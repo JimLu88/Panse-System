@@ -84,3 +84,100 @@ export const resolveException = (id: number, status: 'resolved' | 'ignored') =>
   api
     .patch<DataException>(`/api/exceptions/${id}/resolve`, { status })
     .then((r) => r.data);
+
+// ----- Products -----
+export interface Product {
+  id: number;
+  code: string;
+  name: string;
+  brand: string | null;
+  category: string | null;
+  remark: string | null;
+}
+
+export const listProducts = (q?: string) =>
+  api.get<Product[]>('/api/products', { params: { q, limit: 500 } }).then((r) => r.data);
+
+export const createProduct = (payload: {
+  name: string;
+  brand: string;
+  category: string;
+  category_label?: string;
+  remark?: string;
+}) => api.post<Product>('/api/products', payload).then((r) => r.data);
+
+// ----- Product Inventory (4a) -----
+export interface ProductInventoryRow {
+  id: number;
+  warehouse: string;
+  product_code: string;
+  sku: string | null;
+  spec: string | null;
+  unit: string | null;
+  physical_qty: number;
+  locked_qty: number;
+  remark: string | null;
+}
+
+export const listProductInventory = () =>
+  api.get<ProductInventoryRow[]>('/api/inventory/products').then((r) => r.data);
+
+export const addProductInventoryRow = (payload: {
+  warehouse: string;
+  product_code: string;
+  sku?: string;
+  spec?: string;
+  unit?: string;
+  physical_qty?: number;
+  locked_qty?: number;
+  remark?: string;
+}) => api.post<ProductInventoryRow>('/api/inventory/products', payload).then((r) => r.data);
+
+// ----- BOM -----
+export interface BomLineRow {
+  id: number;
+  product_code: string;
+  sku: string | null;
+  sku_code: string | null;
+  material_code: string;
+  material_name: string | null;
+  unit: string | null;
+  qty_per_product: string;
+}
+
+export interface BomLineGroup {
+  sku: string | null;
+  sku_code: string | null;
+  lines: BomLineRow[];
+}
+
+export const listBomForProduct = (productCode: string) =>
+  api.get<BomLineGroup[]>(`/api/bom/${productCode}`).then((r) => r.data);
+
+// ----- Feishu -----
+export interface FeishuBinding {
+  id: number;
+  system_table: string;
+  feishu_app_token: string;
+  feishu_table_id: string;
+  direction: string;
+  enabled: boolean;
+  field_mapping: string | null;
+}
+
+export interface FeishuStatus {
+  system_table: string;
+  feishu_table_id: string;
+  direction: string;
+  enabled: boolean;
+  mapped_rows: number;
+}
+
+export const listFeishuBindings = () =>
+  api.get<FeishuBinding[]>('/api/feishu/bindings').then((r) => r.data);
+
+export const createFeishuBinding = (payload: Omit<FeishuBinding, 'id'>) =>
+  api.post<FeishuBinding>('/api/feishu/bindings', payload).then((r) => r.data);
+
+export const feishuStatus = () =>
+  api.get<FeishuStatus[]>('/api/feishu/status').then((r) => r.data);

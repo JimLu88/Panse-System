@@ -1,9 +1,13 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import bom as bom_api
 from app.api import exceptions as exceptions_api
+from app.api import feishu as feishu_api
 from app.api import inventory as inventory_api
 from app.api import materials as materials_api
+from app.api import product_inventory as product_inventory_api
+from app.api import products as products_api
 from app.config import get_settings
 
 settings = get_settings()
@@ -19,8 +23,12 @@ app.add_middleware(
 )
 
 app.include_router(materials_api.router)
+app.include_router(products_api.router)
 app.include_router(inventory_api.router)
+app.include_router(product_inventory_api.router)
+app.include_router(bom_api.router)
 app.include_router(exceptions_api.router)
+app.include_router(feishu_api.router)
 
 
 @app.get("/api/health")
