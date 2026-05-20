@@ -1,0 +1,27 @@
+import os
+import sys
+from pathlib import Path
+
+import pytest
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+
+os.environ.setdefault("DATABASE_URL", "sqlite:///:memory:")
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
+
+from app.models import Base  # noqa: E402
+
+
+@pytest.fixture()
+def db_session():
+    engine = create_engine("sqlite:///:memory:", future=True, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+    session = Session()
+    try:
+        yield session
+    finally:
+        session.close()
+        engine.dispose()
