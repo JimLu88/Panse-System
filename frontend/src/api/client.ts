@@ -964,3 +964,42 @@ export const statementXlsxUrl = (supplierId: number, year: number, month: number
 
 export const statementHtmlUrl = (supplierId: number, year: number, month: number) =>
   `/api/suppliers/${supplierId}/statements/${year}/${month}.html`;
+
+// ----- 支付宝自动对账 (业务需求 2) -----
+export interface PaymentMatch {
+  flow_id: number;
+  flow_no: string;
+  flow_amount: number;
+  flow_time: string | null;
+  counterparty: string | null;
+  supplier_id: number | null;
+  supplier_name: string | null;
+  matched_note_ids: number[];
+  matched_note_nos: string[];
+  decision: 'exact' | 'combo' | 'needs_review' | 'no_supplier' | 'no_candidates' | 'skipped';
+  reason: string;
+}
+
+export interface ReconcileSummary {
+  scanned: number;
+  matched_count: number;
+  needs_review: number;
+  no_supplier: number;
+  no_candidates: number;
+  skipped: number;
+  matches: PaymentMatch[];
+}
+
+export const reconcilePayments = (payload: {
+  account?: string;
+  since_days?: number;
+  dry_run?: boolean;
+}) =>
+  api
+    .post<ReconcileSummary>('/api/suppliers/reconcile-payments', payload)
+    .then((r) => r.data);
+
+export const applyManualPaymentMatch = (flow_id: number, note_ids: number[]) =>
+  api
+    .post<PaymentMatch>('/api/suppliers/reconcile-payments/manual', { flow_id, note_ids })
+    .then((r) => r.data);

@@ -206,3 +206,114 @@ def test_supplier_seed_idempotent(db_session):
     assert len(second) == 0
     total = db_session.execute(select(Supplier)).scalars().all()
     assert len(total) == 3
+
+
+def test_reconcile_payments_endpoint(tmp_path, monkeypatch):
+    """端到端: 创建供应商 + 单据 + 流水, 调 /api/suppliers/reconcile-payments."""
+    from app.models.finance import AlipayFlow
+    from app.models.supplier import DeliveryNote, Supplier
+    from datetime import datetime, timezone
+
+    client, token, Sess = _client(tmp_path, monkeypatch)
+    h = {"Authorization": f"Bearer {token}"}
+    try:
+        # 创建供应商 + 关键字
+        r = client.post("/api/suppliers", headers=h, json={
+            "name": "木作工厂", "supplier_type": "woodwork",
+            "alipay_counterparty_keywords": ["X木业", "佛山木业"],
+        })
+        assert r.status_code == 201
+        sup_id = r.json()["id"]
+        assert r.json()["alipay_counterparty_keywords"] == ["X木业", "佛山木业"]
+
+        # 直接 ORM 插单据 + 流水
+        ses = Sess()
+        n = DeliveryNote(supplier_id=sup_id, note_no="N-9001",
+                         delivery_date=date(2026, 5, 14),
+                         total_amount=Decimal("580"), status="confirmed")
+        ses.add(n)
+        f = AlipayFlow(
+            account="企业号", transaction_no="TX-9001",
+            transaction_time=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            transaction_type="转账", counterparty="X木业有限公司",
+            amount=Decimal("-580"),
+            reconciliation_type="factory_payment", reconciliation_status="open",
+        )
+        ses.add(f)
+        ses.commit(); ses.close()
+
+        # dry_run 先看一眼
+        r = client.post("/api/suppliers/reconcile-payments", headers=h,
+                        json={"dry_run": True, "since_days": 90})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["scanned"] == 1
+        assert body["matched_count"] == 1
+        assert body["matches"][0]["decision"] == "exact"
+        assert body["matches"][0]["supplier_name"] == "木作工厂"
+
+        # 正式跑
+        r = client.post("/api/suppliers/reconcile-payments", headers=h,
+                        json={"dry_run": False})
+        assert r.json()["matched_count"] == 1
+
+        # 单据应已被标 paid
+        r = client.get(f"/api/suppliers/{sup_id}/delivery-notes", headers=h)
+        notes = r.json()
+        assert notes[0]["status"] == "paid"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_reconcile_manual_match(tmp_path, monkeypatch):
+    """needs_review 场景下用户手动确认."""
+    from app.models.finance import AlipayFlow
+    from app.models.supplier import DeliveryNote
+    from datetime import datetime, timezone
+
+    client, token, Sess = _client(tmp_path, monkeypatch)
+    h = {"Authorization": f"Bearer {token}"}
+    try:
+        r = client.post("/api/suppliers", headers=h, json={
+            "name": "X木业", "supplier_type": "woodwork",
+            "alipay_counterparty_keywords": ["X木业"],
+        })
+        sup_id = r.json()["id"]
+
+        ses = Sess()
+        n1 = DeliveryNote(supplier_id=sup_id, note_no="A",
+                          delivery_date=date(2026, 5, 10),
+                          total_amount=Decimal("200"), status="confirmed")
+        n2 = DeliveryNote(supplier_id=sup_id, note_no="B",
+                          delivery_date=date(2026, 5, 11),
+                          total_amount=Decimal("300"), status="confirmed")
+        ses.add(n1); ses.add(n2)
+        f = AlipayFlow(
+            account="企业号", transaction_no="TX-M1",
+            transaction_time=datetime(2026, 5, 14, tzinfo=timezone.utc),
+            counterparty="X木业", amount=Decimal("-500"),
+            reconciliation_type="factory_payment", reconciliation_status="open",
+        )
+        ses.add(f); ses.commit()
+        n1_id, n2_id, f_id = n1.id, n2.id, f.id
+        ses.close()
+
+        # combo 唯一 → 应该 decision=combo
+        r = client.post("/api/suppliers/reconcile-payments", headers=h,
+                        json={"dry_run": True})
+        assert r.json()["matches"][0]["decision"] == "combo"
+
+        # 模拟 needs_review: 用错误金额组合手动调用应失败
+        r = client.post("/api/suppliers/reconcile-payments/manual", headers=h,
+                        json={"flow_id": f_id, "note_ids": [n1_id]})
+        assert r.status_code == 400
+        assert "金额对不上" in r.json()["detail"]
+
+        # 正确组合
+        r = client.post("/api/suppliers/reconcile-payments/manual", headers=h,
+                        json={"flow_id": f_id, "note_ids": [n1_id, n2_id]})
+        assert r.status_code == 200
+        assert r.json()["decision"] == "combo"
+        assert set(r.json()["matched_note_ids"]) == {n1_id, n2_id}
+    finally:
+        app.dependency_overrides.clear()

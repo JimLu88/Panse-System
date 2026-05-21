@@ -44,6 +44,10 @@ class Supplier(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # 支付宝自动对账 (业务需求 2): 关键字命中 counterparty 时视为这家供应商的付款
+    alipay_counterparty_keywords: Mapped[Optional[list]] = mapped_column(JSON, default=list)
+    alipay_account: Mapped[Optional[str]] = mapped_column(String(32))  # 主要从哪个支付宝账号付
+
 
 class DeliveryNote(Base, TimestampMixin):
     """供应商送货单一张 = 一次到货 / 一次结账单据."""

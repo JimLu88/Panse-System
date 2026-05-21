@@ -53,6 +53,8 @@ class SupplierOut(BaseModel):
     payment_terms: Optional[str] = None
     is_active: bool
     remark: Optional[str] = None
+    alipay_counterparty_keywords: list[str] = []
+    alipay_account: Optional[str] = None
 
 
 class SupplierIn(BaseModel):
@@ -63,6 +65,8 @@ class SupplierIn(BaseModel):
     address: Optional[str] = None
     payment_terms: Optional[str] = None
     remark: Optional[str] = None
+    alipay_counterparty_keywords: list[str] = []
+    alipay_account: Optional[str] = None
 
 
 class SupplierPatch(BaseModel):
@@ -74,6 +78,8 @@ class SupplierPatch(BaseModel):
     payment_terms: Optional[str] = None
     is_active: Optional[bool] = None
     remark: Optional[str] = None
+    alipay_counterparty_keywords: Optional[list[str]] = None
+    alipay_account: Optional[str] = None
 
 
 class DeliveryLineOut(BaseModel):
@@ -132,6 +138,8 @@ def _supplier_out(s: Supplier) -> SupplierOut:
         id=s.id, name=s.name, supplier_type=s.supplier_type,
         contact=s.contact, phone=s.phone, address=s.address,
         payment_terms=s.payment_terms, is_active=s.is_active, remark=s.remark,
+        alipay_counterparty_keywords=list(s.alipay_counterparty_keywords or []),
+        alipay_account=s.alipay_account,
     )
 
 
@@ -589,3 +597,109 @@ def view_statement_html(
 def _url_quote(name: str) -> str:
     from urllib.parse import quote
     return quote(name)
+
+
+# ----------------------------- 支付宝自动对账 (业务需求 2) ----------- #
+
+
+class PaymentMatchOut(BaseModel):
+    flow_id: int
+    flow_no: str
+    flow_amount: float
+    flow_time: Optional[str]
+    counterparty: Optional[str]
+    supplier_id: Optional[int]
+    supplier_name: Optional[str]
+    matched_note_ids: list[int]
+    matched_note_nos: list[str]
+    decision: str  # exact / combo / needs_review / no_supplier / no_candidates / skipped
+    reason: str
+
+
+class ReconcileSummary(BaseModel):
+    scanned: int
+    matched_count: int
+    needs_review: int
+    no_supplier: int
+    no_candidates: int
+    skipped: int
+    matches: list[PaymentMatchOut]
+
+
+class ReconcileRequest(BaseModel):
+    account: Optional[str] = None
+    since_days: int = 90
+    dry_run: bool = False
+
+
+@router.post("/suppliers/reconcile-payments", response_model=ReconcileSummary)
+def reconcile_payments(
+    payload: ReconcileRequest,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """业务需求: 扫支付宝 factory_payment 流水, 自动配到供应商送货单。
+
+    dry_run=True 只预览匹配方案不落盘。
+    匹配成功 → 流水标 matched, 单据 → paid + 写 alipay_flow_no。
+    """
+    from app.services import supplier_payment_matcher
+    result = supplier_payment_matcher.reconcile(
+        db, account=payload.account,
+        since_days=payload.since_days, dry_run=payload.dry_run,
+    )
+    if not payload.dry_run:
+        db.commit()
+    return ReconcileSummary(
+        scanned=result.scanned,
+        matched_count=result.matched_count,
+        needs_review=result.needs_review,
+        no_supplier=result.no_supplier,
+        no_candidates=result.no_candidates,
+        skipped=result.skipped,
+        matches=[
+            PaymentMatchOut(
+                flow_id=m.flow_id, flow_no=m.flow_no,
+                flow_amount=float(m.flow_amount),
+                flow_time=m.flow_time.isoformat() if m.flow_time else None,
+                counterparty=m.counterparty,
+                supplier_id=m.supplier_id, supplier_name=m.supplier_name,
+                matched_note_ids=m.matched_note_ids,
+                matched_note_nos=m.matched_note_nos,
+                decision=m.decision, reason=m.reason,
+            )
+            for m in result.matches
+        ],
+    )
+
+
+class ManualPaymentMatchIn(BaseModel):
+    flow_id: int
+    note_ids: list[int]
+
+
+@router.post("/suppliers/reconcile-payments/manual", response_model=PaymentMatchOut)
+def apply_manual_payment_match(
+    payload: ManualPaymentMatchIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """needs_review 的流水, 用户在 UI 选好后调这个 endpoint 确认落盘."""
+    from app.services import supplier_payment_matcher
+    try:
+        m = supplier_payment_matcher.apply_manual_match(
+            db, flow_id=payload.flow_id, note_ids=payload.note_ids,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return PaymentMatchOut(
+        flow_id=m.flow_id, flow_no=m.flow_no,
+        flow_amount=float(m.flow_amount),
+        flow_time=m.flow_time.isoformat() if m.flow_time else None,
+        counterparty=m.counterparty,
+        supplier_id=m.supplier_id, supplier_name=m.supplier_name,
+        matched_note_ids=m.matched_note_ids,
+        matched_note_nos=m.matched_note_nos,
+        decision=m.decision, reason=m.reason,
+    )

@@ -37,6 +37,8 @@ import {
   CameraOutlined,
   CheckCircleOutlined,
   CloudDownloadOutlined,
+  DollarOutlined,
+  EditOutlined,
   ExclamationCircleOutlined,
   FileImageOutlined,
   FilePdfOutlined,
@@ -51,7 +53,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DeliveryLine,
   DeliveryNote,
+  PaymentMatch,
+  ReconcileSummary,
   Supplier,
+  applyManualPaymentMatch,
   createSupplier,
   deliveryFileRawUrl,
   getDeliveryNote,
@@ -59,6 +64,8 @@ import {
   listSupplierFolder,
   listSuppliers,
   patchLineMatch,
+  patchSupplier,
+  reconcilePayments,
   rematchNote,
   sourceImageUrl,
   statementHtmlUrl,
@@ -103,6 +110,8 @@ export default function SuppliersPage() {
   const [period, setPeriod] = useState<Dayjs>(() => dayjs());
   const [drawerNoteId, setDrawerNoteId] = useState<number | null>(null);
   const [folderOpen, setFolderOpen] = useState(false);
+  const [reconcileOpen, setReconcileOpen] = useState(false);
+  const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
 
   const { data: suppliers } = useQuery({
     queryKey: ['suppliers'],
@@ -120,6 +129,8 @@ export default function SuppliersPage() {
           suppliers={suppliers ?? []}
           selectedId={activeId}
           onSelect={setSelectedId}
+          onEdit={setEditingSupplier}
+          onOpenReconcile={() => setReconcileOpen(true)}
         />
       </Col>
       <Col flex="auto">
@@ -156,6 +167,15 @@ export default function SuppliersPage() {
       >
         {drawerNoteId && <DeliveryNoteDetail noteId={drawerNoteId} />}
       </Drawer>
+      {reconcileOpen && (
+        <ReconcileModal onClose={() => setReconcileOpen(false)} />
+      )}
+      {editingSupplier && (
+        <SupplierEditModal
+          supplier={editingSupplier}
+          onClose={() => setEditingSupplier(null)}
+        />
+      )}
     </Row>
   );
 }
@@ -166,10 +186,14 @@ function SupplierListPanel({
   suppliers,
   selectedId,
   onSelect,
+  onEdit,
+  onOpenReconcile,
 }: {
   suppliers: Supplier[];
   selectedId: number | null;
   onSelect: (id: number) => void;
+  onEdit: (s: Supplier) => void;
+  onOpenReconcile: () => void;
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -212,19 +236,46 @@ function SupplierListPanel({
             style={{
               cursor: 'pointer',
               background: s.id === selectedId ? '#e6f4ff' : undefined,
-              padding: '8px 10px',
+              padding: '6px 10px',
               borderRadius: 4,
             }}
+            actions={[
+              <Button
+                key="edit"
+                type="link"
+                size="small"
+                icon={<EditOutlined />}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onEdit(s);
+                }}
+              />,
+            ]}
           >
-            <Space>
-              <Tag color={SUPPLIER_TYPE_COLOR[s.supplier_type] ?? 'default'}>
-                {SUPPLIER_TYPE_LABEL[s.supplier_type] ?? s.supplier_type}
-              </Tag>
-              <strong>{s.name}</strong>
+            <Space direction="vertical" size={0}>
+              <Space>
+                <Tag color={SUPPLIER_TYPE_COLOR[s.supplier_type] ?? 'default'}>
+                  {SUPPLIER_TYPE_LABEL[s.supplier_type] ?? s.supplier_type}
+                </Tag>
+                <strong>{s.name}</strong>
+              </Space>
+              {s.alipay_counterparty_keywords?.length > 0 && (
+                <Typography.Text type="secondary" style={{ fontSize: 10 }}>
+                  支付宝关键字: {s.alipay_counterparty_keywords.join(' / ')}
+                </Typography.Text>
+              )}
             </Space>
           </List.Item>
         )}
       />
+      <Button
+        block
+        icon={<DollarOutlined />}
+        onClick={onOpenReconcile}
+        style={{ marginTop: 12 }}
+      >
+        支付宝自动对账
+      </Button>
 
       <Modal
         title="新增供应商"
@@ -264,6 +315,13 @@ function SupplierListPanel({
                 label: x,
               }))}
             />
+          </Form.Item>
+          <Form.Item
+            name="alipay_counterparty_keywords"
+            label="支付宝对手方关键字"
+            tooltip="付款时支付宝流水里这家供应商的名字。多个关键字逐一回车; 命中任一即可。"
+          >
+            <Select mode="tags" placeholder="如 X 木业 / 佛山X木业有限公司" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} />
@@ -883,6 +941,362 @@ function FolderModal({
             </Col>
           ))}
         </Row>
+      )}
+    </Modal>
+  );
+}
+
+// ----------------------------- 编辑供应商 ---------------------------- //
+
+function SupplierEditModal({
+  supplier,
+  onClose,
+}: {
+  supplier: Supplier;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const [form] = Form.useForm();
+  const mut = useMutation({
+    mutationFn: (payload: Partial<Supplier>) => patchSupplier(supplier.id, payload),
+    onSuccess: () => {
+      message.success('已保存');
+      qc.invalidateQueries({ queryKey: ['suppliers'] });
+      onClose();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  return (
+    <Modal
+      open
+      title={`编辑供应商 — ${supplier.name}`}
+      onCancel={onClose}
+      onOk={() => form.submit()}
+      confirmLoading={mut.isPending}
+      destroyOnClose
+    >
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={supplier}
+        onFinish={(v) => mut.mutate(v)}
+      >
+        <Form.Item name="name" label="供应商名" rules={[{ required: true }]}>
+          <Input />
+        </Form.Item>
+        <Form.Item name="supplier_type" label="类型" rules={[{ required: true }]}>
+          <Select
+            options={Object.entries(SUPPLIER_TYPE_LABEL).map(([v, l]) => ({
+              value: v,
+              label: l,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="contact" label="联系人">
+          <Input />
+        </Form.Item>
+        <Form.Item name="phone" label="电话">
+          <Input />
+        </Form.Item>
+        <Form.Item name="payment_terms" label="付款方式">
+          <Select
+            options={['月结', '现付', '预付', '半月结'].map((x) => ({
+              value: x,
+              label: x,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item
+          name="alipay_counterparty_keywords"
+          label="支付宝对手方关键字"
+          tooltip="付款时支付宝流水里这家供应商的名字。多个关键字逐一回车; 命中任一即可。"
+        >
+          <Select mode="tags" placeholder="如 X 木业 / 佛山 X 木业有限公司" />
+        </Form.Item>
+        <Form.Item name="alipay_account" label="主要付款账号">
+          <Select
+            allowClear
+            options={['企业号', '个体户私账', '爱群号', '佳宝号', '主力号'].map((x) => ({
+              value: x,
+              label: x,
+            }))}
+          />
+        </Form.Item>
+        <Form.Item name="remark" label="备注">
+          <Input.TextArea rows={2} />
+        </Form.Item>
+      </Form>
+    </Modal>
+  );
+}
+
+// ----------------------------- 支付宝自动对账 Modal (业务需求 2) ----- //
+
+const DECISION_LABEL: Record<PaymentMatch['decision'], string> = {
+  exact: '精确匹配',
+  combo: '合并匹配',
+  needs_review: '待手动复核',
+  no_supplier: '未识别供应商',
+  no_candidates: '无候选单据',
+  skipped: '跳过',
+};
+const DECISION_COLOR: Record<PaymentMatch['decision'], string> = {
+  exact: 'green',
+  combo: 'cyan',
+  needs_review: 'orange',
+  no_supplier: 'default',
+  no_candidates: 'default',
+  skipped: 'default',
+};
+
+function ReconcileModal({ onClose }: { onClose: () => void }) {
+  const qc = useQueryClient();
+  const [account, setAccount] = useState<string | undefined>(undefined);
+  const [sinceDays, setSinceDays] = useState(90);
+  const [preview, setPreview] = useState<ReconcileSummary | null>(null);
+
+  const dryRunMut = useMutation({
+    mutationFn: () =>
+      reconcilePayments({ account, since_days: sinceDays, dry_run: true }),
+    onSuccess: (r) => setPreview(r),
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '预览失败'),
+  });
+
+  const commitMut = useMutation({
+    mutationFn: () =>
+      reconcilePayments({ account, since_days: sinceDays, dry_run: false }),
+    onSuccess: (r) => {
+      message.success(
+        `已落盘: ${r.matched_count} 笔精确/合并匹配, ${r.needs_review} 笔待复核`,
+      );
+      setPreview(r);
+      qc.invalidateQueries({ queryKey: ['delivery-notes'] });
+      qc.invalidateQueries({ queryKey: ['delivery-note'] });
+    },
+  });
+
+  const manualMut = useMutation({
+    mutationFn: ({ flowId, noteIds }: { flowId: number; noteIds: number[] }) =>
+      applyManualPaymentMatch(flowId, noteIds),
+    onSuccess: () => {
+      message.success('已手动绑定');
+      dryRunMut.mutate();
+      qc.invalidateQueries({ queryKey: ['delivery-notes'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '绑定失败'),
+  });
+
+  const hasCommitable = (preview?.matched_count ?? 0) > 0;
+
+  return (
+    <Modal
+      open
+      width={1100}
+      title="支付宝流水 → 供应商送货单 自动对账"
+      onCancel={onClose}
+      footer={
+        <Space>
+          <Button onClick={onClose}>关闭</Button>
+          <Button
+            onClick={() => dryRunMut.mutate()}
+            loading={dryRunMut.isPending}
+          >
+            重新预览
+          </Button>
+          <Popconfirm
+            title={`确认把 ${preview?.matched_count ?? 0} 笔自动匹配落盘?`}
+            description="待复核的笔不会被自动落盘"
+            okText="确认落盘"
+            disabled={!hasCommitable}
+            onConfirm={() => commitMut.mutate()}
+          >
+            <Button
+              type="primary"
+              disabled={!hasCommitable}
+              loading={commitMut.isPending}
+            >
+              确认匹配 ({preview?.matched_count ?? 0} 笔)
+            </Button>
+          </Popconfirm>
+        </Space>
+      }
+    >
+      <Space style={{ marginBottom: 12 }}>
+        <span>账户:</span>
+        <Select
+          allowClear
+          placeholder="全部账户"
+          style={{ width: 160 }}
+          value={account}
+          onChange={setAccount}
+          options={['企业号', '个体户私账', '爱群号', '佳宝号', '主力号'].map((x) => ({
+            value: x,
+            label: x,
+          }))}
+        />
+        <span>近</span>
+        <Select
+          value={sinceDays}
+          onChange={setSinceDays}
+          options={[30, 60, 90, 180].map((d) => ({ value: d, label: `${d} 天` }))}
+          style={{ width: 100 }}
+        />
+        <Button
+          type="primary"
+          icon={<DollarOutlined />}
+          onClick={() => dryRunMut.mutate()}
+          loading={dryRunMut.isPending}
+        >
+          开始预览
+        </Button>
+      </Space>
+
+      {preview && (
+        <>
+          <Row gutter={8} style={{ marginBottom: 16 }}>
+            <Col span={4}>
+              <Statistic title="扫描流水" value={preview.scanned} />
+            </Col>
+            <Col span={4}>
+              <Statistic
+                title="自动匹配"
+                value={preview.matched_count}
+                valueStyle={{ color: '#3f8600' }}
+              />
+            </Col>
+            <Col span={4}>
+              <Statistic
+                title="待复核"
+                value={preview.needs_review}
+                valueStyle={{ color: '#fa8c16' }}
+              />
+            </Col>
+            <Col span={4}>
+              <Statistic
+                title="未识别供应商"
+                value={preview.no_supplier}
+                valueStyle={{ color: '#bfbfbf' }}
+              />
+            </Col>
+            <Col span={4}>
+              <Statistic title="无候选" value={preview.no_candidates} />
+            </Col>
+            <Col span={4}>
+              <Statistic title="跳过" value={preview.skipped} />
+            </Col>
+          </Row>
+
+          {preview.no_supplier > 0 && (
+            <Alert
+              style={{ marginBottom: 8 }}
+              type="info"
+              showIcon
+              message={`${preview.no_supplier} 笔未识别供应商`}
+              description="去供应商编辑里加 “支付宝对手方关键字”, 再来重新预览即可命中。"
+            />
+          )}
+
+          <Table<PaymentMatch>
+            size="small"
+            rowKey="flow_id"
+            dataSource={preview.matches}
+            pagination={{ pageSize: 50 }}
+            columns={[
+              {
+                title: '决策',
+                dataIndex: 'decision',
+                width: 100,
+                filters: Object.entries(DECISION_LABEL).map(([v, l]) => ({
+                  value: v,
+                  text: l,
+                })),
+                onFilter: (v, r) => r.decision === v,
+                render: (v: PaymentMatch['decision']) => (
+                  <Tag color={DECISION_COLOR[v]}>{DECISION_LABEL[v]}</Tag>
+                ),
+              },
+              {
+                title: '流水时间',
+                dataIndex: 'flow_time',
+                width: 140,
+                render: (v: string | null) =>
+                  v ? new Date(v).toLocaleString('zh-CN') : '-',
+              },
+              {
+                title: '对手方',
+                dataIndex: 'counterparty',
+                ellipsis: true,
+              },
+              {
+                title: '金额',
+                dataIndex: 'flow_amount',
+                width: 90,
+                align: 'right',
+                render: (v: number) => (
+                  <span style={{ color: v < 0 ? '#cf1322' : '#3f8600' }}>
+                    ¥ {Math.abs(v).toFixed(2)}
+                  </span>
+                ),
+              },
+              {
+                title: '供应商',
+                dataIndex: 'supplier_name',
+                width: 110,
+                render: (v: string | null) =>
+                  v ?? <Typography.Text type="secondary">-</Typography.Text>,
+              },
+              {
+                title: '匹配单据',
+                dataIndex: 'matched_note_nos',
+                render: (nos: string[], r: PaymentMatch) =>
+                  nos.length === 0 ? (
+                    <Typography.Text type="secondary">{r.reason}</Typography.Text>
+                  ) : (
+                    <Space wrap size={4}>
+                      {nos.map((no) => (
+                        <Tag key={no} color="blue">
+                          {no}
+                        </Tag>
+                      ))}
+                      {r.decision === 'needs_review' && (
+                        <Tooltip title="把这 N 张单据一起绑定到这笔流水">
+                          <Button
+                            size="small"
+                            type="primary"
+                            ghost
+                            onClick={() =>
+                              Modal.confirm({
+                                title: '把这些单据一起绑定到这笔流水?',
+                                content: `${nos.join(' + ')} 合计应 = ¥${Math.abs(r.flow_amount).toFixed(2)}`,
+                                onOk: () =>
+                                  manualMut.mutateAsync({
+                                    flowId: r.flow_id,
+                                    noteIds: r.matched_note_ids,
+                                  }),
+                              })
+                            }
+                          >
+                            手动绑定
+                          </Button>
+                        </Tooltip>
+                      )}
+                    </Space>
+                  ),
+              },
+              {
+                title: '说明',
+                dataIndex: 'reason',
+                width: 220,
+                render: (v: string) => (
+                  <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                    {v}
+                  </Typography.Text>
+                ),
+              },
+            ]}
+          />
+        </>
       )}
     </Modal>
   );
