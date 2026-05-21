@@ -25,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.models.bom import BomLine
 from app.models.finance import AlipayFlow, RefillRecord
 from app.models.inventory import PartInventory
+from app.models.marketing import PromotionFlow
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order
 from app.services import exception_service
@@ -140,16 +141,63 @@ def run_factory_payment(
     return _result("factory_payment", period_start, period_end, diffs)
 
 
-# -------- Rule 3: 推广支出 --------
+# -------- Rule 3: 推广支出 (Phase 5 实装) --------
 
 def run_promotion(db: Session, *, record_exceptions: bool = True) -> ReconciliationResult:
-    """推广记录暂未建模 → 占位：返回 not_available 并提示在 Phase 5 补。"""
-    diffs = [ReconciliationDiff(
-        key="all",
-        expected=None, actual=None, diff=None,
-        severity="not_available",
-        message="推广记录表 (Phase 5) 还未建模，无法对账推广支出",
-    )]
+    """推广记录 (15) ↔ 支付宝(reconciliation_type=promotion)。
+
+    按月汇总比较：promotion_flows 里的 ‘支出’ 与同期 alipay_flows.amount<0 的
+    promotion 类型流水。差异超阈值入异常。
+    """
+    from sqlalchemy import extract
+    # 推广表的支出按月聚合
+    pf_stmt = select(
+        extract("year", PromotionFlow.transaction_date).label("y"),
+        extract("month", PromotionFlow.transaction_date).label("m"),
+        func.coalesce(func.sum(PromotionFlow.amount), 0).label("spent"),
+    ).where(PromotionFlow.flow_type == "支出").group_by("y", "m")
+    by_month_pf: dict[tuple[int, int], Decimal] = {}
+    for y, m, spent in db.execute(pf_stmt).all():
+        if y is None or m is None:
+            continue
+        by_month_pf[(int(y), int(m))] = Decimal(spent or 0)
+
+    # 支付宝里 reconciliation_type='promotion' 的支出按月
+    af_stmt = select(
+        extract("year", AlipayFlow.transaction_time).label("y"),
+        extract("month", AlipayFlow.transaction_time).label("m"),
+        func.coalesce(func.sum(-AlipayFlow.amount), 0).label("paid"),
+    ).where(AlipayFlow.reconciliation_type == "promotion").group_by("y", "m")
+    by_month_af: dict[tuple[int, int], Decimal] = {}
+    for y, m, paid in db.execute(af_stmt).all():
+        if y is None or m is None:
+            continue
+        by_month_af[(int(y), int(m))] = Decimal(paid or 0)
+
+    diffs: list[ReconciliationDiff] = []
+    for key in sorted(set(by_month_pf) | set(by_month_af)):
+        y, m = key
+        expected = by_month_pf.get(key, Decimal("0"))
+        actual = by_month_af.get(key, Decimal("0"))
+        diff = actual - expected
+        sev = _classify(diff)
+        period_key = f"{y}-{m:02d}"
+        msg = f"{period_key}: 推广支出 ¥{expected}, 支付宝 ¥{actual}, 差 ¥{diff}"
+        diffs.append(ReconciliationDiff(
+            key=period_key, expected=expected, actual=actual, diff=diff,
+            severity=sev, message=msg,
+        ))
+        if sev != "ok" and record_exceptions:
+            _record_exception(db, rule="promotion", key=period_key, diff_amount=diff, message=msg)
+
+    if not diffs:
+        diffs = [ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None,
+            severity="not_available",
+            message="无推广记录数据可对账 (空表)",
+        )]
+    if record_exceptions:
+        db.flush()
     return _result("promotion", None, None, diffs)
 
 

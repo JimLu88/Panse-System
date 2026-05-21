@@ -7,6 +7,7 @@ from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
 from app.api import finance as finance_api
 from app.api import inventory as inventory_api
+from app.api import marketing as marketing_api
 from app.api import match as match_api
 from app.api import materials as materials_api
 from app.api import orders as orders_api
@@ -43,6 +44,7 @@ app.include_router(producibility_api.router)
 app.include_router(finance_api.router)
 app.include_router(scanners_api.router)
 app.include_router(ai_api.router)
+app.include_router(marketing_api.router)
 
 
 @app.get("/api/health")

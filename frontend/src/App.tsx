@@ -13,6 +13,7 @@ import ProducibilityPage from './pages/ProducibilityPage';
 import AlipayPage from './pages/AlipayPage';
 import ReconciliationPage from './pages/ReconciliationPage';
 import AiAssistantPage from './pages/AiAssistantPage';
+import MarketingPage from './pages/MarketingPage';
 
 const { Header, Content } = Layout;
 
@@ -42,6 +43,7 @@ export default function App() {
             { key: 'quote', label: <Link to="/quote">报价计算</Link> },
             { key: 'alipay', label: <Link to="/alipay">支付宝流水</Link> },
             { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
+            { key: 'marketing', label: <Link to="/marketing">营销/售后</Link> },
             { key: 'exceptions', label: <Link to="/exceptions">异常处理</Link> },
             { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
             { key: 'feishu', label: <Link to="/feishu">飞书同步</Link> },
@@ -62,6 +64,7 @@ export default function App() {
           <Route path="/alipay" element={<AlipayPage />} />
           <Route path="/reconciliation" element={<ReconciliationPage />} />
           <Route path="/ai" element={<AiAssistantPage />} />
+          <Route path="/marketing" element={<MarketingPage />} />
           <Route path="/exceptions" element={<ExceptionsPage />} />
           <Route path="/feishu" element={<FeishuSettingsPage />} />
         </Routes>

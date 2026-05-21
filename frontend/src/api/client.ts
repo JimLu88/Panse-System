@@ -478,3 +478,93 @@ export const aiChat = (message: string, sessionId?: string) =>
   api
     .post<AiChatResult>('/api/ai/chat', { message, session_id: sessionId })
     .then((r) => r.data);
+
+// ----- Marketing (Phase 5) -----
+export interface Sample {
+  id: number;
+  sample_no: string;
+  product_code: string | null;
+  product_name: string | null;
+  sku: string | null;
+  sample_type: string | null;
+  qty: number;
+  made_at: string | null;
+  cost: string | null;
+  location: string | null;
+  status: string | null;
+  usage: string | null;
+}
+
+export const listSamples = () =>
+  api.get<Sample[]>('/api/marketing/samples').then((r) => r.data);
+
+export interface BrandMarketing {
+  id: number;
+  project_name: string;
+  project_type: string | null;
+  partner: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  budget: string | null;
+  actual_spend: string | null;
+  status: string | null;
+}
+
+export const listBrandMarketing = () =>
+  api.get<BrandMarketing[]>('/api/marketing/brand').then((r) => r.data);
+
+export const createBrandMarketing = (payload: Partial<BrandMarketing> & { project_name: string }) =>
+  api.post<BrandMarketing>('/api/marketing/brand', payload).then((r) => r.data);
+
+export interface PromotionFlow {
+  id: number;
+  transaction_date: string | null;
+  flow_type: string | null;
+  amount: string;
+  balance_after: string | null;
+  remark: string | null;
+}
+
+export const listPromotionFlows = () =>
+  api.get<PromotionFlow[]>('/api/marketing/promotion').then((r) => r.data);
+
+export interface OutsourcingExpense {
+  id: number;
+  payee: string;
+  amount: string;
+  project: string | null;
+  cost_category: string | null;
+  payment_date: string | null;
+}
+
+export const listOutsourcing = () =>
+  api.get<OutsourcingExpense[]>('/api/marketing/outsourcing').then((r) => r.data);
+
+export interface AfterSalesRow {
+  id: number;
+  platform_order_no: string;
+  reason: string | null;
+  in_platform_total: string | null;
+  out_platform_total: string | null;
+  refill_sku: string | null;
+  status: string | null;
+  customer_satisfaction: string | null;
+  processed_at: string | null;
+}
+
+export const listAfterSales = () =>
+  api.get<AfterSalesRow[]>('/api/marketing/after-sales').then((r) => r.data);
+
+export interface RoiResult {
+  period_start: string | null;
+  period_end: string | null;
+  promotion_spend: string;
+  promotion_recharge: string;
+  order_count: number;
+  order_revenue: string;
+  avg_order_value: string;
+  roi: string | null;
+}
+
+export const getRoi = (params: { period_start?: string; period_end?: string } = {}) =>
+  api.get<RoiResult>('/api/marketing/roi', { params }).then((r) => r.data);

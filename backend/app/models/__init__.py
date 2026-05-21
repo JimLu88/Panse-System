@@ -13,6 +13,14 @@ from app.models.finance import (
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.ai import AiChatLog, AiCodePatch
+from app.models.marketing import (
+    AfterSales,
+    BrandMarketing,
+    OutsourcingExpense,
+    PromotionFlow,
+    Sample,
+    WoodLoss,
+)
 from app.models.pricing import PricingSku
 
 __all__ = [
@@ -35,4 +43,10 @@ __all__ = [
     "FactoryReconciliation",
     "AiChatLog",
     "AiCodePatch",
+    "Sample",
+    "BrandMarketing",
+    "PromotionFlow",
+    "OutsourcingExpense",
+    "AfterSales",
+    "WoodLoss",
 ]

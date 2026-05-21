@@ -20,6 +20,12 @@ from app.database import SessionLocal
 from app.models.bom import BomLine
 from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
 from app.models.inventory import PartInventory, ProductInventory
+from app.models.marketing import (
+    AfterSales,
+    OutsourcingExpense,
+    PromotionFlow,
+    Sample,
+)
 from app.models.material import Material
 from app.models.order import Order
 from app.models.pricing import PricingSku
@@ -42,6 +48,10 @@ SHEET_ALIPAY_SHEETS = (
     ("9e-支付宝流水-主力号", "主力号"),
 )
 SHEET_BALANCE = "10-账户余额汇总"
+SHEET_SAMPLE = "13-样品表"
+SHEET_PROMOTION = "15-推广记录"
+SHEET_OUTSOURCING = "17-人员外包费用"
+SHEET_AFTER_SALES = "18-售后表"
 
 
 def _str(v: Any) -> Optional[str]:
@@ -464,6 +474,151 @@ def import_account_balances(wb, db) -> int:
     return count
 
 
+def import_samples(wb, db) -> int:
+    if SHEET_SAMPLE not in wb.sheetnames:
+        return 0
+    ws = wb[SHEET_SAMPLE]
+    header_row = _find_header_row(ws, "样品编号")
+    count = 0
+    seen: set[str] = set()
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        no = _str(row[0])
+        if not no or no in seen:
+            continue
+        seen.add(no)
+        made_at = row[6]
+        made_at_v = made_at.date() if hasattr(made_at, "date") else None
+        db.add(Sample(
+            sample_no=no,
+            product_code=_str(row[1]),
+            product_name=_str(row[2]),
+            sku=_str(row[3]),
+            sample_type=_str(row[4]),
+            qty=_int(row[5]) or 1,
+            made_at=made_at_v,
+            cost=_decimal(row[7]),
+            location=_str(row[8]),
+            status=_str(row[9]),
+            usage=_str(row[10]),
+            remark=_str(row[11]),
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
+def import_promotion(wb, db) -> int:
+    """15-推广记录: Excel 数据列布局与表头有错位, 自动探测 ‘支出/充值’ 列。"""
+    if SHEET_PROMOTION not in wb.sheetnames:
+        return 0
+    from datetime import datetime, timedelta
+    ws = wb[SHEET_PROMOTION]
+    header_row = _find_header_row(ws, "交易日期")
+    count = 0
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        flow_type = None
+        flow_idx = None
+        for i, v in enumerate(row[:6]):
+            if isinstance(v, str) and v.strip() in ("支出", "充值", "退款"):
+                flow_type, flow_idx = v.strip(), i
+                break
+        if flow_idx is None:
+            continue
+        amount = _decimal(row[flow_idx + 1]) if flow_idx + 1 < len(row) else None
+        if amount is None:
+            continue
+        tdate = row[0]
+        tdate_v = None
+        if hasattr(tdate, "date"):
+            tdate_v = tdate.date()
+        else:
+            try:
+                tdate_v = (datetime(1899, 12, 30) + timedelta(days=float(tdate))).date()
+            except (ValueError, OverflowError, TypeError):
+                pass
+        db.add(PromotionFlow(
+            transaction_date=tdate_v,
+            flow_type=flow_type,
+            amount=amount,
+            balance_after=_decimal(row[flow_idx + 2]) if flow_idx + 2 < len(row) else None,
+            alipay_flow_no=_str(row[flow_idx + 3]) if flow_idx + 3 < len(row) else None,
+            remark=_str(row[flow_idx + 4]) if flow_idx + 4 < len(row) else None,
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
+def import_outsourcing(wb, db) -> int:
+    if SHEET_OUTSOURCING not in wb.sheetnames:
+        return 0
+    ws = wb[SHEET_OUTSOURCING]
+    header_row = _find_header_row(ws, "支付宝流水号")
+    count = 0
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        payee = _str(row[1])
+        amount = _decimal(row[2])
+        if not payee or amount is None:
+            continue
+        pdate = row[6]
+        pdate_v = pdate.date() if hasattr(pdate, "date") else None
+        if pdate_v is None and isinstance(row[7], (object,)) and hasattr(row[7], "date"):
+            pdate_v = row[7].date()
+        db.add(OutsourcingExpense(
+            alipay_flow_no=_str(row[0]),
+            payee=payee,
+            amount=amount,
+            project=_str(row[3]),
+            related_order_no=_str(row[4]),
+            cost_category=_str(row[5]),
+            payment_date=pdate_v,
+            remark=_str(row[7]) if not pdate_v else None,
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
+def import_after_sales(wb, db) -> int:
+    if SHEET_AFTER_SALES not in wb.sheetnames:
+        return 0
+    ws = wb[SHEET_AFTER_SALES]
+    header_row = _find_header_row(ws, "平台订单号")
+    count = 0
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        order_no = _str(row[0])
+        if not order_no:
+            continue
+        pdate = row[17]
+        pdate_v = pdate.date() if hasattr(pdate, "date") else None
+        db.add(AfterSales(
+            platform_order_no=order_no,
+            reason=_str(row[1]),
+            compensation_fee=_decimal(row[2]),
+            good_review_refund=_decimal(row[3]),
+            in_platform_total=_decimal(row[4]),
+            direct_compensation=_decimal(row[5]),
+            second_visit_fee=_decimal(row[6]),
+            return_pack_freight=_decimal(row[7]),
+            out_platform_total=_decimal(row[8]),
+            refill_sku=_str(row[9]),
+            refill_tracking_no=_str(row[10]),
+            refill_freight=_decimal(row[11]),
+            wanshifu_deduction=_decimal(row[12]),
+            factory_compensation=_decimal(row[13]),
+            logistics_compensation=_decimal(row[14]),
+            alipay_flow_no=_str(row[15]),
+            second_inbound_confirmed=_str(row[16]),
+            processed_at=pdate_v,
+            status=_str(row[18]),
+            customer_satisfaction=_str(row[19]),
+            remark=_str(row[20]),
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
 def run(excel_path: Path) -> None:
     wb = openpyxl.load_workbook(str(excel_path), data_only=True)
     db = SessionLocal()
@@ -479,6 +634,10 @@ def run(excel_path: Path) -> None:
         print(f"补单记录: {import_refill(wb, db)}")
         print(f"支付宝流水 (9a-9e): {import_alipay(wb, db)}")
         print(f"账户余额: {import_account_balances(wb, db)}")
+        print(f"样品: {import_samples(wb, db)}")
+        print(f"推广记录: {import_promotion(wb, db)}")
+        print(f"人员外包: {import_outsourcing(wb, db)}")
+        print(f"售后: {import_after_sales(wb, db)}")
         print("=== Done ===")
     finally:
         db.close()
