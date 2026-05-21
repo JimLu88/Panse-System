@@ -15,6 +15,7 @@ import {
   Checkbox,
   Col,
   Empty,
+  Progress,
   Row,
   Select,
   Space,
@@ -22,6 +23,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -38,11 +40,14 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   EntityField,
   EntityType,
+  ImportJob,
   ImportReport,
   ImporterPreviewResp,
   SheetPreview,
   commitImporter,
+  commitImporterAsync,
   fetchEntityTypes,
+  fetchImportJob,
   previewImporter,
 } from '../api/client';
 
@@ -172,6 +177,7 @@ function SheetEditor({
 }) {
   const [autoCreate, setAutoCreate] = useState(true);
   const [autoMatch, setAutoMatch] = useState(true);
+  const [activeJobId, setActiveJobId] = useState<number | null>(null);
 
   const entityType = state?.entity_type ?? 'delivery_note';
   const mapping = state?.mapping ?? {};
@@ -219,6 +225,25 @@ function SheetEditor({
     },
     onError: (e: any) =>
       message.error(e?.response?.data?.detail ?? '入库失败'),
+  });
+
+  // 业务需求 6: 大文件异步入库, 立即返回 job_id, 前端轮询进度
+  const commitAsyncMut = useMutation({
+    mutationFn: () =>
+      commitImporterAsync({
+        file_b64: fileB64,
+        sheet_name: sheet.sheet_name,
+        entity_type: entityType,
+        mapping,
+        auto_create_suppliers: autoCreate,
+        auto_match_orders: autoMatch,
+      }),
+    onSuccess: (r) => {
+      setActiveJobId(r.job_id);
+      message.info(`已开始后台导入 (job #${r.job_id}), 进度面板会自动刷新`);
+    },
+    onError: (e: any) =>
+      message.error(e?.response?.data?.detail ?? '提交失败'),
   });
 
   const colOptions = sheet.column_names.map((c) => ({ value: c, label: c }));
@@ -358,7 +383,7 @@ function SheetEditor({
         />
       </Card>
 
-      <Space>
+      <Space wrap>
         <Button
           icon={<ExperimentOutlined />}
           onClick={() => commitMut.mutate(true)}
@@ -372,16 +397,36 @@ function SheetEditor({
           icon={<ImportOutlined />}
           onClick={() => commitMut.mutate(false)}
           loading={commitMut.isPending}
-          disabled={requiredMissing.length > 0}
+          disabled={requiredMissing.length > 0 || commitAsyncMut.isPending}
         >
-          正式入库
+          同步入库 (小文件)
         </Button>
+        <Tooltip title="100MB / 上万行的大文件请用后台导入, 立即返回, 不会超时">
+          <Button
+            type="primary"
+            ghost
+            icon={<CloudUploadOutlined />}
+            onClick={() => commitAsyncMut.mutate()}
+            loading={commitAsyncMut.isPending}
+            disabled={requiredMissing.length > 0 || activeJobId !== null}
+          >
+            后台入库 (大文件)
+          </Button>
+        </Tooltip>
         {requiredMissing.length > 0 && (
           <Typography.Text type="danger">
             必填字段还没选: {requiredMissing.join(', ')}
           </Typography.Text>
         )}
       </Space>
+
+      {activeJobId !== null && (
+        <JobProgress
+          jobId={activeJobId}
+          onClose={() => setActiveJobId(null)}
+          onReport={onReport}
+        />
+      )}
 
       {report && <ImportReportView report={report} />}
     </Space>
@@ -489,6 +534,120 @@ function ImportReportView({ report }: { report: ImportReport }) {
                 </li>
               ))}
             </ul>
+          }
+        />
+      )}
+    </Card>
+  );
+}
+
+// ----------------------------- 异步作业进度 (业务需求 6) ----------- //
+
+function JobProgress({
+  jobId,
+  onClose,
+  onReport,
+}: {
+  jobId: number;
+  onClose: () => void;
+  onReport: (r: ImportReport) => void;
+}) {
+  const { data: job } = useQuery({
+    queryKey: ['import-job', jobId],
+    queryFn: () => fetchImportJob(jobId),
+    refetchInterval: (q) => {
+      const j = q.state.data as ImportJob | undefined;
+      if (!j) return 2000;
+      return j.status === 'done' || j.status === 'failed' ? false : 2000;
+    },
+  });
+
+  if (!job) {
+    return (
+      <Card size="small" title={`后台作业 #${jobId}`}>
+        加载中...
+      </Card>
+    );
+  }
+
+  const statusColor: Record<string, string> = {
+    pending: 'default',
+    running: 'processing',
+    done: 'success',
+    failed: 'error',
+    cancelled: 'warning',
+  };
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space>
+          <span>后台导入 #{job.id}</span>
+          <Tag color={statusColor[job.status] ?? 'default'}>{job.status.toUpperCase()}</Tag>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {job.sheet_name} → {job.entity_type}
+          </Typography.Text>
+        </Space>
+      }
+      extra={
+        <Space>
+          {job.status === 'done' && job.report && (
+            <Button
+              type="primary"
+              size="small"
+              onClick={() => {
+                onReport(job.report as ImportReport);
+                onClose();
+              }}
+            >
+              查看完整报告
+            </Button>
+          )}
+          {(job.status === 'done' || job.status === 'failed') && (
+            <Button size="small" onClick={onClose}>关闭</Button>
+          )}
+        </Space>
+      }
+    >
+      <Progress
+        percent={Math.round(job.progress_pct)}
+        status={
+          job.status === 'failed'
+            ? 'exception'
+            : job.status === 'done'
+              ? 'success'
+              : 'active'
+        }
+        format={() =>
+          job.total_rows
+            ? `${job.processed_rows} / ${job.total_rows} 行`
+            : (job.status === 'done' ? '完成' : '准备中...')
+        }
+      />
+      {job.error && (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginTop: 8 }}
+          message="导入失败"
+          description={
+            <pre style={{ margin: 0, whiteSpace: 'pre-wrap', fontSize: 11, maxHeight: 200, overflow: 'auto' }}>
+              {job.error}
+            </pre>
+          }
+        />
+      )}
+      {job.status === 'done' && job.report && (
+        <Alert
+          type="success"
+          showIcon
+          style={{ marginTop: 8 }}
+          message={`已入库 ${job.report.inserted_parents} 主 + ${job.report.inserted_children ?? 0} 行明细`}
+          description={
+            (job.report.auto_created_suppliers?.length ?? 0) > 0
+              ? `新建供应商: ${job.report.auto_created_suppliers.join(', ')}`
+              : undefined
           }
         />
       )}

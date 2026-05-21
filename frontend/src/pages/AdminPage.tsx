@@ -40,11 +40,13 @@ import {
   IntegrationConfig,
   Integrations,
   MeUser,
+  SystemEvent,
   SystemStatus,
   createUser,
   fetchHealthLogs,
   fetchIntegrations,
   fetchRoles,
+  fetchSystemEvents,
   fetchSystemStatus,
   listAuditLogs,
   listAuthUsers,
@@ -657,6 +659,8 @@ function MonitorTab() {
         />
       </Card>
 
+      <SystemEventsCard />
+
       <Card
         size="small"
         title={
@@ -709,6 +713,142 @@ function MonitorTab() {
               width: 80,
               align: 'right',
               render: (v: number | null) => (v != null ? `${v}ms` : '-'),
+            },
+          ]}
+        />
+      </Card>
+    </Space>
+  );
+}
+
+// ----------------------------- 重启 / 看门狗事件 (业务需求 5) ----------- //
+
+const EVENT_KIND_LABEL: Record<string, string> = {
+  process_started: '进程启动',
+  restart_requested: '收到重启请求',
+  watchdog_triggered: '看门狗触发',
+  orphan_killed: '孤立进程已 kill',
+  restart_failed: '重启失败',
+};
+const EVENT_KIND_COLOR: Record<string, string> = {
+  process_started: 'green',
+  restart_requested: 'orange',
+  watchdog_triggered: 'red',
+  orphan_killed: 'volcano',
+  restart_failed: 'red',
+};
+
+function SystemEventsCard() {
+  const { data: events } = useQuery({
+    queryKey: ['system-events'],
+    queryFn: () => fetchSystemEvents(50),
+    refetchInterval: 15000,
+  });
+
+  if (!events) return null;
+
+  // 找最近一次 restart_requested → 下一个 process_started, 计算 diff
+  const lastRestart = events.find((e) => e.kind === 'restart_requested');
+  const lastStart = events.find((e) => e.kind === 'process_started');
+  let restartDiff: React.ReactNode = null;
+  if (lastRestart && lastStart && new Date(lastStart.created_at) > new Date(lastRestart.created_at)) {
+    const before = lastRestart.snapshot_json as any;
+    const after = lastStart.snapshot_json as any;
+    restartDiff = (
+      <Alert
+        type="success"
+        showIcon
+        message={`上次重启完成: ${new Date(lastStart.created_at).toLocaleString('zh-CN')} (由 ${lastRestart.actor ?? '?'} 触发)`}
+        description={
+          <Row gutter={16} style={{ marginTop: 4 }}>
+            <Col span={6}>
+              <Statistic
+                title="内存变化"
+                value={`${(before?.mem_used_pct ?? 0).toFixed(1)} → ${(after?.mem_used_pct ?? 0).toFixed(1)} %`}
+                valueStyle={{
+                  fontSize: 16,
+                  color: (after?.mem_used_pct ?? 0) < (before?.mem_used_pct ?? 0) ? '#3f8600' : '#cf1322',
+                }}
+              />
+            </Col>
+            <Col span={6}>
+              <Statistic
+                title="DB 延迟变化"
+                value={`${before?.db_latency_ms ?? '?'} → ${after?.db_latency_ms ?? '?'} ms`}
+                valueStyle={{ fontSize: 16 }}
+              />
+            </Col>
+            <Col span={6}>
+              <Statistic
+                title="fail 数变化"
+                value={`${before?.fail_count ?? 0} → ${after?.fail_count ?? 0}`}
+                valueStyle={{
+                  fontSize: 16,
+                  color: (after?.fail_count ?? 0) < (before?.fail_count ?? 0) ? '#3f8600' : '#cf1322',
+                }}
+              />
+            </Col>
+            <Col span={6}>
+              <Statistic
+                title="重启原因"
+                value={lastRestart.detail ?? '-'}
+                valueStyle={{ fontSize: 12 }}
+              />
+            </Col>
+          </Row>
+        }
+      />
+    );
+  }
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="small">
+      {restartDiff}
+      <Card size="small" title={<Space>重启 / 看门狗事件 <Badge count={events.length} /></Space>}>
+        <Table<SystemEvent>
+          size="small"
+          rowKey="id"
+          dataSource={events}
+          pagination={{ pageSize: 10 }}
+          columns={[
+            {
+              title: '时间',
+              dataIndex: 'created_at',
+              width: 160,
+              render: (v: string) => new Date(v).toLocaleString('zh-CN'),
+            },
+            {
+              title: '事件',
+              dataIndex: 'kind',
+              width: 150,
+              render: (v: string) => (
+                <Tag color={EVENT_KIND_COLOR[v] ?? 'default'}>
+                  {EVENT_KIND_LABEL[v] ?? v}
+                </Tag>
+              ),
+              filters: Object.entries(EVENT_KIND_LABEL).map(([v, l]) => ({ value: v, text: l })),
+              onFilter: (v, r) => r.kind === v,
+            },
+            {
+              title: '触发者',
+              dataIndex: 'actor',
+              width: 100,
+              render: (v: string | null) => v ?? '-',
+            },
+            { title: '详情', dataIndex: 'detail', ellipsis: true },
+            {
+              title: '快照',
+              width: 200,
+              render: (_: any, r: SystemEvent) => {
+                const s = r.snapshot_json as any;
+                if (!s) return '-';
+                return (
+                  <Typography.Text style={{ fontSize: 11 }} type="secondary">
+                    mem {s.mem_used_pct?.toFixed?.(0)}% / disk {s.disk_used_pct?.toFixed?.(0)}% /
+                    db {s.db_ok ? '✓' : '✗'} / fail {s.fail_count ?? 0}
+                  </Typography.Text>
+                );
+              },
             },
           ]}
         />

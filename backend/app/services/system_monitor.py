@@ -1,15 +1,19 @@
 """系统监控 + 看门狗 (业务需求).
 
-提供:
-    - get_status(db)       — 一次性状态快照 (CPU/内存/磁盘/DB/迁移/版本)
-    - run_checks(db)       — 跑全部检查, 入库一条 SystemHealthLog
-    - request_restart()    — 触发 graceful SIGTERM, 配合 docker restart 策略自启
-    - start_background()   — fastapi startup 起一个 60s 轮询循环
+功能:
+    - get_status(db)             — 状态快照 (CPU/内存/磁盘/DB/迁移/版本)
+    - run_checks(db)             — 跑全部检查, 写一条 SystemHealthLog
+    - request_restart(actor)     — 发 SIGTERM 重启; 写 restart_requested 事件
+    - claim_pid_file()           — 启动时检测孤立进程, SIGKILL 后写自己 PID
+    - log_process_started()      — 启动时记录事件, 让 UI 能 diff 重启前后
+    - start_background()         — 60s 轮询; 连续 3 次 fail 自动触发自救重启
 
-实现注意:
-    - 不依赖 psutil (镜像无装), 用 /proc + shutil 取 mem/disk
-    - 重启用 os.kill(getpid(), SIGTERM), uvicorn 收到信号会 graceful shutdown
-      Docker compose `restart: unless-stopped` 会立刻再起一个
+事件 (SystemEvent.kind):
+    restart_requested  — admin 点按钮 / 看门狗自救
+    process_started    — 新进程启动后立刻写一条 (含 snapshot)
+    watchdog_triggered — 看门狗判定要重启 (precedes restart_requested)
+    orphan_killed      — 启动时检测到上次进程残留, kill 后启动
+    restart_failed     — request_restart 自身出错
 """
 from __future__ import annotations
 
@@ -303,14 +307,31 @@ def recent_logs(db: Session, *, limit: int = 100,
 # ----------------------------- 重启 / 看门狗 --------------------- #
 
 
-def request_restart() -> None:
+def request_restart(db: Optional[Session] = None, *,
+                    actor: Optional[str] = None,
+                    detail: Optional[str] = None) -> None:
     """触发 graceful 重启. uvicorn 收到 SIGTERM 后会 shutdown, 由 docker
-    restart 策略 (unless-stopped) 自动再拉起."""
+    restart 策略 (unless-stopped) 自动再拉起.
+
+    db 不为 None 时, 会写一条 restart_requested 事件; 否则只 schedule SIGTERM.
+    """
     pid = os.getpid()
-    _logger.warning("收到重启请求, 给 pid=%s 发 SIGTERM", pid)
-    # 异步 schedule, 让当前 HTTP 响应能返回完成
-    loop = asyncio.get_event_loop()
-    loop.call_later(0.5, lambda: os.kill(pid, signal.SIGTERM))
+    _logger.warning("收到重启请求 actor=%s, 给 pid=%s 发 SIGTERM", actor, pid)
+
+    if db is not None:
+        try:
+            log_event(db, "restart_requested",
+                      actor=actor or "system", detail=detail,
+                      snapshot=_snapshot_for_event(db))
+            db.commit()
+        except Exception as e:  # pragma: no cover
+            _logger.warning("无法记录 restart_requested 事件: %s", e)
+
+    try:
+        loop = asyncio.get_event_loop()
+        loop.call_later(0.5, lambda: os.kill(pid, signal.SIGTERM))
+    except RuntimeError:  # pragma: no cover — 没有 loop, 同步杀
+        os.kill(pid, signal.SIGTERM)
 
 
 async def _background_loop(interval_sec: int) -> None:
@@ -322,6 +343,10 @@ async def _background_loop(interval_sec: int) -> None:
             try:
                 run_checks(db, persist=True)
                 db.commit()
+                # 业务需求 6: 看门狗自救
+                triggered = maybe_auto_restart(db)
+                if triggered:
+                    _logger.warning("看门狗自救已触发: %s", triggered)
             finally:
                 db.close()
         except asyncio.CancelledError:
@@ -351,3 +376,172 @@ def stop_background() -> None:
     if _BG_TASK is not None and not _BG_TASK.done():
         _BG_TASK.cancel()
         _BG_TASK = None
+
+
+# ----------------------------- 事件 / Diff (业务需求 5) ------------- #
+
+
+def _snapshot_for_event(db: Session) -> dict:
+    """重启前后状态精简版, 用于 UI diff."""
+    try:
+        s = get_status(db)
+    except Exception:  # pragma: no cover
+        return {}
+    return {
+        "uptime_sec": s.uptime_sec,
+        "version_sha": s.version_sha,
+        "db_ok": s.db_ok,
+        "db_latency_ms": s.db_latency_ms,
+        "mem_used_pct": round(s.mem_used_pct, 1),
+        "disk_used_pct": round(s.disk_used_pct, 1),
+        "storage_used_mb": s.storage_used_mb,
+        "fail_count": sum(1 for c in s.recent_checks if c.status == "fail"),
+        "warn_count": sum(1 for c in s.recent_checks if c.status == "warn"),
+    }
+
+
+def log_event(db: Session, kind: str, *, actor: Optional[str] = None,
+              detail: Optional[str] = None,
+              snapshot: Optional[dict] = None) -> None:
+    from app.models.system_event import SystemEvent
+    db.add(SystemEvent(
+        kind=kind, actor=actor, detail=detail, snapshot_json=snapshot,
+    ))
+    db.flush()
+
+
+def recent_events(db: Session, *, limit: int = 50) -> list:
+    from app.models.system_event import SystemEvent
+    return list(db.execute(
+        select(SystemEvent).order_by(SystemEvent.id.desc()).limit(limit)
+    ).scalars())
+
+
+def log_process_started(db: Session) -> None:
+    """startup hook 调; 写一条 process_started 事件 (snapshot 之后)."""
+    log_event(db, "process_started", actor="system",
+              detail=f"pid={os.getpid()} version={_version_sha()}",
+              snapshot=_snapshot_for_event(db))
+
+
+# ----------------------------- PID 文件 (业务需求 7) --------------- #
+
+
+PID_FILE = os.environ.get("PANSE_PID_FILE", "/tmp/panse_api.pid")
+
+
+def _is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # 进程存在但不归我们 (在容器里不太可能), 视为活的
+        return True
+
+
+def claim_pid_file(db: Optional[Session] = None) -> Optional[int]:
+    """启动时调用. 如果 PID 文件已有别人 → SIGTERM → 1s 后还活着就 SIGKILL → 写自己 PID.
+
+    返回被杀的旧 pid (None 表示没有孤立进程)。
+    """
+    killed: Optional[int] = None
+    try:
+        if os.path.isfile(PID_FILE):
+            try:
+                prev = int(open(PID_FILE, encoding="utf-8").read().strip())
+            except (ValueError, OSError):
+                prev = -1
+            if prev > 0 and prev != os.getpid() and _is_alive(prev):
+                _logger.warning("发现孤立进程 pid=%s, 准备杀掉", prev)
+                try:
+                    os.kill(prev, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+                # 等最多 3 秒 graceful 退出
+                for _ in range(15):
+                    if not _is_alive(prev):
+                        break
+                    time.sleep(0.2)
+                if _is_alive(prev):
+                    _logger.warning("孤立进程 pid=%s 不肯走, SIGKILL", prev)
+                    try:
+                        os.kill(prev, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                killed = prev
+        # 写自己 PID
+        os.makedirs(os.path.dirname(PID_FILE) or ".", exist_ok=True)
+        with open(PID_FILE, "w", encoding="utf-8") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:  # pragma: no cover
+        _logger.warning("无法读写 PID 文件 %s: %s", PID_FILE, e)
+
+    if killed is not None and db is not None:
+        try:
+            log_event(db, "orphan_killed", actor="system",
+                      detail=f"上次的 pid={killed} 残留, 已 kill 重启",
+                      snapshot=_snapshot_for_event(db))
+        except Exception:  # pragma: no cover
+            pass
+
+    return killed
+
+
+def release_pid_file() -> None:
+    """shutdown hook 调; 只删除属于自己的 PID 文件 (避免覆盖新进程)."""
+    try:
+        if os.path.isfile(PID_FILE):
+            current = open(PID_FILE, encoding="utf-8").read().strip()
+            if current == str(os.getpid()):
+                os.remove(PID_FILE)
+    except OSError:  # pragma: no cover
+        pass
+
+
+# ----------------------------- 自救逻辑 (业务需求 6) --------------- #
+
+
+# 同一进程下不重复触发: 重启请求 cooldown
+_LAST_AUTO_RESTART_TS = 0.0
+AUTO_RESTART_COOLDOWN_SEC = 600   # 10 分钟
+AUTO_RESTART_FAIL_THRESHOLD = 3   # 连续 3 次 fail
+
+
+def _should_auto_restart(db: Session) -> tuple[bool, str]:
+    """检查关键 check 是否连续 fail 3 次. 返回 (是否要重启, 原因)."""
+    from app.models.system_health import SystemHealthLog
+    critical = ("db_ping", "memory")
+    for name in critical:
+        rows = db.execute(
+            select(SystemHealthLog).where(SystemHealthLog.check_name == name)
+            .order_by(SystemHealthLog.id.desc())
+            .limit(AUTO_RESTART_FAIL_THRESHOLD)
+        ).scalars().all()
+        if len(rows) >= AUTO_RESTART_FAIL_THRESHOLD and \
+           all(r.status == "fail" for r in rows):
+            return True, f"{name} 连续 {AUTO_RESTART_FAIL_THRESHOLD} 次 fail"
+    return False, ""
+
+
+def maybe_auto_restart(db: Session) -> Optional[str]:
+    """看门狗 tick 后调用。返回触发原因 (重启) 或 None."""
+    global _LAST_AUTO_RESTART_TS
+    if time.time() - _LAST_AUTO_RESTART_TS < AUTO_RESTART_COOLDOWN_SEC:
+        return None
+    should, reason = _should_auto_restart(db)
+    if not should:
+        return None
+    _LAST_AUTO_RESTART_TS = time.time()
+    log_event(db, "watchdog_triggered", actor="watchdog",
+              detail=reason, snapshot=_snapshot_for_event(db))
+    db.commit()
+    # 真的发 SIGTERM
+    log_event(db, "restart_requested", actor="watchdog",
+              detail=f"自救重启: {reason}", snapshot=_snapshot_for_event(db))
+    db.commit()
+    request_restart()
+    return reason

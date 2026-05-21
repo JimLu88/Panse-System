@@ -117,17 +117,18 @@ def test_request_restart_sends_sigterm():
     assert calls[0][1] == signal.SIGTERM
 
 
-def test_request_restart_no_loop_no_crash():
-    """没有 event loop 时不应崩."""
+def test_request_restart_no_loop_falls_back_to_sync_kill():
+    """没有 event loop 时, 退化为同步 os.kill (不能崩)."""
     import asyncio
     asyncio.set_event_loop(None)
-    # 实际 SIGTERM 不应发出 (没 loop, call_later 失败); 但函数本身不能崩
     with patch("app.services.system_monitor.os.kill") as mk:
         try:
             system_monitor.request_restart()
         except RuntimeError:
-            pass  # 允许 RuntimeError ("no current event loop")
-        mk.assert_not_called()
+            pass
+        # 同步路径: 至少调用了一次 SIGTERM
+        assert mk.call_count >= 1
+        assert mk.call_args[0][1] == signal.SIGTERM
 
 
 def test_start_and_stop_background():

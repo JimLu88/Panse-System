@@ -65,12 +65,25 @@ app.include_router(importer_api.router)
 
 @app.on_event("startup")
 async def _start_watchdog():
-    """业务需求: 启动后台看门狗循环, 每 60s 跑健康检查写入 system_health_logs."""
-    # 测试环境关闭 (避免 conftest 起的多个 in-memory db 互相打扰)
+    """业务需求: 启动后台看门狗循环 + 抢 PID 文件 + 写 process_started 事件."""
     import os
     if os.environ.get("DISABLE_WATCHDOG") == "1":
         return
+    from app.database import SessionLocal
     from app.services import system_monitor
+    db = SessionLocal()
+    try:
+        # 业务需求 7: 抢 PID 文件 — 上次进程没干净退出, 杀掉再启
+        killed = system_monitor.claim_pid_file(db)
+        if killed:
+            db.commit()
+        # 业务需求 5: 进程启动事件, 让 UI 能 diff 重启前后
+        system_monitor.log_process_started(db)
+        db.commit()
+    except Exception:  # pragma: no cover
+        db.rollback()
+    finally:
+        db.close()
     system_monitor.start_background(interval_sec=60)
 
 
@@ -78,6 +91,7 @@ async def _start_watchdog():
 async def _stop_watchdog():
     from app.services import system_monitor
     system_monitor.stop_background()
+    system_monitor.release_pid_file()
 
 
 @app.get("/api/health")

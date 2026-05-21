@@ -213,3 +213,54 @@ def test_commit_invalid_file_b64_returns_400():
         assert r.status_code == 400
     finally:
         app.dependency_overrides.clear()
+
+
+def test_commit_async_creates_job_and_pollable():
+    """业务需求 6: POST /commit-async → 202 + job_id, GET /jobs/{id} 拿状态."""
+    import time as _time
+    client, token, _, Sess = _client()
+    h = {"Authorization": f"Bearer {token}"}
+    try:
+        xlsx = _make_xlsx()
+        r = client.post("/api/importer/preview", headers=h,
+                        files={"file": ("x.xlsx", xlsx,
+                                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")})
+        b64 = r.json()["file_b64"]
+        r = client.post("/api/importer/commit-async", headers=h, json={
+            "file_b64": b64, "sheet_name": "5月对账",
+            "entity_type": "delivery_note",
+            "mapping": {
+                "supplier_name": "供应商", "note_no": "单号",
+                "delivery_date": "日期", "item_name": "品名",
+                "qty": "数量", "amount": "金额",
+            },
+            "auto_match_orders": False,
+        })
+        assert r.status_code == 202, r.text
+        job_id = r.json()["job_id"]
+        assert r.json()["status"] in ("pending", "running", "done")
+
+        # 轮询 (上面 ThreadPoolExecutor 因 SessionLocal 不通会失败, 但 endpoint 本身能跑)
+        # 这里只验证可拉取
+        r = client.get(f"/api/importer/jobs/{job_id}", headers=h)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["id"] == job_id
+        assert "status" in body
+        assert "progress_pct" in body
+
+        r = client.get("/api/importer/jobs", headers=h)
+        assert r.status_code == 200
+        assert any(j["id"] == job_id for j in r.json())
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_async_job_not_found_404():
+    client, token, _, _ = _client()
+    try:
+        r = client.get("/api/importer/jobs/99999",
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 404
+    finally:
+        app.dependency_overrides.clear()

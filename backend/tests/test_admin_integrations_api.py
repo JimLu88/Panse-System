@@ -232,3 +232,45 @@ def test_restart_forbids_non_admin():
         assert r.status_code == 403
     finally:
         app.dependency_overrides.clear()
+
+
+def test_system_events_endpoint():
+    client, token, _ = _client_with_admin_token()
+    try:
+        r = client.get("/api/admin/system-events",
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        body = r.json()
+        assert isinstance(body, list)
+        # 没人写过 → 空列表
+        assert body == []
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_system_events_filters_admin_only():
+    client, _, op_token = _client_with_admin_token()
+    try:
+        r = client.get("/api/admin/system-events",
+                       headers={"Authorization": f"Bearer {op_token}"})
+        assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restart_with_db_writes_event():
+    """重启 endpoint 应写一条 restart_requested 事件."""
+    from unittest.mock import patch
+    client, token, _ = _client_with_admin_token()
+    try:
+        with patch("app.services.system_monitor.request_restart") as mock_rr:
+            r = client.post("/api/admin/restart-api",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={"confirm": "RESTART"})
+        assert r.status_code == 200
+        # request_restart 被调时传了 db + actor
+        mock_rr.assert_called_once()
+        args, kwargs = mock_rr.call_args
+        assert kwargs.get("actor") == "admin"
+    finally:
+        app.dependency_overrides.clear()

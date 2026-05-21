@@ -244,7 +244,8 @@ class RestartOut(BaseModel):
 @router.post("/restart-api", response_model=RestartOut)
 def restart_api(
     payload: RestartIn,
-    _: object = Depends(require_role("admin")),
+    db: Session = Depends(get_db),
+    user = Depends(require_role("admin")),
 ):
     """业务需求: 看门狗 — admin 可在网页上重启后端 API.
 
@@ -255,8 +256,42 @@ def restart_api(
         raise HTTPException(400, "需要 confirm=='RESTART' 才能重启")
     from app.services import system_monitor
     pid = os.getpid()
-    system_monitor.request_restart()
+    system_monitor.request_restart(
+        db, actor=getattr(user, "username", None) or "admin",
+        detail="admin 在网页点击 “重启 API” 按钮",
+    )
     return RestartOut(
         accepted=True, pid=pid,
         detail="已发 SIGTERM, ~1 秒后进程退出, Docker 自动拉起",
     )
+
+
+# ----------------------------- 事件日志 (业务需求 5) ----------------- #
+
+
+class SystemEventOut(BaseModel):
+    id: int
+    kind: str
+    actor: Optional[str]
+    detail: Optional[str]
+    snapshot_json: Optional[dict]
+    created_at: str
+
+
+@router.get("/system-events", response_model=list[SystemEventOut])
+def get_system_events(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    """重启 / 看门狗 / 进程启动事件日志, UI 用来展示 diff."""
+    from app.services import system_monitor
+    rows = system_monitor.recent_events(db, limit=limit)
+    return [
+        SystemEventOut(
+            id=r.id, kind=r.kind, actor=r.actor, detail=r.detail,
+            snapshot_json=r.snapshot_json,
+            created_at=r.created_at.isoformat(),
+        )
+        for r in rows
+    ]

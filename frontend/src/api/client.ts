@@ -1121,3 +1121,57 @@ export const fetchHealthLogs = (limit = 100, check_name?: string) =>
 
 export const restartApi = () =>
   api.post('/api/admin/restart-api', { confirm: 'RESTART' }).then((r) => r.data);
+
+// ----- 异步导入作业 (业务需求 6) -----
+export interface ImportJob {
+  id: number;
+  user_id: number | null;
+  entity_type: string;
+  sheet_name: string;
+  status: 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
+  total_rows: number;
+  processed_rows: number;
+  progress_pct: number;
+  error: string | null;
+  report: any | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+}
+
+export const commitImporterAsync = (payload: {
+  file_b64: string;
+  sheet_name: string;
+  entity_type: string;
+  mapping: Record<string, string>;
+  auto_create_suppliers?: boolean;
+  auto_match_orders?: boolean;
+}) =>
+  api
+    .post<{ job_id: number; status: string; sheet_name: string; entity_type: string }>(
+      '/api/importer/commit-async',
+      payload,
+      { timeout: 180000 },
+    )
+    .then((r) => r.data);
+
+export const fetchImportJob = (id: number) =>
+  api.get<ImportJob>(`/api/importer/jobs/${id}`).then((r) => r.data);
+
+export const fetchImportJobs = (limit = 50) =>
+  api.get<ImportJob[]>('/api/importer/jobs', { params: { limit } }).then((r) => r.data);
+
+// ----- 重启事件 (业务需求 5) -----
+export interface SystemEvent {
+  id: number;
+  kind: string;
+  actor: string | null;
+  detail: string | null;
+  snapshot_json: any | null;
+  created_at: string;
+}
+
+export const fetchSystemEvents = (limit = 50) =>
+  api
+    .get<SystemEvent[]>('/api/admin/system-events', { params: { limit } })
+    .then((r) => r.data);

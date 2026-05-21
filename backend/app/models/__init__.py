@@ -17,7 +17,9 @@ from app.models.auth import AuditLog, User
 from app.models.custom_variant import CustomVariant
 from app.models.knowledge import AiKnowledge
 from app.models.settings import SystemSetting
+from app.models.system_event import SystemEvent
 from app.models.system_health import SystemHealthLog
+from app.models.import_job import ImportJob
 from app.models.supplier import (
     DeliveryFile,
     DeliveryNote,
@@ -69,5 +71,7 @@ __all__ = [
     "DeliveryNoteLine",
     "DeliveryFile",
     "SystemSetting",
+    "SystemEvent",
     "SystemHealthLog",
+    "ImportJob",
 ]

@@ -87,6 +87,13 @@ docker compose exec db pg_dump -U panse panse_erp > panse-backup-$(date +%Y%m%d)
   - 实时看 数据库/磁盘/内存/AI 配置/迁移版本/Storage 占用
   - 每 60s 后台跑健康检查写日志, UI 表格查
   - 网页一键 "重启 API" 按钮 (Docker `restart: unless-stopped` 自动拉起)
+  - **自救重启**: db_ping 或 memory 连续 3 次 fail → 自动 SIGTERM 自己 (10 分钟冷却)
+  - **PID 文件**: 启动时检测孤立进程, SIGTERM → 3s → SIGKILL, 再写自己 PID
+  - **重启 diff**: UI 显示 "上次重启完成 X 分钟前, 内存从 95% 降到 42%"
+- **异步大文件导入** (本期新增): Excel importer 加 "后台入库" 按钮
+  - 100MB / 数万行 Excel 立刻返回 job_id, 不卡 nginx 超时
+  - 实时进度条 (后端每 50 行向 DB 写进度, 前端每 2s 轮询)
+  - 失败时有完整 traceback, 不影响主事务
 
 ## 开发
 

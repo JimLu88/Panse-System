@@ -185,3 +185,100 @@ def commit_import(
         auto_created_suppliers=report.auto_created_suppliers,
         errors=report.errors, warnings=report.warnings,
     )
+
+
+# ----------------------------- 异步导入 (业务需求 6) ---------------- #
+
+
+class CommitAsyncOut(BaseModel):
+    job_id: int
+    status: str
+    sheet_name: str
+    entity_type: str
+
+
+@router.post("/commit-async", response_model=CommitAsyncOut, status_code=202)
+def commit_import_async(
+    payload: CommitIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """100MB 大文件用这个: 立刻返回 job_id, 后台 ThreadPoolExecutor 跑.
+
+    前端调 GET /api/importer/jobs/{job_id} 轮询。
+    """
+    try:
+        file_bytes = base64.b64decode(payload.file_b64.encode("ascii"))
+    except Exception as e:
+        raise HTTPException(400, f"file_b64 解码失败: {e}")
+
+    from app.services import import_job_service
+    job = import_job_service.submit_import(
+        db,
+        file_bytes=file_bytes,
+        sheet_name=payload.sheet_name,
+        entity_type=payload.entity_type,
+        mapping=payload.mapping,
+        user_id=getattr(user, "id", None),
+        auto_create_suppliers=payload.auto_create_suppliers,
+        auto_match_orders=payload.auto_match_orders,
+    )
+    return CommitAsyncOut(
+        job_id=job.id, status=job.status,
+        sheet_name=job.sheet_name, entity_type=job.entity_type,
+    )
+
+
+class ImportJobOut(BaseModel):
+    id: int
+    user_id: Optional[int]
+    entity_type: str
+    sheet_name: str
+    status: str
+    total_rows: int
+    processed_rows: int
+    progress_pct: float
+    error: Optional[str]
+    report: Optional[dict]
+    created_at: str
+    started_at: Optional[str]
+    completed_at: Optional[str]
+
+
+def _job_out(j) -> ImportJobOut:
+    pct = (j.processed_rows / j.total_rows * 100) if j.total_rows else 0.0
+    return ImportJobOut(
+        id=j.id, user_id=j.user_id,
+        entity_type=j.entity_type, sheet_name=j.sheet_name,
+        status=j.status,
+        total_rows=j.total_rows, processed_rows=j.processed_rows,
+        progress_pct=round(pct, 1),
+        error=j.error, report=j.report,
+        created_at=j.created_at.isoformat(),
+        started_at=j.started_at.isoformat() if j.started_at else None,
+        completed_at=j.completed_at.isoformat() if j.completed_at else None,
+    )
+
+
+@router.get("/jobs/{job_id}", response_model=ImportJobOut)
+def get_import_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import import_job_service
+    j = import_job_service.get_job(db, job_id)
+    if j is None:
+        raise HTTPException(404, "作业不存在")
+    return _job_out(j)
+
+
+@router.get("/jobs", response_model=list[ImportJobOut])
+def list_import_jobs(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import import_job_service
+    rows = import_job_service.list_jobs(db, limit=limit)
+    return [_job_out(j) for j in rows]
