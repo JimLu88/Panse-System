@@ -332,3 +332,84 @@ export const computeProducibility = (params: {
   api
     .get<ProducibilityResult>('/api/producibility', { params })
     .then((r) => r.data);
+
+// ----- Finance -----
+export interface AlipayFlow {
+  id: number;
+  account: string;
+  transaction_no: string;
+  transaction_time: string | null;
+  transaction_type: string | null;
+  counterparty: string | null;
+  amount: string;
+  related_order_no: string | null;
+  balance: string | null;
+  reconciliation_status: string;
+  reconciliation_type: string | null;
+  remark: string | null;
+}
+
+export const listAlipayFlows = (params: {
+  account?: string;
+  recon_type?: string;
+  limit?: number;
+} = {}) =>
+  api.get<AlipayFlow[]>('/api/finance/alipay-flows', { params: { limit: 100, ...params } })
+    .then((r) => r.data);
+
+export const importAlipayCsv = (file: File, account: string) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<CsvImportReport>('/api/finance/alipay-flows/import-csv', fd, {
+      params: { account },
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data);
+};
+
+export interface AccountBalanceRow {
+  id: number;
+  account_name: string;
+  period_year: number;
+  period_month: number;
+  opening_balance: string;
+  income: string;
+  expense: string;
+  closing_balance: string;
+}
+
+export const listBalances = (params: { account_name?: string; year?: number } = {}) =>
+  api.get<AccountBalanceRow[]>('/api/finance/accounts', { params }).then((r) => r.data);
+
+export const recomputeBalance = (payload: {
+  account_name: string;
+  year: number;
+  month: number;
+  opening_balance?: string;
+}) => api.post<AccountBalanceRow>('/api/finance/accounts/recompute', payload).then((r) => r.data);
+
+export interface ReconciliationDiff {
+  key: string;
+  expected: string | null;
+  actual: string | null;
+  diff: string | null;
+  severity: 'ok' | 'warning' | 'error' | 'not_available';
+  message: string;
+}
+
+export interface ReconciliationResult {
+  rule: string;
+  total_diffs: number;
+  ok_count: number;
+  warning_count: number;
+  error_count: number;
+  diffs: ReconciliationDiff[];
+}
+
+export const runReconciliation = (rule?: string) => {
+  if (rule) {
+    return api.get<ReconciliationResult>(`/api/finance/reconciliation/${rule}`).then((r) => r.data);
+  }
+  return api.get<Record<string, ReconciliationResult>>('/api/finance/reconciliation').then((r) => r.data);
+};

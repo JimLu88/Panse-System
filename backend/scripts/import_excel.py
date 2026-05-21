@@ -18,6 +18,7 @@ import openpyxl
 
 from app.database import SessionLocal
 from app.models.bom import BomLine
+from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
 from app.models.order import Order
@@ -32,6 +33,15 @@ SHEET_BOM = "3-BOM表"
 SHEET_PART_INV = "4b-配件库存"
 SHEET_PROD_INV = "4a-成品库存"
 SHEET_ORDERS = "5-订单总表"
+SHEET_REFILL = "8-补单记录"
+SHEET_ALIPAY_SHEETS = (
+    ("9a-支付宝流水-企业号", "企业号"),
+    ("9b-支付宝流水-个体户私账", "个体户私账"),
+    ("9c-支付宝流水-爱群号（未来弃用）", "爱群号"),
+    ("9d-支付宝流水-佳宝号（未来弃用）", "佳宝号"),
+    ("9e-支付宝流水-主力号", "主力号"),
+)
+SHEET_BALANCE = "10-账户余额汇总"
 
 
 def _str(v: Any) -> Optional[str]:
@@ -330,6 +340,130 @@ def import_orders(wb, db) -> int:
     return count
 
 
+def import_refill(wb, db) -> int:
+    if SHEET_REFILL not in wb.sheetnames:
+        return 0
+    ws = wb[SHEET_REFILL]
+    header_row = _find_header_row(ws, "订单编号")
+    count = 0
+    seen: set[str] = set()
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        order_no = _str(row[0])
+        if not order_no or order_no in seen:
+            continue
+        seen.add(order_no)
+        refill_date_raw = row[2]
+        refill_date_val = None
+        if hasattr(refill_date_raw, "date"):
+            refill_date_val = refill_date_raw.date()
+        db.add(RefillRecord(
+            order_no=order_no,
+            buyer_nick=_str(row[1]),
+            refill_date=refill_date_val,
+            product_code=_str(row[3]),
+            product_name=_str(row[4]),
+            sku=_str(row[5]),
+            order_amount=_decimal(row[6]),
+            qty=_int(row[7]) or 1,
+            refill_cost=_decimal(row[8]),
+            refill_freight=_decimal(row[9]),
+            platform_fee=_decimal(row[10]),
+            total_cost=_decimal(row[11]),
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
+def import_alipay(wb, db) -> int:
+    """合并 9a~9e 五张表到 alipay_flows，按账户区分。"""
+    from datetime import datetime as _dt
+    total = 0
+    for sheet, account in SHEET_ALIPAY_SHEETS:
+        if sheet not in wb.sheetnames:
+            continue
+        ws = wb[sheet]
+        try:
+            header_row = _find_header_row(ws, "交易时间")
+        except ValueError:
+            continue
+        seen: set[str] = set()
+        for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+            tx_no = _str(row[1])
+            if not tx_no or tx_no in seen:
+                continue
+            amount = _decimal(row[5])
+            if amount is None:
+                continue
+            seen.add(tx_no)
+            if db.query(AlipayFlow).filter_by(account=account, transaction_no=tx_no).first():
+                continue
+            tx_time = row[0]
+            tx_time_val = None
+            if hasattr(tx_time, "date"):
+                tx_time_val = tx_time
+            elif isinstance(tx_time, str) and tx_time.strip():
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                    try:
+                        tx_time_val = _dt.strptime(tx_time.strip(), fmt)
+                        break
+                    except ValueError:
+                        continue
+            db.add(AlipayFlow(
+                account=account,
+                transaction_no=tx_no,
+                transaction_time=tx_time_val,
+                transaction_type=_str(row[2]),
+                counterparty=_str(row[3]),
+                counterparty_account=_str(row[4]),
+                amount=amount,
+                related_order_no=_str(row[6]),
+                balance=_decimal(row[7]),
+                reconciliation_status=_str(row[8]) or "open",
+                reconciliation_type=_str(row[9]),
+                remark=_str(row[10]) if len(row) > 10 else None,
+            ))
+            total += 1
+        db.commit()
+    return total
+
+
+def import_account_balances(wb, db) -> int:
+    if SHEET_BALANCE not in wb.sheetnames:
+        return 0
+    ws = wb[SHEET_BALANCE]
+    header_row = _find_header_row(ws, "账户名称")
+    count = 0
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        name = _str(row[0])
+        if not name:
+            continue
+        dt = row[2]
+        period_year = period_month = None
+        if hasattr(dt, "year"):
+            period_year, period_month = dt.year, dt.month
+        if period_year is None:
+            continue
+        if db.query(AccountBalance).filter_by(
+            account_name=name, period_year=period_year, period_month=period_month
+        ).first():
+            continue
+        opening = _decimal(row[3]) or Decimal("0")
+        db.add(AccountBalance(
+            account_name=name,
+            account_no=_str(row[1]),
+            period_year=period_year,
+            period_month=period_month,
+            opening_balance=opening,
+            income=_decimal(row[4]) or Decimal("0"),
+            expense=_decimal(row[5]) or Decimal("0"),
+            closing_balance=_decimal(row[6]) or opening,
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
 def run(excel_path: Path) -> None:
     wb = openpyxl.load_workbook(str(excel_path), data_only=True)
     db = SessionLocal()
@@ -342,6 +476,9 @@ def run(excel_path: Path) -> None:
         print(f"配件库存: {import_part_inventory(wb, db)}")
         print(f"成品库存: {import_product_inventory(wb, db)}")
         print(f"订单总表: {import_orders(wb, db)}")
+        print(f"补单记录: {import_refill(wb, db)}")
+        print(f"支付宝流水 (9a-9e): {import_alipay(wb, db)}")
+        print(f"账户余额: {import_account_balances(wb, db)}")
         print("=== Done ===")
     finally:
         db.close()

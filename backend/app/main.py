@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api import bom as bom_api
 from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
+from app.api import finance as finance_api
 from app.api import inventory as inventory_api
 from app.api import match as match_api
 from app.api import materials as materials_api
@@ -37,6 +38,7 @@ app.include_router(match_api.router)
 app.include_router(quotes_api.router)
 app.include_router(orders_api.router)
 app.include_router(producibility_api.router)
+app.include_router(finance_api.router)
 
 
 @app.get("/api/health")

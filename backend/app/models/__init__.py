@@ -5,6 +5,12 @@ from app.models.product import Product
 from app.models.bom import BomLine
 from app.models.exception import DataException
 from app.models.feishu_sync import FeishuSyncMap, FeishuTableBinding
+from app.models.finance import (
+    AccountBalance,
+    AlipayFlow,
+    FactoryReconciliation,
+    RefillRecord,
+)
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.pricing import PricingSku
 
@@ -22,4 +28,8 @@ __all__ = [
     "Order",
     "FactoryOrder",
     "PartPurchase",
+    "AlipayFlow",
+    "AccountBalance",
+    "RefillRecord",
+    "FactoryReconciliation",
 ]
