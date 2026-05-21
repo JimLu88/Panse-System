@@ -2,6 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import ai as ai_api
+from app.api import audit as audit_api
+from app.api import auth as auth_api
 from app.api import bom as bom_api
 from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
@@ -17,6 +19,7 @@ from app.api import products as products_api
 from app.api import quotes as quotes_api
 from app.api import scanners as scanners_api
 from app.config import get_settings
+from app.middleware import AuditMiddleware
 
 settings = get_settings()
 
@@ -29,7 +32,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(AuditMiddleware)
 
+app.include_router(auth_api.router)
+app.include_router(audit_api.router)
 app.include_router(materials_api.router)
 app.include_router(products_api.router)
 app.include_router(inventory_api.router)

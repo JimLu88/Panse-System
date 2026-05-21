@@ -11,6 +11,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     ai_model: str = "claude-sonnet-4-6"
 
+    # 认证 (plan §10 Phase 6) — JWT HS256, dev 默认值, 生产必须改
+    jwt_secret: str = "panse-dev-secret-CHANGE-ME-in-production"
+    jwt_ttl_hours: int = 24
+
+    # 审计：哪些路径的写操作要记录
+    audit_skip_paths: str = "/api/health,/api/auth/login"
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

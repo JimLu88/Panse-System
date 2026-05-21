@@ -5,6 +5,78 @@ export const api = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// 自动从 localStorage 取 token 加到所有请求
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('panse_token');
+  if (token) {
+    config.headers = config.headers ?? {};
+    (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+// 401 时清掉 token (AuthProvider 监听并跳登录)
+api.interceptors.response.use(
+  (r) => r,
+  (err) => {
+    if (err?.response?.status === 401) {
+      localStorage.removeItem('panse_token');
+      window.dispatchEvent(new Event('panse:unauthorized'));
+    }
+    return Promise.reject(err);
+  },
+);
+
+// ----- Auth (Phase 6) -----
+export interface MeUser {
+  id: number;
+  username: string;
+  display_name: string | null;
+  role: string;
+  is_active: boolean;
+}
+
+export const login = (username: string, password: string) =>
+  api
+    .post<{ token: string; user: MeUser }>('/api/auth/login', { username, password })
+    .then((r) => r.data);
+
+export const fetchMe = () => api.get<MeUser>('/api/auth/me').then((r) => r.data);
+
+export const listAuthUsers = () =>
+  api.get<MeUser[]>('/api/auth/users').then((r) => r.data);
+
+export const createUser = (payload: {
+  username: string;
+  password: string;
+  role: string;
+  display_name?: string;
+}) => api.post<MeUser>('/api/auth/users', payload).then((r) => r.data);
+
+export const fetchRoles = () =>
+  api
+    .get<{ roles: string[]; descriptions: Record<string, string> }>('/api/auth/roles')
+    .then((r) => r.data);
+
+export interface AuditLog {
+  id: number;
+  user_id: number | null;
+  username: string | null;
+  method: string;
+  path: string;
+  status_code: number | null;
+  ip: string | null;
+  request_body: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export const listAuditLogs = (params: {
+  method?: string;
+  path_prefix?: string;
+  limit?: number;
+} = {}) =>
+  api.get<AuditLog[]>('/api/audit/logs', { params }).then((r) => r.data);
+
 export interface Material {
   id: number;
   code: string;

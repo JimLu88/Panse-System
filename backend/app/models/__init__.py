@@ -13,6 +13,7 @@ from app.models.finance import (
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.ai import AiChatLog, AiCodePatch
+from app.models.auth import AuditLog, User
 from app.models.marketing import (
     AfterSales,
     BrandMarketing,
@@ -49,4 +50,6 @@ __all__ = [
     "OutsourcingExpense",
     "AfterSales",
     "WoodLoss",
+    "User",
+    "AuditLog",
 ]
