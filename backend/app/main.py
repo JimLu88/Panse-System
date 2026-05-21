@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import ai as ai_api
 from app.api import bom as bom_api
 from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
@@ -13,6 +14,7 @@ from app.api import producibility as producibility_api
 from app.api import product_inventory as product_inventory_api
 from app.api import products as products_api
 from app.api import quotes as quotes_api
+from app.api import scanners as scanners_api
 from app.config import get_settings
 
 settings = get_settings()
@@ -39,6 +41,8 @@ app.include_router(quotes_api.router)
 app.include_router(orders_api.router)
 app.include_router(producibility_api.router)
 app.include_router(finance_api.router)
+app.include_router(scanners_api.router)
+app.include_router(ai_api.router)
 
 
 @app.get("/api/health")

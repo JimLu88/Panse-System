@@ -413,3 +413,68 @@ export const runReconciliation = (rule?: string) => {
   }
   return api.get<Record<string, ReconciliationResult>>('/api/finance/reconciliation').then((r) => r.data);
 };
+
+// ----- Scanners (Phase 3.5) -----
+export interface ScannerFinding {
+  source_table: string;
+  source_pk: string;
+  exception_type: string;
+  severity: string;
+  description: string;
+  suggestion_action: string;
+  context: Record<string, unknown>;
+}
+
+export interface ScannerResult {
+  scanner: string;
+  findings: ScannerFinding[];
+  written: number;
+  skipped_duplicate: number;
+}
+
+export const listScanners = () =>
+  api.get<string[]>('/api/scanners').then((r) => r.data);
+
+export const runAllScanners = (dryRun = false) =>
+  api
+    .post<Record<string, ScannerResult>>('/api/scanners/run-all', null, {
+      params: { dry_run: dryRun },
+    })
+    .then((r) => r.data);
+
+// ----- AI Assistant -----
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+}
+
+export interface AiDiagnoseResult {
+  log_id: number;
+  exception_id: number;
+  text: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  error: string | null;
+}
+
+export interface AiChatResult {
+  log_id: number;
+  text: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  error: string | null;
+}
+
+export const aiStatus = () => api.get<AiStatus>('/api/ai/status').then((r) => r.data);
+
+export const aiDiagnose = (exceptionId: number) =>
+  api.post<AiDiagnoseResult>(`/api/ai/diagnose/${exceptionId}`).then((r) => r.data);
+
+export const aiChat = (message: string, sessionId?: string) =>
+  api
+    .post<AiChatResult>('/api/ai/chat', { message, session_id: sessionId })
+    .then((r) => r.data);

@@ -12,6 +12,7 @@ from app.models.finance import (
     RefillRecord,
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
+from app.models.ai import AiChatLog, AiCodePatch
 from app.models.pricing import PricingSku
 
 __all__ = [
@@ -32,4 +33,6 @@ __all__ = [
     "AccountBalance",
     "RefillRecord",
     "FactoryReconciliation",
+    "AiChatLog",
+    "AiCodePatch",
 ]
