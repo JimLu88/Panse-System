@@ -181,3 +181,76 @@ export const createFeishuBinding = (payload: Omit<FeishuBinding, 'id'>) =>
 
 export const feishuStatus = () =>
   api.get<FeishuStatus[]>('/api/feishu/status').then((r) => r.data);
+
+// ----- Match -----
+export interface MatchCandidate {
+  scope: string;
+  code: string;
+  name: string;
+  score: number;
+}
+
+export const fuzzyMatch = (q: string, scope: 'product' | 'material' | 'sku', limit = 10) =>
+  api.get<MatchCandidate[]>('/api/match', { params: { q, scope, limit } }).then((r) => r.data);
+
+// ----- Quotes -----
+export interface LightQuote {
+  sku_code: string;
+  sku: string | null;
+  size_category: string | null;
+  list_price: string | null;
+  daily_price: string | null;
+  small_promo: string | null;
+  mid_promo: string | null;
+  big_promo: string | null;
+  big_promo_margin: string | null;
+  gross_margin_rate: string | null;
+}
+
+export const lightQuote = (skuCode: string) =>
+  api.get<LightQuote>(`/api/quotes/light/${encodeURIComponent(skuCode)}`).then((r) => r.data);
+
+export interface HighQuote {
+  cost: string;
+  size_category: string;
+  margin_rate: string;
+  final_price: string;
+  margin_amount: string;
+}
+
+export const highQuote = (payload: {
+  cost: number | string;
+  size_category: string;
+  margin_rate?: number | string;
+}) => api.post<HighQuote>('/api/quotes/high', payload).then((r) => r.data);
+
+export interface DimensionQuote {
+  base_cm: string;
+  target_cm: string;
+  cm_diff: string;
+  per_cm_cost: string;
+  margin_rate: string;
+  delta: string;
+}
+
+export const dimensionQuote = (payload: {
+  base_cm: number | string;
+  target_cm: number | string;
+  per_cm_cost: number | string;
+  margin_rate?: number | string;
+}) => api.post<DimensionQuote>('/api/quotes/dimension', payload).then((r) => r.data);
+
+export interface MaterialSwapResult {
+  from_code: string;
+  to_code: string;
+  qty: string;
+  from_unit_price: string | null;
+  to_unit_price: string | null;
+  delta: string | null;
+}
+
+export const materialSwap = (payload: {
+  from_code: string;
+  to_code: string;
+  qty?: number | string;
+}) => api.post<MaterialSwapResult>('/api/quotes/material-swap', payload).then((r) => r.data);

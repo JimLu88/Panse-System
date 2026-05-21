@@ -5,6 +5,7 @@ from app.models.product import Product
 from app.models.bom import BomLine
 from app.models.exception import DataException
 from app.models.feishu_sync import FeishuSyncMap, FeishuTableBinding
+from app.models.pricing import PricingSku
 
 __all__ = [
     "Base",
@@ -16,4 +17,5 @@ __all__ = [
     "DataException",
     "FeishuSyncMap",
     "FeishuTableBinding",
+    "PricingSku",
 ]

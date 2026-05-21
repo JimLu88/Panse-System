@@ -7,6 +7,7 @@ import ProductsPage from './pages/ProductsPage';
 import ProductInventoryPage from './pages/ProductInventoryPage';
 import BomViewerPage from './pages/BomViewerPage';
 import FeishuSettingsPage from './pages/FeishuSettingsPage';
+import QuotePage from './pages/QuotePage';
 
 const { Header, Content } = Layout;
 
@@ -31,6 +32,7 @@ export default function App() {
             { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
             { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
             { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
+            { key: 'quote', label: <Link to="/quote">报价计算</Link> },
             { key: 'exceptions', label: <Link to="/exceptions">异常处理</Link> },
             { key: 'feishu', label: <Link to="/feishu">飞书同步</Link> },
           ]}
@@ -44,6 +46,7 @@ export default function App() {
           <Route path="/materials" element={<MaterialsPage />} />
           <Route path="/inventory" element={<PartInventoryPage />} />
           <Route path="/product-inventory" element={<ProductInventoryPage />} />
+          <Route path="/quote" element={<QuotePage />} />
           <Route path="/exceptions" element={<ExceptionsPage />} />
           <Route path="/feishu" element={<FeishuSettingsPage />} />
         </Routes>

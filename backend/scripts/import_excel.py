@@ -20,10 +20,12 @@ from app.database import SessionLocal
 from app.models.bom import BomLine
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
+from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import exception_service, inventory_service, material_service  # noqa: F401
 
 SHEET_PRODUCTS = "1-产品总表"
+SHEET_PRICING = "2-定价总表"
 SHEET_PRICE = "3b-配件价格表"
 SHEET_BOM = "3-BOM表"
 SHEET_PART_INV = "4b-配件库存"
@@ -205,6 +207,55 @@ def import_part_inventory(wb, db) -> int:
     return count
 
 
+def import_pricing(wb, db) -> int:
+    """2-定价总表 → pricing_sku。列序参考 plan §3 / Excel 列：
+    0 产品编码 / 1 产品名称 / 2 SKU / 3 SKU编码 / 4 图片链接 / 5 大小类型 /
+    6 标价 / 7 日常 / 8 小促 / 9 中促 / 10 大促 / 11 大促利润 / 12 毛利率 /
+    13 会计成本 / 14 平台费率 / 15 税费 / 16 物理总成本 / 17 物流 / 18 安装 /
+    19 总出厂成本 / 20 木作成本 / 21 打包 / 22 外采配件
+    """
+    ws = wb[SHEET_PRICING]
+    header_row = _find_header_row(ws, "产品编码")
+    count = 0
+    seen: set[str] = set()
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        sku_code = _str(row[3])
+        product_code = _str(row[0])
+        if not sku_code or not product_code or sku_code in seen:
+            continue
+        if db.query(PricingSku).filter_by(sku_code=sku_code).first():
+            seen.add(sku_code)
+            continue
+        seen.add(sku_code)
+        db.add(PricingSku(
+            product_code=product_code,
+            sku=_str(row[2]),
+            sku_code=sku_code,
+            image_url=_str(row[4]),
+            size_category=_str(row[5]),
+            list_price=_decimal(row[6]),
+            daily_price=_decimal(row[7]),
+            small_promo=_decimal(row[8]),
+            mid_promo=_decimal(row[9]),
+            big_promo=_decimal(row[10]),
+            big_promo_margin=_decimal(row[11]),
+            gross_margin_rate=_decimal(row[12]),
+            accounting_cost=_decimal(row[13]),
+            platform_fee_rate=_decimal(row[14]),
+            tax=_decimal(row[15]),
+            physical_cost=_decimal(row[16]),
+            logistics_cost=_decimal(row[17]),
+            install_cost=_decimal(row[18]),
+            factory_cost=_decimal(row[19]),
+            wood_cost=_decimal(row[20]),
+            packaging_cost=_decimal(row[21]),
+            external_parts_cost=_decimal(row[22]),
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
 def import_product_inventory(wb, db) -> int:
     ws = wb[SHEET_PROD_INV]
     header_row = _find_header_row(ws, "仓库名称")
@@ -235,6 +286,7 @@ def run(excel_path: Path) -> None:
         print(f"=== Importing {excel_path} ===")
         print(f"产品总表: {import_products(wb, db)}")
         print(f"物料单价库: {import_materials(wb, db)}")
+        print(f"定价总表: {import_pricing(wb, db)}")
         print(f"BOM 表: {import_bom(wb, db)}")
         print(f"配件库存: {import_part_inventory(wb, db)}")
         print(f"成品库存: {import_product_inventory(wb, db)}")
