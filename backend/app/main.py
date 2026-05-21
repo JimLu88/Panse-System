@@ -20,6 +20,7 @@ from app.api import product_inventory as product_inventory_api
 from app.api import products as products_api
 from app.api import quotes as quotes_api
 from app.api import reports as reports_api
+from app.api import importer as importer_api
 from app.api import scanners as scanners_api
 from app.api import suppliers as suppliers_api
 from app.config import get_settings
@@ -59,6 +60,7 @@ app.include_router(reports_api.router)
 app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
+app.include_router(importer_api.router)
 
 
 @app.get("/api/health")

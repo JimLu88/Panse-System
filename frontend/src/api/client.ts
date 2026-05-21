@@ -1003,3 +1003,73 @@ export const applyManualPaymentMatch = (flow_id: number, note_ids: number[]) =>
   api
     .post<PaymentMatch>('/api/suppliers/reconcile-payments/manual', { flow_id, note_ids })
     .then((r) => r.data);
+
+// ----- Excel 通用 importer (业务需求) -----
+export interface EntityField {
+  name: string;
+  type: string;
+  required: boolean;
+  desc: string;
+  aliases: string[];
+}
+
+export interface EntityType {
+  value: string;
+  label: string;
+  description: string;
+  fields: EntityField[];
+}
+
+export interface SheetPreview {
+  sheet_name: string;
+  row_count: number;
+  column_names: string[];
+  sample_rows: any[][];
+  suggested_entity: string | null;
+  suggested_mapping: Record<string, string>;
+  notes: string[];
+}
+
+export interface ImporterPreviewResp {
+  file_b64: string;
+  sheets: SheetPreview[];
+}
+
+export interface ImportReport {
+  entity_type: string;
+  sheet_name: string;
+  total_rows: number;
+  inserted_parents: number;
+  inserted_children: number;
+  skipped_rows: number;
+  matched_lines: number;
+  auto_created_suppliers: string[];
+  errors: string[];
+  warnings: string[];
+}
+
+export const fetchEntityTypes = () =>
+  api.get<EntityType[]>('/api/importer/entity-types').then((r) => r.data);
+
+export const previewImporter = (file: File, entityType?: string) => {
+  const form = new FormData();
+  form.append('file', file);
+  const params = entityType ? { entity_type: entityType } : {};
+  return api
+    .post<ImporterPreviewResp>('/api/importer/preview', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      params,
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+
+export const commitImporter = (payload: {
+  file_b64: string;
+  sheet_name: string;
+  entity_type: string;
+  mapping: Record<string, string>;
+  auto_create_suppliers?: boolean;
+  auto_match_orders?: boolean;
+  dry_run?: boolean;
+}) => api.post<ImportReport>('/api/importer/commit', payload).then((r) => r.data);
