@@ -1,13 +1,13 @@
-"""AI 辅助系统 (plan §7).
+"""AI 辅助系统 (plan §7 + 业务需求扩展).
 
-封装 Anthropic Claude API：
+封装 AI Provider 抽象 (anthropic / openai 兼容):
     - diagnose_exception(exception_id): 给一条 data_exceptions 写人话诊断 + 修复建议
     - chat(messages, system?): 通用对话
 
 设计要点：
-    - 系统提示走 prompt caching (5 分钟 TTL)，每次调用复用
-    - claude-sonnet-4-6 (plan v2 选了 sonnet)，可由 settings.ai_model 覆盖
-    - 没 ANTHROPIC_API_KEY 时返回 AiUnavailable，不抛
+    - 系统提示走 prompt caching (anthropic 5 分钟 TTL)
+    - provider/model 优先读 system_settings 表 (后台可改), 缺省 fallback 到 .env
+    - 没 key 时返回 AiUnavailable，不抛
     - 每次调用写一条 ai_chat_logs 审计 (含 token usage)
 """
 from __future__ import annotations
@@ -25,6 +25,10 @@ from app.config import get_settings
 from app.models.ai import AiChatLog
 from app.models.exception import DataException
 from app.models.knowledge import AiKnowledge
+from app.services import settings_service
+from app.services.ai_provider import AiResponse as ProviderResponse
+from app.services.ai_provider import AiUnavailable as ProviderUnavailable
+from app.services.ai_provider import build_provider
 
 settings = get_settings()
 
@@ -55,21 +59,15 @@ SYSTEM_PROMPT = """你是「畔色孚格 ERP」的内置 AI 故障分析助手�
 """
 
 
-@dataclass
-class AiResponse:
-    text: str
-    model: str
-    input_tokens: int
-    output_tokens: int
-    cache_read_tokens: int
-    cache_creation_tokens: int
-
-
-class AiUnavailable(RuntimeError):
-    """AI 未配置 (无 API key) 或调用失败。"""
+# 兼容老接口: 旧测试仍在用 ai_assistant.AiResponse / AiUnavailable / _client
+AiResponse = ProviderResponse
+AiUnavailable = ProviderUnavailable
 
 
 def _client():
+    """老接口: 旧测试通过 patch('_client') 接管 anthropic 客户端调用。
+    新代码请用 build_provider(); 这里只保留 fallback 实现以兼容老测试。
+    """
     import anthropic
     if not settings.anthropic_api_key:
         raise AiUnavailable("ANTHROPIC_API_KEY 未配置；请在 .env 里设好后重启服务。")
@@ -145,6 +143,33 @@ def _call_claude(
         cache_read_tokens=getattr(u, "cache_read_input_tokens", 0) or 0,
         cache_creation_tokens=getattr(u, "cache_creation_input_tokens", 0) or 0,
     )
+
+
+def _has_db_ai_config(db: Session, kind: str) -> bool:
+    """db 里是否存了 ai_{kind}_* 任意键 (有 = 走 provider 路径, 无 = 走老 _client 路径)."""
+    from app.models.settings import SystemSetting
+    row = db.execute(
+        select(SystemSetting.id).where(SystemSetting.key.like(f"ai_{kind}_%"))
+    ).first()
+    return row is not None
+
+
+def _call_ai(
+    db: Session, *,
+    kind: str,
+    user_message: str,
+    extra_system: str = "",
+    max_tokens: int = 1024,
+) -> AiResponse:
+    """统一入口: db 有覆盖 → 走 provider 抽象; 否则 → 老 _client 路径 (保留 test 契约)."""
+    if not _has_db_ai_config(db, kind):
+        return _call_claude(
+            user_message=user_message, extra_system=extra_system, max_tokens=max_tokens,
+        )
+    cfg = settings_service.get_ai_config(db, kind)
+    provider = build_provider(cfg)
+    sys_text = SYSTEM_PROMPT if not extra_system else f"{SYSTEM_PROMPT}\n\n{extra_system}"
+    return provider.chat(system=sys_text, user=user_message, max_tokens=max_tokens)
 
 
 def _context_hash(exc: DataException) -> str:
@@ -238,7 +263,7 @@ def diagnose_exception(db: Session, exception_id: int) -> tuple[AiChatLog, Optio
     user_msg = f"{context}\n请按要求的输出格式分析这条异常。"
 
     try:
-        ai = _call_claude(user_message=user_msg, max_tokens=800)
+        ai = _call_ai(db, kind="diagnose", user_message=user_msg, max_tokens=800)
     except AiUnavailable as e:
         log = _log(
             db,
@@ -288,7 +313,10 @@ def chat(
 ) -> tuple[AiChatLog, Optional[AiResponse]]:
     """通用对话：用户 → AI 一问一答。"""
     try:
-        ai = _call_claude(user_message=user_message, extra_system=extra_system, max_tokens=1500)
+        ai = _call_ai(
+            db, kind="diagnose", user_message=user_message,
+            extra_system=extra_system, max_tokens=1500,
+        )
     except AiUnavailable as e:
         log = _log(db, action_type="chat", user_message=user_message, session_id=session_id, error=str(e))
         return log, None
@@ -313,5 +341,10 @@ def chat(
     return log, ai
 
 
-def is_configured() -> bool:
-    return bool(settings.anthropic_api_key)
+def is_configured(db: Optional[Session] = None) -> bool:
+    """env 有 key, 或 db 里写了 ai_diagnose_api_key 都算配置完成."""
+    if settings.anthropic_api_key:
+        return True
+    if db is None:
+        return False
+    return bool(settings_service.get(db, "ai_diagnose_api_key", env_fallback=False))

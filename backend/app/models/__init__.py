@@ -16,6 +16,13 @@ from app.models.ai import AiChatLog, AiCodePatch
 from app.models.auth import AuditLog, User
 from app.models.custom_variant import CustomVariant
 from app.models.knowledge import AiKnowledge
+from app.models.settings import SystemSetting
+from app.models.supplier import (
+    DeliveryFile,
+    DeliveryNote,
+    DeliveryNoteLine,
+    Supplier,
+)
 from app.models.marketing import (
     AfterSales,
     BrandMarketing,
@@ -56,4 +63,9 @@ __all__ = [
     "AuditLog",
     "AiKnowledge",
     "CustomVariant",
+    "Supplier",
+    "DeliveryNote",
+    "DeliveryNoteLine",
+    "DeliveryFile",
+    "SystemSetting",
 ]

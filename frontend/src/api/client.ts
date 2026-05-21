@@ -777,3 +777,41 @@ export const updateTaobaoIds = (
 
 export const lookupByTaobaoId = (taobaoId: string) =>
   api.get<Product>(`/api/products/lookup-by-taobao-id/${taobaoId}`).then((r) => r.data);
+
+// ----- Admin: AI Integrations (业务需求扩展) -----
+export interface IntegrationConfig {
+  provider: string;
+  base_url: string;
+  api_key_masked: string;
+  api_key_set: boolean;
+  model: string;
+}
+
+export interface SupportedProvider {
+  value: string;
+  label: string;
+  model_hint: string;
+  base_url_hint: string;
+}
+
+export interface Integrations {
+  diagnose: IntegrationConfig;
+  ocr: IntegrationConfig;
+  supported_providers: SupportedProvider[];
+}
+
+export const fetchIntegrations = () =>
+  api.get<Integrations>('/api/admin/integrations').then((r) => r.data);
+
+export const updateIntegrations = (payload: {
+  diagnose?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
+  ocr?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
+}) => api.put<Integrations>('/api/admin/integrations', payload).then((r) => r.data);
+
+export const testIntegration = (kind: 'diagnose' | 'ocr') =>
+  api
+    .post<{ ok: boolean; provider: string; model: string; sample?: string; error?: string }>(
+      '/api/admin/integrations/test',
+      { kind },
+    )
+    .then((r) => r.data);

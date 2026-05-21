@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import admin as admin_api
 from app.api import ai as ai_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
@@ -55,6 +56,7 @@ app.include_router(ai_api.router)
 app.include_router(marketing_api.router)
 app.include_router(reports_api.router)
 app.include_router(customization_api.router)
+app.include_router(admin_api.router)
 
 
 @app.get("/api/health")
