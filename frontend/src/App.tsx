@@ -17,6 +17,7 @@ import AiAssistantPage from './pages/AiAssistantPage';
 import MarketingPage from './pages/MarketingPage';
 import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
+import SuppliersPage from './pages/SuppliersPage';
 import ReportsPage from './pages/ReportsPage';
 import FactorySheetPage from './pages/FactorySheetPage';
 import CustomizationPage from './pages/CustomizationPage';
@@ -66,6 +67,7 @@ export default function App() {
     { key: 'quote', label: <Link to="/quote">报价</Link> },
     { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
     { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
+    { key: 'suppliers', label: <Link to="/suppliers">供应商对账</Link> },
     { key: 'marketing', label: <Link to="/marketing">营销/售后</Link> },
     { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
     { key: 'reports', label: <Link to="/reports">报表</Link> },
@@ -117,6 +119,7 @@ export default function App() {
           <Route path="/quote" element={<QuotePage />} />
           <Route path="/alipay" element={<AlipayPage />} />
           <Route path="/reconciliation" element={<ReconciliationPage />} />
+          <Route path="/suppliers" element={<SuppliersPage />} />
           <Route path="/ai" element={<AiAssistantPage />} />
           <Route path="/marketing" element={<MarketingPage />} />
           <Route path="/exceptions" element={<ExceptionsPage />} />

@@ -815,3 +815,152 @@ export const testIntegration = (kind: 'diagnose' | 'ocr') =>
       { kind },
     )
     .then((r) => r.data);
+
+// ----- Suppliers / 对账模块 (业务需求) -----
+export interface Supplier {
+  id: number;
+  name: string;
+  supplier_type: string;
+  contact: string | null;
+  phone: string | null;
+  address: string | null;
+  payment_terms: string | null;
+  is_active: boolean;
+  remark: string | null;
+}
+
+export interface DeliveryLine {
+  id: number;
+  line_no: number;
+  item_name: string | null;
+  spec: string | null;
+  unit: string | null;
+  qty: number;
+  unit_price: number | null;
+  amount: number | null;
+  matched_order_no: string | null;
+  match_confidence: number | null;
+  match_method: string | null;
+  match_candidates: Array<{
+    order_no: string;
+    factory_order_no?: string | null;
+    confidence: number;
+    method: string;
+    reason: string;
+    customer_name?: string | null;
+    product_code?: string | null;
+    sku?: string | null;
+    qty?: number | null;
+  }>;
+  ocr_warnings: string[];
+  remark: string | null;
+}
+
+export interface DeliveryNote {
+  id: number;
+  supplier_id: number;
+  supplier_name: string;
+  note_no: string | null;
+  delivery_date: string | null;
+  total_amount: number | null;
+  status: string;
+  ocr_confidence: number | null;
+  ocr_warnings: string[];
+  ocr_model: string | null;
+  source_file_id: number | null;
+  remark: string | null;
+  lines: DeliveryLine[];
+}
+
+export interface FolderListing {
+  supplier_id: number;
+  year: number;
+  month: number;
+  file_count: number;
+  files: Array<{
+    id: number;
+    original_name: string;
+    mime_type: string | null;
+    size_bytes: number | null;
+    delivery_note_id: number | null;
+    note_no: string | null;
+    uploaded_at: string;
+  }>;
+}
+
+export const listSuppliers = (activeOnly = true) =>
+  api.get<Supplier[]>('/api/suppliers', { params: { active_only: activeOnly } }).then((r) => r.data);
+
+export const createSupplier = (payload: Partial<Supplier>) =>
+  api.post<Supplier>('/api/suppliers', payload).then((r) => r.data);
+
+export const patchSupplier = (id: number, payload: Partial<Supplier>) =>
+  api.patch<Supplier>(`/api/suppliers/${id}`, payload).then((r) => r.data);
+
+export const listDeliveryNotes = (
+  supplierId: number,
+  params: { year?: number; month?: number; status?: string } = {},
+) =>
+  api
+    .get<DeliveryNote[]>(`/api/suppliers/${supplierId}/delivery-notes`, { params })
+    .then((r) => r.data);
+
+export const getDeliveryNote = (id: number) =>
+  api.get<DeliveryNote>(`/api/delivery-notes/${id}`).then((r) => r.data);
+
+export const uploadDeliveryNote = (
+  supplierId: number,
+  file: File,
+  onDate?: string,
+) => {
+  const form = new FormData();
+  form.append('file', file);
+  if (onDate) form.append('on_date', onDate);
+  return api
+    .post<DeliveryNote>(`/api/suppliers/${supplierId}/delivery-notes`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000, // OCR 可能要 60-120s
+    })
+    .then((r) => r.data);
+};
+
+export const updateDeliveryNote = (
+  id: number,
+  payload: {
+    status?: string;
+    note_no?: string;
+    delivery_date?: string;
+    total_amount?: number;
+    remark?: string;
+    alipay_flow_no?: string;
+  },
+) => api.patch<DeliveryNote>(`/api/delivery-notes/${id}`, payload).then((r) => r.data);
+
+export const patchLineMatch = (
+  noteId: number,
+  lineId: number,
+  payload: { matched_order_no?: string | null; match_confidence?: number },
+) =>
+  api
+    .patch<DeliveryLine>(`/api/delivery-notes/${noteId}/lines/${lineId}/match`, payload)
+    .then((r) => r.data);
+
+export const rematchNote = (id: number) =>
+  api.post<DeliveryNote>(`/api/delivery-notes/${id}/rematch`).then((r) => r.data);
+
+export const listSupplierFolder = (supplierId: number, year: number, month: number) =>
+  api
+    .get<FolderListing>(`/api/suppliers/${supplierId}/folders/${year}/${month}`)
+    .then((r) => r.data);
+
+export const sourceImageUrl = (noteId: number) =>
+  `/api/delivery-notes/${noteId}/source-image`;
+
+export const deliveryFileRawUrl = (fileId: number) =>
+  `/api/delivery-files/${fileId}/raw`;
+
+export const statementXlsxUrl = (supplierId: number, year: number, month: number) =>
+  `/api/suppliers/${supplierId}/statements/${year}/${month}.xlsx`;
+
+export const statementHtmlUrl = (supplierId: number, year: number, month: number) =>
+  `/api/suppliers/${supplierId}/statements/${year}/${month}.html`;
