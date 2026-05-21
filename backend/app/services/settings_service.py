@@ -27,6 +27,8 @@ from app.models.settings import SystemSetting
 _SECRET_KEYS = {
     "ai_diagnose_api_key",
     "ai_ocr_api_key",
+    # webhook URL 含 token, 视为机密
+    "notify_webhook",
 }
 
 

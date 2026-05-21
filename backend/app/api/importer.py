@@ -282,3 +282,20 @@ def list_import_jobs(
     from app.services import import_job_service
     rows = import_job_service.list_jobs(db, limit=limit)
     return [_job_out(j) for j in rows]
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=ImportJobOut)
+def cancel_import_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """请求取消作业. worker 在下一次 progress tick (50 行) 内退出.
+
+    已结束的作业 (done/failed/cancelled) 调用是 no-op, 直接返回当前状态。
+    """
+    from app.services import import_job_service
+    j = import_job_service.request_cancel(db, job_id)
+    if j is None:
+        raise HTTPException(404, "作业不存在")
+    return _job_out(j)

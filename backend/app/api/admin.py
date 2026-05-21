@@ -295,3 +295,70 @@ def get_system_events(
         )
         for r in rows
     ]
+
+
+# ----------------------------- 通知配置 (业务需求扩展) ---------------- #
+
+
+class NotifyConfigOut(BaseModel):
+    provider: str
+    webhook_masked: str
+    webhook_set: bool
+    supported_providers: list[dict]
+
+
+class NotifyConfigIn(BaseModel):
+    provider: Optional[str] = Field(default=None,
+                                    description="slack/wechat_work/dingtalk/feishu/none")
+    webhook: Optional[str] = Field(default=None, description='完整 URL; "__CLEAR__" 清空')
+
+
+class NotifyTestOut(BaseModel):
+    ok: bool
+    detail: str
+
+
+def _read_notify(db: Session) -> NotifyConfigOut:
+    from app.services import notify_service
+    cfg = notify_service.get_config(db)
+    return NotifyConfigOut(
+        provider=cfg["provider"],
+        webhook_masked=settings_service.mask_secret(cfg["webhook"]),
+        webhook_set=cfg["webhook_set"],
+        supported_providers=list(notify_service.SUPPORTED_PROVIDERS),
+    )
+
+
+@router.get("/notify-config", response_model=NotifyConfigOut)
+def get_notify_config(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    return _read_notify(db)
+
+
+@router.put("/notify-config", response_model=NotifyConfigOut)
+def put_notify_config(
+    payload: NotifyConfigIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    if payload.provider is not None:
+        settings_service.set_value(db, "notify_provider", payload.provider.strip())
+    if payload.webhook is not None:
+        if payload.webhook == "__CLEAR__":
+            settings_service.set_value(db, "notify_webhook", "")
+        elif payload.webhook:
+            settings_service.set_value(db, "notify_webhook", payload.webhook.strip())
+    db.commit()
+    return _read_notify(db)
+
+
+@router.post("/notify-config/test", response_model=NotifyTestOut)
+def test_notify_config(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import notify_service
+    ok, detail = notify_service.test_notify(db)
+    return NotifyTestOut(ok=ok, detail=detail)

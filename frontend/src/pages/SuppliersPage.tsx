@@ -259,9 +259,9 @@ function SupplierListPanel({
                 </Tag>
                 <strong>{s.name}</strong>
               </Space>
-              {s.alipay_counterparty_keywords?.length > 0 && (
+              {(s.alipay_counterparty_keywords?.length ?? 0) > 0 && (
                 <Typography.Text type="secondary" style={{ fontSize: 10 }}>
-                  支付宝关键字: {s.alipay_counterparty_keywords.join(' / ')}
+                  支付宝关键字: {(s.alipay_counterparty_keywords ?? []).join(' / ')}
                 </Typography.Text>
               )}
             </Space>

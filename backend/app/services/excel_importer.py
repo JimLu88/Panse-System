@@ -19,6 +19,12 @@ from typing import Any, Callable, Optional
 
 # (done_rows, total_rows) -> None; 调用方用来更新 ImportJob.processed_rows
 ProgressCallback = Callable[[int, int], None]
+# 返回 True 表示外部要求取消 (用户点了取消按钮); worker 据此抛 CancelledImport
+CancelCallback = Callable[[], bool]
+
+
+class CancelledImport(RuntimeError):
+    """用户在 UI 点了取消按钮, worker 干净退出 (rollback)."""
 
 from openpyxl import load_workbook
 from sqlalchemy import select
@@ -228,7 +234,8 @@ def _extract_json(text: str) -> dict:
 def commit_sheet(
     db: Session,
     *,
-    file_bytes: bytes,
+    file_bytes: Optional[bytes] = None,
+    file_path: Optional[str] = None,
     sheet_name: str,
     entity_type: str,
     mapping: dict[str, str],          # target_field -> excel_column
@@ -236,8 +243,15 @@ def commit_sheet(
     auto_match_orders: bool = True,
     dry_run: bool = False,
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_callback: Optional[CancelCallback] = None,
 ) -> ImportReport:
-    """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调)."""
+    """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消)."""
+    if file_bytes is None and file_path is None:
+        raise ImporterError("必须提供 file_bytes 或 file_path 之一")
+    if file_bytes is None:
+        with open(file_path, "rb") as f:  # type: ignore[arg-type]
+            file_bytes = f.read()
+
     schema = get_schema(entity_type)
     _validate_mapping(schema, mapping)
 
@@ -259,13 +273,16 @@ def commit_sheet(
             auto_create_suppliers=auto_create_suppliers,
             auto_match_orders=auto_match_orders,
             progress_callback=progress_callback,
+            cancel_callback=cancel_callback,
         )
     elif entity_type == "factory_order":
         _commit_factory_orders(db, rows=rows, mapping=mapping, report=report,
-                               progress_callback=progress_callback)
+                               progress_callback=progress_callback,
+                               cancel_callback=cancel_callback)
     elif entity_type == "alipay_flow":
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
-                             progress_callback=progress_callback)
+                             progress_callback=progress_callback,
+                             cancel_callback=cancel_callback)
     else:  # pragma: no cover
         raise ImporterError(f"暂不支持 {entity_type} 的入库")
 
@@ -412,14 +429,18 @@ def _commit_delivery_notes(
     db: Session, *, rows: list[dict], mapping: dict[str, str], schema,
     report: ImportReport, auto_create_suppliers: bool, auto_match_orders: bool,
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_callback: Optional[CancelCallback] = None,
 ) -> None:
     """同 (supplier_name, note_no) 的行聚合为一张 DeliveryNote + 多 DeliveryNoteLine."""
     groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
     # (parent_fields, line_fields) 按 group_by 聚合
     total = len(rows)
     for i, raw_row in enumerate(rows, start=1):
-        if progress_callback and i % _PROGRESS_TICK == 0:
-            progress_callback(i, total)
+        if i % _PROGRESS_TICK == 0:
+            if progress_callback:
+                progress_callback(i, total)
+            if cancel_callback and cancel_callback():
+                raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
         projected, errs = _project(raw_row, mapping, schema)
         if errs:
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
@@ -514,12 +535,16 @@ def _commit_delivery_notes(
 def _commit_factory_orders(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_callback: Optional[CancelCallback] = None,
 ) -> None:
     schema = get_schema("factory_order")
     total = len(rows)
     for i, raw_row in enumerate(rows, start=1):
-        if progress_callback and i % _PROGRESS_TICK == 0:
-            progress_callback(i, total)
+        if i % _PROGRESS_TICK == 0:
+            if progress_callback:
+                progress_callback(i, total)
+            if cancel_callback and cancel_callback():
+                raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
         projected, errs = _project(raw_row, mapping, schema)
         if errs:
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
@@ -563,6 +588,7 @@ def _commit_factory_orders(
 def _commit_alipay_flows(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     progress_callback: Optional[ProgressCallback] = None,
+    cancel_callback: Optional[CancelCallback] = None,
 ) -> None:
     """支付宝流水: (account, transaction_no) 唯一. 自动跑 smart_matching_service.run()
     给新进来的流水打标签 (factory_payment/promotion/etc)."""
@@ -570,8 +596,11 @@ def _commit_alipay_flows(
     fresh_ids: list[int] = []
     total = len(rows)
     for i, raw_row in enumerate(rows, start=1):
-        if progress_callback and i % _PROGRESS_TICK == 0:
-            progress_callback(i, total)
+        if i % _PROGRESS_TICK == 0:
+            if progress_callback:
+                progress_callback(i, total)
+            if cancel_callback and cancel_callback():
+                raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
         projected, errs = _project(raw_row, mapping, schema)
         if errs:
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))

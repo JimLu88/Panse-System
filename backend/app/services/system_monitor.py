@@ -536,12 +536,27 @@ def maybe_auto_restart(db: Session) -> Optional[str]:
     if not should:
         return None
     _LAST_AUTO_RESTART_TS = time.time()
+    snap = _snapshot_for_event(db)
     log_event(db, "watchdog_triggered", actor="watchdog",
-              detail=reason, snapshot=_snapshot_for_event(db))
+              detail=reason, snapshot=snap)
     db.commit()
+
+    # 通知 (Slack/微信/钉钉/飞书) — 不抛, 失败只 log
+    try:
+        from app.services import notify_service
+        notify_service.notify(
+            db,
+            f"看门狗触发自救重启\n原因: {reason}\n"
+            f"内存: {snap.get('mem_used_pct')}%  磁盘: {snap.get('disk_used_pct')}%  "
+            f"DB: {'OK' if snap.get('db_ok') else 'FAIL'}",
+            level="error", title="畔色 ERP 看门狗告警",
+        )
+    except Exception as e:  # pragma: no cover
+        _logger.warning("通知发送异常 (不影响重启): %s", e)
+
     # 真的发 SIGTERM
     log_event(db, "restart_requested", actor="watchdog",
-              detail=f"自救重启: {reason}", snapshot=_snapshot_for_event(db))
+              detail=f"自救重启: {reason}", snapshot=snap)
     db.commit()
     request_restart()
     return reason

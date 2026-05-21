@@ -15,6 +15,7 @@ import {
   Checkbox,
   Col,
   Empty,
+  Popconfirm,
   Progress,
   Row,
   Select,
@@ -30,11 +31,13 @@ import {
 } from 'antd';
 import {
   CheckCircleOutlined,
+  CloseCircleOutlined,
   CloudUploadOutlined,
   ExperimentOutlined,
   ImportOutlined,
   InboxOutlined,
   ReloadOutlined,
+  StopOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
@@ -44,6 +47,7 @@ import {
   ImportReport,
   ImporterPreviewResp,
   SheetPreview,
+  cancelImportJob,
   commitImporter,
   commitImporterAsync,
   fetchEntityTypes,
@@ -552,14 +556,26 @@ function JobProgress({
   onClose: () => void;
   onReport: (r: ImportReport) => void;
 }) {
-  const { data: job } = useQuery({
+  const { data: job, refetch } = useQuery({
     queryKey: ['import-job', jobId],
     queryFn: () => fetchImportJob(jobId),
     refetchInterval: (q) => {
       const j = q.state.data as ImportJob | undefined;
       if (!j) return 2000;
-      return j.status === 'done' || j.status === 'failed' ? false : 2000;
+      // done / failed / cancelled 都停止轮询
+      return ['done', 'failed', 'cancelled'].includes(j.status) ? false : 2000;
     },
+  });
+
+  // 业务需求扩展: 取消作业 — worker 在下次 progress tick (≤50 行) 内退出
+  const cancelMut = useMutation({
+    mutationFn: () => cancelImportJob(jobId),
+    onSuccess: () => {
+      message.info('已请求取消, worker 会在 1-2 秒内停止');
+      refetch();
+    },
+    onError: (e: any) =>
+      message.error(e?.response?.data?.detail ?? '取消请求失败'),
   });
 
   if (!job) {
@@ -577,6 +593,8 @@ function JobProgress({
     failed: 'error',
     cancelled: 'warning',
   };
+  const isFinished = ['done', 'failed', 'cancelled'].includes(job.status);
+  const canCancel = !isFinished;
 
   return (
     <Card
@@ -592,6 +610,24 @@ function JobProgress({
       }
       extra={
         <Space>
+          {canCancel && (
+            <Popconfirm
+              title="确定取消导入?"
+              description="worker 会在下一次进度 tick (≤50 行) 时退出, 已入库的数据保留."
+              okText="确定取消"
+              okType="danger"
+              onConfirm={() => cancelMut.mutate()}
+            >
+              <Button
+                danger
+                size="small"
+                icon={<StopOutlined />}
+                loading={cancelMut.isPending}
+              >
+                取消
+              </Button>
+            </Popconfirm>
+          )}
           {job.status === 'done' && job.report && (
             <Button
               type="primary"
@@ -604,7 +640,7 @@ function JobProgress({
               查看完整报告
             </Button>
           )}
-          {(job.status === 'done' || job.status === 'failed') && (
+          {isFinished && (
             <Button size="small" onClick={onClose}>关闭</Button>
           )}
         </Space>
@@ -615,9 +651,11 @@ function JobProgress({
         status={
           job.status === 'failed'
             ? 'exception'
-            : job.status === 'done'
-              ? 'success'
-              : 'active'
+            : job.status === 'cancelled'
+              ? 'normal'
+              : job.status === 'done'
+                ? 'success'
+                : 'active'
         }
         format={() =>
           job.total_rows
@@ -625,7 +663,17 @@ function JobProgress({
             : (job.status === 'done' ? '完成' : '准备中...')
         }
       />
-      {job.error && (
+      {job.status === 'cancelled' && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<CloseCircleOutlined />}
+          style={{ marginTop: 8 }}
+          message="作业已取消"
+          description={job.error || `已处理 ${job.processed_rows}/${job.total_rows} 行, 后续行未入库`}
+        />
+      )}
+      {job.status === 'failed' && job.error && (
         <Alert
           type="error"
           showIcon

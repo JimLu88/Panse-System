@@ -827,6 +827,8 @@ export interface Supplier {
   payment_terms: string | null;
   is_active: boolean;
   remark: string | null;
+  alipay_counterparty_keywords?: string[] | null;
+  alipay_account?: string | null;
 }
 
 export interface DeliveryLine {
@@ -1161,6 +1163,9 @@ export const fetchImportJob = (id: number) =>
 export const fetchImportJobs = (limit = 50) =>
   api.get<ImportJob[]>('/api/importer/jobs', { params: { limit } }).then((r) => r.data);
 
+export const cancelImportJob = (id: number) =>
+  api.post<ImportJob>(`/api/importer/jobs/${id}/cancel`).then((r) => r.data);
+
 // ----- 重启事件 (业务需求 5) -----
 export interface SystemEvent {
   id: number;
@@ -1174,4 +1179,30 @@ export interface SystemEvent {
 export const fetchSystemEvents = (limit = 50) =>
   api
     .get<SystemEvent[]>('/api/admin/system-events', { params: { limit } })
+    .then((r) => r.data);
+
+// ----- 通知配置 (业务需求扩展: 看门狗触发时推 Slack/微信/钉钉/飞书) -----
+export interface NotifyProvider {
+  value: string;
+  label: string;
+}
+
+export interface NotifyConfig {
+  provider: string;
+  webhook_masked: string;
+  webhook_set: boolean;
+  supported_providers: NotifyProvider[];
+}
+
+export const fetchNotifyConfig = () =>
+  api.get<NotifyConfig>('/api/admin/notify-config').then((r) => r.data);
+
+export const updateNotifyConfig = (payload: {
+  provider?: string;
+  webhook?: string;
+}) => api.put<NotifyConfig>('/api/admin/notify-config', payload).then((r) => r.data);
+
+export const testNotifyConfig = () =>
+  api
+    .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
     .then((r) => r.data);

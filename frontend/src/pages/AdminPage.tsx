@@ -40,11 +40,13 @@ import {
   IntegrationConfig,
   Integrations,
   MeUser,
+  NotifyConfig,
   SystemEvent,
   SystemStatus,
   createUser,
   fetchHealthLogs,
   fetchIntegrations,
+  fetchNotifyConfig,
   fetchRoles,
   fetchSystemEvents,
   fetchSystemStatus,
@@ -52,7 +54,9 @@ import {
   listAuthUsers,
   restartApi,
   testIntegration,
+  testNotifyConfig,
   updateIntegrations,
+  updateNotifyConfig,
 } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 
@@ -659,6 +663,8 @@ function MonitorTab() {
         />
       </Card>
 
+      <NotifyConfigCard />
+
       <SystemEventsCard />
 
       <Card
@@ -747,6 +753,17 @@ function SystemEventsCard() {
 
   if (!events) return null;
 
+  // 把含 snapshot_json 的 events 反向 (旧 → 新), 给 TrendChart 画折线
+  const trendPoints = [...events]
+    .filter((e) => e.snapshot_json)
+    .reverse()
+    .map((e) => ({
+      ts: new Date(e.created_at).getTime(),
+      mem: Number((e.snapshot_json as any)?.mem_used_pct ?? 0),
+      db: Number((e.snapshot_json as any)?.db_latency_ms ?? 0),
+      kind: e.kind,
+    }));
+
   // 找最近一次 restart_requested → 下一个 process_started, 计算 diff
   const lastRestart = events.find((e) => e.kind === 'restart_requested');
   const lastStart = events.find((e) => e.kind === 'process_started');
@@ -804,6 +821,14 @@ function SystemEventsCard() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="small">
       {restartDiff}
+      {trendPoints.length >= 2 && (
+        <Card size="small" title="运行趋势 (取自历史事件 snapshot)">
+          <TrendChart points={trendPoints} />
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            蓝线: 内存使用率 (%, 左轴) — 橙线: DB 延迟 (ms, 右轴) — 每点对应一次进程启动/重启事件
+          </Typography.Text>
+        </Card>
+      )}
       <Card size="small" title={<Space>重启 / 看门狗事件 <Badge count={events.length} /></Space>}>
         <Table<SystemEvent>
           size="small"
@@ -854,5 +879,251 @@ function SystemEventsCard() {
         />
       </Card>
     </Space>
+  );
+}
+
+// ----------------------------- 运行趋势折线图 (业务需求扩展) ------------ //
+
+interface TrendPoint {
+  ts: number;
+  mem: number;
+  db: number;
+  kind: string;
+}
+
+function TrendChart({ points }: { points: TrendPoint[] }) {
+  // 内联 SVG, 不引第三方 chart 库 — 折线足够看趋势
+  const w = 720;
+  const h = 180;
+  const padL = 36;
+  const padR = 44;
+  const padT = 12;
+  const padB = 28;
+  const innerW = w - padL - padR;
+  const innerH = h - padT - padB;
+
+  const memMax = Math.max(100, ...points.map((p) => p.mem));
+  const dbMax = Math.max(50, ...points.map((p) => p.db));
+
+  const x = (i: number) =>
+    padL + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+  const yMem = (v: number) => padT + innerH - (v / memMax) * innerH;
+  const yDb = (v: number) => padT + innerH - (v / dbMax) * innerH;
+
+  const memPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${yMem(p.mem)}`).join(' ');
+  const dbPath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${x(i)},${yDb(p.db)}`).join(' ');
+
+  // Y 轴刻度
+  const memTicks = [0, 50, 100].filter((t) => t <= memMax);
+  const dbTicks = [0, Math.round(dbMax / 2), Math.round(dbMax)];
+
+  // X 轴时间标 — 最多 5 个
+  const xTickIdxs: number[] = [];
+  const tickCount = Math.min(5, points.length);
+  for (let i = 0; i < tickCount; i++) {
+    xTickIdxs.push(Math.round((i / (tickCount - 1 || 1)) * (points.length - 1)));
+  }
+
+  return (
+    <svg width="100%" viewBox={`0 0 ${w} ${h}`} style={{ display: 'block' }}>
+      {/* 网格线 + Y 左轴 (mem%) */}
+      {memTicks.map((t) => (
+        <g key={`mt${t}`}>
+          <line
+            x1={padL}
+            x2={w - padR}
+            y1={yMem(t)}
+            y2={yMem(t)}
+            stroke="#f0f0f0"
+            strokeWidth={1}
+          />
+          <text x={padL - 4} y={yMem(t) + 3} fontSize={10} textAnchor="end" fill="#1677ff">
+            {t}%
+          </text>
+        </g>
+      ))}
+      {/* Y 右轴 (db ms) */}
+      {dbTicks.map((t) => (
+        <text
+          key={`dt${t}`}
+          x={w - padR + 4}
+          y={yDb(t) + 3}
+          fontSize={10}
+          fill="#fa8c16"
+        >
+          {t}ms
+        </text>
+      ))}
+      {/* 折线 */}
+      <path d={memPath} fill="none" stroke="#1677ff" strokeWidth={2} />
+      <path d={dbPath} fill="none" stroke="#fa8c16" strokeWidth={2} />
+      {/* 点 */}
+      {points.map((p, i) => (
+        <g key={i}>
+          <circle cx={x(i)} cy={yMem(p.mem)} r={2.5} fill="#1677ff" />
+          <circle cx={x(i)} cy={yDb(p.db)} r={2.5} fill="#fa8c16" />
+          {p.kind === 'watchdog_triggered' && (
+            <circle cx={x(i)} cy={padT + 4} r={4} fill="#cf1322">
+              <title>{`看门狗触发: ${new Date(p.ts).toLocaleString('zh-CN')}`}</title>
+            </circle>
+          )}
+        </g>
+      ))}
+      {/* X 轴时间 */}
+      {xTickIdxs.map((i) => (
+        <text
+          key={`xt${i}`}
+          x={x(i)}
+          y={h - padB + 14}
+          fontSize={10}
+          textAnchor="middle"
+          fill="#999"
+        >
+          {new Date(points[i].ts).toLocaleString('zh-CN', {
+            month: '2-digit',
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+          })}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
+// ----------------------------- 通知配置 (业务需求扩展) ----------------- //
+
+const NOTIFY_PROVIDER_HINT: Record<string, string> = {
+  none: '关闭通知',
+  slack: 'Slack incoming webhook, 形如 https://hooks.slack.com/services/T0/B0/...',
+  wechat_work: '企业微信群机器人, 形如 https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...',
+  dingtalk: '钉钉群机器人, 形如 https://oapi.dingtalk.com/robot/send?access_token=...',
+  feishu: '飞书群机器人, 形如 https://open.feishu.cn/open-apis/bot/v2/hook/...',
+};
+
+function NotifyConfigCard() {
+  const qc = useQueryClient();
+  const [form] = Form.useForm();
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const { data: cfg, isLoading } = useQuery<NotifyConfig>({
+    queryKey: ['notify-config'],
+    queryFn: fetchNotifyConfig,
+  });
+
+  const saveMut = useMutation({
+    mutationFn: (payload: { provider: string; webhook?: string }) => updateNotifyConfig(payload),
+    onSuccess: () => {
+      message.success('通知配置已保存');
+      form.setFieldValue('webhook', '');
+      qc.invalidateQueries({ queryKey: ['notify-config'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  const testMut = useMutation({
+    mutationFn: testNotifyConfig,
+    onSuccess: (r) => {
+      setTestResult({ ok: r.ok, text: r.detail });
+      if (r.ok) message.success('已发出测试消息, 请到群里确认');
+      else message.warning('未发出: ' + r.detail);
+    },
+    onError: (e: any) => setTestResult({ ok: false, text: e?.response?.data?.detail ?? '请求失败' }),
+  });
+
+  const clearMut = useMutation({
+    mutationFn: () => updateNotifyConfig({ webhook: '__CLEAR__' }),
+    onSuccess: () => {
+      message.success('Webhook 已清除');
+      qc.invalidateQueries({ queryKey: ['notify-config'] });
+    },
+  });
+
+  if (isLoading || !cfg) {
+    return <Card size="small" title="运维通知" loading />;
+  }
+
+  return (
+    <Card
+      size="small"
+      title={<Space>运维通知 <Tag color="blue">看门狗触发自动推送</Tag></Space>}
+      extra={
+        <Button
+          icon={<ExperimentOutlined />}
+          size="small"
+          loading={testMut.isPending}
+          disabled={cfg.provider === 'none' || !cfg.webhook_set}
+          onClick={() => testMut.mutate()}
+        >
+          测试通知
+        </Button>
+      }
+    >
+      <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="当前 Provider">
+          <Tag color={cfg.provider === 'none' ? 'default' : 'green'}>{cfg.provider}</Tag>
+        </Descriptions.Item>
+        <Descriptions.Item label="Webhook">
+          {cfg.webhook_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>
+                {cfg.webhook_masked}
+              </Tag>
+              <Button size="small" type="link" danger onClick={() => clearMut.mutate()}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未设置</Tag>
+          )}
+        </Descriptions.Item>
+      </Descriptions>
+
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{ provider: cfg.provider, webhook: '' }}
+        onFinish={(v) => saveMut.mutate(v)}
+      >
+        <Form.Item name="provider" label="通知平台" rules={[{ required: true }]}>
+          <Select
+            options={cfg.supported_providers.map((p) => ({ value: p.value, label: p.label }))}
+          />
+        </Form.Item>
+        <Form.Item
+          shouldUpdate
+          noStyle
+        >
+          {() => (
+            <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: -8 }}>
+              {NOTIFY_PROVIDER_HINT[form.getFieldValue('provider') ?? cfg.provider]}
+            </Typography.Paragraph>
+          )}
+        </Form.Item>
+        <Form.Item
+          name="webhook"
+          label="Webhook URL (留空 = 不修改)"
+          extra="加密存储, 仅显示前 3 后 4 位"
+        >
+          <Input.Password placeholder={cfg.webhook_set ? '(已设置, 留空保留)' : '请输入完整 URL'} />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" loading={saveMut.isPending}>
+            保存
+          </Button>
+        </Form.Item>
+      </Form>
+
+      {testResult && (
+        <Alert
+          type={testResult.ok ? 'success' : 'error'}
+          showIcon
+          message={testResult.ok ? '已发送测试消息' : '发送失败'}
+          description={<code style={{ fontSize: 12 }}>{testResult.text}</code>}
+          closable
+          onClose={() => setTestResult(null)}
+        />
+      )}
+    </Card>
   );
 }
