@@ -7,6 +7,8 @@ from app.api import feishu as feishu_api
 from app.api import inventory as inventory_api
 from app.api import match as match_api
 from app.api import materials as materials_api
+from app.api import orders as orders_api
+from app.api import producibility as producibility_api
 from app.api import product_inventory as product_inventory_api
 from app.api import products as products_api
 from app.api import quotes as quotes_api
@@ -33,6 +35,8 @@ app.include_router(exceptions_api.router)
 app.include_router(feishu_api.router)
 app.include_router(match_api.router)
 app.include_router(quotes_api.router)
+app.include_router(orders_api.router)
+app.include_router(producibility_api.router)
 
 
 @app.get("/api/health")

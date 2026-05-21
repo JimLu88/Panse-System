@@ -254,3 +254,81 @@ export const materialSwap = (payload: {
   to_code: string;
   qty?: number | string;
 }) => api.post<MaterialSwapResult>('/api/quotes/material-swap', payload).then((r) => r.data);
+
+// ----- Orders -----
+export interface Order {
+  id: number;
+  platform: string;
+  order_no: string;
+  is_refill: boolean;
+  order_date: string | null;
+  ship_date: string | null;
+  customer_name: string | null;
+  product_code: string | null;
+  product_name: string | null;
+  sku: string | null;
+  is_custom: boolean;
+  qty: number;
+  status: string;
+  carrier: string | null;
+  tracking_no: string | null;
+  paid_amount: string | null;
+}
+
+export const listOrders = (params: {
+  q?: string;
+  status?: string;
+  platform?: string;
+  limit?: number;
+} = {}) => api.get<Order[]>('/api/orders', { params: { limit: 100, ...params } }).then((r) => r.data);
+
+export const changeOrderStatus = (id: number, status: string, force = false) =>
+  api.post<Order>(`/api/orders/${id}/status`, { status, force }).then((r) => r.data);
+
+export interface CsvImportReport {
+  inserted: number;
+  skipped_duplicate: number;
+  skipped_invalid: number;
+  errors: string[];
+}
+
+export const importOrdersCsv = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<CsvImportReport>('/api/orders/import-csv', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data);
+};
+
+// ----- Producibility -----
+export interface MaterialRequirement {
+  material_code: string;
+  material_name: string | null;
+  qty_per_product: string;
+  available_stock: string;
+  can_build_units: number;
+  shortage_for_target: string;
+}
+
+export interface ProducibilityResult {
+  sku_code: string | null;
+  product_code: string | null;
+  target_qty: number;
+  in_stock_qty: number;
+  can_build_qty: number;
+  total_available_qty: number;
+  bottleneck: MaterialRequirement | null;
+  requirements: MaterialRequirement[];
+  missing_for_target: MaterialRequirement[];
+}
+
+export const computeProducibility = (params: {
+  sku_code?: string;
+  product_code?: string;
+  target_qty?: number;
+}) =>
+  api
+    .get<ProducibilityResult>('/api/producibility', { params })
+    .then((r) => r.data);

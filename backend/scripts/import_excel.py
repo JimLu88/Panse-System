@@ -20,6 +20,7 @@ from app.database import SessionLocal
 from app.models.bom import BomLine
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
+from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import exception_service, inventory_service, material_service  # noqa: F401
@@ -30,6 +31,7 @@ SHEET_PRICE = "3b-配件价格表"
 SHEET_BOM = "3-BOM表"
 SHEET_PART_INV = "4b-配件库存"
 SHEET_PROD_INV = "4a-成品库存"
+SHEET_ORDERS = "5-订单总表"
 
 
 def _str(v: Any) -> Optional[str]:
@@ -279,6 +281,55 @@ def import_product_inventory(wb, db) -> int:
     return count
 
 
+def import_orders(wb, db) -> int:
+    """5-订单总表 → orders。列：平台/订单编号/是否补单/下单日期/客户/电话/地址/发货日期/
+    产品编码/产品名称/SKU/是否定制/数量/锁定状态/物流公司/物流单号/...
+    冷启动只取核心字段；定制订单走 is_custom 标记。
+    """
+    ws = wb[SHEET_ORDERS]
+    header_row = _find_header_row(ws, "平台")
+    count = 0
+    seen: set[str] = set()
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        order_no = _str(row[1])
+        if not order_no or order_no.startswith("#"):
+            continue
+        if order_no in seen or db.query(Order).filter_by(order_no=order_no).first():
+            continue
+        seen.add(order_no)
+        # 解析日期：Excel cell 可能是 datetime 或字符串
+        order_date_raw = row[3]
+        order_date_val = None
+        if hasattr(order_date_raw, "date"):
+            order_date_val = order_date_raw.date()
+        elif isinstance(order_date_raw, str) and order_date_raw.strip():
+            try:
+                from datetime import datetime
+                order_date_val = datetime.strptime(order_date_raw.strip(), "%Y-%m-%d").date()
+            except ValueError:
+                pass
+
+        is_custom_raw = _str(row[11])
+        db.add(Order(
+            platform=_str(row[0]) or "淘宝",
+            order_no=order_no,
+            is_refill=_str(row[2]) == "是",
+            order_date=order_date_val,
+            customer_name=_str(row[4]) if _str(row[4]) and not _str(row[4]).startswith("#") else None,
+            customer_phone=_str(row[5]) if _str(row[5]) and not _str(row[5]).startswith("#") else None,
+            customer_address=_str(row[6]) if _str(row[6]) and not _str(row[6]).startswith("#") else None,
+            product_code=_str(row[8]),
+            product_name=_str(row[9]),
+            sku=_str(row[10]),
+            is_custom=bool(is_custom_raw) and is_custom_raw in ("是", "Y", "1"),
+            qty=_int(row[12]) or 1,
+            status="pending_payment",
+        ))
+        count += 1
+    db.commit()
+    return count
+
+
 def run(excel_path: Path) -> None:
     wb = openpyxl.load_workbook(str(excel_path), data_only=True)
     db = SessionLocal()
@@ -290,6 +341,7 @@ def run(excel_path: Path) -> None:
         print(f"BOM 表: {import_bom(wb, db)}")
         print(f"配件库存: {import_part_inventory(wb, db)}")
         print(f"成品库存: {import_product_inventory(wb, db)}")
+        print(f"订单总表: {import_orders(wb, db)}")
         print("=== Done ===")
     finally:
         db.close()
