@@ -21,6 +21,7 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.finance import AlipayFlow
 from app.models.order import FactoryOrder
 from app.models.supplier import DeliveryNote, DeliveryNoteLine, Supplier
 from app.services import delivery_matcher, settings_service
@@ -120,7 +121,7 @@ def _clean_value(v: Any) -> Any:
 _AI_SYSTEM_PROMPT = """你是 Excel → ERP 字段映射助手。给你一个 sheet 的列名 + 前几行数据,
 请输出严格 JSON, 包括:
 {
-  "entity_type": "delivery_note | factory_order | unknown",
+  "entity_type": "供给的 supported_entities 中选一个 key, 拿不准填 unknown",
   "mapping": { "目标字段名": "Excel 列名", ... },
   "skipped_columns": ["完全不需要的列名", ...],
   "warnings": ["数据脏的提示", ...]
@@ -252,6 +253,8 @@ def commit_sheet(
         )
     elif entity_type == "factory_order":
         _commit_factory_orders(db, rows=rows, mapping=mapping, report=report)
+    elif entity_type == "alipay_flow":
+        _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report)
     else:  # pragma: no cover
         raise ImporterError(f"暂不支持 {entity_type} 的入库")
 
@@ -527,3 +530,67 @@ def _commit_factory_orders(
         )
         db.add(fo)
         report.inserted_parents += 1
+
+
+# ----------------------------- alipay_flow ----------------------- #
+
+
+def _commit_alipay_flows(
+    db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
+) -> None:
+    """支付宝流水: (account, transaction_no) 唯一. 自动跑 smart_matching_service.run()
+    给新进来的流水打标签 (factory_payment/promotion/etc)."""
+    schema = get_schema("alipay_flow")
+    fresh_ids: list[int] = []
+    for i, raw_row in enumerate(rows, start=1):
+        projected, errs = _project(raw_row, mapping, schema)
+        if errs:
+            report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
+            report.skipped_rows += 1
+            continue
+        account = projected.get("account")
+        tx_no = projected.get("transaction_no")
+        amount = projected.get("amount")
+        if not account or not tx_no or amount is None:
+            report.skipped_rows += 1
+            report.errors.append(f"第 {i + 1} 行: 账户/流水号/金额 任一为空")
+            continue
+        existing = db.execute(
+            select(AlipayFlow).where(
+                AlipayFlow.account == account, AlipayFlow.transaction_no == tx_no,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            report.warnings.append(f"已存在 {account} 流水 {tx_no}, 跳过")
+            report.skipped_rows += 1
+            continue
+        flow = AlipayFlow(
+            account=account, transaction_no=tx_no,
+            transaction_time=projected.get("transaction_time"),
+            transaction_type=projected.get("transaction_type"),
+            counterparty=projected.get("counterparty"),
+            counterparty_account=projected.get("counterparty_account"),
+            amount=amount,
+            balance=projected.get("balance"),
+            related_order_no=projected.get("related_order_no"),
+            remark=projected.get("remark"),
+            reconciliation_status="open",
+        )
+        db.add(flow)
+        db.flush()
+        fresh_ids.append(flow.id)
+        report.inserted_parents += 1
+
+    # 入完一次性跑智能标签 (factory_payment / promotion / logistics / salary)
+    if fresh_ids:
+        try:
+            from app.services.smart_matching_service import run as smart_tag
+            tag_result = smart_tag(db)
+            tagged_total = sum(tag_result.tagged.values())
+            if tagged_total > 0:
+                report.warnings.append(
+                    f"已为 {tagged_total} 条新流水自动打标签: "
+                    + ", ".join(f"{k}={v}" for k, v in tag_result.tagged.items())
+                )
+        except Exception as e:  # pragma: no cover
+            report.warnings.append(f"自动打标签失败 (不影响入库): {e}")

@@ -1073,3 +1073,51 @@ export const commitImporter = (payload: {
   auto_match_orders?: boolean;
   dry_run?: boolean;
 }) => api.post<ImportReport>('/api/importer/commit', payload).then((r) => r.data);
+
+// ----- 系统监控 / 看门狗 (业务需求) -----
+export interface HealthCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail: string;
+  duration_ms: number;
+}
+
+export interface SystemStatus {
+  uptime_sec: number;
+  process_started_at: string;
+  version_sha: string;
+  python_version: string;
+  db_ok: boolean;
+  db_latency_ms: number | null;
+  pending_migrations: number;
+  disk_total_gb: number;
+  disk_free_gb: number;
+  disk_used_pct: number;
+  mem_total_mb: number;
+  mem_available_mb: number;
+  mem_used_pct: number;
+  storage_used_mb: number;
+  recent_checks: HealthCheck[];
+}
+
+export interface HealthLog {
+  id: number;
+  check_name: string;
+  status: string;
+  detail: string | null;
+  duration_ms: number | null;
+  created_at: string;
+}
+
+export const fetchSystemStatus = () =>
+  api.get<SystemStatus>('/api/admin/system-status').then((r) => r.data);
+
+export const fetchHealthLogs = (limit = 100, check_name?: string) =>
+  api
+    .get<HealthLog[]>('/api/admin/system-health-logs', {
+      params: { limit, ...(check_name ? { check_name } : {}) },
+    })
+    .then((r) => r.data);
+
+export const restartApi = () =>
+  api.post('/api/admin/restart-api', { confirm: 'RESTART' }).then((r) => r.data);

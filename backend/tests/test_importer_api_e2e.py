@@ -68,7 +68,7 @@ def test_entity_types_endpoint():
         # 至少应包含 delivery_note 与 factory_order
         assert r.status_code == 200
         values = {e["value"] for e in body}
-        assert values == {"delivery_note", "factory_order"}
+        assert values >= {"delivery_note", "factory_order", "alipay_flow"}
         dn = next(e for e in body if e["value"] == "delivery_note")
         assert any(f["name"] == "supplier_name" and f["required"] for f in dn["fields"])
     finally:

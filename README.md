@@ -80,6 +80,13 @@ docker compose exec db pg_dump -U panse panse_erp > panse-backup-$(date +%Y%m%d)
   - 月度对账表 (Excel + 浏览器打印 PDF)
   - 支付宝流水自动对账: 一笔流水自动匹配 1~N 张待付单据 (子集和)
   - 按月浏览原图文件夹
+- **通用 AI Excel 导入** (本期新增): 上传任意 Excel → AI 推断列映射 → 一键入库
+  - 支持: 送货单 / 工厂订单 / 支付宝流水
+  - 上限 200MB (历史对账单含图片可能 100MB+)
+- **系统监控 + 看门狗** (本期新增): admin 后台 "系统监控 / 看门狗" tab
+  - 实时看 数据库/磁盘/内存/AI 配置/迁移版本/Storage 占用
+  - 每 60s 后台跑健康检查写日志, UI 表格查
+  - 网页一键 "重启 API" 按钮 (Docker `restart: unless-stopped` 自动拉起)
 
 ## 开发
 

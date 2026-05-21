@@ -96,6 +96,64 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         "parent_fields": ["supplier_name", "note_no", "delivery_date",
                           "total_amount", "status", "remark"],
     },
+    "alipay_flow": {
+        "label": "支付宝流水",
+        "description": "导入支付宝导出的 Excel/CSV (任意列结构)。一行 = 一条 AlipayFlow。",
+        "fields": {
+            "account": {
+                "type": "str", "required": True,
+                "desc": "支付宝账户 (企业号 / 个体户私账 / 爱群号 / 佳宝号 / 主力号)",
+                "aliases": ["账户", "账号", "支付宝账号", "Account"],
+            },
+            "transaction_no": {
+                "type": "str", "required": True,
+                "desc": "交易流水号 (同一账户内全局唯一)",
+                "aliases": ["流水号", "交易号", "订单号", "TransactionNo"],
+            },
+            "transaction_time": {
+                "type": "datetime", "required": False,
+                "desc": "交易时间",
+                "aliases": ["时间", "交易时间", "Time"],
+            },
+            "transaction_type": {
+                "type": "str", "required": False,
+                "desc": "交易类型 (在线支付 / 转账 / 分账 / ...)",
+                "aliases": ["交易类型", "类型", "Type"],
+            },
+            "counterparty": {
+                "type": "str", "required": False,
+                "desc": "对手方姓名/公司",
+                "aliases": ["对方", "对手方", "对方姓名", "收款方"],
+            },
+            "counterparty_account": {
+                "type": "str", "required": False,
+                "desc": "对手方账号",
+                "aliases": ["对方账号", "收款账号"],
+            },
+            "amount": {
+                "type": "decimal", "required": True,
+                "desc": "金额 (正=收入, 负=支出; 如果 Excel 是 收入/支出 分开两列, 请只选其一并加负号)",
+                "aliases": ["金额", "Amount"],
+            },
+            "balance": {
+                "type": "decimal", "required": False,
+                "desc": "交易后余额",
+                "aliases": ["余额", "账户余额", "Balance"],
+            },
+            "related_order_no": {
+                "type": "str", "required": False,
+                "desc": "关联的平台订单号",
+                "aliases": ["商户订单号", "订单号", "OrderNo"],
+            },
+            "remark": {
+                "type": "str", "required": False,
+                "desc": "备注",
+                "aliases": ["备注", "摘要", "Note"],
+            },
+        },
+        "group_by": ["account", "transaction_no"],
+        "parent_fields": list(),
+    },
     "factory_order": {
         "label": "工厂下单",
         "description": "每行 = 一张工厂订单 (FactoryOrder)。",

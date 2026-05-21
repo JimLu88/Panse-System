@@ -1,6 +1,7 @@
 services:
   db:
     image: postgres:16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-panse}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-panse_dev_pw}
@@ -17,6 +18,7 @@ services:
 
   api:
     build: ./backend
+    restart: unless-stopped     # 业务需求: 看门狗触发 SIGTERM 后 Docker 自动拉起
     depends_on:
       db:
         condition: service_healthy
@@ -27,9 +29,17 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./storage:/app/storage   # 送货单原图归档 + 上传文件
+    healthcheck:
+      test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\", timeout=3)' || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
   web:
     build: ./frontend
+    restart: unless-stopped
     depends_on:
       - api
     environment:

@@ -63,6 +63,23 @@ app.include_router(suppliers_api.router)
 app.include_router(importer_api.router)
 
 
+@app.on_event("startup")
+async def _start_watchdog():
+    """业务需求: 启动后台看门狗循环, 每 60s 跑健康检查写入 system_health_logs."""
+    # 测试环境关闭 (避免 conftest 起的多个 in-memory db 互相打扰)
+    import os
+    if os.environ.get("DISABLE_WATCHDOG") == "1":
+        return
+    from app.services import system_monitor
+    system_monitor.start_background(interval_sec=60)
+
+
+@app.on_event("shutdown")
+async def _stop_watchdog():
+    from app.services import system_monitor
+    system_monitor.stop_background()
+
+
 @app.get("/api/health")
 def health():
     return {"ok": True}

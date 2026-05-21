@@ -454,3 +454,70 @@ def test_commit_chinese_date_format(db_session):
     from sqlalchemy import select
     n = db_session.execute(select(DeliveryNote)).scalar_one()
     assert n.delivery_date == date(2026, 5, 14)
+
+
+# ----------------------------- commit alipay_flow ---------------- #
+
+
+def test_commit_alipay_flow_basic(db_session):
+    from app.models.finance import AlipayFlow
+    data = _xlsx("流水", ["账户", "流水号", "时间", "对方", "金额", "备注"], [
+        ["企业号", "TX001", "2026-05-14 10:00:00", "X木业有限公司", -580, "5月料款"],
+        ["企业号", "TX002", "2026-05-14 11:00:00", "万师傅安装", -120, "安装费"],
+        ["企业号", "TX003", "2026-05-14 12:00:00", "客户A", 2000, "TB-001 收款"],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="流水",
+        entity_type="alipay_flow",
+        mapping={
+            "account": "账户", "transaction_no": "流水号",
+            "transaction_time": "时间", "counterparty": "对方",
+            "amount": "金额", "remark": "备注",
+        },
+    )
+    db_session.commit()
+    assert report.inserted_parents == 3
+    assert report.skipped_rows == 0
+    from sqlalchemy import select
+    flows = db_session.execute(select(AlipayFlow).order_by(AlipayFlow.transaction_no)).scalars().all()
+    assert len(flows) == 3
+    assert flows[0].amount == Decimal("-580")
+    # smart_matching 应该把 X木业 标成 factory_payment, 万师傅 标成 logistics
+    tags = {f.transaction_no: f.reconciliation_type for f in flows}
+    assert tags["TX001"] == "factory_payment"
+    assert tags["TX002"] == "logistics"
+
+
+def test_commit_alipay_flow_dedup_same_account_tx(db_session):
+    from app.models.finance import AlipayFlow
+    pre = AlipayFlow(account="企业号", transaction_no="TX-EXIST",
+                     amount=Decimal("-100"), reconciliation_status="open")
+    db_session.add(pre); db_session.commit()
+    data = _xlsx("S", ["账户", "流水号", "金额"], [
+        ["企业号", "TX-EXIST", -100],   # 重复
+        ["企业号", "TX-NEW", -200],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S",
+        entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号", "amount": "金额"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 1
+    assert report.skipped_rows == 1
+
+
+def test_commit_alipay_flow_missing_required_skipped(db_session):
+    data = _xlsx("S", ["账户", "流水号", "金额"], [
+        ["", "TX1", -100],     # 账户空
+        ["企业号", "", -100],  # 流水号空
+        ["企业号", "TX2", -100],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S",
+        entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号", "amount": "金额"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 1
+    assert report.skipped_rows == 2

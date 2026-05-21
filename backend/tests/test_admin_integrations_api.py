@@ -147,3 +147,88 @@ def test_test_endpoint_returns_error_on_failure():
         assert body["error"]
     finally:
         app.dependency_overrides.clear()
+
+
+# ----------------------------- 系统监控 / 看门狗 endpoints ----------- #
+
+
+def test_system_status_endpoint_requires_admin():
+    client, _, op_token = _client_with_admin_token()
+    try:
+        r = client.get("/api/admin/system-status",
+                       headers={"Authorization": f"Bearer {op_token}"})
+        assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_system_status_endpoint_returns_snapshot():
+    client, token, _ = _client_with_admin_token()
+    try:
+        r = client.get("/api/admin/system-status",
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["db_ok"] is True
+        assert body["python_version"]
+        assert body["uptime_sec"] >= 0
+        assert isinstance(body["recent_checks"], list)
+        names = {c["name"] for c in body["recent_checks"]}
+        assert {"db_ping", "disk", "memory"} <= names
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_health_logs_endpoint():
+    client, token, _ = _client_with_admin_token()
+    try:
+        # 先跑几次状态生成 logs
+        client.get("/api/admin/system-status",
+                   headers={"Authorization": f"Bearer {token}"})
+        # status 不写 logs (那是 persist=False), 这里直接造一条
+        # 通过 logs endpoint 验证
+        r = client.get("/api/admin/system-health-logs",
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200
+        assert isinstance(r.json(), list)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restart_requires_confirm_string():
+    client, token, _ = _client_with_admin_token()
+    try:
+        r = client.post("/api/admin/restart-api",
+                        headers={"Authorization": f"Bearer {token}"},
+                        json={"confirm": "wrong"})
+        assert r.status_code == 400
+        assert "RESTART" in r.json()["detail"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restart_with_correct_confirm_signals_term():
+    """正确 confirm 时返回 accepted=true; 实际 SIGTERM 在 0.5s 后, 测试用 patch 拦截."""
+    client, token, _ = _client_with_admin_token()
+    try:
+        from unittest.mock import patch
+        with patch("app.services.system_monitor.request_restart") as mock_rr:
+            r = client.post("/api/admin/restart-api",
+                            headers={"Authorization": f"Bearer {token}"},
+                            json={"confirm": "RESTART"})
+            assert r.status_code == 200
+            assert r.json()["accepted"] is True
+            mock_rr.assert_called_once()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_restart_forbids_non_admin():
+    client, _, op_token = _client_with_admin_token()
+    try:
+        r = client.post("/api/admin/restart-api",
+                        headers={"Authorization": f"Bearer {op_token}"},
+                        json={"confirm": "RESTART"})
+        assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()

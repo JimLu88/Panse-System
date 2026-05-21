@@ -91,8 +91,9 @@ async def preview(
     content = await file.read()
     if not content:
         raise HTTPException(400, "空文件")
-    if len(content) > 30 * 1024 * 1024:
-        raise HTTPException(413, "文件超过 30MB")
+    # 业务需求: 历史对账单内嵌图片可能 100MB+, 上限放到 200MB
+    if len(content) > 200 * 1024 * 1024:
+        raise HTTPException(413, "文件超过 200MB, 请拆分或先剔除图片")
 
     try:
         previews = excel_importer.preview_excel(content)
@@ -128,7 +129,7 @@ async def preview(
 class CommitIn(BaseModel):
     file_b64: str
     sheet_name: str
-    entity_type: str = Field(..., pattern=r"^(delivery_note|factory_order)$")
+    entity_type: str = Field(..., pattern=r"^(delivery_note|factory_order|alipay_flow)$")
     mapping: dict[str, str]   # target_field -> excel_column
     auto_create_suppliers: bool = True
     auto_match_orders: bool = True
