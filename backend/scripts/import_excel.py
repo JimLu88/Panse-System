@@ -160,6 +160,7 @@ def import_bom(wb, db) -> int:
             sku=_str(row[2]),
             sku_code=_str(row[3]),
             material_code=material_code,
+            size_type=_str(row[6]),  # 尺寸类型 (组合 / 个数 / ...)
             unit=_str(row[8]),
             qty_per_product=_decimal(row[9]) or Decimal("1"),
         ))

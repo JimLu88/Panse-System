@@ -21,4 +21,6 @@ class BomLine(Base, TimestampMixin):
     )
     unit: Mapped[Optional[str]] = mapped_column(String(16))
     qty_per_product: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("1"))
+    # 尺寸类型 (业务需求 §2: 决定微定制时这行 BOM 是否随尺寸变 — "组合"= 随; "个数"= 不变)
+    size_type: Mapped[Optional[str]] = mapped_column(String(32))
     remark: Mapped[Optional[str]] = mapped_column(String(255))

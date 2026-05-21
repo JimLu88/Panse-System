@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.product import Product
-from app.schemas.product import ProductCreate, ProductOut, ProductUpdate
+from app.schemas.product import ProductCreate, ProductOut, ProductUpdate, TaobaoIdsUpdate
 from app.services import product_coder
 
 router = APIRouter(prefix="/api/products", tags=["products"])
@@ -47,6 +47,8 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
         brand=payload.brand.upper(),
         category=payload.category_label or payload.category,
         remark=payload.remark,
+        taobao_id=payload.taobao_id,
+        alt_taobao_ids=payload.alt_taobao_ids or [],
     )
     db.add(prod)
     db.commit()
@@ -64,3 +66,41 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
     db.commit()
     db.refresh(prod)
     return prod
+
+
+@router.put("/{product_id}/taobao-ids", response_model=ProductOut)
+def update_taobao_ids(
+    product_id: int, payload: TaobaoIdsUpdate, db: Session = Depends(get_db)
+):
+    """业务需求 §4: 一个产品最多配 5 个备选商品 ID, 链接换了不用改其它表."""
+    prod = db.get(Product, product_id)
+    if not prod:
+        raise HTTPException(404, "product not found")
+    if len(payload.alternatives) > 5:
+        raise HTTPException(400, "alternatives 最多 5 个")
+    prod.taobao_id = payload.primary
+    prod.alt_taobao_ids = payload.alternatives
+    db.commit()
+    db.refresh(prod)
+    return prod
+
+
+@router.get("/lookup-by-taobao-id/{taobao_id}", response_model=ProductOut)
+def lookup_by_taobao_id(taobao_id: str, db: Session = Depends(get_db)):
+    """业务需求 §3+§4: OCR 拿到淘宝商品 ID 后, 找对应产品.
+
+    先按 primary id 命中; 再按 alt_taobao_ids 数组命中。
+    """
+    primary = db.execute(
+        select(Product).where(Product.taobao_id == taobao_id)
+    ).scalar_one_or_none()
+    if primary:
+        return primary
+    # 备选 ID — 由于 JSON 数组在 SQLite 上没有 ANY 操作, 全扫匹配
+    all_prods = db.execute(
+        select(Product).where(Product.alt_taobao_ids.isnot(None))
+    ).scalars().all()
+    for p in all_prods:
+        if p.alt_taobao_ids and taobao_id in p.alt_taobao_ids:
+            return p
+    raise HTTPException(404, f"没有产品绑定到淘宝商品 ID {taobao_id}")

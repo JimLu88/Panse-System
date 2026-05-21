@@ -110,22 +110,31 @@ export default function OrdersPage() {
     },
     {
       title: '操作',
-      width: 120,
+      width: 200,
       render: (_: unknown, r: Order) => {
         const next = ALLOWED_NEXT[r.status] ?? [];
-        if (next.length === 0) return <span style={{ color: '#999' }}>—</span>;
         return (
-          <Dropdown
-            menu={{
-              items: next.map((s) => ({
-                key: s,
-                label: STATUS_META[s]?.label ?? s,
-                onClick: () => statusMut.mutate({ id: r.id, status: s }),
-              })),
-            }}
-          >
-            <Button size="small">推进</Button>
-          </Dropdown>
+          <Space size="small">
+            <Button
+              size="small"
+              onClick={() => window.open(`/orders/${r.id}/factory-sheet`, '_blank')}
+            >
+              制单图
+            </Button>
+            {next.length > 0 && (
+              <Dropdown
+                menu={{
+                  items: next.map((s) => ({
+                    key: s,
+                    label: STATUS_META[s]?.label ?? s,
+                    onClick: () => statusMut.mutate({ id: r.id, status: s }),
+                  })),
+                }}
+              >
+                <Button size="small">推进</Button>
+              </Dropdown>
+            )}
+          </Space>
         );
       },
     },

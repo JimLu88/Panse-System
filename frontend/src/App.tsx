@@ -18,6 +18,8 @@ import MarketingPage from './pages/MarketingPage';
 import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
 import ReportsPage from './pages/ReportsPage';
+import FactorySheetPage from './pages/FactorySheetPage';
+import CustomizationPage from './pages/CustomizationPage';
 import { useAuth } from './auth/AuthProvider';
 
 const { Header, Content } = Layout;
@@ -60,6 +62,7 @@ export default function App() {
     { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
     { key: 'orders', label: <Link to="/orders">订单</Link> },
     { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
+    { key: 'customization', label: <Link to="/customization">微定制</Link> },
     { key: 'quote', label: <Link to="/quote">报价</Link> },
     { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
     { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
@@ -108,6 +111,8 @@ export default function App() {
           <Route path="/inventory" element={<PartInventoryPage />} />
           <Route path="/product-inventory" element={<ProductInventoryPage />} />
           <Route path="/orders" element={<OrdersPage />} />
+          <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
+          <Route path="/customization" element={<CustomizationPage />} />
           <Route path="/producibility" element={<ProducibilityPage />} />
           <Route path="/quote" element={<QuotePage />} />
           <Route path="/alipay" element={<AlipayPage />} />

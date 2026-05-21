@@ -691,3 +691,89 @@ export interface EscalationOut {
 
 export const runEscalation = () =>
   api.post<EscalationOut[]>('/api/scanners/escalate').then((r) => r.data);
+
+// ----- Factory Sheet (业务需求 §1) -----
+export interface FactorySheetMaterial {
+  material_code: string;
+  material_name: string | null;
+  qty_per_product: string;
+  total_qty: string;
+  unit: string | null;
+  spec: string | null;
+}
+
+export interface FactorySheetWarning {
+  code: string;
+  message: string;
+  severity: string;
+}
+
+export interface FactorySheet {
+  order_no: string;
+  sheet_title: string;
+  order_date: string | null;
+  ship_date: string | null;
+  product_code: string | null;
+  product_name: string | null;
+  sku: string | null;
+  sku_code: string | null;
+  image_url: string | null;
+  material_desc: string | null;
+  dimension_desc: string | null;
+  customer_name: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
+  qty: number;
+  remark: string | null;
+  materials: FactorySheetMaterial[];
+  is_custom_variant: boolean;
+  dimension_changes: Record<string, unknown> | null;
+  warnings: FactorySheetWarning[];
+}
+
+export const getFactorySheet = (orderId: number) =>
+  api.get<FactorySheet>(`/api/orders/${orderId}/factory-sheet`).then((r) => r.data);
+
+// ----- Customization (业务需求 §2) -----
+export interface CustomizationDiffLine {
+  material_code: string;
+  material_name: string | null;
+  original_qty: string;
+  new_qty: string;
+  note: string | null;
+  requires_new_material: boolean;
+}
+
+export interface CustomizationPreview {
+  base_sku_code: string;
+  proposed_custom_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+  diff_lines: CustomizationDiffLine[];
+}
+
+export const previewCustomization = (payload: {
+  base_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+}) => api.post<CustomizationPreview>('/api/customization/preview', payload).then((r) => r.data);
+
+export const confirmCustomization = (payload: {
+  base_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+  order_no?: string;
+  note?: string;
+}) =>
+  api
+    .post<{ custom_variant_id: number; custom_sku_code: string; cloned_bom_lines: number }>(
+      '/api/customization/confirm',
+      payload,
+    )
+    .then((r) => r.data);
+
+// ----- Taobao IDs (业务需求 §4) -----
+export const updateTaobaoIds = (
+  productId: number,
+  payload: { primary?: string; alternatives: string[] },
+) => api.put(`/api/products/${productId}/taobao-ids`, payload).then((r) => r.data);
+
+export const lookupByTaobaoId = (taobaoId: string) =>
+  api.get<Product>(`/api/products/lookup-by-taobao-id/${taobaoId}`).then((r) => r.data);

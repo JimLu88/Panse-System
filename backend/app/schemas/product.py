@@ -11,12 +11,20 @@ class ProductCreate(BaseModel):
     category_label: Optional[str] = Field(None, description="可读类目名，如 卧室-床")
     remark: Optional[str] = None
     created_on: Optional[date] = None
+    taobao_id: Optional[str] = None
+    alt_taobao_ids: Optional[list[str]] = None
 
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
     category: Optional[str] = None
     remark: Optional[str] = None
+    taobao_id: Optional[str] = None
+
+
+class TaobaoIdsUpdate(BaseModel):
+    primary: Optional[str] = None
+    alternatives: list[str] = Field(default_factory=list, max_length=5)
 
 
 class ProductOut(BaseModel):
@@ -27,3 +35,5 @@ class ProductOut(BaseModel):
     brand: Optional[str]
     category: Optional[str]
     remark: Optional[str]
+    taobao_id: Optional[str] = None
+    alt_taobao_ids: Optional[list[str]] = None

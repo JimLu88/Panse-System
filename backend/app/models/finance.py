@@ -85,6 +85,8 @@ class RefillRecord(Base, TimestampMixin):
     refill_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     refill_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     platform_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 业务需求 §5: 补单只算佣金 + 快递; 平台/税务回到 Order.profit 计算
+    commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
 
 

@@ -5,6 +5,7 @@ from app.api import ai as ai_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import bom as bom_api
+from app.api import customization as customization_api
 from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
 from app.api import finance as finance_api
@@ -53,6 +54,7 @@ app.include_router(scanners_api.router)
 app.include_router(ai_api.router)
 app.include_router(marketing_api.router)
 app.include_router(reports_api.router)
+app.include_router(customization_api.router)
 
 
 @app.get("/api/health")

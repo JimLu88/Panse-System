@@ -1,6 +1,9 @@
+from datetime import date as _date
+from decimal import Decimal as _Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
@@ -13,7 +16,7 @@ from app.schemas.order import (
     OrderStatusChange,
     OrderUpdate,
 )
-from app.services import order_import, order_service
+from app.services import factory_sheet, order_import, order_service
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -89,4 +92,76 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         skipped_duplicate=report.skipped_duplicate,
         skipped_invalid=report.skipped_invalid,
         errors=report.errors,
+    )
+
+
+class FactorySheetMaterialOut(BaseModel):
+    material_code: str
+    material_name: Optional[str]
+    qty_per_product: _Decimal
+    total_qty: _Decimal
+    unit: Optional[str]
+    spec: Optional[str]
+
+
+class FactorySheetWarningOut(BaseModel):
+    code: str
+    message: str
+    severity: str
+
+
+class FactorySheetOut(BaseModel):
+    order_no: str
+    sheet_title: str
+    order_date: Optional[_date]
+    ship_date: Optional[_date]
+    product_code: Optional[str]
+    product_name: Optional[str]
+    sku: Optional[str]
+    sku_code: Optional[str]
+    image_url: Optional[str]
+    material_desc: Optional[str]
+    dimension_desc: Optional[str]
+    customer_name: Optional[str]
+    customer_phone: Optional[str]
+    customer_address: Optional[str]
+    qty: int
+    remark: Optional[str]
+    materials: list[FactorySheetMaterialOut]
+    is_custom_variant: bool
+    dimension_changes: Optional[dict]
+    warnings: list[FactorySheetWarningOut]
+
+
+@router.get("/{order_id}/factory-sheet", response_model=FactorySheetOut)
+def get_factory_sheet(order_id: int, db: Session = Depends(get_db)):
+    """业务需求 §1: 生成制单图数据 (前端渲染打印).
+
+    自动拉 BOM 物料明细 + 加密地址检测 + 定制变更信息。
+    """
+    try:
+        sheet = factory_sheet.build(db, order_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return FactorySheetOut(
+        order_no=sheet.order_no,
+        sheet_title=sheet.sheet_title,
+        order_date=sheet.order_date,
+        ship_date=sheet.ship_date,
+        product_code=sheet.product_code,
+        product_name=sheet.product_name,
+        sku=sheet.sku,
+        sku_code=sheet.sku_code,
+        image_url=sheet.image_url,
+        material_desc=sheet.material_desc,
+        dimension_desc=sheet.dimension_desc,
+        customer_name=sheet.customer_name,
+        customer_phone=sheet.customer_phone,
+        customer_address=sheet.customer_address,
+        qty=sheet.qty,
+        remark=sheet.remark,
+        materials=[FactorySheetMaterialOut(**m.__dict__) for m in sheet.materials],
+        is_custom_variant=sheet.is_custom_variant,
+        dimension_changes=sheet.dimension_changes,
+        warnings=[FactorySheetWarningOut(**w.__dict__) for w in sheet.warnings],
     )

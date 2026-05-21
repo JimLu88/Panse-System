@@ -14,6 +14,7 @@ from app.models.finance import (
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.ai import AiChatLog, AiCodePatch
 from app.models.auth import AuditLog, User
+from app.models.custom_variant import CustomVariant
 from app.models.knowledge import AiKnowledge
 from app.models.marketing import (
     AfterSales,
@@ -54,4 +55,5 @@ __all__ = [
     "User",
     "AuditLog",
     "AiKnowledge",
+    "CustomVariant",
 ]

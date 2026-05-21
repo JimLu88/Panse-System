@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import String
+from sqlalchemy import JSON, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -17,3 +17,7 @@ class Product(Base, TimestampMixin):
     brand: Mapped[Optional[str]] = mapped_column(String(32))
     category: Mapped[Optional[str]] = mapped_column(String(64))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # 淘宝商品 ID (主) + 备选 ID 列表 (因链接会换, 业务需求 §4)
+    taobao_id: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    alt_taobao_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
