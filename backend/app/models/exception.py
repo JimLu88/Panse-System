@@ -27,3 +27,6 @@ class DataException(Base, TimestampMixin):
     resolved_by: Mapped[Optional[str]] = mapped_column(String(64))
     resolved_at: Mapped[Optional[str]] = mapped_column(String(32))
     ai_analysis: Mapped[Optional[str]] = mapped_column(Text)
+    # 严重度自动升级 (plan §12.1)
+    escalation_count: Mapped[int] = mapped_column(default=0, nullable=False)
+    last_escalated_at: Mapped[Optional[str]] = mapped_column(String(32))

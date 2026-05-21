@@ -17,6 +17,7 @@ from app.api import producibility as producibility_api
 from app.api import product_inventory as product_inventory_api
 from app.api import products as products_api
 from app.api import quotes as quotes_api
+from app.api import reports as reports_api
 from app.api import scanners as scanners_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
@@ -51,6 +52,7 @@ app.include_router(finance_api.router)
 app.include_router(scanners_api.router)
 app.include_router(ai_api.router)
 app.include_router(marketing_api.router)
+app.include_router(reports_api.router)
 
 
 @app.get("/api/health")

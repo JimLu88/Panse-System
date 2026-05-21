@@ -12,14 +12,19 @@
 """
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.models.ai import AiChatLog
 from app.models.exception import DataException
+from app.models.knowledge import AiKnowledge
 
 settings = get_settings()
 
@@ -142,14 +147,83 @@ def _call_claude(
     )
 
 
+def _context_hash(exc: DataException) -> str:
+    """生成稳定 hash, 剥掉所有非中文非空白字符 (=所有 ID/编码) 后做 sha256.
+
+    例: 三条 description 只是订单号 / 物料编码 / 数量不同, 都规范化为
+        '订单 <X> 引用了不存在的产品编码 <X>', 命中同一条 ai_knowledge.
+    """
+    norm = re.sub(r"[^一-龥\s]+", "<X>", exc.description or "")
+    norm = re.sub(r"\s+", " ", norm).strip()
+    payload = f"{exc.exception_type}|{norm}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+
+
+def _try_knowledge_cache(db: Session, exc: DataException) -> Optional[AiResponse]:
+    h = _context_hash(exc)
+    row = db.execute(
+        select(AiKnowledge).where(
+            AiKnowledge.exception_type == exc.exception_type,
+            AiKnowledge.context_hash == h,
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        return None
+    row.usage_count = (row.usage_count or 0) + 1
+    row.last_used_at = datetime.now(timezone.utc)
+    db.flush()
+    return AiResponse(
+        text=row.solution_text,
+        model=f"{row.model or 'unknown'} [cache hit]",
+        input_tokens=0, output_tokens=0, cache_read_tokens=0, cache_creation_tokens=0,
+    )
+
+
+def _write_knowledge_cache(db: Session, exc: DataException, ai: AiResponse) -> None:
+    h = _context_hash(exc)
+    if db.execute(
+        select(AiKnowledge.id).where(
+            AiKnowledge.exception_type == exc.exception_type,
+            AiKnowledge.context_hash == h,
+        )
+    ).first():
+        return
+    db.add(AiKnowledge(
+        exception_type=exc.exception_type,
+        context_hash=h,
+        solution_text=ai.text,
+        source_exception_id=exc.id,
+        source_description=exc.description,
+        model=ai.model,
+        usage_count=1,
+        last_used_at=datetime.now(timezone.utc),
+    ))
+    db.flush()
+
+
 def diagnose_exception(db: Session, exception_id: int) -> tuple[AiChatLog, Optional[AiResponse]]:
     """让 AI 分析一条异常，返回 (日志, 响应 or None)。
 
+    先查知识库缓存 (plan §12.2)；缓存命中直接复用, 不打 API。
     会把诊断结果写回 data_exceptions.ai_analysis 字段。
     """
     exc = db.get(DataException, exception_id)
     if exc is None:
         raise ValueError(f"exception {exception_id} not found")
+
+    # 先查知识库
+    cached = _try_knowledge_cache(db, exc)
+    if cached is not None:
+        exc.ai_analysis = cached.text
+        log = _log(
+            db, action_type="diagnose",
+            user_message=f"(cache lookup for exception {exception_id})",
+            ai_response=cached.text,
+            related_exception_id=exception_id,
+            model=cached.model,
+            extra={"cache_hit": True},
+        )
+        return log, cached
 
     context = (
         f"待分析异常 #{exc.id}\n"
@@ -184,8 +258,9 @@ def diagnose_exception(db: Session, exception_id: int) -> tuple[AiChatLog, Optio
         )
         return log, None
 
-    # 写回异常表
+    # 写回异常表 + 知识库缓存 (plan §12.2)
     exc.ai_analysis = ai.text
+    _write_knowledge_cache(db, exc, ai)
 
     log = _log(
         db,

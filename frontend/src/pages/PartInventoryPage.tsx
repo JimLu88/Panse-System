@@ -19,6 +19,7 @@ import {
   addPartInventoryRow,
   listPartInventory,
 } from '../api/client';
+import { FirstVisitTip } from '../components/FirstVisitTip';
 
 export default function PartInventoryPage() {
   const qc = useQueryClient();
@@ -85,6 +86,17 @@ export default function PartInventoryPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <FirstVisitTip
+        storageKey="part-inventory"
+        title="配件库存录入指南"
+        description={
+          <ol style={{ marginBottom: 0 }}>
+            <li>「物料名称」必填；如果库里没有该名字, 系统自动建一条「定制物料」(AC-1000+) 并写入异常表</li>
+            <li>「物料编码」可空 — 选填用于精确指定既有物料 (如 AC-0172)</li>
+            <li>定制物料价格 / 单位需要事后到「物料单价库」补全</li>
+          </ol>
+        }
+      />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           配件库存 (4b)

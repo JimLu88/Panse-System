@@ -5,7 +5,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services import scanner_service
+from app.services import escalation_service, scanner_service
 
 router = APIRouter(prefix="/api/scanners", tags=["scanners"])
 
@@ -62,3 +62,19 @@ def run_all(dry_run: bool = False, db: Session = Depends(get_db)):
         )
         for name, r in results.items()
     }
+
+
+class EscalationOut(BaseModel):
+    exception_type: str
+    open_count: int
+    escalated_from: str
+    escalated_to: str
+    affected_ids: list[int]
+
+
+@router.post("/escalate", response_model=list[EscalationOut])
+def run_escalation(db: Session = Depends(get_db)):
+    """plan §12.1: 同类型 open 异常 ≥3 时, 全部升一档严重度."""
+    results = escalation_service.run(db)
+    db.commit()
+    return [EscalationOut(**r.__dict__) for r in results]

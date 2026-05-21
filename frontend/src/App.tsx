@@ -17,6 +17,7 @@ import AiAssistantPage from './pages/AiAssistantPage';
 import MarketingPage from './pages/MarketingPage';
 import LoginPage from './pages/LoginPage';
 import AdminPage from './pages/AdminPage';
+import ReportsPage from './pages/ReportsPage';
 import { useAuth } from './auth/AuthProvider';
 
 const { Header, Content } = Layout;
@@ -64,6 +65,7 @@ export default function App() {
     { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
     { key: 'marketing', label: <Link to="/marketing">营销/售后</Link> },
     { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
+    { key: 'reports', label: <Link to="/reports">报表</Link> },
     { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
     { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
     ...(user.role === 'admin' ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }] : []),
@@ -113,6 +115,7 @@ export default function App() {
           <Route path="/ai" element={<AiAssistantPage />} />
           <Route path="/marketing" element={<MarketingPage />} />
           <Route path="/exceptions" element={<ExceptionsPage />} />
+          <Route path="/reports" element={<ReportsPage />} />
           <Route path="/feishu" element={<FeishuSettingsPage />} />
           <Route path="/admin" element={<AdminPage />} />
         </Routes>

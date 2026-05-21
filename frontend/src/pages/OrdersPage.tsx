@@ -14,6 +14,7 @@ import {
   message,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
+import { FirstVisitTip } from '../components/FirstVisitTip';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -132,6 +133,17 @@ export default function OrdersPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <FirstVisitTip
+        storageKey="orders"
+        title="订单状态机"
+        description={
+          <span>
+            待付款 → 已付款 → 已发货 → 已签收 (任何时候可转售后)。
+            非法跳转会被拒绝；用「推进」下拉只显示合法目标。
+            CSV 导入支持淘宝标准列名 (订单编号 / 下单日期 / 客户姓名 / 数量 / 实付金额 等)。
+          </span>
+        }
+      />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           订单总表 (5)

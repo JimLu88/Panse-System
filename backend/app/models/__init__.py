@@ -14,6 +14,7 @@ from app.models.finance import (
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.ai import AiChatLog, AiCodePatch
 from app.models.auth import AuditLog, User
+from app.models.knowledge import AiKnowledge
 from app.models.marketing import (
     AfterSales,
     BrandMarketing,
@@ -52,4 +53,5 @@ __all__ = [
     "WoodLoss",
     "User",
     "AuditLog",
+    "AiKnowledge",
 ]

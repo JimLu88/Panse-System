@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.finance import AccountBalance, AlipayFlow
-from app.services import alipay_import, balance_service, reconciliation_service
+from app.services import alipay_import, balance_service, reconciliation_service, smart_matching_service
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -54,6 +54,8 @@ class AlipayImportResult(BaseModel):
     skipped_duplicate: int
     skipped_invalid: int
     errors: list[str]
+    auto_tagged: dict[str, int] = {}
+    auto_untouched: int = 0
 
 
 @router.post("/alipay-flows/import-csv", response_model=AlipayImportResult)
@@ -68,11 +70,16 @@ async def import_alipay(
     except UnicodeDecodeError:
         text = raw.decode("gbk", errors="replace")
     r = alipay_import.import_alipay_csv(db, text, account=account)
+    # plan §12.4: 导入完跑一次智能核销
+    matched = smart_matching_service.run(db, account=account)
+    db.commit()
     return AlipayImportResult(
         inserted=r.inserted,
         skipped_duplicate=r.skipped_duplicate,
         skipped_invalid=r.skipped_invalid,
         errors=r.errors,
+        auto_tagged=matched.tagged,
+        auto_untouched=matched.untouched,
     )
 
 

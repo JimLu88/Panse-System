@@ -640,3 +640,54 @@ export interface RoiResult {
 
 export const getRoi = (params: { period_start?: string; period_end?: string } = {}) =>
   api.get<RoiResult>('/api/marketing/roi', { params }).then((r) => r.data);
+
+// ----- Reports & Optimizations (plan §12) -----
+export interface HealthReport {
+  period_start: string;
+  period_end: string;
+  exceptions: {
+    total_open: number;
+    by_severity: Record<string, number>;
+    top_types: Record<string, number>;
+  };
+  reconciliation: Record<string, { total: number; ok: number; warning: number; error: number }>;
+  inventory: { book_value: string; items_priced: number; items_missing_price: number };
+  orders: { month_count: number; month_revenue: string };
+  roi: { promotion_spend: string; order_count: number; order_revenue: string; roi: string | null };
+  integrity_score: number;
+  headlines: string[];
+}
+
+export const getMonthlyReport = (year: number, month: number) =>
+  api
+    .get<HealthReport>('/api/reports/monthly', { params: { year, month } })
+    .then((r) => r.data);
+
+export const getCurrentMonthReport = () =>
+  api.get<HealthReport>('/api/reports/monthly/current').then((r) => r.data);
+
+export interface KnowledgeRow {
+  id: number;
+  exception_type: string;
+  context_hash: string;
+  solution_text: string;
+  source_description: string | null;
+  model: string | null;
+  usage_count: number;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export const listKnowledge = (limit = 50) =>
+  api.get<KnowledgeRow[]>('/api/reports/knowledge', { params: { limit } }).then((r) => r.data);
+
+export interface EscalationOut {
+  exception_type: string;
+  open_count: number;
+  escalated_from: string;
+  escalated_to: string;
+  affected_ids: number[];
+}
+
+export const runEscalation = () =>
+  api.post<EscalationOut[]>('/api/scanners/escalate').then((r) => r.data);
