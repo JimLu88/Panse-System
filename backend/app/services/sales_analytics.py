@@ -250,7 +250,7 @@ def stock_advice(db: Session) -> dict:
         inv = db.execute(
             select(PartInventory).where(PartInventory.material_code == mat_code).limit(1)
         ).scalar_one_or_none()
-        have = inv.physical_qty if inv else 0
+        have = float(inv.physical_qty) if inv else 0.0
         missing = float(need) - have
         lead = mat.lead_time_days if mat else 0
         # 假设 30 天后需要交付, lead 天 → 应该在第 (30 - lead) 天前下单. 今天起算:

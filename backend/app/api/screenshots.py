@@ -12,7 +12,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,6 +21,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.order import Order, PartPurchase
+from app.rate_limit import limiter
 from app.services import vision_ocr_service
 from app.services.ai_provider import AiUnavailable
 
@@ -44,7 +45,9 @@ def _read_image(file: UploadFile, content: bytes) -> tuple[bytes, str]:
 
 
 @router.post("/qianniu-orders/parse")
+@limiter.limit("10/minute")
 async def parse_qianniu(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
@@ -137,7 +140,9 @@ def commit_qianniu(
 
 
 @router.post("/purchase/parse")
+@limiter.limit("10/minute")
 async def parse_purchase(
+    request: Request,
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),

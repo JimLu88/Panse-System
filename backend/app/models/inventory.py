@@ -1,7 +1,8 @@
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, String
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -12,6 +13,8 @@ class PartInventory(Base, TimestampMixin):
 
     每条记录 = (仓库, 物料编码) 维度的库存快照。
     入库行 add_part_row 在物料缺失时会自动触发 Material 的「定制」建档。
+
+    Phase 6: 数量改用 Decimal(14,3) — 之前 Integer 在 BOM 小数 qty 时会向上取整, 多锁/多扣库存.
     """
 
     __tablename__ = "part_inventory"
@@ -23,16 +26,16 @@ class PartInventory(Base, TimestampMixin):
     )
     spec: Mapped[Optional[str]] = mapped_column(String(255))
     unit: Mapped[Optional[str]] = mapped_column(String(16))
-    physical_qty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    locked_qty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    physical_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    locked_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
     last_inbound_at: Mapped[Optional[date]] = mapped_column(Date)
     last_outbound_at: Mapped[Optional[date]] = mapped_column(Date)
-    safety_stock: Mapped[Optional[int]] = mapped_column(Integer)
+    safety_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
 
     @property
-    def available_qty(self) -> int:
-        return (self.physical_qty or 0) - (self.locked_qty or 0)
+    def available_qty(self) -> Decimal:
+        return Decimal(self.physical_qty or 0) - Decimal(self.locked_qty or 0)
 
 
 class ProductInventory(Base, TimestampMixin):
@@ -46,6 +49,6 @@ class ProductInventory(Base, TimestampMixin):
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     spec: Mapped[Optional[str]] = mapped_column(String(255))
     unit: Mapped[Optional[str]] = mapped_column(String(16))
-    physical_qty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    locked_qty: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    physical_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    locked_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(String(255))

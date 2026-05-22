@@ -25,7 +25,10 @@ SEVERITY_BY_PRIORITY = {"high": "critical", "mid": "warn", "low": "info"}
 
 
 def scan_low_stock(db: Session) -> int:
-    """扫所有 PartInventory + Material, 不足 safety_stock 或 lead_time 倒推不够 → Alert."""
+    """扫所有 PartInventory + Material, 不足 safety_stock 或 lead_time 倒推不够 → Alert.
+
+    Phase 6: 跳过 is_discontinued=True 的物料 (停产物料不再预警).
+    """
     rows = db.execute(
         select(PartInventory, Material).join(
             Material, Material.code == PartInventory.material_code,
@@ -33,12 +36,13 @@ def scan_low_stock(db: Session) -> int:
     ).all()
     n = 0
     for inv, mat in rows:
-        available = inv.available_qty
-        threshold = inv.safety_stock or 0
+        if getattr(mat, "is_discontinued", False):
+            continue
+        available = float(inv.available_qty or 0)
+        threshold = float(inv.safety_stock or 0)
         # 业务需求: 智能提前备货 — 拿物料 lead_time × 平均日消耗当下限
         if threshold == 0 and mat.lead_time_days:
-            # 没设 safety_stock 时, 取 lead_time × 1 件 / 天 = lead_time_days
-            threshold = mat.lead_time_days
+            threshold = float(mat.lead_time_days)
         if threshold <= 0:
             continue
         if available < threshold:
@@ -54,7 +58,7 @@ def scan_low_stock(db: Session) -> int:
                          "available": available, "threshold": threshold,
                          "lead_time_days": mat.lead_time_days,
                          "priority": mat.priority},
-                sticky=True,  # 直到入库才解
+                sticky=True,
             )
             n += 1
     return n

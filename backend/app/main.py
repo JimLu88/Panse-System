@@ -1,3 +1,6 @@
+import os
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -32,7 +35,51 @@ from app.middleware import AuditMiddleware
 
 settings = get_settings()
 
-app = FastAPI(title="Panse ERP", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    """Phase 6: 替代 @app.on_event (FastAPI 已废弃).
+
+    启动: 抢 PID 文件 → 写 process_started → 起看门狗 + 调度器
+    关停: 停调度器 → 停看门狗 → 释放 PID + executor
+    """
+    if os.environ.get("DISABLE_WATCHDOG") != "1":
+        from app.database import SessionLocal
+        from app.services import system_monitor
+        db = SessionLocal()
+        try:
+            killed = system_monitor.claim_pid_file(db)
+            if killed:
+                db.commit()
+            system_monitor.log_process_started(db)
+            db.commit()
+        except Exception:  # pragma: no cover
+            db.rollback()
+        finally:
+            db.close()
+        system_monitor.start_background(interval_sec=60)
+        # Phase 1A: 启动统一调度器
+        from app.services import scheduler as scheduler_service
+        scheduler_service.start()
+
+    yield   # 应用运行期
+
+    # ----- 关停 -----
+    if os.environ.get("DISABLE_WATCHDOG") != "1":
+        from app.services import system_monitor
+        from app.services import scheduler as scheduler_service
+        scheduler_service.shutdown()
+        system_monitor.stop_background()
+        system_monitor.release_pid_file()
+    # Phase 6: shutdown import job executor
+    try:
+        from app.services import import_job_service
+        import_job_service.shutdown_executor()
+    except Exception:  # pragma: no cover
+        pass
+
+
+app = FastAPI(title="Panse ERP", version="0.1.0", lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -42,6 +89,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuditMiddleware)
+
+# Phase 6 P0: 限速 (screenshots / importer 防刷)
+from app.rate_limit import install_rate_limit  # noqa: E402
+install_rate_limit(app)
 
 app.include_router(auth_api.router)
 app.include_router(audit_api.router)
@@ -69,42 +120,6 @@ app.include_router(alerts_api.router)
 app.include_router(scheduler_api.router)
 app.include_router(screenshots_api.router)
 app.include_router(aftersales_api.router)
-
-
-@app.on_event("startup")
-async def _start_watchdog():
-    """业务需求: 启动后台看门狗循环 + 抢 PID 文件 + 写 process_started 事件."""
-    import os
-    if os.environ.get("DISABLE_WATCHDOG") == "1":
-        return
-    from app.database import SessionLocal
-    from app.services import system_monitor
-    db = SessionLocal()
-    try:
-        # 业务需求 7: 抢 PID 文件 — 上次进程没干净退出, 杀掉再启
-        killed = system_monitor.claim_pid_file(db)
-        if killed:
-            db.commit()
-        # 业务需求 5: 进程启动事件, 让 UI 能 diff 重启前后
-        system_monitor.log_process_started(db)
-        db.commit()
-    except Exception:  # pragma: no cover
-        db.rollback()
-    finally:
-        db.close()
-    system_monitor.start_background(interval_sec=60)
-    # Phase 1A: 启动统一调度器
-    from app.services import scheduler as scheduler_service
-    scheduler_service.start()
-
-
-@app.on_event("shutdown")
-async def _stop_watchdog():
-    from app.services import system_monitor
-    from app.services import scheduler as scheduler_service
-    scheduler_service.shutdown()
-    system_monitor.stop_background()
-    system_monitor.release_pid_file()
 
 
 @app.get("/api/health")

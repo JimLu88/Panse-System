@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Index, Integer, Numeric, String
+from sqlalchemy import JSON, Boolean, Index, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -36,6 +36,11 @@ class Material(Base, TimestampMixin):
     # 开料 + 物流总周期, 倒推预警触发点
     priority: Mapped[str] = mapped_column(String(8), default="mid", nullable=False)
     # high / mid / low
+
+    # Phase 6: 停产 + 供应商多元化 (备用供应商防断货)
+    is_discontinued: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    primary_supplier_id: Mapped[Optional[int]] = mapped_column(Integer)
+    alt_supplier_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
 
     __table_args__ = (
         Index("ix_materials_name_unique", "name", unique=True),

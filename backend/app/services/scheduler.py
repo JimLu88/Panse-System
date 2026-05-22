@@ -142,10 +142,15 @@ def _job_refund_check(db: Session) -> dict:
 
 
 def _job_activate_future_orders(db: Session) -> dict:
-    """业务需求 10: 远期订单到点激活. activate_at <= now 且 status=pending_payment → 走激活流程."""
+    """业务需求 10: 远期订单到点激活. activate_at <= now 且 status=pending_payment → 走激活流程.
+
+    Phase 6 修复: 必须走 order_service.transition 才能触发派生工厂单 + 锁库存联动,
+    不能直接赋值绕过状态机.
+    """
     from datetime import datetime as _dt
     from sqlalchemy import select
     from app.models.order import Order
+    from app.services import order_service
     now = _dt.now(timezone.utc)
     rows = db.execute(
         select(Order).where(
@@ -156,9 +161,12 @@ def _job_activate_future_orders(db: Session) -> dict:
     ).scalars().all()
     activated = 0
     for o in rows:
-        o.status = "paid"
-        o.activate_at = None  # 激活后清空, 防重复
-        activated += 1
+        try:
+            order_service.transition(db, o, "paid", actor="scheduler")
+            o.activate_at = None  # 激活后清空, 防重复
+            activated += 1
+        except Exception as e:  # pragma: no cover
+            _logger.warning("远期订单 %s 激活失败: %s", o.order_no, e)
     return {"activated": activated}
 
 

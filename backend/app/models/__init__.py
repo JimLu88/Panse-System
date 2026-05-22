@@ -23,6 +23,10 @@ from app.models.import_job import ImportJob
 from app.models.scheduled_job import ScheduledJobRun
 from app.models.alert import Alert
 from app.models.inventory_lock import InventoryLockLedger
+from app.models.accounting_period import AccountingPeriod
+from app.models.order_event import OrderEvent
+from app.models.supplier_score import SupplierScore
+from app.models.daily_briefing import DailyBriefing
 from app.models.supplier import (
     DeliveryFile,
     DeliveryNote,

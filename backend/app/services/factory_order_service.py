@@ -213,7 +213,9 @@ def check_refund_pending_orders(db: Session) -> dict:
             dedupe_key=f"refund_pending:{o.order_no}",
             related_url=f"/orders?q={o.order_no}",
             context={"order_id": o.id, "compensation_fee": str(o.compensation_fee or 0)},
-            sticky=False,   # 用户处理后状态变化 → 下次 tick 自动 resolve
+            sticky=False,
+            # P0 #5: 24h 后自动过期, 下一次 tick 如订单仍在 aftersales 会重新生成
+            auto_resolve_after_minutes=60 * 24,
         )
         flagged += 1
     return {"flagged": flagged}

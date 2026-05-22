@@ -100,7 +100,8 @@ def lock_for_factory_order(
 ) -> LockResult:
     """工厂订单创建时调. 按 BOM 展开物料, 每个 PartInventory.locked_qty += qty.
 
-    不足时不阻断 (仍写 ledger 把缺口记下), 但生成 critical Alert 提示入库。
+    Phase 6: 用 Decimal 全程算, 不再取整, 避免多锁 (BOM 2.5 件 → 锁 2.5 件而非 3).
+    不足时不阻断 (仍写 ledger), 但生成 critical Alert 提示入库。
     """
     fo = db.get(FactoryOrder, factory_order_id)
     if fo is None:
@@ -117,22 +118,19 @@ def lock_for_factory_order(
         if need <= 0:
             continue
         inv = _get_or_create_inventory(db, line.material_code)
-        # locked_qty / physical_qty 用 int (model 限制), 但 BOM qty 是 Decimal
-        # 这里向上取整避免锁少导致超出
-        need_int = int(need) if need == int(need) else int(need) + 1
-        inv.locked_qty = (inv.locked_qty or 0) + need_int
+        inv.locked_qty = Decimal(inv.locked_qty or 0) + need
         _write_ledger(
             db, source_kind="factory_order", source_id=factory_order_id,
             material_code=line.material_code, kind="lock",
-            qty=Decimal(str(need_int)), actor=actor,
+            qty=need, actor=actor,
             remark=f"工厂订单 {fo.factory_order_no}",
         )
         result.locked_lines.append({
             "material_code": line.material_code,
-            "qty_locked": need_int,
-            "physical": inv.physical_qty,
-            "locked_after": inv.locked_qty,
-            "available_after": inv.available_qty,
+            "qty_locked": float(need),
+            "physical": float(inv.physical_qty),
+            "locked_after": float(inv.locked_qty),
+            "available_after": float(inv.available_qty),
         })
         # 不足 → critical alert
         if inv.available_qty < 0:
@@ -147,15 +145,17 @@ def lock_for_factory_order(
                 dedupe_key=f"low_stock_part:{line.material_code}",
                 related_url=f"/inventory/parts?code={line.material_code}",
                 context={"material_code": line.material_code,
-                         "physical": inv.physical_qty,
-                         "locked": inv.locked_qty,
-                         "missing": missing,
+                         "physical": float(inv.physical_qty),
+                         "locked": float(inv.locked_qty),
+                         "missing": float(missing),
                          "factory_order_id": factory_order_id},
                 sticky=True,
             )
             result.shortages.append({
                 "material_code": line.material_code,
-                "requested": need_int, "available": inv.physical_qty, "missing": missing,
+                "requested": float(need),
+                "available": float(inv.physical_qty),
+                "missing": float(missing),
             })
             result.alerts_created.append(alert.id)
     return result
@@ -196,8 +196,7 @@ def release_factory_order_lock(
         if qty <= 0 or not mat_code:
             continue
         inv = _get_or_create_inventory(db, mat_code)
-        delta = int(qty) if qty == int(qty) else int(qty) + 1
-        inv.locked_qty = max((inv.locked_qty or 0) - delta, 0)
+        inv.locked_qty = max(Decimal(inv.locked_qty or 0) - qty, Decimal("0"))
         _write_ledger(
             db, source_kind="factory_order", source_id=factory_order_id,
             material_code=mat_code, kind="release",
@@ -242,9 +241,8 @@ def consume_for_shipment(
         if qty <= 0 or not mat_code:
             continue
         inv = _get_or_create_inventory(db, mat_code)
-        delta = int(qty) if qty == int(qty) else int(qty) + 1
-        inv.locked_qty = max((inv.locked_qty or 0) - delta, 0)
-        inv.physical_qty = max((inv.physical_qty or 0) - delta, 0)
+        inv.locked_qty = max(Decimal(inv.locked_qty or 0) - qty, Decimal("0"))
+        inv.physical_qty = max(Decimal(inv.physical_qty or 0) - qty, Decimal("0"))
         from datetime import date as _date
         inv.last_outbound_at = _date.today()
         _write_ledger(
@@ -260,21 +258,23 @@ def consume_for_shipment(
 
 
 def inbound_part(
-    db: Session, *, material_code: str, qty: int, actor: str = "system",
+    db: Session, *, material_code: str, qty,
+    actor: str = "system",
     source_kind: str = "manual", source_id: Optional[int] = None,
     warehouse: str = DEFAULT_WAREHOUSE, remark: Optional[str] = None,
 ) -> PartInventory:
-    """物料入库 +physical_qty. 用于采购到货 / 调拨 / 手动."""
-    if qty <= 0:
+    """物料入库 +physical_qty. 用于采购到货 / 调拨 / 手动. qty 支持 int 或 Decimal."""
+    qty_d = Decimal(str(qty))
+    if qty_d <= 0:
         raise ValueError("qty 必须 > 0")
     inv = _get_or_create_inventory(db, material_code, warehouse=warehouse)
-    inv.physical_qty = (inv.physical_qty or 0) + qty
+    inv.physical_qty = Decimal(inv.physical_qty or 0) + qty_d
     from datetime import date as _date
     inv.last_inbound_at = _date.today()
     _write_ledger(
         db, source_kind=source_kind, source_id=source_id,
         material_code=material_code, kind="inbound",
-        qty=Decimal(str(qty)), actor=actor, remark=remark,
+        qty=qty_d, actor=actor, remark=remark,
     )
     # 入库可能解决缺货告警
     if inv.available_qty >= 0:
@@ -285,7 +285,7 @@ def inbound_part(
 
 
 def return_in_product(
-    db: Session, *, product_code: str, sku_code: Optional[str], qty: int,
+    db: Session, *, product_code: str, sku_code: Optional[str], qty,
     actor: str = "system", source_kind: str = "aftersales",
     source_id: Optional[int] = None,
     warehouse: str = DEFAULT_WAREHOUSE, remark: Optional[str] = None,
@@ -294,7 +294,8 @@ def return_in_product(
 
     用户可后续手动点 "拆 BOM" 时, 调 disassemble_product_to_parts 才拆。
     """
-    if qty <= 0:
+    qty_d = Decimal(str(qty))
+    if qty_d <= 0:
         raise ValueError("qty 必须 > 0")
     inv = db.execute(
         select(ProductInventory).where(
@@ -312,29 +313,30 @@ def return_in_product(
     if inv is None:
         inv = ProductInventory(
             warehouse=warehouse, product_code=product_code, sku=sku_code,
-            physical_qty=0, locked_qty=0,
+            physical_qty=Decimal("0"), locked_qty=Decimal("0"),
         )
         db.add(inv)
         db.flush()
-    inv.physical_qty = (inv.physical_qty or 0) + qty
+    inv.physical_qty = Decimal(inv.physical_qty or 0) + qty_d
     _write_ledger(
         db, source_kind=source_kind, source_id=source_id,
         material_code=None, product_code=product_code, sku_code=sku_code,
-        kind="return_in", qty=Decimal(str(qty)), actor=actor,
+        kind="return_in", qty=qty_d, actor=actor,
         remark=remark or "退货完好入库",
     )
     return inv
 
 
 def disassemble_product_to_parts(
-    db: Session, *, product_code: str, sku_code: Optional[str], qty: int,
+    db: Session, *, product_code: str, sku_code: Optional[str], qty,
     actor: str = "system", remark: Optional[str] = None,
 ) -> dict:
     """业务需求 9: 用户手动点 "拆 BOM" 时调.
 
     成品 physical_qty -= qty, BOM 展开后每个物料 physical_qty += per * qty。
     """
-    if qty <= 0:
+    qty_d = Decimal(str(qty))
+    if qty_d <= 0:
         raise ValueError("qty 必须 > 0")
     pinv = db.execute(
         select(ProductInventory).where(
@@ -343,49 +345,50 @@ def disassemble_product_to_parts(
             ProductInventory.product_code == product_code,
         )
     ).scalar_one_or_none()
-    if pinv is None or pinv.physical_qty < qty:
-        raise ValueError(f"成品 {product_code} ({sku_code}) 库存不足 {qty}")
-    pinv.physical_qty -= qty
+    if pinv is None or pinv.physical_qty < qty_d:
+        raise ValueError(f"成品 {product_code} ({sku_code}) 库存不足 {qty_d}")
+    pinv.physical_qty = Decimal(pinv.physical_qty) - qty_d
 
     bom = _bom_for(db, product_code=product_code, sku_code=sku_code)
     added: list[dict] = []
     for line in bom:
         per = Decimal(line.qty_per_product or "0")
-        delta = (per * Decimal(qty)).quantize(Decimal("0.001"))
+        delta = (per * qty_d).quantize(Decimal("0.001"))
         if delta <= 0:
             continue
-        d_int = int(delta) if delta == int(delta) else int(delta)
         inv = _get_or_create_inventory(db, line.material_code)
-        inv.physical_qty = (inv.physical_qty or 0) + d_int
+        inv.physical_qty = Decimal(inv.physical_qty or 0) + delta
         _write_ledger(
             db, source_kind="disassemble",
             source_id=None, material_code=line.material_code,
             product_code=product_code, sku_code=sku_code,
-            kind="inbound", qty=Decimal(str(d_int)),
+            kind="inbound", qty=delta,
             actor=actor, remark=remark or f"成品 {product_code} 拆 BOM",
         )
-        added.append({"material_code": line.material_code, "qty": d_int})
-    return {"product_remaining": pinv.physical_qty, "parts_added": added}
+        added.append({"material_code": line.material_code, "qty": float(delta)})
+    return {"product_remaining": float(pinv.physical_qty), "parts_added": added}
 
 
 # ----------------------------- 手动调整 / 盘点 ------------------- #
 
 
 def manual_adjust(
-    db: Session, *, material_code: str, new_physical: int,
+    db: Session, *, material_code: str, new_physical,
     actor: str, remark: str, warehouse: str = DEFAULT_WAREHOUSE,
 ) -> PartInventory:
     """业务需求 8: 手动盘库. 调用方需保证已经过二次确认 (UI 层确认)."""
+    new_d = Decimal(str(new_physical))
     inv = _get_or_create_inventory(db, material_code, warehouse=warehouse)
-    delta = new_physical - (inv.physical_qty or 0)
+    delta = new_d - Decimal(inv.physical_qty or 0)
     if delta == 0:
         return inv
-    inv.physical_qty = new_physical
+    inv.physical_qty = new_d
+    sign = "+" if delta > 0 else ""
     _write_ledger(
         db, source_kind="manual", source_id=None,
         material_code=material_code, kind="count_adjust",
-        qty=Decimal(str(abs(delta))), actor=actor,
-        remark=f"盘点 {('+%d' if delta > 0 else '%d') % delta}: {remark}",
+        qty=abs(delta), actor=actor,
+        remark=f"盘点 {sign}{delta}: {remark}",
     )
     return inv
 
