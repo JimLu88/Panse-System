@@ -41,11 +41,40 @@ except ImportError:
 
 # ----------------------------- 配置 ---------------------------------- #
 
-# 自动定位项目根目录: 假设 exe 放在 deploy/windows 下, 上两层是项目根
-SCRIPT_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))
-PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
-# 用户可改: 项目根目录路径写入 ENV
-PROJECT_ROOT = Path(os.environ.get("PANSE_ROOT", str(PROJECT_ROOT)))
+
+def _find_project_root() -> Path:
+    """找项目根. 兼容 PyInstaller frozen exe + 直接 python panse_tray.py.
+
+    PyInstaller 打包后:
+        - __file__ 指向 _MEI 临时解压目录 (没用)
+        - sys.executable 指向 PanseTray.exe (有用)
+    直接跑:
+        - __file__ 指向 panse_tray.py
+    """
+    # ENV 优先
+    env_root = os.environ.get("PANSE_ROOT")
+    if env_root and (Path(env_root) / "docker-compose.yml").exists():
+        return Path(env_root).resolve()
+
+    if getattr(sys, "frozen", False):
+        # PyInstaller bundle, exe 路径
+        start = Path(sys.executable).parent
+    else:
+        start = Path(__file__).parent
+
+    # 从 start 往上找含 docker-compose.yml 的目录, 最多 5 层
+    cur = start.resolve()
+    for _ in range(6):
+        if (cur / "docker-compose.yml").exists():
+            return cur
+        if cur.parent == cur:
+            break
+        cur = cur.parent
+
+    return start.resolve()
+
+
+PROJECT_ROOT = _find_project_root()
 
 API_URL = "http://localhost:8000/api/health"
 WEB_URL = "http://localhost:5173"
@@ -257,14 +286,23 @@ def watchdog_loop(icon: Icon) -> None:
         time.sleep(CHECK_INTERVAL)
 
 
+def _show_error_box(msg: str) -> None:
+    """启动时无控制台 (.exe 模式), 用 Win32 弹个错误框, 不至于静默退出."""
+    try:
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, msg, "畔色 ERP 看门狗", 0x10)
+    except Exception:
+        # 兜底: print + 等用户看到 (有控制台的话)
+        print(msg)
+
+
 def main():
-    if not PROJECT_ROOT.exists():
-        print(f"项目根目录不存在: {PROJECT_ROOT}")
-        print("请把 PanseTray.exe 放到 <项目根>/deploy/windows/ 下,")
-        print("或设环境变量 PANSE_ROOT 指向项目根.")
-        sys.exit(1)
     if not (PROJECT_ROOT / "docker-compose.yml").exists():
-        print(f"未在 {PROJECT_ROOT} 找到 docker-compose.yml")
+        _show_error_box(
+            f"未在以下路径找到 docker-compose.yml:\n\n{PROJECT_ROOT}\n\n"
+            "请把 PanseTray.exe 放到 <项目根>\\deploy\\windows\\dist\\ 下,\n"
+            "或设环境变量 PANSE_ROOT 指向项目根目录."
+        )
         sys.exit(1)
 
     icon = Icon(
