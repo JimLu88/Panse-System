@@ -27,6 +27,8 @@ from app.models.accounting_period import AccountingPeriod
 from app.models.order_event import OrderEvent
 from app.models.supplier_score import SupplierScore
 from app.models.daily_briefing import DailyBriefing
+from app.models.approval import ApprovalRequest
+from app.models.customer import Customer
 from app.models.supplier import (
     DeliveryFile,
     DeliveryNote,

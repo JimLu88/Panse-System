@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from decimal import Decimal
+from math import sqrt
+from statistics import mean, stdev
 from typing import Optional
 
 from sqlalchemy import select
@@ -18,10 +20,52 @@ from sqlalchemy.orm import Session
 from app.models.bom import BomLine
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
+from app.models.order import Order
 from app.services import alert_service, sales_analytics
 
 
 SEVERITY_BY_PRIORITY = {"high": "critical", "mid": "warn", "low": "info"}
+
+# 服务水平 95% 对应的 Z 值
+_Z_95 = 1.65
+
+
+def compute_dynamic_safety_stock(
+    db: Session, material_code: str, *, lead_time_days: int = 0,
+) -> float:
+    """Phase 9 Tier 2 #3: 动态安全库存 = 平均日消耗 × lead_time + Z × σ × √lead_time.
+
+    用过去 60 天该物料的实际日消耗 (从 lock_ledger 的 consume 行算).
+    Z=1.65 对应 95% 服务水平.
+
+    返回 float (件数). lead_time=0 时退化为 0.
+    """
+    if lead_time_days <= 0:
+        return 0.0
+    cutoff = date.today() - timedelta(days=60)
+    from app.models.inventory_lock import InventoryLockLedger
+    rows = db.execute(
+        select(InventoryLockLedger).where(
+            InventoryLockLedger.material_code == material_code,
+            InventoryLockLedger.kind == "consume",
+            InventoryLockLedger.created_at >= cutoff,
+        )
+    ).scalars().all()
+    if not rows:
+        return float(lead_time_days)   # 没历史 → 保守取 lead_time 件
+    # 按天聚合
+    by_day: dict[date, float] = {}
+    for r in rows:
+        d = r.created_at.date()
+        by_day[d] = by_day.get(d, 0.0) + float(r.qty)
+    # 补齐 60 天的 0 (没有出货的天, 包括今天)
+    days = []
+    for i in range(60):
+        d = date.today() - timedelta(days=i)
+        days.append(by_day.get(d, 0.0))
+    mu = mean(days)
+    sigma = stdev(days) if len(days) > 1 else 0.0
+    return mu * lead_time_days + _Z_95 * sigma * sqrt(lead_time_days)
 
 
 def scan_low_stock(db: Session) -> int:
@@ -40,9 +84,11 @@ def scan_low_stock(db: Session) -> int:
             continue
         available = float(inv.available_qty or 0)
         threshold = float(inv.safety_stock or 0)
-        # 业务需求: 智能提前备货 — 拿物料 lead_time × 平均日消耗当下限
+        # Phase 9 Tier 2 #3: 动态安全库存 (基于历史消耗 + σ + 服务水平 95%)
         if threshold == 0 and mat.lead_time_days:
-            threshold = float(mat.lead_time_days)
+            threshold = compute_dynamic_safety_stock(
+                db, mat.code, lead_time_days=mat.lead_time_days,
+            )
         if threshold <= 0:
             continue
         if available < threshold:
