@@ -20,7 +20,7 @@ docker compose up -d
 
 # 4) 等数据库就绪 (~30 秒), 第一次启动需要跑迁移 + 种供应商
 docker compose exec api alembic upgrade head
-docker compose exec api python ../scripts/seed_suppliers.py
+docker compose exec api python scripts/seed_suppliers.py
 
 # 5) 浏览器开:
 #   前端: http://localhost:5173
