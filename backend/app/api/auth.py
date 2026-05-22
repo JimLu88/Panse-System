@@ -20,7 +20,9 @@ class LoginIn(BaseModel):
 
 
 class LoginOut(BaseModel):
-    token: str
+    token: str             # 兼容旧字段, 等同 access_token
+    access_token: str
+    refresh_token: str
     user: "MeOut"
 
 
@@ -43,8 +45,39 @@ def login(payload: LoginIn, db: Session = Depends(get_db)):
         raise HTTPException(401, "用户名或密码错误")
     user.last_login_at = datetime.now(timezone.utc)
     db.commit()
-    token = auth_service.create_token(user_id=user.id, username=user.username, role=user.role)
-    return LoginOut(token=token, user=MeOut.model_validate(user))
+    pair = auth_service.create_token_pair(
+        user_id=user.id, username=user.username, role=user.role,
+    )
+    return LoginOut(
+        token=pair["access_token"],
+        access_token=pair["access_token"],
+        refresh_token=pair["refresh_token"],
+        user=MeOut.model_validate(user),
+    )
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+class RefreshOut(BaseModel):
+    access_token: str
+
+
+@router.post("/refresh", response_model=RefreshOut)
+def refresh(payload: RefreshIn):
+    """Phase 13: 用 refresh_token 换新 access_token. refresh 自身过期需重新登录."""
+    try:
+        data = auth_service.decode_token(payload.refresh_token)
+    except auth_service.InvalidToken as e:
+        raise HTTPException(401, f"refresh_token 无效: {e}")
+    if data.get("typ") != "refresh":
+        raise HTTPException(400, "不是 refresh_token")
+    new_access = auth_service.create_token(
+        user_id=int(data["uid"]), username=data["uname"], role=data["role"],
+        token_type="access",
+    )
+    return RefreshOut(access_token=new_access)
 
 
 @router.get("/me", response_model=MeOut)

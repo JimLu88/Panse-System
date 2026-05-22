@@ -1,15 +1,19 @@
-"""告警 / 通知中心 API (Phase 1B).
+"""告警 / 通知中心 API (Phase 1B + Phase 12 SSE).
 
 GET  /api/alerts/active                  前端 NotificationBell 轮询 (每 30s)
 GET  /api/alerts/summary                 角标用 (按 severity 计数)
 POST /api/alerts/{id}/dismiss            手动 resolve (sticky 也允许, 业务层应确保根因已修)
 GET  /api/alerts/history                 历史告警列表 (含 resolved)
+GET  /api/alerts/stream                  SSE 推送 (Phase 12): 实时新告警
 """
 from __future__ import annotations
 
+import asyncio
+import json
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -18,7 +22,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.alert import Alert
 from app.models.auth import User
-from app.services import alert_service
+from app.services import alert_service, sse_bus
 
 router = APIRouter(prefix="/api/alerts", tags=["alerts"])
 
@@ -114,3 +118,36 @@ def get_history(
     if kind:
         q = q.where(Alert.kind == kind)
     return [_out(a) for a in db.execute(q).scalars()]
+
+
+# ----------------------------- SSE 推送 (Phase 12) ---------------- #
+
+
+@router.get("/stream")
+async def alert_stream(request: Request):
+    """Server-Sent Events: 客户端订阅, 服务端实时推送 alert / order event.
+
+    替代 30s 轮询. EventSource(/api/alerts/stream) 接.
+    用 stream 后, NotificationBell 不再需要 refetchInterval.
+    """
+    async def event_gen():
+        # heartbeat 注释 (浏览器/代理保活)
+        yield ": connected\n\n"
+        try:
+            async for msg in sse_bus.subscribe():
+                if await request.is_disconnected():
+                    break
+                event_name = msg.get("event", "message")
+                data = json.dumps(msg.get("data", {}), ensure_ascii=False)
+                yield f"event: {event_name}\ndata: {data}\n\n"
+        except asyncio.CancelledError:
+            pass
+
+    return StreamingResponse(
+        event_gen(), media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",   # nginx 不缓冲
+            "Connection": "keep-alive",
+        },
+    )

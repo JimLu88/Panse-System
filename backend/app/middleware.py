@@ -36,11 +36,30 @@ class AuditMiddleware(BaseHTTPMiddleware):
         body_snippet: Optional[dict] = None
         if should_log:
             raw = await request.body()
+            content_type = (request.headers.get("content-type") or "").lower()
             if raw:
-                try:
-                    body_snippet = json.loads(raw)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    body_snippet = {"_raw_bytes_len": len(raw)}
+                # Phase 13: multipart 上传只记元数据 (size + filename), 不记二进制
+                if "multipart/form-data" in content_type:
+                    body_snippet = {
+                        "_multipart_upload": True,
+                        "_size_bytes": len(raw),
+                        "_content_type": content_type[:120],
+                    }
+                else:
+                    try:
+                        body_snippet = json.loads(raw)
+                        # 脱敏: 密码 / token 字段
+                        if isinstance(body_snippet, dict):
+                            for k in list(body_snippet.keys()):
+                                if k.lower() in ("password", "api_key", "secret", "token",
+                                                  "refresh_token", "webhook"):
+                                    body_snippet[k] = "***"
+                            # 超长正文截断
+                            if len(json.dumps(body_snippet, ensure_ascii=False)) > 4096:
+                                body_snippet = {"_truncated": True,
+                                                "_keys": list(body_snippet.keys())[:50]}
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        body_snippet = {"_raw_bytes_len": len(raw)}
 
             async def receive():
                 return {"type": "http.request", "body": raw, "more_body": False}

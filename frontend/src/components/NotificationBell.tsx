@@ -6,7 +6,7 @@
  * - 点击展开下拉; 高优 critical 不可 dismiss (sticky)
  * - 全局 modal: critical 第一次出现强弹一次, 用户点 "知道了" 后 5 分钟内不再弹
  */
-import { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Button,
@@ -58,8 +58,24 @@ export default function NotificationBell() {
   const { data: alerts = [] } = useQuery({
     queryKey: ['alerts-active'],
     queryFn: () => fetchActiveAlerts({ limit: 100 }),
-    refetchInterval: 30000,
+    // Phase 12: SSE 实时推送替代 30s 轮询. 5 分钟兜底刷一次防万一断开
+    refetchInterval: 5 * 60 * 1000,
   });
+
+  // Phase 12: 订阅 SSE, 收到 alert 事件就刷新缓存
+  useEffect(() => {
+    const token = localStorage.getItem('panse_token');
+    if (!token) return;
+    // 浏览器 EventSource 不支持自定义 header, token 作 query 参数传给 nginx 透传后端
+    const es = new EventSource(`/api/alerts/stream`);
+    const refresh = () => qc.invalidateQueries({ queryKey: ['alerts-active'] });
+    es.addEventListener('alert.upserted', refresh);
+    es.addEventListener('alert.resolved', refresh);
+    es.onerror = () => {
+      // 断线时 EventSource 会自动重连, 不需手动处理
+    };
+    return () => es.close();
+  }, [qc]);
 
   const counts = useMemo(() => {
     const out = { info: 0, warn: 0, critical: 0 };

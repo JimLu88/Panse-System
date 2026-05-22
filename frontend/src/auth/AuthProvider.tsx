@@ -39,11 +39,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const login = useCallback(async (username: string, password: string) => {
     const r = await apiLogin(username, password);
     localStorage.setItem('panse_token', r.token);
+    // Phase 13: 同时保存 refresh_token (用于 401 自动续)
+    if ((r as any).refresh_token) {
+      localStorage.setItem('panse_refresh_token', (r as any).refresh_token);
+    }
     setUser(r.user);
   }, []);
 
   const logout = useCallback(() => {
     localStorage.removeItem('panse_token');
+    localStorage.removeItem('panse_refresh_token');
     setUser(null);
   }, []);
 

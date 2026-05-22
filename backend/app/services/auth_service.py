@@ -49,8 +49,18 @@ class InvalidToken(Exception):
     pass
 
 
-def create_token(*, user_id: int, username: str, role: str, ttl_hours: Optional[int] = None) -> str:
-    ttl = (ttl_hours or settings.jwt_ttl_hours) * 3600
+def create_token(*, user_id: int, username: str, role: str,
+                 ttl_hours: Optional[int] = None,
+                 token_type: str = "access") -> str:
+    """Phase 13 P3-22: 加 refresh token 机制.
+
+    token_type='access' (默认): TTL 短 (1 小时), 用于 API 调用
+    token_type='refresh': TTL 长 (30 天), 仅用于换新 access
+    """
+    if token_type == "refresh":
+        ttl = 30 * 24 * 3600
+    else:
+        ttl = (ttl_hours or settings.jwt_ttl_hours) * 3600
     now = int(time.time())
     header = {"alg": "HS256", "typ": "JWT"}
     payload = {
@@ -58,6 +68,7 @@ def create_token(*, user_id: int, username: str, role: str, ttl_hours: Optional[
         "uid": user_id,
         "uname": username,
         "role": role,
+        "typ": token_type,
         "iat": now,
         "exp": now + ttl,
     }
@@ -66,6 +77,16 @@ def create_token(*, user_id: int, username: str, role: str, ttl_hours: Optional[
     signing_input = f"{enc_header}.{enc_payload}".encode()
     signature = hmac.new(settings.jwt_secret.encode(), signing_input, hashlib.sha256).digest()
     return f"{enc_header}.{enc_payload}.{_b64url_encode(signature)}"
+
+
+def create_token_pair(*, user_id: int, username: str, role: str) -> dict:
+    """业务: 登录时返回 access + refresh."""
+    return {
+        "access_token": create_token(user_id=user_id, username=username,
+                                      role=role, token_type="access"),
+        "refresh_token": create_token(user_id=user_id, username=username,
+                                       role=role, token_type="refresh"),
+    }
 
 
 def decode_token(token: str) -> dict[str, Any]:

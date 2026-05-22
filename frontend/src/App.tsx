@@ -1,39 +1,41 @@
+import { Suspense, lazy } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
 import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
-import MaterialsPage from './pages/MaterialsPage';
-import PartInventoryPage from './pages/PartInventoryPage';
-import ExceptionsPage from './pages/ExceptionsPage';
-import ProductsPage from './pages/ProductsPage';
-import ProductInventoryPage from './pages/ProductInventoryPage';
-import BomViewerPage from './pages/BomViewerPage';
-import FeishuSettingsPage from './pages/FeishuSettingsPage';
-import QuotePage from './pages/QuotePage';
-import OrdersPage from './pages/OrdersPage';
-import ProducibilityPage from './pages/ProducibilityPage';
-import AlipayPage from './pages/AlipayPage';
-import ReconciliationPage from './pages/ReconciliationPage';
-import AiAssistantPage from './pages/AiAssistantPage';
-import MarketingPage from './pages/MarketingPage';
 import LoginPage from './pages/LoginPage';
-import AdminPage from './pages/AdminPage';
-import ImporterPage from './pages/ImporterPage';
-import SuppliersPage from './pages/SuppliersPage';
-import ReportsPage from './pages/ReportsPage';
-import FactorySheetPage from './pages/FactorySheetPage';
-import CustomizationPage from './pages/CustomizationPage';
-import ScreenshotImportPage from './pages/ScreenshotImportPage';
-import AfterSalesPage from './pages/AfterSalesPage';
-import ForecastPage from './pages/ForecastPage';
-import AssetsPage from './pages/AssetsPage';
-import CustomersPage from './pages/CustomersPage';
-import OrdersKanbanPage from './pages/OrdersKanbanPage';
-import AccountingPeriodsPage from './pages/AccountingPeriodsPage';
-import SupplierScoresPage from './pages/SupplierScoresPage';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
-import BriefingBanner from './components/BriefingBanner';
 import { useAuth } from './auth/AuthProvider';
+
+// Phase 12: 全部页面 lazy load — 把 1.6MB bundle 拆成 ~30 个小 chunk, 首屏只装登录所需
+const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
+const PartInventoryPage = lazy(() => import('./pages/PartInventoryPage'));
+const ExceptionsPage = lazy(() => import('./pages/ExceptionsPage'));
+const ProductsPage = lazy(() => import('./pages/ProductsPage'));
+const ProductInventoryPage = lazy(() => import('./pages/ProductInventoryPage'));
+const BomViewerPage = lazy(() => import('./pages/BomViewerPage'));
+const FeishuSettingsPage = lazy(() => import('./pages/FeishuSettingsPage'));
+const QuotePage = lazy(() => import('./pages/QuotePage'));
+const OrdersPage = lazy(() => import('./pages/OrdersPage'));
+const ProducibilityPage = lazy(() => import('./pages/ProducibilityPage'));
+const AlipayPage = lazy(() => import('./pages/AlipayPage'));
+const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'));
+const AiAssistantPage = lazy(() => import('./pages/AiAssistantPage'));
+const MarketingPage = lazy(() => import('./pages/MarketingPage'));
+const AdminPage = lazy(() => import('./pages/AdminPage'));
+const ImporterPage = lazy(() => import('./pages/ImporterPage'));
+const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
+const ReportsPage = lazy(() => import('./pages/ReportsPage'));
+const FactorySheetPage = lazy(() => import('./pages/FactorySheetPage'));
+const CustomizationPage = lazy(() => import('./pages/CustomizationPage'));
+const ScreenshotImportPage = lazy(() => import('./pages/ScreenshotImportPage'));
+const AfterSalesPage = lazy(() => import('./pages/AfterSalesPage'));
+const ForecastPage = lazy(() => import('./pages/ForecastPage'));
+const AssetsPage = lazy(() => import('./pages/AssetsPage'));
+const CustomersPage = lazy(() => import('./pages/CustomersPage'));
+const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
+const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
+const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 
 const { Header, Content } = Layout;
 
@@ -42,6 +44,14 @@ const ROLE_COLOR: Record<string, string> = {
   operator: 'blue',
   viewer: 'default',
 };
+
+function PageFallback() {
+  return (
+    <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}>
+      <Spin tip="加载中..."><div style={{ minHeight: 40 }} /></Spin>
+    </div>
+  );
+}
 
 export default function App() {
   const { user, loading, logout } = useAuth();
@@ -127,38 +137,40 @@ export default function App() {
       </Header>
       <CommandPalette />
       <Content style={{ padding: 24 }}>
-        <Routes>
-          <Route path="/" element={<Navigate to="/products" replace />} />
-          <Route path="/login" element={<Navigate to="/products" replace />} />
-          <Route path="/products" element={<ProductsPage />} />
-          <Route path="/bom/:productCode" element={<BomViewerPage />} />
-          <Route path="/materials" element={<MaterialsPage />} />
-          <Route path="/inventory" element={<PartInventoryPage />} />
-          <Route path="/product-inventory" element={<ProductInventoryPage />} />
-          <Route path="/orders" element={<OrdersPage />} />
-          <Route path="/orders/kanban" element={<OrdersKanbanPage />} />
-          <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
-          <Route path="/customers" element={<CustomersPage />} />
-          <Route path="/customization" element={<CustomizationPage />} />
-          <Route path="/screenshots" element={<ScreenshotImportPage />} />
-          <Route path="/aftersales" element={<AfterSalesPage />} />
-          <Route path="/forecast" element={<ForecastPage />} />
-          <Route path="/assets" element={<AssetsPage />} />
-          <Route path="/supplier-scores" element={<SupplierScoresPage />} />
-          <Route path="/accounting" element={<AccountingPeriodsPage />} />
-          <Route path="/producibility" element={<ProducibilityPage />} />
-          <Route path="/quote" element={<QuotePage />} />
-          <Route path="/alipay" element={<AlipayPage />} />
-          <Route path="/reconciliation" element={<ReconciliationPage />} />
-          <Route path="/suppliers" element={<SuppliersPage />} />
-          <Route path="/importer" element={<ImporterPage />} />
-          <Route path="/ai" element={<AiAssistantPage />} />
-          <Route path="/marketing" element={<MarketingPage />} />
-          <Route path="/exceptions" element={<ExceptionsPage />} />
-          <Route path="/reports" element={<ReportsPage />} />
-          <Route path="/feishu" element={<FeishuSettingsPage />} />
-          <Route path="/admin" element={<AdminPage />} />
-        </Routes>
+        <Suspense fallback={<PageFallback />}>
+          <Routes>
+            <Route path="/" element={<Navigate to="/products" replace />} />
+            <Route path="/login" element={<Navigate to="/products" replace />} />
+            <Route path="/products" element={<ProductsPage />} />
+            <Route path="/bom/:productCode" element={<BomViewerPage />} />
+            <Route path="/materials" element={<MaterialsPage />} />
+            <Route path="/inventory" element={<PartInventoryPage />} />
+            <Route path="/product-inventory" element={<ProductInventoryPage />} />
+            <Route path="/orders" element={<OrdersPage />} />
+            <Route path="/orders/kanban" element={<OrdersKanbanPage />} />
+            <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
+            <Route path="/customers" element={<CustomersPage />} />
+            <Route path="/customization" element={<CustomizationPage />} />
+            <Route path="/screenshots" element={<ScreenshotImportPage />} />
+            <Route path="/aftersales" element={<AfterSalesPage />} />
+            <Route path="/forecast" element={<ForecastPage />} />
+            <Route path="/assets" element={<AssetsPage />} />
+            <Route path="/supplier-scores" element={<SupplierScoresPage />} />
+            <Route path="/accounting" element={<AccountingPeriodsPage />} />
+            <Route path="/producibility" element={<ProducibilityPage />} />
+            <Route path="/quote" element={<QuotePage />} />
+            <Route path="/alipay" element={<AlipayPage />} />
+            <Route path="/reconciliation" element={<ReconciliationPage />} />
+            <Route path="/suppliers" element={<SuppliersPage />} />
+            <Route path="/importer" element={<ImporterPage />} />
+            <Route path="/ai" element={<AiAssistantPage />} />
+            <Route path="/marketing" element={<MarketingPage />} />
+            <Route path="/exceptions" element={<ExceptionsPage />} />
+            <Route path="/reports" element={<ReportsPage />} />
+            <Route path="/feishu" element={<FeishuSettingsPage />} />
+            <Route path="/admin" element={<AdminPage />} />
+          </Routes>
+        </Suspense>
       </Content>
     </Layout>
   );

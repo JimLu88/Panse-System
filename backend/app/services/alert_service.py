@@ -94,6 +94,17 @@ def upsert(
         except Exception as e:  # pragma: no cover
             _logger.warning("alert push 失败 (不影响落库): %s", e)
 
+    # Phase 12: 通过 SSE 推到所有在线 client (替代 30s 轮询)
+    try:
+        from app.services import sse_bus
+        sse_bus.publish("alert.upserted", {
+            "id": alert.id, "kind": alert.kind, "severity": alert.severity,
+            "title": alert.title, "body": alert.body,
+            "sticky": alert.sticky, "related_url": alert.related_url,
+        })
+    except Exception:  # pragma: no cover
+        pass
+
     return alert
 
 
@@ -108,6 +119,11 @@ def resolve(
     a.resolved_at = datetime.now(timezone.utc)
     a.resolved_by = resolved_by
     db.flush()
+    try:
+        from app.services import sse_bus
+        sse_bus.publish("alert.resolved", {"id": a.id})
+    except Exception:  # pragma: no cover
+        pass
     return a
 
 

@@ -9,6 +9,7 @@ from app.api import admin as admin_api
 from app.api import aftersales as aftersales_api
 from app.api import ai as ai_api
 from app.api import alerts as alerts_api
+from app.api import approvals as approvals_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import briefings as briefings_api
@@ -131,6 +132,7 @@ app.include_router(briefings_api.supplier_router)
 app.include_router(customers_api.router)
 app.include_router(pricing_api.router)
 app.include_router(search_api.router)
+app.include_router(approvals_api.router)
 
 
 @app.get("/api/health")

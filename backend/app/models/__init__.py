@@ -29,6 +29,7 @@ from app.models.supplier_score import SupplierScore
 from app.models.daily_briefing import DailyBriefing
 from app.models.approval import ApprovalRequest
 from app.models.customer import Customer
+from app.models.sales_rollup import SalesDailyRollup
 from app.models.supplier import (
     DeliveryFile,
     DeliveryNote,

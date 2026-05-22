@@ -15,12 +15,39 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// 401 时清掉 token (AuthProvider 监听并跳登录)
+// Phase 13: 401 时先尝试用 refresh_token 续, 失败才跳登录
+let refreshing: Promise<string | null> | null = null;
+
+async function tryRefresh(): Promise<string | null> {
+  const rt = localStorage.getItem('panse_refresh_token');
+  if (!rt) return null;
+  try {
+    const r = await axios.post<{ access_token: string }>(
+      '/api/auth/refresh', { refresh_token: rt },
+    );
+    localStorage.setItem('panse_token', r.data.access_token);
+    return r.data.access_token;
+  } catch {
+    localStorage.removeItem('panse_token');
+    localStorage.removeItem('panse_refresh_token');
+    return null;
+  }
+}
+
 api.interceptors.response.use(
   (r) => r,
-  (err) => {
-    if (err?.response?.status === 401) {
-      localStorage.removeItem('panse_token');
+  async (err) => {
+    const config = err?.config;
+    if (err?.response?.status === 401 && config && !config._retried) {
+      config._retried = true;
+      // 同一时刻只发一次 refresh 请求
+      if (!refreshing) refreshing = tryRefresh();
+      const newToken = await refreshing;
+      refreshing = null;
+      if (newToken) {
+        config.headers.Authorization = `Bearer ${newToken}`;
+        return api.request(config);
+      }
       window.dispatchEvent(new Event('panse:unauthorized'));
     }
     return Promise.reject(err);
@@ -38,7 +65,12 @@ export interface MeUser {
 
 export const login = (username: string, password: string) =>
   api
-    .post<{ token: string; user: MeUser }>('/api/auth/login', { username, password })
+    .post<{
+      token: string;
+      access_token?: string;
+      refresh_token?: string;
+      user: MeUser;
+    }>('/api/auth/login', { username, password })
     .then((r) => r.data);
 
 export const fetchMe = () => api.get<MeUser>('/api/auth/me').then((r) => r.data);

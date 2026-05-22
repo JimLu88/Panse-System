@@ -195,6 +195,15 @@ def _job_forecast_refresh(db: Session) -> dict:
     return {"sku_count": len(forecast)}
 
 
+def _job_sales_rollup(db: Session) -> dict:
+    """Phase 12 P3-13: 每日聚合昨日订单到 sales_daily_rollup, 加速大量数据查询."""
+    from datetime import date as _date, timedelta as _td
+    from app.services import sales_rollup_service
+    target = _date.today() - _td(days=1)
+    n = sales_rollup_service.rollup_day(db, target)
+    return {"day": target.isoformat(), "rows": n}
+
+
 def _job_daily_briefing(db: Session) -> dict:
     """Phase 8 Tier 1 #1: AI 每日经营简报 (昨日数据合成)."""
     from app.services import briefing_service
@@ -232,6 +241,8 @@ def _register_default_jobs() -> None:
                  _job_daily_briefing, cron={"hour": 9, "minute": 30})
     register_job("monthly_supplier_score", "月初供应商评分",
                  _job_supplier_score, cron={"day": 1, "hour": 10, "minute": 0})
+    register_job("daily_06_sales_rollup", "每日销售汇总 (rollup)",
+                 _job_sales_rollup, cron={"hour": 6, "minute": 30})
 
 
 # ----------------------------- 生命周期 -------------------------- #

@@ -1,8 +1,11 @@
+import csv
+import io
 from datetime import date as _date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -130,6 +133,82 @@ def sales_breakdown(
     return {"period_start": start.isoformat(), "period_end": end.isoformat(), "rows": out}
 
 
+# ----------------------------- Phase 12: CSV 导出 -------------------- #
+
+
+@router.get("/sales/breakdown.csv")
+def export_sales_breakdown(
+    period: str = Query("30d"),
+    db: Session = Depends(get_db),
+):
+    """业务需求扩展: 分产品销售导出 CSV. 老板转发到企业微信群用."""
+    start, end = _range_for(period)
+    rows = sales_analytics.product_breakdown(db, start=start, end=end)
+    buf = io.StringIO()
+    buf.write("﻿")   # BOM, Excel 中文不乱码
+    writer = csv.writer(buf)
+    writer.writerow([
+        "产品编码", "产品名", "SKU 编码", "SKU 名", "件数",
+        "销售额", "成本", "毛利", "净利",
+        "毛利率 %", "净利率 %",
+    ])
+    for r in rows:
+        revenue = float(r.get("revenue") or 0)
+        cost = float(r.get("cost") or 0)
+        net = float(r.get("net_profit") or 0)
+        writer.writerow([
+            r.get("product_code") or "", r.get("product_name") or "",
+            r.get("sku_code") or "", r.get("sku") or "",
+            r.get("qty") or 0,
+            f"{revenue:.2f}", f"{cost:.2f}",
+            f"{revenue - cost:.2f}", f"{net:.2f}",
+            f"{float(r.get('gross_profit_rate') or 0) * 100:.1f}",
+            f"{float(r.get('net_profit_rate') or 0) * 100:.1f}",
+        ])
+    csv_data = buf.getvalue()
+    fname = f"sales_{start.isoformat()}_{end.isoformat()}.csv"
+    return StreamingResponse(
+        iter([csv_data.encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
+@router.get("/sales/summary.csv")
+def export_sales_summary(
+    period: str = Query("30d"),
+    db: Session = Depends(get_db),
+):
+    """导出汇总 + Top 10 利润排行."""
+    start, end = _range_for(period)
+    s = sales_analytics.summary(db, start=start, end=end)
+    buf = io.StringIO()
+    buf.write("﻿")
+    writer = csv.writer(buf)
+    writer.writerow(["项目", "数值"])
+    writer.writerow(["周期", f"{start.isoformat()} ~ {end.isoformat()}"])
+    writer.writerow(["订单数", s.order_count])
+    writer.writerow(["销售额", float(s.revenue)])
+    writer.writerow(["成本", float(s.cost)])
+    writer.writerow(["毛利", float(s.gross_profit)])
+    writer.writerow(["净利", float(s.net_profit)])
+    writer.writerow([])
+    writer.writerow(["Top 10 利润排行"])
+    writer.writerow(["产品编码", "产品名", "订单数", "净利"])
+    for r in s.top_products_by_profit:
+        writer.writerow([
+            r.get("product_code") or "", r.get("product_name") or "",
+            r.get("order_count") or 0,
+            f"{float(r.get('net_profit') or 0):.2f}",
+        ])
+    fname = f"summary_{start.isoformat()}_{end.isoformat()}.csv"
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
+
+
 @router.get("/forecast/30d")
 def forecast_30d(db: Session = Depends(get_db)):
     """业务需求 7: 未来 30 天 SKU 销量预测 (移动平均 + 20% 安全系数)."""
@@ -191,6 +270,16 @@ def assets_summary(db: Session = Depends(get_db)):
 def unmatched_flows(days: int = 7, db: Session = Depends(get_db)):
     """业务需求 19: 未核销异常池 — 最近 7 天 open 状态流水."""
     return {"days": days, "rows": asset_service.unmatched_recent_flows(db, days=days)}
+
+
+@router.get("/unmatched-flows/classify")
+def classify_unmatched(days: int = 7, limit: int = 50,
+                       db: Session = Depends(get_db)):
+    """Phase 11 P4-24: AI 辅助归类未核销流水."""
+    from app.services import flow_classification_service
+    return {"results": flow_classification_service.batch_classify(
+        db, days=days, limit=limit,
+    )}
 
 
 @router.get("/knowledge", response_model=list[KnowledgeOut])
