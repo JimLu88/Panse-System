@@ -198,6 +198,57 @@ class VoidFactoryOrderIn(BaseModel):
     reason: str
 
 
+class OrderEventOut(BaseModel):
+    id: int
+    order_id: int
+    kind: str
+    actor: Optional[str]
+    summary: str
+    detail: Optional[str]
+    context_json: Optional[dict]
+    created_at: str
+
+
+@router.get("/{order_id}/timeline", response_model=list[OrderEventOut])
+def get_order_timeline(order_id: int, db: Session = Depends(get_db)):
+    """Phase 8 Tier 1 #2: 订单全生命周期时间轴 (状态变化 + 工厂单 + 库存锁定 + 退货 + 评论)."""
+    from app.services import order_event_service
+    events = order_event_service.list_for_order(db, order_id)
+    return [
+        OrderEventOut(
+            id=e.id, order_id=e.order_id, kind=e.kind, actor=e.actor,
+            summary=e.summary, detail=e.detail,
+            context_json=e.context_json,
+            created_at=e.created_at.isoformat(),
+        )
+        for e in events
+    ]
+
+
+class CommentIn(BaseModel):
+    text: str
+
+
+@router.post("/{order_id}/comments", response_model=OrderEventOut)
+def add_comment(order_id: int, payload: CommentIn,
+                db: Session = Depends(get_db)):
+    """Phase 8: 在订单时间轴留评论."""
+    if not payload.text.strip():
+        raise HTTPException(400, "评论不能为空")
+    from app.services import order_event_service
+    e = order_event_service.record(
+        db, order_id=order_id, kind="comment",
+        actor="user", summary=payload.text.strip()[:200],
+        detail=payload.text.strip(),
+    )
+    db.commit()
+    return OrderEventOut(
+        id=e.id, order_id=e.order_id, kind=e.kind, actor=e.actor,
+        summary=e.summary, detail=e.detail, context_json=e.context_json,
+        created_at=e.created_at.isoformat(),
+    )
+
+
 @router.post("/factory-orders/{factory_order_id}/void")
 def void_factory_order(
     factory_order_id: int, payload: VoidFactoryOrderIn, db: Session = Depends(get_db),

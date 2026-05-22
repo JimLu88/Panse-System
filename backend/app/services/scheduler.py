@@ -195,6 +195,23 @@ def _job_forecast_refresh(db: Session) -> dict:
     return {"sku_count": len(forecast)}
 
 
+def _job_daily_briefing(db: Session) -> dict:
+    """Phase 8 Tier 1 #1: AI 每日经营简报 (昨日数据合成)."""
+    from app.services import briefing_service
+    b = briefing_service.generate(db, push=True)
+    return {"for_date": b.for_date.isoformat(),
+            "content_len": len(b.content or ""), "model": b.model}
+
+
+def _job_supplier_score(db: Session) -> dict:
+    """Phase 8 Tier 1 #5: 月初算上月供应商评分."""
+    from datetime import date as _date, timedelta as _td
+    from app.services import supplier_score_service
+    last = _date.today().replace(day=1) - _td(days=1)
+    scores = supplier_score_service.compute_for_month(db, last.year, last.month)
+    return {"year": last.year, "month": last.month, "supplier_count": len(scores)}
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -210,6 +227,11 @@ def _register_default_jobs() -> None:
                  _job_data_reconcile, cron={"hour": 10, "minute": 0})
     register_job("daily_06_forecast_refresh", "销售预测重算",
                  _job_forecast_refresh, cron={"hour": 6, "minute": 0})
+    # Phase 8 Tier 1
+    register_job("daily_09_briefing", "AI 每日经营简报",
+                 _job_daily_briefing, cron={"hour": 9, "minute": 30})
+    register_job("monthly_supplier_score", "月初供应商评分",
+                 _job_supplier_score, cron={"day": 1, "hour": 10, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #

@@ -64,6 +64,14 @@ def transition(
     order.status = target
     db.flush()
 
+    # Phase 8 Tier 1 #2: 写时间轴
+    from app.services import order_event_service
+    order_event_service.record(
+        db, order_id=order.id, kind="status_change",
+        actor=actor, summary=f"状态 {prev} → {target}",
+        context={"from": prev, "to": target, "force": force},
+    )
+
     if auto_factory and not order.is_historical:
         from app.services import factory_order_service as fos
         try:

@@ -70,6 +70,24 @@ def generate_factory_order_for(
     lock_result = inventory_lock_service.lock_for_factory_order(
         db, fo.id, actor=actor,
     )
+    # 时间轴
+    from app.services import order_event_service
+    order_event_service.record(
+        db, order_id=order.id, kind="factory_order_generated",
+        actor=actor, summary=f"生成工厂下单单 {fo_no}",
+        context={
+            "factory_order_id": fo.id, "factory_order_no": fo_no,
+            "locked_lines": lock_result.locked_lines,
+            "shortages": lock_result.shortages,
+        },
+    )
+    if lock_result.shortages:
+        order_event_service.record(
+            db, order_id=order.id, kind="inventory_shortage",
+            actor="system",
+            summary=f"⚠️ {len(lock_result.shortages)} 个物料缺货",
+            context={"shortages": lock_result.shortages},
+        )
     return fo, lock_result
 
 
@@ -88,11 +106,17 @@ def cancel_factory_orders_for(
         )
     ).scalars().all()
     n = 0
+    from app.services import order_event_service
     for fo in rows:
         fo.voided_at = datetime.now(timezone.utc)
         fo.voided_reason = reason or "平台订单取消"
         inventory_lock_service.release_factory_order_lock(
             db, fo.id, actor=actor, reason=fo.voided_reason,
+        )
+        order_event_service.record(
+            db, order_id=order.id, kind="factory_order_voided",
+            actor=actor, summary=f"作废工厂单 {fo.factory_order_no}",
+            detail=fo.voided_reason,
         )
         n += 1
     return n

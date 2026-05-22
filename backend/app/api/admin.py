@@ -362,3 +362,48 @@ def test_notify_config(
     from app.services import notify_service
     ok, detail = notify_service.test_notify(db)
     return NotifyTestOut(ok=ok, detail=detail)
+
+
+# ----------------------------- 数据水位线 (Phase 7) ----------------- #
+
+
+class BaselineOut(BaseModel):
+    baseline: Optional[str]
+
+
+class BaselineIn(BaseModel):
+    baseline: str = Field(..., description="YYYY-MM-DD; 空字符串清除")
+
+
+@router.get("/data-baseline", response_model=BaselineOut)
+def get_baseline(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import baseline_service
+    d = baseline_service.get_baseline_date(db)
+    return BaselineOut(baseline=d.isoformat() if d else None)
+
+
+@router.put("/data-baseline")
+def set_baseline(
+    payload: BaselineIn,
+    db: Session = Depends(get_db),
+    user = Depends(require_role("admin")),
+):
+    """业务: 设置历史数据水位线. 之前的订单全部标 is_historical, 不进对账/财务公式."""
+    from datetime import datetime as _dt
+    from app.services import baseline_service
+    if not payload.baseline:
+        baseline_service.clear_baseline(db)
+        db.commit()
+        return {"cleared": True}
+    try:
+        bd = _dt.strptime(payload.baseline, "%Y-%m-%d").date()
+    except ValueError:
+        raise HTTPException(400, "baseline 必须是 YYYY-MM-DD")
+    result = baseline_service.set_baseline_date(
+        db, bd, actor=getattr(user, "username", "admin"),
+    )
+    db.commit()
+    return result

@@ -4,12 +4,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api import accounting as accounting_api
 from app.api import admin as admin_api
 from app.api import aftersales as aftersales_api
 from app.api import ai as ai_api
 from app.api import alerts as alerts_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
+from app.api import briefings as briefings_api
 from app.api import bom as bom_api
 from app.api import customization as customization_api
 from app.api import exceptions as exceptions_api
@@ -120,6 +122,9 @@ app.include_router(alerts_api.router)
 app.include_router(scheduler_api.router)
 app.include_router(screenshots_api.router)
 app.include_router(aftersales_api.router)
+app.include_router(accounting_api.router)
+app.include_router(briefings_api.router)
+app.include_router(briefings_api.supplier_router)
 
 
 @app.get("/api/health")

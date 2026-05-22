@@ -67,6 +67,38 @@ def _next_custom_sku_code(db: Session, base: str) -> str:
     return f"{base}改{max_n + 1:02d}"
 
 
+def _size_signature(dimension_changes: dict) -> str:
+    """把尺寸字典转成有序签名, 用于 fuzzy 匹配现有定制物料."""
+    parts = sorted(f"{k}={v}" for k, v in dimension_changes.items())
+    return "|".join(parts)
+
+
+def _find_reusable_material(
+    db: Session, *, base_material_code: str, base_material_name: Optional[str],
+    size_sig: str,
+) -> Optional[Material]:
+    """Phase 7 P1-8: 找已存在的"同基础物料 + 同尺寸"定制件复用, 避免 BOM 表无限膨胀.
+
+    匹配规则:
+        - is_custom=True (只在定制库找)
+        - name 含 base_material_name (前缀匹配)
+        - remark 含 size_sig
+    """
+    if not base_material_name:
+        return None
+    name_prefix = base_material_name.split("(")[0].strip()
+    rows = db.execute(
+        select(Material).where(
+            Material.is_custom == True,  # noqa: E712
+            Material.name.like(f"{name_prefix}%"),
+        )
+    ).scalars().all()
+    for m in rows:
+        if m.remark and size_sig in m.remark:
+            return m
+    return None
+
+
 def _build_diff(
     db: Session, base_sku_code: str, dimension_changes: dict
 ) -> list[BomDiffLine]:
@@ -75,20 +107,34 @@ def _build_diff(
         .join(Material, BomLine.material_code == Material.code, isouter=True)
         .where(BomLine.sku_code == base_sku_code)
     ).all()
+    size_sig = _size_signature(dimension_changes) if dimension_changes else ""
     diff: list[BomDiffLine] = []
     for line, mat_name in lines:
         note = None
         new_qty = line.qty_per_product or Decimal("1")
+        target_material_code = line.material_code
         if line.size_type == "组合" and dimension_changes:
-            # 整套件随尺寸变, 标个尺寸 tag, qty 不动
             tag = " / ".join(f"{k}={v}" for k, v in dimension_changes.items())
             note = f"按定制尺寸 ({tag}) 重做"
+            # P1-8: 找有没有现成的同尺寸定制件复用
+            reuse = _find_reusable_material(
+                db,
+                base_material_code=line.material_code,
+                base_material_name=mat_name,
+                size_sig=size_sig,
+            )
+            if reuse is not None:
+                target_material_code = reuse.code
+                note = f"复用已有定制物料 {reuse.code} ({tag})"
         diff.append(BomDiffLine(
-            material_code=line.material_code,
+            material_code=target_material_code,
             material_name=mat_name,
             original_qty=line.qty_per_product or Decimal("1"),
             new_qty=new_qty,
             note=note,
+            requires_new_material=(target_material_code == line.material_code
+                                    and line.size_type == "组合"
+                                    and bool(dimension_changes)),
         ))
     return diff
 
