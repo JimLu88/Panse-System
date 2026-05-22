@@ -1,0 +1,130 @@
+/**
+ * 客户 CRM 列表 (Phase 9 Tier 2 #5).
+ */
+import { useState } from 'react';
+import {
+  Alert, Button, Card, Input, Modal, Select, Space, Table, Tag, Typography, message,
+} from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  CustomerItem,
+  fetchCustomerOrders,
+  fetchCustomers,
+  triggerCustomerAggregate,
+} from '../api/client';
+
+const TIER_COLOR: Record<string, string> = {
+  bronze: 'default', silver: 'cyan', gold: 'gold', platinum: 'purple',
+};
+
+const TIER_LABEL: Record<string, string> = {
+  bronze: '青铜', silver: '白银', gold: '黄金', platinum: '铂金',
+};
+
+
+export default function CustomersPage() {
+  const qc = useQueryClient();
+  const [q, setQ] = useState('');
+  const [tier, setTier] = useState<string | undefined>(undefined);
+  const [detailId, setDetailId] = useState<number | null>(null);
+
+  const { data: customers = [], isLoading } = useQuery({
+    queryKey: ['customers', q, tier],
+    queryFn: () => fetchCustomers({ q: q || undefined, tier, limit: 500 }),
+  });
+
+  const aggMut = useMutation({
+    mutationFn: triggerCustomerAggregate,
+    onSuccess: () => {
+      message.success('客户聚合已重算');
+      qc.invalidateQueries({ queryKey: ['customers'] });
+    },
+  });
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info" showIcon
+        message="客户聚合 + LTV 分级"
+        description="按 phone+name 自动合并历史订单. 平铂金客户优先服务, 复购预警."
+      />
+      <Card
+        size="small"
+        title="客户列表"
+        extra={
+          <Space>
+            <Input.Search placeholder="搜客户名 / 电话" value={q}
+                          onChange={(e) => setQ(e.target.value)}
+                          style={{ width: 220 }} allowClear />
+            <Select placeholder="分级"
+                    allowClear value={tier} onChange={setTier}
+                    style={{ width: 120 }}
+                    options={Object.entries(TIER_LABEL).map(([v, l]) => ({ value: v, label: l }))} />
+            <Button icon={<ReloadOutlined />} loading={aggMut.isPending}
+                    onClick={() => aggMut.mutate()}>
+              重算聚合
+            </Button>
+          </Space>
+        }
+      >
+        <Table<CustomerItem>
+          size="small" loading={isLoading} rowKey="id"
+          dataSource={customers}
+          pagination={{ pageSize: 30 }}
+          columns={[
+            { title: 'ID', dataIndex: 'id', width: 60 },
+            { title: '客户', dataIndex: 'name', width: 120 },
+            { title: '电话', dataIndex: 'phone', width: 130 },
+            { title: '分级', dataIndex: 'tier', width: 80,
+              render: (v: string) => <Tag color={TIER_COLOR[v]}>{TIER_LABEL[v]}</Tag>,
+            },
+            { title: '订单数', dataIndex: 'total_orders', width: 80, align: 'right' },
+            { title: '累计消费', dataIndex: 'total_revenue', width: 120, align: 'right',
+              render: (v: number) => `¥${v.toFixed(2)}` },
+            { title: '售后数', dataIndex: 'total_returns', width: 80, align: 'right',
+              render: (v: number) => v > 0 ? <Tag color="orange">{v}</Tag> : '-' },
+            { title: '最后下单', dataIndex: 'last_order_at', width: 120,
+              render: (v: string | null) => v ? new Date(v).toLocaleDateString('zh-CN') : '-' },
+            { title: '标签', dataIndex: 'tags',
+              render: (v: string[]) => (v ?? []).map((t, i) => <Tag key={i}>{t}</Tag>) },
+            { title: '操作', fixed: 'right', width: 90,
+              render: (_: any, r: CustomerItem) => (
+                <Button size="small" onClick={() => setDetailId(r.id)}>历史订单</Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
+      <CustomerOrdersModal customerId={detailId} onClose={() => setDetailId(null)} />
+    </Space>
+  );
+}
+
+function CustomerOrdersModal({ customerId, onClose }: {
+  customerId: number | null; onClose: () => void;
+}) {
+  const { data: orders = [] } = useQuery({
+    queryKey: ['customer-orders', customerId],
+    queryFn: () => fetchCustomerOrders(customerId!),
+    enabled: customerId !== null,
+  });
+  return (
+    <Modal title={`客户 #${customerId} 历史订单`} open={customerId !== null}
+           onCancel={onClose} footer={null} width={900}>
+      <Table size="small" rowKey="id"
+             dataSource={orders}
+             pagination={{ pageSize: 15 }}
+             columns={[
+               { title: '订单号', dataIndex: 'order_no', width: 180 },
+               { title: '日期', dataIndex: 'order_date', width: 120 },
+               { title: '产品', dataIndex: 'product_name' },
+               { title: '数量', dataIndex: 'qty', width: 70 },
+               { title: '实付', dataIndex: 'paid_amount', width: 120,
+                 render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
+               { title: '状态', dataIndex: 'status', width: 100,
+                 render: (v: string) => <Tag>{v}</Tag> },
+             ]} />
+    </Modal>
+  );
+}

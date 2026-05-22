@@ -1406,6 +1406,157 @@ export const fetchUnmatchedFlows = (days = 7) =>
   api.get<{ days: number; rows: any[] }>('/api/reports/unmatched-flows',
     { params: { days } }).then((r) => r.data);
 
+// ----- Phase 8 Tier 1: 订单时间轴 + AI 简报 + 会计期间 + 供应商评分 -----
+export interface OrderEvent {
+  id: number;
+  order_id: number;
+  kind: string;
+  actor: string | null;
+  summary: string;
+  detail: string | null;
+  context_json: Record<string, any> | null;
+  created_at: string;
+}
+
+export const fetchOrderTimeline = (orderId: number) =>
+  api.get<OrderEvent[]>(`/api/orders/${orderId}/timeline`).then((r) => r.data);
+
+export const postOrderComment = (orderId: number, text: string) =>
+  api.post<OrderEvent>(`/api/orders/${orderId}/comments`, { text }).then((r) => r.data);
+
+export interface DailyBriefing {
+  id: number;
+  for_date: string;
+  content: string;
+  highlights_json: any[] | null;
+  model: string | null;
+  generated_at: string | null;
+}
+
+export const fetchTodayBriefing = () =>
+  api.get<DailyBriefing | null>('/api/briefings/today').then((r) => r.data);
+
+export const fetchRecentBriefings = (limit = 14) =>
+  api.get<DailyBriefing[]>('/api/briefings/recent', { params: { limit } }).then((r) => r.data);
+
+export const triggerBriefing = (for_date?: string) =>
+  api.post('/api/briefings/generate-now', null, { params: { for_date } }).then((r) => r.data);
+
+export interface AccountingPeriod {
+  id: number;
+  year: number;
+  month: number;
+  status: 'open' | 'closed' | 'locked';
+  closed_at: string | null;
+  closed_by: string | null;
+  remark: string | null;
+}
+
+export const fetchAccountingPeriods = () =>
+  api.get<AccountingPeriod[]>('/api/accounting/periods').then((r) => r.data);
+
+export const closeAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/close', { year, month }).then((r) => r.data);
+
+export const reopenAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/reopen', { year, month }).then((r) => r.data);
+
+export const lockAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/lock', { year, month }).then((r) => r.data);
+
+export interface SupplierScore {
+  supplier_id: number;
+  year: number;
+  month: number;
+  on_time_rate: number | null;
+  return_rate: number | null;
+  price_variance_pct: number | null;
+  total_orders: number;
+  total_amount: number | null;
+  score: number | null;
+  rank: number | null;
+  detail_json: Record<string, any> | null;
+}
+
+export const fetchSupplierScores = (year: number, month: number) =>
+  api.get<SupplierScore[]>(`/api/supplier-scores/${year}/${month}`).then((r) => r.data);
+
+export const computeSupplierScores = (year: number, month: number) =>
+  api.post(`/api/supplier-scores/compute/${year}/${month}`).then((r) => r.data);
+
+// ----- 数据水位线 (Phase 7) -----
+export const fetchDataBaseline = () =>
+  api.get<{ baseline: string | null }>('/api/admin/data-baseline').then((r) => r.data);
+
+export const setDataBaseline = (baseline: string) =>
+  api.put('/api/admin/data-baseline', { baseline }).then((r) => r.data);
+
+// ----- 客户 CRM (Phase 9) -----
+export interface CustomerItem {
+  id: number;
+  name: string;
+  phone: string | null;
+  address: string | null;
+  tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+  first_order_at: string | null;
+  last_order_at: string | null;
+  total_orders: number;
+  total_revenue: number;
+  total_returns: number;
+  tags: string[];
+  note: string | null;
+}
+
+export const fetchCustomers = (params: { q?: string; tier?: string; limit?: number } = {}) =>
+  api.get<CustomerItem[]>('/api/customers', { params }).then((r) => r.data);
+
+export const fetchCustomer = (id: number) =>
+  api.get<CustomerItem>(`/api/customers/${id}`).then((r) => r.data);
+
+export const fetchCustomerOrders = (id: number) =>
+  api.get<any[]>(`/api/customers/${id}/orders`).then((r) => r.data);
+
+export const triggerCustomerAggregate = () =>
+  api.post('/api/customers/aggregate').then((r) => r.data);
+
+// ----- 智能定价 + 异常诊断 + 物流面单 (Phase 10) -----
+export interface PriceSuggestion {
+  sku_code: string | null;
+  product_code: string;
+  cost: number;
+  historical_avg_price: number;
+  target_margin: number;
+  suggested_price: number;
+  inventory_pressure: number;
+  notes: string[];
+}
+
+export const fetchPriceSuggestion = (params: {
+  product_code: string; sku_code?: string; target_margin?: number;
+}) => api.get<PriceSuggestion>('/api/smart-pricing/suggest', { params }).then((r) => r.data);
+
+export const diagnoseException = (id: number) =>
+  api.get<{ analysis: string; suggested_actions: any[]; severity_recommended: string }>(
+    `/api/exceptions/${id}/diagnose`,
+  ).then((r) => r.data);
+
+export const printShippingLabel = (orderId: number, carrier?: string) =>
+  api.post<{ tracking_no: string; carrier: string; label_url: string }>(
+    `/api/orders/${orderId}/print-label`, null, { params: { carrier } },
+  ).then((r) => r.data);
+
+// ----- 全局搜索 (Tier 3 #14) -----
+export interface SearchHit {
+  kind: string;
+  id: number;
+  title: string;
+  subtitle: string | null;
+  url: string;
+}
+
+export const globalSearch = (q: string, limit = 50) =>
+  api.get<SearchHit[]>('/api/search', { params: { q, limit } }).then((r) => r.data);
+
 // ----- 售后 / 退货 (Phase 5) -----
 export interface AfterSalesItem {
   id: number;

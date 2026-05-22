@@ -26,7 +26,13 @@ import ScreenshotImportPage from './pages/ScreenshotImportPage';
 import AfterSalesPage from './pages/AfterSalesPage';
 import ForecastPage from './pages/ForecastPage';
 import AssetsPage from './pages/AssetsPage';
+import CustomersPage from './pages/CustomersPage';
+import OrdersKanbanPage from './pages/OrdersKanbanPage';
+import AccountingPeriodsPage from './pages/AccountingPeriodsPage';
+import SupplierScoresPage from './pages/SupplierScoresPage';
 import NotificationBell from './components/NotificationBell';
+import CommandPalette from './components/CommandPalette';
+import BriefingBanner from './components/BriefingBanner';
 import { useAuth } from './auth/AuthProvider';
 
 const { Header, Content } = Layout;
@@ -68,6 +74,8 @@ export default function App() {
     { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
     { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
     { key: 'orders', label: <Link to="/orders">订单</Link> },
+    { key: 'orders-kanban', label: <Link to="/orders/kanban">看板</Link> },
+    { key: 'customers', label: <Link to="/customers">客户</Link> },
     { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
     { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
     { key: 'customization', label: <Link to="/customization">微定制</Link> },
@@ -76,12 +84,14 @@ export default function App() {
     { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
     { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
     { key: 'suppliers', label: <Link to="/suppliers">供应商对账</Link> },
+    { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
     { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
     { key: 'importer', label: <Link to="/importer">Excel 导入</Link> },
     { key: 'marketing', label: <Link to="/marketing">营销</Link> },
     { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
     { key: 'reports', label: <Link to="/reports">报表</Link> },
     { key: 'assets', label: <Link to="/assets">资产</Link> },
+    { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
     { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
     { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
     ...(user.role === 'admin' ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }] : []),
@@ -115,6 +125,7 @@ export default function App() {
           </Space>
         </Dropdown>
       </Header>
+      <CommandPalette />
       <Content style={{ padding: 24 }}>
         <Routes>
           <Route path="/" element={<Navigate to="/products" replace />} />
@@ -125,12 +136,16 @@ export default function App() {
           <Route path="/inventory" element={<PartInventoryPage />} />
           <Route path="/product-inventory" element={<ProductInventoryPage />} />
           <Route path="/orders" element={<OrdersPage />} />
+          <Route path="/orders/kanban" element={<OrdersKanbanPage />} />
           <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
+          <Route path="/customers" element={<CustomersPage />} />
           <Route path="/customization" element={<CustomizationPage />} />
           <Route path="/screenshots" element={<ScreenshotImportPage />} />
           <Route path="/aftersales" element={<AfterSalesPage />} />
           <Route path="/forecast" element={<ForecastPage />} />
           <Route path="/assets" element={<AssetsPage />} />
+          <Route path="/supplier-scores" element={<SupplierScoresPage />} />
+          <Route path="/accounting" element={<AccountingPeriodsPage />} />
           <Route path="/producibility" element={<ProducibilityPage />} />
           <Route path="/quote" element={<QuotePage />} />
           <Route path="/alipay" element={<AlipayPage />} />

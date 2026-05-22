@@ -24,6 +24,7 @@ import {
   importOrdersCsv,
   listOrders,
 } from '../api/client';
+import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
   pending_payment: { label: '待付款', color: 'default' },
@@ -51,6 +52,7 @@ export default function OrdersPage() {
   const [statusFilter, setStatusFilter] = useState<StatusKey>('all');
   const [q, setQ] = useState('');
   const [importReport, setImportReport] = useState<CsvImportReport | null>(null);
+  const [timelineFor, setTimelineFor] = useState<number | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ['orders', statusFilter, q],
@@ -115,6 +117,12 @@ export default function OrdersPage() {
         const next = ALLOWED_NEXT[r.status] ?? [];
         return (
           <Space size="small">
+            <Button
+              size="small"
+              onClick={() => setTimelineFor(r.id)}
+            >
+              时间线
+            </Button>
             <Button
               size="small"
               onClick={() => window.open(`/orders/${r.id}/factory-sheet`, '_blank')}
@@ -234,6 +242,11 @@ export default function OrdersPage() {
           </Space>
         )}
       </Modal>
+      <OrderTimelineDrawer
+        orderId={timelineFor}
+        open={timelineFor !== null}
+        onClose={() => setTimelineFor(null)}
+      />
     </Space>
   );
 }

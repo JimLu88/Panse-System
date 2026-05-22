@@ -32,6 +32,7 @@ import {
   runEscalation,
 } from '../api/client';
 import { Radio } from 'antd';
+import BriefingBanner from '../components/BriefingBanner';
 
 export default function ReportsPage() {
   const qc = useQueryClient();
@@ -53,6 +54,7 @@ export default function ReportsPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <BriefingBanner />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           数据健康报告 (plan §12.2)
