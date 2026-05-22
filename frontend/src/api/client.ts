@@ -1181,6 +1181,298 @@ export const fetchSystemEvents = (limit = 50) =>
     .get<SystemEvent[]>('/api/admin/system-events', { params: { limit } })
     .then((r) => r.data);
 
+// ----- 告警 / 通知中心 (Phase 1B) -----
+export interface AlertItem {
+  id: number;
+  kind: string;
+  severity: 'info' | 'warn' | 'critical';
+  title: string;
+  body: string | null;
+  dedupe_key: string | null;
+  related_url: string | null;
+  context_json: Record<string, any> | null;
+  sticky: boolean;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  auto_resolve_until: string | null;
+  notified_at: string | null;
+  created_at: string;
+}
+
+export interface AlertSummary {
+  info: number;
+  warn: number;
+  critical: number;
+}
+
+export const fetchActiveAlerts = (params: { severity?: string; kind?: string; limit?: number } = {}) =>
+  api.get<AlertItem[]>('/api/alerts/active', { params }).then((r) => r.data);
+
+export const fetchAlertSummary = () =>
+  api.get<AlertSummary>('/api/alerts/summary').then((r) => r.data);
+
+export const dismissAlert = (id: number) =>
+  api.post(`/api/alerts/${id}/dismiss`).then((r) => r.data);
+
+export const fetchAlertHistory = (limit = 100, kind?: string) =>
+  api.get<AlertItem[]>('/api/alerts/history', { params: { limit, kind } })
+    .then((r) => r.data);
+
+// ----- 定时任务 (Phase 1A, 业务需求 18 自动任务清单) -----
+export interface SchedulerJob {
+  job_id: string;
+  label: string;
+  kind: string;
+  schedule: Record<string, any>;
+  next_run_at: string | null;
+}
+
+export interface SchedulerRun {
+  id: number;
+  job_id: string;
+  job_label: string;
+  status: string;
+  duration_ms: number | null;
+  error: string | null;
+  result_summary: Record<string, any> | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export const fetchSchedulerJobs = () =>
+  api.get<SchedulerJob[]>('/api/scheduler/jobs').then((r) => r.data);
+
+export const fetchSchedulerRuns = (limit = 100, job_id?: string) =>
+  api.get<SchedulerRun[]>('/api/scheduler/runs', { params: { limit, job_id } })
+    .then((r) => r.data);
+
+export const triggerSchedulerJob = (job_id: string) =>
+  api.post(`/api/scheduler/jobs/${job_id}/trigger`).then((r) => r.data);
+
+// ----- 截图自动化 (Phase 3, 业务需求 1/6) -----
+export interface QianniuOrderParsed {
+  order_no: string;
+  platform?: string;
+  order_date?: string;
+  pay_time?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  customer_address?: string;
+  product_name?: string;
+  sku?: string;
+  qty?: number;
+  unit_price?: number;
+  discount?: number;
+  paid_amount?: number;
+  platform_fee?: number;
+  freight?: number;
+  remark?: string;
+  confidence?: number;
+  warnings?: string[];
+}
+
+export interface QianniuParseResp {
+  image_b64: string;
+  mime: string;
+  orders: QianniuOrderParsed[];
+  ocr_warnings: string[];
+}
+
+export const parseQianniuScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<QianniuParseResp>('/api/screenshots/qianniu-orders/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+
+export const commitQianniuOrders = (orders: QianniuOrderParsed[]) =>
+  api
+    .post<{ inserted: number; skipped_existing: string[] }>(
+      '/api/screenshots/qianniu-orders/commit',
+      { orders },
+    )
+    .then((r) => r.data);
+
+export interface PurchaseLineParsed {
+  material_name?: string;
+  material_code?: string;
+  spec?: string;
+  qty?: number;
+  unit?: string;
+  unit_price?: number;
+  amount?: number;
+}
+
+export interface PurchaseParsed {
+  supplier_name?: string;
+  purchase_date?: string;
+  purchase_no?: string;
+  tracking_no?: string;
+  carrier?: string;
+  freight?: number;
+  total_amount?: number;
+  remark?: string;
+  lines: PurchaseLineParsed[];
+  warnings?: string[];
+}
+
+export interface PurchaseParseResp {
+  image_b64: string;
+  mime: string;
+  purchase: PurchaseParsed;
+}
+
+export const parsePurchaseScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<PurchaseParseResp>('/api/screenshots/purchase/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+
+export const commitPurchaseScreenshot = (payload: {
+  supplier?: string;
+  purchase_date?: string;
+  purchase_no?: string;
+  tracking_no?: string;
+  carrier?: string;
+  freight?: number;
+  total_amount?: number;
+  remark?: string;
+  lines: PurchaseLineParsed[];
+}) =>
+  api
+    .post<{ inserted: number; purchase_no: string; has_tracking: boolean }>(
+      '/api/screenshots/purchase/commit',
+      payload,
+    )
+    .then((r) => r.data);
+
+// ----- 销售报表 / 资产 / 预测 (Phase 4) -----
+export interface SalesSummary {
+  period_start: string;
+  period_end: string;
+  order_count: number;
+  revenue: number;
+  cost: number;
+  gross_profit: number;
+  net_profit: number;
+  top_products_by_profit: Array<Record<string, any>>;
+  top_products_by_profit_rate: Array<Record<string, any>>;
+}
+
+export const fetchSalesSummary = (period: '7d' | '30d' | 'month' | 'year', platform?: string) =>
+  api.get<SalesSummary>('/api/reports/sales/summary', {
+    params: { period, ...(platform ? { platform } : {}) },
+  }).then((r) => r.data);
+
+export const fetchSalesBreakdown = (period: '7d' | '30d' | 'month' | 'year') =>
+  api.get<{ period_start: string; period_end: string; rows: Array<Record<string, any>> }>(
+    '/api/reports/sales/breakdown', { params: { period } },
+  ).then((r) => r.data);
+
+export const fetchForecast30d = () =>
+  api.get<{ forecast: Array<any> }>('/api/reports/forecast/30d').then((r) => r.data);
+
+export const fetchStockAdvice = () =>
+  api.get<{ products: any[]; materials: any[] }>('/api/reports/stock-advice')
+    .then((r) => r.data);
+
+export const fetchSlowMoving = (params: { long_no_sale_days?: number; overstock_ratio?: number } = {}) =>
+  api.get<{ long_idle: any[]; overstock: any[]; thresholds: any }>(
+    '/api/reports/slow-moving', { params },
+  ).then((r) => r.data);
+
+export interface AssetSummary {
+  total: number;
+  categories: Array<{ name: string; amount: number; detail: any[] }>;
+  formula_a: number;
+  formula_b: number;
+  diff: number;
+}
+
+export const fetchAssets = () =>
+  api.get<AssetSummary>('/api/reports/assets').then((r) => r.data);
+
+export const fetchUnmatchedFlows = (days = 7) =>
+  api.get<{ days: number; rows: any[] }>('/api/reports/unmatched-flows',
+    { params: { days } }).then((r) => r.data);
+
+// ----- 售后 / 退货 (Phase 5) -----
+export interface AfterSalesItem {
+  id: number;
+  platform_order_no: string;
+  status: string | null;
+  reason: string | null;
+  refill_tracking_no: string | null;
+  second_inbound_confirmed: string | null;
+  processed_at: string | null;
+  remark: string | null;
+}
+
+export const fetchAfterSales = (status?: string, limit = 100) =>
+  api.get<AfterSalesItem[]>('/api/aftersales', { params: { status, limit } })
+    .then((r) => r.data);
+
+export const createReturn = (payload: { order_no: string; reason: string; tracking_no?: string }) =>
+  api.post<AfterSalesItem>('/api/aftersales', payload).then((r) => r.data);
+
+export const markReturnReceived = (id: number) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/mark-received`).then((r) => r.data);
+
+export const confirmReturnInbound = (id: number, payload: {
+  product_code: string; sku_code?: string; qty: number;
+}) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/confirm-inbound`, payload)
+    .then((r) => r.data);
+
+export const markReturnDamaged = (id: number, reason: string) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/mark-damaged`, { reason })
+    .then((r) => r.data);
+
+export const disassembleProduct = (payload: {
+  product_code: string; sku_code?: string; qty: number;
+}) =>
+  api.post<{ product_remaining: number; parts_added: any[] }>(
+    '/api/aftersales/disassemble-product', payload,
+  ).then((r) => r.data);
+
+// ----- 工厂订单自动派生 (Phase 2) -----
+export const generateFactoryOrder = (orderId: number) =>
+  api.post<{
+    factory_order_id: number;
+    factory_order_no: string;
+    locked_lines: any[];
+    shortages: any[];
+    alerts_created: number[];
+  }>(`/api/orders/${orderId}/generate-factory-order`).then((r) => r.data);
+
+export const createFutureOrder = (payload: {
+  base_order_no: string;
+  activate_at: string;
+  product_code?: string;
+  sku?: string;
+  qty?: number;
+  customer_name?: string;
+  remark?: string;
+}) => api.post<{ id: number; order_no: string; activate_at: string }>(
+  '/api/orders/future', payload,
+).then((r) => r.data);
+
+export const voidFactoryOrder = (factoryOrderId: number, reason: string) =>
+  api.post<{ id: number; factory_order_no: string; voided_at: string; voided_reason: string }>(
+    `/api/orders/factory-orders/${factoryOrderId}/void`,
+    { reason },
+  ).then((r) => r.data);
+
 // ----- 通知配置 (业务需求扩展: 看门狗触发时推 Slack/微信/钉钉/飞书) -----
 export interface NotifyProvider {
   value: string;

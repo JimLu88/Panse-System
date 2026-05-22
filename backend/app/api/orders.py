@@ -133,6 +133,91 @@ class FactorySheetOut(BaseModel):
     warnings: list[FactorySheetWarningOut]
 
 
+@router.post("/{order_id}/generate-factory-order")
+def generate_factory_order(order_id: int, db: Session = Depends(get_db)):
+    """业务需求 2/3: 从平台 Order 自动派生 FactoryOrder + 锁 BOM 库存.
+
+    幂等. 已生成时返回已有的 FactoryOrder. 缺货时仍会创建工厂单, 但同时生成 critical Alert。
+    """
+    from app.services import factory_order_service
+    o = db.get(Order, order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    if o.is_historical:
+        raise HTTPException(400, "历史订单不参与工厂派生")
+    try:
+        fo, lock = factory_order_service.generate_factory_order_for(db, o)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return {
+        "factory_order_id": fo.id,
+        "factory_order_no": fo.factory_order_no,
+        "locked_lines": lock.locked_lines,
+        "shortages": lock.shortages,
+        "alerts_created": lock.alerts_created,
+    }
+
+
+class CreateFutureOrderIn(BaseModel):
+    base_order_no: str
+    activate_at: str   # ISO datetime
+    product_code: Optional[str] = None
+    sku: Optional[str] = None
+    qty: int = 1
+    customer_name: Optional[str] = None
+    remark: Optional[str] = None
+    platform: str = "淘宝"
+
+
+@router.post("/future")
+def create_future_order(payload: CreateFutureOrderIn, db: Session = Depends(get_db)):
+    """业务需求 10 选项 A: 派生一个 30 天后激活的远期订单."""
+    from datetime import datetime as _dt
+    from app.services import factory_order_service
+    try:
+        activate = _dt.fromisoformat(payload.activate_at)
+    except ValueError:
+        raise HTTPException(400, "activate_at 不是合法 ISO 时间")
+    o = factory_order_service.create_future_order(
+        db,
+        base_order_no=payload.base_order_no,
+        activate_at=activate,
+        platform=payload.platform,
+        product_code=payload.product_code,
+        sku=payload.sku,
+        qty=payload.qty,
+        customer_name=payload.customer_name,
+        remark=payload.remark,
+    )
+    db.commit()
+    return {"id": o.id, "order_no": o.order_no, "activate_at": o.activate_at.isoformat()}
+
+
+class VoidFactoryOrderIn(BaseModel):
+    reason: str
+
+
+@router.post("/factory-orders/{factory_order_id}/void")
+def void_factory_order(
+    factory_order_id: int, payload: VoidFactoryOrderIn, db: Session = Depends(get_db),
+):
+    """业务需求 11: 作废一个工厂下单单 (会同时释放锁定库存)."""
+    from app.services import factory_order_service
+    fo = factory_order_service.void_factory_order(
+        db, factory_order_id, reason=payload.reason,
+    )
+    if fo is None:
+        raise HTTPException(404, "factory order not found")
+    db.commit()
+    return {
+        "id": fo.id,
+        "factory_order_no": fo.factory_order_no,
+        "voided_at": fo.voided_at.isoformat() if fo.voided_at else None,
+        "voided_reason": fo.voided_reason,
+    }
+
+
 @router.get("/{order_id}/factory-sheet", response_model=FactorySheetOut)
 def get_factory_sheet(order_id: int, db: Session = Depends(get_db)):
     """业务需求 §1: 生成制单图数据 (前端渲染打印).

@@ -41,6 +41,8 @@ import {
   Integrations,
   MeUser,
   NotifyConfig,
+  SchedulerJob,
+  SchedulerRun,
   SystemEvent,
   SystemStatus,
   createUser,
@@ -48,6 +50,8 @@ import {
   fetchIntegrations,
   fetchNotifyConfig,
   fetchRoles,
+  fetchSchedulerJobs,
+  fetchSchedulerRuns,
   fetchSystemEvents,
   fetchSystemStatus,
   listAuditLogs,
@@ -55,6 +59,7 @@ import {
   restartApi,
   testIntegration,
   testNotifyConfig,
+  triggerSchedulerJob,
   updateIntegrations,
   updateNotifyConfig,
 } from '../api/client';
@@ -82,6 +87,7 @@ export default function AdminPage() {
           { key: 'users', label: '用户管理', children: <UsersTab /> },
           { key: 'integrations', label: 'AI 集成 / OCR 配置', children: <IntegrationsTab /> },
           { key: 'monitor', label: <Space><DashboardOutlined />系统监控 / 看门狗</Space>, children: <MonitorTab /> },
+          { key: 'scheduler', label: '全自动任务清单 (业务需求 18)', children: <SchedulerTab /> },
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
         ]}
       />
@@ -874,6 +880,106 @@ function SystemEventsCard() {
                   </Typography.Text>
                 );
               },
+            },
+          ]}
+        />
+      </Card>
+    </Space>
+  );
+}
+
+// ----------------------------- 全自动任务清单 (业务需求 18) ----------- //
+
+function fmtCron(s: Record<string, any>): string {
+  if (s.interval_minutes) return `每 ${s.interval_minutes} 分钟`;
+  const h = s.hour, m = s.minute;
+  if (h !== undefined && m !== undefined) {
+    return `每天 ${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  }
+  return JSON.stringify(s);
+}
+
+function SchedulerTab() {
+  const qc = useQueryClient();
+  const { data: jobs = [] } = useQuery({
+    queryKey: ['scheduler-jobs'],
+    queryFn: fetchSchedulerJobs,
+    refetchInterval: 30000,
+  });
+  const { data: runs = [] } = useQuery({
+    queryKey: ['scheduler-runs'],
+    queryFn: () => fetchSchedulerRuns(100),
+    refetchInterval: 30000,
+  });
+
+  const triggerMut = useMutation({
+    mutationFn: (id: string) => triggerSchedulerJob(id),
+    onSuccess: (_r, id) => {
+      message.success(`已触发 ${id}, 1-2 秒后看运行结果`);
+      setTimeout(() => qc.invalidateQueries({ queryKey: ['scheduler-runs'] }), 2000);
+    },
+  });
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert type="info" showIcon
+             message="业务需求 18: 所有自动跑的任务"
+             description="包含: 17:00 退款检查、库存预警扫描、远期订单激活、财务公式核对 等. 'next_run_at' 是下一次自动跑的时间. 立即按钮可手工触发一次." />
+      <Card size="small" title="已注册定时任务">
+        <Table<SchedulerJob>
+          size="small" rowKey="job_id" dataSource={jobs} pagination={false}
+          columns={[
+            { title: '任务名', dataIndex: 'label' },
+            { title: 'job_id', dataIndex: 'job_id', width: 240,
+              render: (v: string) => <code style={{ fontSize: 11 }}>{v}</code>,
+            },
+            { title: '频率', dataIndex: 'schedule', width: 180,
+              render: (v: any) => fmtCron(v) },
+            { title: '下次执行', dataIndex: 'next_run_at', width: 200,
+              render: (v: string | null) => v ?
+                new Date(v).toLocaleString('zh-CN') : '-',
+            },
+            { title: '操作', width: 110,
+              render: (_: any, r: SchedulerJob) => (
+                <Button size="small" loading={triggerMut.isPending}
+                        onClick={() => triggerMut.mutate(r.job_id)}>
+                  立即执行
+                </Button>
+              ),
+            },
+          ]}
+        />
+      </Card>
+      <Card size="small" title="最近执行记录">
+        <Table<SchedulerRun>
+          size="small" rowKey="id" dataSource={runs}
+          pagination={{ pageSize: 20 }}
+          columns={[
+            { title: '时间', dataIndex: 'started_at', width: 170,
+              render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',
+            },
+            { title: '任务', dataIndex: 'job_label', width: 180 },
+            { title: '状态', dataIndex: 'status', width: 80,
+              render: (v: string) => (
+                <Tag color={v === 'ok' ? 'green' : v === 'fail' ? 'red' : 'default'}>
+                  {v}
+                </Tag>
+              ),
+            },
+            { title: '耗时', dataIndex: 'duration_ms', width: 90,
+              render: (v: number | null) => v != null ? `${v} ms` : '-',
+            },
+            { title: '结果', dataIndex: 'result_summary',
+              render: (v: any) => v ? (
+                <code style={{ fontSize: 11 }}>{JSON.stringify(v)}</code>
+              ) : '-',
+            },
+            { title: '错误', dataIndex: 'error',
+              render: (v: string | null) => v ? (
+                <Typography.Text type="danger" style={{ fontSize: 11 }}>
+                  {v.slice(0, 120)}
+                </Typography.Text>
+              ) : '-',
             },
           ]}
         />

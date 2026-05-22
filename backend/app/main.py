@@ -2,7 +2,9 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import admin as admin_api
+from app.api import aftersales as aftersales_api
 from app.api import ai as ai_api
+from app.api import alerts as alerts_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import bom as bom_api
@@ -22,6 +24,8 @@ from app.api import quotes as quotes_api
 from app.api import reports as reports_api
 from app.api import importer as importer_api
 from app.api import scanners as scanners_api
+from app.api import scheduler as scheduler_api
+from app.api import screenshots as screenshots_api
 from app.api import suppliers as suppliers_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
@@ -61,6 +65,10 @@ app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
 app.include_router(importer_api.router)
+app.include_router(alerts_api.router)
+app.include_router(scheduler_api.router)
+app.include_router(screenshots_api.router)
+app.include_router(aftersales_api.router)
 
 
 @app.on_event("startup")
@@ -85,11 +93,16 @@ async def _start_watchdog():
     finally:
         db.close()
     system_monitor.start_background(interval_sec=60)
+    # Phase 1A: 启动统一调度器
+    from app.services import scheduler as scheduler_service
+    scheduler_service.start()
 
 
 @app.on_event("shutdown")
 async def _stop_watchdog():
     from app.services import system_monitor
+    from app.services import scheduler as scheduler_service
+    scheduler_service.shutdown()
     system_monitor.stop_background()
     system_monitor.release_pid_file()
 

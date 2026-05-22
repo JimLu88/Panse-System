@@ -5,7 +5,8 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Date, Index, Integer, Numeric, String, Text
+from datetime import datetime
+from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -63,6 +64,14 @@ class Order(Base, TimestampMixin):
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # Phase 1 扩展
+    is_historical: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 历史水位线之前的订单, 不参与库存 / 财务核对
+    activate_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # 远期订单激活时间; 不为空时, 调度器到点改 status=paid 并锁库存
+    last_outbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # 最近一次出货时间, 滞销 / 复购分析用
+
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
     )
@@ -91,6 +100,13 @@ class FactoryOrder(Base, TimestampMixin):
     carrier: Mapped[Optional[str]] = mapped_column(String(64))
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # Phase 2 扩展
+    voided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    voided_reason: Mapped[Optional[str]] = mapped_column(Text)
+    # 17:00 退款检查 → 作废工厂单时填
+    source_order_id: Mapped[Optional[int]] = mapped_column(Integer)
+    # 关联回 platform Order.id, 库存释放时用
 
 
 class PartPurchase(Base, TimestampMixin):
