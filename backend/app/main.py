@@ -49,6 +49,7 @@ async def _lifespan(app: FastAPI):
     启动: 抢 PID 文件 → 写 process_started → 起看门狗 + 调度器
     关停: 停调度器 → 停看门狗 → 释放 PID + executor
     """
+    # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
         from app.database import SessionLocal
         from app.services import system_monitor
@@ -64,17 +65,20 @@ async def _lifespan(app: FastAPI):
         finally:
             db.close()
         system_monitor.start_background(interval_sec=60)
-        # Phase 1A: 启动统一调度器
+
+    # Phase 1A: 调度器独立开关, 不绑死在 watchdog 上
+    if os.environ.get("DISABLE_SCHEDULER") != "1":
         from app.services import scheduler as scheduler_service
         scheduler_service.start()
 
     yield   # 应用运行期
 
     # ----- 关停 -----
-    if os.environ.get("DISABLE_WATCHDOG") != "1":
-        from app.services import system_monitor
+    if os.environ.get("DISABLE_SCHEDULER") != "1":
         from app.services import scheduler as scheduler_service
         scheduler_service.shutdown()
+    if os.environ.get("DISABLE_WATCHDOG") != "1":
+        from app.services import system_monitor
         system_monitor.stop_background()
         system_monitor.release_pid_file()
     # Phase 6: shutdown import job executor

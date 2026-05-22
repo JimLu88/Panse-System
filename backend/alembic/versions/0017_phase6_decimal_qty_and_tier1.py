@@ -76,7 +76,7 @@ def upgrade() -> None:
     op.create_table(
         "order_events",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("order_id", sa.Integer, nullable=False, index=True),
+        sa.Column("order_id", sa.Integer, nullable=False),
         sa.Column("kind", sa.String(48), nullable=False),
         # status_change / factory_order_generated / inventory_locked / inventory_released /
         # shipped / signed / refund_requested / aftersales_inbound / comment / system
@@ -96,7 +96,7 @@ def upgrade() -> None:
     op.create_table(
         "supplier_scores",
         sa.Column("id", sa.Integer, primary_key=True),
-        sa.Column("supplier_id", sa.Integer, nullable=False, index=True),
+        sa.Column("supplier_id", sa.Integer, nullable=False),
         sa.Column("year", sa.Integer, nullable=False),
         sa.Column("month", sa.Integer, nullable=False),
         sa.Column("on_time_rate", sa.Numeric(5, 2)),         # 0-1
@@ -114,6 +114,7 @@ def upgrade() -> None:
         sa.UniqueConstraint("supplier_id", "year", "month",
                             name="uq_supplier_scores_sym"),
     )
+    op.create_index("ix_supplier_scores_supplier_id", "supplier_scores", ["supplier_id"])
 
     # 5. Tier 1 - AI 每日经营简报缓存
     op.create_table(
