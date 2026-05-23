@@ -46,6 +46,7 @@ import {
   ImportJob,
   ImportReport,
   ImporterPreviewResp,
+  SheetAnalysis,
   SheetPreview,
   cancelImportJob,
   commitImporter,
@@ -53,11 +54,29 @@ import {
   fetchEntityTypes,
   fetchImportJob,
   previewImporter,
+  smartAnalyzeExcel,
+  smartCommitExcel,
 } from '../api/client';
 
 const { Dragger } = Upload;
 
+
 export default function ImporterPage() {
+  return (
+    <Tabs
+      defaultActiveKey="smart"
+      items={[
+        { key: 'smart', label: '智能导入 (任意 Excel, AI 自动分析)',
+          children: <SmartImporter /> },
+        { key: 'legacy', label: '手动模式 (单 sheet, 自选实体)',
+          children: <LegacyImporter /> },
+      ]}
+    />
+  );
+}
+
+
+function LegacyImporter() {
   const { data: entityTypes } = useQuery({
     queryKey: ['importer-entity-types'],
     queryFn: fetchEntityTypes,
@@ -700,5 +719,313 @@ function JobProgress({
         />
       )}
     </Card>
+  );
+}
+
+
+// ============================ 智能导入 (Phase 14) ============================ //
+
+const QUALITY_META: Record<string, { color: string; label: string; advice: string }> = {
+  good: { color: 'green', label: '良好', advice: '直接导' },
+  needs_review: { color: 'orange', label: '需确认', advice: '检查列映射后导入' },
+  messy: { color: 'red', label: '太乱', advice: '建议员工先修 Excel 再导' },
+  unknown: { color: 'default', label: '未知', advice: '' },
+};
+
+function SmartImporter() {
+  const [resp, setResp] = useState<{ file_b64: string; sheets: SheetAnalysis[] } | null>(null);
+  const [editedPlan, setEditedPlan] = useState<Record<string, {
+    entity_type: string; mapping: Record<string, string>;
+  }>>({});
+  const [committedReports, setCommittedReports] = useState<any[] | null>(null);
+
+  const analyzeMut = useMutation({
+    mutationFn: (file: File) => smartAnalyzeExcel(file),
+    onSuccess: (r) => {
+      setResp(r);
+      // 初始化每个 sheet 的可编辑状态 = AI 建议
+      const init: typeof editedPlan = {};
+      r.sheets.forEach((s) => {
+        init[s.sheet_name] = {
+          entity_type: s.suggested_entity || 'unknown',
+          mapping: { ...s.mapping },
+        };
+      });
+      setEditedPlan(init);
+      setCommittedReports(null);
+      message.success(`AI 分析了 ${r.sheets.length} 个 sheet`);
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '分析失败'),
+  });
+
+  const commitMut = useMutation({
+    mutationFn: ({ dryRun }: { dryRun: boolean }) => {
+      if (!resp) throw new Error('no analysis');
+      const plan = resp.sheets
+        .filter((s) => {
+          const e = editedPlan[s.sheet_name];
+          return e && e.entity_type !== 'unknown' && Object.keys(e.mapping).length > 0;
+        })
+        .map((s) => ({
+          sheet_name: s.sheet_name,
+          entity_type: editedPlan[s.sheet_name].entity_type,
+          mapping: editedPlan[s.sheet_name].mapping,
+          header_row: s.header_row,
+          dry_run: dryRun,
+        }));
+      if (plan.length === 0) throw new Error('没有可导入的 sheet');
+      return smartCommitExcel({ file_b64: resp.file_b64, plan });
+    },
+    onSuccess: (r, vars) => {
+      setCommittedReports(r.reports);
+      message.success(`${vars.dryRun ? '试运行' : '导入'} 完成: ${r.reports.length} 个 sheet`);
+    },
+    onError: (e: any) => message.error(e?.message ?? e?.response?.data?.detail ?? '失败'),
+  });
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info" showIcon
+        message="智能模式: 上传任意 Excel, AI 自动识别每个 sheet 是哪类数据"
+        description={
+          <ul style={{ margin: 0, paddingLeft: 18 }}>
+            <li><b>🟢 良好</b>: 列名规范, 直接导</li>
+            <li><b>🟡 需确认</b>: 大体能识别, 你确认下列映射就行</li>
+            <li><b>🔴 太乱</b>: AI 给出具体哪几行/哪列有问题, 让员工先修 Excel 再导</li>
+          </ul>
+        }
+      />
+      <Card size="small">
+        <Dragger
+          accept=".xlsx,.xls"
+          showUploadList={false}
+          beforeUpload={(f) => { analyzeMut.mutate(f as File); return false; }}
+          disabled={analyzeMut.isPending}
+          multiple={false}
+        >
+          <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+          <p className="ant-upload-text">
+            {analyzeMut.isPending ? 'AI 正在分析每个 sheet...' : '点击或拖入任意 Excel'}
+          </p>
+          <p className="ant-upload-hint">
+            支持 26 个 sheet 一起分析, 每个 sheet 独立质量评分
+          </p>
+        </Dragger>
+      </Card>
+
+      {resp && (
+        <>
+          <Card size="small" title={`分析结果 (${resp.sheets.length} 个 sheet)`}
+                extra={
+                  <Space>
+                    <Button onClick={() => commitMut.mutate({ dryRun: true })}
+                            loading={commitMut.isPending}>
+                      试运行 (不入库)
+                    </Button>
+                    <Button type="primary"
+                            onClick={() => commitMut.mutate({ dryRun: false })}
+                            loading={commitMut.isPending}>
+                      一键全部导入 ({Object.values(editedPlan).filter(
+                        (e) => e.entity_type !== 'unknown' && Object.keys(e.mapping).length > 0,
+                      ).length} 个)
+                    </Button>
+                  </Space>
+                }>
+            <Tabs
+              destroyInactiveTabPane={false}
+              items={resp.sheets.map((s) => {
+                const qm = QUALITY_META[s.quality] || QUALITY_META.unknown;
+                const ed = editedPlan[s.sheet_name];
+                return {
+                  key: s.sheet_name,
+                  label: (
+                    <Space>
+                      <Tag color={qm.color}>{qm.label}</Tag>
+                      <span>{s.sheet_name}</span>
+                      <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                        {s.total_rows} 行
+                      </Typography.Text>
+                    </Space>
+                  ),
+                  children: (
+                    <SmartSheetEditor
+                      sheet={s}
+                      state={ed}
+                      onStateChange={(state) =>
+                        setEditedPlan((p) => ({ ...p, [s.sheet_name]: state }))
+                      }
+                    />
+                  ),
+                };
+              })}
+            />
+          </Card>
+
+          {committedReports && (
+            <Card size="small" title="导入报告">
+              <Table size="small" rowKey={(r) => r.sheet_name}
+                     pagination={false}
+                     dataSource={committedReports}
+                     columns={[
+                       { title: 'Sheet', dataIndex: 'sheet_name', width: 200 },
+                       { title: '实体', dataIndex: 'entity_type', width: 140 },
+                       { title: '总行', dataIndex: 'total_rows', width: 80 },
+                       { title: '已入', dataIndex: 'inserted_parents', width: 80,
+                         render: (v: number) => v ? <Tag color="green">{v}</Tag> : '-' },
+                       { title: '子项', dataIndex: 'inserted_children', width: 80,
+                         render: (v: number) => v ? <Tag>{v}</Tag> : '-' },
+                       { title: '跳过', dataIndex: 'skipped_rows', width: 80,
+                         render: (v: number) => v ? <Tag color="orange">{v}</Tag> : '-' },
+                       { title: '错误', dataIndex: 'errors',
+                         render: (v: string[]) => (v ?? []).length > 0 ?
+                           <Tag color="red">{v.length} 条</Tag> : '-' },
+                       { title: '其他', render: (r: any) =>
+                         r.skipped ? <Tag color="orange">{r.reason}</Tag> :
+                         r.error ? <Tag color="red">{r.error.slice(0, 60)}</Tag> : '-' },
+                     ]} />
+            </Card>
+          )}
+        </>
+      )}
+    </Space>
+  );
+}
+
+
+function SmartSheetEditor({ sheet, state, onStateChange }: {
+  sheet: SheetAnalysis;
+  state?: { entity_type: string; mapping: Record<string, string> };
+  onStateChange: (s: { entity_type: string; mapping: Record<string, string> }) => void;
+}) {
+  const { data: entityTypes = [] } = useQuery({
+    queryKey: ['importer-entity-types'],
+    queryFn: fetchEntityTypes,
+  });
+  const qm = QUALITY_META[sheet.quality] || QUALITY_META.unknown;
+  const entityType = state?.entity_type ?? 'unknown';
+  const mapping = state?.mapping ?? {};
+  const entity = entityTypes.find((e) => e.value === entityType);
+  const fields = entity?.fields ?? [];
+
+  const setMapping = (target: string, excelCol: string | undefined) => {
+    const next = { ...mapping };
+    if (excelCol) next[target] = excelCol;
+    else delete next[target];
+    onStateChange({ entity_type: entityType, mapping: next });
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Row gutter={16}>
+        <Col span={8}>
+          <Card size="small" title="质量评分">
+            <Statistic value={sheet.quality_score} suffix="/ 100"
+                       valueStyle={{ color: { good: '#52c41a', needs_review: '#fa8c16',
+                                              messy: '#cf1322' }[sheet.quality] || '#999' }} />
+            <Tag color={qm.color}>{qm.label}</Tag> — {qm.advice}
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card size="small" title="AI 判断">
+            <Space direction="vertical">
+              <Space>
+                <Tag color="blue">建议: {sheet.entity_label || '未知'}</Tag>
+                <span style={{ fontSize: 12, color: '#999' }}>
+                  置信度 {(sheet.confidence * 100).toFixed(0)}%
+                </span>
+              </Space>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                表头在第 {sheet.header_row} 行 · {sheet.columns.length} 列
+              </Typography.Text>
+            </Space>
+          </Card>
+        </Col>
+        <Col span={8}>
+          <Card size="small" title="实体类型 (可改)">
+            <Select style={{ width: '100%' }}
+                    value={entityType}
+                    onChange={(v) => onStateChange({ entity_type: v, mapping: {} })}
+                    options={[
+                      { value: 'unknown', label: '— 不导这个 sheet —' },
+                      ...entityTypes.map((e) => ({ value: e.value, label: e.label })),
+                    ]} />
+          </Card>
+        </Col>
+      </Row>
+
+      {sheet.issues.length > 0 && (
+        <Alert
+          type={sheet.quality === 'messy' ? 'error' : 'warning'}
+          showIcon
+          message={`检测到 ${sheet.issues.length} 个数据问题`}
+          description={
+            <Table size="small" pagination={false}
+                   rowKey={(_r, i) => String(i)}
+                   dataSource={sheet.issues}
+                   columns={[
+                     { title: '位置', width: 120, render: (i: any) =>
+                       i.row_offset === -1 ? '表头' :
+                       `第 ${sheet.header_row + i.row_offset + 1} 行 · ${i.column}` },
+                     { title: '原值', dataIndex: 'value', width: 150,
+                       render: (v: any) => v == null ? <i style={{ color: '#999' }}>空</i> :
+                         <code style={{ fontSize: 11 }}>{String(v).slice(0, 30)}</code> },
+                     { title: '问题', dataIndex: 'problem' },
+                     { title: '建议', dataIndex: 'fix' },
+                   ]} />
+          }
+        />
+      )}
+
+      {sheet.notes.length > 0 && (
+        <Alert type="info" message="其他提示"
+               description={<ul>{sheet.notes.map((n, i) => <li key={i}>{n}</li>)}</ul>} />
+      )}
+
+      {entityType !== 'unknown' && fields.length > 0 && (
+        <Card size="small" title="列映射 (AI 已填, 可调)">
+          <Table size="small" rowKey="name" pagination={false}
+                 dataSource={fields}
+                 columns={[
+                   { title: '目标字段', dataIndex: 'name', width: 180,
+                     render: (n: string, f: EntityField) => (
+                       <Space direction="vertical" size={0}>
+                         <Space>
+                           <strong>{n}</strong>
+                           {f.required && <Tag color="red">必填</Tag>}
+                         </Space>
+                         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                           {f.desc}
+                         </Typography.Text>
+                       </Space>
+                     ),
+                   },
+                   { title: '类型', dataIndex: 'type', width: 80,
+                     render: (t: string) => <Tag>{t}</Tag> },
+                   { title: 'Excel 列', width: 280,
+                     render: (_: any, f: EntityField) => (
+                       <Select allowClear style={{ width: '100%' }}
+                               value={mapping[f.name]}
+                               onChange={(v) => setMapping(f.name, v)}
+                               placeholder={f.required ? '(必选)' : '(可选)'}
+                               status={f.required && !mapping[f.name] ? 'error' : undefined}
+                               options={sheet.columns.map((c) => ({ value: c, label: c }))} />
+                     ),
+                   },
+                 ]} />
+        </Card>
+      )}
+
+      <Card size="small" title={`数据样本 (从第 ${sheet.header_row + 1} 行起)`}>
+        <Table size="small" pagination={false} scroll={{ x: true }}
+               dataSource={sheet.sample_rows.map((r, i) => ({
+                 key: i, ...Object.fromEntries(sheet.columns.map((c, j) => [c, r[j]])),
+               }))}
+               columns={sheet.columns.map((c) => ({
+                 title: c, dataIndex: c, ellipsis: true,
+                 render: (v: any) => v == null ? '' : String(v),
+               }))} />
+      </Card>
+    </Space>
   );
 }

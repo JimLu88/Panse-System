@@ -299,3 +299,65 @@ def cancel_import_job(
     if j is None:
         raise HTTPException(404, "作业不存在")
     return _job_out(j)
+
+
+# ----------------------------- 智能导入 (Phase 14) ----------------- #
+
+
+@router.post("/smart-analyze")
+async def smart_analyze(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """业务: 上传任意 Excel → AI 分析每个 sheet → 返回完整 plan.
+
+    返回 {file_b64, sheets: [SheetAnalysis...]}.
+    """
+    from app.services import smart_import_service
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "空文件")
+    if len(content) > 200 * 1024 * 1024:
+        raise HTTPException(413, "文件超过 200MB")
+    try:
+        result = smart_import_service.smart_analyze(db, content)
+    except excel_importer.ImporterError as e:
+        raise HTTPException(400, str(e))
+    return {
+        "file_b64": base64.b64encode(content).decode("ascii"),
+        **smart_import_service.to_dict(result),
+    }
+
+
+class SmartCommitItem(BaseModel):
+    sheet_name: str
+    entity_type: str
+    mapping: dict[str, str]
+    header_row: int = 1
+    dry_run: bool = False
+
+
+class SmartCommitIn(BaseModel):
+    file_b64: str
+    plan: list[SmartCommitItem]
+
+
+@router.post("/smart-commit")
+def smart_commit(
+    payload: SmartCommitIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """按用户在 UI 确认的 plan 一次导多个 sheet."""
+    from app.services import smart_import_service
+    try:
+        file_bytes = base64.b64decode(payload.file_b64.encode("ascii"))
+    except Exception as e:
+        raise HTTPException(400, f"file_b64 解码失败: {e}")
+    reports = smart_import_service.smart_commit(
+        db, file_bytes=file_bytes,
+        plan=[item.model_dump() for item in payload.plan],
+    )
+    db.commit()
+    return {"reports": reports}

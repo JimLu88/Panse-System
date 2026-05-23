@@ -1198,6 +1198,54 @@ export const fetchImportJobs = (limit = 50) =>
 export const cancelImportJob = (id: number) =>
   api.post<ImportJob>(`/api/importer/jobs/${id}/cancel`).then((r) => r.data);
 
+// ----- 智能 Excel 导入 (Phase 14) -----
+export interface SheetAnalysis {
+  sheet_name: string;
+  total_rows: number;
+  header_row: number;
+  columns: string[];
+  sample_rows: any[][];
+  suggested_entity: string | null;
+  entity_label: string | null;
+  confidence: number;
+  mapping: Record<string, string>;
+  skipped_columns: string[];
+  quality: 'good' | 'needs_review' | 'messy';
+  quality_score: number;
+  issues: Array<{ row_offset: number; column: string; value: any; problem: string; fix: string }>;
+  notes: string[];
+}
+
+export interface SmartAnalysisResp {
+  file_b64: string;
+  sheets: SheetAnalysis[];
+}
+
+export const smartAnalyzeExcel = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<SmartAnalysisResp>('/api/importer/smart-analyze', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+    })
+    .then((r) => r.data);
+};
+
+export const smartCommitExcel = (payload: {
+  file_b64: string;
+  plan: Array<{
+    sheet_name: string;
+    entity_type: string;
+    mapping: Record<string, string>;
+    header_row: number;
+    dry_run?: boolean;
+  }>;
+}) =>
+  api
+    .post<{ reports: any[] }>('/api/importer/smart-commit', payload, { timeout: 300000 })
+    .then((r) => r.data);
+
 // ----- 重启事件 (业务需求 5) -----
 export interface SystemEvent {
   id: number;

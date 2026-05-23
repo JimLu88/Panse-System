@@ -283,6 +283,12 @@ def commit_sheet(
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback)
+    elif entity_type in ("product", "material", "bom_line", "product_inventory",
+                          "part_inventory", "order", "account_balance"):
+        _commit_generic(
+            db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
+            progress_callback=progress_callback, cancel_callback=cancel_callback,
+        )
     else:  # pragma: no cover
         raise ImporterError(f"暂不支持 {entity_type} 的入库")
 
@@ -652,3 +658,204 @@ def _commit_alipay_flows(
                 )
         except Exception as e:  # pragma: no cover
             report.warnings.append(f"自动打标签失败 (不影响入库): {e}")
+
+
+# ----------------------------- 通用 entity 入库 (扩展) ----------------- #
+
+
+def _commit_generic(
+    db: Session, *, rows: list[dict], mapping: dict[str, str],
+    entity_type: str, report: ImportReport,
+    progress_callback: Optional[ProgressCallback] = None,
+    cancel_callback: Optional[CancelCallback] = None,
+) -> None:
+    """7 类简单 entity (产品/物料/BOM/库存/订单/账户余额) 统一入库.
+
+    每行 = 一条记录, 按"唯一字段"去重 upsert.
+    """
+    schema = get_schema(entity_type)
+    total = len(rows)
+    uniqueness_field = _UNIQUENESS_FIELD.get(entity_type)
+    # 已存在的 key 集合
+    inserted, updated, skipped = 0, 0, 0
+    for i, raw_row in enumerate(rows, start=1):
+        if i % _PROGRESS_TICK == 0:
+            if progress_callback:
+                progress_callback(i, total)
+            if cancel_callback and cancel_callback():
+                raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
+        projected, errs = _project(raw_row, mapping, schema)
+        if errs:
+            report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
+            skipped += 1
+            continue
+        try:
+            kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field)
+        except Exception as e:
+            report.errors.append(f"第 {i + 1} 行: {type(e).__name__}: {e}")
+            skipped += 1
+            continue
+        if did == "inserted":
+            inserted += 1
+        elif did == "updated":
+            updated += 1
+        else:
+            skipped += 1
+    report.inserted_parents += inserted
+    report.skipped_rows += skipped
+    if updated > 0:
+        report.warnings.append(f"{updated} 行更新已有记录")
+
+
+_UNIQUENESS_FIELD = {
+    "product": "code",
+    "material": "code",
+    "product_inventory": None,   # (warehouse, product_code, sku)
+    "part_inventory": None,       # (warehouse, material_code)
+    "bom_line": None,             # 无 upsert, 直接 add (一个产品多行)
+    "order": "order_no",
+    "account_balance": None,      # (account_name, year, month)
+}
+
+
+def _h_product(db, data, key_field):
+    from app.models.product import Product
+    code = data.get("code")
+    if not code:
+        raise ImporterError("缺产品编码")
+    existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
+    if existing:
+        for f, v in data.items():
+            if v is not None and hasattr(existing, f):
+                setattr(existing, f, v)
+        return "product", "updated"
+    db.add(Product(**{k: v for k, v in data.items() if v is not None}))
+    return "product", "inserted"
+
+
+def _h_material(db, data, key_field):
+    from app.models.material import Material
+    code = data.get("code")
+    name = data.get("name") or code
+    if not code:
+        raise ImporterError("缺物料编码")
+    existing = db.execute(select(Material).where(Material.code == code)).scalar_one_or_none()
+    if existing:
+        for f, v in data.items():
+            if v is not None and hasattr(existing, f):
+                setattr(existing, f, v)
+        return "material", "updated"
+    # name UNIQUE: 重名加 code 后缀
+    same_name = db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
+    if same_name and same_name.code != code:
+        name = f"{name} ({code})"
+    payload = {k: v for k, v in data.items() if v is not None}
+    payload["name"] = name
+    db.add(Material(**payload))
+    return "material", "inserted"
+
+
+def _h_bom(db, data, key_field):
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    product_code = data.get("product_code")
+    material_code = data.get("material_code")
+    if not product_code or not material_code:
+        raise ImporterError("缺 product_code 或 material_code")
+    # 物料不存在 → 自动建占位
+    if not db.execute(select(Material).where(Material.code == material_code)).scalar_one_or_none():
+        db.add(Material(code=material_code, name=f"占位 ({material_code})"))
+        db.flush()
+    db.add(BomLine(**{k: v for k, v in data.items() if v is not None}))
+    return "bom_line", "inserted"
+
+
+def _h_product_inv(db, data, key_field):
+    from app.models.inventory import ProductInventory
+    warehouse = data.get("warehouse") or "江西仓库"
+    product_code = data.get("product_code")
+    sku = data.get("sku")
+    if not product_code:
+        raise ImporterError("缺 product_code")
+    existing = db.execute(select(ProductInventory).where(
+        ProductInventory.warehouse == warehouse,
+        ProductInventory.product_code == product_code,
+        ProductInventory.sku == sku,
+    )).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    payload["warehouse"] = warehouse
+    if existing:
+        for f, v in payload.items():
+            setattr(existing, f, v)
+        return "product_inv", "updated"
+    db.add(ProductInventory(**payload))
+    return "product_inv", "inserted"
+
+
+def _h_part_inv(db, data, key_field):
+    from app.models.inventory import PartInventory
+    from app.models.material import Material
+    warehouse = data.get("warehouse") or "江西仓库"
+    material_code = data.get("material_code")
+    if not material_code:
+        raise ImporterError("缺 material_code")
+    if not db.execute(select(Material).where(Material.code == material_code)).scalar_one_or_none():
+        db.add(Material(code=material_code, name=f"占位 ({material_code})"))
+        db.flush()
+    existing = db.execute(select(PartInventory).where(
+        PartInventory.warehouse == warehouse,
+        PartInventory.material_code == material_code,
+    )).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    payload["warehouse"] = warehouse
+    if existing:
+        for f, v in payload.items():
+            setattr(existing, f, v)
+        return "part_inv", "updated"
+    db.add(PartInventory(**payload))
+    return "part_inv", "inserted"
+
+
+def _h_order(db, data, key_field):
+    from app.models.order import Order
+    order_no = data.get("order_no")
+    if not order_no:
+        raise ImporterError("缺 order_no")
+    existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if existing:
+        return "order", "skipped"   # 已有订单不动 (避免覆盖状态)
+    payload = {k: v for k, v in data.items() if v is not None}
+    payload.setdefault("platform", "淘宝")
+    payload.setdefault("qty", 1)
+    payload.setdefault("status", "signed")
+    payload.setdefault("is_historical", True)   # 通用导入默认标历史
+    db.add(Order(**payload))
+    return "order", "inserted"
+
+
+def _h_balance(db, data, key_field):
+    from app.models.finance import AccountBalance
+    name = data.get("account_name")
+    year = data.get("year")
+    month = data.get("month")
+    if not (name and year and month):
+        raise ImporterError("缺账户名/年/月")
+    existing = db.execute(select(AccountBalance).where(
+        AccountBalance.account_name == name,
+        AccountBalance.period_year == year,
+        AccountBalance.period_month == month,
+    )).scalar_one_or_none()
+    if existing:
+        return "balance", "skipped"
+    payload = {k: v for k, v in data.items() if v is not None}
+    payload["period_year"] = payload.pop("year")
+    payload["period_month"] = payload.pop("month")
+    db.add(AccountBalance(**payload))
+    return "balance", "inserted"
+
+
+_GENERIC_HANDLERS = {
+    "product": _h_product, "material": _h_material, "bom_line": _h_bom,
+    "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
+    "order": _h_order, "account_balance": _h_balance,
+}
