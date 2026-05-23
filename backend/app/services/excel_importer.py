@@ -284,7 +284,7 @@ def commit_sheet(
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
-                          "part_inventory", "order", "account_balance"):
+                          "part_inventory", "order", "account_balance", "pricing_sku"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             progress_callback=progress_callback, cancel_callback=cancel_callback,
@@ -854,8 +854,27 @@ def _h_balance(db, data, key_field):
     return "balance", "inserted"
 
 
+def _h_pricing_sku(db, data, key_field):
+    from app.models.pricing import PricingSku
+    sku_code = data.get("sku_code")
+    if not sku_code:
+        raise ImporterError("缺 sku_code")
+    existing = db.execute(select(PricingSku).where(
+        PricingSku.sku_code == sku_code,
+    )).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    if existing:
+        for f, v in payload.items():
+            if hasattr(existing, f):
+                setattr(existing, f, v)
+        return "pricing_sku", "updated"
+    db.add(PricingSku(**payload))
+    return "pricing_sku", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
     "order": _h_order, "account_balance": _h_balance,
+    "pricing_sku": _h_pricing_sku,
 }

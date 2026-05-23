@@ -94,11 +94,19 @@ class Status:
     NO_DOCKER = "no_docker"
 
 
+_HIDE_WINDOW_KW = {}
+if sys.platform == "win32":
+    # Phase: Windows 上 subprocess 不弹 cmd 黑窗 (30s 一次太烦)
+    _CREATE_NO_WINDOW = 0x08000000
+    _HIDE_WINDOW_KW = {"creationflags": _CREATE_NO_WINDOW}
+
+
 def _run(cmd: list[str], timeout: int = 10) -> tuple[int, str]:
     try:
         r = subprocess.run(cmd, capture_output=True, text=True,
                             timeout=timeout, cwd=str(PROJECT_ROOT),
-                            encoding="utf-8", errors="replace")
+                            encoding="utf-8", errors="replace",
+                            **_HIDE_WINDOW_KW)
         return r.returncode, (r.stdout + r.stderr)
     except (subprocess.TimeoutExpired, FileNotFoundError) as e:
         return -1, str(e)
