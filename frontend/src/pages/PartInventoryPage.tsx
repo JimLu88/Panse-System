@@ -18,6 +18,7 @@ import {
   PartInventory,
   addPartInventoryRow,
   listPartInventory,
+  updatePartInventory,
 } from '../api/client';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 
@@ -29,6 +30,24 @@ export default function PartInventoryPage() {
   });
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
+  const [editingQty, setEditingQty] = useState<Record<number, number>>({});
+  const [savingId, setSavingId] = useState<number | null>(null);
+
+  async function saveQty(id: number) {
+    const qty = editingQty[id];
+    if (qty === undefined) return;
+    setSavingId(id);
+    try {
+      await updatePartInventory(id, { physical_qty: qty });
+      message.success('库存已更新');
+      qc.invalidateQueries({ queryKey: ['part-inventory'] });
+      setEditingQty(prev => { const n = { ...prev }; delete n[id]; return n; });
+    } catch {
+      message.error('保存失败');
+    } finally {
+      setSavingId(null);
+    }
+  }
 
   const addMut = useMutation({
     mutationFn: addPartInventoryRow,
@@ -78,7 +97,34 @@ export default function PartInventoryPage() {
     },
     { title: '规格', dataIndex: 'spec', ellipsis: true },
     { title: '单位', dataIndex: 'unit', width: 70 },
-    { title: '物理库存', dataIndex: 'physical_qty', width: 90 },
+    {
+      title: '物理库存',
+      dataIndex: 'physical_qty',
+      width: 140,
+      render: (v: number, row: PartInventory) => (
+        <Space size={4}>
+          <InputNumber
+            size="small"
+            min={0}
+            value={editingQty[row.id] ?? v}
+            onChange={(val) =>
+              setEditingQty(prev => ({ ...prev, [row.id]: val ?? 0 }))
+            }
+            style={{ width: 70 }}
+          />
+          {editingQty[row.id] !== undefined && (
+            <Button
+              size="small"
+              type="primary"
+              loading={savingId === row.id}
+              onClick={() => saveQty(row.id)}
+            >
+              存
+            </Button>
+          )}
+        </Space>
+      ),
+    },
     { title: '锁定', dataIndex: 'locked_qty', width: 70 },
     { title: '可用', dataIndex: 'available_qty', width: 70 },
     { title: '备注', dataIndex: 'remark', ellipsis: true },

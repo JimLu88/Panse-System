@@ -5,9 +5,10 @@ import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
+import AiAssistantWidget from './components/AiAssistantWidget';
 import { useAuth } from './auth/AuthProvider';
 
-// Phase 12: 全部页面 lazy load — 把 1.6MB bundle 拆成 ~30 个小 chunk, 首屏只装登录所需
+// Phase 12+13: 全部页面 lazy load
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const PartInventoryPage = lazy(() => import('./pages/PartInventoryPage'));
 const ExceptionsPage = lazy(() => import('./pages/ExceptionsPage'));
@@ -37,6 +38,7 @@ const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 
 const { Header, Content } = Layout;
 
@@ -79,8 +81,10 @@ export default function App() {
   const seg = loc.pathname.split('/')[1] || 'products';
   const key = seg === 'bom' ? 'products' : seg;
 
-  // 分组下拉, 避免 26 个入口挤成一长条 (顶栏只剩 5 个分组)
+  // Phase 13: 截图录单提一级; 大盘 Dashboard 作首页
   const menuItems = [
+    { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
+    { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
     {
       key: 'g-product',
       label: '商品',
@@ -101,7 +105,6 @@ export default function App() {
         { key: 'orders', label: <Link to="/orders">订单</Link> },
         { key: 'orders-kanban', label: <Link to="/orders/kanban">看板</Link> },
         { key: 'customers', label: <Link to="/customers">客户</Link> },
-        { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
         { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
       ],
     },
@@ -133,7 +136,6 @@ export default function App() {
       label: '工具',
       children: [
         { key: 'importer', label: <Link to="/importer">Excel 导入</Link> },
-        { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
         ...(user.role === 'admin'
           ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }]
@@ -171,11 +173,13 @@ export default function App() {
         </Dropdown>
       </Header>
       <CommandPalette />
+      <AiAssistantWidget />
       <Content style={{ padding: 24 }}>
         <Suspense fallback={<PageFallback />}>
           <Routes>
-            <Route path="/" element={<Navigate to="/products" replace />} />
-            <Route path="/login" element={<Navigate to="/products" replace />} />
+            <Route path="/" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/bom/:productCode" element={<BomViewerPage />} />
             <Route path="/materials" element={<MaterialsPage />} />

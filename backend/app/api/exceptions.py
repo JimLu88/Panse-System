@@ -1,15 +1,21 @@
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select
+from pydantic import BaseModel
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.exception import DataException
 from app.schemas.exception import DataExceptionOut, DataExceptionResolve
+from app.services import data_quality_service, exception_fix_service
 
 router = APIRouter(prefix="/api/exceptions", tags=["exceptions"])
+
+
+class FixPayload(BaseModel):
+    fields: dict[str, Any]
 
 
 @router.get("", response_model=list[DataExceptionOut])
@@ -45,3 +51,42 @@ def resolve_exception(exception_id: int, payload: DataExceptionResolve, db: Sess
     db.commit()
     db.refresh(exc)
     return exc
+
+
+@router.post("/{exception_id}/fix", response_model=DataExceptionOut)
+def fix_exception(exception_id: int, payload: FixPayload, db: Session = Depends(get_db)):
+    """内联补填: 写回源表字段并解除异常."""
+    try:
+        exc = exception_fix_service.fix_exception(db, exception_id, payload.fields)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return exc
+
+
+@router.post("/run-data-quality", response_model=dict)
+def run_data_quality(db: Session = Depends(get_db)):
+    """触发全部数据完整性扫描, 返回各规则发现数."""
+    results = data_quality_service.run_all(db)
+    return results
+
+
+@router.get("/counts-by-type", response_model=dict)
+def counts_by_type(
+    status: str = Query("open"),
+    db: Session = Depends(get_db),
+):
+    """每种 exception_type 的待处理数, 供顶栏健康度角标和对账页使用."""
+    rows = (
+        db.query(DataException.exception_type, func.count(DataException.id))
+        .filter(DataException.status == status)
+        .group_by(DataException.exception_type)
+        .all()
+    )
+    return {r[0]: r[1] for r in rows}
+
+
+@router.get("/open-count", response_model=dict)
+def open_count(db: Session = Depends(get_db)):
+    """顶栏健康度角标用: 返回 {count: N}."""
+    n = db.query(func.count(DataException.id)).filter(DataException.status == "open").scalar()
+    return {"count": n or 0}

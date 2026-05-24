@@ -17,13 +17,14 @@ import {
   Table,
   Tabs,
   Tag,
-  Typography,
+  Tooltip,
   Upload,
   message,
 } from 'antd';
-import { CloudUploadOutlined, InboxOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, InboxOutlined, SearchOutlined } from '@ant-design/icons';
 import { useMutation } from '@tanstack/react-query';
 import {
+  ProductMatchResult,
   PurchaseLineParsed,
   PurchaseParseResp,
   PurchaseParsed,
@@ -31,6 +32,7 @@ import {
   QianniuParseResp,
   commitPurchaseScreenshot,
   commitQianniuOrders,
+  matchProduct,
   parsePurchaseScreenshot,
   parseQianniuScreenshot,
 } from '../api/client';
@@ -48,15 +50,38 @@ export default function ScreenshotImportPage() {
 
 // ----------------------------- 千牛 ----------------------------- //
 
+interface MatchState {
+  loading: boolean;
+  result?: ProductMatchResult;
+}
+
+function editCell(
+  value: string | undefined,
+  onChange: (v: string) => void,
+  placeholder?: string,
+) {
+  return (
+    <Input
+      value={value ?? ''}
+      size="small"
+      style={{ minWidth: 80 }}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 function QianniuTab() {
   const [resp, setResp] = useState<QianniuParseResp | null>(null);
   const [orders, setOrders] = useState<QianniuOrderParsed[]>([]);
+  const [matchStates, setMatchStates] = useState<Record<number, MatchState>>({});
 
   const parseMut = useMutation({
     mutationFn: (file: File) => parseQianniuScreenshot(file),
     onSuccess: (r) => {
       setResp(r);
       setOrders(r.orders);
+      setMatchStates({});
       message.success(`AI 识别出 ${r.orders.length} 条订单`);
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? 'OCR 失败'),
@@ -68,9 +93,152 @@ function QianniuTab() {
       message.success(`入库 ${r.inserted} 条; 跳过已存在 ${r.skipped_existing.length}`);
       setResp(null);
       setOrders([]);
+      setMatchStates({});
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '入库失败'),
   });
+
+  function setOrder(i: number, patch: Partial<QianniuOrderParsed>) {
+    setOrders(prev => { const n = [...prev]; n[i] = { ...n[i], ...patch }; return n; });
+  }
+
+  async function runMatch(i: number) {
+    const o = orders[i];
+    const pname = o.product_name ?? '';
+    if (!pname) return;
+    setMatchStates(prev => ({ ...prev, [i]: { loading: true } }));
+    try {
+      const res = await matchProduct(pname, o.sku ?? undefined);
+      setMatchStates(prev => ({ ...prev, [i]: { loading: false, result: res } }));
+      if (res.product_code) {
+        setOrder(i, {
+          product_name: res.product_name ?? o.product_name,
+        });
+      }
+    } catch {
+      setMatchStates(prev => ({ ...prev, [i]: { loading: false } }));
+    }
+  }
+
+  const columns = [
+    {
+      title: '订单号', dataIndex: 'order_no', width: 160,
+      render: (v: string, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { order_no: val })),
+    },
+    {
+      title: '下单时间', dataIndex: 'order_date', width: 120,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { order_date: val }), 'YYYY-MM-DD'),
+    },
+    {
+      title: '商品名称', dataIndex: 'product_name', width: 180,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) => (
+        <Space.Compact size="small">
+          <Input
+            value={v ?? ''}
+            size="small"
+            style={{ minWidth: 120 }}
+            onChange={(e) => setOrder(i, { product_name: e.target.value })}
+          />
+          <Tooltip title="匹配产品">
+            <Button
+              size="small"
+              icon={<SearchOutlined />}
+              loading={matchStates[i]?.loading}
+              onClick={() => runMatch(i)}
+            />
+          </Tooltip>
+        </Space.Compact>
+      ),
+    },
+    {
+      title: 'SKU', dataIndex: 'sku', width: 160,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { sku: val })),
+    },
+    {
+      title: '产品匹配', width: 140,
+      render: (_: unknown, _r: QianniuOrderParsed, i: number) => {
+        const ms = matchStates[i];
+        if (!ms?.result) return <span style={{ color: '#bbb', fontSize: 12 }}>-</span>;
+        const { product_code, confidence } = ms.result;
+        if (!product_code) return <Tag color="red">无匹配</Tag>;
+        return (
+          <Tooltip title={`置信度 ${(confidence * 100).toFixed(0)}%`}>
+            <Tag color={confidence >= 0.8 ? 'green' : 'orange'}>{product_code}</Tag>
+          </Tooltip>
+        );
+      },
+    },
+    {
+      title: '数量', dataIndex: 'qty', width: 70,
+      render: (v: number, _r: QianniuOrderParsed, i: number) => (
+        <InputNumber
+          value={v ?? 1} size="small" min={1} style={{ width: 60 }}
+          onChange={(n) => setOrder(i, { qty: Number(n || 1) })}
+        />
+      ),
+    },
+    {
+      title: '客户', dataIndex: 'customer_name', width: 90,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { customer_name: val })),
+    },
+    {
+      title: '电话', dataIndex: 'customer_phone', width: 120,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { customer_phone: val })),
+    },
+    {
+      title: '地址', dataIndex: 'customer_address', width: 200,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { customer_address: val })),
+    },
+    {
+      title: '实付', dataIndex: 'paid_amount', width: 90,
+      render: (v: number | undefined, _r: QianniuOrderParsed, i: number) => (
+        <InputNumber
+          value={v} size="small" min={0} step={0.01} style={{ width: 80 }}
+          onChange={(n) => setOrder(i, { paid_amount: Number(n ?? 0) })}
+        />
+      ),
+    },
+    {
+      title: '优惠', dataIndex: 'discount', width: 80,
+      render: (v: number | undefined, _r: QianniuOrderParsed, i: number) => (
+        <InputNumber
+          value={v} size="small" min={0} step={0.01} style={{ width: 70 }}
+          onChange={(n) => setOrder(i, { discount: Number(n ?? 0) })}
+        />
+      ),
+    },
+    {
+      title: '平台佣金', dataIndex: 'platform_fee', width: 80,
+      render: (v: number | undefined, _r: QianniuOrderParsed, i: number) => (
+        <InputNumber
+          value={v} size="small" min={0} step={0.01} style={{ width: 70 }}
+          onChange={(n) => setOrder(i, { platform_fee: Number(n ?? 0) })}
+        />
+      ),
+    },
+    {
+      title: '客户备注', dataIndex: 'remark', width: 160,
+      render: (v: string | undefined, _r: QianniuOrderParsed, i: number) =>
+        editCell(v, (val) => setOrder(i, { remark: val }), '备注'),
+    },
+    {
+      title: '置信度', dataIndex: 'confidence', width: 75,
+      render: (v: number) => v != null
+        ? <Tag color={v > 0.85 ? 'green' : v > 0.6 ? 'orange' : 'red'}>{(v * 100).toFixed(0)}%</Tag>
+        : '-',
+    },
+    {
+      title: '识别警告', dataIndex: 'warnings', width: 80,
+      render: (ws: string[]) => (ws ?? []).length > 0
+        ? <Tag color="orange">{ws.length} 项</Tag> : '-',
+    },
+  ];
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -78,7 +246,7 @@ function QianniuTab() {
         type="info"
         showIcon
         message="千牛后台订单截图 → AI 自动解析订单字段, 用户预览确认后入库"
-        description="支持订单号、SKU、数量、客户、地址、价格、优惠、平台佣金等全字段。识别后可手工修改, 不准确字段会高亮 warnings。"
+        description="支持全字段可编辑。点商品名旁的🔍可自动匹配系统产品编码。OCR 结果不准确字段会高亮 warnings。"
       />
       <Card size="small">
         <Dragger
@@ -102,63 +270,27 @@ function QianniuTab() {
       )}
 
       {orders.length > 0 && (
-        <Card size="small" title={`待入库订单 (${orders.length})`}
-              extra={
-                <Button type="primary" icon={<CloudUploadOutlined />}
-                        loading={commitMut.isPending}
-                        onClick={() => commitMut.mutate()}>
-                  确认入库
-                </Button>
-              }>
+        <Card
+          size="small"
+          title={`待入库订单 (${orders.length})`}
+          extra={
+            <Button
+              type="primary"
+              icon={<CloudUploadOutlined />}
+              loading={commitMut.isPending}
+              onClick={() => commitMut.mutate()}
+            >
+              确认入库
+            </Button>
+          }
+        >
           <Table
             size="small"
             rowKey={(_, i) => String(i)}
             dataSource={orders}
             pagination={false}
-            scroll={{ x: 1500 }}
-            columns={[
-              { title: '订单号', dataIndex: 'order_no', width: 180,
-                render: (v: string, _r: QianniuOrderParsed, i: number) => (
-                  <Input value={v} size="small" onChange={(e) => {
-                    const next = [...orders]; next[i] = { ...next[i], order_no: e.target.value };
-                    setOrders(next);
-                  }} />
-                ),
-              },
-              { title: '商品', dataIndex: 'product_name', width: 180,
-                render: (v: any, _r: QianniuOrderParsed, i: number) => (
-                  <Input value={v ?? ''} size="small" onChange={(e) => {
-                    const next = [...orders]; next[i] = { ...next[i], product_name: e.target.value };
-                    setOrders(next);
-                  }} />
-                ),
-              },
-              { title: 'SKU', dataIndex: 'sku', width: 180 },
-              { title: '数量', dataIndex: 'qty', width: 80,
-                render: (v: number, _r: QianniuOrderParsed, i: number) => (
-                  <InputNumber value={v ?? 1} size="small" min={1} onChange={(n) => {
-                    const next = [...orders]; next[i] = { ...next[i], qty: Number(n || 1) };
-                    setOrders(next);
-                  }} />
-                ),
-              },
-              { title: '客户', dataIndex: 'customer_name', width: 100 },
-              { title: '电话', dataIndex: 'customer_phone', width: 130 },
-              { title: '地址', dataIndex: 'customer_address', ellipsis: true },
-              { title: '实付', dataIndex: 'paid_amount', width: 90 },
-              { title: '优惠', dataIndex: 'discount', width: 80 },
-              { title: '平台佣金', dataIndex: 'platform_fee', width: 90 },
-              { title: '置信度', dataIndex: 'confidence', width: 80,
-                render: (v: number) => v != null ?
-                  <Tag color={v > 0.85 ? 'green' : v > 0.6 ? 'orange' : 'red'}>
-                    {(v * 100).toFixed(0)}%
-                  </Tag> : '-',
-              },
-              { title: '识别警告', dataIndex: 'warnings',
-                render: (ws: string[]) => (ws ?? []).length > 0 ?
-                  <Tag color="orange">{ws.length} 项</Tag> : '-',
-              },
-            ]}
+            scroll={{ x: 2000 }}
+            columns={columns as any}
           />
         </Card>
       )}

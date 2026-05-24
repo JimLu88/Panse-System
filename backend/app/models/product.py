@@ -24,3 +24,10 @@ class Product(Base, TimestampMixin):
 
     # 重要程度 (Phase 4 库存预警 / 滞销分级用): high / mid / low
     priority: Mapped[str] = mapped_column(String(8), default="mid", nullable=False)
+
+    # 主数据中心字段 (Phase 13)
+    image_url: Mapped[Optional[str]] = mapped_column(String(512))
+    custom_scope: Mapped[Optional[str]] = mapped_column(String(2000))  # 定制范围
+    size_detail: Mapped[Optional[str]] = mapped_column(String(2000))   # 尺寸明细
+    aux_material: Mapped[Optional[str]] = mapped_column(String(2000))  # 辅材介绍
+    description: Mapped[Optional[str]] = mapped_column(String(2000))   # 产品文案

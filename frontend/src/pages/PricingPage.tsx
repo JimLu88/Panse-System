@@ -1,10 +1,21 @@
-/**
- * 定价总表 (#3): 展示导入的全部 SKU 四档售价 + 成本/毛利.
- */
 import { useState } from 'react';
-import { Card, Input, Select, Space, Table, Typography } from 'antd';
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
-import { PricingSku, listPricingSkus } from '../api/client';
+import {
+  Button,
+  Card,
+  Form,
+  Input,
+  InputNumber,
+  Modal,
+  Select,
+  Space,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { PricingSku, createPricingSku, listPricingSkus, updatePricingSku } from '../api/client';
 
 const PAGE_SIZE = 50;
 
@@ -12,48 +23,131 @@ function money(v: number | null) {
   return v === null || v === undefined ? '-' : `¥${Number(v).toLocaleString()}`;
 }
 
+function SkuFormFields() {
+  return (
+    <>
+      <Space wrap style={{ width: '100%' }}>
+        <Form.Item name="product_code" label="产品编码" rules={[{ required: true }]} style={{ minWidth: 180 }}>
+          <Input placeholder="如 PS-24-21-001-0814" />
+        </Form.Item>
+        <Form.Item name="sku" label="SKU 描述">
+          <Input placeholder="如 榉木餐桌-1.4米" style={{ minWidth: 200 }} />
+        </Form.Item>
+        <Form.Item name="sku_code" label="SKU 编码">
+          <Input placeholder="系统自动生成可留空" style={{ minWidth: 160 }} />
+        </Form.Item>
+        <Form.Item name="size_category" label="尺寸分类">
+          <Select style={{ width: 100 }} options={[
+            { value: '小型', label: '小型' },
+            { value: '中型', label: '中型' },
+            { value: '大型', label: '大型' },
+          ]} allowClear />
+        </Form.Item>
+      </Space>
+      <Space wrap style={{ width: '100%' }}>
+        <Form.Item name="list_price" label="标价">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="daily_price" label="日常价">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="small_promo" label="小促价">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="mid_promo" label="中促价">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="big_promo" label="大促价">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+      </Space>
+      <Space wrap style={{ width: '100%' }}>
+        <Form.Item name="accounting_cost" label="会计成本">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="physical_cost" label="物理成本">
+          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
+        </Form.Item>
+        <Form.Item name="platform_fee_rate" label="平台佣金率">
+          <InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.05" />
+        </Form.Item>
+        <Form.Item name="tax" label="税率">
+          <InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.03" />
+        </Form.Item>
+      </Space>
+      <Form.Item name="image_url" label="图片 URL（选填）">
+        <Input placeholder="https://..." />
+      </Form.Item>
+    </>
+  );
+}
+
 export default function PricingPage() {
+  const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [sizeCategory, setSizeCategory] = useState<string | undefined>(undefined);
   const [page, setPage] = useState(1);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editRow, setEditRow] = useState<PricingSku | null>(null);
+  const [form] = Form.useForm();
 
   const { data, isFetching } = useQuery({
     queryKey: ['pricing-skus', q, sizeCategory, page],
     queryFn: () =>
-      listPricingSkus({
-        q: q || undefined,
-        size_category: sizeCategory,
-        limit: PAGE_SIZE,
-        offset: (page - 1) * PAGE_SIZE,
-      }),
+      listPricingSkus({ q: q || undefined, size_category: sizeCategory, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
     placeholderData: keepPreviousData,
   });
 
+  const createMut = useMutation({
+    mutationFn: createPricingSku,
+    onSuccess: () => {
+      message.success('定价 SKU 已创建');
+      setCreateOpen(false);
+      form.resetFields();
+      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
+      updatePricingSku(id, patch),
+    onSuccess: () => {
+      message.success('已更新');
+      setEditRow(null);
+      form.resetFields();
+      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '更新失败'),
+  });
+
+  function openEdit(row: PricingSku) {
+    setEditRow(row);
+    form.setFieldsValue(row);
+  }
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Typography.Title level={4} style={{ margin: 0 }}>
-        定价总表
-      </Typography.Title>
+      <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>
+          新增定价
+        </Button>
+      </Space>
       <Card size="small">
         <Space wrap>
           <Input.Search
             allowClear
             placeholder="搜产品编码 / SKU 编码 / 描述"
             style={{ width: 280 }}
-            onSearch={(v) => {
-              setQ(v);
-              setPage(1);
-            }}
+            onSearch={(v) => { setQ(v); setPage(1); }}
           />
           <Select
             allowClear
             placeholder="大小分类"
             style={{ width: 140 }}
             value={sizeCategory}
-            onChange={(v) => {
-              setSizeCategory(v);
-              setPage(1);
-            }}
+            onChange={(v) => { setSizeCategory(v); setPage(1); }}
             options={[
               { value: '小型', label: '小型' },
               { value: '中型', label: '中型' },
@@ -67,7 +161,7 @@ export default function PricingPage() {
         rowKey="id"
         loading={isFetching}
         dataSource={data?.items ?? []}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1200 }}
         pagination={{
           current: page,
           pageSize: PAGE_SIZE,
@@ -91,12 +185,53 @@ export default function PricingPage() {
             dataIndex: 'gross_margin_rate',
             width: 90,
             render: (v: number | null) =>
-              v === null || v === undefined ? '-' : `${(Number(v) * 100).toFixed(1)}%`,
+              v === null || v === undefined ? '-'
+                : <Tag color={v >= 0.3 ? 'green' : v >= 0.15 ? 'orange' : 'red'}>{(Number(v) * 100).toFixed(1)}%</Tag>,
           },
           { title: '会计成本', dataIndex: 'accounting_cost', width: 100, render: money },
           { title: '物理成本', dataIndex: 'physical_cost', width: 100, render: money },
+          {
+            title: '操作', width: 70, fixed: 'right',
+            render: (_: unknown, row: PricingSku) => (
+              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
+            ),
+          },
         ]}
       />
+
+      {/* 新增弹窗 */}
+      <Modal
+        title="新增定价 SKU"
+        open={createOpen}
+        onCancel={() => { setCreateOpen(false); form.resetFields(); }}
+        onOk={() => form.submit()}
+        confirmLoading={createMut.isPending}
+        width={720}
+        destroyOnClose
+      >
+        <Form form={form} layout="vertical" onFinish={(v) => createMut.mutate(v)}>
+          <SkuFormFields />
+        </Form>
+      </Modal>
+
+      {/* 编辑弹窗 */}
+      <Modal
+        title={`编辑定价 — ${editRow?.sku_code}`}
+        open={!!editRow}
+        onCancel={() => { setEditRow(null); form.resetFields(); }}
+        onOk={() => form.submit()}
+        confirmLoading={updateMut.isPending}
+        width={720}
+        destroyOnClose
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={(v) => editRow && updateMut.mutate({ id: editRow.id, patch: v })}
+        >
+          <SkuFormFields />
+        </Form>
+      </Modal>
     </Space>
   );
 }

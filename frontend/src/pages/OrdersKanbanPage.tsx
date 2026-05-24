@@ -5,9 +5,10 @@
  * 简化版用按钮"推进/取消", 不用拖拽库, 保持 0 依赖.
  */
 import { useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Row, Space, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Empty, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { CheckCircleOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { changeOrderStatus, listOrders } from '../api/client';
+import { changeOrderStatus, confirmOrderManual, confirmOrderTracking, listOrders } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 
 const COLUMNS: { key: string; label: string; color: string; next?: string }[] = [
@@ -32,6 +33,24 @@ export default function OrdersKanbanPage() {
       changeOrderStatus(id, status),
     onSuccess: () => {
       message.success('已更新状态');
+      qc.invalidateQueries({ queryKey: ['orders-kanban'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
+  });
+
+  const trackingMut = useMutation({
+    mutationFn: (id: number) => confirmOrderTracking(id),
+    onSuccess: () => {
+      message.success('快递核对完成');
+      qc.invalidateQueries({ queryKey: ['orders-kanban'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
+  });
+
+  const manualMut = useMutation({
+    mutationFn: (id: number) => confirmOrderManual(id),
+    onSuccess: () => {
+      message.success('人工确认完成');
       qc.invalidateQueries({ queryKey: ['orders-kanban'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
@@ -68,8 +87,15 @@ export default function OrdersKanbanPage() {
                        description={<span style={{ color: '#bbb' }}>无</span>} />
               ) : (
                 grouped[col.key].map((o: any) => (
-                  <Card key={o.id} size="small" style={{ marginBottom: 6 }}
-                        styles={{ body: { padding: 8 } }}>
+                  <Card
+                    key={o.id}
+                    size="small"
+                    style={{
+                      marginBottom: 6,
+                      borderColor: o.signoff_questioned ? '#faad14' : undefined,
+                    }}
+                    styles={{ body: { padding: 8 } }}
+                  >
                     <Space direction="vertical" size={2} style={{ width: '100%' }}>
                       <strong style={{ fontSize: 12 }}>{o.order_no}</strong>
                       <Typography.Text style={{ fontSize: 11 }} type="secondary">
@@ -78,16 +104,48 @@ export default function OrdersKanbanPage() {
                       <Typography.Text style={{ fontSize: 11 }}>
                         ¥{o.paid_amount ?? '0'}
                       </Typography.Text>
-                      <Space size={4} style={{ marginTop: 4 }}>
+                      {o.signoff_questioned && (
+                        <Tag color="warning" icon={<QuestionCircleOutlined />} style={{ fontSize: 11 }}>
+                          签收有疑问
+                        </Tag>
+                      )}
+                      <Space size={4} style={{ marginTop: 4 }} wrap>
                         <Button size="small" onClick={() => setTimelineFor(o.id)}>
                           时间线
                         </Button>
-                        {col.next && (
-                          <Button size="small" type="link"
-                                  loading={transMut.isPending}
-                                  onClick={() => transMut.mutate({
-                                    id: o.id, status: col.next!,
-                                  })}>
+                        {col.key === 'shipped' && (
+                          <>
+                            <Tooltip title="确认快递单号已核对">
+                              <Button
+                                size="small"
+                                icon={<CheckCircleOutlined />}
+                                type={o.tracking_confirmed ? 'primary' : 'default'}
+                                loading={trackingMut.isPending}
+                                onClick={() => !o.tracking_confirmed && trackingMut.mutate(o.id)}
+                              >
+                                快递{o.tracking_confirmed ? '✓' : ''}
+                              </Button>
+                            </Tooltip>
+                            <Tooltip title="人工确认已签收">
+                              <Button
+                                size="small"
+                                icon={<CheckCircleOutlined />}
+                                type={o.manual_confirmed ? 'primary' : 'default'}
+                                loading={manualMut.isPending}
+                                onClick={() => !o.manual_confirmed && manualMut.mutate(o.id)}
+                              >
+                                人工{o.manual_confirmed ? '✓' : ''}
+                              </Button>
+                            </Tooltip>
+                          </>
+                        )}
+                        {col.next && col.key !== 'shipped' && (
+                          <Button
+                            size="small"
+                            type="link"
+                            loading={transMut.isPending}
+                            onClick={() => transMut.mutate({ id: o.id, status: col.next! })}
+                          >
                             → {COLUMNS.find((c) => c.key === col.next)?.label}
                           </Button>
                         )}

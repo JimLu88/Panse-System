@@ -72,6 +72,11 @@ class Order(Base, TimestampMixin):
     last_outbound_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     # 最近一次出货时间, 滞销 / 复购分析用
 
+    # 双核对签收 (Phase 13)
+    tracking_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    manual_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    signoff_questioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
     )

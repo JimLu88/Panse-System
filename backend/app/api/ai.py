@@ -98,6 +98,64 @@ class AiLogOut(BaseModel):
     created_at: str
 
 
+class ReconcileWalkthroughOut(BaseModel):
+    issues: list[dict]
+    ai_used: bool
+    total: int
+
+
+@router.post("/reconcile-walkthrough", response_model=ReconcileWalkthroughOut)
+def reconcile_walkthrough(db: Session = Depends(get_db)):
+    """对账 AI 走查: 汇总所有 open 异常 + 对账差异, AI 逐项定位/查因/建议修复."""
+    from app.services import reconciliation_service
+    from app.models.exception import DataException
+    from sqlalchemy import select
+
+    # 汇总 open 异常
+    exceptions = db.execute(
+        select(DataException).where(DataException.status == "open").limit(50)
+    ).scalars().all()
+
+    issues = []
+    ai_used = False
+
+    if not ai_assistant.is_configured(db):
+        # 无 AI: 返回确定性提示
+        for exc in exceptions:
+            issues.append({
+                "id": exc.id,
+                "type": exc.exception_type,
+                "description": exc.description,
+                "suggestion": exc.suggestion_action,
+                "source": f"{exc.source_table}/{exc.source_pk}",
+            })
+        return ReconcileWalkthroughOut(issues=issues, ai_used=False, total=len(issues))
+
+    # 有 AI: 批量分析
+    for exc in exceptions:
+        try:
+            log, ai = ai_assistant.diagnose_exception(db, exc.id)
+            db.commit()
+            issues.append({
+                "id": exc.id,
+                "type": exc.exception_type,
+                "description": exc.description,
+                "ai_analysis": ai.text if ai else exc.suggestion_action,
+                "source": f"{exc.source_table}/{exc.source_pk}",
+            })
+            ai_used = True
+        except Exception:
+            issues.append({
+                "id": exc.id,
+                "type": exc.exception_type,
+                "description": exc.description,
+                "suggestion": exc.suggestion_action,
+                "source": f"{exc.source_table}/{exc.source_pk}",
+            })
+
+    return ReconcileWalkthroughOut(issues=issues, ai_used=ai_used, total=len(issues))
+
+
 @router.get("/logs", response_model=list[AiLogOut])
 def list_logs(limit: int = 50, db: Session = Depends(get_db)):
     from sqlalchemy import select

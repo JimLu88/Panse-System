@@ -2,12 +2,12 @@
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.services import customization_service
+from app.services import customization_ai_service, customization_service
 
 router = APIRouter(prefix="/api/customization", tags=["customization"])
 
@@ -65,6 +65,45 @@ class ConfirmOut(BaseModel):
     custom_variant_id: int
     custom_sku_code: str
     cloned_bom_lines: int
+
+
+class PriceBreakdownItemOut(BaseModel):
+    label: str
+    amount: float
+    note: str = ""
+
+
+class AiQuoteOut(BaseModel):
+    base_product: Optional[str]
+    base_sku: Optional[str]
+    base_size: Optional[str]
+    changes: list[str]
+    est_price: Optional[float]
+    breakdown: list[PriceBreakdownItemOut]
+    ai_used: bool
+    model: Optional[str]
+    error: Optional[str]
+
+
+@router.post("/ai-quote", response_model=AiQuoteOut)
+async def ai_quote(
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    data = await image.read()
+    mime = image.content_type or "image/jpeg"
+    result = customization_ai_service.ai_quote(db, data, mime)
+    return AiQuoteOut(
+        base_product=result.base_product,
+        base_sku=result.base_sku,
+        base_size=result.base_size,
+        changes=result.changes,
+        est_price=result.est_price,
+        breakdown=[PriceBreakdownItemOut(**b.__dict__) for b in result.breakdown],
+        ai_used=result.ai_used,
+        model=result.model,
+        error=result.error,
+    )
 
 
 @router.post("/confirm", response_model=ConfirmOut, status_code=201)

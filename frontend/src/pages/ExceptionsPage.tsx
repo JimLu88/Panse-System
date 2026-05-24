@@ -1,6 +1,10 @@
 import {
   Alert,
   Button,
+  Descriptions,
+  Form,
+  Input,
+  InputNumber,
   Modal,
   Segmented,
   Space,
@@ -10,16 +14,18 @@ import {
   Typography,
   message,
 } from 'antd';
-import { RobotOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { EditOutlined, RobotOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AiDiagnoseResult,
   DataException,
   aiDiagnose,
+  fixException,
   listExceptions,
   resolveException,
   runAllScanners,
+  runDataQuality,
 } from '../api/client';
 
 const severityColor: Record<string, string> = {
@@ -28,10 +34,52 @@ const severityColor: Record<string, string> = {
   error: 'red',
 };
 
+// 根据异常类型渲染不同的补填字段
+function FixFormFields({ exc }: { exc: DataException }) {
+  const t = exc.exception_type;
+  if (t === 'order_missing_cost') return (
+    <>
+      <Form.Item name="theoretical_cost" label="理论成本 (¥)"><InputNumber style={{ width: '100%' }} min={0} step={0.01} /></Form.Item>
+      <Form.Item name="actual_cost" label="实际成本 (¥)"><InputNumber style={{ width: '100%' }} min={0} step={0.01} /></Form.Item>
+    </>
+  );
+  if (t === 'order_missing_alipay') return (
+    <Form.Item name="remark" label="备注 (临时标注流水号)"><Input /></Form.Item>
+  );
+  if (t === 'order_missing_tracking') return (
+    <>
+      <Form.Item name="carrier" label="承运商"><Input placeholder="顺丰 / 京东 / 德邦" /></Form.Item>
+      <Form.Item name="tracking_no" label="物流单号" rules={[{ required: true }]}><Input /></Form.Item>
+    </>
+  );
+  if (t === 'alipay_missing_txn') return (
+    <Form.Item name="transaction_no" label="交易流水号" rules={[{ required: true }]}><Input /></Form.Item>
+  );
+  if (t === 'factory_recon_incomplete') return (
+    <>
+      <Form.Item name="bill_amount" label="工厂账单金额"><InputNumber style={{ width: '100%' }} step={0.01} /></Form.Item>
+      <Form.Item name="paid_amount" label="实际支付金额"><InputNumber style={{ width: '100%' }} step={0.01} /></Form.Item>
+      <Form.Item name="alipay_flow_no" label="支付宝流水号"><Input /></Form.Item>
+    </>
+  );
+  if (t === 'outsourcing_missing') return (
+    <>
+      <Form.Item name="alipay_flow_no" label="支付宝流水号"><Input /></Form.Item>
+      <Form.Item name="payment_date" label="支付日期"><Input type="date" /></Form.Item>
+    </>
+  );
+  // 通用: 显示提示
+  return (
+    <Alert type="info" message="此异常类型无内联补填模板，请手动前往对应页面修改后点「已处理」。" />
+  );
+}
+
 export default function ExceptionsPage() {
   const qc = useQueryClient();
   const [status, setStatus] = useState<'open' | 'resolved' | 'ignored'>('open');
   const [diagnoseOpen, setDiagnoseOpen] = useState<{ exc: DataException; result?: AiDiagnoseResult } | null>(null);
+  const [fixOpen, setFixOpen] = useState<DataException | null>(null);
+  const [fixForm] = Form.useForm();
 
   const { data, isLoading } = useQuery({
     queryKey: ['exceptions', status],
@@ -65,6 +113,27 @@ export default function ExceptionsPage() {
     },
   });
 
+  const dqMut = useMutation({
+    mutationFn: runDataQuality,
+    onSuccess: (res) => {
+      const total = Object.values(res).filter(v => v > 0).length;
+      message.success(`数据完整性扫描完成，发现 ${total} 类问题`);
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+    },
+  });
+
+  const fixMut = useMutation({
+    mutationFn: ({ id, fields }: { id: number; fields: Record<string, unknown> }) =>
+      fixException(id, fields),
+    onSuccess: () => {
+      message.success('已补填并解除异常');
+      setFixOpen(null);
+      fixForm.resetFields();
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '补填失败'),
+  });
+
   const handleDiagnose = (exc: DataException) => {
     setDiagnoseOpen({ exc });
     diagnoseMut.mutate(exc.id);
@@ -91,7 +160,14 @@ export default function ExceptionsPage() {
       width: 230,
       render: (_: unknown, row: DataException) =>
         row.status === 'open' ? (
-          <Space size="small">
+          <Space size="small" wrap>
+            <Button
+              size="small"
+              icon={<EditOutlined />}
+              onClick={() => { setFixOpen(row); fixForm.resetFields(); }}
+            >
+              补填
+            </Button>
             <Button
               size="small"
               icon={<RobotOutlined />}
@@ -126,6 +202,13 @@ export default function ExceptionsPage() {
           异常处理 (Phase 3.5)
         </Typography.Title>
         <Space>
+          <Button
+            icon={<ThunderboltOutlined />}
+            onClick={() => dqMut.mutate()}
+            loading={dqMut.isPending}
+          >
+            数据完整性扫描
+          </Button>
           <Button
             icon={<ThunderboltOutlined />}
             onClick={() => scanMut.mutate()}
@@ -212,6 +295,40 @@ export default function ExceptionsPage() {
                 </>
               )
             ) : null}
+          </Space>
+        )}
+      </Modal>
+      {/* 内联补填弹窗 */}
+      <Modal
+        title={<span><EditOutlined style={{ marginRight: 6 }} />补填数据 — 异常 #{fixOpen?.id}</span>}
+        open={!!fixOpen}
+        onCancel={() => { setFixOpen(null); fixForm.resetFields(); }}
+        onOk={() => fixForm.submit()}
+        confirmLoading={fixMut.isPending}
+        destroyOnClose
+        width={520}
+      >
+        {fixOpen && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Descriptions size="small" column={1} bordered>
+              <Descriptions.Item label="来源">{fixOpen.source_table} / {fixOpen.source_pk}</Descriptions.Item>
+              <Descriptions.Item label="问题">{fixOpen.description}</Descriptions.Item>
+              <Descriptions.Item label="建议">{fixOpen.suggestion_action}</Descriptions.Item>
+            </Descriptions>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              在下方填写要修正的字段值（字段名必须与系统字段一致）
+            </Typography.Text>
+            <Form
+              form={fixForm}
+              layout="vertical"
+              onFinish={(vals) => {
+                const ctx = fixOpen.context as Record<string, unknown> | null;
+                // 动态生成补填表单基于 exception_type
+                fixMut.mutate({ id: fixOpen.id, fields: vals });
+              }}
+            >
+              <FixFormFields exc={fixOpen} />
+            </Form>
           </Space>
         )}
       </Modal>

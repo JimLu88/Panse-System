@@ -1,15 +1,28 @@
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
+from app.models.auth import User
 from app.models.product import Product
+from app.api.pricing import PricingSkuOut
+from app.models.pricing import PricingSku
 from app.schemas.product import ProductCreate, ProductOut, ProductUpdate, TaobaoIdsUpdate
-from app.services import product_coder
+from app.services import product_coder, product_match_service
 
 router = APIRouter(prefix="/api/products", tags=["products"])
+
+
+class ProductMatchOut(BaseModel):
+    product_code: Optional[str]
+    product_name: Optional[str]
+    sku_code: Optional[str]
+    sku: Optional[str]
+    confidence: float
 
 
 @router.get("", response_model=list[ProductOut])
@@ -83,6 +96,32 @@ def update_taobao_ids(
     db.commit()
     db.refresh(prod)
     return prod
+
+
+@router.get("/match", response_model=ProductMatchOut)
+def match_product(
+    product_name: str = Query(""),
+    sku_text: str = Query("", alias="sku"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """截图录单 / 微定制 AI 用: 模糊匹配系统产品 + SKU."""
+    return product_match_service.match(db, product_name, sku_text)
+
+
+@router.get("/{product_code}/skus", response_model=list[PricingSkuOut])
+def list_product_skus(
+    product_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """产品主数据中心: 展开 SKU 列表."""
+    rows = db.execute(
+        select(PricingSku)
+        .where(PricingSku.product_code == product_code)
+        .order_by(PricingSku.sku_code)
+    ).scalars().all()
+    return [PricingSkuOut.model_validate(r) for r in rows]
 
 
 @router.get("/lookup-by-taobao-id/{taobao_id}", response_model=ProductOut)

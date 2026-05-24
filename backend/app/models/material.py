@@ -42,6 +42,11 @@ class Material(Base, TimestampMixin):
     primary_supplier_id: Mapped[Optional[int]] = mapped_column(Integer)
     alt_supplier_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
 
+    # 微定制面积计算字段 (Phase 13)
+    area: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))    # 单件面积 m²
+    width_mm: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
+    height_mm: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
+
     __table_args__ = (
         Index("ix_materials_name_unique", "name", unique=True),
     )

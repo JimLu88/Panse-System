@@ -237,6 +237,12 @@ def _job_feishu_sync(db: Session) -> dict:
     }
 
 
+def _job_data_quality(db: Session) -> dict:
+    """每日数据完整性扫描 (B1-B11)."""
+    from app.services import data_quality_service
+    return data_quality_service.run_all(db)
+
+
 def _job_post_import_logic_check(db: Session) -> dict:
     """兜底: 每日对全量数据跑一次 AI 逻辑核查 (补导入时漏掉的)."""
     from app.services import post_import_ai_service
@@ -269,6 +275,8 @@ def _register_default_jobs() -> None:
                  _job_feishu_sync, interval_minutes=30)
     register_job("daily_11_ai_logic_check", "AI 数据逻辑核查 (兜底)",
                  _job_post_import_logic_check, cron={"hour": 11, "minute": 0})
+    register_job("daily_08_data_quality", "数据完整性扫描 (B1-B11)",
+                 _job_data_quality, cron={"hour": 8, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #

@@ -121,6 +121,7 @@ export interface PricingSku {
   physical_cost: number | null;
   platform_fee_rate: number | null;
   tax: number | null;
+  image_url?: string | null;
 }
 
 export const listPricingSkus = (params: {
@@ -240,6 +241,11 @@ export interface Product {
   brand: string | null;
   category: string | null;
   remark: string | null;
+  image_url?: string | null;
+  custom_scope?: string | null;
+  size_detail?: string | null;
+  aux_material?: string | null;
+  description?: string | null;
 }
 
 export const listProducts = (q?: string) =>
@@ -251,6 +257,11 @@ export const createProduct = (payload: {
   category: string;
   category_label?: string;
   remark?: string;
+  image_url?: string;
+  custom_scope?: string;
+  size_detail?: string;
+  aux_material?: string;
+  description?: string;
 }) => api.post<Product>('/api/products', payload).then((r) => r.data);
 
 // ----- Product Inventory (4a) -----
@@ -480,6 +491,9 @@ export interface Order {
   carrier: string | null;
   tracking_no: string | null;
   paid_amount: string | null;
+  tracking_confirmed?: boolean;
+  manual_confirmed?: boolean;
+  signoff_questioned?: boolean;
 }
 
 export const listOrders = (params: {
@@ -1865,3 +1879,105 @@ export const testNotifyConfig = () =>
   api
     .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
     .then((r) => r.data);
+
+// ===== Phase 13: 产品主数据中心 / 异常工作台 / Dashboard =====
+
+// -- 产品匹配
+export interface ProductMatchResult {
+  product_code: string | null;
+  product_name: string | null;
+  sku_code: string | null;
+  sku: string | null;
+  confidence: number;
+}
+export const matchProduct = (product_name: string, sku?: string) =>
+  api.get<ProductMatchResult>('/api/products/match', { params: { product_name, sku } }).then(r => r.data);
+
+// -- 产品 SKU 列表 (展开行用)
+export const listProductSkus = (product_code: string) =>
+  api.get<PricingSku[]>(`/api/products/${product_code}/skus`).then(r => r.data);
+
+// -- 定价录入/编辑
+export interface PricingSkuCreate {
+  product_code: string; sku_code: string; sku?: string; size_category?: string;
+  list_price?: number; daily_price?: number; small_promo?: number; mid_promo?: number; big_promo?: number;
+  accounting_cost?: number; physical_cost?: number; platform_fee_rate?: number; tax?: number; image_url?: string;
+}
+export const createPricingSku = (payload: PricingSkuCreate) =>
+  api.post<PricingSku>('/api/pricing-skus', payload).then(r => r.data);
+export const updatePricingSku = (id: number, payload: Partial<PricingSkuCreate>) =>
+  api.patch<PricingSku>(`/api/pricing-skus/${id}`, payload).then(r => r.data);
+export const recomputePricingSku = (id: number) =>
+  api.post<PricingSku>(`/api/pricing-skus/${id}/recompute`).then(r => r.data);
+
+// -- 库存可编辑
+export const updatePartInventory = (id: number, payload: { physical_qty?: number; remark?: string }) =>
+  api.patch(`/api/inventory/parts/${id}`, payload).then(r => r.data);
+export const updateProductInventory = (id: number, payload: { qty?: number; remark?: string }) =>
+  api.patch(`/api/inventory/products/${id}`, payload).then(r => r.data);
+
+// -- 异常工作台
+export const fixException = (id: number, fields: Record<string, unknown>) =>
+  api.post(`/api/exceptions/${id}/fix`, { fields }).then(r => r.data);
+export const runDataQuality = () =>
+  api.post<Record<string, number>>('/api/exceptions/run-data-quality').then(r => r.data);
+export const getExceptionCounts = () =>
+  api.get<Record<string, number>>('/api/exceptions/counts-by-type').then(r => r.data);
+export const getOpenExceptionCount = () =>
+  api.get<{ count: number }>('/api/exceptions/open-count').then(r => r.data);
+
+// -- AI 对账走查
+export interface ReconcileWalkthroughResult {
+  issues: Array<{
+    id?: number; type: string; description: string; ai_analysis?: string; suggestion?: string; source: string;
+  }>;
+  ai_used: boolean;
+  total: number;
+}
+export const reconcileWalkthrough = () =>
+  api.post<ReconcileWalkthroughResult>('/api/ai/reconcile-walkthrough').then(r => r.data);
+
+// -- Dashboard
+export interface DashboardData {
+  orders: {
+    status_counts: Record<string, number>;
+    trend_30d: Array<{ date: string; count: number; revenue: number }>;
+    total_30d: number;
+    revenue_30d: number;
+    count_7d: number;
+  };
+  inventory: { part_total: number; part_negative: number; product_total: number; product_low_stock: number };
+  finance: { alipay_income_30d: number; order_revenue_30d: number };
+  health: { open_exceptions: number; health_score: number };
+}
+export const getDashboard = () =>
+  api.get<DashboardData>('/api/dashboard').then(r => r.data);
+
+// -- 订单双核对签收
+export const confirmOrderTracking = (orderId: number) =>
+  api.post(`/api/orders/${orderId}/confirm-tracking`).then(r => r.data);
+export const confirmOrderManual = (orderId: number) =>
+  api.post(`/api/orders/${orderId}/confirm-manual`).then(r => r.data);
+
+// -- 微定制 AI 报价
+export interface AiQuoteBreakdown {
+  label: string;
+  amount: number;
+  note: string;
+}
+export interface AiQuoteResult {
+  base_product: string | null;
+  base_sku: string | null;
+  base_size: string | null;
+  changes: string[];
+  est_price: number | null;
+  breakdown: AiQuoteBreakdown[];
+  ai_used: boolean;
+  model: string | null;
+  error: string | null;
+}
+export const aiCustomizationQuote = (file: File): Promise<AiQuoteResult> => {
+  const fd = new FormData();
+  fd.append('image', file);
+  return api.post<AiQuoteResult>('/api/customization/ai-quote', fd).then(r => r.data);
+};

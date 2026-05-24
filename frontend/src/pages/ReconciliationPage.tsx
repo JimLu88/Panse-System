@@ -1,8 +1,11 @@
 import {
   Alert,
+  Badge,
+  Button,
   Card,
   Col,
   Empty,
+  List,
   Row,
   Space,
   Spin,
@@ -11,9 +14,18 @@ import {
   Tabs,
   Tag,
   Typography,
+  message,
 } from 'antd';
-import { useQuery } from '@tanstack/react-query';
-import { ReconciliationDiff, ReconciliationResult, runReconciliation } from '../api/client';
+import { ThunderboltOutlined } from '@ant-design/icons';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ReconcileWalkthroughResult,
+  ReconciliationDiff,
+  ReconciliationResult,
+  reconcileWalkthrough,
+  runReconciliation,
+} from '../api/client';
+import { useState } from 'react';
 
 const RULE_LABELS: Record<string, { label: string; desc: string }> = {
   factory_payment: { label: '货款对账', desc: '工厂应付 ↔ 支付宝(工厂付款)' },
@@ -32,9 +44,30 @@ const SEVERITY_COLOR: Record<string, string> = {
 };
 
 export default function ReconciliationPage() {
-  const { data, isLoading } = useQuery({
+  const qc = useQueryClient();
+  const [walkthroughResult, setWalkthroughResult] = useState<ReconcileWalkthroughResult | null>(null);
+
+  const { data, isLoading, refetch } = useQuery({
     queryKey: ['reconciliation'],
     queryFn: () => runReconciliation() as Promise<Record<string, ReconciliationResult>>,
+  });
+
+  const runMut = useMutation({
+    mutationFn: () => runReconciliation() as Promise<Record<string, ReconciliationResult>>,
+    onSuccess: (res) => {
+      qc.setQueryData(['reconciliation'], res);
+      message.success('对账完成');
+    },
+    onError: () => message.error('对账失败'),
+  });
+
+  const walkthroughMut = useMutation({
+    mutationFn: reconcileWalkthrough,
+    onSuccess: (res) => {
+      setWalkthroughResult(res);
+      message.success(`AI 走查完成，发现 ${res.total} 条问题`);
+    },
+    onError: () => message.error('AI 走查失败'),
   });
 
   if (isLoading) return <Spin />;
@@ -42,9 +75,28 @@ export default function ReconciliationPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Typography.Title level={4} style={{ margin: 0 }}>
-        财务对账面板 — plan §8 六条规则
-      </Typography.Title>
+      <Space style={{ justifyContent: 'space-between', width: '100%' }}>
+        <Typography.Title level={4} style={{ margin: 0 }}>
+          财务对账面板 — plan §8 六条规则
+        </Typography.Title>
+        <Space>
+          <Button
+            icon={<ThunderboltOutlined />}
+            loading={walkthroughMut.isPending}
+            onClick={() => walkthroughMut.mutate()}
+          >
+            AI 走查
+          </Button>
+          <Button
+            type="primary"
+            icon={<ThunderboltOutlined />}
+            loading={runMut.isPending}
+            onClick={() => runMut.mutate()}
+          >
+            立即对账
+          </Button>
+        </Space>
+      </Space>
 
       <Row gutter={[12, 12]}>
         {Object.entries(data).map(([rule, res]) => (
@@ -54,11 +106,18 @@ export default function ReconciliationPage() {
                 <span>{RULE_LABELS[rule]?.label ?? rule}</span>
                 {res.error_count > 0 && <Tag color="red">{res.error_count} 严重</Tag>}
                 {res.warning_count > 0 && <Tag color="orange">{res.warning_count} 提示</Tag>}
+                {(res as any).unresolved_count > 0 && (
+                  <Badge count={(res as any).unresolved_count} title="未对清异常数" />
+                )}
               </Space>
             }>
               <Space>
                 <Statistic title="OK" value={res.ok_count} valueStyle={{ color: '#3f8600' }} />
-                <Statistic title="差异" value={res.warning_count + res.error_count} valueStyle={{ color: res.error_count > 0 ? '#cf1322' : '#d4b106' }} />
+                <Statistic
+                  title="差异"
+                  value={res.warning_count + res.error_count}
+                  valueStyle={{ color: res.error_count > 0 ? '#cf1322' : '#d4b106' }}
+                />
                 <Statistic title="总计" value={res.total_diffs} />
               </Space>
               <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
@@ -68,6 +127,33 @@ export default function ReconciliationPage() {
           </Col>
         ))}
       </Row>
+
+      {walkthroughResult && (
+        <Card
+          size="small"
+          title={
+            <Space>
+              <span>AI 走查结果</span>
+              <Tag color="blue">{walkthroughResult.total} 条</Tag>
+              {walkthroughResult.ai_used && <Tag color="purple">AI 分析</Tag>}
+            </Space>
+          }
+          extra={<Button size="small" onClick={() => setWalkthroughResult(null)}>关闭</Button>}
+        >
+          <List
+            size="small"
+            dataSource={walkthroughResult.issues.slice(0, 30)}
+            renderItem={(item) => (
+              <List.Item>
+                <Tag color="warning" style={{ fontSize: 11 }}>{item.type}</Tag>
+                <Typography.Text style={{ fontSize: 13 }}>
+                  {item.ai_analysis || item.suggestion || item.description}
+                </Typography.Text>
+              </List.Item>
+            )}
+          />
+        </Card>
+      )}
 
       <Tabs
         items={Object.entries(data).map(([rule, res]) => ({
@@ -100,27 +186,20 @@ function DiffTable({ rule, result }: { rule: string; result: ReconciliationResul
       width: 90,
       render: (v: string) => <Tag color={SEVERITY_COLOR[v] ?? 'default'}>{v}</Tag>,
     },
-    { title: '业务键', dataIndex: 'key', width: 200, ellipsis: true,
-      render: (v: string) => <code style={{ fontSize: 11 }}>{v}</code> },
     {
-      title: '主表 (应/账面)',
-      dataIndex: 'expected',
-      width: 130,
-      align: 'right' as const,
+      title: '业务键', dataIndex: 'key', width: 200, ellipsis: true,
+      render: (v: string) => <code style={{ fontSize: 11 }}>{v}</code>,
+    },
+    {
+      title: '主表 (应/账面)', dataIndex: 'expected', width: 130, align: 'right' as const,
       render: (v: string | null) => v != null ? `¥${v}` : '-',
     },
     {
-      title: '校验 (实/对照)',
-      dataIndex: 'actual',
-      width: 130,
-      align: 'right' as const,
+      title: '校验 (实/对照)', dataIndex: 'actual', width: 130, align: 'right' as const,
       render: (v: string | null) => v != null ? `¥${v}` : '-',
     },
     {
-      title: '差额',
-      dataIndex: 'diff',
-      width: 110,
-      align: 'right' as const,
+      title: '差额', dataIndex: 'diff', width: 110, align: 'right' as const,
       render: (v: string | null) =>
         v == null ? '-' : (
           <span style={{ color: Number(v) === 0 ? '#666' : Number(v) > 0 ? '#3f8600' : '#cf1322', fontWeight: 600 }}>

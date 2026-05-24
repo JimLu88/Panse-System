@@ -1,14 +1,23 @@
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import get_current_user
+from app.models.auth import User
 from app.models.inventory import PartInventory
 from app.models.material import Material
 from app.schemas.inventory import PartInventoryAddResponse, PartInventoryCreate, PartInventoryOut
 from app.services import inventory_service
+
+
+class PartInventoryPatch(BaseModel):
+    physical_qty: Optional[Decimal] = None
+    remark: Optional[str] = None
 
 router = APIRouter(prefix="/api/inventory/parts", tags=["inventory"])
 
@@ -73,3 +82,21 @@ def add_part_inventory_row(payload: PartInventoryCreate, db: Session = Depends(g
         material_name=mat.name,
         material_created=result.material_created,
     )
+
+
+@router.patch("/{inventory_id}", response_model=PartInventoryOut)
+def update_part_inventory(
+    inventory_id: int,
+    payload: PartInventoryPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """盘库调整: 修改配件库存数量 (physical_qty)."""
+    inv = db.get(PartInventory, inventory_id)
+    if not inv:
+        raise HTTPException(404, "inventory row not found")
+    for k, v in payload.model_dump(exclude_unset=True).items():
+        setattr(inv, k, v)
+    db.commit()
+    db.refresh(inv)
+    return _to_out(inv)

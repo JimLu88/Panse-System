@@ -25,7 +25,8 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertItem, dismissAlert, fetchActiveAlerts } from '../api/client';
+import { AlertItem, dismissAlert, fetchActiveAlerts, getOpenExceptionCount } from '../api/client';
+import { Link } from 'react-router-dom';
 
 const SEVERITY_COLOR: Record<string, string> = {
   info: 'blue', warn: 'orange', critical: 'red',
@@ -175,11 +176,29 @@ export default function NotificationBell() {
     </div>
   );
 
+  const { data: excData } = useQuery({
+    queryKey: ['open-exception-count'],
+    queryFn: getOpenExceptionCount,
+    refetchInterval: 60_000,
+  });
+  const openExceptions = excData?.count ?? 0;
+  const excColor = openExceptions > 10 ? '#cf1322' : openExceptions > 3 ? '#fa8c16' : '#52c41a';
+
   const total = alerts.length;
   const colorByPriority = counts.critical > 0 ? '#cf1322' : counts.warn > 0 ? '#fa8c16' : '#1677ff';
 
   return (
     <>
+      {openExceptions > 0 && (
+        <Link to="/exceptions" style={{ marginRight: 8 }}>
+          <Badge count={openExceptions} size="small" style={{ backgroundColor: excColor }} title={`${openExceptions} 条未处理异常`}>
+            <Tag color={openExceptions > 10 ? 'red' : openExceptions > 3 ? 'orange' : 'green'}
+                 style={{ cursor: 'pointer', margin: 0 }}>
+              异常 {openExceptions}
+            </Tag>
+          </Badge>
+        </Link>
+      )}
       <Dropdown popupRender={() => dropdown} trigger={['click']} placement="bottomRight">
         <Button
           type="text"

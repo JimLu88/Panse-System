@@ -20,6 +20,11 @@ class ProductUpdate(BaseModel):
     category: Optional[str] = None
     remark: Optional[str] = None
     taobao_id: Optional[str] = None
+    image_url: Optional[str] = None
+    custom_scope: Optional[str] = None
+    size_detail: Optional[str] = None
+    aux_material: Optional[str] = None
+    description: Optional[str] = None
 
 
 class TaobaoIdsUpdate(BaseModel):
@@ -37,3 +42,8 @@ class ProductOut(BaseModel):
     remark: Optional[str]
     taobao_id: Optional[str] = None
     alt_taobao_ids: Optional[list[str]] = None
+    image_url: Optional[str] = None
+    custom_scope: Optional[str] = None
+    size_detail: Optional[str] = None
+    aux_material: Optional[str] = None
+    description: Optional[str] = None
