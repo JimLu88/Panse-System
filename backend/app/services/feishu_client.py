@@ -13,7 +13,7 @@ import logging
 import time
 from typing import Any, Optional
 
-import requests
+import httpx
 from sqlalchemy.orm import Session
 
 from app.services import settings_service
@@ -46,12 +46,12 @@ def get_tenant_access_token(db: Session, *, force: bool = False) -> str:
     if cached and not force and cached[1] > now + 60:
         return cached[0]
     try:
-        r = requests.post(
+        r = httpx.post(
             f"{_BASE}/auth/v3/tenant_access_token/internal",
             json={"app_id": app_id, "app_secret": app_secret},
             timeout=_TIMEOUT,
         )
-    except requests.RequestException as e:
+    except httpx.HTTPError as e:
         raise FeishuError(f"获取飞书 token 网络失败: {e}") from e
     data = _json(r)
     if data.get("code") != 0:
@@ -61,7 +61,7 @@ def get_tenant_access_token(db: Session, *, force: bool = False) -> str:
     return token
 
 
-def _json(r: requests.Response) -> dict:
+def _json(r: httpx.Response) -> dict:
     try:
         return r.json()
     except ValueError as e:
@@ -75,8 +75,8 @@ def _headers(db: Session) -> dict:
 
 def _req(db: Session, method: str, url: str, **kwargs) -> dict:
     try:
-        r = requests.request(method, url, headers=_headers(db), timeout=_TIMEOUT, **kwargs)
-    except requests.RequestException as e:
+        r = httpx.request(method, url, headers=_headers(db), timeout=_TIMEOUT, **kwargs)
+    except httpx.HTTPError as e:
         raise FeishuError(f"飞书请求网络失败: {e}") from e
     data = _json(r)
     if data.get("code") != 0:
