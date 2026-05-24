@@ -29,6 +29,8 @@ _SECRET_KEYS = {
     "ai_ocr_api_key",
     # webhook URL 含 token, 视为机密
     "notify_webhook",
+    # 飞书应用凭证
+    "feishu_app_secret",
 }
 
 
@@ -127,21 +129,32 @@ def mask_secret(value: Optional[str]) -> str:
 
 
 # AI 配置一组：方便业务代码直接拿一份 provider config。
+def _raw_ai_config(db: Session, kind: str) -> dict:
+    return {
+        "provider": get(db, f"ai_{kind}_provider"),
+        "base_url": get(db, f"ai_{kind}_base_url"),
+        "api_key": get(db, f"ai_{kind}_api_key"),
+        "model": get(db, f"ai_{kind}_model"),
+    }
+
+
 def get_ai_config(db: Session, kind: str) -> dict:
     """kind in {'diagnose', 'ocr'}.
 
-    返回:
-        {provider, base_url, api_key, model}
-    所有键都可能为空 — 上层自己判 fallback / 未配置。
+    返回 {provider, base_url, api_key, model}。
+
+    单把 key 全局生效: 本槽位没填 api_key 时, 整组回落到另一槽位
+    (diagnose ↔ ocr), 再回落到 env ANTHROPIC_API_KEY / ai_model。
+    这样用户只在任意一处配 key, AI 助手 + 截图 OCR 都能用。
     """
     assert kind in {"diagnose", "ocr"}
     settings = get_settings()
-    # diagnose 默认 fallback 到旧的 ANTHROPIC_API_KEY + ai_model
-    fallback_key = settings.anthropic_api_key if kind == "diagnose" else ""
-    fallback_model = settings.ai_model if kind == "diagnose" else ""
+    other = "ocr" if kind == "diagnose" else "diagnose"
+    own = _raw_ai_config(db, kind)
+    src = own if own["api_key"] else _raw_ai_config(db, other)
     return {
-        "provider": get(db, f"ai_{kind}_provider") or "anthropic",
-        "base_url": get(db, f"ai_{kind}_base_url") or "",
-        "api_key": get(db, f"ai_{kind}_api_key") or fallback_key,
-        "model": get(db, f"ai_{kind}_model") or fallback_model,
+        "provider": src["provider"] or "anthropic",
+        "base_url": src["base_url"] or "",
+        "api_key": src["api_key"] or settings.anthropic_api_key,
+        "model": src["model"] or settings.ai_model,
     }

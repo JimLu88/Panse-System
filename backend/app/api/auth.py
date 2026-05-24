@@ -118,6 +118,70 @@ def list_users(
     return [MeOut.model_validate(u) for u in db.execute(select(User).order_by(User.id)).scalars()]
 
 
+class UserUpdateIn(BaseModel):
+    username: Optional[str] = Field(None, min_length=3, max_length=64)
+    display_name: Optional[str] = None
+    role: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+@router.patch("/users/{user_id}", response_model=MeOut)
+def update_user(
+    user_id: int,
+    payload: UserUpdateIn,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(404, "用户不存在")
+    try:
+        auth_service.update_user(
+            db, u, username=payload.username, display_name=payload.display_name,
+            role=payload.role, is_active=payload.is_active,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    db.refresh(u)
+    return MeOut.model_validate(u)
+
+
+class PasswordResetIn(BaseModel):
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/users/{user_id}/password", status_code=204)
+def reset_password(
+    user_id: int,
+    payload: PasswordResetIn,
+    db: Session = Depends(get_db),
+    _admin: User = Depends(require_role("admin")),
+):
+    u = db.get(User, user_id)
+    if u is None:
+        raise HTTPException(404, "用户不存在")
+    auth_service.set_password(db, u, payload.new_password)
+    db.commit()
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str
+    new_password: str = Field(..., min_length=6)
+
+
+@router.post("/me/password", status_code=204)
+def change_my_password(
+    payload: ChangePasswordIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    if not auth_service.verify_password(payload.old_password, user.password_hash):
+        raise HTTPException(400, "原密码错误")
+    auth_service.set_password(db, user, payload.new_password)
+    db.commit()
+
+
 class RolesOut(BaseModel):
     roles: list[str]
     descriptions: dict[str, str]

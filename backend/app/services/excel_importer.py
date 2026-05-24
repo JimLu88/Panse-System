@@ -65,6 +65,9 @@ class ImportReport:
     matched_lines: int = 0           # delivery_note 自动匹配命中数
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    # 重导冲突: 行匹配到已有记录但字段值不同 (on_conflict != overwrite 时不自动覆盖)
+    # [{source_table, source_pk, diffs: [{field, old, new}]}]
+    conflicts: list[dict] = field(default_factory=list)
 
 
 class ImporterError(RuntimeError):
@@ -242,10 +245,17 @@ def commit_sheet(
     auto_create_suppliers: bool = True,
     auto_match_orders: bool = True,
     dry_run: bool = False,
+    on_conflict: str = "overwrite",
+    sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
 ) -> ImportReport:
-    """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消)."""
+    """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消).
+
+    on_conflict: overwrite (默认, 直接覆盖已有记录) / keep (保留原值) /
+                 ask (记录差异到 report.conflicts 但不覆盖, 等用户裁决).
+    sheet_account: 支付宝流水专用 — 当 sheet 没有账户列时, 用这个账户名填充每行.
+    """
     if file_bytes is None and file_path is None:
         raise ImporterError("必须提供 file_bytes 或 file_path 之一")
     if file_bytes is None:
@@ -253,7 +263,9 @@ def commit_sheet(
             file_bytes = f.read()
 
     schema = get_schema(entity_type)
-    _validate_mapping(schema, mapping)
+    # 支付宝流水允许账户名走 sheet_account 注入, 不强制映射 account 列
+    externally_satisfied = {"account"} if (entity_type == "alipay_flow" and sheet_account) else set()
+    _validate_mapping(schema, mapping, satisfied=externally_satisfied)
 
     rows = _read_all_rows(file_bytes, sheet_name)
     report = ImportReport(
@@ -281,12 +293,14 @@ def commit_sheet(
                                cancel_callback=cancel_callback)
     elif entity_type == "alipay_flow":
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
+                             sheet_account=sheet_account,
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
+            on_conflict=on_conflict,
             progress_callback=progress_callback, cancel_callback=cancel_callback,
         )
     else:  # pragma: no cover
@@ -302,10 +316,10 @@ def commit_sheet(
     return report
 
 
-def _validate_mapping(schema, mapping: dict[str, str]) -> None:
+def _validate_mapping(schema, mapping: dict[str, str], *, satisfied: set = frozenset()) -> None:
     missing = [
         fn for fn, f in schema["fields"].items()
-        if f.get("required") and fn not in mapping
+        if f.get("required") and fn not in mapping and fn not in satisfied
     ]
     if missing:
         raise ImporterError(
@@ -593,11 +607,15 @@ def _commit_factory_orders(
 
 def _commit_alipay_flows(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
+    sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
 ) -> None:
     """支付宝流水: (account, transaction_no) 唯一. 自动跑 smart_matching_service.run()
-    给新进来的流水打标签 (factory_payment/promotion/etc)."""
+    给新进来的流水打标签 (factory_payment/promotion/etc).
+
+    sheet_account: 当 sheet 没有账户列 (账户名写在 sheet 名/标题) 时, 用它填充每行账户。
+    """
     schema = get_schema("alipay_flow")
     fresh_ids: list[int] = []
     total = len(rows)
@@ -612,7 +630,7 @@ def _commit_alipay_flows(
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
             report.skipped_rows += 1
             continue
-        account = projected.get("account")
+        account = projected.get("account") or sheet_account
         tx_no = projected.get("transaction_no")
         amount = projected.get("amount")
         if not account or not tx_no or amount is None:
@@ -663,21 +681,79 @@ def _commit_alipay_flows(
 # ----------------------------- 通用 entity 入库 (扩展) ----------------- #
 
 
+@dataclass
+class _GenericCtx:
+    """传给 generic handler 的上下文 (冲突策略 + 收集差异)."""
+    report: ImportReport
+    on_conflict: str = "overwrite"   # overwrite / keep / ask
+
+
+def _jsonable(v: Any) -> Any:
+    if isinstance(v, Decimal):
+        return float(v)
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()
+    return v
+
+
+def _diff_fields(existing, payload: dict) -> list[dict]:
+    """对比已有记录与新值, 只返回真正变化的字段 [{field, old, new}]."""
+    diffs: list[dict] = []
+    for f, new in payload.items():
+        if not hasattr(existing, f):
+            continue
+        old = getattr(existing, f)
+        if isinstance(old, Decimal) and new is not None:
+            try:
+                if Decimal(str(new)) == old:
+                    continue
+            except (InvalidOperation, ValueError):
+                pass
+        if old == new:
+            continue
+        diffs.append({"field": f, "old": _jsonable(old), "new": _jsonable(new)})
+    return diffs
+
+
+def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
+                  source_table: str, source_pk) -> str:
+    """upsert 命中已有记录时的统一处理: 比 diff + 按 on_conflict 决定覆盖/记冲突."""
+    diffs = _diff_fields(existing, payload)
+    if not diffs:
+        return "skipped"   # 值完全相同, 不算更新
+    if ctx is None or ctx.on_conflict == "overwrite":
+        for f, v in payload.items():
+            if hasattr(existing, f):
+                setattr(existing, f, v)
+        return "updated"
+    if ctx.on_conflict == "keep":
+        return "skipped"   # 保留原值, 不动
+    # ask: 记录差异, 不覆盖, 等用户裁决
+    ctx.report.conflicts.append({
+        "source_table": source_table,
+        "source_pk": str(source_pk) if source_pk is not None else None,
+        "diffs": diffs,
+    })
+    return "conflict"
+
+
 def _commit_generic(
     db: Session, *, rows: list[dict], mapping: dict[str, str],
     entity_type: str, report: ImportReport,
+    on_conflict: str = "overwrite",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
 ) -> None:
     """7 类简单 entity (产品/物料/BOM/库存/订单/账户余额) 统一入库.
 
     每行 = 一条记录, 按"唯一字段"去重 upsert.
+    on_conflict 控制重导命中已有记录且值不同时的行为 (见 commit_sheet).
     """
     schema = get_schema(entity_type)
     total = len(rows)
     uniqueness_field = _UNIQUENESS_FIELD.get(entity_type)
-    # 已存在的 key 集合
-    inserted, updated, skipped = 0, 0, 0
+    ctx = _GenericCtx(report=report, on_conflict=on_conflict)
+    inserted, updated, skipped, conflicted = 0, 0, 0, 0
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
             if progress_callback:
@@ -690,7 +766,7 @@ def _commit_generic(
             skipped += 1
             continue
         try:
-            kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field)
+            kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field, ctx)
         except Exception as e:
             report.errors.append(f"第 {i + 1} 行: {type(e).__name__}: {e}")
             skipped += 1
@@ -699,12 +775,16 @@ def _commit_generic(
             inserted += 1
         elif did == "updated":
             updated += 1
+        elif did == "conflict":
+            conflicted += 1
         else:
             skipped += 1
     report.inserted_parents += inserted
-    report.skipped_rows += skipped
+    report.skipped_rows += skipped + conflicted
     if updated > 0:
         report.warnings.append(f"{updated} 行更新已有记录")
+    if conflicted > 0:
+        report.warnings.append(f"{conflicted} 行与库内数据不同, 待人工确认 (见 conflicts)")
 
 
 _UNIQUENESS_FIELD = {
@@ -718,22 +798,20 @@ _UNIQUENESS_FIELD = {
 }
 
 
-def _h_product(db, data, key_field):
+def _h_product(db, data, key_field, ctx=None):
     from app.models.product import Product
     code = data.get("code")
     if not code:
         raise ImporterError("缺产品编码")
+    payload = {k: v for k, v in data.items() if v is not None}
     existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
     if existing:
-        for f, v in data.items():
-            if v is not None and hasattr(existing, f):
-                setattr(existing, f, v)
-        return "product", "updated"
-    db.add(Product(**{k: v for k, v in data.items() if v is not None}))
+        return "product", _apply_update(existing, payload, ctx, "products", code)
+    db.add(Product(**payload))
     return "product", "inserted"
 
 
-def _h_material(db, data, key_field):
+def _h_material(db, data, key_field, ctx=None):
     from app.models.material import Material
     code = data.get("code")
     name = data.get("name") or code
@@ -741,10 +819,8 @@ def _h_material(db, data, key_field):
         raise ImporterError("缺物料编码")
     existing = db.execute(select(Material).where(Material.code == code)).scalar_one_or_none()
     if existing:
-        for f, v in data.items():
-            if v is not None and hasattr(existing, f):
-                setattr(existing, f, v)
-        return "material", "updated"
+        return "material", _apply_update(
+            existing, {k: v for k, v in data.items() if v is not None}, ctx, "materials", code)
     # name UNIQUE: 重名加 code 后缀
     same_name = db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
     if same_name and same_name.code != code:
@@ -755,7 +831,7 @@ def _h_material(db, data, key_field):
     return "material", "inserted"
 
 
-def _h_bom(db, data, key_field):
+def _h_bom(db, data, key_field, ctx=None):
     from app.models.bom import BomLine
     from app.models.material import Material
     product_code = data.get("product_code")
@@ -770,7 +846,7 @@ def _h_bom(db, data, key_field):
     return "bom_line", "inserted"
 
 
-def _h_product_inv(db, data, key_field):
+def _h_product_inv(db, data, key_field, ctx=None):
     from app.models.inventory import ProductInventory
     warehouse = data.get("warehouse") or "江西仓库"
     product_code = data.get("product_code")
@@ -785,14 +861,14 @@ def _h_product_inv(db, data, key_field):
     payload = {k: v for k, v in data.items() if v is not None}
     payload["warehouse"] = warehouse
     if existing:
-        for f, v in payload.items():
-            setattr(existing, f, v)
-        return "product_inv", "updated"
+        return "product_inv", _apply_update(
+            existing, payload, ctx, "product_inventory",
+            f"{warehouse}|{product_code}|{sku}")
     db.add(ProductInventory(**payload))
     return "product_inv", "inserted"
 
 
-def _h_part_inv(db, data, key_field):
+def _h_part_inv(db, data, key_field, ctx=None):
     from app.models.inventory import PartInventory
     from app.models.material import Material
     warehouse = data.get("warehouse") or "江西仓库"
@@ -809,14 +885,36 @@ def _h_part_inv(db, data, key_field):
     payload = {k: v for k, v in data.items() if v is not None}
     payload["warehouse"] = warehouse
     if existing:
-        for f, v in payload.items():
-            setattr(existing, f, v)
-        return "part_inv", "updated"
+        return "part_inv", _apply_update(
+            existing, payload, ctx, "part_inventory", f"{warehouse}|{material_code}")
     db.add(PartInventory(**payload))
     return "part_inv", "inserted"
 
 
-def _h_order(db, data, key_field):
+def _is_custom_code(db, sku_code, product_code) -> bool:
+    """定制编码识别: SKU 尾部后缀 >= 阈值 (默认 90, 含 99/98/97)."""
+    if not sku_code:
+        return False
+    from app.services import sku_utils
+    threshold = db.info.setdefault("_custom_sku_threshold", sku_utils.get_threshold(db))
+    return sku_utils.is_custom_sku_code(sku_code, product_code, threshold)
+
+
+def _flag_custom(db, source_table: str, source_pk, sku_code) -> None:
+    from app.services import exception_service
+    exception_service.record(
+        db,
+        source_table=source_table,
+        source_pk=str(source_pk) if source_pk is not None else None,
+        exception_type="custom_sku_detected",
+        severity="info",
+        description=f"识别到定制编码 {sku_code} (后缀达定制阈值), 已自动标记定制, 请复核.",
+        suggestion_action="view",
+        context={"sku_code": sku_code},
+    )
+
+
+def _h_order(db, data, key_field, ctx=None):
     from app.models.order import Order
     order_no = data.get("order_no")
     if not order_no:
@@ -829,12 +927,17 @@ def _h_order(db, data, key_field):
     payload.setdefault("qty", 1)
     payload.setdefault("status", "signed")
     payload.setdefault("is_historical", True)   # 通用导入默认标历史
+    # 定制编码自动识别 (后缀 >= 阈值, 如 99/98/97)
+    if _is_custom_code(db, payload.get("sku_code"), payload.get("product_code")):
+        payload["is_custom"] = True
+        _flag_custom(db, "orders", order_no, payload.get("sku_code"))
     db.add(Order(**payload))
     return "order", "inserted"
 
 
-def _h_balance(db, data, key_field):
+def _h_balance(db, data, key_field, ctx=None):
     from app.models.finance import AccountBalance
+    _ = ctx
     name = data.get("account_name")
     year = data.get("year")
     month = data.get("month")
@@ -854,7 +957,7 @@ def _h_balance(db, data, key_field):
     return "balance", "inserted"
 
 
-def _h_pricing_sku(db, data, key_field):
+def _h_pricing_sku(db, data, key_field, ctx=None):
     from app.models.pricing import PricingSku
     sku_code = data.get("sku_code")
     if not sku_code:
@@ -864,10 +967,9 @@ def _h_pricing_sku(db, data, key_field):
     )).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
-        for f, v in payload.items():
-            if hasattr(existing, f):
-                setattr(existing, f, v)
-        return "pricing_sku", "updated"
+        return "pricing_sku", _apply_update(existing, payload, ctx, "pricing_sku", sku_code)
+    if _is_custom_code(db, sku_code, payload.get("product_code")):
+        _flag_custom(db, "pricing_sku", sku_code, sku_code)
     db.add(PricingSku(**payload))
     return "pricing_sku", "inserted"
 

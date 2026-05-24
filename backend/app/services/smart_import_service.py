@@ -385,15 +385,19 @@ def smart_commit(
     plan: list[dict],
 ) -> list[dict]:
     """按用户确认的 plan 全部导入. plan 元素:
-        {sheet_name, entity_type, mapping, header_row, dry_run?}
-    返回每个 sheet 的报告.
+        {sheet_name, entity_type, mapping, header_row, dry_run?,
+         on_conflict?, sheet_account?}
+    on_conflict 默认 'ask' (重导命中已有记录且值不同时, 记到 conflicts 让用户裁决).
+    返回每个 sheet 的报告 (含 conflicts).
     """
     reports = []
     for item in plan:
         sheet_name = item["sheet_name"]
         entity = item["entity_type"]
         mapping = item.get("mapping") or {}
-        if entity == "unknown" or not mapping:
+        sheet_account = item.get("sheet_account")
+        # alipay_flow 若没映射 account 列但给了 sheet_account, 也允许导
+        if entity == "unknown" or (not mapping and not sheet_account):
             reports.append({"sheet_name": sheet_name, "skipped": True,
                             "reason": "未确认 entity / mapping"})
             continue
@@ -406,6 +410,8 @@ def smart_commit(
                 db, file_bytes=adjusted_bytes,
                 sheet_name=sheet_name, entity_type=entity, mapping=mapping,
                 dry_run=item.get("dry_run", False),
+                on_conflict=item.get("on_conflict", "ask"),
+                sheet_account=sheet_account,
             )
             reports.append({
                 "sheet_name": sheet_name, "entity_type": entity,
@@ -415,6 +421,7 @@ def smart_commit(
                 "skipped_rows": report.skipped_rows,
                 "errors": report.errors[:10],
                 "warnings": report.warnings[:10],
+                "conflicts": report.conflicts[:50],
             })
         except excel_importer.ImporterError as e:
             reports.append({"sheet_name": sheet_name, "error": str(e)})

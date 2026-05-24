@@ -15,6 +15,7 @@ from app.api import auth as auth_api
 from app.api import briefings as briefings_api
 from app.api import customers as customers_api
 from app.api import pricing_diagnosis as pricing_api
+from app.api import pricing as pricing_list_api
 from app.api import search as search_api
 from app.api import bom as bom_api
 from app.api import customization as customization_api
@@ -135,6 +136,7 @@ app.include_router(briefings_api.router)
 app.include_router(briefings_api.supplier_router)
 app.include_router(customers_api.router)
 app.include_router(pricing_api.router)
+app.include_router(pricing_list_api.router)
 app.include_router(search_api.router)
 app.include_router(approvals_api.router)
 

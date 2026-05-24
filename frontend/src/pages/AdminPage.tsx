@@ -45,6 +45,7 @@ import {
   SchedulerRun,
   SystemEvent,
   SystemStatus,
+  adminResetPassword,
   createUser,
   fetchHealthLogs,
   fetchIntegrations,
@@ -62,6 +63,7 @@ import {
   triggerSchedulerJob,
   updateIntegrations,
   updateNotifyConfig,
+  updateUser,
 } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 
@@ -98,7 +100,11 @@ export default function AdminPage() {
 function UsersTab() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState<MeUser | null>(null);
+  const [pwdFor, setPwdFor] = useState<MeUser | null>(null);
   const [form] = Form.useForm();
+  const [editForm] = Form.useForm();
+  const [pwdForm] = Form.useForm();
   const { data: users, isLoading } = useQuery({ queryKey: ['users'], queryFn: listAuthUsers });
   const { data: rolesInfo } = useQuery({ queryKey: ['roles'], queryFn: fetchRoles });
 
@@ -112,6 +118,36 @@ function UsersTab() {
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
   });
+
+  const updateMut = useMutation({
+    mutationFn: (v: { id: number; payload: any }) => updateUser(v.id, v.payload),
+    onSuccess: () => {
+      message.success('已保存');
+      setEditing(null);
+      qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  const pwdMut = useMutation({
+    mutationFn: (v: { id: number; pwd: string }) => adminResetPassword(v.id, v.pwd),
+    onSuccess: () => {
+      message.success('密码已重置');
+      setPwdFor(null);
+      pwdForm.resetFields();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '重置失败'),
+  });
+
+  function openEdit(u: MeUser) {
+    setEditing(u);
+    editForm.setFieldsValue({
+      username: u.username,
+      display_name: u.display_name,
+      role: u.role,
+      is_active: u.is_active,
+    });
+  }
 
   return (
     <Space direction="vertical" style={{ width: '100%' }}>
@@ -152,6 +188,20 @@ function UsersTab() {
             width: 80,
             render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
           },
+          {
+            title: '操作',
+            width: 160,
+            render: (_: any, u: MeUser) => (
+              <Space>
+                <Button size="small" onClick={() => openEdit(u)}>
+                  编辑
+                </Button>
+                <Button size="small" icon={<KeyOutlined />} onClick={() => setPwdFor(u)}>
+                  改密
+                </Button>
+              </Space>
+            ),
+          },
         ]}
       />
 
@@ -185,6 +235,63 @@ function UsersTab() {
                 label: `${r} — ${rolesInfo?.descriptions[r] ?? ''}`,
               }))}
             />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`编辑用户 ${editing?.username ?? ''}`}
+        open={!!editing}
+        onCancel={() => setEditing(null)}
+        onOk={() => editForm.submit()}
+        confirmLoading={updateMut.isPending}
+        destroyOnClose
+      >
+        <Form
+          form={editForm}
+          layout="vertical"
+          onFinish={(v) => editing && updateMut.mutate({ id: editing.id, payload: v })}
+        >
+          <Form.Item name="username" label="用户名" rules={[{ required: true, min: 3 }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="display_name" label="显示名">
+            <Input />
+          </Form.Item>
+          <Form.Item name="role" label="角色" rules={[{ required: true }]}>
+            <Select
+              options={(rolesInfo?.roles ?? []).map((r) => ({
+                value: r,
+                label: `${r} — ${rolesInfo?.descriptions[r] ?? ''}`,
+              }))}
+            />
+          </Form.Item>
+          <Form.Item name="is_active" label="状态">
+            <Select
+              options={[
+                { value: true, label: '启用' },
+                { value: false, label: '停用' },
+              ]}
+            />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`重置密码 — ${pwdFor?.username ?? ''}`}
+        open={!!pwdFor}
+        onCancel={() => setPwdFor(null)}
+        onOk={() => pwdForm.submit()}
+        confirmLoading={pwdMut.isPending}
+        destroyOnClose
+      >
+        <Form
+          form={pwdForm}
+          layout="vertical"
+          onFinish={(v) => pwdFor && pwdMut.mutate({ id: pwdFor.id, pwd: v.new_password })}
+        >
+          <Form.Item name="new_password" label="新密码" rules={[{ required: true, min: 6 }]}>
+            <Input.Password />
           </Form.Item>
         </Form>
       </Modal>
@@ -284,6 +391,10 @@ function IntegrationsTab() {
             <span style={{ color: '#999' }}>
               API Key 加密存储于数据库。后台改完<b>无需重启</b>, 下一次调用即生效。环境变量
               <code>ANTHROPIC_API_KEY</code> / <code>AI_MODEL</code> 作为回退默认值。
+            </span>
+            <span style={{ color: '#fa8c16' }}>
+              只填一处即可: 两个槽位会<b>互相自动复用</b> Key/模型。比如只在"异常诊断"填了 Key,
+              "OCR 送货单"和截图录单也能直接用 (反之亦然)。
             </span>
           </Space>
         }

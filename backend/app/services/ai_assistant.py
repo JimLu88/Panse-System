@@ -342,9 +342,16 @@ def chat(
 
 
 def is_configured(db: Optional[Session] = None) -> bool:
-    """env 有 key, 或 db 里写了 ai_diagnose_api_key 都算配置完成."""
+    """env 有 key, 或 db 里写了任一 AI key (diagnose / ocr) 都算配置完成.
+
+    两个槽位互相 fallback (见 settings_service.get_ai_config), 所以填了任一个
+    即视为已配置, AI 助手 + 截图 OCR 都能用.
+    """
     if settings.anthropic_api_key:
         return True
     if db is None:
         return False
-    return bool(settings_service.get(db, "ai_diagnose_api_key", env_fallback=False))
+    return bool(
+        settings_service.get(db, "ai_diagnose_api_key", env_fallback=False)
+        or settings_service.get(db, "ai_ocr_api_key", env_fallback=False)
+    )

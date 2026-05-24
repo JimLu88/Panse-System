@@ -221,6 +221,28 @@ def _job_supplier_score(db: Session) -> dict:
     return {"year": last.year, "month": last.month, "supplier_count": len(scores)}
 
 
+def _job_feishu_sync(db: Session) -> dict:
+    """飞书双向同步 (仅 enabled 的绑定). 未配凭证则空跑."""
+    from app.services import feishu_client, feishu_sync_service
+    try:
+        feishu_client.get_credentials(db)
+    except feishu_client.FeishuError:
+        return {"skipped": "飞书未配置"}
+    results = feishu_sync_service.sync_all(db)
+    return {
+        "bindings": len(results),
+        "pushed": sum(r.pushed for r in results),
+        "pulled": sum(r.pulled for r in results),
+        "conflicts": sum(r.conflicts for r in results),
+    }
+
+
+def _job_post_import_logic_check(db: Session) -> dict:
+    """兜底: 每日对全量数据跑一次 AI 逻辑核查 (补导入时漏掉的)."""
+    from app.services import post_import_ai_service
+    return post_import_ai_service.run_after_import(db, summary={"source": "daily_scan"})
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -243,6 +265,10 @@ def _register_default_jobs() -> None:
                  _job_supplier_score, cron={"day": 1, "hour": 10, "minute": 0})
     register_job("daily_06_sales_rollup", "每日销售汇总 (rollup)",
                  _job_sales_rollup, cron={"hour": 6, "minute": 30})
+    register_job("feishu_sync_30min", "飞书双向同步",
+                 _job_feishu_sync, interval_minutes=30)
+    register_job("daily_11_ai_logic_check", "AI 数据逻辑核查 (兜底)",
+                 _job_post_import_logic_check, cron={"hour": 11, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #

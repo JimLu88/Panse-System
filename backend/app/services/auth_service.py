@@ -125,6 +125,33 @@ def create_user(
     return u
 
 
+def set_password(db: Session, user: User, new_password: str) -> None:
+    user.password_hash = hash_password(new_password)
+    db.flush()
+
+
+def update_user(
+    db: Session, user: User, *, username: Optional[str] = None,
+    display_name: Optional[str] = None, role: Optional[str] = None,
+    is_active: Optional[bool] = None,
+) -> User:
+    from app.models.auth import ROLES
+    if username is not None and username != user.username:
+        if db.execute(select(User).where(User.username == username)).scalar_one_or_none():
+            raise ValueError(f"user {username!r} already exists")
+        user.username = username
+    if display_name is not None:
+        user.display_name = display_name
+    if role is not None:
+        if role not in ROLES:
+            raise ValueError(f"unknown role {role!r}; allowed: {ROLES}")
+        user.role = role
+    if is_active is not None:
+        user.is_active = is_active
+    db.flush()
+    return user
+
+
 def authenticate(db: Session, username: str, password: str) -> Optional[User]:
     u = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
     if u is None or not u.is_active:

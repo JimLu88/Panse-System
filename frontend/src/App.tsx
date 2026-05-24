@@ -36,6 +36,7 @@ const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
+const PricingPage = lazy(() => import('./pages/PricingPage'));
 
 const { Header, Content } = Layout;
 
@@ -78,33 +79,67 @@ export default function App() {
   const seg = loc.pathname.split('/')[1] || 'products';
   const key = seg === 'bom' ? 'products' : seg;
 
+  // 分组下拉, 避免 26 个入口挤成一长条 (顶栏只剩 5 个分组)
   const menuItems = [
-    { key: 'products', label: <Link to="/products">产品总表</Link> },
-    { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
-    { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
-    { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
-    { key: 'orders', label: <Link to="/orders">订单</Link> },
-    { key: 'orders-kanban', label: <Link to="/orders/kanban">看板</Link> },
-    { key: 'customers', label: <Link to="/customers">客户</Link> },
-    { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
-    { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
-    { key: 'customization', label: <Link to="/customization">微定制</Link> },
-    { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
-    { key: 'quote', label: <Link to="/quote">报价</Link> },
-    { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
-    { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
-    { key: 'suppliers', label: <Link to="/suppliers">供应商对账</Link> },
-    { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
-    { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
-    { key: 'importer', label: <Link to="/importer">Excel 导入</Link> },
-    { key: 'marketing', label: <Link to="/marketing">营销</Link> },
-    { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
-    { key: 'reports', label: <Link to="/reports">报表</Link> },
-    { key: 'assets', label: <Link to="/assets">资产</Link> },
-    { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
-    { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
-    { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
-    ...(user.role === 'admin' ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }] : []),
+    {
+      key: 'g-product',
+      label: '商品',
+      children: [
+        { key: 'products', label: <Link to="/products">产品总表</Link> },
+        { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
+        { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
+        { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
+        { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
+        { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
+        { key: 'customization', label: <Link to="/customization">微定制</Link> },
+      ],
+    },
+    {
+      key: 'g-order',
+      label: '订单',
+      children: [
+        { key: 'orders', label: <Link to="/orders">订单</Link> },
+        { key: 'orders-kanban', label: <Link to="/orders/kanban">看板</Link> },
+        { key: 'customers', label: <Link to="/customers">客户</Link> },
+        { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
+        { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
+      ],
+    },
+    {
+      key: 'g-finance',
+      label: '财务',
+      children: [
+        { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
+        { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
+        { key: 'suppliers', label: <Link to="/suppliers">供应商对账</Link> },
+        { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
+        { key: 'assets', label: <Link to="/assets">资产</Link> },
+        { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
+      ],
+    },
+    {
+      key: 'g-analysis',
+      label: '分析',
+      children: [
+        { key: 'reports', label: <Link to="/reports">报表</Link> },
+        { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
+        { key: 'quote', label: <Link to="/quote">报价</Link> },
+        { key: 'marketing', label: <Link to="/marketing">营销</Link> },
+        { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
+      ],
+    },
+    {
+      key: 'g-tools',
+      label: '工具',
+      children: [
+        { key: 'importer', label: <Link to="/importer">Excel 导入</Link> },
+        { key: 'ai', label: <Link to="/ai">AI 助手</Link> },
+        { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
+        ...(user.role === 'admin'
+          ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }]
+          : []),
+      ],
+    },
   ];
 
   return (
@@ -159,6 +194,7 @@ export default function App() {
             <Route path="/accounting" element={<AccountingPeriodsPage />} />
             <Route path="/producibility" element={<ProducibilityPage />} />
             <Route path="/quote" element={<QuotePage />} />
+            <Route path="/pricing" element={<PricingPage />} />
             <Route path="/alipay" element={<AlipayPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />

@@ -46,8 +46,10 @@ import {
   ImportJob,
   ImportReport,
   ImporterPreviewResp,
+  PostImportResult,
   SheetAnalysis,
   SheetPreview,
+  SmartCommitReport,
   cancelImportJob,
   commitImporter,
   commitImporterAsync,
@@ -57,6 +59,8 @@ import {
   smartAnalyzeExcel,
   smartCommitExcel,
 } from '../api/client';
+
+const ALIPAY_ACCOUNTS = ['企业号', '个体户私账', '爱群号', '佳宝号', '主力号'];
 
 const { Dragger } = Upload;
 
@@ -732,12 +736,19 @@ const QUALITY_META: Record<string, { color: string; label: string; advice: strin
   unknown: { color: 'default', label: '未知', advice: '' },
 };
 
+type SmartPlanState = {
+  entity_type: string;
+  mapping: Record<string, string>;
+  sheet_account?: string;
+};
+
 function SmartImporter() {
   const [resp, setResp] = useState<{ file_b64: string; sheets: SheetAnalysis[] } | null>(null);
-  const [editedPlan, setEditedPlan] = useState<Record<string, {
-    entity_type: string; mapping: Record<string, string>;
-  }>>({});
-  const [committedReports, setCommittedReports] = useState<any[] | null>(null);
+  const [editedPlan, setEditedPlan] = useState<Record<string, SmartPlanState>>({});
+  const [commitResult, setCommitResult] = useState<{
+    reports: SmartCommitReport[];
+    post_import: PostImportResult;
+  } | null>(null);
 
   const analyzeMut = useMutation({
     mutationFn: (file: File) => smartAnalyzeExcel(file),
@@ -752,33 +763,44 @@ function SmartImporter() {
         };
       });
       setEditedPlan(init);
-      setCommittedReports(null);
+      setCommitResult(null);
       message.success(`AI 分析了 ${r.sheets.length} 个 sheet`);
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '分析失败'),
   });
 
+  const plannable = (s: SheetAnalysis) => {
+    const e = editedPlan[s.sheet_name];
+    if (!e || e.entity_type === 'unknown') return false;
+    // 支付宝流水: 选了账户就能导 (账户列可缺)
+    if (e.entity_type === 'alipay_flow' && e.sheet_account) return true;
+    return Object.keys(e.mapping).length > 0;
+  };
+
   const commitMut = useMutation({
-    mutationFn: ({ dryRun }: { dryRun: boolean }) => {
+    mutationFn: ({ dryRun, onConflict }: { dryRun: boolean; onConflict: 'ask' | 'overwrite' }) => {
       if (!resp) throw new Error('no analysis');
-      const plan = resp.sheets
-        .filter((s) => {
-          const e = editedPlan[s.sheet_name];
-          return e && e.entity_type !== 'unknown' && Object.keys(e.mapping).length > 0;
-        })
-        .map((s) => ({
-          sheet_name: s.sheet_name,
-          entity_type: editedPlan[s.sheet_name].entity_type,
-          mapping: editedPlan[s.sheet_name].mapping,
-          header_row: s.header_row,
-          dry_run: dryRun,
-        }));
+      const plan = resp.sheets.filter(plannable).map((s) => ({
+        sheet_name: s.sheet_name,
+        entity_type: editedPlan[s.sheet_name].entity_type,
+        mapping: editedPlan[s.sheet_name].mapping,
+        header_row: s.header_row,
+        dry_run: dryRun,
+        on_conflict: onConflict,
+        sheet_account: editedPlan[s.sheet_name].sheet_account ?? null,
+      }));
       if (plan.length === 0) throw new Error('没有可导入的 sheet');
       return smartCommitExcel({ file_b64: resp.file_b64, plan });
     },
     onSuccess: (r, vars) => {
-      setCommittedReports(r.reports);
-      message.success(`${vars.dryRun ? '试运行' : '导入'} 完成: ${r.reports.length} 个 sheet`);
+      setCommitResult(r);
+      const conflicts = (r.reports || []).reduce(
+        (n, rep) => n + (rep.conflicts?.length ?? 0), 0);
+      if (conflicts > 0 && vars.onConflict === 'ask') {
+        message.warning(`${conflicts} 处与库内数据不同, 请在下方裁决`);
+      } else {
+        message.success(`${vars.dryRun ? '试运行' : '导入'} 完成: ${r.reports.length} 个 sheet`);
+      }
     },
     onError: (e: any) => message.error(e?.message ?? e?.response?.data?.detail ?? '失败'),
   });
@@ -819,16 +841,14 @@ function SmartImporter() {
           <Card size="small" title={`分析结果 (${resp.sheets.length} 个 sheet)`}
                 extra={
                   <Space>
-                    <Button onClick={() => commitMut.mutate({ dryRun: true })}
+                    <Button onClick={() => commitMut.mutate({ dryRun: true, onConflict: 'ask' })}
                             loading={commitMut.isPending}>
                       试运行 (不入库)
                     </Button>
                     <Button type="primary"
-                            onClick={() => commitMut.mutate({ dryRun: false })}
+                            onClick={() => commitMut.mutate({ dryRun: false, onConflict: 'ask' })}
                             loading={commitMut.isPending}>
-                      一键全部导入 ({Object.values(editedPlan).filter(
-                        (e) => e.entity_type !== 'unknown' && Object.keys(e.mapping).length > 0,
-                      ).length} 个)
+                      一键全部导入 ({resp.sheets.filter(plannable).length} 个)
                     </Button>
                   </Space>
                 }>
@@ -862,11 +882,11 @@ function SmartImporter() {
             />
           </Card>
 
-          {committedReports && (
+          {commitResult && (
             <Card size="small" title="导入报告">
               <Table size="small" rowKey={(r) => r.sheet_name}
                      pagination={false}
-                     dataSource={committedReports}
+                     dataSource={commitResult.reports}
                      columns={[
                        { title: 'Sheet', dataIndex: 'sheet_name', width: 200 },
                        { title: '实体', dataIndex: 'entity_type', width: 140 },
@@ -877,6 +897,9 @@ function SmartImporter() {
                          render: (v: number) => v ? <Tag>{v}</Tag> : '-' },
                        { title: '跳过', dataIndex: 'skipped_rows', width: 80,
                          render: (v: number) => v ? <Tag color="orange">{v}</Tag> : '-' },
+                       { title: '冲突', dataIndex: 'conflicts', width: 80,
+                         render: (v: any[]) => (v ?? []).length > 0 ?
+                           <Tag color="volcano">{v.length}</Tag> : '-' },
                        { title: '错误', dataIndex: 'errors',
                          render: (v: string[]) => (v ?? []).length > 0 ?
                            <Tag color="red">{v.length} 条</Tag> : '-' },
@@ -886,17 +909,96 @@ function SmartImporter() {
                      ]} />
             </Card>
           )}
+
+          {commitResult && <ConflictReview
+            reports={commitResult.reports}
+            onApplyNew={() => commitMut.mutate({ dryRun: false, onConflict: 'overwrite' })}
+            applying={commitMut.isPending}
+          />}
+
+          {commitResult?.post_import &&
+           (commitResult.post_import.logic_issues > 0 || commitResult.post_import.analysis) && (
+            <Card size="small" title="AI 导入后核查 + 运营分析">
+              {commitResult.post_import.logic_issues > 0 && (
+                <Alert
+                  type="warning" showIcon style={{ marginBottom: 8 }}
+                  message={`AI 逻辑核查发现 ${commitResult.post_import.logic_issues} 条疑似异常`}
+                  description="已写入「异常」页面, 请前往复核处理。"
+                />
+              )}
+              {commitResult.post_import.analysis && (
+                <Alert
+                  type="info" showIcon
+                  message="运营状况分析"
+                  description={
+                    <Typography.Paragraph style={{ whiteSpace: 'pre-wrap', margin: 0 }}>
+                      {commitResult.post_import.analysis}
+                    </Typography.Paragraph>
+                  }
+                />
+              )}
+            </Card>
+          )}
         </>
       )}
     </Space>
   );
 }
 
+// ----------------------------- 冲突复核 (#9) ---------------------- //
+
+function ConflictReview({ reports, onApplyNew, applying }: {
+  reports: SmartCommitReport[];
+  onApplyNew: () => void;
+  applying: boolean;
+}) {
+  const rows = reports.flatMap((rep) =>
+    (rep.conflicts ?? []).flatMap((c) =>
+      c.diffs.map((d) => ({
+        sheet: rep.sheet_name,
+        pk: c.source_pk,
+        table: c.source_table,
+        field: d.field,
+        old: d.old,
+        new: d.new,
+      })),
+    ),
+  );
+  if (rows.length === 0) return null;
+  return (
+    <Card size="small" title={<Space>与此前数据不符 — 需要裁决<Tag color="volcano">{rows.length} 处</Tag></Space>}
+          extra={
+            <Popconfirm
+              title="采用新值并覆盖?"
+              description="会把表里的新值写入已有记录 (其余已存在的行不动)。"
+              okText="采用新值覆盖"
+              onConfirm={onApplyNew}
+            >
+              <Button type="primary" danger loading={applying}>采用新值 (覆盖)</Button>
+            </Popconfirm>
+          }>
+      <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+             message="以下记录已存在且导入表里的值不同, 默认未覆盖。确认无误可点右上「采用新值」, 否则保持原值不动。" />
+      <Table size="small" rowKey={(_r, i) => String(i)} pagination={{ pageSize: 10 }}
+             dataSource={rows}
+             columns={[
+               { title: 'Sheet', dataIndex: 'sheet', width: 140 },
+               { title: '记录', dataIndex: 'pk', width: 140 },
+               { title: '字段', dataIndex: 'field', width: 120 },
+               { title: '原值 (库内)', dataIndex: 'old',
+                 render: (v: any) => <span style={{ color: '#999' }}>{v == null ? '空' : String(v)}</span> },
+               { title: '新值 (导入)', dataIndex: 'new',
+                 render: (v: any) => <strong>{v == null ? '空' : String(v)}</strong> },
+             ]} />
+    </Card>
+  );
+}
+
 
 function SmartSheetEditor({ sheet, state, onStateChange }: {
   sheet: SheetAnalysis;
-  state?: { entity_type: string; mapping: Record<string, string> };
-  onStateChange: (s: { entity_type: string; mapping: Record<string, string> }) => void;
+  state?: SmartPlanState;
+  onStateChange: (s: SmartPlanState) => void;
 }) {
   const { data: entityTypes = [] } = useQuery({
     queryKey: ['importer-entity-types'],
@@ -905,6 +1007,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
   const qm = QUALITY_META[sheet.quality] || QUALITY_META.unknown;
   const entityType = state?.entity_type ?? 'unknown';
   const mapping = state?.mapping ?? {};
+  const sheetAccount = state?.sheet_account;
   const entity = entityTypes.find((e) => e.value === entityType);
   const fields = entity?.fields ?? [];
 
@@ -912,7 +1015,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
     const next = { ...mapping };
     if (excelCol) next[target] = excelCol;
     else delete next[target];
-    onStateChange({ entity_type: entityType, mapping: next });
+    onStateChange({ entity_type: entityType, mapping: next, sheet_account: sheetAccount });
   };
 
   return (
@@ -945,7 +1048,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
           <Card size="small" title="实体类型 (可改)">
             <Select style={{ width: '100%' }}
                     value={entityType}
-                    onChange={(v) => onStateChange({ entity_type: v, mapping: {} })}
+                    onChange={(v) => onStateChange({ entity_type: v, mapping: {}, sheet_account: undefined })}
                     options={[
                       { value: 'unknown', label: '— 不导这个 sheet —' },
                       ...entityTypes.map((e) => ({ value: e.value, label: e.label })),
@@ -953,6 +1056,26 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
           </Card>
         </Col>
       </Row>
+
+      {entityType === 'alipay_flow' && !mapping['account'] && (
+        <Alert
+          type="info" showIcon
+          message="这张支付宝流水表没有「账户」列 — 请指定它属于哪个账户"
+          description={
+            <Space>
+              <span>该 sheet 全部流水归到:</span>
+              <Select
+                style={{ width: 200 }}
+                placeholder="选择账户"
+                value={sheetAccount}
+                onChange={(v) =>
+                  onStateChange({ entity_type: entityType, mapping, sheet_account: v })}
+                options={ALIPAY_ACCOUNTS.map((a) => ({ value: a, label: a }))}
+              />
+            </Space>
+          }
+        />
+      )}
 
       {sheet.issues.length > 0 && (
         <Alert

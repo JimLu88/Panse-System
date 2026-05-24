@@ -85,9 +85,52 @@ export const createUser = (payload: {
   display_name?: string;
 }) => api.post<MeUser>('/api/auth/users', payload).then((r) => r.data);
 
+export const updateUser = (
+  id: number,
+  payload: { username?: string; display_name?: string; role?: string; is_active?: boolean },
+) => api.patch<MeUser>(`/api/auth/users/${id}`, payload).then((r) => r.data);
+
+export const adminResetPassword = (id: number, newPassword: string) =>
+  api.post(`/api/auth/users/${id}/password`, { new_password: newPassword }).then((r) => r.data);
+
+export const changeMyPassword = (oldPassword: string, newPassword: string) =>
+  api
+    .post('/api/auth/me/password', { old_password: oldPassword, new_password: newPassword })
+    .then((r) => r.data);
+
 export const fetchRoles = () =>
   api
     .get<{ roles: string[]; descriptions: Record<string, string> }>('/api/auth/roles')
+    .then((r) => r.data);
+
+// ----- 定价总表 (#3) -----
+export interface PricingSku {
+  id: number;
+  product_code: string;
+  sku: string | null;
+  sku_code: string;
+  size_category: string | null;
+  list_price: number | null;
+  daily_price: number | null;
+  small_promo: number | null;
+  mid_promo: number | null;
+  big_promo: number | null;
+  big_promo_margin: number | null;
+  gross_margin_rate: number | null;
+  accounting_cost: number | null;
+  physical_cost: number | null;
+  platform_fee_rate: number | null;
+  tax: number | null;
+}
+
+export const listPricingSkus = (params: {
+  q?: string;
+  size_category?: string;
+  limit?: number;
+  offset?: number;
+}) =>
+  api
+    .get<{ total: number; items: PricingSku[] }>('/api/pricing-skus', { params })
     .then((r) => r.data);
 
 export interface AuditLog {
@@ -283,8 +326,68 @@ export const listFeishuBindings = () =>
 export const createFeishuBinding = (payload: Omit<FeishuBinding, 'id'>) =>
   api.post<FeishuBinding>('/api/feishu/bindings', payload).then((r) => r.data);
 
+export const updateFeishuBinding = (
+  id: number,
+  payload: Partial<Omit<FeishuBinding, 'id' | 'system_table'>>,
+) => api.patch<FeishuBinding>(`/api/feishu/bindings/${id}`, payload).then((r) => r.data);
+
+export const deleteFeishuBinding = (id: number) =>
+  api.delete(`/api/feishu/bindings/${id}`).then((r) => r.data);
+
 export const feishuStatus = () =>
   api.get<FeishuStatus[]>('/api/feishu/status').then((r) => r.data);
+
+export const feishuSupportedTables = () =>
+  api.get<{ tables: string[] }>('/api/feishu/supported-tables').then((r) => r.data);
+
+export interface FeishuCredentials {
+  app_id: string;
+  app_secret_masked: string;
+  configured: boolean;
+}
+
+export const getFeishuCredentials = () =>
+  api.get<FeishuCredentials>('/api/feishu/credentials').then((r) => r.data);
+
+export const putFeishuCredentials = (payload: { app_id?: string; app_secret?: string }) =>
+  api.put<FeishuCredentials>('/api/feishu/credentials', payload).then((r) => r.data);
+
+export const testFeishuConnection = () =>
+  api.post<{ ok: boolean; error?: string }>('/api/feishu/test').then((r) => r.data);
+
+export interface FeishuSyncResult {
+  system_table: string;
+  pushed: number;
+  pulled: number;
+  created_feishu: number;
+  created_system: number;
+  conflicts: number;
+  errors: string[];
+}
+
+export const triggerFeishuSync = (system_table?: string) =>
+  api
+    .post<{ results: FeishuSyncResult[] }>('/api/feishu/sync', { system_table }, { timeout: 120000 })
+    .then((r) => r.data);
+
+export interface FeishuConflict {
+  id: number;
+  system_table: string;
+  source_pk: string | null;
+  description: string;
+  context: {
+    diffs?: Array<{ field: string; system: any; feishu: any }>;
+    system_updated_at?: string | null;
+    feishu_updated_at?: any;
+  } | null;
+  created_at: string | null;
+}
+
+export const listFeishuConflicts = () =>
+  api.get<FeishuConflict[]>('/api/feishu/conflicts').then((r) => r.data);
+
+export const resolveFeishuConflict = (id: number, keep: 'system' | 'feishu') =>
+  api.post(`/api/feishu/conflicts/${id}/resolve`, { keep }).then((r) => r.data);
 
 // ----- Match -----
 export interface MatchCandidate {
@@ -1232,6 +1335,33 @@ export const smartAnalyzeExcel = (file: File) => {
     .then((r) => r.data);
 };
 
+export interface ImportConflict {
+  source_table: string;
+  source_pk: string | null;
+  diffs: Array<{ field: string; old: any; new: any }>;
+}
+
+export interface SmartCommitReport {
+  sheet_name: string;
+  entity_type?: string;
+  total_rows?: number;
+  inserted_parents?: number;
+  inserted_children?: number;
+  skipped_rows?: number;
+  errors?: string[];
+  warnings?: string[];
+  conflicts?: ImportConflict[];
+  skipped?: boolean;
+  reason?: string;
+  error?: string;
+}
+
+export interface PostImportResult {
+  logic_issues: number;
+  analysis: string | null;
+  ai_used: boolean;
+}
+
 export const smartCommitExcel = (payload: {
   file_b64: string;
   plan: Array<{
@@ -1240,10 +1370,16 @@ export const smartCommitExcel = (payload: {
     mapping: Record<string, string>;
     header_row: number;
     dry_run?: boolean;
+    on_conflict?: 'ask' | 'overwrite' | 'keep';
+    sheet_account?: string | null;
   }>;
 }) =>
   api
-    .post<{ reports: any[] }>('/api/importer/smart-commit', payload, { timeout: 300000 })
+    .post<{ reports: SmartCommitReport[]; post_import: PostImportResult }>(
+      '/api/importer/smart-commit',
+      payload,
+      { timeout: 300000 },
+    )
     .then((r) => r.data);
 
 // ----- 重启事件 (业务需求 5) -----

@@ -336,6 +336,10 @@ class SmartCommitItem(BaseModel):
     mapping: dict[str, str]
     header_row: int = 1
     dry_run: bool = False
+    # 重导冲突策略: ask (默认, 记差异待裁决) / overwrite (采用新值) / keep (保留原值)
+    on_conflict: str = "ask"
+    # 支付宝流水: sheet 无账户列时, 用此账户名填充每行
+    sheet_account: Optional[str] = None
 
 
 class SmartCommitIn(BaseModel):
@@ -360,4 +364,17 @@ def smart_commit(
         plan=[item.model_dump() for item in payload.plan],
     )
     db.commit()
-    return {"reports": reports}
+
+    # 导入后 AI 逻辑核查 + 运营分析 (不阻断主流程)
+    post_import: dict = {"logic_issues": 0, "analysis": None, "ai_used": False}
+    try:
+        from app.services import post_import_ai_service
+        summary = {
+            r.get("entity_type", "unknown"): r.get("inserted_parents", 0)
+            for r in reports if not r.get("skipped") and not r.get("error")
+        }
+        post_import = post_import_ai_service.run_after_import(db, summary=summary)
+        db.commit()
+    except Exception:  # pragma: no cover — 核查失败绝不影响导入结果
+        db.rollback()
+    return {"reports": reports, "post_import": post_import}
