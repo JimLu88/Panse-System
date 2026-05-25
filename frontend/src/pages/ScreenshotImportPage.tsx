@@ -113,6 +113,9 @@ function QianniuTab() {
       if (res.product_code) {
         setOrder(i, {
           product_name: res.product_name ?? o.product_name,
+          product_code: res.product_code,
+          sku_code: res.sku_code ?? undefined,
+          sku: res.sku ?? o.sku,
         });
       }
     } catch {
@@ -162,11 +165,14 @@ function QianniuTab() {
       render: (_: unknown, _r: QianniuOrderParsed, i: number) => {
         const ms = matchStates[i];
         if (!ms?.result) return <span style={{ color: '#bbb', fontSize: 12 }}>-</span>;
-        const { product_code, confidence } = ms.result;
+        const { product_code, sku_code, confidence } = ms.result;
         if (!product_code) return <Tag color="red">无匹配</Tag>;
         return (
           <Tooltip title={`置信度 ${(confidence * 100).toFixed(0)}%`}>
-            <Tag color={confidence >= 0.8 ? 'green' : 'orange'}>{product_code}</Tag>
+            <Space size={2} wrap>
+              <Tag color={confidence >= 0.8 ? 'green' : 'orange'}>{product_code}</Tag>
+              {sku_code && <Tag color="blue">{sku_code}</Tag>}
+            </Space>
           </Tooltip>
         );
       },

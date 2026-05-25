@@ -297,7 +297,9 @@ def commit_sheet(
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
-                          "part_inventory", "order", "account_balance", "pricing_sku"):
+                          "part_inventory", "order", "account_balance", "pricing_sku",
+                          "refill_record", "factory_reconciliation",
+                          "outsourcing_expense", "aftersales"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -405,7 +407,10 @@ def _coerce(value: Any, field_type: str, *, label: str) -> Any:
 def _project(
     row: dict[str, Any], mapping: dict[str, str], schema,
 ) -> tuple[dict[str, Any], list[str]]:
-    """row + mapping → {target_field: typed_value}. 收集行级错误."""
+    """row + mapping → {target_field: typed_value}. 收集行级错误.
+
+    非必填字段转换失败时置 None (不杀整行);必填字段失败才加入 errors.
+    """
     out: dict[str, Any] = {}
     errors: list[str] = []
     for target_field, excel_col in mapping.items():
@@ -413,11 +418,21 @@ def _project(
         field_def = schema["fields"].get(target_field)
         if field_def is None:
             continue
+        # 跳过 Excel 公式错误值 (#DIV/0! 等)
+        if isinstance(raw, str) and raw.strip().startswith("#"):
+            if field_def.get("required"):
+                errors.append(f"{target_field} 含 Excel 错误值: {raw!r}")
+            else:
+                out[target_field] = None
+            continue
         try:
             out[target_field] = _coerce(raw, field_def.get("type", "str"),
                                         label=target_field)
         except ImporterError as e:
-            errors.append(str(e))
+            if field_def.get("required"):
+                errors.append(str(e))
+            else:
+                out[target_field] = None  # 非必填字段转换失败 → null,不杀整行
     return out, errors
 
 
@@ -790,11 +805,16 @@ def _commit_generic(
 _UNIQUENESS_FIELD = {
     "product": "code",
     "material": "code",
-    "product_inventory": None,   # (warehouse, product_code, sku)
-    "part_inventory": None,       # (warehouse, material_code)
-    "bom_line": None,             # 无 upsert, 直接 add (一个产品多行)
+    "product_inventory": None,         # (warehouse, product_code, sku)
+    "part_inventory": None,             # (warehouse, material_code)
+    "bom_line": None,                   # 无 upsert, 直接 add
     "order": "order_no",
-    "account_balance": None,      # (account_name, year, month)
+    "account_balance": None,            # (account_name, year, month)
+    "pricing_sku": "sku_code",
+    "refill_record": "order_no",
+    "factory_reconciliation": None,     # (factory_name, period_end)
+    "outsourcing_expense": None,        # alipay_flow_no 去重
+    "aftersales": "platform_order_no",
 }
 
 
@@ -974,9 +994,80 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
     return "pricing_sku", "inserted"
 
 
+def _h_refill_record(db, data, key_field, ctx=None):
+    from app.models.finance import RefillRecord
+    order_no = data.get("order_no")
+    if not order_no:
+        raise ImporterError("缺 order_no")
+    existing = db.execute(select(RefillRecord).where(RefillRecord.order_no == order_no)).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    if existing:
+        return "refill_record", _apply_update(existing, payload, ctx, "refill_records", order_no)
+    db.add(RefillRecord(**payload))
+    return "refill_record", "inserted"
+
+
+def _h_factory_reconciliation(db, data, key_field, ctx=None):
+    from app.models.finance import FactoryReconciliation
+    factory = data.get("factory_name")
+    if not factory:
+        raise ImporterError("缺 factory_name")
+    period_end = data.get("period_end")
+    existing = db.execute(
+        select(FactoryReconciliation).where(
+            FactoryReconciliation.factory_name == factory,
+            FactoryReconciliation.period_end == period_end,
+        )
+    ).scalar_one_or_none() if period_end else None
+    payload = {k: v for k, v in data.items() if v is not None}
+    if existing:
+        return "factory_reconciliation", _apply_update(
+            existing, payload, ctx, "factory_reconciliations", f"{factory}|{period_end}")
+    db.add(FactoryReconciliation(**payload))
+    return "factory_reconciliation", "inserted"
+
+
+def _h_outsourcing_expense(db, data, key_field, ctx=None):
+    from app.models.marketing import OutsourcingExpense
+    amount = data.get("amount")
+    if amount is None:
+        raise ImporterError("缺 amount")
+    payload = {k: v for k, v in data.items() if v is not None}
+    # OutsourcingExpense 无天然唯一键 → 按 alipay_flow_no 去重(若有)
+    flow_no = payload.get("alipay_flow_no")
+    if flow_no:
+        existing = db.execute(
+            select(OutsourcingExpense).where(OutsourcingExpense.alipay_flow_no == flow_no)
+        ).scalar_one_or_none()
+        if existing:
+            return "outsourcing_expense", _apply_update(
+                existing, payload, ctx, "outsourcing_expenses", flow_no)
+    db.add(OutsourcingExpense(**payload))
+    return "outsourcing_expense", "inserted"
+
+
+def _h_aftersales(db, data, key_field, ctx=None):
+    from app.models.marketing import AfterSales
+    order_no = data.get("platform_order_no")
+    if not order_no:
+        raise ImporterError("缺 platform_order_no")
+    existing = db.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == order_no)
+    ).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    if existing:
+        return "aftersales", _apply_update(existing, payload, ctx, "after_sales", order_no)
+    db.add(AfterSales(**payload))
+    return "aftersales", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
     "order": _h_order, "account_balance": _h_balance,
     "pricing_sku": _h_pricing_sku,
+    "refill_record": _h_refill_record,
+    "factory_reconciliation": _h_factory_reconciliation,
+    "outsourcing_expense": _h_outsourcing_expense,
+    "aftersales": _h_aftersales,
 }

@@ -68,6 +68,33 @@ function FixFormFields({ exc }: { exc: DataException }) {
       <Form.Item name="payment_date" label="支付日期"><Input type="date" /></Form.Item>
     </>
   );
+  if (t === 'stale_import') return (
+    <Alert type="warning" message="导入时间过旧" description="请前往「截图录单」或 Excel 导入页面，导入最新的订单数据后此异常将自动消除。" showIcon />
+  );
+  if (t === 'refill_unmatched') return (
+    <>
+      <Alert type="info" message="补单记录字段缺失或无法匹配主订单" style={{ marginBottom: 8 }} showIcon />
+      <Form.Item name="order_no" label="关联订单号"><Input placeholder="主订单号" /></Form.Item>
+      <Form.Item name="product_code" label="产品编码"><Input placeholder="如 P001" /></Form.Item>
+    </>
+  );
+  if (t === 'aftersales_empty') return (
+    <Alert type="info" message="售后表为空" description="请通过 Excel 导入上传售后记录（aftersales 标签页），导入后此异常将自动消除。" showIcon />
+  );
+  if (t === 'signoff_questioned') return (
+    <>
+      <Alert type="warning" message="订单签收存疑，请核对物流信息后填写" style={{ marginBottom: 8 }} showIcon />
+      <Form.Item name="carrier" label="承运商"><Input placeholder="顺丰 / 京东 / 德邦" /></Form.Item>
+      <Form.Item name="tracking_no" label="物流单号" rules={[{ required: true }]}><Input /></Form.Item>
+    </>
+  );
+  if (t === 'autofill_missing_product_code') return (
+    <>
+      <Alert type="info" message="缺产品编码，无法自动生成工厂下单草稿" style={{ marginBottom: 8 }} showIcon />
+      <Form.Item name="product_code" label="产品编码" rules={[{ required: true }]}><Input placeholder="如 P001" /></Form.Item>
+      <Form.Item name="product_name" label="产品名称（选填）"><Input /></Form.Item>
+    </>
+  );
   // 通用: 显示提示
   return (
     <Alert type="info" message="此异常类型无内联补填模板，请手动前往对应页面修改后点「已处理」。" />

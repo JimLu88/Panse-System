@@ -88,6 +88,13 @@ function ProductDetailSection({ product }: { product: Product }) {
           </Typography.Paragraph>
         </Descriptions.Item>
       )}
+      {product.description && (
+        <Descriptions.Item label="产品文案">
+          <Typography.Paragraph ellipsis={{ expandable: true, rows: 2 }} style={{ marginBottom: 0 }}>
+            {product.description}
+          </Typography.Paragraph>
+        </Descriptions.Item>
+      )}
     </Descriptions>
   );
 }
@@ -245,6 +252,12 @@ export default function ProductsPage() {
           </Form.Item>
           <Form.Item name="size_detail" label="尺寸明细（选填）">
             <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="aux_material" label="辅材介绍（选填）">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="description" label="产品文案（选填）">
+            <Input.TextArea rows={3} />
           </Form.Item>
         </Form>
       </Modal>

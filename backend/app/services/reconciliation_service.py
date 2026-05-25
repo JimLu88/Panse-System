@@ -64,6 +64,7 @@ class ReconciliationResult:
     warning_count: int
     error_count: int
     diffs: list[ReconciliationDiff]
+    unresolved_count: int = 0   # open 异常池中本规则的未对清条数
 
 
 def _within(diff: Decimal, *, pct: Decimal = Decimal("0.005"), abs_floor: Decimal = Decimal("5")) -> bool:
@@ -138,7 +139,7 @@ def run_factory_payment(
             _record_exception(db, rule="factory_payment", key=factory, diff_amount=diff, message=msg)
     if record_exceptions:
         db.flush()
-    return _result("factory_payment", period_start, period_end, diffs)
+    return _result("factory_payment", period_start, period_end, diffs, db)
 
 
 # -------- Rule 3: 推广支出 (Phase 5 实装) --------
@@ -198,7 +199,7 @@ def run_promotion(db: Session, *, record_exceptions: bool = True) -> Reconciliat
         )]
     if record_exceptions:
         db.flush()
-    return _result("promotion", None, None, diffs)
+    return _result("promotion", None, None, diffs, db)
 
 
 # -------- Rule 4: 补单赔实付 --------
@@ -237,7 +238,7 @@ def run_refill_compensation(
             _record_exception(db, rule="refill_compensation", key=r.order_no, diff_amount=diff, message=msg)
     if record_exceptions:
         db.flush()
-    return _result("refill_compensation", None, None, diffs)
+    return _result("refill_compensation", None, None, diffs, db)
 
 
 # -------- Rule 5: 库存资产估值 --------
@@ -279,7 +280,7 @@ def run_inventory_value(db: Session, *, record_exceptions: bool = True) -> Recon
         severity="ok" if missing_price == 0 else "warning",
         message=f"账面价值合计 ¥{total_value} ({len(diffs)} 项物料；{missing_price} 项缺价格未计入)",
     ))
-    return _result("inventory_value", None, None, diffs)
+    return _result("inventory_value", None, None, diffs, db)
 
 
 # -------- Rule 2 / 6: 安装费 / 物流费 (依赖万师傅 CSV) --------
@@ -288,17 +289,32 @@ def run_install_fee(db: Session, **_) -> ReconciliationResult:
     return _result("install_fee", None, None, [ReconciliationDiff(
         key="all", expected=None, actual=None, diff=None, severity="not_available",
         message="安装费对账依赖万师傅 CSV，暂未导入；可在 plan §10 Phase 5 接入售后表后启用",
-    )])
+    )], db)
 
 
 def run_logistics_fee(db: Session, **_) -> ReconciliationResult:
     return _result("logistics_fee", None, None, [ReconciliationDiff(
         key="all", expected=None, actual=None, diff=None, severity="not_available",
         message="物流费对账依赖万师傅月结 CSV，暂未导入",
-    )])
+    )], db)
 
 
-def _result(rule, ps, pe, diffs) -> ReconciliationResult:
+def _count_open_exceptions(db: Session, rule: str) -> int:
+    """统计异常池中本对账规则尚未解决的条数."""
+    from sqlalchemy import func as _func
+    from app.models.exception import DataException
+    row = db.execute(
+        select(_func.count(DataException.id)).where(
+            DataException.source_table == "reconciliation",
+            DataException.source_pk.like(f"{rule}:%"),
+            DataException.status == "open",
+        )
+    ).scalar_one()
+    return int(row or 0)
+
+
+def _result(rule, ps, pe, diffs, db: Optional[Session] = None) -> ReconciliationResult:
+    unresolved = _count_open_exceptions(db, rule) if db is not None else 0
     return ReconciliationResult(
         rule=rule,
         period_start=ps,
@@ -308,6 +324,7 @@ def _result(rule, ps, pe, diffs) -> ReconciliationResult:
         warning_count=sum(1 for d in diffs if d.severity == "warning"),
         error_count=sum(1 for d in diffs if d.severity == "error"),
         diffs=diffs,
+        unresolved_count=unresolved,
     )
 
 

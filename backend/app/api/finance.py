@@ -153,6 +153,7 @@ class ReconciliationOut(BaseModel):
     ok_count: int
     warning_count: int
     error_count: int
+    unresolved_count: int = 0
     diffs: list[DiffOut]
 
 
@@ -163,6 +164,7 @@ def _to_out(r: reconciliation_service.ReconciliationResult) -> ReconciliationOut
         ok_count=r.ok_count,
         warning_count=r.warning_count,
         error_count=r.error_count,
+        unresolved_count=r.unresolved_count,
         diffs=[DiffOut(**d.__dict__) for d in r.diffs],
     )
 

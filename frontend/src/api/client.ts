@@ -625,6 +625,7 @@ export interface ReconciliationResult {
   ok_count: number;
   warning_count: number;
   error_count: number;
+  unresolved_count: number;
   diffs: ReconciliationDiff[];
 }
 
@@ -1500,6 +1501,8 @@ export interface QianniuOrderParsed {
   remark?: string;
   confidence?: number;
   warnings?: string[];
+  product_code?: string | null;
+  sku_code?: string | null;
 }
 
 export interface QianniuParseResp {
@@ -1981,3 +1984,8 @@ export const aiCustomizationQuote = (file: File): Promise<AiQuoteResult> => {
   fd.append('image', file);
   return api.post<AiQuoteResult>('/api/customization/ai-quote', fd).then(r => r.data);
 };
+
+export const autofillGenerate = (dry_run = false) =>
+  api.post<{ factory_orders: { created: number; skipped: number; dry_run: boolean } }>(
+    `/api/exceptions/autofill/generate?dry_run=${dry_run}`
+  ).then(r => r.data);

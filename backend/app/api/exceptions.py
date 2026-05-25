@@ -90,3 +90,13 @@ def open_count(db: Session = Depends(get_db)):
     """顶栏健康度角标用: 返回 {count: N}."""
     n = db.query(func.count(DataException.id)).filter(DataException.status == "open").scalar()
     return {"count": n or 0}
+
+
+@router.post("/autofill/generate", response_model=dict)
+def autofill_generate(dry_run: bool = False, db: Session = Depends(get_db)):
+    """B5: 从订单反推生成工厂下单草稿 (支持 dry_run)."""
+    from app.services import autofill_service
+    result = autofill_service.run_all(db, dry_run=dry_run)
+    if not dry_run:
+        db.commit()
+    return result
