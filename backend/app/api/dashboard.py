@@ -76,7 +76,7 @@ def get_dashboard(
     prod_total = db.query(func.count(ProductInventory.id)).scalar() or 0
     prod_low = (
         db.query(func.count(ProductInventory.id))
-        .filter(ProductInventory.qty <= 5)
+        .filter(ProductInventory.physical_qty <= 5)
         .scalar() or 0
     )
 

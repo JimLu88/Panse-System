@@ -57,7 +57,7 @@ def _register():
             "physical_qty", "remark",
         }),
         "product_inventory": (ProductInventory, {
-            "qty", "remark",
+            "physical_qty", "remark",
         }),
     })
 
