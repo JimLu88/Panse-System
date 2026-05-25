@@ -733,3 +733,65 @@ class TestHeuristicFactoryOrder:
         assert mapping["factory_order_no"] == "工厂订单号"
         assert mapping.get("platform_order_no") == "关联平台订单号"
         assert mapping.get("factory_name") == "工厂名称"
+
+
+# ── 两级匹配度排序 (match_ranked) ─────────────────────────────────────────────
+
+class TestMatchRanked:
+    @pytest.fixture
+    def db(self):
+        engine = create_engine("sqlite:///:memory:", future=True,
+                               connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        Sess = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+        s = Sess()
+        yield s
+        s.close()
+
+    def _seed(self, db):
+        db.add_all([
+            Product(code="P1", name="榉木无边床", brand="畔色", category="33"),
+            Product(code="P2", name="榉木双人床 小灯床", brand="畔色", category="33"),
+            Product(code="P3", name="岩板餐桌", brand="畔色", category="21"),
+        ])
+        db.add_all([
+            PricingSku(product_code="P1", sku_code="P1-18", sku="榉木无边床-1.8米", size_category="大型"),
+            PricingSku(product_code="P1", sku_code="P1-15", sku="榉木无边床-1.5米", size_category="中型"),
+            PricingSku(product_code="P2", sku_code="P2-18", sku="榉木双人床-1.8米", size_category="大型"),
+        ])
+        db.commit()
+
+    def test_ranked_returns_sorted_products(self, db):
+        self._seed(db)
+        res = product_match_service.match_ranked(db, "榉木床", "1.8米")
+        assert len(res) >= 2
+        # 一级匹配度降序
+        confs = [r["product_confidence"] for r in res]
+        assert confs == sorted(confs, reverse=True)
+        # 不相关产品 (餐桌) 不在榜
+        assert all(r["product_code"] != "P3" for r in res)
+
+    def test_skus_sorted_within_product(self, db):
+        self._seed(db)
+        res = product_match_service.match_ranked(db, "榉木无边床", "1.8米")
+        p1 = next(r for r in res if r["product_code"] == "P1")
+        sku_confs = [s["confidence"] for s in p1["skus"]]
+        assert sku_confs == sorted(sku_confs, reverse=True)
+        assert p1["skus"][0]["sku"] == "榉木无边床-1.8米"  # 1.8 命中最高
+
+    def test_sku_code_exact_match_is_full(self, db):
+        self._seed(db)
+        res = product_match_service.match_ranked(db, "随便", "P1-18")
+        p1 = next(r for r in res if r["product_code"] == "P1")
+        top = p1["skus"][0]
+        assert top["sku_code"] == "P1-18"
+        assert top["confidence"] == 1.0
+
+    def test_limit_respected(self, db):
+        self._seed(db)
+        res = product_match_service.match_ranked(db, "榉木", limit=1)
+        assert len(res) == 1
+
+    def test_empty_query(self, db):
+        self._seed(db)
+        assert product_match_service.match_ranked(db, "") == []

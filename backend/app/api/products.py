@@ -25,6 +25,20 @@ class ProductMatchOut(BaseModel):
     confidence: float
 
 
+class RankedSkuOut(BaseModel):
+    sku_code: Optional[str]
+    sku: Optional[str]
+    size_category: Optional[str]
+    confidence: float
+
+
+class RankedProductOut(BaseModel):
+    product_code: str
+    product_name: str
+    product_confidence: float
+    skus: list[RankedSkuOut]
+
+
 @router.get("", response_model=list[ProductOut])
 def list_products(
     q: Optional[str] = Query(None),
@@ -105,8 +119,20 @@ def match_product(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """截图录单 / 微定制 AI 用: 模糊匹配系统产品 + SKU."""
+    """截图录单 / 微定制 AI 用: 模糊匹配系统产品 + SKU (返回最佳单条)."""
     return product_match_service.match(db, product_name, sku_text)
+
+
+@router.get("/match-ranked", response_model=list[RankedProductOut])
+def match_product_ranked(
+    product_name: str = Query(""),
+    sku_text: str = Query("", alias="sku"),
+    limit: int = Query(10, le=50),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """微定制: 按匹配度返回 Top-N 产品(一级) + 各自 SKU(二级), 供人工挑选."""
+    return product_match_service.match_ranked(db, product_name, sku_text, limit=limit)
 
 
 @router.get("/{product_code}/skus", response_model=list[PricingSkuOut])

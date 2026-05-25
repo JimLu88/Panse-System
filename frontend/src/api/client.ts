@@ -1916,6 +1916,23 @@ export interface ProductMatchResult {
 export const matchProduct = (product_name: string, sku?: string) =>
   api.get<ProductMatchResult>('/api/products/match', { params: { product_name, sku } }).then(r => r.data);
 
+// -- 两级匹配度排序 (微定制人工挑选)
+export interface RankedSku {
+  sku_code: string | null;
+  sku: string | null;
+  size_category: string | null;
+  confidence: number;
+}
+export interface RankedProduct {
+  product_code: string;
+  product_name: string;
+  product_confidence: number;
+  skus: RankedSku[];
+}
+export const matchProductRanked = (product_name: string, sku?: string, limit = 10) =>
+  api.get<RankedProduct[]>('/api/products/match-ranked', { params: { product_name, sku, limit } })
+    .then(r => r.data);
+
 // -- 产品 SKU 列表 (展开行用)
 export const listProductSkus = (product_code: string) =>
   api.get<PricingSku[]>(`/api/products/${product_code}/skus`).then(r => r.data);
