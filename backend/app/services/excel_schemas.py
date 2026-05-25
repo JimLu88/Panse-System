@@ -498,12 +498,12 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
             "platform_order_no": {
                 "type": "str", "required": False,
                 "desc": "对应的平台订单号 (淘宝/抖音)",
-                "aliases": ["平台订单号", "淘宝单号", "订单号"],
+                "aliases": ["关联平台订单号", "平台订单号", "淘宝单号", "订单号"],
             },
             "factory_name": {
                 "type": "str", "required": False,
                 "desc": "工厂名",
-                "aliases": ["工厂", "厂家", "供应商"],
+                "aliases": ["工厂名称", "工厂", "厂家", "供应商"],
             },
             "order_date": {
                 "type": "date", "required": False,

@@ -178,20 +178,44 @@ def _ai_analyze(db: Session, columns: list[str], sample_rows: list[list],
 
 
 def _heuristic_match(columns: list[str], sample_rows: list[list]) -> tuple[str, dict, float]:
-    """没 AI 时用关键字 + alias 匹配, 给个 entity 猜测."""
+    """没 AI 时用关键字 + alias 匹配, 给个 entity 猜测.
+
+    两遍匹配, 每列只用一次:
+      - 第 1 遍精确(列名 == 别名), 第 2 遍才子串。
+    避免子串贪婪把同一列分给多个字段 (例: 「工厂订单号」既含 '订单号' 又含 '工厂',
+    旧逻辑会让 platform_order_no / factory_name 都误抢它)。精确匹配额外加权,
+    让列名精确对应的实体在平分时胜出。
+    """
     best_entity = "unknown"
     best_mapping: dict[str, str] = {}
-    best_score = 0
+    best_score = 0.0
     for et, schema in ENTITY_SCHEMAS.items():
-        mapping = {}
-        score = 0
-        for field_name, fdef in schema["fields"].items():
-            aliases = [field_name] + fdef.get("aliases", [])
-            aliases_lower = [a.lower() for a in aliases]
+        mapping: dict[str, str] = {}
+        used: set[str] = set()
+        score = 0.0
+        fields = schema["fields"]
+        # 第 1 遍: 精确列名匹配
+        for fn, fdef in fields.items():
+            aliases_lower = [fn.lower()] + [a.lower() for a in fdef.get("aliases", [])]
             for col in columns:
-                col_lower = col.lower().strip()
-                if col_lower in aliases_lower or any(a in col for a in aliases):
-                    mapping[field_name] = col
+                if col in used:
+                    continue
+                if col.lower().strip() in aliases_lower:
+                    mapping[fn] = col
+                    used.add(col)
+                    score += (2 if fdef.get("required") else 1) + 0.5
+                    break
+        # 第 2 遍: 子串匹配 (只补还没映射上的字段, 且列没被占用)
+        for fn, fdef in fields.items():
+            if fn in mapping:
+                continue
+            aliases = [fn] + fdef.get("aliases", [])
+            for col in columns:
+                if col in used:
+                    continue
+                if any(a in col for a in aliases):
+                    mapping[fn] = col
+                    used.add(col)
                     score += 2 if fdef.get("required") else 1
                     break
         if score > best_score:

@@ -702,3 +702,34 @@ class TestReconcileWalkthrough:
             assert body["ai_used"] is False  # 测试环境无 key
         finally:
             app.dependency_overrides.clear()
+
+
+# ── 启发式映射: 工厂下单表分类 + 不重复占列 ────────────────────────────────────
+
+class TestHeuristicFactoryOrder:
+    def test_factory_order_sheet_classified(self):
+        from app.services.smart_import_service import _heuristic_match
+        columns = ["工厂订单号", "关联平台订单号", "工厂名称", "下单日期", "要求交货日期",
+                   "实际交货日期", "产品编码", "产品名称", "SKU", "数量", "工厂单价",
+                   "工厂账单金额", "产品预期金额", "付款方式", "付款状态", "付款日期",
+                   "物流方式", "物流单号", "支付宝流水号", "备注"]
+        entity, mapping, conf = _heuristic_match(columns, [])
+        assert entity == "factory_order"
+        # 必填 factory_order_no 必须映射上
+        assert mapping["factory_order_no"] == "工厂订单号"
+
+    def test_no_column_assigned_to_multiple_fields(self):
+        from app.services.smart_import_service import _heuristic_match
+        columns = ["工厂订单号", "关联平台订单号", "工厂名称", "下单日期", "要求交货日期",
+                   "实际交货日期", "产品编码", "产品名称", "SKU", "数量", "工厂单价",
+                   "工厂账单金额", "产品预期金额", "付款方式", "付款状态", "付款日期",
+                   "物流方式", "物流单号", "支付宝流水号", "备注"]
+        entity, mapping, _ = _heuristic_match(columns, [])
+        assert entity == "factory_order"
+        # 每个 Excel 列最多被一个字段占用 (修复前 工厂订单号 被 3 个字段抢)
+        used = list(mapping.values())
+        assert len(used) == len(set(used)), f"列重复占用: {used}"
+        # 三个易混字段各归各位
+        assert mapping["factory_order_no"] == "工厂订单号"
+        assert mapping.get("platform_order_no") == "关联平台订单号"
+        assert mapping.get("factory_name") == "工厂名称"
