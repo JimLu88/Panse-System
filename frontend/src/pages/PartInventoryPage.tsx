@@ -30,18 +30,22 @@ export default function PartInventoryPage() {
   });
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
-  const [editingQty, setEditingQty] = useState<Record<number, number>>({});
+  const [edits, setEdits] = useState<Record<number, { physical_qty?: number; locked_qty?: number }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
 
-  async function saveQty(id: number) {
-    const qty = editingQty[id];
-    if (qty === undefined) return;
+  function setEdit(id: number, patch: { physical_qty?: number; locked_qty?: number }) {
+    setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  }
+
+  async function saveRow(id: number) {
+    const patch = edits[id];
+    if (!patch) return;
     setSavingId(id);
     try {
-      await updatePartInventory(id, { physical_qty: qty });
+      await updatePartInventory(id, patch);
       message.success('库存已更新');
       qc.invalidateQueries({ queryKey: ['part-inventory'] });
-      setEditingQty(prev => { const n = { ...prev }; delete n[id]; return n; });
+      setEdits(prev => { const n = { ...prev }; delete n[id]; return n; });
     } catch {
       message.error('保存失败');
     } finally {
@@ -100,34 +104,43 @@ export default function PartInventoryPage() {
     {
       title: '物理库存',
       dataIndex: 'physical_qty',
-      width: 140,
+      width: 100,
       render: (v: number, row: PartInventory) => (
-        <Space size={4}>
-          <InputNumber
-            size="small"
-            min={0}
-            value={editingQty[row.id] ?? v}
-            onChange={(val) =>
-              setEditingQty(prev => ({ ...prev, [row.id]: val ?? 0 }))
-            }
-            style={{ width: 70 }}
-          />
-          {editingQty[row.id] !== undefined && (
-            <Button
-              size="small"
-              type="primary"
-              loading={savingId === row.id}
-              onClick={() => saveQty(row.id)}
-            >
-              存
-            </Button>
-          )}
-        </Space>
+        <InputNumber
+          size="small"
+          min={0}
+          value={edits[row.id]?.physical_qty ?? v}
+          onChange={(val) => setEdit(row.id, { physical_qty: val ?? 0 })}
+          style={{ width: 80 }}
+        />
       ),
     },
-    { title: '锁定', dataIndex: 'locked_qty', width: 70 },
+    {
+      title: '锁定',
+      dataIndex: 'locked_qty',
+      width: 90,
+      render: (v: number, row: PartInventory) => (
+        <InputNumber
+          size="small"
+          min={0}
+          value={edits[row.id]?.locked_qty ?? v}
+          onChange={(val) => setEdit(row.id, { locked_qty: val ?? 0 })}
+          style={{ width: 70 }}
+        />
+      ),
+    },
     { title: '可用', dataIndex: 'available_qty', width: 70 },
     { title: '备注', dataIndex: 'remark', ellipsis: true },
+    {
+      title: '操作',
+      width: 70,
+      render: (_: unknown, row: PartInventory) =>
+        edits[row.id] !== undefined ? (
+          <Button size="small" type="primary" loading={savingId === row.id} onClick={() => saveRow(row.id)}>
+            存
+          </Button>
+        ) : null,
+    },
   ];
 
   return (

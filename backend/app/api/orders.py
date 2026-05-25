@@ -16,7 +16,14 @@ from app.schemas.order import (
     OrderStatusChange,
     OrderUpdate,
 )
-from app.services import data_quality_service, exception_service, factory_sheet, order_import, order_service
+from app.services import (
+    data_quality_service,
+    exception_service,
+    factory_sheet,
+    order_cost_service,
+    order_import,
+    order_service,
+)
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
 
@@ -39,6 +46,69 @@ def list_orders(
         stmt = stmt.where(Order.platform == platform)
     stmt = stmt.order_by(Order.order_date.desc().nulls_last(), Order.id.desc()).limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
+
+
+class CostLineOut(BaseModel):
+    material_code: str
+    material_name: Optional[str]
+    qty_per_product: _Decimal
+    unit_price: Optional[_Decimal]
+    line_cost: Optional[_Decimal]
+    missing_price: bool
+
+
+class CostBreakdownOut(BaseModel):
+    order_no: str
+    sku_code: Optional[str]
+    qty: int
+    unit_cost: _Decimal
+    total_cost: _Decimal
+    resolved: bool
+    missing_price_count: int
+    note: Optional[str]
+    lines: list[CostLineOut]
+
+
+def _bd_to_out(bd: "order_cost_service.CostBreakdown") -> CostBreakdownOut:
+    return CostBreakdownOut(
+        order_no=bd.order_no,
+        sku_code=bd.sku_code,
+        qty=bd.qty,
+        unit_cost=bd.unit_cost,
+        total_cost=bd.total_cost,
+        resolved=bd.resolved,
+        missing_price_count=bd.missing_price_count,
+        note=bd.note,
+        lines=[CostLineOut(**ln.__dict__) for ln in bd.lines],
+    )
+
+
+@router.post("/recompute-costs", response_model=dict)
+def recompute_all_costs(only_missing: bool = True, db: Session = Depends(get_db)):
+    """批量反推理论成本 (按 BOM × 物料单价). only_missing 仅补空值."""
+    result = order_cost_service.recompute_all(db, only_missing=only_missing)
+    db.commit()
+    return result
+
+
+@router.get("/{order_id}/cost-breakdown", response_model=CostBreakdownOut)
+def get_cost_breakdown(order_id: int, db: Session = Depends(get_db)):
+    """反推过程可视化: 返回该订单理论成本的逐条物料明细 (不写库)."""
+    o = db.get(Order, order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    return _bd_to_out(order_cost_service.compute(db, o))
+
+
+@router.post("/{order_id}/recompute-cost", response_model=CostBreakdownOut)
+def recompute_cost(order_id: int, db: Session = Depends(get_db)):
+    """反推单条订单理论成本并写回 theoretical_cost (不动 actual_cost)."""
+    o = db.get(Order, order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    bd = order_cost_service.recompute_and_save(db, o)
+    db.commit()
+    return _bd_to_out(bd)
 
 
 @router.post("", response_model=OrderOut, status_code=201)

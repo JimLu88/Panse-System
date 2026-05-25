@@ -17,6 +17,7 @@ from app.services import inventory_service
 
 class PartInventoryPatch(BaseModel):
     physical_qty: Optional[Decimal] = None
+    locked_qty: Optional[Decimal] = None
     remark: Optional[str] = None
 
 router = APIRouter(prefix="/api/inventory/parts", tags=["inventory"])

@@ -57,6 +57,10 @@ class OrderOut(BaseModel):
     carrier: Optional[str]
     tracking_no: Optional[str]
     paid_amount: Optional[Decimal]
+    theoretical_cost: Optional[Decimal] = None
+    actual_cost: Optional[Decimal] = None
+    actual_freight: Optional[Decimal] = None
+    cost_diff: Optional[Decimal] = None
 
 
 class CsvImportReport(BaseModel):

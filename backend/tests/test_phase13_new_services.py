@@ -557,3 +557,98 @@ class TestExceptionCountEndpoints:
             assert isinstance(body, dict)
         finally:
             app.dependency_overrides.clear()
+
+
+# ── order_cost_service (理论成本反推) ──────────────────────────────────────────
+
+class TestOrderCostService:
+    @pytest.fixture
+    def db(self):
+        engine = create_engine("sqlite:///:memory:", future=True,
+                               connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        Sess = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+        s = Sess()
+        yield s
+        s.close()
+
+    def _seed(self, db):
+        from app.models.bom import BomLine
+        from app.models.material import Material
+        db.add_all([
+            Material(code="M1", name="榉木板", price=Decimal("200.00")),
+            Material(code="M2", name="不锈钢腿", price=Decimal("50.00")),
+            Material(code="M3", name="螺丝包", price=None),  # 缺价
+        ])
+        db.add_all([
+            BomLine(product_code="P1", sku_code="SKU-A", material_code="M1", qty_per_product=Decimal("2")),
+            BomLine(product_code="P1", sku_code="SKU-A", material_code="M2", qty_per_product=Decimal("4")),
+            BomLine(product_code="P1", sku_code="SKU-A", material_code="M3", qty_per_product=Decimal("1")),
+        ])
+        db.add(PricingSku(product_code="P1", sku_code="SKU-A", sku="榉木床-1.8米"))
+        db.commit()
+
+    def test_compute_from_sku_code(self, db):
+        from app.services import order_cost_service
+        self._seed(db)
+        o = Order(platform="淘宝", order_no="O1", product_code="P1",
+                  sku_code="SKU-A", qty=2, status="signed")
+        db.add(o); db.commit()
+        bd = order_cost_service.compute(db, o)
+        # 2*200 + 4*50 + (缺价按0) = 600 单件
+        assert bd.unit_cost == Decimal("600.00")
+        assert bd.total_cost == Decimal("1200.00")
+        assert bd.resolved is True
+        assert bd.missing_price_count == 1
+        assert len(bd.lines) == 3
+
+    def test_resolve_sku_code_via_sku_name(self, db):
+        from app.services import order_cost_service
+        self._seed(db)
+        o = Order(platform="淘宝", order_no="O2", product_code="P1",
+                  sku="榉木床-1.8米", qty=1, status="signed")
+        db.add(o); db.commit()
+        bd = order_cost_service.compute(db, o)
+        assert bd.sku_code == "SKU-A"
+        assert bd.unit_cost == Decimal("600.00")
+
+    def test_no_bom_not_resolved(self, db):
+        from app.services import order_cost_service
+        self._seed(db)
+        o = Order(platform="淘宝", order_no="O3", product_code="PX", qty=1, status="signed")
+        db.add(o); db.commit()
+        bd = order_cost_service.compute(db, o)
+        assert bd.resolved is False
+        assert bd.note is not None
+
+    def test_recompute_saves_theoretical_only(self, db):
+        from app.services import order_cost_service
+        self._seed(db)
+        o = Order(platform="淘宝", order_no="O4", product_code="P1", sku_code="SKU-A",
+                  qty=1, actual_cost=Decimal("520.00"), status="signed")
+        db.add(o); db.commit()
+        order_cost_service.recompute_and_save(db, o)
+        db.commit(); db.refresh(o)
+        assert o.theoretical_cost == Decimal("600.00")
+        assert o.actual_cost == Decimal("520.00")   # 实际成本不动
+        assert o.cost_diff == Decimal("-80.00")     # 实际 − 理论
+
+    def test_cost_diff_none_when_actual_missing(self, db):
+        self._seed(db)
+        o = Order(platform="淘宝", order_no="O5", product_code="P1", sku_code="SKU-A",
+                  qty=1, theoretical_cost=Decimal("600.00"), status="signed")
+        db.add(o); db.commit()
+        assert o.cost_diff is None
+
+    def test_recompute_all_only_missing(self, db):
+        from app.services import order_cost_service
+        self._seed(db)
+        db.add_all([
+            Order(platform="淘宝", order_no="A", product_code="P1", sku_code="SKU-A", qty=1, status="signed"),
+            Order(platform="淘宝", order_no="B", product_code="PX", qty=1, status="signed"),
+        ])
+        db.commit()
+        res = order_cost_service.recompute_all(db, only_missing=True)
+        assert res["updated"] == 1
+        assert res["skipped_no_bom"] == 1
+        assert res["total"] == 2

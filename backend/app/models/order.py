@@ -81,6 +81,13 @@ class Order(Base, TimestampMixin):
         Index("ix_orders_platform_date", "platform", "order_date"),
     )
 
+    @property
+    def cost_diff(self) -> Optional[Decimal]:
+        """实际成本 − 理论成本; 任一缺失则 None (供前端差异列)."""
+        if self.actual_cost is None or self.theoretical_cost is None:
+            return None
+        return self.actual_cost - self.theoretical_cost
+
 
 class FactoryOrder(Base, TimestampMixin):
     __tablename__ = "factory_orders"

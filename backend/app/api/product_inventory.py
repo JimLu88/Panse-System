@@ -17,6 +17,7 @@ from app.services import exception_service
 
 class ProductInventoryPatch(BaseModel):
     qty: Optional[Decimal] = None
+    locked_qty: Optional[Decimal] = None
     remark: Optional[str] = None
 
 router = APIRouter(prefix="/api/inventory/products", tags=["inventory"])
@@ -90,6 +91,8 @@ def update_product_inventory(
         raise HTTPException(404, "inventory row not found")
     if payload.qty is not None:
         inv.physical_qty = payload.qty
+    if payload.locked_qty is not None:
+        inv.locked_qty = payload.locked_qty
     if payload.remark is not None:
         inv.remark = payload.remark
     db.commit()

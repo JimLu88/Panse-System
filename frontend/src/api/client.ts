@@ -491,6 +491,10 @@ export interface Order {
   carrier: string | null;
   tracking_no: string | null;
   paid_amount: string | null;
+  theoretical_cost?: string | null;
+  actual_cost?: string | null;
+  actual_freight?: string | null;
+  cost_diff?: string | null;
   tracking_confirmed?: boolean;
   manual_confirmed?: boolean;
   signoff_questioned?: boolean;
@@ -1913,11 +1917,44 @@ export const updatePricingSku = (id: number, payload: Partial<PricingSkuCreate>)
 export const recomputePricingSku = (id: number) =>
   api.post<PricingSku>(`/api/pricing-skus/${id}/recompute`).then(r => r.data);
 
-// -- 库存可编辑
-export const updatePartInventory = (id: number, payload: { physical_qty?: number; remark?: string }) =>
-  api.patch(`/api/inventory/parts/${id}`, payload).then(r => r.data);
-export const updateProductInventory = (id: number, payload: { qty?: number; remark?: string }) =>
-  api.patch(`/api/inventory/products/${id}`, payload).then(r => r.data);
+// -- 库存可编辑 (盘库/纠错: 物理库存 + 锁定库存 + 备注)
+export const updatePartInventory = (
+  id: number,
+  payload: { physical_qty?: number; locked_qty?: number; remark?: string },
+) => api.patch(`/api/inventory/parts/${id}`, payload).then(r => r.data);
+export const updateProductInventory = (
+  id: number,
+  payload: { qty?: number; locked_qty?: number; remark?: string },
+) => api.patch(`/api/inventory/products/${id}`, payload).then(r => r.data);
+
+// -- 订单理论成本反推 (按 BOM × 物料单价)
+export interface OrderCostLine {
+  material_code: string;
+  material_name: string | null;
+  qty_per_product: string;
+  unit_price: string | null;
+  line_cost: string | null;
+  missing_price: boolean;
+}
+export interface OrderCostBreakdown {
+  order_no: string;
+  sku_code: string | null;
+  qty: number;
+  unit_cost: string;
+  total_cost: string;
+  resolved: boolean;
+  missing_price_count: number;
+  note: string | null;
+  lines: OrderCostLine[];
+}
+export const getOrderCostBreakdown = (id: number) =>
+  api.get<OrderCostBreakdown>(`/api/orders/${id}/cost-breakdown`).then(r => r.data);
+export const recomputeOrderCost = (id: number) =>
+  api.post<OrderCostBreakdown>(`/api/orders/${id}/recompute-cost`).then(r => r.data);
+export const recomputeAllOrderCosts = (only_missing = true) =>
+  api.post<{ updated: number; skipped_no_bom: number; total: number }>(
+    `/api/orders/recompute-costs?only_missing=${only_missing}`,
+  ).then(r => r.data);
 
 // -- 异常工作台
 export const fixException = (id: number, fields: Record<string, unknown>) =>
