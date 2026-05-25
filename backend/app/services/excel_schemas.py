@@ -455,12 +455,12 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
             "counterparty": {
                 "type": "str", "required": False,
                 "desc": "对手方姓名/公司",
-                "aliases": ["对方", "对手方", "对方姓名", "收款方"],
+                "aliases": ["交易对象", "交易对方", "对方", "对手方", "对方姓名", "收款方"],
             },
             "counterparty_account": {
                 "type": "str", "required": False,
                 "desc": "对手方账号",
-                "aliases": ["对方账号", "收款账号"],
+                "aliases": ["交易账户", "对方账号", "收款账号"],
             },
             "amount": {
                 "type": "decimal", "required": True,

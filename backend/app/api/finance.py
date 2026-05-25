@@ -83,6 +83,23 @@ async def import_alipay(
     )
 
 
+class SmartMatchResult(BaseModel):
+    total_scanned: int
+    tagged: dict[str, int]
+    untouched: int
+
+
+@router.post("/smart-match/rerun", response_model=SmartMatchResult)
+def rerun_smart_match(account: Optional[str] = None, db: Session = Depends(get_db)):
+    """重新核销: 对未打标流水按 关联订单号→工厂名→关键字 三段重新打 reconciliation_type.
+
+    导入订单/工厂下单表后再触发, 可把之前没识别的货款/客户回款挂上。
+    """
+    r = smart_matching_service.run(db, account=account)
+    db.commit()
+    return SmartMatchResult(total_scanned=r.total_scanned, tagged=r.tagged, untouched=r.untouched)
+
+
 # -------- Account balances --------
 
 class AccountBalanceOut(BaseModel):
@@ -170,15 +187,26 @@ def _to_out(r: reconciliation_service.ReconciliationResult) -> ReconciliationOut
 
 
 @router.get("/reconciliation/{rule}", response_model=ReconciliationOut)
-def run_one_rule(rule: str, db: Session = Depends(get_db)):
+def run_one_rule(
+    rule: str,
+    period_start: Optional[date] = Query(None, description="账期起 (含)"),
+    period_end: Optional[date] = Query(None, description="账期止 (含)"),
+    db: Session = Depends(get_db),
+):
     fn = reconciliation_service.RULES.get(rule)
     if fn is None:
         raise HTTPException(404, f"unknown rule {rule!r}; available: {list(reconciliation_service.RULES)}")
-    r = fn(db, record_exceptions=False)
+    r = fn(db, record_exceptions=False, period_start=period_start, period_end=period_end)
     return _to_out(r)
 
 
 @router.get("/reconciliation", response_model=dict[str, ReconciliationOut])
-def run_all_rules(db: Session = Depends(get_db)):
-    results = reconciliation_service.run_all(db, record_exceptions=False)
+def run_all_rules(
+    period_start: Optional[date] = Query(None, description="账期起 (含)"),
+    period_end: Optional[date] = Query(None, description="账期止 (含)"),
+    db: Session = Depends(get_db),
+):
+    results = reconciliation_service.run_all(
+        db, record_exceptions=False, period_start=period_start, period_end=period_end,
+    )
     return {name: _to_out(r) for name, r in results.items()}

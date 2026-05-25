@@ -144,11 +144,16 @@ def run_factory_payment(
 
 # -------- Rule 3: 推广支出 (Phase 5 实装) --------
 
-def run_promotion(db: Session, *, record_exceptions: bool = True) -> ReconciliationResult:
+def run_promotion(
+    db: Session, *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
+) -> ReconciliationResult:
     """推广记录 (15) ↔ 支付宝(reconciliation_type=promotion)。
 
     按月汇总比较：promotion_flows 里的 ‘支出’ 与同期 alipay_flows.amount<0 的
-    promotion 类型流水。差异超阈值入异常。
+    promotion 类型流水。差异超阈值入异常。period_start/period_end 限定账期。
     """
     from sqlalchemy import extract
     # 推广表的支出按月聚合
@@ -156,7 +161,12 @@ def run_promotion(db: Session, *, record_exceptions: bool = True) -> Reconciliat
         extract("year", PromotionFlow.transaction_date).label("y"),
         extract("month", PromotionFlow.transaction_date).label("m"),
         func.coalesce(func.sum(PromotionFlow.amount), 0).label("spent"),
-    ).where(PromotionFlow.flow_type == "支出").group_by("y", "m")
+    ).where(PromotionFlow.flow_type == "支出")
+    if period_start:
+        pf_stmt = pf_stmt.where(PromotionFlow.transaction_date >= period_start)
+    if period_end:
+        pf_stmt = pf_stmt.where(PromotionFlow.transaction_date <= period_end)
+    pf_stmt = pf_stmt.group_by("y", "m")
     by_month_pf: dict[tuple[int, int], Decimal] = {}
     for y, m, spent in db.execute(pf_stmt).all():
         if y is None or m is None:
@@ -168,7 +178,12 @@ def run_promotion(db: Session, *, record_exceptions: bool = True) -> Reconciliat
         extract("year", AlipayFlow.transaction_time).label("y"),
         extract("month", AlipayFlow.transaction_time).label("m"),
         func.coalesce(func.sum(-AlipayFlow.amount), 0).label("paid"),
-    ).where(AlipayFlow.reconciliation_type == "promotion").group_by("y", "m")
+    ).where(AlipayFlow.reconciliation_type == "promotion")
+    if period_start:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
+    af_stmt = af_stmt.group_by("y", "m")
     by_month_af: dict[tuple[int, int], Decimal] = {}
     for y, m, paid in db.execute(af_stmt).all():
         if y is None or m is None:
@@ -199,24 +214,40 @@ def run_promotion(db: Session, *, record_exceptions: bool = True) -> Reconciliat
         )]
     if record_exceptions:
         db.flush()
-    return _result("promotion", None, None, diffs, db)
+    return _result("promotion", period_start, period_end, diffs, db)
 
 
 # -------- Rule 4: 补单赔实付 --------
 
 def run_refill_compensation(
-    db: Session, *, record_exceptions: bool = True
+    db: Session, *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
 ) -> ReconciliationResult:
     """补单成本 ↔ 关联订单实付金额差额。
 
-    简化逻辑：对每条 refill_record，比较 total_cost 与同 order_no 主订单 paid_amount
-    （主订单可能不存在 → severity=warning，但不入异常表）。
+    对每条 refill_record，比较 total_cost 与同 order_no 主订单 paid_amount
+    （主订单可能不存在 → severity=warning）。period_start/period_end 按补单日筛。
     """
+    # 一次性建订单实付映射, 避免逐行查 (N+1)
+    paid_by_order: dict[str, Optional[Decimal]] = {
+        order_no: paid
+        for order_no, paid in db.execute(
+            select(Order.order_no, Order.paid_amount).where(Order.order_no.isnot(None))
+        ).all()
+    }
+
+    stmt = select(RefillRecord)
+    if period_start:
+        stmt = stmt.where(RefillRecord.refill_date >= period_start)
+    if period_end:
+        stmt = stmt.where(RefillRecord.refill_date <= period_end)
+    rows = db.execute(stmt).scalars().all()
+
     diffs: list[ReconciliationDiff] = []
-    rows = db.execute(select(RefillRecord)).scalars().all()
     for r in rows:
-        order = db.execute(select(Order).where(Order.order_no == r.order_no)).scalar_one_or_none()
-        if order is None:
+        if r.order_no not in paid_by_order:
             diffs.append(ReconciliationDiff(
                 key=r.order_no,
                 expected=r.total_cost,
@@ -227,7 +258,7 @@ def run_refill_compensation(
             ))
             continue
         expected = r.total_cost or Decimal("0")
-        actual = order.paid_amount or Decimal("0")
+        actual = paid_by_order[r.order_no] or Decimal("0")
         diff = actual - expected
         sev = _classify(diff, abs_floor=Decimal("1"))
         msg = f"补单 {r.order_no}: 总成本 ¥{expected}, 主单实付 ¥{actual}, 差 ¥{diff}"
@@ -238,13 +269,13 @@ def run_refill_compensation(
             _record_exception(db, rule="refill_compensation", key=r.order_no, diff_amount=diff, message=msg)
     if record_exceptions:
         db.flush()
-    return _result("refill_compensation", None, None, diffs, db)
+    return _result("refill_compensation", period_start, period_end, diffs, db)
 
 
 # -------- Rule 5: 库存资产估值 --------
 
-def run_inventory_value(db: Session, *, record_exceptions: bool = True) -> ReconciliationResult:
-    """库存资产 = Σ (配件可用库存 × 物料单价)。
+def run_inventory_value(db: Session, *, record_exceptions: bool = True, **_) -> ReconciliationResult:
+    """库存资产 = Σ (配件可用库存 × 物料单价)。账面快照, 不受账期影响 (忽略 period)。
     成品库存先不计入（需 SKU 级总成本，留 Phase 4 末做）。
     """
     stmt = (

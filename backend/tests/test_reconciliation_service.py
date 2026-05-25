@@ -141,3 +141,31 @@ def test_run_all_executes_all_six(db_session):
         "factory_payment", "install_fee", "promotion",
         "refill_compensation", "inventory_value", "logistics_fee",
     }
+
+
+# ── 对账优化③: 账期维度 ───────────────────────────────────────────────────────
+
+def test_refill_compensation_period_filter(db_session):
+    """按补单日筛账期: 只对账期内的补单。"""
+    db_session.add(RefillRecord(order_no="R-APR", total_cost=Decimal("100"),
+                                refill_date=date(2026, 4, 15)))
+    db_session.add(RefillRecord(order_no="R-MAY", total_cost=Decimal("100"),
+                                refill_date=date(2026, 5, 15)))
+    db_session.flush()
+    r = recon.run_refill_compensation(
+        db_session, period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+        record_exceptions=False,
+    )
+    keys = {d.key for d in r.diffs}
+    assert "R-APR" in keys
+    assert "R-MAY" not in keys
+    assert r.period_start == date(2026, 4, 1)
+
+
+def test_run_all_accepts_period(db_session):
+    """run_all 统一透传 period, 所有规则都不报错 (含忽略 period 的库存/物流)。"""
+    results = recon.run_all(
+        db_session, record_exceptions=False,
+        period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
+    )
+    assert set(results) == set(recon.RULES)

@@ -633,12 +633,28 @@ export interface ReconciliationResult {
   diffs: ReconciliationDiff[];
 }
 
-export const runReconciliation = (rule?: string) => {
+export const runReconciliation = (
+  rule?: string,
+  period?: { period_start?: string; period_end?: string },
+) => {
+  const params = period?.period_start || period?.period_end
+    ? { period_start: period.period_start, period_end: period.period_end }
+    : undefined;
   if (rule) {
-    return api.get<ReconciliationResult>(`/api/finance/reconciliation/${rule}`).then((r) => r.data);
+    return api.get<ReconciliationResult>(`/api/finance/reconciliation/${rule}`, { params }).then((r) => r.data);
   }
-  return api.get<Record<string, ReconciliationResult>>('/api/finance/reconciliation').then((r) => r.data);
+  return api.get<Record<string, ReconciliationResult>>('/api/finance/reconciliation', { params }).then((r) => r.data);
 };
+
+export interface SmartMatchResult {
+  total_scanned: number;
+  tagged: Record<string, number>;
+  untouched: number;
+}
+export const rerunSmartMatch = (account?: string) =>
+  api.post<SmartMatchResult>('/api/finance/smart-match/rerun', null, {
+    params: account ? { account } : undefined,
+  }).then((r) => r.data);
 
 // ----- Scanners (Phase 3.5) -----
 export interface ScannerFinding {

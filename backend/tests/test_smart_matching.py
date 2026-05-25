@@ -73,3 +73,42 @@ def test_mixed_batch(db_session):
     assert r.total_scanned == 4
     assert r.tagged == {"factory_payment": 1, "promotion": 1, "customer_payment": 1}
     assert r.untouched == 1
+
+# ── 对账优化①: 关联订单号归一化 + 数据驱动工厂名 ──────────────────────────────
+
+def test_related_order_no_links_to_real_order(db_session):
+    """收入流水关联订单号(带前缀+空格)归一化后命中真实订单 → customer_payment."""
+    from app.models.order import Order
+    db_session.add(Order(platform="淘宝", order_no="2701846635029001070", status="signed"))
+    db_session.flush()
+    _flow(db_session, "T1", 127.00, related_order_no="T200P2701846635029001 070")
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"customer_payment": 1}
+
+
+def test_related_order_no_links_to_factory_order(db_session):
+    """支出流水关联订单号命中工厂下单 platform_order_no → factory_payment."""
+    from app.models.order import FactoryOrder
+    db_session.add(FactoryOrder(factory_order_no="FO1", platform_order_no="2701846635029001070", factory_name="博冠"))
+    db_session.flush()
+    _flow(db_session, "T1", -3000, related_order_no="T200P2701846635029001 070")
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"factory_payment": 1}
+
+
+def test_dynamic_factory_name_match(db_session):
+    """对手方命中库内真实工厂名(非硬编码关键字) → factory_payment."""
+    from app.models.order import FactoryOrder
+    db_session.add(FactoryOrder(factory_order_no="FO2", platform_order_no="X1", factory_name="玉山县大美木制品厂"))
+    db_session.flush()
+    _flow(db_session, "T1", -8000, counterparty="玉山县大美木制品厂")
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"factory_payment": 1}
+
+
+def test_order_key_normalization():
+    from app.services.smart_matching_service import _order_key
+    assert _order_key("T200P2701846635029001 070") == "2701846635029001070"
+    assert _order_key("淘宝123") is None       # 短串不当订单号
+    assert _order_key(None) is None
+    assert _order_key("  ") is None
