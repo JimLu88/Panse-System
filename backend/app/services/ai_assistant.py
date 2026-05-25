@@ -304,13 +304,94 @@ def diagnose_exception(db: Session, exception_id: int) -> tuple[AiChatLog, Optio
     return log, ai
 
 
+# ── 对账走查: 把对账差异聚合成走查条目 (确定性, AI 不可用也能用) ──────────────
+
+@dataclass
+class ReconcileFinding:
+    rule: str
+    severity: str
+    count: int           # 同类差异条数
+    problem: str         # 问题 (聚合后的一句话)
+    cause: str           # 可能原因
+    suggestion: str      # 修复建议
+    sample_keys: list[str]   # 几个样例业务键, 便于定位
+
+
+_RULE_CN = {
+    "factory_payment": "货款对账(工厂)",
+    "install_fee": "安装费对账",
+    "promotion": "推广支出对账",
+    "refill_compensation": "补单赔付对账",
+    "inventory_value": "库存资产估值",
+    "logistics_fee": "物流费对账",
+}
+
+# 按规则给确定性的「可能原因 / 修复建议」模板
+_RULE_HINT = {
+    "factory_payment": (
+        "工厂账单金额未填、或支付宝流水未被识别为货款支出(对手方关键字没命中)",
+        "到工厂下单表补填账单金额/单价; 在支付宝流水里把对应支出的核销类型改为 factory_payment",
+    ),
+    "promotion": (
+        "推广记录表为空、或推广支出流水未被识别(对手方/备注无推广关键字)",
+        "导入推广记录表; 把直通车/万相台等支出流水核销类型改为 promotion",
+    ),
+    "refill_compensation": (
+        "补单的关联订单号在订单总表里找不到(订单未导入、或订单号格式不一致)",
+        "确认主订单已导入; 在补单异常上内联补填正确的关联订单号",
+    ),
+    "inventory_value": (
+        "部分物料缺单价, 未计入账面价值",
+        "到物料单价库补全缺价物料后重算",
+    ),
+    "install_fee": (
+        "万师傅安装结算 CSV 尚未导入",
+        "拿到万师傅 CSV 后导入售后/安装表再对账",
+    ),
+    "logistics_fee": (
+        "万师傅月结物流 CSV 尚未导入",
+        "拿到月结 CSV 后导入再对账",
+    ),
+}
+
+
+def collect_reconcile_findings(db: Session) -> list[ReconcileFinding]:
+    """跑全部对账规则, 把非 ok/not_available 的差异按(规则×严重度)聚合成走查条目。
+
+    聚合避免「1092 条同样的找不到主订单」刷屏 — 合并为一条带 count 的发现。
+    纯确定性, 不调 AI。
+    """
+    from app.services import reconciliation_service
+
+    results = reconciliation_service.run_all(db, record_exceptions=False)
+    findings: list[ReconcileFinding] = []
+    for rule, r in results.items():
+        bad = [d for d in r.diffs if d.severity in ("warning", "error")]
+        if not bad:
+            continue
+        cause, sugg = _RULE_HINT.get(rule, ("—", "—"))
+        rule_cn = _RULE_CN.get(rule, rule)
+        # 一条规则内 error / warning 各聚成一条
+        for sev in ("error", "warning"):
+            group = [d for d in bad if d.severity == sev]
+            if not group:
+                continue
+            findings.append(ReconcileFinding(
+                rule=rule, severity=sev, count=len(group),
+                problem=f"{rule_cn}: {len(group)} 笔{'差异超阈值' if sev == 'error' else '存在差异/缺关联'}",
+                cause=cause, suggestion=sugg,
+                sample_keys=[d.key for d in group[:5]],
+            ))
+    findings.sort(key=lambda f: 0 if f.severity == "error" else 1)
+    return findings
+
+
 def chat(
     db: Session,
     *,
     user_message: str,
     session_id: Optional[str] = None,
-    extra_system: str = "",
-) -> tuple[AiChatLog, Optional[AiResponse]]:
+    extra_system: str = "",) -> tuple[AiChatLog, Optional[AiResponse]]:
     """通用对话：用户 → AI 一问一答。"""
     try:
         ai = _call_ai(

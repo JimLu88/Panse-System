@@ -652,3 +652,53 @@ class TestOrderCostService:
         assert res["updated"] == 1
         assert res["skipped_no_bom"] == 1
         assert res["total"] == 2
+
+
+# ── 对账走查聚合 (ai_assistant.collect_reconcile_findings) ────────────────────
+
+class TestReconcileWalkthrough:
+    @pytest.fixture
+    def db(self):
+        engine = create_engine("sqlite:///:memory:", future=True,
+                               connect_args={"check_same_thread": False})
+        Base.metadata.create_all(engine)
+        Sess = sessionmaker(bind=engine, autoflush=False, autocommit=False, future=True)
+        s = Sess()
+        yield s
+        s.close()
+
+    def test_groups_refill_mismatches(self, db):
+        from app.models.finance import RefillRecord
+        from app.services import ai_assistant
+        # 3 条补单都找不到主订单 → 应聚合成 1 条 finding (count=3)
+        db.add_all([
+            RefillRecord(order_no="R1", total_cost=Decimal("10")),
+            RefillRecord(order_no="R2", total_cost=Decimal("20")),
+            RefillRecord(order_no="R3", total_cost=Decimal("30")),
+        ])
+        db.commit()
+        findings = ai_assistant.collect_reconcile_findings(db)
+        refill = [f for f in findings if f.rule == "refill_compensation"]
+        assert len(refill) == 1
+        assert refill[0].count == 3
+        assert refill[0].severity == "warning"
+        assert len(refill[0].sample_keys) <= 5
+        assert refill[0].suggestion  # 有修复建议
+
+    def test_empty_db_no_findings(self, db):
+        from app.services import ai_assistant
+        # 空库: 不应产生 warning/error findings (not_available 规则被跳过)
+        findings = ai_assistant.collect_reconcile_findings(db)
+        assert all(f.severity in ("warning", "error") for f in findings)
+
+    def test_endpoint_returns_issues(self):
+        client, token, _ = _make_client()
+        try:
+            r = client.post("/api/ai/reconcile-walkthrough",
+                            headers={"Authorization": f"Bearer {token}"})
+            assert r.status_code == 200
+            body = r.json()
+            assert "issues" in body and "ai_used" in body and "total" in body
+            assert body["ai_used"] is False  # 测试环境无 key
+        finally:
+            app.dependency_overrides.clear()

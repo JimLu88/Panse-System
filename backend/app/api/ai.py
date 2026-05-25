@@ -106,52 +106,46 @@ class ReconcileWalkthroughOut(BaseModel):
 
 @router.post("/reconcile-walkthrough", response_model=ReconcileWalkthroughOut)
 def reconcile_walkthrough(db: Session = Depends(get_db)):
-    """对账 AI 走查: 汇总所有 open 异常 + 对账差异, AI 逐项定位/查因/建议修复."""
-    from app.services import reconciliation_service
+    """对账 AI 走查: 先跑对账规则汇总差异(聚合), 再叠加 open 异常; AI 配置时逐条诊断."""
     from app.models.exception import DataException
     from sqlalchemy import select
 
-    # 汇总 open 异常
+    issues: list[dict] = []
+
+    # 1. 实时对账差异 (聚合, 确定性) — 即使没记成异常也能看到
+    for f in ai_assistant.collect_reconcile_findings(db):
+        issues.append({
+            "type": f.rule,
+            "description": f"{f.problem}（原因：{f.cause}）",
+            "suggestion": f.suggestion,
+            "source": f"reconciliation/{f.rule} · 样例 {', '.join(f.sample_keys) or '—'}",
+        })
+
+    # 2. open 异常池
     exceptions = db.execute(
         select(DataException).where(DataException.status == "open").limit(50)
     ).scalars().all()
 
-    issues = []
     ai_used = False
-
-    if not ai_assistant.is_configured(db):
-        # 无 AI: 返回确定性提示
-        for exc in exceptions:
-            issues.append({
-                "id": exc.id,
-                "type": exc.exception_type,
-                "description": exc.description,
-                "suggestion": exc.suggestion_action,
-                "source": f"{exc.source_table}/{exc.source_pk}",
-            })
-        return ReconcileWalkthroughOut(issues=issues, ai_used=False, total=len(issues))
-
-    # 有 AI: 批量分析
+    configured = ai_assistant.is_configured(db)
     for exc in exceptions:
-        try:
-            log, ai = ai_assistant.diagnose_exception(db, exc.id)
-            db.commit()
-            issues.append({
-                "id": exc.id,
-                "type": exc.exception_type,
-                "description": exc.description,
-                "ai_analysis": ai.text if ai else exc.suggestion_action,
-                "source": f"{exc.source_table}/{exc.source_pk}",
-            })
-            ai_used = True
-        except Exception:
-            issues.append({
-                "id": exc.id,
-                "type": exc.exception_type,
-                "description": exc.description,
-                "suggestion": exc.suggestion_action,
-                "source": f"{exc.source_table}/{exc.source_pk}",
-            })
+        item = {
+            "id": exc.id,
+            "type": exc.exception_type,
+            "description": exc.description,
+            "suggestion": exc.suggestion_action,
+            "source": f"{exc.source_table}/{exc.source_pk}",
+        }
+        if configured:
+            try:
+                _log, ai = ai_assistant.diagnose_exception(db, exc.id)
+                db.commit()
+                if ai:
+                    item["ai_analysis"] = ai.text
+                    ai_used = True
+            except Exception:
+                pass
+        issues.append(item)
 
     return ReconcileWalkthroughOut(issues=issues, ai_used=ai_used, total=len(issues))
 
