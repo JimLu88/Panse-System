@@ -2075,3 +2075,35 @@ export const getQuoteConfig = () =>
   api.get<QuoteConfig>('/api/customization/quote-config').then(r => r.data);
 export const updateQuoteConfig = (patch: Partial<QuoteConfig>) =>
   api.put<QuoteConfig>('/api/customization/quote-config', patch).then(r => r.data);
+
+// ===== 全定制: 板单实时报价 + AI 抽板 =====
+export interface QuoteBoard {
+  part: string; material: string;
+  length_cm: number; width_cm: number; qty: number;
+  unit?: string; is_accessory?: boolean; is_drawer_rail?: boolean;
+}
+export interface BoardQuoteResult {
+  wood_cost: number; labor_fee: number; factory_in_cost: number; factory_profit: number;
+  factory_wood_total: number; accessory_total: number; drawer_rail_total: number;
+  packing_fee: number; freight: number; install_fee: number;
+  panse_cost: number; final_quote: number; factory_quote_compare: number;
+  projection_estimate: number | null; projection_area_m2: number | null;
+  factory_quote: number | null; factory_diff: number | null; size_class: string;
+  wood_lines: { part: string; material: string; cost: number }[];
+  accessory_lines: { part: string; material: string; cost: number }[];
+}
+export const boardQuote = (payload: {
+  product_type: string; length_m: number;
+  overall_width_m?: number; overall_height_m?: number;
+  boards: QuoteBoard[]; factory_quote?: number;
+}) => api.post<BoardQuoteResult>('/api/customization/board-quote', payload).then(r => r.data);
+
+export interface ExtractBoardsResult {
+  ai_used: boolean; model?: string; product_type: string | null;
+  overall: { length_mm?: number; width_mm?: number; height_mm?: number };
+  boards: QuoteBoard[]; error: string | null;
+}
+export const extractBoards = (file: File) => {
+  const fd = new FormData(); fd.append('file', file);
+  return api.post<ExtractBoardsResult>('/api/customization/extract-boards', fd).then(r => r.data);
+};

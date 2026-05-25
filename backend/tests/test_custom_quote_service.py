@@ -105,3 +105,22 @@ def test_config_persist_and_merge():
     assert cfg["factory_profit_rate"] == 0.30
     assert cfg["panse_profit_rate"] == 0.15        # 未动的保留默认
     assert cfg["labor"]["餐边柜"] == [840, 1070, 1480]
+
+
+# ── 板单→报价 (接配置) ────────────────────────────────────────────────────────
+
+def test_quote_from_spec_uses_config():
+    from app.services.custom_quote_service import quote_from_spec, BoardSpec
+    db = _cfg_db()
+    # 餐边柜 2.1m: 一块"等效板"模拟真实材料5044(黑胡桃500→10.088㎡) + 抽屉轨道×4
+    boards = [
+        BoardSpec("板单合计", "黑胡桃木-2.2cm", length_cm=1008.8, width_cm=100, qty=1),
+        BoardSpec("抽屉轨道", "抽屉轨道", 0, 0, qty=4, unit="付", is_drawer_rail=True),
+    ]
+    r = quote_from_spec(db, product_type="餐边柜", length_m=2.1, boards=boards,
+                        overall_width_m=2.1, overall_height_m=1.95)
+    assert r.labor_fee == 1480.0                       # 餐边柜大型, 来自配置
+    assert abs(float(r.wood_cost) - 5044) < 5          # 黑胡桃 10.088㎡×500
+    # 工厂对比 = (5044+1480)×1.25 + 88轨道 = 8243, 工厂8500 → 进500
+    assert abs(float(r.factory_quote_compare) - 8243) < 5
+    assert 8500 - float(r.factory_quote_compare) < 500

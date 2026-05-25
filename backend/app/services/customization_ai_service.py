@@ -221,3 +221,42 @@ def ai_quote(db: Session, image_bytes: bytes, mime: str) -> CustomizationAiResul
         model=model_name,
         error=error_msg,
     )
+
+
+_BOARD_SYSTEM = """\
+你是家具全定制下料助手。看设计图(含整体尺寸标注), 按每一块板拆解, 用 JSON 回答:
+{
+  "product_type": "品类(床/床头柜/电视柜/餐边柜/餐桌/斗柜/书柜/...)",
+  "overall": {"length_mm": null, "width_mm": null, "height_mm": null},
+  "boards": [
+    {"part":"部位(如顶板/侧板/层板/门板/抽屉面板/背板)",
+     "material":"材料(如 樱桃木-2.2cm / 黑胡桃木-2.2cm / 实木多层板1.8cm)",
+     "length_cm": 0, "width_cm": 0, "qty": 1,
+     "is_accessory": false}
+  ]
+}
+长宽统一换算成厘米(cm)。背板/抽屉底板常用多层板。只输出 JSON。"""
+
+
+def extract_boards(db: Session, image_bytes: bytes, mime: str) -> dict:
+    """从设计图抽板单。AI 不可用时返回空板单 (前端转手动录入)。"""
+    try:
+        prov = _build_provider(db)
+        resp = prov.chat_with_image(
+            system=_BOARD_SYSTEM,
+            user="请把这张设计图按每一块板拆成 JSON 板单。",
+            image_bytes=image_bytes, mime=mime, max_tokens=1500,
+        )
+        data = _parse_json_safe(resp.text)
+        return {
+            "ai_used": True,
+            "model": resp.model,
+            "product_type": data.get("product_type"),
+            "overall": data.get("overall") or {},
+            "boards": data.get("boards") or [],
+            "error": None,
+        }
+    except ai_mod.AiUnavailable as e:
+        return {"ai_used": False, "product_type": None, "overall": {}, "boards": [], "error": str(e)}
+    except Exception as e:
+        return {"ai_used": False, "product_type": None, "overall": {}, "boards": [], "error": f"AI 调用失败: {e}"}

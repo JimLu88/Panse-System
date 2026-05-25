@@ -147,6 +147,67 @@ def compute_quote(
     )
 
 
+@dataclass
+class BoardSpec:
+    """前端/AI 给的一条板规格 (长宽单位 cm, 更贴近下料单)。"""
+    part: str
+    material: str
+    length_cm: float
+    width_cm: float
+    qty: float = 1
+    unit: str = "平方米"
+    is_accessory: bool = False        # 配件(把手/灯带/轨道等), 不计入工厂木作
+    is_drawer_rail: bool = False
+
+
+def quote_from_spec(
+    db,
+    *,
+    product_type: str,
+    length_m: float,
+    boards: list[BoardSpec],
+    overall_width_m: Optional[float] = None,
+    overall_height_m: Optional[float] = None,
+) -> QuoteResult:
+    """把"品类 + 板单"按后台配置(单价/人工/打包运费安装/系数)算出整套报价。
+
+    板的长宽按 cm 传入, 自动换算 m。木材单价、人工费(品类×大小)、
+    打包/运费/安装(按大小)、利润系数、投影系数全部从配置读。
+    """
+    from app.services import custom_quote_config_service as cfg_svc
+
+    cfg = cfg_svc.get_config(db)
+    prices = cfg.get("prices", {})
+
+    def _price(mat: str) -> Decimal:
+        return _d(prices.get(mat, prices.get(mat.split("-")[0], 0)))
+
+    wood_lines, acc_lines = [], []
+    for b in boards:
+        ln = Line(
+            part=b.part, material=b.material, unit_price=_price(b.material),
+            qty=_d(b.qty),
+            length_m=_d(b.length_cm) / 100 if b.length_cm else None,
+            width_m=_d(b.width_cm) / 100 if b.width_cm else None,
+            unit=b.unit, is_drawer_rail=b.is_drawer_rail,
+        )
+        (acc_lines if (b.is_accessory or b.is_drawer_rail) else wood_lines).append(ln)
+
+    return compute_quote(
+        wood_lines=wood_lines,
+        accessory_lines=acc_lines,
+        labor_fee=_d(cfg_svc.lookup_labor(cfg, product_type, length_m)),
+        packing_fee=_d(cfg_svc.lookup_packing(cfg, product_type, length_m)),
+        freight=_d(cfg_svc.lookup_freight(cfg, product_type, length_m)),
+        install_fee=_d(cfg_svc.lookup_install(cfg, product_type, length_m)),
+        factory_profit_rate=_d(cfg.get("factory_profit_rate", 0.25)),
+        panse_profit_rate=_d(cfg.get("panse_profit_rate", 0.15)),
+        overall_width_m=_d(overall_width_m) if overall_width_m else None,
+        overall_height_m=_d(overall_height_m) if overall_height_m else None,
+        projection_rate=_d(cfg.get("projection_rate", 900)),
+    )
+
+
 def material_diff_surcharge(
     *,
     new_unit_price: Decimal,

@@ -54,6 +54,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡
     "packing": [100, 200, 400],     # 打包费 [小,中,大]
+    "freight": [100, 100, 150],     # 运费 [小,中,大]
+    "install": [50, 100, 150],      # 上门安装费 [小,中,大]
     "labor": _LABOR,
     "size_rules": _SIZE_RULES,
     "prices": _PRICES,
@@ -107,6 +109,18 @@ def lookup_labor(cfg: dict, product_type: str, length_m: float) -> float:
     return float(row[_SIZE_IDX[classify_size(cfg, product_type, length_m)]])
 
 
+def _by_size(cfg: dict, key: str, default: list, product_type: str, length_m: float) -> float:
+    arr = cfg.get(key, default)
+    return float(arr[_SIZE_IDX[classify_size(cfg, product_type, length_m)]])
+
+
 def lookup_packing(cfg: dict, product_type: str, length_m: float) -> float:
-    pk = cfg.get("packing", [100, 200, 400])
-    return float(pk[_SIZE_IDX[classify_size(cfg, product_type, length_m)]])
+    return _by_size(cfg, "packing", [100, 200, 400], product_type, length_m)
+
+
+def lookup_freight(cfg: dict, product_type: str, length_m: float) -> float:
+    return _by_size(cfg, "freight", [100, 100, 150], product_type, length_m)
+
+
+def lookup_install(cfg: dict, product_type: str, length_m: float) -> float:
+    return _by_size(cfg, "install", [50, 100, 150], product_type, length_m)

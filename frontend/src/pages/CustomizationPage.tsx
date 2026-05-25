@@ -23,8 +23,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import {
   AiQuoteResult,
+  BoardQuoteResult,
+  QuoteBoard,
   QuoteConfig,
   aiCustomizationQuote,
+  boardQuote,
+  extractBoards,
   fuzzyMatch,
   getQuoteConfig,
   updateQuoteConfig,
@@ -298,6 +302,144 @@ function QuoteSettingsTab() {
   );
 }
 
+function FullCustomTab() {
+  const { data: cfg } = useQuery({ queryKey: ['quote-config'], queryFn: getQuoteConfig });
+  const [productType, setProductType] = useState('餐边柜');
+  const [lengthM, setLengthM] = useState(2.1);
+  const [widthM, setWidthM] = useState<number | undefined>();
+  const [heightM, setHeightM] = useState<number | undefined>();
+  const [factoryQuote, setFactoryQuote] = useState<number | undefined>();
+  const [boards, setBoards] = useState<QuoteBoard[]>([
+    { part: '顶板', material: '黑胡桃木-2.2cm', length_cm: 210, width_cm: 45, qty: 1 },
+  ]);
+  const [result, setResult] = useState<BoardQuoteResult | null>(null);
+
+  const typeOpts = Object.keys(cfg?.labor ?? {}).map((t) => ({ value: t, label: t }));
+  const matOpts = Object.keys(cfg?.prices ?? {}).map((m) => ({ value: m, label: m }));
+
+  const quoteMut = useMutation({
+    mutationFn: () => boardQuote({
+      product_type: productType, length_m: lengthM,
+      overall_width_m: widthM, overall_height_m: heightM,
+      boards, factory_quote: factoryQuote,
+    }),
+    onSuccess: setResult,
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '算价失败'),
+  });
+
+  const extractMut = useMutation({
+    mutationFn: (f: File) => extractBoards(f),
+    onSuccess: (r) => {
+      if (r.product_type) setProductType(r.product_type);
+      if (r.overall?.length_mm) setLengthM(r.overall.length_mm / 1000);
+      if (r.overall?.width_mm) setWidthM(r.overall.width_mm / 1000);
+      if (r.overall?.height_mm) setHeightM(r.overall.height_mm / 1000);
+      if (r.boards?.length) setBoards(r.boards);
+      message[r.ai_used ? 'success' : 'warning'](
+        r.ai_used ? `AI 识别 ${r.boards.length} 块板, 请核对` : `AI 未配置(${r.error ?? ''}), 请手动录入`,
+      );
+    },
+  });
+
+  const setB = (i: number, patch: Partial<QuoteBoard>) =>
+    setBoards((p) => p.map((b, j) => (j === i ? { ...b, ...patch } : b)));
+  const addRow = () => setBoards((p) => [...p, { part: '', material: '黑胡桃木-2.2cm', length_cm: 0, width_cm: 0, qty: 1 }]);
+  const delRow = (i: number) => setBoards((p) => p.filter((_, j) => j !== i));
+
+  const money = (v: number | null | undefined) => (v == null ? '—' : `¥${v.toFixed(0)}`);
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert type="info" showIcon message="逐块板按面积算材料 + 品类×大小查人工 → (材料+人工)×工厂利润 = 工厂木作价, 与工厂报价比对; 旁边给投影面积对照防漏算。单价/人工/系数都在『报价参数设置』里调。" />
+      <Space wrap>
+        <Upload accept="image/*" showUploadList={false}
+          beforeUpload={(f) => { extractMut.mutate(f as File); return false; }}>
+          <Button icon={<InboxOutlined />} loading={extractMut.isPending}>上传设计图 AI 抽板</Button>
+        </Upload>
+        <span>品类 <Select size="small" style={{ width: 110 }} value={productType} onChange={setProductType}
+          options={typeOpts} showSearch /></span>
+        <span>长度(m) <InputNumber size="small" value={lengthM} min={0} step={0.1} style={{ width: 80 }}
+          onChange={(v) => setLengthM(Number(v ?? 0))} /></span>
+        <span>整宽(m) <InputNumber size="small" value={widthM} min={0} step={0.01} style={{ width: 80 }}
+          onChange={(v) => setWidthM(v ? Number(v) : undefined)} /></span>
+        <span>整高(m) <InputNumber size="small" value={heightM} min={0} step={0.01} style={{ width: 80 }}
+          onChange={(v) => setHeightM(v ? Number(v) : undefined)} /></span>
+        <span>工厂报价 <InputNumber size="small" value={factoryQuote} min={0} style={{ width: 90 }}
+          onChange={(v) => setFactoryQuote(v ? Number(v) : undefined)} /></span>
+      </Space>
+
+      <Table<QuoteBoard>
+        size="small" pagination={false} rowKey={(_, i) => String(i)} dataSource={boards}
+        columns={[
+          { title: '部位', dataIndex: 'part', render: (v: string, _r: QuoteBoard, i: number) => (
+            <Input size="small" value={v} onChange={(e) => setB(i, { part: e.target.value })} />) },
+          { title: '材料', dataIndex: 'material', width: 170, render: (v: string, _r: QuoteBoard, i: number) => (
+            <Select size="small" style={{ width: 160 }} value={v} options={matOpts} showSearch
+              onChange={(val) => setB(i, { material: val })} />) },
+          { title: '长cm', dataIndex: 'length_cm', width: 80, render: (v: number, _r: QuoteBoard, i: number) => (
+            <InputNumber size="small" value={v} min={0} style={{ width: 70 }}
+              onChange={(val) => setB(i, { length_cm: Number(val ?? 0) })} />) },
+          { title: '宽cm', dataIndex: 'width_cm', width: 80, render: (v: number, _r: QuoteBoard, i: number) => (
+            <InputNumber size="small" value={v} min={0} style={{ width: 70 }}
+              onChange={(val) => setB(i, { width_cm: Number(val ?? 0) })} />) },
+          { title: '数量', dataIndex: 'qty', width: 65, render: (v: number, _r: QuoteBoard, i: number) => (
+            <InputNumber size="small" value={v} min={0} style={{ width: 55 }}
+              onChange={(val) => setB(i, { qty: Number(val ?? 1) })} />) },
+          { title: '轨道', dataIndex: 'is_drawer_rail', width: 50, render: (v: boolean, _r: QuoteBoard, i: number) => (
+            <input type="checkbox" checked={!!v} onChange={(e) => setB(i, { is_drawer_rail: e.target.checked, unit: e.target.checked ? '付' : '平方米' })} />) },
+          { title: '', width: 40, render: (_: unknown, _r: QuoteBoard, i: number) => (
+            <Button size="small" danger type="text" onClick={() => delRow(i)}>×</Button>) },
+        ] as any}
+      />
+      <Space>
+        <Button onClick={addRow}>+ 加一块板</Button>
+        <Button type="primary" loading={quoteMut.isPending} onClick={() => quoteMut.mutate()}>计算报价</Button>
+      </Space>
+
+      {result && (
+        <Space align="start" wrap size="large">
+          <Card size="small" title="工厂木作对比" style={{ minWidth: 280 }}>
+            <Descriptions size="small" column={1}>
+              <Descriptions.Item label="材料(逐板)">{money(result.wood_cost)}</Descriptions.Item>
+              <Descriptions.Item label={`人工(${productType}·${result.size_class}型)`}>{money(result.labor_fee)}</Descriptions.Item>
+              <Descriptions.Item label="厂内总成本">{money(result.factory_in_cost)}</Descriptions.Item>
+              <Descriptions.Item label="工厂利润(×系数)">{money(result.factory_profit)}</Descriptions.Item>
+              <Descriptions.Item label="抽屉轨道">{money(result.drawer_rail_total)}</Descriptions.Item>
+              <Descriptions.Item label={<b>我算工厂价</b>}><b>{money(result.factory_quote_compare)}</b></Descriptions.Item>
+              {result.factory_quote != null && (
+                <Descriptions.Item label="工厂实报">
+                  {money(result.factory_quote)}
+                  <Tag color={Math.abs(result.factory_diff ?? 0) <= 500 ? 'green' : 'red'}>
+                    差 {(result.factory_diff ?? 0) > 0 ? '+' : ''}{result.factory_diff?.toFixed(0)}
+                  </Tag>
+                </Descriptions.Item>
+              )}
+            </Descriptions>
+          </Card>
+          <Card size="small" title="投影面积对照(防漏算)" style={{ minWidth: 240 }}>
+            <Descriptions size="small" column={1}>
+              <Descriptions.Item label="正面投影">{result.projection_area_m2 ?? '—'} ㎡</Descriptions.Item>
+              <Descriptions.Item label="估算价">{money(result.projection_estimate)}</Descriptions.Item>
+              <Descriptions.Item label="对账面价">{money(result.factory_wood_total)}</Descriptions.Item>
+            </Descriptions>
+            <div style={{ color: '#999', fontSize: 12, marginTop: 6 }}>两者差太多 → 可能漏板/算错</div>
+          </Card>
+          <Card size="small" title="畔色最终售价" style={{ minWidth: 220 }}>
+            <Descriptions size="small" column={1}>
+              <Descriptions.Item label="配件">{money(result.accessory_total)}</Descriptions.Item>
+              <Descriptions.Item label="打包/运费/安装">{money(result.packing_fee + result.freight + result.install_fee)}</Descriptions.Item>
+              <Descriptions.Item label="畔色成本">{money(result.panse_cost)}</Descriptions.Item>
+              <Descriptions.Item label={<b>最终报价</b>}>
+                <b style={{ color: '#1677ff', fontSize: 16 }}>{money(result.final_quote)}</b>
+              </Descriptions.Item>
+            </Descriptions>
+          </Card>
+        </Space>
+      )}
+    </Space>
+  );
+}
+
 export default function CustomizationPage() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -306,7 +448,8 @@ export default function CustomizationPage() {
       </Typography.Title>
       <Tabs
         items={[
-          { key: 'ai', label: <><RobotOutlined /> AI 截图报价</>, children: <AiQuoteTab /> },
+          { key: 'full', label: <><RobotOutlined /> 全定制报价</>, children: <FullCustomTab /> },
+          { key: 'ai', label: 'AI 截图报价', children: <AiQuoteTab /> },
           { key: 'manual', label: '手动定制向导', children: <ManualQuoteTab /> },
           { key: 'settings', label: <><SettingOutlined /> 报价参数设置</>, children: <QuoteSettingsTab /> },
         ]}
