@@ -769,31 +769,40 @@ def _commit_generic(
     uniqueness_field = _UNIQUENESS_FIELD.get(entity_type)
     ctx = _GenericCtx(report=report, on_conflict=on_conflict)
     inserted, updated, skipped, conflicted = 0, 0, 0, 0
-    for i, raw_row in enumerate(rows, start=1):
-        if i % _PROGRESS_TICK == 0:
-            if progress_callback:
-                progress_callback(i, total)
-            if cancel_callback and cancel_callback():
-                raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
-        projected, errs = _project(raw_row, mapping, schema)
-        if errs:
-            report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
-            skipped += 1
-            continue
-        try:
-            kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field, ctx)
-        except Exception as e:
-            report.errors.append(f"第 {i + 1} 行: {type(e).__name__}: {e}")
-            skipped += 1
-            continue
-        if did == "inserted":
-            inserted += 1
-        elif did == "updated":
-            updated += 1
-        elif did == "conflict":
-            conflicted += 1
-        else:
-            skipped += 1
+    # 同一次提交内, 源表常有重复唯一键 (如产品总表按 SKU 逐行列同一产品码).
+    # 全局 autoflush=False 会让逐行 select 看不到本批已 add 但未 flush 的行,
+    # 导致重复键堆到最后一次 flush 撞 UNIQUE 约束崩溃. 此处临时开 autoflush,
+    # 让每行的存在性检查先 flush 上一行, 重复键即走正常 upsert 路径.
+    prev_autoflush = db.autoflush
+    db.autoflush = True
+    try:
+        for i, raw_row in enumerate(rows, start=1):
+            if i % _PROGRESS_TICK == 0:
+                if progress_callback:
+                    progress_callback(i, total)
+                if cancel_callback and cancel_callback():
+                    raise CancelledImport(f"用户取消, 已处理 {i}/{total} 行")
+            projected, errs = _project(raw_row, mapping, schema)
+            if errs:
+                report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
+                skipped += 1
+                continue
+            try:
+                kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field, ctx)
+            except Exception as e:
+                report.errors.append(f"第 {i + 1} 行: {type(e).__name__}: {e}")
+                skipped += 1
+                continue
+            if did == "inserted":
+                inserted += 1
+            elif did == "updated":
+                updated += 1
+            elif did == "conflict":
+                conflicted += 1
+            else:
+                skipped += 1
+    finally:
+        db.autoflush = prev_autoflush
     report.inserted_parents += inserted
     report.skipped_rows += skipped + conflicted
     if updated > 0:
