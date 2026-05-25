@@ -2059,3 +2059,19 @@ export const autofillGenerate = (dry_run = false) =>
   api.post<{ factory_orders: { created: number; skipped: number; dry_run: boolean } }>(
     `/api/exceptions/autofill/generate?dry_run=${dry_run}`
   ).then(r => r.data);
+
+// ===== 全定制报价参数 (后台可调) =====
+export interface QuoteConfig {
+  factory_profit_rate: number;
+  panse_profit_rate: number;
+  projection_type: string;          // front=正面 / top=俯视
+  projection_rate: number;
+  packing: number[];                // [小,中,大]
+  labor: Record<string, number[]>;  // 品类 → [小,中,大]
+  size_rules: Record<string, number[]>;  // 品类 → [大阈值,中阈值]
+  prices: Record<string, number>;   // 材料 → 单价
+}
+export const getQuoteConfig = () =>
+  api.get<QuoteConfig>('/api/customization/quote-config').then(r => r.data);
+export const updateQuoteConfig = (patch: Partial<QuoteConfig>) =>
+  api.put<QuoteConfig>('/api/customization/quote-config', patch).then(r => r.data);

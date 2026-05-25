@@ -121,3 +121,33 @@ def confirm(payload: ConfirmIn, db: Session = Depends(get_db)):
         raise HTTPException(400, str(e)) from e
     db.commit()
     return ConfirmOut(**r.__dict__)
+
+
+# -------- 全定制报价参数 (后台可调) --------
+
+@router.get("/quote-config", response_model=dict)
+def get_quote_config(db: Session = Depends(get_db)):
+    """读全定制报价参数 (利润系数/人工表/大小规则/单价/打包/投影)."""
+    from app.services import custom_quote_config_service as cfg
+    return cfg.get_config(db)
+
+
+class QuoteConfigPatch(BaseModel):
+    factory_profit_rate: Optional[float] = None
+    panse_profit_rate: Optional[float] = None
+    projection_type: Optional[str] = None
+    projection_rate: Optional[float] = None
+    packing: Optional[list[float]] = None
+    labor: Optional[dict[str, list[float]]] = None
+    size_rules: Optional[dict[str, list[float]]] = None
+    prices: Optional[dict[str, float]] = None
+
+
+@router.put("/quote-config", response_model=dict)
+def update_quote_config(payload: QuoteConfigPatch, db: Session = Depends(get_db)):
+    """改报价参数 (只更新传入的键), 返回完整配置."""
+    from app.services import custom_quote_config_service as cfg
+    patch = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    result = cfg.save_config(db, patch)
+    db.commit()
+    return result

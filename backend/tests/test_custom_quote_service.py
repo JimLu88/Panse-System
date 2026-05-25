@@ -65,3 +65,43 @@ def test_projection_estimate():
     )
     assert r.projection_area_m2 == D("1.90")       # 1.0 × 1.9
     assert r.projection_estimate == D("1710.00")   # 1.9 × 900
+
+
+# ── 报价参数配置 (后台可调) ───────────────────────────────────────────────────
+
+def _cfg_db():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from app.models import Base
+    eng = create_engine("sqlite:///:memory:", future=True, connect_args={"check_same_thread": False})
+    Base.metadata.create_all(eng)
+    return sessionmaker(bind=eng, autoflush=False, future=True)()
+
+
+def test_size_classification_by_rules():
+    from app.services import custom_quote_config_service as c
+    cfg = c.DEFAULT_CONFIG
+    assert c.classify_size(cfg, "餐边柜", 2.1) == "大"
+    assert c.classify_size(cfg, "餐边柜", 1.5) == "中"
+    assert c.classify_size(cfg, "餐边柜", 1.0) == "小"
+    assert c.classify_size(cfg, "电视柜", 1.8) == "中"   # 1.4-2.0 中
+    assert c.classify_size(cfg, "电视柜", 2.0) == "大"
+
+
+def test_labor_lookup_matches_table():
+    from app.services import custom_quote_config_service as c
+    cfg = c.DEFAULT_CONFIG
+    assert c.lookup_labor(cfg, "餐边柜", 2.1) == 1480   # 大
+    assert c.lookup_labor(cfg, "餐边柜", 1.0) == 840    # 小
+    assert c.lookup_labor(cfg, "电视柜", 1.8) == 800    # 中
+    assert c.lookup_labor(cfg, "餐桌", 1.8) == 400      # 中
+
+
+def test_config_persist_and_merge():
+    from app.services import custom_quote_config_service as c
+    db = _cfg_db()
+    c.save_config(db, {"factory_profit_rate": 0.30})
+    cfg = c.get_config(db)
+    assert cfg["factory_profit_rate"] == 0.30
+    assert cfg["panse_profit_rate"] == 0.15        # 未动的保留默认
+    assert cfg["labor"]["餐边柜"] == [840, 1070, 1480]
