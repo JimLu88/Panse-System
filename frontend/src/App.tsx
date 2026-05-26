@@ -96,6 +96,7 @@ export default function App() {
         { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
         { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
         { key: 'customization', label: <Link to="/customization">微定制</Link> },
+        { key: 'competitor', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
       ],
     },
     {

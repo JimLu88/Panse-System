@@ -365,3 +365,27 @@ def batch_competitor_prices(
     r = cps.batch_update_prices(db, [i.model_dump() for i in payload.items])
     db.commit()
     return CompetitorBatchOut(**r)
+
+
+@router.get("/competitors/worklist", response_model=dict)
+def competitors_worklist(
+    only_with_link: bool = True,
+    limit: int = 1000,
+    db: Session = Depends(get_db),
+    _: bool = Depends(require_ingest_token),
+):
+    """外部采集服务拉取"待抓清单"(id + link), 抓完用 batch-prices 回推。需 X-API-Key。"""
+    from sqlalchemy import select
+    from app.models.competitor import CompetitorPrice
+    stmt = select(CompetitorPrice)
+    if only_with_link:
+        stmt = stmt.where(CompetitorPrice.link.isnot(None), CompetitorPrice.link != "")
+    rows = db.execute(stmt.limit(limit)).scalars().all()
+    return {"items": [
+        {
+            "id": r.id, "link": r.link, "product": r.product, "sku_name": r.sku_name,
+            "last_fetched_at": r.latest_fetched_at.isoformat() if r.latest_fetched_at else None,
+            "fetch_status": r.fetch_status,
+        }
+        for r in rows
+    ]}

@@ -266,6 +266,30 @@ class TestExceptionFixService:
         with pytest.raises(Exception):
             fix_exception(db, 999999, {"theoretical_cost": 100})
 
+    def _seed_tracking_exception(self, db):
+        o = Order(platform="taobao", order_no="TRK-1", qty=1, status="shipped",
+                  tracking_no=None)
+        db.add(o)
+        db.flush()
+        exc = DataException(source_table="orders", source_pk=str(o.id),
+                            exception_type="order_missing_tracking",
+                            severity="warning", description="缺物流号", status="open")
+        db.add(exc)
+        db.commit()
+        return exc.id, o.id
+
+    def test_rescan_keeps_open_when_rule_still_unmet(self, db):
+        # 补了承运商但没补物流号 → 规则仍不满足 → 异常保留 open (闭环复扫)
+        exc_id, oid = self._seed_tracking_exception(db)
+        exc = fix_exception(db, exc_id, {"carrier": "顺丰"})
+        assert exc.status == "open"
+        assert db.get(Order, oid).carrier == "顺丰"  # 写回仍生效
+
+    def test_rescan_resolves_when_rule_met(self, db):
+        exc_id, _ = self._seed_tracking_exception(db)
+        exc = fix_exception(db, exc_id, {"tracking_no": "SF123"})
+        assert exc.status == "resolved"
+
 
 # ── Dashboard API ─────────────────────────────────────────────────────────────
 
@@ -354,6 +378,30 @@ class TestOrderDualSignoff:
             s = Sess()
             o = s.get(Order, oid)
             assert o.status != "signed"
+            s.close()
+        finally:
+            app.dependency_overrides.clear()
+
+    def test_signoff_exception_self_heals(self):
+        # 单核对 → 写 signoff_questioned 异常; 补齐第二核对 → 异常自动 resolved (不重复堆积)
+        client, token, Sess, oid = self._setup()
+        try:
+            hdrs = {"Authorization": f"Bearer {token}"}
+            client.post(f"/api/orders/{oid}/confirm-manual", headers=hdrs)
+            client.post(f"/api/orders/{oid}/confirm-manual", headers=hdrs)  # 重复, 不应堆积
+            s = Sess()
+            q = s.query(DataException).filter_by(
+                source_table="orders", source_pk=str(oid),
+                exception_type="signoff_questioned")
+            assert q.filter_by(status="open").count() == 1  # 幂等: 只一条
+            s.close()
+            client.post(f"/api/orders/{oid}/confirm-tracking", headers=hdrs)  # 补齐
+            s = Sess()
+            q = s.query(DataException).filter_by(
+                source_table="orders", source_pk=str(oid),
+                exception_type="signoff_questioned")
+            assert q.filter_by(status="open").count() == 0  # 自愈
+            assert s.get(Order, oid).status == "signed"
             s.close()
         finally:
             app.dependency_overrides.clear()

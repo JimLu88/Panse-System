@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import type { Dispatch, SetStateAction } from 'react';
 import {
   Alert,
   AutoComplete,
@@ -20,7 +21,7 @@ import {
 } from 'antd';
 import { InboxOutlined, RobotOutlined, SettingOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AiQuoteResult,
   BoardQuoteResult,
@@ -459,34 +460,7 @@ function FullCustomTab() {
             message="淘宝反爬, 最新价为尽力抓取; 抓不到(blocked)时请点链接核对或手动更新。价格均为叠券前, 券后价已注明减额。" />
           <Table
             size="small" pagination={false} rowKey="id" dataSource={competitors}
-            columns={[
-              { title: '匹配', dataIndex: 'confidence', width: 55,
-                render: (v: number) => <Tag color={v >= 0.5 ? 'green' : 'orange'}>{(v * 100).toFixed(0)}%</Tag> },
-              { title: '店铺', dataIndex: 'store', width: 80, ellipsis: true },
-              { title: 'SKU', dataIndex: 'sku_name', ellipsis: true },
-              { title: '木材', dataIndex: 'wood', width: 70 },
-              { title: '我表价', dataIndex: 'daily_price', width: 80, align: 'right' as const,
-                render: (v: number | null) => (v == null ? '—' : `¥${v.toFixed(0)}`) },
-              { title: '最新价', width: 110, align: 'right' as const,
-                render: (_: unknown, r: CompetitorRow) => (
-                  <span>
-                    {r.latest_price != null ? `¥${r.latest_price.toFixed(0)}` : <span style={{ color: '#bbb' }}>—</span>}
-                    {r.fetch_status && r.fetch_status !== 'ok' && r.fetch_status !== 'manual' && (
-                      <Tag color="red" style={{ marginLeft: 4 }}>{r.fetch_status}</Tag>)}
-                    <Button size="small" type="link" onClick={async () => {
-                      try { const u = await refreshCompetitor(r.id);
-                        setCompetitors((p) => p.map((x) => x.id === u.id ? u : x)); }
-                      catch { message.error('刷新失败'); }
-                    }}>刷新</Button>
-                  </span>) },
-              { title: '券后价(减额)', width: 120, align: 'right' as const,
-                render: (_: unknown, r: CompetitorRow) => (
-                  r.after_coupon == null ? '—' :
-                  <span>¥{r.after_coupon.toFixed(0)} <Tag color="blue">−{r.coupon_cut.toFixed(0)}</Tag></span>) },
-              { title: '链接', width: 50,
-                render: (_: unknown, r: CompetitorRow) => r.link
-                  ? <a href={r.link} target="_blank" rel="noreferrer">看</a> : '—' },
-            ] as any}
+            columns={competitorColumns(setCompetitors)}
           />
         </Card>
       )}
@@ -494,17 +468,79 @@ function FullCustomTab() {
   );
 }
 
+function competitorColumns(setRows: Dispatch<SetStateAction<CompetitorRow[]>>) {
+  return [
+    { title: '匹配', dataIndex: 'confidence', width: 55,
+      render: (v: number) => <Tag color={v >= 0.5 ? 'green' : 'orange'}>{(v * 100).toFixed(0)}%</Tag> },
+    { title: '店铺', dataIndex: 'store', width: 80, ellipsis: true },
+    { title: 'SKU', dataIndex: 'sku_name', ellipsis: true },
+    { title: '木材', dataIndex: 'wood', width: 70 },
+    { title: '我表价', dataIndex: 'daily_price', width: 80, align: 'right' as const,
+      render: (v: number | null) => (v == null ? '—' : `¥${v.toFixed(0)}`) },
+    { title: '最新价', width: 110, align: 'right' as const,
+      render: (_: unknown, r: CompetitorRow) => (
+        <span>
+          {r.latest_price != null ? `¥${r.latest_price.toFixed(0)}` : <span style={{ color: '#bbb' }}>—</span>}
+          {r.fetch_status && r.fetch_status !== 'ok' && r.fetch_status !== 'manual' && (
+            <Tag color="red" style={{ marginLeft: 4 }}>{r.fetch_status}</Tag>)}
+          <Button size="small" type="link" onClick={async () => {
+            try { const u = await refreshCompetitor(r.id);
+              setRows((p) => p.map((x) => x.id === u.id ? u : x)); }
+            catch { message.error('刷新失败'); }
+          }}>刷新</Button>
+        </span>) },
+    { title: '券后价(减额)', width: 120, align: 'right' as const,
+      render: (_: unknown, r: CompetitorRow) => (
+        r.after_coupon == null ? '—' :
+        <span>¥{r.after_coupon.toFixed(0)} <Tag color="blue">−{r.coupon_cut.toFixed(0)}</Tag></span>) },
+    { title: '链接', width: 50,
+      render: (_: unknown, r: CompetitorRow) => r.link
+        ? <a href={r.link} target="_blank" rel="noreferrer">看</a> : '—' },
+  ] as any;
+}
+
+function CompetitorTab() {
+  const [q, setQ] = useState('');
+  const [rows, setRows] = useState<CompetitorRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const search = async () => {
+    if (!q.trim()) { setRows([]); return; }
+    setLoading(true);
+    try { setRows(await competitorsTop(q, 20)); }
+    catch { message.error('查询失败'); }
+    finally { setLoading(false); }
+  };
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert type="info" showIcon
+        message="竞品价库: 按 产品/SKU/木材 搜索 Top-N (匹配度排序)。最新价由外部采集回灌或点刷新尽力抓; 价格均为叠券前, 券后价已注明减额。" />
+      <Space.Compact style={{ width: '100%', maxWidth: 480 }}>
+        <Input placeholder="如: 黑胡桃 餐边柜 1.5米" value={q}
+          onChange={(e) => setQ(e.target.value)} onPressEnter={search} allowClear />
+        <Button type="primary" onClick={search}>搜索</Button>
+      </Space.Compact>
+      <Table size="small" loading={loading} pagination={false} rowKey="id" dataSource={rows}
+        columns={competitorColumns(setRows)} />
+    </Space>
+  );
+}
+
 export default function CustomizationPage() {
+  const [params, setParams] = useSearchParams();
+  const activeKey = params.get('tab') || 'full';
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Typography.Title level={4} style={{ margin: 0 }}>
         尺寸微定制 <Tag color="orange">业务需求 §2</Tag>
       </Typography.Title>
       <Tabs
+        activeKey={activeKey}
+        onChange={(k) => setParams(k === 'full' ? {} : { tab: k }, { replace: true })}
         items={[
           { key: 'full', label: <><RobotOutlined /> 全定制报价</>, children: <FullCustomTab /> },
           { key: 'ai', label: 'AI 截图报价', children: <AiQuoteTab /> },
           { key: 'manual', label: '手动定制向导', children: <ManualQuoteTab /> },
+          { key: 'competitor', label: '竞品价库', children: <CompetitorTab /> },
           { key: 'settings', label: <><SettingOutlined /> 报价参数设置</>, children: <QuoteSettingsTab /> },
         ]}
       />

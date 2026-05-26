@@ -15,6 +15,7 @@ from app.models.auth import User
 from app.models.order import Order
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.finance import AlipayFlow
+from app.models.marketing import AfterSales
 from app.models.exception import DataException
 
 router = APIRouter(prefix="/api/dashboard", tags=["dashboard"])
@@ -79,6 +80,18 @@ def get_dashboard(
         .filter(ProductInventory.physical_qty <= 5)
         .scalar() or 0
     )
+    # 缺料 (低于安全库存) / 超卖 (锁定 > 实物)
+    part_below_safety = (
+        db.query(func.count(PartInventory.id))
+        .filter(PartInventory.safety_stock.isnot(None),
+                PartInventory.physical_qty < PartInventory.safety_stock)
+        .scalar() or 0
+    )
+    part_oversold = (
+        db.query(func.count(PartInventory.id))
+        .filter(PartInventory.physical_qty < PartInventory.locked_qty)
+        .scalar() or 0
+    )
 
     # ── 财务概览 ──────────────────────────────────────────────
     revenue_30d_alipay = (
@@ -89,6 +102,37 @@ def get_dashboard(
         )
         .scalar()
     )
+
+    # 成本 & 毛利 (近30天; 实际成本优先, 缺则理论成本)
+    eff_cost_expr = func.coalesce(Order.actual_cost, Order.theoretical_cost, 0)
+    cost_agg = (
+        db.query(
+            func.coalesce(func.sum(Order.theoretical_cost), 0),
+            func.coalesce(func.sum(Order.actual_cost), 0),
+            func.coalesce(func.sum(eff_cost_expr), 0),
+        )
+        .filter(Order.order_date >= last_30, Order.is_historical == False)  # noqa: E712
+        .one()
+    )
+    theoretical_cost_30d = _safe_decimal(cost_agg[0])
+    actual_cost_30d = _safe_decimal(cost_agg[1])
+    effective_cost_30d = _safe_decimal(cost_agg[2])
+    gross_profit_30d = round(total_revenue_30d - effective_cost_30d, 2)
+    gross_margin_rate = round(gross_profit_30d / total_revenue_30d, 4) if total_revenue_30d else 0.0
+
+    # 对账未清 (reconciliation_diff 类未处理异常)
+    recon_unresolved = (
+        db.query(func.count(DataException.id))
+        .filter(DataException.status == "open",
+                DataException.exception_type == "reconciliation_diff")
+        .scalar() or 0
+    )
+
+    # 售后 (笔数 + 平台内外售后总成本)
+    aftersales_count = db.query(func.count(AfterSales.id)).scalar() or 0
+    aftersales_cost_expr = (func.coalesce(AfterSales.in_platform_total, 0)
+                            + func.coalesce(AfterSales.out_platform_total, 0))
+    aftersales_cost = _safe_decimal(db.query(func.sum(aftersales_cost_expr)).scalar())
 
     # 未解决异常数
     open_exceptions = (
@@ -111,12 +155,21 @@ def get_dashboard(
         "inventory": {
             "part_total": part_total,
             "part_negative": part_negative,
+            "part_below_safety": part_below_safety,
+            "part_oversold": part_oversold,
             "product_total": prod_total,
             "product_low_stock": prod_low,
         },
         "finance": {
             "alipay_income_30d": _safe_decimal(revenue_30d_alipay),
             "order_revenue_30d": total_revenue_30d,
+            "theoretical_cost_30d": theoretical_cost_30d,
+            "actual_cost_30d": actual_cost_30d,
+            "gross_profit_30d": gross_profit_30d,
+            "gross_margin_rate": gross_margin_rate,
+            "reconciliation_unresolved": recon_unresolved,
+            "aftersales_count": aftersales_count,
+            "aftersales_cost": aftersales_cost,
         },
         "health": {
             "open_exceptions": open_exceptions,

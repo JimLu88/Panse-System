@@ -2019,8 +2019,18 @@ export interface DashboardData {
     revenue_30d: number;
     count_7d: number;
   };
-  inventory: { part_total: number; part_negative: number; product_total: number; product_low_stock: number };
-  finance: { alipay_income_30d: number; order_revenue_30d: number };
+  inventory: {
+    part_total: number; part_negative: number;
+    part_below_safety: number; part_oversold: number;
+    product_total: number; product_low_stock: number;
+  };
+  finance: {
+    alipay_income_30d: number; order_revenue_30d: number;
+    theoretical_cost_30d: number; actual_cost_30d: number;
+    gross_profit_30d: number; gross_margin_rate: number;
+    reconciliation_unresolved: number;
+    aftersales_count: number; aftersales_cost: number;
+  };
   health: { open_exceptions: number; health_score: number };
 }
 export const getDashboard = () =>

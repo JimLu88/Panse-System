@@ -400,9 +400,21 @@ def confirm_manual(order_id: int, db: Session = Depends(get_db)):
 
 
 def _check_signoff(db, o: Order) -> None:
-    """两个核对都完成 → 状态迁移到 signed; 缺一 → 标记有疑问并写异常."""
+    """两个核对都完成 → 状态迁移到 signed + 自愈遗留异常; 缺一 → 标记有疑问并写异常(幂等)."""
+    from datetime import datetime, timezone
+    from app.models.exception import DataException
+
+    open_q = db.query(DataException).filter_by(
+        source_table="orders", source_pk=str(o.id),
+        exception_type="signoff_questioned", status="open",
+    )
     if o.tracking_confirmed and o.manual_confirmed:
         o.signoff_questioned = False
+        # 自愈: 两核对补齐后解除该订单遗留的签收疑问异常
+        for exc in open_q.all():
+            exc.status = "resolved"
+            exc.resolved_by = "auto_signoff"
+            exc.resolved_at = datetime.now(timezone.utc).isoformat()
         if o.status == "shipped":
             try:
                 order_service.transition(db, o, "signed", actor="auto_signoff")
@@ -410,13 +422,14 @@ def _check_signoff(db, o: Order) -> None:
                 pass
     else:
         o.signoff_questioned = True
-        exception_service.record(
-            db,
-            source_table="orders",
-            source_pk=o.id,
-            exception_type="signoff_questioned",
-            severity="warning",
-            description=f"订单 {o.order_no} 签收核对未完整: 物流确认={o.tracking_confirmed}, 人工确认={o.manual_confirmed}。",
-            suggestion_action="请完成物流确认和人工确认两个核对环节。",
-            context={"order_no": o.order_no, "tracking_confirmed": o.tracking_confirmed, "manual_confirmed": o.manual_confirmed},
-        )
+        if not open_q.first():  # 幂等: 已有 open 的不重复堆积
+            exception_service.record(
+                db,
+                source_table="orders",
+                source_pk=o.id,
+                exception_type="signoff_questioned",
+                severity="warning",
+                description=f"订单 {o.order_no} 签收核对未完整: 物流确认={o.tracking_confirmed}, 人工确认={o.manual_confirmed}。",
+                suggestion_action="请完成物流确认和人工确认两个核对环节。",
+                context={"order_no": o.order_no, "tracking_confirmed": o.tracking_confirmed, "manual_confirmed": o.manual_confirmed},
+            )

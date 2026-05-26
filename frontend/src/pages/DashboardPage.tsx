@@ -148,14 +148,62 @@ export default function DashboardPage() {
         </Col>
       </Row>
 
-      {/* 库存 + 财务 */}
+      {/* 财务概览 (近 30 天) */}
+      <Typography.Title level={5} style={{ margin: '8px 0' }}>财务概览 (近 30 天)</Typography.Title>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="订单收入" value={finance.order_revenue_30d}
+            formatter={(v) => money(Number(v))} /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="理论成本" value={finance.theoretical_cost_30d}
+            formatter={(v) => money(Number(v))} /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="实际成本" value={finance.actual_cost_30d}
+            formatter={(v) => money(Number(v))} /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small">
+            <Statistic title="毛利" value={finance.gross_profit_30d}
+              formatter={(v) => money(Number(v))}
+              valueStyle={{ color: finance.gross_profit_30d >= 0 ? '#3f8600' : '#cf1322' }} />
+            <Tag style={{ marginTop: 8 }}
+              color={finance.gross_margin_rate >= 0.15 ? 'success' : finance.gross_margin_rate >= 0 ? 'warning' : 'error'}>
+              毛利率 {(finance.gross_margin_rate * 100).toFixed(1)}%
+            </Tag>
+          </Card>
+        </Col>
+      </Row>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="支付宝收入" value={finance.alipay_income_30d}
+            formatter={(v) => money(Number(v))} /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="对账未清" value={finance.reconciliation_unresolved} suffix="条"
+            valueStyle={{ color: finance.reconciliation_unresolved > 0 ? '#faad14' : '#52c41a' }} /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="售后笔数" value={finance.aftersales_count} suffix="单" /></Card>
+        </Col>
+        <Col xs={12} lg={6}>
+          <Card size="small"><Statistic title="售后成本" value={finance.aftersales_cost}
+            formatter={(v) => money(Number(v))} valueStyle={{ color: '#cf1322' }} /></Card>
+        </Col>
+      </Row>
+
+      {/* 库存运营 */}
+      <Typography.Title level={5} style={{ margin: '8px 0' }}>库存运营</Typography.Title>
       <Row gutter={[16, 16]}>
         <Col xs={24} sm={12} lg={6}>
           <Card size="small" title="配件库存">
             <Statistic title="品种数" value={inventory.part_total} />
-            {inventory.part_negative > 0 && (
-              <Tag color="error" style={{ marginTop: 8 }}>负库存 {inventory.part_negative} 种</Tag>
-            )}
+            <div style={{ marginTop: 8 }}>
+              {inventory.part_negative > 0 && <Tag color="error">负库存 {inventory.part_negative}</Tag>}
+              {inventory.part_below_safety > 0 && <Tag color="warning">缺料 {inventory.part_below_safety}</Tag>}
+              {inventory.part_oversold > 0 && <Tag color="volcano">超卖 {inventory.part_oversold}</Tag>}
+            </div>
           </Card>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -164,18 +212,6 @@ export default function DashboardPage() {
             {inventory.product_low_stock > 0 && (
               <Tag color="warning" style={{ marginTop: 8 }}>低库存 {inventory.product_low_stock} 种</Tag>
             )}
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card size="small" title="支付宝收入 (近 30 天)">
-            <Statistic value={finance.alipay_income_30d} precision={0}
-              formatter={(v) => money(Number(v))} />
-          </Card>
-        </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <Card size="small" title="订单收入 (近 30 天)">
-            <Statistic value={finance.order_revenue_30d} precision={0}
-              formatter={(v) => money(Number(v))} />
           </Card>
         </Col>
       </Row>

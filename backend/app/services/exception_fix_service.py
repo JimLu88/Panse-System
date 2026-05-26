@@ -65,6 +65,53 @@ def _register():
 _register()
 
 
+# exception_type -> fn(db, row) -> bool (True = 问题仍存在). 缺省的类型不复检, 直接 resolve.
+def _broken_order_cost(db, o) -> bool:
+    return o.theoretical_cost is None and o.actual_cost is None
+
+
+def _broken_order_alipay(db, o) -> bool:
+    from app.models.finance import AlipayFlow
+    linked = {
+        r.related_order_no
+        for r in db.query(AlipayFlow.related_order_no).filter(AlipayFlow.related_order_no.isnot(None)).all()
+    }
+    return o.order_no not in linked
+
+
+def _broken_order_tracking(db, o) -> bool:
+    return o.tracking_no is None
+
+
+def _broken_refill(db, r) -> bool:
+    from app.models.order import Order
+    known = {x.order_no for x in db.query(Order.order_no).all()}
+    return r.order_no not in known
+
+
+def _broken_alipay_txn(db, row) -> bool:
+    return row.transaction_no in ("", "null", None)
+
+
+def _broken_factory_recon(db, r) -> bool:
+    return r.bill_amount is None or r.paid_amount is None or not r.alipay_flow_no
+
+
+def _broken_outsourcing(db, r) -> bool:
+    return (not r.alipay_flow_no) or (not r.payment_date)
+
+
+_STILL_BROKEN = {
+    "order_missing_cost": _broken_order_cost,
+    "order_missing_alipay": _broken_order_alipay,
+    "order_missing_tracking": _broken_order_tracking,
+    "refill_unmatched": _broken_refill,
+    "alipay_missing_txn": _broken_alipay_txn,
+    "factory_recon_incomplete": _broken_factory_recon,
+    "outsourcing_missing": _broken_outsourcing,
+}
+
+
 def fix_exception(db: Session, exception_id: int, fields: dict[str, Any]) -> DataException:
     exc = db.get(DataException, exception_id)
     if exc is None:
@@ -104,6 +151,15 @@ def fix_exception(db: Session, exception_id: int, fields: dict[str, Any]) -> Dat
 
     for k, v in fields.items():
         setattr(row, k, v)
+    db.flush()  # 让复检看到新值
+
+    # 写回后复扫: 若该行仍不满足规则, 不解除, 保留 open (闭环 — 防"假解决")
+    checker = _STILL_BROKEN.get(exc.exception_type)
+    if checker is not None and checker(db, row):
+        db.commit()
+        db.refresh(exc)
+        _log.info("exception %d: fields written but rule still unmet, kept open", exception_id)
+        return exc
 
     exc.status = "resolved"
     exc.resolved_at = __import__("datetime").datetime.utcnow()
