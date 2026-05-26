@@ -419,6 +419,16 @@ export const resolveFeishuConflict = (id: number, keep: 'system' | 'feishu') =>
 export const resolveFeishuConflictFields = (id: number, field_choices: Record<string, 'system' | 'feishu'>) =>
   api.post(`/api/feishu/conflicts/${id}/resolve`, { field_choices }).then((r) => r.data);
 
+// Wiki 节点 token → Bitable App Token
+export const resolveFeishuWiki = (wiki_token: string) =>
+  api.get<{ app_token: string }>('/api/feishu/resolve-wiki', { params: { wiki_token } }).then((r) => r.data);
+
+// 查询飞书多维表字段列表
+export const getFeishuTableFields = (app_token: string, table_id: string) =>
+  api.get<{ fields: Array<{ field_name: string; type: number }> }>(
+    '/api/feishu/table-fields', { params: { app_token, table_id } }
+  ).then((r) => r.data);
+
 // ----- Match -----
 export interface MatchCandidate {
   scope: string;

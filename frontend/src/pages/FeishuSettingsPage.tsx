@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Divider,
   Form,
   Input,
   Modal,
@@ -9,12 +10,15 @@ import {
   Radio,
   Select,
   Space,
+  Spin,
   Switch,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -25,11 +29,13 @@ import {
   feishuStatus,
   feishuSupportedTables,
   getFeishuCredentials,
+  getFeishuTableFields,
   listFeishuBindings,
   listFeishuConflicts,
   putFeishuCredentials,
   resolveFeishuConflict,
   resolveFeishuConflictFields,
+  resolveFeishuWiki,
   testFeishuConnection,
   triggerFeishuSync,
   updateFeishuBinding,
@@ -132,6 +138,53 @@ export default function FeishuSettingsPage() {
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '裁决失败'),
   });
+
+  // Wiki Token 解析
+  const [wikiInput, setWikiInput] = useState('');
+  const [wikiLoading, setWikiLoading] = useState(false);
+
+  async function resolveWiki() {
+    if (!wikiInput.trim()) return;
+    setWikiLoading(true);
+    try {
+      const res = await resolveFeishuWiki(wikiInput.trim());
+      form.setFieldValue('feishu_app_token', res.app_token);
+      message.success(`已解析: ${res.app_token}`);
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? 'Wiki Token 解析失败');
+    } finally {
+      setWikiLoading(false);
+    }
+  }
+
+  // 飞书表字段查询
+  const [fieldsVisible, setFieldsVisible] = useState(false);
+  const [fieldAppToken, setFieldAppToken] = useState('');
+  const [fieldTableId, setFieldTableId] = useState('');
+  const [fieldsData, setFieldsData] = useState<Array<{ field_name: string; type: number }>>([]);
+  const [fieldsLoading, setFieldsLoading] = useState(false);
+
+  async function queryFields() {
+    const appToken = form.getFieldValue('feishu_app_token');
+    const tableId = form.getFieldValue('feishu_table_id');
+    if (!appToken || !tableId) {
+      message.warning('请先填写 App Token 和 Table ID');
+      return;
+    }
+    setFieldAppToken(appToken);
+    setFieldTableId(tableId);
+    setFieldsLoading(true);
+    setFieldsVisible(true);
+    try {
+      const res = await getFeishuTableFields(appToken, tableId);
+      setFieldsData(res.fields);
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '查询字段失败');
+      setFieldsVisible(false);
+    } finally {
+      setFieldsLoading(false);
+    }
+  }
 
   // 字段级合并裁决
   const [merging, setMerging] = useState<FeishuConflict | null>(null);
@@ -393,12 +446,44 @@ export default function FeishuSettingsPage() {
               <Select options={tableOptions} showSearch />
             </Form.Item>
           )}
+
+          {/* Wiki Token 解析助手 */}
+          <Form.Item label={
+            <Space size={4}>
+              Wiki Token 解析
+              <Tooltip title="粘贴飞书 URL 中 wiki/ 后面那段 token（如 NpWzwIcL…），点「解析」自动填写 App Token">
+                <QuestionCircleOutlined style={{ color: '#aaa' }} />
+              </Tooltip>
+            </Space>
+          }>
+            <Space.Compact style={{ width: '100%' }}>
+              <Input
+                placeholder="NpWzwIcLBilnIlk0B2sc5ETInZc"
+                value={wikiInput}
+                onChange={(e) => setWikiInput(e.target.value)}
+              />
+              <Button loading={wikiLoading} onClick={resolveWiki}>解析 → App Token</Button>
+            </Space.Compact>
+          </Form.Item>
+
           <Form.Item name="feishu_app_token" label="飞书 App Token (多维表 base token)"
                      rules={[{ required: true }]}>
-            <Input placeholder="bascnxxxx" />
+            <Input placeholder="bascnxxxx（通过上方解析或手动填写）" />
           </Form.Item>
-          <Form.Item name="feishu_table_id" label="飞书 Table ID" rules={[{ required: true }]}>
-            <Input placeholder="tblxxxx" />
+          <Form.Item name="feishu_table_id" label={
+            <Space size={4}>
+              飞书 Table ID
+              <Tooltip title="URL 中 ?table=tblXXXX 的那段">
+                <QuestionCircleOutlined style={{ color: '#aaa' }} />
+              </Tooltip>
+            </Space>
+          } rules={[{ required: true }]}>
+            <Space.Compact style={{ width: '100%' }}>
+              <Form.Item name="feishu_table_id" noStyle rules={[{ required: true }]}>
+                <Input placeholder="tblxxxx" />
+              </Form.Item>
+              <Button onClick={queryFields}>查询飞书字段</Button>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="direction" label="同步方向">
             <Select
@@ -419,6 +504,41 @@ export default function FeishuSettingsPage() {
             <Switch />
           </Form.Item>
         </Form>
+      </Modal>
+      {/* 飞书字段查询结果 */}
+      <Modal
+        title={`飞书表字段 — ${fieldTableId}`}
+        open={fieldsVisible}
+        onCancel={() => setFieldsVisible(false)}
+        footer={<Button onClick={() => setFieldsVisible(false)}>关闭</Button>}
+        width={480}
+      >
+        {fieldsLoading ? (
+          <Spin />
+        ) : (
+          <>
+            <Alert type="info" showIcon style={{ marginBottom: 12 }}
+              message="把「字段名」复制到字段映射 JSON 的值侧 (右边)"
+              description={`示例: {"code": "${fieldsData[0]?.field_name ?? '编码'}", "name": "${fieldsData[1]?.field_name ?? '名称'}"}`}
+            />
+            <Table
+              rowKey="field_name"
+              size="small"
+              pagination={false}
+              dataSource={fieldsData}
+              columns={[
+                { title: '飞书字段名', dataIndex: 'field_name', render: (v: string) => (
+                  <Typography.Text copyable>{v}</Typography.Text>
+                )},
+                { title: '类型', dataIndex: 'type', width: 60, render: (v: number) => ({
+                  1: '文本', 2: '数字', 3: '单选', 4: '多选', 5: '日期', 7: '复选框',
+                  11: '人员', 13: '电话', 15: 'URL', 17: '附件', 18: '关联', 19: '公式', 20: '创建时间',
+                  21: '修改时间', 22: '创建人', 23: '修改人',
+                }[v] ?? `type${v}` )},
+              ]}
+            />
+          </>
+        )}
       </Modal>
     </Space>
   );
