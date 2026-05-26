@@ -1,6 +1,6 @@
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -10,7 +10,7 @@ from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.exception import DataException
 from app.models.feishu_sync import FeishuTableBinding
-from app.services import feishu_client, feishu_sync_service, settings_service
+from app.services import feishu_client, feishu_sync_service, feishu_webhook_service, settings_service
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
 
@@ -109,23 +109,42 @@ def supported_tables():
 class CredentialsIn(BaseModel):
     app_id: Optional[str] = None
     app_secret: Optional[str] = None   # "__CLEAR__" 清除
+    verification_token: Optional[str] = None  # 事件回调校验 token; "__CLEAR__" 清除
+    encrypt_key: Optional[str] = None         # 事件回调 Encrypt Key; "__CLEAR__" 清除
 
 
 class CredentialsOut(BaseModel):
     app_id: str
     app_secret_masked: str
     configured: bool
+    verification_token_set: bool = False
+    encrypt_key_set: bool = False
 
 
-@router.get("/credentials", response_model=CredentialsOut)
-def get_credentials(db: Session = Depends(get_db), _: User = Depends(require_role("admin"))):
+def _creds_out(db: Session) -> "CredentialsOut":
     app_id = settings_service.get(db, "feishu_app_id", env_fallback=False) or ""
     secret = settings_service.get(db, "feishu_app_secret", env_fallback=False) or ""
     return CredentialsOut(
         app_id=app_id,
         app_secret_masked=settings_service.mask_secret(secret),
         configured=bool(app_id and secret),
+        verification_token_set=bool(settings_service.get(db, "feishu_verification_token", env_fallback=False)),
+        encrypt_key_set=bool(settings_service.get(db, "feishu_encrypt_key", env_fallback=False)),
     )
+
+
+@router.get("/credentials", response_model=CredentialsOut)
+def get_credentials(db: Session = Depends(get_db), _: User = Depends(require_role("admin"))):
+    return _creds_out(db)
+
+
+def _set_or_clear(db: Session, key: str, value: Optional[str]) -> None:
+    if value is None:
+        return
+    if value == "__CLEAR__":
+        settings_service.set_value(db, key, "")
+    elif value:
+        settings_service.set_value(db, key, value.strip())
 
 
 @router.put("/credentials", response_model=CredentialsOut)
@@ -133,18 +152,11 @@ def put_credentials(payload: CredentialsIn, db: Session = Depends(get_db),
                     _: User = Depends(require_role("admin"))):
     if payload.app_id is not None:
         settings_service.set_value(db, "feishu_app_id", payload.app_id.strip())
-    if payload.app_secret is not None:
-        if payload.app_secret == "__CLEAR__":
-            settings_service.set_value(db, "feishu_app_secret", "")
-        elif payload.app_secret:
-            settings_service.set_value(db, "feishu_app_secret", payload.app_secret.strip())
+    _set_or_clear(db, "feishu_app_secret", payload.app_secret)
+    _set_or_clear(db, "feishu_verification_token", payload.verification_token)
+    _set_or_clear(db, "feishu_encrypt_key", payload.encrypt_key)
     db.commit()
-    app_id = settings_service.get(db, "feishu_app_id", env_fallback=False) or ""
-    secret = settings_service.get(db, "feishu_app_secret", env_fallback=False) or ""
-    return CredentialsOut(
-        app_id=app_id, app_secret_masked=settings_service.mask_secret(secret),
-        configured=bool(app_id and secret),
-    )
+    return _creds_out(db)
 
 
 @router.post("/test")
@@ -204,18 +216,44 @@ def list_conflicts(db: Session = Depends(get_db), _: User = Depends(get_current_
 
 
 class ResolveIn(BaseModel):
-    keep: str   # system | feishu
+    keep: Optional[str] = None                       # 整条裁决: system | feishu
+    field_choices: Optional[dict[str, str]] = None   # 字段级合并: {字段: system|feishu}
 
 
 @router.post("/conflicts/{exception_id}/resolve")
 def resolve_conflict(exception_id: int, payload: ResolveIn, db: Session = Depends(get_db),
                      user: User = Depends(require_role("admin", "operator"))):
     try:
-        feishu_sync_service.resolve_conflict(
-            db, exception_id, payload.keep, resolved_by=user.username)
+        if payload.field_choices is not None:
+            feishu_sync_service.resolve_conflict_merged(
+                db, exception_id, payload.field_choices, resolved_by=user.username)
+        elif payload.keep is not None:
+            feishu_sync_service.resolve_conflict(
+                db, exception_id, payload.keep, resolved_by=user.username)
+        else:
+            raise ValueError("需提供 keep 或 field_choices")
     except feishu_client.FeishuError as e:
         raise HTTPException(502, f"飞书操作失败: {e}")
     except ValueError as e:
         raise HTTPException(400, str(e))
     db.commit()
     return {"ok": True}
+
+
+# ----------------------------- 事件回调 (Webhook) -------------------- #
+
+
+@router.post("/webhook")
+async def feishu_webhook(request: Request, db: Session = Depends(get_db)):
+    """飞书事件订阅回调入口 (公开 — 用 verification token / encrypt key 校验来源)。
+
+    在飞书开放平台「事件订阅」填: <本服务公网地址>/api/feishu/webhook
+    并订阅"多维表格记录变更"事件, 即可实现飞书改完近实时同步。
+    """
+    body = await request.json()
+    try:
+        return feishu_webhook_service.handle(db, body)
+    except PermissionError as e:
+        raise HTTPException(401, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))

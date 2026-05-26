@@ -1,7 +1,10 @@
 import {
   Alert,
+  Badge,
   Button,
+  Collapse,
   Descriptions,
+  Empty,
   Form,
   Input,
   InputNumber,
@@ -14,8 +17,8 @@ import {
   Typography,
   message,
 } from 'antd';
-import { EditOutlined, RobotOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { useState } from 'react';
+import { DownOutlined, EditOutlined, RobotOutlined, ThunderboltOutlined, UpOutlined } from '@ant-design/icons';
+import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AiDiagnoseResult,
@@ -33,6 +36,26 @@ const severityColor: Record<string, string> = {
   warning: 'orange',
   error: 'red',
 };
+
+// 异常类型 → 友好分类名 (按类别分组用)
+const TYPE_LABELS: Record<string, string> = {
+  order_missing_cost: '订单缺成本',
+  order_missing_alipay: '订单缺支付宝流水',
+  order_missing_tracking: '订单缺物流单号',
+  stale_import: '导入数据过旧',
+  refill_unmatched: '补单无法匹配主订单',
+  alipay_missing_txn: '支付宝缺流水号',
+  factory_recon_incomplete: '工厂对账缺字段',
+  outsourcing_missing: '外包费用缺字段',
+  aftersales_empty: '售后表为空',
+  signoff_questioned: '订单签收存疑',
+  feishu_conflict: '飞书数据冲突',
+  reconciliation_diff: '对账差异',
+  autofill_missing_product_code: '自动生成缺产品编码',
+  forced_status_transition: '强制状态变更',
+};
+const typeLabel = (t: string) => TYPE_LABELS[t] ?? t;
+const SEVERITY_RANK: Record<string, number> = { error: 3, warning: 2, info: 1 };
 
 // 根据异常类型渲染不同的补填字段
 function FixFormFields({ exc }: { exc: DataException }) {
@@ -166,6 +189,27 @@ export default function ExceptionsPage() {
     diagnoseMut.mutate(exc.id);
   };
 
+  // 按异常类型分类
+  const groups = useMemo(() => {
+    const m = new Map<string, DataException[]>();
+    (data ?? []).forEach((e) => {
+      const arr = m.get(e.exception_type) ?? [];
+      arr.push(e);
+      m.set(e.exception_type, arr);
+    });
+    return Array.from(m.entries())
+      .map(([type, items]) => ({
+        type,
+        items,
+        worst: items.reduce((s, e) => Math.max(s, SEVERITY_RANK[e.severity] ?? 0), 0),
+      }))
+      .sort((a, b) => b.worst - a.worst || b.items.length - a.items.length);
+  }, [data]);
+
+  const [activeKeys, setActiveKeys] = useState<string[]>([]);
+  const allExpanded = groups.length > 0 && activeKeys.length === groups.length;
+  const toggleAll = () => setActiveKeys(allExpanded ? [] : groups.map((g) => g.type));
+
   const columns = [
     {
       title: '严重度',
@@ -222,6 +266,9 @@ export default function ExceptionsPage() {
     },
   ];
 
+  // 分组面板内不再重复显示「异常类型」列 (面板标题已是分类)
+  const panelColumns = columns.filter((c: any) => c.dataIndex !== 'exception_type');
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
@@ -243,6 +290,13 @@ export default function ExceptionsPage() {
           >
             全量扫描
           </Button>
+          <Button
+            icon={allExpanded ? <UpOutlined /> : <DownOutlined />}
+            onClick={toggleAll}
+            disabled={groups.length === 0}
+          >
+            {allExpanded ? '全部折叠' : '全部展开'}
+          </Button>
           <Segmented
             value={status}
             onChange={(v) => setStatus(v as typeof status)}
@@ -255,14 +309,38 @@ export default function ExceptionsPage() {
         </Space>
       </Space>
 
-      <Table<DataException>
-        rowKey="id"
-        loading={isLoading}
-        dataSource={data}
-        columns={columns as any}
-        pagination={{ pageSize: 20 }}
-        size="middle"
-      />
+      {isLoading ? (
+        <div style={{ textAlign: 'center', padding: 48 }}>
+          <Spin tip="加载中..."><div style={{ minHeight: 40 }} /></Spin>
+        </div>
+      ) : groups.length === 0 ? (
+        <Empty description={`没有${status === 'open' ? '未处理' : status === 'resolved' ? '已处理' : '已忽略'}的异常`} />
+      ) : (
+        <Collapse
+          activeKey={activeKeys}
+          onChange={(k) => setActiveKeys(k as string[])}
+          items={groups.map((g) => ({
+            key: g.type,
+            label: (
+              <Space>
+                <Badge status={g.worst >= 3 ? 'error' : g.worst === 2 ? 'warning' : 'processing'} />
+                <b>{typeLabel(g.type)}</b>
+                <Tag color={g.worst >= 3 ? 'red' : g.worst === 2 ? 'orange' : 'blue'}>{g.items.length}</Tag>
+                <Typography.Text type="secondary" style={{ fontSize: 12 }}>{g.type}</Typography.Text>
+              </Space>
+            ),
+            children: (
+              <Table<DataException>
+                rowKey="id"
+                dataSource={g.items}
+                columns={panelColumns as any}
+                pagination={g.items.length > 20 ? { pageSize: 20 } : false}
+                size="small"
+              />
+            ),
+          }))}
+        />
+      )}
 
       <Modal
         title={

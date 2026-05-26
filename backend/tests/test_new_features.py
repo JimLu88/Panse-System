@@ -250,3 +250,80 @@ def test_feishu_conflict_both_changed(db_session, fake_feishu):
     db_session.commit()
     p = db_session.query(Product).filter_by(code="P1").one()
     assert p.name == "飞书改的"
+
+
+def test_feishu_conflict_field_level_merge(db_session, fake_feishu):
+    db_session.add(Product(code="P1", name="同名"))
+    b = _binding(db_session)
+    fake_feishu.records["rec1"] = {"编码": "P1", "名称": "同名"}
+    db_session.commit()
+    feishu_sync_service.sync_binding(db_session, b); db_session.commit()
+    p = db_session.query(Product).filter_by(code="P1").one()
+    p.name = "系统改的"
+    fake_feishu.records["rec1"]["名称"] = "飞书改的"
+    db_session.commit()
+    feishu_sync_service.sync_binding(db_session, b); db_session.commit()
+    conflict = db_session.query(DataException).filter(
+        DataException.exception_type == "feishu_conflict").one()
+    # 字段级合并: name 字段选飞书 → 系统+飞书两侧都变飞书值, 异常解除
+    feishu_sync_service.resolve_conflict_merged(db_session, conflict.id, {"name": "feishu"})
+    db_session.commit()
+    assert db_session.query(Product).filter_by(code="P1").one().name == "飞书改的"
+    assert fake_feishu.records["rec1"]["名称"] == "飞书改的"
+    assert db_session.query(DataException).filter_by(status="open").count() == 0
+
+
+def test_webhook_url_verification(db_session):
+    from app.services import feishu_webhook_service as wh
+    assert wh.handle(db_session, {"type": "url_verification", "challenge": "abc"}) == {"challenge": "abc"}
+
+
+def test_webhook_token_mismatch_rejected(db_session):
+    from app.services import feishu_webhook_service as wh, settings_service
+    settings_service.set_value(db_session, "feishu_verification_token", "GOOD"); db_session.commit()
+    with pytest.raises(PermissionError):
+        wh.handle(db_session, {"type": "url_verification", "challenge": "x", "token": "BAD"})
+
+
+def _aes_backend_works() -> bool:
+    """该沙箱的 cryptography 缺 _cffi_backend, 实际运算会 panic; 生产 docker 正常。"""
+    try:
+        from cryptography.hazmat.backends import default_backend
+        from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+        enc = Cipher(algorithms.AES(b"0" * 32), modes.CBC(b"0" * 16),
+                     backend=default_backend()).encryptor()
+        enc.update(b"0" * 16) + enc.finalize()
+        return True
+    except BaseException:
+        return False
+
+
+def test_webhook_decrypt_roundtrip():
+    if not _aes_backend_works():
+        pytest.skip("cryptography AES 后端在本沙箱不可用 (生产 docker 正常)")
+    import base64, hashlib, json
+    from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+    from app.services import feishu_webhook_service as wh
+    key = "mykey"
+    plain = json.dumps({"type": "url_verification", "challenge": "ok"}).encode()
+    pad = 16 - (len(plain) % 16)
+    padded = plain + bytes([pad]) * pad
+    iv = b"\x00" * 16
+    enc = Cipher(algorithms.AES(hashlib.sha256(key.encode()).digest()), modes.CBC(iv),
+                 backend=default_backend()).encryptor()
+    blob = base64.b64encode(iv + enc.update(padded) + enc.finalize()).decode()
+    assert json.loads(wh.decrypt(blob, key))["challenge"] == "ok"
+
+
+def test_webhook_event_triggers_sync(db_session, fake_feishu):
+    db_session.add(Product(code="P1", name="椅子"))
+    _binding(db_session)
+    db_session.commit()
+    from app.services import feishu_webhook_service as wh
+    resp = wh.handle(db_session, {
+        "header": {"event_type": "drive.file.bitable_record_changed_v1"},
+        "event": {"table_id": "tbl1"},
+    })
+    assert resp == {}
+    assert any(f.get("编码") == "P1" for f in fake_feishu.records.values())

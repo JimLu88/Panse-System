@@ -427,6 +427,68 @@ def resolve_conflict(db: Session, exception_id: int, keep: str, *,
     db.flush()
 
 
+def resolve_conflict_merged(db: Session, exception_id: int, field_choices: dict[str, str], *,
+                            resolved_by: Optional[str] = None) -> None:
+    """字段级合并裁决: 逐字段选 system / feishu, 合并后两侧写一致 (主键恒以系统为准)。"""
+    exc = db.get(DataException, exception_id)
+    if exc is None or exc.exception_type != "feishu_conflict":
+        raise ValueError("找不到该飞书冲突")
+    ctx = exc.context or {}
+    ent = _entities().get(ctx.get("system_table"))
+    binding = db.execute(
+        select(FeishuTableBinding).where(
+            FeishuTableBinding.system_table == ctx.get("system_table"))
+    ).scalar_one_or_none()
+    if ent is None or binding is None:
+        raise ValueError("绑定/实体已不存在")
+    fm = json.loads(binding.field_mapping) if binding.field_mapping else {}
+    pk = ctx.get("system_pk")
+    rec_id = ctx.get("feishu_record_id")
+    sys_row = db.execute(
+        select(ent.model).where(getattr(ent.model, ent.pk_attr) == pk)
+    ).scalar_one_or_none()
+    if sys_row is None:
+        raise ValueError("系统记录已不存在")
+
+    fe_list = feishu_client.list_records(db, ctx["feishu_app_token"], ctx["feishu_table_id"])
+    rec = next((r for r in fe_list if r["record_id"] == rec_id), None)
+    if rec is None:
+        raise ValueError("飞书记录已不存在")
+    fe_vals = _feishu_values(rec["fields"], fm)
+    sys_vals = _system_values(sys_row, list(fm.keys()))
+
+    merged: dict[str, Any] = {}
+    for f in fm:
+        if f == ent.pk_attr:
+            merged[f] = sys_vals.get(f)          # 主键不允许通过合并改动
+            continue
+        if field_choices.get(f) == "feishu":
+            merged[f] = fe_vals.get(f)
+            setattr(sys_row, f, _coerce_for_model(ent.model, f, fe_vals.get(f)))
+        else:
+            merged[f] = sys_vals.get(f)
+
+    feishu_client.update_record(
+        db, ctx["feishu_app_token"], ctx["feishu_table_id"], rec_id,
+        {fm[f]: _normalize(merged[f]) for f in fm})
+
+    new_hash = _hash(merged)
+    m = db.execute(
+        select(FeishuSyncMap).where(
+            FeishuSyncMap.system_table == ctx.get("system_table"),
+            FeishuSyncMap.system_pk == pk,
+        )
+    ).scalar_one_or_none()
+    if m is not None:
+        m.system_hash = new_hash
+        m.feishu_hash = new_hash
+        m.last_sync_at = datetime.now(timezone.utc)
+    exc.status = "resolved"
+    exc.resolved_by = resolved_by
+    exc.resolved_at = datetime.now(timezone.utc).isoformat()
+    db.flush()
+
+
 def push_record(*args, **kwargs):  # 兼容旧引用
     raise NotImplementedError("请改用 sync_binding / sync_all")
 

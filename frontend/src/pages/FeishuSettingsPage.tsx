@@ -6,6 +6,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Radio,
   Select,
   Space,
   Switch,
@@ -28,6 +29,7 @@ import {
   listFeishuConflicts,
   putFeishuCredentials,
   resolveFeishuConflict,
+  resolveFeishuConflictFields,
   testFeishuConnection,
   triggerFeishuSync,
   updateFeishuBinding,
@@ -131,6 +133,29 @@ export default function FeishuSettingsPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '裁决失败'),
   });
 
+  // 字段级合并裁决
+  const [merging, setMerging] = useState<FeishuConflict | null>(null);
+  const [choices, setChoices] = useState<Record<string, 'system' | 'feishu'>>({});
+  const mergeMut = useMutation({
+    mutationFn: (v: { id: number; field_choices: Record<string, 'system' | 'feishu'> }) =>
+      resolveFeishuConflictFields(v.id, v.field_choices),
+    onSuccess: () => {
+      message.success('已按字段合并裁决');
+      setMerging(null);
+      invalidateAll();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '合并失败'),
+  });
+
+  function openMerge(c: FeishuConflict) {
+    const init: Record<string, 'system' | 'feishu'> = {};
+    (c.context?.diffs ?? []).forEach((d) => { init[d.field] = 'system'; });
+    setChoices(init);
+    setMerging(c);
+  }
+
+  const webhookUrl = `${window.location.origin}/api/feishu/webhook`;
+
   const tableOptions = (tables?.tables ?? []).map((t) => ({ value: t, label: t }));
 
   function openEdit(b: FeishuBinding) {
@@ -165,10 +190,18 @@ export default function FeishuSettingsPage() {
               onFinish={(v) => credMut.mutate(v)}
               initialValues={{ app_id: cred?.app_id }}>
           <Form.Item name="app_id" label="App ID">
-            <Input placeholder="cli_xxx" style={{ width: 220 }} defaultValue={cred?.app_id} />
+            <Input placeholder="cli_xxx" style={{ width: 200 }} defaultValue={cred?.app_id} />
           </Form.Item>
           <Form.Item name="app_secret" label="App Secret">
-            <Input.Password placeholder={cred?.app_secret_masked || '输入以更新'} style={{ width: 220 }} />
+            <Input.Password placeholder={cred?.app_secret_masked || '输入以更新'} style={{ width: 200 }} />
+          </Form.Item>
+          <Form.Item name="verification_token" label="Verification Token"
+                     tooltip="事件回调来源校验, 飞书「事件订阅」页提供">
+            <Input.Password placeholder={cred?.verification_token_set ? '已设置, 输入以更新' : '可选'} style={{ width: 200 }} />
+          </Form.Item>
+          <Form.Item name="encrypt_key" label="Encrypt Key"
+                     tooltip="若飞书开启了加密推送则需填; 留空表示明文推送">
+            <Input.Password placeholder={cred?.encrypt_key_set ? '已设置, 输入以更新' : '可选'} style={{ width: 200 }} />
           </Form.Item>
           <Form.Item>
             <Space>
@@ -177,6 +210,14 @@ export default function FeishuSettingsPage() {
             </Space>
           </Form.Item>
         </Form>
+        <Alert type="info" showIcon style={{ marginTop: 12 }}
+          message="近实时同步 (事件回调)"
+          description={
+            <span>
+              在飞书开放平台「事件订阅」填回调地址 <Typography.Text code copyable>{webhookUrl}</Typography.Text>,
+              订阅「多维表格记录变更」事件, 飞书改完即触发同步 (无需等 30 分钟轮询)。需本服务有公网地址 + 网络放行。
+            </span>
+          } />
       </Card>
 
       {/* 冲突裁决 */}
@@ -211,8 +252,8 @@ export default function FeishuSettingsPage() {
                 ),
               },
               {
-                title: '裁决', width: 200, render: (_: any, c: FeishuConflict) => (
-                  <Space>
+                title: '裁决', width: 280, render: (_: any, c: FeishuConflict) => (
+                  <Space wrap>
                     <Button size="small"
                             onClick={() => resolveMut.mutate({ id: c.id, keep: 'system' })}>
                       保留网页端
@@ -221,6 +262,7 @@ export default function FeishuSettingsPage() {
                             onClick={() => resolveMut.mutate({ id: c.id, keep: 'feishu' })}>
                       保留飞书端
                     </Button>
+                    <Button size="small" type="link" onClick={() => openMerge(c)}>逐字段</Button>
                   </Space>
                 ),
               },
@@ -228,6 +270,36 @@ export default function FeishuSettingsPage() {
           />
         </Card>
       )}
+
+      {/* 字段级合并裁决 */}
+      <Modal
+        title={`逐字段裁决 — ${merging?.system_table} / ${merging?.source_pk}`}
+        open={!!merging}
+        onCancel={() => setMerging(null)}
+        onOk={() => merging && mergeMut.mutate({ id: merging.id, field_choices: choices })}
+        confirmLoading={mergeMut.isPending}
+        okText="按所选合并"
+        destroyOnClose
+        width={560}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="逐个字段选择保留哪一端, 合并后两端写成一致 (主键不可改)。" />
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          {(merging?.context?.diffs ?? []).map((d) => (
+            <div key={d.field}>
+              <Typography.Text strong>{d.field}</Typography.Text>
+              <Radio.Group
+                style={{ display: 'block', marginTop: 4 }}
+                value={choices[d.field] ?? 'system'}
+                onChange={(e) => setChoices((p) => ({ ...p, [d.field]: e.target.value }))}
+              >
+                <Radio value="system">网页端: <span style={{ color: '#999' }}>{String(d.system)}</span></Radio>
+                <Radio value="feishu">飞书端: <span>{String(d.feishu)}</span></Radio>
+              </Radio.Group>
+            </div>
+          ))}
+        </Space>
+      </Modal>
 
       {/* 绑定 */}
       <Card size="small" title="表绑定"

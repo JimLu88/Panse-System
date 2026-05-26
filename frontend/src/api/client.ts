@@ -355,12 +355,17 @@ export interface FeishuCredentials {
   app_id: string;
   app_secret_masked: string;
   configured: boolean;
+  verification_token_set?: boolean;
+  encrypt_key_set?: boolean;
 }
 
 export const getFeishuCredentials = () =>
   api.get<FeishuCredentials>('/api/feishu/credentials').then((r) => r.data);
 
-export const putFeishuCredentials = (payload: { app_id?: string; app_secret?: string }) =>
+export const putFeishuCredentials = (payload: {
+  app_id?: string; app_secret?: string;
+  verification_token?: string; encrypt_key?: string;
+}) =>
   api.put<FeishuCredentials>('/api/feishu/credentials', payload).then((r) => r.data);
 
 export const testFeishuConnection = () =>
@@ -399,6 +404,10 @@ export const listFeishuConflicts = () =>
 
 export const resolveFeishuConflict = (id: number, keep: 'system' | 'feishu') =>
   api.post(`/api/feishu/conflicts/${id}/resolve`, { keep }).then((r) => r.data);
+
+// 字段级合并裁决: {字段: 'system'|'feishu'}
+export const resolveFeishuConflictFields = (id: number, field_choices: Record<string, 'system' | 'feishu'>) =>
+  api.post(`/api/feishu/conflicts/${id}/resolve`, { field_choices }).then((r) => r.data);
 
 // ----- Match -----
 export interface MatchCandidate {
