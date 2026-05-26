@@ -274,7 +274,8 @@ def restart_containers(icon=None, item=None):
         if code == 0:
             notify("畔色 ERP", "容器已重启", level="info")
         else:
-            notify("畔色 ERP", f"重启失败: {output[:200]}", level="error")
+            _write_log(f"重启失败:\n{output}")
+            notify("畔色 ERP", f"重启失败:\n{output.strip()[-300:]}", level="error")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -286,7 +287,8 @@ def start_containers(icon=None, item=None):
         if code == 0:
             notify("畔色 ERP", "容器已启动", level="info")
         else:
-            notify("畔色 ERP", f"启动失败: {output[:200]}", level="error")
+            _write_log(f"启动失败:\n{output}")
+            notify("畔色 ERP", f"启动失败:\n{output.strip()[-300:]}", level="error")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -335,7 +337,10 @@ def update_code(icon=None, item=None):
         if code == 0:
             notify("畔色 ERP", f"更新完成, 已同步到 {DEPLOY_BRANCH} 最新", level="info")
         else:
-            notify("畔色 ERP", f"build 失败: {out[:200]}", level="error")
+            _write_log(f"build 失败 (完整输出):\n{out}")
+            # 错误通常在末尾, 取最后 300 字符, 并告知日志路径
+            tail = out.strip()[-300:] if out.strip() else "(无输出)"
+            notify("畔色 ERP", f"build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -367,7 +372,9 @@ def force_sync(icon=None, item=None):
         if code == 0:
             notify("畔色 ERP", f"强制同步完成, 已对齐 {DEPLOY_BRANCH}", level="info")
         else:
-            notify("畔色 ERP", f"build 失败: {out[:200]}", level="error")
+            _write_log(f"build 失败 (完整输出):\n{out}")
+            tail = out.strip()[-300:] if out.strip() else "(无输出)"
+            notify("畔色 ERP", f"build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error")
     threading.Thread(target=_do, daemon=True).start()
 
 
