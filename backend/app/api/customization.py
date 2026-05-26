@@ -135,6 +135,7 @@ def get_quote_config(db: Session = Depends(get_db)):
 class QuoteConfigPatch(BaseModel):
     factory_profit_rate: Optional[float] = None
     panse_profit_rate: Optional[float] = None
+    safety_rate: Optional[float] = None
     projection_type: Optional[str] = None
     projection_rate: Optional[float] = None
     packing: Optional[list[float]] = None
@@ -191,10 +192,12 @@ class BoardQuoteOut(BaseModel):
     panse_cost: float
     final_quote: float
     factory_quote_compare: float
+    factory_quote_conservative: float       # 工厂对比×安全系数(宁高不低)
+    safety_rate: float
     projection_estimate: Optional[float]
     projection_area_m2: Optional[float]
     factory_quote: Optional[float] = None
-    factory_diff: Optional[float] = None    # 工厂报价 − 我的对比价
+    factory_diff: Optional[float] = None     # 工厂报价 − 我的保守对比价
     size_class: str
     wood_lines: list[dict]
     accessory_lines: list[dict]
@@ -221,10 +224,12 @@ def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
         freight=float(r.freight), install_fee=float(r.install_fee),
         panse_cost=float(r.panse_cost), final_quote=float(r.final_quote),
         factory_quote_compare=float(r.factory_quote_compare),
+        factory_quote_conservative=float(r.factory_quote_conservative),
+        safety_rate=float(r.safety_rate),
         projection_estimate=float(r.projection_estimate) if r.projection_estimate is not None else None,
         projection_area_m2=float(r.projection_area_m2) if r.projection_area_m2 is not None else None,
         factory_quote=fq,
-        factory_diff=(fq - float(r.factory_quote_compare)) if fq is not None else None,
+        factory_diff=(fq - float(r.factory_quote_conservative)) if fq is not None else None,
         size_class=cfg_svc.classify_size(cfg, payload.product_type, payload.length_m),
         wood_lines=r.wood_lines, accessory_lines=r.accessory_lines,
     )
@@ -235,3 +240,44 @@ async def extract_boards(file: UploadFile = File(...), db: Session = Depends(get
     """上传设计图 → AI 拆板单 (AI 不可用时返回空, 前端转手动)."""
     raw = await file.read()
     return customization_ai_service.extract_boards(db, raw, file.content_type or "image/jpeg")
+
+
+# -------- 竞品 Top-10 (按匹配度) --------
+
+class CompetitorOut(BaseModel):
+    store: Optional[str]
+    category: Optional[str]
+    product: Optional[str]
+    link: Optional[str]
+    wood: Optional[str]
+    sku_name: Optional[str]
+    daily_price: Optional[float]
+    confidence: float
+
+
+@router.get("/competitors", response_model=list[CompetitorOut])
+def competitors_top(q: str = "", limit: int = 10, db: Session = Depends(get_db)):
+    """按查询词(产品名/SKU)返回竞品 Top-N, 匹配度从高到低 (中文友好相似度)."""
+    from sqlalchemy import select
+    from app.models.competitor import CompetitorPrice
+    from app.services.product_match_service import _similarity
+
+    if not q.strip():
+        return []
+    rows = db.execute(select(CompetitorPrice)).scalars().all()
+    scored = []
+    for r in rows:
+        target = " ".join(filter(None, [r.product, r.sku_name, r.wood]))
+        conf = _similarity(q, target)
+        if conf > 0:
+            scored.append((conf, r))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [
+        CompetitorOut(
+            store=r.store, category=r.category, product=r.product, link=r.link,
+            wood=r.wood, sku_name=r.sku_name,
+            daily_price=float(r.daily_price) if r.daily_price is not None else None,
+            confidence=round(conf, 2),
+        )
+        for conf, r in scored[:limit]
+    ]

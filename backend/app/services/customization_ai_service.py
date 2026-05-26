@@ -59,8 +59,15 @@ _SYSTEM = """\
 只输出 JSON，不要解释。维度单位统一转换为毫米（mm）。"""
 
 
+# 视觉抽板/识图默认模型: sonnet (性价比高, 结构化视觉够用; 不够再后台调 opus)
+_DEFAULT_VISION_MODEL = "claude-sonnet-4-6"
+
+
 def _build_provider(db: Session):
-    cfg = settings_service.get_ai_config(db, "primary")
+    # 视觉任务走 ocr 槽位 (与截图 OCR 同一 key); 没配模型则默认 sonnet
+    cfg = settings_service.get_ai_config(db, "ocr")
+    if not cfg.get("model"):
+        cfg = {**cfg, "model": _DEFAULT_VISION_MODEL}
     return ai_mod.build_provider(cfg)
 
 

@@ -124,3 +124,55 @@ def test_quote_from_spec_uses_config():
     # 工厂对比 = (5044+1480)×1.25 + 88轨道 = 8243, 工厂8500 → 进500
     assert abs(float(r.factory_quote_compare) - 8243) < 5
     assert 8500 - float(r.factory_quote_compare) < 500
+
+
+# ── 联动: 物料表为唯一数据源 (优先于配置) ────────────────────────────────────
+
+def test_lookups_prefer_material_table():
+    from app.services import custom_quote_config_service as c
+    from app.models.material import Material
+    db = _cfg_db()
+    cfg = c.DEFAULT_CONFIG
+    # 物料表里改了价/人工 → 应覆盖配置默认 (联动)
+    db.add_all([
+        Material(code="W1", name="黑胡桃木-2.2cm", price=600),       # 配置默认500
+        Material(code="L1", name="餐边柜-人工费-大型", price=1600),    # 配置默认1480
+        Material(code="P1", name="打包费用-大型家具", price=500),      # 配置默认400
+    ])
+    db.commit()
+    assert c.lookup_price(cfg, "黑胡桃木-2.2cm", db=db) == 600
+    assert c.lookup_labor(cfg, "餐边柜", 2.1, db=db) == 1600
+    assert c.lookup_packing(cfg, "餐边柜", 2.1, db=db) == 500
+    # 没有 db / 表里没有 → 回落配置
+    assert c.lookup_price(cfg, "黑胡桃木-2.2cm") == 500
+    assert c.lookup_labor(cfg, "餐边柜", 2.1) == 1480
+
+
+def test_safety_rate_biases_up():
+    from app.services.custom_quote_service import compute_quote, Line
+    from decimal import Decimal as D
+    base = compute_quote(wood_lines=[Line("板","樱桃木",D("1000"),D("1"),length_m=D("1"),width_m=D("1"))],
+                         accessory_lines=[], labor_fee=D("0"), safety_rate=D("1.0"))
+    safe = compute_quote(wood_lines=[Line("板","樱桃木",D("1000"),D("1"),length_m=D("1"),width_m=D("1"))],
+                         accessory_lines=[], labor_fee=D("0"), safety_rate=D("1.05"))
+    assert safe.final_quote > base.final_quote                    # 上浮
+    assert safe.factory_quote_conservative > safe.factory_quote_compare
+
+
+# ── 竞品 Top-10 匹配 ──────────────────────────────────────────────────────────
+
+def test_competitor_top_ranking():
+    from app.models.competitor import CompetitorPrice
+    from app.services.product_match_service import _similarity
+    db = _cfg_db()
+    db.add_all([
+        CompetitorPrice(store="A", product="樱桃木餐边窄柜", sku_name="窄柜-洞石背板-1.0米", daily_price=5135),
+        CompetitorPrice(store="B", product="黑胡桃餐边柜", sku_name="曜黑柜-整柜-1.5米", daily_price=14191),
+        CompetitorPrice(store="C", product="岩板餐桌", sku_name="餐桌-1.4米", daily_price=3000),
+    ])
+    db.commit()
+    rows = db.query(CompetitorPrice).all()
+    scored = sorted(((_similarity("樱桃木窄柜 1.0米", " ".join(filter(None,[r.product,r.sku_name,r.wood]))), r) for r in rows),
+                    key=lambda x: x[0], reverse=True)
+    assert scored[0][1].store == "A"          # 樱桃木窄柜 命中最高
+    assert scored[0][0] > scored[-1][0]

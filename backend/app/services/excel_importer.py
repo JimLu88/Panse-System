@@ -299,7 +299,7 @@ def commit_sheet(
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
-                          "outsourcing_expense", "aftersales"):
+                          "outsourcing_expense", "aftersales", "competitor_price"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -824,6 +824,7 @@ _UNIQUENESS_FIELD = {
     "factory_reconciliation": None,     # (factory_name, period_end)
     "outsourcing_expense": None,        # alipay_flow_no 去重
     "aftersales": "platform_order_no",
+    "competitor_price": None,           # (store, sku_name) 去重
 }
 
 
@@ -1070,6 +1071,25 @@ def _h_aftersales(db, data, key_field, ctx=None):
     return "aftersales", "inserted"
 
 
+def _h_competitor(db, data, key_field, ctx=None):
+    from app.models.competitor import CompetitorPrice
+    sku_name = data.get("sku_name")
+    if not sku_name:
+        raise ImporterError("缺 SKU 名")
+    payload = {k: v for k, v in data.items() if v is not None}
+    # 按 (store, sku_name) 去重 upsert
+    store = data.get("store")
+    existing = db.execute(
+        select(CompetitorPrice).where(
+            CompetitorPrice.store == store, CompetitorPrice.sku_name == sku_name
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return "competitor_price", _apply_update(existing, payload, ctx, "competitor_prices", sku_name)
+    db.add(CompetitorPrice(**payload))
+    return "competitor_price", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
@@ -1079,4 +1099,5 @@ _GENERIC_HANDLERS = {
     "factory_reconciliation": _h_factory_reconciliation,
     "outsourcing_expense": _h_outsourcing_expense,
     "aftersales": _h_aftersales,
+    "competitor_price": _h_competitor,
 }

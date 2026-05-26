@@ -2064,6 +2064,7 @@ export const autofillGenerate = (dry_run = false) =>
 export interface QuoteConfig {
   factory_profit_rate: number;
   panse_profit_rate: number;
+  safety_rate: number;
   projection_type: string;          // front=正面 / top=俯视
   projection_rate: number;
   packing: number[];                // [小,中,大]
@@ -2087,6 +2088,7 @@ export interface BoardQuoteResult {
   factory_wood_total: number; accessory_total: number; drawer_rail_total: number;
   packing_fee: number; freight: number; install_fee: number;
   panse_cost: number; final_quote: number; factory_quote_compare: number;
+  factory_quote_conservative: number; safety_rate: number;
   projection_estimate: number | null; projection_area_m2: number | null;
   factory_quote: number | null; factory_diff: number | null; size_class: string;
   wood_lines: { part: string; material: string; cost: number }[];
@@ -2107,3 +2109,12 @@ export const extractBoards = (file: File) => {
   const fd = new FormData(); fd.append('file', file);
   return api.post<ExtractBoardsResult>('/api/customization/extract-boards', fd).then(r => r.data);
 };
+
+// ===== 竞品 Top-10 =====
+export interface CompetitorRow {
+  store: string | null; category: string | null; product: string | null;
+  link: string | null; wood: string | null; sku_name: string | null;
+  daily_price: number | null; confidence: number;
+}
+export const competitorsTop = (q: string, limit = 10) =>
+  api.get<CompetitorRow[]>('/api/customization/competitors', { params: { q, limit } }).then(r => r.data);

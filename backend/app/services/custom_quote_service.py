@@ -77,10 +77,12 @@ class QuoteResult:
     freight: Decimal
     install_fee: Decimal
     panse_cost: Decimal               # 畔色成本
-    final_quote: Decimal              # 最终报价
-    factory_quote_compare: Decimal    # 木作总成本 + 抽屉轨道 → 对工厂报价
+    final_quote: Decimal              # 最终报价 (已含安全系数)
+    factory_quote_compare: Decimal    # 木作总成本 + 抽屉轨道 → 对工厂报价(原始)
     projection_estimate: Optional[Decimal]   # 投影面积估算
     projection_area_m2: Optional[Decimal]
+    safety_rate: Decimal = Decimal("1.0")        # 保守上浮系数
+    factory_quote_conservative: Decimal = Decimal("0")  # 工厂对比×安全系数(宁高不低)
     wood_lines: list[dict] = field(default_factory=list)
     accessory_lines: list[dict] = field(default_factory=list)
 
@@ -98,8 +100,12 @@ def compute_quote(
     overall_width_m: Optional[Decimal] = None,
     overall_height_m: Optional[Decimal] = None,
     projection_rate: Decimal = DEFAULT_PROJECTION_RATE,
+    safety_rate: Decimal = Decimal("1.0"),
 ) -> QuoteResult:
-    """按表格管线算一个完全定制产品的报价 + 工厂对比 + 投影面积对照。"""
+    """按表格管线算一个完全定制产品的报价 + 工厂对比 + 投影面积对照。
+
+    safety_rate: 保守上浮系数 (>1 时让成本/售价宁高不低, 防低估亏本)。
+    """
     wood_cost = sum((ln.cost() for ln in wood_lines), Decimal("0"))
     labor_fee = _d(labor_fee)
     factory_in = _q(wood_cost + labor_fee)
@@ -114,11 +120,14 @@ def compute_quote(
     packing_fee, freight, install_fee = _d(packing_fee), _d(freight), _d(install_fee)
     panse_cost = _q(factory_wood_total + acc_total + packing_fee + freight + install_fee)
 
+    sr = _d(safety_rate)
     pr = _d(panse_profit_rate)
-    final_quote = _q(panse_cost / (Decimal("1") - pr)) if pr < 1 else panse_cost
+    panse_cost_safe = _q(panse_cost * sr)
+    final_quote = _q(panse_cost_safe / (Decimal("1") - pr)) if pr < 1 else panse_cost_safe
 
-    # 工厂报价对比 = 木作总成本 + 抽屉轨道 (工厂只算木作+轨道)
+    # 工厂报价对比 = 木作总成本 + 抽屉轨道 (工厂只算木作+轨道); 原始 + 保守两版
     factory_compare = _q(factory_wood_total + drawer_rail_total)
+    factory_compare_safe = _q(factory_compare * sr)
 
     # 投影面积对照 (正面投影 宽×高)
     proj_area = proj_est = None
@@ -142,6 +151,8 @@ def compute_quote(
         factory_quote_compare=factory_compare,
         projection_estimate=proj_est,
         projection_area_m2=proj_area,
+        safety_rate=sr,
+        factory_quote_conservative=factory_compare_safe,
         wood_lines=[{"part": l.part, "material": l.material, "cost": float(l.cost())} for l in wood_lines],
         accessory_lines=[{"part": l.part, "material": l.material, "cost": float(l.cost())} for l in accessory_lines],
     )
@@ -177,15 +188,12 @@ def quote_from_spec(
     from app.services import custom_quote_config_service as cfg_svc
 
     cfg = cfg_svc.get_config(db)
-    prices = cfg.get("prices", {})
-
-    def _price(mat: str) -> Decimal:
-        return _d(prices.get(mat, prices.get(mat.split("-")[0], 0)))
 
     wood_lines, acc_lines = [], []
     for b in boards:
         ln = Line(
-            part=b.part, material=b.material, unit_price=_price(b.material),
+            part=b.part, material=b.material,
+            unit_price=_d(cfg_svc.lookup_price(cfg, b.material, db=db)),
             qty=_d(b.qty),
             length_m=_d(b.length_cm) / 100 if b.length_cm else None,
             width_m=_d(b.width_cm) / 100 if b.width_cm else None,
@@ -196,15 +204,16 @@ def quote_from_spec(
     return compute_quote(
         wood_lines=wood_lines,
         accessory_lines=acc_lines,
-        labor_fee=_d(cfg_svc.lookup_labor(cfg, product_type, length_m)),
-        packing_fee=_d(cfg_svc.lookup_packing(cfg, product_type, length_m)),
-        freight=_d(cfg_svc.lookup_freight(cfg, product_type, length_m)),
-        install_fee=_d(cfg_svc.lookup_install(cfg, product_type, length_m)),
+        labor_fee=_d(cfg_svc.lookup_labor(cfg, product_type, length_m, db=db)),
+        packing_fee=_d(cfg_svc.lookup_packing(cfg, product_type, length_m, db=db)),
+        freight=_d(cfg_svc.lookup_freight(cfg, product_type, length_m, db=db)),
+        install_fee=_d(cfg_svc.lookup_install(cfg, product_type, length_m, db=db)),
         factory_profit_rate=_d(cfg.get("factory_profit_rate", 0.25)),
         panse_profit_rate=_d(cfg.get("panse_profit_rate", 0.15)),
         overall_width_m=_d(overall_width_m) if overall_width_m else None,
         overall_height_m=_d(overall_height_m) if overall_height_m else None,
         projection_rate=_d(cfg.get("projection_rate", 900)),
+        safety_rate=_d(cfg.get("safety_rate", 1.0)),
     )
 
 

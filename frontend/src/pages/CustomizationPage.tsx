@@ -24,10 +24,12 @@ import { useNavigate } from 'react-router-dom';
 import {
   AiQuoteResult,
   BoardQuoteResult,
+  CompetitorRow,
   QuoteBoard,
   QuoteConfig,
   aiCustomizationQuote,
   boardQuote,
+  competitorsTop,
   extractBoards,
   fuzzyMatch,
   getQuoteConfig,
@@ -262,6 +264,7 @@ function QuoteSettingsTab() {
         <Space wrap size="large">
           <span>工厂利润系数 {numCell(c.factory_profit_rate, (v) => upd({ factory_profit_rate: v }))}</span>
           <span>畔色利润系数 {numCell(c.panse_profit_rate, (v) => upd({ panse_profit_rate: v }))}</span>
+          <span>保守系数(宁高不低) {numCell(c.safety_rate, (v) => upd({ safety_rate: v }))}</span>
           <span>投影口径
             <Select size="small" style={{ width: 110, marginLeft: 6 }} value={c.projection_type}
               onChange={(v) => upd({ projection_type: v })}
@@ -313,6 +316,7 @@ function FullCustomTab() {
     { part: '顶板', material: '黑胡桃木-2.2cm', length_cm: 210, width_cm: 45, qty: 1 },
   ]);
   const [result, setResult] = useState<BoardQuoteResult | null>(null);
+  const [competitors, setCompetitors] = useState<CompetitorRow[]>([]);
 
   const typeOpts = Object.keys(cfg?.labor ?? {}).map((t) => ({ value: t, label: t }));
   const matOpts = Object.keys(cfg?.prices ?? {}).map((m) => ({ value: m, label: m }));
@@ -323,7 +327,13 @@ function FullCustomTab() {
       overall_width_m: widthM, overall_height_m: heightM,
       boards, factory_quote: factoryQuote,
     }),
-    onSuccess: setResult,
+    onSuccess: async (res) => {
+      setResult(res);
+      const wood = boards[0]?.material?.split('-')[0] ?? '';
+      try {
+        setCompetitors(await competitorsTop(`${wood}${productType} ${lengthM}米`, 10));
+      } catch { setCompetitors([]); }
+    },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '算价失败'),
   });
 
@@ -405,16 +415,20 @@ function FullCustomTab() {
               <Descriptions.Item label="厂内总成本">{money(result.factory_in_cost)}</Descriptions.Item>
               <Descriptions.Item label="工厂利润(×系数)">{money(result.factory_profit)}</Descriptions.Item>
               <Descriptions.Item label="抽屉轨道">{money(result.drawer_rail_total)}</Descriptions.Item>
-              <Descriptions.Item label={<b>我算工厂价</b>}><b>{money(result.factory_quote_compare)}</b></Descriptions.Item>
+              <Descriptions.Item label="我算工厂价(原始)">{money(result.factory_quote_compare)}</Descriptions.Item>
+              <Descriptions.Item label={<b>保守价(×{result.safety_rate})</b>}>
+                <b style={{ color: '#d46b08' }}>{money(result.factory_quote_conservative)}</b>
+              </Descriptions.Item>
               {result.factory_quote != null && (
                 <Descriptions.Item label="工厂实报">
                   {money(result.factory_quote)}
-                  <Tag color={Math.abs(result.factory_diff ?? 0) <= 500 ? 'green' : 'red'}>
-                    差 {(result.factory_diff ?? 0) > 0 ? '+' : ''}{result.factory_diff?.toFixed(0)}
+                  <Tag color={(result.factory_diff ?? 0) >= 0 ? 'green' : 'red'}>
+                    {(result.factory_diff ?? 0) >= 0 ? '我方低' : '我方高'} {Math.abs(result.factory_diff ?? 0).toFixed(0)}
                   </Tag>
                 </Descriptions.Item>
               )}
             </Descriptions>
+            <div style={{ color: '#999', fontSize: 12, marginTop: 4 }}>保守价宁高不低, 防低估亏本(系数在设置里调)</div>
           </Card>
           <Card size="small" title="投影面积对照(防漏算)" style={{ minWidth: 240 }}>
             <Descriptions size="small" column={1}>
@@ -435,6 +449,24 @@ function FullCustomTab() {
             </Descriptions>
           </Card>
         </Space>
+      )}
+
+      {result && competitors.length > 0 && (
+        <Card size="small" title="竞品参考 Top-10 (按匹配度)">
+          <Table
+            size="small" pagination={false} rowKey={(_, i) => String(i)} dataSource={competitors}
+            columns={[
+              { title: '匹配', dataIndex: 'confidence', width: 60,
+                render: (v: number) => <Tag color={v >= 0.5 ? 'green' : 'orange'}>{(v * 100).toFixed(0)}%</Tag> },
+              { title: '店铺', dataIndex: 'store', width: 90 },
+              { title: '产品', dataIndex: 'product', ellipsis: true },
+              { title: 'SKU', dataIndex: 'sku_name', ellipsis: true },
+              { title: '木材', dataIndex: 'wood', width: 80 },
+              { title: '日常价', dataIndex: 'daily_price', width: 90, align: 'right' as const,
+                render: (v: number | null) => (v == null ? '—' : `¥${v.toFixed(0)}`) },
+            ] as any}
+          />
+        </Card>
       )}
     </Space>
   );

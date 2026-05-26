@@ -51,6 +51,7 @@ _PRICES = {
 DEFAULT_CONFIG: dict[str, Any] = {
     "factory_profit_rate": 0.25,    # 工厂利润系数
     "panse_profit_rate": 0.15,      # 畔色利润系数 (售价毛利, 除法)
+    "safety_rate": 1.05,            # 保守上浮系数 (宁高不低, 防低估亏本)
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡
     "packing": [100, 200, 400],     # 打包费 [小,中,大]
@@ -101,26 +102,61 @@ def classify_size(cfg: dict, product_type: str, length_m: float) -> str:
 _SIZE_IDX = {"小": 0, "中": 1, "大": 2}
 
 
-def lookup_labor(cfg: dict, product_type: str, length_m: float) -> float:
-    """查人工费 (品类 × 大小)。未知品类返回 0。"""
+def _material_price(db, name: str) -> float | None:
+    """查物料表单价 (配件价格表 = 唯一数据源, 与导入/飞书联动)。
+
+    先精确名匹配, 再"包含"模糊匹配; 查不到返回 None 让上层回落配置默认。
+    """
+    if db is None or not name:
+        return None
+    from sqlalchemy import select
+    from app.models.material import Material
+    row = db.execute(select(Material.price).where(Material.name == name)).scalar_one_or_none()
+    if row is None:
+        hit = db.execute(
+            select(Material.price).where(Material.name.like(f"%{name}%"), Material.price.isnot(None))
+        ).first()
+        row = hit[0] if hit else None
+    return float(row) if row is not None else None
+
+
+def lookup_price(cfg: dict, material: str, db=None) -> float:
+    """材料单价: 物料表优先, 配置兜底。"""
+    p = _material_price(db, material)
+    if p is not None:
+        return p
+    prices = cfg.get("prices", {})
+    return float(prices.get(material, prices.get(material.split("-")[0], 0)))
+
+
+def lookup_labor(cfg: dict, product_type: str, length_m: float, db=None) -> float:
+    """人工费 (品类 × 大小): 物料表「{品类}-人工费-{小/中/大}型」优先, 配置兜底。"""
+    size = classify_size(cfg, product_type, length_m)
+    p = _material_price(db, f"{product_type}-人工费-{size}型")
+    if p is not None:
+        return p
     row = cfg.get("labor", {}).get(product_type)
-    if not row:
-        return 0.0
-    return float(row[_SIZE_IDX[classify_size(cfg, product_type, length_m)]])
+    return float(row[_SIZE_IDX[size]]) if row else 0.0
 
 
-def _by_size(cfg: dict, key: str, default: list, product_type: str, length_m: float) -> float:
+def _by_size(cfg: dict, key: str, default: list, product_type: str, length_m: float,
+             mat_name_fmt: str, db=None) -> float:
+    """按大小取费用: 物料表优先 (名如「打包费用-中型家具」), 配置兜底。"""
+    size = classify_size(cfg, product_type, length_m)
+    p = _material_price(db, mat_name_fmt.format(size=size))
+    if p is not None:
+        return p
     arr = cfg.get(key, default)
-    return float(arr[_SIZE_IDX[classify_size(cfg, product_type, length_m)]])
+    return float(arr[_SIZE_IDX[size]])
 
 
-def lookup_packing(cfg: dict, product_type: str, length_m: float) -> float:
-    return _by_size(cfg, "packing", [100, 200, 400], product_type, length_m)
+def lookup_packing(cfg: dict, product_type: str, length_m: float, db=None) -> float:
+    return _by_size(cfg, "packing", [100, 200, 400], product_type, length_m, "打包费用-{size}型家具", db)
 
 
-def lookup_freight(cfg: dict, product_type: str, length_m: float) -> float:
-    return _by_size(cfg, "freight", [100, 100, 150], product_type, length_m)
+def lookup_freight(cfg: dict, product_type: str, length_m: float, db=None) -> float:
+    return _by_size(cfg, "freight", [100, 100, 150], product_type, length_m, "运费-{size}型家具", db)
 
 
-def lookup_install(cfg: dict, product_type: str, length_m: float) -> float:
-    return _by_size(cfg, "install", [50, 100, 150], product_type, length_m)
+def lookup_install(cfg: dict, product_type: str, length_m: float, db=None) -> float:
+    return _by_size(cfg, "install", [50, 100, 150], product_type, length_m, "上门安装费-{size}型家具", db)
