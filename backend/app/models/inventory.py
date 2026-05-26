@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -34,10 +34,6 @@ class PartInventory(Base, TimestampMixin):
     safety_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
 
-    __table_args__ = (
-        UniqueConstraint("warehouse", "material_code", name="uq_part_inventory_warehouse_material"),
-    )
-
     @property
     def available_qty(self) -> Decimal:
         return Decimal(self.physical_qty or 0) - Decimal(self.locked_qty or 0)
@@ -58,7 +54,3 @@ class ProductInventory(Base, TimestampMixin):
     physical_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
     locked_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(String(255))
-
-    __table_args__ = (
-        UniqueConstraint("warehouse", "product_code", name="uq_product_inventory_warehouse_product"),
-    )

@@ -49,14 +49,10 @@ def upgrade() -> None:
     op.add_column("product_inventory",
         sa.Column("sync_key", sa.String(128), nullable=True))
     op.create_unique_constraint("uq_product_inventory_sync_key", "product_inventory", ["sync_key"])
-    op.create_unique_constraint(
-        "uq_product_inventory_warehouse_product", "product_inventory", ["warehouse", "product_code"])
 
     op.add_column("part_inventory",
         sa.Column("sync_key", sa.String(128), nullable=True))
     op.create_unique_constraint("uq_part_inventory_sync_key", "part_inventory", ["sync_key"])
-    op.create_unique_constraint(
-        "uq_part_inventory_warehouse_material", "part_inventory", ["warehouse", "material_code"])
 
     # --- new daily_operations table ---
 
@@ -82,11 +78,9 @@ def downgrade() -> None:
     op.drop_index("ix_daily_operations_record_date", "daily_operations")
     op.drop_table("daily_operations")
 
-    op.drop_constraint("uq_part_inventory_warehouse_material", "part_inventory", type_="unique")
     op.drop_constraint("uq_part_inventory_sync_key", "part_inventory", type_="unique")
     op.drop_column("part_inventory", "sync_key")
 
-    op.drop_constraint("uq_product_inventory_warehouse_product", "product_inventory", type_="unique")
     op.drop_constraint("uq_product_inventory_sync_key", "product_inventory", type_="unique")
     op.drop_column("product_inventory", "sync_key")
 
