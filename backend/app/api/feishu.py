@@ -243,6 +243,19 @@ def resolve_conflict(exception_id: int, payload: ResolveIn, db: Session = Depend
 # ----------------------------- 事件回调 (Webhook) -------------------- #
 
 
+@router.get("/webhook")
+async def feishu_webhook_verify(challenge: Optional[str] = None, token: Optional[str] = None,
+                                 db: Session = Depends(get_db)):
+    """飞书事件订阅 URL 验证 (GET 方式, 旧版 v1 API)。
+    飞书开放平台配置回调地址时会发 GET ?challenge=xxx&token=xxx&type=url_verification,
+    必须回 {"challenge": xxx} 才能通过验证。
+    """
+    expected = settings_service.get(db, "feishu_verification_token", env_fallback=False)
+    if expected and token and token != expected:
+        raise HTTPException(401, "verification token 不匹配")
+    return {"challenge": challenge}
+
+
 @router.post("/webhook")
 async def feishu_webhook(request: Request, db: Session = Depends(get_db)):
     """飞书事件订阅回调入口 (公开 — 用 verification token / encrypt key 校验来源)。
