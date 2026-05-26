@@ -15,10 +15,10 @@ import {
   Typography,
   message,
 } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { PricingSku, Product, createProduct, listProducts, listProductSkus } from '../api/client';
+import { PricingSku, Product, createProduct, listProducts, listProductSkus, updateProduct } from '../api/client';
 
 function SkuExpandedRow({ productCode }: { productCode: string }) {
   const { data, isLoading } = useQuery({
@@ -121,10 +121,25 @@ export default function ProductsPage() {
   const [q, setQ] = useState('');
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
+  const [pageSize, setPageSize] = useState(20);
+  const [editTarget, setEditTarget] = useState<Product | null>(null);
+  const [editForm] = Form.useForm();
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', q],
     queryFn: () => listProducts(q || undefined),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: ({ id, payload }: { id: number; payload: Parameters<typeof updateProduct>[1] }) =>
+      updateProduct(id, payload),
+    onSuccess: () => {
+      message.success('已更新');
+      setEditTarget(null);
+      editForm.resetFields();
+      qc.invalidateQueries({ queryKey: ['products'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '更新失败'),
   });
 
   const createMut = useMutation({
@@ -163,8 +178,30 @@ export default function ProductsPage() {
     { title: '类目', dataIndex: 'category', width: 140 },
     {
       title: '操作',
-      width: 100,
-      render: (_: unknown, row: Product) => <Link to={`/bom/${row.code}`}>查看 BOM</Link>,
+      width: 150,
+      render: (_: unknown, row: Product) => (
+        <Space>
+          <Link to={`/bom/${row.code}`}>查看 BOM</Link>
+          <Button
+            size="small"
+            icon={<EditOutlined />}
+            onClick={() => {
+              setEditTarget(row);
+              editForm.setFieldsValue({
+                name: row.name,
+                remark: row.remark,
+                image_url: row.image_url ?? '',
+                custom_scope: row.custom_scope ?? '',
+                size_detail: row.size_detail ?? '',
+                aux_material: row.aux_material ?? '',
+                description: row.description ?? '',
+              });
+            }}
+          >
+            编辑
+          </Button>
+        </Space>
+      ),
     },
   ];
 
@@ -193,7 +230,12 @@ export default function ProductsPage() {
         loading={isLoading}
         dataSource={data}
         columns={columns as any}
-        pagination={{ pageSize: 20 }}
+        pagination={{
+          pageSize,
+          showSizeChanger: true,
+          pageSizeOptions: [20, 50, 100],
+          onShowSizeChange: (_, size) => setPageSize(size),
+        }}
         expandable={{
           expandedRowRender: (record) => (
             <div style={{ padding: '8px 0' }}>
@@ -203,6 +245,56 @@ export default function ProductsPage() {
           ),
         }}
       />
+
+      <Modal
+        title={`编辑产品 — ${editTarget?.code ?? ''}`}
+        open={!!editTarget}
+        onCancel={() => { setEditTarget(null); editForm.resetFields(); }}
+        onOk={() => editForm.submit()}
+        confirmLoading={updateMut.isPending}
+        destroyOnClose
+      >
+        <Form
+          form={editForm}
+          layout="vertical"
+          onFinish={(v) =>
+            updateMut.mutate({
+              id: editTarget!.id,
+              payload: {
+                name: v.name || undefined,
+                remark: v.remark || undefined,
+                image_url: v.image_url || null,
+                custom_scope: v.custom_scope || null,
+                size_detail: v.size_detail || null,
+                aux_material: v.aux_material || null,
+                description: v.description || null,
+              },
+            })
+          }
+        >
+          <Form.Item name="name" label="产品名称" rules={[{ required: true }]}>
+            <Input />
+          </Form.Item>
+          <Form.Item name="image_url" label="图片 URL">
+            <Input placeholder="https://... 留空则清除图片" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注">
+            <Input />
+          </Form.Item>
+          <Form.Item name="custom_scope" label="定制范围">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="size_detail" label="尺寸明细">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="aux_material" label="辅材介绍">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="description" label="产品文案">
+            <Input.TextArea rows={3} />
+          </Form.Item>
+        </Form>
+      </Modal>
 
       <Modal
         title="新建产品"

@@ -28,6 +28,7 @@ import threading
 import time
 import webbrowser
 from pathlib import Path
+from datetime import datetime
 
 import requests
 from PIL import Image, ImageDraw
@@ -84,8 +85,49 @@ WEB_URL = "http://localhost:5173"
 DEPLOY_BRANCH = os.environ.get("PANSE_BRANCH", "main")
 CHECK_INTERVAL = 30   # 秒
 AUTO_RECOVER = True    # 挂了自动 docker compose up -d
+FAIL_THRESHOLD = 3     # 连续 N 次 FAIL 才触发自动恢复 (防止 AI 请求期间误报)
 CONTAINERS = ["panse-system-db-1", "panse-system-api-1",
               "panse-system-web-1", "panse-system-backup-1"]
+LOG_FILE = PROJECT_ROOT / "logs" / "watchdog.log"
+MAX_LOG_BYTES = 2 * 1024 * 1024  # 日志超 2MB 时归档
+
+_fail_streak = 0  # 当前连续 FAIL 次数
+
+
+# ----------------------------- 日志 --------------------------------- #
+
+
+def _write_log(line: str) -> None:
+    """追加一行到 watchdog.log, 超 2MB 时轮转."""
+    try:
+        LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if LOG_FILE.exists() and LOG_FILE.stat().st_size > MAX_LOG_BYTES:
+            LOG_FILE.rename(LOG_FILE.with_suffix(".log.1"))
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with open(LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(f"[{ts}] {line}\n")
+    except Exception:
+        pass
+
+
+def _collect_api_logs(lines: int = 30) -> str:
+    """从 api 容器拿最后 N 行日志, 用于诊断 API 无响应原因."""
+    try:
+        code, out = _run(
+            ["docker", "compose", "logs", "--tail", str(lines), "--no-log-prefix", "api"],
+            timeout=10,
+        )
+        return out.strip() if code == 0 and out else ""
+    except Exception:
+        return ""
+
+
+def open_log(icon=None, item=None):
+    """用记事本打开 watchdog 日志."""
+    if LOG_FILE.exists():
+        os.startfile(str(LOG_FILE))
+    else:
+        notify("畔色 ERP", f"日志文件还不存在: {LOG_FILE}", level="info")
 
 
 # ----------------------------- 状态判定 ---------------------------- #
@@ -338,16 +380,39 @@ def quit_app(icon, item):
 
 def watchdog_loop(icon: Icon) -> None:
     """30s 一次的检查 + 图标更新 + 自动恢复."""
+    global _fail_streak
+    _write_log(f"看门狗启动 — 项目根: {PROJECT_ROOT} | 间隔: {CHECK_INTERVAL}s | 恢复阈值: 连续{FAIL_THRESHOLD}次")
     while True:
         try:
             status, msg = assess()
+            _write_log(f"[{status.upper()}] {msg}")
             icon.icon = make_icon(status)
             icon.title = f"畔色 ERP - {msg}"
-            # 自动恢复: 没起或挂了, 尝试 up
-            if AUTO_RECOVER and status in (Status.FAIL,):
-                notify("畔色 ERP", f"检测到异常, 尝试自动拉起: {msg}", level="warn")
+
+            if status == Status.FAIL:
+                _fail_streak += 1
+            else:
+                _fail_streak = 0
+
+            # 连续 FAIL_THRESHOLD 次才触发自动恢复, 避免 AI 请求期间的短暂超时误报
+            if AUTO_RECOVER and status == Status.FAIL and _fail_streak >= FAIL_THRESHOLD:
+                api_logs = _collect_api_logs()
+                if api_logs:
+                    _write_log(f"=== api 容器日志 (最后30行) ===\n{api_logs}\n=== END ===")
+                # 通知里附上最后一行容器日志和日志路径
+                last_log_line = api_logs.splitlines()[-1][:120] if api_logs else "无日志"
+                notify(
+                    "畔色 ERP",
+                    f"检测到异常, 尝试自动拉起: {msg}（连续{_fail_streak}次）\n"
+                    f"容器最新日志: {last_log_line}\n"
+                    f"详细日志: {LOG_FILE}",
+                    level="warn",
+                )
+                _write_log(f"触发自动恢复 (连续{_fail_streak}次FAIL), 执行 docker compose up -d")
+                _fail_streak = 0
                 _run(["docker", "compose", "up", "-d"], timeout=120)
         except Exception as e:
+            _write_log(f"watchdog_loop 异常: {e}")
             print(f"watchdog error: {e}")
         time.sleep(CHECK_INTERVAL)
 
@@ -385,6 +450,8 @@ def main():
             Menu.SEPARATOR,
             MenuItem("⬇️ 拉最新代码 + 重建", update_code),
             MenuItem("🧹 强制同步 (丢弃本地改动)", force_sync),
+            Menu.SEPARATOR,
+            MenuItem("📋 查看看门狗日志", open_log),
             Menu.SEPARATOR,
             MenuItem("❌ 退出看门狗", quit_app),
         ),

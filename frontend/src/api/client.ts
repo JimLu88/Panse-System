@@ -264,6 +264,16 @@ export const createProduct = (payload: {
   description?: string;
 }) => api.post<Product>('/api/products', payload).then((r) => r.data);
 
+export const updateProduct = (id: number, payload: {
+  name?: string;
+  remark?: string;
+  image_url?: string | null;
+  custom_scope?: string | null;
+  size_detail?: string | null;
+  aux_material?: string | null;
+  description?: string | null;
+}) => api.patch<Product>(`/api/products/${id}`, payload).then((r) => r.data);
+
 // ----- Product Inventory (4a) -----
 export interface ProductInventoryRow {
   id: number;
