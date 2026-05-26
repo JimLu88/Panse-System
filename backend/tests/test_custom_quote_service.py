@@ -209,6 +209,29 @@ def test_fetch_blocked_graceful():
     assert price is None and status == "no_link"
 
 
+def test_batch_update_prices_by_id_and_link():
+    from app.services import competitor_price_service as cps
+    from app.models.competitor import CompetitorPrice
+    from decimal import Decimal as D
+    db = _cfg_db()
+    a = CompetitorPrice(store="A", sku_name="甲", link="https://x.com/a", daily_price=D("5000"))
+    b = CompetitorPrice(store="B", sku_name="乙", link="https://x.com/b", daily_price=D("6000"))
+    db.add_all([a, b]); db.commit()
+    r = cps.batch_update_prices(db, [
+        {"id": a.id, "latest_price": 4800, "fetch_status": "ok"},     # 按 id
+        {"link": "https://x.com/b", "latest_price": 5500},             # 按 link
+        {"link": "https://x.com/missing", "latest_price": 999},        # 匹配不到
+        {"id": a.id},                                                  # 缺价 → error
+    ])
+    db.commit()
+    assert r["updated"] == 2
+    assert r["not_found"] == ["https://x.com/missing"]
+    assert len(r["errors"]) == 1
+    db.refresh(a); db.refresh(b)
+    assert a.latest_price == D("4800") and a.fetch_status == "ok"
+    assert b.latest_price == D("5500") and b.fetch_status == "ok"  # 默认 ok
+
+
 # ── 物料表 bootstrap 种子 ─────────────────────────────────────────────────────
 
 def test_seed_quote_materials_idempotent():

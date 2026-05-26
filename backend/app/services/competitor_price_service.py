@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.competitor import CompetitorPrice
@@ -66,6 +67,69 @@ def set_manual_price(db: Session, comp_id: int, price: Decimal) -> CompetitorPri
     c.latest_fetched_at = datetime.now(timezone.utc)
     db.flush()
     return c
+
+
+def _parse_dt(s: Optional[str]) -> datetime:
+    """ISO 字符串 → aware datetime; 缺失/非法回落当前 UTC。"""
+    if not s:
+        return datetime.now(timezone.utc)
+    try:
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
+def batch_update_prices(db: Session, items: list[dict]) -> dict:
+    """批量回灌竞品最新价 (供外部采集服务一次推一批)。
+
+    每条按 ``id`` 优先, 否则按 ``link`` 精确匹配命中我表里的行:
+      {id?, link?, latest_price, fetch_status?, fetched_at?}
+    命中即写 latest_price / fetch_status(默认 ok) / latest_fetched_at。
+    返回 {updated, not_found:[key...], errors:[{key, error}...]}; 不抛错, 逐条容错。
+    """
+    updated = 0
+    not_found: list = []
+    errors: list = []
+    link_index: Optional[dict] = None  # 按需预载 link→行, 避免逐条全表查
+
+    for it in items:
+        cid = it.get("id")
+        link = (it.get("link") or "").strip()
+        price = it.get("latest_price")
+        key = cid if cid is not None else (link or None)
+        if price is None:
+            errors.append({"key": key, "error": "missing latest_price"})
+            continue
+
+        c = None
+        if cid is not None:
+            c = db.get(CompetitorPrice, cid)
+        elif link:
+            if link_index is None:
+                link_index = {}
+                for row in db.execute(select(CompetitorPrice)).scalars():
+                    if row.link:
+                        link_index.setdefault(row.link.strip(), row)
+            c = link_index.get(link)
+        else:
+            errors.append({"key": None, "error": "missing id and link"})
+            continue
+
+        if c is None:
+            not_found.append(key)
+            continue
+        try:
+            c.latest_price = Decimal(str(price))
+        except (ValueError, ArithmeticError):
+            errors.append({"key": key, "error": "bad price"})
+            continue
+        c.fetch_status = it.get("fetch_status") or "ok"
+        c.latest_fetched_at = _parse_dt(it.get("fetched_at"))
+        updated += 1
+
+    db.flush()
+    return {"updated": updated, "not_found": not_found, "errors": errors}
 
 
 def after_coupon(price: Optional[Decimal], coupon_rate: float) -> tuple[Optional[float], float]:

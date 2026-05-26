@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_ingest_token
 from app.services import customization_ai_service, customization_service
 
 router = APIRouter(prefix="/api/customization", tags=["customization"])
@@ -328,3 +329,39 @@ def set_competitor_price(comp_id: int, payload: CompetitorManualIn, db: Session 
         raise HTTPException(404, str(e))
     db.commit()
     return _comp_out(db, r, 1.0)
+
+
+# -------- 竞品最新价批量回灌 (外部采集服务 → 本系统) --------
+
+class CompetitorPriceItem(BaseModel):
+    id: Optional[int] = None          # 我表行 id (优先)
+    link: Optional[str] = None        # 或按链接精确匹配
+    latest_price: float
+    fetch_status: Optional[str] = None  # ok/blocked/failed; 缺省 ok
+    fetched_at: Optional[str] = None    # ISO8601 抓取时间; 缺省服务器当前时间
+
+
+class CompetitorBatchIn(BaseModel):
+    items: list[CompetitorPriceItem] = Field(..., min_length=1)
+
+
+class CompetitorBatchOut(BaseModel):
+    updated: int
+    not_found: list = []
+    errors: list = []
+
+
+@router.post("/competitors/batch-prices", response_model=CompetitorBatchOut)
+def batch_competitor_prices(
+    payload: CompetitorBatchIn,
+    db: Session = Depends(get_db),
+    _: bool = Depends(require_ingest_token),
+):
+    """外部采集服务一次推一批竞品最新价 (用 X-API-Key 令牌鉴权)。
+
+    每条按 id 优先、否则按 link 精确匹配我表里的行; 逐条容错, 返回命中/未匹配/错误统计。
+    """
+    from app.services import competitor_price_service as cps
+    r = cps.batch_update_prices(db, [i.model_dump() for i in payload.items])
+    db.commit()
+    return CompetitorBatchOut(**r)
