@@ -1,0 +1,84 @@
+# Panse ERP — 生产部署 (plan §10 Phase 6).
+#
+# 与 docker-compose.yml 的差异：
+#   - 前端走多阶段构建出来的静态文件, 由 nginx 直接服务（不暴露 vite dev server）
+#   - 不挂源码卷; 容器 immutable
+#   - nginx 终止 HTTPS, 拿真实 IP 给 audit 日志
+#   - api / db 不暴露端口, 只内部网络
+#
+# 启动:
+#   cp .env.example .env  # 改密码、设 ANTHROPIC_API_KEY、改 JWT_SECRET
+#   docker compose -f docker-compose.prod.yml up -d --build
+
+services:
+  db:
+    image: postgres:16
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-panse}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?must set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-panse_erp}
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-panse}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    # 生产: 不暴露 5432 到宿主机
+
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: always
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-panse}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-panse_erp}
+      CORS_ORIGINS: "https://${PUBLIC_HOST:?must set PUBLIC_HOST}"
+      JWT_SECRET: ${JWT_SECRET:?must set JWT_SECRET}
+      JWT_TTL_HOURS: ${JWT_TTL_HOURS:-24}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      AI_MODEL: ${AI_MODEL:-claude-sonnet-4-6}
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+    # 生产: 不暴露 8000 到宿主机，由 nginx 反代
+
+  web-build:
+    # 一次性容器：把 frontend 构建成静态文件丢到 web_dist 卷里, 然后退出
+    image: node:20-alpine
+    working_dir: /app
+    volumes:
+      - ./frontend:/app:ro
+      - web_dist:/dist
+    command: >
+      sh -c "cp -r /app /tmp/build && cd /tmp/build &&
+             npm install --no-fund --no-audit &&
+             npm run build &&
+             rm -rf /dist/* && cp -r dist/* /dist/"
+    restart: "no"
+
+  web:
+    image: nginx:alpine
+    restart: always
+    depends_on:
+      web-build:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - web_dist:/usr/share/nginx/html:ro
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - certbot_webroot:/var/www/certbot:ro
+
+volumes:
+  pg_data:
+  web_dist:
+  certbot_webroot:
