@@ -78,6 +78,10 @@ PROJECT_ROOT = _find_project_root()
 
 API_URL = "http://localhost:8000/api/health"
 WEB_URL = "http://localhost:5173"
+# 部署分支: 看门狗永远同步到这个分支 (可用环境变量 PANSE_BRANCH 覆盖).
+# 所有改动合并进 main 后, 点一下"拉最新代码"就能拿到,
+# 不受当前本地 checkout 在哪个分支的影响.
+DEPLOY_BRANCH = os.environ.get("PANSE_BRANCH", "main")
 CHECK_INTERVAL = 30   # 秒
 AUTO_RECOVER = True    # 挂了自动 docker compose up -d
 CONTAINERS = ["panse-system-db-1", "panse-system-api-1",
@@ -253,21 +257,71 @@ def show_status(icon=None, item=None):
 
 
 def update_code(icon=None, item=None):
-    """git pull + 重建"""
-    notify("畔色 ERP", "拉最新代码 + 重建中...", level="info")
+    """一键同步: 切到 DEPLOY_BRANCH → 拉最新 → 重建.
+
+    不管当前本地在哪个分支, 都会先切到 DEPLOY_BRANCH (默认 main) 再拉,
+    所以只要改动合并进了该分支, 点一下就升级到最新.
+    容器启动时 Dockerfile 会自动跑 alembic upgrade head, 无需手动迁移.
+    """
+    notify("畔色 ERP", f"同步 {DEPLOY_BRANCH} 最新代码 + 重建中...", level="info")
 
     def _do():
-        code1, _ = _run(["git", "pull"], timeout=60)
-        if code1 != 0:
-            notify("畔色 ERP", "git pull 失败, 见控制台", level="error")
+        code, out = _run(["git", "fetch", "origin"], timeout=120)
+        if code != 0:
+            notify("畔色 ERP", f"git fetch 失败: {out[:200]}", level="error")
             return
-        code2, output = _run(
+        code, out = _run(["git", "checkout", DEPLOY_BRANCH], timeout=30)
+        if code != 0:
+            notify("畔色 ERP",
+                   f"切到 {DEPLOY_BRANCH} 失败 (本地可能有未提交改动): {out[:200]}",
+                   level="error")
+            return
+        code, out = _run(
+            ["git", "pull", "--ff-only", "origin", DEPLOY_BRANCH], timeout=120,
+        )
+        if code != 0:
+            notify("畔色 ERP",
+                   f"git pull 失败 (本地有改动或分叉, 可试「强制同步」): {out[:200]}",
+                   level="error")
+            return
+        code, out = _run(
             ["docker", "compose", "up", "-d", "--build"], timeout=300,
         )
-        if code2 == 0:
-            notify("畔色 ERP", "更新完成", level="info")
+        if code == 0:
+            notify("畔色 ERP", f"更新完成, 已同步到 {DEPLOY_BRANCH} 最新", level="info")
         else:
-            notify("畔色 ERP", f"build 失败: {output[:200]}", level="error")
+            notify("畔色 ERP", f"build 失败: {out[:200]}", level="error")
+    threading.Thread(target=_do, daemon=True).start()
+
+
+def force_sync(icon=None, item=None):
+    """强制同步: 硬重置到远端 DEPLOY_BRANCH, 丢弃本地代码改动后重建.
+
+    用于普通「拉最新代码」因本地分叉/改动导致 ff-only 失败时.
+    会丢弃本地未提交的代码改动; gitignore 的文件 (如 panse_erp.db) 不受影响.
+    """
+    notify("畔色 ERP", f"强制同步 {DEPLOY_BRANCH} (丢弃本地代码改动)...", level="warn")
+
+    def _do():
+        for cmd in (["git", "fetch", "origin"],
+                    ["git", "checkout", DEPLOY_BRANCH]):
+            code, out = _run(cmd, timeout=120)
+            if code != 0:
+                notify("畔色 ERP", f"{' '.join(cmd)} 失败: {out[:200]}", level="error")
+                return
+        code, out = _run(
+            ["git", "reset", "--hard", f"origin/{DEPLOY_BRANCH}"], timeout=60,
+        )
+        if code != 0:
+            notify("畔色 ERP", f"reset 失败: {out[:200]}", level="error")
+            return
+        code, out = _run(
+            ["docker", "compose", "up", "-d", "--build"], timeout=300,
+        )
+        if code == 0:
+            notify("畔色 ERP", f"强制同步完成, 已对齐 {DEPLOY_BRANCH}", level="info")
+        else:
+            notify("畔色 ERP", f"build 失败: {out[:200]}", level="error")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -326,6 +380,7 @@ def main():
             MenuItem("🔁 重启容器", restart_containers),
             Menu.SEPARATOR,
             MenuItem("⬇️ 拉最新代码 + 重建", update_code),
+            MenuItem("🧹 强制同步 (丢弃本地改动)", force_sync),
             Menu.SEPARATOR,
             MenuItem("❌ 退出看门狗", quit_app),
         ),
