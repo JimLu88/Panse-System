@@ -143,4 +143,20 @@ class PartPurchase(Base, TimestampMixin):
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+
+
+class OrderDetail(Base, TimestampMixin):
+    """订单细节 — 飞书 tblYLdjivHwpu5ea，记录每个 SKU 行级订单与物料对应关系。"""
+    __tablename__ = "order_details"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    factory_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    product_code: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(255))
+    sku_code: Mapped[Optional[str]] = mapped_column(String(64))
+    sku_name: Mapped[Optional[str]] = mapped_column(String(255))
+    bom_material_code: Mapped[Optional[str]] = mapped_column(String(64))
+    material_name: Mapped[Optional[str]] = mapped_column(String(255))
     remark: Mapped[Optional[str]] = mapped_column(Text)

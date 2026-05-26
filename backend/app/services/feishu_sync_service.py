@@ -46,7 +46,7 @@ class SyncEntity:
 def _entities() -> dict[str, SyncEntity]:
     from app.models.customer import Customer
     from app.models.material import Material
-    from app.models.order import Order, FactoryOrder
+    from app.models.order import Order, FactoryOrder, OrderDetail
     from app.models.pricing import PricingSku
     from app.models.product import Product
     from app.models.marketing import Sample, BrandMarketing, AfterSales, PromotionFlow, OutsourcingExpense, WoodLoss, DailyOperation
@@ -73,6 +73,7 @@ def _entities() -> dict[str, SyncEntity]:
         "product_inventory": SyncEntity(ProductInventory, "sync_key"),
         "part_inventory": SyncEntity(PartInventory, "sync_key"),
         "daily_operations": SyncEntity(DailyOperation, "sync_key"),
+        "order_details": SyncEntity(OrderDetail, "sync_key"),
     }
 
 
@@ -81,7 +82,7 @@ SUPPORTED_TABLES = [
     "factory_orders", "alipay_flows", "samples", "after_sales",
     "bom_lines", "brand_marketing", "promotion_flows", "outsourcing_expenses",
     "wood_losses", "factory_reconciliations", "account_balances",
-    "product_inventory", "part_inventory", "daily_operations",
+    "product_inventory", "part_inventory", "daily_operations", "order_details",
 ]
 
 

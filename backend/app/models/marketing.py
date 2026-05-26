@@ -135,9 +135,15 @@ class DailyOperation(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     record_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
-    category: Mapped[Optional[str]] = mapped_column(String(64))   # 经营类别
-    item: Mapped[Optional[str]] = mapped_column(String(255))      # 项目
+    category: Mapped[Optional[str]] = mapped_column(String(64))
+    item: Mapped[Optional[str]] = mapped_column(String(255))
     amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     unit: Mapped[Optional[str]] = mapped_column(String(16))
+    payment_account: Mapped[Optional[str]] = mapped_column(String(64))   # 支付账户
+    expense_type: Mapped[Optional[str]] = mapped_column(String(64))      # 支出类型
+    recipient: Mapped[Optional[str]] = mapped_column(String(128))        # 支付对象
+    payment_method: Mapped[Optional[str]] = mapped_column(String(64))    # 支付方式
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))    # 支付宝流水号
+    invoice_status: Mapped[Optional[str]] = mapped_column(String(32))    # 发票状态
     remark: Mapped[Optional[str]] = mapped_column(Text)

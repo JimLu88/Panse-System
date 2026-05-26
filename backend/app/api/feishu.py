@@ -121,13 +121,21 @@ def setup_preset(payload: SetupPresetIn, db: Session = Depends(get_db),
     - 同 (system_table, feishu_table_id) 已存在: overwrite=False 跳过, True 则更新。
     """
     wiki_token = payload.wiki_token.strip()
-    if wiki_token.startswith("bascn"):
+    # Tokens starting with "bas" are already bitable app_tokens — use directly.
+    if wiki_token.startswith("bas"):
         app_token = wiki_token
     else:
         try:
             app_token = feishu_client.resolve_wiki_app_token(db, wiki_token)
         except feishu_client.FeishuError as e:
-            raise HTTPException(502, f"飞书操作失败: {e}")
+            err_str = str(e)
+            # If credentials are wrong, propagate immediately so the user fixes them.
+            if "获取飞书 token 失败" in err_str:
+                raise HTTPException(502, f"飞书操作失败: {e}")
+            # For other resolution errors (wiki API unavailable, no wiki permission, etc.)
+            # fall back to using the token as a direct app_token so bindings can be created
+            # and corrected later via the UI.
+            app_token = wiki_token
 
     existing = db.execute(select(FeishuTableBinding)).scalars().all()
     by_pair = {(b.system_table, b.feishu_table_id): b for b in existing}

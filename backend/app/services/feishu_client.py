@@ -55,7 +55,8 @@ def get_tenant_access_token(db: Session, *, force: bool = False) -> str:
         raise FeishuError(f"获取飞书 token 网络失败: {e}") from e
     data = _json(r)
     if data.get("code") != 0:
-        raise FeishuError(f"获取飞书 token 失败: {data.get('msg')} (code={data.get('code')})")
+        hint = "，请到 管理→飞书 核对 app_id / app_secret" if data.get("code") in (10003, 10014) else ""
+        raise FeishuError(f"获取飞书 token 失败: {data.get('msg')} (code={data.get('code')}){hint}")
     token = data["tenant_access_token"]
     _TOKEN_CACHE[app_id] = (token, now + int(data.get("expire", 7200)))
     return token
@@ -132,14 +133,14 @@ def delete_record(db: Session, app_token: str, table_id: str, record_id: str) ->
 def resolve_wiki_app_token(db: Session, wiki_token: str) -> str:
     """解析 Wiki 节点 token → Bitable App Token (obj_token).
 
-    调用: GET /wiki/v2/spaces/get_node?token={wiki_token}
+    调用: GET /wiki/v2/spaces/get_node?token={wiki_token}&obj_type=wiki
     返回 data.node.obj_token。
     """
     url = f"{_BASE}/wiki/v2/spaces/get_node"
-    data = _req(db, "GET", url, params={"token": wiki_token})
+    data = _req(db, "GET", url, params={"token": wiki_token, "obj_type": "wiki"})
     obj_token = (data.get("node") or {}).get("obj_token")
     if not obj_token:
-        raise FeishuError(f"无法解析 wiki_token={wiki_token} 对应的 obj_token")
+        raise FeishuError(f"无法解析 wiki_token={wiki_token} 对应的 obj_token，请检查 app 是否有 wiki 权限")
     return obj_token
 
 

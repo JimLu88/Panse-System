@@ -181,8 +181,19 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "daily_operations", "tblvyqyNBj1er26J", "in", "日常经营",
         {
-            "sync_key": "唯一键", "record_date": "日期", "category": "类别", "item": "项目",
-            "amount": "金额", "qty": "数量", "unit": "单位", "remark": "备注",
+            "sync_key": "唯一键", "record_date": "日期", "item": "项目", "amount": "金额",
+            "payment_account": "支付账户", "category": "分类", "expense_type": "支出类型",
+            "recipient": "支付对象", "payment_method": "支付方式",
+            "alipay_flow_no": "支付宝流水号", "invoice_status": "发票状态", "remark": "备注",
+        },
+    ),
+    (
+        "order_details", "tblYLdjivHwpu5ea", "in", "订单细节",
+        {
+            "sync_key": "唯一键", "order_no": "订单编号", "factory_order_no": "工厂订单号",
+            "product_code": "产品编码", "product_name": "产品名称",
+            "sku_code": "SKU编码", "sku_name": "SKU名称",
+            "bom_material_code": "关联BOM物料编码", "material_name": "关联物料名称",
         },
     ),
     (
