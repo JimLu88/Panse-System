@@ -19,6 +19,7 @@ import {
 } from 'antd';
 import { DownOutlined, EditOutlined, RobotOutlined, ThunderboltOutlined, UpOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AiDiagnoseResult,
@@ -126,6 +127,7 @@ function FixFormFields({ exc }: { exc: DataException }) {
 
 export default function ExceptionsPage() {
   const qc = useQueryClient();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<'open' | 'resolved' | 'ignored'>('open');
   const [diagnoseOpen, setDiagnoseOpen] = useState<{ exc: DataException; result?: AiDiagnoseResult } | null>(null);
   const [fixOpen, setFixOpen] = useState<DataException | null>(null);
@@ -229,8 +231,27 @@ export default function ExceptionsPage() {
     {
       title: '操作',
       width: 230,
-      render: (_: unknown, row: DataException) =>
-        row.status === 'open' ? (
+      render: (_: unknown, row: DataException) => {
+        if (row.status !== 'open') {
+          return <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{row.status}</Tag>;
+        }
+        // 飞书冲突: 解除必须走飞书同步 (整条/逐字段), 不能内联补填, 否则两端不一致
+        if (row.exception_type === 'feishu_conflict') {
+          return (
+            <Space size="small" wrap>
+              <Button size="small" type="primary" onClick={() => navigate('/feishu')}>
+                去飞书裁决
+              </Button>
+              <Button size="small" icon={<RobotOutlined />} onClick={() => handleDiagnose(row)}>
+                AI 分析
+              </Button>
+              <Button size="small" onClick={() => resolveMut.mutate({ id: row.id, s: 'ignored' })}>
+                忽略
+              </Button>
+            </Space>
+          );
+        }
+        return (
           <Space size="small" wrap>
             <Button
               size="small"
@@ -260,9 +281,8 @@ export default function ExceptionsPage() {
               忽略
             </Button>
           </Space>
-        ) : (
-          <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{row.status}</Tag>
-        ),
+        );
+      },
     },
   ];
 
