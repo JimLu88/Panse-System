@@ -30,6 +30,7 @@ import {
   aiCustomizationQuote,
   boardQuote,
   competitorsTop,
+  refreshCompetitor,
   extractBoards,
   fuzzyMatch,
   getQuoteConfig,
@@ -265,6 +266,7 @@ function QuoteSettingsTab() {
           <span>工厂利润系数 {numCell(c.factory_profit_rate, (v) => upd({ factory_profit_rate: v }))}</span>
           <span>畔色利润系数 {numCell(c.panse_profit_rate, (v) => upd({ panse_profit_rate: v }))}</span>
           <span>保守系数(宁高不低) {numCell(c.safety_rate, (v) => upd({ safety_rate: v }))}</span>
+          <span>竞品通用券率 {numCell(c.competitor_coupon_rate, (v) => upd({ competitor_coupon_rate: v }))}</span>
           <span>投影口径
             <Select size="small" style={{ width: 110, marginLeft: 6 }} value={c.projection_type}
               onChange={(v) => upd({ projection_type: v })}
@@ -452,18 +454,38 @@ function FullCustomTab() {
       )}
 
       {result && competitors.length > 0 && (
-        <Card size="small" title="竞品参考 Top-10 (按匹配度)">
+        <Card size="small" title={`竞品参考 Top-10 (按匹配度; 券后价已减通用平台券 ${((cfg?.competitor_coupon_rate ?? 0.08) * 100).toFixed(0)}%)`}>
+          <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+            message="淘宝反爬, 最新价为尽力抓取; 抓不到(blocked)时请点链接核对或手动更新。价格均为叠券前, 券后价已注明减额。" />
           <Table
-            size="small" pagination={false} rowKey={(_, i) => String(i)} dataSource={competitors}
+            size="small" pagination={false} rowKey="id" dataSource={competitors}
             columns={[
-              { title: '匹配', dataIndex: 'confidence', width: 60,
+              { title: '匹配', dataIndex: 'confidence', width: 55,
                 render: (v: number) => <Tag color={v >= 0.5 ? 'green' : 'orange'}>{(v * 100).toFixed(0)}%</Tag> },
-              { title: '店铺', dataIndex: 'store', width: 90 },
-              { title: '产品', dataIndex: 'product', ellipsis: true },
+              { title: '店铺', dataIndex: 'store', width: 80, ellipsis: true },
               { title: 'SKU', dataIndex: 'sku_name', ellipsis: true },
-              { title: '木材', dataIndex: 'wood', width: 80 },
-              { title: '日常价', dataIndex: 'daily_price', width: 90, align: 'right' as const,
+              { title: '木材', dataIndex: 'wood', width: 70 },
+              { title: '我表价', dataIndex: 'daily_price', width: 80, align: 'right' as const,
                 render: (v: number | null) => (v == null ? '—' : `¥${v.toFixed(0)}`) },
+              { title: '最新价', width: 110, align: 'right' as const,
+                render: (_: unknown, r: CompetitorRow) => (
+                  <span>
+                    {r.latest_price != null ? `¥${r.latest_price.toFixed(0)}` : <span style={{ color: '#bbb' }}>—</span>}
+                    {r.fetch_status && r.fetch_status !== 'ok' && r.fetch_status !== 'manual' && (
+                      <Tag color="red" style={{ marginLeft: 4 }}>{r.fetch_status}</Tag>)}
+                    <Button size="small" type="link" onClick={async () => {
+                      try { const u = await refreshCompetitor(r.id);
+                        setCompetitors((p) => p.map((x) => x.id === u.id ? u : x)); }
+                      catch { message.error('刷新失败'); }
+                    }}>刷新</Button>
+                  </span>) },
+              { title: '券后价(减额)', width: 120, align: 'right' as const,
+                render: (_: unknown, r: CompetitorRow) => (
+                  r.after_coupon == null ? '—' :
+                  <span>¥{r.after_coupon.toFixed(0)} <Tag color="blue">−{r.coupon_cut.toFixed(0)}</Tag></span>) },
+              { title: '链接', width: 50,
+                render: (_: unknown, r: CompetitorRow) => r.link
+                  ? <a href={r.link} target="_blank" rel="noreferrer">看</a> : '—' },
             ] as any}
           />
         </Card>

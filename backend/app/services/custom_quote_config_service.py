@@ -52,6 +52,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "factory_profit_rate": 0.25,    # 工厂利润系数
     "panse_profit_rate": 0.15,      # 畔色利润系数 (售价毛利, 除法)
     "safety_rate": 1.05,            # 保守上浮系数 (宁高不低, 防低估亏本)
+    "competitor_coupon_rate": 0.08,  # 竞品通用平台券率 (券后价对照, 显示减额)
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡
     "packing": [100, 200, 400],     # 打包费 [小,中,大]

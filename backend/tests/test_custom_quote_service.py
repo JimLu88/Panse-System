@@ -176,3 +176,34 @@ def test_competitor_top_ranking():
                     key=lambda x: x[0], reverse=True)
     assert scored[0][1].store == "A"          # 樱桃木窄柜 命中最高
     assert scored[0][0] > scored[-1][0]
+
+
+# ── 竞品最新价 + 通用券 ───────────────────────────────────────────────────────
+
+def test_after_coupon_discloses_cut():
+    from app.services.competitor_price_service import after_coupon
+    from decimal import Decimal as D
+    after, cut = after_coupon(D("5000"), 0.08)
+    assert cut == 400.0           # 5000 × 8%
+    assert after == 4600.0
+    assert after_coupon(None, 0.08) == (None, 0.0)
+
+
+def test_manual_price_sets_status():
+    from app.services import competitor_price_service as cps
+    from app.models.competitor import CompetitorPrice
+    from decimal import Decimal as D
+    db = _cfg_db()
+    c = CompetitorPrice(store="A", sku_name="X", daily_price=D("5000"))
+    db.add(c); db.commit()
+    cps.set_manual_price(db, c.id, D("4800")); db.commit()
+    db.refresh(c)
+    assert c.latest_price == D("4800")
+    assert c.fetch_status == "manual"
+
+
+def test_fetch_blocked_graceful():
+    # 没链接 → no_link, 不抛错
+    from app.services.competitor_price_service import _try_fetch_price
+    price, status = _try_fetch_price("")
+    assert price is None and status == "no_link"

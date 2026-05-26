@@ -2065,6 +2065,7 @@ export interface QuoteConfig {
   factory_profit_rate: number;
   panse_profit_rate: number;
   safety_rate: number;
+  competitor_coupon_rate: number;
   projection_type: string;          // front=正面 / top=俯视
   projection_rate: number;
   packing: number[];                // [小,中,大]
@@ -2112,9 +2113,20 @@ export const extractBoards = (file: File) => {
 
 // ===== 竞品 Top-10 =====
 export interface CompetitorRow {
+  id: number;
   store: string | null; category: string | null; product: string | null;
   link: string | null; wood: string | null; sku_name: string | null;
-  daily_price: number | null; confidence: number;
+  daily_price: number | null;          // 我表价(叠券前)
+  latest_price: number | null;         // 最新价(抓取/手动, 叠券前)
+  fetch_status: string | null;
+  latest_fetched_at: string | null;
+  coupon_cut: number;                  // 通用券减额
+  after_coupon: number | null;         // 券后价
+  confidence: number;
 }
 export const competitorsTop = (q: string, limit = 10) =>
   api.get<CompetitorRow[]>('/api/customization/competitors', { params: { q, limit } }).then(r => r.data);
+export const refreshCompetitor = (id: number) =>
+  api.post<CompetitorRow>(`/api/customization/competitors/${id}/refresh`).then(r => r.data);
+export const setCompetitorPrice = (id: number, latest_price: number) =>
+  api.patch<CompetitorRow>(`/api/customization/competitors/${id}`, { latest_price }).then(r => r.data);

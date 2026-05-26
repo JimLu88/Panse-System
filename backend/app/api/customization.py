@@ -136,6 +136,7 @@ class QuoteConfigPatch(BaseModel):
     factory_profit_rate: Optional[float] = None
     panse_profit_rate: Optional[float] = None
     safety_rate: Optional[float] = None
+    competitor_coupon_rate: Optional[float] = None
     projection_type: Optional[str] = None
     projection_rate: Optional[float] = None
     packing: Optional[list[float]] = None
@@ -245,19 +246,45 @@ async def extract_boards(file: UploadFile = File(...), db: Session = Depends(get
 # -------- 竞品 Top-10 (按匹配度) --------
 
 class CompetitorOut(BaseModel):
+    id: int
     store: Optional[str]
     category: Optional[str]
     product: Optional[str]
     link: Optional[str]
     wood: Optional[str]
     sku_name: Optional[str]
-    daily_price: Optional[float]
+    daily_price: Optional[float]          # 我表价(叠券前)
+    latest_price: Optional[float]         # 抓取/手动最新价(叠券前)
+    fetch_status: Optional[str]
+    latest_fetched_at: Optional[str]
+    coupon_cut: float                     # 通用券减额
+    after_coupon: Optional[float]         # 券后价(基于最新价, 无则用我表价)
     confidence: float
+
+
+def _comp_out(db, r, conf: float) -> "CompetitorOut":
+    from app.services import competitor_price_service as cps
+    from app.services import custom_quote_config_service as cfg_svc
+    rate = float(cfg_svc.get_config(db).get("competitor_coupon_rate", 0.08))
+    base = r.latest_price if r.latest_price is not None else r.daily_price
+    after, cut = cps.after_coupon(base, rate)
+    return CompetitorOut(
+        id=r.id, store=r.store, category=r.category, product=r.product, link=r.link,
+        wood=r.wood, sku_name=r.sku_name,
+        daily_price=float(r.daily_price) if r.daily_price is not None else None,
+        latest_price=float(r.latest_price) if r.latest_price is not None else None,
+        fetch_status=r.fetch_status,
+        latest_fetched_at=r.latest_fetched_at.isoformat() if r.latest_fetched_at else None,
+        coupon_cut=cut, after_coupon=after, confidence=round(conf, 2),
+    )
 
 
 @router.get("/competitors", response_model=list[CompetitorOut])
 def competitors_top(q: str = "", limit: int = 10, db: Session = Depends(get_db)):
-    """按查询词(产品名/SKU)返回竞品 Top-N, 匹配度从高到低 (中文友好相似度)."""
+    """按查询词(产品名/SKU)返回竞品 Top-N, 匹配度从高到低 (中文友好相似度).
+
+    每条含: 我表价 / 最新价(抓取或手动) / 券后价(减通用券, 披露减额)。
+    """
     from sqlalchemy import select
     from app.models.competitor import CompetitorPrice
     from app.services.product_match_service import _similarity
@@ -272,12 +299,32 @@ def competitors_top(q: str = "", limit: int = 10, db: Session = Depends(get_db))
         if conf > 0:
             scored.append((conf, r))
     scored.sort(key=lambda x: x[0], reverse=True)
-    return [
-        CompetitorOut(
-            store=r.store, category=r.category, product=r.product, link=r.link,
-            wood=r.wood, sku_name=r.sku_name,
-            daily_price=float(r.daily_price) if r.daily_price is not None else None,
-            confidence=round(conf, 2),
-        )
-        for conf, r in scored[:limit]
-    ]
+    return [_comp_out(db, r, conf) for conf, r in scored[:limit]]
+
+
+@router.post("/competitors/{comp_id}/refresh", response_model=CompetitorOut)
+def refresh_competitor(comp_id: int, db: Session = Depends(get_db)):
+    """尽力抓取最新价 (淘宝反爬, 抓不到记 blocked, 不报错)."""
+    from app.services import competitor_price_service as cps
+    try:
+        r = cps.refresh_one(db, comp_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    db.commit()
+    return _comp_out(db, r, 1.0)
+
+
+class CompetitorManualIn(BaseModel):
+    latest_price: float
+
+
+@router.patch("/competitors/{comp_id}", response_model=CompetitorOut)
+def set_competitor_price(comp_id: int, payload: CompetitorManualIn, db: Session = Depends(get_db)):
+    """手动更新竞品最新价 (抓不到时人工填)."""
+    from app.services import competitor_price_service as cps
+    try:
+        r = cps.set_manual_price(db, comp_id, Decimal(str(payload.latest_price)))
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    db.commit()
+    return _comp_out(db, r, 1.0)
