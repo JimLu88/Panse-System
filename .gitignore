@@ -33,3 +33,4 @@ pg_data/
 # Alembic generated cache only — keep versions
 backend/alembic/__pycache__/
 *.tsbuildinfo
+.claude/
