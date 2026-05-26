@@ -284,8 +284,11 @@ def update_code(icon=None, item=None):
                    f"git pull 失败 (本地有改动或分叉, 可试「强制同步」): {out[:200]}",
                    level="error")
             return
+        # --renew-anon-volumes: 强制重建匿名卷 (/app/node_modules),
+        # 否则旧卷会盖住镜像里新装的依赖, 导致 vite 报 "Failed to resolve import".
         code, out = _run(
-            ["docker", "compose", "up", "-d", "--build"], timeout=300,
+            ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
+            timeout=300,
         )
         if code == 0:
             notify("畔色 ERP", f"更新完成, 已同步到 {DEPLOY_BRANCH} 最新", level="info")
@@ -316,7 +319,8 @@ def force_sync(icon=None, item=None):
             notify("畔色 ERP", f"reset 失败: {out[:200]}", level="error")
             return
         code, out = _run(
-            ["docker", "compose", "up", "-d", "--build"], timeout=300,
+            ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
+            timeout=300,
         )
         if code == 0:
             notify("畔色 ERP", f"强制同步完成, 已对齐 {DEPLOY_BRANCH}", level="info")
