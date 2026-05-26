@@ -17,12 +17,15 @@ if errorlevel 1 (
 
 echo [*] 装依赖 (首次需 ~30 秒)...
 python -m pip install --quiet --upgrade pip
-python -m pip install --quiet pystray pillow requests winotify pyinstaller
+python -m pip install --quiet pystray pillow requests winotify pyinstaller pywin32
 if errorlevel 1 (
     echo [X] 装依赖失败. 看上面错误
     pause
     exit /b 1
 )
+
+REM 让 pywin32 的 DLL 注册到正确位置 (解决序数找不到问题)
+python -c "import pywin32_bootstrap" >nul 2>&1
 
 echo [*] 打包 (大概 1 分钟)...
 python -m PyInstaller ^
@@ -30,6 +33,12 @@ python -m PyInstaller ^
     --onefile ^
     --name=PanseTray ^
     --collect-all winotify ^
+    --collect-all pystray ^
+    --hidden-import win32api ^
+    --hidden-import win32con ^
+    --hidden-import win32gui ^
+    --hidden-import win32timezone ^
+    --hidden-import pystray._win32 ^
     panse_tray.py
 
 if errorlevel 1 (
