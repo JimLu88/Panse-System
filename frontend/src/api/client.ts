@@ -429,6 +429,11 @@ export const getFeishuTableFields = (app_token: string, table_id: string) =>
     '/api/feishu/table-fields', { params: { app_token, table_id } }
   ).then((r) => r.data);
 
+// 一键导入预设绑定 (23 表)
+export const setupFeishuPreset = (wiki_token: string, enabled = false, overwrite = false) =>
+  api.post<{app_token:string; created:number; skipped:number; updated:number; items:Array<{system_table:string;label:string;feishu_table_id:string;action:string}>}>(
+    '/api/feishu/setup-preset', { wiki_token, enabled, overwrite }).then(r => r.data);
+
 // ----- Match -----
 export interface MatchCandidate {
   scope: string;

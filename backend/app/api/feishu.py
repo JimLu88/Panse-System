@@ -1,3 +1,4 @@
+import json
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,7 +11,13 @@ from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.exception import DataException
 from app.models.feishu_sync import FeishuTableBinding
-from app.services import feishu_client, feishu_sync_service, feishu_webhook_service, settings_service
+from app.services import (
+    feishu_client,
+    feishu_preset,
+    feishu_sync_service,
+    feishu_webhook_service,
+    settings_service,
+)
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
 
@@ -60,10 +67,16 @@ def list_bindings(db: Session = Depends(get_db)):
 def create_binding(payload: BindingIn, db: Session = Depends(get_db),
                    _: User = Depends(require_role("admin"))):
     existing = db.execute(
-        select(FeishuTableBinding).where(FeishuTableBinding.system_table == payload.system_table)
+        select(FeishuTableBinding).where(
+            FeishuTableBinding.system_table == payload.system_table,
+            FeishuTableBinding.feishu_table_id == payload.feishu_table_id,
+        )
     ).scalar_one_or_none()
     if existing:
-        raise HTTPException(409, f"binding for system_table {payload.system_table} already exists")
+        raise HTTPException(
+            409,
+            f"binding for ({payload.system_table}, {payload.feishu_table_id}) already exists",
+        )
     b = FeishuTableBinding(**payload.model_dump())
     db.add(b)
     db.commit()
@@ -91,6 +104,78 @@ def delete_binding(binding_id: int, db: Session = Depends(get_db),
     if b is not None:
         db.delete(b)
         db.commit()
+
+
+class SetupPresetIn(BaseModel):
+    wiki_token: str
+    enabled: bool = False
+    overwrite: bool = False
+
+
+@router.post("/setup-preset")
+def setup_preset(payload: SetupPresetIn, db: Session = Depends(get_db),
+                 _: User = Depends(require_role("admin"))):
+    """一键按预设创建全部表绑定 (默认不启用, 先核对字段再启用)。
+
+    - wiki_token 解析为 Bitable App Token (若已是 bascn 开头的 app token 则直接用)。
+    - 同 (system_table, feishu_table_id) 已存在: overwrite=False 跳过, True 则更新。
+    """
+    wiki_token = payload.wiki_token.strip()
+    if wiki_token.startswith("bascn"):
+        app_token = wiki_token
+    else:
+        try:
+            app_token = feishu_client.resolve_wiki_app_token(db, wiki_token)
+        except feishu_client.FeishuError as e:
+            raise HTTPException(502, f"飞书操作失败: {e}")
+
+    existing = db.execute(select(FeishuTableBinding)).scalars().all()
+    by_pair = {(b.system_table, b.feishu_table_id): b for b in existing}
+
+    created = skipped = updated = 0
+    items: list[dict] = []
+    for p in feishu_preset.get_presets():
+        key = (p["system_table"], p["feishu_table_id"])
+        fm_json = json.dumps(p["field_mapping"], ensure_ascii=False)
+        b = by_pair.get(key)
+        if b is not None:
+            if not payload.overwrite:
+                skipped += 1
+                action = "skipped"
+            else:
+                b.feishu_app_token = app_token
+                b.field_mapping = fm_json
+                b.direction = p["direction"]
+                updated += 1
+                action = "updated"
+        else:
+            b = FeishuTableBinding(
+                system_table=p["system_table"],
+                feishu_app_token=app_token,
+                feishu_table_id=p["feishu_table_id"],
+                direction=p["direction"],
+                field_mapping=fm_json,
+                enabled=payload.enabled,
+            )
+            db.add(b)
+            by_pair[key] = b
+            created += 1
+            action = "created"
+        items.append({
+            "system_table": p["system_table"],
+            "label": p["label"],
+            "feishu_table_id": p["feishu_table_id"],
+            "action": action,
+        })
+
+    db.commit()
+    return {
+        "app_token": app_token,
+        "created": created,
+        "skipped": skipped,
+        "updated": updated,
+        "items": items,
+    }
 
 
 @router.get("/status", response_model=list[StatusOut])

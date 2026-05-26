@@ -2,6 +2,7 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Divider,
   Form,
   Input,
@@ -36,6 +37,7 @@ import {
   resolveFeishuConflict,
   resolveFeishuConflictFields,
   resolveFeishuWiki,
+  setupFeishuPreset,
   testFeishuConnection,
   triggerFeishuSync,
   updateFeishuBinding,
@@ -137,6 +139,21 @@ export default function FeishuSettingsPage() {
       invalidateAll();
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '裁决失败'),
+  });
+
+  // 一键导入预设绑定
+  const [presetOpen, setPresetOpen] = useState(false);
+  const [presetWiki, setPresetWiki] = useState('NpWzwIcLBilnIlk0B2sc5ETInZc');
+  const [presetEnabled, setPresetEnabled] = useState(false);
+  const presetMut = useMutation({
+    mutationFn: (v: { wiki_token: string; enabled: boolean }) =>
+      setupFeishuPreset(v.wiki_token, v.enabled),
+    onSuccess: (r) => {
+      message.success(`预设导入完成: 新建 ${r.created} / 跳过 ${r.skipped} / 更新 ${r.updated}`);
+      setPresetOpen(false);
+      invalidateAll();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '导入失败'),
   });
 
   // Wiki Token 解析
@@ -358,6 +375,7 @@ export default function FeishuSettingsPage() {
       <Card size="small" title="表绑定"
             extra={
               <Space>
+                <Button onClick={() => setPresetOpen(true)}>一键导入预设(23表)</Button>
                 <Button onClick={() => syncMut.mutate()} loading={syncMut.isPending}>立即同步</Button>
                 <Button type="primary" onClick={() => { setEditing(null); form.resetFields(); setOpen(true); }}>
                   新增绑定
@@ -539,6 +557,36 @@ export default function FeishuSettingsPage() {
             />
           </>
         )}
+      </Modal>
+
+      {/* 一键导入预设绑定 */}
+      <Modal
+        title="一键导入预设绑定 (23 表)"
+        open={presetOpen}
+        onCancel={() => setPresetOpen(false)}
+        onOk={() => presetMut.mutate({ wiki_token: presetWiki.trim(), enabled: presetEnabled })}
+        confirmLoading={presetMut.isPending}
+        okText="开始导入"
+        destroyOnClose
+        width={480}
+      >
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message="按预设自动创建全部表绑定 (含 field_mapping)。已存在的 (系统表, 飞书表) 组合会被跳过。"
+          description="导入后请逐表用「查询飞书字段」核对列名、修正字段映射, 再启用。" />
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <Typography.Text strong>Wiki Token</Typography.Text>
+            <Input
+              style={{ marginTop: 4 }}
+              placeholder="NpWzwIcLBilnIlk0B2sc5ETInZc"
+              value={presetWiki}
+              onChange={(e) => setPresetWiki(e.target.value)}
+            />
+          </div>
+          <Checkbox checked={presetEnabled} onChange={(e) => setPresetEnabled(e.target.checked)}>
+            立即启用(默认不启用,先核对字段)
+          </Checkbox>
+        </Space>
       </Modal>
     </Space>
   );

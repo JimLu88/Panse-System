@@ -42,9 +42,13 @@ class FeishuTableBinding(Base, TimestampMixin):
     __tablename__ = "feishu_table_bindings"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    system_table: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    system_table: Mapped[str] = mapped_column(String(64), nullable=False)
     feishu_app_token: Mapped[str] = mapped_column(String(64), nullable=False)
     feishu_table_id: Mapped[str] = mapped_column(String(64), nullable=False)
     direction: Mapped[str] = mapped_column(String(16), default="bidirectional")  # in / out / bidirectional
     field_mapping: Mapped[Optional[str]] = mapped_column(String(2048))  # JSON string
     enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("system_table", "feishu_table_id", name="uq_feishu_binding_table_pair"),
+    )
