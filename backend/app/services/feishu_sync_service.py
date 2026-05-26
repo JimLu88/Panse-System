@@ -46,19 +46,43 @@ class SyncEntity:
 def _entities() -> dict[str, SyncEntity]:
     from app.models.customer import Customer
     from app.models.material import Material
-    from app.models.order import Order
+    from app.models.order import Order, FactoryOrder
     from app.models.pricing import PricingSku
     from app.models.product import Product
+    from app.models.marketing import Sample, BrandMarketing, AfterSales, PromotionFlow, OutsourcingExpense, WoodLoss, DailyOperation
+    from app.models.finance import AlipayFlow, FactoryReconciliation, AccountBalance
+    from app.models.bom import BomLine
+    from app.models.inventory import ProductInventory, PartInventory
     return {
         "products": SyncEntity(Product, "code"),
         "materials": SyncEntity(Material, "code"),
         "orders": SyncEntity(Order, "order_no"),
         "pricing_sku": SyncEntity(PricingSku, "sku_code"),
         "customers": SyncEntity(Customer, "matching_key"),
+        "factory_orders": SyncEntity(FactoryOrder, "factory_order_no"),
+        "alipay_flows": SyncEntity(AlipayFlow, "transaction_no"),
+        "samples": SyncEntity(Sample, "sample_no"),
+        "after_sales": SyncEntity(AfterSales, "platform_order_no"),
+        "bom_lines": SyncEntity(BomLine, "sync_key"),
+        "brand_marketing": SyncEntity(BrandMarketing, "sync_key"),
+        "promotion_flows": SyncEntity(PromotionFlow, "sync_key"),
+        "outsourcing_expenses": SyncEntity(OutsourcingExpense, "sync_key"),
+        "wood_losses": SyncEntity(WoodLoss, "sync_key"),
+        "factory_reconciliations": SyncEntity(FactoryReconciliation, "sync_key"),
+        "account_balances": SyncEntity(AccountBalance, "sync_key"),
+        "product_inventory": SyncEntity(ProductInventory, "sync_key"),
+        "part_inventory": SyncEntity(PartInventory, "sync_key"),
+        "daily_operations": SyncEntity(DailyOperation, "sync_key"),
     }
 
 
-SUPPORTED_TABLES = ["products", "materials", "orders", "pricing_sku", "customers"]
+SUPPORTED_TABLES = [
+    "products", "materials", "orders", "pricing_sku", "customers",
+    "factory_orders", "alipay_flows", "samples", "after_sales",
+    "bom_lines", "brand_marketing", "promotion_flows", "outsourcing_expenses",
+    "wood_losses", "factory_reconciliations", "account_balances",
+    "product_inventory", "part_inventory", "daily_operations",
+]
 
 
 # ----------------------------- 状态 (Phase 1 保留) ----------------- #

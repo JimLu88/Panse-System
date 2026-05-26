@@ -129,6 +129,31 @@ def delete_record(db: Session, app_token: str, table_id: str, record_id: str) ->
     _req(db, "DELETE", url)
 
 
+def resolve_wiki_app_token(db: Session, wiki_token: str) -> str:
+    """解析 Wiki 节点 token → Bitable App Token (obj_token).
+
+    调用: GET /wiki/v2/spaces/get_node?token={wiki_token}
+    返回 data.node.obj_token。
+    """
+    url = f"{_BASE}/wiki/v2/spaces/get_node"
+    data = _req(db, "GET", url, params={"token": wiki_token})
+    obj_token = (data.get("node") or {}).get("obj_token")
+    if not obj_token:
+        raise FeishuError(f"无法解析 wiki_token={wiki_token} 对应的 obj_token")
+    return obj_token
+
+
+def list_table_fields(db: Session, app_token: str, table_id: str) -> list[dict]:
+    """获取 Bitable 表的字段列表.
+
+    调用: GET /bitable/v1/apps/{app_token}/tables/{table_id}/fields
+    返回 [{field_name, type, ...}, ...]。
+    """
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    data = _req(db, "GET", url)
+    return data.get("items") or []
+
+
 def test_connection(db: Session) -> dict:
     """后台"测试连接"按钮用: 拿一次 token 即视为通。"""
     try:

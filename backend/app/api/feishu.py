@@ -159,6 +159,28 @@ def put_credentials(payload: CredentialsIn, db: Session = Depends(get_db),
     return _creds_out(db)
 
 
+@router.get("/resolve-wiki")
+def resolve_wiki(wiki_token: str, db: Session = Depends(get_db),
+                 _: User = Depends(require_role("admin"))):
+    """将 Wiki 节点 token 解析为 Bitable App Token."""
+    try:
+        app_token = feishu_client.resolve_wiki_app_token(db, wiki_token)
+    except feishu_client.FeishuError as e:
+        raise HTTPException(502, f"飞书操作失败: {e}")
+    return {"app_token": app_token}
+
+
+@router.get("/table-fields")
+def table_fields(app_token: str, table_id: str, db: Session = Depends(get_db),
+                 _: User = Depends(require_role("admin"))):
+    """获取 Bitable 表的字段列表."""
+    try:
+        fields = feishu_client.list_table_fields(db, app_token, table_id)
+    except feishu_client.FeishuError as e:
+        raise HTTPException(502, f"飞书操作失败: {e}")
+    return {"fields": [{"field_name": f.get("field_name"), "type": f.get("type")} for f in fields]}
+
+
 @router.post("/test")
 def test_connection(db: Session = Depends(get_db), _: User = Depends(require_role("admin"))):
     return feishu_client.test_connection(db)

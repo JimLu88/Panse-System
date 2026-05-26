@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, Integer, Numeric, String, Text
+from sqlalchemy import Date, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -35,6 +35,7 @@ class BrandMarketing(Base, TimestampMixin):
     __tablename__ = "brand_marketing"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     project_name: Mapped[str] = mapped_column(String(255), nullable=False)
     project_type: Mapped[Optional[str]] = mapped_column(String(64))
     partner: Mapped[Optional[str]] = mapped_column(String(255))
@@ -54,6 +55,7 @@ class PromotionFlow(Base, TimestampMixin):
     __tablename__ = "promotion_flows"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     transaction_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     flow_type: Mapped[Optional[str]] = mapped_column(String(32))  # 充值 / 支出 / 退款
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
@@ -67,6 +69,7 @@ class OutsourcingExpense(Base, TimestampMixin):
     __tablename__ = "outsourcing_expenses"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
     payee: Mapped[str] = mapped_column(String(128), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
@@ -110,6 +113,7 @@ class WoodLoss(Base, TimestampMixin):
     __tablename__ = "wood_losses"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     purchase_date: Mapped[Optional[date]] = mapped_column(Date)
     wood_type: Mapped[Optional[str]] = mapped_column(String(64))
     spec: Mapped[Optional[str]] = mapped_column(String(128))
@@ -121,4 +125,19 @@ class WoodLoss(Base, TimestampMixin):
     related_product_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
     reason: Mapped[Optional[str]] = mapped_column(String(255))
     disposition: Mapped[Optional[str]] = mapped_column(String(255))
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class DailyOperation(Base, TimestampMixin):
+    """日常经营记录 — 用于飞书同步的经营流水。"""
+    __tablename__ = "daily_operations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    record_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    category: Mapped[Optional[str]] = mapped_column(String(64))   # 经营类别
+    item: Mapped[Optional[str]] = mapped_column(String(255))      # 项目
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 4))
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
     remark: Mapped[Optional[str]] = mapped_column(Text)

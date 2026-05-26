@@ -53,6 +53,7 @@ class AccountBalance(Base, TimestampMixin):
     __tablename__ = "account_balances"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     account_name: Mapped[str] = mapped_column(String(64), nullable=False)
     account_no: Mapped[Optional[str]] = mapped_column(String(128))
     period_year: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -96,6 +97,7 @@ class FactoryReconciliation(Base, TimestampMixin):
     __tablename__ = "factory_reconciliations"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     period_start: Mapped[Optional[date]] = mapped_column(Date)
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     factory_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

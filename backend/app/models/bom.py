@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Numeric, String
+from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -13,6 +13,7 @@ class BomLine(Base, TimestampMixin):
     __tablename__ = "bom_lines"
 
     id: Mapped[int] = mapped_column(primary_key=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
     product_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     sku_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)
