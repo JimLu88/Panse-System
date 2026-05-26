@@ -207,3 +207,22 @@ def test_fetch_blocked_graceful():
     from app.services.competitor_price_service import _try_fetch_price
     price, status = _try_fetch_price("")
     assert price is None and status == "no_link"
+
+
+# ── 物料表 bootstrap 种子 ─────────────────────────────────────────────────────
+
+def test_seed_quote_materials_idempotent():
+    from app.services import custom_quote_config_service as c
+    from app.models.material import Material
+    db = _cfg_db()
+    r1 = c.seed_quote_materials(db); db.commit()
+    assert r1["created"] > 0 and r1["updated"] == 0
+    # 种子后 报价从物料表读
+    g = c.get_config(db)
+    assert c.lookup_labor(g, "餐边柜", 2.1, db=db) == 1480
+    assert c.lookup_price(g, "黑胡桃木-2.2cm", db=db) == 500
+    # 再跑一次 = 全部 update, 不重复建
+    n_before = db.query(Material).count()
+    r2 = c.seed_quote_materials(db); db.commit()
+    assert r2["created"] == 0 and r2["updated"] > 0
+    assert db.query(Material).count() == n_before

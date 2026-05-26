@@ -64,6 +64,45 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 
+def seed_quote_materials(db: Session) -> dict:
+    """把配置里的木价/人工/打包运费安装 写进物料表 (幂等 upsert by name)。
+
+    生产 bootstrap 用: 跑一次后报价就从物料表读真实数据; 之后用户在物料表/飞书改即生效。
+    返回 {created, updated}。
+    """
+    from app.models.material import Material
+
+    existing = {m.name: m for m in db.query(Material).all()}
+    created = updated = seq = 0
+
+    def _up(name: str, price, unit: str, prefix: str):
+        nonlocal created, updated, seq
+        if not name or price is None:
+            return
+        if name in existing:
+            existing[name].price = price
+            updated += 1
+        else:
+            seq += 1
+            m = Material(code=f"{prefix}-{seq:04d}", name=name, price=price, unit=unit)
+            db.add(m)
+            existing[name] = m
+            created += 1
+
+    cfg = dict(DEFAULT_CONFIG)
+    for mat, price in cfg["prices"].items():
+        _up(mat, price, "平方米", "QM")
+    for t, vals in cfg["labor"].items():
+        for sz, p in zip(["小", "中", "大"], vals):
+            _up(f"{t}-人工费-{sz}型", p, "个", "QL")
+    for sz, i in [("小", 0), ("中", 1), ("大", 2)]:
+        _up(f"打包费用-{sz}型家具", cfg["packing"][i], "个", "QF")
+        _up(f"运费-{sz}型家具", cfg["freight"][i], "个", "QF")
+        _up(f"上门安装费-{sz}型家具", cfg["install"][i], "个", "QF")
+    db.flush()
+    return {"created": created, "updated": updated}
+
+
 def get_config(db: Session) -> dict:
     """读配置; 缺失的键用默认值补全 (向后兼容新增参数)。"""
     raw = settings_service.get(db, _KEY, env_fallback=False)
