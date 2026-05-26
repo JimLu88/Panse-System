@@ -7,6 +7,7 @@ POST /api/screenshots/purchase/commit        确认入库 PartPurchase
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -56,7 +57,7 @@ async def parse_qianniu(
     content = await file.read()
     img, mime = _read_image(file, content)
     try:
-        data = vision_ocr_service.parse_qianniu_order(db, img, mime=mime)
+        data = await asyncio.to_thread(vision_ocr_service.parse_qianniu_order, db, img, mime=mime)
     except AiUnavailable as e:
         raise HTTPException(503, str(e))
     return {
@@ -150,7 +151,7 @@ async def parse_purchase(
     content = await file.read()
     img, mime = _read_image(file, content)
     try:
-        data = vision_ocr_service.parse_purchase_invoice(db, img, mime=mime)
+        data = await asyncio.to_thread(vision_ocr_service.parse_purchase_invoice, db, img, mime=mime)
     except AiUnavailable as e:
         raise HTTPException(503, str(e))
     return {

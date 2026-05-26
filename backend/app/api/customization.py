@@ -1,4 +1,5 @@
 """尺寸微定制 API (业务需求 §2)."""
+import asyncio
 from decimal import Decimal
 from typing import Optional
 
@@ -93,7 +94,7 @@ async def ai_quote(
 ):
     data = await image.read()
     mime = image.content_type or "image/jpeg"
-    result = customization_ai_service.ai_quote(db, data, mime)
+    result = await asyncio.to_thread(customization_ai_service.ai_quote, db, data, mime)
     return AiQuoteOut(
         base_product=result.base_product,
         base_sku=result.base_sku,
@@ -241,7 +242,7 @@ def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
 async def extract_boards(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """上传设计图 → AI 拆板单 (AI 不可用时返回空, 前端转手动)."""
     raw = await file.read()
-    return customization_ai_service.extract_boards(db, raw, file.content_type or "image/jpeg")
+    return await asyncio.to_thread(customization_ai_service.extract_boards, db, raw, file.content_type or "image/jpeg")
 
 
 # -------- 竞品 Top-10 (按匹配度) --------

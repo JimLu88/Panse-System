@@ -7,6 +7,7 @@ POST /api/importer/commit    提交 mapping + sheet → 入库 + 报告
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Optional
 
@@ -321,7 +322,7 @@ async def smart_analyze(
     if len(content) > 200 * 1024 * 1024:
         raise HTTPException(413, "文件超过 200MB")
     try:
-        result = smart_import_service.smart_analyze(db, content)
+        result = await asyncio.to_thread(smart_import_service.smart_analyze, db, content)
     except excel_importer.ImporterError as e:
         raise HTTPException(400, str(e))
     return {
