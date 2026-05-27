@@ -236,3 +236,92 @@ def ocr_delivery_note(
 
     payload = _extract_json(resp.text)
     return parse_ocr_response(payload, model=resp.model, raw=resp.text)
+
+
+# ----------------------------- 配件采购发票 OCR -------------------- #
+
+OCR_PURCHASE_PROMPT = """你是配件采购发票/单据 OCR 助手, 把图片里的采购单据解析成结构化 JSON。
+
+必须严格按下面 JSON 结构返回, 不要任何解释文字, 不要 Markdown 代码块:
+{
+  "supplier": "字符串, 供应商/卖家名称, 识别不到填 null",
+  "purchase_date": "YYYY-MM-DD 或 null, 购买/开票日期",
+  "lines": [
+    {
+      "item_name": "字符串, 配件/物料名称",
+      "spec": "字符串, 规格型号, 没有填空串",
+      "unit": "字符串, 单位 (个/件/套/米等)",
+      "qty": 数字,
+      "unit_price": 数字 (元, 没有填 null),
+      "amount": 数字 (元, 没有填 null)
+    }
+  ],
+  "tracking_no": "字符串, 快递/物流单号, 没有填 null",
+  "freight": 数字 (运费, 没有填 null),
+  "total_amount": 数字 (单据合计金额, 没有填 null),
+  "warnings": ["看不清/拿不准的提示"]
+}
+字段规范: 数字不带千分位逗号/¥/元; 中文数字转阿拉伯数字; 看不清填 null 并在 warnings 说明。"""
+
+
+@dataclass
+class ParsedPurchase:
+    supplier: Optional[str]
+    purchase_date: Optional[date]
+    tracking_no: Optional[str]
+    freight: Optional[Decimal]
+    total_amount: Optional[Decimal]
+    lines: list[ParsedDeliveryLine]
+    warnings: list[str]
+    model: str
+    raw_response: str
+    confidence: Decimal
+
+
+def parse_purchase_response(payload: dict, *, model: str, raw: str) -> ParsedPurchase:
+    """解析配件采购发票 OCR 返回 (复用送货单的行解析逻辑)."""
+    note = parse_ocr_response(payload, model=model, raw=raw)
+    warnings = list(note.warnings)
+    supplier = payload.get("supplier")
+    if isinstance(supplier, (int, float)):
+        supplier = str(supplier)
+    tracking_no = payload.get("tracking_no")
+    if isinstance(tracking_no, (int, float)):
+        tracking_no = str(tracking_no)
+    freight = _to_decimal(payload.get("freight"), warnings=warnings, label="运费")
+    purchase_date = _to_date(payload.get("purchase_date"))
+    if payload.get("purchase_date") and not purchase_date:
+        warnings.append(f"购买日期无法解析: {payload['purchase_date']!r}")
+    return ParsedPurchase(
+        supplier=supplier.strip() if isinstance(supplier, str) else None,
+        purchase_date=purchase_date,
+        tracking_no=tracking_no.strip() if isinstance(tracking_no, str) else None,
+        freight=freight,
+        total_amount=note.total_amount,
+        lines=note.lines,
+        warnings=warnings,
+        model=model,
+        raw_response=raw,
+        confidence=max(Decimal("30"), Decimal("100") - Decimal("5") * Decimal(len(warnings))),
+    )
+
+
+def ocr_purchase_invoice(
+    db: Session, *, image_bytes: bytes, mime: str = "image/jpeg",
+) -> ParsedPurchase:
+    """主入口: 给一张配件采购发票图, 返回结构化采购单。"""
+    cfg = settings_service.get_ai_config(db, "ocr")
+    try:
+        provider = build_provider(cfg)
+    except AiUnavailable as e:
+        raise OcrUnavailable(f"OCR 未配置: {e}") from e
+    try:
+        resp = provider.chat_with_image(
+            system=OCR_PURCHASE_PROMPT,
+            user="这是一张配件采购发票/单据, 请按系统提示的 JSON 格式返回。",
+            image_bytes=image_bytes, mime=mime, max_tokens=3000,
+        )
+    except AiUnavailable as e:
+        raise OcrUnavailable(str(e)) from e
+    payload = _extract_json(resp.text)
+    return parse_purchase_response(payload, model=resp.model, raw=resp.text)

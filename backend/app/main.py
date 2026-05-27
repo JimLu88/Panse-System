@@ -52,6 +52,7 @@ from app.api import scanners as scanners_api
 from app.api import scheduler as scheduler_api
 from app.api import screenshots as screenshots_api
 from app.api import suppliers as suppliers_api
+from app.api import purchases as purchases_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
 
@@ -178,6 +179,7 @@ app.include_router(reports_api.router)
 app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
+app.include_router(purchases_api.router)
 app.include_router(importer_api.router)
 app.include_router(logs_api.router)
 app.include_router(alerts_api.router)
