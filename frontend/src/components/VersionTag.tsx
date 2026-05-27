@@ -35,7 +35,8 @@ export default function VersionTag() {
       <Descriptions.Item label="提交时间">{data.commit_date || '—'}</Descriptions.Item>
       <Descriptions.Item label="部署时间">{deployed}</Descriptions.Item>
       <Descriptions.Item label="来源">
-        {data.source === 'build_file' ? '部署文件 (容器)'
+        {data.source === 'build_env' ? '镜像构建时注入 ✓'
+          : data.source === 'build_file' ? '部署文件 (容器)'
           : data.source === 'runtime_git' ? '运行时 git (开发)'
           : '未知'}
       </Descriptions.Item>
