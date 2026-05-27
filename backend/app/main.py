@@ -12,6 +12,9 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+# 同时把最近日志留在内存, 供 /api/logs/recent 在界面上查看
+from app.log_buffer import install_ring_buffer  # noqa: E402
+install_ring_buffer()
 _req_logger = logging.getLogger("panse.request")
 
 from app.api import accounting as accounting_api
@@ -44,6 +47,7 @@ from app.api import products as products_api
 from app.api import quotes as quotes_api
 from app.api import reports as reports_api
 from app.api import importer as importer_api
+from app.api import logs as logs_api
 from app.api import scanners as scanners_api
 from app.api import scheduler as scheduler_api
 from app.api import screenshots as screenshots_api
@@ -175,6 +179,7 @@ app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
 app.include_router(importer_api.router)
+app.include_router(logs_api.router)
 app.include_router(alerts_api.router)
 app.include_router(scheduler_api.router)
 app.include_router(screenshots_api.router)

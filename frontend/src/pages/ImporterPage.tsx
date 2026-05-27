@@ -16,6 +16,7 @@ import {
   Col,
   Collapse,
   Empty,
+  Modal,
   Popconfirm,
   Progress,
   Row,
@@ -47,11 +48,13 @@ import {
   ImportJob,
   ImportReport,
   ImporterPreviewResp,
+  LogLine,
   PostImportResult,
   SheetAnalysis,
   SheetPreview,
   SmartCommitReport,
   cancelImportJob,
+  getRecentLogs,
   commitImporter,
   commitImporterAsync,
   fetchEntityTypes,
@@ -784,6 +787,63 @@ function describeRequestError(e: any): { headline: string; hint: string; raw: st
   };
 }
 
+/** 运行日志查看器 — 弹窗显示最近的后端日志, 排查「上传后发生了什么」. */
+function LogViewer() {
+  const [open, setOpen] = useState(false);
+  const [onlyImport, setOnlyImport] = useState(true);
+  const { data: logs = [], refetch, isFetching } = useQuery({
+    queryKey: ['recent-logs', onlyImport],
+    queryFn: () => getRecentLogs({
+      limit: 500,
+      logger_prefix: onlyImport ? 'panse.smart_import' : undefined,
+    }),
+    enabled: open,
+    refetchInterval: open ? 3000 : false,
+  });
+
+  const colorOf = (lvl: string) =>
+    lvl === 'ERROR' || lvl === 'CRITICAL' ? '#ff6b6b'
+      : lvl === 'WARNING' ? '#ffd166' : '#a8d8ff';
+
+  return (
+    <>
+      <Button size="small" onClick={() => setOpen(true)}>📋 查看运行日志</Button>
+      <Modal
+        title="运行日志 (后端实时, 每 3 秒刷新)"
+        open={open}
+        onCancel={() => setOpen(false)}
+        width={900}
+        footer={[
+          <Checkbox key="filter" checked={onlyImport}
+                    onChange={(e) => setOnlyImport(e.target.checked)}>
+            只看导入相关
+          </Checkbox>,
+          <Button key="refresh" onClick={() => refetch()} loading={isFetching}>
+            手动刷新
+          </Button>,
+          <Button key="close" type="primary" onClick={() => setOpen(false)}>关闭</Button>,
+        ]}
+      >
+        <div style={{
+          maxHeight: 460, overflow: 'auto', background: '#1e1e1e',
+          padding: 10, borderRadius: 4, fontFamily: 'monospace', fontSize: 12,
+        }}>
+          {logs.length === 0 ? (
+            <span style={{ color: '#888' }}>暂无日志 (上传一次文件后再看)</span>
+          ) : (
+            logs.map((l: LogLine, i: number) => (
+              <div key={i} style={{ color: colorOf(l.level), whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
+                <span style={{ color: '#666' }}>{l.ts}</span>{' '}
+                <b>{l.level}</b>{' '}{l.msg}
+              </div>
+            ))
+          )}
+        </div>
+      </Modal>
+    </>
+  );
+}
+
 function SmartImporter() {
   const [resp, setResp] = useState<{ file_b64: string; sheets: SheetAnalysis[] } | null>(null);
   const [editedPlan, setEditedPlan] = useState<Record<string, SmartPlanState>>({});
@@ -860,7 +920,11 @@ function SmartImporter() {
           </ul>
         }
       />
-      <Card size="small">
+      <Card
+        size="small"
+        title="上传 Excel"
+        extra={<LogViewer />}
+      >
         <Dragger
           accept=".xlsx,.xls"
           showUploadList={false}

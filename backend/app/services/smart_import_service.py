@@ -330,10 +330,14 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
     try:
         wb = load_workbook(BytesIO(file_bytes), read_only=True, data_only=True)
     except Exception as e:
+        _logger.warning("打开 Excel 失败: %s", e)
         raise excel_importer.ImporterError(f"无法解析 Excel: {e}") from e
+    _logger.info("Excel 打开成功, 共 %d 个 sheet: %s",
+                 len(wb.worksheets), [w.title for w in wb.worksheets])
 
     # provider 只在主线程读一次配置, 之后并发分析各 sheet 只用 provider 不碰 db
     provider = _build_diagnose_provider(db)
+    _logger.info("AI provider: %s", "已就绪" if provider else "未配置(将用启发式匹配)")
 
     # ---- 1) 顺序预处理: 读每个 sheet + 嗅探表头 (快, 无 AI) ----
     # prepped 每项: 要么 {"done": SheetAnalysis} (空/无表头, 不需 AI),
@@ -385,10 +389,24 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
     def _run_ai(p: dict) -> dict:
         if provider is None:
             return dict(_AI_UNAVAILABLE)
-        return _ai_analyze(provider, p["columns"], p["sample_rows"], p["name"])
+        import time as _t
+        t = _t.monotonic()
+        try:
+            r = _ai_analyze(provider, p["columns"], p["sample_rows"], p["name"])
+            _logger.info("  [%s] AI判定=%s 置信=%.2f 耗时=%.0fms",
+                         p["name"], r.get("entity_type"),
+                         float(r.get("confidence", 0) or 0),
+                         (_t.monotonic() - t) * 1000)
+            return r
+        except Exception as e:
+            _logger.warning("  [%s] AI分析异常: %s: %s", p["name"], type(e).__name__, e)
+            return {"entity_type": "unknown", "confidence": 0, "mapping": {},
+                    "quality": "needs_review", "quality_score": 50,
+                    "issues": [], "notes": [f"AI 分析异常: {e}"]}
 
     if ai_targets:
-        _logger.info("smart_analyze: 并发分析 %d 个 sheet", len(ai_targets))
+        _logger.info("并发分析 %d 个 sheet (启发式跳过 %d 个)...",
+                     len(ai_targets), len(prepped) - len(ai_targets))
         with concurrent.futures.ThreadPoolExecutor(
                 max_workers=min(8, len(ai_targets))) as ex:
             for p, r in zip(ai_targets, ex.map(_run_ai, ai_targets)):
@@ -472,6 +490,9 @@ def smart_commit(
     on_conflict 默认 'ask' (重导命中已有记录且值不同时, 记到 conflicts 让用户裁决).
     返回每个 sheet 的报告 (含 conflicts).
     """
+    dry = any(item.get("dry_run") for item in plan)
+    _logger.info("[smart-commit] 开始%s导入 %d 个 sheet",
+                 "试运行" if dry else "", len(plan))
     reports = []
     for item in plan:
         sheet_name = item["sheet_name"]
@@ -484,6 +505,7 @@ def smart_commit(
             sheet_account = _derive_alipay_account(sheet_name)
         # alipay_flow 若没映射 account 列但给了 sheet_account, 也允许导
         if entity == "unknown" or (not mapping and not sheet_account):
+            _logger.info("  [%s] 跳过 (未确认 entity/mapping)", sheet_name)
             reports.append({"sheet_name": sheet_name, "skipped": True,
                             "reason": "未确认 entity / mapping"})
             continue
@@ -506,6 +528,12 @@ def smart_commit(
             # 每个 sheet 成功后立即提交, 避免单个 sheet 异常回滚全部数据
             if not item.get("dry_run", False):
                 db.commit()
+            _logger.info(
+                "  [%s] %s=%s 入库父=%d 子=%d 跳过=%d 错误=%d 冲突=%d",
+                sheet_name, entity,
+                "试运行" if item.get("dry_run") else "已提交",
+                report.inserted_parents, report.inserted_children,
+                report.skipped_rows, len(report.errors), len(report.conflicts))
             reports.append({
                 "sheet_name": sheet_name, "entity_type": entity,
                 "total_rows": report.total_rows,
@@ -522,8 +550,10 @@ def smart_commit(
                 db.rollback()
             except Exception:
                 pass
+            _logger.exception("  [%s] 导入失败: %s: %s", sheet_name, type(e).__name__, e)
             reports.append({"sheet_name": sheet_name,
                             "error": f"{type(e).__name__}: {e}"})
+    _logger.info("[smart-commit] 完成: %d 个 sheet 处理完毕", len(reports))
     return reports
 
 

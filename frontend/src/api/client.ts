@@ -2058,6 +2058,18 @@ export const getExceptionCounts = () =>
 export const getOpenExceptionCount = () =>
   api.get<{ count: number }>('/api/exceptions/open-count').then(r => r.data);
 
+// -- 运行日志 (内存环形缓冲, 用于界面排查)
+export interface LogLine {
+  ts: string;
+  level: string;
+  logger: string;
+  msg: string;
+}
+export const getRecentLogs = (params?: {
+  limit?: number; level?: string; contains?: string; logger_prefix?: string;
+}) =>
+  api.get<{ logs: LogLine[] }>('/api/logs/recent', { params }).then(r => r.data.logs);
+
 // -- AI 对账走查
 export interface ReconcileWalkthroughResult {
   issues: Array<{

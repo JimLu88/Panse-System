@@ -315,16 +315,32 @@ async def smart_analyze(
 
     返回 {file_b64, sheets: [SheetAnalysis...]}.
     """
+    import logging
+    import time as _time
+    _log = logging.getLogger("panse.smart_import")
     from app.services import smart_import_service
     content = await file.read()
+    _log.info("[smart-analyze] 收到文件 %s, 大小 %.1f KB",
+              getattr(file, "filename", "?"), len(content) / 1024)
     if not content:
+        _log.warning("[smart-analyze] 空文件, 拒绝")
         raise HTTPException(400, "空文件")
     if len(content) > 200 * 1024 * 1024:
+        _log.warning("[smart-analyze] 文件超 200MB, 拒绝")
         raise HTTPException(413, "文件超过 200MB")
+    t0 = _time.monotonic()
     try:
         result = await asyncio.to_thread(smart_import_service.smart_analyze, db, content)
     except excel_importer.ImporterError as e:
+        _log.warning("[smart-analyze] 解析失败 (ImporterError): %s", e)
         raise HTTPException(400, str(e))
+    except Exception as e:
+        # 关键: 任何其他异常都记完整 traceback, 否则前端只看到 500 不知道为什么
+        _log.exception("[smart-analyze] 未预期异常: %s", e)
+        raise HTTPException(500, f"分析失败: {type(e).__name__}: {e}")
+    dur = (_time.monotonic() - t0) * 1000
+    _log.info("[smart-analyze] 完成: %d 个 sheet, 耗时 %.0fms",
+              len(result.sheets), dur)
     return {
         "file_b64": base64.b64encode(content).decode("ascii"),
         **smart_import_service.to_dict(result),
