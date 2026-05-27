@@ -300,7 +300,8 @@ def commit_sheet(
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
                           "outsourcing_expense", "aftersales", "competitor_price",
-                          "daily_operations", "order_details", "wood_loss", "sample"):
+                          "daily_operations", "order_details", "wood_loss", "sample",
+                          "promotion_flow"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -830,6 +831,7 @@ _UNIQUENESS_FIELD = {
     "order_details": None,              # 无唯一键, 直接 add
     "wood_loss": None,                  # 无唯一键, 直接 add
     "sample": "sample_no",
+    "promotion_flow": None,             # 无唯一键, 直接 add
 }
 
 
@@ -1132,6 +1134,16 @@ def _h_wood_loss(db, data, key_field, ctx=None):
     return "wood_loss", "inserted"
 
 
+def _h_promotion_flow(db, data, key_field, ctx=None):
+    from app.models.marketing import PromotionFlow
+    payload = {k: v for k, v in data.items() if v is not None}
+    if not payload:
+        return "promotion_flow", "skipped"
+    payload.setdefault("amount", 0)   # amount NOT NULL
+    db.add(PromotionFlow(**payload))
+    return "promotion_flow", "inserted"
+
+
 def _h_sample(db, data, key_field, ctx=None):
     from app.models.marketing import Sample
     sample_no = data.get("sample_no")
@@ -1160,4 +1172,5 @@ _GENERIC_HANDLERS = {
     "order_details": _h_order_detail,
     "wood_loss": _h_wood_loss,
     "sample": _h_sample,
+    "promotion_flow": _h_promotion_flow,
 }

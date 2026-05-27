@@ -420,6 +420,10 @@ def smart_commit(
         entity = item["entity_type"]
         mapping = item.get("mapping") or {}
         sheet_account = item.get("sheet_account")
+        # 支付宝流水: 表里通常没有账户列, 账户名藏在 sheet 名里 (如 "9a-支付宝流水-企业号")
+        # 自动推导, 用户没手动指定也能导
+        if entity == "alipay_flow" and not sheet_account and "account" not in mapping:
+            sheet_account = _derive_alipay_account(sheet_name)
         # alipay_flow 若没映射 account 列但给了 sheet_account, 也允许导
         if entity == "unknown" or (not mapping and not sheet_account):
             reports.append({"sheet_name": sheet_name, "skipped": True,
@@ -475,6 +479,22 @@ def _safe(v: Any) -> Any:
     if isinstance(v, Decimal):
         return float(v)
     return v
+
+
+_ALIPAY_ACCOUNTS = ["企业号", "个体户私账", "爱群号", "佳宝号", "主力号"]
+
+
+def _derive_alipay_account(sheet_name: str) -> Optional[str]:
+    """从 sheet 名推导支付宝账户. 如 "9a-支付宝流水-企业号" → "企业号"."""
+    for acc in _ALIPAY_ACCOUNTS:
+        if acc in sheet_name:
+            return acc
+    # 兜底: 取最后一个 "-" 之后的部分
+    if "-" in sheet_name:
+        tail = sheet_name.rsplit("-", 1)[-1].strip()
+        if tail and "支付宝" not in tail:
+            return tail
+    return None
 
 
 def _strip_header_offset(file_bytes: bytes, sheet_name: str, header_row: int) -> bytes:

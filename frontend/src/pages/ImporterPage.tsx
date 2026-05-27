@@ -14,6 +14,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Collapse,
   Empty,
   Popconfirm,
   Progress,
@@ -837,6 +838,16 @@ function SmartImporter() {
       </Card>
 
       {resp && (
+        <ImportDiagnostics
+          sheets={resp.sheets}
+          editedPlan={editedPlan}
+          commitResult={commitResult}
+          analyzing={analyzeMut.isPending}
+          committing={commitMut.isPending}
+        />
+      )}
+
+      {resp && (
         <>
           <Card size="small" title={`分析结果 (${resp.sheets.length} 个 sheet)`}
                 extra={
@@ -942,6 +953,223 @@ function SmartImporter() {
         </>
       )}
     </Space>
+  );
+}
+
+// ----------------------------- 导入分析面板 ---------------------- //
+
+type SheetDiag = {
+  sheet_name: string;
+  entity_label: string;
+  status: 'ready' | 'warn' | 'skip' | 'ok' | 'partial' | 'failed' | 'empty';
+  headline: string;
+  detail?: string;
+  logs: string[];
+};
+
+const DIAG_META: Record<SheetDiag['status'], { color: string; label: string }> = {
+  ready: { color: 'blue', label: '待导入' },
+  warn: { color: 'orange', label: '需确认' },
+  skip: { color: 'default', label: '将跳过' },
+  ok: { color: 'green', label: '已导入' },
+  partial: { color: 'gold', label: '部分导入' },
+  failed: { color: 'red', label: '导入失败' },
+  empty: { color: 'default', label: '空表' },
+};
+
+function diagnoseBeforeCommit(s: SheetAnalysis, plan?: SmartPlanState): SheetDiag {
+  const entity = plan?.entity_type ?? s.suggested_entity ?? 'unknown';
+  const label = s.entity_label || entity;
+  const base = { sheet_name: s.sheet_name, entity_label: label, logs: [] as string[] };
+  if (!entity || entity === 'unknown') {
+    return {
+      ...base, status: 'skip',
+      headline: '未识别出数据类型',
+      detail: '系统没认出这个 sheet 属于哪类数据。导入时会自动跳过。如果确实需要导入，请在上方 tab 里手动选择数据类型。',
+    };
+  }
+  if (s.total_rows === 0) {
+    return { ...base, status: 'empty', headline: '表里没有数据行 (只有表头)', detail: '会跳过，无需处理。' };
+  }
+  // 支付宝流水: 账户从 sheet 名自动推导, 无需手动选
+  if (entity === 'alipay_flow') {
+    return { ...base, status: 'ready', headline: `识别为「${label}」`, detail: '账户将根据 sheet 名自动识别。' };
+  }
+  const mapping = plan?.mapping ?? s.mapping ?? {};
+  if (Object.keys(mapping).length === 0) {
+    return {
+      ...base, status: 'warn',
+      headline: '识别出类型，但没有匹配到字段列',
+      detail: `判断为「${label}」，但没有一个 Excel 列能对上目标字段。请到上方 tab 手动配置列映射，否则导入时会跳过。`,
+    };
+  }
+  return { ...base, status: 'ready', headline: `识别为「${label}」，已匹配 ${Object.keys(mapping).length} 个字段`, };
+}
+
+function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
+  const label = rep.entity_type || '—';
+  const base = { sheet_name: rep.sheet_name, entity_label: label, logs: [] as string[] };
+  if (rep.error) {
+    return { ...base, status: 'failed', headline: '整表导入失败', detail: rep.error, logs: [rep.error] };
+  }
+  if (rep.skipped) {
+    return { ...base, status: 'skip', headline: '已跳过', detail: rep.reason };
+  }
+  const inserted = rep.inserted_parents ?? 0;
+  const skipped = rep.skipped_rows ?? 0;
+  const errs = rep.errors ?? [];
+  const total = rep.total_rows ?? 0;
+  if (total === 0) {
+    return { ...base, status: 'empty', headline: '表里没有数据行', detail: '无内容可导。' };
+  }
+  if (inserted === 0 && errs.length > 0) {
+    return {
+      ...base, status: 'failed',
+      headline: `${total} 行全部未入库`,
+      detail: '每一行都因数据问题被拒。常见原因：缺必填字段、数字/日期格式错误。下方是具体行的报错：',
+      logs: errs,
+    };
+  }
+  if (errs.length > 0 || skipped > 0) {
+    return {
+      ...base, status: 'partial',
+      headline: `入库 ${inserted} 行，${skipped} 行被跳过`,
+      detail: errs.length > 0 ? '以下是被跳过行的原因：' : '部分行重复或为空，已跳过。',
+      logs: errs,
+    };
+  }
+  return { ...base, status: 'ok', headline: `成功入库 ${inserted} 行` };
+}
+
+function ImportDiagnostics({
+  sheets, editedPlan, commitResult, analyzing, committing,
+}: {
+  sheets: SheetAnalysis[];
+  editedPlan: Record<string, SmartPlanState>;
+  commitResult: { reports: SmartCommitReport[]; post_import: PostImportResult } | null;
+  analyzing: boolean;
+  committing: boolean;
+}) {
+  const committed = !!commitResult;
+  const diags: SheetDiag[] = committed
+    ? commitResult!.reports.map(diagnoseAfterCommit)
+    : sheets.map((s) => diagnoseBeforeCommit(s, editedPlan[s.sheet_name]));
+
+  const count = (sts: SheetDiag['status'][]) => diags.filter((d) => sts.includes(d.status)).length;
+
+  const okN = count(['ok']);
+  const partialN = count(['partial']);
+  const failedN = count(['failed']);
+  const readyN = count(['ready']);
+  const warnN = count(['warn']);
+  const skipN = count(['skip', 'empty']);
+
+  const totalInserted = committed
+    ? commitResult!.reports.reduce((n, r) => n + (r.inserted_parents ?? 0), 0)
+    : 0;
+
+  // 失败 / 需关注的 sheet 优先展示
+  const attention = diags.filter((d) => ['failed', 'partial', 'warn'].includes(d.status));
+  const fine = diags.filter((d) => ['ok', 'ready', 'skip', 'empty'].includes(d.status));
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space>
+          <span>导入分析</span>
+          {committed
+            ? <Tag color="green">已入库 {totalInserted} 行</Tag>
+            : <Tag color="blue">分析了 {diags.length} 个 sheet</Tag>}
+        </Space>
+      }
+    >
+      {/* 统计概览 */}
+      <Space size="large" wrap style={{ marginBottom: 12 }}>
+        {committed ? (
+          <>
+            <Statistic title="成功导入" value={okN} suffix="表" valueStyle={{ color: '#3f8600' }} />
+            {partialN > 0 && <Statistic title="部分导入" value={partialN} suffix="表" valueStyle={{ color: '#d48806' }} />}
+            {failedN > 0 && <Statistic title="导入失败" value={failedN} suffix="表" valueStyle={{ color: '#cf1322' }} />}
+            <Statistic title="跳过/空表" value={skipN} suffix="表" />
+            <Statistic title="总入库行数" value={totalInserted} valueStyle={{ color: '#3f8600' }} />
+          </>
+        ) : (
+          <>
+            <Statistic title="可直接导入" value={readyN} suffix="表" valueStyle={{ color: '#3f8600' }} />
+            {warnN > 0 && <Statistic title="需手动确认" value={warnN} suffix="表" valueStyle={{ color: '#d48806' }} />}
+            <Statistic title="将跳过" value={skipN} suffix="表" />
+          </>
+        )}
+      </Space>
+
+      {(analyzing || committing) && (
+        <Alert type="info" showIcon style={{ marginBottom: 12 }}
+          message={committing ? '正在导入，请稍候…' : '正在分析每个 sheet…'} />
+      )}
+
+      {/* 失败/需关注: 平铺展示, 带日志 */}
+      {attention.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <Typography.Text strong style={{ color: '#cf1322' }}>
+            {committed ? '需要关注的表' : '导入前需处理的表'} ({attention.length})
+          </Typography.Text>
+          <Space direction="vertical" style={{ width: '100%', marginTop: 6 }}>
+            {attention.map((d) => (
+              <Alert
+                key={d.sheet_name}
+                type={d.status === 'failed' ? 'error' : 'warning'}
+                showIcon
+                message={
+                  <Space>
+                    <Tag color={DIAG_META[d.status].color}>{DIAG_META[d.status].label}</Tag>
+                    <b>{d.sheet_name}</b>
+                    <span>{d.headline}</span>
+                  </Space>
+                }
+                description={
+                  <>
+                    {d.detail && <div style={{ marginBottom: d.logs.length ? 6 : 0 }}>{d.detail}</div>}
+                    {d.logs.length > 0 && (
+                      <pre style={{
+                        margin: 0, padding: 8, background: '#1e1e1e', color: '#e0a0a0',
+                        borderRadius: 4, fontSize: 12, maxHeight: 180, overflow: 'auto',
+                        whiteSpace: 'pre-wrap', wordBreak: 'break-all',
+                      }}>
+                        {d.logs.slice(0, 20).join('\n')}
+                        {d.logs.length > 20 ? `\n… 还有 ${d.logs.length - 20} 条` : ''}
+                      </pre>
+                    )}
+                  </>
+                }
+              />
+            ))}
+          </Space>
+        </div>
+      )}
+
+      {/* 正常的表: 折叠 */}
+      {fine.length > 0 && (
+        <Collapse
+          size="small"
+          items={[{
+            key: 'fine',
+            label: `${committed ? '已完成' : '准备就绪'}的表 (${fine.length})`,
+            children: (
+              <Space direction="vertical" style={{ width: '100%' }}>
+                {fine.map((d) => (
+                  <Space key={d.sheet_name}>
+                    <Tag color={DIAG_META[d.status].color}>{DIAG_META[d.status].label}</Tag>
+                    <b>{d.sheet_name}</b>
+                    <Typography.Text type="secondary">{d.headline}</Typography.Text>
+                  </Space>
+                ))}
+              </Space>
+            ),
+          }]}
+        />
+      )}
+    </Card>
   );
 }
 
@@ -1060,13 +1288,14 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
       {entityType === 'alipay_flow' && !mapping['account'] && (
         <Alert
           type="info" showIcon
-          message="这张支付宝流水表没有「账户」列 — 请指定它属于哪个账户"
+          message="支付宝流水的账户会根据 sheet 名自动识别 — 如需指定可在下方选择"
           description={
             <Space>
-              <span>该 sheet 全部流水归到:</span>
+              <span>账户 (留空则按 sheet 名自动判断):</span>
               <Select
                 style={{ width: 200 }}
-                placeholder="选择账户"
+                allowClear
+                placeholder="自动识别"
                 value={sheetAccount}
                 onChange={(v) =>
                   onStateChange({ entity_type: entityType, mapping, sheet_account: v })}

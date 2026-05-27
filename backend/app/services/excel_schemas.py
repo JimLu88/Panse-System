@@ -701,6 +701,24 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                        "aliases": ["备注", "说明"]},
         },
     },
+    "promotion_flow": {
+        "label": "推广记录",
+        "description": "每行 = 一笔推广账户的充值/消耗流水 (PromotionFlow).",
+        "fields": {
+            "transaction_date": {"type": "date", "required": False, "desc": "交易日期",
+                                 "aliases": ["交易日期", "日期", "交易时间"]},
+            "flow_type": {"type": "str", "required": False, "desc": "收支类型",
+                          "aliases": ["收支类型", "类型", "流水类型"]},
+            "amount": {"type": "decimal", "required": False, "desc": "流水金额",
+                       "aliases": ["流水金额", "金额", "充值金额", "消耗金额"]},
+            "balance_after": {"type": "decimal", "required": False, "desc": "操作后余额",
+                              "aliases": ["操作后余额", "余额", "账户余额"]},
+            "alipay_flow_no": {"type": "str", "required": False, "desc": "支付宝流水号",
+                               "aliases": ["支付宝流水号", "流水号"]},
+            "remark": {"type": "str", "required": False, "desc": "备注",
+                       "aliases": ["备注", "说明"]},
+        },
+    },
 }
 
 
