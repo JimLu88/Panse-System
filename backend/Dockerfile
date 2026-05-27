@@ -11,8 +11,9 @@ RUN pip install --no-cache-dir -e ".[dev]"
 
 COPY . .
 
-# 部署版本: 由 docker compose build --build-arg 注入 (看门狗在 build 前算出 git 信息)
-# 烤进镜像的环境变量, 后端 /api/version 读取, 用于核对「当前跑的是哪个 commit」
+# 版本注入: ARG 放在 COPY 之后、ENV 之前。
+# COPY 层走缓存没关系 —— 只要 GIT_COMMIT 值变了，Docker 就会重新执行
+# 从这行 ARG 往后的所有层，ENV 里会烤进新的 commit hash。
 ARG GIT_COMMIT=unknown
 ARG GIT_COMMIT_MSG=""
 ARG GIT_COMMIT_DATE=""
