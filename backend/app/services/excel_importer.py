@@ -299,7 +299,8 @@ def commit_sheet(
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
-                          "outsourcing_expense", "aftersales", "competitor_price"):
+                          "outsourcing_expense", "aftersales", "competitor_price",
+                          "daily_operations", "order_details"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -825,6 +826,8 @@ _UNIQUENESS_FIELD = {
     "outsourcing_expense": None,        # alipay_flow_no 去重
     "aftersales": "platform_order_no",
     "competitor_price": None,           # (store, sku_name) 去重
+    "daily_operations": None,           # 无唯一键, 直接 add
+    "order_details": None,              # 无唯一键, 直接 add
 }
 
 
@@ -1090,6 +1093,27 @@ def _h_competitor(db, data, key_field, ctx=None):
     return "competitor_price", "inserted"
 
 
+def _h_daily_operation(db, data, key_field, ctx=None):
+    from app.models.marketing import DailyOperation
+    payload = {k: v for k, v in data.items() if v is not None}
+    if not payload:
+        return "daily_operation", "skipped"
+    db.add(DailyOperation(**payload))
+    return "daily_operation", "inserted"
+
+
+def _h_order_detail(db, data, key_field, ctx=None):
+    from app.models.order import OrderDetail
+    order_no = data.get("order_no")
+    factory_order_no = data.get("factory_order_no")
+    product_code = data.get("product_code")
+    if not (order_no or factory_order_no or product_code):
+        return "order_detail", "skipped"
+    payload = {k: v for k, v in data.items() if v is not None}
+    db.add(OrderDetail(**payload))
+    return "order_detail", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
@@ -1100,4 +1124,6 @@ _GENERIC_HANDLERS = {
     "outsourcing_expense": _h_outsourcing_expense,
     "aftersales": _h_aftersales,
     "competitor_price": _h_competitor,
+    "daily_operations": _h_daily_operation,
+    "order_details": _h_order_detail,
 }

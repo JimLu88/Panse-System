@@ -427,8 +427,12 @@ def smart_commit(
             continue
         # 智能 commit 借用 excel_importer.commit_sheet, 但要先把 header_row 适配
         # commit_sheet 假设 header 在第 1 行, 我们要把多余的前置行用 io 流改造
-        adjusted_bytes = _strip_header_offset(file_bytes, sheet_name,
-                                               item.get("header_row", 1))
+        try:
+            adjusted_bytes = _strip_header_offset(file_bytes, sheet_name,
+                                                   item.get("header_row", 1))
+        except Exception as e:
+            reports.append({"sheet_name": sheet_name, "error": f"预处理 Excel 失败: {e}"})
+            continue
         try:
             report = excel_importer.commit_sheet(
                 db, file_bytes=adjusted_bytes,
@@ -437,6 +441,9 @@ def smart_commit(
                 on_conflict=item.get("on_conflict", "ask"),
                 sheet_account=sheet_account,
             )
+            # 每个 sheet 成功后立即提交, 避免单个 sheet 异常回滚全部数据
+            if not item.get("dry_run", False):
+                db.commit()
             reports.append({
                 "sheet_name": sheet_name, "entity_type": entity,
                 "total_rows": report.total_rows,
@@ -447,8 +454,14 @@ def smart_commit(
                 "warnings": report.warnings[:10],
                 "conflicts": report.conflicts[:50],
             })
-        except excel_importer.ImporterError as e:
-            reports.append({"sheet_name": sheet_name, "error": str(e)})
+        except Exception as e:
+            # 捕获所有异常 (含 SQLAlchemy 错误), 回滚本 sheet 后继续
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            reports.append({"sheet_name": sheet_name,
+                            "error": f"{type(e).__name__}: {e}"})
     return reports
 
 

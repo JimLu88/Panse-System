@@ -364,7 +364,11 @@ def smart_commit(
         db, file_bytes=file_bytes,
         plan=[item.model_dump() for item in payload.plan],
     )
-    db.commit()
+    # 每个 sheet 在 smart_commit 内已单独 commit; 此处确保任何残留事务也被提交
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
 
     # 导入后 AI 逻辑核查 + 运营分析 (不阻断主流程)
     post_import: dict = {"logic_issues": 0, "analysis": None, "ai_used": False}
