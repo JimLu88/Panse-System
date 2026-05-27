@@ -1,16 +1,19 @@
 """运行版本信息 — 用于核对「当前跑的代码」是哪个 commit, 是否和最新对齐.
 
 来源优先级:
-  1) build_version.json (部署时由看门狗写入, 容器内 .git 不存在时唯一可靠来源)
-  2) 运行时 git 命令 (本地开发用)
-  3) 未知 (兜底)
+  1) 环境变量 GIT_COMMIT 等 (docker build --build-arg 烤进镜像, 最可靠)
+  2) build_version.json (部署时由看门狗写入)
+  3) 运行时 git 命令 (本地开发用)
+  4) 未知 (兜底)
 
-build_version.json 由 deploy/windows/panse_tray.py 在每次 build 前写入,
-内容含 commit 短哈希 / 完整哈希 / commit 时间 / commit 信息 / 分支 / 部署时间。
+容器内没有 .git, 所以必须在「构建/部署时」由宿主机 (看门狗) 把 git 信息注入进来。
+看门狗在每次 docker compose build 前: 既设置 --build-arg 环境变量, 也写 build_version.json,
+双保险。
 """
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -19,6 +22,21 @@ from pathlib import Path
 _VERSION_FILE = Path(__file__).resolve().parent.parent / "build_version.json"
 # backend/app/version.py → 仓库根 (本地开发跑 git 用)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+def _from_env() -> dict | None:
+    commit = os.environ.get("GIT_COMMIT", "").strip()
+    if not commit or commit == "unknown":
+        return None
+    return {
+        "commit": commit[:7],
+        "commit_full": commit,
+        "commit_date": os.environ.get("GIT_COMMIT_DATE", "").strip(),
+        "commit_message": os.environ.get("GIT_COMMIT_MSG", "").strip(),
+        "branch": os.environ.get("GIT_BRANCH", "").strip(),
+        "deployed_at": os.environ.get("BUILD_TIME", "").strip(),
+        "source": "build_env",
+    }
 
 
 def _from_file() -> dict | None:
@@ -62,8 +80,8 @@ def _from_git() -> dict | None:
 
 @lru_cache(maxsize=1)
 def get_version() -> dict:
-    """返回当前运行版本信息. 进程内缓存 (build_version.json 在容器生命周期内不变)."""
-    info = _from_file() or _from_git() or {
+    """返回当前运行版本信息. 进程内缓存 (容器生命周期内版本不变)."""
+    info = _from_env() or _from_file() or _from_git() or {
         "commit": "unknown", "commit_full": "", "commit_date": "",
         "commit_message": "", "branch": "", "deployed_at": "", "source": "unknown",
     }

@@ -26,7 +26,14 @@ services:
           memory: 512m
 
   api:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        GIT_COMMIT_MSG: ${GIT_COMMIT_MSG:-}
+        GIT_COMMIT_DATE: ${GIT_COMMIT_DATE:-}
+        GIT_BRANCH: ${GIT_BRANCH:-}
+        BUILD_TIME: ${BUILD_TIME:-}
     restart: unless-stopped     # 业务需求: 看门狗触发 SIGTERM 后 Docker 自动拉起
     depends_on:
       db:
