@@ -2224,3 +2224,94 @@ export interface VersionInfo {
 }
 export const getVersion = () =>
   api.get<VersionInfo>('/api/version').then((r) => r.data);
+
+// ----------------------------- 订单细节自动生成 ----------------------------- //
+export interface GenerateOrderDetailsResult {
+  orders_scanned: number;
+  orders_matched: number;
+  details_created: number;
+  details_skipped: number;
+  orders_no_bom: string[];
+  orders_no_bom_count: number;
+  orders_no_product: number;
+}
+export const generateOrderDetails = (orderNos?: string[], onlyMissing = true) =>
+  api
+    .post<GenerateOrderDetailsResult>('/api/orders/generate-order-details', {
+      order_nos: orderNos ?? null,
+      only_missing: onlyMissing,
+    })
+    .then((r) => r.data);
+
+// ----------------------------- 配件采购 (OCR + 发票留存) ----------------------------- //
+export interface PurchaseLine {
+  item_name: string;
+  spec: string;
+  unit: string;
+  qty: number;
+  unit_price: number | null;
+  amount: number | null;
+}
+export interface PurchaseRow {
+  id: number;
+  purchase_no: string;
+  supplier: string | null;
+  purchase_date: string | null;
+  material_code: string | null;
+  material_name: string | null;
+  spec: string | null;
+  qty: number;
+  unit_price: number | null;
+  amount: number | null;
+  tracking_no: string | null;
+  freight: number | null;
+  total_amount: number | null;
+  payment_status: string;
+  source_file_id: number | null;
+  ocr_warnings: string[];
+  ocr_model: string | null;
+}
+export interface PurchaseOcrResult {
+  file_id: number;
+  supplier: string | null;
+  purchase_date: string | null;
+  tracking_no: string | null;
+  freight: number | null;
+  total_amount: number | null;
+  confidence: number;
+  warnings: string[];
+  lines: PurchaseLine[];
+  created_purchase_ids: number[];
+}
+export interface PurchaseFileRow {
+  id: number;
+  year: number;
+  month: number;
+  original_name: string | null;
+  mime_type: string | null;
+  size_bytes: number | null;
+  uploaded_by: string | null;
+}
+export const uploadPurchaseOcr = (file: File, autoCommit = true) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api
+    .post<PurchaseOcrResult>('/api/purchases/upload-ocr', form, {
+      params: { auto_commit: autoCommit },
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000, // OCR 可能要 60-120s
+    })
+    .then((r) => r.data);
+};
+export const listPurchases = (supplier?: string, limit = 200) =>
+  api
+    .get<PurchaseRow[]>('/api/purchases', { params: { supplier, limit } })
+    .then((r) => r.data);
+export const listPurchaseFiles = (year?: number, month?: number) =>
+  api
+    .get<PurchaseFileRow[]>('/api/purchases/files', { params: { year, month } })
+    .then((r) => r.data);
+export const purchaseSourceImageUrl = (purchaseId: number) =>
+  `/api/purchases/${purchaseId}/source-image`;
+export const purchaseFileImageUrl = (fileId: number) =>
+  `/api/purchases/files/${fileId}/image`;

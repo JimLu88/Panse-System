@@ -40,6 +40,7 @@ const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage')
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 
 const { Header, Content } = Layout;
 
@@ -94,6 +95,7 @@ export default function App() {
         { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
         { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
         { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
+        { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
         { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
         { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
         { key: 'customization', label: <Link to="/customization">微定制</Link> },
@@ -205,6 +207,7 @@ export default function App() {
             <Route path="/alipay" element={<AlipayPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
+            <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/importer" element={<ImporterPage />} />
             <Route path="/ai" element={<AiAssistantPage />} />
             <Route path="/marketing" element={<MarketingPage />} />
