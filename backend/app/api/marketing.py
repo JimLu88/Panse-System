@@ -52,6 +52,25 @@ def list_samples(
     return db.execute(stmt).scalars().all()
 
 
+class SampleUpdate(BaseModel):
+    status: Optional[str] = None
+    location: Optional[str] = None
+    usage: Optional[str] = None
+    remark: Optional[str] = None
+
+
+@router.patch("/samples/{sample_id}", response_model=SampleOut)
+def update_sample(sample_id: int, payload: SampleUpdate, db: Session = Depends(get_db)):
+    sample = db.get(Sample, sample_id)
+    if sample is None:
+        raise HTTPException(status_code=404, detail="样品不存在")
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(sample, field, value)
+    db.commit()
+    db.refresh(sample)
+    return sample
+
+
 # -------- Brand Marketing (14) --------
 
 class BrandMarketingOut(BaseModel):
@@ -175,6 +194,10 @@ class WoodLossOut(BaseModel):
     used_qty: Optional[Decimal]
     loss_qty: Optional[Decimal]
     loss_rate_pct: Optional[Decimal]
+    related_product_qty: Optional[Decimal] = None
+    reason: Optional[str] = None
+    disposition: Optional[str] = None
+    remark: Optional[str] = None
 
 
 @router.get("/wood-loss", response_model=list[WoodLossOut])

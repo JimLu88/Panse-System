@@ -300,7 +300,7 @@ def commit_sheet(
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
                           "outsourcing_expense", "aftersales", "competitor_price",
-                          "daily_operations", "order_details"):
+                          "daily_operations", "order_details", "wood_loss", "sample"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -828,6 +828,8 @@ _UNIQUENESS_FIELD = {
     "competitor_price": None,           # (store, sku_name) 去重
     "daily_operations": None,           # 无唯一键, 直接 add
     "order_details": None,              # 无唯一键, 直接 add
+    "wood_loss": None,                  # 无唯一键, 直接 add
+    "sample": "sample_no",
 }
 
 
@@ -1121,6 +1123,29 @@ def _h_order_detail(db, data, key_field, ctx=None):
     return "order_detail", "inserted"
 
 
+def _h_wood_loss(db, data, key_field, ctx=None):
+    from app.models.marketing import WoodLoss
+    payload = {k: v for k, v in data.items() if v is not None}
+    if not payload:
+        return "wood_loss", "skipped"
+    db.add(WoodLoss(**payload))
+    return "wood_loss", "inserted"
+
+
+def _h_sample(db, data, key_field, ctx=None):
+    from app.models.marketing import Sample
+    sample_no = data.get("sample_no")
+    if not sample_no:
+        raise ImporterError("缺样品编号")
+    from sqlalchemy import select as _select
+    existing = db.execute(_select(Sample).where(Sample.sample_no == sample_no)).scalar_one_or_none()
+    payload = {k: v for k, v in data.items() if v is not None}
+    if existing:
+        return "sample", _apply_update(existing, payload, ctx, "samples", sample_no)
+    db.add(Sample(**payload))
+    return "sample", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
@@ -1133,4 +1158,6 @@ _GENERIC_HANDLERS = {
     "competitor_price": _h_competitor,
     "daily_operations": _h_daily_operation,
     "order_details": _h_order_detail,
+    "wood_loss": _h_wood_loss,
+    "sample": _h_sample,
 }

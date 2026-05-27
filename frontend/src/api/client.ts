@@ -769,10 +769,35 @@ export interface Sample {
   location: string | null;
   status: string | null;
   usage: string | null;
+  remark: string | null;
 }
 
 export const listSamples = () =>
   api.get<Sample[]>('/api/marketing/samples').then((r) => r.data);
+
+export const updateSample = (
+  id: number,
+  data: { status?: string; location?: string; usage?: string; remark?: string },
+) => api.patch<Sample>(`/api/marketing/samples/${id}`, data).then((r) => r.data);
+
+export interface WoodLoss {
+  id: number;
+  purchase_date: string | null;
+  wood_type: string | null;
+  spec: string | null;
+  unit: string | null;
+  inbound_qty: string | null;
+  used_qty: string | null;
+  loss_qty: string | null;
+  loss_rate_pct: string | null;
+  related_product_qty: string | null;
+  reason: string | null;
+  disposition: string | null;
+  remark: string | null;
+}
+
+export const listWoodLoss = () =>
+  api.get<WoodLoss[]>('/api/marketing/wood-loss').then((r) => r.data);
 
 export interface BrandMarketing {
   id: number;

@@ -7,12 +7,14 @@ import {
   PromotionFlow,
   RoiResult,
   Sample,
+  WoodLoss,
   getRoi,
   listAfterSales,
   listBrandMarketing,
   listOutsourcing,
   listPromotionFlows,
   listSamples,
+  listWoodLoss,
 } from '../api/client';
 
 export default function MarketingPage() {
@@ -31,6 +33,7 @@ export default function MarketingPage() {
           { key: 'promotion', label: '推广记录 (15)', children: <PromotionTab /> },
           { key: 'brand', label: '品牌营销 (14)', children: <BrandTab /> },
           { key: 'samples', label: '样品 (13)', children: <SamplesTab /> },
+          { key: 'wood_loss', label: '木材损耗 (12)', children: <WoodLossTab /> },
           { key: 'aftersales', label: '售后 (18)', children: <AfterSalesTab /> },
           { key: 'outsourcing', label: '人员外包 (17)', children: <OutsourcingTab /> },
         ]}
@@ -118,27 +121,127 @@ function BrandTab() {
 
 function SamplesTab() {
   const { data, isLoading } = useQuery({ queryKey: ['samples'], queryFn: listSamples });
+
+  const totalCost = (data ?? []).reduce((sum, row) => {
+    const c = row.cost != null ? Number(row.cost) : 0;
+    return sum + c;
+  }, 0);
+
+  const statusColor = (v: string | null) => {
+    if (!v) return 'default';
+    if (v === '在用') return 'green';
+    if (v === '闲置') return 'orange';
+    if (v === '报废') return 'red';
+    return 'default';
+  };
+
+  const summaryRow = () => (
+    <Table.Summary.Row>
+      <Table.Summary.Cell index={0} colSpan={5}>
+        <strong>合计</strong>
+      </Table.Summary.Cell>
+      <Table.Summary.Cell index={5} align="right">
+        <strong>¥{totalCost.toFixed(2)}</strong>
+      </Table.Summary.Cell>
+      <Table.Summary.Cell index={6} colSpan={4} />
+    </Table.Summary.Row>
+  );
+
   return (
     <Table<Sample>
       rowKey="id"
       loading={isLoading}
       dataSource={data}
       pagination={{ pageSize: 20 }}
+      summary={summaryRow}
       columns={[
         { title: '样品号', dataIndex: 'sample_no', width: 110, render: (v) => <code>{v}</code> },
         { title: '产品', dataIndex: 'product_name', ellipsis: true },
         { title: 'SKU', dataIndex: 'sku', ellipsis: true },
         { title: '类型', dataIndex: 'sample_type', width: 90 },
         { title: '数量', dataIndex: 'qty', width: 60 },
-        { title: '成本', dataIndex: 'cost', width: 90, render: (v: string | null) => v ? `¥${v}` : '-' },
+        {
+          title: '成本',
+          dataIndex: 'cost',
+          width: 100,
+          align: 'right' as const,
+          render: (v: string | null) => v ? `¥${v}` : '-',
+        },
+        { title: '制作日期', dataIndex: 'made_at', width: 110 },
         { title: '位置', dataIndex: 'location', width: 140 },
         {
           title: '状态',
           dataIndex: 'status',
           width: 80,
-          render: (v: string | null) => v ? <Tag color={v === '在用' ? 'green' : 'default'}>{v}</Tag> : '-',
+          render: (v: string | null) => v ? <Tag color={statusColor(v)}>{v}</Tag> : '-',
         },
         { title: '用途', dataIndex: 'usage', width: 100 },
+      ]}
+    />
+  );
+}
+
+function WoodLossTab() {
+  const { data, isLoading } = useQuery({ queryKey: ['wood-loss'], queryFn: listWoodLoss });
+
+  const lossRateColor = (v: string | null) => {
+    if (v == null) return 'default';
+    const n = Number(v);
+    if (n < 5) return 'green';
+    if (n <= 15) return 'orange';
+    return 'red';
+  };
+
+  return (
+    <Table<WoodLoss>
+      rowKey="id"
+      loading={isLoading}
+      dataSource={data}
+      size="middle"
+      pagination={{ pageSize: 20 }}
+      columns={[
+        { title: '购买日期', dataIndex: 'purchase_date', width: 110 },
+        { title: '木材种类', dataIndex: 'wood_type', width: 100 },
+        { title: '规格', dataIndex: 'spec', ellipsis: true },
+        { title: '单位', dataIndex: 'unit', width: 60 },
+        {
+          title: '入库量',
+          dataIndex: 'inbound_qty',
+          width: 90,
+          align: 'right' as const,
+          render: (v: string | null) => v ?? '-',
+        },
+        {
+          title: '实用量',
+          dataIndex: 'used_qty',
+          width: 90,
+          align: 'right' as const,
+          render: (v: string | null) => v ?? '-',
+        },
+        {
+          title: '损耗量',
+          dataIndex: 'loss_qty',
+          width: 90,
+          align: 'right' as const,
+          render: (v: string | null) => v ?? '-',
+        },
+        {
+          title: '损耗率%',
+          dataIndex: 'loss_rate_pct',
+          width: 90,
+          align: 'center' as const,
+          render: (v: string | null) =>
+            v != null ? <Tag color={lossRateColor(v)}>{Number(v).toFixed(1)}%</Tag> : '-',
+        },
+        {
+          title: '可做家具数',
+          dataIndex: 'related_product_qty',
+          width: 100,
+          align: 'right' as const,
+          render: (v: string | null) => v ?? '-',
+        },
+        { title: '原因', dataIndex: 'reason', ellipsis: true },
+        { title: '处理方式', dataIndex: 'disposition', ellipsis: true },
       ]}
     />
   );
