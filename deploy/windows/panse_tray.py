@@ -430,6 +430,31 @@ def start_containers(icon=None, item=None):
     threading.Thread(target=_do, daemon=True).start()
 
 
+def rebuild_images(icon=None, item=None):
+    """仅重新构建镜像并重启容器, 不拉代码.
+
+    代码已是最新但版本号没变时使用 — 通常是「拉代码」没有触发 --build。
+    """
+    notify("畔色 ERP", "正在重新构建镜像 (约 2-5 分钟)...", level="info")
+
+    def _do():
+        _write_log("--- 手动触发重新构建镜像 ---")
+        commit, build_env = _stamp_version()
+        code, out = _run(
+            ["docker", "compose", "up", "-d", "--build"],
+            timeout=300, env=build_env,
+        )
+        if code == 0:
+            _write_log(f"重新构建完成 (commit={commit})")
+            notify("畔色 ERP", f"✅ 构建完成！版本 {commit}, 刷新浏览器查看",
+                   level="info", force=True)
+        else:
+            _write_log(f"构建失败:\n{out}")
+            tail = out.strip()[-300:] if out.strip() else "(无输出)"
+            notify("畔色 ERP", f"❌ 构建失败:\n{tail}", level="error", force=True)
+    threading.Thread(target=_do, daemon=True).start()
+
+
 def show_status(icon=None, item=None):
     status, msg = assess()
     containers = check_containers()
@@ -585,6 +610,7 @@ def main():
             MenuItem("📊 当前状态", show_status),
             MenuItem("▶️ 启动容器", start_containers),
             MenuItem("🔁 重启容器", restart_containers),
+            MenuItem("🔨 重新构建镜像 (版本没更新时用)", rebuild_images),
             Menu.SEPARATOR,
             MenuItem("⬇️ 拉最新代码 + 重建", update_code),
             MenuItem("🧹 强制同步 (丢弃本地改动)", force_sync),
