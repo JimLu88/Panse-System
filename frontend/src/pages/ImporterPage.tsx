@@ -743,6 +743,47 @@ type SmartPlanState = {
   sheet_account?: string;
 };
 
+/** 把上传/分析/导入请求本身的失败 (超时/网络/服务器报错) 翻译成可读的报告 + 原始信息. */
+function describeRequestError(e: any): { headline: string; hint: string; raw: string } {
+  const code = e?.code;
+  const status = e?.response?.status;
+  const detail = e?.response?.data?.detail;
+  const msg = String(e?.message ?? e ?? '');
+  const raw = JSON.stringify(
+    {
+      code, status, detail, message: msg,
+      url: e?.config?.url, method: e?.config?.method,
+      timeout_ms: e?.config?.timeout,
+    },
+    null, 2,
+  );
+
+  if (code === 'ECONNABORTED' || /timeout/i.test(msg)) {
+    return {
+      headline: '请求超时 (前端等了 3 分钟仍没等到后端返回)',
+      hint:
+        'sheet 多时旧版后端逐个调 AI 会很慢, 容易超时。最新版本已改成并发分析(快很多), '
+        + '请先「强制同步」更新到最新。若仍超时, 可拆分 Excel 分批导入, 或确认后端能连上 AI 接口。',
+      raw,
+    };
+  }
+  if (!e?.response) {
+    return {
+      headline: '连不上后端 (网络错误 / 后端没起来)',
+      hint: '检查容器是否都在运行 (看门狗 → 当前状态), 以及 http://localhost:8000/api/health 是否正常。',
+      raw,
+    };
+  }
+  if (status === 413) {
+    return { headline: '文件太大 (超过 200MB)', hint: '请先剔除内嵌图片或拆分后再导。', raw };
+  }
+  return {
+    headline: `后端返回错误${status ? ` (HTTP ${status})` : ''}`,
+    hint: detail ? `服务器说: ${detail}` : '展开下方「原始错误」, 把内容发给开发排查。',
+    raw,
+  };
+}
+
 function SmartImporter() {
   const [resp, setResp] = useState<{ file_b64: string; sheets: SheetAnalysis[] } | null>(null);
   const [editedPlan, setEditedPlan] = useState<Record<string, SmartPlanState>>({});
@@ -836,6 +877,40 @@ function SmartImporter() {
           </p>
         </Dragger>
       </Card>
+
+      {/* 请求本身失败 (超时/网络/服务器报错): 持久展示, 不靠一闪而过的 toast */}
+      {(analyzeMut.isError || commitMut.isError) && (() => {
+        const mut = analyzeMut.isError ? analyzeMut : commitMut;
+        const what = analyzeMut.isError ? '分析' : '导入';
+        const err = describeRequestError(mut.error);
+        return (
+          <Alert
+            type="error"
+            showIcon
+            message={<b>{what}失败: {err.headline}</b>}
+            description={
+              <>
+                <div style={{ marginBottom: 8 }}>{err.hint}</div>
+                <Collapse
+                  size="small"
+                  ghost
+                  items={[{
+                    key: 'raw',
+                    label: '原始错误信息 (排查 / 发给开发用)',
+                    children: (
+                      <pre style={{
+                        margin: 0, fontSize: 12, whiteSpace: 'pre-wrap',
+                        background: '#1e1e1e', color: '#d4d4d4',
+                        padding: 8, borderRadius: 4,
+                      }}>{err.raw}</pre>
+                    ),
+                  }]}
+                />
+              </>
+            }
+          />
+        );
+      })()}
 
       {resp && (
         <ImportDiagnostics
