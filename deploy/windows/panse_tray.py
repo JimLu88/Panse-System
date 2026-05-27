@@ -123,11 +123,43 @@ def _collect_api_logs(lines: int = 30) -> str:
 
 
 def open_log(icon=None, item=None):
-    """用记事本打开 watchdog 日志."""
-    if LOG_FILE.exists():
-        os.startfile(str(LOG_FILE))
-    else:
-        notify("畔色 ERP", f"日志文件还不存在: {LOG_FILE}", level="info")
+    """弹出带滚动条的日志窗口 (显示最近 100 行), 方便与 AI 核对问题."""
+    import tkinter as tk
+    from tkinter import scrolledtext
+
+    def _show():
+        lines: list[str] = []
+        if LOG_FILE.exists():
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+            except Exception:
+                pass
+
+        root = tk.Tk()
+        root.title("畔色 ERP — 看门狗日志")
+        root.geometry("920x500")
+        root.resizable(True, True)
+
+        txt = scrolledtext.ScrolledText(root, font=("Consolas", 9), wrap=tk.WORD,
+                                        bg="#1e1e1e", fg="#d4d4d4",
+                                        insertbackground="white")
+        txt.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
+
+        content = "".join(lines[-100:]) if lines else "(日志为空)"
+        txt.insert(tk.END, content)
+        txt.see(tk.END)
+        txt.configure(state=tk.DISABLED)
+
+        bar = tk.Frame(root)
+        bar.pack(fill=tk.X, padx=6, pady=(0, 6))
+        tk.Button(bar, text="📂 打开完整日志文件",
+                  command=lambda: os.startfile(str(LOG_FILE))).pack(side=tk.LEFT)
+        tk.Button(bar, text="关闭", command=root.destroy).pack(side=tk.RIGHT)
+
+        root.mainloop()
+
+    threading.Thread(target=_show, daemon=True).start()
 
 
 # ----------------------------- 状态判定 ---------------------------- #
@@ -237,13 +269,13 @@ def make_icon(color: str) -> Image.Image:
 _LAST_NOTIFIED = {"status": None, "ts": 0}
 
 
-def notify(title: str, msg: str, *, level: str = "info") -> None:
-    """Windows Toast. 同 status 5 分钟内不重复."""
+def notify(title: str, msg: str, *, level: str = "info", force: bool = False) -> None:
+    """Windows Toast. 同等级 5 分钟内不重复 (force=True 直接发, 用于完成类通知)."""
     if not HAS_NOTIFY:
         print(f"[{level}] {title}: {msg}")
         return
     now = time.time()
-    if _LAST_NOTIFIED["status"] == level and now - _LAST_NOTIFIED["ts"] < 300:
+    if not force and _LAST_NOTIFIED["status"] == level and now - _LAST_NOTIFIED["ts"] < 300:
         return
     _LAST_NOTIFIED.update(status=level, ts=now)
     try:
@@ -272,10 +304,10 @@ def restart_containers(icon=None, item=None):
     def _do():
         code, output = _run(["docker", "compose", "restart"], timeout=60)
         if code == 0:
-            notify("畔色 ERP", "容器已重启", level="info")
+            notify("畔色 ERP", "✅ 容器已重启", level="info", force=True)
         else:
             _write_log(f"重启失败:\n{output}")
-            notify("畔色 ERP", f"重启失败:\n{output.strip()[-300:]}", level="error")
+            notify("畔色 ERP", f"重启失败:\n{output.strip()[-300:]}", level="error", force=True)
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -285,10 +317,10 @@ def start_containers(icon=None, item=None):
     def _do():
         code, output = _run(["docker", "compose", "up", "-d"], timeout=120)
         if code == 0:
-            notify("畔色 ERP", "容器已启动", level="info")
+            notify("畔色 ERP", "✅ 容器已启动", level="info", force=True)
         else:
             _write_log(f"启动失败:\n{output}")
-            notify("畔色 ERP", f"启动失败:\n{output.strip()[-300:]}", level="error")
+            notify("畔色 ERP", f"启动失败:\n{output.strip()[-300:]}", level="error", force=True)
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -310,37 +342,42 @@ def update_code(icon=None, item=None):
     notify("畔色 ERP", f"同步 {DEPLOY_BRANCH} 最新代码 + 重建中...", level="info")
 
     def _do():
+        _write_log(f"--- 开始更新代码 (分支: {DEPLOY_BRANCH}) ---")
         code, out = _run(["git", "fetch", "origin"], timeout=120)
         if code != 0:
-            notify("畔色 ERP", f"git fetch 失败: {out[:200]}", level="error")
+            notify("畔色 ERP", f"❌ git fetch 失败: {out[:200]}", level="error", force=True)
+            _write_log(f"git fetch 失败: {out[:300]}")
             return
+        _write_log("git fetch 完成")
         code, out = _run(["git", "checkout", DEPLOY_BRANCH], timeout=30)
         if code != 0:
             notify("畔色 ERP",
-                   f"切到 {DEPLOY_BRANCH} 失败 (本地可能有未提交改动): {out[:200]}",
-                   level="error")
+                   f"❌ 切到 {DEPLOY_BRANCH} 失败 (本地可能有未提交改动): {out[:200]}",
+                   level="error", force=True)
+            _write_log(f"git checkout 失败: {out[:300]}")
             return
         code, out = _run(
             ["git", "pull", "--ff-only", "origin", DEPLOY_BRANCH], timeout=120,
         )
         if code != 0:
             notify("畔色 ERP",
-                   f"git pull 失败 (本地有改动或分叉, 可试「强制同步」): {out[:200]}",
-                   level="error")
+                   f"❌ git pull 失败 (可试「强制同步」): {out[:200]}",
+                   level="error", force=True)
+            _write_log(f"git pull 失败: {out[:300]}")
             return
-        # --renew-anon-volumes: 强制重建匿名卷 (/app/node_modules),
-        # 否则旧卷会盖住镜像里新装的依赖, 导致 vite 报 "Failed to resolve import".
+        _write_log(f"git pull 完成: {out.strip()[:120]}")
+        _write_log("开始 docker compose build + up...")
         code, out = _run(
             ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
             timeout=300,
         )
         if code == 0:
-            notify("畔色 ERP", f"更新完成, 已同步到 {DEPLOY_BRANCH} 最新", level="info")
+            _write_log(f"代码更新完成, 已同步到 {DEPLOY_BRANCH} 最新")
+            notify("畔色 ERP", f"✅ 代码更新完成！已同步到 {DEPLOY_BRANCH} 最新", level="info", force=True)
         else:
             _write_log(f"build 失败 (完整输出):\n{out}")
-            # 错误通常在末尾, 取最后 300 字符, 并告知日志路径
             tail = out.strip()[-300:] if out.strip() else "(无输出)"
-            notify("畔色 ERP", f"build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error")
+            notify("畔色 ERP", f"❌ build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error", force=True)
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -370,11 +407,12 @@ def force_sync(icon=None, item=None):
             timeout=300,
         )
         if code == 0:
-            notify("畔色 ERP", f"强制同步完成, 已对齐 {DEPLOY_BRANCH}", level="info")
+            _write_log(f"强制同步完成, 已对齐 {DEPLOY_BRANCH}")
+            notify("畔色 ERP", f"✅ 强制同步完成！已对齐 {DEPLOY_BRANCH}", level="info", force=True)
         else:
             _write_log(f"build 失败 (完整输出):\n{out}")
             tail = out.strip()[-300:] if out.strip() else "(无输出)"
-            notify("畔色 ERP", f"build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error")
+            notify("畔色 ERP", f"❌ build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error", force=True)
     threading.Thread(target=_do, daemon=True).start()
 
 
