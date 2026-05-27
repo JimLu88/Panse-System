@@ -14,6 +14,7 @@ class Product(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    sub_name: Mapped[Optional[str]] = mapped_column(String(255))           # 副名称 (从名称拆分竖线后)
     brand: Mapped[Optional[str]] = mapped_column(String(32))
     category: Mapped[Optional[str]] = mapped_column(String(64))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
@@ -31,3 +32,14 @@ class Product(Base, TimestampMixin):
     size_detail: Mapped[Optional[str]] = mapped_column(String(2000))   # 尺寸明细
     aux_material: Mapped[Optional[str]] = mapped_column(String(2000))  # 辅材介绍
     description: Mapped[Optional[str]] = mapped_column(String(2000))   # 产品文案
+
+    # 导入扩展字段
+    listing_status: Mapped[Optional[str]] = mapped_column(String(32))          # 上架状态
+    main_material: Mapped[Optional[str]] = mapped_column(String(500))          # 主材介绍
+    taobao_sku_id: Mapped[Optional[str]] = mapped_column(String(64))           # 淘宝 SKU ID
+    accessory_desc: Mapped[Optional[str]] = mapped_column(String(500))         # 外配件说明
+    accessory_remark: Mapped[Optional[str]] = mapped_column(String(500))       # 配件备注
+    size_value: Mapped[Optional[str]] = mapped_column(String(64))              # 尺寸值 (mm)
+    size_confirmed: Mapped[Optional[str]] = mapped_column(String(32))          # 尺寸是否确定
+    sku: Mapped[Optional[str]] = mapped_column(String(255))                    # SKU 描述 (产品主表级)
+    sku_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)    # SKU 编码 (产品主表级)

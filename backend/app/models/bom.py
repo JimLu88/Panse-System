@@ -25,3 +25,5 @@ class BomLine(Base, TimestampMixin):
     # 尺寸类型 (业务需求 §2: 决定微定制时这行 BOM 是否随尺寸变 — "组合"= 随; "个数"= 不变)
     size_type: Mapped[Optional[str]] = mapped_column(String(32))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
+    product_name: Mapped[Optional[str]] = mapped_column(String(255))   # 产品名称 (冗余, 方便对账)
+    material_name: Mapped[Optional[str]] = mapped_column(String(255))  # 物料名称 (冗余, 方便对账)

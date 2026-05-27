@@ -835,17 +835,80 @@ _UNIQUENESS_FIELD = {
 }
 
 
+def _normalize_product(data: dict) -> dict:
+    """导入前规范化: 统一空值填充 + 产品名称拆分.
+
+    规则 (均为用户在导入分析中确认的业务规则):
+      - taobao_sku_id 空 → '待定'
+      - accessory_desc / accessory_remark 空 → '-'
+      - size_value 空 → '待定'
+      - size_confirmed 空 → '待确定'
+      - name 含竖线 (|/丨) → 拆成 name + sub_name
+    """
+    d = dict(data)
+    # 空值填充
+    if not d.get("taobao_sku_id"):
+        d["taobao_sku_id"] = "待定"
+    if not d.get("accessory_desc"):
+        d["accessory_desc"] = "-"
+    if not d.get("accessory_remark"):
+        d["accessory_remark"] = "-"
+    if not d.get("size_value"):
+        d["size_value"] = "待定"
+    if not d.get("size_confirmed"):
+        d["size_confirmed"] = "待确定"
+    # 产品名称拆分: "肤色榉木无边床丨榉木主属腿床" → name + sub_name
+    name = d.get("name") or ""
+    for sep in ("|", "丨", "｜"):
+        if sep in name:
+            parts = name.split(sep, 1)
+            d["name"] = parts[0].strip()
+            d["sub_name"] = parts[1].strip()
+            break
+    return d
+
+
 def _h_product(db, data, key_field, ctx=None):
     from app.models.product import Product
+    from app.models.pricing import PricingSku
+
     code = data.get("code")
     if not code:
         raise ImporterError("缺产品编码")
-    payload = {k: v for k, v in data.items() if v is not None}
+
+    data = _normalize_product(data)
+    sku_code = data.get("sku_code")
+    sku = data.get("sku")
+
+    # 只写 Product 模型认识的字段 (过滤掉 pricing_sku 专属字段等)
+    _PRODUCT_FIELDS = {c.key for c in Product.__table__.columns}
+    payload = {k: v for k, v in data.items() if k in _PRODUCT_FIELDS and v is not None}
+
     existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
     if existing:
-        return "product", _apply_update(existing, payload, ctx, "products", code)
-    db.add(Product(**payload))
-    return "product", "inserted"
+        action = _apply_update(existing, payload, ctx, "products", code)
+    else:
+        db.add(Product(**payload))
+        action = "inserted"
+
+    # 若行内含 sku_code → 同步 upsert pricing_sku (整张产品总表含 SKU 列时触发)
+    if sku_code:
+        ps_existing = db.execute(
+            select(PricingSku).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+        ps_payload: dict = {"product_code": code, "sku_code": sku_code}
+        if sku:
+            ps_payload["sku"] = sku
+        if ps_existing:
+            for k, v in ps_payload.items():
+                if v is not None:
+                    setattr(ps_existing, k, v)
+        else:
+            if _is_custom_code(db, sku_code, code):
+                _flag_custom(db, "pricing_sku", sku_code, sku_code)
+            db.add(PricingSku(**ps_payload))
+
+    return "product", action
 
 
 def _h_material(db, data, key_field, ctx=None):
@@ -897,6 +960,7 @@ def _h_product_inv(db, data, key_field, ctx=None):
     )).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     payload["warehouse"] = warehouse
+    payload.setdefault("locked_qty", 0)   # 锁定库存默认 0，避免 NULL
     if existing:
         return "product_inv", _apply_update(
             existing, payload, ctx, "product_inventory",
