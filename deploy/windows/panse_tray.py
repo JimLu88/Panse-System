@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import subprocess
 import sys
@@ -163,6 +164,64 @@ def _stamp_version() -> tuple[str, dict]:
     except Exception as e:
         _write_log(f"写版本文件失败: {e}")
     return short, build_env
+
+
+_SELF = Path(__file__).resolve()
+# 同步时若拉到的新代码改了看门狗自己, 用这个标志让重启后的新进程接着跑构建
+_RESUME_FLAG = "--resume-build"
+
+
+def _self_signature() -> str:
+    """看门狗自身源码的哈希, 用于检测 git pull 后自己有没有被更新."""
+    try:
+        return hashlib.sha256(_SELF.read_bytes()).hexdigest()
+    except Exception:
+        return ""
+
+
+def _restart_self() -> bool:
+    """用最新源码替换当前进程 (os.execv). 返回 True 表示已重启 (调用方应 return).
+
+    仅在「从源码 python panse_tray.py 运行」时可行; 打包 exe 无法自更新,
+    此时提示用户改用 start_watchdog.bat 从源码启动 (一次), 之后即可自动更新.
+    """
+    if getattr(sys, "frozen", False):
+        notify("畔色 ERP",
+               "⚠️ 看门狗自身已更新, 但你跑的是打包 exe, 无法自动生效。\n"
+               "请改用 deploy\\windows\\start_watchdog.bat 从源码启动 (仅需一次),\n"
+               "之后看门狗即可随代码自动更新。",
+               level="warn", force=True)
+        _write_log("看门狗自身已更新, 但 frozen exe 无法自更新 — 提示改用源码启动")
+        return False
+    _write_log("看门狗自身代码已更新, 重启加载新版本 (重启后接着重建)...")
+    notify("畔色 ERP", "看门狗自身已更新, 正在重启加载新版本...",
+           level="info", force=True)
+    try:
+        os.execv(sys.executable, [sys.executable, str(_SELF), _RESUME_FLAG])
+    except Exception as e:
+        _write_log(f"自重启失败: {e}")
+        return False
+    return True
+
+
+def _build_and_up(prefix: str = "代码更新完成") -> None:
+    """标记版本 → docker compose build + up. update_code / force_sync / 自重启后共用."""
+    commit, build_env = _stamp_version()
+    _write_log("开始 docker compose build + up...")
+    code, out = _run(
+        ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
+        timeout=300, env=build_env,
+    )
+    if code == 0:
+        _write_log(f"{prefix}, 已同步到 {DEPLOY_BRANCH} 最新 (commit={commit})")
+        notify("畔色 ERP",
+               f"✅ {prefix}！已同步到 {DEPLOY_BRANCH} 最新 (版本 {commit})",
+               level="info", force=True)
+    else:
+        _write_log(f"build 失败 (完整输出):\n{out}")
+        tail = out.strip()[-300:] if out.strip() else "(无输出)"
+        notify("畔色 ERP", f"❌ build 失败:\n{tail}\n\n详细日志: {LOG_FILE}",
+               level="error", force=True)
 
 
 def open_log(icon=None, item=None):
@@ -403,6 +462,7 @@ def update_code(icon=None, item=None):
                    level="error", force=True)
             _write_log(f"git checkout 失败: {out[:300]}")
             return
+        old_sig = _self_signature()
         code, out = _run(
             ["git", "pull", "--ff-only", "origin", DEPLOY_BRANCH], timeout=120,
         )
@@ -413,21 +473,10 @@ def update_code(icon=None, item=None):
             _write_log(f"git pull 失败: {out[:300]}")
             return
         _write_log(f"git pull 完成: {out.strip()[:120]}")
-        commit, build_env = _stamp_version()
-        _write_log("开始 docker compose build + up...")
-        code, out = _run(
-            ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
-            timeout=300, env=build_env,
-        )
-        if code == 0:
-            _write_log(f"代码更新完成, 已同步到 {DEPLOY_BRANCH} 最新 (commit={commit})")
-            notify("畔色 ERP",
-                   f"✅ 代码更新完成！已同步到 {DEPLOY_BRANCH} 最新 (版本 {commit})",
-                   level="info", force=True)
-        else:
-            _write_log(f"build 失败 (完整输出):\n{out}")
-            tail = out.strip()[-300:] if out.strip() else "(无输出)"
-            notify("畔色 ERP", f"❌ build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error", force=True)
+        # 拉到的新代码若改了看门狗自己, 先用新代码重启, 重启后接着重建
+        if _self_signature() != old_sig and _restart_self():
+            return
+        _build_and_up("代码更新完成")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -446,26 +495,17 @@ def force_sync(icon=None, item=None):
             if code != 0:
                 notify("畔色 ERP", f"{' '.join(cmd)} 失败: {out[:200]}", level="error")
                 return
+        old_sig = _self_signature()
         code, out = _run(
             ["git", "reset", "--hard", f"origin/{DEPLOY_BRANCH}"], timeout=60,
         )
         if code != 0:
             notify("畔色 ERP", f"reset 失败: {out[:200]}", level="error")
             return
-        commit, build_env = _stamp_version()
-        code, out = _run(
-            ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
-            timeout=300, env=build_env,
-        )
-        if code == 0:
-            _write_log(f"强制同步完成, 已对齐 {DEPLOY_BRANCH} (commit={commit})")
-            notify("畔色 ERP",
-                   f"✅ 强制同步完成！已对齐 {DEPLOY_BRANCH} (版本 {commit})",
-                   level="info", force=True)
-        else:
-            _write_log(f"build 失败 (完整输出):\n{out}")
-            tail = out.strip()[-300:] if out.strip() else "(无输出)"
-            notify("畔色 ERP", f"❌ build 失败:\n{tail}\n\n详细日志: {LOG_FILE}", level="error", force=True)
+        # reset 后看门狗自己若变了, 先用新代码重启, 重启后接着重建
+        if _self_signature() != old_sig and _restart_self():
+            return
+        _build_and_up("强制同步完成")
     threading.Thread(target=_do, daemon=True).start()
 
 
@@ -555,6 +595,13 @@ def main():
         ),
     )
     threading.Thread(target=watchdog_loop, args=(icon,), daemon=True).start()
+    # 自重启接力: 上一个 (旧) 进程拉完代码后用新代码重启了自己, 这里接着重建
+    if _RESUME_FLAG in sys.argv:
+        _write_log("检测到自重启接力标志, 用新代码继续重建...")
+        threading.Thread(
+            target=lambda: _build_and_up("看门狗已更新, 重建完成"),
+            daemon=True,
+        ).start()
     icon.run()
 
 
