@@ -61,6 +61,8 @@ class Order(Base, TimestampMixin):
     install_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    platform_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -94,6 +96,7 @@ class FactoryOrder(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     factory_order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    internal_order_no: Mapped[Optional[str]] = mapped_column(String(32), unique=True, nullable=True, index=True)
     platform_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     factory_name: Mapped[Optional[str]] = mapped_column(String(128))
     order_date: Mapped[Optional[date]] = mapped_column(Date)

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -569,6 +570,26 @@ def _commit_delivery_notes(
 # ----------------------------- factory_order --------------------- #
 
 
+def _next_internal_order_no(db: Session, year: int) -> str:
+    """生成下一个内部单号, 格式: Panse{YYYY}{NNNN}, 如 Panse20260001."""
+    from sqlalchemy import func, text
+    prefix = f"Panse{year}"
+    # 查找当年最大序号
+    result = db.execute(
+        select(FactoryOrder.internal_order_no).where(
+            FactoryOrder.internal_order_no.like(f"{prefix}%")
+        ).order_by(FactoryOrder.internal_order_no.desc()).limit(1)
+    ).scalar_one_or_none()
+    if result:
+        try:
+            seq = int(result[len(prefix):]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:04d}"
+
+
 def _commit_factory_orders(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     progress_callback: Optional[ProgressCallback] = None,
@@ -576,6 +597,7 @@ def _commit_factory_orders(
 ) -> None:
     schema = get_schema("factory_order")
     total = len(rows)
+    current_year = datetime.now().year
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
             if progress_callback:
@@ -599,8 +621,11 @@ def _commit_factory_orders(
             report.warnings.append(f"已存在 工厂订单号 {fo_no}, 跳过")
             report.skipped_rows += 1
             continue
+        # 自动生成内部单号 (若行内未提供)
+        internal_no = projected.get("internal_order_no") or _next_internal_order_no(db, current_year)
         fo = FactoryOrder(
             factory_order_no=fo_no,
+            internal_order_no=internal_no,
             platform_order_no=projected.get("platform_order_no"),
             factory_name=projected.get("factory_name"),
             order_date=projected.get("order_date"),
@@ -616,6 +641,7 @@ def _commit_factory_orders(
             remark=projected.get("remark"),
         )
         db.add(fo)
+        db.flush()  # flush so next _next_internal_order_no can see this row
         report.inserted_parents += 1
 
 
@@ -1015,6 +1041,24 @@ def _flag_custom(db, source_table: str, source_pk, sku_code) -> None:
     )
 
 
+def _normalize_order(data: dict) -> dict:
+    """导入前规范化订单数据.
+
+    规则:
+      - platform_fee 向上取整 (ceil), 按业务惯例
+      - ship_date 为空但 tracking_no 不为空 → 用 order_date 补填 (已发货)
+    """
+    d = dict(data)
+    # 平台服务费向上取整
+    if d.get("platform_fee") is not None:
+        d["platform_fee"] = Decimal(str(math.ceil(float(d["platform_fee"]))))
+    # 发货日期推断: 有运单号但无发货日期 → 用下单日期作为最保守估计
+    if not d.get("ship_date") and d.get("tracking_no"):
+        if d.get("order_date"):
+            d["ship_date"] = d["order_date"]
+    return d
+
+
 def _h_order(db, data, key_field, ctx=None):
     from app.models.order import Order
     order_no = data.get("order_no")
@@ -1023,6 +1067,8 @@ def _h_order(db, data, key_field, ctx=None):
     existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
     if existing:
         return "order", "skipped"   # 已有订单不动 (避免覆盖状态)
+
+    data = _normalize_order(data)
     payload = {k: v for k, v in data.items() if v is not None}
     payload.setdefault("platform", "淘宝")
     payload.setdefault("qty", 1)
@@ -1032,6 +1078,24 @@ def _h_order(db, data, key_field, ctx=None):
     if _is_custom_code(db, payload.get("sku_code"), payload.get("product_code")):
         payload["is_custom"] = True
         _flag_custom(db, "orders", order_no, payload.get("sku_code"))
+    # 标记为补单时, 交叉核验补单记录表
+    if payload.get("is_refill"):
+        from app.models.finance import RefillRecord
+        from app.services import exception_service
+        refill_exists = db.execute(
+            select(RefillRecord).where(RefillRecord.order_no == order_no)
+        ).scalar_one_or_none()
+        if not refill_exists:
+            exception_service.record(
+                db,
+                source_table="orders",
+                source_pk=order_no,
+                exception_type="refill_record_missing",
+                severity="warning",
+                description=f"订单 {order_no} 标记为补单 (是否补单=是), 但补单记录表中未找到对应记录, 请补录。",
+                suggestion_action="view",
+                context={"order_no": order_no},
+            )
     db.add(Order(**payload))
     return "order", "inserted"
 
@@ -1084,9 +1148,20 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
 
 def _h_refill_record(db, data, key_field, ctx=None):
     from app.models.finance import RefillRecord
+    from app.models.order import Order
     order_no = data.get("order_no")
     if not order_no:
         raise ImporterError("缺 order_no")
+    # 自动从 orders 表补填 product_code / product_name / sku (若行内未提供)
+    data = dict(data)
+    if not (data.get("product_code") and data.get("product_name") and data.get("sku")):
+        matched = db.execute(
+            select(Order).where(Order.order_no == order_no)
+        ).scalar_one_or_none()
+        if matched:
+            data.setdefault("product_code", matched.product_code)
+            data.setdefault("product_name", matched.product_name)
+            data.setdefault("sku", matched.sku)
     existing = db.execute(select(RefillRecord).where(RefillRecord.order_no == order_no)).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
