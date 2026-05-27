@@ -150,7 +150,7 @@ def _ai_analyze(db: Session, columns: list[str], sample_rows: list[list],
         },
     }, ensure_ascii=False)
     try:
-        resp = provider.chat(system=_ANALYZE_SYSTEM, user=user_msg, max_tokens=1500)
+        resp = provider.chat(system=_ANALYZE_SYSTEM, user=user_msg, max_tokens=4000)
     except AiUnavailable as e:
         return {"entity_type": "unknown", "confidence": 0, "mapping": {},
                 "quality": "needs_review", "quality_score": 50,
@@ -360,6 +360,10 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
                 entity = h_entity
                 ai_result["mapping"] = h_mapping   # 强覆盖, 不用 setdefault
                 ai_result["confidence"] = max(ai_result.get("confidence", 0), h_conf)
+                # AI 没给出有效评分时 (JSON 截断 / 未识别) 会留个惩罚分 (30),
+                # 启发式既然认出来了, 就把基准分拉回中性, 让真实质量由
+                # _validate_data_quality 的数据校验决定, 别卡在惩罚分上
+                ai_result["quality_score"] = 75
                 ai_result.setdefault("notes", []).append(
                     f"AI 不确定, 启发式匹配建议 {ENTITY_SCHEMAS[entity]['label']}",
                 )
