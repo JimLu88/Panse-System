@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
 import re
@@ -124,17 +125,34 @@ _ANALYZE_SYSTEM = """你是 Excel → ERP 智能分析助手。给你一个 shee
 - 仅输出 JSON, 不要解释文字"""
 
 
-def _ai_analyze(db: Session, columns: list[str], sample_rows: list[list],
-                sheet_name: str) -> dict:
-    """让 AI 看 sheet 头 + 样本数据, 返回完整分析."""
+# AI 未配置时的占位结果 (不碰 db, 可在并发线程里直接复制使用)
+_AI_UNAVAILABLE = {
+    "entity_type": "unknown", "confidence": 0, "mapping": {},
+    "quality": "needs_review", "quality_score": 50,
+    "issues": [], "notes": ["AI 未配置, 跳过智能分析"],
+}
+
+
+def _build_diagnose_provider(db: Session):
+    """构建一次 diagnose AI provider, 供所有 sheet 并发复用. 未配置返回 None.
+
+    db 只在这里 (主线程) 读一次配置; 之后并发分析时各线程只用 provider, 不碰 db,
+    避免 SQLAlchemy Session 非线程安全的问题。
+    """
     cfg = settings_service.get_ai_config(db, "diagnose")
     try:
-        provider = build_provider(cfg)
+        return build_provider(cfg)
     except AiUnavailable:
-        return {"entity_type": "unknown", "confidence": 0,
-                "mapping": {}, "quality": "needs_review",
-                "quality_score": 50,
-                "issues": [], "notes": ["AI 未配置, 跳过智能分析"]}
+        return None
+
+
+def _ai_analyze(provider, columns: list[str], sample_rows: list[list],
+                sheet_name: str) -> dict:
+    """让 AI 看 sheet 头 + 样本数据, 返回完整分析.
+
+    provider 必须由 _build_diagnose_provider 预先构建好 (非 None);
+    本函数不访问 db, 因此可在线程池里并发调用。
+    """
     schema_doc = {
         et: {"label": s["label"], "desc": s["description"],
              "required_fields": [k for k, v in s["fields"].items()
@@ -314,18 +332,24 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
     except Exception as e:
         raise excel_importer.ImporterError(f"无法解析 Excel: {e}") from e
 
-    out: list[SheetAnalysis] = []
+    # provider 只在主线程读一次配置, 之后并发分析各 sheet 只用 provider 不碰 db
+    provider = _build_diagnose_provider(db)
+
+    # ---- 1) 顺序预处理: 读每个 sheet + 嗅探表头 (快, 无 AI) ----
+    # prepped 每项: 要么 {"done": SheetAnalysis} (空/无表头, 不需 AI),
+    #               要么 {"name","columns","sample_rows","header_row","all_rows"}
+    prepped: list[dict] = []
     for ws in wb.worksheets:
         all_rows = []
         for row in ws.iter_rows(values_only=True):
             all_rows.append([_safe(c) for c in (row or [])])
         if not all_rows:
-            out.append(SheetAnalysis(
+            prepped.append({"done": SheetAnalysis(
                 sheet_name=ws.title, total_rows=0, header_row=1,
                 columns=[], sample_rows=[],
                 quality="messy", quality_score=0,
                 notes=["空 sheet"],
-            ))
+            )})
             continue
 
         header_row = _detect_header_row(all_rows)
@@ -341,16 +365,47 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
             sample_rows.append(r[:len(columns)])
 
         if not columns or len(columns) < 2:
-            out.append(SheetAnalysis(
+            prepped.append({"done": SheetAnalysis(
                 sheet_name=ws.title, total_rows=len(all_rows) - header_row,
                 header_row=header_row, columns=columns, sample_rows=sample_rows,
                 quality="messy", quality_score=0,
                 notes=["没找到表头. 这个 sheet 跳过."],
-            ))
+            )})
             continue
 
-        # AI 分析
-        ai_result = _ai_analyze(db, columns, sample_rows, ws.title)
+        prepped.append({
+            "name": ws.title, "columns": columns, "sample_rows": sample_rows,
+            "header_row": header_row, "all_rows": all_rows,
+        })
+    wb.close()
+
+    # ---- 2) 并发跑 AI: 每个 sheet 一次调用, 26 个并行 → 总耗时≈单次而非累加 ----
+    ai_targets = [p for p in prepped if "done" not in p]
+
+    def _run_ai(p: dict) -> dict:
+        if provider is None:
+            return dict(_AI_UNAVAILABLE)
+        return _ai_analyze(provider, p["columns"], p["sample_rows"], p["name"])
+
+    if ai_targets:
+        _logger.info("smart_analyze: 并发分析 %d 个 sheet", len(ai_targets))
+        with concurrent.futures.ThreadPoolExecutor(
+                max_workers=min(8, len(ai_targets))) as ex:
+            for p, r in zip(ai_targets, ex.map(_run_ai, ai_targets)):
+                p["ai_result"] = r
+
+    # ---- 3) 顺序后处理: 启发式兜底 + 数据质量校验 (无 AI, 快) ----
+    out: list[SheetAnalysis] = []
+    for p in prepped:
+        if "done" in p:
+            out.append(p["done"])
+            continue
+        ws_title = p["name"]
+        columns = p["columns"]
+        sample_rows = p["sample_rows"]
+        header_row = p["header_row"]
+        all_rows = p["all_rows"]
+        ai_result = p["ai_result"]
         entity = ai_result.get("entity_type", "unknown")
 
         # AI 没给 mapping → fallback 启发式
@@ -390,7 +445,7 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
         all_issues = list(ai_result.get("issues") or []) + extra_issues
 
         out.append(SheetAnalysis(
-            sheet_name=ws.title,
+            sheet_name=ws_title,
             total_rows=max(len(all_rows) - header_row, 0),
             header_row=header_row,
             columns=columns,
@@ -404,7 +459,6 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
             issues=all_issues[:10],
             notes=list(ai_result.get("notes") or []),
         ))
-    wb.close()
     return AnalysisResult(sheets=out)
 
 

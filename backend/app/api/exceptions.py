@@ -86,10 +86,20 @@ def counts_by_type(
 
 
 @router.get("/open-count", response_model=dict)
-def open_count(db: Session = Depends(get_db)):
-    """顶栏健康度角标用: 返回 {count: N}."""
-    n = db.query(func.count(DataException.id)).filter(DataException.status == "open").scalar()
-    return {"count": n or 0}
+def open_count(
+    exclude_info: bool = Query(
+        True, description="排除 info 级 (如导入时自动打的「定制编码」标记等噪音)"),
+    db: Session = Depends(get_db),
+):
+    """顶栏健康度角标用: 返回 {count: N}.
+
+    默认排除 info 级 — 导入时每个定制编码 SKU 都会打一条 info 标记, 不是真问题,
+    全算进红色角标会动辄上千条吓人。角标只统计真正要处理的 warning/critical。
+    """
+    q = db.query(func.count(DataException.id)).filter(DataException.status == "open")
+    if exclude_info:
+        q = q.filter(DataException.severity != "info")
+    return {"count": q.scalar() or 0}
 
 
 @router.post("/autofill/generate", response_model=dict)
