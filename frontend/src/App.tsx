@@ -6,6 +6,7 @@ import LoginPage from './pages/LoginPage';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
 import AiAssistantWidget from './components/AiAssistantWidget';
+import VersionTag from './components/VersionTag';
 import { useAuth } from './auth/AuthProvider';
 
 // Phase 12+13: 全部页面 lazy load
@@ -158,6 +159,7 @@ export default function App() {
           style={{ flex: 1, minWidth: 0 }}
           items={menuItems}
         />
+        <VersionTag />
         <NotificationBell />
         <Dropdown
           menu={{

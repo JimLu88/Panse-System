@@ -122,6 +122,39 @@ def _collect_api_logs(lines: int = 30) -> str:
         return ""
 
 
+def _write_build_version() -> str:
+    """把当前 HEAD 的 commit 信息写进 backend/build_version.json, 供后端 /api/version 读取.
+
+    容器内没有 .git, 这个文件是后端唯一能知道「自己是哪个版本」的来源。
+    每次 build 前调用, 这样 ERP 里显示的版本就是这次实际部署的代码。
+    返回 commit 短哈希 (用于通知/日志); 失败返回 '?' 但不阻断更新。
+    """
+    import json as _json
+
+    def _g(*args):
+        c, o = _run(["git", *args], timeout=15)
+        return o.strip() if c == 0 else ""
+
+    full = _g("rev-parse", "HEAD")
+    short = full[:7] if full else "?"
+    info = {
+        "commit": short,
+        "commit_full": full,
+        "commit_date": _g("show", "-s", "--format=%ci", "HEAD"),
+        "commit_message": _g("show", "-s", "--format=%s", "HEAD"),
+        "branch": _g("rev-parse", "--abbrev-ref", "HEAD"),
+        "deployed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    try:
+        target = PROJECT_ROOT / "backend" / "build_version.json"
+        target.write_text(_json.dumps(info, ensure_ascii=False, indent=2),
+                          encoding="utf-8")
+        _write_log(f"写入版本文件: commit={short} ({info['commit_message'][:50]})")
+    except Exception as e:
+        _write_log(f"写版本文件失败: {e}")
+    return short
+
+
 def open_log(icon=None, item=None):
     """弹出带滚动条的日志窗口 (显示最近 100 行), 方便与 AI 核对问题."""
     import tkinter as tk
@@ -366,14 +399,17 @@ def update_code(icon=None, item=None):
             _write_log(f"git pull 失败: {out[:300]}")
             return
         _write_log(f"git pull 完成: {out.strip()[:120]}")
+        commit = _write_build_version()
         _write_log("开始 docker compose build + up...")
         code, out = _run(
             ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
             timeout=300,
         )
         if code == 0:
-            _write_log(f"代码更新完成, 已同步到 {DEPLOY_BRANCH} 最新")
-            notify("畔色 ERP", f"✅ 代码更新完成！已同步到 {DEPLOY_BRANCH} 最新", level="info", force=True)
+            _write_log(f"代码更新完成, 已同步到 {DEPLOY_BRANCH} 最新 (commit={commit})")
+            notify("畔色 ERP",
+                   f"✅ 代码更新完成！已同步到 {DEPLOY_BRANCH} 最新 (版本 {commit})",
+                   level="info", force=True)
         else:
             _write_log(f"build 失败 (完整输出):\n{out}")
             tail = out.strip()[-300:] if out.strip() else "(无输出)"
@@ -402,13 +438,16 @@ def force_sync(icon=None, item=None):
         if code != 0:
             notify("畔色 ERP", f"reset 失败: {out[:200]}", level="error")
             return
+        commit = _write_build_version()
         code, out = _run(
             ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
             timeout=300,
         )
         if code == 0:
-            _write_log(f"强制同步完成, 已对齐 {DEPLOY_BRANCH}")
-            notify("畔色 ERP", f"✅ 强制同步完成！已对齐 {DEPLOY_BRANCH}", level="info", force=True)
+            _write_log(f"强制同步完成, 已对齐 {DEPLOY_BRANCH} (commit={commit})")
+            notify("畔色 ERP",
+                   f"✅ 强制同步完成！已对齐 {DEPLOY_BRANCH} (版本 {commit})",
+                   level="info", force=True)
         else:
             _write_log(f"build 失败 (完整输出):\n{out}")
             tail = out.strip()[-300:] if out.strip() else "(无输出)"

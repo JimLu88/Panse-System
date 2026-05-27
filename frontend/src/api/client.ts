@@ -2199,3 +2199,16 @@ export const refreshCompetitor = (id: number) =>
   api.post<CompetitorRow>(`/api/customization/competitors/${id}/refresh`).then(r => r.data);
 export const setCompetitorPrice = (id: number, latest_price: number) =>
   api.patch<CompetitorRow>(`/api/customization/competitors/${id}`, { latest_price }).then(r => r.data);
+
+// ----------------------------- 版本信息 ----------------------------- //
+export interface VersionInfo {
+  commit: string;            // 短哈希, 如 6aaf8ad
+  commit_full: string;
+  commit_date: string;       // commit 作者时间
+  commit_message: string;
+  branch: string;
+  deployed_at: string;       // 看门狗 build 这版代码的时间 (容器里唯一可靠的"部署时间")
+  source: string;            // build_file | runtime_git | unknown
+}
+export const getVersion = () =>
+  api.get<VersionInfo>('/api/version').then((r) => r.data);
