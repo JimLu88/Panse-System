@@ -970,12 +970,19 @@ def _h_order(db, data, key_field, ctx=None):
 
 def _h_balance(db, data, key_field, ctx=None):
     from app.models.finance import AccountBalance
+    from datetime import date as _date, datetime as _dt
     _ = ctx
     name = data.get("account_name")
     year = data.get("year")
     month = data.get("month")
+    # 支持 "统计日期" 单列格式：从日期自动提取年月
+    period_date = data.get("period_date")
+    if period_date and not (year and month):
+        if isinstance(period_date, (_date, _dt)):
+            year = period_date.year
+            month = period_date.month
     if not (name and year and month):
-        raise ImporterError("缺账户名/年/月")
+        raise ImporterError("缺账户名/年/月 (或 统计日期)")
     existing = db.execute(select(AccountBalance).where(
         AccountBalance.account_name == name,
         AccountBalance.period_year == year,
@@ -983,9 +990,9 @@ def _h_balance(db, data, key_field, ctx=None):
     )).scalar_one_or_none()
     if existing:
         return "balance", "skipped"
-    payload = {k: v for k, v in data.items() if v is not None}
-    payload["period_year"] = payload.pop("year")
-    payload["period_month"] = payload.pop("month")
+    payload = {k: v for k, v in data.items() if v is not None and k != "period_date"}
+    payload["period_year"] = payload.pop("year", year)
+    payload["period_month"] = payload.pop("month", month)
     db.add(AccountBalance(**payload))
     return "balance", "inserted"
 
