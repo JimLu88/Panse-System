@@ -541,7 +541,6 @@ def import_promotion(wb, db) -> int:
             transaction_date=tdate_v,
             flow_type=flow_type,
             amount=amount,
-            balance_after=_decimal(row[flow_idx + 2]) if flow_idx + 2 < len(row) else None,
             alipay_flow_no=_str(row[flow_idx + 3]) if flow_idx + 3 < len(row) else None,
             remark=_str(row[flow_idx + 4]) if flow_idx + 4 < len(row) else None,
         ))

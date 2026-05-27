@@ -741,8 +741,6 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                           "aliases": ["收支类型", "类型", "流水类型"]},
             "amount": {"type": "decimal", "required": False, "desc": "流水金额",
                        "aliases": ["流水金额", "金额", "充值金额", "消耗金额"]},
-            "balance_after": {"type": "decimal", "required": False, "desc": "操作后余额",
-                              "aliases": ["操作后余额", "余额", "账户余额"]},
             "alipay_flow_no": {"type": "str", "required": False, "desc": "支付宝流水号",
                                "aliases": ["支付宝流水号", "流水号"]},
             "remark": {"type": "str", "required": False, "desc": "备注",

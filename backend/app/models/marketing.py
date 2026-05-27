@@ -59,7 +59,6 @@ class PromotionFlow(Base, TimestampMixin):
     transaction_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     flow_type: Mapped[Optional[str]] = mapped_column(String(32))  # 充值 / 支出 / 退款
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    balance_after: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
     remark: Mapped[Optional[str]] = mapped_column(Text)
 

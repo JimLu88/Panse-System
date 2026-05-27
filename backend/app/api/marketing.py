@@ -121,7 +121,6 @@ class PromotionFlowOut(BaseModel):
     transaction_date: Optional[date]
     flow_type: Optional[str]
     amount: Decimal
-    balance_after: Optional[Decimal]
     alipay_flow_no: Optional[str]
     remark: Optional[str]
 
