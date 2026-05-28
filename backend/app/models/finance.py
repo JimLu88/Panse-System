@@ -29,7 +29,7 @@ class AlipayFlow(Base, TimestampMixin):
     counterparty: Mapped[Optional[str]] = mapped_column(String(255))
     counterparty_account: Mapped[Optional[str]] = mapped_column(String(255))
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)  # 正=收入, 负=支出
-    related_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    related_order_no: Mapped[Optional[str]] = mapped_column(String(255), index=True)
     balance: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     reconciliation_status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     # open / matched / mismatched / ignored / opening_balance (期初调整)
