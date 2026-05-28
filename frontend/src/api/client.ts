@@ -2315,3 +2315,15 @@ export const purchaseSourceImageUrl = (purchaseId: number) =>
   `/api/purchases/${purchaseId}/source-image`;
 export const purchaseFileImageUrl = (fileId: number) =>
   `/api/purchases/files/${fileId}/image`;
+
+// ---- 校验导出 ----
+export const validateExportExcel = async (file: File): Promise<Blob> => {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await api.post('/api/importer/validate-export', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    responseType: 'blob',
+    timeout: 120000,
+  });
+  return resp.data as Blob;
+};

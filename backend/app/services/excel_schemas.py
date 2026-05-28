@@ -481,19 +481,19 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         "description": "导入支付宝导出的 Excel/CSV (任意列结构)。一行 = 一条 AlipayFlow。",
         "fields": {
             "account": {
-                "type": "str", "required": True,
+                "type": "str", "required": False,  # 通常从 sheet 名推导, 不强制要求列
                 "desc": "支付宝账户 (企业号 / 个体户私账 / 爱群号 / 佳宝号 / 主力号)",
                 "aliases": ["账户", "账号", "支付宝账号", "Account"],
             },
             "transaction_no": {
                 "type": "str", "required": True,
                 "desc": "交易流水号 (同一账户内全局唯一)",
-                "aliases": ["流水号", "交易号", "订单号", "TransactionNo"],
+                "aliases": ["交易流水号", "流水号", "交易号", "TransactionNo", "单号"],
             },
             "transaction_time": {
                 "type": "datetime", "required": False,
                 "desc": "交易时间",
-                "aliases": ["时间", "交易时间", "Time"],
+                "aliases": ["交易时间", "时间", "Time"],
             },
             "transaction_type": {
                 "type": "str", "required": False,
@@ -513,7 +513,7 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
             "amount": {
                 "type": "decimal", "required": True,
                 "desc": "金额 (正=收入, 负=支出; 如果 Excel 是 收入/支出 分开两列, 请只选其一并加负号)",
-                "aliases": ["金额", "Amount"],
+                "aliases": ["收支金额", "金额", "收支", "Amount"],
             },
             "balance": {
                 "type": "decimal", "required": False,
@@ -523,7 +523,7 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
             "related_order_no": {
                 "type": "str", "required": False,
                 "desc": "关联的平台订单号",
-                "aliases": ["商户订单号", "订单号", "OrderNo"],
+                "aliases": ["关联订单号", "商户订单号", "订单号", "OrderNo"],
             },
             "remark": {
                 "type": "str", "required": False,
