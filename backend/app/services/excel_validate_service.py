@@ -38,10 +38,57 @@ from app.services.smart_import_service import _detect_header_row
 _log = logging.getLogger("panse.excel_validate")
 
 _YELLOW = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
+_ORANGE = PatternFill(start_color="FFD591", end_color="FFD591", fill_type="solid")
 _RED_BG = PatternFill(start_color="FFCCCC", end_color="FFCCCC", fill_type="solid")
 _BOLD = Font(bold=True)
 _RED_FONT = Font(color="CC0000")
+_ORANGE_FONT = Font(color="D46B08")
 _GREY_FONT = Font(color="888888", italic=True)
+
+
+# ----------------------------- 对账必填规则 --------------------------- #
+# 业务级"对账必填": 这些字段即使导入时非必填, 但缺了就无法参与对账匹配。
+# 每条规则: 用 col_keywords 在表头里找列, 该列在数据行为空 → 标"对账缺失"。
+# entity_type -> [{"col_keywords": [...], "label": "...", "reason": "..."}]
+RECON_RULES: dict[str, list[dict]] = {
+    "order": [
+        {"col_keywords": ["店铺实收金额", "实收金额", "实付金额", "买家实付"],
+         "label": "店铺实收金额",
+         "reason": "订单收款对账: 要与支付宝收入流水核对, 不填无法匹配"},
+        {"col_keywords": ["产品实际成本", "实际成本"],
+         "label": "产品实际成本",
+         "reason": "成本对账: 理论成本 vs 实际成本, 不填无法核算利润"},
+        {"col_keywords": ["平台服务费", "佣金"],
+         "label": "平台服务费",
+         "reason": "净收入核算: 实收 - 平台费, 不填利润不准"},
+    ],
+    "factory_order": [
+        {"col_keywords": ["工厂账单金额", "账单金额"],
+         "label": "工厂账单金额",
+         "reason": "工厂货款对账: 要与支付宝支出核对, 不填无法匹配"},
+        {"col_keywords": ["付款状态"],
+         "label": "付款状态",
+         "reason": "判断是否已付款, 对账必需"},
+    ],
+    "refill_record": [
+        {"col_keywords": ["总成本"],
+         "label": "总成本",
+         "reason": "补单赔付对账: 与主订单实付核对"},
+        {"col_keywords": ["供应商打款费用", "打款费用"],
+         "label": "供应商打款费用",
+         "reason": "与供应商账单(OCR)逐笔核对"},
+    ],
+    "promotion_flow": [
+        {"col_keywords": ["流水金额", "金额"],
+         "label": "推广金额",
+         "reason": "推广支出对账: 按月与支付宝支出核对"},
+    ],
+    "alipay_flow": [
+        {"col_keywords": ["关联订单号", "商户订单号"],
+         "label": "关联订单号",
+         "reason": "收款对账: 凭此匹配到对应订单, 不填只能人工核对"},
+    ],
+}
 
 
 # ----------------------------- 自动字段映射 --------------------------- #
@@ -129,6 +176,10 @@ class SheetResult:
     issue_rows: int
     sheet_warnings: list[str] = field(default_factory=list)
     row_issues: list[RowIssue] = field(default_factory=list)
+    # 对账缺失: {excel_row_no: ["店铺实收金额", ...]}
+    recon_missing_by_row: dict[int, list[str]] = field(default_factory=dict)
+    # 本表用到的对账规则 (用于在标注里写明 reason)
+    recon_rules: list[dict] = field(default_factory=list)
 
 
 def _validate_sheet(
@@ -250,6 +301,19 @@ def _validate_sheet(
         if nonnull and null_streak >= 3:
             _FORWARD_FILL_COLS.add(excel_col)
 
+    # 对账必填列解析: 把规则里的 col_keywords 落到实际列号
+    recon_cols: list[dict] = []  # [{idx, label, reason}]
+    for rule in RECON_RULES.get(best_entity, []):
+        found_idx = None
+        for i, col in enumerate(columns):
+            if any(kw in col for kw in rule["col_keywords"]):
+                found_idx = i
+                break
+        if found_idx is not None:
+            recon_cols.append({"idx": found_idx, "label": rule["label"],
+                               "reason": rule["reason"]})
+            result.recon_rules.append(rule)
+
     # 3. 逐行校验
     issues_by_row: set[int] = set()
     for row_offset, raw_row in enumerate(data_rows):
@@ -262,6 +326,16 @@ def _validate_sheet(
             for ec in best_mapping.values()
         ):
             continue
+
+        # 对账缺失检查
+        recon_missing_this: list[str] = []
+        for rc in recon_cols:
+            ci = rc["idx"]
+            v = raw_row[ci] if ci < len(raw_row) else None
+            if v is None or (isinstance(v, str) and v.strip() == ""):
+                recon_missing_this.append(rc["label"])
+        if recon_missing_this:
+            result.recon_missing_by_row[excel_row_no] = recon_missing_this
 
         row_issues_this: list[RowIssue] = []
 
@@ -372,6 +446,51 @@ def _write_annotations(
 
     # 列宽
     ws.column_dimensions[ann_col_letter].width = 40
+
+    # ---- 第二列: 对账缺失项 (仅参与对账的表才加) ----
+    if result.recon_rules:
+        recon_col = ann_col + 1
+        recon_col_letter = get_column_letter(recon_col)
+        rc_header = ws.cell(row=header_row_idx, column=recon_col)
+        rc_header.value = "对账缺失项"
+        rc_header.font = _BOLD
+
+        # 表头上方写本表对账要点
+        reason_lines = [f"{r['label']}: {r['reason']}" for r in result.recon_rules]
+        if reason_lines:
+            note_cell = ws.cell(row=max(1, header_row_idx - 1), column=recon_col)
+            note_cell.value = "对账必填: " + " ｜ ".join(reason_lines)
+            note_cell.font = _ORANGE_FONT
+
+        # 当前列名→列号 (含刚写的导入校验列)
+        col_to_idx2 = {}
+        for ri in range(1, recon_col):
+            c = ws.cell(row=header_row_idx, column=ri)
+            if c.value:
+                col_to_idx2[str(c.value).strip()] = ri
+
+        for row_no, missing in result.recon_missing_by_row.items():
+            cell = ws.cell(row=row_no, column=recon_col)
+            cell.value = "缺: " + "、".join(missing)
+            cell.font = _ORANGE_FONT
+            # 缺失的对账列标橙
+            for label in missing:
+                ci = col_to_idx2.get(label)
+                if ci:
+                    ws.cell(row=row_no, column=ci).fill = _ORANGE
+
+        # 对账齐全的行标 ✅
+        if result.total_data_rows > 0:
+            data_start = header_row_idx + 1
+            for r in range(data_start, data_start + result.total_data_rows + 1):
+                cell = ws.cell(row=r, column=recon_col)
+                # 只给有实际数据(导入校验列非空)的行写
+                left = ws.cell(row=r, column=ann_col)
+                if cell.value is None and left.value:
+                    cell.value = "✅ 对账齐全"
+                    cell.font = _GREY_FONT
+
+        ws.column_dimensions[recon_col_letter].width = 32
 
 
 # ----------------------------- 主入口 --------------------------------- #
