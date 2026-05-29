@@ -1,10 +1,18 @@
 import logging
 import os
 import time
+import uuid
 from contextlib import asynccontextmanager
+from contextvars import ContextVar
 
 from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+# 每个请求一个 trace id, 贯穿日志与错误响应, 方便「按 id 串起一次请求」排查
+request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
 
 # 全局日志: 带时间戳 (UTC→本地由容器时区决定), 输出到 stdout → docker logs api 可见
 logging.basicConfig(
@@ -132,17 +140,21 @@ app.add_middleware(AuditMiddleware)
 
 @app.middleware("http")
 async def _log_requests(request: Request, call_next):
-    """每个请求记一行带时间戳的日志: 方法 路径 状态 耗时. 方便排查「卡在哪/谁报错」."""
+    """每个请求记一行带时间戳的日志: rid 方法 路径 状态 耗时. 方便排查「卡在哪/谁报错」."""
+    rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
+    request_id_ctx.set(rid)
+    request.state.request_id = rid
     start = time.monotonic()
     path = request.url.path
     try:
         response = await call_next(request)
     except Exception as e:  # 未捕获异常也要留痕
         dur = (time.monotonic() - start) * 1000
-        _req_logger.error("%s %s -> EXC %s (%.0fms)", request.method, path,
+        _req_logger.error("[%s] %s %s -> EXC %s (%.0fms)", rid, request.method, path,
                           type(e).__name__, dur)
         raise
     dur = (time.monotonic() - start) * 1000
+    response.headers["X-Request-ID"] = rid
     # 健康检查太频繁, 降级到 debug; 慢请求 (>3s) 升到 warning
     if path == "/api/health":
         level = logging.DEBUG
@@ -150,9 +162,42 @@ async def _log_requests(request: Request, call_next):
         level = logging.WARNING
     else:
         level = logging.INFO
-    _req_logger.log(level, "%s %s -> %s (%.0fms)", request.method, path,
+    _req_logger.log(level, "[%s] %s %s -> %s (%.0fms)", rid, request.method, path,
                     response.status_code, dur)
     return response
+
+
+# ---- 统一错误响应: 保留 FastAPI 原有 detail 形状 (前端读 .detail), 仅追加 request_id ----
+@app.exception_handler(StarletteHTTPException)
+async def _http_exc_handler(request: Request, exc: StarletteHTTPException):
+    rid = getattr(request.state, "request_id", request_id_ctx.get())
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": exc.detail, "request_id": rid},
+        headers={"X-Request-ID": rid, **(exc.headers or {})},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def _validation_exc_handler(request: Request, exc: RequestValidationError):
+    rid = getattr(request.state, "request_id", request_id_ctx.get())
+    return JSONResponse(
+        status_code=422,
+        content={"detail": exc.errors(), "request_id": rid},
+        headers={"X-Request-ID": rid},
+    )
+
+
+@app.exception_handler(Exception)
+async def _unhandled_exc_handler(request: Request, exc: Exception):
+    rid = getattr(request.state, "request_id", request_id_ctx.get())
+    logging.getLogger("panse.error").exception("[%s] 未处理异常 %s %s", rid,
+                                                request.method, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "服务器内部错误，请稍后重试或联系管理员。", "request_id": rid},
+        headers={"X-Request-ID": rid},
+    )
 
 # Phase 6 P0: 限速 (screenshots / importer 防刷)
 from app.rate_limit import install_rate_limit  # noqa: E402
