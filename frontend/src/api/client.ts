@@ -9,3 +9,4 @@ export * from './operations';
 export * from './system';
 export * from './importer';
 export * from './screenshots';
+export * from './taobaoExport';

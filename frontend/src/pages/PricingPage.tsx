@@ -11,10 +11,11 @@ import {
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
-import { DownloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined } from '@ant-design/icons';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -23,6 +24,8 @@ import {
   listPricingSkus,
   listPricingTemplates,
   updatePricingSku,
+  listTaobaoExportTypes,
+  downloadTaobaoExport,
 } from '../api/client';
 
 const PAGE_SIZE = 50;
