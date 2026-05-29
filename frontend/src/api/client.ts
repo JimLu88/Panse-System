@@ -2024,6 +2024,53 @@ export const downloadPricingTemplate = (key: string) =>
     })
     .then(r => r.data as Blob);
 
+// -- 淘宝商品导出对应表 (Task 5)
+export interface TaobaoListing {
+  id: number;
+  taobao_item_id: string;
+  taobao_sku_id: string | null;
+  title: string | null;
+  merchant_code: string | null;
+  sku_spec: string | null;
+  category_name: string | null;
+  list_price: string | null;
+  sku_price: string | null;
+  stock: number | null;
+  sku_code: string | null;
+  product_code: string | null;
+  matched: boolean;
+}
+export interface TaobaoImportResult {
+  inserted: number;
+  updated: number;
+  matched: number;
+  total: number;
+  warnings: string[];
+}
+export const importTaobaoExport = (file: File) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api
+    .post<TaobaoImportResult>('/api/taobao-listings/import', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then(r => r.data);
+};
+export const listTaobaoListings = (params: {
+  q?: string;
+  matched?: boolean;
+  limit?: number;
+  offset?: number;
+}) =>
+  api
+    .get<{ total: number; matched: number; items: TaobaoListing[] }>('/api/taobao-listings', { params })
+    .then(r => r.data);
+export const updateTaobaoListing = (
+  id: number,
+  patch: { sku_code?: string; product_code?: string },
+) => api.patch<TaobaoListing>(`/api/taobao-listings/${id}`, patch).then(r => r.data);
+
 // -- 库存可编辑 (盘库/纠错: 物理库存 + 锁定库存 + 备注)
 export const updatePartInventory = (
   id: number,

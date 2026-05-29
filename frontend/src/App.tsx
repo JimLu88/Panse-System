@@ -41,6 +41,7 @@ const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
+const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 
 const { Header, Content } = Layout;
 
@@ -93,6 +94,7 @@ export default function App() {
       children: [
         { key: 'products', label: <Link to="/products">产品总表</Link> },
         { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
+        { key: 'taobao-listings', label: <Link to="/taobao-listings">淘宝对应表</Link> },
         { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
         { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
@@ -209,6 +211,7 @@ export default function App() {
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/importer" element={<ImporterPage />} />
+            <Route path="/taobao-listings" element={<TaobaoListingsPage />} />
             <Route path="/ai" element={<AiAssistantPage />} />
             <Route path="/marketing" element={<MarketingPage />} />
             <Route path="/exceptions" element={<ExceptionsPage />} />

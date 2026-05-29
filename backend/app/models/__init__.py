@@ -46,9 +46,11 @@ from app.models.marketing import (
     WoodLoss,
 )
 from app.models.pricing import PricingSku
+from app.models.taobao_listing import TaobaoListing
 
 __all__ = [
     "Base",
+    "TaobaoListing",
     "Material",
     "PartInventory",
     "ProductInventory",

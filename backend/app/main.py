@@ -61,6 +61,7 @@ from app.api import scheduler as scheduler_api
 from app.api import screenshots as screenshots_api
 from app.api import suppliers as suppliers_api
 from app.api import purchases as purchases_api
+from app.api import taobao_listings as taobao_listings_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
 
@@ -240,6 +241,7 @@ app.include_router(pricing_list_api.router)
 app.include_router(search_api.router)
 app.include_router(approvals_api.router)
 app.include_router(dashboard_api.router)
+app.include_router(taobao_listings_api.router)
 
 
 @app.get("/api/health")
