@@ -250,6 +250,7 @@ def commit_sheet(
     sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> ImportReport:
     """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消).
 
@@ -287,16 +288,19 @@ def commit_sheet(
             auto_match_orders=auto_match_orders,
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
+            import_batch_id=import_batch_id,
         )
     elif entity_type == "factory_order":
         _commit_factory_orders(db, rows=rows, mapping=mapping, report=report,
                                progress_callback=progress_callback,
-                               cancel_callback=cancel_callback)
+                               cancel_callback=cancel_callback,
+                               import_batch_id=import_batch_id)
     elif entity_type == "alipay_flow":
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
                              sheet_account=sheet_account,
                              progress_callback=progress_callback,
-                             cancel_callback=cancel_callback)
+                             cancel_callback=cancel_callback,
+                             import_batch_id=import_batch_id)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
@@ -307,6 +311,7 @@ def commit_sheet(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
             progress_callback=progress_callback, cancel_callback=cancel_callback,
+            import_batch_id=import_batch_id,
         )
     else:  # pragma: no cover
         raise ImporterError(f"暂不支持 {entity_type} 的入库")
@@ -480,6 +485,7 @@ def _commit_delivery_notes(
     report: ImportReport, auto_create_suppliers: bool, auto_match_orders: bool,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """同 (supplier_name, note_no) 的行聚合为一张 DeliveryNote + 多 DeliveryNoteLine."""
     groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
@@ -539,6 +545,8 @@ def _commit_delivery_notes(
         )
         db.add(n)
         db.flush()
+        if import_batch_id:
+            n.import_job_id = import_batch_id
         report.inserted_parents += 1
 
         line_total = Decimal("0")
@@ -570,6 +578,8 @@ def _commit_delivery_notes(
                         report.matched_lines += 1
                 except Exception as e:  # pragma: no cover
                     line.remark = f"匹配失败: {e}"
+            if import_batch_id:
+                line.import_job_id = import_batch_id
             db.add(line)
             report.inserted_children += 1
             if amount is not None:
@@ -606,6 +616,7 @@ def _commit_factory_orders(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     schema = get_schema("factory_order")
     total = len(rows)
@@ -654,6 +665,8 @@ def _commit_factory_orders(
         )
         db.add(fo)
         db.flush()  # flush so next _next_internal_order_no can see this row
+        if import_batch_id:
+            fo.import_job_id = import_batch_id
         report.inserted_parents += 1
 
 
@@ -665,6 +678,7 @@ def _commit_alipay_flows(
     sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """支付宝流水: (account, transaction_no) 唯一. 自动跑 smart_matching_service.run()
     给新进来的流水打标签 (factory_payment/promotion/etc).
@@ -727,6 +741,8 @@ def _commit_alipay_flows(
         )
         db.add(flow)
         db.flush()
+        if import_batch_id:
+            flow.import_job_id = import_batch_id
         fresh_ids.append(flow.id)
         report.inserted_parents += 1
 
@@ -756,6 +772,7 @@ class _GenericCtx:
     """传给 generic handler 的上下文 (冲突策略 + 收集差异)."""
     report: ImportReport
     on_conflict: str = "overwrite"   # overwrite / keep / ask
+    import_batch_id: Optional[int] = None
 
 
 def _jsonable(v: Any) -> Any:
@@ -813,6 +830,7 @@ def _commit_generic(
     on_conflict: str = "overwrite",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """7 类简单 entity (产品/物料/BOM/库存/订单/账户余额) 统一入库.
 
@@ -822,7 +840,7 @@ def _commit_generic(
     schema = get_schema(entity_type)
     total = len(rows)
     uniqueness_field = _UNIQUENESS_FIELD.get(entity_type)
-    ctx = _GenericCtx(report=report, on_conflict=on_conflict)
+    ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
     inserted, updated, skipped, conflicted = 0, 0, 0, 0
     # 合并单元格向下填充: 某些表 (如工厂对账) 只在首行写工厂名, 其余行因合并单元格读出空,
     # 这里按上一非空行的值补齐, 还原合并单元格的真实语义.
@@ -1211,7 +1229,10 @@ def _h_order(db, data, key_field, ctx=None):
                 suggestion_action="view",
                 context={"order_no": order_no},
             )
-    db.add(Order(**payload))
+    obj = Order(**payload)
+    if ctx and ctx.import_batch_id:
+        obj.import_job_id = ctx.import_batch_id
+    db.add(obj)
     return "order", "inserted"
 
 
@@ -1326,7 +1347,10 @@ def _h_factory_reconciliation(db, data, key_field, ctx=None):
     if existing:
         return "factory_reconciliation", _apply_update(
             existing, payload, ctx, "factory_reconciliations", f"{factory}|{period_end}")
-    db.add(FactoryReconciliation(**payload))
+    rec = FactoryReconciliation(**payload)
+    if ctx and ctx.import_batch_id:
+        rec.import_job_id = ctx.import_batch_id
+    db.add(rec)
     return "factory_reconciliation", "inserted"
 
 

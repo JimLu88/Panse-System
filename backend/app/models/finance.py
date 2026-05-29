@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -36,6 +36,9 @@ class AlipayFlow(Base, TimestampMixin):
     reconciliation_type: Mapped[Optional[str]] = mapped_column(String(32))
     # factory_payment / promotion / refill_compensation / logistics / install / opening / other
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
         UniqueConstraint("account", "transaction_no", name="uq_alipay_flow_acct_no"),
@@ -110,3 +113,6 @@ class FactoryReconciliation(Base, TimestampMixin):
     diff_reason: Mapped[Optional[str]] = mapped_column(Text)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

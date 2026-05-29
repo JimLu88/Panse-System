@@ -172,6 +172,7 @@ def _run_job_inline(
             sheet_name=sheet_name, entity_type=entity_type, mapping=mapping,
             auto_create_suppliers=options.get("auto_create_suppliers", True),
             auto_match_orders=options.get("auto_match_orders", True),
+            import_batch_id=job.id,
         )
         db.commit()
         job.status = "done"
@@ -261,6 +262,7 @@ def _run_job(
             auto_match_orders=options.get("auto_match_orders", True),
             progress_callback=progress,
             cancel_callback=check_cancel,
+            import_batch_id=job_id,
         )
         import_db.commit()
     except excel_importer.CancelledImport as e:

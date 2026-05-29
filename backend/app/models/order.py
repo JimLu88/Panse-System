@@ -79,6 +79,9 @@ class Order(Base, TimestampMixin):
     manual_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     signoff_questioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
     )
@@ -122,6 +125,9 @@ class FactoryOrder(Base, TimestampMixin):
     # 17:00 退款检查 → 作废工厂单时填
     source_order_id: Mapped[Optional[int]] = mapped_column(Integer)
     # 关联回 platform Order.id, 库存释放时用
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
 class PartPurchase(Base, TimestampMixin):
