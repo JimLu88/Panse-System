@@ -31,12 +31,12 @@ from app.models.taobao_listing import TaobaoListing
 
 _TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates"
 
-# 各导出类型对应的模板文件 + 数据起始行 (模板里第几行之后开始填数据, 1-based)
+# 各导出类型对应的模板文件 + 数据起始行 (1-based, 数据从该行开始写, 之前的行为表头并保留)
 # 表头占用行数 = data_start_row - 1
-_PRICE_PUBLISH_TPL = ("product_publish.xlsx", 3)        # 表头 3 行 (注意/分组/列名)
-_SINGLE_DISCOUNT_TPL = ("single_item_discount.xlsx", 1)  # 表头 1 行 (列名)
-_PROMO_SIGNUP_TPL = ("promo_signup.xlsx", 3)            # 表头 3 行 (分组/列名/说明)
-_PRODUCT_INFO_TPL = ("product_export_mapping.xlsx", 3)  # 表头 3 行 (注意/分组/列名)
+_PRICE_PUBLISH_TPL = ("product_publish.xlsx", 4)        # 表头 3 行 (注意/分组/列名), 数据从第4行
+_SINGLE_DISCOUNT_TPL = ("single_item_discount.xlsx", 2)  # 表头 1 行 (列名), 数据从第2行
+_PROMO_SIGNUP_TPL = ("promo_signup.xlsx", 4)            # 表头 3 行 (分组/列名/说明), 数据从第4行
+_PRODUCT_INFO_TPL = ("product_export_mapping.xlsx", 4)  # 表头 3 行 (注意/分组/列名), 数据从第4行
 
 # 模板缺失时的回退表头 (单行)
 _FALLBACK_PRICE_PUBLISH = ["商品id", "宝贝标题", "导购标题", "商家编码", "一口价",

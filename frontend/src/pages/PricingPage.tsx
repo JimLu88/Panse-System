@@ -129,6 +129,26 @@ export default function PricingPage() {
     }
   }
 
+  const { data: exportTypes } = useQuery({
+    queryKey: ['taobao-export-types'],
+    queryFn: listTaobaoExportTypes,
+    staleTime: 60 * 60 * 1000,
+  });
+
+  async function handleExport(exportType: string, label: string) {
+    try {
+      const blob = await downloadTaobaoExport(exportType);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `淘宝-${label}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      message.error('导出失败');
+    }
+  }
+
   const createMut = useMutation({
     mutationFn: createPricingSku,
     onSuccess: () => {
@@ -179,6 +199,20 @@ export default function PricingPage() {
           >
             <Button icon={<DownloadOutlined />}>一键模板下载</Button>
           </Dropdown>
+          <Tooltip title="把当前系统定价数据填入淘宝后台批量格式, 下载后可直接上传淘宝后台">
+            <Dropdown
+              disabled={!exportTypes || exportTypes.length === 0}
+              menu={{
+                items: (exportTypes ?? []).map((t) => ({
+                  key: t.key,
+                  label: t.label,
+                  onClick: () => handleExport(t.key, t.label),
+                })),
+              }}
+            >
+              <Button icon={<ExportOutlined />}>批量导出（填好数据）</Button>
+            </Dropdown>
+          </Tooltip>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>
             新增定价
           </Button>
