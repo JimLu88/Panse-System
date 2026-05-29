@@ -223,7 +223,6 @@ def commit_purchase(
             tracking_no=payload.tracking_no,
             freight=Decimal(str(payload.freight)) if payload.freight else None,
             total_amount=Decimal(str(payload.total_amount)) if payload.total_amount else None,
-            remark=payload.remark,
         )
         db.add(pp)
         inserted += 1
