@@ -46,6 +46,7 @@ from app.models.marketing import (
     WoodLoss,
 )
 from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 from app.models.taobao_listing import TaobaoListing
 
 __all__ = [
@@ -60,6 +61,8 @@ __all__ = [
     "FeishuSyncMap",
     "FeishuTableBinding",
     "PricingSku",
+    "PricingSkuCosts",
+    "PricingSkuPromo",
     "Order",
     "FactoryOrder",
     "PartPurchase",

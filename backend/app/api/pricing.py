@@ -13,9 +13,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 from app.services import pricing_calc_service
 
 router = APIRouter(prefix="/api/pricing-skus", tags=["pricing"])
@@ -183,6 +184,99 @@ def recompute_pricing_sku(
 
 
 # ---------------------------------------------------------------------------
+# 比例参考 — 新产品录入「大促到手价」填写时给历史分布
+#   口径: 比例 = 成本 / 大促到手价 (成本÷比例=到手价, 故比例=成本÷到手价)
+#   会计 / 物理 / 出厂 三种成本各算一组分布; 优先按类目, 数据不足回退全局
+# ---------------------------------------------------------------------------
+
+# 成本字段 → 展示名 (前端按这个 key 回填: 到手价 = 该口径成本 / 比例)
+_RATIO_CALIBERS = {
+    "accounting": ("accounting_cost", "会计总成本"),
+    "physical": ("physical_cost", "物理总成本"),
+    "factory": ("factory_cost", "总出厂成本"),
+}
+
+_MIN_SAMPLE = 5   # 同类目样本少于此数回退全局
+
+
+def _ratio_distribution(db: Session, cost_attr: str, category: Optional[str]):
+    """算某成本口径下 比例=成本/大促到手价 的分布. 返回 (top3, range, sample, used_global)."""
+    from app.models.product import Product
+
+    cost_col = getattr(PricingSku, cost_attr)
+
+    def _query(cat: Optional[str]):
+        stmt = (
+            select(cost_col, PricingSku.big_promo)
+            .where(
+                cost_col.isnot(None), cost_col > 0,
+                PricingSku.big_promo.isnot(None), PricingSku.big_promo > 0,
+            )
+        )
+        if cat:
+            stmt = stmt.join(
+                Product, Product.code == PricingSku.product_code
+            ).where(Product.category == cat)
+        return db.execute(stmt).all()
+
+    used_global = False
+    rows = _query(category) if category else []
+    if len(rows) < _MIN_SAMPLE:
+        rows = _query(None)
+        used_global = True
+
+    ratios = []
+    for cost, price in rows:
+        try:
+            r = float(cost) / float(price)
+        except (ZeroDivisionError, TypeError):
+            continue
+        if 0 < r < 5:                 # 过滤脏数据
+            ratios.append(round(r, 2))   # 取到 1% 精度做众数桶
+    sample = len(ratios)
+    if sample == 0:
+        return [], None, 0, used_global
+
+    from collections import Counter
+    counter = Counter(ratios)
+    top = [
+        {"ratio": val, "pct": round(cnt / sample * 100), "count": cnt}
+        for val, cnt in counter.most_common(3)
+    ]
+    ratios.sort()
+    # 中间 80% 区间 (p10–p90) 给「区间」展示
+    lo = ratios[int(sample * 0.1)]
+    hi = ratios[min(sample - 1, int(sample * 0.9))]
+    rng = {"low": lo, "high": hi, "pct": 80}
+    return top, rng, sample, used_global
+
+
+@router.get("/ratio-hints", tags=["pricing"])
+def ratio_hints(
+    category: Optional[str] = Query(None, description="类目名 (如 卧室-床), 优先按类目统计"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """新产品录入填「大促到手价」时的历史比例参考.
+
+    比例 = 成本 / 大促到手价。前端点某条 → 到手价 = 该口径成本 / 比例。
+    会计/物理/出厂 三口径各给 Top3 + 区间; 同类目样本不足自动回退全局。
+    """
+    calibers: dict[str, dict] = {}
+    for key, (attr, label) in _RATIO_CALIBERS.items():
+        top, rng, sample, used_global = _ratio_distribution(db, attr, category)
+        calibers[key] = {
+            "label": label,
+            "cost_field": attr,
+            "sample": sample,
+            "used_global": used_global,
+            "top": top,
+            "range": rng,
+        }
+    return {"category": category, "calibers": calibers}
+
+
+# ---------------------------------------------------------------------------
 # 淘宝批量操作模板下载 — 一键模板按钮用
 # ---------------------------------------------------------------------------
 
@@ -242,3 +336,222 @@ def download_pricing_template(key: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"{meta['label']}.xlsx",
     )
+
+
+# ---------------------------------------------------------------------------
+# 配件成本拆分 — /api/pricing-skus/{sku_code}/costs
+# ---------------------------------------------------------------------------
+
+class PricingSkuCostsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku_code: str
+    rock_slab: Optional[Decimal] = None
+    drawer_rail: Optional[Decimal] = None
+    led_strip: Optional[Decimal] = None
+    glass: Optional[Decimal] = None
+    electric_rail: Optional[Decimal] = None
+    packing_sheet: Optional[Decimal] = None
+    iron_pin: Optional[Decimal] = None
+    connector: Optional[Decimal] = None
+    aluminum_rail: Optional[Decimal] = None
+    plastic_rail: Optional[Decimal] = None
+    mini_handle: Optional[Decimal] = None
+    nail_free_glue: Optional[Decimal] = None
+    engraving: Optional[Decimal] = None
+    acrylic_strip: Optional[Decimal] = None
+    embedded_sleeve: Optional[Decimal] = None
+    cable_mgmt: Optional[Decimal] = None
+    back_panel: Optional[Decimal] = None
+    stainless_trim: Optional[Decimal] = None
+    leg: Optional[Decimal] = None
+    soft_pack: Optional[Decimal] = None
+    bed_board: Optional[Decimal] = None
+    other_cost: Optional[Decimal] = None
+    other_desc: Optional[str] = None
+    parts_remark: Optional[str] = None
+
+
+class PricingSkuCostsIn(BaseModel):
+    rock_slab: Optional[Decimal] = None
+    drawer_rail: Optional[Decimal] = None
+    led_strip: Optional[Decimal] = None
+    glass: Optional[Decimal] = None
+    electric_rail: Optional[Decimal] = None
+    packing_sheet: Optional[Decimal] = None
+    iron_pin: Optional[Decimal] = None
+    connector: Optional[Decimal] = None
+    aluminum_rail: Optional[Decimal] = None
+    plastic_rail: Optional[Decimal] = None
+    mini_handle: Optional[Decimal] = None
+    nail_free_glue: Optional[Decimal] = None
+    engraving: Optional[Decimal] = None
+    acrylic_strip: Optional[Decimal] = None
+    embedded_sleeve: Optional[Decimal] = None
+    cable_mgmt: Optional[Decimal] = None
+    back_panel: Optional[Decimal] = None
+    stainless_trim: Optional[Decimal] = None
+    leg: Optional[Decimal] = None
+    soft_pack: Optional[Decimal] = None
+    bed_board: Optional[Decimal] = None
+    other_cost: Optional[Decimal] = None
+    other_desc: Optional[str] = None
+    parts_remark: Optional[str] = None
+
+
+def _get_sku_or_404(db: Session, sku_code: str) -> PricingSku:
+    sku = db.query(PricingSku).filter(PricingSku.sku_code == sku_code).first()
+    if not sku:
+        raise HTTPException(404, f"PricingSku '{sku_code}' not found")
+    return sku
+
+
+@router.get("/{sku_code}/costs", response_model=PricingSkuCostsOut)
+def get_sku_costs(
+    sku_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    row = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if not row:
+        raise HTTPException(404, f"No costs record for '{sku_code}'")
+    return PricingSkuCostsOut.model_validate(row)
+
+
+@router.post("/{sku_code}/costs", response_model=PricingSkuCostsOut, status_code=201)
+def create_sku_costs(
+    sku_code: str,
+    body: PricingSkuCostsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    existing = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if existing:
+        raise HTTPException(400, f"costs record for '{sku_code}' already exists, use PATCH")
+    sku = _get_sku_or_404(db, sku_code)
+    costs = PricingSkuCosts(sku_code=sku_code, **body.model_dump(exclude_none=True))
+    db.add(costs)
+    pricing_calc_service.recompute_costs(costs, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(costs)
+    return PricingSkuCostsOut.model_validate(costs)
+
+
+@router.patch("/{sku_code}/costs", response_model=PricingSkuCostsOut)
+def upsert_sku_costs(
+    sku_code: str,
+    body: PricingSkuCostsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    sku = _get_sku_or_404(db, sku_code)
+    costs = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if not costs:
+        costs = PricingSkuCosts(sku_code=sku_code)
+        db.add(costs)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(costs, k, v)
+    pricing_calc_service.recompute_costs(costs, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(costs)
+    return PricingSkuCostsOut.model_validate(costs)
+
+
+# ---------------------------------------------------------------------------
+# 活动价格表 — /api/pricing-skus/{sku_code}/promo
+# ---------------------------------------------------------------------------
+
+class PricingSkuPromoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku_code: str
+    taobao_item_id: Optional[str] = None
+    taobao_sku_id: Optional[str] = None
+    taobao_activity_price: Optional[Decimal] = None
+    shop_promo_rate: Optional[Decimal] = None
+    shop_internal_promo: Optional[Decimal] = None
+    shop_internal_final: Optional[Decimal] = None
+    mid_shop_rate: Optional[Decimal] = None
+    mid_buyer_price: Optional[Decimal] = None
+    mid_shop_receipt: Optional[Decimal] = None
+    mid_vip_final: Optional[Decimal] = None
+    big_shop_rate: Optional[Decimal] = None
+    big_buyer_price: Optional[Decimal] = None
+    big_shop_receipt: Optional[Decimal] = None
+    big_vip_final: Optional[Decimal] = None
+    xhs_item_id: Optional[str] = None
+    xhs_sku_name: Optional[str] = None
+    xhs_sku_id: Optional[str] = None
+    xhs_list_price: Optional[Decimal] = None
+    xhs_activity_price: Optional[Decimal] = None
+    xhs_promo_discount: Optional[Decimal] = None
+    xhs_promo_price: Optional[Decimal] = None
+
+
+class PricingSkuPromoIn(BaseModel):
+    taobao_item_id: Optional[str] = None
+    taobao_sku_id: Optional[str] = None
+    shop_promo_rate: Optional[Decimal] = None
+    shop_internal_promo: Optional[Decimal] = None
+    mid_shop_rate: Optional[Decimal] = None
+    big_shop_rate: Optional[Decimal] = None
+    xhs_item_id: Optional[str] = None
+    xhs_sku_name: Optional[str] = None
+    xhs_sku_id: Optional[str] = None
+    xhs_activity_price: Optional[Decimal] = None
+    xhs_promo_discount: Optional[Decimal] = None
+
+
+@router.get("/{sku_code}/promo", response_model=PricingSkuPromoOut)
+def get_sku_promo(
+    sku_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    row = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if not row:
+        raise HTTPException(404, f"No promo record for '{sku_code}'")
+    return PricingSkuPromoOut.model_validate(row)
+
+
+@router.post("/{sku_code}/promo", response_model=PricingSkuPromoOut, status_code=201)
+def create_sku_promo(
+    sku_code: str,
+    body: PricingSkuPromoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    existing = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if existing:
+        raise HTTPException(400, f"promo record for '{sku_code}' already exists, use PATCH")
+    sku = _get_sku_or_404(db, sku_code)
+    promo = PricingSkuPromo(sku_code=sku_code, **body.model_dump(exclude_none=True))
+    db.add(promo)
+    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(promo)
+    return PricingSkuPromoOut.model_validate(promo)
+
+
+@router.patch("/{sku_code}/promo", response_model=PricingSkuPromoOut)
+def upsert_sku_promo(
+    sku_code: str,
+    body: PricingSkuPromoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    sku = _get_sku_or_404(db, sku_code)
+    promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if not promo:
+        promo = PricingSkuPromo(sku_code=sku_code)
+        db.add(promo)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(promo, k, v)
+    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(promo)
+    return PricingSkuPromoOut.model_validate(promo)
