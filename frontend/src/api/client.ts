@@ -1668,6 +1668,42 @@ export const commitPurchaseScreenshot = (payload: {
     )
     .then((r) => r.data);
 
+// ----- 工厂对账单截图 (Task 3) -----
+export interface FactoryReconRowParsed {
+  factory_name: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  order_amount?: number | null;
+  bill_amount?: number | null;
+  paid_amount?: number | null;
+  alipay_flow_no?: string | null;
+  remark?: string | null;
+  warnings?: string[];
+}
+export interface FactoryReconParseResp {
+  image_b64: string;
+  mime: string;
+  rows: FactoryReconRowParsed[];
+  ocr_warnings: string[];
+}
+export const parseFactoryReconScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<FactoryReconParseResp>('/api/screenshots/factory-recon/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+export const commitFactoryReconScreenshot = (rows: FactoryReconRowParsed[]) =>
+  api
+    .post<{ inserted: number; skipped: string[] }>(
+      '/api/screenshots/factory-recon/commit',
+      { rows },
+    )
+    .then((r) => r.data);
+
 // ----- 销售报表 / 资产 / 预测 (Phase 4) -----
 export interface SalesSummary {
   period_start: string;
