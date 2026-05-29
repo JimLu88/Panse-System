@@ -43,6 +43,7 @@ class RankedProductOut(BaseModel):
 def list_products(
     q: Optional[str] = Query(None),
     brand: Optional[str] = None,
+    sort: Optional[str] = Query(None, description="recent=按最近更新倒序 (新产品录入参考下拉用)"),
     limit: int = Query(200, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -52,7 +53,11 @@ def list_products(
         stmt = stmt.where(or_(Product.code.ilike(f"%{q}%"), Product.name.ilike(f"%{q}%")))
     if brand:
         stmt = stmt.where(Product.brand == brand)
-    stmt = stmt.order_by(Product.code).limit(limit).offset(offset)
+    if sort == "recent":
+        stmt = stmt.order_by(Product.updated_at.desc())
+    else:
+        stmt = stmt.order_by(Product.code)
+    stmt = stmt.limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
 
 

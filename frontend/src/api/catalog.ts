@@ -148,6 +148,35 @@ export interface Product {
 export const listProducts = (q?: string) =>
   api.get<Product[]>('/api/products', { params: { q, limit: 500 } }).then((r) => r.data);
 
+// 最近更新产品 (新产品录入「参考已有产品」聚焦时的默认下拉)
+export const listRecentProducts = (limit = 10) =>
+  api
+    .get<Product[]>('/api/products', { params: { sort: 'recent', limit } })
+    .then((r) => r.data);
+
+// 比例参考: 大促到手价的历史分布 (会计/物理/出厂三口径)
+export interface RatioHintItem {
+  ratio: number;
+  pct: number;
+  count: number;
+}
+export interface RatioCaliber {
+  label: string;
+  cost_field: string;
+  sample: number;
+  used_global: boolean;
+  top: RatioHintItem[];
+  range: { low: number; high: number; pct: number } | null;
+}
+export interface RatioHints {
+  category: string | null;
+  calibers: Record<string, RatioCaliber>;
+}
+export const getRatioHints = (category?: string) =>
+  api
+    .get<RatioHints>('/api/pricing-skus/ratio-hints', { params: { category } })
+    .then((r) => r.data);
+
 export const createProduct = (payload: {
   name: string;
   brand: string;

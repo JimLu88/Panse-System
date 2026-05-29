@@ -8,19 +8,24 @@ import {
   Form,
   Input,
   InputNumber,
+  Popover,
   Space,
   Table,
+  Tag,
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
-import { useMutation } from '@tanstack/react-query';
+import { BulbOutlined, DeleteOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
+import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   ComposeBomLine,
   ComposePricingSku,
+  RatioHints,
   composeProduct,
+  getRatioHints,
   listMaterials,
   listProducts,
+  listRecentProducts,
   loadProductReference,
 } from '../api/client';
 
@@ -32,18 +37,135 @@ type SkuRow = ComposePricingSku & { _key: string };
 const emptyBom = (): BomRow => ({ _key: nextKey(), material_code: '', qty_per_product: 1 });
 const emptySku = (): SkuRow => ({ _key: nextKey(), sku_code: '' });
 
+// 大促到手价单元格: 输入框 + 聚焦时浮出「历史比例参考」, 点某条按 成本/比例 回填
+function BigPromoCell({
+  row,
+  hints,
+  category,
+  onChange,
+}: {
+  row: SkuRow;
+  hints?: RatioHints;
+  category?: string;
+  onChange: (n: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const accounting = row.accounting_cost == null || row.accounting_cost === '' ? null : Number(row.accounting_cost);
+  const physical = row.physical_cost == null || row.physical_cost === '' ? null : Number(row.physical_cost);
+
+  // 各口径对应这一行能用来回填的成本值 (出厂成本本表未录入, 仅作参考展示)
+  const costFor: Record<string, number | null> = { accounting, physical, factory: null };
+
+  const fill = (costField: string, ratio: number) => {
+    const cost = costFor[costField];
+    if (cost == null) {
+      message.warning('本行该口径成本未填, 无法按比例回填 (可手动输入到手价)');
+      return;
+    }
+    if (ratio <= 0) return;
+    onChange(Math.round((cost / ratio) * 100) / 100);
+    setOpen(false);
+  };
+
+  const hintContent = () => {
+    if (!hints) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+    const calibers = Object.entries(hints.calibers).filter(([, c]) => c.sample > 0);
+    if (calibers.length === 0) {
+      return <Typography.Text type="secondary">暂无历史数据可参考</Typography.Text>;
+    }
+    return (
+      <div style={{ width: 320 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          比例 = 成本 ÷ 大促到手价。点某条按「该口径成本 ÷ 比例」回填到手价。
+          {hints.category ? `（类目: ${hints.category}）` : '（全部产品）'}
+        </Typography.Text>
+        {calibers.map(([key, c]) => {
+          const canFill = costFor[key] != null;
+          return (
+            <div key={key} style={{ marginTop: 10 }}>
+              <Space size={6}>
+                <Typography.Text strong style={{ fontSize: 13 }}>{c.label}</Typography.Text>
+                <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                  样本 {c.sample}{c.used_global ? ' · 全局' : ''}
+                </Typography.Text>
+              </Space>
+              <div style={{ marginTop: 4 }}>
+                {c.top.map((t) => (
+                  <Tag
+                    key={t.ratio}
+                    color={canFill ? 'blue' : 'default'}
+                    style={{ cursor: canFill ? 'pointer' : 'not-allowed', marginBottom: 4 }}
+                    onClick={() => canFill && fill(key, t.ratio)}
+                  >
+                    {Math.round(t.ratio * 100)}% · {t.pct}% 产品
+                  </Tag>
+                ))}
+                {c.range && (
+                  <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 4 }}>
+                    中间 80% 落在 {Math.round(c.range.low * 100)}%–{Math.round(c.range.high * 100)}%
+                  </Typography.Text>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    );
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger={[]}
+      placement="bottomLeft"
+      title={
+        <Space size={4}>
+          <BulbOutlined style={{ color: '#faad14' }} />
+          <span style={{ fontSize: 13 }}>历史比例参考{category ? `（${category}）` : ''}</span>
+        </Space>
+      }
+      content={hintContent()}
+    >
+      <InputNumber
+        value={row.big_promo == null || row.big_promo === '' ? undefined : Number(row.big_promo)}
+        size="small"
+        min={0}
+        step={0.01}
+        style={{ width: 100 }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 200)}
+        onChange={(n) => onChange(n == null ? null : Number(n))}
+      />
+    </Popover>
+  );
+}
+
 export default function NewProductComposerPage() {
   const [form] = Form.useForm();
   const [bom, setBom] = useState<BomRow[]>([emptyBom()]);
   const [skus, setSkus] = useState<SkuRow[]>([emptySku()]);
+  const categoryLabel = Form.useWatch('category_label', form) as string | undefined;
 
-  // 参考产品搜索
+  // 参考产品搜索 (空输入时显示最近更新)
   const [refOptions, setRefOptions] = useState<{ value: string; label: string }[]>([]);
   // 物料搜索 (BOM 物料编码联想)
   const [matOptions, setMatOptions] = useState<{ value: string; label: string; name: string; unit: string | null }[]>([]);
 
+  // 比例参考分布 (按当前类目, 类目变了自动重拉)
+  const { data: ratioHints } = useQuery({
+    queryKey: ['ratio-hints', categoryLabel ?? ''],
+    queryFn: () => getRatioHints(categoryLabel || undefined),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const showRecent = async () => {
+    const list = await listRecentProducts(10);
+    setRefOptions(list.map((p) => ({ value: p.code, label: `${p.code} — ${p.name}（最近更新）` })));
+  };
+
   const searchRef = async (kw: string) => {
-    if (!kw) { setRefOptions([]); return; }
+    if (!kw) { showRecent(); return; }
     const list = await listProducts(kw);
     setRefOptions(list.slice(0, 20).map((p) => ({ value: p.code, label: `${p.code} — ${p.name}` })));
   };
@@ -179,8 +301,15 @@ export default function NewProductComposerPage() {
       render: (_: any, row: SkuRow) => numInput(row.small_promo, (n) => setSkuRow(row._key, { small_promo: n })) },
     { title: '中促', dataIndex: 'mid_promo', width: 90,
       render: (_: any, row: SkuRow) => numInput(row.mid_promo, (n) => setSkuRow(row._key, { mid_promo: n })) },
-    { title: '大促', dataIndex: 'big_promo', width: 90,
-      render: (_: any, row: SkuRow) => numInput(row.big_promo, (n) => setSkuRow(row._key, { big_promo: n })) },
+    { title: <span>大促 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'big_promo', width: 110,
+      render: (_: any, row: SkuRow) => (
+        <BigPromoCell
+          row={row}
+          hints={ratioHints}
+          category={categoryLabel}
+          onChange={(n) => setSkuRow(row._key, { big_promo: n })}
+        />
+      ) },
     { title: '会计成本', dataIndex: 'accounting_cost', width: 100,
       render: (_: any, row: SkuRow) => numInput(row.accounting_cost, (n) => setSkuRow(row._key, { accounting_cost: n })) },
     { title: '物理成本', dataIndex: 'physical_cost', width: 100,
@@ -205,16 +334,17 @@ export default function NewProductComposerPage() {
         type="info"
         showIcon
         message="一个界面录完产品主数据、BOM 物料清单、定价 SKU，提交时在同一事务里创建，任一步失败全部回滚。"
-        description="可先选「参考已有产品」把 BOM 和定价带进来，改改再存为新品。产品编码按 品牌+年份+类目 自动生成。"
+        description="可先选「参考已有产品」把 BOM 和定价带进来，改改再存为新品。大促价填写时点 💡 看同类目历史比例参考。产品编码按 品牌+年份+类目 自动生成。"
       />
 
       <Card size="small" title="参考已有产品（可选）">
         <AutoComplete
-          style={{ width: 420 }}
+          style={{ width: 460 }}
           options={refOptions}
           onSearch={searchRef}
+          onFocus={() => { if (refOptions.length === 0) showRecent(); }}
           onSelect={(code) => refMut.mutate(code)}
-          placeholder="搜产品编码 / 名称，选中即带入 BOM 与定价"
+          placeholder="不知道编码? 直接点这里看最近更新的产品，或搜编码 / 名称"
         />
       </Card>
 
@@ -257,7 +387,10 @@ export default function NewProductComposerPage() {
         title="③ 定价 SKU"
         extra={<Button size="small" icon={<PlusOutlined />} onClick={() => setSkus((p) => [...p, emptySku()])}>加一行</Button>}
       >
-        <Table rowKey="_key" size="small" dataSource={skus} columns={skuColumns as any} pagination={false} scroll={{ x: 1100 }} />
+        <Table rowKey="_key" size="small" dataSource={skus} columns={skuColumns as any} pagination={false} scroll={{ x: 1120 }} />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          💡 大促价: 点输入框看「会计/物理/出厂」三口径的历史比例分布，点蓝色标签按 成本÷比例 自动回填。
+        </Typography.Text>
       </Card>
 
       <Divider style={{ margin: '4px 0' }} />

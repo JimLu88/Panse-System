@@ -183,6 +183,99 @@ def recompute_pricing_sku(
 
 
 # ---------------------------------------------------------------------------
+# 比例参考 — 新产品录入「大促到手价」填写时给历史分布
+#   口径: 比例 = 成本 / 大促到手价 (成本÷比例=到手价, 故比例=成本÷到手价)
+#   会计 / 物理 / 出厂 三种成本各算一组分布; 优先按类目, 数据不足回退全局
+# ---------------------------------------------------------------------------
+
+# 成本字段 → 展示名 (前端按这个 key 回填: 到手价 = 该口径成本 / 比例)
+_RATIO_CALIBERS = {
+    "accounting": ("accounting_cost", "会计总成本"),
+    "physical": ("physical_cost", "物理总成本"),
+    "factory": ("factory_cost", "总出厂成本"),
+}
+
+_MIN_SAMPLE = 5   # 同类目样本少于此数回退全局
+
+
+def _ratio_distribution(db: Session, cost_attr: str, category: Optional[str]):
+    """算某成本口径下 比例=成本/大促到手价 的分布. 返回 (top3, range, sample, used_global)."""
+    from app.models.product import Product
+
+    cost_col = getattr(PricingSku, cost_attr)
+
+    def _query(cat: Optional[str]):
+        stmt = (
+            select(cost_col, PricingSku.big_promo)
+            .where(
+                cost_col.isnot(None), cost_col > 0,
+                PricingSku.big_promo.isnot(None), PricingSku.big_promo > 0,
+            )
+        )
+        if cat:
+            stmt = stmt.join(
+                Product, Product.code == PricingSku.product_code
+            ).where(Product.category == cat)
+        return db.execute(stmt).all()
+
+    used_global = False
+    rows = _query(category) if category else []
+    if len(rows) < _MIN_SAMPLE:
+        rows = _query(None)
+        used_global = True
+
+    ratios = []
+    for cost, price in rows:
+        try:
+            r = float(cost) / float(price)
+        except (ZeroDivisionError, TypeError):
+            continue
+        if 0 < r < 5:                 # 过滤脏数据
+            ratios.append(round(r, 2))   # 取到 1% 精度做众数桶
+    sample = len(ratios)
+    if sample == 0:
+        return [], None, 0, used_global
+
+    from collections import Counter
+    counter = Counter(ratios)
+    top = [
+        {"ratio": val, "pct": round(cnt / sample * 100), "count": cnt}
+        for val, cnt in counter.most_common(3)
+    ]
+    ratios.sort()
+    # 中间 80% 区间 (p10–p90) 给「区间」展示
+    lo = ratios[int(sample * 0.1)]
+    hi = ratios[min(sample - 1, int(sample * 0.9))]
+    rng = {"low": lo, "high": hi, "pct": 80}
+    return top, rng, sample, used_global
+
+
+@router.get("/ratio-hints", tags=["pricing"])
+def ratio_hints(
+    category: Optional[str] = Query(None, description="类目名 (如 卧室-床), 优先按类目统计"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """新产品录入填「大促到手价」时的历史比例参考.
+
+    比例 = 成本 / 大促到手价。前端点某条 → 到手价 = 该口径成本 / 比例。
+    会计/物理/出厂 三口径各给 Top3 + 区间; 同类目样本不足自动回退全局。
+    """
+    calibers: dict[str, dict] = {}
+    for key, (attr, label) in _RATIO_CALIBERS.items():
+        top, rng, sample, used_global = _ratio_distribution(db, attr, category)
+        calibers[key] = {
+            "label": label,
+            "cost_field": attr,
+            "sample": sample,
+            "used_global": used_global,
+            "top": top,
+            "range": rng,
+        }
+    return {"category": category, "calibers": calibers}
+
+
+# ---------------------------------------------------------------------------
 # 淘宝批量操作模板下载 — 一键模板按钮用
 # ---------------------------------------------------------------------------
 
