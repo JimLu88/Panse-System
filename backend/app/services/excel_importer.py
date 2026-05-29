@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Optional
 
@@ -249,6 +250,7 @@ def commit_sheet(
     sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> ImportReport:
     """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消).
 
@@ -286,16 +288,19 @@ def commit_sheet(
             auto_match_orders=auto_match_orders,
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
+            import_batch_id=import_batch_id,
         )
     elif entity_type == "factory_order":
         _commit_factory_orders(db, rows=rows, mapping=mapping, report=report,
                                progress_callback=progress_callback,
-                               cancel_callback=cancel_callback)
+                               cancel_callback=cancel_callback,
+                               import_batch_id=import_batch_id)
     elif entity_type == "alipay_flow":
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
                              sheet_account=sheet_account,
                              progress_callback=progress_callback,
-                             cancel_callback=cancel_callback)
+                             cancel_callback=cancel_callback,
+                             import_batch_id=import_batch_id)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
@@ -306,6 +311,7 @@ def commit_sheet(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
             progress_callback=progress_callback, cancel_callback=cancel_callback,
+            import_batch_id=import_batch_id,
         )
     else:  # pragma: no cover
         raise ImporterError(f"暂不支持 {entity_type} 的入库")
@@ -386,6 +392,12 @@ def _coerce(value: Any, field_type: str, *, label: str) -> Any:
             return value
         if isinstance(value, datetime):
             return value.date()
+        # Excel 日期序列号 (如 46140) → 真实日期 (Excel 纪元 1899-12-30)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return (datetime(1899, 12, 30) + timedelta(days=float(value))).date()
+            except (ValueError, OverflowError):
+                pass
         s = str(value).strip()
         for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y年%m月%d日"):
             try:
@@ -398,6 +410,12 @@ def _coerce(value: Any, field_type: str, *, label: str) -> Any:
     if field_type == "datetime":
         if isinstance(value, datetime):
             return value
+        # Excel 日期序列号 → datetime (含小数=时间部分)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return datetime(1899, 12, 30) + timedelta(days=float(value))
+            except (ValueError, OverflowError):
+                pass
         return None
     if field_type == "bool":
         if isinstance(value, bool):
@@ -467,6 +485,7 @@ def _commit_delivery_notes(
     report: ImportReport, auto_create_suppliers: bool, auto_match_orders: bool,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """同 (supplier_name, note_no) 的行聚合为一张 DeliveryNote + 多 DeliveryNoteLine."""
     groups: dict[tuple[str, str], list[tuple[dict, dict]]] = {}
@@ -526,6 +545,8 @@ def _commit_delivery_notes(
         )
         db.add(n)
         db.flush()
+        if import_batch_id:
+            n.import_job_id = import_batch_id
         report.inserted_parents += 1
 
         line_total = Decimal("0")
@@ -557,6 +578,8 @@ def _commit_delivery_notes(
                         report.matched_lines += 1
                 except Exception as e:  # pragma: no cover
                     line.remark = f"匹配失败: {e}"
+            if import_batch_id:
+                line.import_job_id = import_batch_id
             db.add(line)
             report.inserted_children += 1
             if amount is not None:
@@ -569,13 +592,35 @@ def _commit_delivery_notes(
 # ----------------------------- factory_order --------------------- #
 
 
+def _next_internal_order_no(db: Session, year: int) -> str:
+    """生成下一个内部单号, 格式: Panse{YYYY}{NNNN}, 如 Panse20260001."""
+    from sqlalchemy import func, text
+    prefix = f"Panse{year}"
+    # 查找当年最大序号
+    result = db.execute(
+        select(FactoryOrder.internal_order_no).where(
+            FactoryOrder.internal_order_no.like(f"{prefix}%")
+        ).order_by(FactoryOrder.internal_order_no.desc()).limit(1)
+    ).scalar_one_or_none()
+    if result:
+        try:
+            seq = int(result[len(prefix):]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    else:
+        seq = 1
+    return f"{prefix}{seq:04d}"
+
+
 def _commit_factory_orders(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     schema = get_schema("factory_order")
     total = len(rows)
+    current_year = datetime.now().year
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
             if progress_callback:
@@ -599,8 +644,11 @@ def _commit_factory_orders(
             report.warnings.append(f"已存在 工厂订单号 {fo_no}, 跳过")
             report.skipped_rows += 1
             continue
+        # 自动生成内部单号 (若行内未提供)
+        internal_no = projected.get("internal_order_no") or _next_internal_order_no(db, current_year)
         fo = FactoryOrder(
             factory_order_no=fo_no,
+            internal_order_no=internal_no,
             platform_order_no=projected.get("platform_order_no"),
             factory_name=projected.get("factory_name"),
             order_date=projected.get("order_date"),
@@ -616,6 +664,9 @@ def _commit_factory_orders(
             remark=projected.get("remark"),
         )
         db.add(fo)
+        db.flush()  # flush so next _next_internal_order_no can see this row
+        if import_batch_id:
+            fo.import_job_id = import_batch_id
         report.inserted_parents += 1
 
 
@@ -627,6 +678,7 @@ def _commit_alipay_flows(
     sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """支付宝流水: (account, transaction_no) 唯一. 自动跑 smart_matching_service.run()
     给新进来的流水打标签 (factory_payment/promotion/etc).
@@ -636,6 +688,7 @@ def _commit_alipay_flows(
     schema = get_schema("alipay_flow")
     fresh_ids: list[int] = []
     total = len(rows)
+    counterparty_filled = 0   # 交易对象为空被置'待确认'的行数
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
             if progress_callback:
@@ -647,6 +700,13 @@ def _commit_alipay_flows(
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
             report.skipped_rows += 1
             continue
+        # 清洗: 流水号/关联订单号去全部空格; 交易对象(公司名)/交易账户(邮箱)去内部空格
+        projected["transaction_no"] = _strip_all_ws(projected.get("transaction_no"))
+        projected["related_order_no"] = _strip_all_ws(projected.get("related_order_no"))
+        if projected.get("counterparty"):
+            projected["counterparty"] = _strip_all_ws(projected["counterparty"])
+        if projected.get("counterparty_account"):
+            projected["counterparty_account"] = _strip_all_ws(projected["counterparty_account"])
         account = projected.get("account") or sheet_account
         tx_no = projected.get("transaction_no")
         amount = projected.get("amount")
@@ -654,6 +714,10 @@ def _commit_alipay_flows(
             report.skipped_rows += 1
             report.errors.append(f"第 {i + 1} 行: 账户/流水号/金额 任一为空")
             continue
+        # 交易对象为空 → 置'待确认' (爱群号等待补填的表), 汇总计数避免逐行刷异常
+        if not projected.get("counterparty"):
+            projected["counterparty"] = "待确认"
+            counterparty_filled += 1
         existing = db.execute(
             select(AlipayFlow).where(
                 AlipayFlow.account == account, AlipayFlow.transaction_no == tx_no,
@@ -677,8 +741,13 @@ def _commit_alipay_flows(
         )
         db.add(flow)
         db.flush()
+        if import_batch_id:
+            flow.import_job_id = import_batch_id
         fresh_ids.append(flow.id)
         report.inserted_parents += 1
+
+    if counterparty_filled:
+        report.warnings.append(f"{counterparty_filled} 条流水交易对象为空, 已统一置'待确认', 请后续核对补填")
 
     # 入完一次性跑智能标签 (factory_payment / promotion / logistics / salary)
     if fresh_ids:
@@ -703,6 +772,7 @@ class _GenericCtx:
     """传给 generic handler 的上下文 (冲突策略 + 收集差异)."""
     report: ImportReport
     on_conflict: str = "overwrite"   # overwrite / keep / ask
+    import_batch_id: Optional[int] = None
 
 
 def _jsonable(v: Any) -> Any:
@@ -760,6 +830,7 @@ def _commit_generic(
     on_conflict: str = "overwrite",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
+    import_batch_id: Optional[int] = None,
 ) -> None:
     """7 类简单 entity (产品/物料/BOM/库存/订单/账户余额) 统一入库.
 
@@ -769,8 +840,12 @@ def _commit_generic(
     schema = get_schema(entity_type)
     total = len(rows)
     uniqueness_field = _UNIQUENESS_FIELD.get(entity_type)
-    ctx = _GenericCtx(report=report, on_conflict=on_conflict)
+    ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
     inserted, updated, skipped, conflicted = 0, 0, 0, 0
+    # 合并单元格向下填充: 某些表 (如工厂对账) 只在首行写工厂名, 其余行因合并单元格读出空,
+    # 这里按上一非空行的值补齐, 还原合并单元格的真实语义.
+    ff_fields = _FORWARD_FILL.get(entity_type, [])
+    ff_last: dict[str, Any] = {}
     # 同一次提交内, 源表常有重复唯一键 (如产品总表按 SKU 逐行列同一产品码).
     # 全局 autoflush=False 会让逐行 select 看不到本批已 add 但未 flush 的行,
     # 导致重复键堆到最后一次 flush 撞 UNIQUE 约束崩溃. 此处临时开 autoflush,
@@ -789,6 +864,11 @@ def _commit_generic(
                 report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
                 skipped += 1
                 continue
+            for f in ff_fields:
+                if projected.get(f):
+                    ff_last[f] = projected[f]
+                elif ff_last.get(f):
+                    projected[f] = ff_last[f]
             try:
                 kind, did = _GENERIC_HANDLERS[entity_type](db, projected, uniqueness_field, ctx)
             except Exception as e:
@@ -813,6 +893,12 @@ def _commit_generic(
         report.warnings.append(f"{conflicted} 行与库内数据不同, 待人工确认 (见 conflicts)")
 
 
+# 需要合并单元格向下填充的字段 (entity_type -> [字段名])
+_FORWARD_FILL = {
+    "factory_reconciliation": ["factory_name"],
+}
+
+
 _UNIQUENESS_FIELD = {
     "product": "code",
     "material": "code",
@@ -833,6 +919,59 @@ _UNIQUENESS_FIELD = {
     "sample": "sample_no",
     "promotion_flow": None,             # 无唯一键, 直接 add
 }
+
+
+_WS_RE = re.compile(r"\s+")
+_NEWLINE_RE = re.compile(r"[\r\n]+")
+
+
+def _strip_all_ws(v: Any) -> Optional[str]:
+    """去除字符串中全部空白 (含内部空格/制表/换行). 用于流水号/订单号/邮箱等不应含空格的字段."""
+    if v is None:
+        return None
+    s = _WS_RE.sub("", str(v))
+    return s or None
+
+
+def _join_multiline(v: Any, sep: str = ",") -> Optional[str]:
+    """单元格内多行 (换行分隔多个值) → 用 sep 拼成一个值. 用于补发物流单号等."""
+    if v is None:
+        return None
+    parts = [p.strip() for p in _NEWLINE_RE.split(str(v)) if p.strip()]
+    return sep.join(parts) or None
+
+
+def _clean_text_no(v: Any) -> Optional[str]:
+    """数字型账号/编号 → 干净文本 (去掉浮点尾巴 .0, 防止手机号被存成科学计数/丢精度)."""
+    if v is None:
+        return None
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    s = str(v).strip()
+    if s.endswith(".0") and s[:-2].isdigit():
+        return s[:-2]
+    return s or None
+
+
+def _sum_opt(*vals: Any) -> Optional[Decimal]:
+    """对若干可选 Decimal 求和; 全部为 None 时返回 None (不强行写 0)."""
+    nums = [v for v in vals if v is not None]
+    if not nums:
+        return None
+    total = Decimal("0")
+    for n in nums:
+        total += Decimal(str(n))
+    return total
+
+
+def _try_parse_date(v: Any) -> Optional[date]:
+    """尽力把值解析成 date; 失败返回 None (不抛异常). 用于'备注列误填日期'的搬移."""
+    if v is None or v == "":
+        return None
+    try:
+        return _coerce(v, "date", label="date")
+    except ImporterError:
+        return None
 
 
 def _normalize_product(data: dict) -> dict:
@@ -1015,14 +1154,54 @@ def _flag_custom(db, source_table: str, source_pk, sku_code) -> None:
     )
 
 
+def _record_exc(db, source_table: str, source_pk, exc_type: str,
+                description: str, severity: str = "warning") -> None:
+    """导入时记录一条数据异常 (统一入口, 供各 handler 标记问题数据)."""
+    from app.services import exception_service
+    exception_service.record(
+        db,
+        source_table=source_table,
+        source_pk=str(source_pk) if source_pk is not None else None,
+        exception_type=exc_type,
+        severity=severity,
+        description=description,
+        suggestion_action="view",
+    )
+
+
+def _normalize_order(data: dict) -> dict:
+    """导入前规范化订单数据.
+
+    规则:
+      - platform_fee 向上取整 (ceil), 按业务惯例
+      - ship_date 为空但 tracking_no 不为空 → 用 order_date 补填 (已发货)
+    """
+    d = dict(data)
+    # 订单号/快递单号去全部空格 (跨表关联匹配靠它, 空格会导致匹配失败)
+    if d.get("order_no"):
+        d["order_no"] = _strip_all_ws(d["order_no"])
+    if d.get("tracking_no"):
+        d["tracking_no"] = _strip_all_ws(d["tracking_no"])
+    # 平台服务费向上取整
+    if d.get("platform_fee") is not None:
+        d["platform_fee"] = Decimal(str(math.ceil(float(d["platform_fee"]))))
+    # 发货日期推断: 有运单号但无发货日期 → 用下单日期作为最保守估计
+    if not d.get("ship_date") and d.get("tracking_no"):
+        if d.get("order_date"):
+            d["ship_date"] = d["order_date"]
+    return d
+
+
 def _h_order(db, data, key_field, ctx=None):
     from app.models.order import Order
+    data = _normalize_order(data)
     order_no = data.get("order_no")
     if not order_no:
         raise ImporterError("缺 order_no")
     existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
     if existing:
         return "order", "skipped"   # 已有订单不动 (避免覆盖状态)
+
     payload = {k: v for k, v in data.items() if v is not None}
     payload.setdefault("platform", "淘宝")
     payload.setdefault("qty", 1)
@@ -1032,7 +1211,28 @@ def _h_order(db, data, key_field, ctx=None):
     if _is_custom_code(db, payload.get("sku_code"), payload.get("product_code")):
         payload["is_custom"] = True
         _flag_custom(db, "orders", order_no, payload.get("sku_code"))
-    db.add(Order(**payload))
+    # 标记为补单时, 交叉核验补单记录表
+    if payload.get("is_refill"):
+        from app.models.finance import RefillRecord
+        from app.services import exception_service
+        refill_exists = db.execute(
+            select(RefillRecord).where(RefillRecord.order_no == order_no)
+        ).scalar_one_or_none()
+        if not refill_exists:
+            exception_service.record(
+                db,
+                source_table="orders",
+                source_pk=order_no,
+                exception_type="refill_record_missing",
+                severity="warning",
+                description=f"订单 {order_no} 标记为补单 (是否补单=是), 但补单记录表中未找到对应记录, 请补录。",
+                suggestion_action="view",
+                context={"order_no": order_no},
+            )
+    obj = Order(**payload)
+    if ctx and ctx.import_batch_id:
+        obj.import_job_id = ctx.import_batch_id
+    db.add(obj)
     return "order", "inserted"
 
 
@@ -1040,7 +1240,14 @@ def _h_balance(db, data, key_field, ctx=None):
     from app.models.finance import AccountBalance
     from datetime import date as _date, datetime as _dt
     _ = ctx
+    data = dict(data)
     name = data.get("account_name")
+    # 账户名整行为空 → 静默跳过 (用户要求, 不报错)
+    if not name:
+        return "balance", "skipped"
+    # 账户号是手机号被存成数字 → 强制干净文本 (去 .0, 防丢精度)
+    if data.get("account_no") is not None:
+        data["account_no"] = _clean_text_no(data["account_no"])
     year = data.get("year")
     month = data.get("month")
     # 支持 "统计日期" 单列格式：从日期自动提取年月
@@ -1084,9 +1291,20 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
 
 def _h_refill_record(db, data, key_field, ctx=None):
     from app.models.finance import RefillRecord
+    from app.models.order import Order
     order_no = data.get("order_no")
     if not order_no:
         raise ImporterError("缺 order_no")
+    # 自动从 orders 表补填 product_code / product_name / sku (若行内未提供)
+    data = dict(data)
+    if not (data.get("product_code") and data.get("product_name") and data.get("sku")):
+        matched = db.execute(
+            select(Order).where(Order.order_no == order_no)
+        ).scalar_one_or_none()
+        if matched:
+            data.setdefault("product_code", matched.product_code)
+            data.setdefault("product_name", matched.product_name)
+            data.setdefault("sku", matched.sku)
     existing = db.execute(select(RefillRecord).where(RefillRecord.order_no == order_no)).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
@@ -1096,10 +1314,28 @@ def _h_refill_record(db, data, key_field, ctx=None):
 
 
 def _h_factory_reconciliation(db, data, key_field, ctx=None):
-    from app.models.finance import FactoryReconciliation
+    from app.models.finance import AlipayFlow, FactoryReconciliation
     factory = data.get("factory_name")
     if not factory:
         raise ImporterError("缺 factory_name")
+    data = dict(data)
+    # 绑定支付宝流水号 → 自动确认实付/对账日期/对账状态=completed
+    flow_no = data.get("alipay_flow_no")
+    if flow_no:
+        flow = db.execute(
+            select(AlipayFlow).where(AlipayFlow.transaction_no == flow_no)
+        ).scalar_one_or_none()
+        if flow is not None:
+            if data.get("paid_amount") is None and flow.amount is not None:
+                data["paid_amount"] = abs(flow.amount)
+            if data.get("reconciled_at") is None and flow.transaction_time is not None:
+                data["reconciled_at"] = flow.transaction_time.date()
+            data.setdefault("status", "completed")
+        else:
+            _record_exc(db, "factory_reconciliations", flow_no, "flow_not_found",
+                        f"工厂对账绑定的支付宝流水号 {flow_no} 在流水表中未找到, 请核对.", "warning")
+    # 差异金额缺省 0 (模型已有 default, 这里显式兜底)
+    data.setdefault("diff_amount", Decimal("0"))
     period_end = data.get("period_end")
     existing = db.execute(
         select(FactoryReconciliation).where(
@@ -1111,7 +1347,10 @@ def _h_factory_reconciliation(db, data, key_field, ctx=None):
     if existing:
         return "factory_reconciliation", _apply_update(
             existing, payload, ctx, "factory_reconciliations", f"{factory}|{period_end}")
-    db.add(FactoryReconciliation(**payload))
+    rec = FactoryReconciliation(**payload)
+    if ctx and ctx.import_batch_id:
+        rec.import_job_id = ctx.import_batch_id
+    db.add(rec)
     return "factory_reconciliation", "inserted"
 
 
@@ -1120,7 +1359,28 @@ def _h_outsourcing_expense(db, data, key_field, ctx=None):
     amount = data.get("amount")
     if amount is None:
         raise ImporterError("缺 amount")
+    data = dict(data)
+    # 支付日期误填在备注列 → 搬到 payment_date, 备注清空
+    if not data.get("payment_date") and data.get("remark"):
+        moved = _try_parse_date(data["remark"])
+        if moved is not None:
+            data["payment_date"] = moved
+            data["remark"] = None
+    # 关联平台订单号为空: 工资类统一填 N/A; 其余报异常待补
+    if not data.get("related_order_no"):
+        proj = f"{data.get('project') or ''}{data.get('cost_category') or ''}"
+        if "工资" in proj:
+            data["related_order_no"] = "N/A"
+        else:
+            _record_exc(db, "outsourcing_expenses", data.get("alipay_flow_no") or data.get("payee"),
+                        "related_order_no_missing",
+                        f"外包费用 (收款人 {data.get('payee')}) 关联平台订单号为空, 请补填以便成本追溯.", "info")
     payload = {k: v for k, v in data.items() if v is not None}
+    # 支付宝流水号为空 → 报异常待回填
+    if not data.get("alipay_flow_no"):
+        _record_exc(db, "outsourcing_expenses", data.get("payee"),
+                    "alipay_flow_no_missing",
+                    f"外包费用 (收款人 {data.get('payee')}) 支付宝流水号为空, 无法与流水对账, 请回填.", "warning")
     # OutsourcingExpense 无天然唯一键 → 按 alipay_flow_no 去重(若有)
     flow_no = payload.get("alipay_flow_no")
     if flow_no:
@@ -1139,10 +1399,30 @@ def _h_aftersales(db, data, key_field, ctx=None):
     order_no = data.get("platform_order_no")
     if not order_no:
         raise ImporterError("缺 platform_order_no")
+    data = dict(data)
+    # 补发物流单号: 单元格内含换行/多个单号 → 英文逗号拼接
+    if data.get("refill_tracking_no"):
+        data["refill_tracking_no"] = _join_multiline(data["refill_tracking_no"])
+    # 售后成本公式自动核算 (为空时):
+    #   平台内售后总成本 = 订单赔付费 + 好评/差价返
+    #   平台外售后总成本 = 直接赔付客户 + 二次上门维修费 + 返厂打包运费
+    if data.get("in_platform_total") is None:
+        v = _sum_opt(data.get("compensation_fee"), data.get("good_review_refund"))
+        if v is not None:
+            data["in_platform_total"] = v
+    if data.get("out_platform_total") is None:
+        v = _sum_opt(data.get("direct_compensation"), data.get("second_visit_fee"),
+                     data.get("return_pack_freight"))
+        if v is not None:
+            data["out_platform_total"] = v
     existing = db.execute(
         select(AfterSales).where(AfterSales.platform_order_no == order_no)
     ).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
+    # 支付宝流水号为空 → 报异常, 让同事回填 (售后表行数有限, 逐行标记可接受)
+    if not data.get("alipay_flow_no"):
+        _record_exc(db, "after_sales", order_no, "alipay_flow_no_missing",
+                    f"售后单 {order_no} 支付宝流水号为空, 无法与流水核销, 请回填.", "warning")
     if existing:
         return "aftersales", _apply_update(existing, payload, ctx, "after_sales", order_no)
     db.add(AfterSales(**payload))
@@ -1200,6 +1480,15 @@ def _h_wood_loss(db, data, key_field, ctx=None):
 
 def _h_promotion_flow(db, data, key_field, ctx=None):
     from app.models.marketing import PromotionFlow
+    data = dict(data)
+    # 流水号去全部空格
+    if data.get("alipay_flow_no"):
+        data["alipay_flow_no"] = _strip_all_ws(data["alipay_flow_no"])
+        if data["alipay_flow_no"] is None:
+            data.pop("alipay_flow_no")
+    # 无流水号 → 现金消耗 (用户规则)
+    if not data.get("alipay_flow_no"):
+        data["alipay_flow_no"] = "现金消耗"
     payload = {k: v for k, v in data.items() if v is not None}
     if not payload:
         return "promotion_flow", "skipped"
@@ -1213,6 +1502,19 @@ def _h_sample(db, data, key_field, ctx=None):
     sample_no = data.get("sample_no")
     if not sample_no:
         raise ImporterError("缺样品编号")
+    data = dict(data)
+    # 用途为空 → 统一 '待处理'
+    if not data.get("usage"):
+        data["usage"] = "待处理"
+    # 产品名称用斜杠拼了多个 (一个样品含多把椅子混放) → 取第一个为主名, 其余进备注
+    name = data.get("product_name") or ""
+    if "/" in name:
+        parts = [p.strip() for p in name.split("/") if p.strip()]
+        if parts:
+            data["product_name"] = parts[0]
+            if len(parts) > 1:
+                extra = "含: " + "/".join(parts[1:])
+                data["remark"] = f"{data['remark']}; {extra}" if data.get("remark") else extra
     from sqlalchemy import select as _select
     existing = db.execute(_select(Sample).where(Sample.sample_no == sample_no)).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}

@@ -175,7 +175,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         "promotion_flows", "tblJ1sgVxmk5JjBZ", "in", "推广记录",
         {
             "sync_key": "唯一键", "transaction_date": "交易日期", "flow_type": "类型",
-            "amount": "金额", "balance_after": "余额", "remark": "备注",
+            "amount": "金额", "remark": "备注",
         },
     ),
     (

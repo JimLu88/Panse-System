@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -29,13 +29,16 @@ class AlipayFlow(Base, TimestampMixin):
     counterparty: Mapped[Optional[str]] = mapped_column(String(255))
     counterparty_account: Mapped[Optional[str]] = mapped_column(String(255))
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)  # 正=收入, 负=支出
-    related_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    related_order_no: Mapped[Optional[str]] = mapped_column(String(255), index=True)
     balance: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     reconciliation_status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     # open / matched / mismatched / ignored / opening_balance (期初调整)
     reconciliation_type: Mapped[Optional[str]] = mapped_column(String(32))
     # factory_payment / promotion / refill_compensation / logistics / install / opening / other
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
         UniqueConstraint("account", "transaction_no", name="uq_alipay_flow_acct_no"),
@@ -110,3 +113,6 @@ class FactoryReconciliation(Base, TimestampMixin):
     diff_reason: Mapped[Optional[str]] = mapped_column(Text)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

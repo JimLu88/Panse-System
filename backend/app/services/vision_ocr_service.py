@@ -96,6 +96,33 @@ _PURCHASE_SYSTEM = """你是采购入库单截图解析助手。
 - 仅输出 JSON"""
 
 
+_FACTORY_RECON_SYSTEM = """你是工厂对账单截图解析助手。
+从用户提供的工厂对账单截图 (可能是表格) 中提取每一行对账记录, 输出严格 JSON:
+{
+  "rows": [
+    {
+      "factory_name": "工厂名称",
+      "period_start": "YYYY-MM-DD (账期起, 可空)",
+      "period_end": "YYYY-MM-DD (账期止, 可空)",
+      "order_amount": 数字 (本期下单金额, 可空),
+      "bill_amount": 数字 (工厂账单金额, 可空),
+      "paid_amount": 数字 (实际已支付, 可空),
+      "alipay_flow_no": "支付宝流水号 (如可见)",
+      "remark": "备注",
+      "warnings": ["识别不清的字段名"]
+    }
+  ],
+  "ocr_warnings": ["全局识别问题, 如截图模糊"]
+}
+
+规则:
+- 数字字段返回纯数字 (不带¥/元), 不确定就 null
+- 日期统一 YYYY-MM-DD
+- 一张对账单可能有多行 (多个工厂或多个账期), 每行一个对象
+- 工厂名称是必须的, 实在看不清填 "未知工厂" 并加 warnings
+- 仅输出 JSON, 不要任何解释文字"""
+
+
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
@@ -159,4 +186,29 @@ def parse_purchase_invoice(
     if isinstance(data["purchase"], dict):
         data["purchase"].setdefault("lines", [])
         data["purchase"].setdefault("warnings", [])
+    return data
+
+
+def parse_factory_reconciliation(
+    db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
+) -> dict:
+    """解析工厂对账单截图. 返回 {"rows": [...], "ocr_warnings": [...]}."""
+    cfg = settings_service.get_ai_config(db, "ocr")
+    try:
+        provider = build_provider(cfg)
+    except AiUnavailable as e:
+        raise AiUnavailable(f"OCR 未配置, 请到管理 → AI 集成 配 vision 模型: {e}")
+    resp = provider.chat_with_image(
+        system=_FACTORY_RECON_SYSTEM,
+        user="请解析这张工厂对账单截图, 输出 JSON.",
+        image_bytes=image_bytes, mime=mime, max_tokens=4000,
+    )
+    try:
+        data = _extract_json(resp.text)
+    except ValueError as e:
+        raise AiUnavailable(f"AI 返回无法解析: {e}")
+    data.setdefault("rows", [])
+    data.setdefault("ocr_warnings", [])
+    if not isinstance(data["rows"], list):
+        data["rows"] = []
     return data

@@ -74,6 +74,9 @@ class DeliveryNote(Base, TimestampMixin):
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
     __table_args__ = (
         Index("ix_delivery_notes_supplier_date", "supplier_id", "delivery_date"),
         UniqueConstraint("supplier_id", "note_no", name="uq_delivery_notes_supplier_note_no"),
@@ -108,6 +111,9 @@ class DeliveryNoteLine(Base, TimestampMixin):
     ocr_warnings: Mapped[Optional[list]] = mapped_column(JSON, default=list)
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
 
 class DeliveryFile(Base, TimestampMixin):

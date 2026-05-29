@@ -1,0 +1,528 @@
+import { api } from './base';
+
+// ----- AI Assistant -----
+export interface AiStatus {
+  configured: boolean;
+  model: string;
+}
+
+export interface AiDiagnoseResult {
+  log_id: number;
+  exception_id: number;
+  text: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  error: string | null;
+}
+
+export interface AiChatResult {
+  log_id: number;
+  text: string | null;
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  cache_read_tokens: number | null;
+  error: string | null;
+}
+
+export const aiStatus = () => api.get<AiStatus>('/api/ai/status').then((r) => r.data);
+
+export const aiDiagnose = (exceptionId: number) =>
+  api.post<AiDiagnoseResult>(`/api/ai/diagnose/${exceptionId}`).then((r) => r.data);
+
+export const aiChat = (message: string, sessionId?: string) =>
+  api
+    .post<AiChatResult>('/api/ai/chat', { message, session_id: sessionId })
+    .then((r) => r.data);
+
+// ----- Marketing (Phase 5) -----
+export interface Sample {
+  id: number;
+  sample_no: string;
+  product_code: string | null;
+  product_name: string | null;
+  sku: string | null;
+  sample_type: string | null;
+  qty: number;
+  made_at: string | null;
+  cost: string | null;
+  location: string | null;
+  status: string | null;
+  usage: string | null;
+  remark: string | null;
+}
+
+export const listSamples = () =>
+  api.get<Sample[]>('/api/marketing/samples').then((r) => r.data);
+
+export const updateSample = (
+  id: number,
+  data: { status?: string; location?: string; usage?: string; remark?: string },
+) => api.patch<Sample>(`/api/marketing/samples/${id}`, data).then((r) => r.data);
+
+export interface WoodLoss {
+  id: number;
+  purchase_date: string | null;
+  wood_type: string | null;
+  spec: string | null;
+  unit: string | null;
+  inbound_qty: string | null;
+  used_qty: string | null;
+  loss_qty: string | null;
+  loss_rate_pct: string | null;
+  related_product_qty: string | null;
+  reason: string | null;
+  disposition: string | null;
+  remark: string | null;
+}
+
+export const listWoodLoss = () =>
+  api.get<WoodLoss[]>('/api/marketing/wood-loss').then((r) => r.data);
+
+export interface BrandMarketing {
+  id: number;
+  project_name: string;
+  project_type: string | null;
+  partner: string | null;
+  start_date: string | null;
+  end_date: string | null;
+  budget: string | null;
+  actual_spend: string | null;
+  status: string | null;
+}
+
+export const listBrandMarketing = () =>
+  api.get<BrandMarketing[]>('/api/marketing/brand').then((r) => r.data);
+
+export const createBrandMarketing = (payload: Partial<BrandMarketing> & { project_name: string }) =>
+  api.post<BrandMarketing>('/api/marketing/brand', payload).then((r) => r.data);
+
+export interface PromotionFlow {
+  id: number;
+  transaction_date: string | null;
+  flow_type: string | null;
+  amount: string;
+  balance_after: string | null;
+  remark: string | null;
+}
+
+export const listPromotionFlows = () =>
+  api.get<PromotionFlow[]>('/api/marketing/promotion').then((r) => r.data);
+
+export interface OutsourcingExpense {
+  id: number;
+  payee: string;
+  amount: string;
+  project: string | null;
+  cost_category: string | null;
+  payment_date: string | null;
+}
+
+export const listOutsourcing = () =>
+  api.get<OutsourcingExpense[]>('/api/marketing/outsourcing').then((r) => r.data);
+
+export interface AfterSalesRow {
+  id: number;
+  platform_order_no: string;
+  reason: string | null;
+  in_platform_total: string | null;
+  out_platform_total: string | null;
+  refill_sku: string | null;
+  status: string | null;
+  customer_satisfaction: string | null;
+  processed_at: string | null;
+}
+
+export const listAfterSales = () =>
+  api.get<AfterSalesRow[]>('/api/marketing/after-sales').then((r) => r.data);
+
+export interface RoiResult {
+  period_start: string | null;
+  period_end: string | null;
+  promotion_spend: string;
+  promotion_recharge: string;
+  order_count: number;
+  order_revenue: string;
+  avg_order_value: string;
+  roi: string | null;
+}
+
+export const getRoi = (params: { period_start?: string; period_end?: string } = {}) =>
+  api.get<RoiResult>('/api/marketing/roi', { params }).then((r) => r.data);
+
+// ----- Reports & Optimizations (plan §12) -----
+export interface HealthReport {
+  period_start: string;
+  period_end: string;
+  exceptions: {
+    total_open: number;
+    by_severity: Record<string, number>;
+    top_types: Record<string, number>;
+  };
+  reconciliation: Record<string, { total: number; ok: number; warning: number; error: number }>;
+  inventory: { book_value: string; items_priced: number; items_missing_price: number };
+  orders: { month_count: number; month_revenue: string };
+  roi: { promotion_spend: string; order_count: number; order_revenue: string; roi: string | null };
+  integrity_score: number;
+  headlines: string[];
+}
+
+export const getMonthlyReport = (year: number, month: number) =>
+  api
+    .get<HealthReport>('/api/reports/monthly', { params: { year, month } })
+    .then((r) => r.data);
+
+export const getCurrentMonthReport = () =>
+  api.get<HealthReport>('/api/reports/monthly/current').then((r) => r.data);
+
+export interface KnowledgeRow {
+  id: number;
+  exception_type: string;
+  context_hash: string;
+  solution_text: string;
+  source_description: string | null;
+  model: string | null;
+  usage_count: number;
+  last_used_at: string | null;
+  created_at: string;
+}
+
+export const listKnowledge = (limit = 50) =>
+  api.get<KnowledgeRow[]>('/api/reports/knowledge', { params: { limit } }).then((r) => r.data);
+
+// ----- Customization (业务需求 §2) -----
+export interface CustomizationDiffLine {
+  material_code: string;
+  material_name: string | null;
+  original_qty: string;
+  new_qty: string;
+  note: string | null;
+  requires_new_material: boolean;
+}
+
+export interface CustomizationPreview {
+  base_sku_code: string;
+  proposed_custom_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+  diff_lines: CustomizationDiffLine[];
+}
+
+export const previewCustomization = (payload: {
+  base_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+}) => api.post<CustomizationPreview>('/api/customization/preview', payload).then((r) => r.data);
+
+export const confirmCustomization = (payload: {
+  base_sku_code: string;
+  dimension_changes: Record<string, unknown>;
+  order_no?: string;
+  note?: string;
+}) =>
+  api
+    .post<{ custom_variant_id: number; custom_sku_code: string; cloned_bom_lines: number }>(
+      '/api/customization/confirm',
+      payload,
+    )
+    .then((r) => r.data);
+
+// ----- 销售报表 / 资产 / 预测 (Phase 4) -----
+export interface SalesSummary {
+  period_start: string;
+  period_end: string;
+  order_count: number;
+  revenue: number;
+  cost: number;
+  gross_profit: number;
+  net_profit: number;
+  top_products_by_profit: Array<Record<string, any>>;
+  top_products_by_profit_rate: Array<Record<string, any>>;
+}
+
+export const fetchSalesSummary = (period: '7d' | '30d' | 'month' | 'year', platform?: string) =>
+  api.get<SalesSummary>('/api/reports/sales/summary', {
+    params: { period, ...(platform ? { platform } : {}) },
+  }).then((r) => r.data);
+
+export const fetchSalesBreakdown = (period: '7d' | '30d' | 'month' | 'year') =>
+  api.get<{ period_start: string; period_end: string; rows: Array<Record<string, any>> }>(
+    '/api/reports/sales/breakdown', { params: { period } },
+  ).then((r) => r.data);
+
+export const fetchForecast30d = () =>
+  api.get<{ forecast: Array<any> }>('/api/reports/forecast/30d').then((r) => r.data);
+
+export const fetchStockAdvice = () =>
+  api.get<{ products: any[]; materials: any[] }>('/api/reports/stock-advice')
+    .then((r) => r.data);
+
+export const fetchSlowMoving = (params: { long_no_sale_days?: number; overstock_ratio?: number } = {}) =>
+  api.get<{ long_idle: any[]; overstock: any[]; thresholds: any }>(
+    '/api/reports/slow-moving', { params },
+  ).then((r) => r.data);
+
+export interface AssetSummary {
+  total: number;
+  categories: Array<{ name: string; amount: number; detail: any[] }>;
+  formula_a: number;
+  formula_b: number;
+  diff: number;
+}
+
+export const fetchAssets = () =>
+  api.get<AssetSummary>('/api/reports/assets').then((r) => r.data);
+
+export const fetchUnmatchedFlows = (days = 7) =>
+  api.get<{ days: number; rows: any[] }>('/api/reports/unmatched-flows',
+    { params: { days } }).then((r) => r.data);
+
+// ----- 数据水位线 (Phase 7) -----
+export const fetchDataBaseline = () =>
+  api.get<{ baseline: string | null }>('/api/admin/data-baseline').then((r) => r.data);
+
+export const setDataBaseline = (baseline: string) =>
+  api.put('/api/admin/data-baseline', { baseline }).then((r) => r.data);
+
+// ----- 客户 CRM (Phase 9) -----
+export interface CustomerItem {
+  id: number;
+  name: string;
+  phone: string | null;
+  address: string | null;
+  tier: 'bronze' | 'silver' | 'gold' | 'platinum';
+  first_order_at: string | null;
+  last_order_at: string | null;
+  total_orders: number;
+  total_revenue: number;
+  total_returns: number;
+  tags: string[];
+  note: string | null;
+}
+
+export const fetchCustomers = (params: { q?: string; tier?: string; limit?: number } = {}) =>
+  api.get<CustomerItem[]>('/api/customers', { params }).then((r) => r.data);
+
+export const fetchCustomer = (id: number) =>
+  api.get<CustomerItem>(`/api/customers/${id}`).then((r) => r.data);
+
+export const fetchCustomerOrders = (id: number) =>
+  api.get<any[]>(`/api/customers/${id}/orders`).then((r) => r.data);
+
+export const triggerCustomerAggregate = () =>
+  api.post('/api/customers/aggregate').then((r) => r.data);
+
+// ----- 智能定价 + 异常诊断 (Phase 10) -----
+export interface PriceSuggestion {
+  sku_code: string | null;
+  product_code: string;
+  cost: number;
+  historical_avg_price: number;
+  target_margin: number;
+  suggested_price: number;
+  inventory_pressure: number;
+  notes: string[];
+}
+
+export const fetchPriceSuggestion = (params: {
+  product_code: string; sku_code?: string; target_margin?: number;
+}) => api.get<PriceSuggestion>('/api/smart-pricing/suggest', { params }).then((r) => r.data);
+
+export const diagnoseException = (id: number) =>
+  api.get<{ analysis: string; suggested_actions: any[]; severity_recommended: string }>(
+    `/api/exceptions/${id}/diagnose`,
+  ).then((r) => r.data);
+
+// ----- 全局搜索 (Tier 3 #14) -----
+export interface SearchHit {
+  kind: string;
+  id: number;
+  title: string;
+  subtitle: string | null;
+  url: string;
+}
+
+export const globalSearch = (q: string, limit = 50) =>
+  api.get<SearchHit[]>('/api/search', { params: { q, limit } }).then((r) => r.data);
+
+// ----- 售后 / 退货 (Phase 5) -----
+export interface AfterSalesItem {
+  id: number;
+  platform_order_no: string;
+  status: string | null;
+  reason: string | null;
+  refill_tracking_no: string | null;
+  second_inbound_confirmed: string | null;
+  processed_at: string | null;
+  remark: string | null;
+}
+
+export const fetchAfterSales = (status?: string, limit = 100) =>
+  api.get<AfterSalesItem[]>('/api/aftersales', { params: { status, limit } })
+    .then((r) => r.data);
+
+export const createReturn = (payload: { order_no: string; reason: string; tracking_no?: string }) =>
+  api.post<AfterSalesItem>('/api/aftersales', payload).then((r) => r.data);
+
+export const markReturnReceived = (id: number) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/mark-received`).then((r) => r.data);
+
+export const confirmReturnInbound = (id: number, payload: {
+  product_code: string; sku_code?: string; qty: number;
+}) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/confirm-inbound`, payload)
+    .then((r) => r.data);
+
+export const markReturnDamaged = (id: number, reason: string) =>
+  api.post<AfterSalesItem>(`/api/aftersales/${id}/mark-damaged`, { reason })
+    .then((r) => r.data);
+
+export const disassembleProduct = (payload: {
+  product_code: string; sku_code?: string; qty: number;
+}) =>
+  api.post<{ product_remaining: number; parts_added: any[] }>(
+    '/api/aftersales/disassemble-product', payload,
+  ).then((r) => r.data);
+
+// -- AI 对账走查
+export interface ReconcileWalkthroughResult {
+  issues: Array<{
+    id?: number; type: string; description: string; ai_analysis?: string; suggestion?: string; source: string;
+  }>;
+  ai_used: boolean;
+  total: number;
+}
+export const reconcileWalkthrough = () =>
+  api.post<ReconcileWalkthroughResult>('/api/ai/reconcile-walkthrough').then(r => r.data);
+
+// -- Dashboard
+export interface DashboardData {
+  orders: {
+    status_counts: Record<string, number>;
+    trend_30d: Array<{ date: string; count: number; revenue: number }>;
+    total_30d: number;
+    revenue_30d: number;
+    count_7d: number;
+  };
+  inventory: {
+    part_total: number; part_negative: number;
+    part_below_safety: number; part_oversold: number;
+    product_total: number; product_low_stock: number;
+  };
+  finance: {
+    alipay_income_30d: number; order_revenue_30d: number;
+    theoretical_cost_30d: number; actual_cost_30d: number;
+    gross_profit_30d: number; gross_margin_rate: number;
+    reconciliation_unresolved: number;
+    aftersales_count: number; aftersales_cost: number;
+  };
+  health: { open_exceptions: number; health_score: number };
+}
+export const getDashboard = () =>
+  api.get<DashboardData>('/api/dashboard').then(r => r.data);
+
+// -- 微定制 AI 报价
+export interface AiQuoteBreakdown {
+  label: string;
+  amount: number;
+  note: string;
+}
+export interface AiQuoteResult {
+  base_product: string | null;
+  base_sku: string | null;
+  base_size: string | null;
+  changes: string[];
+  est_price: number | null;
+  breakdown: AiQuoteBreakdown[];
+  ai_used: boolean;
+  model: string | null;
+  error: string | null;
+}
+export const aiCustomizationQuote = (file: File): Promise<AiQuoteResult> => {
+  const fd = new FormData();
+  fd.append('image', file);
+  return api.post<AiQuoteResult>('/api/customization/ai-quote', fd).then(r => r.data);
+};
+
+// ===== 全定制报价参数 (后台可调) =====
+export interface QuoteConfig {
+  factory_profit_rate: number;
+  panse_profit_rate: number;
+  safety_rate: number;
+  competitor_coupon_rate: number;
+  projection_type: string;          // front=正面 / top=俯视
+  projection_rate: number;
+  packing: number[];                // [小,中,大]
+  labor: Record<string, number[]>;  // 品类 → [小,中,大]
+  size_rules: Record<string, number[]>;  // 品类 → [大阈值,中阈值]
+  prices: Record<string, number>;   // 材料 → 单价
+}
+export const getQuoteConfig = () =>
+  api.get<QuoteConfig>('/api/customization/quote-config').then(r => r.data);
+export const updateQuoteConfig = (patch: Partial<QuoteConfig>) =>
+  api.put<QuoteConfig>('/api/customization/quote-config', patch).then(r => r.data);
+
+// ===== 全定制: 板单实时报价 + AI 抽板 =====
+export interface QuoteBoard {
+  part: string; material: string;
+  length_cm: number; width_cm: number; qty: number;
+  unit?: string; is_accessory?: boolean; is_drawer_rail?: boolean;
+}
+export interface BoardQuoteResult {
+  wood_cost: number; labor_fee: number; factory_in_cost: number; factory_profit: number;
+  factory_wood_total: number; accessory_total: number; drawer_rail_total: number;
+  packing_fee: number; freight: number; install_fee: number;
+  panse_cost: number; final_quote: number; factory_quote_compare: number;
+  factory_quote_conservative: number; safety_rate: number;
+  projection_estimate: number | null; projection_area_m2: number | null;
+  factory_quote: number | null; factory_diff: number | null; size_class: string;
+  wood_lines: { part: string; material: string; cost: number }[];
+  accessory_lines: { part: string; material: string; cost: number }[];
+}
+export const boardQuote = (payload: {
+  product_type: string; length_m: number;
+  overall_width_m?: number; overall_height_m?: number;
+  boards: QuoteBoard[]; factory_quote?: number;
+}) => api.post<BoardQuoteResult>('/api/customization/board-quote', payload).then(r => r.data);
+
+export interface ExtractBoardsResult {
+  ai_used: boolean; model?: string; product_type: string | null;
+  overall: { length_mm?: number; width_mm?: number; height_mm?: number };
+  boards: QuoteBoard[]; error: string | null;
+}
+export const extractBoards = (file: File) => {
+  const fd = new FormData(); fd.append('file', file);
+  return api.post<ExtractBoardsResult>('/api/customization/extract-boards', fd).then(r => r.data);
+};
+
+// ===== 竞品 Top-10 =====
+export interface CompetitorRow {
+  id: number;
+  store: string | null; category: string | null; product: string | null;
+  link: string | null; wood: string | null; sku_name: string | null;
+  daily_price: number | null;          // 我表价(叠券前)
+  latest_price: number | null;         // 最新价(抓取/手动, 叠券前)
+  fetch_status: string | null;
+  latest_fetched_at: string | null;
+  coupon_cut: number;                  // 通用券减额
+  after_coupon: number | null;         // 券后价
+  confidence: number;
+}
+export const competitorsTop = (q: string, limit = 10) =>
+  api.get<CompetitorRow[]>('/api/customization/competitors', { params: { q, limit } }).then(r => r.data);
+export const refreshCompetitor = (id: number) =>
+  api.post<CompetitorRow>(`/api/customization/competitors/${id}/refresh`).then(r => r.data);
+export const setCompetitorPrice = (id: number, latest_price: number) =>
+  api.patch<CompetitorRow>(`/api/customization/competitors/${id}`, { latest_price }).then(r => r.data);
+
+// -- 运行日志 (内存环形缓冲, 用于界面排查)
+export interface LogLine {
+  ts: string;
+  level: string;
+  logger: string;
+  msg: string;
+}
+export const getRecentLogs = (params?: {
+  limit?: number; level?: string; contains?: string; logger_prefix?: string;
+}) =>
+  api.get<{ logs: LogLine[] }>('/api/logs/recent', { params }).then(r => r.data.logs);

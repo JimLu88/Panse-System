@@ -27,6 +27,7 @@ import {
   listOrders,
   recomputeAllOrderCosts,
   recomputeOrderCost,
+  generateOrderDetails,
 } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 import { Drawer, Spin, Table as AntTable } from 'antd';
@@ -103,6 +104,17 @@ export default function OrdersPage() {
       qc.invalidateQueries({ queryKey: ['orders'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '反推失败'),
+  });
+
+  const genDetailsMut = useMutation({
+    mutationFn: () => generateOrderDetails(),
+    onSuccess: (r) => {
+      message.success(
+        `订单细节生成：扫描 ${r.orders_scanned} 单，新建 ${r.details_created} 行，` +
+          `跳过 ${r.details_skipped} 行${r.orders_no_bom_count ? `，${r.orders_no_bom_count} 单无 BOM` : ''}`,
+      );
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '生成失败'),
   });
 
   async function openCost(id: number, order_no: string) {
@@ -257,6 +269,12 @@ export default function OrdersPage() {
             loading={recomputeAllMut.isPending}
           >
             反推理论成本
+          </Button>
+          <Button
+            onClick={() => genDetailsMut.mutate()}
+            loading={genDetailsMut.isPending}
+          >
+            生成订单细节
           </Button>
           <Upload
             accept=".csv"

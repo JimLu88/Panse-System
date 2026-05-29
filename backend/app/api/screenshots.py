@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
+from app.models.finance import FactoryReconciliation
 from app.models.order import Order, PartPurchase
 from app.rate_limit import limiter
 from app.services import vision_ocr_service
@@ -222,9 +223,96 @@ def commit_purchase(
             tracking_no=payload.tracking_no,
             freight=Decimal(str(payload.freight)) if payload.freight else None,
             total_amount=Decimal(str(payload.total_amount)) if payload.total_amount else None,
-            remark=payload.remark,
         )
         db.add(pp)
         inserted += 1
     db.commit()
     return {"inserted": inserted, "purchase_no": base_no, "has_tracking": bool(payload.tracking_no)}
+
+
+# --------------------------- 工厂对账单 (Task 3) --------------------------- #
+
+
+@router.post("/factory-recon/parse")
+@limiter.limit("10/minute")
+async def parse_factory_recon(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """工厂对账单截图 → AI 解析每行对账记录, 不入库 (表格类对账请用 Excel 导入)."""
+    content = await file.read()
+    img, mime = _read_image(file, content)
+    try:
+        data = await asyncio.to_thread(
+            vision_ocr_service.parse_factory_reconciliation, db, img, mime=mime
+        )
+    except AiUnavailable as e:
+        raise HTTPException(503, str(e))
+    return {
+        "image_b64": base64.b64encode(img).decode("ascii"),
+        "mime": mime,
+        **data,
+    }
+
+
+class FactoryReconRowIn(BaseModel):
+    factory_name: str
+    period_start: Optional[str] = None
+    period_end: Optional[str] = None
+    order_amount: Optional[float] = None
+    bill_amount: Optional[float] = None
+    paid_amount: Optional[float] = None
+    alipay_flow_no: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class CommitFactoryReconIn(BaseModel):
+    rows: list[FactoryReconRowIn]
+
+
+def _parse_date(s: Optional[str]):
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def _dec(v: Optional[float]) -> Optional[Decimal]:
+    return Decimal(str(v)) if v is not None else None
+
+
+@router.post("/factory-recon/commit")
+def commit_factory_recon(
+    payload: CommitFactoryReconIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """确认 AI 解析后批量入库 FactoryReconciliation; diff_amount 自动算 (账单-已付)."""
+    inserted = 0
+    skipped: list[str] = []
+    for row in payload.rows:
+        if not row.factory_name:
+            continue
+        bill = _dec(row.bill_amount)
+        paid = _dec(row.paid_amount)
+        diff = (bill - paid) if (bill is not None and paid is not None) else Decimal("0")
+        rec = FactoryReconciliation(
+            factory_name=row.factory_name,
+            period_start=_parse_date(row.period_start),
+            period_end=_parse_date(row.period_end),
+            order_amount=_dec(row.order_amount),
+            bill_amount=bill,
+            paid_amount=paid,
+            diff_amount=diff,
+            alipay_flow_no=row.alipay_flow_no,
+            remark=row.remark,
+            status="open",
+        )
+        db.add(rec)
+        inserted += 1
+    db.commit()
+    return {"inserted": inserted, "skipped": skipped}

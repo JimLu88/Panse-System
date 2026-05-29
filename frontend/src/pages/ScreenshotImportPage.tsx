@@ -24,15 +24,19 @@ import {
 import { CloudUploadOutlined, InboxOutlined, SearchOutlined } from '@ant-design/icons';
 import { useMutation } from '@tanstack/react-query';
 import {
+  FactoryReconParseResp,
+  FactoryReconRowParsed,
   ProductMatchResult,
   PurchaseLineParsed,
   PurchaseParseResp,
   PurchaseParsed,
   QianniuOrderParsed,
   QianniuParseResp,
+  commitFactoryReconScreenshot,
   commitPurchaseScreenshot,
   commitQianniuOrders,
   matchProduct,
+  parseFactoryReconScreenshot,
   parsePurchaseScreenshot,
   parseQianniuScreenshot,
 } from '../api/client';
@@ -44,6 +48,7 @@ export default function ScreenshotImportPage() {
     <Tabs items={[
       { key: 'qianniu', label: '千牛订单截图', children: <QianniuTab /> },
       { key: 'purchase', label: '进货单截图', children: <PurchaseTab /> },
+      { key: 'factory-recon', label: '工厂对账单截图', children: <FactoryReconTab /> },
     ]} />
   );
 }
@@ -424,6 +429,122 @@ function PurchaseTab() {
               { title: '单价', dataIndex: 'unit_price', width: 100 },
               { title: '金额', dataIndex: 'amount', width: 100 },
             ]}
+          />
+        </Card>
+      )}
+    </Space>
+  );
+}
+
+// --------------------------- 工厂对账单 (Task 3) --------------------------- //
+
+function FactoryReconTab() {
+  const [resp, setResp] = useState<FactoryReconParseResp | null>(null);
+  const [rows, setRows] = useState<FactoryReconRowParsed[]>([]);
+
+  const parseMut = useMutation({
+    mutationFn: (file: File) => parseFactoryReconScreenshot(file),
+    onSuccess: (r) => {
+      setResp(r);
+      setRows(r.rows);
+      message.success(`AI 识别出 ${r.rows.length} 行对账记录`);
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? 'OCR 失败'),
+  });
+
+  const commitMut = useMutation({
+    mutationFn: () => commitFactoryReconScreenshot(rows),
+    onSuccess: (r) => {
+      message.success(`入库 ${r.inserted} 行工厂对账记录`);
+      setResp(null); setRows([]);
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '入库失败'),
+  });
+
+  const setRow = (i: number, patch: Partial<FactoryReconRowParsed>) =>
+    setRows((prev) => { const n = [...prev]; n[i] = { ...n[i], ...patch }; return n; });
+
+  const numCell = (
+    v: number | null | undefined,
+    on: (n: number | null) => void,
+  ) => (
+    <InputNumber
+      value={v ?? undefined} size="small" min={0} step={0.01} style={{ width: 110 }}
+      onChange={(n) => on(n == null ? null : Number(n))}
+    />
+  );
+
+  const columns = [
+    { title: '工厂名称', dataIndex: 'factory_name', width: 150,
+      render: (v: string, _r: FactoryReconRowParsed, i: number) =>
+        editCell(v, (val) => setRow(i, { factory_name: val }), '必填') },
+    { title: '账期起', dataIndex: 'period_start', width: 120,
+      render: (v: string | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        editCell(v ?? undefined, (val) => setRow(i, { period_start: val }), 'YYYY-MM-DD') },
+    { title: '账期止', dataIndex: 'period_end', width: 120,
+      render: (v: string | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        editCell(v ?? undefined, (val) => setRow(i, { period_end: val }), 'YYYY-MM-DD') },
+    { title: '下单金额', dataIndex: 'order_amount', width: 120,
+      render: (v: number | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        numCell(v, (n) => setRow(i, { order_amount: n })) },
+    { title: '账单金额', dataIndex: 'bill_amount', width: 120,
+      render: (v: number | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        numCell(v, (n) => setRow(i, { bill_amount: n })) },
+    { title: '已支付', dataIndex: 'paid_amount', width: 120,
+      render: (v: number | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        numCell(v, (n) => setRow(i, { paid_amount: n })) },
+    { title: '支付宝流水号', dataIndex: 'alipay_flow_no', width: 150,
+      render: (v: string | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        editCell(v ?? undefined, (val) => setRow(i, { alipay_flow_no: val })) },
+    { title: '备注', dataIndex: 'remark', width: 150,
+      render: (v: string | null | undefined, _r: FactoryReconRowParsed, i: number) =>
+        editCell(v ?? undefined, (val) => setRow(i, { remark: val })) },
+    { title: '识别警告', dataIndex: 'warnings', width: 80,
+      render: (ws: string[] | undefined) => (ws ?? []).length > 0
+        ? <Tag color="orange">{ws!.length} 项</Tag> : '-' },
+  ];
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info" showIcon
+        message="工厂对账单截图 → AI 解析每行对账 → 确认入库 FactoryReconciliation"
+        description="账单金额-已支付 会自动算成差异。若是规整的 Excel 对账表, 建议改用「Excel 导入」页选 factory_reconciliation 实体, 字段对应更准。"
+      />
+      <Card size="small">
+        <Dragger
+          accept="image/*" showUploadList={false}
+          beforeUpload={(f) => { parseMut.mutate(f); return false; }}
+          disabled={parseMut.isPending} multiple={false}
+        >
+          <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+          <p className="ant-upload-text">
+            {parseMut.isPending ? 'AI 解析中, 请稍候...' : '点击或拖入工厂对账单截图'}
+          </p>
+          <p className="ant-upload-hint">单张图最大 20MB</p>
+        </Dragger>
+      </Card>
+
+      {resp && resp.ocr_warnings.length > 0 && (
+        <Alert type="warning" message="OCR 整体提示"
+               description={<ul>{resp.ocr_warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>} />
+      )}
+
+      {rows.length > 0 && (
+        <Card size="small" title={`待入库对账 (${rows.length})`}
+              extra={
+                <Button type="primary" icon={<CloudUploadOutlined />}
+                        loading={commitMut.isPending} onClick={() => commitMut.mutate()}>
+                  确认入库
+                </Button>
+              }>
+          <Table
+            size="small"
+            rowKey={(_r, i) => String(i)}
+            dataSource={rows}
+            pagination={false}
+            scroll={{ x: 1200 }}
+            columns={columns as any}
           />
         </Card>
       )}

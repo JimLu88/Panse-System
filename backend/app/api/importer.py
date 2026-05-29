@@ -12,12 +12,16 @@ import base64
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import select
 from sqlalchemy.orm import Session
+import io
 
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
+from app.models.import_job import ImportJob
 from app.services import excel_importer
 from app.services.excel_schemas import ENTITY_SCHEMAS, list_entity_types
 
@@ -302,6 +306,46 @@ def cancel_import_job(
     return _job_out(j)
 
 
+@router.post("/jobs/{job_id}/rollback", response_model=dict)
+def rollback_import_job(
+    job_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """回滚导入批次: 删除所有 import_job_id=job_id 的行, 并标记作业为 rolled_back."""
+    from app.models.finance import AlipayFlow, FactoryReconciliation
+    from app.models.order import FactoryOrder, Order
+    from app.models.supplier import DeliveryNote, DeliveryNoteLine
+
+    job = db.get(ImportJob, job_id)
+    if not job:
+        raise HTTPException(404, "作业不存在")
+    if job.status == "rolled_back":
+        raise HTTPException(400, "该作业已回滚")
+    if job.status not in ("done", "cancelled", "failed"):
+        raise HTTPException(400, f"作业状态为 {job.status}, 无法回滚 (只能回滚已完成/失败/取消的作业)")
+
+    deleted: dict[str, int] = {}
+    for model, label in [
+        (DeliveryNoteLine, "delivery_note_lines"),
+        (DeliveryNote, "delivery_notes"),
+        (AlipayFlow, "alipay_flows"),
+        (Order, "orders"),
+        (FactoryOrder, "factory_orders"),
+        (FactoryReconciliation, "factory_reconciliations"),
+    ]:
+        rows = db.execute(
+            select(model).where(model.import_job_id == job_id)
+        ).scalars().all()
+        for row in rows:
+            db.delete(row)
+        deleted[label] = len(rows)
+
+    job.status = "rolled_back"
+    db.commit()
+    return {"job_id": job_id, "deleted": deleted, "total_deleted": sum(deleted.values())}
+
+
 # ----------------------------- 智能导入 (Phase 14) ----------------- #
 
 
@@ -399,3 +443,53 @@ def smart_commit(
     except Exception:  # pragma: no cover — 核查失败绝不影响导入结果
         db.rollback()
     return {"reports": reports, "post_import": post_import}
+
+
+# ----------------------------- 校验导出 (Phase N+1) ----------------- #
+
+
+@router.post("/validate-export")
+async def validate_export(
+    file: UploadFile = File(...),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """上传 Excel → 规则校验所有 sheet → 返回带标注的 xlsx 文件.
+
+    - 问题单元格标黄
+    - 每行末尾追加「导入校验」列, 说明具体错误和修改建议
+    - 可入库的行标注 ✅
+    返回文件名: validated_<原文件名>.xlsx
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(400, "空文件")
+    if len(content) > 200 * 1024 * 1024:
+        raise HTTPException(413, "文件超过 200MB")
+
+    from app.services import excel_validate_service
+    try:
+        annotated_bytes, results = await asyncio.to_thread(
+            excel_validate_service.validate_and_annotate, content
+        )
+    except Exception as e:
+        raise HTTPException(500, f"校验失败: {type(e).__name__}: {e}")
+
+    orig_name = getattr(file, "filename", "export") or "export"
+    if orig_name.lower().endswith(".xlsx"):
+        out_name = orig_name[:-5] + "_校验.xlsx"
+    else:
+        out_name = orig_name + "_校验.xlsx"
+
+    # summary for response header
+    total_issues = sum(r.issue_rows for r in results)
+    total_rows = sum(r.total_data_rows for r in results)
+
+    return StreamingResponse(
+        io.BytesIO(annotated_bytes),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{out_name}"',
+            "X-Validate-Total-Rows": str(total_rows),
+            "X-Validate-Issue-Rows": str(total_issues),
+        },
+    )

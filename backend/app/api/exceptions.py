@@ -7,6 +7,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
+from app.dependencies import require_role
+from app.models.auth import User
 from app.models.exception import DataException
 from app.schemas.exception import DataExceptionOut, DataExceptionResolve
 from app.services import data_quality_service, exception_fix_service
@@ -23,7 +25,7 @@ def list_exceptions(
     status: Optional[str] = Query(None),
     source_table: Optional[str] = None,
     exception_type: Optional[str] = None,
-    limit: int = Query(200, le=1000),
+    limit: int = Query(200, le=5000),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
@@ -39,7 +41,12 @@ def list_exceptions(
 
 
 @router.patch("/{exception_id}/resolve", response_model=DataExceptionOut)
-def resolve_exception(exception_id: int, payload: DataExceptionResolve, db: Session = Depends(get_db)):
+def resolve_exception(
+    exception_id: int,
+    payload: DataExceptionResolve,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
     if payload.status not in {"resolved", "ignored"}:
         raise HTTPException(400, "status must be resolved or ignored")
     exc = db.get(DataException, exception_id)
@@ -54,7 +61,12 @@ def resolve_exception(exception_id: int, payload: DataExceptionResolve, db: Sess
 
 
 @router.post("/{exception_id}/fix", response_model=DataExceptionOut)
-def fix_exception(exception_id: int, payload: FixPayload, db: Session = Depends(get_db)):
+def fix_exception(
+    exception_id: int,
+    payload: FixPayload,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
     """内联补填: 写回源表字段并解除异常."""
     try:
         exc = exception_fix_service.fix_exception(db, exception_id, payload.fields)
@@ -64,7 +76,10 @@ def fix_exception(exception_id: int, payload: FixPayload, db: Session = Depends(
 
 
 @router.post("/run-data-quality", response_model=dict)
-def run_data_quality(db: Session = Depends(get_db)):
+def run_data_quality(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
     """触发全部数据完整性扫描, 返回各规则发现数."""
     results = data_quality_service.run_all(db)
     return results
@@ -85,6 +100,34 @@ def counts_by_type(
     return {r[0]: r[1] for r in rows}
 
 
+@router.get("/summary", response_model=dict)
+def exceptions_summary(
+    status: str = Query("open"),
+    db: Session = Depends(get_db),
+):
+    """一次性返回 按类型 / 按严重度 / 总数 的聚合 (GROUP BY, 不拉明细行).
+
+    供异常页表头与各分组显示「准确总数」, 即使明细列表被分页/截断, 计数仍正确。
+    """
+    by_type = dict(
+        db.query(DataException.exception_type, func.count(DataException.id))
+        .filter(DataException.status == status)
+        .group_by(DataException.exception_type)
+        .all()
+    )
+    by_severity = dict(
+        db.query(DataException.severity, func.count(DataException.id))
+        .filter(DataException.status == status)
+        .group_by(DataException.severity)
+        .all()
+    )
+    return {
+        "total": sum(by_type.values()),
+        "by_type": by_type,
+        "by_severity": by_severity,
+    }
+
+
 @router.get("/open-count", response_model=dict)
 def open_count(
     exclude_info: bool = Query(
@@ -103,7 +146,11 @@ def open_count(
 
 
 @router.post("/autofill/generate", response_model=dict)
-def autofill_generate(dry_run: bool = False, db: Session = Depends(get_db)):
+def autofill_generate(
+    dry_run: bool = False,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
     """B5: 从订单反推生成工厂下单草稿 (支持 dry_run)."""
     from app.services import autofill_service
     result = autofill_service.run_all(db, dry_run=dry_run)

@@ -240,6 +240,33 @@ class CreateFutureOrderIn(BaseModel):
     platform: str = "淘宝"
 
 
+class GenerateOrderDetailsIn(BaseModel):
+    order_nos: Optional[list[str]] = None   # 留空 = 全部订单
+    only_missing: bool = True
+
+
+@router.post("/generate-order-details")
+def generate_order_details(payload: GenerateOrderDetailsIn, db: Session = Depends(get_db)):
+    """订单细节表自动生成 — 从 订单 + BOM 联表推导, 不再手工导入.
+
+    order_nos 留空则处理全部订单; only_missing=True 时跳过已生成的行 (增量幂等)。
+    """
+    from app.services import order_detail_service
+    report = order_detail_service.generate(
+        db, order_nos=payload.order_nos, only_missing=payload.only_missing,
+    )
+    db.commit()
+    return {
+        "orders_scanned": report.orders_scanned,
+        "orders_matched": report.orders_matched,
+        "details_created": report.details_created,
+        "details_skipped": report.details_skipped,
+        "orders_no_bom": report.orders_no_bom[:50],   # 截断, 避免响应过大
+        "orders_no_bom_count": len(report.orders_no_bom),
+        "orders_no_product": report.orders_no_product,
+    }
+
+
 @router.post("/future")
 def create_future_order(payload: CreateFutureOrderIn, db: Session = Depends(get_db)):
     """业务需求 10 选项 A: 派生一个 30 天后激活的远期订单."""

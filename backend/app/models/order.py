@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Optional
 
 from datetime import datetime
-from sqlalchemy import Boolean, Date, DateTime, Index, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -61,6 +61,8 @@ class Order(Base, TimestampMixin):
     install_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    platform_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -76,6 +78,9 @@ class Order(Base, TimestampMixin):
     tracking_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     manual_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     signoff_questioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
@@ -94,6 +99,7 @@ class FactoryOrder(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     factory_order_no: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    internal_order_no: Mapped[Optional[str]] = mapped_column(String(32), unique=True, nullable=True, index=True)
     platform_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     factory_name: Mapped[Optional[str]] = mapped_column(String(128))
     order_date: Mapped[Optional[date]] = mapped_column(Date)
@@ -120,6 +126,9 @@ class FactoryOrder(Base, TimestampMixin):
     source_order_id: Mapped[Optional[int]] = mapped_column(Integer)
     # 关联回 platform Order.id, 库存释放时用
 
+    # 导入批次追踪 (C2)
+    import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
 
 class PartPurchase(Base, TimestampMixin):
     __tablename__ = "part_purchases"
@@ -143,6 +152,28 @@ class PartPurchase(Base, TimestampMixin):
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    # 配件采购发票原图 (OCR 识别来源, 历史发票留存可点击查看)
+    source_file_id: Mapped[Optional[int]] = mapped_column(ForeignKey("purchase_files.id"))
+    ocr_warnings: Mapped[Optional[list]] = mapped_column(JSON)
+    ocr_model: Mapped[Optional[str]] = mapped_column(String(64))
+
+
+class PurchaseFile(Base, TimestampMixin):
+    """上传的配件采购发票/单据原图 — 按 year/month 归档 (业务需求: 历史发票留存可查看)."""
+    __tablename__ = "purchase_files"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    year: Mapped[int] = mapped_column(Integer, nullable=False)
+    month: Mapped[int] = mapped_column(Integer, nullable=False)
+    file_path: Mapped[str] = mapped_column(String(512), nullable=False)
+    original_name: Mapped[Optional[str]] = mapped_column(String(255))
+    mime_type: Mapped[Optional[str]] = mapped_column(String(64))
+    size_bytes: Mapped[Optional[int]] = mapped_column(Integer)
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(64))
+
+    __table_args__ = (
+        Index("ix_purchase_files_period", "year", "month"),
+    )
 
 
 class OrderDetail(Base, TimestampMixin):

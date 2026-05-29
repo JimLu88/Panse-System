@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     # 审计：哪些路径的写操作要记录
     audit_skip_paths: str = "/api/health,/api/auth/login"
 
+    # DB 连接池 (仅 Postgres 生效; SQLite 用单连接池)
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 1800
+
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
 

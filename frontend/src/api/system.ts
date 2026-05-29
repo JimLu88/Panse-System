@@ -1,0 +1,271 @@
+import { api } from './base';
+
+// ----- Admin: AI Integrations (业务需求扩展) -----
+export interface IntegrationConfig {
+  provider: string;
+  base_url: string;
+  api_key_masked: string;
+  api_key_set: boolean;
+  model: string;
+}
+
+export interface SupportedProvider {
+  value: string;
+  label: string;
+  model_hint: string;
+  base_url_hint: string;
+}
+
+export interface Integrations {
+  diagnose: IntegrationConfig;
+  ocr: IntegrationConfig;
+  supported_providers: SupportedProvider[];
+}
+
+export const fetchIntegrations = () =>
+  api.get<Integrations>('/api/admin/integrations').then((r) => r.data);
+
+export const updateIntegrations = (payload: {
+  diagnose?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
+  ocr?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
+}) => api.put<Integrations>('/api/admin/integrations', payload).then((r) => r.data);
+
+export const testIntegration = (kind: 'diagnose' | 'ocr') =>
+  api
+    .post<{ ok: boolean; provider: string; model: string; sample?: string; error?: string }>(
+      '/api/admin/integrations/test',
+      { kind },
+    )
+    .then((r) => r.data);
+
+// ----- 系统监控 / 看门狗 (业务需求) -----
+export interface HealthCheck {
+  name: string;
+  status: 'ok' | 'warn' | 'fail';
+  detail: string;
+  duration_ms: number;
+}
+
+export interface SystemStatus {
+  uptime_sec: number;
+  process_started_at: string;
+  version_sha: string;
+  python_version: string;
+  db_ok: boolean;
+  db_latency_ms: number | null;
+  pending_migrations: number;
+  disk_total_gb: number;
+  disk_free_gb: number;
+  disk_used_pct: number;
+  mem_total_mb: number;
+  mem_available_mb: number;
+  mem_used_pct: number;
+  storage_used_mb: number;
+  recent_checks: HealthCheck[];
+}
+
+export interface HealthLog {
+  id: number;
+  check_name: string;
+  status: string;
+  detail: string | null;
+  duration_ms: number | null;
+  created_at: string;
+}
+
+export const fetchSystemStatus = () =>
+  api.get<SystemStatus>('/api/admin/system-status').then((r) => r.data);
+
+export const fetchHealthLogs = (limit = 100, check_name?: string) =>
+  api
+    .get<HealthLog[]>('/api/admin/system-health-logs', {
+      params: { limit, ...(check_name ? { check_name } : {}) },
+    })
+    .then((r) => r.data);
+
+export const restartApi = () =>
+  api.post('/api/admin/restart-api', { confirm: 'RESTART' }).then((r) => r.data);
+
+// ----- 重启事件 (业务需求 5) -----
+export interface SystemEvent {
+  id: number;
+  kind: string;
+  actor: string | null;
+  detail: string | null;
+  snapshot_json: any | null;
+  created_at: string;
+}
+
+export const fetchSystemEvents = (limit = 50) =>
+  api
+    .get<SystemEvent[]>('/api/admin/system-events', { params: { limit } })
+    .then((r) => r.data);
+
+// ----- 告警 / 通知中心 (Phase 1B) -----
+export interface AlertItem {
+  id: number;
+  kind: string;
+  severity: 'info' | 'warn' | 'critical';
+  title: string;
+  body: string | null;
+  dedupe_key: string | null;
+  related_url: string | null;
+  context_json: Record<string, any> | null;
+  sticky: boolean;
+  resolved_at: string | null;
+  resolved_by: string | null;
+  auto_resolve_until: string | null;
+  notified_at: string | null;
+  created_at: string;
+}
+
+export interface AlertSummary {
+  info: number;
+  warn: number;
+  critical: number;
+}
+
+export const fetchActiveAlerts = (params: { severity?: string; kind?: string; limit?: number } = {}) =>
+  api.get<AlertItem[]>('/api/alerts/active', { params }).then((r) => r.data);
+
+export const fetchAlertSummary = () =>
+  api.get<AlertSummary>('/api/alerts/summary').then((r) => r.data);
+
+export const dismissAlert = (id: number) =>
+  api.post(`/api/alerts/${id}/dismiss`).then((r) => r.data);
+
+export const fetchAlertHistory = (limit = 100, kind?: string) =>
+  api.get<AlertItem[]>('/api/alerts/history', { params: { limit, kind } })
+    .then((r) => r.data);
+
+// ----- 定时任务 (Phase 1A, 业务需求 18 自动任务清单) -----
+export interface SchedulerJob {
+  job_id: string;
+  label: string;
+  kind: string;
+  schedule: Record<string, any>;
+  next_run_at: string | null;
+}
+
+export interface SchedulerRun {
+  id: number;
+  job_id: string;
+  job_label: string;
+  status: string;
+  duration_ms: number | null;
+  error: string | null;
+  result_summary: Record<string, any> | null;
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+}
+
+export const fetchSchedulerJobs = () =>
+  api.get<SchedulerJob[]>('/api/scheduler/jobs').then((r) => r.data);
+
+export const fetchSchedulerRuns = (limit = 100, job_id?: string) =>
+  api.get<SchedulerRun[]>('/api/scheduler/runs', { params: { limit, job_id } })
+    .then((r) => r.data);
+
+export const triggerSchedulerJob = (job_id: string) =>
+  api.post(`/api/scheduler/jobs/${job_id}/trigger`).then((r) => r.data);
+
+// ----- Phase 8: AI 简报 + 会计期间 + 供应商评分 -----
+export interface DailyBriefing {
+  id: number;
+  for_date: string;
+  content: string;
+  highlights_json: any[] | null;
+  model: string | null;
+  generated_at: string | null;
+}
+
+export const fetchTodayBriefing = () =>
+  api.get<DailyBriefing | null>('/api/briefings/today').then((r) => r.data);
+
+export const fetchRecentBriefings = (limit = 14) =>
+  api.get<DailyBriefing[]>('/api/briefings/recent', { params: { limit } }).then((r) => r.data);
+
+export const triggerBriefing = (for_date?: string) =>
+  api.post('/api/briefings/generate-now', null, { params: { for_date } }).then((r) => r.data);
+
+export interface AccountingPeriod {
+  id: number;
+  year: number;
+  month: number;
+  status: 'open' | 'closed' | 'locked';
+  closed_at: string | null;
+  closed_by: string | null;
+  remark: string | null;
+}
+
+export const fetchAccountingPeriods = () =>
+  api.get<AccountingPeriod[]>('/api/accounting/periods').then((r) => r.data);
+
+export const closeAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/close', { year, month }).then((r) => r.data);
+
+export const reopenAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/reopen', { year, month }).then((r) => r.data);
+
+export const lockAccountingPeriod = (year: number, month: number) =>
+  api.post<AccountingPeriod>('/api/accounting/periods/lock', { year, month }).then((r) => r.data);
+
+export interface SupplierScore {
+  supplier_id: number;
+  year: number;
+  month: number;
+  on_time_rate: number | null;
+  return_rate: number | null;
+  price_variance_pct: number | null;
+  total_orders: number;
+  total_amount: number | null;
+  score: number | null;
+  rank: number | null;
+  detail_json: Record<string, any> | null;
+}
+
+export const fetchSupplierScores = (year: number, month: number) =>
+  api.get<SupplierScore[]>(`/api/supplier-scores/${year}/${month}`).then((r) => r.data);
+
+export const computeSupplierScores = (year: number, month: number) =>
+  api.post(`/api/supplier-scores/compute/${year}/${month}`).then((r) => r.data);
+
+// ----- 通知配置 (业务需求扩展: 看门狗触发时推 Slack/微信/钉钉/飞书) -----
+export interface NotifyProvider {
+  value: string;
+  label: string;
+}
+
+export interface NotifyConfig {
+  provider: string;
+  webhook_masked: string;
+  webhook_set: boolean;
+  supported_providers: NotifyProvider[];
+}
+
+export const fetchNotifyConfig = () =>
+  api.get<NotifyConfig>('/api/admin/notify-config').then((r) => r.data);
+
+export const updateNotifyConfig = (payload: {
+  provider?: string;
+  webhook?: string;
+}) => api.put<NotifyConfig>('/api/admin/notify-config', payload).then((r) => r.data);
+
+export const testNotifyConfig = () =>
+  api
+    .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
+    .then((r) => r.data);
+
+// ----------------------------- 版本信息 ----------------------------- //
+export interface VersionInfo {
+  commit: string;            // 短哈希, 如 6aaf8ad
+  commit_full: string;
+  commit_date: string;       // commit 作者时间
+  commit_message: string;
+  branch: string;
+  deployed_at: string;       // 看门狗 build 这版代码的时间 (容器里唯一可靠的"部署时间")
+  source: string;            // build_file | runtime_git | unknown
+}
+export const getVersion = () =>
+  api.get<VersionInfo>('/api/version').then((r) => r.data);

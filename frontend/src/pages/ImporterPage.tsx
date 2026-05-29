@@ -62,6 +62,7 @@ import {
   previewImporter,
   smartAnalyzeExcel,
   smartCommitExcel,
+  validateExportExcel,
 } from '../api/client';
 
 const ALIPAY_ACCOUNTS = ['企业号', '个体户私账', '爱群号', '佳宝号', '主力号'];
@@ -851,6 +852,22 @@ function SmartImporter() {
     reports: SmartCommitReport[];
     post_import: PostImportResult;
   } | null>(null);
+  const [validateFile, setValidateFile] = useState<File | null>(null);
+
+  const validateMut = useMutation({
+    mutationFn: (file: File) => validateExportExcel(file),
+    onSuccess: (blob, file) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      const base = file.name.replace(/\.xlsx?$/i, '');
+      a.href = url;
+      a.download = `${base}_校验.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+      message.success('校验完成，已下载带标注的 Excel');
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '校验失败'),
+  });
 
   const analyzeMut = useMutation({
     mutationFn: (file: File) => smartAnalyzeExcel(file),
@@ -928,8 +945,8 @@ function SmartImporter() {
         <Dragger
           accept=".xlsx,.xls"
           showUploadList={false}
-          beforeUpload={(f) => { analyzeMut.mutate(f as File); return false; }}
-          disabled={analyzeMut.isPending}
+          beforeUpload={(f) => { setValidateFile(f as File); analyzeMut.mutate(f as File); return false; }}
+          disabled={analyzeMut.isPending || validateMut.isPending}
           multiple={false}
         >
           <p className="ant-upload-drag-icon"><InboxOutlined /></p>
@@ -940,6 +957,20 @@ function SmartImporter() {
             支持 26 个 sheet 一起分析, 每个 sheet 独立质量评分
           </p>
         </Dragger>
+        {validateFile && (
+          <div style={{ marginTop: 12 }}>
+            <Button
+              icon={<CheckCircleOutlined />}
+              loading={validateMut.isPending}
+              onClick={() => validateMut.mutate(validateFile)}
+            >
+              校验导出 (下载带标注的 Excel)
+            </Button>
+            <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+              规则校验全部 sheet，问题单元格标黄，修改后重新上传导入
+            </Typography.Text>
+          </div>
+        )}
       </Card>
 
       {/* 请求本身失败 (超时/网络/服务器报错): 持久展示, 不靠一闪而过的 toast */}

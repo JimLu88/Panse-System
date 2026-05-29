@@ -1,0 +1,145 @@
+import { api } from './base';
+
+// ----- 截图自动化 (Phase 3, 业务需求 1/6) -----
+export interface QianniuOrderParsed {
+  order_no: string;
+  platform?: string;
+  order_date?: string;
+  pay_time?: string;
+  customer_name?: string;
+  customer_phone?: string;
+  customer_address?: string;
+  product_name?: string;
+  sku?: string;
+  qty?: number;
+  unit_price?: number;
+  discount?: number;
+  paid_amount?: number;
+  platform_fee?: number;
+  freight?: number;
+  remark?: string;
+  confidence?: number;
+  warnings?: string[];
+  product_code?: string | null;
+  sku_code?: string | null;
+}
+
+export interface QianniuParseResp {
+  image_b64: string;
+  mime: string;
+  orders: QianniuOrderParsed[];
+  ocr_warnings: string[];
+}
+
+export const parseQianniuScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<QianniuParseResp>('/api/screenshots/qianniu-orders/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+
+export const commitQianniuOrders = (orders: QianniuOrderParsed[]) =>
+  api
+    .post<{ inserted: number; skipped_existing: string[] }>(
+      '/api/screenshots/qianniu-orders/commit',
+      { orders },
+    )
+    .then((r) => r.data);
+
+export interface PurchaseLineParsed {
+  material_name?: string;
+  material_code?: string;
+  spec?: string;
+  qty?: number;
+  unit?: string;
+  unit_price?: number;
+  amount?: number;
+}
+
+export interface PurchaseParsed {
+  supplier_name?: string;
+  purchase_date?: string;
+  purchase_no?: string;
+  tracking_no?: string;
+  carrier?: string;
+  freight?: number;
+  total_amount?: number;
+  remark?: string;
+  lines: PurchaseLineParsed[];
+  warnings?: string[];
+}
+
+export interface PurchaseParseResp {
+  image_b64: string;
+  mime: string;
+  purchase: PurchaseParsed;
+}
+
+export const parsePurchaseScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<PurchaseParseResp>('/api/screenshots/purchase/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+
+export const commitPurchaseScreenshot = (payload: {
+  supplier?: string;
+  purchase_date?: string;
+  purchase_no?: string;
+  tracking_no?: string;
+  carrier?: string;
+  freight?: number;
+  total_amount?: number;
+  remark?: string;
+  lines: PurchaseLineParsed[];
+}) =>
+  api
+    .post<{ inserted: number; purchase_no: string; has_tracking: boolean }>(
+      '/api/screenshots/purchase/commit',
+      payload,
+    )
+    .then((r) => r.data);
+
+// ----- 工厂对账单截图 (Task 3) -----
+export interface FactoryReconRowParsed {
+  factory_name: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  order_amount?: number | null;
+  bill_amount?: number | null;
+  paid_amount?: number | null;
+  alipay_flow_no?: string | null;
+  remark?: string | null;
+  warnings?: string[];
+}
+export interface FactoryReconParseResp {
+  image_b64: string;
+  mime: string;
+  rows: FactoryReconRowParsed[];
+  ocr_warnings: string[];
+}
+export const parseFactoryReconScreenshot = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<FactoryReconParseResp>('/api/screenshots/factory-recon/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+export const commitFactoryReconScreenshot = (rows: FactoryReconRowParsed[]) =>
+  api
+    .post<{ inserted: number; skipped: string[] }>(
+      '/api/screenshots/factory-recon/commit',
+      { rows },
+    )
+    .then((r) => r.data);

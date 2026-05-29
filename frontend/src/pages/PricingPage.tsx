@@ -2,6 +2,7 @@ import { useState } from 'react';
 import {
   Button,
   Card,
+  Dropdown,
   Form,
   Input,
   InputNumber,
@@ -13,9 +14,16 @@ import {
   Typography,
   message,
 } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { PricingSku, createPricingSku, listPricingSkus, updatePricingSku } from '../api/client';
+import {
+  PricingSku,
+  createPricingSku,
+  downloadPricingTemplate,
+  listPricingSkus,
+  listPricingTemplates,
+  updatePricingSku,
+} from '../api/client';
 
 const PAGE_SIZE = 50;
 
@@ -98,6 +106,26 @@ export default function PricingPage() {
     placeholderData: keepPreviousData,
   });
 
+  const { data: templates } = useQuery({
+    queryKey: ['pricing-templates'],
+    queryFn: listPricingTemplates,
+    staleTime: 60 * 60 * 1000,
+  });
+
+  async function handleDownloadTemplate(key: string, label: string) {
+    try {
+      const blob = await downloadPricingTemplate(key);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${label}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      message.error('模板下载失败');
+    }
+  }
+
   const createMut = useMutation({
     mutationFn: createPricingSku,
     onSuccess: () => {
@@ -130,9 +158,28 @@ export default function PricingPage() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>
-          新增定价
-        </Button>
+        <Space>
+          <Dropdown
+            disabled={!templates || templates.length === 0}
+            menu={{
+              items: (templates ?? []).map((t) => ({
+                key: t.key,
+                label: (
+                  <Space direction="vertical" size={0}>
+                    <span>{t.label}</span>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>{t.desc}</Typography.Text>
+                  </Space>
+                ),
+                onClick: () => handleDownloadTemplate(t.key, t.label),
+              })),
+            }}
+          >
+            <Button icon={<DownloadOutlined />}>一键模板下载</Button>
+          </Dropdown>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>
+            新增定价
+          </Button>
+        </Space>
       </Space>
       <Card size="small">
         <Space wrap>
