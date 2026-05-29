@@ -2198,6 +2198,13 @@ export const getExceptionCounts = () =>
   api.get<Record<string, number>>('/api/exceptions/counts-by-type').then(r => r.data);
 export const getOpenExceptionCount = () =>
   api.get<{ count: number }>('/api/exceptions/open-count').then(r => r.data);
+export interface ExceptionSummary {
+  total: number;
+  by_type: Record<string, number>;
+  by_severity: Record<string, number>;
+}
+export const getExceptionsSummary = (status = 'open') =>
+  api.get<ExceptionSummary>('/api/exceptions/summary', { params: { status } }).then(r => r.data);
 
 // -- 运行日志 (内存环形缓冲, 用于界面排查)
 export interface LogLine {

@@ -26,6 +26,7 @@ import {
   DataException,
   aiDiagnose,
   fixException,
+  getExceptionsSummary,
   listExceptions,
   resolveException,
   runAllScanners,
@@ -207,6 +208,12 @@ export default function ExceptionsPage() {
     queryFn: () => listExceptions(status, 5000),
   });
 
+  // 准确聚合 (GROUP BY, 不依赖明细是否被截断)
+  const { data: summary } = useQuery({
+    queryKey: ['exceptions-summary', status],
+    queryFn: () => getExceptionsSummary(status),
+  });
+
   // 顶栏角标只统计 warning/error (排除 info), 这里统计三档供页面对账, 解释"角标数 ≠ 页面数"的困惑
   const severityCount = useMemo(() => {
     const out = { info: 0, warning: 0, error: 0 };
@@ -223,6 +230,7 @@ export default function ExceptionsPage() {
     onSuccess: () => {
       message.success('已更新');
       qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
   });
 
@@ -241,6 +249,7 @@ export default function ExceptionsPage() {
       const skipped = Object.values(res).reduce((s, r) => s + r.skipped_duplicate, 0);
       message.success(`扫描完成：新增 ${total} 条，去重 ${skipped} 条`);
       qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
   });
 
@@ -250,6 +259,7 @@ export default function ExceptionsPage() {
       const total = Object.values(res).filter(v => v > 0).length;
       message.success(`数据完整性扫描完成，发现 ${total} 类问题`);
       qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
   });
 
@@ -261,6 +271,7 @@ export default function ExceptionsPage() {
       setFixOpen(null);
       fixForm.resetFields();
       qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '补填失败'),
   });
@@ -439,26 +450,37 @@ export default function ExceptionsPage() {
         </Space>
       </Space>
 
-      {status === 'open' && !isLoading && (data?.length ?? 0) > 0 && (
-        <Alert
-          type="info"
-          showIcon
-          message={
-            <span>
-              共 <b>{data?.length ?? 0}</b> 条未处理异常：
-              error <b>{severityCount.error}</b> · warning <b>{severityCount.warning}</b> · info <b>{severityCount.info}</b>
-            </span>
-          }
-          description={
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              顶栏红色角标只统计 <b>error + warning</b>（共 {severityCount.error + severityCount.warning} 条），
-              不含 info 级提示，所以角标数会与本页总数不同。本页现已加载全部未处理异常（上限 5000 条）。
-              其中「订单缺成本 / 订单缺支付宝流水」会对每一笔历史订单各记一条，是大批量异常的主要来源。
-            </Typography.Text>
-          }
-          style={{ marginBottom: 4 }}
-        />
-      )}
+      {status === 'open' && !isLoading && (summary?.total ?? data?.length ?? 0) > 0 && (() => {
+        const sev = summary?.by_severity ?? {};
+        const total = summary?.total ?? data?.length ?? 0;
+        const err = sev.error ?? severityCount.error;
+        const warn = sev.warning ?? severityCount.warning;
+        const info = sev.info ?? severityCount.info;
+        const loaded = data?.length ?? 0;
+        const truncated = total > loaded;
+        return (
+          <Alert
+            type={truncated ? 'warning' : 'info'}
+            showIcon
+            message={
+              <span>
+                共 <b>{total}</b> 条未处理异常：
+                error <b>{err}</b> · warning <b>{warn}</b> · info <b>{info}</b>
+                {truncated && <>（本页已加载前 <b>{loaded}</b> 条明细）</>}
+              </span>
+            }
+            description={
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                顶栏红色角标只统计 <b>error + warning</b>（共 {err + warn} 条），
+                不含 info 级提示，所以角标数会与本页总数不同。
+                其中「订单缺成本 / 订单缺支付宝流水」会对每一笔历史订单各记一条，是大批量异常的主要来源；
+                可用上方「数据完整性扫描」后按分组批量处理。
+              </Typography.Text>
+            }
+            style={{ marginBottom: 4 }}
+          />
+        );
+      })()}
 
       {isLoading ? (
         <div style={{ textAlign: 'center', padding: 48 }}>

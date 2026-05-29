@@ -85,6 +85,34 @@ def counts_by_type(
     return {r[0]: r[1] for r in rows}
 
 
+@router.get("/summary", response_model=dict)
+def exceptions_summary(
+    status: str = Query("open"),
+    db: Session = Depends(get_db),
+):
+    """一次性返回 按类型 / 按严重度 / 总数 的聚合 (GROUP BY, 不拉明细行).
+
+    供异常页表头与各分组显示「准确总数」, 即使明细列表被分页/截断, 计数仍正确。
+    """
+    by_type = dict(
+        db.query(DataException.exception_type, func.count(DataException.id))
+        .filter(DataException.status == status)
+        .group_by(DataException.exception_type)
+        .all()
+    )
+    by_severity = dict(
+        db.query(DataException.severity, func.count(DataException.id))
+        .filter(DataException.status == status)
+        .group_by(DataException.severity)
+        .all()
+    )
+    return {
+        "total": sum(by_type.values()),
+        "by_type": by_type,
+        "by_severity": by_severity,
+    }
+
+
 @router.get("/open-count", response_model=dict)
 def open_count(
     exclude_info: bool = Query(
