@@ -273,7 +273,165 @@ def ratio_hints(
             "top": top,
             "range": rng,
         }
-    return {"category": category, "calibers": calibers}
+
+    fields: dict[str, dict] = {}
+    for name, (anchor_attr, label, mode) in _RATIO_FIELDS.items():
+        top, rng, sample, used_global = _field_ratio_distribution(
+            db, name, anchor_attr, category
+        )
+        fields[name] = {
+            "anchor": anchor_attr,
+            "anchor_label": label,
+            "mode": mode,
+            "sample": sample,
+            "used_global": used_global,
+            "top": top,
+            "range": rng,
+        }
+
+    return {"category": category, "calibers": calibers, "fields": fields}
+
+
+# ---------------------------------------------------------------------------
+# 通用「智能基准」比例分布 — 各价格/成本字段相对某锚字段的历史比例
+#   field -> (anchor_field, anchor_label, mode)  mode: "pct" 或 "multiplier"
+# ---------------------------------------------------------------------------
+_RATIO_FIELDS = {
+    "list_price":      ("big_promo",  "大促到手价", "multiplier"),  # 标价是到手价的 N 倍
+    "daily_price":     ("list_price", "标价",       "pct"),
+    "small_promo":     ("list_price", "标价",       "pct"),
+    "mid_promo":       ("list_price", "标价",       "pct"),
+    "accounting_cost": ("big_promo",  "大促到手价", "pct"),
+    "physical_cost":   ("big_promo",  "大促到手价", "pct"),
+}
+
+
+def _field_ratio_distribution(
+    db: Session, field_attr: str, anchor_attr: str, category: Optional[str]
+):
+    """算 比例=field/anchor 的分布. 返回 (top3, range, sample, used_global)."""
+    from app.models.product import Product
+
+    field_col = getattr(PricingSku, field_attr)
+    anchor_col = getattr(PricingSku, anchor_attr)
+
+    def _query(cat: Optional[str]):
+        stmt = (
+            select(field_col, anchor_col)
+            .where(
+                field_col.isnot(None), field_col > 0,
+                anchor_col.isnot(None), anchor_col > 0,
+            )
+        )
+        if cat:
+            stmt = stmt.join(
+                Product, Product.code == PricingSku.product_code
+            ).where(Product.category == cat)
+        return db.execute(stmt).all()
+
+    used_global = False
+    rows = _query(category) if category else []
+    if len(rows) < _MIN_SAMPLE:
+        rows = _query(None)
+        used_global = True
+
+    ratios = []
+    for fval, aval in rows:
+        try:
+            r = float(fval) / float(aval)
+        except (ZeroDivisionError, TypeError):
+            continue
+        if 0 < r < 100:               # 过滤脏数据 (倍数口径可能 >1)
+            ratios.append(round(r, 2))
+    sample = len(ratios)
+    if sample == 0:
+        return [], None, 0, used_global
+
+    from collections import Counter
+    counter = Counter(ratios)
+    top = [
+        {"ratio": val, "pct": round(cnt / sample * 100), "count": cnt}
+        for val, cnt in counter.most_common(3)
+    ]
+    ratios.sort()
+    lo = ratios[int(sample * 0.1)]
+    hi = ratios[min(sample - 1, int(sample * 0.9))]
+    rng = {"low": lo, "high": hi, "pct": 80}
+    return top, rng, sample, used_global
+
+
+# ---------------------------------------------------------------------------
+# 通用「常见值」分布 — 配件成本 / 活动价格 各字段历史录入值
+# ---------------------------------------------------------------------------
+def _numeric_field_whitelist(model) -> set[str]:
+    """该 model 的数值列名集合 (防止属性注入)."""
+    from sqlalchemy import Numeric, Integer, Float
+    cols = set()
+    for col in model.__table__.columns:
+        if isinstance(col.type, (Numeric, Integer, Float)):
+            cols.add(col.name)
+    return cols
+
+
+@router.get("/value-hints", tags=["pricing"])
+def value_hints(
+    table: str = Query(..., description="costs | promo"),
+    field: str = Query(...),
+    category: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """返回某扩展表某字段的历史「常见值」分布 (Top3 常见值 + 区间), 供配件成本/活动价格小灯泡参考."""
+    model = {"costs": PricingSkuCosts, "promo": PricingSkuPromo}.get(table)
+    if model is None:
+        raise HTTPException(400, "table 必须是 costs 或 promo")
+    whitelist = _numeric_field_whitelist(model)
+    if field not in whitelist:
+        raise HTTPException(400, f"字段 {field} 不允许")
+
+    col = getattr(model, field)
+
+    def _query(cat: Optional[str]):
+        stmt = select(col).where(col.isnot(None), col > 0)
+        if cat:
+            from app.models.product import Product
+            stmt = (
+                stmt.join(PricingSku, PricingSku.sku_code == model.sku_code)
+                .join(Product, Product.code == PricingSku.product_code)
+                .where(Product.category == cat)
+            )
+        return [row[0] for row in db.execute(stmt).all()]
+
+    used_global = False
+    vals = _query(category) if category else []
+    if len(vals) < _MIN_SAMPLE:
+        vals = _query(None)
+        used_global = True
+
+    # 是否系数 (Numeric(10,6)) — 系数保留原值, 货币圆整 2 位
+    is_rate = field.endswith("_rate") or field.endswith("_discount")
+    nums = []
+    for v in vals:
+        try:
+            f = float(v)
+        except (TypeError, ValueError):
+            continue
+        nums.append(f if is_rate else round(f, 2))
+    sample = len(nums)
+    if sample == 0:
+        return {"sample": 0, "used_global": used_global, "top": [], "range": None}
+
+    from collections import Counter
+    counter = Counter(nums)
+    top = [
+        {"value": val, "pct": round(cnt / sample * 100), "count": cnt}
+        for val, cnt in counter.most_common(3)
+    ]
+    nums.sort()
+    lo = nums[int(sample * 0.1)]
+    hi = nums[min(sample - 1, int(sample * 0.9))]
+    rng = {"low": lo, "high": hi, "pct": 80}
+    return {"sample": sample, "used_global": used_global, "top": top, "range": rng}
 
 
 # ---------------------------------------------------------------------------

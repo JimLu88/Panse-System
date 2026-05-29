@@ -24,7 +24,7 @@ from app.models.auth import User
 from app.models.finance import FactoryReconciliation
 from app.models.order import Order, PartPurchase
 from app.rate_limit import limiter
-from app.services import vision_ocr_service
+from app.services import factory_recon_excel_service, vision_ocr_service
 from app.services.ai_provider import AiUnavailable
 
 router = APIRouter(prefix="/api/screenshots", tags=["screenshots"])
@@ -255,6 +255,30 @@ async def parse_factory_recon(
         "mime": mime,
         **data,
     }
+
+
+@router.post("/factory-recon/parse-excel")
+async def parse_factory_recon_excel(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """上传工厂对账 Excel → AI 整理成标准对账行 (不入库, 返回预览)."""
+    name = (file.filename or "").lower()
+    if not (name.endswith(".xlsx") or name.endswith(".xls")):
+        raise HTTPException(400, "请上传 .xlsx / .xls 文件")
+    content = await file.read()
+    if len(content) > _MAX_BYTES:
+        raise HTTPException(413, "文件过大")
+    try:
+        data = await asyncio.to_thread(
+            factory_recon_excel_service.parse_factory_recon_excel, db, content
+        )
+    except AiUnavailable as e:
+        raise HTTPException(503, str(e))
+    except Exception as e:
+        raise HTTPException(400, f"解析失败: {e}")
+    return data
 
 
 class FactoryReconRowIn(BaseModel):

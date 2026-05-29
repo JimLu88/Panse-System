@@ -168,13 +168,35 @@ export interface RatioCaliber {
   top: RatioHintItem[];
   range: { low: number; high: number; pct: number } | null;
 }
+export interface RatioFieldHint {
+  anchor: string;
+  anchor_label: string;
+  mode: 'pct' | 'multiplier';
+  sample: number;
+  used_global: boolean;
+  top: { ratio: number; pct: number; count: number }[];
+  range: { low: number; high: number; pct: number } | null;
+}
 export interface RatioHints {
   category: string | null;
   calibers: Record<string, RatioCaliber>;
+  fields?: Record<string, RatioFieldHint>;
 }
 export const getRatioHints = (category?: string) =>
   api
     .get<RatioHints>('/api/pricing-skus/ratio-hints', { params: { category } })
+    .then((r) => r.data);
+
+// 通用「常见值」分布 (配件成本 / 活动价格 小灯泡)
+export interface ValueHint {
+  sample: number;
+  used_global: boolean;
+  top: { value: number; pct: number; count: number }[];
+  range: { low: number; high: number; pct: number } | null;
+}
+export const getValueHints = (table: 'costs' | 'promo', field: string, category?: string) =>
+  api
+    .get<ValueHint>('/api/pricing-skus/value-hints', { params: { table, field, category } })
     .then((r) => r.data);
 
 export const createProduct = (payload: {

@@ -136,6 +136,20 @@ export const parseFactoryReconScreenshot = (file: File) => {
     })
     .then((r) => r.data);
 };
+export interface FactoryReconExcelResp {
+  rows: FactoryReconRowParsed[];
+  warnings: string[];
+}
+export const parseFactoryReconExcel = (file: File) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api
+    .post<FactoryReconExcelResp>('/api/screenshots/factory-recon/parse-excel', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+    })
+    .then((r) => r.data);
+};
 export const commitFactoryReconScreenshot = (rows: FactoryReconRowParsed[]) =>
   api
     .post<{ inserted: number; skipped: string[] }>(

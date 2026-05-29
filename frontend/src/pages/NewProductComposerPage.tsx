@@ -27,10 +27,12 @@ import {
   PricingSkuCosts,
   PricingSkuPromo,
   RatioHints,
+  ValueHint,
   composeProduct,
   getRatioHints,
   getSkuCosts,
   getSkuPromo,
+  getValueHints,
   listMaterials,
   listProducts,
   listRecentProducts,
@@ -151,6 +153,226 @@ function BigPromoCell({
   );
 }
 
+// 基础定价价格/成本字段单元格: 聚焦弹出「智能基准」历史比例, 点标签按锚字段×比例回填
+type RatioFieldName = 'list_price' | 'daily_price' | 'small_promo' | 'mid_promo' | 'accounting_cost' | 'physical_cost';
+
+function RatioHintInput({
+  value,
+  fieldName,
+  hints,
+  row,
+  onChange,
+  width = 100,
+}: {
+  value: string | number | null | undefined;
+  fieldName: RatioFieldName;
+  hints?: RatioHints;
+  row: SkuRow;
+  onChange: (n: number | null) => void;
+  width?: number;
+}) {
+  const [open, setOpen] = useState(false);
+  const fh = hints?.fields?.[fieldName];
+
+  const anchorValue = (): number | null => {
+    if (!fh) return null;
+    const raw = (row as any)[fh.anchor];
+    if (raw == null || raw === '') return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+
+  const fill = (ratio: number) => {
+    if (!fh) return;
+    const anchor = anchorValue();
+    if (anchor == null) {
+      message.warning(`请先填写 ${fh.anchor_label}`);
+      return;
+    }
+    if (ratio <= 0) return;
+    onChange(Math.round(anchor * ratio * 100) / 100);
+    setOpen(false);
+  };
+
+  const content = () => {
+    if (!hints) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+    if (!fh || fh.sample === 0 || fh.top.length === 0) {
+      return <Typography.Text type="secondary">暂无历史数据可参考</Typography.Text>;
+    }
+    const isMul = fh.mode === 'multiplier';
+    const canFill = anchorValue() != null;
+    const tagText = (ratio: number) =>
+      isMul ? `×${ratio.toFixed(2)}` : `${Math.round(ratio * 100)}%`;
+    const rangeText = () => {
+      if (!fh.range) return null;
+      return isMul
+        ? `中间 80% 落在 ×${fh.range.low.toFixed(2)}–×${fh.range.high.toFixed(2)}`
+        : `中间 80% 落在 ${Math.round(fh.range.low * 100)}%–${Math.round(fh.range.high * 100)}%`;
+    };
+    return (
+      <div style={{ width: 300 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          {isMul
+            ? `通常是 ${fh.anchor_label} 的若干倍。`
+            : `通常是 ${fh.anchor_label} 的某百分比。`}
+          点标签按「{fh.anchor_label} × 比例」回填。
+        </Typography.Text>
+        <div style={{ marginTop: 4 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            样本 {fh.sample}{fh.used_global ? ' · 全局' : ''}
+          </Typography.Text>
+        </div>
+        <div style={{ marginTop: 6 }}>
+          {fh.top.map((t) => (
+            <Tag
+              key={t.ratio}
+              color={canFill ? 'blue' : 'default'}
+              style={{ cursor: canFill ? 'pointer' : 'not-allowed', marginBottom: 4 }}
+              onClick={() => canFill && fill(t.ratio)}
+            >
+              {tagText(t.ratio)} · {t.pct}% 产品
+            </Tag>
+          ))}
+        </div>
+        {fh.range && (
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            {rangeText()}
+          </Typography.Text>
+        )}
+        {!canFill && (
+          <div>
+            <Typography.Text type="warning" style={{ fontSize: 11 }}>
+              请先填写 {fh.anchor_label}
+            </Typography.Text>
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger={[]}
+      placement="bottomLeft"
+      title={
+        <Space size={4}>
+          <BulbOutlined style={{ color: '#faad14' }} />
+          <span style={{ fontSize: 13 }}>智能基准参考</span>
+        </Space>
+      }
+      content={content()}
+    >
+      <InputNumber
+        value={value == null || value === '' ? undefined : Number(value)}
+        size="small"
+        min={0}
+        step={0.01}
+        style={{ width }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 200)}
+        onChange={(n) => onChange(n == null ? null : Number(n))}
+      />
+    </Popover>
+  );
+}
+
+// 配件成本 / 活动价格单元格: 聚焦弹出该字段历史「常见值」, 点标签直接填值
+function ValueHintInput({
+  value,
+  table,
+  field,
+  category,
+  onChange,
+  width = 120,
+  isRate = false,
+}: {
+  value: number | null | undefined;
+  table: 'costs' | 'promo';
+  field: string;
+  category?: string;
+  onChange: (n: number | null) => void;
+  width?: number;
+  isRate?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [fetched, setFetched] = useState(false);
+
+  const { data: hint } = useQuery({
+    queryKey: ['value-hints', table, field, category ?? ''],
+    queryFn: () => getValueHints(table, field, category || undefined),
+    enabled: fetched,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const fmt = (v: number) => (isRate ? `${v}` : `${v}元`);
+
+  const fill = (v: number) => {
+    onChange(v);
+    setOpen(false);
+  };
+
+  const content = () => {
+    if (!fetched || hint === undefined) return <Typography.Text type="secondary">加载中…</Typography.Text>;
+    const h = hint as ValueHint;
+    if (h.sample === 0 || h.top.length === 0) {
+      return <Typography.Text type="secondary">暂无历史数据可参考</Typography.Text>;
+    }
+    return (
+      <div style={{ width: 280 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+          历史常见值。点标签直接填入。样本 {h.sample}{h.used_global ? ' · 全局' : ''}
+        </Typography.Text>
+        <div style={{ marginTop: 6 }}>
+          {h.top.map((t) => (
+            <Tag
+              key={t.value}
+              color="blue"
+              style={{ cursor: 'pointer', marginBottom: 4 }}
+              onClick={() => fill(t.value)}
+            >
+              {fmt(t.value)} · {t.pct}% 产品
+            </Tag>
+          ))}
+        </div>
+        {h.range && (
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+            中间 80% 落在 {fmt(h.range.low)}–{fmt(h.range.high)}
+          </Typography.Text>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <Popover
+      open={open}
+      onOpenChange={setOpen}
+      trigger={[]}
+      placement="bottomLeft"
+      title={
+        <Space size={4}>
+          <BulbOutlined style={{ color: '#faad14' }} />
+          <span style={{ fontSize: 13 }}>历史常见值</span>
+        </Space>
+      }
+      content={content()}
+    >
+      <InputNumber
+        value={value ?? undefined}
+        size="small"
+        min={0}
+        step={isRate ? 0.001 : 0.01}
+        style={{ width }}
+        onFocus={() => { setFetched(true); setOpen(true); }}
+        onBlur={() => setTimeout(() => setOpen(false), 200)}
+        onChange={(n) => onChange(n == null ? null : Number(n))}
+      />
+    </Popover>
+  );
+}
+
 // ---- 配件成本 Tab ----
 const COST_FIELDS: { field: keyof PricingSkuCosts; label: string }[] = [
   { field: 'rock_slab', label: '岩板' },
@@ -187,9 +409,11 @@ function computePartsTotal(costs: Partial<PricingSkuCosts>): number {
 function SkuCostsTab({
   skuCodes,
   productCode,
+  category,
 }: {
   skuCodes: string[];
   productCode: string | null;
+  category?: string;
 }) {
   const [selectedSku, setSelectedSku] = useState<string>(skuCodes[0] ?? '');
   const [localCosts, setLocalCosts] = useState<Partial<PricingSkuCosts>>({});
@@ -249,11 +473,10 @@ function SkuCostsTab({
           <Col span={12} key={field}>
             <Space>
               <Typography.Text style={{ width: 130, display: 'inline-block' }}>{label}</Typography.Text>
-              <InputNumber
-                size="small"
-                min={0}
-                step={0.01}
-                style={{ width: 120 }}
+              <ValueHintInput
+                table="costs"
+                field={field as string}
+                category={category}
                 value={(localCosts[field] as number | undefined) ?? undefined}
                 onChange={(n) => setLocalCosts((prev) => ({ ...prev, [field]: n }))}
               />
@@ -325,10 +548,12 @@ function SkuPromoTab({
   skuCodes,
   productCode,
   skuRows,
+  category,
 }: {
   skuCodes: string[];
   productCode: string | null;
   skuRows: SkuRow[];
+  category?: string;
 }) {
   const [selectedSku, setSelectedSku] = useState<string>(skuCodes[0] ?? '');
   const [localPromo, setLocalPromo] = useState<Partial<PricingSkuPromo>>({});
@@ -426,7 +651,7 @@ function SkuPromoTab({
         <Col span={12}>
           <Space>
             <Typography.Text style={labelStyle}>店铺宝系数</Typography.Text>
-            <InputNumber size="small" style={{ width: 120 }} min={0} step={0.001}
+            <ValueHintInput table="promo" field="shop_promo_rate" category={category} isRate
               value={localPromo.shop_promo_rate != null ? Number(localPromo.shop_promo_rate) : undefined}
               onChange={(n) => patch({ shop_promo_rate: n ?? undefined })} />
           </Space>
@@ -444,7 +669,7 @@ function SkuPromoTab({
         <Col span={12}>
           <Space>
             <Typography.Text style={labelStyle}>中促店铺系数</Typography.Text>
-            <InputNumber size="small" style={{ width: 120 }} min={0} step={0.001}
+            <ValueHintInput table="promo" field="mid_shop_rate" category={category} isRate
               value={localPromo.mid_shop_rate != null ? Number(localPromo.mid_shop_rate) : undefined}
               onChange={(n) => patch({ mid_shop_rate: n ?? undefined })} />
           </Space>
@@ -474,7 +699,7 @@ function SkuPromoTab({
         <Col span={12}>
           <Space>
             <Typography.Text style={labelStyle}>大促店铺系数</Typography.Text>
-            <InputNumber size="small" style={{ width: 120 }} min={0} step={0.001}
+            <ValueHintInput table="promo" field="big_shop_rate" category={category} isRate
               value={localPromo.big_shop_rate != null ? Number(localPromo.big_shop_rate) : undefined}
               onChange={(n) => patch({ big_shop_rate: n ?? undefined })} />
           </Space>
@@ -528,7 +753,7 @@ function SkuPromoTab({
         <Col span={12}>
           <Space>
             <Typography.Text style={labelStyle}>RN单品宝报名价</Typography.Text>
-            <InputNumber size="small" style={{ width: 120 }} min={0} step={0.01}
+            <ValueHintInput table="promo" field="xhs_activity_price" category={category}
               value={localPromo.xhs_activity_price != null ? Number(localPromo.xhs_activity_price) : undefined}
               onChange={(n) => patch({ xhs_activity_price: n ?? undefined })} />
           </Space>
@@ -708,14 +933,26 @@ export default function NewProductComposerPage() {
       render: (_: any, row: SkuRow) => (
         <Input size="small" value={row.size_category ?? ''} placeholder="小/中/大型" onChange={(e) => setSkuRow(row._key, { size_category: e.target.value })} />
       ) },
-    { title: '标价', dataIndex: 'list_price', width: 90,
-      render: (_: any, row: SkuRow) => numInput(row.list_price, (n) => setSkuRow(row._key, { list_price: n })) },
-    { title: '日常价', dataIndex: 'daily_price', width: 90,
-      render: (_: any, row: SkuRow) => numInput(row.daily_price, (n) => setSkuRow(row._key, { daily_price: n })) },
-    { title: '小促', dataIndex: 'small_promo', width: 90,
-      render: (_: any, row: SkuRow) => numInput(row.small_promo, (n) => setSkuRow(row._key, { small_promo: n })) },
-    { title: '中促', dataIndex: 'mid_promo', width: 90,
-      render: (_: any, row: SkuRow) => numInput(row.mid_promo, (n) => setSkuRow(row._key, { mid_promo: n })) },
+    { title: <span>标价 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'list_price', width: 100,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.list_price} fieldName="list_price" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { list_price: n })} />
+      ) },
+    { title: <span>日常价 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'daily_price', width: 100,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.daily_price} fieldName="daily_price" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { daily_price: n })} />
+      ) },
+    { title: <span>小促 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'small_promo', width: 100,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.small_promo} fieldName="small_promo" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { small_promo: n })} />
+      ) },
+    { title: <span>中促 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'mid_promo', width: 100,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.mid_promo} fieldName="mid_promo" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { mid_promo: n })} />
+      ) },
     { title: <span>大促 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'big_promo', width: 110,
       render: (_: any, row: SkuRow) => (
         <BigPromoCell
@@ -725,10 +962,16 @@ export default function NewProductComposerPage() {
           onChange={(n) => setSkuRow(row._key, { big_promo: n })}
         />
       ) },
-    { title: '会计成本', dataIndex: 'accounting_cost', width: 100,
-      render: (_: any, row: SkuRow) => numInput(row.accounting_cost, (n) => setSkuRow(row._key, { accounting_cost: n })) },
-    { title: '物理成本', dataIndex: 'physical_cost', width: 100,
-      render: (_: any, row: SkuRow) => numInput(row.physical_cost, (n) => setSkuRow(row._key, { physical_cost: n })) },
+    { title: <span>会计成本 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'accounting_cost', width: 110,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.accounting_cost} fieldName="accounting_cost" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { accounting_cost: n })} />
+      ) },
+    { title: <span>物理成本 <BulbOutlined style={{ color: '#faad14' }} /></span>, dataIndex: 'physical_cost', width: 110,
+      render: (_: any, row: SkuRow) => (
+        <RatioHintInput value={row.physical_cost} fieldName="physical_cost" hints={ratioHints} row={row}
+          onChange={(n) => setSkuRow(row._key, { physical_cost: n })} />
+      ) },
     { title: '', width: 40,
       render: (_: any, row: SkuRow) => (
         <Button size="small" type="text" danger icon={<DeleteOutlined />}
@@ -812,7 +1055,7 @@ export default function NewProductComposerPage() {
               label: '基础定价',
               children: (
                 <>
-                  <Table rowKey="_key" size="small" dataSource={skus} columns={skuColumns as any} pagination={false} scroll={{ x: 1120 }} />
+                  <Table rowKey="_key" size="small" dataSource={skus} columns={skuColumns as any} pagination={false} scroll={{ x: 1200 }} />
                   <Typography.Text type="secondary" style={{ fontSize: 12 }}>
                     大促价: 点输入框看「会计/物理/出厂」三口径的历史比例分布，点蓝色标签按 成本÷比例 自动回填。
                   </Typography.Text>
@@ -826,6 +1069,7 @@ export default function NewProductComposerPage() {
                 <SkuCostsTab
                   skuCodes={savedSkuCodes}
                   productCode={savedProductCode}
+                  category={categoryLabel}
                 />
               ),
             },
@@ -837,6 +1081,7 @@ export default function NewProductComposerPage() {
                   skuCodes={savedSkuCodes}
                   productCode={savedProductCode}
                   skuRows={skus}
+                  category={categoryLabel}
                 />
               ),
             },
