@@ -2009,6 +2009,21 @@ export const updatePricingSku = (id: number, payload: Partial<PricingSkuCreate>)
 export const recomputePricingSku = (id: number) =>
   api.post<PricingSku>(`/api/pricing-skus/${id}/recompute`).then(r => r.data);
 
+// -- 淘宝批量操作模板下载
+export interface TaobaoTemplate {
+  key: string;
+  label: string;
+  desc: string;
+}
+export const listPricingTemplates = () =>
+  api.get<TaobaoTemplate[]>('/api/pricing-skus/templates').then(r => r.data);
+export const downloadPricingTemplate = (key: string) =>
+  api
+    .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {
+      responseType: 'blob',
+    })
+    .then(r => r.data as Blob);
+
 // -- 库存可编辑 (盘库/纠错: 物理库存 + 锁定库存 + 备注)
 export const updatePartInventory = (
   id: number,

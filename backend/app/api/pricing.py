@@ -4,7 +4,10 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -177,3 +180,65 @@ def recompute_pricing_sku(
     except ValueError as e:
         raise HTTPException(404, str(e))
     return PricingSkuOut.model_validate(sku)
+
+
+# ---------------------------------------------------------------------------
+# 淘宝批量操作模板下载 — 一键模板按钮用
+# ---------------------------------------------------------------------------
+
+_TEMPLATE_DIR = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates"
+
+# key: 文件名(不含路径), label/desc: 给前端展示
+_TEMPLATES: list[dict[str, str]] = [
+    {
+        "key": "product_publish.xlsx",
+        "label": "产品批量发布模板",
+        "desc": "宝贝标题 / 商家编码 / 一口价 / SKU 价格批量发布",
+    },
+    {
+        "key": "single_item_discount.xlsx",
+        "label": "单品立减批量模板",
+        "desc": "按 商品ID + SKU_ID 设置立减 / 打折优惠",
+    },
+    {
+        "key": "promo_signup.xlsx",
+        "label": "大促活动批量报名模板",
+        "desc": "按商品ID报名大促 / 联报活动 (含一口价、大促价参考)",
+    },
+    {
+        "key": "product_id_export.xlsx",
+        "label": "商品ID导入模板",
+        "desc": "仅商品ID一列, 用于批量勾选 / 导出商品",
+    },
+    {
+        "key": "product_export_mapping.xlsx",
+        "label": "淘宝商品导出对应表",
+        "desc": "商品Id / 宝贝标题 / 商家编码 等字段对应关系",
+    },
+]
+
+
+@router.get("/templates", tags=["pricing"])
+def list_pricing_templates():
+    """列出可下载的淘宝批量操作模板."""
+    return [
+        {"key": t["key"], "label": t["label"], "desc": t["desc"]}
+        for t in _TEMPLATES
+        if (_TEMPLATE_DIR / t["key"]).exists()
+    ]
+
+
+@router.get("/templates/{key}/download", tags=["pricing"])
+def download_pricing_template(key: str):
+    """下载指定模板. key 必须在白名单内, 防目录穿越."""
+    meta = next((t for t in _TEMPLATES if t["key"] == key), None)
+    if meta is None:
+        raise HTTPException(404, "template not found")
+    path = _TEMPLATE_DIR / key
+    if not path.exists():
+        raise HTTPException(404, "template file missing")
+    return FileResponse(
+        path,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=f"{meta['label']}.xlsx",
+    )
