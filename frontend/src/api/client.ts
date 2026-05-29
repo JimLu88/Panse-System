@@ -2107,6 +2107,49 @@ export const updateTaobaoListing = (
   patch: { sku_code?: string; product_code?: string },
 ) => api.patch<TaobaoListing>(`/api/taobao-listings/${id}`, patch).then(r => r.data);
 
+// -- 新产品综合输入 (Task 4)
+export interface ComposeBomLine {
+  material_code: string;
+  material_name?: string | null;
+  unit?: string | null;
+  qty_per_product?: string | number;
+  size_type?: string | null;
+  remark?: string | null;
+}
+export interface ComposePricingSku {
+  sku_code: string;
+  sku?: string | null;
+  size_category?: string | null;
+  list_price?: string | number | null;
+  daily_price?: string | number | null;
+  small_promo?: string | number | null;
+  mid_promo?: string | number | null;
+  big_promo?: string | number | null;
+  accounting_cost?: string | number | null;
+  physical_cost?: string | number | null;
+}
+export interface ComposeProductPayload {
+  name: string;
+  brand: string;
+  category: string;
+  category_label?: string;
+  remark?: string;
+  taobao_id?: string;
+  bom_lines: ComposeBomLine[];
+  pricing_skus: ComposePricingSku[];
+}
+export interface ProductReference {
+  product: { code: string; name: string; brand: string | null; category: string | null; remark: string | null };
+  bom_lines: ComposeBomLine[];
+  pricing_skus: ComposePricingSku[];
+}
+export const loadProductReference = (productCode: string) =>
+  api.get<ProductReference>(`/api/product-composer/reference/${encodeURIComponent(productCode)}`).then(r => r.data);
+export const composeProduct = (payload: ComposeProductPayload) =>
+  api
+    .post<{ product_code: string; bom_lines: number; pricing_skus: number }>('/api/product-composer', payload)
+    .then(r => r.data);
+
 // -- 库存可编辑 (盘库/纠错: 物理库存 + 锁定库存 + 备注)
 export const updatePartInventory = (
   id: number,
