@@ -13,6 +13,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 
 
 def _d(v) -> Optional[Decimal]:
@@ -52,3 +53,45 @@ def recompute_and_save(db: Session, sku_id: int) -> PricingSku:
     db.commit()
     db.refresh(sku)
     return sku
+
+
+def recompute_promo(promo: PricingSkuPromo, sku: PricingSku) -> None:
+    """按公式重算活动价各派生字段. promo 和 sku 对象直接 mutate."""
+    from decimal import Decimal as D, ROUND_HALF_UP
+    daily = sku.daily_price
+    if daily is None:
+        return
+    promo.taobao_activity_price = daily
+    promo.xhs_list_price = daily
+    # 小促
+    if promo.shop_promo_rate and daily:
+        promo.shop_internal_final = (daily * promo.shop_promo_rate).quantize(D("0.01"), ROUND_HALF_UP)
+    # 无国补中促
+    if promo.mid_shop_rate and daily:
+        mid = (daily * D("0.88") * promo.mid_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
+        promo.mid_buyer_price = mid
+        promo.mid_shop_receipt = (mid * D("0.99")).quantize(D("0.01"), ROUND_HALF_UP)
+        promo.mid_vip_final = mid - D("150")
+    # 无国补大促
+    if promo.big_shop_rate and daily:
+        big = (daily * D("0.88") * promo.big_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
+        promo.big_buyer_price = big
+        promo.big_shop_receipt = big
+        promo.big_vip_final = big - D("150")
+    # 小红书
+    if promo.xhs_activity_price:
+        discount = promo.xhs_promo_discount or D("0.15")
+        promo.xhs_promo_price = (promo.xhs_activity_price * (D("1") - discount)).quantize(D("0.01"), ROUND_HALF_UP)
+
+
+def recompute_costs(costs: PricingSkuCosts, sku: PricingSku) -> None:
+    """根据 22 项配件成本重算 sku.external_parts_cost (sum of all non-None cost fields)."""
+    from decimal import Decimal as D
+    COST_FIELDS = [
+        "rock_slab","drawer_rail","led_strip","glass","electric_rail","packing_sheet",
+        "iron_pin","connector","aluminum_rail","plastic_rail","mini_handle","nail_free_glue",
+        "engraving","acrylic_strip","embedded_sleeve","cable_mgmt","back_panel","stainless_trim",
+        "leg","soft_pack","bed_board","other_cost",
+    ]
+    total = sum((getattr(costs, f) or D("0")) for f in COST_FIELDS)
+    sku.external_parts_cost = total if total > 0 else None

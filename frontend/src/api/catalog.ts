@@ -511,3 +511,36 @@ export const updateTaobaoIds = (
 
 export const lookupByTaobaoId = (taobaoId: string) =>
   api.get<Product>(`/api/products/lookup-by-taobao-id/${taobaoId}`).then((r) => r.data);
+
+// 配件成本
+export interface PricingSkuCosts {
+  id?: number; sku_code: string;
+  rock_slab?: number|null; drawer_rail?: number|null; led_strip?: number|null;
+  glass?: number|null; electric_rail?: number|null; packing_sheet?: number|null;
+  iron_pin?: number|null; connector?: number|null; aluminum_rail?: number|null;
+  plastic_rail?: number|null; mini_handle?: number|null; nail_free_glue?: number|null;
+  engraving?: number|null; acrylic_strip?: number|null; embedded_sleeve?: number|null;
+  cable_mgmt?: number|null; back_panel?: number|null; stainless_trim?: number|null;
+  leg?: number|null; soft_pack?: number|null; bed_board?: number|null;
+  other_cost?: number|null; other_desc?: string|null; parts_remark?: string|null;
+}
+export const getSkuCosts = (skuCode: string) =>
+  api.get<PricingSkuCosts>(`/api/pricing-skus/${encodeURIComponent(skuCode)}/costs`).then(r => r.data);
+export const upsertSkuCosts = (skuCode: string, payload: Partial<PricingSkuCosts>) =>
+  api.patch<PricingSkuCosts>(`/api/pricing-skus/${encodeURIComponent(skuCode)}/costs`, payload).then(r => r.data);
+
+// 活动价
+export interface PricingSkuPromo {
+  id?: number; sku_code: string;
+  taobao_item_id?: string|null; taobao_sku_id?: string|null;
+  taobao_activity_price?: number|null;
+  shop_promo_rate?: number|null; shop_internal_promo?: number|null; shop_internal_final?: number|null;
+  mid_shop_rate?: number|null; mid_buyer_price?: number|null; mid_shop_receipt?: number|null; mid_vip_final?: number|null;
+  big_shop_rate?: number|null; big_buyer_price?: number|null; big_shop_receipt?: number|null; big_vip_final?: number|null;
+  xhs_item_id?: string|null; xhs_sku_name?: string|null; xhs_sku_id?: string|null;
+  xhs_list_price?: number|null; xhs_activity_price?: number|null; xhs_promo_discount?: number|null; xhs_promo_price?: number|null;
+}
+export const getSkuPromo = (skuCode: string) =>
+  api.get<PricingSkuPromo>(`/api/pricing-skus/${encodeURIComponent(skuCode)}/promo`).then(r => r.data);
+export const upsertSkuPromo = (skuCode: string, payload: Partial<PricingSkuPromo>) =>
+  api.patch<PricingSkuPromo>(`/api/pricing-skus/${encodeURIComponent(skuCode)}/promo`, payload).then(r => r.data);

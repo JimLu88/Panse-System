@@ -13,9 +13,10 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 from app.services import pricing_calc_service
 
 router = APIRouter(prefix="/api/pricing-skus", tags=["pricing"])
@@ -335,3 +336,222 @@ def download_pricing_template(key: str):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         filename=f"{meta['label']}.xlsx",
     )
+
+
+# ---------------------------------------------------------------------------
+# 配件成本拆分 — /api/pricing-skus/{sku_code}/costs
+# ---------------------------------------------------------------------------
+
+class PricingSkuCostsOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku_code: str
+    rock_slab: Optional[Decimal] = None
+    drawer_rail: Optional[Decimal] = None
+    led_strip: Optional[Decimal] = None
+    glass: Optional[Decimal] = None
+    electric_rail: Optional[Decimal] = None
+    packing_sheet: Optional[Decimal] = None
+    iron_pin: Optional[Decimal] = None
+    connector: Optional[Decimal] = None
+    aluminum_rail: Optional[Decimal] = None
+    plastic_rail: Optional[Decimal] = None
+    mini_handle: Optional[Decimal] = None
+    nail_free_glue: Optional[Decimal] = None
+    engraving: Optional[Decimal] = None
+    acrylic_strip: Optional[Decimal] = None
+    embedded_sleeve: Optional[Decimal] = None
+    cable_mgmt: Optional[Decimal] = None
+    back_panel: Optional[Decimal] = None
+    stainless_trim: Optional[Decimal] = None
+    leg: Optional[Decimal] = None
+    soft_pack: Optional[Decimal] = None
+    bed_board: Optional[Decimal] = None
+    other_cost: Optional[Decimal] = None
+    other_desc: Optional[str] = None
+    parts_remark: Optional[str] = None
+
+
+class PricingSkuCostsIn(BaseModel):
+    rock_slab: Optional[Decimal] = None
+    drawer_rail: Optional[Decimal] = None
+    led_strip: Optional[Decimal] = None
+    glass: Optional[Decimal] = None
+    electric_rail: Optional[Decimal] = None
+    packing_sheet: Optional[Decimal] = None
+    iron_pin: Optional[Decimal] = None
+    connector: Optional[Decimal] = None
+    aluminum_rail: Optional[Decimal] = None
+    plastic_rail: Optional[Decimal] = None
+    mini_handle: Optional[Decimal] = None
+    nail_free_glue: Optional[Decimal] = None
+    engraving: Optional[Decimal] = None
+    acrylic_strip: Optional[Decimal] = None
+    embedded_sleeve: Optional[Decimal] = None
+    cable_mgmt: Optional[Decimal] = None
+    back_panel: Optional[Decimal] = None
+    stainless_trim: Optional[Decimal] = None
+    leg: Optional[Decimal] = None
+    soft_pack: Optional[Decimal] = None
+    bed_board: Optional[Decimal] = None
+    other_cost: Optional[Decimal] = None
+    other_desc: Optional[str] = None
+    parts_remark: Optional[str] = None
+
+
+def _get_sku_or_404(db: Session, sku_code: str) -> PricingSku:
+    sku = db.query(PricingSku).filter(PricingSku.sku_code == sku_code).first()
+    if not sku:
+        raise HTTPException(404, f"PricingSku '{sku_code}' not found")
+    return sku
+
+
+@router.get("/{sku_code}/costs", response_model=PricingSkuCostsOut)
+def get_sku_costs(
+    sku_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    row = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if not row:
+        raise HTTPException(404, f"No costs record for '{sku_code}'")
+    return PricingSkuCostsOut.model_validate(row)
+
+
+@router.post("/{sku_code}/costs", response_model=PricingSkuCostsOut, status_code=201)
+def create_sku_costs(
+    sku_code: str,
+    body: PricingSkuCostsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    existing = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if existing:
+        raise HTTPException(400, f"costs record for '{sku_code}' already exists, use PATCH")
+    sku = _get_sku_or_404(db, sku_code)
+    costs = PricingSkuCosts(sku_code=sku_code, **body.model_dump(exclude_none=True))
+    db.add(costs)
+    pricing_calc_service.recompute_costs(costs, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(costs)
+    return PricingSkuCostsOut.model_validate(costs)
+
+
+@router.patch("/{sku_code}/costs", response_model=PricingSkuCostsOut)
+def upsert_sku_costs(
+    sku_code: str,
+    body: PricingSkuCostsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    sku = _get_sku_or_404(db, sku_code)
+    costs = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku_code).first()
+    if not costs:
+        costs = PricingSkuCosts(sku_code=sku_code)
+        db.add(costs)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(costs, k, v)
+    pricing_calc_service.recompute_costs(costs, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(costs)
+    return PricingSkuCostsOut.model_validate(costs)
+
+
+# ---------------------------------------------------------------------------
+# 活动价格表 — /api/pricing-skus/{sku_code}/promo
+# ---------------------------------------------------------------------------
+
+class PricingSkuPromoOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sku_code: str
+    taobao_item_id: Optional[str] = None
+    taobao_sku_id: Optional[str] = None
+    taobao_activity_price: Optional[Decimal] = None
+    shop_promo_rate: Optional[Decimal] = None
+    shop_internal_promo: Optional[Decimal] = None
+    shop_internal_final: Optional[Decimal] = None
+    mid_shop_rate: Optional[Decimal] = None
+    mid_buyer_price: Optional[Decimal] = None
+    mid_shop_receipt: Optional[Decimal] = None
+    mid_vip_final: Optional[Decimal] = None
+    big_shop_rate: Optional[Decimal] = None
+    big_buyer_price: Optional[Decimal] = None
+    big_shop_receipt: Optional[Decimal] = None
+    big_vip_final: Optional[Decimal] = None
+    xhs_item_id: Optional[str] = None
+    xhs_sku_name: Optional[str] = None
+    xhs_sku_id: Optional[str] = None
+    xhs_list_price: Optional[Decimal] = None
+    xhs_activity_price: Optional[Decimal] = None
+    xhs_promo_discount: Optional[Decimal] = None
+    xhs_promo_price: Optional[Decimal] = None
+
+
+class PricingSkuPromoIn(BaseModel):
+    taobao_item_id: Optional[str] = None
+    taobao_sku_id: Optional[str] = None
+    shop_promo_rate: Optional[Decimal] = None
+    shop_internal_promo: Optional[Decimal] = None
+    mid_shop_rate: Optional[Decimal] = None
+    big_shop_rate: Optional[Decimal] = None
+    xhs_item_id: Optional[str] = None
+    xhs_sku_name: Optional[str] = None
+    xhs_sku_id: Optional[str] = None
+    xhs_activity_price: Optional[Decimal] = None
+    xhs_promo_discount: Optional[Decimal] = None
+
+
+@router.get("/{sku_code}/promo", response_model=PricingSkuPromoOut)
+def get_sku_promo(
+    sku_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    row = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if not row:
+        raise HTTPException(404, f"No promo record for '{sku_code}'")
+    return PricingSkuPromoOut.model_validate(row)
+
+
+@router.post("/{sku_code}/promo", response_model=PricingSkuPromoOut, status_code=201)
+def create_sku_promo(
+    sku_code: str,
+    body: PricingSkuPromoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    existing = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if existing:
+        raise HTTPException(400, f"promo record for '{sku_code}' already exists, use PATCH")
+    sku = _get_sku_or_404(db, sku_code)
+    promo = PricingSkuPromo(sku_code=sku_code, **body.model_dump(exclude_none=True))
+    db.add(promo)
+    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(promo)
+    return PricingSkuPromoOut.model_validate(promo)
+
+
+@router.patch("/{sku_code}/promo", response_model=PricingSkuPromoOut)
+def upsert_sku_promo(
+    sku_code: str,
+    body: PricingSkuPromoIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    sku = _get_sku_or_404(db, sku_code)
+    promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku_code).first()
+    if not promo:
+        promo = PricingSkuPromo(sku_code=sku_code)
+        db.add(promo)
+    for k, v in body.model_dump(exclude_unset=True).items():
+        setattr(promo, k, v)
+    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute(sku)
+    db.commit()
+    db.refresh(promo)
+    return PricingSkuPromoOut.model_validate(promo)
