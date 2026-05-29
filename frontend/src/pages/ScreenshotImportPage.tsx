@@ -13,6 +13,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Segmented,
   Space,
   Table,
   Tabs,
@@ -26,6 +27,7 @@ import { useMutation } from '@tanstack/react-query';
 import {
   FactoryReconParseResp,
   FactoryReconRowParsed,
+  FactoryReconExcelResp,
   ProductMatchResult,
   PurchaseLineParsed,
   PurchaseParseResp,
@@ -37,6 +39,7 @@ import {
   commitQianniuOrders,
   matchProduct,
   parseFactoryReconScreenshot,
+  parseFactoryReconExcel,
   parsePurchaseScreenshot,
   parseQianniuScreenshot,
 } from '../api/client';
@@ -439,24 +442,40 @@ function PurchaseTab() {
 // --------------------------- 工厂对账单 (Task 3) --------------------------- //
 
 function FactoryReconTab() {
+  const [mode, setMode] = useState<'image' | 'excel'>('image');
   const [resp, setResp] = useState<FactoryReconParseResp | null>(null);
   const [rows, setRows] = useState<FactoryReconRowParsed[]>([]);
+  const [excelWarnings, setExcelWarnings] = useState<string[]>([]);
+
+  const reset = () => { setResp(null); setRows([]); setExcelWarnings([]); };
 
   const parseMut = useMutation({
     mutationFn: (file: File) => parseFactoryReconScreenshot(file),
     onSuccess: (r) => {
       setResp(r);
       setRows(r.rows);
+      setExcelWarnings([]);
       message.success(`AI 识别出 ${r.rows.length} 行对账记录`);
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? 'OCR 失败'),
+  });
+
+  const excelMut = useMutation({
+    mutationFn: (file: File) => parseFactoryReconExcel(file),
+    onSuccess: (r: FactoryReconExcelResp) => {
+      setResp(null);
+      setRows(r.rows);
+      setExcelWarnings(r.warnings ?? []);
+      message.success(`AI 整理出 ${r.rows.length} 行对账记录`);
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? 'Excel 解析失败'),
   });
 
   const commitMut = useMutation({
     mutationFn: () => commitFactoryReconScreenshot(rows),
     onSuccess: (r) => {
       message.success(`入库 ${r.inserted} 行工厂对账记录`);
-      setResp(null); setRows([]);
+      reset();
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '入库失败'),
   });
@@ -508,26 +527,53 @@ function FactoryReconTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert
         type="info" showIcon
-        message="工厂对账单截图 → AI 解析每行对账 → 确认入库 FactoryReconciliation"
-        description="账单金额-已支付 会自动算成差异。若是规整的 Excel 对账表, 建议改用「Excel 导入」页选 factory_reconciliation 实体, 字段对应更准。"
+        message="工厂对账单 → AI 解析/整理每行对账 → 确认入库 FactoryReconciliation"
+        description="账单金额-已支付 会自动算成差异。工厂表格较乱时，可直接在此上传 Excel，AI 会自动整理后再入库对账。"
+      />
+      <Segmented
+        value={mode}
+        onChange={(v) => { setMode(v as 'image' | 'excel'); reset(); }}
+        options={[
+          { label: '截图识别', value: 'image' },
+          { label: 'Excel 上传 (AI 整理)', value: 'excel' },
+        ]}
       />
       <Card size="small">
-        <Dragger
-          accept="image/*" showUploadList={false}
-          beforeUpload={(f) => { parseMut.mutate(f); return false; }}
-          disabled={parseMut.isPending} multiple={false}
-        >
-          <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-          <p className="ant-upload-text">
-            {parseMut.isPending ? 'AI 解析中, 请稍候...' : '点击或拖入工厂对账单截图'}
-          </p>
-          <p className="ant-upload-hint">单张图最大 20MB</p>
-        </Dragger>
+        {mode === 'image' ? (
+          <Dragger
+            accept="image/*" showUploadList={false}
+            beforeUpload={(f) => { parseMut.mutate(f); return false; }}
+            disabled={parseMut.isPending} multiple={false}
+          >
+            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+            <p className="ant-upload-text">
+              {parseMut.isPending ? 'AI 解析中, 请稍候...' : '点击或拖入工厂对账单截图'}
+            </p>
+            <p className="ant-upload-hint">单张图最大 20MB</p>
+          </Dragger>
+        ) : (
+          <Dragger
+            accept=".xlsx,.xls" showUploadList={false}
+            beforeUpload={(f) => { excelMut.mutate(f); return false; }}
+            disabled={excelMut.isPending} multiple={false}
+          >
+            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+            <p className="ant-upload-text">
+              {excelMut.isPending ? 'AI 整理中, 请稍候...' : '点击或拖入工厂对账 Excel (.xlsx/.xls)'}
+            </p>
+            <p className="ant-upload-hint">乱表也能用, AI 会自动整理列/格式; 最大 20MB, 取前 200 行</p>
+          </Dragger>
+        )}
       </Card>
 
       {resp && resp.ocr_warnings.length > 0 && (
         <Alert type="warning" message="OCR 整体提示"
                description={<ul>{resp.ocr_warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>} />
+      )}
+
+      {excelWarnings.length > 0 && (
+        <Alert type="warning" message="AI 整理提示"
+               description={<ul>{excelWarnings.map((w, i) => <li key={i}>{w}</li>)}</ul>} />
       )}
 
       {rows.length > 0 && (
