@@ -10,7 +10,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.taobao_listing import TaobaoListing
 from app.services import taobao_listing_service
@@ -45,7 +45,7 @@ class TaobaoListingListOut(BaseModel):
 async def import_taobao_export(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_role("admin", "operator")),
 ):
     """上传淘宝商品导出 Excel, 解析入库并按商家编码自动匹配系统 SKU."""
     name = (file.filename or "").lower()
@@ -111,7 +111,7 @@ def update_taobao_listing(
     listing_id: int,
     body: TaobaoListingPatch,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_role("admin", "operator")),
 ):
     """人工修正某条对应关系 (改系统 sku_code / product_code)."""
     row = db.get(TaobaoListing, listing_id)

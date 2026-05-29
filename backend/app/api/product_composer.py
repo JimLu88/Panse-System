@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user
+from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.bom import BomLine
 from app.models.material import Material
@@ -145,7 +145,7 @@ def load_reference(
 def compose_product(
     payload: ComposeProductIn,
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(require_role("admin", "operator")),
 ):
     """一个事务创建 产品 + BOM + 定价. 任一步失败则全部回滚."""
     # 1) 产品编码
