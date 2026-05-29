@@ -223,9 +223,9 @@ export const addPartInventoryRow = (payload: {
     .post<PartInventoryAddResponse>('/api/inventory/parts', payload)
     .then((r) => r.data);
 
-export const listExceptions = (status?: string) =>
+export const listExceptions = (status?: string, limit = 2000) =>
   api
-    .get<DataException[]>('/api/exceptions', { params: { status } })
+    .get<DataException[]>('/api/exceptions', { params: { status, limit } })
     .then((r) => r.data);
 
 export const resolveException = (id: number, status: 'resolved' | 'ignored') =>

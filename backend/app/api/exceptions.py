@@ -23,7 +23,7 @@ def list_exceptions(
     status: Optional[str] = Query(None),
     source_table: Optional[str] = None,
     exception_type: Optional[str] = None,
-    limit: int = Query(200, le=1000),
+    limit: int = Query(200, le=5000),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):

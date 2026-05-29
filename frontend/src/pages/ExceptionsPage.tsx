@@ -204,8 +204,18 @@ export default function ExceptionsPage() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['exceptions', status],
-    queryFn: () => listExceptions(status),
+    queryFn: () => listExceptions(status, 5000),
   });
+
+  // 顶栏角标只统计 warning/error (排除 info), 这里统计三档供页面对账, 解释"角标数 ≠ 页面数"的困惑
+  const severityCount = useMemo(() => {
+    const out = { info: 0, warning: 0, error: 0 };
+    (data ?? []).forEach((e) => {
+      out[e.severity as 'info' | 'warning' | 'error'] =
+        (out[e.severity as 'info' | 'warning' | 'error'] ?? 0) + 1;
+    });
+    return out;
+  }, [data]);
 
   const resolveMut = useMutation({
     mutationFn: ({ id, s }: { id: number; s: 'resolved' | 'ignored' }) =>
@@ -428,6 +438,27 @@ export default function ExceptionsPage() {
           />
         </Space>
       </Space>
+
+      {status === 'open' && !isLoading && (data?.length ?? 0) > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={
+            <span>
+              共 <b>{data?.length ?? 0}</b> 条未处理异常：
+              error <b>{severityCount.error}</b> · warning <b>{severityCount.warning}</b> · info <b>{severityCount.info}</b>
+            </span>
+          }
+          description={
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              顶栏红色角标只统计 <b>error + warning</b>（共 {severityCount.error + severityCount.warning} 条），
+              不含 info 级提示，所以角标数会与本页总数不同。本页现已加载全部未处理异常（上限 5000 条）。
+              其中「订单缺成本 / 订单缺支付宝流水」会对每一笔历史订单各记一条，是大批量异常的主要来源。
+            </Typography.Text>
+          }
+          style={{ marginBottom: 4 }}
+        />
+      )}
 
       {isLoading ? (
         <div style={{ textAlign: 'center', padding: 48 }}>
