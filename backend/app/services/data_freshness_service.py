@@ -127,22 +127,11 @@ def check_all(db: Session) -> list[FreshnessItem]:
     ))
 
     # 8. 售后表 — 有 aftersales 状态的订单超 3 天未处理则提醒
-    overdue_aftersales = db.execute(
-        select(func.count(Order.id)).where(
-            Order.status == "aftersales",
-            Order.updated_at <= (
-                func.now() - func.cast("3 days", type_=None)
-            ),
-        )
-    ).scalar() or 0
-    # 用 Python timedelta 更安全 (跨 DB 兼容)
     cutoff = date.today() - timedelta(days=3)
     overdue_count = db.execute(
-        select(func.count()).select_from(
-            select(Order.id).where(
-                Order.status == "aftersales",
-                Order.order_date <= cutoff,
-            ).subquery()
+        select(func.count(Order.id)).where(
+            Order.status == "aftersales",
+            Order.order_date <= cutoff,
         )
     ).scalar() or 0
     items.append(FreshnessItem(
