@@ -1,9 +1,12 @@
 """售后 / 退货 API (Phase 5, 业务需求 9)."""
 from __future__ import annotations
 
+import csv
+import io
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -178,3 +181,20 @@ async def import_aftersales_csv(file: UploadFile = File(...), db: Session = Depe
     r = bill_import_service.import_aftersales_csv(db, text)
     db.commit()
     return AfterSalesImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
+@router.get("/template.csv")
+def aftersales_template():
+    """下载售后表导入模板 (空白 CSV, 含正确列名)。"""
+    buf = io.StringIO()
+    buf.write("﻿")  # BOM for Excel
+    csv.writer(buf).writerow([
+        "订单号", "售后原因", "赔付费", "好评返", "平台内总", "直接赔付",
+        "二次上门", "返厂运费", "平台外总", "补发SKU", "补发运单", "补发运费",
+        "万师傅扣款", "工厂赔付", "物流赔偿", "支付宝流水", "处理日期", "状态", "备注",
+    ])
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=aftersales_template.csv"},
+    )

@@ -1,8 +1,11 @@
+import csv
+import io
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -14,6 +17,7 @@ from app.services import (
     alipay_import,
     balance_service,
     bill_import_service,
+    email_import_service,
     reconciliation_service,
     smart_matching_service,
 )
@@ -326,3 +330,312 @@ def run_all_rules(
         db, record_exceptions=False, period_start=period_start, period_end=period_end,
     )
     return {name: _to_out(r) for name, r in results.items()}
+
+
+# -------- CSV 模板下载 --------
+
+def _csv_template(headers: list[str], filename: str) -> StreamingResponse:
+    buf = io.StringIO()
+    buf.write("﻿")  # BOM for Excel
+    csv.writer(buf).writerow(headers)
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@router.get("/alipay-flows/template.csv")
+def alipay_template():
+    """下载支付宝流水导入模板 (空白 CSV, 含正确列名)。"""
+    return _csv_template(
+        ["交易时间", "交易流水号", "交易类型", "交易对象", "收支金额", "关联订单号", "余额", "备注"],
+        "alipay_flows_template.csv",
+    )
+
+
+@router.get("/wanshifu-bills/template.csv")
+def wanshifu_template():
+    """下载万师傅安装账单导入模板。"""
+    return _csv_template(
+        ["日期", "订单号", "服务类型", "金额", "状态", "备注"],
+        "wanshifu_bills_template.csv",
+    )
+
+
+@router.get("/logistics-bills/template.csv")
+def logistics_template():
+    """下载物流费账单导入模板。"""
+    return _csv_template(
+        ["日期", "承运商", "运单号", "订单号", "重量(kg)", "运费", "备注"],
+        "logistics_bills_template.csv",
+    )
+
+
+@router.get("/promotion-flows/template.csv")
+def promotion_template():
+    """下载推广记录导入模板。"""
+    return _csv_template(
+        ["日期", "类型", "金额", "支付宝流水号", "备注"],
+        "promotion_flows_template.csv",
+    )
+
+
+@router.get("/refill-records/template.csv")
+def refill_records_template():
+    """下载补单对账导入模板。"""
+    return _csv_template(
+        ["订单号", "买家", "补单日期", "产品编码", "产品名", "SKU", "订单金额", "数量",
+         "补单成本", "补发运费", "平台费", "佣金", "总成本"],
+        "refill_records_template.csv",
+    )
+
+
+@router.get("/accounts/template.csv")
+def account_balances_template():
+    """下载账户余额导入模板。"""
+    return _csv_template(
+        ["账户名", "年", "月", "期初余额", "收入", "支出", "期末余额", "备注"],
+        "account_balances_template.csv",
+    )
+
+
+# -------- 账户余额 CSV 预览/确认 (两步导入) --------
+
+class CsvPreviewRow(BaseModel):
+    row: int
+    data: dict[str, Any]
+    valid: bool
+    reason: Optional[str] = None
+
+
+class CsvPreviewResult(BaseModel):
+    total: int
+    valid_count: int
+    invalid_count: int
+    preview_rows: list[CsvPreviewRow]
+
+
+def _parse_account_balances_preview(text: str) -> CsvPreviewResult:
+    """解析账户余额 CSV, 返回预览行 (不写库)。"""
+    from app.services.bill_import_service import _BALANCE_MAP, _decimal, _rows
+    rows = _rows(text, _BALANCE_MAP)
+    preview: list[CsvPreviewRow] = []
+    valid = 0
+    for i, rec in enumerate(rows, start=2):
+        account_name = (rec.get("account_name") or "").strip()
+        try:
+            year = int(rec.get("period_year") or 0)
+            month = int(rec.get("period_month") or 0)
+        except (ValueError, TypeError):
+            preview.append(CsvPreviewRow(row=i, data=rec, valid=False, reason="年/月不是数字"))
+            continue
+        if not account_name or not year or not month:
+            preview.append(CsvPreviewRow(row=i, data=rec, valid=False,
+                                         reason="账户名/年/月为必填项"))
+            continue
+        closing = _decimal(rec.get("closing_balance"))
+        preview.append(CsvPreviewRow(
+            row=i,
+            data={
+                "account_name": account_name, "year": year, "month": month,
+                "opening_balance": str(_decimal(rec.get("opening_balance")) or ""),
+                "closing_balance": str(closing or ""),
+                "income": str(_decimal(rec.get("income")) or ""),
+                "expense": str(_decimal(rec.get("expense")) or ""),
+            },
+            valid=True,
+        ))
+        valid += 1
+    return CsvPreviewResult(
+        total=len(preview),
+        valid_count=valid,
+        invalid_count=len(preview) - valid,
+        preview_rows=preview,
+    )
+
+
+@router.post("/accounts/parse-csv", response_model=CsvPreviewResult)
+async def parse_account_balances(file: UploadFile = File(...)):
+    """第一步: 解析账户余额 CSV, 返回预览 (不写库)。
+    确认后调 /accounts/confirm-csv 提交。"""
+    text = await _read_csv(file)
+    return _parse_account_balances_preview(text)
+
+
+@router.post("/accounts/confirm-csv", response_model=BillImportResult)
+async def confirm_account_balances(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """第二步: 正式导入账户余额 CSV (同账户同月 upsert)。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_account_balances_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
+# -------- 支付宝流水 CSV 预览 --------
+
+class AlipayPreviewRow(BaseModel):
+    row: int
+    transaction_time: Optional[str]
+    transaction_no: Optional[str]
+    amount: Optional[str]
+    counterparty: Optional[str]
+    related_order_no: Optional[str]
+    valid: bool
+    reason: Optional[str] = None
+
+
+class AlipayPreviewResult(BaseModel):
+    total: int
+    valid_count: int
+    duplicate_count: int
+    invalid_count: int
+    preview_rows: list[AlipayPreviewRow]
+
+
+@router.post("/alipay-flows/parse-csv", response_model=AlipayPreviewResult)
+async def parse_alipay(
+    account: str = Query(..., description="账户名"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """第一步: 解析支付宝流水 CSV, 返回预览 (不写库)。
+    包含重复检测 (transaction_no 已存在的标注 duplicate)。"""
+    import csv as _csv
+    from io import StringIO
+    from app.services.alipay_import import COLUMN_MAP, _decimal, _datetime
+
+    text = await _read_csv(file)
+    reader = _csv.DictReader(StringIO(text))
+    field_map: dict[str, str] = {}
+    for raw in (reader.fieldnames or []):
+        norm = (raw or "").strip()
+        if norm in COLUMN_MAP:
+            field_map[raw] = COLUMN_MAP[norm]
+
+    existing_nos: set[str] = set(
+        db.execute(select(AlipayFlow.transaction_no)).scalars().all()
+    )
+
+    preview: list[AlipayPreviewRow] = []
+    valid = dup = inv = 0
+    for i, raw_row in enumerate(reader, start=2):
+        rec: dict[str, Any] = {}
+        for k, v in raw_row.items():
+            fn = field_map.get(k)
+            if fn:
+                rec[fn] = v
+        tx_no = (rec.get("transaction_no") or "").strip()
+        amt = _decimal(rec.get("amount"))
+        if not tx_no or amt is None:
+            preview.append(AlipayPreviewRow(
+                row=i, transaction_time=None, transaction_no=tx_no or None,
+                amount=None, counterparty=None, related_order_no=None,
+                valid=False, reason="流水号或金额缺失",
+            ))
+            inv += 1
+            continue
+        if tx_no in existing_nos:
+            preview.append(AlipayPreviewRow(
+                row=i,
+                transaction_time=str(rec.get("transaction_time") or ""),
+                transaction_no=tx_no,
+                amount=str(amt),
+                counterparty=rec.get("counterparty"),
+                related_order_no=rec.get("related_order_no"),
+                valid=False, reason="重复 (已存在)",
+            ))
+            dup += 1
+            continue
+        preview.append(AlipayPreviewRow(
+            row=i,
+            transaction_time=str(rec.get("transaction_time") or ""),
+            transaction_no=tx_no,
+            amount=str(amt),
+            counterparty=rec.get("counterparty"),
+            related_order_no=rec.get("related_order_no"),
+            valid=True,
+        ))
+        valid += 1
+
+    return AlipayPreviewResult(
+        total=len(preview),
+        valid_count=valid,
+        duplicate_count=dup,
+        invalid_count=inv,
+        preview_rows=preview,
+    )
+
+
+# -------- 邮箱 IMAP 配置 & 手动触发 --------
+
+class EmailConfigOut(BaseModel):
+    host: str
+    port: int
+    ssl: bool
+    user: str
+    password_set: bool
+    folder: str
+    subject_filter: str
+    sender_filter: str
+    alipay_account: str
+
+
+class EmailConfigIn(BaseModel):
+    host: Optional[str] = None
+    port: Optional[int] = None
+    ssl: Optional[bool] = None
+    user: Optional[str] = None
+    password: Optional[str] = None
+    folder: Optional[str] = None
+    subject_filter: Optional[str] = None
+    sender_filter: Optional[str] = None
+    alipay_account: Optional[str] = None
+
+
+class EmailPollResult(BaseModel):
+    scanned: int
+    imported: int
+    skipped: int
+    errors: list[str]
+
+
+@router.get("/email-poll/config", response_model=EmailConfigOut)
+def get_email_config(db: Session = Depends(get_db)):
+    """查看邮箱 IMAP 轮询配置。"""
+    return email_import_service.get_config(db)
+
+
+@router.post("/email-poll/config", response_model=EmailConfigOut)
+def update_email_config(payload: EmailConfigIn, db: Session = Depends(get_db)):
+    """更新邮箱 IMAP 轮询配置 (只传需要修改的字段)。"""
+    kwargs: dict[str, Any] = {}
+    if payload.host is not None:
+        kwargs["email_imap_host"] = payload.host
+    if payload.port is not None:
+        kwargs["email_imap_port"] = payload.port
+    if payload.ssl is not None:
+        kwargs["email_imap_ssl"] = payload.ssl
+    if payload.user is not None:
+        kwargs["email_username"] = payload.user
+    if payload.password is not None:
+        kwargs["email_password"] = payload.password
+    if payload.folder is not None:
+        kwargs["email_folder"] = payload.folder
+    if payload.subject_filter is not None:
+        kwargs["email_subject_filter"] = payload.subject_filter
+    if payload.sender_filter is not None:
+        kwargs["email_sender_filter"] = payload.sender_filter
+    if payload.alipay_account is not None:
+        kwargs["email_alipay_account"] = payload.alipay_account
+    email_import_service.save_config(db, **kwargs)
+    db.commit()
+    return email_import_service.get_config(db)
+
+
+@router.post("/email-poll/trigger", response_model=EmailPollResult)
+def trigger_email_poll(db: Session = Depends(get_db)):
+    """立即执行一次邮箱轮询 + 导入 (无需等调度器)。"""
+    r = email_import_service.poll_and_import(db)
+    return EmailPollResult(scanned=r.scanned, imported=r.imported,
+                           skipped=r.skipped, errors=r.errors)
