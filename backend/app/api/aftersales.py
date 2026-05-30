@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -12,7 +12,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.marketing import AfterSales
-from app.services import return_service
+from app.services import bill_import_service, return_service
 
 router = APIRouter(prefix="/api/aftersales", tags=["aftersales"])
 
@@ -157,3 +157,24 @@ def disassemble(
         raise HTTPException(400, str(e))
     db.commit()
     return result
+
+
+# -------- 批量 CSV 导入 --------
+
+class AfterSalesImportResult(BaseModel):
+    inserted: int
+    skipped_invalid: int
+    errors: list[str]
+
+
+@router.post("/import-csv", response_model=AfterSalesImportResult)
+async def import_aftersales_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """批量导入售后表 CSV (订单号必填; 其余字段按列名自动映射)。"""
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+    r = bill_import_service.import_aftersales_csv(db, text)
+    db.commit()
+    return AfterSalesImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)

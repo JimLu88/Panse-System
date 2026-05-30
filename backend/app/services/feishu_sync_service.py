@@ -50,7 +50,7 @@ def _entities() -> dict[str, SyncEntity]:
     from app.models.pricing import PricingSku
     from app.models.product import Product
     from app.models.marketing import Sample, BrandMarketing, AfterSales, PromotionFlow, OutsourcingExpense, WoodLoss, DailyOperation
-    from app.models.finance import AlipayFlow, FactoryReconciliation, AccountBalance
+    from app.models.finance import AlipayFlow, FactoryReconciliation, AccountBalance, WanshifuBill, LogisticsBill, RefillRecord
     from app.models.bom import BomLine
     from app.models.inventory import ProductInventory, PartInventory
     return {
@@ -74,6 +74,9 @@ def _entities() -> dict[str, SyncEntity]:
         "part_inventory": SyncEntity(PartInventory, "sync_key"),
         "daily_operations": SyncEntity(DailyOperation, "sync_key"),
         "order_details": SyncEntity(OrderDetail, "sync_key"),
+        "wanshifu_bills": SyncEntity(WanshifuBill, "id"),
+        "logistics_bills": SyncEntity(LogisticsBill, "id"),
+        "refill_records": SyncEntity(RefillRecord, "id"),
     }
 
 
@@ -83,6 +86,7 @@ SUPPORTED_TABLES = [
     "bom_lines", "brand_marketing", "promotion_flows", "outsourcing_expenses",
     "wood_losses", "factory_reconciliations", "account_balances",
     "product_inventory", "part_inventory", "daily_operations", "order_details",
+    "wanshifu_bills", "logistics_bills", "refill_records",
 ]
 
 
