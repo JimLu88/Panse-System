@@ -187,6 +187,35 @@ async def import_logistics(file: UploadFile = File(...), db: Session = Depends(g
     return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
 
 
+# -------- 推广记录 / 补单对账 / 账户余额 CSV 导入 --------
+
+@router.post("/promotion-flows/import-csv", response_model=BillImportResult)
+async def import_promotion_flows(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入推广记录 CSV (直通车/万相台充值+支出; 列名自动识别)。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_promotion_flows_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
+@router.post("/refill-records/import-csv", response_model=BillImportResult)
+async def import_refill_records(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入补单对账 CSV (订单号必填)。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_refill_records_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
+@router.post("/accounts/import-csv", response_model=BillImportResult)
+async def import_account_balances(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入账户余额 CSV (同账户同月 upsert; 账户名+年+月必填)。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_account_balances_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
 # -------- Account balances --------
 
 class AccountBalanceOut(BaseModel):

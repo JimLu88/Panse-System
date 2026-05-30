@@ -219,6 +219,30 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
             "note": "备注",
         },
     ),
+    (
+        "wanshifu_bills", "", "in", "万师傅安装账单",
+        {
+            "bill_date": "账单日期", "order_no": "订单号", "service_type": "服务类型",
+            "amount": "扣款金额", "status": "结算状态", "remark": "备注",
+        },
+    ),
+    (
+        "logistics_bills", "", "in", "物流费账单",
+        {
+            "bill_date": "账单日期", "carrier": "承运商", "tracking_no": "运单号",
+            "order_no": "订单号", "weight_kg": "重量(kg)", "freight_amount": "运费", "remark": "备注",
+        },
+    ),
+    (
+        "refill_records", "", "in", "补单对账",
+        {
+            "order_no": "订单号", "buyer_nick": "买家昵称", "refill_date": "补单日期",
+            "product_code": "产品编码", "product_name": "产品名称", "sku": "SKU",
+            "order_amount": "订单金额", "qty": "数量",
+            "refill_cost": "补单成本", "refill_freight": "补发运费",
+            "platform_fee": "平台费", "commission": "佣金", "total_cost": "总成本",
+        },
+    ),
 ]
 
 

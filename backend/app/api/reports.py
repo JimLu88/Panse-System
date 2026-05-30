@@ -10,11 +10,13 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from sqlalchemy import func
+
 from app.database import get_db
 from app.models.knowledge import AiKnowledge
 from app.models.marketing import OutsourcingExpense, PromotionFlow
 from app.models.order import Order
-from app.services import asset_service, health_report, sales_analytics, sales_rollup_service
+from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -372,6 +374,29 @@ def assets_summary(db: Session = Depends(get_db)):
         diff=_dec(s.diff),
         breakdown=s.breakdown,
     )
+
+
+@router.get("/data-freshness")
+def data_freshness(db: Session = Depends(get_db)):
+    """各数据源新鲜度状态: 距今天数 / 是否过期 / 提醒文字。前端可用于显示"待补录"小红点。"""
+    items = data_freshness_service.check_all(db)
+    return [
+        {
+            "source": i.source,
+            "last_date": i.last_date.isoformat() if i.last_date else None,
+            "days_stale": i.days_stale,
+            "threshold_days": i.threshold_days,
+            "overdue": i.overdue,
+            "message": i.message,
+        }
+        for i in items
+    ]
+
+
+@router.post("/data-freshness/remind-now")
+def remind_now(db: Session = Depends(get_db)):
+    """手动触发一次新鲜度检查 + 推送 (无需等调度器)。"""
+    return data_freshness_service.check_and_remind(db)
 
 
 @router.get("/unmatched-flows")

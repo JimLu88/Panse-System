@@ -260,6 +260,18 @@ def _job_post_import_logic_check(db: Session) -> dict:
     return post_import_ai_service.run_after_import(db, summary={"source": "daily_scan"})
 
 
+def _job_data_freshness_remind(db: Session) -> dict:
+    """每日 09:00: 检查各数据源新鲜度, 过期则推送通知 + 写 Alert。"""
+    from app.services import data_freshness_service
+    return data_freshness_service.check_and_remind(db)
+
+
+def _job_monthly_data_remind(db: Session) -> dict:
+    """每月 1 号 08:30: 集中提醒上传上月全量数据 (流水/推广/账单/余额)。"""
+    from app.services import data_freshness_service
+    return data_freshness_service.monthly_batch_remind(db)
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -286,6 +298,10 @@ def _register_default_jobs() -> None:
                  _job_feishu_sync, interval_minutes=30)
     register_job("daily_11_ai_logic_check", "AI 数据逻辑核查 (兜底)",
                  _job_post_import_logic_check, cron={"hour": 11, "minute": 0})
+    register_job("daily_09_data_freshness", "数据新鲜度提醒",
+                 _job_data_freshness_remind, cron={"hour": 9, "minute": 0})
+    register_job("monthly_01_data_remind", "月初数据更新提醒",
+                 _job_monthly_data_remind, cron={"day": 1, "hour": 8, "minute": 30})
     register_job("daily_08_data_quality", "数据完整性扫描 (B1-B11)",
                  _job_data_quality, cron={"hour": 8, "minute": 0})
 
