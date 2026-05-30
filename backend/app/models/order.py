@@ -64,6 +64,9 @@ class Order(Base, TimestampMixin):
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     platform_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
 
+    # 支付宝流水号 (由 alipay_backfill_service 从流水反向匹配回填, 订单表 5 表 AM 列)
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
     # Phase 1 扩展

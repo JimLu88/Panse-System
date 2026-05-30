@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.finance import AccountBalance, AlipayFlow
-from app.services import alipay_import, balance_service, reconciliation_service, smart_matching_service
+from app.services import alipay_backfill_service, alipay_import, balance_service, reconciliation_service, smart_matching_service
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -98,6 +98,52 @@ def rerun_smart_match(account: Optional[str] = None, db: Session = Depends(get_d
     r = smart_matching_service.run(db, account=account)
     db.commit()
     return SmartMatchResult(total_scanned=r.total_scanned, tagged=r.tagged, untouched=r.untouched)
+
+
+# -------- 支付宝流水 → 订单 反向匹配回填 --------
+
+class AlipayBackfillOut(BaseModel):
+    total_flows: int
+    matched_orders: int
+    filled_flow_no: int
+    ambiguous: int
+    unmatched: int
+    by_rule: dict[str, int]
+    samples: list[dict]
+
+
+def _backfill_to_out(r: "alipay_backfill_service.BackfillResult") -> AlipayBackfillOut:
+    return AlipayBackfillOut(
+        total_flows=r.total_flows,
+        matched_orders=r.matched_orders,
+        filled_flow_no=r.filled_flow_no,
+        ambiguous=r.ambiguous,
+        unmatched=r.unmatched,
+        by_rule=r.by_rule,
+        samples=r.samples,
+    )
+
+
+@router.get("/order-flow-match/analyze", response_model=AlipayBackfillOut)
+def analyze_order_flow_match(account: Optional[str] = None, db: Session = Depends(get_db)):
+    """只读: 自动从流水里找订单号规律, 预览能匹配多少订单 (不写库).
+
+    返回各规律命中数 (exact/strip_prefix/tail_index) + 样本, 看清匹配逻辑。
+    """
+    return _backfill_to_out(alipay_backfill_service.analyze(db, account=account))
+
+
+@router.post("/order-flow-match/backfill", response_model=AlipayBackfillOut)
+def backfill_order_flow_no(
+    account: Optional[str] = None, only_missing: bool = True, db: Session = Depends(get_db),
+):
+    """落库: 把匹配到的支付宝流水号回填到订单 Order.alipay_flow_no。
+
+    自己找规律 (T200P 前缀 / 备注内订单号 / 尾号倒排), 歧义流水跳过交人工。
+    """
+    r = alipay_backfill_service.backfill(db, account=account, only_missing=only_missing)
+    db.commit()
+    return _backfill_to_out(r)
 
 
 # -------- Account balances --------
