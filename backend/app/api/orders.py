@@ -91,6 +91,21 @@ def recompute_all_costs(only_missing: bool = True, db: Session = Depends(get_db)
     return result
 
 
+@router.post("/backfill-theoretical-cost", response_model=dict)
+def backfill_theoretical_cost(
+    only_missing: bool = True, skip_closed: bool = True, db: Session = Depends(get_db),
+):
+    """用定价表会计总成本回填理论成本 (单一真值来源, 与 BOM 反推互补).
+
+    适合冷启动/缺 BOM 的订单。skip_closed 跳过 cancelled 订单。
+    """
+    result = order_cost_service.backfill_theoretical_from_pricing(
+        db, only_missing=only_missing, skip_closed=skip_closed,
+    )
+    db.commit()
+    return result
+
+
 @router.get("/{order_id}/cost-breakdown", response_model=CostBreakdownOut)
 def get_cost_breakdown(order_id: int, db: Session = Depends(get_db)):
     """反推过程可视化: 返回该订单理论成本的逐条物料明细 (不写库)."""
