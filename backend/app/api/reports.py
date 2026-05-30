@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.knowledge import AiKnowledge
-from app.services import asset_service, health_report, sales_analytics
+from app.models.marketing import OutsourcingExpense, PromotionFlow
+from app.models.order import Order
+from app.services import asset_service, health_report, sales_analytics, sales_rollup_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
 
@@ -233,6 +235,110 @@ def slow_moving(
     )
 
 
+# ----------------------------- 经营状况分析 (功能 5: 收支占比) -------- #
+
+
+@router.get("/operating-analysis")
+def operating_analysis(
+    period: str = Query("30d", description="7d / 30d / month / year"),
+    platform: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """业务需求扩展 (功能 5): 7天/月度/年度经营状况分析 — 各项收支占比.
+
+    收入侧: 销售额。支出侧: 成本 / 运费等订单费用 / 推广 / 人员外包。
+    每项给出金额与占销售额的百分比, 末了给净利与净利率。
+    """
+    start, end = _range_for(period)
+    s = sales_analytics.summary(db, start=start, end=end, platform=platform)
+    revenue = Decimal(s.revenue or 0)
+
+    # 订单级费用 (运费/上楼/安装/赔付) — 从订单聚合
+    fee_q = select(
+        func.coalesce(func.sum(Order.actual_freight), 0),
+        func.coalesce(func.sum(Order.upstairs_fee), 0),
+        func.coalesce(func.sum(Order.install_fee), 0),
+        func.coalesce(func.sum(Order.compensation_fee), 0),
+        func.coalesce(func.sum(Order.platform_fee), 0),
+    ).where(
+        Order.order_date >= start, Order.order_date <= end,
+        Order.is_historical == False,  # noqa: E712
+    )
+    if platform:
+        fee_q = fee_q.where(Order.platform == platform)
+    freight, upstairs, install, comp, platform_fee = db.execute(fee_q).one()
+
+    # 推广支出 (PromotionFlow 支出) 与 人员外包
+    promo = db.execute(
+        select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+            PromotionFlow.flow_type == "支出",
+            PromotionFlow.transaction_date >= start,
+            PromotionFlow.transaction_date <= end,
+        )
+    ).scalar() or 0
+    personnel = db.execute(
+        select(func.coalesce(func.sum(OutsourcingExpense.amount), 0)).where(
+            OutsourcingExpense.payment_date >= start,
+            OutsourcingExpense.payment_date <= end,
+        )
+    ).scalar() or 0
+
+    def _pct(x) -> float:
+        return float(Decimal(x or 0) / revenue * 100) if revenue else 0.0
+
+    items = [
+        {"name": "商品成本", "amount": _dec(s.cost), "pct": _pct(s.cost)},
+        {"name": "运费", "amount": _dec(freight), "pct": _pct(freight)},
+        {"name": "上楼费", "amount": _dec(upstairs), "pct": _pct(upstairs)},
+        {"name": "安装费", "amount": _dec(install), "pct": _pct(install)},
+        {"name": "赔付费", "amount": _dec(comp), "pct": _pct(comp)},
+        {"name": "平台费", "amount": _dec(platform_fee), "pct": _pct(platform_fee)},
+        {"name": "推广费", "amount": _dec(promo), "pct": _pct(promo)},
+        {"name": "人员外包", "amount": _dec(personnel), "pct": _pct(personnel)},
+    ]
+    total_expense = sum(Decimal(str(i["amount"])) for i in items)
+    net = revenue - total_expense
+    return {
+        "period": period,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "revenue": _dec(revenue),
+        "expense_items": items,
+        "total_expense": _dec(total_expense),
+        "net_profit": _dec(net),
+        "net_profit_rate": float(net / revenue * 100) if revenue else 0.0,
+    }
+
+
+# ----------------------------- 销售汇总 (rollup 加速) ----------------- #
+
+
+@router.get("/sales/rollup-summary")
+def sales_rollup_summary(
+    period: str = Query("30d"),
+    platform: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """从 sales_daily_rollup 预聚合表快速取总览 (大数据量时比实时 SUM 快)。
+
+    rollup 未覆盖该区间时返回 {} (前端回退到 /sales/summary 实时算)。
+    """
+    start, end = _range_for(period)
+    return sales_rollup_service.query_summary(db, start=start, end=end, platform=platform)
+
+
+@router.post("/sales/rollup-backfill")
+def sales_rollup_backfill(
+    period: str = Query("30d"),
+    db: Session = Depends(get_db),
+):
+    """补算一段时间的销售日汇总 (历史回填 / rollup 缺口修补)。"""
+    start, end = _range_for(period)
+    r = sales_rollup_service.rollup_range(db, start, end)
+    db.commit()
+    return r
+
+
 # ----------------------------- Phase 4: 资产 / 经营分析 -------------- #
 
 
@@ -248,11 +354,12 @@ class AssetSummaryOut(BaseModel):
     formula_a: float
     formula_b: float
     diff: float
+    breakdown: dict[str, float] = {}
 
 
 @router.get("/assets", response_model=AssetSummaryOut)
 def assets_summary(db: Session = Depends(get_db)):
-    """业务需求 14: 资产总额 + 饼图分类."""
+    """业务需求 14: 资产总额 + 饼图分类; 业务需求 19: 公式 A/B 对比 + 逐项拆解."""
     s = asset_service.summary(db)
     return AssetSummaryOut(
         total=_dec(s.total),
@@ -263,6 +370,7 @@ def assets_summary(db: Session = Depends(get_db)):
         formula_a=_dec(s.formula_a),
         formula_b=_dec(s.formula_b),
         diff=_dec(s.diff),
+        breakdown=s.breakdown,
     )
 
 

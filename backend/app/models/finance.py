@@ -10,6 +10,8 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
 
+
+
 ALIPAY_ACCOUNTS = ("企业号", "个体户私账", "爱群号", "佳宝号", "主力号")
 
 
@@ -92,6 +94,47 @@ class RefillRecord(Base, TimestampMixin):
     # 业务需求 §5: 补单只算佣金 + 快递; 平台/税务回到 Order.profit 计算
     commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+
+
+class WanshifuBill(Base, TimestampMixin):
+    """万师傅安装账单 — 按月从万师傅后台导出 CSV 导入。
+
+    对账逻辑: Σ amount (按月) vs AlipayFlow[reconciliation_type='install'] (按月)。
+    fallback (账单未导入): Σ AfterSales.wanshifu_deduction vs AlipayFlow[install]。
+    """
+    __tablename__ = "wanshifu_bills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bill_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    service_type: Mapped[Optional[str]] = mapped_column(String(64))  # 安装 / 维修 / 其他
+    amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    status: Mapped[Optional[str]] = mapped_column(String(32))  # 已结算 / 待结算
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+    import_job_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+
+
+class LogisticsBill(Base, TimestampMixin):
+    """物流费账单 — 按月从物流公司导出月结账单 CSV 导入。
+
+    对账逻辑: Σ freight_amount (按承运商/月) vs AlipayFlow[reconciliation_type='logistics']。
+    fallback (账单未导入): Σ Order.actual_freight (按月) vs AlipayFlow[logistics]。
+    """
+    __tablename__ = "logistics_bills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bill_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
+    carrier: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 3))
+    freight_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+    import_job_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
 
 
 class FactoryReconciliation(Base, TimestampMixin):

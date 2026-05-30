@@ -9,7 +9,9 @@ from app.models.finance import (
     AccountBalance,
     AlipayFlow,
     FactoryReconciliation,
+    LogisticsBill,
     RefillRecord,
+    WanshifuBill,
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.ai import AiChatLog, AiCodePatch
@@ -70,6 +72,8 @@ __all__ = [
     "AccountBalance",
     "RefillRecord",
     "FactoryReconciliation",
+    "WanshifuBill",
+    "LogisticsBill",
     "AiChatLog",
     "AiCodePatch",
     "Sample",
