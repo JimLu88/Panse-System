@@ -9,7 +9,14 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.finance import AccountBalance, AlipayFlow
-from app.services import alipay_backfill_service, alipay_import, balance_service, reconciliation_service, smart_matching_service
+from app.services import (
+    alipay_backfill_service,
+    alipay_import,
+    balance_service,
+    bill_import_service,
+    reconciliation_service,
+    smart_matching_service,
+)
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
 
@@ -144,6 +151,40 @@ def backfill_order_flow_no(
     r = alipay_backfill_service.backfill(db, account=account, only_missing=only_missing)
     db.commit()
     return _backfill_to_out(r)
+
+
+# -------- 万师傅 / 物流账单导入 (安装费 / 物流费对账数据源) --------
+
+class BillImportResult(BaseModel):
+    inserted: int
+    skipped_invalid: int
+    errors: list[str]
+
+
+async def _read_csv(file: UploadFile) -> str:
+    raw = await file.read()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return raw.decode("gbk", errors="replace")
+
+
+@router.post("/wanshifu-bills/import-csv", response_model=BillImportResult)
+async def import_wanshifu(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入万师傅安装账单 CSV → 供安装费对账 (rule=install_fee) 当应付口径。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_wanshifu_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+
+
+@router.post("/logistics-bills/import-csv", response_model=BillImportResult)
+async def import_logistics(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入物流公司月结账单 CSV → 供物流费对账 (rule=logistics_fee) 当应付口径。"""
+    text = await _read_csv(file)
+    r = bill_import_service.import_logistics_csv(db, text)
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
 
 
 # -------- Account balances --------

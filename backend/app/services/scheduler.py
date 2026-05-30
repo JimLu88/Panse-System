@@ -177,9 +177,20 @@ def _job_lowstock_scan(db: Session) -> dict:
 
 
 def _job_data_reconcile(db: Session) -> dict:
-    """业务需求 19: 财务公式 A vs B 自动核对, 差额生成 Alert."""
-    from app.services import asset_service
-    return asset_service.check_formula_and_alert(db)
+    """业务需求 19 + 功能 1: 全自动核对.
+
+    1) 跑全部 6 条对账规则 (货款/安装/推广/补单/库存/物流), 超阈值自动写异常池 + 报警;
+    2) 算财务公式 A vs B, 差额 > 100 生成 Alert。
+    """
+    from app.services import asset_service, reconciliation_service
+    results = reconciliation_service.run_all(db, record_exceptions=True)
+    db.flush()
+    by_rule = {
+        name: {"error": r.error_count, "warning": r.warning_count, "ok": r.ok_count}
+        for name, r in results.items()
+    }
+    formula = asset_service.check_formula_and_alert(db)
+    return {"reconciliation": by_rule, "formula": formula}
 
 
 def _job_tracking_check(db: Session) -> dict:

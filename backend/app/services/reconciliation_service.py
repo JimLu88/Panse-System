@@ -10,7 +10,7 @@
     - 推广支出：±0.5% 或 ±5 元
     - 补单赔实付：单条订单 ±1 元
     - 库存资产：仅汇总数，差异由人工/AI 判断
-    - 物流/安装：缺万师傅 CSV，暂返回 not_available
+    - 安装费/物流费：±0.5% 或 ±5 元；账单未导入时回退到售后表/订单运费
 """
 from __future__ import annotations
 
@@ -23,9 +23,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.bom import BomLine
-from app.models.finance import AlipayFlow, RefillRecord
+from app.models.finance import AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
 from app.models.inventory import PartInventory
-from app.models.marketing import PromotionFlow
+from app.models.marketing import AfterSales, PromotionFlow
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order
 from app.services import exception_service
@@ -314,20 +314,153 @@ def run_inventory_value(db: Session, *, record_exceptions: bool = True, **_) -> 
     return _result("inventory_value", None, None, diffs, db)
 
 
-# -------- Rule 2 / 6: 安装费 / 物流费 (依赖万师傅 CSV) --------
+# -------- Rule 2: 安装费对账 (万师傅账单 ↔ 支付宝 install 支出) --------
 
-def run_install_fee(db: Session, **_) -> ReconciliationResult:
-    return _result("install_fee", None, None, [ReconciliationDiff(
-        key="all", expected=None, actual=None, diff=None, severity="not_available",
-        message="安装费对账依赖万师傅 CSV，暂未导入；可在 plan §10 Phase 5 接入售后表后启用",
-    )], db)
+def _month_key(d: Optional[date]) -> Optional[str]:
+    return f"{d.year}-{d.month:02d}" if d else None
 
 
-def run_logistics_fee(db: Session, **_) -> ReconciliationResult:
-    return _result("logistics_fee", None, None, [ReconciliationDiff(
-        key="all", expected=None, actual=None, diff=None, severity="not_available",
-        message="物流费对账依赖万师傅月结 CSV，暂未导入",
-    )], db)
+def _sum_by_month(rows) -> dict[str, Decimal]:
+    """rows: 可迭代的 (date, amount); 按 YYYY-MM 聚合, date 为空归入 '(无日期)'。"""
+    out: dict[str, Decimal] = {}
+    for d, amt in rows:
+        key = _month_key(d) or "(无日期)"
+        out[key] = out.get(key, Decimal("0")) + Decimal(amt or 0)
+    return out
+
+
+def run_install_fee(
+    db: Session, *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
+) -> ReconciliationResult:
+    """安装费对账: 万师傅账单 (按月) ↔ 支付宝 install 支出 (按月)。
+
+    优先用 wanshifu_bills (导入的万师傅后台账单); 若该表为空, 回退到
+    售后表 after_sales.wanshifu_deduction (万师傅扣款) 作为应付口径。
+    """
+    has_bills = db.execute(select(func.count(WanshifuBill.id))).scalar_one() > 0
+    if has_bills:
+        wb_stmt = select(WanshifuBill.bill_date, WanshifuBill.amount)
+        if period_start:
+            wb_stmt = wb_stmt.where(WanshifuBill.bill_date >= period_start)
+        if period_end:
+            wb_stmt = wb_stmt.where(WanshifuBill.bill_date <= period_end)
+        billed = _sum_by_month(db.execute(wb_stmt).all())
+        source = "万师傅账单"
+    else:
+        # 回退: 售后表万师傅扣款 (用 processed_at 作账期)
+        as_stmt = select(AfterSales.processed_at, AfterSales.wanshifu_deduction).where(
+            AfterSales.wanshifu_deduction.isnot(None),
+        )
+        if period_start:
+            as_stmt = as_stmt.where(AfterSales.processed_at >= period_start)
+        if period_end:
+            as_stmt = as_stmt.where(AfterSales.processed_at <= period_end)
+        billed = _sum_by_month(db.execute(as_stmt).all())
+        source = "售后表万师傅扣款 (账单未导入, 回退口径)"
+
+    # 支付宝 install 支出 (amount<0 → 取负)
+    af_stmt = select(AlipayFlow.transaction_time, -AlipayFlow.amount).where(
+        AlipayFlow.reconciliation_type == "install",
+    )
+    if period_start:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
+    paid = _sum_by_month(
+        (t.date() if hasattr(t, "date") else t, a) for t, a in db.execute(af_stmt).all()
+    )
+
+    if not billed and not paid:
+        return _result("install_fee", period_start, period_end, [ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None, severity="not_available",
+            message="无万师傅账单 / 售后扣款 / install 流水可对账 (空数据)",
+        )], db)
+
+    diffs: list[ReconciliationDiff] = []
+    for key in sorted(set(billed) | set(paid)):
+        exp = billed.get(key, Decimal("0"))
+        act = paid.get(key, Decimal("0"))
+        diff = act - exp
+        sev = _classify(diff)
+        msg = f"{key}: 应付安装费 ¥{exp} ({source}), 支付宝实付 ¥{act}, 差 ¥{diff}"
+        diffs.append(ReconciliationDiff(
+            key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
+        ))
+        if sev != "ok" and record_exceptions:
+            _record_exception(db, rule="install_fee", key=key, diff_amount=diff, message=msg)
+    if record_exceptions:
+        db.flush()
+    return _result("install_fee", period_start, period_end, diffs, db)
+
+
+# -------- Rule 6: 物流费核销 (物流账单 ↔ 支付宝 logistics 支出) --------
+
+def run_logistics_fee(
+    db: Session, *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
+) -> ReconciliationResult:
+    """物流费对账: 物流公司账单 (按月) ↔ 支付宝 logistics 支出 (按月)。
+
+    优先用 logistics_bills (导入的物流月结账单); 若该表为空, 回退到
+    订单表 orders.actual_freight (按 order_date) 作为应付口径。
+    """
+    has_bills = db.execute(select(func.count(LogisticsBill.id))).scalar_one() > 0
+    if has_bills:
+        lb_stmt = select(LogisticsBill.bill_date, LogisticsBill.freight_amount)
+        if period_start:
+            lb_stmt = lb_stmt.where(LogisticsBill.bill_date >= period_start)
+        if period_end:
+            lb_stmt = lb_stmt.where(LogisticsBill.bill_date <= period_end)
+        billed = _sum_by_month(db.execute(lb_stmt).all())
+        source = "物流公司账单"
+    else:
+        o_stmt = select(Order.order_date, Order.actual_freight).where(
+            Order.actual_freight.isnot(None),
+        )
+        if period_start:
+            o_stmt = o_stmt.where(Order.order_date >= period_start)
+        if period_end:
+            o_stmt = o_stmt.where(Order.order_date <= period_end)
+        billed = _sum_by_month(db.execute(o_stmt).all())
+        source = "订单实际运费 (账单未导入, 回退口径)"
+
+    af_stmt = select(AlipayFlow.transaction_time, -AlipayFlow.amount).where(
+        AlipayFlow.reconciliation_type == "logistics",
+    )
+    if period_start:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
+    paid = _sum_by_month(
+        (t.date() if hasattr(t, "date") else t, a) for t, a in db.execute(af_stmt).all()
+    )
+
+    if not billed and not paid:
+        return _result("logistics_fee", period_start, period_end, [ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None, severity="not_available",
+            message="无物流账单 / 订单运费 / logistics 流水可对账 (空数据)",
+        )], db)
+
+    diffs: list[ReconciliationDiff] = []
+    for key in sorted(set(billed) | set(paid)):
+        exp = billed.get(key, Decimal("0"))
+        act = paid.get(key, Decimal("0"))
+        diff = act - exp
+        sev = _classify(diff)
+        msg = f"{key}: 应付物流费 ¥{exp} ({source}), 支付宝实付 ¥{act}, 差 ¥{diff}"
+        diffs.append(ReconciliationDiff(
+            key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
+        ))
+        if sev != "ok" and record_exceptions:
+            _record_exception(db, rule="logistics_fee", key=key, diff_amount=diff, message=msg)
+    if record_exceptions:
+        db.flush()
+    return _result("logistics_fee", period_start, period_end, diffs, db)
 
 
 def _count_open_exceptions(db: Session, rule: str) -> int:

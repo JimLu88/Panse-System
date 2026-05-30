@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, AlipayFlow
 from app.models.inventory import PartInventory, ProductInventory
+from app.models.marketing import OutsourcingExpense
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order
 
@@ -36,6 +37,8 @@ class AssetSummary:
     formula_a: Decimal = Decimal("0")
     formula_b: Decimal = Decimal("0")
     diff: Decimal = Decimal("0")
+    # 业务需求 19: 公式 A 逐项拆解 (前端展示每个科目, 看差额藏在哪)
+    breakdown: dict = field(default_factory=dict)
 
 
 def _account_balances(db: Session) -> Decimal:
@@ -82,12 +85,44 @@ def _pending_shipment_value(db: Session) -> Decimal:
     return Decimal(rows or 0)
 
 
+def _pending_confirm_value(db: Session) -> Decimal:
+    """待确认收货资产 = 已发货未签收订单的 paid_amount (status='shipped')."""
+    rows = db.execute(
+        select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
+            Order.status == "shipped",
+            Order.is_historical == False,  # noqa: E712
+        )
+    ).scalar()
+    return Decimal(rows or 0)
+
+
 def _pending_factory_payment(db: Session) -> Decimal:
     """未支付的工厂订单结算 = sum(factory_bill_amount) where payment_status='unpaid'."""
     rows = db.execute(
         select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
             FactoryOrder.payment_status == "unpaid",
             FactoryOrder.voided_at.is_(None),
+        )
+    ).scalar()
+    return Decimal(rows or 0)
+
+
+def _pending_platform_fee(db: Session) -> Decimal:
+    """未支付平台费 = 已付未发货/待确认订单上记录的 platform_fee 之和 (尚未从余额扣)."""
+    rows = db.execute(
+        select(func.coalesce(func.sum(Order.platform_fee), 0)).where(
+            Order.status.in_(("paid", "shipped")),
+            Order.is_historical == False,  # noqa: E712
+        )
+    ).scalar()
+    return Decimal(rows or 0)
+
+
+def _pending_personnel_cost(db: Session) -> Decimal:
+    """未支付人员费 = 外包费用表里无支付宝流水号的条目 (= 未结算) 之和."""
+    rows = db.execute(
+        select(func.coalesce(func.sum(OutsourcingExpense.amount), 0)).where(
+            OutsourcingExpense.alipay_flow_no.is_(None),
         )
     ).scalar()
     return Decimal(rows or 0)
@@ -114,25 +149,54 @@ def _total_order_profit(db: Session) -> Decimal:
 
 
 def summary(db: Session) -> AssetSummary:
-    """业务需求 14 资产总额 + 饼图分类 + 19 公式对比."""
+    """业务需求 14 资产总额 + 饼图分类 + 19 公式对比.
+
+    公式 A (资产负债法) = 账户余额 + 库存账面 + 待发货资产 + 待确认收货
+                        - 未付工厂结算 - 未付平台费 - 未付人员费
+    公式 B (订单收益法) = 订单累计利润 + 账户余额
+    两者理论相等; 差额提示未核销项 (保证金 / 工厂打样 / 刷单佣金 暂未建模, 见 breakdown)。
+    """
     balances = _account_balances(db)
     inv_value, inv_detail = _inventory_book_value(db)
     pending_ship = _pending_shipment_value(db)
+    pending_confirm = _pending_confirm_value(db)
     pending_factory = _pending_factory_payment(db)
+    pending_platform = _pending_platform_fee(db)
+    pending_personnel = _pending_personnel_cost(db)
     order_profit = _total_order_profit(db)
 
-    # 饼图分类
+    # 饼图分类 (正向资产项)
     categories = [
         AssetCategory(name="账户余额", amount=balances),
         AssetCategory(name="库存账面", amount=inv_value, detail=inv_detail[:50]),
         AssetCategory(name="待发货资产", amount=pending_ship),
+        AssetCategory(name="待确认收货", amount=pending_confirm),
     ]
     total = sum((c.amount for c in categories), Decimal("0"))
 
-    # 公式 A: 简化为账户 + 库存 + 待发货 - 待付工厂
-    formula_a = balances + inv_value + pending_ship - pending_factory
-    # 公式 B: 订单累计利润 + 账户余额
+    formula_a = (
+        balances + inv_value + pending_ship + pending_confirm
+        - pending_factory - pending_platform - pending_personnel
+    )
     formula_b = order_profit + balances
+
+    breakdown = {
+        # 正向项
+        "账户余额": float(balances),
+        "库存账面": float(inv_value),
+        "待发货资产": float(pending_ship),
+        "待确认收货": float(pending_confirm),
+        # 负向项 (未支付负债)
+        "未付工厂结算": float(pending_factory),
+        "未付平台费": float(pending_platform),
+        "未付人员费": float(pending_personnel),
+        # 公式 B 侧
+        "订单累计利润": float(order_profit),
+        # 暂未建模科目 (待数据源接入后补; 当前按 0 计, 可能是差额来源)
+        "未建模_保证金": 0.0,
+        "未建模_工厂打样": 0.0,
+        "未建模_刷单佣金": 0.0,
+    }
 
     return AssetSummary(
         total=total,
@@ -140,6 +204,7 @@ def summary(db: Session) -> AssetSummary:
         formula_a=formula_a,
         formula_b=formula_b,
         diff=formula_a - formula_b,
+        breakdown=breakdown,
     )
 
 
