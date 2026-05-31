@@ -182,7 +182,7 @@ def _job_data_reconcile(db: Session) -> dict:
     1) 跑全部 6 条对账规则 (货款/安装/推广/补单/库存/物流), 超阈值自动写异常池 + 报警;
     2) 算财务公式 A vs B, 差额 > 100 生成 Alert。
     """
-    from app.services import asset_service, reconciliation_service
+    from app.services import asset_service, notify_service, reconciliation_service
     results = reconciliation_service.run_all(db, record_exceptions=True)
     db.flush()
     by_rule = {
@@ -190,7 +190,25 @@ def _job_data_reconcile(db: Session) -> dict:
         for name, r in results.items()
     }
     formula = asset_service.check_formula_and_alert(db)
-    return {"reconciliation": by_rule, "formula": formula}
+
+    # 对账差异即时推送: 有 error 的规则汇总成一条通知 (飞书/钉钉/企微/Slack)
+    pushed = False
+    rule_labels = {
+        "factory_payment": "货款对账", "install_fee": "安装费", "promotion": "推广支出",
+        "refill_compensation": "补单赔付", "inventory_value": "库存资产", "logistics_fee": "物流费",
+        "revenue_alipay": "收入对账", "operating_expense": "经营支出", "purchase_payment": "采购付款",
+    }
+    bad = [(n, v) for n, v in by_rule.items() if v["error"] > 0]
+    if bad:
+        lines = ["🚨 畔色 ERP | 对账差异提醒", ""]
+        for n, v in bad:
+            lines.append(f"• {rule_labels.get(n, n)}: 严重差异 {v['error']} 条" +
+                         (f", 提示 {v['warning']} 条" if v["warning"] else ""))
+        lines.append("")
+        lines.append("请到「财务对账」面板查看明细并处理。")
+        ok, _ = notify_service.notify(db, "\n".join(lines), level="error", title="对账差异提醒")
+        pushed = ok
+    return {"reconciliation": by_rule, "formula": formula, "pushed": pushed}
 
 
 def _job_tracking_check(db: Session) -> dict:

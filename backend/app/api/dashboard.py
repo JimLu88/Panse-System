@@ -144,17 +144,20 @@ def get_dashboard(
     # 健康度评分: 100 - open_exceptions * 2 (floor 0)
     health_score = max(0, min(100, 100 - open_exceptions * 2))
 
-    # 对账规则逐条状态 (从 DataException 取 reconciliation_diff 的 error/warning 数)
-    RECON_RULES = [
-        ("factory_payment", "货款对账"),
-        ("install_fee", "安装费"),
-        ("promotion", "推广支出"),
-        ("refill_compensation", "补单赔付"),
-        ("inventory_value", "库存资产"),
-        ("logistics_fee", "物流费"),
-    ]
+    # 对账规则逐条状态 (动态枚举 reconciliation_service.RULES, 新增规则自动出现)
+    RULE_LABELS = {
+        "factory_payment": "货款对账",
+        "install_fee": "安装费",
+        "promotion": "推广支出",
+        "refill_compensation": "补单赔付",
+        "inventory_value": "库存资产",
+        "logistics_fee": "物流费",
+        "revenue_alipay": "收入对账",
+        "operating_expense": "经营支出",
+        "purchase_payment": "采购付款",
+    }
     recon_rules = []
-    for rule_key, rule_label in RECON_RULES:
+    for rule_key in RULE_LABELS:
         rows = (
             db.query(DataException.severity, func.count(DataException.id))
             .filter(
@@ -175,10 +178,66 @@ def get_dashboard(
             status = "ok"
         recon_rules.append({
             "key": rule_key,
-            "label": rule_label,
+            "label": RULE_LABELS[rule_key],
             "status": status,
             "error": error_cnt,
             "warning": warning_cnt,
+        })
+
+    # 各异常类型 open 计数 (供健康雷达 + 月结面板)
+    type_counts = dict(
+        db.query(DataException.exception_type, func.count(DataException.id))
+        .filter(DataException.status == "open")
+        .group_by(DataException.exception_type)
+        .all()
+    )
+
+    def _tc(*types: str) -> int:
+        return sum(int(type_counts.get(t, 0)) for t in types)
+
+    # 五维健康雷达 (每维 0~100, 扣分加权)
+    health_dimensions = [
+        {"name": "订单完整", "score": max(0, 100 - _tc(
+            "order_missing_cost", "order_missing_alipay", "order_missing_tracking",
+            "factory_order_uncovered", "refill_unmatched") * 5)},
+        {"name": "财务对账", "score": max(0, 100 - _tc("reconciliation_diff") * 5)},
+        {"name": "库存健康", "score": max(0, 100 - (part_negative * 10 + part_oversold * 5 + part_below_safety * 2))},
+        {"name": "流水完整", "score": max(0, 100 - _tc(
+            "alipay_missing_txn", "alipay_balance_gap", "factory_recon_incomplete") * 5)},
+        {"name": "经营营销", "score": max(0, 100 - _tc(
+            "outsourcing_missing", "wood_loss_high", "sample_missing_cost",
+            "promotion_recharge_unmatched") * 5)},
+    ]
+
+    # 月结清单: 每条对账规则 + 本月关键数据是否到位
+    cur_y, cur_m = today.year, today.month
+    month_start = date(cur_y, cur_m, 1)
+
+    def _exists(model, date_col) -> bool:
+        return (db.query(func.count()).select_from(model)
+                .filter(date_col >= month_start, date_col <= today).scalar() or 0) > 0
+
+    from app.models.marketing import PromotionFlow as _PF
+    from app.models.finance import LogisticsBill as _LB, WanshifuBill as _WB, AccountBalance as _AB
+    monthly_close = []
+    for r in recon_rules:
+        monthly_close.append({
+            "key": r["key"], "label": r["label"], "category": "对账",
+            "done": r["status"] == "ok",
+            "detail": "无差异" if r["status"] == "ok" else f"差异 错误{r['error']}/警告{r['warning']}",
+        })
+    data_items = [
+        ("alipay", "本月支付宝流水", _exists(AlipayFlow, AlipayFlow.transaction_time)),
+        ("promotion", "本月推广记录", _exists(_PF, _PF.transaction_date)),
+        ("logistics_bill", "本月物流账单", _exists(_LB, _LB.bill_date)),
+        ("wanshifu_bill", "本月万师傅账单", _exists(_WB, _WB.bill_date)),
+        ("account_balance", "本月账户余额", (db.query(func.count(_AB.id)).filter(
+            _AB.period_year == cur_y, _AB.period_month == cur_m).scalar() or 0) > 0),
+    ]
+    for key, label, ok in data_items:
+        monthly_close.append({
+            "key": key, "label": label, "category": "数据",
+            "done": bool(ok), "detail": "已录入" if ok else "本月暂无数据",
         })
 
     return {
@@ -213,4 +272,6 @@ def get_dashboard(
             "health_score": health_score,
         },
         "recon_rules": recon_rules,
+        "health_dimensions": health_dimensions,
+        "monthly_close": monthly_close,
     }

@@ -48,8 +48,27 @@ export default function DashboardPage() {
     );
   }
 
-  const { orders, inventory, finance, health, recon_rules } = data as any;
+  const { orders, inventory, finance, health, recon_rules, health_dimensions, monthly_close } = data as any;
   const nav = useNavigate();
+
+  // 五维健康雷达
+  const radarOption = {
+    tooltip: {},
+    radar: {
+      indicator: (health_dimensions || []).map((d: any) => ({ name: d.name, max: 100 })),
+      radius: '65%',
+    },
+    series: [{
+      type: 'radar',
+      data: [{
+        value: (health_dimensions || []).map((d: any) => d.score),
+        name: '健康度',
+        areaStyle: { color: 'rgba(24,144,255,0.25)' },
+        lineStyle: { color: '#1890ff' },
+        itemStyle: { color: '#1890ff' },
+      }],
+    }],
+  };
 
   // 订单状态饼图
   const pieOption = {
@@ -231,6 +250,46 @@ export default function DashboardPage() {
             </Col>
           );
         })}
+      </Row>
+
+      {/* 健康雷达 + 月结清单 */}
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} lg={10}>
+          <Card size="small" title="多维健康雷达">
+            <Suspense fallback={<ChartPlaceholder />}>
+              <ReactECharts option={radarOption} style={{ height: 260 }} />
+            </Suspense>
+          </Card>
+        </Col>
+        <Col xs={24} lg={14}>
+          <Card size="small" title="本月月结清单"
+            extra={<Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              {(monthly_close || []).filter((m: any) => m.done).length}/{(monthly_close || []).length} 已完成
+            </Typography.Text>}>
+            <Row gutter={[8, 8]}>
+              {(monthly_close || []).map((m: any) => (
+                <Col key={m.category + m.key} xs={12} sm={8}>
+                  <Tooltip title={m.detail}>
+                    <div
+                      onClick={() => m.category === '对账' ? nav('/reconciliation') : undefined}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 6,
+                        padding: '4px 8px', borderRadius: 4,
+                        background: m.done ? '#f6ffed' : '#fffbe6',
+                        border: `1px solid ${m.done ? '#b7eb8f' : '#ffe58f'}`,
+                        cursor: m.category === '对账' ? 'pointer' : 'default',
+                      }}>
+                      {m.done
+                        ? <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                        : <ExclamationCircleOutlined style={{ color: '#faad14' }} />}
+                      <span style={{ fontSize: 12, lineHeight: 1.2 }}>{m.label}</span>
+                    </div>
+                  </Tooltip>
+                </Col>
+              ))}
+            </Row>
+          </Card>
+        </Col>
       </Row>
 
       {/* 库存运营 */}
