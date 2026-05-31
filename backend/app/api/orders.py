@@ -1,8 +1,11 @@
+import csv
+import io
 from datetime import date as _date
 from decimal import Decimal as _Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -22,6 +25,7 @@ from app.services import (
     factory_sheet,
     order_cost_service,
     order_import,
+    order_message_service,
     order_service,
 )
 
@@ -475,3 +479,164 @@ def _check_signoff(db, o: Order) -> None:
                 suggestion_action="请完成物流确认和人工确认两个核对环节。",
                 context={"order_no": o.order_no, "tracking_confirmed": o.tracking_confirmed, "manual_confirmed": o.manual_confirmed},
             )
+
+
+# -------- 粘贴消息转订单变更 --------
+
+class ParseMessageIn(BaseModel):
+    text: str
+
+
+class ParseMessageOut(BaseModel):
+    order_no: Optional[str]
+    changes: dict
+    confidence: float
+    raw_text: str
+    ai_available: bool
+
+
+class ApplyMessageChangeIn(BaseModel):
+    changes: dict
+    actor: str = "operator"
+
+
+@router.post("/parse-message-change", response_model=ParseMessageOut)
+def parse_message_change(payload: ParseMessageIn, db: Session = Depends(get_db)):
+    """将粘贴的自然语言消息解析为订单变更字段。
+
+    AI 可用时使用 AI 解析; 不可用时正则兜底提取订单号。
+    返回结果后由前端展示确认, 再调 /{order_id}/apply-message-change 落库。
+    """
+    result = order_message_service.parse_change(db, payload.text)
+    return ParseMessageOut(**result)
+
+
+@router.post("/{order_id}/apply-message-change", response_model=OrderOut)
+def apply_message_change(
+    order_id: int,
+    payload: ApplyMessageChangeIn,
+    db: Session = Depends(get_db),
+):
+    """将解析出的变更字段应用到指定订单 (写库 + 记录操作事件)。"""
+    try:
+        o = order_message_service.apply_change(
+            db, order_id=order_id, changes=payload.changes, actor=payload.actor,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    db.commit()
+    db.refresh(o)
+    return o
+
+
+# -------- 千牛订单 Excel 快捷导入 --------
+
+# 千牛后台导出的 Excel 固定列名 → Order 字段
+_QIANNIU_COLUMN_MAP = {
+    "订单编号": "order_no",
+    "子订单编号": "order_no",   # fallback
+    "买家昵称": "customer_name",
+    "买家": "customer_name",
+    "收货人姓名": "customer_name",
+    "联系手机": "customer_phone",
+    "手机": "customer_phone",
+    "收货地址": "customer_address",
+    "省": None,  # 忽略
+    "市": None,
+    "区": None,
+    "下单时间": "order_date",
+    "付款时间": "order_date",
+    "宝贝名称": "product_name",
+    "商品名称": "product_name",
+    "商家编码": "product_code",
+    "商品编码": "product_code",
+    "购买数量": "qty",
+    "数量": "qty",
+    "实付金额": "paid_amount",
+    "买家实付金额": "paid_amount",
+    "快递公司": "carrier",
+    "物流公司": "carrier",
+    "运单号": "tracking_no",
+    "快递单号": "tracking_no",
+    "发货时间": "ship_date",
+    "备注": "remark",
+    "买家留言": "remark",
+    "卖家备注": "remark",
+}
+
+
+class QianiuImportResult(BaseModel):
+    inserted: int
+    skipped_duplicate: int
+    skipped_invalid: int
+    errors: list[str]
+
+
+@router.get("/import-qianniu/template.csv")
+def qianniu_template():
+    """下载千牛订单导入模板 (与千牛后台导出格式对齐的空白 CSV)。"""
+    buf = io.StringIO()
+    buf.write("﻿")  # BOM
+    csv.writer(buf).writerow([
+        "订单编号", "买家昵称", "联系手机", "收货地址",
+        "下单时间", "宝贝名称", "商家编码", "购买数量",
+        "实付金额", "快递公司", "运单号", "发货时间", "买家留言",
+    ])
+    return StreamingResponse(
+        iter([buf.getvalue().encode("utf-8")]),
+        media_type="text/csv",
+        headers={"Content-Disposition": "attachment; filename=qianniu_orders_template.csv"},
+    )
+
+
+@router.post("/import-qianniu", response_model=QianiuImportResult)
+async def import_qianniu_orders(
+    file: UploadFile = File(...),
+    platform: str = Query("淘宝", description="平台名称 (淘宝/天猫/…)"),
+    db: Session = Depends(get_db),
+):
+    """千牛订单导出 CSV/Excel 快捷导入。
+
+    列名与千牛后台批量导出格式自动匹配 (无需手动配置列映射)。
+    重复订单号跳过, 自动设置 status=paid, platform=淘宝 (可覆盖)。
+    """
+    raw = await file.read()
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+
+    # 注入千牛列名到 order_import 的 COLUMN_ALIASES, 再调用通用导入
+    from app.services import order_import as _oi
+    original = dict(_oi.COLUMN_ALIASES)
+    # 注入千牛列名
+    for qn_col, field_name in _QIANNIU_COLUMN_MAP.items():
+        if field_name and qn_col not in _oi.COLUMN_ALIASES:
+            _oi.COLUMN_ALIASES[qn_col] = field_name
+    # 确保 platform 列名可以被识别
+    if "平台" not in _oi.COLUMN_ALIASES:
+        _oi.COLUMN_ALIASES["平台"] = "platform"
+
+    try:
+        report = _oi.import_orders_from_csv(db, text)
+    finally:
+        # 恢复原始别名表 (避免并发污染)
+        _oi.COLUMN_ALIASES.clear()
+        _oi.COLUMN_ALIASES.update(original)
+
+    db.commit()
+    return QianiuImportResult(
+        inserted=report.inserted,
+        skipped_duplicate=report.skipped_duplicate,
+        skipped_invalid=report.skipped_invalid,
+        errors=report.errors,
+    )
+
+
+# -------- 工厂单每日汇总 (手动触发) --------
+
+@router.post("/factory-daily-summary")
+def factory_daily_summary(db: Session = Depends(get_db)):
+    """手动触发: 汇总今日待生产订单 (paid 状态且无工厂单) 并推送。"""
+    from app.services import factory_summary_service
+    return factory_summary_service.daily_summary(db)
