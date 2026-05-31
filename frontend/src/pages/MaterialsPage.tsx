@@ -1,9 +1,11 @@
 import { useState } from 'react';
 import {
+  Button,
   Form,
   Input,
   InputNumber,
   Modal,
+  Select,
   Segmented,
   Space,
   Table,
@@ -11,10 +13,17 @@ import {
   Typography,
   message,
 } from 'antd';
+import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Material, listMaterials, updateMaterial } from '../api/client';
+import { Material, createMaterial, getNextMaterialCode, listMaterials, updateMaterial } from '../api/client';
 
 type FilterKey = 'all' | 'standard' | 'custom';
+const PREFIX_OPTIONS = [
+  { value: 'AC', label: 'AC — 配件/五金' },
+  { value: 'MP', label: 'MP — 人力费' },
+  { value: 'MW', label: 'MW — 木材' },
+  { value: 'SP', label: 'SP — 特殊件' },
+];
 
 export default function MaterialsPage() {
   const qc = useQueryClient();
@@ -22,6 +31,29 @@ export default function MaterialsPage() {
   const [q, setQ] = useState('');
   const [editing, setEditing] = useState<Material | null>(null);
   const [form] = Form.useForm();
+  const [creating, setCreating] = useState(false);
+  const [createForm] = Form.useForm();
+  const [previewCode, setPreviewCode] = useState<string>('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const fetchPreview = async (prefix: string) => {
+    setPreviewLoading(true);
+    try {
+      const r = await getNextMaterialCode(prefix);
+      setPreviewCode(r.code);
+    } catch {
+      setPreviewCode('—');
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const openCreate = () => {
+    createForm.resetFields();
+    createForm.setFieldsValue({ prefix: 'AC' });
+    setCreating(true);
+    fetchPreview('AC');
+  };
 
   const isCustom = filter === 'custom' ? true : filter === 'standard' ? false : undefined;
 
@@ -38,6 +70,16 @@ export default function MaterialsPage() {
       setEditing(null);
       qc.invalidateQueries({ queryKey: ['materials'] });
     },
+  });
+
+  const createMut = useMutation({
+    mutationFn: createMaterial,
+    onSuccess: (mat) => {
+      message.success(`配件已创建，编码 ${mat.code}`);
+      setCreating(false);
+      qc.invalidateQueries({ queryKey: ['materials'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
   });
 
   const columns = [
@@ -97,6 +139,9 @@ export default function MaterialsPage() {
               { label: '定制 (AC≥1000)', value: 'custom' },
             ]}
           />
+          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>
+            新建配件
+          </Button>
         </Space>
       </Space>
 
@@ -109,6 +154,53 @@ export default function MaterialsPage() {
         size="middle"
       />
 
+      {/* 新建配件 Modal */}
+      <Modal
+        title="新建配件"
+        open={creating}
+        onCancel={() => setCreating(false)}
+        onOk={() => createForm.submit()}
+        confirmLoading={createMut.isPending}
+        destroyOnClose
+      >
+        <Form
+          form={createForm}
+          layout="vertical"
+          onFinish={(v) => createMut.mutate({ ...v, prefix: v.prefix })}
+        >
+          <Form.Item name="prefix" label="配件类型" rules={[{ required: true }]}>
+            <Select
+              options={PREFIX_OPTIONS}
+              onChange={(v) => fetchPreview(v)}
+            />
+          </Form.Item>
+          <Form.Item label="自动分配编码">
+            <Typography.Text code style={{ fontSize: 16 }}>
+              {previewLoading ? '计算中…' : (previewCode || '—')}
+            </Typography.Text>
+            <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+              (提交时自动写入，无需手填)
+            </Typography.Text>
+          </Form.Item>
+          <Form.Item name="name" label="配件名称" rules={[{ required: true }]}>
+            <Input placeholder="如：餐桌-人工费-中型" />
+          </Form.Item>
+          <Form.Item name="unit" label="单位">
+            <Input placeholder="如：条/个/套/m²" />
+          </Form.Item>
+          <Form.Item name="price" label="单价">
+            <InputNumber min={0} step={0.01} style={{ width: '100%' }} placeholder="元" />
+          </Form.Item>
+          <Form.Item name="size_type" label="尺寸类型">
+            <Input placeholder="如 组合 / 个数 / 长度" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注">
+            <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 编辑物料 Modal */}
       <Modal
         title={editing ? `编辑物料 ${editing.code}` : ''}
         open={!!editing}

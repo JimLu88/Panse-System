@@ -39,7 +39,8 @@ class BomLineIn(BaseModel):
 
 
 class PricingIn(BaseModel):
-    sku_code: str
+    sku_code: str = ""  # 空字符串时服务端自动分配
+    is_custom: bool = False  # True → 分配 90/91… 段; False → 11/12… 段
     sku: Optional[str] = None
     size_category: Optional[str] = None
     list_price: Optional[Decimal] = None
@@ -171,7 +172,34 @@ def compose_product(
                 400, f"以下物料编码在物料库不存在, 请先建档: {', '.join(missing)}"
             )
 
-    # 3) 校验 SKU 编码不冲突
+    # 3) SKU 编码自动分配 (空字符串 → 按 is_custom 分配 11+/90+ 段)
+    # 先算本产品已占用的 SKU 后缀
+    existing_suffixes: set[int] = set()
+    for (ec,) in db.execute(
+        select(PricingSku.sku_code).where(PricingSku.product_code == code)
+    ).all():
+        if ec and ec.startswith(code):
+            try:
+                existing_suffixes.add(int(ec[len(code):]))
+            except ValueError:
+                pass
+    normal_counter = 11
+    custom_counter = 90
+    for s in payload.pricing_skus:
+        if not s.sku_code:
+            if s.is_custom:
+                while custom_counter in existing_suffixes or custom_counter > 99:
+                    custom_counter += 1
+                s.sku_code = f"{code}{custom_counter:02d}"
+                existing_suffixes.add(custom_counter)
+                custom_counter += 1
+            else:
+                while normal_counter in existing_suffixes or normal_counter >= 90:
+                    normal_counter += 1
+                s.sku_code = f"{code}{normal_counter:02d}"
+                existing_suffixes.add(normal_counter)
+                normal_counter += 1
+
     sku_codes = [s.sku_code for s in payload.pricing_skus if s.sku_code]
     if sku_codes:
         dup = db.execute(
@@ -213,7 +241,7 @@ def compose_product(
                 continue
             sku = PricingSku(
                 product_code=code,
-                **s.model_dump(exclude_none=True, exclude={"sku_code"}),
+                **s.model_dump(exclude_none=True, exclude={"sku_code", "is_custom"}),
                 sku_code=s.sku_code,
             )
             pricing_calc_service.recompute(sku)
@@ -228,4 +256,5 @@ def compose_product(
         "product_code": code,
         "bom_lines": len(payload.bom_lines),
         "pricing_skus": len(payload.pricing_skus),
+        "sku_codes": [s.sku_code for s in payload.pricing_skus if s.sku_code],
     }

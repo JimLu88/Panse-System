@@ -18,6 +18,8 @@ CUSTOM_PREFIX = "AC"
 CUSTOM_THRESHOLD = 1000
 CODE_RE = re.compile(r"^([A-Z]{2})-(\d+)$")
 
+VALID_PREFIXES = ("AC", "MP", "MW", "SP")
+
 
 def parse_code(code: str) -> tuple[str, int] | None:
     m = CODE_RE.match((code or "").strip())
@@ -27,15 +29,28 @@ def parse_code(code: str) -> tuple[str, int] | None:
 
 
 def format_code(prefix: str, serial: int) -> str:
-    return f"{prefix}-{serial:04d}"
+    return f"{prefix}-{serial:03d}"
+
+
+def next_code(db: Session, prefix: str = CUSTOM_PREFIX) -> str:
+    """统一最大值+1: 对该前缀所有现有编码取最大序号，返回 +1 (3位补零)。"""
+    prefix = prefix.upper().strip()
+    if prefix not in VALID_PREFIXES:
+        raise ValueError(f"prefix must be one of {VALID_PREFIXES}")
+    pattern = f"{prefix}-%"
+    rows = db.execute(
+        select(Material.code).where(Material.code.like(pattern))
+    ).scalars()
+    max_serial = 0
+    for code in rows:
+        parsed = parse_code(code)
+        if parsed is not None:
+            max_serial = max(max_serial, parsed[1])
+    return format_code(prefix, max_serial + 1)
 
 
 def next_custom_code(db: Session, prefix: str = CUSTOM_PREFIX) -> str:
-    """分配下一个定制编码。
-
-    扫描数据库中 prefix-<n> 且 n >= CUSTOM_THRESHOLD 的最大序号，+1。
-    如果一条都没有，返回 prefix-1000。
-    """
+    """兼容旧调用: 定制件 1000+ 段（保留供 material_service 使用）."""
     pattern = f"{prefix}-%"
     rows = db.execute(
         select(Material.code).where(Material.code.like(pattern))
@@ -48,4 +63,4 @@ def next_custom_code(db: Session, prefix: str = CUSTOM_PREFIX) -> str:
         _, serial = parsed
         if serial >= CUSTOM_THRESHOLD and serial > max_serial:
             max_serial = serial
-    return format_code(prefix, max_serial + 1)
+    return f"{prefix}-{max_serial + 1:04d}"
