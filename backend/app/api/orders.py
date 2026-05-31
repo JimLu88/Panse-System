@@ -25,6 +25,7 @@ from app.services import (
     factory_sheet,
     order_cost_service,
     order_import,
+    order_message_service,
     order_service,
 )
 
@@ -480,6 +481,54 @@ def _check_signoff(db, o: Order) -> None:
             )
 
 
+# -------- 粘贴消息转订单变更 --------
+
+class ParseMessageIn(BaseModel):
+    text: str
+
+
+class ParseMessageOut(BaseModel):
+    order_no: Optional[str]
+    changes: dict
+    confidence: float
+    raw_text: str
+    ai_available: bool
+
+
+class ApplyMessageChangeIn(BaseModel):
+    changes: dict
+    actor: str = "operator"
+
+
+@router.post("/parse-message-change", response_model=ParseMessageOut)
+def parse_message_change(payload: ParseMessageIn, db: Session = Depends(get_db)):
+    """将粘贴的自然语言消息解析为订单变更字段。
+
+    AI 可用时使用 AI 解析; 不可用时正则兜底提取订单号。
+    返回结果后由前端展示确认, 再调 /{order_id}/apply-message-change 落库。
+    """
+    result = order_message_service.parse_change(db, payload.text)
+    return ParseMessageOut(**result)
+
+
+@router.post("/{order_id}/apply-message-change", response_model=OrderOut)
+def apply_message_change(
+    order_id: int,
+    payload: ApplyMessageChangeIn,
+    db: Session = Depends(get_db),
+):
+    """将解析出的变更字段应用到指定订单 (写库 + 记录操作事件)。"""
+    try:
+        o = order_message_service.apply_change(
+            db, order_id=order_id, changes=payload.changes, actor=payload.actor,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e))
+    db.commit()
+    db.refresh(o)
+    return o
+
+
 # -------- 千牛订单 Excel 快捷导入 --------
 
 # 千牛后台导出的 Excel 固定列名 → Order 字段
@@ -582,3 +631,12 @@ async def import_qianniu_orders(
         skipped_invalid=report.skipped_invalid,
         errors=report.errors,
     )
+
+
+# -------- 工厂单每日汇总 (手动触发) --------
+
+@router.post("/factory-daily-summary")
+def factory_daily_summary(db: Session = Depends(get_db)):
+    """手动触发: 汇总今日待生产订单 (paid 状态且无工厂单) 并推送。"""
+    from app.services import factory_summary_service
+    return factory_summary_service.daily_summary(db)

@@ -306,6 +306,25 @@ def _to_out(r: reconciliation_service.ReconciliationResult) -> ReconciliationOut
     )
 
 
+@router.get("/reconciliation/ai-diagnosis")
+def reconciliation_ai_diagnosis(db: Session = Depends(get_db)):
+    """对当前所有对账差异做 AI 诊断, 给出可能原因 + 建议处理优先级。
+
+    静态路由注册在 /{rule} 之前, 避免被拦截。
+    AI 未配置时返回 ai_available=false + diagnosis=None。
+    """
+    from app.services import ai_assistant as _ai
+    from app.services.ai_assistant import collect_reconcile_findings as _cf
+    findings = _cf(db)
+    _log, ai = _ai.diagnose_reconciliation(db)
+    return {
+        "diagnosis": ai.text if ai else None,
+        "findings_count": len(findings),
+        "ai_available": ai is not None,
+        "model": ai.model if ai else None,
+    }
+
+
 @router.get("/reconciliation/{rule}", response_model=ReconciliationOut)
 def run_one_rule(
     rule: str,
@@ -639,3 +658,12 @@ def trigger_email_poll(db: Session = Depends(get_db)):
     r = email_import_service.poll_and_import(db)
     return EmailPollResult(scanned=r.scanned, imported=r.imported,
                            skipped=r.skipped, errors=r.errors)
+
+
+# -------- 对账差异 AI 诊断 --------
+
+class ReconciliationDiagnosisOut(BaseModel):
+    diagnosis: Optional[str]
+    findings_count: int
+    ai_available: bool
+    model: Optional[str] = None

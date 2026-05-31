@@ -386,6 +386,59 @@ def collect_reconcile_findings(db: Session) -> list[ReconcileFinding]:
     return findings
 
 
+def diagnose_reconciliation(db: Session) -> tuple["AiChatLog", Optional["AiResponse"]]:
+    """对全量对账差异做 AI 诊断, 给出可能原因 + 处理建议。
+
+    流程:
+    1. collect_reconcile_findings 收集所有差异
+    2. 有差异时构建提示词调 AI
+    3. 返回 (log, response); AI 不可用时 log.error 有说明
+    """
+    findings = collect_reconcile_findings(db)
+    if not findings:
+        msg = "所有对账规则均无差异，暂无需诊断。"
+        log = _log(db, action_type="reconcile_diagnosis", user_message="auto", ai_response=msg)
+        # 构造一个伪 AiResponse 让调用方能取到 text
+        from app.services.ai_provider import AiResponse as _Resp
+        fake = _Resp(text=msg, model="rule", input_tokens=0, output_tokens=0,
+                     cache_read_tokens=0, cache_creation_tokens=0)
+        return log, fake
+
+    # 构建提示词
+    summary_lines = ["以下是本次对账发现的差异（已按严重度排序）："]
+    for f in findings:
+        summary_lines.append(
+            f"- 【{f.rule}】{f.severity.upper()} | {f.problem} | 常见原因: {f.cause} | 建议: {f.suggestion}"
+        )
+    summary_lines.append("\n请针对以上差异：")
+    summary_lines.append("1. 逐条给出最可能的业务原因（简洁, ≤2句话）")
+    summary_lines.append("2. 给出优先处理顺序（error 优先）")
+    summary_lines.append("3. 哪些差异在可安全抹平范围 (±0.5% 或 ±5元以内)")
+
+    user_msg = "\n".join(summary_lines)
+    try:
+        ai = _call_ai(db, kind="diagnose", user_message=user_msg, max_tokens=1200)
+    except AiUnavailable as e:
+        log = _log(db, action_type="reconcile_diagnosis", user_message=user_msg, error=str(e))
+        return log, None
+    except Exception as e:  # pragma: no cover
+        log = _log(db, action_type="reconcile_diagnosis", user_message=user_msg,
+                   error=f"{type(e).__name__}: {e}")
+        return log, None
+
+    log = _log(
+        db, action_type="reconcile_diagnosis",
+        user_message=user_msg, ai_response=ai.text, model=ai.model,
+        usage={
+            "input_tokens": ai.input_tokens,
+            "output_tokens": ai.output_tokens,
+            "cache_read_input_tokens": ai.cache_read_tokens,
+            "cache_creation_input_tokens": ai.cache_creation_tokens,
+        },
+    )
+    return log, ai
+
+
 def chat(
     db: Session,
     *,
