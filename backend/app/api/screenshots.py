@@ -24,7 +24,7 @@ from app.models.auth import User
 from app.models.finance import FactoryReconciliation
 from app.models.order import Order, PartPurchase
 from app.rate_limit import limiter
-from app.services import factory_recon_excel_service, vision_ocr_service
+from app.services import factory_recon_excel_service, factory_sheet, vision_ocr_service
 from app.services.ai_provider import AiUnavailable
 
 router = APIRouter(prefix="/api/screenshots", tags=["screenshots"])
@@ -136,6 +136,52 @@ def commit_qianniu(
         inserted += 1
     db.commit()
     return {"inserted": inserted, "skipped_existing": skipped}
+
+
+class FactorySheetPreviewIn(BaseModel):
+    """从千牛截图解析(未入库)的订单字段直接生成下单图预览。"""
+    order_no: str
+    order_date: Optional[str] = None  # YYYY-MM-DD
+    ship_date: Optional[str] = None
+    product_code: Optional[str] = None
+    product_name: Optional[str] = None
+    sku: Optional[str] = None
+    sku_code: Optional[str] = None
+    qty: int = 1
+    customer_name: Optional[str] = None
+    customer_phone: Optional[str] = None
+    customer_address: Optional[str] = None
+    remark: Optional[str] = None
+
+
+@router.post("/qianniu-orders/factory-sheet")
+def qianniu_factory_sheet(
+    payload: FactorySheetPreviewIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """业务需求 §1: 千牛截图解析后, 对单条订单直接生成「下单图」(无需先入库)。
+
+    工厂沟通的唯一方式 — 用户在截图预览界面点「生成下单图」即可拿到发给工厂的制单图。
+    """
+    sheet = factory_sheet.build_from_fields(
+        db,
+        order_no=payload.order_no or "(未填单号)",
+        product_code=payload.product_code,
+        product_name=payload.product_name,
+        sku=payload.sku,
+        sku_code=payload.sku_code,
+        qty=payload.qty or 1,
+        customer_name=payload.customer_name,
+        customer_phone=payload.customer_phone,
+        customer_address=payload.customer_address,
+        order_date=_parse_date(payload.order_date),
+        ship_date=_parse_date(payload.ship_date),
+        remark=payload.remark,
+    )
+    # 直接 dataclass → dict (含嵌套 materials / warnings)
+    from dataclasses import asdict
+    return asdict(sheet)
 
 
 # ----------------------------- 采购单 ---------------------------- #

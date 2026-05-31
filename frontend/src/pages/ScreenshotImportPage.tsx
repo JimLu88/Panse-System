@@ -13,8 +13,10 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Segmented,
   Space,
+  Spin,
   Table,
   Tabs,
   Tag,
@@ -22,12 +24,13 @@ import {
   Upload,
   message,
 } from 'antd';
-import { CloudUploadOutlined, InboxOutlined, SearchOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, FileImageOutlined, InboxOutlined, PrinterOutlined, SearchOutlined } from '@ant-design/icons';
 import { useMutation } from '@tanstack/react-query';
 import {
   FactoryReconParseResp,
   FactoryReconRowParsed,
   FactoryReconExcelResp,
+  FactorySheet,
   ProductMatchResult,
   PurchaseLineParsed,
   PurchaseParseResp,
@@ -42,7 +45,9 @@ import {
   parseFactoryReconExcel,
   parsePurchaseScreenshot,
   parseQianniuScreenshot,
+  previewQianniuFactorySheet,
 } from '../api/client';
+import FactorySheetCard from '../components/FactorySheetCard';
 
 const { Dragger } = Upload;
 
@@ -83,6 +88,13 @@ function QianniuTab() {
   const [resp, setResp] = useState<QianniuParseResp | null>(null);
   const [orders, setOrders] = useState<QianniuOrderParsed[]>([]);
   const [matchStates, setMatchStates] = useState<Record<number, MatchState>>({});
+  const [sheet, setSheet] = useState<FactorySheet | null>(null);
+
+  const sheetMut = useMutation({
+    mutationFn: (o: QianniuOrderParsed) => previewQianniuFactorySheet(o),
+    onSuccess: (s) => setSheet(s),
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '生成下单图失败'),
+  });
 
   const parseMut = useMutation({
     mutationFn: (file: File) => parseQianniuScreenshot(file),
@@ -252,6 +264,22 @@ function QianniuTab() {
       render: (ws: string[]) => (ws ?? []).length > 0
         ? <Tag color="orange">{ws.length} 项</Tag> : '-',
     },
+    {
+      title: '下单图', fixed: 'right' as const, width: 96,
+      render: (_: unknown, r: QianniuOrderParsed) => (
+        <Tooltip title={r.product_code ? '生成发给工厂的下单图' : '请先匹配产品编码再生成'}>
+          <Button
+            size="small"
+            icon={<FileImageOutlined />}
+            loading={sheetMut.isPending && sheetMut.variables === r}
+            disabled={!r.product_code && !r.sku}
+            onClick={() => sheetMut.mutate(r)}
+          >
+            下单图
+          </Button>
+        </Tooltip>
+      ),
+    },
   ];
 
   return (
@@ -303,11 +331,58 @@ function QianniuTab() {
             rowKey={(_, i) => String(i)}
             dataSource={orders}
             pagination={false}
-            scroll={{ x: 2000 }}
+            scroll={{ x: 2100 }}
             columns={columns as any}
           />
         </Card>
       )}
+
+      {/* 下单图预览弹窗 */}
+      <Modal
+        open={!!sheet || sheetMut.isPending}
+        title="工厂下单图"
+        width={860}
+        onCancel={() => setSheet(null)}
+        footer={
+          sheet ? [
+            <Button key="close" onClick={() => setSheet(null)}>关闭</Button>,
+            <Button
+              key="print"
+              type="primary"
+              icon={<PrinterOutlined />}
+              disabled={sheet.warnings.some((w) => w.severity === 'error')}
+              onClick={() => {
+                const html = document.getElementById('qn-sheet-print')?.innerHTML;
+                if (!html) return;
+                const w = window.open('', '_blank', 'width=900,height=700');
+                if (!w) { message.warning('请允许弹窗以打印'); return; }
+                w.document.write(`<html><head><title>下单图 ${sheet.order_no}</title></head><body>${html}</body></html>`);
+                w.document.close();
+                w.focus();
+                setTimeout(() => { w.print(); }, 300);
+              }}
+            >
+              打印 / 另存为图片
+            </Button>,
+          ] : null
+        }
+      >
+        {sheetMut.isPending ? (
+          <div style={{ textAlign: 'center', padding: 48 }}><Spin tip="生成中..."><div style={{ minHeight: 40 }} /></Spin></div>
+        ) : sheet ? (
+          <>
+            {sheet.warnings.filter((w) => w.severity === 'error').map((w) => (
+              <Alert key={w.code} type="error" showIcon style={{ marginBottom: 8 }} message={w.message} />
+            ))}
+            {sheet.warnings.filter((w) => w.severity !== 'error').map((w) => (
+              <Alert key={w.code} type="warning" showIcon style={{ marginBottom: 8 }} message={w.message} />
+            ))}
+            <div id="qn-sheet-print">
+              <FactorySheetCard data={sheet} />
+            </div>
+          </>
+        ) : null}
+      </Modal>
     </Space>
   );
 }

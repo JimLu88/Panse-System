@@ -78,23 +78,56 @@ class FactorySheet:
     warnings: list[FactorySheetWarning] = field(default_factory=list)
 
 
-def _sheet_title(order: Order) -> str:
-    """4月29日 79单 / 5月7日 91单 这种格式."""
-    if not order.order_date:
-        return f"订单 {order.order_no}"
-    md = order.order_date
-    return f"{md.month}月{md.day}日 订单 {order.order_no[-4:]}"
+def _sheet_title(order_no: str, order_date: Optional[date]) -> str:
+    """5月31日 151单 这种格式 (取订单号尾段)."""
+    if not order_date:
+        return f"订单 {order_no}"
+    return f"{order_date.month}月{order_date.day}日 订单 {order_no[-4:]}"
 
 
 def build(db: Session, order_id: int) -> FactorySheet:
     order = db.get(Order, order_id)
     if order is None:
         raise ValueError(f"order {order_id} not found")
+    return build_from_fields(
+        db,
+        order_no=order.order_no,
+        product_code=order.product_code,
+        product_name=order.product_name,
+        sku=order.sku,
+        sku_code=order.sku_code,
+        qty=order.qty,
+        customer_name=order.customer_name,
+        customer_phone=order.customer_phone,
+        customer_address=order.customer_address,
+        order_date=order.order_date,
+        ship_date=order.ship_date,
+        remark=order.remark,
+    )
 
+
+def build_from_fields(
+    db: Session,
+    *,
+    order_no: str,
+    product_code: Optional[str],
+    product_name: Optional[str],
+    sku: Optional[str],
+    sku_code: Optional[str],
+    qty: int,
+    customer_name: Optional[str],
+    customer_phone: Optional[str],
+    customer_address: Optional[str],
+    order_date: Optional[date],
+    ship_date: Optional[date],
+    remark: Optional[str],
+) -> FactorySheet:
+    """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。"""
+    qty = qty or 1
     warnings: list[FactorySheetWarning] = []
 
     # 1. 客户地址加密检测
-    addr_check = validation.is_address_encrypted(order.customer_address)
+    addr_check = validation.is_address_encrypted(customer_address)
     if addr_check.is_encrypted:
         warnings.append(FactorySheetWarning(
             code="encrypted_address",
@@ -104,7 +137,7 @@ def build(db: Session, order_id: int) -> FactorySheet:
                 "请到客服后台上传未加密版本后重新生成制单图。"
             ),
         ))
-    if validation.is_phone_encrypted(order.customer_phone):
+    if validation.is_phone_encrypted(customer_phone):
         warnings.append(FactorySheetWarning(
             code="encrypted_phone",
             severity="warning",
@@ -114,23 +147,22 @@ def build(db: Session, order_id: int) -> FactorySheet:
     # 2. 找产品 + SKU 详情
     product = None
     pricing_sku = None
-    sku_code = order.sku_code
-    image_url = material_desc = dimension_desc = None
-    if order.product_code:
+    image_url = material_desc = None
+    if product_code:
         product = db.execute(
-            select(Product).where(Product.code == order.product_code)
+            select(Product).where(Product.code == product_code)
         ).scalar_one_or_none()
         if product is None:
             warnings.append(FactorySheetWarning(
                 code="unknown_product",
                 severity="error",
-                message=f"订单 product_code={order.product_code} 在产品总表里找不到。",
+                message=f"订单 product_code={product_code} 在产品总表里找不到。",
             ))
 
     # 通过 SKU 名找 sku_code (Order.sku 存的是 SKU 名字, 不是 code)
-    if order.sku and not sku_code:
+    if sku and not sku_code:
         ps = db.execute(
-            select(PricingSku).where(PricingSku.sku == order.sku)
+            select(PricingSku).where(PricingSku.sku == sku)
         ).scalar_one_or_none()
         if ps:
             sku_code = ps.sku_code
@@ -167,7 +199,7 @@ def build(db: Session, order_id: int) -> FactorySheet:
                 material_code=line.material_code,
                 material_name=mat_name,
                 qty_per_product=qty_per,
-                total_qty=qty_per * Decimal(order.qty),
+                total_qty=qty_per * Decimal(qty),
                 unit=line.unit or mat_unit,
                 spec=line.remark,
             ))
@@ -180,22 +212,22 @@ def build(db: Session, order_id: int) -> FactorySheet:
         ))
 
     return FactorySheet(
-        order_no=order.order_no,
-        sheet_title=_sheet_title(order),
-        order_date=order.order_date,
-        ship_date=order.ship_date,
-        product_code=order.product_code,
-        product_name=product.name if product else order.product_name,
-        sku=order.sku,
+        order_no=order_no,
+        sheet_title=_sheet_title(order_no, order_date),
+        order_date=order_date,
+        ship_date=ship_date,
+        product_code=product_code,
+        product_name=product.name if product else product_name,
+        sku=sku,
         sku_code=sku_code,
         image_url=image_url,
         material_desc=product.remark if product else None,
-        dimension_desc=order.sku,  # SKU 名通常含尺寸信息
-        customer_name=order.customer_name,
-        customer_phone=order.customer_phone,
-        customer_address=order.customer_address,
-        qty=order.qty,
-        remark=order.remark,
+        dimension_desc=sku,  # SKU 名通常含尺寸信息
+        customer_name=customer_name,
+        customer_phone=customer_phone,
+        customer_address=customer_address,
+        qty=qty,
+        remark=remark,
         materials=materials,
         is_custom_variant=is_custom,
         dimension_changes=dim_changes,
