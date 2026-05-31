@@ -41,6 +41,7 @@ import {
   Integrations,
   MeUser,
   NotifyConfig,
+  RuntimeLog,
   SchedulerJob,
   SchedulerRun,
   SystemEvent,
@@ -48,6 +49,7 @@ import {
   adminResetPassword,
   createUser,
   fetchHealthLogs,
+  fetchRecentLogs,
   fetchIntegrations,
   fetchNotifyConfig,
   fetchRoles,
@@ -91,6 +93,7 @@ export default function AdminPage() {
           { key: 'monitor', label: <Space><DashboardOutlined />系统监控 / 看门狗</Space>, children: <MonitorTab /> },
           { key: 'scheduler', label: '全自动任务清单 (业务需求 18)', children: <SchedulerTab /> },
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
+          { key: 'runtime-logs', label: <Space><WarningOutlined />运行日志 / 错误排查</Space>, children: <RuntimeLogsTab /> },
         ]}
       />
     </Space>
@@ -360,6 +363,99 @@ function AuditTab() {
         { title: 'IP', dataIndex: 'ip', width: 110 },
       ]}
     />
+  );
+}
+
+// 运行日志查看 — 把后端内存环形日志直接搬到界面, 排查飞书同步/导入等错误不用敲 docker logs
+function RuntimeLogsTab() {
+  const [level, setLevel] = useState<string>('WARNING');
+  const [contains, setContains] = useState('');
+  const [loggerPrefix, setLoggerPrefix] = useState<string>('');
+
+  const { data, isLoading, refetch, isFetching } = useQuery({
+    queryKey: ['runtime-logs', level, contains, loggerPrefix],
+    queryFn: () =>
+      fetchRecentLogs({
+        limit: 500,
+        level: level || undefined,
+        contains: contains || undefined,
+        logger_prefix: loggerPrefix || undefined,
+      }),
+    refetchInterval: 15000, // 15s 自动刷新, 方便边操作边看
+  });
+
+  const levelColor: Record<string, string> = {
+    DEBUG: 'default',
+    INFO: 'blue',
+    WARNING: 'orange',
+    ERROR: 'red',
+    CRITICAL: 'magenta',
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message="这里能看到后端最近的运行日志 (内存保留约 3000 条, 重启后清空)。"
+        description="同步失败、导入报错等都会记在这里。默认只看 WARNING 及以上; 排查飞书同步选模块「panse.feishu_sync」。"
+      />
+      <Space wrap>
+        <span>级别:</span>
+        <Select
+          value={level}
+          style={{ width: 130 }}
+          onChange={setLevel}
+          options={[
+            { value: '', label: '全部' },
+            { value: 'INFO', label: 'INFO 及以上' },
+            { value: 'WARNING', label: 'WARNING 及以上' },
+            { value: 'ERROR', label: 'ERROR 及以上' },
+          ]}
+        />
+        <span>模块:</span>
+        <Select
+          value={loggerPrefix}
+          style={{ width: 200 }}
+          onChange={setLoggerPrefix}
+          options={[
+            { value: '', label: '全部模块' },
+            { value: 'panse.feishu_sync', label: '飞书同步' },
+            { value: 'panse.smart_import', label: '智能导入' },
+            { value: 'panse.scheduler', label: '定时任务' },
+            { value: 'panse.error', label: '未处理异常' },
+            { value: 'panse.request', label: '请求' },
+          ]}
+        />
+        <Input.Search
+          placeholder="关键字过滤"
+          allowClear
+          style={{ width: 220 }}
+          onSearch={setContains}
+        />
+        <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>
+          刷新
+        </Button>
+      </Space>
+      <Table<RuntimeLog>
+        rowKey={(_, i) => String(i)}
+        loading={isLoading}
+        dataSource={data}
+        size="small"
+        pagination={{ pageSize: 50 }}
+        columns={[
+          { title: '时间', dataIndex: 'ts', width: 160, render: (v: string) => <span style={{ fontSize: 12 }}>{v}</span> },
+          {
+            title: '级别',
+            dataIndex: 'level',
+            width: 90,
+            render: (v: string) => <Tag color={levelColor[v] ?? 'default'}>{v}</Tag>,
+          },
+          { title: '模块', dataIndex: 'logger', width: 170, render: (v: string) => <code style={{ fontSize: 11 }}>{v}</code> },
+          { title: '内容', dataIndex: 'msg', render: (v: string) => <span style={{ fontSize: 12, whiteSpace: 'pre-wrap' }}>{v}</span> },
+        ]}
+      />
+    </Space>
   );
 }
 

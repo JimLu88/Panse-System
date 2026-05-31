@@ -165,7 +165,26 @@ export default function FeishuSettingsPage() {
         }),
         { pushed: 0, pulled: 0, conflicts: 0 },
       );
-      message.success(`同步完成: 推 ${total.pushed} / 拉 ${total.pulled} / 冲突 ${total.conflicts}`);
+      const errs = r.results
+        .filter((x) => x.errors.length > 0)
+        .flatMap((x) => x.errors.map((m) => `${TABLE_LABELS[x.system_table] ?? x.system_table}: ${m}`));
+      if (errs.length > 0) {
+        Modal.error({
+          title: `同步完成, 但有 ${errs.length} 处错误`,
+          width: 640,
+          content: (
+            <div>
+              <p>推 {total.pushed} / 拉 {total.pulled} / 冲突 {total.conflicts}。以下表同步报错:</p>
+              <ul style={{ maxHeight: 320, overflow: 'auto', paddingLeft: 18 }}>
+                {errs.map((m, i) => <li key={i} style={{ fontSize: 12 }}>{m}</li>)}
+              </ul>
+              <p style={{ color: '#999', fontSize: 12 }}>更多细节见「管理 → 运行日志 / 错误排查」(模块: 飞书同步)。</p>
+            </div>
+          ),
+        });
+      } else {
+        message.success(`同步完成: 推 ${total.pushed} / 拉 ${total.pulled} / 冲突 ${total.conflicts}`);
+      }
       invalidateAll();
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '同步失败'),

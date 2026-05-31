@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -20,6 +21,7 @@ from app.services import (
 )
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
+_logger = logging.getLogger("panse.feishu_sync")
 
 
 class BindingIn(BaseModel):
@@ -289,17 +291,24 @@ class SyncIn(BaseModel):
 @router.post("/sync")
 def trigger_sync(payload: SyncIn, db: Session = Depends(get_db),
                  _: User = Depends(require_role("admin", "operator"))):
-    if payload.system_table:
-        b = db.execute(
-            select(FeishuTableBinding).where(
-                FeishuTableBinding.system_table == payload.system_table)
-        ).scalar_one_or_none()
-        if b is None:
-            raise HTTPException(404, "binding 不存在")
-        results = [feishu_sync_service.sync_binding(db, b)]
-    else:
-        results = feishu_sync_service.sync_all(db)
-    db.commit()
+    try:
+        if payload.system_table:
+            b = db.execute(
+                select(FeishuTableBinding).where(
+                    FeishuTableBinding.system_table == payload.system_table)
+            ).scalar_one_or_none()
+            if b is None:
+                raise HTTPException(404, "binding 不存在")
+            results = [feishu_sync_service.sync_binding(db, b)]
+        else:
+            results = feishu_sync_service.sync_all(db)
+        db.commit()
+    except HTTPException:
+        raise
+    except Exception as e:  # 提交失败/不可预期错误 → 记日志并把真实原因返回前端
+        db.rollback()
+        _logger.exception("飞书同步请求失败")
+        raise HTTPException(500, f"同步失败: {type(e).__name__}: {e}")
     return {"results": [r.__dict__ for r in results]}
 
 
