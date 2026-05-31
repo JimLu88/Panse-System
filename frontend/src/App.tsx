@@ -43,6 +43,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
+const CustomQuoteChatPage = lazy(() => import('./pages/CustomQuoteChatPage'));
 
 const { Header, Content } = Layout;
 
@@ -83,12 +84,13 @@ export default function App() {
   }
 
   const seg = loc.pathname.split('/')[1] || 'products';
-  const key = seg === 'bom' ? 'products' : seg;
+  const key = seg === 'bom' ? 'products' : seg === 'customization' ? 'customization' : seg;
 
   // Phase 13: 截图录单提一级; 大盘 Dashboard 作首页
   const menuItems = [
     { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
     { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
+    { key: 'custom-quote', label: <Link to="/custom-quote">定制报价</Link> },
     {
       key: 'g-product',
       label: '商品',
@@ -102,7 +104,6 @@ export default function App() {
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
         { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
         { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
-        { key: 'customization', label: <Link to="/customization">微定制</Link> },
         { key: 'competitor', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
       ],
     },
@@ -199,6 +200,7 @@ export default function App() {
             <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customization" element={<CustomizationPage />} />
+            <Route path="/custom-quote" element={<CustomQuoteChatPage />} />
             <Route path="/screenshots" element={<ScreenshotImportPage />} />
             <Route path="/aftersales" element={<AfterSalesPage />} />
             <Route path="/forecast" element={<ForecastPage />} />

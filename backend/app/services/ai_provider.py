@@ -56,6 +56,11 @@ class AiProvider:
                         mime: str = "image/jpeg", max_tokens: int = 2048) -> AiResponse:
         raise NotImplementedError
 
+    def chat_with_images(self, *, system: str, user: str,
+                         images: list[tuple[bytes, str]],
+                         max_tokens: int = 2048) -> AiResponse:
+        raise NotImplementedError
+
 
 # ----------------------------- Anthropic ---------------------------------- #
 
@@ -96,12 +101,20 @@ class AnthropicProvider(AiProvider):
 
     def chat_with_image(self, *, system: str, user: str, image_bytes: bytes,
                         mime: str = "image/jpeg", max_tokens: int = 2048) -> AiResponse:
+        return self.chat_with_images(
+            system=system, user=user,
+            images=[(image_bytes, mime)], max_tokens=max_tokens,
+        )
+
+    def chat_with_images(self, *, system: str, user: str,
+                         images: list[tuple[bytes, str]],
+                         max_tokens: int = 2048) -> AiResponse:
         client = self._client()
-        b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-        content = [
-            {"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}},
-            {"type": "text", "text": user},
-        ]
+        content: list[dict] = []
+        for img_bytes, mime in images:
+            b64 = base64.standard_b64encode(img_bytes).decode("ascii")
+            content.append({"type": "image", "source": {"type": "base64", "media_type": mime, "data": b64}})
+        content.append({"type": "text", "text": user})
         try:
             resp = client.messages.create(
                 model=self.model, max_tokens=max_tokens,
@@ -178,13 +191,19 @@ class OpenAICompatibleProvider(AiProvider):
 
     def chat_with_image(self, *, system: str, user: str, image_bytes: bytes,
                         mime: str = "image/jpeg", max_tokens: int = 2048) -> AiResponse:
-        b64 = base64.standard_b64encode(image_bytes).decode("ascii")
-        data_url = f"data:{mime};base64,{b64}"
-        # OpenAI vision content blocks
-        user_content = [
-            {"type": "text", "text": user},
-            {"type": "image_url", "image_url": {"url": data_url}},
-        ]
+        return self.chat_with_images(
+            system=system, user=user,
+            images=[(image_bytes, mime)], max_tokens=max_tokens,
+        )
+
+    def chat_with_images(self, *, system: str, user: str,
+                         images: list[tuple[bytes, str]],
+                         max_tokens: int = 2048) -> AiResponse:
+        user_content: list[dict] = [{"type": "text", "text": user}]
+        for img_bytes, mime in images:
+            b64 = base64.standard_b64encode(img_bytes).decode("ascii")
+            data_url = f"data:{mime};base64,{b64}"
+            user_content.append({"type": "image_url", "image_url": {"url": data_url}})
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
