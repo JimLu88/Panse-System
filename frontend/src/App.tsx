@@ -1,7 +1,7 @@
 import { Suspense, lazy } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { LogoutOutlined, UserOutlined } from '@ant-design/icons';
-import { Link, Navigate, Route, Routes, useLocation } from 'react-router-dom';
+import { CameraOutlined, EditOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
@@ -9,7 +9,7 @@ import AiAssistantWidget from './components/AiAssistantWidget';
 import VersionTag from './components/VersionTag';
 import { useAuth } from './auth/AuthProvider';
 
-// Phase 12+13: 全部页面 lazy load
+// 全部页面 lazy load
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const PartInventoryPage = lazy(() => import('./pages/PartInventoryPage'));
 const ExceptionsPage = lazy(() => import('./pages/ExceptionsPage'));
@@ -44,6 +44,9 @@ const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
 const CustomQuoteChatPage = lazy(() => import('./pages/CustomQuoteChatPage'));
+const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
+const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
+const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
 
 const { Header, Content } = Layout;
 
@@ -61,9 +64,26 @@ function PageFallback() {
   );
 }
 
+// 路径 → 所属导航 group 映射
+const PATH_TO_GROUP: Record<string, string> = {
+  dashboard: 'g-data', forecast: 'g-data',
+  products: 'g-product', 'new-product': 'g-product', 'taobao-listings': 'g-product', bom: 'g-product',
+  pricing: 'g-price', quote: 'g-price', customization: 'g-price',
+  inventory: 'g-stock', 'product-inventory': 'g-stock', producibility: 'g-stock',
+  orders: 'g-order', customers: 'g-order', aftersales: 'g-order',
+  'logistics-bills': 'g-logistics', 'wanshifu-bills': 'g-logistics',
+  marketing: 'g-marketing',
+  suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
+  alipay: 'g-finance', reconciliation: 'g-finance', 'refill-records': 'g-finance',
+  accounting: 'g-finance', assets: 'g-finance',
+  reports: 'g-analysis', exceptions: 'g-analysis',
+  importer: 'g-tools', feishu: 'g-tools', admin: 'g-tools',
+};
+
 export default function App() {
   const { user, loading, logout } = useAuth();
   const loc = useLocation();
+  const nav = useNavigate();
 
   if (loading) {
     return (
@@ -73,7 +93,6 @@ export default function App() {
     );
   }
 
-  // 未登录 → 只能进 /login
   if (!user) {
     return (
       <Routes>
@@ -83,28 +102,45 @@ export default function App() {
     );
   }
 
-  const seg = loc.pathname.split('/')[1] || 'products';
-  const key = seg === 'bom' ? 'products' : seg === 'customization' ? 'customization' : seg;
+  const seg = loc.pathname.split('/')[1] || 'dashboard';
+  const group = PATH_TO_GROUP[seg] || '';
+  const selectedKeys = group ? [seg, group] : [seg];
 
-  // Phase 13: 截图录单提一级; 大盘 Dashboard 作首页
   const menuItems = [
-    { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
-    { key: 'screenshots', label: <Link to="/screenshots">截图录单</Link> },
-    { key: 'custom-quote', label: <Link to="/custom-quote">定制报价</Link> },
+    {
+      key: 'g-data',
+      label: '数据分析',
+      children: [
+        { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
+        { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
+      ],
+    },
     {
       key: 'g-product',
-      label: '商品',
+      label: '产品',
       children: [
         { key: 'products', label: <Link to="/products">产品总表</Link> },
         { key: 'new-product', label: <Link to="/new-product">新产品录入</Link> },
-        { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
         { key: 'taobao-listings', label: <Link to="/taobao-listings">淘宝对应表</Link> },
-        { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
+      ],
+    },
+    {
+      key: 'g-price',
+      label: '价格',
+      children: [
+        { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
+        { key: 'quote', label: <Link to="/quote">报价工具</Link> },
+        { key: 'customization', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
+        { key: 'custom-settings', label: <Link to="/customization?tab=settings">报价参数</Link> },
+      ],
+    },
+    {
+      key: 'g-stock',
+      label: '库存',
+      children: [
         { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
-        { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
         { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
         { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
-        { key: 'competitor', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
       ],
     },
     {
@@ -118,15 +154,44 @@ export default function App() {
       ],
     },
     {
+      key: 'g-logistics',
+      label: '物流',
+      children: [
+        { key: 'logistics-bills', label: <Link to="/logistics-bills">物流账单</Link> },
+        { key: 'wanshifu-bills', label: <Link to="/wanshifu-bills">万师傅对账单</Link> },
+      ],
+    },
+    {
+      key: 'g-marketing',
+      label: '营销',
+      children: [
+        { key: 'marketing-promotion', label: <Link to="/marketing?tab=promotion">推广记录</Link> },
+        { key: 'marketing-brand', label: <Link to="/marketing?tab=brand">品牌营销</Link> },
+        { key: 'marketing-samples', label: <Link to="/marketing?tab=samples">样品</Link> },
+        { key: 'marketing-daily', label: <Link to="/marketing?tab=daily">日常经营</Link> },
+        { key: 'marketing-outsourcing', label: <Link to="/marketing?tab=outsourcing">人员外包</Link> },
+      ],
+    },
+    {
+      key: 'g-supply',
+      label: '供应链',
+      children: [
+        { key: 'suppliers', label: <Link to="/suppliers">供应商</Link> },
+        { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
+        { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
+        { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
+        { key: 'marketing-wood', label: <Link to="/marketing?tab=wood_loss">木材损耗</Link> },
+      ],
+    },
+    {
       key: 'g-finance',
       label: '财务',
       children: [
-        { key: 'alipay', label: <Link to="/alipay">支付宝</Link> },
+        { key: 'alipay', label: <Link to="/alipay">支付宝 / 账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
-        { key: 'suppliers', label: <Link to="/suppliers">供应商对账</Link> },
-        { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
-        { key: 'assets', label: <Link to="/assets">资产</Link> },
+        { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
+        { key: 'assets', label: <Link to="/assets">资产</Link> },
       ],
     },
     {
@@ -134,9 +199,6 @@ export default function App() {
       label: '分析',
       children: [
         { key: 'reports', label: <Link to="/reports">报表</Link> },
-        { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
-        { key: 'quote', label: <Link to="/quote">报价</Link> },
-        { key: 'marketing', label: <Link to="/marketing">营销</Link> },
         { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
       ],
     },
@@ -153,19 +215,45 @@ export default function App() {
     },
   ];
 
+  const isScreenshots = loc.pathname === '/screenshots';
+  const isCustomQuote = loc.pathname === '/custom-quote';
+
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', paddingRight: 24 }}>
-        <div style={{ color: 'white', fontWeight: 600, marginRight: 24 }}>
+      <Header style={{ display: 'flex', alignItems: 'center', paddingRight: 16, gap: 0 }}>
+        <div style={{ color: 'white', fontWeight: 600, marginRight: 16, whiteSpace: 'nowrap' }}>
           畔色孚格 ERP
         </div>
         <Menu
           theme="dark"
           mode="horizontal"
-          selectedKeys={[key]}
+          selectedKeys={selectedKeys}
           style={{ flex: 1, minWidth: 0 }}
           items={menuItems}
         />
+        {/* 工具按钮：截图录单 + 定制报价 */}
+        <Space style={{ marginLeft: 8, marginRight: 8, flexShrink: 0 }}>
+          <Button
+            icon={<CameraOutlined />}
+            size="small"
+            type={isScreenshots ? 'primary' : 'default'}
+            ghost={!isScreenshots}
+            onClick={() => nav('/screenshots')}
+            style={{ borderColor: isScreenshots ? undefined : 'rgba(255,255,255,0.45)', color: isScreenshots ? undefined : 'rgba(255,255,255,0.85)' }}
+          >
+            截图录单
+          </Button>
+          <Button
+            icon={<EditOutlined />}
+            size="small"
+            type={isCustomQuote ? 'primary' : 'default'}
+            ghost={!isCustomQuote}
+            onClick={() => nav('/custom-quote')}
+            style={{ borderColor: isCustomQuote ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuote ? undefined : 'rgba(255,255,255,0.85)' }}
+          >
+            定制报价
+          </Button>
+        </Space>
         <VersionTag />
         <NotificationBell />
         <Dropdown
@@ -175,7 +263,7 @@ export default function App() {
             ],
           }}
         >
-          <Space style={{ color: 'white', cursor: 'pointer' }}>
+          <Space style={{ color: 'white', cursor: 'pointer', marginLeft: 8 }}>
             <Avatar size="small" icon={<UserOutlined />} />
             <span>{user.display_name || user.username}</span>
             <Tag color={ROLE_COLOR[user.role]}>{user.role}</Tag>
@@ -223,6 +311,9 @@ export default function App() {
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/feishu" element={<FeishuSettingsPage />} />
             <Route path="/admin" element={<AdminPage />} />
+            <Route path="/wanshifu-bills" element={<WanshifuBillsPage />} />
+            <Route path="/logistics-bills" element={<LogisticsBillsPage />} />
+            <Route path="/refill-records" element={<RefillRecordsPage />} />
           </Routes>
         </Suspense>
       </Content>

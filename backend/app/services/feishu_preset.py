@@ -243,6 +243,13 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
             "platform_fee": "平台费", "commission": "佣金", "total_cost": "总成本",
         },
     ),
+    (
+        "suppliers", "", "bidirectional", "供应商",
+        {
+            "name": "供应商名称", "supplier_type": "类型", "contact": "联系人",
+            "phone": "联系电话", "address": "地址", "remark": "备注",
+        },
+    ),
 ]
 
 

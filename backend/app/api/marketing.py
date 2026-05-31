@@ -12,6 +12,7 @@ from app.database import get_db
 from app.models.marketing import (
     AfterSales,
     BrandMarketing,
+    DailyOperation,
     OutsourcingExpense,
     PromotionFlow,
     Sample,
@@ -202,6 +203,33 @@ class WoodLossOut(BaseModel):
 @router.get("/wood-loss", response_model=list[WoodLossOut])
 def list_wood_loss(db: Session = Depends(get_db)):
     return db.execute(select(WoodLoss).order_by(WoodLoss.id.desc())).scalars().all()
+
+
+# -------- 日常经营 (16) --------
+
+class DailyOperationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    record_date: Optional[date]
+    category: Optional[str]
+    item: Optional[str]
+    amount: Optional[Decimal]
+    qty: Optional[Decimal]
+    unit: Optional[str]
+    payment_account: Optional[str]
+    expense_type: Optional[str]
+    recipient: Optional[str]
+    payment_method: Optional[str]
+    alipay_flow_no: Optional[str]
+    invoice_status: Optional[str]
+    remark: Optional[str]
+
+
+@router.get("/daily", response_model=list[DailyOperationOut])
+def list_daily_operations(limit: int = Query(500, le=2000), db: Session = Depends(get_db)):
+    return db.execute(
+        select(DailyOperation).order_by(DailyOperation.record_date.desc().nulls_last()).limit(limit)
+    ).scalars().all()
 
 
 # -------- ROI --------
