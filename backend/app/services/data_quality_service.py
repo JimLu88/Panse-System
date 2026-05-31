@@ -289,6 +289,8 @@ def scan_alipay_balance_gap(db: Session) -> int:
             .order_by(AlipayFlow.transaction_time.asc(), AlipayFlow.id.asc())
             .all()
         )
+        if len(rows) < 2:
+            continue  # 余额全为 NULL 或只有1条, 无法连续性核查, 跳过 (不误报)
         prev = None
         for r in rows:
             if prev is not None:
@@ -373,9 +375,11 @@ def scan_sample_missing_cost(db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 def scan_factory_order_uncovered(db: Session) -> int:
-    """状态为 shipped/signed 的订单, 若无任何有效 (未作废) 工厂单 → 报异常。
+    """状态为 shipped/signed 且有 actual_cost/theoretical_cost 的订单,
+    若无任何有效 (未作废) 工厂单 → 报 info 级提示。
 
-    工厂单通过 platform_order_no == orders.order_no 关联。
+    仅对有成本的订单报告 (成本已录入说明有采购行为); 无成本的订单可能是库存直发或
+    赠品, 不写异常, 避免误报。severity=info 确保不拉低健康分。
     """
     covered = {
         no for (no,) in db.query(FactoryOrder.platform_order_no)
@@ -386,6 +390,8 @@ def scan_factory_order_uncovered(db: Session) -> int:
     for o in db.query(Order).filter(
         Order.status.in_(["shipped", "signed"]),
         Order.is_historical == False,  # noqa: E712
+        # 只报有成本记录的订单; 无成本大概率库存直发
+        (Order.theoretical_cost.isnot(None)) | (Order.actual_cost.isnot(None)),
     ).all():
         if o.order_no not in covered:
             _record(
@@ -393,9 +399,10 @@ def scan_factory_order_uncovered(db: Session) -> int:
                 source_table="orders",
                 source_pk=o.id,
                 exception_type="factory_order_uncovered",
-                severity="warning",
-                description=f"订单 {o.order_no} 状态为 {o.status}, 但无对应工厂下单记录, 工厂成本可能漏记。",
-                suggestion_action="补录该订单的工厂下单, 或确认是否为库存直发。",
+                severity="info",
+                description=f"订单 {o.order_no} 已{o.status}, 有成本但无工厂下单记录。"
+                            "如为库存直发可忽略; 如为工厂生产请补录工厂单。",
+                suggestion_action="确认是否库存直发; 如非库存直发请在工厂下单页补录。",
                 context={"order_no": o.order_no, "status": o.status},
             )
             count += 1

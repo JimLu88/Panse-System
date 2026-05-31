@@ -195,18 +195,44 @@ def get_dashboard(
     def _tc(*types: str) -> int:
         return sum(int(type_counts.get(t, 0)) for t in types)
 
-    # 五维健康雷达 (每维 0~100, 扣分加权)
+    # 各异常类型严重度权重 (error=10, warning=5, info=1)
+    # 用于雷达扣分, 用 severity 区分; 单维最多扣到底 (floor 0)
+    sev_counts = dict(
+        db.query(DataException.severity, func.count(DataException.id))
+        .filter(DataException.status == "open")
+        .group_by(DataException.severity)
+        .all()
+    )
+
+    def _weighted_score(*types: str) -> int:
+        """计算指定类型的异常加权扣分, 返回 [0,100] 的得分。
+        error 扣 8 分/条, warning 扣 3 分/条, info 扣 0.5 分/条, 最多扣完 100 分。
+        """
+        from app.models.exception import DataException as _DE
+        rows = (
+            db.query(_DE.severity, func.count(_DE.id))
+            .filter(_DE.status == "open", _DE.exception_type.in_(types))
+            .group_by(_DE.severity)
+            .all()
+        )
+        deduct = sum(
+            cnt * (8 if sev == "error" else 3 if sev == "warning" else 0.5)
+            for sev, cnt in rows
+        )
+        return max(0, round(100 - deduct))
+
+    # 五维健康雷达 (每维 0~100, 按异常严重度加权)
     health_dimensions = [
-        {"name": "订单完整", "score": max(0, 100 - _tc(
+        {"name": "订单完整", "score": _weighted_score(
             "order_missing_cost", "order_missing_alipay", "order_missing_tracking",
-            "factory_order_uncovered", "refill_unmatched") * 5)},
-        {"name": "财务对账", "score": max(0, 100 - _tc("reconciliation_diff") * 5)},
-        {"name": "库存健康", "score": max(0, 100 - (part_negative * 10 + part_oversold * 5 + part_below_safety * 2))},
-        {"name": "流水完整", "score": max(0, 100 - _tc(
-            "alipay_missing_txn", "alipay_balance_gap", "factory_recon_incomplete") * 5)},
-        {"name": "经营营销", "score": max(0, 100 - _tc(
+            "factory_order_uncovered", "refill_unmatched")},
+        {"name": "财务对账", "score": _weighted_score("reconciliation_diff")},
+        {"name": "库存健康", "score": max(0, 100 - part_negative * 20 - part_oversold * 10 - min(part_below_safety, 10) * 3)},
+        {"name": "流水完整", "score": _weighted_score(
+            "alipay_missing_txn", "alipay_balance_gap", "factory_recon_incomplete")},
+        {"name": "经营营销", "score": _weighted_score(
             "outsourcing_missing", "wood_loss_high", "sample_missing_cost",
-            "promotion_recharge_unmatched") * 5)},
+            "promotion_recharge_unmatched")},
     ]
 
     # 月结清单: 每条对账规则 + 本月关键数据是否到位
