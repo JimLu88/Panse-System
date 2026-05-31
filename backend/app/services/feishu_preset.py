@@ -34,7 +34,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "bom_lines", "tblOtUUUOT8PsuP9", "in", "BOM表",
+        "bom_lines", "tblOtUUUOT8PsuP9", "bidirectional", "BOM表",
         {
             "sync_key": "唯一键", "product_code": "产品编码", "sku": "SKU",
             "sku_code": "SKU编码", "material_code": "物料编码", "unit": "单位",
@@ -50,7 +50,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "product_inventory", "tblRsLFDXvuKE2CB", "in", "成品库存",
+        "product_inventory", "tblRsLFDXvuKE2CB", "bidirectional", "成品库存",
         {
             "sync_key": "唯一键", "warehouse": "仓库", "product_code": "产品编码",
             "sku": "SKU", "spec": "规格", "unit": "单位", "physical_qty": "实物数量",
@@ -58,7 +58,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "part_inventory", "tblwQ2yL1rzGzDQh", "in", "配件库存",
+        "part_inventory", "tblwQ2yL1rzGzDQh", "bidirectional", "配件库存",
         {
             "sync_key": "唯一键", "warehouse": "仓库", "material_code": "物料编码",
             "spec": "规格", "unit": "单位", "physical_qty": "实物数量",
@@ -76,7 +76,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "factory_orders", "tblTn8Kb8yQCT39U", "in", "工厂下单",
+        "factory_orders", "tblTn8Kb8yQCT39U", "bidirectional", "工厂下单",
         {
             "factory_order_no": "工厂订单号", "platform_order_no": "平台订单号",
             "factory_name": "工厂名称", "order_date": "下单日期", "expected_delivery": "预计交期",
@@ -87,7 +87,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "factory_reconciliations", "tblVDWBjF6WZiPKy", "in", "工厂对账",
+        "factory_reconciliations", "tblVDWBjF6WZiPKy", "bidirectional", "工厂对账",
         {
             "sync_key": "唯一键", "period_start": "对账起", "period_end": "对账止",
             "factory_name": "工厂名称", "order_amount": "下单金额", "bill_amount": "账单金额",
@@ -96,7 +96,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "alipay_flows", "tblIJO5UipqPnpmK", "in", "支付宝流水-企业号",
+        "alipay_flows", "tblIJO5UipqPnpmK", "bidirectional", "支付宝流水-企业号",
         {
             "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
@@ -104,7 +104,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "alipay_flows", "tbl79NjIFcayl4eN", "in", "支付宝流水-个体户私账",
+        "alipay_flows", "tbl79NjIFcayl4eN", "bidirectional", "支付宝流水-个体户私账",
         {
             "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
@@ -112,7 +112,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "alipay_flows", "tblUPYpeREl93yIz", "in", "支付宝流水-爱群",
+        "alipay_flows", "tblUPYpeREl93yIz", "bidirectional", "支付宝流水-爱群",
         {
             "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
@@ -120,7 +120,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "alipay_flows", "tblIFStV63UPmFAl", "in", "支付宝流水-佳宝",
+        "alipay_flows", "tblIFStV63UPmFAl", "bidirectional", "支付宝流水-佳宝",
         {
             "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
@@ -128,7 +128,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "alipay_flows", "tbleXlRHNqHVqtI4", "in", "支付宝流水-主力",
+        "alipay_flows", "tbleXlRHNqHVqtI4", "bidirectional", "支付宝流水-主力",
         {
             "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
@@ -136,7 +136,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "account_balances", "tblrUiLJOc5d3Wm0", "in", "账户余额",
+        "account_balances", "tblrUiLJOc5d3Wm0", "bidirectional", "账户余额",
         {
             "sync_key": "唯一键", "account_name": "账户名称", "account_no": "账号",
             "period_year": "年", "period_month": "月", "opening_balance": "期初余额",
@@ -145,7 +145,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "wood_losses", "tblvLARSHPdlmpOV", "in", "木材损耗",
+        "wood_losses", "tblvLARSHPdlmpOV", "bidirectional", "木材损耗",
         {
             "sync_key": "唯一键", "purchase_date": "采购日期", "wood_type": "木材类型",
             "spec": "规格", "unit": "单位", "inbound_qty": "入库量", "used_qty": "使用量",
@@ -154,7 +154,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "samples", "tbl0jwfGypXEi2xR", "in", "样品",
+        "samples", "tbl0jwfGypXEi2xR", "bidirectional", "样品",
         {
             "sample_no": "样品编号", "product_code": "产品编码", "product_name": "产品名称",
             "sku": "SKU", "sample_type": "样品类型", "qty": "数量", "made_at": "制作日期",
@@ -163,7 +163,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "brand_marketing", "tblraKjamWiLubQx", "in", "品牌营销",
+        "brand_marketing", "tblraKjamWiLubQx", "bidirectional", "品牌营销",
         {
             "sync_key": "唯一键", "project_name": "项目名称", "project_type": "项目类型",
             "partner": "合作方", "start_date": "开始日期", "end_date": "结束日期",
@@ -172,14 +172,14 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "promotion_flows", "tblJ1sgVxmk5JjBZ", "in", "推广记录",
+        "promotion_flows", "tblJ1sgVxmk5JjBZ", "bidirectional", "推广记录",
         {
             "sync_key": "唯一键", "transaction_date": "交易日期", "flow_type": "类型",
             "amount": "金额", "remark": "备注",
         },
     ),
     (
-        "daily_operations", "tblvyqyNBj1er26J", "in", "日常经营",
+        "daily_operations", "tblvyqyNBj1er26J", "bidirectional", "日常经营",
         {
             "sync_key": "唯一键", "record_date": "日期", "item": "项目", "amount": "金额",
             "payment_account": "支付账户", "category": "分类", "expense_type": "支出类型",
@@ -188,7 +188,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "order_details", "tblYLdjivHwpu5ea", "in", "订单细节",
+        "order_details", "tblYLdjivHwpu5ea", "bidirectional", "订单细节",
         {
             "sync_key": "唯一键", "order_no": "订单编号", "factory_order_no": "工厂订单号",
             "product_code": "产品编码", "product_name": "产品名称",
@@ -197,7 +197,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "outsourcing_expenses", "tblmmRAfnySumzq0", "in", "人员外包",
+        "outsourcing_expenses", "tblmmRAfnySumzq0", "bidirectional", "人员外包",
         {
             "sync_key": "唯一键", "payee": "收款方", "amount": "金额", "project": "项目",
             "related_order_no": "关联订单号", "cost_category": "成本类别",
@@ -205,7 +205,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "after_sales", "tbldwJIwYhXBPmWW", "in", "售后",
+        "after_sales", "tbldwJIwYhXBPmWW", "bidirectional", "售后",
         {
             "platform_order_no": "平台订单号", "reason": "原因", "compensation_fee": "赔付费",
             "status": "状态", "processed_at": "处理日期", "remark": "备注",
@@ -220,21 +220,21 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
         },
     ),
     (
-        "wanshifu_bills", "", "in", "万师傅安装账单",
+        "wanshifu_bills", "", "bidirectional", "万师傅安装账单",
         {
             "bill_date": "账单日期", "order_no": "订单号", "service_type": "服务类型",
             "amount": "扣款金额", "status": "结算状态", "remark": "备注",
         },
     ),
     (
-        "logistics_bills", "", "in", "物流费账单",
+        "logistics_bills", "", "bidirectional", "物流费账单",
         {
             "bill_date": "账单日期", "carrier": "承运商", "tracking_no": "运单号",
             "order_no": "订单号", "weight_kg": "重量(kg)", "freight_amount": "运费", "remark": "备注",
         },
     ),
     (
-        "refill_records", "", "in", "补单对账",
+        "refill_records", "", "bidirectional", "补单对账",
         {
             "order_no": "订单号", "buyer_nick": "买家昵称", "refill_date": "补单日期",
             "product_code": "产品编码", "product_name": "产品名称", "sku": "SKU",

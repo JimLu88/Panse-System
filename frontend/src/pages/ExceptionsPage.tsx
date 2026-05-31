@@ -66,15 +66,16 @@ const SOURCE_TABLE_LABELS: Record<string, string> = {
 
 // ============ 异常分类体系 (产品经理视角, 让非技术同事看得懂) ============
 // 6 大类: 产品资料 / 订单 / 对账财务 / 库存 / 售后 / 系统导入
-type CategoryKey = 'product' | 'order' | 'finance' | 'inventory' | 'aftersales' | 'system';
+type CategoryKey = 'sync' | 'product' | 'order' | 'finance' | 'inventory' | 'aftersales' | 'system';
 
 const CATEGORY_META: Record<CategoryKey, { label: string; color: string; desc: string }> = {
+  sync: { label: '同步冲突', color: 'red', desc: '飞书与系统同一条数据两边都改过，需要你裁决以哪边为准' },
   product: { label: '产品资料问题', color: 'magenta', desc: '产品、物料或定价的资料有缺失或填错' },
   order: { label: '订单问题', color: 'blue', desc: '订单本身缺少必要信息（成本、物流、数量等）' },
   finance: { label: '对账 / 财务问题', color: 'gold', desc: '支付宝流水、工厂对账、外包费用对不上账' },
   inventory: { label: '库存问题', color: 'volcano', desc: '库存数量异常，如负库存、超卖' },
   aftersales: { label: '售后问题', color: 'purple', desc: '售后 / 退货数据缺失' },
-  system: { label: '系统 / 导入问题', color: 'geekblue', desc: '数据导入、AI 核查、状态变更、飞书同步相关' },
+  system: { label: '系统 / 导入问题', color: 'geekblue', desc: '数据导入、AI 核查、状态变更相关' },
 };
 
 // 每种异常: 归到哪一类 + 友好名称 + 一句话大白话(发生了什么 / 该去哪修)
@@ -141,7 +142,7 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '已经很久没导入新订单了，大盘数据可能不是最新的。请去「导入」页上传最新的订单 Excel。' },
   forced_status_transition: { category: 'system', label: '订单状态被强制变更',
     hint: '有人绕过正常流程强制改了订单状态。请查审计日志确认这次变更是否合理。' },
-  feishu_conflict: { category: 'system', label: '飞书与系统数据冲突',
+  feishu_conflict: { category: 'sync', label: '飞书与系统数据冲突',
     hint: '飞书和系统里同一条数据不一样，需要你决定以哪边为准。点「去飞书裁决」处理。' },
   ai_logic_check: { category: 'system', label: 'AI 核查发现疑点',
     hint: 'AI 在导入后核查时发现了一处逻辑疑点。请人工复核确认。' },
@@ -151,7 +152,7 @@ const typeMeta = (t: string): TypeMeta =>
   TYPE_META[t] ?? { category: 'system', label: t, hint: '系统检测到一处数据异常，请人工核查后处理。' };
 const typeLabel = (t: string) => typeMeta(t).label;
 const SEVERITY_RANK: Record<string, number> = { error: 3, warning: 2, info: 1 };
-const CATEGORY_ORDER: CategoryKey[] = ['product', 'order', 'finance', 'inventory', 'aftersales', 'system'];
+const CATEGORY_ORDER: CategoryKey[] = ['sync', 'product', 'order', 'finance', 'inventory', 'aftersales', 'system'];
 
 // 根据异常类型渲染不同的补填字段
 function FixFormFields({ exc }: { exc: DataException }) {
