@@ -857,7 +857,7 @@ export default function NewProductComposerPage() {
         remark: r.product.remark ?? undefined,
       });
       setBom(r.bom_lines.length ? r.bom_lines.map((b) => ({ ...b, _key: nextKey() })) : [emptyBom()]);
-      setSkus(r.pricing_skus.length ? r.pricing_skus.map((s) => ({ ...s, _key: nextKey() })) : [emptySku()]);
+      setSkus(r.pricing_skus.length ? r.pricing_skus.map((s) => ({ ...s, _key: nextKey(), is_custom: s.is_custom ?? false })) : [emptySku()]);
       message.success(`已带入参考产品 ${r.product.code} 的 BOM(${r.bom_lines.length}) 与定价(${r.pricing_skus.length})，品牌/类目请重新选择`);
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '加载参考失败'),
@@ -1026,7 +1026,9 @@ export default function NewProductComposerPage() {
       ) },
   ];
 
-  const savedSkuCodes = skus.filter((s) => s.sku_code?.trim()).map((s) => s.sku_code);
+  const savedSkuCodes = skus
+    .map((s) => s.sku_code)
+    .filter((c): c is string => !!c && c.trim().length > 0);
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
