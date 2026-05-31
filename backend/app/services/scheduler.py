@@ -179,10 +179,11 @@ def _job_lowstock_scan(db: Session) -> dict:
 def _job_data_reconcile(db: Session) -> dict:
     """业务需求 19 + 功能 1: 全自动核对.
 
-    1) 跑全部 6 条对账规则 (货款/安装/推广/补单/库存/物流), 超阈值自动写异常池 + 报警;
+    1) 跑全部 9 条对账规则, 超阈值自动写异常池;
     2) 算财务公式 A vs B, 差额 > 100 生成 Alert。
+    不单独推送 — 汇总结果由 daily_10_comprehensive_report 统一推送。
     """
-    from app.services import asset_service, notify_service, reconciliation_service
+    from app.services import asset_service, reconciliation_service
     results = reconciliation_service.run_all(db, record_exceptions=True)
     db.flush()
     by_rule = {
@@ -190,25 +191,7 @@ def _job_data_reconcile(db: Session) -> dict:
         for name, r in results.items()
     }
     formula = asset_service.check_formula_and_alert(db)
-
-    # 对账差异即时推送: 有 error 的规则汇总成一条通知 (飞书/钉钉/企微/Slack)
-    pushed = False
-    rule_labels = {
-        "factory_payment": "货款对账", "install_fee": "安装费", "promotion": "推广支出",
-        "refill_compensation": "补单赔付", "inventory_value": "库存资产", "logistics_fee": "物流费",
-        "revenue_alipay": "收入对账", "operating_expense": "经营支出", "purchase_payment": "采购付款",
-    }
-    bad = [(n, v) for n, v in by_rule.items() if v["error"] > 0]
-    if bad:
-        lines = ["🚨 畔色 ERP | 对账差异提醒", ""]
-        for n, v in bad:
-            lines.append(f"• {rule_labels.get(n, n)}: 严重差异 {v['error']} 条" +
-                         (f", 提示 {v['warning']} 条" if v["warning"] else ""))
-        lines.append("")
-        lines.append("请到「财务对账」面板查看明细并处理。")
-        ok, _ = notify_service.notify(db, "\n".join(lines), level="error", title="对账差异提醒")
-        pushed = ok
-    return {"reconciliation": by_rule, "formula": formula, "pushed": pushed}
+    return {"reconciliation": by_rule, "formula": formula}
 
 
 def _job_tracking_check(db: Session) -> dict:
@@ -234,9 +217,9 @@ def _job_sales_rollup(db: Session) -> dict:
 
 
 def _job_daily_briefing(db: Session) -> dict:
-    """Phase 8 Tier 1 #1: AI 每日经营简报 (昨日数据合成)."""
+    """Phase 8 Tier 1 #1: AI 每日经营简报 (昨日数据合成, 不单独推送 — 并入 10:00 综合报告)."""
     from app.services import briefing_service
-    b = briefing_service.generate(db, push=True)
+    b = briefing_service.generate(db, push=False)
     return {"for_date": b.for_date.isoformat(),
             "content_len": len(b.content or ""), "model": b.model}
 
@@ -279,9 +262,9 @@ def _job_post_import_logic_check(db: Session) -> dict:
 
 
 def _job_data_freshness_remind(db: Session) -> dict:
-    """每日 09:00: 检查各数据源新鲜度, 过期则推送通知 + 写 Alert。"""
+    """每日 09:00: 检查各数据源新鲜度, 过期则写 Alert (不单独推送 — 并入 10:00 综合报告)。"""
     from app.services import data_freshness_service
-    return data_freshness_service.check_and_remind(db)
+    return data_freshness_service.check_and_alert_only(db)
 
 
 def _job_monthly_data_remind(db: Session) -> dict:
@@ -396,6 +379,127 @@ def _job_weekly_purchase_remind(db: Session) -> dict:
     return {"items_count": len(top), "pushed": True}
 
 
+def _job_daily_10_comprehensive_report(db: Session) -> dict:
+    """每天 10:00: 综合日报 — 把所有常规检查结果合并成一条推送.
+
+    包含: AI 简报摘要 / 对账状态 / 数据新鲜度 / 库存预警 / 未解决异常数。
+    仅此一条推送, 不再单独推对账差异、数据新鲜度等子报告。
+    """
+    from datetime import date as _date
+    from sqlalchemy import func as _func
+    from app.models.exception import DataException as _DE
+    from app.models.inventory import PartInventory, ProductInventory
+    from app.models.daily_briefing import DailyBriefing
+    from app.services import data_freshness_service, notify_service, reconciliation_service
+
+    today = _date.today()
+
+    # ── 1. 对账状态 ──────────────────────────────────────────────
+    recon_results = reconciliation_service.run_all(db, record_exceptions=True)
+    db.flush()
+    rule_labels = {
+        "factory_payment": "货款对账", "install_fee": "安装费", "promotion": "推广支出",
+        "refill_compensation": "补单赔付", "inventory_value": "库存资产", "logistics_fee": "物流费",
+        "revenue_alipay": "收入对账", "operating_expense": "经营支出", "purchase_payment": "采购付款",
+    }
+    recon_errors = [(rule_labels.get(n, n), r.error_count, r.warning_count)
+                    for n, r in recon_results.items() if r.error_count > 0]
+    recon_warnings = [(rule_labels.get(n, n), r.warning_count)
+                      for n, r in recon_results.items()
+                      if r.error_count == 0 and r.warning_count > 0]
+
+    # ── 2. 未解决异常总数 ────────────────────────────────────────
+    open_exc = db.query(_func.count(_DE.id)).filter(_DE.status == "open").scalar() or 0
+
+    # ── 3. 库存预警 ──────────────────────────────────────────────
+    prod_low = (db.query(_func.count(ProductInventory.id))
+                .filter(ProductInventory.physical_qty <= 5).scalar() or 0)
+    part_neg = (db.query(_func.count(PartInventory.id))
+                .filter(PartInventory.physical_qty < 0).scalar() or 0)
+
+    # ── 4. 数据新鲜度 ────────────────────────────────────────────
+    stale_items = data_freshness_service.overdue_only(db)
+
+    # ── 5. AI 简报摘要 (今日已生成则取摘要; 未生成则留空) ────────
+    briefing_summary = ""
+    try:
+        b = db.query(DailyBriefing).filter(DailyBriefing.for_date == today).first()
+        if b and b.content:
+            # 截取前 200 字作为摘要
+            briefing_summary = b.content[:200].strip()
+            if len(b.content) > 200:
+                briefing_summary += "…"
+    except Exception:
+        pass
+
+    # ── 组装消息 ─────────────────────────────────────────────────
+    lines = [f"📊 畔色 ERP | {today.month}月{today.day}日 经营日报", ""]
+
+    # AI 简报摘要
+    if briefing_summary:
+        lines.append("🤖 今日简报")
+        lines.append(briefing_summary)
+        lines.append("")
+
+    # 对账状态
+    if recon_errors:
+        lines.append("🚨 对账差异 (需处理)")
+        for label, err, warn in recon_errors:
+            w = f", 提示 {warn} 条" if warn else ""
+            lines.append(f"  • {label}: 严重 {err} 条{w}")
+        lines.append("")
+    elif recon_warnings:
+        lines.append("⚠️ 对账提示")
+        for label, warn in recon_warnings:
+            lines.append(f"  • {label}: 提示 {warn} 条")
+        lines.append("")
+    else:
+        lines.append("✅ 对账: 全部规则正常")
+        lines.append("")
+
+    # 库存
+    inv_parts = []
+    if prod_low:
+        inv_parts.append(f"成品低库存 {prod_low} 项")
+    if part_neg:
+        inv_parts.append(f"配件负库存 {part_neg} 项")
+    if inv_parts:
+        lines.append(f"📦 库存预警: {', '.join(inv_parts)}")
+    else:
+        lines.append("📦 库存: 正常")
+
+    # 数据新鲜度
+    if stale_items:
+        stale_names = ", ".join(i.source for i in stale_items[:4])
+        if len(stale_items) > 4:
+            stale_names += f" 等 {len(stale_items)} 项"
+        lines.append(f"⏰ 数据待更新: {stale_names}")
+
+    # 未解决异常
+    lines.append(f"📋 未解决异常: {open_exc} 条")
+    lines.append("")
+    lines.append("详情请登录系统查看 → 首页大盘")
+
+    level = "error" if recon_errors else ("warn" if (recon_warnings or stale_items or inv_parts) else "info")
+    notify_service.notify(db, "\n".join(lines), level=level, title=f"畔色 ERP | {today.month}月{today.day}日 日报")
+
+    return {
+        "recon_errors": len(recon_errors),
+        "recon_warnings": len(recon_warnings),
+        "open_exceptions": open_exc,
+        "product_low_stock": prod_low,
+        "part_negative": part_neg,
+        "stale_sources": len(stale_items),
+        "briefing_included": bool(briefing_summary),
+    }
+
+
+def _job_data_backup(db: Session) -> dict:
+    """每 6 天 02:00: 全量数据导出 Excel + 保留最新 60 份 + 可选 S3 上传。"""
+    from app.services import backup_service
+    return backup_service.run(db)
+
+
 def _job_monthly_reconcile_diagnose(db: Session) -> dict:
     """每月最后一天 20:00: 跑对账差异 AI 诊断并推送摘要。"""
     from app.services import ai_assistant, notify_service
@@ -420,8 +524,10 @@ def _register_default_jobs() -> None:
                  _job_lowstock_scan, cron={"hour": 7, "minute": 0})
     register_job("daily_09_tracking_check", "快递追踪 (Phase 3 启用)",
                  _job_tracking_check, cron={"hour": 9, "minute": 0})
-    register_job("daily_10_data_reconcile", "数据自动核对",
-                 _job_data_reconcile, cron={"hour": 10, "minute": 0})
+    register_job("daily_10_data_reconcile", "数据自动核对 (写异常池)",
+                 _job_data_reconcile, cron={"hour": 9, "minute": 50})
+    register_job("daily_10_comprehensive_report", "每日综合日报推送",
+                 _job_daily_10_comprehensive_report, cron={"hour": 10, "minute": 0})
     register_job("daily_06_forecast_refresh", "销售预测重算",
                  _job_forecast_refresh, cron={"hour": 6, "minute": 0})
     # Phase 8 Tier 1
@@ -453,6 +559,8 @@ def _register_default_jobs() -> None:
                  _job_weekly_purchase_remind, cron={"day_of_week": "mon", "hour": 9, "minute": 0})
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
+    register_job("every6d_data_backup", "全量数据备份 (每6天)",
+                 _job_data_backup, cron={"day": "*/6", "hour": 2, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #
