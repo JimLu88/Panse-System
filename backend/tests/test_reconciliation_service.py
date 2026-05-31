@@ -140,6 +140,7 @@ def test_run_all_executes_all_six(db_session):
     assert set(results.keys()) == {
         "factory_payment", "install_fee", "promotion",
         "refill_compensation", "inventory_value", "logistics_fee",
+        "revenue_alipay", "operating_expense", "purchase_payment",
     }
 
 

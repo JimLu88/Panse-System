@@ -11,7 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.finance import AccountBalance, AlipayFlow
+from app.models.finance import AccountBalance, AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
 from app.services import (
     alipay_backfill_service,
     alipay_import,
@@ -362,6 +362,91 @@ def _csv_template(headers: list[str], filename: str) -> StreamingResponse:
         media_type="text/csv",
         headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
+
+
+# -------- 万师傅 / 物流账单 / 补单记录 列表 --------
+
+class WanshifuBillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bill_date: Optional[date]
+    order_no: Optional[str]
+    service_type: Optional[str]
+    amount: Decimal
+    status: Optional[str]
+    remark: Optional[str]
+
+
+class LogisticsBillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bill_date: Optional[date]
+    carrier: Optional[str]
+    tracking_no: Optional[str]
+    order_no: Optional[str]
+    weight_kg: Optional[Decimal]
+    freight_amount: Decimal
+    remark: Optional[str]
+
+
+class RefillRecordOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    order_no: str
+    buyer_nick: Optional[str]
+    refill_date: Optional[date]
+    product_code: Optional[str]
+    product_name: Optional[str]
+    sku: Optional[str]
+    qty: int
+    order_amount: Optional[Decimal]
+    refill_cost: Optional[Decimal]
+    total_cost: Optional[Decimal]
+
+
+@router.get("/wanshifu-bills", response_model=list[WanshifuBillOut])
+def list_wanshifu_bills(
+    year: Optional[int] = None,
+    limit: int = Query(500, le=2000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(WanshifuBill)
+    if year:
+        from sqlalchemy import extract
+        stmt = stmt.where(extract("year", WanshifuBill.bill_date) == year)
+    stmt = stmt.order_by(WanshifuBill.bill_date.desc().nulls_last()).limit(limit)
+    return db.execute(stmt).scalars().all()
+
+
+@router.get("/logistics-bills", response_model=list[LogisticsBillOut])
+def list_logistics_bills(
+    carrier: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = Query(500, le=2000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(LogisticsBill)
+    if carrier:
+        stmt = stmt.where(LogisticsBill.carrier == carrier)
+    if year:
+        from sqlalchemy import extract
+        stmt = stmt.where(extract("year", LogisticsBill.bill_date) == year)
+    stmt = stmt.order_by(LogisticsBill.bill_date.desc().nulls_last()).limit(limit)
+    return db.execute(stmt).scalars().all()
+
+
+@router.get("/refill-records", response_model=list[RefillRecordOut])
+def list_refill_records(
+    year: Optional[int] = None,
+    limit: int = Query(500, le=2000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(RefillRecord)
+    if year:
+        from sqlalchemy import extract
+        stmt = stmt.where(extract("year", RefillRecord.refill_date) == year)
+    stmt = stmt.order_by(RefillRecord.refill_date.desc().nulls_last()).limit(limit)
+    return db.execute(stmt).scalars().all()
 
 
 @router.get("/alipay-flows/template.csv")

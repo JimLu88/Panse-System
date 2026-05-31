@@ -1,9 +1,9 @@
 """尺寸微定制 API (业务需求 §2)."""
 import asyncio
 from decimal import Decimal
-from typing import Optional
+from typing import List, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -390,3 +390,148 @@ def competitors_worklist(
         }
         for r in rows
     ]}
+
+
+# -------- 定制报价 AI 对话 (统一入口: 全定制 + 微定制 + 截图识别) -------- #
+
+_CHAT_SONNET = "claude-sonnet-4-6"
+_CHAT_OPUS = "claude-opus-4-8"
+
+_CHAT_SYSTEM = """\
+你是「畔色孚格 ERP」的定制报价顾问。用户会用文字或图片描述他们想要的产品/改造需求。
+
+你的任务（按序）：
+1. 理解需求：识别产品类型、尺寸、材质、数量、特殊要求
+2. 判断类型：
+   - 【全定制】：完全全新的产品规格，在现有 SKU 中找不到匹配
+   - 【微定制】：已有产品的尺寸/颜色/材质微调，能找到一个「基础 SKU」作为起点
+3. 给出报价方向：
+   - 微定制：找出最接近的 SKU 及其日常价，说明需要调整的部分（尺寸变化/加减料）
+   - 全定制：基于同品类产品价格区间，给出大致价格范围和计价逻辑
+4. 列出下一步操作建议
+
+回答格式（严格遵守）：
+【需求理解】<2-3句话描述识别到的需求>
+【定制类型】全定制 / 微定制
+【参考价格】<价格区间或具体 SKU 日常价>
+【推荐操作】<1-3个具体步骤，每步以动词开头>
+【参考 SKU】<SKU编码（如果是微定制）或「暂无匹配」>
+
+现有产品定价数据（供参考）：
+{pricing_context}
+"""
+
+
+def _build_pricing_context(db: Session) -> str:
+    from sqlalchemy import select
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    rows = db.execute(
+        select(PricingSku.sku_code, PricingSku.sku, PricingSku.product_code,
+               PricingSku.size_category, PricingSku.daily_price, PricingSku.list_price)
+        .order_by(PricingSku.product_code, PricingSku.sku_code)
+        .limit(200)
+    ).all()
+
+    if not rows:
+        return "（暂无导入定价数据）"
+
+    product_codes = list({r.product_code for r in rows})[:30]
+    products = db.execute(
+        select(Product.code, Product.name)
+        .where(Product.code.in_(product_codes))
+    ).all()
+    name_map = {p.code: p.name for p in products}
+
+    lines = []
+    cur_prod = None
+    for r in rows:
+        if r.product_code != cur_prod:
+            cur_prod = r.product_code
+            pname = name_map.get(r.product_code, "")
+            lines.append(f"\n产品 {r.product_code} {pname}:")
+        price = f"¥{r.daily_price:.0f}" if r.daily_price else (f"¥{r.list_price:.0f}" if r.list_price else "—")
+        lines.append(f"  {r.sku_code} [{r.sku or ''}] {r.size_category or ''} 日常价{price}")
+    return "\n".join(lines)
+
+
+class AiChatOut(BaseModel):
+    text: str
+    route_type: str  # "full_custom" | "micro_custom" | "unknown"
+    suggested_sku: Optional[str] = None
+    model: str
+    ai_used: bool
+    error: Optional[str] = None
+
+
+@router.post("/ai-chat", response_model=AiChatOut)
+async def ai_chat(
+    message: str = Form(""),
+    model_pref: str = Form("sonnet"),
+    images: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+):
+    """定制报价 AI 对话：文字 + 最多5张图 → AI 分析并给出定制类型和报价方向。"""
+    from app.services import settings_service
+    from app.services import ai_provider as ai_mod
+    from app.services.ai_provider import AiUnavailable
+
+    if len(images) > 5:
+        raise HTTPException(400, "最多上传5张图片")
+
+    target_model = _CHAT_OPUS if model_pref == "opus" else _CHAT_SONNET
+    pricing_ctx = await asyncio.to_thread(_build_pricing_context, db)
+    system = _CHAT_SYSTEM.format(pricing_context=pricing_ctx)
+
+    cfg = settings_service.get_ai_config(db, "ocr")
+    if not cfg.get("api_key"):
+        return AiChatOut(
+            text="AI 未配置，请在后台管理 → AI 设置 中填写 API Key。",
+            route_type="unknown", model="none", ai_used=False,
+            error="AI 未配置",
+        )
+
+    cfg = {**cfg, "model": target_model}
+    provider = ai_mod.build_provider(cfg)
+
+    image_data: list[tuple[bytes, str]] = []
+    for img in images:
+        raw = await img.read()
+        image_data.append((raw, img.content_type or "image/jpeg"))
+
+    user_msg = message.strip() or "（用户上传了图片，请分析定制需求）"
+
+    try:
+        if image_data:
+            resp = await asyncio.to_thread(
+                provider.chat_with_images,
+                system=system, user=user_msg, images=image_data, max_tokens=1500,
+            )
+        else:
+            resp = await asyncio.to_thread(
+                provider.chat, system=system, user=user_msg, max_tokens=1500,
+            )
+    except AiUnavailable as e:
+        return AiChatOut(
+            text=str(e), route_type="unknown", model=target_model,
+            ai_used=False, error=str(e),
+        )
+
+    text = resp.text
+    route_type = "unknown"
+    suggested_sku = None
+    if "微定制" in text:
+        route_type = "micro_custom"
+    elif "全定制" in text:
+        route_type = "full_custom"
+
+    import re as _re
+    m = _re.search(r"【参考 SKU】\s*([A-Z0-9\-]+)", text)
+    if m and m.group(1) != "暂无匹配":
+        suggested_sku = m.group(1)
+
+    return AiChatOut(
+        text=text, route_type=route_type, suggested_sku=suggested_sku,
+        model=resp.model, ai_used=True,
+    )

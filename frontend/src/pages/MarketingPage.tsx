@@ -1,5 +1,6 @@
 import { Card, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import {
   AfterSalesRow,
   BrandMarketing,
@@ -16,26 +17,67 @@ import {
   listSamples,
   listWoodLoss,
 } from '../api/client';
+import { api } from '../api/client';
+
+interface DailyOperation {
+  id: number;
+  record_date: string | null;
+  category: string | null;
+  item: string | null;
+  amount: number | null;
+  expense_type: string | null;
+  recipient: string | null;
+  payment_account: string | null;
+  remark: string | null;
+}
+
+function DailyTab() {
+  const { data = [], isLoading } = useQuery<DailyOperation[]>({
+    queryKey: ['daily-operations'],
+    queryFn: () => api.get('/api/marketing/daily').then(r => r.data),
+  });
+  return (
+    <Table size="small" loading={isLoading} rowKey="id" dataSource={data}
+      pagination={{ pageSize: 50, showSizeChanger: true }}
+      columns={[
+        { title: '日期', dataIndex: 'record_date', width: 110 },
+        { title: '分类', dataIndex: 'category', width: 90, render: (v: string | null) => v ? <Tag>{v}</Tag> : '-' },
+        { title: '项目', dataIndex: 'item', width: 180, ellipsis: true },
+        { title: '金额', dataIndex: 'amount', width: 100, align: 'right' as const,
+          render: (v: number | null) => v != null ? `¥${Number(v).toFixed(2)}` : '-' },
+        { title: '支出类型', dataIndex: 'expense_type', width: 100 },
+        { title: '支付对象', dataIndex: 'recipient', width: 120, ellipsis: true },
+        { title: '支付账户', dataIndex: 'payment_account', width: 110 },
+        { title: '备注', dataIndex: 'remark', ellipsis: true },
+      ]}
+    />
+  );
+}
 
 export default function MarketingPage() {
   const { data: roi } = useQuery({ queryKey: ['roi'], queryFn: () => getRoi() });
+  const [params, setParams] = useSearchParams();
+  const activeKey = params.get('tab') || 'promotion';
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Typography.Title level={4} style={{ margin: 0 }}>
-        营销与售后 (Phase 5)
+        营销与经营
       </Typography.Title>
 
       {roi && <RoiCard roi={roi} />}
 
       <Tabs
+        activeKey={activeKey}
+        onChange={(k) => setParams(k === 'promotion' ? {} : { tab: k }, { replace: true })}
         items={[
-          { key: 'promotion', label: '推广记录 (15)', children: <PromotionTab /> },
-          { key: 'brand', label: '品牌营销 (14)', children: <BrandTab /> },
-          { key: 'samples', label: '样品 (13)', children: <SamplesTab /> },
-          { key: 'wood_loss', label: '木材损耗 (12)', children: <WoodLossTab /> },
-          { key: 'aftersales', label: '售后 (18)', children: <AfterSalesTab /> },
-          { key: 'outsourcing', label: '人员外包 (17)', children: <OutsourcingTab /> },
+          { key: 'promotion', label: '推广记录', children: <PromotionTab /> },
+          { key: 'brand', label: '品牌营销', children: <BrandTab /> },
+          { key: 'samples', label: '样品', children: <SamplesTab /> },
+          { key: 'daily', label: '日常经营', children: <DailyTab /> },
+          { key: 'outsourcing', label: '人员外包', children: <OutsourcingTab /> },
+          { key: 'wood_loss', label: '木材损耗', children: <WoodLossTab /> },
+          { key: 'aftersales', label: '售后', children: <AfterSalesTab /> },
         ]}
       />
     </Space>
