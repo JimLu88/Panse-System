@@ -83,6 +83,24 @@ export const fetchHealthLogs = (limit = 100, check_name?: string) =>
     })
     .then((r) => r.data);
 
+// ----- 运行日志 (内存环形缓冲, 排查同步/导入等错误) -----
+export interface RuntimeLog {
+  ts: string;
+  level: string;
+  logger: string;
+  msg: string;
+}
+
+export const fetchRecentLogs = (params?: {
+  limit?: number;
+  level?: string;
+  contains?: string;
+  logger_prefix?: string;
+}) =>
+  api
+    .get<{ logs: RuntimeLog[] }>('/api/logs/recent', { params })
+    .then((r) => r.data.logs);
+
 export const restartApi = () =>
   api.post('/api/admin/restart-api', { confirm: 'RESTART' }).then((r) => r.data);
 

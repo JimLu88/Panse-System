@@ -210,14 +210,17 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
     ent = ents.get(binding.system_table)
     if ent is None:
         res.errors.append(f"不支持同步的表: {binding.system_table}")
+        _logger.error("飞书同步[%s] 配置错误: %s", binding.system_table, res.errors[-1])
         return res
     try:
         fm = json.loads(binding.field_mapping) if binding.field_mapping else {}
     except json.JSONDecodeError:
         res.errors.append("field_mapping 不是合法 JSON")
+        _logger.error("飞书同步[%s] 配置错误: %s", binding.system_table, res.errors[-1])
         return res
     if ent.pk_attr not in fm:
         res.errors.append(f"field_mapping 必须包含主键字段 {ent.pk_attr}")
+        _logger.error("飞书同步[%s] 配置错误: %s", binding.system_table, res.errors[-1])
         return res
 
     direction = binding.direction or "bidirectional"
@@ -238,6 +241,7 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
         fe_list = feishu_client.list_records(db, binding.feishu_app_token, binding.feishu_table_id)
     except feishu_client.FeishuError as e:
         res.errors.append(str(e))
+        _logger.error("飞书同步[%s] 拉取飞书记录失败: %s", binding.system_table, e)
         return res
     fe_by_pk = {}
     for rec in fe_list:
@@ -260,9 +264,18 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
                       fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, res)
         except feishu_client.FeishuError as e:
             res.errors.append(f"{pk}: {e}")
+            _logger.error("飞书同步[%s] 记录 %s 失败: %s", binding.system_table, pk, e)
         except Exception as e:  # pragma: no cover
             res.errors.append(f"{pk}: {type(e).__name__}: {e}")
+            _logger.exception("飞书同步[%s] 记录 %s 异常", binding.system_table, pk)
     db.flush()
+    if res.errors:
+        _logger.warning("飞书同步[%s] 完成但有 %d 个错误: %s",
+                        binding.system_table, len(res.errors), "; ".join(res.errors[:10]))
+    else:
+        _logger.info("飞书同步[%s] 完成: 推%d 拉%d 新建飞书%d 新建系统%d 冲突%d",
+                     binding.system_table, res.pushed, res.pulled,
+                     res.created_feishu, res.created_system, res.conflicts)
     return res
 
 
