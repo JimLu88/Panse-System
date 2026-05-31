@@ -347,6 +347,50 @@ def _job_monthly_report_push(db: Session) -> dict:
     }
 
 
+def _job_factory_daily_summary(db: Session) -> dict:
+    """每天 18:00: 汇总已付款但无工厂单的订单, 推送生产通知。"""
+    from app.services import factory_summary_service
+    return factory_summary_service.daily_summary(db)
+
+
+def _job_aftersales_followup(db: Session) -> dict:
+    """每天 14:00: 检查售后超时未处理记录, 按原因推送智能建议。"""
+    from app.services import aftersales_followup_service
+    return aftersales_followup_service.check_and_push(db)
+
+
+def _job_weekly_purchase_remind(db: Session) -> dict:
+    """每周一 09:00: 生成本周备货清单并推送。"""
+    from app.services import notify_service, sales_analytics
+    advice = sales_analytics.stock_advice(db)
+    materials = [m for m in advice.get("materials", []) if (m.get("missing") or 0) > 0]
+    materials.sort(key=lambda m: -(m.get("missing") or 0))
+    top = materials[:15]
+    if not top:
+        return {"items_count": 0, "pushed": False}
+    lines = ["📦 本周备货清单", f"共 {len(materials)} 项需要补货，以下为 Top {len(top)}：", ""]
+    for m in top:
+        name = m.get("material_name") or m.get("material_code") or "?"
+        missing = m.get("missing") or 0
+        alert_at = m.get("alert_at") or "尽快"
+        lines.append(f"• {m.get('material_code', '')} {name}  缺 {missing:.0f}  建议 {alert_at} 前下单")
+    notify_service.notify(db, "\n".join(lines), level="warn", title="畔色ERP | 本周备货清单")
+    return {"items_count": len(top), "pushed": True}
+
+
+def _job_monthly_reconcile_diagnose(db: Session) -> dict:
+    """每月最后一天 20:00: 跑对账差异 AI 诊断并推送摘要。"""
+    from app.services import ai_assistant, notify_service
+    _log, ai_resp = ai_assistant.diagnose_reconciliation(db)
+    if ai_resp and ai_resp.text:
+        notify_service.notify(
+            db, ai_resp.text[:1200],
+            level="warn", title="畔色ERP | 月底对账差异诊断",
+        )
+        return {"diagnosis_len": len(ai_resp.text), "pushed": True}
+    return {"diagnosis_len": 0, "pushed": False}
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -383,6 +427,14 @@ def _register_default_jobs() -> None:
                  _job_email_poll_alipay, interval_minutes=360)
     register_job("monthly_01_report_push", "月度经营简报推送",
                  _job_monthly_report_push, cron={"day": 1, "hour": 9, "minute": 0})
+    register_job("daily_18_factory_summary", "每日待生产工厂单汇总",
+                 _job_factory_daily_summary, cron={"hour": 18, "minute": 0})
+    register_job("daily_14_aftersales_followup", "售后超时智能追踪",
+                 _job_aftersales_followup, cron={"hour": 14, "minute": 0})
+    register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
+                 _job_weekly_purchase_remind, cron={"day_of_week": "mon", "hour": 9, "minute": 0})
+    register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
+                 _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #

@@ -30,6 +30,27 @@ def list_export_types(_: User = Depends(get_current_user)):
     return [{"key": k, "label": label} for k, (_fn, label) in _EXPORTERS.items()]
 
 
+@router.get("/price-table")
+def download_price_table(
+    category: Optional[str] = Query(None, description="品类过滤 (可选)"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """一键下载淘宝批量改价表 (price_publish 格式, 上传到淘宝后台即可批量改价)。
+
+    文件名含当日日期, 下载后直接上传到 千牛 → 商品 → 批量工具 → 价格批量发布。
+    """
+    from datetime import date as _date
+    data = taobao_export_service.export_price_publish(db, category=category)
+    today = _date.today().strftime("%Y%m%d")
+    filename = f"taobao_price_table_{today}.xlsx"
+    return StreamingResponse(
+        BytesIO(data),
+        media_type=_XLSX_MEDIA,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @router.get("/{export_type}/download")
 def download_export(
     export_type: str,
