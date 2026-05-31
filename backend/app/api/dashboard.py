@@ -144,6 +144,43 @@ def get_dashboard(
     # 健康度评分: 100 - open_exceptions * 2 (floor 0)
     health_score = max(0, min(100, 100 - open_exceptions * 2))
 
+    # 对账规则逐条状态 (从 DataException 取 reconciliation_diff 的 error/warning 数)
+    RECON_RULES = [
+        ("factory_payment", "货款对账"),
+        ("install_fee", "安装费"),
+        ("promotion", "推广支出"),
+        ("refill_compensation", "补单赔付"),
+        ("inventory_value", "库存资产"),
+        ("logistics_fee", "物流费"),
+    ]
+    recon_rules = []
+    for rule_key, rule_label in RECON_RULES:
+        rows = (
+            db.query(DataException.severity, func.count(DataException.id))
+            .filter(
+                DataException.status == "open",
+                DataException.exception_type == "reconciliation_diff",
+                DataException.source_pk.like(f"{rule_key}:%"),
+            )
+            .group_by(DataException.severity)
+            .all()
+        )
+        error_cnt = sum(cnt for sev, cnt in rows if sev == "error")
+        warning_cnt = sum(cnt for sev, cnt in rows if sev == "warning")
+        if error_cnt > 0:
+            status = "error"
+        elif warning_cnt > 0:
+            status = "warning"
+        else:
+            status = "ok"
+        recon_rules.append({
+            "key": rule_key,
+            "label": rule_label,
+            "status": status,
+            "error": error_cnt,
+            "warning": warning_cnt,
+        })
+
     return {
         "orders": {
             "status_counts": status_counts,
@@ -175,4 +212,5 @@ def get_dashboard(
             "open_exceptions": open_exceptions,
             "health_score": health_score,
         },
+        "recon_rules": recon_rules,
     }
