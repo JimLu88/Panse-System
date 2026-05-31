@@ -4,6 +4,7 @@ import {
   AutoComplete,
   Button,
   Card,
+  Checkbox,
   Col,
   Divider,
   Form,
@@ -16,6 +17,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -43,11 +45,38 @@ import {
 
 let _rowSeq = 1;
 const nextKey = () => `r${_rowSeq++}`;
+
+// 类目码 → 类目名 (空间 + 类型)，供选择类目后自动回填类目名
+const CATEGORY_OPTIONS: { value: string; label: string }[] = [
+  { value: '11', label: '11 客厅-桌' }, { value: '12', label: '12 客厅-椅/凳' },
+  { value: '14', label: '14 客厅-茶几' }, { value: '15', label: '15 客厅-柜子' },
+  { value: '16', label: '16 客厅-沙发' }, { value: '18', label: '18 客厅-其它' },
+  { value: '21', label: '21 餐厅-桌' }, { value: '22', label: '22 餐厅-椅/凳' },
+  { value: '25', label: '25 餐厅-柜子' }, { value: '28', label: '28 餐厅-其它' },
+  { value: '31', label: '31 卧室-桌' }, { value: '32', label: '32 卧室-椅/凳' },
+  { value: '33', label: '33 卧室-床' }, { value: '35', label: '35 卧室-柜子' },
+  { value: '37', label: '37 卧室-梳妆台' }, { value: '38', label: '38 卧室-其它' },
+  { value: '41', label: '41 书房-桌' }, { value: '42', label: '42 书房-椅/凳' },
+  { value: '45', label: '45 书房-柜子' }, { value: '48', label: '48 书房-其它' },
+  { value: '52', label: '52 玄关-椅/凳' }, { value: '55', label: '55 玄关-柜子' },
+  { value: '58', label: '58 玄关-其它' },
+  { value: '61', label: '61 阳台-桌' }, { value: '62', label: '62 阳台-椅/凳' },
+  { value: '65', label: '65 阳台-柜子' },
+  { value: '71', label: '71 厨房-桌' }, { value: '72', label: '72 厨房-椅/凳' },
+  { value: '75', label: '75 厨房-柜子' },
+  { value: '81', label: '81 儿童-桌' }, { value: '82', label: '82 儿童-椅/凳' },
+  { value: '83', label: '83 儿童-床' }, { value: '97', label: '97 其它-梳妆台' },
+  { value: '99', label: '99 其它' },
+];
+const CATEGORY_LABEL_MAP: Record<string, string> = Object.fromEntries(
+  CATEGORY_OPTIONS.map((o) => [o.value, o.label.slice(3)]),
+);
+
 type BomRow = ComposeBomLine & { _key: string };
-type SkuRow = ComposePricingSku & { _key: string };
+type SkuRow = ComposePricingSku & { _key: string; is_custom: boolean };
 
 const emptyBom = (): BomRow => ({ _key: nextKey(), material_code: '', qty_per_product: 1 });
-const emptySku = (): SkuRow => ({ _key: nextKey(), sku_code: '' });
+const emptySku = (): SkuRow => ({ _key: nextKey(), sku_code: '', is_custom: false });
 
 // 大促到手价单元格: 输入框 + 聚焦时浮出「历史比例参考」, 点某条按 成本/比例 回填
 function BigPromoCell({
@@ -836,8 +865,9 @@ export default function NewProductComposerPage() {
 
   const saveMut = useMutation({
     mutationFn: composeProduct,
-    onSuccess: (r) => {
-      message.success(`已创建产品 ${r.product_code}（BOM ${r.bom_lines} 行，定价 ${r.pricing_skus} 个 SKU）`);
+    onSuccess: (r: any) => {
+      const codes = r.sku_codes?.length ? `，SKU: ${r.sku_codes.join(' / ')}` : '';
+      message.success(`已创建产品 ${r.product_code}（BOM ${r.bom_lines} 行，定价 ${r.pricing_skus} 个 SKU${codes}）`);
       setSavedProductCode(r.product_code);
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
@@ -851,9 +881,10 @@ export default function NewProductComposerPage() {
   const onSave = async () => {
     const vals = await form.validateFields();
     const cleanBom = bom.filter((b) => b.material_code?.trim());
-    const cleanSku = skus.filter((s) => s.sku_code?.trim());
+    // SKU行: SKU描述有内容 或 sku_code有内容 均算有效行
+    const cleanSku = skus.filter((s) => s.sku_code?.trim() || s.sku?.trim());
     if (cleanSku.length === 0) {
-      message.warning('至少填写一个定价 SKU（含 SKU 编码）');
+      message.warning('至少填写一个定价 SKU（SKU编码或SKU描述任填一项即可）');
       return;
     }
     saveMut.mutate({
@@ -921,9 +952,25 @@ export default function NewProductComposerPage() {
   ];
 
   const skuColumns = [
-    { title: 'SKU编码*', dataIndex: 'sku_code', width: 140,
+    {
+      title: <Tooltip title="勾选后编码分配到 90/91…99 定制段，普通 SKU 分配 11/12…89">定制</Tooltip>,
+      dataIndex: 'is_custom', width: 52,
       render: (_: any, row: SkuRow) => (
-        <Input size="small" value={row.sku_code} onChange={(e) => setSkuRow(row._key, { sku_code: e.target.value })} placeholder="必填" />
+        <Checkbox
+          checked={row.is_custom}
+          onChange={(e) => setSkuRow(row._key, { is_custom: e.target.checked })}
+        />
+      ),
+    },
+    { title: 'SKU编码 (空=自动生成)', dataIndex: 'sku_code', width: 180,
+      render: (_: any, row: SkuRow) => (
+        <Input
+          size="small"
+          value={row.sku_code ?? ''}
+          onChange={(e) => setSkuRow(row._key, { sku_code: e.target.value })}
+          placeholder={row.is_custom ? '自动 → 产品码+90…' : '自动 → 产品码+11…'}
+          style={!row.sku_code ? { borderStyle: 'dashed' } : undefined}
+        />
       ) },
     { title: 'SKU描述', dataIndex: 'sku', width: 150,
       render: (_: any, row: SkuRow) => (
@@ -1013,14 +1060,25 @@ export default function NewProductComposerPage() {
           <Form.Item name="name" label="产品名称" rules={[{ required: true, message: '必填' }]}>
             <Input style={{ width: 240 }} />
           </Form.Item>
-          <Form.Item name="brand" label="品牌码" rules={[{ required: true, len: 2, message: '2 字母' }]}>
-            <Input style={{ width: 80 }} placeholder="PS" maxLength={2} />
+          <Form.Item name="brand" label="品牌" rules={[{ required: true, message: '必选' }]}>
+            <Select style={{ width: 120 }} placeholder="选品牌" options={[
+              { value: 'PS', label: 'PS — 畔色' },
+              { value: 'FG', label: 'FG — 孚格' },
+            ]} />
           </Form.Item>
-          <Form.Item name="category" label="类目码" rules={[{ required: true, len: 2, message: '2 位数字' }]}>
-            <Input style={{ width: 80 }} placeholder="33" maxLength={2} />
+          <Form.Item name="category" label="类目码" rules={[{ required: true, len: 2, message: '2 位数字' }]}
+            tooltip="空间码(1-8) + 类型码(1-8)，如卧室(3)+床(3)=33，餐厅(2)+桌(1)=21">
+            <Select
+              style={{ width: 160 }}
+              placeholder="选空间+类型"
+              options={CATEGORY_OPTIONS}
+              showSearch
+              optionFilterProp="label"
+              onChange={(v) => form.setFieldsValue({ category_label: CATEGORY_LABEL_MAP[v] })}
+            />
           </Form.Item>
           <Form.Item name="category_label" label="类目名">
-            <Input style={{ width: 140 }} placeholder="卧室-床" />
+            <Input style={{ width: 120 }} placeholder="自动填入可修改" />
           </Form.Item>
           <Form.Item name="taobao_id" label="淘宝商品ID">
             <Input style={{ width: 160 }} />

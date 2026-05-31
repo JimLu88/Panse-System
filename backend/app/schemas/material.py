@@ -17,6 +17,7 @@ class MaterialBase(BaseModel):
 class MaterialCreate(BaseModel):
     name: str = Field(..., max_length=255)
     code: Optional[str] = Field(None, max_length=32)
+    prefix: str = Field("AC", description="code prefix when code not provided: AC/MP/MW/SP")
     size_type: Optional[str] = None
     unit: Optional[str] = None
     price: Optional[Decimal] = None
