@@ -39,6 +39,31 @@ const severityColor: Record<string, string> = {
   error: 'red',
 };
 
+const severityLabel: Record<string, string> = {
+  info: '提示',
+  warning: '警告',
+  error: '严重',
+};
+
+const statusLabel: Record<string, string> = {
+  open: '待处理',
+  resolved: '已解决',
+  ignored: '已忽略',
+};
+
+// 来源表英文 → 中文 (与飞书绑定一致, 额外含对账等虚拟来源)
+const SOURCE_TABLE_LABELS: Record<string, string> = {
+  products: '产品表', pricing_sku: '定价表', bom_lines: 'BOM 表', materials: '物料价格',
+  product_inventory: '成品库存', part_inventory: '配件库存', orders: '销售订单',
+  factory_orders: '工厂下单', factory_reconciliations: '工厂对账', alipay_flows: '支付宝流水',
+  account_balances: '账户余额', wood_losses: '木材损耗', samples: '样品',
+  brand_marketing: '品牌营销', promotion_flows: '推广记录', daily_operations: '日常经营',
+  order_details: '订单细节', outsourcing_expenses: '人员外包', after_sales: '售后',
+  customers: '客户', wanshifu_bills: '万师傅安装账单', logistics_bills: '物流费账单',
+  refill_records: '补单对账', suppliers: '供应商', part_purchases: '配件采购',
+  reconciliation: '财务对账',
+};
+
 // ============ 异常分类体系 (产品经理视角, 让非技术同事看得懂) ============
 // 6 大类: 产品资料 / 订单 / 对账财务 / 库存 / 售后 / 系统导入
 type CategoryKey = 'product' | 'order' | 'finance' | 'inventory' | 'aftersales' | 'system';
@@ -330,9 +355,10 @@ export default function ExceptionsPage() {
       title: '严重度',
       dataIndex: 'severity',
       width: 80,
-      render: (v: string) => <Tag color={severityColor[v] ?? 'default'}>{v}</Tag>,
+      render: (v: string) => <Tag color={severityColor[v] ?? 'default'}>{severityLabel[v] ?? v}</Tag>,
     },
-    { title: '来源表', dataIndex: 'source_table', width: 120 },
+    { title: '来源表', dataIndex: 'source_table', width: 120,
+      render: (v: string) => SOURCE_TABLE_LABELS[v] ?? v },
     {
       title: '主键',
       dataIndex: 'source_pk',
@@ -354,7 +380,7 @@ export default function ExceptionsPage() {
       width: 230,
       render: (_: unknown, row: DataException) => {
         if (row.status !== 'open') {
-          return <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{row.status}</Tag>;
+          return <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{statusLabel[row.status] ?? row.status}</Tag>;
         }
         // 飞书冲突: 解除必须走飞书同步 (整条/逐字段), 不能内联补填, 否则两端不一致
         if (row.exception_type === 'feishu_conflict') {
