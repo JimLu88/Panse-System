@@ -147,6 +147,28 @@ def overdue_only(db: Session) -> list[FreshnessItem]:
     return [i for i in check_all(db) if i.overdue]
 
 
+def check_and_alert_only(db: Session) -> dict:
+    """调度器调用: 检查所有源, 对过期项生成 Alert (不推送通知 — 由综合日报统一推)。"""
+    from app.services import alert_service
+    items = overdue_only(db)
+    if not items:
+        return {"overdue": 0, "reminded": 0}
+    for item in items:
+        alert_service.upsert(
+            db,
+            kind="data_freshness",
+            severity="warn",
+            title=f"数据待更新: {item.source}",
+            body=item.message,
+            dedupe_key=f"data_freshness:{item.source}",
+            related_url="/finance",
+            context={"source": item.source, "days_stale": item.days_stale},
+            auto_resolve_after_minutes=60 * 24 * 2,
+        )
+    db.flush()
+    return {"overdue": len(items), "reminded": len(items)}
+
+
 def check_and_remind(db: Session) -> dict:
     """调度器调用: 检查所有源, 对过期项生成 Alert + 推送通知。"""
     from app.services import alert_service, notify_service
