@@ -34,6 +34,7 @@ function money(v: number) {
 }
 
 export default function DashboardPage() {
+  const nav = useNavigate();
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard'],
     queryFn: getDashboard,
@@ -49,7 +50,6 @@ export default function DashboardPage() {
   }
 
   const { orders, inventory, finance, health, recon_rules, health_dimensions, monthly_close } = data as any;
-  const nav = useNavigate();
 
   // 五维健康雷达
   const radarOption = {
