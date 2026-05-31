@@ -70,7 +70,7 @@ def scan_order_missing_alipay(db: Session) -> int:
     }
     count = 0
     for o in db.query(Order).filter(
-        Order.status.notin_(["cancelled", "pending_payment"]),
+        Order.status.notin_(["cancelled", "pending_payment", "closed"]),
         Order.is_historical == False,  # noqa: E712
     ).all():
         if o.order_no not in linked:

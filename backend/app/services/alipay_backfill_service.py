@@ -72,7 +72,10 @@ class _OrderIndex:
 def _build_order_index(db: Session) -> _OrderIndex:
     idx = _OrderIndex()
     for (ono,) in db.execute(
-        select(Order.order_no).where(Order.order_no.isnot(None))
+        select(Order.order_no).where(
+            Order.order_no.isnot(None),
+            Order.status.notin_(["cancelled", "pending_payment", "closed"]),
+        )
     ).all():
         s = str(ono).strip()
         if s:
