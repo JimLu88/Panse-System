@@ -103,6 +103,19 @@ export const listMaterials = (q?: string, isCustom?: boolean) =>
 export const updateMaterial = (id: number, patch: Partial<Material>) =>
   api.patch<Material>(`/api/materials/${id}`, patch).then((r) => r.data);
 
+export const createMaterial = (payload: {
+  name: string;
+  prefix?: string;
+  code?: string;
+  size_type?: string;
+  unit?: string;
+  price?: number;
+  remark?: string;
+}) => api.post<Material>('/api/materials', payload).then((r) => r.data);
+
+export const getNextMaterialCode = (prefix: string) =>
+  api.get<{ code: string }>('/api/materials/next-code', { params: { prefix } }).then((r) => r.data);
+
 export const listPartInventory = () =>
   api.get<PartInventory[]>('/api/inventory/parts').then((r) => r.data);
 
@@ -460,7 +473,8 @@ export interface ComposeBomLine {
   remark?: string | null;
 }
 export interface ComposePricingSku {
-  sku_code: string;
+  sku_code?: string;
+  is_custom?: boolean;
   sku?: string | null;
   size_category?: string | null;
   list_price?: string | number | null;
