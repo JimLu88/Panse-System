@@ -84,7 +84,7 @@ WEB_URL = "http://localhost:5173"
 # 所有改动合并进 main 后, 点一下"拉最新代码"就能拿到,
 # 不受当前本地 checkout 在哪个分支的影响.
 DEPLOY_BRANCH = os.environ.get("PANSE_BRANCH", "main")
-CHECK_INTERVAL = 30   # 秒
+CHECK_INTERVAL = 60   # 秒 (拉长间隔, 减少 docker 检查占用进程导致悬停转圈)
 AUTO_RECOVER = True    # 挂了自动 docker compose up -d
 FAIL_THRESHOLD = 3     # 连续 N 次 FAIL 才触发自动恢复 (防止 AI 请求期间误报)
 CONTAINERS = ["panse-system-db-1", "panse-system-api-1",
@@ -352,8 +352,13 @@ def assess() -> tuple[str, str]:
 # ----------------------------- 图标生成 ---------------------------- #
 
 
+_ICON_CACHE: dict[str, Image.Image] = {}
+
+
 def make_icon(color: str) -> Image.Image:
-    """生成一个 64x64 圆形托盘图标."""
+    """生成一个 64x64 圆形托盘图标 (按状态缓存, 避免每轮重画)."""
+    if color in _ICON_CACHE:
+        return _ICON_CACHE[color]
     img = Image.new("RGBA", (64, 64), (255, 255, 255, 0))
     draw = ImageDraw.Draw(img)
     colors = {
@@ -366,6 +371,7 @@ def make_icon(color: str) -> Image.Image:
     draw.ellipse((4, 4, 60, 60), fill=fill, outline="white", width=3)
     # 中央写 "P"
     draw.text((22, 16), "P", fill="white")
+    _ICON_CACHE[color] = img
     return img
 
 
@@ -545,12 +551,20 @@ def watchdog_loop(icon: Icon) -> None:
     """30s 一次的检查 + 图标更新 + 自动恢复."""
     global _fail_streak
     _write_log(f"看门狗启动 — 项目根: {PROJECT_ROOT} | 间隔: {CHECK_INTERVAL}s | 恢复阈值: 连续{FAIL_THRESHOLD}次")
+    last_status = None
+    last_title = None
     while True:
         try:
             status, msg = assess()
             _write_log(f"[{status.upper()}] {msg}")
-            icon.icon = make_icon(status)
-            icon.title = f"畔色 ERP - {msg}"
+            # 仅在状态/文案变化时才动托盘对象, 避免每轮无谓刷新 (悬停转圈的元凶之一)
+            if status != last_status:
+                icon.icon = make_icon(status)
+                last_status = status
+            title = f"畔色 ERP - {msg}"
+            if title != last_title:
+                icon.title = title
+                last_title = title
 
             if status == Status.FAIL:
                 _fail_streak += 1
