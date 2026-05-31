@@ -43,6 +43,46 @@ import {
   updateFeishuBinding,
 } from '../api/client';
 
+// 系统表名 → 中文显示名 (与后端 feishu_preset.py 的 label 一致)
+const TABLE_LABELS: Record<string, string> = {
+  products: '产品表',
+  pricing_sku: '定价表',
+  bom_lines: 'BOM 表',
+  materials: '物料价格',
+  product_inventory: '成品库存',
+  part_inventory: '配件库存',
+  orders: '销售订单',
+  factory_orders: '工厂下单',
+  factory_reconciliations: '工厂对账',
+  alipay_flows: '支付宝流水',
+  account_balances: '账户余额',
+  wood_losses: '木材损耗',
+  samples: '样品',
+  brand_marketing: '品牌营销',
+  promotion_flows: '推广记录',
+  daily_operations: '日常经营',
+  order_details: '订单细节',
+  outsourcing_expenses: '人员外包',
+  after_sales: '售后',
+  customers: '客户',
+  wanshifu_bills: '万师傅安装账单',
+  logistics_bills: '物流费账单',
+  refill_records: '补单对账',
+  suppliers: '供应商',
+};
+
+// 渲染系统表名: 中文名为主, 英文表名作小字副标 (方便对照配置)
+function renderTableLabel(t: string) {
+  const cn = TABLE_LABELS[t];
+  if (!cn) return t;
+  return (
+    <span>
+      {cn}
+      <Typography.Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>{t}</Typography.Text>
+    </span>
+  );
+}
+
 export default function FeishuSettingsPage() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -226,7 +266,10 @@ export default function FeishuSettingsPage() {
 
   const webhookUrl = `${window.location.origin}/api/feishu/webhook`;
 
-  const tableOptions = (tables?.tables ?? []).map((t) => ({ value: t, label: t }));
+  const tableOptions = (tables?.tables ?? []).map((t) => ({
+    value: t,
+    label: TABLE_LABELS[t] ? `${TABLE_LABELS[t]} (${t})` : t,
+  }));
 
   function openEdit(b: FeishuBinding) {
     setEditing(b);
@@ -299,7 +342,7 @@ export default function FeishuSettingsPage() {
             rowKey="id" size="small" pagination={false}
             dataSource={conflicts}
             columns={[
-              { title: '系统表', dataIndex: 'system_table', width: 120 },
+              { title: '系统表', dataIndex: 'system_table', width: 160, render: (v: string) => renderTableLabel(v) },
               { title: '记录', dataIndex: 'source_pk', width: 140 },
               {
                 title: '差异', render: (_: any, c: FeishuConflict) => (
@@ -343,7 +386,7 @@ export default function FeishuSettingsPage() {
 
       {/* 字段级合并裁决 */}
       <Modal
-        title={`逐字段裁决 — ${merging?.system_table} / ${merging?.source_pk}`}
+        title={`逐字段裁决 — ${merging ? (TABLE_LABELS[merging.system_table] || merging.system_table) : ''} / ${merging?.source_pk}`}
         open={!!merging}
         onCancel={() => setMerging(null)}
         onOk={() => merging && mergeMut.mutate({ id: merging.id, field_choices: choices })}
@@ -389,7 +432,7 @@ export default function FeishuSettingsPage() {
           size="middle"
           pagination={false}
           columns={[
-            { title: '系统表', dataIndex: 'system_table', width: 120 },
+            { title: '系统表', dataIndex: 'system_table', width: 170, render: (v: string) => renderTableLabel(v) },
             { title: '飞书 App Token', dataIndex: 'feishu_app_token', ellipsis: true },
             { title: '飞书 Table ID', dataIndex: 'feishu_table_id', width: 180 },
             {
@@ -429,20 +472,27 @@ export default function FeishuSettingsPage() {
           size="small"
           pagination={false}
           columns={[
-            { title: '系统表', dataIndex: 'system_table' },
+            { title: '系统表', dataIndex: 'system_table', render: (v: string) => renderTableLabel(v) },
             { title: '飞书 Table ID', dataIndex: 'feishu_table_id' },
-            { title: '方向', dataIndex: 'direction' },
+            {
+              title: '方向', dataIndex: 'direction',
+              render: (v: string) => ({
+                in: <Tag color="green">仅入</Tag>,
+                out: <Tag color="blue">仅出</Tag>,
+                bidirectional: <Tag color="purple">双向</Tag>,
+              }[v] || v),
+            },
             { title: '已映射行数', dataIndex: 'mapped_rows' },
             {
               title: '启用', dataIndex: 'enabled',
-              render: (v: boolean) => (v ? <Tag color="green">on</Tag> : <Tag>off</Tag>),
+              render: (v: boolean) => (v ? <Tag color="green">已启用</Tag> : <Tag>未启用</Tag>),
             },
           ]}
         />
       </Card>
 
       <Modal
-        title={editing ? `编辑绑定 — ${editing.system_table}` : '新增飞书绑定'}
+        title={editing ? `编辑绑定 — ${TABLE_LABELS[editing.system_table] || editing.system_table}` : '新增飞书绑定'}
         open={open || !!editing}
         onCancel={() => { setOpen(false); setEditing(null); }}
         onOk={() => form.submit()}
