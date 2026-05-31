@@ -50,6 +50,25 @@ export const commitQianniuOrders = (orders: QianniuOrderParsed[]) =>
     )
     .then((r) => r.data);
 
+// 千牛截图解析后, 对单条订单直接生成下单图 (无需先入库)
+import type { FactorySheet } from './orders';
+export const previewQianniuFactorySheet = (order: QianniuOrderParsed) =>
+  api
+    .post<FactorySheet>('/api/screenshots/qianniu-orders/factory-sheet', {
+      order_no: order.order_no,
+      order_date: order.order_date,
+      product_code: order.product_code,
+      product_name: order.product_name,
+      sku: order.sku,
+      sku_code: order.sku_code,
+      qty: order.qty ?? 1,
+      customer_name: order.customer_name,
+      customer_phone: order.customer_phone,
+      customer_address: order.customer_address,
+      remark: order.remark,
+    })
+    .then((r) => r.data);
+
 export interface PurchaseLineParsed {
   material_name?: string;
   material_code?: string;
