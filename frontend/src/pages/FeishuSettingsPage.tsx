@@ -204,9 +204,10 @@ export default function FeishuSettingsPage() {
   const [presetOpen, setPresetOpen] = useState(false);
   const [presetWiki, setPresetWiki] = useState('NpWzwIcLBilnIlk0B2sc5ETInZc');
   const [presetEnabled, setPresetEnabled] = useState(false);
+  const [presetOverwrite, setPresetOverwrite] = useState(false);
   const presetMut = useMutation({
-    mutationFn: (v: { wiki_token: string; enabled: boolean }) =>
-      setupFeishuPreset(v.wiki_token, v.enabled),
+    mutationFn: (v: { wiki_token: string; enabled: boolean; overwrite: boolean }) =>
+      setupFeishuPreset(v.wiki_token, v.enabled, v.overwrite),
     onSuccess: (r) => {
       message.success(`预设导入完成: 新建 ${r.created} / 跳过 ${r.skipped} / 更新 ${r.updated}`);
       setPresetOpen(false);
@@ -633,7 +634,7 @@ export default function FeishuSettingsPage() {
         title="一键导入预设绑定 (23 表)"
         open={presetOpen}
         onCancel={() => setPresetOpen(false)}
-        onOk={() => presetMut.mutate({ wiki_token: presetWiki.trim(), enabled: presetEnabled })}
+        onOk={() => presetMut.mutate({ wiki_token: presetWiki.trim(), enabled: presetEnabled, overwrite: presetOverwrite })}
         confirmLoading={presetMut.isPending}
         okText="开始导入"
         destroyOnClose
@@ -654,6 +655,9 @@ export default function FeishuSettingsPage() {
           </div>
           <Checkbox checked={presetEnabled} onChange={(e) => setPresetEnabled(e.target.checked)}>
             立即启用(默认不启用,先核对字段)
+          </Checkbox>
+          <Checkbox checked={presetOverwrite} onChange={(e) => setPresetOverwrite(e.target.checked)}>
+            覆盖已存在的绑定(更新同步方向为双向 + 字段映射)
           </Checkbox>
         </Space>
       </Modal>
