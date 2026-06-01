@@ -543,7 +543,17 @@ _sync_lock = threading.Lock()
 _sync_state: dict = {
     "running": False, "started_at": None, "finished_at": None,
     "scope": None, "summary": None, "error": None,
+    "total": 0, "done": 0, "current": None, "tables": [],
 }
+
+
+def _table_label(system_table: str) -> str:
+    """取系统表对应的中文名 (来自预设), 没有就回退原名."""
+    from app.services.feishu_preset import PRESETS
+    for st, _tid, _dir, label, _fm in PRESETS:
+        if st == system_table:
+            return label
+    return system_table
 
 
 def _run_background_sync(system_table: Optional[str]) -> None:
@@ -556,8 +566,18 @@ def _run_background_sync(system_table: Optional[str]) -> None:
         if system_table:
             q = q.where(FeishuTableBinding.system_table == system_table)
         bindings = db.execute(q).scalars().all()
+        with _sync_lock:
+            _sync_state["total"] = len(bindings)
+            _sync_state["done"] = 0
+            _sync_state["current"] = None
+            _sync_state["tables"] = []
         _logger.info("飞书同步: 后台任务开始, 共 %d 张启用表", len(bindings))
         for b in bindings:
+            label = _table_label(b.system_table)
+            with _sync_lock:
+                _sync_state["current"] = label
+            _logger.info("飞书同步[%s] 开始 (%d/%d)",
+                         b.system_table, agg["tables"] + 1, len(bindings))
             res = sync_binding(db, b)
             db.commit()   # 逐表提交, 中断不丢进度
             agg["tables"] += 1
@@ -567,8 +587,21 @@ def _run_background_sync(system_table: Optional[str]) -> None:
             agg["created_system"] += res.created_system
             agg["conflicts"] += res.conflicts
             agg["errors"] += len(res.errors)
+            with _sync_lock:
+                _sync_state["done"] = agg["tables"]
+                _sync_state["tables"].append({
+                    "system_table": b.system_table, "label": label,
+                    "pushed": res.pushed, "pulled": res.pulled,
+                    "created_feishu": res.created_feishu,
+                    "created_system": res.created_system,
+                    "conflicts": res.conflicts,
+                    "errors": len(res.errors),
+                    "error_detail": res.errors[-1] if res.errors else None,
+                })
         _logger.info("飞书同步: 后台任务完成 %s", agg)
-        _sync_state["summary"] = agg
+        with _sync_lock:
+            _sync_state["summary"] = agg
+            _sync_state["current"] = None
     except Exception as e:  # pragma: no cover
         db.rollback()
         _sync_state["error"] = f"{type(e).__name__}: {e}"
@@ -587,7 +620,8 @@ def start_background_sync(system_table: Optional[str] = None) -> bool:
             return False
         _sync_state.update(running=True, started_at=datetime.now(timezone.utc).isoformat(),
                            finished_at=None, scope=system_table or "all",
-                           summary=None, error=None)
+                           summary=None, error=None,
+                           total=0, done=0, current=None, tables=[])
     threading.Thread(target=_run_background_sync, args=(system_table,),
                      daemon=True).start()
     return True

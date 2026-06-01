@@ -8,6 +8,7 @@ import {
   Input,
   Modal,
   Popconfirm,
+  Progress,
   Radio,
   Select,
   Space,
@@ -26,6 +27,7 @@ import {
   FeishuBinding,
   FeishuConflict,
   FeishuExtraField,
+  FeishuSyncTableProgress,
   createFeishuBinding,
   deleteFeishuBinding,
   feishuStatus,
@@ -190,7 +192,7 @@ export default function FeishuSettingsPage() {
   const { data: syncStatus } = useQuery({
     queryKey: ['feishu-sync-status'],
     queryFn: getFeishuSyncStatus,
-    refetchInterval: (q) => (q.state.data?.running ? 5000 : false),
+    refetchInterval: (q) => (q.state.data?.running ? 2000 : false),
   });
 
   const resolveMut = useMutation({
@@ -357,28 +359,81 @@ export default function FeishuSettingsPage() {
       </Card>
 
       {/* 后台同步进度 */}
-      {syncStatus && (syncStatus.running || syncStatus.summary || syncStatus.error) && (
-        <Alert
-          showIcon
-          type={syncStatus.error ? 'error' : syncStatus.running ? 'info' : 'success'}
-          message={
-            syncStatus.running
-              ? `同步进行中… (范围: ${syncStatus.scope ?? 'all'})`
-              : syncStatus.error
-                ? `上次同步异常: ${syncStatus.error}`
-                : '上次同步已完成'
-          }
-          description={
-            syncStatus.summary ? (
-              <span style={{ fontSize: 12 }}>
-                表 {syncStatus.summary.tables} · 推 {syncStatus.summary.pushed} · 拉 {syncStatus.summary.pulled}
-                {' · '}新建飞书 {syncStatus.summary.created_feishu} · 新建系统 {syncStatus.summary.created_system}
-                {' · '}冲突 {syncStatus.summary.conflicts} · 错误 {syncStatus.summary.errors}
-                {(syncStatus.summary.errors > 0) && '（详情见「管理 → 运行日志」模块: 飞书同步）'}
+      {syncStatus && (syncStatus.running || syncStatus.summary || syncStatus.error || (syncStatus.tables?.length ?? 0) > 0) && (
+        <Card
+          size="small"
+          title={
+            <Space>
+              {syncStatus.running ? <Spin size="small" /> : null}
+              <span>
+                {syncStatus.running
+                  ? `同步进行中… (范围: ${syncStatus.scope ?? 'all'})`
+                  : syncStatus.error
+                    ? '上次同步异常'
+                    : '上次同步已完成'}
               </span>
-            ) : syncStatus.running ? '进度明细见「管理 → 运行日志」(模块: 飞书同步)' : undefined
+              {syncStatus.running && syncStatus.current && (
+                <Tag color="processing">正在同步: {syncStatus.current}</Tag>
+              )}
+            </Space>
           }
-        />
+        >
+          {/* 总进度条 */}
+          <Progress
+            percent={
+              syncStatus.total > 0
+                ? Math.round((syncStatus.done / syncStatus.total) * 100)
+                : syncStatus.running ? 0 : 100
+            }
+            status={
+              syncStatus.error ? 'exception' : syncStatus.running ? 'active' : 'success'
+            }
+            format={() =>
+              syncStatus.total > 0
+                ? `${syncStatus.done}/${syncStatus.total} 表`
+                : syncStatus.running ? '准备中…' : '—'
+            }
+          />
+
+          {syncStatus.error && (
+            <Alert type="error" showIcon style={{ marginTop: 8 }}
+                   message={`同步异常: ${syncStatus.error}`} />
+          )}
+
+          {/* 每张表的明细 */}
+          {(syncStatus.tables?.length ?? 0) > 0 && (
+            <Table<FeishuSyncTableProgress>
+              size="small"
+              style={{ marginTop: 12 }}
+              rowKey="system_table"
+              pagination={false}
+              dataSource={syncStatus.tables}
+              columns={[
+                { title: '表', dataIndex: 'label', key: 'label',
+                  render: (v: string, r) => v || r.system_table },
+                { title: '推送→飞书', dataIndex: 'pushed', key: 'pushed', width: 90, align: 'right' },
+                { title: '拉取→系统', dataIndex: 'pulled', key: 'pulled', width: 90, align: 'right' },
+                { title: '新建飞书', dataIndex: 'created_feishu', key: 'cf', width: 80, align: 'right' },
+                { title: '新建系统', dataIndex: 'created_system', key: 'cs', width: 80, align: 'right' },
+                { title: '冲突', dataIndex: 'conflicts', key: 'conflicts', width: 70, align: 'right',
+                  render: (v: number) => (v > 0 ? <Tag color="orange">{v}</Tag> : v) },
+                { title: '状态', key: 'status', width: 120,
+                  render: (_: unknown, r) =>
+                    r.errors > 0
+                      ? <Tooltip title={r.error_detail || ''}><Tag color="red">失败 {r.errors}</Tag></Tooltip>
+                      : <Tag color="green">完成</Tag> },
+              ]}
+            />
+          )}
+
+          {syncStatus.summary && !syncStatus.running && (
+            <div style={{ fontSize: 12, color: '#888', marginTop: 8 }}>
+              合计: 表 {syncStatus.summary.tables} · 推 {syncStatus.summary.pushed} · 拉 {syncStatus.summary.pulled}
+              {' · '}新建飞书 {syncStatus.summary.created_feishu} · 新建系统 {syncStatus.summary.created_system}
+              {' · '}冲突 {syncStatus.summary.conflicts} · 错误 {syncStatus.summary.errors}
+            </div>
+          )}
+        </Card>
       )}
 
       {/* 飞书多余列裁决 */}
