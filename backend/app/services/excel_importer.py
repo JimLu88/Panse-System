@@ -366,10 +366,20 @@ def _read_all_rows(file_bytes: bytes, sheet_name: str) -> list[dict[str, Any]]:
 
 # ----------------------------- type coercion --------------------- #
 
+# 数值字段里的"未知/待补"占位符 — 当 None 处理 (区别于 0)。
+_NUMERIC_PLACEHOLDERS = {
+    "？", "?", "待补", "待定", "未知", "未定", "-", "—", "/", "N/A", "n/a", "NA", "na", "无",
+}
+
 
 def _coerce(value: Any, field_type: str, *, label: str) -> Any:
     if value is None or value == "":
         return None
+    # 数值占位符 → 空值(待补): 木作成本/配件价格等暂时未知时, 用户填 ？/待补/— 表示
+    # "未知"(区别于 0=确实免费)。统一当 None 入库, 不报错也不臆造 0, 由下游标记「成本不完整」。
+    if field_type in ("int", "decimal") and not isinstance(value, bool):
+        if str(value).strip() in _NUMERIC_PLACEHOLDERS:
+            return None
     if field_type == "str":
         return str(value).strip()
     if field_type == "int":
@@ -632,11 +642,11 @@ def _commit_factory_orders(
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
             report.skipped_rows += 1
             continue
+        from app.services import factory_order_service
         fo_no = projected.get("factory_order_no")
         if not fo_no:
-            report.skipped_rows += 1
-            report.errors.append(f"第 {i + 1} 行: 工厂订单号为空")
-            continue
+            # 留空 → 自动生成 畔色0001 序列 (业务确认用中文)
+            fo_no = factory_order_service.next_factory_order_no(db)
         existing = db.execute(
             select(FactoryOrder).where(FactoryOrder.factory_order_no == fo_no)
         ).scalar_one_or_none()
@@ -646,21 +656,39 @@ def _commit_factory_orders(
             continue
         # 自动生成内部单号 (若行内未提供)
         internal_no = projected.get("internal_order_no") or _next_internal_order_no(db, current_year)
+        qty = int(projected.get("qty") or 1)
+        product_code = projected.get("product_code")
+        sku = projected.get("sku")
+        # 产品预期金额: 行内有就用, 否则按定价表「总出厂成本」自动算
+        expected_amount = projected.get("expected_amount")
+        if expected_amount is None:
+            expected_amount = factory_order_service.expected_amount_for(
+                db, product_code, sku, qty)
+        # 付款状态: 有支付宝流水号即视为已付款 (与对账逻辑一致)
+        flow_no = projected.get("alipay_flow_no")
+        payment_status = projected.get("payment_status")
+        if not payment_status:
+            payment_status = "paid" if flow_no else "unpaid"
         fo = FactoryOrder(
             factory_order_no=fo_no,
             internal_order_no=internal_no,
             platform_order_no=projected.get("platform_order_no"),
-            factory_name=projected.get("factory_name"),
+            factory_name=projected.get("factory_name") or "玉山县博冠家具有限公司",
             order_date=projected.get("order_date"),
             expected_delivery=projected.get("expected_delivery"),
             actual_delivery=projected.get("actual_delivery"),
-            product_code=projected.get("product_code"),
-            sku=projected.get("sku"),
-            qty=int(projected.get("qty") or 1),
+            product_code=product_code,
+            sku=sku,
+            qty=qty,
             unit_price=projected.get("unit_price"),
             factory_bill_amount=projected.get("factory_bill_amount"),
-            payment_method=projected.get("payment_method"),
-            payment_status=projected.get("payment_status") or "unpaid",
+            expected_amount=expected_amount,
+            payment_method=projected.get("payment_method") or "月结",
+            payment_status=payment_status,
+            payment_date=projected.get("payment_date"),
+            carrier=projected.get("carrier"),
+            tracking_no=projected.get("tracking_no"),
+            alipay_flow_no=flow_no,
             remark=projected.get("remark"),
         )
         db.add(fo)
@@ -1229,6 +1257,12 @@ def _h_order(db, data, key_field, ctx=None):
                 suggestion_action="view",
                 context={"order_no": order_no},
             )
+    # 发货仓库: 行内未指定时, 样块/补单→杭州, 其余→江西仓库
+    if not payload.get("warehouse"):
+        from app.services import order_cost_service
+        payload["warehouse"] = order_cost_service.default_warehouse_for(
+            payload.get("product_name"), payload.get("sku"),
+            bool(payload.get("is_refill")))
     obj = Order(**payload)
     if ctx and ctx.import_batch_id:
         obj.import_job_id = ctx.import_batch_id

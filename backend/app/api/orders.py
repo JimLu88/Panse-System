@@ -27,6 +27,7 @@ from app.services import (
     order_import,
     order_message_service,
     order_service,
+    order_sync_service,
 )
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
@@ -108,6 +109,36 @@ def backfill_theoretical_cost(
     )
     db.commit()
     return result
+
+
+@router.post("/rederive-refill-flags", response_model=dict)
+def rederive_refill_flags(recompute_cost: bool = True, db: Session = Depends(get_db)):
+    """以补单记录为准重判「是否补单」, 顺带重算改动订单的理论成本。返回明细供复核。"""
+    r = order_sync_service.rederive_refill_flags(db, recompute_cost=recompute_cost)
+    db.commit()
+    return {
+        "scanned": r.scanned, "flagged": r.flagged, "unflagged": r.unflagged,
+        "flagged_orders": r.flagged_orders[:200],
+        "unflagged_orders": r.unflagged_orders[:200],
+    }
+
+
+@router.get("/cost-completeness", response_model=dict)
+def cost_completeness(db: Session = Depends(get_db)):
+    """成本完整性体检: 列出定价表关键成本列为空(未知/待补)的 SKU, 供前端标「成本不完整」。"""
+    return order_cost_service.cost_completeness_scan(db)
+
+
+@router.post("/backfill-compensation", response_model=dict)
+def backfill_compensation(db: Session = Depends(get_db)):
+    """把售后表赔付按平台订单号聚合, 回写 Order.compensation_fee。"""
+    r = order_sync_service.backfill_compensation_from_aftersales(db)
+    db.commit()
+    return {
+        "aftersales_scanned": r.aftersales_scanned,
+        "orders_updated": r.orders_updated,
+        "total_compensation": str(r.total_compensation),
+    }
 
 
 @router.get("/{order_id}/cost-breakdown", response_model=CostBreakdownOut)

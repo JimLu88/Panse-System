@@ -458,3 +458,173 @@ def test_primary_field_value_coerced_to_text():
     out2 = _to_feishu_fields(r, fm, primary_fe="编码")
     assert out2["编码"] == "ABC"
     assert isinstance(out2["日期"], int)
+
+
+def test_factory_order_no_sequential(db_session):
+    """工厂订单号自动生成 畔色0001 序列, 递增不重复。"""
+    from app.services import factory_order_service as fos
+    assert fos.next_factory_order_no(db_session) == "畔色0001"
+    from app.models.order import FactoryOrder
+    db_session.add(FactoryOrder(factory_order_no="畔色0001", qty=1)); db_session.flush()
+    assert fos.next_factory_order_no(db_session) == "畔色0002"
+    # 旧式 F<订单号> 不参与计数
+    db_session.add(FactoryOrder(factory_order_no="F12345", qty=1)); db_session.flush()
+    assert fos.next_factory_order_no(db_session) == "畔色0002"
+
+
+def test_expected_amount_from_pricing(db_session):
+    """产品预期金额 = 定价表总出厂成本 × 数量; 无定价/无出厂成本 → None (待补)。"""
+    from app.services import factory_order_service as fos
+    db_session.add(PricingSku(product_code="P9", sku="窄柜", sku_code="P9-01",
+                              factory_cost=Decimal("830")))
+    db_session.flush()
+    assert fos.expected_amount_for(db_session, "P9", "P9-01", 2) == Decimal("1660")
+    assert fos.expected_amount_for(db_session, "P9", None, 1) == Decimal("830")
+    assert fos.expected_amount_for(db_session, "NOPE", "NOPE-01", 1) is None
+
+
+def test_factory_reconciliation_rebuild(db_session):
+    """按月把工厂下单表汇总成对账记录: 本期下单金额/账单金额/差异。"""
+    from datetime import date
+    from app.models.order import FactoryOrder
+    from app.models.finance import FactoryReconciliation
+    from app.services import factory_reconciliation_service as frs
+    db_session.add_all([
+        FactoryOrder(factory_order_no="畔色1001", factory_name="玉山县博冠家具有限公司",
+                     order_date=date(2026, 3, 5), qty=1,
+                     expected_amount=Decimal("800"), factory_bill_amount=Decimal("820")),
+        FactoryOrder(factory_order_no="畔色1002", factory_name="玉山县博冠家具有限公司",
+                     order_date=date(2026, 3, 20), qty=1,
+                     expected_amount=Decimal("1000"), factory_bill_amount=Decimal("980")),
+    ])
+    db_session.flush()
+    res = frs.rebuild_all_periods(db_session, factory_name="玉山县博冠家具有限公司")
+    assert res.periods == 1
+    rec = db_session.query(FactoryReconciliation).one()
+    assert rec.order_amount == Decimal("1800")
+    assert rec.bill_amount == Decimal("1800")
+    assert rec.period_start == date(2026, 3, 1)
+    assert rec.period_end == date(2026, 3, 31)
+
+
+def test_zero_cost_for_refill_and_install(db_session):
+    """补单 + 安装SKU 订单理论成本归0。"""
+    from app.models.order import Order
+    from app.services import order_cost_service as ocs
+    o1 = Order(platform="淘宝", order_no="R1", is_refill=True, qty=1, status="signed")
+    o2 = Order(platform="淘宝", order_no="I1", sku="商家安装服务", qty=1, status="signed")
+    db_session.add_all([o1, o2]); db_session.flush()
+    ocs.recompute_and_save(db_session, o1)
+    ocs.recompute_and_save(db_session, o2)
+    assert o1.theoretical_cost == Decimal("0")
+    assert o2.theoretical_cost == Decimal("0")
+
+
+def test_default_warehouse():
+    """样块/补单→杭州, 其余→江西仓库。"""
+    from app.services.order_cost_service import default_warehouse_for
+    assert default_warehouse_for("樱桃木样块", None, False) == "杭州"
+    assert default_warehouse_for("窄柜100", None, True) == "杭州"
+    assert default_warehouse_for("窄柜100", "P-01", False) == "江西仓库"
+
+
+def test_rederive_refill_flags(db_session):
+    """以补单记录为准: 在记录里的标补单, 误标的取消。"""
+    from datetime import date
+    from app.models.order import Order
+    from app.models.finance import RefillRecord
+    from app.services import order_sync_service as oss
+    db_session.add_all([
+        RefillRecord(order_no="A1", refill_date=date(2026, 1, 1), qty=1),
+        Order(platform="淘宝", order_no="A1", is_refill=False, qty=1, status="signed"),
+        Order(platform="淘宝", order_no="B2", is_refill=True, qty=1, status="signed"),
+    ])
+    db_session.flush()
+    r = oss.rederive_refill_flags(db_session, recompute_cost=False)
+    assert "A1" in r.flagged_orders and "B2" in r.unflagged_orders
+    a1 = db_session.query(Order).filter_by(order_no="A1").one()
+    b2 = db_session.query(Order).filter_by(order_no="B2").one()
+    assert a1.is_refill is True and b2.is_refill is False
+
+
+def test_backfill_compensation_from_aftersales(db_session):
+    """售后赔付按订单号聚合回写 Order.compensation_fee。"""
+    from app.models.order import Order
+    from app.models.marketing import AfterSales
+    from app.services import order_sync_service as oss
+    db_session.add_all([
+        Order(platform="淘宝", order_no="C1", qty=1, status="signed"),
+        AfterSales(platform_order_no="C1", compensation_fee=Decimal("120")),
+        AfterSales(platform_order_no="C1", factory_compensation=Decimal("30"),
+                   logistics_compensation=Decimal("20")),
+    ])
+    db_session.flush()
+    r = oss.backfill_compensation_from_aftersales(db_session)
+    assert r.orders_updated == 1
+    c1 = db_session.query(Order).filter_by(order_no="C1").one()
+    assert c1.compensation_fee == Decimal("170")  # 120 + (30+20)
+
+
+def test_alipay_flow_routing(db_session):
+    """支付宝流水自动归类: 推广补流水号 + 未分类支出建采购 + 工厂翻已付款。"""
+    from datetime import date, datetime, timezone
+    from app.models.finance import AlipayFlow
+    from app.models.marketing import PromotionFlow
+    from app.models.order import FactoryOrder, PartPurchase
+    from app.services import alipay_flow_router_service as ar
+    db_session.add_all([
+        # 推广记录待配 (金额200, 日期接近)
+        PromotionFlow(transaction_date=date(2026, 3, 10), amount=Decimal("200"), flow_type="充值"),
+        AlipayFlow(account="企业号", transaction_no="FLOW200", amount=Decimal("-200"),
+                   transaction_time=datetime(2026, 3, 11, tzinfo=timezone.utc),
+                   reconciliation_type="promotion"),
+        # 未分类支出 → 建采购
+        AlipayFlow(account="企业号", transaction_no="FLOW88", amount=Decimal("-88"),
+                   counterparty="某五金店", remark="买铰链",
+                   transaction_time=datetime(2026, 3, 12, tzinfo=timezone.utc)),
+        # 工厂订单有流水号 → 翻已付款
+        FactoryOrder(factory_order_no="畔色2001", qty=1, alipay_flow_no="FLOWFAC",
+                     payment_status="unpaid"),
+        AlipayFlow(account="企业号", transaction_no="FLOWFAC", amount=Decimal("-5000"),
+                   transaction_time=datetime(2026, 3, 13, tzinfo=timezone.utc),
+                   reconciliation_type="factory_payment"),
+    ])
+    db_session.flush()
+    r = ar.run_all(db_session)
+    assert r.promotion_filled == 1
+    assert r.purchases_created == 1
+    assert r.factory_flipped == 1
+    pf = db_session.query(PromotionFlow).one()
+    assert pf.alipay_flow_no == "FLOW200"
+    pp = db_session.query(PartPurchase).one()
+    assert pp.purchase_no.startswith("2026") and len(pp.purchase_no) == 9
+    assert pp.alipay_flow_no == "FLOW88"
+    fo = db_session.query(FactoryOrder).one()
+    assert fo.payment_status == "paid" and fo.payment_date == date(2026, 3, 13)
+
+
+def test_numeric_placeholder_to_null():
+    """数值占位符 ？/待补/— → 入库为 None (区别于 0), 不报错。"""
+    from app.services.excel_importer import _coerce
+    for token in ("？", "?", "待补", "—", "无", "N/A"):
+        assert _coerce(token, "decimal", label="木作成本") is None
+        assert _coerce(token, "int", label="数量") is None
+    # 真实数字与 0 不受影响
+    assert _coerce("123.45", "decimal", label="x") == Decimal("123.45")
+    assert _coerce(0, "decimal", label="x") == Decimal("0")
+
+
+def test_cost_completeness_scan(db_session):
+    """定价表关键成本列为空 → 列入成本不完整 (0 不算缺)。"""
+    from app.services import order_cost_service as ocs
+    db_session.add_all([
+        PricingSku(product_code="PA", sku_code="PA-01", wood_cost=Decimal("100"),
+                   factory_cost=Decimal("200"), accounting_cost=Decimal("300")),
+        PricingSku(product_code="PB", sku_code="PB-01", wood_cost=None,
+                   factory_cost=Decimal("0"), accounting_cost=Decimal("50")),
+    ])
+    db_session.flush()
+    r = ocs.cost_completeness_scan(db_session)
+    assert r["incomplete_count"] == 1
+    assert r["incomplete"][0]["sku_code"] == "PB-01"
+    assert "木作成本" in r["incomplete"][0]["missing"]

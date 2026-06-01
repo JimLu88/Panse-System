@@ -15,7 +15,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import select
@@ -25,6 +26,57 @@ from app.models.order import FactoryOrder, Order
 from app.services import alert_service, inventory_lock_service
 
 _logger = logging.getLogger("panse.factory_order")
+
+# 工厂订单号前缀 — 业务确认用中文「畔色0001」序列 (工厂习惯)。
+FACTORY_ORDER_PREFIX = "畔色"
+
+
+def next_factory_order_no(db: Session) -> str:
+    """生成下一个工厂订单号, 格式 畔色0001 / 畔色0002 ...
+
+    取已有最大序号 +1。只认 前缀+纯数字 的历史号 (旧的 F<订单号> 不参与计数)。
+    """
+    rows = db.execute(
+        select(FactoryOrder.factory_order_no).where(
+            FactoryOrder.factory_order_no.like(f"{FACTORY_ORDER_PREFIX}%")
+        )
+    ).scalars().all()
+    max_seq = 0
+    plen = len(FACTORY_ORDER_PREFIX)
+    for no in rows:
+        tail = (no or "")[plen:].strip()
+        if tail.isdigit():
+            max_seq = max(max_seq, int(tail))
+    return f"{FACTORY_ORDER_PREFIX}{max_seq + 1:04d}"
+
+
+def expected_amount_for(
+    db: Session, product_code: Optional[str], sku_code: Optional[str], qty: int = 1,
+) -> Optional[Decimal]:
+    """产品预期金额 = 定价表「总出厂成本」(factory_cost) × 数量。
+
+    用工厂可比口径 (出厂成本) 而非会计总成本: 工厂账单只含木作/打包/外采,
+    与 factory_cost 同口径, 这样 产品预期金额 vs 工厂账单金额 才可直接对账。
+    (若业务想用会计总成本对账, 把下面 .factory_cost 改成 .accounting_cost 即可。)
+
+    匹配优先级: sku_code 精确 → product_code 首条。任一缺失或无定价 → 返回 None
+    (上层据此标记「成本待补」, 不臆造数字)。
+    """
+    from app.models.pricing import PricingSku
+
+    row = None
+    if sku_code:
+        row = db.execute(
+            select(PricingSku).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+    if row is None and product_code:
+        row = db.execute(
+            select(PricingSku).where(PricingSku.product_code == product_code)
+            .order_by(PricingSku.id).limit(1)
+        ).scalar_one_or_none()
+    if row is None or row.factory_cost is None:
+        return None
+    return row.factory_cost * Decimal(qty or 1)
 
 
 # ----------------------------- 创建 ------------------------------ #
@@ -49,19 +101,21 @@ def generate_factory_order_for(
     if order.is_historical:
         raise ValueError("历史订单 (is_historical) 不参与库存流程")
 
-    fo_no = f"F{order.order_no}"
-    # 避免冲突
-    if db.execute(select(FactoryOrder).where(FactoryOrder.factory_order_no == fo_no)).scalar_one_or_none():
-        fo_no = f"F{order.order_no}_{order.id}"
+    fo_no = next_factory_order_no(db)
 
     fo = FactoryOrder(
         factory_order_no=fo_no,
         platform_order_no=order.order_no,
-        factory_name=factory_name or "默认工厂",
-        order_date=date.today(),
+        factory_name=factory_name or "玉山县博冠家具有限公司",
+        order_date=order.order_date or date.today(),
+        expected_delivery=(order.order_date or date.today()) + timedelta(days=30),
         product_code=order.product_code,
         sku=order.sku,
         qty=order.qty,
+        expected_amount=expected_amount_for(db, order.product_code, order.sku_code, order.qty),
+        payment_method="月结",
+        carrier=order.carrier,
+        tracking_no=order.tracking_no,
         source_order_id=order.id,
     )
     db.add(fo)
