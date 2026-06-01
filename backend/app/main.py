@@ -15,7 +15,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
 
 # 全局日志: 时间戳统一用北京时间 (东八区), 不受容器时区影响, 输出到 stdout → docker logs api 可见
-logging.Formatter.converter = lambda secs: time.gmtime((secs if secs is not None else time.time()) + 8 * 3600)
+# 注意: converter 必须用 staticmethod 包一层。直接赋 lambda/函数会被当成绑定方法, 调用时多塞个 self,
+# 触发 TypeError 让所有格式化崩溃 (日志缓冲会全空、控制台刷 "Logging error")。
+def _beijing_time(secs):
+    return time.gmtime((secs if secs is not None else time.time()) + 8 * 3600)
+logging.Formatter.converter = staticmethod(_beijing_time)
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
