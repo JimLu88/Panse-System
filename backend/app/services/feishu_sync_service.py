@@ -25,7 +25,8 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
-from sqlalchemy import Date, DateTime, Integer, Numeric, func, select
+from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
 from app.models.exception import DataException
@@ -201,6 +202,10 @@ def _coerce_for_model(model, attr: str, value: Any) -> Any:
         return value
     t = col.type
     try:
+        if isinstance(t, Boolean):
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("是", "true", "1", "yes", "t")
         if isinstance(t, Numeric):
             return Decimal(str(value))
         if isinstance(t, Integer):
@@ -439,15 +444,36 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
     return res
 
 
-def _new_map(binding, pk, sys_hash, fe_hash, feishu_record_id) -> FeishuSyncMap:
-    return FeishuSyncMap(
-        system_table=binding.system_table, system_pk=pk,
+def _upsert_map(db: Session, binding, pk: str, sys_hash: str, fe_hash: str,
+                feishu_record_id: str) -> None:
+    """INSERT FeishuSyncMap, ON CONFLICT (system_table, system_pk) DO UPDATE.
+
+    Handles retried syncs gracefully: if a previous run committed some map rows
+    and the session's in-memory maps dict is stale, plain db.add() would raise
+    UniqueViolation. Upsert ensures idempotency.
+    """
+    now = datetime.now(timezone.utc)
+    stmt = pg_insert(FeishuSyncMap).values(
+        system_table=binding.system_table,
+        system_pk=pk,
         feishu_app_token=binding.feishu_app_token,
         feishu_table_id=binding.feishu_table_id,
         feishu_record_id=feishu_record_id,
-        system_hash=sys_hash, feishu_hash=fe_hash,
-        last_sync_at=datetime.now(timezone.utc),
+        system_hash=sys_hash,
+        feishu_hash=fe_hash,
+        last_sync_at=now,
+    ).on_conflict_do_update(
+        constraint="uq_feishu_sync_system",
+        set_={
+            "feishu_app_token": binding.feishu_app_token,
+            "feishu_table_id": binding.feishu_table_id,
+            "feishu_record_id": feishu_record_id,
+            "system_hash": sys_hash,
+            "feishu_hash": fe_hash,
+            "last_sync_at": now,
+        },
     )
+    db.execute(stmt)
 
 
 def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
@@ -463,7 +489,7 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
             db, binding.feishu_app_token, binding.feishu_table_id,
             _to_feishu_fields(sys_row, fm, primary_fe))
         sys_hash = _hash(_system_values(sys_row, fields))
-        db.add(_new_map(binding, pk, sys_hash, sys_hash, rec_id))
+        _upsert_map(db, binding, pk, sys_hash, sys_hash, rec_id)
         res.created_feishu += 1
         return
 
@@ -477,7 +503,7 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         db.add(new_row)
         db.flush()
         fe_hash = _hash(vals)
-        db.add(_new_map(binding, pk, fe_hash, fe_hash, fe_rec["record_id"]))
+        _upsert_map(db, binding, pk, fe_hash, fe_hash, fe_rec["record_id"])
         res.created_system += 1
         return
 
@@ -493,17 +519,17 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
     if m is None:
         # 首次配对: 一致则直接建映射
         if sys_hash == fe_hash:
-            db.add(_new_map(binding, pk, sys_hash, fe_hash, fe_rec["record_id"]))
+            _upsert_map(db, binding, pk, sys_hash, fe_hash, fe_rec["record_id"])
         elif first_sync and can_push:
             # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突
             feishu_client.update_record(
                 db, binding.feishu_app_token, binding.feishu_table_id,
                 fe_rec["record_id"], _to_feishu_fields(sys_row, fm, primary_fe))
-            db.add(_new_map(binding, pk, sys_hash, sys_hash, fe_rec["record_id"]))
+            _upsert_map(db, binding, pk, sys_hash, sys_hash, fe_rec["record_id"])
             res.pushed += 1
         else:
             _record_conflict(db, binding, ent, fm, pk, sys_row, fe_rec, sys_vals, fe_vals)
-            db.add(_new_map(binding, pk, sys_hash, fe_hash, fe_rec["record_id"]))
+            _upsert_map(db, binding, pk, sys_hash, fe_hash, fe_rec["record_id"])
             res.conflicts += 1
         return
 
