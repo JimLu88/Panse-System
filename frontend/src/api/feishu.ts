@@ -97,6 +97,8 @@ export interface FeishuSyncStatus {
   total: number;
   done: number;
   current: string | null;
+  current_done: number;
+  current_total: number;
   tables: FeishuSyncTableProgress[];
 }
 

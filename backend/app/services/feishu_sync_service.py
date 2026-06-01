@@ -310,7 +310,8 @@ class SyncResult:
     errors: list[str] = field(default_factory=list)
 
 
-def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
+def sync_binding(db: Session, binding: FeishuTableBinding,
+                 *, progress_cb=None) -> SyncResult:
     res = SyncResult(system_table=binding.system_table)
     ents = _entities()
     ent = ents.get(binding.system_table)
@@ -377,7 +378,10 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
     }
 
     all_pks = set(sys_rows) | set(fe_by_pk)
-    for pk in all_pks:
+    total = len(all_pks)
+    if progress_cb:
+        progress_cb(0, total)
+    for i, pk in enumerate(all_pks, 1):
         try:
             _sync_one(db, binding, ent, fm, fields, pk, sys_rows.get(pk),
                       fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, first_sync, res)
@@ -387,6 +391,13 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
         except Exception as e:  # pragma: no cover
             res.errors.append(f"{pk}: {type(e).__name__}: {e}")
             _logger.exception("飞书同步[%s] 记录 %s 异常", binding.system_table, pk)
+        # 每 25 条 (或最后一条) 更新一次进度 + 记日志, 让大表也能看到在走
+        if progress_cb and (i % 25 == 0 or i == total):
+            progress_cb(i, total)
+        if i % 50 == 0 or i == total:
+            _logger.info("飞书同步[%s] 进度 %d/%d (推%d 拉%d 新建飞书%d 错误%d)",
+                         binding.system_table, i, total,
+                         res.pushed, res.pulled, res.created_feishu, len(res.errors))
     db.flush()
     if res.errors:
         _logger.warning("飞书同步[%s] 完成但有 %d 个错误: %s",
@@ -548,6 +559,7 @@ _sync_state: dict = {
     "running": False, "started_at": None, "finished_at": None,
     "scope": None, "summary": None, "error": None,
     "total": 0, "done": 0, "current": None, "tables": [],
+    "current_done": 0, "current_total": 0,
 }
 
 
@@ -580,9 +592,17 @@ def _run_background_sync(system_table: Optional[str]) -> None:
             label = _table_label(b.system_table)
             with _sync_lock:
                 _sync_state["current"] = label
+                _sync_state["current_done"] = 0
+                _sync_state["current_total"] = 0
             _logger.info("飞书同步[%s] 开始 (%d/%d)",
                          b.system_table, agg["tables"] + 1, len(bindings))
-            res = sync_binding(db, b)
+
+            def _on_progress(done, tot):
+                with _sync_lock:
+                    _sync_state["current_done"] = done
+                    _sync_state["current_total"] = tot
+
+            res = sync_binding(db, b, progress_cb=_on_progress)
             db.commit()   # 逐表提交, 中断不丢进度
             agg["tables"] += 1
             agg["pushed"] += res.pushed
@@ -625,7 +645,8 @@ def start_background_sync(system_table: Optional[str] = None) -> bool:
         _sync_state.update(running=True, started_at=datetime.now(timezone.utc).isoformat(),
                            finished_at=None, scope=system_table or "all",
                            summary=None, error=None,
-                           total=0, done=0, current=None, tables=[])
+                           total=0, done=0, current=None, tables=[],
+                           current_done=0, current_total=0)
     threading.Thread(target=_run_background_sync, args=(system_table,),
                      daemon=True).start()
     return True
