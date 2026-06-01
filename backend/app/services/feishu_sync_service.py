@@ -165,11 +165,30 @@ def _feishu_values(rec_fields: dict, fm: dict[str, str]) -> dict:
     return {sys_f: rec_fields.get(fe_f) for sys_f, fe_f in fm.items()}
 
 
-def _to_feishu_fields(row, fm: dict[str, str]) -> dict:
-    """系统行 → 飞书 fields ({飞书字段名: JSON 标量})。"""
+def _primary_field_name(db: Session, binding) -> Optional[str]:
+    """取飞书表主字段名 (第一列, 永远文本)。取不到时返回 None, 不影响主流程。"""
+    try:
+        fields = feishu_client.list_table_fields(
+            db, binding.feishu_app_token, binding.feishu_table_id)
+    except feishu_client.FeishuError:
+        return None
+    return next((f.get("field_name") for f in fields if f.get("is_primary")), None)
+
+
+def _to_feishu_fields(row, fm: dict[str, str], primary_fe: Optional[str] = None) -> dict:
+    """系统行 → 飞书 fields ({飞书字段名: JSON 标量})。
+
+    飞书每张表的主字段 (第一列) 永远是文本类型且不可改。若某个日期/数字系统字段
+    恰好映射到主字段, 直接发数字/时间戳会 TextFieldConvFail。这里对落到主字段的值
+    强制转字符串兜底 (对常规 String 主键是无影响的 no-op)。
+    """
     out = {}
     for sys_f, fe_f in fm.items():
-        out[fe_f] = _normalize(getattr(row, sys_f, None))
+        val = _normalize(getattr(row, sys_f, None))
+        if primary_fe is not None and fe_f == primary_fe and val is not None \
+                and not isinstance(val, str):
+            val = str(val)
+        out[fe_f] = val
     return out
 
 
@@ -212,13 +231,15 @@ def _feishu_field_type(model, attr: str) -> int:
 
 
 def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
-                          first_sync: bool, res: "SyncResult") -> None:
+                          first_sync: bool, res: "SyncResult") -> Optional[str]:
     """字段对齐 (以系统映射为准):
     - 映射里有、飞书没有的列 → 按系统字段类型直接在飞书新建。
     - 飞书多出来、映射里没有的列:
         · 首次同步 → 直接删除 (该列飞书数据一并丢失)。
         · 之后    → 记一条「飞书多余字段」冲突, 等用户裁决, 不自动删。
       飞书的主字段 (is_primary) 不能删, 跳过。
+
+    返回飞书主字段名 (供推送时把落到主字段的值强制转文本)。
     """
     try:
         fields = feishu_client.list_table_fields(
@@ -226,8 +247,9 @@ def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
     except feishu_client.FeishuError as e:
         res.errors.append(f"读取飞书字段失败: {e}")
         _logger.error("飞书同步[%s] 读取字段失败: %s", binding.system_table, e)
-        return
+        return None
 
+    primary_fe = next((f.get("field_name") for f in fields if f.get("is_primary")), None)
     existing = {f.get("field_name") for f in fields}
     mapped = set(fm.values())
 
@@ -251,7 +273,7 @@ def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
     extras = [f for f in fields
               if f.get("field_name") not in mapped and not f.get("is_primary")]
     if not extras:
-        return
+        return primary_fe
     extra_names = [f.get("field_name") for f in extras]
     if first_sync:
         for f in extras:
@@ -268,6 +290,7 @@ def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
         _record_field_conflict(db, binding, extra_names)
         _logger.warning("飞书同步[%s] 飞书表多出 %d 个字段, 已记冲突待裁决: %s",
                         binding.system_table, len(extra_names), extra_names)
+    return primary_fe
 
 
 def _record_field_conflict(db, binding, extra_names: list[str]) -> None:
@@ -370,8 +393,10 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
     ).scalar_one() == 0
 
     # 字段对齐: 缺失列补建; 飞书多余列首次删、之后报冲突 (避免 FieldNameNotFound 刷屏)。
+    # 同时拿到飞书主字段名, 推送时把落到主字段的值强制转文本 (主字段永远是文本类型)。
+    primary_fe = None
     if can_push:
-        _ensure_feishu_fields(db, binding, ent, fm, first_sync, res)
+        primary_fe = _ensure_feishu_fields(db, binding, ent, fm, first_sync, res)
 
     # 已有映射
     maps = {
@@ -388,7 +413,8 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
     for i, pk in enumerate(all_pks, 1):
         try:
             _sync_one(db, binding, ent, fm, fields, pk, sys_rows.get(pk),
-                      fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, first_sync, res)
+                      fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, first_sync, res,
+                      primary_fe)
         except feishu_client.FeishuError as e:
             res.errors.append(f"{pk}: {e}")
             _logger.error("飞书同步[%s] 记录 %s 失败: %s", binding.system_table, pk, e)
@@ -425,7 +451,8 @@ def _new_map(binding, pk, sys_hash, fe_hash, feishu_record_id) -> FeishuSyncMap:
 
 
 def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
-              can_push, can_pull, first_sync, res: SyncResult) -> None:
+              can_push, can_pull, first_sync, res: SyncResult,
+              primary_fe: Optional[str] = None) -> None:
     pk_feishu = fm[ent.pk_attr]
 
     # a) 仅系统有 → push 新建到飞书
@@ -434,7 +461,7 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
             return
         rec_id = feishu_client.create_record(
             db, binding.feishu_app_token, binding.feishu_table_id,
-            _to_feishu_fields(sys_row, fm))
+            _to_feishu_fields(sys_row, fm, primary_fe))
         sys_hash = _hash(_system_values(sys_row, fields))
         db.add(_new_map(binding, pk, sys_hash, sys_hash, rec_id))
         res.created_feishu += 1
@@ -471,7 +498,7 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
             # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突
             feishu_client.update_record(
                 db, binding.feishu_app_token, binding.feishu_table_id,
-                fe_rec["record_id"], _to_feishu_fields(sys_row, fm))
+                fe_rec["record_id"], _to_feishu_fields(sys_row, fm, primary_fe))
             db.add(_new_map(binding, pk, sys_hash, sys_hash, fe_rec["record_id"]))
             res.pushed += 1
         else:
@@ -490,7 +517,7 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         return
     if sys_changed and can_push:
         feishu_client.update_record(db, binding.feishu_app_token, binding.feishu_table_id,
-                                    m.feishu_record_id, _to_feishu_fields(sys_row, fm))
+                                    m.feishu_record_id, _to_feishu_fields(sys_row, fm, primary_fe))
         m.system_hash = sys_hash
         m.feishu_hash = sys_hash
         m.last_sync_at = datetime.now(timezone.utc)
@@ -685,8 +712,9 @@ def resolve_conflict(db: Session, exception_id: int, keep: str, *,
     rec_id = ctx.get("feishu_record_id")
 
     if keep == "system" and sys_row is not None:
+        primary_fe = _primary_field_name(db, binding)
         feishu_client.update_record(db, ctx["feishu_app_token"], ctx["feishu_table_id"],
-                                    rec_id, _to_feishu_fields(sys_row, fm))
+                                    rec_id, _to_feishu_fields(sys_row, fm, primary_fe))
         new_hash = _hash(_system_values(sys_row, list(fm.keys())))
     elif keep == "feishu":
         fe_list = feishu_client.list_records(db, ctx["feishu_app_token"], ctx["feishu_table_id"])

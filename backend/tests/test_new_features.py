@@ -434,3 +434,27 @@ def test_all_preset_mappings_include_pk():
         for f in fm:
             assert ent.model.__table__.columns.get(f) is not None, \
                 f"{system_table}.{f} 模型无此列"
+
+
+def test_primary_field_value_coerced_to_text():
+    """落到飞书主字段的值强制转文本 (主字段永远是文本类型), 非主字段保持原类型。"""
+    from datetime import date
+    from app.services.feishu_sync_service import _to_feishu_fields
+
+    class _Row:
+        pass
+    r = _Row()
+    r.code = "ABC"
+    r.bill_date = date(2026, 6, 1)
+    r.amount = 50
+    fm = {"code": "编码", "bill_date": "日期", "amount": "金额"}
+
+    # 主字段恰好是日期列 → 该列被转成字符串, 其余列类型不变
+    out = _to_feishu_fields(r, fm, primary_fe="日期")
+    assert isinstance(out["日期"], str)
+    assert isinstance(out["金额"], int)
+
+    # 常规: 主字段是文本编码列 → 完全无影响 (no-op)
+    out2 = _to_feishu_fields(r, fm, primary_fe="编码")
+    assert out2["编码"] == "ABC"
+    assert isinstance(out2["日期"], int)
