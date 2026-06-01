@@ -168,6 +168,15 @@ def create_field(db: Session, app_token: str, table_id: str,
     return (data.get("field") or {}).get("field_id", "")
 
 
+def delete_field(db: Session, app_token: str, table_id: str, field_id: str) -> None:
+    """删除 Bitable 表里的字段 (不可逆, 该列数据一并丢失).
+
+    调用: DELETE /bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}
+    """
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}"
+    _req(db, "DELETE", url)
+
+
 def test_connection(db: Session) -> dict:
     """后台"测试连接"按钮用: 拿一次 token 即视为通。"""
     try:

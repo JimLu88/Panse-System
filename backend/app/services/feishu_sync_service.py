@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import threading
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
@@ -203,18 +204,26 @@ def _feishu_field_type(model, attr: str) -> int:
 
 
 def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
-                          res: "SyncResult") -> None:
-    """确保映射里的飞书列都存在; 缺的按系统字段类型直接在飞书建出来。"""
+                          first_sync: bool, res: "SyncResult") -> None:
+    """字段对齐 (以系统映射为准):
+    - 映射里有、飞书没有的列 → 按系统字段类型直接在飞书新建。
+    - 飞书多出来、映射里没有的列:
+        · 首次同步 → 直接删除 (该列飞书数据一并丢失)。
+        · 之后    → 记一条「飞书多余字段」冲突, 等用户裁决, 不自动删。
+      飞书的主字段 (is_primary) 不能删, 跳过。
+    """
     try:
-        existing = {
-            f.get("field_name")
-            for f in feishu_client.list_table_fields(
-                db, binding.feishu_app_token, binding.feishu_table_id)
-        }
+        fields = feishu_client.list_table_fields(
+            db, binding.feishu_app_token, binding.feishu_table_id)
     except feishu_client.FeishuError as e:
         res.errors.append(f"读取飞书字段失败: {e}")
         _logger.error("飞书同步[%s] 读取字段失败: %s", binding.system_table, e)
         return
+
+    existing = {f.get("field_name") for f in fields}
+    mapped = set(fm.values())
+
+    # 1) 补建缺失的映射字段
     for sys_f, fe_f in fm.items():
         if fe_f in existing:
             continue
@@ -229,6 +238,58 @@ def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
             res.errors.append(f"新建飞书字段「{fe_f}」失败: {e}")
             _logger.error("飞书同步[%s] 新建字段「%s」失败: %s",
                           binding.system_table, fe_f, e)
+
+    # 2) 处理飞书多余字段
+    extras = [f for f in fields
+              if f.get("field_name") not in mapped and not f.get("is_primary")]
+    if not extras:
+        return
+    extra_names = [f.get("field_name") for f in extras]
+    if first_sync:
+        for f in extras:
+            try:
+                feishu_client.delete_field(
+                    db, binding.feishu_app_token, binding.feishu_table_id, f.get("field_id"))
+                _logger.info("飞书同步[%s] 首次同步删除飞书多余字段「%s」",
+                             binding.system_table, f.get("field_name"))
+            except feishu_client.FeishuError as e:
+                res.errors.append(f"删除飞书多余字段「{f.get('field_name')}」失败: {e}")
+                _logger.error("飞书同步[%s] 删除字段「%s」失败: %s",
+                              binding.system_table, f.get("field_name"), e)
+    else:
+        _record_field_conflict(db, binding, extra_names)
+        _logger.warning("飞书同步[%s] 飞书表多出 %d 个字段, 已记冲突待裁决: %s",
+                        binding.system_table, len(extra_names), extra_names)
+
+
+def _record_field_conflict(db, binding, extra_names: list[str]) -> None:
+    """飞书多出列 → 记/更新一条「飞书多余字段」冲突 (整表级, source_pk=__schema__)。"""
+    pk = "__schema__"
+    ctx = {
+        "system_table": binding.system_table,
+        "feishu_app_token": binding.feishu_app_token,
+        "feishu_table_id": binding.feishu_table_id,
+        "extra_fields": extra_names,
+    }
+    desc = f"飞书表比系统多出 {len(extra_names)} 个字段: {', '.join(extra_names)}; 请裁决保留或删除"
+    existing = db.execute(
+        select(DataException).where(
+            DataException.source_table == binding.system_table,
+            DataException.source_pk == pk,
+            DataException.exception_type == "feishu_extra_field",
+            DataException.status == "open",
+        )
+    ).scalar_one_or_none()
+    if existing is not None:
+        existing.context = ctx
+        existing.description = desc
+        db.flush()
+        return
+    exception_service.record(
+        db, source_table=binding.system_table, source_pk=pk,
+        exception_type="feishu_extra_field", severity="warning",
+        description=desc, suggestion_action="manual_fix", context=ctx,
+    )
 
 
 # ----------------------------- 同步主流程 ------------------------- #
@@ -290,10 +351,18 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
         if pk_val is not None and pk_val != "":
             fe_by_pk[str(pk_val)] = rec
 
-    # 字段体检: 映射里的飞书列名若在表中不存在, 直接按系统字段类型在飞书建出来,
-    # 避免 push 时每条记录都报 FieldNameNotFound 刷屏。
+    # 是否「首次同步」: 这张绑定 (系统表+飞书表) 还没有任何同步映射。
+    # 首次同步以系统为准 (新配对差异直接推系统值), 并删除飞书多余列。
+    first_sync = db.execute(
+        select(func.count(FeishuSyncMap.id)).where(
+            FeishuSyncMap.system_table == binding.system_table,
+            FeishuSyncMap.feishu_table_id == binding.feishu_table_id,
+        )
+    ).scalar_one() == 0
+
+    # 字段对齐: 缺失列补建; 飞书多余列首次删、之后报冲突 (避免 FieldNameNotFound 刷屏)。
     if can_push:
-        _ensure_feishu_fields(db, binding, ent, fm, res)
+        _ensure_feishu_fields(db, binding, ent, fm, first_sync, res)
 
     # 已有映射
     maps = {
@@ -307,7 +376,7 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
     for pk in all_pks:
         try:
             _sync_one(db, binding, ent, fm, fields, pk, sys_rows.get(pk),
-                      fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, res)
+                      fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, first_sync, res)
         except feishu_client.FeishuError as e:
             res.errors.append(f"{pk}: {e}")
             _logger.error("飞书同步[%s] 记录 %s 失败: %s", binding.system_table, pk, e)
@@ -337,7 +406,7 @@ def _new_map(binding, pk, sys_hash, fe_hash, feishu_record_id) -> FeishuSyncMap:
 
 
 def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
-              can_push, can_pull, res: SyncResult) -> None:
+              can_push, can_pull, first_sync, res: SyncResult) -> None:
     pk_feishu = fm[ent.pk_attr]
 
     # a) 仅系统有 → push 新建到飞书
@@ -376,9 +445,16 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
     fe_hash = _hash(fe_vals)
 
     if m is None:
-        # 首次配对: 一致则建映射, 不一致按冲突处理
+        # 首次配对: 一致则直接建映射
         if sys_hash == fe_hash:
             db.add(_new_map(binding, pk, sys_hash, fe_hash, fe_rec["record_id"]))
+        elif first_sync and can_push:
+            # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突
+            feishu_client.update_record(
+                db, binding.feishu_app_token, binding.feishu_table_id,
+                fe_rec["record_id"], _to_feishu_fields(sys_row, fm))
+            db.add(_new_map(binding, pk, sys_hash, sys_hash, fe_rec["record_id"]))
+            res.pushed += 1
         else:
             _record_conflict(db, binding, ent, fm, pk, sys_row, fe_rec, sys_vals, fe_vals)
             db.add(_new_map(binding, pk, sys_hash, fe_hash, fe_rec["record_id"]))
@@ -457,6 +533,68 @@ def sync_all(db: Session) -> list[SyncResult]:
     ).scalars():
         out.append(sync_binding(db, b))
     return out
+
+
+# ----------------------------- 后台同步 --------------------------- #
+# 手动「立即同步」走后台线程: 不受前端超时限制, 每张表同步完立即提交,
+# 中途中断也不会丢已同步的进度。进度查 /api/feishu/sync/status 或运行日志。
+
+_sync_lock = threading.Lock()
+_sync_state: dict = {
+    "running": False, "started_at": None, "finished_at": None,
+    "scope": None, "summary": None, "error": None,
+}
+
+
+def _run_background_sync(system_table: Optional[str]) -> None:
+    from app.database import SessionLocal
+    db = SessionLocal()
+    agg = {"tables": 0, "pushed": 0, "pulled": 0, "created_feishu": 0,
+           "created_system": 0, "conflicts": 0, "errors": 0}
+    try:
+        q = select(FeishuTableBinding).where(FeishuTableBinding.enabled.is_(True))
+        if system_table:
+            q = q.where(FeishuTableBinding.system_table == system_table)
+        bindings = db.execute(q).scalars().all()
+        _logger.info("飞书同步: 后台任务开始, 共 %d 张启用表", len(bindings))
+        for b in bindings:
+            res = sync_binding(db, b)
+            db.commit()   # 逐表提交, 中断不丢进度
+            agg["tables"] += 1
+            agg["pushed"] += res.pushed
+            agg["pulled"] += res.pulled
+            agg["created_feishu"] += res.created_feishu
+            agg["created_system"] += res.created_system
+            agg["conflicts"] += res.conflicts
+            agg["errors"] += len(res.errors)
+        _logger.info("飞书同步: 后台任务完成 %s", agg)
+        _sync_state["summary"] = agg
+    except Exception as e:  # pragma: no cover
+        db.rollback()
+        _sync_state["error"] = f"{type(e).__name__}: {e}"
+        _logger.exception("飞书同步: 后台任务异常")
+    finally:
+        db.close()
+        with _sync_lock:
+            _sync_state["running"] = False
+            _sync_state["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def start_background_sync(system_table: Optional[str] = None) -> bool:
+    """启动后台同步。已有任务在跑则返回 False。"""
+    with _sync_lock:
+        if _sync_state["running"]:
+            return False
+        _sync_state.update(running=True, started_at=datetime.now(timezone.utc).isoformat(),
+                           finished_at=None, scope=system_table or "all",
+                           summary=None, error=None)
+    threading.Thread(target=_run_background_sync, args=(system_table,),
+                     daemon=True).start()
+    return True
+
+
+def sync_status() -> dict:
+    return dict(_sync_state)
 
 
 def resolve_conflict(db: Session, exception_id: int, keep: str, *,
@@ -573,6 +711,31 @@ def resolve_conflict_merged(db: Session, exception_id: int, field_choices: dict[
         m.system_hash = new_hash
         m.feishu_hash = new_hash
         m.last_sync_at = datetime.now(timezone.utc)
+    exc.status = "resolved"
+    exc.resolved_by = resolved_by
+    exc.resolved_at = datetime.now(timezone.utc).isoformat()
+    db.flush()
+
+
+def resolve_extra_fields(db: Session, exception_id: int, action: str, *,
+                         resolved_by: Optional[str] = None) -> None:
+    """裁决「飞书多余字段」冲突。
+    action='delete' 删掉飞书这些多余列 (以系统为准); 'keep' 保留 (两边都留, 仅标记已处理)。
+    """
+    if action not in ("delete", "keep"):
+        raise ValueError("action 必须是 delete 或 keep")
+    exc = db.get(DataException, exception_id)
+    if exc is None or exc.exception_type != "feishu_extra_field":
+        raise ValueError("找不到该飞书多余字段冲突")
+    ctx = exc.context or {}
+    if action == "delete":
+        extras = set(ctx.get("extra_fields") or [])
+        fields = feishu_client.list_table_fields(
+            db, ctx["feishu_app_token"], ctx["feishu_table_id"])
+        for f in fields:
+            if f.get("field_name") in extras and not f.get("is_primary"):
+                feishu_client.delete_field(
+                    db, ctx["feishu_app_token"], ctx["feishu_table_id"], f.get("field_id"))
     exc.status = "resolved"
     exc.resolved_by = resolved_by
     exc.resolved_at = datetime.now(timezone.utc).isoformat()

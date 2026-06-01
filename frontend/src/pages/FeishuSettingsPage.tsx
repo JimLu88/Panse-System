@@ -25,17 +25,21 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   FeishuBinding,
   FeishuConflict,
+  FeishuExtraField,
   createFeishuBinding,
   deleteFeishuBinding,
   feishuStatus,
   feishuSupportedTables,
   getFeishuCredentials,
+  getFeishuSyncStatus,
   getFeishuTableFields,
   listFeishuBindings,
   listFeishuConflicts,
+  listFeishuExtraFields,
   putFeishuCredentials,
   resolveFeishuConflict,
   resolveFeishuConflictFields,
+  resolveFeishuExtraFields,
   resolveFeishuWiki,
   setupFeishuPreset,
   testFeishuConnection,
@@ -102,12 +106,28 @@ export default function FeishuSettingsPage() {
     queryFn: listFeishuConflicts,
     refetchInterval: 30000,
   });
+  const { data: extraFields } = useQuery({
+    queryKey: ['feishu-extra-fields'],
+    queryFn: listFeishuExtraFields,
+    refetchInterval: 30000,
+  });
 
   const invalidateAll = () => {
     qc.invalidateQueries({ queryKey: ['feishu-bindings'] });
     qc.invalidateQueries({ queryKey: ['feishu-status'] });
     qc.invalidateQueries({ queryKey: ['feishu-conflicts'] });
+    qc.invalidateQueries({ queryKey: ['feishu-extra-fields'] });
   };
+
+  const extraResolveMut = useMutation({
+    mutationFn: (v: { id: number; action: 'delete' | 'keep' }) =>
+      resolveFeishuExtraFields(v.id, v.action),
+    onSuccess: () => {
+      message.success('已处理');
+      qc.invalidateQueries({ queryKey: ['feishu-extra-fields'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '处理失败'),
+  });
 
   const credMut = useMutation({
     mutationFn: putFeishuCredentials,
@@ -157,37 +177,20 @@ export default function FeishuSettingsPage() {
   const syncMut = useMutation({
     mutationFn: () => triggerFeishuSync(),
     onSuccess: (r) => {
-      const total = r.results.reduce(
-        (acc, x) => ({
-          pushed: acc.pushed + x.pushed,
-          pulled: acc.pulled + x.pulled,
-          conflicts: acc.conflicts + x.conflicts,
-        }),
-        { pushed: 0, pulled: 0, conflicts: 0 },
-      );
-      const errs = r.results
-        .filter((x) => x.errors.length > 0)
-        .flatMap((x) => x.errors.map((m) => `${TABLE_LABELS[x.system_table] ?? x.system_table}: ${m}`));
-      if (errs.length > 0) {
-        Modal.error({
-          title: `同步完成, 但有 ${errs.length} 处错误`,
-          width: 640,
-          content: (
-            <div>
-              <p>推 {total.pushed} / 拉 {total.pulled} / 冲突 {total.conflicts}。以下表同步报错:</p>
-              <ul style={{ maxHeight: 320, overflow: 'auto', paddingLeft: 18 }}>
-                {errs.map((m, i) => <li key={i} style={{ fontSize: 12 }}>{m}</li>)}
-              </ul>
-              <p style={{ color: '#999', fontSize: 12 }}>更多细节见「管理 → 运行日志 / 错误排查」(模块: 飞书同步)。</p>
-            </div>
-          ),
-        });
+      if (r.status === 'already_running') {
+        message.warning(r.detail);
       } else {
-        message.success(`同步完成: 推 ${total.pushed} / 拉 ${total.pulled} / 冲突 ${total.conflicts}`);
+        message.success(r.detail);
       }
-      invalidateAll();
     },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '同步失败'),
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '同步触发失败'),
+  });
+
+  // 后台同步进度 (运行中每 5s 刷新一次)
+  const { data: syncStatus } = useQuery({
+    queryKey: ['feishu-sync-status'],
+    queryFn: getFeishuSyncStatus,
+    refetchInterval: (q) => (q.state.data?.running ? 5000 : false),
   });
 
   const resolveMut = useMutation({
@@ -352,6 +355,66 @@ export default function FeishuSettingsPage() {
             </span>
           } />
       </Card>
+
+      {/* 后台同步进度 */}
+      {syncStatus && (syncStatus.running || syncStatus.summary || syncStatus.error) && (
+        <Alert
+          showIcon
+          type={syncStatus.error ? 'error' : syncStatus.running ? 'info' : 'success'}
+          message={
+            syncStatus.running
+              ? `同步进行中… (范围: ${syncStatus.scope ?? 'all'})`
+              : syncStatus.error
+                ? `上次同步异常: ${syncStatus.error}`
+                : '上次同步已完成'
+          }
+          description={
+            syncStatus.summary ? (
+              <span style={{ fontSize: 12 }}>
+                表 {syncStatus.summary.tables} · 推 {syncStatus.summary.pushed} · 拉 {syncStatus.summary.pulled}
+                {' · '}新建飞书 {syncStatus.summary.created_feishu} · 新建系统 {syncStatus.summary.created_system}
+                {' · '}冲突 {syncStatus.summary.conflicts} · 错误 {syncStatus.summary.errors}
+                {(syncStatus.summary.errors > 0) && '（详情见「管理 → 运行日志」模块: 飞书同步）'}
+              </span>
+            ) : syncStatus.running ? '进度明细见「管理 → 运行日志」(模块: 飞书同步)' : undefined
+          }
+        />
+      )}
+
+      {/* 飞书多余列裁决 */}
+      {(extraFields?.length ?? 0) > 0 && (
+        <Card size="small" title={<Space>飞书多余列待裁决<Tag color="red">{extraFields!.length}</Tag></Space>}>
+          <Alert type="warning" showIcon style={{ marginBottom: 8 }}
+                 message="飞书表里有系统没有的列。选择「删除多余列」以系统为准 (该列飞书数据会丢失), 或「保留」(忽略本次提示)。" />
+          <Table<FeishuExtraField>
+            rowKey="id" size="small" pagination={false}
+            dataSource={extraFields}
+            columns={[
+              { title: '系统表', dataIndex: 'system_table', width: 160, render: (v: string) => renderTableLabel(v) },
+              {
+                title: '飞书多出的列', render: (_: any, c: FeishuExtraField) => (
+                  <Space wrap>
+                    {(c.context?.extra_fields ?? []).map((f) => <Tag key={f}>{f}</Tag>)}
+                  </Space>
+                ),
+              },
+              {
+                title: '裁决', width: 240, render: (_: any, c: FeishuExtraField) => (
+                  <Space wrap>
+                    <Popconfirm title="确认删除这些飞书列? 该列飞书数据会永久丢失"
+                                onConfirm={() => extraResolveMut.mutate({ id: c.id, action: 'delete' })}>
+                      <Button size="small" danger>删除多余列</Button>
+                    </Popconfirm>
+                    <Button size="small" onClick={() => extraResolveMut.mutate({ id: c.id, action: 'keep' })}>
+                      保留
+                    </Button>
+                  </Space>
+                ),
+              },
+            ]}
+          />
+        </Card>
+      )}
 
       {/* 冲突裁决 */}
       {(conflicts?.length ?? 0) > 0 && (

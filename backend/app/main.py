@@ -14,7 +14,8 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 # 每个请求一个 trace id, 贯穿日志与错误响应, 方便「按 id 串起一次请求」排查
 request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
 
-# 全局日志: 带时间戳 (UTC→本地由容器时区决定), 输出到 stdout → docker logs api 可见
+# 全局日志: 时间戳统一用北京时间 (东八区), 不受容器时区影响, 输出到 stdout → docker logs api 可见
+logging.Formatter.converter = lambda secs: time.gmtime((secs if secs is not None else time.time()) + 8 * 3600)
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO").upper(),
     format="%(asctime)s | %(levelname)-7s | %(name)s | %(message)s",
