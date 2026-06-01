@@ -505,3 +505,61 @@ def test_factory_reconciliation_rebuild(db_session):
     assert rec.bill_amount == Decimal("1800")
     assert rec.period_start == date(2026, 3, 1)
     assert rec.period_end == date(2026, 3, 31)
+
+
+def test_zero_cost_for_refill_and_install(db_session):
+    """补单 + 安装SKU 订单理论成本归0。"""
+    from app.models.order import Order
+    from app.services import order_cost_service as ocs
+    o1 = Order(platform="淘宝", order_no="R1", is_refill=True, qty=1, status="signed")
+    o2 = Order(platform="淘宝", order_no="I1", sku="商家安装服务", qty=1, status="signed")
+    db_session.add_all([o1, o2]); db_session.flush()
+    ocs.recompute_and_save(db_session, o1)
+    ocs.recompute_and_save(db_session, o2)
+    assert o1.theoretical_cost == Decimal("0")
+    assert o2.theoretical_cost == Decimal("0")
+
+
+def test_default_warehouse():
+    """样块/补单→杭州, 其余→江西仓库。"""
+    from app.services.order_cost_service import default_warehouse_for
+    assert default_warehouse_for("樱桃木样块", None, False) == "杭州"
+    assert default_warehouse_for("窄柜100", None, True) == "杭州"
+    assert default_warehouse_for("窄柜100", "P-01", False) == "江西仓库"
+
+
+def test_rederive_refill_flags(db_session):
+    """以补单记录为准: 在记录里的标补单, 误标的取消。"""
+    from datetime import date
+    from app.models.order import Order
+    from app.models.finance import RefillRecord
+    from app.services import order_sync_service as oss
+    db_session.add_all([
+        RefillRecord(order_no="A1", refill_date=date(2026, 1, 1), qty=1),
+        Order(platform="淘宝", order_no="A1", is_refill=False, qty=1, status="signed"),
+        Order(platform="淘宝", order_no="B2", is_refill=True, qty=1, status="signed"),
+    ])
+    db_session.flush()
+    r = oss.rederive_refill_flags(db_session, recompute_cost=False)
+    assert "A1" in r.flagged_orders and "B2" in r.unflagged_orders
+    a1 = db_session.query(Order).filter_by(order_no="A1").one()
+    b2 = db_session.query(Order).filter_by(order_no="B2").one()
+    assert a1.is_refill is True and b2.is_refill is False
+
+
+def test_backfill_compensation_from_aftersales(db_session):
+    """售后赔付按订单号聚合回写 Order.compensation_fee。"""
+    from app.models.order import Order
+    from app.models.marketing import AfterSales
+    from app.services import order_sync_service as oss
+    db_session.add_all([
+        Order(platform="淘宝", order_no="C1", qty=1, status="signed"),
+        AfterSales(platform_order_no="C1", compensation_fee=Decimal("120")),
+        AfterSales(platform_order_no="C1", factory_compensation=Decimal("30"),
+                   logistics_compensation=Decimal("20")),
+    ])
+    db_session.flush()
+    r = oss.backfill_compensation_from_aftersales(db_session)
+    assert r.orders_updated == 1
+    c1 = db_session.query(Order).filter_by(order_no="C1").one()
+    assert c1.compensation_fee == Decimal("170")  # 120 + (30+20)

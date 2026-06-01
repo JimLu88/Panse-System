@@ -1247,6 +1247,12 @@ def _h_order(db, data, key_field, ctx=None):
                 suggestion_action="view",
                 context={"order_no": order_no},
             )
+    # 发货仓库: 行内未指定时, 样块/补单→杭州, 其余→江西仓库
+    if not payload.get("warehouse"):
+        from app.services import order_cost_service
+        payload["warehouse"] = order_cost_service.default_warehouse_for(
+            payload.get("product_name"), payload.get("sku"),
+            bool(payload.get("is_refill")))
     obj = Order(**payload)
     if ctx and ctx.import_batch_id:
         obj.import_job_id = ctx.import_batch_id

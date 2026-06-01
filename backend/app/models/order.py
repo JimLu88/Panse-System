@@ -69,6 +69,9 @@ class Order(Base, TimestampMixin):
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # 发货仓库 — 默认江西仓库; 样块 / 补单订单统一杭州 (导入时由 default_warehouse_for 自动判定)
+    warehouse: Mapped[Optional[str]] = mapped_column(String(32))
+
     # Phase 1 扩展
     is_historical: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 历史水位线之前的订单, 不参与库存 / 财务核对

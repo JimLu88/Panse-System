@@ -29,6 +29,32 @@ _CENTS = Decimal("0.01")
 # 木作物料编码前缀: 这类物料不在 materials 单价表, 价格按 SKU 从 PricingSku.wood_cost 取。
 WOOD_PREFIX = "WD"
 
+# 零成本订单关键词: 商家安装 / 淘宝官方服务 这类 SKU 无实际生产成本。
+ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务")
+
+
+def default_warehouse_for(product_name: Optional[str], sku: Optional[str],
+                          is_refill: bool) -> str:
+    """发货仓库默认判定: 样块 / 补单订单统一杭州, 其余默认江西仓库。"""
+    text = f"{product_name or ''} {sku or ''}"
+    if is_refill or "样块" in text or "样品" in text:
+        return "杭州"
+    return "江西仓库"
+
+
+def zero_cost_reason(order: Order) -> Optional[str]:
+    """判断订单是否应把理论成本直接归 0, 返回原因 (否则 None)。
+
+    - 补单/刷单: 不产生真实生产成本 (成本在补单记录单独核算), 理论成本=0。
+    - 商家安装 / 淘宝官方服务 SKU: 淘宝官方服务, 无实际成本, 全部=0。
+    """
+    if order.is_refill:
+        return "补单(刷单)无真实生产成本, 成本在补单记录核算"
+    text = f"{order.sku or ''} {order.sku_code or ''} {order.product_name or ''}"
+    if any(k in text for k in ZERO_COST_KEYWORDS):
+        return "商家安装/淘宝官方服务 SKU, 无实际成本"
+    return None
+
 
 @dataclass
 class CostLine:
@@ -153,7 +179,18 @@ def compute(db: Session, order: Order) -> CostBreakdown:
 
 
 def recompute_and_save(db: Session, order: Order) -> CostBreakdown:
-    """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost)."""
+    """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
+
+    补单/安装SKU 直接归 0, 不走 BOM 反推。
+    """
+    reason = zero_cost_reason(order)
+    if reason is not None:
+        order.theoretical_cost = Decimal("0")
+        return CostBreakdown(
+            order_no=order.order_no, sku_code=order.sku_code, qty=int(order.qty or 1),
+            unit_cost=Decimal("0"), total_cost=Decimal("0"),
+            resolved=True, note=f"理论成本归0: {reason}",
+        )
     bd = compute(db, order)
     if bd.resolved:
         order.theoretical_cost = bd.unit_cost
@@ -224,10 +261,15 @@ def backfill_theoretical_from_pricing(
     if only_missing:
         stmt = stmt.where(Order.theoretical_cost.is_(None))
     orders = db.execute(stmt).scalars().all()
-    updated = no_pricing = closed = 0
+    updated = no_pricing = closed = zeroed = 0
     for o in orders:
         if skip_closed and o.status in _CLOSED_STATUSES:
             closed += 1
+            continue
+        # 补单/安装SKU → 直接归 0, 不查定价表
+        if zero_cost_reason(o) is not None:
+            o.theoretical_cost = Decimal("0")
+            zeroed += 1
             continue
         cost = _pricing_cost_for(db, o)
         if cost is not None:
@@ -238,6 +280,7 @@ def backfill_theoretical_from_pricing(
     db.flush()
     return {
         "updated": updated,
+        "zeroed_refill_install": zeroed,
         "skipped_no_pricing": no_pricing,
         "skipped_closed": closed,
         "total": len(orders),
