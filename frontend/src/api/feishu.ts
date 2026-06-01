@@ -69,10 +69,23 @@ export interface FeishuSyncResult {
   errors: string[];
 }
 
+// 后台执行: 立即返回 started / already_running, 进度去运行日志看
 export const triggerFeishuSync = (system_table?: string) =>
   api
-    .post<{ results: FeishuSyncResult[] }>('/api/feishu/sync', { system_table }, { timeout: 120000 })
+    .post<{ status: string; detail: string }>('/api/feishu/sync', { system_table })
     .then((r) => r.data);
+
+export interface FeishuSyncStatus {
+  running: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+  scope: string | null;
+  summary: Record<string, number> | null;
+  error: string | null;
+}
+
+export const getFeishuSyncStatus = () =>
+  api.get<FeishuSyncStatus>('/api/feishu/sync/status').then((r) => r.data);
 
 export interface FeishuConflict {
   id: number;
@@ -96,6 +109,22 @@ export const resolveFeishuConflict = (id: number, keep: 'system' | 'feishu') =>
 // 字段级合并裁决: {字段: 'system'|'feishu'}
 export const resolveFeishuConflictFields = (id: number, field_choices: Record<string, 'system' | 'feishu'>) =>
   api.post(`/api/feishu/conflicts/${id}/resolve`, { field_choices }).then((r) => r.data);
+
+// 飞书多余列冲突
+export interface FeishuExtraField {
+  id: number;
+  system_table: string;
+  source_pk: string | null;
+  description: string;
+  context: { extra_fields?: string[]; feishu_table_id?: string } | null;
+  created_at: string | null;
+}
+
+export const listFeishuExtraFields = () =>
+  api.get<FeishuExtraField[]>('/api/feishu/extra-fields').then((r) => r.data);
+
+export const resolveFeishuExtraFields = (id: number, action: 'delete' | 'keep') =>
+  api.post(`/api/feishu/extra-fields/${id}/resolve`, { action }).then((r) => r.data);
 
 // Wiki 节点 token → Bitable App Token
 export const resolveFeishuWiki = (wiki_token: string) =>

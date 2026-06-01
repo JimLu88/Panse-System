@@ -144,6 +144,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '有人绕过正常流程强制改了订单状态。请查审计日志确认这次变更是否合理。' },
   feishu_conflict: { category: 'sync', label: '飞书与系统数据冲突',
     hint: '飞书和系统里同一条数据不一样，需要你决定以哪边为准。点「去飞书裁决」处理。' },
+  feishu_extra_field: { category: 'sync', label: '飞书表有多余的列',
+    hint: '飞书表里有系统没有的列。点「去飞书裁决」选择删除该列（以系统为准）或保留。' },
   ai_logic_check: { category: 'system', label: 'AI 核查发现疑点',
     hint: 'AI 在导入后核查时发现了一处逻辑疑点。请人工复核确认。' },
 };
@@ -383,8 +385,8 @@ export default function ExceptionsPage() {
         if (row.status !== 'open') {
           return <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{statusLabel[row.status] ?? row.status}</Tag>;
         }
-        // 飞书冲突: 解除必须走飞书同步 (整条/逐字段), 不能内联补填, 否则两端不一致
-        if (row.exception_type === 'feishu_conflict') {
+        // 飞书冲突 / 多余列: 解除必须走飞书设置页裁决, 不能内联补填, 否则两端不一致
+        if (row.exception_type === 'feishu_conflict' || row.exception_type === 'feishu_extra_field') {
           return (
             <Space size="small" wrap>
               <Button size="small" type="primary" onClick={() => navigate('/feishu')}>

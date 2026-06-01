@@ -291,25 +291,25 @@ class SyncIn(BaseModel):
 @router.post("/sync")
 def trigger_sync(payload: SyncIn, db: Session = Depends(get_db),
                  _: User = Depends(require_role("admin", "operator"))):
-    try:
-        if payload.system_table:
-            b = db.execute(
-                select(FeishuTableBinding).where(
-                    FeishuTableBinding.system_table == payload.system_table)
-            ).scalar_one_or_none()
-            if b is None:
-                raise HTTPException(404, "binding 不存在")
-            results = [feishu_sync_service.sync_binding(db, b)]
-        else:
-            results = feishu_sync_service.sync_all(db)
-        db.commit()
-    except HTTPException:
-        raise
-    except Exception as e:  # 提交失败/不可预期错误 → 记日志并把真实原因返回前端
-        db.rollback()
-        _logger.exception("飞书同步请求失败")
-        raise HTTPException(500, f"同步失败: {type(e).__name__}: {e}")
-    return {"results": [r.__dict__ for r in results]}
+    """手动触发同步 → 后台执行, 立即返回。进度查 /sync/status 或运行日志。"""
+    if payload.system_table:
+        b = db.execute(
+            select(FeishuTableBinding).where(
+                FeishuTableBinding.system_table == payload.system_table)
+        ).scalar_one_or_none()
+        if b is None:
+            raise HTTPException(404, "binding 不存在")
+    started = feishu_sync_service.start_background_sync(payload.system_table)
+    if not started:
+        return {"status": "already_running",
+                "detail": "已有同步任务在后台运行, 请等它完成或去运行日志查看进度"}
+    return {"status": "started",
+            "detail": "同步已在后台开始, 进度请看「管理 → 运行日志」(模块: 飞书同步)"}
+
+
+@router.get("/sync/status")
+def get_sync_status(_: User = Depends(get_current_user)):
+    return feishu_sync_service.sync_status()
 
 
 class ConflictOut(BaseModel):
@@ -337,6 +337,45 @@ def list_conflicts(db: Session = Depends(get_db), _: User = Depends(get_current_
         )
         for e in rows
     ]
+
+
+@router.get("/extra-fields", response_model=list[ConflictOut])
+def list_extra_field_conflicts(db: Session = Depends(get_db),
+                               _: User = Depends(get_current_user)):
+    """飞书表比系统多出来的列 (待裁决: 删除 / 保留)。"""
+    rows = db.execute(
+        select(DataException).where(
+            DataException.exception_type == "feishu_extra_field",
+            DataException.status == "open",
+        ).order_by(DataException.id.desc())
+    ).scalars().all()
+    return [
+        ConflictOut(
+            id=e.id, system_table=e.source_table, source_pk=e.source_pk,
+            description=e.description, context=e.context,
+            created_at=e.created_at.isoformat() if e.created_at else None,
+        )
+        for e in rows
+    ]
+
+
+class ResolveExtraFieldsIn(BaseModel):
+    action: str   # delete | keep
+
+
+@router.post("/extra-fields/{exception_id}/resolve")
+def resolve_extra_fields(exception_id: int, payload: ResolveExtraFieldsIn,
+                         db: Session = Depends(get_db),
+                         user: User = Depends(require_role("admin", "operator"))):
+    try:
+        feishu_sync_service.resolve_extra_fields(
+            db, exception_id, payload.action, resolved_by=user.username)
+    except feishu_client.FeishuError as e:
+        raise HTTPException(502, f"飞书操作失败: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return {"ok": True}
 
 
 class ResolveIn(BaseModel):

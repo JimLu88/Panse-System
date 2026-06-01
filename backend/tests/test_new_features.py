@@ -164,7 +164,8 @@ class _FakeFeishu:
     def __init__(self):
         self.records = {}   # record_id -> fields
         self._seq = 0
-        self.fields = set()  # 飞书表已有字段名
+        self.fields = {}    # field_name -> {"field_id", "is_primary"}
+        self._fseq = 0
         self.FeishuError = feishu_sync_service.feishu_client.FeishuError
 
     def list_records(self, db, app_token, table_id, page_size=500):
@@ -172,11 +173,20 @@ class _FakeFeishu:
                 for rid, f in self.records.items()]
 
     def list_table_fields(self, db, app_token, table_id):
-        return [{"field_name": n, "type": 1} for n in self.fields]
+        return [{"field_name": n, "field_id": v["field_id"],
+                 "is_primary": v["is_primary"], "type": 1}
+                for n, v in self.fields.items()]
 
     def create_field(self, db, app_token, table_id, field_name, field_type=1):
-        self.fields.add(field_name)
-        return f"fld{len(self.fields)}"
+        self._fseq += 1
+        fid = f"fld{self._fseq}"
+        self.fields[field_name] = {"field_id": fid, "is_primary": False}
+        return fid
+
+    def delete_field(self, db, app_token, table_id, field_id):
+        for n, v in list(self.fields.items()):
+            if v["field_id"] == field_id:
+                del self.fields[n]
 
     def create_record(self, db, app_token, table_id, fields):
         self._seq += 1
@@ -197,6 +207,7 @@ def fake_feishu(monkeypatch):
     monkeypatch.setattr(feishu_sync_service.feishu_client, "list_records", fake.list_records)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "list_table_fields", fake.list_table_fields)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "create_field", fake.create_field)
+    monkeypatch.setattr(feishu_sync_service.feishu_client, "delete_field", fake.delete_field)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "create_record", fake.create_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "update_record", fake.update_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "delete_record", fake.delete_record)
@@ -281,6 +292,56 @@ def test_feishu_conflict_field_level_merge(db_session, fake_feishu):
     assert db_session.query(Product).filter_by(code="P1").one().name == "飞书改的"
     assert fake_feishu.records["rec1"]["名称"] == "飞书改的"
     assert db_session.query(DataException).filter_by(status="open").count() == 0
+
+
+def test_feishu_first_sync_system_authoritative(db_session, fake_feishu):
+    # 首次同步: 两侧都有 P1 但值不同 → 以系统为准覆盖飞书, 不报冲突
+    db_session.add(Product(code="P1", name="系统名"))
+    b = _binding(db_session)
+    fake_feishu.records["rec1"] = {"编码": "P1", "名称": "飞书名"}
+    fake_feishu.fields = {"编码": {"field_id": "f1", "is_primary": True},
+                          "名称": {"field_id": "f2", "is_primary": False}}
+    db_session.commit()
+    res = feishu_sync_service.sync_binding(db_session, b)
+    db_session.commit()
+    assert res.conflicts == 0
+    assert res.pushed == 1
+    assert fake_feishu.records["rec1"]["名称"] == "系统名"
+
+
+def test_feishu_first_sync_deletes_extra_column(db_session, fake_feishu):
+    db_session.add(Product(code="P1", name="椅子"))
+    b = _binding(db_session)
+    # 飞书表多了一列「多余列」, 首次同步应删掉
+    fake_feishu.fields = {
+        "编码": {"field_id": "f1", "is_primary": True},
+        "名称": {"field_id": "f2", "is_primary": False},
+        "多余列": {"field_id": "f3", "is_primary": False},
+    }
+    db_session.commit()
+    feishu_sync_service.sync_binding(db_session, b)
+    db_session.commit()
+    assert "多余列" not in fake_feishu.fields
+
+
+def test_feishu_extra_column_after_first_sync_records_conflict(db_session, fake_feishu):
+    db_session.add(Product(code="P1", name="椅子"))
+    b = _binding(db_session)
+    fake_feishu.fields = {"编码": {"field_id": "f1", "is_primary": True},
+                          "名称": {"field_id": "f2", "is_primary": False}}
+    db_session.commit()
+    feishu_sync_service.sync_binding(db_session, b); db_session.commit()  # 首次
+    # 之后飞书新增一列 → 第二次同步记冲突, 不删
+    fake_feishu.fields["新加列"] = {"field_id": "f9", "is_primary": False}
+    feishu_sync_service.sync_binding(db_session, b); db_session.commit()
+    assert "新加列" in fake_feishu.fields
+    exc = db_session.query(DataException).filter_by(
+        exception_type="feishu_extra_field", status="open").one()
+    assert "新加列" in exc.context["extra_fields"]
+    # 裁决: 删除
+    feishu_sync_service.resolve_extra_fields(db_session, exc.id, "delete")
+    db_session.commit()
+    assert "新加列" not in fake_feishu.fields
 
 
 def test_webhook_url_verification(db_session):
