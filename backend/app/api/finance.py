@@ -18,6 +18,7 @@ from app.services import (
     balance_service,
     bill_import_service,
     email_import_service,
+    factory_reconciliation_service,
     reconciliation_service,
     smart_matching_service,
 )
@@ -98,6 +99,25 @@ class SmartMatchResult(BaseModel):
     total_scanned: int
     tagged: dict[str, int]
     untouched: int
+
+
+class FactoryReconRebuildOut(BaseModel):
+    periods: int
+    created: int
+    updated: int
+
+
+@router.post("/factory-reconciliation/rebuild", response_model=FactoryReconRebuildOut)
+def rebuild_factory_reconciliation(
+    factory_name: Optional[str] = None, db: Session = Depends(get_db),
+):
+    """按自然月把工厂下单表汇总成工厂对账记录 (本期下单金额/账单金额/实付/差异)。
+
+    导入工厂下单表后触发; 幂等, 可反复跑。
+    """
+    r = factory_reconciliation_service.rebuild_all_periods(db, factory_name=factory_name)
+    db.commit()
+    return FactoryReconRebuildOut(periods=r.periods, created=r.created, updated=r.updated)
 
 
 @router.post("/smart-match/rerun", response_model=SmartMatchResult)

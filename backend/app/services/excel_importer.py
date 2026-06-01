@@ -632,11 +632,11 @@ def _commit_factory_orders(
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
             report.skipped_rows += 1
             continue
+        from app.services import factory_order_service
         fo_no = projected.get("factory_order_no")
         if not fo_no:
-            report.skipped_rows += 1
-            report.errors.append(f"第 {i + 1} 行: 工厂订单号为空")
-            continue
+            # 留空 → 自动生成 畔色0001 序列 (业务确认用中文)
+            fo_no = factory_order_service.next_factory_order_no(db)
         existing = db.execute(
             select(FactoryOrder).where(FactoryOrder.factory_order_no == fo_no)
         ).scalar_one_or_none()
@@ -646,21 +646,39 @@ def _commit_factory_orders(
             continue
         # 自动生成内部单号 (若行内未提供)
         internal_no = projected.get("internal_order_no") or _next_internal_order_no(db, current_year)
+        qty = int(projected.get("qty") or 1)
+        product_code = projected.get("product_code")
+        sku = projected.get("sku")
+        # 产品预期金额: 行内有就用, 否则按定价表「总出厂成本」自动算
+        expected_amount = projected.get("expected_amount")
+        if expected_amount is None:
+            expected_amount = factory_order_service.expected_amount_for(
+                db, product_code, sku, qty)
+        # 付款状态: 有支付宝流水号即视为已付款 (与对账逻辑一致)
+        flow_no = projected.get("alipay_flow_no")
+        payment_status = projected.get("payment_status")
+        if not payment_status:
+            payment_status = "paid" if flow_no else "unpaid"
         fo = FactoryOrder(
             factory_order_no=fo_no,
             internal_order_no=internal_no,
             platform_order_no=projected.get("platform_order_no"),
-            factory_name=projected.get("factory_name"),
+            factory_name=projected.get("factory_name") or "玉山县博冠家具有限公司",
             order_date=projected.get("order_date"),
             expected_delivery=projected.get("expected_delivery"),
             actual_delivery=projected.get("actual_delivery"),
-            product_code=projected.get("product_code"),
-            sku=projected.get("sku"),
-            qty=int(projected.get("qty") or 1),
+            product_code=product_code,
+            sku=sku,
+            qty=qty,
             unit_price=projected.get("unit_price"),
             factory_bill_amount=projected.get("factory_bill_amount"),
-            payment_method=projected.get("payment_method"),
-            payment_status=projected.get("payment_status") or "unpaid",
+            expected_amount=expected_amount,
+            payment_method=projected.get("payment_method") or "月结",
+            payment_status=payment_status,
+            payment_date=projected.get("payment_date"),
+            carrier=projected.get("carrier"),
+            tracking_no=projected.get("tracking_no"),
+            alipay_flow_no=flow_no,
             remark=projected.get("remark"),
         )
         db.add(fo)

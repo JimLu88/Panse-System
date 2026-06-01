@@ -539,8 +539,8 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         "description": "每行 = 一张工厂订单 (FactoryOrder)。",
         "fields": {
             "factory_order_no": {
-                "type": "str", "required": True,
-                "desc": "工厂订单号",
+                "type": "str", "required": False,
+                "desc": "工厂订单号 (留空系统自动生成 畔色0001 序列)",
                 "aliases": ["工厂订单号", "下单号", "厂单号"],
             },
             "platform_order_no": {
@@ -593,6 +593,11 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                 "desc": "工厂账单金额",
                 "aliases": ["工厂账单", "账单金额", "金额"],
             },
+            "expected_amount": {
+                "type": "decimal", "required": False,
+                "desc": "产品预期金额 (留空系统按定价表总出厂成本自动算)",
+                "aliases": ["产品预期金额", "预期金额", "预期成本"],
+            },
             "payment_method": {
                 "type": "str", "required": False,
                 "desc": "付款方式 (月结/现付/预付)",
@@ -602,6 +607,26 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                 "type": "str", "required": False,
                 "desc": "付款状态",
                 "aliases": ["付款状态", "对账"],
+            },
+            "payment_date": {
+                "type": "date", "required": False,
+                "desc": "付款日期 (匹配支付宝流水后自动填)",
+                "aliases": ["付款日期"],
+            },
+            "carrier": {
+                "type": "str", "required": False,
+                "desc": "物流方式",
+                "aliases": ["物流方式", "物流公司", "承运商"],
+            },
+            "tracking_no": {
+                "type": "str", "required": False,
+                "desc": "物流单号",
+                "aliases": ["物流单号", "快递单号", "运单号"],
+            },
+            "alipay_flow_no": {
+                "type": "str", "required": False,
+                "desc": "支付宝流水号 (工厂月结付款后填, 触发付款状态翻已付款)",
+                "aliases": ["支付宝流水号", "流水号"],
             },
             "remark": {
                 "type": "str", "required": False,

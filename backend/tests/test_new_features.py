@@ -458,3 +458,50 @@ def test_primary_field_value_coerced_to_text():
     out2 = _to_feishu_fields(r, fm, primary_fe="编码")
     assert out2["编码"] == "ABC"
     assert isinstance(out2["日期"], int)
+
+
+def test_factory_order_no_sequential(db_session):
+    """工厂订单号自动生成 畔色0001 序列, 递增不重复。"""
+    from app.services import factory_order_service as fos
+    assert fos.next_factory_order_no(db_session) == "畔色0001"
+    from app.models.order import FactoryOrder
+    db_session.add(FactoryOrder(factory_order_no="畔色0001", qty=1)); db_session.flush()
+    assert fos.next_factory_order_no(db_session) == "畔色0002"
+    # 旧式 F<订单号> 不参与计数
+    db_session.add(FactoryOrder(factory_order_no="F12345", qty=1)); db_session.flush()
+    assert fos.next_factory_order_no(db_session) == "畔色0002"
+
+
+def test_expected_amount_from_pricing(db_session):
+    """产品预期金额 = 定价表总出厂成本 × 数量; 无定价/无出厂成本 → None (待补)。"""
+    from app.services import factory_order_service as fos
+    db_session.add(PricingSku(product_code="P9", sku="窄柜", sku_code="P9-01",
+                              factory_cost=Decimal("830")))
+    db_session.flush()
+    assert fos.expected_amount_for(db_session, "P9", "P9-01", 2) == Decimal("1660")
+    assert fos.expected_amount_for(db_session, "P9", None, 1) == Decimal("830")
+    assert fos.expected_amount_for(db_session, "NOPE", "NOPE-01", 1) is None
+
+
+def test_factory_reconciliation_rebuild(db_session):
+    """按月把工厂下单表汇总成对账记录: 本期下单金额/账单金额/差异。"""
+    from datetime import date
+    from app.models.order import FactoryOrder
+    from app.models.finance import FactoryReconciliation
+    from app.services import factory_reconciliation_service as frs
+    db_session.add_all([
+        FactoryOrder(factory_order_no="畔色1001", factory_name="玉山县博冠家具有限公司",
+                     order_date=date(2026, 3, 5), qty=1,
+                     expected_amount=Decimal("800"), factory_bill_amount=Decimal("820")),
+        FactoryOrder(factory_order_no="畔色1002", factory_name="玉山县博冠家具有限公司",
+                     order_date=date(2026, 3, 20), qty=1,
+                     expected_amount=Decimal("1000"), factory_bill_amount=Decimal("980")),
+    ])
+    db_session.flush()
+    res = frs.rebuild_all_periods(db_session, factory_name="玉山县博冠家具有限公司")
+    assert res.periods == 1
+    rec = db_session.query(FactoryReconciliation).one()
+    assert rec.order_amount == Decimal("1800")
+    assert rec.bill_amount == Decimal("1800")
+    assert rec.period_start == date(2026, 3, 1)
+    assert rec.period_end == date(2026, 3, 31)

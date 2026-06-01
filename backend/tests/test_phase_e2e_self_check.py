@@ -69,7 +69,7 @@ def test_req2_order_to_factory_order(db_session):
               status="pending_payment")
     db_session.add(o); db_session.flush()
     fo, lock = factory_order_service.generate_factory_order_for(db_session, o)
-    assert fo.factory_order_no.startswith("F")
+    assert fo.factory_order_no.startswith("畔色")
     assert fo.source_order_id == o.id
 
 
