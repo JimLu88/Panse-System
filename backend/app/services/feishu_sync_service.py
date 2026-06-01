@@ -136,8 +136,12 @@ def _normalize(v: Any) -> Any:
     if isinstance(v, Decimal):
         f = float(v)
         return int(f) if f == int(f) else f
-    if isinstance(v, (date, datetime)):
-        return v.isoformat()
+    # 飞书日期字段(type 5)要求毫秒时间戳(整数), 不接受 ISO 字符串
+    if isinstance(v, datetime):
+        ts = v.timestamp() if v.tzinfo else v.replace(tzinfo=timezone.utc).timestamp()
+        return int(ts * 1000)
+    if isinstance(v, date):
+        return int(datetime(v.year, v.month, v.day, tzinfo=timezone.utc).timestamp() * 1000)
     if isinstance(v, float):
         return int(v) if v == int(v) else v
     if isinstance(v, (list, dict)):
