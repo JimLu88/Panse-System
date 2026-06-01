@@ -129,6 +129,10 @@ def _normalize(v: Any) -> Any:
     """把系统值 / 飞书值规整成可比较、可哈希的标量。"""
     if v is None or v == "":
         return None
+    # bool 必须在 int 之前判断, 因为 bool 是 int 的子类
+    # 飞书文本字段不接受 JSON true/false, 统一转成 "是"/"否"
+    if isinstance(v, bool):
+        return "是" if v else "否"
     if isinstance(v, Decimal):
         f = float(v)
         return int(f) if f == int(f) else f
