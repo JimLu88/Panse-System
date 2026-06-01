@@ -190,6 +190,47 @@ def _coerce_for_model(model, attr: str, value: Any) -> Any:
     return value
 
 
+def _feishu_field_type(model, attr: str) -> int:
+    """按系统模型列类型推断飞书字段类型: 2=数字 5=日期 1=文本(默认)。"""
+    col = model.__table__.columns.get(attr)
+    if col is not None:
+        t = col.type
+        if isinstance(t, (Numeric, Integer)):
+            return 2
+        if isinstance(t, (Date, DateTime)):
+            return 5
+    return 1
+
+
+def _ensure_feishu_fields(db: Session, binding, ent, fm: dict[str, str],
+                          res: "SyncResult") -> None:
+    """确保映射里的飞书列都存在; 缺的按系统字段类型直接在飞书建出来。"""
+    try:
+        existing = {
+            f.get("field_name")
+            for f in feishu_client.list_table_fields(
+                db, binding.feishu_app_token, binding.feishu_table_id)
+        }
+    except feishu_client.FeishuError as e:
+        res.errors.append(f"读取飞书字段失败: {e}")
+        _logger.error("飞书同步[%s] 读取字段失败: %s", binding.system_table, e)
+        return
+    for sys_f, fe_f in fm.items():
+        if fe_f in existing:
+            continue
+        ftype = _feishu_field_type(ent.model, sys_f)
+        try:
+            feishu_client.create_field(
+                db, binding.feishu_app_token, binding.feishu_table_id, fe_f, ftype)
+            existing.add(fe_f)
+            _logger.info("飞书同步[%s] 自动新建飞书字段「%s」(type=%d)",
+                         binding.system_table, fe_f, ftype)
+        except feishu_client.FeishuError as e:
+            res.errors.append(f"新建飞书字段「{fe_f}」失败: {e}")
+            _logger.error("飞书同步[%s] 新建字段「%s」失败: %s",
+                          binding.system_table, fe_f, e)
+
+
 # ----------------------------- 同步主流程 ------------------------- #
 
 
@@ -248,6 +289,11 @@ def sync_binding(db: Session, binding: FeishuTableBinding) -> SyncResult:
         pk_val = rec["fields"].get(pk_feishu)
         if pk_val is not None and pk_val != "":
             fe_by_pk[str(pk_val)] = rec
+
+    # 字段体检: 映射里的飞书列名若在表中不存在, 直接按系统字段类型在飞书建出来,
+    # 避免 push 时每条记录都报 FieldNameNotFound 刷屏。
+    if can_push:
+        _ensure_feishu_fields(db, binding, ent, fm, res)
 
     # 已有映射
     maps = {

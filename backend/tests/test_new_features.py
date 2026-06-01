@@ -164,11 +164,19 @@ class _FakeFeishu:
     def __init__(self):
         self.records = {}   # record_id -> fields
         self._seq = 0
+        self.fields = set()  # 飞书表已有字段名
         self.FeishuError = feishu_sync_service.feishu_client.FeishuError
 
     def list_records(self, db, app_token, table_id, page_size=500):
         return [{"record_id": rid, "fields": dict(f), "last_modified_time": 1}
                 for rid, f in self.records.items()]
+
+    def list_table_fields(self, db, app_token, table_id):
+        return [{"field_name": n, "type": 1} for n in self.fields]
+
+    def create_field(self, db, app_token, table_id, field_name, field_type=1):
+        self.fields.add(field_name)
+        return f"fld{len(self.fields)}"
 
     def create_record(self, db, app_token, table_id, fields):
         self._seq += 1
@@ -187,6 +195,8 @@ class _FakeFeishu:
 def fake_feishu(monkeypatch):
     fake = _FakeFeishu()
     monkeypatch.setattr(feishu_sync_service.feishu_client, "list_records", fake.list_records)
+    monkeypatch.setattr(feishu_sync_service.feishu_client, "list_table_fields", fake.list_table_fields)
+    monkeypatch.setattr(feishu_sync_service.feishu_client, "create_field", fake.create_field)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "create_record", fake.create_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "update_record", fake.update_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "delete_record", fake.delete_record)

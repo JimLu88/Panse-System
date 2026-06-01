@@ -155,6 +155,19 @@ def list_table_fields(db: Session, app_token: str, table_id: str) -> list[dict]:
     return data.get("items") or []
 
 
+def create_field(db: Session, app_token: str, table_id: str,
+                 field_name: str, field_type: int = 1) -> str:
+    """在 Bitable 表里新建字段.
+
+    调用: POST /bitable/v1/apps/{app_token}/tables/{table_id}/fields
+    field_type: 1=多行文本 2=数字 5=日期 (默认文本, 兼容性最好)。
+    返回新建字段的 field_id。
+    """
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
+    data = _req(db, "POST", url, json={"field_name": field_name, "type": field_type})
+    return (data.get("field") or {}).get("field_id", "")
+
+
 def test_connection(db: Session) -> dict:
     """后台"测试连接"按钮用: 拿一次 token 即视为通。"""
     try:
