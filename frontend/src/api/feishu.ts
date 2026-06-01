@@ -75,6 +75,18 @@ export const triggerFeishuSync = (system_table?: string) =>
     .post<{ status: string; detail: string }>('/api/feishu/sync', { system_table })
     .then((r) => r.data);
 
+export interface FeishuSyncTableProgress {
+  system_table: string;
+  label: string;
+  pushed: number;
+  pulled: number;
+  created_feishu: number;
+  created_system: number;
+  conflicts: number;
+  errors: number;
+  error_detail: string | null;
+}
+
 export interface FeishuSyncStatus {
   running: boolean;
   started_at: string | null;
@@ -82,6 +94,10 @@ export interface FeishuSyncStatus {
   scope: string | null;
   summary: Record<string, number> | null;
   error: string | null;
+  total: number;
+  done: number;
+  current: string | null;
+  tables: FeishuSyncTableProgress[];
 }
 
 export const getFeishuSyncStatus = () =>
