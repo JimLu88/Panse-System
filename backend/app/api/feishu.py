@@ -299,8 +299,10 @@ def trigger_sync(payload: SyncIn, db: Session = Depends(get_db),
         ).scalar_one_or_none()
         if b is None:
             raise HTTPException(404, "binding 不存在")
+    _logger.info("飞书同步: 收到手动触发请求 (scope=%s)", payload.system_table or "all")
     started = feishu_sync_service.start_background_sync(payload.system_table)
     if not started:
+        _logger.info("飞书同步: 已有任务在跑, 本次忽略")
         return {"status": "already_running",
                 "detail": "已有同步任务在后台运行, 请等它完成或去运行日志查看进度"}
     return {"status": "started",
