@@ -25,7 +25,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
-from sqlalchemy import Date, DateTime, Integer, Numeric, func, select
+from sqlalchemy import Boolean, Date, DateTime, Integer, Numeric, func, select
 from sqlalchemy.orm import Session
 
 from app.models.exception import DataException
@@ -201,6 +201,10 @@ def _coerce_for_model(model, attr: str, value: Any) -> Any:
         return value
     t = col.type
     try:
+        if isinstance(t, Boolean):
+            if isinstance(value, bool):
+                return value
+            return str(value).strip().lower() in ("是", "true", "1", "yes", "t")
         if isinstance(t, Numeric):
             return Decimal(str(value))
         if isinstance(t, Integer):
