@@ -123,6 +123,12 @@ def rederive_refill_flags(recompute_cost: bool = True, db: Session = Depends(get
     }
 
 
+@router.get("/cost-completeness", response_model=dict)
+def cost_completeness(db: Session = Depends(get_db)):
+    """成本完整性体检: 列出定价表关键成本列为空(未知/待补)的 SKU, 供前端标「成本不完整」。"""
+    return order_cost_service.cost_completeness_scan(db)
+
+
 @router.post("/backfill-compensation", response_model=dict)
 def backfill_compensation(db: Session = Depends(get_db)):
     """把售后表赔付按平台订单号聚合, 回写 Order.compensation_fee。"""

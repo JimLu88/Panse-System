@@ -366,10 +366,20 @@ def _read_all_rows(file_bytes: bytes, sheet_name: str) -> list[dict[str, Any]]:
 
 # ----------------------------- type coercion --------------------- #
 
+# 数值字段里的"未知/待补"占位符 — 当 None 处理 (区别于 0)。
+_NUMERIC_PLACEHOLDERS = {
+    "？", "?", "待补", "待定", "未知", "未定", "-", "—", "/", "N/A", "n/a", "NA", "na", "无",
+}
+
 
 def _coerce(value: Any, field_type: str, *, label: str) -> Any:
     if value is None or value == "":
         return None
+    # 数值占位符 → 空值(待补): 木作成本/配件价格等暂时未知时, 用户填 ？/待补/— 表示
+    # "未知"(区别于 0=确实免费)。统一当 None 入库, 不报错也不臆造 0, 由下游标记「成本不完整」。
+    if field_type in ("int", "decimal") and not isinstance(value, bool):
+        if str(value).strip() in _NUMERIC_PLACEHOLDERS:
+            return None
     if field_type == "str":
         return str(value).strip()
     if field_type == "int":

@@ -76,6 +76,7 @@ class CostBreakdown:
     lines: list[CostLine] = field(default_factory=list)
     resolved: bool = False            # 是否成功匹配到 BOM
     missing_price_count: int = 0
+    cost_incomplete: bool = False     # 有物料/木作单价未知(NULL) → 该成本不完整, 非权威值
     note: Optional[str] = None
 
 
@@ -174,8 +175,33 @@ def compute(db: Session, order: Order) -> CostBreakdown:
         lines=lines,
         resolved=bool(lines),
         missing_price_count=missing,
+        cost_incomplete=missing > 0,
         note=note,
     )
+
+
+def cost_completeness_scan(db: Session) -> dict:
+    """成本完整性体检: 找定价表里关键成本列为空(未知/待补)的 SKU。
+
+    区别 0 (确实免费) 与 NULL (未知): NULL 表示成本不完整, 任何由它派生的
+    标价/理论成本都不是权威值, 这里把这些 SKU 列出来供前端标「成本不完整 ⚠️」,
+    而不是让系统拿一个偏低的数字当真。
+    """
+    skus = db.execute(select(PricingSku)).scalars().all()
+    incomplete: list[dict] = []
+    for s in skus:
+        missing = [name for name, val in (
+            ("木作成本", s.wood_cost),
+            ("总出厂成本", s.factory_cost),
+            ("会计总成本", s.accounting_cost),
+        ) if val is None]
+        if missing:
+            incomplete.append({"sku_code": s.sku_code, "missing": missing})
+    return {
+        "total_skus": len(skus),
+        "incomplete_count": len(incomplete),
+        "incomplete": incomplete[:300],
+    }
 
 
 def recompute_and_save(db: Session, order: Order) -> CostBreakdown:

@@ -601,3 +601,30 @@ def test_alipay_flow_routing(db_session):
     assert pp.alipay_flow_no == "FLOW88"
     fo = db_session.query(FactoryOrder).one()
     assert fo.payment_status == "paid" and fo.payment_date == date(2026, 3, 13)
+
+
+def test_numeric_placeholder_to_null():
+    """数值占位符 ？/待补/— → 入库为 None (区别于 0), 不报错。"""
+    from app.services.excel_importer import _coerce
+    for token in ("？", "?", "待补", "—", "无", "N/A"):
+        assert _coerce(token, "decimal", label="木作成本") is None
+        assert _coerce(token, "int", label="数量") is None
+    # 真实数字与 0 不受影响
+    assert _coerce("123.45", "decimal", label="x") == Decimal("123.45")
+    assert _coerce(0, "decimal", label="x") == Decimal("0")
+
+
+def test_cost_completeness_scan(db_session):
+    """定价表关键成本列为空 → 列入成本不完整 (0 不算缺)。"""
+    from app.services import order_cost_service as ocs
+    db_session.add_all([
+        PricingSku(product_code="PA", sku_code="PA-01", wood_cost=Decimal("100"),
+                   factory_cost=Decimal("200"), accounting_cost=Decimal("300")),
+        PricingSku(product_code="PB", sku_code="PB-01", wood_cost=None,
+                   factory_cost=Decimal("0"), accounting_cost=Decimal("50")),
+    ])
+    db_session.flush()
+    r = ocs.cost_completeness_scan(db_session)
+    assert r["incomplete_count"] == 1
+    assert r["incomplete"][0]["sku_code"] == "PB-01"
+    assert "木作成本" in r["incomplete"][0]["missing"]
