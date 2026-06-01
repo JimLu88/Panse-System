@@ -94,6 +94,8 @@ class RefillRecord(Base, TimestampMixin):
     # 业务需求 §5: 补单只算佣金 + 快递; 平台/税务回到 Order.profit 计算
     commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 飞书同步配对键 (自增 id 两端对不上, 用业务字段拼一个稳定键), 由事件钩子自动生成
+    sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 
 
 class WanshifuBill(Base, TimestampMixin):
@@ -114,6 +116,8 @@ class WanshifuBill(Base, TimestampMixin):
     import_job_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
     )
+    # 飞书同步配对键, 由事件钩子自动生成
+    sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 
 
 class LogisticsBill(Base, TimestampMixin):
@@ -135,6 +139,8 @@ class LogisticsBill(Base, TimestampMixin):
     import_job_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
     )
+    # 飞书同步配对键, 由事件钩子自动生成
+    sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 
 
 class FactoryReconciliation(Base, TimestampMixin):
@@ -159,3 +165,46 @@ class FactoryReconciliation(Base, TimestampMixin):
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
+
+# ---------------------------------------------------------------------------
+# 飞书同步配对键自动生成
+# 这三张账单表用自增 id 做主键, 两端 id 对不上, 不能作为飞书同步的配对键。
+# 这里按业务字段拼一个稳定的 sync_key, 通过 SQLAlchemy 事件在插入/更新时自动填充,
+# 覆盖所有创建入口 (Excel 导入 / 扫描 / 异常修复 等), 无需逐个改调用点。
+# ---------------------------------------------------------------------------
+from sqlalchemy import event  # noqa: E402
+
+
+def _part(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, (date, datetime)):
+        return v.isoformat()[:10]
+    return str(v).strip()
+
+
+def _refill_sync_key(o: "RefillRecord") -> str:
+    return "refill:" + ":".join(_part(x) for x in (o.order_no, o.refill_date, o.sku, o.qty))
+
+
+def _wanshifu_sync_key(o: "WanshifuBill") -> str:
+    return "wsf:" + ":".join(_part(x) for x in (o.order_no, o.bill_date, o.service_type, o.amount))
+
+
+def _logistics_sync_key(o: "LogisticsBill") -> str:
+    if o.tracking_no:
+        return "log:" + _part(o.tracking_no)
+    return "log:" + ":".join(_part(x) for x in (o.order_no, o.bill_date, o.carrier, o.freight_amount))
+
+
+def _register_sync_key(model, fn):
+    @event.listens_for(model, "before_insert")
+    @event.listens_for(model, "before_update")
+    def _set_sync_key(_mapper, _conn, target):  # noqa: ANN001
+        target.sync_key = fn(target)
+
+
+_register_sync_key(RefillRecord, _refill_sync_key)
+_register_sync_key(WanshifuBill, _wanshifu_sync_key)
+_register_sync_key(LogisticsBill, _logistics_sync_key)

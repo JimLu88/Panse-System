@@ -76,9 +76,9 @@ def _entities() -> dict[str, SyncEntity]:
         "part_inventory": SyncEntity(PartInventory, "sync_key"),
         "daily_operations": SyncEntity(DailyOperation, "sync_key"),
         "order_details": SyncEntity(OrderDetail, "sync_key"),
-        "wanshifu_bills": SyncEntity(WanshifuBill, "id"),
-        "logistics_bills": SyncEntity(LogisticsBill, "id"),
-        "refill_records": SyncEntity(RefillRecord, "id"),
+        "wanshifu_bills": SyncEntity(WanshifuBill, "sync_key"),
+        "logistics_bills": SyncEntity(LogisticsBill, "sync_key"),
+        "refill_records": SyncEntity(RefillRecord, "sync_key"),
         "suppliers": SyncEntity(Supplier, "name"),
     }
 

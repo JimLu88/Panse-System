@@ -222,6 +222,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "wanshifu_bills", "", "bidirectional", "万师傅安装账单",
         {
+            "sync_key": "唯一键",
             "bill_date": "账单日期", "order_no": "订单号", "service_type": "服务类型",
             "amount": "扣款金额", "status": "结算状态", "remark": "备注",
         },
@@ -229,6 +230,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "logistics_bills", "", "bidirectional", "物流费账单",
         {
+            "sync_key": "唯一键",
             "bill_date": "账单日期", "carrier": "承运商", "tracking_no": "运单号",
             "order_no": "订单号", "weight_kg": "重量(kg)", "freight_amount": "运费", "remark": "备注",
         },
@@ -236,6 +238,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "refill_records", "", "bidirectional", "补单对账",
         {
+            "sync_key": "唯一键",
             "order_no": "订单号", "buyer_nick": "买家昵称", "refill_date": "补单日期",
             "product_code": "产品编码", "product_name": "产品名称", "sku": "SKU",
             "order_amount": "订单金额", "qty": "数量",
