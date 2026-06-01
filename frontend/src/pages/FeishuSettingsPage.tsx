@@ -373,7 +373,11 @@ export default function FeishuSettingsPage() {
                     : '上次同步已完成'}
               </span>
               {syncStatus.running && syncStatus.current && (
-                <Tag color="processing">正在同步: {syncStatus.current}</Tag>
+                <Tag color="processing">
+                  正在同步: {syncStatus.current}
+                  {syncStatus.current_total > 0 &&
+                    ` (${syncStatus.current_done}/${syncStatus.current_total} 条)`}
+                </Tag>
               )}
             </Space>
           }
