@@ -563,3 +563,41 @@ def test_backfill_compensation_from_aftersales(db_session):
     assert r.orders_updated == 1
     c1 = db_session.query(Order).filter_by(order_no="C1").one()
     assert c1.compensation_fee == Decimal("170")  # 120 + (30+20)
+
+
+def test_alipay_flow_routing(db_session):
+    """支付宝流水自动归类: 推广补流水号 + 未分类支出建采购 + 工厂翻已付款。"""
+    from datetime import date, datetime, timezone
+    from app.models.finance import AlipayFlow
+    from app.models.marketing import PromotionFlow
+    from app.models.order import FactoryOrder, PartPurchase
+    from app.services import alipay_flow_router_service as ar
+    db_session.add_all([
+        # 推广记录待配 (金额200, 日期接近)
+        PromotionFlow(transaction_date=date(2026, 3, 10), amount=Decimal("200"), flow_type="充值"),
+        AlipayFlow(account="企业号", transaction_no="FLOW200", amount=Decimal("-200"),
+                   transaction_time=datetime(2026, 3, 11, tzinfo=timezone.utc),
+                   reconciliation_type="promotion"),
+        # 未分类支出 → 建采购
+        AlipayFlow(account="企业号", transaction_no="FLOW88", amount=Decimal("-88"),
+                   counterparty="某五金店", remark="买铰链",
+                   transaction_time=datetime(2026, 3, 12, tzinfo=timezone.utc)),
+        # 工厂订单有流水号 → 翻已付款
+        FactoryOrder(factory_order_no="畔色2001", qty=1, alipay_flow_no="FLOWFAC",
+                     payment_status="unpaid"),
+        AlipayFlow(account="企业号", transaction_no="FLOWFAC", amount=Decimal("-5000"),
+                   transaction_time=datetime(2026, 3, 13, tzinfo=timezone.utc),
+                   reconciliation_type="factory_payment"),
+    ])
+    db_session.flush()
+    r = ar.run_all(db_session)
+    assert r.promotion_filled == 1
+    assert r.purchases_created == 1
+    assert r.factory_flipped == 1
+    pf = db_session.query(PromotionFlow).one()
+    assert pf.alipay_flow_no == "FLOW200"
+    pp = db_session.query(PartPurchase).one()
+    assert pp.purchase_no.startswith("2026") and len(pp.purchase_no) == 9
+    assert pp.alipay_flow_no == "FLOW88"
+    fo = db_session.query(FactoryOrder).one()
+    assert fo.payment_status == "paid" and fo.payment_date == date(2026, 3, 13)

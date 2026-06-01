@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models.finance import AccountBalance, AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
 from app.services import (
     alipay_backfill_service,
+    alipay_flow_router_service,
     alipay_import,
     balance_service,
     bill_import_service,
@@ -118,6 +119,31 @@ def rebuild_factory_reconciliation(
     r = factory_reconciliation_service.rebuild_all_periods(db, factory_name=factory_name)
     db.commit()
     return FactoryReconRebuildOut(periods=r.periods, created=r.created, updated=r.updated)
+
+
+class AlipayRouteResult(BaseModel):
+    promotion_filled: int
+    daily_filled: int
+    outsourcing_filled: int
+    purchases_created: int
+    factory_flipped: int
+
+
+@router.post("/alipay-flows/route", response_model=AlipayRouteResult)
+def route_alipay_flows(rerun_classify: bool = True, db: Session = Depends(get_db)):
+    """支付宝流水自动归类回填: 推广/日常/外包补流水号, 未分类支出建采购, 工厂翻已付款。
+
+    rerun_classify=True 时先跑一遍 smart_matching 打 reconciliation_type。
+    """
+    if rerun_classify:
+        smart_matching_service.run(db)
+    r = alipay_flow_router_service.run_all(db)
+    db.commit()
+    return AlipayRouteResult(
+        promotion_filled=r.promotion_filled, daily_filled=r.daily_filled,
+        outsourcing_filled=r.outsourcing_filled, purchases_created=r.purchases_created,
+        factory_flipped=r.factory_flipped,
+    )
 
 
 @router.post("/smart-match/rerun", response_model=SmartMatchResult)
