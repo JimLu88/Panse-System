@@ -63,7 +63,7 @@ def _entities() -> dict[str, SyncEntity]:
         "pricing_sku": SyncEntity(PricingSku, "sku_code"),
         "customers": SyncEntity(Customer, "matching_key"),
         "factory_orders": SyncEntity(FactoryOrder, "factory_order_no"),
-        "alipay_flows": SyncEntity(AlipayFlow, "transaction_no"),
+        "alipay_flows": SyncEntity(AlipayFlow, "sync_key"),
         "samples": SyncEntity(Sample, "sample_no"),
         "after_sales": SyncEntity(AfterSales, "platform_order_no"),
         "bom_lines": SyncEntity(BomLine, "sync_key"),

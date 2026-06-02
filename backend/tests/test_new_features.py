@@ -247,6 +247,36 @@ def test_feishu_pull_new_record(db_session, fake_feishu):
     assert p.name == "飞书来的"
 
 
+def test_feishu_alipay_paired_flows_both_sync(db_session, fake_feishu):
+    """同号配对流水(在线支付+分账)用 sync_key 配对, 两条都要同步到飞书。
+
+    回归: 旧实现用 transaction_no 当配对键, 这两条会被压成一行, 丢一条。
+    """
+    from app.models.finance import AlipayFlow
+    db_session.add_all([
+        AlipayFlow(account="企业号", transaction_no="P100", transaction_type="在线支付",
+                   amount=Decimal("127.00")),
+        AlipayFlow(account="企业号", transaction_no="P100", transaction_type="分账",
+                   amount=Decimal("-0.76")),
+    ])
+    b = FeishuTableBinding(
+        system_table="alipay_flows", feishu_app_token="appT", feishu_table_id="tblA",
+        direction="out", enabled=True,
+        field_mapping='{"sync_key": "唯一键", "transaction_no": "交易号", '
+                      '"transaction_type": "交易类型", "amount": "金额"}',
+    )
+    db_session.add(b)
+    db_session.commit()
+    res = feishu_sync_service.sync_binding(db_session, b)
+    db_session.commit()
+    assert res.created_feishu == 2
+    keys = {f.get("唯一键") for f in fake_feishu.records.values()}
+    assert keys == {
+        "alipay:企业号:P100:在线支付:127.00",
+        "alipay:企业号:P100:分账:-0.76",
+    }
+
+
 def test_feishu_conflict_both_changed(db_session, fake_feishu):
     # 先建立同步映射 (一致状态)
     db_session.add(Product(code="P1", name="同名"))
