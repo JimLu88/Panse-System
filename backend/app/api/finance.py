@@ -11,7 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.finance import AccountBalance, AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
+from app.models.finance import (
+    AccountBalance, AlipayFlow, FactoryReconciliation, LogisticsBill, RefillRecord, WanshifuBill,
+)
 from app.services import (
     alipay_backfill_service,
     alipay_flow_router_service,
@@ -119,6 +121,43 @@ def rebuild_factory_reconciliation(
     r = factory_reconciliation_service.rebuild_all_periods(db, factory_name=factory_name)
     db.commit()
     return FactoryReconRebuildOut(periods=r.periods, created=r.created, updated=r.updated)
+
+
+class FactoryReconOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    factory_name: str
+    period_start: Optional[date]
+    period_end: Optional[date]
+    order_amount: Optional[Decimal]
+    bill_amount: Optional[Decimal]
+    paid_amount: Optional[Decimal]
+    diff_amount: Decimal
+    status: str          # balanced/underpaid/overpaid/unpaid
+    diff_reason: Optional[str]
+    reconciled_at: Optional[date]
+    alipay_flow_no: Optional[str]
+
+
+@router.get("/factory-reconciliation", response_model=list[FactoryReconOut])
+def list_factory_reconciliation(
+    status: Optional[str] = Query(None, description="按对账状态过滤: balanced/underpaid/overpaid/unpaid"),
+    unbalanced_only: bool = Query(False, description="只看对不上的 (未付清/超付)"),
+    db: Session = Depends(get_db),
+):
+    """工厂对账逐周期清单 (含 账单/实付/差异/对账状态)。
+
+    前端可据此显示「未付清/超付」红黄标; unbalanced_only=True 时只返回对不上的周期,
+    与异常中心 factory_recon_unbalanced 一致。
+    """
+    stmt = select(FactoryReconciliation).order_by(
+        FactoryReconciliation.factory_name, FactoryReconciliation.period_end.desc(),
+    )
+    if status:
+        stmt = stmt.where(FactoryReconciliation.status == status)
+    elif unbalanced_only:
+        stmt = stmt.where(FactoryReconciliation.status.in_(["underpaid", "overpaid"]))
+    return db.execute(stmt).scalars().all()
 
 
 class AlipayRouteResult(BaseModel):

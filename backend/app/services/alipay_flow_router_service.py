@@ -29,6 +29,11 @@ _logger = logging.getLogger("panse.alipay_router")
 
 _MATCH_WINDOW_DAYS = 10   # 金额相同时, 日期相差不超过 N 天才算配上
 
+# 无法归类的支出流水自动建成的采购记录, 用此 purchase_type 标记为「存疑」,
+# 由 data_quality_service.scan_unclassified_purchase 捞成异常, 在异常中心提示人工确认,
+# 避免「系统替你猜成采购、你却不知道」的静默归类。
+UNCLASSIFIED_PURCHASE_TYPE = "存疑(支付宝流水自动归类)"
+
 
 def _q2(v) -> Decimal:
     return Decimal(str(abs(v))).quantize(Decimal("0.01"))
@@ -189,6 +194,7 @@ def create_purchases_from_unclassified(db: Session) -> int:
             amount=amount,
             total_amount=amount,
             related_order_no=f.related_order_no,
+            purchase_type=UNCLASSIFIED_PURCHASE_TYPE,
             payment_method="支付宝",
             payment_status="paid",
             payment_date=when,

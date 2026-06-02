@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.order import FactoryOrder, Order
+from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.finance import AlipayFlow, RefillRecord, FactoryReconciliation
 from app.models.marketing import OutsourcingExpense, AfterSales, PromotionFlow, Sample, WoodLoss
 from app.services import exception_service, settings_service
@@ -437,6 +437,74 @@ def scan_promotion_recharge_unmatched(db: Session) -> int:
 
 
 # ---------------------------------------------------------------------------
+# B12 — 工厂对账不平 (账单 ≠ 实付)
+# ---------------------------------------------------------------------------
+
+def scan_factory_recon_unbalanced(db: Session) -> int:
+    """工厂对账 账单 vs 实付 不平 → 异常 (未付清 / 超付)。
+
+    区别于 factory_recon_incomplete (缺字段): 这条是金额对不上的实质差异,
+    让"4月差¥13389未付清""某期超付"这类口子在异常中心冒出来, 而不是只算个 diff 藏着。
+    """
+    count = 0
+    for r in db.query(FactoryReconciliation).filter(
+        FactoryReconciliation.status.in_(["underpaid", "overpaid"]),
+    ).all():
+        diff = r.diff_amount or 0
+        if r.status == "underpaid":
+            sev, label, act = "error", "未付清", f"账单 ¥{r.bill_amount} > 实付 ¥{r.paid_amount}, 尚欠 ¥{diff}。请确认是否漏付或分期。"
+        else:
+            sev, label, act = "warning", "超付", f"实付 ¥{r.paid_amount} > 账单 ¥{r.bill_amount}, 多付 ¥{-diff}。请确认是否预付或重复支付。"
+        _record(
+            db,
+            source_table="factory_reconciliations",
+            source_pk=r.id,
+            exception_type="factory_recon_unbalanced",
+            severity=sev,
+            description=f"工厂对账 [{r.factory_name}] {r.period_start}~{r.period_end} 对账不平({label}): {act}",
+            suggestion_action="核对工厂账单与支付宝付款流水, 补付/退回差额或登记说明。",
+            context={"id": r.id, "factory_name": r.factory_name, "status": r.status,
+                     "bill_amount": str(r.bill_amount), "paid_amount": str(r.paid_amount),
+                     "diff_amount": str(r.diff_amount)},
+        )
+        count += 1
+    _log.info("scan_factory_recon_unbalanced: %d", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
+# B13 — 支付宝支出被自动归类为采购(存疑), 待人工确认
+# ---------------------------------------------------------------------------
+
+def scan_unclassified_purchase(db: Session) -> int:
+    """无法归类的支出流水被自动建成的采购记录 → 异常, 提示人工确认归类。
+
+    堵住最大的静默漏洞: 系统把对不上的支出"猜"成采购后, 不再无声无息,
+    而是逐条进异常中心, 用户能看到"系统替你归了哪些类、需要复核"。
+    """
+    from app.services.alipay_flow_router_service import UNCLASSIFIED_PURCHASE_TYPE
+    count = 0
+    for r in db.query(PartPurchase).filter(
+        PartPurchase.purchase_type == UNCLASSIFIED_PURCHASE_TYPE,
+    ).all():
+        _record(
+            db,
+            source_table="part_purchases",
+            source_pk=r.id,
+            exception_type="unclassified_purchase",
+            severity="warning",
+            description=(f"采购记录 {r.purchase_no} (¥{r.amount}, {r.supplier or '未知对手方'}) "
+                         f"由支付宝流水自动归类, 实际用途存疑, 需人工确认是否为采购。"),
+            suggestion_action="核对该笔支出真实用途 (采购/日常经营/外包/其它), 修正归类或补全配件信息。",
+            context={"id": r.id, "purchase_no": r.purchase_no, "amount": str(r.amount),
+                     "supplier": r.supplier, "alipay_flow_no": r.alipay_flow_no},
+        )
+        count += 1
+    _log.info("scan_unclassified_purchase: %d", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
 # 全量扫描入口
 # ---------------------------------------------------------------------------
 
@@ -450,6 +518,8 @@ def run_all(db: Session) -> dict[str, int]:
         ("refill_unmatched", scan_refill_unmatched),
         ("alipay_missing_txn", scan_alipay_missing_txn),
         ("factory_recon_incomplete", scan_factory_recon_incomplete),
+        ("factory_recon_unbalanced", scan_factory_recon_unbalanced),
+        ("unclassified_purchase", scan_unclassified_purchase),
         ("outsourcing_missing", scan_outsourcing_missing),
         ("aftersales_empty", scan_aftersales_empty),
         ("alipay_balance_gap", scan_alipay_balance_gap),
