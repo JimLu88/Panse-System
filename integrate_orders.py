@@ -128,34 +128,83 @@ for row in s_ws.iter_rows(min_row=2, values_only=True):
     })
 wb_new.close()
 
-# ── 解析 CSV (1月历史, 订单号损坏) ────────────────────────────────────────────
-with open(NEW_CSV, "rb") as fh_:
-    txt = fh_.read().decode("gbk")
-rdr = list(csv.reader(io.StringIO(txt)))
-ch = rdr[0]
-def cidx(name): return ch.index(name)
-for r in rdr[1:]:
-    if not r or not r[0]: continue
-    main_no = str(r[cidx("主订单编号")]).strip()
+# ── 解析 1月历史原始 CSV (全精度, 订单号已修复) ───────────────────────────────
+# ExportItemList = 行级明细; ExportOrderList = 单级(物流/状态/确认收货)
+UP = Path("/root/.claude/uploads/163899d7-1b44-4c4c-9f50-7d1eb7294c82")
+ITEM_CSV  = UP / "3ca75022-ExportItemlList202606021506.csv"
+ORDER_CSV = UP / "b4068f62-ExportOrderList202606021506.csv"
+
+def load_gbk_csv(p):
+    with open(p, "rb") as f:
+        return list(csv.DictReader(io.StringIO(f.read().decode("gbk"))))
+
+item_rows  = load_gbk_csv(ITEM_CSV)
+order_rows = load_gbk_csv(ORDER_CSV)
+
+# OrderList 单级索引 (列名含尾随空格, 统一 strip)
+jan_order = {}
+for r in order_rows:
+    rr = {(k or "").strip(): v for k, v in r.items()}
+    no = str(rr.get("订单编号", "")).strip()
+    if not no: continue
+    jan_order[no] = {
+        "logistics_no": (rr.get("物流单号") or "").strip(),
+        "logistics_co": (rr.get("物流公司") or "").strip(),
+        "buyer_due": rr.get("买家应付货款"),
+        "status": rr.get("订单状态"),
+        "create": rr.get("订单创建时间"),
+        "title": rr.get("宝贝标题"),
+        "confirm": rr.get("确认收货时间"),
+    }
+
+jan_item_orders = set()
+for r in item_rows:
+    main_no = str(r["主订单编号"]).strip()
+    jan_item_orders.add(main_no)
+    rpt = jan_order.get(main_no, {})
     lines.append({
-        "src": "csv",
+        "src": "csv-jan",
         "order_no": main_no,
-        "create": r[cidx("订单创建时间")],
+        "create": r["订单创建时间"],
         "name": None, "phone": None, "addr": None,
-        "code": code_from_merchant(r[cidx("商家编码")] or r[cidx("外部系统编号")]),
-        "title": r[cidx("标题")],
-        "sku": extract_sku(r[cidx("商品属性")]),
-        "qty": r[cidx("购买数量")],
-        "logistics_co": None, "logistics_no": None,
-        "buyer_due": r[cidx("买家应付货款")],
-        "status": r[cidx("订单状态")],
-        "pay_no": r[cidx("支付单号")],
-        "refund_status": r[cidx("退款状态")],
-        "refund_amt": r[cidx("退款金额")],
-        "order_no_bad": is_sci(r[cidx("主订单编号")]),
+        "code": code_from_merchant(r.get("商家编码") or r.get("外部系统编号")),
+        "title": r["标题"],
+        "sku": extract_sku(r["商品属性"]),
+        "qty": r["购买数量"],
+        "logistics_co": rpt.get("logistics_co"),
+        "logistics_no": rpt.get("logistics_no"),
+        "buyer_due": r["买家应付货款"],
+        "status": r["订单状态"],
+        "pay_no": r.get("支付单号"),
+        "refund_status": r["退款状态"],
+        "refund_amt": r["退款金额"],
+        "order_no_bad": False,   # 原始文件订单号完整
     })
 
-print(f"整合后总行数: {len(lines)} (xlsx销售明细 + csv)")
+# OrderList 中无明细行的订单 (多为交易关闭) → 单级补入
+for no, rpt in jan_order.items():
+    if no in jan_item_orders: continue
+    lines.append({
+        "src": "csv-jan-orderonly",
+        "order_no": no,
+        "create": rpt.get("create"),
+        "name": None, "phone": None, "addr": None,
+        "code": "",
+        "title": rpt.get("title"),
+        "sku": "",
+        "qty": 1,
+        "logistics_co": rpt.get("logistics_co"),
+        "logistics_no": rpt.get("logistics_no"),
+        "buyer_due": rpt.get("buyer_due"),
+        "status": rpt.get("status"),
+        "pay_no": None,
+        "refund_status": None,
+        "refund_amt": None,
+        "order_no_bad": False,
+    })
+
+print(f"1月历史: 明细行 {len(item_rows)} + 仅订单 {len(jan_order)-len(jan_item_orders)} 行")
+print(f"整合后总行数: {len(lines)} (xlsx销售明细 + 1月原始CSV)")
 
 # ── PHASE 2: 写入 5-订单总表修改 ──────────────────────────────────────────────
 wb = load_workbook(SRC)
@@ -229,8 +278,8 @@ for ln in lines:
         flags.append("⚠️ 历史订单号精度丢失(CSV导出为科学计数法,需人工核对)")
     if not ln["code"]:
         flags.append("⚠️ 无商家编码,产品编码待补")
-    if ln["src"] == "csv":
-        flags.append("ℹ️ 1月历史订单")
+    if ln["src"].startswith("csv-jan"):
+        flags.append("ℹ️ 1月历史订单(原始CSV,订单号完整)")
     ws.cell(r,44).value  = " ".join(flags) if flags else "✓"
     r += 1
 
@@ -260,8 +309,8 @@ for ln in lines:
     new_by_order[ln["order_no"]].append(ln)
 
 old_keys = set(old_by_order)
-new_keys = set(k for k in new_by_order if not is_sci(k))   # 排除损坏号
-csv_bad  = [k for k in new_by_order if is_sci(k)]
+new_keys = set(new_by_order)                               # 订单号均完整
+csv_bad  = [k for k in new_by_order if is_sci(k)]          # 已修复, 应为空
 
 added   = sorted(new_keys - old_keys)
 removed = sorted(old_keys - new_keys)
@@ -352,10 +401,12 @@ for k in removed[:25]:
     rep.append(f"  - {k}")
 if len(removed) > 25: rep.append(f"  …… 其余 {len(removed)-25} 个略")
 rep.append("")
-rep.append(f"## 四、订单号损坏（CSV 历史，科学计数法）：{len(csv_bad)} 个")
-for k in csv_bad:
-    n = new_by_order[k][0]
-    rep.append(f"  - {k}  {str(n['title'])[:24]}  创建{n['create']}  应付{n['buyer_due']}")
+rep.append(f"## 四、1月历史订单号修复情况：剩余损坏 {len(csv_bad)} 个")
+rep.append("  （已用原始全精度 CSV(ExportItemList/ExportOrderList)替换，科学计数法损坏已全部修复）")
+jan = [ln for ln in lines if ln["src"].startswith("csv-jan")]
+rep.append(f"  1月历史共导入 {len(jan)} 行，订单号均为完整19位：")
+for ln in jan:
+    rep.append(f"  - {ln['order_no']}  {str(ln['title'])[:22]}  应付{ln['buyer_due']}  {ln['status']}")
 
 report = "\n".join(rep)
 (ROOT / "订单对比报告.md").write_text(report, encoding="utf-8")

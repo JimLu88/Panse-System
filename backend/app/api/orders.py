@@ -28,6 +28,7 @@ from app.services import (
     order_message_service,
     order_service,
     order_sync_service,
+    taobao_order_import,
 )
 
 router = APIRouter(prefix="/api/orders", tags=["orders"])
@@ -661,6 +662,64 @@ async def import_qianniu_orders(
         skipped_duplicate=report.skipped_duplicate,
         skipped_invalid=report.skipped_invalid,
         errors=report.errors,
+    )
+
+
+# -------- 淘宝订单多格式自动识别导入 --------
+
+class TaobaoImportResult(BaseModel):
+    detected_format: str
+    inserted: int
+    skipped_duplicate: int
+    skipped_invalid: int
+    needs_review: int
+    multi_line_orders: int
+    errors: list[str]
+    warnings: list[str]
+
+
+@router.get("/import-taobao/detect")
+async def detect_taobao_format(file: UploadFile = File(...)):
+    """仅识别订单文件格式, 不入库 (上传前预检)。"""
+    raw = await file.read()
+    fmt = taobao_order_import.detect_format(file.filename or "", raw)
+    labels = {
+        "qianniu_multi": "千牛后台多表导出 (订单报表/销售明细/发货报表)",
+        "sales_detail": "销售明细表 (子订单/主订单/商品属性)",
+        "order_master": "订单总表格式 (请用智能导入/CSV导入)",
+        "unknown": "无法识别",
+    }
+    return {"detected_format": fmt, "label": labels.get(fmt, fmt)}
+
+
+@router.post("/import-taobao", response_model=TaobaoImportResult)
+async def import_taobao(
+    file: UploadFile = File(...),
+    platform: str = Query("淘宝", description="平台名称"),
+    force_format: Optional[str] = Query(None, description="强制格式: qianniu_multi/sales_detail"),
+    db: Session = Depends(get_db),
+):
+    """淘宝订单自动识别导入 (两种导出格式)。
+
+    - **千牛后台多表 Excel**: 订单报表 + 销售明细 + 发货报表, 三表按订单号关联
+    - **销售明细 CSV/Excel**: 子订单编号/主订单编号/商品属性... (GBK 或 UTF-8)
+
+    自动识别格式, 商家编码 PPS→P 还原, 商品属性提取 SKU,
+    订单号科学计数法损坏自动标注, 重复订单号跳过。
+    """
+    raw = await file.read()
+    rep = taobao_order_import.import_taobao_orders(
+        db, file.filename or "", raw, platform=platform, force_format=force_format
+    )
+    return TaobaoImportResult(
+        detected_format=rep.detected_format,
+        inserted=rep.inserted,
+        skipped_duplicate=rep.skipped_duplicate,
+        skipped_invalid=rep.skipped_invalid,
+        needs_review=rep.needs_review,
+        multi_line_orders=rep.multi_line_orders,
+        errors=rep.errors,
+        warnings=rep.warnings,
     )
 
 
