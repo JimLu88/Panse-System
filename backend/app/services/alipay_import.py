@@ -85,7 +85,9 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
         report.errors.append("CSV 缺少『收支金额』列")
         return report
 
-    seen: set[str] = set()
+    # 去重键含「交易类型 + 金额」: 同号配对流水 (在线支付货款 + 分账手续费) 都能入库,
+    # 仅「同号 + 同类型 + 同金额」才算真重复 (与 uq_alipay_flow_acct_no / migration 0039 一致)。
+    seen: set[tuple] = set()
     for row in reader:
         payload: dict[str, Any] = {}
         for raw, fld in field_map.items():
@@ -95,18 +97,23 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
         if not tx_no or amount is None:
             report.skipped_invalid += 1
             continue
-        if tx_no in seen:
+        tx_type = payload.get("transaction_type")
+        nat_key = (tx_no, tx_type, amount)
+        if nat_key in seen:
             report.skipped_duplicate += 1
             continue
         if db.execute(
             select(AlipayFlow.id).where(
-                AlipayFlow.account == account, AlipayFlow.transaction_no == tx_no
+                AlipayFlow.account == account,
+                AlipayFlow.transaction_no == tx_no,
+                AlipayFlow.transaction_type == tx_type,
+                AlipayFlow.amount == amount,
             )
         ).first():
             report.skipped_duplicate += 1
-            seen.add(tx_no)
+            seen.add(nat_key)
             continue
-        seen.add(tx_no)
+        seen.add(nat_key)
         db.add(AlipayFlow(
             account=account,
             transaction_no=tx_no,

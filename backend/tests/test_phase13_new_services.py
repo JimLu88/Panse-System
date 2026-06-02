@@ -216,6 +216,42 @@ class TestDataQualityService:
         ).count()
         assert count == 0
 
+    def test_alipay_paired_flow_not_flagged_as_duplicate(self, db):
+        """同号『在线支付 + 分账』正常配对, 不应报重复。"""
+        from datetime import datetime
+        from app.models.finance import AlipayFlow
+        db.add_all([
+            AlipayFlow(account="企业号", transaction_no="P1", transaction_type="在线支付",
+                       amount=Decimal("127.00"), transaction_time=datetime(2026, 4, 28, 10)),
+            AlipayFlow(account="企业号", transaction_no="P1", transaction_type="分账",
+                       amount=Decimal("-0.76"), transaction_time=datetime(2026, 4, 28, 10)),
+        ])
+        db.commit()
+        n = data_quality_service.scan_alipay_duplicate_flow(db)
+        assert n == 0
+
+    def test_alipay_suspect_duplicate_flagged(self, db):
+        """同号 + 同类型 但金额不同 → 疑似重复, 报 warning。
+
+        (同号+同类型+同金额 的『完全重复』已被 uq_alipay_flow_acct_no 约束在入库时挡掉,
+         scanner 的 error 分支是给 migration 0039 之前的历史数据兜底。)
+        """
+        from datetime import datetime
+        from app.models.finance import AlipayFlow
+        db.add_all([
+            AlipayFlow(account="企业号", transaction_no="D1", transaction_type="分账",
+                       amount=Decimal("-0.13"), transaction_time=datetime(2026, 4, 7, 10)),
+            AlipayFlow(account="企业号", transaction_no="D1", transaction_type="分账",
+                       amount=Decimal("-0.15"), transaction_time=datetime(2026, 4, 7, 10)),
+        ])
+        db.commit()
+        n = data_quality_service.scan_alipay_duplicate_flow(db)
+        assert n == 1
+        exc = db.query(DataException).filter(
+            DataException.exception_type == "alipay_duplicate_flow"
+        ).first()
+        assert exc is not None and exc.severity == "warning"
+
 
 # ── exception_fix_service ─────────────────────────────────────────────────────
 

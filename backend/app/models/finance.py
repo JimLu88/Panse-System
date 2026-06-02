@@ -43,7 +43,12 @@ class AlipayFlow(Base, TimestampMixin):
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
-        UniqueConstraint("account", "transaction_no", name="uq_alipay_flow_acct_no"),
+        # 同号配对流水 (在线支付货款 + 分账手续费) 共用同一交易流水号, 必须都能入库;
+        # 仅「同号 + 同类型 + 同金额」才算真重复。详见 migration 0039。
+        UniqueConstraint(
+            "account", "transaction_no", "transaction_type", "amount",
+            name="uq_alipay_flow_acct_no",
+        ),
         Index("ix_alipay_flows_acct_time", "account", "transaction_time"),
     )
 

@@ -504,6 +504,66 @@ def scan_unclassified_purchase(db: Session) -> int:
     return count
 
 
+def scan_alipay_duplicate_flow(db: Session) -> int:
+    """支付宝重复流水检测 (智能判重)。
+
+    背景: 一笔淘宝收款, 支付宝会产生两条共用同一「交易流水号」的流水 ——
+      - 在线支付: 客户实付货款 (正, 本店收入)
+      - 分账    : 淘宝支付手续费 (负, 约千分之六)
+    这种「同号不同交易类型」是正常配对, 不能算重复。
+    真正的重复是「同账户 + 同交易流水号 + 同交易类型」出现多条 (常见于导出/导入重跑、
+    手工补录), 会把收入或手续费重复计一遍, 必须人工核对。
+
+    判重规则: 只对 (account, transaction_no, transaction_type) 完全相同的多条流水报异常;
+    同号不同类型 (分账 / 在线支付) 一律放行。
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple, list] = defaultdict(list)
+    for row in db.query(AlipayFlow).filter(
+        AlipayFlow.transaction_no.isnot(None),
+        AlipayFlow.transaction_no != "",
+    ).all():
+        key = (row.account, row.transaction_no, row.transaction_type)
+        groups[key].append(row)
+
+    count = 0
+    for (account, tx_no, tx_type), rows in groups.items():
+        if len(rows) < 2:
+            continue
+        rows_sorted = sorted(rows, key=lambda r: r.id)
+        amounts = [str(r.amount) for r in rows_sorted]
+        ids = [r.id for r in rows_sorted]
+        # 同号 + 同类型 + 同金额 → 几乎确定是真重复(error); 金额不同 → 疑似(warning)。
+        identical = len(set(amounts)) == 1
+        sev = "error" if identical else "warning"
+        label = "完全重复(同号+同类型+同金额)" if identical else "疑似重复(同号+同类型,金额不同)"
+        # 异常挂在除第一条以外的每条「多余」流水上, 方便逐条核销/删除。
+        for r in rows_sorted[1:]:
+            _record(
+                db,
+                source_table="alipay_flows",
+                source_pk=r.id,
+                exception_type="alipay_duplicate_flow",
+                severity=sev,
+                description=(
+                    f"支付宝重复流水 [{account}] 流水号 {tx_no} 交易类型「{tx_type}」"
+                    f"出现 {len(rows)} 条 ({label}): 金额 {amounts}, id={ids}。"
+                    f"注: 同号的『分账(手续费)+在线支付(收款)』为正常配对, 不在此列。"
+                ),
+                suggestion_action=(
+                    "核对是否为导入重跑/手工补录造成的重复; 若确为重复, 删除多余流水, "
+                    "仅保留一条, 避免收入或手续费被重复计入。"
+                ),
+                context={"account": account, "transaction_no": tx_no,
+                         "transaction_type": tx_type, "amounts": amounts, "ids": ids,
+                         "identical": identical},
+            )
+            count += 1
+    _log.info("scan_alipay_duplicate_flow: %d", count)
+    return count
+
+
 # ---------------------------------------------------------------------------
 # 全量扫描入口
 # ---------------------------------------------------------------------------
@@ -517,6 +577,7 @@ def run_all(db: Session) -> dict[str, int]:
         ("order_missing_tracking", scan_order_missing_tracking),
         ("refill_unmatched", scan_refill_unmatched),
         ("alipay_missing_txn", scan_alipay_missing_txn),
+        ("alipay_duplicate_flow", scan_alipay_duplicate_flow),
         ("factory_recon_incomplete", scan_factory_recon_incomplete),
         ("factory_recon_unbalanced", scan_factory_recon_unbalanced),
         ("unclassified_purchase", scan_unclassified_purchase),

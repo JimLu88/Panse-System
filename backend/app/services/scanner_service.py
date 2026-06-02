@@ -171,26 +171,36 @@ def scan_missing_custom_price(db: Session) -> list[ScanFinding]:
 # -------- Scanner 6: 重复 alipay 流水 (account 内 transaction_no 已唯一约束，但跨账户可能重复) --------
 
 def scan_duplicate_alipay_cross_account(db: Session) -> list[ScanFinding]:
-    """同一 transaction_no 在多个账户出现 → 多半是数据录入错误。"""
+    """同一 transaction_no 出现在「多个不同账户」→ 多半是数据录入错误。
+
+    注意: 同一账户内同一流水号出现多条是正常的 —— 一笔淘宝收款会产生
+    『在线支付(收款) + 分账(手续费)』两条共用同一流水号的配对流水。
+    因此这里必须按「不同账户数」判重 (count(distinct account) > 1),
+    而不是按行数, 否则会把正常配对流水误报成重复。
+    同账户内的真重复由 data_quality_service.scan_alipay_duplicate_flow 负责。
+    """
     out: list[ScanFinding] = []
     from sqlalchemy import func
     dup_q = (
-        select(AlipayFlow.transaction_no, func.count(AlipayFlow.id).label("n"))
+        select(
+            AlipayFlow.transaction_no,
+            func.count(func.distinct(AlipayFlow.account)).label("n_acct"),
+        )
         .group_by(AlipayFlow.transaction_no)
-        .having(func.count(AlipayFlow.id) > 1)
+        .having(func.count(func.distinct(AlipayFlow.account)) > 1)
     )
-    for tx_no, n in db.execute(dup_q).all():
-        accounts = [a for (a,) in db.execute(
+    for tx_no, n_acct in db.execute(dup_q).all():
+        accounts = sorted({a for (a,) in db.execute(
             select(AlipayFlow.account).where(AlipayFlow.transaction_no == tx_no)
-        ).all()]
+        ).all()})
         out.append(ScanFinding(
             source_table="alipay_flows",
             source_pk=tx_no,
             exception_type="duplicate_alipay_flow",
             severity="warning",
-            description=f"支付宝流水号 {tx_no} 在 {n} 个账户出现: {accounts}",
+            description=f"支付宝流水号 {tx_no} 在 {n_acct} 个不同账户出现: {accounts}",
             suggestion_action="merge_or_delete_duplicates",
-            context={"transaction_no": tx_no, "accounts": accounts, "count": n},
+            context={"transaction_no": tx_no, "accounts": accounts, "account_count": n_acct},
         ))
     return out
 
