@@ -34,7 +34,6 @@ _MATCH_WINDOW_DAYS = 10   # 金额相同时, 日期相差不超过 N 天才算�
 # 避免「系统替你猜成采购、你却不知道」的静默归类。
 UNCLASSIFIED_PURCHASE_TYPE = "存疑(支付宝流水自动归类)"
 
-
 def _q2(v) -> Decimal:
     return Decimal(str(abs(v))).quantize(Decimal("0.01"))
 
