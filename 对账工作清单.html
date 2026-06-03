@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "WenQuanYi Zen Hei", sans-serif;
+    color: #1a1a1a;
+    font-size: 11px;
+    line-height: 1.5;
+    margin: 0;
+  }
+  h1 {
+    font-size: 22px;
+    text-align: center;
+    margin: 0 0 2px 0;
+    color: #1f2d4d;
+  }
+  .subtitle {
+    text-align: center;
+    color: #666;
+    font-size: 11px;
+    margin-bottom: 14px;
+  }
+  .section {
+    margin-bottom: 16px;
+    page-break-inside: avoid;
+  }
+  .band {
+    color: #fff;
+    padding: 7px 12px;
+    font-size: 14px;
+    font-weight: bold;
+    border-radius: 5px 5px 0 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .band .freq { font-size: 11px; font-weight: normal; opacity: 0.92; }
+  .daily   .band { background: #2e7d32; }   /* green */
+  .weekly  .band { background: #1565c0; }   /* blue */
+  .monthly .band { background: #6a1b9a; }   /* purple */
+  .oneshot .band { background: #c62828; }   /* red */
+
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    border: 1px solid #d0d0d0;
+    padding: 6px 9px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: #f0f0f0; font-weight: bold; font-size: 10.5px; }
+  td.no { width: 26px; text-align: center; font-weight: bold; color: #555; }
+  td.tag { width: 120px; }
+  .pill {
+    display: inline-block;
+    padding: 1px 8px;
+    border-radius: 10px;
+    font-size: 9.5px;
+    color: #fff;
+    white-space: nowrap;
+  }
+  .p-import { background: #2e7d32; }
+  .p-fill   { background: #1565c0; }
+  .p-check  { background: #ef6c00; }
+  .p-recon  { background: #6a1b9a; }
+  .p-close  { background: #455a64; }
+  .pr-high  { background: #c62828; }
+  .pr-mid   { background: #ef6c00; }
+  .pr-low   { background: #f9a825; color:#222; }
+  .sys { color:#777; font-size: 9.5px; }
+  .legend {
+    margin-top: 4px;
+    font-size: 10px;
+    color: #555;
+    display: flex;
+    gap: 14px;
+    flex-wrap: wrap;
+  }
+  .legend .pill { font-size: 9px; }
+  .note {
+    background: #fff8e1;
+    border-left: 4px solid #f9a825;
+    padding: 8px 12px;
+    font-size: 10.5px;
+    margin-top: 10px;
+    border-radius: 0 4px 4px 0;
+  }
+  .footer { text-align:center; color:#999; font-size:9px; margin-top:14px; }
+</style>
+</head>
+<body>
+
+<h1>畔色系统 · 对账工作清单</h1>
+<div class="subtitle">日常 / 每周 / 每月 标准作业流程（按系统数据要求制定） &nbsp;·&nbsp; 制表日期 2026-06-03</div>
+
+<!-- DAILY -->
+<div class="section daily">
+  <div class="band"><span>🟢 每日工作</span><span class="freq">DAILY · 每个工作日完成</span></div>
+  <table>
+    <tr><th class="no">#</th><th>任务</th><th class="tag">类型</th><th>对应系统模块 / 表</th></tr>
+    <tr><td class="no">1</td><td>从千牛导出当日新订单，用「导入订单」功能导入系统（支持千牛多 sheet 格式）</td><td><span class="pill p-import">导入</span></td><td class="sys">5-订单总表 / Order</td></tr>
+    <tr><td class="no">2</td><td>补充已发货订单的<b>物流公司 + 物流单号</b>，并把订单状态更新为「已发货」</td><td><span class="pill p-fill">填写</span></td><td class="sys">Order.carrier / tracking_no / status</td></tr>
+    <tr><td class="no">3</td><td>导出当日支付宝流水（所有使用中的账户），导入到系统对应账户</td><td><span class="pill p-import">导入</span></td><td class="sys">9a–9e 流水 / AlipayFlow</td></tr>
+  </table>
+</div>
+
+<!-- WEEKLY -->
+<div class="section weekly">
+  <div class="band"><span>🔵 每周工作</span><span class="freq">WEEKLY · 每周固定一天</span></div>
+  <table>
+    <tr><th class="no">#</th><th>任务</th><th class="tag">类型</th><th>对应系统模块 / 表</th></tr>
+    <tr><td class="no">4</td><td>打开「数据异常」面板，处理系统自动标记的问题（金额不符、重复流水等）</td><td><span class="pill p-check">核查</span></td><td class="sys">data_exceptions</td></tr>
+    <tr><td class="no">5</td><td>运行支付宝流水回填，把流水号关联回对应订单（系统按相关订单号自动匹配）</td><td><span class="pill p-recon">对账</span></td><td class="sys">alipay_backfill_service</td></tr>
+    <tr><td class="no">6</td><td>跟进售后：录入本周售后结果（退款金额、退款日期、赔付原因）</td><td><span class="pill p-fill">填写</span></td><td class="sys">18-售后表 / AfterSales</td></tr>
+    <tr><td class="no">7</td><td>录入本周补单记录（补单成本、发货信息）</td><td><span class="pill p-fill">填写</span></td><td class="sys">8-补单记录 / RefillRecord</td></tr>
+  </table>
+</div>
+
+<!-- MONTHLY -->
+<div class="section monthly">
+  <div class="band"><span>🟣 每月工作</span><span class="freq">MONTHLY · 月初处理上月</span></div>
+  <table>
+    <tr><th class="no">#</th><th>任务</th><th class="tag">类型</th><th>对应系统模块 / 表</th></tr>
+    <tr><td class="no">8</td><td>导入<b>物流月结账单</b>（顺丰 / 德邦等），用于物流费对账</td><td><span class="pill p-import">导入</span></td><td class="sys">LogisticsBill</td></tr>
+    <tr><td class="no">9</td><td>导入<b>万师傅安装费账单</b>，用于安装费对账</td><td><span class="pill p-import">导入</span></td><td class="sys">WanshifuBill</td></tr>
+    <tr><td class="no">10</td><td>核对工厂付款：对比工厂账单金额与实际支付的支付宝流水</td><td><span class="pill p-recon">对账</span></td><td class="sys">6-工厂下单表 / FactoryReconciliation</td></tr>
+    <tr><td class="no">11</td><td>运行全量对账（6 条规则：工厂 / 安装 / 推广 / 补单 / 物流 / 库存），逐条核查差异</td><td><span class="pill p-recon">对账</span></td><td class="sys">reconciliation_service</td></tr>
+    <tr><td class="no">12</td><td>核对账户余额：系统 AccountBalance 期末余额 vs 支付宝后台实际余额</td><td><span class="pill p-check">核查</span></td><td class="sys">10-账户余额汇总 / AccountBalance</td></tr>
+    <tr><td class="no">13</td><td>确认无未解决差异后，<b>关闭当月会计期间</b>（防止误改历史数据）</td><td><span class="pill p-close">封账</span></td><td class="sys">AccountingPeriod</td></tr>
+    <tr><td class="no">14</td><td>导出月度利润报表（销售汇总 + 利润分析）</td><td><span class="pill p-recon">报表</span></td><td class="sys">statement / sales_analytics</td></tr>
+  </table>
+</div>
+
+<!-- ONE-SHOT -->
+<div class="section oneshot">
+  <div class="band"><span>🔴 一次性 · 导入前必做</span><span class="freq">ONE-TIME · 当前阶段</span></div>
+  <table>
+    <tr><th class="no">#</th><th>任务</th><th class="tag" style="width:80px">优先级</th></tr>
+    <tr><td class="no">A</td><td>让同事填完 <b>489 个空白订单</b>的核心字段（物流单号、支付宝流水号、订单状态、实际成本）</td><td><span class="pill pr-high">最高</span></td></tr>
+    <tr><td class="no">B</td><td>处理 <b>306 个只在老表里有、新表找不到</b>的订单 — 确认是否作废 / 取消 / 已用新订单号存在</td><td><span class="pill pr-high">最高</span></td></tr>
+    <tr><td class="no">C</td><td>录入各支付宝账户的<b>期初余额</b>（某一日的实际余额）</td><td><span class="pill pr-mid">高</span></td></tr>
+    <tr><td class="no">D</td><td>确认万师傅账单、物流账单的获取来源，建立月度导入流程</td><td><span class="pill pr-mid">高</span></td></tr>
+    <tr><td class="no">E</td><td>导入后人工抽查支付宝流水自动分类（工厂 / 推广 / 物流 / 安装）的准确率</td><td><span class="pill pr-low">中</span></td></tr>
+    <tr><td class="no">F</td><td>处理 4 条重复支付宝流水（已标⚠️，系统自动跳过第二条，需确认业务逻辑正确）</td><td><span class="pill pr-low">中</span></td></tr>
+  </table>
+</div>
+
+<div class="note">
+<b>⚠️ 当前最大短板：</b>① 支付宝流水与订单的关联（流水号回填）尚未完成；② 物流月结账单、万师傅账单两份月度账单缺失。这两项不到位，6 条对账规则只能跑通约一半。建议优先解决 A、B、D 三项后再正式导入做对账。
+</div>
+
+<div class="legend">
+  <span><span class="pill p-import">导入</span> 数据导入系统</span>
+  <span><span class="pill p-fill">填写</span> 人工录入/补充</span>
+  <span><span class="pill p-check">核查</span> 核对/检查</span>
+  <span><span class="pill p-recon">对账</span> 对账/报表</span>
+  <span><span class="pill p-close">封账</span> 关闭会计期</span>
+</div>
+
+<div class="footer">畔色系统对账标准作业流程 · 内部使用</div>
+
+</body>
+</html>
