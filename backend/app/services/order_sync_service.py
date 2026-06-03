@@ -1,6 +1,6 @@
 """订单总表跨表纠错/回填 (Phase 2).
 
-两个显式操作 (导入后手动触发, 幂等):
+三个显式操作 (导入后手动触发, 幂等):
 
 1. rederive_refill_flags — 以 8-补单记录 为准重判「是否补单」:
    订单号在补单记录里 → is_refill=True, 否则 False。改动的订单顺带重算理论成本
@@ -8,6 +8,8 @@
 
 2. backfill_compensation_from_aftersales — 把 18-售后表 的赔付汇总回写订单:
    按平台订单号聚合售后赔付 (优先 compensation_fee, 否则 工厂补偿+物流补偿),
+
+3. mark_custom_sku_suffix — is_custom=True 的订单, 若 sku 未以「改」结尾则追加「改」字后缀
    写入 Order.compensation_fee。
 """
 from __future__ import annotations
@@ -108,3 +110,21 @@ def backfill_compensation_from_aftersales(db: Session) -> CompensationBackfillRe
     _logger.info("售后赔付回写: 售后%d 条 → 更新订单%d 笔, 合计赔付%s",
                  res.aftersales_scanned, res.orders_updated, res.total_compensation)
     return res
+
+
+def mark_custom_sku_suffix(db: Session) -> int:
+    """is_custom=True 的订单，若 sku 未以「改」结尾则追加「改」后缀。幂等。
+
+    例: PPS2633007032011 → PPS2633007032011-改
+    """
+    orders = db.execute(
+        select(Order).where(Order.is_custom == True)  # noqa: E712
+    ).scalars().all()
+    updated = 0
+    for o in orders:
+        if o.sku and not o.sku.endswith("改") and not o.sku.endswith("-改"):
+            o.sku = o.sku + "-改"
+            updated += 1
+    db.flush()
+    _logger.info("微定制 SKU 后缀标注: 共更新 %d 条订单", updated)
+    return updated

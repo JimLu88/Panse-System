@@ -245,11 +245,32 @@ export interface ProductInventoryRow {
   unit: string | null;
   physical_qty: number;
   locked_qty: number;
+  safety_stock: number | null;
+  lead_time_days: number | null;
+  slow_moving_days: number | null;
+  reorder_point: number | null;
   remark: string | null;
+  // computed stats (from API)
+  available_qty: number;
+  daily_sales_30d: number;
+  lead_time_days_computed: number | null;
+  safety_stock_computed: number;
+  reorder_point_computed: number;
+  days_of_stock: number | null;
+  warning_status: 'ok' | 'warning' | 'danger' | 'critical' | 'excess';
+  auto_reorder_qty: number;
 }
 
-export const listProductInventory = () =>
-  api.get<ProductInventoryRow[]>('/api/inventory/products').then((r) => r.data);
+export const listProductInventory = (warningOnly = false) =>
+  api.get<ProductInventoryRow[]>('/api/inventory/products', { params: { warning_only: warningOnly } }).then((r) => r.data);
+
+export const refreshProductInventoryStats = () =>
+  api.post<{ updated: number; message: string }>('/api/inventory/products/refresh').then((r) => r.data);
+
+export const updateProductInventory = (id: number, patch: {
+  qty?: number; locked_qty?: number; safety_stock?: number;
+  lead_time_days?: number; slow_moving_days?: number; reorder_point?: number; remark?: string;
+}) => api.patch<ProductInventoryRow>(`/api/inventory/products/${id}`, patch).then((r) => r.data);
 
 export const addProductInventoryRow = (payload: {
   warehouse: string;
@@ -512,10 +533,7 @@ export const updatePartInventory = (
   id: number,
   payload: { physical_qty?: number; locked_qty?: number; remark?: string },
 ) => api.patch(`/api/inventory/parts/${id}`, payload).then(r => r.data);
-export const updateProductInventory = (
-  id: number,
-  payload: { qty?: number; locked_qty?: number; remark?: string },
-) => api.patch(`/api/inventory/products/${id}`, payload).then(r => r.data);
+// updateProductInventory defined above (with full patch type)
 
 // -- 异常工作台
 export const fixException = (id: number, fields: Record<string, unknown>) =>

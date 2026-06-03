@@ -142,6 +142,14 @@ def backfill_compensation(db: Session = Depends(get_db)):
     }
 
 
+@router.post("/mark-custom-sku", response_model=dict)
+def mark_custom_sku(db: Session = Depends(get_db)):
+    """微定制订单 SKU 追加「-改」后缀 (is_custom=True 且未标注的)。幂等。"""
+    n = order_sync_service.mark_custom_sku_suffix(db)
+    db.commit()
+    return {"updated": n, "message": f"已为 {n} 条微定制订单 SKU 添加「-改」后缀"}
+
+
 @router.get("/{order_id}/cost-breakdown", response_model=CostBreakdownOut)
 def get_cost_breakdown(order_id: int, db: Session = Depends(get_db)):
     """反推过程可视化: 返回该订单理论成本的逐条物料明细 (不写库)."""

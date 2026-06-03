@@ -2,193 +2,337 @@ import { useState } from 'react';
 import {
   Alert,
   AutoComplete,
+  Badge,
   Button,
   Form,
   Input,
   InputNumber,
   Modal,
   Space,
+  Switch,
   Table,
+  Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
-import { PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ProductInventoryRow,
   addProductInventoryRow,
   listProductInventory,
   listProducts,
+  refreshProductInventoryStats,
   updateProductInventory,
 } from '../api/client';
+
+const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
+  ok:       { color: 'success', label: '正常' },
+  warning:  { color: 'warning', label: '即将不足' },
+  danger:   { color: 'error',   label: '低于预警线' },
+  critical: { color: 'error',   label: '库存告急' },
+  excess:   { color: 'default', label: '滞销/超量' },
+};
 
 export default function ProductInventoryPage() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
   const [productSearch, setProductSearch] = useState('');
-  const [edits, setEdits] = useState<Record<number, { qty?: number; locked_qty?: number }>>({});
-  const [savingId, setSavingId] = useState<number | null>(null);
-
-  function setEdit(id: number, patch: { qty?: number; locked_qty?: number }) {
-    setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
-  }
-
-  async function saveRow(id: number) {
-    const patch = edits[id];
-    if (!patch) return;
-    setSavingId(id);
-    try {
-      await updateProductInventory(id, patch);
-      message.success('库存已更新');
-      qc.invalidateQueries({ queryKey: ['product-inventory'] });
-      setEdits(prev => { const n = { ...prev }; delete n[id]; return n; });
-    } catch {
-      message.error('保存失败');
-    } finally {
-      setSavingId(null);
-    }
-  }
+  const [editId, setEditId] = useState<number | null>(null);
+  const [editForm] = Form.useForm();
+  const [warningOnly, setWarningOnly] = useState(false);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['product-inventory'],
-    queryFn: listProductInventory,
+    queryKey: ['product-inventory', warningOnly],
+    queryFn: () => listProductInventory(warningOnly),
   });
 
   const { data: products } = useQuery({
     queryKey: ['products', productSearch],
     queryFn: () => listProducts(productSearch || undefined),
-    enabled: open,
+  });
+
+  const refreshMut = useMutation({
+    mutationFn: refreshProductInventoryStats,
+    onSuccess: (res) => {
+      message.success(res.message);
+      qc.invalidateQueries({ queryKey: ['product-inventory'] });
+    },
   });
 
   const addMut = useMutation({
-    mutationFn: addProductInventoryRow,
+    mutationFn: (v: Parameters<typeof addProductInventoryRow>[0]) => addProductInventoryRow(v),
     onSuccess: () => {
-      message.success('已加入成品库存');
+      message.success('已添加');
+      qc.invalidateQueries({ queryKey: ['product-inventory'] });
       setOpen(false);
       form.resetFields();
-      qc.invalidateQueries({ queryKey: ['product-inventory'] });
-      qc.invalidateQueries({ queryKey: ['exceptions'] });
     },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '录入失败'),
+  });
+
+  const editMut = useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: Parameters<typeof updateProductInventory>[1] }) =>
+      updateProductInventory(id, patch),
+    onSuccess: () => {
+      message.success('已保存');
+      qc.invalidateQueries({ queryKey: ['product-inventory'] });
+      setEditId(null);
+    },
   });
 
   const columns = [
-    { title: '仓库', dataIndex: 'warehouse', width: 110 },
-    { title: '产品编码', dataIndex: 'product_code', width: 160 },
-    { title: 'SKU', dataIndex: 'sku', ellipsis: true },
-    { title: '规格', dataIndex: 'spec', ellipsis: true },
-    { title: '单位', dataIndex: 'unit', width: 60 },
     {
-      title: '物理库存',
-      dataIndex: 'physical_qty',
+      title: '产品编码', dataIndex: 'product_code', width: 120,
+      render: (v: string, r: ProductInventoryRow) => (
+        <Space direction="vertical" size={0}>
+          <Typography.Text strong>{v}</Typography.Text>
+          {r.sku && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.sku}</Typography.Text>}
+        </Space>
+      ),
+    },
+    { title: '仓库', dataIndex: 'warehouse', width: 80 },
+    {
+      title: '库存状态',
+      dataIndex: 'warning_status',
       width: 100,
-      render: (v: number, row: ProductInventoryRow) => (
-        <InputNumber
-          size="small"
-          min={0}
-          value={edits[row.id]?.qty ?? v}
-          onChange={(val) => setEdit(row.id, { qty: val ?? 0 })}
-          style={{ width: 80 }}
-        />
+      render: (s: string) => {
+        const cfg = STATUS_CONFIG[s] || { color: 'default', label: s };
+        return <Badge status={cfg.color as any} text={cfg.label} />;
+      },
+    },
+    {
+      title: '现货 / 可用',
+      width: 110,
+      render: (_: any, r: ProductInventoryRow) => (
+        <Space direction="vertical" size={0}>
+          <span>现货 {Number(r.physical_qty).toFixed(0)}</span>
+          <Typography.Text type={r.available_qty < 0 ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+            可用 {r.available_qty.toFixed(0)}
+          </Typography.Text>
+        </Space>
       ),
     },
     {
-      title: '锁定',
-      dataIndex: 'locked_qty',
+      title: (
+        <Tooltip title="过去30天日均真实订单发货量（不含补单）">日均销量</Tooltip>
+      ),
+      dataIndex: 'daily_sales_30d',
       width: 90,
-      render: (v: number, row: ProductInventoryRow) => (
-        <InputNumber
-          size="small"
-          min={0}
-          value={edits[row.id]?.locked_qty ?? v}
-          onChange={(val) => setEdit(row.id, { locked_qty: val ?? 0 })}
-          style={{ width: 70 }}
-        />
+      render: (v: number) => v > 0 ? v.toFixed(2) : <Typography.Text type="secondary">暂无</Typography.Text>,
+    },
+    {
+      title: (
+        <Tooltip title="按日均销量折算的库存可用天数">可用天数</Tooltip>
+      ),
+      dataIndex: 'days_of_stock',
+      width: 90,
+      render: (v: number | null) => {
+        if (v === null) return <Typography.Text type="secondary">—</Typography.Text>;
+        const color = v < 14 ? '#ff4d4f' : v < 30 ? '#fa8c16' : '#52c41a';
+        return <span style={{ color }}>{v.toFixed(0)} 天</span>;
+      },
+    },
+    {
+      title: (
+        <Tooltip title="当可用库存 ≤ 预警线时触发警告，建议补货">预警线</Tooltip>
+      ),
+      width: 90,
+      render: (_: any, r: ProductInventoryRow) => (
+        <span>{(r.reorder_point ?? r.reorder_point_computed).toFixed(0)}</span>
       ),
     },
-    { title: '备注', dataIndex: 'remark', ellipsis: true },
+    {
+      title: (
+        <Tooltip title="安全库存：最低不能低于的库存量">安全库存</Tooltip>
+      ),
+      width: 90,
+      render: (_: any, r: ProductInventoryRow) => (
+        <span>{(r.safety_stock ?? r.safety_stock_computed).toFixed(0)}</span>
+      ),
+    },
+    {
+      title: (
+        <Tooltip title="工厂平均交货天数（从订单历史推算）">提前期(天)</Tooltip>
+      ),
+      width: 90,
+      render: (_: any, r: ProductInventoryRow) => {
+        const v = r.lead_time_days ?? r.lead_time_days_computed;
+        return v !== null ? `${v}天` : <Typography.Text type="secondary">暂无</Typography.Text>;
+      },
+    },
+    {
+      title: (
+        <Tooltip title="建议补货量 = 预警线×2 − 当前可用量">推荐备货</Tooltip>
+      ),
+      dataIndex: 'auto_reorder_qty',
+      width: 90,
+      render: (v: number) => v > 0
+        ? <Tag color="blue">{v.toFixed(0)} {}</Tag>
+        : <Typography.Text type="secondary">充足</Typography.Text>,
+    },
+    {
+      title: '滞销阈值',
+      dataIndex: 'slow_moving_days',
+      width: 80,
+      render: (v: number | null) => v ? `${v}天` : '60天',
+    },
     {
       title: '操作',
-      width: 70,
-      render: (_: unknown, row: ProductInventoryRow) =>
-        edits[row.id] !== undefined ? (
-          <Button size="small" type="primary" loading={savingId === row.id} onClick={() => saveRow(row.id)}>
-            存
-          </Button>
-        ) : null,
+      width: 80,
+      render: (_: any, r: ProductInventoryRow) => (
+        <Button size="small" onClick={() => {
+          setEditId(r.id);
+          editForm.setFieldsValue({
+            qty: Number(r.physical_qty),
+            locked_qty: Number(r.locked_qty),
+            safety_stock: r.safety_stock !== null ? Number(r.safety_stock) : undefined,
+            lead_time_days: r.lead_time_days,
+            slow_moving_days: r.slow_moving_days ?? 60,
+            reorder_point: r.reorder_point !== null ? Number(r.reorder_point) : undefined,
+            remark: r.remark,
+          });
+        }}>编辑</Button>
+      ),
     },
   ];
+
+  const warningCount = data?.filter(r => r.warning_status !== 'ok').length ?? 0;
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
-        <Typography.Title level={4} style={{ margin: 0 }}>
-          成品库存 (4a)
-        </Typography.Title>
-        <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
-          录入一行
-        </Button>
+        <Space>
+          <Typography.Title level={4} style={{ margin: 0 }}>成品库存</Typography.Title>
+          {warningCount > 0 && (
+            <Tag color="red">{warningCount} 项需关注</Tag>
+          )}
+        </Space>
+        <Space>
+          <Switch
+            checked={warningOnly}
+            onChange={setWarningOnly}
+            checkedChildren="仅预警"
+            unCheckedChildren="全部"
+          />
+          <Button
+            icon={<SyncOutlined />}
+            loading={refreshMut.isPending}
+            onClick={() => refreshMut.mutate()}
+          >
+            重算推算字段
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={() => qc.invalidateQueries({ queryKey: ['product-inventory'] })}>
+            刷新
+          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
+            添加库存
+          </Button>
+        </Space>
       </Space>
 
-      <Alert
-        type="info"
-        showIcon
-        message="成品库存按精确产品编码匹配。如果引用了不存在的产品编码，会被记入「异常处理」页（不会自动建产品）。"
-      />
+      {warningCount > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          message={`${warningCount} 个 SKU 库存状态需关注（低于预警线、告急或滞销）`}
+        />
+      )}
 
-      <Table<ProductInventoryRow>
+      <Table
         rowKey="id"
-        loading={isLoading}
+        columns={columns}
         dataSource={data}
-        columns={columns as any}
-        pagination={{ pageSize: 20 }}
+        loading={isLoading}
+        pagination={{ pageSize: 50 }}
+        scroll={{ x: 1100 }}
+        rowClassName={(r) =>
+          r.warning_status === 'critical' ? 'ant-table-row-danger' :
+          r.warning_status === 'danger' ? 'ant-table-row-warning' : ''
+        }
+        size="small"
       />
 
+      {/* 添加库存弹窗 */}
       <Modal
-        title="录入一条成品库存"
+        title="添加成品库存"
         open={open}
-        onCancel={() => setOpen(false)}
         onOk={() => form.submit()}
+        onCancel={() => { setOpen(false); form.resetFields(); }}
         confirmLoading={addMut.isPending}
-        destroyOnClose
       >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={(v) => addMut.mutate(v)}
-          initialValues={{ warehouse: '江西仓库', unit: '个', physical_qty: 1, locked_qty: 0 }}
-        >
+        <Form form={form} layout="vertical" onFinish={(v) => addMut.mutate(v)}>
           <Form.Item name="warehouse" label="仓库" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
           <Form.Item name="product_code" label="产品编码" rules={[{ required: true }]}>
             <AutoComplete
+              options={(products || []).map(p => ({ value: p.code, label: `${p.code} ${p.name || ''}` }))}
               onSearch={setProductSearch}
-              options={(products ?? []).map((p) => ({ value: p.code, label: `${p.code} ${p.name}` }))}
-              placeholder="按编码或名称搜索"
+              filterOption={(input, opt) => (opt?.label as string || '').toLowerCase().includes(input.toLowerCase())}
             />
           </Form.Item>
-          <Form.Item name="sku" label="SKU">
-            <Input placeholder="如 榉木餐桌-1.4米" />
+          <Form.Item name="sku" label="SKU"><Input /></Form.Item>
+          <Form.Item name="physical_qty" label="现货数量" initialValue={0}>
+            <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
-          <Form.Item name="spec" label="规格">
-            <Input />
+          <Form.Item name="slow_moving_days" label="滞销预警天数" initialValue={60}>
+            <InputNumber min={1} style={{ width: '100%' }} />
           </Form.Item>
-          <Space style={{ width: '100%' }}>
-            <Form.Item name="physical_qty" label="物理库存">
-              <InputNumber min={0} />
-            </Form.Item>
-            <Form.Item name="locked_qty" label="锁定库存">
-              <InputNumber min={0} />
-            </Form.Item>
-            <Form.Item name="unit" label="单位">
-              <Input />
-            </Form.Item>
-          </Space>
-          <Form.Item name="remark" label="备注">
-            <Input />
+          <Form.Item name="remark" label="备注"><Input /></Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 编辑弹窗 */}
+      <Modal
+        title="编辑库存参数"
+        open={editId !== null}
+        onOk={() => editForm.submit()}
+        onCancel={() => setEditId(null)}
+        confirmLoading={editMut.isPending}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="安全库存、提前期、预警线若不填，系统会根据订单历史自动推算。"
+        />
+        <Form
+          form={editForm}
+          layout="vertical"
+          onFinish={(v) => editId && editMut.mutate({
+            id: editId,
+            patch: {
+              qty: v.qty,
+              locked_qty: v.locked_qty,
+              safety_stock: v.safety_stock,
+              lead_time_days: v.lead_time_days,
+              slow_moving_days: v.slow_moving_days,
+              reorder_point: v.reorder_point,
+              remark: v.remark,
+            },
+          })}
+        >
+          <Form.Item name="qty" label="现货数量">
+            <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>
+          <Form.Item name="locked_qty" label="锁定数量">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="safety_stock" label="安全库存（留空=系统推算）">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="lead_time_days" label="提前期天数（留空=从工厂历史推算）">
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="reorder_point" label="预警线（留空=自动计算）">
+            <InputNumber min={0} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="slow_moving_days" label="滞销预警天数">
+            <InputNumber min={1} style={{ width: '100%' }} />
+          </Form.Item>
+          <Form.Item name="remark" label="备注"><Input /></Form.Item>
         </Form>
       </Modal>
     </Space>
