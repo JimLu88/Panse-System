@@ -14,7 +14,7 @@
   (a) 待扣除平台服务费      — Σ platform_fee, status∈{paid, shipped}
   (b) 工厂打样费(未付)      — Σ factory_bill_amount, 未付 + 无平台订单号 (打样件)
   (c) 工厂订单结算费(未付)  — Σ factory_bill_amount, 未付 + 有平台订单号 (正式单)
-  (d) 待付款刷单金额        — Σ paid_amount, is_refill=True 且 status=pending_payment
+  (d) 待付款补单金额        — Σ paid_amount, is_refill=True 且 status=pending_payment
   (e) 总投资费用            — 手动常量 (settings: cashflow_total_investment)
 
 设计要点:
@@ -203,7 +203,7 @@ def compute_summary(db: Session) -> dict:
         {"key": "pending_platform_fee", "label": "待扣除平台服务费", "amount": pending_platform_fee, "manual": False, "source": "订单(未结算)"},
         {"key": "factory_sample", "label": "工厂打样费(未付)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号)"},
         {"key": "factory_settlement", "label": "工厂订单结算费(未付)", "amount": factory_settlement, "manual": False, "source": "工厂订单(未付·有平台单号)"},
-        {"key": "pending_brush", "label": "待付款刷单金额", "amount": pending_brush, "manual": False, "source": "订单(补单·待付款)"},
+        {"key": "pending_brush", "label": "待付款补单金额", "amount": pending_brush, "manual": False, "source": "订单(补单·待付款)"},
         {"key": "total_investment", "label": "总投资费用", "amount": total_investment, "manual": True, "source": "手动维护"},
     ]
 

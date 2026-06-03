@@ -35,6 +35,34 @@ from app.services.excel_schemas import ENTITY_SCHEMAS
 
 _logger = logging.getLogger("panse.smart_import")
 
+# 畔色总表中已知 sheet 名 → entity 类型的确定性映射。
+# 前缀数字编号 + 关键字匹配，不依赖 AI，保证总表一次性导入时每个 sheet 都能被正确识别。
+_KNOWN_SHEET_PATTERNS: list[tuple[str, str]] = [
+    # (关键字子串, entity_type) — 顺序优先
+    ("账户余额", "account_balance"),
+    ("account_balance", "account_balance"),
+    ("支付宝流水", "alipay_flow"),
+    ("alipay", "alipay_flow"),
+    ("订单总表修改", "order"),
+    ("订单总表", "order"),
+    ("订单", "order"),
+    ("产品总表", "product"),
+    ("product", "product"),
+    ("BOM", "bom"),
+    ("bom", "bom"),
+    ("配件库存", "part_inventory"),
+    ("成品库存", "product_inventory"),
+]
+
+
+def _sheet_name_entity(sheet_name: str) -> Optional[str]:
+    """从 sheet 名确定性推导 entity_type；对不上返回 None。"""
+    name_lower = sheet_name.lower()
+    for keyword, entity in _KNOWN_SHEET_PATTERNS:
+        if keyword.lower() in name_lower:
+            return entity if entity in ENTITY_SCHEMAS else None
+    return None
+
 
 # ----------------------------- 数据结构 ---------------------------- #
 
@@ -383,8 +411,25 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
         })
     wb.close()
 
+    # ---- 1b) 确定性 sheet 名匹配：已知命名规律直接定 entity，跳过 AI ----
+    for p in prepped:
+        if "done" in p:
+            continue
+        known = _sheet_name_entity(p["name"])
+        if known:
+            _, h_mapping, _ = _heuristic_match(p["columns"], p["sample_rows"])
+            p["ai_result"] = {
+                "entity_type": known,
+                "confidence": 0.95,
+                "mapping": h_mapping,
+                "quality": "good",
+                "quality_score": 85,
+                "issues": [],
+                "notes": [f"sheet 名确定性匹配 → {ENTITY_SCHEMAS[known]['label']}"],
+            }
+
     # ---- 2) 并发跑 AI: 每个 sheet 一次调用, 26 个并行 → 总耗时≈单次而非累加 ----
-    ai_targets = [p for p in prepped if "done" not in p]
+    ai_targets = [p for p in prepped if "done" not in p and "ai_result" not in p]
 
     def _run_ai(p: dict) -> dict:
         if provider is None:
