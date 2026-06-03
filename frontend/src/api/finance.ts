@@ -361,3 +361,37 @@ export const purchaseSourceImageUrl = (purchaseId: number) =>
   `/api/purchases/${purchaseId}/source-image`;
 export const purchaseFileImageUrl = (fileId: number) =>
   `/api/purchases/files/${fileId}/image`;
+
+// ----- 剩余流水（可用资金）测算 -----
+export interface CashFlowLine {
+  key: string;
+  label: string;
+  amount: string;
+  manual: boolean;
+  source: string;
+}
+export interface CashFlowFreshness {
+  source: string;
+  as_of: string | null;
+  days_ago: number | null;
+  status: 'fresh' | 'aging' | 'stale' | 'unknown';
+}
+export interface CashFlowSummary {
+  total: string;
+  total_additions: string;
+  total_subtractions: string;
+  additions: CashFlowLine[];
+  subtractions: CashFlowLine[];
+  other_account_balance: string;
+  freshness: CashFlowFreshness[];
+  generated_at: string;
+}
+
+export const getCashFlow = () =>
+  api.get<CashFlowSummary>('/api/finance/cash-flow').then((r) => r.data);
+
+export const updateCashFlowSettings = (payload: {
+  shop_deposit?: string;
+  total_investment?: string;
+}) =>
+  api.put<CashFlowSummary>('/api/finance/cash-flow/settings', payload).then((r) => r.data);

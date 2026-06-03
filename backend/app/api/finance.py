@@ -20,6 +20,7 @@ from app.services import (
     alipay_import,
     balance_service,
     bill_import_service,
+    cash_flow_service,
     email_import_service,
     factory_reconciliation_service,
     reconciliation_service,
@@ -828,6 +829,57 @@ def trigger_email_poll(db: Session = Depends(get_db)):
     r = email_import_service.poll_and_import(db)
     return EmailPollResult(scanned=r.scanned, imported=r.imported,
                            skipped=r.skipped, errors=r.errors)
+
+
+# -------- 剩余流水（可用资金）测算 --------
+
+class CashFlowLineOut(BaseModel):
+    key: str
+    label: str
+    amount: Decimal
+    manual: bool
+    source: str
+
+
+class CashFlowFreshnessOut(BaseModel):
+    source: str
+    as_of: Optional[str]
+    days_ago: Optional[int]
+    status: str  # fresh / aging / stale / unknown
+
+
+class CashFlowSummaryOut(BaseModel):
+    total: Decimal
+    total_additions: Decimal
+    total_subtractions: Decimal
+    additions: list[CashFlowLineOut]
+    subtractions: list[CashFlowLineOut]
+    other_account_balance: Decimal
+    freshness: list[CashFlowFreshnessOut]
+    generated_at: str
+
+
+@router.get("/cash-flow", response_model=CashFlowSummaryOut)
+def get_cash_flow(db: Session = Depends(get_db)):
+    """实时测算剩余流水（可用资金）+ 各数据源新鲜度。"""
+    return cash_flow_service.compute_summary(db)
+
+
+class CashFlowSettingsIn(BaseModel):
+    shop_deposit: Optional[Decimal] = None
+    total_investment: Optional[Decimal] = None
+
+
+@router.put("/cash-flow/settings", response_model=CashFlowSummaryOut)
+def update_cash_flow_settings(payload: CashFlowSettingsIn, db: Session = Depends(get_db)):
+    """更新手动常量（店铺保证金 / 总投资费用），返回重新测算后的结果。"""
+    cash_flow_service.update_manual(
+        db,
+        shop_deposit=payload.shop_deposit,
+        total_investment=payload.total_investment,
+    )
+    db.commit()
+    return cash_flow_service.compute_summary(db)
 
 
 # -------- 对账差异 AI 诊断 --------
