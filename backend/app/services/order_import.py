@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
+from app.services import order_cost_service
 
 # 列名别名表：CSV 头 (规范化后) → Order 字段
 COLUMN_ALIASES: dict[str, str] = {
@@ -133,24 +134,28 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
             continue
         seen_in_batch.add(order_no)
 
+        _is_refill = _to_bool(payload.get("is_refill"))
+        _product_name = payload.get("product_name")
+        _sku = payload.get("sku")
         order = Order(
             platform=(payload.get("platform") or "淘宝").strip(),
             order_no=order_no,
-            is_refill=_to_bool(payload.get("is_refill")),
+            is_refill=_is_refill,
             order_date=_to_date(payload.get("order_date")),
             ship_date=_to_date(payload.get("ship_date")),
             customer_name=payload.get("customer_name"),
             customer_phone=payload.get("customer_phone"),
             customer_address=payload.get("customer_address"),
             product_code=payload.get("product_code"),
-            product_name=payload.get("product_name"),
-            sku=payload.get("sku"),
+            product_name=_product_name,
+            sku=_sku,
             is_custom=_to_bool(payload.get("is_custom")),
             qty=_to_int(payload.get("qty"), default=1),
             carrier=payload.get("carrier"),
             tracking_no=payload.get("tracking_no"),
             paid_amount=_to_decimal(payload.get("paid_amount")),
             status="pending_payment",
+            warehouse=order_cost_service.default_warehouse_for(_product_name, _sku, _is_refill),
         )
         db.add(order)
         report.inserted += 1

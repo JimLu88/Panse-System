@@ -162,6 +162,7 @@ def list_factory_reconciliation(
 
 
 class AlipayRouteResult(BaseModel):
+    aftersales_created: int = 0
     promotion_filled: int
     daily_filled: int
     outsourcing_filled: int
@@ -171,7 +172,7 @@ class AlipayRouteResult(BaseModel):
 
 @router.post("/alipay-flows/route", response_model=AlipayRouteResult)
 def route_alipay_flows(rerun_classify: bool = True, db: Session = Depends(get_db)):
-    """支付宝流水自动归类回填: 推广/日常/外包补流水号, 未分类支出建采购, 工厂翻已付款。
+    """支付宝流水自动归类回填: 售后先建→推广/日常/外包补流水号, 未分类建采购, 工厂翻已付款。
 
     rerun_classify=True 时先跑一遍 smart_matching 打 reconciliation_type。
     """
@@ -180,10 +181,39 @@ def route_alipay_flows(rerun_classify: bool = True, db: Session = Depends(get_db
     r = alipay_flow_router_service.run_all(db)
     db.commit()
     return AlipayRouteResult(
+        aftersales_created=r.aftersales_created,
         promotion_filled=r.promotion_filled, daily_filled=r.daily_filled,
         outsourcing_filled=r.outsourcing_filled, purchases_created=r.purchases_created,
         factory_flipped=r.factory_flipped,
     )
+
+
+@router.post("/alipay-flows/detect-refunds", response_model=dict)
+def detect_refunds(db: Session = Depends(get_db)):
+    """识别退款对: 同关联订单号下金额相等、方向相反的两条流水标为 refund_in/refund_out。
+
+    打标后退款对不再被归为「重复流水」异常; 支出侧被 route 识别为售后。
+    """
+    from app.services import flow_refund_service
+    n = flow_refund_service.detect_refunds(db)
+    db.commit()
+    return {"pairs_found": n, "message": f"识别到 {n} 对退款流水并已打标"}
+
+
+@router.post("/factory-reconciliation/match-alipay", response_model=dict)
+def match_factory_alipay(
+    factory_name: Optional[str] = None, db: Session = Depends(get_db),
+):
+    """按工厂对账账单金额合计, 从支付宝支出流水中找等额一笔回填工厂订单 alipay_flow_no。
+
+    命中后 flip_factory_payment 可自动翻「已付款」。
+    factory_name 留空时处理全部工厂。
+    """
+    n = factory_reconciliation_service.match_factory_alipay_by_bill_amount(
+        db, factory_name=factory_name,
+    )
+    db.commit()
+    return {"matched_periods": n, "message": f"按账单金额匹配到 {n} 个工厂付款周期"}
 
 
 @router.post("/smart-match/rerun", response_model=SmartMatchResult)

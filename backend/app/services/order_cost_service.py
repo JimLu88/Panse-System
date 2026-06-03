@@ -160,9 +160,9 @@ def compute(db: Session, order: Order) -> CostBreakdown:
     if not lines:
         note = "未匹配到 BOM (订单缺 sku_code 或该 SKU 无 BOM), 无法反推理论成本"
     elif missing and wood_missing:
-        note = f"{missing} 项缺单价 (含木作: 定价表该 SKU 无 wood_cost, 请补木作成本), 已按 0 计入"
+        note = f"{missing} 项单价未知(待核算), 含木作成本 — 请在定价表补 wood_cost 后重算"
     elif missing:
-        note = f"{missing} 项物料缺单价, 已按 0 计入, 请到物料表补价后重算"
+        note = f"{missing} 项物料单价未知(待核算) — 请在物料表补单价后重算"
     else:
         note = None
 

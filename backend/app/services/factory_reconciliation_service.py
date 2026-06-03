@@ -145,6 +145,86 @@ def rebuild_for_period(
     return "inserted"
 
 
+_FACTORY_KEYWORDS = ("博冠", "玉山", "家具", "板材", "木")
+_BILL_MATCH_TOLERANCE = Decimal("20")   # 账单金额 ±20 元容差
+
+
+def match_factory_alipay_by_bill_amount(db: Session, *, factory_name: Optional[str] = None) -> int:
+    """按对账周期账单金额汇总, 去支付宝支出流水找等额一笔 (±容差), 回填工厂订单 alipay_flow_no。
+
+    命中条件 (同时满足):
+      1. 该周期所有工厂订单 factory_bill_amount 之和 ≈ 支付宝支出流水 |amount| (±容差)
+      2. 流水对手方含工厂关键字 (博冠/玉山/家具等) 或不限 (宽松模式)
+      3. 流水未被其他工厂周期引用
+
+    每个工厂下单的 alipay_flow_no 都更新为匹配到的那笔流水号。
+    """
+    # 取所有支出流水供匹配
+    expense_flows = db.execute(
+        select(AlipayFlow).where(AlipayFlow.amount < 0)
+    ).scalars().all()
+
+    # 已被引用的流水号 (避免同一笔流水重复分配到多个周期)
+    used_flow_nos: set[str] = set()
+    for fo in db.execute(
+        select(FactoryOrder).where(FactoryOrder.alipay_flow_no.isnot(None))
+    ).scalars().all():
+        if fo.alipay_flow_no:
+            used_flow_nos.add(fo.alipay_flow_no)
+
+    q = select(FactoryOrder).where(
+        FactoryOrder.voided_at.is_(None),
+        FactoryOrder.factory_bill_amount.isnot(None),
+        FactoryOrder.alipay_flow_no.is_(None),   # 只补缺
+    )
+    if factory_name:
+        q = q.where(FactoryOrder.factory_name == factory_name)
+    fos = db.execute(q).scalars().all()
+
+    # 按 (工厂, 年月) 分组
+    buckets: dict[tuple[str, int, int], list[FactoryOrder]] = defaultdict(list)
+    for fo in fos:
+        if fo.order_date is None:
+            continue
+        fname = fo.factory_name or DEFAULT_FACTORY
+        buckets[(fname, fo.order_date.year, fo.order_date.month)].append(fo)
+
+    matched_periods = 0
+    for (fname, yr, mo), period_fos in buckets.items():
+        bill_total = sum(fo.factory_bill_amount or Decimal("0") for fo in period_fos)
+        if bill_total <= 0:
+            continue
+
+        best_flow: Optional[AlipayFlow] = None
+        best_diff = None
+        for f in expense_flows:
+            if (f.transaction_no or "") in used_flow_nos:
+                continue
+            flow_abs = abs(f.amount or Decimal("0"))
+            diff = abs(flow_abs - bill_total)
+            if diff > _BILL_MATCH_TOLERANCE:
+                continue
+            # 优先对手方含工厂关键词
+            cp = (f.counterparty or "").lower()
+            is_factory = any(k in cp for k in _FACTORY_KEYWORDS)
+            if best_flow is None or diff < best_diff or (diff == best_diff and is_factory):
+                best_flow = f
+                best_diff = diff
+
+        if best_flow is None:
+            continue
+
+        flow_no = best_flow.transaction_no
+        for fo in period_fos:
+            fo.alipay_flow_no = flow_no
+        used_flow_nos.add(flow_no)
+        matched_periods += 1
+
+    db.flush()
+    _logger.info("工厂流水按账单金额匹配: %d 个周期命中", matched_periods)
+    return matched_periods
+
+
 def rebuild_all_periods(db: Session, *, factory_name: Optional[str] = None) -> ReconResult:
     """按自然月自动分周期, 对所有 (工厂, 月份) 重算对账记录。"""
     q = select(FactoryOrder).where(FactoryOrder.voided_at.is_(None))

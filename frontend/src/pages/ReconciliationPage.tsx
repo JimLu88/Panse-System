@@ -23,8 +23,12 @@ import {
   ReconcileWalkthroughResult,
   ReconciliationDiff,
   ReconciliationResult,
+  detectRefunds,
+  matchFactoryAlipay,
+  rebuildFactoryReconciliation,
   reconcileWalkthrough,
   rerunSmartMatch,
+  routeAlipayFlows,
   runReconciliation,
 } from '../api/client';
 import { useState } from 'react';
@@ -95,6 +99,40 @@ export default function ReconciliationPage() {
     onError: () => message.error('AI 走查失败'),
   });
 
+  const detectRefundsMut = useMutation({
+    mutationFn: detectRefunds,
+    onSuccess: (res) => {
+      message.success(res.message);
+      qc.invalidateQueries({ queryKey: ['reconciliation'] });
+    },
+    onError: () => message.error('退款对识别失败'),
+  });
+
+  const routeMut = useMutation({
+    mutationFn: () => routeAlipayFlows(true),
+    onSuccess: (res) => {
+      message.success(
+        `归类完成 — 售后建${res.aftersales_created} 推广${res.promotion_filled} ` +
+        `日常${res.daily_filled} 外包${res.outsourcing_filled} ` +
+        `采购${res.purchases_created} 工厂翻付${res.factory_flipped}`,
+      );
+      qc.invalidateQueries({ queryKey: ['reconciliation'] });
+    },
+    onError: () => message.error('归类流水失败'),
+  });
+
+  const matchFactoryMut = useMutation({
+    mutationFn: () => matchFactoryAlipay().then(async (r) => {
+      await rebuildFactoryReconciliation();
+      return r;
+    }),
+    onSuccess: (res) => {
+      message.success(res.message + ' — 对账汇总已重算');
+      qc.invalidateQueries({ queryKey: ['reconciliation'] });
+    },
+    onError: () => message.error('工厂流水匹配失败'),
+  });
+
   if (isLoading) return <Spin />;
   if (!data) return <Empty />;
 
@@ -116,6 +154,30 @@ export default function ReconciliationPage() {
               { label: '今年', value: [dayjs().startOf('year'), dayjs().endOf('year')] },
             ]}
           />
+          <Button
+            icon={<ReloadOutlined />}
+            loading={detectRefundsMut.isPending}
+            onClick={() => detectRefundsMut.mutate()}
+            title="识别支付宝流水中金额相等方向相反的退款对，避免被归为重复流水"
+          >
+            退款对识别
+          </Button>
+          <Button
+            icon={<ThunderboltOutlined />}
+            loading={routeMut.isPending}
+            onClick={() => routeMut.mutate()}
+            title="将支付宝流水归类回填到推广/日常/外包/售后/采购各表，并翻转工厂已付款状态"
+          >
+            归类流水
+          </Button>
+          <Button
+            icon={<ReloadOutlined />}
+            loading={matchFactoryMut.isPending}
+            onClick={() => matchFactoryMut.mutate()}
+            title="按工厂账单金额在支付宝支出流水中找等额记录，回填工厂订单流水号并重算对账汇总"
+          >
+            工厂流水匹配
+          </Button>
           <Button
             icon={<ReloadOutlined />}
             loading={rematchMut.isPending}

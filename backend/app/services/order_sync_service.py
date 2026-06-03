@@ -112,6 +112,21 @@ def backfill_compensation_from_aftersales(db: Session) -> CompensationBackfillRe
     return res
 
 
+def backfill_warehouse(db: Session) -> int:
+    """存量订单仓库回填: 对 warehouse 为空的订单用 default_warehouse_for 自动判定。幂等。"""
+    orders = db.execute(
+        select(Order).where(Order.warehouse.is_(None))
+    ).scalars().all()
+    updated = 0
+    for o in orders:
+        wh = order_cost_service.default_warehouse_for(o.product_name, o.sku, o.is_refill)
+        o.warehouse = wh
+        updated += 1
+    db.flush()
+    _logger.info("仓库回填: 更新 %d 条订单", updated)
+    return updated
+
+
 def mark_custom_sku_suffix(db: Session) -> int:
     """is_custom=True 的订单，若 sku 未以「改」结尾则追加「改」后缀。幂等。
 

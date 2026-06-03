@@ -71,6 +71,7 @@ class CostBreakdownOut(BaseModel):
     total_cost: _Decimal
     resolved: bool
     missing_price_count: int
+    cost_incomplete: bool = False
     note: Optional[str]
     lines: list[CostLineOut]
 
@@ -84,6 +85,7 @@ def _bd_to_out(bd: "order_cost_service.CostBreakdown") -> CostBreakdownOut:
         total_cost=bd.total_cost,
         resolved=bd.resolved,
         missing_price_count=bd.missing_price_count,
+        cost_incomplete=bd.cost_incomplete,
         note=bd.note,
         lines=[CostLineOut(**ln.__dict__) for ln in bd.lines],
     )
@@ -140,6 +142,14 @@ def backfill_compensation(db: Session = Depends(get_db)):
         "orders_updated": r.orders_updated,
         "total_compensation": str(r.total_compensation),
     }
+
+
+@router.post("/backfill-warehouse", response_model=dict)
+def backfill_warehouse(db: Session = Depends(get_db)):
+    """对 warehouse 为空的存量订单自动填充仓库 (样块/补单→杭州, 其余→江西仓库)。幂等。"""
+    n = order_sync_service.backfill_warehouse(db)
+    db.commit()
+    return {"updated": n, "message": f"已回填 {n} 条订单的发货仓库"}
 
 
 @router.post("/mark-custom-sku", response_model=dict)
