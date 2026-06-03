@@ -47,6 +47,7 @@ const CustomQuoteChatPage = lazy(() => import('./pages/CustomQuoteChatPage'));
 const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
 const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
 const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
+const CashFlowPage = lazy(() => import('./pages/CashFlowPage'));
 
 const { Header, Content } = Layout;
 
@@ -74,7 +75,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   'logistics-bills': 'g-logistics', 'wanshifu-bills': 'g-logistics',
   marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
-  alipay: 'g-finance', reconciliation: 'g-finance', 'refill-records': 'g-finance',
+  'cash-flow': 'g-finance', alipay: 'g-finance', reconciliation: 'g-finance', 'refill-records': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance',
   reports: 'g-analysis', exceptions: 'g-analysis',
   importer: 'g-tools', feishu: 'g-tools', admin: 'g-tools',
@@ -187,6 +188,7 @@ export default function App() {
       key: 'g-finance',
       label: '财务',
       children: [
+        { key: 'cash-flow', label: <Link to="/cash-flow">剩余流水</Link> },
         { key: 'alipay', label: <Link to="/alipay">支付宝 / 账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
@@ -314,6 +316,7 @@ export default function App() {
             <Route path="/wanshifu-bills" element={<WanshifuBillsPage />} />
             <Route path="/logistics-bills" element={<LogisticsBillsPage />} />
             <Route path="/refill-records" element={<RefillRecordsPage />} />
+            <Route path="/cash-flow" element={<CashFlowPage />} />
           </Routes>
         </Suspense>
       </Content>

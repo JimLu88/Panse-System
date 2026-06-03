@@ -11,7 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.order import FactoryOrder, Order
+from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.finance import AlipayFlow, RefillRecord, FactoryReconciliation
 from app.models.marketing import OutsourcingExpense, AfterSales, PromotionFlow, Sample, WoodLoss
 from app.services import exception_service, settings_service
@@ -437,6 +437,134 @@ def scan_promotion_recharge_unmatched(db: Session) -> int:
 
 
 # ---------------------------------------------------------------------------
+# B12 — 工厂对账不平 (账单 ≠ 实付)
+# ---------------------------------------------------------------------------
+
+def scan_factory_recon_unbalanced(db: Session) -> int:
+    """工厂对账 账单 vs 实付 不平 → 异常 (未付清 / 超付)。
+
+    区别于 factory_recon_incomplete (缺字段): 这条是金额对不上的实质差异,
+    让"4月差¥13389未付清""某期超付"这类口子在异常中心冒出来, 而不是只算个 diff 藏着。
+    """
+    count = 0
+    for r in db.query(FactoryReconciliation).filter(
+        FactoryReconciliation.status.in_(["underpaid", "overpaid"]),
+    ).all():
+        diff = r.diff_amount or 0
+        if r.status == "underpaid":
+            sev, label, act = "error", "未付清", f"账单 ¥{r.bill_amount} > 实付 ¥{r.paid_amount}, 尚欠 ¥{diff}。请确认是否漏付或分期。"
+        else:
+            sev, label, act = "warning", "超付", f"实付 ¥{r.paid_amount} > 账单 ¥{r.bill_amount}, 多付 ¥{-diff}。请确认是否预付或重复支付。"
+        _record(
+            db,
+            source_table="factory_reconciliations",
+            source_pk=r.id,
+            exception_type="factory_recon_unbalanced",
+            severity=sev,
+            description=f"工厂对账 [{r.factory_name}] {r.period_start}~{r.period_end} 对账不平({label}): {act}",
+            suggestion_action="核对工厂账单与支付宝付款流水, 补付/退回差额或登记说明。",
+            context={"id": r.id, "factory_name": r.factory_name, "status": r.status,
+                     "bill_amount": str(r.bill_amount), "paid_amount": str(r.paid_amount),
+                     "diff_amount": str(r.diff_amount)},
+        )
+        count += 1
+    _log.info("scan_factory_recon_unbalanced: %d", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
+# B13 — 支付宝支出被自动归类为采购(存疑), 待人工确认
+# ---------------------------------------------------------------------------
+
+def scan_unclassified_purchase(db: Session) -> int:
+    """无法归类的支出流水被自动建成的采购记录 → 异常, 提示人工确认归类。
+
+    堵住最大的静默漏洞: 系统把对不上的支出"猜"成采购后, 不再无声无息,
+    而是逐条进异常中心, 用户能看到"系统替你归了哪些类、需要复核"。
+    """
+    from app.services.alipay_flow_router_service import UNCLASSIFIED_PURCHASE_TYPE
+    count = 0
+    for r in db.query(PartPurchase).filter(
+        PartPurchase.purchase_type == UNCLASSIFIED_PURCHASE_TYPE,
+    ).all():
+        _record(
+            db,
+            source_table="part_purchases",
+            source_pk=r.id,
+            exception_type="unclassified_purchase",
+            severity="warning",
+            description=(f"采购记录 {r.purchase_no} (¥{r.amount}, {r.supplier or '未知对手方'}) "
+                         f"由支付宝流水自动归类, 实际用途存疑, 需人工确认是否为采购。"),
+            suggestion_action="核对该笔支出真实用途 (采购/日常经营/外包/其它), 修正归类或补全配件信息。",
+            context={"id": r.id, "purchase_no": r.purchase_no, "amount": str(r.amount),
+                     "supplier": r.supplier, "alipay_flow_no": r.alipay_flow_no},
+        )
+        count += 1
+    _log.info("scan_unclassified_purchase: %d", count)
+    return count
+
+
+def scan_alipay_duplicate_flow(db: Session) -> int:
+    """支付宝重复流水检测 (智能判重)。
+
+    背景: 一笔淘宝收款, 支付宝会产生两条共用同一「交易流水号」的流水 ——
+      - 在线支付: 客户实付货款 (正, 本店收入)
+      - 分账    : 淘宝支付手续费 (负, 约千分之六)
+    这种「同号不同交易类型」是正常配对, 不能算重复。
+    真正的重复是「同账户 + 同交易流水号 + 同交易类型」出现多条 (常见于导出/导入重跑、
+    手工补录), 会把收入或手续费重复计一遍, 必须人工核对。
+
+    判重规则: 只对 (account, transaction_no, transaction_type) 完全相同的多条流水报异常;
+    同号不同类型 (分账 / 在线支付) 一律放行。
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple, list] = defaultdict(list)
+    for row in db.query(AlipayFlow).filter(
+        AlipayFlow.transaction_no.isnot(None),
+        AlipayFlow.transaction_no != "",
+    ).all():
+        key = (row.account, row.transaction_no, row.transaction_type)
+        groups[key].append(row)
+
+    count = 0
+    for (account, tx_no, tx_type), rows in groups.items():
+        if len(rows) < 2:
+            continue
+        rows_sorted = sorted(rows, key=lambda r: r.id)
+        amounts = [str(r.amount) for r in rows_sorted]
+        ids = [r.id for r in rows_sorted]
+        # 同号 + 同类型 + 同金额 → 几乎确定是真重复(error); 金额不同 → 疑似(warning)。
+        identical = len(set(amounts)) == 1
+        sev = "error" if identical else "warning"
+        label = "完全重复(同号+同类型+同金额)" if identical else "疑似重复(同号+同类型,金额不同)"
+        # 异常挂在除第一条以外的每条「多余」流水上, 方便逐条核销/删除。
+        for r in rows_sorted[1:]:
+            _record(
+                db,
+                source_table="alipay_flows",
+                source_pk=r.id,
+                exception_type="alipay_duplicate_flow",
+                severity=sev,
+                description=(
+                    f"支付宝重复流水 [{account}] 流水号 {tx_no} 交易类型「{tx_type}」"
+                    f"出现 {len(rows)} 条 ({label}): 金额 {amounts}, id={ids}。"
+                    f"注: 同号的『分账(手续费)+在线支付(收款)』为正常配对, 不在此列。"
+                ),
+                suggestion_action=(
+                    "核对是否为导入重跑/手工补录造成的重复; 若确为重复, 删除多余流水, "
+                    "仅保留一条, 避免收入或手续费被重复计入。"
+                ),
+                context={"account": account, "transaction_no": tx_no,
+                         "transaction_type": tx_type, "amounts": amounts, "ids": ids,
+                         "identical": identical},
+            )
+            count += 1
+    _log.info("scan_alipay_duplicate_flow: %d", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
 # 全量扫描入口
 # ---------------------------------------------------------------------------
 
@@ -449,7 +577,10 @@ def run_all(db: Session) -> dict[str, int]:
         ("order_missing_tracking", scan_order_missing_tracking),
         ("refill_unmatched", scan_refill_unmatched),
         ("alipay_missing_txn", scan_alipay_missing_txn),
+        ("alipay_duplicate_flow", scan_alipay_duplicate_flow),
         ("factory_recon_incomplete", scan_factory_recon_incomplete),
+        ("factory_recon_unbalanced", scan_factory_recon_unbalanced),
+        ("unclassified_purchase", scan_unclassified_purchase),
         ("outsourcing_missing", scan_outsourcing_missing),
         ("aftersales_empty", scan_aftersales_empty),
         ("alipay_balance_gap", scan_alipay_balance_gap),

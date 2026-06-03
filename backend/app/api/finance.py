@@ -11,13 +11,16 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.finance import AccountBalance, AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
+from app.models.finance import (
+    AccountBalance, AlipayFlow, FactoryReconciliation, LogisticsBill, RefillRecord, WanshifuBill,
+)
 from app.services import (
     alipay_backfill_service,
     alipay_flow_router_service,
     alipay_import,
     balance_service,
     bill_import_service,
+    cash_flow_service,
     email_import_service,
     factory_reconciliation_service,
     reconciliation_service,
@@ -119,6 +122,43 @@ def rebuild_factory_reconciliation(
     r = factory_reconciliation_service.rebuild_all_periods(db, factory_name=factory_name)
     db.commit()
     return FactoryReconRebuildOut(periods=r.periods, created=r.created, updated=r.updated)
+
+
+class FactoryReconOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    factory_name: str
+    period_start: Optional[date]
+    period_end: Optional[date]
+    order_amount: Optional[Decimal]
+    bill_amount: Optional[Decimal]
+    paid_amount: Optional[Decimal]
+    diff_amount: Decimal
+    status: str          # balanced/underpaid/overpaid/unpaid
+    diff_reason: Optional[str]
+    reconciled_at: Optional[date]
+    alipay_flow_no: Optional[str]
+
+
+@router.get("/factory-reconciliation", response_model=list[FactoryReconOut])
+def list_factory_reconciliation(
+    status: Optional[str] = Query(None, description="按对账状态过滤: balanced/underpaid/overpaid/unpaid"),
+    unbalanced_only: bool = Query(False, description="只看对不上的 (未付清/超付)"),
+    db: Session = Depends(get_db),
+):
+    """工厂对账逐周期清单 (含 账单/实付/差异/对账状态)。
+
+    前端可据此显示「未付清/超付」红黄标; unbalanced_only=True 时只返回对不上的周期,
+    与异常中心 factory_recon_unbalanced 一致。
+    """
+    stmt = select(FactoryReconciliation).order_by(
+        FactoryReconciliation.factory_name, FactoryReconciliation.period_end.desc(),
+    )
+    if status:
+        stmt = stmt.where(FactoryReconciliation.status == status)
+    elif unbalanced_only:
+        stmt = stmt.where(FactoryReconciliation.status.in_(["underpaid", "overpaid"]))
+    return db.execute(stmt).scalars().all()
 
 
 class AlipayRouteResult(BaseModel):
@@ -789,6 +829,57 @@ def trigger_email_poll(db: Session = Depends(get_db)):
     r = email_import_service.poll_and_import(db)
     return EmailPollResult(scanned=r.scanned, imported=r.imported,
                            skipped=r.skipped, errors=r.errors)
+
+
+# -------- 剩余流水（可用资金）测算 --------
+
+class CashFlowLineOut(BaseModel):
+    key: str
+    label: str
+    amount: Decimal
+    manual: bool
+    source: str
+
+
+class CashFlowFreshnessOut(BaseModel):
+    source: str
+    as_of: Optional[str]
+    days_ago: Optional[int]
+    status: str  # fresh / aging / stale / unknown
+
+
+class CashFlowSummaryOut(BaseModel):
+    total: Decimal
+    total_additions: Decimal
+    total_subtractions: Decimal
+    additions: list[CashFlowLineOut]
+    subtractions: list[CashFlowLineOut]
+    other_account_balance: Decimal
+    freshness: list[CashFlowFreshnessOut]
+    generated_at: str
+
+
+@router.get("/cash-flow", response_model=CashFlowSummaryOut)
+def get_cash_flow(db: Session = Depends(get_db)):
+    """实时测算剩余流水（可用资金）+ 各数据源新鲜度。"""
+    return cash_flow_service.compute_summary(db)
+
+
+class CashFlowSettingsIn(BaseModel):
+    shop_deposit: Optional[Decimal] = None
+    total_investment: Optional[Decimal] = None
+
+
+@router.put("/cash-flow/settings", response_model=CashFlowSummaryOut)
+def update_cash_flow_settings(payload: CashFlowSettingsIn, db: Session = Depends(get_db)):
+    """更新手动常量（店铺保证金 / 总投资费用），返回重新测算后的结果。"""
+    cash_flow_service.update_manual(
+        db,
+        shop_deposit=payload.shop_deposit,
+        total_investment=payload.total_investment,
+    )
+    db.commit()
+    return cash_flow_service.compute_summary(db)
 
 
 # -------- 对账差异 AI 诊断 --------

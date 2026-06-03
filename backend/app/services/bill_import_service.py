@@ -266,26 +266,38 @@ def import_refill_records_csv(db: Session, text: str) -> BillImportReport:
 # ----------------------------- 账户余额 CSV ----------------------- #
 
 _BALANCE_MAP = {
-    "账户名": "account_name", "账户": "account_name",
+    "账户名称": "account_name", "账户名": "account_name", "账户": "account_name",
+    "账户号": "account_no", "账号": "account_no",
+    "统计日期": "period_date", "日期": "period_date",
     "年": "period_year",
     "月": "period_month",
     "期初余额": "opening_balance", "月初余额": "opening_balance",
-    "收入": "income",
-    "支出": "expense",
+    "本月收入": "income", "收入": "income",
+    "本月支出": "expense", "支出": "expense",
     "期末余额": "closing_balance", "月末余额": "closing_balance",
     "备注": "remark",
 }
 
 
 def import_account_balances_csv(db: Session, text: str) -> BillImportReport:
-    """导入账户余额 CSV (同账户同月 upsert)。account_name+年+月 必填。"""
+    """导入账户余额 CSV/Excel 行数据 (同账户同月 upsert)。支持统计日期列自动提取年月。"""
+    from datetime import date as _date, datetime as _dt
     from sqlalchemy import select
     rep = BillImportReport()
     for rec in _rows(text, _BALANCE_MAP):
         account_name = (rec.get("account_name") or "").strip()
+        # 支持统计日期列自动提取年月
+        year = rec.get("period_year")
+        month = rec.get("period_month")
+        period_date = rec.get("period_date")
+        if period_date and not (year and month):
+            pd = _date(period_date) if not isinstance(period_date, (_date, _dt)) else period_date
+            if pd:
+                year = pd.year if isinstance(pd, _date) else pd.date().year
+                month = pd.month if isinstance(pd, _date) else pd.date().month
         try:
-            year = int(rec.get("period_year") or 0)
-            month = int(rec.get("period_month") or 0)
+            year = int(year or 0)
+            month = int(month or 0)
         except (ValueError, TypeError):
             rep.skipped_invalid += 1
             continue
@@ -308,6 +320,13 @@ def import_account_balances_csv(db: Session, text: str) -> BillImportReport:
         row.income = _decimal(rec.get("income")) or row.income or Decimal("0")
         row.expense = _decimal(rec.get("expense")) or row.expense or Decimal("0")
         row.closing_balance = _decimal(rec.get("closing_balance")) or row.closing_balance or Decimal("0")
+        if rec.get("account_no") is not None:
+            raw_no = rec["account_no"]
+            # 手机号/数字账号被 Excel 存成浮点 (如 15384030935.0) → 去 .0
+            try:
+                row.account_no = str(int(float(str(raw_no)))) if str(raw_no).replace(".", "").isdigit() else str(raw_no).strip()
+            except Exception:
+                row.account_no = str(raw_no).strip()
         if rec.get("remark"):
             row.remark = rec["remark"]
         rep.inserted += 1

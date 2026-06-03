@@ -98,7 +98,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "alipay_flows", "tblIJO5UipqPnpmK", "bidirectional", "支付宝流水-企业号",
         {
-            "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
+            "sync_key": "唯一键", "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
             "related_order_no": "关联订单号", "balance": "余额", "remark": "备注",
         },
@@ -106,7 +106,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "alipay_flows", "tbl79NjIFcayl4eN", "bidirectional", "支付宝流水-个体户私账",
         {
-            "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
+            "sync_key": "唯一键", "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
             "related_order_no": "关联订单号", "balance": "余额", "remark": "备注",
         },
@@ -114,7 +114,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "alipay_flows", "tblUPYpeREl93yIz", "bidirectional", "支付宝流水-爱群",
         {
-            "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
+            "sync_key": "唯一键", "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
             "related_order_no": "关联订单号", "balance": "余额", "remark": "备注",
         },
@@ -122,7 +122,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "alipay_flows", "tblIFStV63UPmFAl", "bidirectional", "支付宝流水-佳宝",
         {
-            "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
+            "sync_key": "唯一键", "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
             "related_order_no": "关联订单号", "balance": "余额", "remark": "备注",
         },
@@ -130,7 +130,7 @@ PRESETS: list[tuple[str, str, str, str, dict[str, str]]] = [
     (
         "alipay_flows", "tbleXlRHNqHVqtI4", "bidirectional", "支付宝流水-主力",
         {
-            "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
+            "sync_key": "唯一键", "transaction_no": "交易号", "account": "账户", "transaction_time": "交易时间",
             "transaction_type": "交易类型", "counterparty": "对方", "amount": "金额",
             "related_order_no": "关联订单号", "balance": "余额", "remark": "备注",
         },

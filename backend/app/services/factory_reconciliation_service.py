@@ -5,7 +5,12 @@
     工厂账单金额 bill_amount    = Σ FactoryOrder.factory_bill_amount
     实际支付金额 paid_amount    = Σ 匹配到的支付宝支出
     差异金额   diff_amount     = bill_amount - paid_amount
-    对账状态   status          = 有支付即 completed, 否则 open
+    对账状态   status          = 按 账单 vs 实付 判定:
+        balanced  已对平   |diff| ≤ 容差 且 已有付款
+        underpaid 未付清   账单 > 实付 (差额 > 容差)
+        overpaid  超付     实付 > 账单 (差额 < -容差)
+        unpaid    未付款   实付 = 0
+      —— 这样"对账不平/未付清"会被 data_quality 扫描器捞成异常, 在异常中心提示。
     支付宝流水号 alipay_flow_no = 该周期工厂订单上出现的流水号 (去重)
     对账日期   reconciled_at   = 支付宝流水日期
 
@@ -31,6 +36,21 @@ from app.models.order import FactoryOrder
 _logger = logging.getLogger("panse.factory_recon")
 
 DEFAULT_FACTORY = "玉山县博冠家具有限公司"
+
+# 账单 vs 实付 的对平容差 (元): 小于此差额视为已对平 (工厂让利/抹零)。
+_BALANCE_TOLERANCE = Decimal("5")
+
+
+def _recon_status(bill_amount: Decimal, paid_amount: Decimal) -> str:
+    """按 账单 vs 实付 判定对账状态。"""
+    paid = paid_amount or Decimal("0")
+    bill = bill_amount or Decimal("0")
+    if paid <= 0:
+        return "unpaid"
+    diff = bill - paid
+    if abs(diff) <= _BALANCE_TOLERANCE:
+        return "balanced"
+    return "underpaid" if diff > 0 else "overpaid"
 
 
 @dataclass
@@ -90,7 +110,7 @@ def rebuild_for_period(
     flow_nos = {fo.alipay_flow_no for fo in fos if fo.alipay_flow_no}
     paid_amount, reconciled_at, flow_str = _matched_paid(db, flow_nos)
     diff_amount = (bill_amount or Decimal("0")) - (paid_amount or Decimal("0"))
-    status = "completed" if paid_amount > 0 else "open"
+    status = _recon_status(bill_amount or Decimal("0"), paid_amount or Decimal("0"))
 
     existing = db.execute(
         select(FactoryReconciliation).where(

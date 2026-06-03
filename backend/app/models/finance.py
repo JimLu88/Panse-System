@@ -39,11 +39,21 @@ class AlipayFlow(Base, TimestampMixin):
     # factory_payment / promotion / refill_compensation / logistics / install / opening / other
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # 飞书同步配对键: account+流水号+交易类型+金额 拼成的稳定键。
+    # 自增 id 两端对不上, 单用 transaction_no 又会把同号配对流水(在线支付+分账)
+    # 压成一行, 故按业务唯一键拼 sync_key, 由事件钩子在插入/更新时自动生成。
+    sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
+
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
-        UniqueConstraint("account", "transaction_no", name="uq_alipay_flow_acct_no"),
+        # 同号配对流水 (在线支付货款 + 分账手续费) 共用同一交易流水号, 必须都能入库;
+        # 仅「同号 + 同类型 + 同金额」才算真重复。详见 migration 0039。
+        UniqueConstraint(
+            "account", "transaction_no", "transaction_type", "amount",
+            name="uq_alipay_flow_acct_no",
+        ),
         Index("ix_alipay_flows_acct_time", "account", "transaction_time"),
     )
 
@@ -198,6 +208,14 @@ def _logistics_sync_key(o: "LogisticsBill") -> str:
     return "log:" + ":".join(_part(x) for x in (o.order_no, o.bill_date, o.carrier, o.freight_amount))
 
 
+def _alipay_sync_key(o: "AlipayFlow") -> str:
+    # 与唯一约束 (account, transaction_no, transaction_type, amount) 一致:
+    # 同号配对流水(在线支付+分账)交易类型/金额不同, 键不同, 两端都能配对; 完全相同才算同一行。
+    return "alipay:" + ":".join(
+        _part(x) for x in (o.account, o.transaction_no, o.transaction_type, o.amount)
+    )
+
+
 def _register_sync_key(model, fn):
     @event.listens_for(model, "before_insert")
     @event.listens_for(model, "before_update")
@@ -208,3 +226,4 @@ def _register_sync_key(model, fn):
 _register_sync_key(RefillRecord, _refill_sync_key)
 _register_sync_key(WanshifuBill, _wanshifu_sync_key)
 _register_sync_key(LogisticsBill, _logistics_sync_key)
+_register_sync_key(AlipayFlow, _alipay_sync_key)
