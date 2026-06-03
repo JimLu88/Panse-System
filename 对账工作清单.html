@@ -42,7 +42,6 @@
   .daily   .band { background: #2e7d32; }   /* green */
   .weekly  .band { background: #1565c0; }   /* blue */
   .monthly .band { background: #6a1b9a; }   /* purple */
-  .oneshot .band { background: #c62828; }   /* red */
 
   table { width: 100%; border-collapse: collapse; }
   th, td {
@@ -67,9 +66,6 @@
   .p-check  { background: #ef6c00; }
   .p-recon  { background: #6a1b9a; }
   .p-close  { background: #455a64; }
-  .pr-high  { background: #c62828; }
-  .pr-mid   { background: #ef6c00; }
-  .pr-low   { background: #f9a825; color:#222; }
   .sys { color:#777; font-size: 9.5px; }
   .legend {
     margin-top: 4px;
@@ -104,6 +100,8 @@
     <tr><td class="no">1</td><td>从千牛导出当日新订单，用「导入订单」功能导入系统（支持千牛多 sheet 格式）</td><td><span class="pill p-import">导入</span></td><td class="sys">5-订单总表 / Order</td></tr>
     <tr><td class="no">2</td><td>补充已发货订单的<b>物流公司 + 物流单号</b>，并把订单状态更新为「已发货」</td><td><span class="pill p-fill">填写</span></td><td class="sys">Order.carrier / tracking_no / status</td></tr>
     <tr><td class="no">3</td><td>导出当日支付宝流水（所有使用中的账户），导入到系统对应账户</td><td><span class="pill p-import">导入</span></td><td class="sys">9a–9e 流水 / AlipayFlow</td></tr>
+    <tr><td class="no">4</td><td>录入当日售后进展：退款金额、退款日期、赔付原因（每天有进展就录）</td><td><span class="pill p-fill">填写</span></td><td class="sys">18-售后表 / AfterSales</td></tr>
+    <tr><td class="no">5</td><td>录入当日补单记录：补单成本、发货信息（有补单就录，避免积压）</td><td><span class="pill p-fill">填写</span></td><td class="sys">8-补单记录 / RefillRecord</td></tr>
   </table>
 </div>
 
@@ -112,10 +110,8 @@
   <div class="band"><span>🔵 每周工作</span><span class="freq">WEEKLY · 每周固定一天</span></div>
   <table>
     <tr><th class="no">#</th><th>任务</th><th class="tag">类型</th><th>对应系统模块 / 表</th></tr>
-    <tr><td class="no">4</td><td>打开「数据异常」面板，处理系统自动标记的问题（金额不符、重复流水等）</td><td><span class="pill p-check">核查</span></td><td class="sys">data_exceptions</td></tr>
-    <tr><td class="no">5</td><td>运行支付宝流水回填，把流水号关联回对应订单（系统按相关订单号自动匹配）</td><td><span class="pill p-recon">对账</span></td><td class="sys">alipay_backfill_service</td></tr>
-    <tr><td class="no">6</td><td>跟进售后：录入本周售后结果（退款金额、退款日期、赔付原因）</td><td><span class="pill p-fill">填写</span></td><td class="sys">18-售后表 / AfterSales</td></tr>
-    <tr><td class="no">7</td><td>录入本周补单记录（补单成本、发货信息）</td><td><span class="pill p-fill">填写</span></td><td class="sys">8-补单记录 / RefillRecord</td></tr>
+    <tr><td class="no">6</td><td>打开「数据异常」面板，处理系统自动标记的问题（金额不符、重复流水等）</td><td><span class="pill p-check">核查</span></td><td class="sys">data_exceptions</td></tr>
+    <tr><td class="no">7</td><td>运行支付宝流水回填，把流水号关联回对应订单（系统按相关订单号自动匹配）</td><td><span class="pill p-recon">对账</span></td><td class="sys">alipay_backfill_service</td></tr>
   </table>
 </div>
 
