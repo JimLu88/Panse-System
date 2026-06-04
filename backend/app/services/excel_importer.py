@@ -311,7 +311,7 @@ def commit_sheet(
     auto_create_suppliers: bool = True,
     auto_match_orders: bool = True,
     dry_run: bool = False,
-    on_conflict: str = "overwrite",
+    on_conflict: str = "ask",
     sheet_account: Optional[str] = None,
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
@@ -319,8 +319,9 @@ def commit_sheet(
 ) -> ImportReport:
     """按 mapping 把一个 sheet 的所有行入库 (业务需求 6: 进度回调 + 取消).
 
-    on_conflict: overwrite (默认, 直接覆盖已有记录) / keep (保留原值) /
-                 ask (记录差异到 report.conflicts 但不覆盖, 等用户裁决).
+    on_conflict: ask (默认, 已存在记录记差异到 report.conflicts 待裁决, 不覆盖) /
+                 overwrite (直接覆盖已有记录) / keep (保留原值).
+    重导命中唯一键的已存在行计入 report.skipped_rows, 保证幂等可见。
     sheet_account: 支付宝流水专用 — 当 sheet 没有账户列时, 用这个账户名填充每行.
     """
     if file_bytes is None and file_path is None:
@@ -633,8 +634,10 @@ def _commit_delivery_notes(
             dn_payload = {k: v for k, v in first_parent.items() if v is not None}
             ctx = _GenericCtx(report=report, on_conflict=on_conflict)
             action = _apply_update(existing, dn_payload, ctx, "delivery_notes", note_no, db)
-            if action == "conflict":
+            # 已存在 (无变化 skipped / 冲突待裁决 conflict) → 计跳过 + 提示; updated(覆盖)不算
+            if action in ("conflict", "skipped"):
                 report.skipped_rows += len(entries)
+                report.warnings.append(f"送货单「{note_no}」已存在，跳过 {len(entries)} 行")
             continue
 
         first_parent = entries[0][0]
@@ -783,7 +786,8 @@ def _commit_factory_orders(
             ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
             action = _apply_update(existing, {k: v for k, v in fo_payload.items() if v is not None},
                                    ctx, "factory_orders", fo_no, db)
-            if action == "conflict":
+            # 已存在 (无变化 skipped / 冲突 conflict) → 计跳过; updated(覆盖)不算
+            if action in ("conflict", "skipped"):
                 report.skipped_rows += 1
             continue
         fo = FactoryOrder(
@@ -885,10 +889,9 @@ def _commit_alipay_flows(
                 "remark": projected.get("remark"),
             }
             action = _apply_update(existing, flow_payload, ctx, "alipay_flows", tx_no, db)
-            if action not in ("updated", "conflict"):
-                pass  # skipped (identical)
-            else:
-                report.skipped_rows += 1 if action == "conflict" else 0
+            # 已存在 (无变化 skipped / 冲突 conflict) → 计跳过; updated(覆盖)不算
+            if action in ("conflict", "skipped"):
+                report.skipped_rows += 1
             continue
         flow = AlipayFlow(
             account=account, transaction_no=tx_no,
