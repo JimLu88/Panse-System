@@ -285,21 +285,11 @@ def get_table_data(
 
     col_keys = [c.key for c in cols]
 
-    # pricing_sku 合并三表
+    # pricing_sku 合并三表 —— 列定义无论有无数据都要生成
     costs_map: dict[str, Any] = {}
     promo_map: dict[str, Any] = {}
-    if entity == "pricing_sku" and records:
-        sku_codes = [r.sku_code for r in records if r.sku_code]
-        if sku_codes:
-            for cr in db.execute(
-                select(PricingSkuCosts).where(PricingSkuCosts.sku_code.in_(sku_codes))
-            ).scalars():
-                costs_map[cr.sku_code] = cr
-            for pr in db.execute(
-                select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(sku_codes))
-            ).scalars():
-                promo_map[pr.sku_code] = pr
-        # 把 costs/promo 的列也加进列定义
+    if entity == "pricing_sku":
+        # 先把 costs/promo 的列合并进列定义（不依赖 records）
         extra_cols = []
         for ext_model in (PricingSkuCosts, PricingSkuPromo):
             ext_labels = _build_label_map("pricing_sku")
@@ -314,6 +304,18 @@ def get_table_data(
                     type=_column_type(c), is_core=False,
                 ))
         columns.extend(extra_cols)
+        # 有数据时再批量查 costs/promo
+        if records:
+            sku_codes = [r.sku_code for r in records if r.sku_code]
+            if sku_codes:
+                for cr in db.execute(
+                    select(PricingSkuCosts).where(PricingSkuCosts.sku_code.in_(sku_codes))
+                ).scalars():
+                    costs_map[cr.sku_code] = cr
+                for pr in db.execute(
+                    select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(sku_codes))
+                ).scalars():
+                    promo_map[pr.sku_code] = pr
 
     rows: list[dict[str, Any]] = []
     for r in records:
