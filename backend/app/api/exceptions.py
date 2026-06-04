@@ -60,6 +60,89 @@ def resolve_exception(
     return exc
 
 
+class ImportConflictResolveIn(BaseModel):
+    choice: str  # "new" = 采用导入值, "old" = 保留现有值
+
+
+@router.post("/{exception_id}/resolve-import-conflict", response_model=DataExceptionOut)
+def resolve_import_conflict(
+    exception_id: int,
+    payload: ImportConflictResolveIn,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role("admin", "operator")),
+):
+    """裁决表格导入冲突: choice=new 采用导入新值, choice=old 保留现有值."""
+    if payload.choice not in ("new", "old"):
+        raise HTTPException(400, "choice must be 'new' or 'old'")
+    exc = db.get(DataException, exception_id)
+    if not exc:
+        raise HTTPException(404, "exception not found")
+    if exc.exception_type != "import_conflict":
+        raise HTTPException(400, "此异常不是表格导入冲突类型")
+
+    if payload.choice == "new":
+        ctx = exc.context or {}
+        new_values: dict = ctx.get("new_values", {})
+        source_table = exc.source_table
+        source_pk = exc.source_pk
+        if new_values and source_table and source_pk:
+            _apply_import_conflict_new_values(db, source_table, source_pk, new_values)
+
+    exc.status = "resolved"
+    exc.resolved_by = current_user.username if hasattr(current_user, "username") else str(current_user.id)
+    exc.resolved_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(exc)
+    return exc
+
+
+def _apply_import_conflict_new_values(db: Session, source_table: str, source_pk: str, new_values: dict) -> None:
+    """按 source_table/source_pk 找到记录并应用 new_values."""
+    from sqlalchemy import text as sa_text
+    # 表名 → (SQLAlchemy 模型, PK 字段名)
+    _TABLE_MAP = {
+        "orders": ("app.models.order", "Order", "order_no"),
+        "factory_orders": ("app.models.order", "FactoryOrder", "factory_order_no"),
+        "alipay_flows": ("app.models.finance", "AlipayFlow", "transaction_no"),
+        "products": ("app.models.product", "Product", "code"),
+        "materials": ("app.models.material", "Material", "code"),
+        "pricing_sku": ("app.models.pricing", "PricingSku", "sku_code"),
+        "refill_records": ("app.models.finance", "RefillRecord", "order_no"),
+        "factory_reconciliations": ("app.models.finance", "FactoryReconciliation", None),
+        "outsourcing_expenses": ("app.models.marketing", "OutsourcingExpense", "alipay_flow_no"),
+        "after_sales": ("app.models.marketing", "AfterSales", "platform_order_no"),
+        "competitor_prices": ("app.models.competitor", "CompetitorPrice", None),
+        "samples": ("app.models.marketing", "Sample", "sample_no"),
+        "account_balances": ("app.models.finance", "AccountBalance", None),
+        "product_inventory": ("app.models.inventory", "ProductInventory", None),
+        "part_inventory": ("app.models.inventory", "PartInventory", None),
+        "delivery_notes": ("app.models.supplier", "DeliveryNote", "note_no"),
+    }
+    entry = _TABLE_MAP.get(source_table)
+    if not entry:
+        return  # 不认识的表, 跳过
+    module_path, class_name, pk_field = entry
+    if pk_field is None:
+        return  # 复合键表不支持自动应用, 用户手动处理
+    try:
+        import importlib
+        mod = importlib.import_module(module_path)
+        model_cls = getattr(mod, class_name)
+    except (ImportError, AttributeError):
+        return
+
+    from sqlalchemy import select
+    record = db.execute(
+        select(model_cls).where(getattr(model_cls, pk_field) == source_pk)
+    ).scalar_one_or_none()
+    if record is None:
+        return
+    for field_name, value in new_values.items():
+        if hasattr(record, field_name):
+            setattr(record, field_name, value)
+    db.flush()
+
+
 @router.post("/{exception_id}/fix", response_model=DataExceptionOut)
 def fix_exception(
     exception_id: int,

@@ -69,6 +69,8 @@ class ImportReport:
     # 重导冲突: 行匹配到已有记录但字段值不同 (on_conflict != overwrite 时不自动覆盖)
     # [{source_table, source_pk, diffs: [{field, old, new}]}]
     conflicts: list[dict] = field(default_factory=list)
+    # Excel 列中未被映射到任何系统字段的列名 (用于提示用户哪些内容被忽略)
+    unmapped_columns: list[str] = field(default_factory=list)
 
 
 class ImporterError(RuntimeError):
@@ -274,6 +276,18 @@ def commit_sheet(
         entity_type=entity_type, sheet_name=sheet_name,
         total_rows=len(rows), inserted_parents=0, inserted_children=0, skipped_rows=0,
     )
+    # 计算未被映射的 Excel 列 (mapping 的 values 是 excel 列名)
+    if rows:
+        all_excel_cols = set(rows[0].keys())
+        mapped_cols = set(mapping.values())
+        unmapped = sorted(all_excel_cols - mapped_cols)
+        if unmapped:
+            report.unmapped_columns = unmapped
+            report.warnings.append(
+                f"以下 {len(unmapped)} 个 Excel 列未被映射，其中的数据未导入系统：{', '.join(unmapped[:10])}"
+                + ("…（更多见 unmapped_columns）" if len(unmapped) > 10 else "")
+                + "。如需导入，请在字段映射配置里为这些列选择对应的系统字段。"
+            )
     if not rows:
         if progress_callback:
             progress_callback(0, 0)
@@ -286,18 +300,21 @@ def commit_sheet(
             db, rows=rows, mapping=mapping, schema=schema, report=report,
             auto_create_suppliers=auto_create_suppliers,
             auto_match_orders=auto_match_orders,
+            on_conflict=on_conflict,
             progress_callback=progress_callback,
             cancel_callback=cancel_callback,
             import_batch_id=import_batch_id,
         )
     elif entity_type == "factory_order":
         _commit_factory_orders(db, rows=rows, mapping=mapping, report=report,
+                               on_conflict=on_conflict,
                                progress_callback=progress_callback,
                                cancel_callback=cancel_callback,
                                import_batch_id=import_batch_id)
     elif entity_type == "alipay_flow":
         _commit_alipay_flows(db, rows=rows, mapping=mapping, report=report,
                              sheet_account=sheet_account,
+                             on_conflict=on_conflict,
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback,
                              import_batch_id=import_batch_id)
@@ -493,6 +510,7 @@ _PROGRESS_TICK = 50   # 每 N 行向 callback 报一次进度
 def _commit_delivery_notes(
     db: Session, *, rows: list[dict], mapping: dict[str, str], schema,
     report: ImportReport, auto_create_suppliers: bool, auto_match_orders: bool,
+    on_conflict: str = "ask",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
     import_batch_id: Optional[int] = None,
@@ -534,16 +552,21 @@ def _commit_delivery_notes(
             continue
         # parent 取第一行的 (delivery_date / total_amount / status / remark)
         first_parent = entries[0][0]
-        # 重复单号 → 跳过 (避免 idempotency 问题)
+        # 重复单号 → 对比字段决定是否更新
         existing = db.execute(select(DeliveryNote).where(
             DeliveryNote.supplier_id == supplier.id,
             DeliveryNote.note_no == (note_no if not note_no.startswith("__NO_NOTE_NO__") else None),
         )).scalar_one_or_none() if not note_no.startswith("__NO_NOTE_NO__") else None
         if existing is not None:
-            report.warnings.append(f"已存在 单号 {note_no} ({sup_name}), 跳过")
-            report.skipped_rows += len(entries)
+            first_parent = entries[0][0]
+            dn_payload = {k: v for k, v in first_parent.items() if v is not None}
+            ctx = _GenericCtx(report=report, on_conflict=on_conflict)
+            action = _apply_update(existing, dn_payload, ctx, "delivery_notes", note_no, db)
+            if action == "conflict":
+                report.skipped_rows += len(entries)
             continue
 
+        first_parent = entries[0][0]
         n = DeliveryNote(
             supplier_id=supplier.id,
             note_no=None if note_no.startswith("__NO_NOTE_NO__") else note_no,
@@ -624,6 +647,7 @@ def _next_internal_order_no(db: Session, year: int) -> str:
 
 def _commit_factory_orders(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
+    on_conflict: str = "ask",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
     import_batch_id: Optional[int] = None,
@@ -647,13 +671,6 @@ def _commit_factory_orders(
         if not fo_no:
             # 留空 → 自动生成 畔色0001 序列 (业务确认用中文)
             fo_no = factory_order_service.next_factory_order_no(db)
-        existing = db.execute(
-            select(FactoryOrder).where(FactoryOrder.factory_order_no == fo_no)
-        ).scalar_one_or_none()
-        if existing is not None:
-            report.warnings.append(f"已存在 工厂订单号 {fo_no}, 跳过")
-            report.skipped_rows += 1
-            continue
         # 自动生成内部单号 (若行内未提供)
         internal_no = projected.get("internal_order_no") or _next_internal_order_no(db, current_year)
         qty = int(projected.get("qty") or 1)
@@ -669,6 +686,35 @@ def _commit_factory_orders(
         payment_status = projected.get("payment_status")
         if not payment_status:
             payment_status = "paid" if flow_no else "unpaid"
+        existing = db.execute(
+            select(FactoryOrder).where(FactoryOrder.factory_order_no == fo_no)
+        ).scalar_one_or_none()
+        if existing is not None:
+            fo_payload = {
+                "factory_order_no": fo_no, "internal_order_no": internal_no,
+                "platform_order_no": projected.get("platform_order_no"),
+                "factory_name": projected.get("factory_name") or "玉山县博冠家具有限公司",
+                "order_date": projected.get("order_date"),
+                "expected_delivery": projected.get("expected_delivery"),
+                "actual_delivery": projected.get("actual_delivery"),
+                "product_code": product_code, "sku": sku, "qty": qty,
+                "unit_price": projected.get("unit_price"),
+                "factory_bill_amount": projected.get("factory_bill_amount"),
+                "expected_amount": expected_amount,
+                "payment_method": projected.get("payment_method") or "月结",
+                "payment_status": payment_status,
+                "payment_date": projected.get("payment_date"),
+                "carrier": projected.get("carrier"),
+                "tracking_no": projected.get("tracking_no"),
+                "alipay_flow_no": flow_no,
+                "remark": projected.get("remark"),
+            }
+            ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
+            action = _apply_update(existing, {k: v for k, v in fo_payload.items() if v is not None},
+                                   ctx, "factory_orders", fo_no, db)
+            if action == "conflict":
+                report.skipped_rows += 1
+            continue
         fo = FactoryOrder(
             factory_order_no=fo_no,
             internal_order_no=internal_no,
@@ -704,6 +750,7 @@ def _commit_factory_orders(
 def _commit_alipay_flows(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     sheet_account: Optional[str] = None,
+    on_conflict: str = "ask",
     progress_callback: Optional[ProgressCallback] = None,
     cancel_callback: Optional[CancelCallback] = None,
     import_batch_id: Optional[int] = None,
@@ -717,6 +764,7 @@ def _commit_alipay_flows(
     fresh_ids: list[int] = []
     total = len(rows)
     counterparty_filled = 0   # 交易对象为空被置'待确认'的行数
+    ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
             if progress_callback:
@@ -752,8 +800,22 @@ def _commit_alipay_flows(
             )
         ).scalar_one_or_none()
         if existing is not None:
-            report.warnings.append(f"已存在 {account} 流水 {tx_no}, 跳过")
-            report.skipped_rows += 1
+            flow_payload = {
+                "account": account, "transaction_no": tx_no,
+                "transaction_time": projected.get("transaction_time"),
+                "transaction_type": projected.get("transaction_type"),
+                "counterparty": projected.get("counterparty"),
+                "counterparty_account": projected.get("counterparty_account"),
+                "amount": amount,
+                "balance": projected.get("balance"),
+                "related_order_no": projected.get("related_order_no"),
+                "remark": projected.get("remark"),
+            }
+            action = _apply_update(existing, flow_payload, ctx, "alipay_flows", tx_no, db)
+            if action not in ("updated", "conflict"):
+                pass  # skipped (identical)
+            else:
+                report.skipped_rows += 1 if action == "conflict" else 0
             continue
         flow = AlipayFlow(
             account=account, transaction_no=tx_no,
@@ -831,7 +893,7 @@ def _diff_fields(existing, payload: dict) -> list[dict]:
 
 
 def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
-                  source_table: str, source_pk) -> str:
+                  source_table: str, source_pk, db=None) -> str:
     """upsert 命中已有记录时的统一处理: 比 diff + 按 on_conflict 决定覆盖/记冲突."""
     diffs = _diff_fields(existing, payload)
     if not diffs:
@@ -843,12 +905,31 @@ def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
         return "updated"
     if ctx.on_conflict == "keep":
         return "skipped"   # 保留原值, 不动
-    # ask: 记录差异, 不覆盖, 等用户裁决
+    # ask: 记录差异到 report.conflicts + DataException, 不覆盖, 等用户裁决
+    pk_str = str(source_pk) if source_pk is not None else None
+    diff_summary = "; ".join(
+        f"{d['field']}: {d['old']!r} → {d['new']!r}" for d in diffs[:5]
+    )
     ctx.report.conflicts.append({
         "source_table": source_table,
-        "source_pk": str(source_pk) if source_pk is not None else None,
+        "source_pk": pk_str,
         "diffs": diffs,
     })
+    if db is not None:
+        from app.services import exception_service
+        exception_service.record(
+            db,
+            source_table=source_table,
+            source_pk=pk_str,
+            exception_type="import_conflict",
+            severity="warning",
+            description=f"导入数据与已有记录不同，需确认使用哪个版本。差异：{diff_summary}",
+            suggestion_action="resolve_import_conflict",
+            context={
+                "diffs": diffs,
+                "new_values": {k: _jsonable(v) for k, v in payload.items()},
+            },
+        )
     return "conflict"
 
 
@@ -1053,7 +1134,7 @@ def _h_product(db, data, key_field, ctx=None):
 
     existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
     if existing:
-        action = _apply_update(existing, payload, ctx, "products", code)
+        action = _apply_update(existing, payload, ctx, "products", code, db)
     else:
         db.add(Product(**payload))
         action = "inserted"
@@ -1087,7 +1168,7 @@ def _h_material(db, data, key_field, ctx=None):
     existing = db.execute(select(Material).where(Material.code == code)).scalar_one_or_none()
     if existing:
         return "material", _apply_update(
-            existing, {k: v for k, v in data.items() if v is not None}, ctx, "materials", code)
+            existing, {k: v for k, v in data.items() if v is not None}, ctx, "materials", code, db)
     # name UNIQUE: 重名加 code 后缀
     same_name = db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
     if same_name and same_name.code != code:
@@ -1131,7 +1212,7 @@ def _h_product_inv(db, data, key_field, ctx=None):
     if existing:
         return "product_inv", _apply_update(
             existing, payload, ctx, "product_inventory",
-            f"{warehouse}|{product_code}|{sku}")
+            f"{warehouse}|{product_code}|{sku}", db)
     db.add(ProductInventory(**payload))
     return "product_inv", "inserted"
 
@@ -1154,7 +1235,7 @@ def _h_part_inv(db, data, key_field, ctx=None):
     payload["warehouse"] = warehouse
     if existing:
         return "part_inv", _apply_update(
-            existing, payload, ctx, "part_inventory", f"{warehouse}|{material_code}")
+            existing, payload, ctx, "part_inventory", f"{warehouse}|{material_code}", db)
     db.add(PartInventory(**payload))
     return "part_inv", "inserted"
 
@@ -1226,9 +1307,6 @@ def _h_order(db, data, key_field, ctx=None):
     order_no = data.get("order_no")
     if not order_no:
         raise ImporterError("缺 order_no")
-    existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
-    if existing:
-        return "order", "skipped"   # 已有订单不动 (避免覆盖状态)
 
     payload = {k: v for k, v in data.items() if v is not None}
     payload.setdefault("platform", "淘宝")
@@ -1263,6 +1341,11 @@ def _h_order(db, data, key_field, ctx=None):
         payload["warehouse"] = order_cost_service.default_warehouse_for(
             payload.get("product_name"), payload.get("sku"),
             bool(payload.get("is_refill")))
+
+    existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if existing:
+        return "order", _apply_update(existing, payload, ctx, "orders", order_no, db)
+
     obj = Order(**payload)
     if ctx and ctx.import_batch_id:
         obj.import_job_id = ctx.import_batch_id
@@ -1273,7 +1356,6 @@ def _h_order(db, data, key_field, ctx=None):
 def _h_balance(db, data, key_field, ctx=None):
     from app.models.finance import AccountBalance
     from datetime import date as _date, datetime as _dt
-    _ = ctx
     data = dict(data)
     name = data.get("account_name")
     # 账户名整行为空 → 静默跳过 (用户要求, 不报错)
@@ -1292,16 +1374,17 @@ def _h_balance(db, data, key_field, ctx=None):
             month = period_date.month
     if not (name and year and month):
         raise ImporterError("缺账户名/年/月 (或 统计日期)")
+    payload = {k: v for k, v in data.items() if v is not None and k != "period_date"}
+    payload["period_year"] = payload.pop("year", year)
+    payload["period_month"] = payload.pop("month", month)
     existing = db.execute(select(AccountBalance).where(
         AccountBalance.account_name == name,
         AccountBalance.period_year == year,
         AccountBalance.period_month == month,
     )).scalar_one_or_none()
     if existing:
-        return "balance", "skipped"
-    payload = {k: v for k, v in data.items() if v is not None and k != "period_date"}
-    payload["period_year"] = payload.pop("year", year)
-    payload["period_month"] = payload.pop("month", month)
+        return "balance", _apply_update(existing, payload, ctx, "account_balances",
+                                        f"{name}|{year}|{month}", db)
     db.add(AccountBalance(**payload))
     return "balance", "inserted"
 
@@ -1316,7 +1399,7 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
     )).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
-        return "pricing_sku", _apply_update(existing, payload, ctx, "pricing_sku", sku_code)
+        return "pricing_sku", _apply_update(existing, payload, ctx, "pricing_sku", sku_code, db)
     if _is_custom_code(db, sku_code, payload.get("product_code")):
         _flag_custom(db, "pricing_sku", sku_code, sku_code)
     db.add(PricingSku(**payload))
@@ -1342,7 +1425,7 @@ def _h_refill_record(db, data, key_field, ctx=None):
     existing = db.execute(select(RefillRecord).where(RefillRecord.order_no == order_no)).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
-        return "refill_record", _apply_update(existing, payload, ctx, "refill_records", order_no)
+        return "refill_record", _apply_update(existing, payload, ctx, "refill_records", order_no, db)
     db.add(RefillRecord(**payload))
     return "refill_record", "inserted"
 
@@ -1380,7 +1463,7 @@ def _h_factory_reconciliation(db, data, key_field, ctx=None):
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
         return "factory_reconciliation", _apply_update(
-            existing, payload, ctx, "factory_reconciliations", f"{factory}|{period_end}")
+            existing, payload, ctx, "factory_reconciliations", f"{factory}|{period_end}", db)
     rec = FactoryReconciliation(**payload)
     if ctx and ctx.import_batch_id:
         rec.import_job_id = ctx.import_batch_id
@@ -1423,7 +1506,7 @@ def _h_outsourcing_expense(db, data, key_field, ctx=None):
         ).scalar_one_or_none()
         if existing:
             return "outsourcing_expense", _apply_update(
-                existing, payload, ctx, "outsourcing_expenses", flow_no)
+                existing, payload, ctx, "outsourcing_expenses", flow_no, db)
     db.add(OutsourcingExpense(**payload))
     return "outsourcing_expense", "inserted"
 
@@ -1458,7 +1541,7 @@ def _h_aftersales(db, data, key_field, ctx=None):
         _record_exc(db, "after_sales", order_no, "alipay_flow_no_missing",
                     f"售后单 {order_no} 支付宝流水号为空, 无法与流水核销, 请回填.", "warning")
     if existing:
-        return "aftersales", _apply_update(existing, payload, ctx, "after_sales", order_no)
+        return "aftersales", _apply_update(existing, payload, ctx, "after_sales", order_no, db)
     db.add(AfterSales(**payload))
     return "aftersales", "inserted"
 
@@ -1477,7 +1560,7 @@ def _h_competitor(db, data, key_field, ctx=None):
         )
     ).scalar_one_or_none()
     if existing:
-        return "competitor_price", _apply_update(existing, payload, ctx, "competitor_prices", sku_name)
+        return "competitor_price", _apply_update(existing, payload, ctx, "competitor_prices", sku_name, db)
     db.add(CompetitorPrice(**payload))
     return "competitor_price", "inserted"
 
@@ -1553,7 +1636,7 @@ def _h_sample(db, data, key_field, ctx=None):
     existing = db.execute(_select(Sample).where(Sample.sample_no == sample_no)).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
-        return "sample", _apply_update(existing, payload, ctx, "samples", sample_no)
+        return "sample", _apply_update(existing, payload, ctx, "samples", sample_no, db)
     db.add(Sample(**payload))
     return "sample", "inserted"
 

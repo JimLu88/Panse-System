@@ -29,6 +29,7 @@ import {
   getExceptionsSummary,
   listExceptions,
   resolveException,
+  resolveImportConflict,
   runAllScanners,
   runDataQuality,
 } from '../api/client';
@@ -144,6 +145,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '系统里一条售后记录都没有。请在售后 / 退货页录入，或用 Excel 导入历史售后数据。' },
 
   // —— 系统 / 导入问题 ——
+  import_conflict: { category: 'system', label: '表格导入冲突',
+    hint: '重新导入 Excel 时，发现导入数据与系统已有记录的某些字段不一致。请对比新旧两个版本后，选择"采用新值"（使用导入数据）或"保留旧值"（不改动）。' },
   stale_import: { category: 'system', label: '导入数据太旧',
     hint: '已经很久没导入新订单了，大盘数据可能不是最新的。请去「导入」页上传最新的订单 Excel。' },
   forced_status_transition: { category: 'system', label: '订单状态被强制变更',
@@ -229,12 +232,32 @@ function FixFormFields({ exc }: { exc: DataException }) {
   );
 }
 
+// 导入冲突详情展示: 对比旧值和新值
+function ImportConflictDetail({ exc }: { exc: DataException }) {
+  const ctx = exc.context as { diffs?: Array<{ field: string; old: unknown; new: unknown }> } | null;
+  const diffs = ctx?.diffs ?? [];
+  if (diffs.length === 0) return <Typography.Text type="secondary">无差异详情</Typography.Text>;
+  return (
+    <Table
+      size="small"
+      pagination={false}
+      dataSource={diffs.map((d, i) => ({ ...d, key: i }))}
+      columns={[
+        { title: '字段', dataIndex: 'field', width: 160 },
+        { title: '现有值（旧）', dataIndex: 'old', render: (v) => <span style={{ color: '#cf1322' }}>{v === null || v === undefined ? '—' : String(v)}</span> },
+        { title: '导入值（新）', dataIndex: 'new', render: (v) => <span style={{ color: '#389e0d' }}>{v === null || v === undefined ? '—' : String(v)}</span> },
+      ]}
+    />
+  );
+}
+
 export default function ExceptionsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
   const [status, setStatus] = useState<'open' | 'resolved' | 'ignored'>('open');
   const [diagnoseOpen, setDiagnoseOpen] = useState<{ exc: DataException; result?: AiDiagnoseResult } | null>(null);
   const [fixOpen, setFixOpen] = useState<DataException | null>(null);
+  const [conflictOpen, setConflictOpen] = useState<DataException | null>(null);
   const [fixForm] = Form.useForm();
 
   const { data, isLoading } = useQuery({
@@ -308,6 +331,18 @@ export default function ExceptionsPage() {
       qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '补填失败'),
+  });
+
+  const conflictMut = useMutation({
+    mutationFn: ({ id, choice }: { id: number; choice: 'new' | 'old' }) =>
+      resolveImportConflict(id, choice),
+    onSuccess: (_, vars) => {
+      message.success(vars.choice === 'new' ? '已采用导入新值' : '已保留现有值');
+      setConflictOpen(null);
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '操作失败'),
   });
 
   const handleDiagnose = (exc: DataException) => {
@@ -390,6 +425,26 @@ export default function ExceptionsPage() {
       render: (_: unknown, row: DataException) => {
         if (row.status !== 'open') {
           return <Tag color={row.status === 'resolved' ? 'green' : 'default'}>{statusLabel[row.status] ?? row.status}</Tag>;
+        }
+        // 表格导入冲突: 显示专用裁决按钮
+        if (row.exception_type === 'import_conflict') {
+          return (
+            <Space size="small" wrap>
+              <Button
+                size="small"
+                type="primary"
+                onClick={() => setConflictOpen(row)}
+              >
+                查看差异并裁决
+              </Button>
+              <Button
+                size="small"
+                onClick={() => resolveMut.mutate({ id: row.id, s: 'ignored' })}
+              >
+                忽略
+              </Button>
+            </Space>
+          );
         }
         // 飞书冲突 / 多余列: 解除必须走飞书设置页裁决, 不能内联补填, 否则两端不一致
         if (row.exception_type === 'feishu_conflict' || row.exception_type === 'feishu_extra_field') {
@@ -642,6 +697,43 @@ export default function ExceptionsPage() {
           </Space>
         )}
       </Modal>
+      {/* 导入冲突裁决弹窗 */}
+      <Modal
+        title="表格导入冲突裁决"
+        open={!!conflictOpen}
+        onCancel={() => setConflictOpen(null)}
+        footer={null}
+        width={700}
+        destroyOnClose
+      >
+        {conflictOpen && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Alert
+              type="warning"
+              showIcon
+              message={`来源: ${SOURCE_TABLE_LABELS[conflictOpen.source_table] ?? conflictOpen.source_table} / ${conflictOpen.source_pk}`}
+              description="以下字段在导入数据与现有记录之间存在差异，请选择保留哪个版本。"
+            />
+            <ImportConflictDetail exc={conflictOpen} />
+            <Space style={{ marginTop: 16 }}>
+              <Button
+                type="primary"
+                loading={conflictMut.isPending}
+                onClick={() => conflictMut.mutate({ id: conflictOpen.id, choice: 'new' })}
+              >
+                采用新值（使用导入数据）
+              </Button>
+              <Button
+                loading={conflictMut.isPending}
+                onClick={() => conflictMut.mutate({ id: conflictOpen.id, choice: 'old' })}
+              >
+                保留旧值（不改动）
+              </Button>
+            </Space>
+          </Space>
+        )}
+      </Modal>
+
       {/* 内联补填弹窗 */}
       <Modal
         title={<span><EditOutlined style={{ marginRight: 6 }} />补填数据 — 异常 #{fixOpen?.id}</span>}
