@@ -269,3 +269,23 @@ export const printShippingLabel = (orderId: number, carrier?: string) =>
   api.post<{ tracking_no: string; carrier: string; label_url: string }>(
     `/api/orders/${orderId}/print-label`, null, { params: { carrier } },
   ).then((r) => r.data);
+
+export const backfillWarehouse = () =>
+  api.post<{ updated: number; message: string }>('/api/orders/backfill-warehouse')
+    .then((r) => r.data);
+
+export const markCustomSku = () =>
+  api.post<{ updated: number; message: string }>('/api/orders/mark-custom-sku')
+    .then((r) => r.data);
+
+export const rederiveRefillFlags = (recomputeCost = true) =>
+  api.post<{ scanned: number; flagged: number; unflagged: number }>(
+    '/api/orders/rederive-refill-flags',
+    null,
+    { params: { recompute_cost: recomputeCost } },
+  ).then((r) => r.data);
+
+export const backfillCompensation = () =>
+  api.post<{ aftersales_scanned: number; orders_updated: number; total_compensation: string }>(
+    '/api/orders/backfill-compensation',
+  ).then((r) => r.data);

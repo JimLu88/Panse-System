@@ -34,6 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
+from app.services import order_cost_service
 
 # ── 格式指纹 ──────────────────────────────────────────────────────────────────
 # 千牛多表: Sheet 名命中其一即视为该格式
@@ -433,6 +434,8 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if flags:
             remark = (remark + " | " if remark else "") + "⚠️ " + "; ".join(flags)
 
+        _pname = _clean(primary.get("product_name"))
+        _sku = _clean(primary.get("sku"))
         order = Order(
             platform=(platform or "淘宝").strip(),
             order_no=no,
@@ -441,8 +444,8 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             customer_phone=_clean(o.customer_phone),
             customer_address=_clean(o.customer_address),
             product_code=primary.get("product_code") or None,
-            product_name=_clean(primary.get("product_name")),
-            sku=_clean(primary.get("sku")),
+            product_name=_pname,
+            sku=_sku,
             sku_code=primary.get("sku_code"),
             qty=_to_int(primary.get("qty"), default=1),
             carrier=_clean(o.carrier),
@@ -451,6 +454,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             status=_map_status(o.status_text),
             is_historical=True,
             remark=remark,
+            warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )
         db.add(order)
         rep.inserted += 1

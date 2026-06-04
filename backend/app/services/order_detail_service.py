@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.bom import BomLine
-from app.models.order import Order, OrderDetail
+from app.models.order import FactoryOrder, Order, OrderDetail
 
 _logger = logging.getLogger("panse.order_detail")
 
@@ -80,6 +80,12 @@ def generate(
         select(OrderDetail.sync_key).where(OrderDetail.sync_key.like("auto:%"))
     ).scalars().all())
 
+    # 预取工厂订单号: platform_order_no → factory_order_no (取最新一条)
+    factory_no_map: dict[str, str] = {}
+    for fo in db.execute(select(FactoryOrder).where(FactoryOrder.platform_order_no.isnot(None))).scalars().all():
+        if fo.platform_order_no and fo.factory_order_no:
+            factory_no_map[fo.platform_order_no] = fo.factory_order_no
+
     for order in orders:
         report.orders_scanned += 1
         if not order.product_code:
@@ -98,6 +104,7 @@ def generate(
             db.add(OrderDetail(
                 sync_key=key,
                 order_no=order.order_no,
+                factory_order_no=factory_no_map.get(order.order_no),
                 product_code=order.product_code,
                 product_name=order.product_name or b.product_name,
                 sku_code=order.sku_code,

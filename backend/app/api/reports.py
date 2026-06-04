@@ -13,9 +13,10 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.models.finance import AlipayFlow
 from app.models.knowledge import AiKnowledge
-from app.models.marketing import OutsourcingExpense, PromotionFlow
-from app.models.order import Order
+from app.models.marketing import AfterSales, OutsourcingExpense, PromotionFlow
+from app.models.order import FactoryOrder, Order
 from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service
 
 router = APIRouter(prefix="/api/reports", tags=["reports"])
@@ -431,3 +432,200 @@ def list_knowledge(limit: int = Query(50, le=200), db: Session = Depends(get_db)
         )
         for r in rows
     ]
+
+
+# ─── 月度经营数据表格 ─────────────────────────────────────────────────────────
+
+
+def _month_range(year: int, month: int) -> tuple[_date, _date]:
+    start = _date(year, month, 1)
+    if month == 12:
+        end = _date(year, 12, 31)
+    else:
+        end = _date(year, month + 1, 1) - timedelta(days=1)
+    return start, end
+
+
+def _business_month(db: Session, year: int, month: int) -> dict:
+    """单月经营数据汇总。"""
+    start, end = _month_range(year, month)
+
+    def _qs(col, *wheres):
+        stmt = select(func.coalesce(func.sum(col), 0))
+        for w in wheres:
+            stmt = stmt.where(w)
+        return float(db.execute(stmt).scalar() or 0)
+
+    def _qc(*wheres):
+        stmt = select(func.count(Order.id))
+        for w in wheres:
+            stmt = stmt.where(w)
+        return int(db.execute(stmt).scalar() or 0)
+
+    base = [
+        Order.order_date >= start,
+        Order.order_date <= end,
+        Order.is_historical == False,  # noqa: E712
+    ]
+
+    # 订单
+    real_count = _qc(*base, Order.is_refill == False)  # noqa: E712
+    refill_count = _qc(*base, Order.is_refill == True)  # noqa: E712
+    real_revenue = _qs(Order.paid_amount, *base, Order.is_refill == False)  # noqa: E712
+    refill_revenue = _qs(Order.paid_amount, *base, Order.is_refill == True)  # noqa: E712
+    platform_fee = _qs(Order.platform_fee, *base)
+
+    # 支出
+    promo = float(db.execute(
+        select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+            PromotionFlow.flow_date >= start, PromotionFlow.flow_date <= end,
+        )
+    ).scalar() or 0)
+
+    factory_bill = float(db.execute(
+        select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
+            FactoryOrder.order_date >= start,
+            FactoryOrder.order_date <= end,
+            FactoryOrder.voided_at.is_(None),
+        )
+    ).scalar() or 0)
+
+    aftersales_rows = db.execute(
+        select(AfterSales).where(
+            AfterSales.processed_at >= start,
+            AfterSales.processed_at <= end,
+        )
+    ).scalars().all()
+    aftersales_comp = sum(
+        float((a.factory_compensation or 0) + (a.logistics_compensation or 0) + (a.compensation_fee or 0))
+        for a in aftersales_rows
+    )
+    aftersales_count = len(aftersales_rows)
+
+    outsourcing = float(db.execute(
+        select(func.coalesce(func.sum(OutsourcingExpense.amount), 0)).where(
+            OutsourcingExpense.payment_date >= start,
+            OutsourcingExpense.payment_date <= end,
+        )
+    ).scalar() or 0)
+
+    total_revenue = real_revenue + refill_revenue
+    total_expense = factory_bill + promo + aftersales_comp + outsourcing + platform_fee
+    net_profit = total_revenue - total_expense
+    total_orders = real_count + refill_count
+
+    refill_ratio = round(refill_count / total_orders * 100, 1) if total_orders else 0.0
+    refill_cost_ratio = round(refill_revenue / total_revenue * 100, 1) if total_revenue else 0.0
+    promo_ratio = round(promo / total_revenue * 100, 1) if total_revenue else 0.0
+    aftersales_rate = round(aftersales_count / real_count * 100, 1) if real_count else 0.0
+    lead_time_days = None
+    lt_rows = db.execute(
+        select(FactoryOrder.order_date, FactoryOrder.actual_delivery).where(
+            FactoryOrder.order_date >= start,
+            FactoryOrder.order_date <= end,
+            FactoryOrder.actual_delivery.isnot(None),
+            FactoryOrder.voided_at.is_(None),
+        )
+    ).all()
+    if lt_rows:
+        deltas = [(r.actual_delivery - r.order_date).days for r in lt_rows if r.actual_delivery >= r.order_date]
+        if deltas:
+            lead_time_days = round(sum(deltas) / len(deltas), 1)
+
+    return {
+        "year": year,
+        "month": month,
+        "period": f"{year}-{month:02d}",
+        "real_order_count": real_count,
+        "refill_order_count": refill_count,
+        "real_revenue": round(real_revenue, 2),
+        "refill_revenue": round(refill_revenue, 2),
+        "total_revenue": round(total_revenue, 2),
+        "refill_order_ratio": refill_ratio,
+        "refill_cost_ratio": refill_cost_ratio,
+        "promo_expense": round(promo, 2),
+        "promo_ratio": promo_ratio,
+        "factory_bill": round(factory_bill, 2),
+        "aftersales_compensation": round(aftersales_comp, 2),
+        "aftersales_count": aftersales_count,
+        "aftersales_rate": aftersales_rate,
+        "outsourcing_expense": round(outsourcing, 2),
+        "platform_fee": round(platform_fee, 2),
+        "total_expense": round(total_expense, 2),
+        "net_profit": round(net_profit, 2),
+        "net_profit_rate": round(net_profit / total_revenue * 100, 1) if total_revenue else 0.0,
+        "avg_lead_time_days": lead_time_days,
+    }
+
+
+@router.get("/business-monthly")
+def business_monthly_table(
+    from_year: int = Query(2026, description="起始年份"),
+    from_month: int = Query(1, ge=1, le=12, description="起始月份"),
+    to_year: Optional[int] = Query(None),
+    to_month: Optional[int] = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """月度经营数据表格 — 从指定月份至今, 每月一行。
+
+    返回字段:
+      period, real_order_count, refill_order_count, real_revenue, refill_revenue,
+      total_revenue, refill_order_ratio (%), refill_cost_ratio (%),
+      promo_expense, promo_ratio (%), factory_bill,
+      aftersales_compensation, aftersales_count, aftersales_rate (%),
+      outsourcing_expense, platform_fee,
+      total_expense, net_profit, net_profit_rate (%),
+      avg_lead_time_days
+    """
+    today = _date.today()
+    end_year = to_year or today.year
+    end_month = to_month or today.month
+
+    months = []
+    y, m = from_year, from_month
+    while (y, m) <= (end_year, end_month):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m = 1
+            y += 1
+
+    rows = [_business_month(db, y, m) for y, m in months]
+    rows.reverse()  # 最新月在前
+
+    # 汇总行
+    def _sum(key):
+        return round(sum(r[key] for r in rows if isinstance(r[key], (int, float))), 2)
+
+    total_real = sum(r["real_order_count"] for r in rows)
+    total_refill = sum(r["refill_order_count"] for r in rows)
+    total_rev = _sum("total_revenue")
+    total_refill_rev = _sum("refill_revenue")
+    total_promo = _sum("promo_expense")
+    total_exp = _sum("total_expense")
+    total_net = _sum("net_profit")
+
+    summary = {
+        "period": "合计",
+        "real_order_count": total_real,
+        "refill_order_count": total_refill,
+        "real_revenue": _sum("real_revenue"),
+        "refill_revenue": total_refill_rev,
+        "total_revenue": total_rev,
+        "refill_order_ratio": round(total_refill / (total_real + total_refill) * 100, 1) if (total_real + total_refill) else 0.0,
+        "refill_cost_ratio": round(total_refill_rev / total_rev * 100, 1) if total_rev else 0.0,
+        "promo_expense": total_promo,
+        "promo_ratio": round(total_promo / total_rev * 100, 1) if total_rev else 0.0,
+        "factory_bill": _sum("factory_bill"),
+        "aftersales_compensation": _sum("aftersales_compensation"),
+        "aftersales_count": sum(r["aftersales_count"] for r in rows),
+        "aftersales_rate": round(sum(r["aftersales_count"] for r in rows) / total_real * 100, 1) if total_real else 0.0,
+        "outsourcing_expense": _sum("outsourcing_expense"),
+        "platform_fee": _sum("platform_fee"),
+        "total_expense": total_exp,
+        "net_profit": total_net,
+        "net_profit_rate": round(total_net / total_rev * 100, 1) if total_rev else 0.0,
+        "avg_lead_time_days": None,
+    }
+
+    return {"rows": rows, "summary": summary}

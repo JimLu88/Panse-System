@@ -99,6 +99,37 @@ export const rerunSmartMatch = (account?: string) =>
     params: account ? { account } : undefined,
   }).then((r) => r.data);
 
+export interface AlipayRouteResult {
+  aftersales_created: number;
+  promotion_filled: number;
+  daily_filled: number;
+  outsourcing_filled: number;
+  purchases_created: number;
+  factory_flipped: number;
+}
+export const routeAlipayFlows = (rerunClassify = true) =>
+  api.post<AlipayRouteResult>('/api/finance/alipay-flows/route', null, {
+    params: { rerun_classify: rerunClassify },
+  }).then((r) => r.data);
+
+export const detectRefunds = () =>
+  api.post<{ pairs_found: number; message: string }>('/api/finance/alipay-flows/detect-refunds')
+    .then((r) => r.data);
+
+export const matchFactoryAlipay = (factoryName?: string) =>
+  api.post<{ matched_periods: number; message: string }>(
+    '/api/finance/factory-reconciliation/match-alipay',
+    null,
+    { params: factoryName ? { factory_name: factoryName } : undefined },
+  ).then((r) => r.data);
+
+export const rebuildFactoryReconciliation = (factoryName?: string) =>
+  api.post<{ periods: number; created: number; updated: number }>(
+    '/api/finance/factory-reconciliation/rebuild',
+    null,
+    { params: factoryName ? { factory_name: factoryName } : undefined },
+  ).then((r) => r.data);
+
 // ----- Suppliers / 对账模块 (业务需求) -----
 export interface Supplier {
   id: number;

@@ -21,10 +21,12 @@ import { ThunderboltOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  BusinessMonthRow,
   EscalationOut,
   HealthReport,
   KnowledgeRow,
   SalesSummary,
+  fetchBusinessMonthly,
   fetchSalesBreakdown,
   fetchSalesSummary,
   getMonthlyReport,
@@ -76,11 +78,13 @@ export default function ReportsPage() {
       </Space>
 
       <Tabs
+        defaultActiveKey="monthly"
         items={[
-          { key: 'sales', label: '销售汇总 (业务需求 15)', children: <SalesSummaryTab /> },
-          { key: 'breakdown', label: '分产品销售 (业务需求 16)', children: <SalesBreakdownTab /> },
+          { key: 'monthly', label: '月度经营数据', children: <BusinessMonthlyTab /> },
+          { key: 'sales', label: '销售汇总', children: <SalesSummaryTab /> },
+          { key: 'breakdown', label: '分产品销售', children: <SalesBreakdownTab /> },
           { key: 'health', label: '本月健康度', children: <ReportTab data={data} isLoading={isLoading} /> },
-          { key: 'knowledge', label: 'AI 知识库 (§12.2)', children: <KnowledgeTab /> },
+          { key: 'knowledge', label: 'AI 知识库', children: <KnowledgeTab /> },
           { key: 'escalations', label: '升级记录', children: <EscalationsTab last={escalateMut.data} /> },
         ]}
       />
@@ -395,5 +399,145 @@ function EscalationsTab({ last }: { last?: EscalationOut[] }) {
         { title: '影响条数', dataIndex: 'affected_ids', render: (v: number[]) => v.length },
       ]}
     />
+  );
+}
+
+
+// ─── 月度经营数据表格 ─────────────────────────────────────────────────────────
+
+function fmt(v: number | null | undefined, decimals = 0): string {
+  if (v === null || v === undefined) return '—';
+  return v.toLocaleString('zh-CN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+}
+
+function fmtY(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—';
+  return `¥${fmt(v)}`;
+}
+
+function pct(v: number | null | undefined): string {
+  if (v === null || v === undefined) return '—';
+  return `${v.toFixed(1)}%`;
+}
+
+function BusinessMonthlyTab() {
+  const { data, isLoading } = useQuery({
+    queryKey: ['business-monthly'],
+    queryFn: () => fetchBusinessMonthly(2026, 1),
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const allRows: BusinessMonthRow[] = data
+    ? [...data.rows, { ...data.summary, period: '📊 合计' }]
+    : [];
+
+  const columns = [
+    {
+      title: '月份', dataIndex: 'period', width: 90, fixed: 'left' as const,
+      render: (v: string) => <Typography.Text strong>{v}</Typography.Text>,
+    },
+    {
+      title: '真实订单',
+      children: [
+        { title: '笔数', dataIndex: 'real_order_count', width: 70, render: fmt },
+        { title: '金额', dataIndex: 'real_revenue', width: 100, render: fmtY },
+      ],
+    },
+    {
+      title: '补单',
+      children: [
+        { title: '笔数', dataIndex: 'refill_order_count', width: 60, render: fmt },
+        { title: '金额', dataIndex: 'refill_revenue', width: 100, render: fmtY },
+        {
+          title: '订单占比', dataIndex: 'refill_order_ratio', width: 80,
+          render: (v: number) => {
+            const color = v > 30 ? '#ff4d4f' : v > 15 ? '#fa8c16' : '#52c41a';
+            return <span style={{ color }}>{pct(v)}</span>;
+          },
+        },
+        {
+          title: '金额占比', dataIndex: 'refill_cost_ratio', width: 80,
+          render: (v: number) => {
+            const color = v > 30 ? '#ff4d4f' : v > 15 ? '#fa8c16' : '#52c41a';
+            return <span style={{ color }}>{pct(v)}</span>;
+          },
+        },
+      ],
+    },
+    {
+      title: '支出',
+      children: [
+        {
+          title: '推广费', dataIndex: 'promo_expense', width: 100,
+          render: (v: number, r: BusinessMonthRow) => (
+            <Space direction="vertical" size={0}>
+              <span>{fmtY(v)}</span>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>{pct(r.promo_ratio)}</Typography.Text>
+            </Space>
+          ),
+        },
+        { title: '工厂账单', dataIndex: 'factory_bill', width: 100, render: fmtY },
+        {
+          title: '售后赔付', dataIndex: 'aftersales_compensation', width: 100,
+          render: (v: number, r: BusinessMonthRow) => (
+            <Space direction="vertical" size={0}>
+              <span>{fmtY(v)}</span>
+              <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                {r.aftersales_count}单 / {pct(r.aftersales_rate)}
+              </Typography.Text>
+            </Space>
+          ),
+        },
+        { title: '人员外包', dataIndex: 'outsourcing_expense', width: 90, render: fmtY },
+        { title: '平台费', dataIndex: 'platform_fee', width: 90, render: fmtY },
+        { title: '支出合计', dataIndex: 'total_expense', width: 100, render: fmtY },
+      ],
+    },
+    {
+      title: '利润',
+      children: [
+        { title: '总收入', dataIndex: 'total_revenue', width: 100, render: fmtY },
+        {
+          title: '净利润', dataIndex: 'net_profit', width: 100,
+          render: (v: number) => (
+            <Typography.Text type={v >= 0 ? 'success' : 'danger'} strong>
+              {fmtY(v)}
+            </Typography.Text>
+          ),
+        },
+        {
+          title: '净利率', dataIndex: 'net_profit_rate', width: 80,
+          render: (v: number) => {
+            const color = v >= 20 ? '#52c41a' : v >= 5 ? '#fa8c16' : '#ff4d4f';
+            return <span style={{ color }}>{pct(v)}</span>;
+          },
+        },
+      ],
+    },
+    {
+      title: '工厂交货',
+      dataIndex: 'avg_lead_time_days',
+      width: 90,
+      render: (v: number | null) => v !== null ? `${v}天` : '—',
+    },
+  ];
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Typography.Text type="secondary">
+        数据范围：2026年1月至今，每月一行，合计行在底部。补单占比 &gt;30% 或售后率偏高时红色提示。
+      </Typography.Text>
+      <Table<BusinessMonthRow>
+        rowKey="period"
+        columns={columns}
+        dataSource={allRows}
+        loading={isLoading}
+        pagination={false}
+        scroll={{ x: 1400 }}
+        size="small"
+        bordered
+        rowClassName={(r) => r.period.includes('合计') ? 'ant-table-summary-row' : ''}
+      />
+    </Space>
   );
 }

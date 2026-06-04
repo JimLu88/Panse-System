@@ -177,6 +177,41 @@ export const getMonthlyReport = (year: number, month: number) =>
 export const getCurrentMonthReport = () =>
   api.get<HealthReport>('/api/reports/monthly/current').then((r) => r.data);
 
+export interface BusinessMonthRow {
+  period: string;
+  real_order_count: number;
+  refill_order_count: number;
+  real_revenue: number;
+  refill_revenue: number;
+  total_revenue: number;
+  refill_order_ratio: number;
+  refill_cost_ratio: number;
+  promo_expense: number;
+  promo_ratio: number;
+  factory_bill: number;
+  aftersales_compensation: number;
+  aftersales_count: number;
+  aftersales_rate: number;
+  outsourcing_expense: number;
+  platform_fee: number;
+  total_expense: number;
+  net_profit: number;
+  net_profit_rate: number;
+  avg_lead_time_days: number | null;
+}
+
+export interface BusinessMonthlyResult {
+  rows: BusinessMonthRow[];
+  summary: BusinessMonthRow;
+}
+
+export const fetchBusinessMonthly = (fromYear = 2026, fromMonth = 1) =>
+  api
+    .get<BusinessMonthlyResult>('/api/reports/business-monthly', {
+      params: { from_year: fromYear, from_month: fromMonth },
+    })
+    .then((r) => r.data);
+
 export interface KnowledgeRow {
   id: number;
   exception_type: string;

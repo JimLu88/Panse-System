@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -9,8 +10,12 @@ class ProductInventoryCreate(BaseModel):
     sku: Optional[str] = None
     spec: Optional[str] = None
     unit: Optional[str] = "个"
-    physical_qty: int = 0
-    locked_qty: int = 0
+    physical_qty: Decimal = Decimal("0")
+    locked_qty: Decimal = Decimal("0")
+    safety_stock: Optional[Decimal] = None
+    lead_time_days: Optional[int] = None
+    slow_moving_days: Optional[int] = 60
+    reorder_point: Optional[Decimal] = None
     remark: Optional[str] = None
 
 
@@ -22,6 +27,23 @@ class ProductInventoryOut(BaseModel):
     sku: Optional[str]
     spec: Optional[str]
     unit: Optional[str]
-    physical_qty: int
-    locked_qty: int
+    physical_qty: Decimal
+    locked_qty: Decimal
+    safety_stock: Optional[Decimal]
+    lead_time_days: Optional[int]
+    slow_moving_days: Optional[int]
+    reorder_point: Optional[Decimal]
     remark: Optional[str]
+
+
+class ProductInventoryWithStats(ProductInventoryOut):
+    """ProductInventoryOut + 实时推算字段（不存库，每次请求计算）。"""
+    available_qty: float
+    daily_sales_30d: float
+    lead_time_days_computed: Optional[int]
+    safety_stock_computed: float
+    reorder_point_computed: float
+    days_of_stock: Optional[float]
+    warning_status: str          # ok / warning / danger / critical / excess
+    auto_reorder_qty: float
+    slow_moving_days: Optional[int]

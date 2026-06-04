@@ -41,7 +41,7 @@ import {
   ReloadOutlined,
   StopOutlined,
 } from '@ant-design/icons';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   EntityField,
   EntityType,
@@ -53,13 +53,18 @@ import {
   SheetAnalysis,
   SheetPreview,
   SmartCommitReport,
+  backfillCompensation,
+  backfillWarehouse,
   cancelImportJob,
+  generateOrderDetails,
   getRecentLogs,
   commitImporter,
   commitImporterAsync,
   fetchEntityTypes,
   fetchImportJob,
+  markCustomSku,
   previewImporter,
+  rederiveRefillFlags,
   smartAnalyzeExcel,
   smartCommitExcel,
   validateExportExcel,
@@ -79,6 +84,7 @@ export default function ImporterPage() {
           children: <SmartImporter /> },
         { key: 'legacy', label: '手动模式 (单 sheet, 自选实体)',
           children: <LegacyImporter /> },
+        { key: 'sync', label: '数据同步 / 回填', children: <DataSyncTab /> },
       ]}
     />
   );
@@ -1548,6 +1554,115 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
                  render: (v: any) => v == null ? '' : String(v),
                }))} />
       </Card>
+    </Space>
+  );
+}
+
+
+// ────────────────────────────────────────────────────────────
+// 数据同步 / 回填 Tab
+// ────────────────────────────────────────────────────────────
+
+interface SyncOp {
+  key: string;
+  label: string;
+  desc: string;
+  fn: () => Promise<any>;
+  resultKey?: string;
+}
+
+function DataSyncTab() {
+  const qc = useQueryClient();
+  const [results, setResults] = useState<Record<string, string>>({});
+
+  function useSyncMut(op: SyncOp) {
+    return useMutation({
+      mutationFn: op.fn,
+      onSuccess: (r: any) => {
+        const summary = r?.message ?? JSON.stringify(r);
+        setResults((prev) => ({ ...prev, [op.key]: summary }));
+        message.success(`${op.label} 完成`);
+        qc.invalidateQueries();
+      },
+      onError: (e: any) => message.error(`${op.label} 失败: ${e?.response?.data?.detail ?? e?.message}`),
+    });
+  }
+
+  const ops: SyncOp[] = [
+    {
+      key: 'warehouse',
+      label: '仓库回填',
+      desc: '对 warehouse 字段为空的存量订单自动填充仓库（样块/补单→杭州，其余→江西仓库）。',
+      fn: backfillWarehouse,
+    },
+    {
+      key: 'custom_sku',
+      label: '微定制 SKU 标注',
+      desc: '给 is_custom=True 的订单 SKU 追加「-改」后缀（幂等）。',
+      fn: markCustomSku,
+    },
+    {
+      key: 'refill_flags',
+      label: '补单标记重判',
+      desc: '以 8-补单记录为准重判 is_refill，并顺带重算理论成本。',
+      fn: () => rederiveRefillFlags(true),
+    },
+    {
+      key: 'compensation',
+      label: '售后赔付回写',
+      desc: '把售后表赔付按订单号聚合，回写 Order.compensation_fee。',
+      fn: backfillCompensation,
+    },
+    {
+      key: 'order_details',
+      label: '订单细节生成',
+      desc: '从订单 + BOM 联表自动推导订单细节行（含工厂订单号）。',
+      fn: () => generateOrderDetails(undefined, true).then((r) => ({
+        message: `扫描 ${r.orders_scanned} 单，新建 ${r.details_created} 行，跳过 ${r.details_skipped} 行`,
+      })),
+    },
+  ];
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message="数据同步操作全部幂等，可重复执行。建议在 Excel 批量导入后依次运行。"
+      />
+      {ops.map((op) => {
+        const SyncButton = () => {
+          const mut = useSyncMut(op);
+          return (
+            <Card
+              key={op.key}
+              size="small"
+              title={op.label}
+              extra={
+                <Button
+                  type="primary"
+                  size="small"
+                  loading={mut.isPending}
+                  onClick={() => mut.mutate()}
+                >
+                  执行
+                </Button>
+              }
+            >
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{op.desc}</Typography.Text>
+              {results[op.key] && (
+                <Alert
+                  type="success"
+                  showIcon
+                  style={{ marginTop: 8 }}
+                  message={results[op.key]}
+                />
+              )}
+            </Card>
+          );
+        };
+        return <SyncButton key={op.key} />;
+      })}
     </Space>
   );
 }
