@@ -1465,19 +1465,61 @@ def _h_balance(db, data, key_field, ctx=None):
 
 def _h_pricing_sku(db, data, key_field, ctx=None):
     from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+
+    # Field sets for each sub-table
+    _SKU_FIELDS = {c.key for c in PricingSku.__table__.columns}
+    _COSTS_FIELDS = {c.key for c in PricingSkuCosts.__table__.columns}
+    _PROMO_FIELDS = {c.key for c in PricingSkuPromo.__table__.columns}
+
     sku_code = data.get("sku_code")
     if not sku_code:
         raise ImporterError("缺 sku_code")
-    existing = db.execute(select(PricingSku).where(
-        PricingSku.sku_code == sku_code,
-    )).scalar_one_or_none()
-    payload = {k: v for k, v in data.items() if v is not None}
+
+    all_data = {k: v for k, v in data.items() if v is not None}
+
+    # Split into per-table payloads
+    sku_payload   = {k: v for k, v in all_data.items() if k in _SKU_FIELDS}
+    costs_payload = {k: v for k, v in all_data.items() if k in _COSTS_FIELDS and k != "id"}
+    promo_payload = {k: v for k, v in all_data.items() if k in _PROMO_FIELDS and k != "id"}
+
+    # ── pricing_sku (main) ──────────────────────────────────────────────
+    existing = db.execute(select(PricingSku).where(PricingSku.sku_code == sku_code)).scalar_one_or_none()
     if existing:
-        return "pricing_sku", _apply_update(existing, payload, ctx, "pricing_sku", sku_code, db)
-    if _is_custom_code(db, sku_code, payload.get("product_code")):
-        _flag_custom(db, "pricing_sku", sku_code, sku_code)
-    db.add(PricingSku(**payload))
-    return "pricing_sku", "inserted"
+        action = _apply_update(existing, sku_payload, ctx, "pricing_sku", sku_code, db)
+    else:
+        if _is_custom_code(db, sku_code, sku_payload.get("product_code")):
+            _flag_custom(db, "pricing_sku", sku_code, sku_code)
+        db.add(PricingSku(**sku_payload))
+        action = "inserted"
+
+    # ── pricing_sku_costs (配件成本明细) ────────────────────────────────
+    if costs_payload:
+        costs_payload["sku_code"] = sku_code
+        costs_row = db.execute(
+            select(PricingSkuCosts).where(PricingSkuCosts.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if costs_row:
+            for k, v in costs_payload.items():
+                if k != "sku_code":
+                    setattr(costs_row, k, v)
+        else:
+            db.add(PricingSkuCosts(**costs_payload))
+
+    # ── pricing_sku_promo (平台活动价) ──────────────────────────────────
+    if promo_payload:
+        promo_payload["sku_code"] = sku_code
+        promo_row = db.execute(
+            select(PricingSkuPromo).where(PricingSkuPromo.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if promo_row:
+            for k, v in promo_payload.items():
+                if k != "sku_code":
+                    setattr(promo_row, k, v)
+        else:
+            db.add(PricingSkuPromo(**promo_payload))
+
+    return "pricing_sku", action
 
 
 def _h_refill_record(db, data, key_field, ctx=None):

@@ -2,11 +2,11 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
@@ -17,9 +17,16 @@ from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+from app.models.pricing_formula import PricingFormulaRule
 from app.services import pricing_calc_service
+from app.services import formula_engine_service
 
 router = APIRouter(prefix="/api/pricing-skus", tags=["pricing"])
+
+# ---------------------------------------------------------------------------
+# Formula rule router (separate prefix /api/pricing)
+# ---------------------------------------------------------------------------
+formula_router = APIRouter(prefix="/api/pricing", tags=["pricing-formula"])
 
 
 class PricingSkuOut(BaseModel):
@@ -713,3 +720,130 @@ def upsert_sku_promo(
     db.commit()
     db.refresh(promo)
     return PricingSkuPromoOut.model_validate(promo)
+
+
+# ===========================================================================
+# Formula Rule CRUD endpoints
+# ===========================================================================
+
+class FormulaRuleOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    field_name: str
+    display_name: Optional[str]
+    expression: str
+    description: Optional[str]
+    enabled: bool
+    sort_order: int
+    is_builtin: bool
+
+
+class FormulaRulePatch(BaseModel):
+    expression: Optional[str] = None
+    description: Optional[str] = None
+    enabled: Optional[bool] = None
+    sort_order: Optional[int] = None
+
+
+class FormulaValidateIn(BaseModel):
+    expression: str
+    sample_values: Optional[dict[str, float]] = None
+
+
+class FormulaValidateOut(BaseModel):
+    ok: bool
+    error: Optional[str] = None
+    detected_inputs: list[str] = []
+    sample_result: Optional[float] = None
+
+
+@formula_router.get("/formula-rules", response_model=list[FormulaRuleOut])
+def list_formula_rules(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return db.query(PricingFormulaRule).order_by(PricingFormulaRule.sort_order).all()
+
+
+@formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
+def update_formula_rule(
+    rule_id: int,
+    body: FormulaRulePatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    rule = db.get(PricingFormulaRule, rule_id)
+    if not rule:
+        raise HTTPException(404, "公式规则不存在")
+    updates = body.model_dump(exclude_unset=True)
+    if "expression" in updates:
+        try:
+            formula_engine_service.eval_safe(updates["expression"], {})
+        except ValueError:
+            pass  # May fail due to missing fields; just check syntax
+        try:
+            import ast
+            ast.parse(updates["expression"], mode="eval")
+        except SyntaxError as e:
+            raise HTTPException(422, f"公式语法错误: {e}")
+    for k, v in updates.items():
+        setattr(rule, k, v)
+    db.commit()
+    db.refresh(rule)
+    return rule
+
+
+@formula_router.post("/formula-rules/validate", response_model=FormulaValidateOut)
+def validate_formula(
+    body: FormulaValidateIn,
+    _: User = Depends(get_current_user),
+):
+    import ast as _ast
+    try:
+        _ast.parse(body.expression, mode="eval")
+    except SyntaxError as e:
+        return FormulaValidateOut(ok=False, error=f"语法错误: {e}")
+
+    inputs = formula_engine_service.extract_field_names(body.expression)
+    result = None
+    if body.sample_values:
+        from decimal import Decimal as D
+        ctx = {k: D(str(v)) for k, v in body.sample_values.items()}
+        try:
+            val = formula_engine_service.eval_safe(body.expression, ctx)
+            result = float(val) if val is not None else None
+        except Exception as e:
+            return FormulaValidateOut(ok=False, error=str(e), detected_inputs=inputs)
+
+    return FormulaValidateOut(ok=True, detected_inputs=inputs, sample_result=result)
+
+
+@formula_router.post("/formula-rules/seed")
+def seed_formula_rules(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    count = formula_engine_service.seed_builtin_rules(db)
+    return {"inserted": count, "message": f"已插入 {count} 条内置公式规则"}
+
+
+@formula_router.post("/recompute-all")
+def recompute_all_skus(
+    force: bool = Query(False, description="强制覆盖已有值"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    rules = (
+        db.query(PricingFormulaRule)
+        .filter(PricingFormulaRule.enabled.is_(True))
+        .all()
+    )
+    skus = db.query(PricingSku).all()
+    updated = 0
+    for sku in skus:
+        costs = db.query(PricingSkuCosts).filter(PricingSkuCosts.sku_code == sku.sku_code).first()
+        promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
+        formula_engine_service.compute_all(db, sku, costs, promo, rules=rules, force=force)
+        updated += 1
+    db.commit()
+    return {"updated": updated, "message": f"已重算 {updated} 个 SKU"}
