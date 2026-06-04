@@ -8,6 +8,7 @@ import type { FactorySheet, FactorySheetMaterial } from '../api/orders';
  */
 export default function FactorySheetCard({ data }: { data: FactorySheet }) {
   const green = '#1a7a3c';
+  const extraAccessories = data.materials.filter((m) => m.source === '客户备注');
 
   return (
     <div
@@ -83,9 +84,29 @@ export default function FactorySheetCard({ data }: { data: FactorySheet }) {
         </div>
       </div>
 
+      {/* 客户备注新增配件 — 醒目提示工厂额外备料 (业务需求: 截图备注里的新配件) */}
+      {extraAccessories.length > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginTop: 16 }}
+          message={`客户备注新增配件 ${extraAccessories.length} 项 — 请额外备料`}
+          description={
+            <ul style={{ marginBottom: 0, paddingLeft: 18 }}>
+              {extraAccessories.map((m) => (
+                <li key={m.material_code}>
+                  <b>{m.material_name}</b> × {m.total_qty}{m.unit ?? ''}
+                  {m.note && <span style={{ color: '#a8743a' }}>（{m.note}）</span>}
+                </li>
+              ))}
+            </ul>
+          }
+        />
+      )}
+
       {/* BOM 物料明细 (内部配件采购用, 工厂版可忽略) */}
       <Typography.Title level={5} style={{ marginTop: 20, marginBottom: 8 }}>
-        BOM 物料明细 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>(供配件采购, 工厂备料参考)</span>
+        物料明细 <span style={{ fontWeight: 400, fontSize: 12, color: '#999' }}>(供配件采购, 工厂备料参考)</span>
       </Typography.Title>
       {data.materials.length === 0 ? (
         <Alert type="warning" message="该 SKU 暂无 BOM, 请先在 BOM 表录入物料" />
@@ -96,9 +117,18 @@ export default function FactorySheetCard({ data }: { data: FactorySheet }) {
           pagination={false}
           size="small"
           bordered
+          rowClassName={(r) => (r.source === '客户备注' ? 'extra-accessory-row' : '')}
           columns={[
             { title: '物料编码', dataIndex: 'material_code', width: 110, render: (v: string) => <code>{v}</code> },
-            { title: '物料名称', dataIndex: 'material_name', ellipsis: true },
+            {
+              title: '物料名称', dataIndex: 'material_name', ellipsis: true,
+              render: (v: string, r) => (
+                <span>
+                  {v}
+                  {r.source === '客户备注' && <Tag color="orange" style={{ marginLeft: 6 }}>客户加配</Tag>}
+                </span>
+              ),
+            },
             { title: '单件用量', dataIndex: 'qty_per_product', width: 90, align: 'right' },
             { title: `×${data.qty}件总量`, dataIndex: 'total_qty', width: 100, align: 'right',
               render: (v: string) => <strong>{v}</strong> },
@@ -107,6 +137,7 @@ export default function FactorySheetCard({ data }: { data: FactorySheet }) {
           ]}
         />
       )}
+      <style>{`.extra-accessory-row { background: #fff7e6; }`}</style>
     </div>
   );
 }

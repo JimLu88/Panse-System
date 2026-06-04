@@ -220,6 +220,8 @@ class OrderAccessoryItem(Base, TimestampMixin):
     qty_required: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
     unit: Mapped[Optional[str]] = mapped_column(String(16))
     is_factory_provided: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 来源: bom = BOM 自动带出; 客户备注 = 截图 OCR 备注里识别的新增配件
+    source: Mapped[str] = mapped_column(String(16), default="bom", nullable=False)
     # 未采购 / 已下单 / 运输中 / 已到货 / 工厂提供
     status: Mapped[str] = mapped_column(String(32), default="未采购", nullable=False, index=True)
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128), index=True)

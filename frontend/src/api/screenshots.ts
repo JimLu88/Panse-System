@@ -22,6 +22,8 @@ export interface QianniuOrderParsed {
   warnings?: string[];
   product_code?: string | null;
   sku_code?: string | null;
+  // 客户备注里识别的新增配件 (OCR 带出), 每项 {name, qty?, note?}
+  extra_accessories?: { name: string; qty?: number; note?: string }[];
 }
 
 export interface QianniuParseResp {
@@ -44,9 +46,9 @@ export const parseQianniuScreenshot = (file: File) => {
 
 export const commitQianniuOrders = (orders: QianniuOrderParsed[]) =>
   api
-    .post<{ inserted: number; skipped_existing: string[] }>(
+    .post<{ inserted: number; skipped_existing: string[]; conflicts?: string[] }>(
       '/api/screenshots/qianniu-orders/commit',
-      { orders },
+      { orders },  // 含 extra_accessories, 后端入库时自动生成配件清单
     )
     .then((r) => r.data);
 
@@ -66,6 +68,7 @@ export const previewQianniuFactorySheet = (order: QianniuOrderParsed) =>
       customer_phone: order.customer_phone,
       customer_address: order.customer_address,
       remark: order.remark,
+      extra_accessories: order.extra_accessories,
     })
     .then((r) => r.data);
 

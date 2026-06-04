@@ -30,6 +30,7 @@ import {
   generateOrderDetails,
 } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
+import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
 import { Drawer, Spin, Table as AntTable } from 'antd';
 
 function fmtMoney(v: string | null | undefined): string {
@@ -65,6 +66,7 @@ export default function OrdersPage() {
   const [q, setQ] = useState('');
   const [importReport, setImportReport] = useState<CsvImportReport | null>(null);
   const [timelineFor, setTimelineFor] = useState<number | null>(null);
+  const [accessoryFor, setAccessoryFor] = useState<{ id: number; order_no: string } | null>(null);
   const [costFor, setCostFor] = useState<{ id: number; order_no: string } | null>(null);
   const [costData, setCostData] = useState<OrderCostBreakdown | null>(null);
   const [costLoading, setCostLoading] = useState(false);
@@ -221,6 +223,12 @@ export default function OrdersPage() {
             >
               制单图
             </Button>
+            <Button
+              size="small"
+              onClick={() => setAccessoryFor({ id: r.id, order_no: r.order_no })}
+            >
+              配件
+            </Button>
             {next.length > 0 && (
               <Dropdown
                 menu={{
@@ -346,6 +354,12 @@ export default function OrdersPage() {
           </Space>
         )}
       </Modal>
+      <AccessoryChecklistDrawer
+        orderId={accessoryFor?.id ?? null}
+        orderNo={accessoryFor?.order_no}
+        open={accessoryFor !== null}
+        onClose={() => setAccessoryFor(null)}
+      />
       <OrderTimelineDrawer
         orderId={timelineFor}
         open={timelineFor !== null}

@@ -35,6 +35,8 @@ class FactorySheetMaterial:
     total_qty: Decimal           # qty_per_product × order qty
     unit: Optional[str]
     spec: Optional[str] = None   # 材料规格 (size_type / 物料备注)
+    source: str = "bom"          # bom = BOM 自动带出; 客户备注 = 截图备注里识别的新增配件
+    note: Optional[str] = None   # 客户备注原文 (source=客户备注 时)
 
 
 @dataclass
@@ -78,6 +80,62 @@ class FactorySheet:
     warnings: list[FactorySheetWarning] = field(default_factory=list)
 
 
+def _merge_extra_accessories(
+    db: Session,
+    materials: list[FactorySheetMaterial],
+    extra_accessories: Optional[list[dict]],
+    order_qty: int,
+) -> int:
+    """把客户备注里识别的新增配件合并进物料明细。
+
+    每项 dict 形如 {name, qty?, note?}。尝试按名称匹配 Material 拿到真实编码/单位,
+    匹配不到则用占位编码 (客户新增) 并保留备注原文。返回新增条数。
+    """
+    if not extra_accessories:
+        return 0
+    existing_codes = {m.material_code for m in materials}
+    added = 0
+    for item in extra_accessories:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            per = Decimal(str(item.get("qty") or 1))
+        except (ValueError, ArithmeticError):
+            per = Decimal(1)
+        note = item.get("note") or None
+
+        mat = db.execute(
+            select(Material).where(Material.name == name)
+        ).scalar_one_or_none()
+        if mat:
+            code = mat.code
+            unit = mat.unit
+            mat_name = mat.name
+        else:
+            code = f"NEW-{name[:8]}"   # 占位编码: 库里还没有这个配件
+            unit = None
+            mat_name = name
+        if code in existing_codes:
+            continue   # 已在 BOM 里, 不重复加
+        existing_codes.add(code)
+        # 备注配件的 qty 是整单绝对数量 (如"加2个抱枕"=2), 不随产品件数翻倍
+        materials.append(FactorySheetMaterial(
+            material_code=code,
+            material_name=mat_name,
+            qty_per_product=per,
+            total_qty=per,
+            unit=unit,
+            spec=note,
+            source="客户备注",
+            note=note,
+        ))
+        added += 1
+    return added
+
+
 def _sheet_title(order_no: str, order_date: Optional[date]) -> str:
     """5月31日 151单 这种格式 (取订单号尾段)."""
     if not order_date:
@@ -86,9 +144,22 @@ def _sheet_title(order_no: str, order_date: Optional[date]) -> str:
 
 
 def build(db: Session, order_id: int) -> FactorySheet:
+    from app.models.order import OrderAccessoryItem
+
     order = db.get(Order, order_id)
     if order is None:
         raise ValueError(f"order {order_id} not found")
+
+    # 已入库订单: 把配件清单里「客户备注」来源的配件带进下单图
+    extra = [
+        {"name": it.material_name, "qty": it.qty_required, "note": it.remark}
+        for it in db.execute(
+            select(OrderAccessoryItem).where(
+                OrderAccessoryItem.order_id == order_id,
+                OrderAccessoryItem.source == "客户备注",
+            )
+        ).scalars().all()
+    ]
     return build_from_fields(
         db,
         order_no=order.order_no,
@@ -103,6 +174,7 @@ def build(db: Session, order_id: int) -> FactorySheet:
         order_date=order.order_date,
         ship_date=order.ship_date,
         remark=order.remark,
+        extra_accessories=extra,
     )
 
 
@@ -121,8 +193,13 @@ def build_from_fields(
     order_date: Optional[date],
     ship_date: Optional[date],
     remark: Optional[str],
+    extra_accessories: Optional[list[dict]] = None,
 ) -> FactorySheet:
-    """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。"""
+    """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。
+
+    extra_accessories: 客户备注里识别出的新增配件 (业务需求: 截图 OCR 时若客户备注
+    提到额外配件, 自动加入下单图, 让工厂照单备料)。每项 {name, qty?, note?}。
+    """
     qty = qty or 1
     warnings: list[FactorySheetWarning] = []
 
@@ -209,6 +286,15 @@ def build_from_fields(
             code="no_bom",
             severity="warning",
             message="该 SKU 没有 BOM, 工厂没法直接照单备料。",
+        ))
+
+    # 3b. 客户备注新增配件 (业务需求: 截图 OCR 备注里识别的额外配件也要进下单图)
+    extra_added = _merge_extra_accessories(db, materials, extra_accessories, qty)
+    if extra_added:
+        warnings.append(FactorySheetWarning(
+            code="extra_accessory",
+            severity="warning",
+            message=f"客户备注含 {extra_added} 项新增配件, 已加入下单图, 请工厂确认备料。",
         ))
 
     return FactorySheet(

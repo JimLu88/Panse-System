@@ -132,6 +132,72 @@ export interface FactorySheetMaterial {
   total_qty: string;
   unit: string | null;
   spec: string | null;
+  source?: string;          // bom | 客户备注
+  note?: string | null;     // 客户备注原文
+}
+
+export interface ExtraAccessory {
+  name: string;
+  qty?: number;
+  note?: string;
+}
+
+// 订单配件清单行 (BOM 自动 + 客户备注新增, 含物流追踪)
+export interface AccessoryItem {
+  id: number;
+  order_id: number;
+  order_no: string;
+  material_code: string;
+  material_name: string | null;
+  qty_required: string;
+  unit: string | null;
+  is_factory_provided: boolean;
+  source: string;           // bom | 客户备注
+  status: string;           // 未采购 | 已下单 | 运输中 | 已到货 | 工厂提供
+  tracking_no: string | null;
+  carrier_code: string | null;
+  carrier_name: string | null;
+  tracking_last_status: string | null;
+  tracking_updated_at: string | null;
+  tracking_events: { time: string | null; context: string }[] | null;
+  alert_level: string | null;   // warn | critical
+  alert_reason: string | null;
+  remark: string | null;
+}
+
+export const listAccessories = (orderId: number) =>
+  api.get<AccessoryItem[]>(`/api/orders/${orderId}/accessories`).then((r) => r.data);
+
+export const regenerateAccessories = (orderId: number) =>
+  api.post<AccessoryItem[]>(`/api/orders/${orderId}/accessories/regenerate`).then((r) => r.data);
+
+export const updateAccessory = (
+  itemId: number,
+  patch: Partial<Pick<AccessoryItem, 'status' | 'tracking_no' | 'carrier_code' | 'carrier_name' | 'remark'>>,
+) => api.patch<AccessoryItem>(`/api/orders/accessories/${itemId}`, patch).then((r) => r.data);
+
+export const refreshAccessoryTracking = (itemId: number) =>
+  api.post<AccessoryItem>(`/api/orders/accessories/${itemId}/refresh-tracking`).then((r) => r.data);
+
+export const getAccessoriesPendingSummary = () =>
+  api.get<{ orders: AccessoryPendingOrder[] }>('/api/orders/accessories/pending-summary').then((r) => r.data);
+
+export interface AccessoryPendingOrder {
+  order_id: number;
+  order_no: string;
+  ship_date: string | null;
+  product_name: string | null;
+  critical_count: number;
+  warn_count: number;
+  missing_tracking_count: number;
+  pending_items: {
+    id: number;
+    material_code: string;
+    material_name: string | null;
+    status: string;
+    alert_level: string | null;
+    tracking_no: string | null;
+  }[];
 }
 
 export interface FactorySheetWarning {

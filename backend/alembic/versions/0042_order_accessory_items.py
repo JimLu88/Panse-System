@@ -24,6 +24,8 @@ def upgrade() -> None:
         sa.Column("qty_required", sa.Numeric(12, 4), nullable=False),
         sa.Column("unit", sa.String(16), nullable=True),
         sa.Column("is_factory_provided", sa.Boolean(), nullable=False, server_default="false"),
+        # bom = BOM 自动带出; 客户备注 = 截图 OCR 备注识别的新增配件
+        sa.Column("source", sa.String(16), nullable=False, server_default="bom"),
         # 未采购 / 已下单 / 运输中 / 已到货 / 工厂提供
         sa.Column("status", sa.String(32), nullable=False, server_default="未采购"),
         sa.Column("tracking_no", sa.String(128), nullable=True),

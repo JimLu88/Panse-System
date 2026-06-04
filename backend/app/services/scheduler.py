@@ -200,6 +200,22 @@ def _job_tracking_check(db: Session) -> dict:
     return factory_order_service.check_missing_tracking(db)
 
 
+def _job_accessory_tracking_refresh(db: Session) -> dict:
+    """配件物流实时刷新 — 扫所有运输中配件, 调快递100 更新轨迹/签收状态。
+
+    未配置物流 (kuaidi100) 时整体跳过, 不报错。
+    """
+    from app.services import logistics_tracking_service
+    return logistics_tracking_service.refresh_in_transit(db)
+
+
+def _job_accessory_alert_refresh(db: Session) -> dict:
+    """配件到货预警刷新 — 按发货日临近度更新未到货配件的预警等级。"""
+    from app.services import accessory_checklist_service
+    n = accessory_checklist_service.refresh_all_alerts(db)
+    return {"refreshed": n}
+
+
 def _job_forecast_refresh(db: Session) -> dict:
     """销售预测重算 — 主要是触发 forecast_30d 缓存. 当前是即时计算, 占位返回 0."""
     from app.services import sales_analytics
@@ -564,6 +580,10 @@ def _register_default_jobs() -> None:
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
     register_job("daily_02_data_backup", "全量数据备份 (按配置间隔, 默认7天)",
                  _job_data_backup, cron={"hour": 2, "minute": 0})
+    register_job("accessory_tracking_2h", "配件物流实时刷新 (快递100)",
+                 _job_accessory_tracking_refresh, interval_minutes=120)
+    register_job("daily_0730_accessory_alert", "配件到货预警刷新",
+                 _job_accessory_alert_refresh, cron={"hour": 7, "minute": 30})
 
 
 # ----------------------------- 生命周期 -------------------------- #

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import logging
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Optional
@@ -28,6 +29,7 @@ from app.services import factory_recon_excel_service, factory_sheet, vision_ocr_
 from app.services.ai_provider import AiUnavailable
 
 router = APIRouter(prefix="/api/screenshots", tags=["screenshots"])
+_logger = logging.getLogger("panse.screenshots")
 
 _MAX_BYTES = 20 * 1024 * 1024   # 20 MB / 张, 防止 OOM
 
@@ -85,6 +87,8 @@ class CommitQianniuOrderIn(BaseModel):
     discount: Optional[float] = None
     platform_fee: Optional[float] = None
     remark: Optional[str] = None
+    # 客户备注里识别的新增配件 (OCR 带出), 每项 {name, qty?, note?}
+    extra_accessories: Optional[list[dict]] = None
 
 
 class CommitQianniuIn(BaseModel):
@@ -101,6 +105,7 @@ def commit_qianniu(
     inserted = 0
     skipped: list[str] = []
     conflicts: list[str] = []
+    new_orders: list[tuple] = []  # (Order, extra_accessories) 待生成配件清单
     for o in payload.orders:
         if not o.order_no:
             continue
@@ -166,8 +171,21 @@ def commit_qianniu(
             status="pending_payment",
         )
         db.add(order)
+        new_orders.append((order, o.extra_accessories))
         inserted += 1
     db.commit()
+
+    # 第二段: 为新入库订单生成配件清单 (BOM 自动 + 客户备注新增)
+    from app.services import accessory_checklist_service
+    for order, extra in new_orders:
+        try:
+            accessory_checklist_service.generate_for_order(db, order.id)
+            if extra:
+                accessory_checklist_service.add_extra_accessories(db, order.id, extra)
+        except Exception as e:  # 单单配件清单失败不影响其余
+            _logger.warning("订单 %s 生成配件清单失败: %s", order.order_no, e)
+            db.rollback()
+
     return {"inserted": inserted, "skipped_existing": skipped, "conflicts": conflicts}
 
 
@@ -185,6 +203,8 @@ class FactorySheetPreviewIn(BaseModel):
     customer_phone: Optional[str] = None
     customer_address: Optional[str] = None
     remark: Optional[str] = None
+    # 客户备注里识别的新增配件 (OCR 解析时带出), 每项 {name, qty?, note?}
+    extra_accessories: Optional[list[dict]] = None
 
 
 @router.post("/qianniu-orders/factory-sheet")
@@ -196,6 +216,7 @@ def qianniu_factory_sheet(
     """业务需求 §1: 千牛截图解析后, 对单条订单直接生成「下单图」(无需先入库)。
 
     工厂沟通的唯一方式 — 用户在截图预览界面点「生成下单图」即可拿到发给工厂的制单图。
+    客户备注里的新增配件 (extra_accessories) 也会一并加入下单图。
     """
     sheet = factory_sheet.build_from_fields(
         db,
@@ -211,6 +232,7 @@ def qianniu_factory_sheet(
         order_date=_parse_date(payload.order_date),
         ship_date=_parse_date(payload.ship_date),
         remark=payload.remark,
+        extra_accessories=payload.extra_accessories,
     )
     # 直接 dataclass → dict (含嵌套 materials / warnings)
     from dataclasses import asdict

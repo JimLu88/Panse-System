@@ -69,6 +69,7 @@ def generate_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
             qty_required=Decimal(line.qty_per_product or 1) * Decimal(order.qty or 1),
             unit=line.unit or mat_unit,
             is_factory_provided=factory_provided,
+            source="bom",
             status="工厂提供" if factory_provided else "未采购",
         )
         db.add(item)
@@ -77,6 +78,63 @@ def generate_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     if created:
         db.commit()
         _logger.info("订单 %s 生成配件清单 %d 行", order.order_no, len(created))
+    return created
+
+
+def add_extra_accessories(
+    db: Session, order_id: int, extra: list[dict]
+) -> list[OrderAccessoryItem]:
+    """把截图 OCR 备注里识别的新增配件加入配件清单 (source=客户备注)。
+
+    每项 {name, qty?, note?}。已存在同编码则跳过。返回新建行。
+    """
+    if not extra:
+        return []
+    order = db.get(Order, order_id)
+    if not order:
+        raise ValueError(f"order {order_id} not found")
+
+    existing = {
+        c for c in db.execute(
+            select(OrderAccessoryItem.material_code).where(
+                OrderAccessoryItem.order_id == order_id
+            )
+        ).scalars().all()
+    }
+    created: list[OrderAccessoryItem] = []
+    for item in extra:
+        if not isinstance(item, dict):
+            continue
+        name = (item.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            per = Decimal(str(item.get("qty") or 1))
+        except (ValueError, ArithmeticError):
+            per = Decimal(1)
+        mat = db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
+        code = mat.code if mat else f"NEW-{name[:8]}"
+        if code in existing:
+            continue
+        existing.add(code)
+        row = OrderAccessoryItem(
+            order_id=order_id,
+            order_no=order.order_no,
+            material_code=code,
+            material_name=mat.name if mat else name,
+            qty_required=per,   # 备注配件是整单绝对数量, 不乘订单件数
+            unit=mat.unit if mat else None,
+            is_factory_provided=False,
+            source="客户备注",
+            status="未采购",
+            remark=item.get("note") or None,
+        )
+        db.add(row)
+        created.append(row)
+
+    if created:
+        db.commit()
+        _logger.info("订单 %s 加入客户备注配件 %d 项", order.order_no, len(created))
     return created
 
 

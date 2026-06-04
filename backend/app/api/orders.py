@@ -241,6 +241,8 @@ class FactorySheetMaterialOut(BaseModel):
     total_qty: _Decimal
     unit: Optional[str]
     spec: Optional[str]
+    source: str = "bom"
+    note: Optional[str] = None
 
 
 class FactorySheetWarningOut(BaseModel):
@@ -748,3 +750,115 @@ def factory_daily_summary(db: Session = Depends(get_db)):
     """手动触发: 汇总今日待生产订单 (paid 状态且无工厂单) 并推送。"""
     from app.services import factory_summary_service
     return factory_summary_service.daily_summary(db)
+
+
+# ─────────────────────── 订单配件清单 + 物流追踪 ─────────────────────── #
+
+
+class AccessoryItemOut(BaseModel):
+    id: int
+    order_id: int
+    order_no: str
+    material_code: str
+    material_name: Optional[str]
+    qty_required: _Decimal
+    unit: Optional[str]
+    is_factory_provided: bool
+    source: str
+    status: str
+    tracking_no: Optional[str]
+    carrier_code: Optional[str]
+    carrier_name: Optional[str]
+    tracking_last_status: Optional[str]
+    tracking_updated_at: Optional[str] = None
+    tracking_events: Optional[list] = None
+    alert_level: Optional[str]
+    alert_reason: Optional[str]
+    remark: Optional[str]
+
+    @classmethod
+    def from_model(cls, m) -> "AccessoryItemOut":
+        return cls(
+            id=m.id, order_id=m.order_id, order_no=m.order_no,
+            material_code=m.material_code, material_name=m.material_name,
+            qty_required=m.qty_required, unit=m.unit,
+            is_factory_provided=m.is_factory_provided, source=m.source, status=m.status,
+            tracking_no=m.tracking_no, carrier_code=m.carrier_code, carrier_name=m.carrier_name,
+            tracking_last_status=m.tracking_last_status,
+            tracking_updated_at=m.tracking_updated_at.isoformat() if m.tracking_updated_at else None,
+            tracking_events=m.tracking_events,
+            alert_level=m.alert_level, alert_reason=m.alert_reason, remark=m.remark,
+        )
+
+
+@router.get("/{order_id}/accessories", response_model=list[AccessoryItemOut])
+def list_accessories(order_id: int, db: Session = Depends(get_db)):
+    """订单配件清单 (BOM 自动 + 客户备注新增)。首次访问自动按 BOM 生成。"""
+    from app.services import accessory_checklist_service
+    items = accessory_checklist_service.get_checklist(db, order_id)
+    if not items:
+        accessory_checklist_service.generate_for_order(db, order_id)
+        items = accessory_checklist_service.get_checklist(db, order_id)
+    return [AccessoryItemOut.from_model(m) for m in items]
+
+
+@router.post("/{order_id}/accessories/regenerate", response_model=list[AccessoryItemOut])
+def regenerate_accessories(order_id: int, db: Session = Depends(get_db)):
+    """按当前 BOM 补全配件清单 (幂等, 不删已有行)。"""
+    from app.services import accessory_checklist_service
+    try:
+        accessory_checklist_service.generate_for_order(db, order_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return [AccessoryItemOut.from_model(m)
+            for m in accessory_checklist_service.get_checklist(db, order_id)]
+
+
+class AccessoryItemUpdate(BaseModel):
+    status: Optional[str] = None
+    tracking_no: Optional[str] = None
+    carrier_code: Optional[str] = None
+    carrier_name: Optional[str] = None
+    remark: Optional[str] = None
+    part_purchase_id: Optional[int] = None
+
+
+@router.patch("/accessories/{item_id}", response_model=AccessoryItemOut)
+def update_accessory(item_id: int, payload: AccessoryItemUpdate, db: Session = Depends(get_db)):
+    """更新配件行 (状态/快递单号/承运商/备注)。填快递单号会自动升级为运输中。"""
+    from app.services import accessory_checklist_service
+    try:
+        item = accessory_checklist_service.update_item(
+            db, item_id,
+            status=payload.status, tracking_no=payload.tracking_no,
+            carrier_code=payload.carrier_code, carrier_name=payload.carrier_name,
+            remark=payload.remark, part_purchase_id=payload.part_purchase_id,
+        )
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    return AccessoryItemOut.from_model(item)
+
+
+@router.post("/accessories/{item_id}/refresh-tracking", response_model=AccessoryItemOut)
+def refresh_accessory_tracking(item_id: int, db: Session = Depends(get_db)):
+    """实时查询该配件的物流并回写。未配置物流时返回当前数据 + 提示。"""
+    from app.models.order import OrderAccessoryItem
+    from app.services import logistics_tracking_service
+    try:
+        result = logistics_tracking_service.refresh_item(db, item_id)
+    except ValueError as e:
+        raise HTTPException(404, str(e)) from e
+    item = db.get(OrderAccessoryItem, item_id)
+    out = AccessoryItemOut.from_model(item)
+    if not result.get("ok"):
+        # 把错误透出给前端 (不持久化), 提示改用手动状态
+        out.alert_reason = result.get("error")
+    return out
+
+
+@router.get("/accessories/pending-summary")
+def accessories_pending_summary(db: Session = Depends(get_db)):
+    """跨订单配件待办汇总 (有未到货配件的订单, 按紧急程度排序)。"""
+    from app.services import accessory_checklist_service
+    accessory_checklist_service.refresh_all_alerts(db)
+    return {"orders": accessory_checklist_service.get_summary(db)}
