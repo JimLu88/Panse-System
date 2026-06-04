@@ -364,6 +364,59 @@ def test_notify_config(
     return NotifyTestOut(ok=ok, detail=detail)
 
 
+# ----------------------------- 物流追踪配置 (快递100) --------------- #
+
+
+class LogisticsConfigOut(BaseModel):
+    customer: str
+    customer_set: bool
+    key_masked: str
+    key_set: bool
+
+
+class LogisticsConfigIn(BaseModel):
+    customer: Optional[str] = None   # "__CLEAR__" 清空
+    key: Optional[str] = None        # "__CLEAR__" 清空
+
+
+@router.get("/logistics-config", response_model=LogisticsConfigOut)
+def get_logistics_config(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    customer = settings_service.get(db, "kuaidi100_customer", env_fallback=True) or ""
+    key = settings_service.get(db, "kuaidi100_key", env_fallback=True) or ""
+    return LogisticsConfigOut(
+        customer=customer[:4] + "***" if len(customer) > 4 else ("***" if customer else ""),
+        customer_set=bool(customer),
+        key_masked=settings_service.mask_secret(key),
+        key_set=bool(key),
+    )
+
+
+@router.put("/logistics-config", response_model=LogisticsConfigOut)
+def put_logistics_config(
+    payload: LogisticsConfigIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    if payload.customer is not None:
+        settings_service.set_value(db, "kuaidi100_customer",
+                                   "" if payload.customer == "__CLEAR__" else payload.customer.strip())
+    if payload.key is not None:
+        settings_service.set_value(db, "kuaidi100_key",
+                                   "" if payload.key == "__CLEAR__" else payload.key.strip())
+    db.commit()
+    customer = settings_service.get(db, "kuaidi100_customer", env_fallback=True) or ""
+    key = settings_service.get(db, "kuaidi100_key", env_fallback=True) or ""
+    return LogisticsConfigOut(
+        customer=customer[:4] + "***" if len(customer) > 4 else ("***" if customer else ""),
+        customer_set=bool(customer),
+        key_masked=settings_service.mask_secret(key),
+        key_set=bool(key),
+    )
+
+
 # ----------------------------- 数据水位线 (Phase 7) ----------------- #
 
 

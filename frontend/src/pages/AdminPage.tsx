@@ -38,6 +38,7 @@ import {
   PoweroffOutlined,
   ReloadOutlined,
   SaveOutlined,
+  TruckOutlined,
   UserAddOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -84,6 +85,9 @@ import {
   updateIntegrations,
   updateNotifyConfig,
   updateUser,
+  LogisticsConfig,
+  fetchLogisticsConfig,
+  updateLogisticsConfig,
 } from '../api/client';
 import { useAuth } from '../auth/AuthProvider';
 
@@ -528,7 +532,138 @@ function IntegrationsTab() {
         providers={data.supported_providers}
         onSaved={() => qc.invalidateQueries({ queryKey: ['integrations'] })}
       />
+      <LogisticsForm />
     </Space>
+  );
+}
+
+function LogisticsForm() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['logistics-config'],
+    queryFn: fetchLogisticsConfig,
+  });
+
+  const [customer, setCustomer] = useState('');
+  const [key, setKey] = useState('');
+
+  const saveMut = useMutation({
+    mutationFn: (payload: { customer?: string; key?: string }) => updateLogisticsConfig(payload),
+    onSuccess: () => {
+      message.success('快递100 配置已保存');
+      setCustomer('');
+      setKey('');
+      qc.invalidateQueries({ queryKey: ['logistics-config'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  const clearMut = useMutation({
+    mutationFn: (field: 'customer' | 'key') =>
+      updateLogisticsConfig(field === 'customer' ? { customer: '__CLEAR__' } : { key: '__CLEAR__' }),
+    onSuccess: () => {
+      message.success('已清除');
+      qc.invalidateQueries({ queryKey: ['logistics-config'] });
+    },
+  });
+
+  if (isLoading || !data) return null;
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space>
+          <TruckOutlined />
+          物流追踪 (快递100)
+          <Tag color="orange">logistics</Tag>
+        </Space>
+      }
+      extra={
+        <Typography.Link
+          href="https://www.kuaidi100.com/openapi/api.shtml"
+          target="_blank"
+          style={{ fontSize: 12 }}
+        >
+          申请/查看 Key →
+        </Typography.Link>
+      }
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="快递100 实时查询"
+        description={
+          <Space direction="vertical" size={2}>
+            <span>
+              用于配件清单的「实时刷新物流」功能。需要到
+              <b> kuaidi100.com </b>
+              申请 API 权限, 免费套餐每天 100 次, 商业套餐按需计费。
+            </span>
+            <span style={{ color: '#999' }}>
+              1. 注册/登录 快递100 开发者平台 → 获取 <code>customer</code> 和 <code>Key</code>。
+              2. 将两个值填入下方保存即可, 无需重启。
+            </span>
+          </Space>
+        }
+      />
+      <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="Customer">
+          {data.customer_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>{data.customer}</Tag>
+              <Button size="small" type="link" danger onClick={() => clearMut.mutate('customer')}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未设置</Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="Key">
+          {data.key_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>{data.key_masked}</Tag>
+              <Button size="small" type="link" danger onClick={() => clearMut.mutate('key')}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未设置</Tag>
+          )}
+        </Descriptions.Item>
+      </Descriptions>
+      <Form layout="inline" onFinish={() => saveMut.mutate({ customer: customer || undefined, key: key || undefined })}>
+        <Form.Item label="Customer">
+          <Input
+            value={customer}
+            onChange={(e) => setCustomer(e.target.value)}
+            placeholder="填新值 (留空=不改)"
+            style={{ width: 180 }}
+          />
+        </Form.Item>
+        <Form.Item label="Key">
+          <Input.Password
+            value={key}
+            onChange={(e) => setKey(e.target.value)}
+            placeholder="填新值 (留空=不改)"
+            style={{ width: 200 }}
+          />
+        </Form.Item>
+        <Form.Item>
+          <Button
+            type="primary"
+            htmlType="submit"
+            icon={<SaveOutlined />}
+            loading={saveMut.isPending}
+            disabled={!customer && !key}
+          >
+            保存
+          </Button>
+        </Form.Item>
+      </Form>
+    </Card>
   );
 }
 

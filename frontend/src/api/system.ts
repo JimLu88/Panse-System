@@ -372,6 +372,20 @@ export const testNotifyConfig = () =>
     .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
     .then((r) => r.data);
 
+// ----- 物流追踪配置 (快递100) -----
+export interface LogisticsConfig {
+  customer: string;
+  customer_set: boolean;
+  key_masked: string;
+  key_set: boolean;
+}
+
+export const fetchLogisticsConfig = () =>
+  api.get<LogisticsConfig>('/api/admin/logistics-config').then((r) => r.data);
+
+export const updateLogisticsConfig = (payload: { customer?: string; key?: string }) =>
+  api.put<LogisticsConfig>('/api/admin/logistics-config', payload).then((r) => r.data);
+
 // ----------------------------- 版本信息 ----------------------------- //
 export interface VersionInfo {
   commit: string;            // 短哈希, 如 6aaf8ad
