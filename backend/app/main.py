@@ -95,6 +95,15 @@ async def _lifespan(app: FastAPI):
     except Exception:
         pass
 
+    # 启动恢复: 上次进程被杀时残留的导入作业标记为 failed (否则永远卡 running)
+    try:
+        from app.services import import_job_service
+        n = import_job_service.recover_orphaned_jobs()
+        if n:
+            logging.getLogger("panse.startup").warning("恢复 %d 个中断的导入作业为 failed", n)
+    except Exception:  # pragma: no cover
+        pass
+
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
         from app.database import SessionLocal

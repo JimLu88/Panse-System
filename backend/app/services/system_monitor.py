@@ -527,10 +527,40 @@ def _should_auto_restart(db: Session) -> tuple[bool, str]:
     return False, ""
 
 
+def _recent_restart_count(db: Session, within_sec: int) -> int:
+    """最近 within_sec 秒内 watchdog 自救重启次数 (跨进程重启持久, 读 system_events)。"""
+    from datetime import datetime, timezone, timedelta
+    from app.models.system_event import SystemEvent
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=within_sec)
+    rows = db.execute(
+        select(SystemEvent.created_at)
+        .where(SystemEvent.kind == "watchdog_triggered")
+        .order_by(SystemEvent.id.desc()).limit(10)
+    ).scalars().all()
+    cnt = 0
+    for ts in rows:
+        if ts is None:
+            continue
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        if ts >= cutoff:
+            cnt += 1
+    return cnt
+
+
 def maybe_auto_restart(db: Session) -> Optional[str]:
     """看门狗 tick 后调用。返回触发原因 (重启) 或 None."""
     global _LAST_AUTO_RESTART_TS
     if time.time() - _LAST_AUTO_RESTART_TS < AUTO_RESTART_COOLDOWN_SEC:
+        return None
+    # 持久化冷却: 进程内变量重启后会清零, 故跨重启读 DB 里的 watchdog_triggered 事件。
+    # 冷却窗口内已重启过 → 跳过, 避免病因未消时每 3 分钟(=3 tick)无限重启。
+    if _recent_restart_count(db, AUTO_RESTART_COOLDOWN_SEC) >= 1:
+        return None
+    # 熔断: 1 小时内已自救 >=3 次仍未好转 → 不再自动重启, 留给人工 (自动重启解决不了的问题)。
+    if _recent_restart_count(db, 3600) >= AUTO_RESTART_FAIL_THRESHOLD:
+        _logger.error("看门狗熔断: 1 小时内已自救重启 >=%d 次仍未恢复, 停止自动重启, 请人工介入",
+                      AUTO_RESTART_FAIL_THRESHOLD)
         return None
     should, reason = _should_auto_restart(db)
     if not should:

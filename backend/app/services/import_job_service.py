@@ -81,6 +81,30 @@ def shutdown_executor() -> None:
             _EXECUTOR = None
 
 
+def recover_orphaned_jobs() -> int:
+    """启动时调用: 把上次进程被杀(看门狗 SIGTERM / 重建)时残留的 pending/running 作业
+    标记为 failed —— 否则它们的 worker 已随进程消失, 状态却永远卡在 running, 前端一直转圈。
+    返回处理的作业数。"""
+    from app.database import SessionLocal
+    n = 0
+    try:
+        with SessionLocal() as s:
+            stuck = s.execute(
+                select(ImportJob).where(ImportJob.status.in_(("pending", "running")))
+            ).scalars().all()
+            for j in stuck:
+                j.status = "failed"
+                j.error = "进程重启, 作业被中断 (未完成); 请重新导入。"
+                j.completed_at = datetime.now(timezone.utc)
+                _cleanup_file(j.file_path)
+                n += 1
+            if n:
+                s.commit()
+    except Exception:  # pragma: no cover
+        _logger.exception("恢复孤儿导入作业失败")
+    return n
+
+
 # ----------------------------- 文件落盘 ---------------------------- #
 
 

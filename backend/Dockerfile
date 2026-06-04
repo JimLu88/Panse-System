@@ -26,4 +26,5 @@ ENV GIT_COMMIT=$GIT_COMMIT \
     BUILD_TIME=$BUILD_TIME
 
 EXPOSE 8000
-CMD ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
+# 迁移失败时 sleep 30 再退出, 避免 restart:unless-stopped 紧抠重启循环 (吃 CPU + 刷日志)
+CMD ["sh", "-c", "alembic upgrade head || { echo '[startup] alembic 迁移失败, 30s 后退出以避免紧抠重启循环'; sleep 30; exit 1; }; exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload"]
