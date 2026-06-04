@@ -649,22 +649,29 @@ def _derive_alipay_account(sheet_name: str) -> Optional[str]:
 def _strip_header_offset(file_bytes: bytes, sheet_name: str, header_row: int) -> bytes:
     """如果 header_row > 1, 重写 Excel 删掉前置行, 让 header 变成第 1 行.
 
-    简单实现: openpyxl 加载 → 删行 → 保存到 BytesIO.
-    对于大文件可能慢, 但智能分析模式假设单次导入数据量可控.
+    关键: 必须用 data_only=True 读「公式的缓存计算值」, 再重建为纯值工作簿。
+    否则 openpyxl 以公式模式加载再保存会丢掉公式列的缓存值 (openpyxl 不算公式),
+    导致 店铺实收金额/税费/总成本/利润 等大量公式列在导入时变空 —— 这是历史 bug。
+    重建为单 sheet 纯值表即可 (commit 按 sheet_name 逐表读, 不需要其他 sheet)。
     """
     if header_row <= 1:
         return file_bytes
+    from openpyxl import Workbook
     from openpyxl import load_workbook as _lw
-    wb = _lw(BytesIO(file_bytes))   # not read_only — 要改
+    wb = _lw(BytesIO(file_bytes), data_only=True, read_only=True)
     if sheet_name not in wb.sheetnames:
         wb.close()
         return file_bytes
     ws = wb[sheet_name]
-    for _ in range(header_row - 1):
-        ws.delete_rows(1)
-    buf = BytesIO()
-    wb.save(buf)
+    rows = [list(r) for r in ws.iter_rows(values_only=True)]
     wb.close()
+    out = Workbook()
+    dst = out.active
+    dst.title = sheet_name[:31]   # Excel sheet 名上限 31 字符
+    for r in rows[header_row - 1:]:   # 从真实表头行起, 公式列已是缓存值
+        dst.append(r)
+    buf = BytesIO()
+    out.save(buf)
     return buf.getvalue()
 
 
