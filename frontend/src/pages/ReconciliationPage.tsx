@@ -8,6 +8,7 @@ import {
   Empty,
   List,
   Row,
+  Segmented,
   Space,
   Spin,
   Statistic,
@@ -17,6 +18,7 @@ import {
   Typography,
   message,
 } from 'antd';
+import FullColumnView from '../components/FullColumnView';
 import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -59,6 +61,7 @@ export default function ReconciliationPage() {
   const qc = useQueryClient();
   const [walkthroughResult, setWalkthroughResult] = useState<ReconcileWalkthroughResult | null>(null);
   const [period, setPeriod] = useState<[Dayjs, Dayjs] | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const periodParams = period
     ? { period_start: period[0].format('YYYY-MM-DD'), period_end: period[1].format('YYYY-MM-DD') }
@@ -138,6 +141,17 @@ export default function ReconciliationPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列 (工厂对账)', value: 'full' },
+        ]}
+      />
+      {viewMode === 'full' && <FullColumnView entity="factory_reconciliation" />}
+      {viewMode === 'curated' && (
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           财务对账面板 — plan §8 六条规则
@@ -268,6 +282,8 @@ export default function ReconciliationPage() {
           children: <DiffTable rule={rule} result={res} />,
         }))}
       />
+      </Space>
+      )}
     </Space>
   );
 }

@@ -47,7 +47,12 @@ from app.models.marketing import (
     PromotionFlow,
 )
 from app.models.competitor import CompetitorPrice
-from app.models.supplier import DeliveryNote
+from app.models.supplier import DeliveryNote, Supplier
+from app.models.marketing import BrandMarketing
+from app.models.customer import Customer
+from app.models.taobao_listing import TaobaoListing
+from app.models.finance import WanshifuBill, LogisticsBill
+from app.models.order import PartPurchase
 
 router = APIRouter(prefix="/api/table-explorer", tags=["table-explorer"])
 
@@ -118,6 +123,27 @@ ENTITY_MODELS: dict[str, dict[str, Any]] = {
     "alipay_flow": {"model": AlipayFlow, "label": "支付宝流水",
                     "core": ["account", "transaction_time", "transaction_no", "counterparty", "amount", "balance"],
                     "search": ["transaction_no", "counterparty", "related_order_no"]},
+    "brand_marketing": {"model": BrandMarketing, "label": "品牌营销",
+                        "core": ["project_name", "project_type", "partner", "budget", "actual_spend", "status"],
+                        "search": ["project_name", "partner"]},
+    "customer": {"model": Customer, "label": "客户管理",
+                 "core": ["name", "phone", "tier", "total_orders", "total_revenue"],
+                 "search": ["name", "phone"]},
+    "supplier": {"model": Supplier, "label": "供应商",
+                 "core": ["name", "contact", "phone", "supplier_type"],
+                 "search": ["name", "contact"]},
+    "taobao_listing": {"model": TaobaoListing, "label": "淘宝橱窗",
+                       "core": ["taobao_item_id", "title", "sku_spec", "sku_price", "sku_code"],
+                       "search": ["taobao_item_id", "title", "sku_spec"]},
+    "wanshifu_bill": {"model": WanshifuBill, "label": "万事付账单",
+                      "core": ["bill_date", "order_no", "service_type", "amount", "status"],
+                      "search": ["order_no", "service_type"]},
+    "logistics_bill": {"model": LogisticsBill, "label": "物流账单",
+                       "core": ["bill_date", "carrier", "tracking_no", "order_no", "freight_amount"],
+                       "search": ["tracking_no", "order_no", "carrier"]},
+    "part_purchase": {"model": PartPurchase, "label": "配件采购",
+                      "core": ["purchase_date", "supplier", "material_code", "material_name", "qty", "unit_price", "total_amount"],
+                      "search": ["supplier", "material_code", "material_name"]},
 }
 
 # 永远隐藏的辅助列 (用户明确不需要「导入校验」「问题标注」, 以及内部审计列默认折叠到「全列」)

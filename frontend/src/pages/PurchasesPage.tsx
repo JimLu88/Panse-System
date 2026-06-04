@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   Image,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -11,6 +12,7 @@ import {
   Upload,
   message,
 } from 'antd';
+import FullColumnView from '../components/FullColumnView';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UploadProps } from 'antd';
@@ -27,6 +29,7 @@ const { Title, Text, Paragraph } = Typography;
 export default function PurchasesPage() {
   const qc = useQueryClient();
   const [lastResult, setLastResult] = useState<PurchaseOcrResult | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['purchases'],
@@ -110,6 +113,17 @@ export default function PurchasesPage() {
   return (
     <div style={{ padding: 24 }}>
       <Title level={3}>配件采购 (拍照识别入库)</Title>
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+        style={{ marginBottom: 16 }}
+      />
+      {viewMode === 'full' && <FullColumnView entity="part_purchase" />}
+      {viewMode === 'curated' && (<>
       <Paragraph type="secondary">
         上传配件采购发票/单据照片, 系统自动 OCR 识别供应商、明细、金额、快递单号并入库。
         原图永久留存, 可在列表中点击查看。
@@ -167,6 +181,7 @@ export default function PurchasesPage() {
           pagination={{ pageSize: 20 }}
         />
       </Card>
+      </>)}
     </div>
   );
 }

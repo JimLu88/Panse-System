@@ -22,6 +22,7 @@ import {
   Modal,
   Popconfirm,
   Row,
+  Segmented,
   Select,
   Space,
   Statistic,
@@ -32,6 +33,7 @@ import {
   Upload,
   message,
 } from 'antd';
+import FullColumnView from '../components/FullColumnView';
 import type { UploadFile } from 'antd/es/upload/interface';
 import {
   CameraOutlined,
@@ -112,6 +114,7 @@ export default function SuppliersPage() {
   const [folderOpen, setFolderOpen] = useState(false);
   const [reconcileOpen, setReconcileOpen] = useState(false);
   const [editingSupplier, setEditingSupplier] = useState<Supplier | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data: suppliers } = useQuery({
     queryKey: ['suppliers'],
@@ -123,6 +126,17 @@ export default function SuppliersPage() {
   const activeSupplier = suppliers?.find((s) => s.id === activeId) ?? null;
 
   return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列 (送货单)', value: 'full' },
+        ]}
+      />
+      {viewMode === 'full' && <FullColumnView entity="delivery_note" />}
+      {viewMode === 'curated' && (
     <Row gutter={16}>
       <Col flex="280px">
         <SupplierListPanel
@@ -177,6 +191,8 @@ export default function SuppliersPage() {
         />
       )}
     </Row>
+      )}
+    </Space>
   );
 }
 

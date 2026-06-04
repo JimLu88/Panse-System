@@ -3,8 +3,9 @@
  */
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Input, Modal, Select, Space, Table, Tag, Typography, message,
+  Alert, Button, Card, Input, Modal, Select, Segmented, Space, Table, Tag, Typography, message,
 } from 'antd';
+import FullColumnView from '../components/FullColumnView';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -28,6 +29,7 @@ export default function CustomersPage() {
   const [q, setQ] = useState('');
   const [tier, setTier] = useState<string | undefined>(undefined);
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data: customers = [], isLoading } = useQuery({
     queryKey: ['customers', q, tier],
@@ -49,6 +51,16 @@ export default function CustomersPage() {
         message="客户聚合 + LTV 分级"
         description="按 phone+name 自动合并历史订单. 平铂金客户优先服务, 复购预警."
       />
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+      {viewMode === 'full' && <FullColumnView entity="customer" />}
+      {viewMode === 'curated' && (
       <Card
         size="small"
         title="客户列表"
@@ -96,6 +108,7 @@ export default function CustomersPage() {
           ]}
         />
       </Card>
+      )}
       <CustomerOrdersModal customerId={detailId} onClose={() => setDetailId(null)} />
     </Space>
   );

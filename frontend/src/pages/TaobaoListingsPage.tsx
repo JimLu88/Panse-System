@@ -21,6 +21,7 @@ import {
   listTaobaoListings,
   updateTaobaoListing,
 } from '../api/client';
+import FullColumnView from '../components/FullColumnView';
 
 const PAGE_SIZE = 100;
 
@@ -29,6 +30,7 @@ export default function TaobaoListingsPage() {
   const [q, setQ] = useState('');
   const [matchFilter, setMatchFilter] = useState<'all' | 'matched' | 'unmatched'>('all');
   const [page, setPage] = useState(1);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const matchedParam = matchFilter === 'all' ? undefined : matchFilter === 'matched';
 
@@ -109,6 +111,17 @@ export default function TaobaoListingsPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>淘宝商品对应表</Typography.Title>
       </Space>
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+      {viewMode === 'full' && <FullColumnView entity="taobao_listing" />}
+      {viewMode === 'curated' && (<>
+
       <Alert
         type="info"
         showIcon
@@ -179,6 +192,7 @@ export default function TaobaoListingsPage() {
         }}
         scroll={{ x: 1200 }}
       />
+      </>)}
     </Space>
   );
 }

@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Alert, Button, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, InboxOutlined, SyncOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import FullColumnView from '../components/FullColumnView';
 
 interface LogisticsBill {
   id: number;
@@ -24,6 +25,7 @@ interface ImportResult {
 export default function LogisticsBillsPage() {
   const qc = useQueryClient();
   const [importing, setImporting] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data = [], isLoading } = useQuery<LogisticsBill[]>({
     queryKey: ['logistics-bills'],
@@ -73,6 +75,16 @@ export default function LogisticsBillsPage() {
       <Alert type="info" showIcon
         message="从物流公司后台按月导出月结账单 CSV，导入后用于「物流费对账」规则的应付口径。已同步飞书。" />
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+      {viewMode === 'full' && <FullColumnView entity="logistics_bill" />}
+      {viewMode === 'curated' && (<>
       <Space wrap>
         <Upload accept=".csv" showUploadList={false} beforeUpload={handleImport}>
           <Button icon={<InboxOutlined />} loading={importing}>导入 CSV</Button>
@@ -100,6 +112,7 @@ export default function LogisticsBillsPage() {
         pagination={{ pageSize: 50, showSizeChanger: true }}
         scroll={{ x: 800 }}
       />
+      </>)}
     </Space>
   );
 }
