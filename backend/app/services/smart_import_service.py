@@ -38,20 +38,35 @@ _logger = logging.getLogger("panse.smart_import")
 # 畔色总表中已知 sheet 名 → entity 类型的确定性映射。
 # 前缀数字编号 + 关键字匹配，不依赖 AI，保证总表一次性导入时每个 sheet 都能被正确识别。
 _KNOWN_SHEET_PATTERNS: list[tuple[str, str]] = [
-    # (关键字子串, entity_type) — 顺序优先
+    # (关键字子串, entity_type) — 顺序优先: 具体在前, 通用在后, 避免「订单」误吞「订单细节」。
     ("账户余额", "account_balance"),
     ("account_balance", "account_balance"),
     ("支付宝流水", "alipay_flow"),
     ("alipay", "alipay_flow"),
-    ("订单总表修改", "order"),
-    ("订单总表", "order"),
-    ("订单", "order"),
-    ("产品总表", "product"),
-    ("product", "product"),
-    ("BOM", "bom"),
-    ("bom", "bom"),
+    ("配件采购", "part_purchase"),
     ("配件库存", "part_inventory"),
+    ("配件价格", "material"),
     ("成品库存", "product_inventory"),
+    ("订单细节", "order_details"),
+    ("订单总表", "order"),
+    ("工厂下单", "factory_order"),
+    ("工厂对账", "factory_reconciliation"),
+    ("补单", "refill_record"),
+    ("定价", "pricing_sku"),
+    ("BOM", "bom_line"),
+    ("bom", "bom_line"),
+    ("产品总表", "product"),
+    ("样品", "sample"),
+    ("木材损耗", "wood_loss"),
+    ("品牌营销", "brand_marketing"),
+    ("推广", "promotion_flow"),
+    ("日常经营", "daily_operations"),
+    ("人员外包", "outsourcing_expense"),
+    ("售后", "aftersales"),
+    # 通用兜底 (放最后)
+    ("订单", "order"),
+    ("产品", "product"),
+    ("product", "product"),
 ]
 
 

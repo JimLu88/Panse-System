@@ -104,6 +104,7 @@ class RefillRecord(Base, TimestampMixin):
     # 业务需求 §5: 补单只算佣金 + 快递; 平台/税务回到 Order.profit 计算
     commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    remark: Mapped[Optional[str]] = mapped_column(String(255))   # 备注 / 补单状态
     # 飞书同步配对键 (自增 id 两端对不上, 用业务字段拼一个稳定键), 由事件钩子自动生成
     sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 

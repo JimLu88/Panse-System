@@ -58,10 +58,28 @@ class Order(Base, TimestampMixin):
     actual_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     upstairs_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     install_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
-    compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     platform_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+
+    # 订单 P&L 扩展 (Excel 表 5-订单总表 的财务列, migration 0046)
+    buyer_payable_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 买家应付金额
+    shop_received_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 店铺实收金额
+    tax: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))                    # 税费
+    other_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))              # 其它费用
+    total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))             # 总成本
+    # 售后相关费用 (订单总表内冗余展示; 权威数据见 after_sales 表)
+    good_review_refund: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))     # 好评/差价返
+    second_visit_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))       # 二次上门维修费
+    return_pack_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))    # 返厂打包运费
+    factory_compensation: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 工厂补偿
+    logistics_compensation: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2)) # 物流补偿
+    compensation_total: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))     # 补偿总金额
+    # 退款
+    refund_status: Mapped[Optional[str]] = mapped_column(String(32))                  # 退款状态
+    refund_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))          # 退款金额
+    refund_date: Mapped[Optional[date]] = mapped_column(Date)                         # 退款日期
 
     # 支付宝流水号 (由 alipay_backfill_service 从流水反向匹配回填, 订单表 5 表 AM 列)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
@@ -157,6 +175,7 @@ class PartPurchase(Base, TimestampMixin):
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
     alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    remark: Mapped[Optional[str]] = mapped_column(Text)   # 备注 (migration 0046)
     # 配件采购发票原图 (OCR 识别来源, 历史发票留存可点击查看)
     source_file_id: Mapped[Optional[int]] = mapped_column(ForeignKey("purchase_files.id"))
     ocr_warnings: Mapped[Optional[list]] = mapped_column(JSON)

@@ -90,6 +90,21 @@ def _row_nonempty_count(row: Any) -> int:
     return sum(1 for c in row if c is not None and str(c).strip() != "")
 
 
+def _row_is_comment(row: Any) -> bool:
+    """判断一行是否为「注释/批注行」(多数非空单元格以 * 开头)。
+
+    业务表常在真表头上方放一行星号批注 (如「* 根据订单总表自动匹配」), 该行非空格数
+    可能正好达到表头阈值, 误被当成表头。识别后跳过, 避免把批注行当列名。
+    """
+    if not row:
+        return False
+    cells = [str(c).strip() for c in row if c is not None and str(c).strip() != ""]
+    if not cells:
+        return False
+    star = sum(1 for c in cells if c.startswith("*"))
+    return star >= max(1, len(cells) // 2)
+
+
 def _detect_header_index(buffer: list) -> int:
     """在前若干行里定位真正的表头行。
 
@@ -107,7 +122,7 @@ def _detect_header_index(buffer: list) -> int:
     best = max(counts)
     threshold = max(2, (best + 1) // 2)
     for i, c in enumerate(counts):
-        if c >= threshold:
+        if c >= threshold and not _row_is_comment(buffer[i]):
             return i
     return 0
 
@@ -371,7 +386,7 @@ def commit_sheet(
                           "refill_record", "factory_reconciliation",
                           "outsourcing_expense", "aftersales", "competitor_price",
                           "daily_operations", "order_details", "wood_loss", "sample",
-                          "promotion_flow"):
+                          "promotion_flow", "part_purchase", "brand_marketing"):
         _commit_generic(
             db, rows=rows, mapping=mapping, entity_type=entity_type, report=report,
             on_conflict=on_conflict,
@@ -1089,6 +1104,8 @@ _UNIQUENESS_FIELD = {
     "wood_loss": None,                  # 无唯一键, 直接 add
     "sample": "sample_no",
     "promotion_flow": None,             # 无唯一键, 直接 add
+    "part_purchase": "purchase_no",
+    "brand_marketing": None,            # (project_name, start_date) 去重
 }
 
 
@@ -1301,6 +1318,11 @@ def _h_part_inv(db, data, key_field, ctx=None):
     )).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     payload["warehouse"] = warehouse
+    payload["material_code"] = material_code
+    # 只保留 PartInventory 真实列: material_name 等仅用于反查/生成编码, 不是本表字段;
+    # 若混入 payload 会让 PartInventory(**payload) 抛 TypeError, 导致整表逐行失败被跳过。
+    _PI_FIELDS = {c.key for c in PartInventory.__table__.columns}
+    payload = {k: v for k, v in payload.items() if k in _PI_FIELDS}
     if existing:
         return "part_inv", _apply_update(
             existing, payload, ctx, "part_inventory", f"{warehouse}|{material_code}", db)
@@ -1757,6 +1779,69 @@ def _h_sample(db, data, key_field, ctx=None):
     return "sample", "inserted"
 
 
+def _next_part_purchase_no(db: Session) -> str:
+    """生成下一个配件采购单号, 格式 CG{YYYY}{NNNNN}, 如 CG202600001."""
+    from app.models.order import PartPurchase
+    year = datetime.now().year
+    prefix = f"CG{year}"
+    result = db.execute(
+        select(PartPurchase.purchase_no).where(
+            PartPurchase.purchase_no.like(f"{prefix}%")
+        ).order_by(PartPurchase.purchase_no.desc()).limit(1)
+    ).scalar_one_or_none()
+    seq = 1
+    if result:
+        try:
+            seq = int(result[len(prefix):]) + 1
+        except (ValueError, IndexError):
+            seq = 1
+    return f"{prefix}{seq:05d}"
+
+
+def _h_part_purchase(db, data, key_field, ctx=None):
+    """7-配件采购记录 → PartPurchase. 采购单号留空自动生成 CG 序列, 按单号 upsert."""
+    from app.models.order import PartPurchase
+    data = dict(data)
+    purchase_no = data.get("purchase_no")
+    if not purchase_no:
+        purchase_no = _next_part_purchase_no(db)
+        data["purchase_no"] = purchase_no
+    if data.get("alipay_flow_no"):
+        data["alipay_flow_no"] = _strip_all_ws(data["alipay_flow_no"])
+    _PP_FIELDS = {c.key for c in PartPurchase.__table__.columns}
+    payload = {k: v for k, v in data.items() if v is not None and k in _PP_FIELDS}
+    payload["purchase_no"] = purchase_no
+    existing = db.execute(
+        select(PartPurchase).where(PartPurchase.purchase_no == purchase_no)
+    ).scalar_one_or_none()
+    if existing:
+        return "part_purchase", _apply_update(
+            existing, payload, ctx, "part_purchases", purchase_no, db)
+    db.add(PartPurchase(**payload))
+    return "part_purchase", "inserted"
+
+
+def _h_brand_marketing(db, data, key_field, ctx=None):
+    """14-品牌营销 → BrandMarketing. 按 (project_name, start_date) 去重."""
+    from app.models.marketing import BrandMarketing
+    project_name = data.get("project_name")
+    if not project_name:
+        raise ImporterError("缺 project_name")
+    _BM_FIELDS = {c.key for c in BrandMarketing.__table__.columns}
+    payload = {k: v for k, v in data.items() if v is not None and k in _BM_FIELDS}
+    existing = db.execute(
+        select(BrandMarketing).where(
+            BrandMarketing.project_name == project_name,
+            BrandMarketing.start_date == data.get("start_date"),
+        )
+    ).scalar_one_or_none()
+    if existing:
+        return "brand_marketing", _apply_update(
+            existing, payload, ctx, "brand_marketing", project_name, db)
+    db.add(BrandMarketing(**payload))
+    return "brand_marketing", "inserted"
+
+
 _GENERIC_HANDLERS = {
     "product": _h_product, "material": _h_material, "bom_line": _h_bom,
     "product_inventory": _h_product_inv, "part_inventory": _h_part_inv,
@@ -1772,4 +1857,6 @@ _GENERIC_HANDLERS = {
     "wood_loss": _h_wood_loss,
     "sample": _h_sample,
     "promotion_flow": _h_promotion_flow,
+    "part_purchase": _h_part_purchase,
+    "brand_marketing": _h_brand_marketing,
 }
