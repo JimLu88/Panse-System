@@ -150,18 +150,31 @@ ENTITY_MODELS: dict[str, dict[str, Any]] = {
 _ALWAYS_HIDE = {"import_validation", "problem_note"}
 
 
+# 公共字段中文名兜底: 让无 excel_schemas 定义的"仅浏览"表(客户/供应商/淘宝橱窗/
+# 万师傅/物流账单)在「全部列」里也显示中文表头, 而不是英文字段名。
+_COMMON_LABELS: dict[str, str] = {
+    "id": "ID", "created_at": "创建时间", "updated_at": "更新时间",
+    "name": "名称", "code": "编码", "remark": "备注", "note": "备注",
+    "status": "状态", "amount": "金额", "phone": "电话", "address": "地址",
+    "date": "日期", "order_no": "订单号", "platform_order_no": "平台订单号",
+    "supplier_name": "供应商", "factory_name": "工厂", "qty": "数量",
+    "unit_price": "单价", "total_amount": "总金额", "bill_date": "账单日期",
+    "carrier": "承运商", "tracking_no": "物流单号", "is_active": "是否启用",
+    "sync_key": "同步键", "import_job_id": "导入批次", "service_type": "服务类型",
+    "freight_amount": "运费", "weight_kg": "重量(kg)",
+}
+
+
 def _build_label_map(entity: str) -> dict[str, str]:
-    """字段英文名 → 中文表头。优先复用 excel_schemas 定义。"""
+    """字段英文名 → 中文表头。优先复用 excel_schemas 定义, 再用公共兜底。"""
     labels: dict[str, str] = {}
     schema = ENTITY_SCHEMAS.get(entity)
     if schema:
         for fn, fdef in schema["fields"].items():
             aliases = fdef.get("aliases") or []
             labels[fn] = aliases[0] if aliases else fdef.get("desc", fn) or fn
-    # 公共字段中文名
-    labels.setdefault("id", "ID")
-    labels.setdefault("created_at", "创建时间")
-    labels.setdefault("updated_at", "更新时间")
+    for k, v in _COMMON_LABELS.items():
+        labels.setdefault(k, v)
     return labels
 
 

@@ -51,4 +51,19 @@ docker compose start api
 - [ ] 临时库里 `orders` / `pricing_sku` / `alipay_flows` 行数与生产接近
 - [ ] 演练完已 DROP 临时库
 
-> 注意:`backups/` 目录在 NAS 本机。**强烈建议再把 `backups/` 同步到另一台设备或云盘**——NAS 整机故障时本地备份会一起丢。
+## 异地备份(强烈建议)
+
+`backups/` 在 NAS 本机,**NAS 整机故障 / 被勒索 / 误删卷时本地备份会一起丢**。务必再同步一份到别处,三选一:
+
+```bash
+# A. Synology Hyper Backup (推荐): 套件中心装 Hyper Backup,
+#    源选 Panse-System/backups 文件夹, 目标选 Synology C2 云 / 另一台 NAS / 外接硬盘, 设每日。
+
+# B. rclone 同步到云盘 (阿里云盘/OneDrive/S3 等), 配合 cron 每日:
+rclone sync /volume1/.../Panse-System/backups remote:panse-backup --max-age 35d
+
+# C. rsync 到另一台机器:
+rsync -az --delete /volume1/.../Panse-System/backups/ user@otherhost:/backup/panse/
+```
+
+> 验证异地副本同样要能恢复(走上面流程 A),"有备份"和"能恢复"是两回事。
