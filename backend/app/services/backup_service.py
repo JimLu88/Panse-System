@@ -212,10 +212,11 @@ def _upload_s3(filepath: Path) -> bool:
 # ─────────────────────────── 主入口 ─────────────────────────── #
 
 
-def run(db: Session) -> dict:
-    """调度器调用的主入口: 导出 → 轮换 → 可选 S3 上传."""
-    filepath = export_all(db)
-    deleted = rotate()
+def run(db: Session, output_dir: Optional[str] = None) -> dict:
+    """调度器 / 手动触发的主入口: 导出 → 轮换 → 可选 S3 上传."""
+    out = output_dir or BACKUP_DIR
+    filepath = export_all(db, output_dir=out)
+    deleted = rotate(backup_dir=out)
     uploaded = _upload_s3(filepath)
     size_mb = round(filepath.stat().st_size / 1024 / 1024, 2)
     return {
@@ -226,10 +227,14 @@ def run(db: Session) -> dict:
     }
 
 
-def list_backups(backup_dir: str = BACKUP_DIR) -> list[dict]:
+def list_backups(backup_dir: Optional[str] = None) -> list[dict]:
     """返回本地备份文件列表 (供 API 查询)."""
+    backup_dir = backup_dir or BACKUP_DIR
+    d = Path(backup_dir)
+    if not d.exists():
+        return []
     files = sorted(
-        Path(backup_dir).glob("panse_backup_*.xlsx"),
+        d.glob("panse_backup_*.xlsx"),
         key=lambda p: p.stat().st_mtime,
         reverse=True,
     )
@@ -241,3 +246,114 @@ def list_backups(backup_dir: str = BACKUP_DIR) -> list[dict]:
         }
         for f in files
     ]
+
+
+# ─────────────────────────── 可配置的自动备份 ─────────────────────────── #
+#
+# 配置存 system_settings, 后台可改 (默认每 7 天):
+#   backup_auto_enabled   "1"/"0"   是否开启自动备份 (默认开)
+#   backup_interval_days  int       间隔天数 (默认 7)
+#   backup_dir            str       备份保存目录 (默认 PANSE_BACKUP_DIR / /data/backups)
+#   backup_start_date     YYYY-MM-DD 起始日期 (可选, 自动备份不早于此日)
+#   backup_last_run_at    ISO       上次自动备份时间 (系统维护, 勿手填)
+
+_CFG_DEFAULTS = {
+    "backup_auto_enabled": "1",
+    "backup_interval_days": "7",
+    "backup_dir": BACKUP_DIR,
+    "backup_start_date": "",
+    "backup_last_run_at": "",
+}
+
+
+def get_config(db: Session) -> dict:
+    from app.services import settings_service
+    g = lambda k: settings_service.get(db, k, env_fallback=False) or _CFG_DEFAULTS[k]
+    try:
+        interval = max(1, int(g("backup_interval_days")))
+    except (TypeError, ValueError):
+        interval = 7
+    enabled = g("backup_auto_enabled") not in ("0", "false", "False", "")
+    bdir = settings_service.get(db, "backup_dir", env_fallback=False) or BACKUP_DIR
+    last = settings_service.get(db, "backup_last_run_at", env_fallback=False) or None
+    start = settings_service.get(db, "backup_start_date", env_fallback=False) or None
+    return {
+        "auto_enabled": enabled,
+        "interval_days": interval,
+        "dir": bdir,
+        "start_date": start,
+        "last_run_at": last,
+        "next_run_at": _next_run_at(last, start, interval),
+        "max_backups": MAX_BACKUPS,
+    }
+
+
+def set_config(db: Session, *, auto_enabled: Optional[bool] = None,
+               interval_days: Optional[int] = None, dir: Optional[str] = None,
+               start_date: Optional[str] = None) -> dict:
+    from app.services import settings_service
+    if auto_enabled is not None:
+        settings_service.set_value(db, "backup_auto_enabled", "1" if auto_enabled else "0")
+    if interval_days is not None:
+        settings_service.set_value(db, "backup_interval_days", str(max(1, int(interval_days))))
+    if dir is not None:
+        settings_service.set_value(db, "backup_dir", dir.strip())
+    if start_date is not None:
+        settings_service.set_value(db, "backup_start_date", start_date.strip())
+    db.commit()
+    return get_config(db)
+
+
+def _next_run_at(last_iso: Optional[str], start: Optional[str], interval: int) -> Optional[str]:
+    from datetime import timedelta
+    base = None
+    if last_iso:
+        try:
+            base = datetime.fromisoformat(last_iso)
+        except ValueError:
+            base = None
+    if base is None and start:
+        try:
+            base = datetime.fromisoformat(start)
+        except ValueError:
+            base = None
+    if base is None:
+        return None
+    return (base + timedelta(days=interval)).isoformat()
+
+
+def run_if_due(db: Session) -> dict:
+    """调度器每日调用: 仅当距上次自动备份已满 interval_days 才执行。"""
+    from datetime import date
+
+    cfg = get_config(db)
+    if not cfg["auto_enabled"]:
+        return {"skipped": "自动备份已关闭"}
+
+    today = datetime.now(timezone.utc).date()
+    # 起始日期之前不跑
+    if cfg["start_date"]:
+        try:
+            sd = datetime.fromisoformat(cfg["start_date"]).date()
+            if today < sd:
+                return {"skipped": f"未到起始日期 {cfg['start_date']}"}
+        except ValueError:
+            pass
+
+    last_iso = cfg["last_run_at"]
+    if last_iso:
+        try:
+            last_date = datetime.fromisoformat(last_iso).date()
+            if (today - last_date).days < cfg["interval_days"]:
+                return {"skipped": f"距上次备份不足 {cfg['interval_days']} 天",
+                        "last_run_at": last_iso}
+        except ValueError:
+            pass
+
+    result = run(db, output_dir=cfg["dir"])
+    from app.services import settings_service
+    settings_service.set_value(db, "backup_last_run_at",
+                               datetime.now(timezone.utc).isoformat())
+    db.commit()
+    result["ran"] = True
+    return result

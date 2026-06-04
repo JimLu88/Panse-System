@@ -4,10 +4,13 @@ import {
   Badge,
   Button,
   Card,
+  Checkbox,
   Col,
   Descriptions,
+  Divider,
   Form,
   Input,
+  InputNumber,
   List,
   Modal,
   Popconfirm,
@@ -16,6 +19,7 @@ import {
   Select,
   Space,
   Statistic,
+  Switch,
   Table,
   Tabs,
   Tag,
@@ -25,12 +29,15 @@ import {
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
+  CloudDownloadOutlined,
   DashboardOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   ExperimentOutlined,
   KeyOutlined,
   PoweroffOutlined,
   ReloadOutlined,
+  SaveOutlined,
   UserAddOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
@@ -63,6 +70,13 @@ import {
   listAuthUsers,
   fetchResetDataTables,
   resetBusinessData,
+  BackupConfig,
+  BackupFile,
+  fetchBackupConfig,
+  updateBackupConfig,
+  fetchBackupList,
+  exportAndDownload,
+  downloadBackup,
   restartApi,
   testIntegration,
   testNotifyConfig,
@@ -1449,11 +1463,180 @@ function NotifyConfigCard() {
 // ----------------------------- 数据管理 / 清空导入数据 ---------------- //
 
 function DataResetTab() {
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="large">
+      <BackupSection />
+      <Divider style={{ margin: 0 }} />
+      <ResetSection />
+    </Space>
+  );
+}
+
+function BackupSection() {
+  const qc = useQueryClient();
+  const { data: cfg } = useQuery({ queryKey: ['backup-config'], queryFn: fetchBackupConfig });
+  const { data: files } = useQuery({ queryKey: ['backup-list'], queryFn: fetchBackupList });
+
+  // 本地编辑态 (随配置加载初始化)
+  const [enabled, setEnabled] = useState<boolean>(true);
+  const [interval, setIntervalDays] = useState<number>(7);
+  const [dir, setDir] = useState<string>('');
+  const [startDate, setStartDate] = useState<string>('');
+  React.useEffect(() => {
+    if (cfg) {
+      setEnabled(cfg.auto_enabled);
+      setIntervalDays(cfg.interval_days);
+      setDir(cfg.dir);
+      setStartDate(cfg.start_date ?? '');
+    }
+  }, [cfg]);
+
+  const exportMut = useMutation({
+    mutationFn: () => exportAndDownload(),
+    onSuccess: (r) => {
+      message.success(`已导出并下载 ${r.file} (${r.size_mb} MB)`);
+      qc.invalidateQueries({ queryKey: ['backup-list'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '导出失败'),
+  });
+
+  const saveMut = useMutation({
+    mutationFn: () =>
+      updateBackupConfig({
+        auto_enabled: enabled,
+        interval_days: interval,
+        dir: dir.trim(),
+        start_date: startDate.trim(),
+      }),
+    onSuccess: () => {
+      message.success('自动备份配置已保存');
+      qc.invalidateQueries({ queryKey: ['backup-config'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message="数据备份 / 导出"
+        description="一键把系统所有数据导出成一个 Excel（每张表一个工作表），并可设置每隔若干天自动备份一份到指定目录。导入前、清空前强烈建议先导出一份。"
+      />
+
+      <Card size="small" title="📤 一键全量导出">
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Button
+            type="primary"
+            icon={<CloudDownloadOutlined />}
+            loading={exportMut.isPending}
+            onClick={() => exportMut.mutate()}
+          >
+            立即导出并下载 Excel
+          </Button>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            导出的文件同时会存到备份目录（{cfg?.dir ?? '...'}），最多保留 {cfg?.max_backups ?? 60} 份。
+          </Typography.Text>
+        </Space>
+      </Card>
+
+      <Card size="small" title="⏰ 定时自动备份">
+        <Form layout="vertical" style={{ maxWidth: 520 }}>
+          <Form.Item label="开启自动备份" style={{ marginBottom: 12 }}>
+            <Switch checked={enabled} onChange={setEnabled} />
+          </Form.Item>
+          <Form.Item label="每隔多少天备份一次" style={{ marginBottom: 12 }}>
+            <InputNumber
+              min={1}
+              max={365}
+              value={interval}
+              onChange={(v) => setIntervalDays(Number(v) || 7)}
+              addonAfter="天"
+              disabled={!enabled}
+            />
+          </Form.Item>
+          <Form.Item label="起始日期（可填，留空则从今天起算）" style={{ marginBottom: 12 }}>
+            <Input
+              placeholder="YYYY-MM-DD，如 2026-06-10"
+              value={startDate}
+              onChange={(e) => setStartDate(e.target.value)}
+              disabled={!enabled}
+              style={{ maxWidth: 240 }}
+            />
+          </Form.Item>
+          <Form.Item label="备份保存目录" style={{ marginBottom: 12 }}>
+            <Input
+              placeholder="/data/backups"
+              value={dir}
+              onChange={(e) => setDir(e.target.value)}
+            />
+          </Form.Item>
+          <Space>
+            <Button
+              type="primary"
+              icon={<SaveOutlined />}
+              loading={saveMut.isPending}
+              onClick={() => saveMut.mutate()}
+            >
+              保存配置
+            </Button>
+            {cfg?.last_run_at && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                上次自动备份：{new Date(cfg.last_run_at).toLocaleString()}
+              </Typography.Text>
+            )}
+            {cfg?.next_run_at && (
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                下次预计：{new Date(cfg.next_run_at).toLocaleDateString()}
+              </Typography.Text>
+            )}
+          </Space>
+        </Form>
+      </Card>
+
+      <Card size="small" title={<span>🗂 已有备份（{files?.length ?? 0} 份）</span>}>
+        <List
+          size="small"
+          dataSource={files ?? []}
+          locale={{ emptyText: '暂无备份文件' }}
+          renderItem={(f: BackupFile) => (
+            <List.Item
+              actions={[
+                <Button
+                  key="dl"
+                  type="link"
+                  size="small"
+                  icon={<DownloadOutlined />}
+                  onClick={() => downloadBackup(f.filename)}
+                >
+                  下载
+                </Button>,
+              ]}
+            >
+              <List.Item.Meta
+                title={<span style={{ fontSize: 13 }}>{f.filename}</span>}
+                description={
+                  <span style={{ fontSize: 12 }}>
+                    {f.size_mb} MB · {new Date(f.created_at).toLocaleString()}
+                  </span>
+                }
+              />
+            </List.Item>
+          )}
+        />
+      </Card>
+    </Space>
+  );
+}
+
+function ResetSection() {
   const qc = useQueryClient();
   // 三次确认的步骤: 0 = 未开始, 1/2 = 前两次确认, 3 = 输入密码
   const [step, setStep] = useState(0);
   const [password, setPassword] = useState('');
   const [confirmText, setConfirmText] = useState('');
+  const [clearFeishu, setClearFeishu] = useState(false);
+  const [confirmFeishu, setConfirmFeishu] = useState('');
   const [result, setResult] = useState<ResetDataResult | null>(null);
 
   const { data: tables } = useQuery({
@@ -1462,10 +1645,17 @@ function DataResetTab() {
   });
 
   const resetMut = useMutation({
-    mutationFn: () => resetBusinessData(password),
+    mutationFn: () => resetBusinessData(password, { clearFeishu }),
     onSuccess: (r) => {
       setResult(r);
-      message.success(`已清空 ${r.total_deleted} 行业务数据`);
+      if (r.feishu_error) {
+        message.warning(`本地已清空 ${r.total_deleted} 行；飞书清空失败：${r.feishu_error}`);
+      } else if (r.feishu_cleared) {
+        const fcount = Object.values(r.feishu_deleted).reduce((a, b) => a + b, 0);
+        message.success(`已清空本地 ${r.total_deleted} 行 + 飞书云端 ${fcount} 条`);
+      } else {
+        message.success(`已清空 ${r.total_deleted} 行业务数据`);
+      }
       closeFlow();
       // 业务数据全变了, 失效所有缓存
       qc.invalidateQueries();
@@ -1479,7 +1669,14 @@ function DataResetTab() {
     setStep(0);
     setPassword('');
     setConfirmText('');
+    setClearFeishu(false);
+    setConfirmFeishu('');
   };
+
+  const okDisabled =
+    !password ||
+    confirmText !== 'DELETE' ||
+    (clearFeishu && confirmFeishu !== 'DELETE FEISHU');
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -1523,10 +1720,16 @@ function DataResetTab() {
           showIcon
           closable
           onClose={() => setResult(null)}
-          message={`清空完成：共删除 ${result.total_deleted} 行`}
+          message={`清空完成：本地共删除 ${result.total_deleted} 行${
+            result.feishu_cleared
+              ? `，飞书云端删除 ${Object.values(result.feishu_deleted).reduce((a, b) => a + b, 0)} 条`
+              : ''
+          }`}
           description={
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              账号、设置、配置均已保留。现在可以去「导入」页上传新的总表了。
+              账号、设置、配置均已保留。
+              {result.feishu_error ? `（飞书清空失败：${result.feishu_error}）` : ''}
+              现在可以去「导入」页上传新的总表了。
             </Typography.Text>
           }
         />
@@ -1572,7 +1775,7 @@ function DataResetTab() {
         cancelText="取消"
         okButtonProps={{
           danger: true,
-          disabled: !password || confirmText !== 'DELETE',
+          disabled: okDisabled,
           loading: resetMut.isPending,
         }}
         onOk={() => resetMut.mutate()}
@@ -1592,6 +1795,25 @@ function DataResetTab() {
             value={confirmText}
             onChange={(e) => setConfirmText(e.target.value)}
           />
+
+          <Divider style={{ margin: '8px 0' }} />
+          <Checkbox checked={clearFeishu} onChange={(e) => setClearFeishu(e.target.checked)}>
+            <b style={{ color: '#cf1322' }}>同时清空飞书云端数据</b>
+          </Checkbox>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            勾选后会删除所有已绑定飞书多维表格里的<b>全部记录</b>（云端数据也一并清空，不可恢复）。
+            不勾选则只清本地——但飞书每 30 分钟会把云端数据同步回来，这通常就是「清了又出现」的原因。
+          </Typography.Text>
+          {clearFeishu && (
+            <>
+              <Typography.Text>请输入 <code>DELETE FEISHU</code> 以确认连飞书云端一起清空：</Typography.Text>
+              <Input
+                placeholder="DELETE FEISHU"
+                value={confirmFeishu}
+                onChange={(e) => setConfirmFeishu(e.target.value)}
+              />
+            </>
+          )}
         </Space>
       </Modal>
     </Space>

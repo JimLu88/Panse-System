@@ -495,9 +495,12 @@ def _job_daily_10_comprehensive_report(db: Session) -> dict:
 
 
 def _job_data_backup(db: Session) -> dict:
-    """每 6 天 02:00: 全量数据导出 Excel + 保留最新 60 份 + 可选 S3 上传。"""
+    """每日 02:00 检查: 距上次自动备份满 interval_days (默认7) 才导出。
+
+    间隔/目录/开关/起始日期均可在 后台→数据管理 配置。
+    """
     from app.services import backup_service
-    return backup_service.run(db)
+    return backup_service.run_if_due(db)
 
 
 def _job_monthly_reconcile_diagnose(db: Session) -> dict:
@@ -559,8 +562,8 @@ def _register_default_jobs() -> None:
                  _job_weekly_purchase_remind, cron={"day_of_week": "mon", "hour": 9, "minute": 0})
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
-    register_job("every6d_data_backup", "全量数据备份 (每6天)",
-                 _job_data_backup, cron={"day": "*/6", "hour": 2, "minute": 0})
+    register_job("daily_02_data_backup", "全量数据备份 (按配置间隔, 默认7天)",
+                 _job_data_backup, cron={"hour": 2, "minute": 0})
 
 
 # ----------------------------- 生命周期 -------------------------- #
