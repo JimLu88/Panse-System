@@ -832,6 +832,8 @@ def _commit_alipay_flows(
             report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
             report.skipped_rows += 1
             continue
+        if all(v is None or (isinstance(v, str) and v.strip() == "") for v in projected.values()):
+            continue
         # 清洗: 流水号/关联订单号去全部空格; 交易对象(公司名)/交易账户(邮箱)去内部空格
         projected["transaction_no"] = _strip_all_ws(projected.get("transaction_no"))
         projected["related_order_no"] = _strip_all_ws(projected.get("related_order_no"))
@@ -1028,6 +1030,10 @@ def _commit_generic(
             if errs:
                 report.errors.append(f"第 {i + 1} 行: " + "; ".join(errs))
                 skipped += 1
+                continue
+            # 跳过 MAPPED 列全为空的行 (模板行/辅助列行):
+            # 有些表末尾有大量「导入校验=✅」但业务列全空的占位行, 避免误报必填字段缺失。
+            if all(v is None or (isinstance(v, str) and v.strip() == "") for v in projected.values()):
                 continue
             for f in ff_fields:
                 if projected.get(f):
@@ -1279,7 +1285,13 @@ def _h_part_inv(db, data, key_field, ctx=None):
     warehouse = data.get("warehouse") or "江西仓库"
     material_code = data.get("material_code")
     if not material_code:
-        raise ImporterError("缺 material_code")
+        # 配件编码为空时: 尝试用名称从 Material 表反查编码, 否则用名称拼占位编码
+        name = data.get("material_name") or data.get("spec") or ""
+        if name:
+            mat = db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
+            material_code = mat.code if mat else f"TMP-{name[:12]}"
+        else:
+            raise ImporterError("缺 material_code")
     if not db.execute(select(Material).where(Material.code == material_code)).scalar_one_or_none():
         db.add(Material(code=material_code, name=f"占位 ({material_code})"))
         db.flush()

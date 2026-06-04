@@ -150,8 +150,10 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         "fields": {
             "warehouse": {"type": "str", "required": False, "desc": "仓库",
                           "aliases": ["仓库", "仓库名称"]},
-            "material_code": {"type": "str", "required": True, "desc": "物料编码",
+            "material_code": {"type": "str", "required": False, "desc": "物料编码 (空时按名称自动匹配或生成临时编码)",
                               "aliases": ["物料编码", "配件编码"]},
+            "material_name": {"type": "str", "required": False, "desc": "物料名称 (配件编码为空时用于反查/生成临时编码)",
+                              "aliases": ["物料名称", "配件名称", "品名", "商品名"]},
             "spec": {"type": "str", "required": False, "desc": "规格型号",
                      "aliases": ["规格型号", "规格"]},
             "unit": {"type": "str", "required": False, "desc": "单位",

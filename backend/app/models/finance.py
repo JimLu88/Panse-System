@@ -25,7 +25,7 @@ class AlipayFlow(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     account: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
-    transaction_no: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    transaction_no: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
     transaction_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
     transaction_type: Mapped[Optional[str]] = mapped_column(String(64))  # 分账 / 在线支付 / 转账 / ...
     counterparty: Mapped[Optional[str]] = mapped_column(String(255))
@@ -42,7 +42,7 @@ class AlipayFlow(Base, TimestampMixin):
     # 飞书同步配对键: account+流水号+交易类型+金额 拼成的稳定键。
     # 自增 id 两端对不上, 单用 transaction_no 又会把同号配对流水(在线支付+分账)
     # 压成一行, 故按业务唯一键拼 sync_key, 由事件钩子在插入/更新时自动生成。
-    sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
+    sync_key: Mapped[Optional[str]] = mapped_column(String(255), index=True)
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
