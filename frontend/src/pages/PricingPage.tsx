@@ -7,6 +7,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Segmented,
   Select,
   Space,
   Table,
@@ -16,6 +17,7 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined } from '@ant-design/icons';
+import FullColumnView from '../components/FullColumnView';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -100,6 +102,7 @@ export default function PricingPage() {
   const [page, setPage] = useState(1);
   const [createOpen, setCreateOpen] = useState(false);
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [form] = Form.useForm();
 
   const { data, isFetching } = useQuery({
@@ -220,26 +223,42 @@ export default function PricingPage() {
       </Space>
       <Card size="small">
         <Space wrap>
-          <Input.Search
-            allowClear
-            placeholder="搜产品编码 / SKU 编码 / 描述"
-            style={{ width: 280 }}
-            onSearch={(v) => { setQ(v); setPage(1); }}
-          />
-          <Select
-            allowClear
-            placeholder="大小分类"
-            style={{ width: 140 }}
-            value={sizeCategory}
-            onChange={(v) => { setSizeCategory(v); setPage(1); }}
+          <Segmented
+            value={viewMode}
+            onChange={(v) => setViewMode(v as 'curated' | 'full')}
             options={[
-              { value: '小型', label: '小型' },
-              { value: '中型', label: '中型' },
-              { value: '大型', label: '大型' },
+              { label: '精选视图（可编辑）', value: 'curated' },
+              { label: '全部列', value: 'full' },
             ]}
           />
+          {viewMode === 'curated' && (
+            <>
+              <Input.Search
+                allowClear
+                placeholder="搜产品编码 / SKU 编码 / 描述"
+                style={{ width: 280 }}
+                onSearch={(v) => { setQ(v); setPage(1); }}
+              />
+              <Select
+                allowClear
+                placeholder="大小分类"
+                style={{ width: 140 }}
+                value={sizeCategory}
+                onChange={(v) => { setSizeCategory(v); setPage(1); }}
+                options={[
+                  { value: '小型', label: '小型' },
+                  { value: '中型', label: '中型' },
+                  { value: '大型', label: '大型' },
+                ]}
+              />
+            </>
+          )}
         </Space>
       </Card>
+
+      {viewMode === 'full' && <FullColumnView entity="pricing_sku" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<PricingSku>
         size="small"
         rowKey="id"
@@ -282,6 +301,7 @@ export default function PricingPage() {
           },
         ]}
       />
+      )}
 
       {/* 新增弹窗 */}
       <Modal
