@@ -1198,7 +1198,9 @@ function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
   if (total === 0) {
     return { ...base, status: 'empty', headline: '表里没有数据行', detail: '无内容可导。' };
   }
-  if (inserted === 0 && errs.length > 0) {
+  // 仅当「没有任何行入库 且 没有重复跳过 且 有报错」时, 才算整表失败;
+  // 若大部分是重复跳过(已存在)只有少量报错, 不应吓人地说「全部未入库」。
+  if (inserted === 0 && skipped === 0 && errs.length > 0) {
     return {
       ...base, status: 'failed',
       headline: `${total} 行全部未入库`,

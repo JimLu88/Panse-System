@@ -1440,8 +1440,14 @@ def _h_balance(db, data, key_field, ctx=None):
         if isinstance(period_date, (_date, _dt)):
             year = period_date.year
             month = period_date.month
-    if not (name and year and month):
-        raise ImporterError("缺账户名/年/月 (或 统计日期)")
+    # 账户名有值但缺统计日期 → 用当前年月兜底, 不丢这条余额 (用户可后续改月份)
+    if name and not (year and month):
+        today = _date.today()
+        year, month = today.year, today.month
+        if ctx is not None and ctx.report is not None:
+            ctx.report.warnings.append(
+                f"账户「{name}」缺统计日期, 已按当前年月 {year}-{month:02d} 入账, 请核对"
+            )
     payload = {k: v for k, v in data.items() if v is not None and k != "period_date"}
     payload["period_year"] = payload.pop("year", year)
     payload["period_month"] = payload.pop("month", month)

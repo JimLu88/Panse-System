@@ -143,6 +143,26 @@ def test_commit_skips_merged_title_banner(db_session):
     assert {"PPS001", "PPS002"} <= codes
 
 
+def test_account_balance_missing_date_defaults_to_current(db_session):
+    """账户余额行有账户名但缺统计日期 → 用当前年月兜底入账, 不丢行。"""
+    from app.models.finance import AccountBalance
+    data = _xlsx("10", ["账户名称", "账户号", "统计日期", "期初余额", "期末余额"], [
+        ["银行卡-个体户私人", None, None, 30000, 30000],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="10",
+        entity_type="account_balance",
+        mapping={"account_name": "账户名称", "account_no": "账户号",
+                 "period_date": "统计日期", "opening_balance": "期初余额",
+                 "closing_balance": "期末余额"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 1
+    assert any("缺统计日期" in w for w in report.warnings)
+    bal = db_session.query(AccountBalance).filter_by(account_name="银行卡-个体户私人").one()
+    assert bal.period_year and bal.period_month  # 已填充, 非空
+
+
 # ----------------------------- AI 推断 --------------------------- #
 
 
