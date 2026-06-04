@@ -469,8 +469,15 @@ def reset_data(
         if payload.confirm_feishu != "DELETE FEISHU":
             raise HTTPException(400, 'clear_feishu 时 confirm_feishu 必须等于 "DELETE FEISHU"')
         try:
-            feishu_deleted = data_reset_service.reset_feishu_data(db)
+            result = data_reset_service.reset_feishu_data(db)
+            feishu_deleted = result.get("deleted", {})
             feishu_cleared = True
+            # 逐表删除失败 (HTTP 没抛异常但飞书返回错误): 必须回传, 否则界面误报"成功"
+            errs = result.get("errors") or {}
+            if errs:
+                feishu_error = "部分表删除失败: " + "; ".join(
+                    f"{t}: {m}" for t, m in errs.items()
+                )
         except Exception as e:  # 飞书未配置 / API 失败: 不阻断本地清空, 回传错误
             feishu_error = str(e)
 

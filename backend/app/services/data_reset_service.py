@@ -115,13 +115,17 @@ def reset_business_data(db: Session) -> dict[str, int]:
     return deleted
 
 
-def reset_feishu_data(db: Session) -> dict[str, int]:
+def reset_feishu_data(db: Session) -> dict:
     """清空飞书云端 (多维表格) 里所有已绑定表的记录 + 本地行级映射。
 
     高危、不可逆: 会调用飞书 API 逐表删除记录。
     - 遍历所有 FeishuTableBinding (不论 enabled), 拉取每张表全部记录并批量删除
     - 删完后清空本地 feishu_sync_map (行级映射已失效)
-    返回 {system_table: 删除的飞书记录数}。飞书未配置则抛 FeishuError。
+    - 清空后把所有飞书绑定暂停 (enabled=False), 防止 30 分钟同步任务重新拉回数据
+      用户重新导入后到「飞书设置」手动恢复同步即可
+
+    返回 {deleted: {table: count}, errors: {table: msg}, bindings_paused: n}。
+    飞书未配置则抛 FeishuError。
     """
     from app.models.feishu_sync import FeishuTableBinding
     from app.services import feishu_client
@@ -130,6 +134,7 @@ def reset_feishu_data(db: Session) -> dict[str, int]:
     feishu_client.get_credentials(db)
 
     deleted: dict[str, int] = {}
+    errors: dict[str, str] = {}
     bindings = db.query(FeishuTableBinding).all()
     for b in bindings:
         try:
@@ -140,14 +145,25 @@ def reset_feishu_data(db: Session) -> dict[str, int]:
             )
             deleted[b.system_table] = deleted.get(b.system_table, 0) + n
             _logger.info("清空飞书表 %s (%s): %d 条", b.system_table, b.feishu_table_id, n)
-        except Exception as e:  # 单表失败不中断其余表
+        except Exception as e:
+            errors[b.system_table] = str(e)
             _logger.warning("清空飞书表 %s 失败: %s", b.system_table, e)
-            deleted.setdefault(b.system_table, 0)
 
-    # 行级映射已失效, 一并清掉 (绑定关系保留)
+    # 行级映射已失效, 一并清掉
     map_cnt = db.execute(text("SELECT COUNT(*) FROM feishu_sync_map")).scalar() or 0
     db.execute(text("DELETE FROM feishu_sync_map"))
+
+    # 把所有绑定暂停: 防止 feishu_sync_30min 在清空后 30 分钟内把云端旧数据再拉回来
+    # (如果云端删除成功, 飞书那边已经空了; 万一删除失败, 暂停可阻止数据回填)
+    paused = 0
+    for b in bindings:
+        if b.enabled:
+            b.enabled = False
+            paused += 1
     db.commit()
+
     deleted["_feishu_sync_map"] = int(map_cnt)
-    _logger.info("飞书云端已清空: 共 %d 条记录", sum(deleted.values()))
-    return deleted
+    total = sum(deleted.values())
+    _logger.info("飞书云端已处理: 共删除 %d 条, 暂停 %d 个绑定, 失败表 %d 个",
+                 total, paused, len(errors))
+    return {"deleted": deleted, "errors": errors, "bindings_paused": paused}

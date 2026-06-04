@@ -134,7 +134,7 @@ def batch_delete_records(db: Session, app_token: str, table_id: str,
                          record_ids: list[str]) -> int:
     """批量删除记录 (每次最多 500 条, 自动分批). 返回删除条数。
 
-    调用: POST /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete
+    调用: DELETE /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete
     body: {"records": ["recXXX", ...]}
     """
     ids = [r for r in record_ids if r]
@@ -144,7 +144,7 @@ def batch_delete_records(db: Session, app_token: str, table_id: str,
     deleted = 0
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
-        _req(db, "POST", url, json={"records": chunk})
+        _req(db, "DELETE", url, json={"records": chunk})
         deleted += len(chunk)
     return deleted
 
