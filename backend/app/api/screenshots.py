@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_role
+from app.upload_guard import require_raster_image
 from app.models.auth import User
 from app.models.finance import FactoryReconciliation
 from app.models.order import Order, PartPurchase
@@ -42,6 +43,7 @@ def _read_image(file: UploadFile, content: bytes) -> tuple[bytes, str]:
     mime = file.content_type or "image/jpeg"
     if not mime.startswith("image/"):
         raise HTTPException(400, f"非图片类型: {mime}")
+    require_raster_image(content)   # 按文件头校验, 不信 content-type (防 SVG/HTML 伪造)
     return content, mime
 
 

@@ -20,6 +20,7 @@ import io
 
 from app.database import get_db
 from app.dependencies import require_role
+from app.upload_guard import require_xlsx
 from app.models.auth import User
 from app.models.import_job import ImportJob
 from app.services import excel_importer
@@ -96,6 +97,7 @@ async def preview(
     content = await file.read()
     if not content:
         raise HTTPException(400, "空文件")
+    require_xlsx(content)   # 按文件头校验, 拒绝伪造扩展名的非 Excel 文件
     # 业务需求: 历史对账单内嵌图片可能 100MB+, 上限放到 200MB
     if len(content) > 200 * 1024 * 1024:
         raise HTTPException(413, "文件超过 200MB, 请拆分或先剔除图片")
@@ -310,7 +312,7 @@ def cancel_import_job(
 def rollback_import_job(
     job_id: int,
     db: Session = Depends(get_db),
-    _: User = Depends(require_role("admin", "operator")),
+    _: User = Depends(require_role("admin")),   # 删数据的破坏性操作, 收紧到仅 admin
 ):
     """回滚导入批次: 删除所有 import_job_id=job_id 的行, 并标记作业为 rolled_back."""
     from app.models.finance import AlipayFlow, FactoryReconciliation
@@ -369,6 +371,7 @@ async def smart_analyze(
     if not content:
         _log.warning("[smart-analyze] 空文件, 拒绝")
         raise HTTPException(400, "空文件")
+    require_xlsx(content)   # 按文件头校验, 拒绝伪造扩展名的非 Excel 文件
     if len(content) > 200 * 1024 * 1024:
         _log.warning("[smart-analyze] 文件超 200MB, 拒绝")
         raise HTTPException(413, "文件超过 200MB")
@@ -463,6 +466,7 @@ async def validate_export(
     content = await file.read()
     if not content:
         raise HTTPException(400, "空文件")
+    require_xlsx(content)   # 按文件头校验, 拒绝伪造扩展名的非 Excel 文件
     if len(content) > 200 * 1024 * 1024:
         raise HTTPException(413, "文件超过 200MB")
 
