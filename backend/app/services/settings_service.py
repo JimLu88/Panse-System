@@ -36,8 +36,18 @@ _SECRET_KEYS = {
 
 # 静态加密 (Encryption At Rest) — 用 HMAC-SHA256 做 CTR 流 + HMAC tag, 仅依赖 stdlib.
 # 单租户 ERP, DB 已私有, 主要为防 dump 后明文泄露。 jwt_secret 改了之后旧密文失效。
+def _enc_base() -> bytes:
+    """加密基密钥: SETTINGS_ENCRYPTION_KEY 环境变量优先 (与 JWT 签名密钥彻底分离);
+    未设置则退回 jwt_secret —— 向后兼容, 旧密文正是用它加密的。
+    注: 一旦设置独立的 SETTINGS_ENCRYPTION_KEY, 需到后台重新录入 AI/OCR key。"""
+    explicit = (os.environ.get("SETTINGS_ENCRYPTION_KEY") or "").strip()
+    if explicit:
+        return explicit.encode("utf-8")
+    return get_settings().jwt_secret.encode("utf-8")
+
+
 def _keys() -> tuple[bytes, bytes]:
-    base = get_settings().jwt_secret.encode("utf-8")
+    base = _enc_base()
     enc_key = hashlib.sha256(b"panse-enc|" + base).digest()
     mac_key = hashlib.sha256(b"panse-mac|" + base).digest()
     return enc_key, mac_key

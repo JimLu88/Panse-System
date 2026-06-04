@@ -33,6 +33,7 @@ class MeOut(BaseModel):
     display_name: Optional[str]
     role: str
     is_active: bool
+    must_change_password: bool = False
 
 
 LoginOut.model_rebuild()

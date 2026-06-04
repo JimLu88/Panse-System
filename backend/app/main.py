@@ -104,6 +104,18 @@ async def _lifespan(app: FastAPI):
     except Exception:  # pragma: no cover
         pass
 
+    # 安全: 把仍在用默认弱密码 'admin' 的账号标记为必须改密 (外网 DDNS 暴露前主动保护)
+    try:
+        from app.database import SessionLocal as _SL
+        from app.services import auth_service
+        with _SL() as _s:
+            k = auth_service.flag_weak_default_passwords(_s)
+            if k:
+                logging.getLogger("panse.startup").warning(
+                    "%d 个账号仍在用默认密码 admin, 已标记必须改密", k)
+    except Exception:  # pragma: no cover
+        pass
+
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
         from app.database import SessionLocal
