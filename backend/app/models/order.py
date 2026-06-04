@@ -1,12 +1,11 @@
 """订单总表 / 工厂下单 / 配件采购 (Excel 表 5/6/7 → plan §3)."""
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from datetime import datetime
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -197,3 +196,45 @@ class OrderDetail(Base, TimestampMixin):
     bom_material_code: Mapped[Optional[str]] = mapped_column(String(64))
     material_name: Mapped[Optional[str]] = mapped_column(String(255))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+# 配件状态枚举
+ACCESSORY_STATUS = ("未采购", "已下单", "运输中", "已到货", "工厂提供")
+
+
+class OrderAccessoryItem(Base, TimestampMixin):
+    """订单配件清单行 — 每单每个 AC-* BOM 物料一行，跟踪采购与物流状态。
+
+    MW-*/MP-* 物料 is_factory_provided=True，状态固定为「工厂提供」无需操作。
+    AC-*/SP-* 物料需采购，可录入快递单号自动追踪物流。
+    """
+    __tablename__ = "order_accessory_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("orders.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    order_no: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    material_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    material_name: Mapped[Optional[str]] = mapped_column(String(255))
+    qty_required: Mapped[Decimal] = mapped_column(Numeric(12, 4), nullable=False)
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+    is_factory_provided: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 未采购 / 已下单 / 运输中 / 已到货 / 工厂提供
+    status: Mapped[str] = mapped_column(String(32), default="未采购", nullable=False, index=True)
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    carrier_code: Mapped[Optional[str]] = mapped_column(String(64))   # 快递100 承运商代码
+    carrier_name: Mapped[Optional[str]] = mapped_column(String(64))   # 顺丰/中通...
+    tracking_events: Mapped[Optional[list]] = mapped_column(JSON)     # 缓存物流时间线
+    tracking_last_status: Mapped[Optional[str]] = mapped_column(String(255))
+    tracking_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    part_purchase_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("part_purchases.id", ondelete="SET NULL"), nullable=True
+    )
+    alert_level: Mapped[Optional[str]] = mapped_column(String(16))    # warn / critical
+    alert_reason: Mapped[Optional[str]] = mapped_column(String(255))
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("order_id", "material_code", name="uq_order_accessory_item"),
+    )
