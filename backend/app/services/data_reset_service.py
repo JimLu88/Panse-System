@@ -41,6 +41,7 @@ _BUSINESS_TABLES: list[str] = [
     "refill_records",
     "part_purchases",
     # ---- 订单 / 工厂 ----
+    "order_accessory_items",
     "orders",
     "factory_orders",
     # ---- 产品 / 物料 / BOM / 定价 ----
@@ -86,25 +87,54 @@ def reset_business_data(db: Session) -> dict[str, int]:
     """清空所有导入业务数据, 保留账号/设置/配置。
 
     返回 {table_name: deleted_rows}。
+
+    关键设计 (修复历史 bug):
+      - 每张表的删除包在 SAVEPOINT (begin_nested) 里隔离。
+        否则在 Postgres 下一张表删除失败 (如外键冲突) 会让整个事务进入
+        aborted 状态, 后续所有表全部 InFailedSqlTransaction, 最终 commit
+        变成 ROLLBACK —— 已删的表也被回滚, 表现为"清空后数据全在"。
+      - 多轮删除 (最多 N 轮): 自动解决外键依赖顺序问题。某表因子表外键删不掉,
+        下一轮等子表删完再删它, 直到全部成功或无进展。无需手工维护精确顺序。
     """
     deleted: dict[str, int] = {}
     bind = db.get_bind()
     dialect = bind.dialect.name if bind is not None else ""
 
-    # 关外键约束 (SQLite 用 PRAGMA, Postgres 用 session_replication_role 需超级权限,
-    # 这里按依赖顺序删除, 无需强关)。
     if dialect == "sqlite":
         db.execute(text("PRAGMA foreign_keys = OFF"))
 
+    # 先统计各表行数 (savepoint 隔离, 表不存在不污染主事务)
+    counts: dict[str, int] = {}
     for table in _BUSINESS_TABLES:
         try:
-            # 先数行数 (给用户看清了多少)
-            cnt = db.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar() or 0
-            db.execute(text(f'DELETE FROM "{table}"'))
-            deleted[table] = int(cnt)
-        except Exception as e:  # 表不存在等情况跳过, 不中断整体清空
-            _logger.warning("清空 %s 跳过: %s", table, e)
-            deleted[table] = 0
+            with db.begin_nested():
+                counts[table] = int(
+                    db.execute(text(f'SELECT COUNT(*) FROM "{table}"')).scalar() or 0
+                )
+        except Exception:
+            counts[table] = 0  # 表不存在
+
+    pending = list(_BUSINESS_TABLES)
+    last_err: dict[str, Exception] = {}
+    for _round in range(len(_BUSINESS_TABLES) + 1):
+        if not pending:
+            break
+        still: list[str] = []
+        for table in pending:
+            try:
+                with db.begin_nested():  # SAVEPOINT: 单表失败只回滚这一步
+                    db.execute(text(f'DELETE FROM "{table}"'))
+                deleted[table] = counts.get(table, 0)
+            except Exception as e:
+                last_err[table] = e
+                still.append(table)
+        if len(still) == len(pending):
+            # 整轮无进展, 剩下的表存在无法解决的约束 (或表不存在), 记录后停止
+            for table in still:
+                _logger.warning("清空 %s 最终失败: %s", table, last_err.get(table))
+                deleted.setdefault(table, 0)
+            break
+        pending = still
 
     if dialect == "sqlite":
         db.execute(text("PRAGMA foreign_keys = ON"))

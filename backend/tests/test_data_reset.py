@@ -31,3 +31,31 @@ def test_reset_table_list_excludes_protected():
     for protected in ("users", "system_settings", "feishu_table_bindings",
                       "feishu_sync_map", "alembic_version"):
         assert protected not in tables, f"{protected} 不应被清空"
+
+
+def test_reset_clears_fk_referenced_tables(db_session):
+    """回归: materials 被 part_inventory 外键引用时, 两张表都要被清干净。
+
+    历史 bug: 删 materials 触发外键冲突 → Postgres 事务 abort → commit 变 rollback
+    → 全部数据回滚("清空后数据全在")。多轮 savepoint 删除应能彻底清空。
+    """
+    from app.models.material import Material
+
+    db_session.add(Material(code="AC-0071", name="脚垫", price=None))
+    db_session.execute(text(
+        "INSERT INTO part_inventory (warehouse, material_code, physical_qty, locked_qty) "
+        "VALUES ('杭州', 'AC-0071', 5, 0)"
+    ))
+    db_session.commit()
+
+    data_reset_service.reset_business_data(db_session)
+
+    assert db_session.execute(text("SELECT COUNT(*) FROM materials")).scalar() == 0
+    assert db_session.execute(text("SELECT COUNT(*) FROM part_inventory")).scalar() == 0
+
+
+def test_order_accessory_items_in_reset_list():
+    # 新增的订单配件清单表必须纳入清空清单, 且排在 orders 之前 (子表先删)
+    tables = data_reset_service.list_business_tables()
+    assert "order_accessory_items" in tables
+    assert tables.index("order_accessory_items") < tables.index("orders")

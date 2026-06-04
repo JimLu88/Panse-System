@@ -30,6 +30,10 @@ _TOKEN_CACHE: dict[str, tuple[str, float]] = {}
 class FeishuError(RuntimeError):
     """飞书 API 调用失败 (凭证错 / 网络错 / 业务码非 0)."""
 
+    def __init__(self, message: str, *, code: Optional[int] = None):
+        super().__init__(message)
+        self.code = code
+
 
 def get_credentials(db: Session) -> tuple[str, str]:
     app_id = settings_service.get(db, "feishu_app_id", env_fallback=False)
@@ -81,7 +85,10 @@ def _req(db: Session, method: str, url: str, **kwargs) -> dict:
         raise FeishuError(f"飞书请求网络失败: {e}") from e
     data = _json(r)
     if data.get("code") != 0:
-        raise FeishuError(f"飞书 API 错误: {data.get('msg')} (code={data.get('code')})")
+        raise FeishuError(
+            f"飞书 API 错误: {data.get('msg')} (code={data.get('code')})",
+            code=data.get("code"),
+        )
     return data.get("data", {})
 
 
@@ -130,12 +137,20 @@ def delete_record(db: Session, app_token: str, table_id: str, record_id: str) ->
     _req(db, "DELETE", url)
 
 
+# 飞书业务错误码
+ERR_RECORD_NOT_FOUND = 1254043   # RecordIdNotFound: 要删的记录已不存在
+ERR_TABLE_NOT_FOUND = 1254041    # TableIdNotFound: 表已不存在 (绑定失效)
+
+
 def batch_delete_records(db: Session, app_token: str, table_id: str,
                          record_ids: list[str]) -> int:
     """批量删除记录 (每次最多 500 条, 自动分批). 返回删除条数。
 
-    调用: DELETE /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete
+    调用: POST /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_delete
     body: {"records": ["recXXX", ...]}
+
+    容错: 整批遇 RecordIdNotFound (部分记录已不存在) 时降级逐条删除,
+    逐条仍遇 NotFound 则跳过 (记录不存在即达成删除目标, 幂等)。
     """
     ids = [r for r in record_ids if r]
     if not ids:
@@ -144,8 +159,21 @@ def batch_delete_records(db: Session, app_token: str, table_id: str,
     deleted = 0
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
-        _req(db, "DELETE", url, json={"records": chunk})
-        deleted += len(chunk)
+        try:
+            _req(db, "POST", url, json={"records": chunk})
+            deleted += len(chunk)
+        except FeishuError as e:
+            if e.code != ERR_RECORD_NOT_FOUND:
+                raise
+            # 整批含已不存在记录: 降级逐条删除, 忽略 NotFound
+            for rid in chunk:
+                try:
+                    delete_record(db, app_token, table_id, rid)
+                    deleted += 1
+                except FeishuError as e2:
+                    if e2.code == ERR_RECORD_NOT_FOUND:
+                        continue
+                    raise
     return deleted
 
 
