@@ -104,6 +104,21 @@ export const fetchRecentLogs = (params?: {
 export const restartApi = () =>
   api.post('/api/admin/restart-api', { confirm: 'RESTART' }).then((r) => r.data);
 
+// ----- 清空业务数据 (保留账号/设置/配置) -----
+export interface ResetDataResult {
+  cleared: boolean;
+  total_deleted: number;
+  deleted: Record<string, number>;
+}
+
+export const fetchResetDataTables = () =>
+  api.get<{ tables: string[] }>('/api/admin/reset-data/tables').then((r) => r.data.tables);
+
+export const resetBusinessData = (password: string) =>
+  api
+    .post<ResetDataResult>('/api/admin/reset-data', { password, confirm: 'DELETE' })
+    .then((r) => r.data);
+
 // ----- 重启事件 (业务需求 5) -----
 export interface SystemEvent {
   id: number;

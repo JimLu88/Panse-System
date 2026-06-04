@@ -26,6 +26,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   DashboardOutlined,
+  DeleteOutlined,
   ExperimentOutlined,
   KeyOutlined,
   PoweroffOutlined,
@@ -41,6 +42,7 @@ import {
   Integrations,
   MeUser,
   NotifyConfig,
+  ResetDataResult,
   RuntimeLog,
   SchedulerJob,
   SchedulerRun,
@@ -59,6 +61,8 @@ import {
   fetchSystemStatus,
   listAuditLogs,
   listAuthUsers,
+  fetchResetDataTables,
+  resetBusinessData,
   restartApi,
   testIntegration,
   testNotifyConfig,
@@ -94,6 +98,7 @@ export default function AdminPage() {
           { key: 'scheduler', label: '全自动任务清单 (业务需求 18)', children: <SchedulerTab /> },
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
           { key: 'runtime-logs', label: <Space><WarningOutlined />运行日志 / 错误排查</Space>, children: <RuntimeLogsTab /> },
+          { key: 'data-reset', label: <Space><DeleteOutlined />数据管理</Space>, children: <DataResetTab /> },
         ]}
       />
     </Space>
@@ -1438,5 +1443,157 @@ function NotifyConfigCard() {
         />
       )}
     </Card>
+  );
+}
+
+// ----------------------------- 数据管理 / 清空导入数据 ---------------- //
+
+function DataResetTab() {
+  const qc = useQueryClient();
+  // 三次确认的步骤: 0 = 未开始, 1/2 = 前两次确认, 3 = 输入密码
+  const [step, setStep] = useState(0);
+  const [password, setPassword] = useState('');
+  const [confirmText, setConfirmText] = useState('');
+  const [result, setResult] = useState<ResetDataResult | null>(null);
+
+  const { data: tables } = useQuery({
+    queryKey: ['reset-data-tables'],
+    queryFn: fetchResetDataTables,
+  });
+
+  const resetMut = useMutation({
+    mutationFn: () => resetBusinessData(password),
+    onSuccess: (r) => {
+      setResult(r);
+      message.success(`已清空 ${r.total_deleted} 行业务数据`);
+      closeFlow();
+      // 业务数据全变了, 失效所有缓存
+      qc.invalidateQueries();
+    },
+    onError: (e: any) => {
+      message.error(e?.response?.data?.detail ?? '清空失败');
+    },
+  });
+
+  const closeFlow = () => {
+    setStep(0);
+    setPassword('');
+    setConfirmText('');
+  };
+
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="warning"
+        showIcon
+        message="清空导入数据"
+        description={
+          <Space direction="vertical" size={4}>
+            <span>此操作会删除<b>所有导入的业务数据</b>（订单、流水、产品、物料、BOM、库存、对账、售后、异常等），让你可以重新导入一份干净的总表。</span>
+            <span style={{ color: '#cf1322' }}><b>删除不可恢复，请先自行备份数据库。</b></span>
+          </Space>
+        }
+      />
+
+      <Card size="small" title="✅ 以下内容会被【保留】，绝不删除">
+        <Space wrap>
+          <Tag color="green">登录账号 (users)</Tag>
+          <Tag color="green">系统设置 (system_settings)</Tag>
+          <Tag color="green">AI / OCR 配置</Tag>
+          <Tag color="green">飞书表绑定 (feishu_table_bindings)</Tag>
+          <Tag color="green">飞书同步映射 (feishu_sync_map)</Tag>
+        </Space>
+      </Card>
+
+      <Card size="small" title={<span>🗑 以下 {tables?.length ?? 0} 张业务数据表会被清空</span>}>
+        <Space wrap size={[4, 4]}>
+          {(tables ?? []).map((t) => (
+            <Tag key={t} color="volcano" style={{ fontSize: 11 }}>{t}</Tag>
+          ))}
+        </Space>
+      </Card>
+
+      <Button danger type="primary" icon={<DeleteOutlined />} onClick={() => setStep(1)}>
+        清空导入数据…
+      </Button>
+
+      {result && (
+        <Alert
+          type="success"
+          showIcon
+          closable
+          onClose={() => setResult(null)}
+          message={`清空完成：共删除 ${result.total_deleted} 行`}
+          description={
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              账号、设置、配置均已保留。现在可以去「导入」页上传新的总表了。
+            </Typography.Text>
+          }
+        />
+      )}
+
+      {/* 第 1 次确认 */}
+      <Modal
+        open={step === 1}
+        title="第 1 / 3 次确认"
+        okText="我确定，继续"
+        cancelText="取消"
+        okButtonProps={{ danger: true }}
+        onOk={() => setStep(2)}
+        onCancel={closeFlow}
+      >
+        <p>你即将清空<b>所有导入的业务数据</b>。账号和设置会保留，但订单、流水等数据将被永久删除。</p>
+        <p>确定要继续吗？</p>
+      </Modal>
+
+      {/* 第 2 次确认 */}
+      <Modal
+        open={step === 2}
+        title="第 2 / 3 次确认"
+        okText="确认，进入最后一步"
+        cancelText="返回"
+        okButtonProps={{ danger: true }}
+        onOk={() => setStep(3)}
+        onCancel={closeFlow}
+      >
+        <Alert
+          type="error"
+          showIcon
+          message="此操作不可恢复"
+          description="删除后无法撤销。如果还没备份数据库，请先取消并备份。"
+        />
+      </Modal>
+
+      {/* 第 3 次确认: 密码 + 输入 DELETE */}
+      <Modal
+        open={step === 3}
+        title="第 3 / 3 次确认 — 输入密码"
+        okText="清空数据"
+        cancelText="取消"
+        okButtonProps={{
+          danger: true,
+          disabled: !password || confirmText !== 'DELETE',
+          loading: resetMut.isPending,
+        }}
+        onOk={() => resetMut.mutate()}
+        onCancel={closeFlow}
+      >
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text>请输入你的<b>管理员登录密码</b>以确认身份：</Typography.Text>
+          <Input.Password
+            placeholder="当前管理员密码"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoFocus
+          />
+          <Typography.Text>再在下方输入大写 <code>DELETE</code> 以最终确认：</Typography.Text>
+          <Input
+            placeholder="DELETE"
+            value={confirmText}
+            onChange={(e) => setConfirmText(e.target.value)}
+          />
+        </Space>
+      </Modal>
+    </Space>
   );
 }

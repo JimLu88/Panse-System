@@ -407,3 +407,58 @@ def set_baseline(
     )
     db.commit()
     return result
+
+
+# ----------------------------- 清空业务数据 ---------------------- #
+
+
+class ResetTablesOut(BaseModel):
+    tables: list[str]
+
+
+class ResetDataIn(BaseModel):
+    password: str = Field(..., description="当前管理员密码, 用于二次验证")
+    confirm: str = Field(..., description='必须等于 "DELETE" 才执行')
+
+
+class ResetDataOut(BaseModel):
+    cleared: bool
+    total_deleted: int
+    deleted: dict[str, int]
+
+
+@router.get("/reset-data/tables", response_model=ResetTablesOut)
+def reset_data_tables(
+    _: object = Depends(require_role("admin")),
+):
+    """返回「清空数据」会清掉的业务表清单 (设置/配置/账号不在内)。"""
+    from app.services import data_reset_service
+    return ResetTablesOut(tables=data_reset_service.list_business_tables())
+
+
+@router.post("/reset-data", response_model=ResetDataOut)
+def reset_data(
+    payload: ResetDataIn,
+    db: Session = Depends(get_db),
+    user=Depends(require_role("admin")),
+):
+    """清空所有导入的业务数据, 保留账号/设置/配置。
+
+    安全措施:
+      - 仅 admin 角色
+      - 必须重新输入当前管理员密码 (二次验证)
+      - confirm 字段必须等于 "DELETE"
+    """
+    from app.services import auth_service, data_reset_service
+
+    if payload.confirm != "DELETE":
+        raise HTTPException(400, 'confirm 必须等于 "DELETE"')
+    if not auth_service.verify_password(payload.password, user.password_hash):
+        raise HTTPException(403, "密码错误, 清空操作已取消")
+
+    deleted = data_reset_service.reset_business_data(db)
+    return ResetDataOut(
+        cleared=True,
+        total_deleted=sum(deleted.values()),
+        deleted=deleted,
+    )
