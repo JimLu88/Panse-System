@@ -84,7 +84,7 @@ ENTITY_MODELS: dict[str, dict[str, Any]] = {
                       "core": ["factory_order_no", "platform_order_no", "factory_name", "order_date", "payment_status"],
                       "search": ["factory_order_no", "platform_order_no", "factory_name"]},
     "account_balance": {"model": AccountBalance, "label": "账户月度余额",
-                        "core": ["account_name", "year", "month", "closing_balance"],
+                        "core": ["account_name", "period_year", "period_month", "closing_balance"],
                         "search": ["account_name"]},
     "pricing_sku": {"model": PricingSku, "label": "定价总表 (全列)",
                     "core": ["product_code", "sku_code", "sku", "size_category",

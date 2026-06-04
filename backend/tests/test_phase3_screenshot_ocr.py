@@ -183,13 +183,20 @@ def test_qianniu_commit_inserts_orders():
         assert r.status_code == 200, r.text
         body = r.json()
         assert body["inserted"] == 1
-        # 重复入应被去重
+        # 重复入应被去重 (相同数据 → skipped; 若字段不同则会进 conflicts, 见下)
         r = client.post("/api/screenshots/qianniu-orders/commit", headers=h, json={
-            "orders": [{"order_no": "C001", "qty": 1}],
+            "orders": [{"order_no": "C001", "qty": 2}],
         })
         body = r.json()
         assert body["inserted"] == 0
         assert "C001" in body["skipped_existing"]
+        # 字段不同的重复 → 记为冲突 (待人工裁决), 不静默覆盖
+        r = client.post("/api/screenshots/qianniu-orders/commit", headers=h, json={
+            "orders": [{"order_no": "C001", "qty": 9}],
+        })
+        body = r.json()
+        assert body["inserted"] == 0
+        assert "C001" in body["conflicts"]
         # DB 检查
         s = Sess()
         try:

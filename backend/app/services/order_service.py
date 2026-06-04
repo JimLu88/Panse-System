@@ -76,7 +76,16 @@ def transition(
         from app.services import factory_order_service as fos
         try:
             if target == "paid" and prev in ("pending_payment", "cancelled"):
-                fos.generate_factory_order_for(db, order, actor=actor or "system")
+                fo, _lr = fos.generate_factory_order_for(db, order, actor=actor or "system")
+                # 取消后重新付款: 原工厂单已作废, generate 幂等地返回旧单而不会重新锁库存,
+                # 导致重开订单的库存未被锁 → 记异常让人工确认 (不静默)。
+                if prev == "cancelled" and getattr(fo, "voided_at", None) is not None:
+                    _record_side_effect_exc(
+                        db, order,
+                        f"订单 {order.order_no} 取消后重新付款, 但原工厂单已作废、库存未自动重锁, "
+                        f"请人工确认是否重下工厂单并锁库存。",
+                        exc_type="reopen_relock_needed",
+                    )
             elif target == "cancelled":
                 fos.cancel_factory_orders_for(
                     db, order, reason=f"订单 {order.order_no} 取消",
@@ -86,5 +95,25 @@ def transition(
                 fos.ship_factory_orders_for(db, order, actor=actor or "system")
         except Exception as e:  # pragma: no cover
             _logger.exception("订单状态联动失败 (不阻塞状态变更): %s", e)
+            # 不静默吞掉: 库存/工厂单联动失败可能导致库存与订单不一致, 记异常待人工核对。
+            _record_side_effect_exc(
+                db, order,
+                f"订单 {order.order_no} 状态 {prev}→{target} 的库存/工厂单联动失败: {e}。"
+                f"库存可能未同步, 请人工核对。",
+                exc_type="status_side_effect_failed",
+            )
 
     return order
+
+
+def _record_side_effect_exc(db, order, description: str, *, exc_type: str) -> None:
+    """状态联动副作用异常 → 写入异常池 (失败也不影响主状态变更)。"""
+    try:
+        from app.services import exception_service
+        exception_service.record(
+            db, source_table="orders", source_pk=order.order_no,
+            exception_type=exc_type, severity="warning",
+            description=description, suggestion_action="view",
+        )
+    except Exception:  # pragma: no cover
+        _logger.exception("记录状态联动异常失败")

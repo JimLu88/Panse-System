@@ -91,3 +91,27 @@ def test_every_schema_entity_is_importable_or_special():
     known = set(_ENTITY_MODEL) | special
     missing = [e for e in ENTITY_SCHEMAS if e not in known]
     assert not missing, f"这些 schema 实体没有对应入库 handler 映射, 会导入失败: {missing}"
+
+
+def test_importable_entities_are_browsable():
+    """注册表防漂移: 每个可导入实体都必须在 table_explorer 的 ENTITY_MODELS 里可浏览,
+    否则导进去的数据在「全部列」看不到 —— 与 excel_schemas↔model 脱节同类的注册表漂移。"""
+    from app.api.table_explorer import ENTITY_MODELS
+    importable = set(_ENTITY_MODEL)
+    missing = [e for e in importable if e not in ENTITY_MODELS]
+    assert not missing, (
+        f"这些可导入实体没在 table_explorer.ENTITY_MODELS 注册, 导入后无法在「全部列」浏览: {missing}"
+    )
+
+
+def test_table_explorer_models_have_valid_columns():
+    """table_explorer 注册的每张表的 core/search 列都必须是模型真实列 (防手敲错列名)。"""
+    from app.api.table_explorer import ENTITY_MODELS
+    bad = []
+    for entity, cfg in ENTITY_MODELS.items():
+        model = cfg["model"]
+        cols = {c.key for c in model.__table__.columns}
+        for fld in list(cfg.get("core", [])) + list(cfg.get("search", [])):
+            if fld not in cols:
+                bad.append(f"{entity}.{fld}")
+    assert not bad, f"table_explorer 配了不存在的列: {bad}"

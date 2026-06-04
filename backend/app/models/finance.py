@@ -55,6 +55,8 @@ class AlipayFlow(Base, TimestampMixin):
             name="uq_alipay_flow_acct_no",
         ),
         Index("ix_alipay_flows_acct_time", "account", "transaction_time"),
+        # 对账规则全部按 reconciliation_type 过滤 (run_factory_payment/promotion/install/...)
+        Index("ix_alipay_flows_recon_type", "reconciliation_type"),
     )
 
 

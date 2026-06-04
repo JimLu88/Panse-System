@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Literal, Optional
 
 from sqlalchemy import func, select
@@ -70,15 +70,28 @@ class ReconciliationResult:
     unresolved_count: int = 0   # open 异常池中本规则的未对清条数
 
 
-def _within(diff: Decimal, *, pct: Decimal = Decimal("0.005"), abs_floor: Decimal = Decimal("5")) -> bool:
+def _tolerance(base: Optional[Decimal], pct: Decimal, abs_floor: Decimal) -> Decimal:
+    """容差 = 百分比与绝对值的较大者。base=对账基准额(账单/应收/应付); 缺省退化为绝对值。"""
+    if base is None:
+        return abs_floor
+    try:
+        return max(abs_floor, abs(Decimal(str(base))) * pct)
+    except (InvalidOperation, ValueError, TypeError):
+        return abs_floor
+
+
+def _within(diff: Decimal, *, base: Optional[Decimal] = None,
+            pct: Decimal = Decimal("0.005"), abs_floor: Decimal = Decimal("5")) -> bool:
     """diff 是否在容差内（取百分比与绝对值的较大者）。"""
-    return abs(diff) <= abs_floor
+    return abs(diff) <= _tolerance(base, pct, abs_floor)
 
 
-def _classify(diff: Decimal, *, pct: Decimal = Decimal("0.005"), abs_floor: Decimal = Decimal("5")) -> DiffSeverity:
-    if abs(diff) <= abs_floor:
+def _classify(diff: Decimal, *, base: Optional[Decimal] = None,
+              pct: Decimal = Decimal("0.005"), abs_floor: Decimal = Decimal("5")) -> DiffSeverity:
+    tol = _tolerance(base, pct, abs_floor)
+    if abs(diff) <= tol:
         return "ok"
-    if abs(diff) <= abs_floor * 10:
+    if abs(diff) <= tol * 10:
         return "warning"
     return "error"
 
@@ -143,7 +156,7 @@ def run_factory_payment(
         billed = billed_by_factory.get(factory, Decimal("0"))
         paid = paid_by_factory.get(factory, Decimal("0"))
         diff = paid - billed
-        sev = _classify(diff)
+        sev = _classify(diff, base=billed)
         msg = f"{factory}: 应付 ¥{billed}, 实付 ¥{paid}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=factory, expected=billed, actual=paid, diff=diff, severity=sev, message=msg,
@@ -209,7 +222,7 @@ def run_promotion(
         expected = by_month_pf.get(key, Decimal("0"))
         actual = by_month_af.get(key, Decimal("0"))
         diff = actual - expected
-        sev = _classify(diff)
+        sev = _classify(diff, base=expected)
         period_key = f"{y}-{m:02d}"
         msg = f"{period_key}: 推广支出 ¥{expected}, 支付宝 ¥{actual}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
@@ -273,7 +286,7 @@ def run_refill_compensation(
         expected = r.total_cost or Decimal("0")
         actual = paid_by_order[r.order_no] or Decimal("0")
         diff = actual - expected
-        sev = _classify(diff, abs_floor=Decimal("1"))
+        sev = _classify(diff, base=expected, abs_floor=Decimal("1"))
         msg = f"补单 {r.order_no}: 总成本 ¥{expected}, 主单实付 ¥{actual}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=r.order_no, expected=expected, actual=actual, diff=diff, severity=sev, message=msg,
@@ -397,7 +410,7 @@ def run_install_fee(
         exp = billed.get(key, Decimal("0"))
         act = paid.get(key, Decimal("0"))
         diff = act - exp
-        sev = _classify(diff)
+        sev = _classify(diff, base=exp)
         msg = f"{key}: 应付安装费 ¥{exp} ({source}), 支付宝实付 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
@@ -464,7 +477,7 @@ def run_logistics_fee(
         exp = billed.get(key, Decimal("0"))
         act = paid.get(key, Decimal("0"))
         diff = act - exp
-        sev = _classify(diff)
+        sev = _classify(diff, base=exp)
         msg = f"{key}: 应付物流费 ¥{exp} ({source}), 支付宝实付 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
@@ -538,7 +551,7 @@ def run_revenue_alipay(
         exp = revenue.get(key, Decimal("0"))
         act = income.get(key, Decimal("0"))
         diff = act - exp
-        sev = _classify(diff, abs_floor=Decimal("50"))
+        sev = _classify(diff, base=exp, abs_floor=Decimal("50"))
         msg = f"{key}: 订单营收 ¥{exp}, 支付宝收入 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
@@ -634,7 +647,7 @@ def run_operating_expense(
         exp = expected.get(month, Decimal("0"))
         act = actual.get(month, Decimal("0"))
         diff = act - exp
-        sev = _classify(diff)
+        sev = _classify(diff, base=exp)
         msg = f"{month}: 经营已关联支出 ¥{exp}, 支付宝实付 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=month, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
@@ -709,7 +722,7 @@ def run_purchase_payment(
         exp = expected.get(month, Decimal("0"))
         act = actual.get(month, Decimal("0"))
         diff = act - exp
-        sev = _classify(diff)
+        sev = _classify(diff, base=exp)
         msg = f"{month}: 采购应付 ¥{exp}, 支付宝匹配 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=month, expected=exp, actual=act, diff=diff, severity=sev, message=msg,

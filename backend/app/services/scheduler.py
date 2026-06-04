@@ -445,8 +445,8 @@ def _job_daily_10_comprehensive_report(db: Session) -> dict:
             briefing_summary = b.content[:200].strip()
             if len(b.content) > 200:
                 briefing_summary += "…"
-    except Exception:
-        pass
+    except Exception as e:
+        _logger.warning("日报摘要读取失败 (不影响其余日报): %s", e)
 
     # ── 组装消息 ─────────────────────────────────────────────────
     lines = [f"📊 畔色 ERP | {today.month}月{today.day}日 经营日报", ""]
