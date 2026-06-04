@@ -419,12 +419,17 @@ class ResetTablesOut(BaseModel):
 class ResetDataIn(BaseModel):
     password: str = Field(..., description="当前管理员密码, 用于二次验证")
     confirm: str = Field(..., description='必须等于 "DELETE" 才执行')
+    clear_feishu: bool = Field(False, description="是否同时清空飞书云端绑定表的记录 (高危, 不可逆)")
+    confirm_feishu: str = Field("", description='clear_feishu 时必须等于 "DELETE FEISHU"')
 
 
 class ResetDataOut(BaseModel):
     cleared: bool
     total_deleted: int
     deleted: dict[str, int]
+    feishu_cleared: bool = False
+    feishu_deleted: dict[str, int] = {}
+    feishu_error: Optional[str] = None
 
 
 @router.get("/reset-data/tables", response_model=ResetTablesOut)
@@ -456,9 +461,134 @@ def reset_data(
     if not auth_service.verify_password(payload.password, user.password_hash):
         raise HTTPException(403, "密码错误, 清空操作已取消")
 
+    # 飞书云端清空 (可选, 高危): 需额外二次确认
+    feishu_cleared = False
+    feishu_deleted: dict[str, int] = {}
+    feishu_error: Optional[str] = None
+    if payload.clear_feishu:
+        if payload.confirm_feishu != "DELETE FEISHU":
+            raise HTTPException(400, 'clear_feishu 时 confirm_feishu 必须等于 "DELETE FEISHU"')
+        try:
+            feishu_deleted = data_reset_service.reset_feishu_data(db)
+            feishu_cleared = True
+        except Exception as e:  # 飞书未配置 / API 失败: 不阻断本地清空, 回传错误
+            feishu_error = str(e)
+
     deleted = data_reset_service.reset_business_data(db)
     return ResetDataOut(
         cleared=True,
         total_deleted=sum(deleted.values()),
         deleted=deleted,
+        feishu_cleared=feishu_cleared,
+        feishu_deleted=feishu_deleted,
+        feishu_error=feishu_error,
+    )
+
+
+# ─────────────────────────── 数据备份 / 导出 ─────────────────────────── #
+
+
+class BackupConfigIn(BaseModel):
+    auto_enabled: Optional[bool] = None
+    interval_days: Optional[int] = Field(None, ge=1, le=365)
+    dir: Optional[str] = None
+    start_date: Optional[str] = Field(None, description="YYYY-MM-DD, 留空则不限")
+
+
+class BackupConfigOut(BaseModel):
+    auto_enabled: bool
+    interval_days: int
+    dir: str
+    start_date: Optional[str] = None
+    last_run_at: Optional[str] = None
+    next_run_at: Optional[str] = None
+    max_backups: int
+
+
+class BackupFile(BaseModel):
+    filename: str
+    size_mb: float
+    created_at: str
+
+
+class BackupRunOut(BaseModel):
+    file: str
+    size_mb: float
+    deleted_old: int
+    uploaded_s3: bool
+
+
+@router.get("/backup/config", response_model=BackupConfigOut)
+def backup_get_config(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import backup_service
+    return BackupConfigOut(**backup_service.get_config(db))
+
+
+@router.put("/backup/config", response_model=BackupConfigOut)
+def backup_set_config(
+    payload: BackupConfigIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import backup_service
+    cfg = backup_service.set_config(
+        db,
+        auto_enabled=payload.auto_enabled,
+        interval_days=payload.interval_days,
+        dir=payload.dir,
+        start_date=payload.start_date,
+    )
+    return BackupConfigOut(**cfg)
+
+
+@router.get("/backup/list", response_model=list[BackupFile])
+def backup_list(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import backup_service
+    cfg = backup_service.get_config(db)
+    return [BackupFile(**f) for f in backup_service.list_backups(cfg["dir"])]
+
+
+@router.post("/backup/run", response_model=BackupRunOut)
+def backup_run_now(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    """立即全量导出一份 Excel 备份到备份目录 (含轮换 + 可选 S3)。"""
+    from app.services import backup_service
+    cfg = backup_service.get_config(db)
+    result = backup_service.run(db, output_dir=cfg["dir"])
+    return BackupRunOut(**result)
+
+
+@router.get("/backup/download/{filename}")
+def backup_download(
+    filename: str,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    """下载某个备份文件。也可用于「一键导出并下载」: 先 /backup/run 再下载返回的文件名。"""
+    from pathlib import Path
+
+    from fastapi.responses import FileResponse
+
+    from app.services import backup_service
+
+    # 防路径穿越: 仅允许 panse_backup_*.xlsx 形式的纯文件名
+    if "/" in filename or "\\" in filename or not filename.startswith("panse_backup_") \
+            or not filename.endswith(".xlsx"):
+        raise HTTPException(400, "非法文件名")
+    cfg = backup_service.get_config(db)
+    path = (Path(cfg["dir"]) / filename).resolve()
+    if Path(cfg["dir"]).resolve() not in path.parents or not path.is_file():
+        raise HTTPException(404, "备份文件不存在")
+    return FileResponse(
+        str(path),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        filename=filename,
     )

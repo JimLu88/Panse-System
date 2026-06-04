@@ -113,3 +113,41 @@ def reset_business_data(db: Session) -> dict[str, int]:
     total = sum(deleted.values())
     _logger.info("业务数据已清空: 共 %d 行 (%d 张表)", total, len(_BUSINESS_TABLES))
     return deleted
+
+
+def reset_feishu_data(db: Session) -> dict[str, int]:
+    """清空飞书云端 (多维表格) 里所有已绑定表的记录 + 本地行级映射。
+
+    高危、不可逆: 会调用飞书 API 逐表删除记录。
+    - 遍历所有 FeishuTableBinding (不论 enabled), 拉取每张表全部记录并批量删除
+    - 删完后清空本地 feishu_sync_map (行级映射已失效)
+    返回 {system_table: 删除的飞书记录数}。飞书未配置则抛 FeishuError。
+    """
+    from app.models.feishu_sync import FeishuTableBinding
+    from app.services import feishu_client
+
+    # 未配置凭证直接抛错 (上层捕获提示用户)
+    feishu_client.get_credentials(db)
+
+    deleted: dict[str, int] = {}
+    bindings = db.query(FeishuTableBinding).all()
+    for b in bindings:
+        try:
+            records = feishu_client.list_records(db, b.feishu_app_token, b.feishu_table_id)
+            rec_ids = [r["record_id"] for r in records if r.get("record_id")]
+            n = feishu_client.batch_delete_records(
+                db, b.feishu_app_token, b.feishu_table_id, rec_ids
+            )
+            deleted[b.system_table] = deleted.get(b.system_table, 0) + n
+            _logger.info("清空飞书表 %s (%s): %d 条", b.system_table, b.feishu_table_id, n)
+        except Exception as e:  # 单表失败不中断其余表
+            _logger.warning("清空飞书表 %s 失败: %s", b.system_table, e)
+            deleted.setdefault(b.system_table, 0)
+
+    # 行级映射已失效, 一并清掉 (绑定关系保留)
+    map_cnt = db.execute(text("SELECT COUNT(*) FROM feishu_sync_map")).scalar() or 0
+    db.execute(text("DELETE FROM feishu_sync_map"))
+    db.commit()
+    deleted["_feishu_sync_map"] = int(map_cnt)
+    _logger.info("飞书云端已清空: 共 %d 条记录", sum(deleted.values()))
+    return deleted

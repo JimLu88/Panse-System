@@ -109,15 +109,97 @@ export interface ResetDataResult {
   cleared: boolean;
   total_deleted: number;
   deleted: Record<string, number>;
+  feishu_cleared: boolean;
+  feishu_deleted: Record<string, number>;
+  feishu_error: string | null;
 }
 
 export const fetchResetDataTables = () =>
   api.get<{ tables: string[] }>('/api/admin/reset-data/tables').then((r) => r.data.tables);
 
-export const resetBusinessData = (password: string) =>
+export const resetBusinessData = (
+  password: string,
+  opts: { clearFeishu?: boolean } = {},
+) =>
   api
-    .post<ResetDataResult>('/api/admin/reset-data', { password, confirm: 'DELETE' })
+    .post<ResetDataResult>('/api/admin/reset-data', {
+      password,
+      confirm: 'DELETE',
+      clear_feishu: !!opts.clearFeishu,
+      confirm_feishu: opts.clearFeishu ? 'DELETE FEISHU' : '',
+    })
     .then((r) => r.data);
+
+// ----- 数据备份 / 一键导出 Excel -----
+export interface BackupConfig {
+  auto_enabled: boolean;
+  interval_days: number;
+  dir: string;
+  start_date: string | null;
+  last_run_at: string | null;
+  next_run_at: string | null;
+  max_backups: number;
+}
+
+export interface BackupFile {
+  filename: string;
+  size_mb: number;
+  created_at: string;
+}
+
+export interface BackupRunResult {
+  file: string;
+  size_mb: number;
+  deleted_old: number;
+  uploaded_s3: boolean;
+}
+
+export const fetchBackupConfig = () =>
+  api.get<BackupConfig>('/api/admin/backup/config').then((r) => r.data);
+
+export const updateBackupConfig = (payload: Partial<{
+  auto_enabled: boolean;
+  interval_days: number;
+  dir: string;
+  start_date: string;
+}>) => api.put<BackupConfig>('/api/admin/backup/config', payload).then((r) => r.data);
+
+export const fetchBackupList = () =>
+  api.get<BackupFile[]>('/api/admin/backup/list').then((r) => r.data);
+
+export const runBackupNow = () =>
+  api.post<BackupRunResult>('/api/admin/backup/run').then((r) => r.data);
+
+// 触发一次导出, 然后浏览器下载该文件 (一键导出并下载)
+export const exportAndDownload = async (): Promise<BackupRunResult> => {
+  const result = await runBackupNow();
+  const resp = await api.get(`/api/admin/backup/download/${encodeURIComponent(result.file)}`, {
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = result.file;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+  return result;
+};
+
+export const downloadBackup = async (filename: string) => {
+  const resp = await api.get(`/api/admin/backup/download/${encodeURIComponent(filename)}`, {
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
 
 // ----- 重启事件 (业务需求 5) -----
 export interface SystemEvent {
