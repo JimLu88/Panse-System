@@ -3,6 +3,8 @@ import axios from 'axios';
 export const api = axios.create({
   baseURL: '/',
   headers: { 'Content-Type': 'application/json' },
+  // 全局 30s 超时: 后端卡住时前端不会无限转圈 (大文件导入/AI 调用各自覆盖更长超时)
+  timeout: 30000,
 });
 
 // 自动从 localStorage 取 token 加到所有请求

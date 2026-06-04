@@ -6,6 +6,7 @@ interface AuthCtx {
   loading: boolean;
   login: (username: string, password: string) => Promise<void>;
   logout: () => void;
+  refreshUser: () => Promise<void>;
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -52,7 +53,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser(null);
   }, []);
 
-  return <Ctx.Provider value={{ user, loading, login, logout }}>{children}</Ctx.Provider>;
+  // 改密成功后重新拉 /me, 清掉 must_change_password 标记
+  const refreshUser = useCallback(async () => {
+    try {
+      setUser(await fetchMe());
+    } catch {
+      /* 忽略: 拉取失败保持原状 */
+    }
+  }, []);
+
+  return (
+    <Ctx.Provider value={{ user, loading, login, logout, refreshUser }}>{children}</Ctx.Provider>
+  );
 }
 
 export function useAuth(): AuthCtx {

@@ -81,7 +81,7 @@ export interface ImportJob {
   processed_rows: number;
   progress_pct: number;
   error: string | null;
-  report: any | null;
+  report: ImportReport | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;

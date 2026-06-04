@@ -3,6 +3,7 @@ import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
 import { CameraOutlined, EditOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
+import ForcePasswordChange from './components/ForcePasswordChange';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
 import AiAssistantWidget from './components/AiAssistantWidget';
@@ -103,6 +104,11 @@ export default function App() {
         <Route path="*" element={<Navigate to="/login" state={{ from: loc.pathname }} replace />} />
       </Routes>
     );
+  }
+
+  // 强制改密: 仍在用默认/弱密码的账号, 改密前全屏阻断
+  if (user.must_change_password) {
+    return <ForcePasswordChange />;
   }
 
   const seg = loc.pathname.split('/')[1] || 'dashboard';

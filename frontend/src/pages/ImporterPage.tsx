@@ -1587,22 +1587,43 @@ interface SyncOp {
   resultKey?: string;
 }
 
-function DataSyncTab() {
+function SyncOpCard({ op, result, onResult }: {
+  op: SyncOp;
+  result?: string;
+  onResult: (key: string, summary: string) => void;
+}) {
+  // 抽成顶层组件: hook 在固定层级调用一次, 不再每次渲染重建组件而丢失 mutation 状态
   const qc = useQueryClient();
-  const [results, setResults] = useState<Record<string, string>>({});
+  const mut = useMutation({
+    mutationFn: op.fn,
+    onSuccess: (r: any) => {
+      const summary = r?.message ?? JSON.stringify(r);
+      onResult(op.key, summary);
+      message.success(`${op.label} 完成`);
+      qc.invalidateQueries();
+    },
+    onError: (e: any) => message.error(`${op.label} 失败: ${e?.response?.data?.detail ?? e?.message}`),
+  });
+  return (
+    <Card
+      size="small"
+      title={op.label}
+      extra={
+        <Button type="primary" size="small" loading={mut.isPending} onClick={() => mut.mutate()}>
+          执行
+        </Button>
+      }
+    >
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>{op.desc}</Typography.Text>
+      {result && (
+        <Alert type="success" showIcon style={{ marginTop: 8 }} message={result} />
+      )}
+    </Card>
+  );
+}
 
-  function useSyncMut(op: SyncOp) {
-    return useMutation({
-      mutationFn: op.fn,
-      onSuccess: (r: any) => {
-        const summary = r?.message ?? JSON.stringify(r);
-        setResults((prev) => ({ ...prev, [op.key]: summary }));
-        message.success(`${op.label} 完成`);
-        qc.invalidateQueries();
-      },
-      onError: (e: any) => message.error(`${op.label} 失败: ${e?.response?.data?.detail ?? e?.message}`),
-    });
-  }
+function DataSyncTab() {
+  const [results, setResults] = useState<Record<string, string>>({});
 
   const ops: SyncOp[] = [
     {
@@ -1646,39 +1667,14 @@ function DataSyncTab() {
         showIcon
         message="数据同步操作全部幂等，可重复执行。建议在 Excel 批量导入后依次运行。"
       />
-      {ops.map((op) => {
-        const SyncButton = () => {
-          const mut = useSyncMut(op);
-          return (
-            <Card
-              key={op.key}
-              size="small"
-              title={op.label}
-              extra={
-                <Button
-                  type="primary"
-                  size="small"
-                  loading={mut.isPending}
-                  onClick={() => mut.mutate()}
-                >
-                  执行
-                </Button>
-              }
-            >
-              <Typography.Text type="secondary" style={{ fontSize: 12 }}>{op.desc}</Typography.Text>
-              {results[op.key] && (
-                <Alert
-                  type="success"
-                  showIcon
-                  style={{ marginTop: 8 }}
-                  message={results[op.key]}
-                />
-              )}
-            </Card>
-          );
-        };
-        return <SyncButton key={op.key} />;
-      })}
+      {ops.map((op) => (
+        <SyncOpCard
+          key={op.key}
+          op={op}
+          result={results[op.key]}
+          onResult={(k, s) => setResults((prev) => ({ ...prev, [k]: s }))}
+        />
+      ))}
     </Space>
   );
 }

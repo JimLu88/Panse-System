@@ -7,6 +7,7 @@ export interface MeUser {
   display_name: string | null;
   role: string;
   is_active: boolean;
+  must_change_password?: boolean;
 }
 
 export const login = (username: string, password: string) =>
