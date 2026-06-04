@@ -6,6 +6,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -21,6 +22,7 @@ import {
   updatePartInventory,
 } from '../api/client';
 import { FirstVisitTip } from '../components/FirstVisitTip';
+import FullColumnView from '../components/FullColumnView';
 
 export default function PartInventoryPage() {
   const qc = useQueryClient();
@@ -32,6 +34,7 @@ export default function PartInventoryPage() {
   const [form] = Form.useForm();
   const [edits, setEdits] = useState<Record<number, { physical_qty?: number; locked_qty?: number }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   function setEdit(id: number, patch: { physical_qty?: number; locked_qty?: number }) {
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -171,6 +174,18 @@ export default function PartInventoryPage() {
         message="录入时如果物料名在「物料单价库」里没有，系统会自动建一条定制物料（AC-1000+），并把它丢进「异常处理」页等你补齐价格。"
       />
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="part_inventory" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<PartInventory>
         rowKey="id"
         loading={isLoading}
@@ -179,6 +194,7 @@ export default function PartInventoryPage() {
         pagination={{ pageSize: 20 }}
         size="middle"
       />
+      )}
 
       <Modal
         title="录入一条配件库存"

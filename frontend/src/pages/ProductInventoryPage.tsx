@@ -8,6 +8,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Segmented,
   Space,
   Switch,
   Table,
@@ -26,6 +27,7 @@ import {
   refreshProductInventoryStats,
   updateProductInventory,
 } from '../api/client';
+import FullColumnView from '../components/FullColumnView';
 
 const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   ok:       { color: 'success', label: '正常' },
@@ -43,6 +45,7 @@ export default function ProductInventoryPage() {
   const [editId, setEditId] = useState<number | null>(null);
   const [editForm] = Form.useForm();
   const [warningOnly, setWarningOnly] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data, isLoading } = useQuery({
     queryKey: ['product-inventory', warningOnly],
@@ -240,6 +243,18 @@ export default function ProductInventoryPage() {
         />
       )}
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="product_inventory" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table
         rowKey="id"
         columns={columns}
@@ -253,6 +268,7 @@ export default function ProductInventoryPage() {
         }
         size="small"
       />
+      )}
 
       {/* 添加库存弹窗 */}
       <Modal

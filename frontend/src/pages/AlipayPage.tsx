@@ -19,6 +19,7 @@ import {
   importAlipayCsv,
   listAlipayFlows,
 } from '../api/client';
+import FullColumnView from '../components/FullColumnView';
 
 const ACCOUNTS = ['企业号', '个体户私账', '爱群号', '佳宝号', '主力号'];
 
@@ -26,6 +27,7 @@ export default function AlipayPage() {
   const qc = useQueryClient();
   const [account, setAccount] = useState<string>(ACCOUNTS[0]);
   const [importResult, setImportResult] = useState<CsvImportReport | null>(null);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data, isLoading } = useQuery({
     queryKey: ['alipay', account],
@@ -89,12 +91,27 @@ export default function AlipayPage() {
         </Upload>
       </Space>
 
-      <Segmented
-        value={account}
-        onChange={(v) => setAccount(v as string)}
-        options={ACCOUNTS.map((a) => ({ label: a, value: a }))}
-      />
+      <Space wrap>
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'curated' | 'full')}
+          options={[
+            { label: '精选视图（可编辑）', value: 'curated' },
+            { label: '全部列', value: 'full' },
+          ]}
+        />
+        {viewMode === 'curated' && (
+          <Segmented
+            value={account}
+            onChange={(v) => setAccount(v as string)}
+            options={ACCOUNTS.map((a) => ({ label: a, value: a }))}
+          />
+        )}
+      </Space>
 
+      {viewMode === 'full' && <FullColumnView entity="alipay_flow" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<AlipayFlow>
         rowKey="id"
         loading={isLoading}
@@ -103,6 +120,7 @@ export default function AlipayPage() {
         pagination={{ pageSize: 30 }}
         size="middle"
       />
+      )}
 
       <Modal
         open={!!importResult}

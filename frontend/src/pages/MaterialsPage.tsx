@@ -15,6 +15,7 @@ import {
 } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import FullColumnView from '../components/FullColumnView';
 import { Material, createMaterial, getNextMaterialCode, listMaterials, updateMaterial } from '../api/client';
 
 type FilterKey = 'all' | 'standard' | 'custom';
@@ -35,6 +36,7 @@ export default function MaterialsPage() {
   const [createForm] = Form.useForm();
   const [previewCode, setPreviewCode] = useState<string>('');
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const fetchPreview = async (prefix: string) => {
     setPreviewLoading(true);
@@ -145,6 +147,18 @@ export default function MaterialsPage() {
         </Space>
       </Space>
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="material" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<Material>
         rowKey="id"
         loading={isLoading}
@@ -153,6 +167,7 @@ export default function MaterialsPage() {
         pagination={{ pageSize: 20 }}
         size="middle"
       />
+      )}
 
       {/* 新建配件 Modal */}
       <Modal

@@ -31,6 +31,7 @@ import {
 } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
+import FullColumnView from '../components/FullColumnView';
 import { Drawer, Spin, Table as AntTable } from 'antd';
 
 function fmtMoney(v: string | null | undefined): string {
@@ -70,6 +71,7 @@ export default function OrdersPage() {
   const [costFor, setCostFor] = useState<{ id: number; order_no: string } | null>(null);
   const [costData, setCostData] = useState<OrderCostBreakdown | null>(null);
   const [costLoading, setCostLoading] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data, isLoading } = useQuery({
     queryKey: ['orders', statusFilter, q],
@@ -299,19 +301,34 @@ export default function OrdersPage() {
         </Space>
       </Space>
 
-      <Segmented<StatusKey>
-        value={statusFilter}
-        onChange={(v) => setStatusFilter(v as StatusKey)}
-        options={[
-          { label: '全部', value: 'all' },
-          { label: '待付款', value: 'pending_payment' },
-          { label: '已付款', value: 'paid' },
-          { label: '已发货', value: 'shipped' },
-          { label: '已签收', value: 'signed' },
-          { label: '售后中', value: 'aftersales' },
-        ]}
-      />
+      <Space wrap>
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'curated' | 'full')}
+          options={[
+            { label: '精选视图（可编辑）', value: 'curated' },
+            { label: '全部列', value: 'full' },
+          ]}
+        />
+        {viewMode === 'curated' && (
+          <Segmented<StatusKey>
+            value={statusFilter}
+            onChange={(v) => setStatusFilter(v as StatusKey)}
+            options={[
+              { label: '全部', value: 'all' },
+              { label: '待付款', value: 'pending_payment' },
+              { label: '已付款', value: 'paid' },
+              { label: '已发货', value: 'shipped' },
+              { label: '已签收', value: 'signed' },
+              { label: '售后中', value: 'aftersales' },
+            ]}
+          />
+        )}
+      </Space>
 
+      {viewMode === 'full' && <FullColumnView entity="order" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<Order>
         rowKey="id"
         loading={isLoading}
@@ -320,6 +337,7 @@ export default function OrdersPage() {
         pagination={{ pageSize: 30 }}
         size="middle"
       />
+      )}
 
       <Modal
         title="CSV 导入结果"

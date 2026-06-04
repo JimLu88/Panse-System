@@ -17,6 +17,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Segmented,
   Space,
   Table,
   Tag,
@@ -24,6 +25,7 @@ import {
   message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import FullColumnView from '../components/FullColumnView';
 import {
   AfterSalesItem,
   confirmReturnInbound,
@@ -54,6 +56,7 @@ export default function AfterSalesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [inboundFor, setInboundFor] = useState<AfterSalesItem | null>(null);
   const [disOpen, setDisOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data: rows = [] } = useQuery({
     queryKey: ['aftersales'],
@@ -94,6 +97,18 @@ export default function AfterSalesPage() {
         message="退货闭环流程"
         description="① 创建退货 + 填快递单号 → ② 系统追踪快递, 签收后弹窗待确认 → ③ 检查完好 → 整产品入库 (不拆 BOM); 损坏 → 不入库, 留警告"
       />
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="aftersales" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Card title="退货/售后记录" size="small"
             extra={
               <Space>
@@ -151,6 +166,7 @@ export default function AfterSalesPage() {
           ]}
         />
       </Card>
+      )}
 
       <CreateReturnModal open={createOpen} onClose={() => setCreateOpen(false)}
                          onSubmit={(v) => createMut.mutate(v)}

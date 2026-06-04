@@ -7,6 +7,7 @@ import {
   Image,
   Input,
   Modal,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -18,6 +19,7 @@ import {
 import { EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import FullColumnView from '../components/FullColumnView';
 import { PricingSku, Product, createProduct, listProducts, listProductSkus, updateProduct } from '../api/client';
 
 function SkuExpandedRow({ productCode }: { productCode: string }) {
@@ -124,6 +126,7 @@ export default function ProductsPage() {
   const [pageSize, setPageSize] = useState(20);
   const [editTarget, setEditTarget] = useState<Product | null>(null);
   const [editForm] = Form.useForm();
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', q],
@@ -225,6 +228,18 @@ export default function ProductsPage() {
         message="产品编码由系统按 P + 品牌 + 年份 + 类目 + 计数 + 月日 自动生成，不需要手填。"
       />
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="product" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table<Product>
         rowKey="id"
         loading={isLoading}
@@ -245,6 +260,7 @@ export default function ProductsPage() {
           ),
         }}
       />
+      )}
 
       <Modal
         title={`编辑产品 — ${editTarget?.code ?? ''}`}

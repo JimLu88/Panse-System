@@ -1,8 +1,9 @@
 import { useState } from 'react';
-import { Alert, Button, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, InboxOutlined, SyncOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
+import FullColumnView from '../components/FullColumnView';
 
 interface RefillRecord {
   id: number;
@@ -27,6 +28,7 @@ interface ImportResult {
 export default function RefillRecordsPage() {
   const qc = useQueryClient();
   const [importing, setImporting] = useState(false);
+  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data = [], isLoading } = useQuery<RefillRecord[]>({
     queryKey: ['refill-records'],
@@ -102,6 +104,18 @@ export default function RefillRecordsPage() {
         )}
       </Space>
 
+      <Segmented
+        value={viewMode}
+        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        options={[
+          { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '全部列', value: 'full' },
+        ]}
+      />
+
+      {viewMode === 'full' && <FullColumnView entity="refill_record" defaultShowAll />}
+
+      {viewMode === 'curated' && (
       <Table
         size="small"
         loading={isLoading}
@@ -111,6 +125,7 @@ export default function RefillRecordsPage() {
         pagination={{ pageSize: 50, showSizeChanger: true }}
         scroll={{ x: 900 }}
       />
+      )}
     </Space>
   );
 }
