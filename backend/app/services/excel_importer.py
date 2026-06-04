@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import io
+import itertools
 import json
 import math
 import re
@@ -79,6 +80,37 @@ class ImporterError(RuntimeError):
 
 # ----------------------------- preview --------------------------- #
 
+# 检测真实表头时, 向下扫描的最大行数 (表头一般在前几行内)。
+_HEADER_SCAN_ROWS = 12
+
+
+def _row_nonempty_count(row: Any) -> int:
+    if not row:
+        return 0
+    return sum(1 for c in row if c is not None and str(c).strip() != "")
+
+
+def _detect_header_index(buffer: list) -> int:
+    """在前若干行里定位真正的表头行。
+
+    业务表格常在第一行放一个合并单元格大标题 (如「1-产品总表」, 整行只有 1 个非空格),
+    真正的列名 (产品编码 / SKU编码 ...) 在第二行。openpyxl 读 read_only 时合并标题只在
+    左上角有值, 其余为 None, 若直接拿第一行当表头, 全部列名都会错位, 导致每行都报
+    「缺产品编码 / 缺 sku_code」被跳过。
+
+    策略: 取前几行里"非空单元格最多"的那一行宽度为基准, 返回第一个达到其一半宽度
+    (且 >=2 列) 的行作为表头 — 这样能跳过 1 格的标题横幅, 又不会误伤本就以表头开头的表。
+    """
+    if not buffer:
+        return 0
+    counts = [_row_nonempty_count(r) for r in buffer]
+    best = max(counts)
+    threshold = max(2, (best + 1) // 2)
+    for i, c in enumerate(counts):
+        if c >= threshold:
+            return i
+    return 0
+
 
 def preview_excel(file_bytes: bytes, *, sample_rows: int = 5) -> list[SheetPreview]:
     """解析 Excel, 每个 sheet 返回 header + 前 N 行."""
@@ -90,14 +122,21 @@ def preview_excel(file_bytes: bytes, *, sample_rows: int = 5) -> list[SheetPrevi
     previews: list[SheetPreview] = []
     for ws in wb.worksheets:
         rows_iter = ws.iter_rows(values_only=True)
-        try:
-            header_row = next(rows_iter)
-        except StopIteration:
+        # 先缓冲前几行, 自动定位真正的表头行 (跳过合并单元格大标题横幅)
+        buffer: list = []
+        for _ in range(_HEADER_SCAN_ROWS):
+            try:
+                buffer.append(next(rows_iter))
+            except StopIteration:
+                break
+        if not buffer:
             previews.append(SheetPreview(
                 sheet_name=ws.title, row_count=0, column_names=[], sample_rows=[],
                 notes=["空 sheet, 已跳过"],
             ))
             continue
+        h_idx = _detect_header_index(buffer)
+        header_row = buffer[h_idx]
         column_names = [str(c).strip() if c is not None else f"col{i + 1}"
                         for i, c in enumerate(header_row)]
         # 过滤全空列名 (Excel 尾部 None)
@@ -106,8 +145,16 @@ def preview_excel(file_bytes: bytes, *, sample_rows: int = 5) -> list[SheetPrevi
             if n and not n.startswith("col"):
                 last_nonempty = i + 1
         column_names = column_names[:last_nonempty]
+        notes: list[str] = []
+        if h_idx > 0:
+            notes.append(f"已跳过前 {h_idx} 行 (合并标题/空行), 第 {h_idx + 1} 行识别为表头")
         sample: list[list[Any]] = []
         total = 0
+        # 表头之后的数据行 = 缓冲区剩余 + 迭代器剩余
+        for r in buffer[h_idx + 1:]:
+            total += 1
+            if len(sample) < sample_rows:
+                sample.append([_clean_value(c) for c in (r or [])][:last_nonempty])
         for r in rows_iter:
             total += 1
             if len(sample) < sample_rows:
@@ -117,6 +164,7 @@ def preview_excel(file_bytes: bytes, *, sample_rows: int = 5) -> list[SheetPrevi
             row_count=total,
             column_names=column_names,
             sample_rows=sample,
+            notes=notes,
         ))
     wb.close()
     return previews
@@ -362,15 +410,23 @@ def _read_all_rows(file_bytes: bytes, sheet_name: str) -> list[dict[str, Any]]:
         raise ImporterError(f"sheet {sheet_name!r} 不存在; 可选: {wb.sheetnames}")
     ws = wb[sheet_name]
     rows_iter = ws.iter_rows(values_only=True)
-    try:
-        header_row = next(rows_iter)
-    except StopIteration:
+    # 缓冲前几行自动定位真实表头 (与 preview 一致, 跳过合并标题横幅)
+    buffer: list = []
+    for _ in range(_HEADER_SCAN_ROWS):
+        try:
+            buffer.append(next(rows_iter))
+        except StopIteration:
+            break
+    if not buffer:
         wb.close()
         return []
+    h_idx = _detect_header_index(buffer)
+    header_row = buffer[h_idx]
     columns = [str(c).strip() if c is not None else f"col{i + 1}"
                for i, c in enumerate(header_row)]
     rows: list[dict[str, Any]] = []
-    for r in rows_iter:
+    # 表头之后的数据 = 缓冲剩余 + 迭代器剩余
+    for r in itertools.chain(buffer[h_idx + 1:], rows_iter):
         if r is None:
             continue
         row_dict = {col: r[i] if i < len(r) else None for i, col in enumerate(columns)}

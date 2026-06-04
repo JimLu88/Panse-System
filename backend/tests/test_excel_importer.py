@@ -93,6 +93,56 @@ def test_preview_handles_date_value():
     assert "2026-05-14" in str(p.sample_rows[0][0])
 
 
+def _xlsx_with_title_banner(sheet_name, title, header, rows):
+    """第一行是合并单元格大标题, 第二行才是真表头 (复现业务总表结构)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_name
+    ws.append([title] + [None] * (len(header) - 1))
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(header))
+    ws.append(header)
+    for r in rows:
+        ws.append(r)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_preview_skips_merged_title_banner():
+    """合并标题行不应被当成表头 (否则真列名错位, 每行报缺主键被跳过)."""
+    data = _xlsx_with_title_banner(
+        "1-产品总表", "1-产品总表",
+        ["产品编码", "类目", "产品名称"],
+        [["PPS001", "床", "榉木床"], ["PPS002", "柜", "斗柜"]],
+    )
+    p = excel_importer.preview_excel(data)[0]
+    assert p.column_names == ["产品编码", "类目", "产品名称"]
+    assert p.row_count == 2
+    assert p.sample_rows[0][0] == "PPS001"
+    assert any("识别为表头" in n for n in p.notes)
+
+
+def test_commit_skips_merged_title_banner(db_session):
+    """带合并标题的产品总表能正确入库, 不再误判'缺产品编码'."""
+    from app.models.product import Product
+    data = _xlsx_with_title_banner(
+        "1-产品总表", "1-产品总表",
+        ["产品编码", "类目", "产品名称"],
+        [["PPS001", "床", "榉木床"], ["PPS002", "柜", "斗柜"]],
+    )
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="1-产品总表",
+        entity_type="product",
+        mapping={"code": "产品编码", "category": "类目", "name": "产品名称"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 2
+    assert report.skipped_rows == 0
+    codes = {p.code for p in db_session.query(Product).all()}
+    assert {"PPS001", "PPS002"} <= codes
+
+
 # ----------------------------- AI 推断 --------------------------- #
 
 
