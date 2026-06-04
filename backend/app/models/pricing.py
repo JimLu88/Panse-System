@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Index, Numeric, String
+from sqlalchemy import Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -20,6 +20,7 @@ class PricingSku(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     product_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(255))  # 产品名称
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     sku_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     size_category: Mapped[Optional[str]] = mapped_column(String(16))  # 小型 / 中型 / 大型
@@ -46,6 +47,7 @@ class PricingSku(Base, TimestampMixin):
     external_parts_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
 
     image_url: Mapped[Optional[str]] = mapped_column(String(512))
+    remark: Mapped[Optional[str]] = mapped_column(Text)  # 备注
 
     __table_args__ = (
         Index("ix_pricing_sku_size", "size_category"),

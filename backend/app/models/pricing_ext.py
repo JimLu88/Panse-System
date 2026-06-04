@@ -42,6 +42,7 @@ class PricingSkuPromo(Base, TimestampMixin):
     sku_code: Mapped[str] = mapped_column(String(32), nullable=False, unique=True, index=True)
     # 淘宝
     taobao_item_id: Mapped[Optional[str]] = mapped_column(String(64))
+    taobao_url: Mapped[Optional[str]] = mapped_column(String(512))  # 淘宝链接
     taobao_sku_id: Mapped[Optional[str]] = mapped_column(String(64))
     taobao_activity_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))  # = daily_price
     # 店内活动
@@ -49,13 +50,17 @@ class PricingSkuPromo(Base, TimestampMixin):
     shop_internal_promo: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 店铺宝设置
     shop_internal_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 到手价=小促
     # 无国补中促 (user inputs: mid_shop_rate; rest computed)
+    mid_platform_discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))  # 平台立减 12%
     mid_shop_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))
     mid_buyer_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
+    mid_vip_commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 88VIP佣金
     mid_shop_receipt: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     mid_vip_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     # 无国补大促 (user inputs: big_shop_rate; rest computed)
+    big_platform_discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))  # 平台立减 12%
     big_shop_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))
     big_buyer_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
+    big_vip_commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 88VIP佣金
     big_shop_receipt: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     big_vip_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     # 小红书 (xhs)
