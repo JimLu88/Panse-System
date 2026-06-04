@@ -100,15 +100,48 @@ def commit_qianniu(
     """业务需求 1: 用户确认 AI 解析后, 批量入 Orders 表."""
     inserted = 0
     skipped: list[str] = []
+    conflicts: list[str] = []
     for o in payload.orders:
         if not o.order_no:
             continue
-        # 去重
         existing = db.execute(
             select(Order).where(Order.order_no == o.order_no)
         ).scalar_one_or_none()
         if existing:
-            skipped.append(o.order_no)
+            # 对比字段: 有差异则记冲突, 无差异则静默跳过
+            new_fields = {
+                "platform": o.platform or "淘宝",
+                "customer_name": o.customer_name,
+                "customer_phone": o.customer_phone,
+                "customer_address": o.customer_address,
+                "product_name": o.product_name,
+                "sku": o.sku,
+                "qty": o.qty or 1,
+                "paid_amount": Decimal(str(o.paid_amount)) if o.paid_amount is not None else None,
+            }
+            changed = {k: v for k, v in new_fields.items()
+                       if v is not None and getattr(existing, k, None) != v}
+            if changed:
+                from app.services import exception_service as _exc_svc
+                diffs = [{"field": k, "old": str(getattr(existing, k, None)),
+                          "new": str(v)} for k, v in changed.items()]
+                _exc_svc.record(
+                    db,
+                    source_table="orders",
+                    source_pk=o.order_no,
+                    exception_type="import_conflict",
+                    severity="warning",
+                    description=f"截图订单 {o.order_no} 与已有记录不同，需确认使用哪个版本。",
+                    suggestion_action="resolve_import_conflict",
+                    context={
+                        "diffs": diffs,
+                        "new_values": {k: str(v) if v is not None else None
+                                       for k, v in changed.items()},
+                    },
+                )
+                conflicts.append(o.order_no)
+            else:
+                skipped.append(o.order_no)
             continue
         order_date = None
         if o.order_date:
@@ -135,7 +168,7 @@ def commit_qianniu(
         db.add(order)
         inserted += 1
     db.commit()
-    return {"inserted": inserted, "skipped_existing": skipped}
+    return {"inserted": inserted, "skipped_existing": skipped, "conflicts": conflicts}
 
 
 class FactorySheetPreviewIn(BaseModel):
@@ -245,6 +278,7 @@ def commit_purchase(
             pass
     base_no = payload.purchase_no or f"P{int(datetime.now().timestamp())}"
     inserted = 0
+    conflicts = 0
     for idx, line in enumerate(payload.lines, start=1):
         if not (line.material_code or line.material_name):
             continue
@@ -256,8 +290,39 @@ def commit_purchase(
         unit_price = Decimal(str(line.unit_price)) if line.unit_price is not None else None
         if amount is None and unit_price is not None:
             amount = (unit_price * qty).quantize(Decimal("0.01"))
+        pp_no = f"{base_no}_{idx}" if len(payload.lines) > 1 else base_no
+        # 防重: 按 purchase_no 查重, 字段相同→跳过, 不同→记冲突
+        existing = db.execute(select(PartPurchase).where(PartPurchase.purchase_no == pp_no)).scalar_one_or_none()
+        if existing is not None:
+            new_fields = {
+                "supplier": payload.supplier, "purchase_date": pdate,
+                "material_code": line.material_code, "material_name": line.material_name,
+                "qty": qty, "unit_price": unit_price, "amount": amount,
+            }
+            changed_fields = {k: v for k, v in new_fields.items()
+                              if v is not None and getattr(existing, k, None) != v}
+            if changed_fields:
+                from app.services import exception_service as _exc_svc
+                diffs = [{"field": k, "old": str(getattr(existing, k, None)),
+                          "new": str(v)} for k, v in changed_fields.items()]
+                _exc_svc.record(
+                    db,
+                    source_table="part_purchases",
+                    source_pk=pp_no,
+                    exception_type="import_conflict",
+                    severity="warning",
+                    description=f"截图采购单 {pp_no} 与已有记录不同，需确认使用哪个版本。",
+                    suggestion_action="resolve_import_conflict",
+                    context={
+                        "diffs": diffs,
+                        "new_values": {k: str(v) if v is not None else None
+                                       for k, v in new_fields.items()},
+                    },
+                )
+                conflicts += 1
+            continue
         pp = PartPurchase(
-            purchase_no=f"{base_no}_{idx}" if len(payload.lines) > 1 else base_no,
+            purchase_no=pp_no,
             supplier=payload.supplier,
             purchase_date=pdate,
             material_code=line.material_code,
@@ -273,7 +338,8 @@ def commit_purchase(
         db.add(pp)
         inserted += 1
     db.commit()
-    return {"inserted": inserted, "purchase_no": base_no, "has_tracking": bool(payload.tracking_no)}
+    return {"inserted": inserted, "conflicts": conflicts,
+            "purchase_no": base_no, "has_tracking": bool(payload.tracking_no)}
 
 
 # --------------------------- 工厂对账单 (Task 3) --------------------------- #

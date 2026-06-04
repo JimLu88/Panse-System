@@ -162,6 +162,7 @@ export interface SmartCommitReport {
   errors?: string[];
   warnings?: string[];
   conflicts?: ImportConflict[];
+  unmapped_columns?: string[];
   skipped?: boolean;
   reason?: string;
   error?: string;

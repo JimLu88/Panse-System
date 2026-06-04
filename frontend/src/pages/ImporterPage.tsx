@@ -1206,12 +1206,26 @@ function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
       logs: errs,
     };
   }
+  const unmapped = rep.unmapped_columns ?? [];
   if (errs.length > 0 || skipped > 0) {
+    const logs = [...errs];
+    if (unmapped.length > 0) {
+      logs.push(`⚠ 以下 ${unmapped.length} 个 Excel 列未被映射，其中的数据未导入：${unmapped.join(', ')}`);
+      logs.push('→ 如需导入这些列的数据，请在「字段映射」中为它们指定对应的系统字段，然后重新导入。');
+    }
     return {
       ...base, status: 'partial',
-      headline: `入库 ${inserted} 行，${skipped} 行被跳过`,
+      headline: `入库 ${inserted} 行，${skipped} 行被跳过${unmapped.length > 0 ? `，${unmapped.length} 列未映射` : ''}`,
       detail: errs.length > 0 ? '以下是被跳过行的原因：' : '部分行重复或为空，已跳过。',
-      logs: errs,
+      logs,
+    };
+  }
+  if (unmapped.length > 0) {
+    return {
+      ...base, status: 'warn',
+      headline: `成功入库 ${inserted} 行，但 ${unmapped.length} 个列未被映射`,
+      detail: `以下 Excel 列的数据未被导入：${unmapped.join(', ')}。如需导入，请在字段映射中为这些列选择对应系统字段后重新导入。`,
+      logs: [`未映射列: ${unmapped.join(', ')}`],
     };
   }
   return { ...base, status: 'ok', headline: `成功入库 ${inserted} 行` };

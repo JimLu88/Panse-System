@@ -588,6 +588,7 @@ def smart_commit(
                 "errors": report.errors[:10],
                 "warnings": report.warnings[:10],
                 "conflicts": report.conflicts[:50],
+                "unmapped_columns": report.unmapped_columns,
             })
         except Exception as e:
             # 捕获所有异常 (含 SQLAlchemy 错误), 回滚本 sheet 后继续

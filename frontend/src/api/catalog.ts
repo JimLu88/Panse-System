@@ -143,6 +143,11 @@ export const resolveException = (id: number, status: 'resolved' | 'ignored') =>
     .patch<DataException>(`/api/exceptions/${id}/resolve`, { status })
     .then((r) => r.data);
 
+export const resolveImportConflict = (id: number, choice: 'new' | 'old') =>
+  api
+    .post<DataException>(`/api/exceptions/${id}/resolve-import-conflict`, { choice })
+    .then((r) => r.data);
+
 // ----- Products -----
 export interface Product {
   id: number;
