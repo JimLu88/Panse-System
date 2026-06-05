@@ -1,11 +1,15 @@
 """orders 补全订单总表财务列 — 买家应付/店铺实收/税费/其它费用/总成本 +
 售后费用冗余列 (好评返/二次维修/返厂运费/工厂补偿/物流补偿/补偿总额) + 退款状态/金额/日期.
 
+幂等: 仅补「缺失」的列 (生产库 schema 可能已由历史路径先行存在, 直接 ADD 会撞
+DuplicateColumn 导致迁移失败、API 起不来)。Postgres 与 SQLite 通用 (用 inspector 判断)。
+
 Revision ID: 0046
 Revises: 0045
 """
 from alembic import op
 import sqlalchemy as sa
+from sqlalchemy import inspect
 
 revision = "0046"
 down_revision = "0045"
@@ -32,14 +36,22 @@ _COLUMNS = [
 ]
 
 
+def _existing_columns(table: str) -> set[str]:
+    return {c["name"] for c in inspect(op.get_bind()).get_columns(table)}
+
+
 def upgrade():
+    order_cols = _existing_columns("orders")
     for name, type_ in _COLUMNS:
-        op.add_column("orders", sa.Column(name, type_, nullable=True))
+        if name not in order_cols:
+            op.add_column("orders", sa.Column(name, type_, nullable=True))
     # refill_records: schema 早有 remark 字段 (备注/补单状态), 但表缺列 —— 含备注的补单行
     # 过去会让 RefillRecord(**payload) 抛 TypeError 整行失败。补列修复。
-    op.add_column("refill_records", sa.Column("remark", sa.String(255), nullable=True))
+    if "remark" not in _existing_columns("refill_records"):
+        op.add_column("refill_records", sa.Column("remark", sa.String(255), nullable=True))
     # part_purchases: 新增配件采购导入, 补 remark 列让 备注 不丢。
-    op.add_column("part_purchases", sa.Column("remark", sa.Text(), nullable=True))
+    if "remark" not in _existing_columns("part_purchases"):
+        op.add_column("part_purchases", sa.Column("remark", sa.Text(), nullable=True))
 
 
 def downgrade():
