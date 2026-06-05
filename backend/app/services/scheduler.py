@@ -37,6 +37,35 @@ _REGISTRY: dict[str, dict] = {}
 # ----------------------------- 任务运行包装 ----------------------- #
 
 
+_FAILURE_ALERT_THRESHOLD = 3
+
+
+def _maybe_alert_repeated_failure(db: Session, job_id: str, label: str) -> None:
+    """定时任务连续失败到阈值时告警一次 (优化 #6)。只在"刚跨过阈值"时发, 避免每次刷屏。"""
+    from sqlalchemy import select
+    from app.models.scheduled_job import ScheduledJobRun
+    n = _FAILURE_ALERT_THRESHOLD
+    recent = db.execute(
+        select(ScheduledJobRun.status).where(ScheduledJobRun.job_id == job_id)
+        .order_by(ScheduledJobRun.id.desc()).limit(n)
+    ).scalars().all()
+    if len(recent) < n or any(s != "fail" for s in recent):
+        return
+    prior = db.execute(
+        select(ScheduledJobRun.status).where(ScheduledJobRun.job_id == job_id)
+        .order_by(ScheduledJobRun.id.desc()).offset(n).limit(1)
+    ).scalars().first()
+    if prior == "fail":
+        return   # 已在阈值以上, 之前已告警过, 不重复刷
+    try:
+        from app.services import notify_service
+        notify_service.notify(
+            db, f"定时任务【{label}】({job_id}) 已连续失败 {n} 次, 请尽快检查。",
+            level="error", title="定时任务连续失败")
+    except Exception:  # pragma: no cover
+        _logger.warning("发送任务失败告警出错")
+
+
 def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) -> None:
     """同步任务 wrapper. fn 接收一个 db session, 返回 dict 写到 result_summary."""
     from app.database import SessionLocal
@@ -75,6 +104,8 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
                 started_at=started, completed_at=datetime.now(timezone.utc),
             ))
             log_db.commit()
+            if status == "fail":
+                _maybe_alert_repeated_failure(log_db, job_id, label)
         except Exception as e:  # pragma: no cover
             _logger.warning("写 ScheduledJobRun 失败: %s", e)
         finally:
