@@ -1,0 +1,28 @@
+/* 全局字体基线 — 按苹果排版规范 (Apple HIG / apple.com)。
+   字体: 苹方(中文) + San Francisco(英文/数字), 系统自带, 无需下载。
+   渲染: 开启抗锯齿, 让字看起来更细更清晰 — 苹果同款观感。
+   字距: 轻微收紧 (negative tracking), 大标题收得更紧。
+   行距/字号/文字色 由 antd 主题 token 统一控制 (见 main.tsx)。 */
+
+:root {
+  --apple-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+    "Helvetica Neue", "PingFang SC", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+}
+
+html,
+body {
+  font-family: var(--apple-font);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.01em;
+  color: #1d1d1f;
+}
+
+/* 标题用更紧的字距 — 苹果大字排版规范 */
+h1,
+h2,
+h3,
+h4,
+h5 {
+  letter-spacing: -0.022em;
+}
