@@ -207,7 +207,31 @@ class OwnerHealthOut(BaseModel):
     open_exceptions: int
     exceptions_by_severity: dict
     failing_jobs: list[str]
+    latest_backup_age_h: Optional[float] = None
+    latest_backup_size_mb: Optional[float] = None
+    backup_stale: Optional[bool] = None
     healthy: bool
+
+
+def _backup_status() -> dict:
+    """读 /backups 最新备份的新鲜度 (优化 #4)。无挂载/无备份则字段为空/标陈旧。"""
+    import os
+    import time
+    d = os.environ.get("BACKUP_DIR", "/backups")
+    out: dict = {"latest_backup_age_h": None, "latest_backup_size_mb": None, "backup_stale": None}
+    try:
+        files = [f for f in os.listdir(d) if f.startswith("panse-") and f.endswith(".sql.gz")]
+        if not files:
+            out["backup_stale"] = True
+            return out
+        newest = max(files, key=lambda f: os.path.getmtime(os.path.join(d, f)))
+        p = os.path.join(d, newest)
+        out["latest_backup_age_h"] = round((time.time() - os.path.getmtime(p)) / 3600, 1)
+        out["latest_backup_size_mb"] = round(os.path.getsize(p) / 1024 / 1024, 2)
+        out["backup_stale"] = out["latest_backup_age_h"] > 36 or out["latest_backup_size_mb"] < 0.001
+    except OSError:
+        pass
+    return out
 
 
 @router.get("/owner-health", response_model=OwnerHealthOut)
@@ -236,9 +260,14 @@ def owner_health(
     ).all():
         latest.setdefault(jid, st)
     failing = [jid for jid, st in latest.items() if st == "fail"]
+    bk = _backup_status()
     return OwnerHealthOut(
         open_exceptions=int(total_open), exceptions_by_severity=by_sev,
-        failing_jobs=failing, healthy=(total_open == 0 and not failing),
+        failing_jobs=failing,
+        latest_backup_age_h=bk["latest_backup_age_h"],
+        latest_backup_size_mb=bk["latest_backup_size_mb"],
+        backup_stale=bk["backup_stale"],
+        healthy=(total_open == 0 and not failing and not bk["backup_stale"]),
     )
 
 

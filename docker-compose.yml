@@ -46,6 +46,7 @@ services:
     volumes:
       - ./backend:/app
       - ./storage:/app/storage   # 送货单原图归档 + 上传文件
+      - ./backups:/backups:ro    # 只读: 供"系统体检"报告最新备份新鲜度 (优化 #4)
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\", timeout=3)' || exit 1"]
       interval: 30s
