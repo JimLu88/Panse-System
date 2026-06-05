@@ -771,7 +771,8 @@ def _commit_factory_orders(
                 "order_date": projected.get("order_date"),
                 "expected_delivery": projected.get("expected_delivery"),
                 "actual_delivery": projected.get("actual_delivery"),
-                "product_code": product_code, "sku": sku, "qty": qty,
+                "product_code": product_code, "product_name": projected.get("product_name"),
+                "sku": sku, "qty": qty,
                 "unit_price": projected.get("unit_price"),
                 "factory_bill_amount": projected.get("factory_bill_amount"),
                 "expected_amount": expected_amount,
@@ -799,6 +800,7 @@ def _commit_factory_orders(
             expected_delivery=projected.get("expected_delivery"),
             actual_delivery=projected.get("actual_delivery"),
             product_code=product_code,
+            product_name=projected.get("product_name"),
             sku=sku,
             qty=qty,
             unit_price=projected.get("unit_price"),
@@ -886,6 +888,7 @@ def _commit_alipay_flows(
                 "amount": amount,
                 "balance": projected.get("balance"),
                 "related_order_no": projected.get("related_order_no"),
+                "platform_order_no": projected.get("platform_order_no"),
                 "remark": projected.get("remark"),
             }
             action = _apply_update(existing, flow_payload, ctx, "alipay_flows", tx_no, db)
@@ -902,6 +905,7 @@ def _commit_alipay_flows(
             amount=amount,
             balance=projected.get("balance"),
             related_order_no=projected.get("related_order_no"),
+            platform_order_no=projected.get("platform_order_no"),
             remark=projected.get("remark"),
             reconciliation_status="open",
         )
@@ -1052,6 +1056,15 @@ def _commit_generic(
             # 跳过 MAPPED 列全为空的行 (模板行/辅助列行):
             # 有些表末尾有大量「导入校验=✅」但业务列全空的占位行, 避免误报必填字段缺失。
             if all(v is None or (isinstance(v, str) and v.strip() == "") for v in projected.values()):
+                continue
+            # 跳过"模板/空行": 该 entity 必填键全为空 → 不是真实记录 (常见于表尾公式填充行,
+            # 如售后表尾部仅有"导入校验=✅"+成本列=0)。静默跳过, 不计为错误, 免上百条噪音。
+            _req = [fn for fn, fd in schema["fields"].items() if fd.get("required")]
+            if _req and all(
+                projected.get(rf) is None
+                or (isinstance(projected.get(rf), str) and not projected.get(rf).strip())
+                for rf in _req
+            ):
                 continue
             for f in ff_fields:
                 if projected.get(f):
@@ -1594,13 +1607,25 @@ def _h_factory_reconciliation(db, data, key_field, ctx=None):
                         f"工厂对账绑定的支付宝流水号 {flow_no} 在流水表中未找到, 请核对.", "warning")
     # 差异金额缺省 0 (模型已有 default, 这里显式兜底)
     data.setdefault("diff_amount", Decimal("0"))
+    # 去重键: 优先用"对账周期"(表 11 用文字周期, 无起止日期), 回退到对账截止日期
+    billing_period = data.get("billing_period")
     period_end = data.get("period_end")
-    existing = db.execute(
-        select(FactoryReconciliation).where(
-            FactoryReconciliation.factory_name == factory,
-            FactoryReconciliation.period_end == period_end,
-        )
-    ).scalar_one_or_none() if period_end else None
+    if billing_period:
+        existing = db.execute(
+            select(FactoryReconciliation).where(
+                FactoryReconciliation.factory_name == factory,
+                FactoryReconciliation.billing_period == billing_period,
+            )
+        ).scalar_one_or_none()
+    elif period_end:
+        existing = db.execute(
+            select(FactoryReconciliation).where(
+                FactoryReconciliation.factory_name == factory,
+                FactoryReconciliation.period_end == period_end,
+            )
+        ).scalar_one_or_none()
+    else:
+        existing = None
     payload = {k: v for k, v in data.items() if v is not None}
     if existing:
         return "factory_reconciliation", _apply_update(

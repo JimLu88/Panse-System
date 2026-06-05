@@ -32,6 +32,8 @@ class AlipayFlow(Base, TimestampMixin):
     counterparty_account: Mapped[Optional[str]] = mapped_column(String(255))
     amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)  # 正=收入, 负=支出
     related_order_no: Mapped[Optional[str]] = mapped_column(String(255), index=True)
+    # 平台订单号 (表 9 与"关联订单号"分列; 爱群号等账户会把多笔订单号拼在一格 → Text 不限长, 不建索引)
+    platform_order_no: Mapped[Optional[str]] = mapped_column(Text)
     balance: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 2))
     reconciliation_status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     # open / matched / mismatched / ignored / opening_balance (期初调整)
@@ -106,6 +108,11 @@ class RefillRecord(Base, TimestampMixin):
     # 业务需求 §5: 补单只算佣金 + 快递; 平台/税务回到 Order.profit 计算
     commission: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 表 8-补单记录 字段补全 (Excel 导入)
+    supplier_payment: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 供应商打款费用
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))            # 支付宝流水号
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(128))              # 物流单号
+    fee_remark: Mapped[Optional[str]] = mapped_column(Text)                      # 费用备注
     remark: Mapped[Optional[str]] = mapped_column(String(255))   # 备注 / 补单状态
     # 飞书同步配对键 (自增 id 两端对不上, 用业务字段拼一个稳定键), 由事件钩子自动生成
     sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
@@ -163,6 +170,7 @@ class FactoryReconciliation(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    billing_period: Mapped[Optional[str]] = mapped_column(String(64))   # 对账周期 (如 "2026年1月结账")
     period_start: Mapped[Optional[date]] = mapped_column(Date)
     period_end: Mapped[Optional[date]] = mapped_column(Date)
     factory_name: Mapped[str] = mapped_column(String(128), nullable=False, index=True)

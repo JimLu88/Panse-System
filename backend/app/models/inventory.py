@@ -32,6 +32,14 @@ class PartInventory(Base, TimestampMixin):
     last_inbound_at: Mapped[Optional[date]] = mapped_column(Date)
     last_outbound_at: Mapped[Optional[date]] = mapped_column(Date)
     safety_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))
+    # 表 4b 字段补全 (Excel 导入需要; 全部 nullable 向后兼容)
+    lead_time_days: Mapped[Optional[int]] = mapped_column(Integer)          # 提前期(天)
+    slow_moving_days: Mapped[Optional[int]] = mapped_column(Integer)        # 滞销预警天数
+    avg_daily_sales: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))  # 日均销量
+    stock_status: Mapped[Optional[str]] = mapped_column(String(32))         # 库存状态(导入快照)
+    stock_alert_status: Mapped[Optional[str]] = mapped_column(String(32))   # 库存预警状态(导入快照)
+    slow_moving_status: Mapped[Optional[str]] = mapped_column(String(32))   # 滞销状态(导入快照)
+    auto_restock_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))  # 自动计算备货量(导入快照)
     remark: Mapped[Optional[str]] = mapped_column(String(255))
 
     @property
@@ -65,6 +73,15 @@ class ProductInventory(Base, TimestampMixin):
     lead_time_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     slow_moving_days: Mapped[Optional[int]] = mapped_column(Integer, nullable=True, default=60)
     reorder_point: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3), nullable=True)
+    # 表 4a 字段补全 (Excel 导入需要; 全部 nullable 向后兼容)
+    product_name: Mapped[Optional[str]] = mapped_column(String(255))        # 产品名称
+    last_inbound_at: Mapped[Optional[date]] = mapped_column(Date)           # 最后入库日期
+    last_outbound_at: Mapped[Optional[date]] = mapped_column(Date)          # 最后出库日期
+    avg_daily_sales: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))  # 日均销量
+    stock_status: Mapped[Optional[str]] = mapped_column(String(32))         # 库存状态(导入快照)
+    stock_alert_status: Mapped[Optional[str]] = mapped_column(String(32))   # 库存预警状态(导入快照)
+    slow_moving_status: Mapped[Optional[str]] = mapped_column(String(32))   # 滞销状态(导入快照)
+    auto_restock_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))  # 自动计算备货量(导入快照)
     remark: Mapped[Optional[str]] = mapped_column(String(255))
 
     @property

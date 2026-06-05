@@ -88,6 +88,9 @@ class Order(Base, TimestampMixin):
 
     # 发货仓库 — 默认江西仓库; 样块 / 补单订单统一杭州 (导入时由 default_warehouse_for 自动判定)
     warehouse: Mapped[Optional[str]] = mapped_column(String(32))
+    # 表 5-订单总表 字段补全 (Excel 导入)
+    order_profit: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 订单利润(导入快照)
+    lock_status: Mapped[Optional[str]] = mapped_column(String(32))            # 锁定状态
 
     # Phase 1 扩展
     is_historical: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
@@ -131,6 +134,7 @@ class FactoryOrder(Base, TimestampMixin):
     expected_delivery: Mapped[Optional[date]] = mapped_column(Date)
     actual_delivery: Mapped[Optional[date]] = mapped_column(Date)
     product_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    product_name: Mapped[Optional[str]] = mapped_column(String(255))   # 产品名称 (表 6 导入)
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     qty: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
     unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

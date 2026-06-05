@@ -1,7 +1,7 @@
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import ForeignKey, Numeric, String, UniqueConstraint
+from sqlalchemy import ForeignKey, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -24,6 +24,6 @@ class BomLine(Base, TimestampMixin):
     qty_per_product: Mapped[Decimal] = mapped_column(Numeric(12, 4), default=Decimal("1"))
     # 尺寸类型 (业务需求 §2: 决定微定制时这行 BOM 是否随尺寸变 — "组合"= 随; "个数"= 不变)
     size_type: Mapped[Optional[str]] = mapped_column(String(32))
-    remark: Mapped[Optional[str]] = mapped_column(String(255))
+    remark: Mapped[Optional[str]] = mapped_column(Text)   # 备注(尺寸/工艺说明, 可能很长 → Text 不限长)
     product_name: Mapped[Optional[str]] = mapped_column(String(255))   # 产品名称 (冗余, 方便对账)
     material_name: Mapped[Optional[str]] = mapped_column(String(255))  # 物料名称 (冗余, 方便对账)

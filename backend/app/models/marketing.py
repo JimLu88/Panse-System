@@ -104,6 +104,7 @@ class AfterSales(Base, TimestampMixin):
     processed_at: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[Optional[str]] = mapped_column(String(32))
     customer_satisfaction: Mapped[Optional[str]] = mapped_column(String(32))
+    taobao_backend_note: Mapped[Optional[str]] = mapped_column(Text)   # 淘宝后台标注 (表 18 导入)
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
 
