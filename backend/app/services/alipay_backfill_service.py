@@ -110,9 +110,13 @@ def _match_token(token: str, idx: _OrderIndex) -> Optional[Hit]:
 
 
 def _candidates_from_flow(flow: AlipayFlow) -> list[str]:
-    """一条流水里所有可能含订单号的数字串 (来源: 关联订单号 > 备注 > 对手账户)。"""
+    """一条流水里所有可能含订单号的数字串。
+
+    来源优先级: 平台订单号(已由 order_no_normalizer 多规则还原, 最干净) > 关联订单号 >
+    备注 > 对手账户。爱群号的「平台订单号」列只存在这里, 旧逻辑没读, 现补上。
+    """
     seen: list[str] = []
-    for src in (flow.related_order_no, flow.remark, flow.counterparty_account):
+    for src in (flow.platform_order_no, flow.related_order_no, flow.remark, flow.counterparty_account):
         for run in _digit_runs(src):
             if run not in seen:
                 seen.append(run)
@@ -144,6 +148,7 @@ class BackfillResult:
     ambiguous: int                         # 歧义流水数 (命中多单, 跳过)
     unmatched: int                         # 有数字串但匹配不到订单
     by_rule: dict[str, int] = field(default_factory=dict)   # 各规律命中数
+    flows_marked_matched: int = 0          # 设为 reconciliation_status='matched' 的流水数
     samples: list[dict] = field(default_factory=list)       # 命中样本 (前若干条)
 
 
@@ -212,8 +217,13 @@ def backfill(
     """
     chosen, result = _scan(db, account=account)
     filled = 0
+    marked = 0
     samples_kept = 0
     for ono, (flow, hit) in chosen.items():
+        # 流水已匹配到订单 → 标记已对账 (此前 reconciliation_status 一直停在 'open' 从不更新)
+        if flow.reconciliation_status != "matched":
+            flow.reconciliation_status = "matched"
+            marked += 1
         order = db.execute(
             select(Order).where(Order.order_no == ono)
         ).scalar_one_or_none()
@@ -234,4 +244,5 @@ def backfill(
             samples_kept += 1
     db.flush()
     result.filled_flow_no = filled
+    result.flows_marked_matched = marked
     return result

@@ -14,11 +14,11 @@ def _order(db, order_no):
 
 
 def _flow(db, tx, amount, related_order_no=None, remark=None,
-          counterparty_account=None, account="企业号"):
+          counterparty_account=None, account="企业号", platform_order_no=None):
     f = AlipayFlow(
         account=account, transaction_no=tx, amount=Decimal(str(amount)),
         related_order_no=related_order_no, remark=remark,
-        counterparty_account=counterparty_account,
+        counterparty_account=counterparty_account, platform_order_no=platform_order_no,
     )
     db.add(f)
     db.flush()
@@ -119,3 +119,27 @@ def test_income_flow_preferred_over_expense(db_session):
     assert res.filled_flow_no == 1
     o = db_session.query(Order).filter_by(order_no="2701846635029001070").one()
     assert o.alipay_flow_no == "PAY"  # 认收入那条
+
+
+def test_platform_order_no_used_for_match(db_session):
+    """爱群号: 关联订单号是支付码, 但平台订单号列直给 19 位 → 用平台订单号匹配上 (旧逻辑读不到)."""
+    _order(db_session, "4999357982989757806")
+    _flow(db_session, "FLOWP", 88, related_order_no="P50578040792",
+          platform_order_no="4999357982989757806", account="爱群号")
+
+    res = alipay_backfill_service.backfill(db_session)
+    assert res.filled_flow_no == 1
+    o = db_session.query(Order).filter_by(order_no="4999357982989757806").one()
+    assert o.alipay_flow_no == "FLOWP"
+
+
+def test_linked_flow_marked_matched(db_session):
+    """流水匹配到订单后, reconciliation_status 应被置 matched (此前一直停在 open)."""
+    _order(db_session, "2701846635029001070")
+    f = _flow(db_session, "FLOWM", 127, related_order_no="T200P2701846635029001 070")
+    assert f.reconciliation_status == "open"
+
+    res = alipay_backfill_service.backfill(db_session)
+    assert res.flows_marked_matched == 1
+    db_session.refresh(f)
+    assert f.reconciliation_status == "matched"

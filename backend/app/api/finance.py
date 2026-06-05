@@ -237,6 +237,7 @@ class AlipayBackfillOut(BaseModel):
     unmatched: int
     by_rule: dict[str, int]
     samples: list[dict]
+    flows_marked_matched: int = 0   # 已标记 reconciliation_status='matched' 的流水数
 
 
 def _backfill_to_out(r: "alipay_backfill_service.BackfillResult") -> AlipayBackfillOut:
@@ -248,6 +249,7 @@ def _backfill_to_out(r: "alipay_backfill_service.BackfillResult") -> AlipayBackf
         unmatched=r.unmatched,
         by_rule=r.by_rule,
         samples=r.samples,
+        flows_marked_matched=r.flows_marked_matched,
     )
 
 
