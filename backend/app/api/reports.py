@@ -21,7 +21,12 @@ from app.models.marketing import AfterSales, OutsourcingExpense, PromotionFlow
 from app.models.order import FactoryOrder, Order
 from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service
 
-router = APIRouter(prefix="/api/reports", tags=["reports"])
+# 路由级守卫: 报表含财务数据, 统一要求登录 (此前多数端点无守卫, 外网下可被未登录读取)。
+router = APIRouter(
+    prefix="/api/reports",
+    tags=["reports"],
+    dependencies=[Depends(require_role("admin", "operator", "viewer"))],
+)
 
 
 def _range_for(period: str) -> tuple[_date, _date]:

@@ -203,6 +203,45 @@ def get_system_status(
     )
 
 
+class OwnerHealthOut(BaseModel):
+    open_exceptions: int
+    exceptions_by_severity: dict
+    failing_jobs: list[str]
+    healthy: bool
+
+
+@router.get("/owner-health", response_model=OwnerHealthOut)
+def owner_health(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin", "operator")),
+):
+    """一页体检 (优化 #10): 待处理异常 + 最近一次运行失败的定时任务。补在现有系统监控里,
+    回答"系统现在有没有要紧的事要处理", 不与技术监控(磁盘/内存/迁移)重复。"""
+    from sqlalchemy import func, select
+    from app.models.exception import DataException
+    from app.models.scheduled_job import ScheduledJobRun
+    total_open = db.execute(
+        select(func.count(DataException.id)).where(DataException.status == "open")
+    ).scalar() or 0
+    by_sev = {
+        str(s): int(c) for s, c in db.execute(
+            select(DataException.severity, func.count(DataException.id))
+            .where(DataException.status == "open").group_by(DataException.severity)
+        ).all()
+    }
+    latest: dict[str, str] = {}
+    for jid, st in db.execute(
+        select(ScheduledJobRun.job_id, ScheduledJobRun.status)
+        .order_by(ScheduledJobRun.id.desc()).limit(200)
+    ).all():
+        latest.setdefault(jid, st)
+    failing = [jid for jid, st in latest.items() if st == "fail"]
+    return OwnerHealthOut(
+        open_exceptions=int(total_open), exceptions_by_severity=by_sev,
+        failing_jobs=failing, healthy=(total_open == 0 and not failing),
+    )
+
+
 class HealthLogOut(BaseModel):
     id: int
     check_name: str
