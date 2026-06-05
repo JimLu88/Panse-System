@@ -532,9 +532,17 @@ def _job_monthly_reconcile_diagnose(db: Session) -> dict:
     return {"diagnosis_len": 0, "pushed": False}
 
 
+def _job_audit_prune(db: Session) -> dict:
+    """审计日志留存清理 (优化 #9): 删除超过留存期的 audit_logs。"""
+    from app.api.audit import prune_audit_logs
+    return {"deleted": prune_audit_logs(db)}
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
+    register_job("daily_03_audit_prune", "审计日志留存清理",
+                 _job_audit_prune, cron={"hour": 3, "minute": 30})
     register_job("daily_17_refund_check", "17:00 退款订单检查",
                  _job_refund_check, cron={"hour": 17, "minute": 0})
     register_job("daily_08_activate_future", "远期订单激活",
