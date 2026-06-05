@@ -36,14 +36,20 @@ _SECRET_KEYS = {
 
 # 静态加密 (Encryption At Rest) — 用 HMAC-SHA256 做 CTR 流 + HMAC tag, 仅依赖 stdlib.
 # 单租户 ERP, DB 已私有, 主要为防 dump 后明文泄露。 jwt_secret 改了之后旧密文失效。
+# 历史密文是用旧的默认 jwt_secret 加密的; 固化成常量, 使加密基与"可被改动的
+# JWT_SECRET 环境变量"彻底解耦 —— 否则运维为加固登录设置 JWT_SECRET 会连带改掉加密基,
+# 令已存的 AI/OCR key 全部无法解密 (静默失效)。
+_LEGACY_ENC_BASE = "panse-dev-secret-CHANGE-ME-in-production"
+
+
 def _enc_base() -> bytes:
-    """加密基密钥: SETTINGS_ENCRYPTION_KEY 环境变量优先 (与 JWT 签名密钥彻底分离);
-    未设置则退回 jwt_secret —— 向后兼容, 旧密文正是用它加密的。
+    """加密基密钥: SETTINGS_ENCRYPTION_KEY 环境变量优先; 未设置则用历史默认常量
+    (向后兼容, 旧密文正是用它加密的, 且不随 JWT_SECRET 变化)。
     注: 一旦设置独立的 SETTINGS_ENCRYPTION_KEY, 需到后台重新录入 AI/OCR key。"""
     explicit = (os.environ.get("SETTINGS_ENCRYPTION_KEY") or "").strip()
     if explicit:
         return explicit.encode("utf-8")
-    return get_settings().jwt_secret.encode("utf-8")
+    return _LEGACY_ENC_BASE.encode("utf-8")
 
 
 def _keys() -> tuple[bytes, bytes]:

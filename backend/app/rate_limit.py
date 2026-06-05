@@ -24,7 +24,8 @@ def _key_func(request: Request) -> str:
         try:
             from app.services import auth_service
             payload = auth_service.decode_token(auth[7:])
-            uname = payload.get("username") if isinstance(payload, dict) else None
+            # JWT payload 里用户名字段是 "uname" (见 auth_service.create_token), 不是 "username"
+            uname = payload.get("uname") if isinstance(payload, dict) else None
             if uname:
                 return f"user:{uname}"
         except Exception:

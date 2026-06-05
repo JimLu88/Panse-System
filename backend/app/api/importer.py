@@ -154,6 +154,9 @@ class ImportReportOut(BaseModel):
     auto_created_suppliers: list[str]
     errors: list[str]
     warnings: list[str]
+    # on_conflict='ask' 下重导命中已有记录的差异 + 未映射列, 暴露给调用方避免"静默丢弃"
+    conflicts: list[dict] = []
+    unmapped_columns: list[str] = []
 
 
 @router.post("/commit", response_model=ImportReportOut)
@@ -191,6 +194,7 @@ def commit_import(
         matched_lines=report.matched_lines,
         auto_created_suppliers=report.auto_created_suppliers,
         errors=report.errors, warnings=report.warnings,
+        conflicts=report.conflicts, unmapped_columns=report.unmapped_columns,
     )
 
 
@@ -343,10 +347,18 @@ def rollback_import_job(
         rows_by_table[label] = rows
         deleted[label] = len(rows)
 
-    # 删前进回收站 (storage/recycle_bin/*.json), 防误回滚后数据不可恢复
+    # 删前进回收站 (storage/recycle_bin/*.json), 防误回滚后数据不可恢复。
+    # 写盘失败不阻断回滚 (用户已明确要回滚), 但明确告警, 不静默丢失安全网。
     from app.services import recycle_bin
-    archive_path = recycle_bin.archive(
-        rows_by_table, batch_ref=f"import_job:{job_id}", reason=f"回滚导入作业 {job_id}")
+    archive_path = None
+    archive_warning = None
+    try:
+        archive_path = recycle_bin.archive(
+            rows_by_table, batch_ref=f"import_job:{job_id}", reason=f"回滚导入作业 {job_id}")
+    except Exception as e:
+        import logging
+        archive_warning = f"回收站快照写入失败 (仍继续回滚, 数据将不可恢复): {e}"
+        logging.getLogger("panse.importer").warning(archive_warning)
 
     for rows in rows_by_table.values():
         for row in rows:
@@ -355,7 +367,7 @@ def rollback_import_job(
     job.status = "rolled_back"
     db.commit()
     return {"job_id": job_id, "deleted": deleted, "total_deleted": sum(deleted.values()),
-            "recycle_bin": archive_path}
+            "recycle_bin": archive_path, "recycle_bin_warning": archive_warning}
 
 
 @router.get("/recycle-bin")

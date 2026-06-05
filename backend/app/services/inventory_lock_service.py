@@ -66,7 +66,9 @@ def _get_or_create_inventory(
     )
     # 并发"已付款"订单同时锁同一物料时, 行锁防止读后写丢失更新 → 超卖。
     # 仅 Postgres 生效 (SELECT ... FOR UPDATE); SQLite 自动忽略, 不影响测试。
-    if db.bind is not None and db.bind.dialect.name != "sqlite":
+    # 用 get_bind() (规范 API, 比 .bind 更稳, 多绑定会话也能取到引擎)。
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name != "sqlite":
         stmt = stmt.with_for_update()
     row = db.execute(stmt).scalar_one_or_none()
     if row is None:
@@ -113,6 +115,9 @@ def lock_for_factory_order(
         raise ValueError(f"FactoryOrder {factory_order_id} 缺 product_code, 无法展开 BOM")
 
     bom = _bom_for(db, product_code=fo.product_code, sku_code=None)
+    # 按 material_code 排序后再逐行加行锁: 保证所有并发事务以同一顺序锁定共享物料,
+    # 避免 SELECT ... FOR UPDATE 因加锁顺序不一致而死锁 (配合 _get_or_create_inventory)。
+    bom = sorted(bom, key=lambda ln: ln.material_code or "")
     result = LockResult(factory_order_id=factory_order_id)
 
     for line in bom:

@@ -223,7 +223,10 @@ def flag_weak_default_passwords(db: Session) -> int:
     只命中密码恰为 'admin' 的账号; 已改过密码的不受影响。返回标记数。"""
     n = 0
     try:
-        users = db.execute(select(User).where(User.is_active.is_(True))).scalars().all()
+        # 仅查活跃的 admin 账号: 默认弱密码就是 admin/admin (admin 角色), 同时避免对全部用户跑 bcrypt
+        users = db.execute(
+            select(User).where(User.is_active.is_(True), User.role == "admin")
+        ).scalars().all()
         for u in users:
             if not u.must_change_password and verify_password("admin", u.password_hash):
                 u.must_change_password = True
