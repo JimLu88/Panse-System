@@ -387,6 +387,17 @@ def get_recycle_bin_file(filename: str, _: User = Depends(require_role("admin"))
     return data
 
 
+@router.post("/recycle-bin/{filename}/restore")
+def restore_recycle_bin(filename: str, db: Session = Depends(get_db),
+                        _: User = Depends(require_role("admin"))):
+    """一键还原: 把回收站快照的数据重新插回各表 (保留原主键、保住外键; 已存在则跳过)."""
+    from app.services import recycle_bin
+    result = recycle_bin.restore(db, filename)
+    if result.get("error") == "not_found":
+        raise HTTPException(404, "回收站文件不存在或文件名非法")
+    return result
+
+
 # ----------------------------- 智能导入 (Phase 14) ----------------- #
 
 

@@ -58,6 +58,88 @@ def read_archive(filename: str) -> dict | None:
         return json.load(f)
 
 
+def _restore_models() -> list[tuple]:
+    """表名 → 模型, 顺序为父表先于子表 (delivery_notes 先于 lines, 保住外键)。"""
+    from app.models.finance import AlipayFlow, FactoryReconciliation
+    from app.models.order import FactoryOrder, Order
+    from app.models.supplier import DeliveryNote, DeliveryNoteLine
+    return [
+        ("delivery_notes", DeliveryNote),
+        ("delivery_note_lines", DeliveryNoteLine),
+        ("alipay_flows", AlipayFlow),
+        ("orders", Order),
+        ("factory_orders", FactoryOrder),
+        ("factory_reconciliations", FactoryReconciliation),
+    ]
+
+
+def _coerce(value: Any, col: Any) -> Any:
+    """把 JSON 里的字符串值还原成列的 Python 类型 (Decimal/date/datetime)。"""
+    if value is None:
+        return None
+    import datetime as _dt
+    from decimal import Decimal as _Dec
+    try:
+        pt = col.type.python_type
+    except Exception:
+        return value
+    if pt is _Dec and not isinstance(value, _Dec):
+        try:
+            return _Dec(str(value))
+        except Exception:
+            return None
+    if pt is _dt.datetime and isinstance(value, str):
+        try:
+            return _dt.datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if pt is _dt.date and isinstance(value, str):
+        try:
+            return _dt.date.fromisoformat(value)
+        except ValueError:
+            return None
+    return value
+
+
+def restore(db, filename: str) -> dict:
+    """把回收站快照的数据重新插回各表 (保留原主键以维持外键关系); 已存在的主键跳过 (幂等)。
+
+    返回 {restored: {表: 条数}, total}。PG 上会重置自增序列, 避免后续插入撞已恢复的 id。
+    """
+    from sqlalchemy import text as _text
+    data = read_archive(filename)
+    if data is None:
+        return {"error": "not_found"}
+    payload = data.get("data", {})
+    restored: dict[str, int] = {}
+    touched: list[str] = []
+    for table, model in _restore_models():
+        rows = payload.get(table) or []
+        if not rows:
+            continue
+        cols = {c.key: c for c in model.__table__.columns}
+        n = 0
+        for raw in rows:
+            pk = raw.get("id")
+            if pk is not None and db.get(model, pk) is not None:
+                continue   # 已存在 → 跳过, 不覆盖
+            db.add(model(**{k: _coerce(v, cols[k]) for k, v in raw.items() if k in cols}))
+            n += 1
+        if n:
+            db.flush()
+            restored[table] = n
+            touched.append(model.__tablename__)
+    bind = db.get_bind()
+    if bind is not None and bind.dialect.name == "postgresql":
+        for t in touched:
+            db.execute(_text(
+                f"SELECT setval(pg_get_serial_sequence('{t}','id'), "
+                f"(SELECT COALESCE(MAX(id), 1) FROM {t}))"
+            ))
+    db.commit()
+    return {"restored": restored, "total": sum(restored.values())}
+
+
 def list_archives(limit: int = 100) -> list[dict]:
     """列出回收站文件 (文件名/大小), 供后台查看。"""
     d = _bin_dir()

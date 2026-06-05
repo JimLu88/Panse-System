@@ -30,3 +30,30 @@ def test_list_archives(tmp_path, monkeypatch):
     recycle_bin.archive({"orders": [Order(order_no="A")]}, batch_ref="b1", reason="r")
     items = recycle_bin.list_archives()
     assert len(items) == 1 and items[0]["file"].endswith(".json")
+
+
+def test_archive_then_restore_roundtrip(db_session, tmp_path, monkeypatch):
+    monkeypatch.setenv("RECYCLE_BIN_DIR", str(tmp_path))
+    from datetime import date
+    from app.models.order import Order
+    o = Order(order_no="RB1", platform="淘宝", qty=2,
+              order_date=date(2026, 5, 1), paid_amount=Decimal("123.45"))
+    db_session.add(o)
+    db_session.commit()
+    oid = o.id
+
+    path = recycle_bin.archive({"orders": [o]}, batch_ref="import_job:9", reason="test")
+    db_session.delete(o)
+    db_session.commit()
+    assert db_session.get(Order, oid) is None
+
+    fname = os.path.basename(path)
+    result = recycle_bin.restore(db_session, fname)
+    assert result["total"] == 1
+    back = db_session.get(Order, oid)
+    assert back is not None and back.order_no == "RB1"
+    assert back.paid_amount == Decimal("123.45")     # 字符串还原成 Decimal
+    assert back.order_date == date(2026, 5, 1)        # 字符串还原成 date
+
+    # 幂等: 再还原一次, 主键已存在 → 不重复插
+    assert recycle_bin.restore(db_session, fname)["total"] == 0
