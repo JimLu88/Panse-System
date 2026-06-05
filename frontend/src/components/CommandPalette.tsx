@@ -52,8 +52,13 @@ export default function CommandPalette() {
         setOpen(false);
       }
     };
+    const openHandler = () => setOpen(true);   // 顶栏可见搜索框点击触发
     window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    window.addEventListener('panse:open-search', openHandler);
+    return () => {
+      window.removeEventListener('keydown', handler);
+      window.removeEventListener('panse:open-search', openHandler);
+    };
   }, [open]);
 
   // 远端搜索 (debounce 200ms by useQuery enabled)

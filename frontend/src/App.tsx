@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { CameraOutlined, EditOutlined, LogoutOutlined, UserOutlined } from '@ant-design/icons';
+import { CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import ForcePasswordChange from './components/ForcePasswordChange';
@@ -266,6 +266,16 @@ export default function App() {
             定制报价
           </Button>
         </Space>
+        <Button
+          icon={<SearchOutlined />}
+          size="small"
+          ghost
+          onClick={() => window.dispatchEvent(new Event('panse:open-search'))}
+          style={{ marginRight: 8, flexShrink: 0, borderColor: 'rgba(255,255,255,0.45)', color: 'rgba(255,255,255,0.85)' }}
+          title="全局搜索 (Ctrl+K): 订单号 / 客户 / 产品 / 流水"
+        >
+          搜索
+        </Button>
         <VersionTag />
         <NotificationBell />
         <Dropdown
