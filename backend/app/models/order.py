@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -107,6 +107,7 @@ class Order(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
+        CheckConstraint("qty >= 0", name="ck_orders_qty_nonneg"),
     )
 
     @property

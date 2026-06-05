@@ -346,13 +346,16 @@ def disassemble_product_to_parts(
     qty_d = Decimal(str(qty))
     if qty_d <= 0:
         raise ValueError("qty 必须 > 0")
-    pinv = db.execute(
-        select(ProductInventory).where(
-            ProductInventory.product_code == product_code,
-            (ProductInventory.sku == sku_code) if sku_code else
-            ProductInventory.product_code == product_code,
-        )
-    ).scalar_one_or_none()
+    _pstmt = select(ProductInventory).where(
+        ProductInventory.product_code == product_code,
+        (ProductInventory.sku == sku_code) if sku_code else
+        ProductInventory.product_code == product_code,
+    )
+    # 成品扣减是"先查库存够不够、再减"的 check-then-act, 并发下会超扣 → 加行锁 (仅 PG)
+    _bind = db.get_bind()
+    if _bind is not None and _bind.dialect.name != "sqlite":
+        _pstmt = _pstmt.with_for_update()
+    pinv = db.execute(_pstmt).scalar_one_or_none()
     if pinv is None or pinv.physical_qty < qty_d:
         raise ValueError(f"成品 {product_code} ({sku_code}) 库存不足 {qty_d}")
     pinv.physical_qty = Decimal(pinv.physical_qty) - qty_d
