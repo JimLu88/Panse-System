@@ -569,11 +569,24 @@ def _job_audit_prune(db: Session) -> dict:
     return {"deleted": prune_audit_logs(db)}
 
 
+def _job_monthly_financial_report(db: Session) -> dict:
+    """每月 1 号推送上月财务报表 (优化 #10)。"""
+    from app.services import financial_report_service, notify_service
+    now = datetime.now()
+    y, m = (now.year, now.month - 1) if now.month > 1 else (now.year - 1, 12)
+    summary = financial_report_service.monthly_summary(db, y, m)
+    notify_service.notify(db, financial_report_service.summary_text(summary),
+                          level="info", title="月度财务报表")
+    return summary
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
     register_job("daily_03_audit_prune", "审计日志留存清理",
                  _job_audit_prune, cron={"hour": 3, "minute": 30})
+    register_job("monthly_01_financial_report", "月度财务报表推送",
+                 _job_monthly_financial_report, cron={"day": 1, "hour": 9, "minute": 10})
     register_job("daily_17_refund_check", "17:00 退款订单检查",
                  _job_refund_check, cron={"hour": 17, "minute": 0})
     register_job("daily_08_activate_future", "远期订单激活",

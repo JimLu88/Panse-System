@@ -13,6 +13,8 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.database import get_db
+from app.dependencies import require_role
+from app.models.auth import User
 from app.models.finance import AlipayFlow
 from app.models.knowledge import AiKnowledge
 from app.models.marketing import AfterSales, OutsourcingExpense, PromotionFlow
@@ -64,6 +66,27 @@ def monthly_health(
 def current_month(db: Session = Depends(get_db)):
     now = datetime.now()
     return monthly_health(year=now.year, month=now.month, db=db)
+
+
+@router.get("/monthly-financial")
+def monthly_financial(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    fmt: str = Query("json", pattern="^(json|xlsx)$"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """月度财务报表 (优化 #10): 营收/成本/毛利/净利/订单数; fmt=xlsx 下载 Excel。"""
+    from app.services import financial_report_service
+    s = financial_report_service.monthly_summary(db, year, month)
+    if fmt == "xlsx":
+        data = financial_report_service.build_excel(s)
+        return StreamingResponse(
+            io.BytesIO(data),
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="financial-{s["period"]}.xlsx"'},
+        )
+    return s
 
 
 class KnowledgeOut(BaseModel):
