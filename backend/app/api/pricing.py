@@ -169,12 +169,59 @@ def update_pricing_sku(
     sku = db.get(PricingSku, sku_id)
     if not sku:
         raise HTTPException(404, "Not found")
-    for k, v in body.model_dump(exclude_unset=True).items():
+    changes = body.model_dump(exclude_unset=True)
+    _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
+    for k, v in changes.items():
         setattr(sku, k, v)
     pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(sku)
     return PricingSkuOut.model_validate(sku)
+
+
+_TRACKED_PRICE_FIELDS = {
+    "list_price", "daily_price", "accounting_cost", "physical_cost",
+    "logistics_cost", "install_cost", "factory_cost", "wood_cost",
+    "packaging_cost", "external_parts_cost",
+}
+
+
+def _record_price_changes(db: Session, sku: PricingSku, changes: dict, *, actor) -> None:
+    """价格/成本字段变更留痕 (优化 #5)。"""
+    from app.models.price_change import PriceChangeLog
+    for k, v in changes.items():
+        if k not in _TRACKED_PRICE_FIELDS:
+            continue
+        old = getattr(sku, k, None)
+        if old == v:
+            continue
+        db.add(PriceChangeLog(
+            sku_code=sku.sku_code, field=k,
+            old_value=None if old is None else str(old),
+            new_value=None if v is None else str(v),
+            actor=actor,
+        ))
+
+
+@router.get("/{sku_code}/price-history")
+def price_history(
+    sku_code: str,
+    limit: int = Query(50, le=200),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """某 SKU 的价格/成本变更历史 (优化 #5): 谁何时把哪个字段从多少改成多少。"""
+    from sqlalchemy import select as _select
+    from app.models.price_change import PriceChangeLog
+    rows = db.execute(
+        _select(PriceChangeLog).where(PriceChangeLog.sku_code == sku_code)
+        .order_by(PriceChangeLog.id.desc()).limit(limit)
+    ).scalars().all()
+    return [
+        {"field": r.field, "old": r.old_value, "new": r.new_value,
+         "actor": r.actor, "at": r.created_at.isoformat() if r.created_at else None}
+        for r in rows
+    ]
 
 
 @router.post("/{sku_id}/recompute", response_model=PricingSkuOut)

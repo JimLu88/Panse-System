@@ -49,6 +49,7 @@ from app.models.marketing import (
 )
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+from app.models.price_change import PriceChangeLog
 from app.models.taobao_listing import TaobaoListing
 
 __all__ = [
