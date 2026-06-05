@@ -166,6 +166,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(AuditMiddleware)
+# 幂等: 带 Idempotency-Key 的写请求重复到达直接 409, 防双击/重试重复创建 (优化 #3)
+from app.idempotency import IdempotencyMiddleware  # noqa: E402
+app.add_middleware(IdempotencyMiddleware)
 
 
 @app.middleware("http")
