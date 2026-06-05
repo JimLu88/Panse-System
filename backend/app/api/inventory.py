@@ -11,8 +11,10 @@ from app.dependencies import get_current_user
 from app.models.auth import User
 from app.models.inventory import PartInventory
 from app.models.material import Material
-from app.schemas.inventory import PartInventoryAddResponse, PartInventoryCreate, PartInventoryOut
-from app.services import inventory_service
+from app.schemas.inventory import (
+    PartInventoryAddResponse, PartInventoryCreate, PartInventoryOut, PartInventoryWithStats,
+)
+from app.services import inventory_service, part_inventory_service
 
 
 class PartInventoryPatch(BaseModel):
@@ -53,6 +55,37 @@ def list_part_inventory(
     stmt = stmt.order_by(PartInventory.id.desc()).limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
     return [_to_out(r) for r in rows]
+
+
+@router.get("/with-stats", response_model=list[PartInventoryWithStats])
+def list_part_inventory_with_stats(
+    warehouse: Optional[str] = None,
+    material_code: Optional[str] = None,
+    limit: int = Query(200, le=1000),
+    offset: int = 0,
+    db: Session = Depends(get_db),
+):
+    """配件库存 + 实时预警 (可用量/库存天数/低库存预警/补货建议)。
+
+    日均消耗/提前期/滞销天数 取库内导入值; 据此算预警线、库存天数、预警状态、补货建议。
+    """
+    out: list[PartInventoryWithStats] = []
+    for inv, stats in part_inventory_service.list_with_stats(
+        db, warehouse=warehouse, material_code=material_code, limit=limit, offset=offset,
+    ):
+        base = _to_out(inv).model_dump()
+        out.append(PartInventoryWithStats(
+            **base,
+            daily_sales=stats["daily_sales"],
+            lead_time_days=stats["lead_time_days"],
+            slow_moving_days=stats["slow_moving_days"],
+            safety_stock_computed=stats["safety_stock_computed"],
+            reorder_point_computed=stats["reorder_point_computed"],
+            days_of_stock=stats["days_of_stock"],
+            warning_status=stats["warning_status"],
+            auto_reorder_qty=stats["auto_reorder_qty"],
+        ))
+    return out
 
 
 @router.post("", response_model=PartInventoryAddResponse, status_code=201)

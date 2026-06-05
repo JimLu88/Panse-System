@@ -33,6 +33,18 @@ class PartInventoryOut(BaseModel):
     remark: Optional[str]
 
 
+class PartInventoryWithStats(PartInventoryOut):
+    """PartInventoryOut + 实时推算字段 (不存库, 每次请求计算)。"""
+    daily_sales: float = 0
+    lead_time_days: Optional[int] = None
+    slow_moving_days: Optional[int] = None
+    safety_stock_computed: float = 0
+    reorder_point_computed: float = 0
+    days_of_stock: Optional[float] = None
+    warning_status: str = "ok"
+    auto_reorder_qty: float = 0
+
+
 class PartInventoryAddResponse(BaseModel):
     inventory: PartInventoryOut
     material_code: str
