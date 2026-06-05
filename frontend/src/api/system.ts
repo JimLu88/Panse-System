@@ -398,3 +398,31 @@ export interface VersionInfo {
 }
 export const getVersion = () =>
   api.get<VersionInfo>('/api/version').then((r) => r.data);
+
+// ----- 运维工具页 (优化 #2/#3/#4/#10) -----
+export interface OwnerHealth {
+  open_exceptions: number;
+  exceptions_by_severity: Record<string, number>;
+  failing_jobs: string[];
+  latest_backup_age_h: number | null;
+  latest_backup_size_mb: number | null;
+  backup_stale: boolean | null;
+  healthy: boolean;
+}
+export const ownerHealth = () =>
+  api.get<OwnerHealth>('/api/admin/owner-health').then((r) => r.data);
+
+export interface RecycleBinItem { file: string; size_bytes: number }
+export const recycleBinList = () =>
+  api.get<{ items: RecycleBinItem[] }>('/api/importer/recycle-bin').then((r) => r.data.items);
+export const recycleBinRestore = (filename: string) =>
+  api.post(`/api/importer/recycle-bin/${encodeURIComponent(filename)}/restore`).then((r) => r.data);
+
+export interface MonthlyFinancial {
+  period: string; order_count: number; revenue: number;
+  cost: number; gross_profit: number; net_profit: number;
+}
+export const monthlyFinancial = (year: number, month: number) =>
+  api.get<MonthlyFinancial>('/api/reports/monthly-financial', { params: { year, month } }).then((r) => r.data);
+export const monthlyFinancialXlsxUrl = (year: number, month: number) =>
+  `/api/reports/monthly-financial?year=${year}&month=${month}&fmt=xlsx`;

@@ -26,6 +26,7 @@ const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'));
 const AiAssistantPage = lazy(() => import('./pages/AiAssistantPage'));
 const MarketingPage = lazy(() => import('./pages/MarketingPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
+const OpsToolsPage = lazy(() => import('./pages/OpsToolsPage'));
 const ImporterPage = lazy(() => import('./pages/ImporterPage'));
 const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
@@ -221,7 +222,8 @@ export default function App() {
         { key: 'data-explorer', label: <Link to="/data-explorer">全列数据浏览</Link> },
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
         ...(user.role === 'admin'
-          ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }]
+          ? [{ key: 'admin', label: <Link to="/admin">管理</Link> },
+             { key: 'ops-tools', label: <Link to="/ops-tools">运维工具</Link> }]
           : []),
       ],
     },
@@ -334,6 +336,7 @@ export default function App() {
             <Route path="/reports" element={<ReportsPage />} />
             <Route path="/feishu" element={<FeishuSettingsPage />} />
             <Route path="/admin" element={<AdminPage />} />
+            <Route path="/ops-tools" element={<OpsToolsPage />} />
             <Route path="/wanshifu-bills" element={<WanshifuBillsPage />} />
             <Route path="/logistics-bills" element={<LogisticsBillsPage />} />
             <Route path="/refill-records" element={<RefillRecordsPage />} />
