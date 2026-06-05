@@ -119,6 +119,20 @@ export const getNextMaterialCode = (prefix: string) =>
 export const listPartInventory = () =>
   api.get<PartInventory[]>('/api/inventory/parts').then((r) => r.data);
 
+export interface PartInventoryStats extends PartInventory {
+  daily_sales: number;
+  lead_time_days: number | null;
+  slow_moving_days: number | null;
+  safety_stock_computed: number;
+  reorder_point_computed: number;
+  days_of_stock: number | null;
+  warning_status: string;       // ok / warning / danger / critical / excess
+  auto_reorder_qty: number;
+}
+
+export const listPartInventoryWithStats = () =>
+  api.get<PartInventoryStats[]>('/api/inventory/parts/with-stats').then((r) => r.data);
+
 export const addPartInventoryRow = (payload: {
   warehouse: string;
   material_code?: string;

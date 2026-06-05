@@ -21,8 +21,19 @@ import {
   listPartInventory,
   updatePartInventory,
 } from '../api/client';
+import { listPartInventoryWithStats, type PartInventoryStats } from '../api/catalog';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import FullColumnView from '../components/FullColumnView';
+
+// 预警状态 → 中文标签 + 颜色 (与成品库存一致)
+const WARN_META: Record<string, { label: string; color: string }> = {
+  critical: { label: '缺货', color: 'red' },
+  danger: { label: '低于预警线', color: 'volcano' },
+  warning: { label: '快用完', color: 'orange' },
+  excess: { label: '滞销积压', color: 'purple' },
+  ok: { label: '正常', color: 'green' },
+};
+const WARN_SEV: Record<string, number> = { critical: 0, danger: 1, warning: 2, ok: 3, excess: 4 };
 
 export default function PartInventoryPage() {
   const qc = useQueryClient();
@@ -34,7 +45,12 @@ export default function PartInventoryPage() {
   const [form] = Form.useForm();
   const [edits, setEdits] = useState<Record<number, { physical_qty?: number; locked_qty?: number }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [viewMode, setViewMode] = useState<'curated' | 'alert' | 'full'>('curated');
+  const alerts = useQuery({
+    queryKey: ['part-inventory-stats'],
+    queryFn: listPartInventoryWithStats,
+    enabled: viewMode === 'alert',
+  });
 
   function setEdit(id: number, patch: { physical_qty?: number; locked_qty?: number }) {
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -176,12 +192,53 @@ export default function PartInventoryPage() {
 
       <Segmented
         value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        onChange={(v) => setViewMode(v as 'curated' | 'alert' | 'full')}
         options={[
           { label: '精选视图（可编辑）', value: 'curated' },
+          { label: '智能预警', value: 'alert' },
           { label: '全部列', value: 'full' },
         ]}
       />
+
+      {viewMode === 'alert' && (
+        <>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 4 }}>
+            预警依据导入的「日均消耗 / 提前期 / 滞销天数 / 安全库存」实时计算：可用量、库存天数、
+            预警线、建议备货量。这些值你填得越全，预警越准。
+          </Typography.Paragraph>
+          <Table<PartInventoryStats>
+            rowKey="id"
+            loading={alerts.isLoading}
+            dataSource={[...(alerts.data ?? [])].sort(
+              (a, b) => (WARN_SEV[a.warning_status] ?? 9) - (WARN_SEV[b.warning_status] ?? 9))}
+            pagination={{ pageSize: 20 }}
+            size="middle"
+            columns={[
+              { title: '仓库', dataIndex: 'warehouse', width: 100 },
+              { title: '物料编码', dataIndex: 'material_code', width: 110 },
+              { title: '规格', dataIndex: 'spec', ellipsis: true },
+              { title: '可用', dataIndex: 'available_qty', width: 70 },
+              { title: '日均消耗', dataIndex: 'daily_sales', width: 90 },
+              {
+                title: '库存天数', dataIndex: 'days_of_stock', width: 90,
+                render: (v: number | null) => (v == null ? '—' : v),
+              },
+              { title: '预警线', dataIndex: 'reorder_point_computed', width: 80 },
+              {
+                title: '预警状态', dataIndex: 'warning_status', width: 120,
+                render: (v: string) => {
+                  const m = WARN_META[v] ?? { label: v, color: 'default' };
+                  return <Tag color={m.color}>{m.label}</Tag>;
+                },
+              },
+              {
+                title: '建议备货', dataIndex: 'auto_reorder_qty', width: 90,
+                render: (v: number) => (v > 0 ? <b style={{ color: '#cf1322' }}>{v}</b> : '—'),
+              },
+            ] as any}
+          />
+        </>
+      )}
 
       {viewMode === 'full' && <FullColumnView entity="part_inventory" defaultShowAll />}
 
