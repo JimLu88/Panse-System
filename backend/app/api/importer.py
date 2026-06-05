@@ -328,6 +328,7 @@ def rollback_import_job(
         raise HTTPException(400, f"作业状态为 {job.status}, 无法回滚 (只能回滚已完成/失败/取消的作业)")
 
     deleted: dict[str, int] = {}
+    rows_by_table: dict[str, list] = {}
     for model, label in [
         (DeliveryNoteLine, "delivery_note_lines"),
         (DeliveryNote, "delivery_notes"),
@@ -339,13 +340,29 @@ def rollback_import_job(
         rows = db.execute(
             select(model).where(model.import_job_id == job_id)
         ).scalars().all()
+        rows_by_table[label] = rows
+        deleted[label] = len(rows)
+
+    # 删前进回收站 (storage/recycle_bin/*.json), 防误回滚后数据不可恢复
+    from app.services import recycle_bin
+    archive_path = recycle_bin.archive(
+        rows_by_table, batch_ref=f"import_job:{job_id}", reason=f"回滚导入作业 {job_id}")
+
+    for rows in rows_by_table.values():
         for row in rows:
             db.delete(row)
-        deleted[label] = len(rows)
 
     job.status = "rolled_back"
     db.commit()
-    return {"job_id": job_id, "deleted": deleted, "total_deleted": sum(deleted.values())}
+    return {"job_id": job_id, "deleted": deleted, "total_deleted": sum(deleted.values()),
+            "recycle_bin": archive_path}
+
+
+@router.get("/recycle-bin")
+def list_recycle_bin(_: User = Depends(require_role("admin"))):
+    """列出回收站快照 (回滚/删除前的数据 JSON 备份, 在 storage/recycle_bin/)."""
+    from app.services import recycle_bin
+    return {"items": recycle_bin.list_archives()}
 
 
 # ----------------------------- 智能导入 (Phase 14) ----------------- #
