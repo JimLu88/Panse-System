@@ -841,6 +841,8 @@ def _commit_alipay_flows(
     fresh_ids: list[int] = []
     total = len(rows)
     counterparty_filled = 0   # 交易对象为空被置'待确认'的行数
+    unresolved_refs = 0       # 有关联订单号但无规则能还原成平台订单号的行数
+    unresolved_samples: list[str] = []
     ctx = _GenericCtx(report=report, on_conflict=on_conflict, import_batch_id=import_batch_id)
     for i, raw_row in enumerate(rows, start=1):
         if i % _PROGRESS_TICK == 0:
@@ -873,6 +875,17 @@ def _commit_alipay_flows(
         if not projected.get("counterparty"):
             projected["counterparty"] = "待确认"
             counterparty_filled += 1
+        # 平台订单号还原: 多规则按序检索 (平台列直给 / 本身19位 / 企业号T200P / …),
+        # 命中即用; 有关联订单号但都不命中 → 计入"待补规则"汇总, 不逐行刷异常。
+        from app.services.order_no_normalizer import resolve_platform_order_no
+        _resolved = resolve_platform_order_no(
+            projected.get("related_order_no"), projected.get("platform_order_no"))
+        if _resolved:
+            projected["platform_order_no"] = _resolved
+        elif projected.get("related_order_no"):
+            unresolved_refs += 1
+            if len(unresolved_samples) < 5:
+                unresolved_samples.append(str(projected.get("related_order_no"))[:48])
         existing = db.execute(
             select(AlipayFlow).where(
                 AlipayFlow.account == account, AlipayFlow.transaction_no == tx_no,
@@ -918,6 +931,17 @@ def _commit_alipay_flows(
 
     if counterparty_filled:
         report.warnings.append(f"{counterparty_filled} 条流水交易对象为空, 已统一置'待确认', 请后续核对补填")
+    if unresolved_refs:
+        sample_str = ", ".join(unresolved_samples)
+        report.warnings.append(
+            f"{unresolved_refs} 条流水的关联订单号无法用现有规则还原成平台订单号, "
+            f"已留待补充规则(不影响入库)。样例: {sample_str}"
+        )
+        _record_exc(
+            db, "alipay_flows", sheet_account or "支付宝流水", "order_no_unresolved",
+            f"账户「{sheet_account or '未指定'}」有 {unresolved_refs} 条关联订单号格式未识别, "
+            f"无法自动还原平台订单号, 需补充还原规则。样例: {sample_str}", "info",
+        )
 
     # 入完一次性跑智能标签 (factory_payment / promotion / logistics / salary)
     if fresh_ids:
