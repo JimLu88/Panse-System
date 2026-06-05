@@ -1,0 +1,27 @@
+version: 2
+updates:
+  # 后端 Python 依赖 (pyproject.toml)
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      backend-minor-patch:
+        update-types: [minor, patch]
+
+  # 前端 npm 依赖 (package-lock.json)
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-patch:
+        update-types: [minor, patch]
+
+  # GitHub Actions 自身的版本更新
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

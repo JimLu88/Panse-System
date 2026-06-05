@@ -60,12 +60,15 @@ def _bom_for(db: Session, *, product_code: str, sku_code: Optional[str]) -> list
 def _get_or_create_inventory(
     db: Session, material_code: str, *, warehouse: str = DEFAULT_WAREHOUSE,
 ) -> PartInventory:
-    row = db.execute(
-        select(PartInventory).where(
-            PartInventory.warehouse == warehouse,
-            PartInventory.material_code == material_code,
-        )
-    ).scalar_one_or_none()
+    stmt = select(PartInventory).where(
+        PartInventory.warehouse == warehouse,
+        PartInventory.material_code == material_code,
+    )
+    # 并发"已付款"订单同时锁同一物料时, 行锁防止读后写丢失更新 → 超卖。
+    # 仅 Postgres 生效 (SELECT ... FOR UPDATE); SQLite 自动忽略, 不影响测试。
+    if db.bind is not None and db.bind.dialect.name != "sqlite":
+        stmt = stmt.with_for_update()
+    row = db.execute(stmt).scalar_one_or_none()
     if row is None:
         row = PartInventory(warehouse=warehouse, material_code=material_code,
                             physical_qty=0, locked_qty=0)
