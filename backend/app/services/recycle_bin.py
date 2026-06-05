@@ -46,6 +46,18 @@ def archive(rows_by_table: dict[str, list], *, batch_ref: str, reason: str) -> s
     return path
 
 
+def read_archive(filename: str) -> dict | None:
+    """读取一个回收站快照内容 (供下载/查看/人工恢复)。防路径穿越: 只允许 bin 目录下纯文件名。"""
+    safe = os.path.basename(filename)
+    if safe != filename or not safe.endswith(".json"):
+        return None
+    path = os.path.join(_bin_dir(), safe)
+    if not os.path.isfile(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
 def list_archives(limit: int = 100) -> list[dict]:
     """列出回收站文件 (文件名/大小), 供后台查看。"""
     d = _bin_dir()

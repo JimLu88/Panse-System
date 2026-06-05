@@ -7,12 +7,37 @@ export const api = axios.create({
   timeout: 30000,
 });
 
-// 自动从 localStorage 取 token 加到所有请求
+// 幂等防重复 (优化 #2): 给写请求自动带 Idempotency-Key。3 秒内完全相同的请求
+// (同方法+URL+body) 复用同一 key, 让后端 409 拦掉双击/弱网重试的重复提交;
+// 不同操作各自新 key, 互不影响。失败后端会释放 key, 真重试不受阻。
+const _recentKeys = new Map<string, { key: string; ts: number }>();
+function _idempotencyKey(method: string, url: string, data: unknown): string {
+  const fp = `${method} ${url} ${typeof data === 'string' ? data : JSON.stringify(data ?? '')}`;
+  const now = Date.now();
+  const prev = _recentKeys.get(fp);
+  const key = prev && now - prev.ts < 3000
+    ? prev.key
+    : (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${now}-${Math.random()}`);
+  _recentKeys.set(fp, { key, ts: now });
+  if (_recentKeys.size > 500) {
+    for (const [k, v] of _recentKeys) if (now - v.ts > 10000) _recentKeys.delete(k);
+  }
+  return key;
+}
+
+// 自动从 localStorage 取 token 加到所有请求 + 写请求带幂等 key
 api.interceptors.request.use((config) => {
+  config.headers = config.headers ?? {};
   const token = localStorage.getItem('panse_token');
   if (token) {
-    config.headers = config.headers ?? {};
     (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
+  }
+  const method = (config.method || 'get').toLowerCase();
+  // 跳过文件上传 (FormData 无法序列化指纹, 否则两次不同上传会误判重复)
+  const isUpload = typeof FormData !== 'undefined' && config.data instanceof FormData;
+  if (!isUpload && (method === 'post' || method === 'put' || method === 'patch')) {
+    (config.headers as Record<string, string>)['Idempotency-Key'] =
+      _idempotencyKey(method, config.url || '', config.data);
   }
   return config;
 });

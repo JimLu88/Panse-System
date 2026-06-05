@@ -377,6 +377,16 @@ def list_recycle_bin(_: User = Depends(require_role("admin"))):
     return {"items": recycle_bin.list_archives()}
 
 
+@router.get("/recycle-bin/{filename}")
+def get_recycle_bin_file(filename: str, _: User = Depends(require_role("admin"))):
+    """查看/下载某个回收站快照的完整内容 (被回滚删除的数据, 可据此人工核对或重导)."""
+    from app.services import recycle_bin
+    data = recycle_bin.read_archive(filename)
+    if data is None:
+        raise HTTPException(404, "回收站文件不存在或文件名非法")
+    return data
+
+
 # ----------------------------- 智能导入 (Phase 14) ----------------- #
 
 
