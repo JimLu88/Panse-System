@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, CheckConstraint, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -107,7 +107,8 @@ class Order(Base, TimestampMixin):
 
     __table_args__ = (
         Index("ix_orders_platform_date", "platform", "order_date"),
-        CheckConstraint("qty >= 0", name="ck_orders_qty_nonneg"),
+        # qty>=0 完整性约束改由迁移 0049 在 Postgres 层用 NOT VALID 施加 (生产/CI-PG);
+        # 不放模型层, 避免影响测试用的 create_all 共享内存库 (历史用例会插各种 qty)。
     )
 
     @property
