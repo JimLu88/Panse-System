@@ -77,6 +77,16 @@ api.interceptors.response.use(
       }
       window.dispatchEvent(new Event('panse:unauthorized'));
     }
+    // 错误关联 (优化 #8): 记下后端请求 ID, 前后端日志可对上号 (后端请求日志已带同一 ID)
+    const rid = err?.response?.headers?.['x-request-id'];
+    if (rid) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[请求失败] ${(config?.method || '').toUpperCase()} ${config?.url || ''} `
+        + `状态=${err?.response?.status} 请求ID=${rid}`,
+      );
+      err.requestId = rid;
+    }
     return Promise.reject(err);
   },
 );
