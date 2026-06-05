@@ -8,3 +8,14 @@ test('app loads and shows login for unauthenticated user', async ({ page }) => {
   await expect(page.locator('input[type="password"]')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('button', { name: '登录' })).toBeVisible();
 });
+
+test('login form is interactive', async ({ page }) => {
+  // 纯前端可跑 (无需后端); 真正的"登录→搜索→看订单"全链路需 CI 起后端栈, 见 ci.yml 待办。
+  await page.goto('/');
+  const user = page.getByPlaceholder('用户名');
+  const pwd = page.locator('input[type="password"]');
+  await user.fill('tester');
+  await pwd.fill('secret123');
+  await expect(user).toHaveValue('tester');
+  await expect(page.getByRole('button', { name: '登录' })).toBeEnabled();
+});
