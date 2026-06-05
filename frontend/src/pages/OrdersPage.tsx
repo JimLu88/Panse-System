@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState, type Key } from 'react';
 import {
   Alert,
   Button,
@@ -13,6 +13,7 @@ import {
   Upload,
   message,
 } from 'antd';
+import { downloadCsv } from '../utils/csv';
 import { UploadOutlined } from '@ant-design/icons';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import type { UploadFile } from 'antd/es/upload/interface';
@@ -59,6 +60,11 @@ const ALLOWED_NEXT: Record<string, string[]> = {
   cancelled: [],
 };
 
+// 批量推进可选目标 (逐单仍按 ALLOWED_NEXT 校验, 非法的自动跳过)
+const BATCH_TARGETS: (keyof typeof STATUS_META)[] = [
+  'paid', 'shipped', 'signed', 'aftersales', 'cancelled',
+];
+
 type StatusKey = keyof typeof STATUS_META | 'all';
 
 export default function OrdersPage() {
@@ -72,6 +78,8 @@ export default function OrdersPage() {
   const [costData, setCostData] = useState<OrderCostBreakdown | null>(null);
   const [costLoading, setCostLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
+  const [batchRunning, setBatchRunning] = useState(false);
 
   const { data, isLoading } = useQuery({
     queryKey: ['orders', statusFilter, q],
@@ -82,6 +90,66 @@ export default function OrdersPage() {
         limit: 200,
       }),
   });
+
+  // 仅对「当前列表里真实存在」的选中行操作 (过滤/搜索后失效的 key 自动忽略)
+  const selectedOrders = useMemo(
+    () => (data ?? []).filter((o) => selectedKeys.includes(o.id)),
+    [data, selectedKeys],
+  );
+
+  function exportSelected() {
+    const headers = [
+      '平台', '订单号', '下单日期', '客户', '产品', 'SKU', '数量',
+      '理论成本', '实际成本', '差异', '状态',
+    ];
+    const rows = selectedOrders.map((o) => [
+      o.platform, o.order_no, o.order_date ?? '', o.customer_name ?? '',
+      o.product_name ?? '', o.sku ?? '', o.qty,
+      o.theoretical_cost ?? '', o.actual_cost ?? '', o.cost_diff ?? '',
+      STATUS_META[o.status]?.label ?? o.status,
+    ]);
+    const today = new Date().toISOString().slice(0, 10);
+    downloadCsv(`订单导出_${today}.csv`, headers, rows);
+    message.success(`已导出 ${rows.length} 单`);
+  }
+
+  async function batchAdvance(target: string) {
+    const eligible = selectedOrders.filter((o) =>
+      (ALLOWED_NEXT[o.status] ?? []).includes(target));
+    const skipped = selectedOrders.length - eligible.length;
+    setBatchRunning(true);
+    const results = await Promise.allSettled(
+      eligible.map((o) => changeOrderStatus(o.id, target)),
+    );
+    setBatchRunning(false);
+    const ok = results.filter((r) => r.status === 'fulfilled').length;
+    const failed = results.length - ok;
+    qc.invalidateQueries({ queryKey: ['orders'] });
+    setSelectedKeys([]);
+    const parts = [`成功 ${ok} 单`];
+    if (skipped) parts.push(`跳过 ${skipped} 单(状态不允许)`);
+    if (failed) parts.push(`失败 ${failed} 单`);
+    (failed ? message.warning : message.success)(parts.join('，'));
+  }
+
+  function confirmBatchAdvance(target: keyof typeof STATUS_META) {
+    const label = STATUS_META[target].label;
+    const eligible = selectedOrders.filter((o) =>
+      (ALLOWED_NEXT[o.status] ?? []).includes(target));
+    if (eligible.length === 0) {
+      message.warning(`所选订单都不能推进到「${label}」(状态不允许)`);
+      return;
+    }
+    const skipped = selectedOrders.length - eligible.length;
+    Modal.confirm({
+      title: `批量推进到「${label}」`,
+      content: `共选 ${selectedOrders.length} 单，其中 ${eligible.length} 单可推进` +
+        (skipped ? `，${skipped} 单因状态不允许将跳过` : '') + '。确认继续？',
+      okText: '确认推进',
+      cancelText: '取消',
+      onOk: () => batchAdvance(target),
+    });
+  }
 
   const statusMut = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) => changeOrderStatus(id, status),
@@ -326,6 +394,34 @@ export default function OrdersPage() {
         )}
       </Space>
 
+      {viewMode === 'curated' && selectedOrders.length > 0 && (
+        <div style={{
+          background: '#f5f7fa', border: '1px solid #e6eaf0',
+          borderRadius: 8, padding: '8px 12px',
+        }}>
+          <Space wrap>
+            <span>已选 <b>{selectedOrders.length}</b> 单</span>
+            <Button size="small" onClick={exportSelected}>批量导出 CSV</Button>
+            <Dropdown
+              menu={{
+                items: BATCH_TARGETS.map((s) => ({
+                  key: s,
+                  label: STATUS_META[s].label,
+                  onClick: () => confirmBatchAdvance(s),
+                })),
+              }}
+            >
+              <Button size="small" type="primary" loading={batchRunning}>
+                批量推进状态
+              </Button>
+            </Dropdown>
+            <Button size="small" type="text" onClick={() => setSelectedKeys([])}>
+              取消选择
+            </Button>
+          </Space>
+        </div>
+      )}
+
       {viewMode === 'full' && <FullColumnView entity="order" defaultShowAll />}
 
       {viewMode === 'curated' && (
@@ -334,6 +430,11 @@ export default function OrdersPage() {
         loading={isLoading}
         dataSource={data}
         columns={columns as any}
+        rowSelection={{
+          selectedRowKeys: selectedKeys,
+          onChange: setSelectedKeys,
+          preserveSelectedRowKeys: true,
+        }}
         pagination={{ pageSize: 30 }}
         size="middle"
       />
