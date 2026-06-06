@@ -18,6 +18,7 @@ warning_status:
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import date, timedelta
 from typing import Optional
@@ -44,6 +45,14 @@ def _counts_as_demand(status) -> bool:
     if not s:
         return True   # 状态为空 → 保守计入
     return not any(k in s for k in _NON_DEMAND_KEYWORDS)
+
+
+def _pc_core(pc) -> Optional[str]:
+    """产品编码数字主体 (去前导字母): 订单 P25… / 目录 PPS25… → 25…, 桥接两种前缀。"""
+    if not pc:
+        return None
+    core = re.sub(r"^[A-Za-z]+", "", str(pc).strip())
+    return core or None
 
 
 def compute_material_daily_consumption(db: Session, days: int = _CONSUMPTION_WINDOW_DAYS) -> dict[str, float]:
@@ -78,9 +87,10 @@ def compute_material_daily_consumption(db: Session, days: int = _CONSUMPTION_WIN
     for pc, sc in db.execute(
         select(BomLine.product_code, BomLine.sku_code).where(BomLine.sku_code.isnot(None))
     ).all():
-        if pc and sc:
-            _prod_skus[pc].add(sc)
-    prod_single = {pc: next(iter(s)) for pc, s in _prod_skus.items() if len(s) == 1}
+        core = _pc_core(pc)
+        if core and sc:
+            _prod_skus[core].add(sc)
+    prod_single = {core: next(iter(s)) for core, s in _prod_skus.items() if len(s) == 1}
 
     # 3) 近 N 天真实需求订单, 展开 BOM 累加每个物料的消耗。
     # 不排除 is_historical (批量导入默认标历史, 但那正是要分析的销售史);
@@ -95,7 +105,7 @@ def compute_material_daily_consumption(db: Session, days: int = _CONSUMPTION_WIN
     ).all():
         if not _counts_as_demand(status):
             continue
-        sc = sku_code or (sku_map.get(sku) if sku else None) or prod_single.get(product_code)
+        sc = sku_code or (sku_map.get(sku) if sku else None) or prod_single.get(_pc_core(product_code))
         if not sc or sc not in bom_by_sku:
             continue
         q = float(qty or 0)
