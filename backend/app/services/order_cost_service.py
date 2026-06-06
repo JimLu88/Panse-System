@@ -23,14 +23,15 @@ from app.models.bom import BomLine
 from app.models.material import Material
 from app.models.order import Order
 from app.models.pricing import PricingSku
+from app.services import sku_utils
 
 _CENTS = Decimal("0.01")
 
 # 木作物料编码前缀: 这类物料不在 materials 单价表, 价格按 SKU 从 PricingSku.wood_cost 取。
 WOOD_PREFIX = "WD"
 
-# 零成本订单关键词: 商家安装 / 淘宝官方服务 这类 SKU 无实际生产成本。
-ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务")
+# 零成本订单关键词: 商家安装 / 送货入户 / 补差价 / 淘宝官方服务 这类 SKU 无实际生产成本, 自动归0不报异常。
+ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务", "送货", "补差价")
 
 
 def default_warehouse_for(product_name: Optional[str], sku: Optional[str],
@@ -81,9 +82,9 @@ class CostBreakdown:
 
 
 def _resolve_sku_code(db: Session, order: Order) -> Optional[str]:
-    """订单上 sku_code 优先; 否则用 SKU 名去定价表反查 sku_code (与制单图同逻辑)."""
+    """订单上 sku_code 优先 (去掉定制「改」后缀取基础码查 BOM); 否则用 SKU 名反查."""
     if order.sku_code:
-        return order.sku_code
+        return sku_utils.strip_custom_suffix(order.sku_code)
     if order.sku:
         ps = db.execute(
             select(PricingSku).where(PricingSku.sku == order.sku)
@@ -166,8 +167,9 @@ def compute(db: Session, order: Order) -> CostBreakdown:
     else:
         note = None
 
-    # 方案B: is_custom 单在基础BOM成本上加一笔「定制加价」(可手改, 来自定制报价单或手填)
-    if order.is_custom and order.custom_surcharge is not None:
+    # 方案B: is_custom 单(或 SKU编码带「改」后缀)在基础BOM成本上加一笔「定制加价」(可手改, 来自定制报价单或手填)
+    _is_custom_order = order.is_custom or sku_utils.has_gai_suffix(order.sku_code)
+    if _is_custom_order and order.custom_surcharge is not None:
         sur = Decimal(str(order.custom_surcharge)).quantize(_CENTS)
         if sur != 0:
             had_base = bool(lines)

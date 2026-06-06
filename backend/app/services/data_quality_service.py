@@ -576,9 +576,10 @@ def scan_custom_order_missing_cost_basis(db: Session) -> int:
     已填定制加价的也不报(系统能按 基础BOM+加价 自动算预计成本)。
     含历史单(老定制单正是要逐条补的对象), 仅排除补单。
     """
+    from sqlalchemy import or_
     count = 0
     for o in db.query(Order).filter(
-        Order.is_custom == True,        # noqa: E712
+        or_(Order.is_custom == True, Order.sku_code.like("%改")),  # noqa: E712  定制标记 或 「改」后缀
         Order.is_refill == False,       # noqa: E712
         Order.status.notin_(["cancelled"]),
     ).all():

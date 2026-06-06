@@ -188,6 +188,29 @@ def route_alipay_flows(rerun_classify: bool = True, db: Session = Depends(get_db
     )
 
 
+@router.post("/alipay-flows/amount-match", response_model=dict)
+def amount_match_alipay_flows(
+    days_window: int = 3,
+    include_deprecated: bool = False,
+    db: Session = Depends(get_db),
+):
+    """对账细化(4规则): 流水里没订单号时, 用 金额唯一锁定 / 金额+日期 / 多对一·一对多 /
+    账户语义(只用收入流水、默认排除爱群佳宝) 补匹配。保守: 只填空、仅唯一命中。"""
+    from app.services import alipay_amount_match_service
+    r = alipay_amount_match_service.match(
+        db, days_window=days_window, include_deprecated=include_deprecated
+    )
+    db.commit()
+    return {
+        "candidate_orders": r.candidate_orders,
+        "candidate_flows": r.candidate_flows,
+        "matched": r.matched,
+        "linked_flow_no": r.linked_flow_no,
+        "by_rule": r.by_rule,
+        "samples": r.samples,
+    }
+
+
 @router.post("/alipay-flows/detect-refunds", response_model=dict)
 def detect_refunds(db: Session = Depends(get_db)):
     """识别退款对: 同关联订单号下金额相等、方向相反的两条流水标为 refund_in/refund_out。

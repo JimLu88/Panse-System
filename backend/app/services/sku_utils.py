@@ -13,13 +13,31 @@ from sqlalchemy.orm import Session
 
 DEFAULT_CUSTOM_THRESHOLD = 90
 _TRAILING_DIGITS = re.compile(r"(\d+)\s*$")
+# 定制「改」后缀: 在原SKU编码后加「改」(可带连字符), 如 PPS2325005020237-改 / ...改
+_GAI_SUFFIX = re.compile(r"[-_ ]*改+\s*$")
+
+
+def has_gai_suffix(sku_code: Optional[str]) -> bool:
+    """SKU 编码是否带定制「改」后缀。"""
+    return bool(sku_code) and bool(_GAI_SUFFIX.search(sku_code.strip()))
+
+
+def strip_custom_suffix(sku_code: Optional[str]) -> Optional[str]:
+    """去掉定制「改」后缀, 还原基础SKU编码 (BOM/定价存在基础码下)。
+
+    'PPS2325005020237-改' -> 'PPS2325005020237'; 无改后缀原样返回。
+    """
+    if not sku_code:
+        return sku_code
+    base = _GAI_SUFFIX.sub("", sku_code.strip())
+    return base or sku_code.strip()
 
 
 def sku_suffix(sku_code: Optional[str], product_code: Optional[str] = None) -> Optional[int]:
     """取 SKU 编码尾部 2 位数字后缀。拿不到返回 None。"""
     if not sku_code:
         return None
-    s = sku_code.strip()
+    s = strip_custom_suffix(sku_code)  # 先去「改」后缀再取数字后缀
     if product_code and s.startswith(product_code):
         s = s[len(product_code):]
     m = _TRAILING_DIGITS.search(s)
@@ -33,6 +51,9 @@ def is_custom_sku_code(
     sku_code: Optional[str], product_code: Optional[str] = None,
     threshold: int = DEFAULT_CUSTOM_THRESHOLD,
 ) -> bool:
+    # 「改」后缀 = 定制 (方案B 在原规格上改); 或 数字后缀 >= 阈值 (纯定制 99/98/97)
+    if has_gai_suffix(sku_code):
+        return True
     suf = sku_suffix(sku_code, product_code)
     return suf is not None and suf >= threshold
 
