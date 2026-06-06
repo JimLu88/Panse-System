@@ -470,6 +470,7 @@ export interface TaobaoListing {
   stock: number | null;
   sku_code: string | null;
   product_code: string | null;
+  shop: string | null;
   matched: boolean;
 }
 export interface TaobaoImportResult {
@@ -479,16 +480,21 @@ export interface TaobaoImportResult {
   total: number;
   warnings: string[];
 }
-export const importTaobaoExport = (file: File) => {
+export const importTaobaoExport = (file: File, shop?: string) => {
   const form = new FormData();
   form.append('file', file);
   return api
     .post<TaobaoImportResult>('/api/taobao-listings/import', form, {
+      params: shop ? { shop } : undefined,
       headers: { 'Content-Type': 'multipart/form-data' },
       timeout: 120000,
     })
     .then(r => r.data);
 };
+export const backfillOrdersFromListings = () =>
+  api
+    .post<{ scanned: number; updated: number }>('/api/taobao-listings/backfill-orders')
+    .then(r => r.data);
 export const listTaobaoListings = (params: {
   q?: string;
   matched?: boolean;

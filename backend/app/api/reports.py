@@ -19,7 +19,7 @@ from app.models.finance import AlipayFlow
 from app.models.knowledge import AiKnowledge
 from app.models.marketing import AfterSales, OutsourcingExpense, PromotionFlow
 from app.models.order import FactoryOrder, Order
-from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service
+from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service, shop_report_service
 
 # 路由级守卫: 报表含财务数据, 统一要求登录 (此前多数端点无守卫, 外网下可被未登录读取)。
 router = APIRouter(
@@ -40,6 +40,25 @@ def _range_for(period: str) -> tuple[_date, _date]:
     if period == "year":
         return today.replace(month=1, day=1), today
     raise HTTPException(400, f"未知 period: {period} (允许 7d/30d/month/year)")
+
+
+class ShopStatOut(BaseModel):
+    shop: str
+    order_count: int
+    total_qty: int
+    total_revenue: float
+
+
+@router.get("/shops", response_model=list[ShopStatOut])
+def shop_stats(
+    period: Optional[str] = Query(None, description="7d/30d/month/year; 不填=全部"),
+    db: Session = Depends(get_db),
+):
+    """分店统计: 各店铺 单数/销量/销售额 (按销售额降序, 未归属单独成桶)。"""
+    start = end = None
+    if period:
+        start, end = _range_for(period)
+    return shop_report_service.compute_shop_stats(db, start=start, end=end)
 
 
 class HealthReportOut(BaseModel):

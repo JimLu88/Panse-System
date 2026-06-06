@@ -565,6 +565,43 @@ def scan_alipay_duplicate_flow(db: Session) -> int:
 
 
 # ---------------------------------------------------------------------------
+# B17 — 定制订单缺成本依据 (方案B): 无工厂实际成本 且 无定制加价 → 挂异常
+# ---------------------------------------------------------------------------
+
+def scan_custom_order_missing_cost_basis(db: Session) -> int:
+    """方案B: is_custom 单既无工厂实际成本(actual_cost)、又无定制加价(custom_surcharge),
+    系统无法核算成本 → 挂异常, 提示逐条补「定制需求(定制加价)」。
+
+    已填工厂实际成本的定制单不报(用户明确说这些已无所谓);
+    已填定制加价的也不报(系统能按 基础BOM+加价 自动算预计成本)。
+    含历史单(老定制单正是要逐条补的对象), 仅排除补单。
+    """
+    count = 0
+    for o in db.query(Order).filter(
+        Order.is_custom == True,        # noqa: E712
+        Order.is_refill == False,       # noqa: E712
+        Order.status.notin_(["cancelled"]),
+    ).all():
+        if o.actual_cost is not None:
+            continue  # 已有工厂实际成本 → 不动
+        if o.custom_surcharge is not None:
+            continue  # 已有定制加价 → 可算预计成本, 不报
+        _record(
+            db,
+            source_table="orders",
+            source_pk=o.id,
+            exception_type="custom_order_missing_cost_basis",
+            severity="warning",
+            description=f"定制订单 {o.order_no} 既无工厂实际成本, 又无定制加价, 无法核算成本。",
+            suggestion_action="填写该单「定制加价」(定制需求报价), 系统将按 基础BOM成本 + 定制加价 自动算预计成本。",
+            context={"order_no": o.order_no, "sku_code": o.sku_code, "status": o.status},
+        )
+        count += 1
+    _log.info("scan_custom_order_missing_cost_basis: %d", count)
+    return count
+
+
+# ---------------------------------------------------------------------------
 # 全量扫描入口
 # ---------------------------------------------------------------------------
 
@@ -588,6 +625,7 @@ def run_all(db: Session) -> dict[str, int]:
         ("sample_missing_cost", scan_sample_missing_cost),
         ("factory_order_uncovered", scan_factory_order_uncovered),
         ("promotion_recharge_unmatched", scan_promotion_recharge_unmatched),
+        ("custom_order_missing_cost_basis", scan_custom_order_missing_cost_basis),
     ]
     for name, fn in scanners:
         try:
