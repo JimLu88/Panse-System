@@ -11,7 +11,7 @@ import asyncio
 import base64
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
@@ -461,9 +461,27 @@ class SmartCommitIn(BaseModel):
     plan: list[SmartCommitItem]
 
 
+def _run_post_import_bg(summary: dict) -> None:
+    """后台跑「导入后 AI 逻辑核查 + 运营分析」(独立 session), 不阻塞导入响应。
+
+    结果(异常)照常写入异常中心, 用户稍后在异常页可见。核查失败绝不影响导入结果。
+    """
+    from app.database import SessionLocal
+    from app.services import post_import_ai_service
+    db = SessionLocal()
+    try:
+        post_import_ai_service.run_after_import(db, summary=summary)
+        db.commit()
+    except Exception:  # pragma: no cover — 核查失败绝不影响导入结果
+        db.rollback()
+    finally:
+        db.close()
+
+
 @router.post("/smart-commit")
 def smart_commit(
     payload: SmartCommitIn,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
 ):
@@ -483,19 +501,14 @@ def smart_commit(
     except Exception:
         db.rollback()
 
-    # 导入后 AI 逻辑核查 + 运营分析 (不阻断主流程)
-    post_import: dict = {"logic_issues": 0, "analysis": None, "ai_used": False}
-    try:
-        from app.services import post_import_ai_service
-        summary = {
-            r.get("entity_type", "unknown"): r.get("inserted_parents", 0)
-            for r in reports if not r.get("skipped") and not r.get("error")
-        }
-        post_import = post_import_ai_service.run_after_import(db, summary=summary)
-        db.commit()
-    except Exception:  # pragma: no cover — 核查失败绝不影响导入结果
-        db.rollback()
-    return {"reports": reports, "post_import": post_import}
+    # 导入后 AI 逻辑核查 + 运营分析 → 后台异步执行, 导入立即返回(不再阻塞 ~6s, 避免界面卡顿/误判崩溃)
+    summary = {
+        r.get("entity_type", "unknown"): r.get("inserted_parents", 0)
+        for r in reports if not r.get("skipped") and not r.get("error")
+    }
+    background_tasks.add_task(_run_post_import_bg, summary)
+    return {"reports": reports,
+            "post_import": {"logic_issues": 0, "analysis": None, "ai_used": False, "scheduled": True}}
 
 
 # ----------------------------- 校验导出 (Phase N+1) ----------------- #

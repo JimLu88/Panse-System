@@ -307,16 +307,38 @@ def recent_logs(db: Session, *, limit: int = 100,
 # ----------------------------- 重启 / 看门狗 --------------------- #
 
 
+def _in_container() -> bool:
+    """是否在 Docker 容器内 (决定重启时是否要杀 PID 1)。"""
+    return os.path.exists("/.dockerenv")
+
+
+def _restart_target_pid() -> int:
+    """要重启整个容器, 必须杀容器主进程 PID 1 (uvicorn 主进程/reloader/worker master)。
+
+    在 --reload / --workers 下, 杀自己这个子进程只会被父进程重新拉起、容器不退出,
+    Docker 的 restart 策略就永远不触发 —— 这正是看门狗"拉起失败"的根因。
+    非容器(本地 / 测试)退回杀自己, 安全。
+    """
+    me = os.getpid()
+    if me != 1 and _in_container():
+        return 1
+    return me
+
+
 def request_restart(db: Optional[Session] = None, *,
                     actor: Optional[str] = None,
                     detail: Optional[str] = None) -> None:
-    """触发 graceful 重启. uvicorn 收到 SIGTERM 后会 shutdown, 由 docker
-    restart 策略 (unless-stopped) 自动再拉起.
+    """触发 graceful 重启: 给容器主进程发 SIGTERM, uvicorn shutdown 后由 docker
+    restart 策略 (unless-stopped) 自动再拉起。
 
-    db 不为 None 时, 会写一条 restart_requested 事件; 否则只 schedule SIGTERM.
+    关键: 容器内杀 PID 1 而非自己这个子进程 —— 否则 --reload/--workers 下父进程会把
+    子进程重新拉起、容器不退出, Docker 重启策略不触发 → 拉起失败。
+
+    db 不为 None 时, 会写一条 restart_requested 事件; 否则只 schedule SIGTERM。
     """
-    pid = os.getpid()
-    _logger.warning("收到重启请求 actor=%s, 给 pid=%s 发 SIGTERM", actor, pid)
+    pid = _restart_target_pid()
+    _logger.warning("收到重启请求 actor=%s, 给容器主进程 pid=%s 发 SIGTERM (self=%s)",
+                    actor, pid, os.getpid())
 
     if db is not None:
         try:

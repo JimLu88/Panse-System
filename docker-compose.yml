@@ -38,6 +38,11 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # 不用 --reload(Dockerfile 默认带): 单进程跑, 看门狗 SIGTERM 才能真正退出容器→Docker(unless-stopped)拉起;
+    # 也避免热重载在大导入/文件变动时卡死。改代码后点「拉最新代码+重建」生效。
+    command: >
+      sh -c "alembic upgrade head &&
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000"
     environment:
       DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-panse}:${POSTGRES_PASSWORD:-panse_dev_pw}@db:5432/${POSTGRES_DB:-panse_erp}
       CORS_ORIGINS: "http://localhost:5173,http://127.0.0.1:5173"
