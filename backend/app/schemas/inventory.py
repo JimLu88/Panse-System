@@ -36,6 +36,7 @@ class PartInventoryOut(BaseModel):
 class PartInventoryWithStats(PartInventoryOut):
     """PartInventoryOut + 实时推算字段 (不存库, 每次请求计算)。"""
     daily_sales: float = 0
+    daily_source: str = "none"   # auto(订单×BOM自动算) / imported(手填) / none
     lead_time_days: Optional[int] = None
     slow_moving_days: Optional[int] = None
     safety_stock_computed: float = 0

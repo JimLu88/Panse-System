@@ -77,6 +77,7 @@ def list_part_inventory_with_stats(
         out.append(PartInventoryWithStats(
             **base,
             daily_sales=stats["daily_sales"],
+            daily_source=stats["daily_source"],
             lead_time_days=stats["lead_time_days"],
             slow_moving_days=stats["slow_moving_days"],
             safety_stock_computed=stats["safety_stock_computed"],
