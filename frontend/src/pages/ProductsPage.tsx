@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -118,6 +118,57 @@ const CATEGORY_OPTIONS = [
   { value: '99', label: '99 其它' },
 ];
 
+// 可爱占位图 (小猫脸): 图片缺失或加载失败时显示, 替代难看的"裂图"图标
+const CUTE_IMG =
+  'data:image/svg+xml;charset=utf-8,' +
+  encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>" +
+    "<rect width='120' height='120' rx='14' fill='#fafafa'/>" +
+    "<path d='M38 32 L52 52 L30 52 Z' fill='#ffd6a5'/><path d='M82 32 L90 52 L68 52 Z' fill='#ffd6a5'/>" +
+    "<circle cx='60' cy='62' r='30' fill='#ffe8cc'/>" +
+    "<circle cx='50' cy='58' r='3.6' fill='#595959'/><circle cx='70' cy='58' r='3.6' fill='#595959'/>" +
+    "<path d='M60 64 l-4 4 h8 z' fill='#ff9c9c'/>" +
+    "<path d='M60 68 q-6 6 -12 2 M60 68 q6 6 12 2' fill='none' stroke='#ffb3b3' stroke-width='2' stroke-linecap='round'/>" +
+    "<g stroke='#d9d9d9' stroke-width='2' stroke-linecap='round'><path d='M30 60 h-14 M30 66 h-13'/><path d='M90 60 h14 M90 66 h13'/></g>" +
+    "<text x='60' y='112' text-anchor='middle' font-size='11' fill='#bfbfbf' font-family='sans-serif'>暂无图片</text>" +
+    "</svg>",
+  );
+
+// 可拖拽列宽的表头单元格 (无需 react-resizable 依赖; 拖右边缘改宽)
+function ResizableTitle(props: any) {
+  const { onResize, width, children, ...rest } = props;
+  const start = useRef<{ x: number; w: number } | null>(null);
+  if (!width) return <th {...rest}>{children}</th>;
+  const onMouseDown = (e: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+    start.current = { x: e.clientX, w: width };
+    const move = (ev: MouseEvent) => {
+      if (!start.current) return;
+      onResize(Math.max(60, start.current.w + (ev.clientX - start.current.x)));
+    };
+    const up = () => {
+      start.current = null;
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+  return (
+    <th {...rest} style={{ ...(rest.style || {}), position: 'relative' }}>
+      {children}
+      <span
+        onMouseDown={onMouseDown}
+        style={{
+          position: 'absolute', right: -4, top: 0, bottom: 0, width: 9,
+          cursor: 'col-resize', zIndex: 1, userSelect: 'none',
+        }}
+      />
+    </th>
+  );
+}
+
 export default function ProductsPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
@@ -127,6 +178,12 @@ export default function ProductsPage() {
   const [editTarget, setEditTarget] = useState<Product | null>(null);
   const [editForm] = Form.useForm();
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  // 各列宽度 (可拖拽改); 表头拖右边缘即可
+  const [colW, setColW] = useState<Record<string, number>>({
+    code: 150, name: 240, brand: 90, category: 140, remark: 170, image: 110, actions: 150,
+  });
+  const handleResize = (key: string) => (w: number) =>
+    setColW((prev) => ({ ...prev, [key]: w }));
 
   const { data, isLoading } = useQuery({
     queryKey: ['products', q],
@@ -166,22 +223,69 @@ export default function ProductsPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
   });
 
+  const mkResize = (key: string) => () => ({ width: colW[key], onResize: handleResize(key) });
   const columns = [
-    { title: '编码', dataIndex: 'code', width: 160 },
     {
-      title: '名称', dataIndex: 'name', ellipsis: true,
+      title: '编码', dataIndex: 'code', key: 'code', width: colW.code, ellipsis: true,
+      onHeaderCell: mkResize('code'),
+      render: (v: string) => <code style={{ fontSize: 12 }}>{v}</code>,
+    },
+    {
+      title: '名称', dataIndex: 'name', key: 'name', width: colW.name, ellipsis: true,
+      onHeaderCell: mkResize('name'),
       render: (v: string, row: Product) => (
-        <Space direction="vertical" size={0}>
-          <span>{v}</span>
-          {row.image_url && <Image src={row.image_url} width={32} height={32} style={{ objectFit: 'cover', borderRadius: 3 }} />}
-        </Space>
+        <Typography.Text
+          style={{ width: '100%' }}
+          editable={{
+            tooltip: '点击编辑名称',
+            onChange: (val) => {
+              const t = val.trim();
+              if (t && t !== v) updateMut.mutate({ id: row.id, payload: { name: t } });
+            },
+          }}
+        >
+          {v}
+        </Typography.Text>
       ),
     },
-    { title: '品牌', dataIndex: 'brand', width: 80 },
-    { title: '类目', dataIndex: 'category', width: 140 },
     {
-      title: '操作',
-      width: 150,
+      title: '品牌', dataIndex: 'brand', key: 'brand', width: colW.brand,
+      onHeaderCell: mkResize('brand'),
+      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '-'),
+    },
+    {
+      title: '类目', dataIndex: 'category', key: 'category', width: colW.category, ellipsis: true,
+      onHeaderCell: mkResize('category'),
+    },
+    {
+      title: '备注', dataIndex: 'remark', key: 'remark', width: colW.remark, ellipsis: true,
+      onHeaderCell: mkResize('remark'),
+      render: (v: string | null, row: Product) => (
+        <Typography.Text
+          type={v ? undefined : 'secondary'}
+          editable={{
+            tooltip: '点击编辑备注',
+            onChange: (val) => {
+              const t = val.trim();
+              if (t !== (v ?? '')) updateMut.mutate({ id: row.id, payload: { remark: t || undefined } });
+            },
+          }}
+        >
+          {v || '—'}
+        </Typography.Text>
+      ),
+    },
+    {
+      title: '图片', dataIndex: 'image_url', key: 'image', width: colW.image, align: 'center' as const,
+      onHeaderCell: mkResize('image'),
+      render: (v: string | null) =>
+        v
+          ? <Image src={v} width={88} height={88} style={{ objectFit: 'cover', borderRadius: 8 }} fallback={CUTE_IMG} />
+          : <img src={CUTE_IMG} width={88} height={88} style={{ borderRadius: 8 }} alt="暂无图片" />,
+    },
+    {
+      title: '操作', key: 'actions', width: colW.actions,
+      onHeaderCell: mkResize('actions'),
       render: (_: unknown, row: Product) => (
         <Space>
           <Link to={`/bom/${row.code}`}>查看 BOM</Link>
@@ -226,6 +330,7 @@ export default function ProductsPage() {
         type="info"
         showIcon
         message="产品编码由系统按 P + 品牌 + 年份 + 类目 + 计数 + 月日 自动生成，不需要手填。"
+        description="精选视图：名称 / 备注 可直接点单元格编辑；拖表头右边缘可调列宽；点图片可放大。"
       />
 
       <Segmented
@@ -240,11 +345,14 @@ export default function ProductsPage() {
       {viewMode === 'full' && <FullColumnView entity="product" defaultShowAll />}
 
       {viewMode === 'curated' && (
+      <Image.PreviewGroup>
       <Table<Product>
         rowKey="id"
         loading={isLoading}
         dataSource={data}
         columns={columns as any}
+        components={{ header: { cell: ResizableTitle } }}
+        scroll={{ x: 'max-content' }}
         pagination={{
           pageSize,
           showSizeChanger: true,
@@ -260,6 +368,7 @@ export default function ProductsPage() {
           ),
         }}
       />
+      </Image.PreviewGroup>
       )}
 
       <Modal
