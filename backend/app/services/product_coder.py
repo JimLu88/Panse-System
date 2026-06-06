@@ -53,6 +53,43 @@ def format_code(parts: ProductCodeParts) -> str:
     return f"P{parts.brand}{parts.year}{parts.category}{parts.counter:03d}{parts.month_day}"
 
 
+# ───────────────────── 跨品牌归并 (同一实物, 两个品牌) ─────────────────────
+# 约定: 同一个实物在两个品牌下用「相同的数字主体」, 只有品牌字母不同
+#       (畔色 PPS{X} / 孚格 PFG{X}, X 完全一致; 订单商家编码去品牌后为 P{X})。
+# 物理层 (BOM / 库存 / 工厂成本) 按「数字主体」共用一份;
+# 商业层 (定价 / 上架) 按品牌各设一份 (PPS{X}.. / PFG{X}.. 可不同价)。
+KNOWN_BRAND_CODES = ("PS", "FG")   # P 之后那两位: PS=畔色, FG=孚格
+
+
+def core_of(code: str | None) -> str | None:
+    """取编码的「数字主体」(去掉 P + 品牌字母前缀)。
+
+    PPS26380040225 / PFG26380040225 / P26380040225(订单商家编码) → 26380040225。
+    SKU 编码同理 (含尾部 2 位 SKU 号)。同一实物在不同品牌下数字主体相同。
+    """
+    if not code:
+        return None
+    core = re.sub(r"^[A-Za-z]+", "", str(code).strip())
+    return core or None
+
+
+def brand_variants(code: str | None) -> set[str]:
+    """同一数字主体在各品牌下的等价编码 + 品牌无关(订单)形式。
+
+    给定任意一种写法, 返回所有等价写法 (PPS…/PFG…/P…), 供 BOM/库存/销量
+    按物理实物归并匹配。
+    """
+    if not code:
+        return set()
+    core = core_of(code)
+    if not core:
+        return {str(code).strip()}
+    out = {str(code).strip(), "P" + core}
+    for b in KNOWN_BRAND_CODES:
+        out.add("P" + b + core)
+    return out
+
+
 def next_product_code(
     db: Session,
     *,

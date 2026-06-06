@@ -21,7 +21,6 @@
 """
 from __future__ import annotations
 
-import re
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import median
@@ -32,6 +31,7 @@ from sqlalchemy.orm import Session
 
 from app.models.inventory import ProductInventory
 from app.models.order import FactoryOrder, Order
+from app.services import product_coder
 
 _D = Decimal
 _ZERO = _D("0")
@@ -41,9 +41,8 @@ _DEFAULT_SLOW_MOVING_DAYS = 60
 def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str], days: int = 30) -> float:
     """近 N 天真实订单中该 SKU 的日均发货量。"""
     cutoff = date.today() - timedelta(days=days)
-    # 订单 product_code 用 "P" 前缀、目录/库存用 "PPS" 前缀 (P25…↔PPS25…) — 按数字主体桥接两种写法
-    core = re.sub(r"^[A-Za-z]+", "", product_code) if product_code else ""
-    pc_candidates = {product_code, "P" + core, "PPS" + core} if core else {product_code}
+    # 同一实物跨品牌(PPS/PFG)+订单去品牌(P) 按数字主体归并 → 全部等价编码一起统计销量
+    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
     stmt = (
         select(func.coalesce(func.sum(Order.qty), 0))
         .where(
