@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
-from app.services import order_cost_service
+from app.services import order_cost_service, taobao_listing_service
 
 # ── 格式指纹 ──────────────────────────────────────────────────────────────────
 # 千牛多表: Sheet 名命中其一即视为该格式
@@ -338,6 +338,7 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "sku": extract_sku(g3(row, "商品属性")),
                 "sku_code": _clean(merchant),
                 "product_code": product_code_from_merchant(merchant),
+                "sku_id": _clean(g3(row, "skuId", "sku id", "SKU ID", "sku_id")),
                 "qty": g3(row, "购买数量", "数量"),
                 "amount": _to_decimal(g3(row, "买家应付货款", "商品价格")),
             })
@@ -393,6 +394,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             "sku": extract_sku(gv(row, "商品属性")),
             "sku_code": _clean(merchant),
             "product_code": product_code_from_merchant(merchant),
+            "sku_id": _clean(gv(row, "skuId", "sku id", "SKU ID", "sku_id")),
             "qty": gv(row, "购买数量", "数量"),
             "amount": _to_decimal(gv(row, "买家应付货款", "价格", "商品价格")),
         })
@@ -402,6 +404,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
 # ── 聚合订单行 → Order 入库 ───────────────────────────────────────────────────
 def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                    rep: TaobaoImportReport) -> None:
+    resolver = taobao_listing_service.build_resolver(db)  # 对应表: skuId/编码 → SKU编码/产品编码/店铺
     seen: set[str] = set()
     for no, o in orders.items():
         if not no:
@@ -436,6 +439,17 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
 
         _pname = _clean(primary.get("product_name"))
         _sku = _clean(primary.get("sku"))
+        _product_code = primary.get("product_code") or None
+        _sku_code = primary.get("sku_code")
+        _shop = None
+        # Task 6: 用对应表按 skuId(精确) / 16位商家编码 反查 SKU编码/产品编码/店铺
+        hit = taobao_listing_service.resolve_line(
+            resolver, sku_id=primary.get("sku_id"), merchant_code=primary.get("sku_code"),
+        )
+        if hit:
+            _sku_code = hit.get("sku_code") or _sku_code
+            _product_code = hit.get("product_code") or _product_code
+            _shop = hit.get("shop")
         order = Order(
             platform=(platform or "淘宝").strip(),
             order_no=no,
@@ -443,10 +457,11 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             customer_name=_clean(o.customer_name),
             customer_phone=_clean(o.customer_phone),
             customer_address=_clean(o.customer_address),
-            product_code=primary.get("product_code") or None,
+            product_code=_product_code,
             product_name=_pname,
             sku=_sku,
-            sku_code=primary.get("sku_code"),
+            sku_code=_sku_code,
+            shop=_shop,
             qty=_to_int(primary.get("qty"), default=1),
             carrier=_clean(o.carrier),
             tracking_no=_clean(o.tracking_no),

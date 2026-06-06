@@ -35,6 +35,8 @@ class TaobaoListing(Base, TimestampMixin):
     sku_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     product_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)
     matched: Mapped[bool] = mapped_column(default=False, nullable=False)
+    # 店铺 (该导出来自哪个店: 畔色店 / 孚格店) — 分店统计用 (migration 0052)
+    shop: Mapped[Optional[str]] = mapped_column(String(32), index=True)
 
     __table_args__ = (
         UniqueConstraint("taobao_item_id", "taobao_sku_id", name="uq_taobao_item_sku"),

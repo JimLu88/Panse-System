@@ -166,6 +166,25 @@ def compute(db: Session, order: Order) -> CostBreakdown:
     else:
         note = None
 
+    # 方案B: is_custom 单在基础BOM成本上加一笔「定制加价」(可手改, 来自定制报价单或手填)
+    if order.is_custom and order.custom_surcharge is not None:
+        sur = Decimal(str(order.custom_surcharge)).quantize(_CENTS)
+        if sur != 0:
+            had_base = bool(lines)
+            lines.append(CostLine(
+                material_code="定制加价",
+                material_name="定制加价(方案B)",
+                qty_per_product=Decimal("1"),
+                unit_price=sur,
+                line_cost=sur,
+                missing_price=False,
+            ))
+            unit_cost = (unit_cost + sur).quantize(_CENTS)
+            total_cost = (unit_cost * qty).quantize(_CENTS)
+            note = (note + " | " if note else "") + f"含定制加价 ¥{sur}"
+            if not had_base:
+                note += "(⚠️ 基础BOM未匹配, 仅含加价)"
+
     return CostBreakdown(
         order_no=order.order_no,
         sku_code=sku_code,

@@ -18,6 +18,7 @@ import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tansta
 import {
   TaobaoListing,
   importTaobaoExport,
+  backfillOrdersFromListings,
   listTaobaoListings,
   updateTaobaoListing,
 } from '../api/client';
@@ -31,6 +32,7 @@ export default function TaobaoListingsPage() {
   const [matchFilter, setMatchFilter] = useState<'all' | 'matched' | 'unmatched'>('all');
   const [page, setPage] = useState(1);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [shop, setShop] = useState<string>('自动');  // 导入归属店铺 (分店统计)
 
   const matchedParam = matchFilter === 'all' ? undefined : matchFilter === 'matched';
 
@@ -47,7 +49,7 @@ export default function TaobaoListingsPage() {
   });
 
   const importMut = useMutation({
-    mutationFn: importTaobaoExport,
+    mutationFn: (file: File) => importTaobaoExport(file, shop === '自动' ? undefined : shop),
     onSuccess: (r) => {
       message.success(
         `导入完成：新增 ${r.inserted}，更新 ${r.updated}，自动匹配系统SKU ${r.matched}/${r.total}`,
@@ -56,6 +58,15 @@ export default function TaobaoListingsPage() {
       qc.invalidateQueries({ queryKey: ['taobao-listings'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '导入失败'),
+  });
+
+  const backfillMut = useMutation({
+    mutationFn: () => backfillOrdersFromListings(),
+    onSuccess: (r) => {
+      message.success(`回填完成：扫描 ${r.scanned} 单，更新 ${r.updated} 单`);
+      qc.invalidateQueries({ queryKey: ['taobao-listings'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '回填失败'),
   });
 
   const editMut = useMutation({
@@ -100,6 +111,10 @@ export default function TaobaoListingsPage() {
       render: (m: boolean) =>
         m ? <Tag color="green" icon={<LinkOutlined />}>已匹配</Tag> : <Tag>未匹配</Tag>,
     },
+    {
+      title: '店铺', dataIndex: 'shop', width: 90,
+      render: (v: string | null) => (v ? <Tag color="blue">{v}</Tag> : '-'),
+    },
   ];
 
   const matchRate =
@@ -125,25 +140,52 @@ export default function TaobaoListingsPage() {
       <Alert
         type="info"
         showIcon
-        message="用途"
-        description="导入淘宝后台「商品导出」Excel，建立 商品ID / 淘宝SKU / 商家编码 / 宝贝标题 与系统内部 SKU 编码 的对应关系。导入时按「商家编码」自动匹配系统定价 SKU；未匹配的可在表内直接点「系统SKU编码」手动补填。"
+        message="如何下载 & 导入"
+        description={
+          <>
+            从淘宝后台 <b>商品管理 → 批量导出</b> 下载「商品导出」Excel。表内必须包含
+            <b> 商品Id、skuId、销售属性(颜色分类)</b>，以及<b>两个「商家编码」列</b>
+            （第 1 个 = 14 位产品编码，第 2 个 = 16 位 <b>SKU 编码</b>，系统取第 2 个）。
+            两个店铺（畔色 / 孚格）请<b>各自导出、分别上传</b>，并在下方选好对应店铺（用于分店统计）。
+            导入按商家编码自动匹配系统定价 SKU；未匹配的可在表内点「系统SKU编码」手动补填。
+          </>
+        }
       />
 
       <Card size="small">
-        <Upload.Dragger
-          accept=".xlsx,.xls"
-          maxCount={1}
-          showUploadList={false}
-          disabled={importMut.isPending}
-          beforeUpload={(file) => {
-            importMut.mutate(file as File);
-            return false;
-          }}
-        >
-          <p className="ant-upload-drag-icon"><InboxOutlined /></p>
-          <p className="ant-upload-text">点击或拖拽淘宝商品导出 Excel 到此处导入</p>
-          <p className="ant-upload-hint">支持 .xlsx / .xls；重复导入会按 商品ID+skuId 更新已有记录</p>
-        </Upload.Dragger>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space wrap>
+            <span>归属店铺：</span>
+            <Segmented
+              value={shop}
+              onChange={(v) => setShop(v as string)}
+              options={['自动', '畔色店', '孚格店']}
+            />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              「自动」= 按文件名（孚格… / 畔色…）推断
+            </Typography.Text>
+            <Button
+              onClick={() => backfillMut.mutate()}
+              loading={backfillMut.isPending}
+            >
+              用对应表回填订单店铺/编码
+            </Button>
+          </Space>
+          <Upload.Dragger
+            accept=".xlsx,.xls"
+            maxCount={1}
+            showUploadList={false}
+            disabled={importMut.isPending}
+            beforeUpload={(file) => {
+              importMut.mutate(file as File);
+              return false;
+            }}
+          >
+            <p className="ant-upload-drag-icon"><InboxOutlined /></p>
+            <p className="ant-upload-text">点击或拖拽淘宝商品导出 Excel 到此处导入</p>
+            <p className="ant-upload-hint">支持 .xlsx / .xls；重复导入会按 商品ID+skuId 更新已有记录</p>
+          </Upload.Dragger>
+        </Space>
       </Card>
 
       <Card size="small">

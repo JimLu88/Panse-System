@@ -33,6 +33,7 @@ class TaobaoListingOut(BaseModel):
     sku_code: Optional[str]
     product_code: Optional[str]
     matched: bool
+    shop: Optional[str] = None
 
 
 class TaobaoListingListOut(BaseModel):
@@ -44,19 +45,39 @@ class TaobaoListingListOut(BaseModel):
 @router.post("/import")
 async def import_taobao_export(
     file: UploadFile = File(...),
+    shop: Optional[str] = Query(None, description="店铺(畔色店/孚格店); 不填则按文件名猜"),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
 ):
-    """上传淘宝商品导出 Excel, 解析入库并按商家编码自动匹配系统 SKU."""
+    """上传淘宝商品导出 Excel, 解析入库并按商家编码自动匹配系统 SKU.
+
+    shop 用于分店统计: 优先用显式参数, 否则按文件名(孚格.../畔色...)推断。
+    """
     name = (file.filename or "").lower()
     if not (name.endswith(".xlsx") or name.endswith(".xls")):
         raise HTTPException(400, "请上传 .xlsx / .xls 文件")
+    if not shop:
+        fn = file.filename or ""
+        if "孚格" in fn:
+            shop = "孚格店"
+        elif "畔色" in fn:
+            shop = "畔色店"
     content = await file.read()
     try:
-        result = taobao_listing_service.import_listings(db, content)
+        result = taobao_listing_service.import_listings(db, content, shop=shop)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"解析失败: {e}")
     return result
+
+
+@router.post("/backfill-orders")
+def backfill_orders(
+    only_missing_shop: bool = Query(True, description="仅回填店铺为空的订单"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """一键回填: 用当前对应表给已导入订单补 店铺/产品编码/SKU编码 (只填空字段)。"""
+    return taobao_listing_service.backfill_orders(db, only_missing_shop=only_missing_shop)
 
 
 @router.get("", response_model=TaobaoListingListOut)

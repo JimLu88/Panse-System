@@ -29,6 +29,7 @@ class Order(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     platform: Mapped[str] = mapped_column(String(32), nullable=False, index=True)  # 淘宝 / 抖音 / 直营
+    shop: Mapped[Optional[str]] = mapped_column(String(32), index=True)  # 店铺(畔色店/孚格店) — 分店统计 (migration 0052)
     order_no: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     is_refill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # 是否补单
 
@@ -55,6 +56,8 @@ class Order(Base, TimestampMixin):
     # 成本/费用
     theoretical_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 定制加价 (方案B): is_custom 单的理论成本 = 基础BOM成本 + 此加价; 可由定制报价单回填或手填 (migration 0053)
+    custom_surcharge: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     upstairs_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     install_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

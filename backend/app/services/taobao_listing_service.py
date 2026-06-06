@@ -13,6 +13,7 @@ from typing import Any, Optional
 import openpyxl
 from sqlalchemy.orm import Session
 
+from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.taobao_listing import TaobaoListing
 
@@ -58,6 +59,16 @@ def _build_col_map(header: list[str]) -> dict[str, int]:
             if alias in norm_header:
                 out[field] = norm_header.index(alias)
                 break
+    # 淘宝导出有两个「商家编码」列: 第1个=14位产品编码, 第2个(SKU级)=16位SKU编码。
+    # 上面的 index() 只取到第1个, 这里把第2个单独记到 merchant_code_sku。
+    mc_positions = [
+        i for i, h in enumerate(norm_header)
+        if h in ("商家编码", "商家外部编码", "外部编码")
+    ]
+    if mc_positions:
+        out["merchant_code"] = mc_positions[0]
+        if len(mc_positions) >= 2:
+            out["merchant_code_sku"] = mc_positions[-1]
     return out
 
 
@@ -116,6 +127,8 @@ def parse_rows(file_bytes: bytes) -> tuple[list[dict], list[str]]:
             "taobao_sku_id": _norm(cell("taobao_sku_id")) or None,
             "title": _norm(cell("title")) or None,
             "merchant_code": _norm(cell("merchant_code")) or None,
+            # 第2个「商家编码」= 16位SKU编码 (SKU级); 仅供匹配, import 时 pop 掉再建模型
+            "sku_code_raw": _norm(cell("merchant_code_sku")) or None,
             "sku_spec": _norm(cell("sku_spec")) or None,
             "category_name": _norm(cell("category_name")) or None,
             "list_price": _to_decimal(cell("list_price")),
@@ -129,8 +142,8 @@ def parse_rows(file_bytes: bytes) -> tuple[list[dict], list[str]]:
     return records, warnings
 
 
-def import_listings(db: Session, file_bytes: bytes) -> dict:
-    """解析 + upsert + 自动匹配. 返回统计."""
+def import_listings(db: Session, file_bytes: bytes, shop: Optional[str] = None) -> dict:
+    """解析 + upsert + 自动匹配. 返回统计. shop=店铺(畔色店/孚格店), 用于分店统计."""
     records, warnings = parse_rows(file_bytes)
     if not records:
         return {"inserted": 0, "updated": 0, "matched": 0, "total": 0, "warnings": warnings}
@@ -146,19 +159,25 @@ def import_listings(db: Session, file_bytes: bytes) -> dict:
 
     inserted = updated = matched = 0
     for rec in records:
-        # 按商家编码自动匹配系统 SKU
+        # 第2个商家编码=16位SKU编码 优先匹配; 回退到第1个(14位产品编码)
+        sku_raw = rec.pop("sku_code_raw", None)
         mc = rec.get("merchant_code")
         sku_code = product_code = None
-        if mc:
+        if sku_raw:
+            sku_code = sku_raw
+            product_code = sku_index.get(sku_raw) or (mc if mc in product_codes else None)
+        elif mc:
             if mc in sku_index:
                 sku_code, product_code = mc, sku_index[mc]
             elif mc in product_codes:
                 product_code = mc
         rec["sku_code"] = sku_code
         rec["product_code"] = product_code
-        rec["matched"] = bool(sku_code or product_code)
+        rec["matched"] = bool(product_code) or (bool(sku_code) and sku_code in sku_index)
         if rec["matched"]:
             matched += 1
+        if shop:  # 仅在指定店铺时写入, 避免重导(不带店铺)清空已有 shop
+            rec["shop"] = shop
 
         existing = (
             db.query(TaobaoListing)
@@ -185,3 +204,80 @@ def import_listings(db: Session, file_bytes: bytes) -> dict:
         "total": len(records),
         "warnings": warnings,
     }
+
+
+# ── 订单归属解析 (Task 6): 用对应表把订单的 skuId/商家编码 反查到 SKU编码/产品编码/店铺 ──
+def build_resolver(db: Session) -> dict:
+    """预载对应表, 返回多键索引。
+
+    三个键, 优先级 skuId > 16位SKU编码 > 14位产品编码:
+      by_sku_id[taobao_sku_id]   -> {sku_code, product_code, shop}
+      by_sku_code[sku_code]      -> 同上 (16位商家编码精确)
+      by_product[product_code]   -> 同上 (产品级兜底)
+    值里 shop 来自对应表导入时记录的店铺, 供订单分店归属。
+    """
+    by_sku_id: dict[str, dict] = {}
+    by_sku_code: dict[str, dict] = {}
+    by_product: dict[str, dict] = {}
+    rows = db.query(
+        TaobaoListing.taobao_sku_id,
+        TaobaoListing.sku_code,
+        TaobaoListing.product_code,
+        TaobaoListing.shop,
+    ).all()
+    for r in rows:
+        info = {"sku_code": r.sku_code, "product_code": r.product_code, "shop": r.shop}
+        if r.taobao_sku_id:
+            by_sku_id.setdefault(r.taobao_sku_id, info)
+        if r.sku_code:
+            by_sku_code.setdefault(r.sku_code, info)
+        if r.product_code:
+            by_product.setdefault(r.product_code, info)
+    return {"by_sku_id": by_sku_id, "by_sku_code": by_sku_code, "by_product": by_product}
+
+
+def resolve_line(
+    resolver: dict,
+    *,
+    sku_id: Optional[str] = None,
+    merchant_code: Optional[str] = None,
+) -> Optional[dict]:
+    """按 skuId(精确) → 16位商家编码 → 14位产品编码 顺序反查; 命中返回 dict, 否则 None。"""
+    if sku_id and sku_id in resolver["by_sku_id"]:
+        return resolver["by_sku_id"][sku_id]
+    if merchant_code:
+        if merchant_code in resolver["by_sku_code"]:
+            return resolver["by_sku_code"][merchant_code]
+        if merchant_code in resolver["by_product"]:
+            return resolver["by_product"][merchant_code]
+    return None
+
+
+def backfill_orders(db: Session, *, only_missing_shop: bool = True) -> dict:
+    """一键回填 (Task 9): 用当前对应表给已导入订单补 店铺/产品编码/SKU编码。
+
+    针对「先导了订单、后补全对应表」的历史订单 —— 按订单现有 sku_code(商家编码)
+    反查对应表, 只填空字段(不覆盖已有值)。only_missing_shop=True 时仅扫 shop 为空的订单。
+    返回 {scanned, updated}。
+    """
+    resolver = build_resolver(db)
+    q = db.query(Order)
+    if only_missing_shop:
+        q = q.filter(Order.shop.is_(None))
+    scanned = updated = 0
+    for o in q.all():
+        scanned += 1
+        hit = resolve_line(resolver, sku_id=None, merchant_code=o.sku_code)
+        if not hit:
+            continue
+        changed = False
+        if not o.shop and hit.get("shop"):
+            o.shop = hit["shop"]; changed = True
+        if not o.product_code and hit.get("product_code"):
+            o.product_code = hit["product_code"]; changed = True
+        if not o.sku_code and hit.get("sku_code"):
+            o.sku_code = hit["sku_code"]; changed = True
+        if changed:
+            updated += 1
+    db.commit()
+    return {"scanned": scanned, "updated": updated}
