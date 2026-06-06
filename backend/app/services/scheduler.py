@@ -225,6 +225,31 @@ def _job_data_reconcile(db: Session) -> dict:
     return {"reconciliation": by_rule, "formula": formula}
 
 
+def _job_alipay_match_pipeline(db: Session) -> dict:
+    """支付宝流水 ↔ 订单 自动逐笔匹配 (在 09:50 总额对账之前先把能对的对上)。
+
+    顺序: 归类(reconciliation_type) → 按订单号回填 → 按金额匹配(4规则)。
+    全部「只填空、保守、仅唯一命中」, 跑完仍对不上的由 08:00 数据扫描 / 09:50 对账 挂异常。
+    """
+    from app.services import (
+        alipay_amount_match_service, alipay_backfill_service,
+        alipay_flow_router_service, smart_matching_service,
+    )
+    smart_matching_service.run(db)
+    route = alipay_flow_router_service.run_all(db)
+    db.flush()
+    bf = alipay_backfill_service.backfill(db, only_missing=True)
+    db.flush()
+    am = alipay_amount_match_service.match(db)
+    return {
+        "route": {"purchases_created": getattr(route, "purchases_created", 0),
+                  "factory_flipped": getattr(route, "factory_flipped", 0)},
+        "backfill": {"matched_orders": bf.matched_orders, "filled_flow_no": bf.filled_flow_no},
+        "amount_match": {"matched": am.matched, "linked_flow_no": am.linked_flow_no,
+                         "by_rule": am.by_rule},
+    }
+
+
 def _job_tracking_check(db: Session) -> dict:
     """快递追踪 — 仅扫缺单号; 真正调 17track API 留给 Phase 5 扩展."""
     from app.services import factory_order_service
@@ -595,6 +620,8 @@ def _register_default_jobs() -> None:
                  _job_lowstock_scan, cron={"hour": 7, "minute": 0})
     register_job("daily_09_tracking_check", "快递追踪 (Phase 3 启用)",
                  _job_tracking_check, cron={"hour": 9, "minute": 0})
+    register_job("daily_0940_alipay_match", "支付宝流水↔订单 自动匹配 (归类+按单号+按金额)",
+                 _job_alipay_match_pipeline, cron={"hour": 9, "minute": 40})
     register_job("daily_10_data_reconcile", "数据自动核对 (写异常池)",
                  _job_data_reconcile, cron={"hour": 9, "minute": 50})
     register_job("daily_10_comprehensive_report", "每日综合日报推送",

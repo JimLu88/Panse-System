@@ -1286,6 +1286,30 @@ function SchedulerTab() {
       <Alert type="info" showIcon
              message="业务需求 18: 所有自动跑的任务"
              description="包含: 17:00 退款检查、库存预警扫描、远期订单激活、财务公式核对 等. 'next_run_at' 是下一次自动跑的时间. 立即按钮可手工触发一次." />
+      <Card size="small" title="对账与同步 · 手动执行" type="inner">
+        <Space wrap>
+          {[
+            { id: 'daily_0940_alipay_match', label: '流水↔订单 对账匹配', primary: true },
+            { id: 'daily_10_data_reconcile', label: '总额对账(写异常)' },
+            { id: 'daily_08_data_quality', label: '数据异常扫描' },
+            { id: 'email_poll_alipay_6h', label: '拉取支付宝流水' },
+            { id: 'feishu_sync_30min', label: '飞书同步' },
+          ].map((j) => (
+            <Button
+              key={j.id}
+              type={j.primary ? 'primary' : undefined}
+              loading={triggerMut.isPending}
+              onClick={() => triggerMut.mutate(j.id)}
+            >
+              {j.label}
+            </Button>
+          ))}
+        </Space>
+        <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
+          这些任务每天会自动跑;点按钮可立刻手动执行一次,结果见下方「最近执行记录」。
+          「流水↔订单 对账匹配」= 归类 → 按订单号回填 → 按金额匹配(4规则)。
+        </div>
+      </Card>
       <Card size="small" title="已注册定时任务">
         <Table<SchedulerJob>
           size="small" rowKey="job_id" dataSource={jobs} pagination={false}
