@@ -85,3 +85,25 @@ def settle_part_return(
         raise HTTPException(404, str(e)) from e
     db.commit()
     return PartReturnOut.model_validate(rec)
+
+
+@router.get("/{return_id}/refund-candidates")
+def refund_candidates(
+    return_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """为待收退款的返厂单, 找疑似供应商退款的支付宝流水 (按匹配度排序)."""
+    return part_return_service.find_refund_candidates(db, return_id)
+
+
+@router.post("/auto-reconcile")
+def auto_reconcile_returns(
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """一键自动对账: 把"唯一且金额一致+供应商匹配"的退款流水自动结算到返厂单."""
+    result = part_return_service.auto_reconcile(
+        db, actor=getattr(user, "username", None) or "system")
+    db.commit()
+    return result

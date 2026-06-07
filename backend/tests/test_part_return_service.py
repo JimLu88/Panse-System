@@ -81,3 +81,57 @@ def test_summary_totals(db_session):
     assert s["repair_fee_total"] == 15.0
     assert s["open_count"] == 1
     assert s["total_count"] == 3
+
+
+# ----------------------------- 供应商退款流水自动匹配 ----------------- #
+
+
+def _add_flow(db, *, tx, amount, counterparty=None, account="主力号"):
+    from app.models.finance import AlipayFlow
+    f = AlipayFlow(account=account, transaction_no=tx, amount=Decimal(str(amount)),
+                   counterparty=counterparty, reconciliation_status="open")
+    db.add(f)
+    db.commit()
+    return f
+
+
+def test_find_refund_candidates_ranks_amount_and_supplier(db_session):
+    _seed_defective(db_session, defective=5)
+    rec = part_return_service.record_resolution(
+        db_session, material_code="AC-R01", qty=2, disposition="returned",
+        amount=120, supplier="博冠")
+    db_session.commit()
+    _add_flow(db_session, tx="RF-1", amount=120, counterparty="博冠家具")   # 金额一致+供应商
+    _add_flow(db_session, tx="RF-2", amount=999, counterparty="无关")        # 金额差太远, 被排除
+    cands = part_return_service.find_refund_candidates(db_session, rec.id)
+    assert cands and cands[0]["transaction_no"] == "RF-1"
+    assert cands[0]["score"] >= 6
+    assert all(c["transaction_no"] != "RF-2" for c in cands)
+
+
+def test_auto_reconcile_settles_strong_unique(db_session):
+    _seed_defective(db_session, defective=5)
+    rec = part_return_service.record_resolution(
+        db_session, material_code="AC-R01", qty=2, disposition="returned",
+        amount=120, supplier="博冠")
+    db_session.commit()
+    _add_flow(db_session, tx="RF-1", amount=120, counterparty="博冠家具")
+    res = part_return_service.auto_reconcile(db_session)
+    db_session.commit()
+    db_session.refresh(rec)
+    assert res["matched"] == 1
+    assert rec.status == "settled"
+    assert rec.alipay_flow_no == "RF-1"
+
+
+def test_auto_reconcile_skips_without_supplier(db_session):
+    _seed_defective(db_session, defective=5)
+    rec = part_return_service.record_resolution(
+        db_session, material_code="AC-R01", qty=2, disposition="returned", amount=120)
+    db_session.commit()
+    _add_flow(db_session, tx="RF-1", amount=120, counterparty="某厂")
+    res = part_return_service.auto_reconcile(db_session)
+    db_session.commit()
+    db_session.refresh(rec)
+    assert res["matched"] == 0          # 无供应商 → 仅金额一致(3) < 6, 保守不自动配
+    assert rec.status == "open"

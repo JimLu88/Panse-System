@@ -24,10 +24,12 @@ import {
   updatePartInventory,
 } from '../api/client';
 import {
+  autoReconcileReturns,
   listPartInventoryWithStats,
   listPartReturns,
   markPartDefective,
   partReturnSummary,
+  refundCandidates,
   resolvePartDefective,
   settlePartReturn,
   type PartInventoryStats,
@@ -133,6 +135,31 @@ export default function PartInventoryPage() {
       message.error(e?.response?.data?.detail ?? '结算失败');
     } finally {
       setSettleSaving(false);
+    }
+  }
+
+  // 结算弹窗打开且是退款单 → 拉疑似供应商退款流水候选
+  const candidates = useQuery({
+    queryKey: ['refund-candidates', settleRow?.id],
+    queryFn: () => refundCandidates(settleRow!.id),
+    enabled: settleRow !== null && settleRow.amount_kind === 'refund',
+  });
+
+  const [autoReconciling, setAutoReconciling] = useState(false);
+  async function runAutoReconcile() {
+    setAutoReconciling(true);
+    try {
+      const r = await autoReconcileReturns();
+      message.success(
+        r.matched > 0
+          ? `自动对账成功 ${r.matched} 单`
+          : '暂无可自动匹配的退款（需金额一致且供应商对得上）');
+      qc.invalidateQueries({ queryKey: ['part-returns'] });
+      qc.invalidateQueries({ queryKey: ['part-returns-summary'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '自动对账失败');
+    } finally {
+      setAutoReconciling(false);
     }
   }
 
@@ -354,6 +381,14 @@ export default function PartInventoryPage() {
                        precision={2} prefix="¥" />
             <Statistic title="报废损失" value={returnsSum.data?.scrap_loss_total ?? 0}
                        precision={2} prefix="¥" valueStyle={{ color: '#d48806' }} />
+          </Space>
+          <Space style={{ margin: '4px 0' }}>
+            <Button onClick={runAutoReconcile} loading={autoReconciling}>
+              一键自动对账（退款流水）
+            </Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              自动把「金额一致 + 供应商对得上」的支付宝退款流水结算到对应返厂单。
+            </Typography.Text>
           </Space>
           <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '8px 0' }}>
             「处理」坏件时填了金额就会进这里。退货退款默认「待收」，收到供应商退款后点「结算」并可填支付宝流水号对账。
@@ -588,6 +623,19 @@ export default function PartInventoryPage() {
             : '标记为已结算。'}
         />
         <Form form={settleForm} layout="vertical" onFinish={submitSettle}>
+          {settleRow?.amount_kind === 'refund' && (candidates.data?.length ?? 0) > 0 && (
+            <Form.Item label="疑似退款流水（点选自动填入）">
+              <Select
+                allowClear
+                placeholder={candidates.isFetching ? '匹配中…' : '选择匹配到的退款流水'}
+                options={(candidates.data ?? []).map((c) => ({
+                  value: c.transaction_no,
+                  label: `¥${c.amount} · ${c.counterparty ?? '—'} · ${c.reason}`,
+                }))}
+                onChange={(v) => settleForm.setFieldValue('alipay_flow_no', v)}
+              />
+            </Form.Item>
+          )}
           <Form.Item name="alipay_flow_no" label="支付宝流水号（可选）">
             <Input placeholder="收到退款的那笔流水号" />
           </Form.Item>
