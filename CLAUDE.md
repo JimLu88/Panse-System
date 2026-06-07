@@ -11,7 +11,7 @@
   - 前端：Vite + React 18 + TypeScript + Ant Design 5 + TanStack Query + react-router。页面全部 `lazy` 加载。
   - 部署：Docker Compose 四服务 `db / api / web / backup`。api 启动 `alembic upgrade head && uvicorn`（**无 `--reload`**，单进程，看门狗 SIGTERM → Docker `unless-stopped` 自动拉起）。backup 每天 03:00 `pg_dump | gzip`，保留 30 天。
   - Windows 托盘部署：`deploy/windows/`（`panse_tray.py` + `*.bat`）。
-- **迁移最新 head = `0058`**（`order_settlements` 表）。
+- **迁移最新 head = `0059`**（`account_balances.as_of_date` 统计日期；0058 = `order_settlements` 表）。
 - **Git 工作流**：本地直接提交到 `main`，维护者 push 到 `github.com/JimLu88/Panse-System`，用户只拉代码。**提交信息不带 `Co-Authored-By`**。升级 = `git pull && docker compose up -d --build`。
 - **认证**：JWT HS256；角色 `admin / operator / viewer`；默认 `admin/admin`，启动会把弱密码账号标记 `must_change_password` 强制改密。AI/OCR/物流 key 加密存 `system_settings`（后台可改，无需重启）。
 
@@ -97,7 +97,10 @@ frontend/src/
 ### 6.4 订单 + 状态机 + 导入
 - `orders` 状态机：`pending_payment→paid→shipped→signed→aftersales(↔signed)/cancelled`，迁移图见 `models/order.py: ORDER_STATUS_TRANSITIONS`。双核对签收 `tracking_confirmed`/`manual_confirmed`。
 - 财务列（迁移 0046）：`buyer_payable_amount`(应付)/`paid_amount`(实付)/`shop_received_amount`(实收)/`tax`/`platform_fee`/`refund_*`/`alipay_flow_no`。
-- **订单导入** `order_import.py` / `taobao_order_import.py`：支持千牛多表 Excel(.xlsx) + 销售明细 CSV(GBK/UTF-8)；**已有订单按订单号回填金额/客户、不重复插入**；列别名补全（买家应付货款/实付/主订单编号等）；SKU `PPS+13位` → 旧 `P+11位`；订单号科学计数法标 needs_review 不静默丢。
+- **订单导入** `order_import.py` / `taobao_order_import.py`：支持千牛多表 Excel(.xlsx，入口 `POST /api/orders/import-taobao`) + 销售明细 CSV(GBK/UTF-8)；SKU `PPS+13位` → 旧 `P+11位`；订单号科学计数法标 needs_review 不静默丢。
+  - ⚠️ **订单状态必须从「订单状态」列映射**（`_STATUS_MAP`：等待买家付款→pending_payment / 等待卖家发货→paid / 卖家已发货→shipped / 交易成功→signed / 交易关闭→cancelled）。历史 bug：导入写死 `pending_payment` 致**所有按状态门的统计（现金流在途/资产订单利润/平台费）全算成 0**。
+  - **再导走 UPSERT**（按订单号更新已存在单的状态/金额，不再 skip-duplicate）；**`is_historical=False`**（活跃单要进现金流）；财务列分开存：`买家应付货款→buyer_payable_amount`、`买家实付金额→paid_amount`、`卖家服务费→platform_fee`、`退款金额→refund_amount`、`打款商家金额→shop_received_amount`、`发货时间→ship_date`、`店铺名称→shop`。
+  - 标准 xlsx 三表：`订单报表`(单级全财务列) / `销售明细`(行级驱动) / `发货报表`(收货人联系方式)。
 
 ### 6.5 财务对账闭环 ⭐（本批重点，已逐行读核心代码）
 - **逐笔四方对账** `order_reconciliation_service.py`（财务→结算对账→逐笔对账）：每单一行铺开 收入侧 应付→实付→(补贴)→实收→**实际到账**，成本侧 理论↔实际。
@@ -137,6 +140,14 @@ frontend/src/
 - `roi_service.compute`：推广支出 vs 订单销售额 → ROI（**剩余 TODO：按月占比，剔除补单**）。
 - 定制 `custom_quote_service`(整板逐行成本→工厂利润 25%→畔色加价 15%) / `customization_service`(尺寸微改克隆 BOM 生成 `改NN` 变体)。
 
+### 6.13 剩余流水 / 可用资金 / 投资回收 ⭐（财务→剩余流水, `cash_flow_service.py`）
+- **可用资金 = Σ加项 − Σ减项**（实时算，无手动结算）。**总投资费用不在公式内**——它是沉没本金，单列「投资回收」与累计总利润对比（早期 bug：把总投资当减项 + 历史病根，致可用资金算成 −82万；实为正 ~30万+）。
+- **加项**：平台保证金(手动) + 支付宝余额(**全部**支付宝账户) + 聚合余额 + 推广余额 + 其他账户(银行卡/个体户私账，也是真金) + 订单待确认收货(`Σpaid status=shipped`) + 订单未发货(`Σpaid status=paid`)。账户按账户名子串分类(`_classify_account`)。
+- **减项**：待扣平台费 = (待确认收货+未发货)×**千分之六**(卖家服务费列常空，故估) + 工厂打样(未付·无平台单号) + 工厂结算已开账单未付(有平台单号) + **工厂结算未开账单预估**(活跃单预测工厂成本 `_predicted_factory_cost`=theoretical_cost×qty>BOM现算>定价表factory_cost；**跳过已开账单单防双算**；缺成本单数如实提示) + 代付补单佣金(补单记录 commission 未结)。
+- **投资回收** `compute_total_profit`：累计总利润 = 真实销售(非补单/非取消/有收入) 营收(店铺实收>应付−2%税−费>实付) − 成本(实际/理论) − 售后费用；**标注缺成本单数防高估**。回收率 = 总利润/总投资。
+- **账户余额统计日期** `AccountBalance.as_of_date`(迁移 0059)：余额是某天手填的快照，**新鲜度按 as_of_date / 订单按 max(order_date)**，不再用 `updated_at`(=导入那天=今天)。导入 `_h_balance` 把「统计日期」整日存入 as_of_date 并据此定年月(中文「2026年5月20日」可解析；缺日期则 as_of_date 留空→新鲜度标未知)。
+- **定制单缺需求** `custom_order_spec_service.scan`(`POST /api/orders/scan-custom-specs`)：SKU含定制/其他尺寸 且无具体尺寸规格 → 异常分类 `custom_order_missing_spec`(幂等去重，补需求后自动 resolve)，补全后可用定制定价精确核算工厂成本。
+
 ## 7. ⚠️ 关键数据真相（实测确认，勿重新踩坑）
 
 1. **`AlipayFlow.amount` 带符号**（正=收入 负=支出，负值确实存在），不是绝对值；`sum(-amount)` 判支出是对的。
@@ -148,6 +159,9 @@ frontend/src/
 7. **销售排行榜排除补差价/邮费/专拍**（否则差价链接 58066 件霸榜）。
 8. **支付宝账户**：企业号(9A 淘宝结算) / 爱群号(9C 货款转账个人) / 主力号(komo转账/采购/广告) / 佳宝号(理财)。
 9. 实测：1278 单纳入逐笔对账，2%补贴税合计 ≈¥21,246；年度销量冠军=榉木餐桌 138 件/¥16.6万。
+10. **导入订单状态曾被写死 `pending_payment`**（病根）：致现金流在途/资产订单利润/平台费全算 0、可用资金假性巨负。已修：从「订单状态」列映射 + 再导 UPSERT 刷新。标准 xlsx(970单) 实测：未发货 85 / 待确认收货 27 / 成功 549 / 关闭 304。
+11. **账户余额是「某天手填的快照」不是实时**（用户实测 5月20日填的）：模型加 `as_of_date`，新鲜度按统计日期算（旧逻辑用 `updated_at` 致全标"今天·绿"、月份还错标本月）。企业号期末余额常「待补(流水截至上月)」即不完整，勿当实时现金。
+12. **可用资金本应为正**：账上现金 ~30万、无突发巨额应付，剩余流水 ≈ +30万~60万；早期 −82万 是「总投资当负债 + 工厂欠款虚高(payment_status 默认 unpaid 从未回填) + 订单利润算0」三 bug 叠加的假象。工厂未付款若虚高需对账回填 `FactoryOrder.payment_status`。
 
 ## 8. 约定与模式
 
@@ -166,7 +180,9 @@ frontend/src/
 
 ## 10. 当前状态 & 剩余 TODO
 
-- `origin/main` 最新 = `8a6f0fe`（销售排行榜）。本仓另有开发分支 `claude/jolly-euler-wEyWb`。
+- `origin/main` 最新 = `8a6f0fe`（销售排行榜）。开发分支 `claude/jolly-euler-wEyWb`（已含：系统记忆文档 + 剩余流水/可用资金重做一揽子）。
+- **本批分支新增**（剩余流水修复链，从旧到新）：订单导入状态映射+UPSERT(`2677419`) → 现金流公式重写+投资回收(`549537d`) → 账户余额 as_of_date+新鲜度(`11fc0eb`, 迁移0059) → 定制单缺需求异常(`81a68dc`)。
+- **已知遗留 bug**（非本批引入）：`customer_service.aggregate_all` 未过滤 `is_historical`（`test_aggregate_skips_historical` 既有失败）。`FactoryOrder.payment_status` 默认 unpaid 从未回填 → 工厂欠款口径虚高，需对账回填。
 - **剩余未做**（用户已列）：
   1. **飞书机器人**：发图自动识别 订单表/订单图/供应商图 → 不确定发卡片选 → 确认入库。**需用户提供飞书自建应用凭证**。
   2. **推广 ROI 按月占比**（推广支出/正式销售额，剔除补单）—— 无需外部凭证，可直接做。
