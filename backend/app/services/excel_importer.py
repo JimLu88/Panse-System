@@ -297,6 +297,51 @@ def _extract_json(text: str) -> dict:
     return json.loads(cleaned[start: end + 1])
 
 
+# ----------------------------- 未映射列过滤 ---------------------- #
+
+# 导入时"无需关心"的 Excel 列 — 不计入"未映射"提示 (这些列本就不该入库)。
+# 仅作用于"未映射"列: 已被映射到目标字段的同名列照常入库, 完全不受影响。
+# 分四类:
+#   1) 系统/校验/批注辅助列: 「校验导出」功能回写的标注列、人工批注列;
+#   2) 派生列: 系统按其他字段实时算出 (如 可用库存 = 物理库存 - 锁定库存);
+#   3) 业务冗余列: 数据已在别处保存, 本表不重复存 (如订单里的「核销状态」由系统对账算出);
+#   4) 未命名空列 (colN) 与整列全空列: 没有任何数据, 不存在"丢数据"。
+_IGNORABLE_COLUMN_KEYWORDS = (
+    "导入校验", "问题标注", "对账缺失", "核销状态", "核销类型",
+    "可用库存", "尺寸值", "尺寸是否确定",
+)
+# 精确匹配 (大小写不敏感; 中文不受 lower() 影响)
+_IGNORABLE_COLUMN_EXACT = {
+    "✓", "✔", "√", "商品id", "商品id备注", "sku编码备注",
+}
+_UNNAMED_COL_RE = re.compile(r"^col\d+$", re.IGNORECASE)
+
+
+def _cell_empty(v: Any) -> bool:
+    return v is None or (isinstance(v, str) and v.strip() == "")
+
+
+def _is_ignorable_unmapped_column(col: str, rows: list[dict[str, Any]]) -> bool:
+    """一个"未映射"的 Excel 列是否可静默忽略 (不报"未映射"提示)。
+
+    放行 (返回 True) 的列: 系统辅助/校验/批注列、派生列、业务冗余列、未命名空列、
+    以及整列全空的列 (没有数据被丢弃)。其余"有真实数据又没归宿"的列仍照常提示,
+    避免静默丢数据。
+    """
+    name = (col or "").strip()
+    low = name.lower()
+    if not name or _UNNAMED_COL_RE.match(low):
+        return True
+    if low in _IGNORABLE_COLUMN_EXACT:
+        return True
+    if any(kw.lower() in low for kw in _IGNORABLE_COLUMN_KEYWORDS):
+        return True
+    # 整列全空 → 没有任何数据被丢弃
+    if all(_cell_empty(r.get(col)) for r in rows):
+        return True
+    return False
+
+
 # ----------------------------- 提交入库 -------------------------- #
 
 
@@ -344,7 +389,11 @@ def commit_sheet(
     if rows:
         all_excel_cols = set(rows[0].keys())
         mapped_cols = set(mapping.values())
-        unmapped = sorted(all_excel_cols - mapped_cols)
+        raw_unmapped = sorted(all_excel_cols - mapped_cols)
+        # 过滤掉"无需导入"的列 (系统辅助/批注/派生/冗余/未命名/整列全空), 不报"未映射";
+        # 仅"有真实数据又没归宿"的列才提示, 既不吓人也不静默丢数据。
+        unmapped = [c for c in raw_unmapped
+                    if not _is_ignorable_unmapped_column(c, rows)]
         if unmapped:
             report.unmapped_columns = unmapped
             report.warnings.append(
@@ -886,9 +935,16 @@ def _commit_alipay_flows(
             unresolved_refs += 1
             if len(unresolved_samples) < 5:
                 unresolved_samples.append(str(projected.get("related_order_no"))[:48])
+        # 去重键必须与模型唯一约束一致: (account, transaction_no, transaction_type, amount)。
+        # 同一交易流水号常对应一对流水(在线支付货款 + 分账手续费), 交易类型/金额不同, 两条都要入库;
+        # 仅"同号 + 同类型 + 同金额"才算真重复。旧逻辑只比 (account, 流水号) 会把成对流水压成一条 → 丢数据。
+        tx_type = projected.get("transaction_type")
         existing = db.execute(
             select(AlipayFlow).where(
-                AlipayFlow.account == account, AlipayFlow.transaction_no == tx_no,
+                AlipayFlow.account == account,
+                AlipayFlow.transaction_no == tx_no,
+                AlipayFlow.transaction_type == tx_type,
+                AlipayFlow.amount == amount,
             )
         ).scalar_one_or_none()
         if existing is not None:
@@ -990,6 +1046,11 @@ def _diff_fields(existing, payload: dict) -> list[dict]:
                     continue
             except (InvalidOperation, ValueError):
                 pass
+        # datetime: 库内为带时区(UTC), 重导从 Excel 解析为 naive → 直接 == 会误判为"变化",
+        # 导致每次重导都对同一行刷一堆假冲突。按"墙上时间"(去时区)比较, 同一时刻视为相等。
+        if isinstance(old, datetime) and isinstance(new, datetime):
+            if old.replace(tzinfo=None) == new.replace(tzinfo=None):
+                continue
         if old == new:
             continue
         diffs.append({"field": f, "old": _jsonable(old), "new": _jsonable(new)})
