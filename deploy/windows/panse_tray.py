@@ -209,7 +209,10 @@ def _build_and_up(prefix: str = "代码更新完成") -> None:
     commit, build_env = _stamp_version()
     _write_log("开始 docker compose build + up...")
     code, out = _run(
-        ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes"],
+        # 只重建会变的 api/web (web 带 --renew-anon-volumes 刷新 node_modules 匿名卷);
+        # 明确不动 db/backup → db 容器不被重建, 不会重新 bind 宿主 5432,
+        # 从而避开 Windows/Hyper-V 临时端口保留段(如 5410-5509)导致的 bind 失败。
+        ["docker", "compose", "up", "-d", "--build", "--renew-anon-volumes", "api", "web"],
         timeout=300, env=build_env,
     )
     if code == 0:
@@ -561,7 +564,9 @@ def watchdog_loop(icon: Icon) -> None:
             if status != last_status:
                 icon.icon = make_icon(status)
                 last_status = status
-            title = f"畔色 ERP - {msg}"
+            # Windows 托盘 tooltip 上限 128 字符; 异常时 msg 可能是很长的容器状态 dict,
+            # 不截断会让 icon.title 抛 "string too long" 每轮刷屏。
+            title = f"畔色 ERP - {msg}"[:120]
             if title != last_title:
                 icon.title = title
                 last_title = title
