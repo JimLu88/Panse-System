@@ -65,6 +65,7 @@ class OrderOut(BaseModel):
 
 class CsvImportReport(BaseModel):
     inserted: int
+    backfilled: int = 0
     skipped_duplicate: int
     skipped_invalid: int
     errors: list[str] = Field(default_factory=list)

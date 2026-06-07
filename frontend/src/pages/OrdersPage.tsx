@@ -371,7 +371,7 @@ export default function OrdersPage() {
             生成订单细节
           </Button>
           <Upload
-            accept=".csv"
+            accept=".csv,.xlsx,.xls"
             showUploadList={false}
             beforeUpload={(file) => {
               importMut.mutate(file as File);
@@ -379,7 +379,7 @@ export default function OrdersPage() {
             }}
           >
             <Button icon={<UploadOutlined />} loading={importMut.isPending}>
-              CSV 导入
+              导入订单 (CSV/Excel)
             </Button>
           </Upload>
         </Space>

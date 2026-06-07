@@ -41,12 +41,24 @@ COLUMN_ALIASES: dict[str, str] = {
     "物流单号": "tracking_no",
     "实付金额": "paid_amount",
     "应付金额": "paid_amount",
+    "买家实付金额": "paid_amount",
+    "买家实际支付金额": "paid_amount",
+    "买家应付货款": "paid_amount",
+    "主订单编号": "order_no",
+    "订单创建时间": "order_date",
+    "宝贝标题": "product_name",
+    "商品标题": "product_name",
+    "宝贝总数量": "qty",
+    "购买数量": "qty",
+    "收货人姓名": "customer_name",
+    "联系手机": "customer_phone",
 }
 
 
 @dataclass
 class ImportReport:
     inserted: int = 0
+    backfilled: int = 0
     skipped_duplicate: int = 0
     skipped_invalid: int = 0
     errors: list[str] = None  # type: ignore[assignment]
@@ -125,14 +137,34 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
             report.skipped_invalid += 1
             continue
 
-        # 重复跳过（DB 里已有 or 本次 CSV 已经处理过）
-        if order_no in seen_in_batch or db.execute(
-            select(Order.id).where(Order.order_no == order_no)
-        ).first():
+        # 本批已处理过 → 跳过
+        if order_no in seen_in_batch:
             report.skipped_duplicate += 1
-            seen_in_batch.add(order_no)
             continue
         seen_in_batch.add(order_no)
+        # DB 已存在: 只回填空缺(金额/客户), 不覆盖已有数据, 也不重复插入
+        existing = db.execute(
+            select(Order).where(Order.order_no == order_no)
+        ).scalar_one_or_none()
+        if existing is not None:
+            changed = False
+            amt = _to_decimal(payload.get("paid_amount"))
+            if amt and not existing.paid_amount:
+                existing.paid_amount = amt
+                changed = True
+            nm = payload.get("customer_name")
+            if nm and not existing.customer_name:
+                existing.customer_name = nm
+                changed = True
+            ph = payload.get("customer_phone")
+            if ph and not existing.customer_phone:
+                existing.customer_phone = ph
+                changed = True
+            if changed:
+                report.backfilled += 1
+            else:
+                report.skipped_duplicate += 1
+            continue
 
         _is_refill = _to_bool(payload.get("is_refill"))
         _product_name = payload.get("product_name")
@@ -162,3 +194,41 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
 
     db.commit()
     return report
+
+
+def import_orders_from_xlsx(db: Session, content: bytes) -> ImportReport:
+    """Excel 订单表导入: 取第一个含『订单编号/主订单编号』表头的工作表 → 转 CSV 文本复用 CSV 导入。
+
+    淘宝销售明细 xlsx 含 订单报表/销售明细/发货报表 三表; 取订单报表(单级, 不重复计) 最稳。
+    """
+    import io
+
+    import openpyxl
+
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True)
+    for ws in wb.worksheets:
+        header: Optional[list] = None
+        hr = 0
+        for ri, row in enumerate(ws.iter_rows(min_row=1, max_row=12, min_col=1, max_col=40, values_only=True), start=1):
+            cells = [str(c).strip() if c is not None else "" for c in row]
+            if any(c in ("订单编号", "主订单编号", "订单号") for c in cells):
+                header = cells
+                hr = ri
+                break
+        if not header:
+            continue
+        width = len(header)
+        buf = StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(header)
+        for row in ws.iter_rows(min_row=hr + 1, max_row=200000, min_col=1, max_col=width, values_only=True):
+            if not any(c is not None and str(c).strip() for c in row):
+                continue
+            writer.writerow([
+                "" if c is None else (c.isoformat() if hasattr(c, "isoformat") else str(c))
+                for c in row[:width]
+            ])
+        return import_orders_from_csv(db, buf.getvalue())
+    rep = ImportReport()
+    rep.errors.append("Excel 中未找到含『订单编号 / 主订单编号』的工作表")
+    return rep

@@ -221,13 +221,18 @@ def change_status(order_id: int, payload: OrderStatusChange, db: Session = Depen
 @router.post("/import-csv", response_model=CsvImportReport)
 async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
     raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")  # 中文 Excel 导出常见
-    report = order_import.import_orders_from_csv(db, text)
+    name = (file.filename or "").lower()
+    if name.endswith(".xlsx") or name.endswith(".xls"):
+        report = order_import.import_orders_from_xlsx(db, raw)
+    else:
+        try:
+            text = raw.decode("utf-8-sig")
+        except UnicodeDecodeError:
+            text = raw.decode("gbk", errors="replace")  # 中文 Excel 导出常见
+        report = order_import.import_orders_from_csv(db, text)
     return CsvImportReport(
         inserted=report.inserted,
+        backfilled=getattr(report, "backfilled", 0),
         skipped_duplicate=report.skipped_duplicate,
         skipped_invalid=report.skipped_invalid,
         errors=report.errors,
