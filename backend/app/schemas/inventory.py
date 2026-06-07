@@ -29,6 +29,7 @@ class PartInventoryOut(BaseModel):
     unit: Optional[str]
     physical_qty: int
     locked_qty: int
+    defective_qty: int = 0   # 待返厂/维修中 (坏件), 不计入可用
     available_qty: int
     remark: Optional[str]
 

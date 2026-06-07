@@ -69,6 +69,7 @@ export interface PartInventory {
   unit: string | null;
   physical_qty: number;
   locked_qty: number;
+  defective_qty: number;   // 待返厂/维修中 (坏件), 不计入可用
   available_qty: number;
   remark: string | null;
 }
@@ -558,6 +559,17 @@ export const updatePartInventory = (
   id: number,
   payload: { physical_qty?: number; locked_qty?: number; remark?: string },
 ) => api.patch(`/api/inventory/parts/${id}`, payload).then(r => r.data);
+
+// -- 坏件/返厂维修 (方案B): 标记坏件 → 待返厂; 处理 → 回良品/报废/退款
+export const markPartDefective = (
+  id: number,
+  payload: { qty: number; reason?: string; remark?: string },
+) => api.post<PartInventory>(`/api/inventory/parts/${id}/defect`, payload).then(r => r.data);
+
+export const resolvePartDefective = (
+  id: number,
+  payload: { qty: number; disposition: 'repaired' | 'scrapped' | 'returned'; remark?: string },
+) => api.post<PartInventory>(`/api/inventory/parts/${id}/defect/resolve`, payload).then(r => r.data);
 // updateProductInventory defined above (with full patch type)
 
 // -- 异常工作台
