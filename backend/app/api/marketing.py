@@ -253,3 +253,12 @@ def get_roi(
 ):
     r = roi_service.compute(db, period_start=period_start, period_end=period_end)
     return RoiOut(**r.__dict__)
+
+
+@router.get("/roi/monthly")
+def get_roi_monthly(
+    year: Optional[int] = Query(None, description="限定年份, 缺省全部"),
+    db: Session = Depends(get_db),
+):
+    """推广 ROI 按月占比: 每月 推广支出 / 正式销售额(剔除补单) + ROI。"""
+    return roi_service.monthly_breakdown(db, year=year)

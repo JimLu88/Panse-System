@@ -152,6 +152,25 @@ export interface RoiResult {
 export const getRoi = (params: { period_start?: string; period_end?: string } = {}) =>
   api.get<RoiResult>('/api/marketing/roi', { params }).then((r) => r.data);
 
+export interface RoiMonthRow {
+  period: string;
+  promotion_spend: number;
+  order_revenue: number;
+  order_count: number;
+  spend_ratio: number | null;   // 推广支出 / 正式销售额
+  roi: number | null;
+}
+export interface RoiMonthly {
+  months: RoiMonthRow[];
+  total_spend: number;
+  total_revenue: number;
+  total_order_count: number;
+  overall_spend_ratio: number | null;
+}
+export const getRoiMonthly = (year?: number) =>
+  api.get<RoiMonthly>('/api/marketing/roi/monthly', { params: year ? { year } : {} })
+    .then((r) => r.data);
+
 // ----- Reports & Optimizations (plan §12) -----
 export interface HealthReport {
   period_start: string;

@@ -8,9 +8,11 @@ import {
   OutsourcingExpense,
   PromotionFlow,
   RoiResult,
+  RoiMonthly,
   Sample,
   WoodLoss,
   getRoi,
+  getRoiMonthly,
   listAfterSales,
   listBrandMarketing,
   listOutsourcing,
@@ -82,6 +84,7 @@ export default function MarketingPage() {
       </Typography.Title>
 
       {roi && <RoiCard roi={roi} />}
+      <RoiMonthlyCard />
 
       <Tabs
         activeKey={activeKey}
@@ -122,6 +125,43 @@ function RoiCard({ roi }: { roi: RoiResult }) {
           valueStyle={{ color: roiNum != null && roiNum > 1 ? '#3f8600' : '#cf1322' }}
         />
       </Space>
+    </Card>
+  );
+}
+
+function RoiMonthlyCard() {
+  const { data } = useQuery<RoiMonthly>({ queryKey: ['roi-monthly'], queryFn: () => getRoiMonthly() });
+  if (!data || data.months.length === 0) return null;
+  const pct = (v: number | null) => (v == null ? '—' : `${(v * 100).toFixed(1)}%`);
+  const yuan = (v: number) => `¥${v.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+  return (
+    <Card
+      title="推广 ROI 按月占比（推广支出 ÷ 正式销售额，已剔除补单）"
+      extra={<Typography.Text type="secondary">
+        合计支出 {yuan(data.total_spend)} / 销售额 {yuan(data.total_revenue)} · 总占比 {pct(data.overall_spend_ratio)}
+      </Typography.Text>}
+    >
+      <Table<RoiMonthly['months'][number]>
+        rowKey="period"
+        dataSource={data.months}
+        pagination={false}
+        size="small"
+        columns={[
+          { title: '月份', dataIndex: 'period' },
+          { title: '推广支出', dataIndex: 'promotion_spend', align: 'right', render: (v) => <Typography.Text type="danger">{yuan(v)}</Typography.Text> },
+          { title: '正式销售额', dataIndex: 'order_revenue', align: 'right', render: (v) => <Typography.Text type="success">{yuan(v)}</Typography.Text> },
+          { title: '订单数', dataIndex: 'order_count', align: 'right' },
+          {
+            title: '推广占比', dataIndex: 'spend_ratio', align: 'right',
+            render: (v: number | null) => {
+              if (v == null) return '—';
+              const color = v > 0.3 ? 'red' : v > 0.15 ? 'orange' : 'green';
+              return <Tag color={color}>{pct(v)}</Tag>;
+            },
+          },
+          { title: 'ROI', dataIndex: 'roi', align: 'right', render: (v: number | null) => (v == null ? '—' : `${v.toFixed(2)}×`) },
+        ]}
+      />
     </Card>
   );
 }
