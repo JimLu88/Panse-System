@@ -620,6 +620,22 @@ export const settlePartReturn = (
   id: number,
   payload: { alipay_flow_no?: string; remark?: string },
 ) => api.post<PartReturn>(`/api/part-returns/${id}/settle`, payload).then(r => r.data);
+
+export interface RefundCandidate {
+  transaction_no: string;
+  account: string;
+  transaction_time: string | null;
+  counterparty: string | null;
+  amount: number;
+  score: number;
+  reason: string;
+}
+
+export const refundCandidates = (returnId: number) =>
+  api.get<RefundCandidate[]>(`/api/part-returns/${returnId}/refund-candidates`).then(r => r.data);
+
+export const autoReconcileReturns = () =>
+  api.post<{ matched: number; details: unknown[] }>('/api/part-returns/auto-reconcile').then(r => r.data);
 // updateProductInventory defined above (with full patch type)
 
 // -- 异常工作台

@@ -16,13 +16,14 @@ PartReturn 台账, 把钱也管起来:
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.finance import AlipayFlow
 from app.models.inventory import PartReturn
 from app.models.material import Material
 from app.services import part_defect_service
@@ -130,3 +131,98 @@ def summary(db: Session) -> dict:
         "open_count": sum(1 for r in rows if r.status == "open"),
         "total_count": len(rows),
     }
+
+
+# ----------------------------- 供应商退款流水自动匹配 ----------------- #
+
+# 自动结算阈值: 金额一致(3) + 供应商匹配(3) = 6 才敢自动对账 (保守, 避免错配)。
+_AUTO_SETTLE_SCORE = 6
+
+
+def _linked_flow_nos(db: Session) -> set[str]:
+    """已被某条返厂单占用的支付宝流水号 (避免一笔退款配到多单)."""
+    rows = db.execute(
+        select(PartReturn.alipay_flow_no).where(PartReturn.alipay_flow_no.isnot(None))
+    ).scalars()
+    return {r for r in rows if r}
+
+
+def find_refund_candidates(db: Session, return_id: int, *, limit: int = 8) -> list[dict]:
+    """为一条待收退款的返厂单, 找疑似供应商退款的支付宝流水 (收入流水).
+
+    评分: 金额一致(+3)/接近(+1) · 供应商匹配(+3) · 日期在返厂之后(+1)。按分降序返回。
+    """
+    rec = db.get(PartReturn, return_id)
+    if rec is None or rec.amount_kind != "refund" or rec.amount is None:
+        return []
+    expected = Decimal(rec.amount)
+    if expected <= 0:
+        return []
+    tol = max(expected * Decimal("0.01"), Decimal("5"))   # 1% 或 5 元, 取大
+    lo, hi = expected - tol, expected + tol
+    linked = _linked_flow_nos(db)
+    sup = (rec.supplier or "").strip()
+    flows = db.execute(
+        select(AlipayFlow).where(
+            AlipayFlow.amount > 0,           # 退款是收入
+            AlipayFlow.amount >= lo,
+            AlipayFlow.amount <= hi,
+        )
+    ).scalars().all()
+    out: list[dict] = []
+    for f in flows:
+        if f.transaction_no in linked:
+            continue
+        amt = Decimal(f.amount)
+        diff = abs(amt - expected)
+        score = 0
+        reasons: list[str] = []
+        if diff == 0:
+            score += 3
+            reasons.append("金额一致")
+        else:
+            score += 1
+            reasons.append(f"金额接近(差{diff})")
+        cp = f.counterparty or ""
+        if sup and (sup in cp or cp in sup):
+            score += 3
+            reasons.append("供应商匹配")
+        if f.transaction_time and rec.processed_at:
+            if f.transaction_time.date() >= rec.processed_at - timedelta(days=1):
+                score += 1
+                reasons.append("日期在返厂后")
+            else:
+                score -= 1
+        out.append({
+            "transaction_no": f.transaction_no,
+            "account": f.account,
+            "transaction_time": f.transaction_time.isoformat() if f.transaction_time else None,
+            "counterparty": f.counterparty,
+            "amount": float(amt),
+            "score": score,
+            "reason": " · ".join(reasons),
+        })
+    out.sort(key=lambda x: (-x["score"], x["amount"]))
+    return out[:limit]
+
+
+def auto_reconcile(db: Session, *, actor: str = "system") -> dict:
+    """一键自动对账: 对每条待收退款单, 仅当"唯一且金额一致+供应商匹配"的强候选时自动结算.
+
+    其余 (无供应商/多候选/仅金额接近) 保守留给人工, 不乱配。
+    """
+    matched: list[dict] = []
+    for rec in list_returns(db, status="open"):
+        if rec.amount_kind != "refund" or rec.amount is None:
+            continue
+        cands = find_refund_candidates(db, rec.id, limit=5)
+        strong = [c for c in cands if c["score"] >= _AUTO_SETTLE_SCORE]
+        if len(strong) == 1:
+            settle(db, rec.id, alipay_flow_no=strong[0]["transaction_no"],
+                   actor=actor, remark="自动对账: 匹配供应商退款流水")
+            matched.append({
+                "return_id": rec.id, "material_code": rec.material_code,
+                "transaction_no": strong[0]["transaction_no"],
+                "amount": float(rec.amount),
+            })
+    return {"matched": len(matched), "details": matched}
