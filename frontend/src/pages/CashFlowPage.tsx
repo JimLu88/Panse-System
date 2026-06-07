@@ -100,9 +100,9 @@ export default function CashFlowPage() {
 
   const openEdit = () => {
     const dep = data.additions.find((a) => a.key === 'shop_deposit');
-    const inv = data.subtractions.find((s) => s.key === 'total_investment');
     setDeposit(dep ? Number(dep.amount) : 0);
-    setInvestment(inv ? Number(inv.amount) : 0);
+    // 总投资已移出减项, 单列"投资回收"块
+    setInvestment(data.investment ? Number(data.investment.total_investment) : 0);
     setEditOpen(true);
   };
 
@@ -177,11 +177,42 @@ export default function CashFlowPage() {
         </Col>
       </Row>
 
-      {Number(data.other_account_balance) !== 0 && (
-        <Alert
-          type="info" showIcon style={{ marginBottom: 16 }}
-          message={`其他账户余额（银行卡 / 万师傅等）${money(data.other_account_balance)} — 按公式未计入剩余流水，仅供参考`}
-        />
+      {/* 投资回收: 总投资 ↔ 累计总利润 (总投资是沉没本金, 不进可用资金, 单列对比) */}
+      {data.investment && (
+        <Card title="投资回收（总投资 ↔ 累计总利润）" size="small" style={{ marginBottom: 16 }}>
+          <Row gutter={24}>
+            <Col xs={12} md={6}>
+              <Statistic title="总投资费用" value={money(data.investment.total_investment)} valueStyle={{ fontSize: 20 }} />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic title="累计总利润" value={money(data.investment.total_profit)}
+                valueStyle={{ fontSize: 20, color: '#389e0d' }} />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic title="回收率"
+                value={data.investment.recovery_rate == null ? '—'
+                  : `${(data.investment.recovery_rate * 100).toFixed(1)}%`}
+                valueStyle={{ fontSize: 20, color: data.investment.recovered ? '#389e0d' : '#d46b08' }} />
+            </Col>
+            <Col xs={12} md={6}>
+              <Statistic
+                title={data.investment.recovered ? '已回本 · 超出' : '距回本还差'}
+                value={money(Math.abs(Number(data.investment.remaining)))}
+                valueStyle={{ fontSize: 20, color: data.investment.recovered ? '#389e0d' : '#d46b08' }} />
+            </Col>
+          </Row>
+          {data.investment.profit_detail.orders_missing_cost > 0 && (
+            <Alert
+              type="warning" showIcon style={{ marginTop: 12 }}
+              message={`有 ${data.investment.profit_detail.orders_missing_cost} 单缺成本(未反推理论成本)，按 0 计入 → 累计总利润偏高`}
+              description="可在 订单/成本 反推理论成本后更准。"
+            />
+          )}
+          <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
+            说明：总投资是沉没本金，不计入上方「可用资金」；这里单独与累计利润对比看是否回本。
+            累计利润口径 = 真实销售(非补单/非取消) 营收 − 成本 − 售后费用。
+          </Text>
+        </Card>
       )}
 
       <Modal

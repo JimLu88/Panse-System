@@ -407,12 +407,28 @@ export interface CashFlowFreshness {
   days_ago: number | null;
   status: 'fresh' | 'aging' | 'stale' | 'unknown';
 }
+export interface CashFlowInvestment {
+  total_investment: string;
+  total_profit: string;
+  recovered: boolean | null;
+  recovery_rate: number | null;
+  remaining: string;
+  profit_detail: {
+    order_count: number;
+    revenue: string;
+    cost: string;
+    expense: string;
+    net_profit: string;
+    orders_missing_cost: number;
+  };
+}
 export interface CashFlowSummary {
   total: string;
   total_additions: string;
   total_subtractions: string;
   additions: CashFlowLine[];
   subtractions: CashFlowLine[];
+  investment?: CashFlowInvestment | null;
   other_account_balance: string;
   freshness: CashFlowFreshness[];
   generated_at: string;
