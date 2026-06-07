@@ -29,6 +29,10 @@ class PartInventory(Base, TimestampMixin):
     unit: Mapped[Optional[str]] = mapped_column(String(16))
     physical_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
     locked_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    # 待返厂/维修中 (坏件): 已从良品库移出, 不计入可用; 修好移回良品, 报废/退货则核销。
+    # server_default 让裸 SQL / 旧插入路径也拿到 0 (与 migration 0055 一致), 不触发 NOT NULL。
+    defective_qty: Mapped[Decimal] = mapped_column(
+        Numeric(14, 3), default=Decimal("0"), server_default="0", nullable=False)
     last_inbound_at: Mapped[Optional[date]] = mapped_column(Date)
     last_outbound_at: Mapped[Optional[date]] = mapped_column(Date)
     safety_stock: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))

@@ -543,8 +543,10 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                             "aliases": ["物流单号", "快递单号", "运单号"]},
             "fee_remark": {"type": "str", "required": False, "desc": "费用备注",
                            "aliases": ["费用备注"]},
+            # 「备注」是补单记录真正的自由备注列, 必须优先映射到这里; 不要再把「补单状态」当
+            # remark 别名 — 否则当两列同时存在时, 启发式按列序会先抢「补单状态」, 害「备注」漏映射。
             "remark": {"type": "str", "required": False, "desc": "备注",
-                       "aliases": ["备注", "补单状态"]},
+                       "aliases": ["备注"]},
         },
         "group_by": ["order_no"], "parent_fields": [],
     },

@@ -591,3 +591,123 @@ def test_commit_alipay_flow_missing_required_skipped(db_session):
     db_session.commit()
     assert report.inserted_parents == 1
     assert report.skipped_rows == 2
+
+
+# ----------------------------- 未映射列过滤 ---------------------- #
+
+
+def test_unmapped_helper_columns_ignored(db_session):
+    """系统辅助/批注列、未命名 colN、整列全空列 不计入"未映射"提示 (避免噪音)。"""
+    data = _xlsx(
+        "配件价格",
+        ["物料编码", "物料名称", "计算价格", "导入校验", "⚠️问题标注", "col7", "全空列"],
+        [
+            ["MP-001", "床-人工费-小型", 600, "✅ 可导入", "⚠️ 需人工确认", None, None],
+            ["MP-002", "柜-人工费-小型", 300, "✅ 可导入", None, None, None],
+        ],
+    )
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="配件价格",
+        entity_type="material",
+        mapping={"code": "物料编码", "name": "物料名称", "price": "计算价格"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 2
+    for noise in ("导入校验", "⚠️问题标注", "col7", "全空列"):
+        assert noise not in report.unmapped_columns
+    # 全是噪音列 → 不报"未映射", 也没有未映射警告
+    assert report.unmapped_columns == []
+
+
+def test_unmapped_real_column_still_warned(db_session):
+    """有真实数据又没归宿的列仍要提示, 不能静默丢数据。"""
+    data = _xlsx(
+        "配件价格",
+        ["物料编码", "物料名称", "计算价格", "特殊工艺说明"],
+        [
+            ["MP-101", "异形件", 800, "需 CNC 雕刻"],
+            ["MP-102", "标准件", 200, "常规"],
+        ],
+    )
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="配件价格",
+        entity_type="material",
+        mapping={"code": "物料编码", "name": "物料名称", "price": "计算价格"},
+    )
+    db_session.commit()
+    assert "特殊工艺说明" in report.unmapped_columns
+
+
+# ----------------------------- alipay 成对流水 (同号) ------------- #
+
+
+def test_commit_alipay_paired_flows_same_tx_both_import(db_session):
+    """同一交易流水号的成对流水(在线支付货款 + 分账手续费)类型/金额不同, 两条都要入库。"""
+    from app.models.finance import AlipayFlow
+    data = _xlsx("S", ["账户", "流水号", "交易类型", "金额"], [
+        ["企业号", "TXPAIR", "在线支付", 127],
+        ["企业号", "TXPAIR", "分账", -0.76],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S",
+        entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号",
+                 "transaction_type": "交易类型", "amount": "金额"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 2
+    assert report.skipped_rows == 0
+    from sqlalchemy import select
+    flows = db_session.execute(
+        select(AlipayFlow).where(AlipayFlow.transaction_no == "TXPAIR")
+    ).scalars().all()
+    assert len(flows) == 2
+
+
+def test_commit_alipay_exact_duplicate_skipped(db_session):
+    """同号 + 同类型 + 同金额 才算真重复; 同号但类型/金额不同的成对流水仍入库。"""
+    from app.models.finance import AlipayFlow
+    pre = AlipayFlow(account="企业号", transaction_no="TXDUP",
+                     transaction_type="在线支付", amount=Decimal("127"),
+                     reconciliation_status="open")
+    db_session.add(pre)
+    db_session.commit()
+    data = _xlsx("S", ["账户", "流水号", "交易类型", "金额"], [
+        ["企业号", "TXDUP", "在线支付", 127],    # 完全相同 → 真重复, 跳过
+        ["企业号", "TXDUP", "分账", -0.76],       # 同号不同类型/金额 → 入库
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S",
+        entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号",
+                 "transaction_type": "交易类型", "amount": "金额"},
+    )
+    db_session.commit()
+    assert report.inserted_parents == 1
+    assert report.skipped_rows == 1
+
+
+# ----------------------------- 补单记录「备注」映射 ---------------- #
+
+
+def test_refill_remark_maps_to_beizhu_not_status(db_session):
+    """补单记录的「备注」要映射到 remark, 不能被同为别名的「补单状态」按列序抢走。"""
+    from sqlalchemy import select
+    from app.services.smart_import_service import _heuristic_match
+    from app.models.finance import RefillRecord
+    cols = ["订单编号", "买家昵称", "补单数量", "补单状态", "备注"]
+    _, mapping, _ = _heuristic_match(cols, [])
+    assert mapping.get("remark") == "备注"   # 关键: 不是「补单状态」
+    data = _xlsx("8-补单记录", cols, [
+        ["RF-REMARK-1", "买家A", 1, "", "客户要求加急发货"],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="8-补单记录",
+        entity_type="refill_record", mapping=mapping,
+    )
+    db_session.commit()
+    assert report.inserted_parents == 1
+    rec = db_session.execute(
+        select(RefillRecord).where(RefillRecord.order_no == "RF-REMARK-1")
+    ).scalar_one()
+    assert rec.remark == "客户要求加急发货"

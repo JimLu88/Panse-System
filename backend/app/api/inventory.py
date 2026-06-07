@@ -14,7 +14,7 @@ from app.models.material import Material
 from app.schemas.inventory import (
     PartInventoryAddResponse, PartInventoryCreate, PartInventoryOut, PartInventoryWithStats,
 )
-from app.services import inventory_service, part_inventory_service
+from app.services import inventory_service, part_defect_service, part_inventory_service
 
 
 class PartInventoryPatch(BaseModel):
@@ -34,6 +34,7 @@ def _to_out(inv: PartInventory) -> PartInventoryOut:
         unit=inv.unit,
         physical_qty=inv.physical_qty,
         locked_qty=inv.locked_qty,
+        defective_qty=inv.defective_qty,
         available_qty=inv.available_qty,
         remark=inv.remark,
     )
@@ -132,6 +133,72 @@ def update_part_inventory(
         raise HTTPException(404, "inventory row not found")
     for k, v in payload.model_dump(exclude_unset=True).items():
         setattr(inv, k, v)
+    db.commit()
+    db.refresh(inv)
+    return _to_out(inv)
+
+
+# ----------------------------- 坏件 / 返厂维修 (方案B) ----------------- #
+
+
+class DefectMarkIn(BaseModel):
+    qty: Decimal
+    reason: str = "到货不良"
+    remark: Optional[str] = None
+
+
+class DefectResolveIn(BaseModel):
+    qty: Decimal
+    disposition: str   # repaired(回良品) / scrapped(报废) / returned(退货退款)
+    remark: Optional[str] = None
+
+
+@router.post("/{inventory_id}/defect", response_model=PartInventoryOut)
+def mark_part_defective(
+    inventory_id: int,
+    payload: DefectMarkIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """标记坏件: 把配件从良品库移到「待返厂/维修中」(不计入可用), 写台账留痕."""
+    inv = db.get(PartInventory, inventory_id)
+    if not inv:
+        raise HTTPException(404, "inventory row not found")
+    try:
+        part_defect_service.mark_defective(
+            db, material_code=inv.material_code, qty=payload.qty,
+            actor=getattr(user, "username", None) or "user",
+            reason=payload.reason, remark=payload.remark, warehouse=inv.warehouse,
+        )
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    db.refresh(inv)
+    return _to_out(inv)
+
+
+@router.post("/{inventory_id}/defect/resolve", response_model=PartInventoryOut)
+def resolve_part_defective(
+    inventory_id: int,
+    payload: DefectResolveIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """处理待返厂坏件: repaired 回良品 / scrapped 报废 / returned 退货退款."""
+    inv = db.get(PartInventory, inventory_id)
+    if not inv:
+        raise HTTPException(404, "inventory row not found")
+    try:
+        part_defect_service.resolve_defective(
+            db, material_code=inv.material_code, qty=payload.qty,
+            disposition=payload.disposition,
+            actor=getattr(user, "username", None) or "user",
+            remark=payload.remark, warehouse=inv.warehouse,
+        )
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(400, str(e)) from e
     db.commit()
     db.refresh(inv)
     return _to_out(inv)

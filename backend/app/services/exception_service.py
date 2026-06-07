@@ -22,6 +22,11 @@ def record(
     suggestion_action: Optional[str] = None,
     context: Optional[dict[str, Any]] = None,
 ) -> DataException:
+    # source_pk 列宽仅 64; 业务键(如支付宝交易流水号)可能更长 → 截断,
+    # 防 StringDataRightTruncation 直接崩掉整批导入 (异常记录只需可定位的引用即可)。
+    # 仅处理字符串: int 等其他类型本就很短, 交给 SQLAlchemy 自行转换。
+    if isinstance(source_pk, str) and len(source_pk) > 64:
+        source_pk = source_pk[:64]
     exc = DataException(
         source_table=source_table,
         source_pk=source_pk,

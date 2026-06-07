@@ -1192,36 +1192,36 @@ function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
     return { ...base, status: 'skip', headline: '已跳过', detail: rep.reason };
   }
   const inserted = rep.inserted_parents ?? 0;
+  const children = rep.inserted_children ?? 0;
   const skipped = rep.skipped_rows ?? 0;
   const errs = rep.errors ?? [];
   const total = rep.total_rows ?? 0;
+  const conflicts = rep.conflicts?.length ?? 0;
+  const unmapped = rep.unmapped_columns ?? [];
   if (total === 0) {
     return { ...base, status: 'empty', headline: '表里没有数据行', detail: '无内容可导。' };
   }
-  // 仅当「没有任何行入库 且 没有重复跳过 且 有报错」时, 才算整表失败;
-  // 若大部分是重复跳过(已存在)只有少量报错, 不应吓人地说「全部未入库」。
-  if (inserted === 0 && skipped === 0 && errs.length > 0) {
-    return {
-      ...base, status: 'failed',
-      headline: `${total} 行全部未入库`,
-      detail: '每一行都因数据问题被拒。常见原因：缺必填字段、数字/日期格式错误。下方是具体行的报错：',
-      logs: errs,
-    };
-  }
-  const unmapped = rep.unmapped_columns ?? [];
-  if (errs.length > 0 || skipped > 0) {
-    const logs = [...errs];
-    if (unmapped.length > 0) {
-      logs.push(`⚠ 以下 ${unmapped.length} 个 Excel 列未被映射，其中的数据未导入：${unmapped.join(', ')}`);
-      logs.push('→ 如需导入这些列的数据，请在「字段映射」中为它们指定对应的系统字段，然后重新导入。');
+  // 「跳过」分两种, 必须区别对待, 否则会把正常的去重/重复导入吓成"出错":
+  //   · 真问题: 行因数据错误被拒 → 一定有 errs (缺必填、格式错…) → 橙/红
+  //   · 不是问题: 同一唯一键重复(如一产品多 SKU)、整表重复导入(已存在且值相同) → 只增 skipped, 无 errs → 绿
+  // 1) 有行因数据问题被拒
+  if (errs.length > 0) {
+    if (inserted === 0) {
+      return {
+        ...base, status: 'failed',
+        headline: `${total} 行全部未入库`,
+        detail: '每一行都因数据问题被拒。常见原因：缺必填字段、数字/日期格式错误。下方是具体行的报错：',
+        logs: errs,
+      };
     }
     return {
       ...base, status: 'partial',
-      headline: `入库 ${inserted} 行，${skipped} 行被跳过${unmapped.length > 0 ? `，${unmapped.length} 列未映射` : ''}`,
-      detail: errs.length > 0 ? '以下是被跳过行的原因：' : '部分行重复或为空，已跳过。',
-      logs,
+      headline: `入库 ${inserted} 行，${errs.length} 行因数据问题未入库`,
+      detail: '下方是未入库行的原因（其余重复或已存在的行已自动跳过，无需处理）：',
+      logs: errs,
     };
   }
+  // 2) 没有报错, 但有真实列未映射 → 需确认
   if (unmapped.length > 0) {
     return {
       ...base, status: 'warn',
@@ -1230,7 +1230,25 @@ function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
       logs: [`未映射列: ${unmapped.join(', ')}`],
     };
   }
-  return { ...base, status: 'ok', headline: `成功入库 ${inserted} 行` };
+  // 3) 没有报错, 但有"与库内不同"待裁决 → 需确认 (数据未丢, 见下方冲突复核)
+  if (conflicts > 0) {
+    return {
+      ...base, status: 'warn',
+      headline: `成功入库 ${inserted} 行，另有 ${conflicts} 处与库内数据不同`,
+      detail: '这些记录已存在但值不同，已列在下方「与此前数据不符」处，确认后可一键采用新值。数据未丢失。',
+    };
+  }
+  // 4) 没有报错/未映射/冲突, 只是有重复或已存在被跳过 → 成功 (绿), 给安心说明
+  if (skipped > 0) {
+    return {
+      ...base, status: 'ok',
+      headline: inserted === 0
+        ? `数据已是最新（${skipped} 行均已存在，无新增）`
+        : `成功入库 ${inserted} 行`,
+      detail: `另有 ${skipped} 行为重复或已存在（如同一产品的多个 SKU、或重复导入同一份表），系统已自动去重，无需处理。`,
+    };
+  }
+  return { ...base, status: 'ok', headline: `成功入库 ${inserted} 行${children ? `，${children} 行明细` : ''}` };
 }
 
 function ImportDiagnostics({

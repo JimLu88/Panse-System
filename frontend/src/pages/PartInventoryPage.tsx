@@ -7,6 +7,7 @@ import {
   InputNumber,
   Modal,
   Segmented,
+  Select,
   Space,
   Table,
   Tag,
@@ -21,7 +22,12 @@ import {
   listPartInventory,
   updatePartInventory,
 } from '../api/client';
-import { listPartInventoryWithStats, type PartInventoryStats } from '../api/catalog';
+import {
+  listPartInventoryWithStats,
+  markPartDefective,
+  resolvePartDefective,
+  type PartInventoryStats,
+} from '../api/catalog';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import FullColumnView from '../components/FullColumnView';
 
@@ -51,6 +57,46 @@ export default function PartInventoryPage() {
     queryFn: listPartInventoryWithStats,
     enabled: viewMode === 'alert',
   });
+  // 坏件/返厂 (方案B): mark=报坏件(良品→待返厂), resolve=处理(回良品/报废/退款)
+  const [defectRow, setDefectRow] = useState<PartInventory | null>(null);
+  const [defectMode, setDefectMode] = useState<'mark' | 'resolve'>('mark');
+  const [defectSaving, setDefectSaving] = useState(false);
+  const [defectForm] = Form.useForm();
+
+  function openDefect(row: PartInventory, mode: 'mark' | 'resolve') {
+    setDefectRow(row);
+    setDefectMode(mode);
+    defectForm.resetFields();
+  }
+
+  async function submitDefect(values: {
+    qty: number; reason?: string;
+    disposition?: 'repaired' | 'scrapped' | 'returned'; remark?: string;
+  }) {
+    if (!defectRow) return;
+    setDefectSaving(true);
+    try {
+      if (defectMode === 'mark') {
+        await markPartDefective(defectRow.id, {
+          qty: values.qty, reason: values.reason, remark: values.remark,
+        });
+        message.success('已标记坏件 → 待返厂/维修中');
+      } else {
+        await resolvePartDefective(defectRow.id, {
+          qty: values.qty, disposition: values.disposition!, remark: values.remark,
+        });
+        message.success('已处理');
+      }
+      qc.invalidateQueries({ queryKey: ['part-inventory'] });
+      qc.invalidateQueries({ queryKey: ['part-inventory-stats'] });
+      setDefectRow(null);
+      defectForm.resetFields();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '操作失败');
+    } finally {
+      setDefectSaving(false);
+    }
+  }
 
   function setEdit(id: number, patch: { physical_qty?: number; locked_qty?: number }) {
     setEdits(prev => ({ ...prev, [id]: { ...prev[id], ...patch } }));
@@ -149,16 +195,34 @@ export default function PartInventoryPage() {
       ),
     },
     { title: '可用', dataIndex: 'available_qty', width: 70 },
+    {
+      title: '待返厂',
+      dataIndex: 'defective_qty',
+      width: 80,
+      render: (v: number) =>
+        v > 0 ? <Tag color="volcano">{v}</Tag> : <span style={{ color: '#bbb' }}>0</span>,
+    },
     { title: '备注', dataIndex: 'remark', ellipsis: true },
     {
       title: '操作',
-      width: 70,
-      render: (_: unknown, row: PartInventory) =>
-        edits[row.id] !== undefined ? (
-          <Button size="small" type="primary" loading={savingId === row.id} onClick={() => saveRow(row.id)}>
-            存
+      width: 190,
+      render: (_: unknown, row: PartInventory) => (
+        <Space size={4}>
+          {edits[row.id] !== undefined && (
+            <Button size="small" type="primary" loading={savingId === row.id} onClick={() => saveRow(row.id)}>
+              存
+            </Button>
+          )}
+          <Button size="small" danger onClick={() => openDefect(row, 'mark')}>
+            报坏件
           </Button>
-        ) : null,
+          {row.defective_qty > 0 && (
+            <Button size="small" onClick={() => openDefect(row, 'resolve')}>
+              处理({row.defective_qty})
+            </Button>
+          )}
+        </Space>
+      ),
     },
   ];
 
@@ -296,6 +360,73 @@ export default function PartInventoryPage() {
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={defectMode === 'mark'
+          ? `报坏件 — ${defectRow?.material_code ?? ''}`
+          : `处理待返厂 — ${defectRow?.material_code ?? ''}`}
+        open={defectRow !== null}
+        onCancel={() => setDefectRow(null)}
+        onOk={() => defectForm.submit()}
+        confirmLoading={defectSaving}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={defectMode === 'mark'
+            ? '坏件会从良品库移到「待返厂/维修中」，不再计入可用库存（全程留痕）。'
+            : '修好/换新 → 回良品库；报废或退货退款 → 核销出库。'}
+        />
+        <Form
+          form={defectForm}
+          layout="vertical"
+          onFinish={submitDefect}
+          initialValues={{ qty: 1, reason: '到货不良', disposition: 'repaired' }}
+        >
+          <Form.Item
+            name="qty"
+            label={defectMode === 'mark'
+              ? `数量（当前良品 ${defectRow?.physical_qty ?? 0}）`
+              : `数量（待返厂 ${defectRow?.defective_qty ?? 0}）`}
+            rules={[{ required: true, message: '请输入数量' }]}
+          >
+            <InputNumber
+              min={1}
+              max={defectMode === 'mark'
+                ? Number(defectRow?.physical_qty ?? 0)
+                : Number(defectRow?.defective_qty ?? 0)}
+              style={{ width: '100%' }}
+            />
+          </Form.Item>
+          {defectMode === 'mark' ? (
+            <Form.Item name="reason" label="原因">
+              <Select
+                options={[
+                  { value: '到货不良', label: '到货不良' },
+                  { value: '使用中损坏', label: '使用中损坏' },
+                  { value: '需返厂维修', label: '需返厂维修' },
+                  { value: '需退货退款', label: '需退货退款' },
+                ]}
+              />
+            </Form.Item>
+          ) : (
+            <Form.Item name="disposition" label="处理方式" rules={[{ required: true }]}>
+              <Select
+                options={[
+                  { value: 'repaired', label: '修好/换新 → 回良品库' },
+                  { value: 'scrapped', label: '报废 → 核销' },
+                  { value: 'returned', label: '退货退款 → 核销' },
+                ]}
+              />
+            </Form.Item>
+          )}
+          <Form.Item name="remark" label="备注">
+            <Input.TextArea rows={2} placeholder="如：返厂快递单号 / 供应商 / 退款金额" />
           </Form.Item>
         </Form>
       </Modal>
