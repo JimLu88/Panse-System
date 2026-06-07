@@ -759,6 +759,18 @@ def factory_daily_summary(db: Session = Depends(get_db)):
     return factory_summary_service.daily_summary(db)
 
 
+@router.post("/scan-custom-specs")
+def scan_custom_specs(db: Session = Depends(get_db)):
+    """扫描"缺定制需求(尺寸/规格)"的定制订单 → 异常分类 custom_order_missing_spec。
+
+    补全需求后这些单可用系统定制定价精确核算工厂成本(现金流工厂结算预估更准)。
+    """
+    from app.services import custom_order_spec_service
+    result = custom_order_spec_service.scan(db)
+    db.commit()
+    return result
+
+
 # ─────────────────────── 订单配件清单 + 物流追踪 ─────────────────────── #
 
 
