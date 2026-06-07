@@ -184,9 +184,10 @@ frontend/src/
 - **本批分支新增**（剩余流水修复链，从旧到新）：订单导入状态映射+UPSERT(`2677419`) → 现金流公式重写+投资回收(`549537d`) → 账户余额 as_of_date+新鲜度(`11fc0eb`, 迁移0059) → 定制单缺需求异常(`81a68dc`)。
 - **已知遗留 bug**（非本批引入）：`customer_service.aggregate_all` 未过滤 `is_historical`（`test_aggregate_skips_historical` 既有失败）。`FactoryOrder.payment_status` 默认 unpaid 从未回填 → 工厂欠款口径虚高，需对账回填。
 - **剩余未做**（用户已列）：
-  1. **飞书机器人**：发图自动识别 订单表/订单图/供应商图 → 不确定发卡片选 → 确认入库。**需用户提供飞书自建应用凭证**。
-  2. **推广 ROI 按月占比**（推广支出/正式销售额，剔除补单）—— 无需外部凭证，可直接做。
-  3. **提升对账覆盖率**：补导早期订单 + 更多 billDetail/企业号流水 —— 无需外部凭证，可直接做。
+  1. **飞书机器人**：发图自动识别 订单表/订单图/供应商图 → 不确定发卡片选 → 确认入库。**需用户提供飞书自建应用凭证**（仍 TODO）。
+  2. ✅ **推广 ROI 按月占比**（`roi_service.monthly_breakdown`，`/api/marketing/roi/monthly`，营销页按月表）— 已做(`4a8abd3`)。
+  3. ✅ **对账缺口诊断**（`order_reconciliation_service.coverage_gap`，`/api/settlements/reconciliation/gap`，逐笔对账缺口卡片）— 已做(`7c42f29`)；继续提覆盖率仍需补导早期订单/billDetail/企业号流水(数据侧)。
+- **现金流后续可选**：活跃单 `theoretical_cost` 反推(`order_cost_service.recompute_all`)让"工厂未开账单预估"更准；`FactoryOrder.payment_status` 对账回填消除工厂欠款虚高。
 
 ## 11. 相关文档
 
