@@ -28,7 +28,7 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -110,6 +110,15 @@ def _freshness(label: str, as_of: Optional[datetime]) -> dict:
     else:
         status = "stale"
     return {"source": label, "as_of": as_of.isoformat(), "days_ago": days, "status": status}
+
+
+def _as_datetime(d) -> Optional[datetime]:
+    """date / datetime → tz-aware datetime (供新鲜度按业务日期比较); None 透传。"""
+    if d is None:
+        return None
+    if isinstance(d, datetime):
+        return d
+    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
 def _sum_paid(db: Session, status: str) -> Decimal:
@@ -258,7 +267,7 @@ def compute_summary(db: Session) -> dict:
     bal_alipay = bal_aggregate = bal_promotion = bal_other = Decimal("0")
     balances = _latest_balances(db)
     latest_period: Optional[tuple[int, int]] = None
-    bal_updated_at: Optional[datetime] = None
+    bal_as_of: Optional[date] = None   # 余额统计日期 (新鲜度按此算, 不用入库时间)
     for b in balances:
         cat = _classify_account(b.account_name)
         amt = _d(b.closing_balance)
@@ -273,8 +282,8 @@ def compute_summary(db: Session) -> dict:
         period = (b.period_year, b.period_month)
         if latest_period is None or period > latest_period:
             latest_period = period
-        if b.updated_at and (bal_updated_at is None or b.updated_at > bal_updated_at):
-            bal_updated_at = b.updated_at
+        if b.as_of_date and (bal_as_of is None or b.as_of_date > bal_as_of):
+            bal_as_of = b.as_of_date
 
     awaiting_receipt = _sum_paid(db, "shipped")   # 待确认收货 (已发货未签收)
     not_shipped = _sum_paid(db, "paid")           # 未发货 (已付款未发货)
@@ -324,20 +333,23 @@ def compute_summary(db: Session) -> dict:
         "profit_detail": profit,
     }
 
-    # ── 新鲜度 ───────────────────────────────────────────
-    orders_updated = db.execute(select(func.max(Order.updated_at))).scalar()
-    factory_updated = db.execute(select(func.max(FactoryOrder.updated_at))).scalar()
+    # ── 新鲜度: 用业务日期(数据截止)而非入库时间 ──────────────
+    # 订单 → 最后下单日; 账户余额 → 统计日期(as_of_date); 都不再用 updated_at(=导入那天=今天)。
+    orders_latest = db.execute(select(func.max(Order.order_date))).scalar()
+    factory_latest = db.execute(select(func.max(FactoryOrder.order_date))).scalar()
     deposit_row_at = _setting_updated_at(db, SETTING_SHOP_DEPOSIT)
     investment_at = _setting_updated_at(db, SETTING_TOTAL_INVESTMENT)
 
     bal_label = "账户余额"
-    if latest_period:
-        bal_label = f"账户余额（{latest_period[0]}-{latest_period[1]:02d}）"
+    if bal_as_of:
+        bal_label = f"账户余额（统计日 {bal_as_of.isoformat()}）"
+    elif latest_period:
+        bal_label = f"账户余额（{latest_period[0]}-{latest_period[1]:02d}·缺统计日期）"
 
     freshness = [
-        _freshness("订单数据", orders_updated),
-        _freshness(bal_label, bal_updated_at),
-        _freshness("工厂订单", factory_updated),
+        _freshness("订单数据(最后下单日)", _as_datetime(orders_latest)),
+        _freshness(bal_label, _as_datetime(bal_as_of)),
+        _freshness("工厂订单(最后下单日)", _as_datetime(factory_latest)),
         _freshness("总投资费用", investment_at),
     ]
     if deposit_row_at is not None:

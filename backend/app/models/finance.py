@@ -78,6 +78,9 @@ class AccountBalance(Base, TimestampMixin):
     account_no: Mapped[Optional[str]] = mapped_column(String(128))
     period_year: Mapped[int] = mapped_column(Integer, nullable=False)
     period_month: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 统计日期 (这条余额是哪天的快照) — 余额常是某天手填的, 不是"今天";
+    # 新鲜度红绿灯按这个算, 而非入库时间 updated_at (迁移 0059)。
+    as_of_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     opening_balance: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), nullable=False)
     income: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), nullable=False)
     expense: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"), nullable=False)

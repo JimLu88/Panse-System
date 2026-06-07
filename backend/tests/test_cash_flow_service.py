@@ -100,6 +100,21 @@ def test_total_profit_excludes_refill_and_flags_missing_cost(db_session):
     assert p["net_profit"] == Decimal("2600.00")         # (1000-400) + (2000-0)
 
 
+def test_freshness_uses_as_of_date_not_import_time(db_session):
+    """账户余额新鲜度按统计日期(as_of_date)算, 而非入库时间 — 修复"全标今天·绿"。"""
+    from datetime import date
+    db_session.add(AccountBalance(
+        account_name="支付宝-企业账号", period_year=2026, period_month=5,
+        as_of_date=date(2020, 1, 1),   # 很旧的统计日 → 必为 stale, 不可能是 fresh
+        closing_balance=Decimal("100"),
+    ))
+    db_session.flush()
+    s = cash_flow_service.compute_summary(db_session)
+    bal = next(f for f in s["freshness"] if "账户余额" in f["source"])
+    assert "2020-01-01" in bal["source"]      # 标出真实统计日
+    assert bal["status"] == "stale"           # 旧数据不再伪装"今天/fresh"
+
+
 def test_cash_flow_defaults_empty_db(db_session):
     s = cash_flow_service.compute_summary(db_session)
     # 空库: 总投资不再进减项 → total = 0 (而非 -669871)

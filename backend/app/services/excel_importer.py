@@ -1612,23 +1612,26 @@ def _h_balance(db, data, key_field, ctx=None):
         data["account_no"] = _clean_text_no(data["account_no"])
     year = data.get("year")
     month = data.get("month")
-    # 支持 "统计日期" 单列格式：从日期自动提取年月
+    # 支持 "统计日期" 单列格式：把整日(含"日")存进 as_of_date, 并从它推导年月。
     period_date = data.get("period_date")
-    if period_date and not (year and month):
-        if isinstance(period_date, (_date, _dt)):
-            year = period_date.year
-            month = period_date.month
-    # 账户名有值但缺统计日期 → 用当前年月兜底, 不丢这条余额 (用户可后续改月份)
+    as_of = period_date if isinstance(period_date, (_date, _dt)) else None
+    if isinstance(as_of, _dt):
+        as_of = as_of.date()
+    if as_of and not (year and month):
+        year, month = as_of.year, as_of.month
+    # 账户名有值但缺统计日期 → 用当前年月兜底入库, 但 as_of_date 留空 → 新鲜度标"未知"(诚实, 不伪装今天)
     if name and not (year and month):
         today = _date.today()
         year, month = today.year, today.month
         if ctx is not None and ctx.report is not None:
             ctx.report.warnings.append(
-                f"账户「{name}」缺统计日期, 已按当前年月 {year}-{month:02d} 入账, 请核对"
+                f"账户「{name}」缺统计日期, 已按当前年月 {year}-{month:02d} 入账(新鲜度标未知), 请核对"
             )
     payload = {k: v for k, v in data.items() if v is not None and k != "period_date"}
     payload["period_year"] = payload.pop("year", year)
     payload["period_month"] = payload.pop("month", month)
+    if as_of is not None:
+        payload["as_of_date"] = as_of
     existing = db.execute(select(AccountBalance).where(
         AccountBalance.account_name == name,
         AccountBalance.period_year == year,
