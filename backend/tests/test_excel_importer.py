@@ -773,3 +773,41 @@ def test_product_duplicate_sku_rows_no_conflict(db_session):
     skus = db_session.execute(
         select(PricingSku).where(PricingSku.product_code == "P-DUP")).scalars().all()
     assert {s.sku_code for s in skus} == {"P-DUP11", "P-DUP12"}   # 两个 SKU 都进定价表
+
+
+def test_placeholder_value_overwritten_not_conflict(db_session):
+    """库内是占位值(占位.../待定等) → 真实数据直接覆盖, 算补全不算冲突。
+
+    场景: BOM 先给缺失物料建占位名「占位 (编码)」, 配件价格表再导入真实名。
+    """
+    from sqlalchemy import select
+    from app.models.material import Material
+    db_session.add(Material(code="MW-PH", name="占位 (MW-PH)"))
+    db_session.commit()
+    data = _xlsx("配件价格", ["物料编码", "物料名称", "计算价格"], [["MW-PH", "实木床板-松木", 120]])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="配件价格", entity_type="material",
+        mapping={"code": "物料编码", "name": "物料名称", "price": "计算价格"})
+    db_session.commit()
+    assert report.conflicts == []      # 占位名被真实名覆盖, 不算冲突
+    m = db_session.execute(select(Material).where(Material.code == "MW-PH")).scalar_one()
+    assert m.name == "实木床板-松木"
+
+
+def test_order_multiline_no_conflict(db_session):
+    """多商品订单一单多行: 首行建订单, 后续行不报冲突 (明细在 5b)。"""
+    from sqlalchemy import select
+    from app.models.order import Order
+    data = _xlsx("订单总表", ["订单编号", "产品名称", "SKU编码"], [
+        ["O-MULTI", "床头柜", "PPSA11"],
+        ["O-MULTI", "餐桌", "PPSB22"],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="订单总表", entity_type="order",
+        mapping={"order_no": "订单编号", "product_name": "产品名称", "sku_code": "SKU编码"})
+    db_session.commit()
+    assert report.inserted_parents == 1     # 一张订单
+    assert report.conflicts == []           # 第二行(同单)不再误报冲突
+    cnt = len(db_session.execute(
+        select(Order).where(Order.order_no == "O-MULTI")).scalars().all())
+    assert cnt == 1
