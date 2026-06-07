@@ -95,6 +95,8 @@ class AfterSales(Base, TimestampMixin):
     out_platform_total: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 平台外售后总成本
     refill_sku: Mapped[Optional[str]] = mapped_column(String(255))
     refill_tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
+    # 退货/返厂物流单号 — 追踪签收后自动置 second_inbound_confirmed (migration 0054)
+    return_tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
     refill_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     wanshifu_deduction: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 万师傅扣款
     factory_compensation: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

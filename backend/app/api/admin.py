@@ -436,15 +436,48 @@ def test_notify_config(
 
 
 class LogisticsConfigOut(BaseModel):
+    provider: str                       # 当前选择: kuaidi100 | kdniao | auto
+    # 快递100
     customer: str
     customer_set: bool
     key_masked: str
     key_set: bool
+    # 快递鸟
+    kdniao_ebusiness_id: str
+    kdniao_ebusiness_id_set: bool
+    kdniao_key_masked: str
+    kdniao_key_set: bool
 
 
 class LogisticsConfigIn(BaseModel):
-    customer: Optional[str] = None   # "__CLEAR__" 清空
-    key: Optional[str] = None        # "__CLEAR__" 清空
+    provider: Optional[str] = None              # kuaidi100 | kdniao | auto
+    customer: Optional[str] = None              # 快递100 customer; "__CLEAR__" 清空
+    key: Optional[str] = None                   # 快递100 key; "__CLEAR__" 清空
+    kdniao_ebusiness_id: Optional[str] = None   # 快递鸟 EBusinessID; "__CLEAR__" 清空
+    kdniao_key: Optional[str] = None            # 快递鸟 ApiKey; "__CLEAR__" 清空
+
+
+def _mask_id(v: str) -> str:
+    return (v[:4] + "***") if len(v) > 4 else ("***" if v else "")
+
+
+def _logistics_config_out(db: Session) -> LogisticsConfigOut:
+    customer = settings_service.get(db, "kuaidi100_customer", env_fallback=True) or ""
+    key = settings_service.get(db, "kuaidi100_key", env_fallback=True) or ""
+    eid = settings_service.get(db, "kdniao_ebusiness_id", env_fallback=True) or ""
+    kkey = settings_service.get(db, "kdniao_api_key", env_fallback=True) or ""
+    provider = (settings_service.get(db, "tracking_provider", env_fallback=True) or "auto").lower()
+    return LogisticsConfigOut(
+        provider=provider,
+        customer=_mask_id(customer),
+        customer_set=bool(customer),
+        key_masked=settings_service.mask_secret(key),
+        key_set=bool(key),
+        kdniao_ebusiness_id=_mask_id(eid),
+        kdniao_ebusiness_id_set=bool(eid),
+        kdniao_key_masked=settings_service.mask_secret(kkey),
+        kdniao_key_set=bool(kkey),
+    )
 
 
 @router.get("/logistics-config", response_model=LogisticsConfigOut)
@@ -452,14 +485,7 @@ def get_logistics_config(
     db: Session = Depends(get_db),
     _: object = Depends(require_role("admin")),
 ):
-    customer = settings_service.get(db, "kuaidi100_customer", env_fallback=True) or ""
-    key = settings_service.get(db, "kuaidi100_key", env_fallback=True) or ""
-    return LogisticsConfigOut(
-        customer=customer[:4] + "***" if len(customer) > 4 else ("***" if customer else ""),
-        customer_set=bool(customer),
-        key_masked=settings_service.mask_secret(key),
-        key_set=bool(key),
-    )
+    return _logistics_config_out(db)
 
 
 @router.put("/logistics-config", response_model=LogisticsConfigOut)
@@ -468,21 +494,22 @@ def put_logistics_config(
     db: Session = Depends(get_db),
     _: object = Depends(require_role("admin")),
 ):
-    if payload.customer is not None:
-        settings_service.set_value(db, "kuaidi100_customer",
-                                   "" if payload.customer == "__CLEAR__" else payload.customer.strip())
-    if payload.key is not None:
-        settings_service.set_value(db, "kuaidi100_key",
-                                   "" if payload.key == "__CLEAR__" else payload.key.strip())
+    def _apply(name: str, val: Optional[str]) -> None:
+        if val is None:
+            return
+        settings_service.set_value(db, name, "" if val == "__CLEAR__" else val.strip())
+
+    if payload.provider is not None:
+        prov = payload.provider.strip().lower()
+        if prov not in ("kuaidi100", "kdniao", "auto"):
+            raise HTTPException(400, "provider 必须是 kuaidi100 / kdniao / auto")
+        settings_service.set_value(db, "tracking_provider", prov)
+    _apply("kuaidi100_customer", payload.customer)
+    _apply("kuaidi100_key", payload.key)
+    _apply("kdniao_ebusiness_id", payload.kdniao_ebusiness_id)
+    _apply("kdniao_api_key", payload.kdniao_key)
     db.commit()
-    customer = settings_service.get(db, "kuaidi100_customer", env_fallback=True) or ""
-    key = settings_service.get(db, "kuaidi100_key", env_fallback=True) or ""
-    return LogisticsConfigOut(
-        customer=customer[:4] + "***" if len(customer) > 4 else ("***" if customer else ""),
-        customer_set=bool(customer),
-        key_masked=settings_service.mask_secret(key),
-        key_set=bool(key),
-    )
+    return _logistics_config_out(db)
 
 
 # ----------------------------- 数据水位线 (Phase 7) ----------------- #
