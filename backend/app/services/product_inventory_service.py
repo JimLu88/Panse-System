@@ -36,6 +36,9 @@ from app.services import product_coder
 _D = Decimal
 _ZERO = _D("0")
 _DEFAULT_SLOW_MOVING_DAYS = 60
+# 一般家具的默认提前期(天): 既无手填也无工厂历史时, 用它测算安全库存/预警线。
+# 实木定制家具下单到入库通常 2~4 周, 取 30 天稳健兜底。
+_DEFAULT_LEAD_TIME_DAYS = 30
 
 
 def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str], days: int = 30) -> float:
@@ -88,23 +91,25 @@ def compute_product_stats(
     """计算单条成品库存的所有推算字段，返回 dict 供 API 序列化或写回数据库。"""
     daily = _compute_daily_sales(db, inv.product_code, inv.sku)
 
-    # 提前期：优先使用手动设置值
+    # 提前期：优先手动设置值, 其次工厂历史推算 (lead_time 为 None = 二者都无, 前端显示默认值)
     lead_time = inv.lead_time_days
     if lead_time is None:
         lead_time = _compute_lead_time(db, inv.product_code)
+    # 兜底: 既无手填也无工厂历史 → 用一般家具默认提前期参与安全库存/预警线测算
+    effective_lead = lead_time if lead_time is not None else _DEFAULT_LEAD_TIME_DAYS
 
     slow_days = inv.slow_moving_days or _DEFAULT_SLOW_MOVING_DAYS
 
     # 安全库存
     safety = float(inv.safety_stock or 0)
-    if safety == 0 and lead_time and daily > 0:
-        safety = lead_time * daily * 1.5  # 自动推算: 提前期用量 × 1.5
+    if safety == 0 and effective_lead and daily > 0:
+        safety = effective_lead * daily * 1.5  # 自动推算: 提前期用量 × 1.5
 
     # 预警线
     if inv.reorder_point is not None:
         reorder_pt = float(inv.reorder_point)
     else:
-        reorder_pt = safety + (lead_time or 0) * daily
+        reorder_pt = safety + (effective_lead or 0) * daily
 
     available = float(inv.available_qty)
 

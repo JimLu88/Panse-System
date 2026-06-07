@@ -140,7 +140,6 @@ export default function App() {
       children: [
         { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
         { key: 'pricing-formulas', label: <Link to="/pricing-formulas">公式规则</Link> },
-        { key: 'quote', label: <Link to="/quote">报价工具</Link> },
         { key: 'customization', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
         { key: 'custom-settings', label: <Link to="/customization?tab=settings">报价参数</Link> },
       ],

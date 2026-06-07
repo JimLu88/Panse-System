@@ -27,11 +27,23 @@ class PartInventoryPatch(BaseModel):
 router = APIRouter(prefix="/api/inventory/parts", tags=["inventory"])
 
 
-def _to_out(inv: PartInventory) -> PartInventoryOut:
+def _material_names(db: Session, codes: list[str]) -> dict[str, str]:
+    """批量取 物料编码→名称, 给配件库存补「物料名称」列 (避免 N+1)。"""
+    uniq = [c for c in set(codes) if c]
+    if not uniq:
+        return {}
+    rows = db.execute(
+        select(Material.code, Material.name).where(Material.code.in_(uniq))
+    ).all()
+    return {c: n for c, n in rows}
+
+
+def _to_out(inv: PartInventory, material_name: Optional[str] = None) -> PartInventoryOut:
     return PartInventoryOut(
         id=inv.id,
         warehouse=inv.warehouse,
         material_code=inv.material_code,
+        material_name=material_name,
         spec=inv.spec,
         unit=inv.unit,
         physical_qty=inv.physical_qty,
@@ -57,7 +69,8 @@ def list_part_inventory(
         stmt = stmt.where(PartInventory.material_code == material_code)
     stmt = stmt.order_by(PartInventory.id.desc()).limit(limit).offset(offset)
     rows = db.execute(stmt).scalars().all()
-    return [_to_out(r) for r in rows]
+    names = _material_names(db, [r.material_code for r in rows])
+    return [_to_out(r, names.get(r.material_code)) for r in rows]
 
 
 @router.get("/with-stats", response_model=list[PartInventoryWithStats])
@@ -73,10 +86,12 @@ def list_part_inventory_with_stats(
     日均消耗/提前期/滞销天数 取库内导入值; 据此算预警线、库存天数、预警状态、补货建议。
     """
     out: list[PartInventoryWithStats] = []
-    for inv, stats in part_inventory_service.list_with_stats(
+    pairs = list(part_inventory_service.list_with_stats(
         db, warehouse=warehouse, material_code=material_code, limit=limit, offset=offset,
-    ):
-        base = _to_out(inv).model_dump()
+    ))
+    names = _material_names(db, [inv.material_code for inv, _ in pairs])
+    for inv, stats in pairs:
+        base = _to_out(inv, names.get(inv.material_code)).model_dump()
         out.append(PartInventoryWithStats(
             **base,
             daily_sales=stats["daily_sales"],

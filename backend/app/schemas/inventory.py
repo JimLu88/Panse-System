@@ -25,6 +25,7 @@ class PartInventoryOut(BaseModel):
     id: int
     warehouse: str
     material_code: str
+    material_name: Optional[str] = None
     spec: Optional[str]
     unit: Optional[str]
     physical_qty: int
