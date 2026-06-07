@@ -13,8 +13,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ReconRow, SettlementRow,
-  fetchReconSummary, fetchSettlementSummary, importSettlementBill,
+  ReconGap, ReconRow, SettlementRow,
+  fetchReconGap, fetchReconSummary, fetchSettlementSummary, importSettlementBill,
   listReconciliation, listSettlements,
 } from '../api/settlements';
 
@@ -44,6 +44,45 @@ const numCol = (
   align: 'right' as const,
   render: (v: number | null) => yuan(v),
 });
+
+// 到账覆盖缺口诊断: 按月铺开覆盖率, 指出该补哪几个月的流水/账单
+function ReconGapCard() {
+  const { data } = useQuery<ReconGap>({ queryKey: ['recon-gap'], queryFn: fetchReconGap });
+  if (!data || data.months.length === 0) return null;
+  return (
+    <Card size="small" title="到账覆盖缺口诊断（按月该补哪批流水/账单）" style={{ marginTop: 12 }}>
+      {data.worst_months.length > 0 && (
+        <Alert
+          type="info" showIcon style={{ marginBottom: 12 }}
+          message={`待补到账金额最高的月份: ${data.worst_months.join('、')} — 优先补导这几个月的早期订单 / billDetail / 企业号流水`}
+        />
+      )}
+      <Table<ReconGap['months'][number]>
+        rowKey="period"
+        dataSource={data.months}
+        pagination={false}
+        size="small"
+        columns={[
+          { title: '月份', dataIndex: 'period' },
+          { title: '订单', dataIndex: 'orders', align: 'right' },
+          { title: '有到账', dataIndex: 'evidence', align: 'right' },
+          { title: '待补', dataIndex: 'pending', align: 'right' },
+          {
+            title: '待补金额', dataIndex: 'pending_amount', align: 'right',
+            render: (v: number) => <Tag color={v > 0 ? 'orange' : 'green'}>{yuan(v)}</Tag>,
+          },
+          {
+            title: '覆盖率', dataIndex: 'coverage_pct', align: 'right',
+            render: (v: number) => {
+              const color = v >= 80 ? 'green' : v >= 30 ? 'orange' : 'red';
+              return <Tag color={color}>{v}%</Tag>;
+            },
+          },
+        ]}
+      />
+    </Card>
+  );
+}
 
 // ---------------- 逐笔对账 ----------------
 function ReconciliationTab() {
@@ -159,6 +198,7 @@ function ReconciliationTab() {
               description="多数订单尚无支付宝/微信到账流水可比对。请在「结算明细导入」继续导入 billDetail，并补导早期订单与支付宝企业号流水，覆盖率会随之上升。订单侧金额(应付/实付/实收/2%税)已完整。"
             />
           )}
+          <ReconGapCard />
         </>
       )}
 

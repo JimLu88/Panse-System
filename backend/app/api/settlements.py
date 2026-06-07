@@ -63,6 +63,15 @@ def reconciliation_summary(
     return order_reconciliation_service.summary(db)
 
 
+@router.get("/reconciliation/gap")
+def reconciliation_gap(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """到账覆盖缺口诊断: 按月铺开覆盖率 + 待补金额, 指出最该补流水/账单的几个月。"""
+    return order_reconciliation_service.coverage_gap(db)
+
+
 @router.get("/reconciliation")
 def reconciliation_list(
     limit: int = Query(200, le=2000),

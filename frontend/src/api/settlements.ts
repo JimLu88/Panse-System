@@ -100,3 +100,26 @@ export const listReconciliation = (params: {
   limit?: number; offset?: number; status?: string; channel?: string; q?: string;
 }) =>
   api.get<ReconListResult>('/api/settlements/reconciliation', { params }).then((r) => r.data);
+
+// ---- 到账覆盖缺口诊断 (按月该补哪批流水/账单) ----
+export interface ReconGapMonth {
+  period: string;
+  orders: number;
+  evidence: number;
+  pending: number;
+  pending_amount: number;
+  wechat: number;
+  alipay: number;
+  coverage_pct: number;
+}
+export interface ReconGap {
+  total_orders: number;
+  evidence_orders: number;
+  pending_orders: number;
+  coverage_pct: number;
+  pending_amount: number;
+  months: ReconGapMonth[];
+  worst_months: string[];
+}
+export const fetchReconGap = () =>
+  api.get<ReconGap>('/api/settlements/reconciliation/gap').then((r) => r.data);

@@ -190,6 +190,59 @@ def per_order(
     return {"total": total, "rows": page}
 
 
+def coverage_gap(db: Session) -> dict:
+    """到账覆盖缺口诊断: 按月统计有无到账证据, 指出最该补流水/账单的几个月。
+
+    覆盖率低 = 早期订单未导 / billDetail / 企业号流水没补全。按月铺开让用户知道补哪批。
+    """
+    wnet = _wechat_net_by_order(db)
+    anet = _alipay_net_by_flow_no(db)
+    orders = db.execute(_base_query()).scalars().all()
+
+    by_month: dict[str, dict] = {}
+    tot_orders = tot_evidence = 0
+    tot_pending_amt = Decimal("0")
+    for o in orders:
+        r = _build_row(o, wnet, anet)
+        mk = o.order_date.strftime("%Y-%m") if o.order_date else "无日期"
+        b = by_month.setdefault(mk, {
+            "period": mk, "orders": 0, "evidence": 0, "pending": 0,
+            "pending_amount": Decimal("0"), "wechat": 0, "alipay": 0,
+        })
+        b["orders"] += 1
+        tot_orders += 1
+        if r["channels"]:
+            b["evidence"] += 1
+            tot_evidence += 1
+            b["wechat"] += "微信" in r["channels"]
+            b["alipay"] += "支付宝" in r["channels"]
+        else:
+            b["pending"] += 1
+            if r["expected_net"]:
+                amt = Decimal(str(r["expected_net"]))
+                b["pending_amount"] += amt
+                tot_pending_amt += amt
+
+    months = []
+    for mk in sorted(by_month, reverse=True):
+        b = by_month[mk]
+        b["coverage_pct"] = round(b["evidence"] / b["orders"] * 100, 1) if b["orders"] else 0.0
+        b["pending_amount"] = float(b["pending_amount"])
+        months.append(b)
+    worst = [m["period"] for m in
+             sorted(months, key=lambda m: m["pending_amount"], reverse=True)[:5]
+             if m["pending"] > 0]
+    return {
+        "total_orders": tot_orders,
+        "evidence_orders": tot_evidence,
+        "pending_orders": tot_orders - tot_evidence,
+        "coverage_pct": round(tot_evidence / tot_orders * 100, 1) if tot_orders else 0.0,
+        "pending_amount": float(tot_pending_amt),
+        "months": months,
+        "worst_months": worst,    # 缺口最大(待补流水金额最高)的几个月
+    }
+
+
 def summary(db: Session) -> dict:
     """全量汇总 (不分页): 各金额合计 + 对账状态分布 + 到账覆盖率。"""
     wnet = _wechat_net_by_order(db)
