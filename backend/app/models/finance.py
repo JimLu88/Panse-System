@@ -50,10 +50,11 @@ class AlipayFlow(Base, TimestampMixin):
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
     __table_args__ = (
-        # 同号配对流水 (在线支付货款 + 分账手续费) 共用同一交易流水号, 必须都能入库;
-        # 仅「同号 + 同类型 + 同金额」才算真重复。详见 migration 0039。
+        # 同号多笔真实流水 (成对的货款+分账, 或同号多次扣费) 共用同一交易流水号, 必须都能入库;
+        # 把 balance(交易后余额)纳入键 — 每笔交易后余额不同 → 视为不同流水; 五者全同才算真重复。
+        # 详见 migration 0039(初版四元组) 与 0057(加 balance)。
         UniqueConstraint(
-            "account", "transaction_no", "transaction_type", "amount",
+            "account", "transaction_no", "transaction_type", "amount", "balance",
             name="uq_alipay_flow_acct_no",
         ),
         Index("ix_alipay_flows_acct_time", "account", "transaction_time"),
@@ -220,10 +221,10 @@ def _logistics_sync_key(o: "LogisticsBill") -> str:
 
 
 def _alipay_sync_key(o: "AlipayFlow") -> str:
-    # 与唯一约束 (account, transaction_no, transaction_type, amount) 一致:
-    # 同号配对流水(在线支付+分账)交易类型/金额不同, 键不同, 两端都能配对; 完全相同才算同一行。
+    # 与唯一约束 (account, transaction_no, transaction_type, amount, balance) 一致:
+    # 同号多笔流水(货款+分账 / 同号多次扣费)类型/金额/余额不同, 键不同, 两端都能配对; 五者全同才算同一行。
     return "alipay:" + ":".join(
-        _part(x) for x in (o.account, o.transaction_no, o.transaction_type, o.amount)
+        _part(x) for x in (o.account, o.transaction_no, o.transaction_type, o.amount, o.balance)
     )
 
 

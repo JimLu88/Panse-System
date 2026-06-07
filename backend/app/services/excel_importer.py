@@ -307,7 +307,7 @@ def _extract_json(text: str) -> dict:
 #   3) 业务冗余列: 数据已在别处保存, 本表不重复存 (如订单里的「核销状态」由系统对账算出);
 #   4) 未命名空列 (colN) 与整列全空列: 没有任何数据, 不存在"丢数据"。
 _IGNORABLE_COLUMN_KEYWORDS = (
-    "导入校验", "问题标注", "对账缺失", "核销状态", "核销类型",
+    "导入校验", "问题标注", "冲突标注", "对账缺失", "核销状态", "核销类型",
     "可用库存", "尺寸值", "尺寸是否确定",
 )
 # 精确匹配 (大小写不敏感; 中文不受 lower() 影响)
@@ -950,9 +950,9 @@ def _commit_alipay_flows(
             unresolved_refs += 1
             if len(unresolved_samples) < 5:
                 unresolved_samples.append(str(projected.get("related_order_no"))[:48])
-        # 去重键必须与模型唯一约束一致: (account, transaction_no, transaction_type, amount)。
-        # 同一交易流水号常对应一对流水(在线支付货款 + 分账手续费), 交易类型/金额不同, 两条都要入库;
-        # 仅"同号 + 同类型 + 同金额"才算真重复。旧逻辑只比 (account, 流水号) 会把成对流水压成一条 → 丢数据。
+        # 去重键与模型唯一约束一致: (account, 流水号, 类型, 金额, 余额)。
+        # 同一交易流水号可能对应多笔真实流水(成对的货款+分账, 或同号多次扣费): 类型/金额/余额任一不同即视为
+        # 不同流水, 都要入库; 仅五者全同才算真重复。用 first() 而非 one(), 防极少数余额皆空的同号多行报错。
         tx_type = projected.get("transaction_type")
         existing = db.execute(
             select(AlipayFlow).where(
@@ -960,8 +960,9 @@ def _commit_alipay_flows(
                 AlipayFlow.transaction_no == tx_no,
                 AlipayFlow.transaction_type == tx_type,
                 AlipayFlow.amount == amount,
+                AlipayFlow.balance == projected.get("balance"),
             )
-        ).scalar_one_or_none()
+        ).scalars().first()
         if existing is not None:
             flow_payload = {
                 "account": account, "transaction_no": tx_no,
@@ -1837,16 +1838,19 @@ def _h_aftersales(db, data, key_field, ctx=None):
                      data.get("return_pack_freight"))
         if v is not None:
             data["out_platform_total"] = v
-    existing = db.execute(
-        select(AfterSales).where(AfterSales.platform_order_no == order_no)
-    ).scalar_one_or_none()
     payload = {k: v for k, v in data.items() if v is not None}
     # 支付宝流水号为空 → 报异常, 让同事回填 (售后表行数有限, 逐行标记可接受)
     if not data.get("alipay_flow_no"):
         _record_exc(db, "after_sales", order_no, "alipay_flow_no_missing",
                     f"售后单 {order_no} 支付宝流水号为空, 无法与流水核销, 请回填.", "warning")
-    if existing:
-        return "aftersales", _apply_update(existing, payload, ctx, "after_sales", order_no, db)
+    # 一个订单可能有多次真实售后(用户确认要全保留) → 仅当某条已存在记录与本行"全部导入字段"
+    # 完全一致才算重复(跳过), 否则都作为独立售后入库。这样多次售后都保留, 重导同一份表仍幂等。
+    existing_rows = db.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == order_no)
+    ).scalars().all()
+    for r in existing_rows:
+        if all(getattr(r, k, None) == v for k, v in payload.items() if hasattr(r, k)):
+            return "aftersales", "skipped"
     db.add(AfterSales(**payload))
     return "aftersales", "inserted"
 
