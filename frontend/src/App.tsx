@@ -44,6 +44,7 @@ const PricingPage = lazy(() => import('./pages/PricingPage'));
 const PricingFormulaPage = lazy(() => import('./pages/PricingFormulaPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OpsChecklistPage = lazy(() => import('./pages/OpsChecklistPage'));
+const SalesRankingPage = lazy(() => import('./pages/SalesRankingPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
@@ -73,7 +74,7 @@ function PageFallback() {
 
 // 路径 → 所属导航 group 映射
 const PATH_TO_GROUP: Record<string, string> = {
-  dashboard: 'g-data', forecast: 'g-data',
+  dashboard: 'g-data', forecast: 'g-data', 'ops-checklist': 'g-data', 'sales-ranking': 'g-data',
   products: 'g-product', 'new-product': 'g-product', 'taobao-listings': 'g-product', bom: 'g-product',
   pricing: 'g-price', 'pricing-formulas': 'g-price', quote: 'g-price', customization: 'g-price',
   inventory: 'g-stock', 'product-inventory': 'g-stock', producibility: 'g-stock',
@@ -125,6 +126,7 @@ export default function App() {
       children: [
         { key: 'ops-checklist', label: <Link to="/ops-checklist">待办台账</Link> },
         { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
+        { key: 'sales-ranking', label: <Link to="/sales-ranking">销售排行榜</Link> },
         { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
       ],
     },
@@ -305,6 +307,7 @@ export default function App() {
             <Route path="/login" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/ops-checklist" element={<OpsChecklistPage />} />
+            <Route path="/sales-ranking" element={<SalesRankingPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/bom/:productCode" element={<BomViewerPage />} />
             <Route path="/materials" element={<MaterialsPage />} />

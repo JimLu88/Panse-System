@@ -324,3 +324,102 @@ def slow_moving_split(
             "overstock_ratio": overstock_ratio,
         },
     }
+
+
+# ----------------------------- 销售排行榜 ----------------------- #
+
+
+def _period_key(d: date, granularity: str) -> str:
+    return f"{d.year:04d}-{d.month:02d}" if granularity == "month" else f"{d.year:04d}"
+
+
+# 补差价 / 邮费 / 专拍链接不是真实产品 (买家拍大量 ¥1 凑差价), 会污染排行榜, 排除。
+_NON_PRODUCT_KEYWORDS = ("差价", "邮费", "补拍", "专拍", "专链", "运费", "补差", "改价")
+
+
+def _is_non_product(name: Optional[str]) -> bool:
+    n = name or ""
+    return any(k in n for k in _NON_PRODUCT_KEYWORDS)
+
+
+def product_ranking(
+    db: Session, *,
+    granularity: str = "month",   # month(按月) / year(按年)
+    metric: str = "revenue",      # revenue(销售额) / qty(销量)
+    period: Optional[str] = None,  # 指定周期 (如 2026-04 / 2026); 缺省取最新
+    limit: int = 30,
+) -> dict:
+    """销售排行榜: 按月/按年, 分产品的销量/销售额排行 + 每期冠军时间线。
+
+    口径: 正式销售 (非补单 is_refill=False, 未取消, 有下单日期)。销售额=买家实付 paid_amount。
+    返回 {granularity, metric, selected_period, periods[每期冠军], ranking[选定期排行]}。
+    """
+    granularity = "year" if granularity == "year" else "month"
+    metric = "qty" if metric == "qty" else "revenue"
+
+    orders = db.execute(
+        select(Order).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.order_date.isnot(None),
+            Order.status != "cancelled",
+        )
+    ).scalars().all()
+
+    buckets: dict[str, dict[str, dict]] = {}
+    excluded = 0
+    for o in orders:
+        if not o.order_date:
+            continue
+        if _is_non_product(o.product_name):
+            excluded += 1
+            continue
+        pk = _period_key(o.order_date, granularity)
+        name = o.product_name or o.product_code or "未知产品"
+        key = o.product_code or name
+        bp = buckets.setdefault(pk, {})
+        d = bp.setdefault(key, {
+            "product_code": o.product_code, "product_name": name,
+            "qty": 0, "revenue": Decimal("0"), "order_count": 0,
+        })
+        d["qty"] += int(o.qty or 1)
+        d["revenue"] += Decimal(o.paid_amount or 0)
+        d["order_count"] += 1
+
+    def metric_val(d: dict):
+        return d["qty"] if metric == "qty" else d["revenue"]
+
+    periods_out: list[dict] = []
+    for pk in sorted(buckets.keys(), reverse=True):
+        rows = list(buckets[pk].values())
+        champ = max(rows, key=metric_val) if rows else None
+        periods_out.append({
+            "period": pk,
+            "champion_name": champ["product_name"] if champ else None,
+            "champion_qty": int(champ["qty"]) if champ else 0,
+            "champion_revenue": float(champ["revenue"]) if champ else 0.0,
+            "total_qty": int(sum(r["qty"] for r in rows)),
+            "total_revenue": float(sum((r["revenue"] for r in rows), Decimal("0"))),
+            "product_kinds": len(rows),
+        })
+
+    sel = period if (period and period in buckets) else (periods_out[0]["period"] if periods_out else None)
+    ranking: list[dict] = []
+    if sel and sel in buckets:
+        rows = sorted(buckets[sel].values(), key=metric_val, reverse=True)[:limit]
+        for i, r in enumerate(rows, 1):
+            ranking.append({
+                "rank": i,
+                "product_code": r["product_code"],
+                "product_name": r["product_name"],
+                "qty": int(r["qty"]),
+                "revenue": float(r["revenue"]),
+                "order_count": r["order_count"],
+            })
+
+    return {
+        "granularity": granularity, "metric": metric,
+        "selected_period": sel,
+        "periods": periods_out,
+        "ranking": ranking,
+        "excluded_non_product": excluded,  # 排除的补差价/邮费/专链等非产品订单数
+    }
