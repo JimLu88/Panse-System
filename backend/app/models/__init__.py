@@ -14,6 +14,7 @@ from app.models.finance import (
     WanshifuBill,
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
+from app.models.shipment import Shipment
 from app.models.ai import AiChatLog, AiCodePatch
 from app.models.auth import AuditLog, User
 from app.models.competitor import CompetitorPrice

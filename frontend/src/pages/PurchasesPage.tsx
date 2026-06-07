@@ -13,6 +13,7 @@ import {
   message,
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
+import ShipmentTracker from '../components/ShipmentTracker';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UploadProps } from 'antd';
@@ -84,6 +85,7 @@ export default function PurchasesPage() {
       render: (v: number | null) => (v == null ? '-' : v),
     },
     { title: '快递单号', dataIndex: 'tracking_no', key: 'tracking_no' },
+    { title: '物流', key: 'shipment', width: 150, render: (_: any, r: any) => <ShipmentTracker entityType="part_purchase" entityId={r.id} /> },
     {
       title: '发票原图',
       key: 'image',

@@ -135,20 +135,61 @@ def register_job(
         _add_to_scheduler(job_id)
 
 
-def _add_to_scheduler(job_id: str) -> None:
+# 用户可在设置里覆盖每个任务的定时; 覆盖存 system_settings 的 scheduler_overrides (JSON):
+#   { job_id: { "enabled": bool, "interval_minutes": int, "cron": {hour,minute,...} } }
+_ALLOWED_CRON_KEYS = ("year", "month", "day", "week", "day_of_week", "hour", "minute", "second")
+
+
+def _load_overrides() -> dict:
+    """从设置读 scheduler_overrides (JSON)。缺失/损坏返回 {}。"""
+    import json
+    from app.database import SessionLocal
+    from app.services import settings_service
+    db = SessionLocal()
+    try:
+        raw = settings_service.get(db, "scheduler_overrides", env_fallback=False)
+    except Exception:  # pragma: no cover - 读配置失败不应拖垮调度
+        return {}
+    finally:
+        db.close()
+    if not raw:
+        return {}
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):  # pragma: no cover
+        return {}
+
+
+def _effective_schedule(cfg: dict, ov: dict) -> tuple[str, dict, bool]:
+    """合并默认计划与用户覆盖, 返回 (kind, schedule, enabled)。schedule 为最终生效计划。"""
+    enabled = bool(ov.get("enabled", True))
+    if cfg["cron"]:
+        merged = {**cfg["cron"], **{k: v for k, v in (ov.get("cron") or {}).items() if k in _ALLOWED_CRON_KEYS}}
+        return "cron", merged, enabled
+    interval = int(ov.get("interval_minutes") or cfg["interval_minutes"])
+    return "interval", {"interval_minutes": max(1, interval)}, enabled
+
+
+def _add_to_scheduler(job_id: str, overrides: Optional[dict] = None) -> None:
     from apscheduler.triggers.cron import CronTrigger
     from apscheduler.triggers.interval import IntervalTrigger
 
     cfg = _REGISTRY[job_id]
-    label = cfg["label"]
-    fn = cfg["fn"]
-    if cfg["cron"]:
-        trigger = CronTrigger(**cfg["cron"])
+    ov = (overrides if overrides is not None else _load_overrides()).get(job_id, {})
+    kind, schedule, enabled = _effective_schedule(cfg, ov)
+    if not enabled:
+        # 用户停用了该任务 — 若已在调度器中, 移除
+        if _SCHEDULER is not None and _SCHEDULER.get_job(job_id):
+            _SCHEDULER.remove_job(job_id)
+        return
+    if kind == "cron":
+        trigger = CronTrigger(**schedule)
     else:
-        trigger = IntervalTrigger(minutes=cfg["interval_minutes"])
+        trigger = IntervalTrigger(minutes=schedule["interval_minutes"])
     _SCHEDULER.add_job(
         _run_with_logging, trigger=trigger,
-        args=(job_id, label, fn),
+        args=(job_id, cfg["label"], cfg["fn"]),
         id=job_id, replace_existing=True,
         misfire_grace_time=300, max_instances=1, coalesce=True,
     )
@@ -263,6 +304,16 @@ def _job_accessory_tracking_refresh(db: Session) -> dict:
     """
     from app.services import logistics_tracking_service
     return logistics_tracking_service.refresh_in_transit(db)
+
+
+def _job_shipments_refresh(db: Session) -> dict:
+    """全表物流实时刷新 — ensure 所有带快递单号的业务记录进 shipments, 刷新在途,
+    并把派生状态 (签收→订单签收 / 售后返厂二次入库) 实时回写各业务表。
+
+    未配置物流时整体跳过, 不报错。
+    """
+    from app.services import shipment_service
+    return shipment_service.sync_and_refresh(db)
 
 
 def _job_accessory_alert_refresh(db: Session) -> dict:
@@ -661,6 +712,8 @@ def _register_default_jobs() -> None:
                  _job_data_backup, cron={"hour": 2, "minute": 0})
     register_job("accessory_tracking_2h", "配件物流实时刷新 (快递100)",
                  _job_accessory_tracking_refresh, interval_minutes=120)
+    register_job("shipments_tracking_6h", "全表物流实时刷新 (shipments: 订单/售后/工厂/补单/采购)",
+                 _job_shipments_refresh, interval_minutes=360)
     register_job("daily_0730_accessory_alert", "配件到货预警刷新",
                  _job_accessory_alert_refresh, cron={"hour": 7, "minute": 30})
 
@@ -685,8 +738,9 @@ def start(timezone_name: Optional[str] = None) -> None:
     tz = timezone_name or os.environ.get("PANSE_TZ", "Asia/Shanghai")
     _SCHEDULER = AsyncIOScheduler(timezone=tz)
     _register_default_jobs()
+    overrides = _load_overrides()
     for job_id in _REGISTRY:
-        _add_to_scheduler(job_id)
+        _add_to_scheduler(job_id, overrides)
     _SCHEDULER.start()
     _logger.info("调度器已启动, tz=%s, %d 个任务", tz, len(_REGISTRY))
 
@@ -702,14 +756,18 @@ def shutdown() -> None:
 
 
 def list_jobs() -> list[dict]:
-    """API: 返回 {job_id, label, next_run_at, kind, schedule} 列表."""
+    """API: 返回 {job_id, label, kind, schedule(生效), default_schedule, enabled, next_run_at} 列表."""
+    overrides = _load_overrides()
     out = []
     for jid, cfg in _REGISTRY.items():
+        kind, schedule, enabled = _effective_schedule(cfg, overrides.get(jid, {}))
         info = {
             "job_id": jid,
             "label": cfg["label"],
-            "kind": "cron" if cfg["cron"] else "interval",
-            "schedule": cfg["cron"] or {"interval_minutes": cfg["interval_minutes"]},
+            "kind": kind,
+            "schedule": schedule,
+            "default_schedule": cfg["cron"] or {"interval_minutes": cfg["interval_minutes"]},
+            "enabled": enabled,
             "next_run_at": None,
         }
         if _SCHEDULER is not None:
@@ -739,3 +797,48 @@ def trigger_now(job_id: str) -> bool:
         max_instances=2,
     )
     return True
+
+
+def set_schedule(db: Session, job_id: str, *, interval_minutes: Optional[int] = None,
+                 cron: Optional[dict] = None, enabled: Optional[bool] = None) -> dict:
+    """用户在设置里改某任务的定时: 写入 scheduler_overrides 并立即重排。返回该任务最新信息。
+
+    - interval 任务: 传 interval_minutes (分钟)。
+    - cron 任务: 传 cron={"hour":H,"minute":M,...} (只合并白名单字段, 其余沿用默认)。
+    - enabled: 停用/启用该任务。
+    """
+    import json
+    from app.services import settings_service
+    if job_id not in _REGISTRY:
+        raise ValueError(f"job {job_id} 未注册")
+    cfg = _REGISTRY[job_id]
+
+    overrides = _load_overrides()
+    entry = dict(overrides.get(job_id, {}))
+    if enabled is not None:
+        entry["enabled"] = bool(enabled)
+    if interval_minutes is not None and not cfg["cron"]:
+        iv = int(interval_minutes)
+        if iv < 1:
+            raise ValueError("间隔必须 ≥ 1 分钟")
+        entry["interval_minutes"] = iv
+    if cron is not None and cfg["cron"]:
+        entry["cron"] = {k: v for k, v in cron.items() if k in _ALLOWED_CRON_KEYS}
+    overrides[job_id] = entry
+    settings_service.set_value(db, "scheduler_overrides", json.dumps(overrides, ensure_ascii=False))
+    db.commit()
+
+    if _SCHEDULER is not None:
+        _add_to_scheduler(job_id, overrides)
+
+    kind, schedule, en = _effective_schedule(cfg, entry)
+    next_run = None
+    if _SCHEDULER is not None:
+        job = _SCHEDULER.get_job(job_id)
+        if job and job.next_run_time:
+            next_run = job.next_run_time.isoformat()
+    return {
+        "job_id": job_id, "label": cfg["label"], "kind": kind, "schedule": schedule,
+        "default_schedule": cfg["cron"] or {"interval_minutes": cfg["interval_minutes"]},
+        "enabled": en, "next_run_at": next_run,
+    }

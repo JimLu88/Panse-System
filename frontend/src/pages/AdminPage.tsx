@@ -82,6 +82,7 @@ import {
   testIntegration,
   testNotifyConfig,
   triggerSchedulerJob,
+  updateSchedulerJob,
   updateIntegrations,
   updateNotifyConfig,
   updateUser,
@@ -546,21 +547,39 @@ function LogisticsForm() {
 
   const [customer, setCustomer] = useState('');
   const [key, setKey] = useState('');
+  const [kdniaoId, setKdniaoId] = useState('');
+  const [kdniaoKey, setKdniaoKey] = useState('');
 
   const saveMut = useMutation({
-    mutationFn: (payload: { customer?: string; key?: string }) => updateLogisticsConfig(payload),
+    mutationFn: (payload: {
+      customer?: string;
+      key?: string;
+      kdniao_ebusiness_id?: string;
+      kdniao_key?: string;
+    }) => updateLogisticsConfig(payload),
     onSuccess: () => {
-      message.success('快递100 配置已保存');
+      message.success('物流配置已保存');
       setCustomer('');
       setKey('');
+      setKdniaoId('');
+      setKdniaoKey('');
       qc.invalidateQueries({ queryKey: ['logistics-config'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
   });
 
+  const providerMut = useMutation({
+    mutationFn: (provider: string) => updateLogisticsConfig({ provider }),
+    onSuccess: () => {
+      message.success('已切换 provider');
+      qc.invalidateQueries({ queryKey: ['logistics-config'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '切换失败'),
+  });
+
   const clearMut = useMutation({
-    mutationFn: (field: 'customer' | 'key') =>
-      updateLogisticsConfig(field === 'customer' ? { customer: '__CLEAR__' } : { key: '__CLEAR__' }),
+    mutationFn: (field: 'customer' | 'key' | 'kdniao_ebusiness_id' | 'kdniao_key') =>
+      updateLogisticsConfig({ [field]: '__CLEAR__' }),
     onSuccess: () => {
       message.success('已清除');
       qc.invalidateQueries({ queryKey: ['logistics-config'] });
@@ -575,41 +594,54 @@ function LogisticsForm() {
       title={
         <Space>
           <TruckOutlined />
-          物流追踪 (快递100)
+          物流追踪 (快递100 / 快递鸟)
           <Tag color="orange">logistics</Tag>
         </Space>
       }
       extra={
-        <Typography.Link
-          href="https://www.kuaidi100.com/openapi/api.shtml"
-          target="_blank"
-          style={{ fontSize: 12 }}
-        >
-          申请/查看 Key →
-        </Typography.Link>
+        <Space size={4} style={{ fontSize: 12 }}>
+          <Typography.Link href="https://api.kuaidi100.com/" target="_blank">
+            快递100 Key
+          </Typography.Link>
+          <span>/</span>
+          <Typography.Link href="https://www.kdniao.com/" target="_blank">
+            快递鸟 Key →
+          </Typography.Link>
+        </Space>
       }
     >
       <Alert
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="快递100 实时查询"
+        message="实时查快递 (配件清单 / 订单等的「实时刷新物流」)"
         description={
           <Space direction="vertical" size={2}>
             <span>
-              用于配件清单的「实时刷新物流」功能。需要到
-              <b> kuaidi100.com </b>
-              申请 API 权限, 免费套餐每天 100 次, 商业套餐按需计费。
+              支持 <b>快递100</b> (免费约 100 次/天) 与 <b>快递鸟</b> (即时查询免费档)。
+              填任一家即可; 用下方「启用 provider」选择走哪家 (auto = 谁配了用谁, 优先快递100)。
             </span>
             <span style={{ color: '#999' }}>
-              1. 注册/登录 快递100 开发者平台 → 获取 <code>customer</code> 和 <code>Key</code>。
-              2. 将两个值填入下方保存即可, 无需重启。
+              到对应开放平台获取凭证后填入下方保存即可, 无需重启。
             </span>
           </Space>
         }
       />
+      <Form.Item label="启用 provider" style={{ marginBottom: 12 }}>
+        <Select
+          size="small"
+          style={{ width: 240 }}
+          value={data.provider || 'auto'}
+          onChange={(v) => providerMut.mutate(v)}
+          options={[
+            { value: 'auto', label: 'auto (谁配了用谁, 优先快递100)' },
+            { value: 'kuaidi100', label: '快递100' },
+            { value: 'kdniao', label: '快递鸟' },
+          ]}
+        />
+      </Form.Item>
       <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
-        <Descriptions.Item label="Customer">
+        <Descriptions.Item label="快递100 Customer">
           {data.customer_set ? (
             <Space>
               <Tag color="green" icon={<KeyOutlined />}>{data.customer}</Tag>
@@ -621,7 +653,7 @@ function LogisticsForm() {
             <Tag color="default">未设置</Tag>
           )}
         </Descriptions.Item>
-        <Descriptions.Item label="Key">
+        <Descriptions.Item label="快递100 Key">
           {data.key_set ? (
             <Space>
               <Tag color="green" icon={<KeyOutlined />}>{data.key_masked}</Tag>
@@ -633,22 +665,72 @@ function LogisticsForm() {
             <Tag color="default">未设置</Tag>
           )}
         </Descriptions.Item>
+        <Descriptions.Item label="快递鸟 EBusinessID">
+          {data.kdniao_ebusiness_id_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>{data.kdniao_ebusiness_id}</Tag>
+              <Button size="small" type="link" danger onClick={() => clearMut.mutate('kdniao_ebusiness_id')}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未设置</Tag>
+          )}
+        </Descriptions.Item>
+        <Descriptions.Item label="快递鸟 ApiKey">
+          {data.kdniao_key_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>{data.kdniao_key_masked}</Tag>
+              <Button size="small" type="link" danger onClick={() => clearMut.mutate('kdniao_key')}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未设置</Tag>
+          )}
+        </Descriptions.Item>
       </Descriptions>
-      <Form layout="inline" onFinish={() => saveMut.mutate({ customer: customer || undefined, key: key || undefined })}>
-        <Form.Item label="Customer">
+      <Form
+        layout="inline"
+        onFinish={() =>
+          saveMut.mutate({
+            customer: customer || undefined,
+            key: key || undefined,
+            kdniao_ebusiness_id: kdniaoId || undefined,
+            kdniao_key: kdniaoKey || undefined,
+          })
+        }
+      >
+        <Form.Item label="快递100 Customer">
           <Input
             value={customer}
             onChange={(e) => setCustomer(e.target.value)}
             placeholder="填新值 (留空=不改)"
-            style={{ width: 180 }}
+            style={{ width: 160 }}
           />
         </Form.Item>
-        <Form.Item label="Key">
+        <Form.Item label="快递100 Key">
           <Input.Password
             value={key}
             onChange={(e) => setKey(e.target.value)}
             placeholder="填新值 (留空=不改)"
-            style={{ width: 200 }}
+            style={{ width: 180 }}
+          />
+        </Form.Item>
+        <Form.Item label="快递鸟 ID">
+          <Input
+            value={kdniaoId}
+            onChange={(e) => setKdniaoId(e.target.value)}
+            placeholder="EBusinessID (留空=不改)"
+            style={{ width: 160 }}
+          />
+        </Form.Item>
+        <Form.Item label="快递鸟 Key">
+          <Input.Password
+            value={kdniaoKey}
+            onChange={(e) => setKdniaoKey(e.target.value)}
+            placeholder="ApiKey (留空=不改)"
+            style={{ width: 180 }}
           />
         </Form.Item>
         <Form.Item>
@@ -657,7 +739,7 @@ function LogisticsForm() {
             htmlType="submit"
             icon={<SaveOutlined />}
             loading={saveMut.isPending}
-            disabled={!customer && !key}
+            disabled={!customer && !key && !kdniaoId && !kdniaoKey}
           >
             保存
           </Button>
@@ -1281,6 +1363,47 @@ function SchedulerTab() {
     },
   });
 
+  const enableMut = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      updateSchedulerJob(id, { enabled }),
+    onSuccess: () => {
+      message.success('已更新');
+      qc.invalidateQueries({ queryKey: ['scheduler-jobs'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '更新失败'),
+  });
+
+  const [editJob, setEditJob] = useState<SchedulerJob | null>(null);
+  const [editHour, setEditHour] = useState(9);
+  const [editMinute, setEditMinute] = useState(0);
+  const [editInterval, setEditInterval] = useState(60);
+
+  const openEdit = (j: SchedulerJob) => {
+    setEditJob(j);
+    if (j.kind === 'cron') {
+      setEditHour(Number(j.schedule?.hour ?? 9));
+      setEditMinute(Number(j.schedule?.minute ?? 0));
+    } else {
+      setEditInterval(Number(j.schedule?.interval_minutes ?? 60));
+    }
+  };
+
+  const scheduleMut = useMutation({
+    mutationFn: (j: SchedulerJob) =>
+      updateSchedulerJob(
+        j.job_id,
+        j.kind === 'cron'
+          ? { cron: { hour: editHour, minute: editMinute } }
+          : { interval_minutes: editInterval },
+      ),
+    onSuccess: () => {
+      message.success('定时已更新, 即时生效');
+      setEditJob(null);
+      qc.invalidateQueries({ queryKey: ['scheduler-jobs'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
@@ -1324,17 +1447,49 @@ function SchedulerTab() {
               render: (v: string | null) => v ?
                 new Date(v).toLocaleString('zh-CN') : '-',
             },
-            { title: '操作', width: 110,
+            { title: '启用', dataIndex: 'enabled', width: 70,
+              render: (v: boolean, r: SchedulerJob) => (
+                <Switch size="small" checked={v} loading={enableMut.isPending}
+                        onChange={(checked) => enableMut.mutate({ id: r.job_id, enabled: checked })} />
+              ),
+            },
+            { title: '操作', width: 180,
               render: (_: any, r: SchedulerJob) => (
-                <Button size="small" loading={triggerMut.isPending}
-                        onClick={() => triggerMut.mutate(r.job_id)}>
-                  立即执行
-                </Button>
+                <Space size="small">
+                  <Button size="small" onClick={() => openEdit(r)}>改时间</Button>
+                  <Button size="small" loading={triggerMut.isPending}
+                          onClick={() => triggerMut.mutate(r.job_id)}>
+                    立即执行
+                  </Button>
+                </Space>
               ),
             },
           ]}
         />
       </Card>
+      <Modal
+        open={!!editJob}
+        title={editJob ? `定时设置 · ${editJob.label}` : ''}
+        onCancel={() => setEditJob(null)}
+        onOk={() => editJob && scheduleMut.mutate(editJob)}
+        confirmLoading={scheduleMut.isPending}
+        destroyOnClose
+      >
+        {editJob?.kind === 'cron' ? (
+          <Space>
+            每天
+            <InputNumber min={0} max={23} value={editHour} onChange={(v) => setEditHour(Number(v ?? 0))} addonAfter="时" />
+            <InputNumber min={0} max={59} value={editMinute} onChange={(v) => setEditMinute(Number(v ?? 0))} addonAfter="分" />
+            执行
+          </Space>
+        ) : (
+          <Space>
+            每隔
+            <InputNumber min={1} max={10080} value={editInterval} onChange={(v) => setEditInterval(Number(v ?? 1))} addonAfter="分钟" />
+            执行 (60=1时, 360=6时, 1440=1天)
+          </Space>
+        )}
+      </Modal>
       <Card size="small" title="最近执行记录">
         <Table<SchedulerRun>
           size="small" rowKey="id" dataSource={runs}

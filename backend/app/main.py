@@ -55,6 +55,7 @@ from app.api import marketing as marketing_api
 from app.api import match as match_api
 from app.api import materials as materials_api
 from app.api import orders as orders_api
+from app.api import shipments as shipments_api
 from app.api import producibility as producibility_api
 from app.api import product_inventory as product_inventory_api
 from app.api import products as products_api
@@ -248,6 +249,7 @@ app.include_router(feishu_api.router)
 app.include_router(match_api.router)
 app.include_router(quotes_api.router)
 app.include_router(orders_api.router)
+app.include_router(shipments_api.router)
 app.include_router(producibility_api.router)
 app.include_router(finance_api.router)
 app.include_router(scanners_api.router)

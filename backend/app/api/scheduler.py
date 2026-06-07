@@ -27,6 +27,8 @@ class JobInfo(BaseModel):
     label: str
     kind: str
     schedule: dict
+    default_schedule: Optional[dict] = None
+    enabled: bool = True
     next_run_at: Optional[str]
 
 
@@ -83,3 +85,29 @@ def trigger_job(
     if not ok:
         raise HTTPException(404, f"job {job_id} 未注册")
     return {"accepted": True}
+
+
+class ScheduleIn(BaseModel):
+    interval_minutes: Optional[int] = None   # interval 任务: 间隔分钟
+    cron: Optional[dict] = None              # cron 任务: {hour, minute, ...}
+    enabled: Optional[bool] = None           # 启用/停用
+
+
+@router.put("/jobs/{job_id}/schedule", response_model=JobInfo)
+def set_job_schedule(
+    job_id: str,
+    payload: ScheduleIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """用户自定义某定时任务的执行时间 / 间隔, 或启停。即时生效, 无需重启。"""
+    try:
+        info = scheduler_service.set_schedule(
+            db, job_id,
+            interval_minutes=payload.interval_minutes,
+            cron=payload.cron,
+            enabled=payload.enabled,
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    return JobInfo(**info)

@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 from typing import Optional
@@ -31,6 +32,9 @@ _SECRET_KEYS = {
     "notify_webhook",
     # 飞书应用凭证
     "feishu_app_secret",
+    # 快递查询凭证 (快递100 / 快递鸟) — 加密落库, 不再明文
+    "kuaidi100_key",
+    "kdniao_api_key",
 }
 
 
@@ -49,6 +53,14 @@ def _enc_base() -> bytes:
     explicit = (os.environ.get("SETTINGS_ENCRYPTION_KEY") or "").strip()
     if explicit:
         return explicit.encode("utf-8")
+    # 安全告警: 用源码内置默认密钥加密 ≈ 明文 (任何拿到源码者皆可解密)。生产应设独立 key。
+    # 只告警一次, 避免刷屏; 不硬崩溃 (否则看门狗会陷入重启循环)。
+    if not getattr(_enc_base, "_warned", False):
+        _enc_base._warned = True
+        logging.getLogger("panse.settings").warning(
+            "SETTINGS_ENCRYPTION_KEY 未设置, 机密配置正用源码内置默认密钥加密 (≈明文)。"
+            "生产环境请设置该环境变量后到后台重新录入机密 (AI/OCR/快递 key)。"
+        )
     return _LEGACY_ENC_BASE.encode("utf-8")
 
 

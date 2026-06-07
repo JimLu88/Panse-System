@@ -9,6 +9,7 @@
  *   - 拆 BOM (成品 → 物料)
  */
 import { useState } from 'react';
+import ShipmentTracker from '../components/ShipmentTracker';
 import {
   Alert,
   Button,
@@ -138,6 +139,14 @@ export default function AfterSalesPage() {
             },
             { title: '二次确认', dataIndex: 'second_inbound_confirmed', width: 100,
               render: (v: string | null) => v === '是' ? '✓' : v === '否' ? '✗' : '-',
+            },
+            { title: '物流(补发/返厂)', width: 210,
+              render: (_: any, r: AfterSalesItem) => (
+                <Space direction="vertical" size={2}>
+                  <ShipmentTracker entityType="after_sales_refill" entityId={r.id} />
+                  <ShipmentTracker entityType="after_sales_return" entityId={r.id} />
+                </Space>
+              ),
             },
             { title: '操作', fixed: 'right', width: 280,
               render: (_: any, r: AfterSalesItem) => (
