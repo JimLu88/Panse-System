@@ -36,6 +36,7 @@ _BUSINESS_TABLES: list[str] = [
     "factory_reconciliations",
     "wanshifu_bills",
     "logistics_bills",
+    "shipments",
     "promotion_flows",
     "outsourcing_expenses",
     "refill_records",
@@ -56,6 +57,7 @@ _BUSINESS_TABLES: list[str] = [
     # ---- 库存 ----
     "product_inventory",
     "part_inventory",
+    "part_returns",
     # ---- 售后 / 营销 / 样品 ----
     "after_sales",
     "brand_marketing",
