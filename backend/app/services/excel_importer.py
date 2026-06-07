@@ -321,6 +321,21 @@ def _cell_empty(v: Any) -> bool:
     return v is None or (isinstance(v, str) and v.strip() == "")
 
 
+# 占位/待补 类的"伪值": 库内是这些时, 用真实数据覆盖属于"补全"而非"冲突"。
+# 例: BOM 先给缺失物料建占位名「占位 (MW-007)」, 配件价格表再导入真实名 → 应直接覆盖, 不报冲突。
+_PLACEHOLDER_VALUES = {"待确认", "待定", "待确定", "待补", "-", "—", "/"}
+
+
+def _is_fillable(old: Any) -> bool:
+    """库内旧值是否属于"可被真实数据直接补上"(空 或 占位/待补伪值) → 不算冲突."""
+    if _cell_empty(old):
+        return True
+    if isinstance(old, str):
+        s = old.strip()
+        return s in _PLACEHOLDER_VALUES or s.startswith("占位")
+    return False
+
+
 def _is_ignorable_unmapped_column(col: str, rows: list[dict[str, Any]]) -> bool:
     """一个"未映射"的 Excel 列是否可静默忽略 (不报"未映射"提示)。
 
@@ -1025,6 +1040,9 @@ class _GenericCtx:
     import_batch_id: Optional[int] = None
     # 本批已处理过的产品编码: 同一产品的后续 SKU 行不再 upsert/比对 SPU (避免多 SKU 行误报冲突)
     seen_product_codes: set = field(default_factory=set)
+    # 本批已处理过的订单号: 多商品订单在订单总表里一单多行, 表头以首行为准, 后续行只是明细(在 5b),
+    # 不再 upsert/比对订单 (避免一单多行误报冲突)
+    seen_order_nos: set = field(default_factory=set)
 
 
 def _jsonable(v: Any) -> Any:
@@ -1076,8 +1094,8 @@ def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
     #   - 补全 (库内该字段为空 → 新值非空): 把缺的数据填上, 直接写入, 不算冲突。
     #     例: 产品总表先建了 pricing_sku(价格列全空), 定价总表再导入填价格 → 全是补全。
     #   - 真冲突 (库内非空, 且与新值不同): 才记到 conflicts 待用户裁决, 不覆盖。
-    fills = [d for d in diffs if _cell_empty(d["old"])]
-    real = [d for d in diffs if not _cell_empty(d["old"])]
+    fills = [d for d in diffs if _is_fillable(d["old"])]
+    real = [d for d in diffs if not _is_fillable(d["old"])]
     for d in fills:
         if hasattr(existing, d["field"]):
             setattr(existing, d["field"], payload[d["field"]])
@@ -1560,6 +1578,14 @@ def _h_order(db, data, key_field, ctx=None):
         payload["warehouse"] = order_cost_service.default_warehouse_for(
             payload.get("product_name"), payload.get("sku"),
             bool(payload.get("is_refill")))
+
+    # 多商品订单在订单总表里一单多行: 表头以首行为准, 同一订单号的后续行只是商品明细
+    # (明细在 5b-订单细节单独导入), 不再 upsert/比对订单, 避免一单多行误报"与库内不同"。
+    seen_orders = ctx.seen_order_nos if ctx is not None else None
+    if seen_orders is not None and order_no in seen_orders:
+        return "order", "skipped"
+    if seen_orders is not None:
+        seen_orders.add(order_no)
 
     existing = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
     if existing:
