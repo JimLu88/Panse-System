@@ -59,3 +59,35 @@ def test_order_accessory_items_in_reset_list():
     tables = data_reset_service.list_business_tables()
     assert "order_accessory_items" in tables
     assert tables.index("order_accessory_items") < tables.index("orders")
+
+
+def test_shipments_and_part_returns_in_reset_list():
+    # 新增的物流中心 / 配件返厂台账也必须能被清空
+    tables = set(data_reset_service.list_business_tables())
+    assert "shipments" in tables
+    assert "part_returns" in tables
+
+
+def test_reset_feishu_table_not_found_treated_as_cleared(db_session):
+    """飞书那张表已被删除 (TableIdNotFound) → 视为已清空, 不算失败。"""
+    from unittest.mock import patch
+    from app.models.feishu_sync import FeishuTableBinding
+    from app.services import feishu_client
+
+    db_session.add(FeishuTableBinding(
+        system_table="logistics_bills", feishu_app_token="tok",
+        feishu_table_id="tbl_dead", enabled=True))
+    db_session.commit()
+
+    with patch.object(feishu_client, "get_credentials", return_value=("id", "sec")), \
+         patch.object(feishu_client, "list_records",
+                      side_effect=feishu_client.FeishuError(
+                          "飞书 API 错误: TableIdNotFound (code=1254041)",
+                          code=feishu_client.ERR_TABLE_NOT_FOUND)):
+        result = data_reset_service.reset_feishu_data(db_session)
+
+    assert result["errors"] == {}                       # 失效表不算失败
+    assert "logistics_bills" in result["deleted"]       # 计为已清空(0)
+    b = db_session.query(FeishuTableBinding).filter_by(
+        system_table="logistics_bills").one()
+    assert b.enabled is False                            # 绑定已暂停
