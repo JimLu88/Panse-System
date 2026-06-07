@@ -124,7 +124,11 @@ export default function AfterSalesPage() {
           pagination={{ pageSize: 20 }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 60 },
-            { title: '订单号', dataIndex: 'platform_order_no', width: 180 },
+            { title: '订单号', dataIndex: 'platform_order_no', width: 170 },
+            { title: '客户', dataIndex: 'customer_name', width: 100,
+              render: (v: string | null) => v || <Tag color="warning">未关联</Tag> },
+            { title: '产品', dataIndex: 'product_name', ellipsis: true,
+              render: (v: string | null) => v || '-' },
             { title: '状态', dataIndex: 'status', width: 160,
               render: (v: string) => (
                 <Tag color={STATUS_COLOR[v ?? ''] ?? 'default'}>
@@ -140,11 +144,11 @@ export default function AfterSalesPage() {
             { title: '二次确认', dataIndex: 'second_inbound_confirmed', width: 100,
               render: (v: string | null) => v === '是' ? '✓' : v === '否' ? '✗' : '-',
             },
-            { title: '物流(补发/返厂)', width: 210,
+            { title: '物流', width: 240,
               render: (_: any, r: AfterSalesItem) => (
                 <Space direction="vertical" size={2}>
-                  <ShipmentTracker entityType="after_sales_refill" entityId={r.id} />
-                  <ShipmentTracker entityType="after_sales_return" entityId={r.id} />
+                  <Space size={4}><Tag color="blue">客户退回</Tag><ShipmentTracker entityType="after_sales_return" entityId={r.id} /></Space>
+                  <Space size={4}><Tag color="green">我方补发</Tag><ShipmentTracker entityType="after_sales_refill" entityId={r.id} /></Space>
                 </Space>
               ),
             },

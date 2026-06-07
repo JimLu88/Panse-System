@@ -69,13 +69,13 @@ function ResizableTitle(props: any) {
 }
 
 // 可点击编辑的数字格: 点一下变输入框, 失焦/回车保存
-function EditableNumberCell({ value, onSave }: { value: number | null; onSave: (v: number | null) => void }) {
+function EditableNumberCell({ value, onSave, formula }: { value: number | null; onSave: (v: number | null) => void; formula?: string }) {
   const [editing, setEditing] = useState(false);
   const [val, setVal] = useState<number | null>(value);
   useEffect(() => { setVal(value); }, [value]);
   if (!editing) {
     return (
-      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title="点击改为手动值（公式见列名 ⓘ；之后在「公式规则」页批量重算可按公式还原）">
+      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title={formula ? `公式：${formula}（点击可改为手动值覆盖）` : '点击编辑'}>
         {value === null || value === undefined
           ? <Typography.Text type="secondary">—</Typography.Text>
           : `¥${Number(value).toLocaleString()}`}
@@ -473,11 +473,11 @@ export default function PricingPage() {
           { title: 'SKU 编码', dataIndex: 'sku_code', width: colW.sku_code, onHeaderCell: mkResize('sku_code') },
           { title: '描述', dataIndex: 'sku', width: colW.sku, ellipsis: true, onHeaderCell: mkResize('sku') },
           { title: '分类', dataIndex: 'size_category', width: colW.size_category, onHeaderCell: mkResize('size_category') },
-          { title: <Tooltip title="公式：物理成本 ÷ 0.4 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>标价</span></Tooltip>, dataIndex: 'list_price', width: colW.list_price, onHeaderCell: mkResize('list_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'list_price', nv)} /> },
-          { title: <Tooltip title="公式：标价 × 0.75 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>日常价</span></Tooltip>, dataIndex: 'daily_price', width: colW.daily_price, onHeaderCell: mkResize('daily_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'daily_price', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>小促</span></Tooltip>, dataIndex: 'small_promo', width: colW.small_promo, onHeaderCell: mkResize('small_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'small_promo', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>中促</span></Tooltip>, dataIndex: 'mid_promo', width: colW.mid_promo, onHeaderCell: mkResize('mid_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'mid_promo', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95 ｜ 竞品调价常用, 点格子或多选批量改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促</span></Tooltip>, dataIndex: 'big_promo', width: colW.big_promo, onHeaderCell: mkResize('big_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'big_promo', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ 0.4 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>标价</span></Tooltip>, dataIndex: 'list_price', width: colW.list_price, onHeaderCell: mkResize('list_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ 0.4" onSave={(nv) => saveField(r.id, 'list_price', nv)} /> },
+          { title: <Tooltip title="公式：标价 × 0.75 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>日常价</span></Tooltip>, dataIndex: 'daily_price', width: colW.daily_price, onHeaderCell: mkResize('daily_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="标价 × 0.75" onSave={(nv) => saveField(r.id, 'daily_price', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>小促</span></Tooltip>, dataIndex: 'small_promo', width: colW.small_promo, onHeaderCell: mkResize('small_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.855 − 0.02 − 0.006)" onSave={(nv) => saveField(r.id, 'small_promo', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>中促</span></Tooltip>, dataIndex: 'mid_promo', width: colW.mid_promo, onHeaderCell: mkResize('mid_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006)" onSave={(nv) => saveField(r.id, 'mid_promo', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95 ｜ 竞品调价常用, 点格子或多选批量改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促</span></Tooltip>, dataIndex: 'big_promo', width: colW.big_promo, onHeaderCell: mkResize('big_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95" onSave={(nv) => saveField(r.id, 'big_promo', nv)} /> },
           {
             title: <Tooltip title="公式：(日常价 − 会计成本 − 税费 − 日常价 × 平台费率) ÷ 日常价 ｜ 点格子按目标毛利率反算日常价"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>毛利率</span></Tooltip>,
             dataIndex: 'gross_margin_rate',
@@ -485,8 +485,8 @@ export default function PricingPage() {
             onHeaderCell: mkResize('gross_margin_rate'),
             render: (_: unknown, r: PricingSku) => <MarginCell row={r} onSaveDaily={(dp) => saveField(r.id, 'daily_price', dp)} />,
           },
-          { title: <Tooltip title="公式：总出厂成本 + 物流费 + 安装费 + 外采配件成本 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>会计成本</span></Tooltip>, dataIndex: 'accounting_cost', width: colW.accounting_cost, onHeaderCell: mkResize('accounting_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
-          { title: <Tooltip title="所有实物成本合计，是各档价格的计算基数 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>物理成本</span></Tooltip>, dataIndex: 'physical_cost', width: colW.physical_cost, onHeaderCell: mkResize('physical_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
+          { title: <Tooltip title="公式：总出厂成本 + 物流费 + 安装费 + 外采配件成本 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>会计成本</span></Tooltip>, dataIndex: 'accounting_cost', width: colW.accounting_cost, onHeaderCell: mkResize('accounting_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="总出厂成本 + 物流费 + 安装费 + 外采配件成本" onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
+          { title: <Tooltip title="所有实物成本合计，是各档价格的计算基数 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>物理成本</span></Tooltip>, dataIndex: 'physical_cost', width: colW.physical_cost, onHeaderCell: mkResize('physical_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="各项实物成本合计（出厂+木材+包装+外采配件…）" onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
           {
             title: '操作', width: colW.actions, fixed: 'right' as const,
             render: (_: unknown, row: PricingSku) => (

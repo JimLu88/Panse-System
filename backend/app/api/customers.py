@@ -32,9 +32,10 @@ class CustomerOut(BaseModel):
     total_returns: int
     tags: Optional[list]
     note: Optional[str]
+    products: list = []
 
 
-def _out(c: Customer) -> CustomerOut:
+def _out(c: Customer, products: Optional[list] = None) -> CustomerOut:
     return CustomerOut(
         id=c.id, name=c.name, phone=c.phone, address=c.address, tier=c.tier,
         first_order_at=c.first_order_at.isoformat() if c.first_order_at else None,
@@ -42,7 +43,7 @@ def _out(c: Customer) -> CustomerOut:
         total_orders=c.total_orders,
         total_revenue=float(c.total_revenue or Decimal("0")),
         total_returns=c.total_returns,
-        tags=c.tags or [], note=c.note,
+        tags=c.tags or [], note=c.note, products=products or [],
     )
 
 

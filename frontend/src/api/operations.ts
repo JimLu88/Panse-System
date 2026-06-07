@@ -333,6 +333,7 @@ export interface CustomerItem {
   total_returns: number;
   tags: string[];
   note: string | null;
+  products?: string[];
 }
 
 export const fetchCustomers = (params: { q?: string; tier?: string; limit?: number } = {}) =>
@@ -384,9 +385,12 @@ export const globalSearch = (q: string, limit = 50) =>
 export interface AfterSalesItem {
   id: number;
   platform_order_no: string;
+  customer_name: string | null;
+  product_name: string | null;
   status: string | null;
   reason: string | null;
   refill_tracking_no: string | null;
+  return_tracking_no: string | null;
   second_inbound_confirmed: string | null;
   processed_at: string | null;
   remark: string | null;

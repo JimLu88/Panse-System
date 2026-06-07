@@ -38,7 +38,7 @@ export default function OrdersKanbanPage() {
   const [expandedCols, setExpandedCols] = useState<Record<string, boolean>>({});
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
-    queryFn: () => listOrders({ limit: 1000 }),
+    queryFn: () => listOrders({ limit: 500 }),
     refetchInterval: 30000,
   });
 

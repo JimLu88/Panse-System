@@ -98,6 +98,18 @@ export default function CustomersPage() {
               render: (v: number) => v > 0 ? <Tag color="orange">{v}</Tag> : '-' },
             { title: '最后下单', dataIndex: 'last_order_at', width: 120,
               render: (v: string | null) => v ? new Date(v).toLocaleDateString('zh-CN') : '-' },
+            { title: '购买产品', dataIndex: 'products', width: 240,
+              render: (v: string[]) => {
+                const arr = v ?? [];
+                if (!arr.length) return <Typography.Text type="secondary">—</Typography.Text>;
+                return (
+                  <span>
+                    {arr.slice(0, 3).map((p, i) => <Tag key={i} style={{ marginBottom: 2 }}>{p}</Tag>)}
+                    {arr.length > 3 ? <Tag>+{arr.length - 3}</Tag> : null}
+                  </span>
+                );
+              },
+            },
             { title: '标签', dataIndex: 'tags',
               render: (v: string[]) => (v ?? []).map((t, i) => <Tag key={i}>{t}</Tag>) },
             { title: '操作', fixed: 'right', width: 90,

@@ -23,21 +23,27 @@ router = APIRouter(prefix="/api/aftersales", tags=["aftersales"])
 class AfterSalesOut(BaseModel):
     id: int
     platform_order_no: str
+    customer_name: Optional[str] = None
+    product_name: Optional[str] = None
     status: Optional[str]
     reason: Optional[str]
     refill_tracking_no: Optional[str]
+    return_tracking_no: Optional[str] = None
     second_inbound_confirmed: Optional[str]
     processed_at: Optional[str]
     remark: Optional[str]
 
 
-def _out(a: AfterSales) -> AfterSalesOut:
+def _out(a: AfterSales, order=None) -> AfterSalesOut:
     return AfterSalesOut(
         id=a.id, platform_order_no=a.platform_order_no, status=a.status,
         reason=a.reason, refill_tracking_no=a.refill_tracking_no,
+        return_tracking_no=a.return_tracking_no,
         second_inbound_confirmed=a.second_inbound_confirmed,
         processed_at=a.processed_at.isoformat() if a.processed_at else None,
         remark=a.remark,
+        customer_name=getattr(order, "customer_name", None),
+        product_name=getattr(order, "product_name", None),
     )
 
 
@@ -48,10 +54,18 @@ def list_aftersales(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator", "viewer")),
 ):
+    from app.models.order import Order
     q = select(AfterSales).order_by(AfterSales.id.desc()).limit(limit)
     if status:
         q = q.where(AfterSales.status == status)
-    return [_out(a) for a in db.execute(q).scalars()]
+    rows = db.execute(q).scalars().all()
+    # join 订单补 客户名 + 产品 (售后按 platform_order_no = Order.order_no 关联)
+    nos = [a.platform_order_no for a in rows if a.platform_order_no]
+    omap: dict = {}
+    if nos:
+        for o in db.execute(select(Order).where(Order.order_no.in_(nos))).scalars().all():
+            omap.setdefault(o.order_no, o)
+    return [_out(a, omap.get(a.platform_order_no)) for a in rows]
 
 
 class CreateReturnIn(BaseModel):

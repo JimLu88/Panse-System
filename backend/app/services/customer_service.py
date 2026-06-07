@@ -53,13 +53,18 @@ def aggregate_all(db: Session) -> dict:
     """全量重算所有客户. 适用于初始化或周期重计算."""
     orders = db.execute(
         select(Order).where(
-            Order.is_historical == False,  # noqa: E712
-            Order.status.in_(("paid", "shipped", "signed", "aftersales")),
+            # 导入订单多为历史 + 中文状态; 收录所有真实成交客户, 仅排除关闭/取消
+            Order.status.notin_(("cancelled",)),
+            ~Order.status.like("%关闭%"),
+            ~Order.status.like("%取消%"),
         )
     ).scalars().all()
     by_key: dict[str, dict] = {}
     for o in orders:
-        if not o.customer_name and not o.customer_phone:
+        name = (o.customer_name or "").strip()
+        phone = _normalize_phone(o.customer_phone)
+        # 业务要求: 只收录"同时有真实姓名和电话"的客户; 未解密/空的一律跳过
+        if not name or not phone:
             continue
         key = _matching_key(o.customer_name, o.customer_phone)
         d = by_key.setdefault(key, {
