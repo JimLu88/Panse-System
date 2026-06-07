@@ -496,8 +496,8 @@ def test_commit_factory_order_duplicate_skipped(db_session):
         mapping={"factory_order_no": "厂单号", "qty": "数量"},
     )
     db_session.commit()
-    assert report.inserted_parents == 0
-    assert report.skipped_rows == 1
+    assert report.inserted_parents == 0    # 没有重复插入
+    assert report.conflicts == []          # 命中已存在, 补默认/空字段属补全, 不算冲突
 
 
 def test_commit_unknown_entity_type_raises(db_session):
@@ -573,8 +573,8 @@ def test_commit_alipay_flow_dedup_same_account_tx(db_session):
         mapping={"account": "账户", "transaction_no": "流水号", "amount": "金额"},
     )
     db_session.commit()
-    assert report.inserted_parents == 1
-    assert report.skipped_rows == 1
+    assert report.inserted_parents == 1    # 仅 TX-NEW 新增, TX-EXIST 命中已存在未重复
+    assert report.conflicts == []          # 命中已存在只补全空字段, 不算冲突
 
 
 def test_commit_alipay_flow_missing_required_skipped(db_session):
@@ -683,8 +683,13 @@ def test_commit_alipay_exact_duplicate_skipped(db_session):
                  "transaction_type": "交易类型", "amount": "金额"},
     )
     db_session.commit()
-    assert report.inserted_parents == 1
-    assert report.skipped_rows == 1
+    assert report.inserted_parents == 1    # 仅"分账"新增; "在线支付"完全重复未再插入
+    assert report.conflicts == []          # 完全重复只补全空字段, 不算冲突
+    from sqlalchemy import select as _sel
+    _flows = db_session.execute(
+        _sel(AlipayFlow).where(AlipayFlow.transaction_no == "TXDUP")
+    ).scalars().all()
+    assert len(_flows) == 2                 # 在线支付(原) + 分账(新), 没有第三条
 
 
 # ----------------------------- 补单记录「备注」映射 ---------------- #
@@ -711,3 +716,60 @@ def test_refill_remark_maps_to_beizhu_not_status(db_session):
         select(RefillRecord).where(RefillRecord.order_no == "RF-REMARK-1")
     ).scalar_one()
     assert rec.remark == "客户要求加急发货"
+
+
+# ----------------------------- 重导: 补全 vs 真冲突 ---------------- #
+
+
+def test_reimport_fills_empty_field_not_conflict(db_session):
+    """库内字段为空, 重导把它填上 → 算补全(更新), 不报冲突。"""
+    from sqlalchemy import select
+    from app.models.material import Material
+    db_session.add(Material(code="M-FILL", name="测试件", price=None))
+    db_session.commit()
+    data = _xlsx("配件价格", ["物料编码", "物料名称", "计算价格"], [["M-FILL", "测试件", 600]])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="配件价格", entity_type="material",
+        mapping={"code": "物料编码", "name": "物料名称", "price": "计算价格"})
+    db_session.commit()
+    assert report.conflicts == []                  # 补全不算冲突
+    m = db_session.execute(select(Material).where(Material.code == "M-FILL")).scalar_one()
+    assert m.price == Decimal("600")               # 已填上
+
+
+def test_reimport_changed_nonempty_field_is_conflict(db_session):
+    """库内字段非空且与新值不同 → 真冲突, ask 默认不覆盖。"""
+    from sqlalchemy import select
+    from app.models.material import Material
+    db_session.add(Material(code="M-CONF", name="测试件2", price=Decimal("500")))
+    db_session.commit()
+    data = _xlsx("配件价格", ["物料编码", "物料名称", "计算价格"], [["M-CONF", "测试件2", 600]])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="配件价格", entity_type="material",
+        mapping={"code": "物料编码", "name": "物料名称", "price": "计算价格"})
+    db_session.commit()
+    assert len(report.conflicts) == 1              # 真冲突
+    m = db_session.execute(select(Material).where(Material.code == "M-CONF")).scalar_one()
+    assert m.price == Decimal("500")               # ask 默认不覆盖
+
+
+def test_product_duplicate_sku_rows_no_conflict(db_session):
+    """产品总表同一编码多 SKU 行: SKU 级字段不写 SPU, 重复行不报冲突; SKU 进定价表。"""
+    from sqlalchemy import select
+    from app.models.pricing import PricingSku
+    data = _xlsx("产品总表",
+                 ["产品编码", "产品名称", "类目", "SKU", "SKU编码", "尺寸明细"],
+                 [
+                     ["P-DUP", "测试床", "卧室", "1.2米", "P-DUP11", "宽1200"],
+                     ["P-DUP", "测试床", "卧室", "1.5米", "P-DUP12", "宽1500"],
+                 ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="产品总表", entity_type="product",
+        mapping={"code": "产品编码", "name": "产品名称", "category": "类目",
+                 "sku": "SKU", "sku_code": "SKU编码", "size_detail": "尺寸明细"})
+    db_session.commit()
+    assert report.inserted_parents == 1            # 一个产品
+    assert report.conflicts == []                  # 第二个 SKU 行不再误报冲突
+    skus = db_session.execute(
+        select(PricingSku).where(PricingSku.product_code == "P-DUP")).scalars().all()
+    assert {s.sku_code for s in skus} == {"P-DUP11", "P-DUP12"}   # 两个 SKU 都进定价表

@@ -1023,6 +1023,8 @@ class _GenericCtx:
     report: ImportReport
     on_conflict: str = "overwrite"   # overwrite / keep / ask
     import_batch_id: Optional[int] = None
+    # 本批已处理过的产品编码: 同一产品的后续 SKU 行不再 upsert/比对 SPU (避免多 SKU 行误报冲突)
+    seen_product_codes: set = field(default_factory=set)
 
 
 def _jsonable(v: Any) -> Any:
@@ -1070,15 +1072,25 @@ def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
         return "updated"
     if ctx.on_conflict == "keep":
         return "skipped"   # 保留原值, 不动
-    # ask: 记录差异到 report.conflicts + DataException, 不覆盖, 等用户裁决
+    # ask 模式: 区分"补全"与"真冲突"。
+    #   - 补全 (库内该字段为空 → 新值非空): 把缺的数据填上, 直接写入, 不算冲突。
+    #     例: 产品总表先建了 pricing_sku(价格列全空), 定价总表再导入填价格 → 全是补全。
+    #   - 真冲突 (库内非空, 且与新值不同): 才记到 conflicts 待用户裁决, 不覆盖。
+    fills = [d for d in diffs if _cell_empty(d["old"])]
+    real = [d for d in diffs if not _cell_empty(d["old"])]
+    for d in fills:
+        if hasattr(existing, d["field"]):
+            setattr(existing, d["field"], payload[d["field"]])
+    if not real:
+        return "updated" if fills else "skipped"
     pk_str = str(source_pk) if source_pk is not None else None
     diff_summary = "; ".join(
-        f"{d['field']}: {d['old']!r} → {d['new']!r}" for d in diffs[:5]
+        f"{d['field']}: {d['old']!r} → {d['new']!r}" for d in real[:5]
     )
     ctx.report.conflicts.append({
         "source_table": source_table,
         "source_pk": pk_str,
-        "diffs": diffs,
+        "diffs": real,
     })
     if db is not None:
         from app.services import exception_service
@@ -1091,7 +1103,7 @@ def _apply_update(existing, payload: dict, ctx: Optional["_GenericCtx"],
             description=f"导入数据与已有记录不同，需确认使用哪个版本。差异：{diff_summary}",
             suggestion_action="resolve_import_conflict",
             context={
-                "diffs": diffs,
+                "diffs": real,
                 "new_values": {k: _jsonable(v) for k, v in payload.items()},
             },
         )
@@ -1311,13 +1323,29 @@ def _h_product(db, data, key_field, ctx=None):
     # 只写 Product 模型认识的字段 (过滤掉 pricing_sku 专属字段等)
     _PRODUCT_FIELDS = {c.key for c in Product.__table__.columns}
     payload = {k: v for k, v in data.items() if k in _PRODUCT_FIELDS and v is not None}
+    # SKU 级字段 (每个 SKU 行都不同) — 更新已存在产品时排除, 避免重复 SKU 行误报"与库内不同"。
+    _PRODUCT_SKU_LEVEL_FIELDS = {
+        "sku", "sku_code", "size_detail", "size_value", "size_confirmed", "taobao_sku_id",
+    }
 
-    existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
-    if existing:
-        action = _apply_update(existing, payload, ctx, "products", code, db)
+    # 同一产品(SPU)在总表里按多个 SKU 行重复出现。SPU 以"首次出现的行"为准:
+    # 本批已处理过该编码 → 后续行只是同一产品的其它 SKU, 不再 upsert/比对 Product (只在下方补 pricing_sku),
+    # 否则多 SKU 行里随 SKU 变化的描述(主材/文案/尺寸…)会把每一行都误报成"与库内不同"。
+    seen = ctx.seen_product_codes if ctx is not None else None
+    already_in_batch = bool(seen is not None and code in seen)
+    if seen is not None:
+        seen.add(code)
+    if already_in_batch:
+        action = "skipped"
     else:
-        db.add(Product(**payload))
-        action = "inserted"
+        existing = db.execute(select(Product).where(Product.code == code)).scalar_one_or_none()
+        if existing:
+            # sku/sku_code/尺寸 等 SKU 级字段不写进 SPU 记录 (已写入 pricing_sku)。
+            upd_payload = {k: v for k, v in payload.items() if k not in _PRODUCT_SKU_LEVEL_FIELDS}
+            action = _apply_update(existing, upd_payload, ctx, "products", code, db)
+        else:
+            db.add(Product(**payload))
+            action = "inserted"
 
     # 若行内含 sku_code → 同步 upsert pricing_sku (整张产品总表含 SKU 列时触发)
     if sku_code:

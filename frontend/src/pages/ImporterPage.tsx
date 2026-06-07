@@ -1023,6 +1023,13 @@ function SmartImporter() {
         />
       )}
 
+      {/* 冲突裁决卡片紧跟"导入分析"下方, 让"采用新值"按钮一眼可见 */}
+      {commitResult && <ConflictReview
+        reports={commitResult.reports}
+        onApplyNew={() => commitMut.mutate({ dryRun: false, onConflict: 'overwrite' })}
+        applying={commitMut.isPending}
+      />}
+
       {resp && (
         <>
           <Card size="small" title={`分析结果 (${resp.sheets.length} 个 sheet)`}
@@ -1096,12 +1103,6 @@ function SmartImporter() {
                      ]} />
             </Card>
           )}
-
-          {commitResult && <ConflictReview
-            reports={commitResult.reports}
-            onApplyNew={() => commitMut.mutate({ dryRun: false, onConflict: 'overwrite' })}
-            applying={commitMut.isPending}
-          />}
 
           {commitResult?.post_import &&
            (commitResult.post_import.logic_issues > 0 || commitResult.post_import.analysis) && (
@@ -1235,7 +1236,7 @@ function diagnoseAfterCommit(rep: SmartCommitReport): SheetDiag {
     return {
       ...base, status: 'warn',
       headline: `成功入库 ${inserted} 行，另有 ${conflicts} 处与库内数据不同`,
-      detail: '这些记录已存在但值不同，已列在下方「与此前数据不符」处，确认后可一键采用新值。数据未丢失。',
+      detail: '这些记录已存在但值不同，已列在上方「与此前数据不符」卡片；点其中的「采用新值（覆盖）」即可一键用表里的新值覆盖。数据未丢失，不点则保持原值。',
     };
   }
   // 4) 没有报错/未映射/冲突, 只是有重复或已存在被跳过 → 成功 (绿), 给安心说明
