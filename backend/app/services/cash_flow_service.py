@@ -1,26 +1,30 @@
-"""剩余流水（可用资金）测算 — 业务需求自定义公式。
+"""剩余流水（可用资金）测算 + 投资回收 — 业务需求自定义公式。
 
-剩余流水 = Σ加项 − Σ减项
+可用资金 = Σ加项 − Σ减项  (总投资费用不在内 — 它是沉没本金, 单列做投资回收对比)
 
-加项:
-  (a) 店铺保证金            — 手动常量 (settings: cashflow_shop_deposit)
-  (b) 支付宝账户余额        — AccountBalance 最新期末 (账户名含「支付宝」)
-  (c) 淘宝聚合结算账户余额  — AccountBalance 最新期末 (账户名含「聚合」)
-  (d) 推广账户余额          — AccountBalance 最新期末 (账户名含「推广」)
-  (e) 订单待确认收货金额    — Σ paid_amount, status=shipped (已发货未签收)
-  (f) 订单未发货金额        — Σ paid_amount, status=paid   (已付款未发货)
+加项 (现在还有多少能动用的钱):
+  (a) 平台保证金            — 手动常量 (settings: cashflow_shop_deposit)
+  (b) 支付宝账户余额(全部)  — AccountBalance 最新期末, 账户名含「支付宝」全部账户
+  (c) 淘宝聚合结算账户余额  — 账户名含「聚合」
+  (d) 推广账户余额          — 账户名含「推广」
+  (e) 其他账户余额(银行卡等)— 其余账户 (银行卡/个体户私账等也是真金, 计入)
+  (f) 订单待确认收货金额    — Σ paid_amount, status=shipped (已发货未签收)
+  (g) 订单未发货金额        — Σ paid_amount, status=paid   (已付款未发货)
 
-减项:
-  (a) 待扣除平台服务费      — Σ platform_fee, status∈{paid, shipped}
-  (b) 工厂打样费(未付)      — Σ factory_bill_amount, 未付 + 无平台订单号 (打样件)
-  (c) 工厂订单结算费(未付)  — Σ factory_bill_amount, 未付 + 有平台订单号 (正式单)
-  (d) 待付款补单金额        — Σ paid_amount, is_refill=True 且 status=pending_payment
-  (e) 总投资费用            — 手动常量 (settings: cashflow_total_investment)
+减项 (即将要付出去的钱):
+  (a) 待扣平台服务费        — (待确认收货 + 未发货) × 千分之六 (卖家服务费列常空, 故估算)
+  (b) 工厂打样费(未付)      — Σ factory_bill_amount, 未付 + 无平台单号 (待账单)
+  (c) 工厂结算(已开账单未付)— Σ factory_bill_amount, 未付 + 有平台单号
+  (d) 工厂结算(未开账单预估)— 活跃单(待发货+待确认)的预测工厂成本; 定制单按基础成本
+  (e) 代付补单佣金(未结)    — 补单记录 commission, 无支付宝流水号(未付)
+
+投资回收 (单列, 不进可用资金):
+  总投资费用 (手动) ↔ 累计总利润 (compute_total_profit) → 回收率 / 是否回本。
+  「总投资」的对应面是「总利润」而非「可用资金」, 二者不能混在一个减法里。
 
 设计要点:
   - 不做「手动结算」，每次实时计算；订单/流水/余额一更新即反映。
-  - 同时返回各数据源的「截止时间 + 新鲜度红绿灯」，
-    让大屏在显示数字的同时诚实标出哪块数据可能过期。
+  - 同时返回各数据源的「截止时间 + 新鲜度红绿灯」(账户余额日期问题见 AccountBalance.as_of_date)。
 """
 from __future__ import annotations
 
@@ -31,15 +35,19 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.finance import AccountBalance
+from app.models.finance import AccountBalance, RefillRecord
 from app.models.order import FactoryOrder, Order
-from app.services import settings_service
+from app.services import order_cost_service, settings_service
 
 # ── 手动常量配置键 ────────────────────────────────────────────
 SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
 SETTING_TOTAL_INVESTMENT = "cashflow_total_investment"
 DEFAULT_TOTAL_INVESTMENT = Decimal("669871")
 DEFAULT_SHOP_DEPOSIT = Decimal("0")
+
+# 平台服务费率 ~千分之六 (软件服务费); 淘宝补贴税 2%
+_PLATFORM_FEE_RATE = Decimal("0.006")
+_TAX_RATE = Decimal("0.02")
 
 # 新鲜度阈值（天）
 FRESH_DAYS = 7
@@ -104,15 +112,150 @@ def _freshness(label: str, as_of: Optional[datetime]) -> dict:
     return {"source": label, "as_of": as_of.isoformat(), "days_ago": days, "status": status}
 
 
+def _sum_paid(db: Session, status: str) -> Decimal:
+    """某状态(非历史)订单的买家实付合计 — 现金流"待确认收货/未发货"在途金额。"""
+    return _d(db.execute(
+        select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
+            Order.status == status, Order.is_historical == False,  # noqa: E712
+        )
+    ).scalar())
+
+
+def _factory_unpaid_bill(db: Session, *, has_platform_no: bool) -> Decimal:
+    """未付工厂账单(已开票): factory_bill_amount 非空、未付、未作废, 按有无平台单号区分打样/结算。"""
+    cond = (FactoryOrder.platform_order_no.isnot(None) if has_platform_no
+            else FactoryOrder.platform_order_no.is_(None))
+    return _d(db.execute(
+        select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
+            FactoryOrder.payment_status == "unpaid",
+            FactoryOrder.voided_at.is_(None),
+            FactoryOrder.factory_bill_amount.isnot(None),
+            cond,
+        )
+    ).scalar())
+
+
+def _predicted_factory_cost(db: Session, order: Order) -> Optional[Decimal]:
+    """单订单工厂制造成本预估(订单总额): theoretical_cost×qty > 现算BOM total > 定价表 factory_cost×qty。"""
+    qty = Decimal(int(order.qty or 1))
+    if order.theoretical_cost is not None:
+        return _d(order.theoretical_cost) * qty
+    try:
+        bd = order_cost_service.compute(db, order)
+        if bd.resolved and not bd.cost_incomplete and bd.total_cost:
+            return _d(bd.total_cost)
+    except Exception:  # pragma: no cover - 成本反推失败不拖垮现金流
+        pass
+    from app.models.pricing import PricingSku
+    from app.services import sku_utils
+    if order.sku_code:
+        base = sku_utils.strip_custom_suffix(order.sku_code)
+        fc = db.execute(
+            select(PricingSku.factory_cost).where(PricingSku.sku_code == base)
+        ).scalar_one_or_none()
+        if fc is not None:
+            return _d(fc) * qty
+    return None
+
+
+def _factory_estimate_unbilled(db: Session) -> tuple[Decimal, int, int]:
+    """未开账单工厂结算预估: 活跃单(待发货+待确认收货)预测工厂制造成本合计。
+    已有工厂账单的订单跳过(已计入"已开账单未付", 防双算)。
+    定制单按基础成本估(缺定制需求的单见异常台账)。返回 (合计, 计入单数, 缺成本单数)。"""
+    billed_order_nos = {
+        r for (r,) in db.execute(
+            select(FactoryOrder.platform_order_no).where(
+                FactoryOrder.factory_bill_amount.isnot(None),
+                FactoryOrder.platform_order_no.isnot(None),
+            )
+        ).all()
+    }
+    orders = db.execute(
+        select(Order).where(
+            Order.status.in_(("paid", "shipped")),
+            Order.is_refill == False,  # noqa: E712
+            Order.is_historical == False,  # noqa: E712
+        )
+    ).scalars().all()
+    total = Decimal("0")
+    counted = missing = 0
+    for o in orders:
+        if o.order_no in billed_order_nos:
+            continue  # 已开账单 → 不重复预估
+        c = _predicted_factory_cost(db, o)
+        if c is None:
+            missing += 1
+        else:
+            total += c
+            counted += 1
+    return total.quantize(_Q), counted, missing
+
+
+def _refill_unpaid_commission(db: Session) -> Decimal:
+    """代付补单佣金(未结): 补单记录 commission 合计, 取尚无支付宝流水号(未付)的。"""
+    return _d(db.execute(
+        select(func.coalesce(func.sum(RefillRecord.commission), 0)).where(
+            RefillRecord.alipay_flow_no.is_(None),
+        )
+    ).scalar())
+
+
+def compute_total_profit(db: Session) -> dict:
+    """累计总利润 — 与总投资对比看回本。口径: 真实销售(非补单/非取消/有收入信号)。
+
+    单单净利 = 营收 − 成本 − 售后费用
+      营收 = 店铺实收; 缺则 应付−2%税−平台费; 再缺退买家实付
+      成本 = 实际成本 or 理论(预测)成本; 缺则计 0 (计入 orders_missing_cost, 利润会偏高)
+      售后费用 = 运费 + 安装 + 上楼 + 赔付 + 退款
+    """
+    orders = db.execute(
+        select(Order).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.status != "cancelled",
+            (Order.shop_received_amount.isnot(None))
+            | (Order.paid_amount.isnot(None))
+            | (Order.buyer_payable_amount.isnot(None)),
+        )
+    ).scalars().all()
+    revenue = cost = expense = Decimal("0")
+    missing_cost = 0
+    for o in orders:
+        if o.shop_received_amount is not None:
+            rev = _d(o.shop_received_amount)
+        elif o.buyer_payable_amount is not None:
+            tax = _d(o.tax) if o.tax is not None else (_d(o.buyer_payable_amount) * _TAX_RATE)
+            rev = _d(o.buyer_payable_amount) - tax - _d(o.platform_fee)
+        else:
+            rev = _d(o.paid_amount)
+        c = o.actual_cost if o.actual_cost is not None else o.theoretical_cost
+        if c is None:
+            missing_cost += 1
+            c = Decimal("0")
+        exp = (_d(o.actual_freight) + _d(o.install_fee) + _d(o.upstairs_fee)
+               + _d(o.compensation_fee) + _d(o.refund_amount))
+        revenue += rev
+        cost += _d(c)
+        expense += exp
+    net = (revenue - cost - expense).quantize(_Q)
+    return {
+        "order_count": len(orders),
+        "revenue": revenue.quantize(_Q),
+        "cost": cost.quantize(_Q),
+        "expense": expense.quantize(_Q),
+        "net_profit": net,
+        "orders_missing_cost": missing_cost,
+    }
+
+
 def compute_summary(db: Session) -> dict:
-    """实时计算剩余流水及其明细 + 数据新鲜度。"""
+    """实时测算剩余流水(可用资金) + 投资回收(总利润vs总投资) + 数据新鲜度。
+
+    可用资金 = Σ加项 − Σ减项 (总投资费用不在内 — 它是沉没本金, 单列做投资回收对比)。
+    """
     # ── 加项 ─────────────────────────────────────────────
     shop_deposit = _get_setting_decimal(db, SETTING_SHOP_DEPOSIT, DEFAULT_SHOP_DEPOSIT)
 
-    bal_alipay = Decimal("0")
-    bal_aggregate = Decimal("0")
-    bal_promotion = Decimal("0")
-    bal_other = Decimal("0")
+    bal_alipay = bal_aggregate = bal_promotion = bal_other = Decimal("0")
     balances = _latest_balances(db)
     latest_period: Optional[tuple[int, int]] = None
     bal_updated_at: Optional[datetime] = None
@@ -133,83 +276,53 @@ def compute_summary(db: Session) -> dict:
         if b.updated_at and (bal_updated_at is None or b.updated_at > bal_updated_at):
             bal_updated_at = b.updated_at
 
-    # 订单在途金额
-    awaiting_receipt = _d(
-        db.execute(
-            select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
-                Order.status == "shipped", Order.is_historical == False,  # noqa: E712
-            )
-        ).scalar()
-    )
-    not_shipped = _d(
-        db.execute(
-            select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
-                Order.status == "paid", Order.is_historical == False,  # noqa: E712
-            )
-        ).scalar()
-    )
+    awaiting_receipt = _sum_paid(db, "shipped")   # 待确认收货 (已发货未签收)
+    not_shipped = _sum_paid(db, "paid")           # 未发货 (已付款未发货)
+    order_active = awaiting_receipt + not_shipped
 
     # ── 减项 ─────────────────────────────────────────────
-    pending_platform_fee = _d(
-        db.execute(
-            select(func.coalesce(func.sum(Order.platform_fee), 0)).where(
-                Order.status.in_(("paid", "shipped")), Order.is_historical == False,  # noqa: E712
-            )
-        ).scalar()
-    )
+    # 平台服务费: 卖家服务费列常为空, 直接按在途订单金额 ×千分之六 估
+    platform_fee = (order_active * _PLATFORM_FEE_RATE).quantize(_Q)
+    factory_sample = _factory_unpaid_bill(db, has_platform_no=False)   # 工厂打样(待账单)
+    factory_billed = _factory_unpaid_bill(db, has_platform_no=True)    # 工厂结算-已开账单未付
+    factory_estimate, fe_counted, fe_missing = _factory_estimate_unbilled(db)  # 未开账单预估
+    refill_commission = _refill_unpaid_commission(db)
 
-    # 工厂未付：有平台订单号→正式订单结算费；无→打样费 (尽力拆分，合计稳健)
-    factory_settlement = _d(
-        db.execute(
-            select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
-                FactoryOrder.payment_status == "unpaid",
-                FactoryOrder.voided_at.is_(None),
-                FactoryOrder.platform_order_no.isnot(None),
-            )
-        ).scalar()
-    )
-    factory_sample = _d(
-        db.execute(
-            select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
-                FactoryOrder.payment_status == "unpaid",
-                FactoryOrder.voided_at.is_(None),
-                FactoryOrder.platform_order_no.is_(None),
-            )
-        ).scalar()
-    )
-
-    pending_brush = _d(
-        db.execute(
-            select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
-                Order.is_refill == True,  # noqa: E712
-                Order.status == "pending_payment",
-                Order.is_historical == False,  # noqa: E712
-            )
-        ).scalar()
-    )
-
-    total_investment = _get_setting_decimal(db, SETTING_TOTAL_INVESTMENT, DEFAULT_TOTAL_INVESTMENT)
-
-    # ── 汇总 ─────────────────────────────────────────────
     additions = [
-        {"key": "shop_deposit", "label": "店铺保证金", "amount": shop_deposit, "manual": True, "source": "手动维护"},
-        {"key": "alipay_balance", "label": "支付宝账户余额", "amount": bal_alipay, "manual": False, "source": "账户余额汇总"},
+        {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": "手动维护"},
+        {"key": "alipay_balance", "label": "支付宝账户余额(全部)", "amount": bal_alipay, "manual": False, "source": "账户余额汇总"},
         {"key": "aggregate_balance", "label": "淘宝聚合结算余额", "amount": bal_aggregate, "manual": False, "source": "账户余额汇总"},
         {"key": "promotion_balance", "label": "推广账户余额", "amount": bal_promotion, "manual": False, "source": "账户余额汇总"},
+        {"key": "other_balance", "label": "其他账户余额(银行卡等)", "amount": bal_other, "manual": False, "source": "账户余额汇总"},
         {"key": "awaiting_receipt", "label": "订单待确认收货金额", "amount": awaiting_receipt, "manual": False, "source": "订单(已发货)"},
         {"key": "not_shipped", "label": "订单未发货金额", "amount": not_shipped, "manual": False, "source": "订单(已付款)"},
     ]
     subtractions = [
-        {"key": "pending_platform_fee", "label": "待扣除平台服务费", "amount": pending_platform_fee, "manual": False, "source": "订单(未结算)"},
-        {"key": "factory_sample", "label": "工厂打样费(未付)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号)"},
-        {"key": "factory_settlement", "label": "工厂订单结算费(未付)", "amount": factory_settlement, "manual": False, "source": "工厂订单(未付·有平台单号)"},
-        {"key": "pending_brush", "label": "待付款补单金额", "amount": pending_brush, "manual": False, "source": "订单(补单·待付款)"},
-        {"key": "total_investment", "label": "总投资费用", "amount": total_investment, "manual": True, "source": "手动维护"},
+        {"key": "platform_fee", "label": "待扣平台服务费(在途×0.6%)", "amount": platform_fee, "manual": False, "source": "在途订单估算"},
+        {"key": "factory_sample", "label": "工厂打样费(未付·待账单)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号)"},
+        {"key": "factory_billed", "label": "工厂结算(已开账单未付)", "amount": factory_billed, "manual": False, "source": "工厂订单(未付·有平台单号)"},
+        {"key": "factory_estimate", "label": "工厂结算(未开账单·预测成本)", "amount": factory_estimate, "manual": False,
+         "source": f"活跃单预测成本({fe_counted}单" + (f", {fe_missing}单缺成本未计)" if fe_missing else ")")},
+        {"key": "refill_commission", "label": "代付补单佣金(未结)", "amount": refill_commission, "manual": False, "source": "补单记录"},
     ]
 
     total_add = sum((a["amount"] for a in additions), Decimal("0"))
     total_sub = sum((s["amount"] for s in subtractions), Decimal("0"))
     total = (total_add - total_sub).quantize(_Q)
+
+    # ── 投资回收 (总投资 vs 累计总利润; 不进可用资金) ──────────
+    total_investment = _get_setting_decimal(db, SETTING_TOTAL_INVESTMENT, DEFAULT_TOTAL_INVESTMENT)
+    profit = compute_total_profit(db)
+    net_profit = Decimal(str(profit["net_profit"]))
+    recovery_rate = float(net_profit / total_investment) if total_investment else None
+    investment = {
+        "total_investment": total_investment,
+        "total_profit": net_profit,
+        "recovered": (net_profit >= total_investment) if total_investment else None,
+        "recovery_rate": round(recovery_rate, 4) if recovery_rate is not None else None,
+        "remaining": (total_investment - net_profit).quantize(_Q),
+        "profit_detail": profit,
+    }
 
     # ── 新鲜度 ───────────────────────────────────────────
     orders_updated = db.execute(select(func.max(Order.updated_at))).scalar()
@@ -236,7 +349,8 @@ def compute_summary(db: Session) -> dict:
         "total_subtractions": total_sub.quantize(_Q),
         "additions": additions,
         "subtractions": subtractions,
-        "other_account_balance": bal_other,  # 其他账户（银行卡/万师傅等），未计入公式，仅供参考
+        "investment": investment,
+        "other_account_balance": Decimal("0"),  # 银行卡等已并入加项, 不再单列
         "freshness": freshness,
         "manual": {
             "shop_deposit": shop_deposit,

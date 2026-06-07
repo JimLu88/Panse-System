@@ -914,6 +914,7 @@ class CashFlowSummaryOut(BaseModel):
     total_subtractions: Decimal
     additions: list[CashFlowLineOut]
     subtractions: list[CashFlowLineOut]
+    investment: dict | None = None   # 投资回收: 总投资/累计总利润/回收率 (单列, 不进可用资金)
     other_account_balance: Decimal
     freshness: list[CashFlowFreshnessOut]
     generated_at: str
