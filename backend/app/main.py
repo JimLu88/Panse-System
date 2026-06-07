@@ -51,6 +51,7 @@ from app.api import exceptions as exceptions_api
 from app.api import feishu as feishu_api
 from app.api import finance as finance_api
 from app.api import inventory as inventory_api
+from app.api import part_returns as part_returns_api
 from app.api import marketing as marketing_api
 from app.api import match as match_api
 from app.api import materials as materials_api
@@ -242,6 +243,7 @@ app.include_router(audit_api.router)
 app.include_router(materials_api.router)
 app.include_router(products_api.router)
 app.include_router(inventory_api.router)
+app.include_router(part_returns_api.router)
 app.include_router(product_inventory_api.router)
 app.include_router(bom_api.router)
 app.include_router(exceptions_api.router)

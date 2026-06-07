@@ -9,6 +9,7 @@ import {
   Segmented,
   Select,
   Space,
+  Statistic,
   Table,
   Tag,
   Typography,
@@ -24,9 +25,14 @@ import {
 } from '../api/client';
 import {
   listPartInventoryWithStats,
+  listPartReturns,
   markPartDefective,
+  partReturnSummary,
   resolvePartDefective,
+  settlePartReturn,
   type PartInventoryStats,
+  type PartReturn,
+  type PartReturnSummary,
 } from '../api/catalog';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import FullColumnView from '../components/FullColumnView';
@@ -51,7 +57,7 @@ export default function PartInventoryPage() {
   const [form] = Form.useForm();
   const [edits, setEdits] = useState<Record<number, { physical_qty?: number; locked_qty?: number }>>({});
   const [savingId, setSavingId] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<'curated' | 'alert' | 'full'>('curated');
+  const [viewMode, setViewMode] = useState<'curated' | 'alert' | 'full' | 'returns'>('curated');
   const alerts = useQuery({
     queryKey: ['part-inventory-stats'],
     queryFn: listPartInventoryWithStats,
@@ -95,6 +101,38 @@ export default function PartInventoryPage() {
       message.error(e?.response?.data?.detail ?? '操作失败');
     } finally {
       setDefectSaving(false);
+    }
+  }
+
+  // 返厂台账 (方案C): 退款应收/维修费/报废损失 + 供应商对账 + 结算
+  const returns = useQuery({
+    queryKey: ['part-returns'],
+    queryFn: () => listPartReturns(),
+    enabled: viewMode === 'returns',
+  });
+  const returnsSum = useQuery({
+    queryKey: ['part-returns-summary'],
+    queryFn: partReturnSummary,
+    enabled: viewMode === 'returns',
+  });
+  const [settleRow, setSettleRow] = useState<PartReturn | null>(null);
+  const [settleSaving, setSettleSaving] = useState(false);
+  const [settleForm] = Form.useForm();
+
+  async function submitSettle(values: { alipay_flow_no?: string; remark?: string }) {
+    if (!settleRow) return;
+    setSettleSaving(true);
+    try {
+      await settlePartReturn(settleRow.id, values);
+      message.success('已标记结算');
+      qc.invalidateQueries({ queryKey: ['part-returns'] });
+      qc.invalidateQueries({ queryKey: ['part-returns-summary'] });
+      setSettleRow(null);
+      settleForm.resetFields();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '结算失败');
+    } finally {
+      setSettleSaving(false);
     }
   }
 
@@ -256,10 +294,11 @@ export default function PartInventoryPage() {
 
       <Segmented
         value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'alert' | 'full')}
+        onChange={(v) => setViewMode(v as 'curated' | 'alert' | 'full' | 'returns')}
         options={[
           { label: '精选视图（可编辑）', value: 'curated' },
           { label: '智能预警', value: 'alert' },
+          { label: '返厂台账', value: 'returns' },
           { label: '全部列', value: 'full' },
         ]}
       />
@@ -298,6 +337,89 @@ export default function PartInventoryPage() {
               {
                 title: '建议备货', dataIndex: 'auto_reorder_qty', width: 90,
                 render: (v: number) => (v > 0 ? <b style={{ color: '#cf1322' }}>{v}</b> : '—'),
+              },
+            ] as any}
+          />
+        </>
+      )}
+
+      {viewMode === 'returns' && (
+        <>
+          <Space size="large" wrap>
+            <Statistic title="待收退款" value={returnsSum.data?.pending_refund ?? 0}
+                       precision={2} prefix="¥" valueStyle={{ color: '#cf1322' }} />
+            <Statistic title="已收退款" value={returnsSum.data?.received_refund ?? 0}
+                       precision={2} prefix="¥" valueStyle={{ color: '#3f8600' }} />
+            <Statistic title="维修费合计" value={returnsSum.data?.repair_fee_total ?? 0}
+                       precision={2} prefix="¥" />
+            <Statistic title="报废损失" value={returnsSum.data?.scrap_loss_total ?? 0}
+                       precision={2} prefix="¥" valueStyle={{ color: '#d48806' }} />
+          </Space>
+          <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '8px 0' }}>
+            「处理」坏件时填了金额就会进这里。退货退款默认「待收」，收到供应商退款后点「结算」并可填支付宝流水号对账。
+          </Typography.Paragraph>
+          <Table<PartReturn>
+            rowKey="id"
+            loading={returns.isLoading}
+            dataSource={returns.data}
+            pagination={{ pageSize: 20 }}
+            size="middle"
+            columns={[
+              { title: '日期', dataIndex: 'processed_at', width: 110 },
+              {
+                title: '物料', width: 190,
+                render: (_: unknown, r: PartReturn) => (
+                  <Space direction="vertical" size={0}>
+                    <span>{r.material_code}</span>
+                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>
+                      {r.material_name}
+                    </Typography.Text>
+                  </Space>
+                ),
+              },
+              { title: '数量', dataIndex: 'qty', width: 60 },
+              {
+                title: '处置', dataIndex: 'disposition', width: 90,
+                render: (v: string) => {
+                  const m: Record<string, { l: string; c: string }> = {
+                    returned: { l: '退货退款', c: 'volcano' },
+                    repaired: { l: '返厂维修', c: 'blue' },
+                    scrapped: { l: '报废', c: 'default' },
+                  };
+                  const x = m[v] ?? { l: v, c: 'default' };
+                  return <Tag color={x.c}>{x.l}</Tag>;
+                },
+              },
+              {
+                title: '金额', dataIndex: 'amount', width: 90,
+                render: (v: number | null) => (v == null ? '—' : `¥${v}`),
+              },
+              {
+                title: '供应商', dataIndex: 'supplier', ellipsis: true,
+                render: (v: string | null) => v ?? '—',
+              },
+              {
+                title: '采购单', dataIndex: 'related_purchase_no', width: 120,
+                render: (v: string | null) => v ?? '—',
+              },
+              {
+                title: '状态', dataIndex: 'status', width: 90,
+                render: (v: string) =>
+                  v === 'open' ? <Tag color="orange">待收/待结</Tag> : <Tag color="green">已结算</Tag>,
+              },
+              {
+                title: '流水号', dataIndex: 'alipay_flow_no', width: 120, ellipsis: true,
+                render: (v: string | null) => v ?? '—',
+              },
+              {
+                title: '操作', width: 80,
+                render: (_: unknown, r: PartReturn) =>
+                  r.status === 'open' ? (
+                    <Button size="small" type="primary"
+                            onClick={() => { setSettleRow(r); settleForm.resetFields(); }}>
+                      结算
+                    </Button>
+                  ) : null,
               },
             ] as any}
           />
@@ -415,18 +537,62 @@ export default function PartInventoryPage() {
               />
             </Form.Item>
           ) : (
-            <Form.Item name="disposition" label="处理方式" rules={[{ required: true }]}>
-              <Select
-                options={[
-                  { value: 'repaired', label: '修好/换新 → 回良品库' },
-                  { value: 'scrapped', label: '报废 → 核销' },
-                  { value: 'returned', label: '退货退款 → 核销' },
-                ]}
-              />
-            </Form.Item>
+            <>
+              <Form.Item name="disposition" label="处理方式" rules={[{ required: true }]}>
+                <Select
+                  options={[
+                    { value: 'repaired', label: '修好/换新 → 回良品库' },
+                    { value: 'scrapped', label: '报废 → 核销' },
+                    { value: 'returned', label: '退货退款 → 核销' },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
+                name="amount"
+                label="金额（可选）"
+                tooltip="退货退款=应收供应商退款；返厂维修=维修费；报废=损失金额。填了才进返厂台账对账"
+              >
+                <InputNumber min={0} style={{ width: '100%' }} addonAfter="元" />
+              </Form.Item>
+              <Form.Item name="supplier" label="供应商（可选）">
+                <Input placeholder="退/返给哪个供应商" />
+              </Form.Item>
+              <Form.Item name="related_purchase_no" label="关联采购单（可选）">
+                <Input placeholder="原采购单号，如 CG202600001" />
+              </Form.Item>
+              <Form.Item name="tracking_no" label="返厂快递单号（可选）">
+                <Input placeholder="寄回供应商的快递单号" />
+              </Form.Item>
+            </>
           )}
           <Form.Item name="remark" label="备注">
             <Input.TextArea rows={2} placeholder="如：返厂快递单号 / 供应商 / 退款金额" />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      <Modal
+        title={`结算返厂单 — ${settleRow?.material_code ?? ''}`}
+        open={settleRow !== null}
+        onCancel={() => setSettleRow(null)}
+        onOk={() => settleForm.submit()}
+        confirmLoading={settleSaving}
+        destroyOnClose
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message={settleRow?.amount_kind === 'refund'
+            ? `确认已收到供应商退款 ¥${settleRow?.amount ?? 0}？可填收款的支付宝流水号便于对账。`
+            : '标记为已结算。'}
+        />
+        <Form form={settleForm} layout="vertical" onFinish={submitSettle}>
+          <Form.Item name="alipay_flow_no" label="支付宝流水号（可选）">
+            <Input placeholder="收到退款的那笔流水号" />
+          </Form.Item>
+          <Form.Item name="remark" label="备注（可选）">
+            <Input.TextArea rows={2} />
           </Form.Item>
         </Form>
       </Modal>
