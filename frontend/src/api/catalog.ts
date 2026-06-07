@@ -65,6 +65,7 @@ export interface PartInventory {
   id: number;
   warehouse: string;
   material_code: string;
+  material_name: string | null;
   spec: string | null;
   unit: string | null;
   physical_qty: number;

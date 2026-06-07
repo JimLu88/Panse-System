@@ -229,6 +229,17 @@ export default function PartInventoryPage() {
           v
         ),
     },
+    {
+      title: '物料名称',
+      dataIndex: 'material_name',
+      width: 170,
+      ellipsis: true,
+      render: (v: string | null, row: PartInventory) => {
+        const isCustom = row.material_code.startsWith('AC-') && parseInt(row.material_code.slice(3), 10) >= 1000;
+        if (!v) return <Typography.Text type="secondary">（未命名）</Typography.Text>;
+        return isCustom ? <Tag color="orange">{v}</Tag> : <span>{v}</span>;
+      },
+    },
     { title: '规格', dataIndex: 'spec', ellipsis: true },
     { title: '单位', dataIndex: 'unit', width: 70 },
     {
@@ -316,7 +327,12 @@ export default function PartInventoryPage() {
       <Alert
         type="info"
         showIcon
-        message="录入时如果物料名在「物料单价库」里没有，系统会自动建一条定制物料（AC-1000+），并把它丢进「异常处理」页等你补齐价格。"
+        message={
+          <span>
+            <Tag color="orange" style={{ marginInlineEnd: 6 }}>橙色</Tag>
+            = 系统自动建的「定制物料」（编码 AC-1000+，原本不在「物料单价库」里），缺价格/单位，需到「物料单价库」补齐；其余为正式物料。录入时若物料名在库里没有，会自动建一条定制物料并丢进「异常处理」页等你补价。
+          </span>
+        }
       />
 
       <Segmented

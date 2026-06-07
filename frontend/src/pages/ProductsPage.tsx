@@ -118,21 +118,45 @@ const CATEGORY_OPTIONS = [
   { value: '99', label: '99 其它' },
 ];
 
-// 可爱占位图 (小猫脸): 图片缺失或加载失败时显示, 替代难看的"裂图"图标
-const CUTE_IMG =
-  'data:image/svg+xml;charset=utf-8,' +
-  encodeURIComponent(
-    "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120'>" +
-    "<rect width='120' height='120' rx='14' fill='#fafafa'/>" +
-    "<path d='M38 32 L52 52 L30 52 Z' fill='#ffd6a5'/><path d='M82 32 L90 52 L68 52 Z' fill='#ffd6a5'/>" +
-    "<circle cx='60' cy='62' r='30' fill='#ffe8cc'/>" +
-    "<circle cx='50' cy='58' r='3.6' fill='#595959'/><circle cx='70' cy='58' r='3.6' fill='#595959'/>" +
-    "<path d='M60 64 l-4 4 h8 z' fill='#ff9c9c'/>" +
-    "<path d='M60 68 q-6 6 -12 2 M60 68 q6 6 12 2' fill='none' stroke='#ffb3b3' stroke-width='2' stroke-linecap='round'/>" +
-    "<g stroke='#d9d9d9' stroke-width='2' stroke-linecap='round'><path d='M30 60 h-14 M30 66 h-13'/><path d='M90 60 h14 M90 66 h13'/></g>" +
-    "<text x='60' y='112' text-anchor='middle' font-size='11' fill='#bfbfbf' font-family='sans-serif'>暂无图片</text>" +
-    "</svg>",
+// 像素占位图: ASCII 网格 → 内联 SVG data-URI (替代难看的"裂图")
+function pixelPlaceholder(
+  grid: string[], palette: Record<string, string>, bg: string, labelColor: string,
+): string {
+  const canvas = 120, pad = 14, labelH = 16;
+  const cols = grid[0].length, rows = grid.length;
+  const cell = Math.floor(Math.min((canvas - pad * 2) / cols, (canvas - pad * 2 - labelH) / rows));
+  const w = cell * cols, h = cell * rows;
+  const ox = Math.round((canvas - w) / 2), oy = Math.round((canvas - labelH - h) / 2);
+  let rects = '';
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < grid[y].length; x++) {
+      const f = palette[grid[y][x]];
+      if (f) rects += `<rect x='${ox + x * cell}' y='${oy + y * cell}' width='${cell}' height='${cell}' fill='${f}'/>`;
+    }
+  }
+  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
+    "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' shape-rendering='crispEdges'>" +
+    `<rect width='120' height='120' rx='14' fill='${bg}'/>${rects}` +
+    `<text x='60' y='112' text-anchor='middle' font-size='11' fill='${labelColor}' font-family='monospace'>暂无图片</text></svg>`,
   );
+}
+
+// 图片缺失/加载失败时显示的像素史莱姆占位 (RPG 史莱姆, 用户选定方案4)
+const CUTE_IMG = pixelPlaceholder(
+  [
+    '....bb....',
+    '...bbbb...',
+    '..bbbbbb..',
+    '.bbbbbbbb.',
+    'bbKbbbbKbb',
+    'bbbbbbbbbb',
+    'bbbWWWWbbb',
+    '.bbbbbbbb.',
+  ],
+  { b: '#4dabf7', K: '#0b3a66', W: '#ffffff' },
+  '#eaf4ff',
+  '#6f9ec9',
+);
 
 // 可拖拽列宽的表头单元格 (无需 react-resizable 依赖; 拖右边缘改宽)
 function ResizableTitle(props: any) {

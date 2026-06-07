@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState, type Key } from 'react';
 import {
   Button,
   Card,
@@ -34,6 +34,94 @@ const PAGE_SIZE = 50;
 
 function money(v: number | null) {
   return v === null || v === undefined ? '-' : `¥${Number(v).toLocaleString()}`;
+}
+
+// 可拖拽列宽的表头单元格 (拖右边缘改宽)
+function ResizableTitle(props: any) {
+  const { onResize, width, children, ...rest } = props;
+  const start = useRef<{ x: number; w: number } | null>(null);
+  if (!width || !onResize) return <th {...rest}>{children}</th>;
+  const onMouseDown = (e: any) => {
+    e.preventDefault();
+    e.stopPropagation();
+    start.current = { x: e.clientX, w: width };
+    const move = (ev: MouseEvent) => {
+      if (!start.current) return;
+      onResize(Math.max(60, start.current.w + (ev.clientX - start.current.x)));
+    };
+    const up = () => {
+      start.current = null;
+      document.removeEventListener('mousemove', move);
+      document.removeEventListener('mouseup', up);
+    };
+    document.addEventListener('mousemove', move);
+    document.addEventListener('mouseup', up);
+  };
+  return (
+    <th {...rest} style={{ ...(rest.style || {}), position: 'relative' }}>
+      {children}
+      <span
+        onMouseDown={onMouseDown}
+        style={{ position: 'absolute', right: -4, top: 0, bottom: 0, width: 9, cursor: 'col-resize', zIndex: 1, userSelect: 'none' }}
+      />
+    </th>
+  );
+}
+
+// 可点击编辑的数字格: 点一下变输入框, 失焦/回车保存
+function EditableNumberCell({ value, onSave }: { value: number | null; onSave: (v: number | null) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState<number | null>(value);
+  useEffect(() => { setVal(value); }, [value]);
+  if (!editing) {
+    return (
+      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title="点击编辑">
+        {value === null || value === undefined
+          ? <Typography.Text type="secondary">—</Typography.Text>
+          : `¥${Number(value).toLocaleString()}`}
+      </span>
+    );
+  }
+  const commit = () => { setEditing(false); if (val !== value) onSave(val); };
+  return (
+    <InputNumber
+      size="small" autoFocus value={val} precision={2} min={0}
+      onChange={setVal} onBlur={commit} onPressEnter={commit}
+      style={{ width: '100%' }}
+    />
+  );
+}
+
+// 毛利率格: 彩色 Tag; 点击后按目标毛利率% 反算日常价 (服务端再自动算回毛利率)
+function MarginCell({ row, onSaveDaily }: { row: PricingSku; onSaveDaily: (dailyPrice: number) => void }) {
+  const v = row.gross_margin_rate;
+  const [editing, setEditing] = useState(false);
+  const [pct, setPct] = useState<number | null>(v != null ? Number((Number(v) * 100).toFixed(1)) : null);
+  useEffect(() => { setPct(v != null ? Number((Number(v) * 100).toFixed(1)) : null); }, [v]);
+  if (!editing) {
+    const tag = v === null || v === undefined
+      ? <Typography.Text type="secondary">—</Typography.Text>
+      : <Tag color={Number(v) >= 0.3 ? 'green' : Number(v) >= 0.15 ? 'orange' : 'red'}>{(Number(v) * 100).toFixed(1)}%</Tag>;
+    return <span onClick={() => setEditing(true)} style={{ cursor: 'pointer' }} title="点击按目标毛利率反算日常价">{tag}</span>;
+  }
+  const commit = () => {
+    setEditing(false);
+    if (pct === null || pct === undefined) return;
+    if (!row.accounting_cost) { message.error('该 SKU 缺会计成本，无法按毛利率反算日常价'); return; }
+    const cost = Number(row.accounting_cost);
+    const tax = Number(row.tax ?? 0);
+    const pfr = Number(row.platform_fee_rate ?? 0);
+    const denom = 1 - pfr - pct / 100;
+    if (denom <= 0) { message.error('毛利率过高，无法反算（1 − 平台费率 − 毛利率 ≤ 0）'); return; }
+    onSaveDaily(Math.round(((cost + tax) / denom) * 100) / 100);
+  };
+  return (
+    <InputNumber
+      size="small" autoFocus value={pct} min={0} max={99} precision={1}
+      onChange={setPct} onBlur={commit} onPressEnter={commit}
+      style={{ width: '100%' }}
+    />
+  );
 }
 
 function SkuFormFields() {
@@ -180,6 +268,70 @@ export default function PricingPage() {
     form.setFieldsValue(row);
   }
 
+  // ── 列宽可拖 ──
+  const [colW, setColW] = useState<Record<string, number>>({
+    product_code: 110, sku_code: 120, sku: 160, size_category: 70,
+    list_price: 90, daily_price: 90, small_promo: 90, mid_promo: 90, big_promo: 100,
+    gross_margin_rate: 90, accounting_cost: 100, physical_cost: 100, actions: 70,
+  });
+  const mkResize = (key: string) => () => ({
+    width: colW[key], onResize: (w: number) => setColW((p) => ({ ...p, [key]: w })),
+  });
+  const scrollX = Object.values(colW).reduce((a, b) => a + b, 0) + 70;
+
+  const items = data?.items ?? [];
+
+  // 内联保存单格 (改价/改成本后服务端自动重算毛利率)
+  const saveField = (id: number, field: string, value: number | null) =>
+    updateMut.mutate({ id, patch: { [field]: value } });
+
+  // ── 多选 + 批量调价 ──
+  const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
+  const lastIdx = useRef<number | null>(null);
+  const [batchField, setBatchField] = useState<string>('big_promo');
+  const [batchMode, setBatchMode] = useState<'set' | 'multiply'>('multiply');
+  const [batchValue, setBatchValue] = useState<number | null>(null);
+  const [batchRunning, setBatchRunning] = useState(false);
+
+  const BATCH_FIELDS = [
+    { value: 'list_price', label: '标价' },
+    { value: 'daily_price', label: '日常价' },
+    { value: 'small_promo', label: '小促' },
+    { value: 'mid_promo', label: '中促' },
+    { value: 'big_promo', label: '大促' },
+    { value: 'accounting_cost', label: '会计成本' },
+    { value: 'physical_cost', label: '物理成本' },
+  ];
+
+  async function batchApply() {
+    if (batchValue === null || batchValue === undefined) { message.warning('请输入数值'); return; }
+    const ids = selectedKeys.map(Number);
+    const byId = new Map(items.map((r) => [r.id, r]));
+    const tasks: Promise<unknown>[] = [];
+    let skipped = 0;
+    for (const id of ids) {
+      if (batchMode === 'set') {
+        tasks.push(updatePricingSku(id, { [batchField]: batchValue }));
+      } else {
+        const row = byId.get(id);
+        if (!row) { skipped += 1; continue; }
+        const cur = Number((row as any)[batchField] ?? 0);
+        tasks.push(updatePricingSku(id, { [batchField]: Math.round(cur * batchValue * 100) / 100 }));
+      }
+    }
+    setBatchRunning(true);
+    try {
+      await Promise.all(tasks);
+      message.success(`已套用 ${tasks.length} 个 SKU${skipped ? `（${skipped} 个跨页未加载，已跳过）` : ''}`);
+      setSelectedKeys([]);
+      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
+    } catch {
+      message.error('批量套用失败');
+    } finally {
+      setBatchRunning(false);
+    }
+  }
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
@@ -258,13 +410,56 @@ export default function PricingPage() {
 
       {viewMode === 'full' && <FullColumnView entity="pricing_sku" defaultShowAll />}
 
+      {viewMode === 'curated' && selectedKeys.length > 0 && (
+        <div style={{ background: '#f5f7fa', border: '1px solid #e6eaf0', borderRadius: 8, padding: '8px 12px' }}>
+          <Space wrap>
+            <span>已选 <b>{selectedKeys.length}</b> 个 SKU</span>
+            <Select size="small" style={{ width: 110 }} value={batchField} onChange={setBatchField} options={BATCH_FIELDS} />
+            <Select
+              size="small" style={{ width: 120 }} value={batchMode}
+              onChange={(v) => setBatchMode(v as 'set' | 'multiply')}
+              options={[{ value: 'multiply', label: '× 系数' }, { value: 'set', label: '设为固定值' }]}
+            />
+            <InputNumber
+              size="small" style={{ width: 130 }} value={batchValue} onChange={setBatchValue}
+              placeholder={batchMode === 'multiply' ? '如 0.95' : '如 1999'}
+            />
+            <Button size="small" type="primary" loading={batchRunning} onClick={batchApply}>套用</Button>
+            <Button size="small" type="text" onClick={() => setSelectedKeys([])}>取消</Button>
+            <Tooltip title="想按「公式规则」整批重算各档价格，去『公式规则』页点「批量重算」">
+              <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>按公式重算？</Typography.Text>
+            </Tooltip>
+          </Space>
+        </div>
+      )}
+
       {viewMode === 'curated' && (
       <Table<PricingSku>
         size="small"
         rowKey="id"
         loading={isFetching}
-        dataSource={data?.items ?? []}
-        scroll={{ x: 1200 }}
+        dataSource={items}
+        components={{ header: { cell: ResizableTitle } }}
+        rowSelection={{
+          selectedRowKeys: selectedKeys,
+          onChange: setSelectedKeys,
+          preserveSelectedRowKeys: true,
+          onSelect: (record: PricingSku, selected: boolean, _rows: any, e: any) => {
+            const idx = items.findIndex((r) => r.id === record.id);
+            if (e?.shiftKey && lastIdx.current !== null && idx !== -1) {
+              const a = Math.min(lastIdx.current, idx);
+              const b = Math.max(lastIdx.current, idx);
+              const range = items.slice(a, b + 1).map((r) => r.id);
+              setSelectedKeys((prev) => {
+                const set = new Set<Key>(prev);
+                range.forEach((k) => (selected ? set.add(k) : set.delete(k)));
+                return Array.from(set);
+              });
+            }
+            lastIdx.current = idx;
+          },
+        }}
+        scroll={{ x: scrollX }}
         pagination={{
           current: page,
           pageSize: PAGE_SIZE,
@@ -274,32 +469,31 @@ export default function PricingPage() {
           showSizeChanger: false,
         }}
         columns={[
-          { title: '产品编码', dataIndex: 'product_code', fixed: 'left', width: 110 },
-          { title: 'SKU 编码', dataIndex: 'sku_code', fixed: 'left', width: 120 },
-          { title: '描述', dataIndex: 'sku', width: 160, ellipsis: true },
-          { title: '分类', dataIndex: 'size_category', width: 70 },
-          { title: '标价', dataIndex: 'list_price', width: 90, render: money },
-          { title: '日常价', dataIndex: 'daily_price', width: 90, render: money },
-          { title: '小促', dataIndex: 'small_promo', width: 90, render: money },
-          { title: '中促', dataIndex: 'mid_promo', width: 90, render: money },
-          { title: '大促', dataIndex: 'big_promo', width: 90, render: money },
+          { title: '产品编码', dataIndex: 'product_code', width: colW.product_code, onHeaderCell: mkResize('product_code') },
+          { title: 'SKU 编码', dataIndex: 'sku_code', width: colW.sku_code, onHeaderCell: mkResize('sku_code') },
+          { title: '描述', dataIndex: 'sku', width: colW.sku, ellipsis: true, onHeaderCell: mkResize('sku') },
+          { title: '分类', dataIndex: 'size_category', width: colW.size_category, onHeaderCell: mkResize('size_category') },
+          { title: <Tooltip title="公式：物理成本 ÷ 0.4 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>标价</span></Tooltip>, dataIndex: 'list_price', width: colW.list_price, onHeaderCell: mkResize('list_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'list_price', nv)} /> },
+          { title: <Tooltip title="公式：标价 × 0.75 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>日常价</span></Tooltip>, dataIndex: 'daily_price', width: colW.daily_price, onHeaderCell: mkResize('daily_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'daily_price', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>小促</span></Tooltip>, dataIndex: 'small_promo', width: colW.small_promo, onHeaderCell: mkResize('small_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'small_promo', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>中促</span></Tooltip>, dataIndex: 'mid_promo', width: colW.mid_promo, onHeaderCell: mkResize('mid_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'mid_promo', nv)} /> },
+          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95 ｜ 竞品调价常用, 点格子或多选批量改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促</span></Tooltip>, dataIndex: 'big_promo', width: colW.big_promo, onHeaderCell: mkResize('big_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'big_promo', nv)} /> },
           {
-            title: '毛利率',
+            title: <Tooltip title="公式：(日常价 − 会计成本 − 税费 − 日常价 × 平台费率) ÷ 日常价 ｜ 点格子按目标毛利率反算日常价"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>毛利率</span></Tooltip>,
             dataIndex: 'gross_margin_rate',
-            width: 90,
-            render: (v: number | null) =>
-              v === null || v === undefined ? '-'
-                : <Tag color={v >= 0.3 ? 'green' : v >= 0.15 ? 'orange' : 'red'}>{(Number(v) * 100).toFixed(1)}%</Tag>,
+            width: colW.gross_margin_rate,
+            onHeaderCell: mkResize('gross_margin_rate'),
+            render: (_: unknown, r: PricingSku) => <MarginCell row={r} onSaveDaily={(dp) => saveField(r.id, 'daily_price', dp)} />,
           },
-          { title: '会计成本', dataIndex: 'accounting_cost', width: 100, render: money },
-          { title: '物理成本', dataIndex: 'physical_cost', width: 100, render: money },
+          { title: <Tooltip title="公式：总出厂成本 + 物流费 + 安装费 + 外采配件成本 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>会计成本</span></Tooltip>, dataIndex: 'accounting_cost', width: colW.accounting_cost, onHeaderCell: mkResize('accounting_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
+          { title: <Tooltip title="所有实物成本合计，是各档价格的计算基数 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>物理成本</span></Tooltip>, dataIndex: 'physical_cost', width: colW.physical_cost, onHeaderCell: mkResize('physical_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
           {
-            title: '操作', width: 70, fixed: 'right',
+            title: '操作', width: colW.actions, fixed: 'right' as const,
             render: (_: unknown, row: PricingSku) => (
               <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
             ),
           },
-        ]}
+        ] as any}
       />
       )}
 

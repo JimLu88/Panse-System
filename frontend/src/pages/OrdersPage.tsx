@@ -214,11 +214,12 @@ export default function OrdersPage() {
   });
 
   const columns = [
-    { title: '平台', dataIndex: 'platform', width: 80 },
+    { title: '平台', dataIndex: 'platform', width: 80, fixed: 'left' as const },
     {
       title: '订单号',
       dataIndex: 'order_no',
       width: 180,
+      fixed: 'left' as const,
       render: (v: string, r: Order) => (
         <Space size={4}>
           <code>{v}</code>
@@ -229,8 +230,8 @@ export default function OrdersPage() {
     },
     { title: '下单日期', dataIndex: 'order_date', width: 110 },
     { title: '客户', dataIndex: 'customer_name', width: 90 },
-    { title: '产品', dataIndex: 'product_name', ellipsis: true },
-    { title: 'SKU', dataIndex: 'sku', ellipsis: true },
+    { title: '产品', dataIndex: 'product_name', width: 220, ellipsis: true },
+    { title: 'SKU', dataIndex: 'sku', width: 200, ellipsis: true },
     { title: '数量', dataIndex: 'qty', width: 60 },
     {
       title: '理论成本',
@@ -270,13 +271,14 @@ export default function OrdersPage() {
       },
     },
     {
-      title: '物流',
-      width: 160,
+      title: '物流 / 查款',
+      width: 220,
       render: (_: unknown, r: Order) => <ShipmentTracker entityType="order" entityId={r.id} />,
     },
     {
       title: '操作',
       width: 200,
+      fixed: 'right' as const,
       render: (_: unknown, r: Order) => {
         const next = ALLOWED_NEXT[r.status] ?? [];
         return (
@@ -441,6 +443,7 @@ export default function OrdersPage() {
           onChange: setSelectedKeys,
           preserveSelectedRowKeys: true,
         }}
+        scroll={{ x: 1870 }}
         pagination={{ pageSize: 30 }}
         size="middle"
       />

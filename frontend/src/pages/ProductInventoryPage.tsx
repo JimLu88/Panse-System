@@ -4,6 +4,7 @@ import {
   AutoComplete,
   Badge,
   Button,
+  Collapse,
   Form,
   Input,
   InputNumber,
@@ -87,11 +88,11 @@ export default function ProductInventoryPage() {
 
   const columns = [
     {
-      title: '产品编码', dataIndex: 'product_code', width: 120,
-      render: (v: string, r: ProductInventoryRow) => (
+      title: '产品', dataIndex: 'sku', width: 230,
+      render: (_: any, r: ProductInventoryRow) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong>{v}</Typography.Text>
-          {r.sku && <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.sku}</Typography.Text>}
+          <Typography.Text strong style={{ fontSize: 14 }}>{r.sku || r.product_code}</Typography.Text>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.product_code}</Typography.Text>
         </Space>
       ),
     },
@@ -157,12 +158,17 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="工厂平均交货天数（从订单历史推算）">提前期(天)</Tooltip>
+        <Tooltip title="工厂平均交货天数（手填 > 工厂历史推算 > 一般家具默认 30 天）">提前期(天)</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => {
         const v = r.lead_time_days ?? r.lead_time_days_computed;
-        return v !== null ? `${v}天` : <Typography.Text type="secondary">暂无</Typography.Text>;
+        if (v !== null && v !== undefined) return `${v}天`;
+        return (
+          <Tooltip title="未手填、也无工厂历史，按一般家具默认 30 天估算（可在编辑里改）">
+            <Typography.Text type="secondary">30天<span style={{ fontSize: 10 }}> 默认</span></Typography.Text>
+          </Tooltip>
+        );
       },
     },
     {
@@ -202,6 +208,28 @@ export default function ProductInventoryPage() {
   ];
 
   const warningCount = data?.filter(r => r.warning_status !== 'ok').length ?? 0;
+
+  // 分区: 热销缺货(无货但近30天有销量) / 有货 / 无货且近期无销量(默认折叠)
+  const rows = data ?? [];
+  const alertRows = rows.filter((r) => r.available_qty <= 0 && r.daily_sales_30d > 0);
+  const inStockRows = rows.filter((r) => r.available_qty > 0);
+  const deadRows = rows.filter((r) => r.available_qty <= 0 && r.daily_sales_30d <= 0);
+
+  const renderInvTable = (list: ProductInventoryRow[], paginate: boolean) => (
+    <Table
+      rowKey="id"
+      columns={columns}
+      dataSource={list}
+      loading={isLoading}
+      pagination={paginate ? { pageSize: 50 } : false}
+      scroll={{ x: 1280 }}
+      rowClassName={(r) =>
+        r.warning_status === 'critical' ? 'ant-table-row-danger' :
+        r.warning_status === 'danger' ? 'ant-table-row-warning' : ''
+      }
+      size="small"
+    />
+  );
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -254,21 +282,36 @@ export default function ProductInventoryPage() {
 
       {viewMode === 'full' && <FullColumnView entity="product_inventory" defaultShowAll />}
 
-      {viewMode === 'curated' && (
-      <Table
-        rowKey="id"
-        columns={columns}
-        dataSource={data}
-        loading={isLoading}
-        pagination={{ pageSize: 50 }}
-        scroll={{ x: 1100 }}
-        rowClassName={(r) =>
-          r.warning_status === 'critical' ? 'ant-table-row-danger' :
-          r.warning_status === 'danger' ? 'ant-table-row-warning' : ''
-        }
-        size="small"
-      />
-      )}
+      {viewMode === 'curated' && (warningOnly ? (
+        renderInvTable(data ?? [], true)
+      ) : (
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          {alertRows.length > 0 && (
+            <>
+              <Alert
+                type="error"
+                showIcon
+                message={`${alertRows.length} 个产品已缺货、但近 30 天仍有销量 — 建议优先补货`}
+              />
+              <Typography.Text strong style={{ color: '#cf1322' }}>
+                🔥 热销缺货 · 待补货（{alertRows.length}）
+              </Typography.Text>
+              {renderInvTable(alertRows, false)}
+            </>
+          )}
+          <Typography.Text strong>有货（{inStockRows.length}）</Typography.Text>
+          {renderInvTable(inStockRows, true)}
+          {deadRows.length > 0 && (
+            <Collapse
+              items={[{
+                key: 'dead',
+                label: `无货 · 近期无销量（${deadRows.length}）— 点击展开`,
+                children: renderInvTable(deadRows, true),
+              }]}
+            />
+          )}
+        </Space>
+      ))}
 
       {/* 添加库存弹窗 */}
       <Modal

@@ -4,6 +4,7 @@ import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, E
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
+import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -50,6 +51,85 @@ const softArea = (rgb: string) => ({
   type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
   colorStops: [{ offset: 0, color: `rgba(${rgb},.22)` }, { offset: 1, color: `rgba(${rgb},0)` }],
 });
+
+// 数据新鲜度红绿灯
+const FRESH_DOT: Record<string, { dot: string; color: string }> = {
+  fresh: { dot: '🟢', color: 'success' },
+  aging: { dot: '🟡', color: 'warning' },
+  stale: { dot: '🔴', color: 'error' },
+  unknown: { dot: '⚪', color: 'default' },
+};
+
+function freshAgo(f: CashFlowFreshness) {
+  if (f.days_ago == null) return '无记录';
+  if (f.days_ago === 0) return '今天';
+  return `${f.days_ago} 天前`;
+}
+
+// 运营大盘上的「剩余流水 / 可用资金」卡片: 复用 /api/finance/cash-flow, 点击进完整页
+function CashFlowBanner() {
+  const nav = useNavigate();
+  const { data, isLoading } = useQuery<CashFlowSummary>({
+    queryKey: ['cash-flow'], queryFn: getCashFlow, refetchInterval: 60_000,
+  });
+  if (isLoading || !data) {
+    return (
+      <MCard style={{ marginBottom: 16 }}>
+        <div style={{ height: 96, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>
+      </MCard>
+    );
+  }
+  const totalNum = Number(data.total);
+  const hasStale = data.freshness.some((f) => f.status === 'stale');
+  const invest = data.subtractions.find((s) => s.key === 'total_investment');
+  return (
+    <MCard
+      hoverable
+      onClick={() => nav('/cash-flow')}
+      style={{
+        marginBottom: 16, cursor: 'pointer',
+        background: 'linear-gradient(135deg,#ffffff 0%,#f5f3ff 100%)',
+        borderColor: hasStale ? '#fecaca' : '#e9d5ff',
+      }}
+    >
+      <Row align="middle" gutter={[16, 12]}>
+        <Col xs={24} md={10}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <DollarOutlined style={{ color: M.violet }} />
+            <span style={{ color: M.sub, fontSize: 13, fontWeight: 600 }}>剩余流水 · 可用资金（实时）</span>
+            {hasStale && <Tag color="error" style={{ borderRadius: 8 }}>数据偏旧</Tag>}
+          </div>
+          <div style={{ color: totalNum >= 0 ? M.emerald : M.rose, fontWeight: 800, fontSize: 30, letterSpacing: '-0.01em', marginTop: 2 }}>
+            {money(totalNum)}
+          </div>
+          <div style={{ marginTop: 4, fontSize: 12, color: M.sub }}>
+            <span style={{ color: M.emerald }}>↑ 加项 {money(Number(data.total_additions))}</span>
+            <span style={{ margin: '0 8px' }}>·</span>
+            <span style={{ color: M.rose }}>↓ 减项 {money(Number(data.total_subtractions))}</span>
+            {invest && (
+              <>
+                <span style={{ margin: '0 8px' }}>·</span>
+                <span>总投资费用 {money(Number(invest.amount))}</span>
+              </>
+            )}
+          </div>
+        </Col>
+        <Col xs={24} md={14}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+            {data.freshness.map((f) => (
+              <Tooltip key={f.source} title={`数据截至 ${f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录'}`}>
+                <Tag color={FRESH_DOT[f.status]?.color || 'default'} style={{ borderRadius: 8, marginInlineEnd: 0 }}>
+                  {FRESH_DOT[f.status]?.dot} {f.source} · {freshAgo(f)}
+                </Tag>
+              </Tooltip>
+            ))}
+          </div>
+          <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: M.indigo }}>点击查看完整明细 →</div>
+        </Col>
+      </Row>
+    </MCard>
+  );
+}
 
 export default function DashboardPage() {
   const nav = useNavigate();
@@ -141,6 +221,9 @@ export default function DashboardPage() {
         <Typography.Title level={4} style={{ margin: 0, color: M.ink, fontWeight: 800 }}>运营大盘</Typography.Title>
         <Typography.Text style={{ color: M.sub, fontSize: 13 }}>实时经营概览 · 每分钟自动刷新</Typography.Text>
       </div>
+
+      {/* 剩余流水 · 可用资金 (实时, 含数据红绿灯; 点击进完整页) */}
+      <CashFlowBanner />
 
       {/* KPI 卡片行 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

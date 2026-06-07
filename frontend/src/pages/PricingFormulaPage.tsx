@@ -458,15 +458,30 @@ export default function PricingFormulaPage() {
         </Col>
       </Row>
 
-      <Table
-        dataSource={rules}
-        columns={columns}
-        rowKey="id"
-        loading={isLoading}
-        size="small"
-        pagination={false}
-        scroll={{ x: 900 }}
-      />
+      {!isLoading && rules.length === 0 ? (
+        <Card style={{ textAlign: 'center', padding: '32px 0' }}>
+          <Title level={5} type="secondary" style={{ marginTop: 0 }}>还没有任何公式规则</Title>
+          <Text type="secondary">
+            点下面按钮一键载入 18 条内置公式（标价 / 日常价 / 小促 / 中促 / 大促 / 毛利率 / 会计成本 …）。
+            载入后可逐条编辑公式、启停，并「批量重算」让改动作用到所有 SKU。
+          </Text>
+          <div style={{ marginTop: 16 }}>
+            <Button type="primary" icon={<UndoOutlined />} loading={seedMut.isPending} onClick={() => seedMut.mutate()}>
+              一键初始化内置公式
+            </Button>
+          </div>
+        </Card>
+      ) : (
+        <Table
+          dataSource={rules}
+          columns={columns}
+          rowKey="id"
+          loading={isLoading}
+          size="small"
+          pagination={false}
+          scroll={{ x: 900 }}
+        />
+      )}
 
       {editingRule && (
         <EditFormulaModal
