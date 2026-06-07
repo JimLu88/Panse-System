@@ -14,6 +14,7 @@ import {
   message,
 } from 'antd';
 import { downloadCsv } from '../utils/csv';
+import ShipmentTracker from '../components/ShipmentTracker';
 import { UploadOutlined } from '@ant-design/icons';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import type { UploadFile } from 'antd/es/upload/interface';
@@ -267,6 +268,11 @@ export default function OrdersPage() {
         const m = STATUS_META[v] ?? { label: v, color: 'default' };
         return <Tag color={m.color}>{m.label}</Tag>;
       },
+    },
+    {
+      title: '物流',
+      width: 160,
+      render: (_: unknown, r: Order) => <ShipmentTracker entityType="order" entityId={r.id} />,
     },
     {
       title: '操作',

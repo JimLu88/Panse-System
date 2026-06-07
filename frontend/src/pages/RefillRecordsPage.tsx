@@ -4,6 +4,7 @@ import { DownloadOutlined, InboxOutlined, SyncOutlined } from '@ant-design/icons
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
+import ShipmentTracker from '../components/ShipmentTracker';
 
 interface RefillRecord {
   id: number;
@@ -57,6 +58,7 @@ export default function RefillRecordsPage() {
     v != null ? `¥${Number(v).toFixed(2)}` : '-';
 
   const columns = [
+    { title: '物流', width: 150, render: (_: any, r: RefillRecord) => <ShipmentTracker entityType="refill_record" entityId={r.id} /> },
     { title: '补单日期', dataIndex: 'refill_date', width: 110 },
     { title: '订单号', dataIndex: 'order_no', width: 160, ellipsis: true },
     { title: '买家昵称', dataIndex: 'buyer_nick', width: 110, ellipsis: true },

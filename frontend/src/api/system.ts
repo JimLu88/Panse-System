@@ -259,6 +259,8 @@ export interface SchedulerJob {
   label: string;
   kind: string;
   schedule: Record<string, any>;
+  default_schedule?: Record<string, any> | null;
+  enabled: boolean;
   next_run_at: string | null;
 }
 
@@ -284,6 +286,11 @@ export const fetchSchedulerRuns = (limit = 100, job_id?: string) =>
 
 export const triggerSchedulerJob = (job_id: string) =>
   api.post(`/api/scheduler/jobs/${job_id}/trigger`).then((r) => r.data);
+
+export const updateSchedulerJob = (
+  job_id: string,
+  payload: { interval_minutes?: number; cron?: Record<string, any>; enabled?: boolean },
+) => api.put<SchedulerJob>(`/api/scheduler/jobs/${job_id}/schedule`, payload).then((r) => r.data);
 
 // ----- Phase 8: AI 简报 + 会计期间 + 供应商评分 -----
 export interface DailyBriefing {
@@ -372,19 +379,29 @@ export const testNotifyConfig = () =>
     .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
     .then((r) => r.data);
 
-// ----- 物流追踪配置 (快递100) -----
+// ----- 物流追踪配置 (快递100 / 快递鸟) -----
 export interface LogisticsConfig {
+  provider: string;
   customer: string;
   customer_set: boolean;
   key_masked: string;
   key_set: boolean;
+  kdniao_ebusiness_id: string;
+  kdniao_ebusiness_id_set: boolean;
+  kdniao_key_masked: string;
+  kdniao_key_set: boolean;
 }
 
 export const fetchLogisticsConfig = () =>
   api.get<LogisticsConfig>('/api/admin/logistics-config').then((r) => r.data);
 
-export const updateLogisticsConfig = (payload: { customer?: string; key?: string }) =>
-  api.put<LogisticsConfig>('/api/admin/logistics-config', payload).then((r) => r.data);
+export const updateLogisticsConfig = (payload: {
+  provider?: string;
+  customer?: string;
+  key?: string;
+  kdniao_ebusiness_id?: string;
+  kdniao_key?: string;
+}) => api.put<LogisticsConfig>('/api/admin/logistics-config', payload).then((r) => r.data);
 
 // ----------------------------- 版本信息 ----------------------------- //
 export interface VersionInfo {
