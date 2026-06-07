@@ -177,6 +177,15 @@ def reset_feishu_data(db: Session) -> dict:
             )
             deleted[b.system_table] = deleted.get(b.system_table, 0) + n
             _logger.info("清空飞书表 %s (%s): %d 条", b.system_table, b.feishu_table_id, n)
+        except feishu_client.FeishuError as e:
+            # 飞书那张表已被删除(绑定失效, TableIdNotFound) → 本就无内容可清, 视为已清空, 不算失败。
+            # (函数末尾会统一暂停所有绑定, 失效绑定一并停用。)
+            if getattr(e, "code", None) == feishu_client.ERR_TABLE_NOT_FOUND:
+                deleted.setdefault(b.system_table, 0)
+                _logger.info("飞书表 %s 已不存在(绑定失效), 视为已清空", b.system_table)
+            else:
+                errors[b.system_table] = str(e)
+                _logger.warning("清空飞书表 %s 失败: %s", b.system_table, e)
         except Exception as e:
             errors[b.system_table] = str(e)
             _logger.warning("清空飞书表 %s 失败: %s", b.system_table, e)
