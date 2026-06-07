@@ -69,6 +69,22 @@ def _datetime(v: Any) -> Optional[datetime]:
     return None
 
 
+def date_from_flow_no(no: Any) -> Optional[datetime]:
+    """支付宝交易流水号前 8 位编码交易日期 (YYYYMMDD): 2026040722001183631429552504 → 2026-04-07。
+
+    企业号等账户导出常缺『交易时间』列, 用流水号前缀兜底反推交易日 (设为当天 00:00)。
+    仅在前 8 位是合法日期且年份在 2018~2035 时才认, 否则 None。
+    """
+    s = str(no or "").strip()
+    if len(s) < 8 or not s[:8].isdigit():
+        return None
+    try:
+        d = datetime.strptime(s[:8], "%Y%m%d")
+    except ValueError:
+        return None
+    return d if 2018 <= d.year <= 2035 else None
+
+
 def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImportReport:
     report = AlipayImportReport()
     reader = csv.DictReader(StringIO(csv_text))
@@ -117,7 +133,7 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
         db.add(AlipayFlow(
             account=account,
             transaction_no=tx_no,
-            transaction_time=_datetime(payload.get("transaction_time")),
+            transaction_time=_datetime(payload.get("transaction_time")) or date_from_flow_no(tx_no),
             transaction_type=payload.get("transaction_type"),
             counterparty=payload.get("counterparty"),
             counterparty_account=payload.get("counterparty_account"),

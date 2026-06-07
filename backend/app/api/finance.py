@@ -261,6 +261,7 @@ class AlipayBackfillOut(BaseModel):
     by_rule: dict[str, int]
     samples: list[dict]
     flows_marked_matched: int = 0   # 已标记 reconciliation_status='matched' 的流水数
+    filled_dates: int = 0           # 从流水号前缀回填交易时间的笔数 (企业号缺日期兜底)
 
 
 def _backfill_to_out(r: "alipay_backfill_service.BackfillResult") -> AlipayBackfillOut:
@@ -292,10 +293,14 @@ def backfill_order_flow_no(
     """落库: 把匹配到的支付宝流水号回填到订单 Order.alipay_flow_no。
 
     自己找规律 (T200P 前缀 / 备注内订单号 / 尾号倒排), 歧义流水跳过交人工。
+    顺带把交易时间为空的流水 (企业号常见) 从流水号前缀回填日期。
     """
+    dates = alipay_backfill_service.backfill_transaction_time(db, account=account)
     r = alipay_backfill_service.backfill(db, account=account, only_missing=only_missing)
     db.commit()
-    return _backfill_to_out(r)
+    out = _backfill_to_out(r)
+    out.filled_dates = dates.get("filled", 0)
+    return out
 
 
 # -------- 万师傅 / 物流账单导入 (安装费 / 物流费对账数据源) --------

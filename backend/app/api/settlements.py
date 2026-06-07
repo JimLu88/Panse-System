@@ -9,7 +9,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.settlement import OrderSettlement
-from app.services import settlement_import_service
+from app.services import order_reconciliation_service, settlement_import_service
 
 router = APIRouter(prefix="/api/settlements", tags=["settlements"])
 
@@ -52,3 +52,28 @@ def list_settlements(
         "entry_type": r.entry_type, "income": float(r.income or 0), "expense": float(r.expense or 0),
         "description": r.description,
     } for r in rows]
+
+
+@router.get("/reconciliation/summary")
+def reconciliation_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """逐笔对账全量汇总: 应付/实付/补贴/实收/2%税/软件费 合计 + 对账状态分布 + 到账覆盖率。"""
+    return order_reconciliation_service.summary(db)
+
+
+@router.get("/reconciliation")
+def reconciliation_list(
+    limit: int = Query(200, le=2000),
+    offset: int = Query(0, ge=0),
+    status: str | None = Query(None, description="matched / diff / pending"),
+    channel: str | None = Query(None, description="wechat / alipay / none"),
+    q: str | None = Query(None, description="订单号 / 客户名 关键词"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """逐笔对账明细 (每单一行, 四方对账 + 2%补贴税)。"""
+    return order_reconciliation_service.per_order(
+        db, limit=limit, offset=offset, status=status, channel=channel, q=q,
+    )

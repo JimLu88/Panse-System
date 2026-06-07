@@ -246,3 +246,26 @@ def backfill(
     result.filled_flow_no = filled
     result.flows_marked_matched = marked
     return result
+
+
+def backfill_transaction_time(db: Session, *, account: Optional[str] = None) -> dict:
+    """交易时间为空的流水, 从支付宝流水号前 8 位 (YYYYMMDD) 反推交易日期。
+
+    企业号等账户导出缺『交易时间』列时, 流水的 transaction_time 全空, 导致按月对账/
+    时间筛选拿不到这些笔。流水号前 8 位即交易日, 据此回填 (设当天 00:00)。
+    仅回填 transaction_time 为空者, 不覆盖已有时间。返回 {scanned, filled, skipped}。
+    """
+    from app.services.alipay_import import date_from_flow_no
+
+    stmt = select(AlipayFlow).where(AlipayFlow.transaction_time.is_(None))
+    if account:
+        stmt = stmt.where(AlipayFlow.account == account)
+    rows = db.execute(stmt).scalars().all()
+    filled = 0
+    for f in rows:
+        d = date_from_flow_no(f.transaction_no)
+        if d is not None:
+            f.transaction_time = d
+            filled += 1
+    db.flush()
+    return {"scanned": len(rows), "filled": filled, "skipped": len(rows) - filled}
