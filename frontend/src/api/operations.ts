@@ -348,6 +348,31 @@ export const fetchCustomerOrders = (id: number) =>
 export const triggerCustomerAggregate = () =>
   api.post('/api/customers/aggregate').then((r) => r.data);
 
+// ----- 运营待办台账 (SOP 每日/每周/每月清单) -----
+export interface OpsTask {
+  key: string;
+  title: string;
+  detail: string;
+  done: boolean;
+  done_at: string | null;
+}
+export interface OpsGroup {
+  freq: string;
+  label: string;
+  period_key: string;
+  done_count: number;
+  total: number;
+  tasks: OpsTask[];
+}
+export interface OpsChecklist {
+  groups: OpsGroup[];
+  today: string;
+}
+export const fetchOpsChecklist = () =>
+  api.get<OpsChecklist>('/api/ops-checklist').then((r) => r.data);
+export const toggleOpsTask = (task_key: string, done: boolean) =>
+  api.post<OpsChecklist>('/api/ops-checklist/toggle', { task_key, done }).then((r) => r.data);
+
 // ----- 智能定价 + 异常诊断 (Phase 10) -----
 export interface PriceSuggestion {
   sku_code: string | null;

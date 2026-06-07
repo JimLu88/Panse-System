@@ -43,6 +43,7 @@ const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
 const PricingFormulaPage = lazy(() => import('./pages/PricingFormulaPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const OpsChecklistPage = lazy(() => import('./pages/OpsChecklistPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
@@ -121,6 +122,7 @@ export default function App() {
       key: 'g-data',
       label: '数据分析',
       children: [
+        { key: 'ops-checklist', label: <Link to="/ops-checklist">待办台账</Link> },
         { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
         { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
       ],
@@ -300,6 +302,7 @@ export default function App() {
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/login" element={<Navigate to="/dashboard" replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/ops-checklist" element={<OpsChecklistPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/bom/:productCode" element={<BomViewerPage />} />
             <Route path="/materials" element={<MaterialsPage />} />

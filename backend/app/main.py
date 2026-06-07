@@ -33,6 +33,7 @@ _req_logger = logging.getLogger("panse.request")
 from app.api import accounting as accounting_api
 from app.api import admin as admin_api
 from app.api import aftersales as aftersales_api
+from app.api import ops_checklist as ops_checklist_api
 from app.api import ai as ai_api
 from app.api import alerts as alerts_api
 from app.api import approvals as approvals_api
@@ -246,6 +247,7 @@ app.include_router(inventory_api.router)
 app.include_router(part_returns_api.router)
 app.include_router(product_inventory_api.router)
 app.include_router(bom_api.router)
+app.include_router(ops_checklist_api.router)
 app.include_router(exceptions_api.router)
 app.include_router(feishu_api.router)
 app.include_router(match_api.router)
