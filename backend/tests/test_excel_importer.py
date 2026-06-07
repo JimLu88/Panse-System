@@ -794,6 +794,86 @@ def test_placeholder_value_overwritten_not_conflict(db_session):
     assert m.name == "实木床板-松木"
 
 
+def test_alipay_same_tx_diff_balance_both_import(db_session):
+    """同号+同类型+同金额但余额不同的两笔真实扣费, 都要入库 (不被当成重复)。"""
+    from sqlalchemy import select
+    from app.models.finance import AlipayFlow
+    data = _xlsx("S", ["账户", "流水号", "交易类型", "金额", "余额"], [
+        ["企业号", "TXB", "分账", -0.76, 100.00],
+        ["企业号", "TXB", "分账", -0.76, 99.24],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S", entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号", "transaction_type": "交易类型",
+                 "amount": "金额", "balance": "余额"})
+    db_session.commit()
+    assert report.inserted_parents == 2
+    flows = db_session.execute(
+        select(AlipayFlow).where(AlipayFlow.transaction_no == "TXB")).scalars().all()
+    assert len(flows) == 2
+
+
+def test_alipay_exact_same_incl_balance_dedup(db_session):
+    """五元组(含余额)完全相同 → 真重复, 不重复插入。"""
+    from sqlalchemy import select
+    from app.models.finance import AlipayFlow
+    pre = AlipayFlow(account="企业号", transaction_no="TXC", transaction_type="分账",
+                     amount=Decimal("-0.76"), balance=Decimal("100.00"),
+                     reconciliation_status="open")
+    db_session.add(pre)
+    db_session.commit()
+    data = _xlsx("S", ["账户", "流水号", "交易类型", "金额", "余额"], [
+        ["企业号", "TXC", "分账", -0.76, 100.00],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="S", entity_type="alipay_flow",
+        mapping={"account": "账户", "transaction_no": "流水号", "transaction_type": "交易类型",
+                 "amount": "金额", "balance": "余额"})
+    db_session.commit()
+    assert report.inserted_parents == 0
+    flows = db_session.execute(
+        select(AlipayFlow).where(AlipayFlow.transaction_no == "TXC")).scalars().all()
+    assert len(flows) == 1
+
+
+def test_aftersales_multiple_per_order_all_import(db_session):
+    """同一订单的多次真实售后(赔付费/日期不同)都要入库。"""
+    from sqlalchemy import select
+    from app.models.marketing import AfterSales
+    data = _xlsx("售后", ["平台订单号", "订单赔付费", "售后处理日期"], [
+        ["O-AS", 100, "2026-05-01"],
+        ["O-AS", 200, "2026-05-10"],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="售后", entity_type="aftersales",
+        mapping={"platform_order_no": "平台订单号", "compensation_fee": "订单赔付费",
+                 "processed_at": "售后处理日期"})
+    db_session.commit()
+    assert report.inserted_parents == 2
+    rows = db_session.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == "O-AS")).scalars().all()
+    assert len(rows) == 2
+
+
+def test_aftersales_same_event_dedup(db_session):
+    """同一订单+同日期+同赔付费 = 同一条售后 → 重导不重复。"""
+    from sqlalchemy import select
+    from app.models.marketing import AfterSales
+    data = _xlsx("售后", ["平台订单号", "订单赔付费", "售后处理日期"], [
+        ["O-AS2", 100, "2026-05-01"],
+        ["O-AS2", 100, "2026-05-01"],
+    ])
+    report = excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="售后", entity_type="aftersales",
+        mapping={"platform_order_no": "平台订单号", "compensation_fee": "订单赔付费",
+                 "processed_at": "售后处理日期"})
+    db_session.commit()
+    assert report.inserted_parents == 1
+    rows = db_session.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == "O-AS2")).scalars().all()
+    assert len(rows) == 1
+
+
 def test_order_multiline_no_conflict(db_session):
     """多商品订单一单多行: 首行建订单, 后续行不报冲突 (明细在 5b)。"""
     from sqlalchemy import select

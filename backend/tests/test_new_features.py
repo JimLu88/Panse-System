@@ -255,9 +255,9 @@ def test_feishu_alipay_paired_flows_both_sync(db_session, fake_feishu):
     from app.models.finance import AlipayFlow
     db_session.add_all([
         AlipayFlow(account="企业号", transaction_no="P100", transaction_type="在线支付",
-                   amount=Decimal("127.00")),
+                   amount=Decimal("127.00"), balance=Decimal("1000.00")),
         AlipayFlow(account="企业号", transaction_no="P100", transaction_type="分账",
-                   amount=Decimal("-0.76")),
+                   amount=Decimal("-0.76"), balance=Decimal("999.24")),
     ])
     b = FeishuTableBinding(
         system_table="alipay_flows", feishu_app_token="appT", feishu_table_id="tblA",
@@ -272,8 +272,8 @@ def test_feishu_alipay_paired_flows_both_sync(db_session, fake_feishu):
     assert res.created_feishu == 2
     keys = {f.get("唯一键") for f in fake_feishu.records.values()}
     assert keys == {
-        "alipay:企业号:P100:在线支付:127.00",
-        "alipay:企业号:P100:分账:-0.76",
+        "alipay:企业号:P100:在线支付:127.00:1000.00",
+        "alipay:企业号:P100:分账:-0.76:999.24",
     }
 
 
