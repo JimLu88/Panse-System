@@ -51,6 +51,37 @@ class PartInventory(Base, TimestampMixin):
         return Decimal(self.physical_qty or 0) - Decimal(self.locked_qty or 0)
 
 
+class PartReturn(Base, TimestampMixin):
+    """配件返厂/退货单 (方案C — 坏件财务闭环).
+
+    「处理待返厂坏件」时同步生成, 记录这次处置的钱:
+      disposition=returned → amount = 应收供应商退款 (status=open 待收, 收到后 settle)
+      disposition=repaired → amount = 返厂维修费 (确认即 settled)
+      disposition=scrapped → amount = 报废损失 (= 采购成本, 确认即 settled)
+    可关联 支付宝流水号 与 原采购单, 供应商对账用。库存动作仍由 part_defect_service 处理。
+    """
+
+    __tablename__ = "part_returns"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_code: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    material_name: Mapped[Optional[str]] = mapped_column(String(255))
+    warehouse: Mapped[str] = mapped_column(String(64), default="default", nullable=False)
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    disposition: Mapped[str] = mapped_column(String(16), nullable=False)   # returned/repaired/scrapped
+    amount_kind: Mapped[str] = mapped_column(String(16), nullable=False)   # refund/repair_fee/scrap_loss
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    reason: Mapped[Optional[str]] = mapped_column(String(255))
+    supplier: Mapped[Optional[str]] = mapped_column(String(128))
+    related_purchase_no: Mapped[Optional[str]] = mapped_column(String(32))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
+    status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)  # open/settled
+    actor: Mapped[Optional[str]] = mapped_column(String(64))
+    processed_at: Mapped[Optional[date]] = mapped_column(Date)
+    remark: Mapped[Optional[str]] = mapped_column(String(500))
+
+
 class ProductInventory(Base, TimestampMixin):
     """成品库存 (Excel 表 4a-成品库存)。
 

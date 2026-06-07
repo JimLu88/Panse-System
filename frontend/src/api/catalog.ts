@@ -568,8 +568,58 @@ export const markPartDefective = (
 
 export const resolvePartDefective = (
   id: number,
-  payload: { qty: number; disposition: 'repaired' | 'scrapped' | 'returned'; remark?: string },
+  payload: {
+    qty: number;
+    disposition: 'repaired' | 'scrapped' | 'returned';
+    amount?: number;
+    supplier?: string;
+    related_purchase_no?: string;
+    tracking_no?: string;
+    reason?: string;
+    remark?: string;
+  },
 ) => api.post<PartInventory>(`/api/inventory/parts/${id}/defect/resolve`, payload).then(r => r.data);
+
+// -- 配件返厂/退货 财务台账 (方案C): 退款应收/维修费/报废损失 + 供应商对账
+export interface PartReturn {
+  id: number;
+  material_code: string;
+  material_name: string | null;
+  warehouse: string;
+  qty: number;
+  disposition: string;        // returned / repaired / scrapped
+  amount_kind: string;        // refund / repair_fee / scrap_loss
+  amount: number | null;
+  reason: string | null;
+  supplier: string | null;
+  related_purchase_no: string | null;
+  alipay_flow_no: string | null;
+  tracking_no: string | null;
+  status: string;             // open / settled
+  actor: string | null;
+  processed_at: string | null;
+  remark: string | null;
+}
+
+export interface PartReturnSummary {
+  pending_refund: number;
+  received_refund: number;
+  repair_fee_total: number;
+  scrap_loss_total: number;
+  open_count: number;
+  total_count: number;
+}
+
+export const listPartReturns = (status?: string) =>
+  api.get<PartReturn[]>('/api/part-returns', { params: status ? { status } : {} }).then(r => r.data);
+
+export const partReturnSummary = () =>
+  api.get<PartReturnSummary>('/api/part-returns/summary').then(r => r.data);
+
+export const settlePartReturn = (
+  id: number,
+  payload: { alipay_flow_no?: string; remark?: string },
+) => api.post<PartReturn>(`/api/part-returns/${id}/settle`, payload).then(r => r.data);
 // updateProductInventory defined above (with full patch type)
 
 // -- 异常工作台

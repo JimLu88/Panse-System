@@ -14,7 +14,9 @@ from app.models.material import Material
 from app.schemas.inventory import (
     PartInventoryAddResponse, PartInventoryCreate, PartInventoryOut, PartInventoryWithStats,
 )
-from app.services import inventory_service, part_defect_service, part_inventory_service
+from app.services import (
+    inventory_service, part_defect_service, part_inventory_service, part_return_service,
+)
 
 
 class PartInventoryPatch(BaseModel):
@@ -150,6 +152,12 @@ class DefectMarkIn(BaseModel):
 class DefectResolveIn(BaseModel):
     qty: Decimal
     disposition: str   # repaired(回良品) / scrapped(报废) / returned(退货退款)
+    # 财务闭环 (方案C, 均可选): 金额 = 退款应收/维修费/报废损失; 供应商/原采购单/返厂快递单号
+    amount: Optional[Decimal] = None
+    supplier: Optional[str] = None
+    related_purchase_no: Optional[str] = None
+    tracking_no: Optional[str] = None
+    reason: Optional[str] = None
     remark: Optional[str] = None
 
 
@@ -185,16 +193,22 @@ def resolve_part_defective(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """处理待返厂坏件: repaired 回良品 / scrapped 报废 / returned 退货退款."""
+    """处理待返厂坏件: repaired 回良品 / scrapped 报废 / returned 退货退款.
+
+    同步生成一条返厂台账 (part_returns) 记录这次处置的钱, 供应商对账用 (方案C)。
+    """
     inv = db.get(PartInventory, inventory_id)
     if not inv:
         raise HTTPException(404, "inventory row not found")
     try:
-        part_defect_service.resolve_defective(
+        part_return_service.record_resolution(
             db, material_code=inv.material_code, qty=payload.qty,
-            disposition=payload.disposition,
+            disposition=payload.disposition, warehouse=inv.warehouse,
             actor=getattr(user, "username", None) or "user",
-            remark=payload.remark, warehouse=inv.warehouse,
+            amount=payload.amount, supplier=payload.supplier,
+            related_purchase_no=payload.related_purchase_no,
+            tracking_no=payload.tracking_no, reason=payload.reason,
+            remark=payload.remark,
         )
     except ValueError as e:
         db.rollback()
