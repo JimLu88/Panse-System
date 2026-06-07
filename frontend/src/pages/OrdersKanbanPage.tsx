@@ -15,16 +15,30 @@ const COLUMNS: { key: string; label: string; color: string; next?: string }[] = 
   { key: 'pending_payment', label: '待付款', color: 'default', next: 'paid' },
   { key: 'paid', label: '已付款', color: 'cyan', next: 'shipped' },
   { key: 'shipped', label: '已发货', color: 'blue', next: 'signed' },
-  { key: 'signed', label: '已签收', color: 'green' },
   { key: 'aftersales', label: '售后中', color: 'orange' },
 ];
+const COL_CAP = 25; // 每列默认最多显示这么多张, 超出折叠
+
+// 导入订单状态多为中文(交易成功 / 买家已付款,等待卖家发货 / 交易关闭…), 归一到看板列
+function normStatus(raw: string): string {
+  const s = raw || '';
+  if (['pending_payment', 'paid', 'shipped', 'signed', 'aftersales', 'cancelled'].includes(s)) return s;
+  if (/售后|退款|退货/.test(s)) return 'aftersales';
+  if (/关闭|取消/.test(s)) return 'cancelled';
+  if (/等待买家付款|待付款/.test(s)) return 'pending_payment';
+  if (/成功|已签收|已收货|已完成/.test(s)) return 'signed';
+  if (/已发货|等待买家确认|待收货|运输/.test(s)) return 'shipped';
+  if (/已付款|等待卖家发货|待发货/.test(s)) return 'paid';
+  return 'other';
+}
 
 export default function OrdersKanbanPage() {
   const qc = useQueryClient();
   const [timelineFor, setTimelineFor] = useState<number | null>(null);
+  const [expandedCols, setExpandedCols] = useState<Record<string, boolean>>({});
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
-    queryFn: () => listOrders({ limit: 200 }),
+    queryFn: () => listOrders({ limit: 1000 }),
     refetchInterval: 30000,
   });
 
@@ -60,15 +74,23 @@ export default function OrdersKanbanPage() {
 
   const grouped: Record<string, any[]> = {};
   COLUMNS.forEach((c) => { grouped[c.key] = []; });
+  const hidden = { signed: 0, cancelled: 0, other: 0 };
   (orders || []).forEach((o: any) => {
-    if (grouped[o.status]) grouped[o.status].push(o);
+    const k = normStatus(o.status);
+    if (grouped[k]) grouped[k].push(o);
+    else if (k === 'signed') hidden.signed += 1;
+    else if (k === 'cancelled') hidden.cancelled += 1;
+    else hidden.other += 1;
   });
+  // 每列按下单日期倒序(新→旧), 便于折叠较旧的单
+  Object.values(grouped).forEach((list) =>
+    list.sort((a, b) => String(b.order_date || '').localeCompare(String(a.order_date || ''))));
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
-             message="订单看板视图: 一眼看到瓶颈在哪一档"
-             description="点订单卡片查时间线; 点 [→ 下一档] 推进状态 (走状态机校验)" />
+             message="订单看板视图: 一眼看到瓶颈在哪一档（只显示进行中的订单）"
+             description={`点订单卡片查时间线; 点 [→ 下一档] 推进状态。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`} />
       <Row gutter={12}>
         {COLUMNS.map((col) => (
           <Col key={col.key} span={Math.floor(24 / COLUMNS.length)}>
@@ -86,7 +108,8 @@ export default function OrdersKanbanPage() {
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
                        description={<span style={{ color: '#bbb' }}>无</span>} />
               ) : (
-                grouped[col.key].map((o: any) => (
+                <>
+                {(expandedCols[col.key] ? grouped[col.key] : grouped[col.key].slice(0, COL_CAP)).map((o: any) => (
                   <Card
                     key={o.id}
                     size="small"
@@ -152,7 +175,14 @@ export default function OrdersKanbanPage() {
                       </Space>
                     </Space>
                   </Card>
-                ))
+                ))}
+                {grouped[col.key].length > COL_CAP && (
+                  <Button type="dashed" size="small" block style={{ marginTop: 4 }}
+                          onClick={() => setExpandedCols((p) => ({ ...p, [col.key]: !p[col.key] }))}>
+                    {expandedCols[col.key] ? '收起' : `还有 ${grouped[col.key].length - COL_CAP} 单 · 展开`}
+                  </Button>
+                )}
+                </>
               )}
             </Card>
           </Col>

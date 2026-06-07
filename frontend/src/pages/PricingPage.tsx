@@ -75,7 +75,7 @@ function EditableNumberCell({ value, onSave }: { value: number | null; onSave: (
   useEffect(() => { setVal(value); }, [value]);
   if (!editing) {
     return (
-      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title="点击编辑">
+      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title="点击改为手动值（公式见列名 ⓘ；之后在「公式规则」页批量重算可按公式还原）">
         {value === null || value === undefined
           ? <Typography.Text type="secondary">—</Typography.Text>
           : `¥${Number(value).toLocaleString()}`}

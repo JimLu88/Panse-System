@@ -41,28 +41,28 @@ _DEFAULT_SLOW_MOVING_DAYS = 60
 _DEFAULT_LEAD_TIME_DAYS = 30
 
 
-def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str], days: int = 30) -> float:
-    """近 N 天真实订单中该 SKU 的日均发货量。"""
+def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = None, days: int = 30) -> float:
+    """近 N 天该产品的真实订单日均发货量 (产品级, 所有尺寸合计)。
+
+    注: 订单的 sku 串(淘宝SKU)与库存的 sku 串(描述)口径不一致, 按 sku 精确匹配会恒为 0;
+    故按 product_code(含 PPS/PFG/P 品牌变体)汇总到产品级, 同一产品各尺寸行共享该日均 (近似但可用)。
+    不排除 is_historical: 批量导入默认标历史, 但那正是要分析的销售史。
+    """
     cutoff = date.today() - timedelta(days=days)
     # 同一实物跨品牌(PPS/PFG)+订单去品牌(P) 按数字主体归并 → 全部等价编码一起统计销量
     pc_candidates = product_coder.brand_variants(product_code) or {product_code}
-    stmt = (
-        select(func.coalesce(func.sum(Order.qty), 0))
-        .where(
+    total = float(db.execute(
+        select(func.coalesce(func.sum(Order.qty), 0)).where(
             Order.product_code.in_(pc_candidates),
             Order.is_refill == False,  # noqa: E712  补单不算真实销量
             Order.order_date >= cutoff,
-            # 排除 已关闭/取消/未付款 (兼容导入的中文平台状态 + 系统枚举);
-            # 不排除 is_historical: 批量导入默认标历史, 但那正是要分析的销售史。
+            # 排除 已关闭/取消/未付款 (兼容导入的中文平台状态 + 系统枚举)
             Order.status.notin_(["cancelled", "pending_payment"]),
             ~Order.status.like("%关闭%"),
             ~Order.status.like("%取消%"),
             ~Order.status.like("%等待买家付款%"),
         )
-    )
-    if sku:
-        stmt = stmt.where(Order.sku == sku)
-    total = float(db.execute(stmt).scalar() or 0)
+    ).scalar() or 0)
     return round(total / days, 3)
 
 

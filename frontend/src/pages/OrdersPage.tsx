@@ -264,9 +264,17 @@ export default function OrdersPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 120,
       render: (v: string) => {
-        const m = STATUS_META[v] ?? { label: v, color: 'default' };
+        // 导入的淘宝中文长状态 → 短标签, 避免撑爆列、挡住右侧「物流/查款」
+        const RAW: Record<string, { label: string; color: string }> = {
+          '买家已付款,等待卖家发货': { label: '待发货', color: 'cyan' },
+          '卖家已发货，等待买家确认': { label: '待收货', color: 'blue' },
+          '交易成功': { label: '交易成功', color: 'green' },
+          '交易关闭': { label: '已关闭', color: 'default' },
+          '等待买家付款': { label: '待付款', color: 'gold' },
+        };
+        const m = STATUS_META[v] ?? RAW[v] ?? { label: v, color: 'default' };
         return <Tag color={m.color}>{m.label}</Tag>;
       },
     },

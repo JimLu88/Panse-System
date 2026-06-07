@@ -120,7 +120,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="过去30天日均真实订单发货量（不含补单）">日均销量</Tooltip>
+        <Tooltip title="该产品(所有尺寸合计)近30天真实订单日均发货量（不含补单）；同一产品各尺寸行共享此值">日均销量</Tooltip>
       ),
       dataIndex: 'daily_sales_30d',
       width: 90,
