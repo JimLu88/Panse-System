@@ -53,6 +53,7 @@ const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
 const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
 const CashFlowPage = lazy(() => import('./pages/CashFlowPage'));
 const DataExplorerPage = lazy(() => import('./pages/DataExplorerPage'));
+const SettlementsPage = lazy(() => import('./pages/SettlementsPage'));
 
 const { Header, Content } = Layout;
 
@@ -201,6 +202,7 @@ export default function App() {
         { key: 'cash-flow', label: <Link to="/cash-flow">剩余流水</Link> },
         { key: 'alipay', label: <Link to="/alipay">支付宝 / 账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
+        { key: 'settlements', label: <Link to="/settlements">结算对账</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
         { key: 'assets', label: <Link to="/assets">资产</Link> },
@@ -342,6 +344,7 @@ export default function App() {
             <Route path="/logistics-bills" element={<LogisticsBillsPage />} />
             <Route path="/refill-records" element={<RefillRecordsPage />} />
             <Route path="/cash-flow" element={<CashFlowPage />} />
+            <Route path="/settlements" element={<SettlementsPage />} />
             <Route path="/data-explorer" element={<DataExplorerPage />} />
           </Routes>
         </Suspense>
