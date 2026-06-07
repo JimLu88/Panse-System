@@ -90,6 +90,7 @@ import {
   fetchLogisticsConfig,
   updateLogisticsConfig,
 } from '../api/client';
+import { syncAllShipments } from '../api/shipments';
 import { useAuth } from '../auth/AuthProvider';
 
 export default function AdminPage() {
@@ -586,6 +587,20 @@ function LogisticsForm() {
     },
   });
 
+  const syncMut = useMutation({
+    mutationFn: () => syncAllShipments(),
+    onSuccess: (r) => {
+      if (r.skipped) {
+        message.warning(`物流未配置: ${r.skipped}`);
+      } else {
+        message.success(
+          `同步完成: 检查 ${r.checked} 单, 新建 ${r.synced ?? 0}, 已签收 ${r.signed}, 失败 ${r.errors}`,
+        );
+      }
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '同步失败'),
+  });
+
   if (isLoading || !data) return null;
 
   return (
@@ -627,6 +642,14 @@ function LogisticsForm() {
           </Space>
         }
       />
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Button icon={<ReloadOutlined />} loading={syncMut.isPending} onClick={() => syncMut.mutate()}>
+          立即同步全部物流
+        </Button>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          扫描所有在途订单/售后/工厂单/补单/采购的快递单号并立即批量刷新 (无需等定时任务)
+        </Typography.Text>
+      </Space>
       <Form.Item label="启用 provider" style={{ marginBottom: 12 }}>
         <Select
           size="small"
