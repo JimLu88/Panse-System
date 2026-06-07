@@ -695,6 +695,7 @@ async def import_qianniu_orders(
 class TaobaoImportResult(BaseModel):
     detected_format: str
     inserted: int
+    updated: int = 0
     skipped_duplicate: int
     skipped_invalid: int
     needs_review: int
@@ -739,6 +740,7 @@ async def import_taobao(
     return TaobaoImportResult(
         detected_format=rep.detected_format,
         inserted=rep.inserted,
+        updated=rep.updated,
         skipped_duplicate=rep.skipped_duplicate,
         skipped_invalid=rep.skipped_invalid,
         needs_review=rep.needs_review,

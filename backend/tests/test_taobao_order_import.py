@@ -2,6 +2,7 @@
 """淘宝订单多格式自动识别导入测试。"""
 import csv
 import io
+from decimal import Decimal
 
 from openpyxl import Workbook
 
@@ -90,7 +91,11 @@ def test_import_qianniu_multi(db_session):
     assert o.customer_phone == "13800138000"
     assert o.carrier == "圆通"                   # 订单报表关联
     assert o.status == "paid"
-    assert o.is_historical is True
+    # 活跃订单必须 is_historical=False, 否则现金流"待确认收货/未发货"过滤不到 (修复:历史病根)
+    assert o.is_historical is False
+    # 财务列落库 (现金流/逐笔对账靠它们)
+    assert o.buyer_payable_amount == Decimal("2104.80")
+    assert o.paid_amount == Decimal("2104.80")
 
 
 def test_import_sales_detail_csv(db_session):
@@ -104,11 +109,25 @@ def test_import_sales_detail_csv(db_session):
 
 
 def test_import_dedup(db_session):
+    """再次导入同文件: 不重复插入, 改走 UPSERT 更新 (现金流要靠再导更新历史单的状态)。"""
     raw = _sales_detail_csv_bytes()
     tio.import_taobao_orders(db_session, "ItemList.csv", raw)
     rep2 = tio.import_taobao_orders(db_session, "ItemList.csv", raw)
     assert rep2.inserted == 0
-    assert rep2.skipped_duplicate == 1
+    assert rep2.updated == 1
+    assert db_session.query(Order).filter_by(order_no="B200").count() == 1   # 仍只一行
+
+
+def test_reimport_updates_status_and_amount(db_session):
+    """病根修复验证: 已存在订单(如旧导入卡在 pending_payment)再导时, 状态/金额被淘宝导出刷新。"""
+    o = Order(platform="淘宝", order_no="B200", status="pending_payment")
+    db_session.add(o)
+    db_session.commit()
+    rep = tio.import_taobao_orders(db_session, "ItemList.csv", _sales_detail_csv_bytes())
+    assert rep.inserted == 0 and rep.updated == 1
+    o2 = db_session.query(Order).filter_by(order_no="B200").one()
+    assert o2.status == "signed"                          # pending_payment → signed
+    assert o2.buyer_payable_amount == Decimal("2933.78")  # 金额回填
 
 
 def test_import_multi_line_order(db_session):

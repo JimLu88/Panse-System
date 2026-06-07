@@ -169,6 +169,7 @@ def _clean(v: Any) -> Optional[str]:
 class TaobaoImportReport:
     detected_format: str = "unknown"
     inserted: int = 0
+    updated: int = 0                # 已存在订单被回填状态/金额 (再次导入更新)
     skipped_duplicate: int = 0
     skipped_invalid: int = 0
     needs_review: int = 0           # 订单号损坏等, 已入库但标注待核
@@ -188,8 +189,17 @@ class _OrderRow:
     customer_address: Any = None
     carrier: Any = None
     tracking_no: Any = None
-    paid_amount: Any = None
+    paid_amount: Any = None          # 买家应付货款 (兜底, 老逻辑沿用)
     status_text: Any = None
+    # 财务列 (订单报表/销售明细自带, 现金流"待确认收货/未发货/平台费"全靠它们)
+    buyer_payable: Any = None        # 买家应付货款
+    paid_real: Any = None            # 买家实付金额 (买家真实支付 = 我方应收)
+    shop_received: Any = None        # 打款商家金额 (店铺实收, 历史CSV有)
+    platform_fee: Any = None         # 卖家服务费 (平台服务费)
+    refund: Any = None               # 退款金额
+    ship_time: Any = None            # 发货时间
+    confirm_time: Any = None         # 确认收货时间
+    shop: Any = None                 # 店铺名称
     lines: list[dict] = field(default_factory=list)   # 每个商品行
 
 
@@ -283,6 +293,15 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "buyer_due": g(row, "买家应付货款", "买家实付金额"),
                 "status": g(row, "订单状态"),
                 "create": g(row, "订单创建时间", "订单付款时间"),
+                # 财务列 (订单报表自带): 应付/实付/实收/平台费/退款/发货确认时间/店铺
+                "payable": g(row, "买家应付货款"),
+                "paid_real": g(row, "买家实付金额", "买家实际支付金额"),
+                "shop_received": g(row, "打款商家金额"),
+                "platform_fee": g(row, "卖家服务费", "平台服务费"),
+                "refund": g(row, "退款金额"),
+                "ship_time": g(row, "发货时间"),
+                "confirm_time": g(row, "确认收货时间"),
+                "shop": g(row, "店铺名称"),
             }
 
     # 发货报表: 单级 客户信息
@@ -330,6 +349,14 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                     carrier=r.get("carrier"), tracking_no=r.get("tracking"),
                     paid_amount=r.get("buyer_due") or g3(row, "买家应付货款"),
                     status_text=r.get("status") or g3(row, "订单状态"),
+                    buyer_payable=r.get("payable") or g3(row, "买家应付货款"),
+                    paid_real=r.get("paid_real") or g3(row, "买家实付金额"),
+                    shop_received=r.get("shop_received"),
+                    platform_fee=r.get("platform_fee"),
+                    refund=r.get("refund") or g3(row, "退款金额"),
+                    ship_time=r.get("ship_time") or g3(row, "发货时间"),
+                    confirm_time=r.get("confirm_time") or g3(row, "确认收货时间"),
+                    shop=r.get("shop"),
                 )
                 orders[no] = o
             merchant = g3(row, "商家编码", "外部系统编号")
@@ -386,6 +413,14 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
                 tracking_no=gv(row, "物流单号", "运单号"),
                 paid_amount=gv(row, "买家应付货款", "买家实付金额", "实付金额"),
                 status_text=gv(row, "订单状态"),
+                buyer_payable=gv(row, "买家应付货款"),
+                paid_real=gv(row, "买家实付金额", "买家实际支付金额", "实付金额"),
+                shop_received=gv(row, "打款商家金额"),
+                platform_fee=gv(row, "卖家服务费", "平台服务费"),
+                refund=gv(row, "退款金额"),
+                ship_time=gv(row, "发货时间"),
+                confirm_time=gv(row, "确认收货时间"),
+                shop=gv(row, "店铺名称"),
             )
             orders[no] = o
         merchant = gv(row, "商家编码", "外部系统编号")
@@ -410,9 +445,8 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if not no:
             rep.skipped_invalid += 1
             continue
-        if no in seen or db.execute(select(Order.id).where(Order.order_no == no)).first():
+        if no in seen:
             rep.skipped_duplicate += 1
-            seen.add(no)
             continue
         seen.add(no)
 
@@ -429,19 +463,15 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 for l in lines if l is not primary
             ]
             remark = "本单含%d个商品, 其余: %s" % (len(lines), "; ".join(others))
-
-        flags = []
         if o.order_no_bad:
-            flags.append("订单号科学计数法损坏(需人工核对)")
             rep.needs_review += 1
-        if flags:
-            remark = (remark + " | " if remark else "") + "⚠️ " + "; ".join(flags)
+            remark = (remark + " | " if remark else "") + "⚠️ 订单号科学计数法损坏(需人工核对)"
 
         _pname = _clean(primary.get("product_name"))
         _sku = _clean(primary.get("sku"))
         _product_code = primary.get("product_code") or None
         _sku_code = primary.get("sku_code")
-        _shop = None
+        _shop = _clean(o.shop)
         # Task 6: 用对应表按 skuId(精确) / 16位商家编码 反查 SKU编码/产品编码/店铺
         hit = taobao_listing_service.resolve_line(
             resolver, sku_id=primary.get("sku_id"), merchant_code=primary.get("sku_code"),
@@ -449,11 +479,58 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if hit:
             _sku_code = hit.get("sku_code") or _sku_code
             _product_code = hit.get("product_code") or _product_code
-            _shop = hit.get("shop")
+            _shop = hit.get("shop") or _shop
+
+        # 财务字段 (淘宝导出为准): 应付/实付/实收/平台费/退款/发货日
+        status = _map_status(o.status_text)
+        payable = _to_decimal(o.buyer_payable)
+        paid = _to_decimal(o.paid_real) or _to_decimal(o.paid_amount)
+        received = _to_decimal(o.shop_received)
+        pfee = _to_decimal(o.platform_fee)
+        refund = _to_decimal(o.refund)
+        ship_dt = _to_date(o.ship_time)
+
+        existing = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if existing is not None:
+            # 再次导入: 状态/金额以淘宝导出为准(覆盖); 描述/客户仅在缺失时回填;
+            # 不动 is_historical / is_refill / remark (避免覆盖人工标注)。
+            existing.status = status
+            if payable is not None:
+                existing.buyer_payable_amount = payable
+            if paid is not None:
+                existing.paid_amount = paid
+            if received is not None:
+                existing.shop_received_amount = received
+            if pfee is not None:
+                existing.platform_fee = pfee
+            if refund is not None:
+                existing.refund_amount = refund
+            if ship_dt is not None:
+                existing.ship_date = ship_dt
+            if _shop and not existing.shop:
+                existing.shop = _shop
+            if _pname and not existing.product_name:
+                existing.product_name = _pname
+            if _sku and not existing.sku:
+                existing.sku = _sku
+            if _product_code and not existing.product_code:
+                existing.product_code = _product_code
+            if _sku_code and not existing.sku_code:
+                existing.sku_code = _sku_code
+            if o.customer_name and not existing.customer_name:
+                existing.customer_name = _clean(o.customer_name)
+            if o.customer_phone and not existing.customer_phone:
+                existing.customer_phone = _clean(o.customer_phone)
+            if o.customer_address and not existing.customer_address:
+                existing.customer_address = _clean(o.customer_address)
+            rep.updated += 1
+            continue
+
         order = Order(
             platform=(platform or "淘宝").strip(),
             order_no=no,
             order_date=_to_date(o.order_date),
+            ship_date=ship_dt,
             customer_name=_clean(o.customer_name),
             customer_phone=_clean(o.customer_phone),
             customer_address=_clean(o.customer_address),
@@ -465,9 +542,14 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             qty=_to_int(primary.get("qty"), default=1),
             carrier=_clean(o.carrier),
             tracking_no=_clean(o.tracking_no),
-            paid_amount=_to_decimal(o.paid_amount),
-            status=_map_status(o.status_text),
-            is_historical=True,
+            buyer_payable_amount=payable,
+            paid_amount=paid,
+            shop_received_amount=received,
+            platform_fee=pfee,
+            refund_amount=refund,
+            status=status,
+            # 现金流"待确认收货/未发货"靠活跃单的金额; 故不再一律 historical
+            is_historical=False,
             remark=remark,
             warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )

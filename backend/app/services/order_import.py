@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.models.order import Order
 from app.services import order_cost_service
+from app.services.taobao_order_import import _map_status  # 淘宝订单状态文本→内部status (单一来源)
 
 # 列名别名表：CSV 头 (规范化后) → Order 字段
 COLUMN_ALIASES: dict[str, str] = {
@@ -40,10 +41,18 @@ COLUMN_ALIASES: dict[str, str] = {
     "物流公司": "carrier",
     "物流单号": "tracking_no",
     "实付金额": "paid_amount",
-    "应付金额": "paid_amount",
     "买家实付金额": "paid_amount",
     "买家实际支付金额": "paid_amount",
-    "买家应付货款": "paid_amount",
+    "买家应付货款": "buyer_payable_amount",   # 应付≠实付, 分开存 (逐笔对账/现金流都要)
+    "应付金额": "buyer_payable_amount",
+    "打款商家金额": "shop_received_amount",    # 店铺实收 (历史CSV有此列)
+    "卖家服务费": "platform_fee",
+    "平台服务费": "platform_fee",
+    "退款金额": "refund_amount",
+    "店铺名称": "shop",
+    "店铺": "shop",
+    "订单状态": "status",                      # 淘宝订单状态 → 修复"全部pending_payment"病根
+    "发货时间": "ship_date",
     "主订单编号": "order_no",
     "订单创建时间": "order_date",
     "宝贝标题": "product_name",
@@ -103,8 +112,11 @@ def _to_int(v: Any, default: int = 0) -> int:
 def _to_decimal(v: Any) -> Optional[Decimal]:
     if v is None or v == "":
         return None
+    s = str(v).replace(",", "").replace("¥", "").replace("元", "").strip()
+    if not s:
+        return None
     try:
-        return Decimal(str(v))
+        return Decimal(s)
     except (InvalidOperation, ValueError):
         return None
 
@@ -148,18 +160,34 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
         ).scalar_one_or_none()
         if existing is not None:
             changed = False
-            amt = _to_decimal(payload.get("paid_amount"))
-            if amt and not existing.paid_amount:
-                existing.paid_amount = amt
+            _payable = _to_decimal(payload.get("buyer_payable_amount"))
+            _paid = _to_decimal(payload.get("paid_amount")) or _payable
+            if _paid and not existing.paid_amount:
+                existing.paid_amount = _paid
                 changed = True
-            nm = payload.get("customer_name")
-            if nm and not existing.customer_name:
-                existing.customer_name = nm
+            if _payable and not existing.buyer_payable_amount:
+                existing.buyer_payable_amount = _payable
                 changed = True
-            ph = payload.get("customer_phone")
-            if ph and not existing.customer_phone:
-                existing.customer_phone = ph
+            for fld in ("shop_received_amount", "platform_fee", "refund_amount"):
+                v = _to_decimal(payload.get(fld))
+                if v is not None and getattr(existing, fld) is None:
+                    setattr(existing, fld, v)
+                    changed = True
+            # 订单状态: 有『订单状态』列就以淘宝导出为准刷新 (修复历史单卡 pending_payment)
+            if payload.get("status"):
+                new_status = _map_status(payload.get("status"))
+                if new_status != existing.status:
+                    existing.status = new_status
+                    changed = True
+            sd = _to_date(payload.get("ship_date"))
+            if sd and not existing.ship_date:
+                existing.ship_date = sd
                 changed = True
+            for fld in ("customer_name", "customer_phone", "shop"):
+                v = payload.get(fld)
+                if v and not getattr(existing, fld):
+                    setattr(existing, fld, v)
+                    changed = True
             if changed:
                 report.backfilled += 1
             else:
@@ -185,8 +213,14 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
             qty=_to_int(payload.get("qty"), default=1),
             carrier=payload.get("carrier"),
             tracking_no=payload.get("tracking_no"),
-            paid_amount=_to_decimal(payload.get("paid_amount")),
-            status="pending_payment",
+            buyer_payable_amount=_to_decimal(payload.get("buyer_payable_amount")),
+            paid_amount=_to_decimal(payload.get("paid_amount")) or _to_decimal(payload.get("buyer_payable_amount")),
+            shop_received_amount=_to_decimal(payload.get("shop_received_amount")),
+            platform_fee=_to_decimal(payload.get("platform_fee")),
+            refund_amount=_to_decimal(payload.get("refund_amount")),
+            shop=payload.get("shop"),
+            # 订单状态映射 (淘宝导出); 无『订单状态』列时 _map_status 返回 pending_payment (原默认)
+            status=_map_status(payload.get("status")),
             warehouse=order_cost_service.default_warehouse_for(_product_name, _sku, _is_refill),
         )
         db.add(order)
