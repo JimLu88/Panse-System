@@ -187,7 +187,7 @@ frontend/src/
   1. ✅ **飞书机器人**（长连接 WebSocket，免公网/免验签）：`feishu_ws_service.py`(lark-oapi WS 客户端，收 `im.message.receive_v1`+`card.action.trigger`) + `feishu_bot_service.py`(收图→`classify_image`分类→卡片选→`process_pick`异步入库+patch更新卡片)；`feishu_client.download_message_resource/reply_card/patch_card`。**opt-in**：`ENABLE_FEISHU_BOT=1` + 配凭证才起（`main.py` lifespan）。卡片回调 3 秒内 ack toast、入库放后台线程后 patch 更新。**上线需用户配飞书自建应用凭证 + 开放平台事件订阅(选长连接)**，见 `docs/feishu-bot.md`。供应商送货单完整入库仍待接 `delivery_storage`。已做(`bf541c3` webhook骨架 → 长连接重做)。
   2. ✅ **推广 ROI 按月占比**（`roi_service.monthly_breakdown`，`/api/marketing/roi/monthly`，营销页按月表）— 已做(`4a8abd3`)。
   3. ✅ **对账缺口诊断**（`order_reconciliation_service.coverage_gap`，`/api/settlements/reconciliation/gap`，逐笔对账缺口卡片）— 已做(`7c42f29`)；继续提覆盖率仍需补导早期订单/billDetail/企业号流水(数据侧)。
-- **现金流后续可选**：活跃单 `theoretical_cost` 反推(`order_cost_service.recompute_all`)让"工厂未开账单预估"更准；`FactoryOrder.payment_status` 对账回填消除工厂欠款虚高。
+- ✅ **现金流准确度两项已做**：① 工厂欠款对账回填 `factory_payment_service.backfill_payment_status`(证据:流水号/付款日 + 推断:关联订单已签收且超结算周期45天→已付，写备注审计)，`POST /api/finance/factory-payment/backfill`，消除欠款虚高；② 反推理论成本复用 `order_cost_service.recompute_all`(`POST /api/orders/recompute-costs`)。两者前端在 财务→剩余流水 顶栏「工厂欠款回填」「反推理论成本」按钮。
 
 ## 11. 相关文档
 

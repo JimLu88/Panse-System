@@ -943,6 +943,24 @@ def update_cash_flow_settings(payload: CashFlowSettingsIn, db: Session = Depends
     return cash_flow_service.compute_summary(db)
 
 
+@router.post("/factory-payment/backfill")
+def backfill_factory_payment(
+    settlement_days: int = Query(45, ge=0, description="结算周期天数(超此且关联订单已签收判已结)"),
+    apply_settled_inference: bool = Query(True, description="是否启用已结算推断(规则B)"),
+    dry_run: bool = Query(False, description="只统计不落库"),
+    db: Session = Depends(get_db),
+):
+    """工厂订单付款状态对账回填 — 消除"工厂欠款虚高"(payment_status 默认 unpaid 从未回填)。"""
+    from app.services import factory_payment_service
+    result = factory_payment_service.backfill_payment_status(
+        db, settlement_days=settlement_days,
+        apply_settled_inference=apply_settled_inference, dry_run=dry_run,
+    )
+    if not dry_run:
+        db.commit()
+    return result
+
+
 # -------- 对账差异 AI 诊断 --------
 
 class ReconciliationDiagnosisOut(BaseModel):

@@ -442,3 +442,24 @@ export const updateCashFlowSettings = (payload: {
   total_investment?: string;
 }) =>
   api.put<CashFlowSummary>('/api/finance/cash-flow/settings', payload).then((r) => r.data);
+
+// 工厂欠款对账回填 (消除虚高): 有流水号/付款日 或 关联订单已签收且超结算周期 → 标已付
+export interface FactoryPaymentBackfillResult {
+  scanned: number;
+  by_evidence: number;
+  by_settled: number;
+  still_unpaid: number;
+  settlement_days: number;
+  dry_run: boolean;
+}
+export const backfillFactoryPayment = (params: {
+  settlement_days?: number; apply_settled_inference?: boolean; dry_run?: boolean;
+} = {}) =>
+  api.post<FactoryPaymentBackfillResult>('/api/finance/factory-payment/backfill', null, { params })
+    .then((r) => r.data);
+
+// 反推活跃单理论成本 (让"工厂未开账单预估"不再缺成本)
+export interface RecomputeCostResult { updated: number; skipped_no_bom: number; total: number; }
+export const recomputeOrderCosts = (only_missing = true) =>
+  api.post<RecomputeCostResult>('/api/orders/recompute-costs', null, { params: { only_missing } })
+    .then((r) => r.data);
