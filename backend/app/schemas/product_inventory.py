@@ -38,6 +38,9 @@ class ProductInventoryOut(BaseModel):
 
 class ProductInventoryWithStats(ProductInventoryOut):
     """ProductInventoryOut + 实时推算字段（不存库，每次请求计算）。"""
+    id: Optional[int] = None        # 无库存产品(虚拟行)无 id
+    product_name: Optional[str] = None
+    has_inventory: bool = True      # False = 该产品还没建库存行(前端折叠到"无库存")
     available_qty: float
     daily_sales_30d: float
     lead_time_days_computed: Optional[int]

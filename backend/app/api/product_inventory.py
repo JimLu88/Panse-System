@@ -36,6 +36,7 @@ def list_product_inventory(
     warehouse: Optional[str] = None,
     product_code: Optional[str] = None,
     warning_only: bool = Query(False, description="只显示需要关注的库存 (warning/danger/critical/excess)"),
+    include_all: bool = Query(False, description="含还没建库存行的产品(虚拟行, has_inventory=False, 前端折叠)"),
     limit: int = Query(200, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -49,7 +50,9 @@ def list_product_inventory(
     rows = db.execute(stmt).scalars().all()
 
     result = []
+    covered: set[str] = set()
     for inv in rows:
+        covered.add(inv.product_code)
         stats = product_inventory_service.compute_product_stats(db, inv)
         if warning_only and stats["warning_status"] == "ok":
             continue
@@ -58,6 +61,8 @@ def list_product_inventory(
             "warehouse": inv.warehouse,
             "product_code": inv.product_code,
             "sku": inv.sku,
+            "product_name": getattr(inv, "product_name", None),
+            "has_inventory": True,
             "spec": inv.spec,
             "unit": inv.unit,
             "physical_qty": inv.physical_qty,
@@ -70,6 +75,24 @@ def list_product_inventory(
             **stats,
         }
         result.append(ProductInventoryWithStats(**row_dict))
+
+    # 含全部产品: 把还没建库存行的产品也带出来(虚拟行, 前端折叠到"无库存")
+    if include_all and not warning_only and not (warehouse or product_code):
+        from app.models.product import Product
+        pstmt = select(Product)
+        if covered:
+            pstmt = pstmt.where(Product.code.notin_(covered))
+        for p in db.execute(pstmt.order_by(Product.code)).scalars().all():
+            result.append(ProductInventoryWithStats(
+                id=None, warehouse="-", product_code=p.code, sku=None,
+                product_name=getattr(p, "name", None), has_inventory=False,
+                spec=None, unit=None, physical_qty=Decimal("0"), locked_qty=Decimal("0"),
+                safety_stock=None, lead_time_days=None, slow_moving_days=None,
+                reorder_point=None, remark=None,
+                available_qty=0.0, daily_sales_30d=0.0, lead_time_days_computed=None,
+                safety_stock_computed=0.0, reorder_point_computed=0.0, days_of_stock=None,
+                warning_status="ok", auto_reorder_qty=0.0,
+            ))
     return result
 
 

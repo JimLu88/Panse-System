@@ -258,9 +258,11 @@ export const updateProduct = (id: number, payload: {
 
 // ----- Product Inventory (4a) -----
 export interface ProductInventoryRow {
-  id: number;
+  id: number | null;            // 无库存产品(虚拟行)无 id
   warehouse: string;
   product_code: string;
+  product_name?: string | null;
+  has_inventory?: boolean;      // false = 还没建库存行
   sku: string | null;
   spec: string | null;
   unit: string | null;
@@ -282,8 +284,10 @@ export interface ProductInventoryRow {
   auto_reorder_qty: number;
 }
 
-export const listProductInventory = (warningOnly = false) =>
-  api.get<ProductInventoryRow[]>('/api/inventory/products', { params: { warning_only: warningOnly } }).then((r) => r.data);
+export const listProductInventory = (warningOnly = false, includeAll = false) =>
+  api.get<ProductInventoryRow[]>('/api/inventory/products', {
+    params: { warning_only: warningOnly, include_all: includeAll },
+  }).then((r) => r.data);
 
 export const refreshProductInventoryStats = () =>
   api.post<{ updated: number; message: string }>('/api/inventory/products/refresh').then((r) => r.data);

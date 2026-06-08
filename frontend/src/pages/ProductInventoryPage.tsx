@@ -50,7 +50,8 @@ export default function ProductInventoryPage() {
 
   const { data, isLoading } = useQuery({
     queryKey: ['product-inventory', warningOnly],
-    queryFn: () => listProductInventory(warningOnly),
+    // 全部视图带出所有产品(含还没建库存行的, 前端折叠); 仅预警视图后端会忽略 include_all
+    queryFn: () => listProductInventory(warningOnly, !warningOnly),
   });
 
   const { data: products } = useQuery({
@@ -91,8 +92,11 @@ export default function ProductInventoryPage() {
       title: '产品', dataIndex: 'sku', width: 230,
       render: (_: any, r: ProductInventoryRow) => (
         <Space direction="vertical" size={0}>
-          <Typography.Text strong style={{ fontSize: 14 }}>{r.sku || r.product_code}</Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.product_code}</Typography.Text>
+          <Typography.Text strong style={{ fontSize: 14 }}>{r.sku || r.product_name || r.product_code}</Typography.Text>
+          <Space size={4}>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.product_code}</Typography.Text>
+            {r.has_inventory === false && <Tag color="default" style={{ fontSize: 10, lineHeight: '16px' }}>无库存行</Tag>}
+          </Space>
         </Space>
       ),
     },
@@ -191,6 +195,12 @@ export default function ProductInventoryPage() {
       title: '操作',
       width: 80,
       render: (_: any, r: ProductInventoryRow) => (
+        r.has_inventory === false || r.id == null ? (
+          <Button size="small" type="link" onClick={() => {
+            form.setFieldsValue({ product_code: r.product_code });
+            setOpen(true);
+          }}>建库存</Button>
+        ) : (
         <Button size="small" onClick={() => {
           setEditId(r.id);
           editForm.setFieldsValue({
@@ -203,21 +213,22 @@ export default function ProductInventoryPage() {
             remark: r.remark,
           });
         }}>编辑</Button>
+        )
       ),
     },
   ];
 
   const warningCount = data?.filter(r => r.warning_status !== 'ok').length ?? 0;
 
-  // 分区: 热销缺货(无货但近30天有销量) / 有货 / 无货且近期无销量(默认折叠)
+  // 三类: ① 需预警(全显示) ② 已建库存但不预警(折叠) ③ 还没建库存行的产品(折叠)
   const rows = data ?? [];
-  const alertRows = rows.filter((r) => r.available_qty <= 0 && r.daily_sales_30d > 0);
-  const inStockRows = rows.filter((r) => r.available_qty > 0);
-  const deadRows = rows.filter((r) => r.available_qty <= 0 && r.daily_sales_30d <= 0);
+  const alertRows = rows.filter((r) => r.warning_status !== 'ok');
+  const normalRows = rows.filter((r) => r.has_inventory !== false && r.warning_status === 'ok');
+  const noInvRows = rows.filter((r) => r.has_inventory === false);
 
   const renderInvTable = (list: ProductInventoryRow[], paginate: boolean) => (
     <Table
-      rowKey="id"
+      rowKey={(r) => (r.id != null ? String(r.id) : 'p:' + r.product_code)}
       columns={columns}
       dataSource={list}
       loading={isLoading}
@@ -286,27 +297,28 @@ export default function ProductInventoryPage() {
         renderInvTable(data ?? [], true)
       ) : (
         <Space direction="vertical" style={{ width: '100%' }} size="small">
-          {alertRows.length > 0 && (
-            <>
-              <Alert
-                type="error"
-                showIcon
-                message={`${alertRows.length} 个产品已缺货、但近 30 天仍有销量 — 建议优先补货`}
-              />
-              <Typography.Text strong style={{ color: '#cf1322' }}>
-                🔥 热销缺货 · 待补货（{alertRows.length}）
-              </Typography.Text>
-              {renderInvTable(alertRows, false)}
-            </>
-          )}
-          <Typography.Text strong>有货（{inStockRows.length}）</Typography.Text>
-          {renderInvTable(inStockRows, true)}
-          {deadRows.length > 0 && (
+          {/* ① 需预警的产品: 全部显示 */}
+          <Typography.Text strong style={{ color: alertRows.length ? '#cf1322' : undefined }}>
+            ⚠️ 需关注 · 预警（{alertRows.length}）{alertRows.length === 0 ? ' — 暂无' : ''}
+          </Typography.Text>
+          {alertRows.length > 0 && renderInvTable(alertRows, true)}
+
+          {/* ② 已建库存但不预警: 折叠 */}
+          <Collapse
+            items={[{
+              key: 'normal',
+              label: `有货 · 库存正常（${normalRows.length}）— 点击展开`,
+              children: renderInvTable(normalRows, true),
+            }]}
+          />
+
+          {/* ③ 还没建库存行的产品: 折叠 */}
+          {noInvRows.length > 0 && (
             <Collapse
               items={[{
-                key: 'dead',
-                label: `无货 · 近期无销量（${deadRows.length}）— 点击展开`,
-                children: renderInvTable(deadRows, true),
+                key: 'noinv',
+                label: `还没建库存行的产品（${noInvRows.length}）— 点击展开 · 可「建库存」`,
+                children: renderInvTable(noInvRows, true),
               }]}
             />
           )}
