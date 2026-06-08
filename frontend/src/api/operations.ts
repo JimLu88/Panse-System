@@ -372,6 +372,7 @@ export interface OpsTask {
   key: string;
   title: string;
   detail: string;
+  route?: string | null;
   done: boolean;
   done_at: string | null;
 }
