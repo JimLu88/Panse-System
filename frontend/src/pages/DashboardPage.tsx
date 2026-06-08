@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
 import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
+import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -224,6 +225,9 @@ export default function DashboardPage() {
 
       {/* 剩余流水 · 可用资金 (实时, 含数据红绿灯; 点击进完整页) */}
       <CashFlowBanner />
+
+      {/* 月度经营 (工厂口径利润/ROI + 销售占比饼图, 可切月; 未对清月标仅供参考) */}
+      <MonthlyOpsPanel />
 
       {/* KPI 卡片行 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>

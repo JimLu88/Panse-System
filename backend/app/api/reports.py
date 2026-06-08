@@ -19,7 +19,7 @@ from app.models.finance import AlipayFlow
 from app.models.knowledge import AiKnowledge
 from app.models.marketing import AfterSales, OutsourcingExpense, PromotionFlow
 from app.models.order import FactoryOrder, Order
-from app.services import asset_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service, shop_report_service
+from app.services import asset_service, dashboard_monthly_service, data_freshness_service, health_report, sales_analytics, sales_rollup_service, shop_report_service
 
 # 路由级守卫: 报表含财务数据, 统一要求登录 (此前多数端点无守卫, 外网下可被未登录读取)。
 router = APIRouter(
@@ -197,6 +197,23 @@ def sales_ranking(
     return sales_analytics.product_ranking(
         db, granularity=granularity, metric=metric, period=period, limit=limit,
     )
+
+
+@router.get("/monthly-pnl")
+def monthly_pnl(db: Session = Depends(get_db)):
+    """数据大盘·月度经营: 工厂口径利润 + 对账完成度(accurate/reference_only) + 推广ROI + 累计投资回收率, 逐月。"""
+    return dashboard_monthly_service.monthly_pnl(db)
+
+
+@router.get("/sales-mix")
+def sales_mix(
+    year: int = Query(...),
+    month: int = Query(..., ge=1, le=12),
+    by: str = Query("product", description="product(产品) / shop(店铺)"),
+    db: Session = Depends(get_db),
+):
+    """某月销售占比(饼图数据): 正式销售按 产品/店铺 维度, 剔除补差价邮费专链。"""
+    return dashboard_monthly_service.sales_mix(db, year=year, month=month, by=by)
 
 
 # ----------------------------- Phase 12: CSV 导出 -------------------- #
