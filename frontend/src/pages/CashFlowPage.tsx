@@ -72,6 +72,7 @@ export default function CashFlowPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [deposit, setDeposit] = useState<number | null>(null);
   const [investment, setInvestment] = useState<number | null>(null);
+  const [settlementDays, setSettlementDays] = useState<number | null>(null);
 
   const { data, isLoading } = useQuery<CashFlowSummary>({
     queryKey: ['cash-flow'],
@@ -83,6 +84,7 @@ export default function CashFlowPage() {
     mutationFn: () => updateCashFlowSettings({
       shop_deposit: deposit == null ? undefined : String(deposit),
       total_investment: investment == null ? undefined : String(investment),
+      factory_settlement_days: settlementDays == null ? undefined : settlementDays,
     }),
     onSuccess: (fresh) => {
       qc.setQueryData(['cash-flow'], fresh);
@@ -122,6 +124,7 @@ export default function CashFlowPage() {
     setDeposit(dep ? Number(dep.amount) : 0);
     // 总投资已移出减项, 单列"投资回收"块
     setInvestment(data.investment ? Number(data.investment.total_investment) : 0);
+    setSettlementDays(data.manual?.factory_settlement_days ?? 45);
     setEditOpen(true);
   };
 
@@ -263,6 +266,16 @@ export default function CashFlowPage() {
               parser={(v) => Number(`${v}`.replace(/,/g, '')) as any}
             />
             <Text type="secondary" style={{ fontSize: 12 }}>建议每月更新一次；超过 31 天未改会在上方变红提醒。</Text>
+          </div>
+          <div>
+            <Text>工厂结算周期（天）</Text>
+            <InputNumber
+              style={{ width: '100%' }} value={settlementDays} onChange={setSettlementDays}
+              min={0} max={365} precision={0} addonAfter="天"
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              「工厂欠款回填」用：关联订单已签收且工厂下单超过此天数 → 判定已结。按你家工厂月结习惯填（默认 45）。
+            </Text>
           </div>
         </Space>
       </Modal>

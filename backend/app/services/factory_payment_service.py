@@ -18,20 +18,45 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import FactoryOrder, Order
+from app.services import settings_service
 
 _BACKFILL_NOTE = "对账回填:关联订单已签收且超结算周期,判定已结"
+
+# 工厂结算周期(天) — 规则B用; 后台可配(system_settings), 默认 45。
+SETTING_SETTLEMENT_DAYS = "factory_settlement_days"
+DEFAULT_SETTLEMENT_DAYS = 45
+
+
+def get_settlement_days(db: Session) -> int:
+    raw = settings_service.get(db, SETTING_SETTLEMENT_DAYS, env_fallback=False)
+    if raw is None or str(raw).strip() == "":
+        return DEFAULT_SETTLEMENT_DAYS
+    try:
+        return int(float(str(raw)))
+    except (TypeError, ValueError):
+        return DEFAULT_SETTLEMENT_DAYS
+
+
+def set_settlement_days(db: Session, days: int) -> None:
+    settings_service.set_value(
+        db, SETTING_SETTLEMENT_DAYS, str(int(days)),
+        description="工厂结算周期(天) — 工厂欠款回填规则B(关联订单已签收且超此天数判已结)",
+    )
 
 
 def backfill_payment_status(
     db: Session, *,
-    settlement_days: int = 45,
+    settlement_days: Optional[int] = None,
     apply_settled_inference: bool = True,
     dry_run: bool = False,
 ) -> dict:
     """把确实已付的工厂订单 payment_status 从 unpaid 回填为 paid。
 
+    settlement_days 缺省时读后台配置 (system_settings.factory_settlement_days, 默认 45)。
     返回 {scanned, by_evidence, by_settled, still_unpaid, ...}。
     """
+    if settlement_days is None:
+        settlement_days = get_settlement_days(db)
     rows = db.execute(
         select(FactoryOrder).where(
             FactoryOrder.payment_status == "unpaid",

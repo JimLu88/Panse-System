@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, RefillRecord
 from app.models.order import FactoryOrder, Order
-from app.services import order_cost_service, settings_service
+from app.services import factory_payment_service, order_cost_service, settings_service
 
 # ── 手动常量配置键 ────────────────────────────────────────────
 SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
@@ -367,6 +367,7 @@ def compute_summary(db: Session) -> dict:
         "manual": {
             "shop_deposit": shop_deposit,
             "total_investment": total_investment,
+            "factory_settlement_days": factory_payment_service.get_settlement_days(db),
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -383,8 +384,9 @@ def update_manual(
     *,
     shop_deposit: Optional[Decimal] = None,
     total_investment: Optional[Decimal] = None,
+    factory_settlement_days: Optional[int] = None,
 ) -> None:
-    """更新手动常量（店铺保证金 / 总投资费用）。"""
+    """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期）。"""
     if shop_deposit is not None:
         settings_service.set_value(
             db, SETTING_SHOP_DEPOSIT, str(shop_deposit), description="剩余流水-店铺保证金",
@@ -393,3 +395,5 @@ def update_manual(
         settings_service.set_value(
             db, SETTING_TOTAL_INVESTMENT, str(total_investment), description="剩余流水-总投资费用",
         )
+    if factory_settlement_days is not None:
+        factory_payment_service.set_settlement_days(db, factory_settlement_days)

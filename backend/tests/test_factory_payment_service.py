@@ -59,6 +59,21 @@ def test_inference_can_be_disabled(db_session):
     assert db.query(FactoryOrder).filter_by(factory_order_no="S1").one().payment_status == "unpaid"
 
 
+def test_settlement_days_from_settings(db_session):
+    """结算周期改成后台可配: backfill 缺省读 system_settings(默认45)。"""
+    from app.services import cash_flow_service
+    assert F.get_settlement_days(db_session) == 45                 # 默认
+    cash_flow_service.update_manual(db_session, factory_settlement_days=10)
+    db_session.flush()
+    assert F.get_settlement_days(db_session) == 10                 # 已配
+    old = date.today() - timedelta(days=20)                        # 距今20天 > 配置10
+    _order(db_session, "O1", "signed", old)
+    _fo(db_session, "S1", platform_no="O1", order_date=old)
+    db_session.flush()
+    r = F.backfill_payment_status(db_session)                      # 不传参 → 用配置10
+    assert r["settlement_days"] == 10 and r["by_settled"] == 1
+
+
 def test_dry_run_no_change(db_session):
     db = db_session
     _fo(db, "E1", flow_no="T1")

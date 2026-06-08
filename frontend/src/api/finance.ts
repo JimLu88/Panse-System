@@ -431,6 +431,7 @@ export interface CashFlowSummary {
   investment?: CashFlowInvestment | null;
   other_account_balance: string;
   freshness: CashFlowFreshness[];
+  manual?: { shop_deposit: string; total_investment: string; factory_settlement_days: number };
   generated_at: string;
 }
 
@@ -440,6 +441,7 @@ export const getCashFlow = () =>
 export const updateCashFlowSettings = (payload: {
   shop_deposit?: string;
   total_investment?: string;
+  factory_settlement_days?: number;
 }) =>
   api.put<CashFlowSummary>('/api/finance/cash-flow/settings', payload).then((r) => r.data);
 
