@@ -431,6 +431,42 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
         return {"error": str(e)}
 
 
+def process_pick_supplier(orig_image_msg_id: str, supplier_id: int,
+                          card_message_id: Optional[str] = None) -> dict:
+    """长连接: 用户在供应商选择卡上点了某供应商 → 后台按该供应商把送货单入库。"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return _do_pick_supplier(db, orig_image_msg_id, supplier_id, card_message_id)
+    finally:
+        db.close()
+
+
+def _do_pick_supplier(db: Session, orig_image_msg_id: str, supplier_id: int,
+                      card_message_id: Optional[str] = None) -> dict:
+    try:
+        pending = _load_pending(db).get(orig_image_msg_id)
+        if not pending:
+            _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
+            return {"error": "expired"}
+        img = feishu_client.download_message_resource(db, orig_image_msg_id, pending["file_key"])
+        result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+        db.commit()
+        _patch_result(db, card_message_id,
+                      "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
+                      "green" if result["ok"] else "orange")
+        return {"supplier_id": supplier_id, **result}
+    except AiUnavailable as e:
+        db.rollback()
+        _patch_result(db, card_message_id, "OCR 未配置", f"请到 管理→AI 集成 配 vision 模型。\n{e}", "red")
+        return {"error": "ai_unavailable"}
+    except Exception as e:  # pragma: no cover
+        db.rollback()
+        _log.error("飞书机器人送货单异步入库失败: %s", e)
+        _patch_result(db, card_message_id, "入库失败", f"出错了: {e}", "red")
+        return {"error": str(e)}
+
+
 def _patch_result(db: Session, card_message_id: Optional[str], title: str, content: str, template: str) -> None:
     if not card_message_id:
         return

@@ -80,10 +80,24 @@ def _on_card(data: Any):
 
     if op == "pick" and orig_id:
         kind = value.get("kind")
+        # 送货单需先追问"哪家供应商"才能正确归属, 不直接入库
+        if kind == "supplier_note":
+            db = _new_session()
+            try:
+                _patch(card_msg_id, B._supplier_picker_card(orig_id, B._recent_suppliers(db)))
+            finally:
+                db.close()
+            return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "请选择归属供应商"}})
         threading.Thread(
             target=B.process_pick, args=(orig_id, kind, card_msg_id), daemon=True,
         ).start()
         return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "已收到，正在识别入库…"}})
+    if op == "pick_supplier" and orig_id:
+        supplier_id = value.get("supplier_id")
+        threading.Thread(
+            target=B.process_pick_supplier, args=(orig_id, supplier_id, card_msg_id), daemon=True,
+        ).start()
+        return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "已收到，正在入库…"}})
     if op == "repick" and orig_id:
         _patch(card_msg_id, B._picker_card(orig_id))
         return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "请重新选择类型"}})
