@@ -304,6 +304,35 @@ def competitors_top(q: str = "", limit: int = 10, db: Session = Depends(get_db))
     return [_comp_out(db, r, conf) for conf, r in scored[:limit]]
 
 
+class CompetitorCreateIn(BaseModel):
+    store: Optional[str] = None
+    category: Optional[str] = None
+    product: Optional[str] = None
+    sku_name: Optional[str] = None
+    wood: Optional[str] = None
+    link: Optional[str] = None
+    daily_price: Optional[float] = None      # 我表价(叠券前)
+    latest_price: Optional[float] = None     # 最新价(叠券前)
+
+
+@router.post("/competitors", response_model=CompetitorOut, status_code=201)
+def add_competitor(payload: CompetitorCreateIn, db: Session = Depends(get_db)):
+    """新增一条竞品价记录 (手动录入竞品价库)。"""
+    from decimal import Decimal as _D
+    from app.models.competitor import CompetitorPrice
+    r = CompetitorPrice(
+        store=payload.store, category=payload.category, product=payload.product,
+        sku_name=payload.sku_name, wood=payload.wood, link=payload.link,
+        daily_price=_D(str(payload.daily_price)) if payload.daily_price is not None else None,
+        latest_price=_D(str(payload.latest_price)) if payload.latest_price is not None else None,
+        fetch_status="manual",
+    )
+    db.add(r)
+    db.commit()
+    db.refresh(r)
+    return _comp_out(db, r, 1.0)
+
+
 @router.post("/competitors/{comp_id}/refresh", response_model=CompetitorOut)
 def refresh_competitor(comp_id: int, db: Session = Depends(get_db)):
     """尽力抓取最新价 (淘宝反爬, 抓不到记 blocked, 不报错)."""

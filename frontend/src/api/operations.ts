@@ -598,6 +598,10 @@ export const refreshCompetitor = (id: number) =>
   api.post<CompetitorRow>(`/api/customization/competitors/${id}/refresh`).then(r => r.data);
 export const setCompetitorPrice = (id: number, latest_price: number) =>
   api.patch<CompetitorRow>(`/api/customization/competitors/${id}`, { latest_price }).then(r => r.data);
+export const addCompetitor = (payload: {
+  store?: string; category?: string; product?: string; sku_name?: string;
+  wood?: string; link?: string; daily_price?: number; latest_price?: number;
+}) => api.post<CompetitorRow>('/api/customization/competitors', payload).then(r => r.data);
 
 // -- 运行日志 (内存环形缓冲, 用于界面排查)
 export interface LogLine {

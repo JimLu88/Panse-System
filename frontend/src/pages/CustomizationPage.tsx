@@ -9,6 +9,7 @@ import {
   Form,
   Input,
   InputNumber,
+  Modal,
   Select,
   Space,
   Spin,
@@ -31,6 +32,7 @@ import {
   aiCustomizationQuote,
   boardQuote,
   competitorsTop,
+  addCompetitor,
   refreshCompetitor,
   extractBoards,
   fuzzyMatch,
@@ -503,6 +505,8 @@ function CompetitorTab() {
   const [q, setQ] = useState('');
   const [rows, setRows] = useState<CompetitorRow[]>([]);
   const [loading, setLoading] = useState(false);
+  const [addOpen, setAddOpen] = useState(false);
+  const [addForm] = Form.useForm();
   const search = async () => {
     if (!q.trim()) { setRows([]); return; }
     setLoading(true);
@@ -510,17 +514,47 @@ function CompetitorTab() {
     catch { message.error('查询失败'); }
     finally { setLoading(false); }
   };
+  const submitAdd = async (v: any) => {
+    try {
+      await addCompetitor(v);
+      message.success('已添加竞品');
+      setAddOpen(false); addForm.resetFields();
+      if (q.trim()) search();
+    } catch { message.error('添加失败'); }
+  };
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
-        message="竞品价库: 按 产品/SKU/木材 搜索 Top-N (匹配度排序)。最新价由外部采集回灌或点刷新尽力抓; 价格均为叠券前, 券后价已注明减额。" />
-      <Space.Compact style={{ width: '100%', maxWidth: 480 }}>
-        <Input placeholder="如: 黑胡桃 餐边柜 1.5米" value={q}
-          onChange={(e) => setQ(e.target.value)} onPressEnter={search} allowClear />
-        <Button type="primary" onClick={search}>搜索</Button>
-      </Space.Compact>
+        message="竞品价库: 按 产品/SKU/木材 搜索 Top-N (匹配度排序)。可点「添加竞品」手动录入; 最新价由外部采集回灌或点刷新尽力抓; 价格均为叠券前, 券后价已注明减额。" />
+      <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
+        <Space.Compact style={{ width: '100%', maxWidth: 480 }}>
+          <Input placeholder="如: 黑胡桃 餐边柜 1.5米" value={q}
+            onChange={(e) => setQ(e.target.value)} onPressEnter={search} allowClear />
+          <Button type="primary" onClick={search}>搜索</Button>
+        </Space.Compact>
+        <Button onClick={() => setAddOpen(true)}>+ 添加竞品</Button>
+      </Space>
       <Table size="small" loading={loading} pagination={false} rowKey="id" dataSource={rows}
         columns={competitorColumns(setRows)} />
+
+      <Modal title="添加竞品价" open={addOpen} onOk={() => addForm.submit()}
+        onCancel={() => setAddOpen(false)} okText="保存" confirmLoading={false} destroyOnClose>
+        <Form form={addForm} layout="vertical" onFinish={submitAdd}>
+          <Form.Item name="product" label="产品" rules={[{ required: true, message: '填产品名' }]}>
+            <Input placeholder="如: 黑胡桃餐边柜" />
+          </Form.Item>
+          <Space style={{ width: '100%' }} size="middle">
+            <Form.Item name="store" label="店铺"><Input placeholder="竞品店铺名" /></Form.Item>
+            <Form.Item name="wood" label="木材"><Input placeholder="如: 黑胡桃" /></Form.Item>
+          </Space>
+          <Form.Item name="sku_name" label="SKU 名"><Input placeholder="如: 1.5米 黑胡桃" /></Form.Item>
+          <Space style={{ width: '100%' }} size="middle">
+            <Form.Item name="daily_price" label="我表价(叠券前)"><InputNumber min={0} addonAfter="元" style={{ width: 160 }} /></Form.Item>
+            <Form.Item name="latest_price" label="最新价(叠券前)"><InputNumber min={0} addonAfter="元" style={{ width: 160 }} /></Form.Item>
+          </Space>
+          <Form.Item name="link" label="链接"><Input placeholder="竞品商品链接(可选)" /></Form.Item>
+        </Form>
+      </Modal>
     </Space>
   );
 }
