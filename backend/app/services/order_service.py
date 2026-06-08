@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import ORDER_STATUS_TRANSITIONS, Order
@@ -17,6 +18,62 @@ _logger = logging.getLogger("panse.order_service")
 
 class InvalidStatusTransition(ValueError):
     pass
+
+
+# 合法枚举状态
+_ENUM_STATUSES = {"pending_payment", "paid", "shipped", "signed", "aftersales", "cancelled"}
+# 历史/导入遗留的非枚举状态(中文淘宝状态 + confirmed/completed) → 枚举。
+# 订单总表/部分导入直接存了中文「等待买家付款」等, 致状态机/统计/看板推进全失效。
+_STATUS_ALIASES = {
+    "等待买家付款": "pending_payment",
+    "买家已付款,等待卖家发货": "paid", "买家已付款，等待卖家发货": "paid", "等待卖家发货": "paid",
+    "买家已付款": "paid",
+    "卖家已发货,等待买家确认": "shipped", "卖家已发货，等待买家确认": "shipped",
+    "卖家已发货": "shipped", "等待买家确认收货": "shipped",
+    "交易成功": "signed", "completed": "signed", "confirmed": "signed", "已完成": "signed",
+    "交易关闭": "cancelled", "交易已关闭": "cancelled", "已关闭": "cancelled",
+    "退款成功": "aftersales", "售后": "aftersales", "退款中": "aftersales",
+}
+
+
+def normalize_status(raw) -> str:
+    """把历史中文/遗留状态规范化为枚举; 已是枚举原样返回; 实在认不出原样保留。"""
+    if not raw:
+        return "pending_payment"
+    s = str(raw).strip()
+    if s in _ENUM_STATUSES:
+        return s
+    if s in _STATUS_ALIASES:
+        return _STATUS_ALIASES[s]
+    # 模糊兜底
+    if "退款" in s or "售后" in s:
+        return "aftersales"
+    if "关闭" in s:
+        return "cancelled"
+    if "成功" in s or "完成" in s:
+        return "signed"
+    if "发货" in s and "等待买家" in s:
+        return "shipped"
+    if "付款" in s and "等待卖家" in s:
+        return "paid"
+    if "等待买家付款" in s:
+        return "pending_payment"
+    return s  # 未知: 原样保留, 不臆改
+
+
+def normalize_all_statuses(db: Session) -> dict:
+    """批量把订单的中文/遗留状态回填为枚举 (修看板推进 + 让按状态门的统计纳入这些单)。"""
+    rows = db.execute(select(Order)).scalars().all()
+    fixed = 0
+    by_map: dict[str, int] = {}
+    for o in rows:
+        norm = normalize_status(o.status)
+        if norm != o.status:
+            by_map[f"{o.status}→{norm}"] = by_map.get(f"{o.status}→{norm}", 0) + 1
+            o.status = norm
+            fixed += 1
+    db.flush()
+    return {"scanned": len(rows), "fixed": fixed, "by_map": by_map}
 
 
 def transition(
@@ -37,6 +94,11 @@ def transition(
         * → cancelled              → 释放所有关联 FactoryOrder 的锁定
         paid/shipped → shipped     → 锁定库存转为实际扣减 + 更新 last_outbound_at
     """
+    # 兼容历史中文/遗留状态: 先规范化当前状态再判迁移, 顺手把数据修正为枚举
+    norm = normalize_status(order.status)
+    if norm != order.status:
+        order.status = norm
+    target = normalize_status(target)
     if target == order.status:
         return order
     allowed = ORDER_STATUS_TRANSITIONS.get(order.status, set())

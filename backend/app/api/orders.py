@@ -99,6 +99,18 @@ def recompute_all_costs(only_missing: bool = True, db: Session = Depends(get_db)
     return result
 
 
+@router.post("/normalize-statuses", response_model=dict)
+def normalize_statuses(db: Session = Depends(get_db)):
+    """把订单的中文/遗留状态(等待买家付款/交易成功/confirmed…)批量回填为枚举。
+
+    修「看板推进报错: 不是合法迁移」+ 让按状态门的统计纳入这些历史单。
+    """
+    from app.services import order_service
+    result = order_service.normalize_all_statuses(db)
+    db.commit()
+    return result
+
+
 @router.post("/backfill-theoretical-cost", response_model=dict)
 def backfill_theoretical_cost(
     only_missing: bool = True, skip_closed: bool = True, db: Session = Depends(get_db),

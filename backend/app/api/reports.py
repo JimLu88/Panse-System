@@ -539,7 +539,7 @@ def _business_month(db: Session, year: int, month: int) -> dict:
     # 支出
     promo = float(db.execute(
         select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
-            PromotionFlow.flow_date >= start, PromotionFlow.flow_date <= end,
+            PromotionFlow.transaction_date >= start, PromotionFlow.transaction_date <= end,
         )
     ).scalar() or 0)
 

@@ -1549,7 +1549,10 @@ def _h_order(db, data, key_field, ctx=None):
     payload = {k: v for k, v in data.items() if v is not None}
     payload.setdefault("platform", "淘宝")
     payload.setdefault("qty", 1)
-    payload.setdefault("status", "signed")
+    # 状态规范化: 订单总表「订单状态」常是中文(等待买家付款/交易成功…), 统一映射为枚举,
+    # 否则状态机/看板推进/按状态门的统计全失效。缺省按历史已完成。
+    from app.services.order_service import normalize_status as _norm_status
+    payload["status"] = _norm_status(payload.get("status") or "signed")
     payload.setdefault("is_historical", True)   # 通用导入默认标历史
     # 定制编码自动识别 (后缀 >= 阈值, 如 99/98/97)
     if _is_custom_code(db, payload.get("sku_code"), payload.get("product_code")):
