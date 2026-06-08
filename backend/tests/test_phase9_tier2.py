@@ -164,15 +164,22 @@ def test_tier_promotion(db_session):
     assert c.tier == "platinum"   # > 50000
 
 
-def test_aggregate_skips_historical(db_session):
+def test_aggregate_includes_historical_real_customers(db_session):
+    # 业务决策(用户要求): 导入的真实客户多在"历史"订单里(表5订单总表 is_historical=True),
+    # 客户页要把这些真实成交客户全部收录; 仅按"有真实姓名+电话"过滤, 不再按 is_historical 排除。
     today = date.today()
     db_session.add(Order(platform="淘宝", order_no="H1", order_date=today,
-                          customer_name="X", customer_phone="138",
+                          customer_name="张三", customer_phone="13800000000",
                           qty=1, paid_amount=Decimal("999999"),
+                          status="signed", is_historical=True))
+    # 无真实姓名/电话的历史订单仍应跳过 (不污染客户库)
+    db_session.add(Order(platform="淘宝", order_no="H2", order_date=today,
+                          customer_name=None, customer_phone=None,
+                          qty=1, paid_amount=Decimal("100"),
                           status="signed", is_historical=True))
     db_session.flush()
     r = customer_service.aggregate_all(db_session)
-    assert r["customer_count"] == 0
+    assert r["customer_count"] == 1
 
 
 def test_aftersales_increments_returns(db_session):
