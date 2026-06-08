@@ -1,0 +1,79 @@
+"""工厂逐单对账 API — 导入工厂侧对账单 xlsx + 逐月对账 + 逐单填原因做平。"""
+from __future__ import annotations
+
+from fastapi import APIRouter, Body, Depends, File, Query, UploadFile
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.dependencies import require_role
+from app.models.auth import User
+from app.services import factory_recon_import_service, factory_recon_service, import_storage
+
+router = APIRouter(prefix="/api/factory-recon", tags=["factory-recon"])
+
+
+@router.post("/import")
+def import_factory_recon(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """导入工厂侧对账单 xlsx (价格=工厂结算价=成本); 自动回填 Order.actual_cost。"""
+    content = file.file.read()
+    arch = import_storage.archive(
+        db, content=content, original_name=file.filename or "factory_recon.xlsx",
+        kind="factory_recon", source="web", uploaded_by=getattr(user, "username", None),
+    )
+    rep = factory_recon_import_service.import_factory_recon_xlsx(db, content)
+    import_storage.update_summary(db, arch.file.id, {
+        "inserted": rep.inserted, "skipped_duplicate": rep.skipped_duplicate,
+        "backfilled_cost": rep.backfilled_cost,
+    })
+    db.commit()
+    return {
+        "inserted": rep.inserted, "skipped_invalid": rep.skipped_invalid,
+        "skipped_duplicate": rep.skipped_duplicate, "backfilled_cost": rep.backfilled_cost,
+        "sheets": rep.sheets, "unmapped_columns": rep.unmapped_columns, "errors": rep.errors,
+        "archived_file_id": arch.file.id, "duplicate_upload": arch.is_duplicate,
+    }
+
+
+@router.get("/summary")
+def factory_recon_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """逐月对账汇总: 应付(Σ结算价) ↔ 实付(factory_payment) + 差额 + 已归因状态。"""
+    return factory_recon_service.summary(db)
+
+
+@router.get("/items")
+def factory_recon_items(
+    period: str | None = Query(None, description="YYYY-MM"),
+    status: str | None = Query(None, description="resolved / open"),
+    q: str | None = Query(None, description="订单号/客户/详情 关键词"),
+    limit: int = Query(500, le=2000),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """工厂结算逐单明细。"""
+    return factory_recon_service.list_items(
+        db, period=period, status=status, q=q, limit=limit, offset=offset,
+    )
+
+
+@router.post("/items/{item_id}/resolve")
+def resolve_factory_recon_item(
+    item_id: int,
+    reason: str = Body("", embed=True),
+    resolved: bool = Body(True, embed=True),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """对某条工厂结算行「填原因做平」(扣减/减免/差异原因) 或撤销做平。"""
+    out = factory_recon_service.resolve(
+        db, item_id, reason=reason, actor=getattr(user, "username", None), resolved=resolved,
+    )
+    db.commit()
+    return out

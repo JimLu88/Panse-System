@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, RefillRecord
 from app.models.order import FactoryOrder, Order
+from app.models.shop_deposit import ShopDeposit
 from app.services import factory_payment_service, order_cost_service, settings_service
 
 # ── 手动常量配置键 ────────────────────────────────────────────
@@ -262,7 +263,14 @@ def compute_summary(db: Session) -> dict:
     可用资金 = Σ加项 − Σ减项 (总投资费用不在内 — 它是沉没本金, 单列做投资回收对比)。
     """
     # ── 加项 ─────────────────────────────────────────────
-    shop_deposit = _get_setting_decimal(db, SETTING_SHOP_DEPOSIT, DEFAULT_SHOP_DEPOSIT)
+    # 平台保证金: 优先用多店铺条目(ShopDeposit)求和; 无条目时回退旧单常量(向后兼容)
+    deposit_total, deposit_count = _shop_deposit_entries(db)
+    if deposit_count > 0:
+        shop_deposit = deposit_total
+        deposit_source = f"保证金条目({deposit_count} 店铺)"
+    else:
+        shop_deposit = _get_setting_decimal(db, SETTING_SHOP_DEPOSIT, DEFAULT_SHOP_DEPOSIT)
+        deposit_source = "手动维护(单值)"
 
     bal_alipay = bal_aggregate = bal_promotion = bal_other = Decimal("0")
     balances = _latest_balances(db)
@@ -298,7 +306,7 @@ def compute_summary(db: Session) -> dict:
     refill_commission = _refill_unpaid_commission(db)
 
     additions = [
-        {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": "手动维护"},
+        {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": deposit_source},
         {"key": "alipay_balance", "label": "支付宝账户余额(全部)", "amount": bal_alipay, "manual": False, "source": "账户余额汇总"},
         {"key": "aggregate_balance", "label": "淘宝聚合结算余额", "amount": bal_aggregate, "manual": False, "source": "账户余额汇总"},
         {"key": "promotion_balance", "label": "推广账户余额", "amount": bal_promotion, "manual": False, "source": "账户余额汇总"},
@@ -371,6 +379,14 @@ def compute_summary(db: Session) -> dict:
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _shop_deposit_entries(db: Session) -> tuple[Decimal, int]:
+    """多店铺保证金条目: 返回 (合计, 条目数)。无条目时 (0, 0) → 调用方回退旧单常量。"""
+    total, count = db.execute(
+        select(func.coalesce(func.sum(ShopDeposit.amount), 0), func.count(ShopDeposit.id))
+    ).one()
+    return (Decimal(total or 0), int(count or 0))
 
 
 def _setting_updated_at(db: Session, key: str) -> Optional[datetime]:

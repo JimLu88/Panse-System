@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.services import settings_service
 
 _SETTING = "ops_checklist_done"
+_DYN = "ops_checklist_dynamic"   # 动态待办(系统自动生成, 如对账新差异)
 
 # 例行工作项 (按畔色 ERP 实际流程定制); 含: 做什么 / 导哪张表 / 做什么记录 / 截图上传
 OPS_TASKS = [
@@ -71,6 +72,43 @@ def _load(db: Session) -> dict:
         return {}
 
 
+def _load_dynamic(db: Session) -> list[dict]:
+    raw = settings_service.get(db, _DYN, env_fallback=False)
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def add_dynamic_todo(
+    db: Session, *, key: str, title: str, detail: str = "",
+    route: Optional[str] = None, freq: str = "daily",
+) -> None:
+    """系统自动生成一条动态待办(按 key 去重 upsert); 与静态项一样按周期自动重置。
+
+    用于 功能 C: 对账发现新差异时, 在运营待办台账挂一条"去归因做平"的待办。
+    """
+    if freq not in ("daily", "weekly", "monthly"):
+        freq = "daily"
+    items = _load_dynamic(db)
+    now = datetime.now(timezone.utc).isoformat()
+    found = next((i for i in items if i.get("key") == key), None)
+    if found:
+        found.update({"title": title, "detail": detail, "route": route, "freq": freq, "updated_at": now})
+    else:
+        items.append({"key": key, "title": title, "detail": detail, "route": route,
+                      "freq": freq, "created_at": now, "updated_at": now})
+    settings_service.set_value(db, _DYN, json.dumps(items), description="运营待办-动态项")
+
+
+def remove_dynamic_todo(db: Session, key: str) -> None:
+    items = [i for i in _load_dynamic(db) if i.get("key") != key]
+    settings_service.set_value(db, _DYN, json.dumps(items), description="运营待办-动态项")
+
+
 def status(db: Session) -> dict:
     today = date.today()
     done = _load(db)
@@ -81,7 +119,18 @@ def status(db: Session) -> dict:
         groups[t["freq"]].append({
             "key": t["key"], "title": t["title"], "detail": t["detail"],
             "route": t.get("route"),
-            "done": mark in done, "done_at": done.get(mark),
+            "done": mark in done, "done_at": done.get(mark), "dynamic": False,
+        })
+    for t in _load_dynamic(db):
+        freq = t.get("freq", "daily")
+        if freq not in groups:
+            freq = "daily"
+        pk = _period_key(freq, today)
+        mark = f"{t['key']}@{pk}"
+        groups[freq].append({
+            "key": t["key"], "title": t.get("title", t["key"]), "detail": t.get("detail", ""),
+            "route": t.get("route"),
+            "done": mark in done, "done_at": done.get(mark), "dynamic": True,
         })
     out = []
     for f in ("daily", "weekly", "monthly"):
@@ -97,9 +146,13 @@ def status(db: Session) -> dict:
 def toggle(db: Session, task_key: str, done: bool, actor: Optional[str] = None) -> dict:
     today = date.today()
     task = next((t for t in OPS_TASKS if t["key"] == task_key), None)
-    if not task:
-        raise ValueError(f"未知任务: {task_key}")
-    mark = f"{task_key}@{_period_key(task['freq'], today)}"
+    freq = task["freq"] if task else None
+    if freq is None:
+        dyn = next((t for t in _load_dynamic(db) if t.get("key") == task_key), None)
+        if dyn is None:
+            raise ValueError(f"未知任务: {task_key}")
+        freq = dyn.get("freq", "daily")
+    mark = f"{task_key}@{_period_key(freq, today)}"
     state = _load(db)
     if done:
         state[mark] = datetime.now(timezone.utc).isoformat()

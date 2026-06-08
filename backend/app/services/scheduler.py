@@ -249,21 +249,71 @@ def _job_lowstock_scan(db: Session) -> dict:
 
 
 def _job_data_reconcile(db: Session) -> dict:
-    """业务需求 19 + 功能 1: 全自动核对.
+    """业务需求 19 + 功能 1 + 功能 C(自动对账+新差异推送): 全自动核对.
 
-    1) 跑全部 9 条对账规则, 超阈值自动写异常池;
-    2) 算财务公式 A vs B, 差额 > 100 生成 Alert。
-    不单独推送 — 汇总结果由 daily_10_comprehensive_report 统一推送。
+    1) 跑全部对账规则, 超阈值自动写异常池(幂等);
+    2) 比对本次新出现的未归因差异(reconciliation_diff, open) → 站内通知(NotificationBell)
+       + 运营待办台账动态待办, 提醒去对账诊断归因做平;
+    3) 算财务公式 A vs B, 差额 > 100 生成 Alert。
+    不单独推送群 — 汇总结果由 daily_10_comprehensive_report 统一推送。
     """
-    from app.services import asset_service, reconciliation_service
+    from sqlalchemy import select
+
+    from app.models.exception import DataException
+    from app.services import (
+        alert_service, asset_service, ops_checklist_service, reconciliation_service,
+    )
+
+    def _open_recon_pks() -> set[str]:
+        rows = db.execute(
+            select(DataException.source_pk).where(
+                DataException.exception_type == "reconciliation_diff",
+                DataException.status == "open",
+            )
+        ).all()
+        return {pk for (pk,) in rows if pk}
+
+    before = _open_recon_pks()
     results = reconciliation_service.run_all(db, record_exceptions=True)
     db.flush()
+    after = _open_recon_pks()
+    new_pks = after - before
+
     by_rule = {
         name: {"error": r.error_count, "warning": r.warning_count, "ok": r.ok_count}
         for name, r in results.items()
     }
+
+    # 功能 C: 新差异 → 站内通知 + 动态待办
+    if new_pks:
+        n = len(new_pks)
+        sample = "; ".join(sorted(new_pks)[:5])
+        body = f"本次对账新增 {n} 笔未归因差异: {sample}" + ("…" if n > 5 else "")
+        alert_service.upsert(
+            db,
+            kind="reconciliation_diff",
+            severity="warn",
+            title=f"对账发现 {n} 笔新差异待归因",
+            body=body,
+            dedupe_key="recon_new_diff",
+            related_url="/recon-diagnostics",
+            context={"count": n, "pks": sorted(new_pks)[:50]},
+        )
+        try:
+            ops_checklist_service.add_dynamic_todo(
+                db,
+                key="recon_diff_followup",
+                title=f"归因做平 {n} 笔对账差异",
+                detail="对账诊断/工厂逐单对账: 逐条填原因做平本次新增的未归因差异",
+                route="/recon-diagnostics",
+                freq="daily",
+            )
+        except Exception:  # pragma: no cover
+            pass
+        db.flush()
+
     formula = asset_service.check_formula_and_alert(db)
-    return {"reconciliation": by_rule, "formula": formula}
+    return {"reconciliation": by_rule, "new_diff_count": len(new_pks), "formula": formula}
 
 
 def _job_alipay_match_pipeline(db: Session) -> dict:
