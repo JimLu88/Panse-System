@@ -472,6 +472,27 @@ def show_status(icon=None, item=None):
     notify(f"畔色 ERP 状态: {status.upper()}", full, level=status)
 
 
+def _git_fetch_branch(timeout: int = 300, retries: int = 2) -> tuple[int, str]:
+    """只拉部署分支 (不拉全部 refs/tags) + 慢连接探测 + 自动重试 — 国内连 GitHub 防超时.
+
+    `git fetch origin` 会把所有分支(含一堆 claude/* 开发分支)和标签都拉一遍, 慢网下 120s 易超。
+    这里只拉 DEPLOY_BRANCH 并显式更新其远端跟踪分支; 用 http.lowSpeedLimit/Time 在连接真卡死
+    (持续 <1KB/s 超 120s) 时尽早放弃以便重试; 失败按 3/6 秒退避重试, 总超时放宽到 300s。
+    """
+    refspec = f"{DEPLOY_BRANCH}:refs/remotes/origin/{DEPLOY_BRANCH}"
+    cmd = ["git", "-c", "http.lowSpeedLimit=1000", "-c", "http.lowSpeedTime=120",
+           "fetch", "--no-tags", "origin", refspec]
+    code, out = 1, ""
+    for i in range(retries + 1):
+        code, out = _run(cmd, timeout=timeout)
+        if code == 0:
+            return code, out
+        if i < retries:
+            _write_log(f"git fetch 第 {i + 1} 次失败, {3 * (i + 1)} 秒后重试: {out[:120]}")
+            time.sleep(3 * (i + 1))
+    return code, out
+
+
 def update_code(icon=None, item=None):
     """一键同步: 切到 DEPLOY_BRANCH → 拉最新 → 重建.
 
@@ -483,9 +504,10 @@ def update_code(icon=None, item=None):
 
     def _do():
         _write_log(f"--- 开始更新代码 (分支: {DEPLOY_BRANCH}) ---")
-        code, out = _run(["git", "fetch", "origin"], timeout=120)
+        code, out = _git_fetch_branch()
         if code != 0:
-            notify("畔色 ERP", f"❌ git fetch 失败: {out[:200]}", level="error", force=True)
+            notify("畔色 ERP", f"❌ git fetch 失败(网络慢/不通, 可重试): {out[:200]}",
+                   level="error", force=True)
             _write_log(f"git fetch 失败: {out[:300]}")
             return
         _write_log("git fetch 完成")
@@ -497,16 +519,17 @@ def update_code(icon=None, item=None):
             _write_log(f"git checkout 失败: {out[:300]}")
             return
         old_sig = _self_signature()
+        # 已 fetch 到本地, 直接本地快进合并 (不再二次联网, 更快更稳)
         code, out = _run(
-            ["git", "pull", "--ff-only", "origin", DEPLOY_BRANCH], timeout=120,
+            ["git", "merge", "--ff-only", f"origin/{DEPLOY_BRANCH}"], timeout=30,
         )
         if code != 0:
             notify("畔色 ERP",
-                   f"❌ git pull 失败 (可试「强制同步」): {out[:200]}",
+                   f"❌ 拉最新失败 (本地可能分叉, 可试「强制同步」): {out[:200]}",
                    level="error", force=True)
-            _write_log(f"git pull 失败: {out[:300]}")
+            _write_log(f"git merge --ff-only 失败: {out[:300]}")
             return
-        _write_log(f"git pull 完成: {out.strip()[:120]}")
+        _write_log(f"拉最新完成: {out.strip()[:120]}")
         # 拉到的新代码若改了看门狗自己, 先用新代码重启, 重启后接着重建
         if _self_signature() != old_sig and _restart_self():
             return
@@ -523,12 +546,15 @@ def force_sync(icon=None, item=None):
     notify("畔色 ERP", f"强制同步 {DEPLOY_BRANCH} (丢弃本地代码改动)...", level="warn")
 
     def _do():
-        for cmd in (["git", "fetch", "origin"],
-                    ["git", "checkout", DEPLOY_BRANCH]):
-            code, out = _run(cmd, timeout=120)
-            if code != 0:
-                notify("畔色 ERP", f"{' '.join(cmd)} 失败: {out[:200]}", level="error")
-                return
+        code, out = _git_fetch_branch()
+        if code != 0:
+            notify("畔色 ERP", f"git fetch 失败(网络慢/不通, 可重试): {out[:200]}",
+                   level="error", force=True)
+            return
+        code, out = _run(["git", "checkout", DEPLOY_BRANCH], timeout=30)
+        if code != 0:
+            notify("畔色 ERP", f"git checkout {DEPLOY_BRANCH} 失败: {out[:200]}", level="error")
+            return
         old_sig = _self_signature()
         code, out = _run(
             ["git", "reset", "--hard", f"origin/{DEPLOY_BRANCH}"], timeout=60,
