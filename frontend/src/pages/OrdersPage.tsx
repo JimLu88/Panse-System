@@ -5,6 +5,7 @@ import {
   Dropdown,
   Input,
   Modal,
+  Popconfirm,
   Segmented,
   Space,
   Table,
@@ -28,6 +29,7 @@ import {
   importOrdersCsv,
   listOrders,
   recomputeAllOrderCosts,
+  normalizeOrderStatuses,
   recomputeOrderCost,
   generateOrderDetails,
 } from '../api/client';
@@ -168,6 +170,15 @@ export default function OrdersPage() {
       qc.invalidateQueries({ queryKey: ['orders'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '导入失败'),
+  });
+
+  const normalizeStatusMut = useMutation({
+    mutationFn: () => normalizeOrderStatuses(),
+    onSuccess: (r) => {
+      message.success(`规范化完成: 修正 ${r.fixed} / ${r.scanned} 单的状态`);
+      qc.invalidateQueries({ queryKey: ['orders'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
   });
 
   const recomputeAllMut = useMutation({
@@ -364,6 +375,14 @@ export default function OrdersPage() {
           >
             反推理论成本
           </Button>
+          <Popconfirm
+            title="规范化订单状态"
+            description="把历史中文/遗留状态(等待买家付款/交易成功/confirmed…)统一为枚举，修看板推进报错并让统计纳入这些单。"
+            okText="开始规范化" cancelText="取消"
+            onConfirm={() => normalizeStatusMut.mutate()}
+          >
+            <Button loading={normalizeStatusMut.isPending}>规范化订单状态</Button>
+          </Popconfirm>
           <Button
             onClick={() => genDetailsMut.mutate()}
             loading={genDetailsMut.isPending}

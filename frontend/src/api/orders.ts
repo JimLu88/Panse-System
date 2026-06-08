@@ -313,6 +313,12 @@ export const recomputeAllOrderCosts = (only_missing = true) =>
     `/api/orders/recompute-costs?only_missing=${only_missing}`,
   ).then(r => r.data);
 
+// 规范化订单状态: 中文/遗留状态(等待买家付款/交易成功/confirmed…) → 枚举, 修看板推进+统计纳入
+export const normalizeOrderStatuses = () =>
+  api.post<{ scanned: number; fixed: number; by_map: Record<string, number> }>(
+    '/api/orders/normalize-statuses',
+  ).then(r => r.data);
+
 // ----------------------------- 订单细节自动生成 ----------------------------- //
 export interface GenerateOrderDetailsResult {
   orders_scanned: number;
