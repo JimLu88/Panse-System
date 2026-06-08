@@ -8,9 +8,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
+from app.models.prepay_ledger import PrepayLedger
 from app.models.settlement import OrderSettlement
 from app.services import (
-    import_storage, order_reconciliation_service, recon_diagnostics_service, settlement_import_service,
+    import_storage, order_reconciliation_service, prepay_import_service,
+    recon_diagnostics_service, settlement_import_service,
 )
 
 router = APIRouter(prefix="/api/settlements", tags=["settlements"])
@@ -79,6 +81,61 @@ def reconciliation_gap(
 ):
     """到账覆盖缺口诊断: 按月铺开覆盖率 + 待补金额, 指出最该补流水/账单的几个月。"""
     return order_reconciliation_service.coverage_gap(db)
+
+
+@router.post("/prepay/import")
+def import_prepay(
+    category: str = Query(..., description="refill_commission / refill_express / aftersales"),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """导入代付台账(补单佣金/补单快递/售后 实际打款), 作为这三类对账的进项来源。"""
+    raw = file.file.read()
+    kind = "aftersales" if category == "aftersales" else "refill"
+    arch = import_storage.archive(
+        db, content=raw, original_name=file.filename or f"{category}.csv", kind=kind, source="web",
+    )
+    try:
+        text = raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        text = raw.decode("gbk", errors="replace")
+    r = prepay_import_service.import_prepay_csv(db, text, category=category)
+    import_storage.update_summary(db, arch.file.id, {
+        "inserted": r.inserted, "skipped_duplicate": r.skipped_duplicate, "category": category,
+    })
+    db.commit()
+    return {
+        "inserted": r.inserted, "skipped_invalid": r.skipped_invalid,
+        "skipped_duplicate": r.skipped_duplicate, "unmapped_columns": r.unmapped_columns,
+        "errors": r.errors, "archived_file_id": arch.file.id, "duplicate_upload": arch.is_duplicate,
+    }
+
+
+@router.get("/prepay/summary")
+def prepay_summary(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    return prepay_import_service.summary(db)
+
+
+@router.get("/prepay")
+def list_prepay(
+    category: str | None = Query(None),
+    limit: int = Query(300, le=2000),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    stmt = select(PrepayLedger).order_by(PrepayLedger.pay_date.desc().nulls_last(), PrepayLedger.id.desc())
+    if category:
+        stmt = stmt.where(PrepayLedger.category == category)
+    rows = db.execute(stmt.limit(limit)).scalars().all()
+    return [{
+        "id": r.id, "category": r.category, "pay_no": r.pay_no, "order_no": r.order_no,
+        "pay_date": r.pay_date.isoformat() if r.pay_date else None,
+        "amount": float(r.amount or 0), "payee": r.payee, "remark": r.remark,
+    } for r in rows]
 
 
 @router.get("/reconciliation/diagnostics")

@@ -135,12 +135,14 @@ def test_promotion_returns_not_available(db_session):
 
 # -------- run_all --------
 
-def test_run_all_executes_all_six(db_session):
+def test_run_all_executes_all_rules(db_session):
     results = recon.run_all(db_session)
     assert set(results.keys()) == {
         "factory_payment", "install_fee", "promotion",
         "refill_compensation", "inventory_value", "logistics_fee",
         "revenue_alipay", "operating_expense", "purchase_payment",
+        # WS4 代付台账三规则 (补单佣金/补单快递/售后 实付↔应摊)
+        "refill_commission_payout", "refill_express_payout", "aftersales_payout",
     }
 
 

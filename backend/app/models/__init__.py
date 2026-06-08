@@ -25,6 +25,7 @@ from app.models.system_event import SystemEvent
 from app.models.system_health import SystemHealthLog
 from app.models.import_job import ImportJob
 from app.models.import_file import ImportedFile
+from app.models.prepay_ledger import PrepayLedger
 from app.models.scheduled_job import ScheduledJobRun
 from app.models.alert import Alert
 from app.models.inventory_lock import InventoryLockLedger
@@ -99,4 +100,5 @@ __all__ = [
     "SystemHealthLog",
     "ImportJob",
     "ImportedFile",
+    "PrepayLedger",
 ]

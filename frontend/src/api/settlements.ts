@@ -120,6 +120,29 @@ export interface ReconDiagnostics {
 export const fetchReconDiagnostics = () =>
   api.get<ReconDiagnostics>('/api/settlements/reconciliation/diagnostics').then((r) => r.data);
 
+// ---- 代付台账 (prepay ledger: 补单佣金/补单快递/售后 实际打款) ----
+export interface PrepayRow {
+  id: number; category: string; pay_no: string | null; order_no: string | null;
+  pay_date: string | null; amount: number; payee: string | null; remark: string | null;
+}
+export interface PrepaySummary {
+  total: number; by_category: Record<string, { count: number; amount: number }>;
+}
+export interface PrepayImportResult {
+  inserted: number; skipped_invalid: number; skipped_duplicate: number;
+  unmapped_columns: string[]; errors: string[];
+  archived_file_id?: number; duplicate_upload?: boolean;
+}
+export const importPrepay = (file: File, category: string) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api.post<PrepayImportResult>(`/api/settlements/prepay/import?category=${category}`, fd).then((r) => r.data);
+};
+export const fetchPrepaySummary = () =>
+  api.get<PrepaySummary>('/api/settlements/prepay/summary').then((r) => r.data);
+export const listPrepay = (category?: string) =>
+  api.get<PrepayRow[]>('/api/settlements/prepay', { params: { category, limit: 500 } }).then((r) => r.data);
+
 // ---- 到账覆盖缺口诊断 (按月该补哪批流水/账单) ----
 export interface ReconGapMonth {
   period: string;

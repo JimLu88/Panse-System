@@ -28,6 +28,7 @@ from app.models.inventory import PartInventory
 from app.models.marketing import AfterSales, BrandMarketing, DailyOperation, OutsourcingExpense, PromotionFlow
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order, PartPurchase
+from app.models.prepay_ledger import PrepayLedger
 from app.services import exception_service
 
 RuleName = Literal[
@@ -40,6 +41,9 @@ RuleName = Literal[
     "revenue_alipay",
     "operating_expense",
     "purchase_payment",
+    "refill_commission_payout",
+    "refill_express_payout",
+    "aftersales_payout",
 ]
 
 DiffSeverity = Literal["ok", "warning", "error", "not_available"]
@@ -763,6 +767,90 @@ def _result(rule, ps, pe, diffs, db: Optional[Session] = None) -> Reconciliation
     )
 
 
+# -------- Rule 10/11/12: 代付台账对账 (补单佣金 / 补单快递 / 售后 实付 ↔ 订单应摊) --------
+
+def _prepay_income_by_month(db: Session, category: str,
+                            ps: Optional[date], pe: Optional[date]) -> dict[str, Decimal]:
+    """代付台账某类的实付(进项)按月。"""
+    stmt = select(PrepayLedger.pay_date, PrepayLedger.amount).where(PrepayLedger.category == category)
+    if ps:
+        stmt = stmt.where(PrepayLedger.pay_date >= ps)
+    if pe:
+        stmt = stmt.where(PrepayLedger.pay_date <= pe)
+    return _sum_by_month(db.execute(stmt).all())
+
+
+def _run_prepay(db: Session, *, rule: RuleName, category: str,
+                billed_by_month: dict[str, Decimal],
+                ps: Optional[date], pe: Optional[date], record_exceptions: bool) -> ReconciliationResult:
+    """通用: 应摊(出项, billed_by_month) ↔ 代付台账实付(进项)。差额=实付-应摊。"""
+    paid = _prepay_income_by_month(db, category, ps, pe)
+    if not billed_by_month and not paid:
+        return _result(rule, ps, pe, [ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None, severity="not_available",
+            message="无订单应摊 / 代付台账数据可对账 (导入代付台账后启用)",
+        )], db)
+    diffs: list[ReconciliationDiff] = []
+    for key in sorted(set(billed_by_month) | set(paid)):
+        exp = billed_by_month.get(key, Decimal("0"))   # 应摊
+        act = paid.get(key, Decimal("0"))               # 实际代付
+        diff = act - exp
+        sev = _classify(diff, base=exp)
+        msg = f"{key}: 应摊 ¥{exp}, 实际代付 ¥{act}, 差 ¥{diff}"
+        diffs.append(ReconciliationDiff(key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg))
+        if sev != "ok" and record_exceptions:
+            _record_exception(db, rule=rule, key=key, diff_amount=diff, message=msg)
+    if record_exceptions:
+        db.flush()
+    return _result(rule, ps, pe, diffs, db)
+
+
+def run_refill_commission_payout(db: Session, *, period_start=None, period_end=None,
+                                 record_exceptions: bool = True) -> ReconciliationResult:
+    """补单佣金: 订单应摊 RefillRecord.commission ↔ 代付台账 refill_commission 实付 (按月)。"""
+    stmt = select(RefillRecord.refill_date, RefillRecord.commission).where(RefillRecord.commission.isnot(None))
+    if period_start:
+        stmt = stmt.where(RefillRecord.refill_date >= period_start)
+    if period_end:
+        stmt = stmt.where(RefillRecord.refill_date <= period_end)
+    billed = _sum_by_month(db.execute(stmt).all())
+    return _run_prepay(db, rule="refill_commission_payout", category="refill_commission",
+                       billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions)
+
+
+def run_refill_express_payout(db: Session, *, period_start=None, period_end=None,
+                              record_exceptions: bool = True) -> ReconciliationResult:
+    """补单快递: 订单应摊 RefillRecord.refill_freight ↔ 代付台账 refill_express 实付 (按月)。"""
+    stmt = select(RefillRecord.refill_date, RefillRecord.refill_freight).where(RefillRecord.refill_freight.isnot(None))
+    if period_start:
+        stmt = stmt.where(RefillRecord.refill_date >= period_start)
+    if period_end:
+        stmt = stmt.where(RefillRecord.refill_date <= period_end)
+    billed = _sum_by_month(db.execute(stmt).all())
+    return _run_prepay(db, rule="refill_express_payout", category="refill_express",
+                       billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions)
+
+
+def run_aftersales_payout(db: Session, *, period_start=None, period_end=None,
+                          record_exceptions: bool = True) -> ReconciliationResult:
+    """售后: 订单应摊售后(赔付费+好评返+二次上门+返厂运费) ↔ 代付台账 aftersales 实付 (按月)。"""
+    stmt = select(AfterSales)
+    if period_start:
+        stmt = stmt.where(AfterSales.processed_at >= period_start)
+    if period_end:
+        stmt = stmt.where(AfterSales.processed_at <= period_end)
+    billed: dict[str, Decimal] = {}
+    for a in db.execute(stmt).scalars().all():
+        fee = (Decimal(a.compensation_fee or 0) + Decimal(a.good_review_refund or 0)
+               + Decimal(a.second_visit_fee or 0) + Decimal(a.return_pack_freight or 0))
+        if fee == 0:
+            continue
+        key = _month_key(a.processed_at) or "(无日期)"
+        billed[key] = billed.get(key, Decimal("0")) + fee
+    return _run_prepay(db, rule="aftersales_payout", category="aftersales",
+                       billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions)
+
+
 # 规则注册表
 RULES: dict[RuleName, callable] = {
     "factory_payment": run_factory_payment,
@@ -774,6 +862,9 @@ RULES: dict[RuleName, callable] = {
     "revenue_alipay": run_revenue_alipay,
     "operating_expense": run_operating_expense,
     "purchase_payment": run_purchase_payment,
+    "refill_commission_payout": run_refill_commission_payout,
+    "refill_express_payout": run_refill_express_payout,
+    "aftersales_payout": run_aftersales_payout,
 }
 
 
