@@ -322,6 +322,8 @@ class BillImportResult(BaseModel):
     inserted: int
     skipped_invalid: int
     errors: list[str]
+    skipped_duplicate: int = 0
+    unmapped_columns: list[str] = []
 
 
 async def _read_csv(file: UploadFile) -> str:
@@ -338,7 +340,8 @@ async def import_wanshifu(file: UploadFile = File(...), db: Session = Depends(ge
     text = await _read_csv(file)
     r = bill_import_service.import_wanshifu_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 @router.post("/logistics-bills/import-csv", response_model=BillImportResult)
@@ -347,7 +350,8 @@ async def import_logistics(file: UploadFile = File(...), db: Session = Depends(g
     text = await _read_csv(file)
     r = bill_import_service.import_logistics_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 # -------- 推广记录 / 补单对账 / 账户余额 CSV 导入 --------
@@ -358,7 +362,8 @@ async def import_promotion_flows(file: UploadFile = File(...), db: Session = Dep
     text = await _read_csv(file)
     r = bill_import_service.import_promotion_flows_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 @router.post("/refill-records/import-csv", response_model=BillImportResult)
@@ -367,7 +372,8 @@ async def import_refill_records(file: UploadFile = File(...), db: Session = Depe
     text = await _read_csv(file)
     r = bill_import_service.import_refill_records_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 @router.post("/accounts/import-csv", response_model=BillImportResult)
@@ -376,7 +382,8 @@ async def import_account_balances(file: UploadFile = File(...), db: Session = De
     text = await _read_csv(file)
     r = bill_import_service.import_account_balances_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 # -------- Account balances --------
@@ -795,7 +802,8 @@ async def confirm_account_balances(file: UploadFile = File(...), db: Session = D
     text = await _read_csv(file)
     r = bill_import_service.import_account_balances_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
 # -------- 支付宝流水 CSV 预览 --------

@@ -40,6 +40,8 @@ _LOGISTICS_MAP = {
 class BillImportReport:
     inserted: int = 0
     skipped_invalid: int = 0
+    skipped_duplicate: int = 0
+    unmapped_columns: list[str] = field(default_factory=list)  # 未识别(被丢弃)的表头, 提示用户
     errors: list[str] = field(default_factory=list)
 
 
@@ -83,17 +85,38 @@ def _rows(text: str, colmap: dict) -> list[dict]:
     return out
 
 
+def _unmapped_headers(text: str, colmap: dict) -> list[str]:
+    """返回表头里没被 colmap 识别(因而被丢弃)的列名, 用于兜底提示用户。"""
+    reader = csv.DictReader(StringIO(text))
+    return [h for h in (reader.fieldnames or []) if h and (h or "").strip() and (h or "").strip() not in colmap]
+
+
 def import_wanshifu_csv(db: Session, text: str, *, import_job_id: Optional[int] = None) -> BillImportReport:
-    """导入万师傅安装账单。金额缺失 / 无法解析的行跳过。"""
+    """导入万师傅安装账单。金额缺失跳过; 同 (账单日期, 订单号, 金额) 重复跳过 (防重复导入翻倍)。"""
+    from sqlalchemy import select
     rep = BillImportReport()
-    for i, rec in enumerate(_rows(text, _WANSHIFU_MAP), start=2):
+    rep.unmapped_columns = _unmapped_headers(text, _WANSHIFU_MAP)
+    existing = {
+        (d, o, a) for d, o, a in db.execute(
+            select(WanshifuBill.bill_date, WanshifuBill.order_no, WanshifuBill.amount)
+        ).all()
+    }
+    seen: set = set()
+    for rec in _rows(text, _WANSHIFU_MAP):
         amount = _decimal(rec.get("amount"))
         if amount is None:
             rep.skipped_invalid += 1
             continue
+        bill_date = _date(rec.get("bill_date"))
+        order_no = (rec.get("order_no") or None)
+        key = (bill_date, order_no, amount)
+        if key in existing or key in seen:
+            rep.skipped_duplicate += 1
+            continue
+        seen.add(key)
         db.add(WanshifuBill(
-            bill_date=_date(rec.get("bill_date")),
-            order_no=(rec.get("order_no") or None),
+            bill_date=bill_date,
+            order_no=order_no,
             service_type=(rec.get("service_type") or None),
             amount=amount,
             status=(rec.get("status") or None),
@@ -106,17 +129,40 @@ def import_wanshifu_csv(db: Session, text: str, *, import_job_id: Optional[int] 
 
 
 def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int] = None) -> BillImportReport:
-    """导入物流费月结账单。运费缺失 / 无法解析的行跳过。"""
+    """导入物流费月结账单。运费缺失跳过; 有运单号按 (日期,运单号) 去重, 否则按 (日期,承运商,运费) 去重。"""
+    from sqlalchemy import select
     rep = BillImportReport()
+    rep.unmapped_columns = _unmapped_headers(text, _LOGISTICS_MAP)
+
+    def _key(bill_date, tracking_no, carrier, freight):
+        if tracking_no:
+            return ("t", bill_date, tracking_no)
+        return ("f", bill_date, carrier, freight)
+
+    existing = {
+        _key(d, t, c, f) for d, t, c, f in db.execute(
+            select(LogisticsBill.bill_date, LogisticsBill.tracking_no,
+                   LogisticsBill.carrier, LogisticsBill.freight_amount)
+        ).all()
+    }
+    seen: set = set()
     for rec in _rows(text, _LOGISTICS_MAP):
         freight = _decimal(rec.get("freight_amount"))
         if freight is None:
             rep.skipped_invalid += 1
             continue
+        bill_date = _date(rec.get("bill_date"))
+        tracking_no = (rec.get("tracking_no") or None)
+        carrier = (rec.get("carrier") or None)
+        key = _key(bill_date, tracking_no, carrier, freight)
+        if key in existing or key in seen:
+            rep.skipped_duplicate += 1
+            continue
+        seen.add(key)
         db.add(LogisticsBill(
-            bill_date=_date(rec.get("bill_date")),
-            carrier=(rec.get("carrier") or None),
-            tracking_no=(rec.get("tracking_no") or None),
+            bill_date=bill_date,
+            carrier=carrier,
+            tracking_no=tracking_no,
             order_no=(rec.get("order_no") or None),
             weight_kg=_decimal(rec.get("weight_kg")),
             freight_amount=freight,
@@ -199,16 +245,31 @@ _PROMO_MAP = {
 
 
 def import_promotion_flows_csv(db: Session, text: str) -> BillImportReport:
-    """导入推广记录 CSV（直通车/万相台充值+支出）。金额缺失则跳过。"""
+    """导入推广记录 CSV（直通车/万相台充值+支出）。金额缺失跳过; 同 (日期,类型,金额) 重复跳过。"""
+    from sqlalchemy import select
     rep = BillImportReport()
+    rep.unmapped_columns = _unmapped_headers(text, _PROMO_MAP)
+    existing = {
+        (d, t, a) for d, t, a in db.execute(
+            select(PromotionFlow.transaction_date, PromotionFlow.flow_type, PromotionFlow.amount)
+        ).all()
+    }
+    seen: set = set()
     for rec in _rows(text, _PROMO_MAP):
         amount = _decimal(rec.get("amount"))
         if amount is None:
             rep.skipped_invalid += 1
             continue
+        tx_date = _date(rec.get("transaction_date"))
+        flow_type = rec.get("flow_type") or None
+        key = (tx_date, flow_type, amount)
+        if key in existing or key in seen:
+            rep.skipped_duplicate += 1
+            continue
+        seen.add(key)
         db.add(PromotionFlow(
-            transaction_date=_date(rec.get("transaction_date")),
-            flow_type=rec.get("flow_type") or None,
+            transaction_date=tx_date,
+            flow_type=flow_type,
             amount=amount,
             alipay_flow_no=rec.get("alipay_flow_no") or None,
             remark=rec.get("remark") or None,
