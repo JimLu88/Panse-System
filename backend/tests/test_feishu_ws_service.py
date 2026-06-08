@@ -1,0 +1,59 @@
+# -*- coding: utf-8 -*-
+"""飞书机器人长连接(WebSocket) 接入 可测部分单测 (不起真连接/真飞书/真AI)。"""
+import time
+
+from app.models.order import Order
+from app.services import feishu_bot_service as B
+from app.services import feishu_client, feishu_ws_service as W, vision_ocr_service
+
+
+def test_parse_card_event_variants():
+    ev = {"action": {"value": {"op": "pick", "message_id": "m1", "kind": "order_table"}},
+          "context": {"open_message_id": "card9"}}
+    assert W._parse_card_event(ev) == ("pick", {"op": "pick", "message_id": "m1", "kind": "order_table"}, "card9")
+    # value 是字符串(部分客户端) 也能解析
+    ev2 = {"action": {"value": '{"op":"cancel","message_id":"m2"}'}}
+    op, value, card = W._parse_card_event(ev2)
+    assert op == "cancel" and value["message_id"] == "m2" and card is None
+
+
+def test_to_dict_passthrough():
+    assert W._to_dict({"event": {"x": 1}}) == {"x": 1}
+    assert W._to_dict({"message": {"y": 2}}) == {"message": {"y": 2}}
+
+
+def test_on_card_pick_acks_and_schedules(monkeypatch):
+    called = {}
+    monkeypatch.setattr(B, "process_pick", lambda *a, **k: called.update(args=a))
+    resp = W._on_card({"action": {"value": {"op": "pick", "message_id": "m1", "kind": "order_table"}},
+                       "context": {"open_message_id": "c1"}})
+    assert type(resp).__name__ == "P2CardActionTriggerResponse"   # 3秒内 ack
+    time.sleep(0.05)                                              # 等后台线程
+    assert called["args"] == ("m1", "order_table", "c1")
+
+
+def test_on_card_cancel(monkeypatch):
+    monkeypatch.setattr(W, "_patch", lambda *a, **k: None)
+    resp = W._on_card({"action": {"value": {"op": "cancel", "message_id": "m1"}},
+                       "context": {"open_message_id": "c1"}})
+    assert type(resp).__name__ == "P2CardActionTriggerResponse"
+
+
+def test_do_pick_imports_and_patches(db_session, monkeypatch):
+    B._stage(db_session, "m1", {"file_key": "k1", "kind": "order_table", "conf": 0.9})
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(vision_ocr_service, "parse_qianniu_order",
+                        lambda db, img, **k: {"orders": [{"order_no": "W1", "qty": 1}], "ocr_warnings": []})
+    patched = {}
+    monkeypatch.setattr(feishu_client, "patch_card", lambda db, mid, card: patched.update(mid=mid, card=card))
+
+    r = B._do_pick(db_session, "m1", "order_table", "card9")
+    assert r["ok"] and r["kind"] == "order_table"
+    assert db_session.query(Order).filter_by(order_no="W1").count() == 1
+    assert patched["mid"] == "card9"                              # 完成后 patch 更新卡片
+    assert patched["card"]["header"]["template"] == "green"
+
+
+def test_do_pick_expired(db_session, monkeypatch):
+    monkeypatch.setattr(feishu_client, "patch_card", lambda *a, **k: None)
+    assert B._do_pick(db_session, "nope", "order_table", "card9")["error"] == "expired"

@@ -125,6 +125,13 @@ def reply_text(db: Session, message_id: str, text: str) -> dict:
     return _req(db, "POST", url, json=body)
 
 
+def patch_card(db: Session, message_id: str, card: dict) -> dict:
+    """更新一条已发送的卡片消息 (im/v1/messages/{id} PATCH) — 卡片回调延时更新(30分钟内)用。"""
+    url = f"{_BASE}/im/v1/messages/{message_id}"
+    body = {"content": json.dumps(card, ensure_ascii=False)}
+    return _req(db, "PATCH", url, json=body)
+
+
 def list_records(db: Session, app_token: str, table_id: str,
                  *, page_size: int = 500) -> list[dict]:
     """拉取一张 Bitable 表的全部记录 (自动翻页).

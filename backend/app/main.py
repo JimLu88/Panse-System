@@ -142,6 +142,15 @@ async def _lifespan(app: FastAPI):
         from app.services import scheduler as scheduler_service
         scheduler_service.start()
 
+    # 飞书机器人长连接 (opt-in): 配了 app_id/secret + 环境变量 ENABLE_FEISHU_BOT=1 才起,
+    # 默认不动现有部署 (飞书表同步用户不会被动开机器人)。
+    if os.environ.get("ENABLE_FEISHU_BOT") == "1":
+        try:
+            from app.services import feishu_ws_service
+            feishu_ws_service.start()
+        except Exception:  # pragma: no cover
+            logging.getLogger("panse.startup").warning("飞书机器人长连接启动失败", exc_info=True)
+
     yield   # 应用运行期
 
     # ----- 关停 -----

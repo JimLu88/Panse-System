@@ -292,3 +292,49 @@ def _safe_reply(db: Session, message_id: str, card: dict) -> None:
         feishu_client.reply_card(db, message_id, card)
     except Exception as e:  # pragma: no cover
         _log.warning("飞书机器人回卡片失败(凭证未配置?): %s", e)
+
+
+# ── 长连接(WebSocket)异步处理: 卡片回调要 3 秒内 ack, 入库放后台 + patch 更新卡片 ──
+def process_pick(orig_image_msg_id: str, kind: str, card_message_id: Optional[str] = None) -> dict:
+    """卡片"确认入库"的异步处理: 自带 DB 会话, 调 _do_pick。"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return _do_pick(db, orig_image_msg_id, kind, card_message_id)
+    finally:
+        db.close()
+
+
+def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
+             card_message_id: Optional[str] = None) -> dict:
+    """下载原图 → 按类型入库 → patch 更新卡片。(db 由调用方提供, 便于测试)"""
+    try:
+        pending = _load_pending(db).get(orig_image_msg_id)
+        if not pending:
+            _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
+            return {"error": "expired"}
+        img = feishu_client.download_message_resource(db, orig_image_msg_id, pending["file_key"])
+        result = _dispatch_import(db, kind, img)
+        db.commit()
+        _patch_result(db, card_message_id,
+                      "✅ 入库完成" if result["ok"] else "未入库", result["summary"],
+                      "green" if result["ok"] else "orange")
+        return {"kind": kind, **result}
+    except AiUnavailable as e:
+        db.rollback()
+        _patch_result(db, card_message_id, "OCR 未配置", f"请到 管理→AI 集成 配 vision 模型。\n{e}", "red")
+        return {"error": "ai_unavailable"}
+    except Exception as e:  # pragma: no cover
+        db.rollback()
+        _log.error("飞书机器人异步入库失败: %s", e)
+        _patch_result(db, card_message_id, "入库失败", f"出错了: {e}", "red")
+        return {"error": str(e)}
+
+
+def _patch_result(db: Session, card_message_id: Optional[str], title: str, content: str, template: str) -> None:
+    if not card_message_id:
+        return
+    try:
+        feishu_client.patch_card(db, card_message_id, _result_card(title, content, template))
+    except Exception as e:  # pragma: no cover
+        _log.warning("飞书机器人更新卡片失败: %s", e)
