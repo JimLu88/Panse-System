@@ -44,6 +44,7 @@ RuleName = Literal[
     "refill_commission_payout",
     "refill_express_payout",
     "aftersales_payout",
+    "refund_reconciliation",
 ]
 
 DiffSeverity = Literal["ok", "warning", "error", "not_available"]
@@ -851,6 +852,53 @@ def run_aftersales_payout(db: Session, *, period_start=None, period_end=None,
                        billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions)
 
 
+# -------- Rule 13: 退款闭环 (订单退款应退 ↔ 支付宝实际退款流出) --------
+
+def run_refund_reconciliation(db: Session, *, period_start=None, period_end=None,
+                              record_exceptions: bool = True) -> ReconciliationResult:
+    """退款闭环: 订单退款应退 (Order.refund_amount, 按 refund_date) ↔ 支付宝实际退款流出
+    (AlipayFlow reconciliation_type='refund_out', 按月)。差额=实退-应退。"""
+    o_stmt = select(Order.refund_date, Order.refund_amount).where(
+        Order.refund_amount.isnot(None), Order.refund_amount > 0,
+    )
+    if period_start:
+        o_stmt = o_stmt.where(Order.refund_date >= period_start)
+    if period_end:
+        o_stmt = o_stmt.where(Order.refund_date <= period_end)
+    billed = _sum_by_month(db.execute(o_stmt).all())  # 应退
+
+    af_stmt = select(AlipayFlow.transaction_time, func.abs(AlipayFlow.amount)).where(
+        AlipayFlow.reconciliation_type == "refund_out",
+    )
+    if period_start:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
+    paid = _sum_by_month(
+        (t.date() if hasattr(t, "date") else t, a) for t, a in db.execute(af_stmt).all()
+    )  # 实退
+
+    if not billed and not paid:
+        return _result("refund_reconciliation", period_start, period_end, [ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None, severity="not_available",
+            message="无订单退款 / 支付宝退款流水可对账 (空)",
+        )], db)
+
+    diffs: list[ReconciliationDiff] = []
+    for key in sorted(set(billed) | set(paid)):
+        exp = billed.get(key, Decimal("0"))
+        act = paid.get(key, Decimal("0"))
+        diff = act - exp
+        sev = _classify(diff, base=exp)
+        msg = f"{key}: 订单应退 ¥{exp}, 支付宝实退 ¥{act}, 差 ¥{diff}"
+        diffs.append(ReconciliationDiff(key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg))
+        if sev != "ok" and record_exceptions:
+            _record_exception(db, rule="refund_reconciliation", key=key, diff_amount=diff, message=msg)
+    if record_exceptions:
+        db.flush()
+    return _result("refund_reconciliation", period_start, period_end, diffs, db)
+
+
 # 规则注册表
 RULES: dict[RuleName, callable] = {
     "factory_payment": run_factory_payment,
@@ -865,6 +913,7 @@ RULES: dict[RuleName, callable] = {
     "refill_commission_payout": run_refill_commission_payout,
     "refill_express_payout": run_refill_express_payout,
     "aftersales_payout": run_aftersales_payout,
+    "refund_reconciliation": run_refund_reconciliation,
 }
 
 
