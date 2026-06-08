@@ -57,9 +57,29 @@ def handle(db: Session, body: dict[str, Any]) -> dict:
         return {"challenge": body.get("challenge")}
 
     header = body.get("header") or {}
-    event_type = header.get("event_type") or (body.get("event") or {}).get("type") or body.get("type")
-    _maybe_trigger_sync(db, event_type, body.get("event") or {})
+    event = body.get("event") or {}
+    event_type = header.get("event_type") or event.get("type") or body.get("type")
+    _maybe_trigger_sync(db, event_type, event)
+    _maybe_bot(db, event_type, event)
     return {}
+
+
+def _maybe_bot(db: Session, event_type: str | None, event: dict) -> None:
+    """机器人: 收图消息(im.message.receive_v1) / 卡片按钮(card.action.trigger)
+    → 分发到 feishu_bot_service。尽力而为, 出错只记日志不让 webhook 500。"""
+    if not event_type:
+        return
+    try:
+        from app.services import feishu_bot_service
+        if "im.message.receive" in event_type:
+            feishu_bot_service.on_message_event(db, event)
+            db.commit()
+        elif "card.action.trigger" in event_type:
+            feishu_bot_service.on_card_action(db, event)
+            db.commit()
+    except Exception as e:  # pragma: no cover
+        db.rollback()
+        _log.error("飞书机器人事件处理失败: %s", e)
 
 
 def _maybe_trigger_sync(db: Session, event_type: str | None, event: dict) -> None:

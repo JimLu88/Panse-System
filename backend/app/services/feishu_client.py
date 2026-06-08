@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import time
 from typing import Any, Optional
@@ -90,6 +91,38 @@ def _req(db: Session, method: str, url: str, **kwargs) -> dict:
             code=data.get("code"),
         )
     return data.get("data", {})
+
+
+# ── 机器人: 消息图片下载 + 回交互卡片 ──────────────────────────
+def download_message_resource(db: Session, message_id: str, file_key: str,
+                              *, type_: str = "image") -> bytes:
+    """下载消息里的图片/文件原始字节 (im/v1/messages/{id}/resources/{key})。"""
+    url = f"{_BASE}/im/v1/messages/{message_id}/resources/{file_key}?type={type_}"
+    try:
+        r = httpx.get(
+            url, headers={"Authorization": f"Bearer {get_tenant_access_token(db)}"},
+            timeout=_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        raise FeishuError(f"飞书下载图片网络失败: {e}") from e
+    ctype = r.headers.get("content-type", "")
+    if r.status_code != 200 or ctype.startswith("application/json"):
+        raise FeishuError(f"飞书下载图片失败: HTTP {r.status_code} {r.text[:120]}")
+    return r.content
+
+
+def reply_card(db: Session, message_id: str, card: dict) -> dict:
+    """回复一条消息, 内容为交互卡片 (im/v1/messages/{id}/reply)。"""
+    url = f"{_BASE}/im/v1/messages/{message_id}/reply"
+    body = {"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)}
+    return _req(db, "POST", url, json=body)
+
+
+def reply_text(db: Session, message_id: str, text: str) -> dict:
+    """回复一条纯文本消息。"""
+    url = f"{_BASE}/im/v1/messages/{message_id}/reply"
+    body = {"msg_type": "text", "content": json.dumps({"text": text}, ensure_ascii=False)}
+    return _req(db, "POST", url, json=body)
 
 
 def list_records(db: Session, app_token: str, table_id: str,
