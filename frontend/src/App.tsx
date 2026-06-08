@@ -56,6 +56,7 @@ const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
 const CashFlowPage = lazy(() => import('./pages/CashFlowPage'));
 const DataExplorerPage = lazy(() => import('./pages/DataExplorerPage'));
 const SettlementsPage = lazy(() => import('./pages/SettlementsPage'));
+const ImportArchivePage = lazy(() => import('./pages/ImportArchivePage'));
 
 const { Header, Content } = Layout;
 
@@ -87,7 +88,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   reconciliation: 'g-finance', 'refill-records': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance',
   reports: 'g-analysis', exceptions: 'g-analysis',
-  importer: 'g-tools', 'data-explorer': 'g-tools', feishu: 'g-tools', admin: 'g-tools',
+  importer: 'g-tools', 'data-explorer': 'g-tools', 'import-archive': 'g-tools', feishu: 'g-tools', admin: 'g-tools',
 };
 
 export default function App() {
@@ -226,6 +227,7 @@ export default function App() {
       label: '工具',
       children: [
         { key: 'importer', label: <Link to="/importer">Excel 导入</Link> },
+        { key: 'import-archive', label: <Link to="/import-archive">导入档案</Link> },
         { key: 'data-explorer', label: <Link to="/data-explorer">全列数据浏览</Link> },
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
         ...(user.role === 'admin'
@@ -353,6 +355,7 @@ export default function App() {
             <Route path="/cash-flow" element={<CashFlowPage />} />
             <Route path="/settlements" element={<SettlementsPage />} />
             <Route path="/data-explorer" element={<DataExplorerPage />} />
+            <Route path="/import-archive" element={<ImportArchivePage />} />
           </Routes>
         </Suspense>
       </Content>

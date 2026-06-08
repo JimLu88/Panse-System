@@ -23,6 +23,7 @@ from app.services import (
     cash_flow_service,
     email_import_service,
     factory_reconciliation_service,
+    import_storage,
     reconciliation_service,
     smart_matching_service,
 )
@@ -72,6 +73,8 @@ class AlipayImportResult(BaseModel):
     errors: list[str]
     auto_tagged: dict[str, int] = {}
     auto_untouched: int = 0
+    archived_file_id: Optional[int] = None   # 归档原文件 id (导入档案可回溯)
+    duplicate_upload: bool = False            # 同一文件曾上传过
 
 
 @router.post("/alipay-flows/import-csv", response_model=AlipayImportResult)
@@ -81,6 +84,10 @@ async def import_alipay(
     db: Session = Depends(get_db),
 ):
     raw = await file.read()
+    arch = import_storage.archive(
+        db, content=raw, original_name=file.filename or f"alipay-{account}.csv",
+        kind="alipay", source="web",
+    )
     try:
         text = raw.decode("utf-8-sig")
     except UnicodeDecodeError:
@@ -88,6 +95,10 @@ async def import_alipay(
     r = alipay_import.import_alipay_csv(db, text, account=account)
     # plan §12.4: 导入完跑一次智能核销
     matched = smart_matching_service.run(db, account=account)
+    import_storage.update_summary(db, arch.file.id, {
+        "inserted": r.inserted, "skipped_duplicate": r.skipped_duplicate,
+        "skipped_invalid": r.skipped_invalid, "account": account,
+    })
     db.commit()
     return AlipayImportResult(
         inserted=r.inserted,
@@ -96,6 +107,8 @@ async def import_alipay(
         errors=r.errors,
         auto_tagged=matched.tagged,
         auto_untouched=matched.untouched,
+        archived_file_id=arch.file.id,
+        duplicate_upload=arch.is_duplicate,
     )
 
 

@@ -69,3 +69,5 @@ class CsvImportReport(BaseModel):
     skipped_duplicate: int
     skipped_invalid: int
     errors: list[str] = Field(default_factory=list)
+    archived_file_id: Optional[int] = None   # 归档原文件 id (导入档案可回溯)
+    duplicate_upload: bool = False            # 同一文件曾上传过

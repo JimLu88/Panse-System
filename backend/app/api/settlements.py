@@ -9,7 +9,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.settlement import OrderSettlement
-from app.services import order_reconciliation_service, settlement_import_service
+from app.services import import_storage, order_reconciliation_service, settlement_import_service
 
 router = APIRouter(prefix="/api/settlements", tags=["settlements"])
 
@@ -22,7 +22,14 @@ def import_settlements(
     _: User = Depends(require_role("admin", "operator")),
 ):
     content = file.file.read()
+    arch = import_storage.archive(
+        db, content=content, original_name=file.filename or "settlement.xlsx",
+        kind="settlement", source="web", uploaded_by=getattr(_, "username", None),
+    )
     result = settlement_import_service.import_bill(db, content, source=source)
+    if isinstance(result, dict):
+        import_storage.update_summary(db, arch.file.id, result)
+        result = {**result, "archived_file_id": arch.file.id, "duplicate_upload": arch.is_duplicate}
     db.commit()
     return result
 

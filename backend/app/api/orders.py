@@ -23,6 +23,7 @@ from app.services import (
     data_quality_service,
     exception_service,
     factory_sheet,
+    import_storage,
     order_cost_service,
     order_import,
     order_message_service,
@@ -234,6 +235,9 @@ def change_status(order_id: int, payload: OrderStatusChange, db: Session = Depen
 async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
     raw = await file.read()
     name = (file.filename or "").lower()
+    arch = import_storage.archive(
+        db, content=raw, original_name=file.filename or "orders.csv", kind="orders", source="web",
+    )
     if name.endswith(".xlsx") or name.endswith(".xls"):
         report = order_import.import_orders_from_xlsx(db, raw)
     else:
@@ -242,12 +246,22 @@ async def import_csv(file: UploadFile = File(...), db: Session = Depends(get_db)
         except UnicodeDecodeError:
             text = raw.decode("gbk", errors="replace")  # 中文 Excel 导出常见
         report = order_import.import_orders_from_csv(db, text)
+    summary = {
+        "inserted": report.inserted,
+        "backfilled": getattr(report, "backfilled", 0),
+        "skipped_duplicate": report.skipped_duplicate,
+        "skipped_invalid": report.skipped_invalid,
+    }
+    import_storage.update_summary(db, arch.file.id, summary)
+    db.commit()
     return CsvImportReport(
         inserted=report.inserted,
         backfilled=getattr(report, "backfilled", 0),
         skipped_duplicate=report.skipped_duplicate,
         skipped_invalid=report.skipped_invalid,
         errors=report.errors,
+        archived_file_id=arch.file.id,
+        duplicate_upload=arch.is_duplicate,
     )
 
 
