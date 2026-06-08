@@ -5,11 +5,12 @@
  * 简化版用按钮"推进/取消", 不用拖拽库, 保持 0 依赖.
  */
 import { useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Empty, Popconfirm, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { CheckCircleOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { changeOrderStatus, confirmOrderManual, confirmOrderTracking, listOrders } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
+import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
 
 const COLUMNS: { key: string; label: string; color: string; next?: string }[] = [
   { key: 'pending_payment', label: '待付款', color: 'default', next: 'paid' },
@@ -35,6 +36,7 @@ function normStatus(raw: string): string {
 export default function OrdersKanbanPage() {
   const qc = useQueryClient();
   const [timelineFor, setTimelineFor] = useState<number | null>(null);
+  const [accessoryFor, setAccessoryFor] = useState<{ id: number; order_no: string } | null>(null);
   const [expandedCols, setExpandedCols] = useState<Record<string, boolean>>({});
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
@@ -90,7 +92,7 @@ export default function OrdersKanbanPage() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="订单看板视图: 一眼看到瓶颈在哪一档（只显示进行中的订单）"
-             description={`点订单卡片查时间线; 点 [→ 下一档] 推进状态。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`} />
+             description={`[时间线]看进度 · [配件]看BOM采购清单(待采购/已到货打勾) · [→下一档]推进状态(点击是改状态、会二次确认, 不是拖拽)。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`} />
       <Row gutter={12}>
         {COLUMNS.map((col) => (
           <Col key={col.key} span={Math.floor(24 / COLUMNS.length)}>
@@ -136,6 +138,11 @@ export default function OrdersKanbanPage() {
                         <Button size="small" onClick={() => setTimelineFor(o.id)}>
                           时间线
                         </Button>
+                        <Tooltip title="BOM 配件采购清单: 哪些待采购/已到货, 采购完打勾">
+                          <Button size="small" onClick={() => setAccessoryFor({ id: o.id, order_no: o.order_no })}>
+                            配件
+                          </Button>
+                        </Tooltip>
                         {col.key === 'shipped' && (
                           <>
                             <Tooltip title="确认快递单号已核对">
@@ -163,14 +170,18 @@ export default function OrdersKanbanPage() {
                           </>
                         )}
                         {col.next && col.key !== 'shipped' && (
-                          <Button
-                            size="small"
-                            type="link"
-                            loading={transMut.isPending}
-                            onClick={() => transMut.mutate({ id: o.id, status: col.next! })}
+                          <Popconfirm
+                            title={`把订单推进到「${COLUMNS.find((c) => c.key === col.next)?.label}」？`}
+                            description="这会改变订单状态(不是拖拽预览)，确认后生效。"
+                            okText="确认推进" cancelText="取消"
+                            onConfirm={() => transMut.mutate({ id: o.id, status: col.next! })}
                           >
-                            → {COLUMNS.find((c) => c.key === col.next)?.label}
-                          </Button>
+                            <Tooltip title={`推进到下一档：${COLUMNS.find((c) => c.key === col.next)?.label}`}>
+                              <Button size="small" type="link" loading={transMut.isPending}>
+                                → {COLUMNS.find((c) => c.key === col.next)?.label}
+                              </Button>
+                            </Tooltip>
+                          </Popconfirm>
                         )}
                       </Space>
                     </Space>
@@ -190,6 +201,12 @@ export default function OrdersKanbanPage() {
       </Row>
       <OrderTimelineDrawer orderId={timelineFor} open={timelineFor !== null}
                             onClose={() => setTimelineFor(null)} />
+      <AccessoryChecklistDrawer
+        orderId={accessoryFor?.id ?? null}
+        orderNo={accessoryFor?.order_no}
+        open={accessoryFor !== null}
+        onClose={() => setAccessoryFor(null)}
+      />
     </Space>
   );
 }
