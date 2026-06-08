@@ -12,7 +12,7 @@ def test_picker_and_confirm_cards():
     pick = B._picker_card("m1")
     assert pick["header"]["title"]["content"].startswith("📷")
     ops = [a["value"]["kind"] for a in pick["elements"][1]["actions"] if a["value"].get("kind")]
-    assert ops == ["order_table", "order_image", "supplier_note"]
+    assert ops == ["order_table", "order_image", "supplier_note", "alipay_flow"]
     conf = B._confirm_card("m1", "supplier_note", 0.9)
     assert "供应商送货单" in conf["elements"][0]["text"]["content"]
 

@@ -12,8 +12,10 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models.finance import (
-    AccountBalance, AlipayFlow, FactoryReconciliation, LogisticsBill, RefillRecord, WanshifuBill,
+    AccountBalance, AlipayFlow, FactoryReconciliation, LogisticsBill,
+    RefillRecord, WanshifuBill,
 )
+from app.models.marketing import PromotionFlow
 from app.services import (
     alipay_backfill_service,
     alipay_flow_router_service,
@@ -618,6 +620,16 @@ class LogisticsBillOut(BaseModel):
     remark: Optional[str]
 
 
+class PromotionFlowOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    transaction_date: Optional[date]
+    flow_type: Optional[str]
+    amount: Decimal
+    alipay_flow_no: Optional[str]
+    remark: Optional[str]
+
+
 class RefillRecordOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -661,6 +673,23 @@ def list_logistics_bills(
         from sqlalchemy import extract
         stmt = stmt.where(extract("year", LogisticsBill.bill_date) == year)
     stmt = stmt.order_by(LogisticsBill.bill_date.desc().nulls_last()).limit(limit)
+    return db.execute(stmt).scalars().all()
+
+
+@router.get("/promotion-flows", response_model=list[PromotionFlowOut])
+def list_promotion_flows(
+    flow_type: Optional[str] = None,
+    year: Optional[int] = None,
+    limit: int = Query(500, le=2000),
+    db: Session = Depends(get_db),
+):
+    stmt = select(PromotionFlow)
+    if flow_type:
+        stmt = stmt.where(PromotionFlow.flow_type == flow_type)
+    if year:
+        from sqlalchemy import extract
+        stmt = stmt.where(extract("year", PromotionFlow.transaction_date) == year)
+    stmt = stmt.order_by(PromotionFlow.transaction_date.desc().nulls_last()).limit(limit)
     return db.execute(stmt).scalars().all()
 
 

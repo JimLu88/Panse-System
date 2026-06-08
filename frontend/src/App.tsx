@@ -61,6 +61,7 @@ const ReconDiagnosticsPage = lazy(() => import('./pages/ReconDiagnosticsPage'));
 const PrepayLedgerPage = lazy(() => import('./pages/PrepayLedgerPage'));
 const FactoryReconPage = lazy(() => import('./pages/FactoryReconPage'));
 const ShopDepositsPage = lazy(() => import('./pages/ShopDepositsPage'));
+const PromotionFlowsPage = lazy(() => import('./pages/PromotionFlowsPage'));
 
 const { Header, Content } = Layout;
 
@@ -90,7 +91,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
   'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
   reconciliation: 'g-finance', 'refill-records': 'g-finance', 'recon-diagnostics': 'g-finance', 'prepay-ledger': 'g-finance',
-  'factory-recon': 'g-finance', 'shop-deposits': 'g-finance',
+  'factory-recon': 'g-finance', 'shop-deposits': 'g-finance', 'promotion-flows': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance',
   reports: 'g-analysis', exceptions: 'g-analysis',
   importer: 'g-tools', 'data-explorer': 'g-tools', 'import-archive': 'g-tools', feishu: 'g-tools', admin: 'g-tools',
@@ -218,6 +219,7 @@ export default function App() {
         { key: 'factory-recon', label: <Link to="/factory-recon">工厂逐单对账</Link> },
         { key: 'prepay-ledger', label: <Link to="/prepay-ledger">代付台账</Link> },
         { key: 'shop-deposits', label: <Link to="/shop-deposits">平台保证金</Link> },
+        { key: 'promotion-flows', label: <Link to="/promotion-flows">推广费流水</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
         { key: 'assets', label: <Link to="/assets">资产</Link> },
@@ -367,6 +369,7 @@ export default function App() {
             <Route path="/factory-recon" element={<FactoryReconPage />} />
             <Route path="/prepay-ledger" element={<PrepayLedgerPage />} />
             <Route path="/shop-deposits" element={<ShopDepositsPage />} />
+            <Route path="/promotion-flows" element={<PromotionFlowsPage />} />
             <Route path="/data-explorer" element={<DataExplorerPage />} />
             <Route path="/import-archive" element={<ImportArchivePage />} />
           </Routes>

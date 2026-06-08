@@ -128,6 +128,31 @@ _FACTORY_RECON_SYSTEM = """你是工厂对账单截图解析助手。
 - 仅输出 JSON, 不要任何解释文字"""
 
 
+_ALIPAY_SYSTEM = """你是支付宝流水截图解析助手。
+从用户提供的支付宝账单/流水截图中提取每一笔交易, 输出严格 JSON:
+{
+  "flows": [
+    {
+      "transaction_time": "YYYY-MM-DD HH:MM:SS (或 YYYY-MM-DD, 可空)",
+      "transaction_no": "交易流水号/订单号 (尽量取支付宝交易号)",
+      "transaction_type": "交易类型/分类 (如 在线支付/转账/退款, 可空)",
+      "counterparty": "交易对方 (可空)",
+      "amount": 数字 (收支金额, 收入为正/支出为负; 截图里有'收入/支出'或+/-就按符号),
+      "related_order_no": "关联商户订单号 (可空)",
+      "balance": 数字 (账户余额, 可空),
+      "remark": "备注/商品说明 (可空)"
+    }
+  ],
+  "ocr_warnings": ["全局识别问题, 如截图模糊/被截断/可能漏行"]
+}
+
+规则:
+- 金额返回纯数字带符号 (支出为负数), 不带 ¥/元; 不确定就 null
+- 交易流水号必须尽量取全; 取不到就 null 并加 warnings (无流水号的行无法入库)
+- 截图通常是长账单, 若怀疑上下被截断务必在 ocr_warnings 提示"可能漏行, 建议用 CSV 导出"
+- 仅输出 JSON, 不要任何解释文字"""
+
+
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
 
@@ -216,4 +241,34 @@ def parse_factory_reconciliation(
     data.setdefault("ocr_warnings", [])
     if not isinstance(data["rows"], list):
         data["rows"] = []
+    return data
+
+
+def parse_alipay_flow_screenshot(
+    db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
+) -> dict:
+    """解析支付宝流水截图. 返回 {"flows": [...], "ocr_warnings": [...]}.
+
+    flows 内字段直接对应 alipay_import.import_alipay_rows 的 payload 键
+    (transaction_no/transaction_time/transaction_type/counterparty/amount/
+     related_order_no/balance/remark)。
+    """
+    cfg = settings_service.get_ai_config(db, "ocr")
+    try:
+        provider = build_provider(cfg)
+    except AiUnavailable as e:
+        raise AiUnavailable(f"OCR 未配置, 请到管理 → AI 集成 配 vision 模型: {e}")
+    resp = provider.chat_with_image(
+        system=_ALIPAY_SYSTEM,
+        user="请解析这张支付宝流水截图, 输出 JSON.",
+        image_bytes=image_bytes, mime=mime, max_tokens=4000,
+    )
+    try:
+        data = _extract_json(resp.text)
+    except ValueError as e:
+        raise AiUnavailable(f"AI 返回无法解析: {e}")
+    data.setdefault("flows", [])
+    data.setdefault("ocr_warnings", [])
+    if not isinstance(data["flows"], list):
+        data["flows"] = []
     return data

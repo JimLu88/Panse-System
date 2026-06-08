@@ -35,7 +35,9 @@ from app.models.supplier import (
     DeliveryNoteLine,
     Supplier,
 )
-from app.services import delivery_matcher, delivery_storage, ocr_service, statement_service
+from app.services import (
+    delivery_matcher, delivery_note_service, delivery_storage, ocr_service, statement_service,
+)
 
 router = APIRouter(prefix="/api", tags=["suppliers"])
 
@@ -273,7 +275,6 @@ async def upload_and_ocr(
     if len(content) > 20 * 1024 * 1024:
         raise HTTPException(413, "文件超过 20MB")
 
-    # 1) 落盘
     from datetime import date as _d
     archive_date = None
     if on_date:
@@ -281,84 +282,12 @@ async def upload_and_ocr(
             archive_date = _d.fromisoformat(on_date)
         except ValueError:
             raise HTTPException(400, "日期格式应为 YYYY-MM-DD")
-    saved = delivery_storage.save_upload(
-        supplier_id, content=content,
+
+    note = delivery_note_service.create_from_image(
+        db, supplier=s, content=content, mime=file.content_type,
         original_name=file.filename or "upload.jpg",
-        on_date=archive_date,
+        uploaded_by=user.username, on_date=archive_date,
     )
-    df = DeliveryFile(
-        supplier_id=supplier_id,
-        year=saved["year"], month=saved["month"],
-        file_path=saved["file_path"],
-        original_name=saved["original_name"],
-        mime_type=saved["mime_type"],
-        size_bytes=saved["size_bytes"],
-        uploaded_by=user.username,
-    )
-    db.add(df)
-    db.flush()
-
-    # 2) OCR
-    try:
-        parsed = ocr_service.ocr_delivery_note(
-            db, image_bytes=content, mime=saved["mime_type"] or "image/jpeg",
-            supplier_name=s.name, supplier_type=s.supplier_type,
-        )
-    except ocr_service.OcrUnavailable as e:
-        # 入了文件, 但 OCR 没配 / 失败 — 仍记一条 pending_review 空单, 让用户事后再跑
-        note = DeliveryNote(
-            supplier_id=supplier_id, source_file_id=df.id,
-            status="pending_review", ocr_warnings=[f"OCR 调用失败: {e}"],
-        )
-        db.add(note)
-        db.commit()
-        db.refresh(note)
-        return _note_out(db, note)
-    except ocr_service.OcrParseError as e:
-        note = DeliveryNote(
-            supplier_id=supplier_id, source_file_id=df.id,
-            status="pending_review",
-            ocr_warnings=[f"OCR 返回无法解析: {e}"],
-        )
-        db.add(note)
-        db.commit()
-        db.refresh(note)
-        return _note_out(db, note)
-
-    # 3) 入主表 + 明细 + 匹配
-    note = DeliveryNote(
-        supplier_id=supplier_id,
-        source_file_id=df.id,
-        note_no=parsed.note_no,
-        delivery_date=parsed.delivery_date,
-        total_amount=parsed.total_amount,
-        ocr_model=parsed.model,
-        ocr_warnings=parsed.warnings,
-        ocr_confidence=parsed.confidence,
-        status="pending_review",
-    )
-    db.add(note)
-    db.flush()
-
-    for pl in parsed.lines:
-        line = DeliveryNoteLine(
-            delivery_note_id=note.id, line_no=pl.line_no,
-            item_name=pl.item_name, spec=pl.spec, unit=pl.unit,
-            qty=pl.qty, unit_price=pl.unit_price, amount=pl.amount,
-            ocr_raw_text=pl.raw_text, ocr_warnings=pl.warnings,
-        )
-        # 自动跑匹配
-        try:
-            candidates = delivery_matcher.match_line(
-                db, item_name=pl.item_name, spec=pl.spec, qty=pl.qty,
-                delivery_date=parsed.delivery_date,
-            )
-            delivery_matcher.apply_candidates_to_line(line, candidates)
-        except Exception as e:  # pragma: no cover
-            line.match_method = "error"
-            line.match_candidates = []
-            line.remark = f"匹配失败: {e}"
-        db.add(line)
     db.commit()
     db.refresh(note)
     return _note_out(db, note)

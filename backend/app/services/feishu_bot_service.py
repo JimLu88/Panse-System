@@ -37,14 +37,19 @@ IMAGE_TYPES = {
     "order_table": "订单表(批量订单截图)",
     "order_image": "订单图(单个订单截图)",
     "supplier_note": "供应商送货单",
+    "alipay_flow": "支付宝流水截图",
 }
 
 _CLASSIFY_SYSTEM = (
     "你是图片分类助手。判断用户发来的图属于哪类，只输出 JSON。\n"
     "类型: order_table=淘宝/千牛批量订单列表截图; order_image=单个订单详情截图; "
-    "supplier_note=供应商送货单/采购单/进货单; unknown=都不像。\n"
-    '输出: {"kind": "order_table|order_image|supplier_note|unknown", "confidence": 0~1}'
+    "supplier_note=供应商送货单/采购单/进货单; alipay_flow=支付宝账单/流水/收支明细截图; "
+    "unknown=都不像。\n"
+    '输出: {"kind": "order_table|order_image|supplier_note|alipay_flow|unknown", "confidence": 0~1}'
 )
+
+# 默认支付宝账户标签 (截图录入与 CSV 导入分账户去重, 避免互相覆盖)
+_ALIPAY_SCREENSHOT_ACCOUNT = "支付宝(截图)"
 
 
 # ── 暂存 (system_settings JSON) ───────────────────────────────
@@ -114,6 +119,7 @@ def _picker_card(message_id: str, *, hint: str = "我不太确定这张图的类
                 _btn("订单表(批量)", {"op": "pick", "message_id": message_id, "kind": "order_table"}, "primary"),
                 _btn("订单图(单个)", {"op": "pick", "message_id": message_id, "kind": "order_image"}, "primary"),
                 _btn("供应商送货单", {"op": "pick", "message_id": message_id, "kind": "supplier_note"}),
+                _btn("支付宝流水", {"op": "pick", "message_id": message_id, "kind": "alipay_flow"}),
                 _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
             ]},
         ],
@@ -142,6 +148,36 @@ def _result_card(title: str, content: str, template: str = "green") -> dict:
         "config": {"wide_screen_mode": True},
         "header": {"template": template, "title": {"tag": "plain_text", "content": title}},
         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
+    }
+
+
+def _recent_suppliers(db: Session, limit: int = 9) -> list[tuple[int, str]]:
+    """取最近/常用供应商 (id, name), 供送货单归属选择。"""
+    from app.models.supplier import Supplier
+    rows = db.execute(
+        select(Supplier.id, Supplier.name).order_by(Supplier.id.desc()).limit(limit)
+    ).all()
+    return [(r[0], r[1]) for r in rows]
+
+
+def _supplier_picker_card(message_id: str, suppliers: list[tuple[int, str]]) -> dict:
+    """识别为送货单后, 追问"这是哪家供应商?" — 列出候选供应商让用户点选。"""
+    if not suppliers:
+        return _result_card(
+            "请先建供应商",
+            "识别为供应商送货单，但系统里还没有供应商。请先到 供应商 页新建供应商后再发图。", "orange")
+    actions = [
+        _btn(name[:18], {"op": "pick_supplier", "message_id": message_id, "supplier_id": sid}, "primary")
+        for sid, name in suppliers
+    ]
+    actions.append(_btn("取消", {"op": "cancel", "message_id": message_id}, "danger"))
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📦 这是哪家供应商的送货单？"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "请点选送货单归属的供应商："}},
+            {"tag": "action", "actions": actions},
+        ],
     }
 
 
@@ -190,7 +226,20 @@ def _import_orders(db: Session, parsed: dict) -> dict:
             "warnings": parsed.get("ocr_warnings") or []}
 
 
-def _dispatch_import(db: Session, kind: str, image_bytes: bytes) -> dict:
+def _import_alipay_flows(db: Session, parsed: dict) -> dict:
+    """把 parse_alipay_flow_screenshot 的结果入 alipay_flows (默认截图账户, 带去重)。"""
+    from app.services import alipay_import
+    flows = parsed.get("flows") or []
+    rep = alipay_import.import_alipay_rows(
+        db, flows, account=_ALIPAY_SCREENSHOT_ACCOUNT, commit=False,
+    )
+    return {"inserted": rep.inserted, "skipped_duplicate": rep.skipped_duplicate,
+            "skipped_invalid": rep.skipped_invalid,
+            "warnings": parsed.get("ocr_warnings") or []}
+
+
+def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
+                     supplier_id: Optional[int] = None) -> dict:
     """按类型解析图片并入库, 返回结果摘要 {ok, summary}。"""
     if kind in ("order_table", "order_image"):
         parsed = vision_ocr_service.parse_qianniu_order(db, image_bytes)
@@ -199,15 +248,32 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes) -> dict:
         if r["warnings"]:
             msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
         return {"ok": True, "summary": msg}
+    if kind == "alipay_flow":
+        parsed = vision_ocr_service.parse_alipay_flow_screenshot(db, image_bytes)
+        r = _import_alipay_flows(db, parsed)
+        msg = (f"支付宝流水入库完成: 新增 **{r['inserted']}** 笔, 重复 {r['skipped_duplicate']}, "
+               f"无效 {r['skipped_invalid']} (账户「{_ALIPAY_SCREENSHOT_ACCOUNT}」)。")
+        warns = list(r["warnings"]) + ["长账单截图可能漏行, 完整流水建议用 CSV 导出 / 邮箱自动收取。"]
+        msg += f"\n⚠️ {'; '.join(map(str, warns[:3]))}"
+        return {"ok": True, "summary": msg}
     if kind == "supplier_note":
-        # 供应商送货单: 先识别, 完整入库走既有「供应商对账 OCR」流程 (需 supplier 归属/原图归档)
-        from app.services import ocr_service
-        note = ocr_service.parse_delivery_note(db, image_bytes, mime="image/jpeg")
-        lines = getattr(note, "lines", None) or (note.get("lines") if isinstance(note, dict) else [])
-        total = getattr(note, "total_amount", None) if not isinstance(note, dict) else note.get("total_amount")
-        return {"ok": True, "summary": (
-            f"已识别送货单: {len(lines)} 行, 合计 ¥{total or '?'}。\n"
-            "（完整入库请到 供应商 → 送货单 OCR 确认归属供应商后保存）")}
+        if not supplier_id:
+            return {"ok": False, "summary": "供应商送货单需先选择归属供应商。"}
+        from app.models.supplier import Supplier
+        from app.services import delivery_note_service
+        supplier = db.get(Supplier, supplier_id)
+        if supplier is None:
+            return {"ok": False, "summary": f"供应商不存在: {supplier_id}"}
+        note = delivery_note_service.create_from_image(
+            db, supplier=supplier, content=image_bytes, mime="image/jpeg",
+            original_name="feishu.jpg", uploaded_by="feishu_bot",
+        )
+        n_lines = len(getattr(note, "lines", []) or [])
+        msg = (f"送货单已入库到供应商 **{supplier.name}**: {n_lines} 行"
+               f"{f', 合计 ¥{note.total_amount}' if note.total_amount else ''} (待在供应商页确认)。")
+        if note.ocr_warnings:
+            msg += f"\n⚠️ {'; '.join(map(str, note.ocr_warnings[:2]))}"
+        return {"ok": True, "summary": msg}
     return {"ok": False, "summary": f"未知类型: {kind}"}
 
 
@@ -234,8 +300,14 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         _log.warning("飞书机器人取图/分类失败: %s", e)
 
     _stage(db, message_id, {"file_key": file_key, "kind": kind, "conf": conf})
-    card = _confirm_card(message_id, kind, conf) if (kind in IMAGE_TYPES and conf >= _CONFIDENT) \
-        else _picker_card(message_id)
+    if kind in IMAGE_TYPES and conf >= _CONFIDENT:
+        # 送货单即使识别确定, 也要追问"哪家供应商"才能正确归属入库
+        if kind == "supplier_note":
+            card = _supplier_picker_card(message_id, _recent_suppliers(db))
+        else:
+            card = _confirm_card(message_id, kind, conf)
+    else:
+        card = _picker_card(message_id)
     _safe_reply(db, message_id, card)
     return {"message_id": message_id, "kind": kind, "confidence": conf, "card_sent": True}
 
@@ -260,6 +332,30 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     if op == "repick":
         _safe_reply(db, orig_id, _picker_card(orig_id))
         return {"op": "repick"}
+    # 用户选了具体供应商 → 按该供应商把送货单入库
+    if op == "pick_supplier":
+        supplier_id = value.get("supplier_id")
+        pending = _load_pending(db).get(orig_id)
+        if not pending:
+            _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
+            return {"op": "pick_supplier", "error": "expired"}
+        try:
+            img = feishu_client.download_message_resource(db, orig_id, pending["file_key"])
+            result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+            db.commit()
+        except AiUnavailable as e:
+            _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
+            return {"op": "pick_supplier", "error": "ai_unavailable"}
+        except Exception as e:  # pragma: no cover
+            db.rollback()
+            _log.error("飞书机器人送货单入库失败: %s", e)
+            _safe_reply(db, orig_id, _result_card("入库失败", f"出错了: {e}", "red"))
+            return {"op": "pick_supplier", "error": str(e)}
+        _safe_reply(db, orig_id, _result_card(
+            "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
+            "green" if result["ok"] else "orange"))
+        return {"op": "pick_supplier", "supplier_id": supplier_id, **result}
+
     if op != "pick":
         return None
 
@@ -268,6 +364,10 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     if not pending:
         _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
         return {"op": "pick", "error": "expired"}
+    # 送货单: 先追问"哪家供应商", 选定后再入库 (见 pick_supplier)
+    if kind == "supplier_note":
+        _safe_reply(db, orig_id, _supplier_picker_card(orig_id, _recent_suppliers(db)))
+        return {"op": "pick", "kind": kind, "await": "supplier"}
     try:
         img = feishu_client.download_message_resource(db, orig_id, pending["file_key"])
         result = _dispatch_import(db, kind, img)
@@ -281,7 +381,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
         _safe_reply(db, orig_id, _result_card("入库失败", f"出错了: {e}", "red"))
         return {"op": "pick", "error": str(e)}
     _safe_reply(db, orig_id, _result_card(
-        "✅ 入库完成" if result["ok"] else "未入库", result["summary"],
+        "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
         "green" if result["ok"] else "orange"))
     return {"op": "pick", "kind": kind, **result}
 

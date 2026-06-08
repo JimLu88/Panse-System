@@ -101,13 +101,28 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
         report.errors.append("CSV 缺少『收支金额』列")
         return report
 
-    # 去重键含「交易类型 + 金额」: 同号配对流水 (在线支付货款 + 分账手续费) 都能入库,
-    # 仅「同号 + 同类型 + 同金额」才算真重复 (与 uq_alipay_flow_acct_no / migration 0039 一致)。
-    seen: set[tuple] = set()
+    rows: list[dict[str, Any]] = []
     for row in reader:
         payload: dict[str, Any] = {}
         for raw, fld in field_map.items():
             payload[fld] = row.get(raw)
+        rows.append(payload)
+    return import_alipay_rows(db, rows, account=account, report=report)
+
+
+def import_alipay_rows(
+    db: Session, rows: list[dict[str, Any]], *, account: str,
+    report: Optional[AlipayImportReport] = None, commit: bool = True,
+) -> AlipayImportReport:
+    """把已规范化的流水行(payload dict 列表)写入 AlipayFlow, 带去重。
+
+    供 CSV 导入 与 截图 OCR(parse_alipay_flow_screenshot)共用。
+    去重键含「交易类型 + 金额」: 同号配对流水(在线支付货款 + 分账手续费)都能入库,
+    仅「同号 + 同类型 + 同金额」才算真重复 (与 uq_alipay_flow_acct_no / migration 0039 一致)。
+    """
+    report = report or AlipayImportReport()
+    seen: set[tuple] = set()
+    for payload in rows:
         tx_no = (payload.get("transaction_no") or "").strip()
         amount = _decimal(payload.get("amount"))
         if not tx_no or amount is None:
@@ -145,5 +160,6 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
             remark=payload.get("remark"),
         ))
         report.inserted += 1
-    db.commit()
+    if commit:
+        db.commit()
     return report
