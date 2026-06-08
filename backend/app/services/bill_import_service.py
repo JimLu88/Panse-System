@@ -55,8 +55,14 @@ def _decimal(v: Any) -> Optional[Decimal]:
 def _date(v: Any) -> Optional[date]:
     if v is None or str(v).strip() == "":
         return None
+    # Excel/openpyxl 可能直接给 date/datetime 对象
+    if isinstance(v, datetime):
+        return v.date()
+    if isinstance(v, date):
+        return v
     s = str(v).strip()
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S", "%Y/%m/%d %H:%M:%S"):
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S",
+                "%Y/%m/%d %H:%M:%S", "%Y年%m月%d日", "%Y年%m月%d号"):
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
@@ -281,20 +287,16 @@ _BALANCE_MAP = {
 
 def import_account_balances_csv(db: Session, text: str) -> BillImportReport:
     """导入账户余额 CSV/Excel 行数据 (同账户同月 upsert)。支持统计日期列自动提取年月。"""
-    from datetime import date as _date, datetime as _dt
     from sqlalchemy import select
     rep = BillImportReport()
     for rec in _rows(text, _BALANCE_MAP):
         account_name = (rec.get("account_name") or "").strip()
-        # 支持统计日期列自动提取年月
+        # 统计日期: 这条余额是哪天的快照 (余额常是某天手填的, 新鲜度按它算而非入库时间)
+        as_of = _date(rec.get("period_date"))
         year = rec.get("period_year")
         month = rec.get("period_month")
-        period_date = rec.get("period_date")
-        if period_date and not (year and month):
-            pd = _date(period_date) if not isinstance(period_date, (_date, _dt)) else period_date
-            if pd:
-                year = pd.year if isinstance(pd, _date) else pd.date().year
-                month = pd.month if isinstance(pd, _date) else pd.date().month
+        if as_of and not (year and month):  # 缺年月时从统计日期自动提取
+            year, month = as_of.year, as_of.month
         try:
             year = int(year or 0)
             month = int(month or 0)
@@ -316,6 +318,8 @@ def import_account_balances_csv(db: Session, text: str) -> BillImportReport:
         )
         if not existing:
             db.add(row)
+        if as_of is not None:
+            row.as_of_date = as_of
         row.opening_balance = _decimal(rec.get("opening_balance")) or row.opening_balance or Decimal("0")
         row.income = _decimal(rec.get("income")) or row.income or Decimal("0")
         row.expense = _decimal(rec.get("expense")) or row.expense or Decimal("0")

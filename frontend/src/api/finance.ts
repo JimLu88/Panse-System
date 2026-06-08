@@ -39,12 +39,15 @@ export const importAlipayCsv = (file: File, account: string) => {
 export interface AccountBalanceRow {
   id: number;
   account_name: string;
+  account_no: string | null;
   period_year: number;
   period_month: number;
+  as_of_date: string | null;
   opening_balance: string;
   income: string;
   expense: string;
   closing_balance: string;
+  remark: string | null;
 }
 
 export const listBalances = (params: { account_name?: string; year?: number } = {}) =>
@@ -56,6 +59,36 @@ export const recomputeBalance = (payload: {
   month: number;
   opening_balance?: string;
 }) => api.post<AccountBalanceRow>('/api/finance/accounts/recompute', payload).then((r) => r.data);
+
+// 手动录入/更新账户余额快照 (账户名+年+月 upsert); 余额多是某天手填的, as_of_date=统计日期
+export interface BalanceUpsertPayload {
+  account_name: string;
+  account_no?: string | null;
+  period_year: number;
+  period_month: number;
+  as_of_date?: string | null;
+  opening_balance?: string;
+  income?: string;
+  expense?: string;
+  closing_balance: string;
+  remark?: string | null;
+}
+export const upsertBalance = (payload: BalanceUpsertPayload) =>
+  api.post<AccountBalanceRow>('/api/finance/accounts', payload).then((r) => r.data);
+
+export const deleteBalance = (id: number) =>
+  api.delete<{ deleted: number }>(`/api/finance/accounts/${id}`).then((r) => r.data);
+
+export const importAccountBalancesCsv = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<{ inserted: number; skipped_invalid: number; errors: string[] }>(
+      '/api/finance/accounts/import-csv', fd,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    .then((r) => r.data);
+};
 
 export interface ReconciliationDiff {
   key: string;

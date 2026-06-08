@@ -372,12 +372,15 @@ class AccountBalanceOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
     account_name: str
+    account_no: Optional[str] = None
     period_year: int
     period_month: int
+    as_of_date: Optional[date] = None
     opening_balance: Decimal
     income: Decimal
     expense: Decimal
     closing_balance: Decimal
+    remark: Optional[str] = None
 
 
 @router.get("/accounts", response_model=list[AccountBalanceOut])
@@ -393,6 +396,66 @@ def list_balances(
         stmt = stmt.where(AccountBalance.period_year == year)
     stmt = stmt.order_by(AccountBalance.account_name, AccountBalance.period_year.desc(), AccountBalance.period_month.desc())
     return db.execute(stmt).scalars().all()
+
+
+class BalanceUpsertIn(BaseModel):
+    """手动录入/更新一条账户余额快照 (账户名+年+月 upsert)。"""
+    account_name: str
+    account_no: Optional[str] = None
+    period_year: int
+    period_month: int
+    as_of_date: Optional[date] = None
+    opening_balance: Optional[Decimal] = None
+    income: Optional[Decimal] = None
+    expense: Optional[Decimal] = None
+    closing_balance: Decimal
+    remark: Optional[str] = None
+
+
+@router.post("/accounts", response_model=AccountBalanceOut)
+def upsert_balance(payload: BalanceUpsertIn, db: Session = Depends(get_db)):
+    """手动录入/更新账户余额快照。余额多是某天手填的, as_of_date 存「统计日期」(新鲜度据此算)。"""
+    existing = db.execute(
+        select(AccountBalance).where(
+            AccountBalance.account_name == payload.account_name,
+            AccountBalance.period_year == payload.period_year,
+            AccountBalance.period_month == payload.period_month,
+        )
+    ).scalar_one_or_none()
+    row = existing or AccountBalance(
+        account_name=payload.account_name,
+        period_year=payload.period_year,
+        period_month=payload.period_month,
+    )
+    if not existing:
+        db.add(row)
+    if payload.account_no is not None:
+        row.account_no = payload.account_no
+    if payload.as_of_date is not None:
+        row.as_of_date = payload.as_of_date
+    if payload.opening_balance is not None:
+        row.opening_balance = payload.opening_balance
+    if payload.income is not None:
+        row.income = payload.income
+    if payload.expense is not None:
+        row.expense = payload.expense
+    row.closing_balance = payload.closing_balance
+    if payload.remark is not None:
+        row.remark = payload.remark
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+@router.delete("/accounts/{balance_id}")
+def delete_balance(balance_id: int, db: Session = Depends(get_db)):
+    """删除一条账户余额快照 (录错时清理)。"""
+    row = db.get(AccountBalance, balance_id)
+    if not row:
+        raise HTTPException(404, "余额记录不存在")
+    db.delete(row)
+    db.commit()
+    return {"deleted": balance_id}
 
 
 class RecomputeIn(BaseModel):

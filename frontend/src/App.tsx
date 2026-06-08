@@ -22,6 +22,7 @@ const QuotePage = lazy(() => import('./pages/QuotePage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
 const ProducibilityPage = lazy(() => import('./pages/ProducibilityPage'));
 const AlipayPage = lazy(() => import('./pages/AlipayPage'));
+const AccountBalancesPage = lazy(() => import('./pages/AccountBalancesPage'));
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'));
 const AiAssistantPage = lazy(() => import('./pages/AiAssistantPage'));
 const MarketingPage = lazy(() => import('./pages/MarketingPage'));
@@ -82,7 +83,8 @@ const PATH_TO_GROUP: Record<string, string> = {
   'logistics-bills': 'g-logistics', 'wanshifu-bills': 'g-logistics',
   marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
-  'cash-flow': 'g-finance', alipay: 'g-finance', reconciliation: 'g-finance', 'refill-records': 'g-finance',
+  'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
+  reconciliation: 'g-finance', 'refill-records': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance',
   reports: 'g-analysis', exceptions: 'g-analysis',
   importer: 'g-tools', 'data-explorer': 'g-tools', feishu: 'g-tools', admin: 'g-tools',
@@ -202,7 +204,8 @@ export default function App() {
       label: '财务',
       children: [
         { key: 'cash-flow', label: <Link to="/cash-flow">剩余流水</Link> },
-        { key: 'alipay', label: <Link to="/alipay">支付宝 / 账户余额</Link> },
+        { key: 'alipay', label: <Link to="/alipay">支付宝流水</Link> },
+        { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'settlements', label: <Link to="/settlements">结算对账</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
@@ -330,6 +333,7 @@ export default function App() {
             <Route path="/pricing" element={<PricingPage />} />
             <Route path="/pricing-formulas" element={<PricingFormulaPage />} />
             <Route path="/alipay" element={<AlipayPage />} />
+            <Route path="/account-balances" element={<AccountBalancesPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />

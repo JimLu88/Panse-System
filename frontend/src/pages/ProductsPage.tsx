@@ -141,7 +141,7 @@ function pixelPlaceholder(
   );
 }
 
-// 图片缺失/加载失败时显示的像素史莱姆占位 (RPG 史莱姆, 用户选定方案4)
+// 图片缺失/加载失败时的像素占位 (黑白 + 透明底, 用户要求)
 const CUTE_IMG = pixelPlaceholder(
   [
     '....bb....',
@@ -153,9 +153,9 @@ const CUTE_IMG = pixelPlaceholder(
     'bbbWWWWbbb',
     '.bbbbbbbb.',
   ],
-  { b: '#4dabf7', K: '#0b3a66', W: '#ffffff' },
-  '#eaf4ff',
-  '#6f9ec9',
+  { b: '#a8adb5', K: '#2b2b2b', W: '#f5f5f5' },  // 身灰 / 眼黑 / 嘴白 → 黑白
+  'none',                                          // 透明底色
+  '#9aa0a6',                                       // "暂无图片" 灰字
 );
 
 // 可拖拽列宽的表头单元格 (无需 react-resizable 依赖; 拖右边缘改宽)
@@ -305,7 +305,7 @@ export default function ProductsPage() {
       render: (v: string | null) =>
         v
           ? <Image src={v} width={88} height={88} style={{ objectFit: 'cover', borderRadius: 8 }} fallback={CUTE_IMG} />
-          : <img src={CUTE_IMG} width={88} height={88} style={{ borderRadius: 8 }} alt="暂无图片" />,
+          : <img src={CUTE_IMG} width={72} height={72} alt="暂无图片" />,
     },
     {
       title: '操作', key: 'actions', width: colW.actions,

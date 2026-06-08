@@ -39,7 +39,7 @@ OPS_TASKS = [
      "detail": "导入 企业号(9A) / 爱群号(9C) 当月支付宝流水"},
     {"key": "monthly_wechat_bill", "freq": "monthly", "title": "导入微信账单(billDetail)", "route": "/settlements",
      "detail": "导入当月微信支付订单账单明细(billDetail xlsx)"},
-    {"key": "monthly_account_balance", "freq": "monthly", "title": "填写所有账户余额", "route": "/alipay",
+    {"key": "monthly_account_balance", "freq": "monthly", "title": "填写所有账户余额", "route": "/account-balances",
      "detail": "账户余额: 录入各账户(支付宝企业/爱群/聚合/推广/银行卡)当月期末余额 + 统计日期"},
     {"key": "monthly_recon", "freq": "monthly", "title": "月度对账 + 推广ROI", "route": "/settlements",
      "detail": "全月逐笔对账; 算推广支出占正式销售额(不含补单)的占比"},
