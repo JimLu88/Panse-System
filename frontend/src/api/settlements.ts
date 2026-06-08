@@ -101,6 +101,25 @@ export const listReconciliation = (params: {
 }) =>
   api.get<ReconListResult>('/api/settlements/reconciliation', { params }).then((r) => r.data);
 
+// ---- 对账诊断 (reconciliation diagnostics) ----
+export interface ReconDiagnostics {
+  balance_check: {
+    checked: number; unbalanced: number;
+    rows: Array<{ account_name: string; period: string; opening: number; income: number; expense: number; closing: number; expected_closing: number; diff: number }>;
+  };
+  orphan_flows: {
+    total_flows: number; orphan_count: number; orphan_income: number; orphan_expense: number;
+    by_account: Record<string, number>;
+    samples: Array<{ account: string; transaction_no: string; transaction_time: string | null; transaction_type: string | null; amount: number; counterparty: string | null; remark: string }>;
+  };
+  coverage: {
+    accounts: Array<{ account: string; total: number; with_order: number; matched: number; unclassified: number; no_date: number; matched_pct: number }>;
+  };
+}
+
+export const fetchReconDiagnostics = () =>
+  api.get<ReconDiagnostics>('/api/settlements/reconciliation/diagnostics').then((r) => r.data);
+
 // ---- 到账覆盖缺口诊断 (按月该补哪批流水/账单) ----
 export interface ReconGapMonth {
   period: string;

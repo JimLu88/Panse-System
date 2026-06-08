@@ -57,6 +57,7 @@ const CashFlowPage = lazy(() => import('./pages/CashFlowPage'));
 const DataExplorerPage = lazy(() => import('./pages/DataExplorerPage'));
 const SettlementsPage = lazy(() => import('./pages/SettlementsPage'));
 const ImportArchivePage = lazy(() => import('./pages/ImportArchivePage'));
+const ReconDiagnosticsPage = lazy(() => import('./pages/ReconDiagnosticsPage'));
 
 const { Header, Content } = Layout;
 
@@ -85,7 +86,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
   'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
-  reconciliation: 'g-finance', 'refill-records': 'g-finance',
+  reconciliation: 'g-finance', 'refill-records': 'g-finance', 'recon-diagnostics': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance',
   reports: 'g-analysis', exceptions: 'g-analysis',
   importer: 'g-tools', 'data-explorer': 'g-tools', 'import-archive': 'g-tools', feishu: 'g-tools', admin: 'g-tools',
@@ -209,6 +210,7 @@ export default function App() {
         { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'settlements', label: <Link to="/settlements">结算对账</Link> },
+        { key: 'recon-diagnostics', label: <Link to="/recon-diagnostics">对账诊断</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
         { key: 'assets', label: <Link to="/assets">资产</Link> },
@@ -354,6 +356,7 @@ export default function App() {
             <Route path="/refill-records" element={<RefillRecordsPage />} />
             <Route path="/cash-flow" element={<CashFlowPage />} />
             <Route path="/settlements" element={<SettlementsPage />} />
+            <Route path="/recon-diagnostics" element={<ReconDiagnosticsPage />} />
             <Route path="/data-explorer" element={<DataExplorerPage />} />
             <Route path="/import-archive" element={<ImportArchivePage />} />
           </Routes>

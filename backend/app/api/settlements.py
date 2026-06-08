@@ -9,7 +9,9 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.settlement import OrderSettlement
-from app.services import import_storage, order_reconciliation_service, settlement_import_service
+from app.services import (
+    import_storage, order_reconciliation_service, recon_diagnostics_service, settlement_import_service,
+)
 
 router = APIRouter(prefix="/api/settlements", tags=["settlements"])
 
@@ -77,6 +79,15 @@ def reconciliation_gap(
 ):
     """到账覆盖缺口诊断: 按月铺开覆盖率 + 待补金额, 指出最该补流水/账单的几个月。"""
     return order_reconciliation_service.coverage_gap(db)
+
+
+@router.get("/reconciliation/diagnostics")
+def reconciliation_diagnostics(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """对账诊断: 账户余额钩稽 + 孤儿流水(没人认领的钱) + 各账户流水覆盖 (揭示对账缺口在哪)。"""
+    return recon_diagnostics_service.diagnostics(db)
 
 
 @router.get("/reconciliation")
