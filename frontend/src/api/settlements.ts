@@ -143,6 +143,18 @@ export const fetchPrepaySummary = () =>
 export const listPrepay = (category?: string) =>
   api.get<PrepayRow[]>('/api/settlements/prepay', { params: { category, limit: 500 } }).then((r) => r.data);
 
+// ---- 对账/利润 口径配置 (容差+税费率, 全局+按店铺) ----
+export interface ReconConfig {
+  defaults: Record<string, number>;
+  by_shop: Record<string, Record<string, number>>;
+}
+export const fetchReconConfig = () =>
+  api.get<ReconConfig>('/api/settlements/recon-config').then((r) => r.data);
+export const updateReconConfig = (
+  defaults: Record<string, number> | null,
+  by_shop: Record<string, Record<string, number>> | null,
+) => api.put<ReconConfig>('/api/settlements/recon-config', { defaults, by_shop }).then((r) => r.data);
+
 // ---- 到账覆盖缺口诊断 (按月该补哪批流水/账单) ----
 export interface ReconGapMonth {
   period: string;

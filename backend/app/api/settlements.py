@@ -1,7 +1,7 @@
 """结算账单(微信/聚合 billDetail)导入 + 列表 + 汇总。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Query, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -12,7 +12,7 @@ from app.models.prepay_ledger import PrepayLedger
 from app.models.settlement import OrderSettlement
 from app.services import (
     import_storage, order_reconciliation_service, prepay_import_service,
-    recon_diagnostics_service, settlement_import_service,
+    recon_config_service, recon_diagnostics_service, settlement_import_service,
 )
 
 router = APIRouter(prefix="/api/settlements", tags=["settlements"])
@@ -136,6 +136,27 @@ def list_prepay(
         "pay_date": r.pay_date.isoformat() if r.pay_date else None,
         "amount": float(r.amount or 0), "payee": r.payee, "remark": r.remark,
     } for r in rows]
+
+
+@router.get("/recon-config")
+def get_recon_config(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """对账/利润口径配置: 容差 + 补贴税率 + 软件费率 (全局默认 + 按店铺覆盖)。"""
+    return recon_config_service.get_config(db)
+
+
+@router.put("/recon-config")
+def update_recon_config(
+    defaults: dict | None = Body(None),
+    by_shop: dict | None = Body(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    cfg = recon_config_service.set_config(db, defaults=defaults, by_shop=by_shop)
+    db.commit()
+    return cfg
 
 
 @router.get("/reconciliation/diagnostics")

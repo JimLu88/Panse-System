@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from app.models.finance import AlipayFlow
 from app.models.order import Order
 from app.models.settlement import OrderSettlement
+from app.services import recon_config_service
 
 _CENT = Decimal("0.01")
 _TAX_RATE = Decimal("0.02")  # 淘宝补贴 2% 税费 (商家应税收入)
@@ -64,12 +65,13 @@ def _alipay_net_by_flow_no(db: Session) -> dict[str, Decimal]:
     return dict(out)
 
 
-def _tax_of(o: Order) -> Optional[Decimal]:
-    """补贴税 (2%): 优先用订单存的 tax; 缺则按 买家应付 × 2% 估算。"""
+def _tax_of(o: Order, cfg: dict) -> Optional[Decimal]:
+    """补贴税: 优先用订单存的 tax; 缺则按 买家应付 × 补贴税率(按店铺可配) 估算。"""
     if o.tax is not None:
         return _d(o.tax)
     if o.buyer_payable_amount is not None:
-        return (_d(o.buyer_payable_amount) * _TAX_RATE).quantize(_CENT)
+        tax_rate = recon_config_service.rate(cfg, "subsidy_tax_rate", o.shop)
+        return (_d(o.buyer_payable_amount) * tax_rate).quantize(_CENT)
     return None
 
 
@@ -82,19 +84,23 @@ def _expected_net(o: Order, tax: Optional[Decimal], fee: Optional[Decimal]) -> O
     return _d(o.paid_amount)
 
 
-def _tolerance(base: Optional[Decimal]) -> Decimal:
-    """到账差额容差: 取 ±1 元 与 0.5% 的较大者 (含取整误差与零头)。"""
+def _tolerance(base: Optional[Decimal], cfg: dict) -> Decimal:
+    """到账差额容差: 取 容差最小金额 与 容差百分比 的较大者 (可在设置里调)。"""
+    floor = recon_config_service.rate(cfg, "tolerance_floor")
+    pct = recon_config_service.rate(cfg, "tolerance_pct")
     if base is None:
-        return Decimal("1")
-    return max(Decimal("1"), (abs(base) * Decimal("0.005")).quantize(_CENT))
+        return floor
+    return max(floor, (abs(base) * pct).quantize(_CENT))
 
 
-def _build_row(o: Order, wnet: dict, anet: dict) -> dict:
+def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict) -> dict:
     payable = _d(o.buyer_payable_amount)
     paid = _d(o.paid_amount)
     received = _d(o.shop_received_amount)
-    tax = _tax_of(o)
+    tax = _tax_of(o, cfg)
     fee = _d(o.platform_fee)
+    if fee is None and payable is not None:  # 缺软件费时按费率(按店铺可配)估算
+        fee = (payable * recon_config_service.rate(cfg, "software_fee_rate", o.shop)).quantize(_CENT)
     subsidy = (payable - paid) if (payable is not None and paid is not None and payable > paid) else None
 
     wechat = wnet.get(o.order_no)
@@ -111,7 +117,7 @@ def _build_row(o: Order, wnet: dict, anet: dict) -> dict:
     diff = (arrived - expected) if (arrived is not None and expected is not None) else None
     if not has_evidence:
         status = "pending"
-    elif diff is not None and abs(diff) <= _tolerance(expected):
+    elif diff is not None and abs(diff) <= _tolerance(expected, cfg):
         status = "matched"
     else:
         status = "diff"
@@ -167,6 +173,7 @@ def per_order(
     """逐笔对账列表 (分页 + 状态/渠道/关键词筛选)。"""
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    cfg = recon_config_service.get_config(db)
 
     stmt = _base_query()
     if q:
@@ -175,7 +182,7 @@ def per_order(
     stmt = stmt.order_by(Order.order_date.desc().nulls_last(), Order.id.desc())
     orders = db.execute(stmt).scalars().all()
 
-    rows = [_build_row(o, wnet, anet) for o in orders]
+    rows = [_build_row(o, wnet, anet, cfg) for o in orders]
     if status:
         rows = [r for r in rows if r["status"] == status]
     if channel == "wechat":
@@ -197,13 +204,14 @@ def coverage_gap(db: Session) -> dict:
     """
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    cfg = recon_config_service.get_config(db)
     orders = db.execute(_base_query()).scalars().all()
 
     by_month: dict[str, dict] = {}
     tot_orders = tot_evidence = 0
     tot_pending_amt = Decimal("0")
     for o in orders:
-        r = _build_row(o, wnet, anet)
+        r = _build_row(o, wnet, anet, cfg)
         mk = o.order_date.strftime("%Y-%m") if o.order_date else "无日期"
         b = by_month.setdefault(mk, {
             "period": mk, "orders": 0, "evidence": 0, "pending": 0,
@@ -247,13 +255,14 @@ def summary(db: Session) -> dict:
     """全量汇总 (不分页): 各金额合计 + 对账状态分布 + 到账覆盖率。"""
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    cfg = recon_config_service.get_config(db)
     orders = db.execute(_base_query()).scalars().all()
 
     agg = {k: Decimal("0") for k in
            ("payable", "paid", "received", "tax", "platform_fee", "subsidy", "arrived")}
     matched = diff = pending = evidence = wechat_orders = alipay_orders = 0
     for o in orders:
-        r = _build_row(o, wnet, anet)
+        r = _build_row(o, wnet, anet, cfg)
         for k in agg:
             v = r.get(k)
             if v is not None:

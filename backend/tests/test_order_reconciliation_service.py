@@ -35,10 +35,10 @@ def test_coverage_gap_by_month(db_session):
     assert by["2026-04"]["orders"] == 2 and by["2026-04"]["evidence"] == 1
     assert by["2026-04"]["coverage_pct"] == 50.0
     assert by["2026-05"]["coverage_pct"] == 0.0
-    # 待补金额 = 应付 - 2%税 - 软件费: O2=1960, O3=2940
-    assert by["2026-04"]["pending_amount"] == 1960.0
-    assert by["2026-05"]["pending_amount"] == 2940.0
-    # 缺口最大的月在前 (5月待补 2940 > 4月 1960)
+    # 待补金额 = 应付 - 2%补贴税 - 0.6%软件费(缺platform_fee时按费率估): O2=2000-40-12=1948, O3=3000-60-18=2922
+    assert by["2026-04"]["pending_amount"] == 1948.0
+    assert by["2026-05"]["pending_amount"] == 2922.0
+    # 缺口最大的月在前 (5月待补 2922 > 4月 1948)
     assert g["worst_months"][0] == "2026-05"
 
 

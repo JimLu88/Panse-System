@@ -8,6 +8,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import { fetchReconDiagnostics } from '../api/settlements';
+import ReconConfigCard from '../components/ReconConfigCard';
 
 const yuan = (v: number | null | undefined) =>
   v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
@@ -50,6 +51,8 @@ export default function ReconDiagnosticsPage() {
         message="对账缺口体检 (只读)"
         description="①账户余额钩稽: 期初+收入−支出 应等于 期末, 对不平=填报有误/漏记。②孤儿流水: 既无订单又无归类的钱, 最该先认领。③各账户流水覆盖: 未归类/缺日期占比高=该账户没对全, 对账自然一片红。"
       />
+
+      <ReconConfigCard />
 
       <Card size="small" title={`① 账户余额钩稽 (${bc?.unbalanced ?? 0}/${bc?.checked ?? 0} 对不平)`} loading={isLoading}>
         {bc && bc.unbalanced === 0 ? (
