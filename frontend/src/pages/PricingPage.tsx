@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type Key } from 'react';
 import {
   Button,
   Card,
+  Checkbox,
   Dropdown,
   Form,
   Input,
@@ -192,6 +193,34 @@ export default function PricingPage() {
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [form] = Form.useForm();
+
+  // ── 字段视图: 成本与基础价 / 淘宝 / 小红书 / 自定义 (快速切换可见列) ──
+  const FIELD_OPTS = [
+    { value: 'product_code', label: '产品编码' }, { value: 'sku_code', label: 'SKU编码' },
+    { value: 'sku', label: '描述' }, { value: 'size_category', label: '分类' },
+    { value: 'list_price', label: '标价' }, { value: 'daily_price', label: '日常价' },
+    { value: 'small_promo', label: '小促' }, { value: 'mid_promo', label: '中促' },
+    { value: 'big_promo', label: '大促' }, { value: 'gross_margin_rate', label: '毛利率' },
+    { value: 'accounting_cost', label: '会计成本' }, { value: 'physical_cost', label: '物理成本' },
+  ];
+  const VIEW_PRESETS: Record<string, string[]> = {
+    cost: ['product_code', 'sku_code', 'sku', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'],
+    taobao: ['product_code', 'sku_code', 'sku', 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'gross_margin_rate'],
+    xhs: ['product_code', 'sku_code', 'sku', 'list_price', 'daily_price', 'gross_margin_rate'],
+  };
+  const [fieldView, setFieldView] = useState<string>('all');
+  const [customFields, setCustomFields] = useState<string[]>(() => {
+    try { return JSON.parse(localStorage.getItem('panse_pricing_custom_cols') || '[]'); } catch { return []; }
+  });
+  const saveCustomFields = (vals: string[]) => {
+    setCustomFields(vals);
+    localStorage.setItem('panse_pricing_custom_cols', JSON.stringify(vals));
+  };
+  const applyView = (cols: any[]) => {
+    if (fieldView === 'all') return cols;
+    const set = new Set(fieldView === 'custom' ? customFields : (VIEW_PRESETS[fieldView] || []));
+    return cols.filter((c) => c.fixed === 'right' || !c.dataIndex || set.has(c.dataIndex));
+  };
 
   const { data, isFetching } = useQuery({
     queryKey: ['pricing-skus', q, sizeCategory, page],
@@ -403,6 +432,34 @@ export default function PricingPage() {
                   { value: '大型', label: '大型' },
                 ]}
               />
+              <Segmented
+                size="small"
+                value={fieldView}
+                onChange={(v) => setFieldView(v as string)}
+                options={[
+                  { label: '全部字段', value: 'all' },
+                  { label: '成本与基础价', value: 'cost' },
+                  { label: '淘宝', value: 'taobao' },
+                  { label: '小红书', value: 'xhs' },
+                  { label: '自定义', value: 'custom' },
+                ]}
+              />
+              {fieldView === 'custom' && (
+                <Dropdown
+                  trigger={['click']}
+                  dropdownRender={() => (
+                    <div style={{ background: '#fff', padding: 12, boxShadow: '0 2px 8px rgba(0,0,0,.15)', borderRadius: 8, maxWidth: 360 }}>
+                      <Checkbox.Group
+                        options={FIELD_OPTS}
+                        value={customFields}
+                        onChange={(v) => saveCustomFields(v as string[])}
+                      />
+                    </div>
+                  )}
+                >
+                  <Button size="small" icon={<EditOutlined />}>选字段（{customFields.length}）</Button>
+                </Dropdown>
+              )}
             </>
           )}
         </Space>
@@ -468,7 +525,7 @@ export default function PricingPage() {
           onChange: setPage,
           showSizeChanger: false,
         }}
-        columns={[
+        columns={applyView([
           { title: '产品编码', dataIndex: 'product_code', width: colW.product_code, onHeaderCell: mkResize('product_code') },
           { title: 'SKU 编码', dataIndex: 'sku_code', width: colW.sku_code, onHeaderCell: mkResize('sku_code') },
           { title: '描述', dataIndex: 'sku', width: colW.sku, ellipsis: true, onHeaderCell: mkResize('sku') },
@@ -493,7 +550,7 @@ export default function PricingPage() {
               <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
             ),
           },
-        ] as any}
+        ]) as any}
       />
       )}
 
