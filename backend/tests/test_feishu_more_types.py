@@ -89,6 +89,55 @@ def test_text_message_replies_help_guide(db_session, monkeypatch):
     assert "图片" in body and "表格" in body   # 指南列了发图/发表格两类
 
 
+# ---- 群里 @机器人 + 带图 → 富文本(post)消息, 图片内嵌, 应当图片处理(而非回指南) ----
+def test_post_message_with_image_processes_image(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMGBYTES")
+    monkeypatch.setattr(fb, "classify_image", lambda db, img, **k: ("order_table", 0.95))
+    monkeypatch.setattr(feishu_client, "reply_card", lambda *a, **k: None)
+    post = {"title": "", "content": [[
+        {"tag": "at", "user_id": "ou_x", "user_name": "Panse System"},
+        {"tag": "text", "text": " "},
+        {"tag": "img", "image_key": "img_v2_abc"},
+    ]]}
+    event = {"message": {"message_type": "post", "message_id": "p1",
+                         "content": json.dumps(post)}}
+    out = fb.on_message_event(db, event)
+    db.flush()
+    assert out["kind"] == "order_table" and out["card_sent"] is True
+    pend = fb._load_pending(db).get("p1")
+    assert pend and pend["file_key"] == "img_v2_abc"   # 内嵌图已暂存待确认
+
+
+def test_post_message_multi_image_warns(db_session, monkeypatch):
+    db = db_session
+    cards = []
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda db, img, **k: ("order_table", 0.95))
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: cards.append(card))
+    post = {"content": [
+        [{"tag": "img", "image_key": "img_1"}],
+        [{"tag": "img", "image_key": "img_2"}],
+    ]}
+    event = {"message": {"message_type": "post", "message_id": "p3",
+                         "content": json.dumps(post)}}
+    out = fb.on_message_event(db, event)
+    assert out["extra_images"] == 1   # 处理首张 + 提醒剩余
+    assert any("多图提醒" in c["header"]["title"]["content"] for c in cards)
+
+
+def test_post_message_text_only_replies_help(db_session, monkeypatch):
+    db = db_session
+    replies = []
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: replies.append(card))
+    post = {"content": [[{"tag": "at", "user_id": "ou_x"}, {"tag": "text", "text": " 你好"}]]}
+    event = {"message": {"message_type": "post", "message_id": "p2",
+                         "content": json.dumps(post)}}
+    out = fb.on_message_event(db, event)
+    assert out["kind"] == "help"   # 富文本无图 → 回使用指南
+    assert "使用指南" in replies[0]["header"]["title"]["content"]
+
+
 def test_classify_table_by_filename():
     from app.services import table_ingest_service as tis
     assert tis.classify_table("2026工厂对账单.xlsx", b"") == "factory_recon"

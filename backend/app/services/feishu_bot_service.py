@@ -472,40 +472,39 @@ def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
     return {"message_id": message_id, "file_kind": fkind, "card_sent": True}
 
 
-# ── 事件入口 (feishu_webhook_service 调用) ─────────────────────
-def on_message_event(db: Session, event: dict) -> Optional[dict]:
-    """im.message.receive_v1: 收到图片 → 分类 → 暂存 → 回卡片。返回回复结果(或 None 表示忽略非图片)。"""
-    msg = event.get("message") or {}
-    mtype = msg.get("message_type")
-    if mtype == "file":
-        return _on_file_message(db, msg)   # Excel/CSV 表格
-    if mtype != "image":
-        # 文本/其它消息(如 @机器人 说话)→ 回使用指南, 不再沉默
-        mid = msg.get("message_id")
-        if mid:
-            _safe_reply(db, mid, _help_card())
-            return {"message_id": mid, "kind": "help", "card_sent": True}
-        return None
-    message_id = msg.get("message_id")
-    try:
-        content = json.loads(msg.get("content") or "{}")
-    except Exception:
-        content = {}
-    file_key = content.get("image_key")
-    if not (message_id and file_key):
-        return None
+# ── 富文本(post)解析: 群里 @机器人 并带图时, 飞书发的是 post, 图片内嵌其中 ──
+def _post_image_keys(content_meta: dict) -> list[str]:
+    """从富文本(post)消息内容里按顺序抽出所有内嵌图片的 image_key。
 
+    post content 结构: {"title":.., "content": [[{"tag":"img","image_key":..},
+    {"tag":"at",..}, {"tag":"text",..}], ...]}  —— content 是「行」的列表, 行是「段」的列表。
+    """
+    keys: list[str] = []
+    for line in content_meta.get("content") or []:
+        if not isinstance(line, list):
+            continue
+        for seg in line:
+            if isinstance(seg, dict) and seg.get("tag") == "img" and seg.get("image_key"):
+                keys.append(seg["image_key"])
+    return keys
+
+
+def _process_image(db: Session, message_id: str, image_key: str) -> dict:
+    """下载图 → 分类 → 兜底归档 → 暂存 → 回确认/选类型卡。
+
+    单聊直接发图(image 消息) 与 群里 @机器人 带图(post 消息内嵌) 共用此路径。
+    """
     kind, conf = "unknown", 0.0
     archived_path: Optional[str] = None
     try:
-        img = feishu_client.download_message_resource(db, message_id, file_key)
+        img = feishu_client.download_message_resource(db, message_id, image_key)
         kind, conf = classify_image(db, img)
         # 收到即按类型归档原图(兜底): 即便后续取消/失败, 原图也不丢
         archived_path = _archive_image(db, img, kind)
     except Exception as e:  # 下载/分类失败 → 仍让用户选类型, 不崩
         _log.warning("飞书机器人取图/分类失败: %s", e)
 
-    _stage(db, message_id, {"file_key": file_key, "kind": kind, "conf": conf,
+    _stage(db, message_id, {"file_key": image_key, "kind": kind, "conf": conf,
                             "archived_path": archived_path})
     if kind in IMAGE_TYPES and conf >= _threshold(kind):
         # 送货单即使识别确定, 也要追问"哪家供应商"才能正确归属入库
@@ -517,6 +516,56 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         card = _picker_card(message_id)
     _safe_reply(db, message_id, card)
     return {"message_id": message_id, "kind": kind, "confidence": conf, "card_sent": True}
+
+
+# ── 事件入口 (feishu_webhook_service / feishu_ws_service 调用) ──
+def on_message_event(db: Session, event: dict) -> Optional[dict]:
+    """im.message.receive_v1: 按消息类型路由。
+
+      - image          单聊直接发图          → 识别入库
+      - post (富文本)   群里 @机器人 + 带图    → 取内嵌图识别入库; 无图则回使用指南
+      - file           Excel/CSV 表格        → 识别导入
+      - 其它(text 等)   @机器人 说话           → 回使用指南
+
+    返回处理结果, 或 None(无 message_id 等无法处理)。
+    """
+    msg = event.get("message") or {}
+    mtype = msg.get("message_type")
+    message_id = msg.get("message_id")
+    try:
+        content = json.loads(msg.get("content") or "{}")
+    except Exception:
+        content = {}
+
+    if mtype == "file":
+        return _on_file_message(db, msg)   # Excel/CSV 表格
+    if mtype == "image":
+        file_key = content.get("image_key")
+        if not (message_id and file_key):
+            return None
+        return _process_image(db, message_id, file_key)
+    if mtype == "post":
+        # 群里 @机器人 并带图 → 富文本(post), 图片内嵌; 取第一张识别(多图则提示逐张发)
+        keys = _post_image_keys(content)
+        if message_id and keys:
+            res = _process_image(db, message_id, keys[0])
+            if len(keys) > 1:
+                _safe_reply(db, message_id, _result_card(
+                    "多图提醒",
+                    f"这条消息里有 {len(keys)} 张图，我先处理第一张。"
+                    "其余请**一张一张**单独 @我 发，避免漏处理。", "orange"))
+                res["extra_images"] = len(keys) - 1
+            return res
+        # 富文本里没有图(纯 @+文字) → 回使用指南
+        if message_id:
+            _safe_reply(db, message_id, _help_card())
+            return {"message_id": message_id, "kind": "help", "card_sent": True}
+        return None
+    # 文本/其它消息(如 @机器人 说句话) → 回使用指南, 不再沉默
+    if message_id:
+        _safe_reply(db, message_id, _help_card())
+        return {"message_id": message_id, "kind": "help", "card_sent": True}
+    return None
 
 
 def on_card_action(db: Session, event: dict) -> Optional[dict]:
