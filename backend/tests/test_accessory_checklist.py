@@ -83,3 +83,67 @@ def test_extra_accessories_flow_into_factory_sheet(db_session, order_with_bom):
     assert extra_rows[0].total_qty == Decimal("2")
     # 应有 extra_accessory 警告
     assert any(w.code == "extra_accessory" for w in sheet.warnings)
+
+
+# ---- 一个 sku_code 在 BOM 里挂了多个产品时, 按 product_code 消歧, 不串料 ----
+def test_generate_disambiguates_by_product_code(db_session):
+    db = db_session
+    db.add_all([
+        Material(code="AC-T", name="桌专用料", unit="块"),
+        Material(code="AC-G", name="玻璃(别的产品的)", unit="根"),
+    ])
+    # 同一 sku_code 'SX' 在 BOM 里挂了两个产品(脏数据)
+    db.add_all([
+        BomLine(product_code="P_TABLE", sku_code="SX", material_code="AC-T", qty_per_product=Decimal("1")),
+        BomLine(product_code="P_OTHER", sku_code="SX", material_code="AC-G", qty_per_product=Decimal("2")),
+    ])
+    order = Order(platform="淘宝", order_no="OD1", product_code="P_TABLE", sku_code="SX", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    created = svc.generate_for_order(db, order.id)
+    assert {c.material_code for c in created} == {"AC-T"}   # 只本产品的料, 不串入 P_OTHER 的玻璃
+
+
+def test_generate_uses_bom_name_when_material_is_placeholder(db_session):
+    db = db_session
+    db.add(Material(code="WD-9", name="占位 (WD-9)", unit="套"))   # 物料库还是占位
+    db.add(BomLine(product_code="PZ", sku_code="SZ", material_code="WD-9",
+                   material_name="榉木腿", qty_per_product=Decimal("1")))
+    order = Order(platform="淘宝", order_no="OD3", product_code="PZ", sku_code="SZ", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    created = svc.generate_for_order(db, order.id)
+    assert created[0].material_name == "榉木腿"   # 退回 BOM 名, 不显示"占位"
+
+
+def test_resync_removes_blended_and_refreshes_names(db_session):
+    db = db_session
+    db.add_all([
+        Material(code="AC-T", name="桌专用料", unit="块"),
+        Material(code="WD-1", name="占位 (WD-1)", unit="套"),
+        Material(code="AC-G", name="玻璃", unit="根"),
+    ])
+    db.add_all([
+        BomLine(product_code="P_TABLE", sku_code="SX", material_code="AC-T",
+                material_name="桌专用料", qty_per_product=Decimal("1")),
+        BomLine(product_code="P_TABLE", sku_code="SX", material_code="WD-1",
+                material_name="榉木餐桌木作", qty_per_product=Decimal("1")),
+    ])
+    order = Order(platform="淘宝", order_no="OD2", product_code="P_TABLE", sku_code="SX", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    # 历史脏数据: 串入了 AC-G(不属本产品), WD-1 名是占位; 用户已把 AC-T 标"已下单"(进度要保留)
+    db.add_all([
+        OrderAccessoryItem(order_id=order.id, order_no="OD2", material_code="AC-T",
+                           material_name="桌专用料", qty_required=Decimal("1"), source="bom", status="已下单"),
+        OrderAccessoryItem(order_id=order.id, order_no="OD2", material_code="WD-1",
+                           material_name="占位 (WD-1)", qty_required=Decimal("1"), source="bom", status="未采购"),
+        OrderAccessoryItem(order_id=order.id, order_no="OD2", material_code="AC-G",
+                           material_name="玻璃", qty_required=Decimal("2"), source="bom", status="未采购"),
+    ])
+    db.commit()
+    items = svc.resync_for_order(db, order.id)
+    by = {i.material_code: i for i in items}
+    assert set(by) == {"AC-T", "WD-1"}                  # 串料 AC-G 已删
+    assert by["AC-T"].status == "已下单"                 # 已对上的料保留用户进度
+    assert by["WD-1"].material_name == "榉木餐桌木作"     # 占位名按 BOM 刷新

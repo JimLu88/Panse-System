@@ -849,14 +849,16 @@ def list_accessories(order_id: int, db: Session = Depends(get_db)):
 
 @router.post("/{order_id}/accessories/regenerate", response_model=list[AccessoryItemOut])
 def regenerate_accessories(order_id: int, db: Session = Depends(get_db)):
-    """按当前 BOM 补全配件清单 (幂等, 不删已有行)。"""
+    """按当前 BOM 重新对齐配件清单: 刷新名字/数量、删掉不在 BOM 里的串料行、补齐缺失。
+
+    保留客户备注行与已填的采购/物流进度。用于修复历史脏数据(如一个 sku_code 串了多产品的料)。
+    """
     from app.services import accessory_checklist_service
     try:
-        accessory_checklist_service.generate_for_order(db, order_id)
+        items = accessory_checklist_service.resync_for_order(db, order_id)
     except ValueError as e:
         raise HTTPException(404, str(e)) from e
-    return [AccessoryItemOut.from_model(m)
-            for m in accessory_checklist_service.get_checklist(db, order_id)]
+    return [AccessoryItemOut.from_model(m) for m in items]
 
 
 class AccessoryItemUpdate(BaseModel):

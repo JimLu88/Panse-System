@@ -27,25 +27,76 @@ _ALERT_WARN_DAYS = 5
 _ALERT_CRITICAL_DAYS = 2
 
 
+# 物料库里"占位/待补"型伪名 (导 BOM 时引用了库里还没有的料号会自动建 "占位 (XX)" 行,
+# 等导物料表再用真名覆盖)。这类名字没意义, 显示时应退回 BOM 行里写的人话名。
+_PLACEHOLDER_NAMES = {"待补", "—", "-", "?", "？", "待定", "未知"}
+
+
+def _is_placeholder_name(name: Optional[str]) -> bool:
+    s = (name or "").strip()
+    return (not s) or s.startswith("占位") or s in _PLACEHOLDER_NAMES
+
+
+def _resolve_name(mat_name: Optional[str], line: BomLine) -> Optional[str]:
+    """配件显示名: 优先用物料库真实名; 物料库还是占位/空 → 退回 BOM 行里写的名(常含人话描述)。"""
+    if not _is_placeholder_name(mat_name):
+        return mat_name
+    if not _is_placeholder_name(line.material_name):
+        return line.material_name
+    return mat_name or line.material_name or line.material_code
+
+
+def _bom_rows_for_order(db: Session, order: Order) -> list:
+    """取该订单对应的 BOM 行。
+
+    关键: 优先按 product_code(+sku_code) 精确匹配 —— 一个 sku_code 可能在 BOM 里挂了
+    多个产品(脏数据), 只按 sku_code 抓会把多个产品的料串在一起。product_code 缺失时才退回 sku_code。
+    """
+    base = (
+        select(BomLine, Material.name.label("mat_name"), Material.unit.label("mat_unit"))
+        .join(Material, BomLine.material_code == Material.code, isouter=True)
+    )
+    if order.product_code:
+        conds = [BomLine.product_code == order.product_code]
+        if order.sku_code:
+            conds.append(BomLine.sku_code == order.sku_code)
+        rows = db.execute(base.where(*conds)).all()
+        if rows:
+            return rows
+        # (product_code + sku_code) 无果 → 退回仅 product_code (BOM 可能没填 sku_code)
+        rows = db.execute(base.where(BomLine.product_code == order.product_code)).all()
+        if rows:
+            return rows
+    if order.sku_code:
+        return db.execute(base.where(BomLine.sku_code == order.sku_code)).all()
+    return []
+
+
+def _bom_item_fields(order: Order, line: BomLine, mat_name, mat_unit) -> dict:
+    """从一条 BOM 行算出配件清单行的字段 (名字/数量/单位/是否工厂提供/状态)。"""
+    prefix = line.material_code.split("-", 1)[0].upper()
+    factory_provided = prefix in _FACTORY_PREFIXES
+    return {
+        "material_name": _resolve_name(mat_name, line),
+        "qty_required": Decimal(line.qty_per_product or 1) * Decimal(order.qty or 1),
+        "unit": line.unit or mat_unit,
+        "is_factory_provided": factory_provided,
+        "status_default": "工厂提供" if factory_provided else "未采购",
+    }
+
+
 def generate_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     """为订单生成配件清单行（幂等：已存在的行不重复创建）。
 
-    返回本次新建的行。
+    返回本次新建的行。按 product_code(+sku_code) 取 BOM, 避免一个 sku_code 挂多产品时串料。
     """
     order = db.get(Order, order_id)
     if not order:
         raise ValueError(f"order {order_id} not found")
-
-    sku_code = order.sku_code
-    if not sku_code:
+    if not (order.product_code or order.sku_code):
         return []
 
-    bom_rows = db.execute(
-        select(BomLine, Material.name.label("mat_name"), Material.unit.label("mat_unit"))
-        .join(Material, BomLine.material_code == Material.code, isouter=True)
-        .where(BomLine.sku_code == sku_code)
-    ).all()
-
+    bom_rows = _bom_rows_for_order(db, order)
     existing = {
         row.material_code
         for row in db.execute(
@@ -59,18 +110,18 @@ def generate_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     for line, mat_name, mat_unit in bom_rows:
         if line.material_code in existing:
             continue
-        prefix = line.material_code.split("-", 1)[0].upper()
-        factory_provided = prefix in _FACTORY_PREFIXES
+        existing.add(line.material_code)   # 防同一 BOM 里重复料号触发唯一约束
+        f = _bom_item_fields(order, line, mat_name, mat_unit)
         item = OrderAccessoryItem(
             order_id=order_id,
             order_no=order.order_no,
             material_code=line.material_code,
-            material_name=mat_name or line.material_name,
-            qty_required=Decimal(line.qty_per_product or 1) * Decimal(order.qty or 1),
-            unit=line.unit or mat_unit,
-            is_factory_provided=factory_provided,
+            material_name=f["material_name"],
+            qty_required=f["qty_required"],
+            unit=f["unit"],
+            is_factory_provided=f["is_factory_provided"],
             source="bom",
-            status="工厂提供" if factory_provided else "未采购",
+            status=f["status_default"],
         )
         db.add(item)
         created.append(item)
@@ -79,6 +130,57 @@ def generate_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
         db.commit()
         _logger.info("订单 %s 生成配件清单 %d 行", order.order_no, len(created))
     return created
+
+
+def resync_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
+    """按当前 BOM 重新对齐配件清单 (source=bom): 刷新名字/数量、删掉不在 BOM 里的串料行、补齐缺失。
+
+    保留 source=客户备注 的行, 以及已对上料号的行上已填的采购/物流状态 —— 只修错的, 不丢进度。
+    用于修复历史脏数据(如一个 sku_code 串了两个产品的料)。
+    """
+    order = db.get(Order, order_id)
+    if not order:
+        raise ValueError(f"order {order_id} not found")
+
+    correct: dict[str, tuple] = {}
+    for line, mat_name, mat_unit in _bom_rows_for_order(db, order):
+        correct.setdefault(line.material_code, (line, mat_name, mat_unit))
+
+    existing = {
+        it.material_code: it
+        for it in db.execute(
+            select(OrderAccessoryItem).where(
+                OrderAccessoryItem.order_id == order_id,
+                OrderAccessoryItem.source == "bom",
+            )
+        ).scalars().all()
+    }
+
+    removed = 0
+    for code, it in existing.items():
+        if code not in correct:        # BOM 里已没有的料(串料/旧数据) → 删
+            db.delete(it)
+            removed += 1
+
+    for code, (line, mat_name, mat_unit) in correct.items():
+        f = _bom_item_fields(order, line, mat_name, mat_unit)
+        it = existing.get(code)
+        if it is not None:             # 已存在且 BOM 仍有 → 刷新名字/数量/单位, 保留状态/快递
+            it.material_name = f["material_name"]
+            it.qty_required = f["qty_required"]
+            it.unit = f["unit"]
+            it.is_factory_provided = f["is_factory_provided"]
+        else:                          # BOM 有但清单缺 → 补
+            db.add(OrderAccessoryItem(
+                order_id=order_id, order_no=order.order_no, material_code=code,
+                material_name=f["material_name"], qty_required=f["qty_required"],
+                unit=f["unit"], is_factory_provided=f["is_factory_provided"],
+                source="bom", status=f["status_default"],
+            ))
+
+    db.commit()
+    _logger.info("订单 %s 配件重对齐: 删 %d 行串料, 现 %d 行 BOM 料", order.order_no, removed, len(correct))
+    return get_checklist(db, order_id)
 
 
 def add_extra_accessories(
