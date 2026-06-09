@@ -224,10 +224,29 @@ def _to_decimal(v: Any) -> Optional[Decimal]:
         return None
 
 
+# 千牛/淘宝把收货信息打码用的星号(含全角); 姓名/电话/地址任一带星号 = 被脱敏未解密
+_MASK_CHARS = ("*", "＊", "✱", "∗")
+
+
+def _is_masked_contact(o: dict) -> bool:
+    """收货信息是否被千牛/淘宝星号脱敏(姓名/电话/地址任一含 *)。
+
+    脱敏地址无法发货; 更要命的是若先占位入库, 之后解密重发会被订单号去重挡掉
+    (真地址永远进不来)。故识别到脱敏一律不入, 让用户在千牛「解密」后重发。
+    """
+    blob = (
+        f"{o.get('customer_name') or ''}"
+        f"{o.get('customer_phone') or ''}"
+        f"{o.get('customer_address') or ''}"
+    )
+    return any(ch in blob for ch in _MASK_CHARS)
+
+
 def _import_orders(db: Session, parsed: dict) -> dict:
-    """把 parse_qianniu_order 的结果入 Orders 表 (新单插入, 已存在跳过)。"""
+    """把 parse_qianniu_order 的结果入 Orders 表 (新单插入, 已存在/脱敏跳过)。"""
     orders = parsed.get("orders") or []
-    inserted = skipped = 0
+    inserted = skipped = skipped_masked = 0
+    masked_nos: list[str] = []
     seen: set[str] = set()
     for o in orders:
         ono = (o.get("order_no") or "").strip()
@@ -238,7 +257,12 @@ def _import_orders(db: Session, parsed: dict) -> dict:
             continue
         seen.add(ono)
         if db.execute(select(Order.id).where(Order.order_no == ono)).first():
-            skipped += 1
+            skipped += 1         # 已入库(此前已有真地址) → 静默跳过, 不误报脱敏
+            continue
+        if _is_masked_contact(o):
+            # 收货信息星号脱敏 → 不占位入库(否则解密重发会被去重挡掉), 收集待提示用户解密
+            skipped_masked += 1
+            masked_nos.append(ono)
             continue
         od = None
         if o.get("order_date"):
@@ -255,8 +279,8 @@ def _import_orders(db: Session, parsed: dict) -> dict:
         ))
         inserted += 1
     db.flush()
-    return {"inserted": inserted, "skipped": skipped,
-            "warnings": parsed.get("ocr_warnings") or []}
+    return {"inserted": inserted, "skipped": skipped, "skipped_masked": skipped_masked,
+            "masked_nos": masked_nos, "warnings": parsed.get("ocr_warnings") or []}
 
 
 def _import_alipay_flows(db: Session, parsed: dict) -> dict:
@@ -277,7 +301,18 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
     if kind in ("order_table", "order_image"):
         parsed = vision_ocr_service.parse_qianniu_order(db, image_bytes)
         r = _import_orders(db, parsed)
+        masked = r.get("skipped_masked", 0)
+        nos = "、".join(r.get("masked_nos", [])[:5])
+        # 全部因脱敏没入(典型: 单个订单详情被星号打码) → 不硬塞, 让用户解密重发
+        if r["inserted"] == 0 and masked > 0 and r["skipped"] == 0:
+            return {"ok": False, "summary": (
+                "收货信息被加密(星号 ****)，没法发货也没法入库。\n"
+                "请在**千牛后台把收货信息「解密」**后，再截图发我。\n"
+                f"涉及订单: {nos}")}
         msg = f"订单入库完成: 新增 **{r['inserted']}** 单, 跳过(已存在) {r['skipped']} 单。"
+        if masked > 0:
+            msg += (f"\n⚠️ 另有 **{masked}** 单收货信息被加密(星号)已跳过 —— "
+                    f"请在千牛「解密」后重发: {nos}")
         if r["warnings"]:
             msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
         return {"ok": True, "summary": msg}

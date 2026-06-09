@@ -138,6 +138,33 @@ def test_post_message_text_only_replies_help(db_session, monkeypatch):
     assert "使用指南" in replies[0]["header"]["title"]["content"]
 
 
+# ---- 收货信息被星号脱敏(千牛未解密) → 不入库, 让用户解密重发 ----
+def test_import_orders_skips_masked_contact(db_session):
+    db = db_session
+    parsed = {"orders": [
+        {"order_no": "M-CLEAN", "customer_name": "陈文婷", "customer_phone": "15712345678",
+         "customer_address": "浙江省舟山市定海区临城街道7幢1503"},
+        {"order_no": "M-MASK", "customer_name": "陈**", "customer_phone": "***********",
+         "customer_address": "浙江省舟山市定海区*********"},
+    ]}
+    r = fb._import_orders(db, parsed)
+    db.flush()
+    assert r["inserted"] == 1                                  # 只入了未脱敏那单
+    assert r["skipped_masked"] == 1 and r["masked_nos"] == ["M-MASK"]
+    from app.models.order import Order
+    assert db.query(Order).filter_by(order_no="M-MASK").count() == 0   # 脱敏单没占位
+
+
+def test_dispatch_order_all_masked_asks_decrypt(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_qianniu_order", lambda db, img, **k: {
+        "orders": [{"order_no": "3303049694128050781", "customer_name": "陈**",
+                    "customer_phone": "***********", "customer_address": "浙江省舟山市定海区****"}]})
+    r = fb._dispatch_import(db, "order_image", b"img")
+    assert r["ok"] is False
+    assert "解密" in r["summary"] and "加密" in r["summary"]    # 提示去千牛解密
+
+
 def test_classify_table_by_filename():
     from app.services import table_ingest_service as tis
     assert tis.classify_table("2026工厂对账单.xlsx", b"") == "factory_recon"
