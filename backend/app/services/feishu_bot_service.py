@@ -276,7 +276,7 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
         parsed = vision_ocr_service.parse_factory_reconciliation(db, image_bytes)
         from app.services import screenshot_ingest_service
         r = screenshot_ingest_service.commit_factory_recon_parsed(db, parsed)
-        msg = f"工厂对账入库完成: 新增 **{r['inserted']}** 行对账记录。"
+        msg = f"工厂对账入库完成: 新增 **{r['inserted']}** 行, 跳过(已存在) {r.get('skipped', 0)} 行。"
         if r["warnings"]:
             msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
         return {"ok": True, "summary": msg}
@@ -440,11 +440,18 @@ def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
 
     fkind = _classify_filename(file_name)
     archived_path = None
+    downloaded = False
     try:
         data = feishu_client.download_message_resource(db, message_id, file_key, type_="file")
+        downloaded = True
         archived_path = _archive_bytes(db, data, _FILE_ARCHIVE_KIND.get(fkind, "generic"), file_name)
-    except Exception as e:  # 下载失败 → 仍让用户选类型(取件在 pick 时再试)
+    except Exception as e:
         _log.warning("飞书取文件失败: %s", e)
+    if not downloaded:
+        # 连原件都没取到 → 别给确认卡误导用户, 直接让其重发
+        _safe_reply(db, message_id, _result_card(
+            "文件获取失败", f"`{file_name}` 从飞书下载失败, 请重新发一次。", "red"))
+        return {"message_id": message_id, "error": "download_failed"}
 
     _stage(db, message_id, {"file_key": file_key, "is_file": True, "file_name": file_name,
                             "kind": fkind, "archived_path": archived_path})

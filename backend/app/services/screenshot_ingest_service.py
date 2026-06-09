@@ -73,20 +73,35 @@ def commit_purchase_parsed(db: Session, parsed: dict) -> dict:
 
 
 def commit_factory_recon_parsed(db: Session, parsed: dict) -> dict:
-    """parse_factory_reconciliation 的结果(rows)→ FactoryReconciliation 多行 (diff=账单-已付)。"""
+    """parse_factory_reconciliation 的结果(rows)→ FactoryReconciliation 多行 (diff=账单-已付)。
+
+    去重: 同 (工厂, 账期起, 账期止, 账单额, 已付额) 已存在则跳过, 防重复发图造成对账金额翻倍。
+    """
     rows = (parsed or {}).get("rows") or []
-    inserted = 0
+    inserted = skipped = 0
     for row in rows:
         fname = (row.get("factory_name") or "").strip()
         if not fname:
             continue
+        ps = _date(row.get("period_start"))
+        pe = _date(row.get("period_end"))
         bill = _dec(row.get("bill_amount"))
         paid = _dec(row.get("paid_amount"))
+        exists = db.execute(
+            select(FactoryReconciliation.id).where(
+                FactoryReconciliation.factory_name == fname,
+                FactoryReconciliation.period_start == ps,
+                FactoryReconciliation.period_end == pe,
+                FactoryReconciliation.bill_amount == bill,
+                FactoryReconciliation.paid_amount == paid,
+            )
+        ).first()
+        if exists:
+            skipped += 1
+            continue
         diff = (bill - paid) if (bill is not None and paid is not None) else Decimal("0")
         db.add(FactoryReconciliation(
-            factory_name=fname,
-            period_start=_date(row.get("period_start")),
-            period_end=_date(row.get("period_end")),
+            factory_name=fname, period_start=ps, period_end=pe,
             order_amount=_dec(row.get("order_amount")),
             bill_amount=bill, paid_amount=paid, diff_amount=diff,
             alipay_flow_no=row.get("alipay_flow_no"), remark=row.get("remark"),
@@ -94,4 +109,4 @@ def commit_factory_recon_parsed(db: Session, parsed: dict) -> dict:
         ))
         inserted += 1
     db.flush()
-    return {"inserted": inserted, "warnings": parsed.get("ocr_warnings") or []}
+    return {"inserted": inserted, "skipped": skipped, "warnings": parsed.get("ocr_warnings") or []}

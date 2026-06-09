@@ -47,6 +47,19 @@ def test_purchase_parsed_skips_duplicate_purchase_no(db_session):
     assert r2["inserted"] == 0 and r2["skipped"] == 1
 
 
+def test_factory_recon_parsed_dedup_on_resend(db_session):
+    db = db_session
+    parsed = {"rows": [{"factory_name": "博冠家具", "period_end": "2026-01-31",
+                        "bill_amount": 1000, "paid_amount": 600}]}
+    r1 = sis.commit_factory_recon_parsed(db, parsed)
+    db.flush()
+    assert r1["inserted"] == 1
+    r2 = sis.commit_factory_recon_parsed(db, parsed)   # 重复发图 → 不再翻倍
+    db.flush()
+    assert r2["inserted"] == 0 and r2["skipped"] == 1
+    assert db.query(FactoryReconciliation).filter_by(factory_name="博冠家具").count() == 1
+
+
 # ---- Excel 文件消息 ----
 def test_classify_filename():
     assert fb._classify_filename("2026工厂对账单.xlsx") == "factory_recon_xlsx"
@@ -67,6 +80,22 @@ def test_file_message_archives_and_picks(db_session, monkeypatch):
     assert db.query(ImportedFile).filter_by(kind="factory_recon", source="feishu").count() == 1
     pend = fb._load_pending(db).get("f1")
     assert pend["is_file"] is True and pend["archived_path"]
+
+
+def test_file_message_download_failure_asks_resend(db_session, monkeypatch):
+    db = db_session
+    replies = []
+    def _boom(*a, **k):
+        raise RuntimeError("feishu down")
+    monkeypatch.setattr(feishu_client, "download_message_resource", _boom)
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: replies.append(card))
+    event = {"message": {"message_type": "file", "message_id": "f3",
+                         "content": json.dumps({"file_key": "k", "file_name": "工厂对账.xlsx"})}}
+    out = fb.on_message_event(db, event)
+    # 取不到原件 → 不给确认卡, 直接让重发
+    assert out["error"] == "download_failed"
+    assert "文件获取失败" in replies[0]["header"]["title"]["content"]
+    assert fb._load_pending(db).get("f3") is None   # 未暂存
 
 
 def test_file_message_non_table_rejected(db_session, monkeypatch):
