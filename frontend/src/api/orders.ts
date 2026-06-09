@@ -60,6 +60,14 @@ export const bulkUpdateAccessories = (payload: {
   item_ids: number[]; status?: string; purchase_no?: string; tracking_no?: string; self_delivered?: boolean;
 }) => api.post<{ updated: number }>('/api/orders/accessories/bulk-update', payload).then((r) => r.data);
 
+// 一次性给所有进行中的订单补全配件清单(历史单批量)
+export const backfillAllAccessories = () =>
+  api.post<{ orders_processed: number }>('/api/orders/accessories/backfill-all').then((r) => r.data);
+
+// 一键配齐: 把某单所有未到货配件置已到货(清缺料报警)
+export const markAllAccessoriesArrived = (orderId: number) =>
+  api.post(`/api/orders/${orderId}/accessories/mark-all-arrived`).then((r) => r.data);
+
 export interface CsvImportReport {
   inserted: number;
   skipped_duplicate: number;

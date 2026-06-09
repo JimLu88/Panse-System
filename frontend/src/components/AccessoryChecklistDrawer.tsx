@@ -4,13 +4,14 @@
  */
 import { useState } from 'react';
 import {
-  Alert, Button, Drawer, Input, Popover, Select, Space, Table, Tag, Timeline,
+  Alert, Button, Drawer, Input, Popconfirm, Popover, Select, Space, Table, Tag, Timeline,
   Tooltip, Typography, message,
 } from 'antd';
 import { ReloadOutlined, TruckOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   listAccessories, updateAccessory, refreshAccessoryTracking, regenerateAccessories,
+  markAllAccessoriesArrived,
   type AccessoryItem,
 } from '../api/orders';
 
@@ -55,6 +56,15 @@ export default function AccessoryChecklistDrawer({
   const regenMut = useMutation({
     mutationFn: () => regenerateAccessories(orderId!),
     onSuccess: () => { message.success('已按 BOM 补全配件'); invalidate(); },
+  });
+
+  const markAllMut = useMutation({
+    mutationFn: () => markAllAccessoriesArrived(orderId!),
+    onSuccess: () => {
+      message.success('已把本单配件全部标为到货');
+      invalidate();
+      qc.invalidateQueries({ queryKey: ['orders-kanban-acc'] });
+    },
   });
 
   const purchaseItems = items.filter((i) => !i.is_factory_provided);
@@ -153,9 +163,17 @@ export default function AccessoryChecklistDrawer({
       width={760}
       destroyOnClose
       extra={
-        <Button size="small" onClick={() => regenMut.mutate()} loading={regenMut.isPending}>
-          按 BOM 补全
-        </Button>
+        <Space>
+          <Button size="small" onClick={() => regenMut.mutate()} loading={regenMut.isPending}>
+            按 BOM 补全
+          </Button>
+          <Popconfirm
+            title="把本单所有配件标为已到货？" description="清掉缺料报警(历史单常用)。"
+            okText="确认" cancelText="取消" onConfirm={() => markAllMut.mutate()}
+          >
+            <Button size="small" type="primary" loading={markAllMut.isPending}>一键配齐</Button>
+          </Popconfirm>
+        </Space>
       }
     >
       {criticalCount > 0 && (

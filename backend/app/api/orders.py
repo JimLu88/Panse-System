@@ -942,6 +942,21 @@ def accessories_bulk_update(payload: AccessoryBulkUpdate, db: Session = Depends(
     return {"updated": n}
 
 
+@router.post("/accessories/backfill-all")
+def accessories_backfill_all(db: Session = Depends(get_db)):
+    """给所有进行中的订单(已付款/已发货/售后)批量生成+对齐配件清单(一次性补全历史单)。"""
+    from app.services import accessory_checklist_service
+    return accessory_checklist_service.backfill_all(db)
+
+
+@router.post("/{order_id}/accessories/mark-all-arrived", response_model=list[AccessoryItemOut])
+def mark_all_accessories_arrived(order_id: int, db: Session = Depends(get_db)):
+    """一键配齐: 把该单所有未到货配件置「已到货」, 清掉缺料报警。"""
+    from app.services import accessory_checklist_service
+    accessory_checklist_service.mark_all_arrived(db, order_id)
+    return [AccessoryItemOut.from_model(m) for m in accessory_checklist_service.get_checklist(db, order_id)]
+
+
 @router.get("/accessories/pending-summary")
 def accessories_pending_summary(db: Session = Depends(get_db)):
     """跨订单配件待办汇总 (有未到货配件的订单, 按紧急程度排序)。"""

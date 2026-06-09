@@ -345,6 +345,49 @@ def bulk_update(db: Session, item_ids: list[int], *, status: Optional[str] = Non
     return len(items)
 
 
+def mark_all_arrived(db: Session, order_id: int) -> int:
+    """一键配齐: 把该单所有未到货的配件行置「已到货」, 清掉缺料报警。返回更新数。"""
+    items = db.execute(
+        select(OrderAccessoryItem).where(
+            OrderAccessoryItem.order_id == order_id,
+            OrderAccessoryItem.status.notin_(["已到货", "工厂提供"]),
+        )
+    ).scalars().all()
+    for it in items:
+        it.status = "已到货"
+    db.commit()
+    return len(items)
+
+
+def backfill_all(db: Session) -> dict:
+    """给进行中的订单(已付款/已发货/售后)批量生成+对齐配件清单。
+
+    跳过历史订单、无 product/sku 的单、以及待付款/已签收/已取消(看板不显缺料)。返回处理数。
+    """
+    from app.models.order import Order
+    from app.services.order_service import normalize_status
+
+    # 不按 is_historical 过滤: 看板上的进行中订单很多是历史水位线之前的(被标 historical),
+    # 但用户仍在看板上管理它们, 配件该补全。只按"进行中状态"筛。
+    rows = db.execute(
+        select(Order.id, Order.status, Order.product_code, Order.sku_code)
+    ).all()
+    processed = 0
+    for oid, status, pc, sc in rows:
+        if not (pc or sc):
+            continue
+        if normalize_status(status or "") not in ("paid", "shipped", "aftersales"):
+            continue
+        try:
+            resync_for_order(db, oid)   # 内部已 commit
+            processed += 1
+        except Exception as e:  # pragma: no cover - 单单失败不连累整批
+            db.rollback()
+            _logger.warning("backfill 订单 %s 配件失败: %s", oid, e)
+    _logger.info("配件清单批量补全: 处理 %d 单", processed)
+    return {"orders_processed": processed}
+
+
 def get_checklist(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     return list(
         db.execute(

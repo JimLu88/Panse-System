@@ -322,6 +322,8 @@ export const addProductInventoryRow = (payload: {
 export interface BomLineRow {
   id: number;
   product_code: string;
+  product_name?: string | null;
+  product_image_url?: string | null;
   sku: string | null;
   sku_code: string | null;
   material_code: string;
@@ -346,6 +348,12 @@ export const deleteBomLine = (lineId: number) =>
 // BOM 清单(扁平): 按产品编码 / 物料编码筛
 export const listBomLines = (params: { product_code?: string; material_code?: string; limit?: number } = {}) =>
   api.get<BomLineRow[]>('/api/bom', { params: { limit: 500, ...params } }).then((r) => r.data);
+
+// 编辑单条 BOM 行(改 SKU 归属 / 料号 / 单耗 / 单位等)
+export const updateBomLine = (id: number, patch: {
+  product_code?: string; sku?: string; sku_code?: string; material_code?: string;
+  material_name?: string; unit?: string; qty_per_product?: number | string;
+}) => api.patch<BomLineRow>(`/api/bom/lines/${id}`, patch).then((r) => r.data);
 
 // ----- Match -----
 export interface MatchCandidate {

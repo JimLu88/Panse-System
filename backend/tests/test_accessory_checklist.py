@@ -95,6 +95,22 @@ def test_summary_by_order(db_session, order_with_bom):
     assert entry["pending"] == 1        # AC-0001 未采购 → 还缺
 
 
+def test_mark_all_arrived_clears_pending(db_session):
+    db = db_session
+    order = Order(platform="淘宝", order_no="OM", product_code="P", sku_code="S", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    db.add_all([
+        OrderAccessoryItem(order_id=order.id, order_no="OM", material_code="AC-1", material_name="玻璃",
+                           qty_required=Decimal("1"), source="bom", status="未采购"),
+        OrderAccessoryItem(order_id=order.id, order_no="OM", material_code="AC-2", material_name="五金",
+                           qty_required=Decimal("1"), source="bom", status="已下单"),
+    ])
+    db.commit()
+    assert svc.mark_all_arrived(db, order.id) == 2
+    assert all(i.status == "已到货" for i in svc.get_checklist(db, order.id))
+
+
 def test_woodwork_defaults_done_and_named(db_session):
     db = db_session
     db.add(Material(code="WD-0036", name="占位 (WD-0036)", unit="套"))   # 木作料号, 物料库占位

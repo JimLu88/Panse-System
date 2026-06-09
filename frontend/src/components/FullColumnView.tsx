@@ -112,18 +112,25 @@ export default function FullColumnView({
 
   const visibleColumns = useMemo(() => {
     const cols = showAll ? allColumns : allColumns.filter((c) => effectiveCore.has(c.key));
-    return cols.map((c) => ({
-      title: (
-        <Tooltip title={c.key}>
-          <span>{c.label}</span>
-        </Tooltip>
-      ),
-      dataIndex: c.key,
-      key: c.key,
-      width: c.type === 'str' ? 160 : 120,
-      ellipsis: true,
-      render: (v: any) => renderCell(v, c.type),
-    }));
+    return cols.map((c) => {
+      // 统一收窄: 长文案(产品文案/尺寸明细)不再撑爆整行, 截断后悬停看全文
+      const w = c.type === 'datetime' ? 150 : c.type === 'str' ? 150 : 110;
+      return {
+        title: (
+          <Tooltip title={c.key}>
+            <span>{c.label}</span>
+          </Tooltip>
+        ),
+        dataIndex: c.key,
+        key: c.key,
+        width: w,
+        ellipsis: true,
+        onCell: () => ({
+          style: { maxWidth: w, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' as const },
+        }),
+        render: (v: any) => renderCell(v, c.type),
+      };
+    });
   }, [showAll, allColumns, effectiveCore]);
 
   const saveCustomCore = (keys: string[]) => {
