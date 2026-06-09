@@ -27,6 +27,20 @@ def test_purchase_screenshot_inserts_part_purchase(db_session, monkeypatch):
     assert pps[0].supplier == "博冠五金"
 
 
+def test_purchase_no_lines_is_rejected(db_session, monkeypatch):
+    db = db_session
+    # OCR 没解析出明细行 → 多半不是采购单, 不硬塞
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_purchase_invoice",
+                        lambda db, img, **k: {"purchase": {"supplier_name": None, "lines": []}})
+    r = fb._dispatch_import(db, "purchase", b"img")
+    assert r["ok"] is False
+    assert "不是采购单" in r["summary"]
+
+
+def test_purchase_higher_confidence_threshold():
+    assert fb._threshold("purchase") > fb._threshold("order_table")
+
+
 def test_factory_recon_screenshot_inserts_reconciliation(db_session, monkeypatch):
     db = db_session
     monkeypatch.setattr(fb.vision_ocr_service, "parse_factory_reconciliation", lambda db, img, **k: {

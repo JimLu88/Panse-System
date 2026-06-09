@@ -31,6 +31,12 @@ _log = logging.getLogger("panse.feishu_bot")
 
 _PENDING_KEY = "feishu_bot_pending"   # 待处理图片暂存 (message_id -> {...})
 _CONFIDENT = 0.75                     # 置信度阈值: 高于此直接确认, 否则让用户选
+# 采购单各式各样、易和送货单/其它单据混, 用更高门槛(否则一律让用户点选核对)
+_CONFIDENT_BY_KIND = {"purchase": 0.88}
+
+
+def _threshold(kind: str) -> float:
+    return _CONFIDENT_BY_KIND.get(kind, _CONFIDENT)
 
 # 图片类型 → 中文标签 / 入库去向
 IMAGE_TYPES = {
@@ -267,6 +273,11 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
         parsed = vision_ocr_service.parse_purchase_invoice(db, image_bytes)
         from app.services import screenshot_ingest_service
         r = screenshot_ingest_service.commit_purchase_parsed(db, parsed)
+        # 仔细核对: 没解析出任何采购明细行 → 多半不是采购单, 不硬塞, 让用户换类型
+        if r["inserted"] == 0 and r["skipped"] == 0:
+            return {"ok": False, "summary": (
+                "没识别到采购明细(物料/数量/单价)。这可能不是采购单 —— "
+                "请点「换个类型」重选, 或换张更清晰的采购/进货单。")}
         sup = f"(供应商: {r['supplier']})" if r.get("supplier") else ""
         msg = f"采购单入库完成: 新增 **{r['inserted']}** 行, 跳过 {r['skipped']} 行 {sup}。"
         if r["warnings"]:
@@ -471,7 +482,7 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
 
     _stage(db, message_id, {"file_key": file_key, "kind": kind, "conf": conf,
                             "archived_path": archived_path})
-    if kind in IMAGE_TYPES and conf >= _CONFIDENT:
+    if kind in IMAGE_TYPES and conf >= _threshold(kind):
         # 送货单即使识别确定, 也要追问"哪家供应商"才能正确归属入库
         if kind == "supplier_note":
             card = _supplier_picker_card(message_id, _recent_suppliers(db))

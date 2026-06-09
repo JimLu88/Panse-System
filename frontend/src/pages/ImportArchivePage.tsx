@@ -14,7 +14,8 @@ import { ImportedFileRow, downloadImportFile, fetchImportFileSummary, fetchImpor
 const KIND_LABEL: Record<string, string> = {
   orders: '订单', taobao: '淘宝订单', alipay: '支付宝流水', settlement: '结算账单(billDetail)',
   wanshifu: '万师傅账单', logistics: '物流账单', promotion: '推广流水', aftersales: '售后',
-  refill: '补单', account_balance: '账户余额', generic: '其它',
+  refill: '补单', account_balance: '账户余额',
+  factory_recon: '工厂对账', purchase: '采购单', screenshot: '截图录入', generic: '其它',
 };
 
 const KB = (n: number | null) => (n == null ? '-' : n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
