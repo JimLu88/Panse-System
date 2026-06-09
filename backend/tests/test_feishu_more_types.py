@@ -1,0 +1,101 @@
+"""飞书新增类型: 采购单/工厂对账 截图入库 + Excel 文件消息(订单/工厂对账)。"""
+import json
+from decimal import Decimal
+from io import BytesIO
+
+import openpyxl
+
+from app.models.finance import FactoryReconciliation
+from app.models.factory_recon_item import FactoryReconItem
+from app.models.import_file import ImportedFile
+from app.models.order import PartPurchase
+from app.services import feishu_bot_service as fb, screenshot_ingest_service as sis, feishu_client
+
+
+# ---- 截图: 采购单 / 工厂对账 独立成类 ----
+def test_purchase_screenshot_inserts_part_purchase(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_purchase_invoice", lambda db, img, **k: {
+        "purchase": {"supplier_name": "博冠五金", "purchase_no": "PO-1",
+                     "lines": [{"material_name": "合页", "qty": 10, "unit_price": 2.5},
+                               {"material_name": "螺丝", "qty": 100, "unit_price": 0.1}]}})
+    r = fb._dispatch_import(db, "purchase", b"img")
+    db.flush()
+    assert r["ok"] is True
+    pps = db.query(PartPurchase).all()
+    assert len(pps) == 2
+    assert pps[0].supplier == "博冠五金"
+
+
+def test_factory_recon_screenshot_inserts_reconciliation(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_factory_reconciliation", lambda db, img, **k: {
+        "rows": [{"factory_name": "博冠家具", "bill_amount": 1000, "paid_amount": 600}]})
+    r = fb._dispatch_import(db, "factory_recon", b"img")
+    db.flush()
+    assert r["ok"] is True
+    rec = db.query(FactoryReconciliation).filter_by(factory_name="博冠家具").one()
+    assert rec.diff_amount == Decimal("400")   # 1000 - 600
+
+
+def test_purchase_parsed_skips_duplicate_purchase_no(db_session):
+    db = db_session
+    parsed = {"purchase": {"purchase_no": "PO-DUP", "lines": [{"material_name": "板", "qty": 1}]}}
+    sis.commit_purchase_parsed(db, parsed)
+    db.flush()
+    r2 = sis.commit_purchase_parsed(db, parsed)   # 同 purchase_no 再来一次
+    assert r2["inserted"] == 0 and r2["skipped"] == 1
+
+
+# ---- Excel 文件消息 ----
+def test_classify_filename():
+    assert fb._classify_filename("2026工厂对账单.xlsx") == "factory_recon_xlsx"
+    assert fb._classify_filename("千牛订单导出.xlsx") == "order_xlsx"
+    assert fb._classify_filename("乱七八糟.xlsx") is None
+
+
+def test_file_message_archives_and_picks(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"XLSXBYTES")
+    monkeypatch.setattr(feishu_client, "reply_card", lambda *a, **k: None)
+    event = {"message": {"message_type": "file", "message_id": "f1",
+                         "content": json.dumps({"file_key": "k", "file_name": "6月工厂对账单.xlsx"})}}
+    out = fb.on_message_event(db, event)
+    db.flush()
+    assert out["file_kind"] == "factory_recon_xlsx"
+    # 原文件已兜底归档(kind=factory_recon, source=feishu)
+    assert db.query(ImportedFile).filter_by(kind="factory_recon", source="feishu").count() == 1
+    pend = fb._load_pending(db).get("f1")
+    assert pend["is_file"] is True and pend["archived_path"]
+
+
+def test_file_message_non_table_rejected(db_session, monkeypatch):
+    db = db_session
+    replies = []
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: replies.append(card))
+    event = {"message": {"message_type": "file", "message_id": "f2",
+                         "content": json.dumps({"file_key": "k", "file_name": "猫.pdf"})}}
+    out = fb.on_message_event(db, event)
+    assert out == {"ignored": True, "file_name": "猫.pdf"}
+    assert "暂不支持" in replies[0]["header"]["title"]["content"]
+
+
+def _factory_recon_xlsx() -> bytes:
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "26年1月"
+    ws.append(["畔色 月度生产明细表"])
+    ws.append(["单号", "订单号", "追加订单号1", "备注", "详情", "数量", "价格",
+               "客户信息", "下单时间", "发货时间"])
+    ws.append([1, "ORDX1", "", "", "胡桃木案台", 1, 1450, "上海 李四", 46080, 46109])
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
+
+
+def test_dispatch_file_factory_recon_xlsx_imports(db_session):
+    db = db_session
+    r = fb._dispatch_file(db, "factory_recon_xlsx", _factory_recon_xlsx(), "工厂对账.xlsx")
+    db.flush()
+    assert r["ok"] is True
+    assert db.query(FactoryReconItem).filter_by(order_no="ORDX1").count() == 1

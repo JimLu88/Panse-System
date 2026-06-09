@@ -37,15 +37,20 @@ IMAGE_TYPES = {
     "order_table": "订单表(批量订单截图)",
     "order_image": "订单图(单个订单截图)",
     "supplier_note": "供应商送货单",
+    "purchase": "采购单/进货单",
+    "factory_recon": "工厂对账单截图",
     "alipay_flow": "支付宝流水截图",
 }
 
 _CLASSIFY_SYSTEM = (
     "你是图片分类助手。判断用户发来的图属于哪类，只输出 JSON。\n"
     "类型: order_table=淘宝/千牛批量订单列表截图; order_image=单个订单详情截图; "
-    "supplier_note=供应商送货单/采购单/进货单; alipay_flow=支付宝账单/流水/收支明细截图; "
-    "unknown=都不像。\n"
-    '输出: {"kind": "order_table|order_image|supplier_note|alipay_flow|unknown", "confidence": 0~1}'
+    "supplier_note=供应商送货单(送来成品/货物的清单); "
+    "purchase=采购单/进货单(我方向供应商买配件/物料的单据); "
+    "factory_recon=工厂对账单(工厂列出的下单/账单/已付金额对账表); "
+    "alipay_flow=支付宝账单/流水/收支明细截图; unknown=都不像。\n"
+    '输出: {"kind": "order_table|order_image|supplier_note|purchase|factory_recon|alipay_flow|unknown", '
+    '"confidence": 0~1}'
 )
 
 # 默认支付宝账户标签 (截图录入与 CSV 导入分账户去重, 避免互相覆盖)
@@ -119,6 +124,8 @@ def _picker_card(message_id: str, *, hint: str = "我不太确定这张图的类
                 _btn("订单表(批量)", {"op": "pick", "message_id": message_id, "kind": "order_table"}, "primary"),
                 _btn("订单图(单个)", {"op": "pick", "message_id": message_id, "kind": "order_image"}, "primary"),
                 _btn("供应商送货单", {"op": "pick", "message_id": message_id, "kind": "supplier_note"}),
+                _btn("采购单/进货单", {"op": "pick", "message_id": message_id, "kind": "purchase"}),
+                _btn("工厂对账单", {"op": "pick", "message_id": message_id, "kind": "factory_recon"}),
                 _btn("支付宝流水", {"op": "pick", "message_id": message_id, "kind": "alipay_flow"}),
                 _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
             ]},
@@ -256,6 +263,23 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
         warns = list(r["warnings"]) + ["长账单截图可能漏行, 完整流水建议用 CSV 导出 / 邮箱自动收取。"]
         msg += f"\n⚠️ {'; '.join(map(str, warns[:3]))}"
         return {"ok": True, "summary": msg}
+    if kind == "purchase":
+        parsed = vision_ocr_service.parse_purchase_invoice(db, image_bytes)
+        from app.services import screenshot_ingest_service
+        r = screenshot_ingest_service.commit_purchase_parsed(db, parsed)
+        sup = f"(供应商: {r['supplier']})" if r.get("supplier") else ""
+        msg = f"采购单入库完成: 新增 **{r['inserted']}** 行, 跳过 {r['skipped']} 行 {sup}。"
+        if r["warnings"]:
+            msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
+        return {"ok": True, "summary": msg}
+    if kind == "factory_recon":
+        parsed = vision_ocr_service.parse_factory_reconciliation(db, image_bytes)
+        from app.services import screenshot_ingest_service
+        r = screenshot_ingest_service.commit_factory_recon_parsed(db, parsed)
+        msg = f"工厂对账入库完成: 新增 **{r['inserted']}** 行对账记录。"
+        if r["warnings"]:
+            msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
+        return {"ok": True, "summary": msg}
     if kind == "supplier_note":
         if not supplier_id:
             return {"ok": False, "summary": "供应商送货单需先选择归属供应商。"}
@@ -282,49 +306,163 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
 _ARCHIVE_KIND = {
     "order_table": "orders", "order_image": "orders",
     "alipay_flow": "alipay", "supplier_note": "screenshot",
+    "purchase": "purchase", "factory_recon": "factory_recon",
 }
 
 
-def _archive_image(db: Session, img: bytes, kind: str) -> Optional[str]:
-    """把飞书原图按类型落盘归档(imports/{kind}/年/月)+ 登记 ImportedFile, 返回 stored_path。
+def _archive_bytes(db: Session, content: bytes, archive_kind: str, original_name: str) -> Optional[str]:
+    """把飞书原文件按类型落盘归档(imports/{kind}/年/月)+ 登记 ImportedFile, 返回 stored_path。
 
-    兜底用: 即使后续解析/入库失败或用户取消, 原图也已保存, 不会因飞书清理资源而丢失。
+    兜底用: 即使后续解析/入库失败或用户取消, 原件也已保存, 不会因飞书清理资源而丢失。
     归档失败只记日志, 绝不影响主流程。
     """
     try:
         from app.services import import_storage
         arch = import_storage.archive(
-            db, content=img, original_name=f"feishu_{kind}.jpg",
-            kind=_ARCHIVE_KIND.get(kind, "screenshot"), source="feishu",
+            db, content=content, original_name=original_name,
+            kind=archive_kind, source="feishu",
         )
         return arch.file.stored_path
     except Exception as e:  # pragma: no cover
-        _log.warning("飞书原图归档失败(不影响入库): %s", e)
+        _log.warning("飞书原件归档失败(不影响入库): %s", e)
         return None
 
 
+def _archive_image(db: Session, img: bytes, kind: str) -> Optional[str]:
+    """图片按分类归档(未知类→screenshot 兜底)。"""
+    return _archive_bytes(db, img, _ARCHIVE_KIND.get(kind, "screenshot"), f"feishu_{kind}.jpg")
+
+
 def _load_image(db: Session, message_id: str, pending: dict) -> bytes:
-    """取原图: 先从飞书下载; 失败则回退读归档副本(兜底, 防飞书资源过期)。"""
+    """取原件: 先从飞书下载(图片/文件按 is_file 区分); 失败则回退读归档副本(防飞书资源过期)。"""
+    type_ = "file" if pending.get("is_file") else "image"
     try:
-        return feishu_client.download_message_resource(db, message_id, pending["file_key"])
+        return feishu_client.download_message_resource(
+            db, message_id, pending["file_key"], type_=type_)
     except Exception as e:
         ap = pending.get("archived_path")
         if ap:
             try:
                 from app.services import import_storage
-                _log.warning("飞书取图失败, 回退归档副本: %s", e)
+                _log.warning("飞书取件失败, 回退归档副本: %s", e)
                 return import_storage.read(ap)
             except Exception:  # pragma: no cover
                 pass
         raise
 
 
+# ── Excel/CSV 文件(飞书 file 消息) ────────────────────────────
+# 文件类型 → 中文标签 / 归档去向 / 导入服务
+FILE_TYPES = {
+    "order_xlsx": "订单表格",
+    "factory_recon_xlsx": "工厂对账表",
+}
+_FILE_ARCHIVE_KIND = {"order_xlsx": "orders", "factory_recon_xlsx": "factory_recon"}
+
+
+def _classify_filename(name: str) -> Optional[str]:
+    """按文件名关键词粗判表格类型 (拿不准返回 None → 让用户选)。"""
+    n = name or ""
+    if any(k in n for k in ("对账", "工厂")):
+        return "factory_recon_xlsx"
+    if any(k in n for k in ("订单", "千牛", "淘宝", "销售明细")):
+        return "order_xlsx"
+    return None
+
+
+def _file_confirm_card(message_id: str, fkind: str, file_name: str) -> dict:
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "green", "title": {"tag": "plain_text", "content": "📄 收到表格，确认导入？"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md",
+             "content": f"`{file_name}` 识别为 **{FILE_TYPES.get(fkind, fkind)}**。确认后导入。"}},
+            {"tag": "action", "actions": [
+                _btn("✅ 确认导入", {"op": "pick", "message_id": message_id, "kind": fkind}, "primary"),
+                _btn("换个类型", {"op": "repick_file", "message_id": message_id}),
+                _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
+            ]},
+        ],
+    }
+
+
+def _file_picker_card(message_id: str, file_name: str) -> dict:
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📄 这个表格是哪类？"}},
+        "elements": [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"`{file_name}` 请点选类型："}},
+            {"tag": "action", "actions": [
+                _btn("订单表格", {"op": "pick", "message_id": message_id, "kind": "order_xlsx"}, "primary"),
+                _btn("工厂对账表", {"op": "pick", "message_id": message_id, "kind": "factory_recon_xlsx"}, "primary"),
+                _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
+            ]},
+        ],
+    }
+
+
+def _dispatch_file(db: Session, kind: str, content: bytes, file_name: Optional[str]) -> dict:
+    """按表格类型导入 (复用既有导入服务)。"""
+    if kind == "factory_recon_xlsx":
+        from app.services import factory_recon_import_service as fr
+        rep = fr.import_factory_recon_xlsx(db, content)
+        msg = (f"工厂对账单导入完成: 新增 **{rep.inserted}** 行, 重复 {rep.skipped_duplicate}, "
+               f"无效 {rep.skipped_invalid}, 回填成本 {rep.backfilled_cost} 单。")
+        if rep.errors:
+            return {"ok": False, "summary": f"导入失败: {'; '.join(map(str, rep.errors[:2]))}"}
+        return {"ok": True, "summary": msg}
+    if kind == "order_xlsx":
+        from app.services import taobao_order_import
+        rep = taobao_order_import.import_taobao_orders(db, file_name or "orders.xlsx", content)
+        msg = (f"订单表导入完成({rep.detected_format}): 新增 **{rep.inserted}**, 更新 {rep.updated}, "
+               f"重复 {rep.skipped_duplicate}, 无效 {rep.skipped_invalid}。")
+        if rep.errors:
+            msg += f"\n⚠️ {'; '.join(map(str, rep.errors[:2]))}"
+        return {"ok": True, "summary": msg}
+    return {"ok": False, "summary": f"未知表格类型: {kind}"}
+
+
+def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
+    """飞书 file 消息(Excel/CSV)→ 归档兜底 + 按文件名粗判类型 → 确认/选类型卡。"""
+    message_id = msg.get("message_id")
+    try:
+        content_meta = json.loads(msg.get("content") or "{}")
+    except Exception:
+        content_meta = {}
+    file_key = content_meta.get("file_key")
+    file_name = content_meta.get("file_name") or ""
+    if not (message_id and file_key):
+        return None
+    if not file_name.lower().endswith((".xlsx", ".xls", ".csv")):
+        _safe_reply(db, message_id, _result_card(
+            "暂不支持该文件", f"目前只认 Excel/CSV 表格(.xlsx/.xls/.csv)。收到: {file_name}", "orange"))
+        return {"ignored": True, "file_name": file_name}
+
+    fkind = _classify_filename(file_name)
+    archived_path = None
+    try:
+        data = feishu_client.download_message_resource(db, message_id, file_key, type_="file")
+        archived_path = _archive_bytes(db, data, _FILE_ARCHIVE_KIND.get(fkind, "generic"), file_name)
+    except Exception as e:  # 下载失败 → 仍让用户选类型(取件在 pick 时再试)
+        _log.warning("飞书取文件失败: %s", e)
+
+    _stage(db, message_id, {"file_key": file_key, "is_file": True, "file_name": file_name,
+                            "kind": fkind, "archived_path": archived_path})
+    card = _file_confirm_card(message_id, fkind, file_name) if fkind \
+        else _file_picker_card(message_id, file_name)
+    _safe_reply(db, message_id, card)
+    return {"message_id": message_id, "file_kind": fkind, "card_sent": True}
+
+
 # ── 事件入口 (feishu_webhook_service 调用) ─────────────────────
 def on_message_event(db: Session, event: dict) -> Optional[dict]:
     """im.message.receive_v1: 收到图片 → 分类 → 暂存 → 回卡片。返回回复结果(或 None 表示忽略非图片)。"""
     msg = event.get("message") or {}
-    if msg.get("message_type") != "image":
-        return None  # 只处理图片消息
+    mtype = msg.get("message_type")
+    if mtype == "file":
+        return _on_file_message(db, msg)   # Excel/CSV 表格
+    if mtype != "image":
+        return None  # 只处理图片 / 文件消息
     message_id = msg.get("message_id")
     try:
         content = json.loads(msg.get("content") or "{}")
@@ -378,6 +516,10 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     if op == "repick":
         _safe_reply(db, orig_id, _picker_card(orig_id))
         return {"op": "repick"}
+    if op == "repick_file":
+        pending = _load_pending(db).get(orig_id) or {}
+        _safe_reply(db, orig_id, _file_picker_card(orig_id, pending.get("file_name", "")))
+        return {"op": "repick_file"}
     # 用户选了具体供应商 → 按该供应商把送货单入库
     if op == "pick_supplier":
         supplier_id = value.get("supplier_id")
@@ -410,6 +552,21 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     if not pending:
         _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
         return {"op": "pick", "error": "expired"}
+    # 表格文件(Excel/CSV): 按类型导入
+    if kind in FILE_TYPES:
+        try:
+            content = _load_image(db, orig_id, pending)
+            result = _dispatch_file(db, kind, content, pending.get("file_name"))
+            db.commit()
+        except Exception as e:  # pragma: no cover
+            db.rollback()
+            _log.error("飞书机器人表格导入失败: %s", e)
+            _safe_reply(db, orig_id, _result_card("导入失败", f"出错了: {e}", "red"))
+            return {"op": "pick", "error": str(e)}
+        _safe_reply(db, orig_id, _result_card(
+            "✅ 处理完成" if result["ok"] else "未导入", result["summary"],
+            "green" if result["ok"] else "orange"))
+        return {"op": "pick", "kind": kind, **result}
     # 送货单: 先追问"哪家供应商", 选定后再入库 (见 pick_supplier)
     if kind == "supplier_note":
         _safe_reply(db, orig_id, _supplier_picker_card(orig_id, _recent_suppliers(db)))
@@ -457,13 +614,16 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
     try:
         pending = _load_pending(db).get(orig_image_msg_id)
         if not pending:
-            _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
+            _patch_result(db, card_message_id, "已过期", "会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
-        img = _load_image(db, orig_image_msg_id, pending)
-        result = _dispatch_import(db, kind, img)
+        content = _load_image(db, orig_image_msg_id, pending)
+        if kind in FILE_TYPES:
+            result = _dispatch_file(db, kind, content, pending.get("file_name"))
+        else:
+            result = _dispatch_import(db, kind, content)
         db.commit()
         _patch_result(db, card_message_id,
-                      "✅ 入库完成" if result["ok"] else "未入库", result["summary"],
+                      "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
                       "green" if result["ok"] else "orange")
         return {"kind": kind, **result}
     except AiUnavailable as e:

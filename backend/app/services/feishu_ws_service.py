@@ -101,6 +101,14 @@ def _on_card(data: Any):
     if op == "repick" and orig_id:
         _patch(card_msg_id, B._picker_card(orig_id))
         return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "请重新选择类型"}})
+    if op == "repick_file" and orig_id:
+        db = _new_session()
+        try:
+            pending = B._load_pending(db).get(orig_id) or {}
+        finally:
+            db.close()
+        _patch(card_msg_id, B._file_picker_card(orig_id, pending.get("file_name", "")))
+        return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "请重新选择类型"}})
     if op == "cancel":
         if card_msg_id:
             _patch(card_msg_id, B._result_card("已取消", "好的，这张图不入库。", "grey"))
