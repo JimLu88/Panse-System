@@ -277,6 +277,48 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
     return {"ok": False, "summary": f"未知类型: {kind}"}
 
 
+# ── 原图兜底归档 + 取图(失败回退归档副本) ────────────────────
+# 分类 → 归档去向(imports/{kind}/年/月); 未知类一律进 screenshot 兜底, 绝不丢原图
+_ARCHIVE_KIND = {
+    "order_table": "orders", "order_image": "orders",
+    "alipay_flow": "alipay", "supplier_note": "screenshot",
+}
+
+
+def _archive_image(db: Session, img: bytes, kind: str) -> Optional[str]:
+    """把飞书原图按类型落盘归档(imports/{kind}/年/月)+ 登记 ImportedFile, 返回 stored_path。
+
+    兜底用: 即使后续解析/入库失败或用户取消, 原图也已保存, 不会因飞书清理资源而丢失。
+    归档失败只记日志, 绝不影响主流程。
+    """
+    try:
+        from app.services import import_storage
+        arch = import_storage.archive(
+            db, content=img, original_name=f"feishu_{kind}.jpg",
+            kind=_ARCHIVE_KIND.get(kind, "screenshot"), source="feishu",
+        )
+        return arch.file.stored_path
+    except Exception as e:  # pragma: no cover
+        _log.warning("飞书原图归档失败(不影响入库): %s", e)
+        return None
+
+
+def _load_image(db: Session, message_id: str, pending: dict) -> bytes:
+    """取原图: 先从飞书下载; 失败则回退读归档副本(兜底, 防飞书资源过期)。"""
+    try:
+        return feishu_client.download_message_resource(db, message_id, pending["file_key"])
+    except Exception as e:
+        ap = pending.get("archived_path")
+        if ap:
+            try:
+                from app.services import import_storage
+                _log.warning("飞书取图失败, 回退归档副本: %s", e)
+                return import_storage.read(ap)
+            except Exception:  # pragma: no cover
+                pass
+        raise
+
+
 # ── 事件入口 (feishu_webhook_service 调用) ─────────────────────
 def on_message_event(db: Session, event: dict) -> Optional[dict]:
     """im.message.receive_v1: 收到图片 → 分类 → 暂存 → 回卡片。返回回复结果(或 None 表示忽略非图片)。"""
@@ -293,13 +335,17 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         return None
 
     kind, conf = "unknown", 0.0
+    archived_path: Optional[str] = None
     try:
         img = feishu_client.download_message_resource(db, message_id, file_key)
         kind, conf = classify_image(db, img)
+        # 收到即按类型归档原图(兜底): 即便后续取消/失败, 原图也不丢
+        archived_path = _archive_image(db, img, kind)
     except Exception as e:  # 下载/分类失败 → 仍让用户选类型, 不崩
         _log.warning("飞书机器人取图/分类失败: %s", e)
 
-    _stage(db, message_id, {"file_key": file_key, "kind": kind, "conf": conf})
+    _stage(db, message_id, {"file_key": file_key, "kind": kind, "conf": conf,
+                            "archived_path": archived_path})
     if kind in IMAGE_TYPES and conf >= _CONFIDENT:
         # 送货单即使识别确定, 也要追问"哪家供应商"才能正确归属入库
         if kind == "supplier_note":
@@ -340,7 +386,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
             return {"op": "pick_supplier", "error": "expired"}
         try:
-            img = feishu_client.download_message_resource(db, orig_id, pending["file_key"])
+            img = _load_image(db, orig_id, pending)
             result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
             db.commit()
         except AiUnavailable as e:
@@ -369,7 +415,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
         _safe_reply(db, orig_id, _supplier_picker_card(orig_id, _recent_suppliers(db)))
         return {"op": "pick", "kind": kind, "await": "supplier"}
     try:
-        img = feishu_client.download_message_resource(db, orig_id, pending["file_key"])
+        img = _load_image(db, orig_id, pending)
         result = _dispatch_import(db, kind, img)
         db.commit()
     except AiUnavailable as e:
@@ -413,7 +459,7 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
         if not pending:
             _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
-        img = feishu_client.download_message_resource(db, orig_image_msg_id, pending["file_key"])
+        img = _load_image(db, orig_image_msg_id, pending)
         result = _dispatch_import(db, kind, img)
         db.commit()
         _patch_result(db, card_message_id,
@@ -449,7 +495,7 @@ def _do_pick_supplier(db: Session, orig_image_msg_id: str, supplier_id: int,
         if not pending:
             _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
-        img = feishu_client.download_message_resource(db, orig_image_msg_id, pending["file_key"])
+        img = _load_image(db, orig_image_msg_id, pending)
         result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
         db.commit()
         _patch_result(db, card_message_id,

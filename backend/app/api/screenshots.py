@@ -47,6 +47,20 @@ def _read_image(file: UploadFile, content: bytes) -> tuple[bytes, str]:
     return content, mime
 
 
+def _archive_original(db: Session, content: bytes, original_name: str, kind: str) -> None:
+    """兜底归档原始截图/文件到 imports/{kind}/年/月 (parse 阶段就存, 防丢)。失败不阻断解析。"""
+    try:
+        from app.services import import_storage
+        import_storage.archive(
+            db, content=content, original_name=original_name or f"{kind}.jpg",
+            kind=kind, source="screenshot",
+        )
+        db.commit()
+    except Exception as e:  # pragma: no cover - 归档失败仅记日志, 不影响预览
+        db.rollback()
+        _logger.warning("截图原图归档失败(不影响解析): %s", e)
+
+
 # ----------------------------- 千牛订单 -------------------------- #
 
 
@@ -61,6 +75,7 @@ async def parse_qianniu(
     """业务需求 1: 千牛截图 → AI 解析订单字段, 不入库."""
     content = await file.read()
     img, mime = _read_image(file, content)
+    _archive_original(db, img, file.filename or "qianniu.jpg", "orders")
     try:
         data = await asyncio.to_thread(vision_ocr_service.parse_qianniu_order, db, img, mime=mime)
     except AiUnavailable as e:
@@ -254,6 +269,7 @@ async def parse_purchase(
 ):
     content = await file.read()
     img, mime = _read_image(file, content)
+    _archive_original(db, img, file.filename or "purchase.jpg", "purchase")
     try:
         data = await asyncio.to_thread(vision_ocr_service.parse_purchase_invoice, db, img, mime=mime)
     except AiUnavailable as e:
@@ -380,6 +396,7 @@ async def parse_factory_recon(
     """工厂对账单截图 → AI 解析每行对账记录, 不入库 (表格类对账请用 Excel 导入)."""
     content = await file.read()
     img, mime = _read_image(file, content)
+    _archive_original(db, img, file.filename or "factory_recon.jpg", "factory_recon")
     try:
         data = await asyncio.to_thread(
             vision_ocr_service.parse_factory_reconciliation, db, img, mime=mime
@@ -406,6 +423,7 @@ async def parse_factory_recon_excel(
     content = await file.read()
     if len(content) > _MAX_BYTES:
         raise HTTPException(413, "文件过大")
+    _archive_original(db, content, file.filename or "factory_recon.xlsx", "factory_recon")
     try:
         data = await asyncio.to_thread(
             factory_recon_excel_service.parse_factory_recon_excel, db, content

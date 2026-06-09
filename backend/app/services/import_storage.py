@@ -23,7 +23,8 @@ from app.services.delivery_storage import get_root
 
 KINDS = (
     "orders", "taobao", "alipay", "settlement", "wanshifu", "logistics",
-    "promotion", "aftersales", "refill", "account_balance", "generic",
+    "promotion", "aftersales", "refill", "account_balance",
+    "factory_recon", "purchase", "screenshot", "generic",
 )
 
 
