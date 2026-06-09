@@ -266,6 +266,9 @@ class OrderAccessoryItem(Base, TimestampMixin):
     alert_level: Mapped[Optional[str]] = mapped_column(String(16))    # warn / critical
     alert_reason: Mapped[Optional[str]] = mapped_column(String(255))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # 按配件聚合采购视图: 采购单号 + 自送(工厂周边买/自己送, 免物流号)
+    purchase_no: Mapped[Optional[str]] = mapped_column(String(128))
+    self_delivered: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     __table_args__ = (
         UniqueConstraint("order_id", "material_code", name="uq_order_accessory_item"),

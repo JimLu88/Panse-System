@@ -39,6 +39,7 @@ const ForecastPage = lazy(() => import('./pages/ForecastPage'));
 const AssetsPage = lazy(() => import('./pages/AssetsPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
+const AccessoryPurchasePage = lazy(() => import('./pages/AccessoryPurchasePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
@@ -172,6 +173,7 @@ export default function App() {
       children: [
         { key: 'orders', label: <Link to="/orders">订单</Link> },
         { key: 'orders-kanban', label: <Link to="/orders/kanban">看板</Link> },
+        { key: 'accessory-purchase', label: <Link to="/accessory-purchase">配件备料</Link> },
         { key: 'customers', label: <Link to="/customers">客户</Link> },
         { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
       ],
@@ -331,6 +333,7 @@ export default function App() {
             <Route path="/product-inventory" element={<ProductInventoryPage />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/orders/kanban" element={<OrdersKanbanPage />} />
+            <Route path="/accessory-purchase" element={<AccessoryPurchasePage />} />
             <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customization" element={<CustomizationPage />} />

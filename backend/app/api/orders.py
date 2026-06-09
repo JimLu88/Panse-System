@@ -912,6 +912,32 @@ def accessories_summary_by_order(db: Session = Depends(get_db)):
     return accessory_checklist_service.summary_by_order(db)
 
 
+@router.get("/accessories/by-component")
+def accessories_by_component(db: Session = Depends(get_db)):
+    """按配件聚合的采购视图: 还缺哪些配件(待买/已买未到) + 涉及哪些订单。"""
+    from app.services import accessory_checklist_service
+    return accessory_checklist_service.by_component(db)
+
+
+class AccessoryBulkUpdate(BaseModel):
+    item_ids: list[int]
+    status: Optional[str] = None
+    purchase_no: Optional[str] = None
+    tracking_no: Optional[str] = None
+    self_delivered: Optional[bool] = None
+
+
+@router.post("/accessories/bulk-update")
+def accessories_bulk_update(payload: AccessoryBulkUpdate, db: Session = Depends(get_db)):
+    """聚合采购视图里批量标记: 已购买(填采购单号) / 已到货 / 自送 / 物流号。"""
+    from app.services import accessory_checklist_service
+    n = accessory_checklist_service.bulk_update(
+        db, payload.item_ids, status=payload.status, purchase_no=payload.purchase_no,
+        tracking_no=payload.tracking_no, self_delivered=payload.self_delivered,
+    )
+    return {"updated": n}
+
+
 @router.get("/accessories/pending-summary")
 def accessories_pending_summary(db: Session = Depends(get_db)):
     """跨订单配件待办汇总 (有未到货配件的订单, 按紧急程度排序)。"""

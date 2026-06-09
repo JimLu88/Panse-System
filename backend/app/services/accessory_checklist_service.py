@@ -260,6 +260,76 @@ def summary_by_order(db: Session) -> dict[int, dict]:
     return out
 
 
+def _fmt_qty(d: Decimal) -> str:
+    """数量去掉尾零(Numeric(12,4) 会带 .0000), 不用科学计数法。2.0000→'2', 2.5000→'2.5'。"""
+    s = f"{d:f}"
+    return (s.rstrip("0").rstrip(".") if "." in s else s) or "0"
+
+
+def by_component(db: Session) -> list[dict]:
+    """按配件聚合(跨订单)采购视图: 还需采购/在途的配件, 按料号汇总缺多少 + 涉及哪些订单。
+
+    只统计 需采购(非工厂提供) 且 还没到货(状态 未采购/已下单/运输中) 的行。
+    每个料号给出: 待买量(未采购) / 已买未到量(已下单+运输中) / 涉及订单明细。按名称排序。
+    """
+    rows = db.execute(
+        select(OrderAccessoryItem).where(
+            OrderAccessoryItem.is_factory_provided.is_(False),
+            OrderAccessoryItem.status.in_(["未采购", "已下单", "运输中"]),
+        )
+    ).scalars().all()
+    groups: dict[str, dict] = {}
+    for it in rows:
+        g = groups.get(it.material_code)
+        if g is None:
+            g = groups[it.material_code] = {
+                "material_code": it.material_code, "material_name": it.material_name,
+                "unit": it.unit, "to_buy_qty": Decimal(0), "bought_pending_qty": Decimal(0),
+                "order_count": 0, "items": [],
+            }
+        qty = it.qty_required or Decimal(0)
+        if it.status == "未采购":
+            g["to_buy_qty"] += qty
+        else:
+            g["bought_pending_qty"] += qty
+        g["order_count"] += 1
+        g["items"].append({
+            "id": it.id, "order_id": it.order_id, "order_no": it.order_no,
+            "qty_required": _fmt_qty(qty), "status": it.status, "purchase_no": it.purchase_no,
+            "tracking_no": it.tracking_no, "self_delivered": it.self_delivered,
+        })
+    out = list(groups.values())
+    for g in out:
+        g["to_buy_qty"] = _fmt_qty(g["to_buy_qty"])
+        g["bought_pending_qty"] = _fmt_qty(g["bought_pending_qty"])
+    out.sort(key=lambda g: g["material_name"] or g["material_code"])
+    return out
+
+
+def bulk_update(db: Session, item_ids: list[int], *, status: Optional[str] = None,
+                purchase_no: Optional[str] = None, tracking_no: Optional[str] = None,
+                self_delivered: Optional[bool] = None) -> int:
+    """批量更新配件行 (聚合采购视图里勾选若干单一起标 已购买/已到货/自送/填单号)。返回更新数。"""
+    if not item_ids:
+        return 0
+    items = db.execute(
+        select(OrderAccessoryItem).where(OrderAccessoryItem.id.in_(item_ids))
+    ).scalars().all()
+    for it in items:
+        if status is not None:
+            it.status = status
+        if purchase_no is not None:
+            it.purchase_no = purchase_no or None
+        if tracking_no is not None:
+            it.tracking_no = tracking_no or None
+        if self_delivered is not None:
+            it.self_delivered = self_delivered
+            if self_delivered:
+                it.tracking_no = None   # 自送无物流号
+    db.commit()
+    return len(items)
+
+
 def get_checklist(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     return list(
         db.execute(

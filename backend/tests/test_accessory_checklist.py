@@ -95,6 +95,44 @@ def test_summary_by_order(db_session, order_with_bom):
     assert entry["pending"] == 1        # AC-0001 未采购 → 还缺
 
 
+def test_by_component_aggregates_across_orders(db_session):
+    db = db_session
+    db.add_all([
+        OrderAccessoryItem(order_id=1, order_no="O1", material_code="AC-RAIL", material_name="电力轨道1米",
+                           qty_required=Decimal("2"), unit="根", source="bom", status="未采购", is_factory_provided=False),
+        OrderAccessoryItem(order_id=2, order_no="O2", material_code="AC-RAIL", material_name="电力轨道1米",
+                           qty_required=Decimal("3"), unit="根", source="bom", status="已下单", is_factory_provided=False),
+        OrderAccessoryItem(order_id=3, order_no="O3", material_code="MW-X", material_name="木作",
+                           qty_required=Decimal("1"), source="bom", status="工厂提供", is_factory_provided=True),
+        OrderAccessoryItem(order_id=4, order_no="O4", material_code="AC-RAIL", material_name="电力轨道1米",
+                           qty_required=Decimal("5"), unit="根", source="bom", status="已到货", is_factory_provided=False),
+    ])
+    db.commit()
+    out = svc.by_component(db)
+    rail = next(g for g in out if g["material_code"] == "AC-RAIL")
+    assert rail["to_buy_qty"] == "2"            # O1 未采购
+    assert rail["bought_pending_qty"] == "3"    # O2 已下单(已购买未到)
+    assert rail["order_count"] == 2             # O1+O2 (O4已到货不计入待办)
+    assert all(g["material_code"] != "MW-X" for g in out)   # 工厂提供不进采购视图
+
+
+def test_bulk_update_bought_and_self_delivered(db_session):
+    db = db_session
+    a = OrderAccessoryItem(order_id=1, order_no="O1", material_code="AC-G", material_name="玻璃",
+                           qty_required=Decimal("1"), source="bom", status="未采购", is_factory_provided=False)
+    b = OrderAccessoryItem(order_id=2, order_no="O2", material_code="AC-G", material_name="玻璃",
+                           qty_required=Decimal("1"), source="bom", status="未采购", is_factory_provided=False,
+                           tracking_no="SF123")
+    db.add_all([a, b])
+    db.commit()
+    assert svc.bulk_update(db, [a.id], status="已下单", purchase_no="PO-2026-01") == 1
+    db.refresh(a)
+    assert a.status == "已下单" and a.purchase_no == "PO-2026-01"   # 已购买 + 采购单号
+    svc.bulk_update(db, [b.id], status="已到货", self_delivered=True)   # 自送 → 已到货 + 清物流号
+    db.refresh(b)
+    assert b.self_delivered is True and b.status == "已到货" and b.tracking_no is None
+
+
 def test_generate_disambiguates_by_product_code(db_session):
     db = db_session
     db.add_all([

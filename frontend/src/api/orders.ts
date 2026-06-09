@@ -44,6 +44,22 @@ export interface AccessorySummary { total: number; done: number; pending: number
 export const fetchAccessorySummary = () =>
   api.get<Record<number, AccessorySummary>>('/api/orders/accessories/summary').then((r) => r.data);
 
+// 按配件聚合采购视图: 每种配件全局还缺多少 + 涉及哪些订单
+export interface ComponentItem {
+  id: number; order_id: number; order_no: string; qty_required: string;
+  status: string; purchase_no: string | null; tracking_no: string | null; self_delivered: boolean;
+}
+export interface ComponentGroup {
+  material_code: string; material_name: string | null; unit: string | null;
+  to_buy_qty: string; bought_pending_qty: string; order_count: number; items: ComponentItem[];
+}
+export const fetchAccessoriesByComponent = () =>
+  api.get<ComponentGroup[]>('/api/orders/accessories/by-component').then((r) => r.data);
+
+export const bulkUpdateAccessories = (payload: {
+  item_ids: number[]; status?: string; purchase_no?: string; tracking_no?: string; self_delivered?: boolean;
+}) => api.post<{ updated: number }>('/api/orders/accessories/bulk-update', payload).then((r) => r.data);
+
 export interface CsvImportReport {
   inserted: number;
   skipped_duplicate: number;
