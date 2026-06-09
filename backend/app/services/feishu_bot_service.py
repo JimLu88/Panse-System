@@ -351,23 +351,16 @@ def _load_image(db: Session, message_id: str, pending: dict) -> bytes:
         raise
 
 
-# ── Excel/CSV 文件(飞书 file 消息) ────────────────────────────
-# 文件类型 → 中文标签 / 归档去向 / 导入服务
-FILE_TYPES = {
-    "order_xlsx": "订单表格",
-    "factory_recon_xlsx": "工厂对账表",
-}
-_FILE_ARCHIVE_KIND = {"order_xlsx": "orders", "factory_recon_xlsx": "factory_recon"}
+# ── Excel/CSV 文件(飞书 file 消息) — 类型注册/识别/路由见 table_ingest_service ──
+from app.services import table_ingest_service as _tis
+
+# key → 中文标签 (供 confirm/picker/路由判断; FILE_TYPES 成员即"是表格文件类型")
+FILE_TYPES = {k: t["label"] for k, t in _tis.TABLE_TYPES.items()}
 
 
-def _classify_filename(name: str) -> Optional[str]:
-    """按文件名关键词粗判表格类型 (拿不准返回 None → 让用户选)。"""
-    n = name or ""
-    if any(k in n for k in ("对账", "工厂")):
-        return "factory_recon_xlsx"
-    if any(k in n for k in ("订单", "千牛", "淘宝", "销售明细")):
-        return "order_xlsx"
-    return None
+def _file_archive_kind(fkind: Optional[str]) -> str:
+    t = _tis.TABLE_TYPES.get(fkind or "")
+    return t["archive"] if t else "generic"
 
 
 def _file_confirm_card(message_id: str, fkind: str, file_name: str) -> dict:
@@ -387,39 +380,25 @@ def _file_confirm_card(message_id: str, fkind: str, file_name: str) -> dict:
 
 
 def _file_picker_card(message_id: str, file_name: str) -> dict:
+    """拿不准类型时, 列出全部表格类型让用户点选(从注册表动态生成)。"""
+    actions = [
+        _btn(t["label"], {"op": "pick", "message_id": message_id, "kind": k}, "primary")
+        for k, t in _tis.TABLE_TYPES.items()
+    ]
+    actions.append(_btn("取消", {"op": "cancel", "message_id": message_id}, "danger"))
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📄 这个表格是哪类？"}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"`{file_name}` 请点选类型："}},
-            {"tag": "action", "actions": [
-                _btn("订单表格", {"op": "pick", "message_id": message_id, "kind": "order_xlsx"}, "primary"),
-                _btn("工厂对账表", {"op": "pick", "message_id": message_id, "kind": "factory_recon_xlsx"}, "primary"),
-                _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
-            ]},
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"`{file_name}` 没认准，请点选类型："}},
+            {"tag": "action", "actions": actions},
         ],
     }
 
 
 def _dispatch_file(db: Session, kind: str, content: bytes, file_name: Optional[str]) -> dict:
-    """按表格类型导入 (复用既有导入服务)。"""
-    if kind == "factory_recon_xlsx":
-        from app.services import factory_recon_import_service as fr
-        rep = fr.import_factory_recon_xlsx(db, content)
-        msg = (f"工厂对账单导入完成: 新增 **{rep.inserted}** 行, 重复 {rep.skipped_duplicate}, "
-               f"无效 {rep.skipped_invalid}, 回填成本 {rep.backfilled_cost} 单。")
-        if rep.errors:
-            return {"ok": False, "summary": f"导入失败: {'; '.join(map(str, rep.errors[:2]))}"}
-        return {"ok": True, "summary": msg}
-    if kind == "order_xlsx":
-        from app.services import taobao_order_import
-        rep = taobao_order_import.import_taobao_orders(db, file_name or "orders.xlsx", content)
-        msg = (f"订单表导入完成({rep.detected_format}): 新增 **{rep.inserted}**, 更新 {rep.updated}, "
-               f"重复 {rep.skipped_duplicate}, 无效 {rep.skipped_invalid}。")
-        if rep.errors:
-            msg += f"\n⚠️ {'; '.join(map(str, rep.errors[:2]))}"
-        return {"ok": True, "summary": msg}
-    return {"ok": False, "summary": f"未知表格类型: {kind}"}
+    """按表格类型导入 (复用既有导入服务, CSV/xlsx 通吃)。"""
+    return _tis.import_table(db, kind, content, file_name)
 
 
 def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
@@ -438,13 +417,14 @@ def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
             "暂不支持该文件", f"目前只认 Excel/CSV 表格(.xlsx/.xls/.csv)。收到: {file_name}", "orange"))
         return {"ignored": True, "file_name": file_name}
 
-    fkind = _classify_filename(file_name)
+    fkind = None
     archived_path = None
     downloaded = False
     try:
         data = feishu_client.download_message_resource(db, message_id, file_key, type_="file")
         downloaded = True
-        archived_path = _archive_bytes(db, data, _FILE_ARCHIVE_KIND.get(fkind, "generic"), file_name)
+        fkind = _tis.classify_table(file_name, data)   # 文件名 + 表头结构 结合判类型
+        archived_path = _archive_bytes(db, data, _file_archive_kind(fkind), file_name)
     except Exception as e:
         _log.warning("飞书取文件失败: %s", e)
     if not downloaded:
@@ -559,8 +539,8 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     if not pending:
         _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
         return {"op": "pick", "error": "expired"}
-    # 表格文件(Excel/CSV): 按类型导入
-    if kind in FILE_TYPES:
+    # 表格文件(Excel/CSV): 按类型导入 (按 is_file 区分, 避免与图片 kind 同名冲突)
+    if pending.get("is_file"):
         try:
             content = _load_image(db, orig_id, pending)
             result = _dispatch_file(db, kind, content, pending.get("file_name"))
@@ -624,7 +604,7 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
             _patch_result(db, card_message_id, "已过期", "会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
         content = _load_image(db, orig_image_msg_id, pending)
-        if kind in FILE_TYPES:
+        if pending.get("is_file"):
             result = _dispatch_file(db, kind, content, pending.get("file_name"))
         else:
             result = _dispatch_import(db, kind, content)

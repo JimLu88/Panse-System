@@ -61,10 +61,13 @@ def test_factory_recon_parsed_dedup_on_resend(db_session):
 
 
 # ---- Excel 文件消息 ----
-def test_classify_filename():
-    assert fb._classify_filename("2026工厂对账单.xlsx") == "factory_recon_xlsx"
-    assert fb._classify_filename("千牛订单导出.xlsx") == "order_xlsx"
-    assert fb._classify_filename("乱七八糟.xlsx") is None
+def test_classify_table_by_filename():
+    from app.services import table_ingest_service as tis
+    assert tis.classify_table("2026工厂对账单.xlsx", b"") == "factory_recon"
+    assert tis.classify_table("千牛订单导出.xlsx", b"") == "order"
+    assert tis.classify_table("万师傅5月账单.xlsx", b"") == "wanshifu"
+    assert tis.classify_table("物流月结.xlsx", b"") == "logistics"
+    assert tis.classify_table("乱七八糟.xlsx", b"") is None
 
 
 def test_file_message_archives_and_picks(db_session, monkeypatch):
@@ -75,7 +78,7 @@ def test_file_message_archives_and_picks(db_session, monkeypatch):
                          "content": json.dumps({"file_key": "k", "file_name": "6月工厂对账单.xlsx"})}}
     out = fb.on_message_event(db, event)
     db.flush()
-    assert out["file_kind"] == "factory_recon_xlsx"
+    assert out["file_kind"] == "factory_recon"
     # 原文件已兜底归档(kind=factory_recon, source=feishu)
     assert db.query(ImportedFile).filter_by(kind="factory_recon", source="feishu").count() == 1
     pend = fb._load_pending(db).get("f1")
@@ -124,7 +127,7 @@ def _factory_recon_xlsx() -> bytes:
 
 def test_dispatch_file_factory_recon_xlsx_imports(db_session):
     db = db_session
-    r = fb._dispatch_file(db, "factory_recon_xlsx", _factory_recon_xlsx(), "工厂对账.xlsx")
+    r = fb._dispatch_file(db, "factory_recon", _factory_recon_xlsx(), "工厂对账.xlsx")
     db.flush()
     assert r["ok"] is True
     assert db.query(FactoryReconItem).filter_by(order_no="ORDX1").count() == 1

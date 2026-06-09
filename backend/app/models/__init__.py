@@ -26,6 +26,7 @@ from app.models.system_health import SystemHealthLog
 from app.models.import_job import ImportJob
 from app.models.import_file import ImportedFile
 from app.models.prepay_ledger import PrepayLedger
+from app.models.settlement import OrderSettlement
 from app.models.factory_recon_item import FactoryReconItem
 from app.models.shop_deposit import ShopDeposit
 from app.models.scheduled_job import ScheduledJobRun
@@ -103,6 +104,7 @@ __all__ = [
     "ImportJob",
     "ImportedFile",
     "PrepayLedger",
+    "OrderSettlement",
     "FactoryReconItem",
     "ShopDeposit",
 ]

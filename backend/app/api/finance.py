@@ -90,10 +90,8 @@ async def import_alipay(
         db, content=raw, original_name=file.filename or f"alipay-{account}.csv",
         kind="alipay", source="web",
     )
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")
+    from app.services import tabular
+    text = tabular.to_csv_text(raw, file.filename)
     r = alipay_import.import_alipay_csv(db, text, account=account)
     # plan §12.4: 导入完跑一次智能核销
     matched = smart_matching_service.run(db, account=account)
@@ -329,11 +327,10 @@ class BillImportResult(BaseModel):
 
 
 async def _read_csv(file: UploadFile) -> str:
+    """读上传文件为 CSV 文本 —— CSV 直接解码, Excel(xlsx) 自动转 CSV 文本。"""
+    from app.services import tabular
     raw = await file.read()
-    try:
-        return raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return raw.decode("gbk", errors="replace")
+    return tabular.to_csv_text(raw, file.filename)
 
 
 @router.post("/wanshifu-bills/import-csv", response_model=BillImportResult)

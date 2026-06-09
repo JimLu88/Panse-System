@@ -96,10 +96,8 @@ def import_prepay(
     arch = import_storage.archive(
         db, content=raw, original_name=file.filename or f"{category}.csv", kind=kind, source="web",
     )
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")
+    from app.services import tabular
+    text = tabular.to_csv_text(raw, file.filename)
     r = prepay_import_service.import_prepay_csv(db, text, category=category)
     import_storage.update_summary(db, arch.file.id, {
         "inserted": r.inserted, "skipped_duplicate": r.skipped_duplicate, "category": category,

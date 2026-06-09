@@ -61,12 +61,13 @@ def test_account_balances_csv_skips_invalid(db_session):
 # ----------------------------- 数据新鲜度 ----------------------------- #
 
 def test_freshness_all_sources_present(db_session):
-    """check_all 返回全部 8 个数据源."""
+    """check_all 返回全部数据源 (含新增 代付台账 / 微信账单)."""
     items = data_freshness_service.check_all(db_session)
     sources = {i.source for i in items}
     assert sources == {
         "支付宝流水", "万师傅安装账单", "物流费账单", "推广记录",
         "账户余额", "淘宝订单", "补单对账", "售后表",
+        "代付台账", "微信账单",
     }
 
 

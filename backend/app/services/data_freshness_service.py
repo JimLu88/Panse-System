@@ -126,6 +126,27 @@ def check_all(db: Session) -> list[FreshnessItem]:
         message=f"补单对账最后一条为 {last_refill or '无'}，已 {stale} 天未录入。请整理上周补单记录 CSV 后上传至 POST /api/finance/refill-records/import-csv",
     ))
 
+    # 7b. 代付台账 (补单佣金/快递/售后打款) — 月度; 超 40 天提醒
+    from app.models.prepay_ledger import PrepayLedger
+    last_prepay = db.execute(select(func.max(PrepayLedger.pay_date))).scalar()
+    stale = _days_since(last_prepay)
+    items.append(FreshnessItem(
+        source="代付台账", last_date=last_prepay, days_stale=stale,
+        threshold_days=40, overdue=stale > 40,
+        message=f"代付台账(补单佣金/快递/售后打款)最后一条为 {last_prepay or '无'}，已 {stale} 天未导入。请上传实际打款明细至 POST /api/settlements/prepay/import",
+    ))
+
+    # 7c. 微信账单 (聚合/微信 billDetail) — 月度; 超 40 天提醒
+    from app.models.settlement import OrderSettlement
+    last_settle = db.execute(select(func.max(OrderSettlement.settle_time))).scalar()
+    last_settle_date = last_settle.date() if last_settle else None
+    stale = _days_since(last_settle_date)
+    items.append(FreshnessItem(
+        source="微信账单", last_date=last_settle_date, days_stale=stale,
+        threshold_days=40, overdue=stale > 40,
+        message=f"微信账单(billDetail)最后一条为 {last_settle_date or '无'}，已 {stale} 天未导入。请上传当月微信支付账单明细至 POST /api/settlements/import",
+    ))
+
     # 8. 售后表 — 有 aftersales 状态的订单超 3 天未处理则提醒
     cutoff = date.today() - timedelta(days=3)
     overdue_count = db.execute(

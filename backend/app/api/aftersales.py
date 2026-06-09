@@ -188,10 +188,8 @@ class AfterSalesImportResult(BaseModel):
 async def import_aftersales_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """批量导入售后表 CSV (订单号必填; 其余字段按列名自动映射)。"""
     raw = await file.read()
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = raw.decode("gbk", errors="replace")
+    from app.services import tabular
+    text = tabular.to_csv_text(raw, file.filename)
     r = bill_import_service.import_aftersales_csv(db, text)
     db.commit()
     return AfterSalesImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
