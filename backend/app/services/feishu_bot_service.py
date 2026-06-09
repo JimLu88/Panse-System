@@ -139,14 +139,28 @@ def _picker_card(message_id: str, *, hint: str = "我不太确定这张图的类
     }
 
 
-def _confirm_card(message_id: str, kind: str, conf: float) -> dict:
+def _batch_hint(n: int) -> str:
+    """多图整批认不准/不同类时的引导语: 说清「同类型一次发、不同类型分批发」, 并请用户点选整批类型。"""
+    return (f"这条消息里有 **{n}** 张图，我没法确定都是同一类（或没认准）。\n"
+            f"**同一种类型的图一次性发、不同类型分批发**最稳。\n"
+            f"这一批整体是哪类？点一下，我就按这个类型把 **{n}** 张**全部**入库：")
+
+
+def _confirm_card(message_id: str, kind: str, conf: float, *, n: int = 1) -> dict:
+    label = IMAGE_TYPES.get(kind, kind)
+    if n > 1:
+        title = "📷 识别结果 — 确认全部入库？"
+        body = (f"这条消息里 **{n}** 张图都识别为 **{label}**（最低置信度 {conf:.0%}）。"
+                f"确认后我把 **{n}** 张**全部**入库。")
+    else:
+        title = "📷 识别结果，确认入库？"
+        body = f"识别为 **{label}**（置信度 {conf:.0%}）。确认后入库。"
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "green",
-                   "title": {"tag": "plain_text", "content": "📷 识别结果，确认入库？"}},
+                   "title": {"tag": "plain_text", "content": title}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md",
-             "content": f"识别为 **{IMAGE_TYPES.get(kind, kind)}**（置信度 {conf:.0%}）。确认后入库。"}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": body}},
             {"tag": "action", "actions": [
                 _btn("✅ 确认入库", {"op": "pick", "message_id": message_id, "kind": kind}, "primary"),
                 _btn("换个类型", {"op": "repick", "message_id": message_id}),
@@ -193,8 +207,11 @@ def _recent_suppliers(db: Session, limit: int = 9) -> list[tuple[int, str]]:
     return [(r[0], r[1]) for r in rows]
 
 
-def _supplier_picker_card(message_id: str, suppliers: list[tuple[int, str]]) -> dict:
-    """识别为送货单后, 追问"这是哪家供应商?" — 列出候选供应商让用户点选。"""
+def _supplier_picker_card(message_id: str, suppliers: list[tuple[int, str]], *, n: int = 1) -> dict:
+    """识别为送货单后, 追问"这是哪家供应商?" — 列出候选供应商让用户点选。
+
+    n>1 时表示一整批送货单, 选定后整批归到同一家供应商。
+    """
     if not suppliers:
         return _result_card(
             "请先建供应商",
@@ -204,11 +221,13 @@ def _supplier_picker_card(message_id: str, suppliers: list[tuple[int, str]]) -> 
         for sid, name in suppliers
     ]
     actions.append(_btn("取消", {"op": "cancel", "message_id": message_id}, "danger"))
+    tip = (f"这 **{n}** 张送货单都归到哪家供应商？点一下，我按这家把 {n} 张全部入库："
+           if n > 1 else "请点选送货单归属的供应商：")
     return {
         "config": {"wide_screen_mode": True},
         "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📦 这是哪家供应商的送货单？"}},
         "elements": [
-            {"tag": "div", "text": {"tag": "lark_md", "content": "请点选送货单归属的供应商："}},
+            {"tag": "div", "text": {"tag": "lark_md", "content": tip}},
             {"tag": "action", "actions": actions},
         ],
     }
@@ -365,6 +384,40 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
             msg += f"\n⚠️ {'; '.join(map(str, note.ocr_warnings[:2]))}"
         return {"ok": True, "summary": msg}
     return {"ok": False, "summary": f"未知类型: {kind}"}
+
+
+def _dispatch_batch(db: Session, message_id: str, kind: str, pending: dict, *,
+                    supplier_id: Optional[int] = None) -> dict:
+    """一条富文本里的多张图, 按同一 kind 逐张入库并汇总。
+
+    单张异常只跳过该张、不连累其余; AiUnavailable 整批同因 → 往外抛, 由调用方统一提示配 OCR。
+    """
+    images = pending.get("images") or []
+    done = failed = 0
+    lines: list[str] = []
+    for i, im in enumerate(images, 1):
+        try:
+            img = _load_image(db, message_id, im)   # im 自带 file_key/archived_path, 直接当 pending 用
+            r = _dispatch_import(db, kind, img, supplier_id=supplier_id)
+        except AiUnavailable:
+            raise
+        except Exception as e:  # pragma: no cover - 单张坏不连累其余
+            failed += 1
+            lines.append(f"• 第{i}张：出错，已跳过")
+            _log.warning("批量第%d张入库失败: %s", i, e)
+            continue
+        if r.get("ok"):
+            done += 1
+        else:
+            failed += 1
+        first_line = (r.get("summary") or "").splitlines()[0] if r.get("summary") else ""
+        lines.append(f"• 第{i}张：{first_line}")
+    label = IMAGE_TYPES.get(kind, kind)
+    head = (f"批量【{label}】共 {len(images)} 张：✅ 成功 **{done}** 张"
+            + (f"，⚠️ 未入 {failed} 张" if failed else "") + "。")
+    body = "\n".join(lines[:8]) + (f"\n…共 {len(lines)} 条明细" if len(lines) > 8 else "")
+    return {"ok": done > 0, "summary": head + ("\n" + body if body else ""),
+            "done": done, "failed": failed}
 
 
 # ── 原图兜底归档 + 取图(失败回退归档副本) ────────────────────
@@ -553,6 +606,43 @@ def _process_image(db: Session, message_id: str, image_key: str) -> dict:
     return {"message_id": message_id, "kind": kind, "confidence": conf, "card_sent": True}
 
 
+def _process_batch(db: Session, message_id: str, image_keys: list[str]) -> dict:
+    """一条富文本里的多张图: 逐张下载+分类+兜底归档, 判定整批是否同一可信类型, 出一张卡。
+
+    - 全部都同一可信类型 → 一张"确认全部入库"卡 (送货单则先选供应商, 应用到整批)。
+    - 认不准/类型不一 → 一张选类型卡(说明同类型一次发/不同类型分批发), 用户点一次整批入库。
+    确认/点选后由 _dispatch_batch 逐张入库 —— 一条消息里的图都不丢。
+    """
+    items: list[dict] = []
+    for k in image_keys:
+        kind, conf, ap = "unknown", 0.0, None
+        try:
+            img = feishu_client.download_message_resource(db, message_id, k)
+            kind, conf = classify_image(db, img)
+            ap = _archive_image(db, img, kind)   # 收到即归档(兜底), 即便后续取消也不丢原图
+        except Exception as e:
+            _log.warning("批量取图/分类失败: %s", e)
+        items.append({"file_key": k, "kind": kind, "conf": conf, "archived_path": ap})
+    n = len(items)
+    # 仅当"每一张都可信、且都是同一类型"才自动确认; 否则一律让用户点选整批类型(宁可多问一次)
+    confident_same = (
+        n > 0
+        and all(it["kind"] in IMAGE_TYPES and it["conf"] >= _threshold(it["kind"]) for it in items)
+        and len({it["kind"] for it in items}) == 1
+    )
+    batch_kind = items[0]["kind"] if confident_same else "unknown"
+    min_conf = min((it["conf"] for it in items), default=0.0)
+    _stage(db, message_id, {"is_batch": True, "images": items, "kind": batch_kind, "conf": min_conf})
+    if batch_kind == "supplier_note":
+        card = _supplier_picker_card(message_id, _recent_suppliers(db), n=n)
+    elif batch_kind != "unknown":
+        card = _confirm_card(message_id, batch_kind, min_conf, n=n)
+    else:
+        card = _picker_card(message_id, hint=_batch_hint(n))
+    _safe_reply(db, message_id, card)
+    return {"message_id": message_id, "batch": n, "kind": batch_kind, "card_sent": True}
+
+
 # ── 事件入口 (feishu_webhook_service / feishu_ws_service 调用) ──
 def on_message_event(db: Session, event: dict) -> Optional[dict]:
     """im.message.receive_v1: 按消息类型路由。
@@ -580,17 +670,12 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
             return None
         return _process_image(db, message_id, file_key)
     if mtype == "post":
-        # 群里 @机器人 并带图 → 富文本(post), 图片内嵌; 取第一张识别(多图则提示逐张发)
+        # 群里 @机器人 并带图 → 富文本(post), 图片内嵌。单图走单图流程; 多图整批按同一类型处理(不丢图)。
         keys = _post_image_keys(content)
         if message_id and keys:
-            res = _process_image(db, message_id, keys[0])
-            if len(keys) > 1:
-                _safe_reply(db, message_id, _result_card(
-                    "多图提醒",
-                    f"这条消息里有 {len(keys)} 张图，我先处理第一张。"
-                    "其余请**一张一张**单独 @我 发，避免漏处理。", "orange"))
-                res["extra_images"] = len(keys) - 1
-            return res
+            if len(keys) == 1:
+                return _process_image(db, message_id, keys[0])
+            return _process_batch(db, message_id, keys)
         # 富文本里没有图(纯 @+文字) → 回使用指南
         if message_id:
             _safe_reply(db, message_id, _help_card())
@@ -621,7 +706,11 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
         _safe_reply(db, orig_id, _result_card("已取消", "好的，这张图不入库。", "grey"))
         return {"op": "cancel"}
     if op == "repick":
-        _safe_reply(db, orig_id, _picker_card(orig_id))
+        pending = _load_pending(db).get(orig_id) or {}
+        imgs = pending.get("images") or []
+        hint = (_batch_hint(len(imgs)) if pending.get("is_batch") and len(imgs) > 1
+                else "我不太确定这张图的类型，请点选：")
+        _safe_reply(db, orig_id, _picker_card(orig_id, hint=hint))
         return {"op": "repick"}
     if op == "repick_file":
         pending = _load_pending(db).get(orig_id) or {}
@@ -635,8 +724,11 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             _safe_reply(db, orig_id, _result_card("已过期", "这张图的会话已过期，请重新发一次。", "red"))
             return {"op": "pick_supplier", "error": "expired"}
         try:
-            img = _load_image(db, orig_id, pending)
-            result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+            if pending.get("is_batch"):
+                result = _dispatch_batch(db, orig_id, "supplier_note", pending, supplier_id=supplier_id)
+            else:
+                img = _load_image(db, orig_id, pending)
+                result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
             db.commit()
         except AiUnavailable as e:
             _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
@@ -672,6 +764,27 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             return {"op": "pick", "error": str(e)}
         _safe_reply(db, orig_id, _result_card(
             "✅ 处理完成" if result["ok"] else "未导入", result["summary"],
+            "green" if result["ok"] else "orange"))
+        return {"op": "pick", "kind": kind, **result}
+    # 富文本多图批量: 整批按选定 kind 逐张入库 (送货单批量先选供应商, 应用到整批)
+    if pending.get("is_batch"):
+        if kind == "supplier_note":
+            _safe_reply(db, orig_id, _supplier_picker_card(
+                orig_id, _recent_suppliers(db), n=len(pending.get("images") or [])))
+            return {"op": "pick", "kind": kind, "await": "supplier"}
+        try:
+            result = _dispatch_batch(db, orig_id, kind, pending)
+            db.commit()
+        except AiUnavailable as e:
+            _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
+            return {"op": "pick", "error": "ai_unavailable"}
+        except Exception as e:  # pragma: no cover
+            db.rollback()
+            _log.error("飞书机器人批量入库失败: %s", e)
+            _safe_reply(db, orig_id, _result_card("入库失败", f"出错了: {e}", "red"))
+            return {"op": "pick", "error": str(e)}
+        _safe_reply(db, orig_id, _result_card(
+            "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
             "green" if result["ok"] else "orange"))
         return {"op": "pick", "kind": kind, **result}
     # 送货单: 先追问"哪家供应商", 选定后再入库 (见 pick_supplier)
@@ -723,10 +836,13 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
         if not pending:
             _patch_result(db, card_message_id, "已过期", "会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
-        content = _load_image(db, orig_image_msg_id, pending)
-        if pending.get("is_file"):
+        if pending.get("is_batch"):
+            result = _dispatch_batch(db, orig_image_msg_id, kind, pending)
+        elif pending.get("is_file"):
+            content = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_file(db, kind, content, pending.get("file_name"))
         else:
+            content = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_import(db, kind, content)
         db.commit()
         _patch_result(db, card_message_id,
@@ -762,8 +878,11 @@ def _do_pick_supplier(db: Session, orig_image_msg_id: str, supplier_id: int,
         if not pending:
             _patch_result(db, card_message_id, "已过期", "图片会话已过期，请重新发一次。", "red")
             return {"error": "expired"}
-        img = _load_image(db, orig_image_msg_id, pending)
-        result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+        if pending.get("is_batch"):
+            result = _dispatch_batch(db, orig_image_msg_id, "supplier_note", pending, supplier_id=supplier_id)
+        else:
+            img = _load_image(db, orig_image_msg_id, pending)
+            result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
         db.commit()
         _patch_result(db, card_message_id,
                       "✅ 处理完成" if result["ok"] else "未入库", result["summary"],

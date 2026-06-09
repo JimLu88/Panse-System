@@ -110,10 +110,12 @@ def test_post_message_with_image_processes_image(db_session, monkeypatch):
 
 
 def test_post_message_multi_image_warns(db_session, monkeypatch):
+    """旧行为(只处理首张 + 提醒逐张发)已改为整批处理: 多图同类型 → 一张确认卡, 不丢图。"""
     db = db_session
     cards = []
     monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
     monkeypatch.setattr(fb, "classify_image", lambda db, img, **k: ("order_table", 0.95))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
     monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: cards.append(card))
     post = {"content": [
         [{"tag": "img", "image_key": "img_1"}],
@@ -122,8 +124,10 @@ def test_post_message_multi_image_warns(db_session, monkeypatch):
     event = {"message": {"message_type": "post", "message_id": "p3",
                          "content": json.dumps(post)}}
     out = fb.on_message_event(db, event)
-    assert out["extra_images"] == 1   # 处理首张 + 提醒剩余
-    assert any("多图提醒" in c["header"]["title"]["content"] for c in cards)
+    assert out["batch"] == 2 and out["kind"] == "order_table"      # 整批处理
+    assert "extra_images" not in out                               # 不再"只处理首张"
+    assert not any("多图提醒" in c["header"]["title"]["content"] for c in cards)
+    assert fb._load_pending(db)["p3"]["is_batch"] is True          # 整批待确认
 
 
 def test_post_message_text_only_replies_help(db_session, monkeypatch):
@@ -235,3 +239,90 @@ def test_dispatch_file_factory_recon_xlsx_imports(db_session):
     db.flush()
     assert r["ok"] is True
     assert db.query(FactoryReconItem).filter_by(order_no="ORDX1").count() == 1
+
+
+# ---- 多图批量(一条富文本多张图) → 整批同类型: 问一次, 全部入库 ----
+def _post_event(message_id: str, image_keys: list[str]) -> dict:
+    content = {"title": "", "content": [[{"tag": "img", "image_key": k}] for k in image_keys]}
+    return {"message": {"message_type": "post", "message_id": message_id,
+                        "content": json.dumps(content)}}
+
+
+def test_post_multi_image_same_type_one_confirm_card(db_session, monkeypatch):
+    db = db_session
+    cards = []
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda *a, **k: ("order_image", 0.95))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: cards.append(card))
+    out = fb.on_message_event(db, _post_event("p1", ["k1", "k2", "k3"]))
+    assert out["batch"] == 3 and out["kind"] == "order_image"
+    assert len(cards) == 1                                   # 只回一张卡(不再"先处理第一张")
+    assert "确认全部入库" in cards[0]["header"]["title"]["content"]
+    body = cards[0]["elements"][0]["text"]["content"]
+    assert "3" in body and "全部" in body
+    pend = fb._load_pending(db)["p1"]
+    assert pend["is_batch"] is True and len(pend["images"]) == 3
+
+
+def test_post_multi_image_mixed_shows_picker_with_convention(db_session, monkeypatch):
+    db = db_session
+    cards = []
+    seq = iter([("order_image", 0.95), ("alipay_flow", 0.95)])   # 两张类型不一
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda *a, **k: next(seq))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: cards.append(card))
+    out = fb.on_message_event(db, _post_event("p2", ["k1", "k2"]))
+    assert out["kind"] == "unknown"                          # 类型不一 → 不自动确认
+    hint = cards[0]["elements"][0]["text"]["content"]
+    assert "同一种类型" in hint and "分批" in hint            # 给出约定: 同类型一次发/不同类型分批
+    assert fb._load_pending(db)["p2"]["is_batch"] is True
+
+
+def test_dispatch_batch_imports_all_images(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(fb, "_load_image", lambda db, mid, im: b"IMG")
+    seq = iter([
+        {"orders": [{"order_no": "B-1", "customer_name": "甲", "customer_phone": "13800000001",
+                     "customer_address": "上海市A路1号"}]},
+        {"orders": [{"order_no": "B-2", "customer_name": "乙", "customer_phone": "13800000002",
+                     "customer_address": "北京市B路2号"}]},
+    ])
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_qianniu_order", lambda db, img, **k: next(seq))
+    pending = {"is_batch": True, "images": [
+        {"file_key": "k1", "kind": "order_image", "conf": 0.9, "archived_path": None},
+        {"file_key": "k2", "kind": "order_image", "conf": 0.9, "archived_path": None}]}
+    r = fb._dispatch_batch(db, "p3", "order_image", pending)
+    db.flush()
+    assert r["ok"] is True and r["done"] == 2 and r["failed"] == 0
+    assert "共 2 张" in r["summary"]
+    from app.models.order import Order
+    assert db.query(Order).filter(Order.order_no.in_(["B-1", "B-2"])).count() == 2
+
+
+def test_on_card_action_batch_pick_imports_all(db_session, monkeypatch):
+    db = db_session
+    fb._stage(db, "p5", {"is_batch": True, "kind": "order_image", "conf": 0.9, "images": [
+        {"file_key": "k1", "kind": "order_image", "conf": 0.9, "archived_path": None},
+        {"file_key": "k2", "kind": "order_image", "conf": 0.9, "archived_path": None}]})
+    monkeypatch.setattr(fb, "_load_image", lambda db, mid, im: b"IMG")
+    seq = iter([{"orders": [{"order_no": "R-1", "customer_address": "上海"}]},
+                {"orders": [{"order_no": "R-2", "customer_address": "北京"}]}])
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_qianniu_order", lambda db, img, **k: next(seq))
+    monkeypatch.setattr(feishu_client, "reply_card", lambda *a, **k: None)
+    out = fb.on_card_action(db, {"action": {"value": {"op": "pick", "message_id": "p5", "kind": "order_image"}}})
+    assert out["op"] == "pick" and out.get("done") == 2      # on_card_action 路由到批量分发
+    from app.models.order import Order
+    assert db.query(Order).filter(Order.order_no.in_(["R-1", "R-2"])).count() == 2
+
+
+def test_post_single_image_not_batch(db_session, monkeypatch):
+    db = db_session
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda *a, **k: ("order_table", 0.9))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
+    monkeypatch.setattr(feishu_client, "reply_card", lambda *a, **k: None)
+    out = fb.on_message_event(db, _post_event("p4", ["only"]))
+    assert out.get("kind") == "order_table" and "batch" not in out   # 单图富文本 → 单图流程
+    assert fb._load_pending(db)["p4"].get("is_batch") is None
