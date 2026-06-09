@@ -1,8 +1,9 @@
 """飞书机器人长连接(WebSocket)接入 — 自建应用免公网地址 / 免验签。
 
-用官方 lark-oapi WS 客户端收两类事件, 复用 feishu_bot_service 的识别/入库逻辑:
-  - im.message.receive_v1   收到图片 → 下载 → 分类 → 回卡片(确认/选类型)
-  - card.action.trigger     卡片按钮 → 3秒内 ack 一个 toast, 入库放后台线程 + patch 更新卡片
+用官方 lark-oapi WS 客户端收三类事件, 复用既有识别/入库/同步逻辑:
+  - im.message.receive_v1              收到图片/文件 → 下载 → 分类 → 回卡片(确认/选类型)
+  - card.action.trigger               卡片按钮 → 3秒内 ack 一个 toast, 入库放后台线程 + patch 更新卡片
+  - drive.file.bitable_record_changed 多维表记录变更 → 后台触发表格同步(免再依赖 webhook)
 
 仅当配了 app_id/secret 且环境变量 ENABLE_FEISHU_BOT=1 时启动(由 main.py lifespan 调 start())。
 启动失败/凭证缺失只记日志, 不影响主服务。
@@ -116,6 +117,41 @@ def _on_card(data: Any):
     return P2CardActionTriggerResponse({"toast": {"type": "warning", "content": "无效操作"}})
 
 
+def _on_bitable_change(data: Any) -> None:
+    """drive.file.bitable_record_changed_v1: 多维表记录变更 → 后台触发对应绑定同步。
+
+    长连接接管表格同步事件后, 飞书改完不必再依赖 webhook 也能近实时同步(另有 30 分钟定时兜底)。
+    同步要打飞书 API + 写库, 可能较慢 → 放后台线程, 不占长连接 3 秒回执窗口。
+    """
+    event = _to_dict(data)
+    table_id = event.get("table_id")
+    threading.Thread(target=_run_bitable_sync, args=(table_id,),
+                     name="feishu-ws-sync", daemon=True).start()
+
+
+def _run_bitable_sync(table_id: Optional[str]) -> None:
+    """后台: 找到该多维表对应的启用绑定, 逐个同步(尽力而为, 单个失败不连累其余)。"""
+    from sqlalchemy import select
+    from app.models.feishu_sync import FeishuTableBinding
+    from app.services import feishu_sync_service
+
+    db = _new_session()
+    try:
+        q = select(FeishuTableBinding).where(FeishuTableBinding.enabled.is_(True))
+        if table_id:
+            q = q.where(FeishuTableBinding.feishu_table_id == table_id)
+        for b in db.execute(q).scalars().all():
+            try:
+                feishu_sync_service.sync_binding(db, b)
+                db.commit()
+                _log.info("长连接触发同步 %s", getattr(b, "system_table", "?"))
+            except Exception as e:  # pragma: no cover
+                db.rollback()
+                _log.error("长连接同步 %s 失败: %s", getattr(b, "system_table", "?"), e)
+    finally:
+        db.close()
+
+
 def _patch(card_msg_id: Optional[str], card: dict) -> None:
     if not card_msg_id:
         return
@@ -158,6 +194,7 @@ def start() -> bool:
             lark.EventDispatcherHandler.builder("", "")
             .register_p2_im_message_receive_v1(_on_message)
             .register_p2_card_action_trigger(_on_card)
+            .register_p2_drive_file_bitable_record_changed_v1(_on_bitable_change)
             .build()
         )
         client = lark.ws.Client(

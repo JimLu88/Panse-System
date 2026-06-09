@@ -57,3 +57,20 @@ def test_do_pick_imports_and_patches(db_session, monkeypatch):
 def test_do_pick_expired(db_session, monkeypatch):
     monkeypatch.setattr(feishu_client, "patch_card", lambda *a, **k: None)
     assert B._do_pick(db_session, "nope", "order_table", "card9")["error"] == "expired"
+
+
+def test_on_bitable_change_triggers_sync(monkeypatch):
+    """多维表记录变更事件 → 取出 table_id, 后台触发该表同步(长连接接管表格同步, 不再依赖 webhook)。"""
+    called = {}
+    monkeypatch.setattr(W, "_run_bitable_sync", lambda table_id: called.setdefault("table_id", table_id))
+
+    class _FakeThread:   # 同步替身, 直接跑 target, 不起真线程(避免时序)
+        def __init__(self, target=None, args=(), **k):
+            self._t, self._a = target, args
+
+        def start(self):
+            self._t(*self._a)
+
+    monkeypatch.setattr(W.threading, "Thread", _FakeThread)
+    W._on_bitable_change({"event": {"table_id": "tblXYZ", "file_token": "f1"}})
+    assert called["table_id"] == "tblXYZ"
