@@ -19,6 +19,13 @@ export interface PricingSku {
   platform_fee_rate: number | null;
   tax: number | null;
   image_url?: string | null;
+  // 出厂/拆分成本(后端早已返回, 之前前端没暴露)
+  factory_cost?: number | null;        // 工厂成本(总出厂)
+  wood_cost?: number | null;           // 木作成本
+  logistics_cost?: number | null;      // 物流成本
+  install_cost?: number | null;        // 安装成本
+  packaging_cost?: number | null;      // 包装成本
+  external_parts_cost?: number | null; // 外配件成本
 }
 
 export const listPricingSkus = (params: {

@@ -5,6 +5,7 @@ import {
   Checkbox,
   Dropdown,
   Form,
+  Image,
   Input,
   InputNumber,
   Modal,
@@ -198,15 +199,21 @@ export default function PricingPage() {
   const FIELD_OPTS = [
     { value: 'product_code', label: '产品编码' }, { value: 'sku_code', label: 'SKU编码' },
     { value: 'sku', label: '描述' }, { value: 'size_category', label: '分类' },
+    { value: 'image_url', label: '图片' },
     { value: 'list_price', label: '标价' }, { value: 'daily_price', label: '日常价' },
     { value: 'small_promo', label: '小促' }, { value: 'mid_promo', label: '中促' },
-    { value: 'big_promo', label: '大促' }, { value: 'gross_margin_rate', label: '毛利率' },
+    { value: 'big_promo', label: '大促' }, { value: 'big_promo_margin', label: '大促利润' },
+    { value: 'gross_margin_rate', label: '毛利率' },
     { value: 'accounting_cost', label: '会计成本' }, { value: 'physical_cost', label: '物理成本' },
+    { value: 'factory_cost', label: '工厂成本' }, { value: 'wood_cost', label: '木作成本' },
+    { value: 'logistics_cost', label: '物流成本' }, { value: 'install_cost', label: '安装成本' },
+    { value: 'packaging_cost', label: '包装成本' }, { value: 'external_parts_cost', label: '外配件成本' },
+    { value: 'platform_fee_rate', label: '平台费率' }, { value: 'tax', label: '税费' },
   ];
   const VIEW_PRESETS: Record<string, string[]> = {
-    cost: ['product_code', 'sku_code', 'sku', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'],
-    taobao: ['product_code', 'sku_code', 'sku', 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'gross_margin_rate'],
-    xhs: ['product_code', 'sku_code', 'sku', 'list_price', 'daily_price', 'gross_margin_rate'],
+    cost: ['product_code', 'sku_code', 'sku', 'image_url', 'factory_cost', 'wood_cost', 'logistics_cost', 'install_cost', 'packaging_cost', 'external_parts_cost', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'],
+    taobao: ['product_code', 'sku_code', 'sku', 'image_url', 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'big_promo_margin', 'gross_margin_rate'],
+    xhs: ['product_code', 'sku_code', 'sku', 'image_url', 'list_price', 'daily_price', 'gross_margin_rate'],
   };
   const [fieldView, setFieldView] = useState<string>('all');
   const [customFields, setCustomFields] = useState<string[]>(() => {
@@ -299,9 +306,11 @@ export default function PricingPage() {
 
   // ── 列宽可拖 ──
   const [colW, setColW] = useState<Record<string, number>>({
-    product_code: 110, sku_code: 120, sku: 160, size_category: 70,
+    product_code: 110, sku_code: 120, sku: 160, size_category: 70, image_url: 60,
     list_price: 90, daily_price: 90, small_promo: 90, mid_promo: 90, big_promo: 100,
-    gross_margin_rate: 90, accounting_cost: 100, physical_cost: 100, actions: 70,
+    big_promo_margin: 90, gross_margin_rate: 90, accounting_cost: 100, physical_cost: 100,
+    factory_cost: 90, wood_cost: 90, logistics_cost: 90, install_cost: 90,
+    packaging_cost: 90, external_parts_cost: 100, platform_fee_rate: 90, tax: 80, actions: 70,
   });
   const mkResize = (key: string) => () => ({
     width: colW[key], onResize: (w: number) => setColW((p) => ({ ...p, [key]: w })),
@@ -530,6 +539,7 @@ export default function PricingPage() {
           { title: 'SKU 编码', dataIndex: 'sku_code', width: colW.sku_code, onHeaderCell: mkResize('sku_code') },
           { title: '描述', dataIndex: 'sku', width: colW.sku, ellipsis: true, onHeaderCell: mkResize('sku') },
           { title: '分类', dataIndex: 'size_category', width: colW.size_category, onHeaderCell: mkResize('size_category') },
+          { title: '图片', dataIndex: 'image_url', width: colW.image_url, onHeaderCell: mkResize('image_url'), render: (v: string | null) => v ? <Image src={v} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} /> : <span style={{ color: '#ddd', fontSize: 11 }}>无</span> },
           { title: <Tooltip title="公式：物理成本 ÷ 0.4 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>标价</span></Tooltip>, dataIndex: 'list_price', width: colW.list_price, onHeaderCell: mkResize('list_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ 0.4" onSave={(nv) => saveField(r.id, 'list_price', nv)} /> },
           { title: <Tooltip title="公式：标价 × 0.75 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>日常价</span></Tooltip>, dataIndex: 'daily_price', width: colW.daily_price, onHeaderCell: mkResize('daily_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="标价 × 0.75" onSave={(nv) => saveField(r.id, 'daily_price', nv)} /> },
           { title: <Tooltip title="公式：物理成本 ÷ (0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>小促</span></Tooltip>, dataIndex: 'small_promo', width: colW.small_promo, onHeaderCell: mkResize('small_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.855 − 0.02 − 0.006)" onSave={(nv) => saveField(r.id, 'small_promo', nv)} /> },
@@ -544,6 +554,15 @@ export default function PricingPage() {
           },
           { title: <Tooltip title="公式：总出厂成本 + 物流费 + 安装费 + 外采配件成本 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>会计成本</span></Tooltip>, dataIndex: 'accounting_cost', width: colW.accounting_cost, onHeaderCell: mkResize('accounting_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="总出厂成本 + 物流费 + 安装费 + 外采配件成本" onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
           { title: <Tooltip title="所有实物成本合计，是各档价格的计算基数 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>物理成本</span></Tooltip>, dataIndex: 'physical_cost', width: colW.physical_cost, onHeaderCell: mkResize('physical_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="各项实物成本合计（出厂+木材+包装+外采配件…）" onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
+          { title: <Tooltip title="公式：大促价 × (1 − 平台费率) − 会计成本 − 税费 ｜ 自动算"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促利润</span></Tooltip>, dataIndex: 'big_promo_margin', width: colW.big_promo_margin, onHeaderCell: mkResize('big_promo_margin'), render: (v: number | null) => v == null ? '-' : `¥${v}` },
+          { title: '工厂成本', dataIndex: 'factory_cost', width: colW.factory_cost, onHeaderCell: mkResize('factory_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'factory_cost', nv)} /> },
+          { title: '木作成本', dataIndex: 'wood_cost', width: colW.wood_cost, onHeaderCell: mkResize('wood_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'wood_cost', nv)} /> },
+          { title: '物流成本', dataIndex: 'logistics_cost', width: colW.logistics_cost, onHeaderCell: mkResize('logistics_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'logistics_cost', nv)} /> },
+          { title: '安装成本', dataIndex: 'install_cost', width: colW.install_cost, onHeaderCell: mkResize('install_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'install_cost', nv)} /> },
+          { title: '包装成本', dataIndex: 'packaging_cost', width: colW.packaging_cost, onHeaderCell: mkResize('packaging_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'packaging_cost', nv)} /> },
+          { title: '外配件成本', dataIndex: 'external_parts_cost', width: colW.external_parts_cost, onHeaderCell: mkResize('external_parts_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'external_parts_cost', nv)} /> },
+          { title: '平台费率', dataIndex: 'platform_fee_rate', width: colW.platform_fee_rate, onHeaderCell: mkResize('platform_fee_rate'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'platform_fee_rate', nv)} /> },
+          { title: '税费', dataIndex: 'tax', width: colW.tax, onHeaderCell: mkResize('tax'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'tax', nv)} /> },
           {
             title: '操作', width: colW.actions, fixed: 'right' as const,
             render: (_: unknown, row: PricingSku) => (
