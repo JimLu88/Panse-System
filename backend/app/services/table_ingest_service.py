@@ -48,7 +48,7 @@ def _imp_alipay(db: Session, content: bytes, filename: Optional[str]) -> dict:
     from app.services import alipay_import
     account = _alipay_account(filename)
     text = tabular.to_csv_text(content, filename)
-    rep = alipay_import.import_alipay_csv(db, text, account=account)
+    rep = alipay_import.import_alipay_csv(db, text, account=account, commit=False)
     if rep.errors:
         return {"ok": False, "summary": f"导入失败: {'; '.join(map(str, rep.errors[:2]))}"}
     return {"ok": True, "summary": (
@@ -139,7 +139,7 @@ TABLE_TYPES: dict[str, dict] = {
     },
     "logistics": {
         "label": "物流账单", "archive": "logistics",
-        "keywords": ["物流", "运费", "快递", "承运"],
+        "keywords": ["物流", "运费", "承运"],   # 不用"快递"(代付台账有"快递代付"会冲突), 靠这些或表头
         "fingerprint": ["承运商", "运单号", "运费", "重量(kg)", "重量"],
         "importer": _bill_importer("import_logistics_csv", "物流账单"),
     },

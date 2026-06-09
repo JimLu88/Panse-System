@@ -85,7 +85,7 @@ def date_from_flow_no(no: Any) -> Optional[datetime]:
     return d if 2018 <= d.year <= 2035 else None
 
 
-def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImportReport:
+def import_alipay_csv(db: Session, csv_text: str, *, account: str, commit: bool = True) -> AlipayImportReport:
     report = AlipayImportReport()
     reader = csv.DictReader(StringIO(csv_text))
     field_map: dict[str, str] = {}
@@ -107,7 +107,7 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str) -> AlipayImpo
         for raw, fld in field_map.items():
             payload[fld] = row.get(raw)
         rows.append(payload)
-    return import_alipay_rows(db, rows, account=account, report=report)
+    return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
 
 
 def import_alipay_rows(

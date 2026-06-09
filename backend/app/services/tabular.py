@@ -41,6 +41,11 @@ def _fmt(cell) -> str:
         return cell.strftime("%Y-%m-%d %H:%M:%S")
     if isinstance(cell, date):
         return cell.strftime("%Y-%m-%d")
+    if isinstance(cell, float):
+        # 整数值的 float(如被 Excel 数字化的 订单号/流水号/金额)→ 不要写成科学计数 "1.2e+27",
+        # 否则会污染 流水号/订单号 去重键。(注: >15 位的长号 openpyxl 已丢精度, 这是 Excel 固有问题,
+        # 长号列建议保持文本格式或用 CSV; 此处至少避免科学计数串。)
+        return str(int(cell)) if cell.is_integer() else repr(cell)
     return str(cell)
 
 

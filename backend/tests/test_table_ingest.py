@@ -32,6 +32,32 @@ def test_tabular_xlsx_to_csv_with_dates():
     assert tabular.read_header(content, "x.xlsx") == ["日期", "运费"]
 
 
+def test_xlsx_large_integer_id_not_scientific():
+    # 被 Excel 数字化的长订单号: 不能写成科学计数, 否则污染去重键
+    content = _xlsx(["订单号", "金额"], [123456789012, 100.0])
+    txt = tabular.to_csv_text(content, "x.xlsx")
+    assert "123456789012" in txt
+    assert "e+" not in txt.lower() and "E+" not in txt
+    assert "100" in txt and "100.0" not in txt   # 整数金额不带 .0
+
+
+def test_classify_kuaidi_daifu_goes_prepay():
+    # "快递代付台账" 不再被 logistics 的"快递"抢走 → 走代付台账
+    assert tis.classify_table("快递代付台账.xlsx", b"") == "prepay"
+    assert tis.classify_table("物流月结账单.xlsx", b"") == "logistics"
+
+
+def test_alipay_import_commit_false_is_atomic(db_session):
+    from app.models.finance import AlipayFlow
+    from app.services import alipay_import
+    db = db_session
+    csv_text = "交易流水号,收支金额,交易类型\nT100,-50,采购\n"
+    rep = alipay_import.import_alipay_csv(db, csv_text, account="企业号", commit=False)
+    assert rep.inserted == 1
+    db.rollback()   # commit=False → 调用方可回滚, 不会留下半条
+    assert db.query(AlipayFlow).filter_by(transaction_no="T100").count() == 0
+
+
 def test_legacy_xls_rejected():
     # OLE 头伪装成 .xls
     try:
