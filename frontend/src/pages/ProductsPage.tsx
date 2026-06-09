@@ -7,6 +7,7 @@ import {
   Image,
   Input,
   Modal,
+  Popconfirm,
   Segmented,
   Select,
   Space,
@@ -16,11 +17,11 @@ import {
   Typography,
   message,
 } from 'antd';
-import { EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
-import { PricingSku, Product, createProduct, listProducts, listProductSkus, updateProduct } from '../api/client';
+import { PricingSku, Product, createProduct, deleteProduct, listProducts, listProductSkus, updateProduct } from '../api/client';
 
 function SkuExpandedRow({ productCode }: { productCode: string }) {
   const { data, isLoading } = useQuery({
@@ -204,7 +205,7 @@ export default function ProductsPage() {
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   // 各列宽度 (可拖拽改); 表头拖右边缘即可
   const [colW, setColW] = useState<Record<string, number>>({
-    code: 150, name: 240, brand: 90, category: 140, remark: 170, image: 110, actions: 150,
+    code: 150, name: 240, brand: 90, category: 140, remark: 170, image: 110, actions: 220,
   });
   const handleResize = (key: string) => (w: number) =>
     setColW((prev) => ({ ...prev, [key]: w }));
@@ -245,6 +246,26 @@ export default function ProductsPage() {
       qc.invalidateQueries({ queryKey: ['products'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: ({ id, force }: { id: number; force?: boolean }) => deleteProduct(id, force),
+    onSuccess: (r) => {
+      message.success(`已删除 ${r.deleted_product}（BOM ${r.deleted_bom_lines} 行 / 定价 ${r.deleted_pricing_skus} 条）`);
+      qc.invalidateQueries({ queryKey: ['products'] });
+    },
+    onError: (e: any, vars) => {
+      if (e?.response?.status === 409) {   // 被订单引用 → 让用户二次确认强删
+        Modal.confirm({
+          title: '该产品被订单引用',
+          content: e?.response?.data?.detail ?? '删除会影响这些订单，仍要删吗？',
+          okText: '仍然删除', okButtonProps: { danger: true }, cancelText: '取消',
+          onOk: () => deleteMut.mutate({ id: vars.id, force: true }),
+        });
+      } else {
+        message.error(e?.response?.data?.detail ?? '删除失败');
+      }
+    },
   });
 
   const mkResize = (key: string) => () => ({ width: colW[key], onResize: handleResize(key) });
@@ -331,6 +352,14 @@ export default function ProductsPage() {
           >
             编辑
           </Button>
+          <Popconfirm
+            title={`删除产品 ${row.code}？`}
+            description="会一并删它的 BOM 行和定价 SKU（被订单引用会再次确认）。"
+            okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+            onConfirm={() => deleteMut.mutate({ id: row.id })}
+          >
+            <Button size="small" danger icon={<DeleteOutlined />} loading={deleteMut.isPending}>删除</Button>
+          </Popconfirm>
         </Space>
       ),
     },

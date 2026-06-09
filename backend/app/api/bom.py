@@ -1,6 +1,6 @@
 from collections import OrderedDict
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -10,6 +10,16 @@ from app.models.material import Material
 from app.schemas.bom import BomLineGroup, BomLineOut
 
 router = APIRouter(prefix="/api/bom", tags=["bom"])
+
+
+@router.delete("/lines/{line_id}", status_code=204)
+def delete_bom_line(line_id: int, db: Session = Depends(get_db)):
+    """删除单条 BOM 行 (清理串料 / 错挂到别的 SKU 的料)。BOM 行无订单直接外键, 删除安全。"""
+    line = db.get(BomLine, line_id)
+    if not line:
+        raise HTTPException(404, "bom line not found")
+    db.delete(line)
+    db.commit()
 
 
 @router.get("/{product_code}", response_model=list[BomLineGroup])

@@ -256,6 +256,16 @@ export const updateProduct = (id: number, payload: {
   description?: string | null;
 }) => api.patch<Product>(`/api/products/${id}`, payload).then((r) => r.data);
 
+export interface DeleteProductResult {
+  deleted_product: string;
+  deleted_bom_lines: number;
+  deleted_pricing_skus: number;
+  orders_referencing: number;
+}
+// force=true 才会删被订单引用的产品(后端默认拦截, 返回 409)。级联删它的 BOM 行 + 定价 SKU。
+export const deleteProduct = (id: number, force = false) =>
+  api.delete<DeleteProductResult>(`/api/products/${id}`, { params: { force } }).then((r) => r.data);
+
 // ----- Product Inventory (4a) -----
 export interface ProductInventoryRow {
   id: number | null;            // 无库存产品(虚拟行)无 id
@@ -328,6 +338,10 @@ export interface BomLineGroup {
 
 export const listBomForProduct = (productCode: string) =>
   api.get<BomLineGroup[]>(`/api/bom/${productCode}`).then((r) => r.data);
+
+// 删单条 BOM 行 (清理串料 / 错挂到别的 SKU 的料)
+export const deleteBomLine = (lineId: number) =>
+  api.delete(`/api/bom/lines/${lineId}`).then((r) => r.data);
 
 // ----- Match -----
 export interface MatchCandidate {

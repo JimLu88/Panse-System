@@ -2,7 +2,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -98,6 +98,38 @@ def update_product(product_id: int, payload: ProductUpdate, db: Session = Depend
     db.commit()
     db.refresh(prod)
     return prod
+
+
+@router.delete("/{product_id}")
+def delete_product(product_id: int, force: bool = Query(False), db: Session = Depends(get_db)):
+    """删产品 + 级联删它的 BOM 行 / 定价 SKU。
+
+    防误删: 被订单引用时拦截(409), 确认后加 ?force=true 才删。用于清理重复/错误产品
+    (例如一个 SKU 编码错挂了两个产品里的多余那个)。
+    """
+    from app.models.bom import BomLine
+    from app.models.order import Order
+    from app.models.pricing import PricingSku
+
+    prod = db.get(Product, product_id)
+    if not prod:
+        raise HTTPException(404, "product not found")
+    n_orders = db.execute(
+        select(func.count()).select_from(Order).where(Order.product_code == prod.code)
+    ).scalar() or 0
+    if n_orders and not force:
+        raise HTTPException(
+            409,
+            f"该产品被 {n_orders} 个订单引用, 删除会影响这些订单的成本/配件核算。"
+            f"确认要删请加 force=true。",
+        )
+    n_bom = db.query(BomLine).filter(BomLine.product_code == prod.code).delete(synchronize_session=False)
+    n_sku = db.query(PricingSku).filter(PricingSku.product_code == prod.code).delete(synchronize_session=False)
+    code = prod.code
+    db.delete(prod)
+    db.commit()
+    return {"deleted_product": code, "deleted_bom_lines": n_bom,
+            "deleted_pricing_skus": n_sku, "orders_referencing": n_orders}
 
 
 @router.put("/{product_id}/taobao-ids", response_model=ProductOut)
