@@ -326,3 +326,69 @@ def test_post_single_image_not_batch(db_session, monkeypatch):
     out = fb.on_message_event(db, _post_event("p4", ["only"]))
     assert out.get("kind") == "order_table" and "batch" not in out   # 单图富文本 → 单图流程
     assert fb._load_pending(db)["p4"].get("is_batch") is None
+
+
+# ---- 一张一张连发 → 3 分钟内同一会话同一人自动并成一批(只问一次) ----
+def _image_event(message_id: str, image_key: str, *, chat: str = "oc_1", sender: str = "ou_a") -> dict:
+    return {"sender": {"sender_id": {"open_id": sender}},
+            "message": {"message_type": "image", "message_id": message_id, "chat_id": chat,
+                        "content": json.dumps({"image_key": image_key})}}
+
+
+def test_burst_two_images_grouped_into_one_card(db_session, monkeypatch):
+    db = db_session
+    cards, patches = [], []
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda *a, **k: ("order_image", 0.95))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
+    monkeypatch.setattr(feishu_client, "reply_card",
+                        lambda db, mid, card: (cards.append(mid), {"message_id": f"card_{mid}"})[1])
+    monkeypatch.setattr(feishu_client, "patch_card", lambda db, cid, card: patches.append((cid, card)))
+    fb.on_message_event(db, _image_event("m1", "k1"))            # 第一张: 弹一张卡
+    assert len(cards) == 1 and len(patches) == 0
+    out2 = fb.on_message_event(db, _image_event("m2", "k2"))     # 第二张(窗口内同会话同人): 并入, 刷新原卡
+    assert out2["grouped_into"] == "m1" and out2["n"] == 2
+    assert len(cards) == 1 and len(patches) == 1                 # 没有新卡, 只 patch 了原卡
+    pend = fb._load_pending(db)["m1"]
+    assert pend["is_batch"] is True
+    assert [im["file_key"] for im in pend["images"]] == ["k1", "k2"]
+
+
+def test_burst_different_sender_not_grouped(db_session, monkeypatch):
+    db = db_session
+    cards = []
+    monkeypatch.setattr(feishu_client, "download_message_resource", lambda *a, **k: b"IMG")
+    monkeypatch.setattr(fb, "classify_image", lambda *a, **k: ("order_image", 0.95))
+    monkeypatch.setattr(fb, "_archive_image", lambda *a, **k: "p")
+    monkeypatch.setattr(feishu_client, "reply_card",
+                        lambda db, mid, card: (cards.append(mid), {"message_id": f"c_{mid}"})[1])
+    monkeypatch.setattr(feishu_client, "patch_card", lambda *a, **k: None)
+    fb.on_message_event(db, _image_event("m1", "k1", sender="ou_a"))
+    out2 = fb.on_message_event(db, _image_event("m2", "k2", sender="ou_b"))   # 不同人 → 各自独立
+    assert "grouped_into" not in out2 and len(cards) == 2
+    assert fb._load_pending(db)["m2"].get("is_batch") is None
+
+
+def test_find_open_batch_respects_3min_window(db_session):
+    from datetime import datetime, timezone, timedelta
+    db = db_session
+    old = (datetime.now(timezone.utc) - timedelta(seconds=fb._BATCH_WINDOW_SEC + 10)).isoformat()
+    fb._save_pending(db, {"m1": {"batch_key": "oc:ou", "is_batch": True, "images": [{}], "at": old}})
+    assert fb._find_open_batch(db, "oc:ou") is None              # 超 3 分钟 → 不并批(让用户重新 @)
+    fresh = datetime.now(timezone.utc).isoformat()
+    fb._save_pending(db, {"m2": {"batch_key": "oc:ou", "is_batch": True, "images": [{}], "at": fresh}})
+    assert fb._find_open_batch(db, "oc:ou") == "m2"              # 窗口内 → 并入
+
+
+def test_pick_drops_pending_so_straggler_starts_new_batch(db_session, monkeypatch):
+    db = db_session
+    fb._stage(db, "m1", {"is_batch": True, "batch_key": "oc:ou", "kind": "order_image", "conf": 0.9,
+                         "card_msg_id": None, "images": [
+                             {"file_key": "k1", "kind": "order_image", "conf": 0.9, "archived_path": None}]})
+    monkeypatch.setattr(fb, "_load_image", lambda db, mid, im: b"IMG")
+    monkeypatch.setattr(fb.vision_ocr_service, "parse_qianniu_order",
+                        lambda db, img, **k: {"orders": [{"order_no": "D-1", "customer_address": "上海"}]})
+    monkeypatch.setattr(feishu_client, "reply_card", lambda *a, **k: None)
+    fb.on_card_action(db, {"action": {"value": {"op": "pick", "message_id": "m1", "kind": "order_image"}}})
+    assert "m1" not in fb._load_pending(db)                      # 入库后丢弃
+    assert fb._find_open_batch(db, "oc:ou") is None              # 后到的图不会再并进已处理的批

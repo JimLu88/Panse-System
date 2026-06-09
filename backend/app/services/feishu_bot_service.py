@@ -31,6 +31,8 @@ _log = logging.getLogger("panse.feishu_bot")
 
 _PENDING_KEY = "feishu_bot_pending"   # 待处理图片暂存 (message_id -> {...})
 _CONFIDENT = 0.75                     # 置信度阈值: 高于此直接确认, 否则让用户选
+# 同一会话同一人, 3 分钟内连发的图自动并成"一批"(只问一次类型); 超时/想另起 → 重新 @我
+_BATCH_WINDOW_SEC = 180
 # 采购单各式各样、易和送货单/其它单据混, 用更高门槛(否则一律让用户点选核对)
 _CONFIDENT_BY_KIND = {"purchase": 0.88}
 
@@ -184,6 +186,9 @@ _HELP_CONTENT = (
     "淘宝/千牛订单 · 支付宝流水 · 采购单/进货单 · 工厂对账 · 供应商送货单\n\n"
     "**📄 发表格（Excel / CSV）**\n"
     "订单 · 工厂对账 · 万师傅 · 物流 · 推广 · 微信账单 · 代付台账 · 补单 · 账户余额 · 支付宝\n\n"
+    "**🗂️ 多张图一次发**\n"
+    "同一类型的图**连着发**就行：**3 分钟内**你发来的图我算作**一批**，只问你**一次**类型、一次性全入库；"
+    "**不同类型请分批发**。隔太久或想另起一批，**重新 @我** 即可。\n\n"
     "发来后我会弹卡片让你**确认**；认不准会让你**点选类型**。所有原文件都会按类型归档，"
     "在系统「数据工具 → 导入档案」可随时回看下载。\n\n"
     "> 群里记得 **@我** 再带上图片/文件；私聊我的话直接发就行。"
@@ -577,10 +582,86 @@ def _post_image_keys(content_meta: dict) -> list[str]:
     return keys
 
 
-def _process_image(db: Session, message_id: str, image_key: str) -> dict:
-    """下载图 → 分类 → 兜底归档 → 暂存 → 回确认/选类型卡。
+# ── 多图归批: 同一会话同一人 3 分钟内连发的图算一批, 只问一次类型 ──
+def _batch_key(event: dict, msg: dict) -> Optional[str]:
+    """归批键 = 会话 + 发送人。同一群/单聊里同一个人连发的图才会归到一批。取不到则不归批。"""
+    chat = msg.get("chat_id") or ""
+    sid = (event.get("sender") or {}).get("sender_id") or {}
+    sender = sid.get("open_id") or sid.get("user_id") or sid.get("union_id") or ""
+    return f"{chat}:{sender}" if (chat or sender) else None
 
-    单聊直接发图(image 消息) 与 群里 @机器人 带图(post 消息内嵌) 共用此路径。
+
+def _decide_batch_kind(images: list[dict]) -> tuple[str, float]:
+    """整批判一个类型: 每张都可信且都同一类 → 该类型; 否则 unknown(让用户点选)。返回(kind, 最低置信度)。"""
+    confident_same = (
+        len(images) > 0
+        and all(it["kind"] in IMAGE_TYPES and it["conf"] >= _threshold(it["kind"]) for it in images)
+        and len({it["kind"] for it in images}) == 1
+    )
+    kind = images[0]["kind"] if confident_same else "unknown"
+    return kind, min((it["conf"] for it in images), default=0.0)
+
+
+def _build_batch_card(db: Session, anchor_id: str, images: list[dict],
+                      batch_kind: str, min_conf: float) -> dict:
+    """按整批类型选卡片: 送货单→选供应商; 同一可信类型→确认卡; 否则→选类型卡。n=1 退化为单图措辞。"""
+    n = len(images)
+    if batch_kind == "supplier_note":
+        return _supplier_picker_card(anchor_id, _recent_suppliers(db), n=n)
+    if batch_kind != "unknown":
+        return _confirm_card(anchor_id, batch_kind, min_conf, n=n)
+    hint = _batch_hint(n) if n > 1 else "我不太确定这张图的类型，请点选："
+    return _picker_card(anchor_id, hint=hint)
+
+
+def _find_open_batch(db: Session, batch_key: Optional[str]) -> Optional[str]:
+    """找同一会话同一人、3 分钟内、尚未入库的开放批次锚点 message_id(取最近一条); 没有则 None。"""
+    if not batch_key:
+        return None
+    data = _load_pending(db)
+    now = datetime.now(timezone.utc)
+    best: Optional[str] = None
+    for mid, rec in data.items():
+        if rec.get("batch_key") != batch_key or rec.get("decided") or rec.get("is_file"):
+            continue
+        try:
+            age = (now - datetime.fromisoformat(rec["at"])).total_seconds()
+        except Exception:
+            continue
+        if age > _BATCH_WINDOW_SEC:
+            continue
+        if best is None or rec["at"] > data[best]["at"]:
+            best = mid
+    return best
+
+
+def _append_to_batch(db: Session, anchor_id: str, item: dict) -> Optional[dict]:
+    """把新图并入开放批次(必要时把单图锚点升级为批次), 刷新原卡片张数/类型。锚点已不在 → None。"""
+    data = _load_pending(db)
+    rec = data.get(anchor_id)
+    if not rec:
+        return None
+    if not rec.get("is_batch"):   # 单图锚点 → 升级为批次(把它自己作为第一张)
+        rec["images"] = [{"file_key": rec.get("file_key"), "kind": rec.get("kind"),
+                          "conf": rec.get("conf", 0.0), "archived_path": rec.get("archived_path")}]
+        rec["is_batch"] = True
+    rec["images"].append(item)
+    rec["at"] = datetime.now(timezone.utc).isoformat()
+    batch_kind, min_conf = _decide_batch_kind(rec["images"])
+    rec["kind"] = batch_kind
+    data[anchor_id] = rec
+    _save_pending(db, data)
+    _patch_card_safe(db, rec.get("card_msg_id"),
+                     _build_batch_card(db, anchor_id, rec["images"], batch_kind, min_conf))
+    return {"message_id": anchor_id, "grouped_into": anchor_id,
+            "n": len(rec["images"]), "kind": batch_kind}
+
+
+def _process_image(db: Session, message_id: str, image_key: str, *,
+                   batch_key: Optional[str] = None) -> dict:
+    """下载图 → 分类 → 兜底归档 → (并入 3 分钟内同会话批次 / 否则新建) → 回卡。
+
+    单聊直接发图(image) 与 群里 @机器人 带图(post 内嵌) 共用此路径。
     """
     kind, conf = "unknown", 0.0
     archived_path: Optional[str] = None
@@ -592,26 +673,31 @@ def _process_image(db: Session, message_id: str, image_key: str) -> dict:
     except Exception as e:  # 下载/分类失败 → 仍让用户选类型, 不崩
         _log.warning("飞书机器人取图/分类失败: %s", e)
 
+    item = {"file_key": image_key, "kind": kind, "conf": conf, "archived_path": archived_path}
+    # 3 分钟内同一会话同一人已有开放批次 → 并进去(不再单独弹卡), 只刷新原卡片
+    if batch_key:
+        anchor = _find_open_batch(db, batch_key)
+        if anchor:
+            r = _append_to_batch(db, anchor, item)
+            if r is not None:
+                return r
+    # 新建: 先按单图存(顶层留 file_key 兼容); 若 3 分钟内再来图会自动并成批
+    batch_kind, min_conf = _decide_batch_kind([item])
+    card = _build_batch_card(db, message_id, [item], batch_kind, min_conf)
+    card_msg_id = _safe_reply(db, message_id, card)
     _stage(db, message_id, {"file_key": image_key, "kind": kind, "conf": conf,
-                            "archived_path": archived_path})
-    if kind in IMAGE_TYPES and conf >= _threshold(kind):
-        # 送货单即使识别确定, 也要追问"哪家供应商"才能正确归属入库
-        if kind == "supplier_note":
-            card = _supplier_picker_card(message_id, _recent_suppliers(db))
-        else:
-            card = _confirm_card(message_id, kind, conf)
-    else:
-        card = _picker_card(message_id)
-    _safe_reply(db, message_id, card)
+                            "archived_path": archived_path, "batch_key": batch_key,
+                            "card_msg_id": card_msg_id})
     return {"message_id": message_id, "kind": kind, "confidence": conf, "card_sent": True}
 
 
-def _process_batch(db: Session, message_id: str, image_keys: list[str]) -> dict:
-    """一条富文本里的多张图: 逐张下载+分类+兜底归档, 判定整批是否同一可信类型, 出一张卡。
+def _process_batch(db: Session, message_id: str, image_keys: list[str], *,
+                   batch_key: Optional[str] = None) -> dict:
+    """一条富文本里的多张图: 逐张下载+分类+兜底归档, 判一个整批类型, 出一张卡。
 
-    - 全部都同一可信类型 → 一张"确认全部入库"卡 (送货单则先选供应商, 应用到整批)。
-    - 认不准/类型不一 → 一张选类型卡(说明同类型一次发/不同类型分批发), 用户点一次整批入库。
-    确认/点选后由 _dispatch_batch 逐张入库 —— 一条消息里的图都不丢。
+    - 全部同一可信类型 → "确认全部入库"卡(送货单则先选供应商, 应用到整批)。
+    - 认不准/类型不一 → 选类型卡(说明同类型一次发/不同类型分批发), 点一次整批入库。
+    点选后由 _dispatch_batch 逐张入库 —— 一条消息里的图都不丢。
     """
     items: list[dict] = []
     for k in image_keys:
@@ -623,24 +709,12 @@ def _process_batch(db: Session, message_id: str, image_keys: list[str]) -> dict:
         except Exception as e:
             _log.warning("批量取图/分类失败: %s", e)
         items.append({"file_key": k, "kind": kind, "conf": conf, "archived_path": ap})
-    n = len(items)
-    # 仅当"每一张都可信、且都是同一类型"才自动确认; 否则一律让用户点选整批类型(宁可多问一次)
-    confident_same = (
-        n > 0
-        and all(it["kind"] in IMAGE_TYPES and it["conf"] >= _threshold(it["kind"]) for it in items)
-        and len({it["kind"] for it in items}) == 1
-    )
-    batch_kind = items[0]["kind"] if confident_same else "unknown"
-    min_conf = min((it["conf"] for it in items), default=0.0)
-    _stage(db, message_id, {"is_batch": True, "images": items, "kind": batch_kind, "conf": min_conf})
-    if batch_kind == "supplier_note":
-        card = _supplier_picker_card(message_id, _recent_suppliers(db), n=n)
-    elif batch_kind != "unknown":
-        card = _confirm_card(message_id, batch_kind, min_conf, n=n)
-    else:
-        card = _picker_card(message_id, hint=_batch_hint(n))
-    _safe_reply(db, message_id, card)
-    return {"message_id": message_id, "batch": n, "kind": batch_kind, "card_sent": True}
+    batch_kind, min_conf = _decide_batch_kind(items)
+    card = _build_batch_card(db, message_id, items, batch_kind, min_conf)
+    card_msg_id = _safe_reply(db, message_id, card)
+    _stage(db, message_id, {"is_batch": True, "batch_key": batch_key, "images": items,
+                            "kind": batch_kind, "conf": min_conf, "card_msg_id": card_msg_id})
+    return {"message_id": message_id, "batch": len(items), "kind": batch_kind, "card_sent": True}
 
 
 # ── 事件入口 (feishu_webhook_service / feishu_ws_service 调用) ──
@@ -661,6 +735,7 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         content = json.loads(msg.get("content") or "{}")
     except Exception:
         content = {}
+    bkey = _batch_key(event, msg)   # 会话+发送人, 用于把 3 分钟内连发的图归一批
 
     if mtype == "file":
         return _on_file_message(db, msg)   # Excel/CSV 表格
@@ -668,14 +743,14 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         file_key = content.get("image_key")
         if not (message_id and file_key):
             return None
-        return _process_image(db, message_id, file_key)
+        return _process_image(db, message_id, file_key, batch_key=bkey)
     if mtype == "post":
         # 群里 @机器人 并带图 → 富文本(post), 图片内嵌。单图走单图流程; 多图整批按同一类型处理(不丢图)。
         keys = _post_image_keys(content)
         if message_id and keys:
             if len(keys) == 1:
-                return _process_image(db, message_id, keys[0])
-            return _process_batch(db, message_id, keys)
+                return _process_image(db, message_id, keys[0], batch_key=bkey)
+            return _process_batch(db, message_id, keys, batch_key=bkey)
         # 富文本里没有图(纯 @+文字) → 回使用指南
         if message_id:
             _safe_reply(db, message_id, _help_card())
@@ -729,6 +804,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             else:
                 img = _load_image(db, orig_id, pending)
                 result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+            _drop_pending(db, orig_id)
             db.commit()
         except AiUnavailable as e:
             _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
@@ -774,6 +850,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             return {"op": "pick", "kind": kind, "await": "supplier"}
         try:
             result = _dispatch_batch(db, orig_id, kind, pending)
+            _drop_pending(db, orig_id)
             db.commit()
         except AiUnavailable as e:
             _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
@@ -794,6 +871,7 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     try:
         img = _load_image(db, orig_id, pending)
         result = _dispatch_import(db, kind, img)
+        _drop_pending(db, orig_id)
         db.commit()
     except AiUnavailable as e:
         _safe_reply(db, orig_id, _result_card("OCR 未配置", f"请先到 管理 → AI 集成 配 vision 模型。\n{e}", "red"))
@@ -809,12 +887,31 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
     return {"op": "pick", "kind": kind, **result}
 
 
-def _safe_reply(db: Session, message_id: str, card: dict) -> None:
-    """发卡片, 失败只记日志不抛 (凭证未配置/网络问题时机器人不该让 webhook 500)。"""
+def _safe_reply(db: Session, message_id: str, card: dict) -> Optional[str]:
+    """发卡片, 返回卡片消息 id(供后续 patch 更新); 失败只记日志不抛, 返回 None。"""
     try:
-        feishu_client.reply_card(db, message_id, card)
+        data = feishu_client.reply_card(db, message_id, card)
+        return (data or {}).get("message_id")
     except Exception as e:  # pragma: no cover
         _log.warning("飞书机器人回卡片失败(凭证未配置?): %s", e)
+        return None
+
+
+def _patch_card_safe(db: Session, card_msg_id: Optional[str], card: dict) -> None:
+    """更新一张已发出的卡片(并批时刷新张数/类型); 失败只记日志。"""
+    if not card_msg_id:
+        return
+    try:
+        feishu_client.patch_card(db, card_msg_id, card)
+    except Exception as e:  # pragma: no cover
+        _log.warning("飞书机器人刷新卡片失败: %s", e)
+
+
+def _drop_pending(db: Session, message_id: str) -> None:
+    """入库后丢弃该暂存项: 避免 3 分钟窗口内后到的图再并进"已处理完"的批次(应另起一批)。"""
+    data = _load_pending(db)
+    if data.pop(message_id, None) is not None:
+        _save_pending(db, data)
 
 
 # ── 长连接(WebSocket)异步处理: 卡片回调要 3 秒内 ack, 入库放后台 + patch 更新卡片 ──
@@ -844,6 +941,7 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
         else:
             content = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_import(db, kind, content)
+        _drop_pending(db, orig_image_msg_id)
         db.commit()
         _patch_result(db, card_message_id,
                       "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
@@ -883,6 +981,7 @@ def _do_pick_supplier(db: Session, orig_image_msg_id: str, supplier_id: int,
         else:
             img = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+        _drop_pending(db, orig_image_msg_id)
         db.commit()
         _patch_result(db, card_message_id,
                       "✅ 处理完成" if result["ok"] else "未入库", result["summary"],
