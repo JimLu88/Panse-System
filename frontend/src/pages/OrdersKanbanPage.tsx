@@ -10,9 +10,16 @@ import { QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors,
-  useDraggable, useDroppable, closestCorners,
-  type DragEndEvent, type DragStartEvent,
+  useDraggable, useDroppable, closestCorners, pointerWithin, MeasuringStrategy,
+  type CollisionDetection, type DragEndEvent, type DragStartEvent,
 } from '@dnd-kit/core';
+
+// 用 DragOverlay 时, 原卡片不动 → 要按"指针所在的列"判落点(pointerWithin); 拖到列间空隙
+// 命中不到时退回 closestCorners, 保证总能落到最近的列。
+const collisionStrategy: CollisionDetection = (args) => {
+  const hits = pointerWithin(args);
+  return hits.length > 0 ? hits : closestCorners(args);
+};
 import { changeOrderStatus, fetchAccessorySummary, listOrders } from '../api/client';
 import type { AccessorySummary, Order } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
@@ -175,7 +182,8 @@ export default function OrdersKanbanPage() {
   return (
     <DndContext
       sensors={sensors}
-      collisionDetection={closestCorners}
+      collisionDetection={collisionStrategy}
+      measuring={{ droppable: { strategy: MeasuringStrategy.Always } }}
       onDragStart={(e: DragStartEvent) => setActiveId(e.active.id as number)}
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveId(null)}
