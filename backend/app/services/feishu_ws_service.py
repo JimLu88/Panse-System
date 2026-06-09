@@ -147,16 +147,21 @@ def start() -> bool:
     if not (app_id and app_secret):
         return False
 
-    import lark_oapi as lark
-    handler = (
-        lark.EventDispatcherHandler.builder("", "")
-        .register_p2_im_message_receive_v1(_on_message)
-        .register_p2_card_action_trigger(_on_card)
-        .build()
-    )
-    client = lark.ws.Client(app_id, app_secret, event_handler=handler, log_level=lark.LogLevel.WARNING)
-
     def _run():
+        # 关键: lark ws 客户端要在本线程内构造 + 用本线程自己的事件循环,
+        # 否则在主线程(uvicorn 运行中的 loop)里构造会捕获那个 loop, start() 时报
+        # "this event loop is already running"。
+        import asyncio
+        import lark_oapi as lark
+        asyncio.set_event_loop(asyncio.new_event_loop())
+        handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(_on_message)
+            .register_p2_card_action_trigger(_on_card)
+            .build()
+        )
+        client = lark.ws.Client(
+            app_id, app_secret, event_handler=handler, log_level=lark.LogLevel.WARNING)
         try:
             client.start()  # 阻塞: 维持长连接
         except Exception as e:  # pragma: no cover
