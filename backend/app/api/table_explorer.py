@@ -162,6 +162,14 @@ _COMMON_LABELS: dict[str, str] = {
     "carrier": "承运商", "tracking_no": "物流单号", "is_active": "是否启用",
     "sync_key": "同步键", "import_job_id": "导入批次", "service_type": "服务类型",
     "freight_amount": "运费", "weight_kg": "重量(kg)",
+    # 产品总表常见英文列 → 中文(全部列视图用)
+    "alt_taobao_ids": "备用淘宝ID", "taobao_id": "淘宝ID", "taobao_sku_id": "淘宝SKU-ID",
+    "sub_name": "副名称", "brand": "品牌", "category": "类目", "priority": "重要程度",
+    "image_url": "图片链接", "sku": "SKU", "sku_code": "SKU编码",
+    "custom_scope": "定制范围", "size_detail": "尺寸明细", "aux_material": "辅材介绍",
+    "description": "产品文案", "main_material": "主材介绍", "listing_status": "上架状态",
+    "accessory_desc": "外配件说明", "accessory_remark": "配件备注",
+    "size_value": "尺寸值(mm)", "size_confirmed": "尺寸是否确定",
 }
 
 

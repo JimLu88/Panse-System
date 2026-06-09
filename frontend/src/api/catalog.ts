@@ -343,6 +343,10 @@ export const listBomForProduct = (productCode: string) =>
 export const deleteBomLine = (lineId: number) =>
   api.delete(`/api/bom/lines/${lineId}`).then((r) => r.data);
 
+// BOM 清单(扁平): 按产品编码 / 物料编码筛
+export const listBomLines = (params: { product_code?: string; material_code?: string; limit?: number } = {}) =>
+  api.get<BomLineRow[]>('/api/bom', { params: { limit: 500, ...params } }).then((r) => r.data);
+
 // ----- Match -----
 export interface MatchCandidate {
   scope: string;

@@ -17,6 +17,7 @@ const ExceptionsPage = lazy(() => import('./pages/ExceptionsPage'));
 const ProductsPage = lazy(() => import('./pages/ProductsPage'));
 const ProductInventoryPage = lazy(() => import('./pages/ProductInventoryPage'));
 const BomViewerPage = lazy(() => import('./pages/BomViewerPage'));
+const BomListPage = lazy(() => import('./pages/BomListPage'));
 const FeishuSettingsPage = lazy(() => import('./pages/FeishuSettingsPage'));
 const QuotePage = lazy(() => import('./pages/QuotePage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
@@ -145,6 +146,7 @@ export default function App() {
       label: '产品',
       children: [
         { key: 'products', label: <Link to="/products">产品总表</Link> },
+        { key: 'bom-list', label: <Link to="/bom-list">BOM 清单</Link> },
         { key: 'new-product', label: <Link to="/new-product">新产品录入</Link> },
         { key: 'taobao-listings', label: <Link to="/taobao-listings">淘宝对应表</Link> },
       ],
@@ -328,6 +330,7 @@ export default function App() {
             <Route path="/sales-ranking" element={<SalesRankingPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/bom/:productCode" element={<BomViewerPage />} />
+            <Route path="/bom-list" element={<BomListPage />} />
             <Route path="/materials" element={<MaterialsPage />} />
             <Route path="/inventory" element={<PartInventoryPage />} />
             <Route path="/product-inventory" element={<ProductInventoryPage />} />

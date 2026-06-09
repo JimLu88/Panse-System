@@ -223,7 +223,11 @@ def change_status(order_id: int, payload: OrderStatusChange, db: Session = Depen
     if not o:
         raise HTTPException(404, "order not found")
     try:
-        order_service.transition(db, o, payload.status, actor=payload.actor, force=payload.force)
+        order_service.transition(
+            db, o, payload.status, actor=payload.actor,
+            force=payload.force or payload.confirmed,   # 看板拖拽=人工敲定, 允许任意方向(含回拖纠错)
+            quiet=payload.confirmed,                     # 看板拖拽不写"强制迁移"异常, 免刷屏
+        )
     except order_service.InvalidStatusTransition as e:
         raise HTTPException(400, str(e)) from e
     if payload.confirmed:

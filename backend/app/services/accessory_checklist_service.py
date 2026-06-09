@@ -22,6 +22,9 @@ _logger = logging.getLogger("panse.accessory_checklist")
 
 # 工厂自备前缀 (不需要外部采购)
 _FACTORY_PREFIXES = ("MW", "MP")
+# 木作料号(WD-*): 由木作厂自制, 默认已备(不当外购缺料); 占位时显示"木作部分"
+_WOODWORK_PREFIXES = ("WD",)
+_WOODWORK_DEFAULT_STATUS = "已到货"
 # 触发采购预警的提前天数
 _ALERT_WARN_DAYS = 5
 _ALERT_CRITICAL_DAYS = 2
@@ -43,6 +46,9 @@ def _resolve_name(mat_name: Optional[str], line: BomLine) -> Optional[str]:
         return mat_name
     if not _is_placeholder_name(line.material_name):
         return line.material_name
+    # 木作料号(WD-*)还是占位 → 用清晰全名"木作部分", 不显示"占位"
+    if (line.material_code or "").upper().startswith("WD"):
+        return "木作部分"
     return mat_name or line.material_name or line.material_code
 
 
@@ -76,12 +82,18 @@ def _bom_item_fields(order: Order, line: BomLine, mat_name, mat_unit) -> dict:
     """从一条 BOM 行算出配件清单行的字段 (名字/数量/单位/是否工厂提供/状态)。"""
     prefix = line.material_code.split("-", 1)[0].upper()
     factory_provided = prefix in _FACTORY_PREFIXES
+    if factory_provided:
+        status = "工厂提供"
+    elif prefix in _WOODWORK_PREFIXES:
+        status = _WOODWORK_DEFAULT_STATUS   # 木作默认已备, 不当外购缺料(用户可改)
+    else:
+        status = "未采购"
     return {
         "material_name": _resolve_name(mat_name, line),
         "qty_required": Decimal(line.qty_per_product or 1) * Decimal(order.qty or 1),
         "unit": line.unit or mat_unit,
         "is_factory_provided": factory_provided,
-        "status_default": "工厂提供" if factory_provided else "未采购",
+        "status_default": status,
     }
 
 
@@ -170,6 +182,9 @@ def resync_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
             it.qty_required = f["qty_required"]
             it.unit = f["unit"]
             it.is_factory_provided = f["is_factory_provided"]
+            # 木作历史行还停在旧默认"未采购"(没人工动过) → 升级为新默认(已备), 不再当外购缺料
+            if it.status == "未采购" and (code or "").upper().startswith("WD"):
+                it.status = _WOODWORK_DEFAULT_STATUS
         else:                          # BOM 有但清单缺 → 补
             db.add(OrderAccessoryItem(
                 order_id=order_id, order_no=order.order_no, material_code=code,

@@ -57,7 +57,12 @@ function renderCell(value: any, type: string) {
   if ((type === 'datetime' || type === 'date') && typeof value === 'string') {
     return <span>{value.replace('T', ' ').slice(0, type === 'date' ? 10 : 19)}</span>;
   }
-  return <span>{String(value)}</span>;
+  const text = String(value);
+  // 长内容(尺寸明细/定制范围等)列窄会被省略号截断 → 悬停显示全文, 方便看到后面
+  if (text.length > 14) {
+    return <Tooltip title={text} placement="topLeft" overlayStyle={{ maxWidth: 520 }}><span>{text}</span></Tooltip>;
+  }
+  return <span>{text}</span>;
 }
 
 /**

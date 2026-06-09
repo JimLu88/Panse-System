@@ -95,6 +95,34 @@ def test_summary_by_order(db_session, order_with_bom):
     assert entry["pending"] == 1        # AC-0001 未采购 → 还缺
 
 
+def test_woodwork_defaults_done_and_named(db_session):
+    db = db_session
+    db.add(Material(code="WD-0036", name="占位 (WD-0036)", unit="套"))   # 木作料号, 物料库占位
+    db.add(BomLine(product_code="PW", sku_code="SW", material_code="WD-0036", qty_per_product=Decimal("2")))
+    order = Order(platform="淘宝", order_no="OW", product_code="PW", sku_code="SW", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    it = svc.generate_for_order(db, order.id)[0]
+    assert it.material_name == "木作部分"      # 占位 → 木作部分(全名)
+    assert it.status == "已到货"               # 木作默认已备, 不当外购缺料
+    assert it.is_factory_provided is False
+
+
+def test_resync_bumps_untouched_woodwork_to_done(db_session):
+    db = db_session
+    db.add(Material(code="WD-1", name="占位 (WD-1)", unit="套"))
+    db.add(BomLine(product_code="PW", sku_code="SW", material_code="WD-1", qty_per_product=Decimal("1")))
+    order = Order(platform="淘宝", order_no="OW2", product_code="PW", sku_code="SW", qty=1, status="paid")
+    db.add(order)
+    db.commit()
+    # 历史行: 木作还停在旧默认"未采购"
+    db.add(OrderAccessoryItem(order_id=order.id, order_no="OW2", material_code="WD-1",
+                              material_name="占位 (WD-1)", qty_required=Decimal("1"), source="bom", status="未采购"))
+    db.commit()
+    items = svc.resync_for_order(db, order.id)
+    assert items[0].status == "已到货" and items[0].material_name == "木作部分"
+
+
 def test_by_component_aggregates_across_orders(db_session):
     db = db_session
     db.add_all([

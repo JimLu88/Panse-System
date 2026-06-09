@@ -83,6 +83,7 @@ def transition(
     *,
     actor: Optional[str] = None,
     force: bool = False,
+    quiet: bool = False,
     auto_factory: bool = True,
 ) -> Order:
     """把订单从当前状态推进到 target。
@@ -108,19 +109,20 @@ def transition(
                 f"order {order.order_no}: {order.status!r} → {target!r} 不是合法迁移，"
                 f"合法目标: {sorted(allowed)}"
             )
-        exception_service.record(
-            db,
-            source_table="orders",
-            source_pk=order.order_no,
-            exception_type="forced_status_transition",
-            severity="warning",
-            description=(
-                f"订单 {order.order_no} 被强制从 {order.status} → {target}（绕过状态机）"
-                f"{'，操作人: ' + actor if actor else ''}"
-            ),
-            suggestion_action="review_audit_log",
-            context={"from": order.status, "to": target, "actor": actor},
-        )
+        if not quiet:   # quiet=看板人工拖拽纠错(任意方向) → 不写"强制迁移"异常, 免刷屏
+            exception_service.record(
+                db,
+                source_table="orders",
+                source_pk=order.order_no,
+                exception_type="forced_status_transition",
+                severity="warning",
+                description=(
+                    f"订单 {order.order_no} 被强制从 {order.status} → {target}（绕过状态机）"
+                    f"{'，操作人: ' + actor if actor else ''}"
+                ),
+                suggestion_action="review_audit_log",
+                context={"from": order.status, "to": target, "actor": actor},
+            )
 
     prev = order.status
     order.status = target

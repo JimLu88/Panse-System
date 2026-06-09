@@ -48,14 +48,14 @@ function normStatus(raw: string): string {
 
 function AccessoryTag({ acc }: { acc?: AccessorySummary }) {
   if (!acc || acc.total === 0) return <Tag style={{ marginInlineEnd: 0 }}>配件未建</Tag>;
-  if (acc.pending === 0) return <Tag color="green" style={{ marginInlineEnd: 0 }}>齐 {acc.done}/{acc.total}</Tag>;
-  return <Tag color="red" style={{ marginInlineEnd: 0 }}>缺 {acc.pending}/{acc.total}</Tag>;
+  if (acc.pending === 0) return <Tag color="green" style={{ marginInlineEnd: 0 }}>配件齐</Tag>;
+  return <Tag color="red" style={{ marginInlineEnd: 0 }}>缺 {acc.pending} 项</Tag>;
 }
 
 function DraggableCard({
-  o, acc, onTimeline, onAccessory,
+  o, acc, showAccessory, onTimeline, onAccessory,
 }: {
-  o: Order; acc?: AccessorySummary;
+  o: Order; acc?: AccessorySummary; showAccessory: boolean;
   onTimeline: (id: number) => void; onAccessory: (o: Order) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: o.id });
@@ -86,11 +86,13 @@ function DraggableCard({
           {/* 操作区: 阻止 mousedown/touchstart 冒泡, 点按钮不会触发拖拽 */}
           <div onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
             <Space size={4} wrap>
-              <Button size="small" onClick={() => onTimeline(o.id)}>时间线</Button>
-              <Tooltip title="BOM 配件采购清单: 缺哪些/已到货, 点开可补全/改状态">
+              <Tooltip title="这单的全过程记录：状态变更 / 锁库存 / 缺货 / 发货 / 打面单，也可在这里加备注">
+                <Button size="small" onClick={() => onTimeline(o.id)}>时间线</Button>
+              </Tooltip>
+              <Tooltip title="BOM 配件采购清单: 缺哪些 / 已到货, 点开可补全 / 改状态">
                 <Button size="small" onClick={() => onAccessory(o)}>配件</Button>
               </Tooltip>
-              <AccessoryTag acc={acc} />
+              {showAccessory && <AccessoryTag acc={acc} />}
             </Space>
           </div>
         </Space>
@@ -208,6 +210,7 @@ export default function OrdersKanbanPage() {
                       {shown.map((o) => (
                         <DraggableCard
                           key={o.id} o={o} acc={accSummary[o.id]}
+                          showAccessory={col.key !== 'pending_payment'}   /* 待付款不显示缺料(没付款没必要配) */
                           onTimeline={setTimelineFor}
                           onAccessory={(ord) => setAccessoryFor({ id: ord.id, order_no: ord.order_no })}
                         />
