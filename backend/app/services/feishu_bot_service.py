@@ -164,6 +164,26 @@ def _result_card(title: str, content: str, template: str = "green") -> dict:
     }
 
 
+_HELP_CONTENT = (
+    "你好，我是畔色 ERP 录入助手 🤖 —— 直接把**图片**或**表格文件**发给我，我会自动识别类型并入库。\n\n"
+    "**📷 发图片（截图）**\n"
+    "淘宝/千牛订单 · 支付宝流水 · 采购单/进货单 · 工厂对账 · 供应商送货单\n\n"
+    "**📄 发表格（Excel / CSV）**\n"
+    "订单 · 工厂对账 · 万师傅 · 物流 · 推广 · 微信账单 · 代付台账 · 补单 · 账户余额 · 支付宝\n\n"
+    "发来后我会弹卡片让你**确认**；认不准会让你**点选类型**。所有原文件都会按类型归档，"
+    "在系统「数据工具 → 导入档案」可随时回看下载。\n\n"
+    "> 群里记得 **@我** 再带上图片/文件；私聊我的话直接发就行。"
+)
+
+
+def _help_card() -> dict:
+    return {
+        "config": {"wide_screen_mode": True},
+        "header": {"template": "blue", "title": {"tag": "plain_text", "content": "📋 使用指南"}},
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": _HELP_CONTENT}}],
+    }
+
+
 def _recent_suppliers(db: Session, limit: int = 9) -> list[tuple[int, str]]:
     """取最近/常用供应商 (id, name), 供送货单归属选择。"""
     from app.models.supplier import Supplier
@@ -460,7 +480,12 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
     if mtype == "file":
         return _on_file_message(db, msg)   # Excel/CSV 表格
     if mtype != "image":
-        return None  # 只处理图片 / 文件消息
+        # 文本/其它消息(如 @机器人 说话)→ 回使用指南, 不再沉默
+        mid = msg.get("message_id")
+        if mid:
+            _safe_reply(db, mid, _help_card())
+            return {"message_id": mid, "kind": "help", "card_sent": True}
+        return None
     message_id = msg.get("message_id")
     try:
         content = json.loads(msg.get("content") or "{}")

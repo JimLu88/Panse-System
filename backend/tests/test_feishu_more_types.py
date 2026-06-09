@@ -75,6 +75,20 @@ def test_factory_recon_parsed_dedup_on_resend(db_session):
 
 
 # ---- Excel 文件消息 ----
+def test_text_message_replies_help_guide(db_session, monkeypatch):
+    db = db_session
+    replies = []
+    monkeypatch.setattr(feishu_client, "reply_card", lambda db, mid, card: replies.append((mid, card)))
+    event = {"message": {"message_type": "text", "message_id": "t1",
+                         "content": json.dumps({"text": "@机器人 你好"})}}
+    out = fb.on_message_event(db, event)
+    assert out["kind"] == "help"
+    assert replies and replies[0][0] == "t1"
+    assert "使用指南" in replies[0][1]["header"]["title"]["content"]
+    body = replies[0][1]["elements"][0]["text"]["content"]
+    assert "图片" in body and "表格" in body   # 指南列了发图/发表格两类
+
+
 def test_classify_table_by_filename():
     from app.services import table_ingest_service as tis
     assert tis.classify_table("2026工厂对账单.xlsx", b"") == "factory_recon"
