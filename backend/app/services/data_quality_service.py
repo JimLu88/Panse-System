@@ -606,6 +606,120 @@ def scan_custom_order_missing_cost_basis(db: Session) -> int:
 # 全量扫描入口
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# B-extra — 产品 / BOM / 物料 一致性冲突 (配件清单串料 / 占位名 的根源)
+# ---------------------------------------------------------------------------
+_PLACEHOLDER_NAMES = {"待补", "—", "-", "?", "？", "待定", "未知"}
+
+
+def _is_placeholder_name(name) -> bool:
+    s = (name or "").strip()
+    return (not s) or s.startswith("占位") or s in _PLACEHOLDER_NAMES
+
+
+def scan_bom_product_collision(db: Session) -> int:
+    """一个 SKU 编码在 BOM 里挂了多个产品 → 按此 SKU 生成的配件清单会串料。"""
+    from sqlalchemy import func, select
+    from app.models.bom import BomLine
+    count = 0
+    rows = db.execute(
+        select(BomLine.sku_code, func.count(func.distinct(BomLine.product_code)))
+        .where(BomLine.sku_code.isnot(None))
+        .group_by(BomLine.sku_code)
+        .having(func.count(func.distinct(BomLine.product_code)) > 1)
+    ).all()
+    for sku_code, npc in rows:
+        prods = db.execute(
+            select(BomLine.product_code, BomLine.product_name)
+            .where(BomLine.sku_code == sku_code).distinct()
+        ).all()
+        plist = "; ".join(f"{pc}({pn or '-'})" for pc, pn in prods)
+        _record(
+            db,
+            source_table="bom_lines",
+            source_pk=sku_code,
+            exception_type="bom_product_collision",
+            severity="error",
+            description=f"SKU 编码 {sku_code} 在 BOM 里挂了 {npc} 个产品: {plist}。会导致按此 SKU 生成的配件清单串料。",
+            suggestion_action="删多余产品或改正其SKU编码",
+            context={"sku_code": sku_code,
+                     "products": [{"code": pc, "name": pn} for pc, pn in prods]},
+        )
+        count += 1
+    _log.info("scan_bom_product_collision: %d colliding sku_codes", count)
+    return count
+
+
+def scan_material_name_conflict(db: Session) -> int:
+    """同一料号在 物料库 与 BOM 里名字不一样(都非占位) → 同编码指了不同物料。"""
+    from sqlalchemy import select
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    rows = db.execute(
+        select(BomLine.material_code, BomLine.material_name, Material.name)
+        .join(Material, BomLine.material_code == Material.code)
+        .where(BomLine.material_name.isnot(None))
+        .distinct()
+    ).all()
+    count = 0
+    seen: set[str] = set()
+    for code, bom_name, mat_name in rows:
+        if code in seen or _is_placeholder_name(bom_name) or _is_placeholder_name(mat_name):
+            continue
+        if (bom_name or "").strip() == (mat_name or "").strip():
+            continue
+        seen.add(code)
+        _record(
+            db,
+            source_table="materials",
+            source_pk=code,
+            exception_type="material_name_conflict",
+            severity="error",
+            description=f"料号 {code} 名称冲突: 物料库='{mat_name}', BOM='{bom_name}' —— 同一编码指了不同物料。",
+            suggestion_action="核对该料号并改正名称",
+            context={"material_code": code, "material_name": mat_name, "bom_name": bom_name},
+        )
+        count += 1
+    _log.info("scan_material_name_conflict: %d conflicts", count)
+    return count
+
+
+def scan_material_placeholder(db: Session) -> int:
+    """物料库里名字还是"占位"、且已被 BOM 引用的料号 → 该补真实名。"""
+    from sqlalchemy import select
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    count = 0
+    for code, name in db.execute(
+        select(Material.code, Material.name).where(Material.name.like("占位%"))
+    ).all():
+        used = db.execute(
+            select(BomLine.id).where(BomLine.material_code == code).limit(1)
+        ).first()
+        if not used:
+            continue
+        bom_name = db.execute(
+            select(BomLine.material_name).where(
+                BomLine.material_code == code, BomLine.material_name.isnot(None)
+            ).limit(1)
+        ).scalar()
+        sugg = (f"建议填: {bom_name}" if bom_name and not _is_placeholder_name(bom_name)
+                else "请补填该物料真实名称")
+        _record(
+            db,
+            source_table="materials",
+            source_pk=code,
+            exception_type="material_placeholder",
+            severity="warning",
+            description=f"料号 {code} 物料库名称还是占位『{name}』, 已被 BOM 引用但未填真实名。",
+            suggestion_action=sugg[:64],
+            context={"material_code": code, "placeholder_name": name, "bom_name": bom_name},
+        )
+        count += 1
+    _log.info("scan_material_placeholder: %d placeholders in use", count)
+    return count
+
+
 def run_all(db: Session) -> dict[str, int]:
     results: dict[str, int] = {}
     scanners = [
@@ -627,6 +741,9 @@ def run_all(db: Session) -> dict[str, int]:
         ("factory_order_uncovered", scan_factory_order_uncovered),
         ("promotion_recharge_unmatched", scan_promotion_recharge_unmatched),
         ("custom_order_missing_cost_basis", scan_custom_order_missing_cost_basis),
+        ("bom_product_collision", scan_bom_product_collision),
+        ("material_name_conflict", scan_material_name_conflict),
+        ("material_placeholder", scan_material_placeholder),
     ]
     for name, fn in scanners:
         try:
