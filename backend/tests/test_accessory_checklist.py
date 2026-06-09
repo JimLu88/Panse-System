@@ -86,6 +86,15 @@ def test_extra_accessories_flow_into_factory_sheet(db_session, order_with_bom):
 
 
 # ---- 一个 sku_code 在 BOM 里挂了多个产品时, 按 product_code 消歧, 不串料 ----
+def test_summary_by_order(db_session, order_with_bom):
+    svc.generate_for_order(db_session, order_with_bom.id)
+    s = svc.summary_by_order(db_session)
+    entry = s[order_with_bom.id]
+    assert entry["total"] == 2          # AC-0001 + MW-0001
+    assert entry["done"] == 1           # MW-0001 工厂提供 → 算配齐
+    assert entry["pending"] == 1        # AC-0001 未采购 → 还缺
+
+
 def test_generate_disambiguates_by_product_code(db_session):
     db = db_session
     db.add_all([

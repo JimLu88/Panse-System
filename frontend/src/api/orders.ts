@@ -25,6 +25,7 @@ export interface Order {
   tracking_confirmed?: boolean;
   manual_confirmed?: boolean;
   signoff_questioned?: boolean;
+  kanban_confirmed?: boolean;
 }
 
 export const listOrders = (params: {
@@ -34,8 +35,14 @@ export const listOrders = (params: {
   limit?: number;
 } = {}) => api.get<Order[]>('/api/orders', { params: { limit: 100, ...params } }).then((r) => r.data);
 
-export const changeOrderStatus = (id: number, status: string, force = false) =>
-  api.post<Order>(`/api/orders/${id}/status`, { status, force }).then((r) => r.data);
+// confirmed=true: 看板人工拖拽 → 后端标记该单为"已确定"
+export const changeOrderStatus = (id: number, status: string, force = false, confirmed = false) =>
+  api.post<Order>(`/api/orders/${id}/status`, { status, force, confirmed }).then((r) => r.data);
+
+// 看板配件配齐进度: { [order_id]: { total, done, pending } }
+export interface AccessorySummary { total: number; done: number; pending: number }
+export const fetchAccessorySummary = () =>
+  api.get<Record<number, AccessorySummary>>('/api/orders/accessories/summary').then((r) => r.data);
 
 export interface CsvImportReport {
   inserted: number;

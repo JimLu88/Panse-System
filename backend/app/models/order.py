@@ -107,6 +107,8 @@ class Order(Base, TimestampMixin):
     tracking_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     manual_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     signoff_questioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 看板人工拖拽"确定"标记 (区分人工已确定 vs 导入/同步自动归类)
+    kanban_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

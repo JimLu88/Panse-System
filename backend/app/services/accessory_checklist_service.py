@@ -240,6 +240,26 @@ def add_extra_accessories(
     return created
 
 
+def summary_by_order(db: Session) -> dict[int, dict]:
+    """看板用: 每个(已生成配件的)订单的配齐进度 {order_id: {total, done, pending}}。
+
+    done = 状态为「已到货」或「工厂提供」。没生成配件行的订单不在结果里(前端按"未生成"处理)。
+    """
+    from sqlalchemy import case, func
+    rows = db.execute(
+        select(
+            OrderAccessoryItem.order_id,
+            func.count().label("total"),
+            func.sum(case((OrderAccessoryItem.status.in_(["已到货", "工厂提供"]), 1), else_=0)).label("done"),
+        ).group_by(OrderAccessoryItem.order_id)
+    ).all()
+    out: dict[int, dict] = {}
+    for oid, total, done in rows:
+        t, d = int(total or 0), int(done or 0)
+        out[oid] = {"total": t, "done": d, "pending": t - d}
+    return out
+
+
 def get_checklist(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     return list(
         db.execute(

@@ -1,26 +1,32 @@
 /**
- * 订单看板 (Phase 8 Tier 1 #4, 借鉴 Linear).
+ * 订单看板 — 拖拽换列 (@dnd-kit, 桌面拖/手机长按拖), 人工拖拽即「已确定」, 配件配齐徽标。
  *
- * 5 列 = 5 个订单状态. 拖拽换列 → 调 transition API.
- * 简化版用按钮"推进/取消", 不用拖拽库, 保持 0 依赖.
+ * 拖卡片到目标列 → changeOrderStatus(confirmed=true): 改状态 + 标记 kanban_confirmed。
+ * 不再用「→下一档」按钮; 去掉了「快递/人工」双核对按钮(查快递在「配件」抽屉里)。
  */
-import { useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Popconfirm, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
-import { CheckCircleOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { useState, type ReactNode } from 'react';
+import { Alert, Button, Card, Col, Empty, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { changeOrderStatus, confirmOrderManual, confirmOrderTracking, listOrders } from '../api/client';
+import {
+  DndContext, DragOverlay, MouseSensor, TouchSensor, useSensor, useSensors,
+  useDraggable, useDroppable, closestCorners,
+  type DragEndEvent, type DragStartEvent,
+} from '@dnd-kit/core';
+import { changeOrderStatus, fetchAccessorySummary, listOrders } from '../api/client';
+import type { AccessorySummary, Order } from '../api/client';
 import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
 
-const COLUMNS: { key: string; label: string; color: string; next?: string }[] = [
-  { key: 'pending_payment', label: '待付款', color: 'default', next: 'paid' },
-  { key: 'paid', label: '已付款', color: 'cyan', next: 'shipped' },
-  { key: 'shipped', label: '已发货', color: 'blue', next: 'signed' },
+const COLUMNS: { key: string; label: string; color: string }[] = [
+  { key: 'pending_payment', label: '待付款', color: 'default' },
+  { key: 'paid', label: '已付款', color: 'cyan' },
+  { key: 'shipped', label: '已发货', color: 'blue' },
   { key: 'aftersales', label: '售后中', color: 'orange' },
 ];
-const COL_CAP = 25; // 每列默认最多显示这么多张, 超出折叠
+const COL_CAP = 25;
 
-// 导入订单状态多为中文(交易成功 / 买家已付款,等待卖家发货 / 交易关闭…), 归一到看板列
+// 导入订单状态多为中文, 归一到看板列
 function normStatus(raw: string): string {
   const s = raw || '';
   if (['pending_payment', 'paid', 'shipped', 'signed', 'aftersales', 'cancelled'].includes(s)) return s;
@@ -33,180 +39,203 @@ function normStatus(raw: string): string {
   return 'other';
 }
 
+function AccessoryTag({ acc }: { acc?: AccessorySummary }) {
+  if (!acc || acc.total === 0) return <Tag style={{ marginInlineEnd: 0 }}>配件未建</Tag>;
+  if (acc.pending === 0) return <Tag color="green" style={{ marginInlineEnd: 0 }}>齐 {acc.done}/{acc.total}</Tag>;
+  return <Tag color="red" style={{ marginInlineEnd: 0 }}>缺 {acc.pending}/{acc.total}</Tag>;
+}
+
+function DraggableCard({
+  o, acc, onTimeline, onAccessory,
+}: {
+  o: Order; acc?: AccessorySummary;
+  onTimeline: (id: number) => void; onAccessory: (o: Order) => void;
+}) {
+  const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: o.id });
+  return (
+    <div
+      ref={setNodeRef}
+      {...attributes}
+      {...listeners}
+      style={{ marginBottom: 6, cursor: 'grab', opacity: isDragging ? 0.4 : 1 }}
+    >
+      <Card
+        size="small"
+        styles={{ body: { padding: 8 } }}
+        style={{ borderColor: o.kanban_confirmed ? '#52c41a' : (o.signoff_questioned ? '#faad14' : undefined) }}
+      >
+        <Space direction="vertical" size={2} style={{ width: '100%' }}>
+          <Space size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
+            <strong style={{ fontSize: 12 }}>{o.order_no}</strong>
+            {o.kanban_confirmed && <Tag color="success" style={{ marginInlineEnd: 0 }}>已确定</Tag>}
+          </Space>
+          <Typography.Text style={{ fontSize: 11 }} type="secondary">
+            {o.customer_name || '-'} · {o.product_name || '-'} ×{o.qty}
+          </Typography.Text>
+          <Typography.Text style={{ fontSize: 11 }}>¥{o.paid_amount ?? '0'}</Typography.Text>
+          {o.signoff_questioned && (
+            <Tag color="warning" icon={<QuestionCircleOutlined />} style={{ fontSize: 11 }}>签收有疑问</Tag>
+          )}
+          {/* 操作区: 阻止 mousedown/touchstart 冒泡, 点按钮不会触发拖拽 */}
+          <div onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
+            <Space size={4} wrap>
+              <Button size="small" onClick={() => onTimeline(o.id)}>时间线</Button>
+              <Tooltip title="BOM 配件采购清单: 缺哪些/已到货, 点开可补全/改状态">
+                <Button size="small" onClick={() => onAccessory(o)}>配件</Button>
+              </Tooltip>
+              <AccessoryTag acc={acc} />
+            </Space>
+          </div>
+        </Space>
+      </Card>
+    </div>
+  );
+}
+
+function DroppableColumn({
+  col, count, children,
+}: { col: { key: string; label: string; color: string }; count: number; children: ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id: col.key });
+  return (
+    <Card
+      size="small"
+      title={
+        <Space>
+          <Tag color={col.color}>{col.label}</Tag>
+          <Typography.Text type="secondary">{count}</Typography.Text>
+        </Space>
+      }
+      styles={{ body: { minHeight: 480, padding: 8, background: isOver ? '#e6f4ff' : undefined, transition: 'background .15s' } }}
+    >
+      <div ref={setNodeRef} style={{ minHeight: 464 }}>{children}</div>
+    </Card>
+  );
+}
+
 export default function OrdersKanbanPage() {
   const qc = useQueryClient();
   const [timelineFor, setTimelineFor] = useState<number | null>(null);
   const [accessoryFor, setAccessoryFor] = useState<{ id: number; order_no: string } | null>(null);
   const [expandedCols, setExpandedCols] = useState<Record<string, boolean>>({});
+  const [activeId, setActiveId] = useState<number | null>(null);
+
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
     queryFn: () => listOrders({ limit: 500 }),
     refetchInterval: 30000,
   });
+  const { data: accSummary = {} } = useQuery({
+    queryKey: ['orders-kanban-acc'],
+    queryFn: fetchAccessorySummary,
+    refetchInterval: 60000,
+  });
 
   const transMut = useMutation({
     mutationFn: ({ id, status }: { id: number; status: string }) =>
-      changeOrderStatus(id, status),
+      changeOrderStatus(id, status, false, true),   // confirmed=true → 标记已确定
     onSuccess: () => {
-      message.success('已更新状态');
+      message.success('已确定并更新状态');
       qc.invalidateQueries({ queryKey: ['orders-kanban'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
   });
 
-  const trackingMut = useMutation({
-    mutationFn: (id: number) => confirmOrderTracking(id),
-    onSuccess: () => {
-      message.success('快递核对完成');
-      qc.invalidateQueries({ queryKey: ['orders-kanban'] });
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
-  });
-
-  const manualMut = useMutation({
-    mutationFn: (id: number) => confirmOrderManual(id),
-    onSuccess: () => {
-      message.success('人工确认完成');
-      qc.invalidateQueries({ queryKey: ['orders-kanban'] });
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
-  });
+  // 桌面: 移动 6px 起拖(点击不误触); 手机: 长按 200ms 起拖(点击/滚动不误触)
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 6 } }),
+  );
 
   if (isLoading) return <Card loading />;
 
-  const grouped: Record<string, any[]> = {};
+  const grouped: Record<string, Order[]> = {};
   COLUMNS.forEach((c) => { grouped[c.key] = []; });
   const hidden = { signed: 0, cancelled: 0, other: 0 };
-  (orders || []).forEach((o: any) => {
+  (orders || []).forEach((o) => {
     const k = normStatus(o.status);
     if (grouped[k]) grouped[k].push(o);
     else if (k === 'signed') hidden.signed += 1;
     else if (k === 'cancelled') hidden.cancelled += 1;
     else hidden.other += 1;
   });
-  // 每列按下单日期倒序(新→旧), 便于折叠较旧的单
   Object.values(grouped).forEach((list) =>
     list.sort((a, b) => String(b.order_date || '').localeCompare(String(a.order_date || ''))));
 
+  const activeOrder = activeId != null ? orders.find((o) => o.id === activeId) : null;
+
+  const onDragEnd = (e: DragEndEvent) => {
+    setActiveId(null);
+    const over = e.over?.id as string | undefined;
+    if (!over) return;
+    const o = orders.find((x) => x.id === e.active.id);
+    if (!o || normStatus(o.status) === over) return;   // 没移动 / 同列 → 不动
+    transMut.mutate({ id: o.id, status: over });
+  };
+
   return (
-    <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Alert type="info" showIcon
-             message="订单看板视图: 一眼看到瓶颈在哪一档（只显示进行中的订单）"
-             description={`[时间线]看进度 · [配件]看BOM采购清单(待采购/已到货打勾) · [→下一档]推进状态(点击是改状态、会二次确认, 不是拖拽)。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`} />
-      <Row gutter={12}>
-        {COLUMNS.map((col) => (
-          <Col key={col.key} span={Math.floor(24 / COLUMNS.length)}>
-            <Card size="small"
-                  title={
-                    <Space>
-                      <Tag color={col.color}>{col.label}</Tag>
-                      <Typography.Text type="secondary">
-                        {grouped[col.key].length}
-                      </Typography.Text>
-                    </Space>
-                  }
-                  styles={{ body: { minHeight: 480, padding: 8 } }}>
-              {grouped[col.key].length === 0 ? (
-                <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
-                       description={<span style={{ color: '#bbb' }}>无</span>} />
-              ) : (
-                <>
-                {(expandedCols[col.key] ? grouped[col.key] : grouped[col.key].slice(0, COL_CAP)).map((o: any) => (
-                  <Card
-                    key={o.id}
-                    size="small"
-                    style={{
-                      marginBottom: 6,
-                      borderColor: o.signoff_questioned ? '#faad14' : undefined,
-                    }}
-                    styles={{ body: { padding: 8 } }}
-                  >
-                    <Space direction="vertical" size={2} style={{ width: '100%' }}>
-                      <strong style={{ fontSize: 12 }}>{o.order_no}</strong>
-                      <Typography.Text style={{ fontSize: 11 }} type="secondary">
-                        {o.customer_name || '-'} · {o.product_name || '-'} ×{o.qty}
-                      </Typography.Text>
-                      <Typography.Text style={{ fontSize: 11 }}>
-                        ¥{o.paid_amount ?? '0'}
-                      </Typography.Text>
-                      {o.signoff_questioned && (
-                        <Tag color="warning" icon={<QuestionCircleOutlined />} style={{ fontSize: 11 }}>
-                          签收有疑问
-                        </Tag>
-                      )}
-                      <Space size={4} style={{ marginTop: 4 }} wrap>
-                        <Button size="small" onClick={() => setTimelineFor(o.id)}>
-                          时间线
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCorners}
+      onDragStart={(e: DragStartEvent) => setActiveId(e.active.id as number)}
+      onDragEnd={onDragEnd}
+      onDragCancel={() => setActiveId(null)}
+    >
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <Alert
+          type="info" showIcon
+          message="订单看板: 拖动卡片到目标档即更新状态(并标记「已确定」)。只显示进行中的订单。"
+          description={`[时间线]看进度 · [配件]看BOM采购清单(缺多少/已到货)。手机端长按卡片再拖。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`}
+        />
+        <Row gutter={12}>
+          {COLUMNS.map((col) => {
+            const list = grouped[col.key];
+            const shown = expandedCols[col.key] ? list : list.slice(0, COL_CAP);
+            return (
+              <Col key={col.key} span={Math.floor(24 / COLUMNS.length)}>
+                <DroppableColumn col={col} count={list.length}>
+                  {list.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={<span style={{ color: '#bbb' }}>无</span>} />
+                  ) : (
+                    <>
+                      {shown.map((o) => (
+                        <DraggableCard
+                          key={o.id} o={o} acc={accSummary[o.id]}
+                          onTimeline={setTimelineFor}
+                          onAccessory={(ord) => setAccessoryFor({ id: ord.id, order_no: ord.order_no })}
+                        />
+                      ))}
+                      {list.length > COL_CAP && (
+                        <Button type="dashed" size="small" block style={{ marginTop: 4 }}
+                                onClick={() => setExpandedCols((p) => ({ ...p, [col.key]: !p[col.key] }))}>
+                          {expandedCols[col.key] ? '收起' : `还有 ${list.length - COL_CAP} 单 · 展开`}
                         </Button>
-                        <Tooltip title="BOM 配件采购清单: 哪些待采购/已到货, 采购完打勾">
-                          <Button size="small" onClick={() => setAccessoryFor({ id: o.id, order_no: o.order_no })}>
-                            配件
-                          </Button>
-                        </Tooltip>
-                        {col.key === 'shipped' && (
-                          <>
-                            <Tooltip title="确认快递单号已核对">
-                              <Button
-                                size="small"
-                                icon={<CheckCircleOutlined />}
-                                type={o.tracking_confirmed ? 'primary' : 'default'}
-                                loading={trackingMut.isPending}
-                                onClick={() => !o.tracking_confirmed && trackingMut.mutate(o.id)}
-                              >
-                                快递{o.tracking_confirmed ? '✓' : ''}
-                              </Button>
-                            </Tooltip>
-                            <Tooltip title="人工确认已签收">
-                              <Button
-                                size="small"
-                                icon={<CheckCircleOutlined />}
-                                type={o.manual_confirmed ? 'primary' : 'default'}
-                                loading={manualMut.isPending}
-                                onClick={() => !o.manual_confirmed && manualMut.mutate(o.id)}
-                              >
-                                人工{o.manual_confirmed ? '✓' : ''}
-                              </Button>
-                            </Tooltip>
-                          </>
-                        )}
-                        {col.next && col.key !== 'shipped' && (
-                          <Popconfirm
-                            title={`把订单推进到「${COLUMNS.find((c) => c.key === col.next)?.label}」？`}
-                            description="这会改变订单状态(不是拖拽预览)，确认后生效。"
-                            okText="确认推进" cancelText="取消"
-                            onConfirm={() => transMut.mutate({ id: o.id, status: col.next! })}
-                          >
-                            <Tooltip title={`推进到下一档：${COLUMNS.find((c) => c.key === col.next)?.label}`}>
-                              <Button size="small" type="link" loading={transMut.isPending}>
-                                → {COLUMNS.find((c) => c.key === col.next)?.label}
-                              </Button>
-                            </Tooltip>
-                          </Popconfirm>
-                        )}
-                      </Space>
-                    </Space>
-                  </Card>
-                ))}
-                {grouped[col.key].length > COL_CAP && (
-                  <Button type="dashed" size="small" block style={{ marginTop: 4 }}
-                          onClick={() => setExpandedCols((p) => ({ ...p, [col.key]: !p[col.key] }))}>
-                    {expandedCols[col.key] ? '收起' : `还有 ${grouped[col.key].length - COL_CAP} 单 · 展开`}
-                  </Button>
-                )}
-                </>
-              )}
-            </Card>
-          </Col>
-        ))}
-      </Row>
-      <OrderTimelineDrawer orderId={timelineFor} open={timelineFor !== null}
-                            onClose={() => setTimelineFor(null)} />
+                      )}
+                    </>
+                  )}
+                </DroppableColumn>
+              </Col>
+            );
+          })}
+        </Row>
+      </Space>
+
+      <DragOverlay>
+        {activeOrder ? (
+          <Card size="small" styles={{ body: { padding: 8 } }}
+                style={{ width: 240, boxShadow: '0 6px 20px rgba(0,0,0,.18)' }}>
+            <strong style={{ fontSize: 12 }}>{activeOrder.order_no}</strong>
+            <div style={{ fontSize: 11, color: '#888' }}>{activeOrder.product_name || '-'} ×{activeOrder.qty}</div>
+          </Card>
+        ) : null}
+      </DragOverlay>
+
+      <OrderTimelineDrawer orderId={timelineFor} open={timelineFor !== null} onClose={() => setTimelineFor(null)} />
       <AccessoryChecklistDrawer
         orderId={accessoryFor?.id ?? null}
         orderNo={accessoryFor?.order_no}
         open={accessoryFor !== null}
         onClose={() => setAccessoryFor(null)}
       />
-    </Space>
+    </DndContext>
   );
 }

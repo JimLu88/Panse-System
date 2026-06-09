@@ -37,6 +37,7 @@ class OrderStatusChange(BaseModel):
     status: str
     actor: Optional[str] = None
     force: bool = False
+    confirmed: bool = False   # 看板人工拖拽 → 标记该单为"已确定"(人工敲定)
 
 
 class OrderOut(BaseModel):
@@ -61,6 +62,7 @@ class OrderOut(BaseModel):
     actual_cost: Optional[Decimal] = None
     actual_freight: Optional[Decimal] = None
     cost_diff: Optional[Decimal] = None
+    kanban_confirmed: bool = False   # 看板里人工拖拽确定过
 
 
 class CsvImportReport(BaseModel):

@@ -226,6 +226,8 @@ def change_status(order_id: int, payload: OrderStatusChange, db: Session = Depen
         order_service.transition(db, o, payload.status, actor=payload.actor, force=payload.force)
     except order_service.InvalidStatusTransition as e:
         raise HTTPException(400, str(e)) from e
+    if payload.confirmed:
+        o.kanban_confirmed = True   # 看板人工拖拽 → 标记已确定(人工敲定, 区分自动归类)
     db.commit()
     db.refresh(o)
     return o
@@ -901,6 +903,13 @@ def refresh_accessory_tracking(item_id: int, db: Session = Depends(get_db)):
         # 把错误透出给前端 (不持久化), 提示改用手动状态
         out.alert_reason = result.get("error")
     return out
+
+
+@router.get("/accessories/summary")
+def accessories_summary_by_order(db: Session = Depends(get_db)):
+    """看板用: 每个订单配件配齐进度 {order_id: {total, done, pending}} (只含已生成配件的订单)。"""
+    from app.services import accessory_checklist_service
+    return accessory_checklist_service.summary_by_order(db)
 
 
 @router.get("/accessories/pending-summary")
