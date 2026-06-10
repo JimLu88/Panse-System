@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- 网络权限：Ktor HTTP 服务需要 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 前台服务：HTTP 服务常驻 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Android 13+ 显示通知（前台服务通知必需）-->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 14+ 锁屏期间保持 WiFi/网络 -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <application
+        android:allowBackup="false"
+        android:icon="@android:drawable/ic_menu_compass"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AppCompat.DayNight">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
+            无障碍服务声明：
+              - canRetrieveWindowContent = 必须 true 才能读 view tree
+              - canPerformGestures        = 阶段 1.6 发送消息时手势模拟需要
+        -->
+        <service
+            android:name=".QianniuAccessibilityService"
+            android:exported="false"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:label="@string/accessibility_service_label">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+
+        <!--
+            Phase 2.5 前台服务：
+              - foregroundServiceType="specialUse" 对应 FOREGROUND_SERVICE_SPECIAL_USE 权限
+              - Android 14+ 要求 specialUse 在 property 里说明用途
+              - 该 service 启动 Ktor HTTP server（端口 8765），常驻接收 PC 端请求
+        -->
+        <service
+            android:name=".service.QianniuForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="本服务作为千牛 AI 接待助手的本地 HTTP 桥接，向卖家 PC 端提供消息读写 API；属于自用工具，仅在用户主动启用配对后运行。" />
+        </service>
+    </application>
+</manifest>

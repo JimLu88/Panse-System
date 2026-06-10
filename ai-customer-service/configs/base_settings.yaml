@@ -1,0 +1,37 @@
+# 全局设置（由「设置」页保存）。重启仍读取本文件。
+# 以下为仓库默认示例；实际密钥请在界面填写。
+
+deepseek_api_key: ""
+dashscope_api_key: ""
+openai_api_key: ""
+anthropic_api_key: ""
+gemini_api_key: ""
+
+llm_api_base: ""
+llm_gemini_attach_search_tool: true
+
+model_front_desk: "openai/gpt-4o-mini"
+model_deep_analysis: "openai/claude-sonnet-4-6-thinking"
+
+anthropic_model: "claude-3-5-sonnet-20241022"
+push_serverchan_sendkey: ""
+push_pushplus_token: ""
+push_wecom_webhook: ""
+audio_target_exe: "AliWorkbench.exe"
+# 有系统音量时是否要求千牛在跑才触发接待（true=防听音乐误触；false=任意声音都跑视觉轮询）
+audio_gate_fire_only_when_qianniu_running: true
+# 全系统混音峰值高于该值则视为有声响（0..1）。0.02 偏高时可下调到 0.005~0.01
+audio_peak_threshold: 0.02
+# 峰值轮询间隔（秒）。叮咚很短时调小（0.04）以减少漏采
+audio_poll_interval_s: 0.08
+# 两次触发的最短间隔（秒）。避免一次叮咚被反复触发（同一条消息回声）
+audio_cooldown_s: 4.0
+# 兜底扫屏间隔（分钟）；视觉哨兵已主动扫会话列表，本兜底主要兜窗口被覆盖等极端情况
+sweep_interval_minutes: 2
+# 视觉哨兵：每 N 秒主动扫一次左侧会话列表 ROI（独立于声音，强烈推荐保持开启）
+visual_sentry_enabled: true
+visual_sentry_interval_s: 4
+# 窗口/会话切换后截图前等待（秒）；可与 query_rewrite.yaml timing.capture_delay_s 叠加
+capture_delay_s: 1.5
+vm_host_program: ""
+vm_host_args: ""

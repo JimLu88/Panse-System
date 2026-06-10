@@ -1,0 +1,50 @@
+brand_id: demo_brand
+shop_code: demo_shop
+shop_display_name: Demo店铺
+
+qianniu:
+  main_window_name_contains: 千牛
+  # 坐标全部是“屏幕绝对像素坐标”（DPI 必须 100%）
+  input_box_point:
+    x: 0
+    y: 0
+  # 可选：如果你想用“点击发送按钮”而不是 Enter
+  send_button_point:
+    x: 0
+    y: 0
+  chat_scroll_point:
+    x: 0
+    y: 0
+  # 左侧头像/会话列表区域（未读黄点检测 + 点击切换）；配合 unread_session_switch
+  session_list_rect:
+    left: 0
+    top: 0
+    right: 0
+    bottom: 0
+  unread_session_switch: true
+  # 超过 N 秒未从聊天 OCR 到买家新留言则最小化主窗口（0=关闭）；与「仅最小化时叮咚」配合
+  idle_auto_minimize_seconds: 120
+  taskbar_icon_point:
+    x: 0
+    y: 0
+  restore_title_ocr_rect:
+    left: 0
+    top: 0
+    right: 0
+    bottom: 0
+
+# OCR 需要的 ROI（屏幕绝对像素坐标，DPI 必须 100%）
+# 聊天区域（用于抽取消息/找锚点/恢复接管）
+ocr_chat_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
+
+# 千牛右侧区域（用于检测订单状态变化等“视觉证据”）
+ocr_right_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
+

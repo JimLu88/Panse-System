@@ -1,0 +1,20 @@
+{
+  "behavior": {
+    "enabled": true,
+    "click_jitter_px": 5,
+    "type_delay_min_s": 0.08,
+    "type_delay_max_s": 0.25,
+    "click_after_min_s": 0.5,
+    "click_after_max_s": 1.5,
+    "breath_min_s": 5.0,
+    "breath_max_s": 15.0,
+    "breath_every_n_messages": 4,
+    "idle_interval_min_s": 600.0,
+    "idle_interval_max_s": 1800.0
+  },
+  "web_dashboard": {
+    "port": 8080,
+    "host": "0.0.0.0",
+    "enabled": false
+  }
+}

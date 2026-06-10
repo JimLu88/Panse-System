@@ -1,0 +1,146 @@
+/* =====================================================================
+   手机接待仪表盘 — 移动端优先深色主题，零第三方依赖
+   ===================================================================== */
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:       #0D1B2A;
+  --bg2:      #132236;
+  --bg3:      #1C3050;
+  --border:   #2A4060;
+  --text:     #D0DCE8;
+  --sub:      #7A9AB8;
+  --green:    #27AE60;
+  --green-hl: #2ECC71;
+  --red:      #E74C3C;
+  --red-hl:   #FF5C4D;
+  --orange:   #E67E22;
+  --blue-hl:  #3498DB;
+  --radius:   8px;
+  --shadow:   0 2px 8px rgba(0,0,0,0.4);
+}
+
+html { font-size: 15px; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.55;
+  min-height: 100vh;
+  padding-bottom: 60px;
+}
+
+/* ── 顶部 ─── */
+.top-bar {
+  position: sticky; top: 0; z-index: 100;
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--bg2); border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+}
+.top-title { font-size: 1rem; font-weight: 700; color: #ECF0F1; }
+.top-refresh { font-size: 0.78rem; color: var(--sub); }
+
+/* ── 紧急区 ─── */
+.emergency-zone {
+  background: linear-gradient(135deg,#1A0A0A,#2A1010);
+  border: 1px solid #5A1010; border-radius: var(--radius);
+  margin: 12px; padding: 14px 16px;
+}
+.emergency-hint { font-size: 0.85rem; color: #E0A0A0; margin-bottom: 10px; text-align: center; }
+.emergency-btns { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+
+.btn-emergency {
+  flex: 1; min-width: 160px; padding: 15px 10px;
+  font-size: 1rem; font-weight: 700;
+  background: var(--red); color: #fff;
+  border: none; border-radius: var(--radius); cursor: pointer;
+  box-shadow: 0 4px 14px rgba(231,76,60,.55);
+  transition: background .15s, transform .1s;
+}
+.btn-emergency:active { background: var(--red-hl); transform: scale(.97); }
+
+.btn-resume {
+  flex: 1; min-width: 140px; padding: 15px 10px;
+  font-size: 1rem; font-weight: 700;
+  background: var(--green); color: #fff;
+  border: none; border-radius: var(--radius); cursor: pointer;
+  box-shadow: 0 4px 12px rgba(39,174,96,.4);
+  transition: background .15s, transform .1s;
+}
+.btn-resume:active { background: var(--green-hl); transform: scale(.97); }
+
+.ctrl-msg { margin-top: 8px; font-size: 0.8rem; color: #E0A0A0; text-align: center; min-height: 18px; }
+
+/* ── 通用区块 ─── */
+.section-block {
+  background: var(--bg2); border: 1px solid var(--border);
+  border-radius: var(--radius); margin: 10px 12px;
+  padding: 14px 16px; box-shadow: var(--shadow);
+}
+.section-title { font-size: .95rem; font-weight: 700; margin-bottom: 10px; color: #AAC8E8; }
+.section-sub   { font-size: .78rem; color: var(--sub); margin-bottom: 8px; }
+.updated-hint  { font-size: .75rem; color: var(--sub); margin-top: 8px; text-align: right; }
+
+/* ── 统计 ─── */
+.stat-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 8px; }
+.stat-card {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px 6px; text-align: center;
+}
+.stat-val      { font-size: 2rem; font-weight: 800; color: #ECF0F1; line-height: 1.1; }
+.stat-val.green { color: var(--green); }
+.stat-val.red   { color: var(--red); }
+.stat-lbl      { font-size: .72rem; color: var(--sub); margin-top: 4px; }
+
+/* ── 设备卡片 ─── */
+.device-card {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: 6px; padding: 12px 14px; margin-bottom: 8px;
+  display: flex; align-items: flex-start; gap: 10px;
+}
+.device-dot {
+  width: 12px; height: 12px; border-radius: 50%;
+  margin-top: 4px; flex-shrink: 0;
+}
+.dot-running { background: var(--green); box-shadow: 0 0 7px var(--green); }
+.dot-paused  { background: var(--orange); }
+.dot-error   { background: var(--red); }
+.dot-other   { background: #555; }
+.device-info { flex: 1; }
+.device-shop  { font-weight: 700; font-size: .95rem; }
+.device-id    { font-size: .75rem; color: var(--sub); margin-top: 2px; }
+.device-stats { font-size: .8rem; color: var(--sub); margin-top: 5px; }
+.device-badge {
+  font-size: .72rem; border-radius: 4px;
+  padding: 2px 8px; font-weight: 600; white-space: nowrap; align-self: flex-start;
+}
+.badge-running { background: rgba(39,174,96,.2); color: var(--green-hl); }
+.badge-paused  { background: rgba(230,126,34,.2); color: #F39C12; }
+.badge-error   { background: rgba(231,76,60,.2);  color: var(--red-hl); }
+.badge-other   { background: rgba(80,80,80,.3);   color: #888; }
+
+/* ── 消息列表 ─── */
+.msg-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+  font-size: .82rem;
+}
+.msg-row:last-child { border-bottom: none; }
+.msg-time   { color: var(--sub); white-space: nowrap; flex-shrink: 0; }
+.msg-device { color: var(--blue-hl); font-size: .75rem; white-space: nowrap; flex-shrink: 0; }
+.msg-text   { color: var(--text); flex: 1; word-break: break-all; }
+
+/* ── 杂项 ─── */
+.placeholder { color: var(--sub); font-size: .85rem; text-align: center; padding: 20px 0; }
+
+.footer {
+  position: fixed; bottom: 0; left: 0; right: 0;
+  background: var(--bg2); border-top: 1px solid var(--border);
+  padding: 8px 16px; font-size: .75rem; color: var(--sub); text-align: center;
+}
+
+@media (min-width: 640px) {
+  .stat-val { font-size: 2.4rem; }
+  .emergency-btns { flex-wrap: nowrap; }
+}

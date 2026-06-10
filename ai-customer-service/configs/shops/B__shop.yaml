@@ -1,0 +1,40 @@
+brand_id: B
+shop_code: shop
+shop_display_name: dian
+qianniu:
+  main_window_name_contains: 千牛
+  input_box_point:
+    x: 0
+    y: 0
+  send_button_point:
+    x: 0
+    y: 0
+  chat_scroll_point:
+    x: 0
+    y: 0
+  session_list_rect:
+    left: 0
+    top: 0
+    right: 0
+    bottom: 0
+  unread_session_switch: true
+  idle_auto_minimize_seconds: 120
+  taskbar_icon_point:
+    x: 0
+    y: 0
+  restore_title_ocr_rect:
+    left: 0
+    top: 0
+    right: 0
+    bottom: 0
+ocr_chat_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
+ocr_right_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
+shop_id: B:shop

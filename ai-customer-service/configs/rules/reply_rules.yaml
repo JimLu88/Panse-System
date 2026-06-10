@@ -1,0 +1,36 @@
+# 客服分支规则（YAML）。话术文案用 template_id 引用，正文可在「话术表/SQLite」维护；
+# 此处只描述「在什么条件下用哪条模板」。后续引擎按 id 解析执行。
+#
+# 字段说明：
+# - id: 规则唯一标识（英文、短横线）
+# - enabled: 是否启用
+# - description: 给人看的说明
+# - match: 匹配类型（随引擎扩展：customization_scope / keyword / intent …）
+# - params: 匹配参数（与 Excel 商品字段、标签对齐）
+# - reply_template_id: 命中时引用的话术模板 ID（在话术库中配置同 ID 的文案）
+# - fallback_template_id: 可选；未命中时的模板（也可用单独一条「默认规则」）
+
+version: 1
+
+templates_ref:
+  # 模板 ID → 默认占位文案（可被话术库覆盖）；用于本地预览与测试
+  tpl_custom_ok: "可以的亲，您说的这项在我们支持定制范围内，细节我帮您备注～"
+  tpl_custom_escalate: "您的定制需求比较高呢，我需要和工厂技术确认后再回复您，您稍等～"
+
+rules:
+  - id: customization-in-scope
+    enabled: true
+    description: 客户诉求落在商品「可定制标签/范围」内时，直接告知可做
+    match:
+      type: customization_in_scope
+      # 与 Excel 同步字段示例：商品列「可定制标签」包含下列任一维度
+      product_field: customizable_tags
+    reply_template_id: tpl_custom_ok
+
+  - id: customization-out-of-scope
+    enabled: true
+    description: 诉求超出商品允许的定制范围，转工厂确认话术
+    match:
+      type: customization_not_in_scope
+      product_field: customizable_tags
+    reply_template_id: tpl_custom_escalate

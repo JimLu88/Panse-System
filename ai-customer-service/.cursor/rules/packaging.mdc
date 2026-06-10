@@ -1,0 +1,20 @@
+---
+description: 接待台功能改动后自动打包 exe
+globs:
+  - apps/**
+  - configs/**
+  - AIWorkbench.spec
+---
+
+完成 AIWorkbench 接待相关功能/配置修复后，在告知用户前**自行执行打包**：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build_aiworkbench.ps1
+```
+
+- 脚本会 patch+1 并同步 `apps/release_info.py` 与 `apps/__version__.py`
+- 产物：`dist\AIWorkbench-vX.Y.Z.exe` 与 `dist\AIWorkbench.exe`
+- 正常体积约 150MB；超过 300MB 视为异常
+- 提醒用户部署时同步 `configs\query_rewrite.yaml`
+
+用户明确说「只改文档/只问问题」时不要打包。

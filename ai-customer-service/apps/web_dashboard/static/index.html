@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+  <title>手机接待 · 局域网监控</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <!-- 顶部标题栏 -->
+  <header class="top-bar">
+    <span class="top-title">📱 手机接待 · 监控仪表盘</span>
+    <span class="top-refresh" id="refresh-indicator">⏳ 加载中…</span>
+  </header>
+
+  <!-- 紧急控制区 -->
+  <section class="emergency-zone">
+    <p class="emergency-hint">⚠️ 发现问题？点下方按钮立即暂停所有设备的自动回复</p>
+    <div class="emergency-btns">
+      <button class="btn-emergency" onclick="doPauseAll()">
+        ⏸&ensp;紧急暂停全部接待
+      </button>
+      <button class="btn-resume" onclick="doResumeAll()">
+        ▶&ensp;恢复全部接待
+      </button>
+    </div>
+    <p class="ctrl-msg" id="ctrl-msg"></p>
+  </section>
+
+  <!-- 今日统计 -->
+  <section class="section-block">
+    <h2 class="section-title">📊 今日概览</h2>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-val" id="s-total">—</div>
+        <div class="stat-lbl">今日接待总数</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val green" id="s-active">—</div>
+        <div class="stat-lbl">接待中设备</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" id="s-error">—</div>
+        <div class="stat-lbl">异常设备</div>
+      </div>
+    </div>
+    <p class="updated-hint">数据更新：<span id="s-updated">—</span></p>
+  </section>
+
+  <!-- 设备状态 -->
+  <section class="section-block">
+    <h2 class="section-title">📡 设备状态</h2>
+    <div id="devices-list">
+      <p class="placeholder">暂无设备数据，请确认主程序已打开「手机接待」Tab</p>
+    </div>
+  </section>
+
+  <!-- 最近接待记录 -->
+  <section class="section-block">
+    <h2 class="section-title">💬 最近接待记录</h2>
+    <p class="section-sub">买家昵称已自动脱敏</p>
+    <div id="msgs-list">
+      <p class="placeholder">暂无记录</p>
+    </div>
+  </section>
+
+  <!-- 页脚 -->
+  <footer class="footer">
+    AIWorkbench v1.4.0 · 手机接待仪表盘
+    &nbsp;·&nbsp;
+    <span id="auto-label" onclick="toggleAutoRefresh()" style="cursor:pointer;text-decoration:underline;">
+      暂停自动刷新
+    </span>
+  </footer>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

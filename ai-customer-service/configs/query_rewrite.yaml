@@ -1,0 +1,180 @@
+# Query 重写与输入质量门控（对应实施计划 P1/P2、优化 B）
+query_rewrite:
+  input_field: user_message.content
+  pre_filter:
+    min_length: 3
+    quick_reply_template: "您好，请问有什么可以帮到您？"
+  input_quality_gate:
+    enabled: true
+    quick_reply_template: "您好，请问有什么可以帮到您？"
+    product_card_inquiry_template: "您好，请问关于这款商品有什么想了解的？"
+
+executor:
+  busy_timeout_seconds: 30
+  auto_reset_on_timeout: true
+  queue_depth_check: true
+
+inquiry_auto_reply:
+  # v1.6.25：询价改「知识库优先」——KB 命中则正常回答具体价格/规格；
+  # KB 未命中时才发本兜底话术，并同时跳强提醒（让主理人接手核价）。
+  price_quote_template: "现在已经是活动期间了，您加购后购物车的价格就是最终优惠价了呢，因为平台券每个人不同，每个人到手价会有不同，我不能准确回答您，店铺价格都是一样的哦~"
+  order_placed_template: "您好，感谢您的支持！订单提交后我们会尽快安排发货，有任何问题随时告知～"
+
+# 通用兜底话术（可在工作台「通用兜底话术」面板直接编辑）
+fallback_phrases:
+  welcome_greeting: "您好，在的呢～"
+  handoff_soothe: "我帮您确认看看，您稍等呢~"
+  replenish_reply: "老客户回购这边给您优先安排～需要同款直接说尺寸规格，我帮您备注。"
+  batch_soothe: "亲，稍等一下哦～"
+  # v1.3.94：买家分享商品卡片（OCR 仅识别到商品图、无文字提问）时追问规格
+  product_card_inquiry: "您是想什么要什么规格呢？"
+  # v1.6.27：泛问材质/尺寸/颜色但未指定产品、知识库未命中时，反问澄清是哪款（不转人工）
+  spec_clarify: "您说的哪一款呢？方便发下产品链接么？或者说一下产品名称，我来帮您看下呢~"
+
+jim:
+  min_buyer_len_for_price_handoff: 4
+
+bring_to_front:
+  minimized_check: true
+  restore_if_minimized: true
+  sw_restore_enabled: true
+  wait_after_restore_ms: 1200
+  window_ready_timeout_ms: 2500
+  window_ready_poll_ms: 50
+  restore_sequence_when_minimized:
+    - method: taskbar_click
+      wait_after_ms: 600
+    - method: win32_show_normal
+      wait_after_ms: 400
+  foreground_sequence_when_visible:
+    - method: win32_setforeground
+      wait_after_ms: 80
+    - method: alt_nudge
+      wait_after_ms: 120
+  verify_conditions:
+    hwnd_match: true
+    not_minimized: true
+    window_visible: true
+  verify_fail_action: retry_restore
+  verify_retry_limit: 2
+
+session_detection:
+  highlight_method: "hsv"
+  hsv_lower: [35, 100, 100]
+  hsv_upper: [55, 255, 255]
+  session_highlight_threshold: 20
+  # 叮咚首帧：黄条像素和低于此值则跳过点击（原 55 易漏淡黄高亮）
+  yel_max_first_frame_audio: 15
+  # 黄条弱命中阈值：像素 < 此值视为「不确定」，同时检查红标兜底
+  yel_weak_match_audio: 25
+  # 视觉哨兵首帧仍用较高阈值，避免静止列表误点
+  yel_max_first_frame_visual: 55
+  yel_max_log_skip_below: 8
+  # 千牛还原后、扫黄条前等待列表渲染（秒）
+  session_list_settle_wait_s: 0.8
+  # audio_peak 首扫：连续 N 帧同一行黄条再点击（过滤残影/动画）
+  yellow_bar_confirm_frames: 2
+  yellow_bar_confirm_interval_s: 0.12
+  # topmost=列表最上方未读行；max=黄条像素最强行（易误点底部残影）
+  yellow_row_pick: topmost
+  # 无黄条时：检测列表行内红色未读角标/倒计时（已选中会话常无黄条）
+  enable_red_badge_switch: true
+  # v1.6.18：实测纯红角标每行仅 8~9px，旧值 18 漏真角标；角标在第1~3行(y≈77起)
+  red_badge_min_pixels: 6
+  # 红标在 ROI 顶部若干像素行内找（新消息角标可能在第1~3行会话）
+  red_badge_max_pixel_row: 180
+  # 叮咚黄条只在列表上部该比例行内识别（避免点到中部旧会话）
+  audio_yellow_top_row_ratio: 0.28
+  # v1.6.19：黄条 0~4s 闪烁、5s 后恒定黄。多帧轮询跨过闪烁期，任一帧捕到即用。
+  # v1.6.27 提速：本店千牛用红色角标而非黄条（黄条恒 yelMax=0），旧值 12×0.5≈6s 每轮白等。
+  # 降到 2×0.4≈0.8s，黄条没命中立刻走红标兜底（红标才是本店真正生效的切换信号）。
+  yellow_poll_rounds: 2
+  yellow_poll_interval_s: 0.4
+  # 点击会话后额外等待（秒），叠加在「截图前等待」之上
+  post_switch_extra_delay_s: 0.4
+  post_switch_click_sleep_s: 0.45
+  # 定时 OCR 重扫当前聊天区间隔（秒）
+  chat_rescan_interval_s: 30
+  # 多客户批量安抚（v1.3.99：默认关闭——多次出现误点千牛工具栏/重复发送被风控的事故，
+  # 需要时在「编辑通用兜底话术」面板手动开启）
+  batch_soothe_enabled: false
+  batch_soothe_max_sessions: 2
+
+timing:
+  # 覆盖 base_settings 的 capture_delay_s（截图前等待）
+  # v1.6.27 提速：1.5→1.0s（千牛切换后渲染通常 <1s）
+  capture_delay_s: 1.0
+
+# 聊天区 OCR 时间戳与系统时间校对（防点错旧会话）
+time_alignment:
+  enabled: true
+  # 兼容旧逻辑：与 stale_discard_minutes 取较大者为「丢弃」阈值
+  max_skew_minutes: 5
+  warn_skew_minutes: 3
+  stale_discard_minutes: 15
+  capture_skew_discard_minutes: 15
+  # 未识别到时间戳：allow=继续；block=转人工
+  on_missing_timestamp: allow
+
+# 本地千牛 SQLite 轮询（实验）：勾选「本地 DB 消息源」后启用
+# 配置步骤：python scripts/db_discovery.py → python scripts/db_schema_probe.py "路径"
+db_listener:
+  poll_interval_seconds: 1.0
+  db_path: ""
+  table: ""
+  col_map: {}
+
+debug:
+  save_snapshot: true
+  snapshot_on_low_conf: true
+  snapshot_on_low_conf_threshold: 0.6
+  snapshot_dir: "data/ocr_debug"
+
+# OCR 引擎与预处理配置
+ocr:
+  # fallback（默认）：Paddle 置信度不足时降级到 Rapid
+  # best_of_two：同时运行两个引擎，取置信度更高的结果（精度优先，略慢）
+  engine_mode: "fallback"
+
+  # 买家消息气泡 X 坐标分界（买家消息在聊天区左侧此比例范围内）
+  buyer_x_ratio: 0.50
+
+  # RapidOCR 参数
+  rapid:
+    text_score: 0.5           # 文字置信度阈值，降低可减少漏检
+    det_limit_side_len: 1280  # 检测器最大边长限制（默认 736 会缩小截图，影响识别）
+    det_limit_type: "max"
+
+  # 截图预处理（送 OCR 前执行）
+  preprocess:
+    enabled: true
+    scale: 2.0             # 放大倍数（2x 改善小字体识别）
+    contrast_cutoff: 1     # PIL autocontrast 截断比例（0=关闭）
+    sharpen_radius: 1.0    # 锐化半径
+    sharpen_percent: 150   # 锐化强度（0=关闭）
+
+audio_trigger:
+  min_peak_threshold: 0.02
+  # 若 base_settings 未改，可作兜底（优先仍读 audio_cooldown_s）
+  cooldown_seconds: 4.0
+
+session:
+  greeting_cooldown_minutes: 5
+
+# AI 陪伴 · 深度检查全仓扫描
+companion:
+  deep_scan:
+    # 发给大模型的代码摘要上限（字）；完整扫描仍在 repo_scan/latest_full_scan.txt
+    llm_excerpt_max_chars: 18000
+    # 接待核心路径：保留较多正文
+    priority_file_max_chars: 3500
+    # 其余文件：只提取 def/class/配置键等轮廓
+    outline_max_symbols: 40
+    priority_path_prefixes:
+      - apps/core/orchestrator/
+      - apps/core/channels/qianniu/
+      - apps/core/audio/
+      - apps/core/ai/input_quality_gate.py
+      - apps/core/automation/
+      - configs/query_rewrite.yaml
+      - configs/base_settings.yaml

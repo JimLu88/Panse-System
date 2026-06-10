@@ -1,0 +1,143 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:padding="20dp">
+
+        <!-- 标题 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_status"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <!-- 无障碍授权状态 -->
+        <TextView
+            android:id="@+id/tv_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/status_disabled"
+            android:textSize="16sp" />
+
+        <Button
+            android:id="@+id/btn_open_settings"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/btn_open_settings" />
+
+        <!-- 分隔 -->
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:layout_marginTop="20dp"
+            android:layout_marginBottom="20dp"
+            android:background="#33888888" />
+
+        <!-- HTTP 服务状态 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="@string/title_http_server"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/tv_http_status"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/http_status_stopped"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/tv_ip_port"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:fontFamily="monospace"
+            android:text="—"
+            android:textColor="#1976D2"
+            android:textSize="16sp" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/btn_start_http"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/btn_start_http" />
+
+            <Button
+                android:id="@+id/btn_stop_http"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/btn_stop_http" />
+        </LinearLayout>
+
+        <!-- 二维码 -->
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="20dp"
+            android:text="@string/title_pair_qr"
+            android:textSize="18sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
+            android:text="@string/hint_pair_qr"
+            android:textColor="#666"
+            android:textSize="13sp" />
+
+        <ImageView
+            android:id="@+id/iv_qr"
+            android:layout_width="280dp"
+            android:layout_height="280dp"
+            android:layout_marginTop="10dp"
+            android:layout_gravity="center"
+            android:adjustViewBounds="true"
+            android:background="#FFFFFF"
+            android:contentDescription="@string/desc_qr_code"
+            android:scaleType="fitCenter" />
+
+        <Button
+            android:id="@+id/btn_reset_token"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/btn_reset_token" />
+
+        <!-- 提示 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="24dp"
+            android:text="@string/hint_qianniu_open"
+            android:textColor="#666"
+            android:textSize="13sp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="@string/info_logcat_tag"
+            android:textColor="#666"
+            android:textSize="12sp" />
+    </LinearLayout>
+</ScrollView>

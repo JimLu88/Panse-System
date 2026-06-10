@@ -1,0 +1,71 @@
+{
+  "_comment": "修复档案种子：开发者每次修复后在对应 sig_id 的 fixes 追加一条。version 用真实自增号(apps/__version__.py)，营销名(v1.6.0)写 summary。运行时 fix_archive 自动记录问题出现，导出报告交叉对比，暴露『修了仍复现』。",
+  "_version_map": "1.5.6=bring_to_front; 1.5.7=噪声拆分; 1.5.8=单字+重复; 1.5.9=v1.6.0-rc1; 1.5.10=v1.6.0final; 1.5.11=v1.6.1-rc1; 1.5.12=v1.6.1final",
+  "issues": [
+    {
+      "sig_id": "yellow_bar_zero",
+      "title": "黄条识别 max=0（未读高亮检测失效）",
+      "fixes": [
+        {"version": "1.5.6", "date": "2026-05-29", "summary": "bring_to_front 4 个 return 路径补 _maybe_pin_window 矫正窗口位置", "root_cause": "(当时判断)窗口漂移导致 ROI 坐标错位", "files": ["apps/core/channels/qianniu/bring_to_front.py"]},
+        {"version": "1.5.10", "date": "2026-05-29", "summary": "v1.6.0：加右下角 minibubble L3 兜底", "root_cause": "(当时判断)新版千牛未读高亮颜色变了，HSV 阈值过时", "files": ["apps/core/channels/qianniu/minibubble_fallback.py"]},
+        {"version": "1.5.11", "date": "2026-05-29", "summary": "v1.6.1-rc1：minibubble 放宽 tb 昵称匹配 + 输出 OCR 预览", "root_cause": "(当时判断)minibubble 匹配过严", "files": ["apps/core/channels/qianniu/minibubble_fallback.py"]},
+        {"version": "1.5.14", "date": "2026-05-30", "summary": "v1.6.2：切会话改四层兜底 L1气泡→L2原地黄条→L3滚到顶再扫黄条→L4红标；滚到顶仍max=0强制存档", "root_cause": "【用户实测确认的真根因】黄条高亮一直存在，但会话列表滚动到了下方，未读会话不在画面内→所以扫不到。不是颜色/HSV问题。前3次修复方向全错(窗口漂移/HSV阈值/匹配过严均非根因)", "files": ["apps/core/channels/qianniu/session_list_unread.py"]}
+      ]
+    },
+    {
+      "sig_id": "repeat_reply_noise",
+      "title": "在么/寒暄被当噪声不回复",
+      "fixes": [
+        {"version": "1.5.7", "date": "2026-05-29", "summary": "拆分买家开场寒暄与卖家回声，audio_peak 时在么不算噪声", "root_cause": "买家开场寒暄和卖家回声混在同一正则", "files": ["apps/core/orchestrator/reply_guards.py"]}
+      ]
+    },
+    {
+      "sig_id": "single_char_risk",
+      "title": "单字 OCR 触发风控话术",
+      "fixes": [
+        {"version": "1.5.8", "date": "2026-05-29", "summary": "len<=1 buyer_text 直接 discard，不再发『请问有什么可以帮到您』", "root_cause": "单字 OCR 多为噪声，quick_reply 模板正好踩风控关键词", "files": ["apps/core/ai/input_quality_gate.py"]}
+      ]
+    },
+    {
+      "sig_id": "dup_reply",
+      "title": "重复回复触发风控",
+      "fixes": [
+        {"version": "1.5.8", "date": "2026-05-29", "summary": "welcome 已发+剩纯寒暄则不再调 LLM 生成第二句", "root_cause": "OCR buyer_text 含店铺名/买家ID/AI自己的回复，脏数据触发多次回复", "files": ["apps/core/orchestrator/event_pipeline.py", "apps/core/orchestrator/reply_guards.py"]},
+        {"version": "1.5.9", "date": "2026-05-29", "summary": "v1.6.0-rc1：SessionReplyBudget 同一买家消息最多3条+Jaccard 0.75 去重", "root_cause": "缺少跨 cycle 的发送历史去重", "files": ["apps/core/orchestrator/outbound_history.py", "apps/core/orchestrator/event_pipeline.py"]}
+      ]
+    },
+    {
+      "sig_id": "risk_warning_popup",
+      "title": "淘宝风控弹窗（返回修改）",
+      "fixes": [
+        {"version": "1.5.10", "date": "2026-05-29", "summary": "v1.6.0：risk_warning_revise L1 UIA+L2 Claude视觉+L3 人工，点返回修改后 LLM 重新生成", "root_cause": "之前完全没有识别风控弹窗的逻辑", "files": ["apps/core/automation/risk_warning_revise.py", "apps/core/automation/popup_dismiss.py"]}
+      ]
+    },
+    {
+      "sig_id": "fatal_exception",
+      "title": "致命异常（cycle 崩溃）",
+      "fixes": [
+        {"version": "1.5.11", "date": "2026-05-29", "summary": "v1.6.1-rc1：cycle_buyer_digest 在所有分支初始化，修 UnboundLocalError", "root_cause": "v1.6.0 接入 budget 时只在主 OCR 分支定义该变量，先验复用分支漏了", "files": ["apps/core/orchestrator/event_pipeline.py"]},
+        {"version": "1.5.19", "date": "2026-05-31", "summary": "v1.6.5：装全局崩溃捕获(faulthandler+sys/threading.excepthook→data/logs/crash_*.log)+预览渲染守护包装。终结『崩溃无痕迹反复盲修』——本次正是靠它一次抓到真栈。", "root_cause": "打包窗口 exe 零崩溃捕获：PyQt6 主线程槽内未捕获异常会直接 abort 进程、C 扩展段错误 try/except 拦不住，崩溃后什么都不留→无法定位。", "files": ["apps/ui/main.py", "apps/ui/dialogs/shop_calibration_dialog.py"]},
+        {"version": "1.5.19", "date": "2026-05-31", "summary": "v1.6.5：修自动识别卡死闪退——_AutoCalibrateThread.__init__ 补 yaml_path 形参并透传 shop_yaml_path 给 run_auto_calibrate。", "root_cause": "v1.6.3 在 _on_auto_calibrate 调用 _AutoCalibrateThread(yaml_path=...)，但 thread 的 __init__ 那处接线编辑被 GateGuard 拦掉从未落地→构造抛 TypeError→线程没启动→UI 永远卡『识别中』。", "files": ["apps/ui/dialogs/shop_calibration_dialog.py"]},
+        {"version": "1.5.19", "date": "2026-05-31", "summary": "v1.6.5：修 bug历史按钮 NameError——settings_view.py import 块补 QTextEdit。", "root_cause": "_show_copy_dialog 用了 QTextEdit 但 import 块漏了它。", "files": ["apps/ui/views/settings_view.py"]},
+        {"version": "1.5.21", "date": "2026-05-31", "summary": "v1.6.6：修『话术库未命中转人工兜底时不回复、兜底话术也不发』——5 个 reply_guards 符号改为 event_pipeline.py 模块级 import。", "root_cause": "normalize_buyer_digest 等被全文多处使用，但此前只在 2 个局部分支做函数内 import；转人工兜底路径(line~1112等)不在那作用域→运行到兜底就 NameError→整个兜底分支崩溃→既不回复也不发兜底话术。靠 v1.6.4 崩溃捕获 crash 日志一次定位。", "files": ["apps/core/orchestrator/event_pipeline.py"]}
+      ]
+    },
+    {
+      "sig_id": "bring_front_fail",
+      "title": "千牛置前失败/被抢焦点",
+      "fixes": [
+        {"version": "1.5.11", "date": "2026-05-29", "summary": "v1.6.1-rc1：置前后二次校验，前台非千牛则重试最多2次", "root_cause": "Claude/其它窗口在置前后抢回前台", "files": ["apps/core/channels/qianniu/bring_to_front.py"]}
+      ]
+    },
+    {
+      "sig_id": "coord_calib_miss",
+      "title": "坐标自动识别漏识别",
+      "fixes": [
+        {"version": "1.5.11", "date": "2026-05-29", "summary": "v1.6.1-rc1：客服按钮识别加橙色 HSV（新版千牛改橙色）", "root_cause": "硬编码蓝色阈值打不到橙色按钮", "files": ["apps/core/automation/auto_calibrate.py"]},
+        {"version": "1.5.16", "date": "2026-05-31", "summary": "v1.6.3：anchor 窗口+偏移预测优先。校准成功时固化『窗口rect+各组件相对左上角偏移』到 qianniu.calib_anchor；下次校准用『当前窗口左上+偏移』直接预测输入框/发送键/滚动点/客服键/会话列表/聊天OCR区，再画标注图给 AI 复检，全过即用，个别字段被否决才退回满屏搜该字段并在预览标红。锁定窗口未变时弹窗确认是否真要重校。任务栏图标在窗口外，仍每次 UIA 重定位（不纳入 anchor）。", "root_cause": "【根因】窗口已被『窗口锁定』钉死在固定rect，组件全是窗口内固定偏移，但旧逻辑每次仍从全屏 CV 启发式(蓝像素/Hough竖线/Sobel)重搜，极易 latch 到错的东西(发送键飘到右侧面板~350px)→识别离谱。新逻辑把锁定窗口当原点，偏移预测+AI复检，从源头消除满屏瞎搜。", "files": ["apps/core/automation/anchor_calibrate.py", "apps/core/automation/auto_calibrate.py", "apps/core/configs/shop_yaml_calibration.py", "apps/ui/dialogs/shop_calibration_dialog.py"]}
+      ]
+    }
+  ]
+}

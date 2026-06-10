@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">千牛接待助手</string>
+    <string name="accessibility_service_label">千牛接待助手</string>
+    <string name="accessibility_service_description">辅助店主自动接待千牛买家消息。需要读取千牛 App 内容并模拟点击。</string>
+
+    <!-- 无障碍授权区 -->
+    <string name="title_status">无障碍服务</string>
+    <string name="status_disabled">未授权（请到系统设置 → 无障碍 → 启用本服务）</string>
+    <string name="status_enabled">已授权 ✓</string>
+    <string name="btn_open_settings">打开无障碍设置</string>
+
+    <!-- HTTP 服务区 -->
+    <string name="title_http_server">局域网 HTTP 服务</string>
+    <string name="http_status_running">运行中 ✓</string>
+    <string name="http_status_stopped">未启动</string>
+    <string name="btn_start_http">启动服务</string>
+    <string name="btn_stop_http">停止服务</string>
+
+    <!-- 二维码区 -->
+    <string name="title_pair_qr">PC 端配对二维码</string>
+    <string name="hint_pair_qr">在 PC 端「移动设备」对话框扫此码，自动填入 IP / 端口 / Token。</string>
+    <string name="desc_qr_code">配对二维码图像</string>
+    <string name="btn_reset_token">重置配对令牌（PC 需重新扫码）</string>
+    <string name="toast_token_reset">配对令牌已重置，请在 PC 端重新扫码</string>
+
+    <!-- 通用提示 -->
+    <string name="hint_qianniu_open">请打开千牛 App 后切换到「消息」页面。logcat tag = QianniuAgent.*</string>
+    <string name="info_logcat_tag">查看日志：adb logcat -s QianniuAgent QianniuAgent.Sessions QianniuAgent.Messages QianniuAgent.Sender QianniuAgent.Http QianniuAgent.FgService</string>
+</resources>

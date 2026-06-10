@@ -1,0 +1,25 @@
+{
+  "categories": {
+    "thanks": {
+      "replies": ["老板客气啦，有需要随时喊我～", "应该的，您有问题随时问～"]
+    },
+    "ack": {
+      "replies": ["嗯嗯好的～", "收到～"]
+    },
+    "greeting": {
+      "replies": ["在的呢～", "您好，我在的～"]
+    },
+    "farewell": {
+      "replies": ["好的，您慢走～", "嗯嗯，有需要再来～"]
+    },
+    "polite_short": {
+      "replies": ["好哒～", "嗯嗯～"]
+    },
+    "emoji": {
+      "replies": ["😊", "👌"]
+    },
+    "other": {
+      "replies": ["嗯嗯～", "在的呢～"]
+    }
+  }
+}

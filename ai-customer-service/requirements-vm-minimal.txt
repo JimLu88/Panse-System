@@ -1,0 +1,21 @@
+# Same as requirements.txt but without sentence-transformers (large torch stack).
+# Use with: pack_vm_dependency_bundle.ps1 -Minimal
+PyQt6>=6.6.0
+pyzmq>=26.0.0
+pyinstaller>=6.0.0
+uiautomation>=2.0.20
+rapidocr-onnxruntime>=1.4.4
+onnxruntime>=1.17.0
+mss>=9.0.1
+Pillow>=10.0.0
+numpy>=1.26.0
+PyYAML>=6.0.0
+pytest>=8.0.0
+anthropic>=0.40.0
+litellm>=1.55.0
+openpyxl>=3.1.0
+pycaw>=20240210
+psutil>=6.0.0
+comtypes>=1.4.0
+rank-bm25>=0.2.2
+pynput>=1.7.7

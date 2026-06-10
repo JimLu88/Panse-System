@@ -1,0 +1,2 @@
+"""Screen capture utilities (MSS)."""
+

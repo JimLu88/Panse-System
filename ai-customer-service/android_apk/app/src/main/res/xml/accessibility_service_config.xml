@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    无障碍服务配置：
+      - packageNames     仅监听千牛 App，不滥用全局监听（合规检查项）
+      - eventTypes       页面切换 + 内容变化
+      - canPerformGestures=true   阶段 1.6 模拟点击发送
+      - canRetrieveWindowContent=true   核心能力，必须开
+-->
+<accessibility-service
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/accessibility_service_description"
+    android:notificationTimeout="100"
+    android:packageNames="com.taobao.qianniu" />

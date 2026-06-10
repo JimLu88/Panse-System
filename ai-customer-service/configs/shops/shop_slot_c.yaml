@@ -1,0 +1,22 @@
+# 并排实例 C：请在屏幕上固定千牛窗口区域后，改为真实坐标与 OCR 矩形。
+brand_id: demo_brand_c
+shop_code: slot_c
+shop_display_name: 并排店铺 C
+
+qianniu:
+  main_window_name_contains: 千牛
+  input_box_point: { x: 0, y: 0 }
+  send_button_point: { x: 0, y: 0 }
+  chat_scroll_point: { x: 0, y: 0 }
+
+ocr_chat_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
+
+ocr_right_rect:
+  left: 0
+  top: 0
+  right: 0
+  bottom: 0
