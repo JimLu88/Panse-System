@@ -11,7 +11,7 @@
 | 挂载项 | 挂在哪个子系统 | 默认状态 | 启用前提 | 文档 |
 |---|---|---|---|---|
 | **A. 本地爬虫接口** | ② 采集分析 | 已确定接入 | 你本地有现成程序 | [A-local-crawler](A-local-crawler.md) |
-| **B. 图片指纹变形流水线** | ④ 适配器 | 默认关闭 | 仅"素材二创"伦理等级开启 | [B-image-fingerprint](B-image-fingerprint.md) |
+| **B. 图片指纹变形流水线** | ④ 适配器 | 默认关闭（⚠️ 家具矩阵建议提为必备） | 仅"素材二创"伦理等级开启；**多号发同款产品图场景下为刚需**（不做变形必被判同号连坐） | [B-image-fingerprint](B-image-fingerprint.md) |
 | **C. 海外 AUTO / 官方 API 驱动** | ⑥ 分发调度 | 推荐启用 | 申请到各平台 API | [C-overseas-api-driver](C-overseas-api-driver.md) |
 | **D. 国内自动操作驱动** | ⑥ 分发调度 | 默认关闭 | 评估风险后决定 | [D-domestic-automation](D-domestic-automation.md) |
 | **E. 代理与环境隔离层（"环境胶囊"）** | 横向支撑 | 默认关闭 | 启用 C 或 D 时配套启用 | [E-proxy-env-isolation](E-proxy-env-isolation.md) |

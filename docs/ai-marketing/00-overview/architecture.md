@@ -53,6 +53,9 @@
 | ⑤ | 账号与凭证管理 | 分发 | 档案 + 健康心跳，不管执行 | [05-account-manager](../01-subsystems/05-account-manager.md) |
 | ⑥ | 分发调度中心 | 分发 | 谁、何时、用哪个号、发到哪 | [06-dispatcher](../01-subsystems/06-dispatcher.md) |
 | ⑦ | 数据回收与分析 | 分发 | 真实感归因，反哺选题 | [07-analytics](../01-subsystems/07-analytics.md) |
+| ⑧ | 评论引流站（评审补充）| 分发 | 找上升期机会+AI写稿，人工点发 | [08-comment-engine](../01-subsystems/08-comment-engine.md) |
+| ⑨ | 养号 SOP 引擎（评审补充）| 分发 | 排程养号清单+成长门槛，不全自动 | [09-account-nurturing](../01-subsystems/09-account-nurturing.md) |
+| ⑩ | 线索/私信收件箱（评审补充）| 分发 | 承接问询+来源归因+回写 ERP 成交 | [10-lead-inbox](../01-subsystems/10-lead-inbox.md) |
 | Ⅰ | 配置与规则中心 | 横向 | 热更新 + 灰度 + 分级 | [config-rule-center](../02-cross-cutting/config-rule-center.md) |
 | Ⅱ | 风控事件总线 | 横向 | 独立订阅异常信号 | [risk-event-bus](../02-cross-cutting/risk-event-bus.md) |
 | Ⅲ | 多 LLM 路由 | 横向 | 顶级/廉价分层调用 | [llm-router](../02-cross-cutting/llm-router.md) |
