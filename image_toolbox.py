@@ -62,12 +62,15 @@ def human(n):
 # 标签页一：子文件夹提取
 # =====================================================================
 class ExtractorTab(ttk.Frame):
-    def __init__(self, master):
+    def __init__(self, master, compress_tab=None, notebook=None):
         super().__init__(master, padding=8)
+        self.compress_tab = compress_tab   # 复用「批量压缩」页的设置
+        self.notebook = notebook           # 用于“去调整压缩设置”跳转
         self.src_root = tk.StringVar()
         self.dst_root = tk.StringVar()
         self.mode = tk.StringVar(value="move")
         self.batch_pick = tk.StringVar()
+        self.compress_on = tk.BooleanVar(value=False)
         self.rows = []
         self._build()
 
@@ -107,6 +110,17 @@ class ExtractorTab(ttk.Frame):
         canvas.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
         canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        # 复制/移动时顺带压缩图片（复用「批量压缩」页设置）
+        comp = ttk.Frame(self)
+        comp.pack(fill="x", pady=(4, 0))
+        ttk.Checkbutton(comp, text="复制时压缩图片内容", variable=self.compress_on,
+                        command=self._toggle_compress).pack(side="left")
+        self.comp_frame = ttk.Frame(comp)  # 勾选后才显示
+        self.comp_summary = ttk.Label(self.comp_frame, text="", foreground="gray")
+        self.comp_summary.pack(side="left", padx=8)
+        ttk.Button(self.comp_frame, text="去调整压缩设置",
+                   command=self._goto_compress).pack(side="left")
 
         bottom = ttk.Frame(self)
         bottom.pack(fill="x", pady=6)
@@ -175,6 +189,31 @@ class ExtractorTab(ttk.Frame):
             if r["subs"]:
                 r["include"].set(nv)
 
+    # ---- 压缩选项 ----
+    def _toggle_compress(self):
+        if self.compress_on.get():
+            if not PIL_OK:
+                messagebox.showwarning("提示", "未安装 Pillow，无法压缩。请先 pip 安装相关库。")
+                self.compress_on.set(False)
+                return
+            self._refresh_comp_summary()
+            self.comp_frame.pack(side="left")
+        else:
+            self.comp_frame.pack_forget()
+
+    def _refresh_comp_summary(self):
+        ct = self.compress_tab
+        if not ct:
+            self.comp_summary.configure(text="（找不到压缩页设置）")
+            return
+        mx = ct.max_size.get().strip() or "不限"
+        self.comp_summary.configure(
+            text=f"当前压缩设置：质量 {ct.quality.get()} / 格式 {ct.out_fmt.get()} / 最大边 {mx}px")
+
+    def _goto_compress(self):
+        if self.notebook and self.compress_tab:
+            self.notebook.select(self.compress_tab)
+
     def start(self):
         if not self.rows:
             messagebox.showwarning("提示", "请先选择根目录。"); return
@@ -188,29 +227,67 @@ class ExtractorTab(ttk.Frame):
                 jobs.append((src, os.path.join(self.dst_root.get(), nm), r["outer"]))
         if not jobs:
             messagebox.showinfo("提示", "没有勾选任何行。"); return
+        do_compress = self.compress_on.get()
+        tip = "（图片将按压缩页设置压缩）" if do_compress else ""
         if not messagebox.askyesno("确认", f"将{'移动' if self.mode.get() == 'move' else '复制'} "
-                                            f"{len(jobs)} 个子文件夹，确定吗？"):
+                                            f"{len(jobs)} 个子文件夹{tip}，确定吗？"):
             return
         self.run_btn.configure(state="disabled")
-        threading.Thread(target=self._process, args=(jobs,), daemon=True).start()
+        threading.Thread(target=self._process, args=(jobs, do_compress), daemon=True).start()
 
-    def _process(self, jobs):
+    def _compress_settings(self):
+        """从「批量压缩」页读取当前设置，返回 (quality, target_ext, max_size)。"""
+        ct = self.compress_tab
+        ext_map = {"JPG": ".jpg", "PNG": ".png", "WebP": ".webp", "AVIF": ".avif",
+                   "TIFF": ".tiff", "BMP": ".bmp", "GIF": ".gif", "ICO": ".ico"}
+        target_ext = ext_map.get(ct.out_fmt.get())  # None = 保持原格式
+        try:
+            mx = int(ct.max_size.get()) if ct.max_size.get().strip() else None
+        except ValueError:
+            mx = None
+        return ct.quality.get(), target_ext, mx
+
+    def _copy_compress_tree(self, src, dst, quality, target_ext, max_size):
+        """复制整个子文件夹；图片压缩，非图片原样复制。"""
+        for root, _, files in os.walk(src):
+            out_dir = os.path.join(dst, os.path.relpath(root, src))
+            os.makedirs(out_dir, exist_ok=True)
+            for f in files:
+                sp = os.path.join(root, f)
+                if os.path.splitext(f)[1].lower() in SUPPORTED:
+                    dp = os.path.join(out_dir, f)
+                    if target_ext:
+                        dp = os.path.splitext(dp)[0] + target_ext
+                    try:
+                        CompressTab._compress_one(sp, dp, quality, target_ext, max_size)
+                    except Exception:
+                        shutil.copy2(sp, os.path.join(out_dir, f))  # 压缩失败则保留原图
+                else:
+                    shutil.copy2(sp, os.path.join(out_dir, f))
+
+    def _process(self, jobs, do_compress):
         self.progress.configure(maximum=len(jobs), value=0)
         ok = fail = 0
         is_move = self.mode.get() == "move"
+        cfg = self._compress_settings() if do_compress else None
         for i, (src, dst, outer) in enumerate(jobs, 1):
             try:
                 base, n = dst, 1
                 while os.path.exists(dst):
                     dst = f"{base}_{n}"; n += 1
-                shutil.move(src, dst) if is_move else shutil.copytree(src, dst)
+                if do_compress:
+                    self._copy_compress_tree(src, dst, *cfg)
+                    if is_move:
+                        shutil.rmtree(src)  # 压缩是重新编码，先压成新目录再删原文件夹
+                else:
+                    shutil.move(src, dst) if is_move else shutil.copytree(src, dst)
                 ok += 1
                 self._log(f"[{i}/{len(jobs)}] {outer} → {os.path.basename(dst)} ✓")
             except Exception as e:
                 fail += 1
                 self._log(f"[{i}/{len(jobs)}] {outer} ✗ {e}")
             self.progress.configure(value=i)
-        self._log(f"\n完成！成功 {ok}，失败 {fail}。")
+        self._log(f"\n完成！成功 {ok}，失败 {fail}。" + ("（已压缩）" if do_compress else ""))
         self.after(0, lambda: self.run_btn.configure(state="normal"))
         self.after(0, lambda: messagebox.showinfo("完成", f"成功 {ok}，失败 {fail}。"))
 
@@ -418,8 +495,10 @@ def main():
     root.geometry("900x680")
     nb = ttk.Notebook(root)
     nb.pack(fill="both", expand=True)
-    nb.add(ExtractorTab(nb), text="  子文件夹提取  ")
-    nb.add(CompressTab(nb), text="  批量压缩  ")
+    compress_tab = CompressTab(nb)
+    extractor_tab = ExtractorTab(nb, compress_tab=compress_tab, notebook=nb)
+    nb.add(extractor_tab, text="  子文件夹提取  ")
+    nb.add(compress_tab, text="  批量压缩  ")
     root.mainloop()
 
 
