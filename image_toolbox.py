@@ -1,0 +1,427 @@
+# -*- coding: utf-8 -*-
+"""
+图片工具箱（可视化）
+=====================================
+两个功能合一，标签页切换：
+  1) 子文件夹提取：从每个外层文件夹里挑指定子文件夹，提取到新目录
+  2) 批量压缩：批量压缩图片，可选质量、格式转换、最大尺寸
+
+支持格式：
+  输入：jpg/jpeg/png/webp/bmp/tif/tiff/gif/ico + HEIC/HEIF（苹果手机照片）+ avif
+  输出：JPG / PNG / WebP / AVIF / TIFF / BMP / GIF / ICO
+
+依赖（仅压缩功能需要）：pillow  pillow-heif  pillow-avif-plugin
+运行：python image_toolbox.py
+"""
+
+import os
+import shutil
+import threading
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox
+
+# ---- 图片库与扩展格式插件（缺失时压缩页友好降级） ----
+try:
+    from PIL import Image
+    PIL_OK = True
+except ImportError:
+    PIL_OK = False
+
+# HEIC/HEIF 读取（苹果照片）
+try:
+    import pillow_heif
+    pillow_heif.register_heif_opener()
+    HEIF_OK = True
+except Exception:
+    HEIF_OK = False
+
+# AVIF 读写
+try:
+    import pillow_avif  # noqa: F401  导入即注册 AVIF 插件
+    AVIF_OK = True
+except Exception:
+    # pillow-heif 也能提供 AVIF 支持
+    try:
+        pillow_heif.register_avif_opener()
+        AVIF_OK = True
+    except Exception:
+        AVIF_OK = False
+
+SUPPORTED = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff",
+             ".gif", ".ico", ".heic", ".heif", ".avif"}
+
+
+def human(n):
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB":
+            return f"{n:.1f}{u}"
+        n /= 1024
+
+
+# =====================================================================
+# 标签页一：子文件夹提取
+# =====================================================================
+class ExtractorTab(ttk.Frame):
+    def __init__(self, master):
+        super().__init__(master, padding=8)
+        self.src_root = tk.StringVar()
+        self.dst_root = tk.StringVar()
+        self.mode = tk.StringVar(value="move")
+        self.batch_pick = tk.StringVar()
+        self.rows = []
+        self._build()
+
+    def _build(self):
+        top = ttk.Frame(self)
+        top.pack(fill="x")
+        ttk.Label(top, text="根目录（含外层文件夹）:").grid(row=0, column=0, sticky="w")
+        ttk.Entry(top, textvariable=self.src_root, width=60).grid(row=0, column=1, padx=6)
+        ttk.Button(top, text="选择…", command=self.choose_src).grid(row=0, column=2)
+        ttk.Label(top, text="输出目录:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(top, textvariable=self.dst_root, width=60).grid(row=1, column=1, padx=6, pady=(6, 0))
+        ttk.Button(top, text="选择…", command=self.choose_dst).grid(row=1, column=2, pady=(6, 0))
+
+        batch = ttk.LabelFrame(self, text="批量设定（可选）", padding=6)
+        batch.pack(fill="x", pady=6)
+        ttk.Label(batch, text="所有行统一提取:").pack(side="left")
+        self.batch_combo = ttk.Combobox(batch, textvariable=self.batch_pick, width=26, state="readonly")
+        self.batch_combo.pack(side="left", padx=6)
+        ttk.Button(batch, text="应用到全部", command=self.apply_batch).pack(side="left")
+        ttk.Button(batch, text="全选/全不选", command=self.toggle_all).pack(side="left", padx=6)
+
+        header = ttk.Frame(self)
+        header.pack(fill="x")
+        ttk.Label(header, text="✓", width=3).grid(row=0, column=0)
+        ttk.Label(header, text="外层文件夹", width=26).grid(row=0, column=1, sticky="w")
+        ttk.Label(header, text="提取哪个子文件夹", width=30).grid(row=0, column=2, sticky="w")
+        ttk.Label(header, text="新名称（默认=外层名）", width=26).grid(row=0, column=3, sticky="w")
+
+        cont = ttk.Frame(self)
+        cont.pack(fill="both", expand=True)
+        canvas = tk.Canvas(cont, highlightthickness=0)
+        sb = ttk.Scrollbar(cont, orient="vertical", command=canvas.yview)
+        self.table = ttk.Frame(canvas)
+        self.table.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.create_window((0, 0), window=self.table, anchor="nw")
+        canvas.configure(yscrollcommand=sb.set)
+        canvas.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-e.delta / 120), "units"))
+
+        bottom = ttk.Frame(self)
+        bottom.pack(fill="x", pady=6)
+        ttk.Radiobutton(bottom, text="移动", variable=self.mode, value="move").pack(side="left")
+        ttk.Radiobutton(bottom, text="复制", variable=self.mode, value="copy").pack(side="left", padx=8)
+        self.run_btn = ttk.Button(bottom, text="开始提取", command=self.start)
+        self.run_btn.pack(side="right")
+
+        self.progress = ttk.Progressbar(self, mode="determinate")
+        self.progress.pack(fill="x")
+        self.log = tk.Text(self, height=6, state="disabled")
+        self.log.pack(fill="both", pady=(4, 0))
+
+    def choose_src(self):
+        d = filedialog.askdirectory(title="选择根目录")
+        if d:
+            self.src_root.set(d)
+            self.load_folders(d)
+
+    def choose_dst(self):
+        d = filedialog.askdirectory(title="选择输出目录")
+        if d:
+            self.dst_root.set(d)
+
+    def load_folders(self, root_dir):
+        for w in self.table.winfo_children():
+            w.destroy()
+        self.rows.clear()
+        outers = sorted(d for d in os.listdir(root_dir)
+                        if os.path.isdir(os.path.join(root_dir, d)))
+        all_subs = set()
+        for i, outer in enumerate(outers):
+            op = os.path.join(root_dir, outer)
+            subs = sorted(d for d in os.listdir(op) if os.path.isdir(os.path.join(op, d)))
+            all_subs.update(subs)
+            inc = tk.BooleanVar(value=bool(subs))
+            pick = tk.StringVar(value=subs[0] if subs else "")
+            name = tk.StringVar(value=outer)
+            ttk.Checkbutton(self.table, variable=inc).grid(row=i, column=0, padx=2, pady=2)
+            ttk.Label(self.table, text=outer, width=26, anchor="w").grid(row=i, column=1, sticky="w")
+            combo = ttk.Combobox(self.table, textvariable=pick, values=subs, width=28,
+                                 state="readonly" if subs else "disabled")
+            combo.grid(row=i, column=2, padx=4)
+            ttk.Entry(self.table, textvariable=name, width=26).grid(row=i, column=3, padx=4)
+            self.rows.append(dict(outer=outer, outer_path=op, subs=subs,
+                                  include=inc, pick=pick, name=name))
+        self.batch_combo.configure(values=sorted(all_subs))
+        self._log(f"已加载 {len(outers)} 个外层文件夹。")
+
+    def apply_batch(self):
+        t = self.batch_pick.get()
+        if not t:
+            messagebox.showinfo("提示", "请先在下拉里选一个子文件夹名。")
+            return
+        c = 0
+        for r in self.rows:
+            if t in r["subs"]:
+                r["pick"].set(t); r["include"].set(True); c += 1
+            else:
+                r["include"].set(False)
+        self._log(f"已统一设为「{t}」：{c} 个匹配，其余 {len(self.rows) - c} 个已取消勾选。")
+
+    def toggle_all(self):
+        nv = not all(r["include"].get() for r in self.rows)
+        for r in self.rows:
+            if r["subs"]:
+                r["include"].set(nv)
+
+    def start(self):
+        if not self.rows:
+            messagebox.showwarning("提示", "请先选择根目录。"); return
+        if not self.dst_root.get():
+            messagebox.showwarning("提示", "请先选择输出目录。"); return
+        jobs = []
+        for r in self.rows:
+            if r["include"].get() and r["pick"].get():
+                src = os.path.join(r["outer_path"], r["pick"].get())
+                nm = r["name"].get().strip() or r["outer"]
+                jobs.append((src, os.path.join(self.dst_root.get(), nm), r["outer"]))
+        if not jobs:
+            messagebox.showinfo("提示", "没有勾选任何行。"); return
+        if not messagebox.askyesno("确认", f"将{'移动' if self.mode.get() == 'move' else '复制'} "
+                                            f"{len(jobs)} 个子文件夹，确定吗？"):
+            return
+        self.run_btn.configure(state="disabled")
+        threading.Thread(target=self._process, args=(jobs,), daemon=True).start()
+
+    def _process(self, jobs):
+        self.progress.configure(maximum=len(jobs), value=0)
+        ok = fail = 0
+        is_move = self.mode.get() == "move"
+        for i, (src, dst, outer) in enumerate(jobs, 1):
+            try:
+                base, n = dst, 1
+                while os.path.exists(dst):
+                    dst = f"{base}_{n}"; n += 1
+                shutil.move(src, dst) if is_move else shutil.copytree(src, dst)
+                ok += 1
+                self._log(f"[{i}/{len(jobs)}] {outer} → {os.path.basename(dst)} ✓")
+            except Exception as e:
+                fail += 1
+                self._log(f"[{i}/{len(jobs)}] {outer} ✗ {e}")
+            self.progress.configure(value=i)
+        self._log(f"\n完成！成功 {ok}，失败 {fail}。")
+        self.after(0, lambda: self.run_btn.configure(state="normal"))
+        self.after(0, lambda: messagebox.showinfo("完成", f"成功 {ok}，失败 {fail}。"))
+
+    def _log(self, msg):
+        def a():
+            self.log.configure(state="normal"); self.log.insert("end", msg + "\n")
+            self.log.see("end"); self.log.configure(state="disabled")
+        self.after(0, a)
+
+
+# =====================================================================
+# 标签页二：批量压缩
+# =====================================================================
+class CompressTab(ttk.Frame):
+    OUT_FORMATS = ["保持原格式", "JPG", "PNG", "WebP", "AVIF", "TIFF", "BMP", "GIF", "ICO"]
+
+    def __init__(self, master):
+        super().__init__(master, padding=8)
+        self.recursive = tk.BooleanVar(value=False)
+        self.quality = tk.IntVar(value=85)
+        self.out_fmt = tk.StringVar(value="保持原格式")
+        self.max_size = tk.StringVar(value="")
+        self.dst_root = tk.StringVar()
+        self.folders = []
+        self._build()
+
+    def _build(self):
+        if not PIL_OK:
+            ttk.Label(self, text="未安装 Pillow，压缩功能不可用。\n请运行：pip install pillow pillow-heif pillow-avif-plugin",
+                      foreground="red").pack(pady=20)
+            return
+
+        caps = []
+        caps.append("HEIC/HEIF " + ("✓" if HEIF_OK else "✗（缺 pillow-heif）"))
+        caps.append("AVIF " + ("✓" if AVIF_OK else "✗（缺 pillow-avif-plugin）"))
+        ttk.Label(self, text="扩展格式支持：  " + "    ".join(caps), foreground="gray").pack(anchor="w")
+
+        fr = ttk.LabelFrame(self, text="要压缩的文件夹", padding=6)
+        fr.pack(fill="both", expand=True, pady=4)
+        self.listbox = tk.Listbox(fr, height=6)
+        self.listbox.pack(side="left", fill="both", expand=True)
+        btns = ttk.Frame(fr)
+        btns.pack(side="right", fill="y", padx=6)
+        ttk.Button(btns, text="添加文件夹", command=self.add_folder).pack(fill="x", pady=2)
+        ttk.Button(btns, text="移除选中", command=self.remove_folder).pack(fill="x", pady=2)
+        ttk.Checkbutton(btns, text="含子文件夹", variable=self.recursive).pack(anchor="w", pady=4)
+
+        opt = ttk.Frame(self)
+        opt.pack(fill="x", pady=4)
+        ttk.Label(opt, text="质量:").grid(row=0, column=0, sticky="w")
+        ttk.Scale(opt, from_=1, to=100, variable=self.quality, orient="horizontal",
+                  length=180, command=lambda e: self.qlabel.configure(text=str(self.quality.get()))).grid(row=0, column=1, padx=4)
+        self.qlabel = ttk.Label(opt, text="85", width=4)
+        self.qlabel.grid(row=0, column=2)
+        ttk.Label(opt, text="（PNG/BMP 无损，质量无效）", foreground="gray").grid(row=0, column=3, sticky="w")
+
+        ttk.Label(opt, text="输出格式:").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(opt, textvariable=self.out_fmt, values=self.OUT_FORMATS,
+                     width=14, state="readonly").grid(row=1, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(opt, text="最大边像素(留空=不限):").grid(row=1, column=2, sticky="e", pady=(6, 0))
+        ttk.Entry(opt, textvariable=self.max_size, width=8).grid(row=1, column=3, sticky="w", pady=(6, 0))
+
+        dst = ttk.Frame(self)
+        dst.pack(fill="x", pady=4)
+        ttk.Label(dst, text="输出目录:").pack(side="left")
+        ttk.Entry(dst, textvariable=self.dst_root, width=50).pack(side="left", padx=6)
+        ttk.Button(dst, text="选择…", command=self.choose_dst).pack(side="left")
+
+        bot = ttk.Frame(self)
+        bot.pack(fill="x")
+        self.run_btn = ttk.Button(bot, text="开始压缩", command=self.start)
+        self.run_btn.pack(side="right")
+        self.progress = ttk.Progressbar(self, mode="determinate")
+        self.progress.pack(fill="x", pady=(4, 0))
+        self.log = tk.Text(self, height=6, state="disabled")
+        self.log.pack(fill="both", pady=(4, 0))
+
+    def add_folder(self):
+        d = filedialog.askdirectory(title="选择要压缩的文件夹")
+        if d and d not in self.folders:
+            self.folders.append(d)
+            self.listbox.insert("end", d)
+
+    def remove_folder(self):
+        for idx in reversed(self.listbox.curselection()):
+            self.folders.pop(idx)
+            self.listbox.delete(idx)
+
+    def choose_dst(self):
+        d = filedialog.askdirectory(title="选择输出目录")
+        if d:
+            self.dst_root.set(d)
+
+    def _collect(self, folder):
+        out = []
+        if self.recursive.get():
+            for root, _, files in os.walk(folder):
+                out += [os.path.join(root, f) for f in files
+                        if os.path.splitext(f)[1].lower() in SUPPORTED]
+        else:
+            out = [os.path.join(folder, f) for f in os.listdir(folder)
+                   if os.path.isfile(os.path.join(folder, f))
+                   and os.path.splitext(f)[1].lower() in SUPPORTED]
+        return out
+
+    def start(self):
+        if not PIL_OK:
+            return
+        if not self.folders:
+            messagebox.showwarning("提示", "请先添加要压缩的文件夹。"); return
+        if not self.dst_root.get():
+            messagebox.showwarning("提示", "请先选择输出目录。"); return
+
+        ext_map = {"JPG": ".jpg", "PNG": ".png", "WebP": ".webp", "AVIF": ".avif",
+                   "TIFF": ".tiff", "BMP": ".bmp", "GIF": ".gif", "ICO": ".ico"}
+        target_ext = ext_map.get(self.out_fmt.get())  # None = 保持原格式
+        try:
+            mx = int(self.max_size.get()) if self.max_size.get().strip() else None
+        except ValueError:
+            mx = None
+
+        tasks = []
+        for folder in self.folders:
+            for src in self._collect(folder):
+                tasks.append((src, folder))
+        if not tasks:
+            messagebox.showinfo("提示", "没有找到图片。"); return
+
+        self.run_btn.configure(state="disabled")
+        threading.Thread(target=self._process,
+                         args=(tasks, self.quality.get(), target_ext, mx), daemon=True).start()
+
+    def _process(self, tasks, quality, target_ext, max_size):
+        self.progress.configure(maximum=len(tasks), value=0)
+        ok = fail = 0
+        total_o = total_n = 0
+        for i, (src, base) in enumerate(tasks, 1):
+            rel = os.path.relpath(src, base)
+            dst_root = os.path.join(self.dst_root.get(), os.path.basename(base.rstrip("/\\")))
+            dst = os.path.join(dst_root, rel)
+            if target_ext:
+                dst = os.path.splitext(dst)[0] + target_ext
+            try:
+                o, n = self._compress_one(src, dst, quality, target_ext, max_size)
+                total_o += o; total_n += n; ok += 1
+                pct = (1 - n / o) * 100 if o else 0
+                self._log(f"[{i}/{len(tasks)}] {rel}  {human(o)}→{human(n)} (-{pct:.0f}%)")
+            except Exception as e:
+                fail += 1
+                self._log(f"[{i}/{len(tasks)}] ✗ {rel}  {e}")
+            self.progress.configure(value=i)
+        if total_o:
+            saved = total_o - total_n
+            self._log(f"\n完成！成功 {ok}，失败 {fail}。"
+                      f"总计 {human(total_o)}→{human(total_n)}，省 {human(saved)} "
+                      f"(-{saved / total_o * 100:.0f}%)")
+        self.after(0, lambda: self.run_btn.configure(state="normal"))
+        self.after(0, lambda: messagebox.showinfo("完成", f"成功 {ok}，失败 {fail}。"))
+
+    @staticmethod
+    def _compress_one(src, dst, quality, target_ext, max_size):
+        orig = os.path.getsize(src)
+        img = Image.open(src)
+        if max_size and (img.width > max_size or img.height > max_size):
+            img.thumbnail((max_size, max_size), Image.LANCZOS)
+        out_ext = (target_ext or os.path.splitext(src)[1]).lower()
+
+        # 不支持透明通道的格式 → 贴白底转 RGB
+        if out_ext in (".jpg", ".jpeg", ".bmp"):
+            if img.mode in ("RGBA", "LA", "P"):
+                bg = Image.new("RGB", img.size, (255, 255, 255))
+                rgba = img.convert("RGBA")
+                bg.paste(rgba, mask=rgba.split()[-1])
+                img = bg
+            else:
+                img = img.convert("RGB")
+        elif out_ext == ".gif":
+            img = img.convert("P", palette=Image.ADAPTIVE)
+
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        kw = {}
+        if out_ext in (".jpg", ".jpeg"):
+            kw = {"quality": quality, "optimize": True, "progressive": True}
+        elif out_ext == ".webp":
+            kw = {"quality": quality, "method": 6}
+        elif out_ext == ".avif":
+            kw = {"quality": quality}
+        elif out_ext == ".png":
+            kw = {"optimize": True}
+        elif out_ext in (".tif", ".tiff"):
+            kw = {"compression": "tiff_lzw"}
+        img.save(dst, **kw)
+        return orig, os.path.getsize(dst)
+
+    def _log(self, msg):
+        def a():
+            self.log.configure(state="normal"); self.log.insert("end", msg + "\n")
+            self.log.see("end"); self.log.configure(state="disabled")
+        self.after(0, a)
+
+
+def main():
+    root = tk.Tk()
+    root.title("图片工具箱")
+    root.geometry("900x680")
+    nb = ttk.Notebook(root)
+    nb.pack(fill="both", expand=True)
+    nb.add(ExtractorTab(nb), text="  子文件夹提取  ")
+    nb.add(CompressTab(nb), text="  批量压缩  ")
+    root.mainloop()
+
+
+if __name__ == "__main__":
+    main()

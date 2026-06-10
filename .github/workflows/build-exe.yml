@@ -1,0 +1,39 @@
+name: Build 图片工具箱 EXE
+
+# 推送到本分支、或手动触发时，在 Windows 上打包 .exe 并上传为可下载产物
+on:
+  push:
+    branches:
+      - claude/focused-darwin-l3r94c
+    paths:
+      - image_toolbox.py
+      - .github/workflows/build-exe.yml
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 安装依赖
+        run: pip install pyinstaller pillow pillow-heif pillow-avif-plugin
+
+      - name: 打包 EXE
+        run: >
+          pyinstaller --onefile --windowed --clean
+          --name ImageToolbox
+          --collect-all pillow_heif
+          --collect-all pillow_avif
+          image_toolbox.py
+
+      - name: 上传 EXE 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageToolbox-windows-exe
+          path: dist/ImageToolbox.exe
+          if-no-files-found: error
