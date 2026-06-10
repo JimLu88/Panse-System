@@ -73,6 +73,11 @@ class ExtractorTab(ttk.Frame):
         self.compress_on = tk.BooleanVar(value=False)
         self.rows = []
         self._build()
+        # 监听「批量压缩」页设置变化，实时刷新摘要（否则改了质量这里不更新）
+        if self.compress_tab:
+            for v in (self.compress_tab.quality, self.compress_tab.out_fmt,
+                      self.compress_tab.max_size):
+                v.trace_add("write", lambda *a: self._refresh_comp_summary())
 
     def _build(self):
         top = ttk.Frame(self)
