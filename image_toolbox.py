@@ -23,7 +23,7 @@ from tkinter import ttk, filedialog, messagebox
 
 # ---- 图片库与扩展格式插件（缺失时压缩页友好降级） ----
 try:
-    from PIL import Image
+    from PIL import Image, ImageOps
     PIL_OK = True
 except ImportError:
     PIL_OK = False
@@ -533,6 +533,8 @@ class CompressTab(ttk.Frame):
     def _compress_one(cls, src, dst, quality, target_ext, max_size, tgt_bytes=None):
         orig = os.path.getsize(src)
         img = Image.open(src)
+        # 按 EXIF 方向把像素转正（否则手机竖图重存后会显示成横的）
+        img = ImageOps.exif_transpose(img)
         if max_size and (img.width > max_size or img.height > max_size):
             img.thumbnail((max_size, max_size), Image.LANCZOS)
         out_ext = (target_ext or os.path.splitext(src)[1]).lower()
