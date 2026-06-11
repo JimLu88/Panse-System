@@ -170,6 +170,15 @@ def digest():
     return scheduler.DIGEST
 
 
+@router.get("/watchdog")
+def watchdog_status(db: Session = Depends(get_db)):
+    """看门狗状态 + 最近20次体检记录。"""
+    from ..services import watchdog
+    if watchdog.STATE["last_check_at"] is None:
+        watchdog.check_once()
+    return watchdog.status(db)
+
+
 # ---------------- ⑧ 评论引流 ----------------
 @router.post("/comments/scan")
 def comments_scan(db: Session = Depends(get_db)):

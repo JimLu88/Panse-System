@@ -4,6 +4,7 @@ from .comment import CommentOpportunity
 from .content import ContentEvent, Draft, Topic
 from .lead import Lead
 from .publish import Metric, PublishEvent
+from .system import HealthLog
 
 __all__ = [
     "Account",
@@ -15,4 +16,5 @@ __all__ = [
     "Lead",
     "Metric",
     "PublishEvent",
+    "HealthLog",
 ]

@@ -15,15 +15,18 @@ from fastapi.staticfiles import StaticFiles
 from .api.routes import router
 from .config import get_settings
 from .database import init_db
-from .services import scheduler
+from .services import scheduler, watchdog
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    task = asyncio.create_task(scheduler.loop())
+    tasks = [asyncio.create_task(scheduler.loop())]
+    if get_settings().watchdog_enabled:
+        tasks.append(asyncio.create_task(watchdog.loop()))
     yield
-    task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(title="AI Marketing System · 家具品牌内容矩阵", version="0.2.0",

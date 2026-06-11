@@ -76,6 +76,10 @@ document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
 });
 
 api('GET','/api/health').then(h=>$('#llm').textContent='LLM: '+h.llm_provider+(h.auth?' · 🔒':''));
+api('GET','/api/watchdog').then(w=>{
+  const ok=w.consecutive_failures===0;
+  $('#llm').textContent+=` · 🐶${ok?'正常':'⚠️连续失败'+w.consecutive_failures+'次'}`;
+}).catch(()=>{});
 api('GET','/api/digest').then(d=>{
   const parts=[];
   if(d.overdue_leads)parts.push(`⚠️ ${d.overdue_leads} 条线索超48h未跟进`);
@@ -212,8 +216,9 @@ const VIEWS = {
   },
 
   async data(v){
-    const [o,boost]=await Promise.all([api('GET','/api/analytics/overview'),api('GET','/api/analytics/category-boost')]);
+    const [o,boost,wd]=await Promise.all([api('GET','/api/analytics/overview'),api('GET','/api/analytics/category-boost'),api('GET','/api/watchdog')]);
     const boosts=Object.entries(boost);
+    const lastChecks=(wd.recent||[]).slice(0,8);
     v.innerHTML=`<div class="card"><h3>⑦ 数据大盘</h3>
       <div class="grid"><div class="card" style="margin:0"><div class="muted">已发布</div><div style="font-size:26px">${o.published}</div></div>
       <div class="card" style="margin:0"><div class="muted">加权真实感</div><div style="font-size:26px">${o.avg_realness_weighted}</div></div>
@@ -221,7 +226,15 @@ const VIEWS = {
       <div class="muted" style="margin-top:10px">${o.note}</div></div>
       <div class="card"><h3>⑦→① 选题反哺（高真实感品类加权）</h3>
       ${boosts.length?`<table><tbody>${boosts.map(([c,b])=>`<tr><td>${c}</td><td>boost +${b}</td></tr>`).join('')}</tbody></table>`
-      :'<div class="empty">还没有产生 boost 的品类（真实感需 > 0.6）</div>'}</div>`;
+      :'<div class="empty">还没有产生 boost 的品类（真实感需 > 0.6）</div>'}</div>
+      <div class="card"><h3>🐶 看门狗 <span class="muted">60s体检 · 连续${wd.config.failures_to_restart}次失败自救重启 · 冷却${wd.config.cooldown_min}分钟</span></h3>
+      <div class="kv">连续失败：<b>${wd.consecutive_failures}</b> 次 ${wd.in_cooldown?'<span class="pill y">冷却期内</span>':''}
+      · 最近体检 ${wd.last_check_at?new Date(wd.last_check_at).toLocaleString():'—'}</div>
+      ${lastChecks.length?`<table style="margin-top:8px"><thead><tr><th>时间</th><th>结果</th><th>明细</th></tr></thead>
+      <tbody>${lastChecks.map(h=>`<tr><td>${new Date(h.at).toLocaleTimeString()}</td>
+      <td><span class="pill ${h.ok?'':'r'}">${h.ok?'OK':'FAIL'}</span></td>
+      <td class="muted">${Object.entries(h.details).map(([k,v])=>`${v.ok?'✅':'❌'}${k}:${v.info}`).join(' · ')}</td></tr>`).join('')}</tbody></table>`
+      :'<div class="empty">暂无体检记录</div>'}</div>`;
   },
 };
 

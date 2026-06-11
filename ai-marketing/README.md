@@ -40,6 +40,8 @@ docker compose up -d --build    # 端口 8001，数据持久化在 ./data/
 
 **鉴权**：`.env` 配 `API_TOKEN=xxx` 后所有 `/api/*` 需 `Authorization: Bearer xxx`（工作台会弹框让你输一次，存浏览器）。不配则免鉴权（内网）。
 
+**看门狗**（与 ERP system_monitor 同模式）：每 60s 体检 DB/磁盘/内存/调度器心跳，写 `system_health_logs`；连续 3 次失败 → SIGTERM 自救 → Docker `restart: unless-stopped` 自动拉起（10 分钟冷却防重启风暴）。状态看工作台顶栏 🐶 或「数据大盘」页，API：`GET /api/watchdog`。环境变量 `WATCHDOG_ENABLED=0` 可关。
+
 ## 端到端走一遍（命令行）
 
 ```bash

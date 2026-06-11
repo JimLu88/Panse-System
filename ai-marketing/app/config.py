@@ -28,6 +28,9 @@ class Settings(BaseSettings):
     # 简单鉴权：配了 API_TOKEN 则 /api/* 需 Bearer token（/api/health 除外）
     api_token: str = ""
 
+    # 看门狗（60s体检，连续3次失败 SIGTERM 自救，配合 Docker unless-stopped）
+    watchdog_enabled: bool = True
+
 
 @lru_cache
 def get_settings() -> Settings:

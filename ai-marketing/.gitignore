@@ -5,3 +5,4 @@ __pycache__/
 marketing.db
 *.db
 data/
+watchdog.cooldown
