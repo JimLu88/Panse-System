@@ -31,6 +31,13 @@ class Account(Base):
     topic_affinity: Mapped[dict] = mapped_column(JSON, default=dict)
 
     follower_count: Mapped[int] = mapped_column(Integer, default=0)
+
+    # 运营管理字段（评审建议2/11/13）：
+    real_person: Mapped[str] = mapped_column(String(40), default="")   # 人设号绑定的真人（同事）
+    device_note: Mapped[str] = mapped_column(String(80), default="")   # 绑定手机/设备
+    sim_note: Mapped[str] = mapped_column(String(40), default="")      # 手机卡
+    official_setup: Mapped[dict] = mapped_column(JSON, default=dict)   # 专业号官方功能开通清单
+
     # 养号阶段：nurturing(养号期)/trial(试发期)/active(正式期)
     stage: Mapped[str] = mapped_column(String(12), default="nurturing")
     stage_since: Mapped[dt.date] = mapped_column(Date, default=lambda: dt.date.today())

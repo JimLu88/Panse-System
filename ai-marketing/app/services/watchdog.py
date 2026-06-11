@@ -154,6 +154,11 @@ def self_restart(kill=None) -> bool:
         return False
     _COOLDOWN_FILE.write_text(dt.datetime.now(dt.timezone.utc).isoformat())
     log.critical("看门狗：连续 %s 次体检失败，SIGTERM 自救重启", FAILURES_TO_RESTART)
+    try:
+        from . import notifier
+        notifier.send_feishu(f"【看门狗告警】内容矩阵系统连续 {FAILURES_TO_RESTART} 次体检失败，正在自动重启。")
+    except Exception:
+        pass
     (kill or (lambda: os.kill(os.getpid(), signal.SIGTERM)))()
     return True
 

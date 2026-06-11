@@ -6,24 +6,31 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..schemas import (
+    AccountProfileIn,
+    ComplianceCheckIn,
     DraftGenIn,
     HealthIn,
     LeadIn,
     LeadStatusIn,
     LeadWonIn,
+    MeetingIn,
     MetricIn,
     ReviewActionIn,
     ScheduleIn,
     TopicGenIn,
+    ZhihuUpdateIn,
 )
 from ..services import (
     account_service,
     analytics,
     comment_engine,
+    data_source,
     dispatcher,
     generator,
     lead_inbox,
     nurture,
+    ops_checklist,
+    ops_content,
     review,
     topic_engine,
 )
@@ -128,11 +135,20 @@ def dispatch_published(event_id: int, db: Session = Depends(get_db)):
 # ---------------- ⑦ 数据回收 ----------------
 @router.post("/metrics")
 def metrics_record(body: MetricIn, db: Session = Depends(get_db)):
+    # 普通人友好：给"条数"则自动换算比例（提问数/长评数/互回数 ÷ 总评论数）
+    q_rate, i_rate, l_ratio = body.question_rate, body.interaction_rate, body.long_comment_ratio
+    if body.comments > 0:
+        if body.question_comments is not None:
+            q_rate = min(body.question_comments / body.comments, 1.0)
+        if body.reply_comments is not None:
+            i_rate = min(body.reply_comments / body.comments, 1.0)
+        if body.long_comments is not None:
+            l_ratio = min(body.long_comments / body.comments, 1.0)
     m = analytics.record_metric(db, body.content_id, body.account_id, views=body.views,
                                 likes=body.likes, comments=body.comments, collects=body.collects,
-                                question_rate=body.question_rate,
-                                interaction_rate=body.interaction_rate,
-                                long_comment_ratio=body.long_comment_ratio)
+                                question_rate=q_rate,
+                                interaction_rate=i_rate,
+                                long_comment_ratio=l_ratio)
     return {"id": m.id, "realness_score": m.realness_score, "weight_factor": m.weight_factor}
 
 
@@ -273,3 +289,161 @@ def leads_export(db: Session = Depends(get_db)):
     writer.writerows(rows)
     return PlainTextResponse(buf.getvalue(), media_type="text/csv",
                              headers={"Content-Disposition": "attachment; filename=leads.csv"})
+
+
+# ---------------- 今日待办（首页） ----------------
+@router.get("/home")
+def home_dashboard(db: Session = Depends(get_db)):
+    """普通人首页：今天该做什么，一屏看完。"""
+    import datetime as dt
+    from sqlalchemy import func, select
+    from ..models import (Account, CommentOpportunity, Draft, Lead, Metric,
+                          NurtureTask, PublishEvent)
+
+    now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
+    today = dt.date.today().isoformat()
+
+    to_review = db.scalar(select(func.count()).select_from(Draft)
+                          .where(Draft.status == "drafted")) or 0
+    pending_pub = db.scalars(select(PublishEvent)
+                             .where(PublishEvent.result == "pending")).all()
+    due_pub = sum(1 for e in pending_pub if e.scheduled_at <= now)
+    comments_pending = db.scalar(select(func.count()).select_from(CommentOpportunity)
+                                 .where(CommentOpportunity.status == "pending")) or 0
+    nurture_left = db.scalar(select(func.count()).select_from(NurtureTask)
+                             .where(NurtureTask.period_key == today,
+                                    NurtureTask.done.is_(False))) or 0
+    overdue = sum(1 for l in lead_inbox.list_leads(db) if l["overdue_48h"])
+
+    # 数据待录：已发出但还没录指标的发布事件
+    metric_pairs = set(db.execute(select(Metric.content_id, Metric.account_id)).all())
+    success = db.scalars(select(PublishEvent)
+                         .where(PublishEvent.result == "success")).all()
+    data_missing = sum(1 for e in success
+                       if (e.content_id, e.account_id) not in metric_pairs)
+
+    ops = ops_checklist.today(db)
+    return {
+        "to_review": to_review,
+        "to_publish": len(pending_pub),
+        "due_publish": due_pub,
+        "comments_pending": comments_pending,
+        "nurture_left": nurture_left,
+        "overdue_leads": overdue,
+        "data_missing": data_missing,
+        "ops_done": ops["done"],
+        "ops_total": ops["total"],
+    }
+
+
+# ---------------- 运营台账 ----------------
+@router.get("/ops/today")
+def ops_today(db: Session = Depends(get_db)):
+    return ops_checklist.today(db)
+
+
+@router.post("/ops/task/{task_id}/toggle")
+def ops_toggle(task_id: int, db: Session = Depends(get_db)):
+    t = _err(ops_checklist.toggle, db, task_id)
+    return {"id": t.id, "done": t.done}
+
+
+# ---------------- 知乎占坑 ----------------
+@router.get("/zhihu")
+def zhihu_list(db: Session = Depends(get_db)):
+    return ops_content.list_zhihu(db)
+
+
+@router.post("/zhihu/{qid}")
+def zhihu_update(qid: int, body: ZhihuUpdateIn, db: Session = Depends(get_db)):
+    z = _err(ops_content.update_zhihu, db, qid, status=body.status,
+             answer_url=body.answer_url, note=body.note)
+    return {"id": z.id, "status": z.status}
+
+
+# ---------------- 复盘会 ----------------
+@router.get("/review-meetings")
+def meetings_list(db: Session = Depends(get_db)):
+    return ops_content.list_meetings(db)
+
+
+@router.post("/review-meetings")
+def meetings_save(body: MeetingIn, db: Session = Depends(get_db)):
+    m = ops_content.save_meeting(db, hot_case=body.hot_case,
+                                 flop_case=body.flop_case, conclusion=body.conclusion)
+    return {"id": m.id, "week_key": m.week_key}
+
+
+# ---------------- 合规自查 ----------------
+@router.post("/compliance/check")
+def compliance_check(body: ComplianceCheckIn):
+    """粘贴文案 → 违禁词分级扫描（广告法红线自查工具）。"""
+    from ..services import compliance
+    hits = compliance.scan_banned(body.text)
+    return {
+        "hits": hits,
+        "blocked": bool(hits["S"]),
+        "verdict": ("S级命中，禁止发布" if hits["S"]
+                    else "A级命中，必须改写后发布" if hits["A"]
+                    else "B级提醒，建议软化" if hits["B"] else "未发现违禁词"),
+    }
+
+
+@router.get("/compliance/words")
+def compliance_words():
+    """红线清单展示（培训页用）。"""
+    from ..config import BANNED_WORDS
+    return BANNED_WORDS
+
+
+# ---------------- 账号档案管理 ----------------
+@router.patch("/accounts/{account_id}/profile")
+def account_profile(account_id: int, body: AccountProfileIn, db: Session = Depends(get_db)):
+    from ..models import Account
+    a = db.get(Account, account_id)
+    if a is None:
+        raise HTTPException(status_code=404, detail="账号不存在")
+    if body.real_person is not None:
+        a.real_person = body.real_person
+    if body.device_note is not None:
+        a.device_note = body.device_note
+    if body.sim_note is not None:
+        a.sim_note = body.sim_note
+    if body.official_setup is not None:
+        a.official_setup = body.official_setup
+    db.commit()
+    return {"id": a.id, "real_person": a.real_person, "device_note": a.device_note,
+            "sim_note": a.sim_note, "official_setup": a.official_setup}
+
+
+# ---------------- 引导数据 ----------------
+@router.get("/promo-calendar")
+def promo_calendar():
+    """大促节点 + 种草开始日（提前45天）。"""
+    import datetime as dt
+    from ..config import PROMO_CALENDAR, PROMO_LEAD_DAYS
+    today = dt.date.today()
+    out = []
+    for p in PROMO_CALENDAR:
+        d = dt.date(today.year, p["month"], p["day"])
+        if d < today:
+            d = dt.date(today.year + 1, p["month"], p["day"])
+        seed_start = d - dt.timedelta(days=PROMO_LEAD_DAYS)
+        out.append({"name": p["name"], "date": d.isoformat(),
+                    "seed_start": seed_start.isoformat(),
+                    "days_to_seed": (seed_start - today).days,
+                    "should_seed_now": seed_start <= today < d})
+    out.sort(key=lambda x: x["date"])
+    return out[:4]
+
+
+@router.get("/faq-scripts")
+def faq_scripts():
+    """私信话术库（含老客返图邀约），一键复制。"""
+    from ..config import FAQ_SCRIPTS
+    return FAQ_SCRIPTS
+
+
+@router.get("/datasource/status")
+def datasource_status():
+    return data_source.status()

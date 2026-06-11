@@ -5,101 +5,162 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>畔色/孚格 · 内容矩阵工作台</title>
 <style>
-  :root{--bg:#f6f5f2;--card:#fff;--line:#e7e3dc;--ink:#2c2a26;--sub:#8a847a;--accent:#8a6d4f;--green:#3f9d5a;--yellow:#c89a2b;--red:#c4503e}
+  :root{--bg:#f6f5f2;--card:#fff;--line:#e7e3dc;--ink:#2c2a26;--sub:#8a847a;--accent:#8a6d4f;--accent2:#a98b66;--green:#3f9d5a;--yellow:#c89a2b;--red:#c4503e;--blue:#4a7eb5}
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
-  header{background:var(--ink);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
-  header h1{font-size:17px;margin:0;font-weight:600}
-  header .tag{font-size:12px;color:#cabfaf;opacity:.8;background:#403c35;padding:2px 8px;border-radius:10px}
-  #digest{font-size:12px;color:#f3d9a4}
-  nav{display:flex;gap:4px;padding:10px 18px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  nav button{border:0;background:transparent;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--sub)}
+  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
+  header{background:var(--ink);color:#fff;padding:12px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
+  header h1{font-size:16px;margin:0;font-weight:600}
+  header .tag{font-size:12px;color:#cdbfa8;background:#403c35;padding:2px 8px;border-radius:10px}
+  .layout{display:flex;min-height:calc(100vh - 46px)}
+  nav{width:184px;background:#fff;border-right:1px solid var(--line);padding:10px 8px;flex-shrink:0}
+  nav .group{font-size:11px;color:var(--sub);padding:10px 12px 4px;letter-spacing:1px}
+  nav button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--ink);text-align:left;margin-bottom:2px}
+  nav button:hover{background:#f3efe9}
   nav button.on{background:var(--accent);color:#fff}
-  main{padding:20px;max-width:1100px;margin:0 auto}
+  nav button .badge{margin-left:auto;background:var(--red);color:#fff;font-size:11px;border-radius:9px;padding:0 6px;min-width:18px;text-align:center}
+  nav button.on .badge{background:#fff;color:var(--accent)}
+  main{flex:1;padding:20px;max-width:980px}
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .guide{background:#fbf6ee;border:1px solid #ecddc6;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;line-height:1.7;color:#6b5a42}
+  .guide b{color:var(--accent)}
+  .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+  .steps .s{flex:1;min-width:120px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;color:var(--sub)}
+  .steps .s b{display:block;color:var(--ink);font-size:13px;margin-top:2px}
+  .steps .s .n{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;background:var(--accent);color:#fff;border-radius:50%;font-size:12px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   button.act{background:var(--accent);color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}
   button.act:disabled{opacity:.4;cursor:not-allowed}
   button.ghost{background:#fff;border:1px solid var(--line);color:var(--ink);padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
-  input,select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px}
+  input,select,textarea{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit}
+  textarea{width:100%;min-height:60px}
   .muted{color:var(--sub);font-size:12px}
   .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
-  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:9px;background:#efe;color:var(--green)}
-  .pill.y{background:#fbf3da;color:var(--yellow)}.pill.r{background:#f9e3df;color:var(--red)}.pill.b{background:#eee;color:var(--sub)}
-  h3{margin:0 0 6px;font-size:15px}
+  .stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+  .stat .c{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;cursor:pointer}
+  .stat .c:hover{border-color:var(--accent)}
+  .stat .c .num{font-size:28px;font-weight:600}
+  .stat .c .lbl{font-size:12px;color:var(--sub)}
+  .stat .c.urgent .num{color:var(--red)}
+  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:9px;background:#e8f3ea;color:var(--green)}
+  .pill.y{background:#fbf3da;color:var(--yellow)}.pill.r{background:#f9e3df;color:var(--red)}.pill.b{background:#eee;color:var(--sub)}.pill.bl{background:#e4eef7;color:var(--blue)}
+  h3{margin:0 0 8px;font-size:15px}
+  h3 .sub{font-weight:400;color:var(--sub);font-size:12px;margin-left:6px}
   .kv{font-size:13px;line-height:1.7}
   .hl{background:#fbe6c8;border-radius:3px;padding:0 2px}
   table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
   th{color:var(--sub);font-weight:500}
-  .empty{color:var(--sub);font-size:13px;padding:8px 0}
+  .empty{color:var(--sub);font-size:13px;padding:14px;text-align:center}
   .timeline{font-size:12px;color:var(--sub);border-left:2px solid var(--line);padding-left:12px;margin-top:8px}
   .timeline div{margin:4px 0}
+  .ck{cursor:pointer;user-select:none}
+  .copybtn{font-size:11px;padding:2px 8px}
 </style>
 </head>
 <body>
 <header>
-  <h1>畔色/孚格 · 内容矩阵工作台</h1>
+  <h1>🪵 畔色/孚格 · 内容矩阵工作台</h1>
   <span class="tag" id="llm">…</span>
-  <span id="digest"></span>
+  <span class="tag" id="ds"></span>
+  <span class="tag" id="wd"></span>
 </header>
-<nav>
-  <button data-t="pipe" class="on">内容流水线</button>
-  <button data-t="review">审核工位</button>
-  <button data-t="queue">发布队列</button>
-  <button data-t="comment">评论引流</button>
-  <button data-t="nurture">养号清单</button>
-  <button data-t="account">账号健康</button>
-  <button data-t="lead">线索收件箱</button>
-  <button data-t="data">数据大盘</button>
-</nav>
+<div class="layout">
+<nav id="nav"></nav>
 <main id="view"></main>
+</div>
 
 <script>
 const $ = (s,e=document)=>e.querySelector(s);
+const esc=s=>(s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 async function api(m,u,b,retried){
   const tok=localStorage.getItem('api_token');
   const r=await fetch(u,{method:m,headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:b?JSON.stringify(b):undefined});
-  if(r.status===401&&!retried){
-    const nt=prompt('该服务已开启鉴权，请输入 API Token：');
-    if(nt){localStorage.setItem('api_token',nt);return api(m,u,b,true);}
-  }
+  if(r.status===401&&!retried){const nt=prompt('该服务已开启鉴权，请输入 API Token：');if(nt){localStorage.setItem('api_token',nt);return api(m,u,b,true);}}
   if(!r.ok)throw new Error((await r.json()).detail||r.status);
-  return r.json();
+  const ct=r.headers.get('content-type')||'';return ct.includes('json')?r.json():r.text();
 }
-const flag = f=>`<span class="pill ${f==='green'?'':f==='yellow'?'y':'r'}">${f}</span>`;
+const flag=f=>`<span class="pill ${f==='green'?'':f==='yellow'?'y':'r'}">${f==='green'?'正常':f==='yellow'?'注意':'异常'}</span>`;
 const roleCN=r=>({brand:'品牌专业号',persona:'人设小号',review:'垂类测评',spare:'备用孵化',zhihu:'知乎'}[r]||r);
-let TAB='pipe';
+const copy=t=>{navigator.clipboard?.writeText(t);toast('已复制');};
+function toast(m){const d=document.createElement('div');d.textContent=m;d.style.cssText='position:fixed;bottom:30px;left:50%;transform:translateX(-50%);background:#2c2a26;color:#fff;padding:8px 18px;border-radius:20px;z-index:99;font-size:13px';document.body.appendChild(d);setTimeout(()=>d.remove(),1400);}
 
-document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
-  TAB=b.dataset.t;document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));render();
-});
+const MENU=[
+  ['开始',[['home','🏠 今日待办']]],
+  ['内容生产',[['pipe','①② 选题与生成'],['review','③ 审核工位'],['queue','④ 发布队列']]],
+  ['引流获客',[['comment','⑤ 评论引流'],['lead','⑥ 线索收件箱'],['zhihu','⑦ 知乎占坑']]],
+  ['账号运营',[['nurture','⑧ 养号清单'],['account','⑨ 账号管理'],['ops','⑩ 运营台账']]],
+  ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['system','⚙️ 系统状态']]],
+];
+let TAB='home', HOME={};
 
-api('GET','/api/health').then(h=>$('#llm').textContent='LLM: '+h.llm_provider+(h.auth?' · 🔒':''));
-api('GET','/api/watchdog').then(w=>{
-  const ok=w.consecutive_failures===0;
-  $('#llm').textContent+=` · 🐶${ok?'正常':'⚠️连续失败'+w.consecutive_failures+'次'}`;
-}).catch(()=>{});
-api('GET','/api/digest').then(d=>{
-  const parts=[];
-  if(d.overdue_leads)parts.push(`⚠️ ${d.overdue_leads} 条线索超48h未跟进`);
-  if(d.due_publishes)parts.push(`📤 ${d.due_publishes} 条已到发布时间待人工发出`);
-  $('#digest').textContent=parts.join('　');
-}).catch(()=>{});
+function buildNav(){
+  $('#nav').innerHTML=MENU.map(([g,items])=>`<div class="group">${g}</div>`+items.map(([t,label])=>{
+    const b=badge(t);
+    return `<button data-t="${t}" class="${t===TAB?'on':''}">${label}${b?`<span class="badge">${b}</span>`:''}</button>`;
+  }).join('')).join('');
+  $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>{TAB=b.dataset.t;buildNav();render();});
+}
+function badge(t){
+  if(t==='review')return HOME.to_review;
+  if(t==='queue')return HOME.due_publish;
+  if(t==='comment')return HOME.comments_pending;
+  if(t==='lead')return HOME.overdue_leads;
+  return 0;
+}
+
+api('GET','/api/health').then(h=>$('#llm').textContent='AI: '+h.llm_provider+(h.auth?' 🔒':''));
+api('GET','/api/datasource/status').then(d=>$('#ds').textContent='数据源: '+(d.mode==='crawler'?'真实爬虫':'演示数据'));
+api('GET','/api/watchdog').then(w=>$('#wd').textContent='🐶'+(w.consecutive_failures===0?'看门狗正常':'⚠️异常'+w.consecutive_failures)).catch(()=>{});
+
+async function refreshHome(){try{HOME=await api('GET','/api/home');}catch(e){HOME={};}buildNav();}
 
 async function render(){
-  const v=$('#view');v.innerHTML='加载中…';
-  try{ await VIEWS[TAB](v); }catch(e){ v.innerHTML=`<div class="card" style="color:var(--red)">出错：${e.message}</div>`; }
+  const v=$('#view');v.innerHTML='<div class="empty">加载中…</div>';
+  try{ await VIEWS[TAB](v); }catch(e){ v.innerHTML=`<div class="card" style="color:var(--red)">出错：${esc(e.message)}</div>`; }
 }
 
-const VIEWS = {
+const VIEWS={
+  // ============ 今日待办首页 ============
+  async home(v){
+    HOME=await api('GET','/api/home');buildNav();
+    const cards=[
+      ['to_review','待审核草稿','review',HOME.to_review,false],
+      ['due_publish','到点待发布','queue',HOME.due_publish,true],
+      ['comments_pending','待处理评论','comment',HOME.comments_pending,false],
+      ['nurture_left','养号未打卡','nurture',HOME.nurture_left,false],
+      ['overdue_leads','超48h线索','lead',HOME.overdue_leads,true],
+      ['data_missing','待录数据','queue',HOME.data_missing,false],
+    ];
+    v.innerHTML=`
+    <div class="guide">👋 <b>欢迎使用内容矩阵工作台</b>。这套系统帮你管好"做内容→发出去→引流量→变订单"的全过程。
+    下面是<b>今天要做的事</b>，点任意一张卡片直接去处理。每个页面顶部都有黄色操作说明，照着做即可，不用培训。</div>
+    <div class="card"><h3>📋 今日待办</h3>
+      <div class="stat">${cards.map(([k,lbl,tab,n,urg])=>`
+        <div class="c ${urg&&n?'urgent':''}" onclick="go('${tab}')"><div class="num">${n??0}</div><div class="lbl">${lbl}</div></div>`).join('')}
+        <div class="c" onclick="go('ops')"><div class="num">${HOME.ops_done}/${HOME.ops_total}</div><div class="lbl">运营台账打卡</div></div>
+      </div></div>
+    <div class="card"><h3>🗺 完整流程（新手必读）</h3>
+      <div class="steps">
+        <div class="s"><span class="n">1</span><b>选题与生成</b>系统给家具选题，AI 自动写小红书文案</div>
+        <div class="s"><span class="n">2</span><b>审核工位</b>30秒检查一篇，敏感词/AI感不过关会拦住</div>
+        <div class="s"><span class="n">3</span><b>发布队列</b>系统自动错峰排好，你照卡片人工发出</div>
+        <div class="s"><span class="n">4</span><b>评论引流</b>系统找上升期笔记，你点发AI写好的评论</div>
+        <div class="s"><span class="n">5</span><b>线索收件箱</b>有人来问，用话术库回，成交回填订单号</div>
+        <div class="s"><span class="n">6</span><b>数据复盘</b>录入数据，系统告诉你哪类内容最有效</div>
+      </div>
+      <div class="muted">⚠️ 重要：本系统所有"自动"都是<b>帮你准备好、由你点发</b>，绝不自动操作账号——这是小红书不封号的唯一安全做法。</div>
+    </div>`;
+  },
+
+  // ============ ①② 选题与生成 ============
   async pipe(v){
-    v.innerHTML=`<div class="card"><h3>① 生成选题</h3>
+    v.innerHTML=`<div class="guide">📝 <b>第一步：做内容</b>。先选一个产品分类「生成选题」，系统会给出几个选题（🌲常青=能火很久的搜索内容，🔥时效=蹭当下热点）。
+    然后在选题卡片上选一个账号「生成草稿」，AI 会自动写好文案 → 去③审核工位检查。</div>
+    <div class="card"><h3>① 生成选题 <span class="sub">家具是"先搜索后下单"，常青选题更值钱</span></h3>
       <div class="row"><select id="cat">${['餐桌','餐椅','茶几','柜类','床'].map(c=>`<option>${c}</option>`).join('')}</select>
-      <input id="cnt" type="number" value="3" style="width:70px"><button class="act" id="gt">生成选题</button>
-      <span class="muted">72h 内同标题不重复；高真实感品类自动加权</span></div>
+      <input id="cnt" type="number" value="3" style="width:64px"><button class="act" id="gt">生成选题</button></div>
       <div id="topics" class="grid" style="margin-top:12px"></div></div>
-      <div class="card"><h3>③ 生成草稿（四层流水线）</h3><div class="muted">数值类声明会自动标"待人工核实"进审核工位。</div>
+      <div class="card"><h3>③ 待审核草稿</h3><div class="muted">生成后会出现在这里，数值类描述(如"1.2米""1999元")会自动标记待你核实。</div>
       <div id="drafts" class="grid" style="margin-top:12px"></div></div>`;
     $('#gt').onclick=async()=>{await api('POST','/api/topics/generate',{category:$('#cat').value,count:+$('#cnt').value});loadTopics();};
     const accs=await api('GET','/api/accounts');
@@ -107,29 +168,27 @@ const VIEWS = {
       const ts=await api('GET','/api/topics');
       $('#topics').innerHTML=ts.map(t=>`<div class="card" style="margin:0">
         <span class="pill ${t.kind==='evergreen'?'':'b'}">${t.kind==='evergreen'?'🌲常青':'🔥时效'}</span>
-        <div class="kv" style="margin:6px 0"><b>${t.title}</b></div>
-        <div class="muted">热度 ${t.heat_score} · ${t.category}</div>
-        <div class="row" style="margin-top:8px"><select class="acc">${accs.map(a=>`<option value="${a.id}">${a.nickname}</option>`).join('')}</select>
-        <button class="ghost gd" data-id="${t.id}">生成草稿</button></div></div>`).join('')||'<div class="empty">还没有选题</div>';
+        <div class="kv" style="margin:6px 0"><b>${esc(t.title)}</b></div><div class="muted">热度 ${t.heat_score} · ${t.category}</div>
+        <div class="row" style="margin-top:8px"><select class="acc">${accs.map(a=>`<option value="${a.id}">${esc(a.nickname)}</option>`).join('')}</select>
+        <button class="ghost gd" data-id="${t.id}">生成草稿</button></div></div>`).join('')||'<div class="empty">点上方生成选题</div>';
       $('#topics').querySelectorAll('.gd').forEach(b=>b.onclick=async()=>{
         const acc=b.closest('.card').querySelector('.acc').value;
-        await api('POST','/api/drafts/generate',{topic_id:+b.dataset.id,account_id:+acc});loadDrafts();
-      });
+        try{await api('POST','/api/drafts/generate',{topic_id:+b.dataset.id,account_id:+acc});loadDrafts();toast('草稿已生成，去③审核');}catch(e){alert(e.message);}});
     }
     async function loadDrafts(){
-      const ds=await api('GET','/api/drafts');
-      $('#drafts').innerHTML=ds.map(d=>`<div class="card" style="margin:0">
-        <div class="kv"><b>${d.title}</b></div>
-        <div class="muted">AI感 ${d.ai_likeness} · <span class="pill ${d.status==='approved'||d.status==='published'?'':d.status==='rejected'?'r':'b'}">${d.status}</span></div>
-        <button class="ghost" style="margin-top:8px" onclick="openReview(${d.id})">进审核工位</button></div>`).join('')||'<div class="empty">还没有草稿</div>';
+      const ds=(await api('GET','/api/drafts')).filter(d=>d.status==='drafted');
+      $('#drafts').innerHTML=ds.map(d=>`<div class="card" style="margin:0"><div class="kv"><b>${esc(d.title)}</b></div>
+        <div class="muted">AI感 ${d.ai_likeness}（越低越像真人）</div>
+        <button class="ghost" style="margin-top:8px" onclick="openReview(${d.id})">去审核 →</button></div>`).join('')||'<div class="empty">暂无待审核草稿</div>';
     }
     loadTopics();loadDrafts();
   },
 
   async review(v){
     const ds=await api('GET','/api/drafts');
-    v.innerHTML=`<div class="card"><h3>③.5 审核工位 <span class="muted">目标 30 秒/篇</span></h3>
-      <div class="row"><select id="pick">${ds.map(d=>`<option value="${d.id}">#${d.id} ${d.title}</option>`).join('')}</select>
+    v.innerHTML=`<div class="guide">🔍 <b>第二步：审核（目标30秒/篇）</b>。左边是文案，<span class="hl">黄色高亮</span>是有问题的词；右边三张体检报告，红色"阻塞"的必须改。
+    确认没问题点「通过」，通过后去④发布队列排发布。</div>
+    <div class="card"><div class="row"><span>选草稿：</span><select id="pick">${ds.map(d=>`<option value="${d.id}">#${d.id} ${esc(d.title)}（${d.status}）</option>`).join('')}</select>
       <button class="act" id="open">打开</button></div></div><div id="rv"></div>`;
     $('#open').onclick=()=>openReview(+$('#pick').value);
     if(ds.length)openReview(ds[0].id);
@@ -139,152 +198,231 @@ const VIEWS = {
     const [ds,accs,q]=await Promise.all([api('GET','/api/drafts'),api('GET','/api/accounts'),api('GET','/api/dispatch/queue')]);
     const approved=ds.filter(d=>d.status==='approved');
     const active=accs.filter(a=>a.stage==='active'&&a.health_flag==='green');
-    v.innerHTML=`<div class="card"><h3>⑥ 排发布（反共振错峰）</h3>
-      ${approved.length?`<div class="row">
-        <select id="qd">${approved.map(d=>`<option value="${d.id}">#${d.id} ${d.title}</option>`).join('')}</select>
-        <select id="qa" multiple size="4" title="Ctrl多选">${active.map(a=>`<option value="${a.id}">${a.nickname}</option>`).join('')}</select>
-        <button class="act" id="qs">排发布</button></div>
-        <div class="muted" style="margin-top:6px">仅正式期+绿牌号可选；多号自动错峰 20–45 分钟递增 + 秒级抖动 + 标签打散</div>`
-      :'<div class="empty">暂无已审核通过待排程的稿件（先去审核工位通过一篇）</div>'}
-      </div>
-      <div class="card"><h3>发布队列（ASSIST：到点人工发出）</h3><div id="qt"></div></div>
-      <div class="card" id="cardbox" style="display:none"></div>`;
-    if(approved.length)$('#qs').onclick=async()=>{
+    v.innerHTML=`<div class="guide">📤 <b>第三步：发布</b>。选一篇审核通过的稿 + 几个账号「排发布」，系统会<b>自动错开时间、打散标签</b>（防止被平台识别为矩阵号）。
+    然后到点时点「📋卡片」复制文案，去 App 人工发出，发完点「✅已发」。发布后记得「录数据」。</div>
+    <div class="card"><h3>排发布 <span class="sub">仅正式期+健康正常的号可选</span></h3>
+      ${approved.length&&active.length?`<div class="row">
+        <select id="qd">${approved.map(d=>`<option value="${d.id}">${esc(d.title)}</option>`).join('')}</select>
+        <select id="qa" multiple size="3" title="按住Ctrl多选" style="min-width:160px">${active.map(a=>`<option value="${a.id}">${esc(a.nickname)}</option>`).join('')}</select>
+        <button class="act" id="qs">排发布</button></div><div class="muted" style="margin-top:6px">按住 Ctrl/⌘ 可多选账号；多个号会自动错峰20-45分钟</div>`
+      :`<div class="empty">${approved.length?'没有可用账号（需正式期+绿色健康）':'没有审核通过的稿件，先去③审核通过一篇'}</div>`}
+    </div>
+    <div class="card"><h3>发布队列</h3><div id="qt"></div></div>
+    <div class="card" id="cardbox" style="display:none"></div>`;
+    if(approved.length&&active.length)$('#qs').onclick=async()=>{
       const ids=[...$('#qa').selectedOptions].map(o=>+o.value);
-      if(!ids.length)return alert('请选择至少一个账号（Ctrl 多选）');
-      await api('POST','/api/dispatch/schedule',{content_id:+$('#qd').value,account_ids:ids});render();
-    };
-    $('#qt').innerHTML=q.length?`<table><thead><tr><th>稿件</th><th>账号</th><th>排程时间</th><th>错峰</th><th>状态</th><th></th></tr></thead>
-      <tbody>${q.map(e=>`<tr><td>${e.title}</td><td>${e.account}</td>
-      <td>${new Date(e.scheduled_at).toLocaleString()}</td><td>+${e.offset_minutes}min</td>
-      <td><span class="pill ${e.result==='success'?'':'b'}">${e.result}</span></td>
-      <td>${e.result==='pending'?`<button class="ghost" onclick="showCard(${e.event_id})">📋 卡片</button>
-      <button class="ghost" onclick="markPub(${e.event_id})">✅ 已发</button>`:''}</td></tr>`).join('')}</tbody></table>`
-      :'<div class="empty">队列为空</div>';
+      if(!ids.length)return alert('请按住 Ctrl 选择至少一个账号');
+      try{await api('POST','/api/dispatch/schedule',{content_id:+$('#qd').value,account_ids:ids});render();toast('已排入队列');}catch(e){alert(e.message);}};
+    $('#qt').innerHTML=q.length?`<table><thead><tr><th>稿件</th><th>账号</th><th>计划时间</th><th>状态</th><th>操作</th></tr></thead><tbody>${q.map(e=>`<tr>
+      <td>${esc(e.title)}</td><td>${esc(e.account)}</td><td>${new Date(e.scheduled_at).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})}<br><span class="muted">错峰+${e.offset_minutes}分</span></td>
+      <td>${e.result==='success'?'<span class="pill">已发布</span>':'<span class="pill b">待发出</span>'}</td>
+      <td>${e.result==='pending'?`<button class="ghost copybtn" onclick="showCard(${e.event_id})">📋卡片</button> <button class="ghost copybtn" onclick="markPub(${e.event_id})">✅已发</button>`
+        :e.has_metric?'<span class="muted">已录数据</span>':`<button class="ghost copybtn" onclick="recData(${e.content_id},${e.account_id})">录数据</button>`}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">队列为空</div>';
   },
 
+  // ============ 引流 ============
   async comment(v){
-    v.innerHTML=`<div class="card"><h3>⑧ 评论引流站 <span class="muted">永不全自动 · 单号≤5条/日 · 同笔记矩阵互斥</span></h3>
-      <button class="act" id="scan">扫描上升期机会</button></div><div id="opps" class="grid"></div>`;
-    $('#scan').onclick=async()=>{await api('POST','/api/comments/scan');load();};
+    v.innerHTML=`<div class="guide">💬 <b>评论引流（绝不全自动！）</b>。系统帮你找<b>正在上升的家居笔记</b>、写好引流评论，你看一眼觉得合适，<b>手动复制去发</b>。
+    规则：每个号每天最多5条、同一篇笔记我们只出现1次（防扎堆被封）。<b>种水</b>=不提品牌建立信任，<b>引导</b>=带搜索暗号。</div>
+    <div class="card"><div class="row"><button class="act" id="scan">🔍 扫描上升期机会</button><span class="muted">数据源：<span id="dsm"></span></span></div></div>
+    <div id="opps" class="grid"></div>`;
+    api('GET','/api/datasource/status').then(d=>$('#dsm').textContent=d.hint);
+    $('#scan').onclick=async()=>{await api('POST','/api/comments/scan');load();toast('已扫描');};
     async function load(){
       const os=await api('GET','/api/comments');
       $('#opps').innerHTML=os.map(o=>`<div class="card" style="margin:0">
-        <span class="pill ${o.comment_kind==='seed'?'':'b'}">${o.comment_kind==='seed'?'种水':'引导'}</span>
-        <span class="pill ${o.status==='posted'?'':'b'}">${o.status}</span>
-        <div class="kv" style="margin:6px 0">📌 ${o.note_title}</div>
-        <div class="kv" style="background:#faf8f4;padding:8px;border-radius:8px">💬 ${o.draft_comment}</div>
-        <div class="muted" style="margin-top:6px">建议号 #${o.suggested_account_id||'—'}</div>
-        ${o.status==='pending'?`<div class="row" style="margin-top:8px"><button class="ghost" onclick="cact(${o.id},'post')">✅ 已人工发</button><button class="ghost" onclick="cact(${o.id},'skip')">跳过</button></div>`:''}
-        </div>`).join('')||'<div class="empty">点上方扫描（已有机会的笔记会自动去重）</div>';
+        <span class="pill ${o.comment_kind==='seed'?'':'bl'}">${o.comment_kind==='seed'?'种水':'引导'}</span> <span class="pill ${o.status==='posted'?'':'b'}">${o.status==='posted'?'已发':o.status==='skipped'?'已跳过':'待处理'}</span>
+        <div class="kv" style="margin:6px 0">📌 ${esc(o.note_title)}</div>
+        <div class="kv" style="background:#faf8f4;padding:8px;border-radius:8px">💬 ${esc(o.draft_comment)} <button class="ghost copybtn" onclick="copy('${esc(o.draft_comment).replace(/'/g,"")}')">复制</button></div>
+        <div class="muted" style="margin-top:6px">建议用号 #${o.suggested_account_id||'无可用号'}</div>
+        ${o.status==='pending'?`<div class="row" style="margin-top:8px"><button class="ghost" onclick="cact(${o.id},'post')">✅ 已手动发出</button><button class="ghost" onclick="cact(${o.id},'skip')">跳过</button></div>`:''}</div>`).join('')||'<div class="empty">点上方扫描（同一篇笔记不会重复出现）</div>';
     }
     load();
   },
 
+  async lead(v){
+    const [ls,faq]=await Promise.all([api('GET','/api/leads'),api('GET','/api/faq-scripts')]);
+    v.innerHTML=`<div class="guide">📥 <b>有人来问就是钱</b>。把私信/评论里的咨询记到这里，用下面的<b>话术库一键复制</b>回复（家具客户在比价，<b>回得快=成单</b>，超48小时会标红）。
+    成交后点「标记成交」填订单号，系统就能算出"哪篇内容带来了订单"。</div>
+    <div class="card"><h3>💬 私信话术库 <span class="sub">点复制，按情况微调后发给客户</span></h3>
+      <div class="grid">${faq.map(f=>`<div class="card" style="margin:0"><b>${esc(f.title)}</b> <button class="ghost copybtn" onclick="copy('${esc(f.text).replace(/'/g,"")}')">复制</button><div class="muted" style="margin-top:4px">${esc(f.text)}</div></div>`).join('')}</div></div>
+    <div class="card"><h3>线索列表</h3><div class="row"><button class="ghost" id="demo">＋ 手动录入线索</button><a class="ghost copybtn" style="text-decoration:none;line-height:2" href="/api/leads/export" download>⬇️ 导出CSV</a></div>
+      <table style="margin-top:10px"><thead><tr><th>来源</th><th>暗号</th><th>问询</th><th>状态</th><th>操作</th></tr></thead><tbody>${ls.map(l=>`<tr>
+      <td>${l.source_type}</td><td>${esc(l.attribution_code)||'—'}</td><td>${esc(l.question)||'—'} ${l.overdue_48h?'<span class="pill r">超48h</span>':''}</td>
+      <td><span class="pill ${l.status==='won'?'':'b'}">${l.status}</span>${l.erp_order_no?' '+esc(l.erp_order_no):''}</td>
+      <td>${l.status!=='won'?`<button class="ghost copybtn" onclick="lwin(${l.id})">标记成交</button>`:'✅'}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">还没有线索</td></tr>'}</tbody></table></div>`;
+    $('#demo').onclick=async()=>{const q=prompt('客户问了什么？','1.4米餐桌有现货吗');if(q){await api('POST','/api/leads',{source_type:'dm',question:q,attribution_code:'畔色XYZ'});render();}};
+  },
+
+  async zhihu(v){
+    const qs=await api('GET','/api/zhihu');
+    v.innerHTML=`<div class="guide">📚 <b>知乎占坑（家具回报率最高的动作）</b>。这20个是高搜索量的家具问题。挑几个写3000字深度回答，<b>一次投入能吃两年搜索流量</b>。
+    状态：待写→写作中→已发布，发布后把链接填进去方便追踪。</div>
+    <div class="card"><table><thead><tr><th>高搜索问题</th><th>状态</th><th>操作</th></tr></thead><tbody>${qs.map(z=>`<tr>
+      <td>${esc(z.question)}${z.answer_url?` <a href="${esc(z.answer_url)}" target="_blank" class="muted">[链接]</a>`:''}</td>
+      <td><span class="pill ${z.status==='posted'?'':z.status==='writing'?'y':'b'}">${z.status==='posted'?'已发布':z.status==='writing'?'写作中':'待写'}</span></td>
+      <td><select onchange="zset(${z.id},this.value)"><option value="">改状态</option><option value="todo">待写</option><option value="writing">写作中</option><option value="posted">已发布</option></select>
+      ${z.status==='posted'?`<button class="ghost copybtn" onclick="zurl(${z.id})">填链接</button>`:''}</td></tr>`).join('')}</tbody></table></div>`;
+  },
+
+  // ============ 账号运营 ============
   async nurture(v){
     const accs=await api('GET','/api/accounts');
-    v.innerHTML=`<div class="card"><h3>⑨ 养号 SOP <span class="muted">系统排程 + 人工打卡 · 晋级需≥10天日活打卡</span></h3>
-      <div class="row"><select id="na">${accs.map(a=>`<option value="${a.id}">${a.nickname}（${a.stage}）</option>`).join('')}</select>
+    v.innerHTML=`<div class="guide">🌱 <b>养号（不能偷懒走捷径）</b>。新号要先养：每天照清单<b>真人手动</b>浏览/点赞/收藏，养够才能发内容。
+    系统不做机器养号——机器固定动作正是平台抓封号的特征。晋级需累计打卡≥10天。</div>
+    <div class="card"><div class="row"><span>选账号：</span><select id="na">${accs.map(a=>`<option value="${a.id}">${esc(a.nickname)}（${a.stage==='active'?'正式期':a.stage==='trial'?'试发期':'养号期'}）</option>`).join('')}</select>
       <button class="act" id="load">查看今日清单</button></div></div><div id="nt"></div>`;
     $('#load').onclick=()=>loadN(+$('#na').value);
-    window.loadN=async id=>{
-      const t=await api('GET',`/api/nurture/${id}/today`);
-      $('#nt').innerHTML=`<div class="card"><div class="muted">${t.stage_desc}（今日 ${t.done_count}/${t.total} · 累计打卡 ${t.checkin_days} 天）</div>
-        <table><tbody>${t.tasks.map(x=>`<tr><td>${x.scope==='week'?'📅 ':''}${x.target}</td><td style="text-align:right">${x.done?'✅':`<button class="ghost" onclick="nchk(${x.id},${id})">打卡</button>`}</td></tr>`).join('')}</tbody></table>
-        <button class="act" style="margin-top:10px" onclick="nprom(${id})">尝试晋级</button></div>`;
-    };
+    window.loadN=async id=>{const t=await api('GET',`/api/nurture/${id}/today`);
+      $('#nt').innerHTML=`<div class="card"><div class="muted">${esc(t.stage_desc)} · 今日完成 ${t.done_count}/${t.total} · 累计打卡 ${t.checkin_days} 天</div>
+        <table style="margin-top:8px"><tbody>${t.tasks.map(x=>`<tr><td>${x.scope==='week'?'📅 ':''}${esc(x.target)}</td><td style="text-align:right;width:80px">${x.done?'✅ 完成':`<button class="ghost copybtn" onclick="nchk(${x.id},${id})">打卡</button>`}</td></tr>`).join('')}</tbody></table>
+        <button class="act" style="margin-top:10px" onclick="nprom(${id})">尝试晋级到下一阶段</button></div>`;};
     loadN(accs[0].id);
   },
 
   async account(v){
-    const a=await api('GET','/api/accounts');
-    v.innerHTML=`<div class="card"><h3>⑤ 账号健康仪表盘</h3>
-      <table><thead><tr><th>账号</th><th>角色</th><th>阶段</th><th>粉丝</th><th>存活率</th><th>健康</th></tr></thead>
-      <tbody>${a.map(x=>`<tr><td>${x.nickname}</td><td>${roleCN(x.role)}</td><td>${x.stage}</td><td>${x.follower_count}</td><td>${(x.post_alive_rate*100).toFixed(0)}%</td><td>${flag(x.health_flag)} ${x.health_score}</td></tr>`).join('')}</tbody></table></div>`;
+    const accs=await api('GET','/api/accounts');
+    v.innerHTML=`<div class="guide">👥 <b>账号管理</b>。每个号要<b>独立手机+独立卡+独立网络</b>，一台手机登多个号是连坐封号第一大原因。
+    人设小号建议绑定一位真人（同事），保持画面真实连贯。品牌专业号把官方功能（认证/店铺组件/群聊）全开，这是合法挂链接的唯一通道。点账号行可编辑。</div>
+    <div class="card"><table><thead><tr><th>账号</th><th>角色</th><th>阶段</th><th>粉丝</th><th>健康</th><th>真人/设备</th><th></th></tr></thead><tbody>${accs.map(a=>`<tr>
+      <td>${esc(a.nickname)}<br><span class="muted">${a.platform}</span></td><td>${roleCN(a.role)}</td>
+      <td>${a.stage==='active'?'正式期':a.stage==='trial'?'试发期':'养号期'}</td><td>${a.follower_count}</td>
+      <td>${flag(a.health_flag)} <span class="muted">存活${(a.post_alive_rate*100).toFixed(0)}%</span></td>
+      <td class="muted">${esc(a.real_person)||'—'} / ${esc(a.device_note)||'未登记'}</td>
+      <td><button class="ghost copybtn" onclick="editAcc(${a.id})">编辑</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="card" id="accedit" style="display:none"></div>`;
+    window._accs=accs;
   },
 
-  async lead(v){
-    const ls=await api('GET','/api/leads');
-    v.innerHTML=`<div class="card"><h3>⑩ 线索收件箱 <span class="muted">来源归因 + 48h跟进 + 回写ERP成交</span></h3>
-      <div class="row"><button class="ghost" id="demo">＋ 录一条样例线索</button>
-      <a class="ghost" style="text-decoration:none" href="/api/leads/export" download>⬇️ 导出CSV对账</a></div>
-      <table style="margin-top:10px"><thead><tr><th>来源</th><th>暗号</th><th>问询</th><th>状态</th><th></th></tr></thead>
-      <tbody>${ls.map(l=>`<tr><td>${l.source_type}</td><td>${l.attribution_code||'—'}</td><td>${l.question||'—'} ${l.overdue_48h?'<span class="pill r">超48h</span>':''}</td>
-      <td><span class="pill ${l.status==='won'?'':'b'}">${l.status}</span>${l.erp_order_no?' '+l.erp_order_no:''}</td>
-      <td>${l.status!=='won'?`<button class="ghost" onclick="lwin(${l.id})">标记成交</button>`:''}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">还没有线索</td></tr>'}</tbody></table></div>`;
-    $('#demo').onclick=async()=>{await api('POST','/api/leads',{source_type:'comment',question:'1.4米餐桌有货吗？',interest_category:'餐桌',attribution_code:'畔色XYZ'});render();};
+  async ops(v){
+    const o=await api('GET','/api/ops/today');
+    v.innerHTML=`<div class="guide">✅ <b>运营日常打卡</b>。这是把"该养成的习惯"列成清单：每天回私信/录数据/发布、每周复盘、每月实拍素材日/投放记账/设备盘点。
+    照做打勾即可，跨天/周/月会自动重置。<b>带🔴的是最影响效果的，别跳过。</b></div>
+    <div class="card"><h3>今日运营台账 <span class="sub">完成 ${o.done}/${o.total}</span></h3>
+      <table><tbody>${o.tasks.map(t=>`<tr><td>${t.scope==='month'?'🗓 ':t.scope==='week'?'📅 ':''}${['shoot_day','data_entry','dm_reply'].some(k=>t.title.includes('实拍')||t.title.includes('数据录入')||t.title.includes('私信'))?'🔴 ':''}${esc(t.title)}</td>
+      <td style="text-align:right;width:90px"><button class="ghost copybtn ck" onclick="opstog(${t.id})">${t.done?'✅ 已完成':'打卡'}</button></td></tr>`).join('')}</tbody></table></div>`;
+  },
+
+  // ============ 辅助工具 ============
+  async calendar(v){
+    const ps=await api('GET','/api/promo-calendar');
+    v.innerHTML=`<div class="guide">📅 <b>大促要提前45天种草</b>。家具决策周期长，临时发没用。下面标"🔥该种草了"的，现在就要开始围绕它出内容。</div>
+    <div class="card"><table><thead><tr><th>大促</th><th>日期</th><th>种草开始日</th><th>状态</th></tr></thead><tbody>${ps.map(p=>`<tr>
+      <td><b>${esc(p.name)}</b></td><td>${p.date}</td><td>${p.seed_start}</td>
+      <td>${p.should_seed_now?'<span class="pill r">🔥 该种草了</span>':p.days_to_seed>0?`<span class="pill b">${p.days_to_seed}天后开始种草</span>`:'<span class="pill">进行中</span>'}</td></tr>`).join('')}</tbody></table></div>`;
+  },
+
+  async compliance(v){
+    const words=await api('GET','/api/compliance/words');
+    v.innerHTML=`<div class="guide">🛡 <b>文案合规自查（广告法红线）</b>。发布前把文案粘进来扫一遍。<b>S级</b>=违法禁发，<b>A级</b>=必须改（如"最/第一/纯实木/零甲醛"），<b>B级</b>=建议软化。</div>
+    <div class="card"><h3>粘贴文案自查</h3><textarea id="ct" placeholder="把要发的标题+正文粘进来…"></textarea>
+      <button class="act" style="margin-top:8px" id="cc">检查</button><div id="cr" style="margin-top:10px"></div></div>
+    <div class="card"><h3>红线词库（培训参考）</h3>
+      <div class="kv"><b style="color:var(--red)">S级·禁发：</b>${(words.S||[]).join('、')}</div>
+      <div class="kv"><b style="color:var(--yellow)">A级·必改：</b>${(words.A||[]).join('、')}</div>
+      <div class="kv"><b style="color:var(--sub)">B级·建议软化：</b>${(words.B||[]).join('、')}</div></div>`;
+    $('#cc').onclick=async()=>{const r=await api('POST','/api/compliance/check',{text:$('#ct').value});
+      $('#cr').innerHTML=`<div class="kv"><span class="pill ${r.blocked?'r':r.hits.A.length?'y':''}">${esc(r.verdict)}</span></div>
+      ${r.hits.S.length?`<div class="kv">S级命中：${r.hits.S.join('、')}</div>`:''}${r.hits.A.length?`<div class="kv">A级命中：${r.hits.A.join('、')}</div>`:''}${r.hits.B.length?`<div class="kv">B级命中：${r.hits.B.join('、')}</div>`:''}`;};
   },
 
   async data(v){
-    const [o,boost,wd]=await Promise.all([api('GET','/api/analytics/overview'),api('GET','/api/analytics/category-boost'),api('GET','/api/watchdog')]);
+    const [o,boost,meetings]=await Promise.all([api('GET','/api/analytics/overview'),api('GET','/api/analytics/category-boost'),api('GET','/api/review-meetings')]);
     const boosts=Object.entries(boost);
-    const lastChecks=(wd.recent||[]).slice(0,8);
-    v.innerHTML=`<div class="card"><h3>⑦ 数据大盘</h3>
-      <div class="grid"><div class="card" style="margin:0"><div class="muted">已发布</div><div style="font-size:26px">${o.published}</div></div>
-      <div class="card" style="margin:0"><div class="muted">加权真实感</div><div style="font-size:26px">${o.avg_realness_weighted}</div></div>
-      <div class="card" style="margin:0"><div class="muted">待复盘(真实感<0.6)</div><div style="font-size:26px">${o.low_realness_to_review}</div></div></div>
-      <div class="muted" style="margin-top:10px">${o.note}</div></div>
-      <div class="card"><h3>⑦→① 选题反哺（高真实感品类加权）</h3>
-      ${boosts.length?`<table><tbody>${boosts.map(([c,b])=>`<tr><td>${c}</td><td>boost +${b}</td></tr>`).join('')}</tbody></table>`
-      :'<div class="empty">还没有产生 boost 的品类（真实感需 > 0.6）</div>'}</div>
-      <div class="card"><h3>🐶 看门狗 <span class="muted">60s体检 · 连续${wd.config.failures_to_restart}次失败自救重启 · 冷却${wd.config.cooldown_min}分钟</span></h3>
-      <div class="kv">连续失败：<b>${wd.consecutive_failures}</b> 次 ${wd.in_cooldown?'<span class="pill y">冷却期内</span>':''}
-      · 最近体检 ${wd.last_check_at?new Date(wd.last_check_at).toLocaleString():'—'}</div>
-      ${lastChecks.length?`<table style="margin-top:8px"><thead><tr><th>时间</th><th>结果</th><th>明细</th></tr></thead>
-      <tbody>${lastChecks.map(h=>`<tr><td>${new Date(h.at).toLocaleTimeString()}</td>
-      <td><span class="pill ${h.ok?'':'r'}">${h.ok?'OK':'FAIL'}</span></td>
-      <td class="muted">${Object.entries(h.details).map(([k,v])=>`${v.ok?'✅':'❌'}${k}:${v.info}`).join(' · ')}</td></tr>`).join('')}</tbody></table>`
-      :'<div class="empty">暂无体检记录</div>'}</div>`;
+    v.innerHTML=`<div class="guide">📊 <b>用数据说话</b>。这里看内容效果。"真实感"比阅读量重要（高赞没人评论=假火）。下方<b>每周复盘</b>：拆一篇火的、一篇没火的，写下结论，越用越懂你的用户。</div>
+    <div class="card"><h3>⑦ 数据大盘</h3><div class="stat">
+      <div class="c"><div class="num">${o.published}</div><div class="lbl">已发布</div></div>
+      <div class="c"><div class="num">${o.avg_realness_weighted}</div><div class="lbl">加权真实感</div></div>
+      <div class="c ${o.low_realness_to_review?'urgent':''}"><div class="num">${o.low_realness_to_review}</div><div class="lbl">待复盘(真实感<0.6)</div></div></div>
+      <div class="muted" style="margin-top:8px">${esc(o.note)}</div></div>
+    <div class="card"><h3>⑦→① 哪类内容最值得多做 <span class="sub">真实感高的品类，系统会自动给它的选题加热度</span></h3>
+      ${boosts.length?`<table><tbody>${boosts.map(([c,b])=>`<tr><td>${c}</td><td>${b>0?`<span class="pill">推荐多做 +${b}</span>`:'<span class="muted">暂无加权</span>'}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">还没有足够数据（先录入笔记数据）</div>'}</div>
+    <div class="card"><h3>📝 每周复盘</h3>
+      <div class="row" style="flex-direction:column;align-items:stretch">
+      <input id="hot" placeholder="本周哪篇火了？为什么？"><input id="flop" placeholder="哪篇没火？问题在哪？"><input id="conc" placeholder="下周怎么改？一句话结论">
+      <button class="act" id="savem" style="align-self:flex-start">保存本周复盘</button></div>
+      <div style="margin-top:12px">${meetings.map(m=>`<div class="card" style="margin:6px 0"><b>${m.week_key}</b><div class="kv">🔥火：${esc(m.hot_case)}</div><div class="kv">❄️扑：${esc(m.flop_case)}</div><div class="kv">👉结论：${esc(m.conclusion)}</div></div>`).join('')||'<div class="muted">还没有复盘记录</div>'}</div></div>`;
+    $('#savem').onclick=async()=>{await api('POST','/api/review-meetings',{hot_case:$('#hot').value,flop_case:$('#flop').value,conclusion:$('#conc').value});render();toast('已保存');};
+  },
+
+  async system(v){
+    const [wd,ds]=await Promise.all([api('GET','/api/watchdog'),api('GET','/api/datasource/status')]);
+    const recent=(wd.recent||[]).slice(0,10);
+    v.innerHTML=`<div class="guide">⚙️ <b>系统状态</b>。看门狗每60秒自动体检，连续3次异常会自动重启（配合Docker）。数据源显示当前用真实爬虫还是演示数据。</div>
+    <div class="card"><h3>🐶 看门狗 <span class="sub">60秒体检 · 连续${wd.config.failures_to_restart}次失败自救重启</span></h3>
+      <div class="kv">连续失败：<b>${wd.consecutive_failures}</b> 次 ${wd.in_cooldown?'<span class="pill y">重启冷却中</span>':'<span class="pill">运行正常</span>'} · 最近体检 ${wd.last_check_at?new Date(wd.last_check_at).toLocaleString():'—'}</div>
+      ${recent.length?`<table style="margin-top:8px"><thead><tr><th>时间</th><th>结果</th><th>明细</th></tr></thead><tbody>${recent.map(h=>`<tr><td>${new Date(h.at).toLocaleTimeString()}</td><td><span class="pill ${h.ok?'':'r'}">${h.ok?'OK':'FAIL'}</span></td><td class="muted">${Object.entries(h.details).map(([k,vv])=>`${vv.ok?'✅':'❌'}${k}`).join(' ')}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">暂无记录</div>'}</div>
+    <div class="card"><h3>📡 数据源</h3><div class="kv">${esc(ds.hint)}</div></div>`;
   },
 };
 
+window.go=t=>{TAB=t;buildNav();render();};
+
 window.openReview=async id=>{
-  TAB='review';document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.t==='review'));
+  TAB='review';buildNav();
   const [r,events]=await Promise.all([api('GET',`/api/review/${id}`),api('GET',`/api/content/${id}/events`)]);
-  let body=r.body;
-  r.highlights.forEach(h=>{body=body.replaceAll(h.word,`<span class="hl">${h.word}⚠️${h.level}</span>`);});
+  let body=esc(r.body);r.highlights.forEach(h=>{body=body.replaceAll(esc(h.word),`<span class="hl">${esc(h.word)}⚠️${h.level}</span>`);});
   const claims=(r.fact_check&&r.fact_check.pending_human)||[];
-  $('#view').innerHTML=`<div class="card"><h3>③.5 审核：${r.title}</h3>
-    <div class="grid"><div><h3>原文（问题高亮）</h3><div class="kv card" style="margin:0">${body.replaceAll('\n','<br>')}</div>
-    <div class="muted" style="margin-top:8px">标签：${(r.tags||[]).map(t=>'#'+t).join(' ')}</div>
-    <h3 style="margin-top:12px">事件时间线</h3><div class="timeline">${events.map(e=>`<div>${new Date(e.at).toLocaleString()} · <b>${e.event_type}</b></div>`).join('')||'—'}</div></div>
+  $('#view').innerHTML=`<div class="guide">🔍 审核中：<b>${esc(r.title)}</b>。左边检查文案，右边看体检。红色"阻塞"必须改了才能通过。</div>
+  <div class="card"><div class="grid"><div><h3>文案（黄色是问题词）</h3><div class="kv card" style="margin:0">${body.replaceAll('\n','<br>')}</div>
+    <div class="muted" style="margin-top:8px">标签：${(r.tags||[]).map(t=>'#'+esc(t)).join(' ')}</div>
+    <h3 style="margin-top:12px">这篇经历了什么</h3><div class="timeline">${events.map(e=>`<div>${new Date(e.at).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'})} · ${e.event_type}</div>`).join('')||'—'}</div></div>
     <div><h3>三张体检报告</h3>
-      <div class="kv">AI感：<b>${r.reports.ai_likeness.score}</b> ${r.reports.ai_likeness.block?'<span class="pill r">阻塞</span>':'<span class="pill">通过</span>'}</div>
-      <div class="kv">信息密度：${r.reports.info_density}</div>
-      <div class="kv">敏感词：S${(r.reports.banned_words.S||[]).length} / A${(r.reports.banned_words.A||[]).length} / B${(r.reports.banned_words.B||[]).length}</div>
-      ${claims.length?`<div class="kv">事实核查：<span class="pill y">${claims.length} 处数值待人工核实</span> ${claims.map(c=>`<span class="hl">${c}</span>`).join(' ')}</div>`:'<div class="kv">事实核查：无数值类声明</div>'}
-      <h3 style="margin-top:12px">必改3节点</h3>
-      <div class="kv">☐ 首图文字覆盖 ${r.must_fix.cover_text_density}</div>
-      <div class="kv">☐ 第二段营销话术：${r.must_fix.para2_marketing}</div>
-      <div class="kv">☐ 个人化细节锚 ${r.must_fix.personal_anchor_count} 处</div>
-      ${r.rewrite_candidates.length?`<h3 style="margin-top:12px">改写候选（一键替换）</h3>${r.rewrite_candidates.map(c=>`<div class="kv card" style="margin:4px 0;cursor:default">${c}</div>`).join('')}`:''}
+      <div class="kv">AI感：<b>${r.reports.ai_likeness.score}</b>/100 ${r.reports.ai_likeness.block?'<span class="pill r">太像AI·阻塞</span>':'<span class="pill">像真人·OK</span>'}</div>
+      <div class="kv">信息密度：${r.reports.info_density}（越高越干货）</div>
+      <div class="kv">敏感词：S${(r.reports.banned_words.S||[]).length} A${(r.reports.banned_words.A||[]).length} B${(r.reports.banned_words.B||[]).length}</div>
+      ${claims.length?`<div class="kv">⚠️ ${claims.length}处数值待你核实：${claims.map(c=>`<span class="hl">${esc(c)}</span>`).join(' ')}</div>`:'<div class="kv">✅ 无数值需核实</div>'}
+      <h3 style="margin-top:12px">必改3处</h3>
+      <div class="kv">☐ 首图文字覆盖率 ${r.must_fix.cover_text_density}</div>
+      <div class="kv">☐ 营销话术：${r.must_fix.para2_marketing}</div>
+      <div class="kv">☐ 个人化细节 ${r.must_fix.personal_anchor_count} 处（"我家""上次"越多越真实）</div>
+      ${r.rewrite_candidates.length?`<h3 style="margin-top:12px">改写参考</h3>${r.rewrite_candidates.map(c=>`<div class="kv card" style="margin:4px 0">${esc(c)}</div>`).join('')}`:''}
     </div></div>
-    ${r.blockers.length?`<div class="kv" style="color:var(--red);margin-top:10px">⛔ ${r.blockers.join('；')}</div>`:''}
+    ${r.blockers.length?`<div class="kv" style="color:var(--red);margin-top:10px">⛔ ${r.blockers.map(esc).join('；')}</div>`:''}
     <div class="row" style="margin-top:14px">
-      <button class="act" ${r.can_approve&&r.status==='drafted'?'':'disabled'} onclick="rev(${id},'approve')">通过</button>
-      <button class="ghost" onclick="rev(${id},'reject')">拒绝</button>
-      ${r.status==='approved'?'<span class="muted">已通过 → 去「发布队列」排发布</span>':''}
-      ${r.status==='scheduled'?'<span class="muted">已在发布队列</span>':''}
-      ${r.status==='published'?'<span class="muted">已全部发出</span>':''}
+      <button class="act" ${r.can_approve&&r.status==='drafted'?'':'disabled'} onclick="rev(${id},'approve')">✅ 通过</button>
+      <button class="ghost" onclick="rev(${id},'reject')">✗ 拒绝</button>
+      ${r.status==='approved'?'<span class="muted">已通过 → 去④发布队列</span>':r.status==='scheduled'?'<span class="muted">已在发布队列</span>':r.status==='published'?'<span class="muted">已全部发出</span>':''}
     </div></div>`;
 };
-window.rev=async(id,act)=>{try{await api('POST',`/api/review/${id}/${act}`,{note:'工作台审核',reason:'不符合调性'});}catch(e){alert(e.message);}openReview(id);};
-window.cact=async(id,act)=>{try{await api('POST',`/api/comments/${id}/${act}`);}catch(e){alert(e.message);}render();};
-window.nchk=async(id,acc)=>{await api('POST',`/api/nurture/task/${id}/check`);loadN(acc);};
-window.nprom=async id=>{const r=await api('POST',`/api/nurture/${id}/promote`);alert(r.promoted?('已晋级到 '+r.stage):('暂不能晋级：'+r.reason));};
-window.lwin=async id=>{const no=prompt('回写 ERP 订单号：','SO'+Date.now());if(no){await api('POST',`/api/leads/${id}/won`,{erp_order_no:no});render();}};
-window.showCard=async id=>{
-  const c=await api('GET',`/api/dispatch/${id}/card`);
-  const box=$('#cardbox');box.style.display='block';
-  box.innerHTML=`<h3>📋 ASSIST 发布卡片 #${c.event_id}</h3>
-    <div class="kv"><b>Alt+1 标题：</b>${c.clipboard['1_title']}</div>
-    <div class="kv"><b>Alt+2 正文：</b><br>${c.clipboard['2_body'].replaceAll('\n','<br>')}</div>
-    <div class="kv"><b>Alt+3 标签：</b>${c.clipboard['3_tags']}</div>
-    <div class="muted" style="margin-top:6px">${c.reminder}</div>`;
-};
-window.markPub=async id=>{try{await api('POST',`/api/dispatch/${id}/published`);}catch(e){alert(e.message);}render();};
+window.rev=async(id,act)=>{try{await api('POST',`/api/review/${id}/${act}`,{note:'已审核',reason:'不符合调性'});refreshHome();}catch(e){alert(e.message);}openReview(id);};
+window.cact=async(id,act)=>{try{await api('POST',`/api/comments/${id}/${act}`);}catch(e){alert(e.message);}refreshHome();render();};
+window.nchk=async(id,acc)=>{await api('POST',`/api/nurture/task/${id}/check`);refreshHome();loadN(acc);};
+window.nprom=async id=>{const r=await api('POST',`/api/nurture/${id}/promote`);alert(r.promoted?('🎉 已晋级到 '+(r.stage==='active'?'正式期':'试发期')):('暂不能晋级：'+r.reason));};
+window.lwin=async id=>{const no=prompt('回填 ERP 订单号（成交归因用）：','SO'+Date.now());if(no){await api('POST',`/api/leads/${id}/won`,{erp_order_no:no});render();}};
+window.showCard=async id=>{const c=await api('GET',`/api/dispatch/${id}/card`);const box=$('#cardbox');box.style.display='block';
+  box.innerHTML=`<h3>📋 复制去发（${c.reminder}）</h3>
+    <div class="kv"><b>标题</b> <button class="ghost copybtn" onclick="copy('${esc(c.clipboard['1_title']).replace(/'/g,"")}')">复制</button><br>${esc(c.clipboard['1_title'])}</div>
+    <div class="kv" style="margin-top:8px"><b>正文</b> <button class="ghost copybtn" onclick="copy(window._body)">复制</button><br>${esc(c.clipboard['2_body']).replaceAll('\n','<br>')}</div>
+    <div class="kv" style="margin-top:8px"><b>标签</b> <button class="ghost copybtn" onclick="copy('${esc(c.clipboard['3_tags']).replace(/'/g,"")}')">复制</button><br>${esc(c.clipboard['3_tags'])}</div>`;
+  window._body=c.clipboard['2_body'];box.scrollIntoView({behavior:'smooth'});};
+window.markPub=async id=>{try{await api('POST',`/api/dispatch/${id}/published`);refreshHome();}catch(e){alert(e.message);}render();};
+window.recData=async(cid,aid)=>{
+  const views=+prompt('这篇的浏览量/小眼睛？','1000')||0;if(!views)return;
+  const likes=+prompt('点赞数？','50')||0;const comments=+prompt('评论数？','10')||0;const collects=+prompt('收藏数？','20')||0;
+  const ql=comments?(+prompt(`${comments}条评论里，"提问型"有几条？`,'3')||0):0;
+  const ll=comments?(+prompt('超过15字的"长评论"有几条？','4')||0):0;
+  await api('POST','/api/metrics',{content_id:cid,account_id:aid,views,likes,comments,collects,question_comments:ql,long_comments:ll});
+  refreshHome();render();toast('数据已录入');};
+window.zset=async(id,s)=>{if(s){await api('POST',`/api/zhihu/${id}`,{status:s});render();}};
+window.zurl=async id=>{const u=prompt('粘贴知乎回答链接：');if(u){await api('POST',`/api/zhihu/${id}`,{answer_url:u});render();}};
+window.opstog=async id=>{await api('POST',`/api/ops/task/${id}/toggle`);refreshHome();render();};
+window.editAcc=id=>{
+  const a=window._accs.find(x=>x.id===id);const box=$('#accedit');box.style.display='block';
+  const items=['企业认证','开通店铺组件','开通群聊(私域)','完善合集/瞬间'];const setup=a.official_setup||{};
+  box.innerHTML=`<h3>编辑：${esc(a.nickname)}</h3>
+    <div class="kv">绑定真人（人设号建议填同事名）<br><input id="ea_rp" value="${esc(a.real_person)}" placeholder="如：小王"></div>
+    <div class="kv" style="margin-top:6px">绑定设备<br><input id="ea_dev" value="${esc(a.device_note)}" placeholder="如：iPhone13-A / 备用机"></div>
+    <div class="kv" style="margin-top:6px">绑定手机卡<br><input id="ea_sim" value="${esc(a.sim_note)}" placeholder="如：138xxxx"></div>
+    ${a.role==='brand'?`<div class="kv" style="margin-top:6px">官方功能开通（专业号合法引流通道，建议全开）<br>${items.map(it=>`<label style="margin-right:10px"><input type="checkbox" class="ea_of" value="${it}" ${setup[it]?'checked':''}>${it}</label>`).join('')}</div>`:''}
+    <button class="act" style="margin-top:10px" onclick="saveAcc(${id})">保存</button>`;
+  box.scrollIntoView({behavior:'smooth'});};
+window.saveAcc=async id=>{
+  const of={};document.querySelectorAll('.ea_of').forEach(c=>of[c.value]=c.checked);
+  await api('PATCH',`/api/accounts/${id}/profile`,{real_person:$('#ea_rp').value,device_note:$('#ea_dev').value,sim_note:$('#ea_sim').value,official_setup:of});
+  render();toast('已保存');};
 
-render();
+(async()=>{await refreshHome();render();})();
 </script>
 </body>
 </html>

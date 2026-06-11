@@ -13,23 +13,17 @@ from sqlalchemy.orm import Session
 
 from ..config import PRODUCT_KEYWORDS
 from ..models import Account, CommentOpportunity
-from . import compliance
+from . import compliance, data_source
 from .llm_router import get_router
-
-# 模拟上升期笔记流（真实场景来自 ① 热点雷达 / 挂载项 A 爬虫）
-_MOCK_NOTES = [
-    ("新房装修日记|餐厅终于搞定了", "decor_diary"),
-    ("求推荐！小户型餐桌怎么选", "decor_diary"),
-    ("晒晒我的新中式客厅", "decor_diary"),
-    ("分享几个家居好物", "general"),
-    ("租房改造|花了2000块", "decor_diary"),
-]
 
 DAILY_LIMIT = 5  # 单号每日评论上限（设计稿待校准初值）
 
 
 def scan_opportunities(db: Session, count: int = 5) -> list[CommentOpportunity]:
-    """扫描上升期笔记，匹配产品线，草拟评论，挑执行号。已有机会的笔记跳过（去重）。"""
+    """扫描上升期笔记，匹配产品线，草拟评论，挑执行号。已有机会的笔记跳过（去重）。
+
+    笔记来源走 data_source（接了爬虫用真实上升笔记，否则内置演示数据）。
+    """
     router = get_router()
     # 只用正式期 + 绿牌号承接评论（与养号引擎联动）
     eligible = list(db.scalars(
@@ -41,12 +35,14 @@ def scan_opportunities(db: Session, count: int = 5) -> list[CommentOpportunity]:
             CommentOpportunity.status.in_(["pending", "posted"]))
     ))
 
+    notes, _src = data_source.fetch_rising_notes()
     out: list[CommentOpportunity] = []
-    for title, kind in random.sample(_MOCK_NOTES, k=min(count, len(_MOCK_NOTES))):
+    for note in random.sample(notes, k=min(count, len(notes))):
+        title, kind = note["title"], note["kind"]
         if title in seen_titles:
             continue
         category, score = _match_category(title)
-        growth = round(random.uniform(0.3, 0.9), 2)
+        growth = note["growth"] if note["growth"] is not None else round(random.uniform(0.3, 0.9), 2)
         # 装修日记类加权（决策期用户）
         if kind == "decor_diary":
             score = min(score + 0.2, 1.0)
@@ -61,6 +57,7 @@ def scan_opportunities(db: Session, count: int = 5) -> list[CommentOpportunity]:
 
         opp = CommentOpportunity(
             note_title=title,
+            note_url=note.get("url", ""),
             note_kind=kind,
             growth_rate=growth,
             match_category=category,

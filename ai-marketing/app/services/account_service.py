@@ -19,12 +19,17 @@ def health_dashboard(db: Session) -> list[dict]:
             "id": a.id,
             "nickname": a.nickname,
             "role": a.role,
+            "platform": a.platform,
             "stage": a.stage,
             "follower_count": a.follower_count,
             "health_score": a.health_score,
             "health_flag": a.health_flag,
             "post_alive_rate": a.post_alive_rate,
             "driver_mode": a.driver_mode,
+            "real_person": a.real_person,
+            "device_note": a.device_note,
+            "sim_note": a.sim_note,
+            "official_setup": a.official_setup or {},
         })
     return out
 

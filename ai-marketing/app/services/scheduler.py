@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from ..database import SessionLocal
 from ..models import Account, PublishEvent
-from . import lead_inbox, nurture
+from . import lead_inbox, notifier, nurture
 
 log = logging.getLogger("marketing.scheduler")
 
@@ -24,6 +24,7 @@ DIGEST: dict = {"generated_at": None, "overdue_leads": 0, "due_publishes": 0,
                 "nurture_accounts": 0}
 
 INTERVAL_SECONDS = 3600
+_last_alert_key = ""  # 防重复告警
 
 
 def run_once() -> dict:
@@ -50,6 +51,19 @@ def run_once() -> dict:
             "due_publishes": len(due),
             "nurture_accounts": len(accounts),
         })
+
+        # 有待办则推飞书（同一情况一天只提醒一次，防打扰）
+        global _last_alert_key
+        if overdue or len(due):
+            key = f"{dt.date.today()}-{overdue}-{len(due)}"
+            if key != _last_alert_key:
+                parts = []
+                if overdue:
+                    parts.append(f"{overdue} 条线索超48小时未跟进")
+                if due:
+                    parts.append(f"{len(due)} 条笔记已到发布时间待人工发出")
+                notifier.send_feishu("【内容矩阵提醒】" + "；".join(parts) + "，请到工作台处理。")
+                _last_alert_key = key
         return dict(DIGEST)
     finally:
         db.close()

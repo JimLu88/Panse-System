@@ -73,22 +73,26 @@ def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[Publi
 
 
 def queue(db: Session) -> list[dict]:
-    """发布队列视图（工作台用）：事件 + 稿件标题 + 账号昵称。"""
+    """发布队列视图（工作台用）：事件 + 稿件标题 + 账号昵称 + 是否已录数据。"""
+    from ..models import Metric
     rows = db.execute(
         select(PublishEvent, Draft.title, Account.nickname)
         .join(Draft, Draft.id == PublishEvent.content_id)
         .join(Account, Account.id == PublishEvent.account_id)
         .order_by(PublishEvent.result.desc(), PublishEvent.scheduled_at)
     ).all()
+    metric_pairs = set(db.execute(select(Metric.content_id, Metric.account_id)).all())
     return [{
         "event_id": ev.id,
         "content_id": ev.content_id,
+        "account_id": ev.account_id,
         "title": title,
         "account": nickname,
         "scheduled_at": ev.scheduled_at.isoformat(),
         "offset_minutes": ev.offset_minutes,
         "tags": ev.tag_variant,
         "result": ev.result,
+        "has_metric": (ev.content_id, ev.account_id) in metric_pairs,
     } for ev, title, nickname in rows]
 
 
