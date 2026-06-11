@@ -14,6 +14,7 @@
 运行：python image_toolbox.py
 """
 
+import io
 import os
 import shutil
 import threading
@@ -71,12 +72,13 @@ class ExtractorTab(ttk.Frame):
         self.mode = tk.StringVar(value="move")
         self.batch_pick = tk.StringVar()
         self.compress_on = tk.BooleanVar(value=False)
+        self.cancel = threading.Event()    # 停止标志
         self.rows = []
         self._build()
         # 监听「批量压缩」页设置变化，实时刷新摘要（否则改了质量这里不更新）
         if self.compress_tab:
             for v in (self.compress_tab.quality, self.compress_tab.out_fmt,
-                      self.compress_tab.max_size):
+                      self.compress_tab.max_size, self.compress_tab.target_mb):
                 v.trace_add("write", lambda *a: self._refresh_comp_summary())
 
     def _build(self):
@@ -133,6 +135,8 @@ class ExtractorTab(ttk.Frame):
         ttk.Radiobutton(bottom, text="复制", variable=self.mode, value="copy").pack(side="left", padx=8)
         self.run_btn = ttk.Button(bottom, text="开始提取", command=self.start)
         self.run_btn.pack(side="right")
+        self.stop_btn = ttk.Button(bottom, text="停止", command=self.stop_run, state="disabled")
+        self.stop_btn.pack(side="right", padx=6)
 
         self.progress = ttk.Progressbar(self, mode="determinate")
         self.progress.pack(fill="x")
@@ -212,8 +216,10 @@ class ExtractorTab(ttk.Frame):
             self.comp_summary.configure(text="（找不到压缩页设置）")
             return
         mx = ct.max_size.get().strip() or "不限"
+        tgt = ct.target_mb.get().strip()
+        tgt_txt = f" / 目标 {tgt}MB" if tgt else ""
         self.comp_summary.configure(
-            text=f"当前压缩设置：质量 {ct.quality.get()} / 格式 {ct.out_fmt.get()} / 最大边 {mx}px")
+            text=f"当前压缩设置：质量 {ct.quality.get()} / 格式 {ct.out_fmt.get()} / 最大边 {mx}px{tgt_txt}")
 
     def _goto_compress(self):
         if self.notebook and self.compress_tab:
@@ -237,11 +243,17 @@ class ExtractorTab(ttk.Frame):
         if not messagebox.askyesno("确认", f"将{'移动' if self.mode.get() == 'move' else '复制'} "
                                             f"{len(jobs)} 个子文件夹{tip}，确定吗？"):
             return
+        self.cancel.clear()
         self.run_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
         threading.Thread(target=self._process, args=(jobs, do_compress), daemon=True).start()
 
+    def stop_run(self):
+        self.cancel.set()
+        self._log("正在停止…（当前文件夹处理完即停）")
+
     def _compress_settings(self):
-        """从「批量压缩」页读取当前设置，返回 (quality, target_ext, max_size)。"""
+        """从「批量压缩」页读取当前设置，返回 (quality, target_ext, max_size, tgt_bytes)。"""
         ct = self.compress_tab
         ext_map = {"JPG": ".jpg", "PNG": ".png", "WebP": ".webp", "AVIF": ".avif",
                    "TIFF": ".tiff", "BMP": ".bmp", "GIF": ".gif", "ICO": ".ico"}
@@ -250,9 +262,13 @@ class ExtractorTab(ttk.Frame):
             mx = int(ct.max_size.get()) if ct.max_size.get().strip() else None
         except ValueError:
             mx = None
-        return ct.quality.get(), target_ext, mx
+        try:
+            tgt = int(float(ct.target_mb.get()) * 1024 * 1024) if ct.target_mb.get().strip() else None
+        except ValueError:
+            tgt = None
+        return ct.quality.get(), target_ext, mx, tgt
 
-    def _copy_compress_tree(self, src, dst, quality, target_ext, max_size):
+    def _copy_compress_tree(self, src, dst, quality, target_ext, max_size, tgt_bytes):
         """复制整个子文件夹；图片压缩，非图片原样复制。"""
         for root, _, files in os.walk(src):
             out_dir = os.path.join(dst, os.path.relpath(root, src))
@@ -264,7 +280,7 @@ class ExtractorTab(ttk.Frame):
                     if target_ext:
                         dp = os.path.splitext(dp)[0] + target_ext
                     try:
-                        CompressTab._compress_one(sp, dp, quality, target_ext, max_size)
+                        CompressTab._compress_one(sp, dp, quality, target_ext, max_size, tgt_bytes)
                     except Exception:
                         shutil.copy2(sp, os.path.join(out_dir, f))  # 压缩失败则保留原图
                 else:
@@ -275,7 +291,11 @@ class ExtractorTab(ttk.Frame):
         ok = fail = 0
         is_move = self.mode.get() == "move"
         cfg = self._compress_settings() if do_compress else None
+        stopped = False
         for i, (src, dst, outer) in enumerate(jobs, 1):
+            if self.cancel.is_set():
+                stopped = True
+                break
             try:
                 base, n = dst, 1
                 while os.path.exists(dst):
@@ -292,9 +312,15 @@ class ExtractorTab(ttk.Frame):
                 fail += 1
                 self._log(f"[{i}/{len(jobs)}] {outer} ✗ {e}")
             self.progress.configure(value=i)
-        self._log(f"\n完成！成功 {ok}，失败 {fail}。" + ("（已压缩）" if do_compress else ""))
-        self.after(0, lambda: self.run_btn.configure(state="normal"))
-        self.after(0, lambda: messagebox.showinfo("完成", f"成功 {ok}，失败 {fail}。"))
+        head = "已停止。" if stopped else "完成！"
+        self._log(f"\n{head}成功 {ok}，失败 {fail}。" + ("（已压缩）" if do_compress else ""))
+        self.after(0, self._finish)
+        self.after(0, lambda: messagebox.showinfo("已停止" if stopped else "完成",
+                                                  f"成功 {ok}，失败 {fail}。"))
+
+    def _finish(self):
+        self.run_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
 
     def _log(self, msg):
         def a():
@@ -315,8 +341,10 @@ class CompressTab(ttk.Frame):
         self.quality = tk.IntVar(value=85)
         self.out_fmt = tk.StringVar(value="保持原格式")
         self.max_size = tk.StringVar(value="")
+        self.target_mb = tk.StringVar(value="")   # 目标大小(MB)，留空=不限
         self.dst_root = tk.StringVar()
         self.folders = []
+        self.cancel = threading.Event()
         self._build()
 
     def _build(self):
@@ -355,6 +383,11 @@ class CompressTab(ttk.Frame):
         ttk.Label(opt, text="最大边像素(留空=不限):").grid(row=1, column=2, sticky="e", pady=(6, 0))
         ttk.Entry(opt, textvariable=self.max_size, width=8).grid(row=1, column=3, sticky="w", pady=(6, 0))
 
+        ttk.Label(opt, text="目标大小(MB):").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(opt, textvariable=self.target_mb, width=8).grid(row=2, column=1, sticky="w", pady=(6, 0))
+        ttk.Label(opt, text="留空=只按上面的质量；填了会自动降质量/缩尺寸压到该大小以内",
+                  foreground="gray").grid(row=2, column=2, columnspan=2, sticky="w", pady=(6, 0))
+
         dst = ttk.Frame(self)
         dst.pack(fill="x", pady=4)
         ttk.Label(dst, text="输出目录:").pack(side="left")
@@ -365,6 +398,8 @@ class CompressTab(ttk.Frame):
         bot.pack(fill="x")
         self.run_btn = ttk.Button(bot, text="开始压缩", command=self.start)
         self.run_btn.pack(side="right")
+        self.stop_btn = ttk.Button(bot, text="停止", command=self.stop_run, state="disabled")
+        self.stop_btn.pack(side="right", padx=6)
         self.progress = ttk.Progressbar(self, mode="determinate")
         self.progress.pack(fill="x", pady=(4, 0))
         self.log = tk.Text(self, height=6, state="disabled")
@@ -414,6 +449,11 @@ class CompressTab(ttk.Frame):
         except ValueError:
             mx = None
 
+        try:
+            tgt_bytes = int(float(self.target_mb.get()) * 1024 * 1024) if self.target_mb.get().strip() else None
+        except ValueError:
+            tgt_bytes = None
+
         tasks = []
         for folder in self.folders:
             for src in self._collect(folder):
@@ -421,22 +461,33 @@ class CompressTab(ttk.Frame):
         if not tasks:
             messagebox.showinfo("提示", "没有找到图片。"); return
 
+        self.cancel.clear()
         self.run_btn.configure(state="disabled")
+        self.stop_btn.configure(state="normal")
         threading.Thread(target=self._process,
-                         args=(tasks, self.quality.get(), target_ext, mx), daemon=True).start()
+                         args=(tasks, self.quality.get(), target_ext, mx, tgt_bytes),
+                         daemon=True).start()
 
-    def _process(self, tasks, quality, target_ext, max_size):
+    def stop_run(self):
+        self.cancel.set()
+        self._log("正在停止…（当前图片处理完即停）")
+
+    def _process(self, tasks, quality, target_ext, max_size, tgt_bytes):
         self.progress.configure(maximum=len(tasks), value=0)
         ok = fail = 0
         total_o = total_n = 0
+        stopped = False
         for i, (src, base) in enumerate(tasks, 1):
+            if self.cancel.is_set():
+                stopped = True
+                break
             rel = os.path.relpath(src, base)
             dst_root = os.path.join(self.dst_root.get(), os.path.basename(base.rstrip("/\\")))
             dst = os.path.join(dst_root, rel)
             if target_ext:
                 dst = os.path.splitext(dst)[0] + target_ext
             try:
-                o, n = self._compress_one(src, dst, quality, target_ext, max_size)
+                o, n = self._compress_one(src, dst, quality, target_ext, max_size, tgt_bytes)
                 total_o += o; total_n += n; ok += 1
                 pct = (1 - n / o) * 100 if o else 0
                 self._log(f"[{i}/{len(tasks)}] {rel}  {human(o)}→{human(n)} (-{pct:.0f}%)")
@@ -444,16 +495,42 @@ class CompressTab(ttk.Frame):
                 fail += 1
                 self._log(f"[{i}/{len(tasks)}] ✗ {rel}  {e}")
             self.progress.configure(value=i)
+        head = "已停止。" if stopped else "完成！"
         if total_o:
             saved = total_o - total_n
-            self._log(f"\n完成！成功 {ok}，失败 {fail}。"
+            self._log(f"\n{head}成功 {ok}，失败 {fail}。"
                       f"总计 {human(total_o)}→{human(total_n)}，省 {human(saved)} "
                       f"(-{saved / total_o * 100:.0f}%)")
-        self.after(0, lambda: self.run_btn.configure(state="normal"))
-        self.after(0, lambda: messagebox.showinfo("完成", f"成功 {ok}，失败 {fail}。"))
+        else:
+            self._log(f"\n{head}成功 {ok}，失败 {fail}。")
+        self.after(0, self._finish)
+        self.after(0, lambda: messagebox.showinfo("已停止" if stopped else "完成",
+                                                  f"成功 {ok}，失败 {fail}。"))
+
+    def _finish(self):
+        self.run_btn.configure(state="normal")
+        self.stop_btn.configure(state="disabled")
+
+    _FMT = {".jpg": "JPEG", ".jpeg": "JPEG", ".png": "PNG", ".webp": "WEBP",
+            ".avif": "AVIF", ".tif": "TIFF", ".tiff": "TIFF", ".bmp": "BMP",
+            ".gif": "GIF", ".ico": "ICO"}
 
     @staticmethod
-    def _compress_one(src, dst, quality, target_ext, max_size):
+    def _save_kwargs(out_ext, quality):
+        if out_ext in (".jpg", ".jpeg"):
+            return {"quality": quality, "optimize": True, "progressive": True}
+        if out_ext == ".webp":
+            return {"quality": quality, "method": 6}
+        if out_ext == ".avif":
+            return {"quality": quality}
+        if out_ext == ".png":
+            return {"optimize": True}
+        if out_ext in (".tif", ".tiff"):
+            return {"compression": "tiff_lzw"}
+        return {}
+
+    @classmethod
+    def _compress_one(cls, src, dst, quality, target_ext, max_size, tgt_bytes=None):
         orig = os.path.getsize(src)
         img = Image.open(src)
         if max_size and (img.width > max_size or img.height > max_size):
@@ -473,18 +550,45 @@ class CompressTab(ttk.Frame):
             img = img.convert("P", palette=Image.ADAPTIVE)
 
         os.makedirs(os.path.dirname(dst), exist_ok=True)
-        kw = {}
-        if out_ext in (".jpg", ".jpeg"):
-            kw = {"quality": quality, "optimize": True, "progressive": True}
-        elif out_ext == ".webp":
-            kw = {"quality": quality, "method": 6}
-        elif out_ext == ".avif":
-            kw = {"quality": quality}
-        elif out_ext == ".png":
-            kw = {"optimize": True}
-        elif out_ext in (".tif", ".tiff"):
-            kw = {"compression": "tiff_lzw"}
-        img.save(dst, **kw)
+
+        # 普通模式：直接按质量保存
+        if not tgt_bytes:
+            img.save(dst, **cls._save_kwargs(out_ext, quality))
+            return orig, os.path.getsize(dst)
+
+        # 目标大小模式：先降质量，仍超标再缩尺寸，迭代逼近
+        fmt = cls._FMT.get(out_ext, "JPEG")
+        lossy = out_ext in (".jpg", ".jpeg", ".webp", ".avif")
+        work = img
+        fallback = None  # 达不到目标时的最小结果兜底
+        for _ in range(7):                       # 最多缩 7 轮尺寸
+            if lossy:
+                q = quality
+                while q >= 20:
+                    buf = io.BytesIO()
+                    work.save(buf, format=fmt, **cls._save_kwargs(out_ext, q))
+                    if buf.tell() <= tgt_bytes:
+                        with open(dst, "wb") as f:
+                            f.write(buf.getvalue())
+                        return orig, os.path.getsize(dst)
+                    q -= 10
+                fallback = buf.getvalue()        # 记录最低质量结果
+            else:                                 # 无损格式只能靠缩尺寸
+                buf = io.BytesIO()
+                work.save(buf, format=fmt, **cls._save_kwargs(out_ext, quality))
+                if buf.tell() <= tgt_bytes:
+                    with open(dst, "wb") as f:
+                        f.write(buf.getvalue())
+                    return orig, os.path.getsize(dst)
+                fallback = buf.getvalue()
+            nw, nh = int(work.width * 0.85), int(work.height * 0.85)
+            if nw < 100 or nh < 100:
+                break
+            work = work.resize((nw, nh), Image.LANCZOS)
+
+        # 没压到目标以内：写入能做到的最小结果
+        with open(dst, "wb") as f:
+            f.write(fallback)
         return orig, os.path.getsize(dst)
 
     def _log(self, msg):
