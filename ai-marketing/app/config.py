@@ -25,6 +25,9 @@ class Settings(BaseSettings):
     erp_base_url: str = ""
     erp_token: str = ""
 
+    # 简单鉴权：配了 API_TOKEN 则 /api/* 需 Bearer token（/api/health 除外）
+    api_token: str = ""
+
 
 @lru_cache
 def get_settings() -> Settings:

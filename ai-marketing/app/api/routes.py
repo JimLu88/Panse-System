@@ -109,6 +109,11 @@ def dispatch_schedule(body: ScheduleIn, db: Session = Depends(get_db)):
              "offset_minutes": e.offset_minutes, "tags": e.tag_variant} for e in events]
 
 
+@router.get("/dispatch/queue")
+def dispatch_queue(db: Session = Depends(get_db)):
+    return dispatcher.queue(db)
+
+
 @router.get("/dispatch/{event_id}/card")
 def dispatch_card(event_id: int, db: Session = Depends(get_db)):
     return _err(dispatcher.assist_card, db, event_id)
@@ -136,6 +141,35 @@ def analytics_overview(db: Session = Depends(get_db)):
     return analytics.overview(db)
 
 
+@router.get("/analytics/category-boost")
+def analytics_boost(db: Session = Depends(get_db)):
+    """⑦→① 反哺：各品类真实感加权（>0 的品类选题会被加权）。"""
+    return analytics.category_boost(db)
+
+
+@router.get("/content/{content_id}/events")
+def content_events(content_id: int, db: Session = Depends(get_db)):
+    """事件流时间线（事件溯源可见化）。"""
+    from sqlalchemy import select
+    from ..models import ContentEvent
+    rows = db.scalars(
+        select(ContentEvent).where(ContentEvent.content_id == content_id,
+                                   ContentEvent.event_type != "topic_chosen")
+        .order_by(ContentEvent.id)
+    )
+    return [{"event_type": e.event_type, "payload": e.payload,
+             "at": e.created_at.isoformat()} for e in rows]
+
+
+@router.get("/digest")
+def digest():
+    """调度器摘要：超期线索 / 到点未发事件。"""
+    from ..services import scheduler
+    if scheduler.DIGEST["generated_at"] is None:
+        scheduler.run_once()
+    return scheduler.DIGEST
+
+
 # ---------------- ⑧ 评论引流 ----------------
 @router.post("/comments/scan")
 def comments_scan(db: Session = Depends(get_db)):
@@ -158,9 +192,9 @@ def comments_list(db: Session = Depends(get_db)):
 
 
 @router.post("/comments/{opp_id}/post")
-def comments_post(opp_id: int, db: Session = Depends(get_db)):
-    o = _err(comment_engine.mark_posted, db, opp_id)
-    return {"id": o.id, "status": o.status}
+def comments_post(opp_id: int, account_id: int | None = None, db: Session = Depends(get_db)):
+    o = _err(comment_engine.mark_posted, db, opp_id, account_id)
+    return {"id": o.id, "status": o.status, "posted_by": o.posted_by_account_id}
 
 
 @router.post("/comments/{opp_id}/skip")
@@ -212,3 +246,21 @@ def leads_status(lead_id: int, body: LeadStatusIn, db: Session = Depends(get_db)
 def leads_won(lead_id: int, body: LeadWonIn, db: Session = Depends(get_db)):
     lead = _err(lead_inbox.mark_won, db, lead_id, body.erp_order_no)
     return {"id": lead.id, "status": lead.status, "erp_order_no": lead.erp_order_no}
+
+
+@router.get("/leads/export")
+def leads_export(db: Session = Depends(get_db)):
+    """线索 CSV 导出（ERP 回写接口未就绪时的对账降级方案）。"""
+    import csv
+    import io
+    from fastapi.responses import PlainTextResponse
+    rows = lead_inbox.list_leads(db)
+    buf = io.StringIO()
+    writer = csv.DictWriter(buf, fieldnames=["id", "source_type", "attribution_code",
+                                             "contact", "question", "interest_category",
+                                             "status", "erp_order_no", "created_at"],
+                            extrasaction="ignore")
+    writer.writeheader()
+    writer.writerows(rows)
+    return PlainTextResponse(buf.getvalue(), media_type="text/csv",
+                             headers={"Content-Disposition": "attachment; filename=leads.csv"})

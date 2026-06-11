@@ -29,6 +29,17 @@ uvicorn app.main:app --reload
 
 打开 http://127.0.0.1:8000 看工作台，http://127.0.0.1:8000/docs 看 API。
 
+**Docker 方式**（与 ERP 同习惯）：
+
+```bash
+cd ai-marketing
+docker compose up -d --build    # 端口 8001，数据持久化在 ./data/
+```
+
+**测试**：`python -m pytest tests/ -q`（端到端 + 逻辑回归共 12 例）。
+
+**鉴权**：`.env` 配 `API_TOKEN=xxx` 后所有 `/api/*` 需 `Authorization: Bearer xxx`（工作台会弹框让你输一次，存浏览器）。不配则免鉴权（内网）。
+
 ## 端到端走一遍（命令行）
 
 ```bash

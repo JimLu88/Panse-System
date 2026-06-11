@@ -1,13 +1,14 @@
 """⑧ 评论引流站。对应 08-comment-engine.md。
 
 发现上升期笔记 → 匹配产品线 → AI 草拟评论 → 人工点发（永不全自动）。
-家具场景优先装修日记类笔记（用户处于决策期）。
+频控硬约束：单号每日上限 DAILY_LIMIT、同一笔记矩阵内最多 1 个号评论。
 """
 from __future__ import annotations
 
+import datetime as dt
 import random
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..config import PRODUCT_KEYWORDS
@@ -28,15 +29,22 @@ DAILY_LIMIT = 5  # 单号每日评论上限（设计稿待校准初值）
 
 
 def scan_opportunities(db: Session, count: int = 5) -> list[CommentOpportunity]:
-    """扫描上升期笔记，匹配产品线，草拟评论，挑执行号。"""
+    """扫描上升期笔记，匹配产品线，草拟评论，挑执行号。已有机会的笔记跳过（去重）。"""
     router = get_router()
     # 只用正式期 + 绿牌号承接评论（与养号引擎联动）
     eligible = list(db.scalars(
         select(Account).where(Account.stage == "active", Account.health_flag == "green")
     ))
+    # 去重：同一笔记已有 pending/posted 机会则不再生成
+    seen_titles = set(db.scalars(
+        select(CommentOpportunity.note_title).where(
+            CommentOpportunity.status.in_(["pending", "posted"]))
+    ))
 
     out: list[CommentOpportunity] = []
     for title, kind in random.sample(_MOCK_NOTES, k=min(count, len(_MOCK_NOTES))):
+        if title in seen_titles:
+            continue
         category, score = _match_category(title)
         growth = round(random.uniform(0.3, 0.9), 2)
         # 装修日记类加权（决策期用户）
@@ -72,26 +80,57 @@ def scan_opportunities(db: Session, count: int = 5) -> list[CommentOpportunity]:
 
 
 def _match_category(title: str) -> tuple[str, float]:
-    best, best_score = "", 0.0
+    """关键词精确匹配产品线；泛家居词兜底。"""
     for cat, kws in PRODUCT_KEYWORDS.items():
-        for kw in [cat, *kws]:
-            if kw in title or any(c in title for c in cat):
-                if 0.5 > best_score:
-                    best, best_score = cat, 0.5
-    # 泛家居关键词兜底
-    if not best and any(w in title for w in ("装修", "家居", "客厅", "餐厅", "新房", "改造")):
-        best, best_score = "餐桌", 0.4
-    return best, best_score
+        for kw in (cat, *kws):
+            if kw in title:
+                return cat, 0.6
+    if any(w in title for w in ("装修", "家居", "客厅", "餐厅", "新房", "改造")):
+        return "餐桌", 0.4
+    return "", 0.0
 
 
-def mark_posted(db: Session, opp_id: int) -> CommentOpportunity:
-    """人工点发后回写。"""
+def _posted_today(db: Session, account_id: int) -> int:
+    start = dt.datetime.now(dt.timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
+    return db.scalar(
+        select(func.count()).select_from(CommentOpportunity).where(
+            CommentOpportunity.posted_by_account_id == account_id,
+            CommentOpportunity.posted_at >= start.replace(tzinfo=None),
+        )
+    ) or 0
+
+
+def mark_posted(db: Session, opp_id: int, account_id: int | None = None) -> CommentOpportunity:
+    """人工点发后回写。强制：单号每日限额 + 同笔记矩阵内互斥。"""
     opp = db.get(CommentOpportunity, opp_id)
     if opp is None:
         raise ValueError("机会不存在")
+    if opp.status == "posted":
+        raise ValueError("该机会已发出")
     if opp.compliance.get("S"):
         raise ValueError("S级敏感词，不可发")
+
+    acc_id = account_id or opp.suggested_account_id
+    if acc_id is None:
+        raise ValueError("无执行账号（无正式期绿牌号可用）")
+
+    # 同一笔记矩阵内最多 1 个号出现（设计稿硬规则）
+    dup = db.scalar(
+        select(func.count()).select_from(CommentOpportunity).where(
+            CommentOpportunity.note_title == opp.note_title,
+            CommentOpportunity.status == "posted",
+        )
+    ) or 0
+    if dup:
+        raise ValueError("该笔记下矩阵已有账号评论过，跳过（反共振）")
+
+    # 单号每日上限
+    if _posted_today(db, acc_id) >= DAILY_LIMIT:
+        raise ValueError(f"账号 #{acc_id} 今日评论已达上限 {DAILY_LIMIT} 条")
+
     opp.status = "posted"
+    opp.posted_at = dt.datetime.now(dt.timezone.utc)
+    opp.posted_by_account_id = acc_id
     db.commit()
     return opp
 

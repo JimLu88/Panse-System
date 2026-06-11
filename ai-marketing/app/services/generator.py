@@ -1,17 +1,26 @@
 """③ 内容生成引擎：四层流水线。对应 03-generator.md。
 
-逻辑重构 → 事实核查 → 风格注入 → 合规预检，产出含必改3节点的草稿。
-账号性格档案注入 prompt（矩阵号同质化的根本解）。
+逻辑重构 → 事实核查（规则版：数值类声明标待人工核实）→ 风格注入 → 合规预检。
+LLM 输出解析失败自动重试一次，仍失败则拒绝入库（不存空稿）。
 """
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy.orm import Session
 
 from ..models import Account, ContentEvent, Draft, Topic
 from . import compliance
 from .llm_router import get_router
+
+# 数值类事实声明（尺寸/价格/时长/比例）→ 全部标"待人工核实"进审核高亮
+_CLAIM_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:米|cm|公分|mm|元|块|年|个月|天|%|折)")
+
+
+def extract_claims(text: str) -> list[str]:
+    """规则版事实核查：抽取数值类声明。"""
+    return _CLAIM_RE.findall(text)
 
 
 def generate_draft(db: Session, topic_id: int, account_id: int | None = None) -> Draft:
@@ -36,18 +45,28 @@ def generate_draft(db: Session, topic_id: int, account_id: int | None = None) ->
         f"关键词：{topic.keywords}。{persona_hint}"
         "用闺蜜聊天口吻，含真实使用细节，输出 JSON：title/narrative_units/tags。"
     )
-    raw = router.complete("generator.style_injection", prompt, json_mode=True)
-    data = _safe_json(raw)
-    units = data.get("narrative_units", [])
-    body = "\n".join(u.get("content", "") for u in units)
-    title = data.get("title", topic.title)[:20]
-    tags = data.get("tags", topic.keywords)
+    # 解析失败重试一次（质量回退的最小实现）；仍失败拒绝入库
+    units: list = []
+    data: dict = {}
+    for _attempt in range(2):
+        raw = router.complete("generator.style_injection", prompt, json_mode=True)
+        data = _safe_json(raw)
+        units = data.get("narrative_units") or []
+        if units:
+            break
+    if not units:
+        raise ValueError("LLM 输出无法解析为结构化草稿（已重试 1 次），未入库")
 
-    # 第②层 事实核查（mock：家具内容多为主观体验，标注待人工核实数值类声明）
-    fact = {"passed": [], "pending_human": []}
+    body = "\n".join(u.get("content", "") for u in units)
+    title = (data.get("title") or topic.title)[:20]
+    tags = data.get("tags") or topic.keywords
+
+    # 第②层 事实核查（规则版）：数值类声明全部标待人工核实
+    full_text = f"{title}\n{body}"
+    claims = extract_claims(full_text)
+    fact = {"passed": [], "pending_human": claims}
 
     # 第④层 合规预检
-    full_text = f"{title}\n{body}"
     hits = compliance.scan_banned(full_text)
     ai_like = compliance.ai_likeness_score(full_text)
     density = compliance.info_density(full_text)
@@ -83,7 +102,8 @@ def generate_draft(db: Session, topic_id: int, account_id: int | None = None) ->
     db.add(draft)
     db.flush()
     db.add(ContentEvent(content_id=draft.id, event_type="draft_generated",
-                        payload={"ai_likeness": ai_like, "info_density": density}))
+                        payload={"ai_likeness": ai_like, "info_density": density,
+                                 "claims_pending": len(claims)}))
     db.commit()
     return draft
 

@@ -30,6 +30,7 @@ class Topic(Base):
     heat_status: Mapped[str] = mapped_column(String(10), default="safe")  # peak/safe/decay
     topic_kind: Mapped[str] = mapped_column(String(10), default="trend")  # trend(时效)/evergreen(常青)
     keywords: Mapped[list] = mapped_column(JSON, default=list)
+    safe_window: Mapped[dict] = mapped_column(JSON, default=dict)  # 安全发布窗口 {start,end}
     recommended_style: Mapped[str] = mapped_column(String(50), default="diary")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 
@@ -56,7 +57,8 @@ class Draft(Base):
     must_fix: Mapped[dict] = mapped_column(JSON, default=dict)
     lineage: Mapped[dict] = mapped_column(JSON, default=dict)
 
-    status: Mapped[str] = mapped_column(String(20), default="drafted")  # drafted/approved/rejected/published
+    # 状态机: drafted → approved → scheduled → published / rejected
+    status: Mapped[str] = mapped_column(String(20), default="drafted")
     review_note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 

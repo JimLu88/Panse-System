@@ -1,0 +1,16 @@
+services:
+  marketing:
+    build: .
+    container_name: panse-marketing
+    ports:
+      - "8001:8000"   # 避开 ERP 的 8000
+    environment:
+      - DATABASE_URL=sqlite:////app/data/marketing.db
+      - LLM_PROVIDER=${LLM_PROVIDER:-mock}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - API_TOKEN=${API_TOKEN:-}
+      - ERP_BASE_URL=${ERP_BASE_URL:-}
+      - ERP_TOKEN=${ERP_TOKEN:-}
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

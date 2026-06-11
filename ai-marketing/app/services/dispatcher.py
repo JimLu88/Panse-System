@@ -1,19 +1,18 @@
 """⑥ 分发调度中心：ASSIST driver + 反共振错峰。对应 06-dispatcher.md。
 
 ASSIST = 系统排程 + 人工点发（国内默认，不碰自动化）。
-反共振 = 同选题多账号强制错峰 + 标签打散，避免被判矩阵共振降权。
+反共振 = 同选题多账号强制错峰（递增间隔，不回绕）+ 秒级随机抖动 + 标签打散。
+草稿状态机：approved → scheduled → published（全部事件发完才算 published）。
 """
 from __future__ import annotations
 
 import datetime as dt
 import random
 
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from ..models import Account, ContentEvent, Draft, PublishEvent
-
-# 反共振错峰基准（分钟），对应设计稿 23/47 分钟级别
-_OFFSET_BASE = [0, 23, 47, 72, 125]
 
 
 def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[PublishEvent]:
@@ -21,12 +20,17 @@ def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[Publi
     draft = db.get(Draft, content_id)
     if draft is None:
         raise ValueError("草稿不存在")
+    if draft.status == "scheduled":
+        raise ValueError("该稿已在发布队列，勿重复排程")
+    if draft.status == "published":
+        raise ValueError("该稿已发布完成")
     if draft.status != "approved":
         raise ValueError("草稿未通过审核，不能排发布")
 
     base_tags = list(draft.tags or [])
     events: list[PublishEvent] = []
     now = dt.datetime.now(dt.timezone.utc)
+    offset = 0  # 递增错峰：第 i 个号在前一个号基础上 +20~45 分钟，永不回绕撞峰
 
     for i, acc_id in enumerate(account_ids):
         account = db.get(Account, acc_id)
@@ -42,14 +46,16 @@ def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[Publi
                                 payload={"account_id": acc_id, "reason": f"stage_{account.stage}"}))
             continue
 
-        offset = _OFFSET_BASE[i % len(_OFFSET_BASE)] + random.randint(0, 60) // 60
+        if events:  # 第一个号 T+0，之后递增
+            offset += random.randint(20, 45)
+        jitter_seconds = random.randint(0, 60)  # 秒级抖动（设计稿"+随机0–60秒"）
         # 标签交叉打散：每个号取不同子集
         variant = random.sample(base_tags, k=min(3, len(base_tags))) if base_tags else []
         ev = PublishEvent(
             content_id=content_id,
             account_id=acc_id,
             platform=account.platform,
-            scheduled_at=now + dt.timedelta(minutes=offset),
+            scheduled_at=now + dt.timedelta(minutes=offset, seconds=jitter_seconds),
             driver_used="assist",
             result="pending",
             offset_minutes=offset,
@@ -58,11 +64,32 @@ def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[Publi
         db.add(ev)
         events.append(ev)
 
-    draft.status = "published" if events else draft.status
+    if events:
+        draft.status = "scheduled"
     db.add(ContentEvent(content_id=content_id, event_type="dispatch_scheduled",
                         payload={"count": len(events)}))
     db.commit()
     return events
+
+
+def queue(db: Session) -> list[dict]:
+    """发布队列视图（工作台用）：事件 + 稿件标题 + 账号昵称。"""
+    rows = db.execute(
+        select(PublishEvent, Draft.title, Account.nickname)
+        .join(Draft, Draft.id == PublishEvent.content_id)
+        .join(Account, Account.id == PublishEvent.account_id)
+        .order_by(PublishEvent.result.desc(), PublishEvent.scheduled_at)
+    ).all()
+    return [{
+        "event_id": ev.id,
+        "content_id": ev.content_id,
+        "title": title,
+        "account": nickname,
+        "scheduled_at": ev.scheduled_at.isoformat(),
+        "offset_minutes": ev.offset_minutes,
+        "tags": ev.tag_variant,
+        "result": ev.result,
+    } for ev, title, nickname in rows]
 
 
 def assist_card(db: Session, event_id: int) -> dict:
@@ -86,7 +113,7 @@ def assist_card(db: Session, event_id: int) -> dict:
 
 
 def mark_published(db: Session, event_id: int) -> PublishEvent:
-    """运营点发后回写。"""
+    """运营点发后回写；该稿全部事件发完才把草稿置为 published。"""
     ev = db.get(PublishEvent, event_id)
     if ev is None:
         raise ValueError("发布事件不存在")
@@ -94,5 +121,14 @@ def mark_published(db: Session, event_id: int) -> PublishEvent:
     ev.published_at = dt.datetime.now(dt.timezone.utc)
     db.add(ContentEvent(content_id=ev.content_id, event_type="published",
                         payload={"account_id": ev.account_id}))
+    db.flush()
+    remaining = db.scalar(
+        select(func.count()).select_from(PublishEvent).where(
+            PublishEvent.content_id == ev.content_id, PublishEvent.result != "success")
+    ) or 0
+    if remaining == 0:
+        draft = db.get(Draft, ev.content_id)
+        if draft:
+            draft.status = "published"
     db.commit()
     return ev

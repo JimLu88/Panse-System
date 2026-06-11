@@ -32,4 +32,6 @@ class CommentOpportunity(Base):
     suggested_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     status: Mapped[str] = mapped_column(String(12), default="pending")  # pending/posted/skipped
+    posted_at: Mapped[dt.datetime | None] = mapped_column(DateTime, nullable=True)
+    posted_by_account_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)

@@ -8,9 +8,10 @@
   :root{--bg:#f6f5f2;--card:#fff;--line:#e7e3dc;--ink:#2c2a26;--sub:#8a847a;--accent:#8a6d4f;--green:#3f9d5a;--yellow:#c89a2b;--red:#c4503e}
   *{box-sizing:border-box}
   body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink)}
-  header{background:var(--ink);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px}
+  header{background:var(--ink);color:#fff;padding:14px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap}
   header h1{font-size:17px;margin:0;font-weight:600}
   header .tag{font-size:12px;color:#cabfaf;opacity:.8;background:#403c35;padding:2px 8px;border-radius:10px}
+  #digest{font-size:12px;color:#f3d9a4}
   nav{display:flex;gap:4px;padding:10px 18px;background:#fff;border-bottom:1px solid var(--line);flex-wrap:wrap}
   nav button{border:0;background:transparent;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--sub)}
   nav button.on{background:var(--accent);color:#fff}
@@ -18,6 +19,7 @@
   .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
   button.act{background:var(--accent);color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  button.act:disabled{opacity:.4;cursor:not-allowed}
   button.ghost{background:#fff;border:1px solid var(--line);color:var(--ink);padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
   input,select{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px}
   .muted{color:var(--sub);font-size:12px}
@@ -31,16 +33,20 @@
   th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
   th{color:var(--sub);font-weight:500}
   .empty{color:var(--sub);font-size:13px;padding:8px 0}
+  .timeline{font-size:12px;color:var(--sub);border-left:2px solid var(--line);padding-left:12px;margin-top:8px}
+  .timeline div{margin:4px 0}
 </style>
 </head>
 <body>
 <header>
   <h1>畔色/孚格 · 内容矩阵工作台</h1>
   <span class="tag" id="llm">…</span>
+  <span id="digest"></span>
 </header>
 <nav>
   <button data-t="pipe" class="on">内容流水线</button>
   <button data-t="review">审核工位</button>
+  <button data-t="queue">发布队列</button>
   <button data-t="comment">评论引流</button>
   <button data-t="nurture">养号清单</button>
   <button data-t="account">账号健康</button>
@@ -51,15 +57,31 @@
 
 <script>
 const $ = (s,e=document)=>e.querySelector(s);
-const api = async (m,u,b)=>{const r=await fetch(u,{method:m,headers:{'content-type':'application/json'},body:b?JSON.stringify(b):undefined});if(!r.ok)throw new Error((await r.json()).detail||r.status);return r.json()};
+async function api(m,u,b,retried){
+  const tok=localStorage.getItem('api_token');
+  const r=await fetch(u,{method:m,headers:{'content-type':'application/json',...(tok?{authorization:'Bearer '+tok}:{})},body:b?JSON.stringify(b):undefined});
+  if(r.status===401&&!retried){
+    const nt=prompt('该服务已开启鉴权，请输入 API Token：');
+    if(nt){localStorage.setItem('api_token',nt);return api(m,u,b,true);}
+  }
+  if(!r.ok)throw new Error((await r.json()).detail||r.status);
+  return r.json();
+}
 const flag = f=>`<span class="pill ${f==='green'?'':f==='yellow'?'y':'r'}">${f}</span>`;
+const roleCN=r=>({brand:'品牌专业号',persona:'人设小号',review:'垂类测评',spare:'备用孵化',zhihu:'知乎'}[r]||r);
 let TAB='pipe';
 
 document.querySelectorAll('nav button').forEach(b=>b.onclick=()=>{
   TAB=b.dataset.t;document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x===b));render();
 });
 
-api('GET','/api/health').then(h=>$('#llm').textContent='LLM: '+h.llm_provider);
+api('GET','/api/health').then(h=>$('#llm').textContent='LLM: '+h.llm_provider+(h.auth?' · 🔒':''));
+api('GET','/api/digest').then(d=>{
+  const parts=[];
+  if(d.overdue_leads)parts.push(`⚠️ ${d.overdue_leads} 条线索超48h未跟进`);
+  if(d.due_publishes)parts.push(`📤 ${d.due_publishes} 条已到发布时间待人工发出`);
+  $('#digest').textContent=parts.join('　');
+}).catch(()=>{});
 
 async function render(){
   const v=$('#view');v.innerHTML='加载中…';
@@ -70,9 +92,10 @@ const VIEWS = {
   async pipe(v){
     v.innerHTML=`<div class="card"><h3>① 生成选题</h3>
       <div class="row"><select id="cat">${['餐桌','餐椅','茶几','柜类','床'].map(c=>`<option>${c}</option>`).join('')}</select>
-      <input id="cnt" type="number" value="3" style="width:70px"><button class="act" id="gt">生成选题</button></div>
+      <input id="cnt" type="number" value="3" style="width:70px"><button class="act" id="gt">生成选题</button>
+      <span class="muted">72h 内同标题不重复；高真实感品类自动加权</span></div>
       <div id="topics" class="grid" style="margin-top:12px"></div></div>
-      <div class="card"><h3>③ 生成草稿（四层流水线）</h3><div class="muted">点选题卡片上的「生成草稿」，结果进审核工位。</div>
+      <div class="card"><h3>③ 生成草稿（四层流水线）</h3><div class="muted">数值类声明会自动标"待人工核实"进审核工位。</div>
       <div id="drafts" class="grid" style="margin-top:12px"></div></div>`;
     $('#gt').onclick=async()=>{await api('POST','/api/topics/generate',{category:$('#cat').value,count:+$('#cnt').value});loadTopics();};
     const accs=await api('GET','/api/accounts');
@@ -93,7 +116,7 @@ const VIEWS = {
       const ds=await api('GET','/api/drafts');
       $('#drafts').innerHTML=ds.map(d=>`<div class="card" style="margin:0">
         <div class="kv"><b>${d.title}</b></div>
-        <div class="muted">AI感 ${d.ai_likeness} · <span class="pill ${d.status==='approved'?'':d.status==='rejected'?'r':'b'}">${d.status}</span></div>
+        <div class="muted">AI感 ${d.ai_likeness} · <span class="pill ${d.status==='approved'||d.status==='published'?'':d.status==='rejected'?'r':'b'}">${d.status}</span></div>
         <button class="ghost" style="margin-top:8px" onclick="openReview(${d.id})">进审核工位</button></div>`).join('')||'<div class="empty">还没有草稿</div>';
     }
     loadTopics();loadDrafts();
@@ -108,8 +131,36 @@ const VIEWS = {
     if(ds.length)openReview(ds[0].id);
   },
 
+  async queue(v){
+    const [ds,accs,q]=await Promise.all([api('GET','/api/drafts'),api('GET','/api/accounts'),api('GET','/api/dispatch/queue')]);
+    const approved=ds.filter(d=>d.status==='approved');
+    const active=accs.filter(a=>a.stage==='active'&&a.health_flag==='green');
+    v.innerHTML=`<div class="card"><h3>⑥ 排发布（反共振错峰）</h3>
+      ${approved.length?`<div class="row">
+        <select id="qd">${approved.map(d=>`<option value="${d.id}">#${d.id} ${d.title}</option>`).join('')}</select>
+        <select id="qa" multiple size="4" title="Ctrl多选">${active.map(a=>`<option value="${a.id}">${a.nickname}</option>`).join('')}</select>
+        <button class="act" id="qs">排发布</button></div>
+        <div class="muted" style="margin-top:6px">仅正式期+绿牌号可选；多号自动错峰 20–45 分钟递增 + 秒级抖动 + 标签打散</div>`
+      :'<div class="empty">暂无已审核通过待排程的稿件（先去审核工位通过一篇）</div>'}
+      </div>
+      <div class="card"><h3>发布队列（ASSIST：到点人工发出）</h3><div id="qt"></div></div>
+      <div class="card" id="cardbox" style="display:none"></div>`;
+    if(approved.length)$('#qs').onclick=async()=>{
+      const ids=[...$('#qa').selectedOptions].map(o=>+o.value);
+      if(!ids.length)return alert('请选择至少一个账号（Ctrl 多选）');
+      await api('POST','/api/dispatch/schedule',{content_id:+$('#qd').value,account_ids:ids});render();
+    };
+    $('#qt').innerHTML=q.length?`<table><thead><tr><th>稿件</th><th>账号</th><th>排程时间</th><th>错峰</th><th>状态</th><th></th></tr></thead>
+      <tbody>${q.map(e=>`<tr><td>${e.title}</td><td>${e.account}</td>
+      <td>${new Date(e.scheduled_at).toLocaleString()}</td><td>+${e.offset_minutes}min</td>
+      <td><span class="pill ${e.result==='success'?'':'b'}">${e.result}</span></td>
+      <td>${e.result==='pending'?`<button class="ghost" onclick="showCard(${e.event_id})">📋 卡片</button>
+      <button class="ghost" onclick="markPub(${e.event_id})">✅ 已发</button>`:''}</td></tr>`).join('')}</tbody></table>`
+      :'<div class="empty">队列为空</div>';
+  },
+
   async comment(v){
-    v.innerHTML=`<div class="card"><h3>⑧ 评论引流站 <span class="muted">永不全自动 · 系统找机会+AI写稿+人工点发</span></h3>
+    v.innerHTML=`<div class="card"><h3>⑧ 评论引流站 <span class="muted">永不全自动 · 单号≤5条/日 · 同笔记矩阵互斥</span></h3>
       <button class="act" id="scan">扫描上升期机会</button></div><div id="opps" class="grid"></div>`;
     $('#scan').onclick=async()=>{await api('POST','/api/comments/scan');load();};
     async function load(){
@@ -121,21 +172,21 @@ const VIEWS = {
         <div class="kv" style="background:#faf8f4;padding:8px;border-radius:8px">💬 ${o.draft_comment}</div>
         <div class="muted" style="margin-top:6px">建议号 #${o.suggested_account_id||'—'}</div>
         ${o.status==='pending'?`<div class="row" style="margin-top:8px"><button class="ghost" onclick="cact(${o.id},'post')">✅ 已人工发</button><button class="ghost" onclick="cact(${o.id},'skip')">跳过</button></div>`:''}
-        </div>`).join('')||'<div class="empty">点上方扫描</div>';
+        </div>`).join('')||'<div class="empty">点上方扫描（已有机会的笔记会自动去重）</div>';
     }
     load();
   },
 
   async nurture(v){
     const accs=await api('GET','/api/accounts');
-    v.innerHTML=`<div class="card"><h3>⑨ 养号 SOP <span class="muted">系统排程 + 人工打卡，不做自动脚本</span></h3>
+    v.innerHTML=`<div class="card"><h3>⑨ 养号 SOP <span class="muted">系统排程 + 人工打卡 · 晋级需≥10天日活打卡</span></h3>
       <div class="row"><select id="na">${accs.map(a=>`<option value="${a.id}">${a.nickname}（${a.stage}）</option>`).join('')}</select>
       <button class="act" id="load">查看今日清单</button></div></div><div id="nt"></div>`;
     $('#load').onclick=()=>loadN(+$('#na').value);
     window.loadN=async id=>{
       const t=await api('GET',`/api/nurture/${id}/today`);
-      $('#nt').innerHTML=`<div class="card"><div class="muted">${t.stage_desc}（${t.done_count}/${t.total}）</div>
-        <table><tbody>${t.tasks.map(x=>`<tr><td>${x.target}</td><td style="text-align:right">${x.done?'✅':`<button class="ghost" onclick="nchk(${x.id},${id})">打卡</button>`}</td></tr>`).join('')}</tbody></table>
+      $('#nt').innerHTML=`<div class="card"><div class="muted">${t.stage_desc}（今日 ${t.done_count}/${t.total} · 累计打卡 ${t.checkin_days} 天）</div>
+        <table><tbody>${t.tasks.map(x=>`<tr><td>${x.scope==='week'?'📅 ':''}${x.target}</td><td style="text-align:right">${x.done?'✅':`<button class="ghost" onclick="nchk(${x.id},${id})">打卡</button>`}</td></tr>`).join('')}</tbody></table>
         <button class="act" style="margin-top:10px" onclick="nprom(${id})">尝试晋级</button></div>`;
     };
     loadN(accs[0].id);
@@ -151,7 +202,8 @@ const VIEWS = {
   async lead(v){
     const ls=await api('GET','/api/leads');
     v.innerHTML=`<div class="card"><h3>⑩ 线索收件箱 <span class="muted">来源归因 + 48h跟进 + 回写ERP成交</span></h3>
-      <button class="ghost" id="demo">＋ 录一条样例线索</button>
+      <div class="row"><button class="ghost" id="demo">＋ 录一条样例线索</button>
+      <a class="ghost" style="text-decoration:none" href="/api/leads/export" download>⬇️ 导出CSV对账</a></div>
       <table style="margin-top:10px"><thead><tr><th>来源</th><th>暗号</th><th>问询</th><th>状态</th><th></th></tr></thead>
       <tbody>${ls.map(l=>`<tr><td>${l.source_type}</td><td>${l.attribution_code||'—'}</td><td>${l.question||'—'} ${l.overdue_48h?'<span class="pill r">超48h</span>':''}</td>
       <td><span class="pill ${l.status==='won'?'':'b'}">${l.status}</span>${l.erp_order_no?' '+l.erp_order_no:''}</td>
@@ -160,29 +212,34 @@ const VIEWS = {
   },
 
   async data(v){
-    const o=await api('GET','/api/analytics/overview');
+    const [o,boost]=await Promise.all([api('GET','/api/analytics/overview'),api('GET','/api/analytics/category-boost')]);
+    const boosts=Object.entries(boost);
     v.innerHTML=`<div class="card"><h3>⑦ 数据大盘</h3>
       <div class="grid"><div class="card" style="margin:0"><div class="muted">已发布</div><div style="font-size:26px">${o.published}</div></div>
-      <div class="card" style="margin:0"><div class="muted">平均真实感</div><div style="font-size:26px">${o.avg_realness}</div></div>
+      <div class="card" style="margin:0"><div class="muted">加权真实感</div><div style="font-size:26px">${o.avg_realness_weighted}</div></div>
       <div class="card" style="margin:0"><div class="muted">待复盘(真实感<0.6)</div><div style="font-size:26px">${o.low_realness_to_review}</div></div></div>
-      <div class="muted" style="margin-top:10px">${o.note}</div></div>`;
+      <div class="muted" style="margin-top:10px">${o.note}</div></div>
+      <div class="card"><h3>⑦→① 选题反哺（高真实感品类加权）</h3>
+      ${boosts.length?`<table><tbody>${boosts.map(([c,b])=>`<tr><td>${c}</td><td>boost +${b}</td></tr>`).join('')}</tbody></table>`
+      :'<div class="empty">还没有产生 boost 的品类（真实感需 > 0.6）</div>'}</div>`;
   },
 };
 
-const roleCN=r=>({brand:'品牌专业号',persona:'人设小号',review:'垂类测评',spare:'备用孵化',zhihu:'知乎'}[r]||r);
-
 window.openReview=async id=>{
   TAB='review';document.querySelectorAll('nav button').forEach(x=>x.classList.toggle('on',x.dataset.t==='review'));
-  const r=await api('GET',`/api/review/${id}`);
+  const [r,events]=await Promise.all([api('GET',`/api/review/${id}`),api('GET',`/api/content/${id}/events`)]);
   let body=r.body;
   r.highlights.forEach(h=>{body=body.replaceAll(h.word,`<span class="hl">${h.word}⚠️${h.level}</span>`);});
+  const claims=(r.fact_check&&r.fact_check.pending_human)||[];
   $('#view').innerHTML=`<div class="card"><h3>③.5 审核：${r.title}</h3>
     <div class="grid"><div><h3>原文（问题高亮）</h3><div class="kv card" style="margin:0">${body.replaceAll('\n','<br>')}</div>
-    <div class="muted" style="margin-top:8px">标签：${(r.tags||[]).map(t=>'#'+t).join(' ')}</div></div>
+    <div class="muted" style="margin-top:8px">标签：${(r.tags||[]).map(t=>'#'+t).join(' ')}</div>
+    <h3 style="margin-top:12px">事件时间线</h3><div class="timeline">${events.map(e=>`<div>${new Date(e.at).toLocaleString()} · <b>${e.event_type}</b></div>`).join('')||'—'}</div></div>
     <div><h3>三张体检报告</h3>
       <div class="kv">AI感：<b>${r.reports.ai_likeness.score}</b> ${r.reports.ai_likeness.block?'<span class="pill r">阻塞</span>':'<span class="pill">通过</span>'}</div>
       <div class="kv">信息密度：${r.reports.info_density}</div>
       <div class="kv">敏感词：S${(r.reports.banned_words.S||[]).length} / A${(r.reports.banned_words.A||[]).length} / B${(r.reports.banned_words.B||[]).length}</div>
+      ${claims.length?`<div class="kv">事实核查：<span class="pill y">${claims.length} 处数值待人工核实</span> ${claims.map(c=>`<span class="hl">${c}</span>`).join(' ')}</div>`:'<div class="kv">事实核查：无数值类声明</div>'}
       <h3 style="margin-top:12px">必改3节点</h3>
       <div class="kv">☐ 首图文字覆盖 ${r.must_fix.cover_text_density}</div>
       <div class="kv">☐ 第二段营销话术：${r.must_fix.para2_marketing}</div>
@@ -191,16 +248,28 @@ window.openReview=async id=>{
     </div></div>
     ${r.blockers.length?`<div class="kv" style="color:var(--red);margin-top:10px">⛔ ${r.blockers.join('；')}</div>`:''}
     <div class="row" style="margin-top:14px">
-      <button class="act" ${r.can_approve?'':'disabled'} onclick="rev(${id},'approve')">通过</button>
+      <button class="act" ${r.can_approve&&r.status==='drafted'?'':'disabled'} onclick="rev(${id},'approve')">通过</button>
       <button class="ghost" onclick="rev(${id},'reject')">拒绝</button>
-      ${r.status==='approved'?'<span class="muted">已通过，去「内容流水线」无；可在 API 排发布</span>':''}
+      ${r.status==='approved'?'<span class="muted">已通过 → 去「发布队列」排发布</span>':''}
+      ${r.status==='scheduled'?'<span class="muted">已在发布队列</span>':''}
+      ${r.status==='published'?'<span class="muted">已全部发出</span>':''}
     </div></div>`;
 };
-window.rev=async(id,act)=>{await api('POST',`/api/review/${id}/${act}`,{note:'工作台审核',reason:'不符合调性'});openReview(id);};
-window.cact=async(id,act)=>{await api('POST',`/api/comments/${id}/${act}`);render();};
+window.rev=async(id,act)=>{try{await api('POST',`/api/review/${id}/${act}`,{note:'工作台审核',reason:'不符合调性'});}catch(e){alert(e.message);}openReview(id);};
+window.cact=async(id,act)=>{try{await api('POST',`/api/comments/${id}/${act}`);}catch(e){alert(e.message);}render();};
 window.nchk=async(id,acc)=>{await api('POST',`/api/nurture/task/${id}/check`);loadN(acc);};
 window.nprom=async id=>{const r=await api('POST',`/api/nurture/${id}/promote`);alert(r.promoted?('已晋级到 '+r.stage):('暂不能晋级：'+r.reason));};
 window.lwin=async id=>{const no=prompt('回写 ERP 订单号：','SO'+Date.now());if(no){await api('POST',`/api/leads/${id}/won`,{erp_order_no:no});render();}};
+window.showCard=async id=>{
+  const c=await api('GET',`/api/dispatch/${id}/card`);
+  const box=$('#cardbox');box.style.display='block';
+  box.innerHTML=`<h3>📋 ASSIST 发布卡片 #${c.event_id}</h3>
+    <div class="kv"><b>Alt+1 标题：</b>${c.clipboard['1_title']}</div>
+    <div class="kv"><b>Alt+2 正文：</b><br>${c.clipboard['2_body'].replaceAll('\n','<br>')}</div>
+    <div class="kv"><b>Alt+3 标签：</b>${c.clipboard['3_tags']}</div>
+    <div class="muted" style="margin-top:6px">${c.reminder}</div>`;
+};
+window.markPub=async id=>{try{await api('POST',`/api/dispatch/${id}/published`);}catch(e){alert(e.message);}render();};
 
 render();
 </script>
