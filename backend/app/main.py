@@ -44,6 +44,7 @@ from app.api import approvals as approvals_api
 from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import briefings as briefings_api
+from app.api import web_agent as web_agent_api
 from app.api import customers as customers_api
 from app.api import pricing_diagnosis as pricing_api
 from app.api import pricing as pricing_list_api
@@ -74,6 +75,9 @@ from app.api import scheduler as scheduler_api
 from app.api import screenshots as screenshots_api
 from app.api import suppliers as suppliers_api
 from app.api import purchases as purchases_api
+from app.api import field_changes as field_changes_api
+from app.api import exports as exports_api
+from app.api import gallery as gallery_api
 from app.api import taobao_listings as taobao_listings_api
 from app.api import product_composer as product_composer_api
 from app.api import taobao_export as taobao_export_api
@@ -122,6 +126,19 @@ async def _lifespan(app: FastAPI):
                     "%d 个账号仍在用默认密码 admin, 已标记必须改密", k)
     except Exception:  # pragma: no cover
         pass
+
+    # 公式规则兜底种入 (Plan C2): 新库/测试库启动即有内置定价规则; 双重幂等
+    try:
+        from app.database import SessionLocal as _SL_F
+        from app.services import formula_engine_service
+        with _SL_F() as _s:
+            inserted = formula_engine_service.seed_builtin_rules(_s)
+            formula_engine_service.align_rules_to_builtin(_s)
+            _s.commit()
+            if inserted:
+                logging.getLogger("panse.startup").info("公式规则种入 %d 条", inserted)
+    except Exception:  # pragma: no cover - 种入失败不阻断启动
+        logging.getLogger("panse.startup").warning("公式规则种入失败", exc_info=True)
 
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
@@ -181,6 +198,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# 外网/群晖访问优化: JSON 响应 gzip 压缩 (大列表体积降 ~80%, 1KB 以下不压)
+from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
+app.add_middleware(GZipMiddleware, minimum_size=1024)
 app.add_middleware(AuditMiddleware)
 # 幂等: 带 Idempotency-Key 的写请求重复到达直接 409, 防双击/重试重复创建 (优化 #3)
 from app.idempotency import IdempotencyMiddleware  # noqa: E402
@@ -281,6 +301,9 @@ app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
 app.include_router(purchases_api.router)
+app.include_router(field_changes_api.router)
+app.include_router(exports_api.router)
+app.include_router(gallery_api.router)
 app.include_router(importer_api.router)
 app.include_router(logs_api.router)
 app.include_router(alerts_api.router)
@@ -301,6 +324,7 @@ app.include_router(dashboard_api.router)
 app.include_router(taobao_listings_api.router)
 app.include_router(product_composer_api.router)
 app.include_router(taobao_export_api.router)
+app.include_router(web_agent_api.router)
 
 
 @app.get("/api/health")

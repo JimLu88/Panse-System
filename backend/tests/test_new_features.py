@@ -59,10 +59,10 @@ def test_pricing_import_flags_custom(db_session):
         mapping={"product_code": "产品编码", "sku_code": "SKU编码", "list_price": "标价"},
     )
     db_session.commit()
+    # 用户拍板 (2026-06): 定制编码识别为确定性规则, 全自动处理, 不再记提示异常
     flagged = db_session.query(DataException).filter(
         DataException.exception_type == "custom_sku_detected").all()
-    assert len(flagged) == 1
-    assert flagged[0].source_pk == "P199"
+    assert len(flagged) == 0
 
 
 # ----------------------------- 导入冲突检测 ---------------------- #

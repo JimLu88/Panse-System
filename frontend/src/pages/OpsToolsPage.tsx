@@ -7,6 +7,7 @@ import {
   monthlyFinancial, monthlyFinancialXlsxUrl, ownerHealth,
   recycleBinList, recycleBinRestore, type RecycleBinItem,
 } from '../api/system';
+import PresetTable from '../components/PresetTable';
 
 export default function OpsToolsPage() {
   const qc = useQueryClient();
@@ -89,7 +90,8 @@ export default function OpsToolsPage() {
         <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
           导入回滚会先把数据存成快照。如误删,点"还原"把数据放回(保留原编号,重复点不会重复插)。
         </Typography.Paragraph>
-        <Table<RecycleBinItem>
+        <PresetTable<RecycleBinItem>
+          tableKey="recycle_bin"
           rowKey="file"
           size="small"
           pagination={false}

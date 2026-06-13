@@ -41,29 +41,128 @@ _DEFAULT_SLOW_MOVING_DAYS = 60
 _DEFAULT_LEAD_TIME_DAYS = 30
 
 
-def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = None, days: int = 30) -> float:
-    """近 N 天该产品的真实订单日均发货量 (产品级, 所有尺寸合计)。
+# ── 销量公式配置 (用户拍板 2026-06-11: 默认加权 — 越近的日期权重越高; 大促时段可配) ──
+_DEFAULT_PROMO_PERIODS = [
+    {"name": "618 大促", "start": "05-13", "end": "06-18"},
+    {"name": "双11 大促", "start": "10-20", "end": "11-13"},
+]
 
-    注: 订单的 sku 串(淘宝SKU)与库存的 sku 串(描述)口径不一致, 按 sku 精确匹配会恒为 0;
-    故按 product_code(含 PPS/PFG/P 品牌变体)汇总到产品级, 同一产品各尺寸行共享该日均 (近似但可用)。
-    不排除 is_historical: 批量导入默认标历史, 但那正是要分析的销售史。
+
+def get_forecast_config(db: Session) -> dict:
+    """日均销量公式 + 大促时段配置 (存 system_settings, 可在成品库存页编辑)。"""
+    import json
+    from app.services import settings_service
+    mode = settings_service.get(db, "daily_sales_mode", env_fallback=False) or "weighted"
+    try:
+        halflife = int(settings_service.get(db, "daily_sales_halflife", env_fallback=False) or 14)
+        window = int(settings_service.get(db, "daily_sales_window", env_fallback=False) or 60)
+    except ValueError:
+        halflife, window = 14, 60
+    raw = settings_service.get(db, "promo_periods", env_fallback=False)
+    try:
+        periods = json.loads(raw) if raw else _DEFAULT_PROMO_PERIODS
+        if not isinstance(periods, list):
+            periods = _DEFAULT_PROMO_PERIODS
+    except Exception:
+        periods = _DEFAULT_PROMO_PERIODS
+    return {"mode": mode, "halflife_days": halflife, "window_days": window,
+            "promo_periods": periods}
+
+
+def save_forecast_config(db: Session, cfg: dict) -> dict:
+    import json
+    from app.services import settings_service
+    if cfg.get("mode") in ("weighted", "simple"):
+        settings_service.set_value(db, "daily_sales_mode", cfg["mode"])
+    if cfg.get("halflife_days"):
+        settings_service.set_value(db, "daily_sales_halflife", str(int(cfg["halflife_days"])))
+    if cfg.get("window_days"):
+        settings_service.set_value(db, "daily_sales_window", str(int(cfg["window_days"])))
+    if isinstance(cfg.get("promo_periods"), list):
+        settings_service.set_value(db, "promo_periods", json.dumps(cfg["promo_periods"], ensure_ascii=False))
+    return get_forecast_config(db)
+
+
+def _resolve_period(p: dict, year: int) -> Optional[tuple[date, date]]:
+    try:
+        sm, sd = (int(x) for x in str(p.get("start", "")).split("-"))
+        em, ed = (int(x) for x in str(p.get("end", "")).split("-"))
+        s = date(year, sm, sd)
+        e = date(year, em, ed)
+        if e < s:   # 跨年时段 (如 12-20 ~ 01-05)
+            e = date(year + 1, em, ed)
+        return s, e
+    except (ValueError, TypeError):
+        return None
+
+
+def promo_status(db: Session, *, prep_days: int = 30) -> dict:
+    """大促备货状态: 当前是否在大促期内 / 是否进入备货窗口 (大促开始前 prep_days 天)。
+
+    用户口径: 大促前要提前备货, 大促后销量会急剧下降, 不能只看平均数。
     """
-    cutoff = date.today() - timedelta(days=days)
-    # 同一实物跨品牌(PPS/PFG)+订单去品牌(P) 按数字主体归并 → 全部等价编码一起统计销量
+    cfg = get_forecast_config(db)
+    today = date.today()
+    active, upcoming = [], []
+    for p in cfg["promo_periods"]:
+        for year in (today.year - 1, today.year, today.year + 1):
+            r = _resolve_period(p, year)
+            if not r:
+                continue
+            s, e = r
+            if s <= today <= e:
+                active.append({"name": p.get("name"), "start": s.isoformat(), "end": e.isoformat()})
+            elif s - timedelta(days=prep_days) <= today < s:
+                upcoming.append({"name": p.get("name"), "start": s.isoformat(),
+                                 "end": e.isoformat(), "days_to_start": (s - today).days})
+    return {"active": active, "upcoming": upcoming, "prep_days": prep_days}
+
+
+def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = None,
+                         days: int = 30, cfg: Optional[dict] = None) -> float:
+    """该产品的日均发货量 (产品级, 所有尺寸合计)。
+
+    公式 (成品库存页可改, 存 system_settings):
+      weighted (默认) — 指数加权移动平均: 每天销量乘 0.5^(距今天数/半衰期),
+                        越近的日期权重越高 (用户拍板)。窗口/半衰期可配。
+      simple           — 旧口径: 窗口期总量 ÷ 窗口天数。
+    注: 按 product_code(含 PPS/PFG/P 品牌变体)汇总到产品级。不排除 is_historical。
+    """
+    if cfg is None:
+        cfg = get_forecast_config(db)
+    window = int(cfg.get("window_days") or days or 60)
+    cutoff = date.today() - timedelta(days=window)
     pc_candidates = product_coder.brand_variants(product_code) or {product_code}
-    total = float(db.execute(
-        select(func.coalesce(func.sum(Order.qty), 0)).where(
-            Order.product_code.in_(pc_candidates),
-            Order.is_refill == False,  # noqa: E712  补单不算真实销量
-            Order.order_date >= cutoff,
-            # 排除 已关闭/取消/未付款 (兼容导入的中文平台状态 + 系统枚举)
-            Order.status.notin_(["cancelled", "pending_payment"]),
-            ~Order.status.like("%关闭%"),
-            ~Order.status.like("%取消%"),
-            ~Order.status.like("%等待买家付款%"),
-        )
-    ).scalar() or 0)
-    return round(total / days, 3)
+    base_filters = (
+        Order.product_code.in_(pc_candidates),
+        Order.is_refill == False,  # noqa: E712  补单不算真实销量
+        Order.order_date >= cutoff,
+        Order.status.notin_(["cancelled", "pending_payment"]),
+        ~Order.status.like("%关闭%"),
+        ~Order.status.like("%取消%"),
+        ~Order.status.like("%等待买家付款%"),
+    )
+    if cfg.get("mode") == "simple":
+        total = float(db.execute(
+            select(func.coalesce(func.sum(Order.qty), 0)).where(*base_filters)
+        ).scalar() or 0)
+        return round(total / window, 3)
+    # weighted: 按天聚合后做指数衰减加权
+    halflife = max(1, int(cfg.get("halflife_days") or 14))
+    rows = db.execute(
+        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0))
+        .where(*base_filters).group_by(Order.order_date)
+    ).all()
+    today = date.today()
+    weighted_sum = 0.0
+    for d, qty in rows:
+        if d is None:
+            continue
+        age = (today - d).days
+        weighted_sum += float(qty) * (0.5 ** (age / halflife))
+    # 归一化分母 = 窗口内每天的权重和 → 结果仍是"每天卖几件"的口径
+    denom = sum(0.5 ** (a / halflife) for a in range(window))
+    return round(weighted_sum / denom, 3) if denom else 0.0
 
 
 def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:

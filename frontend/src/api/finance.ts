@@ -76,6 +76,26 @@ export interface BalanceUpsertPayload {
 export const upsertBalance = (payload: BalanceUpsertPayload) =>
   api.post<AccountBalanceRow>('/api/finance/accounts', payload).then((r) => r.data);
 
+// Plan F10: 期初余额倒推 — 最近快照 − 区间Σ流水 → target_date 当日期初
+export interface DeriveOpeningResult {
+  ok: boolean;
+  message?: string;
+  account?: string;
+  target_date?: string;
+  snapshot_date?: string;
+  snapshot_balance?: number;
+  interval_net_flow?: number;
+  derived_balance?: number;
+  span_days?: number;
+  days_with_flows?: number;
+  gap_days?: number;
+  hint?: string;
+}
+export const deriveOpeningBalance = (account: string, targetDate: string) =>
+  api.get<DeriveOpeningResult>('/api/finance/balances/derive-opening', {
+    params: { account, target_date: targetDate },
+  }).then((r) => r.data);
+
 export const deleteBalance = (id: number) =>
   api.delete<{ deleted: number }>(`/api/finance/accounts/${id}`).then((r) => r.data);
 
@@ -121,6 +141,55 @@ export const runReconciliation = (
   }
   return api.get<Record<string, ReconciliationResult>>('/api/finance/reconciliation', { params }).then((r) => r.data);
 };
+
+// 人工做平: 永久豁免某条对账差异 (带原因, 进修改档案)
+export const writeoffReconciliationDiff = (rule: string, key: string, reason: string) =>
+  api.post('/api/finance/reconciliation/writeoff', { rule, key, reason }).then((r) => r.data);
+
+export interface WriteoffsOut {
+  keys: Record<string, string[]>;
+  totals: Record<string, number>;
+  grand_total: number;
+  count: number;
+  synced_at?: string | null;   // 异常池最近同步时间
+}
+
+// 工厂别名映射 (货款对账两侧名称归一; 系统内自助维护)
+export const getFactoryAliases = () =>
+  api.get<{ aliases: Record<string, string> }>(
+    '/api/finance/reconciliation/factory-aliases',
+  ).then((r) => r.data.aliases);
+
+export const saveFactoryAliases = (aliases: Record<string, string>) =>
+  api.put('/api/finance/reconciliation/factory-aliases', { aliases }).then((r) => r.data);
+
+export const listReconciliationWriteoffs = () =>
+  api.get<WriteoffsOut>('/api/finance/reconciliation/writeoffs').then((r) => r.data);
+
+// 对账每日快照 (近 N 天) — 趋势图数据源, 由每日 23:30 调度写入
+export interface ReconSnapshotRow {
+  snap_date: string;
+  rule: string;
+  ok: number;
+  warning: number;
+  error: number;
+  total_diff_abs: number;
+}
+export const listReconSnapshots = (days = 30) =>
+  api.get<{ rows: ReconSnapshotRow[] }>(
+    '/api/finance/reconciliation/snapshots', { params: { days } },
+  ).then((r) => r.data.rows);
+
+// 经营支出自动配流水: 缺流水号的 日常/外包/品牌 记录按金额+日期窗口配支付宝支出
+export interface ExpenseMatchOut {
+  matched: Record<string, number>;
+  ambiguous: number;
+  unmatched: number;
+  details: string[];
+}
+export const matchExpenseFlows = () =>
+  api.post<ExpenseMatchOut>('/api/finance/reconciliation/match-expense-flows')
+    .then((r) => r.data);
 
 export interface SmartMatchResult {
   total_scanned: number;
@@ -176,6 +245,9 @@ export interface Supplier {
   remark: string | null;
   alipay_counterparty_keywords?: string[] | null;
   alipay_account?: string | null;
+  latest_score?: number | null;
+  latest_rank?: number | null;
+  score_period?: string | null;
 }
 
 export interface DeliveryLine {
@@ -239,6 +311,26 @@ export interface FolderListing {
 
 export const listSuppliers = (activeOnly = true) =>
   api.get<Supplier[]>('/api/suppliers', { params: { active_only: activeOnly } }).then((r) => r.data);
+
+// #3: 从支付宝流水挖候选 + 批量建供应商
+export interface AlipaySupplierCandidate {
+  counterparty: string;
+  payment_count: number;
+  total_paid: number;
+}
+export const getAlipaySupplierCandidates = (minCount = 2) =>
+  api
+    .get<{ candidates: AlipaySupplierCandidate[]; total: number }>('/api/suppliers/alipay-candidates', { params: { min_count: minCount } })
+    .then((r) => r.data);
+export const autoCreateSuppliers = (counterparties: string[], supplier_type = 'other') =>
+  api
+    .post<{ created: string[]; count: number }>('/api/suppliers/auto-create', { counterparties, supplier_type })
+    .then((r) => r.data);
+// 从配件采购记录(真实供应商源)挖候选 — 结构同支付宝候选, 前端复用同一个建档弹窗
+export const getPurchaseSupplierCandidates = (minCount = 1) =>
+  api
+    .get<{ candidates: AlipaySupplierCandidate[]; total: number }>('/api/suppliers/purchase-candidates', { params: { min_count: minCount } })
+    .then((r) => r.data);
 
 export const createSupplier = (payload: Partial<Supplier>) =>
   api.post<Supplier>('/api/suppliers', payload).then((r) => r.data);
@@ -402,6 +494,19 @@ export interface PurchaseFileRow {
   size_bytes: number | null;
   uploaded_by: string | null;
 }
+// Excel/CSV 直接导入采购记录 (列名映射, 不走 OCR)
+export const importPurchasesTable = (file: File) => {
+  const form = new FormData();
+  form.append('file', file);
+  return api
+    .post<{ inserted: number; skipped_duplicate: number; skipped_invalid: number;
+            unmapped_columns: string[]; message: string }>(
+      '/api/purchases/import-table', form,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    )
+    .then((r) => r.data);
+};
+
 export const uploadPurchaseOcr = (file: File, autoCommit = true) => {
   const form = new FormData();
   form.append('file', file);

@@ -72,6 +72,17 @@ def _maybe_bot(db: Session, event_type: str | None, event: dict) -> None:
     try:
         from app.services import feishu_bot_service
         if "im.message.receive" in event_type:
+            # 防"一直默默发卡片": 飞书会对未 ack 的旧消息事件长时间反复重投 → 这里也按
+            # message_id 去重 + 丢弃 15 分钟前的旧重投(复用长连接那套), 否则每次重投都弹一张卡。
+            from app.services import feishu_ws_service as _ws
+            _msg = event.get("message") or {}
+            _mid, _ct = _msg.get("message_id"), _msg.get("create_time")
+            if _mid and _ws._dedup(_mid):
+                _log.info("webhook 跳过重复消息 %s", _mid)
+                return
+            if _ct and _ws._is_stale_ms(_ct):
+                _log.info("webhook 丢弃飞书旧事件重投 %s (create_time=%s)", _mid, _ct)
+                return
             feishu_bot_service.on_message_event(db, event)
             db.commit()
         elif "card.action.trigger" in event_type:

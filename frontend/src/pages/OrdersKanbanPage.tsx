@@ -1,11 +1,12 @@
 /**
- * 订单看板 — 拖拽换列 (@dnd-kit, 桌面拖/手机长按拖), 人工拖拽即「已确定」, 配件配齐徽标。
+ * 订单看板 — 顶部切「订单视图 / 配件视图」。
  *
- * 拖卡片到目标列 → changeOrderStatus(confirmed=true): 改状态 + 标记 kanban_confirmed。
- * 不再用「→下一档」按钮; 去掉了「快递/人工」双核对按钮(查快递在「配件」抽屉里)。
+ * 订单视图: 拖拽换列 (@dnd-kit, 桌面拖/手机长按拖), 人工拖拽即「已确定」(仅本次会话提示, 不持久化), 配件配齐徽标。
+ *   拖卡片到目标列 → changeOrderStatus(confirmed=true): 改状态(允许任意方向/回拖纠错) + 安静迁移不刷异常。
+ * 配件视图: 按配件汇总的全局采购清单 (原「配件备料」并入此处, 不再单开页面)。
  */
 import { useState, type ReactNode } from 'react';
-import { Alert, Button, Card, Col, Empty, Row, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Row, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -22,8 +23,10 @@ const collisionStrategy: CollisionDetection = (args) => {
 };
 import { changeOrderStatus, fetchAccessorySummary, listOrders } from '../api/client';
 import type { AccessorySummary, Order } from '../api/client';
-import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
+import DispositionModal, { type DispositionRequest } from '../components/DispositionModal';
+import FactoryProductionView from '../components/FactoryProductionView';
+import AccessoryPurchasePage from './AccessoryPurchasePage';
 
 const COLUMNS: { key: string; label: string; color: string }[] = [
   { key: 'pending_payment', label: '待付款', color: 'default' },
@@ -53,10 +56,10 @@ function AccessoryTag({ acc }: { acc?: AccessorySummary }) {
 }
 
 function DraggableCard({
-  o, acc, showAccessory, onTimeline, onAccessory,
+  o, acc, showAccessory, confirmed, onAccessory,
 }: {
-  o: Order; acc?: AccessorySummary; showAccessory: boolean;
-  onTimeline: (id: number) => void; onAccessory: (o: Order) => void;
+  o: Order; acc?: AccessorySummary; showAccessory: boolean; confirmed: boolean;
+  onAccessory: (o: Order) => void;
 }) {
   const { attributes, listeners, setNodeRef, isDragging } = useDraggable({ id: o.id });
   return (
@@ -69,12 +72,12 @@ function DraggableCard({
       <Card
         size="small"
         styles={{ body: { padding: 8 } }}
-        style={{ borderColor: o.kanban_confirmed ? '#52c41a' : (o.signoff_questioned ? '#faad14' : undefined) }}
+        style={{ borderColor: confirmed ? '#52c41a' : (o.signoff_questioned ? '#faad14' : undefined) }}
       >
         <Space direction="vertical" size={2} style={{ width: '100%' }}>
           <Space size={4} style={{ width: '100%', justifyContent: 'space-between' }}>
             <strong style={{ fontSize: 12 }}>{o.order_no}</strong>
-            {o.kanban_confirmed && <Tag color="success" style={{ marginInlineEnd: 0 }}>已确定</Tag>}
+            {confirmed && <Tag color="success" style={{ marginInlineEnd: 0 }}>已确定</Tag>}
           </Space>
           <Typography.Text style={{ fontSize: 11 }} type="secondary">
             {o.customer_name || '-'} · {o.product_name || '-'} ×{o.qty}
@@ -86,9 +89,6 @@ function DraggableCard({
           {/* 操作区: 阻止 mousedown/touchstart 冒泡, 点按钮不会触发拖拽 */}
           <div onMouseDown={(e) => e.stopPropagation()} onTouchStart={(e) => e.stopPropagation()}>
             <Space size={4} wrap>
-              <Tooltip title="这单的全过程记录：状态变更 / 锁库存 / 缺货 / 发货 / 打面单，也可在这里加备注">
-                <Button size="small" onClick={() => onTimeline(o.id)}>时间线</Button>
-              </Tooltip>
               <Tooltip title="BOM 配件采购清单: 缺哪些 / 已到货, 点开可补全 / 改状态">
                 <Button size="small" onClick={() => onAccessory(o)}>配件</Button>
               </Tooltip>
@@ -121,12 +121,14 @@ function DroppableColumn({
   );
 }
 
-export default function OrdersKanbanPage() {
+function OrdersBoard() {
   const qc = useQueryClient();
-  const [timelineFor, setTimelineFor] = useState<number | null>(null);
   const [accessoryFor, setAccessoryFor] = useState<{ id: number; order_no: string } | null>(null);
   const [expandedCols, setExpandedCols] = useState<Record<string, boolean>>({});
   const [activeId, setActiveId] = useState<number | null>(null);
+  const [q, setQ] = useState('');   // 按 订单号 / 产品名 / 客户名 过滤(用户要求: 订单视图加搜索)
+  // 「已确定」只在本次会话内提示(拖完即时反馈), 不读后端 kanban_confirmed → 下次登录不再显示。
+  const [justConfirmed, setJustConfirmed] = useState<Set<number>>(new Set());
 
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
@@ -139,14 +141,26 @@ export default function OrdersKanbanPage() {
     refetchInterval: 60000,
   });
 
+  const [dispReq, setDispReq] = useState<DispositionRequest | null>(null);
   const transMut = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: string }) =>
-      changeOrderStatus(id, status, false, true),   // confirmed=true → 标记已确定
-    onSuccess: () => {
+    mutationFn: ({ id, status, opts }: { id: number; status: string;
+                  opts?: { disposition?: 'future' | 'release'; plannedShipDate?: string } }) =>
+      changeOrderStatus(id, status, false, true, opts),   // confirmed=true → 允许任意方向 + 安静迁移
+    onSuccess: (_data, vars) => {
+      setDispReq(null);
+      setJustConfirmed((prev) => new Set(prev).add(vars.id));   // 本次会话内显示「已确定」
       message.success('已确定并更新状态');
       qc.invalidateQueries({ queryKey: ['orders-kanban'] });
     },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
+    onError: (e: any, vars) => {
+      const detail = e?.response?.data?.detail;
+      // Plan F2: 取消带在制工厂单 → 强制二选一弹窗
+      if (e?.response?.status === 422 && detail?.need_disposition) {
+        setDispReq({ orderId: vars.id, status: vars.status, factoryOrders: detail.factory_orders || [] });
+        return;
+      }
+      message.error(typeof detail === 'string' ? detail : '失败');
+    },
   });
 
   // 桌面: 移动 6px 起拖(点击不误触); 手机: 长按 200ms 起拖(点击/滚动不误触)
@@ -157,11 +171,19 @@ export default function OrdersKanbanPage() {
 
   if (isLoading) return <Card loading />;
 
+  const kw = q.trim().toLowerCase();
+  const visible = kw
+    ? (orders || []).filter((o) =>
+        [o.order_no, o.product_name, o.customer_name]
+          .some((v) => String(v || '').toLowerCase().includes(kw)))
+    : (orders || []);
+
   const grouped: Record<string, Order[]> = {};
   COLUMNS.forEach((c) => { grouped[c.key] = []; });
   const hidden = { signed: 0, cancelled: 0, other: 0 };
-  (orders || []).forEach((o) => {
-    const k = normStatus(o.status);
+  visible.forEach((o) => {
+    // 有未完成售后 → 归"售后中"列 (派生, 不依赖底层 status; 与订单视图口径一致)
+    const k = o.has_active_aftersales ? 'aftersales' : normStatus(o.status);
     if (grouped[k]) grouped[k].push(o);
     else if (k === 'signed') hidden.signed += 1;
     else if (k === 'cancelled') hidden.cancelled += 1;
@@ -193,8 +215,15 @@ export default function OrdersKanbanPage() {
       <Space direction="vertical" style={{ width: '100%' }} size="middle">
         <Alert
           type="info" showIcon
-          message="订单看板: 拖动卡片到目标档即更新状态(并标记「已确定」)。只显示进行中的订单。"
-          description={`[时间线]看进度 · [配件]看BOM采购清单(缺多少/已到货)。手机端长按卡片再拖。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`}
+          message="订单看板: 拖动卡片到目标档即更新状态(可任意方向, 拖错了拖回去也行)。只显示进行中的订单。"
+          description={`[配件]看 BOM 采购清单(缺多少/已到货)。手机端长按卡片再拖。已完结不展示: 已签收 ${hidden.signed} 单、已关闭 ${hidden.cancelled} 单${hidden.other ? `、其他 ${hidden.other} 单` : ''}。`}
+        />
+        <Input.Search
+          allowClear
+          placeholder="搜索 订单号 / 产品名 / 客户名"
+          style={{ maxWidth: 360 }}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
         />
         <Row gutter={12}>
           {COLUMNS.map((col) => {
@@ -210,8 +239,8 @@ export default function OrdersKanbanPage() {
                       {shown.map((o) => (
                         <DraggableCard
                           key={o.id} o={o} acc={accSummary[o.id]}
+                          confirmed={justConfirmed.has(o.id)}
                           showAccessory={col.key !== 'pending_payment'}   /* 待付款不显示缺料(没付款没必要配) */
-                          onTimeline={setTimelineFor}
                           onAccessory={(ord) => setAccessoryFor({ id: ord.id, order_no: ord.order_no })}
                         />
                       ))}
@@ -230,6 +259,16 @@ export default function OrdersKanbanPage() {
         </Row>
       </Space>
 
+      <DispositionModal
+        req={dispReq}
+        loading={transMut.isPending}
+        onCancel={() => setDispReq(null)}
+        onSubmit={(d) => dispReq && transMut.mutate({
+          id: dispReq.orderId, status: dispReq.status,
+          opts: { disposition: d.disposition, plannedShipDate: d.plannedShipDate },
+        })}
+      />
+
       <DragOverlay>
         {activeOrder ? (
           <Card size="small" styles={{ body: { padding: 8 } }}
@@ -240,7 +279,6 @@ export default function OrdersKanbanPage() {
         ) : null}
       </DragOverlay>
 
-      <OrderTimelineDrawer orderId={timelineFor} open={timelineFor !== null} onClose={() => setTimelineFor(null)} />
       <AccessoryChecklistDrawer
         orderId={accessoryFor?.id ?? null}
         orderNo={accessoryFor?.order_no}
@@ -248,5 +286,23 @@ export default function OrdersKanbanPage() {
         onClose={() => setAccessoryFor(null)}
       />
     </DndContext>
+  );
+}
+
+export default function OrdersKanbanPage() {
+  const [topView, setTopView] = useState<'orders' | 'factory' | 'accessory'>('orders');
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Segmented
+        value={topView}
+        onChange={(v) => setTopView(v as 'orders' | 'factory' | 'accessory')}
+        options={[
+          { label: '订单视图', value: 'orders' },
+          { label: '工厂制作单', value: 'factory' },
+          { label: '配件视图', value: 'accessory' },
+        ]}
+      />
+      {topView === 'orders' ? <OrdersBoard /> : topView === 'factory' ? <FactoryProductionView /> : <AccessoryPurchasePage />}
+    </Space>
   );
 }

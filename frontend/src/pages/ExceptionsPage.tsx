@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Segmented,
   Space,
   Spin,
@@ -32,6 +33,7 @@ import {
   resolveImportConflict,
   runAllScanners,
   runDataQuality,
+  recheckAllExceptions,
 } from '../api/client';
 
 const severityColor: Record<string, string> = {
@@ -282,12 +284,16 @@ export default function ExceptionsPage() {
   }, [data]);
 
   const resolveMut = useMutation({
-    mutationFn: ({ id, s }: { id: number; s: 'resolved' | 'ignored' }) =>
-      resolveException(id, s),
-    onSuccess: () => {
-      message.success('已更新');
+    mutationFn: ({ id, s, f }: { id: number; s: 'resolved' | 'ignored'; f?: boolean }) =>
+      resolveException(id, s, f ?? false),
+    onSuccess: (_r, vars) => {
+      message.success(vars.s === 'resolved' ? '复核通过, 已销账' : '已强制忽略, 不再提醒');
       qc.invalidateQueries({ queryKey: ['exceptions'] });
       qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+    },
+    onError: (e: any) => {
+      // 409 = 复核未通过: 问题还在, 不销账 (用户拍板: 还存在就不能跳过去)
+      message.warning(e?.response?.data?.detail ?? e?.message ?? '操作失败', 6);
     },
   });
 
@@ -318,6 +324,18 @@ export default function ExceptionsPage() {
       qc.invalidateQueries({ queryKey: ['exceptions'] });
       qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
     },
+  });
+
+  const recheckMut = useMutation({
+    mutationFn: recheckAllExceptions,
+    onSuccess: (res) => {
+      message.success(res.closed > 0
+        ? `重新复核完成：${res.closed} 条已修复的异常已自动销账`
+        : '重新复核完成：没有可自动销账的异常（剩下的需人工处理）');
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+    },
+    onError: () => message.error('复核失败'),
   });
 
   const fixMut = useMutation({
@@ -369,14 +387,18 @@ export default function ExceptionsPage() {
 
   // 再按 6 大类归拢: 每个分类下挂它的异常类型组
   const categories = useMemo(() => {
+    // 不重要异常 (用户拍板 2026-06-12): 纯 info 级的组从主分类剥出来,
+    // 收进页尾一个灰显、默认折叠的"不重要"分类 — 看不看都行, 不打扰主流程。
+    const muted = groups.filter((g) => g.worst <= 1);
+    const main = groups.filter((g) => g.worst > 1);
     const byCat = new Map<CategoryKey, typeof groups>();
-    groups.forEach((g) => {
+    main.forEach((g) => {
       const cat = typeMeta(g.type).category;
       const arr = byCat.get(cat) ?? [];
       arr.push(g);
       byCat.set(cat, arr);
     });
-    return CATEGORY_ORDER
+    const cats: any[] = CATEGORY_ORDER
       .filter((c) => byCat.has(c))
       .map((c) => {
         const gs = byCat.get(c)!;
@@ -388,6 +410,20 @@ export default function ExceptionsPage() {
           worst: gs.reduce((s, g) => Math.max(s, g.worst), 0),
         };
       });
+    if (muted.length) {
+      cats.push({
+        key: 'muted',
+        meta: {
+          label: '不重要异常',
+          color: 'default',
+          desc: '低关注 info 级提示: 不影响业务、可能长期存在。默认折叠, 不用处理。',
+        },
+        groups: muted,
+        total: muted.reduce((s, g) => s + g.items.length, 0),
+        worst: 1,
+      });
+    }
+    return cats;
   }, [groups]);
 
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
@@ -437,12 +473,14 @@ export default function ExceptionsPage() {
               >
                 查看差异并裁决
               </Button>
-              <Button
-                size="small"
-                onClick={() => resolveMut.mutate({ id: row.id, s: 'ignored' })}
+              <Popconfirm
+                title="强制忽略此异常?"
+                description="忽略 = 永久不再提醒, 问题本身不会被修复。"
+                okText="确认忽略" okButtonProps={{ danger: true }}
+                onConfirm={() => resolveMut.mutate({ id: row.id, s: 'ignored', f: true })}
               >
-                忽略
-              </Button>
+                <Button size="small">强制忽略</Button>
+              </Popconfirm>
             </Space>
           );
         }
@@ -456,9 +494,14 @@ export default function ExceptionsPage() {
               <Button size="small" icon={<RobotOutlined />} onClick={() => handleDiagnose(row)}>
                 AI 分析
               </Button>
-              <Button size="small" onClick={() => resolveMut.mutate({ id: row.id, s: 'ignored' })}>
-                忽略
-              </Button>
+              <Popconfirm
+                title="强制忽略此异常?"
+                description="忽略 = 永久不再提醒, 问题本身不会被修复。"
+                okText="确认忽略" okButtonProps={{ danger: true }}
+                onConfirm={() => resolveMut.mutate({ id: row.id, s: 'ignored', f: true })}
+              >
+                <Button size="small">强制忽略</Button>
+              </Popconfirm>
             </Space>
           );
         }
@@ -481,16 +524,19 @@ export default function ExceptionsPage() {
             <Button
               size="small"
               type="primary"
+              title="先自动复核问题是否已修复, 修好了才销账"
               onClick={() => resolveMut.mutate({ id: row.id, s: 'resolved' })}
             >
               已处理
             </Button>
-            <Button
-              size="small"
-              onClick={() => resolveMut.mutate({ id: row.id, s: 'ignored' })}
+            <Popconfirm
+              title="强制忽略此异常?"
+              description="忽略 = 永久不再提醒, 问题本身不会被修复。"
+              okText="确认忽略" okButtonProps={{ danger: true }}
+              onConfirm={() => resolveMut.mutate({ id: row.id, s: 'ignored', f: true })}
             >
-              忽略
-            </Button>
+              <Button size="small">强制忽略</Button>
+            </Popconfirm>
           </Space>
         );
       },
@@ -508,6 +554,24 @@ export default function ExceptionsPage() {
         </Typography.Title>
         <Space>
           <Button
+            onClick={async () => {
+              // 带鉴权的 blob 下载 (直链丢 Authorization 头会 401)
+              const { api } = await import('../api/client');
+              const resp = await api.get('/api/exceptions/export', { responseType: 'blob' });
+              const url = window.URL.createObjectURL(resp.data as Blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = '异常批注表.xlsx';
+              document.body.appendChild(a);
+              a.click();
+              a.remove();
+              window.URL.revokeObjectURL(url);
+            }}
+            title="按来源表导出: 每张源表一个 sheet, 出问题的行末列写异常批注"
+          >
+            导出批注表
+          </Button>
+          <Button
             icon={<ThunderboltOutlined />}
             onClick={() => dqMut.mutate()}
             loading={dqMut.isPending}
@@ -520,6 +584,15 @@ export default function ExceptionsPage() {
             loading={scanMut.isPending}
           >
             全量扫描
+          </Button>
+          <Button
+            type="primary" ghost
+            icon={<ThunderboltOutlined />}
+            onClick={() => recheckMut.mutate()}
+            loading={recheckMut.isPending}
+            title="对有检查器的异常重跑判定, 把问题已修复的自动销账 (没检查器的留人工)"
+          >
+            重新复核全部异常
           </Button>
           <Button
             icon={allExpanded ? <UpOutlined /> : <DownOutlined />}
@@ -581,7 +654,7 @@ export default function ExceptionsPage() {
       ) : (
         <Space direction="vertical" style={{ width: '100%' }} size="large">
           {categories.map((cat) => (
-            <div key={cat.key}>
+            <div key={cat.key} style={cat.key === 'muted' ? { opacity: 0.6 } : undefined}>
               <Space style={{ marginBottom: 8 }} align="center">
                 <Tag color={cat.meta.color} style={{ fontSize: 14, padding: '2px 10px', margin: 0 }}>
                   {cat.meta.label}
@@ -596,7 +669,7 @@ export default function ExceptionsPage() {
               <Collapse
                 activeKey={activeKeys}
                 onChange={(k) => setActiveKeys(k as string[])}
-                items={cat.groups.map((g) => {
+                items={(cat.groups as typeof groups).map((g) => {
                   const meta = typeMeta(g.type);
                   const table = g.items[0]?.source_table;
                   return {
@@ -623,7 +696,7 @@ export default function ExceptionsPage() {
                           rowKey="id"
                           dataSource={g.items}
                           columns={panelColumns as any}
-                          pagination={g.items.length > 20 ? { pageSize: 20 } : false}
+                          pagination={g.items.length > 20 ? { pageSize: 100 } : false}
                           size="small"
                         />
                       </>

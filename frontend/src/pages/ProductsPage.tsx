@@ -3,6 +3,7 @@ import {
   Alert,
   Button,
   Descriptions,
+  Dropdown,
   Form,
   Image,
   Input,
@@ -17,11 +18,27 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
-import { PricingSku, Product, createProduct, deleteProduct, listProducts, listProductSkus, updateProduct } from '../api/client';
+import GalleryModal from '../components/GalleryModal';
+import { CUTE_IMG } from '../components/ProductThumb';
+import { PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct } from '../api/client';
+import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
+
+const PRODUCT_FIELDS: PresetField[] = [
+  { key: 'code', label: '编码', group: '字段' },
+  { key: 'name', label: '名称', group: '字段' },
+  { key: 'brand', label: '品牌', group: '字段' },
+  { key: 'category', label: '类目', group: '字段' },
+  { key: 'remark', label: '备注', group: '字段' },
+  { key: 'image', label: '图片', group: '字段' },
+];
+const PRODUCT_PRESETS = [
+  { name: '常用', fields: ['code', 'name', 'category', 'image'] },
+  { name: '名称备注', fields: ['code', 'name', 'brand', 'category', 'remark', 'image'] },
+];
 
 function SkuExpandedRow({ productCode }: { productCode: string }) {
   const { data, isLoading } = useQuery({
@@ -42,10 +59,13 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
         columns={[
           {
             title: '图片', width: 64,
-            render: (_: unknown, r: PricingSku) =>
-              r.image_url
-                ? <Image src={r.image_url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} />
-                : <span style={{ color: '#ddd', fontSize: 12 }}>无图</span>,
+            // SKU 图全部图库优先 (用户拍板 2026-06-12); 图库没有才回退淘宝 image_url
+            render: (_: unknown, r: PricingSku) => {
+              const src = (r as any).gallery_image_url || r.image_url;
+              return src
+                ? <Image src={src} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 4 }} fallback={CUTE_IMG} />
+                : <img src={CUTE_IMG} width={48} height={48} alt="暂无图片" />;
+            },
           },
           { title: 'SKU 编码', dataIndex: 'sku_code', width: 120 },
           { title: 'SKU', dataIndex: 'sku', ellipsis: true },
@@ -113,51 +133,11 @@ const CATEGORY_OPTIONS = [
   { value: '35', label: '35 卧室-柜' },
   { value: '38', label: '38 卧室-床头柜' },
   { value: '41', label: '41 书房-书桌' },
-  { value: '45', label: '45 书房-书柜' },
+  { value: '45', label: '45 书房-柜' },
   { value: '55', label: '55 玄关-柜' },
   { value: '78', label: '78 餐厅-岛台' },
   { value: '99', label: '99 其它' },
 ];
-
-// 像素占位图: ASCII 网格 → 内联 SVG data-URI (替代难看的"裂图")
-function pixelPlaceholder(
-  grid: string[], palette: Record<string, string>, bg: string, labelColor: string,
-): string {
-  const canvas = 120, pad = 14, labelH = 16;
-  const cols = grid[0].length, rows = grid.length;
-  const cell = Math.floor(Math.min((canvas - pad * 2) / cols, (canvas - pad * 2 - labelH) / rows));
-  const w = cell * cols, h = cell * rows;
-  const ox = Math.round((canvas - w) / 2), oy = Math.round((canvas - labelH - h) / 2);
-  let rects = '';
-  for (let y = 0; y < rows; y++) {
-    for (let x = 0; x < grid[y].length; x++) {
-      const f = palette[grid[y][x]];
-      if (f) rects += `<rect x='${ox + x * cell}' y='${oy + y * cell}' width='${cell}' height='${cell}' fill='${f}'/>`;
-    }
-  }
-  return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(
-    "<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' shape-rendering='crispEdges'>" +
-    `<rect width='120' height='120' rx='14' fill='${bg}'/>${rects}` +
-    `<text x='60' y='112' text-anchor='middle' font-size='11' fill='${labelColor}' font-family='monospace'>暂无图片</text></svg>`,
-  );
-}
-
-// 图片缺失/加载失败时的像素占位 (黑白 + 透明底, 用户要求)
-const CUTE_IMG = pixelPlaceholder(
-  [
-    '....bb....',
-    '...bbbb...',
-    '..bbbbbb..',
-    '.bbbbbbbb.',
-    'bbKbbbbKbb',
-    'bbbbbbbbbb',
-    'bbbWWWWbbb',
-    '.bbbbbbbb.',
-  ],
-  { b: '#a8adb5', K: '#2b2b2b', W: '#f5f5f5' },  // 身灰 / 眼黑 / 嘴白 → 黑白
-  'none',                                          // 透明底色
-  '#9aa0a6',                                       // "暂无图片" 灰字
-);
 
 // 可拖拽列宽的表头单元格 (无需 react-resizable 依赖; 拖右边缘改宽)
 function ResizableTitle(props: any) {
@@ -197,10 +177,14 @@ function ResizableTitle(props: any) {
 export default function ProductsPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
+  const [category, setCategory] = useState<string | undefined>(undefined);
+  const [brand, setBrand] = useState<string | undefined>(undefined);
   const [open, setOpen] = useState(false);
   const [form] = Form.useForm();
   const [pageSize, setPageSize] = useState(20);
   const [editTarget, setEditTarget] = useState<Product | null>(null);
+  // 产品图库弹窗 (按编码匹配 D:\畔色 产品图库 的文件夹)
+  const [galleryFor, setGalleryFor] = useState<string | null>(null);
   const [editForm] = Form.useForm();
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   // 各列宽度 (可拖拽改); 表头拖右边缘即可
@@ -209,10 +193,16 @@ export default function ProductsPage() {
   });
   const handleResize = (key: string) => (w: number) =>
     setColW((prev) => ({ ...prev, [key]: w }));
+  const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
+  const applyView = (cols: any[]) =>
+    visibleKeys === null ? cols : cols.filter((c: any) => c.key === 'actions' || visibleKeys.includes(c.key));
 
   const { data, isLoading } = useQuery({
-    queryKey: ['products', q],
-    queryFn: () => listProducts(q || undefined),
+    queryKey: ['products', q, category, brand],
+    queryFn: () => listProducts(q || undefined, { category, brand }),
+  });
+  const { data: categories = [] } = useQuery({
+    queryKey: ['product-categories'], queryFn: listProductCategories, staleTime: 5 * 60 * 1000,
   });
 
   const updateMut = useMutation({
@@ -323,10 +313,13 @@ export default function ProductsPage() {
     {
       title: '图片', dataIndex: 'image_url', key: 'image', width: colW.image, align: 'center' as const,
       onHeaderCell: mkResize('image'),
-      render: (v: string | null) =>
-        v
-          ? <Image src={v} width={88} height={88} style={{ objectFit: 'cover', borderRadius: 8 }} fallback={CUTE_IMG} />
-          : <img src={CUTE_IMG} width={72} height={72} alt="暂无图片" />,
+      // 产品行图片图库优先 (用户拍板 2026-06-12); 图库没有才回退淘宝 image_url
+      render: (v: string | null, row: Product) => {
+        const src = (row as any).gallery_image_url || v;
+        return src
+          ? <Image src={src} width={88} height={88} style={{ objectFit: 'cover', borderRadius: 8 }} fallback={CUTE_IMG} />
+          : <img src={CUTE_IMG} width={72} height={72} alt="暂无图片" />;
+      },
     },
     {
       title: '操作', key: 'actions', width: colW.actions,
@@ -334,6 +327,7 @@ export default function ProductsPage() {
       render: (_: unknown, row: Product) => (
         <Space>
           <Link to={`/bom/${row.code}`}>查看 BOM</Link>
+          <Button size="small" onClick={() => setGalleryFor(row.code)}>图库</Button>
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -341,11 +335,18 @@ export default function ProductsPage() {
               setEditTarget(row);
               editForm.setFieldsValue({
                 name: row.name,
+                sub_name: row.sub_name ?? '',
+                brand: row.brand ?? '',
+                category: row.category ?? '',
+                priority: row.priority ?? 'mid',
                 remark: row.remark,
                 image_url: row.image_url ?? '',
                 custom_scope: row.custom_scope ?? '',
+                size_value: row.size_value ?? '',
                 size_detail: row.size_detail ?? '',
+                main_material: row.main_material ?? '',
                 aux_material: row.aux_material ?? '',
+                accessory_desc: row.accessory_desc ?? '',
                 description: row.description ?? '',
               });
             }}
@@ -371,8 +372,110 @@ export default function ProductsPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           产品总表 (1)
         </Typography.Title>
-        <Space>
-          <Input.Search placeholder="按编码或名称" allowClear style={{ width: 280 }} onSearch={setQ} />
+        <Space wrap>
+          <Input.Search placeholder="按编码或名称" allowClear style={{ width: 240 }} onSearch={setQ} />
+          <Select allowClear showSearch placeholder="按类目筛" style={{ width: 180 }} value={category}
+            onChange={setCategory} options={categories.map((c) => ({ value: c, label: c }))} />
+          <Select allowClear placeholder="按品牌筛" style={{ width: 130 }} value={brand} onChange={setBrand}
+            options={[{ value: 'PS', label: 'PS 畔色' }, { value: 'FG', label: 'FG 孚格' }]} />
+          <Dropdown
+            menu={{
+              items: [
+                { key: 'refresh', label: '刷新图库配图 — 把图库新图刷进表格图片列' },
+                { key: 'scan', label: '扫描图库建档 — 发现产品表缺的新文件夹' },
+                { key: 'coverage', label: '图库体检 — SKU 配图覆盖率 (不进异常)' },
+              ],
+              onClick: async ({ key }) => {
+                const { api } = await import('../api/client');
+                try {
+                  if (key === 'refresh') {
+                    const r = await api.post('/api/gallery/refresh-images');
+                    message.success(
+                      `刷新完成: 补上 ${r.data.filled_products} 个产品主图、`
+                      + `${r.data.filled_skus} 个 SKU 图 (只填空缺, 已有图不动)`, 6);
+                    qc.invalidateQueries({ queryKey: ['products'] });
+                    return;
+                  }
+                  if (key === 'scan') {
+                    const r = await api.post('/api/gallery/scan');
+                    const news: { folder: string; code: string; name: string; image_count: number }[] =
+                      r.data.new_folders ?? [];
+                    if (news.length === 0) {
+                      message.success('图库扫描完成: 没有发现产品表缺的新文件夹');
+                      return;
+                    }
+                    Modal.confirm({
+                      title: `图库里有 ${news.length} 个文件夹还没有产品档案`,
+                      width: 560,
+                      content: (
+                        <ul style={{ maxHeight: 300, overflow: 'auto', paddingLeft: 18 }}>
+                          {news.map((n) => (
+                            <li key={n.code}>
+                              <code>{n.code}</code> {n.name}
+                              <span style={{ color: '#999' }}>（{n.image_count} 张图）</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ),
+                      okText: '一键建档',
+                      onOk: async () => {
+                        const r2 = await api.post('/api/gallery/scan', null, { params: { create: true } });
+                        message.success(`已建 ${r2.data.created} 个产品档案 (备注: 图库扫描自动建档), 请补全类目/定价`);
+                        qc.invalidateQueries({ queryKey: ['products'] });
+                      },
+                    });
+                    return;
+                  }
+                  // 图库体检
+                  const r = await api.get('/api/gallery/coverage');
+                  const { products: rows, no_folder, totals } = r.data as any;
+                  const lacking = rows.filter((p: any) => p.missing.length > 0);
+                  Modal.info({
+                    title: `图库体检 — SKU 配图 ${totals.with_image}/${totals.sku_total} (实时检查, 不进异常)`,
+                    width: 680,
+                    content: (
+                      <div style={{ maxHeight: 420, overflow: 'auto' }}>
+                        {lacking.length === 0 && no_folder.length === 0 && (
+                          <p>全部 SKU 都有配图，图库很健康。</p>
+                        )}
+                        {lacking.length > 0 && (
+                          <>
+                            <p style={{ margin: '8px 0 4px' }}><b>缺 SKU 图的产品（{lacking.length} 个，缺 {totals.missing} 款）:</b></p>
+                            {lacking.map((p: any) => (
+                              <div key={p.code} style={{ marginBottom: 6, fontSize: 13 }}>
+                                <code>{p.code}</code> {p.name}
+                                <Tag style={{ marginLeft: 6 }}>{p.with_image}/{p.total}</Tag>
+                                <div style={{ color: '#999', fontSize: 12, paddingLeft: 12 }}>
+                                  缺: {p.missing.join('、')}
+                                </div>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                        {no_folder.length > 0 && (
+                          <>
+                            <p style={{ margin: '12px 0 4px' }}><b>图库里没有文件夹的产品（{no_folder.length} 个）:</b></p>
+                            {no_folder.map((p: any) => (
+                              <div key={p.code} style={{ fontSize: 13 }}>
+                                <code>{p.code}</code> {p.name} <span style={{ color: '#999' }}>({p.sku_count} 款 SKU)</span>
+                              </div>
+                            ))}
+                          </>
+                        )}
+                        <p style={{ color: '#999', fontSize: 12, marginTop: 12 }}>
+                          实时读图库文件夹计算——补图/改名后再点一次即是最新结果；老产品缺图不会进异常中心。
+                        </p>
+                      </div>
+                    ),
+                  });
+                } catch (e: any) {
+                  message.error(e?.response?.data?.detail ?? '图库操作失败');
+                }
+              },
+            }}
+          >
+            <Button>图库设置 <DownOutlined /></Button>
+          </Dropdown>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
             新建产品
           </Button>
@@ -386,14 +489,19 @@ export default function ProductsPage() {
         description="精选视图：名称 / 备注 可直接点单元格编辑；拖表头右边缘可调列宽；点图片可放大。"
       />
 
-      <Segmented
-        value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
-        options={[
-          { label: '精选视图（可编辑）', value: 'curated' },
-          { label: '全部列', value: 'full' },
-        ]}
-      />
+      <Space wrap>
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'curated' | 'full')}
+          options={[
+            { label: '精选视图（可编辑）', value: 'curated' },
+            { label: '全部列', value: 'full' },
+          ]}
+        />
+        {viewMode === 'curated' && (
+          <FieldPresetBar tableKey="product" allFields={PRODUCT_FIELDS} defaults={PRODUCT_PRESETS} onChange={setVisibleKeys} />
+        )}
+      </Space>
 
       {viewMode === 'full' && <FullColumnView entity="product" defaultShowAll />}
 
@@ -403,13 +511,13 @@ export default function ProductsPage() {
         rowKey="id"
         loading={isLoading}
         dataSource={data}
-        columns={columns as any}
+        columns={applyView(columns) as any}
         components={{ header: { cell: ResizableTitle } }}
         scroll={{ x: 'max-content' }}
         pagination={{
           pageSize,
           showSizeChanger: true,
-          pageSizeOptions: [20, 50, 100],
+          pageSizeOptions: [20, 50, 100, 200],
           onShowSizeChange: (_, size) => setPageSize(size),
         }}
         expandable={{
@@ -440,32 +548,57 @@ export default function ProductsPage() {
               id: editTarget!.id,
               payload: {
                 name: v.name || undefined,
+                sub_name: v.sub_name || null,
+                brand: v.brand || null,
+                category: v.category || null,
+                priority: v.priority || null,
                 remark: v.remark || undefined,
                 image_url: v.image_url || null,
                 custom_scope: v.custom_scope || null,
+                size_value: v.size_value || null,
                 size_detail: v.size_detail || null,
+                main_material: v.main_material || null,
                 aux_material: v.aux_material || null,
+                accessory_desc: v.accessory_desc || null,
                 description: v.description || null,
               },
             })
           }
         >
+          <Alert type="info" showIcon style={{ marginBottom: 12 }}
+            message="产品主数据为单一来源 —— 保存后该产品所有 SKU / 订单的下单图、核算自动用新值(即「一键覆盖所有SKU」)。"
+            description="每个字段的改动会自动留存最近 30 份修改档案(谁/何时/旧值→新值), 可在「工具→修改档案」回看。" />
           <Form.Item name="name" label="产品名称" rules={[{ required: true }]}>
             <Input />
           </Form.Item>
+          <Space style={{ display: 'flex' }} size="middle">
+            <Form.Item name="sub_name" label="副名称" style={{ flex: 1 }}><Input /></Form.Item>
+            <Form.Item name="brand" label="品牌" style={{ width: 120 }}><Input /></Form.Item>
+            <Form.Item name="priority" label="重要程度" style={{ width: 120 }}>
+              <Select options={[{ value: 'high', label: '高' }, { value: 'mid', label: '中' }, { value: 'low', label: '低' }]} />
+            </Form.Item>
+          </Space>
+          <Form.Item name="category" label="类目"><Input placeholder="如 餐厅-餐桌" /></Form.Item>
           <Form.Item name="image_url" label="图片 URL">
             <Input placeholder="https://... 留空则清除图片" />
           </Form.Item>
           <Form.Item name="remark" label="备注">
             <Input />
           </Form.Item>
+          <Form.Item name="main_material" label="主材介绍（下单图先写主材）">
+            <Input.TextArea rows={2} />
+          </Form.Item>
+          <Form.Item name="aux_material" label="辅材介绍（下单图再写辅材）">
+            <Input.TextArea rows={2} />
+          </Form.Item>
           <Form.Item name="custom_scope" label="定制范围">
             <Input.TextArea rows={2} />
           </Form.Item>
+          <Space style={{ display: 'flex' }} size="middle">
+            <Form.Item name="size_value" label="尺寸值(mm)" style={{ width: 200 }}><Input /></Form.Item>
+            <Form.Item name="accessory_desc" label="外配件说明" style={{ flex: 1 }}><Input /></Form.Item>
+          </Space>
           <Form.Item name="size_detail" label="尺寸明细">
-            <Input.TextArea rows={2} />
-          </Form.Item>
-          <Form.Item name="aux_material" label="辅材介绍">
             <Input.TextArea rows={2} />
           </Form.Item>
           <Form.Item name="description" label="产品文案">
@@ -531,6 +664,7 @@ export default function ProductsPage() {
           </Form.Item>
         </Form>
       </Modal>
+      <GalleryModal productCode={galleryFor} onClose={() => setGalleryFor(null)} />
     </Space>
   );
 }

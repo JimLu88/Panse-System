@@ -42,8 +42,8 @@ def test_unknown_image_still_archived_as_screenshot(db_session, monkeypatch):
 
 def test_load_image_falls_back_to_archive_when_feishu_down(db_session, monkeypatch):
     db = db_session
-    path = fb._archive_image(db, b"ARCHIVED-IMG", "alipay_flow")
-    assert path
+    path, file_id = fb._archive_image(db, b"ARCHIVED-IMG", "alipay_flow")  # 现返回 (路径, 归档id)
+    assert path and file_id
     def _boom(*a, **k):
         raise RuntimeError("feishu down")
     monkeypatch.setattr(feishu_client, "download_message_resource", _boom)

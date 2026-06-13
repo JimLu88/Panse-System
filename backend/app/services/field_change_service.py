@@ -1,0 +1,135 @@
+"""人工编辑历史档案服务 (方向 2+4)。
+
+约定:
+  - 只在"人"触发的写端点调用 (web 编辑 / 飞书修改 source='feishu');
+    系统自动重算/导入回填不调 → 档案里全是人的决定, 不被机器噪音淹没。
+  - diff_and_apply(): 编辑端点一行接入 — 捕获旧值 → setattr → 记录差异。
+  - history(): 单字段最近 N 份 (默认 30); recent(): 修改档案中心全局检索。
+"""
+from __future__ import annotations
+
+import logging
+from typing import Any, Optional
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.field_change import FieldChange
+
+_logger = logging.getLogger("panse.field_change")
+
+
+def _to_str(v: Any) -> Optional[str]:
+    if v is None:
+        return None
+    return str(v)
+
+
+def record(
+    db: Session, *,
+    table: str, pk: Any, field: str,
+    old: Any, new: Any,
+    actor: Optional[str] = None, source: str = "web",
+    row_label: Optional[str] = None, field_label: Optional[str] = None,
+) -> None:
+    """记一条字段修改。old==new 时不记。失败只告警, 绝不阻断业务保存。"""
+    try:
+        old_s, new_s = _to_str(old), _to_str(new)
+        if old_s == new_s:
+            return
+        db.add(FieldChange(
+            table_name=table, row_pk=str(pk), row_label=row_label,
+            field=field, field_label=field_label,
+            old_value=old_s, new_value=new_s,
+            actor=actor, source=source,
+        ))
+        db.flush()
+    except Exception:  # pragma: no cover - 审计失败不影响保存
+        _logger.warning("field_change 记录失败 %s.%s#%s", table, field, pk, exc_info=True)
+
+
+def diff_and_apply(
+    db: Session, obj: Any, data: dict, *,
+    table: str, pk: Any,
+    actor: Optional[str] = None, source: str = "web",
+    row_label: Optional[str] = None,
+    field_labels: Optional[dict] = None,
+    skip_fields: tuple = (),
+) -> int:
+    """编辑端点一行接入: 对 data 里的每个键, 捕获旧值 → setattr → 记差异。
+
+    返回实际变化的字段数。data 值为 None 表示"清空"也照记。
+    """
+    changed = 0
+    labels = field_labels or {}
+    for k, v in data.items():
+        if k in skip_fields or not hasattr(obj, k):
+            continue
+        old = getattr(obj, k)
+        setattr(obj, k, v)
+        old_s, new_s = _to_str(old), _to_str(v)
+        if old_s != new_s:
+            record(db, table=table, pk=pk, field=k, old=old, new=v,
+                   actor=actor, source=source, row_label=row_label,
+                   field_label=labels.get(k))
+            changed += 1
+    return changed
+
+
+def history(db: Session, *, table: str, pk: str, field: str, limit: int = 30) -> list[dict]:
+    """单字段最近 N 份历史 (新→旧), 每份带日期/人/来源。"""
+    rows = db.execute(
+        select(FieldChange).where(
+            FieldChange.table_name == table,
+            FieldChange.row_pk == str(pk),
+            FieldChange.field == field,
+        ).order_by(FieldChange.id.desc()).limit(limit)
+    ).scalars().all()
+    return [_out(r) for r in rows]
+
+
+def recent(
+    db: Session, *,
+    table: Optional[str] = None, pk: Optional[str] = None,
+    actor: Optional[str] = None, source: Optional[str] = None,
+    q: Optional[str] = None, limit: int = 200, offset: int = 0,
+) -> dict:
+    """修改档案中心: 按 表/行/人/来源/关键词 过滤的全局流水。"""
+    stmt = select(FieldChange)
+    if table:
+        stmt = stmt.where(FieldChange.table_name == table)
+    if pk:
+        stmt = stmt.where(FieldChange.row_pk == str(pk))
+    if actor:
+        stmt = stmt.where(FieldChange.actor == actor)
+    if source:
+        stmt = stmt.where(FieldChange.source == source)
+    if q:
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(
+            FieldChange.row_pk.ilike(like)
+            | FieldChange.row_label.ilike(like)
+            | FieldChange.field.ilike(like)
+            | FieldChange.field_label.ilike(like)
+        )
+    rows = db.execute(
+        stmt.order_by(FieldChange.id.desc()).offset(offset).limit(limit)
+    ).scalars().all()
+    return {"rows": [_out(r) for r in rows]}
+
+
+def _out(r: FieldChange) -> dict:
+    return {
+        "id": r.id,
+        "table_name": r.table_name,
+        "row_pk": r.row_pk,
+        "row_label": r.row_label,
+        "field": r.field,
+        "field_label": r.field_label,
+        "old_value": r.old_value,
+        "new_value": r.new_value,
+        "actor": r.actor,
+        "source": r.source,
+        "source_label": {"feishu": "飞书修改", "import": "导入覆盖"}.get(r.source, "网页编辑"),
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    }

@@ -69,8 +69,9 @@ def test_refill_no_matching_order(db_session):
     db_session.add(RefillRecord(order_no="X999", total_cost=Decimal("100")))
     db_session.flush()
     r = recon.run_refill_compensation(db_session, record_exceptions=False)
-    assert r.diffs[0].severity == "warning"
-    assert "找不到对应主订单" in r.diffs[0].message
+    # 2026-06-11 拍板: 主订单未导入 = 数据缺失提示, 不算差异
+    assert r.diffs[0].severity == "not_available"
+    assert "主订单未导入" in r.diffs[0].message
 
 
 def test_refill_matches_order_paid(db_session):
@@ -144,6 +145,7 @@ def test_run_all_executes_all_rules(db_session):
         # WS4 代付台账三规则 (补单佣金/补单快递/售后 实付↔应摊)
         "refill_commission_payout", "refill_express_payout", "aftersales_payout",
         "refund_reconciliation",
+        "ledger_check",   # Rule 14 总账级勾稽 (2026-06-11)
     }
 
 
@@ -173,3 +175,66 @@ def test_run_all_accepts_period(db_session):
         period_start=date(2026, 4, 1), period_end=date(2026, 4, 30),
     )
     assert set(results) == set(recon.RULES)
+
+
+# -------- Rule 14 ledger_check (总账级勾稽) --------
+
+def test_ledger_check_balanced(db_session):
+    """余额变动 = 流水净额 → ok; 账面自洽不另报。"""
+    from app.models.finance import AccountBalance
+    db_session.add(AccountBalance(
+        account_name="企业号", period_year=2026, period_month=3,
+        opening_balance=Decimal("10000"), income=Decimal("5000"),
+        expense=Decimal("2000"), closing_balance=Decimal("13000"),
+    ))
+    db_session.add(AlipayFlow(
+        account="企业号", transaction_no="L1",
+        transaction_time=datetime(2026, 3, 10), amount=Decimal("5000")))
+    db_session.add(AlipayFlow(
+        account="企业号", transaction_no="L2",
+        transaction_time=datetime(2026, 3, 20), amount=Decimal("-2000")))
+    db_session.flush()
+
+    r = recon.run_ledger_check(db_session, record_exceptions=False)
+
+    flow = next(d for d in r.diffs if d.key == "企业号 2026-03")
+    assert flow.severity == "ok"
+    assert flow.diff == Decimal("0")
+    # 账面自洽 → 不产生 "账面" 差异行
+    assert not any("账面" in d.key for d in r.diffs)
+
+
+def test_ledger_check_missing_flows_flagged(db_session):
+    """余额动了 ¥3000 但当月没导流水 → 差异 + 人话提示。"""
+    from app.models.finance import AccountBalance
+    db_session.add(AccountBalance(
+        account_name="企业号", period_year=2026, period_month=4,
+        opening_balance=Decimal("13000"), income=Decimal("3000"),
+        expense=Decimal("0"), closing_balance=Decimal("16000"),
+    ))
+    db_session.flush()
+
+    r = recon.run_ledger_check(db_session, record_exceptions=False)
+
+    flow = next(d for d in r.diffs if d.key == "企业号 2026-04")
+    assert flow.severity in ("warning", "error")
+    assert "漏导" in flow.message
+
+
+def test_ledger_check_book_inconsistent_and_exempt(db_session):
+    """期初+收-支 ≠ 期末 → 报账面不自洽; 爱群号不做流水勾稽。"""
+    from app.models.finance import AccountBalance
+    db_session.add(AccountBalance(
+        account_name="爱群号", period_year=2026, period_month=3,
+        opening_balance=Decimal("1000"), income=Decimal("500"),
+        expense=Decimal("0"), closing_balance=Decimal("9999"),  # 账面差 ¥8499
+    ))
+    db_session.flush()
+
+    r = recon.run_ledger_check(db_session, record_exceptions=False)
+
+    book = next(d for d in r.diffs if "账面" in d.key)
+    assert book.severity in ("warning", "error")
+    flow = next(d for d in r.diffs if d.key == "爱群号 2026-03")
+    assert flow.severity == "not_available"
+    assert "豁免" in flow.message

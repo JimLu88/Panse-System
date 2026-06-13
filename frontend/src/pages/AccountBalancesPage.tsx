@@ -27,11 +27,14 @@ import dayjs from 'dayjs';
 import {
   AccountBalanceRow,
   BalanceUpsertPayload,
+  DeriveOpeningResult,
   deleteBalance,
+  deriveOpeningBalance,
   importAccountBalancesCsv,
   listBalances,
   upsertBalance,
 } from '../api/finance';
+import PresetTable from '../components/PresetTable';
 
 // 常见账户名 (支付宝 4 个号 + 聚合/推广/银行/保证金/个体户私账); 可自由输入新名字
 const ACCOUNT_SUGGESTIONS = [
@@ -51,11 +54,65 @@ function freshness(asOf: string | null): { label: string; color: string } {
 const fmt = (v: string | null | undefined) =>
   v == null || v === '' ? '-' : `¥${Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Plan F10: 期初余额倒推 Modal — 最近快照 − 区间Σ流水 → 目标日期初, 可一键写入
+function DeriveOpeningModal({ open, onClose, onWritten }: {
+  open: boolean; onClose: () => void; onWritten: () => void;
+}) {
+  const [account, setAccount] = useState('企业号');
+  const [target, setTarget] = useState(() => dayjs().startOf('month'));
+  const [result, setResult] = useState<DeriveOpeningResult | null>(null);
+  const deriveMut = useMutation({
+    mutationFn: () => deriveOpeningBalance(account, target.format('YYYY-MM-DD')),
+    onSuccess: setResult,
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '倒推失败'),
+  });
+  const writeMut = useMutation({
+    mutationFn: () => upsertBalance({
+      account_name: account,
+      period_year: target.year(),
+      period_month: target.month() + 1,
+      as_of_date: target.format('YYYY-MM-DD'),
+      opening_balance: String(result!.derived_balance),
+      closing_balance: String(result!.derived_balance),
+      remark: `期初倒推: 按 ${result!.snapshot_date} 快照 − 区间流水推得`,
+    }),
+    onSuccess: () => { message.success('已写入余额快照'); onWritten(); onClose(); },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '写入失败'),
+  });
+  return (
+    <Modal open={open} onCancel={onClose} title="期初余额倒推工具" footer={null} width={520}>
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        <Space>
+          <AutoComplete
+            value={account} onChange={setAccount} style={{ width: 140 }}
+            options={ACCOUNT_SUGGESTIONS.map((a) => ({ value: a }))}
+          />
+          <DatePicker value={target} onChange={(d) => d && setTarget(d)} />
+          <Button type="primary" loading={deriveMut.isPending} onClick={() => deriveMut.mutate()}>倒推</Button>
+        </Space>
+        {result && !result.ok && <Alert type="warning" showIcon message={result.message} />}
+        {result?.ok && (
+          <Card size="small">
+            <p>快照: {result.snapshot_date} 余额 ¥{Math.round(result.snapshot_balance!).toLocaleString()}</p>
+            <p>区间净流水: ¥{Math.round(result.interval_net_flow!).toLocaleString()}（{result.days_with_flows}/{result.span_days} 天有流水）</p>
+            <p><b>{result.target_date} 推得期初: ¥{Number(result.derived_balance).toLocaleString()}</b></p>
+            {(result.gap_days ?? 0) > 0 && <Alert type="info" showIcon message={result.hint} style={{ marginBottom: 8 }} />}
+            <Button type="primary" loading={writeMut.isPending} onClick={() => writeMut.mutate()}>
+              一键写入余额快照
+            </Button>
+          </Card>
+        )}
+      </Space>
+    </Modal>
+  );
+}
+
 export default function AccountBalancesPage() {
   const qc = useQueryClient();
   const [year, setYear] = useState<number | undefined>(undefined);
   const [editing, setEditing] = useState<AccountBalanceRow | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
+  const [deriveOpen, setDeriveOpen] = useState(false);
   const [form] = Form.useForm();
 
   const { data, isLoading } = useQuery({
@@ -228,8 +285,15 @@ export default function AccountBalancesPage() {
           >
             <Button icon={<UploadOutlined />} loading={importMut.isPending}>CSV 导入</Button>
           </Upload>
+          <Button onClick={() => setDeriveOpen(true)}>期初倒推</Button>
         </Space>
       </Space>
+
+      <DeriveOpeningModal
+        open={deriveOpen}
+        onClose={() => setDeriveOpen(false)}
+        onWritten={() => qc.invalidateQueries({ queryKey: ['account-balances'] })}
+      />
 
       {/* 账上现金合计 (每账户取最新一期) */}
       <Card size="small">
@@ -269,12 +333,13 @@ export default function AccountBalancesPage() {
         />
       </Space>
 
-      <Table<AccountBalanceRow>
+      <PresetTable<AccountBalanceRow>
+        tableKey="account_balance"
         rowKey="id"
         loading={isLoading}
         dataSource={rows}
         columns={columns as any}
-        pagination={{ pageSize: 50 }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         size="middle"
         scroll={{ x: 1200 }}
       />

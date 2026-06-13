@@ -17,13 +17,21 @@ class ProductCreate(BaseModel):
 
 class ProductUpdate(BaseModel):
     name: Optional[str] = None
+    sub_name: Optional[str] = None
+    brand: Optional[str] = None
     category: Optional[str] = None
+    priority: Optional[str] = None
     remark: Optional[str] = None
     taobao_id: Optional[str] = None
     image_url: Optional[str] = None
     custom_scope: Optional[str] = None
     size_detail: Optional[str] = None
+    size_value: Optional[str] = None
+    main_material: Optional[str] = None       # 主材 (图4)
     aux_material: Optional[str] = None
+    accessory_desc: Optional[str] = None
+    accessory_remark: Optional[str] = None
+    listing_status: Optional[str] = None
     description: Optional[str] = None
 
 
@@ -43,7 +51,17 @@ class ProductOut(BaseModel):
     taobao_id: Optional[str] = None
     alt_taobao_ids: Optional[list[str]] = None
     image_url: Optional[str] = None
+    # 图库主图缩略 URL (列表显示图库优先, 不落库; list_products 批量注入)
+    gallery_image_url: Optional[str] = None
     custom_scope: Optional[str] = None
     size_detail: Optional[str] = None
     aux_material: Optional[str] = None
     description: Optional[str] = None
+    # 图4: 产品编辑弹窗预填用
+    sub_name: Optional[str] = None
+    priority: Optional[str] = None
+    size_value: Optional[str] = None
+    main_material: Optional[str] = None
+    accessory_desc: Optional[str] = None
+    accessory_remark: Optional[str] = None
+    listing_status: Optional[str] = None

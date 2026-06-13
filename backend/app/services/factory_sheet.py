@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -78,6 +79,20 @@ class FactorySheet:
     dimension_changes: Optional[dict] = None
 
     warnings: list[FactorySheetWarning] = field(default_factory=list)
+
+    # 下单图规范化 (用户 6 点要求, 2026-06)
+    ship_eta_auto: bool = False              # ship_date 是否为"下单+25天"自动推算
+    size_info: Optional[str] = None          # SKU 完整尺寸 (产品表 size_value/size_detail)
+    production_note: Optional[str] = None    # 店铺/生产备注 (与客户备注一并完整显示)
+
+    # 图库配图 (2026-06-11 用户需求: 主图之外再配 SKU 尺寸图, 下单更标准)
+    # 相对图库根路径, 前端拼 /api/gallery/file?path=…&max_edge=1600 显示
+    gallery_main_image: Optional[str] = None
+    sku_image: Optional[str] = None
+
+    # 主材 / 辅材 (图4, 2026-06-12): 取产品总表 main_material / aux_material, 下单图先主材后辅材
+    main_material: Optional[str] = None
+    aux_material: Optional[str] = None
 
 
 def _merge_extra_accessories(
@@ -173,8 +188,12 @@ def build(db: Session, order_id: int) -> FactorySheet:
         customer_address=order.customer_address,
         order_date=order.order_date,
         ship_date=order.ship_date,
-        remark=order.remark,
+        # 客户备注 = 买家留言(平台, 随重导更新) 优先, 回退 ERP 人工备注
+        remark=getattr(order, "buyer_message", None) or order.remark,
         extra_accessories=extra,
+        # 店铺/生产备注 = 人工生产备注 优先, 回退 商家备注(平台)
+        production_note=(getattr(order, "production_note", None)
+                         or getattr(order, "seller_memo", None)),
     )
 
 
@@ -194,6 +213,7 @@ def build_from_fields(
     ship_date: Optional[date],
     remark: Optional[str],
     extra_accessories: Optional[list[dict]] = None,
+    production_note: Optional[str] = None,
 ) -> FactorySheet:
     """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。
 
@@ -229,6 +249,12 @@ def build_from_fields(
         product = db.execute(
             select(Product).where(Product.code == product_code)
         ).scalar_one_or_none()
+        # 编码前缀错配兜底 (2026-06-12): 订单/BOM 用 P+11位, 产品总表用 PPS+11位 →
+        # 精确查不到时, 用 PPS 前缀再查一次 (修"产品总表找不到"+主辅材空)。
+        if product is None and product_code.startswith("P") and not product_code.startswith("PPS"):
+            product = db.execute(
+                select(Product).where(Product.code == "PPS" + product_code[1:])
+            ).scalar_one_or_none()
         if product is None:
             warnings.append(FactorySheetWarning(
                 code="unknown_product",
@@ -251,15 +277,15 @@ def build_from_fields(
     if pricing_sku:
         image_url = pricing_sku.image_url
 
-    # 是否定制 sku
+    # 是否定制 sku — "-改" 编码即定制单 (custom_variants 没录档案也算定制, 2026-06-12)
     is_custom = False
     dim_changes = None
     if sku_code and "改" in sku_code:
+        is_custom = True
         cv = db.execute(
             select(CustomVariant).where(CustomVariant.custom_sku_code == sku_code)
         ).scalar_one_or_none()
         if cv:
-            is_custom = True
             dim_changes = cv.dimension_overrides
 
     # 3. BOM 物料明细 (业务需求 §1)
@@ -272,9 +298,14 @@ def build_from_fields(
         ).all()
         for line, mat_name, mat_unit in bom:
             qty_per = Decimal(line.qty_per_product or 1)
+            # 用户规则: "占位"物料 = 该产品的木作部分, 下单图上按产品名表述
+            display_name = mat_name
+            if display_name and "占位" in display_name:
+                base = product_name or (product.name if product else None) or "本产品"
+                display_name = f"{base}-木作部分"
             materials.append(FactorySheetMaterial(
                 material_code=line.material_code,
-                material_name=mat_name,
+                material_name=display_name,
                 qty_per_product=qty_per,
                 total_qty=qty_per * Decimal(qty),
                 unit=line.unit or mat_unit,
@@ -297,17 +328,68 @@ def build_from_fields(
             message=f"客户备注含 {extra_added} 项新增配件, 已加入下单图, 请工厂确认备料。",
         ))
 
+    # 用户规则: 发货时间缺省 = 下单 + 25 天 (自动写明)
+    ship_eta_auto = False
+    if not ship_date and order_date:
+        from datetime import timedelta as _td
+        ship_date = order_date + _td(days=25)
+        ship_eta_auto = True
+
+    # 尺寸信息: 优先产品总表的尺寸字段, SKU 名兜底。
+    # 占位文本按空处理 (2026-06-12 用户: 产品表 size_value 整列是"待定", 下单图不能照抄)
+    def _clean_size(v: Optional[str]) -> Optional[str]:
+        s = str(v).strip() if v else ""
+        if not s or s in ("待定", "-", "无", "暂无", "/"):
+            return None
+        return s.replace("\n", "；")   # size_detail 是多行 mm 明细, 压成一行
+    size_info = None
+    # 定制单优先级 (用户确认 2026-06-12): 定制档案尺寸 > SKU 名带尺寸 >
+    # 定制单一律"以客户备注为准"(绝不显示默认款尺寸误导工厂) > 产品默认 > SKU 名。
+    # 备注只展示不解析 — 自由文本机器提尺寸容易错单, 以人工核对为准。
+    if dim_changes:
+        size_info = "定制: " + "；".join(f"{k} {v}" for k, v in dim_changes.items())
+    elif sku and re.search(r"\d+(?:\.\d+)?\s*(?:米|m|M|cm|CM|mm|MM)", sku):
+        # SKU 名带明确尺寸 (1.4米/45cm/1200mm) → 以 SKU 为准:
+        # 产品表 size_detail 是默认款尺寸, 对非默认尺寸的 SKU 会误导工厂备料。
+        size_info = sku
+    elif is_custom or any(h in (sku or "") for h in ("定制", "咨询", "联系客服")):
+        size_info = "定制尺寸 — 以客户备注为准"
+        warnings.append(FactorySheetWarning(
+            code="custom_size_in_remark",
+            severity="warning" if remark else "error",
+            message=("定制单未录定制尺寸, 下单图以客户备注为准, 请核对备注后再发工厂。"
+                     if remark else
+                     "定制单未录定制尺寸且客户备注为空 — 请先补尺寸再发工厂!"),
+        ))
+    if size_info is None and product is not None:
+        size_info = _clean_size(product.size_value) or _clean_size(product.size_detail)
+    size_info = size_info or sku
+
+    # 图库配图: 主图 + SKU 尺寸图 (图库缺失/未挂载时悄悄留空, 不影响下单图)
+    gallery_main = sku_img = None
+    if product_code:
+        from app.services import gallery_lookup
+        gallery_main = gallery_lookup.main_image_rel(product_code)
+        sku_img = gallery_lookup.sku_image_rel(product_code, sku_code, sku)
+
     return FactorySheet(
         order_no=order_no,
         sheet_title=_sheet_title(order_no, order_date),
         order_date=order_date,
         ship_date=ship_date,
+        ship_eta_auto=ship_eta_auto,
+        size_info=size_info,
+        production_note=production_note,
+        gallery_main_image=gallery_main,
+        sku_image=sku_img,
         product_code=product_code,
         product_name=product.name if product else product_name,
         sku=sku,
         sku_code=sku_code,
         image_url=image_url,
         material_desc=product.remark if product else None,
+        main_material=product.main_material if product else None,
+        aux_material=product.aux_material if product else None,
         dimension_desc=sku,  # SKU 名通常含尺寸信息
         customer_name=customer_name,
         customer_phone=customer_phone,

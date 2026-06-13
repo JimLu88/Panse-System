@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 from pathlib import Path
 from urllib.parse import quote
 
@@ -15,8 +16,27 @@ from app.dependencies import require_role
 from app.models.auth import User
 from app.models.import_file import ImportedFile
 from app.services import import_storage
+from app.services.delivery_storage import get_root
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
+
+
+def _host_root() -> str:
+    """归档根目录在主机(PC)上的路径。后端跑在 Docker(Linux) 里, 容器内是 /app/storage,
+    主机上是仓库下的 ./storage。用 HOST_STORAGE_ROOT 覆盖, 默认按本机仓库位置。"""
+    return os.environ.get("HOST_STORAGE_ROOT") or r"D:\Panse-System\storage"
+
+
+def _host_path(container_path: str | None) -> str | None:
+    """把容器内路径翻译成主机(PC)上的 Windows 路径, 供前端「打开文件夹」展示/复制。"""
+    if not container_path:
+        return None
+    p = Path(container_path)
+    try:
+        rel = p.resolve().relative_to(get_root().resolve())
+        return str(Path(_host_root()).joinpath(*rel.parts)).replace("/", "\\")
+    except Exception:
+        return str(p).replace("/", "\\")
 
 
 def _out(r: ImportedFile) -> dict:
@@ -29,6 +49,7 @@ def _out(r: ImportedFile) -> dict:
         "row_summary": r.row_summary,
         "uploaded_by": r.uploaded_by,
         "created_at": r.created_at.isoformat() if r.created_at else None,
+        "folder": _host_path(str(Path(r.stored_path).parent)) if r.stored_path else None,
     }
 
 
@@ -62,7 +83,11 @@ def files_summary(
         select(ImportedFile.kind, func.count(ImportedFile.id)).group_by(ImportedFile.kind)
     ).all()
     total = db.execute(select(func.count(ImportedFile.id))).scalar_one()
-    return {"total": int(total or 0), "by_kind": {k: int(n) for k, n in by_kind}}
+    return {
+        "total": int(total or 0),
+        "by_kind": {k: int(n) for k, n in by_kind},
+        "imports_root": _host_path(str(get_root() / "imports")),
+    }
 
 
 @router.get("/files/{file_id}/download")

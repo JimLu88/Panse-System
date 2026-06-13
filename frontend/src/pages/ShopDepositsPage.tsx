@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ShopDeposit, createShopDeposit, deleteShopDeposit, listShopDeposits, updateShopDeposit,
 } from '../api/shopDeposits';
+import PresetTable from '../components/PresetTable';
 
 export default function ShopDepositsPage() {
   const qc = useQueryClient();
@@ -65,7 +66,8 @@ export default function ShopDepositsPage() {
       </Space>
 
       <Card size="small">
-        <Table<ShopDeposit>
+        <PresetTable<ShopDeposit>
+          tableKey="shop_deposit"
           rowKey="id" size="small" loading={isLoading} dataSource={data?.rows ?? []}
           pagination={false}
           columns={[

@@ -84,7 +84,13 @@ export default function MonthlyOpsPanel() {
             <Statistic title="利润率" value={selRow.net_profit_rate ?? 0} suffix="%" precision={1} />
           </Card></Col>
           <Col span={4}><Card size="small">
-            <Statistic title="当月营收" value={selRow.total_revenue ?? 0} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
+            {/* 销售额口径 = 剔除补单 (用户拍板 2026-06-12), 补单金额单独注释 */}
+            <Statistic title="当月营收 (不含补单)" value={selRow.real_revenue ?? 0} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
+            {(selRow.refill_revenue ?? 0) > 0 && (
+              <div style={{ color: '#999', fontSize: 12 }}>
+                有补单 ¥{Math.round(selRow.refill_revenue ?? 0).toLocaleString()} 未计入
+              </div>
+            )}
           </Card></Col>
           <Col span={4}><Card size="small">
             <Statistic title="推广ROI" value={selRow.promo_roi ?? 0} precision={2} suffix="×" />

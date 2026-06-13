@@ -137,30 +137,25 @@ class TestPricingCalcService:
         return PricingSku(**defaults)
 
     def test_gross_margin_formula(self):
-        # tax field = DIRECT AMOUNT (not a rate); pfr is a rate
-        # margin = (daily_price - cost - tax_amount - pf_amount) / daily_price
-        # pf = 3600 * 0.05 = 180; tax = 0.03 (direct); cost = 1800
-        # → (3600 - 1800 - 0.03 - 180) / 3600 ≈ 0.449992
+        # 定价总表口径: 毛利率 = 大促利润 ÷ 大促价 = (大促价 − 会计成本) ÷ 大促价
+        # fixture 无 physical_cost → 会计成本不重算, 保持 1800; big=3200
         sku = self._sku()
         pricing_calc_service.recompute(sku)
-        dp = Decimal("3600")
-        pf = (dp * Decimal("0.05")).quantize(Decimal("0.01"))
-        expected = float((dp - Decimal("1800") - Decimal("0.03") - pf) / dp)
+        expected = float((Decimal("3200") - Decimal("1800")) / Decimal("3200"))
         assert sku.gross_margin_rate is not None
         assert abs(float(sku.gross_margin_rate) - expected) < 0.001
 
     def test_zero_price_gives_none(self):
-        # daily_price=0 → margin skipped (guard in service)
-        sku = self._sku(daily_price=Decimal("0"), list_price=Decimal("0"))
+        # 大促价=0 → 毛利率/利润不算 (guard in service)
+        sku = self._sku(big_promo=Decimal("0"))
         pricing_calc_service.recompute(sku)
         assert sku.gross_margin_rate is None
 
     def test_big_promo_margin_is_absolute_value(self):
-        # big_promo_margin = big_promo - pf - cost - tax  (absolute profit ¥)
+        # 定价总表: 大促利润 = 大促价 − 会计成本 (绝对金额 ¥)
         sku = self._sku(big_promo=Decimal("2900"))
         pricing_calc_service.recompute(sku)
-        pf = (Decimal("2900") * Decimal("0.05")).quantize(Decimal("0.01"))
-        expected = float(Decimal("2900") - pf - Decimal("1800") - Decimal("0.03"))
+        expected = float(Decimal("2900") - Decimal("1800"))
         assert sku.big_promo_margin is not None
         assert abs(float(sku.big_promo_margin) - expected) < 0.1
 
@@ -753,20 +748,24 @@ class TestReconcileWalkthrough:
 
     def test_groups_refill_mismatches(self, db):
         from app.models.finance import RefillRecord
+        from app.models.order import Order
         from app.services import ai_assistant
-        # 3 条补单都找不到主订单 → 应聚合成 1 条 finding (count=3)
+        # 2026-06-11 拍板: 主订单未导入 = not_available (不进 findings);
+        # 真实差额 (主单实付≠补单成本) 才聚合成 warning/error finding。
+        from datetime import date as _date
+        _today = _date.today()   # 财务起始线 2026-01-01: 无日期补单会被排除, 测试数据带今天日期
+        db.add(Order(platform="淘宝", order_no="R1", qty=1, paid_amount=Decimal("999")))
         db.add_all([
-            RefillRecord(order_no="R1", total_cost=Decimal("10")),
-            RefillRecord(order_no="R2", total_cost=Decimal("20")),
-            RefillRecord(order_no="R3", total_cost=Decimal("30")),
+            RefillRecord(order_no="R1", total_cost=Decimal("10"), refill_date=_today),   # 真差额
+            RefillRecord(order_no="R2", total_cost=Decimal("20"), refill_date=_today),   # 主单未导入 → 不报
+            RefillRecord(order_no="R3", total_cost=Decimal("30"), refill_date=_today),   # 主单未导入 → 不报
         ])
         db.commit()
         findings = ai_assistant.collect_reconcile_findings(db)
         refill = [f for f in findings if f.rule == "refill_compensation"]
         assert len(refill) == 1
-        assert refill[0].count == 3
-        assert refill[0].severity == "warning"
-        assert len(refill[0].sample_keys) <= 5
+        assert refill[0].count == 1          # 只有真实差额那条
+        assert refill[0].severity in ("warning", "error")
         assert refill[0].suggestion  # 有修复建议
 
     def test_empty_db_no_findings(self, db):

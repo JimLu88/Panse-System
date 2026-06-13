@@ -532,7 +532,26 @@ function CompetitorTab() {
             onChange={(e) => setQ(e.target.value)} onPressEnter={search} allowClear />
           <Button type="primary" onClick={search}>搜索</Button>
         </Space.Compact>
-        <Button onClick={() => setAddOpen(true)}>+ 添加竞品</Button>
+        <Space>
+          <Upload accept=".xlsx" showUploadList={false} beforeUpload={async (file) => {
+            const fd = new FormData();
+            fd.append('file', file);
+            try {
+              const { api } = await import('../api/client');
+              const r = await api.post('/api/customization/competitors/import', fd, {
+                headers: { 'Content-Type': 'multipart/form-data' },
+              });
+              message.success(`竞品价库导入完成: 新增 ${r.data.inserted}, 更新 ${r.data.updated}, 跳过 ${r.data.skipped}; 原文件已存档`);
+              if (q.trim()) search();
+            } catch (e: any) {
+              message.error(e?.response?.data?.detail ?? '导入失败');
+            }
+            return false;
+          }}>
+            <Button>导入 xlsx</Button>
+          </Upload>
+          <Button onClick={() => setAddOpen(true)}>+ 添加竞品</Button>
+        </Space>
       </Space>
       <Table size="small" loading={loading} pagination={false} rowKey="id" dataSource={rows}
         columns={competitorColumns(setRows)} />

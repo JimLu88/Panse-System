@@ -21,28 +21,29 @@ def _d(v) -> Optional[Decimal]:
 
 
 def recompute(sku: PricingSku) -> None:
-    """原地重算毛利率和大促利润（仅当相关成本字段有值）。"""
-    cost = _d(sku.accounting_cost)
+    """原地按【定价总表口径】重算 平台费/税/会计成本/大促利润/毛利率。
+
+    依赖 大促价(K) 与 物理成本(Q):
+      平台费 O = 大促价 × 0.6% ; 税 P = 大促价 × 2%
+      会计成本 N = 物理成本 + 平台费 + 税
+      大促利润 L = 大促价 − 会计成本 ; 毛利率 M = 大促利润 ÷ 大促价
+    只让利润链跟随, 不动 物流/安装/出厂/物理 等成本输入(可手填/按SKU调整)。
+    """
+    cent = Decimal("0.01")
+    big = _d(sku.big_promo)
+    phys = _d(sku.physical_cost)
+    if big is not None:
+        sku.platform_fee_rate = (big * Decimal("0.006")).quantize(cent, rounding=ROUND_HALF_UP)
+        sku.tax = (big * Decimal("0.02")).quantize(cent, rounding=ROUND_HALF_UP)
+    pf = _d(sku.platform_fee_rate) or Decimal("0")
     tax = _d(sku.tax) or Decimal("0")
-    pfr = _d(sku.platform_fee_rate) or Decimal("0")
-
-    def _margin(price_val):
-        if price_val is None or cost is None:
-            return None
-        price = _d(price_val)
-        pf = (price * pfr).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        margin = (price - cost - tax - pf) / price
-        return margin.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
-
-    if sku.daily_price:
-        sku.gross_margin_rate = _margin(sku.daily_price)
-
-    if sku.big_promo and cost is not None:
-        big = _d(sku.big_promo)
-        pf = (big * pfr).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        sku.big_promo_margin = (big - pf - cost - tax).quantize(
-            Decimal("0.01"), rounding=ROUND_HALF_UP
-        )
+    if phys is not None:
+        sku.accounting_cost = (phys + pf + tax).quantize(cent, rounding=ROUND_HALF_UP)
+    cost = _d(sku.accounting_cost)
+    if big is not None and big != 0 and cost is not None:
+        margin = (big - cost).quantize(cent, rounding=ROUND_HALF_UP)
+        sku.big_promo_margin = margin
+        sku.gross_margin_rate = (margin / big).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
 
 def recompute_and_save(db: Session, sku_id: int) -> PricingSku:

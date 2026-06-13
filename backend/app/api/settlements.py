@@ -83,6 +83,16 @@ def reconciliation_gap(
     return order_reconciliation_service.coverage_gap(db)
 
 
+@router.get("/reconciliation/gap/{period}")
+def reconciliation_gap_detail(
+    period: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """Plan L1: 某月 (YYYY-MM) 待补订单清单 + 缺什么证据 + 行动指引。"""
+    return order_reconciliation_service.coverage_gap_detail(db, period)
+
+
 @router.post("/prepay/import")
 def import_prepay(
     category: str = Query(..., description="refill_commission / refill_express / aftersales"),

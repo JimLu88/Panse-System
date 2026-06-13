@@ -51,18 +51,35 @@ def _profit_for(o: Order) -> tuple[Decimal, Decimal, Decimal]:
     return paid, cost, net
 
 
+def brand_of(o: Order) -> Optional[str]:
+    """Plan F8: 订单归属品牌 — 优先店铺名 (畔色→PS / 孚格→PFG), 缺失回退编码前缀。"""
+    shop = o.shop or ""
+    if "畔色" in shop:
+        return "PS"
+    if "孚格" in shop:
+        return "PFG"
+    code = (o.product_code or o.sku_code or o.sku or "")
+    if code.startswith("PPS"):
+        return "PS"
+    if code.startswith("PFG"):
+        return "PFG"
+    return None
+
+
 def summary(db: Session, *, start: date, end: date,
-            platform: Optional[str] = None) -> SalesSummary:
-    """汇总一段时间内已发货/签收订单的销售指标 (业务需求 15)."""
+            platform: Optional[str] = None,
+            brand: Optional[str] = None) -> SalesSummary:
+    """汇总一段时间内已发货/签收订单的销售指标 (业务需求 15)。brand=PS/PFG 按品牌过滤 (F8)。"""
     q = select(Order).where(
         Order.order_date >= start,
         Order.order_date <= end,
-        Order.is_historical == False,  # noqa: E712
         Order.status.in_(("paid", "shipped", "signed")),
     )
     if platform:
         q = q.where(Order.platform == platform)
     orders = db.execute(q).scalars().all()
+    if brand:
+        orders = [o for o in orders if brand_of(o) == brand]
 
     s = SalesSummary(period_start=start, period_end=end)
     by_product: dict[str, dict] = {}
@@ -100,15 +117,17 @@ def summary(db: Session, *, start: date, end: date,
 
 def product_breakdown(
     db: Session, *, start: date, end: date,
+    brand: Optional[str] = None,
 ) -> list[dict]:
-    """分产品 SKU 维度的销售指标 (业务需求 16)."""
+    """分产品 SKU 维度的销售指标 (业务需求 16)。brand=PS/PFG 按品牌过滤 (F8)。"""
     orders = db.execute(
         select(Order).where(
             Order.order_date >= start, Order.order_date <= end,
-            Order.is_historical == False,  # noqa: E712
             Order.status.in_(("paid", "shipped", "signed")),
         )
     ).scalars().all()
+    if brand:
+        orders = [o for o in orders if brand_of(o) == brand]
     by_sku: dict[str, dict] = {}
     for o in orders:
         revenue, cost, net = _profit_for(o)
@@ -142,11 +161,13 @@ def _sales_by_day(db: Session, days: int = 90) -> dict[str, dict[date, int]]:
     key 永远是 'product_code|sku_id' 形式 (无 product_code 用 '?', 无 sku 用 product_code).
     """
     cutoff = date.today() - timedelta(days=days)
+    # 只排补单 (刷的不是真实需求)。不排 is_historical: 本库导入路径给几乎所有
+    # 真实订单都打了 historical 标 (529/530), 它不等于"旧数据", 排它=预测全空。
     orders = db.execute(
         select(Order).where(
             Order.order_date >= cutoff,
-            Order.is_historical == False,  # noqa: E712
             Order.status.in_(("paid", "shipped", "signed")),
+            Order.is_refill == False,      # noqa: E712
         )
     ).scalars().all()
     out: dict[str, dict[date, int]] = {}
@@ -161,27 +182,75 @@ def _sales_by_day(db: Session, days: int = 90) -> dict[str, dict[date, int]]:
     return out
 
 
+def _product_info_map(db: Session, codes: set[str]) -> dict[str, tuple]:
+    """product_code → (name, image_url), 批量查避免 N+1。"""
+    if not codes:
+        return {}
+    rows = db.execute(
+        select(Product.code, Product.name, Product.image_url).where(Product.code.in_(codes))
+    ).all()
+    return {c: (n, img) for c, n, img in rows}
+
+
+# 备货预测智能排除 (用户拍板 2026-06-11): 这些"产品"不是实物备货项
+_FORECAST_EXCLUDE_KW = ("全屋定制", "样块", "补差", "差价", "邮费", "定金", "运费")
+
+
 def forecast_30d(db: Session) -> list[dict]:
-    """业务需求 7 + 8: 简单移动平均预测未来 30 天销量.
+    """业务需求 7 + 8: 简单移动平均预测未来 30 天销量 (按产品聚合)。
 
     用过去 60 天平均日销 × 30, 加 1.2 倍安全系数。
+    排除补单 (is_refill); 用户拍板 (2026-06-11):
+      - 按「产品」排列, 各 SKU (含定制咨询类) 归并到所属产品, SKU 明细放 skus 里
+      - 全屋定制/样块/补差 等非实物备货项智能排除
+      - 订单缺产品编码的 (旧版显示 "?") 不进备货预测
 
-    返回: [{sku_key, product_code, sku, avg_daily, forecast_30d, last_60d_total}]
+    返回: [{product_code, product_name, image_url, avg_daily, forecast_30d,
+            last_60d_total, sku, skus: [{sku, qty_60d}]}]
     """
     by_sku = _sales_by_day(db, days=60)
-    out = []
+    # 先按产品聚合
+    by_product: dict[str, dict] = {}
     for sku_key, day_map in by_sku.items():
         total = sum(day_map.values())
-        avg_daily = total / 60
-        forecast = int(avg_daily * 30 * 1.2 + 0.5)   # +20% 安全系数
         product_code, _, sku = sku_key.partition("|")
+        if product_code == "?" or not product_code:
+            continue   # 缺产品编码的订单无法备货, 不进预测 (在异常中心另行治理)
+        g = by_product.setdefault(product_code, {"total": 0, "skus": []})
+        g["total"] += total
+        g["skus"].append({"sku": sku or "(未填SKU)", "qty_60d": total})
+    info = _product_info_map(db, set(by_product))
+    # 产品表查不到的编码 (订单 product_code 填错/产品未建档) → 用订单淘宝标题兜底,
+    # 别再显示 "—" 让人猜 (2026-06-11 用户反馈)
+    missing_codes = [c for c in by_product if c not in info or not info[c][0]]
+    taobao_fallback: dict[str, str] = {}
+    if missing_codes:
+        for code, tname in db.execute(
+            select(Order.product_code, func.max(Order.product_name))
+            .where(Order.product_code.in_(missing_codes))
+            .group_by(Order.product_code)
+        ).all():
+            if tname:
+                taobao_fallback[code] = f"[产品表无此编码] {tname[:24]}"
+    out = []
+    for code, g in by_product.items():
+        name, img = info.get(code, (None, None))
+        if not name:
+            name = taobao_fallback.get(code)
+        if name and any(kw in name for kw in _FORECAST_EXCLUDE_KW):
+            continue   # 非实物备货项
+        avg_daily = g["total"] / 60
+        forecast = int(avg_daily * 30 * 1.2 + 0.5)   # +20% 安全系数
+        skus = sorted(g["skus"], key=lambda s: s["qty_60d"], reverse=True)
         out.append({
-            "sku_key": sku_key,
-            "product_code": product_code if product_code != "?" else None,
-            "sku": sku,
+            "product_code": code,
+            "product_name": name,
+            "image_url": img,
             "avg_daily": round(avg_daily, 3),
             "forecast_30d": forecast,
-            "last_60d_total": total,
+            "last_60d_total": g["total"],
+            "sku": None,           # 兼容旧字段 (现按产品聚合)
+            "skus": skus,
         })
     return sorted(out, key=lambda r: r["forecast_30d"], reverse=True)
 
@@ -223,6 +292,8 @@ def stock_advice(db: Session) -> dict:
         need_to_produce = max(f["forecast_30d"] - in_stock, 0)
         products_out.append({
             "product_code": product_code,
+            "product_name": f.get("product_name"),
+            "image_url": f.get("image_url"),
             "sku": f["sku"],
             "forecast_30d": f["forecast_30d"],
             "in_stock": in_stock,
@@ -287,10 +358,17 @@ def slow_moving_split(
     # 长期未售: 查 part_inventory.last_outbound_at
     long_idle: list[dict] = []
     rows = db.execute(select(PartInventory).where(PartInventory.physical_qty > 0)).scalars().all()
+    mat_names = {
+        c: n for c, n in db.execute(
+            select(Material.code, Material.name).where(
+                Material.code.in_({r.material_code for r in rows}))
+        ).all()
+    } if rows else {}
     for r in rows:
         if r.last_outbound_at and r.last_outbound_at < cutoff:
             long_idle.append({
                 "material_code": r.material_code,
+                "material_name": mat_names.get(r.material_code),
                 "physical_qty": r.physical_qty,
                 "last_outbound_at": r.last_outbound_at.isoformat() if r.last_outbound_at else None,
                 "days_since": (today - r.last_outbound_at).days,
@@ -306,11 +384,15 @@ def slow_moving_split(
     pinvs = db.execute(
         select(ProductInventory).where(ProductInventory.physical_qty > 0)
     ).scalars().all()
+    pinfo = _product_info_map(db, {p.product_code for p in pinvs if p.product_code})
     for p in pinvs:
         forecast_qty = fmap.get(p.product_code, 0)
         if forecast_qty > 0 and p.physical_qty > overstock_ratio * forecast_qty:
+            name, img = pinfo.get(p.product_code or "", (None, None))
             overstock.append({
                 "product_code": p.product_code,
+                "product_name": name,
+                "image_url": img,
                 "sku": p.sku,
                 "physical_qty": p.physical_qty,
                 "forecast_30d": forecast_qty,

@@ -44,13 +44,20 @@ def get_dashboard(
         .all()
     )
 
-    # 近 30 天趋势 (按周分组)
+    # 近 30 天趋势 (按周分组) — 销售额剔除补单 (用户拍板 2026-06-12), 补单金额单独注释
     trend_rows = (
         db.query(Order.order_date, func.count(Order.id), func.sum(Order.paid_amount))
-        .filter(Order.order_date >= last_30, Order.is_historical == False)  # noqa: E712
+        .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
+                Order.is_refill == False)  # noqa: E712
         .group_by(Order.order_date)
         .order_by(Order.order_date)
         .all()
+    )
+    refill_excluded_30d = float(
+        db.query(func.coalesce(func.sum(Order.paid_amount), 0))
+        .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
+                Order.is_refill == True)  # noqa: E712
+        .scalar() or 0
     )
     order_trend = [
         {"date": str(r[0]), "count": r[1], "revenue": _safe_decimal(r[2])}
@@ -272,6 +279,7 @@ def get_dashboard(
             "trend_30d": order_trend,
             "total_30d": total_orders_30d,
             "revenue_30d": total_revenue_30d,
+            "refill_excluded_30d": refill_excluded_30d,   # 注释用: 有补单 ¥X 未计入
             "count_7d": orders_7d,
         },
         "inventory": {

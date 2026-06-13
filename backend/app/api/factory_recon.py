@@ -1,7 +1,7 @@
 """工厂逐单对账 API — 导入工厂侧对账单 xlsx + 逐月对账 + 逐单填原因做平。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Body, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -75,5 +75,43 @@ def resolve_factory_recon_item(
     out = factory_recon_service.resolve(
         db, item_id, reason=reason, actor=getattr(user, "username", None), resolved=resolved,
     )
+    db.commit()
+    return out
+
+
+@router.post("/items/{item_id}/split")
+def split_factory_recon_item(
+    item_id: int,
+    parts: list[dict] = Body(..., embed=True,
+                             description='[{"amount":"120.00","resolution_kind":"价差","remark":"..."}]'),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """Plan L5: 差异行拆分归因 — Σ 子行金额必须 = 原行金额, 不平 → 400。"""
+    try:
+        out = factory_recon_service.split_item(
+            db, item_id, parts=parts, actor=getattr(user, "username", None),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    return out
+
+
+@router.post("/items/{item_id}/confirm")
+def confirm_factory_recon_item(
+    item_id: int,
+    resolution_kind: str = Body(..., embed=True, description="漏单/价差/运费/补偿/其他"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """Plan L5: 确认差异行归因 (确认人/时间落库)。"""
+    try:
+        out = factory_recon_service.confirm_item(
+            db, item_id, resolution_kind=resolution_kind,
+            actor=getattr(user, "username", None),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     db.commit()
     return out

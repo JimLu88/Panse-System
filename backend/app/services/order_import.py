@@ -15,8 +15,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
-from app.services import order_cost_service
-from app.services.taobao_order_import import _map_status  # 淘宝订单状态文本→内部status (单一来源)
+from app.services import import_clean, order_cost_service
+from app.services.taobao_order_import import _map_status, apply_refill_flags  # 状态映射 + 补单回标 (单一来源)
 
 # 列名别名表：CSV 头 (规范化后) → Order 字段
 COLUMN_ALIASES: dict[str, str] = {
@@ -90,7 +90,8 @@ def _to_date(v: Any) -> Optional[date]:
             return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
-    return None
+    # Excel 日期序列号 (46175 → 2026-06-08): 经 Excel 转存的 CSV 常见 (C14)
+    return import_clean.excel_serial_to_date(s)
 
 
 def _to_bool(v: Any) -> bool:
@@ -185,6 +186,8 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
                 changed = True
             for fld in ("customer_name", "customer_phone", "shop"):
                 v = payload.get(fld)
+                if fld == "customer_phone":
+                    v = import_clean.clean_phone(v)   # 去淘宝虚拟分机后缀 -NNNN
                 if v and not getattr(existing, fld):
                     setattr(existing, fld, v)
                     changed = True
@@ -204,7 +207,7 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
             order_date=_to_date(payload.get("order_date")),
             ship_date=_to_date(payload.get("ship_date")),
             customer_name=payload.get("customer_name"),
-            customer_phone=payload.get("customer_phone"),
+            customer_phone=import_clean.clean_phone(payload.get("customer_phone")),
             customer_address=payload.get("customer_address"),
             product_code=payload.get("product_code"),
             product_name=_product_name,
@@ -226,6 +229,8 @@ def import_orders_from_csv(db: Session, csv_text: str) -> ImportReport:
         db.add(order)
         report.inserted += 1
 
+    db.flush()
+    apply_refill_flags(db)   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
     db.commit()
     return report
 

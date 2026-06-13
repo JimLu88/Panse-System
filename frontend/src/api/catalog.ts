@@ -26,17 +26,126 @@ export interface PricingSku {
   install_cost?: number | null;        // 安装成本
   packaging_cost?: number | null;      // 包装成本
   external_parts_cost?: number | null; // 外配件成本
+  // 列表接口平铺合并的配件成本(rock_slab…)、活动价(taobao_*/xhs_*/mid_*/big_*)、
+  // 自定义列(cf_<id>) 都按动态 key 透传, 故用索引签名接住。
+  [key: string]: number | string | null | undefined;
 }
 
 export const listPricingSkus = (params: {
   q?: string;
   size_category?: string;
+  category?: string;
   limit?: number;
   offset?: number;
 }) =>
   api
     .get<{ total: number; items: PricingSku[] }>('/api/pricing-skus', { params })
     .then((r) => r.data);
+
+// 产品类目去重列表 — 产品/BOM/定价 三处「按类目筛」下拉用
+export const listProductCategories = () =>
+  api.get<string[]>('/api/products/categories').then((r) => r.data);
+
+// ----- 定价表自定义列 (EAV) -----
+export interface PricingCustomField {
+  id: number;
+  label: string;
+  value_kind: 'number' | 'text';
+  sort_order: number;
+}
+export const listPricingCustomFields = () =>
+  api.get<PricingCustomField[]>('/api/pricing/custom-fields').then((r) => r.data);
+export const createPricingCustomField = (payload: { label: string; value_kind?: 'number' | 'text' }) =>
+  api.post<PricingCustomField>('/api/pricing/custom-fields', payload).then((r) => r.data);
+export const updatePricingCustomField = (id: number, payload: { label?: string; sort_order?: number }) =>
+  api.patch<PricingCustomField>(`/api/pricing/custom-fields/${id}`, payload).then((r) => r.data);
+export const deletePricingCustomField = (id: number) =>
+  api.delete(`/api/pricing/custom-fields/${id}`).then((r) => r.data);
+export const setPricingCustomValue = (skuCode: string, fieldId: number, value: number | string | null) =>
+  api.patch(`/api/pricing-skus/${encodeURIComponent(skuCode)}/custom/${fieldId}`, { value }).then((r) => r.data);
+
+// ----- 定价公式规则 (改系数用) -----
+export interface PricingFormulaRule {
+  id: number;
+  field_name: string;
+  display_name: string | null;
+  expression: string;
+  description: string | null;
+  enabled: boolean;
+  sort_order: number;
+  is_builtin: boolean;
+}
+export const listFormulaRules = () =>
+  api.get<PricingFormulaRule[]>('/api/pricing/formula-rules').then((r) => r.data);
+export const updateFormulaRule = (id: number, body: Partial<PricingFormulaRule>) =>
+  api.put<PricingFormulaRule>(`/api/pricing/formula-rules/${id}`, body).then((r) => r.data);
+export const recomputeAllPricing = (force = false) =>
+  api.post<{ updated: number; message: string }>('/api/pricing/recompute-all', null, { params: { force } })
+    .then((r) => r.data);
+
+// ── 日均销量公式 + 大促时段配置 (成品库存页) ──
+export interface ForecastConfig {
+  mode: 'weighted' | 'simple';
+  halflife_days: number;
+  window_days: number;
+  promo_periods: { name: string; start: string; end: string }[];
+  promo?: {
+    active: { name: string; start: string; end: string }[];
+    upcoming: { name: string; start: string; end: string; days_to_start: number }[];
+    prep_days: number;
+  };
+}
+
+export const fetchForecastConfig = () =>
+  api.get<ForecastConfig>('/api/inventory/products/forecast-config').then((r) => r.data);
+
+export const saveForecastConfig = (cfg: Partial<ForecastConfig>) =>
+  api.put<ForecastConfig>('/api/inventory/products/forecast-config', cfg).then((r) => r.data);
+
+// ── 人工编辑历史档案 (方向2+4) ──
+export interface FieldChangeRow {
+  id: number;
+  table_name: string;
+  row_pk: string;
+  row_label: string | null;
+  field: string;
+  field_label: string | null;
+  old_value: string | null;
+  new_value: string | null;
+  actor: string | null;
+  source: string;
+  source_label: string;
+  created_at: string | null;
+}
+
+export const fetchFieldHistory = (table: string, pk: string, field: string, limit = 30) =>
+  api.get<{ rows: FieldChangeRow[] }>('/api/field-changes/history', {
+    params: { table, pk, field, limit },
+  }).then((r) => r.data.rows);
+
+export const listFieldChanges = (params: {
+  table?: string; pk?: string; actor?: string; source?: string;
+  q?: string; limit?: number; offset?: number;
+} = {}) =>
+  api.get<{ rows: FieldChangeRow[] }>('/api/field-changes', { params }).then((r) => r.data.rows);
+
+// 编辑器「保存并覆盖同产品全部 SKU」(价格主表/22配件/渠道系数 三段可选)
+export const updatePricingByProduct = (productCode: string, body: {
+  sku?: Record<string, unknown>; costs?: Record<string, unknown>; promo?: Record<string, unknown>;
+}) =>
+  api.patch<{ updated: number; message: string }>(
+    `/api/pricing-skus/by-product/${encodeURIComponent(productCode)}`, body,
+  ).then((r) => r.data);
+
+// Plan F1: 活动报名价 vs 定价渠道价 对照 (超差记异常+critical 告警)
+export const runPromoPriceCheck = () =>
+  api.post<{ checked: number; mismatch_count: number; tolerance: number }>(
+    '/api/pricing-skus/promo-price-check').then((r) => r.data);
+
+// Plan L7: 定价配件成本 ↔ BOM 漂移全量检查 (标 stale + 记异常)
+export const runBomSyncCheck = () =>
+  api.post<{ checked: number; stale_count: number }>(
+    '/api/pricing-skus/bom-sync-check').then((r) => r.data);
 
 export interface AuditLog {
   id: number;
@@ -125,6 +234,16 @@ export const createMaterial = (payload: {
 export const getNextMaterialCode = (prefix: string) =>
   api.get<{ code: string }>('/api/materials/next-code', { params: { prefix } }).then((r) => r.data);
 
+// #5: 物料反推产品 (BOM 反查)
+export interface MaterialUsedIn {
+  product_code: string;
+  product_name: string | null;
+  qty_per_product: number;
+  sku_count: number;
+}
+export const getMaterialUsedInProducts = (code: string) =>
+  api.get<MaterialUsedIn[]>(`/api/materials/${encodeURIComponent(code)}/used-in-products`).then((r) => r.data);
+
 export const listPartInventory = () =>
   api.get<PartInventory[]>('/api/inventory/parts').then((r) => r.data);
 
@@ -161,9 +280,10 @@ export const listExceptions = (status?: string, limit = 2000) =>
     .get<DataException[]>('/api/exceptions', { params: { status, limit } })
     .then((r) => r.data);
 
-export const resolveException = (id: number, status: 'resolved' | 'ignored') =>
+// force: resolved=跳过"问题是否已修复"复核; ignored=确认强制忽略
+export const resolveException = (id: number, status: 'resolved' | 'ignored', force = false) =>
   api
-    .patch<DataException>(`/api/exceptions/${id}/resolve`, { status })
+    .patch<DataException>(`/api/exceptions/${id}/resolve`, { status, force })
     .then((r) => r.data);
 
 export const resolveImportConflict = (id: number, choice: 'new' | 'old') =>
@@ -184,10 +304,17 @@ export interface Product {
   size_detail?: string | null;
   aux_material?: string | null;
   description?: string | null;
+  sub_name?: string | null;
+  priority?: string | null;
+  size_value?: string | null;
+  main_material?: string | null;
+  accessory_desc?: string | null;
+  accessory_remark?: string | null;
+  listing_status?: string | null;
 }
 
-export const listProducts = (q?: string) =>
-  api.get<Product[]>('/api/products', { params: { q, limit: 500 } }).then((r) => r.data);
+export const listProducts = (q?: string, params?: { category?: string; brand?: string }) =>
+  api.get<Product[]>('/api/products', { params: { q, limit: 500, ...params } }).then((r) => r.data);
 
 // 最近更新产品 (新产品录入「参考已有产品」聚焦时的默认下拉)
 export const listRecentProducts = (limit = 10) =>
@@ -240,6 +367,22 @@ export const getValueHints = (table: 'costs' | 'promo', field: string, category?
     .get<ValueHint>('/api/pricing-skus/value-hints', { params: { table, field, category } })
     .then((r) => r.data);
 
+// 系数目录(中文标识 + 含义) + 每个「按 SKU 系数」的众数(全局默认) —— 定价页三色覆盖标识用
+export interface CoefficientStat {
+  field: string;
+  label: string;
+  scope: 'global' | 'per_sku';
+  meaning: string;
+  fixed?: number;            // 结构性系数的固定值 (如 0.4)
+  mode?: number | null;      // 按SKU系数的众数 = 全局默认
+  distinct?: number;         // 不同取值数
+  sample?: number;
+}
+export const getCoefficientStats = () =>
+  api
+    .get<{ coefficients: CoefficientStat[] }>('/api/pricing-skus/coefficient-stats')
+    .then((r) => r.data.coefficients);
+
 export const createProduct = (payload: {
   name: string;
   brand: string;
@@ -255,11 +398,20 @@ export const createProduct = (payload: {
 
 export const updateProduct = (id: number, payload: {
   name?: string;
+  sub_name?: string | null;
+  brand?: string | null;
+  category?: string | null;
+  priority?: string | null;
   remark?: string;
   image_url?: string | null;
   custom_scope?: string | null;
   size_detail?: string | null;
+  size_value?: string | null;
+  main_material?: string | null;
   aux_material?: string | null;
+  accessory_desc?: string | null;
+  accessory_remark?: string | null;
+  listing_status?: string | null;
   description?: string | null;
 }) => api.patch<Product>(`/api/products/${id}`, payload).then((r) => r.data);
 
@@ -314,6 +466,14 @@ export const updateProductInventory = (id: number, patch: {
   lead_time_days?: number; slow_moving_days?: number; reorder_point?: number; remark?: string;
 }) => api.patch<ProductInventoryRow>(`/api/inventory/products/${id}`, patch).then((r) => r.data);
 
+// 同产品全部 SKU 一键同步参数 (安全库存/提前期/预警线/滞销阈值; 不含数量)
+export const syncProductInventoryParams = (productCode: string, patch: {
+  safety_stock?: number; lead_time_days?: number;
+  slow_moving_days?: number; reorder_point?: number;
+}) => api.patch<{ updated: number; message: string }>(
+  `/api/inventory/products/by-product/${encodeURIComponent(productCode)}`, patch,
+).then((r) => r.data);
+
 export const addProductInventoryRow = (payload: {
   warehouse: string;
   product_code: string;
@@ -331,6 +491,7 @@ export interface BomLineRow {
   product_code: string;
   product_name?: string | null;
   product_image_url?: string | null;
+  product_category?: string | null;
   sku: string | null;
   sku_code: string | null;
   material_code: string;
@@ -352,8 +513,8 @@ export const listBomForProduct = (productCode: string) =>
 export const deleteBomLine = (lineId: number) =>
   api.delete(`/api/bom/lines/${lineId}`).then((r) => r.data);
 
-// BOM 清单(扁平): 按产品编码 / 物料编码筛
-export const listBomLines = (params: { product_code?: string; material_code?: string; limit?: number } = {}) =>
+// BOM 清单(扁平): 按产品编码 / 物料编码 / 类目筛
+export const listBomLines = (params: { product_code?: string; product?: string; material_code?: string; category?: string; limit?: number } = {}) =>
   api.get<BomLineRow[]>('/api/bom', { params: { limit: 500, ...params } }).then((r) => r.data);
 
 // 编辑单条 BOM 行(改 SKU 归属 / 料号 / 单耗 / 单位等)
@@ -361,6 +522,13 @@ export const updateBomLine = (id: number, patch: {
   product_code?: string; sku?: string; sku_code?: string; material_code?: string;
   material_name?: string; unit?: string; qty_per_product?: number | string;
 }) => api.patch<BomLineRow>(`/api/bom/lines/${id}`, patch).then((r) => r.data);
+
+// 行内新增 BOM 行 (图2): 选已有物料编码, 或给 new_material_name + prefix 自动建物料+编码
+export const createBomLine = (payload: {
+  product_code: string; sku?: string; sku_code?: string;
+  material_code?: string; new_material_name?: string; material_prefix?: string;
+  unit?: string; qty_per_product?: number | string;
+}) => api.post<BomLineRow>('/api/bom/lines', payload).then((r) => r.data);
 
 // ----- Match -----
 export interface MatchCandidate {
@@ -681,6 +849,8 @@ export const fixException = (id: number, fields: Record<string, unknown>) =>
   api.post(`/api/exceptions/${id}/fix`, { fields }).then(r => r.data);
 export const runDataQuality = () =>
   api.post<Record<string, number>>('/api/exceptions/run-data-quality').then(r => r.data);
+export const recheckAllExceptions = () =>
+  api.post<{ closed: number; by_type: Record<string, number> }>('/api/exceptions/recheck-all').then(r => r.data);
 export const getExceptionCounts = () =>
   api.get<Record<string, number>>('/api/exceptions/counts-by-type').then(r => r.data);
 export const getOpenExceptionCount = () =>

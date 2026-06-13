@@ -89,6 +89,38 @@ def _next_purchase_no(db: Session) -> str:
     return f"{prefix}{seq:02d}"
 
 
+# 表格导入列名映射 (Excel/CSV — 用户要求: 不止图片/PDF, 表格也能直接导)
+_TABLE_MAP = {
+    "供应商": "supplier", "店铺": "supplier", "对手方": "supplier",
+    "购买日期": "purchase_date", "日期": "purchase_date", "采购日期": "purchase_date",
+    "配件名称": "material_name", "名称": "material_name", "商品名称": "material_name", "品名": "material_name",
+    "规格": "spec",
+    "数量": "qty",
+    "单价": "unit_price",
+    "金额": "amount", "总价": "amount", "合计": "amount", "总金额": "amount",
+    "快递单号": "tracking_no", "运单号": "tracking_no", "物流单号": "tracking_no",
+    "备注": "remark",
+}
+
+
+@router.post("/import-table", response_model=dict)
+async def import_purchases_table(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """Excel/CSV 批量导入采购记录 (核心在 purchase_table_import, 与飞书文件路由共用)。"""
+    from app.services import purchase_table_import
+
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "空文件")
+    try:
+        return purchase_table_import.import_purchases_table_core(db, raw, file.filename)
+    except Exception as e:
+        raise HTTPException(400, f"文件解析失败: {e}") from e
+
+
 @router.post("/upload-ocr", response_model=UploadOcrResult)
 async def upload_and_ocr(
     file: UploadFile = File(...),
@@ -177,11 +209,21 @@ async def upload_and_ocr(
 def list_purchases(
     limit: int = Query(200, le=1000),
     supplier: Optional[str] = None,
+    include_non_purchase: bool = False,   # 默认隐藏 代扣款/理财申购/服务费/淘天 等非采购
     db: Session = Depends(get_db),
 ):
     q = select(PartPurchase)
     if supplier:
         q = q.where(PartPurchase.supplier == supplier)
+    if not include_non_purchase:
+        from sqlalchemy import and_, or_
+        bad = ("代扣", "代付", "资金扣回", "消费券", "理财", "申购",
+               "服务费", "手续费", "余额宝", "转入", "转出", "单次转", "转账")
+        q = q.where(
+            or_(PartPurchase.material_name.is_(None),
+                and_(*[PartPurchase.material_name.notlike(f"%{k}%") for k in bad])),
+            or_(PartPurchase.supplier.is_(None), PartPurchase.supplier.notlike("%淘天%")),
+        )
     rows = db.execute(
         q.order_by(PartPurchase.purchase_date.desc().nulls_last(), PartPurchase.id.desc())
         .limit(limit)

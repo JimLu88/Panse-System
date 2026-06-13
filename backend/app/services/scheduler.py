@@ -373,6 +373,47 @@ def _job_accessory_alert_refresh(db: Session) -> dict:
     return {"refreshed": n}
 
 
+def _job_cost_recompute(db: Session) -> dict:
+    """理论成本每日兜底反推 — 补任何仍"未反推"(NULL/0)的订单 (导入时已即时反推, 这里收尾)。"""
+    from app.services import order_cost_service
+    return order_cost_service.recompute_all(db, only_missing=True)
+
+
+def _job_accessory_backfill(db: Session) -> dict:
+    """配件清单每日自动补建/对齐 — 进行中订单(已付款/已发货/售后)按 BOM 生成或重对齐,
+    免得停留在"配件未建"。保留已填采购/物流进度。(用户拍板 2026-06-12: 全自动, 不靠首次查看才建)"""
+    from app.services import accessory_checklist_service
+    return accessory_checklist_service.backfill_all(db)
+
+
+def _job_accessory_self_arrive(db: Session) -> dict:
+    """自送/无物流号配件 3 天自动到货 (用户拍板 2026-06-12)。
+
+    自送(工厂周边买/自己送)的配件没物流号, 无法靠快递100 自动签收。
+    约定: 标「已下单」满 3 天仍无操作 → 自动标「已到货」(有物流号的交给快递追踪, 这里只管无号的)。
+    有问题工厂会报, 用户可手动改回。updated_at 作采购时间代理(自送项标已下单后基本不再变动)。
+    """
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import or_, select
+    from app.models.order import OrderAccessoryItem
+    cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+    rows = db.execute(select(OrderAccessoryItem).where(
+        OrderAccessoryItem.status == "已下单",
+        OrderAccessoryItem.is_factory_provided.is_(False),
+        or_(OrderAccessoryItem.tracking_no.is_(None), OrderAccessoryItem.tracking_no == ""),
+        OrderAccessoryItem.updated_at < cutoff,
+    )).scalars().all()
+    n = 0
+    for it in rows:
+        it.status = "已到货"
+        it.self_delivered = True
+        it.remark = ((it.remark + " | ") if it.remark else "") + "自动到货(自送满3天无异常)"
+        n += 1
+    if n:
+        db.commit()
+    return {"auto_arrived": n}
+
+
 def _job_forecast_refresh(db: Session) -> dict:
     """销售预测重算 — 主要是触发 forecast_30d 缓存. 当前是即时计算, 占位返回 0."""
     from app.services import sales_analytics
@@ -525,6 +566,134 @@ def _job_factory_daily_summary(db: Session) -> dict:
     """每天 18:00: 汇总已付款但无工厂单的订单, 推送生产通知。"""
     from app.services import factory_summary_service
     return factory_summary_service.daily_summary(db)
+
+
+def _job_notify_retry(db: Session) -> dict:
+    """每 30 分钟: 重发失败的飞书/webhook 通知 (指数退避, 最多 5 次)。"""
+    from app.services import notify_service
+    return notify_service.retry_pending(db)
+
+
+def _job_thumb_cache_cleanup(db: Session) -> dict:
+    """每月 1 日 04:00: 清理 90 天未更新的图库缩略图缓存 (只增不减会吃满磁盘)。"""
+    import time
+    from pathlib import Path
+    cache = Path("/app/storage/gallery_thumbs")
+    if not cache.exists():
+        return {"deleted": 0}
+    cutoff = time.time() - 90 * 86400
+    deleted = 0
+    for f in cache.glob("*.webp"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+                deleted += 1
+        except OSError:
+            continue
+    return {"deleted": deleted}
+
+
+def _job_recon_snapshot(db: Session) -> dict:
+    """每天 23:30: 留存当日对账结果快照 (看差异是在收敛还是恶化 — 对账建议 13)。"""
+    from datetime import date as _date
+    from decimal import Decimal
+
+    from sqlalchemy import text as _sql
+
+    from app.services import reconciliation_service
+    results = reconciliation_service.run_all(db, record_exceptions=False)
+    today = _date.today()
+    for rule, r in results.items():
+        total_abs = sum((abs(d.diff) for d in r.diffs if d.diff is not None), Decimal("0"))
+        db.execute(_sql(
+            "INSERT INTO recon_snapshots (snap_date, rule, ok_count, warning_count, error_count, total_diff_abs) "
+            "VALUES (:d, :r, :ok, :w, :e, :t) "
+            "ON CONFLICT (snap_date, rule) DO UPDATE SET ok_count=:ok, warning_count=:w, "
+            "error_count=:e, total_diff_abs=:t"
+        ), {"d": today, "r": rule, "ok": r.ok_count, "w": r.warning_count,
+            "e": r.error_count, "t": total_abs})
+    db.commit()
+
+    # 做平金额警戒线 (用户拍板 2026-06-11 建议5): 累计做平超阈值 → 飞书提醒
+    try:
+        from app.models.exception import DataException
+        from app.services import alert_service, settings_service
+        rows = db.query(DataException).filter(
+            DataException.source_table == "reconciliation",
+            DataException.exception_type == "reconciliation_diff",
+            DataException.status == "ignored",
+        ).all()
+        total_wo = Decimal("0")
+        for r2 in rows:
+            try:
+                total_wo += abs(Decimal(str((r2.context or {}).get("diff", "0"))))
+            except Exception:
+                continue
+        raw_th = settings_service.get(db, "writeoff_alert_threshold", env_fallback=False)
+        threshold = Decimal(str(raw_th)) if raw_th else Decimal("50000")
+        if total_wo > threshold:
+            alert_service.upsert(
+                db, kind="writeoff_excess", severity="critical",
+                title="对账做平金额超警戒线",
+                body=(f"累计人工做平 {len(rows)} 条差异, 金额合计 ¥{int(total_wo):,}, "
+                      f"已超警戒线 ¥{int(threshold):,}。做平越多越可能掩盖系统性账务问题, "
+                      "请到 财务→对账 复查 (明细见 工具→修改档案 搜「做平」)。"),
+                dedupe_key="writeoff_excess",
+            )
+            db.commit()
+    except Exception:  # pragma: no cover - 警戒检查失败不影响快照
+        pass
+    return {"rules": len(results)}
+
+
+def _job_orders_maintain(db: Session) -> dict:
+    """每天 02:30 订单数据自动维护 (用户拍板: 原订单页三个手动按钮收掉, 改全自动):
+    反推理论成本(只补空) + 规范化订单状态 + 生成订单细节(增量)。全部幂等。"""
+    from app.services import order_cost_service, order_detail_service, order_service
+    cost = order_cost_service.recompute_all(db, only_missing=True)
+    status = order_service.normalize_all_statuses(db)
+    details = order_detail_service.generate(db, order_nos=None, only_missing=True)
+    db.commit()
+    return {
+        "costs": cost, "statuses": status,
+        "details_matched": getattr(details, "orders_matched", None),
+    }
+
+
+def _job_web_agent_daily(db: Session) -> dict:
+    """每天 06:30: Web-Agent 自动取数编排 (按更新间隔: 订单1天/余额流水3天)。
+
+    串行触发到期任务 → 等 job 完成 → 扫共享目录导入 → 飞书日报。
+    Agent 离线/待人工的任务快速失败并标记, 不无限重试 (交接方案 §7.6)。
+    """
+    from app.services import agent_ingest_service
+    if agent_ingest_service.is_running():
+        return {"skipped": "已有编排在跑 (手动触发未结束)"}
+    return agent_ingest_service.orchestrate(db, force=False)
+
+
+def _job_order_sheets_daily(db: Session) -> dict:
+    """每天 18:00: 给已付款新订单补生成下单图 → 存导入档案 → 推飞书群 (用户拍板)。"""
+    from app.services import order_sheet_archive_service
+    return order_sheet_archive_service.push_daily(db)
+
+
+def _job_order_sheets_catchup(db: Session) -> dict:
+    """每小时: 导入新订单后尽快补生成下单图 (静默, 不推送; 日报在 18:00)。"""
+    from app.services import order_sheet_archive_service
+    return order_sheet_archive_service.generate_pending(db)
+
+
+def _job_void_sheets(db: Session) -> dict:
+    """每天 10:00: 检查退款订单 (付款+已生成下单图+退款) → 作废图+删原图+推送。"""
+    from app.services import order_sheet_archive_service
+    return order_sheet_archive_service.push_void_daily(db)
+
+
+def _job_aftersales_auto(db: Session) -> dict:
+    """每天 09:00: 售后自动建条 (万师傅/支付宝流水/退款) + 日报。"""
+    from app.services import aftersales_auto_service
+    return aftersales_auto_service.run_daily(db)
 
 
 def _job_aftersales_followup(db: Session) -> dict:
@@ -706,6 +875,47 @@ def _job_monthly_financial_report(db: Session) -> dict:
     return summary
 
 
+def _job_refill_rederive(db: Session) -> dict:
+    """补单自动打标兜底 (Plan L3): 以补单记录为准全量重判 is_refill + 重算成本."""
+    from dataclasses import asdict
+    from app.services import order_sync_service
+    res = order_sync_service.rederive_refill_flags(db)
+    return asdict(res)
+
+
+def _job_factory_payment_backfill(db: Session) -> dict:
+    """工厂付款回填常态化 (Plan L2).
+
+    规则A(有流水号/付款日证据)每天实跑; 规则B(超结算期推断)默认只 dry_run 预览,
+    结果进 result_summary 供观察, system_settings.factory_backfill_apply_inference
+    置 1/true 后切换为实跑。
+    """
+    from app.services import factory_payment_service, settings_service
+    raw = settings_service.get(db, "factory_backfill_apply_inference", env_fallback=False) or ""
+    apply_b = str(raw).strip().lower() in ("1", "true", "on", "yes")
+    res = factory_payment_service.backfill_payment_status(db, apply_settled_inference=apply_b)
+    res["inference_enabled"] = apply_b
+    if not apply_b:
+        preview = factory_payment_service.backfill_payment_status(
+            db, apply_settled_inference=True, dry_run=True)
+        res["inference_dry_run_preview"] = {
+            k: preview.get(k) for k in ("by_settled", "still_unpaid") if k in preview
+        }
+    return res
+
+
+def _job_weekly_sales_report(db: Session) -> dict:
+    """销售周报推送 (Plan F7): 周一 09:30 推上周摘要 (文字条形图卡片)."""
+    from app.services import report_push_service
+    return report_push_service.push_weekly_sales(db)
+
+
+def _job_promo_price_check(db: Session) -> dict:
+    """活动报名价对照 (Plan F1): 报名价 vs 定价渠道价, 超差记异常+critical."""
+    from app.services import promo_price_check_service
+    return promo_price_check_service.check_all(db)
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -752,6 +962,24 @@ def _register_default_jobs() -> None:
                  _job_monthly_report_push, cron={"day": 1, "hour": 9, "minute": 0})
     register_job("daily_18_factory_summary", "每日待生产工厂单汇总",
                  _job_factory_daily_summary, cron={"hour": 18, "minute": 0})
+    register_job("daily_0630_web_agent", "Web-Agent 自动取数编排(06:30)",
+                 _job_web_agent_daily, cron={"hour": 6, "minute": 30})
+    register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
+                 _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
+    register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",
+                 _job_void_sheets, cron={"hour": 10, "minute": 0})
+    register_job("daily_0900_aftersales_auto", "售后自动建条(万师傅/流水/退款)",
+                 _job_aftersales_auto, cron={"hour": 9, "minute": 0})
+    register_job("daily_0230_orders_maintain", "订单自动维护(成本/状态/细节)",
+                 _job_orders_maintain, cron={"hour": 2, "minute": 30})
+    register_job("notify_retry_30min", "失败通知重发(指数退避)",
+                 _job_notify_retry, interval_minutes=30)
+    register_job("monthly_thumb_cleanup", "图库缩略图缓存月度清理",
+                 _job_thumb_cache_cleanup, cron={"day": 1, "hour": 4, "minute": 0})
+    register_job("daily_2330_recon_snapshot", "对账结果每日快照",
+                 _job_recon_snapshot, cron={"hour": 23, "minute": 30})
+    register_job("hourly_order_sheets_catchup", "下单图增量补生成(导入后1小时内)",
+                 _job_order_sheets_catchup, interval_minutes=60)
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
@@ -766,6 +994,22 @@ def _register_default_jobs() -> None:
                  _job_shipments_refresh, interval_minutes=360)
     register_job("daily_0730_accessory_alert", "配件到货预警刷新",
                  _job_accessory_alert_refresh, cron={"hour": 7, "minute": 30})
+    register_job("daily_0740_self_arrive", "自送配件3天自动到货",
+                 _job_accessory_self_arrive, cron={"hour": 7, "minute": 40})
+    register_job("daily_0650_cost_recompute", "理论成本兜底反推 (补未反推)",
+                 _job_cost_recompute, cron={"hour": 6, "minute": 50})
+    register_job("daily_0655_accessory_backfill", "配件清单自动补建/对齐 (进行中订单)",
+                 _job_accessory_backfill, cron={"hour": 6, "minute": 55})
+    # Plan 阶段一: L3 补单打标兜底 + L2 工厂付款回填常态化
+    register_job("daily_0645_refill_rederive", "补单自动打标兜底 (is_refill 重判)",
+                 _job_refill_rederive, cron={"hour": 6, "minute": 45})
+    register_job("daily_0710_factory_payment_backfill", "工厂付款状态回填 (规则A实跑/规则B看开关)",
+                 _job_factory_payment_backfill, cron={"hour": 7, "minute": 10})
+    # Plan 阶段三: F7 销售周报 (文字条形图) + F1 活动报名价对照
+    register_job("weekly_mon_0930_sales_report", "销售周报推送 (上周摘要)",
+                 _job_weekly_sales_report, cron={"day_of_week": "mon", "hour": 9, "minute": 30})
+    register_job("daily_0830_promo_price_check", "活动报名价 vs 定价渠道价 对照",
+                 _job_promo_price_check, cron={"hour": 8, "minute": 30})
 
 
 # ----------------------------- 生命周期 -------------------------- #

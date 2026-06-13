@@ -72,7 +72,7 @@ export default function ReconDiagnosticsPage() {
             <Col span={6}><div style={{ color: '#888', fontSize: 12 }}>按账户: {Object.entries(of.by_account).map(([k, v]) => `${k}:${v}`).join('  ') || '—'}</div></Col>
           </Row>
         )}
-        <Table rowKey="transaction_no" size="small" pagination={{ pageSize: 20 }}
+        <Table rowKey="transaction_no" size="small" pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           dataSource={of?.samples ?? []}
           columns={[
             { title: '账户', dataIndex: 'account', width: 90 },

@@ -296,6 +296,17 @@ def check_refund_pending_orders(db: Session) -> dict:
             auto_resolve_after_minutes=60 * 24,
         )
         flagged += 1
+    # Plan F3: 有待处理退款单 → 飞书汇总推送一条 (失败不阻断检查)
+    if flagged:
+        try:
+            from app.services import notify_service
+            notify_service.notify(
+                db,
+                f"17:00 退款检查: {flagged} 笔订单处于售后状态超过 24 小时未取消, 请到订单页确认处理。",
+                level="warning", title="畔色 ERP [退款检查]",
+            )
+        except Exception:  # pragma: no cover
+            pass
     return {"flagged": flagged}
 
 

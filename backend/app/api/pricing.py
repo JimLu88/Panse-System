@@ -1,12 +1,12 @@
 """定价总表 API — 读取 + 录入 + 编辑 + 成本重算."""
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
@@ -17,6 +17,7 @@ from app.dependencies import get_current_user, require_role
 from app.models.auth import User
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+from app.models.pricing_custom import PricingCustomField, PricingCustomValue
 from app.models.pricing_formula import PricingFormulaRule
 from app.services import pricing_calc_service
 from app.services import formula_engine_service
@@ -30,7 +31,9 @@ formula_router = APIRouter(prefix="/api/pricing", tags=["pricing-formula"])
 
 
 class PricingSkuOut(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
+    # extra="allow": 列表接口会把配件成本(costs)、活动价(promo)、自定义列(cf_<id>)
+    # 平铺合并进来一起返回, 这些"额外字段"需要透传给前端做可选列。
+    model_config = ConfigDict(from_attributes=True, extra="allow")
     id: int
     product_code: str
     sku: Optional[str]
@@ -105,28 +108,47 @@ class PricingSkuPatch(BaseModel):
     external_parts_cost: Optional[Decimal] = None
 
 
+_EXT_SKIP = {"id", "sku_code", "created_at", "updated_at"}
+
+
+def _ext_dict(obj) -> dict:
+    """扩展表(costs/promo) ORM 对象 → {列: 值}, 跳过主键/外键/时间戳。"""
+    if obj is None:
+        return {}
+    return {c.key: getattr(obj, c.key) for c in obj.__table__.columns if c.key not in _EXT_SKIP}
+
+
 @router.get("", response_model=PricingSkuListOut)
 def list_pricing_skus(
     q: Optional[str] = Query(None, description="按 product_code / sku_code / sku 模糊搜"),
     size_category: Optional[str] = Query(None),
+    category: Optional[str] = Query(None, description="按产品类目筛 (join 产品总表 category)"),
     product_code: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
+    from app.models.product import Product
     stmt = select(PricingSku)
     count_stmt = select(func.count(PricingSku.id))
+    if category:
+        stmt = stmt.join(Product, Product.code == PricingSku.product_code)
+        count_stmt = count_stmt.join(Product, Product.code == PricingSku.product_code)
     filters = []
     if q:
-        like = f"%{q.strip()}%"
-        filters.append(or_(
-            PricingSku.product_code.ilike(like),
-            PricingSku.sku_code.ilike(like),
-            PricingSku.sku.ilike(like),
-        ))
+        # 全站统一模糊搜索: 空格分词 + SKU名/产品名 字符间隙 ("榉木餐桌"中"榉木岩板餐桌")
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[
+            PricingSku.product_code, PricingSku.sku_code,
+            PricingSku.sku, PricingSku.product_name,
+        ], gap_cols=[PricingSku.sku, PricingSku.product_name])
+        if fc is not None:
+            filters.append(fc)
     if size_category:
         filters.append(PricingSku.size_category == size_category)
+    if category:
+        filters.append(Product.category == category)
     if product_code:
         filters.append(PricingSku.product_code == product_code)
     for f in filters:
@@ -136,10 +158,237 @@ def list_pricing_skus(
     rows = db.execute(
         stmt.order_by(PricingSku.product_code, PricingSku.sku_code).limit(limit).offset(offset)
     ).scalars().all()
-    return PricingSkuListOut(
-        total=total,
-        items=[PricingSkuOut.model_validate(r) for r in rows],
-    )
+
+    # 平铺合并: 配件成本(costs) / 活动价(promo) / 自定义列(cf_<id>) 一起返回, 供前端做可选列。
+    sku_codes = [r.sku_code for r in rows if r.sku_code]
+    costs_map: dict[str, PricingSkuCosts] = {}
+    promo_map: dict[str, PricingSkuPromo] = {}
+    cv_map: dict[str, dict[int, PricingCustomValue]] = {}
+    if sku_codes:
+        for cr in db.execute(select(PricingSkuCosts).where(PricingSkuCosts.sku_code.in_(sku_codes))).scalars():
+            costs_map[cr.sku_code] = cr
+        for pr in db.execute(select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(sku_codes))).scalars():
+            promo_map[pr.sku_code] = pr
+        for cv in db.execute(select(PricingCustomValue).where(PricingCustomValue.sku_code.in_(sku_codes))).scalars():
+            cv_map.setdefault(cv.sku_code, {})[cv.field_id] = cv
+    custom_fields = db.execute(
+        select(PricingCustomField).order_by(PricingCustomField.sort_order, PricingCustomField.id)
+    ).scalars().all()
+
+    # SKU 图片图库优先 (用户拍板 2026-06-12): 图库有就用图库的, 前端没有才回退淘宝 image_url
+    from app.services.gallery_lookup import sku_gallery_url_map
+    gallery_urls = sku_gallery_url_map(
+        [(r.product_code, r.sku_code, r.sku) for r in rows])
+
+    items = []
+    for r in rows:
+        base = PricingSkuOut.model_validate(r).model_dump()
+        base.update(_ext_dict(costs_map.get(r.sku_code)))
+        base.update(_ext_dict(promo_map.get(r.sku_code)))
+        base["gallery_image_url"] = gallery_urls.get(r.sku_code)
+        cvs = cv_map.get(r.sku_code, {})
+        for fdef in custom_fields:
+            v = cvs.get(fdef.id)
+            base[f"cf_{fdef.id}"] = None if v is None else (
+                v.num_value if fdef.value_kind == "number" else v.text_value
+            )
+        items.append(PricingSkuOut.model_validate(base))
+    return PricingSkuListOut(total=total, items=items)
+
+
+class ByProductPatch(BaseModel):
+    """一键覆盖同产品全部 SKU: 三段可选 — 主表字段 / 配件成本 / 渠道系数。"""
+    sku: Optional[dict] = None      # PricingSku 字段 (价格/成本)
+    costs: Optional[dict] = None    # PricingSkuCosts 字段 (22 配件)
+    promo: Optional[dict] = None    # PricingSkuPromo 字段 (渠道价/系数)
+
+
+@router.patch("/by-product/{product_code}", response_model=dict)
+def update_pricing_by_product(
+    product_code: str,
+    body: ByProductPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """编辑器「保存并覆盖同产品全部 SKU」: 把给定字段铺到该产品所有 SKU + 重算 + 留痕。"""
+    from app.services import field_change_service
+    skus = db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
+    if not skus:
+        raise HTTPException(404, f"产品 {product_code} 没有定价行")
+    actor = getattr(_, "username", None)
+    updated = 0
+    for sku in skus:
+        if body.sku:
+            _record_price_changes(db, sku, body.sku, actor=actor)
+            for k, v in body.sku.items():
+                if hasattr(sku, k):
+                    setattr(sku, k, v)
+        if body.costs:
+            costs = db.query(PricingSkuCosts).filter(
+                PricingSkuCosts.sku_code == sku.sku_code).first()
+            if costs is None:
+                costs = PricingSkuCosts(sku_code=sku.sku_code)
+                db.add(costs)
+                db.flush()
+            field_change_service.diff_and_apply(
+                db, costs, body.costs, table="pricing_sku_costs", pk=sku.sku_code,
+                actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
+            pricing_calc_service.recompute_costs(costs, sku)
+        if body.promo:
+            promo = db.query(PricingSkuPromo).filter(
+                PricingSkuPromo.sku_code == sku.sku_code).first()
+            if promo is None:
+                promo = PricingSkuPromo(sku_code=sku.sku_code)
+                db.add(promo)
+                db.flush()
+            field_change_service.diff_and_apply(
+                db, promo, body.promo, table="pricing_sku_promo", pk=sku.sku_code,
+                actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
+            pricing_calc_service.recompute_promo(promo, sku)
+        pricing_calc_service.recompute(sku)
+        updated += 1
+    db.commit()
+    return {"product_code": product_code, "updated": updated,
+            "message": f"已覆盖 {updated} 个 SKU 并重算"}
+
+
+@router.post("/bom-sync-check")
+def bom_sync_check(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """已停用 (用户拍板 2026-06-12): BOM 单价只用于预估/定制报价, 不与批量定价对照。
+
+    保留路由防旧客户端 404; 不再执行任何检查。
+    """
+    return {"disabled": True, "checked": 0, "stale_count": 0,
+            "note": "BOM漂移检查已按拍板停用 (BOM单价只用于预估/定制报价)"}
+
+
+# ---------------------------------------------------------------------------
+# Plan F1: 活动报名价 — 导入 / 截图OCR双步 / 列表 / 对照检查
+# ---------------------------------------------------------------------------
+
+@router.post("/campaign-signups/import-csv")
+async def import_campaign_signups(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """导入活动报名价 CSV/Excel, 入库后立即对照定价渠道价。"""
+    raw = await file.read()
+    from app.services import bill_import_service, promo_price_check_service, tabular
+    text = tabular.to_csv_text(raw, file.filename)
+    rep = bill_import_service.import_campaign_signup_csv(db, text)
+    check = promo_price_check_service.check_all(db)
+    db.commit()
+    return {"inserted": rep.inserted, "updated": rep.skipped_duplicate,
+            "skipped_invalid": rep.skipped_invalid,
+            "unmapped_columns": rep.unmapped_columns, "check": check}
+
+
+@router.post("/campaign-signups/ocr-parse")
+async def ocr_parse_campaign_signup(
+    image: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """报名结果截图 → OCR 解析 (双步第一步: 返回 rows 供人工确认, 不入库)。"""
+    from app.services import vision_ocr_service
+    from app.services.ai_provider import AiUnavailable
+    raw = await image.read()
+    try:
+        return vision_ocr_service.parse_promo_signup(
+            db, raw, mime=image.content_type or "image/jpeg")
+    except AiUnavailable as e:
+        raise HTTPException(503, str(e)) from e
+
+
+class CampaignSignupRowIn(BaseModel):
+    sku_code: str
+    channel: str = "taobao"
+    campaign_name: Optional[str] = None
+    signup_price: Decimal
+    effective_date: Optional[str] = None
+    remark: Optional[str] = None
+
+
+@router.post("/campaign-signups/commit")
+def commit_campaign_signups(
+    rows: list[CampaignSignupRowIn] = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """OCR 双步第二步: 确认后的行入库 (source=ocr), 同键 upsert, 入库后立即对照。"""
+    from datetime import date as _date_cls
+    from app.models.campaign_signup import CampaignSignupPrice
+    from app.services import promo_price_check_service
+    n_new = n_upd = 0
+    for r in rows:
+        ch = r.channel if r.channel in ("taobao", "xhs") else "taobao"
+        camp = (r.campaign_name or "").strip() or None
+        eff = None
+        if r.effective_date:
+            try:
+                eff = _date_cls.fromisoformat(r.effective_date)
+            except ValueError:
+                eff = None
+        existing = db.execute(
+            select(CampaignSignupPrice).where(
+                CampaignSignupPrice.sku_code == r.sku_code,
+                CampaignSignupPrice.channel == ch,
+                CampaignSignupPrice.campaign_name == camp,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.signup_price = r.signup_price
+            existing.source = "ocr"
+            existing.effective_date = eff or existing.effective_date
+            existing.remark = r.remark or existing.remark
+            n_upd += 1
+        else:
+            db.add(CampaignSignupPrice(
+                sku_code=r.sku_code, channel=ch, campaign_name=camp,
+                signup_price=r.signup_price, source="ocr",
+                effective_date=eff, remark=r.remark,
+            ))
+            n_new += 1
+    db.flush()
+    check = promo_price_check_service.check_all(db)
+    db.commit()
+    return {"inserted": n_new, "updated": n_upd, "check": check}
+
+
+@router.get("/campaign-signups")
+def list_campaign_signups(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """活动报名价列表 (近 500 条)。"""
+    from app.models.campaign_signup import CampaignSignupPrice
+    rows = db.execute(
+        select(CampaignSignupPrice).order_by(CampaignSignupPrice.id.desc()).limit(500)
+    ).scalars().all()
+    return [{
+        "id": r.id, "sku_code": r.sku_code, "channel": r.channel,
+        "campaign_name": r.campaign_name,
+        "signup_price": float(r.signup_price),
+        "source": r.source,
+        "effective_date": r.effective_date.isoformat() if r.effective_date else None,
+        "remark": r.remark,
+    } for r in rows]
+
+
+@router.post("/promo-price-check")
+def run_promo_price_check(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """手动跑一次 报名价 vs 定价渠道价 对照 (超差记异常 + critical 告警)。"""
+    from app.services import promo_price_check_service
+    r = promo_price_check_service.check_all(db)
+    db.commit()
+    return r
 
 
 @router.post("", response_model=PricingSkuOut, status_code=201)
@@ -186,14 +435,22 @@ _TRACKED_PRICE_FIELDS = {
 }
 
 
-def _record_price_changes(db: Session, sku: PricingSku, changes: dict, *, actor) -> None:
-    """价格/成本字段变更留痕 (优化 #5)。"""
+def _record_price_changes(db: Session, sku: PricingSku, changes: dict, *, actor,
+                          source: str = "web") -> None:
+    """价格/成本字段变更留痕 (优化 #5 + 统一编辑历史档案)。"""
     from app.models.price_change import PriceChangeLog
+    from app.services import field_change_service
     for k, v in changes.items():
-        if k not in _TRACKED_PRICE_FIELDS:
-            continue
         old = getattr(sku, k, None)
         if old == v:
+            continue
+        # 统一档案: 所有字段都记 (字段悬浮历史 / 修改档案中心)
+        field_change_service.record(
+            db, table="pricing_skus", pk=sku.sku_code, field=k,
+            old=old, new=v, actor=actor, source=source,
+            row_label=sku.sku or sku.product_code,
+        )
+        if k not in _TRACKED_PRICE_FIELDS:
             continue
         db.add(PriceChangeLog(
             sku_code=sku.sku_code, field=k,
@@ -489,6 +746,82 @@ def value_hints(
 
 
 # ---------------------------------------------------------------------------
+# 系数目录(中文标识 + 含义) + 每个「按 SKU 系数」的众数(全局默认)
+#   给定价页「系数中文标识 + 含义 + 三色覆盖标识」用:
+#   某行系数 == 众数 → 跟随全局(灰); ≠ 众数 → 单行覆盖(橙)。
+#   只读不改算法 —— 所有价格数字保持与定价总表一致。
+# ---------------------------------------------------------------------------
+COEFFICIENT_CATALOG: list[dict] = [
+    # ── 结构性系数 (全表统一, 写死在公式里) ──
+    {"field": "list_margin", "label": "标价毛利基数", "scope": "global", "fixed": 0.4,
+     "meaning": "标价 = 物理总成本 ÷ 0.4（成本占标价 40%，留 60% 毛利空间）"},
+    {"field": "daily_factor", "label": "日常价系数", "scope": "global", "fixed": 0.75,
+     "meaning": "日常价 = 标价 × 0.75（日常 75 折）"},
+    {"field": "platform_base", "label": "平台到手基数", "scope": "global", "fixed": 0.855,
+     "meaning": "小/中/大促分母里的 0.855 = 扣完隐性后平台到手净额基数 85.5%"},
+    {"field": "platform_commission", "label": "平台抽佣", "scope": "global", "fixed": 0.02,
+     "meaning": "0.02 = 平台抽佣 2%"},
+    {"field": "struct_tax", "label": "税", "scope": "global", "fixed": 0.006,
+     "meaning": "0.006 = 税 0.6%"},
+    {"field": "promo_88", "label": "88券力度", "scope": "global", "fixed": 0.88,
+     "meaning": "0.88 = 中/大促 88 券活动折扣"},
+    {"field": "big_extra", "label": "大促额外折", "scope": "global", "fixed": 0.95,
+     "meaning": "0.95 = 大促(双11) 在中促价基础上再 95 折"},
+    {"field": "vip_coupon", "label": "88VIP券", "scope": "global", "fixed": 150,
+     "meaning": "150 = 中/大促会员价 = 到手价 − 150 元 88VIP 券"},
+    # ── 经营性系数 (每个 SKU 可不同; 来自 pricing_sku_promo) ──
+    {"field": "shop_promo_rate", "label": "店铺宝系数", "scope": "per_sku", "model": "promo",
+     "meaning": "小促到手价 = 日常价 × 店铺宝系数（每个 SKU 可不同）"},
+    {"field": "mid_shop_rate", "label": "中促系数", "scope": "per_sku", "model": "promo",
+     "meaning": "中促到手价 = 日常价 × 88券 × 中促系数（每个 SKU 可不同）"},
+    {"field": "big_shop_rate", "label": "大促系数", "scope": "per_sku", "model": "promo",
+     "meaning": "大促到手价 = 日常价 × 88券 × 大促系数（每个 SKU 可不同）"},
+    {"field": "xhs_promo_discount", "label": "小红书折扣率", "scope": "per_sku", "model": "promo",
+     "meaning": "小红书促销价 = 活动价 × (1 − 折扣率)，默认 0.15"},
+]
+
+
+def _coeff_mode(db: Session, model, field: str):
+    """某「按 SKU 系数」字段的众数 + 不同取值数 + 样本量 (全表)。"""
+    col = getattr(model, field)
+    vals = [r[0] for r in db.execute(select(col).where(col.isnot(None))).all() if r[0] is not None]
+    nums = []
+    for v in vals:
+        try:
+            nums.append(round(float(v), 6))
+        except (TypeError, ValueError):
+            continue
+    if not nums:
+        return None, 0, 0
+    from collections import Counter
+    mode_val = Counter(nums).most_common(1)[0][0]
+    return mode_val, len(set(nums)), len(nums)
+
+
+@router.get("/coefficient-stats", tags=["pricing"])
+def coefficient_stats(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """系数目录(中文标识 + 含义) + 每个「按 SKU 系数」的众数(全局默认)。
+
+    前端定价页用它做三色覆盖标识: 某行系数 == 众数 → 灰(跟随全局); ≠ → 橙(单行覆盖)。
+    只读统计, 不改任何价格算法。
+    """
+    model_map = {"promo": PricingSkuPromo, "sku": PricingSku}
+    out: list[dict] = []
+    for c in COEFFICIENT_CATALOG:
+        entry = {k: c[k] for k in ("field", "label", "scope", "meaning")}
+        if "fixed" in c:
+            entry["fixed"] = c["fixed"]
+        if c["scope"] == "per_sku":
+            mode_val, distinct, sample = _coeff_mode(db, model_map.get(c.get("model", "promo")), c["field"])
+            entry.update(mode=mode_val, distinct=distinct, sample=sample)
+        out.append(entry)
+    return {"coefficients": out}
+
+
+# ---------------------------------------------------------------------------
 # 淘宝批量操作模板下载 — 一键模板按钮用
 # ---------------------------------------------------------------------------
 
@@ -662,8 +995,13 @@ def upsert_sku_costs(
     if not costs:
         costs = PricingSkuCosts(sku_code=sku_code)
         db.add(costs)
-    for k, v in body.model_dump(exclude_unset=True).items():
-        setattr(costs, k, v)
+        db.flush()
+    from app.services import field_change_service
+    field_change_service.diff_and_apply(
+        db, costs, body.model_dump(exclude_unset=True),
+        table="pricing_sku_costs", pk=sku_code,
+        actor=getattr(_, "username", None), row_label=sku.sku or sku.product_code,
+    )
     pricing_calc_service.recompute_costs(costs, sku)
     pricing_calc_service.recompute(sku)
     db.commit()
@@ -760,8 +1098,13 @@ def upsert_sku_promo(
     if not promo:
         promo = PricingSkuPromo(sku_code=sku_code)
         db.add(promo)
-    for k, v in body.model_dump(exclude_unset=True).items():
-        setattr(promo, k, v)
+        db.flush()
+    from app.services import field_change_service
+    field_change_service.diff_and_apply(
+        db, promo, body.model_dump(exclude_unset=True),
+        table="pricing_sku_promo", pk=sku_code,
+        actor=getattr(_, "username", None), row_label=sku.sku or sku.product_code,
+    )
     pricing_calc_service.recompute_promo(promo, sku)
     pricing_calc_service.recompute(sku)
     db.commit()
@@ -894,3 +1237,128 @@ def recompute_all_skus(
         updated += 1
     db.commit()
     return {"updated": updated, "message": f"已重算 {updated} 个 SKU"}
+
+
+# ===========================================================================
+# 定价表自定义列 (EAV) — 用户自建任意列(数值/文本)、可改名, 按 SKU 填值
+# ===========================================================================
+
+class CustomFieldOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    label: str
+    value_kind: str
+    sort_order: int
+
+
+class CustomFieldIn(BaseModel):
+    label: str
+    value_kind: str = "number"   # number | text
+
+
+class CustomFieldPatch(BaseModel):
+    label: Optional[str] = None
+    sort_order: Optional[int] = None
+
+
+class CustomValueIn(BaseModel):
+    value: Optional[Any] = None   # 数值列填数字, 文本列填字符串; None/空清空
+
+
+@formula_router.get("/custom-fields", response_model=list[CustomFieldOut])
+def list_custom_fields(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    return (
+        db.query(PricingCustomField)
+        .order_by(PricingCustomField.sort_order, PricingCustomField.id)
+        .all()
+    )
+
+
+@formula_router.post("/custom-fields", response_model=CustomFieldOut, status_code=201)
+def create_custom_field(
+    body: CustomFieldIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    label = (body.label or "").strip() or "自定义列"
+    kind = body.value_kind if body.value_kind in ("number", "text") else "number"
+    max_order = db.query(func.coalesce(func.max(PricingCustomField.sort_order), 0)).scalar() or 0
+    f = PricingCustomField(label=label, value_kind=kind, sort_order=int(max_order) + 1)
+    db.add(f)
+    db.commit()
+    db.refresh(f)
+    return f
+
+
+@formula_router.patch("/custom-fields/{field_id}", response_model=CustomFieldOut)
+def update_custom_field(
+    field_id: int,
+    body: CustomFieldPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    f = db.get(PricingCustomField, field_id)
+    if not f:
+        raise HTTPException(404, "自定义列不存在")
+    updates = body.model_dump(exclude_unset=True)
+    if "label" in updates and updates["label"]:
+        f.label = updates["label"].strip()
+    if "sort_order" in updates and updates["sort_order"] is not None:
+        f.sort_order = int(updates["sort_order"])
+    db.commit()
+    db.refresh(f)
+    return f
+
+
+@formula_router.delete("/custom-fields/{field_id}")
+def delete_custom_field(
+    field_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    f = db.get(PricingCustomField, field_id)
+    if not f:
+        raise HTTPException(404, "自定义列不存在")
+    n = db.query(PricingCustomValue).filter(PricingCustomValue.field_id == field_id).delete(
+        synchronize_session=False
+    )
+    db.delete(f)
+    db.commit()
+    return {"deleted_field": field_id, "deleted_values": n}
+
+
+@router.patch("/{sku_code}/custom/{field_id}")
+def set_custom_value(
+    sku_code: str,
+    field_id: int,
+    body: CustomValueIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """给某 SKU 在某自定义列上填值 (数值列写 num_value, 文本列写 text_value)。"""
+    fdef = db.get(PricingCustomField, field_id)
+    if not fdef:
+        raise HTTPException(404, "自定义列不存在")
+    cv = (
+        db.query(PricingCustomValue)
+        .filter(PricingCustomValue.sku_code == sku_code, PricingCustomValue.field_id == field_id)
+        .first()
+    )
+    if cv is None:
+        cv = PricingCustomValue(sku_code=sku_code, field_id=field_id)
+        db.add(cv)
+    val = body.value
+    if val in (None, ""):
+        cv.num_value = None
+        cv.text_value = None
+    elif fdef.value_kind == "number":
+        try:
+            cv.num_value = Decimal(str(val))
+        except (InvalidOperation, ValueError):
+            raise HTTPException(422, f"该列为数值列, 无法解析: {val}")
+        cv.text_value = None
+    else:
+        cv.text_value = str(val)
+        cv.num_value = None
+    db.commit()
+    return {"ok": True, "sku_code": sku_code, "field_id": field_id}

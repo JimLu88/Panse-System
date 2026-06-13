@@ -31,6 +31,36 @@ class ProductInventoryPatch(BaseModel):
 router = APIRouter(prefix="/api/inventory/products", tags=["inventory"])
 
 
+@router.get("/forecast-config")
+def get_forecast_config_api(db: Session = Depends(get_db)):
+    """日均销量公式 + 大促时段配置 + 当前大促备货状态。"""
+    from app.services import product_inventory_service as svc
+    return {**svc.get_forecast_config(db), "promo": svc.promo_status(db)}
+
+
+@router.put("/forecast-config")
+def put_forecast_config_api(
+    payload: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """保存公式/大促配置 (留痕修改档案), 下次刷新统计即按新公式。"""
+    from app.services import field_change_service
+    from app.services import product_inventory_service as svc
+    old = svc.get_forecast_config(db)
+    cfg = svc.save_forecast_config(db, payload or {})
+    for k in ("mode", "halflife_days", "window_days", "promo_periods"):
+        field_change_service.record(
+            db, table="system_settings", pk=f"daily_sales_{k}", field=k,
+            old=str(old.get(k)), new=str(cfg.get(k)),
+            actor=getattr(_, "username", None), row_label="销量公式/大促配置",
+            field_label={"mode": "公式模式", "halflife_days": "半衰期(天)",
+                         "window_days": "窗口(天)", "promo_periods": "大促时段"}.get(k),
+        )
+    db.commit()
+    return {**cfg, "promo": svc.promo_status(db)}
+
+
 @router.get("", response_model=list[ProductInventoryWithStats])
 def list_product_inventory(
     warehouse: Optional[str] = None,
@@ -154,27 +184,66 @@ def update_product_inventory(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """盘库调整：修改成品库存数量及参数。"""
+    """盘库调整：修改成品库存数量及参数。(人工编辑 → 统一历史档案)"""
     inv = db.get(ProductInventory, inventory_id)
     if not inv:
         raise HTTPException(404, "inventory row not found")
-    if payload.qty is not None:
-        inv.physical_qty = payload.qty
-    if payload.locked_qty is not None:
-        inv.locked_qty = payload.locked_qty
-    if payload.safety_stock is not None:
-        inv.safety_stock = payload.safety_stock
-    if payload.lead_time_days is not None:
-        inv.lead_time_days = payload.lead_time_days
-    if payload.slow_moving_days is not None:
-        inv.slow_moving_days = payload.slow_moving_days
-    if payload.reorder_point is not None:
-        inv.reorder_point = payload.reorder_point
-    if payload.remark is not None:
-        inv.remark = payload.remark
+    from app.services import field_change_service
+    data = {
+        "physical_qty": payload.qty, "locked_qty": payload.locked_qty,
+        "safety_stock": payload.safety_stock, "lead_time_days": payload.lead_time_days,
+        "slow_moving_days": payload.slow_moving_days, "reorder_point": payload.reorder_point,
+        "remark": payload.remark,
+    }
+    data = {k: v for k, v in data.items() if v is not None}
+    field_change_service.diff_and_apply(
+        db, inv, data, table="product_inventory", pk=inv.id,
+        actor=getattr(_, "username", None),
+        row_label=f"{inv.sku or inv.product_code} @{inv.warehouse}",
+        field_labels={"physical_qty": "现货数量", "locked_qty": "锁定数量",
+                      "safety_stock": "安全库存", "lead_time_days": "提前期(天)",
+                      "slow_moving_days": "滞销阈值(天)", "reorder_point": "预警线"},
+    )
     db.commit()
     db.refresh(inv)
     return inv
+
+
+@router.patch("/by-product/{product_code}", response_model=dict)
+def update_product_inventory_params_by_product(
+    product_code: str,
+    payload: ProductInventoryPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """同产品全部 SKU 一键同步参数 (安全库存/提前期/预警线/滞销阈值)。
+
+    刻意不同步 qty/locked_qty/remark — 各 SKU 数量不同, 批量覆盖数量必然出错。
+    """
+    rows = db.execute(
+        select(ProductInventory).where(ProductInventory.product_code == product_code)
+    ).scalars().all()
+    if not rows:
+        raise HTTPException(404, f"产品 {product_code} 没有库存行")
+    from app.services import field_change_service
+    data = {
+        "safety_stock": payload.safety_stock, "lead_time_days": payload.lead_time_days,
+        "slow_moving_days": payload.slow_moving_days, "reorder_point": payload.reorder_point,
+    }
+    data = {k: v for k, v in data.items() if v is not None}
+    updated = 0
+    for inv in rows:
+        field_change_service.diff_and_apply(
+            db, inv, data, table="product_inventory", pk=inv.id,
+            actor=getattr(_, "username", None),
+            row_label=f"{inv.sku or inv.product_code} @{inv.warehouse} (批量同步)",
+            field_labels={"safety_stock": "安全库存", "lead_time_days": "提前期(天)",
+                          "slow_moving_days": "滞销阈值(天)", "reorder_point": "预警线"},
+        )
+        updated += 1
+    db.commit()
+    return {"product_code": product_code, "updated": updated,
+            "message": f"已同步参数到 {updated} 个 SKU 库存行"}
 
 
 @router.delete("/{inventory_id}", status_code=204)

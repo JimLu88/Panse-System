@@ -927,7 +927,14 @@ function SmartImporter() {
         message.success(`${vars.dryRun ? '试运行' : '导入'} 完成: ${r.reports.length} 个 sheet`);
       }
     },
-    onError: (e: any) => message.error(e?.message ?? e?.response?.data?.detail ?? '失败'),
+    onError: (e: any) => {
+      // 幂等 409 = 同一请求几秒内重复到达被拦 (防双击双写), 不是真失败
+      if (e?.response?.status === 409 && e?.response?.data?.idempotent) {
+        message.info('这次点击与上一次完全相同, 已被防重复机制忽略 — 上一次的结果就是最终结果');
+        return;
+      }
+      message.error(e?.response?.data?.detail ?? e?.message ?? '失败');
+    },
   });
 
   return (
@@ -1418,7 +1425,7 @@ function ConflictReview({ reports, onApplyNew, applying }: {
           }>
       <Alert type="warning" showIcon style={{ marginBottom: 8 }}
              message="以下记录已存在且导入表里的值不同, 默认未覆盖。确认无误可点右上「采用新值」, 否则保持原值不动。" />
-      <Table size="small" rowKey={(_r, i) => String(i)} pagination={{ pageSize: 10 }}
+      <Table size="small" rowKey={(_r, i) => String(i)} pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
              dataSource={rows}
              columns={[
                { title: 'Sheet', dataIndex: 'sheet', width: 140 },

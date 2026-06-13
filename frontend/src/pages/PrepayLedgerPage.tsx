@@ -10,6 +10,7 @@ import {
 import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { PrepayRow, fetchPrepaySummary, importPrepay, listPrepay } from '../api/settlements';
+import PresetTable from '../components/PresetTable';
 
 const CATS = [
   { value: 'refill_commission', label: '补单佣金' },
@@ -78,9 +79,10 @@ export default function PrepayLedgerPage() {
       </Card>
 
       <Card size="small" title={`${CAT_LABEL[category]} 明细`}>
-        <Table<PrepayRow>
+        <PresetTable<PrepayRow>
+          tableKey="prepay_ledger"
           rowKey="id" size="small" loading={isLoading} dataSource={rows}
-          pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 笔` }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (t) => `共 ${t} 笔` }}
           columns={[
             { title: '打款日期', dataIndex: 'pay_date', width: 110, render: (v) => v || '-' },
             { title: '打款流水号', dataIndex: 'pay_no', width: 200, render: (v) => v || '-' },

@@ -3,9 +3,10 @@
  */
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Input, Modal, Select, Segmented, Space, Table, Tag, Typography, message,
+  Alert, Button, Card, Input, Modal, Select, Segmented, Space, Switch, Table, Tag, Typography, message,
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -30,6 +31,8 @@ export default function CustomersPage() {
   const [tier, setTier] = useState<string | undefined>(undefined);
   const [detailId, setDetailId] = useState<number | null>(null);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  // Plan C1: 重算口径开关 — 含/不含历史导入订单
+  const [includeHistorical, setIncludeHistorical] = useState(true);
 
   const { data: customers = [], isLoading } = useQuery({
     queryKey: ['customers', q, tier],
@@ -37,7 +40,7 @@ export default function CustomersPage() {
   });
 
   const aggMut = useMutation({
-    mutationFn: triggerCustomerAggregate,
+    mutationFn: () => triggerCustomerAggregate(includeHistorical),
     onSuccess: () => {
       message.success('客户聚合已重算');
       qc.invalidateQueries({ queryKey: ['customers'] });
@@ -73,6 +76,8 @@ export default function CustomersPage() {
                     allowClear value={tier} onChange={setTier}
                     style={{ width: 120 }}
                     options={Object.entries(TIER_LABEL).map(([v, l]) => ({ value: v, label: l }))} />
+            <Switch checkedChildren="含历史客户" unCheckedChildren="不含历史"
+                    checked={includeHistorical} onChange={setIncludeHistorical} />
             <Button icon={<ReloadOutlined />} loading={aggMut.isPending}
                     onClick={() => aggMut.mutate()}>
               重算聚合
@@ -80,10 +85,11 @@ export default function CustomersPage() {
           </Space>
         }
       >
-        <Table<CustomerItem>
+        <PresetTable<CustomerItem>
+          tableKey="customer"
           size="small" loading={isLoading} rowKey="id"
           dataSource={customers}
-          pagination={{ pageSize: 30 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 60 },
             { title: '客户', dataIndex: 'name', width: 120 },
@@ -139,7 +145,7 @@ function CustomerOrdersModal({ customerId, onClose }: {
            onCancel={onClose} footer={null} width={900}>
       <Table size="small" rowKey="id"
              dataSource={orders}
-             pagination={{ pageSize: 15 }}
+             pagination={{ defaultPageSize: 15, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
              columns={[
                { title: '订单号', dataIndex: 'order_no', width: 180 },
                { title: '日期', dataIndex: 'order_date', width: 120 },

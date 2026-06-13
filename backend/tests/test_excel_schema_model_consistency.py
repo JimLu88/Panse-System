@@ -87,7 +87,8 @@ def test_every_schema_entity_is_importable_or_special():
 
     防止新增实体时忘了在 importer 里挂 handler → 导入时报 '暂不支持'。
     """
-    special = {"delivery_note", "alipay_flow", "factory_order", "account_balance"}
+    special = {"delivery_note", "alipay_flow", "factory_order", "account_balance",
+               "wanshifu_bill"}
     known = set(_ENTITY_MODEL) | special
     missing = [e for e in ENTITY_SCHEMAS if e not in known]
     assert not missing, f"这些 schema 实体没有对应入库 handler 映射, 会导入失败: {missing}"

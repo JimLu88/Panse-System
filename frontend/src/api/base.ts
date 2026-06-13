@@ -77,6 +77,11 @@ api.interceptors.response.use(
       }
       window.dispatchEvent(new Event('panse:unauthorized'));
     }
+    // 幂等 409: 同请求几秒内重复到达被防重复机制拦下 — 把英文 axios 报错换成后端中文说明,
+    // 这样不管页面显示 e.message 还是 detail, 用户看到的都是人话而非 "status code 409"。
+    if (err?.response?.status === 409 && err?.response?.data?.idempotent) {
+      err.message = err.response.data.detail || '重复提交已忽略 (防双击)';
+    }
     // 错误关联 (优化 #8): 记下后端请求 ID, 前后端日志可对上号 (后端请求日志已带同一 ID)
     const rid = err?.response?.headers?.['x-request-id'];
     if (rid) {

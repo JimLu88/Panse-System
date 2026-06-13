@@ -9,6 +9,7 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import { RankPeriod, RankRow, fetchSalesRanking } from '../api/reports';
+import PresetTable from '../components/PresetTable';
 
 const yuan = (v: number) => `¥${Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 const medal = (r: number) => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `#${r}`);
@@ -120,7 +121,8 @@ export default function SalesRankingPage() {
       <Row gutter={12}>
         <Col span={14}>
           <Card size="small" title={`${sel ?? ''} 产品排行 (Top 30)`}>
-            <Table<RankRow>
+            <PresetTable<RankRow>
+              tableKey="sales_ranking"
               rowKey="rank" size="small" loading={isLoading}
               dataSource={data?.ranking ?? []} pagination={false}
               scroll={{ y: 520 }}

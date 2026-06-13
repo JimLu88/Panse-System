@@ -281,8 +281,12 @@ def scan_alipay_balance_gap(db: Session) -> int:
     """
     from decimal import Decimal
     count = 0
+    # 用户拍板 (2026-06-11): 爱群号曾混用私人支出, 流水天然不连续 → 永久豁免不报
+    EXEMPT_KW = ("爱群",)
     accounts = [a[0] for a in db.query(AlipayFlow.account).distinct().all()]
     for account in accounts:
+        if account and any(k in account for k in EXEMPT_KW):
+            continue
         rows = (
             db.query(AlipayFlow)
             .filter(AlipayFlow.account == account, AlipayFlow.balance.isnot(None))
@@ -504,6 +508,45 @@ def scan_unclassified_purchase(db: Session) -> int:
     return count
 
 
+# 明显不是配件采购的"财务噪音"关键词 (支付宝流水被误建成采购记录)
+_MISCLASS_KEYWORDS = (
+    "理财", "申购", "赎回", "利息", "收益", "转入", "转出", "转账", "还款", "借款",
+    "提现", "充值", "红包", "服务费", "保证金", "消费者",
+)
+
+
+def scan_misclassified_purchase(db: Session) -> int:
+    """配件采购里混进的财务噪音(理财申购/单次转入/服务费/保证金…) → 异常, 提示重新归类。
+
+    这些是支付宝流水被误当成"配件采购"建进来的: 既不是配件, 也会污染采购统计。
+    归类建议: 理财/转入/转账 → 其它/忽略; 消费者体验提升计划服务费 → 平台费/经营支出;
+    消费者保证金充值 → 平台保证金。
+    """
+    count = 0
+    for r in db.query(PartPurchase).all():
+        name = f"{r.material_name or ''}{r.supplier or ''}"
+        hit = next((kw for kw in _MISCLASS_KEYWORDS if kw in name), None)
+        if not hit:
+            continue
+        nm = (r.material_name or r.supplier or "")[:40]   # material_name 可能很长, 截断
+        _record(
+            db,
+            source_table="part_purchases",
+            source_pk=r.id,
+            exception_type="misclassified_purchase",
+            severity="warning",
+            description=(f"采购记录 {r.purchase_no}「{nm}」(¥{r.amount}) 含「{hit}」, "
+                         f"疑似财务流水(理财/转账/服务费/保证金)被误归成配件采购。"
+                         f"建议: 理财/转入→其它; 服务费→平台费/经营; 保证金→平台保证金。"),
+            suggestion_action="疑似财务流水误入配件采购，请改归类或删除。",   # 列宽仅 64
+            context={"id": r.id, "purchase_no": r.purchase_no, "name": nm,
+                     "supplier": r.supplier, "amount": str(r.amount), "matched": hit},
+        )
+        count += 1
+    _log.info("scan_misclassified_purchase: %d", count)
+    return count
+
+
 def scan_alipay_duplicate_flow(db: Session) -> int:
     """支付宝重复流水检测 (智能判重)。
 
@@ -720,6 +763,33 @@ def scan_material_placeholder(db: Session) -> int:
     return count
 
 
+def scan_product_missing_taobao_ids(db: Session) -> int:
+    """产品缺 淘宝商品ID / SKU ID → 异常 (用户要求: 对应关系直接维护在产品表上)。"""
+    from app.models.product import Product
+    count = 0
+    for p in db.query(Product).all():
+        missing = []
+        if not (p.taobao_id or "").strip():
+            missing.append("淘宝商品ID")
+        if not (p.taobao_sku_id or "").strip():
+            missing.append("淘宝SKU ID")
+        if not missing:
+            continue
+        _record(
+            db,
+            source_table="products",
+            source_pk=p.code,
+            exception_type="missing_taobao_mapping",
+            severity="warning",
+            description=f"产品 {p.code} {p.name} 缺 {'/'.join(missing)}, 订单将无法按对应表自动回填编码。",
+            suggestion_action="到产品页编辑补填; 或导入淘宝宝贝导出表自动回填。",
+            context={"product_code": p.code, "missing": missing},
+        )
+        count += 1
+    _log.info("scan_product_missing_taobao_ids: %d", count)
+    return count
+
+
 def run_all(db: Session) -> dict[str, int]:
     results: dict[str, int] = {}
     scanners = [
@@ -733,6 +803,7 @@ def run_all(db: Session) -> dict[str, int]:
         ("factory_recon_incomplete", scan_factory_recon_incomplete),
         ("factory_recon_unbalanced", scan_factory_recon_unbalanced),
         ("unclassified_purchase", scan_unclassified_purchase),
+        ("misclassified_purchase", scan_misclassified_purchase),
         ("outsourcing_missing", scan_outsourcing_missing),
         ("aftersales_empty", scan_aftersales_empty),
         ("alipay_balance_gap", scan_alipay_balance_gap),
@@ -744,6 +815,7 @@ def run_all(db: Session) -> dict[str, int]:
         ("bom_product_collision", scan_bom_product_collision),
         ("material_name_conflict", scan_material_name_conflict),
         ("material_placeholder", scan_material_placeholder),
+        ("product_missing_taobao_ids", scan_product_missing_taobao_ids),
     ]
     for name, fn in scanners:
         try:

@@ -89,6 +89,11 @@ class Order(Base, TimestampMixin):
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
+    # 平台备注 (用户拍板 2026-06-11): 买家留言/商家备注随淘宝重导覆盖更新;
+    # remark 保留为 ERP 人工备注, 重导永不碰。
+    buyer_message: Mapped[Optional[str]] = mapped_column(Text)   # 买家留言 (平台)
+    seller_memo: Mapped[Optional[str]] = mapped_column(Text)     # 商家备注/卖家备注 (平台)
+
     # 发货仓库 — 默认江西仓库; 样块 / 补单订单统一杭州 (导入时由 default_warehouse_for 自动判定)
     warehouse: Mapped[Optional[str]] = mapped_column(String(32))
     # 表 5-订单总表 字段补全 (Excel 导入)
@@ -109,6 +114,12 @@ class Order(Base, TimestampMixin):
     signoff_questioned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     # 看板人工拖拽"确定"标记 (区分人工已确定 vs 导入/同步自动归类)
     kanban_confirmed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+
+    # 工厂制作单视图: 手动发货截止(覆盖默认30天倒扣) + 卡片备注(红色醒目)
+    ship_deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    production_note: Mapped[Optional[str]] = mapped_column(Text)
+    # 远期单: 等客户通知再发货, 工厂制作单里单独归类(不按30天倒扣紧急度)
+    is_remote_ship: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

@@ -10,6 +10,7 @@ export interface ImportedFileRow {
   row_summary: Record<string, unknown> | null;
   uploaded_by: string | null;
   created_at: string | null;
+  folder: string | null;   // 主机(PC)上的归档文件夹路径, 供「打开文件夹」展示/复制
 }
 
 export interface ImportedFileList {
@@ -20,6 +21,7 @@ export interface ImportedFileList {
 export interface ImportedFileSummary {
   total: number;
   by_kind: Record<string, number>;
+  imports_root?: string | null;   // 归档根目录(主机路径)
 }
 
 export const fetchImportFiles = (params: { kind?: string; month?: string; limit?: number; offset?: number }) =>

@@ -549,8 +549,16 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         m.last_sync_at = datetime.now(timezone.utc)
         res.pushed += 1
     elif fe_changed and can_pull:
+        # 飞书侧人工修改拉回 → 统一编辑历史档案 (来源标"飞书修改")
+        from app.services import field_change_service
         for f, v in fe_vals.items():
-            setattr(sys_row, f, _coerce_for_model(ent.model, f, v))
+            new_val = _coerce_for_model(ent.model, f, v)
+            field_change_service.record(
+                db, table=ent.model.__tablename__, pk=pk, field=f,
+                old=getattr(sys_row, f, None), new=new_val,
+                actor="飞书同步", source="feishu",
+            )
+            setattr(sys_row, f, new_val)
         m.feishu_hash = fe_hash
         m.system_hash = fe_hash
         m.last_sync_at = datetime.now(timezone.utc)

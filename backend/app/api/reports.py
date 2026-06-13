@@ -7,7 +7,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import not_, or_, select
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func
@@ -148,11 +148,12 @@ def _dec(d) -> float:
 def sales_summary(
     period: str = Query("30d", description="7d / 30d / month / year"),
     platform: Optional[str] = None,
+    brand: Optional[str] = Query(None, description="PS / PFG 品牌过滤 (Plan F8)"),
     db: Session = Depends(get_db),
 ):
     """业务需求 15: 店铺销售汇总 (销售额/成本/毛利/净利 + 利润排行 Top 10)."""
     start, end = _range_for(period)
-    s = sales_analytics.summary(db, start=start, end=end, platform=platform)
+    s = sales_analytics.summary(db, start=start, end=end, platform=platform, brand=brand)
     def _ser(rows):
         return [
             {k: (_dec(v) if isinstance(v, Decimal) else v) for k, v in r.items()}
@@ -171,11 +172,12 @@ def sales_summary(
 @router.get("/sales/breakdown")
 def sales_breakdown(
     period: str = Query("30d"),
+    brand: Optional[str] = Query(None, description="PS / PFG 品牌过滤 (Plan F8)"),
     db: Session = Depends(get_db),
 ):
     """业务需求 16: 分产品 SKU 销售明细."""
     start, end = _range_for(period)
-    rows = sales_analytics.product_breakdown(db, start=start, end=end)
+    rows = sales_analytics.product_breakdown(db, start=start, end=end, brand=brand)
     out = []
     for r in rows:
         d = {}
@@ -343,7 +345,6 @@ def operating_analysis(
         func.coalesce(func.sum(Order.platform_fee), 0),
     ).where(
         Order.order_date >= start, Order.order_date <= end,
-        Order.is_historical == False,  # noqa: E712
     )
     if platform:
         fee_q = fee_q.where(Order.platform == platform)
@@ -484,6 +485,29 @@ def unmatched_flows(days: int = 7, db: Session = Depends(get_db)):
     return {"days": days, "rows": asset_service.unmatched_recent_flows(db, days=days)}
 
 
+@router.get("/assets/diff-drilldown")
+def assets_diff_drilldown(db: Session = Depends(get_db)):
+    """Plan L6: 两口径资金差额下钻 — 每个科目的构成明细 TopN."""
+    return asset_service.diff_drilldown(db)
+
+
+@router.get("/sales-by-brand")
+def sales_by_brand(
+    period: str = Query("30d", description="7d / 30d / month / year"),
+    db: Session = Depends(get_db),
+):
+    """Plan F8: 按品牌 (PS 畔色 / PFG 孚格) 汇总销售额/净利/单量."""
+    start, end = _range_for(period)
+    out = []
+    for b in ("PS", "PFG"):
+        s = sales_analytics.summary(db, start=start, end=end, brand=b)
+        out.append({
+            "brand": b, "order_count": s.order_count,
+            "revenue": _dec(s.revenue), "net_profit": _dec(s.net_profit),
+        })
+    return {"period": period, "brands": out}
+
+
 @router.get("/unmatched-flows/classify")
 def classify_unmatched(days: int = 7, limit: int = 50,
                        db: Session = Depends(get_db)):
@@ -540,10 +564,16 @@ def _business_month(db: Session, year: int, month: int) -> dict:
             stmt = stmt.where(w)
         return int(db.execute(stmt).scalar() or 0)
 
+    # 不再按 is_historical 过滤: 日常导入的订单大多被标了 is_historical=True, 若过滤会把绝大多数
+    # 真实订单漏掉(出现"某月 0 单"的怪数)。报表本就从 2026 起, 直接按下单日统计全部真实订单。
+    # 排除"已取消/交易关闭"的单(不算真实成交)。
+    _not_cancelled = not_(or_(
+        Order.status.ilike("%取消%"), Order.status.ilike("%关闭%"), Order.status == "cancelled",
+    ))
     base = [
         Order.order_date >= start,
         Order.order_date <= end,
-        Order.is_historical == False,  # noqa: E712
+        _not_cancelled,
     ]
 
     # 订单
@@ -556,6 +586,7 @@ def _business_month(db: Session, year: int, month: int) -> dict:
     # 支出
     promo = float(db.execute(
         select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+            PromotionFlow.flow_type == "支出",   # 只算推广"支出"; 不能把"收入/充值"也加进推广费(否则翻倍)
             PromotionFlow.transaction_date >= start, PromotionFlow.transaction_date <= end,
         )
     ).scalar() or 0)
@@ -587,14 +618,15 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         )
     ).scalar() or 0)
 
-    total_revenue = real_revenue + refill_revenue
+    # 主口径 = 正式销售额 (剔除补单, 用户拍板 2026-06-12); refill_revenue 仅作"未计入"注释
+    total_revenue = real_revenue + refill_revenue   # 总流水 (含补单, 仅参考)
     total_expense = factory_bill + promo + aftersales_comp + outsourcing + platform_fee
-    net_profit = total_revenue - total_expense
+    net_profit = real_revenue - total_expense
     total_orders = real_count + refill_count
 
     refill_ratio = round(refill_count / total_orders * 100, 1) if total_orders else 0.0
     refill_cost_ratio = round(refill_revenue / total_revenue * 100, 1) if total_revenue else 0.0
-    promo_ratio = round(promo / total_revenue * 100, 1) if total_revenue else 0.0
+    promo_ratio = round(promo / real_revenue * 100, 1) if real_revenue else 0.0
     aftersales_rate = round(aftersales_count / real_count * 100, 1) if real_count else 0.0
     lead_time_days = None
     lt_rows = db.execute(
@@ -631,7 +663,7 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         "platform_fee": round(platform_fee, 2),
         "total_expense": round(total_expense, 2),
         "net_profit": round(net_profit, 2),
-        "net_profit_rate": round(net_profit / total_revenue * 100, 1) if total_revenue else 0.0,
+        "net_profit_rate": round(net_profit / real_revenue * 100, 1) if real_revenue else 0.0,
         "avg_lead_time_days": lead_time_days,
     }
 

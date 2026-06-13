@@ -23,11 +23,50 @@ def list_materials(
 ):
     stmt = select(Material)
     if q:
-        stmt = stmt.where(or_(Material.code.ilike(f"%{q}%"), Material.name.ilike(f"%{q}%")))
+        # 全站统一模糊搜索: 空格分词 + 物料名字符间隙
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[Material.code, Material.name],
+                          gap_cols=[Material.name])
+        if fc is not None:
+            stmt = stmt.where(fc)
     if is_custom is not None:
         stmt = stmt.where(Material.is_custom == is_custom)
     stmt = stmt.order_by(Material.code).limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
+
+
+class MaterialUsedInOut(BaseModel):
+    product_code: str
+    product_name: Optional[str] = None
+    qty_per_product: float
+    sku_count: int
+
+
+@router.get("/{code}/used-in-products", response_model=list[MaterialUsedInOut])
+def material_used_in_products(code: str, db: Session = Depends(get_db)):
+    """物料反推产品 (BOM 反查): 列出 BOM 里用到该物料的产品 + 单产品用量 + 涉及 SKU 数。"""
+    from app.models.bom import BomLine
+    rows = db.execute(
+        select(BomLine.product_code, BomLine.product_name, BomLine.qty_per_product, BomLine.sku_code)
+        .where(BomLine.material_code == code)
+    ).all()
+    agg: dict[str, dict] = {}
+    for pc, pname, qty, skuc in rows:
+        e = agg.setdefault(pc, {"product_code": pc, "product_name": pname, "qty": 0.0, "skus": set()})
+        if pname and not e["product_name"]:
+            e["product_name"] = pname
+        e["qty"] = max(e["qty"], float(qty or 0))
+        if skuc:
+            e["skus"].add(skuc)
+    out = [
+        MaterialUsedInOut(
+            product_code=e["product_code"], product_name=e["product_name"],
+            qty_per_product=e["qty"], sku_count=len(e["skus"]),
+        )
+        for e in agg.values()
+    ]
+    out.sort(key=lambda x: x.product_code)
+    return out
 
 
 class NextCodeOut(BaseModel):
@@ -79,8 +118,19 @@ def update_material(material_id: int, payload: MaterialUpdate, db: Session = Dep
     mat = db.get(Material, material_id)
     if not mat:
         raise HTTPException(404, "material not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(mat, k, v)
+    data = payload.model_dump(exclude_unset=True)
+    price_changed = "price" in data and data["price"] != mat.price
+    # 人工编辑 → 统一历史档案 (本路由无登录依赖, actor 记空, 来源 web)
+    from app.services import field_change_service
+    field_change_service.diff_and_apply(
+        db, mat, data, table="materials", pk=mat.code,
+        row_label=mat.name,
+        field_labels={"price": "单价", "name": "名称", "unit": "单位",
+                      "lead_time_days": "提前期(天)", "safety_stock": "安全库存"},
+    )
+    # BOM漂移检查已停用 (用户拍板 2026-06-12): BOM 单价只用于预估/定制报价,
+    # 不与批量定价对照, 物料改价不再触发 stale 标记/异常。
+    _ = price_changed
     db.commit()
     db.refresh(mat)
     return mat

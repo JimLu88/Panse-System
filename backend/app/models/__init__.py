@@ -1,5 +1,9 @@
 from app.models.base import Base
 from app.models.material import Material
+from app.models.pricing_formula import PricingFormulaRule  # noqa: F401 - 注册进 metadata, SQLite 测试库才建表 (Plan C2)
+from app.models.campaign_signup import CampaignSignupPrice  # noqa: F401 - 活动报名价 (Plan F1)
+from app.models.field_change import FieldChange  # noqa: F401 - 人工编辑历史档案 (方向2+4)
+from app.models.disassembly_log import DisassemblyLog  # noqa: F401 - 拆BOM历史+回撤
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.product import Product
 from app.models.bom import BomLine
@@ -12,6 +16,7 @@ from app.models.finance import (
     LogisticsBill,
     RefillRecord,
     WanshifuBill,
+    WanshifuOrder,
 )
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.shipment import Shipment
@@ -55,6 +60,7 @@ from app.models.marketing import (
 )
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+from app.models.pricing_custom import PricingCustomField, PricingCustomValue
 from app.models.price_change import PriceChangeLog
 from app.models.taobao_listing import TaobaoListing
 
@@ -72,6 +78,8 @@ __all__ = [
     "PricingSku",
     "PricingSkuCosts",
     "PricingSkuPromo",
+    "PricingCustomField",
+    "PricingCustomValue",
     "Order",
     "FactoryOrder",
     "PartPurchase",
@@ -80,6 +88,7 @@ __all__ = [
     "RefillRecord",
     "FactoryReconciliation",
     "WanshifuBill",
+    "WanshifuOrder",
     "LogisticsBill",
     "AiChatLog",
     "AiCodePatch",

@@ -43,6 +43,7 @@ class RankedProductOut(BaseModel):
 def list_products(
     q: Optional[str] = Query(None),
     brand: Optional[str] = None,
+    category: Optional[str] = Query(None, description="按类目精确筛"),
     sort: Optional[str] = Query(None, description="recent=按最近更新倒序 (新产品录入参考下拉用)"),
     limit: int = Query(200, le=1000),
     offset: int = 0,
@@ -50,15 +51,44 @@ def list_products(
 ):
     stmt = select(Product)
     if q:
-        stmt = stmt.where(or_(Product.code.ilike(f"%{q}%"), Product.name.ilike(f"%{q}%")))
+        # 全站统一模糊搜索: 「榉木餐桌」也能搜到「榉木岩板餐桌」(规则见 fuzzy_search)
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[Product.code, Product.name, Product.sub_name],
+                          gap_cols=[Product.name, Product.sub_name])
+        if fc is not None:
+            stmt = stmt.where(fc)
     if brand:
         stmt = stmt.where(Product.brand == brand)
+    if category:
+        stmt = stmt.where(Product.category == category)
     if sort == "recent":
         stmt = stmt.order_by(Product.updated_at.desc())
     else:
         stmt = stmt.order_by(Product.code)
     stmt = stmt.limit(limit).offset(offset)
-    return db.execute(stmt).scalars().all()
+    rows = db.execute(stmt).scalars().all()
+    # 产品行图片图库优先 (用户拍板 2026-06-12: 图片显示全部图库优先)。
+    # 只注入显示字段, 不改 image_url 数据; 图库根目录整批只扫一次。
+    from app.services.gallery_lookup import main_image_url_map
+    gallery_urls = main_image_url_map([r.code for r in rows])
+    out = []
+    for r in rows:
+        base = ProductOut.model_validate(r)
+        base.gallery_image_url = gallery_urls.get(r.code)
+        out.append(base)
+    return out
+
+
+@router.get("/categories", response_model=list[str])
+def list_categories(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """所有出现过的产品类目 (去重排序) — 产品/BOM/定价 三处按类目筛的下拉数据源。"""
+    rows = db.execute(
+        select(Product.category)
+        .where(Product.category.isnot(None), Product.category != "")
+        .distinct()
+        .order_by(Product.category)
+    ).scalars().all()
+    return [c for c in rows if c]
 
 
 @router.post("", response_model=ProductOut, status_code=201)
@@ -88,13 +118,28 @@ def create_product(payload: ProductCreate, db: Session = Depends(get_db)):
     return prod
 
 
+_PRODUCT_FIELD_LABELS = {
+    "name": "产品名称", "sub_name": "副名称", "brand": "品牌", "category": "类目",
+    "priority": "重要程度", "remark": "备注", "main_material": "主材", "aux_material": "辅材",
+    "size_detail": "尺寸明细", "size_value": "尺寸值", "custom_scope": "定制范围",
+    "accessory_desc": "外配件说明", "accessory_remark": "配件备注", "description": "产品文案",
+    "listing_status": "上架状态",
+}
+
+
 @router.patch("/{product_id}", response_model=ProductOut)
 def update_product(product_id: int, payload: ProductUpdate, db: Session = Depends(get_db)):
+    """编辑产品 (图4): 改动逐字段记修改档案 (table=products, 字段级保留最近30份, 可悬浮回看)。
+    产品主数据为单一来源, 保存后该产品所有 SKU / 订单的下单图/核算自动用新值。"""
+    from app.services import field_change_service
     prod = db.get(Product, product_id)
     if not prod:
         raise HTTPException(404, "product not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(prod, k, v)
+    field_change_service.diff_and_apply(
+        db, prod, payload.model_dump(exclude_unset=True),
+        table="products", pk=prod.code, actor="产品编辑", source="web",
+        row_label=(prod.name or prod.code)[:40], field_labels=_PRODUCT_FIELD_LABELS,
+    )
     db.commit()
     db.refresh(prod)
     return prod
@@ -178,13 +223,21 @@ def list_product_skus(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """产品主数据中心: 展开 SKU 列表."""
+    """产品主数据中心: 展开 SKU 列表 (SKU 图片图库优先, 用户拍板 2026-06-12)."""
     rows = db.execute(
         select(PricingSku)
         .where(PricingSku.product_code == product_code)
         .order_by(PricingSku.sku_code)
     ).scalars().all()
-    return [PricingSkuOut.model_validate(r) for r in rows]
+    from app.services.gallery_lookup import sku_gallery_url_map
+    gallery_urls = sku_gallery_url_map(
+        [(r.product_code, r.sku_code, r.sku) for r in rows])
+    out = []
+    for r in rows:
+        base = PricingSkuOut.model_validate(r).model_dump()
+        base["gallery_image_url"] = gallery_urls.get(r.sku_code)
+        out.append(PricingSkuOut.model_validate(base))
+    return out
 
 
 @router.get("/lookup-by-taobao-id/{taobao_id}", response_model=ProductOut)

@@ -43,6 +43,7 @@ import {
   WarningOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import OpsToolsPage from './OpsToolsPage';   // 运维工具 (2026-06-12) 并入管理 → 作为标签页
 import {
   AuditLog,
   HealthLog,
@@ -119,6 +120,7 @@ export default function AdminPage() {
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
           { key: 'runtime-logs', label: <Space><WarningOutlined />运行日志 / 错误排查</Space>, children: <RuntimeLogsTab /> },
           { key: 'data-reset', label: <Space><DeleteOutlined />数据管理</Space>, children: <DataResetTab /> },
+          { key: 'ops-tools', label: '运维工具', children: <OpsToolsPage /> },
         ]}
       />
     </Space>
@@ -338,7 +340,7 @@ function AuditTab() {
       loading={isLoading}
       dataSource={data}
       size="small"
-      pagination={{ pageSize: 30 }}
+      pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
       columns={[
         {
           title: '时间',
@@ -467,7 +469,7 @@ function RuntimeLogsTab() {
         loading={isLoading}
         dataSource={data}
         size="small"
-        pagination={{ pageSize: 50 }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         columns={[
           { title: '时间', dataIndex: 'ts', width: 160, render: (v: string) => <span style={{ fontSize: 12 }}>{v}</span> },
           {
@@ -1152,7 +1154,7 @@ function MonitorTab() {
           size="small"
           rowKey="id"
           dataSource={logs ?? []}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             {
               title: '时间',
@@ -1306,7 +1308,7 @@ function SystemEventsCard() {
           size="small"
           rowKey="id"
           dataSource={events}
-          pagination={{ pageSize: 10 }}
+          pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             {
               title: '时间',
@@ -1516,7 +1518,7 @@ function SchedulerTab() {
       <Card size="small" title="最近执行记录">
         <Table<SchedulerRun>
           size="small" rowKey="id" dataSource={runs}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '时间', dataIndex: 'started_at', width: 170,
               render: (v: string) => v ? new Date(v).toLocaleString('zh-CN') : '-',

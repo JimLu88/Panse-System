@@ -85,6 +85,55 @@ def recompute_month(
     return row
 
 
+def derive_opening_balance(db: Session, *, account: str, target_date: date) -> dict:
+    """Plan F10: 期初余额倒推工具。
+
+    取 as_of_date >= target_date 的最近余额快照, 减去 (target_date, as_of_date] 区间的
+    Σ AlipayFlow.amount (带符号) → 推出 target_date 当日的期初余额。
+    顺带报告区间内"无流水天数" gaps (可能是漏导入, 提醒核对)。
+    """
+    snap = db.execute(
+        select(AccountBalance).where(
+            AccountBalance.account_name == account,
+            AccountBalance.as_of_date.isnot(None),
+            AccountBalance.as_of_date >= target_date,
+        ).order_by(AccountBalance.as_of_date.asc()).limit(1)
+    ).scalar_one_or_none()
+    if snap is None:
+        return {"ok": False,
+                "message": f"{account} 在 {target_date} 之后没有带统计日期的余额快照, 无法倒推"}
+    rows = db.execute(
+        select(AlipayFlow.transaction_time, AlipayFlow.amount).where(
+            AlipayFlow.account == account,
+            AlipayFlow.transaction_time.isnot(None),
+        )
+    ).all()
+    net = Decimal("0")
+    flow_days: set[date] = set()
+    for t, amt in rows:
+        d = t.date()
+        if target_date < d <= snap.as_of_date:
+            net += Decimal(amt or 0)
+            flow_days.add(d)
+    span_days = (snap.as_of_date - target_date).days
+    gaps = max(0, span_days - len(flow_days))
+    derived = (Decimal(snap.closing_balance or 0) - net).quantize(Decimal("0.01"))
+    return {
+        "ok": True,
+        "account": account,
+        "target_date": target_date.isoformat(),
+        "snapshot_date": snap.as_of_date.isoformat(),
+        "snapshot_balance": float(snap.closing_balance or 0),
+        "interval_net_flow": float(net),
+        "derived_balance": float(derived),
+        "span_days": span_days,
+        "days_with_flows": len(flow_days),
+        "gap_days": gaps,
+        "hint": (f"区间 {span_days} 天里有 {gaps} 天没有任何流水"
+                 + (", 若该账户日常有交易, 可能漏导入, 结果仅供参考" if gaps > max(1, span_days) // 2 else "")),
+    }
+
+
 def insert_opening_adjustment(
     db: Session,
     *,

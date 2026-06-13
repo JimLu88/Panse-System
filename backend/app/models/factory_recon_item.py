@@ -39,4 +39,10 @@ class FactoryReconItem(Base, TimestampMixin):
     resolved_by: Mapped[Optional[str]] = mapped_column(String(64))
     resolved_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
+    # Plan L5 差异处置闭环: 拆分(子行指向原行) + 归因分类 + 正式确认
+    parent_item_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    resolution_kind: Mapped[Optional[str]] = mapped_column(String(16))  # 漏单/价差/运费/补偿/其他
+    confirmed_by: Mapped[Optional[str]] = mapped_column(String(64))
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     source: Mapped[str] = mapped_column(String(16), default="import", nullable=False)

@@ -38,6 +38,9 @@ class OrderStatusChange(BaseModel):
     actor: Optional[str] = None
     force: bool = False
     confirmed: bool = False   # 看板人工拖拽 → 标记该单为"已确定"(人工敲定)
+    # Plan F2: 取消带活跃工厂单的订单时必须二选一 — future=转远期单 / release=纯释放库存
+    disposition: Optional[str] = None          # "future" | "release"
+    planned_ship_date: Optional[date] = None   # disposition=future 时必填 (预计发货日)
 
 
 class OrderOut(BaseModel):
@@ -45,6 +48,8 @@ class OrderOut(BaseModel):
     id: int
     platform: str
     order_no: str
+    # 内部产品名 (产品总表), 列表端点回填; 订单自带 product_name 是淘宝标题不直观
+    internal_product_name: Optional[str] = None
     is_refill: bool
     order_date: Optional[date]
     ship_date: Optional[date]
@@ -55,6 +60,10 @@ class OrderOut(BaseModel):
     is_custom: bool
     qty: int
     status: str
+    # 派生展示状态: 有未完成售后(AfterSales 非「已完成」)的订单显示为 aftersales,
+    # 不改底层 status(保留 shipped/signed 生命周期)。看板/筛选按此归"售后中"(2026-06-12)。
+    display_status: Optional[str] = None
+    has_active_aftersales: bool = False
     carrier: Optional[str]
     tracking_no: Optional[str]
     paid_amount: Optional[Decimal]

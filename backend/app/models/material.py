@@ -47,6 +47,9 @@ class Material(Base, TimestampMixin):
     width_mm: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
     height_mm: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2))
 
+    # Plan C3 防串料: 定制件记录它从哪个基础物料派生 (复用判定按它精确对照)
+    base_material_code: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+
     __table_args__ = (
         Index("ix_materials_name_unique", "name", unique=True),
     )

@@ -1,14 +1,14 @@
-import { useEffect, useRef, useState, type Key } from 'react';
+import { useEffect, useRef, useState, type Key, type ReactNode } from 'react';
 import {
   Button,
   Card,
-  Checkbox,
   Dropdown,
   Form,
   Image,
   Input,
   InputNumber,
   Modal,
+  Popover,
   Segmented,
   Select,
   Space,
@@ -18,25 +18,109 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import FullColumnView from '../components/FullColumnView';
+import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
+import ProductThumb from '../components/ProductThumb';
+import PricingEditorModal from '../components/PricingEditorModal';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
+  PricingFormulaRule,
   createPricingSku,
   downloadPricingTemplate,
   listPricingSkus,
   listPricingTemplates,
+  listProductCategories,
+  listFormulaRules,
+  recomputeAllPricing,
   updatePricingSku,
+  updateFormulaRule,
+  upsertSkuCosts,
+  upsertSkuPromo,
   listTaobaoExportTypes,
   downloadTaobaoExport,
+  getCoefficientStats,
+  runPromoPriceCheck,
+  type CoefficientStat,
 } from '../api/client';
 
-const PAGE_SIZE = 50;
-
+// 表格金额统一口径: 无小数(四舍五入) + ¥ 前缀; 悬浮公式里保留两位看精确值
 function money(v: number | null) {
-  return v === null || v === undefined ? '-' : `¥${Number(v).toLocaleString()}`;
+  return v === null || v === undefined ? '-' : `¥${Math.round(Number(v)).toLocaleString()}`;
 }
+const num = (v: unknown): number | null =>
+  v === null || v === undefined || v === '' ? null : Number(v);
+const str = (v: unknown): string | null =>
+  v === null || v === undefined ? null : String(v);
+
+// ── 字段元数据: 配件成本(22) / 文本配件 / 活动价(淘宝+小红书) ──
+const ACCESSORY_FIELDS: { key: string; label: string }[] = [
+  { key: 'rock_slab', label: '岩板' }, { key: 'drawer_rail', label: '抽屉轨道' }, { key: 'led_strip', label: '灯带' },
+  { key: 'glass', label: '玻璃' }, { key: 'electric_rail', label: '电力轨道' }, { key: 'packing_sheet', label: '打包纸片' },
+  { key: 'iron_pin', label: '铁销' }, { key: 'connector', label: '连接片' }, { key: 'aluminum_rail', label: '铝合金轨道' },
+  { key: 'plastic_rail', label: '塑料轨道' }, { key: 'mini_handle', label: 'mini把手' }, { key: 'nail_free_glue', label: '免钉胶' },
+  { key: 'engraving', label: '雕刻' }, { key: 'acrylic_strip', label: '亚克力条' }, { key: 'embedded_sleeve', label: '预埋套杆' },
+  { key: 'cable_mgmt', label: '理线架+插排' }, { key: 'back_panel', label: '背板' }, { key: 'stainless_trim', label: '装饰条(不锈钢)' },
+  { key: 'leg', label: '腿部' }, { key: 'soft_pack', label: '软包' }, { key: 'bed_board', label: '床铺板' }, { key: 'other_cost', label: '其他配件' },
+];
+const ACCESSORY_TEXT_FIELDS: { key: string; label: string }[] = [
+  { key: 'other_desc', label: '外配件说明' }, { key: 'parts_remark', label: '配件备注' },
+];
+type PromoField = { key: string; label: string; kind: 'num' | 'text'; editable: boolean };
+const PROMO_FIELDS: PromoField[] = [
+  { key: 'taobao_item_id', label: '淘宝商品ID', kind: 'text', editable: true },
+  { key: 'taobao_sku_id', label: '淘宝SKUID', kind: 'text', editable: true },
+  { key: 'taobao_activity_price', label: '淘宝活动报名价', kind: 'num', editable: false },
+  { key: 'shop_promo_rate', label: '店铺宝系数', kind: 'num', editable: true },
+  { key: 'shop_internal_promo', label: '店铺宝设置', kind: 'num', editable: false },
+  { key: 'shop_internal_final', label: '小促到手价', kind: 'num', editable: false },
+  { key: 'mid_shop_rate', label: '中促系数', kind: 'num', editable: true },
+  { key: 'mid_buyer_price', label: '中促到手价', kind: 'num', editable: false },
+  { key: 'mid_shop_receipt', label: '中促店铺到账', kind: 'num', editable: false },
+  { key: 'mid_vip_final', label: '中促会员价', kind: 'num', editable: false },
+  { key: 'big_shop_rate', label: '大促系数', kind: 'num', editable: true },
+  { key: 'big_buyer_price', label: '大促到手价', kind: 'num', editable: false },
+  { key: 'big_shop_receipt', label: '大促店铺到账', kind: 'num', editable: false },
+  { key: 'big_vip_final', label: '大促会员价', kind: 'num', editable: false },
+  { key: 'xhs_item_id', label: '小红书商品ID', kind: 'text', editable: true },
+  { key: 'xhs_sku_name', label: '小红书SKU名', kind: 'text', editable: true },
+  { key: 'xhs_sku_id', label: '小红书SKUID', kind: 'text', editable: true },
+  { key: 'xhs_list_price', label: '小红书标价', kind: 'num', editable: false },
+  { key: 'xhs_activity_price', label: '小红书活动价', kind: 'num', editable: true },
+  { key: 'xhs_promo_discount', label: '小红书折扣率', kind: 'num', editable: true },
+  { key: 'xhs_promo_price', label: '小红书促销价', kind: 'num', editable: false },
+];
+
+// 字段总表(供快捷按钮勾选, 带分组) + 内置默认按钮
+const BASE_FIELDS: PresetField[] = [
+  { key: 'product_code', label: '产品编码', group: '基础信息' }, { key: 'sku_code', label: 'SKU编码', group: '基础信息' },
+  { key: 'sku', label: '描述', group: '基础信息' }, { key: 'size_category', label: '分类', group: '基础信息' },
+  { key: 'image_url', label: '图片', group: '基础信息' },
+  { key: 'list_price', label: '标价', group: '价格档位' }, { key: 'daily_price', label: '日常价', group: '价格档位' },
+  { key: 'small_promo', label: '小促', group: '价格档位' }, { key: 'mid_promo', label: '中促', group: '价格档位' },
+  { key: 'big_promo', label: '大促', group: '价格档位' },
+  { key: 'big_promo_margin', label: '大促利润', group: '利润/毛利' }, { key: 'gross_margin_rate', label: '毛利率', group: '利润/毛利' },
+  { key: 'accounting_cost', label: '会计成本', group: '成本拆分' }, { key: 'physical_cost', label: '物理成本', group: '成本拆分' },
+  { key: 'factory_cost', label: '工厂成本', group: '成本拆分' }, { key: 'wood_cost', label: '木作成本', group: '成本拆分' },
+  { key: 'logistics_cost', label: '物流成本', group: '成本拆分' }, { key: 'install_cost', label: '安装成本', group: '成本拆分' },
+  { key: 'packaging_cost', label: '包装成本', group: '成本拆分' }, { key: 'external_parts_cost', label: '外配件成本', group: '成本拆分' },
+  { key: 'platform_fee_rate', label: '平台费率', group: '成本拆分' }, { key: 'tax', label: '税费', group: '成本拆分' },
+];
+const ALL_FIELDS: PresetField[] = [
+  ...BASE_FIELDS,
+  ...ACCESSORY_FIELDS.map((f) => ({ ...f, group: '配件成本' })),
+  ...ACCESSORY_TEXT_FIELDS.map((f) => ({ ...f, group: '配件成本' })),
+  ...PROMO_FIELDS.filter((f) => !f.key.startsWith('xhs')).map((f) => ({ key: f.key, label: f.label, group: '淘宝/活动价' })),
+  ...PROMO_FIELDS.filter((f) => f.key.startsWith('xhs')).map((f) => ({ key: f.key, label: f.label, group: '小红书' })),
+];
+const _baseKeys = ['product_code', 'sku_code', 'sku', 'image_url'];
+const PRESET_DEFAULTS = [
+  { name: '成本基础价', fields: [..._baseKeys, 'factory_cost', 'wood_cost', 'logistics_cost', 'install_cost', 'packaging_cost', 'external_parts_cost', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'] },
+  { name: '配件成本', fields: [..._baseKeys, ...ACCESSORY_FIELDS.map((f) => f.key), ...ACCESSORY_TEXT_FIELDS.map((f) => f.key)] },
+  { name: '淘宝', fields: [..._baseKeys, 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'big_promo_margin', ...PROMO_FIELDS.filter((f) => !f.key.startsWith('xhs')).map((f) => f.key)] },
+  { name: '小红书', fields: [..._baseKeys, 'list_price', 'daily_price', ...PROMO_FIELDS.filter((f) => f.key.startsWith('xhs')).map((f) => f.key)] },
+];
 
 // 可拖拽列宽的表头单元格 (拖右边缘改宽)
 function ResizableTitle(props: any) {
@@ -70,60 +154,141 @@ function ResizableTitle(props: any) {
   );
 }
 
-// 可点击编辑的数字格: 点一下变输入框, 失焦/回车保存
-function EditableNumberCell({ value, onSave, formula }: { value: number | null; onSave: (v: number | null) => void; formula?: string }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState<number | null>(value);
-  useEffect(() => { setVal(value); }, [value]);
-  if (!editing) {
-    return (
-      <span onClick={() => setEditing(true)} style={{ cursor: 'pointer', display: 'inline-block', minWidth: 40 }} title={formula ? `公式：${formula}（点击可改为手动值覆盖）` : '点击编辑'}>
-        {value === null || value === undefined
-          ? <Typography.Text type="secondary">—</Typography.Text>
-          : `¥${Number(value).toLocaleString()}`}
-      </span>
-    );
+// 计算列单元格悬浮: 显示"公式 + 本行实际引用的数值"(图1 引用逻辑展示)
+function cellFormulaTip(r: PricingSku, field: string): ReactNode {
+  const n = (k: string) => num((r as any)[k]);
+  const m = (v: number | null) => (v == null ? '—' : `¥${Number(v).toLocaleString()}`);
+  switch (field) {
+    case 'physical_cost':
+      return <span>物理成本 = 物流{m(n('logistics_cost'))} + 安装{m(n('install_cost'))} + 总出厂{m(n('factory_cost'))} = <b>{m(n('physical_cost'))}</b></span>;
+    case 'factory_cost':
+      return <span>总出厂 = 木作{m(n('wood_cost'))} + 打包{m(n('packaging_cost'))} + 外配件{m(n('external_parts_cost'))} = <b>{m(n('factory_cost'))}</b></span>;
+    case 'accounting_cost':
+      return <span>会计成本 = 物理{m(n('physical_cost'))} + 平台费{m(n('platform_fee_rate'))} + 税{m(n('tax'))} = <b>{m(n('accounting_cost'))}</b></span>;
+    case 'big_promo_margin':
+      return <span>大促利润 = 大促价{m(n('big_promo'))} − 会计成本{m(n('accounting_cost'))} = <b>{m(n('big_promo_margin'))}</b></span>;
+    case 'gross_margin_rate': {
+      const g = n('gross_margin_rate');
+      return <span>毛利率 = 大促利润{m(n('big_promo_margin'))} ÷ 大促价{m(n('big_promo'))} = <b>{g == null ? '—' : (g * 100).toFixed(1) + '%'}</b></span>;
+    }
+    case 'platform_fee_rate':
+      return <span>平台费 = 大促价{m(n('big_promo'))} × 0.6% = <b>{m(n('platform_fee_rate'))}</b></span>;
+    case 'tax':
+      return <span>税费 = 大促价{m(n('big_promo'))} × 2% = <b>{m(n('tax'))}</b></span>;
+    case 'logistics_cost':
+      return <span>物流 = 按尺寸（{r.size_category || '未分类'}）：大700 / 中300 / 小80</span>;
+    case 'install_cost':
+      return <span>安装 = 按尺寸（{r.size_category || '未分类'}）：大150 / 中100 / 小0</span>;
+    case 'external_parts_cost':
+      return <span>外配件成本 = 22 项配件成本之和 = <b>{m(n('external_parts_cost'))}</b></span>;
+    default:
+      return null;
   }
-  const commit = () => { setEditing(false); if (val !== value) onSave(val); };
+}
+
+// 只读数字格 (用户拍板: 单元格不再直接点击编辑, 统一走行「编辑」弹窗 — 防误触键盘改坏整表)
+// onSave 参数保留以兼容旧调用点, 不再使用。tip=悬浮显示公式+引用值。
+function EditableNumberCell({ value, unit = '¥', tip }: { value: number | null; onSave?: (v: number | null) => void; unit?: string; tip?: ReactNode }) {
+  const span = (
+    <span style={{ display: 'inline-block', minWidth: 36, borderBottom: tip ? '1px dotted #d9d9d9' : undefined }}
+      title={tip ? undefined : '在行「编辑」里修改'}>
+      {value === null || value === undefined
+        ? <Typography.Text type="secondary">—</Typography.Text>
+        : unit === '¥'
+          ? `¥${Math.round(Number(value)).toLocaleString()}`
+          : `${unit}${Number(value).toLocaleString()}`}
+    </span>
+  );
+  return tip ? <Tooltip title={tip}>{span}</Tooltip> : span;
+}
+
+// 只读文本格 (统一走行「编辑」; onSave 保留兼容旧调用点)
+function EditableTextCell({ value }: { value: string | null; onSave?: (v: string | null) => void }) {
   return (
-    <InputNumber
-      size="small" autoFocus value={val} precision={2} min={0}
-      onChange={setVal} onBlur={commit} onPressEnter={commit}
-      style={{ width: '100%' }}
-    />
+    <span style={{ display: 'inline-block', minWidth: 36 }} title="在行「编辑」里修改">
+      {value || <Typography.Text type="secondary">—</Typography.Text>}
+    </span>
   );
 }
 
-// 毛利率格: 彩色 Tag; 点击后按目标毛利率% 反算日常价 (服务端再自动算回毛利率)
-function MarginCell({ row, onSaveDaily }: { row: PricingSku; onSaveDaily: (dailyPrice: number) => void }) {
-  const v = row.gross_margin_rate;
-  const [editing, setEditing] = useState(false);
-  const [pct, setPct] = useState<number | null>(v != null ? Number((Number(v) * 100).toFixed(1)) : null);
-  useEffect(() => { setPct(v != null ? Number((Number(v) * 100).toFixed(1)) : null); }, [v]);
-  if (!editing) {
-    const tag = v === null || v === undefined
-      ? <Typography.Text type="secondary">—</Typography.Text>
-      : <Tag color={Number(v) >= 0.3 ? 'green' : Number(v) >= 0.15 ? 'orange' : 'red'}>{(Number(v) * 100).toFixed(1)}%</Tag>;
-    return <span onClick={() => setEditing(true)} style={{ cursor: 'pointer' }} title="点击按目标毛利率反算日常价">{tag}</span>;
-  }
-  const commit = () => {
-    setEditing(false);
-    if (pct === null || pct === undefined) return;
-    if (!row.accounting_cost) { message.error('该 SKU 缺会计成本，无法按毛利率反算日常价'); return; }
-    const cost = Number(row.accounting_cost);
-    const tax = Number(row.tax ?? 0);
-    const pfr = Number(row.platform_fee_rate ?? 0);
-    const denom = 1 - pfr - pct / 100;
-    if (denom <= 0) { message.error('毛利率过高，无法反算（1 − 平台费率 − 毛利率 ≤ 0）'); return; }
-    onSaveDaily(Math.round(((cost + tax) / denom) * 100) / 100);
-  };
-  return (
-    <InputNumber
-      size="small" autoFocus value={pct} min={0} max={99} precision={1}
-      onChange={setPct} onBlur={commit} onPressEnter={commit}
-      style={{ width: '100%' }}
-    />
+// 价格档位格: 点击弹出「手动改值(仅这行) / 改系数(仅这行)」—— 都只改当前 SKU, 不影响别人。
+// 中促/大促有「按SKU系数」(中促系数/大促系数): 改系数=给一个独立数字框, 用正确公式即时预览并只存这一行。
+function PriceCell({
+  value, physicalCost, baseLabel, feeTax, formulaText, onSaveValue,
+}: {
+  value: number | null;
+  physicalCost: number | null;
+  baseLabel?: string;        // 有则=促销档(小/中/大促), 可改"基数"; 无则=结构档(标价/日常)只能手动改值
+  feeTax: number;            // 抽佣+税 = 0.026
+  formulaText: string;
+  onSaveValue: (v: number | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<'value' | 'base'>('value');
+  const [val, setVal] = useState<number | null>(value);
+  // 价 = 物理 ÷ (基数 − feeTax) → 基数 = 物理 ÷ 价 + feeTax (从现价反解, 不需存字段)
+  const curBase = baseLabel && value && physicalCost
+    ? Math.round((physicalCost / value + feeTax) * 10000) / 10000 : null;
+  const [base, setBase] = useState<number | null>(curBase);
+  useEffect(() => { setVal(value); }, [value]);
+  useEffect(() => { setBase(curBase); }, [curBase]);
+
+  const preview = baseLabel && base != null && physicalCost && base - feeTax > 0
+    ? Math.round((physicalCost / (base - feeTax)) * 100) / 100 : null;
+
+  const panel = (
+    <div style={{ width: 340 }}>
+      <Segmented
+        size="small" block value={mode} onChange={(v) => setMode(v as 'value' | 'base')}
+        options={[{ label: '手动改值（仅这行）', value: 'value' }, { label: '改系数（仅这行）', value: 'base' }]}
+      />
+      {mode === 'value' ? (
+        <Space style={{ marginTop: 10 }}>
+          <InputNumber size="small" value={val} precision={2} min={0} onChange={setVal} style={{ width: 160 }} addonBefore="¥" />
+          <Button size="small" type="primary" onClick={() => { setOpen(false); if (val !== value) onSaveValue(val); }}>保存</Button>
+        </Space>
+      ) : baseLabel ? (
+        <div style={{ marginTop: 10 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            {baseLabel}：价 = 物理成本 ÷ ({baseLabel} − 0.02抽佣 − 0.006税)。基数越大→越便宜。
+          </Typography.Text>
+          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 13 }}>{baseLabel}</span>
+            <InputNumber size="small" value={base} precision={4} min={0} max={1} step={0.01} onChange={setBase} style={{ width: 120 }} />
+            <span style={{ color: '#999', fontSize: 13 }}>→ 预览 <b>¥{preview ?? '—'}</b></span>
+          </div>
+          <Button size="small" type="primary" style={{ marginTop: 10 }}
+            disabled={preview == null}
+            onClick={() => { if (preview != null) { onSaveValue(preview); setOpen(false); } }}>
+            保存（只改这一行）
+          </Button>
+          <div style={{ marginTop: 6, fontSize: 11, color: '#52c41a' }}>✓ 只改这一个 SKU；口径与定价总表一致：物理 ÷ (基数 − 0.026)</div>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12, fontSize: 12, color: '#999' }}>
+          这一档（{formulaText}）是<b>结构性全局系数</b>，全表统一。要单独改这一行，请用上面「手动改值」。
+        </div>
+      )}
+    </div>
   );
+
+  // 用户拍板: 单元格只读 — 价格档也统一走行「编辑」; 悬浮仍展示公式口径
+  void open; void setOpen; void panel; void mode;
+  return (
+    <Tooltip title={formulaText}>
+      <span style={{ borderBottom: '1px dashed #d9d9d9' }} title="在行「编辑」里修改">
+        {value === null || value === undefined ? <Typography.Text type="secondary">—</Typography.Text> : `¥${Math.round(Number(value)).toLocaleString()}`}
+      </span>
+    </Tooltip>
+  );
+}
+
+// 毛利率格: 彩色 Tag (只读 — 统一走行「编辑」改价, 毛利率由系统联动重算)
+function MarginCell({ row }: { row: PricingSku; onSaveDaily?: (dailyPrice: number) => void }) {
+  const v = num(row.gross_margin_rate);
+  return v === null || v === undefined
+    ? <Typography.Text type="secondary">—</Typography.Text>
+    : <Tag color={Number(v) >= 0.3 ? 'green' : Number(v) >= 0.15 ? 'orange' : 'red'}>{(Number(v) * 100).toFixed(1)}%</Tag>;
 }
 
 function SkuFormFields() {
@@ -148,40 +313,50 @@ function SkuFormFields() {
         </Form.Item>
       </Space>
       <Space wrap style={{ width: '100%' }}>
-        <Form.Item name="list_price" label="标价">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="daily_price" label="日常价">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="small_promo" label="小促价">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="mid_promo" label="中促价">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="big_promo" label="大促价">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
+        <Form.Item name="list_price" label="标价"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="daily_price" label="日常价"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="small_promo" label="小促价"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="mid_promo" label="中促价"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="big_promo" label="大促价"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
       </Space>
       <Space wrap style={{ width: '100%' }}>
-        <Form.Item name="accounting_cost" label="会计成本">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="physical_cost" label="物理成本">
-          <InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} />
-        </Form.Item>
-        <Form.Item name="platform_fee_rate" label="平台佣金率">
-          <InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.05" />
-        </Form.Item>
-        <Form.Item name="tax" label="税率">
-          <InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.03" />
-        </Form.Item>
+        <Form.Item name="accounting_cost" label="会计成本"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="physical_cost" label="物理成本"><InputNumber min={0} step={0.01} prefix="¥" style={{ width: 120 }} /></Form.Item>
+        <Form.Item name="platform_fee_rate" label="平台佣金率"><InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.05" /></Form.Item>
+        <Form.Item name="tax" label="税率"><InputNumber min={0} max={1} step={0.01} style={{ width: 100 }} placeholder="如 0.03" /></Form.Item>
       </Space>
-      <Form.Item name="image_url" label="图片 URL（选填）">
-        <Input placeholder="https://..." />
-      </Form.Item>
+      <Form.Item name="image_url" label="图片 URL（选填）"><Input placeholder="https://..." /></Form.Item>
     </>
+  );
+}
+
+// 系数说明图例: 所有系数的中文标识 + 含义 + 全局默认(众数), 点开随时查
+function CoefficientLegend({ coeffs }: { coeffs: CoefficientStat[] }) {
+  if (!coeffs.length) return null;
+  const grp = (s: string) => coeffs.filter((c) => c.scope === s);
+  const row = (c: CoefficientStat) => (
+    <div key={c.field} style={{ marginBottom: 6, lineHeight: 1.5 }}>
+      <Tag color={c.scope === 'per_sku' ? 'orange' : 'blue'} style={{ marginInlineEnd: 6 }}>
+        {c.label}{c.fixed != null ? ` = ${c.fixed}` : ''}
+      </Tag>
+      <span style={{ fontSize: 12, color: '#555' }}>{c.meaning}</span>
+      {c.scope === 'per_sku' && c.mode != null && (
+        <span style={{ fontSize: 11, color: '#999' }}>（全局默认/众数 {c.mode}，{c.distinct} 种取值）</span>
+      )}
+    </div>
+  );
+  const content = (
+    <div style={{ maxWidth: 480, maxHeight: 440, overflow: 'auto' }}>
+      <Typography.Text strong>结构性系数（全表统一，写死在公式里）</Typography.Text>
+      <div style={{ margin: '4px 0 10px' }}>{grp('global').map(row)}</div>
+      <Typography.Text strong>经营性系数（每个 SKU 可不同 · 表里橙色格 = 此 SKU 已单独改过）</Typography.Text>
+      <div style={{ marginTop: 4 }}>{grp('per_sku').map(row)}</div>
+    </div>
+  );
+  return (
+    <Popover trigger="click" content={content} title="系数中文标识 + 含义">
+      <Button size="small" icon={<QuestionCircleOutlined />}>系数说明</Button>
+    </Popover>
   );
 }
 
@@ -189,122 +364,96 @@ export default function PricingPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
   const [sizeCategory, setSizeCategory] = useState<string | undefined>(undefined);
+  const [category, setCategory] = useState<string | undefined>(undefined);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(50);
   const [createOpen, setCreateOpen] = useState(false);
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
+  // 统一编辑器 (可拖动, 字段级历史, 一键覆盖同产品)
+  const [editorRow, setEditorRow] = useState<PricingSku | null>(null);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);   // null = 全部字段
   const [form] = Form.useForm();
 
-  // ── 字段视图: 成本与基础价 / 淘宝 / 小红书 / 自定义 (快速切换可见列) ──
-  const FIELD_OPTS = [
-    { value: 'product_code', label: '产品编码' }, { value: 'sku_code', label: 'SKU编码' },
-    { value: 'sku', label: '描述' }, { value: 'size_category', label: '分类' },
-    { value: 'image_url', label: '图片' },
-    { value: 'list_price', label: '标价' }, { value: 'daily_price', label: '日常价' },
-    { value: 'small_promo', label: '小促' }, { value: 'mid_promo', label: '中促' },
-    { value: 'big_promo', label: '大促' }, { value: 'big_promo_margin', label: '大促利润' },
-    { value: 'gross_margin_rate', label: '毛利率' },
-    { value: 'accounting_cost', label: '会计成本' }, { value: 'physical_cost', label: '物理成本' },
-    { value: 'factory_cost', label: '工厂成本' }, { value: 'wood_cost', label: '木作成本' },
-    { value: 'logistics_cost', label: '物流成本' }, { value: 'install_cost', label: '安装成本' },
-    { value: 'packaging_cost', label: '包装成本' }, { value: 'external_parts_cost', label: '外配件成本' },
-    { value: 'platform_fee_rate', label: '平台费率' }, { value: 'tax', label: '税费' },
-  ];
-  const VIEW_PRESETS: Record<string, string[]> = {
-    cost: ['product_code', 'sku_code', 'sku', 'image_url', 'factory_cost', 'wood_cost', 'logistics_cost', 'install_cost', 'packaging_cost', 'external_parts_cost', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'],
-    taobao: ['product_code', 'sku_code', 'sku', 'image_url', 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'big_promo_margin', 'gross_margin_rate'],
-    xhs: ['product_code', 'sku_code', 'sku', 'image_url', 'list_price', 'daily_price', 'gross_margin_rate'],
-  };
-  const [fieldView, setFieldView] = useState<string>('all');
-  const [customFields, setCustomFields] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem('panse_pricing_custom_cols') || '[]'); } catch { return []; }
-  });
-  const saveCustomFields = (vals: string[]) => {
-    setCustomFields(vals);
-    localStorage.setItem('panse_pricing_custom_cols', JSON.stringify(vals));
-  };
+  const { data: categories = [] } = useQuery({ queryKey: ['product-categories'], queryFn: listProductCategories, staleTime: 5 * 60 * 1000 });
+  const { data: formulaRules = [] } = useQuery({ queryKey: ['pricing-formula-rules-min'], queryFn: listFormulaRules, staleTime: 60 * 1000 });
+  const ruleByField: Record<string, PricingFormulaRule> = {};
+  formulaRules.forEach((r) => { ruleByField[r.field_name] = r; });
+  // 系数目录(中文标识+含义) + 每个按SKU系数的众数(全局默认) — 三色覆盖标识用
+  const { data: coeffStats = [] } = useQuery({ queryKey: ['pricing-coefficient-stats'], queryFn: getCoefficientStats, staleTime: 5 * 60 * 1000 });
+  const coeffByField: Record<string, CoefficientStat> = {};
+  coeffStats.forEach((c) => { coeffByField[c.field] = c; });
+
   const applyView = (cols: any[]) => {
-    if (fieldView === 'all') return cols;
-    const set = new Set(fieldView === 'custom' ? customFields : (VIEW_PRESETS[fieldView] || []));
+    if (visibleKeys === null) return cols;
+    const set = new Set(visibleKeys);
     return cols.filter((c) => c.fixed === 'right' || !c.dataIndex || set.has(c.dataIndex));
   };
 
   const { data, isFetching } = useQuery({
-    queryKey: ['pricing-skus', q, sizeCategory, page],
+    queryKey: ['pricing-skus', q, sizeCategory, category, page, pageSize],
     queryFn: () =>
-      listPricingSkus({ q: q || undefined, size_category: sizeCategory, limit: PAGE_SIZE, offset: (page - 1) * PAGE_SIZE }),
+      listPricingSkus({ q: q || undefined, size_category: sizeCategory, category, limit: pageSize, offset: (page - 1) * pageSize }),
     placeholderData: keepPreviousData,
   });
 
-  const { data: templates } = useQuery({
-    queryKey: ['pricing-templates'],
-    queryFn: listPricingTemplates,
-    staleTime: 60 * 60 * 1000,
-  });
+  const { data: templates } = useQuery({ queryKey: ['pricing-templates'], queryFn: listPricingTemplates, staleTime: 60 * 60 * 1000 });
+  const { data: exportTypes } = useQuery({ queryKey: ['taobao-export-types'], queryFn: listTaobaoExportTypes, staleTime: 60 * 60 * 1000 });
 
   async function handleDownloadTemplate(key: string, label: string) {
     try {
       const blob = await downloadPricingTemplate(key);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `${label}.xlsx`;
-      a.click();
+      a.href = url; a.download = `${label}.xlsx`; a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      message.error('模板下载失败');
-    }
+    } catch { message.error('模板下载失败'); }
   }
-
-  const { data: exportTypes } = useQuery({
-    queryKey: ['taobao-export-types'],
-    queryFn: listTaobaoExportTypes,
-    staleTime: 60 * 60 * 1000,
-  });
-
   async function handleExport(exportType: string, label: string) {
     try {
       const blob = await downloadTaobaoExport(exportType);
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url;
-      a.download = `淘宝-${label}.xlsx`;
-      a.click();
+      a.href = url; a.download = `淘宝-${label}.xlsx`; a.click();
       URL.revokeObjectURL(url);
-    } catch {
-      message.error('导出失败');
-    }
+    } catch { message.error('导出失败'); }
   }
 
+  const invalidatePricing = () => qc.invalidateQueries({ queryKey: ['pricing-skus'] });
   const createMut = useMutation({
     mutationFn: createPricingSku,
-    onSuccess: () => {
-      message.success('定价 SKU 已创建');
-      setCreateOpen(false);
-      form.resetFields();
-      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
-    },
+    onSuccess: () => { message.success('定价 SKU 已创建'); setCreateOpen(false); form.resetFields(); invalidatePricing(); },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
   });
-
   const updateMut = useMutation({
-    mutationFn: ({ id, patch }: { id: number; patch: Record<string, unknown> }) =>
-      updatePricingSku(id, patch),
-    onSuccess: () => {
-      message.success('已更新');
-      setEditRow(null);
-      form.resetFields();
-      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
-    },
+    mutationFn: ({ id, patch }: { id: number; patch: Record<string, unknown> }) => updatePricingSku(id, patch),
+    onSuccess: () => { message.success('已更新'); setEditRow(null); form.resetFields(); invalidatePricing(); },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '更新失败'),
   });
+  const costMut = useMutation({
+    mutationFn: ({ skuCode, patch }: { skuCode: string; patch: Record<string, unknown> }) => upsertSkuCosts(skuCode, patch),
+    onSuccess: () => { message.success('配件成本已更新'); invalidatePricing(); },
+    onError: () => message.error('保存失败'),
+  });
+  const promoMut = useMutation({
+    mutationFn: ({ skuCode, patch }: { skuCode: string; patch: Record<string, unknown> }) => upsertSkuPromo(skuCode, patch),
+    onSuccess: () => { message.success('活动价已更新'); invalidatePricing(); },
+    onError: () => message.error('保存失败'),
+  });
+  const formulaMut = useMutation({
+    mutationFn: ({ id, expression }: { id: number; expression: string }) => updateFormulaRule(id, { expression }),
+    onSuccess: () => { message.success('公式已保存'); qc.invalidateQueries({ queryKey: ['pricing-formula-rules-min'] }); },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '公式保存失败（检查语法）'),
+  });
+  const recomputeMut = useMutation({
+    mutationFn: () => recomputeAllPricing(true),
+    onSuccess: (r) => { message.success(r.message ?? '已重算'); invalidatePricing(); },
+    onError: () => message.error('重算失败'),
+  });
 
-  function openEdit(row: PricingSku) {
-    setEditRow(row);
-    form.setFieldsValue(row);
-  }
+  function openEdit(row: PricingSku) { setEditRow(row); form.setFieldsValue(row); }
 
-  // ── 列宽可拖 ──
+  // ── 列宽 (基础列可拖) ──
   const [colW, setColW] = useState<Record<string, number>>({
     product_code: 110, sku_code: 120, sku: 160, size_category: 70, image_url: 60,
     list_price: 90, daily_price: 90, small_promo: 90, mid_promo: 90, big_promo: 100,
@@ -312,35 +461,27 @@ export default function PricingPage() {
     factory_cost: 90, wood_cost: 90, logistics_cost: 90, install_cost: 90,
     packaging_cost: 90, external_parts_cost: 100, platform_fee_rate: 90, tax: 80, actions: 70,
   });
-  const mkResize = (key: string) => () => ({
-    width: colW[key], onResize: (w: number) => setColW((p) => ({ ...p, [key]: w })),
-  });
-  const scrollX = Object.values(colW).reduce((a, b) => a + b, 0) + 70;
+  const cw = (key: string, def: number) => colW[key] ?? def;
+  const mkResize = (key: string) => () => ({ width: colW[key], onResize: (w: number) => setColW((p) => ({ ...p, [key]: w })) });
 
   const items = data?.items ?? [];
 
-  // 内联保存单格 (改价/改成本后服务端自动重算毛利率)
-  const saveField = (id: number, field: string, value: number | null) =>
-    updateMut.mutate({ id, patch: { [field]: value } });
+  const saveField = (id: number, field: string, value: number | null) => updateMut.mutate({ id, patch: { [field]: value } });
+  const saveCost = (row: PricingSku, field: string, value: number | string | null) => costMut.mutate({ skuCode: row.sku_code, patch: { [field]: value } });
+  const savePromo = (row: PricingSku, field: string, value: number | string | null) => promoMut.mutate({ skuCode: row.sku_code, patch: { [field]: value } });
 
   // ── 多选 + 批量调价 ──
   const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
   const lastIdx = useRef<number | null>(null);
   const [batchField, setBatchField] = useState<string>('big_promo');
-  const [batchMode, setBatchMode] = useState<'set' | 'multiply'>('multiply');
+  const [batchMode, setBatchMode] = useState<'set' | 'multiply' | 'base'>('multiply');
   const [batchValue, setBatchValue] = useState<number | null>(null);
   const [batchRunning, setBatchRunning] = useState(false);
-
   const BATCH_FIELDS = [
-    { value: 'list_price', label: '标价' },
-    { value: 'daily_price', label: '日常价' },
-    { value: 'small_promo', label: '小促' },
-    { value: 'mid_promo', label: '中促' },
-    { value: 'big_promo', label: '大促' },
-    { value: 'accounting_cost', label: '会计成本' },
-    { value: 'physical_cost', label: '物理成本' },
+    { value: 'list_price', label: '标价' }, { value: 'daily_price', label: '日常价' },
+    { value: 'small_promo', label: '小促' }, { value: 'mid_promo', label: '中促' }, { value: 'big_promo', label: '大促' },
+    { value: 'accounting_cost', label: '会计成本' }, { value: 'physical_cost', label: '物理成本' },
   ];
-
   async function batchApply() {
     if (batchValue === null || batchValue === undefined) { message.warning('请输入数值'); return; }
     const ids = selectedKeys.map(Number);
@@ -348,10 +489,15 @@ export default function PricingPage() {
     const tasks: Promise<unknown>[] = [];
     let skipped = 0;
     for (const id of ids) {
-      if (batchMode === 'set') {
-        tasks.push(updatePricingSku(id, { [batchField]: batchValue }));
-      } else {
-        const row = byId.get(id);
+      const row = byId.get(id);
+      if (batchMode === 'set') { tasks.push(updatePricingSku(id, { [batchField]: batchValue })); }
+      else if (batchMode === 'base') {
+        // 设基数(小/中/大促): 价 = 物理成本 ÷ (基数 − 0.026), 每行用自己的物理成本 → 这就是 V6 的"分组档"批量套用
+        const phys = row ? Number((row as any).physical_cost) : 0;
+        if (!row || !phys || batchValue - 0.026 <= 0) { skipped += 1; continue; }
+        tasks.push(updatePricingSku(id, { [batchField]: Math.round((phys / (batchValue - 0.026)) * 100) / 100 }));
+      }
+      else {
         if (!row) { skipped += 1; continue; }
         const cur = Number((row as any)[batchField] ?? 0);
         tasks.push(updatePricingSku(id, { [batchField]: Math.round(cur * batchValue * 100) / 100 }));
@@ -361,114 +507,192 @@ export default function PricingPage() {
     try {
       await Promise.all(tasks);
       message.success(`已套用 ${tasks.length} 个 SKU${skipped ? `（${skipped} 个跨页未加载，已跳过）` : ''}`);
-      setSelectedKeys([]);
-      qc.invalidateQueries({ queryKey: ['pricing-skus'] });
-    } catch {
-      message.error('批量套用失败');
-    } finally {
-      setBatchRunning(false);
-    }
+      setSelectedKeys([]); invalidatePricing();
+    } catch { message.error('批量套用失败'); }
+    finally { setBatchRunning(false); }
   }
+
+  const fmtFormula: Record<string, string> = {
+    list_price: '物理成本 ÷ 0.4', daily_price: '标价 × 0.75',
+    small_promo: '物理成本 ÷ (小促基数 − 0.02抽佣 − 0.006税)',
+    mid_promo: '物理成本 ÷ (中促基数 − 0.02抽佣 − 0.006税)',
+    big_promo: '物理成本 ÷ (大促基数 − 0.02抽佣 − 0.006税)',
+  };
+  // 小促/中促/大促 = 物理成本 ÷ (基数 − 0.02 − 0.006); 基数按 SKU 不同(从现价反解)。改基数=只改这一行。
+  const FEE_TAX = 0.026; // 平台抽佣 0.02 + 税 0.006
+  const TIER_BASE: Record<string, string> = { small_promo: '小促基数', mid_promo: '中促基数', big_promo: '大促基数' };
+  // 各成本/计算列的真实公式(取自定价总表的单元格公式) — 悬浮显示。录入值的列标注来源。
+  const COL_FORMULA: Record<string, string> = {
+    accounting_cost: '会计总成本 = 物理总成本 + 平台费 + 税费',
+    physical_cost: '物理总成本 = 物流费 + 安装费 + 总出厂成本',
+    factory_cost: '总出厂成本 = 木作成本 + 打包 + 外采配件成本',
+    external_parts_cost: '外采配件成本 = 22 项配件成本之和（岩板…其他）',
+    logistics_cost: '物流费 = 按尺寸：大型 700 / 中型 300 / 小型 80',
+    install_cost: '安装费 = 按尺寸：大型 150 / 中型 100 / 小型 0',
+    platform_fee_rate: '平台费 = 大促价 × 0.6%（平台抽佣，这里是金额不是费率）',
+    tax: '税费 = 大促价 × 2%',
+    big_promo_margin: '大促利润 = 大促价 − 会计总成本',
+    gross_margin_rate: '毛利率 = 大促利润 ÷ 大促价',
+    wood_cost: '木作成本 = 录入值（来自 BOM 木料成本）',
+    packaging_cost: '打包 = 录入值',
+  };
+  const colTitle = (label: string, key: string) =>
+    COL_FORMULA[key]
+      ? <Tooltip title={COL_FORMULA[key]}><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>{label}</span></Tooltip>
+      : label;
+
+  const priceTierCol = (key: string, label: string) => ({
+    title: <Tooltip title={`公式：${fmtFormula[key]} ｜ 点格子可改值或改公式系数`}><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>{label}</span></Tooltip>,
+    dataIndex: key, width: cw(key, 92), onHeaderCell: mkResize(key),
+    render: (v: any, r: PricingSku) => (
+      <PriceCell
+        value={num(v)} physicalCost={num(r.physical_cost)}
+        baseLabel={TIER_BASE[key]} feeTax={FEE_TAX} formulaText={`公式：${fmtFormula[key]}`}
+        onSaveValue={(nv) => saveField(r.id, key, nv)}
+      />
+    ),
+  });
+
+  // ── 列定义 ──
+  const baseColumns: any[] = [
+    { title: '产品编码', dataIndex: 'product_code', width: cw('product_code', 110), onHeaderCell: mkResize('product_code') },
+    // 「漂移」标签已撤 (用户拍板 2026-06-12: BOM 单价只用于预估/定制报价, 不与定价对照)
+    { title: 'SKU 编码', dataIndex: 'sku_code', width: cw('sku_code', 120), onHeaderCell: mkResize('sku_code') },
+    { title: '描述', dataIndex: 'sku', width: cw('sku', 160), ellipsis: true, onHeaderCell: mkResize('sku') },
+    { title: '分类', dataIndex: 'size_category', width: cw('size_category', 70), onHeaderCell: mkResize('size_category') },
+    { title: '图片', dataIndex: 'image_url', width: cw('image_url', 60), onHeaderCell: mkResize('image_url'),
+      // SKU 图全部图库优先 (用户拍板 2026-06-12); 图库没有才回退淘宝 image_url
+      render: (v: any, r: PricingSku) => <ProductThumb src={(r as any).gallery_image_url || (v ? String(v) : null)} size={40} /> },
+    priceTierCol('list_price', '标价'),
+    priceTierCol('daily_price', '日常价'),
+    priceTierCol('small_promo', '小促'),
+    priceTierCol('mid_promo', '中促'),
+    priceTierCol('big_promo', '大促'),
+    { title: <Tooltip title="毛利率 = 大促利润 ÷ 大促价 ｜ 点格子可按目标毛利率反算日常价"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>毛利率</span></Tooltip>, dataIndex: 'gross_margin_rate', width: cw('gross_margin_rate', 90), onHeaderCell: mkResize('gross_margin_rate'), render: (_: unknown, r: PricingSku) => <Tooltip title={cellFormulaTip(r, 'gross_margin_rate')}><span><MarginCell row={r} onSaveDaily={(dp) => saveField(r.id, 'daily_price', dp)} /></span></Tooltip> },
+    { title: colTitle('会计成本', 'accounting_cost'), dataIndex: 'accounting_cost', width: cw('accounting_cost', 100), onHeaderCell: mkResize('accounting_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'accounting_cost')} onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
+    { title: colTitle('物理成本', 'physical_cost'), dataIndex: 'physical_cost', width: cw('physical_cost', 100), onHeaderCell: mkResize('physical_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'physical_cost')} onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
+    { title: colTitle('大促利润', 'big_promo_margin'), dataIndex: 'big_promo_margin', width: cw('big_promo_margin', 90), onHeaderCell: mkResize('big_promo_margin'), render: (v: any, r: PricingSku) => <Tooltip title={cellFormulaTip(r, 'big_promo_margin')}><span style={{ borderBottom: '1px dotted #d9d9d9', cursor: 'help' }}>{money(num(v))}</span></Tooltip> },
+    { title: colTitle('工厂成本', 'factory_cost'), dataIndex: 'factory_cost', width: cw('factory_cost', 90), onHeaderCell: mkResize('factory_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'factory_cost')} onSave={(nv) => saveField(r.id, 'factory_cost', nv)} /> },
+    { title: colTitle('木作成本', 'wood_cost'), dataIndex: 'wood_cost', width: cw('wood_cost', 90), onHeaderCell: mkResize('wood_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} onSave={(nv) => saveField(r.id, 'wood_cost', nv)} /> },
+    { title: colTitle('物流成本', 'logistics_cost'), dataIndex: 'logistics_cost', width: cw('logistics_cost', 90), onHeaderCell: mkResize('logistics_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'logistics_cost')} onSave={(nv) => saveField(r.id, 'logistics_cost', nv)} /> },
+    { title: colTitle('安装成本', 'install_cost'), dataIndex: 'install_cost', width: cw('install_cost', 90), onHeaderCell: mkResize('install_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'install_cost')} onSave={(nv) => saveField(r.id, 'install_cost', nv)} /> },
+    { title: colTitle('包装成本', 'packaging_cost'), dataIndex: 'packaging_cost', width: cw('packaging_cost', 90), onHeaderCell: mkResize('packaging_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} onSave={(nv) => saveField(r.id, 'packaging_cost', nv)} /> },
+    { title: colTitle('外配件成本', 'external_parts_cost'), dataIndex: 'external_parts_cost', width: cw('external_parts_cost', 100), onHeaderCell: mkResize('external_parts_cost'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'external_parts_cost')} onSave={(nv) => saveField(r.id, 'external_parts_cost', nv)} /> },
+    { title: colTitle('平台费', 'platform_fee_rate'), dataIndex: 'platform_fee_rate', width: cw('platform_fee_rate', 90), onHeaderCell: mkResize('platform_fee_rate'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'platform_fee_rate')} onSave={(nv) => saveField(r.id, 'platform_fee_rate', nv)} /> },
+    { title: colTitle('税费', 'tax'), dataIndex: 'tax', width: cw('tax', 80), onHeaderCell: mkResize('tax'), render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} tip={cellFormulaTip(r, 'tax')} onSave={(nv) => saveField(r.id, 'tax', nv)} /> },
+  ];
+  const accessoryColumns: any[] = [
+    ...ACCESSORY_FIELDS.map((f) => ({ title: f.label, dataIndex: f.key, width: 96, render: (v: any, r: PricingSku) => <EditableNumberCell value={num(v)} onSave={(nv) => saveCost(r, f.key, nv)} /> })),
+    ...ACCESSORY_TEXT_FIELDS.map((f) => ({ title: f.label, dataIndex: f.key, width: 140, ellipsis: true, render: (v: any, r: PricingSku) => <EditableTextCell value={str(v)} onSave={(nv) => saveCost(r, f.key, nv)} /> })),
+  ];
+  // 按SKU系数: 三色覆盖标识(橙=与全局众数不同) + 表头中文标识带含义悬浮
+  const COEFF_COLOR = ['shop_promo_rate', 'mid_shop_rate', 'big_shop_rate', 'xhs_promo_discount'];
+  const coeffTitle = (f: PromoField) => {
+    const meta = coeffByField[f.key];
+    if (!meta) return f.label;
+    return (
+      <Tooltip title={<span>{meta.meaning}{meta.mode != null ? <><br />全局默认(众数)：{meta.mode}（{meta.distinct} 种取值）</> : null}</span>}>
+        <span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>{f.label}</span>
+      </Tooltip>
+    );
+  };
+  const promoColumns: any[] = PROMO_FIELDS.map((f) => ({
+    title: COEFF_COLOR.includes(f.key) ? coeffTitle(f) : f.label,
+    dataIndex: f.key, width: f.kind === 'text' ? 130 : 100, ellipsis: f.kind === 'text',
+    render: (v: any, r: PricingSku) => {
+      if (!f.editable) return f.kind === 'num' ? money(num(v)) : (str(v) || <Typography.Text type="secondary">—</Typography.Text>);
+      if (f.kind !== 'num') return <EditableTextCell value={str(v)} onSave={(nv) => savePromo(r, f.key, nv)} />;
+      const cell = <EditableNumberCell value={num(v)} unit={f.key.endsWith('_rate') || f.key.endsWith('_discount') ? '' : '¥'} onSave={(nv) => savePromo(r, f.key, nv)} />;
+      const meta = coeffByField[f.key];
+      const val = num(v);
+      const override = COEFF_COLOR.includes(f.key) && meta?.mode != null && val != null && Math.abs(val - meta.mode) > 1e-6;
+      if (!override) return cell;
+      return (
+        <Tooltip title={`单行覆盖：全局众数 ${meta!.mode} → 本行 ${val}（Δ${(val - meta!.mode!).toFixed(4)}）。橙色 = 此 SKU 系数与大多数不同`}>
+          <span style={{ background: '#fff3e0', border: '1px solid #ffd591', borderRadius: 4, padding: '0 4px', display: 'inline-block' }}>{cell}</span>
+        </Tooltip>
+      );
+    },
+  }));
+  const actionsCol = {
+    title: '操作', width: cw('actions', 70), fixed: 'right' as const,
+    render: (_: unknown, row: PricingSku) => <Button size="small" icon={<EditOutlined />} onClick={() => setEditorRow(row)}>编辑</Button>,
+  };
+
+  // 列组配色: 价格档=蓝 / 利润汇总=黄 / 成本拆分=绿 / 22配件=紫 / 渠道(淘宝小红书)=粉
+  // 只动底色不动逻辑, 让眼睛能按色块定位列组, 减少看错列。
+  const GROUP_BG: Record<string, string> = {
+    list_price: '#eef6ff', daily_price: '#eef6ff', small_promo: '#eef6ff',
+    mid_promo: '#eef6ff', big_promo: '#eef6ff',
+    gross_margin_rate: '#fffbe6', accounting_cost: '#fffbe6',
+    physical_cost: '#fffbe6', big_promo_margin: '#fffbe6',
+    factory_cost: '#f6ffed', wood_cost: '#f6ffed', logistics_cost: '#f6ffed',
+    install_cost: '#f6ffed', packaging_cost: '#f6ffed',
+    external_parts_cost: '#f6ffed', platform_fee_rate: '#f6ffed', tax: '#f6ffed',
+  };
+  ACCESSORY_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fbf4ff'; });
+  PROMO_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fff0f6'; });
+  const withGroupColor = (cols: any[]) => cols.map((c) => {
+    const bg = GROUP_BG[c.dataIndex as string];
+    if (!bg) return c;
+    return {
+      ...c,
+      onCell: () => ({ style: { background: bg } }),
+      onHeaderCell: (col: any) => ({
+        ...(c.onHeaderCell ? c.onHeaderCell(col) : {}),
+        style: { background: bg },
+      }),
+    };
+  });
+
+  const allColumns = withGroupColor([...baseColumns, ...accessoryColumns, ...promoColumns, actionsCol]);
+  const visibleColumns = applyView(allColumns);
+  const scrollX = visibleColumns.reduce((a: number, c: any) => a + (typeof c.width === 'number' ? c.width : 110), 0);
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <PricingEditorModal
+        row={editorRow}
+        onClose={() => setEditorRow(null)}
+        onSaved={invalidatePricing}
+      />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
-          <Dropdown
-            disabled={!templates || templates.length === 0}
-            menu={{
-              items: (templates ?? []).map((t) => ({
-                key: t.key,
-                label: (
-                  <Space direction="vertical" size={0}>
-                    <span>{t.label}</span>
-                    <Typography.Text type="secondary" style={{ fontSize: 11 }}>{t.desc}</Typography.Text>
-                  </Space>
-                ),
-                onClick: () => handleDownloadTemplate(t.key, t.label),
-              })),
-            }}
-          >
+          <Dropdown disabled={!templates || templates.length === 0}
+            menu={{ items: (templates ?? []).map((t) => ({ key: t.key, label: (<Space direction="vertical" size={0}><span>{t.label}</span><Typography.Text type="secondary" style={{ fontSize: 11 }}>{t.desc}</Typography.Text></Space>), onClick: () => handleDownloadTemplate(t.key, t.label) })) }}>
             <Button icon={<DownloadOutlined />}>一键模板下载</Button>
           </Dropdown>
           <Tooltip title="把当前系统定价数据填入淘宝后台批量格式, 下载后可直接上传淘宝后台">
-            <Dropdown
-              disabled={!exportTypes || exportTypes.length === 0}
-              menu={{
-                items: (exportTypes ?? []).map((t) => ({
-                  key: t.key,
-                  label: t.label,
-                  onClick: () => handleExport(t.key, t.label),
-                })),
-              }}
-            >
+            <Dropdown disabled={!exportTypes || exportTypes.length === 0}
+              menu={{ items: (exportTypes ?? []).map((t) => ({ key: t.key, label: t.label, onClick: () => handleExport(t.key, t.label) })) }}>
               <Button icon={<ExportOutlined />}>批量导出（填好数据）</Button>
             </Dropdown>
           </Tooltip>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>
-            新增定价
-          </Button>
+          <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>新增定价</Button>
         </Space>
       </Space>
       <Card size="small">
         <Space wrap>
-          <Segmented
-            value={viewMode}
-            onChange={(v) => setViewMode(v as 'curated' | 'full')}
-            options={[
-              { label: '精选视图（可编辑）', value: 'curated' },
-              { label: '全部列', value: 'full' },
-            ]}
-          />
+          <Segmented value={viewMode} onChange={(v) => setViewMode(v as 'curated' | 'full')}
+            options={[{ label: '精选视图（可编辑）', value: 'curated' }, { label: '全部列', value: 'full' }]} />
           {viewMode === 'curated' && (
             <>
-              <Input.Search
-                allowClear
-                placeholder="搜产品编码 / SKU 编码 / 描述"
-                style={{ width: 280 }}
-                onSearch={(v) => { setQ(v); setPage(1); }}
-              />
-              <Select
-                allowClear
-                placeholder="大小分类"
-                style={{ width: 140 }}
-                value={sizeCategory}
-                onChange={(v) => { setSizeCategory(v); setPage(1); }}
-                options={[
-                  { value: '小型', label: '小型' },
-                  { value: '中型', label: '中型' },
-                  { value: '大型', label: '大型' },
-                ]}
-              />
-              <Segmented
-                size="small"
-                value={fieldView}
-                onChange={(v) => setFieldView(v as string)}
-                options={[
-                  { label: '全部字段', value: 'all' },
-                  { label: '成本与基础价', value: 'cost' },
-                  { label: '淘宝', value: 'taobao' },
-                  { label: '小红书', value: 'xhs' },
-                  { label: '自定义', value: 'custom' },
-                ]}
-              />
-              {fieldView === 'custom' && (
-                <Dropdown
-                  trigger={['click']}
-                  dropdownRender={() => (
-                    <div style={{ background: '#fff', padding: 12, boxShadow: '0 2px 8px rgba(0,0,0,.15)', borderRadius: 8, maxWidth: 360 }}>
-                      <Checkbox.Group
-                        options={FIELD_OPTS}
-                        value={customFields}
-                        onChange={(v) => saveCustomFields(v as string[])}
-                      />
-                    </div>
-                  )}
-                >
-                  <Button size="small" icon={<EditOutlined />}>选字段（{customFields.length}）</Button>
-                </Dropdown>
-              )}
+              <Input.Search allowClear placeholder="搜产品编码 / SKU 编码 / 描述" style={{ width: 240 }} onSearch={(v) => { setQ(v); setPage(1); }} />
+              <Select allowClear placeholder="大小分类" style={{ width: 110 }} value={sizeCategory} onChange={(v) => { setSizeCategory(v); setPage(1); }}
+                options={[{ value: '小型', label: '小型' }, { value: '中型', label: '中型' }, { value: '大型', label: '大型' }]} />
+              <Select allowClear showSearch placeholder="按类目筛" style={{ width: 170 }} value={category} onChange={(v) => { setCategory(v); setPage(1); }}
+                options={categories.map((c) => ({ value: c, label: c }))} />
+              <FieldPresetBar tableKey="pricing_sku" allFields={ALL_FIELDS} defaults={PRESET_DEFAULTS} onChange={setVisibleKeys} />
+              <CoefficientLegend coeffs={coeffStats} />
+              <Button size="small" onClick={async () => {
+                try {
+                  const r = await runPromoPriceCheck();
+                  message[r.mismatch_count ? 'warning' : 'success'](
+                    `活动价核对: 查 ${r.checked} 条, ${r.mismatch_count} 条不符${r.mismatch_count ? ' — 详见异常中心' : ''}`);
+                } catch { message.error('核对失败'); }
+              }}>活动价核对</Button>
+              {/* 「BOM漂移检查」按钮已撤 (用户拍板 2026-06-12: BOM单价只用于预估/定制报价) */}
             </>
           )}
         </Space>
@@ -481,20 +705,11 @@ export default function PricingPage() {
           <Space wrap>
             <span>已选 <b>{selectedKeys.length}</b> 个 SKU</span>
             <Select size="small" style={{ width: 110 }} value={batchField} onChange={setBatchField} options={BATCH_FIELDS} />
-            <Select
-              size="small" style={{ width: 120 }} value={batchMode}
-              onChange={(v) => setBatchMode(v as 'set' | 'multiply')}
-              options={[{ value: 'multiply', label: '× 系数' }, { value: 'set', label: '设为固定值' }]}
-            />
-            <InputNumber
-              size="small" style={{ width: 130 }} value={batchValue} onChange={setBatchValue}
-              placeholder={batchMode === 'multiply' ? '如 0.95' : '如 1999'}
-            />
+            <Select size="small" style={{ width: 160 }} value={batchMode} onChange={(v) => setBatchMode(v as 'set' | 'multiply' | 'base')}
+              options={[{ value: 'multiply', label: '× 系数' }, { value: 'set', label: '设为固定值' }, { value: 'base', label: '设基数(小/中/大促)' }]} />
+            <InputNumber size="small" style={{ width: 130 }} value={batchValue} onChange={setBatchValue} placeholder={batchMode === 'multiply' ? '如 0.95' : batchMode === 'base' ? '基数 如 0.87' : '如 1999'} />
             <Button size="small" type="primary" loading={batchRunning} onClick={batchApply}>套用</Button>
             <Button size="small" type="text" onClick={() => setSelectedKeys([])}>取消</Button>
-            <Tooltip title="想按「公式规则」整批重算各档价格，去『公式规则』页点「批量重算」">
-              <Typography.Text type="secondary" style={{ fontSize: 12, cursor: 'help' }}>按公式重算？</Typography.Text>
-            </Tooltip>
           </Space>
         </div>
       )}
@@ -502,6 +717,7 @@ export default function PricingPage() {
       {viewMode === 'curated' && (
       <Table<PricingSku>
         size="small"
+        sticky
         rowKey="id"
         loading={isFetching}
         dataSource={items}
@@ -528,83 +744,25 @@ export default function PricingPage() {
         scroll={{ x: scrollX }}
         pagination={{
           current: page,
-          pageSize: PAGE_SIZE,
+          pageSize,
           total: data?.total ?? 0,
           showTotal: (t) => `共 ${t} 条`,
-          onChange: setPage,
-          showSizeChanger: false,
+          showSizeChanger: true,
+          pageSizeOptions: [50, 100, 200],
+          onChange: (p, ps) => { setPage(p); setPageSize(ps); },
         }}
-        columns={applyView([
-          { title: '产品编码', dataIndex: 'product_code', width: colW.product_code, onHeaderCell: mkResize('product_code') },
-          { title: 'SKU 编码', dataIndex: 'sku_code', width: colW.sku_code, onHeaderCell: mkResize('sku_code') },
-          { title: '描述', dataIndex: 'sku', width: colW.sku, ellipsis: true, onHeaderCell: mkResize('sku') },
-          { title: '分类', dataIndex: 'size_category', width: colW.size_category, onHeaderCell: mkResize('size_category') },
-          { title: '图片', dataIndex: 'image_url', width: colW.image_url, onHeaderCell: mkResize('image_url'), render: (v: string | null) => v ? <Image src={v} width={40} height={40} style={{ objectFit: 'cover', borderRadius: 4 }} /> : <span style={{ color: '#ddd', fontSize: 11 }}>无</span> },
-          { title: <Tooltip title="公式：物理成本 ÷ 0.4 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>标价</span></Tooltip>, dataIndex: 'list_price', width: colW.list_price, onHeaderCell: mkResize('list_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ 0.4" onSave={(nv) => saveField(r.id, 'list_price', nv)} /> },
-          { title: <Tooltip title="公式：标价 × 0.75 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>日常价</span></Tooltip>, dataIndex: 'daily_price', width: colW.daily_price, onHeaderCell: mkResize('daily_price'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="标价 × 0.75" onSave={(nv) => saveField(r.id, 'daily_price', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>小促</span></Tooltip>, dataIndex: 'small_promo', width: colW.small_promo, onHeaderCell: mkResize('small_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.855 − 0.02 − 0.006)" onSave={(nv) => saveField(r.id, 'small_promo', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>中促</span></Tooltip>, dataIndex: 'mid_promo', width: colW.mid_promo, onHeaderCell: mkResize('mid_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006)" onSave={(nv) => saveField(r.id, 'mid_promo', nv)} /> },
-          { title: <Tooltip title="公式：物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95 ｜ 竞品调价常用, 点格子或多选批量改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促</span></Tooltip>, dataIndex: 'big_promo', width: colW.big_promo, onHeaderCell: mkResize('big_promo'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="物理成本 ÷ (0.88 × 0.855 − 0.02 − 0.006) × 0.95" onSave={(nv) => saveField(r.id, 'big_promo', nv)} /> },
-          {
-            title: <Tooltip title="公式：(日常价 − 会计成本 − 税费 − 日常价 × 平台费率) ÷ 日常价 ｜ 点格子按目标毛利率反算日常价"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>毛利率</span></Tooltip>,
-            dataIndex: 'gross_margin_rate',
-            width: colW.gross_margin_rate,
-            onHeaderCell: mkResize('gross_margin_rate'),
-            render: (_: unknown, r: PricingSku) => <MarginCell row={r} onSaveDaily={(dp) => saveField(r.id, 'daily_price', dp)} />,
-          },
-          { title: <Tooltip title="公式：总出厂成本 + 物流费 + 安装费 + 外采配件成本 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>会计成本</span></Tooltip>, dataIndex: 'accounting_cost', width: colW.accounting_cost, onHeaderCell: mkResize('accounting_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="总出厂成本 + 物流费 + 安装费 + 外采配件成本" onSave={(nv) => saveField(r.id, 'accounting_cost', nv)} /> },
-          { title: <Tooltip title="所有实物成本合计，是各档价格的计算基数 ｜ 点格子可直接改"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>物理成本</span></Tooltip>, dataIndex: 'physical_cost', width: colW.physical_cost, onHeaderCell: mkResize('physical_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} formula="各项实物成本合计（出厂+木材+包装+外采配件…）" onSave={(nv) => saveField(r.id, 'physical_cost', nv)} /> },
-          { title: <Tooltip title="公式：大促价 × (1 − 平台费率) − 会计成本 − 税费 ｜ 自动算"><span style={{ borderBottom: '1px dotted #bbb', cursor: 'help' }}>大促利润</span></Tooltip>, dataIndex: 'big_promo_margin', width: colW.big_promo_margin, onHeaderCell: mkResize('big_promo_margin'), render: (v: number | null) => v == null ? '-' : `¥${v}` },
-          { title: '工厂成本', dataIndex: 'factory_cost', width: colW.factory_cost, onHeaderCell: mkResize('factory_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'factory_cost', nv)} /> },
-          { title: '木作成本', dataIndex: 'wood_cost', width: colW.wood_cost, onHeaderCell: mkResize('wood_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'wood_cost', nv)} /> },
-          { title: '物流成本', dataIndex: 'logistics_cost', width: colW.logistics_cost, onHeaderCell: mkResize('logistics_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'logistics_cost', nv)} /> },
-          { title: '安装成本', dataIndex: 'install_cost', width: colW.install_cost, onHeaderCell: mkResize('install_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'install_cost', nv)} /> },
-          { title: '包装成本', dataIndex: 'packaging_cost', width: colW.packaging_cost, onHeaderCell: mkResize('packaging_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'packaging_cost', nv)} /> },
-          { title: '外配件成本', dataIndex: 'external_parts_cost', width: colW.external_parts_cost, onHeaderCell: mkResize('external_parts_cost'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'external_parts_cost', nv)} /> },
-          { title: '平台费率', dataIndex: 'platform_fee_rate', width: colW.platform_fee_rate, onHeaderCell: mkResize('platform_fee_rate'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'platform_fee_rate', nv)} /> },
-          { title: '税费', dataIndex: 'tax', width: colW.tax, onHeaderCell: mkResize('tax'), render: (v: number | null, r: PricingSku) => <EditableNumberCell value={v} onSave={(nv) => saveField(r.id, 'tax', nv)} /> },
-          {
-            title: '操作', width: colW.actions, fixed: 'right' as const,
-            render: (_: unknown, row: PricingSku) => (
-              <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(row)}>编辑</Button>
-            ),
-          },
-        ]) as any}
+        columns={visibleColumns as any}
       />
       )}
 
       {/* 新增弹窗 */}
-      <Modal
-        title="新增定价 SKU"
-        open={createOpen}
-        onCancel={() => { setCreateOpen(false); form.resetFields(); }}
-        onOk={() => form.submit()}
-        confirmLoading={createMut.isPending}
-        width={720}
-        destroyOnClose
-      >
-        <Form form={form} layout="vertical" onFinish={(v) => createMut.mutate(v)}>
-          <SkuFormFields />
-        </Form>
+      <Modal title="新增定价 SKU" open={createOpen} onCancel={() => { setCreateOpen(false); form.resetFields(); }} onOk={() => form.submit()} confirmLoading={createMut.isPending} width={720} destroyOnClose>
+        <Form form={form} layout="vertical" onFinish={(v) => createMut.mutate(v)}><SkuFormFields /></Form>
       </Modal>
 
       {/* 编辑弹窗 */}
-      <Modal
-        title={`编辑定价 — ${editRow?.sku_code}`}
-        open={!!editRow}
-        onCancel={() => { setEditRow(null); form.resetFields(); }}
-        onOk={() => form.submit()}
-        confirmLoading={updateMut.isPending}
-        width={720}
-        destroyOnClose
-      >
-        <Form
-          form={form}
-          layout="vertical"
-          onFinish={(v) => editRow && updateMut.mutate({ id: editRow.id, patch: v })}
-        >
-          <SkuFormFields />
-        </Form>
+      <Modal title={`编辑定价 — ${editRow?.sku_code}`} open={!!editRow} onCancel={() => { setEditRow(null); form.resetFields(); }} onOk={() => form.submit()} confirmLoading={updateMut.isPending} width={720} destroyOnClose>
+        <Form form={form} layout="vertical" onFinish={(v) => editRow && updateMut.mutate({ id: editRow.id, patch: v })}><SkuFormFields /></Form>
       </Modal>
     </Space>
   );

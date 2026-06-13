@@ -73,13 +73,14 @@ export function CustomizationDialog({
   });
 
   const confirmMut = useMutation({
-    mutationFn: () => {
+    mutationFn: (ack: boolean) => {
       if (!preview) throw new Error('需要先 preview');
       return confirmCustomization({
         base_sku_code: baseSkuCode,
         dimension_changes: preview.dimension_changes as Record<string, unknown>,
         order_no: orderNo,
         note: form.getFieldValue('note'),
+        acknowledge_shortage: ack,
       });
     },
     onSuccess: (r) => {
@@ -88,7 +89,37 @@ export function CustomizationDialog({
       setPreview(null);
       form.resetFields();
     },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '确认失败'),
+    onError: (e: any) => {
+      const detail = e?.response?.data?.detail;
+      // Plan F5: 缺料 → 分组弹窗确认后重发
+      if (e?.response?.status === 409 && detail?.shortage_unacknowledged) {
+        const sc = detail.stock_check || {};
+        Modal.confirm({
+          title: '该定制单存在缺料 — 请确认',
+          width: 580,
+          okText: '已知缺料，继续生成',
+          cancelText: '先去备料',
+          onOk: () => confirmMut.mutate(true),
+          content: (
+            <div>
+              {(sc.need_purchase || []).length > 0 && (
+                <p><b>需采购：</b>{sc.need_purchase.map((i: any) =>
+                  `${i.material_name || i.material_code}(缺${i.shortage})`).join('、')}</p>
+              )}
+              {(sc.need_new_material || []).length > 0 && (
+                <p><b>需新开料：</b>{sc.need_new_material.map((i: any) =>
+                  i.material_name || i.material_code).join('、')}</p>
+              )}
+              {(sc.in_stock || []).length > 0 && (
+                <p style={{ color: '#888' }}>现货够：{sc.in_stock.length} 项</p>
+              )}
+            </div>
+          ),
+        });
+        return;
+      }
+      message.error(typeof detail === 'string' ? detail : '确认失败');
+    },
   });
 
   return (
@@ -114,7 +145,7 @@ export function CustomizationDialog({
         ) : (
           <Space key="confirm">
             <Button onClick={() => setPreview(null)}>重填尺寸</Button>
-            <Button type="primary" danger loading={confirmMut.isPending} onClick={() => confirmMut.mutate()}>
+            <Button type="primary" danger loading={confirmMut.isPending} onClick={() => confirmMut.mutate(false)}>
               确认 — 生成 {preview.proposed_custom_sku_code}
             </Button>
           </Space>

@@ -57,11 +57,12 @@ def list_customers(
 ):
     stmt = select(Customer).order_by(Customer.total_revenue.desc())
     if q:
-        from sqlalchemy import or_
-        stmt = stmt.where(or_(
-            Customer.name.ilike(f"%{q}%"),
-            Customer.phone.ilike(f"%{q}%"),
-        ))
+        # 全站统一模糊搜索: 空格分词 + 姓名字符间隙
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[Customer.name, Customer.phone],
+                          gap_cols=[Customer.name])
+        if fc is not None:
+            stmt = stmt.where(fc)
     if tier:
         stmt = stmt.where(Customer.tier == tier)
     stmt = stmt.limit(limit)
@@ -102,10 +103,11 @@ def get_customer_orders(
 
 @router.post("/aggregate")
 def trigger_aggregate(
+    include_historical: bool = Query(True, description="是否含历史导入订单 (Plan C1 双口径开关)"),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ):
-    """admin 手动触发: 重算所有客户聚合."""
-    r = customer_service.aggregate_all(db)
+    """admin 手动触发: 重算所有客户聚合. include_historical=false 排除历史订单口径."""
+    r = customer_service.aggregate_all(db, include_historical=include_historical)
     db.commit()
     return r

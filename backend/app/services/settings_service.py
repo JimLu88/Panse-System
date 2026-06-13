@@ -163,6 +163,7 @@ def _raw_ai_config(db: Session, kind: str) -> dict:
         "base_url": get(db, f"ai_{kind}_base_url"),
         "api_key": get(db, f"ai_{kind}_api_key"),
         "model": get(db, f"ai_{kind}_model"),
+        "user_agent": get(db, f"ai_{kind}_user_agent"),
     }
 
 
@@ -175,8 +176,21 @@ def get_ai_config(db: Session, kind: str) -> dict:
     (diagnose ↔ ocr), 再回落到 env ANTHROPIC_API_KEY / ai_model。
     这样用户只在任意一处配 key, AI 助手 + 截图 OCR 都能用。
     """
-    assert kind in {"diagnose", "ocr"}
+    assert kind in {"diagnose", "ocr", "ocr_fallback"}
     settings = get_settings()
+    # ocr_fallback: 独立兜底槽位 (如本机 Ollama), 不交叉回落、不借用 anthropic key —
+    # 没配就返回空, 让调用方跳过。主 OCR 额度用光/报错时自动切到它, 保持自动化不退人工。
+    if kind == "ocr_fallback":
+        own = _raw_ai_config(db, "ocr_fallback")
+        # 默认就指向本机 Ollama 标准端点: 用户只要 `ollama pull qwen2.5vl` 即自动兜底, 零配置。
+        # (Ollama 没起/没拉模型时, 兜底调用会连接失败 → 调用方安全报异常, 不会写错数据)
+        return {
+            "provider": own["provider"] or "openai",   # Ollama 走 OpenAI 兼容协议
+            "base_url": own["base_url"] or "http://host.docker.internal:11434/v1",
+            "api_key": own["api_key"] or "ollama",      # Ollama 不校验 key, 占位即可
+            "model": own["model"] or "qwen2.5vl",
+            "user_agent": own.get("user_agent") or "",
+        }
     other = "ocr" if kind == "diagnose" else "diagnose"
     own = _raw_ai_config(db, kind)
     src = own if own["api_key"] else _raw_ai_config(db, other)
@@ -185,4 +199,5 @@ def get_ai_config(db: Session, kind: str) -> dict:
         "base_url": src["base_url"] or "",
         "api_key": src["api_key"] or settings.anthropic_api_key,
         "model": src["model"] or settings.ai_model,
+        "user_agent": src.get("user_agent") or "",
     }

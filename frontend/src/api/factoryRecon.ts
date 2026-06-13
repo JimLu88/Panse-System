@@ -73,3 +73,15 @@ export const listFactoryReconItems = (params: {
 
 export const resolveFactoryReconItem = (id: number, reason: string, resolved = true) =>
   api.post(`/api/factory-recon/items/${id}/resolve`, { reason, resolved }).then((r) => r.data);
+
+// Plan L5: 差异处置闭环 — 确认归因 / 拆分归因子行
+export const RESOLUTION_KINDS = ['漏单', '价差', '运费', '补偿', '其他'] as const;
+
+export const confirmFactoryReconItem = (id: number, resolutionKind: string) =>
+  api.post(`/api/factory-recon/items/${id}/confirm`, { resolution_kind: resolutionKind })
+    .then((r) => r.data);
+
+export const splitFactoryReconItem = (
+  id: number,
+  parts: Array<{ amount: string; resolution_kind: string; remark?: string }>,
+) => api.post(`/api/factory-recon/items/${id}/split`, { parts }).then((r) => r.data);

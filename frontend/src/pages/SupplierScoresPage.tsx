@@ -6,6 +6,7 @@ import {
   Alert, Button, Card, DatePicker, Space, Table, Tag, Typography, message,
 } from 'antd';
 import dayjs from 'dayjs';
+import PresetTable from '../components/PresetTable';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   SupplierScore,
@@ -51,7 +52,8 @@ export default function SupplierScoresPage() {
                 </Button>
               </Space>
             }>
-        <Table<SupplierScore>
+        <PresetTable<SupplierScore>
+          tableKey="supplier_score"
           size="small" rowKey="supplier_id"
           dataSource={scores}
           pagination={false}

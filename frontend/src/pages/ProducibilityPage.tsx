@@ -12,6 +12,7 @@ import {
   Typography,
   message,
 } from 'antd';
+import PresetTable from '../components/PresetTable';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import {
   MaterialRequirement,
@@ -143,7 +144,8 @@ export default function ProducibilityPage() {
             />
           ) : (
             <Card title="BOM 物料明细">
-              <Table<MaterialRequirement>
+              <PresetTable<MaterialRequirement>
+                tableKey="producibility_req"
                 rowKey="material_code"
                 dataSource={result.requirements}
                 columns={reqColumns as any}

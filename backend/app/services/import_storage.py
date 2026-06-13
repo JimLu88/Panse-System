@@ -22,9 +22,14 @@ from app.models.import_file import ImportedFile
 from app.services.delivery_storage import get_root
 
 KINDS = (
-    "orders", "taobao", "alipay", "settlement", "wanshifu", "logistics",
-    "promotion", "aftersales", "refill", "account_balance",
-    "factory_recon", "purchase", "screenshot", "generic",
+    "orders", "taobao", "alipay", "settlement", "wanshifu", "wanshifu_orders",
+    "logistics", "promotion", "aftersales", "refill", "account_balance",
+    "factory_recon", "purchase", "screenshot",
+    # 系统生成档案 (2026-06-11 用户需求: 下单图/作废图/页面导出 单独分类入口)
+    "order_sheet", "order_sheet_void", "page_export",
+    # 全类目 Excel 导出 (2026-06-12 用户需求: 资料存档库留存, 超30份轮转)
+    "full_export",
+    "generic",
 )
 
 
@@ -92,6 +97,28 @@ def update_summary(db: Session, file_id: int, row_summary: dict) -> None:
     if rec is not None:
         rec.row_summary = row_summary
         db.flush()
+
+
+def delete_record(db: Session, file_id: int) -> bool:
+    """删除一条归档记录; 物理文件仅在没有其他记录共享同一路径时才删 (hash 去重共盘)。
+
+    用途: 退款作废 — 作废图生成后删掉原下单图 (用户拍板 2026-06-11)。不 commit。
+    """
+    rec = db.get(ImportedFile, file_id)
+    if rec is None:
+        return False
+    path = rec.stored_path
+    db.delete(rec)
+    db.flush()
+    still_used = db.execute(
+        select(ImportedFile).where(ImportedFile.stored_path == path)
+    ).scalars().first()
+    if still_used is None:
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:  # pragma: no cover - 文件已不在等
+            pass
+    return True
 
 
 def read(stored_path: str) -> bytes:

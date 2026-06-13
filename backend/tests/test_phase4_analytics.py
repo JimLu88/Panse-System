@@ -52,7 +52,9 @@ def test_summary_basic(db_session):
     assert s.top_products_by_profit[0]["net_profit"] == Decimal("1200")
 
 
-def test_summary_skips_historical(db_session):
+def test_summary_includes_historical(db_session):
+    # 改: 日常导入的订单大多被标 is_historical=True, 销售汇总/报表必须把它们也计入,
+    # 否则会出现"某月 0 单"的怪数。现在不再按 is_historical 过滤。
     _seed_orders(db_session, [1])
     h = Order(platform="淘宝", order_no="HIST1", order_date=date.today(),
               product_code="P1", qty=1, paid_amount=Decimal("99999"),
@@ -60,7 +62,7 @@ def test_summary_skips_historical(db_session):
     db_session.add(h); db_session.flush()
     today = date.today()
     s = sales_analytics.summary(db_session, start=today - timedelta(days=7), end=today)
-    assert s.order_count == 1   # 历史单不算
+    assert s.order_count == 2   # 历史标记的单也计入
 
 
 def test_breakdown_by_sku(db_session):
@@ -100,11 +102,12 @@ def test_forecast_30d_uses_60_day_average(db_session):
         ))
     db_session.flush()
     rows = sales_analytics.forecast_30d(db_session)
-    s1 = next(r for r in rows if r["product_code"] == "P1" and r["sku"] == "S1")
+    # 2026-06 重构: 按产品聚合, SKU 明细在 skus 里
+    s1 = next(r for r in rows if r["product_code"] == "P1")
     assert s1["last_60d_total"] == 30
     # avg = 30/60 = 0.5; forecast = 0.5 * 30 * 1.2 = 18
     assert s1["forecast_30d"] == 18
-    assert s1["sku_key"] == "P1|S1"
+    assert any(s["sku"] == "S1" and s["qty_60d"] == 30 for s in s1["skus"])
 
 
 # ----------------------------- stock advice --------------------- #
@@ -212,7 +215,7 @@ def test_asset_summary_includes_inventory_and_balances(db_session):
     s = asset_service.summary(db_session)
     cats = {c.name: float(c.amount) for c in s.categories}
     assert cats["账户余额"] == 1300.0
-    assert cats["库存账面"] == 200.0   # 20 * 10
+    assert cats["其它物料库存"] == 200.0   # 20 * 10 (M5 非 MW/AC → 其它物料)
     assert s.total >= Decimal("1500")
 
 

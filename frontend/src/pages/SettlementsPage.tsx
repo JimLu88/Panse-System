@@ -5,16 +5,18 @@
  *  2) 结算明细导入: 导入 微信/聚合(billDetail) 与 支付宝 结算账单, 看每笔流水的收款/扣款。
  */
 import { useState, type ReactNode } from 'react';
+import PresetTable from '../components/PresetTable';
 import {
-  Alert, Card, Col, Input, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Tooltip,
+  Alert, Button, Card, Col, Drawer, Input, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Tooltip,
   Typography, Upload, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { UploadOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ReconGap, ReconRow, SettlementRow,
-  fetchReconGap, fetchReconSummary, fetchSettlementSummary, importSettlementBill,
+  ReconGap, ReconGapDetail, ReconRow, SettlementRow,
+  fetchReconGap, fetchReconGapDetail, fetchReconSummary, fetchSettlementSummary, importSettlementBill,
   listReconciliation, listSettlements,
 } from '../api/settlements';
 
@@ -45,25 +47,74 @@ const numCol = (
   render: (v: number | null) => yuan(v),
 });
 
+// Plan L1: 月份缺口下钻 Drawer — 该月待补订单清单 + 缺什么证据 + 去导入
+function GapDetailDrawer({ period, onClose }: { period: string | null; onClose: () => void }) {
+  const { data, isLoading } = useQuery<ReconGapDetail>({
+    queryKey: ['recon-gap-detail', period],
+    queryFn: () => fetchReconGapDetail(period!),
+    enabled: !!period,
+  });
+  return (
+    <Drawer title={`${period ?? ''} 待补订单清单`} open={!!period} onClose={onClose} width={760}>
+      {isLoading && <Card loading />}
+      {data && (
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          {data.actions.length > 0 && (
+            <Alert
+              type="warning" showIcon
+              message={`该月 ${data.pending_count} 单待补到账证据`}
+              description={<ul style={{ margin: 0, paddingLeft: 18 }}>
+                {data.actions.map((a, i) => <li key={i}>{a}</li>)}
+              </ul>}
+              action={<Link to="/importer"><Button size="small">去导入</Button></Link>}
+            />
+          )}
+          <Table
+            size="small" rowKey="order_no"
+            dataSource={data.rows}
+            pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [50, 100, 200] }}
+            columns={[
+              { title: '订单号', dataIndex: 'order_no', width: 180, ellipsis: true },
+              { title: '日期', dataIndex: 'order_date', width: 100 },
+              { title: '店铺', dataIndex: 'shop', width: 90, ellipsis: true },
+              { title: '客户', dataIndex: 'customer_name', width: 90, ellipsis: true },
+              { title: '产品', dataIndex: 'product_name', ellipsis: true },
+              { title: '应到账', dataIndex: 'expected_net', width: 100, align: 'right',
+                render: (v: number | null) => yuan(v) },
+              { title: '缺什么', dataIndex: 'missing', width: 180,
+                render: (m: string[]) => (m || []).map((x) => <Tag key={x} color="orange">{x}</Tag>) },
+            ]}
+          />
+        </Space>
+      )}
+    </Drawer>
+  );
+}
+
 // 到账覆盖缺口诊断: 按月铺开覆盖率, 指出该补哪几个月的流水/账单
 function ReconGapCard() {
   const { data } = useQuery<ReconGap>({ queryKey: ['recon-gap'], queryFn: fetchReconGap });
+  const [detailPeriod, setDetailPeriod] = useState<string | null>(null);
   if (!data || data.months.length === 0) return null;
   return (
-    <Card size="small" title="到账覆盖缺口诊断（按月该补哪批流水/账单）" style={{ marginTop: 12 }}>
+    <Card size="small" title="到账覆盖缺口诊断（按月该补哪批流水/账单，点月份看清单）" style={{ marginTop: 12 }}>
       {data.worst_months.length > 0 && (
         <Alert
           type="info" showIcon style={{ marginBottom: 12 }}
           message={`待补到账金额最高的月份: ${data.worst_months.join('、')} — 优先补导这几个月的早期订单 / billDetail / 企业号流水`}
         />
       )}
+      <GapDetailDrawer period={detailPeriod} onClose={() => setDetailPeriod(null)} />
       <Table<ReconGap['months'][number]>
         rowKey="period"
         dataSource={data.months}
         pagination={false}
         size="small"
         columns={[
-          { title: '月份', dataIndex: 'period' },
+          { title: '月份', dataIndex: 'period',
+            render: (v: string, r) => r.pending > 0
+              ? <a onClick={() => setDetailPeriod(v)}>{v}</a>
+              : v },
           { title: '订单', dataIndex: 'orders', align: 'right' },
           { title: '有到账', dataIndex: 'evidence', align: 'right' },
           { title: '待补', dataIndex: 'pending', align: 'right' },
@@ -232,10 +283,11 @@ function ReconciliationTab() {
             onSearch={(v) => setQ(v)}
           />
         </Space>
-        <Table<ReconRow>
+        <PresetTable<ReconRow>
+          tableKey="settlement_recon"
           rowKey="order_no" size="small" loading={isLoading}
           dataSource={data?.rows ?? []}
-          pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 单 (筛选后)` }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (t) => `共 ${t} 单 (筛选后)` }}
           scroll={{ x: 1900 }}
           bordered
         />
@@ -305,9 +357,10 @@ function SettlementDetailTab() {
       )}
 
       <Card size="small" title="结算明细(近 300 笔)">
-        <Table<SettlementRow>
+        <PresetTable<SettlementRow>
+          tableKey="settlement_bill"
           rowKey="id" size="small" loading={isLoading} dataSource={rows}
-          pagination={{ pageSize: 50 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '来源', dataIndex: 'source', width: 90, render: (v) => <Tag>{SOURCE_LABEL[v] ?? v}</Tag> },
             { title: '入账时间', dataIndex: 'settle_time', width: 160, render: (v) => v ? new Date(v).toLocaleString('zh-CN') : <Tag color="warning">无日期</Tag> },

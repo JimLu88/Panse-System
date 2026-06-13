@@ -34,6 +34,7 @@ import {
   message,
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 import type { UploadFile } from 'antd/es/upload/interface';
 import {
   CameraOutlined,
@@ -65,6 +66,9 @@ import {
   listDeliveryNotes,
   listSupplierFolder,
   listSuppliers,
+  getAlipaySupplierCandidates,
+  getPurchaseSupplierCandidates,
+  autoCreateSuppliers,
   patchLineMatch,
   patchSupplier,
   reconcilePayments,
@@ -213,6 +217,8 @@ function SupplierListPanel({
 }) {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
+  const [acOpen, setAcOpen] = useState(false);
+  const [acSource, setAcSource] = useState<'alipay' | 'purchase'>('alipay');
   const [form] = Form.useForm();
   const createMut = useMutation({
     mutationFn: createSupplier,
@@ -232,14 +238,18 @@ function SupplierListPanel({
       size="small"
       title="供应商"
       extra={
-        <Button
-          type="primary"
-          size="small"
-          icon={<PlusOutlined />}
-          onClick={() => setOpen(true)}
-        >
-          新增
-        </Button>
+        <Space>
+          <Button size="small" icon={<ImportOutlined />} onClick={() => { setAcSource('alipay'); setAcOpen(true); }}>从支付宝建</Button>
+          <Button size="small" icon={<ImportOutlined />} onClick={() => { setAcSource('purchase'); setAcOpen(true); }}>从采购记录建</Button>
+          <Button
+            type="primary"
+            size="small"
+            icon={<PlusOutlined />}
+            onClick={() => setOpen(true)}
+          >
+            新增
+          </Button>
+        </Space>
       }
     >
       <List
@@ -274,6 +284,13 @@ function SupplierListPanel({
                   {SUPPLIER_TYPE_LABEL[s.supplier_type] ?? s.supplier_type}
                 </Tag>
                 <strong>{s.name}</strong>
+                {s.latest_score != null && (
+                  <Tooltip title={`月度评分 · 期 ${s.score_period ?? '-'}`}>
+                    <Tag color={Number(s.latest_score) >= 80 ? 'green' : Number(s.latest_score) >= 60 ? 'orange' : 'red'}>
+                      {s.latest_rank != null ? `#${s.latest_rank} ` : ''}评分 {Number(s.latest_score).toFixed(0)}
+                    </Tag>
+                  </Tooltip>
+                )}
               </Space>
               {(s.alipay_counterparty_keywords?.length ?? 0) > 0 && (
                 <Typography.Text type="secondary" style={{ fontSize: 10 }}>
@@ -292,6 +309,8 @@ function SupplierListPanel({
       >
         支付宝自动对账
       </Button>
+
+      <AlipaySupplierModal open={acOpen} onClose={() => setAcOpen(false)} source={acSource} />
 
       <Modal
         title="新增供应商"
@@ -473,12 +492,13 @@ function SupplierDetailPanel({
         </Space>
       </Space>
 
-      <Table<DeliveryNote>
+      <PresetTable<DeliveryNote>
+        tableKey="delivery_note"
         rowKey="id"
         size="small"
         loading={isLoading}
         dataSource={notes ?? []}
-        pagination={{ pageSize: 30 }}
+        pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         onRow={(r) => ({
           onClick: () => onOpenNote(r.id),
           style: { cursor: 'pointer' },
@@ -1066,6 +1086,89 @@ const DECISION_COLOR: Record<PaymentMatch['decision'], string> = {
   skipped: 'default',
 };
 
+// #3: 从支付宝流水挖"多次打过款、还不是供应商"的对手方, 勾选批量建档(自动加支付宝关键字)
+function AlipaySupplierModal({ open, onClose, source = 'alipay' }: { open: boolean; onClose: () => void; source?: 'alipay' | 'purchase' }) {
+  const qc = useQueryClient();
+  const [selected, setSelected] = useState<string[]>([]);
+  const [type, setType] = useState('other');
+  const { data, isFetching } = useQuery({
+    queryKey: ['supplier-candidates', source],
+    queryFn: () => (source === 'purchase' ? getPurchaseSupplierCandidates(1) : getAlipaySupplierCandidates(2)),
+    enabled: open,
+  });
+  const mut = useMutation({
+    mutationFn: () => autoCreateSuppliers(selected, type),
+    onSuccess: (r) => {
+      message.success(`已建 ${r.count} 个供应商`);
+      setSelected([]);
+      qc.invalidateQueries({ queryKey: ['suppliers'] });
+      onClose();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '建供应商失败'),
+  });
+  const cands = data?.candidates ?? [];
+  return (
+    <Modal
+      title={source === 'purchase' ? '从采购记录建供应商' : '从支付宝流水自动建供应商'}
+      open={open}
+      onCancel={onClose}
+      width={680}
+      okText={`建 ${selected.length} 个`}
+      okButtonProps={{ disabled: selected.length === 0, loading: mut.isPending }}
+      onOk={() => mut.mutate()}
+      destroyOnClose
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message={source === 'purchase'
+          ? '下面是配件采购记录里的供应商(还不是档案)。这是真实付款对象, 比支付宝准。勾选建档。'
+          : '下面是支付宝里多次给它打过款、但还不是供应商的对手方。勾选真正的供应商建档——会自动加支付宝关键字，下次「自动对账」就能命中。'}
+      />
+      <Space style={{ marginBottom: 8 }}>
+        <span>类型</span>
+        <Select
+          size="small"
+          style={{ width: 130 }}
+          value={type}
+          onChange={setType}
+          options={[
+            { value: 'woodwork', label: '木作工厂' },
+            { value: 'rock_slab', label: '岩板厂' },
+            { value: 'glass', label: '玻璃厂' },
+            { value: 'hardware', label: '五金/配件' },
+            { value: 'logistics', label: '物流' },
+            { value: 'other', label: '其他' },
+          ]}
+        />
+      </Space>
+      <Table
+        size="small"
+        rowKey="counterparty"
+        loading={isFetching}
+        dataSource={cands}
+        pagination={false}
+        scroll={{ y: 360 }}
+        locale={{ emptyText: '没有候选（流水里多次付款的对手方都已是供应商）' }}
+        rowSelection={{ selectedRowKeys: selected, onChange: (k) => setSelected(k as string[]) }}
+        columns={[
+          { title: '对手方', dataIndex: 'counterparty', ellipsis: true },
+          { title: '打款次数', dataIndex: 'payment_count', width: 90, align: 'right' as const },
+          {
+            title: '累计金额',
+            dataIndex: 'total_paid',
+            width: 120,
+            align: 'right' as const,
+            render: (v: number) => `¥${Number(v).toLocaleString()}`,
+          },
+        ]}
+      />
+    </Modal>
+  );
+}
+
+
 function ReconcileModal({ onClose }: { onClose: () => void }) {
   const qc = useQueryClient();
   const [account, setAccount] = useState<string | undefined>(undefined);
@@ -1217,7 +1320,7 @@ function ReconcileModal({ onClose }: { onClose: () => void }) {
             size="small"
             rowKey="flow_id"
             dataSource={preview.matches}
-            pagination={{ pageSize: 50 }}
+            pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
             columns={[
               {
                 title: '决策',

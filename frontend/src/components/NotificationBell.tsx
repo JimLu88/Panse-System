@@ -38,6 +38,16 @@ const SEVERITY_ICON: Record<string, React.ReactNode> = {
 };
 
 const MODAL_COOLDOWN_KEY = 'panse_alert_modal_seen';
+const MODAL_SHOWN_KEY = 'panse_alert_modal_shown_ids';
+
+// C4: 已弹过的告警 id 持久化到 sessionStorage — 刷新页面不重弹
+function loadShownIds(): Set<number> {
+  try {
+    return new Set(JSON.parse(sessionStorage.getItem(MODAL_SHOWN_KEY) || '[]'));
+  } catch {
+    return new Set();
+  }
+}
 
 function isInCooldown(): boolean {
   const raw = localStorage.getItem(MODAL_COOLDOWN_KEY);
@@ -86,19 +96,21 @@ export default function NotificationBell() {
     return out;
   }, [alerts]);
 
-  const [modalShownIds, setModalShownIds] = useState<Set<number>>(new Set());
+  const [modalShownIds, setModalShownIds] = useState<Set<number>>(loadShownIds);
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAlerts, setModalAlerts] = useState<AlertItem[]>([]);
 
-  // critical 出现 → 强弹 modal (cooldown 5 分钟)
+  // critical / 退款待处理 出现 → 强弹 modal (cooldown 5 分钟; F3 扩 refund_pending)
   useEffect(() => {
-    const crits = alerts.filter((a) => a.severity === 'critical');
+    const crits = alerts.filter((a) => a.severity === 'critical' || a.kind === 'refund_pending');
     if (crits.length === 0 || isInCooldown()) return;
     const unseen = crits.filter((a) => !modalShownIds.has(a.id));
     if (unseen.length > 0) {
       setModalAlerts(crits);
       setModalOpen(true);
-      setModalShownIds(new Set([...modalShownIds, ...crits.map((c) => c.id)]));
+      const next = new Set([...modalShownIds, ...crits.map((c) => c.id)]);
+      setModalShownIds(next);
+      try { sessionStorage.setItem(MODAL_SHOWN_KEY, JSON.stringify([...next])); } catch { /* 忽略 */ }
       markCooldown(crits.map((c) => c.id));
     }
   }, [alerts, modalShownIds]);

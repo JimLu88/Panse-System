@@ -5,6 +5,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Popover,
   Select,
   Segmented,
   Space,
@@ -16,7 +17,42 @@ import {
 import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
-import { Material, createMaterial, getNextMaterialCode, listMaterials, updateMaterial } from '../api/client';
+import FieldPresetBar, { fieldsFromColumns, applyPreset } from '../components/FieldPresetBar';
+import { Material, createMaterial, getMaterialUsedInProducts, getNextMaterialCode, listMaterials, updateMaterial } from '../api/client';
+
+// #5: 物料反推产品 — 点「查看」弹出 BOM 里用到此物料的产品(懒加载)
+function UsedInCell({ code }: { code: string }) {
+  const [open, setOpen] = useState(false);
+  const { data, isFetching } = useQuery({
+    queryKey: ['material-used-in', code],
+    queryFn: () => getMaterialUsedInProducts(code),
+    enabled: open,
+  });
+  const content = (
+    <div style={{ maxWidth: 400, maxHeight: 300, overflow: 'auto' }}>
+      {isFetching ? (
+        <Typography.Text type="secondary">加载中…</Typography.Text>
+      ) : data && data.length > 0 ? (
+        <Table
+          size="small" rowKey="product_code" pagination={false} dataSource={data}
+          columns={[
+            { title: '产品', dataIndex: 'product_name', ellipsis: true, render: (v: string | null, r: any) => v || r.product_code },
+            { title: '编码', dataIndex: 'product_code', width: 130 },
+            { title: '用量', dataIndex: 'qty_per_product', width: 56, align: 'right' as const },
+            { title: 'SKU', dataIndex: 'sku_count', width: 48, align: 'right' as const },
+          ]}
+        />
+      ) : (
+        <Typography.Text type="secondary">没有产品用到此物料</Typography.Text>
+      )}
+    </div>
+  );
+  return (
+    <Popover trigger="click" open={open} onOpenChange={setOpen} content={content} title="用到此物料的产品 (BOM 反查)">
+      <a>查看</a>
+    </Popover>
+  );
+}
 
 type FilterKey = 'all' | 'standard' | 'custom';
 const PREFIX_OPTIONS = [
@@ -37,6 +73,12 @@ export default function MaterialsPage() {
   const [previewCode, setPreviewCode] = useState<string>('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
+  // #图4: 物料筛选 — 编码前缀 / 床铺板·非床铺板 / 尺寸类型 / 单位
+  const [prefix, setPrefix] = useState('all');
+  const [bedboard, setBedboard] = useState('all');
+  const [sizeType, setSizeType] = useState<string | undefined>(undefined);
+  const [unitF, setUnitF] = useState<string | undefined>(undefined);
 
   const fetchPreview = async (prefix: string) => {
     setPreviewLoading(true);
@@ -62,6 +104,18 @@ export default function MaterialsPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['materials', q, isCustom],
     queryFn: () => listMaterials(q || undefined, isCustom),
+  });
+
+  // 客户端筛选(物料表已全量加载) — 前缀/床铺板/尺寸/单位
+  const sizeOpts = Array.from(new Set((data ?? []).map((m) => m.size_type).filter(Boolean))) as string[];
+  const unitOpts = Array.from(new Set((data ?? []).map((m) => m.unit).filter(Boolean))) as string[];
+  const filtered = (data ?? []).filter((m) => {
+    if (prefix !== 'all' && !String(m.code || '').toUpperCase().startsWith(prefix)) return false;
+    if (bedboard === 'bed' && !/铺板/.test(m.name || '')) return false;
+    if (bedboard === 'nonbed' && /铺板/.test(m.name || '')) return false;
+    if (sizeType && m.size_type !== sizeType) return false;
+    if (unitF && m.unit !== unitF) return false;
+    return true;
   });
 
   const updateMut = useMutation({
@@ -103,6 +157,11 @@ export default function MaterialsPage() {
         v == null ? <Tag color="red">待补</Tag> : <span>{v}</span>,
     },
     { title: '备注', dataIndex: 'remark', ellipsis: true },
+    {
+      title: '用于产品',
+      width: 80,
+      render: (_: unknown, row: Material) => <UsedInCell code={row.code} />,
+    },
     {
       title: '操作',
       width: 80,
@@ -147,14 +206,39 @@ export default function MaterialsPage() {
         </Space>
       </Space>
 
-      <Segmented
-        value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
-        options={[
-          { label: '精选视图（可编辑）', value: 'curated' },
-          { label: '全部列', value: 'full' },
-        ]}
-      />
+      <Space wrap>
+        <Segmented
+          value={viewMode}
+          onChange={(v) => setViewMode(v as 'curated' | 'full')}
+          options={[
+            { label: '精选视图（可编辑）', value: 'curated' },
+            { label: '全部列', value: 'full' },
+          ]}
+        />
+        {viewMode === 'curated' && (
+          <FieldPresetBar
+            tableKey="material"
+            allFields={fieldsFromColumns(columns)}
+            defaults={[{ name: '常用', fields: ['material_code', 'material_name', 'unit', 'calc_price', 'spec'] }]}
+            onChange={setVisibleKeys}
+          />
+        )}
+      </Space>
+
+      {viewMode === 'curated' && (
+        <Space wrap>
+          <Typography.Text type="secondary">筛选:</Typography.Text>
+          <Select size="middle" style={{ width: 130 }} value={prefix} onChange={setPrefix}
+            options={[{ value: 'all', label: '全部类别' }, { value: 'AC', label: 'AC 配件' }, { value: 'MW', label: 'MW 木料' }, { value: 'MP', label: 'MP 人力' }, { value: 'SP', label: 'SP 特殊' }]} />
+          <Select size="middle" style={{ width: 130 }} value={bedboard} onChange={setBedboard}
+            options={[{ value: 'all', label: '全部' }, { value: 'bed', label: '仅床铺板' }, { value: 'nonbed', label: '非床铺板' }]} />
+          <Select size="middle" allowClear placeholder="尺寸类型" style={{ width: 130 }} value={sizeType} onChange={setSizeType}
+            options={sizeOpts.map((s) => ({ value: s, label: s }))} />
+          <Select size="middle" allowClear placeholder="单位" style={{ width: 110 }} value={unitF} onChange={setUnitF}
+            options={unitOpts.map((s) => ({ value: s, label: s }))} />
+          <Typography.Text type="secondary">共 {filtered.length} 项</Typography.Text>
+        </Space>
+      )}
 
       {viewMode === 'full' && <FullColumnView entity="material" defaultShowAll />}
 
@@ -162,9 +246,9 @@ export default function MaterialsPage() {
       <Table<Material>
         rowKey="id"
         loading={isLoading}
-        dataSource={data}
-        columns={columns as any}
-        pagination={{ pageSize: 20 }}
+        dataSource={filtered}
+        columns={applyPreset(columns, visibleKeys) as any}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         size="middle"
       />
       )}

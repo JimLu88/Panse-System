@@ -1098,6 +1098,27 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         },
         "group_by": [], "parent_fields": [],
     },
+    "wanshifu_bill": {
+        "label": "万师傅月结账单",
+        "description": "每行 = 万师傅一笔安装/售后结算 (WanshifuBill), 用于安装费对账应付口径。"
+                       "订单号列空时, 系统自动从「备注/常用备注」里抽淘宝订单号(15-19位)补成关联, "
+                       "再按服务类型分流安装费/售后成本。走专用导入器入库 (零损伤去重)。",
+        "fields": {
+            "bill_date": {"type": "date", "required": False, "desc": "账单/结算日期",
+                          "aliases": ["日期", "账单日期", "结算日期"]},
+            "order_no": {"type": "str", "required": False, "desc": "订单号 (空时从备注抽淘宝单号补)",
+                         "aliases": ["订单号", "关联订单号", "平台订单号"]},
+            "service_type": {"type": "str", "required": False, "desc": "服务类型 (安装/售后/维修)",
+                             "aliases": ["服务类型", "类型"]},
+            "amount": {"type": "decimal", "required": True, "desc": "结算金额",
+                       "aliases": ["金额", "扣款金额", "结算金额", "费用"]},
+            "status": {"type": "str", "required": False, "desc": "结算状态",
+                       "aliases": ["状态", "结算状态"]},
+            "remark": {"type": "str", "required": False, "desc": "备注 (常用备注里常含关联淘宝订单号)",
+                       "aliases": ["备注", "常用备注", "客户备注", "订单备注"]},
+        },
+        "group_by": [], "parent_fields": [],
+    },
     "brand_marketing": {
         "label": "品牌营销",
         "description": "每行 = 一个品牌营销项目 (BrandMarketing).",

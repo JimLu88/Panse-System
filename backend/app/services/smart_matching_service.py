@@ -47,6 +47,19 @@ SALARY_KEYS = ("工资", "薪资", "外包")
 # 工厂名兜底关键字 (库里没工厂名时仍能粗匹配)
 FACTORY_KEYS = ("家具", "工厂", "木业", "木器", "家居")
 
+# ── 段 0: 用户写死规则 (2026-06-11 拍板, 永不再误归成采购/不再报异常) ──
+# 理财申购/单次转入 = 支付宝余额⇄余额宝的账户内转移, 不是经营支出。
+INTERNAL_TRANSFER_KEYS = (
+    "理财申购", "理财赎回", "余额宝", "余利宝", "单次转入", "单次转出",
+)
+# 消费者体验提升计划服务费 = 淘宝官方按单代扣的平台服务费 (退货宝等, 按店铺类目/
+# 规模/售后情况定价), 对手方多为「上海淘天商业管理有限公司」→ 平台费/经营。
+PLATFORM_FEE_KEYS = (
+    "消费者体验提升计划", "淘天商业", "平台服务费", "天猫服务费",
+)
+# 消费者保证金充值 → 平台保证金 (资产, 非费用)
+PLATFORM_DEPOSIT_KEYS = ("消费者保证金", "保证金充值")
+
 
 def _matches(text: Optional[str], keys: tuple[str, ...]) -> bool:
     if not text:
@@ -94,6 +107,14 @@ def _classify(flow: AlipayFlow, lk: _Lookups) -> Optional[str]:
     has_ron = bool((flow.related_order_no or "").strip())
     ron = _order_key(flow.related_order_no)
     desc = " ".join(filter(None, [flow.counterparty, flow.remark, flow.transaction_type]))
+
+    # 段 0: 用户写死的确定性规则, 优先于一切 (理财转移/平台代扣费/保证金)
+    if _matches(desc, INTERNAL_TRANSFER_KEYS):
+        return "internal_transfer"
+    if _matches(desc, PLATFORM_DEPOSIT_KEYS):
+        return "platform_deposit"
+    if _matches(desc, PLATFORM_FEE_KEYS):
+        return "platform_fee"
 
     # 段 1: 关联订单号直挂 (归一化后比对真实订单/工厂下单)
     if ron:

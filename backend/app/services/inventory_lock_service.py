@@ -72,10 +72,20 @@ def _get_or_create_inventory(
         stmt = stmt.with_for_update()
     row = db.execute(stmt).scalar_one_or_none()
     if row is None:
-        row = PartInventory(warehouse=warehouse, material_code=material_code,
-                            physical_qty=0, locked_qty=0)
-        db.add(row)
-        db.flush()
+        # 并发首锁竞态 (Plan C6): 两事务同时 get-miss → 双 INSERT。
+        # 用 SAVEPOINT 包住插入, 撞 (warehouse, material_code) 唯一键(迁移 0074)后
+        # 回滚到 SAVEPOINT 再带行锁重查, 复用对方插入的行。
+        from sqlalchemy.exc import IntegrityError
+        try:
+            with db.begin_nested():
+                row = PartInventory(warehouse=warehouse, material_code=material_code,
+                                    physical_qty=0, locked_qty=0)
+                db.add(row)
+                db.flush()
+        except IntegrityError:
+            row = db.execute(stmt).scalar_one_or_none()
+            if row is None:  # pragma: no cover - 对方事务回滚了, 极小概率
+                raise
     return row
 
 
@@ -143,20 +153,38 @@ def lock_for_factory_order(
         # 不足 → critical alert
         if inv.available_qty < 0:
             missing = -inv.available_qty
+            dedupe = f"low_stock_part:{line.material_code}"
+            # C4: 同一物料被多个工厂单锁缺 → factory_order_ids 追加进列表, 不覆盖
+            prior = alert_service.get_active_context(db, dedupe) or {}
+            fo_ids = [int(x) for x in (prior.get("factory_order_ids") or []) if x is not None]
+            if prior.get("factory_order_id") is not None and prior["factory_order_id"] not in fo_ids:
+                fo_ids.append(int(prior["factory_order_id"]))
+            if factory_order_id not in fo_ids:
+                fo_ids.append(factory_order_id)
+            # 推送文案人话化 (用户拍板 2026-06-11): 数量整数化 + 写出配件名称
+            def _n(v):
+                f = float(v or 0)
+                return str(int(f)) if f == int(f) else f"{f:g}"
+            from app.models.material import Material as _Mat
+            _mat_name = db.execute(
+                select(_Mat.name).where(_Mat.code == line.material_code)
+            ).scalar_one_or_none() or ""
+            _label = f"{_mat_name} ({line.material_code})" if _mat_name else line.material_code
             alert = alert_service.upsert(
                 db,
                 kind="low_stock_part",
                 severity="critical",
-                title=f"配件缺货: {line.material_code}",
-                body=(f"{line.material_code} 当前已锁定 {inv.locked_qty} > 物理 {inv.physical_qty}, "
-                      f"缺 {missing} 件. 请尽快入库或调整订单."),
-                dedupe_key=f"low_stock_part:{line.material_code}",
+                title=f"配件缺货: {_label}",
+                body=(f"「{_label}」工厂订单需要 {_n(inv.locked_qty)} 件, 仓库只有 {_n(inv.physical_qty)} 件, "
+                      f"还缺 {_n(missing)} 件。请尽快采购入库, 或调整工厂订单。"),
+                dedupe_key=dedupe,
                 related_url=f"/inventory/parts?code={line.material_code}",
                 context={"material_code": line.material_code,
                          "physical": float(inv.physical_qty),
                          "locked": float(inv.locked_qty),
                          "missing": float(missing),
-                         "factory_order_id": factory_order_id},
+                         "factory_order_id": factory_order_id,
+                         "factory_order_ids": fo_ids},
                 sticky=True,
             )
             result.shortages.append({
@@ -377,7 +405,78 @@ def disassemble_product_to_parts(
             actor=actor, remark=remark or f"成品 {product_code} 拆 BOM",
         )
         added.append({"material_code": line.material_code, "qty": float(delta)})
-    return {"product_remaining": float(pinv.physical_qty), "parts_added": added}
+
+    # 拆解留痕 (用户需求 2026-06-11: 历史可查 + 可回撤)
+    from app.models.disassembly_log import DisassemblyLog
+    log = DisassemblyLog(
+        product_code=product_code, sku_code=sku_code, qty=qty_d,
+        parts_json=added, actor=actor,
+    )
+    db.add(log)
+    db.flush()
+    return {"product_remaining": float(pinv.physical_qty), "parts_added": added,
+            "log_id": log.id}
+
+
+def undo_disassembly(db: Session, log_id: int, *, actor: str = "user") -> dict:
+    """回撤一次拆 BOM (用户需求 2026-06-11: 误操作可补救)。
+
+    反向操作: 成品 physical += qty, 每项物料 physical -= qty。
+    物料已被消耗到不够扣时拒绝 (提示先盘库), 防止扣成负数。只能撤一次。
+    """
+    from datetime import datetime, timezone
+
+    from app.models.disassembly_log import DisassemblyLog
+    log = db.get(DisassemblyLog, log_id)
+    if log is None:
+        raise ValueError(f"拆解记录 {log_id} 不存在")
+    if log.undone_at is not None:
+        raise ValueError("该次拆解已经回撤过, 不能重复回撤")
+
+    # 物料先验: 全部够扣才动手 (避免扣一半失败)
+    parts = log.parts_json or []
+    for p in parts:
+        inv = _get_or_create_inventory(db, p["material_code"])
+        if Decimal(inv.physical_qty or 0) < Decimal(str(p["qty"])):
+            raise ValueError(
+                f"物料 {p['material_code']} 现库存不足 {p['qty']} (可能已被领用), "
+                "无法整笔回撤, 请先盘库核对。")
+
+    qty_d = Decimal(str(log.qty))
+    pstmt = select(ProductInventory).where(
+        ProductInventory.product_code == log.product_code,
+        (ProductInventory.sku == log.sku_code) if log.sku_code else
+        ProductInventory.product_code == log.product_code,
+    )
+    pinv = db.execute(pstmt).scalar_one_or_none()
+    if pinv is None:
+        raise ValueError(f"成品 {log.product_code} 库存行不存在, 无法回撤")
+    pinv.physical_qty = Decimal(pinv.physical_qty or 0) + qty_d
+
+    for p in parts:
+        inv = _get_or_create_inventory(db, p["material_code"])
+        inv.physical_qty = Decimal(inv.physical_qty or 0) - Decimal(str(p["qty"]))
+        _write_ledger(
+            db, source_kind="disassemble_undo", source_id=log.id,
+            material_code=p["material_code"], product_code=log.product_code,
+            sku_code=log.sku_code, kind="outbound", qty=Decimal(str(p["qty"])),
+            actor=actor, remark=f"回撤拆BOM #{log.id}",
+        )
+    log.undone_at = datetime.now(timezone.utc)
+    log.undone_by = actor
+    db.flush()
+    # 回撤动作进修改档案
+    try:
+        from app.services import field_change_service
+        field_change_service.record(
+            db, table="disassembly_logs", pk=log.id, field="undone",
+            old="已拆解", new=f"已回撤 (成品+{qty_d}, {len(parts)} 项物料扣回)",
+            actor=actor, row_label=f"拆BOM {log.product_code} ×{qty_d}",
+            field_label="拆BOM回撤",
+        )
+    except Exception:  # pragma: no cover
+        pass
+    return {"ok": True, "product_restored": float(qty_d), "parts_removed": len(parts)}
 
 
 # ----------------------------- 手动调整 / 盘点 ------------------- #

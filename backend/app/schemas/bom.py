@@ -10,6 +10,7 @@ class BomLineOut(BaseModel):
     product_code: str
     product_name: Optional[str] = None        # BOM 清单页显示用(join 产品总表)
     product_image_url: Optional[str] = None    # 产品图片(join 产品总表)
+    product_category: Optional[str] = None     # 产品类目(join 产品总表, 供按类目筛)
     sku: Optional[str]
     sku_code: Optional[str]
     material_code: str
@@ -26,6 +27,18 @@ class BomLineUpdate(BaseModel):
     material_code: Optional[str] = None
     material_name: Optional[str] = None
     unit: Optional[str] = None
+    qty_per_product: Optional[Decimal] = None
+
+
+class BomLineCreate(BaseModel):
+    """行内新增一条 BOM (图2): 选已有物料编码, 或给新物料名+前缀自动建编码。"""
+    product_code: str
+    sku: Optional[str] = None
+    sku_code: Optional[str] = None
+    material_code: Optional[str] = None        # 选已有物料编码
+    new_material_name: Optional[str] = None     # 或: 新建物料的名称 (编码自动生成/或同时填 material_code)
+    material_prefix: Optional[str] = "AC"        # 新建物料自动编码前缀 (AC/MP/MW/SP)
+    unit: Optional[str] = "套"
     qty_per_product: Optional[Decimal] = None
 
 

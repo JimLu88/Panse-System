@@ -110,6 +110,72 @@ def import_alipay_csv(db: Session, csv_text: str, *, account: str, commit: bool 
     return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
 
 
+def import_alipay_bill(
+    db: Session, text: str, *, account: str, commit: bool = True,
+) -> AlipayImportReport:
+    """支付宝商家『对账单』(开放平台 API / PC 下载, signcustomer 资金账单) 导入。
+
+    格式与标准 CSV 不同 (用户 2026-06-12 反馈):
+    - 头尾各有若干 `#` 注释行 (账号/起止日期/合计/导出时间);
+    - 列头: 账务流水号,业务流水号,商户订单号,商品名称,发生时间,对方账号,
+            收入金额(+元),支出金额(-元),账户余额(元),交易渠道,业务类型,备注;
+    - 每个字段值带尾随制表符 (防 Excel 截断长数字);
+    - 收入/支出分两列 → 合成带符号金额 (收入+ / 支出-)。
+    """
+    report = AlipayImportReport()
+    lines = text.splitlines()
+    hdr_idx = None
+    for i, ln in enumerate(lines):
+        if "账务流水号" in ln and "账户余额" in ln:
+            hdr_idx = i
+            break
+    if hdr_idx is None:
+        report.errors.append("非支付宝对账单格式 (未找到『账务流水号…账户余额』列头)")
+        return report
+    header = [h.strip().strip("\t") for h in lines[hdr_idx].split(",")]
+
+    def col(sub: str) -> Optional[int]:
+        for i, h in enumerate(header):
+            if sub in h:
+                return i
+        return None
+
+    ci = {k: col(k) for k in (
+        "账务流水号", "业务流水号", "商户订单号", "商品名称", "发生时间",
+        "对方账号", "收入金额", "支出金额", "账户余额", "交易渠道", "业务类型", "备注")}
+    bal_idx = ci.get("账户余额") or 0
+    rows: list[dict[str, Any]] = []
+    for ln in lines[hdr_idx + 1:]:
+        if not ln.strip() or ln.lstrip().startswith("#"):
+            continue
+        cells = [c.strip().strip("\t").strip() for c in ln.split(",")]
+        if len(cells) <= bal_idx:
+            continue
+
+        def g(k: str) -> Optional[str]:
+            idx = ci.get(k)
+            return cells[idx] if idx is not None and idx < len(cells) else None
+
+        income = _decimal(g("收入金额")) or Decimal("0")
+        expense = _decimal(g("支出金额")) or Decimal("0")
+        # 支出金额列本身带负号 (表头『支出金额(-元)』) → 用 abs 兜底, 兼容正负两种导出;
+        # 合成带符号金额: 收入正 / 支出负 (与历史企业号流水 amount 符号一致)。
+        amount = income - abs(expense)
+        # transaction_no 用『业务流水号』(28/32位) 与历史企业号流水一致, 避免重复计数;
+        # 一个业务流水号下的收款+手续费是不同 type/amount, 去重键 (no,type,amount) 不会误判。
+        rows.append({
+            "transaction_no": g("业务流水号"),
+            "transaction_time": g("发生时间"),
+            "transaction_type": g("业务类型"),
+            "counterparty_account": g("对方账号"),
+            "amount": amount,
+            "related_order_no": g("商户订单号"),
+            "balance": g("账户余额"),
+            "remark": " ".join(x for x in (g("商品名称"), g("备注")) if x)[:500] or None,
+        })
+    return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
+
+
 def import_alipay_rows(
     db: Session, rows: list[dict[str, Any]], *, account: str,
     report: Optional[AlipayImportReport] = None, commit: bool = True,

@@ -8,6 +8,7 @@ import {
   Empty,
   Progress,
   Row,
+  Select,
   Space,
   Spin,
   Statistic,
@@ -17,27 +18,34 @@ import {
   Typography,
   message,
 } from 'antd';
-import { ThunderboltOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 import {
   BusinessMonthRow,
-  EscalationOut,
   HealthReport,
   KnowledgeRow,
+  OperatingAnalysis,
   SalesSummary,
   fetchBusinessMonthly,
+  fetchOperatingAnalysis,
   fetchSalesBreakdown,
   fetchSalesSummary,
   getMonthlyReport,
   listKnowledge,
-  runEscalation,
 } from '../api/client';
 import { Radio } from 'antd';
 import BriefingBanner from '../components/BriefingBanner';
 
+// 对账规则中文名 (与对账面板一致, 用户要求界面不出现英文)
+const RECON_RULE_LABELS: Record<string, string> = {
+  factory_payment: '货款对账', install_fee: '安装费收支', promotion: '推广支出',
+  refill_compensation: '补单赔实付', inventory_value: '库存资产', logistics_fee: '物流费销项',
+  revenue_alipay: '收入对账', operating_expense: '经营支出', purchase_payment: '采购付款',
+  refill_commission_payout: '补单佣金代付', refill_express_payout: '补单快递代付',
+  aftersales_payout: '售后赔付代付', refund_reconciliation: '退款进出对账',
+};
+
 export default function ReportsPage() {
-  const qc = useQueryClient();
   const [period, setPeriod] = useState(() => dayjs());
 
   const { data, isLoading } = useQuery({
@@ -45,47 +53,32 @@ export default function ReportsPage() {
     queryFn: () => getMonthlyReport(period.year(), period.month() + 1),
   });
 
-  const escalateMut = useMutation({
-    mutationFn: runEscalation,
-    onSuccess: (res) => {
-      message.success(`${res.length} 组异常类型被升级严重度`);
-      qc.invalidateQueries({ queryKey: ['report'] });
-      qc.invalidateQueries({ queryKey: ['exceptions'] });
-    },
-  });
+  // 用户拍板 (2026-06-11): 「异常严重度升级」按钮 + 「升级记录」tab 移除 —
+  // 升级只是把堆积异常的严重度调档, 对用户没有实际动作价值, 徒增困惑。
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <BriefingBanner />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
-          数据健康报告 (plan §12.2)
+          数据健康报告
         </Typography.Title>
-        <Space>
-          <DatePicker.MonthPicker
-            value={period}
-            onChange={(v) => v && setPeriod(v)}
-            allowClear={false}
-          />
-          <Button
-            icon={<ThunderboltOutlined />}
-            onClick={() => escalateMut.mutate()}
-            loading={escalateMut.isPending}
-          >
-            异常严重度升级
-          </Button>
-        </Space>
+        <DatePicker.MonthPicker
+          value={period}
+          onChange={(v) => v && setPeriod(v)}
+          allowClear={false}
+        />
       </Space>
 
       <Tabs
         defaultActiveKey="monthly"
         items={[
           { key: 'monthly', label: '月度经营数据', children: <BusinessMonthlyTab /> },
+          { key: 'operating', label: '经营状况', children: <OperatingTab /> },
           { key: 'sales', label: '销售汇总', children: <SalesSummaryTab /> },
           { key: 'breakdown', label: '分产品销售', children: <SalesBreakdownTab /> },
           { key: 'health', label: '本月健康度', children: <ReportTab data={data} isLoading={isLoading} /> },
           { key: 'knowledge', label: 'AI 知识库', children: <KnowledgeTab /> },
-          { key: 'escalations', label: '升级记录', children: <EscalationsTab last={escalateMut.data} /> },
         ]}
       />
     </Space>
@@ -173,7 +166,8 @@ function ReportTab({ data, isLoading }: { data?: HealthReport; isLoading: boolea
           pagination={false}
           dataSource={Object.entries(data.reconciliation).map(([rule, v]) => ({ rule, ...v }))}
           columns={[
-            { title: '规则', dataIndex: 'rule', width: 200 },
+            { title: '规则', dataIndex: 'rule', width: 200,
+              render: (v: string) => RECON_RULE_LABELS[v] ?? v },
             { title: '总记录', dataIndex: 'total', width: 100 },
             {
               title: 'OK',
@@ -237,16 +231,60 @@ function PeriodPicker({ value, onChange }: { value: Period; onChange: (v: Period
   );
 }
 
-function SalesSummaryTab() {
+// Plan F8: 品牌筛选 (PS 畔色 / PFG 孚格)
+const BRAND_OPTS = [
+  { value: '', label: '全部品牌' },
+  { value: 'PS', label: '畔色 (PS)' },
+  { value: 'PFG', label: '孚格 (PFG)' },
+];
+
+// Plan F6: 经营状况 tab — 收支占比 + 净利卡片
+function OperatingTab() {
   const [period, setPeriod] = useState<Period>('30d');
   const { data, isLoading } = useQuery({
-    queryKey: ['sales-summary', period],
-    queryFn: () => fetchSalesSummary(period),
+    queryKey: ['operating-analysis', period],
+    queryFn: () => fetchOperatingAnalysis(period),
   });
   if (isLoading || !data) return <Spin />;
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <PeriodPicker value={period} onChange={setPeriod} />
+      <Row gutter={12}>
+        <Col span={6}><Card size="small"><Statistic title="销售额" value={Math.round(data.revenue)} prefix="¥" /></Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="总支出" value={Math.round(data.total_expense)} prefix="¥" /></Card></Col>
+        <Col span={6}><Card size="small">
+          <Statistic title="净利" value={Math.round(data.net_profit)} prefix="¥"
+                     valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} />
+        </Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="净利率" value={data.net_profit_rate.toFixed(1)} suffix="%" /></Card></Col>
+      </Row>
+      <Card size="small" title={`支出占比 (占销售额 %, ${data.period_start} ~ ${data.period_end})`}>
+        {data.expense_items.map((i) => (
+          <div key={i.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+            <span style={{ width: 72, flexShrink: 0 }}>{i.name}</span>
+            <Progress percent={Math.min(100, Number(i.pct.toFixed(1)))} size="small" style={{ flex: 1 }}
+                      format={() => `¥${Math.round(i.amount).toLocaleString()} · ${i.pct.toFixed(1)}%`} />
+          </div>
+        ))}
+      </Card>
+    </Space>
+  );
+}
+
+function SalesSummaryTab() {
+  const [period, setPeriod] = useState<Period>('30d');
+  const [brand, setBrand] = useState('');
+  const { data, isLoading } = useQuery({
+    queryKey: ['sales-summary', period, brand],
+    queryFn: () => fetchSalesSummary(period, undefined, brand || undefined),
+  });
+  if (isLoading || !data) return <Spin />;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Space>
+        <PeriodPicker value={period} onChange={setPeriod} />
+        <Select size="small" value={brand} onChange={setBrand} options={BRAND_OPTS} style={{ width: 130 }} />
+      </Space>
       <Row gutter={12}>
         <Col span={4}><Card size="small"><Statistic title="订单数" value={data.order_count} /></Card></Col>
         <Col span={4}><Card size="small"><Statistic title="销售额" value={data.revenue.toFixed(2)} prefix="¥" /></Card></Col>
@@ -301,18 +339,22 @@ function SalesSummaryTab() {
 
 function SalesBreakdownTab() {
   const [period, setPeriod] = useState<Period>('30d');
+  const [brand, setBrand] = useState('');
   const { data, isLoading } = useQuery({
-    queryKey: ['sales-breakdown', period],
-    queryFn: () => fetchSalesBreakdown(period),
+    queryKey: ['sales-breakdown', period, brand],
+    queryFn: () => fetchSalesBreakdown(period, brand || undefined),
   });
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <PeriodPicker value={period} onChange={setPeriod} />
+      <Space>
+        <PeriodPicker value={period} onChange={setPeriod} />
+        <Select size="small" value={brand} onChange={setBrand} options={BRAND_OPTS} style={{ width: 130 }} />
+      </Space>
       <Card size="small" title={`分 SKU 销售 (${data?.period_start} ~ ${data?.period_end})`}>
         <Table size="small" loading={isLoading}
                rowKey={(r) => `${r.product_code}_${r.sku_code}`}
                dataSource={data?.rows ?? []}
-               pagination={{ pageSize: 30 }}
+               pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
                scroll={{ x: 1200 }}
                columns={[
                  { title: '产品', dataIndex: 'product_code', width: 100 },
@@ -355,7 +397,7 @@ function KnowledgeTab() {
         rowKey="id"
         loading={isLoading}
         dataSource={data}
-        pagination={{ pageSize: 20 }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         columns={[
           { title: '异常类型', dataIndex: 'exception_type', width: 220 },
           { title: '复用次数', dataIndex: 'usage_count', width: 100,
@@ -370,44 +412,15 @@ function KnowledgeTab() {
   );
 }
 
-function EscalationsTab({ last }: { last?: EscalationOut[] }) {
-  if (!last || last.length === 0) {
-    return (
-      <Empty
-        description={
-          <span style={{ color: '#999' }}>
-            点上方「异常严重度升级」按钮跑一次。<br />
-            规则: 同类型 open 异常 ≥3 时, 全部升一档严重度 (info → warning → error)。
-          </span>
-        }
-      />
-    );
-  }
-  return (
-    <Table<EscalationOut>
-      rowKey={(r) => r.exception_type + r.escalated_from}
-      dataSource={last}
-      size="small"
-      pagination={false}
-      columns={[
-        { title: '异常类型', dataIndex: 'exception_type', width: 250 },
-        { title: '原严重度', dataIndex: 'escalated_from', width: 100,
-          render: (v: string) => <Tag>{v}</Tag> },
-        { title: '→', width: 30 },
-        { title: '新严重度', dataIndex: 'escalated_to', width: 100,
-          render: (v: string) => <Tag color={{ warning: 'orange', error: 'red' }[v] ?? 'default'}>{v}</Tag> },
-        { title: '影响条数', dataIndex: 'affected_ids', render: (v: number[]) => v.length },
-      ]}
-    />
-  );
-}
-
-
 // ─── 月度经营数据表格 ─────────────────────────────────────────────────────────
 
 function fmt(v: number | null | undefined, decimals = 0): string {
   if (v === null || v === undefined) return '—';
-  return v.toLocaleString('zh-CN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  // 钳制小数位到合法区间 [0,20], 否则 toLocaleString 会抛 "minimumFractionDigits value is out of range" 整页崩。
+  const d = Math.max(0, Math.min(20, Math.trunc(Number(decimals) || 0)));
+  return n.toLocaleString('zh-CN', { minimumFractionDigits: d, maximumFractionDigits: d });
 }
 
 function fmtY(v: number | null | undefined): string {

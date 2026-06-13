@@ -170,6 +170,15 @@ _COMMON_LABELS: dict[str, str] = {
     "description": "产品文案", "main_material": "主材介绍", "listing_status": "上架状态",
     "accessory_desc": "外配件说明", "accessory_remark": "配件备注",
     "size_value": "尺寸值(mm)", "size_confirmed": "尺寸是否确定",
+    # 物料单价库常见英文列 → 中文
+    "is_custom": "是否定制", "is_discontinued": "是否停用",
+    "primary_supplier_id": "主供应商", "alt_supplier_ids": "备选供应商",
+    "area": "面积", "width_mm": "宽(mm)", "height_mm": "高(mm)",
+    "length_mm": "长(mm)", "depth_mm": "深(mm)", "thickness_mm": "厚(mm)",
+    "size_type": "尺寸类型", "calc_price": "计算价格", "unit": "单位",
+    "replenish_cycle": "补货周期", "lead_time_days": "补货周期(天)",
+    "material_code": "物料编码", "material_name": "物料名称", "spec": "规格",
+    "physical_qty": "实物数量", "locked_qty": "锁定数量", "warehouse": "仓库",
 }
 
 

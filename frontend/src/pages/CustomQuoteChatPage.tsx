@@ -21,6 +21,7 @@ import {
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import { CUTE_IMG } from '../components/ProductThumb';
 
 const { TextArea } = Input;
 const { Text, Paragraph } = Typography;
@@ -178,6 +179,7 @@ export default function CustomQuoteChatPage() {
                     height={80}
                     style={{ objectFit: 'cover', borderRadius: 4, border: '1px solid #d9d9d9' }}
                     preview={false}
+                    fallback={CUTE_IMG}
                   />
                   <Button
                     size="small"

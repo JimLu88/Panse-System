@@ -112,6 +112,40 @@ def backfill_compensation_from_aftersales(db: Session) -> CompensationBackfillRe
     return res
 
 
+def refresh_order_compensation(db: Session, order_no: str) -> bool:
+    """单订单版赔付回写 (Plan L4): 售后增改后只刷新该单, 避免全表扫。
+
+    汇总该平台订单号的所有售后赔付 → Order.compensation_fee → 重算成本 → 记 pnl_refreshed 事件。
+    返回是否有实际改动。
+    """
+    ono = (order_no or "").strip()
+    if not ono:
+        return False
+    order = db.execute(
+        select(Order).where(Order.order_no == ono)
+    ).scalar_one_or_none()
+    if order is None:
+        return False
+    rows = db.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == ono)
+    ).scalars().all()
+    comp = sum((_aftersales_comp(a) for a in rows), Decimal("0"))
+    if (order.compensation_fee or Decimal("0")) == comp:
+        return False
+    order.compensation_fee = comp
+    order_cost_service.recompute_and_save(db, order)
+    try:
+        from app.services import order_event_service
+        order_event_service.record(
+            db, order_id=order.id, kind="pnl_refreshed",
+            summary=f"售后赔付变动 → 利润已刷新 (赔付合计 {comp})",
+        )
+    except Exception:  # pragma: no cover - 事件记录失败不阻断回写
+        _logger.warning("pnl_refreshed 事件记录失败 order=%s", ono, exc_info=True)
+    db.flush()
+    return True
+
+
 def backfill_warehouse(db: Session) -> int:
     """存量订单仓库回填: 对 warehouse 为空的订单用 default_warehouse_for 自动判定。幂等。"""
     orders = db.execute(

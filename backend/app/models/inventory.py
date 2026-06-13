@@ -2,7 +2,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Date, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -45,6 +45,12 @@ class PartInventory(Base, TimestampMixin):
     slow_moving_status: Mapped[Optional[str]] = mapped_column(String(32))   # 滞销状态(导入快照)
     auto_restock_qty: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 3))  # 自动计算备货量(导入快照)
     remark: Mapped[Optional[str]] = mapped_column(String(255))
+
+    __table_args__ = (
+        # Plan C6 发现的竞态: 并发首锁同一物料时两事务都 get-miss → 双 INSERT 出重复行。
+        # 唯一键兜底 (迁移 0074 已去重存量), _get_or_create_inventory 撞键后重查。
+        UniqueConstraint("warehouse", "material_code", name="uq_part_inventory_wh_code"),
+    )
 
     @property
     def available_qty(self) -> Decimal:

@@ -105,8 +105,41 @@ def _bill_importer(fn_name: str, label: str) -> Callable:
     return _imp
 
 
+def _imp_part_purchase(db: Session, content: bytes, filename: Optional[str]) -> dict:
+    """配件采购表 (飞书直接传 Excel/CSV 也能入库, 与网页上传共用核心)。"""
+    from app.services import purchase_table_import
+    r = purchase_table_import.import_purchases_table_core(db, content, filename)
+    return {"ok": True, "summary": (
+        f"配件采购导入完成: 新增 **{r['inserted']}**, 重复 {r['skipped_duplicate']}, "
+        f"无效 {r['skipped_invalid']}。"
+        + (f" 未识别列: {','.join(r['unmapped_columns'])}" if r['unmapped_columns'] else ""))}
+
+
+def _imp_order_part_purchase(db: Session, content: bytes, filename: Optional[str]) -> dict:
+    """「订单号 + 配件」采购回填: 把订单对应配件标已购买(未采购→已下单), 从待买扣减。"""
+    from app.services import order_accessory_purchase_import as oap
+    r = oap.import_order_part_purchases_core(db, content, filename)
+    extra = (f" 未匹配 {r['unmatched']} 行(如: {', '.join(r['unmatched_list'][:3])})"
+             if r["unmatched"] else "")
+    return {"ok": True, "summary": (
+        f"订单配件采购回填: 共 {r['rows']} 行, 标为已购买 **{r['updated']}** 项配件, "
+        f"已是已买 {r['already']}。{extra}")}
+
+
 # ── 类型注册表: key → 标签 / 文件名关键词 / 表头列名指纹 / 归档去向 / 导入器 ──
 TABLE_TYPES: dict[str, dict] = {
+    "order_part_purchase": {
+        "label": "订单配件采购回填", "archive": "purchases",
+        "keywords": ["订单配件", "配件已购", "已购配件", "订单号配件"],
+        "fingerprint": ["订单号", "配件名称", "配件编码"],   # 命中≥2, 压过 factory_recon/part_purchase
+        "importer": _imp_order_part_purchase,
+    },
+    "part_purchase": {
+        "label": "配件采购表", "archive": "purchases",
+        "keywords": ["配件采购", "采购表", "采购明细"],
+        "fingerprint": ["配件名称", "供应商", "购买日期", "快递单号"],
+        "importer": _imp_part_purchase,
+    },
     "order": {
         "label": "订单表", "archive": "orders",
         "keywords": ["订单", "千牛", "淘宝", "销售明细"],
@@ -188,8 +221,15 @@ def classify_table(filename: Optional[str], content: bytes) -> Optional[str]:
     if len(fn_hits) == 1:
         return fn_hits[0]
     if len(fn_hits) > 1:
-        # 多个文件名命中 → 先比表头指纹, 再比命中关键词的具体程度(越长越具体)
-        return max(fn_hits, key=lambda k: (_fp_score(header, TABLE_TYPES[k]), _kw_len(TABLE_TYPES[k])))
+        # 多个文件名命中 → 先比表头指纹, 再比命中关键词的具体程度(越长越具体)。
+        # 用户拍板 (2026-06-11): 比完仍打平 = 真歧义 → 返回 None, 飞书端强制弹选类型卡。
+        scored = sorted(
+            ((_fp_score(header, TABLE_TYPES[k]), _kw_len(TABLE_TYPES[k]), k) for k in fn_hits),
+            reverse=True,
+        )
+        if len(scored) > 1 and scored[0][:2] == scored[1][:2]:
+            return None
+        return scored[0][2]
 
     # 文件名没命中 → 纯看表头
     if header:

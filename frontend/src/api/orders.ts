@@ -11,10 +11,13 @@ export interface Order {
   customer_name: string | null;
   product_code: string | null;
   product_name: string | null;
+  internal_product_name?: string | null;   // 内部产品名 (产品总表回填)
   sku: string | null;
   is_custom: boolean;
   qty: number;
   status: string;
+  display_status?: string | null;        // 派生展示状态: 有未完成售后→aftersales(看板/筛选用)
+  has_active_aftersales?: boolean;        // 是否有未完成售后记录
   carrier: string | null;
   tracking_no: string | null;
   paid_amount: string | null;
@@ -30,14 +33,25 @@ export interface Order {
 
 export const listOrders = (params: {
   q?: string;
+  product?: string;       // 产品名称/编码 (含内部产品名反查)
+  date_from?: string;     // 下单日期起 YYYY-MM-DD
+  date_to?: string;       // 下单日期止
   status?: string;
   platform?: string;
   limit?: number;
 } = {}) => api.get<Order[]>('/api/orders', { params: { limit: 100, ...params } }).then((r) => r.data);
 
 // confirmed=true: 看板人工拖拽 → 后端标记该单为"已确定"
-export const changeOrderStatus = (id: number, status: string, force = false, confirmed = false) =>
-  api.post<Order>(`/api/orders/${id}/status`, { status, force, confirmed }).then((r) => r.data);
+// opts (Plan F2): 取消带在制工厂单的订单时必须带 disposition (future|release)
+export const changeOrderStatus = (
+  id: number, status: string, force = false, confirmed = false,
+  opts?: { disposition?: 'future' | 'release'; plannedShipDate?: string },
+) =>
+  api.post<Order>(`/api/orders/${id}/status`, {
+    status, force, confirmed,
+    disposition: opts?.disposition,
+    planned_ship_date: opts?.plannedShipDate,
+  }).then((r) => r.data);
 
 // 看板配件配齐进度: { [order_id]: { total, done, pending } }
 export interface AccessorySummary { total: number; done: number; pending: number }
@@ -48,13 +62,16 @@ export const fetchAccessorySummary = () =>
 export interface ComponentItem {
   id: number; order_id: number; order_no: string; qty_required: string;
   status: string; purchase_no: string | null; tracking_no: string | null; self_delivered: boolean;
+  product_name?: string | null; customer_name?: string | null; customer_address?: string | null;
+  order_date?: string | null; ship_deadline?: string | null;
 }
 export interface ComponentGroup {
   material_code: string; material_name: string | null; unit: string | null;
   to_buy_qty: string; bought_pending_qty: string; order_count: number; items: ComponentItem[];
 }
-export const fetchAccessoriesByComponent = () =>
-  api.get<ComponentGroup[]>('/api/orders/accessories/by-component').then((r) => r.data);
+export const fetchAccessoriesByComponent = (product?: string) =>
+  api.get<ComponentGroup[]>('/api/orders/accessories/by-component',
+    { params: product ? { product } : undefined }).then((r) => r.data);
 
 export const bulkUpdateAccessories = (payload: {
   item_ids: number[]; status?: string; purchase_no?: string; tracking_no?: string; self_delivered?: boolean;
@@ -67,6 +84,36 @@ export const backfillAllAccessories = () =>
 // 一键配齐: 把某单所有未到货配件置已到货(清缺料报警)
 export const markAllAccessoriesArrived = (orderId: number) =>
   api.post(`/api/orders/${orderId}/accessories/mark-all-arrived`).then((r) => r.data);
+
+// ----- 工厂制作单视图 (已付款待发货 = 在工厂制作中) -----
+export interface FactoryCard {
+  id: number;
+  order_no: string;
+  order_date: string | null;
+  ship_deadline: string | null;        // 手动发货截止(覆盖默认)
+  effective_deadline: string | null;   // 生效截止(手动优先, 否则下单+30天)
+  days_left: number | null;            // 距截止剩余天数(负=超期)
+  customer_name: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
+  product_name: string | null;
+  sku: string | null;
+  sku_code: string | null;
+  qty: number;
+  category: string | null;
+  remark: string | null;               // 客户/订单备注
+  production_note: string | null;      // 工厂制作单卡片备注(红色醒目)
+  is_custom: boolean;
+  is_remote_ship: boolean;             // 远期单(等客户通知再发)
+  status: 'remote' | 'overdue' | 'critical' | 'urgent' | 'normal';  // 紧急度分类
+}
+export const fetchFactoryProduction = (product?: string) =>
+  api.get<FactoryCard[]>('/api/orders/factory-production',
+    { params: product ? { product } : undefined }).then((r) => r.data);
+export const updateOrderProduction = (
+  id: number,
+  patch: { ship_deadline?: string | null; production_note?: string | null; is_remote_ship?: boolean },
+) => api.patch(`/api/orders/${id}/production`, patch).then((r) => r.data);
 
 export interface CsvImportReport {
   inserted: number;

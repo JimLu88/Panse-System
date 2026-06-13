@@ -1,23 +1,19 @@
 import { useState } from 'react';
-import { Card, Segmented, Space, Statistic, Table, Tabs, Tag, Typography } from 'antd';
+import { Card, Segmented, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { useSearchParams } from 'react-router-dom';
 import {
-  AfterSalesRow,
   BrandMarketing,
   OutsourcingExpense,
   PromotionFlow,
   RoiResult,
   RoiMonthly,
-  Sample,
   WoodLoss,
   getRoi,
   getRoiMonthly,
-  listAfterSales,
   listBrandMarketing,
   listOutsourcing,
   listPromotionFlows,
-  listSamples,
   listWoodLoss,
 } from '../api/client';
 import { api } from '../api/client';
@@ -54,7 +50,7 @@ function DailyTab() {
       {viewMode === 'full' && <FullColumnView entity="daily_operations" />}
       {viewMode === 'curated' && (
         <Table size="small" loading={isLoading} rowKey="id" dataSource={data}
-          pagination={{ pageSize: 50, showSizeChanger: true }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true }}
           columns={[
             { title: '日期', dataIndex: 'record_date', width: 110 },
             { title: '分类', dataIndex: 'category', width: 90, render: (v: string | null) => v ? <Tag>{v}</Tag> : '-' },
@@ -72,33 +68,37 @@ function DailyTab() {
   );
 }
 
+// 每个菜单项只看自己的分区 (用户拍板: 不再用页内 Tabs 混排; 导航条即入口)
+const SECTION_TITLE: Record<string, string> = {
+  promotion: '推广记录', brand: '品牌营销', daily: '日常经营',
+  outsourcing: '人员外包', wood_loss: '木材损耗',
+};
+
 export default function MarketingPage() {
-  const { data: roi } = useQuery({ queryKey: ['roi'], queryFn: () => getRoi() });
-  const [params, setParams] = useSearchParams();
-  const activeKey = params.get('tab') || 'promotion';
+  const [params] = useSearchParams();
+  const section = params.get('tab') || 'promotion';
+  const { data: roi } = useQuery({
+    queryKey: ['roi'], queryFn: () => getRoi(),
+    enabled: section === 'promotion',   // ROI 只属于推广分区
+  });
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Typography.Title level={4} style={{ margin: 0 }}>
-        营销与经营
+        {SECTION_TITLE[section] ?? '营销与经营'}
       </Typography.Title>
 
-      {roi && <RoiCard roi={roi} />}
-      <RoiMonthlyCard />
-
-      <Tabs
-        activeKey={activeKey}
-        onChange={(k) => setParams(k === 'promotion' ? {} : { tab: k }, { replace: true })}
-        items={[
-          { key: 'promotion', label: '推广记录', children: <PromotionTab /> },
-          { key: 'brand', label: '品牌营销', children: <BrandTab /> },
-          { key: 'samples', label: '样品', children: <SamplesTab /> },
-          { key: 'daily', label: '日常经营', children: <DailyTab /> },
-          { key: 'outsourcing', label: '人员外包', children: <OutsourcingTab /> },
-          { key: 'wood_loss', label: '木材损耗', children: <WoodLossTab /> },
-          { key: 'aftersales', label: '售后', children: <AfterSalesTab /> },
-        ]}
-      />
+      {section === 'promotion' && (
+        <>
+          {roi && <RoiCard roi={roi} />}
+          <RoiMonthlyCard />
+          <PromotionTab />
+        </>
+      )}
+      {section === 'brand' && <BrandTab />}
+      {section === 'daily' && <DailyTab />}
+      {section === 'outsourcing' && <OutsourcingTab />}
+      {section === 'wood_loss' && <WoodLossTab />}
     </Space>
   );
 }
@@ -186,7 +186,7 @@ function PromotionTab() {
           loading={isLoading}
           dataSource={data}
           size="middle"
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '日期', dataIndex: 'transaction_date', width: 120 },
             {
@@ -230,7 +230,7 @@ function BrandTab() {
           rowKey="id"
           loading={isLoading}
           dataSource={data}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '项目', dataIndex: 'project_name', ellipsis: true },
             { title: '类型', dataIndex: 'project_type', width: 100 },
@@ -238,82 +238,6 @@ function BrandTab() {
             { title: '预算', dataIndex: 'budget', render: (v: string | null) => v ? `¥${v}` : '-' },
             { title: '实际', dataIndex: 'actual_spend', render: (v: string | null) => v ? `¥${v}` : '-' },
             { title: '状态', dataIndex: 'status' },
-          ]}
-        />
-      )}
-    </Space>
-  );
-}
-
-function SamplesTab() {
-  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
-  const { data, isLoading } = useQuery({ queryKey: ['samples'], queryFn: listSamples });
-
-  const totalCost = (data ?? []).reduce((sum, row) => {
-    const c = row.cost != null ? Number(row.cost) : 0;
-    return sum + c;
-  }, 0);
-
-  const statusColor = (v: string | null) => {
-    if (!v) return 'default';
-    if (v === '在用') return 'green';
-    if (v === '闲置') return 'orange';
-    if (v === '报废') return 'red';
-    return 'default';
-  };
-
-  const summaryRow = () => (
-    <Table.Summary.Row>
-      <Table.Summary.Cell index={0} colSpan={5}>
-        <strong>合计</strong>
-      </Table.Summary.Cell>
-      <Table.Summary.Cell index={5} align="right">
-        <strong>¥{totalCost.toFixed(2)}</strong>
-      </Table.Summary.Cell>
-      <Table.Summary.Cell index={6} colSpan={4} />
-    </Table.Summary.Row>
-  );
-
-  return (
-    <Space direction="vertical" style={{ width: '100%' }}>
-      <Segmented
-        value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
-        options={[
-          { label: '精选视图', value: 'curated' },
-          { label: '全部列', value: 'full' },
-        ]}
-      />
-      {viewMode === 'full' && <FullColumnView entity="sample" />}
-      {viewMode === 'curated' && (
-        <Table<Sample>
-          rowKey="id"
-          loading={isLoading}
-          dataSource={data}
-          pagination={{ pageSize: 20 }}
-          summary={summaryRow}
-          columns={[
-            { title: '样品号', dataIndex: 'sample_no', width: 110, render: (v) => <code>{v}</code> },
-            { title: '产品', dataIndex: 'product_name', ellipsis: true },
-            { title: 'SKU', dataIndex: 'sku', ellipsis: true },
-            { title: '类型', dataIndex: 'sample_type', width: 90 },
-            { title: '数量', dataIndex: 'qty', width: 60 },
-            {
-              title: '成本',
-              dataIndex: 'cost',
-              width: 100,
-              align: 'right' as const,
-              render: (v: string | null) => v ? `¥${v}` : '-',
-            },
-            { title: '制作日期', dataIndex: 'made_at', width: 110 },
-            { title: '位置', dataIndex: 'location', width: 140 },
-            {
-              title: '状态',
-              dataIndex: 'status',
-              width: 80,
-              render: (v: string | null) => v ? <Tag color={statusColor(v)}>{v}</Tag> : '-',
-            },
-            { title: '用途', dataIndex: 'usage', width: 100 },
           ]}
         />
       )}
@@ -350,7 +274,7 @@ function WoodLossTab() {
           loading={isLoading}
           dataSource={data}
           size="middle"
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '购买日期', dataIndex: 'purchase_date', width: 110 },
             { title: '木材种类', dataIndex: 'wood_type', width: 100 },
@@ -401,42 +325,6 @@ function WoodLossTab() {
   );
 }
 
-function AfterSalesTab() {
-  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
-  const { data, isLoading } = useQuery({ queryKey: ['after-sales'], queryFn: listAfterSales });
-  return (
-    <Space direction="vertical" style={{ width: '100%' }}>
-      <Segmented
-        value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
-        options={[
-          { label: '精选视图', value: 'curated' },
-          { label: '全部列', value: 'full' },
-        ]}
-      />
-      {viewMode === 'full' && <FullColumnView entity="aftersales" />}
-      {viewMode === 'curated' && (
-        <Table<AfterSalesRow>
-          rowKey="id"
-          loading={isLoading}
-          dataSource={data}
-          pagination={{ pageSize: 20 }}
-          columns={[
-            { title: '平台订单号', dataIndex: 'platform_order_no', width: 200, render: (v) => <code style={{ fontSize: 11 }}>{v}</code> },
-            { title: '原因', dataIndex: 'reason', ellipsis: true },
-            { title: '平台内成本', dataIndex: 'in_platform_total', render: (v: string | null) => v ? `¥${v}` : '-' },
-            { title: '平台外成本', dataIndex: 'out_platform_total', render: (v: string | null) => v ? `¥${v}` : '-' },
-            { title: '补发 SKU', dataIndex: 'refill_sku', ellipsis: true },
-            { title: '状态', dataIndex: 'status' },
-            { title: '满意度', dataIndex: 'customer_satisfaction' },
-            { title: '处理日期', dataIndex: 'processed_at' },
-          ]}
-        />
-      )}
-    </Space>
-  );
-}
-
 function OutsourcingTab() {
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const { data, isLoading } = useQuery({ queryKey: ['outsourcing'], queryFn: listOutsourcing });
@@ -456,7 +344,7 @@ function OutsourcingTab() {
           rowKey="id"
           loading={isLoading}
           dataSource={data}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '收款人', dataIndex: 'payee', width: 120 },
             {

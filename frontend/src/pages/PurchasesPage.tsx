@@ -13,11 +13,15 @@ import {
   message,
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
+import { CUTE_IMG } from '../components/ProductThumb';
 import ShipmentTracker from '../components/ShipmentTracker';
+import PresetTable from '../components/PresetTable';
+import UrgentShortageGate from '../components/UrgentShortageGate';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UploadProps } from 'antd';
 import {
+  importPurchasesTable,
   listPurchases,
   uploadPurchaseOcr,
   purchaseSourceImageUrl,
@@ -53,12 +57,31 @@ export default function PurchasesPage() {
     },
   });
 
+  // 表格 (Excel/CSV) 走结构化导入, 图片/PDF 走 OCR — 同一个拖拽框按扩展名分流
+  const tableMut = useMutation({
+    mutationFn: (file: File) => importPurchasesTable(file),
+    onSuccess: (res) => {
+      message[res.inserted ? 'success' : 'warning'](res.message
+        + (res.skipped_duplicate ? ` · 重复跳过 ${res.skipped_duplicate}` : '')
+        + (res.skipped_invalid ? ` · 无效跳过 ${res.skipped_invalid}` : ''));
+      qc.invalidateQueries({ queryKey: ['purchases'] });
+    },
+    onError: (e: any) => {
+      message.error(`表格导入失败: ${e?.response?.data?.detail || e?.message || e}`);
+    },
+  });
+
   const uploadProps: UploadProps = {
     multiple: false,
     showUploadList: false,
-    accept: 'image/*,.pdf',
+    accept: 'image/*,.pdf,.xlsx,.xls,.csv',
     beforeUpload: (file) => {
-      uploadMut.mutate(file as File);
+      const name = (file.name || '').toLowerCase();
+      if (/\.(xlsx|xls|csv)$/.test(name)) {
+        tableMut.mutate(file as File);
+      } else {
+        uploadMut.mutate(file as File);
+      }
       return false; // 阻止 antd 自动上传, 走我们的 mutation
     },
   };
@@ -69,20 +92,22 @@ export default function PurchasesPage() {
     { title: '购买日期', dataIndex: 'purchase_date', key: 'purchase_date', width: 110 },
     { title: '配件名称', dataIndex: 'material_name', key: 'material_name' },
     { title: '规格', dataIndex: 'spec', key: 'spec' },
-    { title: '数量', dataIndex: 'qty', key: 'qty', width: 80 },
+    // 数字格式统一 (用户拍板): 数量去尾零 (1.0000→1), 金额 ¥ 整数无小数
+    { title: '数量', dataIndex: 'qty', key: 'qty', width: 80,
+      render: (v: number | string | null) => (v == null ? '-' : String(Number(v))) },
     {
       title: '单价',
       dataIndex: 'unit_price',
       key: 'unit_price',
       width: 90,
-      render: (v: number | null) => (v == null ? '-' : v),
+      render: (v: number | null) => (v == null ? '-' : `¥${Math.round(Number(v)).toLocaleString()}`),
     },
     {
       title: '金额',
       dataIndex: 'amount',
       key: 'amount',
-      width: 90,
-      render: (v: number | null) => (v == null ? '-' : v),
+      width: 100,
+      render: (v: number | null) => (v == null ? '-' : `¥${Math.round(Number(v)).toLocaleString()}`),
     },
     { title: '快递单号', dataIndex: 'tracking_no', key: 'tracking_no' },
     { title: '物流', key: 'shipment', width: 150, render: (_: any, r: any) => <ShipmentTracker entityType="part_purchase" entityId={r.id} /> },
@@ -98,6 +123,7 @@ export default function PurchasesPage() {
             style={{ objectFit: 'cover' }}
             src={purchaseSourceImageUrl(r.id)}
             placeholder
+            fallback={CUTE_IMG}
           />
         ) : (
           <Text type="secondary">无</Text>
@@ -114,6 +140,7 @@ export default function PurchasesPage() {
 
   return (
     <div style={{ padding: 24 }}>
+      <UrgentShortageGate />
       <Title level={3}>配件采购 (拍照识别入库)</Title>
       <Segmented
         value={viewMode}
@@ -137,9 +164,11 @@ export default function PurchasesPage() {
             <InboxOutlined />
           </p>
           <p className="ant-upload-text">
-            {uploadMut.isPending ? '识别中 (可能需 30-120 秒)...' : '点击或拖拽发票图片到此处'}
+            {uploadMut.isPending ? '识别中 (可能需 30-120 秒)...'
+              : tableMut.isPending ? '表格导入中...'
+              : '点击或拖拽 发票图片 / Excel / CSV 到此处'}
           </p>
-          <p className="ant-upload-hint">支持 jpg/png/pdf, 上限 15MB</p>
+          <p className="ant-upload-hint">图片/PDF 走 OCR 识别; Excel/CSV 按列名直接导入 (供应商/购买日期/配件名称/数量/单价/金额/快递单号)。上限 15MB</p>
         </Upload.Dragger>
       </Card>
 
@@ -173,14 +202,15 @@ export default function PurchasesPage() {
       )}
 
       <Card title="采购记录">
-        <Table
+        <PresetTable
+          tableKey="purchases"
           rowKey="id"
           loading={isLoading}
           dataSource={rows}
           columns={columns}
           size="small"
           scroll={{ x: 1100 }}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         />
       </Card>
       </>)}

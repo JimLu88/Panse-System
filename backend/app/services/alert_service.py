@@ -80,13 +80,16 @@ def upsert(
         db.add(alert)
         db.flush()
 
-    # critical 推群 (一次)
-    if push_notify and severity == "critical" and alert.notified_at is None:
+    # critical 推群 (一次); 同键 12h 冷却 = 一天最多两次 (用户拍板 2026-06-11); 总开关+白名单可配 (F9)
+    if (push_notify and severity == "critical" and alert.notified_at is None
+            and not (dedupe_key and _recently_notified(db, dedupe_key))
+            and _push_allowed(db, kind)):
         try:
             from app.services import notify_service
             text = f"{title}\n{body or ''}".strip()
             ok, _ = notify_service.notify(
-                db, text, level="error", title=f"畔色 ERP [{kind}]",
+                db, text, level="error",
+                title=f"畔色 ERP · {KIND_LABELS.get(kind, kind)}",
             )
             if ok:
                 alert.notified_at = datetime.now(timezone.utc)
@@ -106,6 +109,64 @@ def upsert(
         pass
 
     return alert
+
+
+def _push_allowed(db: Session, kind: str) -> bool:
+    """Plan F9: critical 飞书推送受总开关 + kind 白名单控制 (settings 可配, 默认全放行)。
+
+    system_settings.alert_push_feishu_enabled = 0/false → 全部不推
+    system_settings.alert_push_kind_whitelist = "low_stock_part,refund_pending" → 只推这些 kind
+    """
+    try:
+        from app.services import settings_service
+        enabled = settings_service.get(db, "alert_push_feishu_enabled", env_fallback=False)
+        if enabled is not None and str(enabled).strip().lower() in ("0", "false", "off", "no"):
+            return False
+        wl = settings_service.get(db, "alert_push_kind_whitelist", env_fallback=False)
+        if wl:
+            kinds = [k.strip() for k in str(wl).split(",") if k.strip()]
+            return kind in kinds
+        return True
+    except Exception:  # pragma: no cover - 配置读取失败按默认放行
+        return True
+
+
+# 推送标题的中文标签 (用户要求: 像 low_stock_part 这种英文要让正常人能看懂)
+KIND_LABELS = {
+    "low_stock_part": "配件缺货提醒",
+    "missing_tracking": "缺快递单号",
+    "refund_pending": "退款待处理",
+    "return_pending": "退货待确认",
+    "slow_moving": "滞销提醒",
+    "data_freshness": "数据该更新了",
+    "backup_stale": "备份过期",
+    "writeoff_excess": "做平金额超警戒",
+}
+
+
+def _recently_notified(db: Session, dedupe_key: str, *, hours: int = 12) -> bool:
+    """同 dedupe_key 在 N 小时内推送过 (含已 resolve 的旧条) → 冷却, 不重推。
+    12h = 一天最多两次 (用户拍板 2026-06-11)。"""
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+    row = db.execute(
+        select(Alert.id).where(
+            Alert.dedupe_key == dedupe_key,
+            Alert.notified_at.isnot(None),
+            Alert.notified_at >= cutoff,
+        ).limit(1)
+    ).scalar_one_or_none()
+    return row is not None
+
+
+def get_active_context(db: Session, dedupe_key: str) -> Optional[dict]:
+    """取同 dedupe_key 的 active alert 的 context_json (调用方合并列表时用, Plan C4)。"""
+    row = db.execute(
+        select(Alert).where(
+            Alert.dedupe_key == dedupe_key,
+            Alert.resolved_at.is_(None),
+        ).order_by(Alert.id.desc()).limit(1)
+    ).scalar_one_or_none()
+    return row.context_json if row is not None else None
 
 
 def resolve(

@@ -21,6 +21,7 @@ from app.models.inventory import PartInventory, ProductInventory
 from app.models.marketing import OutsourcingExpense
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order
+from app.models.shop_deposit import ShopDeposit
 
 
 @dataclass
@@ -74,6 +75,61 @@ def _inventory_book_value(db: Session) -> tuple[Decimal, list[dict]]:
     return total, detail
 
 
+def _inventory_split(db: Session) -> tuple[Decimal, Decimal, Decimal]:
+    """配件库存账面按编码前缀拆: 木料(MW) / 配件(AC) / 其它(SP/MP…)。"""
+    rows = db.execute(
+        select(PartInventory, Material).join(Material, Material.code == PartInventory.material_code)
+    ).all()
+    wood = parts = other = Decimal("0")
+    for inv, mat in rows:
+        if not (mat.price and inv.physical_qty):
+            continue
+        val = (Decimal(mat.price) * Decimal(inv.physical_qty)).quantize(Decimal("0.01"))
+        code = (inv.material_code or "").upper()
+        if code.startswith("MW"):
+            wood += val
+        elif code.startswith("AC"):
+            parts += val
+        else:
+            other += val
+    return wood, parts, other
+
+
+def _product_inventory_value(db: Session) -> tuple[Decimal, list[dict]]:
+    """成品库存价值 = Σ(成品现货 × 定价表工厂成本)。
+
+    口径拍板 (2026-06-12): 财务计算一律用定价表工厂价格, 不用 BOM 物料单价
+    (BOM 配件是单件订购价, 仅供定制估算)。SKU 名能对上定价行时用 SKU 级
+    factory_cost, 否则产品级均值; factory_cost 缺失用 physical_cost 兜底。
+    """
+    from app.models.pricing import PricingSku
+
+    sku_cost: dict[tuple[str, str], Decimal] = {}
+    prod_costs: dict[str, list[Decimal]] = {}
+    for ps in db.execute(select(PricingSku)).scalars().all():
+        c = ps.factory_cost if ps.factory_cost is not None else ps.physical_cost
+        if c is None:
+            continue
+        c = Decimal(str(c))
+        if ps.sku:
+            sku_cost[(ps.product_code, ps.sku)] = c
+        prod_costs.setdefault(ps.product_code, []).append(c)
+    prod_avg = {pc: (sum(cs) / len(cs)).quantize(Decimal("0.01"))
+                for pc, cs in prod_costs.items()}
+
+    total = Decimal("0")
+    detail: list[dict] = []
+    for inv in db.execute(select(ProductInventory)).scalars().all():
+        cost = sku_cost.get((inv.product_code, inv.sku or "")) or prod_avg.get(inv.product_code)
+        if cost and inv.physical_qty:
+            val = (cost * Decimal(inv.physical_qty)).quantize(Decimal("0.01"))
+            total += val
+            detail.append({"product_code": inv.product_code,
+                           "qty": float(inv.physical_qty), "unit_cost": float(cost),
+                           "value": float(val)})
+    return total, detail
+
+
 def _pending_shipment_value(db: Session) -> Decimal:
     """已付未发货订单的待发货资产 (= paid_amount)."""
     rows = db.execute(
@@ -94,6 +150,14 @@ def _pending_confirm_value(db: Session) -> Decimal:
         )
     ).scalar()
     return Decimal(rows or 0)
+
+
+def _shop_deposit_total(db: Session) -> Decimal:
+    """平台保证金 = ShopDeposit 多店铺条目求和 (押在平台的钱也是资产)."""
+    total = db.execute(
+        select(func.coalesce(func.sum(ShopDeposit.amount), 0))
+    ).scalar()
+    return Decimal(total or 0)
 
 
 def _pending_factory_payment(db: Session) -> Decimal:
@@ -158,6 +222,9 @@ def summary(db: Session) -> AssetSummary:
     """
     balances = _account_balances(db)
     inv_value, inv_detail = _inventory_book_value(db)
+    wood_value, parts_value, other_mat_value = _inventory_split(db)
+    product_inv_value, product_inv_detail = _product_inventory_value(db)
+    deposit_total = _shop_deposit_total(db)
     pending_ship = _pending_shipment_value(db)
     pending_confirm = _pending_confirm_value(db)
     pending_factory = _pending_factory_payment(db)
@@ -168,14 +235,19 @@ def summary(db: Session) -> AssetSummary:
     # 饼图分类 (正向资产项)
     categories = [
         AssetCategory(name="账户余额", amount=balances),
-        AssetCategory(name="库存账面", amount=inv_value, detail=inv_detail[:50]),
+        AssetCategory(name="平台保证金", amount=deposit_total),
+        AssetCategory(name="木料库存(MW)", amount=wood_value),
+        AssetCategory(name="配件库存(AC)", amount=parts_value),
+        AssetCategory(name="其它物料库存", amount=other_mat_value),
+        AssetCategory(name="成品库存(BOM成本)", amount=product_inv_value, detail=product_inv_detail[:50]),
         AssetCategory(name="待发货资产", amount=pending_ship),
         AssetCategory(name="待确认收货", amount=pending_confirm),
     ]
     total = sum((c.amount for c in categories), Decimal("0"))
 
     formula_a = (
-        balances + inv_value + pending_ship + pending_confirm
+        balances + deposit_total + inv_value + product_inv_value
+        + pending_ship + pending_confirm
         - pending_factory - pending_platform - pending_personnel
     )
     formula_b = order_profit + balances
@@ -183,7 +255,11 @@ def summary(db: Session) -> AssetSummary:
     breakdown = {
         # 正向项
         "账户余额": float(balances),
-        "库存账面": float(inv_value),
+        "平台保证金": float(deposit_total),
+        "木料库存(MW)": float(wood_value),
+        "配件库存(AC)": float(parts_value),
+        "其它物料库存": float(other_mat_value),
+        "成品库存(BOM成本)": float(product_inv_value),
         "待发货资产": float(pending_ship),
         "待确认收货": float(pending_confirm),
         # 负向项 (未支付负债)
@@ -193,7 +269,6 @@ def summary(db: Session) -> AssetSummary:
         # 公式 B 侧
         "订单累计利润": float(order_profit),
         # 暂未建模科目 (待数据源接入后补; 当前按 0 计, 可能是差额来源)
-        "未建模_保证金": 0.0,
         "未建模_工厂打样": 0.0,
         "未建模_刷单佣金": 0.0,
     }
@@ -206,6 +281,48 @@ def summary(db: Session) -> AssetSummary:
         diff=formula_a - formula_b,
         breakdown=breakdown,
     )
+
+
+def diff_drilldown(db: Session) -> dict:
+    """Plan L6: 公式 A/B 差额下钻 — 每个分项给构成明细 TopN, 定位差额藏在哪。"""
+    inv_value, inv_detail = _inventory_book_value(db)
+    product_inv_value, product_inv_detail = _product_inventory_value(db)
+    # 未付工厂结算: 逐单明细
+    unpaid_fos = db.execute(
+        select(FactoryOrder).where(
+            FactoryOrder.payment_status == "unpaid",
+            FactoryOrder.voided_at.is_(None),
+        ).order_by(FactoryOrder.factory_bill_amount.desc().nulls_last()).limit(30)
+    ).scalars().all()
+    # 订单累计利润: 贡献最大/最小的单 (公式 B 侧异常常在这)
+    orders = db.execute(
+        select(Order).where(
+            Order.is_historical == False,  # noqa: E712
+            Order.status.in_(("paid", "shipped", "signed")),
+        )
+    ).scalars().all()
+    contrib = []
+    for o in orders:
+        profit = (Decimal(o.paid_amount or 0) - Decimal(o.actual_cost or o.theoretical_cost or 0)
+                  - Decimal(o.actual_freight or 0) - Decimal(o.upstairs_fee or 0)
+                  - Decimal(o.install_fee or 0) - Decimal(o.compensation_fee or 0))
+        contrib.append({"order_no": o.order_no, "profit": float(profit),
+                        "paid": float(o.paid_amount or 0),
+                        "cost": float(o.actual_cost or o.theoretical_cost or 0)})
+    contrib.sort(key=lambda x: x["profit"])
+    return {
+        "库存账面明细": inv_detail[:50],
+        "成品库存明细": product_inv_detail[:50],
+        "未付工厂结算明细": [
+            {"factory_order_no": f.factory_order_no, "factory_name": f.factory_name,
+             "amount": float(f.factory_bill_amount or 0),
+             "expected_delivery": str(f.expected_delivery or "")}
+            for f in unpaid_fos
+        ],
+        "订单利润_最亏TOP20": contrib[:20],
+        "订单利润_最赚TOP20": list(reversed(contrib[-20:])),
+        "近30天未核销流水": unmatched_recent_flows(db, days=30)[:50],
+    }
 
 
 # ----------------------------- 未核销异常池 (业务需求 19) -------- #

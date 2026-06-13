@@ -177,3 +177,21 @@ export interface ReconGap {
 }
 export const fetchReconGap = () =>
   api.get<ReconGap>('/api/settlements/reconciliation/gap').then((r) => r.data);
+
+// Plan L1: 某月待补订单清单 + 缺什么证据 + 行动指引
+export interface ReconGapDetail {
+  period: string;
+  pending_count: number;
+  rows: Array<{
+    order_no: string;
+    order_date: string | null;
+    shop: string | null;
+    customer_name: string | null;
+    product_name: string | null;
+    expected_net: number | null;
+    missing: string[];
+  }>;
+  actions: string[];
+}
+export const fetchReconGapDetail = (period: string) =>
+  api.get<ReconGapDetail>(`/api/settlements/reconciliation/gap/${period}`).then((r) => r.data);

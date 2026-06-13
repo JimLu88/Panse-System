@@ -251,6 +251,46 @@ def coverage_gap(db: Session) -> dict:
     }
 
 
+def coverage_gap_detail(db: Session, period: str) -> dict:
+    """Plan L1: 某月待补订单清单 + 行动指引 — 缺微信 billDetail 还是缺支付宝流水。"""
+    wnet = _wechat_net_by_order(db)
+    anet = _alipay_net_by_flow_no(db)
+    cfg = recon_config_service.get_config(db)
+    orders = db.execute(_base_query()).scalars().all()
+    rows = []
+    for o in orders:
+        mk = o.order_date.strftime("%Y-%m") if o.order_date else "无日期"
+        if mk != period:
+            continue
+        r = _build_row(o, wnet, anet, cfg)
+        if r["status"] != "pending":
+            continue
+        missing = []
+        if wnet.get(o.order_no) is None:
+            missing.append("微信billDetail")
+        if not o.alipay_flow_no or anet.get(o.alipay_flow_no) is None:
+            missing.append("支付宝流水")
+        rows.append({
+            "order_no": o.order_no,
+            "order_date": o.order_date.isoformat() if o.order_date else None,
+            "shop": o.shop, "customer_name": o.customer_name,
+            "product_name": o.product_name,
+            "expected_net": r.get("expected_net"),
+            "missing": missing,
+        })
+    n_wx = sum(1 for r in rows if "微信billDetail" in r["missing"])
+    n_zfb = sum(1 for r in rows if "支付宝流水" in r["missing"])
+    actions = []
+    if n_wx:
+        actions.append(f"{n_wx} 单缺微信结算证据 → 到「结算/导入」上传该月 billDetail CSV")
+    if n_zfb:
+        actions.append(f"{n_zfb} 单缺支付宝流水绑定 → 导入企业号流水后跑「支付宝↔订单 自动匹配」")
+    if period < "2026-01":
+        actions.append("早期订单可能本就没有线上凭据 → 核对后可在逐笔对账里标 ignored 做平")
+    return {"period": period, "pending_count": len(rows),
+            "rows": rows[:500], "actions": actions}
+
+
 def summary(db: Session) -> dict:
     """全量汇总 (不分页): 各金额合计 + 对账状态分布 + 到账覆盖率。"""
     wnet = _wechat_net_by_order(db)

@@ -50,12 +50,15 @@ def search(
         return []
     pattern = f"%{q.strip()}%"
     out: list[SearchHit] = []
+    # 全站统一模糊搜索 (2026-06-12): 名称类字段允许字符间隙, 编号/电话保持连续匹配
+    from app.services.fuzzy_search import fuzzy_clause
 
     # Orders
     for o in db.execute(
         select(Order).where(
-            or_(Order.order_no.ilike(pattern), Order.customer_name.ilike(pattern),
-                Order.customer_phone.ilike(pattern), Order.product_name.ilike(pattern)),
+            fuzzy_clause(q, like_cols=[Order.order_no, Order.customer_name,
+                                       Order.customer_phone, Order.product_name],
+                         gap_cols=[Order.customer_name, Order.product_name]),
         ).limit(15)
     ).scalars():
         out.append(SearchHit(
@@ -68,7 +71,8 @@ def search(
     # Customers
     for c in db.execute(
         select(Customer).where(
-            or_(Customer.name.ilike(pattern), Customer.phone.ilike(pattern)),
+            fuzzy_clause(q, like_cols=[Customer.name, Customer.phone],
+                         gap_cols=[Customer.name]),
         ).limit(10)
     ).scalars():
         out.append(SearchHit(
@@ -81,7 +85,8 @@ def search(
     # Materials
     for m in db.execute(
         select(Material).where(
-            or_(Material.code.ilike(pattern), Material.name.ilike(pattern)),
+            fuzzy_clause(q, like_cols=[Material.code, Material.name],
+                         gap_cols=[Material.name]),
         ).limit(10)
     ).scalars():
         out.append(SearchHit(
@@ -94,7 +99,8 @@ def search(
     # Products
     for p in db.execute(
         select(Product).where(
-            or_(Product.code.ilike(pattern), Product.name.ilike(pattern)),
+            fuzzy_clause(q, like_cols=[Product.code, Product.name, Product.sub_name],
+                         gap_cols=[Product.name, Product.sub_name]),
         ).limit(10)
     ).scalars():
         out.append(SearchHit(
@@ -106,7 +112,9 @@ def search(
 
     # Suppliers
     for s in db.execute(
-        select(Supplier).where(Supplier.name.ilike(pattern)).limit(5)
+        select(Supplier).where(
+            fuzzy_clause(q, like_cols=[Supplier.name], gap_cols=[Supplier.name]),
+        ).limit(5)
     ).scalars():
         out.append(SearchHit(
             kind="supplier", id=s.id, title=f"供应商 {s.name}",

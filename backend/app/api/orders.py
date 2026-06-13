@@ -11,7 +11,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models.order import Order
+from app.models.order import FactoryOrder, Order
 from app.schemas.order import (
     CsvImportReport,
     OrderCreate,
@@ -38,21 +38,190 @@ router = APIRouter(prefix="/api/orders", tags=["orders"])
 @router.get("", response_model=list[OrderOut])
 def list_orders(
     q: Optional[str] = Query(None, description="搜索订单号/客户名"),
+    product: Optional[str] = Query(None, description="产品名称/编码 模糊搜索 (含内部产品名)"),
+    date_from: Optional[_date] = Query(None, description="下单日期起 (含)"),
+    date_to: Optional[_date] = Query(None, description="下单日期止 (含)"),
     status: Optional[str] = None,
     platform: Optional[str] = None,
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    from app.models.product import Product as _P
     stmt = select(Order)
+    from app.services.fuzzy_search import fuzzy_clause
     if q:
-        stmt = stmt.where(or_(Order.order_no.ilike(f"%{q}%"), Order.customer_name.ilike(f"%{q}%")))
-    if status:
+        # 全站统一模糊搜索: 订单号连续匹配, 客户名允许字符间隙
+        fc = fuzzy_clause(q, like_cols=[Order.order_no, Order.customer_name],
+                          gap_cols=[Order.customer_name])
+        if fc is not None:
+            stmt = stmt.where(fc)
+    if product:
+        # 同时搜 淘宝标题 / 产品编码 / 内部产品名 (产品总表反查编码), 全部模糊
+        pf = fuzzy_clause(product, like_cols=[_P.name, _P.sub_name], gap_cols=[_P.name, _P.sub_name])
+        codes = ([c for (c,) in db.execute(select(_P.code).where(pf)).all()]
+                 if pf is not None else [])
+        cond = fuzzy_clause(product, like_cols=[Order.product_name, Order.product_code],
+                            gap_cols=[Order.product_name])
+        if codes:
+            cond = or_(cond, Order.product_code.in_(codes))
+        if cond is not None:
+            stmt = stmt.where(cond)
+    if date_from:
+        stmt = stmt.where(Order.order_date >= date_from)
+    if date_to:
+        stmt = stmt.where(Order.order_date <= date_to)
+    # 售后中 = 有"未完成"售后记录的订单 (AfterSales.status 非「已完成」); 派生归类,
+    # 不依赖 Order.status (它从不为 aftersales)。已完成的售后自动排除 (2026-06-12)。
+    from app.models.marketing import AfterSales
+    # 「售后中」只算真正在处理的售后: 排除 已完成 + auto。
+    # auto = 系统从 支付宝退款流水/平台退款/万师傅维修 自动生成的"已结算"台账(钱已入流水、
+    # 服务已完成), 不是待处理案件 → 不计入售后中 (用户拍板 2026-06-12: 退款/赔付/红包不算售后中)。
+    active_as_nos = {
+        no for (no,) in db.execute(
+            select(AfterSales.platform_order_no).where(
+                AfterSales.platform_order_no.isnot(None),
+                or_(
+                    AfterSales.status.is_(None),
+                    AfterSales.status.notin_(["已完成", "auto"]),
+                ),
+            )
+        ).all() if no
+    }
+    if status == "aftersales":
+        stmt = stmt.where(Order.order_no.in_(active_as_nos or {"\0__none__"}))
+    elif status:
         stmt = stmt.where(Order.status == status)
     if platform:
         stmt = stmt.where(Order.platform == platform)
     stmt = stmt.order_by(Order.order_date.desc().nulls_last(), Order.id.desc()).limit(limit).offset(offset)
-    return db.execute(stmt).scalars().all()
+    rows = db.execute(stmt).scalars().all()
+    # 回填内部产品名 (产品总表), 列表页直接显示内部名而非淘宝标题
+    codes = {r.product_code for r in rows if r.product_code}
+    name_map = {
+        c: n for c, n in db.execute(
+            select(_P.code, _P.name).where(_P.code.in_(codes))
+        ).all()
+    } if codes else {}
+    for r in rows:
+        r.internal_product_name = name_map.get(r.product_code)
+        r.has_active_aftersales = r.order_no in active_as_nos
+        # 有未完成售后 → 展示为售后中 (覆盖底层状态); 否则用原状态
+        r.display_status = "aftersales" if r.has_active_aftersales else r.status
+    return rows
+
+
+DEFAULT_SHIP_DAYS = 30   # 工厂制作单默认发货周期(天)
+
+
+@router.get("/factory-production")
+def factory_production(
+    product: Optional[str] = Query(None, description="产品名称/编码/SKU 模糊搜索 (含内部产品名)"),
+    db: Session = Depends(get_db),
+):
+    """工厂制作单视图: 列出"已付款待发货"(在工厂制作中)的订单卡片。
+
+    默认发货截止 = 下单日 + 30天; 手动 ship_deadline 优先。days_left = 截止 − 今天(负数=超期)。
+    product 非空时只返回匹配该产品(名称/编码/SKU/内部名)的订单卡片。
+    """
+    from datetime import timedelta
+    from app.models.product import Product
+    # DB 里状态可能是中文/遗留写法(等待卖家发货/买家已付款…), 用规范化函数判"已付款待发货"。
+    # 工厂制作单 = 现在"已付款但还没发货"的单(就是在工厂做的)。2026 年以前的已统一清成已发货,
+    # 所以这里自然只剩 2026 之后真正未发的; 不再按 is_historical 过滤(那会把日常导入的活单也误藏)。
+    # 仍排除已退款/关闭的单。
+    all_orders = db.execute(
+        select(Order).order_by(Order.order_date.asc().nulls_last())
+    ).scalars().all()
+    # 在制口径与配件采购视图共用 order_service.is_in_factory_production (已付款待发货且未退款)
+    orders = [o for o in all_orders if order_service.is_in_factory_production(o)]
+    if product:
+        # 按产品搜索: 内部产品名(产品总表反查编码) + 订单自带名称/编码/SKU 模糊
+        from app.models.product import Product as _P
+        from app.services.fuzzy_search import fuzzy_clause
+        pf = fuzzy_clause(product, like_cols=[_P.name, _P.sub_name], gap_cols=[_P.name, _P.sub_name])
+        pcodes = {c for (c,) in db.execute(select(_P.code).where(pf)).all()} if pf is not None else set()
+        s = product.lower()
+
+        def _match(o: Order) -> bool:
+            if o.product_code and o.product_code in pcodes:
+                return True
+            return any(s in (getattr(o, f) or "").lower()
+                       for f in ("product_name", "product_code", "sku", "sku_code"))
+
+        orders = [o for o in orders if _match(o)]
+    codes = {o.product_code for o in orders if o.product_code}
+    cat: dict[str, Optional[str]] = {}
+    if codes:
+        for code, c in db.execute(select(Product.code, Product.category).where(Product.code.in_(codes))).all():
+            cat[code] = c
+    today = _date.today()
+    # 远期单关键字: 客户备注里出现这些 → 自动归为远期(等通知再发)
+    REMOTE_KW = ("等通知", "通知后", "通知再发", "客户通知", "待通知", "暂不发", "暂缓", "不急", "等客户")
+
+    def _status(o: Order, days: Optional[int]) -> str:
+        if o.is_remote_ship or any(k in (o.remark or "") for k in REMOTE_KW):
+            return "remote"        # 远期: 等客户通知再发
+        if days is None:
+            return "normal"
+        if days < 0:
+            return "overdue"       # 已超期
+        if days <= 5:
+            return "critical"      # 非常紧急
+        if days <= 11:
+            return "urgent"        # 紧急
+        return "normal"            # 正常安排
+
+    out = []
+    for o in orders:
+        base = o.order_date
+        eff = o.ship_deadline or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
+        days = (eff - today).days if eff else None
+        out.append({
+            "id": o.id,
+            "order_no": o.order_no,
+            "order_date": base.isoformat() if base else None,
+            "ship_deadline": o.ship_deadline.isoformat() if o.ship_deadline else None,
+            "effective_deadline": eff.isoformat() if eff else None,
+            "days_left": days,
+            "customer_name": o.customer_name,
+            "customer_phone": o.customer_phone,
+            "customer_address": o.customer_address,
+            "product_name": o.product_name,
+            "sku": o.sku,
+            "sku_code": o.sku_code,
+            "qty": o.qty,
+            "category": cat.get(o.product_code or ""),
+            "remark": o.remark,
+            "production_note": o.production_note,
+            "is_custom": o.is_custom,
+            "is_remote_ship": o.is_remote_ship,
+            "status": _status(o, days),   # remote/overdue/critical/urgent/normal
+        })
+    return out
+
+
+class ProductionPatch(BaseModel):
+    ship_deadline: Optional[_date] = None
+    production_note: Optional[str] = None
+    is_remote_ship: Optional[bool] = None
+
+
+@router.patch("/{order_id}/production")
+def update_production(order_id: int, body: ProductionPatch, db: Session = Depends(get_db)):
+    """工厂制作单: 改单卡的发货截止 / 备注。"""
+    o = db.get(Order, order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    data = body.model_dump(exclude_unset=True)
+    if "ship_deadline" in data:
+        o.ship_deadline = data["ship_deadline"]
+    if "production_note" in data:
+        o.production_note = data["production_note"]
+    if "is_remote_ship" in data:
+        o.is_remote_ship = bool(data["is_remote_ship"])
+    db.commit()
+    return {"ok": True, "id": o.id}
 
 
 class CostLineOut(BaseModel):
@@ -210,8 +379,15 @@ def update_order(order_id: int, payload: OrderUpdate, db: Session = Depends(get_
     o = db.get(Order, order_id)
     if not o:
         raise HTTPException(404, "order not found")
-    for k, v in payload.model_dump(exclude_unset=True).items():
-        setattr(o, k, v)
+    # 人工编辑 → 统一历史档案 (本路由无登录依赖, actor 记空)
+    from app.services import field_change_service
+    field_change_service.diff_and_apply(
+        db, o, payload.model_dump(exclude_unset=True),
+        table="orders", pk=o.order_no, row_label=o.product_name,
+        field_labels={"actual_cost": "实际成本", "actual_freight": "实际运费",
+                      "tracking_no": "快递单号", "carrier": "承运商",
+                      "ship_date": "发货日期", "remark": "备注"},
+    )
     db.commit()
     db.refresh(o)
     return o
@@ -222,6 +398,53 @@ def change_status(order_id: int, payload: OrderStatusChange, db: Session = Depen
     o = db.get(Order, order_id)
     if not o:
         raise HTTPException(404, "order not found")
+
+    # Plan F2: 取消有活跃工厂单的订单 → 强制二选一 (future=转远期 / release=纯释放)
+    if payload.status == "cancelled":
+        active_fos = db.execute(
+            select(FactoryOrder).where(
+                FactoryOrder.source_order_id == o.id,
+                FactoryOrder.voided_at.is_(None),
+            )
+        ).scalars().all()
+        if active_fos and payload.disposition not in ("future", "release"):
+            raise HTTPException(422, detail={
+                "need_disposition": True,
+                "message": "该订单有在制工厂单, 取消前必须选择去向: 转远期单(future) 或 纯释放库存(release)",
+                "factory_orders": [
+                    {"id": f.id, "factory_order_no": f.factory_order_no,
+                     "qty": f.qty, "expected_delivery": str(f.expected_delivery or "")}
+                    for f in active_fos
+                ],
+            })
+        if active_fos and payload.disposition == "future":
+            if not payload.planned_ship_date:
+                raise HTTPException(422, detail={
+                    "need_disposition": True,
+                    "message": "转远期单必须填预计发货日 planned_ship_date",
+                })
+            from datetime import datetime as _dt, time as _t, timedelta as _td
+            activate_at = _dt.combine(payload.planned_ship_date, _t(8, 0)) - _td(days=10)
+            from app.services import factory_order_service as _fos, order_event_service
+            fut = _fos.create_future_order(
+                db, base_order_no=o.order_no, activate_at=activate_at,
+                platform=o.platform or "淘宝", product_code=o.product_code,
+                sku=o.sku, qty=o.qty or 1, customer_name=o.customer_name,
+                remark=f"远期订单 (原单 {o.order_no} 取消转远期, 预计发货 {payload.planned_ship_date})",
+            )
+            order_event_service.record(
+                db, order_id=o.id, kind="disposition",
+                actor=payload.actor or "user",
+                summary=f"取消转远期: 派生 {fut.order_no}, {activate_at:%Y-%m-%d} 自动激活重锁",
+            )
+        elif active_fos and payload.disposition == "release":
+            from app.services import order_event_service
+            order_event_service.record(
+                db, order_id=o.id, kind="disposition",
+                actor=payload.actor or "user",
+                summary="取消纯释放: 工厂单作废, 锁定库存全部释放",
+            )
+
     try:
         order_service.transition(
             db, o, payload.status, actor=payload.actor,
@@ -309,6 +532,14 @@ class FactorySheetOut(BaseModel):
     is_custom_variant: bool
     dimension_changes: Optional[dict]
     warnings: list[FactorySheetWarningOut]
+    # 下单图规范化 + 图库配图 (FactorySheet 新增字段, 此前漏传导致订单详情页"无产品图")
+    ship_eta_auto: bool = False
+    size_info: Optional[str] = None
+    production_note: Optional[str] = None
+    gallery_main_image: Optional[str] = None
+    sku_image: Optional[str] = None
+    main_material: Optional[str] = None    # 主材介绍 (图4: 下单图先写主材)
+    aux_material: Optional[str] = None     # 辅材介绍 (图4: 再写辅材)
 
 
 @router.post("/{order_id}/generate-factory-order")
@@ -505,6 +736,13 @@ def get_factory_sheet(order_id: int, db: Session = Depends(get_db)):
         is_custom_variant=sheet.is_custom_variant,
         dimension_changes=sheet.dimension_changes,
         warnings=[FactorySheetWarningOut(**w.__dict__) for w in sheet.warnings],
+        ship_eta_auto=sheet.ship_eta_auto,
+        size_info=sheet.size_info,
+        production_note=sheet.production_note,
+        gallery_main_image=sheet.gallery_main_image,
+        sku_image=sheet.sku_image,
+        main_material=sheet.main_material,
+        aux_material=sheet.aux_material,
     )
 
 
@@ -917,10 +1155,14 @@ def accessories_summary_by_order(db: Session = Depends(get_db)):
 
 
 @router.get("/accessories/by-component")
-def accessories_by_component(db: Session = Depends(get_db)):
-    """按配件聚合的采购视图: 还缺哪些配件(待买/已买未到) + 涉及哪些订单。"""
+def accessories_by_component(
+    product: Optional[str] = Query(None, description="按产品搜索: 只看该产品用到的配件及缺口"),
+    db: Session = Depends(get_db),
+):
+    """按配件聚合的采购视图: 还缺哪些配件(待买/已买未到) + 涉及哪些订单。
+    product 非空时只统计该产品(名称/编码/SKU/内部名)订单用到的配件。"""
     from app.services import accessory_checklist_service
-    return accessory_checklist_service.by_component(db)
+    return accessory_checklist_service.by_component(db, product=product)
 
 
 class AccessoryBulkUpdate(BaseModel):

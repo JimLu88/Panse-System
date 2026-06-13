@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import csv
 import io
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -20,6 +21,15 @@ from app.services import bill_import_service, return_service
 router = APIRouter(prefix="/api/aftersales", tags=["aftersales"])
 
 
+def _refresh_pnl(db: Session, a: AfterSales) -> None:
+    """售后写操作成功后刷新该订单 P&L (Plan L4); 失败不阻断主流程。"""
+    try:
+        from app.services import order_sync_service
+        order_sync_service.refresh_order_compensation(db, a.platform_order_no)
+    except Exception:  # pragma: no cover
+        pass
+
+
 class AfterSalesOut(BaseModel):
     id: int
     platform_order_no: str
@@ -29,12 +39,20 @@ class AfterSalesOut(BaseModel):
     reason: Optional[str]
     refill_tracking_no: Optional[str]
     return_tracking_no: Optional[str] = None
+    product_code: Optional[str] = None   # 关联订单的产品编码 (行内拆BOM预填用)
+    sku_code: Optional[str] = None
     second_inbound_confirmed: Optional[str]
     processed_at: Optional[str]
     remark: Optional[str]
+    in_platform_total: Optional[Decimal] = None    # 平台内售后成本
+    out_platform_total: Optional[Decimal] = None    # 平台外售后成本
+    total_cost: Optional[Decimal] = None            # 售后总成本(赔付费+好评返+二次上门+返厂运费)
 
 
 def _out(a: AfterSales, order=None) -> AfterSalesOut:
+    def _d(v):
+        return Decimal(str(v)) if v is not None else Decimal("0")
+    total = _d(a.compensation_fee) + _d(a.good_review_refund) + _d(a.second_visit_fee) + _d(a.return_pack_freight)
     return AfterSalesOut(
         id=a.id, platform_order_no=a.platform_order_no, status=a.status,
         reason=a.reason, refill_tracking_no=a.refill_tracking_no,
@@ -44,6 +62,11 @@ def _out(a: AfterSales, order=None) -> AfterSalesOut:
         remark=a.remark,
         customer_name=getattr(order, "customer_name", None),
         product_name=getattr(order, "product_name", None),
+        product_code=getattr(order, "product_code", None),
+        sku_code=getattr(order, "sku_code", None),
+        in_platform_total=a.in_platform_total,
+        out_platform_total=a.out_platform_total,
+        total_cost=total,
     )
 
 
@@ -87,6 +110,7 @@ def create_return(
         )
     except ValueError as e:
         raise HTTPException(400, str(e))
+    _refresh_pnl(db, a)
     db.commit()
     return _out(a)
 
@@ -101,6 +125,7 @@ def mark_received(
         a = return_service.mark_received(db, after_sales_id)
     except ValueError as e:
         raise HTTPException(404, str(e))
+    _refresh_pnl(db, a)
     db.commit()
     return _out(a)
 
@@ -126,6 +151,7 @@ def confirm_inbound(
         )
     except ValueError as e:
         raise HTTPException(404, str(e))
+    _refresh_pnl(db, a)
     db.commit()
     return _out(a)
 
@@ -147,6 +173,7 @@ def mark_damaged(
         )
     except ValueError as e:
         raise HTTPException(404, str(e))
+    _refresh_pnl(db, a)
     db.commit()
     return _out(a)
 
@@ -176,6 +203,86 @@ def disassemble(
     return result
 
 
+@router.get("/disassembly-logs")
+def list_disassembly_logs(
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """拆 BOM 历史 (新→旧), 含是否已回撤。"""
+    from sqlalchemy import select as _sel
+
+    from app.models.disassembly_log import DisassemblyLog
+    rows = db.execute(
+        _sel(DisassemblyLog).order_by(DisassemblyLog.id.desc()).limit(min(limit, 500))
+    ).scalars().all()
+    return [{
+        "id": r.id, "product_code": r.product_code, "sku_code": r.sku_code,
+        "qty": float(r.qty or 0), "parts": r.parts_json or [], "actor": r.actor,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+        "undone_at": r.undone_at.isoformat() if r.undone_at else None,
+        "undone_by": r.undone_by,
+    } for r in rows]
+
+
+@router.post("/disassembly-logs/{log_id}/undo")
+def undo_disassembly_api(
+    log_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """回撤一次拆 BOM: 成品加回、物料扣回 (物料不够扣会拒绝)。"""
+    from app.services import inventory_lock_service
+    try:
+        result = inventory_lock_service.undo_disassembly(
+            db, log_id, actor=getattr(user, "username", "user"))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    db.commit()
+    return result
+
+
+class AfterSalesPatch(BaseModel):
+    return_tracking_no: Optional[str] = None
+    refill_tracking_no: Optional[str] = None
+    remark: Optional[str] = None
+
+
+@router.patch("/{after_sales_id}", response_model=AfterSalesOut)
+def update_aftersales(
+    after_sales_id: int,
+    payload: AfterSalesPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """补填/修改售后行的快递单号(退回/补发)与备注; 填了单号自动纳入物流追踪。"""
+    a = db.get(AfterSales, after_sales_id)
+    if a is None:
+        raise HTTPException(404, "after sales record not found")
+    data = {
+        k: (v.strip() if isinstance(v, str) and v.strip() else None)
+        for k, v in payload.model_dump(exclude_unset=True).items()
+    }
+    # 人工编辑 → 统一历史档案
+    from app.services import field_change_service
+    field_change_service.diff_and_apply(
+        db, a, data, table="after_sales", pk=a.id,
+        actor=getattr(_, "username", None), row_label=a.platform_order_no,
+        field_labels={"return_tracking_no": "退回快递单号",
+                      "refill_tracking_no": "补发快递单号", "remark": "备注"},
+    )
+    try:
+        from app.services import shipment_service
+        if a.return_tracking_no and "return_tracking_no" in data:
+            shipment_service.upsert_shipment(db, "after_sales_return", a.id, a.return_tracking_no)
+        if a.refill_tracking_no and "refill_tracking_no" in data:
+            shipment_service.upsert_shipment(db, "after_sales_refill", a.id, a.refill_tracking_no)
+    except Exception:  # pragma: no cover - 建追踪失败不阻断保存
+        pass
+    db.commit()
+    return _out(a)
+
+
 # -------- 批量 CSV 导入 --------
 
 class AfterSalesImportResult(BaseModel):
@@ -191,6 +298,13 @@ async def import_aftersales_csv(file: UploadFile = File(...), db: Session = Depe
     from app.services import tabular
     text = tabular.to_csv_text(raw, file.filename)
     r = bill_import_service.import_aftersales_csv(db, text)
+    # Plan L4: 批量导入后全量回写赔付 → 订单 P&L 不滞后
+    if r.inserted:
+        try:
+            from app.services import order_sync_service
+            order_sync_service.backfill_compensation_from_aftersales(db)
+        except Exception:  # pragma: no cover
+            pass
     db.commit()
     return AfterSalesImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors)
 

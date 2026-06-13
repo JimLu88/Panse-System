@@ -73,17 +73,47 @@ def _size_signature(dimension_changes: dict) -> str:
     return "|".join(parts)
 
 
+def _dims_of(changes: dict) -> tuple[Optional[Decimal], Optional[Decimal]]:
+    """从尺寸字典提取 宽/高 数值 (键名兼容 宽/width / 高/height), 提不出返回 None。"""
+    w = h = None
+    for k, v in (changes or {}).items():
+        kl = str(k).lower()
+        try:
+            dv = Decimal(str(v))
+        except Exception:
+            continue
+        if "宽" in kl or "width" in kl:
+            w = dv
+        elif "高" in kl or "height" in kl:
+            h = dv
+    return w, h
+
+
 def _find_reusable_material(
     db: Session, *, base_material_code: str, base_material_name: Optional[str],
-    size_sig: str,
+    size_sig: str, width_mm: Optional[Decimal] = None, height_mm: Optional[Decimal] = None,
 ) -> Optional[Material]:
-    """Phase 7 P1-8: 找已存在的"同基础物料 + 同尺寸"定制件复用, 避免 BOM 表无限膨胀.
+    """Phase 7 P1-8 + Plan C3 防串料: 找"同基础物料 + 同尺寸"定制件复用.
 
-    匹配规则:
-        - is_custom=True (只在定制库找)
-        - name 含 base_material_name (前缀匹配)
-        - remark 含 size_sig
+    正式口径: is_custom + base_material_code 精确对照 + width/height 数值比对;
+    旧数据兜底: 名称前缀 + remark 含 size_sig, 但标了不同 base 的绝不复用 (防串料)。
     """
+    # 1) 正式口径: base_material_code 精确匹配
+    rows = db.execute(
+        select(Material).where(
+            Material.is_custom == True,  # noqa: E712
+            Material.base_material_code == base_material_code,
+        )
+    ).scalars().all()
+    for m in rows:
+        if (width_mm is not None and height_mm is not None
+                and m.width_mm is not None and m.height_mm is not None):
+            if Decimal(m.width_mm) == width_mm and Decimal(m.height_mm) == height_mm:
+                return m
+            continue   # 双方尺寸都明确但不等 → 不是同一件
+        if m.remark and size_sig and size_sig in m.remark:
+            return m
+    # 2) 旧数据兜底: 名称前缀 (未回填 base_material_code 的历史定制件)
     if not base_material_name:
         return None
     name_prefix = base_material_name.split("(")[0].strip()
@@ -94,6 +124,8 @@ def _find_reusable_material(
         )
     ).scalars().all()
     for m in rows:
+        if m.base_material_code and m.base_material_code != base_material_code:
+            continue   # C3: 同前缀不同基础料 → 串料风险, 跳过
         if m.remark and size_sig in m.remark:
             return m
     return None
@@ -116,12 +148,14 @@ def _build_diff(
         if line.size_type == "组合" and dimension_changes:
             tag = " / ".join(f"{k}={v}" for k, v in dimension_changes.items())
             note = f"按定制尺寸 ({tag}) 重做"
-            # P1-8: 找有没有现成的同尺寸定制件复用
+            # P1-8: 找有没有现成的同尺寸定制件复用 (C3: 带宽高数值精确比对)
+            w_mm, h_mm = _dims_of(dimension_changes)
             reuse = _find_reusable_material(
                 db,
                 base_material_code=line.material_code,
                 base_material_name=mat_name,
                 size_sig=size_sig,
+                width_mm=w_mm, height_mm=h_mm,
             )
             if reuse is not None:
                 target_material_code = reuse.code
@@ -137,6 +171,37 @@ def _build_diff(
                                     and bool(dimension_changes)),
         ))
     return diff
+
+
+def precheck_stock(db: Session, diff_lines: list[BomDiffLine]) -> dict:
+    """Plan F5: 定制确认前库存预检 — 按可用量分组: 现货够 / 需采购 / 需新开料。"""
+    from app.models.inventory import PartInventory
+    in_stock: list[dict] = []
+    need_purchase: list[dict] = []
+    need_new_material: list[dict] = []
+    for d in diff_lines:
+        need = float(d.new_qty or 0)
+        item = {"material_code": d.material_code, "material_name": d.material_name,
+                "need": need}
+        if d.requires_new_material:
+            need_new_material.append(item)
+            continue
+        inv = db.execute(
+            select(PartInventory).where(PartInventory.material_code == d.material_code)
+        ).scalar_one_or_none()
+        avail = float(inv.available_qty) if inv is not None else 0.0
+        item["available"] = avail
+        if avail >= need:
+            in_stock.append(item)
+        else:
+            item["shortage"] = round(need - avail, 3)
+            need_purchase.append(item)
+    return {
+        "in_stock": in_stock,
+        "need_purchase": need_purchase,
+        "need_new_material": need_new_material,
+        "has_shortage": bool(need_purchase or need_new_material),
+    }
 
 
 def preview(

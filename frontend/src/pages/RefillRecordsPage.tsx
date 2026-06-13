@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Alert, Button, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
-import { DownloadOutlined, InboxOutlined, SyncOutlined } from '@ant-design/icons';
+import { Alert, Button, InputNumber, Modal, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { DownloadOutlined, InboxOutlined, SettingOutlined, SyncOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
@@ -87,6 +87,26 @@ export default function RefillRecordsPage() {
         message="补单 = 已发货后额外补发的订单成本（含补发运费、佣金）。导入后参与利润核算。已同步飞书。" />
 
       <Space wrap>
+        <Upload accept=".xlsx" showUploadList={false} beforeUpload={async (file) => {
+          // 补单简表 (发中介的: 订单号/旺旺/本金/佣金/店铺), 日期取文件名如 5.31
+          const fd = new FormData();
+          fd.append('file', file);
+          try {
+            const r = await api.post('/api/finance/refill-records/import-xlsx', fd, {
+              headers: { 'Content-Type': 'multipart/form-data' },
+            });
+            message.success(
+              `补单表已导入 (日期 ${r.data.refill_date}): 新增 ${r.data.inserted}, ` +
+              `重复 ${r.data.skipped_duplicate}, 无效 ${r.data.skipped_invalid}; 原文件已存档`,
+            );
+            qc.invalidateQueries({ queryKey: ['refill-records'] });
+          } catch (e: any) {
+            message.error(e?.response?.data?.detail ?? '补单表导入失败');
+          }
+          return false;
+        }}>
+          <Button type="primary" icon={<InboxOutlined />}>导入补单表 xlsx</Button>
+        </Upload>
         <Upload accept=".csv" showUploadList={false} beforeUpload={handleImport}>
           <Button icon={<InboxOutlined />} loading={importing}>导入 CSV</Button>
         </Upload>
@@ -96,6 +116,39 @@ export default function RefillRecordsPage() {
         </Button>
         <Button icon={<SyncOutlined />} onClick={() => qc.invalidateQueries({ queryKey: ['refill-records'] })}>
           刷新
+        </Button>
+        <Button icon={<SettingOutlined />} onClick={async () => {
+          // 补单费用设置 (用户拍板: 快递费缺省 ¥5, 可自行调整)
+          try {
+            const r = await api.get('/api/finance/refill-records/settings');
+            let freight = Number(r.data.freight_default ?? 5);
+            Modal.confirm({
+              title: '补单费用设置',
+              icon: <SettingOutlined />,
+              content: (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ marginBottom: 6 }}>补单快递费缺省（导入补单表时每条自动带上）:</div>
+                  <InputNumber
+                    defaultValue={freight}
+                    min={0} max={1000} prefix="¥" style={{ width: 160 }}
+                    onChange={(v) => { freight = Number(v ?? 0); }}
+                  />
+                  <div style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
+                    只影响之后的导入；已导入记录不变。改动记入修改档案。
+                  </div>
+                </div>
+              ),
+              okText: '保存',
+              onOk: async () => {
+                await api.put('/api/finance/refill-records/settings', { freight_default: freight });
+                message.success(`已保存: 补单快递费缺省 ¥${freight}`);
+              },
+            });
+          } catch (e: any) {
+            message.error(e?.response?.data?.detail ?? '读取设置失败');
+          }
+        }}>
+          设置
         </Button>
         {data.length > 0 && (
           <Typography.Text type="secondary">
@@ -124,7 +177,7 @@ export default function RefillRecordsPage() {
         rowKey="id"
         dataSource={data}
         columns={columns}
-        pagination={{ pageSize: 50, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true }}
         scroll={{ x: 900 }}
       />
       )}

@@ -1210,6 +1210,34 @@ def _commit_generic(
     if conflicted > 0:
         report.warnings.append(f"{conflicted} 行与库内数据不同, 待人工确认 (见 conflicts)")
 
+    # 导入消失检测 (用户拍板 2026-06-12): 产品总表重导时, 库里有但新表里没有的产品
+    # → 报异常问是否删除, 绝不静默动行。只在"像全表重导"时比对 (本批编码 ≥30 且
+    # ≥60% 库内产品数), 避免导半张分类表把其余产品全误报成消失。
+    if entity_type == "product":
+        try:
+            from app.models.product import Product as _P
+            from app.services import import_vanish_service
+            seen = set(ctx.seen_product_codes)
+            import_vanish_service.resolve_reappeared(
+                db, source_table="products", present_keys=seen)
+            db_codes = {r[0] for r in db.query(_P.code).all()}
+            if len(seen) >= 30 and len(seen) >= 0.6 * max(len(db_codes), 1):
+                n = import_vanish_service.report_missing(
+                    db, source_table="products", label="产品",
+                    missing=sorted(db_codes - seen),
+                    scope_desc=f"本次产品总表共 {len(seen)} 个编码",
+                )
+                if n:
+                    report.warnings.append(
+                        f"⚠ {n} 个产品在库里有但新表里消失了, 已报异常等确认是否删除")
+            elif seen and len(seen) < 0.6 * max(len(db_codes), 1):
+                report.warnings.append(
+                    "本次产品表编码数偏少 (疑似部分导入), 未做消失比对")
+        except Exception:  # pragma: no cover - 检测故障不阻断导入
+            import logging
+            logging.getLogger("panse.excel_importer").warning(
+                "产品消失检测失败", exc_info=True)
+
 
 # 需要合并单元格向下填充的字段 (entity_type -> [字段名])
 _FORWARD_FILL = {
@@ -1407,6 +1435,8 @@ def _h_material(db, data, key_field, ctx=None):
 
 
 def _h_bom(db, data, key_field, ctx=None):
+    from sqlalchemy import func
+
     from app.models.bom import BomLine
     from app.models.material import Material
     product_code = data.get("product_code")
@@ -1417,6 +1447,20 @@ def _h_bom(db, data, key_field, ctx=None):
     if not db.execute(select(Material).where(Material.code == material_code)).scalar_one_or_none():
         db.add(Material(code=material_code, name=f"占位 ({material_code})"))
         db.flush()
+    # 防重 (2026-06-12 用户: 重导 BOM 表把每行复制了 7 遍, 下单图物料爆炸):
+    # 完全相同的行 (产品+SKU+物料+用量+备注+单位+尺寸类型 全等) 已存在 → 跳过不再插。
+    # 注意: 同 SKU 同物料不同备注/用量是合法 BOM (如多块玻璃各有用途), 只拦"全等"。
+    dup_q = select(BomLine).where(
+        BomLine.product_code == product_code,
+        BomLine.material_code == material_code,
+        func.coalesce(BomLine.sku_code, "") == (data.get("sku_code") or ""),
+        BomLine.qty_per_product == (data.get("qty_per_product") or Decimal("1")),
+        func.coalesce(BomLine.remark, "") == (data.get("remark") or ""),
+        func.coalesce(BomLine.unit, "") == (data.get("unit") or ""),
+        func.coalesce(BomLine.size_type, "") == (data.get("size_type") or ""),
+    )
+    if db.execute(dup_q.limit(1)).scalar_one_or_none():
+        return "bom_line", "skipped"
     db.add(BomLine(**{k: v for k, v in data.items() if v is not None}))
     return "bom_line", "inserted"
 
@@ -1488,17 +1532,12 @@ def _is_custom_code(db, sku_code, product_code) -> bool:
 
 
 def _flag_custom(db, source_table: str, source_pk, sku_code) -> None:
-    from app.services import exception_service
-    exception_service.record(
-        db,
-        source_table=source_table,
-        source_pk=str(source_pk) if source_pk is not None else None,
-        exception_type="custom_sku_detected",
-        severity="info",
-        description=f"识别到定制编码 {sku_code} (后缀达定制阈值), 已自动标记定制, 请复核.",
-        suggestion_action="view",
-        context={"sku_code": sku_code},
-    )
+    """定制编码识别 (后缀达阈值) — 调用处已自动标 is_custom, 属确定性规则。
+
+    用户拍板 (2026-06): 全自动处理, 不再往异常中心记"已处理请复核"的提示噪音
+    (此前累计 233 条)。识别与标记逻辑不变, 仅静默。
+    """
+    return None
 
 
 def _record_exc(db, source_table: str, source_pk, exc_type: str,

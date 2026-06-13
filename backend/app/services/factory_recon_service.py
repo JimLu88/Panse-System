@@ -141,6 +141,78 @@ def list_items(
     }
 
 
+RESOLUTION_KINDS = ("漏单", "价差", "运费", "补偿", "其他")
+
+
+def split_item(db: Session, item_id: int, *, parts: list[dict],
+               actor: Optional[str] = None) -> dict:
+    """Plan L5: 把一条差异行拆成多条归因子行。Σ 子行金额必须 = 原行金额 (Decimal 校验)。
+
+    parts: [{"amount": "120.00", "resolution_kind": "价差", "remark": "..."}]
+    """
+    it = db.get(FactoryReconItem, item_id)
+    if it is None:
+        raise ValueError(f"工厂对账条目不存在: {item_id}")
+    if it.parent_item_id is not None:
+        raise ValueError("子行不能再拆分")
+    if not parts or len(parts) < 2:
+        raise ValueError("拆分至少要两条")
+    total = Decimal("0")
+    cleaned: list[tuple[Decimal, str, Optional[str]]] = []
+    for p in parts:
+        try:
+            amt = Decimal(str(p.get("amount")))
+        except Exception:
+            raise ValueError(f"拆分金额不是数字: {p.get('amount')!r}")
+        kind = (p.get("resolution_kind") or "").strip()
+        if kind not in RESOLUTION_KINDS:
+            raise ValueError(f"归因必须是 {'/'.join(RESOLUTION_KINDS)} 之一: {kind!r}")
+        cleaned.append((amt, kind, (p.get("remark") or None)))
+        total += amt
+    if total != Decimal(it.settle_price or 0):
+        raise ValueError(f"拆分金额合计 {total} ≠ 原行金额 {it.settle_price}, 必须打平")
+    children = []
+    for amt, kind, remark in cleaned:
+        child = FactoryReconItem(
+            source_sheet=it.source_sheet, doc_no=it.doc_no, order_no=it.order_no,
+            detail=it.detail, qty=it.qty, settle_price=amt,
+            customer_info=it.customer_info, order_date=it.order_date,
+            ship_date=it.ship_date, remark=remark,
+            parent_item_id=it.id, resolution_kind=kind, source="split",
+        )
+        db.add(child)
+        children.append(child)
+    # 原行标记已做平 (被拆分), 金额保留供追溯
+    it.resolved = True
+    it.settle_reason = f"已拆分为 {len(children)} 条归因子行"
+    it.resolved_by = actor
+    it.resolved_at = datetime.now(timezone.utc)
+    db.flush()
+    return {"parent_id": it.id, "children": [c.id for c in children]}
+
+
+def confirm_item(db: Session, item_id: int, *, resolution_kind: str,
+                 actor: Optional[str] = None) -> dict:
+    """Plan L5: 确认一条差异行的归因。全部确认后调用方可触发期间重算。"""
+    it = db.get(FactoryReconItem, item_id)
+    if it is None:
+        raise ValueError(f"工厂对账条目不存在: {item_id}")
+    kind = (resolution_kind or "").strip()
+    if kind not in RESOLUTION_KINDS:
+        raise ValueError(f"归因必须是 {'/'.join(RESOLUTION_KINDS)} 之一: {kind!r}")
+    it.resolution_kind = kind
+    it.confirmed_by = actor
+    it.confirmed_at = datetime.now(timezone.utc)
+    if not it.resolved:
+        it.resolved = True
+        it.settle_reason = it.settle_reason or f"确认归因: {kind}"
+        it.resolved_by = actor
+        it.resolved_at = it.confirmed_at
+    db.flush()
+    return {"id": it.id, "resolution_kind": it.resolution_kind,
+            "confirmed_at": it.confirmed_at.isoformat()}
+
+
 def resolve(db: Session, item_id: int, *, reason: str, actor: Optional[str] = None,
             resolved: bool = True) -> dict:
     """对某条工厂结算行「填原因做平」(或撤销)。reason=扣减/减免/差异原因。"""

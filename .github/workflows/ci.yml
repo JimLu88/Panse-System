@@ -31,8 +31,7 @@ jobs:
     name: migrations + e2e (postgres)
     runs-on: ubuntu-latest
     # 套件单测走内存 sqlite (conftest 固定); 此 job 主要验证 alembic 迁移在真 PG 能跑通 +
-    # e2e (TestClient 走 app 引擎=PG)。PG 特有问题先暴露不阻塞主流程。
-    continue-on-error: true
+    # e2e (TestClient 走 app 引擎=PG)。Plan C5: 迁移已在真 PG 反复验证, 收紧为阻塞性检查。
     defaults:
       run:
         working-directory: backend

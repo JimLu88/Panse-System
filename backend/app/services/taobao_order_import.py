@@ -174,6 +174,9 @@ class TaobaoImportReport:
     skipped_invalid: int = 0
     needs_review: int = 0           # 订单号损坏等, 已入库但标注待核
     multi_line_orders: int = 0      # 一单多商品的订单数
+    status_changed: int = 0         # 重导时状态被覆盖的单数 (日报用)
+    amount_changed: int = 0         # 重导时实付/退款被覆盖的单数 (日报用)
+    vanished: int = 0               # 库里有、新文件里没有的单数 (报异常, 不动行)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -200,6 +203,8 @@ class _OrderRow:
     ship_time: Any = None            # 发货时间
     confirm_time: Any = None         # 确认收货时间
     shop: Any = None                 # 店铺名称
+    buyer_message: Any = None        # 买家留言 (平台, 重导覆盖)
+    seller_memo: Any = None          # 卖家备注/商家备注 (平台, 重导覆盖)
     lines: list[dict] = field(default_factory=list)   # 每个商品行
 
 
@@ -221,8 +226,17 @@ def detect_format(filename: str, raw: bytes) -> str:
         header = _xlsx_first_header(raw)
         if SALES_DETAIL_KEYS & set(header):
             return "sales_detail"
+        # 千牛「订单报表」单表导出 (Web-Agent 自动取数, 2026-06-12): 主单级,
+        # 列名 _parse_sales_detail 的 gv 兜底全覆盖 → 直接走 sales_detail 解析。
+        if "订单编号" in header and "订单创建时间" in header and "订单状态" in header:
+            return "sales_detail"
         if "订单编号" in header and ("买家应付金额" in header or "产品编码" in header):
             return "order_master"
+        # 淘宝卖家中心「已卖出的宝贝」导出 (ExportOrderList, sheet 多名 'export'; Web-Agent 自动下载):
+        # 列为 订单编号/订单状态/买家应付货款/收货人姓名/买家留言… 无"订单创建时间"。
+        # _parse_sales_detail 的 gv 兜底全覆盖这些列名 → 走 sales_detail 解析 (2026-06-12)。
+        if "订单编号" in header and "订单状态" in header:
+            return "sales_detail"
         return "unknown"
     # CSV
     header = _csv_header(raw)
@@ -357,6 +371,8 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                     ship_time=r.get("ship_time") or g3(row, "发货时间"),
                     confirm_time=r.get("confirm_time") or g3(row, "确认收货时间"),
                     shop=r.get("shop"),
+                    buyer_message=g3(row, "买家留言", "买家留言备注", "买家备注"),
+                    seller_memo=g3(row, "卖家备注", "商家备注", "卖家留言"),
                 )
                 orders[no] = o
             merchant = g3(row, "商家编码", "外部系统编号")
@@ -421,6 +437,8 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
                 ship_time=gv(row, "发货时间"),
                 confirm_time=gv(row, "确认收货时间"),
                 shop=gv(row, "店铺名称"),
+                buyer_message=gv(row, "买家留言", "买家留言备注", "买家备注"),
+                seller_memo=gv(row, "卖家备注", "商家备注", "卖家留言", "常用备注"),
             )
             orders[no] = o
         merchant = gv(row, "商家编码", "外部系统编号")
@@ -494,20 +512,51 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if existing is not None:
             # 再次导入: 状态/金额以淘宝导出为准(覆盖); 描述/客户仅在缺失时回填; 不动 is_refill/remark。
             # is_historical 置 False: 淘宝真实订单应进统计(预测/月度报表/现金流), 旧通用导入误标历史在此纠正。
+            # 用户拍板 (2026-06-11): 被覆盖的关键字段记修改档案 (source=import), 旧值可回溯。
+            def _trace(fname: str, flabel: str, old_v, new_v) -> bool:
+                if str(old_v) == str(new_v):
+                    return False
+                try:
+                    from app.services import field_change_service
+                    field_change_service.record(
+                        db, table="orders", pk=no, field=fname, old=old_v, new=new_v,
+                        actor="订单重导", source="import",
+                        row_label=(existing.product_name or "")[:40], field_label=flabel,
+                    )
+                except Exception:
+                    pass
+                return True
+            if _trace("status", "订单状态", existing.status, status):
+                rep.status_changed += 1
             existing.is_historical = False
             existing.status = status
             if payable is not None:
                 existing.buyer_payable_amount = payable
             if paid is not None:
+                if _trace("paid_amount", "实付金额", existing.paid_amount, paid):
+                    rep.amount_changed += 1
                 existing.paid_amount = paid
             if received is not None:
                 existing.shop_received_amount = received
             if pfee is not None:
                 existing.platform_fee = pfee
             if refund is not None:
+                if _trace("refund_amount", "退款金额", existing.refund_amount, refund):
+                    rep.amount_changed += 1
                 existing.refund_amount = refund
             if ship_dt is not None:
+                _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt
+            # 平台备注随重导覆盖 (用户拍板: 买家留言/商家备注是淘宝侧会变的数据;
+            # 非空才覆盖, 防止不含该列的旧格式文件把留言抹掉)
+            _bmsg = _clean(o.buyer_message)
+            if _bmsg:
+                _trace("buyer_message", "买家留言", existing.buyer_message, _bmsg)
+                existing.buyer_message = _bmsg
+            _smemo = _clean(o.seller_memo)
+            if _smemo:
+                _trace("seller_memo", "商家备注", existing.seller_memo, _smemo)
+                existing.seller_memo = _smemo
             if _shop and not existing.shop:
                 existing.shop = _shop
             if _pname and not existing.product_name:
@@ -552,6 +601,8 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             # 现金流"待确认收货/未发货"靠活跃单的金额; 故不再一律 historical
             is_historical=False,
             remark=remark,
+            buyer_message=_clean(o.buyer_message),
+            seller_memo=_clean(o.seller_memo),
             warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )
         db.add(order)
@@ -559,12 +610,66 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
     db.commit()
 
 
+def apply_refill_flags(db: Session) -> int:
+    """每次导入订单后调用: 凡出现在补单对账(RefillRecord)里的订单号, 一律优先标成 is_refill=True。
+
+    补单表是补单与否的最高优先级来源 —— 否则这些单会被当成"真实订单"少算补单(报表失真)。
+    """
+    from app.models.finance import RefillRecord
+    refill_nos = {n for (n,) in db.execute(select(RefillRecord.order_no)).all() if n}
+    if not refill_nos:
+        return 0
+    n = 0
+    for o in db.execute(
+        select(Order).where(Order.order_no.in_(refill_nos), Order.is_refill == False)  # noqa: E712
+    ).scalars().all():
+        o.is_refill = True
+        n += 1
+    return n
+
+
+_OOXML_ENCRYPTED_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def is_encrypted_ooxml(raw: bytes) -> bool:
+    """前 8 字节是 OOXML 加密复合文档魔数 → 加密发货报表。"""
+    return raw[:8] == _OOXML_ENCRYPTED_MAGIC
+
+
+def maybe_decrypt(raw: bytes, password: Optional[str]) -> bytes:
+    """加密 OOXML(发货报表) → 用口令解成明文 xlsx 字节; 明文则原样返回。
+
+    口令缺失/错误抛 ValueError, 调用方据此标「待口令」或「口令错误」。
+    """
+    if not is_encrypted_ooxml(raw):
+        return raw
+    if not password:
+        raise ValueError("发货报表已加密, 但未取到飞书口令 (请转发『发货密码 xxx』到飞书机器人)")
+    import msoffcrypto
+    fin = io.BytesIO(raw)
+    fout = io.BytesIO()
+    office = msoffcrypto.OfficeFile(fin)
+    try:
+        office.load_key(password=password)
+        office.decrypt(fout)
+    except Exception as e:  # msoffcrypto 口令错误 → InvalidKeyError 等
+        raise ValueError(f"发货报表解密失败 (口令可能已过期或不对): {e}") from e
+    return fout.getvalue()
+
+
 # ── 对外统一入口 ──────────────────────────────────────────────────────────────
 def import_taobao_orders(db: Session, filename: str, raw: bytes,
                          platform: str = "淘宝",
-                         force_format: Optional[str] = None) -> TaobaoImportReport:
-    """自动识别格式并导入。force_format 可强制指定 (绕过自动识别)。"""
+                         force_format: Optional[str] = None,
+                         password: Optional[str] = None) -> TaobaoImportReport:
+    """自动识别格式并导入。force_format 可强制指定; password 用于解密加密发货报表。"""
     rep = TaobaoImportReport()
+    if is_encrypted_ooxml(raw):
+        try:
+            raw = maybe_decrypt(raw, password)
+        except ValueError as e:
+            rep.errors.append(str(e))
+            return rep
     fmt = force_format or detect_format(filename, raw)
     rep.detected_format = fmt
 
@@ -586,5 +691,99 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     if not orders:
         rep.warnings.append("未解析到任何订单行。")
         return rep
+
+    # 坏文件拦截 (用户拍板 2026-06-11): 自动导出偶发半截文件 — 行数比上次骤降一半以上
+    # 时拒绝导入 (覆盖式导入最怕拿残缺文件当权威源), 并推飞书告警。
+    try:
+        from app.services import settings_service
+        last_raw = settings_service.get(db, "last_order_import_count", env_fallback=False)
+        last_n = int(last_raw) if last_raw else 0
+        if last_n >= 50 and len(orders) < last_n * 0.5:
+            msg = (f"本次解析仅 {len(orders)} 单, 上次为 {last_n} 单 (骤降 >50%), "
+                   "疑似导出文件不完整, 已拒绝导入。请重新导出后再试; "
+                   "若确属正常 (如刻意缩小导出范围), 连续导两次即可生效。")
+            rep.errors.append(msg)
+            try:
+                from app.services import alert_service
+                alert_service.upsert(
+                    db, kind="import_anomaly", severity="critical",
+                    title="订单导入文件异常, 已拦截",
+                    body=msg, dedupe_key="import_anomaly:orders",
+                )
+                db.commit()
+            except Exception:
+                pass
+            # 把"上次行数"更新为本次, 这样用户确认无误后重导第二次即放行
+            settings_service.set_value(db, "last_order_import_count", str(len(orders)))
+            db.commit()
+            return rep
+        settings_service.set_value(db, "last_order_import_count", str(len(orders)))
+    except Exception:  # pragma: no cover - 拦截器故障不阻断导入
+        pass
+
     _commit_orders(db, orders, platform, rep)
+    if apply_refill_flags(db):   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
+        db.commit()
+
+    # 理论成本自动反推 (用户拍板 2026-06-12: 订单导入进来就应自动推算, 不再"未反推")。
+    # only_missing=True 只补未算/为0的 (已算的不动); 失败不阻断导入。
+    try:
+        from app.services import order_cost_service
+        order_cost_service.recompute_all(db, only_missing=True)
+    except Exception as e:  # noqa: BLE001
+        rep.warnings.append(f"理论成本自动反推未完成: {type(e).__name__}")
+
+    # 导入消失检测 (用户拍板 2026-06-12): 库里有、新文件里没有 → 报异常问是否删除,
+    # 绝不静默覆盖/删行。范围按文件内订单日期 [min,max] 圈定, 窗口外老订单不误报。
+    try:
+        from datetime import date as _date_cls
+
+        from app.models.order import Order as _Order
+        from app.services import import_vanish_service
+        # orders 是 dict[order_no, _OrderRow] — 必须取 values(), 直接迭代拿到的是字符串键
+        _rows = list(orders.values()) if isinstance(orders, dict) else list(orders)
+        file_keys = {o.order_no for o in _rows if o.order_no and not o.order_no_bad}
+        # 重新出现的单自动销掉旧异常 (拆单恢复/上次导出遗漏这次补上了)
+        import_vanish_service.resolve_reappeared(
+            db, source_table="orders", present_keys=file_keys)
+        dates = [o.order_date for o in _rows
+                 if isinstance(o.order_date, _date_cls)]
+        if dates and file_keys:
+            dmin, dmax = min(dates), max(dates)
+            db_keys = {
+                r[0] for r in db.query(_Order.order_no).filter(
+                    _Order.platform == platform,
+                    _Order.is_refill == False,  # noqa: E712
+                    _Order.order_date >= dmin,
+                    _Order.order_date <= dmax,
+                ).all()
+            }
+            rep.vanished = import_vanish_service.report_missing(
+                db, source_table="orders", label="订单",
+                missing=sorted(db_keys - file_keys),
+                scope_desc=f"本次文件覆盖 {dmin}~{dmax}",
+            )
+            db.commit()
+    except Exception:  # pragma: no cover - 检测故障不阻断导入
+        import logging
+        logging.getLogger("panse.taobao_import").warning("订单消失检测失败", exc_info=True)
+
+    # 导入差异日报 (用户拍板): 有实际写入才推, 一眼看到今天发生了什么
+    if rep.inserted or rep.updated:
+        try:
+            from app.services import notify_service
+            vanish_line = (f"\n⚠ 有 {rep.vanished} 单在库里有但新文件里消失了, "
+                           "已报异常等你确认是否删除 (异常中心 → import_missing)。"
+                           if rep.vanished else "")
+            notify_service.notify(
+                db,
+                (f"订单重导完成: 解析 {len(orders)} 单 — 新增 {rep.inserted}, "
+                 f"更新 {rep.updated} (状态变更 {rep.status_changed}, 金额变更 {rep.amount_changed}), "
+                 f"重复 {rep.skipped_duplicate}, 无效 {rep.skipped_invalid}。"
+                 "变更明细见 工具→修改档案 (来源筛「导入覆盖」)。" + vanish_line),
+                level="warning" if rep.vanished else "info",
+                title="畔色 ERP · 订单导入日报",
+            )
+        except Exception:  # pragma: no cover
+            pass
     return rep

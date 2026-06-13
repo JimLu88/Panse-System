@@ -100,6 +100,12 @@ def notify(
 
     永远不抛异常 (即使发不出来也不能影响主业务流). 失败时 log.warning.
     """
+    # 测试/维护环境总开关: 跑 pytest 时绝不往真实飞书群推 (2026-06-11: C6 并发测试
+    # 每跑一次全量测试就给群里推一条缺货告警, 用户被轰炸)
+    import os
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return False, "通知已被 PANSE_DISABLE_NOTIFY 关闭 (测试环境)"
+
     cfg = get_config(db)
     provider = cfg["provider"]
     webhook = cfg["webhook"]
@@ -110,7 +116,61 @@ def notify(
     ok, resp = _post_json(webhook, payload)
     if not ok:
         _logger.warning("通知发送失败 (%s): %s", provider, resp)
+        _enqueue_retry(db, text, title=title, level=level)
     return ok, resp
+
+
+# ── 失败重试队列 (用户审核项 17): 失败入库, 调度每 30 分钟重发, 最多 5 次 ──
+
+_MAX_RETRY = 5
+
+
+def _enqueue_retry(db: Session, text: str, *, title: Optional[str], level: str) -> None:
+    """发送失败 → 入重试队列。任何错误都吞掉 (审计性质, 不影响主业务)。"""
+    try:
+        from datetime import datetime, timedelta, timezone
+        from sqlalchemy import text as _sql
+        db.execute(_sql(
+            "INSERT INTO notify_retries (text, title, level, attempts, next_at) "
+            "VALUES (:t, :ti, :lv, 0, :nx)"
+        ), {"t": text, "ti": title, "lv": level,
+            "nx": datetime.now(timezone.utc) + timedelta(minutes=30)})
+        db.flush()
+    except Exception:  # pragma: no cover - 表不存在(测试库)/入队失败不阻断
+        _logger.debug("notify 重试入队失败 (忽略)", exc_info=True)
+
+
+def retry_pending(db: Session) -> dict:
+    """调度任务: 重发到期的失败通知。成功标 sent_at; 超过 _MAX_RETRY 次放弃。"""
+    from datetime import datetime, timedelta, timezone
+    from sqlalchemy import text as _sql
+    now = datetime.now(timezone.utc)
+    try:
+        rows = db.execute(_sql(
+            "SELECT id, text, title, level, attempts FROM notify_retries "
+            "WHERE sent_at IS NULL AND attempts < :mx AND (next_at IS NULL OR next_at <= :now) "
+            "ORDER BY id LIMIT 20"
+        ), {"mx": _MAX_RETRY, "now": now}).fetchall()
+    except Exception:  # pragma: no cover
+        return {"retried": 0, "sent": 0}
+    sent = 0
+    for rid, text_, title, level, attempts in rows:
+        cfg = get_config(db)
+        ok = False
+        if cfg["provider"] != "none" and cfg["webhook"]:
+            payload = _build_payload(cfg["provider"], text_, level=level, title=title)
+            ok, _ = _post_json(cfg["webhook"], payload)
+        if ok:
+            db.execute(_sql("UPDATE notify_retries SET sent_at=:now, attempts=attempts+1 WHERE id=:id"),
+                       {"now": now, "id": rid})
+            sent += 1
+        else:
+            # 指数退避: 30min × 2^attempts
+            db.execute(_sql(
+                "UPDATE notify_retries SET attempts=attempts+1, next_at=:nx WHERE id=:id"
+            ), {"nx": now + timedelta(minutes=30 * (2 ** (attempts + 1))), "id": rid})
+    db.commit()
+    return {"retried": len(rows), "sent": sent}
 
 
 def test_notify(db: Session) -> tuple[bool, str]:

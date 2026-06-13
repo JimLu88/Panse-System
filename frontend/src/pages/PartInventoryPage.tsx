@@ -38,6 +38,7 @@ import {
 } from '../api/catalog';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 
 // 预警状态 → 中文标签 + 颜色 (与成品库存一致)
 const WARN_META: Record<string, { label: string; color: string }> = {
@@ -237,6 +238,45 @@ export default function PartInventoryPage() {
       render: (v: string | null, row: PartInventory) => {
         const isCustom = row.material_code.startsWith('AC-') && parseInt(row.material_code.slice(3), 10) >= 1000;
         if (!v) return <Typography.Text type="secondary">（未命名）</Typography.Text>;
+        // 占位名 = 录入时名称为空自动建档, 原名无处可查 → 给「补名」入口人工补上
+        if (v.startsWith('占位')) {
+          return (
+            <Space size={4}>
+              <Tag color="orange">{v}</Tag>
+              <Button
+                size="small" type="link" style={{ padding: 0 }}
+                onClick={() => {
+                  let newName = '';
+                  Modal.confirm({
+                    title: `给 ${row.material_code} 补物料名称`,
+                    content: (
+                      <div>
+                        <p style={{ color: '#999', fontSize: 12 }}>
+                          这条是录入时名称为空自动建的定制物料, 原名无处可查 — 请按实物补一个名字。
+                        </p>
+                        <Input placeholder="如: 黑色金属桌腿-加固款"
+                          onChange={(e) => { newName = e.target.value; }} />
+                      </div>
+                    ),
+                    okText: '保存',
+                    onOk: async () => {
+                      if (!newName.trim()) { message.warning('请输入名称'); return Promise.reject(); }
+                      const { api } = await import('../api/client');
+                      const mats = await api.get('/api/materials', { params: { q: row.material_code } });
+                      const mat = (mats.data as any[]).find((m) => m.code === row.material_code);
+                      if (!mat) { message.error('物料库里找不到该编码'); return; }
+                      await api.patch(`/api/materials/${mat.id}`, { name: newName.trim() });
+                      message.success(`已改名: ${row.material_code} → ${newName.trim()}`);
+                      qc.invalidateQueries({ queryKey: ['part-inventory'] });
+                    },
+                  });
+                }}
+              >
+                补名
+              </Button>
+            </Space>
+          );
+        }
         return isCustom ? <Tag color="orange">{v}</Tag> : <span>{v}</span>;
       },
     },
@@ -357,7 +397,7 @@ export default function PartInventoryPage() {
             loading={alerts.isLoading}
             dataSource={[...(alerts.data ?? [])].sort(
               (a, b) => (WARN_SEV[a.warning_status] ?? 9) - (WARN_SEV[b.warning_status] ?? 9))}
-            pagination={{ pageSize: 20 }}
+            pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
             size="middle"
             columns={[
               { title: '仓库', dataIndex: 'warehouse', width: 100 },
@@ -413,7 +453,7 @@ export default function PartInventoryPage() {
             rowKey="id"
             loading={returns.isLoading}
             dataSource={returns.data}
-            pagination={{ pageSize: 20 }}
+            pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
             size="middle"
             columns={[
               { title: '日期', dataIndex: 'processed_at', width: 110 },
@@ -480,12 +520,13 @@ export default function PartInventoryPage() {
       {viewMode === 'full' && <FullColumnView entity="part_inventory" defaultShowAll />}
 
       {viewMode === 'curated' && (
-      <Table<PartInventory>
+      <PresetTable<PartInventory>
+        tableKey="part_inventory"
         rowKey="id"
         loading={isLoading}
         dataSource={data}
         columns={columns as any}
-        pagination={{ pageSize: 20 }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         size="middle"
       />
       )}

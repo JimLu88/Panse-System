@@ -23,6 +23,7 @@ import {
   updateTaobaoListing,
 } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 
 const PAGE_SIZE = 100;
 
@@ -218,7 +219,8 @@ export default function TaobaoListingsPage() {
         </Space>
       </Card>
 
-      <Table<TaobaoListing>
+      <PresetTable<TaobaoListing>
+        tableKey="taobao_listing"
         rowKey="id"
         size="small"
         loading={isFetching}

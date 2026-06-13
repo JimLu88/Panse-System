@@ -91,16 +91,15 @@ def list_taobao_listings(
 ):
     base = select(TaobaoListing)
     if q:
-        like = f"%{q.strip()}%"
-        base = base.where(
-            or_(
-                TaobaoListing.taobao_item_id.ilike(like),
-                TaobaoListing.taobao_sku_id.ilike(like),
-                TaobaoListing.merchant_code.ilike(like),
-                TaobaoListing.title.ilike(like),
-                TaobaoListing.sku_code.ilike(like),
-            )
-        )
+        # 全站统一模糊搜索: 空格分词 + 标题字符间隙
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[
+            TaobaoListing.taobao_item_id, TaobaoListing.taobao_sku_id,
+            TaobaoListing.merchant_code, TaobaoListing.title,
+            TaobaoListing.sku_code,
+        ], gap_cols=[TaobaoListing.title])
+        if fc is not None:
+            base = base.where(fc)
     if matched is not None:
         base = base.where(TaobaoListing.matched == matched)
 

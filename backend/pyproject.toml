@@ -19,6 +19,8 @@ dependencies = [
     "slowapi>=0.1.9",
     "cryptography>=41",
     "lark-oapi>=1.2",
+    "pillow>=10.0",
+    "msoffcrypto-tool>=5.1",
 ]
 
 [project.optional-dependencies]

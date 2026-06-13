@@ -6,6 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
 import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
 import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
+import AutomationStatusCard from '../components/AutomationStatusCard';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -229,29 +230,37 @@ export default function DashboardPage() {
       {/* 月度经营 (工厂口径利润/ROI + 销售占比饼图, 可切月; 未对清月标仅供参考) */}
       <MonthlyOpsPanel />
 
-      {/* KPI 卡片行 */}
+      {/* 自动化任务 · 今日状态 (用户拍板 2026-06-12: 可自动的指标一个框, 每天看状态) */}
+      <div style={{ marginBottom: 16 }}><AutomationStatusCard /></div>
+
+      {/* KPI 卡片行 — 每张卡点击进它关联最高的页面 (用户要求) */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} lg={6}>
-          <MCard>
+          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
             <Statistic title="近 7 天订单" value={orders.count_7d} prefix={<ShoppingOutlined style={{ color: M.violet }} />} suffix="单"
               valueStyle={{ ...bigNum }} />
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <MCard>
-            <Statistic title="近 30 天收入" value={orders.revenue_30d} precision={0}
+          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
+            <Statistic title="近 30 天收入 (不含补单)" value={orders.revenue_30d} precision={0}
               prefix={<DollarOutlined style={{ color: M.indigo }} />}
               formatter={(v) => `¥${Number(v).toLocaleString()}`} valueStyle={{ ...bigNum }} />
+            {((orders as any).refill_excluded_30d ?? 0) > 0 && (
+              <div style={{ color: '#999', fontSize: 12 }}>
+                有补单 ¥{Math.round((orders as any).refill_excluded_30d).toLocaleString()} 未计入
+              </div>
+            )}
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <MCard>
+          <MCard onClick={() => nav('/exceptions')} style={{ cursor: 'pointer' }}>
             <Statistic title="待处理异常" value={health.open_exceptions} prefix={<AlertOutlined />}
               valueStyle={{ ...bigNum, color: health.open_exceptions > 10 ? M.rose : health.open_exceptions > 3 ? M.amber : M.emerald }} />
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={6}>
-          <MCard title="数据健康度">
+          <MCard title="数据健康度" onClick={() => nav('/reports')} style={{ cursor: 'pointer' }}>
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <Progress type="dashboard" percent={health.health_score} strokeColor={healthStroke} trailColor="#eef2f7" size={84} />
             </div>
@@ -262,14 +271,14 @@ export default function DashboardPage() {
       {/* 图表行 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} lg={12}>
-          <MCard title="订单状态分布">
+          <MCard title="订单状态分布" onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
             <Suspense fallback={<ChartPlaceholder />}>
               <ReactECharts option={pieOption} style={{ height: 240 }} />
             </Suspense>
           </MCard>
         </Col>
         <Col xs={24} lg={12}>
-          <MCard title="近 30 天订单趋势">
+          <MCard title="近 30 天订单趋势" onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
             <Suspense fallback={<ChartPlaceholder />}>
               <ReactECharts option={trendOption} style={{ height: 240 }} />
             </Suspense>
@@ -281,16 +290,16 @@ export default function DashboardPage() {
       <Typography.Title level={5} style={sectionTitle}>财务概览 (近 30 天)</Typography.Title>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="订单收入" value={finance.order_revenue_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}><Statistic title="订单收入" value={finance.order_revenue_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="理论成本" value={finance.theoretical_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/pricing')} style={{ cursor: 'pointer' }}><Statistic title="理论成本" value={finance.theoretical_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="实际成本" value={finance.actual_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="实际成本" value={finance.actual_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard>
+          <MCard onClick={() => nav('/assets-cashflow')} style={{ cursor: 'pointer' }}>
             <Statistic title="毛利" value={finance.gross_profit_30d} formatter={(v) => money(Number(v))}
               valueStyle={{ ...midNum, color: finance.gross_profit_30d >= 0 ? M.emerald : M.rose }} />
             <Tag style={{ marginTop: 8, borderRadius: 8 }}
@@ -302,17 +311,17 @@ export default function DashboardPage() {
       </Row>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="支付宝收入" value={finance.alipay_income_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/alipay')} style={{ cursor: 'pointer' }}><Statistic title="支付宝收入" value={finance.alipay_income_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="对账未清" value={finance.reconciliation_unresolved} suffix="条"
+          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="对账未清" value={finance.reconciliation_unresolved} suffix="条"
             valueStyle={{ ...midNum, color: finance.reconciliation_unresolved > 0 ? M.amber : M.emerald }} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="售后笔数" value={finance.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后笔数" value={finance.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard><Statistic title="售后成本" value={finance.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
+          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后成本" value={finance.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
         </Col>
       </Row>
 

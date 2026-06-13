@@ -4,6 +4,7 @@ import { DownloadOutlined, InboxOutlined, SyncOutlined } from '@ant-design/icons
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 
 interface LogisticsBill {
   id: number;
@@ -103,13 +104,14 @@ export default function LogisticsBillsPage() {
         )}
       </Space>
 
-      <Table
+      <PresetTable
+        tableKey="logistics_bill"
         size="small"
         loading={isLoading}
         rowKey="id"
         dataSource={data}
         columns={columns}
-        pagination={{ pageSize: 50, showSizeChanger: true }}
+        pagination={{ defaultPageSize: 100, showSizeChanger: true }}
         scroll={{ x: 800 }}
       />
       </>)}

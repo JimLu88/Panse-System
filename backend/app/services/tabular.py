@@ -63,6 +63,34 @@ def _xlsx_to_csv(content: bytes) -> str:
     return out.getvalue()
 
 
+def to_csv_texts(content: bytes, filename: Optional[str] = None) -> list[tuple[str, str]]:
+    """xlsx/csv → [(sheet名, CSV文本), ...] — 多 sheet 全读 (用户要求: 工厂对账单两个 sheet 都要用)。
+
+    CSV 文件天然单 sheet, 返回一项。空 sheet 跳过。
+    """
+    if is_legacy_xls(content, filename) and not looks_like_xlsx(content, filename):
+        raise ValueError("不支持老的 .xls 格式，请在 Excel 里『另存为 .xlsx』后再上传。")
+    if not looks_like_xlsx(content, filename):
+        return [("(CSV)", to_csv_text(content, filename))]
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+    out: list[tuple[str, str]] = []
+    for ws in wb.worksheets:
+        if not ws.max_row or ws.max_row == 0:
+            continue
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        has_data = False
+        for row in ws.iter_rows(values_only=True):
+            if all(c is None for c in row):
+                continue
+            has_data = True
+            w.writerow([_fmt(c) for c in row])
+        if has_data:
+            out.append((ws.title, buf.getvalue()))
+    return out or [("(空表)", "")]
+
+
 def to_csv_text(content: bytes, filename: Optional[str] = None) -> str:
     """xlsx/csv 字节 → CSV 文本。给所有按 CSV 文本工作的导入器复用。"""
     if is_legacy_xls(content, filename) and not looks_like_xlsx(content, filename):

@@ -107,11 +107,57 @@ def _wood_unit_price(db: Session, sku_code: Optional[str]) -> Optional[Decimal]:
 def compute(db: Session, order: Order) -> CostBreakdown:
     """反推一条订单的理论成本, 返回明细 (不写库).
 
-    普通物料按 materials.price; 木作物料 (WD- 前缀) 按定价表 PricingSku.wood_cost。
-    同一 SKU 可能有多条木作 BOM 行 (木作部分拆件), 共用同一个 wood_cost 单价,
-    但只在第一条 WD 行计入成本, 其余 WD 行单价计 0, 避免重复累加整套木作成本。
+    口径 (用户拍板 2026-06-12): **已知 SKU 直接用定价表工厂成本反推**
+    (factory_cost 含全套配件的批量采购价) + 运费/安装/税/扣点 = 会计总成本;
+    BOM 物料反推只用于 **定制单** (BOM 配件是单件订购价, 对成品 SKU 不准)。
+
+    BOM 路径细节: 普通物料按 materials.price; 木作物料 (WD- 前缀) 按定价表
+    PricingSku.wood_cost, 整套只计第一条 WD 行, 避免重复累加。
     """
     sku_code = _resolve_sku_code(db, order)
+    _is_custom_order = order.is_custom or sku_utils.has_gai_suffix(order.sku_code)
+
+    # ---- 已知 SKU (非定制): 定价表直推, 不走 BOM ----
+    if sku_code and not _is_custom_order:
+        ps = db.execute(
+            select(PricingSku).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if ps is not None and (ps.factory_cost is not None or ps.accounting_cost is not None):
+            lines: list[CostLine] = []
+            for code, name, val in (
+                ("工厂成本", "出厂成本(定价表, 含全套配件)", ps.factory_cost),
+                ("运费", "物流运输费(定价表)", ps.logistics_cost),
+                ("安装", "安装费(定价表)", ps.install_cost),
+                ("税费", "税费(定价表)", ps.tax),
+                ("扣点", "平台扣点(定价表)", ps.platform_fee_rate),  # 列名为 rate, 实存金额
+            ):
+                if val is None or Decimal(str(val)) == 0:
+                    continue
+                amt = Decimal(str(val)).quantize(_CENTS)
+                lines.append(CostLine(
+                    material_code=code, material_name=name,
+                    qty_per_product=Decimal("1"), unit_price=amt,
+                    line_cost=amt, missing_price=False,
+                ))
+            comp_sum = sum(
+                (ln.line_cost for ln in lines if ln.line_cost is not None), Decimal("0")
+            ).quantize(_CENTS)
+            # 合计以定价表会计总成本为准 (组件缺列时兜底用组件合计)
+            unit_cost = (Decimal(str(ps.accounting_cost)).quantize(_CENTS)
+                         if ps.accounting_cost is not None else comp_sum)
+            qty = int(order.qty or 1)
+            note = "口径: 定价表工厂成本+费用 (已知 SKU 不走 BOM, BOM 仅用于定制估算)"
+            if ps.accounting_cost is not None and comp_sum != unit_cost:
+                note += f" | 组件合计 ¥{comp_sum} 与会计总成本差 ¥{(unit_cost - comp_sum).quantize(_CENTS)}"
+            return CostBreakdown(
+                order_no=order.order_no, sku_code=sku_code, qty=qty,
+                unit_cost=unit_cost,
+                total_cost=(unit_cost * qty).quantize(_CENTS),
+                lines=lines, resolved=True,
+                missing_price_count=0, cost_incomplete=False, note=note,
+            )
+
+    # ---- 定制单 / 定价表无成本: BOM 物料反推 ----
     lines: list[CostLine] = []
     if sku_code:
         wood_price = _wood_unit_price(db, sku_code)
@@ -147,6 +193,32 @@ def compute(db: Session, order: Order) -> CostBreakdown:
                 missing_price=missing,
             ))
 
+    # 费用组件 (用户 2026-06-12: 理论成本须含 运费/安装/税费/平台扣点 — 这些是实际发生的):
+    # 来自定价表同 SKU 行。platform_fee_rate 列实存的是扣点金额 (账面核算:
+    # accounting_cost = factory_cost + logistics + install + tax + platform_fee, 已实测吻合)。
+    pricing_acc: Optional[Decimal] = None
+    if lines and sku_code:
+        ps = db.execute(
+            select(PricingSku).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if ps is not None:
+            if ps.accounting_cost is not None:
+                pricing_acc = Decimal(str(ps.accounting_cost))
+            for code, name, val in (
+                ("运费", "物流运输费(定价表)", ps.logistics_cost),
+                ("安装", "安装费(定价表)", ps.install_cost),
+                ("税费", "税费(定价表)", ps.tax),
+                ("扣点", "平台扣点(定价表)", ps.platform_fee_rate),
+            ):
+                if val is None or Decimal(str(val)) == 0:
+                    continue
+                amt = Decimal(str(val)).quantize(_CENTS)
+                lines.append(CostLine(
+                    material_code=code, material_name=name,
+                    qty_per_product=Decimal("1"), unit_price=amt,
+                    line_cost=amt, missing_price=False,
+                ))
+
     unit_cost = sum(
         (ln.line_cost for ln in lines if ln.line_cost is not None), Decimal("0")
     ).quantize(_CENTS)
@@ -166,9 +238,14 @@ def compute(db: Session, order: Order) -> CostBreakdown:
         note = f"{missing} 项物料单价未知(待核算) — 请在物料表补单价后重算"
     else:
         note = None
+    # 与定价表会计总成本对账: 差异通常 = BOM 反推出厂成本 与 定价表出厂成本的差
+    if pricing_acc is not None and lines:
+        diff = (unit_cost - pricing_acc).quantize(_CENTS)
+        cmp_note = (f"定价表会计总成本 ¥{pricing_acc}"
+                    + (f" (反推差 {'+' if diff > 0 else ''}{diff})" if diff != 0 else " (反推一致)"))
+        note = (note + " | " if note else "") + cmp_note
 
     # 方案B: is_custom 单(或 SKU编码带「改」后缀)在基础BOM成本上加一笔「定制加价」(可手改, 来自定制报价单或手填)
-    _is_custom_order = order.is_custom or sku_utils.has_gai_suffix(order.sku_code)
     if _is_custom_order and order.custom_surcharge is not None:
         sur = Decimal(str(order.custom_surcharge)).quantize(_CENTS)
         if sur != 0:
@@ -241,17 +318,30 @@ def recompute_and_save(db: Session, order: Order) -> CostBreakdown:
     bd = compute(db, order)
     if bd.resolved:
         order.theoretical_cost = bd.unit_cost
+        return bd
+    # 无 BOM → 回退定价表会计总成本 (口径同样含运费/安装/税/扣点)
+    cost = _pricing_cost_for(db, order)
+    if cost is not None:
+        order.theoretical_cost = cost.quantize(_CENTS)
+        bd.unit_cost = cost.quantize(_CENTS)
+        bd.total_cost = (bd.unit_cost * bd.qty).quantize(_CENTS)
+        bd.resolved = True
+        bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表会计总成本"
     return bd
 
 
 def recompute_all(db: Session, *, only_missing: bool = True) -> dict:
-    """批量反推. only_missing=True 时只补 theoretical_cost 为空的订单.
+    """批量反推. only_missing=True 时补 theoretical_cost 为空 **或为 0** 的订单
+    (历史导入曾把未反推订单写成 0, 只查 NULL 会让这批永远卡死, 2026-06-12 修);
+    真正应为 0 的 (补单/安装SKU) 由 zero_cost_reason 幂等重新归 0, 不受影响。
 
     Returns: {updated, skipped_no_bom, total}
     """
+    from sqlalchemy import or_
     stmt = select(Order)
     if only_missing:
-        stmt = stmt.where(Order.theoretical_cost.is_(None))
+        stmt = stmt.where(or_(Order.theoretical_cost.is_(None),
+                              Order.theoretical_cost == 0))
     orders = db.execute(stmt).scalars().all()
     updated = skipped = 0
     for o in orders:

@@ -40,6 +40,20 @@ def _is_placeholder_name(name: Optional[str]) -> bool:
     return (not s) or s.startswith("占位") or s in _PLACEHOLDER_NAMES
 
 
+def _product_code_variants(code: Optional[str]) -> list[str]:
+    """订单 product_code 用 P+11、产品总表/BOM 用 PPS+11 → 匹配时两种前缀都试,
+    修编码错配导致的"BOM 编辑后没自动重算到订单 / 看板配件靠 sku_code 兜命"问题。"""
+    if not code:
+        return []
+    code = code.strip()
+    out = {code}
+    if code.startswith("PPS"):
+        out.add("P" + code[3:])      # PPS+11 → P+11 (订单形态)
+    elif code.startswith("P"):
+        out.add("PPS" + code[1:])    # P+11 → PPS+11 (产品/BOM 形态)
+    return list(out)
+
+
 def _resolve_name(mat_name: Optional[str], line: BomLine) -> Optional[str]:
     """配件显示名: 优先用物料库真实名; 物料库还是占位/空 → 退回 BOM 行里写的名(常含人话描述)。"""
     if not _is_placeholder_name(mat_name):
@@ -63,14 +77,15 @@ def _bom_rows_for_order(db: Session, order: Order) -> list:
         .join(Material, BomLine.material_code == Material.code, isouter=True)
     )
     if order.product_code:
-        conds = [BomLine.product_code == order.product_code]
+        pcs = _product_code_variants(order.product_code)   # P+11 / PPS+11 两形态都匹配
+        conds = [BomLine.product_code.in_(pcs)]
         if order.sku_code:
             conds.append(BomLine.sku_code == order.sku_code)
         rows = db.execute(base.where(*conds)).all()
         if rows:
             return rows
         # (product_code + sku_code) 无果 → 退回仅 product_code (BOM 可能没填 sku_code)
-        rows = db.execute(base.where(BomLine.product_code == order.product_code)).all()
+        rows = db.execute(base.where(BomLine.product_code.in_(pcs))).all()
         if rows:
             return rows
     if order.sku_code:
@@ -198,6 +213,33 @@ def resync_for_order(db: Session, order_id: int) -> list[OrderAccessoryItem]:
     return get_checklist(db, order_id)
 
 
+def resync_product_orders(db: Session, product_code: Optional[str]) -> int:
+    """BOM 变更(改/增/删行)后, 自动对该产品「在制未发货」(paid) 订单按新 BOM 重对齐配件清单。
+
+    已发货/已签收/已取消不动(避免回溯已完成单); 保留各行已填的采购单号/物流进度。
+    返回实际重算的订单数。用户拍板 2026-06-12: 改 BOM 实时联动, 不再手动「重新生成配件」。
+    """
+    if not product_code:
+        return 0
+    from app.services.order_service import normalize_status
+    pcs = _product_code_variants(product_code)   # BOM 用 PPS+11, 订单用 P+11 → 两形态都找
+    rows = db.execute(
+        select(Order.id, Order.status).where(Order.product_code.in_(pcs))
+    ).all()
+    n = 0
+    for oid, status in rows:
+        if normalize_status(status or "") != "paid":
+            continue
+        try:
+            resync_for_order(db, oid)   # 内部已 commit, 保留采购/物流进度
+            n += 1
+        except ValueError:
+            continue
+    if n:
+        _logger.info("产品 %s BOM 变更 → 自动重算 %d 个在制订单配件清单", product_code, n)
+    return n
+
+
 def add_extra_accessories(
     db: Session, order_id: int, extra: list[dict]
 ) -> list[OrderAccessoryItem]:
@@ -281,18 +323,64 @@ def _fmt_qty(d: Decimal) -> str:
     return (s.rstrip("0").rstrip(".") if "." in s else s) or "0"
 
 
-def by_component(db: Session) -> list[dict]:
+def by_component(db: Session, product: Optional[str] = None) -> list[dict]:
     """按配件聚合(跨订单)采购视图: 还需采购/在途的配件, 按料号汇总缺多少 + 涉及哪些订单。
 
     只统计 需采购(非工厂提供) 且 还没到货(状态 未采购/已下单/运输中) 的行。
     每个料号给出: 待买量(未采购) / 已买未到量(已下单+运输中) / 涉及订单明细。按名称排序。
+    product 非空时: 只统计该产品(名称/编码/SKU/内部名)订单用到的配件 (图1 按产品查缺口)。
     """
-    rows = db.execute(
-        select(OrderAccessoryItem).where(
-            OrderAccessoryItem.is_factory_provided.is_(False),
-            OrderAccessoryItem.status.in_(["未采购", "已下单", "运输中"]),
-        )
-    ).scalars().all()
+    stmt = select(OrderAccessoryItem).where(
+        OrderAccessoryItem.is_factory_provided.is_(False),
+        OrderAccessoryItem.status.in_(["未采购", "已下单", "运输中"]),
+    )
+    if product:
+        from sqlalchemy import or_
+        from app.models.product import Product as _P
+        from app.services.fuzzy_search import fuzzy_clause
+        pf = fuzzy_clause(product, like_cols=[_P.name, _P.sub_name], gap_cols=[_P.name, _P.sub_name])
+        pcodes = ([c for (c,) in db.execute(select(_P.code).where(pf)).all()]
+                  if pf is not None else [])
+        oc = fuzzy_clause(product, like_cols=[Order.product_name, Order.product_code, Order.sku],
+                          gap_cols=[Order.product_name])
+        if pcodes:
+            oc = or_(oc, Order.product_code.in_(pcodes)) if oc is not None else Order.product_code.in_(pcodes)
+        order_ids = ({i for (i,) in db.execute(select(Order.id).where(oc)).all()}
+                     if oc is not None else set())
+        if not order_ids:
+            return []
+        stmt = stmt.where(OrderAccessoryItem.order_id.in_(order_ids))
+    rows = db.execute(stmt).scalars().all()
+    # 只保留「在制」订单 (已付款待发货且未退款), 与工厂制作单同口径 —— 不混入已发货/
+    # 已签收/已退款/关闭单遗留的未到货配件行 (修用户核对 108 vs 98 的差: 关闭单不该进采购)。
+    from app.services import order_service
+    cand_ids = {it.order_id for it in rows if it.order_id}
+    orders_by_id: dict[int, Order] = {}
+    if cand_ids:
+        for o in db.execute(select(Order).where(Order.id.in_(cand_ids))).scalars().all():
+            orders_by_id[o.id] = o
+    rows = [it for it in rows
+            if it.order_id in orders_by_id
+            and order_service.is_in_factory_production(orders_by_id[it.order_id])]
+    # 自有产品名: 订单 product_code → 产品总表 Product.name (P/PPS 两形态都试), 不用淘宝标题。
+    from app.models.product import Product
+    name_vars: set[str] = set()
+    for o in orders_by_id.values():
+        name_vars.update(_product_code_variants(o.product_code))
+    own_name: dict[str, str] = {}
+    if name_vars:
+        for code, nm in db.execute(
+            select(Product.code, Product.name).where(Product.code.in_(name_vars))
+        ).all():
+            if nm:
+                own_name[code] = nm
+
+    def _disp_name(o: Order) -> Optional[str]:
+        for v in _product_code_variants(o.product_code):
+            if v in own_name:
+                return own_name[v]
+        return o.product_name        # 兜底: 产品总表没匹配到 → 退回订单自带名
+
     groups: dict[str, dict] = {}
     for it in rows:
         g = groups.get(it.material_code)
@@ -308,10 +396,16 @@ def by_component(db: Session) -> list[dict]:
         else:
             g["bought_pending_qty"] += qty
         g["order_count"] += 1
+        o = orders_by_id.get(it.order_id)
         g["items"].append({
             "id": it.id, "order_id": it.order_id, "order_no": it.order_no,
             "qty_required": _fmt_qty(qty), "status": it.status, "purchase_no": it.purchase_no,
             "tracking_no": it.tracking_no, "self_delivered": it.self_delivered,
+            "product_name": _disp_name(o) if o else None,
+            "customer_name": o.customer_name if o else None,
+            "customer_address": o.customer_address if o else None,
+            "order_date": (o.order_date.isoformat() if o and o.order_date else None),
+            "ship_deadline": (o.ship_deadline.isoformat() if o and o.ship_deadline else None),
         })
     out = list(groups.values())
     for g in out:

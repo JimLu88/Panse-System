@@ -49,7 +49,7 @@ def test_install_fee_flags_mismatch(db_session):
 
 
 def test_install_fee_fallback_to_aftersales(db_session):
-    """无万师傅账单时, 回退用售后表 wanshifu_deduction 当应付口径."""
+    """2026-06-11 拍板 (对账建议 7): 万师傅账单未导入时不再用售后表假对比 → not_available."""
     db_session.add(AfterSales(
         platform_order_no="A1", wanshifu_deduction=Decimal("80"),
         processed_at=date(2026, 4, 5),
@@ -57,9 +57,8 @@ def test_install_fee_fallback_to_aftersales(db_session):
     _install_flow(db_session, "INS3", -80, datetime(2026, 4, 6))
 
     r = reconciliation_service.run_install_fee(db_session, record_exceptions=False)
-    d = next(d for d in r.diffs if d.key == "2026-04")
-    assert d.expected == Decimal("80")
-    assert d.diff == Decimal("0")
+    assert r.diffs[0].severity == "not_available"
+    assert "万师傅账单未导入" in r.diffs[0].message
 
 
 def test_install_fee_empty_is_not_available(db_session):
@@ -82,7 +81,7 @@ def test_logistics_fee_matches_bill_and_flow(db_session):
 
 
 def test_logistics_fee_fallback_to_order_freight(db_session):
-    """无物流账单时回退用订单 actual_freight."""
+    """2026-06-11 拍板 (对账建议 6): 物流账单未导入时不再用订单运费假对比 → not_available."""
     db_session.add(Order(
         platform="淘宝", order_no="O1", qty=1, status="signed",
         order_date=date(2026, 5, 2), actual_freight=Decimal("30"),
@@ -90,9 +89,8 @@ def test_logistics_fee_fallback_to_order_freight(db_session):
     _logistics_flow(db_session, "LG2", -30, datetime(2026, 5, 3))
 
     r = reconciliation_service.run_logistics_fee(db_session, record_exceptions=False)
-    d = next(d for d in r.diffs if d.key == "2026-05")
-    assert d.expected == Decimal("30")
-    assert d.diff == Decimal("0")
+    assert r.diffs[0].severity == "not_available"
+    assert "物流账单未导入" in r.diffs[0].message
 
 
 def test_logistics_fee_empty_is_not_available(db_session):

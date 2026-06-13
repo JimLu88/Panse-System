@@ -23,7 +23,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import HTMLResponse, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -57,6 +57,10 @@ class SupplierOut(BaseModel):
     remark: Optional[str] = None
     alipay_counterparty_keywords: list[str] = []
     alipay_account: Optional[str] = None
+    # 最新一期供应商评分 (整合进供应商页, 不必再单开评分页)
+    latest_score: Optional[float] = None
+    latest_rank: Optional[int] = None
+    score_period: Optional[str] = None
 
 
 class SupplierIn(BaseModel):
@@ -135,13 +139,16 @@ class LineMatchPatch(BaseModel):
 # ----------------------------- Suppliers CRUD -------------------------- #
 
 
-def _supplier_out(s: Supplier) -> SupplierOut:
+def _supplier_out(s: Supplier, sc=None) -> SupplierOut:
     return SupplierOut(
         id=s.id, name=s.name, supplier_type=s.supplier_type,
         contact=s.contact, phone=s.phone, address=s.address,
         payment_terms=s.payment_terms, is_active=s.is_active, remark=s.remark,
         alipay_counterparty_keywords=list(s.alipay_counterparty_keywords or []),
         alipay_account=s.alipay_account,
+        latest_score=float(sc.score) if sc is not None and sc.score is not None else None,
+        latest_rank=sc.rank if sc is not None else None,
+        score_period=f"{sc.year}-{sc.month:02d}" if sc is not None else None,
     )
 
 
@@ -155,7 +162,14 @@ def list_suppliers(
     if active_only:
         q = q.where(Supplier.is_active.is_(True))
     rows = db.execute(q).scalars().all()
-    return [_supplier_out(s) for s in rows]
+    # 每个供应商取最新一期评分 (year,month 最大)
+    from app.models.supplier_score import SupplierScore
+    latest: dict[int, SupplierScore] = {}
+    for sc in db.execute(
+        select(SupplierScore).order_by(SupplierScore.year.desc(), SupplierScore.month.desc())
+    ).scalars().all():
+        latest.setdefault(sc.supplier_id, sc)
+    return [_supplier_out(s, latest.get(s.id)) for s in rows]
 
 
 @router.post("/suppliers", response_model=SupplierOut, status_code=201)
@@ -171,6 +185,135 @@ def create_supplier(
     db.commit()
     db.refresh(s)
     return _supplier_out(s)
+
+
+class AutoCreateSuppliersIn(BaseModel):
+    counterparties: list[str]
+    supplier_type: str = "other"
+
+
+# 非供应商的常见对手方关键词 (过滤噪音, 不当候选)
+# 内部人员/账户 (魏佳英/魏佳音/爱群/畔色 + 掩码 **英/**群/**音) 统一取自 internal_accounts
+from app.services.internal_accounts import INTERNAL_COUNTERPARTY_KW
+
+_NON_SUPPLIER_KW = (
+    "淘宝", "天猫", "淘天", "支付宝", "余额宝", "红包", "退款", "还款", "手续费", "服务费",
+    "工资", "个人", "转账", "提现", "花呗", "借呗", "微信", "财付通", "保证金", "理财", "申购",
+) + INTERNAL_COUNTERPARTY_KW
+
+
+@router.get("/suppliers/alipay-candidates")
+def alipay_supplier_candidates(
+    min_count: int = Query(2, ge=1, description="至少出账几次才算候选"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """从支付宝流水挖出"还不是供应商、但多次给它打过款"的对手方, 供自动建供应商。
+
+    出账(amount<0)按 counterparty 聚合; 跳过已是供应商 / 关键字命中 / 明显非供应商的。
+    """
+    from app.models.finance import AlipayFlow
+    known: set[str] = set()
+    for s in db.execute(select(Supplier)).scalars().all():
+        known.add(s.name)
+        for kw in (s.alipay_counterparty_keywords or []):
+            if kw:
+                known.add(kw)
+    rows = db.execute(
+        select(
+            AlipayFlow.counterparty,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(func.abs(AlipayFlow.amount)), 0).label("total"),
+        )
+        .where(
+            AlipayFlow.amount < 0,
+            AlipayFlow.counterparty.isnot(None), AlipayFlow.counterparty != "",
+            # 排除内部理财/余额宝转入(如魏佳音的 18 笔理财申购, 钱没出去)
+            or_(AlipayFlow.transaction_type.is_(None), ~AlipayFlow.transaction_type.like("%理财%")),
+        )
+        .group_by(AlipayFlow.counterparty)
+    ).all()
+    cands = []
+    for cp, cnt, total in rows:
+        if cnt < min_count:
+            continue
+        if cp in known or any(k and (k in cp or cp in k) for k in known):
+            continue
+        if any(nk in cp for nk in _NON_SUPPLIER_KW):
+            continue
+        cands.append({"counterparty": cp, "payment_count": int(cnt), "total_paid": float(total or 0)})
+    cands.sort(key=lambda c: c["total_paid"], reverse=True)
+    return {"candidates": cands, "total": len(cands)}
+
+
+@router.post("/suppliers/auto-create")
+def auto_create_suppliers(
+    payload: AutoCreateSuppliersIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """把选中的对手方批量建成供应商 (名字=对手方, 关键字=[对手方], 类型可选)。"""
+    existing = {n for (n,) in db.execute(select(Supplier.name)).all()}
+    created = []
+    for cp in payload.counterparties:
+        cp = (cp or "").strip()
+        if not cp or cp in existing:
+            continue
+        db.add(Supplier(
+            name=cp, supplier_type=payload.supplier_type or "other",
+            alipay_counterparty_keywords=[cp], is_active=True,
+        ))
+        existing.add(cp)
+        created.append(cp)
+    if created:
+        db.commit()
+    return {"created": created, "count": len(created)}
+
+
+@router.get("/suppliers/purchase-candidates")
+def purchase_supplier_candidates(
+    min_count: int = Query(1, ge=1, description="至少出现几次才算候选"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """从配件采购记录(PartPurchase.supplier)挖出还不是供应商的真实供应商 —— 比支付宝准。
+
+    采购记录里的供应商才是真实付款对象(老孙木皮厂/木隅工厂…);
+    跳过已是供应商 / 非供应商关键字(代扣/理财/淘天等)的。返回结构与支付宝候选一致, 前端可复用建档。
+    """
+    from app.models.order import PartPurchase
+    known: set[str] = set()
+    for s in db.execute(select(Supplier)).scalars().all():
+        known.add(s.name)
+        for kw in (s.alipay_counterparty_keywords or []):
+            if kw:
+                known.add(kw)
+    rows = db.execute(
+        select(
+            PartPurchase.supplier,
+            func.count().label("cnt"),
+            func.coalesce(func.sum(func.abs(PartPurchase.amount)), 0).label("total"),
+        )
+        .where(
+            PartPurchase.supplier.isnot(None), PartPurchase.supplier != "",
+            # 排除非采购行(代扣/理财/服务费等), 与配件采购列表口径一致
+            or_(PartPurchase.material_name.is_(None),
+                and_(*[PartPurchase.material_name.notlike(f"%{k}%")
+                       for k in ("代扣", "理财", "申购", "服务费", "手续费", "余额宝")])),
+        )
+        .group_by(PartPurchase.supplier)
+    ).all()
+    cands = []
+    for sup, cnt, total in rows:
+        if cnt < min_count:
+            continue
+        if sup in known or any(k and (k in sup or sup in k) for k in known):
+            continue
+        if any(nk in sup for nk in _NON_SUPPLIER_KW):
+            continue
+        cands.append({"counterparty": sup, "payment_count": int(cnt), "total_paid": float(total or 0)})
+    cands.sort(key=lambda c: c["total_paid"], reverse=True)
+    return {"candidates": cands, "total": len(cands)}
 
 
 @router.patch("/suppliers/{supplier_id}", response_model=SupplierOut)

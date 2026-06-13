@@ -49,16 +49,21 @@ def _tier_for(ltv: Decimal) -> str:
     return "bronze"
 
 
-def aggregate_all(db: Session) -> dict:
-    """全量重算所有客户. 适用于初始化或周期重计算."""
-    orders = db.execute(
-        select(Order).where(
-            # 导入订单多为历史 + 中文状态; 收录所有真实成交客户, 仅排除关闭/取消
-            Order.status.notin_(("cancelled",)),
-            ~Order.status.like("%关闭%"),
-            ~Order.status.like("%取消%"),
-        )
-    ).scalars().all()
+def aggregate_all(db: Session, *, include_historical: bool = True) -> dict:
+    """全量重算所有客户. 适用于初始化或周期重计算.
+
+    Plan C1: include_historical=False 时排除历史导入订单 (Order.is_historical),
+    默认 True 维持现状 — 两种口径由前端开关切换。
+    """
+    conds = [
+        # 导入订单多为历史 + 中文状态; 收录所有真实成交客户, 仅排除关闭/取消
+        Order.status.notin_(("cancelled",)),
+        ~Order.status.like("%关闭%"),
+        ~Order.status.like("%取消%"),
+    ]
+    if not include_historical:
+        conds.append(Order.is_historical == False)  # noqa: E712
+    orders = db.execute(select(Order).where(*conds)).scalars().all()
     by_key: dict[str, dict] = {}
     for o in orders:
         name = (o.customer_name or "").strip()

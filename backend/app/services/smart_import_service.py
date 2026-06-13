@@ -62,6 +62,8 @@ _KNOWN_SHEET_PATTERNS: list[tuple[str, str]] = [
     ("推广", "promotion_flow"),
     ("日常经营", "daily_operations"),
     ("人员外包", "outsourcing_expense"),
+    ("万师傅", "wanshifu_bill"),
+    ("wanshifu", "wanshifu_bill"),
     ("售后", "aftersales"),
     # 通用兜底 (放最后)
     ("订单", "order"),
@@ -564,10 +566,29 @@ def smart_commit(
         if entity == "alipay_flow" and not sheet_account and "account" not in mapping:
             sheet_account = _derive_alipay_account(sheet_name)
         # alipay_flow 若没映射 account 列但给了 sheet_account, 也允许导
-        if entity == "unknown" or (not mapping and not sheet_account):
+        if entity == "unknown" or (
+            entity != "wanshifu_bill" and not mapping and not sheet_account
+        ):
             _logger.info("  [%s] 跳过 (未确认 entity/mapping)", sheet_name)
             reports.append({"sheet_name": sheet_name, "skipped": True,
                             "reason": "未确认 entity / mapping"})
+            continue
+        # 万师傅月结账单: 不走通用 upsert, 改路由到专用导入器 (含 备注→淘宝单号 抽取、
+        # 零损伤去重)。把该 sheet 单独转成 CSV 文本交给 import_wanshifu_csv。
+        if entity == "wanshifu_bill":
+            try:
+                report_dict = _commit_wanshifu_bill(
+                    db, file_bytes=file_bytes, sheet_name=sheet_name,
+                    dry_run=item.get("dry_run", False))
+            except Exception as e:  # noqa: BLE001 - 单 sheet 失败不连累其他
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                _logger.exception("  [%s] 万师傅账单导入失败: %s", sheet_name, e)
+                report_dict = {"sheet_name": sheet_name,
+                               "error": f"{type(e).__name__}: {e}"}
+            reports.append(report_dict)
             continue
         # 智能 commit 借用 excel_importer.commit_sheet, 但要先把 header_row 适配
         # commit_sheet 假设 header 在第 1 行, 我们要把多余的前置行用 io 流改造
@@ -616,6 +637,46 @@ def smart_commit(
                             "error": f"{type(e).__name__}: {e}"})
     _logger.info("[smart-commit] 完成: %d 个 sheet 处理完毕", len(reports))
     return reports
+
+
+def _commit_wanshifu_bill(
+    db: Session, *, file_bytes: bytes, sheet_name: str, dry_run: bool,
+) -> dict:
+    """把指定 sheet 转 CSV 后交给万师傅专用导入器 (零损伤去重 + 备注抽淘宝单号)。
+
+    复用 bill_import_service.import_wanshifu_csv, 避免在通用 upsert 里重复实现
+    财务对账逻辑。dry_run 时导完即回滚。
+    """
+    from app.services import bill_import_service, tabular
+
+    texts = tabular.to_csv_texts(file_bytes)
+    text = None
+    for name, csv_text in texts:
+        if name == sheet_name:
+            text = csv_text
+            break
+    if text is None:  # CSV 单 sheet 或名字对不上时退回首个
+        text = texts[0][1] if texts else ""
+
+    rep = bill_import_service.import_wanshifu_csv(db, text)
+    if dry_run:
+        db.rollback()
+    else:
+        db.commit()
+    _logger.info("  [%s] wanshifu_bill %s 入库=%d 跳过无效=%d 重复=%d",
+                 sheet_name, "试运行" if dry_run else "已提交",
+                 rep.inserted, rep.skipped_invalid, rep.skipped_duplicate)
+    warnings = []
+    if rep.skipped_duplicate:
+        warnings.append(f"{rep.skipped_duplicate} 行与库内重复, 已跳过")
+    return {
+        "sheet_name": sheet_name, "entity_type": "wanshifu_bill",
+        "total_rows": rep.inserted + rep.skipped_invalid + rep.skipped_duplicate,
+        "inserted_parents": rep.inserted, "inserted_children": 0,
+        "skipped_rows": rep.skipped_invalid + rep.skipped_duplicate,
+        "errors": rep.errors[:10], "warnings": warnings,
+        "conflicts": [], "unmapped_columns": rep.unmapped_columns,
+    }
 
 
 # ----------------------------- 辅助 ----------------------------- #

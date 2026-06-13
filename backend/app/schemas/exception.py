@@ -21,3 +21,5 @@ class DataExceptionOut(BaseModel):
 class DataExceptionResolve(BaseModel):
     status: str  # resolved / ignored
     resolved_by: Optional[str] = None
+    # 强制: 跳过"问题是否已修复"复核 (resolved) / 确认强制忽略 (ignored)
+    force: bool = False

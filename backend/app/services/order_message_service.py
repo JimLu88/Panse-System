@@ -51,6 +51,19 @@ _PARSE_SYSTEM_EXTRA = """你还需要处理"粘贴消息转订单变更"的场�
 如果信息不足, 返回 confidence < 0.5 并在对应字段留空。"""
 
 
+def _normalize_changes(raw) -> dict:
+    """AI 输出漂移防御: changes 偶尔返回 [{field, new_value}, ...] 列表形态 → 归一成 dict。"""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, list):
+        out = {}
+        for item in raw:
+            if isinstance(item, dict) and item.get("field"):
+                out[str(item["field"])] = item.get("new_value", item.get("value"))
+        return out
+    return {}
+
+
 def parse_change(db: Session, text: str) -> dict:
     """从自然语言文本中提取订单变更信息.
 
@@ -75,7 +88,7 @@ def parse_change(db: Session, text: str) -> dict:
             parsed = json.loads(match.group())
             return {
                 "order_no": parsed.get("order_no"),
-                "changes": parsed.get("changes", {}),
+                "changes": _normalize_changes(parsed.get("changes")),
                 "confidence": parsed.get("confidence", 0.5),
                 "raw_text": text,
                 "ai_available": True,

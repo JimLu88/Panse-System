@@ -4,6 +4,7 @@
  * 列出最近 24 个月, admin 可 关闭 / 重开 / 锁死.
  */
 import { useState } from 'react';
+import PresetTable from '../components/PresetTable';
 import {
   Alert,
   Button,
@@ -80,10 +81,11 @@ export default function AccountingPeriodsPage() {
                 </Button>
               </Space>
             }>
-        <Table<AccountingPeriod>
+        <PresetTable<AccountingPeriod>
+          tableKey="accounting_period"
           size="small" rowKey="id"
           dataSource={periods}
-          pagination={{ pageSize: 24 }}
+          pagination={{ defaultPageSize: 24, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '年月', width: 110,
               render: (_: any, r: AccountingPeriod) => `${r.year}-${String(r.month).padStart(2, '0')}` },

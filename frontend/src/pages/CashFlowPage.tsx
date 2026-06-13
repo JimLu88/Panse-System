@@ -7,6 +7,7 @@ import {
   EditOutlined, ReloadOutlined, ArrowUpOutlined, ArrowDownOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import PresetTable from '../components/PresetTable';
 import {
   CashFlowFreshness, CashFlowLine, CashFlowSummary, getCashFlow, updateCashFlowSettings,
   backfillFactoryPayment, recomputeOrderCosts,
@@ -43,7 +44,8 @@ function LineTable({ lines, kind }: { lines: CashFlowLine[]; kind: 'add' | 'sub'
   const color = kind === 'add' ? '#389e0d' : '#cf1322';
   const sign = kind === 'add' ? '+' : '−';
   return (
-    <Table<CashFlowLine>
+    <PresetTable<CashFlowLine>
+      tableKey="cashflow"
       rowKey="key"
       dataSource={lines}
       pagination={false}

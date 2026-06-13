@@ -61,6 +61,25 @@ def normalize_status(raw) -> str:
     return s  # 未知: 原样保留, 不臆改
 
 
+# 退款/关闭类 refund_status: 这些不算"在制" (与工厂制作单口径一致)
+_REFUNDED_STATUSES = {"退款成功", "退款中", "已退款", "退款关闭", "退款完成", "交易关闭"}
+
+
+def is_in_factory_production(o: Order) -> bool:
+    """订单是否「在工厂制作中」= 已付款待发货 且 未退款/未关闭。
+
+    工厂制作单视图(/factory-production)与配件采购视图(by_component)共用此口径,
+    避免两处订单计数漂移 —— 已发货/已签收/已退款/已关闭的单都不算在制。
+    """
+    if normalize_status(o.status) != "paid":
+        return False
+    if (o.refund_status or "") in _REFUNDED_STATUSES:
+        return False
+    if o.refund_amount and float(o.refund_amount) > 0:
+        return False
+    return True
+
+
 def normalize_all_statuses(db: Session) -> dict:
     """批量把订单的中文/遗留状态回填为枚举 (修看板推进 + 让按状态门的统计纳入这些单)。"""
     rows = db.execute(select(Order)).scalars().all()

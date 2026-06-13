@@ -3,15 +3,16 @@
  * 逐月对账「应付(Σ结算价) ↔ 实付(支付宝 factory_payment)」, 对不上的逐单「填原因做平」。
  */
 import { useState } from 'react';
+import PresetTable from '../components/PresetTable';
 import {
-  Alert, Button, Card, Col, Input, Modal, Row, Segmented, Space, Statistic,
+  Alert, Button, Card, Col, Dropdown, Input, InputNumber, Modal, Row, Segmented, Select, Space, Statistic,
   Table, Tag, Typography, Upload, message,
 } from 'antd';
 import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  FactoryReconItem, fetchFactoryReconSummary, importFactoryRecon,
-  listFactoryReconItems, resolveFactoryReconItem,
+  FactoryReconItem, RESOLUTION_KINDS, confirmFactoryReconItem, fetchFactoryReconSummary,
+  importFactoryRecon, listFactoryReconItems, resolveFactoryReconItem, splitFactoryReconItem,
 } from '../api/factoryRecon';
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
@@ -68,6 +69,31 @@ export default function FactoryReconPage() {
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '操作失败'),
   });
+
+  // Plan L5: 确认归因 (漏单/价差/运费/补偿/其他) + 拆分归因
+  const confirmMut = useMutation({
+    mutationFn: ({ id, kind }: { id: number; kind: string }) => confirmFactoryReconItem(id, kind),
+    onSuccess: (r: any) => { message.success(`已确认归因: ${r.resolution_kind}`); refresh(); },
+    onError: (e: any) => message.error(typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : '确认失败'),
+  });
+  const [splitting, setSplitting] = useState<FactoryReconItem | null>(null);
+  const [splitParts, setSplitParts] = useState<Array<{ amount: number | null; kind: string; remark: string }>>([]);
+  const openSplit = (row: FactoryReconItem) => {
+    setSplitting(row);
+    setSplitParts([
+      { amount: row.settle_price, kind: '价差', remark: '' },
+      { amount: 0, kind: '运费', remark: '' },
+    ]);
+  };
+  const splitMut = useMutation({
+    mutationFn: () => splitFactoryReconItem(
+      splitting!.id,
+      splitParts.map((p) => ({ amount: String(p.amount ?? 0), resolution_kind: p.kind, remark: p.remark || undefined })),
+    ),
+    onSuccess: () => { message.success('已拆分'); setSplitting(null); refresh(); },
+    onError: (e: any) => message.error(typeof e?.response?.data?.detail === 'string' ? e.response.data.detail : '拆分失败'),
+  });
+  const splitSum = splitParts.reduce((a, p) => a + (p.amount ?? 0), 0);
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -129,9 +155,10 @@ export default function FactoryReconPage() {
           </Space>
         )}
       >
-        <Table<FactoryReconItem>
+        <PresetTable<FactoryReconItem>
+          tableKey="factory_recon_item"
           rowKey="id" size="small" loading={isLoading} dataSource={items?.rows ?? []}
-          pagination={{ pageSize: 50, showTotal: (t) => `共 ${t} 笔` }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (t) => `共 ${t} 笔` }}
           columns={[
             { title: '单号', dataIndex: 'doc_no', width: 70, render: (v) => v || '-' },
             { title: '订单号', dataIndex: 'order_no', width: 175, render: (v) => v || '-' },
@@ -144,10 +171,19 @@ export default function FactoryReconPage() {
               r ? <Tag color="blue" title={row.settle_reason || ''}>已做平</Tag>
                 : <Tag color="default">未做平</Tag>
             ) },
-            { title: '操作', width: 90, render: (_, row) => (
+            { title: '操作', width: 210, render: (_, row) => (
               row.resolved
                 ? <Button size="small" type="link" onClick={() => resolveMut.mutate({ id: row.id, reason: '', resolved: false })}>撤销</Button>
-                : <Button size="small" type="link" onClick={() => { setResolving(row); setReason(''); }}>填原因做平</Button>
+                : <Space size={0}>
+                    <Button size="small" type="link" onClick={() => { setResolving(row); setReason(''); }}>做平</Button>
+                    <Dropdown menu={{
+                      items: RESOLUTION_KINDS.map((k) => ({ key: k, label: k })),
+                      onClick: ({ key }) => confirmMut.mutate({ id: row.id, kind: key }),
+                    }}>
+                      <Button size="small" type="link">确认归因</Button>
+                    </Dropdown>
+                    <Button size="small" type="link" onClick={() => openSplit(row)}>拆分</Button>
+                  </Space>
             ) },
           ]}
           expandable={{
@@ -181,6 +217,43 @@ export default function FactoryReconPage() {
           rows={3} value={reason} onChange={(e) => setReason(e.target.value)}
           placeholder="如: 平台扣减运费 / 工厂让利减免 / 批量分账 / 录入差异 …"
         />
+      </Modal>
+
+      <Modal
+        title={`拆分归因 — ${splitting?.order_no || ''} (原额 ¥${splitting?.settle_price?.toFixed(2) ?? '—'})`}
+        open={!!splitting}
+        onCancel={() => setSplitting(null)}
+        onOk={() => splitMut.mutate()}
+        confirmLoading={splitMut.isPending}
+        okText="拆分"
+        okButtonProps={{ disabled: !splitting || Math.abs(splitSum - (splitting?.settle_price ?? 0)) > 0.005 }}
+        width={560}
+      >
+        <Alert
+          type="info" showIcon style={{ marginBottom: 12 }}
+          message="把一条差异拆成多条归因子行；各行金额合计必须等于原额才能提交。"
+        />
+        {splitParts.map((p, i) => (
+          <Space key={i} style={{ marginBottom: 8 }}>
+            <InputNumber value={p.amount} precision={2} style={{ width: 130 }} addonBefore="¥"
+              onChange={(v) => setSplitParts((arr) => arr.map((x, j) => j === i ? { ...x, amount: v } : x))} />
+            <Select value={p.kind} style={{ width: 100 }}
+              options={RESOLUTION_KINDS.map((k) => ({ value: k, label: k }))}
+              onChange={(v) => setSplitParts((arr) => arr.map((x, j) => j === i ? { ...x, kind: v } : x))} />
+            <Input value={p.remark} placeholder="备注 (可选)" style={{ width: 160 }}
+              onChange={(e) => setSplitParts((arr) => arr.map((x, j) => j === i ? { ...x, remark: e.target.value } : x))} />
+            {splitParts.length > 2 && (
+              <Button size="small" danger type="link"
+                onClick={() => setSplitParts((arr) => arr.filter((_, j) => j !== i))}>删</Button>
+            )}
+          </Space>
+        ))}
+        <div>
+          <Button size="small" onClick={() => setSplitParts((arr) => [...arr, { amount: 0, kind: '其他', remark: '' }])}>+ 加一行</Button>
+          <span style={{ marginLeft: 12, color: Math.abs(splitSum - (splitting?.settle_price ?? 0)) > 0.005 ? '#cf1322' : '#389e0d' }}>
+            合计 ¥{splitSum.toFixed(2)} / 需 ¥{splitting?.settle_price?.toFixed(2) ?? '—'}
+          </span>
+        </div>
       </Modal>
     </Space>
   );

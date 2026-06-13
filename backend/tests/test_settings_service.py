@@ -89,4 +89,5 @@ def test_get_ai_config_db_wins_over_env(db_session):
     assert cfg == {
         "provider": "openai", "api_key": "key1", "model": "qwen-vl-max",
         "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "user_agent": "",
     }

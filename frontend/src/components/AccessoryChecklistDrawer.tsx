@@ -10,7 +10,7 @@ import {
 import { ReloadOutlined, TruckOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  listAccessories, updateAccessory, refreshAccessoryTracking, regenerateAccessories,
+  listAccessories, updateAccessory, refreshAccessoryTracking,
   markAllAccessoriesArrived,
   type AccessoryItem,
 } from '../api/orders';
@@ -51,11 +51,6 @@ export default function AccessoryChecklistDrawer({
       invalidate();
     },
     onError: () => message.error('物流刷新失败'),
-  });
-
-  const regenMut = useMutation({
-    mutationFn: () => regenerateAccessories(orderId!),
-    onSuccess: () => { message.success('已按 BOM 补全配件'); invalidate(); },
   });
 
   const markAllMut = useMutation({
@@ -164,9 +159,7 @@ export default function AccessoryChecklistDrawer({
       destroyOnClose
       extra={
         <Space>
-          <Button size="small" onClick={() => regenMut.mutate()} loading={regenMut.isPending}>
-            按 BOM 补全
-          </Button>
+          {/* 「按 BOM 补全」已去掉: 改 BOM 现在自动重算在制订单配件 (2026-06-12) */}
           <Popconfirm
             title="把本单所有配件标为已到货？" description="清掉缺料报警(历史单常用)。"
             okText="确认" cancelText="取消" onConfirm={() => markAllMut.mutate()}

@@ -98,7 +98,8 @@ def generate(db: Session, year: int, month: int) -> HealthReport:
         func.count(Order.id),
         func.coalesce(func.sum(Order.paid_amount), 0),
     ).where(
-        Order.order_date >= start, Order.order_date <= end, Order.status != "cancelled"
+        Order.order_date >= start, Order.order_date <= end, Order.status != "cancelled",
+        Order.is_refill == False,  # noqa: E712 - 销售额全站剔补单 (用户拍板 2026-06-12)
     )
     cnt, rev = db.execute(order_q).one()
     r.orders = {

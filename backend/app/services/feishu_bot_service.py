@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -434,27 +435,67 @@ _ARCHIVE_KIND = {
 }
 
 
-def _archive_bytes(db: Session, content: bytes, archive_kind: str, original_name: str) -> Optional[str]:
-    """把飞书原文件按类型落盘归档(imports/{kind}/年/月)+ 登记 ImportedFile, 返回 stored_path。
+def _archive_bytes(db: Session, content: bytes, archive_kind: str, original_name: str,
+                   *, uploaded_by: Optional[str] = None) -> Optional[tuple[str, int]]:
+    """把飞书原文件按类型落盘归档(imports/{kind}/年/月)+ 登记 ImportedFile, 返回 (stored_path, file_id)。
 
     兜底用: 即使后续解析/入库失败或用户取消, 原件也已保存, 不会因飞书清理资源而丢失。
+    uploaded_by: 记录发图人(飞书 sender id), 供「导入档案」显示上传人。
     归档失败只记日志, 绝不影响主流程。
     """
     try:
         from app.services import import_storage
         arch = import_storage.archive(
             db, content=content, original_name=original_name,
-            kind=archive_kind, source="feishu",
+            kind=archive_kind, source="feishu", uploaded_by=uploaded_by,
         )
-        return arch.file.stored_path
+        return arch.file.stored_path, arch.file.id
     except Exception as e:  # pragma: no cover
         _log.warning("飞书原件归档失败(不影响入库): %s", e)
         return None
 
 
-def _archive_image(db: Session, img: bytes, kind: str) -> Optional[str]:
-    """图片按分类归档(未知类→screenshot 兜底)。"""
-    return _archive_bytes(db, img, _ARCHIVE_KIND.get(kind, "screenshot"), f"feishu_{kind}.jpg")
+def _archive_image(db: Session, img: bytes, kind: str,
+                   *, uploaded_by: Optional[str] = None) -> Optional[tuple[str, int]]:
+    """图片按分类归档(未知类→screenshot 兜底)。返回 (stored_path, file_id)。"""
+    return _archive_bytes(db, img, _ARCHIVE_KIND.get(kind, "screenshot"),
+                          f"feishu_{kind}.jpg", uploaded_by=uploaded_by)
+
+
+def _sender_label(db: Session, event: dict) -> Optional[str]:
+    """发图人(作 上传人)。优先用 open_id 查通讯录解析真实姓名(已开 contact:user.base:readonly);
+    查不到再回退 id。"""
+    sid = (event.get("sender") or {}).get("sender_id") or {}
+    open_id = sid.get("open_id")
+    if open_id:
+        try:
+            name = feishu_client.get_user_name(db, open_id)
+            if name:
+                return name
+        except Exception:  # pragma: no cover - 解析失败不影响入库
+            pass
+    uid = open_id or sid.get("user_id") or sid.get("union_id")
+    return f"飞书:{uid}" if uid else "飞书"
+
+
+def _pending_file_ids(pending: dict) -> list[int]:
+    """该暂存项归档的 ImportedFile id 列表 (批量含每张图)。"""
+    if pending.get("is_batch"):
+        return [im.get("archived_file_id") for im in (pending.get("images") or [])]
+    return [pending.get("archived_file_id")]
+
+
+def _mark_archive_result(db: Session, file_ids: list[int], ok: bool, note: str) -> None:
+    """把导入是否成功回写到归档文件的 row_summary, 供「导入档案」显示导入结果。失败不影响主流程。"""
+    from app.services import import_storage
+    head = (note or "").splitlines()[0] if note else ""
+    for fid in file_ids:
+        if not fid:
+            continue
+        try:
+            import_storage.update_summary(db, fid, {"ok": bool(ok), "note": head[:140]})
+        except Exception as e:  # pragma: no cover
+            _log.warning("回写导入结果失败(忽略): %s", e)
 
 
 def _load_image(db: Session, message_id: str, pending: dict) -> bytes:
@@ -525,7 +566,7 @@ def _dispatch_file(db: Session, kind: str, content: bytes, file_name: Optional[s
     return _tis.import_table(db, kind, content, file_name)
 
 
-def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
+def _on_file_message(db: Session, msg: dict, *, uploaded_by: Optional[str] = None) -> Optional[dict]:
     """飞书 file 消息(Excel/CSV)→ 归档兜底 + 按文件名粗判类型 → 确认/选类型卡。"""
     message_id = msg.get("message_id")
     try:
@@ -543,12 +584,15 @@ def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
 
     fkind = None
     archived_path = None
+    archived_file_id = None
     downloaded = False
     try:
         data = feishu_client.download_message_resource(db, message_id, file_key, type_="file")
         downloaded = True
         fkind = _tis.classify_table(file_name, data)   # 文件名 + 表头结构 结合判类型
-        archived_path = _archive_bytes(db, data, _file_archive_kind(fkind), file_name)
+        arch = _archive_bytes(db, data, _file_archive_kind(fkind), file_name, uploaded_by=uploaded_by)
+        if arch:
+            archived_path, archived_file_id = arch
     except Exception as e:
         _log.warning("飞书取文件失败: %s", e)
     if not downloaded:
@@ -558,7 +602,8 @@ def _on_file_message(db: Session, msg: dict) -> Optional[dict]:
         return {"message_id": message_id, "error": "download_failed"}
 
     _stage(db, message_id, {"file_key": file_key, "is_file": True, "file_name": file_name,
-                            "kind": fkind, "archived_path": archived_path})
+                            "kind": fkind, "archived_path": archived_path,
+                            "archived_file_id": archived_file_id})
     card = _file_confirm_card(message_id, fkind, file_name) if fkind \
         else _file_picker_card(message_id, file_name)
     _safe_reply(db, message_id, card)
@@ -643,7 +688,8 @@ def _append_to_batch(db: Session, anchor_id: str, item: dict) -> Optional[dict]:
         return None
     if not rec.get("is_batch"):   # 单图锚点 → 升级为批次(把它自己作为第一张)
         rec["images"] = [{"file_key": rec.get("file_key"), "kind": rec.get("kind"),
-                          "conf": rec.get("conf", 0.0), "archived_path": rec.get("archived_path")}]
+                          "conf": rec.get("conf", 0.0), "archived_path": rec.get("archived_path"),
+                          "archived_file_id": rec.get("archived_file_id")}]
         rec["is_batch"] = True
     rec["images"].append(item)
     rec["at"] = datetime.now(timezone.utc).isoformat()
@@ -658,22 +704,26 @@ def _append_to_batch(db: Session, anchor_id: str, item: dict) -> Optional[dict]:
 
 
 def _process_image(db: Session, message_id: str, image_key: str, *,
-                   batch_key: Optional[str] = None) -> dict:
+                   batch_key: Optional[str] = None, uploaded_by: Optional[str] = None) -> dict:
     """下载图 → 分类 → 兜底归档 → (并入 3 分钟内同会话批次 / 否则新建) → 回卡。
 
     单聊直接发图(image) 与 群里 @机器人 带图(post 内嵌) 共用此路径。
     """
     kind, conf = "unknown", 0.0
     archived_path: Optional[str] = None
+    archived_file_id: Optional[int] = None
     try:
         img = feishu_client.download_message_resource(db, message_id, image_key)
         kind, conf = classify_image(db, img)
         # 收到即按类型归档原图(兜底): 即便后续取消/失败, 原图也不丢
-        archived_path = _archive_image(db, img, kind)
+        arch = _archive_image(db, img, kind, uploaded_by=uploaded_by)
+        if arch:
+            archived_path, archived_file_id = arch
     except Exception as e:  # 下载/分类失败 → 仍让用户选类型, 不崩
         _log.warning("飞书机器人取图/分类失败: %s", e)
 
-    item = {"file_key": image_key, "kind": kind, "conf": conf, "archived_path": archived_path}
+    item = {"file_key": image_key, "kind": kind, "conf": conf,
+            "archived_path": archived_path, "archived_file_id": archived_file_id}
     # 3 分钟内同一会话同一人已有开放批次 → 并进去(不再单独弹卡), 只刷新原卡片
     if batch_key:
         anchor = _find_open_batch(db, batch_key)
@@ -686,13 +736,13 @@ def _process_image(db: Session, message_id: str, image_key: str, *,
     card = _build_batch_card(db, message_id, [item], batch_kind, min_conf)
     card_msg_id = _safe_reply(db, message_id, card)
     _stage(db, message_id, {"file_key": image_key, "kind": kind, "conf": conf,
-                            "archived_path": archived_path, "batch_key": batch_key,
-                            "card_msg_id": card_msg_id})
+                            "archived_path": archived_path, "archived_file_id": archived_file_id,
+                            "batch_key": batch_key, "card_msg_id": card_msg_id})
     return {"message_id": message_id, "kind": kind, "confidence": conf, "card_sent": True}
 
 
 def _process_batch(db: Session, message_id: str, image_keys: list[str], *,
-                   batch_key: Optional[str] = None) -> dict:
+                   batch_key: Optional[str] = None, uploaded_by: Optional[str] = None) -> dict:
     """一条富文本里的多张图: 逐张下载+分类+兜底归档, 判一个整批类型, 出一张卡。
 
     - 全部同一可信类型 → "确认全部入库"卡(送货单则先选供应商, 应用到整批)。
@@ -701,14 +751,17 @@ def _process_batch(db: Session, message_id: str, image_keys: list[str], *,
     """
     items: list[dict] = []
     for k in image_keys:
-        kind, conf, ap = "unknown", 0.0, None
+        kind, conf, ap, afid = "unknown", 0.0, None, None
         try:
             img = feishu_client.download_message_resource(db, message_id, k)
             kind, conf = classify_image(db, img)
-            ap = _archive_image(db, img, kind)   # 收到即归档(兜底), 即便后续取消也不丢原图
+            arch = _archive_image(db, img, kind, uploaded_by=uploaded_by)   # 收到即归档(兜底)
+            if arch:
+                ap, afid = arch
         except Exception as e:
             _log.warning("批量取图/分类失败: %s", e)
-        items.append({"file_key": k, "kind": kind, "conf": conf, "archived_path": ap})
+        items.append({"file_key": k, "kind": kind, "conf": conf,
+                      "archived_path": ap, "archived_file_id": afid})
     batch_kind, min_conf = _decide_batch_kind(items)
     card = _build_batch_card(db, message_id, items, batch_kind, min_conf)
     card_msg_id = _safe_reply(db, message_id, card)
@@ -718,6 +771,160 @@ def _process_batch(db: Session, message_id: str, image_keys: list[str], *,
 
 
 # ── 事件入口 (feishu_webhook_service / feishu_ws_service 调用) ──
+# 兼容多种顺手写法: 「发货密码 xxx」「密码xxx」「密码：xxx」「发货密码:xxx」
+# 必须带「密码」前缀(发货可选), 防裸口令误判。分隔符(空格/冒号)可有可无, 故「密码0Sd4SDS7」也认。
+_SHIPPING_PWD_RE = re.compile(r"^\s*(?:发货)?密码\s*[:：]?\s*(\S+)\s*$")
+
+
+def _extract_shipping_password(text: str) -> Optional[str]:
+    """从文本里取发货报表口令。需带「密码」前缀(发货可选), 分隔符可省, 防裸消息误判。"""
+    m = _SHIPPING_PWD_RE.match(text or "")
+    return m.group(1) if m else None
+
+
+def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
+    """存最新发货报表口令 + 时间戳, 回执确认。导入加密发货报表时取最近一条。"""
+    from datetime import datetime, timezone
+    settings_service.set_value(db, "taobao_shipping_pwd_latest", pwd,
+                               description="淘宝发货报表最新解密口令(一次一密)")
+    settings_service.set_value(db, "taobao_shipping_pwd_at",
+                               datetime.now(timezone.utc).isoformat(),
+                               description="发货报表口令收到时间")
+    db.commit()
+    _safe_reply(db, message_id, _result_card(
+        "已收到发货报表口令", "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。", "green"))
+    return {"message_id": message_id, "kind": "shipping_password", "captured": True}
+
+
+# ── 飞书「售后」关键词多步录入 (2026-06-12) ──
+# 流程: 发「售后」→ 回"请录入售后单号" → 发单号(标记售后)→ 回"请输入售后备注"
+#       → 发备注 → 回"售后录入已完成"。标记后该单在 订单视图 显示为「售后中」(见 orders.list_orders)。
+KEY_AS_FLOW = "feishu_as_flow"   # 售后录入会话状态前缀 (按 chat_id)
+
+
+def _as_flow_key(chat_id: str) -> str:
+    return f"{KEY_AS_FLOW}:{chat_id}"
+
+
+def _get_as_flow(db: Session, chat_id: str) -> Optional[dict]:
+    if not chat_id:
+        return None
+    raw = settings_service.get(db, _as_flow_key(chat_id), env_fallback=False)
+    if not raw:
+        return None
+    try:
+        st = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    from datetime import datetime, timedelta
+    at = st.get("at")
+    if at:   # 30 分钟未续 → 视为过期, 防卡死会话
+        try:
+            ts = datetime.fromisoformat(at)
+            now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
+            if now - ts > timedelta(minutes=30):
+                return None
+        except ValueError:
+            pass
+    return st
+
+
+def _set_as_flow(db: Session, chat_id: str, st: Optional[dict]) -> None:
+    from datetime import datetime, timezone
+    if st is None:
+        settings_service.set_value(db, _as_flow_key(chat_id), "")
+    else:
+        st["at"] = datetime.now(timezone.utc).isoformat()
+        settings_service.set_value(db, _as_flow_key(chat_id), json.dumps(st, ensure_ascii=False),
+                                   description="飞书售后录入会话状态")
+    db.commit()
+
+
+def _mark_order_aftersales(db: Session, order_no: str) -> tuple[int, bool]:
+    """为订单建/取「活跃」售后条目, 返回 (after_sales_id, 是否匹配到订单)。幂等(同单复用)。"""
+    from sqlalchemy import select
+    from app.models.marketing import AfterSales
+    from app.models.order import Order
+    from datetime import date
+    matched = db.execute(
+        select(Order.id).where(Order.order_no == order_no)).scalar_one_or_none() is not None
+    existing = db.execute(
+        select(AfterSales).where(
+            AfterSales.platform_order_no == order_no,
+            AfterSales.reason == "人工标记(飞书)",
+            (AfterSales.status.is_(None)) | (AfterSales.status != "已完成"),
+        ).order_by(AfterSales.id.desc())
+    ).scalars().first()
+    if existing:
+        return existing.id, matched
+    a = AfterSales(platform_order_no=order_no, reason="人工标记(飞书)",
+                   status="处理中", processed_at=date.today(), remark="飞书录入")
+    db.add(a)
+    db.flush()
+    return a.id, matched
+
+
+def _apply_aftersales_remark(db: Session, as_id: Optional[int], remark: str) -> None:
+    from app.models.marketing import AfterSales
+    if not as_id:
+        return
+    a = db.get(AfterSales, as_id)
+    if a:
+        a.remark = f"飞书录入: {remark}" if remark else "飞书录入"
+        db.flush()
+
+
+def _handle_aftersales_flow(db: Session, msg: dict, message_id: str, text: str) -> Optional[dict]:
+    """「售后」关键词多步录入。处理了返回结果 dict; 与售后无关返回 None。"""
+    chat_id = msg.get("chat_id") or ""
+    flow = _get_as_flow(db, chat_id)
+    if text in ("售后", "/售后", "售后录入"):   # 启动 (精确匹配防误触)
+        _set_as_flow(db, chat_id, {"step": "order"})
+        _safe_reply(db, message_id, _result_card("售后录入", "请录入售后单号。", "blue"))
+        return {"message_id": message_id, "kind": "aftersales_flow", "step": "order"}
+    if not flow:
+        return None
+    step = flow.get("step")
+    if step == "order":
+        order_no = (text or "").strip()
+        if not order_no:
+            _safe_reply(db, message_id, _result_card("售后录入", "请录入售后单号(直接发订单号)。", "blue"))
+            return {"message_id": message_id, "kind": "aftersales_flow", "step": "order"}
+        as_id, matched = _mark_order_aftersales(db, order_no)
+        db.commit()
+        flow.update({"step": "remark", "order_no": order_no, "as_id": as_id})
+        _set_as_flow(db, chat_id, flow)
+        note = "" if matched else "\n(注: 该单号未在订单表找到, 售后条目已登记)"
+        _safe_reply(db, message_id, _result_card(
+            "已标记售后", f"订单 {order_no} 已标记为售后。{note}\n请输入售后备注。", "orange"))
+        return {"message_id": message_id, "kind": "aftersales_flow", "step": "remark"}
+    if step == "remark":
+        _apply_aftersales_remark(db, flow.get("as_id"), (text or "").strip())
+        db.commit()
+        _set_as_flow(db, chat_id, None)
+        _safe_reply(db, message_id, _result_card(
+            "售后录入已完成",
+            f"订单 {flow.get('order_no')} 售后已登记、备注已保存。\n"
+            "现在可在 订单看板 → 订单视图 的「售后中」看到。", "green"))
+        return {"message_id": message_id, "kind": "aftersales_flow", "step": "done"}
+    return None
+
+
+def _remember_push_chat(db: Session, msg: dict) -> bool:
+    """把当前会话 chat_id 记为外发目标 (二维码/提醒推这里)。已设则不覆盖。
+    返回是否本次新设 (供首次设置时给用户明确反馈)。"""
+    try:
+        chat_id = msg.get("chat_id")
+        if chat_id and not settings_service.get(db, "feishu_push_chat_id", env_fallback=False):
+            settings_service.set_value(db, "feishu_push_chat_id", chat_id,
+                                       description="飞书外发目标会话(二维码/文件提醒)")
+            db.commit()
+            return True
+    except Exception:  # pragma: no cover - 记忆失败不影响主流程
+        db.rollback()
+    return False
+
+
 def on_message_event(db: Session, event: dict) -> Optional[dict]:
     """im.message.receive_v1: 按消息类型路由。
 
@@ -736,21 +943,54 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
     except Exception:
         content = {}
     bkey = _batch_key(event, msg)   # 会话+发送人, 用于把 3 分钟内连发的图归一批
+    uploader = _sender_label(db, event)  # 发图人 → 解析真实姓名记到归档「上传人」
+
+    # 记住"最近和机器人对话的会话" → 作为二维码/提醒的外发目标 (用户无需手填 chat_id)
+    newly_set_push = _remember_push_chat(db, msg)
+
+    # 发货报表口令: 文本「发货密码 xxx」→ 存设置, 供导入加密发货报表时解密 (2026-06-12)
+    if mtype == "text" and message_id:
+        # 群里 @机器人 时文本带 "@_user_N" / "@_all" 占位, 去掉再识别关键词/口令
+        text = re.sub(r"@_user_\d+|@_all|@\S+", "", content.get("text", "") or "").strip()
+        # 售后录入流程 (「售后」关键词启动的多步会话) 优先 — 进行中时拦截后续单号/备注
+        as_flow = _handle_aftersales_flow(db, msg, message_id, text)
+        if as_flow is not None:
+            return as_flow
+        pwd = _extract_shipping_password(text)
+        if pwd:
+            return _capture_shipping_password(db, message_id, pwd)
+        # 「扫码」关键词 → 启动待扫码任务 (发大二维码, 浏览器开等扫≤10分钟) (2026-06-12)
+        if text in ("扫码", "扫码登录", "开始扫码", "/扫码"):
+            from app.services import agent_ingest_service
+            res = agent_ingest_service.start_pending_scans(db)
+            if res.get("started"):
+                tip = "已启动扫码 — 二维码马上发到本群, 请在 10 分钟内用对应 App 扫。"
+            else:
+                tip = res.get("reason", "当前没有待扫码的任务")
+            _safe_reply(db, message_id, _result_card("扫码", tip, "green"))
+            return {"message_id": message_id, "kind": "scan_trigger", "card_sent": True}
+        if newly_set_push:
+            _safe_reply(db, message_id, _result_card(
+                "本群已设为推送目标 ✅",
+                "以后二维码 / 文件提醒会发到这里。\n"
+                "· 发图片 → 我帮你识别入库\n"
+                "· 发「发货密码 xxx」→ 我自动解密发货报表", "green"))
+            return {"message_id": message_id, "kind": "push_chat_set", "card_sent": True}
 
     if mtype == "file":
-        return _on_file_message(db, msg)   # Excel/CSV 表格
+        return _on_file_message(db, msg, uploaded_by=uploader)   # Excel/CSV 表格
     if mtype == "image":
         file_key = content.get("image_key")
         if not (message_id and file_key):
             return None
-        return _process_image(db, message_id, file_key, batch_key=bkey)
+        return _process_image(db, message_id, file_key, batch_key=bkey, uploaded_by=uploader)
     if mtype == "post":
         # 群里 @机器人 并带图 → 富文本(post), 图片内嵌。单图走单图流程; 多图整批按同一类型处理(不丢图)。
         keys = _post_image_keys(content)
         if message_id and keys:
             if len(keys) == 1:
-                return _process_image(db, message_id, keys[0], batch_key=bkey)
-            return _process_batch(db, message_id, keys, batch_key=bkey)
+                return _process_image(db, message_id, keys[0], batch_key=bkey, uploaded_by=uploader)
+            return _process_batch(db, message_id, keys, batch_key=bkey, uploaded_by=uploader)
         # 富文本里没有图(纯 @+文字) → 回使用指南
         if message_id:
             _safe_reply(db, message_id, _help_card())
@@ -941,6 +1181,7 @@ def _do_pick(db: Session, orig_image_msg_id: str, kind: str,
         else:
             content = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_import(db, kind, content)
+        _mark_archive_result(db, _pending_file_ids(pending), result["ok"], result.get("summary", ""))
         _drop_pending(db, orig_image_msg_id)
         db.commit()
         _patch_result(db, card_message_id,
@@ -981,6 +1222,7 @@ def _do_pick_supplier(db: Session, orig_image_msg_id: str, supplier_id: int,
         else:
             img = _load_image(db, orig_image_msg_id, pending)
             result = _dispatch_import(db, "supplier_note", img, supplier_id=supplier_id)
+        _mark_archive_result(db, _pending_file_ids(pending), result["ok"], result.get("summary", ""))
         _drop_pending(db, orig_image_msg_id)
         db.commit()
         _patch_result(db, card_message_id,

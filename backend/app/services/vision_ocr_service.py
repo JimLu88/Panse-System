@@ -167,19 +167,45 @@ def _extract_json(text: str) -> dict:
         return json.loads(cleaned[start: end + 1])
 
 
+def _ocr_image_resp(db: Session, *, system: str, user: str, image_bytes: bytes,
+                    mime: str, max_tokens: int):
+    """视觉 OCR 调用 + 主→兜底自动切换 (用户拍板 2026-06-12: 怕的不是钱是自动化断档)。
+    主用 'ocr' 配置(如 gpt-5.4-mini); 额度用光/报错/超时 → 自动切 'ocr_fallback'(如本机 Ollama),
+    永不因主用挂掉退回人工。两者都不可用才抛 AiUnavailable。"""
+    from datetime import date
+    today = date.today().isoformat()
+    # 以天为时限 (用户拍板 2026-06-12): 主用今天已确认挂 → 当天直接走本地兜底, 不再反复试主用;
+    # 隔天 (down != today) 自动先试主用 gpt-5.4-mini, 它额度/通道恢复就自愈。
+    down = settings_service.get(db, "ocr_primary_down_day", env_fallback=False)
+    kinds = ("ocr_fallback",) if down == today else ("ocr", "ocr_fallback")
+    errors = []
+    for kind in kinds:
+        cfg = settings_service.get_ai_config(db, kind)
+        if kind == "ocr_fallback" and not (cfg.get("base_url") or cfg.get("model")):
+            continue   # 兜底槽位未配 → 跳过
+        try:
+            provider = build_provider(cfg)
+            return provider.chat_with_image(
+                system=system, user=user, image_bytes=image_bytes, mime=mime, max_tokens=max_tokens)
+        except Exception as e:  # noqa: BLE001 — 主用失败自动转兜底
+            errors.append(f"{kind}: {type(e).__name__}")
+            if kind == "ocr":
+                _logger.warning("OCR 主用今日失败, 当天改走本地兜底, 明日再先试主用: %s", e)
+                try:
+                    settings_service.set_value(db, "ocr_primary_down_day", today)
+                    db.commit()
+                except Exception:  # noqa: BLE001
+                    db.rollback()
+            continue
+    raise AiUnavailable(f"OCR 主用+兜底均不可用 ({'; '.join(errors)})")
+
+
 def parse_qianniu_order(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析千牛订单截图. 返回 {"orders": [...], "ocr_warnings": [...]}."""
-    cfg = settings_service.get_ai_config(db, "ocr")
-    try:
-        provider = build_provider(cfg)
-    except AiUnavailable as e:
-        raise AiUnavailable(f"OCR 未配置, 请到管理 → AI 集成 配 vision 模型: {e}")
-
-    resp = provider.chat_with_image(
-        system=_QIANNIU_SYSTEM,
-        user="请解析这张千牛订单截图, 输出 JSON.",
+    resp = _ocr_image_resp(
+        db, system=_QIANNIU_SYSTEM, user="请解析这张千牛订单截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
     try:
@@ -194,18 +220,45 @@ def parse_qianniu_order(
     return data
 
 
+_BALANCE_SYSTEM = (
+    "你是财务OCR助手, 读电商资金截图的余额。页面常有多个账户/板块(主账户/保证金/万相台推广/冻结/提现中), 不要混。\n"
+    "按给定的「账户」名选对应板块的余额:\n"
+    "  · 含『聚合/资金/淘宝』→ 取『聚合结算账户』最上方那个最大的「账户余额」(不是可提现, 不是保证金, 不是冻结);\n"
+    "  · 含『推广/万相台』→ 取『万相台无界版』的「账户总余额」;\n"
+    "  · 含『保证金』→ 取保证金账户「可用余额」;\n"
+    "  · 含『支付宝』→ 取「可用余额」;\n"
+    "  · 含『万师傅』→ 取右上角账户余额(常为 0);\n"
+    "  · 其余 → 取页面最显著的主账户余额。\n"
+    "只返回 JSON: {\"available\": 数字或null, \"label_found\": \"实际读的板块+余额项\", "
+    "\"confidence\": \"high|low\", \"note\": \"简述\"}\n"
+    "数字去掉逗号和¥符号, 保留两位小数。看不清/找不到对应板块/有歧义 → confidence=low。\n"
+    "绝不编造数字; 完全读不到就 available=null, confidence=low。"
+)
+
+
+def parse_balance_screenshot(
+    db: Session, image_bytes: bytes, *, mime: str = "image/png", account_hint: str = "",
+) -> dict:
+    """读余额截图的「可用余额」. 返回 {available, label_found, confidence, note}.
+    调用方据 confidence/available 决定是否写库 (读不准不写, 报异常)。"""
+    resp = _ocr_image_resp(
+        db, system=_BALANCE_SYSTEM,
+        user=f"账户: {account_hint or '未知'}。按上面规则读这张截图里该账户对应板块的余额, 输出 JSON.",
+        image_bytes=image_bytes, mime=mime, max_tokens=500,
+    )
+    try:
+        data = _extract_json(resp.text)
+    except ValueError as e:
+        raise AiUnavailable(f"AI 返回无法解析: {e}")
+    return data
+
+
 def parse_purchase_invoice(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析采购单/进货单截图. 返回 {"purchase": {...}}."""
-    cfg = settings_service.get_ai_config(db, "ocr")
-    try:
-        provider = build_provider(cfg)
-    except AiUnavailable as e:
-        raise AiUnavailable(f"OCR 未配置: {e}")
-    resp = provider.chat_with_image(
-        system=_PURCHASE_SYSTEM,
-        user="请解析这张采购/进货单截图.",
+    resp = _ocr_image_resp(
+        db, system=_PURCHASE_SYSTEM, user="请解析这张采购/进货单截图.",
         image_bytes=image_bytes, mime=mime, max_tokens=3000,
     )
     try:
@@ -223,14 +276,44 @@ def parse_factory_reconciliation(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析工厂对账单截图. 返回 {"rows": [...], "ocr_warnings": [...]}."""
-    cfg = settings_service.get_ai_config(db, "ocr")
+    resp = _ocr_image_resp(
+        db, system=_FACTORY_RECON_SYSTEM, user="请解析这张工厂对账单截图, 输出 JSON.",
+        image_bytes=image_bytes, mime=mime, max_tokens=4000,
+    )
     try:
-        provider = build_provider(cfg)
-    except AiUnavailable as e:
-        raise AiUnavailable(f"OCR 未配置, 请到管理 → AI 集成 配 vision 模型: {e}")
-    resp = provider.chat_with_image(
-        system=_FACTORY_RECON_SYSTEM,
-        user="请解析这张工厂对账单截图, 输出 JSON.",
+        data = _extract_json(resp.text)
+    except ValueError as e:
+        raise AiUnavailable(f"AI 返回无法解析: {e}")
+    data.setdefault("rows", [])
+    data.setdefault("ocr_warnings", [])
+    if not isinstance(data["rows"], list):
+        data["rows"] = []
+    return data
+
+
+_PROMO_SIGNUP_SYSTEM = """\
+你是电商活动报名结果截图解析器。截图来自淘宝/天猫营销中心或小红书商家后台的活动报名页。
+请提取每一行报名记录, 输出严格 JSON (不要 markdown 代码块):
+{
+  "rows": [
+    {"sku_code": "SKU编码或商品编码 (尽量提取, 没有则用商品名)",
+     "channel": "taobao 或 xhs (按截图来源平台判断)",
+     "campaign_name": "活动名称 (如 618/双11/单品宝)",
+     "signup_price": 1234.56},
+    ...
+  ],
+  "ocr_warnings": ["看不清/不确定的内容写在这里"]
+}
+注意: signup_price 是数字不带货币符号; 模糊或被遮挡的行放进 ocr_warnings 而不是猜。
+"""
+
+
+def parse_promo_signup(
+    db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
+) -> dict:
+    """Plan F1: 解析活动报名结果截图. 返回 {"rows": [...], "ocr_warnings": [...]}."""
+    resp = _ocr_image_resp(
+        db, system=_PROMO_SIGNUP_SYSTEM, user="请解析这张活动报名结果截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
     try:
@@ -253,14 +336,8 @@ def parse_alipay_flow_screenshot(
     (transaction_no/transaction_time/transaction_type/counterparty/amount/
      related_order_no/balance/remark)。
     """
-    cfg = settings_service.get_ai_config(db, "ocr")
-    try:
-        provider = build_provider(cfg)
-    except AiUnavailable as e:
-        raise AiUnavailable(f"OCR 未配置, 请到管理 → AI 集成 配 vision 模型: {e}")
-    resp = provider.chat_with_image(
-        system=_ALIPAY_SYSTEM,
-        user="请解析这张支付宝流水截图, 输出 JSON.",
+    resp = _ocr_image_resp(
+        db, system=_ALIPAY_SYSTEM, user="请解析这张支付宝流水截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
     try:

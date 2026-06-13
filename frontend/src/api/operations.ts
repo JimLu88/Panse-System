@@ -256,11 +256,27 @@ export interface CustomizationDiffLine {
   requires_new_material: boolean;
 }
 
+export interface StockCheckItem {
+  material_code: string;
+  material_name: string | null;
+  need: number;
+  available?: number;
+  shortage?: number;
+}
+
+export interface StockCheck {
+  in_stock: StockCheckItem[];
+  need_purchase: StockCheckItem[];
+  need_new_material: StockCheckItem[];
+  has_shortage: boolean;
+}
+
 export interface CustomizationPreview {
   base_sku_code: string;
   proposed_custom_sku_code: string;
   dimension_changes: Record<string, unknown>;
   diff_lines: CustomizationDiffLine[];
+  stock_check?: StockCheck | null;   // Plan F5 库存预检
 }
 
 export const previewCustomization = (payload: {
@@ -273,6 +289,7 @@ export const confirmCustomization = (payload: {
   dimension_changes: Record<string, unknown>;
   order_no?: string;
   note?: string;
+  acknowledge_shortage?: boolean;   // Plan F5: 缺料弹窗确认后置 true
 }) =>
   api
     .post<{ custom_variant_id: number; custom_sku_code: string; cloned_bom_lines: number }>(
@@ -294,15 +311,35 @@ export interface SalesSummary {
   top_products_by_profit_rate: Array<Record<string, any>>;
 }
 
-export const fetchSalesSummary = (period: '7d' | '30d' | 'month' | 'year', platform?: string) =>
+export const fetchSalesSummary = (period: '7d' | '30d' | 'month' | 'year', platform?: string, brand?: string) =>
   api.get<SalesSummary>('/api/reports/sales/summary', {
-    params: { period, ...(platform ? { platform } : {}) },
+    params: { period, ...(platform ? { platform } : {}), ...(brand ? { brand } : {}) },
   }).then((r) => r.data);
 
-export const fetchSalesBreakdown = (period: '7d' | '30d' | 'month' | 'year') =>
+export const fetchSalesBreakdown = (period: '7d' | '30d' | 'month' | 'year', brand?: string) =>
   api.get<{ period_start: string; period_end: string; rows: Array<Record<string, any>> }>(
-    '/api/reports/sales/breakdown', { params: { period } },
+    '/api/reports/sales/breakdown', { params: { period, ...(brand ? { brand } : {}) } },
   ).then((r) => r.data);
+
+// Plan F6: 经营状况分析 (收支占比 + 净利)
+export interface OperatingAnalysis {
+  period: string;
+  period_start: string;
+  period_end: string;
+  revenue: number;
+  expense_items: Array<{ name: string; amount: number; pct: number }>;
+  total_expense: number;
+  net_profit: number;
+  net_profit_rate: number;
+}
+
+export const fetchOperatingAnalysis = (period: '7d' | '30d' | 'month' | 'year') =>
+  api.get<OperatingAnalysis>('/api/reports/operating-analysis', { params: { period } })
+    .then((r) => r.data);
+
+// Plan L6: 两口径资金差额下钻 — 每个科目的构成明细 TopN
+export const fetchAssetDrilldown = () =>
+  api.get<Record<string, any[]>>('/api/reports/assets/diff-drilldown').then((r) => r.data);
 
 export const fetchForecast30d = () =>
   api.get<{ forecast: Array<any> }>('/api/reports/forecast/30d').then((r) => r.data);
@@ -364,8 +401,10 @@ export const fetchCustomer = (id: number) =>
 export const fetchCustomerOrders = (id: number) =>
   api.get<any[]>(`/api/customers/${id}/orders`).then((r) => r.data);
 
-export const triggerCustomerAggregate = () =>
-  api.post('/api/customers/aggregate').then((r) => r.data);
+export const triggerCustomerAggregate = (includeHistorical = true) =>
+  api.post('/api/customers/aggregate', null, {
+    params: { include_historical: includeHistorical },
+  }).then((r) => r.data);
 
 // ----- 运营待办台账 (SOP 每日/每周/每月清单) -----
 export interface OpsTask {
@@ -432,6 +471,8 @@ export interface AfterSalesItem {
   platform_order_no: string;
   customer_name: string | null;
   product_name: string | null;
+  product_code: string | null;
+  sku_code: string | null;
   status: string | null;
   reason: string | null;
   refill_tracking_no: string | null;
@@ -439,7 +480,16 @@ export interface AfterSalesItem {
   second_inbound_confirmed: string | null;
   processed_at: string | null;
   remark: string | null;
+  in_platform_total: string | null;
+  out_platform_total: string | null;
+  total_cost: string | null;
 }
+
+export const updateAfterSales = (id: number, patch: {
+  return_tracking_no?: string | null;
+  refill_tracking_no?: string | null;
+  remark?: string | null;
+}) => api.patch<AfterSalesItem>(`/api/aftersales/${id}`, patch).then((r) => r.data);
 
 export const fetchAfterSales = (status?: string, limit = 100) =>
   api.get<AfterSalesItem[]>('/api/aftersales', { params: { status, limit } })
@@ -468,6 +518,20 @@ export const disassembleProduct = (payload: {
     '/api/aftersales/disassemble-product', payload,
   ).then((r) => r.data);
 
+// 拆 BOM 历史 + 回撤 (用户需求 2026-06-11: 误操作可补救)
+export interface DisassemblyLogRow {
+  id: number; product_code: string; sku_code: string | null; qty: number;
+  parts: { material_code: string; qty: number }[];
+  actor: string | null; created_at: string | null;
+  undone_at: string | null; undone_by: string | null;
+}
+
+export const listDisassemblyLogs = () =>
+  api.get<DisassemblyLogRow[]>('/api/aftersales/disassembly-logs').then((r) => r.data);
+
+export const undoDisassembly = (logId: number) =>
+  api.post(`/api/aftersales/disassembly-logs/${logId}/undo`).then((r) => r.data);
+
 // -- AI 对账走查
 export interface ReconcileWalkthroughResult {
   issues: Array<{
@@ -486,6 +550,7 @@ export interface DashboardData {
     trend_30d: Array<{ date: string; count: number; revenue: number }>;
     total_30d: number;
     revenue_30d: number;
+    refill_excluded_30d?: number;   // 注释用: 有补单 ¥X 未计入
     count_7d: number;
   };
   inventory: {

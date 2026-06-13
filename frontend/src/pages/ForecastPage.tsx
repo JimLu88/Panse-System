@@ -24,6 +24,34 @@ import {
   fetchSlowMoving,
   fetchStockAdvice,
 } from '../api/client';
+import ProductThumb from '../components/ProductThumb';
+
+// SKU 构成标签 (按产品聚合后的明细; 定制咨询类 SKU 也归并在所属产品下)
+function skuTags(r: any) {
+  const skus: { sku: string; qty_60d: number }[] = r.skus ?? [];
+  if (!skus.length) return <Typography.Text type="secondary">—</Typography.Text>;
+  return (
+    <Space size={4} wrap>
+      {skus.slice(0, 4).map((s) => (
+        <Tag key={s.sku} style={{ fontSize: 11 }}>{s.sku} ×{s.qty_60d}</Tag>
+      ))}
+      {skus.length > 4 && <Tag style={{ fontSize: 11 }}>+{skus.length - 4} 个</Tag>}
+    </Space>
+  );
+}
+
+// 产品列: 图 + 名称 + 编码 (没名没图的行至少有编码兜底)
+function productCell(r: any) {
+  return (
+    <Space size={8}>
+      <ProductThumb src={r.image_url || null} size={40} />
+      <span>
+        <div>{r.product_name || <Typography.Text type="secondary">—</Typography.Text>}</div>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>{r.product_code || '—'}</Typography.Text>
+      </span>
+    </Space>
+  );
+}
 
 
 export default function ForecastPage() {
@@ -44,18 +72,20 @@ function ForecastTab() {
     <Card size="small" title="未来 30 天预测销量 (基于过去 60 天移动平均 × 1.2)">
       <Table
         size="small" loading={isLoading}
-        rowKey="sku_key"
+        rowKey="product_code"
         dataSource={data?.forecast ?? []}
         columns={[
-          { title: '产品', dataIndex: 'product_code', width: 100 },
-          { title: 'SKU', dataIndex: 'sku' },
-          { title: '过去 60 天总销', dataIndex: 'last_60d_total', width: 130 },
+          { title: '产品', width: 240, render: (_: any, r: any) => productCell(r),
+            sorter: (a: any, b: any) => String(a.product_name ?? a.product_code).localeCompare(String(b.product_name ?? b.product_code)) },
+          { title: 'SKU 构成 (60天销量)', render: (_: any, r: any) => skuTags(r) },
+          { title: '过去 60 天总销', dataIndex: 'last_60d_total', width: 130,
+            sorter: (a: any, b: any) => (a.last_60d_total ?? 0) - (b.last_60d_total ?? 0) },
           { title: '日均', dataIndex: 'avg_daily', width: 100 },
           { title: '未来 30 天预测', dataIndex: 'forecast_30d', width: 130,
             render: (v: number) => <Tag color="blue">{v}</Tag>,
           },
         ]}
-        pagination={{ pageSize: 30 }}
+        pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
       />
     </Card>
   );
@@ -73,13 +103,14 @@ function AdviceTab() {
       <Card size="small" title="按产品: 未来 30 天产能缺口">
         <Table
           size="small" loading={isLoading}
-          rowKey={(r: any) => `${r.product_code}|${r.sku}`}
+          rowKey={(r: any) => `${r.product_code}`}
           dataSource={data?.products ?? []}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
-            { title: '产品', dataIndex: 'product_code' },
-            { title: 'SKU', dataIndex: 'sku' },
-            { title: '预测 30 天', dataIndex: 'forecast_30d', width: 110 },
+            { title: '产品', width: 240, render: (_: any, r: any) => productCell(r),
+              sorter: (a: any, b: any) => String(a.product_name ?? a.product_code).localeCompare(String(b.product_name ?? b.product_code)) },
+            { title: '预测 30 天', dataIndex: 'forecast_30d', width: 110,
+              sorter: (a: any, b: any) => (a.forecast_30d ?? 0) - (b.forecast_30d ?? 0) },
             { title: '现成品库存', dataIndex: 'in_stock', width: 110 },
             { title: '需生产', dataIndex: 'need_to_produce', width: 100,
               render: (v: number) => v > 0 ?
@@ -93,7 +124,7 @@ function AdviceTab() {
           size="small" loading={isLoading}
           rowKey={(r: any) => r.material_code}
           dataSource={data?.materials ?? []}
-          pagination={{ pageSize: 30 }}
+          pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: '物料', dataIndex: 'material_code' },
             { title: '名称', dataIndex: 'material_name' },
@@ -139,9 +170,10 @@ function SlowMovingTab() {
             <Table size="small" loading={isLoading}
                    rowKey="material_code"
                    dataSource={data?.long_idle ?? []}
-                   pagination={{ pageSize: 15 }}
+                   pagination={{ defaultPageSize: 15, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
                    columns={[
                      { title: '物料', dataIndex: 'material_code', width: 110 },
+                     { title: '名称', dataIndex: 'material_name', ellipsis: true },
                      { title: '库存', dataIndex: 'physical_qty', width: 80 },
                      { title: '最后出货', dataIndex: 'last_outbound_at' },
                      { title: '滞销天数', dataIndex: 'days_since', width: 90,
@@ -154,9 +186,9 @@ function SlowMovingTab() {
             <Table size="small" loading={isLoading}
                    rowKey={(r: any) => `${r.product_code}_${r.sku}`}
                    dataSource={data?.overstock ?? []}
-                   pagination={{ pageSize: 15 }}
+                   pagination={{ defaultPageSize: 15, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
                    columns={[
-                     { title: '产品', dataIndex: 'product_code', width: 110 },
+                     { title: '产品', width: 220, render: (_: any, r: any) => productCell(r) },
                      { title: 'SKU', dataIndex: 'sku' },
                      { title: '库存', dataIndex: 'physical_qty', width: 80 },
                      { title: '预测 30 天', dataIndex: 'forecast_30d', width: 100 },

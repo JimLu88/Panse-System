@@ -48,7 +48,9 @@ def test_add_row_reuses_custom_material_on_second_inbound(db_session):
     assert r1.material_created is True
     assert r2.material_created is False
     assert r1.material.code == r2.material.code == "AC-1000"
-    assert db_session.query(PartInventory).count() == 2
+    # (warehouse, material_code) 唯一 (迁移 0074): 二次入库累加到同一行, 不再重复插行
+    assert db_session.query(PartInventory).count() == 1
+    assert r2.inventory.physical_qty == 3
     assert db_session.query(DataException).count() == 1  # 只在首次自动创建时记一条
 
 

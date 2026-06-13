@@ -1,8 +1,9 @@
 """定价扩展 — 配件成本拆分 + 平台活动价."""
 from __future__ import annotations
+from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import Numeric, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
 
@@ -35,6 +36,10 @@ class PricingSkuCosts(Base, TimestampMixin):
     other_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))       # 其他
     other_desc: Mapped[Optional[str]] = mapped_column(Text)                    # 外配件说明
     parts_remark: Mapped[Optional[str]] = mapped_column(Text)                  # 配件备注
+
+    # Plan L7: 定价配件成本 ↔ BOM 漂移标记 (BOM/物料价变动后由 pricing_bom_sync_service 维护)
+    bom_synced_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    stale_reason: Mapped[Optional[str]] = mapped_column(String(255))
 
 class PricingSkuPromo(Base, TimestampMixin):
     __tablename__ = "pricing_sku_promo"

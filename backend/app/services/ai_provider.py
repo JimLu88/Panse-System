@@ -39,7 +39,8 @@ class AiUnavailable(RuntimeError):
 class AiProvider:
     name = "base"
 
-    def __init__(self, *, api_key: str, model: str, base_url: str = "") -> None:
+    def __init__(self, *, api_key: str, model: str, base_url: str = "",
+                 user_agent: str = "") -> None:
         if not api_key:
             raise AiUnavailable(f"{self.name} 未配置: API Key 为空")
         if not model:
@@ -47,6 +48,9 @@ class AiProvider:
         self.api_key = api_key
         self.model = model
         self.base_url = base_url.rstrip("/") if base_url else ""
+        # 外接中转(如米醋/micuapi)常要求带 Codex/Claude-CLI 风格 User-Agent, 否则 403 block。
+        # 留空时给一个 Codex 风格默认; 精确值可在 管理→AI集成 / 设置里覆盖 (见 micuapi UA 说明页)。
+        self.user_agent = user_agent or "codex_cli_rs/0.21.0 (PanseERP)"
 
     def chat(self, *, system: str, user: str, max_tokens: int = 1024,
              cache_system: bool = True) -> AiResponse:
@@ -150,6 +154,7 @@ class OpenAICompatibleProvider(AiProvider):
         return {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
+            "User-Agent": self.user_agent,
         }
 
     def _post(self, payload: dict, timeout: float = 60.0) -> dict:
@@ -219,17 +224,20 @@ class OpenAICompatibleProvider(AiProvider):
 def build_provider(cfg: dict) -> AiProvider:
     """cfg = {"provider": "...", "api_key": "...", "model": "...", "base_url": "..."}"""
     p = (cfg.get("provider") or "anthropic").lower()
+    ua = cfg.get("user_agent") or ""
     if p == "anthropic":
         return AnthropicProvider(
             api_key=cfg.get("api_key") or "",
             model=cfg.get("model") or "",
             base_url=cfg.get("base_url") or "",
+            user_agent=ua,
         )
     if p in ("openai", "openai-compat", "openai_compatible"):
         return OpenAICompatibleProvider(
             api_key=cfg.get("api_key") or "",
             model=cfg.get("model") or "",
             base_url=cfg.get("base_url") or "",
+            user_agent=ua,
         )
     raise AiUnavailable(f"未知 provider: {p}")
 

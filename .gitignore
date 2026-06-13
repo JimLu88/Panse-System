@@ -38,3 +38,11 @@ backend/alembic/__pycache__/
 # 部署时由看门狗写入的版本标记 (每次 build 前重新生成)
 backend/build_version.json
 audit_xlsx.py
+
+# 运行时数据 / 备份 / 上传 / 打包产物 — 绝不入库 (含财务数据与隐私截图)
+backups/
+storage/
+deploy/windows/build/
+# dist/ 已在上方 Node 段覆盖 (含 deploy/windows/dist/)
+# 本地 compose 覆盖 (文件自注「请勿提交」, 仅本机端口/飞书开关)
+docker-compose.override.yml

@@ -26,6 +26,7 @@ from sqlalchemy.orm import Session
 from app.models.finance import AlipayFlow
 from app.models.marketing import AfterSales, DailyOperation, OutsourcingExpense, PromotionFlow
 from app.models.order import FactoryOrder, PartPurchase
+from app.services import internal_accounts
 
 _logger = logging.getLogger("panse.alipay_router")
 
@@ -239,12 +240,74 @@ def _guess_material(db: Session, name: str) -> tuple[Optional[str], Optional[str
     return None, None
 
 
+# 非采购支出关键字: 平台代扣/代付/服务费、理财/余额宝转入、退款/转账等 —— 不当成"配件采购"。
+# 写进系统: 以后导入支付宝流水, 命中这些的不会再生成采购记录(自动筛选)。
+# "消费券代付资金扣回"属于订单级扣款(已在 order_settlements 按订单核算), 不是采购。
+_NON_PURCHASE_KW = (
+    "代扣", "代付", "资金扣回", "消费券", "服务费", "手续费",
+    "理财", "申购", "赎回", "余额宝", "退款", "还款",
+    "转账", "转入", "转出", "单次转", "提现", "花呗", "借呗", "工资", "保证金",
+    "淘天", "淘宝", "天猫",
+)
+
+
+def _is_non_purchase(f) -> bool:
+    text = f"{f.transaction_type or ''}{f.remark or ''}{f.counterparty or ''}"
+    if any(k in text for k in _NON_PURCHASE_KW):
+        return True
+    # 内部互转 (我方账户/人员之间挪钱) 不是采购; 员工代购(带真实货品备注)除外
+    return internal_accounts.is_internal_transfer(
+        f.counterparty, f.transaction_type, f.remark
+    )
+
+
+def purge_non_purchase_records(db: Session) -> int:
+    """清理已误生成的非采购记录 (代付/理财/内部互转), 每次流水归类时自动跑。
+
+    只删自动生成的行 (有 alipay_flow_no), 手工录入的不碰。
+    员工代购 (内部人员 + 真实货品备注) 保留并补 purchase_type=员工代购。
+    """
+    rows = db.execute(
+        select(PartPurchase).where(PartPurchase.alipay_flow_no.isnot(None))
+    ).scalars().all()
+    n = 0
+    unlinked_flow_nos: list[str] = []
+    for p in rows:
+        name = p.material_name or ""
+        if any(k in name for k in _NON_PURCHASE_KW):
+            unlinked_flow_nos.append(p.alipay_flow_no)
+            db.delete(p)
+            n += 1
+            continue
+        # 已导入账户主人 (爱群/魏佳音/畔色…): 任何打款都是内部互转 → 删 (防双计)
+        if internal_accounts.is_imported_account_owner(p.supplier):
+            unlinked_flow_nos.append(p.alipay_flow_no)
+            db.delete(p)
+            n += 1
+            continue
+        if internal_accounts.is_internal_counterparty(p.supplier):
+            if internal_accounts.is_transfer_like(name) or not name.strip():
+                unlinked_flow_nos.append(p.alipay_flow_no)
+                db.delete(p)
+                n += 1
+            elif p.purchase_type != internal_accounts.EMPLOYEE_PROXY_PURCHASE_TYPE:
+                p.purchase_type = internal_accounts.EMPLOYEE_PROXY_PURCHASE_TYPE
+    db.flush()
+    # Plan L8: 删除的采购行解绑流水 — 无其他业务行引用的流水核销状态回 open
+    if unlinked_flow_nos:
+        from app.services import match_unlink_service
+        for no in unlinked_flow_nos:
+            match_unlink_service.unlink_purchase(db, no)
+    return n
+
+
 def create_purchases_from_unclassified(db: Session) -> int:
     """7-配件采购记录: 把无法归类的支出流水整合成采购记录。
 
     范围: amount<0 且 reconciliation_type 为空/other, 且该流水号尚未被任何
     采购/推广/外包/日常记录引用。供应商取对手方, 备注取流水备注, 视为已付款。
     """
+    purge_non_purchase_records(db)   # 先清掉历史误归类 (代付/理财/内部互转)
     referenced = set()
     for model in (PartPurchase, PromotionFlow, OutsourcingExpense, DailyOperation, AfterSales):
         for no in db.execute(select(model.alipay_flow_no)).scalars().all():
@@ -261,11 +324,17 @@ def create_purchases_from_unclassified(db: Session) -> int:
     for f in flows:
         if f.transaction_no in referenced:
             continue
+        if _is_non_purchase(f):
+            continue   # 平台代扣/服务费/理财/余额宝/退款/转账等 → 不是配件采购, 不生成记录
         when = f.transaction_time.date() if f.transaction_time else date.today()
         amount = _q2(f.amount)
         raw_name = f.remark or f.transaction_type or "未分类支出"
         mat_code, hint = _guess_material(db, raw_name)
         mat_name = raw_name + (hint or "")
+        # 员工代购: 对手方内部人员 + 真实货品备注 → 保留为采购但专门标记
+        ptype = (internal_accounts.EMPLOYEE_PROXY_PURCHASE_TYPE
+                 if internal_accounts.is_internal_counterparty(f.counterparty)
+                 else UNCLASSIFIED_PURCHASE_TYPE)
         pp = PartPurchase(
             purchase_no=_next_purchase_no_yearly(db, when.year),
             supplier=f.counterparty,
@@ -277,7 +346,7 @@ def create_purchases_from_unclassified(db: Session) -> int:
             amount=amount,
             total_amount=amount,
             related_order_no=f.related_order_no,
-            purchase_type=UNCLASSIFIED_PURCHASE_TYPE,
+            purchase_type=ptype,
             payment_method="支付宝",
             payment_status="paid",
             payment_date=when,

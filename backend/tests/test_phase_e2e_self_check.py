@@ -178,8 +178,10 @@ def test_req7_sales_forecast(db_session):
         ))
     db_session.flush()
     forecast = sales_analytics.forecast_30d(db_session)
-    s1 = next(r for r in forecast if r["sku"] == "S1")
+    # 2026-06 重构: 按产品聚合
+    s1 = next(r for r in forecast if r["product_code"] == "P1")
     assert s1["forecast_30d"] > 0
+    assert any(s["sku"] == "S1" for s in s1["skus"])
 
 
 # ----------------------------- 业务需求 8: 库存预警 + 滞销 ------ #
@@ -338,7 +340,7 @@ def test_req14_asset_summary(db_session):
     db_session.flush()
     s = asset_service.summary(db_session)
     cat_names = {c.name for c in s.categories}
-    assert "库存账面" in cat_names
+    assert "其它物料库存" in cat_names
     assert "账户余额" in cat_names
     assert "待发货资产" in cat_names
 

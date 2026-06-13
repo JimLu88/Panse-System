@@ -8,34 +8,68 @@
  *   - 标记损坏不入库
  *   - 拆 BOM (成品 → 物料)
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import ShipmentTracker from '../components/ShipmentTracker';
 import {
   Alert,
   Button,
   Card,
+  Drawer,
   Form,
   Input,
   InputNumber,
   Modal,
+  Popconfirm,
   Segmented,
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
+import PresetTable from '../components/PresetTable';
 import {
   AfterSalesItem,
+  DisassemblyLogRow,
   confirmReturnInbound,
   createReturn,
   disassembleProduct,
   fetchAfterSales,
+  listDisassemblyLogs,
   markReturnDamaged,
   markReturnReceived,
+  undoDisassembly,
+  updateAfterSales,
 } from '../api/client';
+
+// 点击补填/修改快递单号 (退回/补发共用)
+function EditableTrackingNo({ label, value, onSave }: {
+  label: string; value: string | null; onSave: (v: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(value ?? '');
+  if (!editing) {
+    return (
+      <span onClick={() => { setVal(value ?? ''); setEditing(true); }} style={{ cursor: 'pointer' }}>
+        <Typography.Text type="secondary" style={{ fontSize: 11 }}>{label} </Typography.Text>
+        {value || <Tag color="warning" style={{ marginInlineEnd: 0 }}>未填·点我填</Tag>}
+      </span>
+    );
+  }
+  const commit = () => {
+    setEditing(false);
+    const t = val.trim();
+    if (t !== (value ?? '')) onSave(t || null);
+  };
+  return (
+    <Input size="small" autoFocus value={val} style={{ width: 170 }}
+           placeholder={`${label}快递单号`}
+           onChange={(e) => setVal(e.target.value)} onBlur={commit} onPressEnter={commit} />
+  );
+}
 
 const STATUS_COLOR: Record<string, string> = {
   pending_return: 'orange',
@@ -56,7 +90,36 @@ export default function AfterSalesPage() {
   const qc = useQueryClient();
   const [createOpen, setCreateOpen] = useState(false);
   const [inboundFor, setInboundFor] = useState<AfterSalesItem | null>(null);
-  const [disOpen, setDisOpen] = useState(false);
+  // 拆BOM 改为按单品行内操作: 记录目标行, 双重确认后才打开执行表单
+  const [disFor, setDisFor] = useState<AfterSalesItem | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+
+  const confirmDisassemble = (r: AfterSalesItem) => {
+    Modal.confirm({
+      title: '拆 BOM — 这是干什么的？',
+      width: 520,
+      content: (
+        <div>
+          <p>把 <b>{r.product_name || r.product_code || '该产品'}</b> 的 N 件<b>成品库存</b>拆回
+            BOM 物料库存：成品 −N，BOM 里每种物料按单耗 +N。</p>
+          <p>用途：退回来的成品不再整件卖、决定拆了当配件用时才操作。</p>
+          <p style={{ color: '#cf1322' }}>影响：成品库存 与 配件库存 两张表都会变动（有台账可查，但不会自动撤销）。</p>
+        </div>
+      ),
+      okText: '我已了解，继续',
+      cancelText: '取消',
+      onOk: () => {
+        Modal.confirm({
+          title: '再次确认',
+          content: `确定要拆解「${r.product_name || r.product_code || '该产品'}」的成品库存吗？下一步选择数量后执行。`,
+          okText: '确认拆解',
+          okButtonProps: { danger: true },
+          cancelText: '取消',
+          onOk: () => setDisFor(r),
+        });
+      },
+    });
+  };
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data: rows = [] } = useQuery({
@@ -91,11 +154,22 @@ export default function AfterSalesPage() {
     },
   });
 
+  // 补填快递单号 (退回/补发); 填了自动纳入物流追踪
+  const patchMut = useMutation({
+    mutationFn: ({ id, patch }: { id: number; patch: Parameters<typeof updateAfterSales>[1] }) =>
+      updateAfterSales(id, patch),
+    onSuccess: () => {
+      message.success('已保存, 单号将自动追踪');
+      qc.invalidateQueries({ queryKey: ['aftersales'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert
         type="info" showIcon
-        message="退货闭环流程"
+        message="退货 / 售后（含售后金额统计 · 原「营销与经营 → 售后」已并入此处，统一在这里看，不再分开）"
         description="① 创建退货 + 填快递单号 → ② 系统追踪快递, 签收后弹窗待确认 → ③ 检查完好 → 整产品入库 (不拆 BOM); 损坏 → 不入库, 留警告"
       />
       <Segmented
@@ -113,22 +187,23 @@ export default function AfterSalesPage() {
       <Card title="退货/售后记录" size="small"
             extra={
               <Space>
-                <Button onClick={() => setDisOpen(true)}>拆 BOM (成品 → 物料)</Button>
+                <Button onClick={() => setHistoryOpen(true)}>拆BOM 历史</Button>
                 <Button type="primary" onClick={() => setCreateOpen(true)}>新建退货</Button>
               </Space>
             }>
-        <Table
+        <PresetTable
+          tableKey="aftersales"
           size="small"
           rowKey="id"
           dataSource={rows}
-          pagination={{ pageSize: 20 }}
+          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
           columns={[
             { title: 'ID', dataIndex: 'id', width: 60 },
             { title: '订单号', dataIndex: 'platform_order_no', width: 170 },
             { title: '客户', dataIndex: 'customer_name', width: 100,
               render: (v: string | null) => v || <Tag color="warning">未关联</Tag> },
-            { title: '产品', dataIndex: 'product_name', ellipsis: true,
-              render: (v: string | null) => v || '-' },
+            { title: '产品', dataIndex: 'product_name', width: 130, ellipsis: true,
+              render: (v: string | null) => v ? <Tooltip title={v}><span>{v}</span></Tooltip> : '-' },
             { title: '状态', dataIndex: 'status', width: 160,
               render: (v: string) => (
                 <Tag color={STATUS_COLOR[v ?? ''] ?? 'default'}>
@@ -136,10 +211,23 @@ export default function AfterSalesPage() {
                 </Tag>
               ),
             },
-            { title: '原因', dataIndex: 'reason', ellipsis: true },
-            { title: '快递单号', dataIndex: 'refill_tracking_no', width: 140,
-              render: (v: string | null) =>
-                v ? v : <Tag color="warning">未填</Tag>,
+            { title: '原因', dataIndex: 'reason', width: 130, ellipsis: true,
+              render: (v: string | null) => v ? <Tooltip title={v}><span>{v}</span></Tooltip> : '-' },
+            { title: '售后金额', dataIndex: 'total_cost', width: 100, align: 'right' as const,
+              render: (v: string | null) => v != null && Number(v) ? <b style={{ color: '#cf1322' }}>¥{Number(v).toLocaleString()}</b> : '-' },
+            { title: '平台内', dataIndex: 'in_platform_total', width: 90, align: 'right' as const,
+              render: (v: string | null) => v != null && Number(v) ? `¥${Number(v).toLocaleString()}` : '-' },
+            { title: '平台外', dataIndex: 'out_platform_total', width: 90, align: 'right' as const,
+              render: (v: string | null) => v != null && Number(v) ? `¥${Number(v).toLocaleString()}` : '-' },
+            { title: '快递单号 (点击可填)', width: 200,
+              render: (_: any, r: AfterSalesItem) => (
+                <Space direction="vertical" size={2}>
+                  <EditableTrackingNo label="退回" value={r.return_tracking_no}
+                    onSave={(v) => patchMut.mutate({ id: r.id, patch: { return_tracking_no: v } })} />
+                  <EditableTrackingNo label="补发" value={r.refill_tracking_no}
+                    onSave={(v) => patchMut.mutate({ id: r.id, patch: { refill_tracking_no: v } })} />
+                </Space>
+              ),
             },
             { title: '二次确认', dataIndex: 'second_inbound_confirmed', width: 100,
               render: (v: string | null) => v === '是' ? '✓' : v === '否' ? '✗' : '-',
@@ -155,6 +243,7 @@ export default function AfterSalesPage() {
             { title: '操作', fixed: 'right', width: 280,
               render: (_: any, r: AfterSalesItem) => (
                 <Space>
+                  <Button size="small" danger onClick={() => confirmDisassemble(r)}>拆BOM</Button>
                   {r.status === 'pending_return' && (
                     <Button size="small" onClick={() => recvMut.mutate(r.id)}>标记签收</Button>
                   )}
@@ -186,7 +275,8 @@ export default function AfterSalesPage() {
                          loading={createMut.isPending} />
       <ConfirmInboundModal item={inboundFor} onClose={() => setInboundFor(null)}
                            onOk={() => qc.invalidateQueries({ queryKey: ['aftersales'] })} />
-      <DisassembleModal open={disOpen} onClose={() => setDisOpen(false)} />
+      <DisassembleModal target={disFor} onClose={() => setDisFor(null)} />
+      <DisassemblyHistoryDrawer open={historyOpen} onClose={() => setHistoryOpen(false)} />
     </Space>
   );
 }
@@ -255,7 +345,62 @@ function ConfirmInboundModal({ item, onClose, onOk }: {
   );
 }
 
-function DisassembleModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+// 拆 BOM 历史抽屉 (用户需求 2026-06-11: 留痕 + 可回撤, 误操作可补救)
+function DisassemblyHistoryDrawer({ open, onClose }: { open: boolean; onClose: () => void }) {
+  const qc = useQueryClient();
+  const { data: logs, isLoading } = useQuery({
+    queryKey: ['disassembly-logs'], queryFn: listDisassemblyLogs, enabled: open,
+  });
+  const undoMut = useMutation({
+    mutationFn: (id: number) => undoDisassembly(id),
+    onSuccess: () => {
+      message.success('已回撤: 成品加回, 物料扣回');
+      qc.invalidateQueries({ queryKey: ['disassembly-logs'] });
+      qc.invalidateQueries({ queryKey: ['aftersales'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '回撤失败'),
+  });
+  return (
+    <Drawer open={open} onClose={onClose} title="拆 BOM 历史 (可回撤)" width={760}>
+      <Table<DisassemblyLogRow>
+        size="small" rowKey="id" loading={isLoading}
+        dataSource={logs ?? []}
+        pagination={{ defaultPageSize: 20 }}
+        columns={[
+          { title: '时间', dataIndex: 'created_at', width: 150,
+            render: (v: string | null) => v ? v.slice(0, 16).replace('T', ' ') : '-' },
+          { title: '产品', dataIndex: 'product_code', width: 150,
+            render: (v: string, r) => <span>{v}{r.sku_code ? ` / ${r.sku_code}` : ''}</span> },
+          { title: '数量', dataIndex: 'qty', width: 70,
+            render: (v: number) => String(Number(v)) },
+          { title: '拆出物料', render: (_: any, r) => (
+              <Space size={4} wrap>
+                {(r.parts ?? []).slice(0, 4).map((p) => (
+                  <Tag key={p.material_code} style={{ fontSize: 11 }}>{p.material_code} +{Number(p.qty)}</Tag>
+                ))}
+                {(r.parts ?? []).length > 4 && <Tag style={{ fontSize: 11 }}>+{r.parts.length - 4}</Tag>}
+              </Space>
+            ) },
+          { title: '操作人', dataIndex: 'actor', width: 90 },
+          { title: '状态', width: 160, render: (_: any, r) => r.undone_at
+              ? <Tag>已回撤 ({r.undone_by})</Tag>
+              : (
+                <Popconfirm
+                  title="回撤这次拆解？"
+                  description="成品数量加回、拆出的物料全部扣回。物料若已被领用不够扣, 会拒绝回撤。"
+                  okText="确认回撤" okButtonProps={{ danger: true }}
+                  onConfirm={() => undoMut.mutate(r.id)}
+                >
+                  <Button size="small" danger loading={undoMut.isPending}>回撤</Button>
+                </Popconfirm>
+              ) },
+        ]}
+      />
+    </Drawer>
+  );
+}
+
+function DisassembleModal({ target, onClose }: { target: AfterSalesItem | null; onClose: () => void }) {
   const [form] = Form.useForm();
   const [result, setResult] = useState<any>(null);
   const mut = useMutation({
@@ -267,10 +412,22 @@ function DisassembleModal({ open, onClose }: { open: boolean; onClose: () => voi
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '拆分失败'),
   });
+  // 行内打开时预填该单品的产品/SKU 编码
+  useEffect(() => {
+    if (target) {
+      setResult(null);
+      form.setFieldsValue({
+        product_code: target.product_code || undefined,
+        sku_code: target.sku_code || undefined,
+        qty: 1,
+      });
+    }
+  }, [target, form]);
   return (
-    <Modal open={open} title="拆 BOM (成品 → 物料)"
+    <Modal open={!!target} title={`拆 BOM (成品 → 物料)${target?.product_name ? ` — ${target.product_name}` : ''}`}
            onCancel={() => { setResult(null); onClose(); }}
            onOk={() => form.submit()}
+           okText="执行拆解" okButtonProps={{ danger: true }}
            confirmLoading={mut.isPending} destroyOnClose>
       <Form form={form} layout="vertical" onFinish={(v) => mut.mutate(v)}>
         <Form.Item name="product_code" label="产品编码" rules={[{ required: true }]}>

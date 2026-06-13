@@ -112,32 +112,48 @@ BUILTIN_RULES = [
         "description": "日常价 = 标价 × 75%",
         "sort_order": 20,
     },
+    # 小促/中促/大促价 = 物理总成本 ÷ (基数 − 0.02抽佣 − 0.006税), 基数按 SKU 不同(定价总表 I/J/K 列)。
+    # 不做全局公式 → 由定价页「改系数(仅这行)」按行编辑; 对齐时禁用旧的全局规则(REMOVED_RULE_FIELDS), 避免重算覆盖按行价。
     {
-        "field_name": "small_promo",
-        "display_name": "小促价",
-        "expression": "物理总成本 / (0.855 - 0.02 - 0.006)",
-        "description": "小促价 = 物理总成本 / (85.5% - 平台抽佣2% - 税0.6%)",
-        "sort_order": 30,
+        "field_name": "install_cost",
+        "display_name": "安装费",
+        "expression": "IF(大小分类 == '大型', 150, IF(大小分类 == '中型', 100, IF(大小分类 == '小型', 0, 0)))",
+        "description": "安装费 = 按尺寸 大150/中100/小0",
+        "sort_order": 5,
     },
     {
-        "field_name": "mid_promo",
-        "display_name": "中促价",
-        "expression": "物理总成本 / (0.88 * 0.855 - 0.02 - 0.006)",
-        "description": "中促价 = 物理总成本 / (88折 × 85.5% - 平台抽佣 - 税)",
-        "sort_order": 40,
+        "field_name": "factory_cost",
+        "display_name": "总出厂成本",
+        "expression": "木作成本 + 包装成本 + 外采配件成本",
+        "description": "总出厂成本 = 木作 + 打包 + 外采配件",
+        "sort_order": 7,
     },
     {
-        "field_name": "big_promo",
-        "display_name": "大促价",
-        "expression": "物理总成本 / (0.88 * 0.855 - 0.02 - 0.006) * 0.95",
-        "description": "大促价 ≈ 中促价 × 95% (双11额外折扣)",
-        "sort_order": 50,
+        "field_name": "physical_cost",
+        "display_name": "物理总成本",
+        "expression": "物流费用 + 安装费 + 总出厂成本",
+        "description": "物理总成本 = 物流 + 安装 + 总出厂",
+        "sort_order": 8,
+    },
+    {
+        "field_name": "platform_fee_rate",
+        "display_name": "平台费",
+        "expression": "大促价 * 0.006",
+        "description": "平台费 = 大促价 × 0.6% (定价总表口径, 是金额)",
+        "sort_order": 55,
+    },
+    {
+        "field_name": "tax",
+        "display_name": "税费",
+        "expression": "大促价 * 0.02",
+        "description": "税费 = 大促价 × 2%",
+        "sort_order": 56,
     },
     {
         "field_name": "logistics_cost",
         "display_name": "物流费用",
-        "expression": "IF(大小分类 == '大型', 700, IF(大小分类 == '中型', 300, 130))",
-        "description": "按产品大小分类自动匹配物流成本",
+        "expression": "IF(大小分类 == '大型', 700, IF(大小分类 == '中型', 300, IF(大小分类 == '小型', 80, 0)))",
+        "description": "物流费 = 按尺寸 大700/中300/小80",
         "sort_order": 5,
     },
     {
@@ -150,22 +166,22 @@ BUILTIN_RULES = [
     {
         "field_name": "accounting_cost",
         "display_name": "会计总成本",
-        "expression": "总出厂成本 + 物流费用 + 安装费 + 外采配件成本",
-        "description": "会计总成本 = 出厂成本 + 物流 + 安装 + 外采配件",
+        "expression": "物理总成本 + 平台费率 + 税费",
+        "description": "会计总成本 = 物理总成本 + 平台费 + 税费 (定价总表 N=O+P+Q)",
         "sort_order": 60,
     },
     {
         "field_name": "gross_margin_rate",
         "display_name": "毛利率",
-        "expression": "(日常价 - 会计总成本 - 税费 - 日常价 * 平台费率) / 日常价",
-        "description": "毛利率 = (售价 - 总成本 - 税 - 平台费) / 售价",
+        "expression": "大促利润 / 大促价",
+        "description": "毛利率 = 大促利润 ÷ 大促价 (定价总表 M=L/K)",
         "sort_order": 70,
     },
     {
         "field_name": "big_promo_margin",
         "display_name": "大促利润",
-        "expression": "大促价 * (1 - 平台费率) - 会计总成本 - 税费",
-        "description": "大促利润 = 大促价 × (1-平台费率) - 总成本 - 税",
+        "expression": "大促价 - 会计总成本",
+        "description": "大促利润 = 大促价 − 会计总成本 (定价总表 L=K-N)",
         "sort_order": 80,
     },
     {
@@ -507,3 +523,39 @@ def seed_builtin_rules(db: Session) -> int:
     if inserted:
         db.commit()
     return inserted
+
+
+# 这些字段按 SKU 基数不同(定价总表 I/J/K), 不做全局公式; 对齐时禁用其旧规则, 避免重算覆盖按行价。
+REMOVED_RULE_FIELDS = {"small_promo", "mid_promo", "big_promo"}
+
+
+def align_rules_to_builtin(db: Session) -> dict:
+    """把现有公式规则对齐成 BUILTIN（更新表达式 / 插入缺失），并禁用 REMOVED_RULE_FIELDS。
+
+    只改规则元数据，不动任何 SKU 的价格。对齐后引擎重算口径 = 定价总表口径。
+    """
+    by_field = {r.field_name: r for r in db.query(PricingFormulaRule).all()}
+    updated = inserted = disabled = 0
+    for rd in BUILTIN_RULES:
+        ex = by_field.get(rd["field_name"])
+        if ex is None:
+            db.add(PricingFormulaRule(
+                field_name=rd["field_name"], display_name=rd.get("display_name"),
+                expression=rd["expression"], description=rd.get("description"),
+                sort_order=rd.get("sort_order", 0), enabled=True, is_builtin=True,
+            ))
+            inserted += 1
+        elif ex.expression != rd["expression"] or not ex.enabled:
+            ex.expression = rd["expression"]
+            ex.description = rd.get("description")
+            ex.display_name = rd.get("display_name")
+            ex.sort_order = rd.get("sort_order", 0)
+            ex.enabled = True
+            updated += 1
+    for f in REMOVED_RULE_FIELDS:
+        ex = by_field.get(f)
+        if ex is not None and ex.enabled:
+            ex.enabled = False
+            disabled += 1
+    db.commit()
+    return {"updated": updated, "inserted": inserted, "disabled": disabled}

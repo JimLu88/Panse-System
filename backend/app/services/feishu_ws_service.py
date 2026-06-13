@@ -10,9 +10,12 @@
 """
 from __future__ import annotations
 
+import collections
 import json
 import logging
+import queue
 import threading
+import time
 from typing import Any, Optional
 
 _log = logging.getLogger("panse.feishu_ws")
@@ -28,6 +31,88 @@ def is_running() -> bool:
 def _new_session():
     from app.database import SessionLocal
     return SessionLocal()
+
+
+# ── 事件去重 + 消息异步处理 ──────────────────────────────────────
+# 飞书长连接: handler 若不能秒回, 服务端会判失败并「重复、反复重发」同一事件。
+# (1) 按 event_id 去重, 重发的事件直接忽略;
+# (2) 收图/收文件的识别+OCR 较慢 → 不在回调里同步做, 丢进单后台 worker 串行处理,
+#     回调立刻返回 → 不再触发重发(取消后被重发的选类型卡"弹回"也随之消失)。
+_seen_events: "collections.OrderedDict[str, bool]" = collections.OrderedDict()
+_seen_lock = threading.Lock()
+_SEEN_CAP = 4000
+
+_msg_queue: "queue.Queue[dict]" = queue.Queue()
+_worker_started = False
+_worker_lock = threading.Lock()
+
+
+def _marshal(data: Any) -> dict:
+    """lark 事件对象 → 完整 raw dict(含 header/event); 已是 dict 则透传。"""
+    if isinstance(data, dict):
+        return data
+    import lark_oapi as lark
+    return json.loads(lark.JSON.marshal(data))
+
+
+def _evt_id(raw: dict) -> Optional[str]:
+    return (raw.get("header") or {}).get("event_id")
+
+
+def _dedup(event_id: Optional[str]) -> bool:
+    """True=重复事件(应跳过)。无 event_id 不去重(如单测直接喂 dict)。"""
+    if not event_id:
+        return False
+    with _seen_lock:
+        if event_id in _seen_events:
+            return True
+        _seen_events[event_id] = True
+        while len(_seen_events) > _SEEN_CAP:
+            _seen_events.popitem(last=False)
+    return False
+
+
+# 飞书会对"未成功 ack 的旧事件"长时间反复重投(可达数小时)。进程重启会清空内存去重,
+# 于是每次重启后这些旧事件的下一次重投又会弹一张卡 —— 表现为"一直默默地发卡片"。
+# 用消息创建时间兜底: 超过 15 分钟的消息事件一律视为旧重投, 直接 ack 不再弹卡(与重启无关)。
+_STALE_MS = 15 * 60 * 1000
+
+
+def _is_stale_ms(create_time_ms) -> bool:
+    try:
+        return (time.time() * 1000 - float(create_time_ms)) > _STALE_MS
+    except (TypeError, ValueError):
+        return False
+
+
+def _ensure_worker() -> None:
+    global _worker_started
+    with _worker_lock:
+        if _worker_started:
+            return
+        threading.Thread(target=_msg_worker, name="feishu-msg-worker", daemon=True).start()
+        _worker_started = True
+
+
+def _msg_worker() -> None:
+    """串行处理收到的消息事件(下载/识别/归档/回卡)。串行 → 3 分钟归批逻辑不并发打架。"""
+    from app.services import feishu_bot_service
+    while True:
+        event = _msg_queue.get()
+        try:
+            db = _new_session()
+            try:
+                feishu_bot_service.on_message_event(db, event)
+                db.commit()
+            except Exception as e:  # pragma: no cover
+                db.rollback()
+                _log.error("WS 收图处理失败: %s", e)
+            finally:
+                db.close()
+        except Exception as e:  # pragma: no cover
+            _log.error("WS 消息 worker 异常: %s", e)
+        finally:
+            _msg_queue.task_done()
 
 
 # ── 事件解析 (纯函数, 便于测试) ────────────────────────────────
@@ -57,18 +142,24 @@ def _parse_card_event(event: dict) -> tuple[Optional[str], dict, Optional[str]]:
 
 # ── 事件 handler ──────────────────────────────────────────────
 def _on_message(data: Any) -> None:
-    """im.message.receive_v1: 收图 → 识别 → 回卡片 (事件类无需返回)。"""
-    from app.services import feishu_bot_service
-    event = _to_dict(data)
-    db = _new_session()
-    try:
-        feishu_bot_service.on_message_event(db, event)
-        db.commit()
-    except Exception as e:  # pragma: no cover
-        db.rollback()
-        _log.error("WS 收图处理失败: %s", e)
-    finally:
-        db.close()
+    """im.message.receive_v1: 秒回(只入队), 实际识别在后台串行做。多重防重发:
+    (1) 按 message_id 去重(同一条消息的重投不再处理); (2) 丢弃飞书对旧事件的长时间重投
+    (按 create_time, 超 15 分钟直接 ack 不弹卡) —— 彻底止住"一直默默发卡片"。
+    """
+    raw = _marshal(data)
+    event = raw.get("event") or raw
+    msg = event.get("message") or {}
+    key = msg.get("message_id") or _evt_id(raw)
+    if _dedup(key):
+        _log.info("WS 重复消息已忽略(去重 key=%s)", key)
+        return
+    ct = msg.get("create_time")
+    if ct and _is_stale_ms(ct):
+        _log.info("WS 丢弃飞书旧事件重投(create_time=%s, 不弹卡, 直接 ack)", ct)
+        return
+    _ensure_worker()
+    _msg_queue.put(event)
+    _log.info("WS 收到消息事件入队 message_id=%s", msg.get("message_id"))
 
 
 def _on_card(data: Any):
@@ -76,7 +167,10 @@ def _on_card(data: Any):
     from lark_oapi.event.callback.model.p2_card_action_trigger import P2CardActionTriggerResponse
     from app.services import feishu_bot_service as B
 
-    op, value, card_msg_id = _parse_card_event(_to_dict(data))
+    raw = _marshal(data)
+    if _dedup(_evt_id(raw)):   # 重发的同一次点击 → 不重复处理(避免重复入库/重复弹卡)
+        return P2CardActionTriggerResponse({"toast": {"type": "info", "content": "处理中…"}})
+    op, value, card_msg_id = _parse_card_event(raw.get("event") or raw)
     orig_id = value.get("message_id")
 
     if op == "pick" and orig_id:

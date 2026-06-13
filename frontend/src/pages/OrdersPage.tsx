@@ -2,21 +2,24 @@ import { useMemo, useState, type Key } from 'react';
 import {
   Alert,
   Button,
+  DatePicker,
   Dropdown,
   Input,
   Modal,
-  Popconfirm,
   Segmented,
   Space,
   Table,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
 } from 'antd';
+import dayjs, { Dayjs } from 'dayjs';
 import { downloadCsv } from '../utils/csv';
 import ShipmentTracker from '../components/ShipmentTracker';
-import { UploadOutlined } from '@ant-design/icons';
+import { CloudSyncOutlined, UploadOutlined } from '@ant-design/icons';
+import { pullOrders } from '../api/webAgent';
 import { FirstVisitTip } from '../components/FirstVisitTip';
 import type { UploadFile } from 'antd/es/upload/interface';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -28,20 +31,19 @@ import {
   getOrderCostBreakdown,
   importOrdersCsv,
   listOrders,
-  recomputeAllOrderCosts,
-  normalizeOrderStatuses,
   recomputeOrderCost,
-  generateOrderDetails,
 } from '../api/client';
-import OrderTimelineDrawer from '../components/OrderTimelineDrawer';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
+import DispositionModal, { type DispositionRequest } from '../components/DispositionModal';
 import FullColumnView from '../components/FullColumnView';
+import FieldPresetBar, { fieldsFromColumns, applyPreset } from '../components/FieldPresetBar';
 import { Drawer, Spin, Table as AntTable } from 'antd';
 
 function fmtMoney(v: string | null | undefined): string {
   if (v === null || v === undefined || v === '') return '—';
   const n = Number(v);
-  return Number.isFinite(n) ? `¥${n.toFixed(2)}` : String(v);
+  // 表格金额统一口径: 无小数(四舍五入) + ¥ 前缀
+  return Number.isFinite(n) ? `¥${Math.round(n).toLocaleString()}` : String(v);
 }
 
 const STATUS_META: Record<string, { label: string; color: string }> = {
@@ -73,22 +75,31 @@ type StatusKey = keyof typeof STATUS_META | 'all';
 export default function OrdersPage() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState<StatusKey>('all');
-  const [q, setQ] = useState('');
+  // 支持 /orders?q=订单号 直达 (支付宝流水「关联订单」点击跳转用)
+  const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
   const [importReport, setImportReport] = useState<CsvImportReport | null>(null);
-  const [timelineFor, setTimelineFor] = useState<number | null>(null);
   const [accessoryFor, setAccessoryFor] = useState<{ id: number; order_no: string } | null>(null);
   const [costFor, setCostFor] = useState<{ id: number; order_no: string } | null>(null);
   const [costData, setCostData] = useState<OrderCostBreakdown | null>(null);
   const [costLoading, setCostLoading] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
 
+  // 搜索增强 (用户要求): 产品名称 + 下单时间范围
+  const [productQ, setProductQ] = useState('');
+  const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(null);
+
   const { data, isLoading } = useQuery({
-    queryKey: ['orders', statusFilter, q],
+    queryKey: ['orders', statusFilter, q, productQ,
+               dateRange?.[0]?.format('YYYY-MM-DD'), dateRange?.[1]?.format('YYYY-MM-DD')],
     queryFn: () =>
       listOrders({
         q: q || undefined,
+        product: productQ || undefined,
+        date_from: dateRange?.[0]?.format('YYYY-MM-DD'),
+        date_to: dateRange?.[1]?.format('YYYY-MM-DD'),
         status: statusFilter === 'all' ? undefined : statusFilter,
         limit: 200,
       }),
@@ -154,13 +165,25 @@ export default function OrdersPage() {
     });
   }
 
+  const [dispReq, setDispReq] = useState<DispositionRequest | null>(null);
   const statusMut = useMutation({
-    mutationFn: ({ id, status }: { id: number; status: string }) => changeOrderStatus(id, status),
+    mutationFn: ({ id, status, opts }: { id: number; status: string;
+                  opts?: { disposition?: 'future' | 'release'; plannedShipDate?: string } }) =>
+      changeOrderStatus(id, status, false, false, opts),
     onSuccess: () => {
+      setDispReq(null);
       message.success('状态已更新');
       qc.invalidateQueries({ queryKey: ['orders'] });
     },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '更新失败'),
+    onError: (e: any, vars) => {
+      const detail = e?.response?.data?.detail;
+      // Plan F2: 取消带在制工厂单 → 强制二选一弹窗
+      if (e?.response?.status === 422 && detail?.need_disposition) {
+        setDispReq({ orderId: vars.id, status: vars.status, factoryOrders: detail.factory_orders || [] });
+        return;
+      }
+      message.error(typeof detail === 'string' ? detail : '更新失败');
+    },
   });
 
   const importMut = useMutation({
@@ -172,34 +195,14 @@ export default function OrdersPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '导入失败'),
   });
 
-  const normalizeStatusMut = useMutation({
-    mutationFn: () => normalizeOrderStatuses(),
-    onSuccess: (r) => {
-      message.success(`规范化完成: 修正 ${r.fixed} / ${r.scanned} 单的状态`);
-      qc.invalidateQueries({ queryKey: ['orders'] });
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '失败'),
+  // 手动从淘宝实时拉取订单 (Web-Agent): 发工厂制单图前点一下拉最新订单/状态
+  const pullMut = useMutation({
+    mutationFn: pullOrders,
+    onSuccess: () => message.success('已开始从淘宝拉取订单 (后台进行, 约几分钟; 完成后刷新即可看到最新)。若需扫码会发到飞书'),
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '拉取失败 — 确认取数服务在线'),
   });
 
-  const recomputeAllMut = useMutation({
-    mutationFn: () => recomputeAllOrderCosts(true),
-    onSuccess: (r) => {
-      message.success(`理论成本反推完成：更新 ${r.updated} 单，${r.skipped_no_bom} 单无 BOM 跳过`);
-      qc.invalidateQueries({ queryKey: ['orders'] });
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '反推失败'),
-  });
-
-  const genDetailsMut = useMutation({
-    mutationFn: () => generateOrderDetails(),
-    onSuccess: (r) => {
-      message.success(
-        `订单细节生成：扫描 ${r.orders_scanned} 单，新建 ${r.details_created} 行，` +
-          `跳过 ${r.details_skipped} 行${r.orders_no_bom_count ? `，${r.orders_no_bom_count} 单无 BOM` : ''}`,
-      );
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '生成失败'),
-  });
+  // 反推理论成本 / 规范化状态 / 生成订单细节: 已转每日 02:30 调度自动维护, 手动按钮收掉
 
   async function openCost(id: number, order_no: string) {
     setCostFor({ id, order_no });
@@ -241,7 +244,15 @@ export default function OrdersPage() {
     },
     { title: '下单日期', dataIndex: 'order_date', width: 110 },
     { title: '客户', dataIndex: 'customer_name', width: 90 },
-    { title: '产品', dataIndex: 'product_name', width: 220, ellipsis: true },
+    {
+      title: '产品', dataIndex: 'product_name', width: 220, ellipsis: true,
+      // 用户拍板: 显示内部产品名 (产品总表), 淘宝原标题悬浮可见
+      render: (v: string | null, r: Order) => (
+        <Tooltip title={v ? `淘宝标题: ${v}` : undefined}>
+          <span>{(r as any).internal_product_name || v || '—'}</span>
+        </Tooltip>
+      ),
+    },
     { title: 'SKU', dataIndex: 'sku', width: 200, ellipsis: true },
     { title: '数量', dataIndex: 'qty', width: 60 },
     {
@@ -249,8 +260,14 @@ export default function OrdersPage() {
       dataIndex: 'theoretical_cost',
       width: 100,
       align: 'right' as const,
-      render: (v: string | null) =>
-        v === null || v === undefined ? <Typography.Text type="secondary">未反推</Typography.Text> : fmtMoney(v),
+      render: (v: string | null, r: Order) => {
+        if (r.is_refill) return <Typography.Text type="secondary">补单(无成本)</Typography.Text>;
+        if (v === null || v === undefined || Number(v) === 0) {
+          // 无产品/无定价依据 → 标"待定价"提示去补 (导入已自动反推有依据的)
+          return <Typography.Text type="warning">待定价</Typography.Text>;
+        }
+        return fmtMoney(v);
+      },
     },
     {
       title: '实际成本',
@@ -276,7 +293,9 @@ export default function OrdersPage() {
       title: '状态',
       dataIndex: 'status',
       width: 120,
-      render: (v: string) => {
+      render: (v: string, r: Order) => {
+        // 有未完成售后 → 用派生状态显示「售后中」(覆盖底层状态)
+        const sv = r.display_status ?? v;
         // 导入的淘宝中文长状态 → 短标签, 避免撑爆列、挡住右侧「物流/查款」
         const RAW: Record<string, { label: string; color: string }> = {
           '买家已付款,等待卖家发货': { label: '待发货', color: 'cyan' },
@@ -285,7 +304,7 @@ export default function OrdersPage() {
           '交易关闭': { label: '已关闭', color: 'default' },
           '等待买家付款': { label: '待付款', color: 'gold' },
         };
-        const m = STATUS_META[v] ?? RAW[v] ?? { label: v, color: 'default' };
+        const m = STATUS_META[sv] ?? RAW[sv] ?? { label: sv, color: 'default' };
         return <Tag color={m.color}>{m.label}</Tag>;
       },
     },
@@ -302,12 +321,6 @@ export default function OrdersPage() {
         const next = ALLOWED_NEXT[r.status] ?? [];
         return (
           <Space size="small">
-            <Button
-              size="small"
-              onClick={() => setTimelineFor(r.id)}
-            >
-              时间线
-            </Button>
             <Button
               size="small"
               onClick={() => openCost(r.id, r.order_no)}
@@ -362,33 +375,33 @@ export default function OrdersPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           订单总表 (5)
         </Typography.Title>
-        <Space>
+        <Space wrap>
           <Input.Search
             placeholder="搜订单号 / 客户名"
             allowClear
-            style={{ width: 260 }}
+            defaultValue={q}
+            style={{ width: 200 }}
             onSearch={setQ}
           />
-          <Button
-            onClick={() => recomputeAllMut.mutate()}
-            loading={recomputeAllMut.isPending}
-          >
-            反推理论成本
-          </Button>
-          <Popconfirm
-            title="规范化订单状态"
-            description="把历史中文/遗留状态(等待买家付款/交易成功/confirmed…)统一为枚举，修看板推进报错并让统计纳入这些单。"
-            okText="开始规范化" cancelText="取消"
-            onConfirm={() => normalizeStatusMut.mutate()}
-          >
-            <Button loading={normalizeStatusMut.isPending}>规范化订单状态</Button>
-          </Popconfirm>
-          <Button
-            onClick={() => genDetailsMut.mutate()}
-            loading={genDetailsMut.isPending}
-          >
-            生成订单细节
-          </Button>
+          <Input.Search
+            placeholder="搜产品名称 / 编码"
+            allowClear
+            style={{ width: 180 }}
+            onSearch={setProductQ}
+          />
+          <DatePicker.RangePicker
+            placeholder={['下单起', '下单止']}
+            value={dateRange}
+            onChange={(v) => setDateRange(v as [Dayjs, Dayjs] | null)}
+            style={{ width: 240 }}
+          />
+          {/* 反推理论成本/规范化状态/生成订单细节 已转每日 02:30 自动维护, 按钮收掉 */}
+          <Tooltip title="实时从淘宝拉取近3个月全量订单并导入 — 发工厂制单图前可点一下拉最新状态">
+            <Button icon={<CloudSyncOutlined />} loading={pullMut.isPending}
+              onClick={() => pullMut.mutate()}>
+              手动更新拉取订单
+            </Button>
+          </Tooltip>
           <Upload
             accept=".csv,.xlsx,.xls"
             showUploadList={false}
@@ -425,6 +438,14 @@ export default function OrdersPage() {
               { label: '已签收', value: 'signed' },
               { label: '售后中', value: 'aftersales' },
             ]}
+          />
+        )}
+        {viewMode === 'curated' && (
+          <FieldPresetBar
+            tableKey="order"
+            allFields={fieldsFromColumns(columns)}
+            defaults={[{ name: '常用', fields: ['order_no', 'order_date', 'customer_name', 'product_name', 'status'] }]}
+            onChange={setVisibleKeys}
           />
         )}
       </Space>
@@ -464,14 +485,14 @@ export default function OrdersPage() {
         rowKey="id"
         loading={isLoading}
         dataSource={data}
-        columns={columns as any}
+        columns={applyPreset(columns, visibleKeys) as any}
         rowSelection={{
           selectedRowKeys: selectedKeys,
           onChange: setSelectedKeys,
           preserveSelectedRowKeys: true,
         }}
         scroll={{ x: 1870 }}
-        pagination={{ pageSize: 30 }}
+        pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
         size="middle"
       />
       )}
@@ -515,10 +536,14 @@ export default function OrdersPage() {
         open={accessoryFor !== null}
         onClose={() => setAccessoryFor(null)}
       />
-      <OrderTimelineDrawer
-        orderId={timelineFor}
-        open={timelineFor !== null}
-        onClose={() => setTimelineFor(null)}
+      <DispositionModal
+        req={dispReq}
+        loading={statusMut.isPending}
+        onCancel={() => setDispReq(null)}
+        onSubmit={(d) => dispReq && statusMut.mutate({
+          id: dispReq.orderId, status: dispReq.status,
+          opts: { disposition: d.disposition, plannedShipDate: d.plannedShipDate },
+        })}
       />
 
       <Drawer

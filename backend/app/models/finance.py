@@ -144,6 +144,44 @@ class WanshifuBill(Base, TimestampMixin):
     sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 
 
+class WanshifuOrder(Base, TimestampMixin):
+    """万师傅安装订单档案 — 后台「订单导出」38 列格式 (2026-06 起默认格式)。
+
+    与 WanshifuBill (月结账单, 对账用) 不同: 这张表是逐单服务档案,
+    含客户信息, 用于和淘宝订单配对 → 售后/安装费自动挂单。
+    表里没有淘宝订单号, 配对靠 手机号/姓名+城市/物流单号 多层启发式,
+    结果写 matched_order_no + match_method; 对不上留空给人工。
+    """
+    __tablename__ = "wanshifu_orders"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    wsf_order_no: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
+    service_type: Mapped[Optional[str]] = mapped_column(String(64))     # 家具|安装
+    status: Mapped[Optional[str]] = mapped_column(String(64))           # 交易成功 / 交易关闭…
+    product_category: Mapped[Optional[str]] = mapped_column(String(64))  # 桌类-餐台/餐桌
+    product_model: Mapped[Optional[str]] = mapped_column(String(255))   # 商品型号 (自由文本)
+    customer_name: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    customer_phone: Mapped[Optional[str]] = mapped_column(String(32))   # 可能带 -分机 虚拟号
+    province: Mapped[Optional[str]] = mapped_column(String(32))
+    city: Mapped[Optional[str]] = mapped_column(String(32))
+    district: Mapped[Optional[str]] = mapped_column(String(32))
+    address: Mapped[Optional[str]] = mapped_column(String(255))
+    net_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 订单总净额
+    service_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单服务费
+    created_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), index=True)
+    finished_time: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    tracking_company: Mapped[Optional[str]] = mapped_column(String(64))
+    tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
+    source_shop: Mapped[Optional[str]] = mapped_column(String(128))
+    matched_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    match_method: Mapped[Optional[str]] = mapped_column(String(32))   # phone_full/name_city/…/multi/none
+    match_note: Mapped[Optional[str]] = mapped_column(Text)           # 多候选清单/未匹配原因
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+    import_job_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
+    )
+
+
 class LogisticsBill(Base, TimestampMixin):
     """物流费账单 — 按月从物流公司导出月结账单 CSV 导入。
 

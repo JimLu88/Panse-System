@@ -21,14 +21,95 @@ import {
 import { PlusOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  ForecastConfig,
   ProductInventoryRow,
   addProductInventoryRow,
+  fetchForecastConfig,
   listProductInventory,
   listProducts,
   refreshProductInventoryStats,
+  saveForecastConfig,
+  syncProductInventoryParams,
   updateProductInventory,
 } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
+
+// 「销量公式」按钮 + 配置弹窗 + 大促备货提示 (用户拍板: 默认加权公式, 大促时段可增减)
+function FormulaButton() {
+  const qc = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const { data: cfg } = useQuery({ queryKey: ['forecast-config'], queryFn: fetchForecastConfig });
+  const [draft, setDraft] = useState<ForecastConfig | null>(null);
+  const saveMut = useMutation({
+    mutationFn: (c: Partial<ForecastConfig>) => saveForecastConfig(c),
+    onSuccess: () => {
+      message.success('公式已保存, 点「刷新统计」后按新公式计算');
+      qc.invalidateQueries({ queryKey: ['forecast-config'] });
+      setOpen(false);
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+  const d = draft ?? cfg ?? null;
+  const promoNotice = [
+    ...(cfg?.promo?.active ?? []).map((p) => `${p.name} 进行中 (${p.start}~${p.end})`),
+    ...(cfg?.promo?.upcoming ?? []).map((p) => `${p.name} 还有 ${p.days_to_start} 天开始, 已进入备货窗口`),
+  ];
+  return (
+    <>
+      {promoNotice.length > 0 && (
+        <Tag color="orange">⚡ {promoNotice.join('; ')}</Tag>
+      )}
+      <Button size="small" onClick={() => { setDraft(cfg ? { ...cfg, promo_periods: [...cfg.promo_periods] } : null); setOpen(true); }}>
+        销量公式 ⚙
+      </Button>
+      <Modal
+        open={open} title="日均销量公式 / 大促时段"
+        onCancel={() => setOpen(false)}
+        onOk={() => d && saveMut.mutate({
+          mode: d.mode, halflife_days: d.halflife_days,
+          window_days: d.window_days, promo_periods: d.promo_periods,
+        })}
+        confirmLoading={saveMut.isPending}
+      >
+        {d && (
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Alert type="info" showIcon message="加权 = 指数加权移动平均: 每天销量 × 0.5^(距今天数/半衰期), 越近的日期权重越高。大促前的备货窗口会在页面顶部提示, 避免只看平均数误判。" />
+            <Space>
+              <span>公式:</span>
+              <Segmented value={d.mode} onChange={(v) => setDraft({ ...d, mode: v as 'weighted' | 'simple' })}
+                options={[{ label: '加权 (近期权重高)', value: 'weighted' }, { label: '简单平均', value: 'simple' }]} />
+            </Space>
+            <Space>
+              <span>半衰期(天):</span>
+              <InputNumber min={1} max={60} value={d.halflife_days}
+                onChange={(v) => setDraft({ ...d, halflife_days: Number(v) || 14 })} />
+              <span>统计窗口(天):</span>
+              <InputNumber min={7} max={365} value={d.window_days}
+                onChange={(v) => setDraft({ ...d, window_days: Number(v) || 60 })} />
+            </Space>
+            <Typography.Text strong>大促时段 (月-日, 每年重复, 可增减):</Typography.Text>
+            {d.promo_periods.map((p, i) => (
+              <Space key={i}>
+                <Input style={{ width: 110 }} value={p.name} placeholder="名称"
+                  onChange={(e) => { const ps = [...d.promo_periods]; ps[i] = { ...p, name: e.target.value }; setDraft({ ...d, promo_periods: ps }); }} />
+                <Input style={{ width: 80 }} value={p.start} placeholder="05-13"
+                  onChange={(e) => { const ps = [...d.promo_periods]; ps[i] = { ...p, start: e.target.value }; setDraft({ ...d, promo_periods: ps }); }} />
+                <span>~</span>
+                <Input style={{ width: 80 }} value={p.end} placeholder="06-18"
+                  onChange={(e) => { const ps = [...d.promo_periods]; ps[i] = { ...p, end: e.target.value }; setDraft({ ...d, promo_periods: ps }); }} />
+                <Button size="small" danger onClick={() => setDraft({ ...d, promo_periods: d.promo_periods.filter((_, j) => j !== i) })}>删</Button>
+              </Space>
+            ))}
+            <Button size="small" icon={<PlusOutlined />}
+              onClick={() => setDraft({ ...d, promo_periods: [...d.promo_periods, { name: '新时段', start: '01-01', end: '01-07' }] })}>
+              加一个时段
+            </Button>
+          </Space>
+        )}
+      </Modal>
+    </>
+  );
+}
 
 const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   ok:       { color: 'success', label: '正常' },
@@ -44,6 +125,9 @@ export default function ProductInventoryPage() {
   const [form] = Form.useForm();
   const [productSearch, setProductSearch] = useState('');
   const [editId, setEditId] = useState<number | null>(null);
+  // 一键同步: 当前编辑行所属产品 + 是否把参数同步到该产品全部 SKU
+  const [editProductCode, setEditProductCode] = useState<string | null>(null);
+  const [syncAllSkus, setSyncAllSkus] = useState(false);
   const [editForm] = Form.useForm();
   const [warningOnly, setWarningOnly] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
@@ -203,6 +287,8 @@ export default function ProductInventoryPage() {
         ) : (
         <Button size="small" onClick={() => {
           setEditId(r.id);
+          setEditProductCode(r.product_code || null);
+          setSyncAllSkus(false);
           editForm.setFieldsValue({
             qty: Number(r.physical_qty),
             locked_qty: Number(r.locked_qty),
@@ -250,6 +336,7 @@ export default function ProductInventoryPage() {
           {warningCount > 0 && (
             <Tag color="red">{warningCount} 项需关注</Tag>
           )}
+          <FormulaButton />
         </Space>
         <Space>
           <Switch
@@ -372,19 +459,42 @@ export default function ProductInventoryPage() {
         <Form
           form={editForm}
           layout="vertical"
-          onFinish={(v) => editId && editMut.mutate({
-            id: editId,
-            patch: {
-              qty: v.qty,
-              locked_qty: v.locked_qty,
-              safety_stock: v.safety_stock,
-              lead_time_days: v.lead_time_days,
-              slow_moving_days: v.slow_moving_days,
-              reorder_point: v.reorder_point,
-              remark: v.remark,
-            },
-          })}
+          onFinish={async (v) => {
+            if (!editId) return;
+            // 勾选同步时: 参数项批量铺到本产品全部 SKU, 数量仍只改当前行
+            if (syncAllSkus && editProductCode) {
+              try {
+                const r = await syncProductInventoryParams(editProductCode, {
+                  safety_stock: v.safety_stock,
+                  lead_time_days: v.lead_time_days,
+                  slow_moving_days: v.slow_moving_days,
+                  reorder_point: v.reorder_point,
+                });
+                message.success(r.message);
+              } catch (e: any) {
+                message.error(e?.response?.data?.detail ?? '批量同步失败');
+                return;
+              }
+            }
+            editMut.mutate({
+              id: editId,
+              patch: {
+                qty: v.qty,
+                locked_qty: v.locked_qty,
+                safety_stock: v.safety_stock,
+                lead_time_days: v.lead_time_days,
+                slow_moving_days: v.slow_moving_days,
+                reorder_point: v.reorder_point,
+                remark: v.remark,
+              },
+            });
+          }}
         >
+          <Form.Item label={`参数同步到本产品全部 SKU${editProductCode ? ` (${editProductCode})` : ''}`}
+                     tooltip="只同步 安全库存/提前期/预警线/滞销阈值 四个参数；现货/锁定数量各 SKU 不同，不会被同步">
+            <Switch checked={syncAllSkus} onChange={setSyncAllSkus}
+                    checkedChildren="同步全部 SKU" unCheckedChildren="仅这一行" />
+          </Form.Item>
           <Form.Item name="qty" label="现货数量">
             <InputNumber min={0} style={{ width: '100%' }} />
           </Form.Item>

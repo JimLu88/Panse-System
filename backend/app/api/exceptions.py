@@ -40,6 +40,28 @@ def list_exceptions(
     return db.execute(stmt).scalars().all()
 
 
+@router.get("/export")
+def export_exceptions(
+    source_table: Optional[str] = Query(None, description="只导某张源表"),
+    include_ignored: bool = Query(False),
+    db: Session = Depends(get_db),
+):
+    """异常随源表导出 (用户需求): 每个来源表一个 sheet, 整行数据 + 末列「异常批注」。"""
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services.exceptions_export_service import build_export_workbook
+    wb = build_export_workbook(db, source_table=source_table, include_ignored=include_ignored)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=exceptions_annotated.xlsx"},
+    )
+
+
 @router.patch("/{exception_id}/resolve", response_model=DataExceptionOut)
 def resolve_exception(
     exception_id: int,
@@ -52,6 +74,13 @@ def resolve_exception(
     exc = db.get(DataException, exception_id)
     if not exc:
         raise HTTPException(404, "exception not found")
+    # 复核 (用户拍板 2026-06-12): 点「已处理」先检查问题是否真修好了;
+    # 仍存在 → 拒绝销账并说明原因 (force=True 跳过, 慎用)。
+    if payload.status == "resolved" and not payload.force:
+        from app.services.exception_recheck_service import recheck
+        reason = recheck(db, exc)
+        if reason:
+            raise HTTPException(409, f"复核未通过, 问题仍存在: {reason}")
     exc.status = payload.status
     exc.resolved_by = payload.resolved_by
     exc.resolved_at = datetime.now(timezone.utc).isoformat()
@@ -166,6 +195,18 @@ def run_data_quality(
     """触发全部数据完整性扫描, 返回各规则发现数."""
     results = data_quality_service.run_all(db)
     return results
+
+
+@router.post("/recheck-all", response_model=dict)
+def recheck_all(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """重新复核全部异常: 对「有检查器」的类型重跑判定, 把条件已不成立(已修复)的批量销账。
+    没检查器的类型不动 (留人工)。返回 {总关闭数, 按类型}。"""
+    from app.services.exception_recheck_service import bulk_close_resolved
+    closed = bulk_close_resolved(db)
+    return {"closed": sum(closed.values()), "by_type": closed}
 
 
 @router.get("/counts-by-type", response_model=dict)

@@ -7,6 +7,9 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
+
+from app.dependencies import require_role
+from app.models.auth import User
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -343,6 +346,175 @@ async def import_wanshifu(file: UploadFile = File(...), db: Session = Depends(ge
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
+@router.get("/refill-records/settings")
+def get_refill_settings(db: Session = Depends(get_db)):
+    """补单导入费用设置 (设置按钮用)。"""
+    from app.services import settings_service as _ss
+    raw = _ss.get(db, "refill_freight_default", env_fallback=False)
+    try:
+        freight = float(raw) if raw else 5.0
+    except (TypeError, ValueError):
+        freight = 5.0
+    return {"freight_default": freight}
+
+
+@router.put("/refill-records/settings")
+def put_refill_settings(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """调整补单费用缺省 (留痕修改档案)。body: {"freight_default": 5}"""
+    from app.services import field_change_service, settings_service as _ss
+    try:
+        freight = float(payload.get("freight_default"))
+    except (TypeError, ValueError):
+        raise HTTPException(400, "freight_default 必须是数字")
+    if freight < 0 or freight > 1000:
+        raise HTTPException(400, "快递费缺省须在 0~1000 之间")
+    old = _ss.get(db, "refill_freight_default", env_fallback=False)
+    _ss.set_value(db, "refill_freight_default", str(freight))
+    field_change_service.record(
+        db, table="system_settings", pk="refill_freight_default",
+        field="refill_freight_default", old=old, new=str(freight),
+        actor=getattr(user, "username", None),
+        row_label="补单费用设置", field_label="补单快递费缺省",
+    )
+    db.commit()
+    return {"ok": True, "freight_default": freight}
+
+
+@router.post("/refill-records/import-xlsx")
+async def import_refill_xlsx(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """补单简表 xlsx 直接导入 (订单号/旺旺/本金/佣金/店铺; 日期取文件名如 5.31)。
+
+    原文件按 类别(refill)+日期 归档进 工具→导入档案。
+    """
+    import io
+
+    import openpyxl
+
+    from app.services import bill_import_service as bis
+    from app.services import import_storage
+    data = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    except Exception:
+        raise HTTPException(400, "无法解析 xlsx 文件")
+    refill_date = bis.refill_date_from_filename(file.filename or "")
+    arch = import_storage.archive(
+        db, content=data, original_name=file.filename or "补单表.xlsx",
+        kind="refill", source="web", on_date=refill_date,
+    )
+    # 快递费缺省 ¥5 (用户拍板), settings refill_freight_default 可调
+    from decimal import Decimal as _D
+
+    from app.services import settings_service as _ss
+    try:
+        freight = _D(str(_ss.get(db, "refill_freight_default", env_fallback=False) or "5"))
+    except Exception:
+        freight = _D("5")
+    rep = bis.import_refill_simple_xlsx(db, wb, refill_date=refill_date,
+                                        freight_default=freight)
+    if rep.errors:
+        db.commit()   # 归档保留, 方便排查
+        raise HTTPException(400, "; ".join(rep.errors))
+    import_storage.update_summary(db, arch.file.id, {
+        "inserted": rep.inserted, "skipped_duplicate": rep.skipped_duplicate,
+        "skipped_invalid": rep.skipped_invalid, "note": f"补单日期 {refill_date}",
+    })
+    db.commit()
+    return {"inserted": rep.inserted, "skipped_duplicate": rep.skipped_duplicate,
+            "skipped_invalid": rep.skipped_invalid, "refill_date": str(refill_date),
+            "archived": not arch.is_duplicate}
+
+
+# -------- 万师傅安装订单档案 (38列订单导出, 2026-06 起默认格式) --------
+
+@router.post("/wanshifu-orders/import")
+async def import_wanshifu_orders(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """导入万师傅「订单导出」xlsx (含客户信息), 导入后自动跑订单配对。"""
+    import io
+
+    import openpyxl
+
+    from app.services import wanshifu_order_service as wsf
+    data = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), data_only=True)
+    except Exception:
+        raise HTTPException(400, "无法解析 xlsx 文件")
+    rep = wsf.import_workbook(db, wb)
+    if rep.errors:
+        raise HTTPException(400, "; ".join(rep.errors))
+    counts = wsf.match_orders(db)
+    # 售后自动化① (用户拍板): 配对完立即把交易成功单建成售后条目
+    from app.services import aftersales_auto_service
+    aftersales_n = aftersales_auto_service.create_from_wanshifu(db)
+    db.commit()
+    return {"parsed": rep.parsed, "inserted": rep.inserted, "updated": rep.updated,
+            "match": counts, "aftersales_created": aftersales_n}
+
+
+@router.get("/wanshifu-orders")
+def list_wanshifu_orders(
+    only_unmatched: bool = Query(False),
+    limit: int = Query(500, le=2000),
+    db: Session = Depends(get_db),
+):
+    from app.models.finance import WanshifuOrder
+    from app.services.wanshifu_order_service import METHOD_CN
+    stmt = select(WanshifuOrder)
+    if only_unmatched:
+        stmt = stmt.where(WanshifuOrder.matched_order_no.is_(None))
+    stmt = stmt.order_by(WanshifuOrder.created_time.desc().nulls_last()).limit(limit)
+    return [{
+        "id": w.id, "wsf_order_no": w.wsf_order_no, "status": w.status,
+        "service_type": w.service_type,
+        "product_category": w.product_category, "customer_name": w.customer_name,
+        "customer_phone": w.customer_phone,
+        "region": "".join(x for x in (w.province, w.city, w.district) if x),
+        "address": w.address,
+        "net_amount": float(w.net_amount) if w.net_amount is not None else None,
+        "service_fee": float(w.service_fee) if w.service_fee is not None else None,
+        "created_time": w.created_time.isoformat() if w.created_time else None,
+        "matched_order_no": w.matched_order_no,
+        "match_method": METHOD_CN.get(w.match_method or "", w.match_method),
+        "match_note": w.match_note,
+    } for w in db.execute(stmt).scalars().all()]
+
+
+@router.post("/wanshifu-orders/match")
+def match_wanshifu_orders(
+    rematch_all: bool = Query(False, description="true=全部重配 (人工指定的除外)"),
+    db: Session = Depends(get_db),
+):
+    from app.services import wanshifu_order_service as wsf
+    counts = wsf.match_orders(db, only_unmatched=not rematch_all)
+    from app.services import aftersales_auto_service
+    counts["aftersales_created"] = aftersales_auto_service.create_from_wanshifu(db)
+    db.commit()
+    return counts
+
+
+@router.get("/wanshifu-orders/export-annotated")
+def export_wanshifu_annotated(db: Session = Depends(get_db)):
+    """档案+匹配批注 xlsx — 「对不上的告诉我」的回执表。"""
+    import io
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services import wanshifu_order_service as wsf
+    wb = wsf.build_annotated_workbook(db)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=wanshifu_orders_annotated.xlsx"},
+    )
+
+
 @router.post("/logistics-bills/import-csv", response_model=BillImportResult)
 async def import_logistics(file: UploadFile = File(...), db: Session = Depends(get_db)):
     """导入物流公司月结账单 CSV → 供物流费对账 (rule=logistics_fee) 当应付口径。"""
@@ -501,6 +673,16 @@ def recompute(payload: RecomputeIn, db: Session = Depends(get_db)):
     return row
 
 
+@router.get("/balances/derive-opening")
+def derive_opening(
+    account: str,
+    target_date: date,
+    db: Session = Depends(get_db),
+):
+    """Plan F10: 期初余额倒推 — 最近快照 − 区间Σ流水 → target_date 当日期初 (+ 缺流水提示)。"""
+    return balance_service.derive_opening_balance(db, account=account, target_date=target_date)
+
+
 # -------- Reconciliation --------
 
 class DiffOut(BaseModel):
@@ -534,6 +716,156 @@ def _to_out(r: reconciliation_service.ReconciliationResult) -> ReconciliationOut
     )
 
 
+class WriteoffIn(BaseModel):
+    rule: str
+    key: str
+    reason: str
+
+
+@router.post("/reconciliation/writeoff")
+def writeoff_reconciliation_diff(
+    payload: WriteoffIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """人工做平: 把某条对账差异永久豁免 (cron 不再翻出来), 带原因留痕进修改档案。"""
+    from app.models.exception import DataException
+    from app.services import exception_service, field_change_service
+    pk = f"{payload.rule}:{payload.key}"
+    exc = db.query(DataException).filter(
+        DataException.source_table == "reconciliation",
+        DataException.source_pk == pk,
+        DataException.exception_type == "reconciliation_diff",
+        DataException.status.in_(("open", "ignored")),
+    ).first()
+    if exc is None:
+        exc = exception_service.record(
+            db, source_table="reconciliation", source_pk=pk,
+            exception_type="reconciliation_diff", severity="info",
+            description=f"[人工做平] {payload.rule} {payload.key}",
+            suggestion_action="manual_writeoff",
+            context={"rule": payload.rule, "key": payload.key},
+        )
+    from datetime import datetime, timezone
+    exc.status = "ignored"
+    exc.resolved_by = getattr(user, "username", None)
+    exc.resolved_at = datetime.now(timezone.utc).isoformat()
+    exc.description = (exc.description or "") + f" | 做平原因: {payload.reason}"
+    # 做平动作进修改档案 (谁/何时/为何把账做平, 可回溯)
+    field_change_service.record(
+        db, table="reconciliation", pk=pk, field="writeoff",
+        old="差异未处理", new=f"已做平: {payload.reason}",
+        actor=getattr(user, "username", None),
+        row_label=f"对账[{payload.rule}] {payload.key}",
+        field_label="人工做平",
+    )
+    db.commit()
+    return {"ok": True, "rule": payload.rule, "key": payload.key}
+
+
+@router.get("/reconciliation/writeoffs")
+def list_reconciliation_writeoffs(db: Session = Depends(get_db)):
+    """已做平的差异键 {rule: [key...]} + 做平金额小计 (对账建议 8: 做平多了会掩盖系统性问题)。"""
+    from decimal import Decimal, InvalidOperation
+
+    from app.models.exception import DataException
+    rows = db.query(DataException).filter(
+        DataException.source_table == "reconciliation",
+        DataException.exception_type == "reconciliation_diff",
+        DataException.status == "ignored",
+    ).all()
+    out: dict[str, list[str]] = {}
+    totals: dict[str, float] = {}
+    grand = Decimal("0")
+    for r in rows:
+        pk = r.source_pk or ""
+        if ":" not in pk:
+            continue
+        rule, key = pk.split(":", 1)
+        out.setdefault(rule, []).append(key)
+        try:
+            amt = abs(Decimal(str((r.context or {}).get("diff", "0"))))
+        except (InvalidOperation, ValueError, TypeError):
+            amt = Decimal("0")
+        totals[rule] = totals.get(rule, 0.0) + float(amt)
+        grand += amt
+    # 异常池最近同步时间 (run_all 写异常时记录) — 前端显示"差异截至何时"
+    from app.services import settings_service
+    synced_at = settings_service.get(db, "recon_exceptions_synced_at", env_fallback=False)
+    return {"keys": out, "totals": totals, "grand_total": float(grand),
+            "count": len(rows), "synced_at": synced_at}
+
+
+@router.get("/reconciliation/factory-aliases")
+def get_factory_aliases(db: Session = Depends(get_db)):
+    """工厂别名映射 {别名: 标准名} — 货款对账两侧名称先归一再比对。"""
+    from app.services.reconciliation_service import _factory_aliases
+    return {"aliases": _factory_aliases(db)}
+
+
+@router.put("/reconciliation/factory-aliases")
+def put_factory_aliases(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """保存别名映射 (留痕修改档案)。body: {"aliases": {"**晶": "XX家具厂"}}"""
+    import json
+
+    from app.services import field_change_service, settings_service
+    aliases = payload.get("aliases")
+    if not isinstance(aliases, dict):
+        raise HTTPException(400, "aliases 必须是 {别名: 标准名} 对象")
+    from app.services.reconciliation_service import _factory_aliases
+    old = _factory_aliases(db)
+    settings_service.set_value(db, "factory_aliases", json.dumps(aliases, ensure_ascii=False))
+    field_change_service.record(
+        db, table="system_settings", pk="factory_aliases", field="factory_aliases",
+        old=json.dumps(old, ensure_ascii=False), new=json.dumps(aliases, ensure_ascii=False),
+        actor=getattr(user, "username", None), row_label="工厂别名映射",
+        field_label="工厂别名",
+    )
+    db.commit()
+    return {"ok": True, "count": len(aliases)}
+
+
+@router.post("/reconciliation/match-expense-flows")
+def match_expense_flows_api(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """经营支出自动配流水: 给缺流水号的 日常/外包/品牌 记录按金额+日期窗口配支付宝支出。
+
+    只在唯一命中时回填 (多候选留人工), 回填记修改档案。
+    """
+    from app.services.expense_flow_match_service import match_expense_flows
+    res = match_expense_flows(db, actor=getattr(user, "username", None))
+    db.commit()
+    return {"matched": res.matched, "ambiguous": res.ambiguous,
+            "unmatched": res.unmatched, "details": res.details}
+
+
+@router.get("/reconciliation/snapshots")
+def list_recon_snapshots(
+    days: int = Query(30, le=180),
+    db: Session = Depends(get_db),
+):
+    """对账每日快照 (近 N 天) — 看各规则差异是在收敛还是恶化。"""
+    from sqlalchemy import text as _sql
+    try:
+        rows = db.execute(_sql(
+            "SELECT snap_date, rule, ok_count, warning_count, error_count, total_diff_abs "
+            "FROM recon_snapshots WHERE snap_date >= CURRENT_DATE - CAST(:d AS integer) "
+            "ORDER BY snap_date, rule"
+        ), {"d": days}).fetchall()
+    except Exception:
+        return {"rows": []}
+    return {"rows": [
+        {"snap_date": str(r[0]), "rule": r[1], "ok": r[2], "warning": r[3],
+         "error": r[4], "total_diff_abs": float(r[5] or 0)} for r in rows
+    ]}
+
+
 @router.get("/reconciliation/ai-diagnosis")
 def reconciliation_ai_diagnosis(db: Session = Depends(get_db)):
     """对当前所有对账差异做 AI 诊断, 给出可能原因 + 建议处理优先级。
@@ -563,6 +895,7 @@ def run_one_rule(
     fn = reconciliation_service.RULES.get(rule)
     if fn is None:
         raise HTTPException(404, f"unknown rule {rule!r}; available: {list(reconciliation_service.RULES)}")
+    reconciliation_service.load_thresholds(db)
     r = fn(db, record_exceptions=False, period_start=period_start, period_end=period_end)
     return _to_out(r)
 

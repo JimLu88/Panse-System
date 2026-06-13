@@ -132,6 +132,44 @@ def patch_card(db: Session, message_id: str, card: dict) -> dict:
     return _req(db, "PATCH", url, json=body)
 
 
+# ── 主动外发: 给指定会话发文本/图片 (二维码/文件推送, 2026-06-12) ────────────
+def upload_image(db: Session, png_bytes: bytes) -> str:
+    """上传图片到飞书, 返回 image_key (im/v1/images, image_type=message)。"""
+    url = f"{_BASE}/im/v1/images"
+    try:
+        r = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {get_tenant_access_token(db)}"},
+            files={"image": ("qr.png", png_bytes, "image/png")},
+            data={"image_type": "message"},
+            timeout=_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        raise FeishuError(f"飞书上传图片网络失败: {e}") from e
+    data = _json(r)
+    if data.get("code") != 0:
+        raise FeishuError(f"飞书上传图片失败: {data.get('msg')} (code={data.get('code')})")
+    return (data.get("data") or {}).get("image_key", "")
+
+
+def send_text(db: Session, receive_id: str, text: str,
+              *, id_type: str = "chat_id") -> dict:
+    """主动给指定会话/用户发纯文本 (im/v1/messages)。"""
+    url = f"{_BASE}/im/v1/messages?receive_id_type={id_type}"
+    body = {"receive_id": receive_id, "msg_type": "text",
+            "content": json.dumps({"text": text}, ensure_ascii=False)}
+    return _req(db, "POST", url, json=body)
+
+
+def send_image(db: Session, receive_id: str, image_key: str,
+               *, id_type: str = "chat_id") -> dict:
+    """主动给指定会话/用户发图片 (im/v1/messages, msg_type=image)。"""
+    url = f"{_BASE}/im/v1/messages?receive_id_type={id_type}"
+    body = {"receive_id": receive_id, "msg_type": "image",
+            "content": json.dumps({"image_key": image_key}, ensure_ascii=False)}
+    return _req(db, "POST", url, json=body)
+
+
 def list_records(db: Session, app_token: str, table_id: str,
                  *, page_size: int = 500) -> list[dict]:
     """拉取一张 Bitable 表的全部记录 (自动翻页).
@@ -271,3 +309,30 @@ def test_connection(db: Session) -> dict:
         return {"ok": True}
     except FeishuError as e:
         return {"ok": False, "error": str(e)}
+
+
+# 进程内 open_id -> 姓名 缓存 (姓名极少变, 避免每张图都打一次通讯录 API)
+_NAME_CACHE: dict[str, str] = {}
+
+
+def get_user_name(db: Session, user_id: str, *, id_type: str = "open_id") -> Optional[str]:
+    """按 open_id(默认) 查飞书用户姓名 —— 需「contact:user.base:readonly」通讯录权限。
+
+    调用: GET /contact/v3/users/{user_id}?user_id_type=open_id  → data.user.name
+    带进程缓存; 失败/无权限返回 None (上层回退用 id, 不影响主流程)。
+    """
+    if not user_id:
+        return None
+    cached = _NAME_CACHE.get(user_id)
+    if cached:
+        return cached
+    try:
+        url = f"{_BASE}/contact/v3/users/{user_id}"
+        data = _req(db, "GET", url, params={"user_id_type": id_type})
+        name = (data.get("user") or {}).get("name")
+        if name:
+            _NAME_CACHE[user_id] = name
+        return name
+    except Exception as e:  # pragma: no cover - 无权限/网络错 → 回退 id
+        _logger.info("查飞书用户名失败(忽略, 回退id): %s", e)
+        return None

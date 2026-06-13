@@ -3,7 +3,16 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from app.services import notify_service, settings_service
+
+
+@pytest.fixture(autouse=True)
+def _allow_notify_in_this_module(monkeypatch):
+    """conftest 全局设了 PANSE_DISABLE_NOTIFY (防测试轰炸真实飞书群);
+    本文件专测 notify 本身且全程 mock HTTP, 安全豁免。"""
+    monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
 
 
 def test_notify_returns_false_when_no_config(db_session):

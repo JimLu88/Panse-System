@@ -30,11 +30,16 @@ def get_by_name(db: Session, name: str) -> Optional[Material]:
     return db.execute(select(Material).where(Material.name == name)).scalar_one_or_none()
 
 
-def ensure_by_name(db: Session, name: str) -> EnsureResult:
+def ensure_by_name(
+    db: Session, name: str, *,
+    base_material_code: "str | None" = None,
+    width_mm=None, height_mm=None,
+) -> EnsureResult:
     """精确名称查找，缺失则自动建定制物料。
 
     用户确认的字段策略：「全部留空，进异常表等人工补」。
     所以只填 code/name/is_custom 三个字段；price/unit/size_type 留 NULL。
+    Plan C3: 调用方知道来源时补写 base_material_code 与宽高, 复用判定按它精确对照。
     """
     name = (name or "").strip()
     if not name:
@@ -57,6 +62,9 @@ def ensure_by_name(db: Session, name: str) -> EnsureResult:
         code=code,
         name=display_name,
         is_custom=True,
+        base_material_code=base_material_code,
+        width_mm=width_mm,
+        height_mm=height_mm,
     )
     db.add(mat)
     db.flush()

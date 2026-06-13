@@ -15,6 +15,8 @@ from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, LogisticsBill, RefillRecord, WanshifuBill
 from app.models.marketing import AfterSales, PromotionFlow
+from app.models.order import Order
+from app.services import import_clean
 
 _WANSHIFU_MAP = {
     "日期": "bill_date", "账单日期": "bill_date", "结算日期": "bill_date",
@@ -22,7 +24,7 @@ _WANSHIFU_MAP = {
     "服务类型": "service_type", "类型": "service_type",
     "金额": "amount", "扣款金额": "amount", "结算金额": "amount", "费用": "amount",
     "状态": "status", "结算状态": "status",
-    "备注": "remark",
+    "备注": "remark", "常用备注": "remark", "客户备注": "remark", "订单备注": "remark",
 }
 
 _LOGISTICS_MAP = {
@@ -64,12 +66,21 @@ def _date(v: Any) -> Optional[date]:
         return v
     s = str(v).strip()
     for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y-%m-%d %H:%M:%S",
-                "%Y/%m/%d %H:%M:%S", "%Y年%m月%d日", "%Y年%m月%d号"):
+                "%Y/%m/%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S",
+                "%Y年%m月%d日", "%Y年%m月%d号"):
         try:
             return datetime.strptime(s, fmt).date()
         except ValueError:
             continue
-    return None
+    # 纯"月日" (如 "6月1日"/"06-01"): 按当年补全 (用户拍板 2026-06-11 统一日期解析器)
+    for fmt in ("%m月%d日", "%m月%d号", "%m-%d", "%m/%d"):
+        try:
+            d = datetime.strptime(s, fmt)
+            return date(date.today().year, d.month, d.day)
+        except ValueError:
+            continue
+    # Excel 日期序列号 (46175 → 2026-06-08): Excel 转存 CSV 常见 (C14)
+    return import_clean.excel_serial_to_date(s)
 
 
 def _rows(text: str, colmap: dict) -> list[dict]:
@@ -108,7 +119,14 @@ def import_wanshifu_csv(db: Session, text: str, *, import_job_id: Optional[int] 
             rep.skipped_invalid += 1
             continue
         bill_date = _date(rec.get("bill_date"))
-        order_no = (rec.get("order_no") or None)
+        order_no = import_clean.clean_no(rec.get("order_no"))
+        # 关联订单在「备注/常用备注」里 (用户拍板 2026-06-12): 订单号列空时, 从备注抽取
+        # 淘宝订单号(15-19位数字)补成 order_no, 供安装费/售后对账按单匹配。只补不覆盖。
+        if not order_no:
+            import re as _re
+            _m = _re.search(r"\d{15,19}", str(rec.get("remark") or ""))
+            if _m:
+                order_no = import_clean.clean_no(_m.group(0))
         key = (bill_date, order_no, amount)
         if key in existing or key in seen:
             rep.skipped_duplicate += 1
@@ -152,7 +170,7 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
             rep.skipped_invalid += 1
             continue
         bill_date = _date(rec.get("bill_date"))
-        tracking_no = (rec.get("tracking_no") or None)
+        tracking_no = import_clean.clean_no(rec.get("tracking_no"))
         carrier = (rec.get("carrier") or None)
         key = _key(bill_date, tracking_no, carrier, freight)
         if key in existing or key in seen:
@@ -163,11 +181,106 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
             bill_date=bill_date,
             carrier=carrier,
             tracking_no=tracking_no,
-            order_no=(rec.get("order_no") or None),
+            order_no=import_clean.clean_no(rec.get("order_no")),
             weight_kg=_decimal(rec.get("weight_kg")),
             freight_amount=freight,
             remark=(rec.get("remark") or None),
             import_job_id=import_job_id,
+        ))
+        rep.inserted += 1
+    db.flush()
+    return rep
+
+
+# --------------------- 补单表 xlsx (发中介的简表) -------------------- #
+# 用户确认格式 (2026-06-11, 例 "5.31畔色.xlsx"):
+#   订单号 | 旺旺（淘宝账号非昵称）/JD填写账户 | 金额（不要加佣金） | (空表头=佣金) | 店铺名字
+# 补单日期从文件名解析 (5.31 → 当年 5月31日); 解析不出用今天。
+
+def refill_date_from_filename(name: str, *, today=None):
+    import re
+    from datetime import date as date_cls
+    t = today or date_cls.today()
+    m = re.search(r"(\d{1,2})[.\-月](\d{1,2})", name or "")
+    if m:
+        try:
+            mo, d = int(m.group(1)), int(m.group(2))
+            if 1 <= mo <= 12 and 1 <= d <= 31:
+                return date_cls(t.year, mo, d)
+        except ValueError:
+            pass
+    return t
+
+
+def import_refill_simple_xlsx(db: Session, wb, *, refill_date,
+                              freight_default=None,
+                              import_job_id: Optional[int] = None) -> BillImportReport:
+    """补单简表 xlsx → RefillRecord。去重: (订单号, 补单日期) 已有则跳过。
+
+    freight_default: 补单快递费缺省 (用户拍板 ¥5, settings refill_freight_default 可调)。
+    """
+    from sqlalchemy import select
+    rep = BillImportReport()
+    ws = wb.worksheets[0]
+    headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+    col = {"order_no": None, "buyer_nick": None, "amount": None,
+           "commission": None, "shop": None}
+    for i, h in enumerate(headers):
+        if h.startswith("订单号"):
+            col["order_no"] = i
+        elif "旺旺" in h or "账号" in h:
+            col["buyer_nick"] = i
+        elif h.startswith("金额"):   # 先于佣金判断 — "金额（不要加佣金）"也含"佣金"二字
+            col["amount"] = i
+        elif "佣金" in h:   # 用户确认: 现在是空表头, 未来会填上"补单佣金"
+            col["commission"] = i
+        elif "店铺" in h:
+            col["shop"] = i
+    if col["order_no"] is None or col["amount"] is None:
+        rep.errors.append("表头缺「订单号/金额」列, 请确认是补单简表格式")
+        return rep
+    # 佣金列 = 金额列右边第一个无表头列 (用户表里该列表头为空)
+    if col["amount"] is not None and col["amount"] + 1 < len(headers) \
+            and not headers[col["amount"] + 1]:
+        col["commission"] = col["amount"] + 1
+
+    existing = {
+        (no, d) for no, d in db.execute(
+            select(RefillRecord.order_no, RefillRecord.refill_date)
+        ).all()
+    }
+    seen: set = set()
+    for r in ws.iter_rows(min_row=2, values_only=True):
+        if not r:
+            continue
+        order_no = import_clean.clean_no(r[col["order_no"]] if col["order_no"] < len(r) else None)
+        if not order_no:
+            continue
+        amount = _decimal(r[col["amount"]] if col["amount"] < len(r) else None)
+        if amount is None:
+            rep.skipped_invalid += 1
+            continue
+        key = (order_no, refill_date)
+        if key in existing or key in seen:
+            rep.skipped_duplicate += 1
+            continue
+        seen.add(key)
+        commission = (_decimal(r[col["commission"]])
+                      if col["commission"] is not None and col["commission"] < len(r) else None)
+        nick = (str(r[col["buyer_nick"]]).strip()
+                if col["buyer_nick"] is not None and col["buyer_nick"] < len(r)
+                and r[col["buyer_nick"]] is not None else None)
+        shop = (str(r[col["shop"]]).strip()
+                if col["shop"] is not None and col["shop"] < len(r)
+                and r[col["shop"]] is not None else None)
+        db.add(RefillRecord(
+            order_no=order_no,
+            buyer_nick=nick,
+            refill_date=refill_date,
+            order_amount=amount,          # 金额（不要加佣金）= 本金
+            commission=commission,
+            refill_freight=freight_default,   # 快递费缺省 ¥5 (设置可调)
+            fee_remark=f"店铺:{shop}" if shop else None,
         ))
         rep.inserted += 1
     db.flush()
@@ -302,7 +415,7 @@ def import_refill_records_csv(db: Session, text: str) -> BillImportReport:
     """导入补单对账 CSV。order_no 必填。"""
     rep = BillImportReport()
     for rec in _rows(text, _REFILL_MAP):
-        order_no = (rec.get("order_no") or "").strip()
+        order_no = import_clean.clean_no(rec.get("order_no")) or ""
         if not order_no:
             rep.skipped_invalid += 1
             continue
@@ -324,6 +437,71 @@ def import_refill_records_csv(db: Session, text: str) -> BillImportReport:
             platform_fee=_decimal(rec.get("platform_fee")),
             commission=_decimal(rec.get("commission")),
             total_cost=_decimal(rec.get("total_cost")),
+        ))
+        rep.inserted += 1
+        # 补单对账里出现的订单号 → 同步把订单表标成 is_refill, 否则报表会把它当"真实订单"、少算补单。
+        o = db.query(Order).filter(Order.order_no == order_no).first()
+        if o is not None and not o.is_refill:
+            o.is_refill = True
+    db.flush()
+    # L3 闭环: 导入完成后全量重判 is_refill (双向: 补单消失也会摘标) + 重算成本
+    if rep.inserted:
+        try:
+            from app.services import order_sync_service
+            order_sync_service.rederive_refill_flags(db)
+        except Exception:  # pragma: no cover - 兜底不阻断导入
+            pass
+    return rep
+
+
+# ----------------------------- 活动报名价 CSV (Plan F1) ---------- #
+
+_CAMPAIGN_MAP = {
+    "SKU编码": "sku_code", "SKU": "sku_code", "sku_code": "sku_code",
+    "渠道": "channel", "平台": "channel",
+    "活动名": "campaign_name", "活动名称": "campaign_name", "活动": "campaign_name",
+    "报名价": "signup_price", "活动报名价": "signup_price", "报名价格": "signup_price",
+    "生效日期": "effective_date", "活动日期": "effective_date",
+    "备注": "remark",
+}
+
+_CHANNEL_NORM = {"淘宝": "taobao", "天猫": "taobao", "taobao": "taobao",
+                 "小红书": "xhs", "xhs": "xhs", "rn": "xhs"}
+
+
+def import_campaign_signup_csv(db: Session, text: str) -> BillImportReport:
+    """Plan F1: 导入活动报名价 CSV。sku_code+报名价必填; 同 (sku,渠道,活动) upsert 覆盖价格。"""
+    from sqlalchemy import select
+    from app.models.campaign_signup import CampaignSignupPrice
+    rep = BillImportReport()
+    rep.unmapped_columns = _unmapped_headers(text, _CAMPAIGN_MAP)
+    for rec in _rows(text, _CAMPAIGN_MAP):
+        sku = import_clean.clean_no(rec.get("sku_code")) or ""
+        price = _decimal(rec.get("signup_price"))
+        if not sku or price is None:
+            rep.skipped_invalid += 1
+            continue
+        raw_channel = (rec.get("channel") or "").strip()
+        channel = _CHANNEL_NORM.get(raw_channel.lower()) or _CHANNEL_NORM.get(raw_channel) or "taobao"
+        campaign = (rec.get("campaign_name") or "").strip() or None
+        existing = db.execute(
+            select(CampaignSignupPrice).where(
+                CampaignSignupPrice.sku_code == sku,
+                CampaignSignupPrice.channel == channel,
+                CampaignSignupPrice.campaign_name == campaign,
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            existing.signup_price = price
+            existing.effective_date = _date(rec.get("effective_date")) or existing.effective_date
+            existing.remark = (rec.get("remark") or None) or existing.remark
+            rep.skipped_duplicate += 1   # 视为更新, 不重复插行
+            continue
+        db.add(CampaignSignupPrice(
+            sku_code=sku, channel=channel, campaign_name=campaign,
+            signup_price=price, source="import",
+            effective_date=_date(rec.get("effective_date")),
+            remark=rec.get("remark") or None,
         ))
         rep.inserted += 1
     db.flush()

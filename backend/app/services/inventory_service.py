@@ -5,6 +5,7 @@ add_part_row(): 录入一条配件库存。如果传入的是物料名称且该�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import select
@@ -54,6 +55,25 @@ def add_part_row(
         result = material_service.ensure_by_name(db, material_name or "")
         material = result.material
         material_created = result.created
+
+    # (warehouse, material_code) 唯一 (迁移 0074): 二次入库累加数量, 不再重复插行
+    inv = db.execute(
+        select(PartInventory).where(
+            PartInventory.warehouse == warehouse,
+            PartInventory.material_code == material.code,
+        )
+    ).scalar_one_or_none()
+    if inv is not None:
+        inv.physical_qty = Decimal(inv.physical_qty or 0) + Decimal(physical_qty or 0)
+        inv.locked_qty = Decimal(inv.locked_qty or 0) + Decimal(locked_qty or 0)
+        if spec:
+            inv.spec = spec
+        if unit:
+            inv.unit = unit
+        if remark:
+            inv.remark = remark
+        db.flush()
+        return AddPartRowResult(inventory=inv, material=material, material_created=material_created)
 
     inv = PartInventory(
         warehouse=warehouse,
