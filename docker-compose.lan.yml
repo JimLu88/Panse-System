@@ -1,0 +1,17 @@
+# Panse ERP — 群晖 LAN 上线: 只追加 http web。db/api 已由 docker-compose.yml 起在 panse-system 项目。
+# 前端镜像在 PC build 好 save→load 到 NAS (panse-system-web:lan)。
+# 起: sudo /usr/local/bin/docker compose -p panse-system -f docker-compose.lan.yml up -d web
+# 访问: http://<NAS-IP>:8200  (对照 AI 蜂群系统 http://<NAS-IP>:8100 同源模式)
+# web 走 panse-system 项目的默认网络 panse-system_default, 用服务名 api 解析到 api:8000。
+services:
+  web:
+    image: panse-system-web:lan
+    restart: always
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+    ports:
+      - "8200:80"
+    deploy:
+      resources:
+        limits:
+          memory: 256m

@@ -1,0 +1,8 @@
+# 只给 deploy/web.lan.Dockerfile 用 (BuildKit 按 <dockerfile>.dockerignore 取), 不影响其它 build。
+# 排除一切, 只放行 frontend 源码 + deploy/nginx.lan.conf, 避免把 node_modules/.git/76G 无关物塞进 context。
+*
+!frontend
+!deploy
+frontend/node_modules
+frontend/dist
+frontend/tsconfig.tsbuildinfo
