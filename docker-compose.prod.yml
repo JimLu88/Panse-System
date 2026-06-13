@@ -36,7 +36,7 @@ services:
       resources:
         limits:
           memory: 1536m
-          cpus: '2'
+          # cpus 群晖内核(无 CPU CFS cgroup)不支持, 已去掉; 只用内存上限
         reservations:
           memory: 256m
     # 生产: 不暴露 5432 到宿主机
@@ -85,7 +85,7 @@ services:
       resources:
         limits:
           memory: 2g
-          cpus: '2'
+          # cpus 群晖内核不支持, 去掉
         reservations:
           memory: 512m
     # 生产: 不暴露 8000, 由 nginx 反代
@@ -127,7 +127,7 @@ services:
       resources:
         limits:
           memory: 256m
-          cpus: '1'
+          # cpus 群晖内核不支持, 去掉
 
   # 容器内自动备份 — 每天 03:00 dump 数据库, 保留 30 天 (与 Hyper Backup 异地备份互补)
   backup:
