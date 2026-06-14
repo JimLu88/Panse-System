@@ -28,6 +28,8 @@ logging.basicConfig(
 # 同时把最近日志留在内存, 供 /api/logs/recent 在界面上查看
 from app.log_buffer import install_ring_buffer  # noqa: E402
 install_ring_buffer()
+# apscheduler 启动时每个 job 刷一行 "Added job"(~90 行)会顶掉 /api/logs/recent 的有效日志 → 降噪到 WARNING
+logging.getLogger("apscheduler").setLevel(logging.WARNING)
 _req_logger = logging.getLogger("panse.request")
 
 from app.api import accounting as accounting_api
@@ -330,6 +332,23 @@ app.include_router(web_agent_api.router)
 @app.get("/api/health")
 def health():
     return {"ok": True}
+
+
+@app.get("/api/ready")
+def ready():
+    """就绪探针: 真正连一下 DB(SELECT 1)。/api/health 是浅探活只证明进程在,
+    DB 断/盘满时它仍 200; /api/ready 让这类故障对部署层(健康检查/负载均衡)可见。"""
+    from sqlalchemy import text
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT 1"))
+        return {"ready": True}
+    except Exception as e:  # noqa: BLE001 — 探针要把任何 DB 故障翻成 503
+        return JSONResponse(status_code=503,
+                            content={"ready": False, "error": type(e).__name__})
+    finally:
+        db.close()
 
 
 @app.get("/api/version")
