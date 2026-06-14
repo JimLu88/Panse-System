@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -30,6 +30,9 @@ router = APIRouter(prefix="/api/gallery", tags=["gallery"])
 
 _IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
 _CODE_RE = re.compile(r"^(P[A-Z]{0,3}\d{8,})")   # 文件夹名开头的产品编码
+_ROOT_GROUP = "(根目录)"           # tree 里直接放文件夹根的图片用这个组名
+_MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 单张上限 30MB
+_UNSAFE_NAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')   # 文件名里不许出现的字符
 
 
 def _root() -> Path:
@@ -125,6 +128,98 @@ def folder_tree(folder: str = Query(..., description="根目录下的产品文�
         groups.append({"group": sub.name,
                        "images": [str(Path(folder) / f.relative_to(base)) for f in imgs]})
     return {"folder": folder, "groups": groups}
+
+
+def _safe_filename(name: str, default_ext: str = ".jpg") -> str:
+    """清洗上传文件名: 去路径分隔符/非法字符, 保留扩展名, 兜底名。"""
+    base = Path(name or "").name                  # 去掉任何目录部分 (防 ../)
+    base = _UNSAFE_NAME_RE.sub("_", base).strip().strip(".")
+    stem, ext = os.path.splitext(base)
+    ext = ext.lower()
+    if ext not in _IMAGE_EXT:
+        ext = default_ext
+    stem = stem or "image"
+    return f"{stem}{ext}"
+
+
+def _dedupe_path(target_dir: Path, filename: str) -> Path:
+    """同名文件已存在 → 追加 _1/_2…, 不覆盖既有图。"""
+    out = target_dir / filename
+    if not out.exists():
+        return out
+    stem, ext = os.path.splitext(filename)
+    i = 1
+    while True:
+        cand = target_dir / f"{stem}_{i}{ext}"
+        if not cand.exists():
+            return cand
+        i += 1
+
+
+@router.post("/upload")
+async def upload_image(
+    file: UploadFile = File(...),
+    folder: Optional[str] = Form(None, description="目标产品文件夹名(没有则用 product_code 新建)"),
+    product_code: Optional[str] = Form(None, description="产品编码(folder 缺省时据此建/找文件夹)"),
+    group: Optional[str] = Form(None, description="分组子目录: 主图/SKU 图/场景图…; 空或(根目录)=放文件夹根"),
+):
+    """上传一张产品图到图库 (用户需求 2026-06-14: 自己加新图)。
+
+    存到 GALLERY_ROOT/<产品文件夹>/<分组>/<文件名>。文件夹/分组不存在自动建;
+    同名不覆盖(追加 _1); 路径越界/非图片/超 30MB 一律拒绝。需图库卷可写(去掉 :ro)。
+    """
+    root = _root()
+    if not root.exists():
+        raise HTTPException(503, "图库目录未挂载")
+
+    # 1) 定位/新建产品文件夹
+    folder_name = (folder or "").strip()
+    if not folder_name:
+        if not (product_code or "").strip():
+            raise HTTPException(400, "需提供 folder 或 product_code")
+        folder_name = product_code.strip()
+    base = _safe_resolve(folder_name)
+    base.mkdir(parents=True, exist_ok=True)
+
+    # 2) 分组子目录 ((根目录) / 空 = 直接放文件夹根)
+    grp = (group or "").strip()
+    if grp and grp != _ROOT_GROUP:
+        target_dir = _safe_resolve(str(Path(folder_name) / grp))
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        target_dir = base
+
+    # 3) 校验 + 落盘 (大小上限 + 扩展名)
+    fname = _safe_filename(file.filename or "")
+    if Path(fname).suffix.lower() not in _IMAGE_EXT:
+        raise HTTPException(400, "只允许图片文件 (jpg/png/webp/gif/bmp)")
+    out = _dedupe_path(target_dir, fname)
+    try:
+        out.relative_to(root.resolve())          # 双保险: 最终路径仍在根内
+    except ValueError:
+        raise HTTPException(403, "路径越界")
+    size = 0
+    try:
+        with out.open("wb") as w:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_UPLOAD_BYTES:
+                    w.close()
+                    out.unlink(missing_ok=True)
+                    raise HTTPException(413, "图片超过 30MB 上限")
+                w.write(chunk)
+    except HTTPException:
+        raise
+    except OSError as e:
+        out.unlink(missing_ok=True)
+        # 卷只读 / 磁盘满 等
+        raise HTTPException(500, f"写入失败(图库卷是否可写?): {e}")
+    rel = str(out.relative_to(root.resolve())).replace("\\", "/")
+    return {"ok": True, "folder": folder_name, "group": grp or _ROOT_GROUP,
+            "path": rel, "filename": out.name, "size": size}
 
 
 @router.post("/refresh-images")

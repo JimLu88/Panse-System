@@ -83,7 +83,8 @@ services:
       start_period: 40s
     volumes:
       - ${STORAGE_DIR:-./storage}:/app/storage
-      - ${GALLERY_DIR:-./gallery}:/app/gallery:ro
+      # 图库改可写 (2026-06-14): 支持图库弹窗"上传新图"; 写入仅经 /api/gallery/upload, 路径受 _safe_resolve 限制在根内
+      - ${GALLERY_DIR:-./gallery}:/app/gallery
       - ${AGENT_OUTPUT_DIR_HOST:-./agent_output}:/app/agent_output:ro
       - ${BACKUPS_DIR:-./backups}:/backups:ro
       - /etc/localtime:/etc/localtime:ro

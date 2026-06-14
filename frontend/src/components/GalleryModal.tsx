@@ -4,13 +4,20 @@
  * 按 主图/SKU图/详情页 分组浏览。列表加载 480px WebP 缩略图 (秒开),
  * 点开预览加载 1600px 压缩版 — 外网访问带宽友好。
  */
-import { useState } from 'react';
-import { Empty, Image, Modal, Select, Space, Spin, Tag, Typography } from 'antd';
-import { useQuery } from '@tanstack/react-query';
+import { useMemo, useState } from 'react';
+import {
+  Button, Empty, Image, message, Modal, Select, Space, Spin, Tag, Typography, Upload,
+} from 'antd';
+import { UploadOutlined } from '@ant-design/icons';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/base';
 
 const thumbUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&thumb=1`;
 const previewUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&max_edge=1600`;
+
+const ROOT_GROUP = '(根目录)';
+// 上传分组候选: 库内已有分组 + 常用分组, 去重
+const COMMON_GROUPS = ['主图', 'SKU 图', '场景图', '详情页', ROOT_GROUP];
 
 interface TreeGroup { group: string; images: string[] }
 
@@ -18,6 +25,8 @@ export default function GalleryModal({ productCode, onClose }: {
   productCode: string | null; onClose: () => void;
 }) {
   const [folder, setFolder] = useState<string | undefined>(undefined);
+  const [uploadGroup, setUploadGroup] = useState<string>('主图');
+  const queryClient = useQueryClient();
 
   const { data: folders, isLoading: loadingFolders } = useQuery({
     queryKey: ['gallery-folders', productCode],
@@ -36,6 +45,64 @@ export default function GalleryModal({ productCode, onClose }: {
     enabled: !!activeFolder,
   });
 
+  // 分组下拉选项: 已有分组优先, 再补常用分组
+  const groupOptions = useMemo(() => {
+    const seen = new Set<string>();
+    const opts: { value: string; label: string }[] = [];
+    for (const g of (tree ?? []).map((t) => t.group)) {
+      if (!seen.has(g)) { seen.add(g); opts.push({ value: g, label: g }); }
+    }
+    for (const g of COMMON_GROUPS) {
+      if (!seen.has(g)) { seen.add(g); opts.push({ value: g, label: g }); }
+    }
+    return opts;
+  }, [tree]);
+
+  const doUpload = async (file: File) => {
+    const fd = new FormData();
+    fd.append('file', file);
+    // 有匹配文件夹用文件夹名; 没有则用产品编码让后端新建
+    if (activeFolder) fd.append('folder', activeFolder);
+    if (productCode) fd.append('product_code', productCode);
+    fd.append('group', uploadGroup);
+    try {
+      await api.post('/api/gallery/upload', fd, {
+        headers: { 'Content-Type': undefined as unknown as string },
+        timeout: 120000,
+      });
+      message.success(`已上传「${file.name}」到「${uploadGroup}」`);
+      // 刷新文件夹列表(图片数)与当前树
+      queryClient.invalidateQueries({ queryKey: ['gallery-folders', productCode] });
+      queryClient.invalidateQueries({ queryKey: ['gallery-tree', activeFolder] });
+    } catch (e) {
+      const msg = (e as { response?: { data?: { detail?: string } }; message?: string })
+        ?.response?.data?.detail
+        || (e as { message?: string })?.message || '上传失败';
+      message.error(msg);
+    }
+  };
+
+  const uploadBar = (
+    <Space wrap>
+      <Typography.Text type="secondary">上传到:</Typography.Text>
+      <Select
+        size="small"
+        style={{ minWidth: 120 }}
+        value={uploadGroup}
+        onChange={setUploadGroup}
+        options={groupOptions}
+      />
+      <Upload
+        multiple
+        showUploadList={false}
+        accept="image/*"
+        beforeUpload={(file) => { void doUpload(file as File); return false; }}
+      >
+        <Button size="small" type="primary" icon={<UploadOutlined />}>上传新图</Button>
+      </Upload>
+    </Space>
+  );
+
   return (
     <Modal
       open={!!productCode}
@@ -46,7 +113,10 @@ export default function GalleryModal({ productCode, onClose }: {
     >
       {loadingFolders && <Spin />}
       {folders && folders.length === 0 && (
-        <Empty description={`图库里没有以 ${productCode} 开头的文件夹 (按「产品名称+编码」命名即可自动匹配)`} />
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Empty description={`图库里没有以 ${productCode} 开头的文件夹 — 上传第一张图会自动建文件夹`} />
+          {uploadBar}
+        </Space>
       )}
       {folders && folders.length > 0 && (
         <Space direction="vertical" style={{ width: '100%' }}>
@@ -58,6 +128,7 @@ export default function GalleryModal({ productCode, onClose }: {
               options={folders.map((f) => ({ value: f, label: f }))}
             />
           )}
+          {uploadBar}
           {loadingTree && <Spin />}
           {(tree ?? []).map((g) => (
             <div key={g.group}>

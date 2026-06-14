@@ -1728,15 +1728,16 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
         action = "inserted"
 
     # ── pricing_sku_costs (配件成本明细) ────────────────────────────────
+    # 评审: 原来子表逐字段无条件 setattr 覆盖, 绕过 on_conflict → 改走 _apply_update,
+    # 与主表一致(ask 模式: 补空/真冲突记异常不覆盖; _diff_fields 对 Decimal 精度安全, 不刷浮点噪声)。
     if costs_payload:
         costs_payload["sku_code"] = sku_code
         costs_row = db.execute(
             select(PricingSkuCosts).where(PricingSkuCosts.sku_code == sku_code)
         ).scalar_one_or_none()
         if costs_row:
-            for k, v in costs_payload.items():
-                if k != "sku_code":
-                    setattr(costs_row, k, v)
+            _apply_update(costs_row, {k: v for k, v in costs_payload.items() if k != "sku_code"},
+                          ctx, "pricing_sku_costs", sku_code, db)
         else:
             db.add(PricingSkuCosts(**costs_payload))
 
@@ -1747,9 +1748,8 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
             select(PricingSkuPromo).where(PricingSkuPromo.sku_code == sku_code)
         ).scalar_one_or_none()
         if promo_row:
-            for k, v in promo_payload.items():
-                if k != "sku_code":
-                    setattr(promo_row, k, v)
+            _apply_update(promo_row, {k: v for k, v in promo_payload.items() if k != "sku_code"},
+                          ctx, "pricing_sku_promo", sku_code, db)
         else:
             db.add(PricingSkuPromo(**promo_payload))
 
