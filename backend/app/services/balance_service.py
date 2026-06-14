@@ -5,7 +5,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import and_, extract, func, select
+from sqlalchemy import and_, extract, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, AlipayFlow
@@ -35,7 +35,10 @@ def recompute_month(
             AlipayFlow.amount > 0,
             extract("year", AlipayFlow.transaction_time) == year,
             extract("month", AlipayFlow.transaction_time) == month,
-            AlipayFlow.reconciliation_type != "opening",
+            or_(
+                AlipayFlow.reconciliation_type.is_(None),
+                AlipayFlow.reconciliation_type != "opening",
+            ),
         )
     )
     expense_q = select(func.coalesce(func.sum(-AlipayFlow.amount), 0)).where(
@@ -44,7 +47,10 @@ def recompute_month(
             AlipayFlow.amount < 0,
             extract("year", AlipayFlow.transaction_time) == year,
             extract("month", AlipayFlow.transaction_time) == month,
-            AlipayFlow.reconciliation_type != "opening",
+            or_(
+                AlipayFlow.reconciliation_type.is_(None),
+                AlipayFlow.reconciliation_type != "opening",
+            ),
         )
     )
     income = Decimal(db.execute(income_q).scalar() or 0)

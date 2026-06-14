@@ -74,7 +74,7 @@ services:
       - "host.docker.internal:host-gateway"
     command: >
       sh -c "alembic upgrade head &&
-             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 2"
+             exec uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1"
     volumes:
       - ${STORAGE_DIR:-./storage}:/app/storage
       - ${GALLERY_DIR:-./gallery}:/app/gallery:ro

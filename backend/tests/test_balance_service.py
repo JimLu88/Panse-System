@@ -83,3 +83,14 @@ def test_recompute_is_idempotent(db_session):
     assert r1.id == r2.id
     assert r2.closing_balance == Decimal("100.00")
     assert db_session.query(AccountBalance).count() == 1
+
+
+def test_recompute_includes_null_reconciliation_type(db_session):
+    # 回归 (2026-06-14): reconciliation_type=NULL 的流水(标准支付宝导入即如此)必须计入当月收支。
+    # 旧 bug: `!= "opening"` 在 SQL 里对 NULL 求值为 NULL → 整条被 WHERE 排除, 期末余额系统性少算。
+    _flow(db_session, "企业号", datetime(2026, 5, 10), 1000, "N1", type_=None)
+    _flow(db_session, "企业号", datetime(2026, 5, 12), -400, "N2", type_=None)
+    row = balance_service.recompute_month(db_session, account="企业号", year=2026, month=5)
+    assert row.income == Decimal("1000")
+    assert row.expense == Decimal("400")
+    assert row.closing_balance == Decimal("600.00")
