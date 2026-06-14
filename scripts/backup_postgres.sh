@@ -20,7 +20,7 @@ out="$BACKUP_DIR/panse_${ts}.sql.gz"
 
 echo "[$(date -Iseconds)] start dump → $out"
 docker exec -e PGUSER="$USER" "$CONTAINER" \
-  pg_dump --no-owner --no-privileges -Fc "$DB" | gzip > "$out"
+  pg_dump --no-owner --no-privileges "$DB" | gzip > "$out"   # 明文 SQL(与 compose 备份 / psql 恢复一致, 评审#11; 去掉 -Fc 自定义格式)
 
 # 校验非空
 if [[ ! -s "$out" ]]; then

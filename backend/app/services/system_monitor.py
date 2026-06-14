@@ -361,11 +361,18 @@ def request_restart(db: Optional[Session] = None, *,
         os.kill(pid, signal.SIGTERM)
 
 
-async def _background_loop(interval_sec: int) -> None:
+import threading as _threading
+
+_BG_THREAD = None   # type: ignore[var-annotated]
+_BG_STOP = None     # type: ignore[var-annotated]
+
+
+def _background_loop_sync(interval_sec: int, stop_event) -> None:
+    """看门狗循环 — 跑在独立 OS 线程 (评审#6): 业务 event loop 被慢 SQL / 外部 HTTP
+    阻塞时, 看门狗仍能照常体检 + 自救, 不会跟着冻住。"""
     from app.database import SessionLocal
-    while True:
+    while not stop_event.wait(interval_sec):
         try:
-            await asyncio.sleep(interval_sec)
             db = SessionLocal()
             try:
                 run_checks(db, persist=True)
@@ -376,33 +383,28 @@ async def _background_loop(interval_sec: int) -> None:
                     _logger.warning("看门狗自救已触发: %s", triggered)
             finally:
                 db.close()
-        except asyncio.CancelledError:
-            raise
         except Exception as e:  # pragma: no cover
             _logger.warning("健康检查失败: %s", e)
 
 
-_BG_TASK: Optional[asyncio.Task] = None
-
-
 def start_background(interval_sec: int = 60) -> None:
-    """FastAPI startup 时调一次. 重复调安全."""
-    global _BG_TASK
-    if _BG_TASK is not None and not _BG_TASK.done():
+    """FastAPI startup 时调一次. 重入安全. 看门狗跑在独立 OS 线程, 不受业务 loop 阻塞影响。"""
+    global _BG_THREAD, _BG_STOP
+    if _BG_THREAD is not None and _BG_THREAD.is_alive():
         return
-    try:
-        loop = asyncio.get_event_loop()
-        _BG_TASK = loop.create_task(_background_loop(interval_sec))
-        _logger.info("看门狗后台任务已启动 (interval=%ss)", interval_sec)
-    except RuntimeError:  # pragma: no cover — 没有 loop
-        pass
+    _BG_STOP = _threading.Event()
+    _BG_THREAD = _threading.Thread(
+        target=_background_loop_sync, args=(interval_sec, _BG_STOP),
+        daemon=True, name="panse-watchdog")
+    _BG_THREAD.start()
+    _logger.info("看门狗后台线程已启动 (interval=%ss, 独立OS线程)", interval_sec)
 
 
 def stop_background() -> None:
-    global _BG_TASK
-    if _BG_TASK is not None and not _BG_TASK.done():
-        _BG_TASK.cancel()
-        _BG_TASK = None
+    global _BG_THREAD, _BG_STOP
+    if _BG_STOP is not None:
+        _BG_STOP.set()
+    _BG_THREAD = None
 
 
 # ----------------------------- 事件 / Diff (业务需求 5) ------------- #
