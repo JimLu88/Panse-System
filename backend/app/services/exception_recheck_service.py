@@ -98,8 +98,8 @@ def _check_order_missing_cost(db: Session, exc: DataException) -> Optional[str]:
         return None
     if o.theoretical_cost is not None or o.actual_cost is not None:
         return None
-    if (o.status or "") == "cancelled" or o.is_historical:
-        return None
+    if (o.status or "") in ("cancelled", "pending_payment") or o.is_historical:
+        return None  # 取消/未付款无成本核算需求(用户拍板2026-06-15)
     from app.services.data_quality_service import is_non_product_order, is_custom_order
     if is_non_product_order(o) or is_custom_order(o):
         return None  # 非实物(差价/样品)/定制(改/尾号≥90) 不属此类(定制归 custom_order_missing_cost_basis)

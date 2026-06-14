@@ -69,7 +69,7 @@ def is_custom_order(o) -> bool:
 def scan_order_missing_cost(db: Session) -> int:
     count = 0
     for o in db.query(Order).filter(
-        Order.status.notin_(["cancelled"]),
+        Order.status.notin_(["cancelled", "pending_payment"]),  # 取消/未付款无成本核算需求(用户拍板2026-06-15)
         Order.is_historical == False,  # noqa: E712
     ).all():
         if o.theoretical_cost is None and o.actual_cost is None:
