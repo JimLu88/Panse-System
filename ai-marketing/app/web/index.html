@@ -86,8 +86,8 @@ function toast(m){const d=document.createElement('div');d.textContent=m;d.style.
 
 const MENU=[
   ['开始',[['home','🏠 今日待办']]],
-  ['内容生产',[['pipe','①② 选题与生成'],['review','③ 审核工位'],['queue','④ 发布队列']]],
-  ['引流获客',[['comment','⑤ 评论引流'],['lead','⑥ 线索收件箱'],['zhihu','⑦ 知乎占坑']]],
+  ['内容生产',[['hotnotes','🔥 爆文挖掘'],['pipe','①② 选题与生成'],['review','③ 审核工位'],['queue','④ 发布队列'],['calendar2','📆 内容日历']]],
+  ['引流获客',[['comment','⑤ 评论引流'],['inbox','💌 评论管理'],['mentions','📡 品牌舆情'],['lead','⑥ 线索收件箱'],['zhihu','⑦ 知乎占坑']]],
   ['账号运营',[['nurture','⑧ 养号清单'],['account','⑨ 账号管理'],['ops','⑩ 运营台账']]],
   ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['system','⚙️ 系统状态']]],
 ];
@@ -104,6 +104,8 @@ function badge(t){
   if(t==='review')return HOME.to_review;
   if(t==='queue')return HOME.due_publish;
   if(t==='comment')return HOME.comments_pending;
+  if(t==='inbox')return HOME.inbox_pending;
+  if(t==='mentions')return HOME.mentions_new;
   if(t==='lead')return HOME.overdue_leads;
   return 0;
 }
@@ -172,10 +174,14 @@ const VIEWS={
         <span class="pill ${t.kind==='evergreen'?'':'b'}">${t.kind==='evergreen'?'🌲常青':'🔥时效'}</span>
         <div class="kv" style="margin:6px 0"><b>${esc(t.title)}</b></div><div class="muted">热度 ${t.heat_score} · ${t.category}</div>
         <div class="row" style="margin-top:8px"><select class="acc">${accs.map(a=>`<option value="${a.id}">${esc(a.nickname)}</option>`).join('')}</select>
-        <button class="ghost gd" data-id="${t.id}">生成草稿</button></div></div>`).join('')||'<div class="empty">点上方生成选题</div>';
+        <button class="ghost gd" data-id="${t.id}">生成图文</button>
+        <button class="ghost gv" data-id="${t.id}">🎬口播脚本</button></div></div>`).join('')||'<div class="empty">点上方生成选题</div>';
       $('#topics').querySelectorAll('.gd').forEach(b=>b.onclick=async()=>{
         const acc=b.closest('.card').querySelector('.acc').value;
         try{await api('POST','/api/drafts/generate',{topic_id:+b.dataset.id,account_id:+acc});loadDrafts();toast('草稿已生成，去③审核');}catch(e){alert(e.message);}});
+      $('#topics').querySelectorAll('.gv').forEach(b=>b.onclick=async()=>{
+        const acc=b.closest('.card').querySelector('.acc').value;
+        try{await api('POST','/api/drafts/video',{topic_id:+b.dataset.id,account_id:+acc});loadDrafts();toast('口播脚本已生成，去③审核');}catch(e){alert(e.message);}});
     }
     async function loadDrafts(){
       const ds=(await api('GET','/api/drafts')).filter(d=>d.status==='drafted');
@@ -209,7 +215,7 @@ const VIEWS={
         <button class="act" id="qs">排发布</button></div><div class="muted" style="margin-top:6px">按住 Ctrl/⌘ 可多选账号；多个号会自动错峰20-45分钟</div>`
       :`<div class="empty">${approved.length?'没有可用账号（需正式期+绿色健康）':'没有审核通过的稿件，先去③审核通过一篇'}</div>`}
     </div>
-    <div class="card"><h3>发布队列</h3><div id="qt"></div></div>
+    <div class="card"><h3>发布队列</h3><div class="row" style="margin-bottom:8px"><button class="ghost" onclick="autoCollect()">📥 自动回采已发数据</button><span class="muted">接采集器后自动拉曝光/赞藏，省去手填</span></div><div id="qt"></div></div>
     <div class="card" id="cardbox" style="display:none"></div>`;
     if(approved.length&&active.length)$('#qs').onclick=async()=>{
       const ids=[...$('#qa').selectedOptions].map(o=>+o.value);
@@ -290,15 +296,16 @@ const VIEWS={
   },
 
   async account(v){
-    const accs=await api('GET','/api/accounts');
+    const [accs,conflicts]=await Promise.all([api('GET','/api/accounts'),api('GET','/api/accounts/device-conflicts')]);
     v.innerHTML=`<div class="guide">👥 <b>账号管理</b>。每个号要<b>独立手机+独立卡+独立网络</b>，一台手机登多个号是连坐封号第一大原因。
-    人设小号建议绑定一位真人（同事），保持画面真实连贯。品牌专业号把官方功能（认证/店铺组件/群聊）全开，这是合法挂链接的唯一通道。点账号行可编辑。</div>
-    <div class="card"><table><thead><tr><th>账号</th><th>角色</th><th>阶段</th><th>粉丝</th><th>健康</th><th>真人/设备</th><th></th></tr></thead><tbody>${accs.map(a=>`<tr>
+    人设小号建议绑定一位真人（同事）。品牌专业号把官方功能（认证/店铺组件/群聊）全开。点账号行可编辑；发现限流/滑块点「风控」一键熔断。</div>
+    ${conflicts.length?`<div class="card" style="border-color:var(--red)"><h3 style="color:var(--red)">⚠️ 一机多号告警</h3>${conflicts.map(c=>`<div class="kv">设备「${esc(c.device)}」绑定了：${c.accounts.map(esc).join('、')} —— 建议拆到独立设备</div>`).join('')}</div>`:''}
+    <div class="card"><table><thead><tr><th>账号</th><th>角色</th><th>阶段</th><th>粉丝</th><th>健康</th><th>真人/设备</th><th>操作</th></tr></thead><tbody>${accs.map(a=>`<tr>
       <td>${esc(a.nickname)}<br><span class="muted">${a.platform}</span></td><td>${roleCN(a.role)}</td>
       <td>${a.stage==='active'?'正式期':a.stage==='trial'?'试发期':'养号期'}</td><td>${a.follower_count}</td>
-      <td>${flag(a.health_flag)} <span class="muted">存活${(a.post_alive_rate*100).toFixed(0)}%</span></td>
+      <td>${flag(a.health_flag)} <span class="muted">${a.health_score}</span></td>
       <td class="muted">${esc(a.real_person)||'—'} / ${esc(a.device_note)||'未登记'}</td>
-      <td><button class="ghost copybtn" onclick="editAcc(${a.id})">编辑</button></td></tr>`).join('')}</tbody></table></div>
+      <td><button class="ghost copybtn" onclick="editAcc(${a.id})">编辑</button> <button class="ghost copybtn" onclick="riskSignal(${a.id})">风控</button></td></tr>`).join('')}</tbody></table></div>
       <div class="card" id="accedit" style="display:none"></div>`;
     window._accs=accs;
   },
@@ -364,6 +371,76 @@ const VIEWS={
       ${recent.length?`<table style="margin-top:8px"><thead><tr><th>时间</th><th>结果</th><th>明细</th></tr></thead><tbody>${recent.map(h=>`<tr><td>${new Date(h.at).toLocaleTimeString()}</td><td><span class="pill ${h.ok?'':'r'}">${h.ok?'OK':'FAIL'}</span></td><td class="muted">${Object.entries(h.details).map(([k,vv])=>`${vv.ok?'✅':'❌'}${k}`).join(' ')}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">暂无记录</div>'}</div>
     <div class="card"><h3>📡 数据源</h3><div class="kv">${esc(ds.hint)}</div></div>`;
   },
+
+  // ============ 🔥 爆文挖掘 ============
+  async hotnotes(v){
+    v.innerHTML=`<div class="guide">🔥 <b>抄作业（合法）</b>。系统抓同赛道<b>真实跑赢的笔记</b>，拆解它的标题/封面/结构给你参考。
+    <b>低粉爆文</b>=小号也能火的内容，最可复制；<b>评论词云</b>=用户在竞品评论区问的真实问题，直接拿来当选题。（采集只读不发）</div>
+    <div class="card"><div class="row"><select id="hc">${['','餐桌','餐椅','茶几','柜类','床'].map(c=>`<option value="${c}">${c||'全部'}</option>`).join('')}</select>
+      <button class="act" id="mine">🔍 抓取爆文</button>
+      <label class="muted"><input type="checkbox" id="lowonly"> 只看低粉爆文</label></div></div>
+    <div class="card"><h3>🔑 评论词云（用户真实问题→选题灵感）</h3><div id="cloud" class="row"></div></div>
+    <div id="hotlist" class="grid"></div>`;
+    $('#mine').onclick=async()=>{const r=await api('POST',`/api/crawl/hot-notes?category=${$('#hc').value}`);toast(`抓到 ${r.added} 篇(低粉爆文 ${r.low_fan})`);load();};
+    $('#lowonly').onchange=load;
+    async function load(){
+      const [hot,cloud]=await Promise.all([api('GET',`/api/crawl/hot-notes?low_fan=${$('#lowonly').checked}`),api('GET','/api/crawl/comment-cloud')]);
+      $('#cloud').innerHTML=cloud.map(w=>`<span class="pill bl" style="font-size:${12+Math.min(w.count*2,8)}px">${esc(w.word)} ${w.count}</span>`).join(' ')||'<span class="muted">抓取爆文后生成</span>';
+      $('#hotlist').innerHTML=hot.map(h=>`<div class="card" style="margin:0">
+        ${h.is_low_fan_hit?'<span class="pill r">💎低粉爆文</span> ':''}<span class="pill b">${h.author_followers}粉</span>
+        <div class="kv" style="margin:6px 0"><b>${esc(h.title)}</b></div>
+        <div class="muted">👍${h.likes} ⭐${h.collects} 💬${h.comments_count}</div>
+        <div class="kv" style="margin-top:6px;background:#faf8f4;padding:8px;border-radius:8px">
+          <div>📐 封面：${esc(h.cover_style)}</div><div>🧱 结构：${esc(h.structure)}</div></div></div>`).join('')||'<div class="empty">点上方抓取爆文</div>';
+    }
+    load();
+  },
+
+  // ============ 💌 评论管理（自有笔记）============
+  async inbox(v){
+    v.innerHTML=`<div class="guide">💌 <b>自己笔记下的评论=到嘴的客户</b>。系统抓来并<b>自动分类</b>（问价/问尺寸/夸/吐槽），问价问尺寸的已备好回复话术，
+    你点「复制回复」去发，高意向的「转线索」进收件箱跟进。发完别不管，<b>评论区要对话才成交</b>。</div>
+    <div class="card"><div class="row"><button class="act" id="fetch">📥 抓取最新评论</button><span class="muted" id="isum"></span></div></div>
+    <div id="ilist"></div>`;
+    $('#fetch').onclick=async()=>{const r=await api('POST','/api/inbox/fetch');toast(`抓到 ${r.added} 条评论`);load();};
+    async function load(){
+      const [list,sum]=await Promise.all([api('GET','/api/inbox/comments'),api('GET','/api/inbox/summary')]);
+      const cn={price:'💰问价',size:'📐问尺寸',material:'🪵问材质',praise:'❤️好评',complaint:'⚠️吐槽',other:'💬其他'};
+      $('#isum').textContent=`待处理 ${sum.pending} 条 · `+Object.entries(sum.by_intent).map(([k,n])=>`${cn[k]||k}${n}`).join(' ');
+      $('#ilist').innerHTML=list.length?`<div class="card"><table><thead><tr><th>笔记</th><th>评论</th><th>意图</th><th>建议回复</th><th>操作</th></tr></thead><tbody>${list.map(c=>`<tr>
+        <td class="muted">${esc(c.note_title)}</td><td>${esc(c.text)}</td><td><span class="pill ${c.intent==='complaint'?'r':c.intent==='praise'?'':'bl'}">${cn[c.intent]||c.intent}</span></td>
+        <td class="muted" style="max-width:240px">${esc(c.reply_draft)} <button class="ghost copybtn" onclick="copy('${esc(c.reply_draft).replace(/'/g,'')}')">复制回复</button></td>
+        <td>${c.status==='new'?`<button class="ghost copybtn" onclick="ibreplied(${c.id})">已回复</button>${['price','size','material'].includes(c.intent)?`<button class="ghost copybtn" onclick="ibtolead(${c.id})">转线索</button>`:''}`:`<span class="pill ${c.status==='converted'?'':'b'}">${c.status==='converted'?'已转线索':'已回复'}</span>`}</td></tr>`).join('')}</tbody></table></div>`:'<div class="empty">点上方抓取（需先有已发布笔记）</div>';
+    }
+    load();
+  },
+
+  // ============ 📡 品牌舆情 ============
+  async mentions(v){
+    v.innerHTML=`<div class="guide">📡 <b>盯着别人怎么说你和竞品</b>。系统监控全平台提及：<b>正面</b>去感谢放大，<b>负面</b>优先安抚，<b>竞品</b>笔记下去做引导评论抢客。</div>
+    <div class="card"><button class="act" id="mscan">🔍 扫描品牌/竞品提及</button></div><div id="mlist" class="grid"></div>`;
+    $('#mscan').onclick=async()=>{const r=await api('POST','/api/mentions/scan');toast(`新增 ${r.added} 条`);load();};
+    async function load(){
+      const ms=await api('GET','/api/mentions');
+      $('#mlist').innerHTML=ms.map(m=>`<div class="card" style="margin:0">
+        <span class="pill ${m.type==='competitor'?'y':'bl'}">${m.type==='competitor'?'竞品':'品牌'}</span>
+        <span class="pill ${m.sentiment==='neg'?'r':m.sentiment==='pos'?'':'b'}">${m.sentiment==='neg'?'负面':m.sentiment==='pos'?'正面':'中性'}</span>
+        <div class="kv" style="margin:6px 0"><b>${esc(m.title)}</b></div><div class="muted">${esc(m.snippet)}</div>
+        <div class="kv" style="margin-top:6px;color:var(--accent)">👉 ${esc(m.suggest)}</div>
+        ${m.status==='new'?`<button class="ghost copybtn" style="margin-top:6px" onclick="mhandle(${m.id})">标记已处理</button>`:'<span class="pill" style="margin-top:6px">已处理</span>'}</div>`).join('')||'<div class="empty">点上方扫描</div>';
+    }
+    load();
+  },
+
+  // ============ 📆 内容日历 ============
+  async calendar2(v){
+    const cal=await api('GET','/api/dispatch/calendar');
+    const head=cal.dates.map(d=>`<th>${d.slice(5)}</th>`).join('');
+    v.innerHTML=`<div class="guide">📆 <b>一眼看排期</b>。横轴日期、纵轴账号，每格是该号那天的笔记。<b>空白格=断更</b>该补内容了。绿色已发，灰色待发。</div>
+    <div class="card" style="overflow-x:auto"><table><thead><tr><th>账号</th>${head}</tr></thead><tbody>${cal.accounts.map(a=>`<tr>
+      <td><b>${esc(a.nickname)}</b><br><span class="muted">${a.stage==='active'?'正式':a.stage==='trial'?'试发':'养号'}</span></td>
+      ${cal.dates.map(d=>{const cells=a.cells[d]||[];return `<td>${cells.map(c=>`<div class="pill ${c.result==='success'?'':'b'}" style="display:block;margin:1px 0;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(c.title)}">${esc(c.title)}</div>`).join('')||'<span class="muted">·</span>'}</td>`}).join('')}</tr>`).join('')}</tbody></table></div>`;
+  },
 };
 
 window.go=t=>{TAB=t;buildNav();render();};
@@ -392,6 +469,7 @@ window.openReview=async id=>{
     <div class="row" style="margin-top:14px">
       <button class="act" ${r.can_approve&&r.status==='drafted'?'':'disabled'} onclick="rev(${id},'approve')">✅ 通过</button>
       <button class="ghost" onclick="rev(${id},'reject')">✗ 拒绝</button>
+      <button class="ghost" onclick="titleAB(${id})">🎯 标题A/B候选</button>
       ${r.status==='approved'?'<span class="muted">已通过 → 去④发布队列</span>':r.status==='scheduled'?'<span class="muted">已在发布队列</span>':r.status==='published'?'<span class="muted">已全部发出</span>':''}
     </div></div>`;
 };
@@ -422,6 +500,13 @@ window.zview=async id=>{const qs=await api('GET','/api/zhihu');const z=qs.find(x
     <div class="kv" style="white-space:pre-wrap;background:#faf8f4;padding:12px;border-radius:8px">${esc(z.answer_draft)}</div>`;
   window._zd=z.answer_draft;box.scrollIntoView({behavior:'smooth'});};
 window.opstog=async id=>{await api('POST',`/api/ops/task/${id}/toggle`);refreshHome();render();};
+window.ibreplied=async id=>{await api('POST',`/api/inbox/comments/${id}/replied`);refreshHome();render();};
+window.ibtolead=async id=>{await api('POST',`/api/inbox/comments/${id}/to-lead`);toast('已转入线索收件箱');refreshHome();render();};
+window.mhandle=async id=>{await api('POST',`/api/mentions/${id}/handled`);refreshHome();render();};
+window.genVideo=async(tid,acc)=>{await api('POST','/api/drafts/video',{topic_id:tid,account_id:acc});toast('口播脚本已生成，去审核工位');render();};
+window.titleAB=async id=>{const r=await api('POST',`/api/drafts/${id}/title-variants`);alert('标题A/B候选：\n\n'+r.variants.join('\n'));};
+window.autoCollect=async()=>{const r=await api('POST','/api/metrics/auto-collect');toast(`自动回采 ${r.collected} 篇数据`);refreshHome();render();};
+window.riskSignal=async id=>{const s=prompt('风控信号(captcha滑块/throttled限流/note_hidden笔记被隐藏)：','throttled');if(s){await api('POST',`/api/accounts/${id}/risk-signal`,{signal:s});render();}};
 window.editAcc=id=>{
   const a=window._accs.find(x=>x.id===id);const box=$('#accedit');box.style.display='block';
   const items=['企业认证','开通店铺组件','开通群聊(私域)','完善合集/瞬间'];const setup=a.official_setup||{};

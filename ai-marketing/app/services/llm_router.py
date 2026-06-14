@@ -22,6 +22,7 @@ ROUTES = {
     "generator.compliance_scan": "cheap",
     "comment.draft": "top",
     "zhihu.answer": "top",
+    "generator.video_script": "top",
     "review.suggest": "cheap",
     "collector.style_extract": "cheap",
 }
@@ -137,9 +138,37 @@ class _MockLLM:
         if task == "review.suggest":
             return ("从本周数据看，真实感高的品类值得加大投入、把发布时间前移到早高峰，"
                     "互动低的内容增加真实使用场景细节（如「用了三个月」这类锚点）。")
+        if task == "generator.video_script":
+            return _MockLLM._video_script(prompt)
         if task == "generator.fact_check":
             return json.dumps({"passed": [], "pending_human": []}, ensure_ascii=False)
         return "（mock 输出）"
+
+    @staticmethod
+    def _video_script(prompt: str) -> str:
+        kw = prompt
+        if "：" in prompt:
+            kw = prompt.split("：")[-1]
+        kw = kw.strip()[:20] or "实木餐桌"
+        return f"""【口播脚本 · {kw}】
+
+〔分镜1·0-3秒 抓人〕画面：手敲桌面特写
+口播：买{kw}前，这3个坑我替你踩过了。
+
+〔分镜2·3-10秒 痛点〕画面：贴皮开胶/色差对比
+口播：第一，别只看"实木"两个字，框架实木和全实木差很多。
+
+〔分镜3·10-20秒 干货〕画面：纹理特写+尺寸标注
+口播：第二，尺寸按户型算，每边留60公分走动才不挤。
+
+〔分镜4·20-28秒 信任〕画面：使用半年实拍
+口播：我家这张用了快一年，每天擦一擦还跟新的一样。
+
+〔分镜5·28-32秒 引导〕画面：店铺/主页
+口播：想看尺寸清单的，评论区扣1，我整理好发你。
+
+#实木家具 #{kw} #家居好物
+（口播脚本初稿，配自家实拍视频后发布。）"""
 
     @staticmethod
     def _zhihu_answer(prompt: str) -> str:

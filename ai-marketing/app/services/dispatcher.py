@@ -41,9 +41,15 @@ def schedule(db: Session, content_id: int, account_ids: list[int]) -> list[Publi
             db.add(ContentEvent(content_id=content_id, event_type="dispatch_skipped",
                                 payload={"account_id": acc_id, "reason": "health_red"}))
             continue
-        if account.stage != "active":
+        if account.stage == "nurturing":
             db.add(ContentEvent(content_id=content_id, event_type="dispatch_skipped",
-                                payload={"account_id": acc_id, "reason": f"stage_{account.stage}"}))
+                                payload={"account_id": acc_id, "reason": "stage_nurturing"}))
+            continue
+        # #5 新号违规预检：试发期账号更脆弱，A级敏感词也不放行（正式期仅卡S级）
+        if account.stage == "trial" and (draft.compliance or {}).get("A"):
+            db.add(ContentEvent(content_id=content_id, event_type="dispatch_skipped",
+                                payload={"account_id": acc_id, "reason": "trial_strict_compliance",
+                                         "hits": draft.compliance.get("A")}))
             continue
 
         if events:  # 第一个号 T+0，之后递增
@@ -94,6 +100,54 @@ def queue(db: Session) -> list[dict]:
         "result": ev.result,
         "has_metric": (ev.content_id, ev.account_id) in metric_pairs,
     } for ev, title, nickname in rows]
+
+
+def calendar(db: Session, days: int = 7) -> dict:
+    """#12 内容日历：账号 × 日期 网格视图。"""
+    from ..models import Account
+    now = dt.datetime.now(dt.timezone.utc)
+    today = now.date()
+    dates = [(today + dt.timedelta(days=i)).isoformat() for i in range(-2, days)]
+    accounts = list(db.scalars(select(Account).order_by(Account.id)))
+
+    rows = db.execute(
+        select(PublishEvent, Draft.title).join(Draft, Draft.id == PublishEvent.content_id)
+    ).all()
+    grid: dict[int, dict[str, list]] = {a.id: {d: [] for d in dates} for a in accounts}
+    for ev, title in rows:
+        d = ev.scheduled_at.date().isoformat()
+        if ev.account_id in grid and d in grid[ev.account_id]:
+            grid[ev.account_id][d].append({"title": title, "result": ev.result,
+                                           "event_id": ev.id})
+    return {
+        "dates": dates,
+        "accounts": [{"id": a.id, "nickname": a.nickname, "stage": a.stage,
+                      "cells": grid[a.id]} for a in accounts],
+    }
+
+
+def best_time(db: Session, account_id: int) -> dict:
+    """#13 最佳发布时间：按该号历史互动数据算最佳发布小时。"""
+    from ..models import Metric
+    rows = db.execute(
+        select(PublishEvent.published_at, Metric.realness_score, Metric.views)
+        .join(Metric, (Metric.content_id == PublishEvent.content_id)
+              & (Metric.account_id == PublishEvent.account_id))
+        .where(PublishEvent.account_id == account_id,
+               PublishEvent.published_at.isnot(None))
+    ).all()
+    hour_score: dict[int, float] = {}
+    hour_n: dict[int, int] = {}
+    for published_at, realness, views in rows:
+        h = published_at.hour
+        hour_score[h] = hour_score.get(h, 0) + (realness or 0) * (views or 1)
+        hour_n[h] = hour_n.get(h, 0) + 1
+    if not hour_score:
+        # 无数据时给家居类经验时段
+        return {"best_hours": [7, 12, 21], "based_on": "经验默认（暂无数据）"}
+    ranked = sorted(hour_score.items(), key=lambda kv: kv[1] / hour_n[kv[0]], reverse=True)
+    return {"best_hours": [h for h, _ in ranked[:3]],
+            "based_on": f"{sum(hour_n.values())} 条历史数据"}
 
 
 def assist_card(db: Session, event_id: int) -> dict:

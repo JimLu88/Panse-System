@@ -85,3 +85,20 @@ class AccountProfileIn(BaseModel):
     device_note: str | None = None
     sim_note: str | None = None
     official_setup: dict | None = None
+
+
+class RiskSignalIn(BaseModel):
+    signal: str  # captcha/throttled/note_hidden/normal
+
+
+class VideoGenIn(BaseModel):
+    topic_id: int
+    account_id: int | None = None
+
+
+class ReplyThreadIn(BaseModel):
+    text: str
+
+
+class AssignIn(BaseModel):
+    assignee: str

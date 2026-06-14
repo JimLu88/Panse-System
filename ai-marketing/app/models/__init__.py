@@ -2,6 +2,7 @@
 from .account import Account, NurtureTask
 from .comment import CommentOpportunity
 from .content import ContentEvent, Draft, Topic
+from .crawl import BrandMention, HotNote, InboundComment
 from .lead import Lead
 from .ops import OpsTask, ReviewMeeting, ZhihuQuestion
 from .publish import Metric, PublishEvent
@@ -14,6 +15,9 @@ __all__ = [
     "ContentEvent",
     "Draft",
     "Topic",
+    "BrandMention",
+    "HotNote",
+    "InboundComment",
     "Lead",
     "Metric",
     "PublishEvent",

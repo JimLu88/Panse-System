@@ -11,7 +11,7 @@ import random
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ..config import PRODUCT_KEYWORDS
+from ..config import PRODUCT_KEYWORDS, SEO_KEYWORDS
 from ..models import ContentEvent, Topic
 from . import analytics
 
@@ -34,7 +34,8 @@ _DEDUP_HOURS = 72
 
 
 def generate_topics(db: Session, category: str, count: int = 3) -> list[Topic]:
-    keywords = PRODUCT_KEYWORDS.get(category, [category])
+    # 融合产品词 + 小红书SEO搜索词（#8），让选题吃搜索流量
+    keywords = PRODUCT_KEYWORDS.get(category, [category]) + SEO_KEYWORDS.get(category, [])
     # ⑦→① 反哺：该品类历史真实感高 → 热度加权
     boost = analytics.category_boost(db).get(category, 0.0)
 

@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 from ..database import get_db
 from ..schemas import (
     AccountProfileIn,
+    AssignIn,
     ComplianceCheckIn,
     DraftGenIn,
     HealthIn,
@@ -15,9 +16,12 @@ from ..schemas import (
     LeadWonIn,
     MeetingIn,
     MetricIn,
+    ReplyThreadIn,
     ReviewActionIn,
+    RiskSignalIn,
     ScheduleIn,
     TopicGenIn,
+    VideoGenIn,
     ZhihuUpdateIn,
 )
 from ..services import (
@@ -25,9 +29,11 @@ from ..services import (
     analytics,
     comment_engine,
     content_seeder,
+    crawl_service,
     data_source,
     dispatcher,
     generator,
+    inbox_comments,
     lead_inbox,
     nurture,
     ops_checklist,
@@ -298,8 +304,8 @@ def home_dashboard(db: Session = Depends(get_db)):
     """普通人首页：今天该做什么，一屏看完。"""
     import datetime as dt
     from sqlalchemy import func, select
-    from ..models import (Account, CommentOpportunity, Draft, Lead, Metric,
-                          NurtureTask, PublishEvent)
+    from ..models import (Account, BrandMention, CommentOpportunity, Draft,
+                          InboundComment, Lead, Metric, NurtureTask, PublishEvent)
 
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     today = dt.date.today().isoformat()
@@ -323,12 +329,19 @@ def home_dashboard(db: Session = Depends(get_db)):
     data_missing = sum(1 for e in success
                        if (e.content_id, e.account_id) not in metric_pairs)
 
+    inbox_pending = db.scalar(select(func.count()).select_from(InboundComment)
+                              .where(InboundComment.status == "new")) or 0
+    mentions_new = db.scalar(select(func.count()).select_from(BrandMention)
+                             .where(BrandMention.status == "new")) or 0
+
     ops = ops_checklist.today(db)
     return {
         "to_review": to_review,
         "to_publish": len(pending_pub),
         "due_publish": due_pub,
         "comments_pending": comments_pending,
+        "inbox_pending": inbox_pending,
+        "mentions_new": mentions_new,
         "nurture_left": nurture_left,
         "overdue_leads": overdue,
         "data_missing": data_missing,
@@ -474,3 +487,143 @@ def faq_scripts():
 @router.get("/datasource/status")
 def datasource_status():
     return data_source.status()
+
+
+# ==================== Phase2: 采集/爆文/评论管理/舆情/日历 ====================
+
+# ---------------- #6/#7 竞品爆文挖掘 + 低粉爆文 ----------------
+@router.post("/crawl/hot-notes")
+def crawl_hot(category: str = "", db: Session = Depends(get_db)):
+    return crawl_service.mine_hot_notes(db, category)
+
+
+@router.get("/crawl/hot-notes")
+def crawl_hot_list(low_fan: bool = False, db: Session = Depends(get_db)):
+    return crawl_service.list_hot_notes(db, low_fan_only=low_fan)
+
+
+# ---------------- #10 评论词云（反推选题）----------------
+@router.get("/crawl/comment-cloud")
+def crawl_cloud(db: Session = Depends(get_db)):
+    return crawl_service.comment_cloud(db)
+
+
+# ---------------- #16 数据自动回采 ----------------
+@router.post("/metrics/auto-collect")
+def metrics_auto(db: Session = Depends(get_db)):
+    return crawl_service.auto_collect_metrics(db)
+
+
+# ---------------- #17/#18/#20 自有笔记评论管理 ----------------
+@router.post("/inbox/fetch")
+def inbox_fetch(db: Session = Depends(get_db)):
+    return inbox_comments.fetch_for_published(db)
+
+
+@router.get("/inbox/comments")
+def inbox_list(status: str | None = None, db: Session = Depends(get_db)):
+    return inbox_comments.list_inbound(db, status)
+
+
+@router.get("/inbox/summary")
+def inbox_sum(db: Session = Depends(get_db)):
+    return inbox_comments.inbound_summary(db)
+
+
+@router.post("/inbox/comments/{cid}/replied")
+def inbox_replied(cid: int, db: Session = Depends(get_db)):
+    c = _err(inbox_comments.mark_replied, db, cid)
+    return {"id": c.id, "status": c.status}
+
+
+@router.post("/inbox/comments/{cid}/to-lead")
+def inbox_to_lead(cid: int, db: Session = Depends(get_db)):
+    return _err(inbox_comments.to_lead, db, cid)
+
+
+@router.post("/inbox/comments/{cid}/thread")
+def inbox_thread(cid: int, body: ReplyThreadIn, db: Session = Depends(get_db)):
+    c = _err(inbox_comments.add_reply_thread, db, cid, body.text)
+    return {"id": c.id, "parent_id": c.parent_id, "intent": c.intent}
+
+
+# ---------------- #19 品牌/竞品舆情 ----------------
+@router.post("/mentions/scan")
+def mentions_scan(db: Session = Depends(get_db)):
+    return inbox_comments.scan_mentions(db)
+
+
+@router.get("/mentions")
+def mentions_list(db: Session = Depends(get_db)):
+    return inbox_comments.list_mentions(db)
+
+
+@router.post("/mentions/{mid}/handled")
+def mentions_handled(mid: int, db: Session = Depends(get_db)):
+    m = _err(inbox_comments.handle_mention, db, mid)
+    return {"id": m.id, "status": m.status}
+
+
+# ---------------- #12 内容日历 / #13 最佳时间 ----------------
+@router.get("/dispatch/calendar")
+def dispatch_calendar(db: Session = Depends(get_db)):
+    return dispatcher.calendar(db)
+
+
+@router.get("/dispatch/best-time/{account_id}")
+def dispatch_best_time(account_id: int, db: Session = Depends(get_db)):
+    return dispatcher.best_time(db, account_id)
+
+
+# ---------------- #9 标题A/B / #11 口播脚本 ----------------
+@router.post("/drafts/{draft_id}/title-variants")
+def draft_titles(draft_id: int, db: Session = Depends(get_db)):
+    return {"variants": _err(generator.generate_title_variants, db, draft_id)}
+
+
+@router.post("/drafts/video")
+def draft_video(body: VideoGenIn, db: Session = Depends(get_db)):
+    d = _err(generator.generate_video_script, db, body.topic_id, body.account_id)
+    return {"id": d.id, "title": d.title, "content_type": d.content_type}
+
+
+@router.get("/library/covers")
+def library_covers():
+    from ..config import COVER_TEMPLATES
+    return COVER_TEMPLATES
+
+
+@router.get("/library/seo")
+def library_seo():
+    from ..config import SEO_KEYWORDS
+    return SEO_KEYWORDS
+
+
+# ---------------- #3 风控信号 / #4 设备冲突 ----------------
+@router.post("/accounts/{account_id}/risk-signal")
+def account_risk(account_id: int, body: RiskSignalIn, db: Session = Depends(get_db)):
+    a = _err(account_service.ingest_risk_signal, db, account_id, body.signal)
+    return {"id": a.id, "health_score": a.health_score, "health_flag": a.health_flag}
+
+
+@router.get("/accounts/device-conflicts")
+def account_device_conflicts(db: Session = Depends(get_db)):
+    return account_service.device_conflicts(db)
+
+
+# ---------------- #14 团队协作 ----------------
+@router.get("/team/roles")
+def team_roles():
+    from ..config import TEAM_ROLES
+    return TEAM_ROLES
+
+
+@router.patch("/drafts/{draft_id}/assign")
+def draft_assign(draft_id: int, body: AssignIn, db: Session = Depends(get_db)):
+    from ..models import Draft
+    d = db.get(Draft, draft_id)
+    if d is None:
+        raise HTTPException(status_code=404, detail="草稿不存在")
+    d.assignee = body.assignee
+    db.commit()
+    return {"id": d.id, "assignee": d.assignee}

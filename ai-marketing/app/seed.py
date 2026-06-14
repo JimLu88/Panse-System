@@ -59,11 +59,16 @@ def run() -> None:
         print(f"已写入 {len(_SEED_ACCOUNTS)} 个种子账号（小红书6 + 知乎2）。")
 
         # 自动预填内容：知乎20题答案初稿 + 各品类选题/草稿，开箱即有料
-        from .services import content_seeder, ops_content
+        from .services import content_seeder, crawl_service, inbox_comments, ops_content
         n = ops_content.generate_all_zhihu_answers(db)
         print(f"已 AI 生成 {n} 篇知乎答案初稿。")
         r = content_seeder.seed_batch(db, per_category=1)
         print(f"已预热 {r['topics']} 个选题 / {r['drafts']} 篇小红书草稿。")
+        # Phase2：竞品爆文 + 品牌舆情（评论需先有已发布笔记，开箱时为空，运营发布后抓）
+        for cat in ("餐桌", "茶几", "柜类"):
+            crawl_service.mine_hot_notes(db, cat)
+        m = inbox_comments.scan_mentions(db)
+        print(f"已抓取竞品爆文(含低粉爆文) + {m['added']} 条品牌/竞品舆情。")
     finally:
         db.close()
 

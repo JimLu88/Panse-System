@@ -40,7 +40,7 @@ def _week_key(day: dt.date) -> str:
 
 
 def today_tasks(db: Session, account_id: int) -> dict:
-    """生成/读取某号当日养号清单（日任务 + 本周周任务）。"""
+    """生成/读取某号当日养号清单（日任务 + 本周周任务 + 矩阵互动）。"""
     account = db.get(Account, account_id)
     if account is None:
         raise ValueError("账号不存在")
@@ -56,9 +56,20 @@ def today_tasks(db: Session, account_id: int) -> dict:
 
     daily = _load(day_key)
     if not daily:
+        # #2 差异化养号：任务量按账号+日期播种，每号节奏稳定但各不相同（非机械统一）
+        rnd = random.Random(f"{account_id}-{day_key}")
         for key, tmpl, rng in _DAILY_TASKS:
             db.add(NurtureTask(account_id=account_id, period_key=day_key,
-                               task_key=key, target=tmpl.format(n=random.randint(*rng))))
+                               task_key=key, target=tmpl.format(n=rnd.randint(*rng))))
+        # #1 矩阵互动换量（抱团）：给一个不同的矩阵号互动，控比例防被识别为养号团
+        peer = db.scalar(
+            select(Account).where(Account.id != account_id,
+                                  Account.stage.in_(["active", "trial"]))
+            .order_by(Account.id)
+        )
+        if peer:
+            db.add(NurtureTask(account_id=account_id, period_key=day_key, task_key="matrix",
+                               target=f"给矩阵号「{peer.nickname}」真实互动1-2条(点赞/评论，别天天同一个号)"))
         db.commit()
         daily = _load(day_key)
 
