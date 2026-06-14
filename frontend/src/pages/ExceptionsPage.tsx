@@ -159,6 +159,36 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '飞书表里有系统没有的列。点「去飞书裁决」选择删除该列（以系统为准）或保留。' },
   ai_logic_check: { category: 'system', label: 'AI 核查发现疑点',
     hint: 'AI 在导入后核查时发现了一处逻辑疑点。请人工复核确认。' },
+
+  // —— 补全翻译 (2026-06-14): 以下类型原先没有中文名, 界面会直接显示英文 code ——
+  alipay_balance_gap: { category: 'finance', label: '支付宝账户余额对不上',
+    hint: '账户期末余额与按流水推算出来的余额对不上(有缺口)。请核对该账户的支付宝流水是否漏记/重复, 或期初余额是否填错。' },
+  factory_order_uncovered: { category: 'order', label: '订单有成本但没有工厂下单记录',
+    hint: '订单已成交且有成本, 但系统里找不到对应的工厂下单记录。请去「工厂下单」补建该订单的下单记录, 或确认是否无需下单。' },
+  material_placeholder: { category: 'product', label: '物料名称还是占位(未填真名)',
+    hint: '这个料号在物料库里的名称还是占位符, 且已被 BOM 引用。请去「物料表」把它的真实名称和价格补全。' },
+  custom_order_missing_cost_basis: { category: 'order', label: '定制订单缺成本依据',
+    hint: '定制订单既没有工厂实际成本, 也没有定制加价, 无法核算成本/毛利。请去订单页补填工厂成本或定制加价。' },
+  pricing_bom_drift: { category: 'product', label: '定价配件成本与 BOM 不一致',
+    hint: '这个 SKU 的「定价里记的配件成本」和「BOM 实际算出来的」对不上(漂移)。请核对 BOM 或重新同步定价配件成本。' },
+  alipay_flow_no_missing: { category: 'finance', label: '缺支付宝流水号',
+    hint: '这条记录(售后/退款等)应有对应的支付宝流水号但没填, 无法核账。请补填支付宝流水号。' },
+  refill_record_missing: { category: 'order', label: '标记为补单但找不到补单记录',
+    hint: '订单标了「是否补单=是」, 但补单对账表里没有对应记录。请去「补单对账」补录该订单的补单记录。' },
+  missing_taobao_mapping: { category: 'product', label: '产品缺淘宝映射',
+    hint: '产品缺少淘宝/对应表的映射字段, 导入订单时无法按对应表自动回填产品编码。请去产品页补全映射。' },
+  misclassified_purchase: { category: 'finance', label: '采购疑似归类错误',
+    hint: '一条采购记录的名称里含有疑似别的用途的关键词, 可能归类错了。请核对这笔钱的真实用途并修正归类。' },
+  bom_product_collision: { category: 'product', label: 'SKU 在 BOM 里挂了多个产品(会串料)',
+    hint: '同一个 SKU 编码在 BOM 里对应了多个产品, 按它生成配件清单会串料。请去 BOM 表把多余的产品关联清掉, 只留正确的一个。' },
+  promotion_recharge_unmatched: { category: 'finance', label: '推广充值缺支付宝流水号',
+    hint: '推广充值记录没填支付宝流水号, 无法核对充值出账。请补填对应的支付宝流水号。' },
+  order_no_unresolved: { category: 'finance', label: '支付宝流水的订单号无法匹配',
+    hint: '这条支付宝流水带的订单号在系统里匹配不到对应订单。请核对订单号是否填错, 或该订单是否还没导入。' },
+  material_name_conflict: { category: 'product', label: '料号名称冲突(物料库与 BOM 不一致)',
+    hint: '同一个料号, 在「物料库」和「BOM」里写的名称不一样, 等于同一编码指了两种物料。请统一成正确的名称。' },
+  flow_not_found: { category: 'finance', label: '工厂对账的支付宝流水号找不到',
+    hint: '工厂对账里填的支付宝流水号, 在支付宝流水表里查不到。请核对流水号是否填错, 或该流水是否还没导入。' },
 };
 
 const typeMeta = (t: string): TypeMeta =>
@@ -450,7 +480,6 @@ export default function ExceptionsPage() {
       render: (t: string) => (
         <Space direction="vertical" size={0}>
           <span>{typeLabel(t)}</span>
-          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{t}</Typography.Text>
         </Space>
       ),
     },
@@ -679,8 +708,7 @@ export default function ExceptionsPage() {
                         <Badge status={g.worst >= 3 ? 'error' : g.worst === 2 ? 'warning' : 'processing'} />
                         <b>{meta.label}</b>
                         <Tag color={g.worst >= 3 ? 'red' : g.worst === 2 ? 'orange' : 'blue'}>{g.items.length}</Tag>
-                        {table && <Tag>表: {table}</Tag>}
-                        <Typography.Text type="secondary" style={{ fontSize: 11 }}>{g.type}</Typography.Text>
+                        {table && <Tag>表: {SOURCE_TABLE_LABELS[table] ?? table}</Tag>}
                       </Space>
                     ),
                     children: (
@@ -733,7 +761,7 @@ export default function ExceptionsPage() {
               description={
                 <Space size="small" wrap>
                   <Tag color={severityColor[diagnoseOpen.exc.severity]}>{diagnoseOpen.exc.severity}</Tag>
-                  <Tag>{diagnoseOpen.exc.source_table}</Tag>
+                  <Tag>{SOURCE_TABLE_LABELS[diagnoseOpen.exc.source_table] ?? diagnoseOpen.exc.source_table}</Tag>
                   <code>{diagnoseOpen.exc.source_pk}</code>
                 </Space>
               }
@@ -820,7 +848,7 @@ export default function ExceptionsPage() {
         {fixOpen && (
           <Space direction="vertical" style={{ width: '100%' }}>
             <Descriptions size="small" column={1} bordered>
-              <Descriptions.Item label="来源">{fixOpen.source_table} / {fixOpen.source_pk}</Descriptions.Item>
+              <Descriptions.Item label="来源">{SOURCE_TABLE_LABELS[fixOpen.source_table] ?? fixOpen.source_table} / {fixOpen.source_pk}</Descriptions.Item>
               <Descriptions.Item label="问题">{fixOpen.description}</Descriptions.Item>
               <Descriptions.Item label="建议">{fixOpen.suggestion_action}</Descriptions.Item>
             </Descriptions>
