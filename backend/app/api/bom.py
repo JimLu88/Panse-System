@@ -193,7 +193,14 @@ def list_bom_for_product(
 ):
     """返回某产品所有 SKU 的 BOM，按 SKU 分组。"""
     stmt = (
-        select(BomLine, Material.name.label("material_name"))
+        select(
+            BomLine,
+            Material.name.label("material_name"),
+            Material.width_mm.label("material_width_mm"),
+            Material.height_mm.label("material_height_mm"),
+            Material.area.label("material_area"),
+            Material.size_type.label("material_size_type"),
+        )
         .join(Material, BomLine.material_code == Material.code, isouter=True)
         .where(BomLine.product_code == product_code)
         .order_by(BomLine.sku_code, BomLine.id)
@@ -201,7 +208,7 @@ def list_bom_for_product(
     rows = db.execute(stmt).all()
 
     grouped: OrderedDict[tuple[str | None, str | None], BomLineGroup] = OrderedDict()
-    for line, material_name in rows:
+    for line, material_name, width_mm, height_mm, area, size_type in rows:
         key = (line.sku, line.sku_code)
         if key not in grouped:
             grouped[key] = BomLineGroup(sku=line.sku, sku_code=line.sku_code, lines=[])
@@ -215,6 +222,10 @@ def list_bom_for_product(
                 material_name=material_name,
                 unit=line.unit,
                 qty_per_product=line.qty_per_product,
+                material_width_mm=width_mm,
+                material_height_mm=height_mm,
+                material_area=area,
+                material_size_type=size_type,
             )
         )
     return list(grouped.values())

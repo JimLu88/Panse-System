@@ -17,6 +17,11 @@ class BomLineOut(BaseModel):
     material_name: Optional[str] = None
     unit: Optional[str]
     qty_per_product: Decimal
+    # 物料下料尺寸 (join 物料库 Material; 绘图子程序按 product_code 取真实下料用, 其余接口留空)
+    material_width_mm: Optional[Decimal] = None
+    material_height_mm: Optional[Decimal] = None
+    material_area: Optional[Decimal] = None
+    material_size_type: Optional[str] = None
 
 
 class BomLineUpdate(BaseModel):
