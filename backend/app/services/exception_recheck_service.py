@@ -100,6 +100,9 @@ def _check_order_missing_cost(db: Session, exc: DataException) -> Optional[str]:
         return None
     if (o.status or "") == "cancelled" or o.is_historical:
         return None
+    from app.services.data_quality_service import is_non_product_order, is_custom_order
+    if is_non_product_order(o) or is_custom_order(o):
+        return None  # 非实物(差价/样品)/定制(改/尾号≥90) 不属此类(定制归 custom_order_missing_cost_basis)
     return f"订单 {o.order_no} 理论/实际成本仍都为空"
 
 
@@ -199,6 +202,8 @@ def _check_missing_taobao_mapping(db: Session, exc: DataException) -> Optional[s
     p = db.execute(select(Product).where(Product.code == exc.source_pk)).scalar_one_or_none()
     if p is None:
         return None
+    if (getattr(p, "listing_status", None) or "") == "下架":
+        return None  # 下架产品(未上架/未生产)不报缺淘宝映射
     if getattr(p, "taobao_id", None):
         return None
     return f"产品 {exc.source_pk} 仍缺淘宝商品ID"

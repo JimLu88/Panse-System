@@ -115,7 +115,7 @@ def compute(db: Session, order: Order) -> CostBreakdown:
     PricingSku.wood_cost, 整套只计第一条 WD 行, 避免重复累加。
     """
     sku_code = _resolve_sku_code(db, order)
-    _is_custom_order = order.is_custom or sku_utils.has_gai_suffix(order.sku_code)
+    _is_custom_order = order.is_custom or sku_utils.is_custom_sku_code(order.sku_code, order.product_code)
 
     # ---- 已知 SKU (非定制): 定价表直推, 不走 BOM ----
     if sku_code and not _is_custom_order:

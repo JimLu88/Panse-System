@@ -33,6 +33,24 @@ def _record(db: Session, **kwargs: Any) -> None:
     exception_service.record(db, **kwargs)
 
 
+# 非实物链接(差价/邮费/补拍/样品等): 无产品成本, 不该报"缺成本"; 关键词可按需扩充。
+NON_PRODUCT_COST_KEYWORDS = ("差价", "邮费", "补拍", "专链", "样品", "小样", "样块")
+
+
+def is_non_product_order(o) -> bool:
+    """差价/邮费/补拍/样品 等非实物订单 — 无产品成本, 不计入"缺成本"异常。"""
+    name = (getattr(o, "product_name", None) or "")
+    return any(k in name for k in NON_PRODUCT_COST_KEYWORDS)
+
+
+def is_custom_order(o) -> bool:
+    """定制单: is_custom 标记 / 「改」后缀 / 数字尾号≥90(99/98…)。定制单缺成本由
+    custom_order_missing_cost_basis 单独管(提示补定制加价), 不在通用缺成本里重复报。"""
+    from app.services import sku_utils
+    return bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
+        getattr(o, "sku_code", None), getattr(o, "product_code", None))
+
+
 # ---------------------------------------------------------------------------
 # B1 — 订单缺理论/实际成本
 # ---------------------------------------------------------------------------
@@ -44,6 +62,8 @@ def scan_order_missing_cost(db: Session) -> int:
         Order.is_historical == False,  # noqa: E712
     ).all():
         if o.theoretical_cost is None and o.actual_cost is None:
+            if is_non_product_order(o) or is_custom_order(o):
+                continue  # 非实物(差价/样品)无成本; 定制单(改/尾号≥90)归 custom_order_missing_cost_basis
             _record(
                 db,
                 source_table="orders",
@@ -622,10 +642,11 @@ def scan_custom_order_missing_cost_basis(db: Session) -> int:
     from sqlalchemy import or_
     count = 0
     for o in db.query(Order).filter(
-        or_(Order.is_custom == True, Order.sku_code.like("%改")),  # noqa: E712  定制标记 或 「改」后缀
         Order.is_refill == False,       # noqa: E712
         Order.status.notin_(["cancelled"]),
     ).all():
+        if not is_custom_order(o):
+            continue  # 仅定制单: is_custom / 「改」后缀 / 数字尾号≥90(99/98…), DB 无关
         if o.actual_cost is not None:
             continue  # 已有工厂实际成本 → 不动
         if o.custom_surcharge is not None:
@@ -768,6 +789,8 @@ def scan_product_missing_taobao_ids(db: Session) -> int:
     from app.models.product import Product
     count = 0
     for p in db.query(Product).all():
+        if (getattr(p, "listing_status", None) or "") == "下架":
+            continue  # 下架=未上架/未生产, 不报缺淘宝映射
         missing = []
         if not (p.taobao_id or "").strip():
             missing.append("淘宝商品ID")
