@@ -47,6 +47,22 @@ def sku_suffix(sku_code: Optional[str], product_code: Optional[str] = None) -> O
     return int(digits[-2:]) if len(digits) >= 2 else int(digits)
 
 
+def base_product_code(sku_code: Optional[str]) -> Optional[str]:
+    """由 SKU 编码推出所属产品编码 = 去「改」后缀, 再去掉尾部 2 位数字后缀。
+
+    'PPS2421007090199' -> 'PPS24210070901' (定制尾号99 → 正常产品);
+    'PPS2325005020237改' -> 'PPS23250050202'。
+    取不到 (空/长度不足/尾部非数字) → None。
+    """
+    if not sku_code:
+        return None
+    s = strip_custom_suffix(sku_code).strip()
+    m = _TRAILING_DIGITS.search(s)
+    if not m or len(m.group(1)) < 2 or len(s) <= 2:
+        return None
+    return s[:-2] or None
+
+
 def is_custom_sku_code(
     sku_code: Optional[str], product_code: Optional[str] = None,
     threshold: int = DEFAULT_CUSTOM_THRESHOLD,

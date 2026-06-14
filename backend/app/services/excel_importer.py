@@ -1403,9 +1403,14 @@ def _h_product(db, data, key_field, ctx=None):
         if sku:
             ps_payload["sku"] = sku
         if ps_existing:
-            for k, v in ps_payload.items():
-                if v is not None:
-                    setattr(ps_existing, k, v)
+            # ⚠ 数据丢失根因(2026-06-14 排查): 原来无条件 setattr 把定价表里更全的 sku 名
+            # (如"…白色岩板")用产品总表里的精简名悄悄覆盖, 绕过 on_conflict=ask → 岩板黑/白区分丢失。
+            # 修复: 产品归属(product_code)以产品总表为准可更新; sku 名只"补空"不"覆盖"——
+            # 库内已有非空 sku 名时一律不动(sku 名以定价表为权威, 有差异由定价表导入的冲突流程处理)。
+            if code and ps_existing.product_code != code:
+                ps_existing.product_code = code
+            if sku and _cell_empty(ps_existing.sku):
+                ps_existing.sku = sku
         else:
             if _is_custom_code(db, sku_code, code):
                 _flag_custom(db, "pricing_sku", sku_code, sku_code)
@@ -1597,6 +1602,12 @@ def _h_order(db, data, key_field, ctx=None):
     if _is_custom_code(db, payload.get("sku_code"), payload.get("product_code")):
         payload["is_custom"] = True
         _flag_custom(db, "orders", order_no, payload.get("sku_code"))
+        # 尾号99等定制单自动归到正常产品 (用户拍板 2026-06-14): 销售额要能关联到产品。
+        # 定制单的 product_code 常残缺/缺失 → 一律由 sku_code 去尾2位重推 (= 正常产品编码)。
+        from app.services import sku_utils as _sku_utils
+        _base = _sku_utils.base_product_code(payload.get("sku_code"))
+        if _base:
+            payload["product_code"] = _base
     # 标记为补单时, 交叉核验补单记录表
     if payload.get("is_refill"):
         from app.models.finance import RefillRecord

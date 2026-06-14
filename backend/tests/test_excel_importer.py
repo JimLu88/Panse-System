@@ -891,3 +891,54 @@ def test_order_multiline_no_conflict(db_session):
     cnt = len(db_session.execute(
         select(Order).where(Order.order_no == "O-MULTI")).scalars().all())
     assert cnt == 1
+
+
+def test_product_import_does_not_clobber_existing_pricing_sku_name(db_session):
+    """回归(2026-06-14 数据丢失根因): 产品总表导入(sku列精简名)不得覆盖定价表里已有的更全 sku 名。
+
+    场景: 定价表先建 sku='榉木餐桌-1.2米-白色岩板'; 之后产品总表(同 sku_code, sku='榉木餐桌-1.2米')
+    以 on_conflict='ask' 导入 → 原 bug 会无条件 setattr 抹掉"白色岩板"。修复后库内 sku 名应保持不变。
+    """
+    from app.models.pricing import PricingSku
+    from sqlalchemy import select as _select
+    db_session.add(PricingSku(
+        product_code="PPSX1", sku_code="PPSX111", sku="榉木餐桌-1.2米-白色岩板"))
+    db_session.commit()
+
+    data = _xlsx("1-产品总表", ["产品编码", "产品名称", "SKU", "SKU编码"], [
+        ["PPSX1", "榉木岩板餐桌", "榉木餐桌-1.2米", "PPSX111"],
+    ])
+    excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="1-产品总表", entity_type="product",
+        mapping={"code": "产品编码", "name": "产品名称", "sku": "SKU", "sku_code": "SKU编码"},
+        on_conflict="ask",
+    )
+    db_session.commit()
+    ps = db_session.execute(
+        _select(PricingSku).where(PricingSku.sku_code == "PPSX111")).scalar_one()
+    assert ps.sku == "榉木餐桌-1.2米-白色岩板"   # 没被产品总表精简名覆盖
+    assert ps.product_code == "PPSX1"
+
+
+def test_order_import_custom_99_auto_attributes_to_product(db_session):
+    """尾号99定制单导入时自动归到正常产品 (2026-06-14): product_code = sku_code 去尾2位。
+
+    即便行内 product_code 残缺/缺失, 也按 sku_code 重推, 保证销售额能关联到产品。
+    """
+    from app.models.order import Order
+    from sqlalchemy import select as _select
+    data = _xlsx("订单总表", ["订单编号", "SKU编码", "产品编码"], [
+        ["O-CUSTOM-99", "PPS2421007090199", ""],          # 99 定制, 产品码缺失
+        ["O-NORMAL-11", "PPS2421007090111", "PPS24210070901"],  # 普通单, 不动
+    ])
+    excel_importer.commit_sheet(
+        db_session, file_bytes=data, sheet_name="订单总表", entity_type="order",
+        mapping={"order_no": "订单编号", "sku_code": "SKU编码", "product_code": "产品编码"})
+    db_session.commit()
+    custom = db_session.execute(
+        _select(Order).where(Order.order_no == "O-CUSTOM-99")).scalar_one()
+    assert custom.is_custom is True
+    assert custom.product_code == "PPS24210070901"   # 自动由 sku_code 去尾2位推得
+    normal = db_session.execute(
+        _select(Order).where(Order.order_no == "O-NORMAL-11")).scalar_one()
+    assert normal.product_code == "PPS24210070901"   # 普通单照常
