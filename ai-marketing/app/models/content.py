@@ -49,6 +49,8 @@ class Draft(Base):
     body: Mapped[str] = mapped_column(Text, default="")
     tags: Mapped[list] = mapped_column(JSON, default=list)
     narrative_units: Mapped[list] = mapped_column(JSON, default=list)
+    content_type: Mapped[str] = mapped_column(String(10), default="graphic")  # graphic/video
+    title_variants: Mapped[list] = mapped_column(JSON, default=list)  # #9 标题A/B候选
 
     fact_check: Mapped[dict] = mapped_column(JSON, default=dict)
     compliance: Mapped[dict] = mapped_column(JSON, default=dict)
@@ -59,6 +61,7 @@ class Draft(Base):
 
     # 状态机: drafted → approved → scheduled → published / rejected
     status: Mapped[str] = mapped_column(String(20), default="drafted")
+    assignee: Mapped[str] = mapped_column(String(40), default="")  # #14 指派负责人
     review_note: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now)
 

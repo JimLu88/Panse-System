@@ -108,6 +108,50 @@ def generate_draft(db: Session, topic_id: int, account_id: int | None = None) ->
     return draft
 
 
+def generate_title_variants(db: Session, draft_id: int) -> list[str]:
+    """#9 标题 A/B：用钩子库为草稿产出多个标题候选，发不同号测点击。"""
+    import random as _r
+
+    from ..config import TITLE_HOOKS
+    draft = db.get(Draft, draft_id)
+    if draft is None:
+        raise ValueError("草稿不存在")
+    topic = db.get(Topic, draft.topic_id)
+    kw = (topic.keywords[0] if topic and topic.keywords else "实木家具")
+    variants = list({h.format(kw=kw)[:20] for h in _r.sample(TITLE_HOOKS, k=min(4, len(TITLE_HOOKS)))})
+    draft.title_variants = variants
+    db.commit()
+    return variants
+
+
+def generate_video_script(db: Session, topic_id: int, account_id: int | None = None) -> Draft:
+    """#11 口播脚本/分镜：产出 content_type=video 的草稿，进同一审核流程。"""
+    topic = db.get(Topic, topic_id)
+    if topic is None:
+        raise ValueError("选题不存在")
+    router = get_router()
+    kw = topic.keywords[0] if topic.keywords else topic.title
+    script = router.complete("generator.video_script", f"为家具写小红书口播脚本：{kw}")
+    hits = compliance.scan_banned(script)
+    draft = Draft(
+        topic_id=topic.id, account_id=account_id, title=("【视频】" + topic.title)[:20],
+        body=script, tags=topic.keywords, narrative_units=[],
+        content_type="video", fact_check={"passed": [], "pending_human": extract_claims(script)},
+        compliance=hits, ai_likeness=compliance.ai_likeness_score(script),
+        info_density=compliance.info_density(script),
+        must_fix={"cover_text_density": 0.0, "para2_marketing": "ok",
+                  "personal_anchor_count": script.count("我")},
+        lineage={"prompt_template": "video_v1", "generated_by_model": router.provider},
+        status="drafted",
+    )
+    db.add(draft)
+    db.flush()
+    db.add(ContentEvent(content_id=draft.id, event_type="draft_generated",
+                        payload={"content_type": "video"}))
+    db.commit()
+    return draft
+
+
 def _safe_json(raw: str) -> dict:
     try:
         return json.loads(raw)
