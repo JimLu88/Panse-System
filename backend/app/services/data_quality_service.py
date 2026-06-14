@@ -43,6 +43,17 @@ def is_non_product_order(o) -> bool:
     return any(k in name for k in NON_PRODUCT_COST_KEYWORDS)
 
 
+# 非卖品产品(作废链接/纯定制/全屋定制/商家安装/送货sku/淘宝自动生成sku/样品链接): 本就没上架,
+# 不该报"缺淘宝映射"。用产品名关键词识别(在售真品名里不会出现这些词)。
+NON_SELLABLE_PRODUCT_KEYWORDS = ("作废", "定制", "安装", "送货", "自动生成", "样品", "小样")
+
+
+def is_non_sellable_product(p) -> bool:
+    """非卖品/占位/作废 产品 — 不报缺淘宝映射 (名字含 作废/定制/安装/送货/自动生成/样 等)。"""
+    name = (getattr(p, "name", None) or "")
+    return any(k in name for k in NON_SELLABLE_PRODUCT_KEYWORDS)
+
+
 def is_custom_order(o) -> bool:
     """定制单: is_custom 标记 / 「改」后缀 / 数字尾号≥90(99/98…)。定制单缺成本由
     custom_order_missing_cost_basis 单独管(提示补定制加价), 不在通用缺成本里重复报。"""
@@ -791,6 +802,8 @@ def scan_product_missing_taobao_ids(db: Session) -> int:
     for p in db.query(Product).all():
         if (getattr(p, "listing_status", None) or "") == "下架":
             continue  # 下架=未上架/未生产, 不报缺淘宝映射
+        if is_non_sellable_product(p):
+            continue  # 作废/定制/安装/送货/样品 等非卖品, 本就没上架
         missing = []
         if not (p.taobao_id or "").strip():
             missing.append("淘宝商品ID")

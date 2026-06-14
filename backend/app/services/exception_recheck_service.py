@@ -152,6 +152,29 @@ def _check_refill_unmatched(db: Session, exc: DataException) -> Optional[str]:
     return f"补单 {exc.source_pk} 订单号 {r.order_no} 仍找不到对应订单"
 
 
+def _check_refill_record_missing(db: Session, exc: DataException) -> Optional[str]:
+    """订单标补单但补单表无记录: 修好 = 该订单号现在补单表里有记录了
+    (或订单已不在/不再标补单/已取消)。source_pk = 订单号(字符串)。
+
+    注: 此类异常由导入时(_h_order)创建, 之前无复核器 → 即便补单记录补上也不会自动销账,
+    导致大量 stale 误报(实测 31/93 其实已有补单记录)。补上复核器。"""
+    from sqlalchemy import func
+    from app.models.finance import RefillRecord
+    from app.models.order import Order
+    o = db.execute(select(Order).where(Order.order_no == exc.source_pk)).scalar_one_or_none()
+    if o is None:
+        return None  # 订单已不在
+    if not getattr(o, "is_refill", False):
+        return None  # 不再标补单
+    if (o.status or "") == "cancelled":
+        return None
+    n = db.execute(select(func.count()).select_from(RefillRecord)
+                   .where(RefillRecord.order_no == exc.source_pk)).scalar() or 0
+    if n:
+        return None  # 补单记录已存在 → 已修好
+    return f"订单 {exc.source_pk} 标补单但补单表仍无记录"
+
+
 def _check_factory_order_uncovered(db: Session, exc: DataException) -> Optional[str]:
     """已发货有成本但无工厂单: 修好 = 已有有效工厂单 (或不再发货态/无成本/历史)。"""
     from sqlalchemy import func
@@ -204,6 +227,9 @@ def _check_missing_taobao_mapping(db: Session, exc: DataException) -> Optional[s
         return None
     if (getattr(p, "listing_status", None) or "") == "下架":
         return None  # 下架产品(未上架/未生产)不报缺淘宝映射
+    from app.services.data_quality_service import is_non_sellable_product
+    if is_non_sellable_product(p):
+        return None  # 作废/定制/安装/送货/样品 等非卖品, 本就没上架
     if getattr(p, "taobao_id", None):
         return None
     return f"产品 {exc.source_pk} 仍缺淘宝商品ID"
@@ -218,6 +244,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_missing_tracking": _check_order_missing_tracking,
     "order_missing_alipay": _check_order_missing_alipay,
     "refill_unmatched": _check_refill_unmatched,
+    "refill_record_missing": _check_refill_record_missing,
     "factory_order_uncovered": _check_factory_order_uncovered,
     "promotion_recharge_unmatched": _check_promotion_recharge_unmatched,
     "custom_order_missing_cost_basis": _check_custom_order_missing_cost_basis,
