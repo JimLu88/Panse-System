@@ -203,10 +203,17 @@ def run_factory_payment(
         billed_by_factory[k] = billed_by_factory.get(k, Decimal("0")) + Decimal(billed or 0)
 
     # 流水里查 reconciliation_type = factory_payment 的支出 (amount < 0)
+    # 评审财务#1: 付款侧也要按账期过滤 (与 promotion/install/logistics/revenue 一致);
+    # 原来只过滤了应付侧(order_date), 付款侧取全量 → 传 period 时"当期应付 vs 历史全量实付"虚假大额差。
     flow_stmt = select(
         AlipayFlow.counterparty,
         func.coalesce(func.sum(-AlipayFlow.amount), 0).label("paid"),
-    ).where(AlipayFlow.reconciliation_type == "factory_payment").group_by(AlipayFlow.counterparty)
+    ).where(AlipayFlow.reconciliation_type == "factory_payment")
+    if period_start:
+        flow_stmt = flow_stmt.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        flow_stmt = flow_stmt.where(AlipayFlow.transaction_time <= period_end)
+    flow_stmt = flow_stmt.group_by(AlipayFlow.counterparty)
     paid_by_factory: dict[str, Decimal] = {}
     for name, paid in db.execute(flow_stmt).all():
         k = _canon_factory(name, aliases) if name else "(未匹配)"

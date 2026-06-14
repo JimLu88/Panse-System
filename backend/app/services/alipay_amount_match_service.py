@@ -178,8 +178,12 @@ def match(db: Session, *, days_window: int = 3, amount_tol: Decimal = _CENT,
         o.alipay_flow_no = m.flow_nos[0]    # 多笔时记主流水, 其余在对账明细可见
         linked += 1
         for fno in m.flow_nos:
+            # 评审财务#2: transaction_no 在本库非唯一(382组重复, 其中358组金额还不同 → 是"商户单号/多行项"
+            # 性质, 不是同一笔交易的副本)。所以绝不能"按交易号全标 matched"——会误标金额不同的无关流水。
+            # 保留单条命中, 但加 order_by 去掉 .limit(1) 的非确定性(原来随机挑一条)。
             f = db.execute(
-                select(AlipayFlow).where(AlipayFlow.transaction_no == fno).limit(1)
+                select(AlipayFlow).where(AlipayFlow.transaction_no == fno)
+                .order_by(AlipayFlow.id).limit(1)
             ).scalar_one_or_none()
             if f is not None and f.reconciliation_status != "matched":
                 f.reconciliation_status = "matched"

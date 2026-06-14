@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import select
@@ -23,6 +24,7 @@ from app.models.finance import AlipayFlow
 _logger = logging.getLogger("panse.flow_refund")
 
 _CENTS = Decimal("0.01")
+_MAX_TIME = datetime.max  # 缺失 transaction_time 的流水排序时垫底
 
 
 def detect_refunds(db: Session) -> int:
@@ -46,8 +48,13 @@ def detect_refunds(db: Session) -> int:
 
     pairs_found = 0
     for order_no, group in by_order.items():
-        incomes = [f for f in group if (f.amount or 0) > 0]
-        expenses = [f for f in group if (f.amount or 0) < 0]
+        # 评审财务#3: 等额盲配加两道护栏(不丢现有正确对):
+        #   1) 按时间排序, 配对结果稳定(不再依赖数据库行序的偶然顺序)
+        #   2) 两侧都有时间戳时, 退款(支出)必须发生在付款(收入)当天或之后; 缺时间则放行(回退原行为)
+        def _t(f):  # 缺失时间排最后, 不参与排序比较时视为最大
+            return f.transaction_time or _MAX_TIME
+        incomes = sorted([f for f in group if (f.amount or 0) > 0], key=_t)
+        expenses = sorted([f for f in group if (f.amount or 0) < 0], key=_t)
         used_income_ids: set[int] = set()
         used_expense_ids: set[int] = set()
 
@@ -55,6 +62,10 @@ def detect_refunds(db: Session) -> int:
             inc_abs = abs(inc.amount or Decimal("0")).quantize(_CENTS)
             for exp in expenses:
                 if exp.id in used_expense_ids:
+                    continue
+                # 退款必须不早于付款 (两侧时间都在时才校验; 任一缺失则回退原等额规则)
+                if inc.transaction_time and exp.transaction_time \
+                        and exp.transaction_time < inc.transaction_time:
                     continue
                 exp_abs = abs(exp.amount or Decimal("0")).quantize(_CENTS)
                 if inc_abs == exp_abs and inc_abs > 0:
