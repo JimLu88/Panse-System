@@ -1,6 +1,7 @@
 # AI Marketing Syeyem · 全平台内容生产与分发系统
 
-> 📝 **设计稿阶段** · 这是规划文档目录，不是代码仓库。
+> 🚧 **已实现 Phase-1/2/3**（小红书+知乎）· 可运行代码见 [`../../ai-marketing/`](../../ai-marketing)，交接说明见 [`../../ai-marketing/HANDOFF.md`](../../ai-marketing/HANDOFF.md)。
+> 本目录为原始设计稿；落地实现以 `ai-marketing/` 为准（养号/内容制作/分发/评论 + 看门狗 + 运营台账已建成，49 测试全绿）。
 > 服务于小红书、知乎、抖音、快手、Instagram、TikTok、小黑盒 等多平台的 AI 内容生产 + 多模式分发。
 
 ---

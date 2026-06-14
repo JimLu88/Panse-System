@@ -62,8 +62,9 @@ _MOCK_MENTIONS = [
 
 
 def _crawler_get(path: str, params: dict | None = None):
-    """调真实爬虫；失败返回 None（调用方回退演示数据）。"""
-    base = get_settings().crawler_base_url
+    """调真实爬虫；失败返回 None（调用方回退演示数据）。地址走运行时配置(界面可改)。"""
+    from . import runtime_config
+    base = runtime_config.get("crawler_base_url")
     if not base:
         return None
     try:
@@ -126,7 +127,8 @@ def fetch_mentions(keywords: list[str]) -> tuple[list[dict], str]:
 
 
 def status() -> dict:
-    base = get_settings().crawler_base_url
+    from . import runtime_config
+    base = runtime_config.get("crawler_base_url")
     return {
         "mode": "crawler" if base else "mock",
         "crawler_url": base or None,

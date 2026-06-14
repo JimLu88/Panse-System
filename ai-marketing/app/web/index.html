@@ -89,7 +89,7 @@ const MENU=[
   ['内容生产',[['hotnotes','🔥 爆文挖掘'],['pipe','①② 选题与生成'],['review','③ 审核工位'],['queue','④ 发布队列'],['calendar2','📆 内容日历']]],
   ['引流获客',[['comment','⑤ 评论引流'],['inbox','💌 评论管理'],['mentions','📡 品牌舆情'],['lead','⑥ 线索收件箱'],['zhihu','⑦ 知乎占坑']]],
   ['账号运营',[['nurture','⑧ 养号清单'],['account','⑨ 账号管理'],['ops','⑩ 运营台账']]],
-  ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['system','⚙️ 系统状态']]],
+  ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['report','🧾 一周战报'],['settings','🔧 系统设置'],['system','⚙️ 系统状态']]],
 ];
 let TAB='home', HOME={};
 
@@ -432,6 +432,40 @@ const VIEWS={
     load();
   },
 
+  // ============ 🧾 一周战报 ============
+  async report(v){
+    const r=await api('GET','/api/report/weekly');
+    v.innerHTML=`<div class="guide">🧾 <b>一周战报</b>。把"发了多少→引流多少→来了多少线索→成交多少"一页看完。点「推送飞书」发到群里同步。</div>
+    <div class="card"><h3>${r.week} 战报</h3>
+      <div class="stat">
+        <div class="c"><div class="num">${r.published}</div><div class="lbl">发布笔记</div></div>
+        <div class="c"><div class="num">${r.comments_posted}</div><div class="lbl">评论引流</div></div>
+        <div class="c"><div class="num">${r.inbound_comments}</div><div class="lbl">收到评论</div></div>
+        <div class="c"><div class="num">${r.leads_new}</div><div class="lbl">新增线索</div></div>
+        <div class="c"><div class="num">${r.leads_won}</div><div class="lbl">成交</div></div>
+        <div class="c"><div class="num">${r.avg_realness}</div><div class="lbl">加权真实感</div></div>
+      </div>
+      ${r.top_category?`<div class="kv" style="margin-top:10px">📈 最值得加投品类：<b>${esc(r.top_category)}</b></div>`:''}
+      ${r.best_content.length?`<div class="kv">🏆 本周最佳：${r.best_content.map(b=>esc(b.title)).join('、')}</div>`:''}
+      <button class="act" style="margin-top:12px" id="push">推送到飞书群</button></div>`;
+    $('#push').onclick=async()=>{const x=await api('POST','/api/report/weekly/push');toast(x.pushed_to_feishu?'已推送飞书':'未配飞书地址（去系统设置填）');};
+  },
+
+  // ============ 🔧 系统设置 ============
+  async settings(v){
+    const ss=await api('GET','/api/settings');
+    v.innerHTML=`<div class="guide">🔧 <b>系统设置</b>。在这里填好集成地址<b>即时生效、无需重启</b>。填了采集器地址，全站演示数据自动换成真实数据；填了飞书地址，告警和战报推到群里。</div>
+    <div class="card">${ss.map(s=>`<div style="margin-bottom:14px"><b>${esc(s.label)}</b> ${s.configured?'<span class="pill">已配置</span>':'<span class="pill b">未配置</span>'}
+      <div class="muted">${esc(s.hint)}</div>
+      <div class="row" style="margin-top:6px"><input id="set_${s.key}" value="${esc(s.value)}" placeholder="留空=用演示数据" style="flex:1;min-width:280px">
+      <button class="ghost" onclick="saveSet('${s.key}')">保存</button></div></div>`).join('')}</div>
+    <div class="card"><h3>📤 真实数据导入（不想起服务时）</h3>
+      <div class="muted">把采集器导出的 JSON 粘进来直接灌入（格式：{"hot_notes":[...],"mentions":[...]}）。</div>
+      <textarea id="imp" placeholder='{"hot_notes":[{"title":"...","fans":800,"likes":12000,"cover":"...","structure":"...","comments_sample":["..."]}]}'></textarea>
+      <button class="act" style="margin-top:8px" id="impbtn">导入</button><div id="impr" class="muted" style="margin-top:6px"></div></div>`;
+    $('#impbtn').onclick=async()=>{try{const r=await api('POST','/api/crawl/import',JSON.parse($('#imp').value||'{}'));$('#impr').textContent=`导入爆文 ${r.hot_notes_added} / 舆情 ${r.mentions_added}`;}catch(e){$('#impr').textContent='出错：'+e.message;}};
+  },
+
   // ============ 📆 内容日历 ============
   async calendar2(v){
     const cal=await api('GET','/api/dispatch/calendar');
@@ -507,6 +541,7 @@ window.genVideo=async(tid,acc)=>{await api('POST','/api/drafts/video',{topic_id:
 window.titleAB=async id=>{const r=await api('POST',`/api/drafts/${id}/title-variants`);alert('标题A/B候选：\n\n'+r.variants.join('\n'));};
 window.autoCollect=async()=>{const r=await api('POST','/api/metrics/auto-collect');toast(`自动回采 ${r.collected} 篇数据`);refreshHome();render();};
 window.riskSignal=async id=>{const s=prompt('风控信号(captcha滑块/throttled限流/note_hidden笔记被隐藏)：','throttled');if(s){await api('POST',`/api/accounts/${id}/risk-signal`,{signal:s});render();}};
+window.saveSet=async key=>{await api('POST',`/api/settings/${key}`,{value:document.getElementById('set_'+key).value});toast('已保存，即时生效');render();};
 window.editAcc=id=>{
   const a=window._accs.find(x=>x.id===id);const box=$('#accedit');box.style.display='block';
   const items=['企业认证','开通店铺组件','开通群聊(私域)','完善合集/瞬间'];const setup=a.official_setup||{};

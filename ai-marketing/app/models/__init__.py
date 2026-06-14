@@ -6,6 +6,7 @@ from .crawl import BrandMention, HotNote, InboundComment
 from .lead import Lead
 from .ops import OpsTask, ReviewMeeting, ZhihuQuestion
 from .publish import Metric, PublishEvent
+from .setting import Setting
 from .system import HealthLog
 
 __all__ = [
@@ -21,6 +22,7 @@ __all__ = [
     "Lead",
     "Metric",
     "PublishEvent",
+    "Setting",
     "HealthLog",
     "OpsTask",
     "ReviewMeeting",
