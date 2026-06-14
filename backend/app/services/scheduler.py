@@ -962,8 +962,10 @@ def _register_default_jobs() -> None:
                  _job_monthly_report_push, cron={"day": 1, "hour": 9, "minute": 0})
     register_job("daily_18_factory_summary", "每日待生产工厂单汇总",
                  _job_factory_daily_summary, cron={"hour": 18, "minute": 0})
-    register_job("daily_0630_web_agent", "Web-Agent 自动取数编排(06:30)",
-                 _job_web_agent_daily, cron={"hour": 6, "minute": 30})
+    # 2026-06-14 用户改: Web-Agent 取数挪到 18:00 左右(那时 PC 一般开着, 群晖才连得上 PC 的浏览器农场)。
+    # 保留 job_id 不变以免孤立已存的 override / 运行历史。
+    register_job("daily_0630_web_agent", "Web-Agent 自动取数编排(18:00)",
+                 _job_web_agent_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",
@@ -1030,7 +1032,14 @@ def start(timezone_name: Optional[str] = None) -> None:
         return
 
     tz = timezone_name or os.environ.get("PANSE_TZ", "Asia/Shanghai")
-    _SCHEDULER = AsyncIOScheduler(timezone=tz)
+    # 群晖 2G 内存: 限制同时并发的同步任务数, 避免早高峰多个全表重算挤在一起把内存打爆。
+    # coalesce=错过的多次触发合并成一次; max_instances=1=同一任务不重叠跑; misfire 1h 宽限。
+    from apscheduler.executors.pool import ThreadPoolExecutor as _APThreadPool
+    _SCHEDULER = AsyncIOScheduler(
+        timezone=tz,
+        executors={"default": _APThreadPool(max_workers=int(os.environ.get("SCHED_MAX_WORKERS", "2")))},
+        job_defaults={"coalesce": True, "max_instances": 1, "misfire_grace_time": 3600},
+    )
     _register_default_jobs()
     overrides = _load_overrides()
     for job_id in _REGISTRY:
