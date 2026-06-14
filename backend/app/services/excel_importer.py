@@ -1896,9 +1896,15 @@ def _h_aftersales(db, data, key_field, ctx=None):
             data["out_platform_total"] = v
     payload = {k: v for k, v in data.items() if v is not None}
     # 支付宝流水号为空 → 报异常, 让同事回填 (售后表行数有限, 逐行标记可接受)
+    # 但: 关联订单若交易关闭(cancelled)/未付款(pending_payment)——客户下单后直接退款, 本就不产生
+    # 支付宝流水 → 不报缺流水号(用户拍板 2026-06-15)。
     if not data.get("alipay_flow_no"):
-        _record_exc(db, "after_sales", order_no, "alipay_flow_no_missing",
-                    f"售后单 {order_no} 支付宝流水号为空, 无法与流水核销, 请回填.", "warning")
+        from app.models.order import Order as _Ord
+        _o = db.execute(select(_Ord).where(_Ord.order_no == order_no)).scalar_one_or_none()
+        _closed = _o is not None and (_o.status or "") in ("cancelled", "pending_payment")
+        if not _closed:
+            _record_exc(db, "after_sales", order_no, "alipay_flow_no_missing",
+                        f"售后单 {order_no} 支付宝流水号为空, 无法与流水核销, 请回填.", "warning")
     # 一个订单可能有多次真实售后(用户确认要全保留) → 仅当某条已存在记录与本行"全部导入字段"
     # 完全一致才算重复(跳过), 否则都作为独立售后入库。这样多次售后都保留, 重导同一份表仍幂等。
     existing_rows = db.execute(

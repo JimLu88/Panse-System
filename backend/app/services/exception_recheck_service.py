@@ -152,6 +152,26 @@ def _check_refill_unmatched(db: Session, exc: DataException) -> Optional[str]:
     return f"补单 {exc.source_pk} 订单号 {r.order_no} 仍找不到对应订单"
 
 
+def _check_alipay_flow_no_missing(db: Session, exc: DataException) -> Optional[str]:
+    """缺支付宝流水号(售后): 修好 = 流水号已填; 或关联订单交易关闭(cancelled)/未付款
+    (pending_payment)——客户下单直接退款, 本就不会产生支付宝流水 (用户拍板 2026-06-15)。
+    非 after_sales 来源(如 outsourcing_expenses 外包私账)无可靠复核键 → 保留人工处理。"""
+    from app.models.marketing import AfterSales
+    from app.models.order import Order
+    if exc.source_table != "after_sales":
+        return f"{exc.source_pk} 仍缺支付宝流水号(人工处理)"
+    o = db.execute(select(Order).where(Order.order_no == exc.source_pk)).scalar_one_or_none()
+    if o is not None and (o.status or "") in ("cancelled", "pending_payment"):
+        return None  # 交易关闭/未付款 → 本就无流水
+    rows = db.execute(
+        select(AfterSales).where(AfterSales.platform_order_no == exc.source_pk)).scalars().all()
+    if not rows:
+        return None  # 售后记录已不在
+    if all((r.alipay_flow_no or "").strip() for r in rows):
+        return None  # 都已回填
+    return f"售后单 {exc.source_pk} 仍缺支付宝流水号"
+
+
 def _check_refill_record_missing(db: Session, exc: DataException) -> Optional[str]:
     """订单标补单但补单表无记录: 修好 = 该订单号现在补单表里有记录了
     (或订单已不在/不再标补单/已取消)。source_pk = 订单号(字符串)。
@@ -243,6 +263,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_missing_cost": _check_order_missing_cost,
     "order_missing_tracking": _check_order_missing_tracking,
     "order_missing_alipay": _check_order_missing_alipay,
+    "alipay_flow_no_missing": _check_alipay_flow_no_missing,
     "refill_unmatched": _check_refill_unmatched,
     "refill_record_missing": _check_refill_record_missing,
     "factory_order_uncovered": _check_factory_order_uncovered,
