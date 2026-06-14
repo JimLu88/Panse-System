@@ -57,6 +57,13 @@ def run() -> None:
             ))
         db.commit()
         print(f"已写入 {len(_SEED_ACCOUNTS)} 个种子账号（小红书6 + 知乎2）。")
+
+        # 自动预填内容：知乎20题答案初稿 + 各品类选题/草稿，开箱即有料
+        from .services import content_seeder, ops_content
+        n = ops_content.generate_all_zhihu_answers(db)
+        print(f"已 AI 生成 {n} 篇知乎答案初稿。")
+        r = content_seeder.seed_batch(db, per_category=1)
+        print(f"已预热 {r['topics']} 个选题 / {r['drafts']} 篇小红书草稿。")
     finally:
         db.close()
 

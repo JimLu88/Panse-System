@@ -83,3 +83,49 @@ def test_metric_count_to_ratio(client, db):
 def test_datasource_status(client):
     r = client.get("/api/datasource/status").json()
     assert r["mode"] in ("mock", "crawler")
+
+
+def test_zhihu_generate_answer(client):
+    qs = client.get("/api/zhihu").json()
+    qid = qs[0]["id"]
+    r = client.post(f"/api/zhihu/{qid}/generate").json()
+    assert len(r["answer_draft"]) > 100  # 生成了实质内容
+    assert r["status"] == "writing"
+    # 列表能看到 has_draft
+    after = {q["id"]: q for q in client.get("/api/zhihu").json()}
+    assert after[qid]["has_draft"] is True
+
+
+def test_zhihu_generate_all(client):
+    r = client.post("/api/zhihu/generate-all").json()
+    assert r["generated"] >= 0
+    # 再调一次应为0（已全有初稿）
+    r2 = client.post("/api/zhihu/generate-all").json()
+    assert r2["generated"] == 0
+    drafts = [q for q in client.get("/api/zhihu").json() if q["has_draft"]]
+    assert len(drafts) == 20
+
+
+def test_content_seed_batch(client):
+    r = client.post("/api/content/seed-batch?per_category=1").json()
+    assert r["topics"] >= 5  # 5个品类各至少1个
+    assert r["drafts"] >= 1
+    drafts = client.get("/api/drafts").json()
+    assert len(drafts) >= r["drafts"]
+
+
+def test_review_suggest(client, db):
+    from app.models import Account, Draft, Topic
+    t = Topic(title="建议测试", category="床")
+    db.add(t)
+    db.commit()
+    d = Draft(topic_id=t.id, title="x", body="b", ai_likeness=10,
+              compliance={"S": [], "A": [], "B": []})
+    db.add(d)
+    db.commit()
+    acc = client.get("/api/accounts").json()[0]["id"]
+    client.post("/api/metrics", json={"content_id": d.id, "account_id": acc,
+                                      "views": 1000, "comments": 10,
+                                      "question_comments": 9, "long_comments": 9})
+    r = client.post("/api/review-meetings/suggest").json()
+    assert "suggestion" in r and len(r["suggestion"]) > 0

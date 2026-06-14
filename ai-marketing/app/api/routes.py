@@ -24,6 +24,7 @@ from ..services import (
     account_service,
     analytics,
     comment_engine,
+    content_seeder,
     data_source,
     dispatcher,
     generator,
@@ -354,11 +355,37 @@ def zhihu_list(db: Session = Depends(get_db)):
     return ops_content.list_zhihu(db)
 
 
+@router.post("/zhihu/generate-all")
+def zhihu_generate_all(db: Session = Depends(get_db)):
+    """AI 给所有没初稿的知乎问题批量生成答案。（静态路由须在 /{qid} 之前）"""
+    n = ops_content.generate_all_zhihu_answers(db)
+    return {"generated": n}
+
+
 @router.post("/zhihu/{qid}")
 def zhihu_update(qid: int, body: ZhihuUpdateIn, db: Session = Depends(get_db)):
     z = _err(ops_content.update_zhihu, db, qid, status=body.status,
              answer_url=body.answer_url, note=body.note)
     return {"id": z.id, "status": z.status}
+
+
+@router.post("/zhihu/{qid}/generate")
+def zhihu_generate(qid: int, db: Session = Depends(get_db)):
+    """AI 生成单个问题的答案初稿。"""
+    z = _err(ops_content.generate_zhihu_answer, db, qid)
+    return {"id": z.id, "status": z.status, "answer_draft": z.answer_draft}
+
+
+@router.post("/content/seed-batch")
+def content_seed_batch(per_category: int = 1, db: Session = Depends(get_db)):
+    """一键预热：各品类批量生成选题+草稿，系统首次开箱即有内容。"""
+    return content_seeder.seed_batch(db, per_category)
+
+
+@router.post("/review-meetings/suggest")
+def meetings_suggest(db: Session = Depends(get_db)):
+    """从数据自动生成复盘行动建议。"""
+    return ops_content.suggest_conclusion(db)
 
 
 # ---------------- 复盘会 ----------------

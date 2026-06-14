@@ -39,6 +39,7 @@ class ZhihuQuestion(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     question: Mapped[str] = mapped_column(String(200))
     status: Mapped[str] = mapped_column(String(12), default="todo")  # todo/writing/posted
+    answer_draft: Mapped[str] = mapped_column(Text, default="")  # AI 生成的答案初稿
     answer_url: Mapped[str] = mapped_column(String(300), default="")
     note: Mapped[str] = mapped_column(Text, default="")
     updated_at: Mapped[dt.datetime] = mapped_column(DateTime, default=_now, onupdate=_now)

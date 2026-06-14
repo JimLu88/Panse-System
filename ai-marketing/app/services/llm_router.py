@@ -21,6 +21,8 @@ ROUTES = {
     "generator.fact_check": "cheap",
     "generator.compliance_scan": "cheap",
     "comment.draft": "top",
+    "zhihu.answer": "top",
+    "review.suggest": "cheap",
     "collector.style_extract": "cheap",
 }
 
@@ -130,9 +132,49 @@ class _MockLLM:
                 "纹理好看是真的，平时擦一擦保养下能用很久。",
             ]
             return random.choice(seeds)
+        if task == "zhihu.answer":
+            return _MockLLM._zhihu_answer(prompt)
+        if task == "review.suggest":
+            return ("从本周数据看，真实感高的品类值得加大投入、把发布时间前移到早高峰，"
+                    "互动低的内容增加真实使用场景细节（如「用了三个月」这类锚点）。")
         if task == "generator.fact_check":
             return json.dumps({"passed": [], "pending_human": []}, ensure_ascii=False)
         return "（mock 输出）"
+
+    @staticmethod
+    def _zhihu_answer(prompt: str) -> str:
+        """生成一篇结构化的知乎长答案初稿（家具理性分析体）。
+
+        从 prompt 里取出问题，套用「先给结论→拆维度→给避坑→收尾」骨架。
+        真实模型会写得更细，mock 给出可直接润色的可用框架。
+        """
+        q = prompt
+        for marker in ("问题：", "针对问题", "回答："):
+            if marker in prompt:
+                q = prompt.split(marker, 1)[1]
+        q = q.strip().strip("「」\"' 。") or "实木家具怎么选"
+        return f"""先说结论：{q.replace("？", "").replace("?", "")}——抓住「材质、结构、工艺、售后」四点就不容易踩坑，下面拆开讲。
+
+## 一、先看材质，别被名字忽悠
+市面上「实木」水分很大。真正耐用的是榉木、白蜡木这类硬木，纹理细、握感沉；橡胶木、松木偏软，价格低但容易磕碰。重点：问清楚是「全实木」还是「框架实木+板材」，看清主材而不是只看一个「实木」标签。
+
+## 二、结构决定用几年
+- 榫卯/五金加固的连接比纯胶粘的牢；
+- 桌面厚度、横档数量直接影响承重和晃动；
+- 含水率有没有做处理，南方潮湿地区尤其要问，否则容易变形开裂。
+
+## 三、尺寸和场景匹配（最容易忽略）
+小户型优先窄边或可折叠款，每边预留 60cm 走动空间才舒服。买之前量好你家的实际摆放尺寸，别只看图片。
+
+## 四、避坑清单
+1. 警惕「贴皮冒充实木」——看封边和木纹连续性；
+2. 「零甲醛」是营销话术，关注的是是否达到 E0/E1 等环保等级；
+3. 留意售后年限和开裂、结构问题是否包修。
+
+## 五、总结
+预算够上硬木全实木 + 正规品牌质保；预算有限就盯住主材和结构，别为花哨造型多花钱。家具是低频耐用品，宁可多花两天做功课，也别买回来天天后悔。
+
+（以上为初稿框架，请补充自家产品的真实参数、实拍图和买家案例后再发布。）"""
 
 
 _router: LLMRouter | None = None

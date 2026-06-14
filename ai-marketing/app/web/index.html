@@ -158,11 +158,13 @@ const VIEWS={
     然后在选题卡片上选一个账号「生成草稿」，AI 会自动写好文案 → 去③审核工位检查。</div>
     <div class="card"><h3>① 生成选题 <span class="sub">家具是"先搜索后下单"，常青选题更值钱</span></h3>
       <div class="row"><select id="cat">${['餐桌','餐椅','茶几','柜类','床'].map(c=>`<option>${c}</option>`).join('')}</select>
-      <input id="cnt" type="number" value="3" style="width:64px"><button class="act" id="gt">生成选题</button></div>
+      <input id="cnt" type="number" value="3" style="width:64px"><button class="act" id="gt">生成选题</button>
+      <button class="ghost" id="seedall">🚀 一键预热（各品类自动出选题+草稿）</button></div>
       <div id="topics" class="grid" style="margin-top:12px"></div></div>
       <div class="card"><h3>③ 待审核草稿</h3><div class="muted">生成后会出现在这里，数值类描述(如"1.2米""1999元")会自动标记待你核实。</div>
       <div id="drafts" class="grid" style="margin-top:12px"></div></div>`;
     $('#gt').onclick=async()=>{await api('POST','/api/topics/generate',{category:$('#cat').value,count:+$('#cnt').value});loadTopics();};
+    $('#seedall').onclick=async()=>{toast('预热生成中…');const r=await api('POST','/api/content/seed-batch?per_category=2');toast(`已生成 ${r.topics} 选题 / ${r.drafts} 草稿`);loadTopics();loadDrafts();refreshHome();};
     const accs=await api('GET','/api/accounts');
     async function loadTopics(){
       const ts=await api('GET','/api/topics');
@@ -256,13 +258,20 @@ const VIEWS={
 
   async zhihu(v){
     const qs=await api('GET','/api/zhihu');
-    v.innerHTML=`<div class="guide">📚 <b>知乎占坑（家具回报率最高的动作）</b>。这20个是高搜索量的家具问题。挑几个写3000字深度回答，<b>一次投入能吃两年搜索流量</b>。
-    状态：待写→写作中→已发布，发布后把链接填进去方便追踪。</div>
+    const withDraft=qs.filter(z=>z.has_draft).length;
+    v.innerHTML=`<div class="guide">📚 <b>知乎占坑（家具回报率最高的动作）</b>。这20个是高搜索量的家具问题，<b>一次投入能吃两年搜索流量</b>。
+    点「🤖 AI生成全部初稿」让系统先把答案框架写好，你补上自家产品参数和实拍图就能发。</div>
+    <div class="card"><div class="row"><button class="act" id="genall">🤖 AI生成全部初稿</button>
+      <span class="muted">已有初稿 ${withDraft}/${qs.length}</span></div></div>
     <div class="card"><table><thead><tr><th>高搜索问题</th><th>状态</th><th>操作</th></tr></thead><tbody>${qs.map(z=>`<tr>
-      <td>${esc(z.question)}${z.answer_url?` <a href="${esc(z.answer_url)}" target="_blank" class="muted">[链接]</a>`:''}</td>
+      <td>${esc(z.question)}${z.answer_url?` <a href="${esc(z.answer_url)}" target="_blank" class="muted">[链接]</a>`:''}
+      ${z.has_draft?'<br><span class="pill bl">已有AI初稿</span>':''}</td>
       <td><span class="pill ${z.status==='posted'?'':z.status==='writing'?'y':'b'}">${z.status==='posted'?'已发布':z.status==='writing'?'写作中':'待写'}</span></td>
-      <td><select onchange="zset(${z.id},this.value)"><option value="">改状态</option><option value="todo">待写</option><option value="writing">写作中</option><option value="posted">已发布</option></select>
-      ${z.status==='posted'?`<button class="ghost copybtn" onclick="zurl(${z.id})">填链接</button>`:''}</td></tr>`).join('')}</tbody></table></div>`;
+      <td>${z.has_draft?`<button class="ghost copybtn" onclick="zview(${z.id})">看初稿</button>`:`<button class="ghost copybtn" onclick="zgen(${z.id})">🤖生成</button>`}
+      <select onchange="zset(${z.id},this.value)"><option value="">改状态</option><option value="todo">待写</option><option value="writing">写作中</option><option value="posted">已发布</option></select>
+      ${z.status==='posted'?`<button class="ghost copybtn" onclick="zurl(${z.id})">填链接</button>`:''}</td></tr>`).join('')}</tbody></table></div>
+      <div class="card" id="zbox" style="display:none"></div>`;
+    $('#genall').onclick=async()=>{toast('AI 生成中…');const r=await api('POST','/api/zhihu/generate-all');toast(`已生成 ${r.generated} 篇初稿`);render();};
   },
 
   // ============ 账号运营 ============
@@ -340,9 +349,10 @@ const VIEWS={
     <div class="card"><h3>📝 每周复盘</h3>
       <div class="row" style="flex-direction:column;align-items:stretch">
       <input id="hot" placeholder="本周哪篇火了？为什么？"><input id="flop" placeholder="哪篇没火？问题在哪？"><input id="conc" placeholder="下周怎么改？一句话结论">
-      <button class="act" id="savem" style="align-self:flex-start">保存本周复盘</button></div>
+      <div class="row"><button class="act" id="savem">保存本周复盘</button><button class="ghost" id="sugg">🤖 AI建议结论</button></div></div>
       <div style="margin-top:12px">${meetings.map(m=>`<div class="card" style="margin:6px 0"><b>${m.week_key}</b><div class="kv">🔥火：${esc(m.hot_case)}</div><div class="kv">❄️扑：${esc(m.flop_case)}</div><div class="kv">👉结论：${esc(m.conclusion)}</div></div>`).join('')||'<div class="muted">还没有复盘记录</div>'}</div></div>`;
     $('#savem').onclick=async()=>{await api('POST','/api/review-meetings',{hot_case:$('#hot').value,flop_case:$('#flop').value,conclusion:$('#conc').value});render();toast('已保存');};
+    $('#sugg').onclick=async()=>{const r=await api('POST','/api/review-meetings/suggest');$('#conc').value=r.suggestion;toast('已填入AI建议，可编辑后保存');};
   },
 
   async system(v){
@@ -406,6 +416,11 @@ window.recData=async(cid,aid)=>{
   refreshHome();render();toast('数据已录入');};
 window.zset=async(id,s)=>{if(s){await api('POST',`/api/zhihu/${id}`,{status:s});render();}};
 window.zurl=async id=>{const u=prompt('粘贴知乎回答链接：');if(u){await api('POST',`/api/zhihu/${id}`,{answer_url:u});render();}};
+window.zgen=async id=>{toast('AI 生成中…');await api('POST',`/api/zhihu/${id}/generate`);render();toast('初稿已生成');};
+window.zview=async id=>{const qs=await api('GET','/api/zhihu');const z=qs.find(x=>x.id===id);const box=$('#zbox');box.style.display='block';
+  box.innerHTML=`<h3>📄 ${esc(z.question)} <button class="ghost copybtn" onclick="copy(window._zd)">复制全文</button></h3>
+    <div class="kv" style="white-space:pre-wrap;background:#faf8f4;padding:12px;border-radius:8px">${esc(z.answer_draft)}</div>`;
+  window._zd=z.answer_draft;box.scrollIntoView({behavior:'smooth'});};
 window.opstog=async id=>{await api('POST',`/api/ops/task/${id}/toggle`);refreshHome();render();};
 window.editAcc=id=>{
   const a=window._accs.find(x=>x.id===id);const box=$('#accedit');box.style.display='block';
