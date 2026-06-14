@@ -17,8 +17,10 @@ from . import analytics, data_source
 LOW_FAN_MAX = 2000
 LOW_FAN_MIN_LIKES = 5000
 
-# 评论词云停用词
-_STOP = set("的了吗呀啊吧呢和与或这那有没我你他她它们个是不在求好看")
+# 评论词云停用词 + 尾部语气词（用于把"米够用吗"切成"够用"）
+_STOP = set("的了吗呀啊吧呢和与或这那有没我你他她它们个是不在求好看怎么多少")
+_TRAIL = "吗呢吧啊呀的了么哇嘛"
+_LEAD = "这那有没求好太很都也还就"
 
 
 def mine_hot_notes(db: Session, category: str = "") -> dict:
@@ -62,10 +64,52 @@ def comment_cloud(db: Session, top: int = 20) -> list[dict]:
     counter: Counter[str] = Counter()
     for h in db.scalars(select(HotNote)):
         for c in (h.sample_comments or []):
-            for token in re.findall(r"[一-龥]{2,}", c):
-                if token not in _STOP and len(token) <= 6:
+            for raw in re.findall(r"[一-龥]{2,}", c):
+                token = raw.strip(_TRAIL).lstrip(_LEAD).strip(_TRAIL)
+                if 2 <= len(token) <= 6 and token not in _STOP:
                     counter[token] += 1
     return [{"word": w, "count": c} for w, c in counter.most_common(top)]
+
+
+def import_crawled(db: Session, payload: dict) -> dict:
+    """#真实数据导入：无需起 HTTP 服务，直接把采集器导出的 JSON 灌进来。
+
+    payload 形如 {"hot_notes":[...], "mentions":[...]}，字段同 data_source 契约。
+    供"先用爬虫导出文件、再上传"的轻量接入路径。
+    """
+    from ..models import BrandMention
+    hot = payload.get("hot_notes") or []
+    mentions = payload.get("mentions") or []
+    seen = set(db.scalars(select(HotNote.title)))
+    h_added = 0
+    for n in hot:
+        if n.get("title") in seen:
+            continue
+        is_low = n.get("fans", 0) < LOW_FAN_MAX and n.get("likes", 0) >= LOW_FAN_MIN_LIKES
+        db.add(HotNote(
+            platform=n.get("platform", "xhs"), title=n.get("title", ""),
+            author=n.get("author", ""), author_followers=n.get("fans", 0),
+            likes=n.get("likes", 0), collects=n.get("collects", 0),
+            comments_count=n.get("comments", 0), category=n.get("category", ""),
+            cover_style=n.get("cover", ""), structure=n.get("structure", ""),
+            is_low_fan_hit=is_low, sample_comments=n.get("comments_sample", []),
+            url=n.get("url", ""),
+        ))
+        h_added += 1
+    m_added = 0
+    seen_m = set(db.scalars(select(BrandMention.note_title)))
+    for m in mentions:
+        if m.get("title") in seen_m:
+            continue
+        db.add(BrandMention(
+            platform=m.get("platform", "xhs"), mention_type=m.get("type", "brand"),
+            keyword=m.get("keyword", ""), note_title=m.get("title", ""),
+            snippet=m.get("snippet", ""), sentiment=m.get("sentiment", "neutral"),
+            url=m.get("url", ""), status="new",
+        ))
+        m_added += 1
+    db.commit()
+    return {"hot_notes_added": h_added, "mentions_added": m_added}
 
 
 def auto_collect_metrics(db: Session) -> dict:

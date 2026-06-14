@@ -627,3 +627,37 @@ def draft_assign(draft_id: int, body: AssignIn, db: Session = Depends(get_db)):
     d.assignee = body.assignee
     db.commit()
     return {"id": d.id, "assignee": d.assignee}
+
+
+# ==================== Phase3 收尾: 设置/导入/周报 ====================
+
+@router.get("/settings")
+def settings_list():
+    """运行时设置（采集器/飞书/ERP 地址），界面可改无需重启。"""
+    from ..services import runtime_config
+    return runtime_config.all_settings()
+
+
+@router.post("/settings/{key}")
+def settings_set(key: str, body: dict, db: Session = Depends(get_db)):
+    from ..services import runtime_config
+    _err(runtime_config.set_value, key, body.get("value", ""))
+    return {"key": key, "saved": True}
+
+
+@router.post("/crawl/import")
+def crawl_import(payload: dict, db: Session = Depends(get_db)):
+    """真实数据导入：把采集器导出的 JSON 直接灌入（免起 HTTP 服务）。"""
+    return crawl_service.import_crawled(db, payload)
+
+
+@router.get("/report/weekly")
+def report_weekly(db: Session = Depends(get_db)):
+    from ..services import weekly_report
+    return weekly_report.build(db)
+
+
+@router.post("/report/weekly/push")
+def report_weekly_push(db: Session = Depends(get_db)):
+    from ..services import weekly_report
+    return weekly_report.push(db)

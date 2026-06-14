@@ -84,11 +84,13 @@ def mark_won(db: Session, lead_id: int, erp_order_no: str) -> Lead:
     lead.last_touch_at = dt.datetime.now(dt.timezone.utc)
     db.commit()
 
+    from . import runtime_config
+    erp_base = runtime_config.get("erp_base_url")
     s = get_settings()
-    if s.erp_base_url and erp_order_no:
+    if erp_base and erp_order_no:
         try:
             httpx.post(
-                f"{s.erp_base_url.rstrip('/')}/api/marketing/lead-attribution",
+                f"{erp_base.rstrip('/')}/api/marketing/lead-attribution",
                 headers={"Authorization": f"Bearer {s.erp_token}"} if s.erp_token else {},
                 json={"order_no": erp_order_no, "source": "xhs",
                       "attribution_code": lead.attribution_code, "lead_id": lead.id},

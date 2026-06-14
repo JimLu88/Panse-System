@@ -15,8 +15,9 @@ log = logging.getLogger("marketing.notifier")
 
 
 def send_feishu(text: str) -> bool:
-    """发送文本到飞书群（best-effort：失败只记日志，不抛异常）。"""
-    url = get_settings().feishu_webhook_url
+    """发送文本到飞书群（best-effort：失败只记日志，不抛异常）。地址走运行时配置(界面可改)。"""
+    from . import runtime_config
+    url = runtime_config.get("feishu_webhook_url")
     if not url:
         return False
     try:
