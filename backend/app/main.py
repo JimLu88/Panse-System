@@ -201,8 +201,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 # 外网/群晖访问优化: JSON 响应 gzip 压缩 (大列表体积降 ~80%, 1KB 以下不压)
+# 图片(/api/gallery/)走原始字节、不二次 gzip — 已压缩内容再压白耗 CPU 且破坏流式 (评审#10)。
 from starlette.middleware.gzip import GZipMiddleware  # noqa: E402
-app.add_middleware(GZipMiddleware, minimum_size=1024)
+_GZIP_SKIP_PREFIXES = ("/api/gallery/",)
+
+
+class _PathAwareGZip:
+    """图片等已压缩路径跳过 gzip, 其余仍走 GZipMiddleware。"""
+    def __init__(self, app, minimum_size: int = 1024):
+        self._plain = app
+        self._gzip = GZipMiddleware(app, minimum_size=minimum_size)
+
+    async def __call__(self, scope, receive, send):
+        if scope.get("type") == "http" and any(
+                scope.get("path", "").startswith(p) for p in _GZIP_SKIP_PREFIXES):
+            return await self._plain(scope, receive, send)
+        return await self._gzip(scope, receive, send)
+
+
+app.add_middleware(_PathAwareGZip, minimum_size=1024)
 app.add_middleware(AuditMiddleware)
 # 幂等: 带 Idempotency-Key 的写请求重复到达直接 409, 防双击/重试重复创建 (优化 #3)
 from app.idempotency import IdempotencyMiddleware  # noqa: E402

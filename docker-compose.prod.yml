@@ -35,10 +35,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: 1536m
+          memory: 768m
           # cpus 群晖内核(无 CPU CFS cgroup)不支持, 已去掉; 只用内存上限
         reservations:
-          memory: 256m
+          memory: 128m
     # 生产: 不暴露 5432 到宿主机
 
   api:
@@ -132,7 +132,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 128m
           # cpus 群晖内核不支持, 去掉
 
   # 容器内自动备份 — 每天 03:00 dump 数据库, 保留 30 天 (与 Hyper Backup 异地备份互补)
@@ -185,7 +185,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 256m
+          memory: 128m
 
 volumes:
   pg_data:
