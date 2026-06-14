@@ -525,6 +525,36 @@ async def import_logistics(file: UploadFile = File(...), db: Session = Depends(g
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
+@router.post("/logistics-bills/import-xlsx", response_model=BillImportResult)
+async def import_logistics_xlsx_ep(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    """物流账单 xlsx 统一导入 (用户 2026-06-15): 按文件名自动识别承运商。
+       - 德邦 (文件名含「德邦」): 逐运单 + 实收运费/运费。
+       - 壹米滴答 (李爱群月结): 月结总额取自文件名 (如「…账单 14540元」) → 1 条汇总。
+    原文件归档进 工具→导入档案。"""
+    import io
+
+    import openpyxl
+
+    from app.services import import_storage
+    data = await file.read()
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+    except Exception:
+        raise HTTPException(400, "无法解析 xlsx 文件")
+    try:
+        _y, _m, _ = bill_import_service.parse_logi_bill_filename(file.filename or "")
+        import datetime as _dt
+        _on = _dt.date(_y, _m, 1) if _m else _dt.date.today()
+        import_storage.archive(db, content=data, original_name=file.filename or "logistics.xlsx",
+                               kind="logistics", source="web", on_date=_on)
+    except Exception:
+        pass  # 归档失败不阻断导入
+    r = bill_import_service.import_logistics_xlsx(db, wb, source_name=file.filename or "")
+    db.commit()
+    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+                            skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
+
+
 # -------- 推广记录 / 补单对账 / 账户余额 CSV 导入 --------
 
 @router.post("/promotion-flows/import-csv", response_model=BillImportResult)

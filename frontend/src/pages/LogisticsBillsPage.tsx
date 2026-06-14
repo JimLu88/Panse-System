@@ -51,6 +51,27 @@ export default function LogisticsBillsPage() {
     return false;
   };
 
+  // 物流账单 xlsx 统一导入: 文件名含「德邦」=逐运单; 否则壹米滴答月结(总额取自文件名「…14540元」)
+  const handleImportXlsx = async (file: File) => {
+    setImporting(true);
+    const fd = new FormData();
+    fd.append('file', file);
+    try {
+      const r = await api.post<ImportResult & { skipped_duplicate?: number }>(
+        '/api/finance/logistics-bills/import-xlsx', fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } },
+      );
+      const dup = r.data.skipped_duplicate ?? 0;
+      message.success(`导入成功：新增 ${r.data.inserted} 条，去重 ${dup} 条，跳过 ${r.data.skipped_invalid} 条`);
+      qc.invalidateQueries({ queryKey: ['logistics-bills'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? 'xlsx 导入失败');
+    } finally {
+      setImporting(false);
+    }
+    return false;
+  };
+
   const columns = [
     { title: '账单日期', dataIndex: 'bill_date', width: 110 },
     { title: '承运商', dataIndex: 'carrier', width: 100,
@@ -89,6 +110,9 @@ export default function LogisticsBillsPage() {
       <Space wrap>
         <Upload accept=".csv" showUploadList={false} beforeUpload={handleImport}>
           <Button icon={<InboxOutlined />} loading={importing}>导入 CSV</Button>
+        </Upload>
+        <Upload accept=".xlsx" multiple showUploadList={false} beforeUpload={handleImportXlsx}>
+          <Button type="primary" icon={<InboxOutlined />} loading={importing}>导入账单 xlsx (壹米滴答/德邦)</Button>
         </Upload>
         <Button icon={<DownloadOutlined />}
           onClick={() => window.open('/api/finance/logistics-bills/template.csv')}>

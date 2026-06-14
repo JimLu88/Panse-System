@@ -192,6 +192,102 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
     return rep
 
 
+def parse_logi_bill_filename(name: str):
+    """物流账单文件名 → (年, 月, 月结总额)。
+    '李爱群 2026年1月账单 14540元'→(2026,1,14540); '程卫燕 德邦 3月'→(当年,3,None)。"""
+    import re
+    name = name or ""
+    mo = re.search(r"(\d{1,2})\s*月", name)
+    month = int(mo.group(1)) if mo else None
+    mt = re.search(r"(\d{3,7})\s*元", name)
+    total = _decimal(mt.group(1)) if mt else None
+    ym = re.search(r"(20\d{2})\s*年", name)
+    year = int(ym.group(1)) if ym else date.today().year
+    return year, month, total
+
+
+def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
+                          import_job_id: Optional[int] = None) -> BillImportReport:
+    """物流账单 xlsx 统一导入, 按文件名自动识别承运商 (用户 2026-06-15):
+       - 文件名含「德邦」: 逐运单(运单号 + 实收运费/运费)按行入 LogisticsBill。
+       - 否则(壹米滴答 / 李爱群月结): 无逐单运费, 月结总额在文件名 → 入 1 条汇总行。
+    去重靠 sync_key (重导幂等)。"""
+    from sqlalchemy import select
+    import calendar
+    rep = BillImportReport()
+    ws = wb[wb.sheetnames[0]]
+    rows = [r for r in ws.iter_rows(values_only=True)
+            if r and any(c is not None and str(c).strip() for c in r)]
+    if not rows:
+        rep.errors.append(f"{source_name}: 空表")
+        return rep
+    hdr = [str(c or "").strip() for c in rows[0]]
+    body = rows[1:]
+
+    def col(*names):
+        for nm in names:
+            for i, h in enumerate(hdr):
+                if h == nm or nm in h:
+                    return i
+        return None
+
+    year, month, fname_total = parse_logi_bill_filename(source_name)
+    month_end = date(year, month, calendar.monthrange(year, month)[1]) if month else None
+    existing = {k for (k,) in db.execute(
+        select(LogisticsBill.sync_key).where(LogisticsBill.sync_key.isnot(None))).all()}
+    seen: set = set()
+    c_track = col("运单号")
+
+    if "德邦" in (source_name or ""):
+        c_fee = col("实收运费", "运费")
+        c_date = col("业务日期", "寄件时间", "日期")
+        c_wt = col("计费重量")
+        c_to = col("收货人", "收件人姓名")
+        c_dest = col("目的地", "目的站", "收件人省市区")
+        if c_track is None or c_fee is None:
+            rep.errors.append(f"{source_name}: 德邦表缺『运单号』或『运费』列")
+            return rep
+        for r in body:
+            track = import_clean.clean_no(r[c_track])
+            fee = _decimal(r[c_fee])
+            if not track or fee is None:
+                rep.skipped_invalid += 1
+                continue
+            bdate = (_date(r[c_date]) if c_date is not None else None) or month_end
+            to = str(r[c_to]).strip() if (c_to is not None and r[c_to]) else ""
+            dest = str(r[c_dest]).strip() if (c_dest is not None and r[c_dest]) else ""
+            sk = f"logi|德邦|{bdate}|{track}|{fee}|{to}"
+            if sk in existing or sk in seen:
+                rep.skipped_duplicate += 1
+                continue
+            seen.add(sk)
+            db.add(LogisticsBill(
+                bill_date=bdate, carrier="德邦", tracking_no=track, order_no=None,
+                weight_kg=(_decimal(r[c_wt]) if c_wt is not None else None),
+                freight_amount=fee, remark=f"德邦 收货:{to} 目的:{dest}".strip(),
+                import_job_id=import_job_id, sync_key=sk,
+            ))
+            rep.inserted += 1
+    else:
+        if fname_total is None:
+            rep.errors.append(f"{source_name}: 壹米滴答月结需在文件名给总额(如「…账单 14540元」)")
+            return rep
+        cnt = sum(1 for r in body if c_track is not None and r[c_track])
+        sk = f"logi|壹米滴答|{year}-{month or 0:02d}|summary"
+        if sk in existing:
+            rep.skipped_duplicate += 1
+        else:
+            db.add(LogisticsBill(
+                bill_date=month_end, carrier="壹米滴答", tracking_no=None, order_no=None,
+                weight_kg=None, freight_amount=fname_total,
+                remark=f"壹米滴答 {year}年{month}月月结汇总, 共{cnt}单(逐单运费未单独提供, 总额取自账单)",
+                import_job_id=import_job_id, sync_key=sk,
+            ))
+            rep.inserted += 1
+    db.flush()
+    return rep
+
+
 # --------------------- 补单表 xlsx (发中介的简表) -------------------- #
 # 用户确认格式 (2026-06-11, 例 "5.31畔色.xlsx"):
 #   订单号 | 旺旺（淘宝账号非昵称）/JD填写账户 | 金额（不要加佣金） | (空表头=佣金) | 店铺名字
