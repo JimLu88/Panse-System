@@ -143,14 +143,19 @@ def _check_disk() -> HealthCheck:
         usage = shutil.disk_usage("/")
         used_pct = usage.used / usage.total * 100
         free_gb = usage.free / (1024 ** 3)
-        if used_pct >= 95:
+        # 按"剩余空间"判定而非纯百分比: 群晖等共享大卷长期接近满(整卷被媒体占),
+        # 纯 used% 会对 ERP 误报; 真实风险是"写不进去"→ 看绝对可用空间。
+        # 阈值可用 DISK_FREE_FAIL_GB / DISK_FREE_WARN_GB 环境变量覆盖。
+        fail_gb = float(os.environ.get("DISK_FREE_FAIL_GB", "10"))
+        warn_gb = float(os.environ.get("DISK_FREE_WARN_GB", "30"))
+        if free_gb < fail_gb:
             status = "fail"
-        elif used_pct >= 85:
+        elif free_gb < warn_gb:
             status = "warn"
         else:
             status = "ok"
         return HealthCheck("disk", status,
-                           f"used={used_pct:.1f}% free={free_gb:.1f}GB",
+                           f"free={free_gb:.1f}GB used={used_pct:.1f}%",
                            int((time.time() - t0) * 1000))
     except OSError as e:
         return HealthCheck("disk", "fail", str(e),
