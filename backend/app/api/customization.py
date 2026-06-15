@@ -169,11 +169,33 @@ class QuoteConfigPatch(BaseModel):
     prices: Optional[dict[str, float]] = None
 
 
+def _validate_quote_config(patch: dict) -> None:
+    """报价参数范围校验, 防误填把全公司报价带歪。"""
+    def _rate(k: str, lo: float, hi: float) -> None:
+        if patch.get(k) is not None and not (lo <= float(patch[k]) <= hi):
+            raise HTTPException(400, f"{k} 必须在 {lo}~{hi} 之间")
+    _rate("factory_profit_rate", 0, 0.95)
+    _rate("panse_profit_rate", 0, 0.95)
+    _rate("competitor_coupon_rate", 0, 0.95)
+    _rate("safety_rate", 1.0, 3.0)
+    if patch.get("projection_rate") is not None and float(patch["projection_rate"]) <= 0:
+        raise HTTPException(400, "projection_rate 必须 > 0")
+    for k in ("packing", "freight", "install"):
+        arr = patch.get(k)
+        if arr is not None and not (isinstance(arr, list) and len(arr) == 3 and all(float(x) >= 0 for x in arr)):
+            raise HTTPException(400, f"{k} 必须是 3 个非负数 [小,中,大]")
+    if patch.get("prices") is not None:
+        for mat, p in patch["prices"].items():
+            if float(p) < 0:
+                raise HTTPException(400, f"价格「{mat}」不能为负")
+
+
 @router.put("/quote-config", response_model=dict)
 def update_quote_config(payload: QuoteConfigPatch, db: Session = Depends(get_db)):
-    """改报价参数 (只更新传入的键), 返回完整配置."""
+    """改报价参数 (只更新传入的键, 带范围校验), 返回完整配置."""
     from app.services import custom_quote_config_service as cfg
     patch = {k: v for k, v in payload.model_dump(exclude_none=True).items()}
+    _validate_quote_config(patch)
     result = cfg.save_config(db, patch)
     db.commit()
     return result
@@ -612,12 +634,14 @@ def _build_pricing_context(db: Session, query: str = "") -> str:
 
     lines = ["【全部产品目录(按类目; 每行: 编码 名称 (价格区间, SKU数))】"]
     cur = object()
-    for p in products:
+    for p in products[:200]:   # token 预算: 产品过多时只列前200(与需求同类目的明细在下方补)
         if p.category != cur:
             cur = p.category
             lines.append(f"\n# 类目: {cur or '未分类'}")
         rng, n = _rng(p.code)
         lines.append(f"  {p.code} {p.name} ({rng}, {n}SKU)")
+    if len(products) > 200:
+        lines.append(f"\n…(共 {len(products)} 个产品, 上方列前 200; 与本次需求同类目的见下方明细)")
 
     # 与需求同类目(类目末段词出现在用户描述里)的产品 → 给 SKU/尺寸/价格明细
     q = query or ""
