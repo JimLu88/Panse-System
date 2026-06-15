@@ -38,6 +38,7 @@ from app.api import aftersales as aftersales_api
 from app.api import ops_checklist as ops_checklist_api
 from app.api import settlements as settlements_api
 from app.api import factory_recon as factory_recon_api
+from app.api import factory_orders as factory_orders_api
 from app.api import shop_deposits as shop_deposits_api
 from app.api import imports as imports_api
 from app.api import ai as ai_api
@@ -302,6 +303,7 @@ app.include_router(bom_api.router)
 app.include_router(ops_checklist_api.router)
 app.include_router(settlements_api.router)
 app.include_router(factory_recon_api.router)
+app.include_router(factory_orders_api.router)
 app.include_router(shop_deposits_api.router)
 app.include_router(imports_api.router)
 app.include_router(exceptions_api.router)

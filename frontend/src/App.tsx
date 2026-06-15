@@ -51,6 +51,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OpsChecklistPage = lazy(() => import('./pages/OpsChecklistPage'));
 const SalesRankingPage = lazy(() => import('./pages/SalesRankingPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
+const FactoryOrdersPage = lazy(() => import('./pages/FactoryOrdersPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
 const CustomQuoteChatPage = lazy(() => import('./pages/CustomQuoteChatPage'));
@@ -212,6 +213,7 @@ export default function App() {
         { key: 'suppliers', label: <Link to="/suppliers">供应商</Link> },
         { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
+        { key: 'factory-orders', label: <Link to="/factory-orders">工厂下单表</Link> },
         { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
       ],
     },
@@ -363,6 +365,7 @@ export default function App() {
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />
+            <Route path="/factory-orders" element={<FactoryOrdersPage />} />
             <Route path="/importer" element={<ImporterPage />} />
             <Route path="/web-agent" element={<WebAgentPage />} />
             <Route path="/taobao-listings" element={<TaobaoListingsPage />} />

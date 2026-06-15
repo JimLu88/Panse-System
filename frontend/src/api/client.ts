@@ -10,3 +10,4 @@ export * from './system';
 export * from './importer';
 export * from './screenshots';
 export * from './taobaoExport';
+export * from './factoryOrders';
