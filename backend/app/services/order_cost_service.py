@@ -104,6 +104,27 @@ def _wood_unit_price(db: Session, sku_code: Optional[str]) -> Optional[Decimal]:
     return Decimal(str(wc)) if wc is not None else None
 
 
+def _custom_estimate_cost(db: Session, order: Order) -> Optional[Decimal]:
+    """定制单缺成本时的占位估算: 取"同款(product_code)正常单(非定制/非补单)、理论成本已知"
+    的平均单件理论成本。无同款正常单则 None。用户拍板 2026-06-15: 账面先大致准, 异常仍报。"""
+    pc = (order.product_code or "").strip()
+    if not pc:
+        return None
+    vals = db.execute(
+        select(Order.theoretical_cost).where(
+            Order.product_code == pc,
+            Order.is_custom == False,        # noqa: E712
+            Order.is_refill == False,        # noqa: E712
+            Order.theoretical_cost.isnot(None),
+            Order.theoretical_cost > 0,
+        )
+    ).scalars().all()
+    if not vals:
+        return None
+    avg = sum((Decimal(str(v)) for v in vals), Decimal("0")) / Decimal(len(vals))
+    return avg.quantize(_CENTS)
+
+
 def compute(db: Session, order: Order) -> CostBreakdown:
     """反推一条订单的理论成本, 返回明细 (不写库).
 
@@ -263,6 +284,25 @@ def compute(db: Session, order: Order) -> CostBreakdown:
             note = (note + " | " if note else "") + f"含定制加价 ¥{sur}"
             if not had_base:
                 note += "(⚠️ 基础BOM未匹配, 仅含加价)"
+
+    # 定制单仍无成本依据(无BOM产品成本/无定制加价/无实际成本) → 用"同款正常单平均理论成本"占位估算,
+    # 让账面毛利大致可用; 异常照报(scan 看 actual_cost/custom_surcharge, 不看此估算)。用户拍板 2026-06-15。
+    _FEE_CODES = {"运费", "安装", "税费", "扣点", "定制加价"}
+    _prod_cost = sum((ln.line_cost or Decimal("0")) for ln in lines
+                     if ln.material_code not in _FEE_CODES)
+    if (_is_custom_order and order.custom_surcharge is None and order.actual_cost is None
+            and _prod_cost <= 0):
+        _est = _custom_estimate_cost(db, order)
+        if _est is not None and _est > 0:
+            lines.append(CostLine(
+                material_code="估算成本", material_name="同款正常单均价(占位估算)",
+                qty_per_product=Decimal("1"), unit_price=_est, line_cost=_est,
+                missing_price=False,
+            ))
+            unit_cost = (unit_cost + _est).quantize(_CENTS)
+            total_cost = (unit_cost * qty).quantize(_CENTS)
+            note = ((note + " | ") if note else "") + \
+                f"⚠定制缺成本 → 按同款正常单均价估算 ¥{_est} (账面占位, 待补工厂实际成本)"
 
     return CostBreakdown(
         order_no=order.order_no,
