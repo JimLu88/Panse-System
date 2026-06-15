@@ -14,6 +14,28 @@ from app.services import customization_ai_service, customization_service
 router = APIRouter(prefix="/api/customization", tags=["customization"])
 
 
+def _log_quote(db: Session, *, source: str, user_message: str = "",
+               ai_response: str = "", model: Optional[str] = None,
+               extra: Optional[dict] = None) -> None:
+    """报价留痕: 每次定制报价(AI对话/截图/板单)记一条 ai_chat_logs(action_type=custom_quote),
+    可复盘"为啥报这价"/审计/统计 AI 准确率。复用现有表, 最佳努力, 失败绝不影响报价返回。"""
+    try:
+        from app.models.ai import AiChatLog
+        db.add(AiChatLog(
+            action_type="custom_quote",
+            user_message=(user_message or "")[:4000],
+            ai_response=(ai_response or "")[:8000],
+            model=model,
+            extra={"source": source, **(extra or {})},
+        ))
+        db.commit()
+    except Exception:  # noqa: BLE001 - 留痕失败不能影响报价
+        try:
+            db.rollback()
+        except Exception:
+            pass
+
+
 class DiffLineOut(BaseModel):
     material_code: str
     material_name: Optional[str]
@@ -100,6 +122,9 @@ async def ai_quote(
     data = await image.read()
     mime = image.content_type or "image/jpeg"
     result = await asyncio.to_thread(customization_ai_service.ai_quote, db, data, mime)
+    _log_quote(db, source="ai_quote", user_message=f"{result.base_product or ''} {result.changes}",
+               ai_response=" | ".join(f"{b.label}:{b.amount}" for b in result.breakdown),
+               model=result.model, extra={"est_price": result.est_price, "base_sku": result.base_sku})
     return AiQuoteOut(
         base_product=result.base_product,
         base_sku=result.base_sku,
@@ -261,6 +286,10 @@ def board_quote(payload: BoardQuoteIn, db: Session = Depends(get_db)):
     )
     cfg = cfg_svc.get_config(db)
     fq = payload.factory_quote
+    _log_quote(db, source="board_quote",
+               user_message=f"{payload.product_type} {payload.length_m}m {len(payload.boards)}板",
+               extra={"final_quote": float(r.final_quote),
+                      "factory_compare": float(r.factory_quote_conservative)})
     return BoardQuoteOut(
         wood_cost=float(r.wood_cost), labor_fee=float(r.labor_fee),
         factory_in_cost=float(r.factory_in_cost), factory_profit=float(r.factory_profit),
@@ -749,6 +778,8 @@ async def ai_chat(
     if m and m.group(1) != "暂无匹配":
         suggested_sku = m.group(1)
 
+    _log_quote(db, source="ai_chat", user_message=user_msg, ai_response=text,
+               model=resp.model, extra={"route_type": route_type, "suggested_sku": suggested_sku})
     return AiChatOut(
         text=text, route_type=route_type, suggested_sku=suggested_sku,
         model=resp.model, ai_used=True,
