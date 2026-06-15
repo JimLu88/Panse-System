@@ -368,8 +368,46 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
     if category == "balance":
         return _ocr_balance_to_db(db, path, raw)
     if category == "alipay":
-        return ("alipay", "pending_read",
-                {"note": "支付宝账单格式待首份文件确认后接解析"})
+        # 支付宝 signcustomer 资金账单 (企业号官方API 按天/按月下载的 zip, 或明文 CSV)。
+        # 2026-06-15: 原 pending_read 占位, 现接 alipay_import 自动解析 (格式已确认)。日账单 zip
+        # 内含『账务流水号…账户余额』CSV(GBK); 非该格式(如主力号个人版)仍 pending_read 待人工。
+        from app.services import alipay_import
+        import zipfile
+        text = None
+        if raw[:2] == b"PK":
+            try:
+                zf = zipfile.ZipFile(io.BytesIO(raw))
+                for nm in zf.namelist():
+                    if nm.lower().endswith(".csv"):
+                        data = zf.read(nm)
+                        for enc in ("gbk", "gb18030", "utf-8-sig", "utf-8"):
+                            try:
+                                t = data.decode(enc)
+                            except Exception:
+                                continue
+                            if "账务流水号" in t:
+                                text = t
+                                break
+                    if text:
+                        break
+            except Exception:
+                text = None
+        else:
+            for enc in ("gbk", "gb18030", "utf-8-sig", "utf-8"):
+                try:
+                    t = raw.decode(enc)
+                except Exception:
+                    continue
+                if "账务流水号" in t:
+                    text = t
+                    break
+        if not text:
+            return ("alipay", "pending_read",
+                    {"note": "支付宝账单: 非企业号 signcustomer 资金账单格式(无账务流水号), 待人工/其它解析"})
+        rep = alipay_import.import_alipay_bill(db, text, account="企业号")
+        if getattr(rep, "errors", None):
+            return ("alipay", "error", _report_to_dict(rep))
+        return ("alipay", "imported", _report_to_dict(rep))
     return ("generic", "unsupported", {"note": "未识别类别, 仅归档"})
 
 
@@ -412,6 +450,43 @@ def refresh_alipay_balances(db: Session) -> list[dict]:
                       if avail is not None else f"支付宝API精确取数: {total} ({today})")
         out.append({"account": erp_name, "balance": str(total)})
     db.commit()
+    return out
+
+
+def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
+                         max_days: int = 40) -> dict:
+    """按天用官方 API 拉企业号 signcustomer 资金账单 (T+1), 补到昨天。
+
+    官方 alipay.data.dataservice.bill.downloadurl.query 只给已结算的过去日/月, **不给当月整月**
+    (传 bill_date=当月 → 40004 TYPE_NOT_SUPPORTED), 故逐日拉。下载落 NAS 共享 alipay_api/,
+    随后 run_ingest 经 _import_one('alipay') 自动解析入库 (2026-06-15 接通)。幂等: 重拉同日
+    产同名文件 → run_ingest 按 hash 跳过; 流水按 (tx_no,type,amount) 去重, 重复无副作用。"""
+    from datetime import date, timedelta
+
+    from sqlalchemy import func as _func
+    from app.models.finance import AlipayFlow
+    acc = next((a for a in web_agent_service.alipay_accounts(db)
+                if (a.get("name") or "") == account_name), None)
+    if not acc:
+        return {"skip": f"无 {account_name} 账户配置"}
+    aid = acc.get("id")
+    last = db.query(_func.max(AlipayFlow.transaction_time)).filter(
+        AlipayFlow.account == account_name).scalar()
+    today = date.today()
+    start = last.date() if last else today - timedelta(days=max_days)
+    if start < today - timedelta(days=max_days):
+        start = today - timedelta(days=max_days)
+    end = today - timedelta(days=1)   # T+1: 只到昨天 (当天还没结算)
+    out: dict = {"account": account_name, "from": str(start), "to": str(end),
+                 "pulled": 0, "fail": 0}
+    d = start
+    while d <= end:
+        try:
+            r = web_agent_service.alipay_bill(db, aid, "signcustomer", d.isoformat())
+            out["pulled" if r.get("ok") else "fail"] += 1
+        except Exception:  # noqa: BLE001 - 单日失败不阻断
+            out["fail"] += 1
+        d += timedelta(days=1)
     return out
 
 
@@ -601,6 +676,12 @@ def orchestrate(db: Session, *, force: bool = False) -> dict:
         db.commit()
     except Exception as e:  # noqa: BLE001
         out["alipay_balance"] = [{"error": f"{type(e).__name__}: {e}"}]
+    # 企业号流水: 按天官方API补到昨天(T+1), 落NAS共享; 下方 run_ingest 经 _import_one 自动入库。
+    # 每轮都补(官方API便宜、无浏览器/无扫码); 解决"当月整月API取不了→流水停更"(2026-06-15)。
+    try:
+        out["alipay_daily"] = refresh_alipay_daily(db)
+    except Exception as e:  # noqa: BLE001
+        out["alipay_daily"] = {"error": f"{type(e).__name__}: {e}"}
 
     today = date.today()
     for task_id in plan:
