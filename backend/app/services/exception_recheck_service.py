@@ -172,8 +172,12 @@ def _check_alipay_flow_no_missing(db: Session, exc: DataException) -> Optional[s
     from app.models.order import Order
     if exc.source_table != "after_sales":
         return f"{exc.source_pk} 仍缺支付宝流水号(人工处理)"
+    from datetime import date as _date
     o = db.execute(select(Order).where(Order.order_no == exc.source_pk)).scalar_one_or_none()
-    if o is not None and (o.status or "") in ("cancelled", "pending_payment"):
+    # 原订单已删(多为2025清理) 或 下单在2026以前 → 不再要求流水 (用户拍板 2026-06-15: 2026以前不管)
+    if o is None or (o.order_date and o.order_date < _date(2026, 1, 1)):
+        return None
+    if (o.status or "") in ("cancelled", "pending_payment"):
         return None  # 交易关闭/未付款 → 本就无流水
     rows = db.execute(
         select(AfterSales).where(AfterSales.platform_order_no == exc.source_pk)).scalars().all()
@@ -181,7 +185,13 @@ def _check_alipay_flow_no_missing(db: Session, exc: DataException) -> Optional[s
         return None  # 售后记录已不在
     if all((r.alipay_flow_no or "").strip() for r in rows):
         return None  # 都已回填
-    return f"售后单 {exc.source_pk} 仍缺支付宝流水号"
+    # 无任何额外赔付付款(纯退款在原单已完成) → 不会产生新支付宝流水, 不需流水号 (用户拍板 2026-06-15)
+    _PAYOUT = ("compensation_fee", "direct_compensation", "out_platform_total", "in_platform_total",
+               "second_visit_fee", "return_pack_freight", "good_review_refund",
+               "factory_compensation", "logistics_compensation")
+    if not any(any((getattr(r, f, None) or 0) > 0 for f in _PAYOUT) for r in rows):
+        return None
+    return f"售后单 {exc.source_pk} (有额外赔付) 仍缺支付宝流水号"
 
 
 def _check_refill_record_missing(db: Session, exc: DataException) -> Optional[str]:
@@ -292,8 +302,32 @@ def _check_alipay_duplicate_flow(db: Session, exc: DataException) -> Optional[st
     return None
 
 
+def _check_alipay_balance_gap(db: Session, exc: DataException) -> Optional[str]:
+    """支付宝余额断链: 修好(销账) = 该流水"前驱余额"(本余额-本金额)现在能对上本账户某条流水
+    的余额(同秒/乱序重排后链条接上了), 或本条是窗口最早一条, 或流水已删。与 scanner 同口径
+    (前驱余额法, 2026-06-15 根因修: 旧"按时间相邻比"对企业号同秒多笔大量误报, 流水其实不缺)。"""
+    from decimal import Decimal
+    from app.models.finance import AlipayFlow
+    try:
+        f = db.get(AlipayFlow, int(exc.source_pk))
+    except (TypeError, ValueError):
+        return None
+    if f is None or f.balance is None:
+        return None
+    bal_set = {b for (b,) in db.execute(select(AlipayFlow.balance).where(
+        AlipayFlow.account == f.account, AlipayFlow.balance.isnot(None))).all()}
+    earliest = db.execute(select(AlipayFlow.id).where(
+        AlipayFlow.account == f.account, AlipayFlow.balance.isnot(None)
+    ).order_by(AlipayFlow.transaction_time.asc(), AlipayFlow.id.asc()).limit(1)).scalar()
+    pred = f.balance - (f.amount or Decimal("0"))
+    if pred in bal_set or f.id == earliest:
+        return None
+    return f"流水 {f.id} 余额断链 (前驱应为 ¥{pred}, 无对应流水)"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
+    "alipay_balance_gap": _check_alipay_balance_gap,
     "bom_product_collision": _check_bom_product_collision,
     "import_missing": _check_import_missing,
     "material_name_conflict": _check_material_name_conflict,

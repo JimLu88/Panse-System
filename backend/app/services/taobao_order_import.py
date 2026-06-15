@@ -468,6 +468,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             continue
         seen.add(no)
 
+        # 2025 订单已物理清理(用户拍板 2026-06-15); 淘宝"近3月"报表会带回老的已成交单 →
+        # 不再重建, 否则每次取数都把已删的 2025 单灌回来(并再生缺收款等异常)。order_date 为空
+        # (个别发货报表行)无法判断 → 保留交后续处理。
+        _od = _to_date(o.order_date)
+        if _od is not None and _od.year < 2026:
+            continue
+
         # 主商品行: 取金额最大的一行 (定制差价等小额行不抢主位)
         lines = o.lines or [{}]
         if len(lines) > 1:
