@@ -1150,6 +1150,33 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
         },
         "group_by": [], "parent_fields": [],
     },
+    "factory_bill": {
+        "label": "工厂对账单",
+        "description": "工厂每月发来的对账单/下单发货明细(格式随便: 多 sheet、含标题/小计/优惠后行、"
+                       "备货/售后混排、价格可能是文字)。走专用解析器: 按订单号(含追加号)把『价格』"
+                       "写进工厂单的工厂实际(factory_bill_amount); 匹配不上的(备货/售后/查无订单)"
+                       "只报告、留待后续账单 (用户拍板 2026-06-15)。",
+        "fields": {
+            "seq": {"type": "str", "required": False, "desc": "单号(工厂序号)",
+                    "aliases": ["单号", "序号"]},
+            "order_no": {"type": "str", "required": False, "desc": "淘宝订单号",
+                         "aliases": ["订单号", "淘宝订单号"]},
+            "extra_no": {"type": "str", "required": False, "desc": "追加订单号",
+                         "aliases": ["追加订单号", "追加订单号1", "追加订单号2"]},
+            "product": {"type": "str", "required": False, "desc": "详情/货物",
+                        "aliases": ["详情", "详 情", "货物"]},
+            "qty": {"type": "int", "required": False, "desc": "数量", "aliases": ["数量"]},
+            "price": {"type": "decimal", "required": False, "desc": "工厂价格(实收)",
+                      "aliases": ["价格", "金额"]},
+            "customer": {"type": "str", "required": False, "desc": "客户信息",
+                         "aliases": ["客户信息", "客户"]},
+            "order_date": {"type": "date", "required": False, "desc": "下单时间",
+                           "aliases": ["下单时间"]},
+            "ship_date": {"type": "date", "required": False, "desc": "发货时间",
+                          "aliases": ["发货时间", "到货时间"]},
+        },
+        "group_by": [], "parent_fields": [],
+    },
 }
 
 

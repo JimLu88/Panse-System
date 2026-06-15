@@ -81,3 +81,26 @@ export interface FactorySyncResult {
 // 把订单系统里 已付款/已发货/已签收(去补单/退款) 的订单并入工厂下单表(幂等去重)
 export const syncFactoryOrdersFromOrders = () =>
   api.post<FactorySyncResult>('/api/factory-orders/sync-from-orders').then((r) => r.data);
+
+export interface FactoryBillImportResult {
+  updated: number;
+  unchanged: number;
+  non_numeric: number;
+  order_lines: number;
+  stock_or_aftersales_skipped: number;
+  unmatched_count: number;
+  unmatched: { order_no: string; product: string; reason: string }[];
+  subtotals: { label: string; amount: string }[];
+  dry_run: boolean;
+}
+
+// 上传工厂对账单 xlsx → 按订单号把"价格"写进工厂实际(匹配不上的留待后续账单)
+export const importFactoryBill = (file: File, dryRun = false) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<FactoryBillImportResult>(`/api/factory-orders/import-bill?dry_run=${dryRun}`, fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
+    .then((r) => r.data);
+};

@@ -81,6 +81,15 @@ def _sheet_name_entity(sheet_name: str) -> Optional[str]:
     return None
 
 
+def _looks_like_factory_bill(columns: list[str]) -> bool:
+    """工厂对账单签名: 同时有 价格 + 客户信息 + (订单号 或 单号) + (下单/发货时间)。
+    这组合是工厂「下单发货明细表」独有, 普通订单/工厂下单表凑不齐 → 不靠 sheet 名也能认出。"""
+    cols = "".join((c or "") for c in columns).replace(" ", "")
+    return ("价格" in cols and ("客户信息" in cols or "客户" in cols)
+            and ("订单号" in cols or "单号" in cols)
+            and ("下单时间" in cols or "发货时间" in cols or "到货时间" in cols))
+
+
 # ----------------------------- 数据结构 ---------------------------- #
 
 
@@ -433,6 +442,8 @@ def smart_analyze(db: Session, file_bytes: bytes) -> AnalysisResult:
         if "done" in p:
             continue
         known = _sheet_name_entity(p["name"])
+        if not known and _looks_like_factory_bill(p["columns"]):
+            known = "factory_bill"   # 工厂对账单签名命中(价格+客户信息+订单号+时间), 不靠 sheet 名
         if known:
             _, h_mapping, _ = _heuristic_match(p["columns"], p["sample_rows"])
             p["ai_result"] = {
@@ -567,7 +578,7 @@ def smart_commit(
             sheet_account = _derive_alipay_account(sheet_name)
         # alipay_flow 若没映射 account 列但给了 sheet_account, 也允许导
         if entity == "unknown" or (
-            entity != "wanshifu_bill" and not mapping and not sheet_account
+            entity not in ("wanshifu_bill", "factory_bill") and not mapping and not sheet_account
         ):
             _logger.info("  [%s] 跳过 (未确认 entity/mapping)", sheet_name)
             reports.append({"sheet_name": sheet_name, "skipped": True,
@@ -586,6 +597,23 @@ def smart_commit(
                 except Exception:
                     pass
                 _logger.exception("  [%s] 万师傅账单导入失败: %s", sheet_name, e)
+                report_dict = {"sheet_name": sheet_name,
+                               "error": f"{type(e).__name__}: {e}"}
+            reports.append(report_dict)
+            continue
+        # 工厂对账单: 乱格式(多 sheet/小计/备货/售后), 走专用解析器, 按订单号写工厂实际, 不走列映射。
+        if entity == "factory_bill":
+            try:
+                from app.services import factory_bill_import_service
+                report_dict = factory_bill_import_service.commit_sheet_bill(
+                    db, file_bytes=file_bytes, sheet_name=sheet_name,
+                    dry_run=item.get("dry_run", False))
+            except Exception as e:  # noqa: BLE001 - 单 sheet 失败不连累其他
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
+                _logger.exception("  [%s] 工厂对账单导入失败: %s", sheet_name, e)
                 report_dict = {"sheet_name": sheet_name,
                                "error": f"{type(e).__name__}: {e}"}
             reports.append(report_dict)

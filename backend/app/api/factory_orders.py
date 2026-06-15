@@ -10,7 +10,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -193,3 +193,23 @@ def sync_factory_orders_from_orders(
     """
     from app.services import factory_order_service
     return factory_order_service.sync_from_orders(db)
+
+
+@router.post("/import-bill")
+async def import_factory_bill(
+    file: UploadFile = File(...),
+    dry_run: bool = Query(False, description="试运行: 只解析+匹配, 不写库"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """上传工厂对账单 xlsx → 按订单号(含追加号)把「价格」写进工厂实际(factory_bill_amount)。
+
+    匹配不上的(备货/售后/查无订单/价格非数字)只报告、不动 —— 等后续账单再补 (用户拍板 2026-06-15)。
+    支持工厂随便发来的两个 sheet 任意一个; 自动跳过标题/小计/优惠后等行。
+    """
+    from app.services import factory_bill_import_service
+    content = await file.read()
+    try:
+        return factory_bill_import_service.import_bill(db, content, dry_run=dry_run)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"对账单解析失败: {e}")

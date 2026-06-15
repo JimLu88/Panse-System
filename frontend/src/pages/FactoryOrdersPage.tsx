@@ -2,13 +2,13 @@
 import { useMemo, useState } from 'react';
 import {
   Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Row, Segmented,
-  Select, Space, Statistic, Table, Tag, Typography, message,
+  Select, Space, Statistic, Table, Tag, Typography, Upload, message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
   listFactoryOrders, factoryOrderAccessories, reconcileFactoryOrder, syncFactoryOrdersFromOrders,
-  type FactoryOrderRow,
+  importFactoryBill, type FactoryOrderRow,
 } from '../api/client';
 
 const { Title, Text } = Typography;
@@ -84,6 +84,31 @@ export default function FactoryOrdersPage() {
       qc.invalidateQueries({ queryKey: ['factory-orders'] });
     },
     onError: (e: any) => message.error(`同步失败: ${e?.response?.data?.detail || e?.message || e}`),
+  });
+
+  const billMut = useMutation({
+    mutationFn: (file: File) => importFactoryBill(file),
+    onSuccess: (r) => {
+      Modal.info({
+        title: '工厂对账单导入完成',
+        width: 640,
+        content: (
+          <div>
+            <p>
+              更新工厂实际 <b>{r.updated}</b> 单 · 未变 {r.unchanged} · 未匹配 {r.unmatched_count}
+              (备货/售后/查无订单/价格非数字) · 备货售后行 {r.stock_or_aftersales_skipped}
+            </p>
+            {r.unmatched_count > 0 && (
+              <Text type="secondary">
+                未匹配示例: {r.unmatched.slice(0, 5).map((u) => `${u.order_no || '—'}(${u.reason})`).join('; ')}
+              </Text>
+            )}
+          </div>
+        ),
+      });
+      qc.invalidateQueries({ queryKey: ['factory-orders'] });
+    },
+    onError: (e: any) => message.error(`导入失败: ${e?.response?.data?.detail || e?.message || e}`),
   });
 
   const openReconcile = (r: FactoryOrderRow) => {
@@ -178,6 +203,13 @@ export default function FactoryOrdersPage() {
         >
           <Button type="primary" ghost loading={syncMut.isPending}>从订单同步</Button>
         </Popconfirm>
+        <Upload
+          accept=".xlsx,.xls"
+          showUploadList={false}
+          beforeUpload={(file) => { billMut.mutate(file as File); return false; }}
+        >
+          <Button loading={billMut.isPending}>导入工厂对账单</Button>
+        </Upload>
       </Space>
       <Table<FactoryOrderRow>
         rowKey="id"
