@@ -575,37 +575,69 @@ _CHAT_SYSTEM = """\
 """
 
 
-def _build_pricing_context(db: Session) -> str:
-    from sqlalchemy import select
+def _build_pricing_context(db: Session, query: str = "") -> str:
+    """喂给定制报价 AI 的产品定价上下文。
+
+    旧版只取前 200 SKU / 前 30 产品 → AI 看不到全部品类(如床头柜排编码后段被截掉),
+    误判"暂无X品类"乱估。改为: ①永远给【全部产品目录】(按类目, 每行 编码+名称+价格区间);
+    ②对【与需求同类目】的产品再给 SKU/尺寸/价格明细。这样 AI 既知道有哪些品类, 又有相关品的细价。
+    """
+    from sqlalchemy import func, select
     from app.models.pricing import PricingSku
     from app.models.product import Product
 
-    rows = db.execute(
-        select(PricingSku.sku_code, PricingSku.sku, PricingSku.product_code,
-               PricingSku.size_category, PricingSku.daily_price, PricingSku.list_price)
-        .order_by(PricingSku.product_code, PricingSku.sku_code)
-        .limit(200)
+    products = db.execute(select(Product).order_by(Product.category, Product.code)).scalars().all()
+    if not products:
+        return "（暂无产品数据）"
+    agg = db.execute(
+        select(PricingSku.product_code, func.min(PricingSku.daily_price),
+               func.max(PricingSku.daily_price), func.count())
+        .group_by(PricingSku.product_code)
     ).all()
+    price_map = {r[0]: (r[1], r[2], r[3]) for r in agg}
 
-    if not rows:
-        return "（暂无导入定价数据）"
+    def _rng(code: str):
+        mn, mx, n = price_map.get(code, (None, None, 0))
+        if mn is None:
+            return "无定价", 0
+        if mn == mx:
+            return f"日常价¥{float(mn):.0f}", n
+        return f"日常价¥{float(mn):.0f}-{float(mx):.0f}", n
 
-    product_codes = list({r.product_code for r in rows})[:30]
-    products = db.execute(
-        select(Product.code, Product.name)
-        .where(Product.code.in_(product_codes))
-    ).all()
-    name_map = {p.code: p.name for p in products}
+    lines = ["【全部产品目录(按类目; 每行: 编码 名称 (价格区间, SKU数))】"]
+    cur = object()
+    for p in products:
+        if p.category != cur:
+            cur = p.category
+            lines.append(f"\n# 类目: {cur or '未分类'}")
+        rng, n = _rng(p.code)
+        lines.append(f"  {p.code} {p.name} ({rng}, {n}SKU)")
 
-    lines = []
-    cur_prod = None
-    for r in rows:
-        if r.product_code != cur_prod:
-            cur_prod = r.product_code
-            pname = name_map.get(r.product_code, "")
-            lines.append(f"\n产品 {r.product_code} {pname}:")
-        price = f"¥{r.daily_price:.0f}" if r.daily_price else (f"¥{r.list_price:.0f}" if r.list_price else "—")
-        lines.append(f"  {r.sku_code} [{r.sku or ''}] {r.size_category or ''} 日常价{price}")
+    # 与需求同类目(类目末段词出现在用户描述里)的产品 → 给 SKU/尺寸/价格明细
+    q = query or ""
+    rel_cats = {p.category for p in products
+                if p.category and p.category.split("-")[-1] in q}
+    # 类目末段越具体(越长)越优先, 防"柜"这种泛词把床头柜挤出截断上限
+    relevant = sorted(
+        [p for p in products if p.category in rel_cats],
+        key=lambda p: -len((p.category or "").split("-")[-1]),
+    )[:20]
+    if relevant:
+        lines.append("\n【与本次需求同类目的产品 — SKU/尺寸/价格明细】")
+        nm = {p.code: p.name for p in relevant}
+        skus = db.execute(
+            select(PricingSku.product_code, PricingSku.sku_code, PricingSku.sku,
+                   PricingSku.size_category, PricingSku.daily_price, PricingSku.list_price)
+            .where(PricingSku.product_code.in_([p.code for p in relevant]))
+            .order_by(PricingSku.product_code, PricingSku.sku_code)
+        ).all()
+        cur = object()
+        for r in skus:
+            if r.product_code != cur:
+                cur = r.product_code
+                lines.append(f"\n产品 {r.product_code} {nm.get(r.product_code, '')}:")
+            price = f"¥{r.daily_price:.0f}" if r.daily_price else (f"¥{r.list_price:.0f}" if r.list_price else "—")
+            lines.append(f"  {r.sku_code} [{r.sku or ''}] {r.size_category or ''} 日常价{price}")
     return "\n".join(lines)
 
 
@@ -634,7 +666,7 @@ async def ai_chat(
         raise HTTPException(400, "最多上传5张图片")
 
     target_model = _CHAT_OPUS if model_pref == "opus" else _CHAT_SONNET
-    pricing_ctx = await asyncio.to_thread(_build_pricing_context, db)
+    pricing_ctx = await asyncio.to_thread(_build_pricing_context, db, message)
     system = _CHAT_SYSTEM.format(pricing_context=pricing_ctx)
 
     cfg = settings_service.get_ai_config(db, "ocr")
