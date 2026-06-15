@@ -36,7 +36,6 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _dispatch(db, cmd: str, args: list[str]):
-    from . import services as _  # noqa
     from .services import (comment_engine, content_seeder, crawl_service,
                            generator, topic_engine, weekly_report)
     if cmd == "topics":

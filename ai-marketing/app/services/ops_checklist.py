@@ -40,14 +40,12 @@ def _period_key(scope: str, day: dt.date) -> str:
 def today(db: Session) -> dict:
     """读取/生成当期运营台账（按日/周/月各自的 period 自动重置）。"""
     day = dt.date.today()
-    out = []
     for scope, key, title in TEMPLATES:
         period = _period_key(scope, day)
         task = db.scalar(select(OpsTask).where(OpsTask.task_key == key,
                                                OpsTask.period_key == period))
         if task is None:
-            task = OpsTask(period_key=period, scope=scope, task_key=key, title=title)
-            db.add(task)
+            db.add(OpsTask(period_key=period, scope=scope, task_key=key, title=title))
             db.flush()
     db.commit()
     rows = []

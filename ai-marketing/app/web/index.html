@@ -5,61 +5,79 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>畔色/孚格 · 内容矩阵工作台</title>
 <style>
-  :root{--bg:#f6f5f2;--card:#fff;--line:#e7e3dc;--ink:#2c2a26;--sub:#8a847a;--accent:#8a6d4f;--accent2:#a98b66;--green:#3f9d5a;--yellow:#c89a2b;--red:#c4503e;--blue:#4a7eb5}
+  :root{--bg:#f5f3ef;--card:#fff;--line:#e7e3dc;--ink:#2b2925;--sub:#857f74;--accent:#8a6d4f;--accent2:#a98b66;--green:#3f9d5a;--yellow:#bf8f1e;--red:#c4503e;--blue:#4a7eb5;--shadow:0 1px 3px rgba(0,0,0,.05),0 1px 2px rgba(0,0,0,.04);--radius:12px}
   *{box-sizing:border-box}
-  body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:14px}
-  header{background:var(--ink);color:#fff;padding:12px 22px;display:flex;align-items:center;gap:14px;flex-wrap:wrap;position:sticky;top:0;z-index:10}
-  header h1{font-size:16px;margin:0;font-weight:600}
-  header .tag{font-size:12px;color:#cdbfa8;background:#403c35;padding:2px 8px;border-radius:10px}
-  .layout{display:flex;min-height:calc(100vh - 46px)}
-  nav{width:184px;background:#fff;border-right:1px solid var(--line);padding:10px 8px;flex-shrink:0}
-  nav .group{font-size:11px;color:var(--sub);padding:10px 12px 4px;letter-spacing:1px}
-  nav button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:9px 12px;border-radius:8px;cursor:pointer;font-size:14px;color:var(--ink);text-align:left;margin-bottom:2px}
+  html{-webkit-text-size-adjust:100%}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--ink);font-size:15px;line-height:1.6}
+  header{background:var(--ink);color:#fff;padding:12px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;position:sticky;top:0;z-index:20;box-shadow:0 2px 8px rgba(0,0,0,.12)}
+  header h1{font-size:16px;margin:0;font-weight:600;margin-right:auto}
+  header .tag{font-size:12px;color:#d8cbb4;background:#403c35;padding:3px 9px;border-radius:11px;white-space:nowrap}
+  #navtoggle{display:none;background:#403c35;color:#fff;border:0;border-radius:8px;padding:6px 12px;font-size:14px;cursor:pointer}
+  .layout{display:flex;min-height:calc(100vh - 50px)}
+  nav{width:196px;background:#fff;border-right:1px solid var(--line);padding:10px 8px;flex-shrink:0;overflow-y:auto}
+  nav .group{font-size:11px;color:var(--sub);padding:12px 12px 4px;letter-spacing:1px;font-weight:600}
+  nav button{display:flex;align-items:center;gap:8px;width:100%;border:0;background:transparent;padding:10px 12px;border-radius:9px;cursor:pointer;font-size:14px;color:var(--ink);text-align:left;margin-bottom:2px;line-height:1.3}
   nav button:hover{background:#f3efe9}
-  nav button.on{background:var(--accent);color:#fff}
-  nav button .badge{margin-left:auto;background:var(--red);color:#fff;font-size:11px;border-radius:9px;padding:0 6px;min-width:18px;text-align:center}
+  nav button.on{background:var(--accent);color:#fff;font-weight:500}
+  nav button .badge{margin-left:auto;background:var(--red);color:#fff;font-size:11px;border-radius:9px;padding:1px 7px;min-width:18px;text-align:center}
   nav button.on .badge{background:#fff;color:var(--accent)}
-  main{flex:1;padding:20px;max-width:980px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
-  .guide{background:#fbf6ee;border:1px solid #ecddc6;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:13px;line-height:1.7;color:#6b5a42}
+  main{flex:1;padding:22px;max-width:1000px;width:100%}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:18px;margin-bottom:14px;box-shadow:var(--shadow);overflow-x:auto}
+  .guide{background:linear-gradient(#fcf8f1,#fbf5ea);border:1px solid #ecddc6;border-radius:var(--radius);padding:13px 16px;margin-bottom:16px;font-size:14px;line-height:1.8;color:#6b5a42}
   .guide b{color:var(--accent)}
-  .steps{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
-  .steps .s{flex:1;min-width:120px;background:#fff;border:1px solid var(--line);border-radius:10px;padding:10px;font-size:12px;color:var(--sub)}
-  .steps .s b{display:block;color:var(--ink);font-size:13px;margin-top:2px}
-  .steps .s .n{display:inline-block;width:20px;height:20px;line-height:20px;text-align:center;background:var(--accent);color:#fff;border-radius:50%;font-size:12px}
+  .steps{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin-bottom:14px}
+  .steps .s{background:#fff;border:1px solid var(--line);border-radius:10px;padding:11px;font-size:12px;color:var(--sub)}
+  .steps .s b{display:block;color:var(--ink);font-size:13px;margin-top:3px}
+  .steps .s .n{display:inline-block;width:21px;height:21px;line-height:21px;text-align:center;background:var(--accent);color:#fff;border-radius:50%;font-size:12px}
   .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
-  button.act{background:var(--accent);color:#fff;border:0;padding:8px 14px;border-radius:8px;cursor:pointer;font-size:13px}
+  button.act{background:var(--accent);color:#fff;border:0;padding:9px 16px;border-radius:9px;cursor:pointer;font-size:14px;min-height:38px;font-weight:500}
+  button.act:hover{background:#7a5f44}
   button.act:disabled{opacity:.4;cursor:not-allowed}
-  button.ghost{background:#fff;border:1px solid var(--line);color:var(--ink);padding:7px 12px;border-radius:8px;cursor:pointer;font-size:13px}
-  input,select,textarea{padding:7px 10px;border:1px solid var(--line);border-radius:8px;font-size:13px;font-family:inherit}
-  textarea{width:100%;min-height:60px}
-  .muted{color:var(--sub);font-size:12px}
-  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:12px}
-  .stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
-  .stat .c{background:#fff;border:1px solid var(--line);border-radius:10px;padding:14px;cursor:pointer}
-  .stat .c:hover{border-color:var(--accent)}
-  .stat .c .num{font-size:28px;font-weight:600}
-  .stat .c .lbl{font-size:12px;color:var(--sub)}
+  button.ghost{background:#fff;border:1px solid var(--line);color:var(--ink);padding:8px 13px;border-radius:9px;cursor:pointer;font-size:13px;min-height:36px}
+  button.ghost:hover{border-color:var(--accent);color:var(--accent)}
+  input,select,textarea{padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-family:inherit;background:#fff;min-height:38px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  textarea{width:100%;min-height:64px;line-height:1.6}
+  .muted{color:var(--sub);font-size:12.5px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px}
+  .stat{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+  .stat .c{background:#fff;border:1px solid var(--line);border-radius:10px;padding:15px;cursor:pointer;transition:border-color .15s,transform .1s}
+  .stat .c:hover{border-color:var(--accent);transform:translateY(-1px)}
+  .stat .c .num{font-size:30px;font-weight:700;line-height:1.1}
+  .stat .c .lbl{font-size:12.5px;color:var(--sub);margin-top:3px}
   .stat .c.urgent .num{color:var(--red)}
-  .pill{display:inline-block;font-size:11px;padding:1px 8px;border-radius:9px;background:#e8f3ea;color:var(--green)}
-  .pill.y{background:#fbf3da;color:var(--yellow)}.pill.r{background:#f9e3df;color:var(--red)}.pill.b{background:#eee;color:var(--sub)}.pill.bl{background:#e4eef7;color:var(--blue)}
-  h3{margin:0 0 8px;font-size:15px}
-  h3 .sub{font-weight:400;color:var(--sub);font-size:12px;margin-left:6px}
-  .kv{font-size:13px;line-height:1.7}
-  .hl{background:#fbe6c8;border-radius:3px;padding:0 2px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:8px;border-bottom:1px solid var(--line);vertical-align:top}
-  th{color:var(--sub);font-weight:500}
-  .empty{color:var(--sub);font-size:13px;padding:14px;text-align:center}
-  .timeline{font-size:12px;color:var(--sub);border-left:2px solid var(--line);padding-left:12px;margin-top:8px}
+  .pill{display:inline-block;font-size:11px;padding:2px 9px;border-radius:10px;background:#e8f3ea;color:var(--green);white-space:nowrap}
+  .pill.y{background:#fbf2d6;color:var(--yellow)}.pill.r{background:#f9e3df;color:var(--red)}.pill.b{background:#eee;color:var(--sub)}.pill.bl{background:#e4eef7;color:var(--blue)}
+  h3{margin:0 0 10px;font-size:16px}
+  h3 .sub{font-weight:400;color:var(--sub);font-size:12.5px;margin-left:6px}
+  .kv{font-size:14px;line-height:1.8}
+  .hl{background:#fbe6c8;border-radius:3px;padding:0 3px;font-weight:500}
+  .tablewrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+  table{width:100%;border-collapse:collapse;font-size:13.5px;min-width:max-content}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--sub);font-weight:500;white-space:nowrap}
+  .empty{color:var(--sub);font-size:14px;padding:28px 14px;text-align:center}
+  .empty:before{content:"📭";display:block;font-size:28px;margin-bottom:6px;opacity:.6}
+  .timeline{font-size:12.5px;color:var(--sub);border-left:2px solid var(--line);padding-left:12px;margin-top:8px}
   .timeline div{margin:4px 0}
   .ck{cursor:pointer;user-select:none}
-  .copybtn{font-size:11px;padding:2px 8px}
+  .copybtn{font-size:12px;padding:4px 10px;min-height:30px}
+  @media(max-width:860px){
+    body{font-size:15px}
+    #navtoggle{display:block}
+    .layout{flex-direction:column}
+    nav{width:100%;border-right:0;border-bottom:1px solid var(--line);max-height:50vh;display:none}
+    nav.open{display:block}
+    nav .group{padding-top:8px}
+    main{padding:16px}
+    header h1{font-size:15px}
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>🪵 畔色/孚格 · 内容矩阵工作台</h1>
+  <button id="navtoggle" onclick="document.getElementById('nav').classList.toggle('open')">☰ 菜单</button>
   <span class="tag" id="llm">…</span>
   <span class="tag" id="ds"></span>
   <span class="tag" id="wd"></span>
@@ -99,7 +117,7 @@ function buildNav(){
     const b=badge(t);
     return `<button data-t="${t}" class="${t===TAB?'on':''}">${label}${b?`<span class="badge">${b}</span>`:''}</button>`;
   }).join('')).join('');
-  $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>{TAB=b.dataset.t;buildNav();render();});
+  $('#nav').querySelectorAll('button').forEach(b=>b.onclick=()=>{TAB=b.dataset.t;buildNav();render();$('#nav').classList.remove('open');window.scrollTo(0,0);});
 }
 function badge(t){
   if(t==='review')return HOME.to_review;
@@ -126,21 +144,27 @@ const VIEWS={
   // ============ 今日待办首页 ============
   async home(v){
     HOME=await api('GET','/api/home');buildNav();
+    let ds={mode:'mock'};try{ds=await api('GET','/api/datasource/status');}catch(e){}
     const cards=[
-      ['to_review','待审核草稿','review',HOME.to_review,false],
-      ['due_publish','到点待发布','queue',HOME.due_publish,true],
-      ['comments_pending','待处理评论','comment',HOME.comments_pending,false],
-      ['nurture_left','养号未打卡','nurture',HOME.nurture_left,false],
-      ['overdue_leads','超48h线索','lead',HOME.overdue_leads,true],
-      ['data_missing','待录数据','queue',HOME.data_missing,false],
+      ['to_review','📝 去审核草稿','review',HOME.to_review,false],
+      ['due_publish','📤 去发布','queue',HOME.due_publish,true],
+      ['comments_pending','💬 处理评论','comment',HOME.comments_pending,false],
+      ['nurture_left','🌱 养号打卡','nurture',HOME.nurture_left,false],
+      ['overdue_leads','📥 跟进线索','lead',HOME.overdue_leads,true],
+      ['data_missing','📊 补录数据','queue',HOME.data_missing,false],
     ];
     v.innerHTML=`
-    <div class="guide">👋 <b>欢迎使用内容矩阵工作台</b>。这套系统帮你管好"做内容→发出去→引流量→变订单"的全过程。
-    下面是<b>今天要做的事</b>，点任意一张卡片直接去处理。每个页面顶部都有黄色操作说明，照着做即可，不用培训。</div>
-    <div class="card"><h3>📋 今日待办</h3>
+    <div class="guide">👋 <b>欢迎使用内容矩阵工作台</b>。这套系统帮你管好"做内容 → 发出去 → 引流量 → 变订单"的全过程。
+    下面是<b>今天要做的事</b>，点卡片直接去处理。每个页面顶部都有黄色说明，照着做即可，<b>不用培训</b>。</div>
+    ${ds.mode==='mock'?`<div class="card" style="border-color:#ecddc6;background:#fcf8f1"><h3>🚀 首次使用？先做 3 步</h3>
+      <div class="kv">1️⃣ 去 <b>🔧系统设置</b> 填「采集器地址」→ 全站演示数据换成真实数据<br>
+      2️⃣ 填「飞书 Webhook」→ 待办提醒推到群里<br>
+      3️⃣ 配真实大模型 Key（改 .env 的 LLM_PROVIDER）→ AI 文案更好</div>
+      <button class="act" style="margin-top:10px" onclick="go('settings')">去系统设置 →</button></div>`:''}
+    <div class="card"><h3>📋 今日待办 <span class="sub">点卡片直接去做</span></h3>
       <div class="stat">${cards.map(([k,lbl,tab,n,urg])=>`
         <div class="c ${urg&&n?'urgent':''}" onclick="go('${tab}')"><div class="num">${n??0}</div><div class="lbl">${lbl}</div></div>`).join('')}
-        <div class="c" onclick="go('ops')"><div class="num">${HOME.ops_done}/${HOME.ops_total}</div><div class="lbl">运营台账打卡</div></div>
+        <div class="c" onclick="go('ops')"><div class="num">${HOME.ops_done}/${HOME.ops_total}</div><div class="lbl">✅ 运营打卡</div></div>
       </div></div>
     <div class="card"><h3>🗺 完整流程（新手必读）</h3>
       <div class="steps">

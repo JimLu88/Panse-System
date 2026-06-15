@@ -10,7 +10,7 @@ import math
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Experiment, Lead, Metric, PublishEvent
+from ..models import Experiment, Lead, PublishEvent
 
 
 def create_experiment(db: Session, name: str, factor: str, arm_names: list[str]) -> Experiment:
