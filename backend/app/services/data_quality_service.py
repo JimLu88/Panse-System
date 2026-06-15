@@ -619,11 +619,14 @@ def scan_alipay_duplicate_flow(db: Session) -> int:
         AlipayFlow.transaction_no.isnot(None),
         AlipayFlow.transaction_no != "",
     ).all():
-        key = (row.account, row.transaction_no, row.transaction_type)
+        # 业务流水号(transaction_no)会被多笔不同交易复用(分账/其它/手续费), 判重必须连金额一起比 ——
+        # 否则把"复用同一业务流水号的不同金额交易"误判成重复 (2026-06-15 根因修; 实测53组误报,
+        # 如 交易分账#…599608 含 ¥22.00/¥-0.13/¥21.87 是三笔不同交易)。与导入去重键 (no,type,amount) 一致。
+        key = (row.account, row.transaction_no, row.transaction_type, str(row.amount))
         groups[key].append(row)
 
     count = 0
-    for (account, tx_no, tx_type), rows in groups.items():
+    for (account, tx_no, tx_type, _amt), rows in groups.items():
         if len(rows) < 2:
             continue
         rows_sorted = sorted(rows, key=lambda r: r.id)

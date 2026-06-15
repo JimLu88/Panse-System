@@ -267,7 +267,32 @@ def _check_missing_taobao_mapping(db: Session, exc: DataException) -> Optional[s
     return f"产品 {exc.source_pk} 仍缺淘宝商品ID"
 
 
+def _check_alipay_duplicate_flow(db: Session, exc: DataException) -> Optional[str]:
+    """支付宝重复流水: 修好(销账)= 不再有"同账户+同业务流水号+同类型+同金额"的其它流水。
+    根因修(2026-06-15): 业务流水号会被多笔不同交易复用, 判重必须连金额一起比, 否则把"复用同号
+    的不同金额交易"误报成重复 (与导入去重键 (no,type,amount) 一致)。流水已删也销账。"""
+    from sqlalchemy import func
+    from app.models.finance import AlipayFlow
+    try:
+        f = db.get(AlipayFlow, int(exc.source_pk))
+    except (TypeError, ValueError):
+        return None
+    if f is None:
+        return None
+    n = db.execute(select(func.count()).select_from(AlipayFlow).where(
+        AlipayFlow.account == f.account,
+        AlipayFlow.transaction_no == f.transaction_no,
+        AlipayFlow.transaction_type == f.transaction_type,
+        AlipayFlow.amount == f.amount,
+        AlipayFlow.id != f.id,
+    )).scalar() or 0
+    if n:
+        return f"流水 {f.id} 仍与其它 {n} 条完全重复(同号+类型+金额)"
+    return None
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
+    "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "bom_product_collision": _check_bom_product_collision,
     "import_missing": _check_import_missing,
     "material_name_conflict": _check_material_name_conflict,
