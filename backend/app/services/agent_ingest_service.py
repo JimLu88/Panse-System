@@ -521,17 +521,28 @@ def run_ingest(db: Session) -> dict:
     # 让用户转发『发货密码 xxx』; 收到后 _capture_shipping_password→reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
-        try:
-            from app.services import notify_service
+        import os as _os
+        if not _os.environ.get("PANSE_DISABLE_NOTIFY"):
             n = len(_pending_pw_files)
-            notify_service.notify(
-                db,
-                (f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                 f"『发货密码 xxxx』转发到这里 —— 一报表一密、收到后自动解密入库 (60 分钟内有效)。"),
-                level="warn", title="发货报表待口令",
-            )
-        except Exception:
-            _log.warning("发货报表待口令主动提醒推送失败", exc_info=True)
+            _msg = (f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
+                    f"『发货密码 xxxx』转发到这里 —— 一报表一密、收到后自动解密入库 (60 分钟内有效)。")
+            # 优先推飞书: 用户本就在飞书转发口令, 且 notify provider 未必配了 webhook
+            # (现网=wechat_work 但 webhook 空 → 走 notify 会静默丢失)。飞书推送失败再兜底 notify。
+            _pushed = False
+            try:
+                from app.services import feishu_client
+                _chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+                if _chat:
+                    feishu_client.send_text(db, _chat, _msg)
+                    _pushed = True
+            except Exception:
+                _log.warning("发货报表待口令飞书提醒失败", exc_info=True)
+            if not _pushed:
+                try:
+                    from app.services import notify_service
+                    notify_service.notify(db, _msg, level="warn", title="发货报表待口令")
+                except Exception:
+                    _log.warning("发货报表待口令兜底通知失败", exc_info=True)
     state["last_ingest_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_STATE, state)
     _save_json(db, KEY_LAST_INGEST, report)
