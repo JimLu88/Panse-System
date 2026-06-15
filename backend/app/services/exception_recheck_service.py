@@ -119,19 +119,27 @@ def _check_order_missing_tracking(db: Session, exc: DataException) -> Optional[s
 
 
 def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str]:
-    """订单缺支付宝流水: 修好 = 已有 AlipayFlow.related_order_no 关联 (或取消/待付款/历史)。"""
+    """订单缺收款记录: 修好(销账) = 已成交单有了支付宝流水或聚合结算关联; 或本就不该要收款
+    (担保交易中 paid/shipped、退款 aftersales、取消、待付款、历史)。
+    根因修(2026-06-15): 淘宝企业单走聚合批量打款, 逐单货款在聚合账单(OrderSettlement), 故聚合
+    结算也算已收款; 且只有已成交(signed/completed) 才该有收款流水, 在途单不算缺。与 scanner 同口径。"""
     from sqlalchemy import func
     from app.models.finance import AlipayFlow
+    from app.models.settlement import OrderSettlement
     o = _get_order(db, exc)
     if o is None:
         return None
-    if (o.status or "") in ("cancelled", "pending_payment") or o.is_historical:
+    if o.is_historical or (o.status or "") not in ("signed", "completed", "success", "finished"):
         return None
     n = db.execute(select(func.count()).select_from(AlipayFlow)
                    .where(AlipayFlow.related_order_no == o.order_no)).scalar() or 0
     if n:
         return None
-    return f"订单 {o.order_no} 仍无支付宝流水关联"
+    m = db.execute(select(func.count()).select_from(OrderSettlement)
+                   .where(OrderSettlement.order_no == o.order_no)).scalar() or 0
+    if m:
+        return None
+    return f"订单 {o.order_no} 已成交但无收款记录(支付宝流水/聚合结算均无)"
 
 
 def _check_refill_unmatched(db: Session, exc: DataException) -> Optional[str]:

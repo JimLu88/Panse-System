@@ -95,13 +95,26 @@ def scan_order_missing_cost(db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 def scan_order_missing_alipay(db: Session) -> int:
+    # 已收款判定 (2026-06-15 根因修, 据用户提示"淘宝聚合可逐单拉"): 淘宝企业订单走『聚合结算』
+    # 批量打款 —— 单笔支付宝流水是多单合并的批次, 无法逐单匹配; 逐单货款只落在『聚合账单』里
+    # (OrderSettlement.order_no, 由 settlement_import 导入)。故"已收款"= 支付宝流水
+    # (AlipayFlow.related_order_no) 或 聚合结算(OrderSettlement.order_no) 任一有记录。
+    from app.models.settlement import OrderSettlement
     linked = {
-        row.related_order_no
-        for row in db.query(AlipayFlow).filter(AlipayFlow.related_order_no.isnot(None)).all()
+        r for (r,) in db.query(AlipayFlow.related_order_no)
+        .filter(AlipayFlow.related_order_no.isnot(None)).all()
     }
+    linked |= {
+        r for (r,) in db.query(OrderSettlement.order_no)
+        .filter(OrderSettlement.order_no.isnot(None)).all()
+    }
+    # 只查『货款应已到账』的订单 —— 交易成功(signed)/已完成。担保交易中的 paid(买家已付款待发货)/
+    # shipped(已发货待确认收货) 货款仍在淘宝担保未释放, 本就无收款流水, 不算缺失(在途, 归现金流预测);
+    # aftersales(退款)/cancelled/pending_payment 同理不该要收款流水。否则把"在途"误报成"缺数据"。
+    SETTLED_STATES = ("signed", "completed", "success", "finished")
     count = 0
     for o in db.query(Order).filter(
-        Order.status.notin_(["cancelled", "pending_payment"]),
+        Order.status.in_(SETTLED_STATES),
         Order.is_historical == False,  # noqa: E712
     ).all():
         if o.order_no not in linked:
@@ -111,12 +124,12 @@ def scan_order_missing_alipay(db: Session) -> int:
                 source_pk=o.id,
                 exception_type="order_missing_alipay",
                 severity="warning",
-                description=f"订单 {o.order_no} 无对应支付宝流水记录, 无法财务匹配。",
-                suggestion_action="在支付宝流水页找到对应记录并填写 related_order_no。",
+                description=f"订单 {o.order_no} 已成交但无收款记录(支付宝流水/聚合结算均无), 无法财务匹配。",
+                suggestion_action="导入覆盖该单的淘宝聚合账单(收支记录)或对应支付宝流水后自动消除。",
                 context={"order_no": o.order_no, "paid_amount": str(o.paid_amount)},
             )
             count += 1
-    _log.info("scan_order_missing_alipay: %d unlinked", count)
+    _log.info("scan_order_missing_alipay: %d unlinked (settled-only, incl 聚合结算)", count)
     return count
 
 
