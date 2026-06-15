@@ -628,6 +628,10 @@ def run_ingest(db: Session) -> dict:
             db.commit()
             report["auto_resolved"] = exception_recheck_service.bulk_close_resolved(db)
             db.commit()
+            # 工厂下单表自动并入新订单 (用户拍板 2026-06-15: 已付款/已发货/已签收, 去补单/退款, 幂等去重)
+            from app.services import factory_order_service
+            report["factory_sync"] = factory_order_service.sync_from_orders(db)
+            db.commit()
         except Exception:  # noqa: BLE001 - 联动失败不影响导入结果
             db.rollback()
             _log.warning("ingest 后联动消异常失败", exc_info=True)

@@ -1,13 +1,13 @@
 // 供应链「工厂下单表」(2026-06-15): 逐单 下单内容+推算成本+工厂实际+差异+支付/对账, 逐单核对。
 import { useMemo, useState } from 'react';
 import {
-  Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Row, Segmented,
+  Button, Card, Col, DatePicker, Form, Input, InputNumber, Modal, Popconfirm, Row, Segmented,
   Select, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
 import {
-  listFactoryOrders, factoryOrderAccessories, reconcileFactoryOrder,
+  listFactoryOrders, factoryOrderAccessories, reconcileFactoryOrder, syncFactoryOrdersFromOrders,
   type FactoryOrderRow,
 } from '../api/client';
 
@@ -75,6 +75,15 @@ export default function FactoryOrdersPage() {
       qc.invalidateQueries({ queryKey: ['factory-orders'] });
     },
     onError: (e: any) => message.error(`核对失败: ${e?.response?.data?.detail || e?.message || e}`),
+  });
+
+  const syncMut = useMutation({
+    mutationFn: () => syncFactoryOrdersFromOrders(),
+    onSuccess: (r) => {
+      message.success(`已并入订单: 新增 ${r.created} 张, 跳过 ${r.skipped} 张(已存在)`);
+      qc.invalidateQueries({ queryKey: ['factory-orders'] });
+    },
+    onError: (e: any) => message.error(`同步失败: ${e?.response?.data?.detail || e?.message || e}`),
   });
 
   const openReconcile = (r: FactoryOrderRow) => {
@@ -161,6 +170,14 @@ export default function FactoryOrdersPage() {
           value={month ? dayjs(`${month}-01`) : null}
           onChange={(d) => setMonth(d ? d.format('YYYY-MM') : undefined)}
         />
+        <Popconfirm
+          title="从订单系统并入工厂单"
+          description="把 已付款/已发货/已签收(去补单/退款) 的订单并入本表, 已存在的不重复。"
+          okText="并入" cancelText="取消"
+          onConfirm={() => syncMut.mutate()}
+        >
+          <Button type="primary" ghost loading={syncMut.isPending}>从订单同步</Button>
+        </Popconfirm>
       </Space>
       <Table<FactoryOrderRow>
         rowKey="id"

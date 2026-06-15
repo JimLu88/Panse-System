@@ -145,6 +145,77 @@ def generate_factory_order_for(
     return fo, lock_result
 
 
+# --------------- 订单 → 工厂单 批量并入 (用户拍板 2026-06-15) -------- #
+
+# 并入口径: 已付款/已发货/已签收 (待付款客户没付钱多半没下厂→不进; cancelled退款→不进; 补单→不进)
+SYNC_FACTORY_ORDER_STATES = ("paid", "shipped", "signed")
+
+
+def sync_from_orders(db: Session, *, dry_run: bool = False) -> dict:
+    """把订单系统里 已付款/已发货/已签收 (非补单非历史) 的订单并入工厂下单表。
+
+    用户拍板 2026-06-15: 工厂下单表 = 手工录入 + 订单系统真实订单, 去重, 便于逐单对工厂账单。
+    幂等去重: 订单已有有效工厂单 (source_order_id=订单 或 platform_order_no=订单号) → 跳过。
+    新建: 带 source_order_id (防与付款自动建/重跑重复) + 产品/数量 + 推算成本(定价 factory_cost×qty,
+          缺则空); factory_bill_amount 留空(待对账), payment_status=unpaid。
+          不锁库存 (历史补全/对账用, 不走在产库存流程, 区别于 generate_factory_order_for)。
+    Returns {created, skipped, candidates, dry_run}
+    """
+    covered_no = {
+        r[0] for r in db.execute(
+            select(FactoryOrder.platform_order_no).where(
+                FactoryOrder.platform_order_no.isnot(None), FactoryOrder.voided_at.is_(None))
+        ).all() if r[0]
+    }
+    covered_src = {
+        r[0] for r in db.execute(
+            select(FactoryOrder.source_order_id).where(
+                FactoryOrder.source_order_id.isnot(None), FactoryOrder.voided_at.is_(None))
+        ).all() if r[0]
+    }
+    orders = db.execute(
+        select(Order).where(
+            Order.is_historical == False,  # noqa: E712
+            Order.is_refill == False,      # noqa: E712
+            Order.status.in_(SYNC_FACTORY_ORDER_STATES),
+        ).order_by(Order.order_date, Order.id)
+    ).scalars().all()
+    # 起始序号: 一次取 max, 之后内存自增 (避免每行查一次 next_factory_order_no)
+    seq = int(next_factory_order_no(db)[len(FACTORY_ORDER_PREFIX):])
+    created = skipped = 0
+    for o in orders:
+        if o.id in covered_src or (o.order_no and o.order_no in covered_no):
+            skipped += 1
+            continue
+        if not dry_run:
+            fo = FactoryOrder(
+                factory_order_no=f"{FACTORY_ORDER_PREFIX}{seq:04d}",
+                platform_order_no=o.order_no,
+                source_order_id=o.id,
+                factory_name="玉山县博冠家具有限公司",
+                order_date=o.order_date,
+                product_code=o.product_code,
+                product_name=o.product_name,
+                sku=o.sku,
+                qty=o.qty or 1,
+                expected_amount=expected_amount_for(db, o.product_code, o.sku_code, o.qty or 1),
+                payment_method="月结",
+                payment_status="unpaid",
+                remark="由订单自动并入工厂下单表",
+            )
+            db.add(fo)
+            seq += 1
+        covered_src.add(o.id)
+        if o.order_no:
+            covered_no.add(o.order_no)
+        created += 1
+    if not dry_run:
+        db.commit()
+    _logger.info("sync_from_orders: created=%d skipped=%d candidates=%d dry_run=%s",
+                 created, skipped, len(orders), dry_run)
+    return {"created": created, "skipped": skipped, "candidates": len(orders), "dry_run": dry_run}
+
+
 # ----------------------------- 取消 / 作废 ----------------------- #
 
 

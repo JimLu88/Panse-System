@@ -70,3 +70,14 @@ export const reconcileFactoryOrder = (
     remark?: string;
   },
 ) => api.post<FactoryOrderRow>(`/api/factory-orders/${encodeURIComponent(no)}/reconcile`, payload).then((r) => r.data);
+
+export interface FactorySyncResult {
+  created: number;
+  skipped: number;
+  candidates: number;
+  dry_run: boolean;
+}
+
+// 把订单系统里 已付款/已发货/已签收(去补单/退款) 的订单并入工厂下单表(幂等去重)
+export const syncFactoryOrdersFromOrders = () =>
+  api.post<FactorySyncResult>('/api/factory-orders/sync-from-orders').then((r) => r.data);

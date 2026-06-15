@@ -179,3 +179,17 @@ def reconcile_factory_order(
     db.commit()
     db.refresh(fo)
     return _row(fo)
+
+
+@router.post("/sync-from-orders")
+def sync_factory_orders_from_orders(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """把订单系统里 已付款/已发货/已签收 (去补单/去退款, 待付款不进) 的订单并入工厂下单表。
+
+    幂等去重(source_order_id / 平台订单号); 新行带推算成本(定价表), 工厂实际留空待对账。
+    用户拍板 2026-06-15: 工厂下单表 = 手工录入 + 订单系统真实订单, 加总去重。
+    """
+    from app.services import factory_order_service
+    return factory_order_service.sync_from_orders(db)
