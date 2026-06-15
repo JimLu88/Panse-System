@@ -505,3 +505,100 @@ async def ai_chat(
         text=text, route_type=route_type, suggested_sku=suggested_sku,
         model=resp.model, ai_used=True,
     )
+
+
+# ───────────────────────── 定制报价 v2 (理顺 + 提速) ─────────────────────────
+# 一个分类器前门 + 两条确定性管道 (见 docs/定制报价v2_理顺提速_落地方案.md)。
+# 全部新增端点, 与旧端点影子并行(旧端点不动); 普通定制 0 次额外 AI, 纯算术。
+
+
+class V2ClassifyIn(BaseModel):
+    text: str = Field("", description="客户定制描述")
+    image_count: int = 0
+
+
+class V2QuoteLightIn(BaseModel):
+    base_product_code: str = Field(..., min_length=1)
+    target_length_m: Optional[float] = None
+    target_material: Optional[str] = None
+    add_parts: list[dict] = Field(default_factory=list)
+    remove_parts: list[dict] = Field(default_factory=list)
+    price_tier: str = "daily"
+
+
+class V2BoardIn(BaseModel):
+    part: str = ""
+    material: str = ""
+    length_cm: float = 0
+    width_cm: float = 0
+    qty: float = 1
+    unit: str = "平方米"
+    is_accessory: bool = False
+    is_drawer_rail: bool = False
+
+
+class V2QuoteHeavyIn(BaseModel):
+    product_type: str = Field(..., min_length=1)
+    length_m: float = Field(..., gt=0)
+    boards: List[V2BoardIn] = Field(default_factory=list)
+    overall_width_m: Optional[float] = None
+    overall_height_m: Optional[float] = None
+    auto_hardware: bool = True
+
+
+@router.post("/v2/classify")
+def v2_classify(payload: V2ClassifyIn, db: Session = Depends(get_db)) -> dict:
+    """前门分类器: 判普通/特殊定制 + 匹配基础产品 (确定性, 不依赖 AI 在线)。"""
+    from app.services import custom_quote_v2_service as v2
+    r = v2.classify(db, text=payload.text, image_count=payload.image_count)
+    _log_quote(db, source="v2_classify", user_message=payload.text, extra=r)
+    return r
+
+
+@router.post("/v2/quote-light")
+def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
+    """普通定制报价: 真实SKU锚点价 + 尺寸/材质/增减部位 delta (0 AI, 纯算术)。"""
+    from app.services import custom_quote_v2_service as v2
+    r = v2.quote_light(
+        db, base_product_code=payload.base_product_code,
+        target_length_m=payload.target_length_m, target_material=payload.target_material,
+        add_parts=payload.add_parts, remove_parts=payload.remove_parts,
+        price_tier=payload.price_tier,
+    )
+    _log_quote(
+        db, source="v2_quote_light",
+        user_message=f"{payload.base_product_code} L={payload.target_length_m} 料={payload.target_material}",
+        extra={k: r.get(k) for k in ("final_price", "anchor", "material_delta", "addremove_delta")},
+    )
+    return r
+
+
+@router.post("/v2/quote-heavy")
+def v2_quote_heavy(payload: V2QuoteHeavyIn, db: Session = Depends(get_db)) -> dict:
+    """特殊定制报价: 板单 → quote_from_spec 引擎 + 自动推五金。"""
+    from app.services import custom_quote_v2_service as v2
+    boards = [
+        {"part": b.part, "material": b.material, "length_cm": b.length_cm,
+         "width_cm": b.width_cm, "qty": b.qty, "unit": b.unit,
+         "is_accessory": b.is_accessory, "is_drawer_rail": b.is_drawer_rail}
+        for b in payload.boards
+    ]
+    try:
+        r = v2.quote_heavy(
+            db, product_type=payload.product_type, length_m=payload.length_m, boards=boards,
+            overall_width_m=payload.overall_width_m, overall_height_m=payload.overall_height_m,
+            auto_hardware=payload.auto_hardware,
+        )
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"板单报价失败: {e}")
+    _log_quote(db, source="v2_quote_heavy",
+               user_message=f"{payload.product_type} L={payload.length_m}",
+               extra={"final_price": r.get("final_price")})
+    return r
+
+
+@router.get("/v2/part-template")
+def v2_part_template(category: str, db: Session = Depends(get_db)) -> dict:
+    """品类部位模板 (从自有 BOM 聚合): 选品类带出标准部位骨架, 供特殊定制预填板单。"""
+    from app.services import custom_quote_v2_service as v2
+    return {"category": category, "parts": v2.suggest_part_template(db, category)}
