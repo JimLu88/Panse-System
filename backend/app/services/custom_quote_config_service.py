@@ -149,24 +149,38 @@ def _material_price(db, name: str) -> float | None:
     """
     if db is None or not name:
         return None
-    from sqlalchemy import select
+    from sqlalchemy import func, select
     from app.models.material import Material
     row = db.execute(select(Material.price).where(Material.name == name)).scalar_one_or_none()
     if row is None:
+        # 模糊匹配排除 样块/样品/小样(防¥24样块这类低价乱入); 多条命中取名字最短的(最接近精确)
         hit = db.execute(
-            select(Material.price).where(Material.name.like(f"%{name}%"), Material.price.isnot(None))
+            select(Material.price).where(
+                Material.name.like(f"%{name}%"), Material.price.isnot(None),
+                ~Material.name.like("%样块%"),
+                ~Material.name.like("%样品%"),
+                ~Material.name.like("%小样%"),
+            ).order_by(func.length(Material.name)).limit(1)
         ).first()
         row = hit[0] if hit else None
     return float(row) if row is not None else None
 
 
 def lookup_price(cfg: dict, material: str, db=None) -> float:
-    """材料单价: 物料表优先, 配置兜底。"""
+    """材料单价: 物料表优先, 配置兜底。
+
+    配置兜底: 先精确键; 没有则取"同材种(去厚度)"任一价当近似。
+    (旧版 split("-")[0] 当键去查必为 0 —— 配置键都带厚度如「黑胡桃木-2.2cm」, 丢厚度后查无此键。)
+    """
     p = _material_price(db, material)
     if p is not None:
         return p
     prices = cfg.get("prices", {})
-    return float(prices.get(material, prices.get(material.split("-")[0], 0)))
+    if material in prices:
+        return float(prices[material])
+    species = material.split("-")[0]
+    same = [v for k, v in prices.items() if k.split("-")[0] == species]
+    return float(same[0]) if same else 0.0
 
 
 def lookup_labor(cfg: dict, product_type: str, length_m: float, db=None) -> float:

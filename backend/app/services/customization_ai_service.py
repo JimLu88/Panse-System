@@ -118,6 +118,22 @@ def _find_sibling_by_material(db: Session, base_product_code: str, wood: str) ->
     ).first()
 
 
+def _category_price_range(db: Session, category: Optional[str]) -> tuple[Optional[float], Optional[float]]:
+    """同类目(类目末段词)SKU 日常价区间, 给报价做合理性护栏。查不到返回 (None, None)。"""
+    if not category:
+        return None, None
+    from sqlalchemy import func, select
+    leaf = category.split("-")[-1]
+    row = db.execute(
+        select(func.min(PricingSku.daily_price), func.max(PricingSku.daily_price))
+        .join(Product, PricingSku.product_code == Product.code)
+        .where(Product.category.like(f"%{leaf}%"), PricingSku.daily_price.isnot(None))
+    ).first()
+    if row and row[0] is not None:
+        return float(row[0]), float(row[1])
+    return None, None
+
+
 def _find_base_sku(db: Session, product_code: str, dims: dict) -> Optional[PricingSku]:
     skus = db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
     if not skus:
@@ -255,6 +271,17 @@ def ai_quote(db: Session, image_bytes: bytes, mime: str) -> CustomizationAiResul
     # 全定制(没匹配到任何现成产品): 引导走板单报价引擎, 别凭空给价
     if not base_product_code and not error_msg:
         error_msg = "未匹配到现成产品(疑似全定制) — 请用「AI拆板单 → 板单报价」走引擎出精确价。"
+
+    # 护栏: 估价超出同类目区间太多(<下限40% 或 >上限250%) → 标⚠提示人工复核, 防再出离谱价
+    if est_price is not None and base_product_code:
+        _bp = db.query(Product).filter(Product.code == base_product_code).first()
+        _lo, _hi = _category_price_range(db, _bp.category if _bp else None)
+        if _lo is not None and (est_price < _lo * 0.4 or est_price > _hi * 2.5):
+            _leaf = (_bp.category or "").split("-")[-1] if _bp else ""
+            breakdown.append(PriceBreakdownItem(
+                label="⚠ 合理性提示", amount=0.0,
+                note=f"估价 ¥{est_price:.0f} 超出「{_leaf}」同类区间 ¥{_lo:.0f}–{_hi:.0f}, 建议人工复核",
+            ))
 
     changes_list = material_changes.copy()
     for k, v in dims.items():
