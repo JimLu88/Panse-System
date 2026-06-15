@@ -547,6 +547,15 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             if ship_dt is not None:
                 _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt
+            # 物流单号/承运商: 重导时回填(只填空, 不覆盖已手工改的)。
+            # 修复(2026-06-15): 原更新分支漏了这两个 → 已发货订单重导也补不上物流号(图四常驻27)。
+            _trk = _clean(o.tracking_no)
+            if _trk and not existing.tracking_no:
+                _trace("tracking_no", "物流单号", existing.tracking_no, _trk)
+                existing.tracking_no = _trk
+            _car = _clean(o.carrier)
+            if _car and not existing.carrier:
+                existing.carrier = _car
             # 平台备注随重导覆盖 (用户拍板: 买家留言/商家备注是淘宝侧会变的数据;
             # 非空才覆盖, 防止不含该列的旧格式文件把留言抹掉)
             _bmsg = _clean(o.buyer_message)
