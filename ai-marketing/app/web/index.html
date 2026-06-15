@@ -86,10 +86,11 @@ function toast(m){const d=document.createElement('div');d.textContent=m;d.style.
 
 const MENU=[
   ['开始',[['home','🏠 今日待办']]],
-  ['内容生产',[['hotnotes','🔥 爆文挖掘'],['pipe','①② 选题与生成'],['review','③ 审核工位'],['queue','④ 发布队列'],['calendar2','📆 内容日历']]],
-  ['引流获客',[['comment','⑤ 评论引流'],['inbox','💌 评论管理'],['mentions','📡 品牌舆情'],['lead','⑥ 线索收件箱'],['zhihu','⑦ 知乎占坑']]],
+  ['内容生产',[['hotnotes','🔥 爆文挖掘'],['pipe','①② 选题与生成'],['avatar','🎭 数字人工作室'],['clips','✂️ 视频切片'],['review','③ 审核工位'],['queue','④ 发布队列'],['calendar2','📆 内容日历']]],
+  ['引流获客',[['comment','⑤ 评论引流'],['inbox','💌 评论管理'],['mentions','📡 品牌舆情'],['lead','⑥ 线索收件箱'],['crm','👤 客户库'],['zhihu','⑦ 知乎占坑']]],
   ['账号运营',[['nurture','⑧ 养号清单'],['account','⑨ 账号管理'],['ops','⑩ 运营台账']]],
-  ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['report','🧾 一周战报'],['settings','🔧 系统设置'],['system','⚙️ 系统状态']]],
+  ['增长实验',[['experiment','🧪 A/B实验'],['funnel','🔻 转化漏斗']]],
+  ['辅助工具',[['calendar','📅 大促日历'],['compliance','🛡 文案合规自查'],['data','📊 数据与复盘'],['report','🧾 一周战报'],['aeo','🤖 AI搜索(AEO)'],['settings','🔧 系统设置'],['system','⚙️ 系统状态']]],
 ];
 let TAB='home', HOME={};
 
@@ -466,6 +467,90 @@ const VIEWS={
     $('#impbtn').onclick=async()=>{try{const r=await api('POST','/api/crawl/import',JSON.parse($('#imp').value||'{}'));$('#impr').textContent=`导入爆文 ${r.hot_notes_added} / 舆情 ${r.mentions_added}`;}catch(e){$('#impr').textContent='出错：'+e.message;}};
   },
 
+  // ============ 🎭 数字人工作室（重点）============
+  async avatar(v){
+    const [avatars,jobs,accs]=await Promise.all([api('GET','/api/avatars'),api('GET','/api/avatars/jobs'),api('GET','/api/accounts')]);
+    v.innerHTML=`<div class="guide">🎭 <b>数字人/数字分身</b>——给品牌真人(老板/设计师)建一个 AI 分身：克隆声音+对口型，把<b>口播脚本一键变成视频</b>，还能 24/7 给客户出<b>点名的个性化私信视频</b>。
+    ⚠️ <b>合规红线</b>：必须真人<b>书面授权</b>才能用其声音肖像，授权后才可渲染。需在「系统设置」填数字人渲染服务地址(InfiniteTalk/Duix-Avatar 自托管或 HeyGen 类)，未填则出演示成片。</div>
+    <div class="card"><h3>① 建数字分身</h3>
+      <div class="row"><input id="av_name" placeholder="数字人名(如 畔色老板IP)"><input id="av_person" placeholder="绑定真人">
+      <select id="av_acc"><option value="">绑定账号(可选)</option>${accs.map(a=>`<option value="${a.id}">${esc(a.nickname)}</option>`).join('')}</select></div>
+      <div class="row" style="margin-top:6px"><input id="av_face" placeholder="肖像样本URL/路径"><input id="av_voice" placeholder="声音样本URL/路径">
+      <label class="muted"><input type="checkbox" id="av_auth"> 已取得真人书面授权</label><button class="act" id="av_create">创建</button></div></div>
+    <div class="card"><h3>② 我的数字人</h3><div id="avlist" class="grid"></div></div>
+    <div class="card"><h3>③ 渲染队列（口播脚本→成片）</h3>
+      <div class="muted">到「①②选题与生成」用🎬生成口播脚本草稿，回这里选数字人渲染；或直接给客户出私信视频。</div>
+      <div id="avjobs"></div></div>`;
+    $('#av_create').onclick=async()=>{
+      await api('POST','/api/avatars',{name:$('#av_name').value||'数字人',real_person:$('#av_person').value,
+        bound_account_id:$('#av_acc').value?+$('#av_acc').value:null,face_ref:$('#av_face').value,
+        voice_sample_ref:$('#av_voice').value,authorized:$('#av_auth').checked});
+      toast('数字人已创建');render();};
+    const vids=(await api('GET','/api/drafts')).filter(d=>true);
+    $('#avlist').innerHTML=avatars.map(a=>`<div class="card" style="margin:0">
+      <b>${esc(a.name)}</b> ${a.authorized?'<span class="pill">已授权</span>':'<span class="pill r">未授权</span>'} <span class="pill ${a.status==='ready'?'':'b'}">${a.status==='ready'?'就绪':'待完善'}</span>
+      <div class="muted" style="margin:4px 0">真人:${esc(a.real_person)||'—'} · ${a.has_voice?'🎙声音✓':'🎙声音✗'} ${a.has_face?'🖼肖像✓':'🖼肖像✗'}</div>
+      ${!a.authorized?`<button class="ghost copybtn" onclick="avAuth(${a.id})">登记授权</button>`:''}
+      <div class="row" style="margin-top:6px"><input id="dmt_${a.id}" placeholder="客户称呼" style="width:90px"><input id="dms_${a.id}" placeholder="私信内容" style="flex:1">
+      <button class="ghost copybtn" onclick="avDM(${a.id})">出私信视频</button></div></div>`).join('')||'<div class="empty">先创建一个数字人</div>';
+    $('#avjobs').innerHTML=jobs.length?`<table><thead><tr><th>数字人</th><th>类型</th><th>对象</th><th>状态</th><th>成片</th></tr></thead><tbody>${jobs.map(j=>`<tr>
+      <td>${esc(j.avatar)}</td><td>${j.type==='dm'?'私信视频':'笔记视频'}</td><td>${esc(j.target)||'—'}</td>
+      <td><span class="pill ${j.status==='done'?'':j.status==='failed'?'r':'b'}">${j.status}</span><span class="muted"> ${j.provider}</span></td>
+      <td>${j.output_url?`<a href="${esc(j.output_url)}" target="_blank">查看</a>`:'—'}</td></tr>`).join('')}</tbody></table>`:'<div class="empty">暂无渲染任务</div>';
+  },
+
+  // ============ ✂️ 视频切片 ============
+  async clips(v){
+    v.innerHTML=`<div class="guide">✂️ <b>一鱼多吃</b>。把一条长视频(工厂探访/直播/长测评)的<b>文字转写</b>粘进来，系统自动切成多条短视频笔记草稿，每条配好钩子。</div>
+    <div class="card"><div class="row"><input id="cl_title" placeholder="长视频标题"><select id="cl_cat">${['餐桌','餐椅','茶几','柜类','床'].map(c=>`<option>${c}</option>`).join('')}</select><input id="cl_n" type="number" value="5" style="width:60px"></div>
+      <textarea id="cl_tr" style="margin-top:8px" placeholder="把视频的文字转写/字幕粘进来（按句切）…"></textarea>
+      <button class="act" style="margin-top:8px" id="cl_go">切片生成草稿</button><div id="cl_r" class="muted" style="margin-top:6px"></div></div>`;
+    $('#cl_go').onclick=async()=>{try{const r=await api('POST','/api/clips',{title:$('#cl_title').value,transcript:$('#cl_tr').value,category:$('#cl_cat').value,max_clips:+$('#cl_n').value});$('#cl_r').textContent=`已生成 ${r.clips} 条短视频草稿，去③审核工位`;}catch(e){$('#cl_r').textContent='出错：'+e.message;}};
+  },
+
+  // ============ 👤 客户库 ============
+  async crm(v){
+    const [cs,sum]=await Promise.all([api('GET','/api/crm/customers'),api('GET','/api/crm/summary')]);
+    const tn={vip:'VIP',repeat:'复购',normal:'普通',sleeping:'沉睡',new:'新客'};
+    v.innerHTML=`<div class="guide">👤 <b>第一方数据=家具复购的命根</b>。成交客户自动进库并做 RFM 分层，给每层<b>触达建议</b>（家具复购靠老客转介绍+连带）。点同步从成交线索拉取。</div>
+    <div class="card"><div class="row"><button class="act" id="csync">从成交线索同步</button><span class="muted">共 ${sum.total} 位 · ${Object.entries(sum.by_tier).map(([k,n])=>`${tn[k]||k}${n}`).join(' ')}</span></div></div>
+    <div class="card"><table><thead><tr><th>客户</th><th>来源</th><th>单数</th><th>分层</th><th>触达建议</th></tr></thead><tbody>${cs.map(c=>`<tr>
+      <td>${esc(c.contact)}</td><td>${c.source}</td><td>${c.order_count}</td><td><span class="pill ${c.rfm_tier==='vip'?'':c.rfm_tier==='sleeping'?'y':'b'}">${tn[c.rfm_tier]||c.rfm_tier}</span></td>
+      <td class="muted">${esc(c.reach_suggestion)}</td></tr>`).join('')||'<tr><td colspan="5" class="empty">点同步</td></tr>'}</tbody></table></div>`;
+    $('#csync').onclick=async()=>{const r=await api('POST','/api/crm/sync');toast(`新增 ${r.added} 位客户`);render();};
+  },
+
+  // ============ 🧪 A/B 实验 ============
+  async experiment(v){
+    const es=await api('GET','/api/experiments');
+    v.innerHTML=`<div class="guide">🧪 <b>用数据决定哪个更好</b>。测封面/标题/钩子/发布时间——系统用多臂老虎机(UCB1)告诉你下个该试哪个、最后谁赢。</div>
+    <div class="card"><h3>新建实验</h3><div class="row"><input id="ex_name" placeholder="实验名(如 餐桌封面测试)">
+      <select id="ex_factor"><option value="title">标题</option><option value="cover">封面</option><option value="hook">钩子</option><option value="time">发布时间</option></select>
+      <input id="ex_arms" placeholder="候选,逗号分隔(如 大字报,实景,九宫格)" style="flex:1"><button class="act" id="ex_go">创建</button></div></div>
+    <div id="exlist">${es.map(e=>`<div class="card"><h3>${esc(e.name)} <span class="sub">${e.factor} · ${e.status==='done'?'已结束 🏆'+esc(e.winner):'进行中'}</span></h3>
+      <table><thead><tr><th>候选</th><th>曝光</th><th>回报均值</th><th>记录</th></tr></thead><tbody>${e.arms.map(a=>`<tr><td>${esc(a.name)}</td><td>${a.impressions}</td><td>${a.ctr}</td>
+      <td><input id="rw_${e.id}_${esc(a.name)}" type="number" step="0.1" placeholder="回报" style="width:70px"><button class="ghost copybtn" onclick="exRec(${e.id},'${esc(a.name)}')">记一次</button></td></tr>`).join('')}</tbody></table>
+      <div class="row" style="margin-top:8px"><button class="ghost" onclick="exReco(${e.id})">该试哪个?</button>${e.status!=='done'?`<button class="ghost" onclick="exDone(${e.id})">结束并定胜出</button>`:''}</div></div>`).join('')||'<div class="empty">还没有实验</div>'}</div>`;
+    $('#ex_go').onclick=async()=>{const arms=$('#ex_arms').value.split(/[,，]/).map(s=>s.trim()).filter(Boolean);if(arms.length<2)return alert('至少2个候选');await api('POST','/api/experiments',{name:$('#ex_name').value||'实验',factor:$('#ex_factor').value,arms});render();};
+  },
+
+  // ============ 🔻 转化漏斗 ============
+  async funnel(v){
+    const f=await api('GET','/api/analytics/funnel');
+    const max=Math.max(...f.stages.map(s=>s.count),1);
+    v.innerHTML=`<div class="guide">🔻 <b>全链路看转化</b>。从发布到成交每一层剩多少，哪一层漏得多就补哪。带暗号的线索=内容真带来的客。</div>
+    <div class="card">${f.stages.map(s=>`<div style="margin:8px 0"><div class="kv">${esc(s.name)}：<b>${s.count}</b></div>
+      <div style="background:var(--accent);height:22px;border-radius:5px;width:${Math.max(s.count/max*100,3)}%"></div></div>`).join('')}
+      <div class="kv" style="margin-top:10px">线索成交率：<b>${(f.conversion['线索成交率']*100).toFixed(1)}%</b></div></div>`;
+  },
+
+  // ============ 🤖 AI搜索(AEO) ============
+  async aeo(v){
+    const a=await api('GET','/api/aeo/overview');
+    v.innerHTML=`<div class="guide">🤖 <b>AI 答案引擎可见度</b>。越来越多人直接问 ChatGPT/Perplexity"实木餐桌哪个牌子好"。这里并入你<b>独立的 AEO 项目</b>数据，看品牌被 AI 引用的情况。</div>
+    <div class="card">${a.connected?`<div class="kv">✅ 已连接 AEO 项目</div><pre class="kv" style="white-space:pre-wrap">${esc(JSON.stringify(a,null,2))}</pre>`:`<div class="kv">⚠️ ${esc(a.hint)}</div><div class="muted" style="margin-top:6px">去「系统设置」填 AEO 项目地址即可打通。</div>`}</div>`;
+  },
+
   // ============ 📆 内容日历 ============
   async calendar2(v){
     const cal=await api('GET','/api/dispatch/calendar');
@@ -504,6 +589,7 @@ window.openReview=async id=>{
       <button class="act" ${r.can_approve&&r.status==='drafted'?'':'disabled'} onclick="rev(${id},'approve')">✅ 通过</button>
       <button class="ghost" onclick="rev(${id},'reject')">✗ 拒绝</button>
       <button class="ghost" onclick="titleAB(${id})">🎯 标题A/B候选</button>
+      <button class="ghost" onclick="avRender(${id})">🎭 数字人渲染(口播脚本)</button>
       ${r.status==='approved'?'<span class="muted">已通过 → 去④发布队列</span>':r.status==='scheduled'?'<span class="muted">已在发布队列</span>':r.status==='published'?'<span class="muted">已全部发出</span>':''}
     </div></div>`;
 };
@@ -542,6 +628,12 @@ window.titleAB=async id=>{const r=await api('POST',`/api/drafts/${id}/title-vari
 window.autoCollect=async()=>{const r=await api('POST','/api/metrics/auto-collect');toast(`自动回采 ${r.collected} 篇数据`);refreshHome();render();};
 window.riskSignal=async id=>{const s=prompt('风控信号(captcha滑块/throttled限流/note_hidden笔记被隐藏)：','throttled');if(s){await api('POST',`/api/accounts/${id}/risk-signal`,{signal:s});render();}};
 window.saveSet=async key=>{await api('POST',`/api/settings/${key}`,{value:document.getElementById('set_'+key).value});toast('已保存，即时生效');render();};
+window.avAuth=async id=>{await api('POST',`/api/avatars/${id}/authorize`);toast('已登记授权');render();};
+window.avDM=async id=>{const t=document.getElementById('dmt_'+id).value,s=document.getElementById('dms_'+id).value;if(!s)return alert('填私信内容');try{await api('POST','/api/avatars/render/dm',{avatar_id:id,target:t,script:s});toast('私信视频已生成');render();}catch(e){alert(e.message);}};
+window.avRender=async(draftId)=>{const av=prompt('用哪个数字人ID渲染？');if(av){try{await api('POST','/api/avatars/render/draft',{draft_id:draftId,avatar_id:+av});toast('已提交渲染，看数字人工作室');}catch(e){alert(e.message);}}};
+window.exRec=async(id,arm)=>{const rw=document.getElementById('rw_'+id+'_'+arm).value;await api('POST',`/api/experiments/${id}/result`,{arm,reward:+rw||0});render();};
+window.exReco=async id=>{const r=await api('GET',`/api/experiments/${id}/recommend`);alert('建议试：'+r.recommend+'\n'+r.reason);};
+window.exDone=async id=>{const r=await api('POST',`/api/experiments/${id}/conclude`);alert('胜出：'+r.winner);render();};
 window.editAcc=id=>{
   const a=window._accs.find(x=>x.id===id);const box=$('#accedit');box.style.display='block';
   const items=['企业认证','开通店铺组件','开通群聊(私域)','完善合集/瞬间'];const setup=a.official_setup||{};

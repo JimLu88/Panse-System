@@ -661,3 +661,176 @@ def report_weekly(db: Session = Depends(get_db)):
 def report_weekly_push(db: Session = Depends(get_db)):
     from ..services import weekly_report
     return weekly_report.push(db)
+
+
+# ==================== Phase4: 数字人/CRM/A-B/切片/个性化/Agent/集成 ====================
+
+# ---------------- #2/#6 数字人(重点) ----------------
+@router.get("/avatars")
+def avatars_list(db: Session = Depends(get_db)):
+    from ..services import avatar_service
+    return avatar_service.list_avatars(db)
+
+
+@router.post("/avatars")
+def avatars_create(body: dict, db: Session = Depends(get_db)):
+    from ..services import avatar_service
+    a = avatar_service.create_avatar(
+        db, name=body.get("name", "数字人"), real_person=body.get("real_person", ""),
+        bound_account_id=body.get("bound_account_id"),
+        voice_sample_ref=body.get("voice_sample_ref", ""), face_ref=body.get("face_ref", ""),
+        authorized=bool(body.get("authorized")), persona=body.get("persona"))
+    return {"id": a.id, "status": a.status}
+
+
+@router.post("/avatars/{avatar_id}/authorize")
+def avatars_authorize(avatar_id: int, db: Session = Depends(get_db)):
+    from ..services import avatar_service
+    a = _err(avatar_service.authorize, db, avatar_id)
+    return {"id": a.id, "authorized": a.authorized, "status": a.status}
+
+
+@router.post("/avatars/render/draft")
+def avatars_render_draft(body: dict, db: Session = Depends(get_db)):
+    """口播脚本草稿 → 数字人成片。"""
+    from ..services import avatar_service
+    j = _err(avatar_service.render_from_draft, db, body["draft_id"], body["avatar_id"])
+    return {"job_id": j.id, "status": j.status, "output_url": j.output_url}
+
+
+@router.post("/avatars/render/dm")
+def avatars_render_dm(body: dict, db: Session = Depends(get_db)):
+    """#6 数字分身：给客户出个性化私信视频(点名)。"""
+    from ..services import avatar_service
+    j = _err(avatar_service.render_dm_video, db, body["avatar_id"],
+             body.get("target", ""), body.get("script", ""))
+    return {"job_id": j.id, "status": j.status, "output_url": j.output_url}
+
+
+@router.get("/avatars/jobs")
+def avatars_jobs(db: Session = Depends(get_db)):
+    from ..services import avatar_service
+    return avatar_service.list_jobs(db)
+
+
+@router.post("/avatars/jobs/{job_id}/callback")
+def avatars_callback(job_id: int, body: dict, db: Session = Depends(get_db)):
+    """真实数字人服务渲染完成回调。"""
+    from ..services import avatar_service
+    j = _err(avatar_service.callback, db, job_id, body.get("output_url", ""),
+             body.get("status", "done"))
+    return {"job_id": j.id, "status": j.status}
+
+
+# ---------------- #5 客户库/复购 ----------------
+@router.post("/crm/sync")
+def crm_sync(db: Session = Depends(get_db)):
+    from ..services import crm_service
+    return crm_service.sync_from_leads(db)
+
+
+@router.get("/crm/customers")
+def crm_customers(db: Session = Depends(get_db)):
+    from ..services import crm_service
+    return crm_service.list_customers(db)
+
+
+@router.get("/crm/summary")
+def crm_summary(db: Session = Depends(get_db)):
+    from ..services import crm_service
+    return crm_service.summary(db)
+
+
+# ---------------- #9 A/B 实验 + 全漏斗 ----------------
+@router.post("/experiments")
+def exp_create(body: dict, db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    e = experiment_service.create_experiment(db, body["name"], body.get("factor", "title"),
+                                             body.get("arms", []))
+    return {"id": e.id}
+
+
+@router.get("/experiments")
+def exp_list(db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    return experiment_service.list_experiments(db)
+
+
+@router.post("/experiments/{exp_id}/result")
+def exp_result(exp_id: int, body: dict, db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    _err(experiment_service.record_result, db, exp_id, body["arm"], float(body.get("reward", 0)))
+    return {"ok": True}
+
+
+@router.get("/experiments/{exp_id}/recommend")
+def exp_recommend(exp_id: int, db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    return _err(experiment_service.recommend_arm, db, exp_id)
+
+
+@router.post("/experiments/{exp_id}/conclude")
+def exp_conclude(exp_id: int, db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    e = _err(experiment_service.conclude, db, exp_id)
+    return {"id": e.id, "winner": e.winner, "status": e.status}
+
+
+@router.get("/analytics/funnel")
+def analytics_funnel(db: Session = Depends(get_db)):
+    from ..services import experiment_service
+    return experiment_service.funnel(db)
+
+
+# ---------------- #3 视频切片 ----------------
+@router.post("/clips")
+def clips_create(body: dict, db: Session = Depends(get_db)):
+    from ..services import clip_service
+    drafts = _err(clip_service.clip_long_video, db, body.get("title", "长视频"),
+                  body.get("transcript", ""), body.get("category", "餐桌"),
+                  int(body.get("max_clips", 5)))
+    return {"clips": len(drafts), "draft_ids": [d.id for d in drafts]}
+
+
+# ---------------- #7 受众个性化 ----------------
+@router.get("/audience/segments")
+def audience_segments():
+    from ..config import AUDIENCE_SEGMENTS
+    return AUDIENCE_SEGMENTS
+
+
+@router.post("/personalize")
+def personalize(body: dict, db: Session = Depends(get_db)):
+    from ..services import personalize
+    drafts = _err(personalize.generate_for_segments, db, body["topic_id"],
+                  body.get("segments", []), body.get("account_id"))
+    return {"drafts": len(drafts), "draft_ids": [d.id for d in drafts]}
+
+
+# ---------------- #1 Agent/MCP ----------------
+@router.get("/agent/actions")
+def agent_actions():
+    """Agent 动作清单(agent原生)：MCP/Claude 据此知道能调什么。"""
+    from ..cli import ACTIONS
+    return ACTIONS
+
+
+# ---------------- #8 官方API直发 ----------------
+@router.post("/dispatch/{event_id}/official-publish")
+def official_publish(event_id: int, db: Session = Depends(get_db)):
+    from ..services import integrations
+    return _err(integrations.official_publish, db, event_id)
+
+
+# ---------------- #4 自动化编排 ----------------
+@router.get("/automation/events")
+def automation_events():
+    from ..services.integrations import AUTOMATION_EVENTS
+    return AUTOMATION_EVENTS
+
+
+# ---------------- #10 AEO 打通 ----------------
+@router.get("/aeo/overview")
+def aeo_overview():
+    from ..services import integrations
+    return integrations.aeo_overview()
