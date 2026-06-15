@@ -214,7 +214,8 @@ def _check_factory_order_uncovered(db: Session, exc: DataException) -> Optional[
     o = _get_order(db, exc)
     if o is None:
         return None
-    if (o.status or "") not in ("shipped", "signed") or o.is_historical:
+    # 补单(is_refill)是补发/重发, 不需新工厂下单 → 销账 (与 scanner 同口径, 用户拍板 2026-06-15)
+    if (o.status or "") not in ("shipped", "signed") or o.is_historical or getattr(o, "is_refill", False):
         return None
     if o.theoretical_cost is None and o.actual_cost is None:
         return None

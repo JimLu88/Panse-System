@@ -326,10 +326,13 @@ def scan_aftersales_empty(db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 def scan_alipay_balance_gap(db: Session) -> int:
-    """同账户按时间排序, 校验 balance[i] ≈ balance[i-1] + amount[i]。
+    """账户余额连续性核查 —— 订单无关、与流水排序无关 (2026-06-15 根因修)。
 
-    断点 (差额 > 1 元) → 报异常, 提示该账户有流水缺失或余额错位。
-    仅对 balance 非空的相邻两条比较; 跳过缺 balance 的记录。
+    旧法按 (时间,id) 相邻两条比 balance[i]≈balance[i-1]+amount[i], 但企业号常有"同一秒多笔
+    收款", id 顺序≠真实账务顺序 → 大量误报(实测57条几乎全是同秒乱序, 流水其实一条不缺)。
+    新法: 每条流水的"前驱余额"= 本余额 - 本金额; 若该值正好是本账户里某条流水的余额(说明确有
+    一条流水停在那, 链条接得上), 或本条就是窗口最早一条, 则连续。只有"前驱余额"对不上任何
+    流水 = 真有一笔流水缺失。这样同秒/乱序不再误报, 只抓真缺口。
     """
     from decimal import Decimal
     count = 0
@@ -347,28 +350,33 @@ def scan_alipay_balance_gap(db: Session) -> int:
         )
         if len(rows) < 2:
             continue  # 余额全为 NULL 或只有1条, 无法连续性核查, 跳过 (不误报)
-        prev = None
-        for r in rows:
-            if prev is not None:
-                expected = (prev.balance or Decimal("0")) + (r.amount or Decimal("0"))
-                gap = (r.balance or Decimal("0")) - expected
-                if abs(gap) > Decimal("1"):
-                    _record(
-                        db,
-                        source_table="alipay_flows",
-                        source_pk=r.id,
-                        exception_type="alipay_balance_gap",
-                        severity="warning",
-                        description=(
-                            f"支付宝[{account}] 余额不连续: 上一条余额 ¥{prev.balance} + 本次 ¥{r.amount} "
-                            f"= ¥{expected}, 实际余额 ¥{r.balance}, 差 ¥{gap}。可能有流水缺失。"
-                        ),
-                        suggestion_action="检查该账户该时间段是否有遗漏的流水未导入。",
-                        context={"account": account, "gap": str(gap), "txn_no": r.transaction_no},
-                    )
-                    count += 1
-            prev = r
-    _log.info("scan_alipay_balance_gap: %d gaps", count)
+        bal_set = {r.balance for r in rows if r.balance is not None}
+        earliest_id = min(rows, key=lambda r: (r.transaction_time, r.id)).id
+        for i, r in enumerate(rows, 1):  # i = 该账户按时间的第几条
+            pred = (r.balance or Decimal("0")) - (r.amount or Decimal("0"))
+            if pred in bal_set or r.id == earliest_id:
+                continue  # 前驱余额能对上某条流水(或本条是窗口起点) → 链条完整
+            mon = r.transaction_time.strftime("%Y-%m-%d %H:%M") if r.transaction_time else "?"
+            _record(
+                db,
+                source_table="alipay_flows",
+                source_pk=r.id,
+                exception_type="alipay_balance_gap",
+                severity="warning",
+                description=(
+                    f"支付宝[{account}] {mon} 第{i}条 (流水号…{(r.transaction_no or '')[-8:]}) 余额断链: "
+                    f"本余额 ¥{r.balance} − 本金额 ¥{r.amount} = 前驱应为 ¥{pred}, 但没有任何流水停在该余额"
+                    f" → 该账户该时段疑似漏导一笔流水。"
+                ),
+                suggestion_action="检查该账户该时段是否有遗漏流水未导入。",
+                context={"account": account,
+                         "month": (r.transaction_time.strftime("%Y-%m")
+                                   if r.transaction_time else None),
+                         "seq": i, "expected_prev_balance": str(pred),
+                         "balance": str(r.balance), "txn_no": r.transaction_no},
+            )
+            count += 1
+    _log.info("scan_alipay_balance_gap: %d gaps (predecessor-balance method)", count)
     return count
 
 
@@ -446,6 +454,7 @@ def scan_factory_order_uncovered(db: Session) -> int:
     for o in db.query(Order).filter(
         Order.status.in_(["shipped", "signed"]),
         Order.is_historical == False,  # noqa: E712
+        Order.is_refill == False,      # noqa: E712  # 补单是补发/重发, 不需新工厂下单 (用户拍板 2026-06-15)
         # 只报有成本记录的订单; 无成本大概率库存直发
         (Order.theoretical_cost.isnot(None)) | (Order.actual_cost.isnot(None)),
     ).all():

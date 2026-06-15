@@ -381,10 +381,12 @@ def flip_factory_payment(db: Session) -> int:
     return n
 
 
-def run_all(db: Session) -> RouteResult:
+def run_all(db: Session, *, create_purchases: bool = True) -> RouteResult:
     """一键全跑 (建议先跑 smart_matching_service.run 打好 reconciliation_type).
 
     顺序: 售后先抢 → 推广/日常/外包匹配 → 采购兜底 → 工厂翻已付 → 回写售后成本。
+    create_purchases=False: 只做匹配/回填(填空 alipay_flow_no 等), 不把无法归类的支出兜底建成
+    采购记录 —— 供 run_ingest 导入后"联动消异常"调用, 避免每次导入都新建一堆待确认采购。
     """
     from app.services import order_sync_service
     res = RouteResult()
@@ -392,7 +394,8 @@ def run_all(db: Session) -> RouteResult:
     res.promotion_filled = match_promotion_flows(db)
     res.daily_filled = match_daily_operations(db)
     res.outsourcing_filled = match_outsourcing(db)
-    res.purchases_created = create_purchases_from_unclassified(db)
+    if create_purchases:
+        res.purchases_created = create_purchases_from_unclassified(db)
     res.factory_flipped = flip_factory_payment(db)
     # 售后新建后立即回写订单赔付成本
     if res.aftersales_created > 0:

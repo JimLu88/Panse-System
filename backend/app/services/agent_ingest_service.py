@@ -618,6 +618,19 @@ def run_ingest(db: Session) -> dict:
                     notify_service.notify(db, _msg, level="warn", title="发货报表待口令")
                 except Exception:
                     _log.warning("发货报表待口令兜底通知失败", exc_info=True)
+    # 联动消异常 (用户要求 2026-06-15): 本轮真有导入 → 立即跑流水匹配(回填 alipay_flow_no /
+    # 翻工厂已付 / 建售后等, create_purchases=False 不兜底建采购避免噪音) + 全量复核销账,
+    # 让"导入了对应记录就把异常消掉"即时生效, 不必等夜间调度。
+    if report["imported"]:
+        try:
+            from app.services import alipay_flow_router_service, exception_recheck_service
+            alipay_flow_router_service.run_all(db, create_purchases=False)
+            db.commit()
+            report["auto_resolved"] = exception_recheck_service.bulk_close_resolved(db)
+            db.commit()
+        except Exception:  # noqa: BLE001 - 联动失败不影响导入结果
+            db.rollback()
+            _log.warning("ingest 后联动消异常失败", exc_info=True)
     state["last_ingest_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_STATE, state)
     _save_json(db, KEY_LAST_INGEST, report)
