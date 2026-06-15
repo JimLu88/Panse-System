@@ -129,6 +129,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '工厂对账缺少账单金额 / 已付金额 / 支付宝流水号。点「补填」补全这些字段。' },
   factory_recon_unbalanced: { category: 'finance', label: '工厂对账不平（未付清 / 超付）',
     hint: '工厂账单金额和实际支付对不上：未付清＝账单大于实付（还欠工厂钱），超付＝实付大于账单（多付了）。请核对工厂账单与支付宝付款流水，补付 / 退回差额或登记说明。' },
+  factory_payment_flow_missing: { category: 'finance', label: '工厂付款流水待匹配（我们→工厂）',
+    hint: '工厂月结已对账（账单金额已录），但系统里没找到我们付给工厂的支付宝流水（方向：我们→工厂）。请核实以什么账户 / 形式付的（单笔近似，或多笔加总近似工厂月结额），若从爱群号付请导入爱群号流水，匹配后即可消账。' },
   unclassified_purchase: { category: 'finance', label: '存疑采购（流水自动归类）',
     hint: '一笔支出流水对不上任何已知用途，系统先把它「猜」成了采购记录。请核对这笔钱的真实用途（采购 / 日常经营 / 外包 / 其它），修正归类或补全配件信息。' },
   outsourcing_missing: { category: 'finance', label: '外包费用缺字段',
