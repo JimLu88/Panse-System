@@ -17,8 +17,6 @@ import random
 
 import httpx
 
-from ..config import get_settings
-
 log = logging.getLogger("marketing.datasource")
 
 # ---------------- 上升期笔记（评论引流用）----------------

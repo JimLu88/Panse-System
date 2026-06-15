@@ -304,8 +304,8 @@ def home_dashboard(db: Session = Depends(get_db)):
     """普通人首页：今天该做什么，一屏看完。"""
     import datetime as dt
     from sqlalchemy import func, select
-    from ..models import (Account, BrandMention, CommentOpportunity, Draft,
-                          InboundComment, Lead, Metric, NurtureTask, PublishEvent)
+    from ..models import (BrandMention, CommentOpportunity, Draft,
+                          InboundComment, Metric, NurtureTask, PublishEvent)
 
     now = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None)
     today = dt.date.today().isoformat()

@@ -9,8 +9,6 @@ import logging
 
 import httpx
 
-from ..config import get_settings
-
 log = logging.getLogger("marketing.notifier")
 
 
