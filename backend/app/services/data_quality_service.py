@@ -444,7 +444,19 @@ def scan_factory_order_uncovered(db: Session) -> int:
 
     仅对有成本的订单报告 (成本已录入说明有采购行为); 无成本的订单可能是库存直发或
     赠品, 不写异常, 避免误报。severity=info 确保不拉低健康分。
+
+    用户拍板 2026-06-15: 系统本就自动生成工厂单、无手工录入步骤; 不在工厂下单表里的订单
+    一律视为库存直发/无需工厂单 → 此异常默认**关闭**(仅 settings factory_order_uncovered_check=1 才扫)。
     """
+    try:
+        from app.services import settings_service as _ss
+        _on = str(_ss.get(db, "factory_order_uncovered_check", env_fallback=False) or "").strip().lower() \
+            in ("1", "true", "yes", "on")
+    except Exception:
+        _on = False
+    if not _on:
+        _log.info("scan_factory_order_uncovered: 默认关闭, skip")
+        return 0
     covered = {
         no for (no,) in db.query(FactoryOrder.platform_order_no)
         .filter(FactoryOrder.platform_order_no.isnot(None), FactoryOrder.voided_at.is_(None))

@@ -219,6 +219,15 @@ def _check_refill_record_missing(db: Session, exc: DataException) -> Optional[st
 
 def _check_factory_order_uncovered(db: Session, exc: DataException) -> Optional[str]:
     """已发货有成本但无工厂单: 修好 = 已有有效工厂单 (或不再发货态/无成本/历史)。"""
+    # 用户拍板 2026-06-15: 此异常默认关闭(系统自动建工厂单、无手工录入), 关闭时一律判为已解决→销账。
+    try:
+        from app.services import settings_service as _ss
+        _on = str(_ss.get(db, "factory_order_uncovered_check", env_fallback=False) or "").strip().lower() \
+            in ("1", "true", "yes", "on")
+    except Exception:
+        _on = False
+    if not _on:
+        return None
     from sqlalchemy import func
     from app.models.order import FactoryOrder
     o = _get_order(db, exc)

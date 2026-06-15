@@ -27,6 +27,10 @@ export interface FactoryOrderSummary {
   diff_sum: number;
   reconciled: number;
   reconciled_pct: number;
+  paid_count: number;
+  unpaid_count: number;
+  paid_sum: number;
+  unpaid_sum: number;
 }
 
 export interface FactoryOrderList {

@@ -89,6 +89,10 @@ def list_factory_orders(
     exp_sum = sum((r["expected_amount"] or 0) for r in rows)
     act_sum = sum((r["factory_bill_amount"] or 0) for r in rows)
     rec = sum(1 for r in rows if r["reconciled"])
+    # 支付维度: 已付金额取工厂实际(账单), 无账单则退回推算(应付); 答用户"不然不知道"
+    _amt = lambda r: (r["factory_bill_amount"] if r["factory_bill_amount"] is not None else (r["expected_amount"] or 0))
+    paid_rows = [r for r in rows if r["payment_status"] == "paid"]
+    unpaid_rows = [r for r in rows if r["payment_status"] != "paid"]
     return {
         "rows": rows,
         "summary": {
@@ -98,6 +102,10 @@ def list_factory_orders(
             "diff_sum": round(exp_sum - act_sum, 2),
             "reconciled": rec,
             "reconciled_pct": round(rec / len(rows) * 100, 1) if rows else 0,
+            "paid_count": len(paid_rows),
+            "unpaid_count": len(unpaid_rows),
+            "paid_sum": round(sum(_amt(r) for r in paid_rows), 2),
+            "unpaid_sum": round(sum(_amt(r) for r in unpaid_rows), 2),
         },
         "factories": sorted({r["factory_name"] for r in rows if r["factory_name"]}),
     }

@@ -42,6 +42,7 @@ export default function FactoryOrdersPage() {
   const qc = useQueryClient();
   const [factory, setFactory] = useState<string | undefined>();
   const [month, setMonth] = useState<string | undefined>();
+  const [payStatus, setPayStatus] = useState<string | undefined>();
   const [view, setView] = useState<'all' | 'unreconciled' | 'diff'>('all');
   const [editing, setEditing] = useState<FactoryOrderRow | null>(null);
   const [form] = Form.useForm();
@@ -49,9 +50,10 @@ export default function FactoryOrdersPage() {
   const params = useMemo(() => ({
     factory,
     month,
+    payment_status: payStatus,
     only_unreconciled: view === 'unreconciled',
     only_diff: view === 'diff',
-  }), [factory, month, view]);
+  }), [factory, month, payStatus, view]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['factory-orders', params],
@@ -124,13 +126,19 @@ export default function FactoryOrdersPage() {
       <Title level={4}>工厂下单表</Title>
       <Text type="secondary">逐单核对: 系统推算成本 ↔ 工厂实际成本(账单) ↔ 支付。点行可展开配件清单。</Text>
       {s && (
-        <Row gutter={12} style={{ margin: '12px 0' }}>
-          <Col span={4}><Card size="small"><Statistic title="单数" value={s.count} /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="推算合计(应付)" value={s.expected_sum} precision={2} prefix="¥" /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="工厂实际合计" value={s.actual_sum} precision={2} prefix="¥" /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="差异合计" value={s.diff_sum} precision={2} prefix="¥" valueStyle={{ color: Math.abs(s.diff_sum) >= 1 ? '#cf1322' : undefined }} /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="已核对" value={s.reconciled_pct} precision={1} suffix={`% (${s.reconciled}/${s.count})`} /></Card></Col>
-        </Row>
+        <>
+          <Row gutter={12} style={{ marginTop: 12 }}>
+            <Col span={4}><Card size="small"><Statistic title="单数" value={s.count} /></Card></Col>
+            <Col span={5}><Card size="small"><Statistic title="推算合计(应付)" value={s.expected_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col span={5}><Card size="small"><Statistic title="工厂实际合计" value={s.actual_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col span={5}><Card size="small"><Statistic title="差异合计" value={s.diff_sum} precision={2} prefix="¥" valueStyle={{ color: Math.abs(s.diff_sum) >= 1 ? '#cf1322' : undefined }} /></Card></Col>
+            <Col span={5}><Card size="small"><Statistic title="已核对" value={s.reconciled_pct} precision={1} suffix={`% (${s.reconciled}/${s.count})`} /></Card></Col>
+          </Row>
+          <Row gutter={12} style={{ margin: '12px 0' }}>
+            <Col span={12}><Card size="small"><Statistic title="已付(工厂)" value={s.paid_sum} precision={2} prefix="¥" suffix={` · ${s.paid_count}单`} valueStyle={{ color: '#1677ff' }} /></Card></Col>
+            <Col span={12}><Card size="small"><Statistic title="未付(待付)" value={s.unpaid_sum} precision={2} prefix="¥" suffix={` · ${s.unpaid_count}单`} valueStyle={{ color: s.unpaid_sum >= 1 ? '#fa8c16' : undefined }} /></Card></Col>
+          </Row>
+        </>
       )}
       <Space style={{ marginBottom: 12 }} wrap>
         <Segmented
@@ -143,9 +151,15 @@ export default function FactoryOrdersPage() {
           onChange={setFactory}
           options={(data?.factories || []).map((f) => ({ label: f, value: f }))}
         />
-        <Input
-          allowClear placeholder="按下单月 YYYY-MM" style={{ width: 160 }} value={month}
-          onChange={(e) => setMonth(e.target.value || undefined)}
+        <Select
+          allowClear placeholder="支付状态" style={{ width: 130 }} value={payStatus}
+          onChange={(v) => setPayStatus(v)}
+          options={[{ label: '已付', value: 'paid' }, { label: '未付', value: 'unpaid' }]}
+        />
+        <DatePicker
+          picker="month" placeholder="按下单月" style={{ width: 150 }}
+          value={month ? dayjs(`${month}-01`) : null}
+          onChange={(d) => setMonth(d ? d.format('YYYY-MM') : undefined)}
         />
       </Space>
       <Table<FactoryOrderRow>
