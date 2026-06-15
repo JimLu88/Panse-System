@@ -117,19 +117,27 @@ def scan_order_missing_alipay(db: Session) -> int:
         Order.status.in_(SETTLED_STATES),
         Order.is_historical == False,  # noqa: E712
     ).all():
-        if o.order_no not in linked:
-            _record(
-                db,
-                source_table="orders",
-                source_pk=o.id,
-                exception_type="order_missing_alipay",
-                severity="warning",
-                description=f"订单 {o.order_no} 已成交但无收款记录(支付宝流水/聚合结算均无), 无法财务匹配。",
-                suggestion_action="导入覆盖该单的淘宝聚合账单(收支记录)或对应支付宝流水后自动消除。",
-                context={"order_no": o.order_no, "paid_amount": str(o.paid_amount)},
-            )
-            count += 1
-    _log.info("scan_order_missing_alipay: %d unlinked (settled-only, incl 聚合结算)", count)
+        if o.order_no in linked:
+            continue
+        # 淘宝企业单走批量结算, 逐单支付宝流水拿不到; 但淘宝订单报表已逐单给出『打款商家金额』
+        # (淘宝实际打给卖家的货款)。有该金额 = 淘宝已逐单确认放款 → 视为已收款, 不逐单误报;
+        # "钱是否真到账"由月度货款对账(Σ打款商家金额 vs 支付宝/聚合实际到账, 按天可下钻定位)兜底。
+        # (2026-06-15 用户拍板: 交易成功+有打款金额=货款到账)
+        if o.shop_received_amount and o.shop_received_amount > 0:
+            continue
+        # 已成交 + 无流水 + 无聚合 + 连淘宝打款金额都没有 → 真·缺收款凭据, 逐单留异常便于人工定位
+        _record(
+            db,
+            source_table="orders",
+            source_pk=o.id,
+            exception_type="order_missing_alipay",
+            severity="warning",
+            description=f"订单 {o.order_no} 已成交却无任何收款凭据(支付宝流水/聚合结算/淘宝打款金额均无), 需人工核实货款。",
+            suggestion_action="确认该单货款是否到账; 或导入覆盖该单的支付宝流水/聚合账单后自动消除。",
+            context={"order_no": o.order_no, "paid_amount": str(o.paid_amount)},
+        )
+        count += 1
+    _log.info("scan_order_missing_alipay: %d (settled, no flow/settlement/淘宝打款金额)", count)
     return count
 
 

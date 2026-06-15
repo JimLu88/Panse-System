@@ -139,7 +139,11 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
                    .where(OrderSettlement.order_no == o.order_no)).scalar() or 0
     if m:
         return None
-    return f"订单 {o.order_no} 已成交但无收款记录(支付宝流水/聚合结算均无)"
+    # 淘宝逐单『打款商家金额』有值 = 淘宝已确认放款(批量结算逐单流水不可得), 视为已收款; 总额由
+    # 月度货款对账兜底。仅当连打款金额都没有才是真缺收款凭据 (2026-06-15 用户拍板)。
+    if o.shop_received_amount and o.shop_received_amount > 0:
+        return None
+    return f"订单 {o.order_no} 已成交却无任何收款凭据(支付宝流水/聚合结算/淘宝打款金额均无)"
 
 
 def _check_refill_unmatched(db: Session, exc: DataException) -> Optional[str]:
