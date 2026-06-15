@@ -415,10 +415,66 @@ def refresh_alipay_balances(db: Session) -> list[dict]:
     return out
 
 
+def reingest_pending_shipping(db: Session) -> dict:
+    """飞书收到『发货密码』后调用: 用最新口令重试 OUTPUT_DIR 里所有加密发货报表。
+
+    修复 (2026-06-15) —— 以前的死结: 加密报表无口令时标 pending_password 但**照样归档**
+    (file_hash 记录), 等口令到了, 下次 run_ingest 又按"已知文件"跳过 → 永远不会解密
+    (用户每次都得叫我手动导)。此函数绕过 hash 去重, 直接对所有加密淘宝报表用最新口令重试:
+    import 是 upsert 幂等 (重复导无副作用); 一报一密, 口令不匹配的那份自然解密失败、保持
+    待解密, 不影响其它份。由飞书口令入站处理器调用, 实现"发口令→自动入库"。"""
+    out: dict = {"tried": 0, "imported": 0, "failed": 0, "updated": 0, "files": []}
+    pwd = _fresh_shipping_password(db)
+    if not pwd:
+        out["note"] = "无有效口令 (可能已过期, 请重发『发货密码 xxx』)"
+        return out
+    if not OUTPUT_DIR.exists():
+        out["note"] = f"共享目录不存在: {OUTPUT_DIR}"
+        return out
+    from app.services import taobao_order_import
+    for path in sorted(OUTPUT_DIR.rglob("*")):
+        if not path.is_file() or path.name.startswith("_"):
+            continue
+        if path.suffix.lower() not in (".xlsx", ".xls"):
+            continue
+        if _classify(path.relative_to(OUTPUT_DIR)) != "taobao_report":
+            continue
+        raw = path.read_bytes()
+        if raw[:8] != _OOXML_ENCRYPTED_MAGIC:
+            continue   # 只重试加密发货报表; 明文报表归 run_ingest 常规流程
+        out["tried"] += 1
+        try:
+            rep = taobao_order_import.import_taobao_orders(
+                db, path.name, raw, password=pwd)
+            errs = getattr(rep, "errors", None)
+            if errs:
+                out["failed"] += 1
+                out["files"].append({"file": path.name, "status": "pending",
+                                     "note": str(errs[0])[:120]})
+                continue
+            d = _report_to_dict(rep)
+            d["agent_status"] = "imported"
+            import_storage.archive(db, content=raw, original_name=path.name,
+                                   kind="taobao", source="api", row_summary=d)
+            db.commit()
+            out["imported"] += 1
+            out["updated"] += int(d.get("updated") or 0)
+            out["files"].append({"file": path.name, "status": "imported",
+                                 "updated": d.get("updated"),
+                                 "inserted": d.get("inserted")})
+        except Exception as e:  # noqa: BLE001 - 单文件失败不阻断
+            db.rollback()
+            out["failed"] += 1
+            out["files"].append({"file": path.name, "status": "error",
+                                 "note": f"{type(e).__name__}: {e}"})
+    return out
+
+
 def run_ingest(db: Session) -> dict:
     """扫 output 目录全部文件, 新文件(hash 未见过)导入+归档。幂等, 可随时跑。"""
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
+    _pending_pw_files: list[str] = []   # 本轮新下载、待飞书口令解密的加密发货报表
     if not OUTPUT_DIR.exists():
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
         return report
@@ -452,6 +508,8 @@ def run_ingest(db: Session) -> dict:
                 state[category] = datetime.now().isoformat(timespec="seconds")
             else:
                 report["pending"] += 1
+                if status == "pending_password":
+                    _pending_pw_files.append(path.name)
         except Exception as e:  # noqa: BLE001 - 单文件失败不阻断批量
             db.rollback()
             _log.warning("agent ingest 失败 %s", rel, exc_info=True)
@@ -459,6 +517,21 @@ def run_ingest(db: Session) -> dict:
                           "summary": {"error": f"{type(e).__name__}: {e}"}})
             report["errors"] += 1
         report["files"].append(entry)
+    # 主动提醒 (用户要求 2026-06-15): 取数下载到加密发货报表却无有效口令 → 主动推飞书,
+    # 让用户转发『发货密码 xxx』; 收到后 _capture_shipping_password→reingest_pending_shipping
+    # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
+    if _pending_pw_files:
+        try:
+            from app.services import notify_service
+            n = len(_pending_pw_files)
+            notify_service.notify(
+                db,
+                (f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
+                 f"『发货密码 xxxx』转发到这里 —— 一报表一密、收到后自动解密入库 (60 分钟内有效)。"),
+                level="warn", title="发货报表待口令",
+            )
+        except Exception:
+            _log.warning("发货报表待口令主动提醒推送失败", exc_info=True)
     state["last_ingest_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_STATE, state)
     _save_json(db, KEY_LAST_INGEST, report)

@@ -783,7 +783,11 @@ def _extract_shipping_password(text: str) -> Optional[str]:
 
 
 def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
-    """存最新发货报表口令 + 时间戳, 回执确认。导入加密发货报表时取最近一条。"""
+    """存最新发货报表口令 + 时间戳, 然后立刻用它重试待解密的加密发货报表, 回执告知结果。
+
+    修复 (2026-06-15): 以前只存口令、回"下次导入时再解密", 但文件早已归档(hash-known)→
+    下次 ingest 当"已知文件"跳过→永不解密 (用户每次都得叫我手动导一遍)。现在收到口令即
+    调 reingest_pending_shipping 自动解密入库, 真正打通"发口令→入库"闭环。"""
     from datetime import datetime, timezone
     settings_service.set_value(db, "taobao_shipping_pwd_latest", pwd,
                                description="淘宝发货报表最新解密口令(一次一密)")
@@ -791,9 +795,23 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
                                datetime.now(timezone.utc).isoformat(),
                                description="发货报表口令收到时间")
     db.commit()
-    _safe_reply(db, message_id, _result_card(
-        "已收到发货报表口令", "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。", "green"))
-    return {"message_id": message_id, "kind": "shipping_password", "captured": True}
+    imported = 0
+    body = "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。"
+    try:
+        from app.services import agent_ingest_service
+        r = agent_ingest_service.reingest_pending_shipping(db)
+        imported = r.get("imported") or 0
+        if imported:
+            body = (f"已用口令自动解密并导入 {imported} 份发货报表 "
+                    f"(更新订单 {r.get('updated') or 0} 单)。")
+        elif r.get("tried"):
+            body = ("口令已存, 但当前待解密的发货报表用它仍打不开 (可能这条口令对应另一份"
+                    "报表 —— 一报一密)。已留待匹配, 收到对应口令会自动入库。")
+    except Exception:
+        pass
+    _safe_reply(db, message_id, _result_card("已收到发货报表口令", body, "green"))
+    return {"message_id": message_id, "kind": "shipping_password",
+            "captured": True, "imported": imported}
 
 
 # ── 飞书「售后」关键词多步录入 (2026-06-12) ──

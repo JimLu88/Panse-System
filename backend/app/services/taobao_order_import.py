@@ -701,34 +701,12 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
         rep.warnings.append("未解析到任何订单行。")
         return rep
 
-    # 坏文件拦截 (用户拍板 2026-06-11): 自动导出偶发半截文件 — 行数比上次骤降一半以上
-    # 时拒绝导入 (覆盖式导入最怕拿残缺文件当权威源), 并推飞书告警。
-    try:
-        from app.services import settings_service
-        last_raw = settings_service.get(db, "last_order_import_count", env_fallback=False)
-        last_n = int(last_raw) if last_raw else 0
-        if last_n >= 50 and len(orders) < last_n * 0.5:
-            msg = (f"本次解析仅 {len(orders)} 单, 上次为 {last_n} 单 (骤降 >50%), "
-                   "疑似导出文件不完整, 已拒绝导入。请重新导出后再试; "
-                   "若确属正常 (如刻意缩小导出范围), 连续导两次即可生效。")
-            rep.errors.append(msg)
-            try:
-                from app.services import alert_service
-                alert_service.upsert(
-                    db, kind="import_anomaly", severity="critical",
-                    title="订单导入文件异常, 已拦截",
-                    body=msg, dedupe_key="import_anomaly:orders",
-                )
-                db.commit()
-            except Exception:
-                pass
-            # 把"上次行数"更新为本次, 这样用户确认无误后重导第二次即放行
-            settings_service.set_value(db, "last_order_import_count", str(len(orders)))
-            db.commit()
-            return rep
-        settings_service.set_value(db, "last_order_import_count", str(len(orders)))
-    except Exception:  # pragma: no cover - 拦截器故障不阻断导入
-        pass
+    # 行数骤降拦截已整体移除 (用户拍板 2026-06-15)。根因: 淘宝三张互补报表 —— 订单报表
+    # (~897 单, 主单级含物流单号)、宝贝销售明细 (~851 单, 行级含商品/SKU)、发货报表
+    # (~108 单, 仅已发货, 含收货人/电话) —— 各自覆盖不同订单子集, 却共用一个全局"上次行数"
+    # 计数器互比, 导小表 (发货报表) 时必然误判"骤降 >50%"而拒导。这是拿异质报表当同一总体
+    # 比较的设计缺陷, 不是真有坏文件。导入本就是 upsert (只增改、从不删行, 见 _commit_orders),
+    # 残缺文件也抹不掉已有数据 → 该防护既误报又多余, 删除 (不再读写 last_order_import_count)。
 
     _commit_orders(db, orders, platform, rep)
     if apply_refill_flags(db):   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
@@ -742,37 +720,51 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     except Exception as e:  # noqa: BLE001
         rep.warnings.append(f"理论成本自动反推未完成: {type(e).__name__}")
 
-    # 导入消失检测 (用户拍板 2026-06-12): 库里有、新文件里没有 → 报异常问是否删除,
-    # 绝不静默覆盖/删行。范围按文件内订单日期 [min,max] 圈定, 窗口外老订单不误报。
+    # 导入消失检测 (用户拍板 2026-06-12; 根因修正后 2026-06-15 默认关闭"报缺")。
+    # ⚠ 根因: report_missing 假设"单份文件 = 该时段全量快照", 但淘宝三张报表各覆盖不同子集
+    # (订单报表897 / 销售明细851 / 发货报表108) —— 互比会把"另一张报表独有的单"误判成消失
+    # (导 108 单的发货报表会一次性误报数百单 import_missing 异常)。这正是用户说的"误报背后有
+    # 真问题": 用错了比较口径。导入是 upsert (永不删行), 即便真有单从淘宝消失, 库里也不会被抹,
+    # 故"报缺"默认关; 仅当 settings taobao_import_vanish_check=1 且确知本次是单一权威订单表时才开。
+    # resolve_reappeared 保留 (只销旧异常、绝不新建), 让历史误报在每次重导时自动收敛归零。
     try:
-        from datetime import date as _date_cls
-
         from app.models.order import Order as _Order
         from app.services import import_vanish_service
         # orders 是 dict[order_no, _OrderRow] — 必须取 values(), 直接迭代拿到的是字符串键
         _rows = list(orders.values()) if isinstance(orders, dict) else list(orders)
         file_keys = {o.order_no for o in _rows if o.order_no and not o.order_no_bad}
-        # 重新出现的单自动销掉旧异常 (拆单恢复/上次导出遗漏这次补上了)
+        # 重新出现的单自动销掉旧异常 (拆单恢复/上次导出遗漏这次补上了 / 历史误报自愈)
         import_vanish_service.resolve_reappeared(
             db, source_table="orders", present_keys=file_keys)
-        dates = [o.order_date for o in _rows
-                 if isinstance(o.order_date, _date_cls)]
-        if dates and file_keys:
-            dmin, dmax = min(dates), max(dates)
-            db_keys = {
-                r[0] for r in db.query(_Order.order_no).filter(
-                    _Order.platform == platform,
-                    _Order.is_refill == False,  # noqa: E712
-                    _Order.order_date >= dmin,
-                    _Order.order_date <= dmax,
-                ).all()
-            }
-            rep.vanished = import_vanish_service.report_missing(
-                db, source_table="orders", label="订单",
-                missing=sorted(db_keys - file_keys),
-                scope_desc=f"本次文件覆盖 {dmin}~{dmax}",
-            )
-            db.commit()
+        db.commit()
+        _vanish_on = False
+        try:
+            from app.services import settings_service as _ss
+            _vanish_on = str(_ss.get(db, "taobao_import_vanish_check",
+                                     env_fallback=False) or "").strip().lower() \
+                in ("1", "true", "yes", "on")
+        except Exception:
+            _vanish_on = False
+        if _vanish_on:
+            from datetime import date as _date_cls
+            dates = [o.order_date for o in _rows
+                     if isinstance(o.order_date, _date_cls)]
+            if dates and file_keys:
+                dmin, dmax = min(dates), max(dates)
+                db_keys = {
+                    r[0] for r in db.query(_Order.order_no).filter(
+                        _Order.platform == platform,
+                        _Order.is_refill == False,  # noqa: E712
+                        _Order.order_date >= dmin,
+                        _Order.order_date <= dmax,
+                    ).all()
+                }
+                rep.vanished = import_vanish_service.report_missing(
+                    db, source_table="orders", label="订单",
+                    missing=sorted(db_keys - file_keys),
+                    scope_desc=f"本次文件覆盖 {dmin}~{dmax}",
+                )
+                db.commit()
     except Exception:  # pragma: no cover - 检测故障不阻断导入
         import logging
         logging.getLogger("panse.taobao_import").warning("订单消失检测失败", exc_info=True)
