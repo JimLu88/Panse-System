@@ -63,6 +63,8 @@ services:
       SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       AI_MODEL: ${AI_MODEL:-claude-sonnet-4-6}
+      # 飞书机器人长连接(入站: 收『发货密码』口令/指令; 出站: 推QR/日报)。配齐 app_id+app_secret 后才真连。
+      ENABLE_FEISHU_BOT: ${ENABLE_FEISHU_BOT:-1}
       TZ: ${TZ:-Asia/Shanghai}
       GALLERY_ROOT: /app/gallery
       AGENT_OUTPUT_DIR: /app/agent_output
