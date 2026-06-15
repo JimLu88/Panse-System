@@ -15,6 +15,12 @@ EDITABLE = {
     "feishu_webhook_url": ("feishu_webhook_url", "飞书群机器人 Webhook",
                            "看门狗告警/超期线索/到点发布 推送到飞书群"),
     "erp_base_url": ("erp_base_url", "ERP 地址", "线索成交回写 Panse-System 订单归因"),
+    "avatar_provider_url": ("avatar_provider_url", "数字人渲染服务地址",
+                            "InfiniteTalk/Duix-Avatar 自托管或 HeyGen 类 API，把口播脚本渲染成数字人视频"),
+    "automation_webhook_url": ("automation_webhook_url", "自动化编排 Webhook (n8n/Make)",
+                               "新爆文/新线索等事件推到 n8n/Make，串成可视化自动化流水线"),
+    "aeo_base_url": ("aeo_base_url", "AEO 项目地址",
+                     "打通你的 AEO 项目，把品牌在 AI 答案引擎的被引用数据并入大盘"),
 }
 
 

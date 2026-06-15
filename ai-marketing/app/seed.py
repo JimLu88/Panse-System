@@ -69,6 +69,12 @@ def run() -> None:
             crawl_service.mine_hot_notes(db, cat)
         m = inbox_comments.scan_mentions(db)
         print(f"已抓取竞品爆文(含低粉爆文) + {m['added']} 条品牌/竞品舆情。")
+        # Phase4：演示数字人(已授权就绪，可直接渲染口播脚本)
+        from .services import avatar_service
+        avatar_service.create_avatar(db, name="畔色老板IP", real_person="老板",
+                                     face_ref="demo_face.png", voice_sample_ref="demo_voice.wav",
+                                     authorized=True, persona={"tone": "亲和实在"})
+        print("已创建演示数字人「畔色老板IP」(已授权)。")
     finally:
         db.close()
 
