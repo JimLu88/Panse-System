@@ -192,3 +192,74 @@ def test_quote_heavy_engine_and_hardware():
     assert r["final_price"] > 0
     mats = {h["material"] for h in r["inferred_hardware"]}
     assert "抽屉轨道" in mats                                # 有抽屉面板 → 自动加轨道
+
+
+# ───────── 缓存 + AI 增强分类(收尾批) ─────────
+
+class _FakeResp:
+    def __init__(self, text):
+        self.text = text
+
+
+class _FakeProvider:
+    """假 AI 提供方: 固定返回一段文本(模拟模型 JSON 输出)。"""
+    def __init__(self, text):
+        self._t = text
+
+    def chat(self, system, user, max_tokens=600):
+        return _FakeResp(self._t)
+
+    def chat_with_images(self, system, user, images, max_tokens=600):
+        return _FakeResp(self._t)
+
+
+def test_cache_hits_once():
+    v2.cache_clear()
+    n = {"c": 0}
+
+    def build():
+        n["c"] += 1
+        return n["c"]
+
+    a = v2._cached("k", build)
+    b = v2._cached("k", build)
+    assert a == b == 1 and n["c"] == 1          # 第二次走缓存, builder 只跑一次
+    v2.cache_clear()
+
+
+def test_classify_deterministic_parses_dims_material():
+    db = _db()
+    _seed_table(db)
+    v2.cache_clear()
+    r = v2.classify(db, text="蜂蜜餐桌 改 1.5米 黑胡桃")
+    assert r["customization_type"] == "普通定制"
+    assert r["target_length_m"] == 1.5
+    assert r["target_material"] == "黑胡桃"
+    assert r["ai_used"] is False
+
+
+def test_classify_ai_parses_structured():
+    db = _db()
+    _seed_table(db)
+    v2.cache_clear()
+    js = ('{"customization_type":"普通定制","matched_product_name":"畔色蜂蜜餐桌",'
+          '"target_length_m":1.5,"target_material":"黑胡桃","add_parts":[],'
+          '"remove_parts":[],"confidence":0.9,"reasoning":"改尺寸+材质"}')
+    r = v2.classify_ai(db, text="蜂蜜餐桌改1.5米黑胡桃", images=None,
+                       provider=_FakeProvider(js), model="x")
+    assert r is not None
+    assert r["customization_type"] == "普通定制"
+    assert r["base_product_code"] == "P1"        # 产品名→code 映射
+    assert r["target_length_m"] == 1.5 and r["target_material"] == "黑胡桃"
+    assert r["ai_used"] is True
+    v2.cache_clear()
+
+
+def test_classify_ai_none_on_garbage():
+    db = _db()
+    _seed_table(db)
+    v2.cache_clear()
+    assert v2.classify_ai(db, text="x", images=None,
+                          provider=_FakeProvider("不是JSON"), model="") is None
+    assert v2.classify_ai(db, text="x", images=None, provider=None, model="") is None
+    v2.cache_clear()

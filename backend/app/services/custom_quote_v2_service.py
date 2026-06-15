@@ -2,20 +2,22 @@
 
 一个分类器前门 + 两条确定性管道 (见 docs/定制报价v2_理顺提速_落地方案.md):
 
-  classify(text)        → {普通定制|特殊定制, 命中的基础产品, 置信度}
+  classify / classify_ai  → {普通定制|特殊定制, 命中的基础产品, (AI)解析出的尺寸/材质/增减}
   普通定制 quote_light  = 真实SKU锚点价 + 尺寸delta(策略C 多档插值) + 材质delta(wood_cost反推) + 增减部位delta
-                          —— 0 次额外 AI, 纯算术, 锚在已验证的真实价上
   特殊定制 quote_heavy  = 品类部位模板(BOM聚合) → quote_from_spec 引擎 + 自动推五金
 
 P0 实测(2026-06-16 生产库): Material.area 全空 → 不用板件几何; 同款多档定价 88% → 策略C插值;
 PricingSku.wood_cost 95%非空 + MW木材单价表干净 → 材质delta 用 wood_cost÷原料单价 反推面积。
 全部自有数据(定价表/配件表/BOM), 不使用任何外部 Excel 数据。
 
+提速: 标准产品库名单 + 品类部位模板 走进程内缓存(TTL 5 分钟, 只存纯数据)。
 财务纪律: 本服务纯计算 + 只读查库, 不写订单/财务字段; 由新端点影子并行调用, 旧端点保留。
 """
 from __future__ import annotations
 
+import json
 import re
+import time
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -32,6 +34,36 @@ _PRICE_TIERS = {
     "list": "list_price", "daily": "daily_price",
     "small": "small_promo", "mid": "mid_promo", "big": "big_promo",
 }
+
+
+# ───────────────────────── 进程内缓存 (提速) ───────────────────────── #
+# 只存纯数据(非 ORM 对象), 跨会话安全; TTL 5 分钟, 写表后自然过期。
+
+_CACHE: dict = {}
+_CACHE_TTL = 300.0
+
+
+def _cached(key, builder, ttl=_CACHE_TTL):
+    now = time.monotonic()
+    hit = _CACHE.get(key)
+    if hit and (now - hit[1]) < ttl:
+        return hit[0]
+    val = builder()
+    _CACHE[key] = (val, now)
+    return val
+
+
+def cache_clear() -> None:
+    """物料/产品/模板变更后清缓存(导入/飞书同步后调用)。"""
+    _CACHE.clear()
+
+
+def _parse_json(text) -> dict:
+    try:
+        m = re.search(r"\{.*\}", text or "", re.DOTALL)
+        return json.loads(m.group()) if m else {}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 # ───────────────────────── 工具: 尺寸解析 + 插值 ───────────────────────── #
@@ -94,14 +126,12 @@ def _wood_unit_price(db: Session, wood: str) -> Optional[float]:
         Material.price.isnot(None),
     ).all()
     if not rows:
-        # 退一步: 不限前缀
         rows = db.query(Material).filter(
             Material.name.like(f"%{wood}%"), Material.price.isnot(None),
             ~Material.name.like("%样块%"), ~Material.name.like("%样品%"),
         ).all()
     if not rows:
         return None
-    # 优先 2.2cm 标准厚度, 否则名字最短(最接近主料)
     rows.sort(key=lambda m: (0 if "2.2" in (m.name or "") else 1, len(m.name or "")))
     return float(rows[0].price)
 
@@ -153,7 +183,6 @@ def quote_light(
         anchor_wood, _ = interp(wood_pts, target_length_m) if wood_pts else (None, "no-data")
         note = f"策略C 多档插值@{target_length_m}m ({method}, {len(price_pts)}档)"
     else:
-        # 不改尺寸: 取中位长度档作代表锚点
         rep = sorted(skus, key=lambda s: parse_length_m(s.sku) or 0)[len(skus) // 2]
         anchor = float(getattr(rep, tier_col, None) or rep.daily_price or rep.list_price or 0)
         anchor_wood = float(rep.wood_cost) if rep.wood_cost is not None else None
@@ -171,7 +200,6 @@ def quote_light(
             (prod.main_material if prod else "") or "")
         tgt = detect_wood(target_material) or target_material
         if base_wood and tgt and tgt not in (base_wood, ""):
-            # (a) 同类目找目标材种现成款 → 用其真实价做新锚点 (最准)
             sib = _find_sibling_by_material(db, prod, tgt) if prod else None
             if sib:
                 sib_skus = db.query(PricingSku).filter(
@@ -185,7 +213,6 @@ def quote_light(
                     material_delta = round(sib_price - anchor, 2)
                     breakdown.append({"label": f"换料→{tgt}(现成款)", "amount": material_delta,
                                       "note": f"切到 {sib.code} {sib.name} 真实价 {round(sib_price,2)}"})
-            # (b) 无现成款 → wood_cost ÷ 原料单价 反推面积 × 料价差 × 1.25
             if material_delta == 0.0:
                 orig_u = _wood_unit_price(db, base_wood)
                 new_u = _wood_unit_price(db, tgt)
@@ -260,13 +287,99 @@ def _part_price(db: Session, name: str) -> float:
 
 # ───────────────────────── 分类器前门 ───────────────────────── #
 
+def _catalog(db: Session):
+    """标准产品库 (名单文本 + 名→code 映射), 缓存。给分类器 AI 注入。"""
+    def build():
+        names, name2code = [], {}
+        for code, name in db.query(Product.code, Product.name).all():
+            if name:
+                names.append(name)
+                name2code[name] = code
+        return "、".join(names[:400]), name2code
+    return _cached("catalog", build)
+
+
+_CLASSIFY_AI_SYSTEM = """你是家具定制报价分类助手。标准产品库(名称):
+{catalog}
+
+判断客户定制需求, 严格只返回 JSON(无解释/无 markdown):
+{{
+  "customization_type": "普通定制" 或 "特殊定制",
+  "matched_product_name": "命中的标准产品名(尽量完整), 无则 null",
+  "target_length_m": 目标整体长度(米,数字) 或 null,
+  "target_material": "目标主材(如 黑胡桃/樱桃木/榉木) 或 null",
+  "add_parts": [{{"material": "部位/材料名", "qty": 1}}],
+  "remove_parts": [{{"material": "部位名", "qty": 1}}],
+  "confidence": 0到1的数字,
+  "reasoning": "一句话理由"
+}}
+规则: 命中标准库且只改尺寸/材质/颜色/简单增减 → 普通定制; 全新结构或库里没有 → 特殊定制。"""
+
+
+def classify_ai(db: Session, *, text: str = "", images=None, provider=None, model: str = "") -> Optional[dict]:
+    """AI 增强分类: 自由文字/图 → 结构化(类型+产品+尺寸+材质+增减)。失败返回 None 让上层回落确定性。"""
+    if provider is None:
+        return None
+    catalog, name2code = _catalog(db)
+    system = _CLASSIFY_AI_SYSTEM.format(catalog=catalog)
+    try:
+        if images:
+            resp = provider.chat_with_images(system=system, user=text or "(见图)", images=images, max_tokens=600)
+        else:
+            resp = provider.chat(system=system, user=text or "", max_tokens=600)
+    except Exception:  # noqa: BLE001
+        return None
+    data = _parse_json(getattr(resp, "text", ""))
+    if data.get("customization_type") not in ("普通定制", "特殊定制"):
+        return None
+    code = None
+    mname = data.get("matched_product_name")
+    if mname:
+        code = name2code.get(mname)
+        if not code:
+            for nm, c in name2code.items():
+                if mname in nm or nm in mname:
+                    code = c
+                    break
+    pname = db.query(Product.name).filter(Product.code == code).scalar() if code else None
+    return {
+        "customization_type": data["customization_type"],
+        "base_product_code": code,
+        "base_product_name": pname or mname,
+        "target_length_m": data.get("target_length_m"),
+        "target_material": data.get("target_material"),
+        "add_parts": data.get("add_parts") or [],
+        "remove_parts": data.get("remove_parts") or [],
+        "confidence": round(float(data.get("confidence") or 0.7), 2),
+        "reasoning": data.get("reasoning") or "AI 判定",
+        "ai_used": True,
+    }
+
+
 def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
     """判定普通定制(改现有产品) / 特殊定制(全新), 并匹配基础产品。
 
     确定性: 命中标准产品库(match 置信≥0.4) → 普通定制; 否则 → 特殊定制。
-    (AI 自由文本解析为后续增强项; 当前纯确定性, 稳且可测、不依赖 AI 在线。)
+    (无 AI 或 AI 失败时的回落; 稳且可测、不依赖 AI 在线。)
     """
     m = match(db, text or "", "")
+    # 中文描述词(尺寸/材质/动词)会拉低 token 匹配; 不中则用"去噪核心词"再匹配一次
+    if not (m.get("product_code") and m.get("confidence", 0) >= 0.4):
+        core = re.sub(r"\d+(?:\.\d+)?\s*(?:米|mm|cm|m)", " ", text or "")
+        for _w in _WOOD_KEYWORDS:
+            core = core.replace(_w, " ")
+        core = re.sub(r"[改成为的把要做想换尺寸材质]", " ", core).strip()
+        if core and core != (text or "").strip():
+            m2 = match(db, core, "")
+            if m2.get("confidence", 0) > m.get("confidence", 0):
+                m = m2
+    base = {
+        "target_length_m": parse_length_m(text),
+        "target_material": detect_wood(text),
+        "add_parts": [],
+        "remove_parts": [],
+        "ai_used": False,
+    }
     if m.get("product_code") and m.get("confidence", 0) >= 0.4:
         return {
             "customization_type": "普通定制",
@@ -275,7 +388,7 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
             "matched_sku_code": m.get("sku_code"),
             "confidence": m["confidence"],
             "reasoning": "命中标准产品库 → 在现有产品上改尺寸/材质/增减部位",
-            "ai_used": False,
+            **base,
         }
     return {
         "customization_type": "特殊定制",
@@ -284,7 +397,7 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
         "matched_sku_code": None,
         "confidence": round(max(0.5, 1 - m.get("confidence", 0)), 2),
         "reasoning": "未命中标准产品库 → 走全定制板单引擎",
-        "ai_used": False,
+        **base,
     }
 
 
@@ -293,20 +406,23 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
 def suggest_part_template(db: Session, category: str, *, top: int = 40) -> list[dict]:
     """从同品类现有产品的 BOM 聚合出「标准部位清单」(部位名 + 最常见材料 + 出现频次)。
 
-    供特殊定制时自动带板单骨架(尺寸仍由设计/客户填)。全部自有 BOM 数据。
+    供特殊定制时自动带板单骨架(尺寸仍由设计/客户填)。全部自有 BOM 数据。缓存 5 分钟。
     """
+    if not category:
+        return []
+    return _cached(f"tmpl:{category}:{top}", lambda: _aggregate_template(db, category, top))
+
+
+def _aggregate_template(db: Session, category: str, top: int) -> list[dict]:
     from collections import Counter
 
     from app.models.bom import BomLine
-    if not category:
-        return []
     leaf = category.split("-")[-1]
     codes = [p.code for p in db.query(Product).filter(
         Product.category.like(f"%{leaf}%")).all()]
     if not codes:
         return []
     lines = db.query(BomLine).filter(BomLine.product_code.in_(codes)).all()
-    # 按物料名归并(同部位常重复出现), 统计频次 + 记一个材料名
     freq: Counter = Counter()
     mat_of: dict[str, Counter] = {}
     for ln in lines:

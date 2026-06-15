@@ -294,22 +294,21 @@ export default function App() {
           <Button
             icon={<EditOutlined />}
             size="small"
-            type={isCustomQuote ? 'primary' : 'default'}
-            ghost={!isCustomQuote}
-            onClick={() => nav('/custom-quote')}
-            style={{ borderColor: isCustomQuote ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuote ? undefined : 'rgba(255,255,255,0.85)' }}
-          >
-            定制报价
-          </Button>
-          <Button
-            icon={<EditOutlined />}
-            size="small"
             type={isCustomQuoteV2 ? 'primary' : 'default'}
             ghost={!isCustomQuoteV2}
             onClick={() => nav('/custom-quote-v2')}
             style={{ borderColor: isCustomQuoteV2 ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuoteV2 ? undefined : 'rgba(255,255,255,0.85)' }}
           >
-            定制报价v2
+            定制报价
+          </Button>
+          <Button
+            size="small"
+            type={isCustomQuote ? 'primary' : 'default'}
+            ghost={!isCustomQuote}
+            onClick={() => nav('/custom-quote')}
+            style={{ borderColor: isCustomQuote ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuote ? undefined : 'rgba(255,255,255,0.85)' }}
+          >
+            旧版AI对话
           </Button>
         </Space>
         <Button

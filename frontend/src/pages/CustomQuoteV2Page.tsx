@@ -10,10 +10,17 @@ import {
   Table,
   Tag,
   Typography,
+  Upload,
   message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { DeleteOutlined, PlusOutlined, RobotOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import {
+  DeleteOutlined,
+  PictureOutlined,
+  PlusOutlined,
+  RobotOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -25,6 +32,10 @@ interface ClassifyResult {
   base_product_name: string | null;
   confidence: number;
   reasoning: string;
+  target_length_m?: number | null;
+  target_material?: string | null;
+  add_parts?: { material: string; qty: number }[];
+  ai_used?: boolean;
 }
 interface BreakdownItem {
   label: string;
@@ -67,6 +78,13 @@ interface BoardRow {
   length_cm: number;
   width_cm: number;
   qty: number;
+}
+interface QuoteLog {
+  id: number;
+  source: string | null;
+  message: string;
+  extra: Record<string, unknown> | null;
+  created_at: string | null;
 }
 
 function authHeaders(json: boolean): Record<string, string> {
@@ -113,9 +131,39 @@ const breakdownCols: ColumnsType<BreakdownItem> = [
   },
 ];
 
+const logCols: ColumnsType<QuoteLog> = [
+  { title: '#', dataIndex: 'id', key: 'id', width: 56 },
+  {
+    title: '来源',
+    dataIndex: 'source',
+    key: 'source',
+    width: 130,
+    render: (s: string | null) => <Tag>{s ?? '—'}</Tag>,
+  },
+  { title: '输入', dataIndex: 'message', key: 'message', ellipsis: true },
+  {
+    title: '报价',
+    key: 'price',
+    width: 90,
+    align: 'right',
+    render: (_: unknown, r: QuoteLog) => {
+      const p = r.extra?.final_price;
+      return p != null ? `¥${Number(p).toFixed(0)}` : '—';
+    },
+  },
+  {
+    title: '时间',
+    dataIndex: 'created_at',
+    key: 'created_at',
+    width: 160,
+    render: (t: string | null) => (t ? t.replace('T', ' ').slice(0, 19) : '—'),
+  },
+];
+
 export default function CustomQuoteV2Page() {
   // ── 分类 ──
   const [desc, setDesc] = useState('');
+  const [clsImages, setClsImages] = useState<File[]>([]);
   const [clsLoading, setClsLoading] = useState(false);
   const [cls, setCls] = useState<ClassifyResult | null>(null);
 
@@ -137,17 +185,32 @@ export default function CustomQuoteV2Page() {
   const [cat, setCat] = useState('');
   const [tmpl, setTmpl] = useState<TemplatePart[] | null>(null);
 
+  // ── 留痕对账 ──
+  const [logs, setLogs] = useState<QuoteLog[] | null>(null);
+  const [logsLoading, setLogsLoading] = useState(false);
+
   const doClassify = async () => {
-    if (!desc.trim()) {
-      message.warning('请输入定制描述');
+    if (!desc.trim() && clsImages.length === 0) {
+      message.warning('请输入描述或上传图片');
       return;
     }
     setClsLoading(true);
     setCls(null);
     try {
-      const r = await apiPost<ClassifyResult>('/v2/classify', { text: desc.trim() });
+      const fd = new FormData();
+      fd.append('message', desc.trim());
+      clsImages.forEach((f) => fd.append('images', f, f.name));
+      const resp = await fetch('/api/customization/v2/classify', {
+        method: 'POST',
+        body: fd,
+        headers: authHeaders(false),
+      });
+      if (!resp.ok) throw new Error('分类失败');
+      const r = (await resp.json()) as ClassifyResult;
       setCls(r);
       if (r.base_product_code) setPcode(r.base_product_code);
+      if (r.target_length_m) setLen(r.target_length_m);
+      if (r.target_material) setMat(r.target_material);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
@@ -229,6 +292,18 @@ export default function CustomQuoteV2Page() {
     }
   };
 
+  const loadLogs = async () => {
+    setLogsLoading(true);
+    try {
+      const r = await apiGet<{ logs: QuoteLog[] }>('/v2/quote-logs?limit=50');
+      setLogs(r.logs);
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setLogsLoading(false);
+    }
+  };
+
   const setBoard = (key: number, field: keyof BoardRow, value: string | number) =>
     setBoards((prev) => prev.map((b) => (b.key === key ? ({ ...b, [field]: value } as BoardRow) : b)));
   const addBoard = () =>
@@ -256,21 +331,39 @@ export default function CustomQuoteV2Page() {
       <Alert
         type="info"
         showIcon
-        message="新版口径: 普通定制 = 真实SKU档价插值 + 材质/增减部位增量(纯算术, 秒级)；特殊定制 = 板单引擎 + 自动推五金。与旧版「定制报价」并行, 可对比。"
+        message="普通定制 = 真实SKU档价插值 + 材质/增减增量(纯算术, 秒级)；特殊定制 = 板单引擎 + 自动推五金。描述/截图由 AI 解析自动填表单(AI 不可用则确定性匹配)。"
       />
 
       {/* ── 1. 分类器 ── */}
-      <Card size="small" title="① 智能分类(判普通/特殊 + 匹配产品)">
+      <Card size="small" title="① 智能分类(文字/图 → 类型 + 产品 + 尺寸 + 材质)">
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <TextArea
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
-            placeholder="例如: 蜂蜜餐桌 改 1.5 米 / 客户要全新异形旋转吧台..."
+            placeholder="例如: 蜂蜜餐桌 改 1.5 米 黑胡桃 / 客户要全新异形旋转吧台..."
             autoSize={{ minRows: 2, maxRows: 5 }}
           />
-          <Button type="primary" icon={<RobotOutlined />} loading={clsLoading} onClick={doClassify}>
-            判定
-          </Button>
+          <Space wrap>
+            <Upload
+              multiple
+              accept="image/*"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                setClsImages((p) => [...p, file]);
+                return false;
+              }}
+            >
+              <Button icon={<PictureOutlined />}>加图片</Button>
+            </Upload>
+            {clsImages.length > 0 && (
+              <Tag closable onClose={() => setClsImages([])} color="blue">
+                {clsImages.length} 张图
+              </Tag>
+            )}
+            <Button type="primary" icon={<RobotOutlined />} loading={clsLoading} onClick={doClassify}>
+              判定
+            </Button>
+          </Space>
           {cls && (
             <Alert
               type={cls.customization_type === '普通定制' ? 'success' : 'warning'}
@@ -279,15 +372,22 @@ export default function CustomQuoteV2Page() {
                   <Tag color={cls.customization_type === '普通定制' ? 'blue' : 'orange'}>
                     {cls.customization_type}
                   </Tag>
+                  {cls.ai_used && <Tag color="purple" icon={<RobotOutlined />}>AI 解析</Tag>}
                   {cls.base_product_code && (
                     <Text>
                       命中: <Text strong>{cls.base_product_name}</Text>（{cls.base_product_code}）
                     </Text>
                   )}
+                  {cls.target_length_m ? <Tag color="cyan">尺寸 {cls.target_length_m}m</Tag> : null}
+                  {cls.target_material ? <Tag color="gold">材质 {cls.target_material}</Tag> : null}
                   <Text type="secondary">置信度 {cls.confidence}</Text>
                 </Space>
               }
-              description={<Text type="secondary" style={{ fontSize: 12 }}>{cls.reasoning}</Text>}
+              description={
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  {cls.reasoning}（已自动填入下方表单, 可手动改）
+                </Text>
+              }
             />
           )}
         </Space>
@@ -302,7 +402,7 @@ export default function CustomQuoteV2Page() {
               value={pcode}
               onChange={(e) => setPcode(e.target.value)}
               style={{ width: 320 }}
-              placeholder="如 PFG25210021222(可由上方分类自动填)"
+              placeholder="如 PFG25210021222(分类自动填)"
             />
             <InputNumber
               addonBefore="目标长度(米)"
@@ -450,8 +550,9 @@ export default function CustomQuoteV2Page() {
                 </Text>
                 <Text type="secondary">
                   木作 {heavy.wood_cost.toFixed(0)} · 人工 {heavy.labor_fee.toFixed(0)} · 配件{' '}
-                  {heavy.accessory_total.toFixed(0)} · 工厂对比 {heavy.factory_quote_compare.toFixed(0)}
+                  {heavy.accessory_total.toFixed(0)}
                 </Text>
+                <Tag color="volcano">工厂木作对比 ¥{heavy.factory_quote_compare.toFixed(0)}</Tag>
               </Space>
               {heavy.inferred_hardware.length > 0 && (
                 <Space wrap>
@@ -469,9 +570,26 @@ export default function CustomQuoteV2Page() {
         </Space>
       </Card>
 
+      {/* ── 4. 留痕对账 ── */}
+      <Card size="small" title="④ 报价留痕(灰度对账 · 新旧口径复盘)">
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <Button onClick={loadLogs} loading={logsLoading}>
+            加载最近报价留痕
+          </Button>
+          {logs && (
+            <Table<QuoteLog>
+              size="small"
+              rowKey="id"
+              pagination={{ pageSize: 8 }}
+              columns={logCols}
+              dataSource={logs}
+            />
+          )}
+        </Space>
+      </Card>
+
       <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        说明: 普通定制锚在真实 SKU 档价上做插值 + 增量(P0 实测 88% 产品有多档价);材质增量用 wood_cost
-        反推面积。系数/利润率在「报价参数设置」里可改。本页只读计算, 不落订单。
+        说明: 普通定制锚在真实 SKU 档价上做插值 + 增量;材质增量用 wood_cost 反推面积。工厂只报木作=「工厂木作对比」口径(配件/打包/运费/安装/畔色利润不含)。系数/利润率在「报价参数设置」里可改。本页只读计算, 不落订单。
       </Paragraph>
     </Space>
   );

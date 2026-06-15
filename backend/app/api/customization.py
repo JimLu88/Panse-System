@@ -547,12 +547,38 @@ class V2QuoteHeavyIn(BaseModel):
 
 
 @router.post("/v2/classify")
-def v2_classify(payload: V2ClassifyIn, db: Session = Depends(get_db)) -> dict:
-    """前门分类器: 判普通/特殊定制 + 匹配基础产品 (确定性, 不依赖 AI 在线)。"""
+async def v2_classify(
+    message: str = Form(""),
+    images: List[UploadFile] = File(default=[]),
+    db: Session = Depends(get_db),
+) -> dict:
+    """前门分类器: 自由文字/图 → AI 结构化(类型+产品+尺寸+材质+增减); AI 不可用回落确定性匹配。"""
     from app.services import custom_quote_v2_service as v2
-    r = v2.classify(db, text=payload.text, image_count=payload.image_count)
-    _log_quote(db, source="v2_classify", user_message=payload.text, extra=r)
-    return r
+    from app.services import customization_ai_service, settings_service
+
+    image_data: list[tuple[bytes, str]] = []
+    for img in (images or [])[:5]:
+        raw = await img.read()
+        image_data.append((raw, img.content_type or "image/jpeg"))
+
+    result = None
+    cfg = settings_service.get_ai_config(db, "ocr")
+    if cfg.get("api_key"):
+        try:
+            prov = customization_ai_service._build_provider(db)
+            result = await asyncio.to_thread(
+                v2.classify_ai, db, text=message, images=image_data,
+                provider=prov, model=cfg.get("model") or "",
+            )
+        except Exception:  # noqa: BLE001
+            result = None
+    if result is None:
+        result = v2.classify(db, text=message, image_count=len(image_data))
+
+    _log_quote(db, source="v2_classify", user_message=message,
+               ai_response=result.get("reasoning", ""),
+               extra={k: result.get(k) for k in ("customization_type", "base_product_code", "confidence", "ai_used")})
+    return result
 
 
 @router.post("/v2/quote-light")
@@ -602,3 +628,20 @@ def v2_part_template(category: str, db: Session = Depends(get_db)) -> dict:
     """品类部位模板 (从自有 BOM 聚合): 选品类带出标准部位骨架, 供特殊定制预填板单。"""
     from app.services import custom_quote_v2_service as v2
     return {"category": category, "parts": v2.suggest_part_template(db, category)}
+
+
+@router.get("/v2/quote-logs")
+def v2_quote_logs(limit: int = 50, db: Session = Depends(get_db)) -> dict:
+    """定制报价留痕 (灰度对账): 最近 N 条 v2/旧报价记录, 供新旧口径对比复盘。"""
+    from app.models.ai import AiChatLog
+    rows = (db.query(AiChatLog)
+            .filter(AiChatLog.action_type == "custom_quote")
+            .order_by(AiChatLog.id.desc()).limit(min(max(limit, 1), 200)).all())
+    return {"logs": [{
+        "id": r.id,
+        "source": (r.extra or {}).get("source"),
+        "message": r.user_message,
+        "extra": r.extra,
+        "model": r.model,
+        "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) else None,
+    } for r in rows]}
