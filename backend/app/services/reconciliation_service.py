@@ -1294,3 +1294,59 @@ def run_all(db: Session, **kwargs) -> dict[RuleName, ReconciliationResult]:
         except Exception:  # pragma: no cover
             pass
     return results
+
+
+# ---------------------------------------------------------------------------
+# 对账准确月份指标 (用户拍板 2026-06-15): 一眼看哪几个月财务"真核准"
+# (收款/余额/对账/售后/工厂全齐、无 open 财务异常)
+# ---------------------------------------------------------------------------
+_FIN_RECON_EXC = ("order_missing_alipay", "alipay_balance_gap", "reconciliation_diff",
+                  "alipay_flow_no_missing", "factory_recon_incomplete", "alipay_duplicate_flow")
+
+
+def _exc_month(db: Session, exc) -> Optional[str]:
+    """异常归到哪个月: 流水类按流水时间, 订单/售后类按订单日期, 其它取 context.month。"""
+    st = exc.source_table
+    if st == "alipay_flows":
+        f = db.get(AlipayFlow, int(exc.source_pk)) if (exc.source_pk or "").isdigit() else None
+        return f.transaction_time.strftime("%Y-%m") if (f and f.transaction_time) else None
+    if st in ("orders", "after_sales"):
+        o = None
+        if st == "orders" and (exc.source_pk or "").isdigit():
+            o = db.get(Order, int(exc.source_pk))
+        if o is None:
+            o = db.execute(select(Order).where(Order.order_no == exc.source_pk)).scalars().first()
+        return o.order_date.strftime("%Y-%m") if (o and o.order_date) else None
+    return (exc.context or {}).get("month")
+
+
+def reconciliation_accuracy_by_month(db: Session) -> list[dict]:
+    """按月给"对账准确度": 该月有订单且无任何 open 财务对账异常(收款/余额/对账/售后/工厂)→ 已核准。
+    财务起始线(2026-01)之前不计。用户拍板 2026-06-15: 一眼看哪几个月财务是真准的。"""
+    from collections import defaultdict
+
+    from app.models.exception import DataException
+    start = _finance_start(db)
+    start_m = start.strftime("%Y-%m") if start else "2026-01"
+    months: dict = defaultdict(lambda: {"orders": 0, "open_issues": 0, "by_type": defaultdict(int)})
+    for (od,) in db.execute(select(Order.order_date).where(Order.order_date.isnot(None))).all():
+        if od:
+            months[od.strftime("%Y-%m")]["orders"] += 1
+    for e in db.execute(select(DataException).where(
+            DataException.status == "open",
+            DataException.exception_type.in_(_FIN_RECON_EXC))).scalars().all():
+        m = _exc_month(db, e)
+        if m:
+            months[m]["open_issues"] += 1
+            months[m]["by_type"][e.exception_type] += 1
+    out: list[dict] = []
+    for m in sorted(months):
+        if m < start_m:
+            continue
+        d = months[m]
+        out.append({
+            "month": m, "orders": d["orders"], "open_issues": d["open_issues"],
+            "accurate": d["orders"] > 0 and d["open_issues"] == 0,
+            "by_type": dict(d["by_type"]),
+        })
+    return out

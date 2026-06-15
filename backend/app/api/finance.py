@@ -942,6 +942,19 @@ def run_all_rules(
     return {name: _to_out(r) for name, r in results.items()}
 
 
+@router.get("/reconciliation-accuracy")
+def reconciliation_accuracy(db: Session = Depends(get_db)):
+    """按月『对账准确度』: 哪些月份财务已核准(该月有订单且无 open 财务对账异常)。
+    用户拍板 2026-06-15: 体现哪几个月财务真实准确。"""
+    rows = reconciliation_service.reconciliation_accuracy_by_month(db)
+    return {
+        "months": rows,
+        "accurate_months": [r["month"] for r in rows if r["accurate"]],
+        "accurate_count": sum(1 for r in rows if r["accurate"]),
+        "total_months": len(rows),
+    }
+
+
 # -------- CSV 模板下载 --------
 
 def _csv_template(headers: list[str], filename: str) -> StreamingResponse:
