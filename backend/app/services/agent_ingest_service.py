@@ -536,7 +536,9 @@ def orchestrate(db: Session, *, force: bool = False) -> dict:
             out["tasks"].append({"task": task_id, "status": "error",
                                  "error": r.get("error", "无 job id")})
             continue
-        final = web_agent_service.wait_job(db, r["job"], timeout_s=1200)
+        # 淘宝3报表异步导出受淘宝"两次导出≥5分钟"限流, 整轮可达~18分钟 → 等到 30 分钟,
+        # 与 Web-Agent agent_total_timeout_s(1500s) 对齐, 避免单轮假超时 (2026-06-15)。
+        final = web_agent_service.wait_job(db, r["job"], timeout_s=1800)
         status = (final.get("status") or "").lower()
         item = {"task": task_id, "status": status}
         if status in ("error", "failed", "timeout"):
