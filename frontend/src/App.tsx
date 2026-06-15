@@ -55,6 +55,7 @@ const FactoryOrdersPage = lazy(() => import('./pages/FactoryOrdersPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
 const CustomQuoteChatPage = lazy(() => import('./pages/CustomQuoteChatPage'));
+const CustomQuoteV2Page = lazy(() => import('./pages/CustomQuoteV2Page'));
 const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
 const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
 const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
@@ -263,6 +264,7 @@ export default function App() {
 
   const isScreenshots = loc.pathname === '/screenshots';
   const isCustomQuote = loc.pathname === '/custom-quote';
+  const isCustomQuoteV2 = loc.pathname === '/custom-quote-v2';
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
@@ -298,6 +300,16 @@ export default function App() {
             style={{ borderColor: isCustomQuote ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuote ? undefined : 'rgba(255,255,255,0.85)' }}
           >
             定制报价
+          </Button>
+          <Button
+            icon={<EditOutlined />}
+            size="small"
+            type={isCustomQuoteV2 ? 'primary' : 'default'}
+            ghost={!isCustomQuoteV2}
+            onClick={() => nav('/custom-quote-v2')}
+            style={{ borderColor: isCustomQuoteV2 ? undefined : 'rgba(255,255,255,0.45)', color: isCustomQuoteV2 ? undefined : 'rgba(255,255,255,0.85)' }}
+          >
+            定制报价v2
           </Button>
         </Space>
         <Button
@@ -349,6 +361,7 @@ export default function App() {
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customization" element={<CustomizationPage />} />
             <Route path="/custom-quote" element={<CustomQuoteChatPage />} />
+            <Route path="/custom-quote-v2" element={<CustomQuoteV2Page />} />
             <Route path="/screenshots" element={<ScreenshotImportPage />} />
             <Route path="/aftersales" element={<AfterSalesPage />} />
             <Route path="/forecast" element={<ForecastPage />} />
