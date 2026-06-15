@@ -96,6 +96,28 @@ def _estimate_size_category(dims: dict) -> str:
     return "小型"
 
 
+_WOOD_KEYWORDS = ["黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木", "橡木"]
+
+
+def _detect_target_wood(material_changes: list[str]) -> Optional[str]:
+    """从材质变更描述里识别目标木种(取最先命中的)。"""
+    text = " ".join(material_changes or [])
+    for w in _WOOD_KEYWORDS:
+        if w in text:
+            return w
+    return None
+
+
+def _find_sibling_by_material(db: Session, base_product_code: str, wood: str) -> Optional[Product]:
+    """同类目里找名称含目标木种的现成产品(微定制改材质时优先用现成款真实价, 比线性估准)。"""
+    base = db.query(Product).filter(Product.code == base_product_code).first()
+    if not base or not base.category:
+        return None
+    return db.query(Product).filter(
+        Product.category == base.category, Product.name.like(f"%{wood}%")
+    ).first()
+
+
 def _find_base_sku(db: Session, product_code: str, dims: dict) -> Optional[PricingSku]:
     skus = db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
     if not skus:
@@ -142,24 +164,28 @@ def _compute_price(
                 note=f"{w}mm vs 基准 {nominal}mm",
             ))
 
-    # Material change surcharge: +200/item (rough estimate)
+    # 物料变更加价: 物料表查到该材料(排样块/样品)→ 面积×单价; 否则按基础价10%粗估(不再死板¥200)
     for change in material_changes:
-        # Try to match material name to get unit price
         mats = db.query(Material).filter(
             Material.name.ilike(f"%{change[:6]}%"),
             Material.price.isnot(None),
+            ~Material.name.like("%样块%"),
+            ~Material.name.like("%样品%"),
+            ~Material.name.like("%小样%"),
         ).limit(1).all()
         if mats:
             m = mats[0]
             area = float(m.area or Decimal("1.0"))
             unit_price = float(m.price or 0)
             surcharge = area * unit_price
+            note = "按面积×单价估算"
         else:
-            surcharge = 200.0
+            surcharge = round(base_price * 0.10, 2)
+            note = "粗估(目录无同款/无物料价, 需人工核)"
         breakdown.append(PriceBreakdownItem(
             label=f"物料变更: {change[:20]}",
             amount=round(surcharge, 2),
-            note="按面积×单价估算" if mats else "默认估算",
+            note=note,
         ))
 
     total = sum(b.amount for b in breakdown)
@@ -205,11 +231,30 @@ def ai_quote(db: Session, image_bytes: bytes, mime: str) -> CustomizationAiResul
     base_product_name = match_result["product_name"] if match_result else product_name or None
     base_sku_desc = match_result["sku"] if match_result else None
 
+    # 微定制改材质: 优先在同类目找"目标木种"的现成款, 直接用它的真实价(比线性估准得多)
+    sibling_note = None
+    target_wood = _detect_target_wood(material_changes)
+    if target_wood and base_product_code:
+        base_prod = db.query(Product).filter(Product.code == base_product_code).first()
+        if base_prod and target_wood not in (base_prod.name or ""):
+            sib = _find_sibling_by_material(db, base_product_code, target_wood)
+            if sib:
+                base_product_code = sib.code
+                base_product_name = sib.name
+                base_sku_desc = None
+                sibling_note = f"已切到同类目「{target_wood}」现成款 {sib.code}({sib.name}), 用其真实价"
+                material_changes = [c for c in material_changes if target_wood not in c]
+
     # Step 3: Price estimation
     base_sku = None
     if base_product_code:
         base_sku = _find_base_sku(db, base_product_code, dims)
     est_price, breakdown = _compute_price(base_sku, dims, material_changes, db)
+    if sibling_note:
+        breakdown.insert(0, PriceBreakdownItem(label="参考现成款", amount=0.0, note=sibling_note))
+    # 全定制(没匹配到任何现成产品): 引导走板单报价引擎, 别凭空给价
+    if not base_product_code and not error_msg:
+        error_msg = "未匹配到现成产品(疑似全定制) — 请用「AI拆板单 → 板单报价」走引擎出精确价。"
 
     changes_list = material_changes.copy()
     for k, v in dims.items():
