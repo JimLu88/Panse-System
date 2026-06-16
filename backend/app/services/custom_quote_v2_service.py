@@ -449,11 +449,13 @@ def infer_hardware(boards: list[dict]) -> list[dict]:
     for b in boards:
         name = (b.get("part") or "").lower()
         qty = float(b.get("qty", 1) or 1)
-        if "抽屉" in name or "drawer" in name:
+        # 抽屉只按"面板"计抽数; 围板/侧板/后板/底板不重复计(否则 9 抽柜被算成 45 抽)
+        if "drawer" in name or ("抽屉" in name and "面" in name):
             drawer += qty
         if "门" in name or "door" in name:
             door += qty
-        if "层板" in name or "隔板" in name or "shelf" in name:
+        # 层板托只给横向层板/隔板; 竖隔板(竖向分隔)不算
+        if "竖" not in name and ("层板" in name or "隔板" in name or "shelf" in name):
             shelf += qty
         if "把手" in name or "handle" in name:
             has_handle = True
