@@ -96,11 +96,10 @@ def _bom_rows_for_order(db: Session, order: Order) -> list:
 def _bom_item_fields(order: Order, line: BomLine, mat_name, mat_unit) -> dict:
     """从一条 BOM 行算出配件清单行的字段 (名字/数量/单位/是否工厂提供/状态)。"""
     prefix = line.material_code.split("-", 1)[0].upper()
-    factory_provided = prefix in _FACTORY_PREFIXES
+    # 木作(WD-*)= 工厂制作, 与 MW/MP 一样视为工厂提供, 绝不算外购配件、不进配齐判断(用户拍板)
+    factory_provided = prefix in _FACTORY_PREFIXES or prefix in _WOODWORK_PREFIXES
     if factory_provided:
         status = "工厂提供"
-    elif prefix in _WOODWORK_PREFIXES:
-        status = _WOODWORK_DEFAULT_STATUS   # 木作默认已备, 不当外购缺料(用户可改)
     else:
         status = "未采购"
     return {

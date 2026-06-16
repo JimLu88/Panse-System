@@ -106,6 +106,7 @@ export interface FactoryCard {
   is_custom: boolean;
   is_remote_ship: boolean;             // 远期单(等客户通知再发)
   status: 'remote' | 'overdue' | 'critical' | 'urgent' | 'normal';  // 紧急度分类
+  accessory: AccessorySummary | null;  // 配件配齐进度 {total,done,pending}; null=未生成配件
 }
 export const fetchFactoryProduction = (product?: string) =>
   api.get<FactoryCard[]>('/api/orders/factory-production',

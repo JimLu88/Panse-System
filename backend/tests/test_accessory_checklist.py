@@ -120,8 +120,8 @@ def test_woodwork_defaults_done_and_named(db_session):
     db.commit()
     it = svc.generate_for_order(db, order.id)[0]
     assert it.material_name == "木作部分"      # 占位 → 木作部分(全名)
-    assert it.status == "已到货"               # 木作默认已备, 不当外购缺料
-    assert it.is_factory_provided is False
+    assert it.status == "工厂提供"             # 木作=工厂制作, 与MW/MP一样工厂提供, 不算外购配件(用户拍板)
+    assert it.is_factory_provided is True
 
 
 def test_resync_bumps_untouched_woodwork_to_done(db_session):

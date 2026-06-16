@@ -172,6 +172,8 @@ def factory_production(
             return "urgent"        # 紧急
         return "normal"            # 正常安排
 
+    from app.services import accessory_checklist_service as _acc
+    acc_sum = _acc.summary_by_order(db)   # {order_id: {total, done, pending}} 配齐进度
     out = []
     for o in orders:
         base = o.order_date
@@ -197,6 +199,7 @@ def factory_production(
             "is_custom": o.is_custom,
             "is_remote_ship": o.is_remote_ship,
             "status": _status(o, days),   # remote/overdue/critical/urgent/normal
+            "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
         })
     return out
 

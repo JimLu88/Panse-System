@@ -24,6 +24,7 @@ const PRINT_CSS = `
 }`;
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFactoryProduction, updateOrderProduction, type FactoryCard } from '../api/client';
+import { listAccessories, markAllAccessoriesArrived, type AccessoryItem } from '../api/orders';
 
 // 颜色随剩余天数: 初始绿 → 蓝 → 橙 → 越近越红 → 超期深红
 function dayStyle(d: number | null): { color: string; weight: number } {
@@ -75,6 +76,23 @@ export default function FactoryProductionView() {
       qc.invalidateQueries({ queryKey: ['factory-production'] });
     },
     onError: () => message.error('保存失败'),
+  });
+
+  // 配件配齐弹窗 (#12)
+  const [accCard, setAccCard] = useState<FactoryCard | null>(null);
+  const accQuery = useQuery({
+    queryKey: ['order-accessories', accCard?.id],
+    queryFn: () => listAccessories(accCard!.id),
+    enabled: !!accCard,
+  });
+  const markArrivedMut = useMutation({
+    mutationFn: (id: number) => markAllAccessoriesArrived(id),
+    onSuccess: () => {
+      message.success('已全部标记已到货');
+      accQuery.refetch();
+      qc.invalidateQueries({ queryKey: ['factory-production'] });
+    },
+    onError: () => message.error('操作失败'),
   });
 
   const sorted = useMemo(() => {
@@ -261,6 +279,11 @@ export default function FactoryProductionView() {
                     <div>{c.product_name || '-'} <span style={{ color: '#999' }}>×{c.qty}</span></div>
                     <div style={{ color: '#888' }}>{c.sku || ''}{c.sku_code ? ` (${c.sku_code})` : ''}</div>
                     {c.category && <Tag style={{ marginTop: 2 }}>{c.category}</Tag>}
+                    {c.accessory && (
+                      <Tag style={{ marginTop: 2 }} color={c.accessory.pending === 0 ? 'green' : 'orange'}>
+                        {c.accessory.pending === 0 ? '配件配齐' : `配件缺 ${c.accessory.pending}/${c.accessory.total}`}
+                      </Tag>
+                    )}
                   </div>
                   {c.remark && (
                     <div style={{ fontSize: 12, background: '#fffbe6', border: '1px solid #ffe58f', borderRadius: 4, padding: '2px 6px' }}>
@@ -278,6 +301,7 @@ export default function FactoryProductionView() {
                       onClick={() => saveMut.mutate({ id: c.id, patch: { is_remote_ship: !c.is_remote_ship } })}>
                       {c.is_remote_ship ? '取消远期' : '设为远期'}
                     </Button>
+                    <Button size="small" onClick={() => setAccCard(c)}>配件</Button>
                   </Space>
                 </Space>
               </Card>
@@ -285,6 +309,41 @@ export default function FactoryProductionView() {
           );
         })}
       </Row>
+
+      <Modal
+        title={`配件清单 — ${accCard?.order_no ?? ''}`}
+        open={!!accCard}
+        onCancel={() => setAccCard(null)}
+        footer={[
+          <Button key="arrive" type="primary"
+            onClick={() => accCard && markArrivedMut.mutate(accCard.id)}>
+            全部标已到货
+          </Button>,
+          <Button key="close" onClick={() => setAccCard(null)}>关闭</Button>,
+        ]}
+      >
+        {accQuery.isLoading ? (
+          <Typography.Text type="secondary">加载中…</Typography.Text>
+        ) : (() => {
+          const items = (accQuery.data || []).filter((i: AccessoryItem) => !i.is_factory_provided);
+          if (items.length === 0) return <Empty description="本单无需采购的配件(木作/工厂提供不计入)" />;
+          return (
+            <Space direction="vertical" style={{ width: '100%' }} size={4}>
+              {items.map((i: AccessoryItem) => (
+                <Space key={i.id} style={{ width: '100%', justifyContent: 'space-between' }}>
+                  <span>
+                    {i.material_name || i.material_code}{' '}
+                    <Typography.Text type="secondary">×{i.qty_required}{i.unit || ''}</Typography.Text>
+                  </span>
+                  <Tag color={['已到货', '工厂提供'].includes(i.status) ? 'green' : i.status === '未采购' ? 'default' : 'blue'}>
+                    {i.status}
+                  </Tag>
+                </Space>
+              ))}
+            </Space>
+          );
+        })()}
+      </Modal>
 
       <Modal
         title={`制作单 — ${editing?.order_no ?? ''}`}
