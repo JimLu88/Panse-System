@@ -16,6 +16,7 @@ interface StatementRow {
   factory_predicted: number | null;
   break_even_factory: number | null;
   break_even_buffer: number | null;
+  estimated: boolean;
   note: string | null;
 }
 interface Statement {
@@ -50,6 +51,7 @@ const cols: ColumnsType<StatementRow> = [
       <span>
         {v ?? '—'}
         {r.is_custom ? <Tag color="purple" style={{ marginLeft: 4 }}>定制</Tag> : null}
+        {r.estimated ? <Tag color="orange">估算</Tag> : null}
       </span>
     ),
   },

@@ -61,6 +61,31 @@ def _excluded_reason(order: Order) -> Optional[str]:
     return None
 
 
+# 估算回落时区分"工厂/产品成本"与"费用"(费用不算进预测工厂价)
+_EST_FEE_CODES = {"运费", "安装", "税费", "扣点"}
+
+
+def _estimate_predicted(db: Session, order: Order) -> tuple[Optional[float], float, Optional[str]]:
+    """定价表查不到工厂价 → 用 order_cost_service 估算 (BOM反推/同款均价)。
+
+    返回 (预测工厂价估算[per order], 费用[per unit: 运费+安装+税+扣点], compute备注)。
+    取不到 → (None, 0, None)。标注由调用方加「估算」。
+    """
+    try:
+        from app.services import order_cost_service
+        bd = order_cost_service.compute(db, order)
+    except Exception:  # noqa: BLE001
+        return None, 0.0, None
+    qty = int(order.qty or 1)
+    non_fee = sum(float(ln.line_cost) for ln in bd.lines
+                  if ln.line_cost is not None and ln.material_code not in _EST_FEE_CODES)
+    fee_unit = sum(float(ln.line_cost) for ln in bd.lines
+                   if ln.line_cost is not None and ln.material_code in _EST_FEE_CODES)
+    if non_fee <= 0:
+        return None, 0.0, None
+    return round(non_fee * qty, 2), fee_unit, bd.note
+
+
 def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) -> dict:
     """生成工厂对账单。period='YYYY-MM' 按 order_date 筛; None=全部(限 limit)。
 
@@ -95,6 +120,11 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
         ).scalars()
     } if skus else {}
 
+    from app.services import custom_quote_config_service as ccfg
+    cfg = ccfg.get_config(db)
+    plat = float(cfg.get("platform_fee_rate", 0.05))
+    tax = float(cfg.get("tax_rate", 0.0))
+
     rows: list[dict] = []
     tot_revenue = tot_predicted = tot_break_even = tot_buffer = 0.0
     missing = 0
@@ -107,6 +137,8 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
         acc_unit = float(ps.accounting_cost) if (ps and ps.accounting_cost is not None) else None
 
         note = None
+        estimated = False
+        est_fee_unit = 0.0
         if fac_unit is not None:
             predicted = round(fac_unit * qty, 2)
         elif o.actual_cost is not None:
@@ -116,14 +148,22 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
             predicted = round(float(o.custom_surcharge), 2)
             note = "定制单 → 用定制加价占位"
         else:
-            predicted = None
-            note = "缺工厂价(待补定价表/实际成本)"
+            predicted, est_fee_unit, est_note = _estimate_predicted(db, o)
+            if predicted is not None:
+                estimated = True
+                note = "估算: " + (est_note or "定价表无工厂价 → 成本反推/同款均价")
+            else:
+                note = "缺工厂价(待补定价表/实际成本)"
 
         break_even = buffer = None
         if revenue and fac_unit is not None and acc_unit is not None:
             non_factory = (acc_unit - fac_unit) * qty
             break_even = round(revenue - non_factory, 2)
             buffer = round(break_even - predicted, 2) if predicted is not None else None
+        elif revenue and estimated and predicted is not None:
+            # 估算单: 红线 = 实收×(1−平台扣点−税) − 估算运费/安装 (保守, 守只高不低)
+            break_even = round(revenue * (1 - plat - tax) - est_fee_unit * qty, 2)
+            buffer = round(break_even - predicted, 2)
         elif not revenue:
             note = (note + "; " if note else "") + "缺售价(实收)→ 无法算红线"
 
@@ -138,6 +178,7 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
             "factory_predicted": predicted,
             "break_even_factory": break_even,
             "break_even_buffer": buffer,
+            "estimated": estimated,
             "note": note,
         })
         if predicted is not None:
