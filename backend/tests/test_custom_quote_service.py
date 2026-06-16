@@ -93,7 +93,7 @@ def test_labor_lookup_matches_table():
     cfg = c.DEFAULT_CONFIG
     assert c.lookup_labor(cfg, "餐边柜", 2.1) == 1480   # 大
     assert c.lookup_labor(cfg, "餐边柜", 1.0) == 840    # 小
-    assert c.lookup_labor(cfg, "电视柜", 1.8) == 800    # 中
+    assert c.lookup_labor(cfg, "电视柜", 1.8) == 560    # 中 (2026-06-16 工厂拆解单校准: 800→560)
     assert c.lookup_labor(cfg, "餐桌", 1.8) == 400      # 中
 
 
