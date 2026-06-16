@@ -325,7 +325,12 @@ export default function FactoryProductionView() {
         {accQuery.isLoading ? (
           <Typography.Text type="secondary">加载中…</Typography.Text>
         ) : (() => {
-          const items = (accQuery.data || []).filter((i: AccessoryItem) => !i.is_factory_provided);
+          const items = (accQuery.data || []).filter(
+            (i: AccessoryItem) =>
+              !i.is_factory_provided &&
+              !(i.material_name || '').includes('木作') &&
+              !(i.material_code || '').toUpperCase().startsWith('WD'),
+          );
           if (items.length === 0) return <Empty description="本单无需采购的配件(木作/工厂提供不计入)" />;
           return (
             <Space direction="vertical" style={{ width: '100%' }} size={4}>
@@ -333,7 +338,7 @@ export default function FactoryProductionView() {
                 <Space key={i.id} style={{ width: '100%', justifyContent: 'space-between' }}>
                   <span>
                     {i.material_name || i.material_code}{' '}
-                    <Typography.Text type="secondary">×{i.qty_required}{i.unit || ''}</Typography.Text>
+                    <Typography.Text type="secondary">×{Number(i.qty_required)}{i.unit || ''}</Typography.Text>
                   </span>
                   <Tag color={['已到货', '工厂提供'].includes(i.status) ? 'green' : i.status === '未采购' ? 'default' : 'blue'}>
                     {i.status}

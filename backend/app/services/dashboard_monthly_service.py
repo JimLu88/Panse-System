@@ -137,6 +137,10 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
             name = o.shop or "(未分店)"
         else:
             name = _iname(o.product_code) or o.product_name or o.product_code or "未知产品"
+        # #18 排除非产品服务(送货入户/商家安装/上门安装等)
+        if any(k in name for k in ("送货", "入户", "安装")) or any(
+                k in (o.product_name or "") for k in ("送货", "入户", "安装")):
+            continue
         rev = Decimal(o.paid_amount or 0)
         qty = int(o.qty or 1)
         b = buckets.setdefault(name, {"name": name, "revenue": Decimal("0"), "qty": 0})
