@@ -94,7 +94,16 @@ async def import_competitors(file: UploadFile = File(...), db: Session = Depends
     except Exception:
         raise HTTPException(400, "无法解析 xlsx 文件")
     ws = wb.worksheets[0]
-    headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]
+    # 自动定位表头行: 有的导出首行为空/标题占位 → 取首个含 ≥2 个可识别表头关键词的行
+    _HDR_KW = ("店铺", "店名", "类目", "分类", "产品", "商品", "sku", "链接",
+               "木材", "价格", "日常价", "最新价", "名称", "url", "http")
+    header_row_idx = 1
+    for idx, row in enumerate(ws.iter_rows(min_row=1, max_row=12, values_only=True), start=1):
+        cells = [str(c).strip().lower() if c is not None else "" for c in row]
+        if sum(1 for c in cells if any(k in c for k in _HDR_KW)) >= 2:
+            header_row_idx = idx
+            break
+    headers = [str(c.value).strip() if c.value is not None else "" for c in ws[header_row_idx]]
     col: dict[str, int] = {}
     for i, h in enumerate(headers):
         if not h:
@@ -140,7 +149,7 @@ async def import_competitors(file: UploadFile = File(...), db: Session = Depends
     existing = {((r.store or ""), (r.sku_name or "")): r
                 for r in db.execute(_sel(CompetitorPrice)).scalars().all()}
     inserted = updated = skipped = 0
-    for r in ws.iter_rows(min_row=2, values_only=True):
+    for r in ws.iter_rows(min_row=header_row_idx + 1, values_only=True):
         if not r:
             continue
         sku_name = _v(r, "sku_name") or _v(r, "product")
