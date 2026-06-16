@@ -110,6 +110,23 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
         )
     ).scalars().all()
 
+    # #7 饼图用店铺内部产品名(非淘宝长名): order.product_code(P+11) → Product(PPS+11).name
+    from app.models.product import Product as _P
+    _codes: set = set()
+    for o in orders:
+        c = o.product_code
+        if c:
+            _codes.add(c)
+            if c.startswith("P") and not c.startswith("PPS"):
+                _codes.add("PPS" + c[1:])
+    _name_of = dict(db.query(_P.code, _P.name).filter(_P.code.in_(_codes)).all()) if _codes else {}
+
+    def _iname(c):
+        if not c:
+            return None
+        return _name_of.get(c) or (_name_of.get("PPS" + c[1:])
+                                   if c.startswith("P") and not c.startswith("PPS") else None)
+
     buckets: dict[str, dict] = {}
     total_rev = Decimal("0")
     total_qty = 0
@@ -119,7 +136,7 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
         if by == "shop":
             name = o.shop or "(未分店)"
         else:
-            name = o.product_name or o.product_code or "未知产品"
+            name = _iname(o.product_code) or o.product_name or o.product_code or "未知产品"
         rev = Decimal(o.paid_amount or 0)
         qty = int(o.qty or 1)
         b = buckets.setdefault(name, {"name": name, "revenue": Decimal("0"), "qty": 0})
