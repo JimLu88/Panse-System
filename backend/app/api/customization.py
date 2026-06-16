@@ -386,12 +386,9 @@ async def v2_classify(
         result = v2.classify(db, text=message, image_count=len(image_data))
 
     # 匹配产品 Top-10 候选 (带匹配度%): 匹配不一定对 → 前端下拉让用户手选纠正
-    from app.services.product_match_service import match_ranked
-    result["candidates"] = [
-        {"product_code": x["product_code"], "product_name": x["product_name"],
-         "confidence": x["product_confidence"]}
-        for x in match_ranked(db, message, "", limit=10)
-    ]
+    result["candidates"] = v2.product_candidates(
+        db, message, matched_code=result.get("base_product_code"),
+        matched_name=result.get("base_product_name"), matched_conf=result.get("confidence"))
 
     _log_quote(db, source="v2_classify", user_message=message,
                ai_response=result.get("reasoning", ""),

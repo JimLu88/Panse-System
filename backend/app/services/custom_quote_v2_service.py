@@ -605,6 +605,33 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
     }
 
 
+def product_candidates(
+    db: Session, text: str, *, matched_code=None, matched_name=None,
+    matched_conf=0.9, limit: int = 10,
+) -> list[dict]:
+    """匹配产品 Top-N 候选 (去噪后按相似度排; 确保命中项在内), 给前端下拉手选纠正。
+
+    去噪: 剥尺寸/增减从句(不要…)/动词, 只留"樱桃木窄柜"这类产品标识词再匹配,
+    否则整句噪声会把 match_ranked 全打成 0%。
+    """
+    from app.services.product_match_service import match_ranked
+    core = re.sub(r"\d+(?:\.\d+)?\s*(?:米|mm|cm|m|公分|MM|CM|M)", " ", text or "")
+    core = re.split(r"[，,。;；、]|不要|去掉|去除|改成|改为|加上|计算价格|算价|样式|定制", core)[0]
+    core = re.sub(r"[的把要做想换]", " ", core).strip() or (text or "")
+    cands = [
+        {"product_code": x["product_code"], "product_name": x["product_name"],
+         "confidence": x["product_confidence"]}
+        for x in match_ranked(db, core, "", limit=limit)
+    ]
+    if matched_code and not any(c["product_code"] == matched_code for c in cands):
+        cands.insert(0, {
+            "product_code": matched_code,
+            "product_name": matched_name or matched_code,
+            "confidence": round(float(matched_conf or 0.9), 2),
+        })
+    return cands[:limit]
+
+
 # ───────────────────────── 特殊定制: 部位模板 + 自动推五金 ───────────────────────── #
 
 def suggest_part_template(db: Session, category: str, *, top: int = 40) -> list[dict]:
