@@ -200,6 +200,31 @@ def test_style_delta_geometry_wood_part():
     assert total == round(264 * 1.3 * 1.25 / 0.85, 2)
 
 
+def test_modify_parts():
+    """改部位(换料): 材料差; 净增(新料更贵)×(1+工厂利润), 净减就材料差不加利润。"""
+    from app.models.material import Material
+    db = _db()
+    db.add_all([
+        Material(code="QM-0001", name="实木多层板1.8cm", price=D("220"), unit="平方米"),
+        Material(code="QM-0002", name="亚克力洞洞板", price=D("400"), unit="平方米"),
+        Material(code="QM-0003", name="廉价背板", price=D("100"), unit="平方米"),
+    ])
+    db.commit()
+    cfg = {"style_labor_ratio": 0.30, "factory_profit_rate": 0.25,
+           "panse_profit_rate": 0.15, "style_remove_credit": 0.85}
+    # 背板模板=多层板 1.2㎡×220=264。改贵料(亚克力 1.2㎡×400=480): 差+216, 净增×1.25=270
+    total, _l, detail = v2.style_delta(
+        db, category="餐边柜", length_m=1.5, add_parts=[], remove_parts=[],
+        modify_parts=[{"material": "背板", "material_real": "亚克力洞洞板"}], cfg=cfg)
+    assert detail[0]["change"] == "modify" and detail[0]["from_material"] == "实木多层板1.8cm"
+    assert total == round((480 - 264) * 1.25, 2)          # 净增=216×1.25=270
+    # 改便宜料(1.2㎡×100=120): 差-144, 净减就材料差不加利润
+    total2, _l2, _d2 = v2.style_delta(
+        db, category="餐边柜", length_m=1.5, add_parts=[], remove_parts=[],
+        modify_parts=[{"material": "背板", "material_real": "廉价背板"}], cfg=cfg)
+    assert total2 == round(120 - 264, 2)                  # 净减=-144(不加工厂利润)
+
+
 def test_compare_prices_baseline_and_competitor():
     """竞品对比: 空竞品表→仅本店标准款基准; 灌一条竞品→出现并算高低。"""
     db = _db()

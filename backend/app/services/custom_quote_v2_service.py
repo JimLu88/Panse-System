@@ -179,6 +179,7 @@ def quote_light(
     target_material: Optional[str] = None,
     add_parts: Optional[list[dict]] = None,
     remove_parts: Optional[list[dict]] = None,
+    modify_parts: Optional[list[dict]] = None,
     price_tier: str = "daily",
     factory_profit_rate: float = 0.25,
 ) -> dict:
@@ -250,7 +251,7 @@ def quote_light(
     category = (prod.category if prod else None) or base_product_code
     addrm_delta, addrm_lines, parts_detail = style_delta(
         db, category=category, length_m=target_length_m,
-        add_parts=add_parts, remove_parts=remove_parts, cfg=cfg,
+        add_parts=add_parts, remove_parts=remove_parts, modify_parts=modify_parts, cfg=cfg,
     )
     breakdown.extend(addrm_lines)
     final += addrm_delta
@@ -413,12 +414,13 @@ def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
 def style_delta(
     db: Session, *, category: str, length_m: Optional[float],
     add_parts: Optional[list], remove_parts: Optional[list], cfg: dict,
-    depth_cm=None, height_cm=None,
+    modify_parts: Optional[list] = None, depth_cm=None, height_cm=None,
 ) -> tuple[float, list, list]:
     """增减部位逐部位 cascade → (净delta, breakdown行, parts_detail可编辑明细)。
 
     每部位: 材料成本 → ×(1+人工占比) → ×(1+工厂利润) ÷ (1−畔色毛利) = 零售增量。
     追加: +零售; 删除: −材料×remove_credit (决策①: 删件只省材料, 不退人工/利润; 默认0.85, 铁律「只高不低」)。
+    改料: 材料差(新−旧); 净增(新料更贵)再×(1+工厂利润)(工厂额外算这部分成本), 净减就材料差。
     """
     dims_map = _template_part_dims(category, length_m, depth_cm, height_cm)
     lr = float(cfg.get("style_labor_ratio", 0.30))
@@ -449,10 +451,30 @@ def style_delta(
         total -= amt
         r["change"], r["delta"] = "remove", -amt
         detail.append(r)
-        note = f"材料{r['material_cost']:g}×{rc:g}(决策①: 删件只扣材料, 不退人工/利润)"
+        note = f"材料{r['material_cost']:g}({r['formula']})×{rc:g}(决策①: 删件只扣材料, 不退人工/利润)"
         if not r["priced"]:
             note = "⚠物料表无此料价,计0需手填 / " + note
         lines.append({"label": f"删除: {r['name']}", "amount": -amt, "note": note})
+    for p in (modify_parts or []):
+        # 改部位(换料): 按材料差; 净增(新料更贵)再×(1+工厂利润)(工厂额外算这部分成本), 净减就材料差
+        old_r = _resolve_part(db, {k: v for k, v in p.items() if k != "material_real"}, dims_map)
+        new_r = _resolve_part(db, p, dims_map)   # 带 material_real=新料
+        dmat = round(new_r["material_cost"] - old_r["material_cost"], 2)
+        if dmat > 0:
+            amt = round(dmat * (1 + fpr), 2)
+            tail = f"材料差+{dmat:g}×(1+{fpr:g}厂利)"
+        else:
+            amt = dmat
+            tail = f"材料差{dmat:g}"
+        total += amt
+        rr = dict(new_r)
+        rr["change"], rr["delta"], rr["from_material"] = "modify", amt, old_r["material"]
+        detail.append(rr)
+        note = (f"{tail} [旧{old_r['material'] or '原料'}{old_r['material_cost']:g}"
+                f"→新{new_r['material']}{new_r['material_cost']:g}({new_r['formula']})]")
+        if not new_r["priced"]:
+            note = "⚠新料无价,计0需手填 / " + note
+        lines.append({"label": f"改: {new_r['name']}→{new_r['material']}", "amount": amt, "note": note})
     return round(total, 2), lines, detail
 
 
@@ -752,6 +774,16 @@ _COMMON_PARTS = [
     "拉手", "把手", "电力轨道", "灯带", "挂衣杆", "镜子", "玻璃门", "玻璃层板",
 ]
 
+# A4 品类分段: 多段柜体的部位带「段-」前缀(让客服分清上柜/中段/下柜的顶板); 单段柜/桌/床用本体部位。
+# (段前缀名仍能命中模板几何: _match_part_dims 子串匹配「上柜-顶板」→「顶板」。)
+_CATEGORY_SEGMENTS: dict[str, list[str]] = {
+    "餐边柜": ["上柜", "中段", "下柜"], "组合柜": ["上柜", "中段", "下柜"],
+    "酒柜": ["上柜", "中段", "下柜"], "餐厅柜": ["上柜", "中段", "下柜"],
+    "书柜": ["上柜", "下柜"], "鞋柜": ["上柜", "下柜"], "玄关柜": ["上柜", "下柜"],
+}
+_SEGMENT_PARTS = ["顶板", "底板", "侧板", "层板", "门板", "抽屉面板", "背板"]    # 随段重复
+_WHOLE_PARTS = ["脚架", "踢脚", "灯带", "电力轨道", "挂衣杆", "玻璃门", "拉手", "把手", "镜子"]  # 整体不分段
+
 
 def part_options(db: Session, *, category: str = "") -> dict:
     """A3 增减部位可选项: 常用部位 + 该品类 BOM 模板部位 + 物料表可选料名。
@@ -759,7 +791,14 @@ def part_options(db: Session, *, category: str = "") -> dict:
     给前端可搜索下拉(替代手输, 防判错)。物料表排除 人工费/打包/运费/安装/样块/样品/小样。
     返回 {parts:[...], materials:[...]} 两组字符串(前端分组展示, 仍允许手填自定义)。
     """
-    parts: list[str] = list(_COMMON_PARTS)
+    leaf = (category or "").split("-")[-1].strip()
+    segs = _CATEGORY_SEGMENTS.get(leaf)
+    if segs:
+        # A4: 多段品类 → 每段一套部位(上柜-顶板/中段-顶板/…) + 整体部位
+        parts: list[str] = [f"{seg}-{p}" for seg in segs for p in _SEGMENT_PARTS]
+        parts += [p for p in _WHOLE_PARTS if p not in parts]
+    else:
+        parts = list(_COMMON_PARTS)
     if category:
         for p in suggest_part_template(db, category, top=30):
             nm = p.get("part")
@@ -776,7 +815,7 @@ def part_options(db: Session, *, category: str = "") -> dict:
         seen.add(name)
         mats.append(name)
     mats.sort()
-    return {"parts": parts, "materials": mats[:400]}
+    return {"parts": parts, "materials": mats[:400], "segments": segs or []}
 
 
 # 自动推五金阈值 (后台可调; 逻辑借鉴参考项目, 数据用我们自己的)

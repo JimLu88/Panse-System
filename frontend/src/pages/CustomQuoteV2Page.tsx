@@ -104,8 +104,9 @@ interface LightResult {
 // 增减部位(可编辑: 分类器自动填 + 用户手调)
 interface EditPart {
   key: number;
-  change: 'add' | 'remove';
-  material: string;
+  change: 'add' | 'remove' | 'modify';
+  material: string;        // 部位/原料名 (modify 时 = 原部位)
+  material_real?: string;  // modify 时 = 改成的新材料
   qty: number;
 }
 interface HardwareItem {
@@ -522,6 +523,7 @@ export default function CustomQuoteV2Page() {
   const [pcode, setPcode] = useState('');
   const [len, setLen] = useState<number | null>(null);
   const [mat, setMat] = useState('');
+  const [tier, setTier] = useState('big');   // 报价档位 (默认大促)
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
@@ -623,7 +625,7 @@ export default function CustomQuoteV2Page() {
     message.info('已停止, 可改「匹配产品」或表单后手动算价');
   };
 
-  const addPartRow = (change: 'add' | 'remove') =>
+  const addPartRow = (change: 'add' | 'remove' | 'modify') =>
     setParts((ps) => [...ps, { key: partSeq.current++, change, material: '', qty: 1 }]);
   const updatePartRow = (key: number, patch: Partial<EditPart>) =>
     setParts((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
@@ -635,6 +637,7 @@ export default function CustomQuoteV2Page() {
     matStr: string,
     partsList: EditPart[],
     signal?: AbortSignal,
+    tierVal: string = tier,
   ) => {
     if (!code.trim()) {
       message.warning('请填基础产品编码');
@@ -653,6 +656,10 @@ export default function CustomQuoteV2Page() {
         remove_parts: partsList
           .filter((p) => p.change === 'remove' && p.material.trim())
           .map((p) => ({ material: p.material.trim(), qty: p.qty })),
+        modify_parts: partsList
+          .filter((p) => p.change === 'modify' && p.material.trim() && (p.material_real || '').trim())
+          .map((p) => ({ material: p.material.trim(), material_real: (p.material_real || '').trim(), qty: p.qty })),
+        price_tier: tierVal,
       }, signal);
       setLight(r);
       if (r.error) message.warning(r.error);
@@ -909,6 +916,17 @@ export default function CustomQuoteV2Page() {
               style={{ width: 220 }}
               placeholder="如 黑胡桃(可空)"
             />
+            <Select
+              value={tier}
+              onChange={(v) => { setTier(v); if (pcode) runLight(pcode, len, mat, parts, undefined, v); }}
+              style={{ width: 160 }}
+              options={[
+                { value: 'big', label: '报价档·大促' },
+                { value: 'mid', label: '报价档·中促' },
+                { value: 'small', label: '报价档·小促' },
+                { value: 'daily', label: '报价档·日常' },
+              ]}
+            />
             <Button type="primary" loading={lightLoading} onClick={doLight}>
               算价
             </Button>
@@ -929,14 +947,24 @@ export default function CustomQuoteV2Page() {
               )}
               {parts.map((p) => (
                 <Space key={p.key} wrap>
-                  <Tag color={p.change === 'add' ? 'green' : 'red'}>
-                    {p.change === 'add' ? '追加' : '删除'}
+                  <Tag color={p.change === 'add' ? 'green' : p.change === 'remove' ? 'red' : 'blue'}>
+                    {p.change === 'add' ? '追加' : p.change === 'remove' ? '删除' : '改料'}
                   </Tag>
                   <PartSelect
                     value={p.material}
                     onChange={(v) => updatePartRow(p.key, { material: v })}
                     groups={partGroups}
                   />
+                  {p.change === 'modify' && (
+                    <>
+                      <Text type="secondary">改成→</Text>
+                      <PartSelect
+                        value={p.material_real || ''}
+                        onChange={(v) => updatePartRow(p.key, { material_real: v })}
+                        groups={partGroups}
+                      />
+                    </>
+                  )}
                   <InputNumber
                     addonBefore="数量"
                     value={p.qty}
@@ -959,6 +987,9 @@ export default function CustomQuoteV2Page() {
                 </Button>
                 <Button size="small" danger icon={<PlusOutlined />} onClick={() => addPartRow('remove')}>
                   去部位
+                </Button>
+                <Button size="small" icon={<PlusOutlined />} onClick={() => addPartRow('modify')}>
+                  改部位
                 </Button>
               </Space>
             </Space>

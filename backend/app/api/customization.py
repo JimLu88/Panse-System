@@ -333,7 +333,8 @@ class V2QuoteLightIn(BaseModel):
     target_material: Optional[str] = None
     add_parts: list[dict] = Field(default_factory=list)
     remove_parts: list[dict] = Field(default_factory=list)
-    price_tier: str = "daily"
+    modify_parts: list[dict] = Field(default_factory=list)
+    price_tier: str = "big"
 
 
 class V2BoardIn(BaseModel):
@@ -409,7 +410,7 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
         db, base_product_code=payload.base_product_code,
         target_length_m=payload.target_length_m, target_material=payload.target_material,
         add_parts=payload.add_parts, remove_parts=payload.remove_parts,
-        price_tier=payload.price_tier,
+        modify_parts=payload.modify_parts, price_tier=payload.price_tier,
     )
     _log_quote(
         db, source="v2_quote_light",
