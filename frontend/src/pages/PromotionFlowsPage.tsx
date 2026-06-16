@@ -21,7 +21,9 @@ interface ImportResult {
   errors: string[];
 }
 
-const TYPE_COLOR: Record<string, string> = { 充值: 'green', 支出: 'red', 退款: 'blue' };
+const TYPE_COLOR: Record<string, string> = { 充值: 'green', 收入: 'green', 支出: 'red', 退款: 'blue' };
+// 旧数据进账标签是「收入」, 新导入统一成「充值」; 统计两者都算进账, 免「充值2万vs支出10万」错觉
+const RECHARGE_TYPES = ['充值', '收入'];
 
 export default function PromotionFlowsPage() {
   const qc = useQueryClient();
@@ -61,7 +63,7 @@ export default function PromotionFlowsPage() {
     { title: '备注', dataIndex: 'remark', ellipsis: true, render: (v: string | null) => v || '-' },
   ];
 
-  const recharge = data.filter((r) => r.flow_type === '充值').reduce((s, r) => s + Number(r.amount), 0);
+  const recharge = data.filter((r) => RECHARGE_TYPES.includes(r.flow_type ?? '')).reduce((s, r) => s + Number(r.amount), 0);
   const spend = data.filter((r) => r.flow_type === '支出').reduce((s, r) => s + Number(r.amount), 0);
 
   return (

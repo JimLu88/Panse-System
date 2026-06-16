@@ -27,6 +27,7 @@ export interface SalesRanking {
   periods: RankPeriod[];
   ranking: RankRow[];
   excluded_non_product: number;
+  refund_excluded?: boolean;   // #25 销售额=实付-退款 (已去退款)
 }
 
 export const fetchSalesRanking = (params: {

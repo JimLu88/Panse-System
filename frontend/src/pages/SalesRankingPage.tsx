@@ -111,10 +111,15 @@ export default function SalesRankingPage() {
         </Row>
       )}
 
-      {data && data.excluded_non_product > 0 && (
+      {data && (data.excluded_non_product > 0 || data.refund_excluded) && (
         <Alert
           type="info" showIcon
-          message={`已排除 ${data.excluded_non_product} 笔 补差价/邮费/专拍 等非产品订单 (不计入排行)`}
+          message={[
+            data.excluded_non_product > 0
+              ? `已排除 ${data.excluded_non_product} 笔 补差价/邮费/专拍 等非产品订单 (不计入排行)`
+              : null,
+            data.refund_excluded ? '销售额 = 买家实付 − 退款 (已去除退款)' : null,
+          ].filter(Boolean).join('　·　')}
         />
       )}
 

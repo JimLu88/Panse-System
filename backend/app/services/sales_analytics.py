@@ -424,6 +424,37 @@ def _is_non_product(name: Optional[str]) -> bool:
     return any(k in n for k in _NON_PRODUCT_KEYWORDS)
 
 
+def _internal_names(db: Session, codes: set[str]) -> tuple[dict[str, str], dict[str, str]]:
+    """订单 product_code → 内部短名(Product.name) + 规范编码。
+
+    处理品牌前缀漂移: 订单常用「P+11位」, 产品档案是「PPS+11位」(畔色)。
+    返回 (name_map: code→内部短名, canon_map: code→规范编码; 同款 P/PPS 合并到 PPS)。
+    与 dashboard_monthly_service.sales_mix(_iname) 同口径。"""
+    want: set[str] = set()
+    for c in codes:
+        if not c:
+            continue
+        want.add(c)
+        if c.startswith("P") and not c.startswith("PPS"):
+            want.add("PPS" + c[1:])
+    prod = (dict(db.execute(select(Product.code, Product.name).where(Product.code.in_(want))).all())
+            if want else {})
+    name_map: dict[str, str] = {}
+    canon_map: dict[str, str] = {}
+    for c in codes:
+        if not c:
+            continue
+        if c in prod:
+            name_map[c] = prod[c]
+            canon_map[c] = c
+        elif c.startswith("P") and not c.startswith("PPS") and ("PPS" + c[1:]) in prod:
+            name_map[c] = prod["PPS" + c[1:]]
+            canon_map[c] = "PPS" + c[1:]
+        else:
+            canon_map[c] = c
+    return name_map, canon_map
+
+
 def product_ranking(
     db: Session, *,
     granularity: str = "month",   # month(按月) / year(按年)
@@ -447,6 +478,9 @@ def product_ranking(
         )
     ).scalars().all()
 
+    # #19/#25: 用内部短名(Product.name)替淘宝长名 + 合并 P↔PPS 前缀漂移去重
+    name_map, canon_map = _internal_names(db, {o.product_code for o in orders if o.product_code})
+
     buckets: dict[str, dict[str, dict]] = {}
     excluded = 0
     for o in orders:
@@ -456,15 +490,22 @@ def product_ranking(
             excluded += 1
             continue
         pk = _period_key(o.order_date, granularity)
-        name = o.product_name or o.product_code or "未知产品"
-        key = o.product_code or name
+        code = o.product_code
+        canon = canon_map.get(code, code) if code else None
+        iname = name_map.get(code) if code else None
+        name = iname or o.product_name or code or "未知产品"
+        key = canon or name
         bp = buckets.setdefault(pk, {})
         d = bp.setdefault(key, {
-            "product_code": o.product_code, "product_name": name,
+            "product_code": canon, "product_name": name,
             "qty": 0, "revenue": Decimal("0"), "order_count": 0,
         })
+        if iname and d["product_name"] != iname:
+            d["product_name"] = iname     # 优先内部短名 (同款 P/PPS 合并后统一显示)
         d["qty"] += int(o.qty or 1)
-        d["revenue"] += Decimal(o.paid_amount or 0)
+        # #25 总销售额去退款: 实付 - 退款 (全退订单计 0)
+        rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)
+        d["revenue"] += rev if rev > 0 else Decimal("0")
         d["order_count"] += 1
 
     def metric_val(d: dict):
@@ -504,4 +545,5 @@ def product_ranking(
         "periods": periods_out,
         "ranking": ranking,
         "excluded_non_product": excluded,  # 排除的补差价/邮费/专链等非产品订单数
+        "refund_excluded": True,           # #25 总销售额=实付-退款 (已去退款)
     }

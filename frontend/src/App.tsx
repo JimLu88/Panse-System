@@ -142,8 +142,7 @@ export default function App() {
       key: 'g-data',
       label: '数据分析',
       children: [
-        { key: 'ops-checklist', label: <Link to="/ops-checklist">待办台账</Link> },
-        { key: 'dashboard', label: <Link to="/dashboard">大盘</Link> },
+        { key: 'dashboard', label: <Link to="/dashboard">数据大盘</Link> },
         { key: 'sales-ranking', label: <Link to="/sales-ranking">销售排行榜</Link> },
         { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
       ],
@@ -193,7 +192,7 @@ export default function App() {
       label: '物流',
       children: [
         { key: 'logistics-bills', label: <Link to="/logistics-bills">物流账单</Link> },
-        { key: 'wanshifu-bills', label: <Link to="/wanshifu-bills">万师傅对账单</Link> },
+        // #28: 「万师傅对账单」tab 删除 (万师傅是充值制, 不需月结对账; 路由/页面保留, 仅撤出菜单)
       ],
     },
     {
@@ -242,6 +241,8 @@ export default function App() {
         { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
       ],
     },
+    // #24: 「待办事项」提到顶层 (分析 与 工具 之间), 原在「数据分析」组内名「待办台账」
+    { key: 'ops-checklist', label: <Link to="/ops-checklist">待办事项</Link> },
     {
       key: 'g-tools',
       label: '工具',
