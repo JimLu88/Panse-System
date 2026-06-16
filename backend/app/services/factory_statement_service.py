@@ -76,6 +76,10 @@ def _estimate_predicted(db: Session, order: Order) -> tuple[Optional[float], flo
         bd = order_cost_service.compute(db, order)
     except Exception:  # noqa: BLE001
         return None, 0.0, None
+    # 只用真实 BOM 反推的估算; 同款均价占位/无BOM 太不准(会算出成本>售价的假亏) → 不估, 保持"缺"
+    if not bd.lines or "未匹配到 BOM" in (bd.note or "") \
+            or any((ln.material_code or "") == "估算成本" for ln in bd.lines):
+        return None, 0.0, None
     qty = int(order.qty or 1)
     non_fee = sum(float(ln.line_cost) for ln in bd.lines
                   if ln.line_cost is not None and ln.material_code not in _EST_FEE_CODES)
