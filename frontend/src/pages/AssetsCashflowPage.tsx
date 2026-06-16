@@ -5,6 +5,7 @@
 import { Tabs } from 'antd';
 import AssetsPage from './AssetsPage';
 import CashFlowPage from './CashFlowPage';
+import ShopDepositsPage from './ShopDepositsPage';
 
 export default function AssetsCashflowPage() {
   return (
@@ -13,6 +14,8 @@ export default function AssetsCashflowPage() {
       items={[
         { key: 'assets', label: '资产', children: <AssetsPage /> },
         { key: 'cashflow', label: '剩余流水', children: <CashFlowPage /> },
+        // 平台保证金并入此页 (原独立财务页移除); 其合计已自动并入剩余流水的「平台保证金」加项
+        { key: 'shop-deposits', label: '平台保证金', children: <ShopDepositsPage /> },
       ]}
     />
   );

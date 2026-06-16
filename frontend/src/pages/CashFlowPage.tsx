@@ -72,7 +72,6 @@ function LineTable({ lines, kind }: { lines: CashFlowLine[]; kind: 'add' | 'sub'
 export default function CashFlowPage() {
   const qc = useQueryClient();
   const [editOpen, setEditOpen] = useState(false);
-  const [deposit, setDeposit] = useState<number | null>(null);
   const [investment, setInvestment] = useState<number | null>(null);
   const [settlementDays, setSettlementDays] = useState<number | null>(null);
 
@@ -84,7 +83,6 @@ export default function CashFlowPage() {
 
   const saveMut = useMutation({
     mutationFn: () => updateCashFlowSettings({
-      shop_deposit: deposit == null ? undefined : String(deposit),
       total_investment: investment == null ? undefined : String(investment),
       factory_settlement_days: settlementDays == null ? undefined : settlementDays,
     }),
@@ -122,9 +120,7 @@ export default function CashFlowPage() {
   const totalNum = Number(data.total);
 
   const openEdit = () => {
-    const dep = data.additions.find((a) => a.key === 'shop_deposit');
-    setDeposit(dep ? Number(dep.amount) : 0);
-    // 总投资已移出减项, 单列"投资回收"块
+    // 平台保证金改在「资产 & 流水 → 平台保证金」标签页维护, 此处不再手填
     setInvestment(data.investment ? Number(data.investment.total_investment) : 0);
     setSettlementDays(data.manual?.factory_settlement_days ?? 45);
     setEditOpen(true);
@@ -250,15 +246,11 @@ export default function CashFlowPage() {
         onOk={() => saveMut.mutate()} confirmLoading={saveMut.isPending} okText="保存并测算"
       >
         <Space direction="vertical" style={{ width: '100%' }} size="large">
-          <div>
-            <Text>店铺保证金</Text>
-            <InputNumber
-              style={{ width: '100%' }} value={deposit} onChange={setDeposit}
-              min={0} precision={2} addonBefore="¥"
-              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
-              parser={(v) => Number(`${v}`.replace(/,/g, '')) as any}
-            />
-          </div>
+          <Alert
+            type="info" showIcon
+            message="平台保证金已移到「资产 & 流水 → 平台保证金」标签页维护"
+            description="在那里按店铺各记各的，合计会自动计入本页「平台保证金」加项，无需在此手填。"
+          />
           <div>
             <Text>总投资费用</Text>
             <InputNumber

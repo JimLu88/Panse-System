@@ -69,7 +69,6 @@ const ReconDiagnosticsPage = lazy(() => import('./pages/ReconDiagnosticsPage'));
 const PrepayLedgerPage = lazy(() => import('./pages/PrepayLedgerPage'));
 const FactoryReconPage = lazy(() => import('./pages/FactoryReconPage'));
 const ReconCenterPage = lazy(() => import('./pages/ReconCenterPage'));
-const ShopDepositsPage = lazy(() => import('./pages/ShopDepositsPage'));
 const PromotionFlowsPage = lazy(() => import('./pages/PromotionFlowsPage'));
 
 const { Header, Content } = Layout;
@@ -228,7 +227,6 @@ export default function App() {
         { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'recon-center', label: <Link to="/recon-center">对账中心 (结算/诊断/工厂/代付)</Link> },
-        { key: 'shop-deposits', label: <Link to="/shop-deposits">平台保证金</Link> },
         { key: 'promotion-flows', label: <Link to="/promotion-flows">推广费流水</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         // 会计期间(关账)暂时隐藏 (用户 2026-06-12: 没有专业财务先不用) —
@@ -390,7 +388,8 @@ export default function App() {
             <Route path="/recon-diagnostics" element={<Navigate to="/recon-center?tab=diagnostics" replace />} />
             <Route path="/factory-recon" element={<Navigate to="/recon-center?tab=factory" replace />} />
             <Route path="/prepay-ledger" element={<Navigate to="/recon-center?tab=prepay" replace />} />
-            <Route path="/shop-deposits" element={<ShopDepositsPage />} />
+            {/* 平台保证金已并入「资产 & 流水」页的标签页; 旧链接重定向过去 */}
+            <Route path="/shop-deposits" element={<Navigate to="/assets-cashflow" replace />} />
             <Route path="/promotion-flows" element={<PromotionFlowsPage />} />
             <Route path="/data-explorer" element={<DataExplorerPage />} />
             <Route path="/import-archive" element={<ImportArchivePage />} />
