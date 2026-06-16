@@ -44,14 +44,20 @@ def get_dashboard(
         .all()
     )
 
-    # 近 30 天趋势 (按周分组) — 销售额剔除补单 (用户拍板 2026-06-12), 补单金额单独注释
+    # 近 30 天趋势 — 收入口径(#11 用户拍板): 订单买家实付 paid_amount, 排除 补单(is_refill) + 关闭单(cancelled);
+    # 退款金额单独列(refund_30d), 不在此从收入里扣(净额由前端/财务页按需扣)。
     trend_rows = (
         db.query(Order.order_date, func.count(Order.id), func.sum(Order.paid_amount))
         .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
-                Order.is_refill == False)  # noqa: E712
+                Order.is_refill == False, Order.status != "cancelled")  # noqa: E712
         .group_by(Order.order_date)
         .order_by(Order.order_date)
         .all()
+    )
+    refund_30d = float(
+        db.query(func.coalesce(func.sum(Order.refund_amount), 0))
+        .filter(Order.order_date >= last_30, Order.is_historical == False)  # noqa: E712
+        .scalar() or 0
     )
     refill_excluded_30d = float(
         db.query(func.coalesce(func.sum(Order.paid_amount), 0))
@@ -280,6 +286,8 @@ def get_dashboard(
             "total_30d": total_orders_30d,
             "revenue_30d": total_revenue_30d,
             "refill_excluded_30d": refill_excluded_30d,   # 注释用: 有补单 ¥X 未计入
+            "refund_30d": refund_30d,                     # #11 近30天退款额(单独列, 未从收入扣)
+            "revenue_caliber": "买家实付(paid_amount)·不含补单/关闭单·退款另列",  # #11 口径说明
             "count_7d": orders_7d,
         },
         "inventory": {
@@ -304,6 +312,7 @@ def get_dashboard(
         "health": {
             "open_exceptions": open_exceptions,
             "health_score": health_score,
+            "health_note": "健康度 = 100 − 未解决异常数×2 (满分100; 异常越多越低, ≥50条即0%)",  # #9 口径
         },
         "recon_rules": recon_rules,
         "health_dimensions": health_dimensions,

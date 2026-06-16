@@ -163,6 +163,23 @@ async def _lifespan(app: FastAPI):
             db.close()
         system_monitor.start_background(interval_sec=60)
 
+    # #15 启动补拉: 容器一起来就扫共享目录, 把 PC 自跑下载的报表导进来(群晖挂过/刚重启 → 上线即自拉)。
+    # 后台线程跑, 不阻塞启动; run_ingest 不开浏览器、幂等(file_hash 防重)。
+    if os.environ.get("DISABLE_SCHEDULER") != "1":
+        import threading as _th
+
+        def _startup_ingest() -> None:
+            try:
+                from app.database import SessionLocal as _SLI
+                from app.services import agent_ingest_service as _ai
+                with _SLI() as _s:
+                    r = _ai.run_ingest(_s)
+                logging.getLogger("panse.startup").info("启动补拉 run_ingest: %s", r)
+            except Exception:  # pragma: no cover
+                logging.getLogger("panse.startup").warning("启动补拉失败", exc_info=True)
+
+        _th.Thread(target=_startup_ingest, daemon=True).start()
+
     # Phase 1A: 调度器独立开关, 不绑死在 watchdog 上
     if os.environ.get("DISABLE_SCHEDULER") != "1":
         from app.services import scheduler as scheduler_service

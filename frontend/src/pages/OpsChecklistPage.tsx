@@ -6,6 +6,7 @@ import { Button, Card, Checkbox, Progress, Space, Tag, Typography, message } fro
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { OpsGroup, fetchOpsChecklist, toggleOpsTask } from '../api/operations';
+import AutomationStatusCard from '../components/AutomationStatusCard';   // #6 从首页移来
 
 const FREQ_COLOR: Record<string, string> = { daily: 'blue', weekly: 'purple', monthly: 'orange' };
 
@@ -31,6 +32,7 @@ export default function OpsChecklistPage() {
           今天 {data.today} · 勾选记录完成情况;每个周期(日/周/月)自动重置,未做完的会标记。
         </Typography.Text>
       </div>
+      <AutomationStatusCard />
       {data.groups.map((g: OpsGroup) => {
         const pending = g.total - g.done_count;
         const pct = g.total > 0 ? Math.round((g.done_count / g.total) * 100) : 0;

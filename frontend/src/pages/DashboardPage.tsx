@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
 import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
 import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
-import AutomationStatusCard from '../components/AutomationStatusCard';
+// #6 自动化任务清单已移到「待办台账」(OpsChecklistPage), 首页不再引用
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -118,13 +118,21 @@ function CashFlowBanner() {
         </Col>
         <Col xs={24} md={14}>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-            {data.freshness.map((f) => (
-              <Tooltip key={f.source} title={`数据截至 ${f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录'}`}>
-                <Tag color={FRESH_DOT[f.status]?.color || 'default'} style={{ borderRadius: 8, marginInlineEnd: 0 }}>
-                  {FRESH_DOT[f.status]?.dot} {f.source} · {freshAgo(f)}
+            {data.freshness.map((f) =>
+              /投资|保证金/.test(f.source) ? (
+                // #5 投资费用/保证金: 变化小, 不显示天数 → 蓝色可点链接, 直接进更新入口
+                <Tag key={f.source} color="blue" style={{ borderRadius: 8, marginInlineEnd: 0, cursor: 'pointer' }}
+                  onClick={(e) => { e.stopPropagation(); nav('/cash-flow'); }}>
+                  {f.source} · 更新 →
                 </Tag>
-              </Tooltip>
-            ))}
+              ) : (
+                <Tooltip key={f.source} title={`数据截至 ${f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录'}`}>
+                  <Tag color={FRESH_DOT[f.status]?.color || 'default'} style={{ borderRadius: 8, marginInlineEnd: 0 }}>
+                    {FRESH_DOT[f.status]?.dot} {f.source} · {freshAgo(f)}
+                  </Tag>
+                </Tooltip>
+              ),
+            )}
           </div>
           <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: M.indigo }}>点击查看完整明细 →</div>
         </Col>
@@ -186,7 +194,7 @@ export default function DashboardPage() {
       data: Object.entries(orders.status_counts as Record<string, number>)
         .filter(([, v]) => v > 0)
         .map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v, itemStyle: { color: STATUS_COLORS[k] } })),
-      label: { show: false },
+      label: { show: true, formatter: '{b} {d}%', color: M.sub, fontSize: 11 },   // #10 直接标百分比
     }],
   };
 
@@ -230,8 +238,7 @@ export default function DashboardPage() {
       {/* 月度经营 (工厂口径利润/ROI + 销售占比饼图, 可切月; 未对清月标仅供参考) */}
       <MonthlyOpsPanel />
 
-      {/* 自动化任务 · 今日状态 (用户拍板 2026-06-12: 可自动的指标一个框, 每天看状态) */}
-      <div style={{ marginBottom: 16 }}><AutomationStatusCard /></div>
+      {/* #6 自动化任务清单已移到「待办台账」, 首页不再展示(用户拍板 2026-06-17) */}
 
       {/* KPI 卡片行 — 每张卡点击进它关联最高的页面 (用户要求) */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
@@ -251,6 +258,14 @@ export default function DashboardPage() {
                 有补单 ¥{Math.round((orders as any).refill_excluded_30d).toLocaleString()} 未计入
               </div>
             )}
+            {((orders as any).refund_30d ?? 0) > 0 && (
+              <div style={{ color: '#999', fontSize: 12 }}>
+                已退款 ¥{Math.round((orders as any).refund_30d).toLocaleString()}(未从收入扣)
+              </div>
+            )}
+            {(orders as any).revenue_caliber && (
+              <div style={{ color: '#bbb', fontSize: 11 }}>口径: {(orders as any).revenue_caliber}</div>
+            )}
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={6}>
@@ -264,6 +279,9 @@ export default function DashboardPage() {
             <div style={{ display: 'flex', justifyContent: 'center' }}>
               <Progress type="dashboard" percent={health.health_score} strokeColor={healthStroke} trailColor="#eef2f7" size={84} />
             </div>
+            {(health as any).health_note && (
+              <div style={{ color: '#bbb', fontSize: 11, textAlign: 'center', marginTop: 4 }}>{(health as any).health_note}</div>
+            )}
           </MCard>
         </Col>
       </Row>

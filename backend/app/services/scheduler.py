@@ -666,10 +666,38 @@ def _job_web_agent_daily(db: Session) -> dict:
     串行触发到期任务 → 等 job 完成 → 扫共享目录导入 → 飞书日报。
     Agent 离线/待人工的任务快速失败并标记, 不无限重试 (交接方案 §7.6)。
     """
-    from app.services import agent_ingest_service
+    from app.services import agent_ingest_service, alert_service
     if agent_ingest_service.is_running():
         return {"skipped": "已有编排在跑 (手动触发未结束)"}
-    return agent_ingest_service.orchestrate(db, force=False)
+    r = agent_ingest_service.orchestrate(db, force=False)
+    # #15: agent 离线/任务出错 → 明确告警(不再静默显示"正常"); 成功则消掉旧告警。
+    offline = r.get("agent_offline")
+    failed = [t.get("task", "") for t in (r.get("tasks") or []) if t.get("status") == "error"]
+    if offline or failed:
+        alert_service.upsert(
+            db, kind="web_agent_pull_failed", severity="warn",
+            title="订单自动取数异常 (PC Agent 离线/任务出错)",
+            body=("PC 取数 Agent 连不上或部分任务报错, 订单/余额可能没更新。"
+                  + (f" Agent 离线: {str(offline)[:100]}" if offline else "")
+                  + (f" 失败任务: {','.join(failed)}" if failed else "")
+                  + " 请确认 PC 开着且 Panse-Web-Agent 在运行。"),
+            dedupe_key="web_agent_pull_failed", related_url="/admin",
+        )
+        db.flush()
+    else:
+        try:
+            alert_service.resolve_by_dedupe(db, "web_agent_pull_failed")
+            db.flush()
+        except Exception:  # pragma: no cover
+            pass
+    return r
+
+
+def _job_ingest_scan(db: Session) -> dict:
+    """#15 每小时扫共享目录导入 PC 自跑下载的报表(不开浏览器、不驱动 agent)。
+    解决"只靠 18:00 编排"的脆弱: PC 自己下载的文件每小时自动进库。幂等(file_hash 防重)。"""
+    from app.services import agent_ingest_service
+    return agent_ingest_service.run_ingest(db)
 
 
 def _job_order_sheets_daily(db: Session) -> dict:
@@ -966,6 +994,8 @@ def _register_default_jobs() -> None:
     # 保留 job_id 不变以免孤立已存的 override / 运行历史。
     register_job("daily_0630_web_agent", "Web-Agent 自动取数编排(18:00)",
                  _job_web_agent_daily, cron={"hour": 18, "minute": 0})
+    register_job("hourly_ingest_scan", "每小时扫共享目录导入(PC自跑报表 #15)",
+                 _job_ingest_scan, interval_minutes=60)
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",
