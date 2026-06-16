@@ -108,6 +108,8 @@ interface EditPart {
   material: string;        // 部位/原料名 (modify 时 = 原部位)
   material_real?: string;  // modify 时 = 改成的新材料
   qty: number;
+  length_cm?: number;      // 尺寸(空=用模板几何); 手填覆盖→快速改价
+  width_cm?: number;
 }
 interface HardwareItem {
   material: string;
@@ -528,7 +530,7 @@ export default function CustomQuoteV2Page() {
   const [light, setLight] = useState<LightResult | null>(null);
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
   const partSeq = useRef(1);
-  const [partOpts, setPartOpts] = useState<{ parts: string[]; materials: string[] }>({ parts: [], materials: [] });
+  const [partOpts, setPartOpts] = useState<{ parts: string[]; materials: string[]; woods: string[] }>({ parts: [], materials: [], woods: [] });
 
   // ── 特殊定制 ──
   const [ptype, setPtype] = useState('');
@@ -554,7 +556,7 @@ export default function CustomQuoteV2Page() {
   // A3: 加载增减部位下拉数据(常用部位 + 物料表); 命中产品后按其品类补 BOM 部位
   useEffect(() => {
     const cat = light?.category ? `?category=${encodeURIComponent(light.category)}` : '';
-    apiGet<{ parts: string[]; materials: string[] }>(`/v2/part-options${cat}`)
+    apiGet<{ parts: string[]; materials: string[]; woods: string[] }>(`/v2/part-options${cat}`)
       .then(setPartOpts)
       .catch(() => undefined);
   }, [light?.category]);
@@ -652,16 +654,27 @@ export default function CustomQuoteV2Page() {
         target_material: matStr.trim() || undefined,
         add_parts: partsList
           .filter((p) => p.change === 'add' && p.material.trim())
-          .map((p) => ({ material: p.material.trim(), qty: p.qty })),
+          .map((p) => ({ material: p.material.trim(), qty: p.qty, length_cm: p.length_cm, width_cm: p.width_cm })),
         remove_parts: partsList
           .filter((p) => p.change === 'remove' && p.material.trim())
-          .map((p) => ({ material: p.material.trim(), qty: p.qty })),
+          .map((p) => ({ material: p.material.trim(), qty: p.qty, length_cm: p.length_cm, width_cm: p.width_cm })),
         modify_parts: partsList
           .filter((p) => p.change === 'modify' && p.material.trim() && (p.material_real || '').trim())
-          .map((p) => ({ material: p.material.trim(), material_real: (p.material_real || '').trim(), qty: p.qty })),
+          .map((p) => ({ material: p.material.trim(), material_real: (p.material_real || '').trim(), qty: p.qty, length_cm: p.length_cm, width_cm: p.width_cm })),
         price_tier: tierVal,
       }, signal);
       setLight(r);
+      // C: 后端解析的尺寸回填到部位行(空的才填), 让用户看到+可继续手调快速改价
+      if (r.parts_detail && r.parts_detail.length) {
+        setParts((ps) =>
+          ps.map((p) => {
+            const d = (r.parts_detail || []).find((x) => x.change === p.change && x.name === p.material.trim());
+            return d && (p.length_cm == null || p.width_cm == null)
+              ? { ...p, length_cm: p.length_cm ?? d.length_cm, width_cm: p.width_cm ?? d.width_cm }
+              : p;
+          }),
+        );
+      }
       if (r.error) message.warning(r.error);
     } catch (e) {
       if ((e as Error).name !== 'AbortError') message.error((e as Error).message);
@@ -909,12 +922,14 @@ export default function CustomQuoteV2Page() {
               step={0.1}
               style={{ width: 200 }}
             />
-            <Input
-              addonBefore="改材质"
-              value={mat}
-              onChange={(e) => setMat(e.target.value)}
+            <Select
+              value={mat || undefined}
+              onChange={(v) => setMat(v ?? '')}
               style={{ width: 220 }}
-              placeholder="如 黑胡桃(可空)"
+              placeholder="改材质(下拉选, 可空)"
+              allowClear
+              showSearch
+              options={partOpts.woods.map((w) => ({ value: w, label: w }))}
             />
             <Select
               value={tier}
@@ -973,6 +988,10 @@ export default function CustomQuoteV2Page() {
                     step={1}
                     style={{ width: 120 }}
                   />
+                  <InputNumber addonBefore="长cm" value={p.length_cm} placeholder="模板"
+                    onChange={(v) => updatePartRow(p.key, { length_cm: v ?? undefined })} min={0} style={{ width: 118 }} />
+                  <InputNumber addonBefore="宽cm" value={p.width_cm} placeholder="模板"
+                    onChange={(v) => updatePartRow(p.key, { width_cm: v ?? undefined })} min={0} style={{ width: 118 }} />
                   <Button
                     danger
                     size="small"

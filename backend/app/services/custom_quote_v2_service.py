@@ -97,13 +97,13 @@ def interp(points: list[tuple[float, float]], x: float) -> tuple[Optional[float]
             if x0 <= x <= x1:
                 y = y0 + (y1 - y0) * (x - x0) / (x1 - x0) if x1 != x0 else y0
                 return y, "interp"
-    # 外推: 用最近一段斜率
+    # 外推: 用最近一段斜率; 跳过重复 x(同尺寸多变体如洞石/洞洞板, 否则 slope=0 把外推压平 → 1.5m 不追加费用)
     if x < pts[0][0]:
         x0, y0 = pts[0]
-        x1, y1 = pts[1]
+        x1, y1 = next(((px, py) for px, py in pts if px != x0), pts[-1])
     else:
-        x0, y0 = pts[-2]
         x1, y1 = pts[-1]
+        x0, y0 = next(((px, py) for px, py in reversed(pts) if px != x1), pts[0])
     slope = (y1 - y0) / (x1 - x0) if x1 != x0 else 0.0
     return y0 + slope * (x - x0), "extrap"
 
@@ -815,7 +815,9 @@ def part_options(db: Session, *, category: str = "") -> dict:
         seen.add(name)
         mats.append(name)
     mats.sort()
-    return {"parts": parts, "materials": mats[:400], "segments": segs or []}
+    # A: 改材质下拉用的木材类型(全部放上去, 不靠大模型识别); detect_wood 也认这些
+    return {"parts": parts, "materials": mats[:400], "segments": segs or [],
+            "woods": list(_WOOD_KEYWORDS)}
 
 
 # 自动推五金阈值 (后台可调; 逻辑借鉴参考项目, 数据用我们自己的)
