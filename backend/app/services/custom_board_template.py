@@ -131,7 +131,7 @@ def generate_boards(
 
 # 品牌精简系数: 通用模板按"满配"估材料, 畔色实际设计偏精简(板薄/部件少),
 # 经 5 单真实工厂价校准 ≈0.70(平均偏高比 1.42 的倒数)。可调; 收更多单后回归。
-TEMPLATE_MATERIAL_FACTOR = 0.62
+TEMPLATE_MATERIAL_FACTOR = 0.85
 
 
 def quote_from_template(

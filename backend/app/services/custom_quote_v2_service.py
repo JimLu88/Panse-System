@@ -471,6 +471,16 @@ def infer_hardware(boards: list[dict]) -> list[dict]:
     return extra
 
 
+# 畔色自购材料(工厂报价不含 → 排除出"工厂木作对比"; 工厂五金只含 螺丝/螺栓/抽屉轨道)
+_PANSE_PURCHASED_KW = ["玻璃", "岩板", "洞石", "洞洞板", "电力轨道", "多层板", "把手", "亚克力", "镜子"]
+
+
+def is_panse_purchased(material: str) -> bool:
+    """该材料是否畔色自购(工厂报价不含, 不计入工厂木作对比, 但计入畔色零售价)。"""
+    m = material or ""
+    return any(k in m for k in _PANSE_PURCHASED_KW)
+
+
 def quote_heavy(
     db: Session,
     *,
@@ -494,7 +504,8 @@ def quote_heavy(
             length_cm=float(b.get("length_cm", 0) or 0),
             width_cm=float(b.get("width_cm", 0) or 0),
             qty=float(b.get("qty", 1) or 1), unit=b.get("unit", "平方米"),
-            is_accessory=bool(b.get("is_accessory")),
+            # 畔色自购材料(玻璃/岩板/背板多层板/把手等)自动排除出工厂木作对比
+            is_accessory=bool(b.get("is_accessory")) or is_panse_purchased(b.get("material", "")),
             is_drawer_rail=bool(b.get("is_drawer_rail")),
         )
         for b in boards
