@@ -129,22 +129,40 @@ def generate_boards(
     )
 
 
+# 品牌精简系数: 通用模板按"满配"估材料, 畔色实际设计偏精简(板薄/部件少),
+# 经 5 单真实工厂价校准 ≈0.70(平均偏高比 1.42 的倒数)。可调; 收更多单后回归。
+TEMPLATE_MATERIAL_FACTOR = 0.70
+
+
 def quote_from_template(
     db,
     category: str,
     length_cm: float,
+    *,
+    material_factor: float = TEMPLATE_MATERIAL_FACTOR,
     **kwargs,
 ) -> dict:
-    """品类 + 外形 → 自动板单 → quote-heavy 引擎报价(含自动推五金)。返回报价 + 生成的板单。"""
+    """品类 + 外形 → 自动板单 → quote-heavy 引擎报价(含自动推五金)。
+
+    返回报价 + 生成的板单(展示用真实尺寸)。计价时木作板面积 × material_factor 做品牌精简校准,
+    五金/配件不缩。前端可改板单后走 /v2/quote-heavy 出未缩版精确价。
+    """
     from app.services.custom_quote_v2_service import quote_heavy
-    boards = generate_boards(category, length_cm, **kwargs)
+    boards = generate_boards(category, length_cm, **kwargs)   # 真实板单(展示)
+    priced = []
+    for b in boards:
+        nb = dict(b)
+        if not b.get("is_accessory"):
+            nb["width_cm"] = round(float(b["width_cm"]) * material_factor, 2)   # 面积×系数
+        priced.append(nb)
     r = quote_heavy(
         db,
         product_type=_leaf(category),
         length_m=length_cm / 100,
-        boards=boards,
+        boards=priced,
         overall_width_m=(kwargs.get("depth_cm") or 0) / 100 or None,
         overall_height_m=(kwargs.get("height_cm") or 0) / 100 or None,
     )
     r["generated_boards"] = boards
+    r["material_factor"] = material_factor
     return r
