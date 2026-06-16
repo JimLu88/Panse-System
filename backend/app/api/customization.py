@@ -645,3 +645,37 @@ def v2_quote_logs(limit: int = 50, db: Session = Depends(get_db)) -> dict:
         "model": r.model,
         "created_at": r.created_at.isoformat() if getattr(r, "created_at", None) else None,
     } for r in rows]}
+
+
+class V2TemplateIn(BaseModel):
+    category: str = Field(..., min_length=1)
+    length_cm: float = Field(..., gt=0)
+    depth_cm: Optional[float] = None
+    height_cm: Optional[float] = None
+    cols: Optional[int] = None
+    drawers: Optional[int] = None
+    doors: Optional[int] = None
+    shelves: Optional[int] = None
+    main_material: Optional[str] = None
+    back_material: Optional[str] = None
+    drawer_material: Optional[str] = None
+
+
+@router.post("/v2/quote-from-template")
+def v2_quote_from_template(payload: V2TemplateIn, db: Session = Depends(get_db)) -> dict:
+    """品类 + 外形尺寸(长深高 cm) → 自动出板单 → 引擎报价 + 自动推五金。返回报价 + 生成的板单(前端可改后再走 /v2/quote-heavy)。"""
+    from app.services import custom_board_template as tpl
+    kw: dict = {}
+    for k in ("depth_cm", "height_cm", "cols", "drawers", "doors", "shelves",
+              "main_material", "back_material", "drawer_material"):
+        v = getattr(payload, k)
+        if v is not None:
+            kw[k] = v
+    try:
+        r = tpl.quote_from_template(db, payload.category, payload.length_cm, **kw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"模板报价失败: {e}")
+    _log_quote(db, source="v2_template",
+               user_message=f"{payload.category} {payload.length_cm}cm",
+               extra={k: r.get(k) for k in ("final_price", "factory_quote_compare", "wood_cost", "labor_fee")})
+    return r
