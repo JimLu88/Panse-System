@@ -22,7 +22,19 @@ _MAX_ROWS = 20000
 
 
 def _cell(v):
+    """页面导出标量; Decimal→float、date/datetime 原生透传(Excel 当数字/日期)。
+    datetime/time 剥 tzinfo —— openpyxl 不支持带时区时间。"""
+    from datetime import date as _date, datetime as _dt, time as _time
+    from decimal import Decimal as _Dec
     if v is None or isinstance(v, (int, float, str, bool)):
+        return v
+    if isinstance(v, _Dec):
+        return float(v)
+    if isinstance(v, _dt):
+        return v.replace(tzinfo=None)
+    if isinstance(v, _time):
+        return v.replace(tzinfo=None)
+    if isinstance(v, _date):
         return v
     return str(v)
 

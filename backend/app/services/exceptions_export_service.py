@@ -41,9 +41,21 @@ def _key_column(model):
 
 
 def _cell(v):
-    """openpyxl 能写的标量; dict/list 等转 str。"""
+    """openpyxl 能写的标量; Decimal→float、date/datetime 原生透传(让 Excel 当数字/日期),
+    其余 dict/list 等转 str。修: 旧版把 Decimal/日期一并 str() 导致全量导出数字变文本。
+    注意: datetime/time 必须剥掉 tzinfo —— openpyxl 不支持带时区的时间(TimestampMixin 是 tz-aware)。"""
+    from datetime import date as _date, datetime as _dt, time as _time
+    from decimal import Decimal as _Dec
     if v is None or isinstance(v, (int, float, str, bool)):
         return v
+    if isinstance(v, _Dec):
+        return float(v)
+    if isinstance(v, _dt):            # datetime 是 date 子类, 必须先判
+        return v.replace(tzinfo=None)
+    if isinstance(v, _time):
+        return v.replace(tzinfo=None)
+    if isinstance(v, _date):
+        return v   # 纯日期无时区, openpyxl 原生写成日期, 由调用方设 number_format
     return str(v)
 
 
