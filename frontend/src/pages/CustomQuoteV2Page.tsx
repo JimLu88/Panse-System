@@ -184,6 +184,12 @@ export default function CustomQuoteV2Page() {
   const [heavy, setHeavy] = useState<HeavyResult | null>(null);
   const [cat, setCat] = useState('');
   const [tmpl, setTmpl] = useState<TemplatePart[] | null>(null);
+  // 模板自动出板(按外形)
+  const [tDepth, setTDepth] = useState<number | null>(null);
+  const [tHeight, setTHeight] = useState<number | null>(null);
+  const [tDrawers, setTDrawers] = useState<number | null>(null);
+  const [tDoors, setTDoors] = useState<number | null>(null);
+  const [tplLoading, setTplLoading] = useState(false);
 
   // ── 留痕对账 ──
   const [logs, setLogs] = useState<QuoteLog[] | null>(null);
@@ -269,6 +275,36 @@ export default function CustomQuoteV2Page() {
       })),
     );
     message.success('已把模板部位填入板单, 请补每块尺寸');
+  };
+
+  const doAutoBoards = async () => {
+    if (!ptype.trim() || !hlen) {
+      message.warning('请先填上方「品类」和「整体长度」');
+      return;
+    }
+    setTplLoading(true);
+    try {
+      const body: Record<string, unknown> = { category: ptype.trim(), length_cm: hlen * 100 };
+      if (tDepth) body.depth_cm = tDepth;
+      if (tHeight) body.height_cm = tHeight;
+      if (tDrawers != null) body.drawers = tDrawers;
+      if (tDoors != null) body.doors = tDoors;
+      const r = await apiPost<
+        HeavyResult & { generated_boards: { part: string; material: string; length_cm: number; width_cm: number; qty: number }[] }
+      >('/v2/quote-from-template', body);
+      setBoards(
+        (r.generated_boards || []).map((b, i) => ({
+          key: i + 1, part: b.part, material: b.material,
+          length_cm: b.length_cm, width_cm: b.width_cm, qty: b.qty,
+        })),
+      );
+      setHeavy(r);
+      message.success('已按外形自动出板单(满配上限·只高不低, 请删减到实际再算价)');
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setTplLoading(false);
+    }
   };
 
   const doHeavy = async () => {
@@ -468,6 +504,19 @@ export default function CustomQuoteV2Page() {
               style={{ width: 200 }}
             />
           </Space>
+
+          <Space wrap size={4}>
+            <InputNumber addonBefore="深cm" value={tDepth} onChange={(v) => setTDepth(v)} min={0} style={{ width: 130 }} />
+            <InputNumber addonBefore="高cm" value={tHeight} onChange={(v) => setTHeight(v)} min={0} style={{ width: 130 }} />
+            <InputNumber addonBefore="抽屉数" value={tDrawers} onChange={(v) => setTDrawers(v)} min={0} style={{ width: 120 }} />
+            <InputNumber addonBefore="门数" value={tDoors} onChange={(v) => setTDoors(v)} min={0} style={{ width: 110 }} />
+            <Button type="primary" ghost loading={tplLoading} onClick={doAutoBoards}>
+              按外形自动出板单
+            </Button>
+          </Space>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            填品类+长(上方)+深高/抽屉/门 → 自动出「满配上限」板单(报价只高不低);在下方删减到实际再算价。深高/数量留空则用品类默认。
+          </Text>
 
           <Space wrap size={4}>
             <Input
