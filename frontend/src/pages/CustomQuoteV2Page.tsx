@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -35,11 +35,45 @@ interface ClassifyResult {
   target_length_m?: number | null;
   target_material?: string | null;
   add_parts?: { material: string; qty: number }[];
+  remove_parts?: { material: string; qty: number }[];
   ai_used?: boolean;
 }
 interface BreakdownItem {
   label: string;
   amount: number;
+  note: string;
+}
+interface PartDetail {
+  name: string;
+  material: string;
+  unit: string;
+  qty: number;
+  length_cm: number;
+  width_cm: number;
+  area_m2: number;
+  unit_price: number;
+  material_cost: number;
+  formula: string;
+  change: 'add' | 'remove';
+  delta: number;
+  priced: boolean;
+}
+interface CompetitorRow {
+  store: string | null;
+  product?: string | null;
+  sku_name: string | null;
+  wood: string | null;
+  price: number;
+  source: string;
+  diff_pct: number | null;
+  is_lower: boolean;
+  link?: string | null;
+}
+interface Comparison {
+  our_price: number;
+  competitors: CompetitorRow[];
+  competitor_available: boolean;
+  baseline: { label: string; price: number; diff_pct: number; is_lower: boolean } | null;
   note: string;
 }
 interface LightResult {
@@ -49,8 +83,18 @@ interface LightResult {
   material_delta: number;
   addremove_delta: number;
   base_product_name?: string | null;
+  category?: string;
   breakdown: BreakdownItem[];
+  parts_detail?: PartDetail[];
+  comparison?: Comparison;
   error?: string;
+}
+// 增减部位(可编辑: 分类器自动填 + 用户手调)
+interface EditPart {
+  key: number;
+  change: 'add' | 'remove';
+  material: string;
+  qty: number;
 }
 interface HardwareItem {
   material: string;
@@ -131,6 +175,52 @@ const breakdownCols: ColumnsType<BreakdownItem> = [
   },
 ];
 
+const competitorCols: ColumnsType<CompetitorRow> = [
+  {
+    title: '竞品',
+    key: 'who',
+    render: (_: unknown, r: CompetitorRow) => (
+      <div>
+        <Text style={{ fontSize: 12 }}>{r.store ?? '—'}</Text>
+        <br />
+        <Text type="secondary" style={{ fontSize: 11 }}>{r.sku_name ?? r.product ?? ''}</Text>
+      </div>
+    ),
+  },
+  { title: '木材', dataIndex: 'wood', key: 'wood', width: 76, render: (v: string | null) => v ?? '—' },
+  {
+    title: '竞品价',
+    dataIndex: 'price',
+    key: 'price',
+    align: 'right',
+    render: (v: number) => `¥${v.toFixed(0)}`,
+  },
+  {
+    title: '我们 vs 它',
+    key: 'diff',
+    align: 'right',
+    render: (_: unknown, r: CompetitorRow) =>
+      r.diff_pct == null ? (
+        '—'
+      ) : (
+        <Tag color={r.is_lower ? 'green' : 'red'}>
+          {r.is_lower ? '低' : '高'} {Math.abs(r.diff_pct)}%
+        </Tag>
+      ),
+  },
+  {
+    title: '来源',
+    dataIndex: 'source',
+    key: 'source',
+    width: 76,
+    render: (v: string) => (
+      <Text type="secondary" style={{ fontSize: 11 }}>
+        {v}
+      </Text>
+    ),
+  },
+];
+
 const logCols: ColumnsType<QuoteLog> = [
   { title: '#', dataIndex: 'id', key: 'id', width: 56 },
   {
@@ -173,6 +263,8 @@ export default function CustomQuoteV2Page() {
   const [mat, setMat] = useState('');
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
+  const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
+  const partSeq = useRef(1);
 
   // ── 特殊定制 ──
   const [ptype, setPtype] = useState('');
@@ -217,12 +309,25 @@ export default function CustomQuoteV2Page() {
       if (r.base_product_code) setPcode(r.base_product_code);
       if (r.target_length_m) setLen(r.target_length_m);
       if (r.target_material) setMat(r.target_material);
+      // 分类器识别出的增减部位 → 自动填入可编辑表(用户可改/删/加)
+      const detected: EditPart[] = [];
+      (r.add_parts ?? []).forEach((p) =>
+        detected.push({ key: partSeq.current++, change: 'add', material: p.material, qty: p.qty || 1 }));
+      (r.remove_parts ?? []).forEach((p) =>
+        detected.push({ key: partSeq.current++, change: 'remove', material: p.material, qty: p.qty || 1 }));
+      setParts(detected);
     } catch (e) {
       message.error((e as Error).message);
     } finally {
       setClsLoading(false);
     }
   };
+
+  const addPartRow = (change: 'add' | 'remove') =>
+    setParts((ps) => [...ps, { key: partSeq.current++, change, material: '', qty: 1 }]);
+  const updatePartRow = (key: number, patch: Partial<EditPart>) =>
+    setParts((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
+  const removePartRow = (key: number) => setParts((ps) => ps.filter((p) => p.key !== key));
 
   const doLight = async () => {
     if (!pcode.trim()) {
@@ -236,6 +341,12 @@ export default function CustomQuoteV2Page() {
         base_product_code: pcode.trim(),
         target_length_m: len ?? undefined,
         target_material: mat.trim() || undefined,
+        add_parts: parts
+          .filter((p) => p.change === 'add' && p.material.trim())
+          .map((p) => ({ material: p.material.trim(), qty: p.qty })),
+        remove_parts: parts
+          .filter((p) => p.change === 'remove' && p.material.trim())
+          .map((p) => ({ material: p.material.trim(), qty: p.qty })),
       });
       setLight(r);
       if (r.error) message.warning(r.error);
@@ -460,6 +571,57 @@ export default function CustomQuoteV2Page() {
             </Button>
           </Space>
 
+          {/* 增减部位: 分类器自动填, 可手动增/删/改 → 后端逐部位算价(铁律: 删除偏保守, 只高不低) */}
+          <Card
+            size="small"
+            type="inner"
+            title="增减部位(自动识别 · 可手调 → 逐部位算价)"
+            styles={{ body: { padding: 8 } }}
+          >
+            <Space direction="vertical" style={{ width: '100%' }} size={6}>
+              {parts.length === 0 && (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  无增减部位(纯改尺寸/材质)。要"加某部位/去某部位"点下方按钮。
+                </Text>
+              )}
+              {parts.map((p) => (
+                <Space key={p.key} wrap>
+                  <Tag color={p.change === 'add' ? 'green' : 'red'}>
+                    {p.change === 'add' ? '追加' : '删除'}
+                  </Tag>
+                  <Input
+                    value={p.material}
+                    onChange={(e) => updatePartRow(p.key, { material: e.target.value })}
+                    style={{ width: 240 }}
+                    placeholder="部位/材料名 如 中间背板 / 电力轨道"
+                  />
+                  <InputNumber
+                    addonBefore="数量"
+                    value={p.qty}
+                    onChange={(v) => updatePartRow(p.key, { qty: v ?? 1 })}
+                    min={0.1}
+                    step={1}
+                    style={{ width: 120 }}
+                  />
+                  <Button
+                    danger
+                    size="small"
+                    icon={<DeleteOutlined />}
+                    onClick={() => removePartRow(p.key)}
+                  />
+                </Space>
+              ))}
+              <Space>
+                <Button size="small" icon={<PlusOutlined />} onClick={() => addPartRow('add')}>
+                  加部位
+                </Button>
+                <Button size="small" danger icon={<PlusOutlined />} onClick={() => addPartRow('remove')}>
+                  去部位
+                </Button>
+              </Space>
+            </Space>
+          </Card>
+
           {light && light.final_price != null && (
             <>
               <Space align="baseline">
@@ -476,6 +638,39 @@ export default function CustomQuoteV2Page() {
                 columns={breakdownCols}
                 dataSource={light.breakdown}
               />
+              {light.comparison && (
+                <Card
+                  size="small"
+                  type="inner"
+                  title="竞品 / 标准款 对比"
+                  styles={{ body: { padding: 8 } }}
+                >
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      {light.comparison.note}
+                    </Text>
+                    {light.comparison.baseline && (
+                      <Space wrap>
+                        <Tag>{light.comparison.baseline.label}</Tag>
+                        <Text>¥{light.comparison.baseline.price.toFixed(2)}</Text>
+                        <Tag color={light.comparison.baseline.is_lower ? 'green' : 'red'}>
+                          本单{light.comparison.baseline.is_lower ? '低' : '高'}{' '}
+                          {Math.abs(light.comparison.baseline.diff_pct)}%
+                        </Tag>
+                      </Space>
+                    )}
+                    {light.comparison.competitors.length > 0 && (
+                      <Table<CompetitorRow>
+                        size="small"
+                        rowKey={(_, i) => String(i)}
+                        pagination={false}
+                        columns={competitorCols}
+                        dataSource={light.comparison.competitors}
+                      />
+                    )}
+                  </Space>
+                </Card>
+              )}
             </>
           )}
           {light && light.final_price == null && (

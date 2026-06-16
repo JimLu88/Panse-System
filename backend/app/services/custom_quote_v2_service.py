@@ -226,27 +226,30 @@ def quote_light(
                                       "note": "缺原料价/木作成本, 需人工核"})
     final += material_delta
 
-    # ── 增减部位 delta ──
-    addrm_delta = 0.0
-    for p in (add_parts or []):
-        unit_price = _part_price(db, p.get("material") or p.get("name") or "")
-        qty = float(p.get("qty", 1) or 1)
-        cost = round(unit_price * qty * (1 + factory_profit_rate), 2)
-        addrm_delta += cost
-        breakdown.append({"label": f"追加: {p.get('material') or p.get('name')}", "amount": cost,
-                          "note": f"{unit_price}×{qty}×{1+factory_profit_rate}"})
-    for p in (remove_parts or []):
-        unit_price = _part_price(db, p.get("material") or p.get("name") or "")
-        qty = float(p.get("qty", 1) or 1)
-        cost = round(unit_price * qty * (1 + factory_profit_rate), 2)
-        addrm_delta -= cost
-        breakdown.append({"label": f"删除: {p.get('material') or p.get('name')}", "amount": -cost,
-                          "note": f"−{unit_price}×{qty}×{1+factory_profit_rate}"})
+    # ── 增减部位 delta (逐部位 cascade: 木作用模板几何×木单价 / 配件×计价单位 → ×人工×厂利÷畔色) ──
+    from app.services import custom_quote_config_service as ccfg
+    cfg = ccfg.get_config(db)
+    category = (prod.category if prod else None) or base_product_code
+    addrm_delta, addrm_lines, parts_detail = style_delta(
+        db, category=category, length_m=target_length_m,
+        add_parts=add_parts, remove_parts=remove_parts, cfg=cfg,
+    )
+    breakdown.extend(addrm_lines)
     final += addrm_delta
+
+    # ── 竞品/基准对比 (每次算价都带; 竞品表空则只给本店标准款基准, 永远有对比) ──
+    comparison = compare_prices(
+        db, category=category,
+        wood=(target_material or detect_wood(prod.name if prod else "")),
+        size_m=target_length_m, our_price=round(final, 2),
+        baseline_price=round(anchor + material_delta, 2),
+        baseline_label="本店标准款(同尺寸同材质)",
+    )
 
     return {
         "base_product_code": base_product_code,
         "base_product_name": prod.name if prod else None,
+        "category": category,
         "anchor": round(anchor, 2),
         "anchor_method": note,
         "material_delta": material_delta,
@@ -254,6 +257,8 @@ def quote_light(
         "final_price": round(final, 2),
         "price_tier": price_tier,
         "breakdown": breakdown,
+        "parts_detail": parts_detail,
+        "comparison": comparison,
         "ai_used": False,
     }
 
@@ -268,21 +273,196 @@ def _find_sibling_by_material(db: Session, base: Product, wood: str) -> Optional
     ).first()
 
 
-def _part_price(db: Session, name: str) -> float:
-    """部位/配件单价: 物料表精确→模糊(排样块)。查不到→0(上层标注需人工)。"""
+# ─────────── 普通定制·增减部位: 逐部位 cascade (借参考 style-customization 逻辑, 数据自有) ─────────── #
+
+def _material_price_unit(db: Session, name: str) -> tuple[Optional[float], str]:
+    """物料表查 (单价, 计价单位)。精确名→模糊(排样块/样品)。查不到→(None,'')。"""
     if not name:
-        return 0.0
+        return None, ""
     from sqlalchemy import func, select
-    row = db.execute(select(Material.price).where(Material.name == name)).scalar_one_or_none()
+    row = db.execute(select(Material.price, Material.unit).where(Material.name == name)).first()
     if row is None:
-        hit = db.execute(
-            select(Material.price).where(
+        row = db.execute(
+            select(Material.price, Material.unit).where(
                 Material.name.like(f"%{name}%"), Material.price.isnot(None),
                 ~Material.name.like("%样块%"), ~Material.name.like("%样品%"),
+                ~Material.name.like("%小样%"),
             ).order_by(func.length(Material.name)).limit(1)
         ).first()
-        row = hit[0] if hit else None
-    return float(row) if row is not None else 0.0
+    if row is None:
+        return None, ""
+    return (float(row[0]) if row[0] is not None else None), (row[1] or "")
+
+
+def _template_part_dims(category: str, length_m: Optional[float],
+                        depth_cm=None, height_cm=None) -> dict:
+    """品类+外形 → {部位名: (length_cm, width_cm, qty, material)} (模板几何, 给增减部位估面积)。"""
+    try:
+        from app.services import custom_board_template as tmpl
+        boards = tmpl.generate_boards(
+            category, (length_m or 1.0) * 100, depth_cm=depth_cm, height_cm=height_cm)
+    except Exception:  # noqa: BLE001
+        return {}
+    return {b["part"]: (b.get("length_cm", 0), b.get("width_cm", 0),
+                        b.get("qty", 1), b.get("material", "")) for b in boards}
+
+
+def _match_part_dims(name: str, dims_map: dict):
+    """部位名 → 模板几何 (含包含式模糊: 「中间背板」→「背板」)。无 → None。"""
+    if not name:
+        return None
+    if name in dims_map:
+        return dims_map[name]
+    for k, v in dims_map.items():
+        if k and (k in name or name in k):
+            return v
+    return None
+
+
+def _cost_by_unit(price: float, unit: str, qty: float,
+                  length_cm: float, width_cm: float) -> tuple[float, str, float]:
+    """按计价单位算单部位材料成本 → (成本, 公式串, 面积㎡)。
+    平方米: 长×宽×数量×价; 米: 长×数量×价; 其他(个/付/组/张/件): 数量×价。
+    """
+    u = unit or ""
+    if "平" in u or "㎡" in u or "m2" in u.lower():
+        if length_cm > 0 and width_cm > 0:
+            area = (length_cm / 100) * (width_cm / 100)
+            return area * qty * price, f"{area:.3f}㎡×{qty:g}×{price:g}", area
+        return 0.0, "按㎡但缺尺寸→0(需手填)", 0.0
+    if u in ("米", "1米", "m"):
+        if length_cm > 0:
+            meters = length_cm / 100
+            return meters * qty * price, f"{meters:.2f}m×{qty:g}×{price:g}", 0.0
+        return qty * price, f"{qty:g}×{price:g}(无长按件)", 0.0
+    return qty * price, f"{qty:g}×{price:g}", 0.0
+
+
+def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
+    """解析一个增/删部位 → 完整明细。尺寸优先显式(可手调), 否则木作用模板几何;
+    材料优先显式, 否则模板该部位材料, 再否则部位名本身(配件如「电力轨道」直查物料表)。
+    """
+    name = (part.get("material") or part.get("name") or "").strip()
+    qty = float(part.get("qty", 1) or 1)
+    tdims = _match_part_dims(name, dims_map)
+    material = (part.get("material_real") or "").strip() or (tdims[3] if tdims else "") or name
+    length_cm = float(part.get("length_cm") or 0) or (float(tdims[0]) if tdims else 0.0)
+    width_cm = float(part.get("width_cm") or 0) or (float(tdims[1]) if tdims else 0.0)
+    price, unit = _material_price_unit(db, material)
+    if price is None and material != name:
+        price, unit = _material_price_unit(db, name)   # 配件名直查
+    price = price or 0.0
+    cost, formula, area = _cost_by_unit(price, unit, qty, length_cm, width_cm)
+    return {
+        "name": name, "material": material, "unit": unit or "件",
+        "qty": qty, "length_cm": round(length_cm, 1), "width_cm": round(width_cm, 1),
+        "area_m2": round(area, 3), "unit_price": price,
+        "material_cost": round(cost, 2), "formula": formula,
+        "panse_purchased": is_panse_purchased(material or name),
+        "priced": price > 0,
+    }
+
+
+def style_delta(
+    db: Session, *, category: str, length_m: Optional[float],
+    add_parts: Optional[list], remove_parts: Optional[list], cfg: dict,
+    depth_cm=None, height_cm=None,
+) -> tuple[float, list, list]:
+    """增减部位逐部位 cascade → (净delta, breakdown行, parts_detail可编辑明细)。
+
+    每部位: 材料成本 → ×(1+人工占比) → ×(1+工厂利润) ÷ (1−畔色毛利) = 零售增量。
+    追加: +零售; 删除: −零售×remove_credit (铁律「只高不低」: 删得保守, 偏高防亏)。
+    """
+    dims_map = _template_part_dims(category, length_m, depth_cm, height_cm)
+    lr = float(cfg.get("style_labor_ratio", 0.30))
+    fpr = float(cfg.get("factory_profit_rate", 0.25))
+    pgr = 1.0 - float(cfg.get("panse_profit_rate", 0.15))
+    rc = float(cfg.get("style_remove_credit", 0.85))
+
+    def retail(material_cost: float) -> float:
+        return material_cost * (1 + lr) * (1 + fpr) / (pgr if pgr > 0 else 1.0)
+
+    total = 0.0
+    lines: list = []
+    detail: list = []
+    casc = f"×{1 + lr:g}人工×{1 + fpr:g}厂利÷{pgr:g}畔色"
+    for p in (add_parts or []):
+        r = _resolve_part(db, p, dims_map)
+        amt = round(retail(r["material_cost"]), 2)
+        total += amt
+        r["change"], r["delta"] = "add", amt
+        detail.append(r)
+        note = f"材料{r['material_cost']:g}({r['formula']}){casc}"
+        if not r["priced"]:
+            note = "⚠物料表无此料价,计0需手填 / " + note
+        lines.append({"label": f"追加: {r['name']}", "amount": amt, "note": note})
+    for p in (remove_parts or []):
+        r = _resolve_part(db, p, dims_map)
+        amt = round(retail(r["material_cost"]) * rc, 2)
+        total -= amt
+        r["change"], r["delta"] = "remove", -amt
+        detail.append(r)
+        note = f"材料{r['material_cost']:g}→零售×{rc:g}保守(只高不低)"
+        if not r["priced"]:
+            note = "⚠物料表无此料价,计0需手填 / " + note
+        lines.append({"label": f"删除: {r['name']}", "amount": -amt, "note": note})
+    return round(total, 2), lines, detail
+
+
+def compare_prices(
+    db: Session, *, category: Optional[str], wood: Optional[str],
+    size_m: Optional[float], our_price: float,
+    baseline_price: Optional[float] = None, baseline_label: str = "本店标准款标价",
+) -> dict:
+    """竞品对比块: 竞品表(同类目、按尺寸接近度取5条) + 本店标准款标价基准(永远有)。
+
+    每条算「我们价 vs 它」高/低%。竞品表空→competitors=[], baseline 仍给 → 每次算价都有对比。
+    """
+    from app.models.competitor import CompetitorPrice
+    leaf = (category or "").split("-")[-1]
+    rows = []
+    try:
+        q = db.query(CompetitorPrice)
+        if leaf:
+            q = q.filter(CompetitorPrice.category.like(f"%{leaf}%"))
+        rows = q.limit(300).all()
+    except Exception:  # noqa: BLE001
+        rows = []
+
+    def price_of(r) -> float:
+        v = r.latest_price if r.latest_price is not None else r.daily_price
+        return float(v) if v is not None else 0.0
+
+    if wood:
+        woody = [r for r in rows if r.wood and (wood in r.wood or r.wood in wood)]
+        rows = woody or rows
+    rows = [r for r in rows if price_of(r) > 0]
+    rows.sort(key=lambda r: abs((parse_length_m(r.sku_name) or 99) - (size_m or 0)))
+    comps = []
+    for r in rows[:5]:
+        cp = price_of(r)
+        comps.append({
+            "store": r.store, "product": r.product, "sku_name": r.sku_name,
+            "wood": r.wood, "price": round(cp, 2),
+            "source": "最新抓取" if r.latest_price is not None else "我记价",
+            "diff_pct": round((our_price - cp) / cp * 100, 1) if cp else None,
+            "is_lower": our_price < cp, "link": r.link,
+        })
+    baseline = None
+    if baseline_price and baseline_price > 0:
+        baseline = {
+            "label": baseline_label, "price": round(baseline_price, 2),
+            "diff_pct": round((our_price - baseline_price) / baseline_price * 100, 1),
+            "is_lower": our_price < baseline_price,
+        }
+    return {
+        "our_price": round(our_price, 2),
+        "competitors": comps,
+        "competitor_available": bool(comps),
+        "baseline": baseline,
+        "note": ("竞品库暂无同类目数据(待导入新鲜竞品价); 下方为本店标准款标价基准"
+                 if not comps else f"匹配 {len(comps)} 条竞品(按尺寸接近度排序)"),
+    }
 
 
 # ───────────────────────── 分类器前门 ───────────────────────── #

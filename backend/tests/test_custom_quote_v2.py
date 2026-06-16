@@ -112,15 +112,56 @@ def test_material_delta_prefers_sibling():
 # ───────── 普通定制: 增减部位 delta ─────────
 
 def test_add_remove_parts():
+    """配件(按件)逐部位 cascade: 材料 → ×1.3人工 ×1.25厂利 ÷0.85畔色; 删除再×0.85保守。"""
     db = _db()
     _seed_bed(db)
     r = v2.quote_light(db, base_product_code="B1", target_length_m=1.5,
                        add_parts=[{"material": "金属把手", "qty": 2}])
-    assert r["addremove_delta"] == 75.0          # 30×2×1.25
-    assert r["final_price"] == 2075.0
+    assert r["addremove_delta"] == 114.71         # 60×1.3×1.25÷0.85
+    assert r["final_price"] == 2114.71
+    assert r["parts_detail"][0]["change"] == "add" and r["parts_detail"][0]["material_cost"] == 60.0
     r2 = v2.quote_light(db, base_product_code="B1", target_length_m=1.5,
                         remove_parts=[{"material": "金属把手", "qty": 1}])
-    assert r2["addremove_delta"] == -37.5
+    assert r2["addremove_delta"] == -48.75         # 30×1.3×1.25÷0.85×0.85(删除保守, 只高不低)
+    # 每次算价都带竞品/基准对比块
+    assert "comparison" in r and r["comparison"]["baseline"] is not None
+
+
+def test_style_delta_geometry_wood_part():
+    """木作部位走模板几何: 「背板」→ 餐边柜模板 1.5m×0.8m=1.2㎡ × 多层板220元/㎡ 的逐部位算价。"""
+    from app.models.material import Material
+    db = _db()
+    db.add(Material(code="QM-0001", name="实木多层板1.8cm", price=D("220"), unit="平方米"))
+    db.commit()
+    cfg = {"style_labor_ratio": 0.30, "factory_profit_rate": 0.25,
+           "panse_profit_rate": 0.15, "style_remove_credit": 0.85}
+    total, lines, detail = v2.style_delta(
+        db, category="餐边柜", length_m=1.5,
+        add_parts=[{"material": "背板"}], remove_parts=[], cfg=cfg)
+    d = detail[0]
+    assert d["material"] == "实木多层板1.8cm"      # 模板把「背板」映射到多层板
+    assert d["area_m2"] == 1.2                       # 1.5m × 0.8m(餐边柜H=80cm)
+    assert d["material_cost"] == 264.0               # 1.2㎡ × 220
+    assert total == round(264 * 1.3 * 1.25 / 0.85, 2)
+
+
+def test_compare_prices_baseline_and_competitor():
+    """竞品对比: 空竞品表→仅本店标准款基准; 灌一条竞品→出现并算高低。"""
+    db = _db()
+    c = v2.compare_prices(db, category="餐边柜", wood="樱桃木", size_m=1.5,
+                          our_price=3000, baseline_price=2800)
+    assert c["competitor_available"] is False
+    assert c["baseline"]["price"] == 2800.0
+    assert c["baseline"]["diff_pct"] == 7.1 and c["baseline"]["is_lower"] is False
+    from app.models.competitor import CompetitorPrice
+    db.add(CompetitorPrice(store="别家", category="餐边柜", product="樱桃木餐边柜",
+                           wood="樱桃木", sku_name="餐边柜-1.5米", daily_price=D("3500")))
+    db.commit()
+    c2 = v2.compare_prices(db, category="餐边柜", wood="樱桃木", size_m=1.5,
+                           our_price=3000, baseline_price=2800)
+    assert c2["competitor_available"] is True
+    comp = c2["competitors"][0]
+    assert comp["price"] == 3500.0 and comp["is_lower"] is True
 
 
 # ───────── 分类器 ─────────

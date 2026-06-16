@@ -52,6 +52,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "factory_profit_rate": 0.25,    # 工厂利润系数
     "panse_profit_rate": 0.15,      # 畔色利润系数 (售价毛利, 除法)
     "safety_rate": 1.05,            # 保守上浮系数 (宁高不低, 防低估亏本)
+    # 普通定制·增减部位逐部位算价 (参考程序 style-customization 逻辑, 系数用我们自己的, 后台可调):
+    "style_labor_ratio": 0.30,      # 增减部位人工 = 材料成本 × 此 (≈出厂人工占比23.08%的等价: 0.30/1.30)
+    "style_remove_credit": 0.85,    # 删除部位只返还此比例零售价 (铁律「只高不低」: 删得保守, 偏高防亏)
     "competitor_coupon_rate": 0.08,  # 竞品通用平台券率 (券后价对照, 显示减额)
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡
