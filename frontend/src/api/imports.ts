@@ -30,6 +30,27 @@ export const fetchImportFiles = (params: { kind?: string; month?: string; limit?
 export const fetchImportFileSummary = () =>
   api.get<ImportedFileSummary>('/api/imports/files/summary').then((r) => r.data);
 
+// 工厂下单图 → 飞书 手动补推 (修复: 旧逻辑只推"本次新生成"被每小时补生成抢空)
+export interface OrderSheetPushStatus {
+  configured: boolean;     // 飞书推送群是否配好 (feishu_push_chat_id)
+  pending_total: number;   // 含历史基线的全部未推 (手动按钮可推的总量)
+  pending_new: number;     // 不含历史基线 (18:00 自动会推的量, 平时应接近 0)
+}
+
+export interface OrderSheetPushResult {
+  pushed: number;
+  failed: number;
+  remaining: number;
+  order_nos: string[];
+  reason?: string;
+}
+
+export const fetchOrderSheetPushStatus = () =>
+  api.get<OrderSheetPushStatus>('/api/imports/order-sheets/push-status').then((r) => r.data);
+
+export const pushOrderSheets = (limit = 20) =>
+  api.post<OrderSheetPushResult>('/api/imports/order-sheets/push', { limit }).then((r) => r.data);
+
 // 通过带鉴权的 axios 实例取 blob 再触发下载 (直链会丢 Authorization 头 → 401)
 export async function downloadImportFile(id: number, filename: string) {
   const resp = await api.get(`/api/imports/files/${id}/download`, { responseType: 'blob' });

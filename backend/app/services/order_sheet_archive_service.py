@@ -241,45 +241,123 @@ def render_png(sheet) -> bytes:
     return _html_to_png(render_html(sheet))
 
 
-def _push_sheet_images(db: Session, order_nos: list[str], *, limit: int = 20) -> int:
-    """把新生成的下单图渲染成图片, 推到飞书推送群 (feishu_push_chat_id)。返回成功数。失败不抛。"""
+def _order_no_from_name(name: Optional[str]) -> Optional[str]:
+    """从归档文件名 下单图_{order_no}.html 反解订单号。"""
+    if name and name.startswith("下单图_") and name.endswith(".html"):
+        return name[len("下单图_"):-len(".html")]
+    return None
+
+
+def _pending_push_records(db: Session, *, include_baseline: bool) -> list[ImportedFile]:
+    """【还没推过图】的下单图归档记录, 按生成先后 (旧→新)。
+
+    判定基于归档记录自身的 row_summary.pushed —— 与"HTML 是否新生成"彻底解耦。
+    include_baseline=False: 跳过部署前堆积的历史基线 (row_summary.baseline=True),
+    避免 18:00 自动推一次性把历史单刷给工厂群; 手动补推时传 True 把历史也纳入。
+    """
+    recs = db.execute(
+        select(ImportedFile).where(ImportedFile.kind == "order_sheet").order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    out: list[ImportedFile] = []
+    for r in recs:
+        st = r.row_summary or {}
+        if st.get("pushed"):
+            continue
+        if not include_baseline and st.get("baseline"):
+            continue
+        if not _order_no_from_name(r.original_filename):
+            continue
+        out.append(r)
+    return out
+
+
+def count_pending_push(db: Session, *, include_baseline: bool = True) -> int:
+    """待推飞书的下单图张数 (前端按钮角标用)。"""
+    return len(_pending_push_records(db, include_baseline=include_baseline))
+
+
+def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False) -> dict:
+    """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
+
+    与"生成 HTML"彻底解耦 —— 不论 HTML 是 18:00 日推、每小时补生成、还是手动生成的,
+    只要这条归档还没推过图就在这里补推一次。修复历史 bug: 旧逻辑只推「本次新生成」的单号,
+    一旦被每小时补生成任务抢先生成, 该单就永远不再被推 (归档里全是 HTML、飞书一张图没有)。
+
+    返回 {pushed, failed, remaining, order_nos, reason?}。单张失败不抛 (不阻断整批)。
+    """
     import os
-    if os.environ.get("PANSE_DISABLE_NOTIFY") or not order_nos:
-        return 0
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"pushed": 0, "failed": 0, "remaining": 0, "order_nos": [], "reason": "notify_disabled"}
     from app.services import feishu_client, settings_service
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
-        return 0
-    sent = 0
-    for no in order_nos[:limit]:
+        return {"pushed": 0, "failed": 0,
+                "remaining": count_pending_push(db, include_baseline=include_baseline),
+                "order_nos": [], "reason": "no_chat_id"}
+    pushed = failed = 0
+    sent_nos: list[str] = []
+    for rec in _pending_push_records(db, include_baseline=include_baseline)[:limit]:
+        no = _order_no_from_name(rec.original_filename)
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order:
+            continue
+        if (order.status or "") == "cancelled" or _is_refunded(order):
+            continue   # 退款/取消单不推工厂 (走作废图流程, 不在此补推)
         try:
-            order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
-            if not order:
-                continue
             png = render_png(factory_sheet.build(db, order.id))
             key = feishu_client.upload_image(db, png)
             cap = f"工厂下单图 · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
             feishu_client.send_text(db, chat_id, cap)
             feishu_client.send_image(db, chat_id, key)
-            sent += 1
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True}
+            db.commit()
+            pushed += 1
+            sent_nos.append(no)
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
+            db.rollback()
+            failed += 1
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
-    return sent
+    return {"pushed": pushed, "failed": failed,
+            "remaining": count_pending_push(db, include_baseline=include_baseline),
+            "order_nos": sent_nos}
+
+
+def baseline_existing_sheets(db: Session) -> int:
+    """一次性: 把"现存且还没推过图"的下单图标记为历史基线 (baseline=True)。
+
+    使 18:00 自动推送不会把部署前堆积的历史单一次性刷给工厂群; 这些历史单仍可在
+    「资料存档库」用手动按钮补推。幂等 (已 pushed / 已 baseline 的跳过)。返回新打标条数。"""
+    n = 0
+    for rec in _pending_push_records(db, include_baseline=True):
+        st = rec.row_summary or {}
+        if st.get("baseline"):
+            continue
+        rec.row_summary = {**st, "baseline": True}
+        n += 1
+    if n:
+        db.commit()
+    return n
 
 
 def push_daily(db: Session) -> dict:
-    """每日定时: 补生成 + 把新下单图渲染成图片推飞书群 (用户拍板 2026-06-12: 要图片不要只文字)。"""
+    """每日 18:00: 补生成 + 把"还没推过图"的新下单图渲染成图片推飞书工厂群。
+
+    历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
+    """
     result = generate_pending(db)
     n = result["generated"]
-    imgs = _push_sheet_images(db, result.get("order_nos") or [])
-    result["images_pushed"] = imgs
-    if n:
-        tail = (f", 已把 {imgs} 张图片发到本群" if imgs
-                else ", 已存「资料存档库」(类型: 下单图), 可下载/打印发工厂")
-        text = (f"今日新生成 {n} 张工厂下单图{tail}。\n单号: "
-                + "、".join(result["order_nos"][:10]) + ("…" if n > 10 else ""))
+    push = push_pending_images(db, limit=20, include_baseline=False)
+    result["images_pushed"] = push["pushed"]
+    result["images_remaining"] = push["remaining"]
+    if push["pushed"]:
+        head = f"今日推送 {push['pushed']} 张工厂下单图到工厂群"
+        if push["remaining"]:
+            head += f" (还有 {push['remaining']} 张排队, 明日续推)"
+        text = head + "。\n单号: " + "、".join(push["order_nos"][:10]) + ("…" if len(push["order_nos"]) > 10 else "")
+    elif n:
+        text = f"今日新生成 {n} 张工厂下单图, 已存「资料存档库」(类型: 工厂下单图), 可下载/打印发工厂。"
     else:
-        text = "今日没有需要生成下单图的新订单。"
+        text = "今日没有需要生成/推送的下单图。"
     try:
         from app.services import notify_service
         ok, _ = notify_service.notify(db, text, level="info", title="畔色 ERP [下单图日报]")

@@ -4,12 +4,15 @@
  */
 import { useState } from 'react';
 import {
-  Button, Card, Col, Modal, Row, Segmented, Space, Statistic, Table, Tag, Typography, message,
+  Button, Card, Col, Modal, Popconfirm, Row, Segmented, Space, Statistic, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { DownloadOutlined, FolderOpenOutlined } from '@ant-design/icons';
+import { CloudUploadOutlined, DownloadOutlined, FolderOpenOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useQuery } from '@tanstack/react-query';
-import { ImportedFileRow, downloadImportFile, fetchImportFileSummary, fetchImportFiles } from '../api/imports';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  ImportedFileRow, downloadImportFile, fetchImportFileSummary, fetchImportFiles,
+  fetchOrderSheetPushStatus, pushOrderSheets,
+} from '../api/imports';
 import PresetTable from '../components/PresetTable';
 
 const KIND_LABEL: Record<string, string> = {
@@ -37,8 +40,14 @@ function summaryDetail(s: Record<string, unknown> | null): string {
   return parts.join(' / ');
 }
 
-// 导入结果状态: 成功 / 失败 / 未导入(仅归档) / 已处理(无新增)
-function renderResult(s: Record<string, unknown> | null) {
+// 导入结果状态: 成功 / 失败 / 未导入(仅归档) / 已处理(无新增)。
+// 工厂下单图特殊: 显示飞书推送态 (已推飞书 / 待推飞书 / 历史·待补推)。
+function renderResult(s: Record<string, unknown> | null, kind?: string) {
+  if (kind === 'order_sheet') {
+    if (s?.pushed === true) return <Tag color="cyan">已推飞书</Tag>;
+    if (s?.baseline === true) return <Tag color="gold">历史·待补推</Tag>;
+    return <Tag color="orange">待推飞书</Tag>;
+  }
   if (!s) return <Tag>未导入</Tag>;
   const detail = summaryDetail(s);
   const note = <span style={{ fontSize: 12, color: '#999' }}>{detail}</span>;
@@ -66,11 +75,33 @@ function showFolder(path: string | null) {
 
 export default function ImportArchivePage() {
   const [kind, setKind] = useState<string>('');
+  const qc = useQueryClient();
 
   const { data: sum } = useQuery({ queryKey: ['import-archive-summary'], queryFn: fetchImportFileSummary });
   const { data, isLoading } = useQuery({
     queryKey: ['import-archive', kind],
     queryFn: () => fetchImportFiles({ kind: kind || undefined, limit: 1000 }),
+  });
+  const { data: pushStatus } = useQuery({
+    queryKey: ['order-sheet-push-status'],
+    queryFn: fetchOrderSheetPushStatus,
+  });
+  const pushMut = useMutation({
+    mutationFn: () => pushOrderSheets(20),
+    onSuccess: (r) => {
+      if (r.reason === 'no_chat_id') {
+        message.warning('飞书推送群未配置：到「管理 → 飞书」设置 feishu_push_chat_id（推送群会话ID）');
+        return;
+      }
+      message.success(
+        `已推送 ${r.pushed} 张下单图到飞书工厂群`
+        + (r.failed ? `，失败 ${r.failed} 张` : '')
+        + (r.remaining ? `，还剩 ${r.remaining} 张未推（可再次点击续推）` : '，已全部推完'),
+      );
+      qc.invalidateQueries({ queryKey: ['order-sheet-push-status'] });
+      qc.invalidateQueries({ queryKey: ['import-archive'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '推送失败'),
   });
 
   const onDownload = async (r: ImportedFileRow) => {
@@ -84,7 +115,7 @@ export default function ImportArchivePage() {
   const columns: ColumnsType<ImportedFileRow> = [
     { title: '类型', dataIndex: 'kind', width: 130, render: (v: string) => <Tag color="blue">{KIND_LABEL[v] ?? v}</Tag> },
     { title: '原文件名', dataIndex: 'original_filename', ellipsis: true, render: (v: string | null) => v || <span style={{ color: '#bbb' }}>(无名)</span> },
-    { title: '导入结果', key: 'summary', width: 220, render: (_: unknown, r) => renderResult(r.row_summary) },
+    { title: '导入结果', key: 'summary', width: 220, render: (_: unknown, r) => renderResult(r.row_summary, r.kind) },
     { title: '大小', dataIndex: 'size_bytes', width: 80, align: 'right', render: KB },
     { title: '来源', dataIndex: 'source', width: 70, render: (v: string) => <Tag>{v}</Tag> },
     { title: '上传人', dataIndex: 'uploaded_by', width: 130, ellipsis: true, render: (v: string | null) => v || '-' },
@@ -108,9 +139,32 @@ export default function ImportArchivePage() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>资料存档库</Typography.Title>
-        {sum?.imports_root && (
-          <Button icon={<FolderOpenOutlined />} onClick={() => showFolder(sum.imports_root || null)}>归档目录</Button>
-        )}
+        <Space>
+          {pushStatus && (
+            <Popconfirm
+              title="推送工厂下单图到飞书工厂群"
+              description={`把还没推过的下单图渲染成图片发到飞书工厂群，每次最多 20 张（当前待推 ${pushStatus.pending_total} 张）。`}
+              okText="推送" cancelText="取消"
+              disabled={!pushStatus.configured || pushStatus.pending_total === 0 || pushMut.isPending}
+              onConfirm={() => pushMut.mutate()}
+            >
+              <Tooltip title={
+                !pushStatus.configured ? '飞书推送群未配置：到「管理 → 飞书」设置 feishu_push_chat_id'
+                  : pushStatus.pending_total === 0 ? '没有待推送的下单图（都已推过）' : ''
+              }>
+                <Button
+                  type="primary" icon={<CloudUploadOutlined />} loading={pushMut.isPending}
+                  disabled={!pushStatus.configured || pushStatus.pending_total === 0}
+                >
+                  推送下单图到飞书{pushStatus.pending_total ? ` (待推 ${pushStatus.pending_total})` : ''}
+                </Button>
+              </Tooltip>
+            </Popconfirm>
+          )}
+          {sum?.imports_root && (
+            <Button icon={<FolderOpenOutlined />} onClick={() => showFolder(sum.imports_root || null)}>归档目录</Button>
+          )}
+        </Space>
       </Space>
       <Typography.Paragraph type="secondary" style={{ margin: 0 }}>
         每次导入的表格/图片原文件都自动按 类型/年/月 归档在此,可下载回溯。对账对不上时点开原始凭证核对。

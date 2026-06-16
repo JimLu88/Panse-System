@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -15,7 +16,7 @@ from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.import_file import ImportedFile
-from app.services import import_storage
+from app.services import import_storage, order_sheet_archive_service, settings_service
 from app.services.delivery_storage import get_root
 
 router = APIRouter(prefix="/api/imports", tags=["imports"])
@@ -109,3 +110,43 @@ def download_file(
         media_type="application/octet-stream",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fn)}"},
     )
+
+
+# ── 工厂下单图 → 飞书 手动补推 (修复: 旧逻辑只推"本次新生成"被每小时补生成抢空) ──
+@router.get("/order-sheets/push-status")
+def order_sheet_push_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """资料存档库「推送下单图到飞书」按钮的状态: 飞书是否配好 + 待推张数。
+
+    pending_total: 含历史基线的全部未推 (手动按钮可推的总量);
+    pending_new:   不含历史基线 (18:00 自动会推的量, 平时应接近 0)。
+    """
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    return {
+        "configured": bool(chat_id),
+        "pending_total": order_sheet_archive_service.count_pending_push(db, include_baseline=True),
+        "pending_new": order_sheet_archive_service.count_pending_push(db, include_baseline=False),
+    }
+
+
+class OrderSheetPushIn(BaseModel):
+    limit: int = 20   # 每次最多推多少张 (防一次性刷屏工厂群)
+
+
+@router.post("/order-sheets/push")
+def order_sheet_push(
+    payload: OrderSheetPushIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """手动把"还没推过图"的工厂下单图渲染成图片推飞书工厂群 (含历史基线, 分批每次≤上限)。
+
+    用于: 历史堆积补推、或想立刻验证。推成功的会标记 pushed, 不会重复推。
+    """
+    limit = max(1, min(int(payload.limit or 20), 50))
+    res = order_sheet_archive_service.push_pending_images(db, limit=limit, include_baseline=True)
+    if res.get("reason") == "no_chat_id":
+        raise HTTPException(400, "飞书推送群未配置: 请到 管理 → 飞书 设置 feishu_push_chat_id (推送群会话ID)")
+    return res
