@@ -80,10 +80,10 @@ def _seed_bed(db, with_walnut_sibling=False):
     db.add(Product(code="B1", name="畔色榉木无边床", category="卧室-床", main_material="榉木"))
     db.add(PricingSku(product_code="B1", sku="榉木无边床-1.5米", sku_code="B1-1.5",
                       size_category="中型", daily_price=D("2000"), wood_cost=D("600"),
-                      factory_cost=D("900"), accounting_cost=D("1300")))
+                      factory_cost=D("900"), accounting_cost=D("1300"), big_promo=D("1625")))
     db.add(PricingSku(product_code="B1", sku="榉木无边床-1.8米", sku_code="B1-1.8",
                       size_category="大型", daily_price=D("2300"), wood_cost=D("720"),
-                      factory_cost=D("1050"), accounting_cost=D("1500")))
+                      factory_cost=D("1050"), accounting_cost=D("1500"), big_promo=D("1875")))
     if with_walnut_sibling:
         db.add(Product(code="B2", name="畔色黑胡桃无边床", category="卧室-床", main_material="黑胡桃"))
         db.add(PricingSku(product_code="B2", sku="黑胡桃无边床-1.5米", sku_code="B2-1.5",
@@ -121,7 +121,32 @@ def test_break_even_light():
     assert r["factory_predicted"] == 900.0                 # 定价表 factory_cost@1.5
     assert r["break_even_factory"] == 1600.0               # 2000 − (1300−900)
     assert r["break_even_buffer"] == 700.0                 # 1600 − 900 = 售价2000 − accounting1300
-    assert r["break_even_sell"] == 1300.0                  # B2 保本价 = 售价2000 − 本单利润700 = accounting全成本
+    assert r["product_margin"] == 0.20                     # 大促毛利率 = 平均(1−1300/1625, 1−1500/1875)
+    assert r["break_even_sell"] == 1600.0                  # 保本价 = 售价2000 × (1−0.20)(与红线同值纯巧合)
+
+
+def test_product_margin():
+    """本款大促毛利率(实时): 平均(1−会计成本/大促价); 缺则回落 gross_margin_rate; 再缺→None。"""
+    from app.models.pricing import PricingSku
+    db = _db()
+    db.add(PricingSku(product_code="X1", sku="x-1.0米", sku_code="X1-1.0",
+                      big_promo=D("1000"), accounting_cost=D("800")))   # 1−800/1000=0.20
+    db.add(PricingSku(product_code="X1", sku="x-1.2米", sku_code="X1-1.2",
+                      big_promo=D("1000"), accounting_cost=D("600")))   # 1−600/1000=0.40
+    db.commit()
+    xs = db.query(PricingSku).filter(PricingSku.product_code == "X1").all()
+    assert v2.product_margin(xs) == 0.30                    # 平均(0.20, 0.40)
+    # 无 big_promo → 回落存档 gross_margin_rate
+    db.add(PricingSku(product_code="Y1", sku="y-1.0米", sku_code="Y1-1.0",
+                      gross_margin_rate=D("0.18")))
+    db.commit()
+    ys = db.query(PricingSku).filter(PricingSku.product_code == "Y1").all()
+    assert v2.product_margin(ys) == 0.18
+    # 大促价/会计/存档 全无 → None
+    db.add(PricingSku(product_code="Z1", sku="z-1.0米", sku_code="Z1-1.0", daily_price=D("500")))
+    db.commit()
+    zs = db.query(PricingSku).filter(PricingSku.product_code == "Z1").all()
+    assert v2.product_margin(zs) is None
 
 
 def test_break_even_heavy():

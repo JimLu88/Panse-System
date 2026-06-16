@@ -153,6 +153,24 @@ def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
     return price_pts, wood_pts
 
 
+def product_margin(skus: list[PricingSku]) -> Optional[float]:
+    """本款「大促毛利率」(实时算, 不写死): 平均 (1 − 会计成本 / 大促价)。
+
+    与 pricing 现有大促公式一致(比例 = 会计成本 accounting_cost ÷ 大促到手价 big_promo)。
+    缺 big_promo/accounting_cost 的 SKU 跳过; 全缺 → 回落存档 gross_margin_rate 列均值; 再缺 → None。
+    价格一变下次算价自动跟着变; 不同产品/类目各算各的, 绝不写死。
+    """
+    ms = []
+    for s in skus:
+        bp, ac = s.big_promo, s.accounting_cost
+        if bp is not None and ac is not None and float(bp) > 0:
+            ms.append(1.0 - float(ac) / float(bp))
+    if ms:
+        return round(sum(ms) / len(ms), 4)
+    gm = [float(s.gross_margin_rate) for s in skus if s.gross_margin_rate is not None]
+    return round(sum(gm) / len(gm), 4) if gm else None
+
+
 def quote_light(
     db: Session,
     *,
@@ -257,8 +275,9 @@ def quote_light(
                 if ac is not None:
                     break_even_factory = round(final - (ac - fp), 2)   # 净不亏: 售价 − 非工厂成本(accounting−factory)
                     break_even_buffer = round(break_even_factory - factory_predicted, 2)
-    # B2 决策①: 保本价(最低可卖, 全成本不含畔色利润) = 售价 − 本单利润(buffer)
-    break_even_sell = round(final - break_even_buffer, 2) if break_even_buffer is not None else None
+    # 保本价(最低可卖): 保持本款大促毛利率 → 售价 × (1 − 该款毛利率); 毛利率实时算, 不写死
+    margin = product_margin(skus)
+    break_even_sell = round(final * (1 - margin), 2) if margin is not None else None
 
     # ── 竞品/基准对比 (每次算价都带; 竞品表空则只给本店标准款基准, 永远有对比) ──
     comparison = compare_prices(
@@ -280,8 +299,9 @@ def quote_light(
         "final_price": round(final, 2),
         "factory_predicted": factory_predicted,     # 预测工厂价(定价表 factory_cost 插值, 缺则 None)
         "break_even_factory": break_even_factory,    # 盈亏平衡工厂价(净不亏红线: 售价−非工厂成本)
-        "break_even_buffer": break_even_buffer,      # 安全垫 = 平衡价 − 预测价 (≈本单利润)
-        "break_even_sell": break_even_sell,          # 保本价(最低可卖, 全成本不含畔色利润; 售价−本单利润)
+        "break_even_buffer": break_even_buffer,      # 安全垫 = 平衡价 − 预测价 (≈本单利润; 仅内部参考)
+        "product_margin": margin,                    # 本款大促毛利率(实时: 平均 1−会计成本/大促价; 缺则 None)
+        "break_even_sell": break_even_sell,          # 保本价(最低可卖) = 售价 × (1 − 本款大促毛利率)
         "price_tier": price_tier,
         "breakdown": breakdown,
         "parts_detail": parts_detail,

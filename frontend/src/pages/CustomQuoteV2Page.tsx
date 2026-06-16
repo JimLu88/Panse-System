@@ -95,6 +95,7 @@ interface LightResult {
   break_even_factory?: number | null;
   break_even_buffer?: number | null;
   break_even_sell?: number | null;
+  product_margin?: number | null;
   breakdown: BreakdownItem[];
   parts_detail?: PartDetail[];
   comparison?: Comparison;
@@ -428,6 +429,80 @@ function QuoteCoefPanel({ onSaved }: { onSaved?: () => void }) {
           利润系数只作用于增减部位加价;调低→报价更低更好卖
         </Text>
       </Space>
+    </Card>
+  );
+}
+
+// 保本价 = 报价 × (1 − 本款大促毛利率); 毛利率实时取自该款 SKU, 可手动改
+function MarginFloor({
+  finalPrice,
+  productMargin,
+  factoryPredicted,
+}: {
+  finalPrice: number;
+  productMargin?: number | null;
+  factoryPredicted?: number | null;
+}) {
+  const auto = productMargin != null ? Math.round(productMargin * 1000) / 10 : null;
+  const [marginPct, setMarginPct] = useState<number | null>(auto);
+  useEffect(() => setMarginPct(auto), [auto]);
+  const breakEven = marginPct != null ? finalPrice * (1 - marginPct / 100) : null;
+  return (
+    <Card size="small" type="inner" title="保本价(按本款大促毛利率)" styles={{ body: { padding: 8 } }}>
+      <Space wrap size="large" align="center">
+        <span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            本款大促毛利率(实时·可改)
+          </Text>
+          <br />
+          <InputNumber
+            value={marginPct}
+            onChange={(v) => setMarginPct(v)}
+            addonAfter="%"
+            min={0}
+            max={95}
+            step={0.5}
+            style={{ width: 120 }}
+          />
+          {auto != null ? (
+            <Text type="secondary" style={{ fontSize: 11 }}>
+              {' '}系统取 {auto}%
+            </Text>
+          ) : (
+            <Text type="warning" style={{ fontSize: 11 }}>
+              {' '}该款无大促价数据,请手填
+            </Text>
+          )}
+        </span>
+        <span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            保本价(最低可卖)
+          </Text>
+          <br />
+          <Text strong style={{ fontSize: 22, color: '#fa8c16' }}>
+            {breakEven != null ? `¥${breakEven.toFixed(2)}` : '—'}
+          </Text>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            {' '}= 报价×(1−毛利率)
+          </Text>
+        </span>
+        {factoryPredicted != null && (
+          <span>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              预测工厂价
+            </Text>
+            <br />
+            <Text strong style={{ fontSize: 18 }}>
+              ¥{factoryPredicted.toFixed(2)}
+            </Text>
+          </span>
+        )}
+      </Space>
+      <div style={{ marginTop: 6 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          毛利率实时取自本款 SKU 的「大促价÷会计成本」(=系统现有大促公式),可手动覆盖;保本价随之变。卖低于保本价即亏。
+        </Text>
+      </div>
     </Card>
   );
 }
@@ -900,21 +975,10 @@ export default function CustomQuoteV2Page() {
                     </Text>
                     {light.base_product_name && <Text type="secondary">{light.base_product_name}</Text>}
                   </Space>
-                  {light.break_even_sell != null && (
-                    <Space align="baseline" wrap>
-                      <Text type="secondary">保本价(最低可卖):</Text>
-                      <Text strong style={{ fontSize: 18, color: '#fa8c16' }}>
-                        ¥{light.break_even_sell.toFixed(2)}
-                      </Text>
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        全成本·不含畔色利润;低于此即亏
-                      </Text>
-                    </Space>
-                  )}
-                  <FactoryRedline
-                    predicted={light.factory_predicted}
-                    breakEven={light.break_even_factory}
-                    buffer={light.break_even_buffer}
+                  <MarginFloor
+                    finalPrice={light.final_price}
+                    productMargin={light.product_margin}
+                    factoryPredicted={light.factory_predicted}
                   />
                   <Table<BreakdownItem>
                     size="small"
@@ -1136,7 +1200,7 @@ export default function CustomQuoteV2Page() {
       </Card>
 
       <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        说明: 普通定制以「标准原价(同尺寸真实档价)」为基础做插值 + 增量;材质增量用 wood_cost 反推面积;删除部位只扣材料成本(决策①)。保本价 = 全成本不含畔色利润(最低可卖,低于此即亏)。利润系数在上方「报价系数」面板可改(调低→报价更低更好卖)。本页只读计算, 不落订单。
+        说明: 普通定制以「标准原价(同尺寸真实档价)」为基础做插值 + 增量;材质增量用 wood_cost 反推面积;删除部位只扣材料成本(决策①)。保本价 = 报价 ×(1 − 本款大促毛利率),毛利率实时取自该款 SKU(大促价÷会计成本)、可手动改。增减部位的利润系数在上方「报价系数」面板可改。本页只读计算, 不落订单。
       </Paragraph>
     </Space>
   );
