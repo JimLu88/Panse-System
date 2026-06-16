@@ -39,6 +39,7 @@ from app.api import ops_checklist as ops_checklist_api
 from app.api import settlements as settlements_api
 from app.api import factory_recon as factory_recon_api
 from app.api import factory_orders as factory_orders_api
+from app.api import factory_statement as factory_statement_api
 from app.api import cs_integration as cs_integration_api
 from app.api import competitor as competitor_api
 from app.api import shop_deposits as shop_deposits_api
@@ -306,6 +307,7 @@ app.include_router(ops_checklist_api.router)
 app.include_router(settlements_api.router)
 app.include_router(factory_recon_api.router)
 app.include_router(factory_orders_api.router)
+app.include_router(factory_statement_api.router)
 app.include_router(cs_integration_api.router)
 app.include_router(competitor_api.router)
 app.include_router(shop_deposits_api.router)
