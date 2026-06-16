@@ -39,7 +39,7 @@ interface ClassifyResult {
   target_material?: string | null;
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
-  candidates?: { product_code: string; product_name: string; confidence: number }[];
+  candidates?: { product_code: string; product_name: string; sku?: string | null; confidence: number }[];
   ai_used?: boolean;
 }
 interface BreakdownItem {
@@ -669,7 +669,7 @@ export default function CustomQuoteV2Page() {
                 placeholder="按匹配度排序的 Top-10 候选"
                 options={candidates.map((c) => ({
                   value: c.product_code,
-                  label: `${Math.round(c.confidence * 100)}%　${c.product_name}`,
+                  label: `${Math.round(c.confidence * 100)}%　${c.product_name}${c.sku ? `　· ${c.sku}` : ''}`,
                 }))}
               />
             </Space>

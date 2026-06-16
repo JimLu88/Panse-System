@@ -627,13 +627,15 @@ def product_candidates(
     cands = []
     for x in match_ranked(db, core, "", limit=limit * 2):
         conf = max(float(x["product_confidence"]), _overlap(x["product_name"]))
+        sku = (x.get("skus") or [{}])[0].get("sku")   # 代表SKU(匹配度最高那条), 同名产品靠它区分
         cands.append({"product_code": x["product_code"], "product_name": x["product_name"],
-                      "confidence": round(conf, 2)})
+                      "sku": sku, "confidence": round(conf, 2)})
     mc = round(float(matched_conf or 0.9), 2)
     hit = next((c for c in cands if c["product_code"] == matched_code), None) if matched_code else None
     if matched_code and hit is None:
-        cands.append({"product_code": matched_code,
-                      "product_name": matched_name or matched_code, "confidence": mc})
+        rep = db.query(PricingSku.sku).filter(PricingSku.product_code == matched_code).first()
+        cands.append({"product_code": matched_code, "product_name": matched_name or matched_code,
+                      "sku": rep[0] if rep else None, "confidence": mc})
     elif hit is not None:
         hit["confidence"] = max(hit["confidence"], mc)   # 命中项用分类器置信(更准)
     cands.sort(key=lambda c: c["confidence"], reverse=True)
