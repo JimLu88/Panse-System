@@ -121,6 +121,7 @@ def test_break_even_light():
     assert r["factory_predicted"] == 900.0                 # 定价表 factory_cost@1.5
     assert r["break_even_factory"] == 1600.0               # 2000 − (1300−900)
     assert r["break_even_buffer"] == 700.0                 # 1600 − 900 = 售价2000 − accounting1300
+    assert r["break_even_sell"] == 1300.0                  # B2 保本价 = 售价2000 − 本单利润700 = accounting全成本
 
 
 def test_break_even_heavy():
@@ -135,6 +136,7 @@ def test_break_even_heavy():
     assert r["factory_predicted"] == r["factory_quote_compare"]
     assert r["break_even_factory"] < r["final_price"]      # 红线低于售价
     assert r["break_even_buffer"] == round(r["break_even_factory"] - r["factory_predicted"], 2)
+    assert r["break_even_sell"] == round(r["final_price"] - r["break_even_buffer"], 2)  # B2 保本价
 
 
 # ───────── 普通定制: 增减部位 delta ─────────
@@ -150,7 +152,7 @@ def test_add_remove_parts():
     assert r["parts_detail"][0]["change"] == "add" and r["parts_detail"][0]["material_cost"] == 60.0
     r2 = v2.quote_light(db, base_product_code="B1", target_length_m=1.5,
                         remove_parts=[{"material": "金属把手", "qty": 1}])
-    assert r2["addremove_delta"] == -48.75         # 30×1.3×1.25÷0.85×0.85(删除保守, 只高不低)
+    assert r2["addremove_delta"] == -25.5          # 决策①: 删件只扣材料 30×0.85(不退人工/利润)
     # 每次算价都带竞品/基准对比块
     assert "comparison" in r and r["comparison"]["baseline"] is not None
 
@@ -208,6 +210,35 @@ def test_classify_miss_is_heavy():
     r = v2.classify(db, text="全新异形旋转吧台")
     assert r["customization_type"] == "特殊定制"
     assert r["base_product_code"] is None
+
+
+# ───────── A6 尺寸合理性校验 ─────────
+
+def test_size_plausible():
+    from app.services.custom_quote_config_service import DEFAULT_CONFIG as cfg, size_plausible
+    assert size_plausible(cfg, "卧室-床头柜", 1.5) is False   # 1.5m 床头柜→不合理(上限0.5×1.6=0.8)
+    assert size_plausible(cfg, "卧室-床头柜", 0.7) is True
+    assert size_plausible(cfg, "餐厅-餐桌", 1.5) is True       # 餐桌上限 2.0×1.6
+    assert size_plausible(cfg, "卧室-床头柜", None) is True    # 无长度→不拦
+    assert size_plausible(cfg, "衣帽架", 5.0) is True          # 大阈0→不判
+
+
+def test_apply_size_sanity_demotes_implausible():
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+    from app.services.custom_quote_config_service import DEFAULT_CONFIG
+    db = _db()
+    db.add(Product(code="N1", name="畔色床头柜", category="卧室-床头柜", main_material="樱桃木"))
+    db.add(PricingSku(product_code="N1", sku="床头柜-0.5米", sku_code="N1-0.5",
+                      size_category="小型", daily_price=D("800")))
+    db.commit()
+    res = {"customization_type": "普通定制", "base_product_code": "N1",
+           "base_product_name": "畔色床头柜", "target_length_m": 1.5, "confidence": 0.9}
+    out = v2.apply_size_sanity(db, DEFAULT_CONFIG, res)
+    assert out["base_product_code"] is None and out["size_warning"] is True
+    assert out["confidence"] <= 0.3
+    out2 = v2.apply_size_sanity(db, DEFAULT_CONFIG, {**res, "target_length_m": 0.5})
+    assert out2["base_product_code"] == "N1" and not out2.get("size_warning")
 
 
 # ───────── 自动推五金 ─────────

@@ -189,7 +189,7 @@ def quote_light(
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
         return {"error": "锚点价缺失(该产品4档价为空)", "final_price": None, "breakdown": []}
-    breakdown.append({"label": "锚点价", "amount": round(anchor, 2), "note": note})
+    breakdown.append({"label": "标准原价(同尺寸)", "amount": round(anchor, 2), "note": note})
 
     final = anchor
 
@@ -257,6 +257,8 @@ def quote_light(
                 if ac is not None:
                     break_even_factory = round(final - (ac - fp), 2)   # 净不亏: 售价 − 非工厂成本(accounting−factory)
                     break_even_buffer = round(break_even_factory - factory_predicted, 2)
+    # B2 决策①: 保本价(最低可卖, 全成本不含畔色利润) = 售价 − 本单利润(buffer)
+    break_even_sell = round(final - break_even_buffer, 2) if break_even_buffer is not None else None
 
     # ── 竞品/基准对比 (每次算价都带; 竞品表空则只给本店标准款基准, 永远有对比) ──
     comparison = compare_prices(
@@ -279,6 +281,7 @@ def quote_light(
         "factory_predicted": factory_predicted,     # 预测工厂价(定价表 factory_cost 插值, 缺则 None)
         "break_even_factory": break_even_factory,    # 盈亏平衡工厂价(净不亏红线: 售价−非工厂成本)
         "break_even_buffer": break_even_buffer,      # 安全垫 = 平衡价 − 预测价 (≈本单利润)
+        "break_even_sell": break_even_sell,          # 保本价(最低可卖, 全成本不含畔色利润; 售价−本单利润)
         "price_tier": price_tier,
         "breakdown": breakdown,
         "parts_detail": parts_detail,
@@ -395,7 +398,7 @@ def style_delta(
     """增减部位逐部位 cascade → (净delta, breakdown行, parts_detail可编辑明细)。
 
     每部位: 材料成本 → ×(1+人工占比) → ×(1+工厂利润) ÷ (1−畔色毛利) = 零售增量。
-    追加: +零售; 删除: −零售×remove_credit (铁律「只高不低」: 删得保守, 偏高防亏)。
+    追加: +零售; 删除: −材料×remove_credit (决策①: 删件只省材料, 不退人工/利润; 默认0.85, 铁律「只高不低」)。
     """
     dims_map = _template_part_dims(category, length_m, depth_cm, height_cm)
     lr = float(cfg.get("style_labor_ratio", 0.30))
@@ -422,11 +425,11 @@ def style_delta(
         lines.append({"label": f"追加: {r['name']}", "amount": amt, "note": note})
     for p in (remove_parts or []):
         r = _resolve_part(db, p, dims_map)
-        amt = round(retail(r["material_cost"]) * rc, 2)
+        amt = round(r["material_cost"] * rc, 2)   # 决策①: 删件只省材料(不退人工/利润)
         total -= amt
         r["change"], r["delta"] = "remove", -amt
         detail.append(r)
-        note = f"材料{r['material_cost']:g}→零售×{rc:g}保守(只高不低)"
+        note = f"材料{r['material_cost']:g}×{rc:g}(决策①: 删件只扣材料, 不退人工/利润)"
         if not r["priced"]:
             note = "⚠物料表无此料价,计0需手填 / " + note
         lines.append({"label": f"删除: {r['name']}", "amount": -amt, "note": note})
@@ -452,6 +455,9 @@ def compare_prices(
         rows = q.limit(300).all()
     except Exception:  # noqa: BLE001
         rows = []
+
+    # A1: 竞品对比排除自家店(畔色木作/畔色…), 只留真·别家竞品
+    rows = [r for r in rows if not (r.store and "畔色" in r.store)]
 
     def price_of(r) -> float:
         v = r.latest_price if r.latest_price is not None else r.daily_price
@@ -605,9 +611,38 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
     }
 
 
+def apply_size_sanity(db: Session, cfg: dict, result: dict) -> dict:
+    """A6 尺寸合理性校验: 命中产品品类×解析长度不合理 → 不自动选定, 降权交候选下拉。
+
+    防「1.5m 窄柜被判成床头柜」: 命中产品末级品类有 size_rules 且长度超「大阈值×系数」,
+    则清空 base_product_code(前端不自动算价)、置 size_warning、置信压到≤0.3, 让用户从
+    匹配产品 Top-N 下拉手选纠正。命中合理或无长度 → 原样返回。
+    """
+    from app.services import custom_quote_config_service as ccfg
+    code = result.get("base_product_code")
+    length = result.get("target_length_m")
+    if not code or not length:
+        return result
+    cat = db.query(Product.category).filter(Product.code == code).scalar()
+    if ccfg.size_plausible(cfg, cat, length):
+        return result
+    leaf = (cat or "").split("-")[-1] or "该品类"
+    name = result.get("base_product_name") or code
+    return {
+        **result,
+        "base_product_code": None,
+        "base_product_name": None,
+        "matched_sku_code": None,
+        "confidence": round(min(float(result.get("confidence") or 0.3), 0.3), 2),
+        "reasoning": (f"⚠ 疑似误判: {length:g}m 对「{leaf}」不合理(原命中 {name}), "
+                      f"已不自动选定, 请从下方匹配产品下拉里确认"),
+        "size_warning": True,
+    }
+
+
 def product_candidates(
     db: Session, text: str, *, matched_code=None, matched_name=None,
-    matched_conf=0.9, limit: int = 10,
+    matched_conf=0.9, limit: int = 10, length_m: Optional[float] = None,
 ) -> list[dict]:
     """匹配产品 Top-N 候选 (去噪后按相似度排; 确保命中项在内), 给前端下拉手选纠正。
 
@@ -638,6 +673,17 @@ def product_candidates(
                       "sku": rep[0] if rep else None, "confidence": mc})
     elif hit is not None:
         hit["confidence"] = max(hit["confidence"], mc)   # 命中项用分类器置信(更准)
+    # A6: 尺寸对该品类不合理的候选降权(防 1.5m 把床头柜排前)
+    if length_m:
+        from app.services import custom_quote_config_service as ccfg
+        _cfg = ccfg.get_config(db)
+        _codes = [c["product_code"] for c in cands if c.get("product_code")]
+        _cats = dict(db.query(Product.code, Product.category)
+                     .filter(Product.code.in_(_codes)).all()) if _codes else {}
+        for c in cands:
+            if not ccfg.size_plausible(_cfg, _cats.get(c["product_code"]), length_m):
+                c["confidence"] = round(c["confidence"] * 0.3, 2)
+                c["size_flag"] = True
     cands.sort(key=lambda c: c["confidence"], reverse=True)
     return cands[:limit]
 
@@ -677,6 +723,40 @@ def _aggregate_template(db: Session, category: str, top: int) -> list[dict]:
         common_mat = mat_of[name].most_common(1)[0][0] if mat_of.get(name) else name
         out.append({"part": name, "default_material": common_mat, "freq": n})
     return out
+
+
+# A3 常用部位(增减部位下拉兜底, 与品类 BOM 模板合并)
+_COMMON_PARTS = [
+    "顶板", "底板", "侧板", "背板", "中间背板", "层板", "隔板", "竖隔板",
+    "抽屉", "抽屉面板", "门板", "柜门", "脚", "脚架", "踢脚",
+    "拉手", "把手", "电力轨道", "灯带", "挂衣杆", "镜子", "玻璃门", "玻璃层板",
+]
+
+
+def part_options(db: Session, *, category: str = "") -> dict:
+    """A3 增减部位可选项: 常用部位 + 该品类 BOM 模板部位 + 物料表可选料名。
+
+    给前端可搜索下拉(替代手输, 防判错)。物料表排除 人工费/打包/运费/安装/样块/样品/小样。
+    返回 {parts:[...], materials:[...]} 两组字符串(前端分组展示, 仍允许手填自定义)。
+    """
+    parts: list[str] = list(_COMMON_PARTS)
+    if category:
+        for p in suggest_part_template(db, category, top=30):
+            nm = p.get("part")
+            if nm and nm not in parts:
+                parts.append(nm)
+    seen: set[str] = set()
+    mats: list[str] = []
+    rows = db.query(Material.name).filter(Material.price.isnot(None)).limit(3000).all()
+    for (name,) in rows:
+        if not name or name in seen:
+            continue
+        if any(x in name for x in ("人工费", "打包", "运费", "安装", "样块", "样品", "小样")):
+            continue
+        seen.add(name)
+        mats.append(name)
+    mats.sort()
+    return {"parts": parts, "materials": mats[:400]}
 
 
 # 自动推五金阈值 (后台可调; 逻辑借鉴参考项目, 数据用我们自己的)
@@ -774,6 +854,7 @@ def quote_heavy(
                    + float(r.packing_fee) + float(r.freight) + float(r.install_fee))
     break_even = round(final - non_factory - final * (plat + tax), 2)
     buffer = round(break_even - predicted, 2)
+    break_even_sell = round(final - buffer, 2)   # B2: 保本价(最低可卖, 全成本不含畔色利润)
     return {
         "product_type": product_type,
         "final_price": final,
@@ -784,6 +865,7 @@ def quote_heavy(
         "factory_predicted": predicted,           # 预测工厂价(=木作总成本+抽屉轨道)
         "break_even_factory": break_even,          # 盈亏平衡工厂价(净不亏红线: 高于此本单亏)
         "break_even_buffer": buffer,               # 安全垫 = 平衡价 − 预测价 (≈本单利润)
+        "break_even_sell": break_even_sell,        # 保本价(最低可卖, 全成本不含畔色利润; 售价−本单利润)
         "break_even_note": f"净不亏: 售价{final:.0f} − 非工厂成本{non_factory:.0f} − 平台税{final*(plat+tax):.0f}",
         "panse_cost": float(r.panse_cost),
         "inferred_hardware": inferred,

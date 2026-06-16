@@ -1,12 +1,14 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
   Card,
   Checkbox,
+  Col,
   Divider,
   Input,
   InputNumber,
+  Row,
   Select,
   Space,
   Table,
@@ -39,8 +41,9 @@ interface ClassifyResult {
   target_material?: string | null;
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
-  candidates?: { product_code: string; product_name: string; sku?: string | null; confidence: number }[];
+  candidates?: { product_code: string; product_name: string; sku?: string | null; confidence: number; size_flag?: boolean }[];
   ai_used?: boolean;
+  size_warning?: boolean;
 }
 interface BreakdownItem {
   label: string;
@@ -91,6 +94,7 @@ interface LightResult {
   factory_predicted?: number | null;
   break_even_factory?: number | null;
   break_even_buffer?: number | null;
+  break_even_sell?: number | null;
   breakdown: BreakdownItem[];
   parts_detail?: PartDetail[];
   comparison?: Comparison;
@@ -117,6 +121,7 @@ interface HeavyResult {
   factory_predicted?: number | null;
   break_even_factory?: number | null;
   break_even_buffer?: number | null;
+  break_even_sell?: number | null;
   break_even_note?: string;
   inferred_hardware: HardwareItem[];
   error?: string;
@@ -167,6 +172,19 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
 async function apiGet<T>(path: string): Promise<T> {
   const resp = await fetch('/api/customization' + path, { headers: authHeaders(false) });
   if (!resp.ok) throw new Error('请求失败');
+  return (await resp.json()) as T;
+}
+
+async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch('/api/customization' + path, {
+    method: 'PUT',
+    headers: authHeaders(true),
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) {
+    const e = (await resp.json().catch(() => ({ detail: '保存失败' }))) as { detail?: string };
+    throw new Error(e.detail ?? '保存失败');
+  }
   return (await resp.json()) as T;
 }
 
@@ -295,7 +313,7 @@ function FactoryRedline({
         </span>
         <span>
           <Text type="secondary" style={{ fontSize: 12 }}>
-            安全垫(工厂可再高)
+            工厂涨价余地(还能涨多少到亏线)
           </Text>
           <br />
           <Text strong style={{ fontSize: 18, color: buffer != null && buffer >= 0 ? '#389e0d' : '#cf1322' }}>
@@ -305,9 +323,111 @@ function FactoryRedline({
       </Space>
       <div style={{ marginTop: 6 }}>
         <Text type="secondary" style={{ fontSize: 12 }}>
-          工厂实际报价 ≤ 红线才不亏;红线 − 预测 = 安全垫(≈本单利润)。净不亏口径(已扣运费/安装/配件/平台扣点/税)。
+          工厂实际报价 ≤ 红线才不亏;红线 − 预测 = 工厂涨价余地(≈本单利润)。净不亏口径(已扣运费/安装/配件/平台扣点/税)。
         </Text>
       </div>
+    </Card>
+  );
+}
+
+// A3: 增减部位可搜索下拉(常用部位 + 物料表), 仍允许手填自定义
+function PartSelect({
+  value,
+  onChange,
+  groups,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  groups: { label: string; options: { value: string; label: string }[] }[];
+}) {
+  const [search, setSearch] = useState('');
+  const opts = useMemo(() => {
+    const known = new Set(groups.flatMap((g) => g.options.map((o) => o.value)));
+    const extra = search && !known.has(search) ? search : value && !known.has(value) ? value : '';
+    return extra
+      ? [{ label: '自定义', options: [{ value: extra, label: `${extra}(手填)` }] }, ...groups]
+      : groups;
+  }, [groups, search, value]);
+  return (
+    <Select
+      showSearch
+      value={value || undefined}
+      onChange={(v) => onChange((v as string) ?? '')}
+      onSearch={setSearch}
+      placeholder="选部位/材料(可搜索·可手填)"
+      style={{ width: 240 }}
+      options={opts}
+      filterOption={(input, option) =>
+        String(option?.label ?? '').toLowerCase().includes(input.toLowerCase())
+      }
+      allowClear
+    />
+  );
+}
+
+// B2: 报价系数面板(工厂/畔色/安全 可调, 改完保存→重算生效)
+function QuoteCoefPanel({ onSaved }: { onSaved?: () => void }) {
+  const [cfg, setCfg] = useState<{ factory: number; panse: number; safety: number } | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    apiGet<{ factory_profit_rate: number; panse_profit_rate: number; safety_rate: number }>('/quote-config')
+      .then((c) => setCfg({ factory: c.factory_profit_rate, panse: c.panse_profit_rate, safety: c.safety_rate }))
+      .catch(() => undefined);
+  }, []);
+  if (!cfg) return null;
+  const save = async () => {
+    setSaving(true);
+    try {
+      await apiPut('/quote-config', {
+        factory_profit_rate: cfg.factory,
+        panse_profit_rate: cfg.panse,
+        safety_rate: cfg.safety,
+      });
+      message.success('系数已保存,重新算价生效');
+      onSaved?.();
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card size="small" type="inner" title="报价系数(可调 · 改完保存→重算生效)" styles={{ body: { padding: 8 } }}>
+      <Space wrap size={8} align="center">
+        <InputNumber
+          addonBefore="工厂利润"
+          addonAfter="%"
+          value={Math.round(cfg.factory * 1000) / 10}
+          onChange={(v) => setCfg({ ...cfg, factory: (v ?? 0) / 100 })}
+          min={0}
+          max={95}
+          style={{ width: 170 }}
+        />
+        <InputNumber
+          addonBefore="畔色利润"
+          addonAfter="%"
+          value={Math.round(cfg.panse * 1000) / 10}
+          onChange={(v) => setCfg({ ...cfg, panse: (v ?? 0) / 100 })}
+          min={0}
+          max={95}
+          style={{ width: 170 }}
+        />
+        <InputNumber
+          addonBefore="安全系数"
+          value={cfg.safety}
+          onChange={(v) => setCfg({ ...cfg, safety: v ?? 1.05 })}
+          min={1}
+          max={3}
+          step={0.01}
+          style={{ width: 150 }}
+        />
+        <Button type="primary" ghost loading={saving} onClick={save}>
+          保存系数
+        </Button>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          利润系数只作用于增减部位加价;调低→报价更低更好卖
+        </Text>
+      </Space>
     </Card>
   );
 }
@@ -331,6 +451,7 @@ export default function CustomQuoteV2Page() {
   const [light, setLight] = useState<LightResult | null>(null);
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
   const partSeq = useRef(1);
+  const [partOpts, setPartOpts] = useState<{ parts: string[]; materials: string[] }>({ parts: [], materials: [] });
 
   // ── 特殊定制 ──
   const [ptype, setPtype] = useState('');
@@ -352,6 +473,21 @@ export default function CustomQuoteV2Page() {
   // ── 留痕对账 ──
   const [logs, setLogs] = useState<QuoteLog[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
+
+  // A3: 加载增减部位下拉数据(常用部位 + 物料表); 命中产品后按其品类补 BOM 部位
+  useEffect(() => {
+    const cat = light?.category ? `?category=${encodeURIComponent(light.category)}` : '';
+    apiGet<{ parts: string[]; materials: string[] }>(`/v2/part-options${cat}`)
+      .then(setPartOpts)
+      .catch(() => undefined);
+  }, [light?.category]);
+  const partGroups = useMemo(
+    () => [
+      { label: '常用部位', options: partOpts.parts.map((p) => ({ value: p, label: p })) },
+      { label: '物料', options: partOpts.materials.map((m) => ({ value: m, label: m })) },
+    ],
+    [partOpts],
+  );
 
   // 说一句话 → 自动分类 + (普通定制)自动算价; 判错可点「停止」中断
   const runPipeline = async () => {
@@ -570,7 +706,7 @@ export default function CustomQuoteV2Page() {
   const delBoard = (key: number) => setBoards((prev) => prev.filter((b) => b.key !== key));
 
   return (
-    <Space direction="vertical" style={{ width: '100%', maxWidth: 980 }} size="middle">
+    <Space direction="vertical" style={{ width: '100%', maxWidth: 1180 }} size="middle">
       <Space align="center">
         <Title level={4} style={{ margin: 0 }}>
           定制报价 · 智能算价
@@ -627,7 +763,7 @@ export default function CustomQuoteV2Page() {
           </Space>
           {cls && (
             <Alert
-              type={cls.customization_type === '普通定制' ? 'success' : 'warning'}
+              type={cls.size_warning ? 'warning' : cls.customization_type === '普通定制' ? 'success' : 'warning'}
               message={
                 <Space wrap>
                   <Tag color={cls.customization_type === '普通定制' ? 'blue' : 'orange'}>
@@ -657,6 +793,7 @@ export default function CustomQuoteV2Page() {
       {/* ── 2. 普通定制 ── */}
       <Card size="small" title="② 普通定制算价(改现有产品)">
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          <QuoteCoefPanel onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
           {candidates.length > 0 && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -720,11 +857,10 @@ export default function CustomQuoteV2Page() {
                   <Tag color={p.change === 'add' ? 'green' : 'red'}>
                     {p.change === 'add' ? '追加' : '删除'}
                   </Tag>
-                  <Input
+                  <PartSelect
                     value={p.material}
-                    onChange={(e) => updatePartRow(p.key, { material: e.target.value })}
-                    style={{ width: 240 }}
-                    placeholder="部位/材料名 如 中间背板 / 电力轨道"
+                    onChange={(v) => updatePartRow(p.key, { material: v })}
+                    groups={partGroups}
                   />
                   <InputNumber
                     addonBefore="数量"
@@ -754,60 +890,77 @@ export default function CustomQuoteV2Page() {
           </Card>
 
           {light && light.final_price != null && (
-            <>
-              <Space align="baseline">
-                <Text>最终报价:</Text>
-                <Text strong style={{ fontSize: 26, color: '#1677ff' }}>
-                  ¥{light.final_price.toFixed(2)}
-                </Text>
-                {light.base_product_name && <Text type="secondary">{light.base_product_name}</Text>}
-              </Space>
-              <FactoryRedline
-                predicted={light.factory_predicted}
-                breakEven={light.break_even_factory}
-                buffer={light.break_even_buffer}
-              />
-              <Table<BreakdownItem>
-                size="small"
-                rowKey={(_, i) => String(i)}
-                pagination={false}
-                columns={breakdownCols}
-                dataSource={light.breakdown}
-              />
-              {light.comparison && (
-                <Card
-                  size="small"
-                  type="inner"
-                  title="竞品 / 标准款 对比"
-                  styles={{ body: { padding: 8 } }}
-                >
-                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
-                    <Text type="secondary" style={{ fontSize: 12 }}>
-                      {light.comparison.note}
+            <Row gutter={16}>
+              <Col xs={24} lg={14}>
+                <Space direction="vertical" style={{ width: '100%' }} size={8}>
+                  <Space align="baseline" wrap>
+                    <Text>最终报价:</Text>
+                    <Text strong style={{ fontSize: 26, color: '#1677ff' }}>
+                      ¥{light.final_price.toFixed(2)}
                     </Text>
-                    {light.comparison.baseline && (
-                      <Space wrap>
-                        <Tag>{light.comparison.baseline.label}</Tag>
-                        <Text>¥{light.comparison.baseline.price.toFixed(2)}</Text>
-                        <Tag color={light.comparison.baseline.is_lower ? 'green' : 'red'}>
-                          本单{light.comparison.baseline.is_lower ? '低' : '高'}{' '}
-                          {Math.abs(light.comparison.baseline.diff_pct)}%
-                        </Tag>
-                      </Space>
-                    )}
-                    {light.comparison.competitors.length > 0 && (
-                      <Table<CompetitorRow>
-                        size="small"
-                        rowKey={(_, i) => String(i)}
-                        pagination={false}
-                        columns={competitorCols}
-                        dataSource={light.comparison.competitors}
-                      />
-                    )}
+                    {light.base_product_name && <Text type="secondary">{light.base_product_name}</Text>}
                   </Space>
-                </Card>
-              )}
-            </>
+                  {light.break_even_sell != null && (
+                    <Space align="baseline" wrap>
+                      <Text type="secondary">保本价(最低可卖):</Text>
+                      <Text strong style={{ fontSize: 18, color: '#fa8c16' }}>
+                        ¥{light.break_even_sell.toFixed(2)}
+                      </Text>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        全成本·不含畔色利润;低于此即亏
+                      </Text>
+                    </Space>
+                  )}
+                  <FactoryRedline
+                    predicted={light.factory_predicted}
+                    breakEven={light.break_even_factory}
+                    buffer={light.break_even_buffer}
+                  />
+                  <Table<BreakdownItem>
+                    size="small"
+                    rowKey={(_, i) => String(i)}
+                    pagination={false}
+                    columns={breakdownCols}
+                    dataSource={light.breakdown}
+                  />
+                </Space>
+              </Col>
+              <Col xs={24} lg={10}>
+                {light.comparison && (
+                  <Card
+                    size="small"
+                    type="inner"
+                    title="竞品 / 标准款 对比(同尺寸·别家店)"
+                    styles={{ body: { padding: 8 } }}
+                  >
+                    <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {light.comparison.note}
+                      </Text>
+                      {light.comparison.baseline && (
+                        <Space wrap>
+                          <Tag>{light.comparison.baseline.label}</Tag>
+                          <Text>¥{light.comparison.baseline.price.toFixed(2)}</Text>
+                          <Tag color={light.comparison.baseline.is_lower ? 'green' : 'red'}>
+                            本单{light.comparison.baseline.is_lower ? '低' : '高'}{' '}
+                            {Math.abs(light.comparison.baseline.diff_pct)}%
+                          </Tag>
+                        </Space>
+                      )}
+                      {light.comparison.competitors.length > 0 && (
+                        <Table<CompetitorRow>
+                          size="small"
+                          rowKey={(_, i) => String(i)}
+                          pagination={false}
+                          columns={competitorCols}
+                          dataSource={light.comparison.competitors}
+                        />
+                      )}
+                    </Space>
+                  </Card>
+                )}
+              </Col>
+            </Row>
           )}
           {light && light.final_price == null && (
             <Alert type="error" showIcon message={light.error ?? '算价失败'} />
@@ -934,6 +1087,15 @@ export default function CustomQuoteV2Page() {
                 </Text>
                 <Tag color="volcano">工厂木作对比 ¥{heavy.factory_quote_compare.toFixed(0)}</Tag>
               </Space>
+              {heavy.break_even_sell != null && (
+                <Space align="baseline" wrap>
+                  <Text type="secondary">保本价(最低可卖):</Text>
+                  <Text strong style={{ fontSize: 18, color: '#d4380d' }}>
+                    ¥{heavy.break_even_sell.toFixed(2)}
+                  </Text>
+                  <Text type="secondary" style={{ fontSize: 12 }}>全成本·不含畔色利润;低于此即亏</Text>
+                </Space>
+              )}
               <FactoryRedline
                 predicted={heavy.factory_predicted ?? heavy.factory_quote_compare}
                 breakEven={heavy.break_even_factory}
@@ -974,7 +1136,7 @@ export default function CustomQuoteV2Page() {
       </Card>
 
       <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        说明: 普通定制锚在真实 SKU 档价上做插值 + 增量;材质增量用 wood_cost 反推面积。工厂只报木作=「工厂木作对比」口径(配件/打包/运费/安装/畔色利润不含)。系数/利润率在「报价参数设置」里可改。本页只读计算, 不落订单。
+        说明: 普通定制以「标准原价(同尺寸真实档价)」为基础做插值 + 增量;材质增量用 wood_cost 反推面积;删除部位只扣材料成本(决策①)。保本价 = 全成本不含畔色利润(最低可卖,低于此即亏)。利润系数在上方「报价系数」面板可改(调低→报价更低更好卖)。本页只读计算, 不落订单。
       </Paragraph>
     </Space>
   );

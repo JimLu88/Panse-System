@@ -385,10 +385,15 @@ async def v2_classify(
     if result is None:
         result = v2.classify(db, text=message, image_count=len(image_data))
 
+    # A6 尺寸合理性校验(防 1.5m 判成床头柜): 不合理→清空选定+降权, 交候选下拉手选纠正
+    from app.services import custom_quote_config_service as ccfg
+    result = v2.apply_size_sanity(db, ccfg.get_config(db), result)
+
     # 匹配产品 Top-10 候选 (带匹配度%): 匹配不一定对 → 前端下拉让用户手选纠正
     result["candidates"] = v2.product_candidates(
         db, message, matched_code=result.get("base_product_code"),
-        matched_name=result.get("base_product_name"), matched_conf=result.get("confidence"))
+        matched_name=result.get("base_product_name"), matched_conf=result.get("confidence"),
+        length_m=result.get("target_length_m"))
 
     _log_quote(db, source="v2_classify", user_message=message,
                ai_response=result.get("reasoning", ""),
@@ -443,6 +448,13 @@ def v2_part_template(category: str, db: Session = Depends(get_db)) -> dict:
     """品类部位模板 (从自有 BOM 聚合): 选品类带出标准部位骨架, 供特殊定制预填板单。"""
     from app.services import custom_quote_v2_service as v2
     return {"category": category, "parts": v2.suggest_part_template(db, category)}
+
+
+@router.get("/v2/part-options")
+def v2_part_options(category: str = "", db: Session = Depends(get_db)) -> dict:
+    """A3 增减部位下拉数据源: 常用部位 + 品类BOM部位 + 物料表料名(替代手输, 防判错)。"""
+    from app.services import custom_quote_v2_service as v2
+    return v2.part_options(db, category=category)
 
 
 @router.get("/v2/quote-logs")

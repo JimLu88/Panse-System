@@ -58,7 +58,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "tax_rate": 0.0,                # 税率 (售价占比; 默认0, 需要开票计税时填)
     # 普通定制·增减部位逐部位算价 (参考程序 style-customization 逻辑, 系数用我们自己的, 后台可调):
     "style_labor_ratio": 0.30,      # 增减部位人工 = 材料成本 × 此 (≈出厂人工占比23.08%的等价: 0.30/1.30)
-    "style_remove_credit": 0.85,    # 删除部位只返还此比例零售价 (铁律「只高不低」: 删得保守, 偏高防亏)
+    "style_remove_credit": 0.85,    # 删除部位只返还此比例「材料成本」(决策①: 删件只省料, 不退人工/利润; 铁律「只高不低」)
     "competitor_coupon_rate": 0.08,  # 竞品通用平台券率 (券后价对照, 显示减额)
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡
@@ -67,6 +67,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "install": [50, 100, 150],      # 上门安装费 [小,中,大]
     "labor": _LABOR,
     "size_rules": _SIZE_RULES,
+    # A6 尺寸合理性: 长度 > 该品类「大阈值」×此系数 → 判该品类不合理
+    # (防 1.5m 被判成床头柜: 床头柜大阈 0.5 × 1.6 = 0.8m 为上限)
+    "size_sanity_factor": 1.6,
     "prices": _PRICES,
 }
 
@@ -144,6 +147,23 @@ def classify_size(cfg: dict, product_type: str, length_m: float) -> str:
     if length_m >= mid:
         return "中"
     return "小"
+
+
+def size_plausible(cfg: dict, category: str | None, length_m: float | None) -> bool:
+    """品类×长度是否合理 (A6 防误判: 1.5m 不该判成床头柜)。
+
+    规则: 长度 ≤ 该品类「大阈值」× size_sanity_factor → 合理。
+    无长度 / 品类无 size_rules / 大阈值为 0(如衣帽架) → 不判定 (返回 True 不拦)。
+    category 取末级 (Product.category 形如「卧室-床头柜」, size_rules 键为末级名)。
+    """
+    if not category or not length_m:
+        return True
+    leaf = category.split("-")[-1]
+    rule = (cfg.get("size_rules") or {}).get(leaf)
+    if not rule or not rule[0]:
+        return True
+    factor = float(cfg.get("size_sanity_factor", 1.6) or 1.6)
+    return float(length_m) <= float(rule[0]) * factor
 
 
 _SIZE_IDX = {"小": 0, "中": 1, "大": 2}
