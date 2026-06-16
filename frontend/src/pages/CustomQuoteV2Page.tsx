@@ -3,9 +3,11 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Divider,
   Input,
   InputNumber,
+  Select,
   Space,
   Table,
   Tag,
@@ -37,6 +39,7 @@ interface ClassifyResult {
   target_material?: string | null;
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
+  candidates?: { product_code: string; product_name: string; confidence: number }[];
   ai_used?: boolean;
 }
 interface BreakdownItem {
@@ -147,11 +150,12 @@ function authHeaders(json: boolean): Record<string, string> {
   return h;
 }
 
-async function apiPost<T>(path: string, body: unknown): Promise<T> {
+async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Promise<T> {
   const resp = await fetch('/api/customization' + path, {
     method: 'POST',
     headers: authHeaders(true),
     body: JSON.stringify(body),
+    signal,
   });
   if (!resp.ok) {
     const e = (await resp.json().catch(() => ({ detail: '请求失败' }))) as { detail?: string };
@@ -314,6 +318,10 @@ export default function CustomQuoteV2Page() {
   const [clsImages, setClsImages] = useState<File[]>([]);
   const [clsLoading, setClsLoading] = useState(false);
   const [cls, setCls] = useState<ClassifyResult | null>(null);
+  const [candidates, setCandidates] = useState<NonNullable<ClassifyResult['candidates']>>([]);
+  const [autoQuote, setAutoQuote] = useState(true);   // 说一句话→自动往下算价
+  const [running, setRunning] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
 
   // ── 普通定制 ──
   const [pcode, setPcode] = useState('');
@@ -345,11 +353,15 @@ export default function CustomQuoteV2Page() {
   const [logs, setLogs] = useState<QuoteLog[] | null>(null);
   const [logsLoading, setLogsLoading] = useState(false);
 
-  const doClassify = async () => {
+  // 说一句话 → 自动分类 + (普通定制)自动算价; 判错可点「停止」中断
+  const runPipeline = async () => {
     if (!desc.trim() && clsImages.length === 0) {
       message.warning('请输入描述或上传图片');
       return;
     }
+    const ac = new AbortController();
+    abortRef.current = ac;
+    setRunning(true);
     setClsLoading(true);
     setCls(null);
     try {
@@ -360,10 +372,12 @@ export default function CustomQuoteV2Page() {
         method: 'POST',
         body: fd,
         headers: authHeaders(false),
+        signal: ac.signal,
       });
       if (!resp.ok) throw new Error('分类失败');
       const r = (await resp.json()) as ClassifyResult;
       setCls(r);
+      setCandidates(r.candidates ?? []);
       if (r.base_product_code) setPcode(r.base_product_code);
       if (r.target_length_m) setLen(r.target_length_m);
       if (r.target_material) setMat(r.target_material);
@@ -374,11 +388,28 @@ export default function CustomQuoteV2Page() {
       (r.remove_parts ?? []).forEach((p) =>
         detected.push({ key: partSeq.current++, change: 'remove', material: p.material, qty: p.qty || 1 }));
       setParts(detected);
+      // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
+      if (autoQuote && !ac.signal.aborted) {
+        if (r.customization_type === '普通定制' && r.base_product_code) {
+          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal);
+        } else if (r.customization_type === '特殊定制') {
+          message.info('特殊定制: 已分类, 请在③填品类+外形(自动出板)或板单再算价');
+        }
+      }
     } catch (e) {
-      message.error((e as Error).message);
+      if ((e as Error).name !== 'AbortError') message.error((e as Error).message);
     } finally {
+      setRunning(false);
       setClsLoading(false);
     }
+  };
+
+  const stop = () => {
+    abortRef.current?.abort();
+    setRunning(false);
+    setClsLoading(false);
+    setLightLoading(false);
+    message.info('已停止, 可改「匹配产品」或表单后手动算价');
   };
 
   const addPartRow = (change: 'add' | 'remove') =>
@@ -387,8 +418,14 @@ export default function CustomQuoteV2Page() {
     setParts((ps) => ps.map((p) => (p.key === key ? { ...p, ...patch } : p)));
   const removePartRow = (key: number) => setParts((ps) => ps.filter((p) => p.key !== key));
 
-  const doLight = async () => {
-    if (!pcode.trim()) {
+  const runLight = async (
+    code: string,
+    lenM: number | null,
+    matStr: string,
+    partsList: EditPart[],
+    signal?: AbortSignal,
+  ) => {
+    if (!code.trim()) {
       message.warning('请填基础产品编码');
       return;
     }
@@ -396,23 +433,30 @@ export default function CustomQuoteV2Page() {
     setLight(null);
     try {
       const r = await apiPost<LightResult>('/v2/quote-light', {
-        base_product_code: pcode.trim(),
-        target_length_m: len ?? undefined,
-        target_material: mat.trim() || undefined,
-        add_parts: parts
+        base_product_code: code.trim(),
+        target_length_m: lenM ?? undefined,
+        target_material: matStr.trim() || undefined,
+        add_parts: partsList
           .filter((p) => p.change === 'add' && p.material.trim())
           .map((p) => ({ material: p.material.trim(), qty: p.qty })),
-        remove_parts: parts
+        remove_parts: partsList
           .filter((p) => p.change === 'remove' && p.material.trim())
           .map((p) => ({ material: p.material.trim(), qty: p.qty })),
-      });
+      }, signal);
       setLight(r);
       if (r.error) message.warning(r.error);
     } catch (e) {
-      message.error((e as Error).message);
+      if ((e as Error).name !== 'AbortError') message.error((e as Error).message);
     } finally {
       setLightLoading(false);
     }
+  };
+
+  const doLight = () => runLight(pcode, len, mat, parts);
+  // 用户从「匹配产品」下拉手选纠正 → 立即换产品并重算
+  const onPickProduct = (code: string) => {
+    setPcode(code);
+    runLight(code, len, mat, parts);
   };
 
   const doTemplate = async () => {
@@ -569,9 +613,17 @@ export default function CustomQuoteV2Page() {
                 {clsImages.length} 张图
               </Tag>
             )}
-            <Button type="primary" icon={<RobotOutlined />} loading={clsLoading} onClick={doClassify}>
-              判定
+            <Button type="primary" icon={<RobotOutlined />} loading={running} onClick={runPipeline}>
+              判定并算价
             </Button>
+            {running && (
+              <Button danger onClick={stop}>
+                停止
+              </Button>
+            )}
+            <Checkbox checked={autoQuote} onChange={(e) => setAutoQuote(e.target.checked)}>
+              判定后自动算价
+            </Checkbox>
           </Space>
           {cls && (
             <Alert
@@ -605,6 +657,23 @@ export default function CustomQuoteV2Page() {
       {/* ── 2. 普通定制 ── */}
       <Card size="small" title="② 普通定制算价(改现有产品)">
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          {candidates.length > 0 && (
+            <Space wrap align="center">
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                匹配产品(不一定准, 选错可改后自动重算):
+              </Text>
+              <Select
+                style={{ width: 440 }}
+                value={pcode || undefined}
+                onChange={onPickProduct}
+                placeholder="按匹配度排序的 Top-10 候选"
+                options={candidates.map((c) => ({
+                  value: c.product_code,
+                  label: `${Math.round(c.confidence * 100)}%　${c.product_name}`,
+                }))}
+              />
+            </Space>
+          )}
           <Space wrap>
             <Input
               addonBefore="基础产品编码"
