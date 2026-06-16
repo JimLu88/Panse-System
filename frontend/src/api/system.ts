@@ -19,6 +19,7 @@ export interface SupportedProvider {
 export interface Integrations {
   diagnose: IntegrationConfig;
   ocr: IntegrationConfig;
+  custom: IntegrationConfig;
   supported_providers: SupportedProvider[];
 }
 
@@ -28,9 +29,10 @@ export const fetchIntegrations = () =>
 export const updateIntegrations = (payload: {
   diagnose?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
   ocr?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
+  custom?: Partial<{ provider: string; base_url: string; api_key: string; model: string }>;
 }) => api.put<Integrations>('/api/admin/integrations', payload).then((r) => r.data);
 
-export const testIntegration = (kind: 'diagnose' | 'ocr') =>
+export const testIntegration = (kind: 'diagnose' | 'ocr' | 'custom') =>
   api
     .post<{ ok: boolean; provider: string; model: string; sample?: string; error?: string }>(
       '/api/admin/integrations/test',

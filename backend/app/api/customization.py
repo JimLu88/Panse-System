@@ -562,7 +562,7 @@ async def v2_classify(
         image_data.append((raw, img.content_type or "image/jpeg"))
 
     result = None
-    cfg = settings_service.get_ai_config(db, "ocr")
+    cfg = settings_service.get_ai_config(db, "custom")  # 定制报价专属槽; 没配回落 ocr
     if cfg.get("api_key"):
         try:
             prov = customization_ai_service._build_provider(db)

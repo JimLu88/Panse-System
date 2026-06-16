@@ -35,6 +35,7 @@ class IntegrationConfigOut(BaseModel):
 class IntegrationsOut(BaseModel):
     diagnose: IntegrationConfigOut
     ocr: IntegrationConfigOut
+    custom: IntegrationConfigOut
     supported_providers: list[dict]
 
 
@@ -48,10 +49,11 @@ class IntegrationConfigIn(BaseModel):
 class IntegrationsIn(BaseModel):
     diagnose: Optional[IntegrationConfigIn] = None
     ocr: Optional[IntegrationConfigIn] = None
+    custom: Optional[IntegrationConfigIn] = None
 
 
 class TestIn(BaseModel):
-    kind: str = Field(..., pattern=r"^(diagnose|ocr)$")
+    kind: str = Field(..., pattern=r"^(diagnose|ocr|custom)$")
 
 
 class TestOut(BaseModel):
@@ -82,6 +84,7 @@ def get_integrations(
     return IntegrationsOut(
         diagnose=_read(db, "diagnose"),
         ocr=_read(db, "ocr"),
+        custom=_read(db, "custom"),
         supported_providers=list(SUPPORTED_PROVIDERS),
     )
 
@@ -111,10 +114,13 @@ def put_integrations(
         _apply(db, "diagnose", payload.diagnose)
     if payload.ocr:
         _apply(db, "ocr", payload.ocr)
+    if payload.custom:
+        _apply(db, "custom", payload.custom)
     db.commit()
     return IntegrationsOut(
         diagnose=_read(db, "diagnose"),
         ocr=_read(db, "ocr"),
+        custom=_read(db, "custom"),
         supported_providers=list(SUPPORTED_PROVIDERS),
     )
 

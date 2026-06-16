@@ -176,7 +176,7 @@ def get_ai_config(db: Session, kind: str) -> dict:
     (diagnose ↔ ocr), 再回落到 env ANTHROPIC_API_KEY / ai_model。
     这样用户只在任意一处配 key, AI 助手 + 截图 OCR 都能用。
     """
-    assert kind in {"diagnose", "ocr", "ocr_fallback"}
+    assert kind in {"diagnose", "ocr", "ocr_fallback", "custom"}
     settings = get_settings()
     # ocr_fallback: 独立兜底槽位 (如本机 Ollama), 不交叉回落、不借用 anthropic key —
     # 没配就返回空, 让调用方跳过。主 OCR 额度用光/报错时自动切到它, 保持自动化不退人工。
@@ -191,9 +191,14 @@ def get_ai_config(db: Session, kind: str) -> dict:
             "model": own["model"] or "qwen2.5vl",
             "user_agent": own.get("user_agent") or "",
         }
-    other = "ocr" if kind == "diagnose" else "diagnose"
-    own = _raw_ai_config(db, kind)
-    src = own if own["api_key"] else _raw_ai_config(db, other)
+    # custom (定制报价分类器): 没配 key 回落到 ocr; diagnose↔ocr 互相回落
+    if kind == "custom":
+        own = _raw_ai_config(db, "custom")
+        src = own if own["api_key"] else _raw_ai_config(db, "ocr")
+    else:
+        other = "ocr" if kind == "diagnose" else "diagnose"
+        own = _raw_ai_config(db, kind)
+        src = own if own["api_key"] else _raw_ai_config(db, other)
     return {
         "provider": src["provider"] or "anthropic",
         "base_url": src["base_url"] or "",

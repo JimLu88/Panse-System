@@ -536,6 +536,13 @@ function IntegrationsTab() {
         providers={data.supported_providers}
         onSaved={() => qc.invalidateQueries({ queryKey: ['integrations'] })}
       />
+      <IntegrationForm
+        kind="custom"
+        title="定制报价 AI (分类/识图)"
+        current={data.custom}
+        providers={data.supported_providers}
+        onSaved={() => qc.invalidateQueries({ queryKey: ['integrations'] })}
+      />
       <LogisticsForm />
     </Space>
   );
@@ -781,7 +788,7 @@ function IntegrationForm({
   providers,
   onSaved,
 }: {
-  kind: 'diagnose' | 'ocr';
+  kind: 'diagnose' | 'ocr' | 'custom';
   title: string;
   current: IntegrationConfig;
   providers: Integrations['supported_providers'];
