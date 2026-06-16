@@ -237,6 +237,27 @@ def quote_light(
     breakdown.extend(addrm_lines)
     final += addrm_delta
 
+    # ── 工厂价预测 + 盈亏平衡 (定价表 factory_cost/accounting_cost 插值; accounting 已含真实扣点/税) ──
+    fac_pts, acc_pts = [], []
+    for s in skus:
+        ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+        if ln is None:
+            continue
+        if getattr(s, "factory_cost", None) is not None:
+            fac_pts.append((ln, float(s.factory_cost)))
+        if getattr(s, "accounting_cost", None) is not None:
+            acc_pts.append((ln, float(s.accounting_cost)))
+    factory_predicted = break_even_factory = break_even_buffer = None
+    if fac_pts:
+        fp = interp(fac_pts, target_length_m)[0] if target_length_m else sum(v for _, v in fac_pts) / len(fac_pts)
+        if fp is not None:
+            factory_predicted = round(fp, 2)
+            if acc_pts:
+                ac = interp(acc_pts, target_length_m)[0] if target_length_m else sum(v for _, v in acc_pts) / len(acc_pts)
+                if ac is not None:
+                    break_even_factory = round(final - (ac - fp), 2)   # 净不亏: 售价 − 非工厂成本(accounting−factory)
+                    break_even_buffer = round(break_even_factory - factory_predicted, 2)
+
     # ── 竞品/基准对比 (每次算价都带; 竞品表空则只给本店标准款基准, 永远有对比) ──
     comparison = compare_prices(
         db, category=category,
@@ -255,6 +276,9 @@ def quote_light(
         "material_delta": material_delta,
         "addremove_delta": round(addrm_delta, 2),
         "final_price": round(final, 2),
+        "factory_predicted": factory_predicted,     # 预测工厂价(定价表 factory_cost 插值, 缺则 None)
+        "break_even_factory": break_even_factory,    # 盈亏平衡工厂价(净不亏红线: 售价−非工厂成本)
+        "break_even_buffer": break_even_buffer,      # 安全垫 = 平衡价 − 预测价 (≈本单利润)
         "price_tier": price_tier,
         "breakdown": breakdown,
         "parts_detail": parts_detail,
@@ -702,13 +726,28 @@ def quote_heavy(
         db, product_type=product_type, length_m=length_m, boards=specs,
         overall_width_m=overall_width_m, overall_height_m=overall_height_m,
     )
+    # 盈亏平衡工厂价 (净不亏): 售价 − 畔色非工厂成本((配件−抽屉轨道)+打包+运费+安装) − 售价×(平台扣点+税)
+    from app.services import custom_quote_config_service as ccfg
+    cfg = ccfg.get_config(db)
+    plat = float(cfg.get("platform_fee_rate", 0.05))
+    tax = float(cfg.get("tax_rate", 0.0))
+    final = float(r.final_quote)
+    predicted = float(r.factory_quote_compare)
+    non_factory = (float(r.accessory_total) - float(r.drawer_rail_total)
+                   + float(r.packing_fee) + float(r.freight) + float(r.install_fee))
+    break_even = round(final - non_factory - final * (plat + tax), 2)
+    buffer = round(break_even - predicted, 2)
     return {
         "product_type": product_type,
-        "final_price": float(r.final_quote),
+        "final_price": final,
         "wood_cost": float(r.wood_cost),
         "labor_fee": float(r.labor_fee),
         "accessory_total": float(r.accessory_total),
-        "factory_quote_compare": float(r.factory_quote_compare),
+        "factory_quote_compare": predicted,
+        "factory_predicted": predicted,           # 预测工厂价(=木作总成本+抽屉轨道)
+        "break_even_factory": break_even,          # 盈亏平衡工厂价(净不亏红线: 高于此本单亏)
+        "break_even_buffer": buffer,               # 安全垫 = 平衡价 − 预测价 (≈本单利润)
+        "break_even_note": f"净不亏: 售价{final:.0f} − 非工厂成本{non_factory:.0f} − 平台税{final*(plat+tax):.0f}",
         "panse_cost": float(r.panse_cost),
         "inferred_hardware": inferred,
         "wood_lines": r.wood_lines,

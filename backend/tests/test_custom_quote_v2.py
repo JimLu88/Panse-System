@@ -79,9 +79,11 @@ def _seed_bed(db, with_walnut_sibling=False):
     ])
     db.add(Product(code="B1", name="畔色榉木无边床", category="卧室-床", main_material="榉木"))
     db.add(PricingSku(product_code="B1", sku="榉木无边床-1.5米", sku_code="B1-1.5",
-                      size_category="中型", daily_price=D("2000"), wood_cost=D("600")))
+                      size_category="中型", daily_price=D("2000"), wood_cost=D("600"),
+                      factory_cost=D("900"), accounting_cost=D("1300")))
     db.add(PricingSku(product_code="B1", sku="榉木无边床-1.8米", sku_code="B1-1.8",
-                      size_category="大型", daily_price=D("2300"), wood_cost=D("720")))
+                      size_category="大型", daily_price=D("2300"), wood_cost=D("720"),
+                      factory_cost=D("1050"), accounting_cost=D("1500")))
     if with_walnut_sibling:
         db.add(Product(code="B2", name="畔色黑胡桃无边床", category="卧室-床", main_material="黑胡桃"))
         db.add(PricingSku(product_code="B2", sku="黑胡桃无边床-1.5米", sku_code="B2-1.5",
@@ -107,6 +109,32 @@ def test_material_delta_prefers_sibling():
     assert r["material_delta"] == 800.0          # 2800(现成款真实价) − 2000(锚点)
     assert r["final_price"] == 2800.0
     assert "现成款" in r["breakdown"][-1]["label"]
+
+
+# ───────── 盈亏平衡工厂价 (净不亏红线) ─────────
+
+def test_break_even_light():
+    """普通定制盈亏平衡: 售价 − (accounting−factory) = 红线; 安全垫 = 红线 − 预测 = 售价 − accounting。"""
+    db = _db()
+    _seed_bed(db)
+    r = v2.quote_light(db, base_product_code="B1", target_length_m=1.5)
+    assert r["factory_predicted"] == 900.0                 # 定价表 factory_cost@1.5
+    assert r["break_even_factory"] == 1600.0               # 2000 − (1300−900)
+    assert r["break_even_buffer"] == 700.0                 # 1600 − 900 = 售价2000 − accounting1300
+
+
+def test_break_even_heavy():
+    """特殊定制盈亏平衡: 预测=factory_quote_compare; 红线<售价; 安全垫=红线−预测。"""
+    db = _db()
+    boards = [
+        {"part": "板单合计", "material": "黑胡桃木-2.2cm", "length_cm": 1008.8, "width_cm": 100, "qty": 1},
+        {"part": "抽屉面板", "material": "樱桃木-2.2cm", "length_cm": 40, "width_cm": 20, "qty": 2},
+    ]
+    r = v2.quote_heavy(db, product_type="餐边柜", length_m=2.1, boards=boards,
+                       overall_width_m=2.1, overall_height_m=1.95)
+    assert r["factory_predicted"] == r["factory_quote_compare"]
+    assert r["break_even_factory"] < r["final_price"]      # 红线低于售价
+    assert r["break_even_buffer"] == round(r["break_even_factory"] - r["factory_predicted"], 2)
 
 
 # ───────── 普通定制: 增减部位 delta ─────────

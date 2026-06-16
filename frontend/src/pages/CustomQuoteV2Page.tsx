@@ -84,6 +84,9 @@ interface LightResult {
   addremove_delta: number;
   base_product_name?: string | null;
   category?: string;
+  factory_predicted?: number | null;
+  break_even_factory?: number | null;
+  break_even_buffer?: number | null;
   breakdown: BreakdownItem[];
   parts_detail?: PartDetail[];
   comparison?: Comparison;
@@ -107,6 +110,10 @@ interface HeavyResult {
   labor_fee: number;
   accessory_total: number;
   factory_quote_compare: number;
+  factory_predicted?: number | null;
+  break_even_factory?: number | null;
+  break_even_buffer?: number | null;
+  break_even_note?: string;
   inferred_hardware: HardwareItem[];
   error?: string;
 }
@@ -249,6 +256,56 @@ const logCols: ColumnsType<QuoteLog> = [
     render: (t: string | null) => (t ? t.replace('T', ' ').slice(0, 19) : '—'),
   },
 ];
+
+function FactoryRedline({
+  predicted,
+  breakEven,
+  buffer,
+}: {
+  predicted?: number | null;
+  breakEven?: number | null;
+  buffer?: number | null;
+}) {
+  if (predicted == null && breakEven == null) return null;
+  return (
+    <Card size="small" type="inner" title="工厂价红线(预测 / 盈亏平衡)" styles={{ body: { padding: 8 } }}>
+      <Space size="large" wrap>
+        <span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            预测工厂价
+          </Text>
+          <br />
+          <Text strong style={{ fontSize: 18 }}>
+            {predicted != null ? `¥${predicted.toFixed(2)}` : '—'}
+          </Text>
+        </span>
+        <span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            盈亏平衡价(红线)
+          </Text>
+          <br />
+          <Text strong style={{ fontSize: 18, color: '#cf1322' }}>
+            {breakEven != null ? `¥${breakEven.toFixed(2)}` : '—'}
+          </Text>
+        </span>
+        <span>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            安全垫(工厂可再高)
+          </Text>
+          <br />
+          <Text strong style={{ fontSize: 18, color: buffer != null && buffer >= 0 ? '#389e0d' : '#cf1322' }}>
+            {buffer != null ? `¥${buffer.toFixed(2)}` : '—'}
+          </Text>
+        </span>
+      </Space>
+      <div style={{ marginTop: 6 }}>
+        <Text type="secondary" style={{ fontSize: 12 }}>
+          工厂实际报价 ≤ 红线才不亏;红线 − 预测 = 安全垫(≈本单利润)。净不亏口径(已扣运费/安装/配件/平台扣点/税)。
+        </Text>
+      </div>
+    </Card>
+  );
+}
 
 export default function CustomQuoteV2Page() {
   // ── 分类 ──
@@ -631,6 +688,11 @@ export default function CustomQuoteV2Page() {
                 </Text>
                 {light.base_product_name && <Text type="secondary">{light.base_product_name}</Text>}
               </Space>
+              <FactoryRedline
+                predicted={light.factory_predicted}
+                breakEven={light.break_even_factory}
+                buffer={light.break_even_buffer}
+              />
               <Table<BreakdownItem>
                 size="small"
                 rowKey={(_, i) => String(i)}
@@ -798,6 +860,11 @@ export default function CustomQuoteV2Page() {
                 </Text>
                 <Tag color="volcano">工厂木作对比 ¥{heavy.factory_quote_compare.toFixed(0)}</Tag>
               </Space>
+              <FactoryRedline
+                predicted={heavy.factory_predicted ?? heavy.factory_quote_compare}
+                breakEven={heavy.break_even_factory}
+                buffer={heavy.break_even_buffer}
+              />
               {heavy.inferred_hardware.length > 0 && (
                 <Space wrap>
                   <Text type="secondary">自动推五金:</Text>
