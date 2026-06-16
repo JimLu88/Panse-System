@@ -618,17 +618,25 @@ def product_candidates(
     core = re.sub(r"\d+(?:\.\d+)?\s*(?:米|mm|cm|m|公分|MM|CM|M)", " ", text or "")
     core = re.split(r"[，,。;；、]|不要|去掉|去除|改成|改为|加上|计算价格|算价|样式|定制", core)[0]
     core = re.sub(r"[的把要做想换]", " ", core).strip() or (text or "")
-    cands = [
-        {"product_code": x["product_code"], "product_name": x["product_name"],
-         "confidence": x["product_confidence"]}
-        for x in match_ranked(db, core, "", limit=limit)
-    ]
-    if matched_code and not any(c["product_code"] == matched_code for c in cands):
-        cands.insert(0, {
-            "product_code": matched_code,
-            "product_name": matched_name or matched_code,
-            "confidence": round(float(matched_conf or 0.9), 2),
-        })
+
+    def _overlap(name: str) -> float:
+        # 字符重叠度兜底: token 相似度对家具长名常打 0, 用共享字符比例给备选一个可读的%
+        sa, sb = set(core), set(name or "")
+        return len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
+
+    cands = []
+    for x in match_ranked(db, core, "", limit=limit * 2):
+        conf = max(float(x["product_confidence"]), _overlap(x["product_name"]))
+        cands.append({"product_code": x["product_code"], "product_name": x["product_name"],
+                      "confidence": round(conf, 2)})
+    mc = round(float(matched_conf or 0.9), 2)
+    hit = next((c for c in cands if c["product_code"] == matched_code), None) if matched_code else None
+    if matched_code and hit is None:
+        cands.append({"product_code": matched_code,
+                      "product_name": matched_name or matched_code, "confidence": mc})
+    elif hit is not None:
+        hit["confidence"] = max(hit["confidence"], mc)   # 命中项用分类器置信(更准)
+    cands.sort(key=lambda c: c["confidence"], reverse=True)
     return cands[:limit]
 
 
