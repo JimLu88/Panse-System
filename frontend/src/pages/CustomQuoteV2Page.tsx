@@ -21,6 +21,7 @@ import {
   RobotOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
+import { CompetitorImportButton } from '../components/CompetitorImportButton';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -537,6 +538,10 @@ export default function CustomQuoteV2Page() {
         showIcon
         message="普通定制 = 真实SKU档价插值 + 材质/增减增量(纯算术, 秒级)；特殊定制 = 板单引擎 + 自动推五金。描述/截图由 AI 解析自动填表单(AI 不可用则确定性匹配)。"
       />
+      <Space align="center" wrap>
+        <Text type="secondary" style={{ fontSize: 12 }}>竞品价库(对比用):</Text>
+        <CompetitorImportButton label="导入竞品价 xlsx" />
+      </Space>
 
       {/* ── 1. 分类器 ── */}
       <Card size="small" title="① 智能分类(文字/图 → 类型 + 产品 + 尺寸 + 材质)">

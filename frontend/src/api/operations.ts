@@ -51,6 +51,8 @@ export interface Sample {
   location: string | null;
   status: string | null;
   usage: string | null;
+  related_order_no: string | null;
+  sold_at: string | null;
   remark: string | null;
 }
 
@@ -61,6 +63,15 @@ export const updateSample = (
   id: number,
   data: { status?: string; location?: string; usage?: string; remark?: string },
 ) => api.patch<Sample>(`/api/marketing/samples/${id}`, data).then((r) => r.data);
+
+export interface SampleSellPayload {
+  order_no: string;
+  repair_fee?: number;
+  transfer_freight?: number;
+  supplier?: string;
+}
+export const sellSample = (id: number, data: SampleSellPayload) =>
+  api.post(`/api/marketing/samples/${id}/sell`, data).then((r) => r.data);
 
 export interface WoodLoss {
   id: number;

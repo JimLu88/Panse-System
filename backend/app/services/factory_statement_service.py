@@ -71,7 +71,15 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
     if rng:
         stmt = stmt.where(Order.order_date >= rng[0], Order.order_date <= rng[1])
     orders = db.execute(stmt).scalars().all()
-    orders = [o for o in orders if _excluded_reason(o) is None][:limit]
+    # 样品出货单不进工厂对账单 (样品早做好、不向工厂下单; 修复费/转运费走配件采购)
+    from app.models.marketing import Sample
+    sample_order_nos = {
+        no for (no,) in db.execute(
+            select(Sample.related_order_no).where(Sample.related_order_no.isnot(None))
+        ).all() if no
+    }
+    orders = [o for o in orders
+              if _excluded_reason(o) is None and o.order_no not in sample_order_nos][:limit]
 
     # 预加载 PricingSku (防 N+1): 先按 sku_code, 无 code 的按 sku 名
     codes = {o.sku_code for o in orders if o.sku_code}

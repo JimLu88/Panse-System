@@ -59,6 +59,18 @@ def test_period_filter_and_available():
     assert fss.generate(db, period="2026-05")["count"] == 1
 
 
+def test_excludes_sample_sale_order():
+    """样品出货单(有关联样品)不进工厂对账单。"""
+    from app.models.order import Order
+    from app.models.marketing import Sample
+    db = _db()
+    db.add(Order(platform="淘宝", order_no="S1", product_code="P1", qty=1,
+                 order_date=date(2026, 6, 1), shop_received_amount=D("2000")))
+    db.add(Sample(sample_no="SP1", product_code="P1", status="已售", related_order_no="S1"))
+    db.commit()
+    assert fss.generate(db, period="2026-06")["count"] == 0
+
+
 def test_missing_factory_cost_flagged():
     from app.models.order import Order
     db = _db()

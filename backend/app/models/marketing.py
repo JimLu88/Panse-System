@@ -25,8 +25,12 @@ class Sample(Base, TimestampMixin):
     made_at: Mapped[Optional[date]] = mapped_column(Date)
     cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     location: Mapped[Optional[str]] = mapped_column(String(128))
-    status: Mapped[Optional[str]] = mapped_column(String(32))  # 在用 / 闲置 / 报损
+    status: Mapped[Optional[str]] = mapped_column(String(32))  # 在用 / 闲置 / 报损 / 已售
     usage: Mapped[Optional[str]] = mapped_column(String(128))
+    # 样品售出: 关联订单号 + 售出日期 (从样品库卖出, 走"杭州→江西修复→发客户"流程;
+    # 修复费/转运费记入配件采购 PartPurchase, 不动订单表)
+    related_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    sold_at: Mapped[Optional[date]] = mapped_column(Date)
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
 

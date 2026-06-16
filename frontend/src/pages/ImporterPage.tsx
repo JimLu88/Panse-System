@@ -42,6 +42,7 @@ import {
   StopOutlined,
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { CompetitorImportButton } from '../components/CompetitorImportButton';
 import {
   EntityField,
   EntityType,
@@ -152,6 +153,15 @@ function LegacyImporter() {
           </p>
           <p className="ant-upload-hint">支持 .xlsx; AI 会自动推荐列映射, 你可调整</p>
         </Dragger>
+      </Card>
+
+      <Card size="small" title="竞品价库导入 (直接, 免列映射)">
+        <Space wrap align="center">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            竞品价格表(店铺/类目/产品/链接/木材/SKU/价)自动识别表头、按 店铺+SKU 去重, 不走上方列映射流程。
+          </Typography.Text>
+          <CompetitorImportButton label="导入竞品价 xlsx" />
+        </Space>
       </Card>
 
       {previewResp && previewResp.sheets.length > 0 && (

@@ -39,6 +39,8 @@ class SampleOut(BaseModel):
     location: Optional[str]
     status: Optional[str]
     usage: Optional[str]
+    related_order_no: Optional[str] = None
+    sold_at: Optional[date] = None
     remark: Optional[str]
 
 
@@ -70,6 +72,68 @@ def update_sample(sample_id: int, payload: SampleUpdate, db: Session = Depends(g
     db.commit()
     db.refresh(sample)
     return sample
+
+
+class SampleSellIn(BaseModel):
+    order_no: str
+    repair_fee: Optional[float] = None        # 修复费 (江西修复, 记一笔配件采购)
+    transfer_freight: Optional[float] = None  # 转运费 杭州→江西 (记一笔配件采购)
+    supplier: Optional[str] = None            # 修复方/承运方
+    sold_at: Optional[date] = None
+
+
+@router.post("/samples/{sample_id}/sell")
+def sell_sample(sample_id: int, payload: SampleSellIn, db: Session = Depends(get_db)) -> dict:
+    """样品售出: 标记已售 + 关联订单, 并把 修复费/转运费 各记一笔配件采购(关联该订单)。
+
+    走"杭州样品 → 江西修复(修复费) → 发客户"流程; 成本进配件采购(PartPurchase),
+    **不动订单表**。订单的工厂对账单会自动排除这种样品出货单。
+    """
+    from datetime import date as _date
+    from app.models.order import PartPurchase
+    from app.services.alipay_flow_router_service import _next_purchase_no_yearly
+
+    sample = db.get(Sample, sample_id)
+    if sample is None:
+        raise HTTPException(status_code=404, detail="样品不存在")
+    order_no = (payload.order_no or "").strip()
+    if not order_no:
+        raise HTTPException(status_code=400, detail="请填关联订单号")
+    sold = payload.sold_at or _date.today()
+    sample.related_order_no = order_no
+    sample.status = "已售"
+    sample.sold_at = sold
+
+    created: list[dict] = []
+
+    def _purchase(name: str, amount: Optional[float], kind: str) -> None:
+        if amount is None or float(amount) == 0:
+            return
+        pp = PartPurchase(
+            purchase_no=_next_purchase_no_yearly(db, sold.year),
+            material_name=name, qty=Decimal("1"),
+            unit_price=Decimal(str(amount)), amount=Decimal(str(amount)),
+            total_amount=Decimal(str(amount)),
+            purchase_type="样品修复", related_order_no=order_no,
+            supplier=payload.supplier, purchase_date=sold,
+            payment_status="unpaid",
+        )
+        db.add(pp)
+        db.flush()   # 让下一笔取号能看到本笔, 防同号
+        created.append({"kind": kind, "purchase_no": pp.purchase_no, "amount": float(amount)})
+
+    _purchase(f"样品修复费-{order_no}", payload.repair_fee, "修复费")
+    _purchase(f"样品转运费(杭州→江西)-{order_no}", payload.transfer_freight, "转运费")
+    db.commit()
+    db.refresh(sample)
+    return {
+        "sample_id": sample.id,
+        "sample_no": sample.sample_no,
+        "status": sample.status,
+        "related_order_no": sample.related_order_no,
+        "sold_at": sample.sold_at.isoformat() if sample.sold_at else None,
+        "purchases": created,
+    }
 
 
 # -------- Brand Marketing (14) --------
