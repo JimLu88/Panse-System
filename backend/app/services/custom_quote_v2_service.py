@@ -181,6 +181,7 @@ def quote_light(
     remove_parts: Optional[list[dict]] = None,
     modify_parts: Optional[list[dict]] = None,
     price_tier: str = "daily",
+    base_sku_code: Optional[str] = None,
     factory_profit_rate: float = 0.25,
 ) -> dict:
     """普通定制报价 (改现有产品): 真实SKU锚点价 + 尺寸delta(策略C) + 材质delta(wood_cost反推) + 增减部位delta。
@@ -191,6 +192,14 @@ def quote_light(
     skus = db.query(PricingSku).filter(PricingSku.product_code == base_product_code).all()
     if not skus:
         return {"error": f"定价表无此产品 {base_product_code}", "final_price": None, "breakdown": []}
+    # SKU 匹配(#29): 选了具体 SKU → 锁定同变体(去尺寸签名相同的档), 不混洞石/洞洞板, 大尺寸沿本变体外推
+    if base_sku_code:
+        chosen = next((s for s in skus if base_sku_code in (s.sku_code or "", s.sku or "")), None)
+        if chosen:
+            vk = _sku_variant_key(chosen.sku or chosen.sku_code or "")
+            same = [s for s in skus if _sku_variant_key(s.sku or s.sku_code or "") == vk]
+            if same:
+                skus = same
 
     prod = db.query(Product).filter(Product.code == base_product_code).first()
     price_pts, wood_pts = _sku_points(skus, tier_col)
@@ -680,6 +689,29 @@ def apply_size_sanity(db: Session, cfg: dict, result: dict) -> dict:
                       f"已不自动选定, 请从下方匹配产品下拉里确认"),
         "size_warning": True,
     }
+
+
+def _sku_variant_key(name: str) -> str:
+    """SKU 变体签名 = 去掉尺寸后的名(洞石/洞洞板等变体区分; 同变体不同尺寸 → 同签名)。"""
+    return re.sub(r"[-\s]*\d+(?:\.\d+)?\s*米", "", name or "").strip()
+
+
+def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 10) -> list[dict]:
+    """该产品各 SKU 的匹配候选(按与描述字符重叠%排序), 给前端 SKU 下拉锁变体。"""
+    skus = db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
+    core = re.split(r"[，,。;；、]|计算价格|算价|样式", text or "")[0]
+    sa = set(core)
+    out = []
+    for s in skus:
+        name = s.sku or s.sku_code or ""
+        sb = set(name)
+        conf = len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
+        price = s.big_promo if s.big_promo is not None else s.daily_price
+        out.append({"sku_code": s.sku_code, "sku_name": name,
+                    "price": round(float(price), 2) if price is not None else None,
+                    "confidence": round(conf, 2)})
+    out.sort(key=lambda c: c["confidence"], reverse=True)
+    return out[:limit]
 
 
 def product_candidates(

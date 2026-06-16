@@ -42,6 +42,7 @@ interface ClassifyResult {
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
   candidates?: { product_code: string; product_name: string; sku?: string | null; confidence: number; size_flag?: boolean }[];
+  sku_candidates?: { sku_code: string; sku_name: string; price: number | null; confidence: number }[];
   ai_used?: boolean;
   size_warning?: boolean;
 }
@@ -517,6 +518,8 @@ export default function CustomQuoteV2Page() {
   const [clsLoading, setClsLoading] = useState(false);
   const [cls, setCls] = useState<ClassifyResult | null>(null);
   const [candidates, setCandidates] = useState<NonNullable<ClassifyResult['candidates']>>([]);
+  const [skuCandidates, setSkuCandidates] = useState<NonNullable<ClassifyResult['sku_candidates']>>([]);
+  const [selectedSku, setSelectedSku] = useState<string | undefined>(undefined);
   const [autoQuote, setAutoQuote] = useState(true);   // 说一句话→自动往下算价
   const [running, setRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -593,6 +596,8 @@ export default function CustomQuoteV2Page() {
       const r = (await resp.json()) as ClassifyResult;
       setCls(r);
       setCandidates(r.candidates ?? []);
+      setSkuCandidates(r.sku_candidates ?? []);
+      setSelectedSku(undefined);
       if (r.base_product_code) setPcode(r.base_product_code);
       if (r.target_length_m) setLen(r.target_length_m);
       if (r.target_material) setMat(r.target_material);
@@ -640,6 +645,7 @@ export default function CustomQuoteV2Page() {
     partsList: EditPart[],
     signal?: AbortSignal,
     tierVal: string = tier,
+    skuVal: string | undefined = selectedSku,
   ) => {
     if (!code.trim()) {
       message.warning('请填基础产品编码');
@@ -662,6 +668,7 @@ export default function CustomQuoteV2Page() {
           .filter((p) => p.change === 'modify' && p.material.trim() && (p.material_real || '').trim())
           .map((p) => ({ material: p.material.trim(), material_real: (p.material_real || '').trim(), qty: p.qty, length_cm: p.length_cm, width_cm: p.width_cm })),
         price_tier: tierVal,
+        base_sku_code: skuVal,
       }, signal);
       setLight(r);
       // C: 后端解析的尺寸回填到部位行(空的才填), 让用户看到+可继续手调快速改价
@@ -902,6 +909,24 @@ export default function CustomQuoteV2Page() {
                 options={candidates.map((c) => ({
                   value: c.product_code,
                   label: `${Math.round(c.confidence * 100)}%　${c.product_name}${c.sku ? `　· ${c.sku}` : ''}`,
+                }))}
+              />
+            </Space>
+          )}
+          {skuCandidates.length > 0 && (
+            <Space wrap align="center">
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                匹配SKU(锁变体不混·按%排序):
+              </Text>
+              <Select
+                style={{ width: 440 }}
+                value={selectedSku}
+                onChange={(v) => { setSelectedSku(v); runLight(pcode, len, mat, parts, undefined, tier, v); }}
+                allowClear
+                placeholder="选具体SKU(如 1.2米洞石背板)→ 按该变体算, 大尺寸沿本变体外推"
+                options={skuCandidates.map((s) => ({
+                  value: s.sku_code,
+                  label: `${Math.round(s.confidence * 100)}%　${s.sku_name}${s.price != null ? `　¥${s.price}` : ''}`,
                 }))}
               />
             </Space>

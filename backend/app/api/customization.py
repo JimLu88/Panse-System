@@ -335,6 +335,7 @@ class V2QuoteLightIn(BaseModel):
     remove_parts: list[dict] = Field(default_factory=list)
     modify_parts: list[dict] = Field(default_factory=list)
     price_tier: str = "big"
+    base_sku_code: Optional[str] = None
 
 
 class V2BoardIn(BaseModel):
@@ -395,6 +396,8 @@ async def v2_classify(
         db, message, matched_code=result.get("base_product_code"),
         matched_name=result.get("base_product_name"), matched_conf=result.get("confidence"),
         length_m=result.get("target_length_m"))
+    if result.get("base_product_code"):
+        result["sku_candidates"] = v2.sku_candidates(db, message, result["base_product_code"])
 
     _log_quote(db, source="v2_classify", user_message=message,
                ai_response=result.get("reasoning", ""),
@@ -411,6 +414,7 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
         target_length_m=payload.target_length_m, target_material=payload.target_material,
         add_parts=payload.add_parts, remove_parts=payload.remove_parts,
         modify_parts=payload.modify_parts, price_tier=payload.price_tier,
+        base_sku_code=payload.base_sku_code,
     )
     _log_quote(
         db, source="v2_quote_light",

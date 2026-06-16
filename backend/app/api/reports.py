@@ -620,7 +620,11 @@ def _business_month(db: Session, year: int, month: int) -> dict:
 
     # 主口径 = 正式销售额 (剔除补单, 用户拍板 2026-06-12); refill_revenue 仅作"未计入"注释
     total_revenue = real_revenue + refill_revenue   # 总流水 (含补单, 仅参考)
-    total_expense = factory_bill + promo + aftersales_comp + outsourcing + platform_fee
+    # 商品成本(COGS, #17 修复): 每单 actual_cost(已对账)否则 theoretical_cost(BOM预估) —— 未对账月也有成本,
+    # 利润不再虚高(原 total_expense 漏算商品成本 = 1月"25万假利润"根因)。已对账时 actual_cost≈factory_bill, 用它进利润不重复计。
+    effective_cost = _qs(func.coalesce(Order.actual_cost, Order.theoretical_cost, 0),
+                         *base, Order.is_refill == False)  # noqa: E712
+    total_expense = effective_cost + promo + aftersales_comp + outsourcing + platform_fee
     net_profit = real_revenue - total_expense
     total_orders = real_count + refill_count
 
@@ -656,6 +660,7 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         "promo_expense": round(promo, 2),
         "promo_ratio": promo_ratio,
         "factory_bill": round(factory_bill, 2),
+        "effective_cost": round(effective_cost, 2),   # #17 商品成本(已对账actual否则BOM预估), 进利润计算
         "aftersales_compensation": round(aftersales_comp, 2),
         "aftersales_count": aftersales_count,
         "aftersales_rate": aftersales_rate,
