@@ -35,8 +35,10 @@ _CENTS = Decimal("0.01")
 # 木作物料编码前缀: 这类物料不在 materials 单价表, 价格按 SKU 从 PricingSku.wood_cost 取。
 WOOD_PREFIX = "WD"
 
-# 零成本订单关键词: 商家安装 / 送货入户 / 补差价 / 淘宝官方服务 这类 SKU 无实际生产成本, 自动归0不报异常。
-ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务", "送货", "补差价")
+# 零成本订单关键词: 商家安装 / 送货入户 / 补差价 / 样品样块 / 专链补拍 等非产品单, 无整份SKU生产成本,
+# 自动归0不报异常 (2026-06-17 扩充: 实测 157 单"实付几十却背一整套餐边柜成本¥9000"全是这类, 拉负总利润)。
+ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务", "送货", "补差价", "差价",
+                      "样品", "样块", "专链", "补拍", "邮费")
 
 
 def default_warehouse_for(product_name: Optional[str], sku: Optional[str],
@@ -569,6 +571,18 @@ def auto_cost_backfill(db: Session) -> dict:
        3) 给"靠估算/缺成本"的已付款订单写异常待人工补实际成本 (补了自动关闭)。
     返回统计。替代旧 _job_cost_recompute 的 recompute_all。
     """
+    # 先把"应归0却被估了整份SKU成本"的非产品单(差价/样品/专链/安装/送货)重新归0 (2026-06-17):
+    # 实测 157 单实付几十却背一整套餐边柜成本¥9000, 是总利润为负的主因, 这里一次性纠正。
+    rezeroed = 0
+    for o in db.execute(
+        select(Order).where(Order.theoretical_cost.isnot(None), Order.theoretical_cost != 0)
+    ).scalars().all():
+        if zero_cost_reason(o) is not None:
+            o.theoretical_cost = Decimal("0")
+            rezeroed += 1
+    if rezeroed:
+        db.flush()
+
     ratios = category_cost_ratios(db)
     orders = db.execute(
         select(Order).where(or_(Order.theoretical_cost.is_(None), Order.theoretical_cost == 0))
@@ -598,7 +612,7 @@ def auto_cost_backfill(db: Session) -> dict:
     db.commit()
     return {
         "updated": updated, "estimated_by_ratio": estimated, "still_missing": skipped,
-        "skipped_refund_old": skipped_refund,
+        "skipped_refund_old": skipped_refund, "rezeroed_non_product": rezeroed,
         "exceptions": exc, "store_ratio": ratios.get("_store"),
         "category_ratios": {k: v for k, v in ratios.items() if k != "_store"},
     }

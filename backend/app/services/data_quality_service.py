@@ -16,8 +16,9 @@ from app.models.finance import AlipayFlow, RefillRecord, FactoryReconciliation
 from app.models.marketing import OutsourcingExpense, AfterSales, PromotionFlow, Sample, WoodLoss
 from app.services import exception_service, settings_service
 
-# 非产品订单关键词: 安装/送货/补差价/官方服务 这类单从不走正常收款流水, 不该报「缺收款凭据」
-_NON_PRODUCT_KW = ("安装", "送货", "入户", "补差价", "官方服务", "上门服务")
+# 非产品订单关键词: 安装/送货/补差价/样品/专链/官方服务 这类单从不走正常收款流水, 不该报「缺收款凭据」
+_NON_PRODUCT_KW = ("安装", "送货", "入户", "补差价", "差价", "样品", "样块",
+                   "专链", "补拍", "邮费", "官方服务", "上门服务")
 
 _log = logging.getLogger("panse.data_quality")
 
