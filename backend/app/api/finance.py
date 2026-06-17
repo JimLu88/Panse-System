@@ -1036,6 +1036,30 @@ def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optiona
     }
 
 
+@router.get("/orders-missing-code")
+def orders_missing_code(db: Session = Depends(get_db)):
+    """诊断: 2026 销售订单里 product_code 为空的, 看能否经 sku_code→定价表 解出产品编码+短名。"""
+    from datetime import date as _d
+    from app.models.order import Order as _O
+    from app.models.pricing import PricingSku
+    from app.models.product import Product as _P
+    orders = db.execute(select(_O).where(
+        _O.product_code.is_(None), _O.order_date >= _d(2026, 1, 1),
+        _O.status.in_(("paid", "shipped", "signed")))).scalars().all()
+    sku2code = {s: c for s, c in db.execute(select(PricingSku.sku_code, PricingSku.product_code)).all() if s}
+    code2name = {c: n for c, n in db.execute(select(_P.code, _P.name)).all()}
+    out = []
+    resolvable = 0
+    for o in orders:
+        via = sku2code.get(o.sku_code) if o.sku_code else None
+        if via:
+            resolvable += 1
+        out.append({"order_no": o.order_no, "product_name": (o.product_name or "")[:36],
+                    "sku_code": o.sku_code, "sku": (o.sku or "")[:24],
+                    "resolved_code": via, "resolved_name": code2name.get(via) if via else None})
+    return {"total_missing_code": len(orders), "resolvable_via_sku": resolvable, "samples": out[:30]}
+
+
 @router.get("/order-payment-diagnosis")
 def order_payment_diagnosis(order_nos: str = Query(..., description="逗号分隔订单号"),
                             db: Session = Depends(get_db)):
