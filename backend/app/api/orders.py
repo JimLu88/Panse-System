@@ -1212,11 +1212,11 @@ def accessories_pending_summary(db: Session = Depends(get_db)):
 
 # ─── 定制单核对 (推演成本; 工厂成本填入后全覆盖) — 用户拍板 2026-06-17 ──────────
 @router.get("/custom-reconcile")
-def custom_reconcile(only_missing: bool = True, db: Session = Depends(get_db)):
-    """定制单核对: 按订单备注推演工厂成本 (可插拔 resolver + 预留外部 API)。
-    only_missing=true 只看缺工厂成本的(异常那批); =false 看全部定制单。"""
+def custom_reconcile(only_missing: bool = True, ai: bool = False, db: Session = Depends(get_db)):
+    """定制单核对: 分级混合推演工厂成本 (规则→本地AI→85%兜底)。
+    only_missing=true 只看缺工厂成本的; ai=true 复杂单走本地大模型(慢, 按需点)。"""
     from app.services import custom_order_reconcile_service as svc
-    return svc.list_custom_reconcile(db, only_missing=only_missing)
+    return svc.list_custom_reconcile(db, only_missing=only_missing, use_ai=ai)
 
 
 class _ReconApiUrl(BaseModel):
@@ -1225,19 +1225,19 @@ class _ReconApiUrl(BaseModel):
 
 @router.get("/custom-reconcile/external-api")
 def get_recon_api(db: Session = Depends(get_db)):
-    """读复杂备注的预留外部解析 API 地址。"""
+    """读本地 AI 模型地址 (Ollama OpenAI-compat, 复杂定制单估价用)。"""
     from app.services import custom_order_reconcile_service as svc
     from app.services import settings_service
-    return {"url": settings_service.get(db, svc.API_URL_KEY, env_fallback=False) or ""}
+    return {"url": settings_service.get(db, svc.AI_BASE_URL_KEY, env_fallback=False) or ""}
 
 
 @router.put("/custom-reconcile/external-api")
 def put_recon_api(body: _ReconApiUrl, db: Session = Depends(get_db)):
-    """配置复杂备注的预留外部解析 API (留空=关闭, 复杂单落『需系统运算』)。"""
+    """配置本地 AI 模型地址 (留空=用默认 PC Ollama)。"""
     from app.services import custom_order_reconcile_service as svc
     from app.services import settings_service
-    settings_service.set_value(db, svc.API_URL_KEY, body.url.strip(),
-                               description="定制单核对: 复杂备注外部解析 API URL (预留)")
+    settings_service.set_value(db, svc.AI_BASE_URL_KEY, body.url.strip(),
+                               description="定制单核对: 本地 AI 模型地址 (Ollama OpenAI-compat)")
     db.commit()
     return {"url": body.url.strip()}
 

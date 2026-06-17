@@ -457,22 +457,25 @@ export interface CustomReconcileRow {
   method: string;
   detail: string;
   source: string;
+  confidence: 'high' | 'mid' | 'low';
   is_final: boolean;
   projected_margin: number | null;
-  projected_margin_rate: number | null;
-  needs_compute: boolean;
+  needs_review: boolean;   // 低置信(85%兜底) → 标红待人工
 }
 export interface CustomReconcileResp {
   rows: CustomReconcileRow[];
   count: number;
-  needs_compute_count: number;
-  external_api_configured: boolean;
+  low_confidence_count: number;
+  ai_used: number;
+  ai_unavailable: boolean;   // 本地模型不可达(已飞书报警)
+  ai_enabled: boolean;
   socket_material_code: string;
+  fallback_rate: number;
 }
 
-export const fetchCustomReconcile = (onlyMissing = true) =>
+export const fetchCustomReconcile = (onlyMissing = true, ai = false) =>
   api.get<CustomReconcileResp>('/api/orders/custom-reconcile', {
-    params: { only_missing: onlyMissing },
+    params: { only_missing: onlyMissing, ai },
   }).then((r) => r.data);
 
 export const applyProjectedCost = (orderId: number) =>
