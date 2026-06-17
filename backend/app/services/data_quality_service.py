@@ -325,6 +325,11 @@ def scan_aftersales_empty(db: Session) -> int:
 # B12 — 支付宝余额连续性 (账户内 balance 跳变 → 流水可能缺失)
 # ---------------------------------------------------------------------------
 
+from decimal import Decimal as _Decimal
+# 余额断链容差: ≤此值视为链条连续(吸收支付宝收款手续费的几分钱配对噪声, 真漏一笔至少几元)
+_BALANCE_GAP_TOL = _Decimal("0.5")
+
+
 def scan_alipay_balance_gap(db: Session) -> int:
     """账户余额连续性核查 —— 订单无关、与流水排序无关 (2026-06-15 根因修)。
 
@@ -356,6 +361,11 @@ def scan_alipay_balance_gap(db: Session) -> int:
             pred = (r.balance or Decimal("0")) - (r.amount or Decimal("0"))
             if pred in bal_set or r.id == earliest_id:
                 continue  # 前驱余额能对上某条流水(或本条是窗口起点) → 链条完整
+            # 容差 (2026-06-17 实测企业号6条全是 ¥0.11~0.15 差): 支付宝收款每笔带 ~¥0.1 手续费,
+            # 收款行与手续费行的余额配对会让链条差几分钱 → ≤¥0.5 视为连续。真漏一笔至少几元,
+            # 这样只抓材料级缺口, 不再被 1毛钱手续费噪声误报成"漏导一笔流水"。
+            if any(abs(pred - b) <= _BALANCE_GAP_TOL for b in bal_set):
+                continue
             mon = r.transaction_time.strftime("%Y-%m-%d %H:%M") if r.transaction_time else "?"
             _record(
                 db,
@@ -405,6 +415,8 @@ def balance_gap_details(db: Session, *, account_kw: str = "企业号", window: i
             pred = (r.balance or Decimal("0")) - (r.amount or Decimal("0"))
             if pred in bal_set or r.id == earliest_id:
                 continue
+            if any(abs(pred - b) <= _BALANCE_GAP_TOL for b in bal_set):
+                continue  # 几分钱手续费噪声, 与 scanner 同口径不算断链
             lo, hi = max(0, idx - window), min(len(rows), idx + 2)
             null_before = any(rows[j].balance is None for j in range(lo, idx))
             out.append({

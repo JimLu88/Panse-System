@@ -331,6 +331,9 @@ def _check_alipay_balance_gap(db: Session, exc: DataException) -> Optional[str]:
     pred = f.balance - (f.amount or Decimal("0"))
     if pred in bal_set or f.id == earliest:
         return None
+    # 与 scanner 同口径: ≤¥0.5 的差是支付宝手续费配对噪声, 不算断链 (2026-06-17)
+    if any(abs(pred - b) <= Decimal("0.5") for b in bal_set):
+        return None
     return f"流水 {f.id} 余额断链 (前驱应为 ¥{pred}, 无对应流水)"
 
 

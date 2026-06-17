@@ -52,6 +52,15 @@ def _do_resync() -> dict:
             _logger.exception("实时同步-对账失败: %s", e)
             db.rollback()
             out["reconcile_error"] = f"{type(e).__name__}: {e}"
+        # 3) 批量销账: 有检查器的异常类型, 条件已不成立的(数据已修)自动关闭 → 待办即时清
+        try:
+            from app.services import exception_recheck_service
+            out["closed"] = exception_recheck_service.bulk_close_resolved(db)
+            db.commit()
+        except Exception as e:  # noqa: BLE001
+            _logger.exception("实时同步-批量销账失败: %s", e)
+            db.rollback()
+            out["close_error"] = f"{type(e).__name__}: {e}"
     finally:
         db.close()
     return out
