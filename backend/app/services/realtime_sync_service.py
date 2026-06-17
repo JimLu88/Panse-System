@@ -55,7 +55,7 @@ def _do_resync() -> dict:
 
     try:
         from app.services import (
-            alipay_amount_match_service, alipay_flow_router_service,
+            alipay_amount_match_service, alipay_flow_router_service, data_quality_service,
             exception_recheck_service, expense_flow_match_service, flow_refund_service,
             factory_reconciliation_service, order_cost_service, reconciliation_service,
             smart_matching_service,
@@ -72,6 +72,8 @@ def _do_resync() -> dict:
         _step("expense_match", lambda d: expense_flow_match_service.match_expense_flows(d) and None)
         # ── 5) 成本兜底 + 缺成本异常 (#30) ──
         _step("cost", lambda d: order_cost_service.auto_cost_backfill(d))
+        # ── 5b) 数据质量扫描写异常池 (含错配单 cost_exceeds_paid 等 23 项) ──
+        _step("data_quality", lambda d: data_quality_service.run_all(d))
         # ── 6) 14 条对账规则写异常池 (原「立即对账」按钮) ──
         _step("reconcile", lambda d: reconciliation_service.run_all(d, record_exceptions=True) and "ok")
         # ── 7) 批量销账: 数据已修的异常自动关闭 ──

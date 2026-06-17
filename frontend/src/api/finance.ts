@@ -224,6 +224,10 @@ export const routeAlipayFlows = (rerunClassify = true) =>
     params: { rerun_classify: rerunClassify },
   }).then((r) => r.data);
 
+// 手动跑一遍全自动对账流水线 (归类/退款识别/工厂匹配/核销/配流水/成本/对账/写异常)
+export const runRealtimeSync = () =>
+  api.post<Record<string, unknown>>('/api/finance/realtime-sync').then((r) => r.data);
+
 export const detectRefunds = () =>
   api.post<{ pairs_found: number; message: string }>('/api/finance/alipay-flows/detect-refunds')
     .then((r) => r.data);

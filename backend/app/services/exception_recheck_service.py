@@ -118,6 +118,20 @@ def _check_order_missing_tracking(db: Session, exc: DataException) -> Optional[s
     return f"订单 {o.order_no} 状态 {o.status} 仍无物流号"
 
 
+def _check_cost_exceeds_paid(db: Session, exc: DataException) -> Optional[str]:
+    """错配单复核: 成本已不再明显高于实付(已并单/改 actual_cost) → 销账。与 scanner 同口径。"""
+    o = _get_order(db, exc)
+    if o is None:
+        return None
+    paid = Decimal(str(o.paid_amount or 0))
+    cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+    if paid <= 0 or cost <= 0:
+        return None
+    if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
+        return None
+    return f"订单 {o.order_no} 实付 ¥{paid} 仍背成本 ¥{cost}, 错配未解决"
+
+
 def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str]:
     """订单缺收款记录: 修好(销账) = 已成交单有了支付宝流水或聚合结算关联; 或本就不该要收款
     (担保交易中 paid/shipped、退款 aftersales、取消、待付款、历史)。
@@ -353,6 +367,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "material_name_conflict": _check_material_name_conflict,
     "material_placeholder": _check_material_placeholder,
     "order_missing_cost": _check_order_missing_cost,
+    "cost_exceeds_paid": _check_cost_exceeds_paid,
     "order_missing_tracking": _check_order_missing_tracking,
     "order_missing_alipay": _check_order_missing_alipay,
     "alipay_flow_no_missing": _check_alipay_flow_no_missing,

@@ -22,27 +22,23 @@ import {
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
-import { ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { ThunderboltOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   ReconcileWalkthroughResult,
   ReconciliationDiff,
   ReconciliationResult,
-  detectRefunds,
   getFactoryAliases,
   listReconciliationWriteoffs,
   saveFactoryAliases,
-  matchFactoryAlipay,
-  rebuildFactoryReconciliation,
   reconcileWalkthrough,
-  rerunSmartMatch,
-  routeAlipayFlows,
+  runRealtimeSync,
   runReconciliation,
   writeoffReconciliationDiff,
 } from '../api/client';
 import { Suspense, lazy, useEffect, useState } from 'react';
 import dayjs, { Dayjs } from 'dayjs';
-import { listReconSnapshots, matchExpenseFlows } from '../api/client';
+import { listReconSnapshots } from '../api/client';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -125,24 +121,14 @@ export default function ReconciliationPage() {
       runReconciliation(undefined, periodParams) as Promise<Record<string, ReconciliationResult>>,
   });
 
-  const runMut = useMutation({
-    mutationFn: () =>
-      runReconciliation(undefined, periodParams) as Promise<Record<string, ReconciliationResult>>,
-    onSuccess: (res) => {
-      qc.setQueryData(['reconciliation', periodParams], res);
-      message.success('对账完成');
-    },
-    onError: () => message.error('对账失败'),
-  });
-
-  const rematchMut = useMutation({
-    mutationFn: () => rerunSmartMatch(),
-    onSuccess: (res) => {
-      const total = Object.values(res.tagged).reduce((s, n) => s + n, 0);
-      message.success(`重新核销完成：本次新打标 ${total} 条，仍未识别 ${res.untouched} 条`);
+  // 立即同步: 手动跑一遍全自动对账流水线 (替代原来那一排单独按钮; 平时导入后已自动跑)
+  const syncMut = useMutation({
+    mutationFn: runRealtimeSync,
+    onSuccess: () => {
+      message.success('全流水线已跑完(归类/退款识别/工厂匹配/核销/配流水/对账)，已刷新');
       qc.invalidateQueries({ queryKey: ['reconciliation'] });
     },
-    onError: () => message.error('重新核销失败'),
+    onError: () => message.error('立即同步失败'),
   });
 
   const walkthroughMut = useMutation({
@@ -152,70 +138,6 @@ export default function ReconciliationPage() {
       message.success(`AI 走查完成，发现 ${res.total} 条问题`);
     },
     onError: () => message.error('AI 走查失败'),
-  });
-
-  const detectRefundsMut = useMutation({
-    mutationFn: detectRefunds,
-    onSuccess: (res) => {
-      message.success(res.message);
-      qc.invalidateQueries({ queryKey: ['reconciliation'] });
-    },
-    onError: () => message.error('退款对识别失败'),
-  });
-
-  const routeMut = useMutation({
-    mutationFn: () => routeAlipayFlows(true),
-    onSuccess: (res) => {
-      message.success(
-        `归类完成 — 售后建${res.aftersales_created} 推广${res.promotion_filled} ` +
-        `日常${res.daily_filled} 外包${res.outsourcing_filled} ` +
-        `采购${res.purchases_created} 工厂翻付${res.factory_flipped}`,
-      );
-      qc.invalidateQueries({ queryKey: ['reconciliation'] });
-    },
-    onError: () => message.error('归类流水失败'),
-  });
-
-  // 经营支出自动配流水 (用户拍板): 只在金额+日期窗口唯一命中时回填, 多候选留人工
-  const expenseMatchMut = useMutation({
-    mutationFn: matchExpenseFlows,
-    onSuccess: (res) => {
-      const total = Object.values(res.matched).reduce((s, n) => s + n, 0);
-      Modal.info({
-        title: '经营支出自动配流水完成',
-        width: 640,
-        content: (
-          <div>
-            <p>
-              配上 {total} 条（{Object.entries(res.matched).map(([k, v]) => `${k} ${v}`).join('、')}）；
-              同金额多候选留人工 {res.ambiguous} 条；窗口内没找到 {res.unmatched} 条。
-            </p>
-            {res.details.length > 0 && (
-              <div style={{ maxHeight: 300, overflow: 'auto', fontSize: 12, lineHeight: 1.8 }}>
-                {res.details.map((d, i) => <div key={i}>{d}</div>)}
-              </div>
-            )}
-            <p style={{ color: '#999', fontSize: 12, marginTop: 8 }}>
-              回填动作已记入「修改档案」，可回溯撤销。
-            </p>
-          </div>
-        ),
-      });
-      qc.invalidateQueries({ queryKey: ['reconciliation'] });
-    },
-    onError: (e: any) => message.error(e?.response?.data?.detail ?? '自动配流水失败'),
-  });
-
-  const matchFactoryMut = useMutation({
-    mutationFn: () => matchFactoryAlipay().then(async (r) => {
-      await rebuildFactoryReconciliation();
-      return r;
-    }),
-    onSuccess: (res) => {
-      message.success(res.message + ' — 对账汇总已重算');
-      qc.invalidateQueries({ queryKey: ['reconciliation'] });
-    },
-    onError: () => message.error('工厂流水匹配失败'),
   });
 
   if (isLoading) return <Spin />;
@@ -250,60 +172,25 @@ export default function ReconciliationPage() {
               { label: '今年', value: [dayjs().startOf('year'), dayjs().endOf('year')] },
             ]}
           />
-          <Button
-            icon={<ReloadOutlined />}
-            loading={detectRefundsMut.isPending}
-            onClick={() => detectRefundsMut.mutate()}
-            title="识别支付宝流水中金额相等方向相反的退款对，避免被归为重复流水"
-          >
-            退款对识别
-          </Button>
-          <Button
-            icon={<ThunderboltOutlined />}
-            loading={routeMut.isPending}
-            onClick={() => routeMut.mutate()}
-            title="将支付宝流水归类回填到推广/日常/外包/售后/采购各表，并翻转工厂已付款状态"
-          >
-            归类流水
-          </Button>
-          <Button
-            icon={<ReloadOutlined />}
-            loading={matchFactoryMut.isPending}
-            onClick={() => matchFactoryMut.mutate()}
-            title="按工厂账单金额在支付宝支出流水中找等额记录，回填工厂订单流水号并重算对账汇总"
-          >
-            工厂流水匹配
-          </Button>
-          <Button
-            icon={<ReloadOutlined />}
-            loading={rematchMut.isPending}
-            onClick={() => rematchMut.mutate()}
-            title="按 关联订单号→工厂名→关键字 重新给支付宝流水打核销类型"
-          >
-            重新核销
-          </Button>
+          {/* 归类流水/退款识别/工厂匹配/重新核销/自动配流水/对账 已全自动(导入后自动跑), 按钮撤掉。
+              只留: AI走查(花钱,手动) + 工厂别名(配置) + 立即同步(手动强制跑一遍全流水线)。 */}
           <Button
             icon={<ThunderboltOutlined />}
             loading={walkthroughMut.isPending}
             onClick={() => walkthroughMut.mutate()}
+            title="AI 分析对账问题(调用大模型, 需手动触发)"
           >
             AI 走查
-          </Button>
-          <Button
-            loading={expenseMatchMut.isPending}
-            onClick={() => expenseMatchMut.mutate()}
-            title="给缺流水号的 日常经营/人员外包/品牌营销 记录按金额+日期窗口配支付宝支出流水；只在唯一命中时回填并留痕"
-          >
-            自动配流水
           </Button>
           <Button onClick={() => setAliasOpen(true)}>工厂别名</Button>
           <Button
             type="primary"
             icon={<ThunderboltOutlined />}
-            loading={runMut.isPending}
-            onClick={() => runMut.mutate()}
+            loading={syncMut.isPending}
+            onClick={() => syncMut.mutate()}
+            title="手动跑一遍全自动对账流水线(归类/退款识别/工厂匹配/核销/配流水/成本/对账/写异常)。平时导入后已自动跑, 这里供随时强制刷新。"
           >
-            立即对账
+            立即同步
           </Button>
         </Space>
       </Space>

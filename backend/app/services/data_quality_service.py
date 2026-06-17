@@ -152,6 +152,42 @@ def scan_order_missing_alipay(db: Session) -> int:
     return count
 
 
+def scan_cost_exceeds_paid(db: Session) -> int:
+    """错配单: 实付明显小于成本(背了整份SKU成本)的正式订单 → 异常, 供人工查原因。
+
+    用户拍板 2026-06-17: 那批"实付几十却背一整套餐边柜成本"的单, 关键词抓不到的(补差价/部分付款
+    /错配)列入异常逐单看。口径: 正式销售(非补单/非取消), 成本(actual或theoretical) > 实付×1.5
+    且超额 ≥¥300; 非产品单(安装/送货/差价/样品 —— 应已归0)除外。
+    """
+    from decimal import Decimal
+    SALE = ("paid", "shipped", "signed", "completed", "success", "finished")
+    count = 0
+    for o in db.query(Order).filter(
+        Order.status.in_(SALE), Order.is_refill == False,  # noqa: E712
+    ).all():
+        paid = Decimal(str(o.paid_amount or 0))
+        cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+        if paid <= 0 or cost <= 0:
+            continue
+        if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
+            continue
+        txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+        if any(k in txt for k in _NON_PRODUCT_KW):
+            continue  # 这类应已归0; 双保险
+        _record(
+            db, source_table="orders", source_pk=o.id,
+            exception_type="cost_exceeds_paid", severity="warning",
+            description=(f"订单 {o.order_no} 实付 ¥{paid} 却背成本 ¥{cost} (差 ¥{cost - paid}), "
+                        f"疑补差价/部分付款单错配整份 SKU 成本, 拖累利润, 请核实。"),
+            suggestion_action="核实是否补差价/部分付款: 是则成本归原单, 本单成本应清(改 actual_cost=0 或并单)。",
+            context={"order_no": o.order_no, "paid": str(paid), "cost": str(cost),
+                     "product_name": o.product_name},
+        )
+        count += 1
+    _log.info("scan_cost_exceeds_paid: %d", count)
+    return count
+
+
 def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
     """诊断「订单缺支付宝收款流水」(只读): 对给定订单号, 查它现在到底有没有收款凭据
     (支付宝流水关联 / 聚合结算 / 淘宝打款金额), 以及现在是否还该被标异常。
@@ -994,6 +1030,7 @@ def run_all(db: Session) -> dict[str, int]:
     results: dict[str, int] = {}
     scanners = [
         ("order_missing_cost", scan_order_missing_cost),
+        ("cost_exceeds_paid", scan_cost_exceeds_paid),
         ("order_missing_alipay", scan_order_missing_alipay),
         ("stale_import", scan_stale_import),
         ("order_missing_tracking", scan_order_missing_tracking),
