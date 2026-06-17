@@ -212,10 +212,24 @@ _AI_SYSTEM_PROMPT = """你是 Excel → ERP 字段映射助手。给你一个 sh
 - 仅输出 JSON, 不要任何解释文字"""
 
 
+def _looks_like_factory_recon(columns) -> bool:
+    """确定性识别工厂对账单(逐单): 有 订单号 + 价格/结算价/工厂价 列。
+    AI 易把它误判成 order → 工具导入对账单后实际成本不写 (用户实测 2026-06-18), 故加这条硬规则。"""
+    cols = {str(c).replace(" ", "").replace("　", "").strip() for c in (columns or [])}
+    has_order = any(k in cols for k in ("订单号", "订单编号", "淘宝订单号"))
+    has_price = any(k in cols for k in ("结算价", "工厂价", "工厂结算价", "价格"))
+    return has_order and has_price
+
+
 def infer_mapping(
     db: Session, *, preview: SheetPreview, entity_type: Optional[str] = None,
 ) -> SheetPreview:
     """让 AI 给一个 sheet 推荐 entity_type + column mapping. 失败时返回原 preview."""
+    # 工厂对账单(逐单) 走确定性识别, 不靠 AI: 有 订单号+价格 → factory_recon (按订单号回填实际成本)。
+    if entity_type in (None, "", "auto") and _looks_like_factory_recon(preview.column_names):
+        preview.suggested_entity = "factory_recon"
+        preview.notes.append("已识别为「工厂对账单(逐单)」→ 导入后按订单号把价格回填到实际成本")
+        return preview
     cfg = settings_service.get_ai_config(db, "diagnose")
     try:
         provider = build_provider(cfg)

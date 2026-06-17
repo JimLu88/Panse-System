@@ -32,13 +32,24 @@ from app.models.product import Product
 SETTLED_SALE_STATUSES = ("paid", "shipped", "signed", "completed", "success", "finished")
 
 
+# 服务行项 (送货入户/商家安装/上门), 非产品销售 → 不计营收/成本 (用户拍板 2026-06-18)。
+SERVICE_KEYWORDS = ("送货", "入户", "安装", "上门")
+
+
+def _is_service_line(name) -> bool:
+    n = name or ""
+    return any(k in n for k in SERVICE_KEYWORDS)
+
+
 def settled_sale_clause():
-    """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款。不含 is_refill 过滤。"""
+    """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款 且 非服务行项。不含 is_refill 过滤。"""
     paid = func.coalesce(Order.paid_amount, 0)
     refund = func.coalesce(Order.refund_amount, 0)
+    name = func.coalesce(Order.product_name, "")
     return and_(
         Order.status.in_(SETTLED_SALE_STATUSES),
         not_(and_(paid > 0, refund >= paid * Decimal("0.99"))),  # 全额退款不算成交
+        *[not_(name.contains(k)) for k in SERVICE_KEYWORDS],     # 送货/安装等服务费不算营收
     )
 
 
@@ -49,6 +60,8 @@ def is_settled_sale(o) -> bool:
     paid = Decimal(str(o.paid_amount or 0))
     refund = Decimal(str(getattr(o, "refund_amount", 0) or 0))
     if paid > 0 and refund >= paid * Decimal("0.99"):
+        return False
+    if _is_service_line(getattr(o, "product_name", "")):
         return False
     return True
 
