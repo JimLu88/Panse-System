@@ -49,23 +49,25 @@ def get_dashboard(
         .all()
     )
 
-    # 近 30 天趋势 — 收入口径(#11 用户拍板): 订单买家实付 paid_amount, 排除 补单(is_refill) + 关闭单(cancelled);
-    # 退款金额单独列(refund_30d), 不在此从收入里扣(净额由前端/财务页按需扣)。
+    # 近 30 天趋势 — 收入口径(用户拍板 2026-06-17): 只算"已付款成交"真实订单 —— 排除
+    # 待付款(pending_payment)/取消/关闭 + 全额退款 + 补单。退款额单独列且已从收入扣。
+    from app.services.sales_analytics import settled_sale_clause
+    _settled = settled_sale_clause()
     trend_rows = (
         db.query(Order.order_date, func.count(Order.id), func.sum(Order.paid_amount))
         .filter(Order.order_date >= win_start, Order.order_date <= win_end,
                 Order.is_historical == False,  # noqa: E712
-                Order.is_refill == False, Order.status != "cancelled")  # noqa: E712
+                Order.is_refill == False, _settled)  # noqa: E712
         .group_by(Order.order_date)
         .order_by(Order.order_date)
         .all()
     )
-    # 退款额: 口径与收入一致(同窗口、排补单/关闭单), 用于从收入中扣除 (用户拍板 2026-06-17)
+    # 退款额: 口径与收入一致(同窗口、真实成交、排补单), 用于从收入中扣除 (用户拍板 2026-06-17)
     refund_30d = float(
         db.query(func.coalesce(func.sum(Order.refund_amount), 0))
         .filter(Order.order_date >= win_start, Order.order_date <= win_end,
                 Order.is_historical == False,  # noqa: E712
-                Order.is_refill == False, Order.status != "cancelled")  # noqa: E712
+                Order.is_refill == False, _settled)  # noqa: E712
         .scalar() or 0
     )
     refill_excluded_30d = float(
@@ -136,7 +138,9 @@ def get_dashboard(
             func.coalesce(func.sum(Order.actual_cost), 0),
             func.coalesce(func.sum(eff_cost_expr), 0),
         )
-        .filter(Order.order_date >= last_30, Order.is_historical == False)  # noqa: E712
+        # 成本口径与收入一致: 真实成交·非补单 (否则成本含待付款单、毛利被压低)
+        .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
+                Order.is_refill == False, _settled)  # noqa: E712
         .one()
     )
     theoretical_cost_30d = _safe_decimal(cost_agg[0])

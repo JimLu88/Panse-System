@@ -218,10 +218,11 @@ def compute_total_profit(db: Session) -> dict:
       成本 = 实际成本 or 理论(预测)成本; 缺则计 0 (计入 orders_missing_cost, 利润会偏高)
       售后费用 = 运费 + 安装 + 上楼 + 赔付 + 退款
     """
+    from app.services.sales_analytics import settled_sale_clause
     orders = db.execute(
         select(Order).where(
             Order.is_refill == False,  # noqa: E712
-            Order.status != "cancelled",
+            settled_sale_clause(),     # 真实成交(排待付款/取消/全退) 用户拍板 2026-06-17
             (Order.shop_received_amount.isnot(None))
             | (Order.paid_amount.isnot(None))
             | (Order.buyer_payable_amount.isnot(None)),

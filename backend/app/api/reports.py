@@ -398,6 +398,7 @@ def operating_analysis(
         func.coalesce(func.sum(Order.platform_fee), 0),
     ).where(
         Order.order_date >= start, Order.order_date <= end,
+        sales_analytics.settled_sale_clause(),   # 真实成交口径 (剔除待付款/取消/全退)
         Order.is_refill == False,   # noqa: E712  # 经营状况也剔除补单(用户拍板 2026-06-17)
     )
     if platform:
@@ -619,23 +620,24 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         return int(db.execute(stmt).scalar() or 0)
 
     # 不再按 is_historical 过滤: 日常导入的订单大多被标了 is_historical=True, 若过滤会把绝大多数
-    # 真实订单漏掉(出现"某月 0 单"的怪数)。报表本就从 2026 起, 直接按下单日统计全部真实订单。
-    # 排除"已取消/交易关闭"的单(不算真实成交)。
-    _not_cancelled = not_(or_(
-        Order.status.ilike("%取消%"), Order.status.ilike("%关闭%"), Order.status == "cancelled",
-    ))
-    base = [
-        Order.order_date >= start,
-        Order.order_date <= end,
-        _not_cancelled,
-    ]
+    # 真实订单漏掉(出现"某月 0 单"的怪数)。报表本就从 2026 起, 直接按下单日统计。
+    # 真实订单口径(用户拍板 2026-06-17, 全系统统一): 只算"已付款且成交"——排除 待付款/取消/关闭
+    # 与 全额退款单(原来只排取消, 把 90 个待付款也算进 1 月营收 → 净利率虚高到 73%)。
+    from app.services.sales_analytics import settled_sale_clause
+    _settled = settled_sale_clause()
+    base = [Order.order_date >= start, Order.order_date <= end]
+    real = [*base, _settled, Order.is_refill == False]  # noqa: E712
 
-    # 订单
-    real_count = _qc(*base, Order.is_refill == False)  # noqa: E712
+    # 订单 (真实成交)
+    real_count = _qc(*real)
+    # 实收 = Σ实付 − Σ部分退款 (全额退款单已被 _settled 排除)
+    real_paid = _qs(Order.paid_amount, *real)
+    real_refund = _qs(func.coalesce(Order.refund_amount, 0), *real)
+    real_revenue = round(real_paid - real_refund, 2)
+    # 补单 (监控用, 统计当月全部补单, 不限成交状态)
     refill_count = _qc(*base, Order.is_refill == True)  # noqa: E712
-    real_revenue = _qs(Order.paid_amount, *base, Order.is_refill == False)  # noqa: E712
     refill_revenue = _qs(Order.paid_amount, *base, Order.is_refill == True)  # noqa: E712
-    platform_fee = _qs(Order.platform_fee, *base)
+    platform_fee = _qs(Order.platform_fee, *real)
 
     # 支出
     promo = float(db.execute(
@@ -676,8 +678,7 @@ def _business_month(db: Session, year: int, month: int) -> dict:
     total_revenue = real_revenue + refill_revenue   # 总流水 (含补单, 仅参考)
     # 商品成本(COGS, #17 修复): 每单 actual_cost(已对账)否则 theoretical_cost(BOM预估) —— 未对账月也有成本,
     # 利润不再虚高(原 total_expense 漏算商品成本 = 1月"25万假利润"根因)。已对账时 actual_cost≈factory_bill, 用它进利润不重复计。
-    effective_cost = _qs(func.coalesce(Order.actual_cost, Order.theoretical_cost, 0),
-                         *base, Order.is_refill == False)  # noqa: E712
+    effective_cost = _qs(func.coalesce(Order.actual_cost, Order.theoretical_cost, 0), *real)
     cogs = max(effective_cost, factory_bill)   # 取更全的: 有工厂账单用账单, 否则用逐单成本估算(未对账月也有成本)
     total_expense = cogs + promo + aftersales_comp + outsourcing + platform_fee
     net_profit = real_revenue - total_expense

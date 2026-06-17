@@ -43,10 +43,11 @@ def compute(
     recharge_q = select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
         PromotionFlow.flow_type == "充值"
     )
+    from app.services.sales_analytics import settled_sale_clause
     order_revenue_q = select(
         func.coalesce(func.sum(Order.paid_amount), 0).label("rev"),
         func.count(Order.id).label("cnt"),
-    ).where(Order.status != "cancelled", Order.is_refill == False)  # noqa: E712 剔除补单
+    ).where(settled_sale_clause(), Order.is_refill == False)  # noqa: E712 真实成交·剔除补单 (2026-06-17)
 
     if period_start:
         spend_q = spend_q.where(PromotionFlow.transaction_date >= period_start)

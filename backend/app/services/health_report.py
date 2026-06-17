@@ -94,11 +94,13 @@ def generate(db: Session, year: int, month: int) -> HealthReport:
     }
 
     # -------- 订单 --------
+    from app.services.sales_analytics import settled_sale_clause
     order_q = select(
         func.count(Order.id),
         func.coalesce(func.sum(Order.paid_amount), 0),
     ).where(
-        Order.order_date >= start, Order.order_date <= end, Order.status != "cancelled",
+        Order.order_date >= start, Order.order_date <= end,
+        settled_sale_clause(),     # 真实成交(排待付款/取消/全退) 用户拍板 2026-06-17
         Order.is_refill == False,  # noqa: E712 - 销售额全站剔补单 (用户拍板 2026-06-12)
     )
     cnt, rev = db.execute(order_q).one()

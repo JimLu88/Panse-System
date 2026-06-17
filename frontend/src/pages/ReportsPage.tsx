@@ -572,7 +572,8 @@ function BusinessMonthlyTab() {
       <Typography.Text type="secondary">
         数据范围：2026年1月至今，每月一行，合计行在底部。补单占比 &gt;30% 或售后率偏高时红色提示。
         <br />
-        「真实订单」金额 = 正式订单（已剔除补单、取消/关闭单）的买家实付合计；退款未逐单扣减（退款在「退款对账」单独核算）。
+        「真实订单」= <b>已付款且成交</b>的正式订单（已剔除 <b>待付款 / 取消 / 关闭 / 全额退款 / 补单</b>）；
+        金额 = 买家实付 − 部分退款（真实到手）。与上方各页口径一致。
       </Typography.Text>
       <Table<BusinessMonthRow>
         rowKey="period"

@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import and_, func, select
+from sqlalchemy import and_, func, not_, select
 from sqlalchemy.orm import Session
 
 from app.models.bom import BomLine
@@ -24,6 +24,33 @@ from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
 from app.models.order import Order
 from app.models.product import Product
+
+# ── 真实成交订单口径 (用户拍板 2026-06-17) ─────────────────────────────────────
+# 只算「买家已付款且成交」的单, 全系统统一口径, 不能疏漏:
+#   排除 待付款(pending_payment) / 取消 / 关闭, 以及 全额退款单。
+#   补单(is_refill) 由各调用方按需另行过滤 (有的要单独统计补单)。
+SETTLED_SALE_STATUSES = ("paid", "shipped", "signed", "completed", "success", "finished")
+
+
+def settled_sale_clause():
+    """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款。不含 is_refill 过滤。"""
+    paid = func.coalesce(Order.paid_amount, 0)
+    refund = func.coalesce(Order.refund_amount, 0)
+    return and_(
+        Order.status.in_(SETTLED_SALE_STATUSES),
+        not_(and_(paid > 0, refund >= paid * Decimal("0.99"))),  # 全额退款不算成交
+    )
+
+
+def is_settled_sale(o) -> bool:
+    """Python 版同口径 (遍历订单对象时用)。"""
+    if (getattr(o, "status", "") or "") not in SETTLED_SALE_STATUSES:
+        return False
+    paid = Decimal(str(o.paid_amount or 0))
+    refund = Decimal(str(getattr(o, "refund_amount", 0) or 0))
+    if paid > 0 and refund >= paid * Decimal("0.99"):
+        return False
+    return True
 
 
 @dataclass
@@ -74,8 +101,8 @@ def summary(db: Session, *, start: date, end: date,
     q = select(Order).where(
         Order.order_date >= start,
         Order.order_date <= end,
-        Order.status.in_(("paid", "shipped", "signed")),
-        Order.is_refill == False,   # noqa: E712  # 剔除补单/刷单(¥0成本会造成100%利润假象, 用户拍板 2026-06-17)
+        settled_sale_clause(),       # 已付款成交·非待付款/取消/关闭·未全额退款 (用户拍板 2026-06-17)
+        Order.is_refill == False,    # noqa: E712  # 剔除补单/刷单(¥0成本会造成100%利润假象)
     )
     if platform:
         q = q.where(Order.platform == platform)
@@ -130,7 +157,7 @@ def product_breakdown(
     orders = db.execute(
         select(Order).where(
             Order.order_date >= start, Order.order_date <= end,
-            Order.status.in_(("paid", "shipped", "signed")),
+            settled_sale_clause(),      # 已付款成交·非待付款/取消/关闭·未全额退款
             Order.is_refill == False,   # noqa: E712  # 剔除补单/刷单(用户拍板 2026-06-17)
         )
     ).scalars().all()
@@ -485,7 +512,7 @@ def product_ranking(
         select(Order).where(
             Order.is_refill == False,  # noqa: E712
             Order.order_date.isnot(None),
-            Order.status != "cancelled",
+            settled_sale_clause(),     # 已付款成交·非待付款/取消/关闭·未全额退款 (用户拍板 2026-06-17)
         )
     ).scalars().all()
 

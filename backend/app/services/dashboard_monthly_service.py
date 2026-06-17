@@ -104,7 +104,7 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
     orders = db.execute(
         select(Order).where(
             Order.is_refill == False,  # noqa: E712
-            Order.status != "cancelled",
+            sales_analytics.settled_sale_clause(),   # 真实成交(排待付款/取消/全退) 用户拍板 2026-06-17
             Order.order_date >= start,
             Order.order_date <= end,
         )
