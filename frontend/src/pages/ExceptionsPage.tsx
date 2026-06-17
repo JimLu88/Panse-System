@@ -18,7 +18,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DownOutlined, EditOutlined, RobotOutlined, ThunderboltOutlined, UpOutlined } from '@ant-design/icons';
+import { DownOutlined, EditOutlined, RobotOutlined, UpOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -31,9 +31,6 @@ import {
   listExceptions,
   resolveException,
   resolveImportConflict,
-  runAllScanners,
-  runDataQuality,
-  recheckAllExceptions,
 } from '../api/client';
 
 const severityColor: Record<string, string> = {
@@ -337,38 +334,7 @@ export default function ExceptionsPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? 'AI 调用失败'),
   });
 
-  const scanMut = useMutation({
-    mutationFn: () => runAllScanners(false),
-    onSuccess: (res) => {
-      const total = Object.values(res).reduce((s, r) => s + r.written, 0);
-      const skipped = Object.values(res).reduce((s, r) => s + r.skipped_duplicate, 0);
-      message.success(`扫描完成：新增 ${total} 条，去重 ${skipped} 条`);
-      qc.invalidateQueries({ queryKey: ['exceptions'] });
-      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
-    },
-  });
-
-  const dqMut = useMutation({
-    mutationFn: runDataQuality,
-    onSuccess: (res) => {
-      const total = Object.values(res).filter(v => v > 0).length;
-      message.success(`数据完整性扫描完成，发现 ${total} 类问题`);
-      qc.invalidateQueries({ queryKey: ['exceptions'] });
-      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
-    },
-  });
-
-  const recheckMut = useMutation({
-    mutationFn: recheckAllExceptions,
-    onSuccess: (res) => {
-      message.success(res.closed > 0
-        ? `重新复核完成：${res.closed} 条已修复的异常已自动销账`
-        : '重新复核完成：没有可自动销账的异常（剩下的需人工处理）');
-      qc.invalidateQueries({ queryKey: ['exceptions'] });
-      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
-    },
-    onError: () => message.error('复核失败'),
-  });
+  // scanMut / dqMut / recheckMut 已删 (用户拍板 2026-06-17): 扫描+复核全部并入实时同步, 不再手动触发。
 
   const fixMut = useMutation({
     mutationFn: ({ id, fields }: { id: number; fields: Record<string, unknown> }) =>
@@ -602,29 +568,8 @@ export default function ExceptionsPage() {
           >
             导出批注表
           </Button>
-          <Button
-            icon={<ThunderboltOutlined />}
-            onClick={() => dqMut.mutate()}
-            loading={dqMut.isPending}
-          >
-            数据完整性扫描
-          </Button>
-          <Button
-            icon={<ThunderboltOutlined />}
-            onClick={() => scanMut.mutate()}
-            loading={scanMut.isPending}
-          >
-            全量扫描
-          </Button>
-          <Button
-            type="primary" ghost
-            icon={<ThunderboltOutlined />}
-            onClick={() => recheckMut.mutate()}
-            loading={recheckMut.isPending}
-            title="对有检查器的异常重跑判定, 把问题已修复的自动销账 (没检查器的留人工)"
-          >
-            重新复核全部异常
-          </Button>
+          {/* 扫描/复核按钮已撤 (用户拍板 2026-06-17): 所有问题都实时进异常 —— 每次导入 +
+              「立即同步」都自动跑 数据质量扫描 + 旧版完整性扫描 + 对账 + 复核销账, 无需手动点。 */}
           <Button
             icon={allExpanded ? <UpOutlined /> : <DownOutlined />}
             onClick={toggleAll}
@@ -668,7 +613,7 @@ export default function ExceptionsPage() {
                 顶栏红色角标只统计 <b>error + warning</b>（共 {err + warn} 条），
                 不含 info 级提示，所以角标数会与本页总数不同。
                 其中「订单缺成本 / 订单缺支付宝流水」会对每一笔历史订单各记一条，是大批量异常的主要来源；
-                可用上方「数据完整性扫描」后按分组批量处理。
+                异常已实时生成与自动销账（导入后自动跑），按分组逐条处理即可。
               </Typography.Text>
             }
             style={{ marginBottom: 4 }}

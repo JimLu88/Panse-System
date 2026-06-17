@@ -1049,6 +1049,26 @@ def purge_pre_2026_refills(db: Session = Depends(get_db)):
     return {"deleted_pre_2026_refills": n}
 
 
+@router.post("/refill-records/purge-unmatched")
+def purge_unmatched_refills(db: Session = Depends(get_db)):
+    """删除「其它店铺」补单记录 = 订单号在主订单总表里找不到的补单 (孚格家居/小红书等)。
+
+    主店(畔色淘宝)补单的订单号都在系统里; 其它店铺的对不上 → 就是 refill_unmatched 异常那批。
+    删除后下次同步复核会自动销账对应异常 (用户拍板 2026-06-17: 先全删, 加第二店铺后再议)。
+    """
+    from app.models.finance import RefillRecord as _RR
+    from app.models.order import Order as _O
+    known = {o for (o,) in db.execute(select(_O.order_no)).all()}
+    rows = db.execute(select(_RR)).scalars().all()
+    victims = [r for r in rows if r.order_no not in known]
+    samples = [r.order_no for r in victims[:20]]
+    for r in victims:
+        db.delete(r)
+    db.commit()
+    return {"deleted_unmatched_refills": len(victims), "remaining_refills": len(rows) - len(victims),
+            "sample_order_nos": samples}
+
+
 @router.get("/exception-audit")
 def exception_audit(db: Session = Depends(get_db)):
     """诊断 cost_missing_estimated 异常构成(关闭/非产品/真缺) + 补单按年分布。"""

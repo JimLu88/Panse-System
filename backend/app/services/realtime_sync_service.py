@@ -58,7 +58,7 @@ def _do_resync() -> dict:
             alipay_amount_match_service, alipay_flow_router_service, data_quality_service,
             exception_recheck_service, expense_flow_match_service, flow_refund_service,
             factory_reconciliation_service, order_cost_service, order_sync_service,
-            reconciliation_service, smart_matching_service,
+            reconciliation_service, scanner_service, smart_matching_service,
         )
         # ── 0) 订单缺 product_code 经 sku_code 回填 (导入丢编码补救; 排行/汇总短名都靠它) ──
         _step("backfill_product_code", lambda d: order_sync_service.backfill_product_code(d))
@@ -76,6 +76,9 @@ def _do_resync() -> dict:
         _step("cost", lambda d: order_cost_service.auto_cost_backfill(d))
         # ── 5b) 数据质量扫描写异常池 (含错配单 cost_exceeds_paid 等 23 项) ──
         _step("data_quality", lambda d: data_quality_service.run_all(d))
+        # ── 5c) 旧版完整性扫描 (负库存/发货早于下单/非正价/定制缺价/悬空编码/重复流水 6 项) ──
+        #        并入实时, 这样「全量扫描」按钮可撤掉 —— 所有问题都实时进异常 (用户拍板 2026-06-17)
+        _step("scanners", lambda d: scanner_service.run_all(d))
         # ── 6) 14 条对账规则写异常池 (原「立即对账」按钮) ──
         _step("reconcile", lambda d: reconciliation_service.run_all(d, record_exceptions=True) and "ok")
         # ── 7) 批量销账: 数据已修的异常自动关闭 ──
