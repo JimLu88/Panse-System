@@ -50,6 +50,9 @@ _STATUS_MAP = {
     "卖家已发货,等待买家确认": "shipped",
     "卖家已发货，等待买家确认": "shipped",
     "交易成功": "signed",
+    # 已收货/已结算/交易完成/待评价/已签收 = 真实成交完结 (用户实测 2026-06-18: 这些没被识别→错标待付款)
+    "已收货": "signed", "买家已收货": "signed", "已签收": "signed", "交易完成": "signed",
+    "已完成": "signed", "待评价": "signed", "已结算": "signed",
     "交易关闭": "cancelled",
     "退款成功": "aftersales",
 }
@@ -66,7 +69,8 @@ def _map_status(raw: Any) -> str:
         return "aftersales"
     if "关闭" in s:
         return "cancelled"
-    if "成功" in s:
+    # 成交完结类: 成功/收货/签收/完成/已结算/待评价 → 已签收 (扩展, 防"已收货"这类掉进待付款)
+    if any(k in s for k in ("成功", "收货", "签收", "交易完成", "已完成", "已结算", "待评价")):
         return "signed"
     if "发货" in s and "等待买家" in s:
         return "shipped"
@@ -514,15 +518,12 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         pfee = _to_decimal(o.platform_fee)
         refund = _to_decimal(o.refund)
         ship_dt = _to_date(o.ship_time)
-        # 防错标"待付款" (用户拍板 2026-06-18): 订单状态文本不在映射表里(如"已收货"/CSV无状态列)会默认"待付款",
-        # 但若有 物流单号/发货日(已发货)或 店铺实收/买家实付>0(已收钱), 必然是真实成交 → 据证据纠正状态,
-        # 否则这些真单被"真实成交"过滤掉, 收入/利润全系统少算 (1月就因此 ¥17万 显示成 ¥7万)。
-        # 注意: paid_amount 列其实是"买家应付", 不能当付款凭据; 只认 实付(paid_real)/店铺实收(received)/物流。
+        # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
+        # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款。
+        # ⚠ 不用物流单号作凭据: 实测物流号会出现在 ¥0/补拍/未成交单上, 不可靠(全刷会把假单也算进来)。
         if status == "pending_payment":
             _paid_real = _to_decimal(o.paid_real)
-            if _clean(o.tracking_no) or ship_dt:
-                status = "shipped"
-            elif (received and received > 0) or (_paid_real and _paid_real > 0):
+            if (received and received > 0) or (_paid_real and _paid_real > 0):
                 status = "paid"
 
         existing = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
