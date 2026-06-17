@@ -40,6 +40,7 @@ export default function WebAgentPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [ivOrders, setIvOrders] = useState<number | null>(null);
   const [ivBalance, setIvBalance] = useState<number | null>(null);
+  const [schedTime, setSchedTime] = useState<string | null>(null);  // 每日触发时刻 HH:MM
   const [token, setToken] = useState('');
 
   const { data, isLoading, refetch } = useQuery({
@@ -74,6 +75,7 @@ export default function WebAgentPage() {
       message.success('设置已保存');
       setSettingsOpen(false);
       setToken('');
+      setSchedTime(null);
       qc.invalidateQueries({ queryKey: ['web-agent-settings'] });
       qc.invalidateQueries({ queryKey: ['web-agent-status'] });
     },
@@ -94,6 +96,11 @@ export default function WebAgentPage() {
             status={agent?.online ? 'success' : 'error'}
             text={agent?.online ? '取数服务在线' : '取数服务离线'}
           />
+          {settings?.schedule_enabled !== false && (
+            <Text type="secondary" style={{ fontSize: 13, marginLeft: 10 }}>
+              · 每天 <b>{settings?.schedule_time ?? '—'}</b> 自动取数（点「更新间隔设置」可改）
+            </Text>
+          )}
         </Title>
         <Space>
           <Button icon={<ReloadOutlined />} onClick={() => refetch()}>刷新</Button>
@@ -275,6 +282,7 @@ export default function WebAgentPage() {
         onOk={() => settingsMut.mutate({
           interval_orders_days: ivOrders ?? settings?.interval_orders_days,
           interval_balance_days: ivBalance ?? settings?.interval_balance_days,
+          schedule_time: schedTime ?? settings?.schedule_time,
           ...(token ? { token } : {}),
         })}
         confirmLoading={settingsMut.isPending}
@@ -283,6 +291,13 @@ export default function WebAgentPage() {
           <Descriptions.Item label="取数服务地址">{settings?.agent_url}</Descriptions.Item>
         </Descriptions>
         <Space direction="vertical" style={{ width: '100%' }}>
+          <Space>
+            <Text style={{ width: 160, display: 'inline-block' }}>每日自动取数时刻</Text>
+            <Input placeholder="HH:MM 如 17:30" style={{ width: 120 }}
+              value={schedTime ?? settings?.schedule_time}
+              onChange={(e) => setSchedTime(e.target.value)} />
+            <Text type="secondary">每天这个点自动拉订单+余额</Text>
+          </Space>
           <Space>
             <Text style={{ width: 160, display: 'inline-block' }}>订单更新间隔 (天)</Text>
             <InputNumber min={1} max={30}

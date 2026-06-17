@@ -170,17 +170,32 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     return result
 
 
+import re as _re
+
+_HHMM = _re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
+
 class WebAgentSettings(BaseModel):
     interval_orders_days: Optional[int] = None
     interval_balance_days: Optional[int] = None
+    schedule_time: Optional[str] = None       # 每日触发时刻 HH:MM (转发给 Agent local_schedule_time)
+    schedule_enabled: Optional[bool] = None   # 定时取数总开关
     token: Optional[str] = None          # write-only, 不回显
 
 
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db)):
+    # 每日触发时刻/开关存在 Agent 端 (local_schedule_*), 取数服务在线时回读
+    schedule_time, schedule_enabled = "18:00", True
+    agent_s = web_agent_service._get(db, "/api/settings")
+    if agent_s.get("ok"):
+        schedule_time = str(agent_s.get("local_schedule_time") or "18:00")
+        schedule_enabled = bool(agent_s.get("local_schedule_enabled", True))
     return {
         "interval_orders_days": ingest._get_int(db, ingest.KEY_INTERVAL_ORDERS, 1),
         "interval_balance_days": ingest._get_int(db, ingest.KEY_INTERVAL_BALANCE, 3),
+        "schedule_time": schedule_time,
+        "schedule_enabled": schedule_enabled,
         "token_configured": bool(settings_service.get(db, web_agent_service.TOKEN_KEY)),
         "agent_url": web_agent_service.BASE_URL,
     }
@@ -203,5 +218,17 @@ def put_settings(payload: WebAgentSettings, db: Session = Depends(get_db)):
     if payload.token is not None:
         settings_service.set_value(db, web_agent_service.TOKEN_KEY, payload.token,
                                    description="Panse-Web-Agent API token")
+    # 每日触发时刻/开关 → 转发给取数服务 (Agent local_schedule_*), 改完即时重排, 不用重启
+    agent_payload: dict = {}
+    if payload.schedule_time is not None:
+        if not _HHMM.match(payload.schedule_time.strip()):
+            raise HTTPException(400, "触发时刻格式应为 HH:MM (如 17:30)")
+        agent_payload["local_schedule_time"] = payload.schedule_time.strip()
+    if payload.schedule_enabled is not None:
+        agent_payload["local_schedule_enabled"] = bool(payload.schedule_enabled)
+    if agent_payload:
+        res = web_agent_service._post(db, "/api/settings", agent_payload)
+        if not res.get("ok"):
+            raise HTTPException(409, f"取数服务未接受时间设置: {res.get('error', '')}")
     db.commit()
     return get_settings(db)

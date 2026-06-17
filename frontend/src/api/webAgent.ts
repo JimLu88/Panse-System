@@ -38,6 +38,8 @@ export interface WebAgentStatus {
 export interface WebAgentSettings {
   interval_orders_days: number;
   interval_balance_days: number;
+  schedule_time: string;       // 每日触发时刻 HH:MM
+  schedule_enabled: boolean;
   token_configured: boolean;
   agent_url: string;
 }
@@ -65,6 +67,8 @@ export async function getWebAgentSettings(): Promise<WebAgentSettings> {
 export async function putWebAgentSettings(payload: {
   interval_orders_days?: number;
   interval_balance_days?: number;
+  schedule_time?: string;        // HH:MM
+  schedule_enabled?: boolean;
   token?: string;
 }): Promise<WebAgentSettings> {
   return (await api.put('/api/web-agent/settings', payload)).data;
