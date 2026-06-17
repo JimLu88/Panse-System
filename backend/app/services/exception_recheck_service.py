@@ -289,8 +289,8 @@ def _check_custom_order_missing_cost_basis(db: Session, exc: DataException) -> O
         return None
     if o.actual_cost is not None or o.custom_surcharge is not None:
         return None
-    # 已有推演成本(定制单核对自动写回 theoretical_cost) → 已能核算 → 销账 (用户拍板 2026-06-17)
-    if o.theoretical_cost is not None and float(o.theoretical_cost) > 0:
+    # 已有推演成本(定制单核对自动写回 theoretical_cost, 含成本=0) → 已能核算 → 销账 (用户拍板 2026-06-17)
+    if o.theoretical_cost is not None:
         return None
     if (o.status or "") == "cancelled":
         return None

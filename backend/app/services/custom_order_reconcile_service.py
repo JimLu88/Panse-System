@@ -67,8 +67,11 @@ def _r_surcharge(db, o, txt):
     return None
 
 
-# 必须带成本类关键词 (不再匹配裸 ¥X / X元 —— 那些常是"活动到手"售价)
-_COST_KW = re.compile(r"(?:成本|材料费|料费|纯材料|加价|定制费|工厂价)\s*[:：=]?\s*[¥￥]?\s*(\d+(?:\.\d+)?)")
+# 必须带成本类关键词 (不再匹配裸 ¥X / X元 —— 那些常是"活动到手"售价)。
+# 连接词放宽: 成本算100 / 成本设置为20 / 成本为0 / 成本=200 都要能取到 (审计修 2026-06-17)。
+_COST_KW = re.compile(
+    r"(?:成本|材料费|料费|纯材料|加价|定制费|工厂价)\s*(?:设置为|设为|算|为|是|约|大概|[:：=])?\s*[¥￥]?\s*(\d+(?:\.\d+)?)"
+)
 
 
 def _r_cost_keyword(db, o, txt):
@@ -76,7 +79,7 @@ def _r_cost_keyword(db, o, txt):
     if not m:
         return None
     amt = _d(m.group(1))
-    if amt is None:
+    if amt is None or amt < 0:
         return None
     return {"cost": amt, "method": "备注写明成本", "detail": f"备注成本 {amt}",
             "source": "amount", "confidence": "high"}
@@ -98,14 +101,19 @@ def _r_percent(db, o, txt):
             "source": "percent", "confidence": "high"}
 
 
-_SOCKET_QTY = re.compile(r"插座\s*[x×\*]?\s*(\d+)")
+# 数量: "插座×3" / "插座 3" (数字在后) 或 "3个插座" / "2插座" (数字在前) 都要取到 (审计修 2026-06-17)
+_SOCKET_QTY = re.compile(r"插座\s*[x×\*]?\s*(\d+)|(\d+)\s*个?\s*插座")
+# 大件关键词: 备注里有这些 → 不是纯插座追加, 别只算插座(会严重低估), 交 AI/85% 兜底
+_BIG_ITEM_KW = ("柜", "桌", "床", "灯带", "岩板", "玻璃", "水管", "移门", "背板", "抽屉", "大板")
 
 
 def _r_socket(db, o, txt):
     if "插座" not in txt:
         return None
+    if any(k in txt for k in _BIG_ITEM_KW):
+        return None   # 插座与大件混在一起 → 非纯插座单, 不能只算 ¥63 (审计修 2026-06-17)
     m = _SOCKET_QTY.search(txt)
-    qty = int(m.group(1)) if m else 1
+    qty = int(m.group(1) or m.group(2)) if m else 1
     mat = db.execute(select(Material).where(Material.code == SOCKET_MATERIAL_CODE)).scalar_one_or_none()
     price = _d(mat.price) if (mat and mat.price is not None) else None
     if price is None:

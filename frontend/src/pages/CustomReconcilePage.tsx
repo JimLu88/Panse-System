@@ -11,7 +11,8 @@ import { RobotOutlined, SettingOutlined, ReloadOutlined } from '@ant-design/icon
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  CustomReconcileRow, applyProjectedCost, fetchCustomReconcile, getReconApiUrl, putReconApiUrl,
+  CustomReconcileRow, aiRecomputeCustom, applyProjectedCost, fetchCustomReconcile,
+  getReconApiUrl, putReconApiUrl,
 } from '../api/orders';
 
 const { Title, Text, Paragraph } = Typography;
@@ -40,6 +41,17 @@ export default function CustomReconcilePage() {
       qc.invalidateQueries({ queryKey: ['custom-reconcile'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '写回失败'),
+  });
+
+  // 一键 AI 重算兜底: 把 85% 兜底的用本地 AI 重估并写回(规则算出的不动)
+  const recomputeMut = useMutation({
+    mutationFn: aiRecomputeCustom,
+    onSuccess: (r) => {
+      if (r.ai_unavailable) message.warning('本地模型不可达(PC/Ollama没开?), 已飞书报警, 维持 85% 兜底');
+      else message.success(`AI 重算完成: 已写回 ${r.filled} 单`);
+      qc.invalidateQueries({ queryKey: ['custom-reconcile'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? 'AI 重算失败'),
   });
 
   const openApi = async () => {
@@ -105,13 +117,18 @@ export default function CustomReconcilePage() {
           <Segmented value={onlyMissing ? 'missing' : 'all'}
             onChange={(v) => setOnlyMissing(v === 'missing')}
             options={[{ label: '只看缺工厂成本', value: 'missing' }, { label: '全部定制单', value: 'all' }]} />
-          <Tooltip title="复杂备注(改尺寸/材质)交本地大模型 qwen2.5vl 估算; PC没开机会飞书报警并暂用85%兜底">
+          <Tooltip title="复杂备注(改尺寸/材质)交本地大模型 qwen2.5vl 估算预览(不写回); PC没开机会飞书报警并暂用85%兜底">
             <Button type={useAi ? 'primary' : 'default'} icon={<RobotOutlined />}
               loading={useAi && isFetching}
               onClick={() => { setUseAi(true); }}>
               AI 估算复杂单
             </Button>
           </Tooltip>
+          <Popconfirm title="一键 AI 重算兜底并写回?"
+            description="把 85% 兜底的定制单用本地 AI 重估、写回理论成本(规则已算出的不动)。PC/Ollama 没开会飞书报警并维持 85%。"
+            onConfirm={() => recomputeMut.mutate()}>
+            <Button danger icon={<RobotOutlined />} loading={recomputeMut.isPending}>AI 重算兜底(写回)</Button>
+          </Popconfirm>
           <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>刷新</Button>
           <Tooltip title="本地 AI 模型地址 (Ollama OpenAI-compat); 留空用默认 PC Ollama">
             <Button icon={<SettingOutlined />} onClick={openApi}>本地AI地址</Button>

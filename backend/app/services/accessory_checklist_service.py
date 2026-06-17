@@ -307,7 +307,11 @@ def summary_by_order(db: Session) -> dict[int, dict]:
             OrderAccessoryItem.order_id,
             func.count().label("total"),
             func.sum(case((OrderAccessoryItem.status.in_(["已到货", "工厂提供"]), 1), else_=0)).label("done"),
-        ).group_by(OrderAccessoryItem.order_id)
+        )
+        # 木作/工厂提供(WD-*/MW-*/MP-*)不算外购配件, 卡片"配件缺 X/Y"也排除它,
+        # 与配件弹窗一致 (用户拍板 2026-06-17)。
+        .where(OrderAccessoryItem.is_factory_provided.is_(False))
+        .group_by(OrderAccessoryItem.order_id)
     ).all()
     out: dict[int, dict] = {}
     for oid, total, done in rows:
@@ -401,6 +405,10 @@ def by_component(db: Session, product: Optional[str] = None) -> list[dict]:
             "qty_required": _fmt_qty(qty), "status": it.status, "purchase_no": it.purchase_no,
             "tracking_no": it.tracking_no, "self_delivered": it.self_delivered,
             "product_name": _disp_name(o) if o else None,
+            # SKU 名通常含尺寸(如"1.2米洞石款窄柜"), 展开后让用户看到每单具体尺寸 (用户拍板 2026-06-17)
+            "sku": (o.sku if o else None),
+            "sku_code": (o.sku_code if o else None),
+            "size": getattr(it, "size", None),   # 配件自身尺寸(若有, 数据可能不准)
             "customer_name": o.customer_name if o else None,
             "customer_address": o.customer_address if o else None,
             "order_date": (o.order_date.isoformat() if o and o.order_date else None),

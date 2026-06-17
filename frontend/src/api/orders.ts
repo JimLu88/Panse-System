@@ -64,6 +64,7 @@ export interface ComponentItem {
   status: string; purchase_no: string | null; tracking_no: string | null; self_delivered: boolean;
   product_name?: string | null; customer_name?: string | null; customer_address?: string | null;
   order_date?: string | null; ship_deadline?: string | null;
+  sku?: string | null; sku_code?: string | null; size?: string | null;   // SKU名含尺寸; 展开看每单尺寸
 }
 export interface ComponentGroup {
   material_code: string; material_name: string | null; unit: string | null;
@@ -481,6 +482,12 @@ export const fetchCustomReconcile = (onlyMissing = true, ai = false) =>
 export const applyProjectedCost = (orderId: number) =>
   api.post<{ ok: boolean; order_no: string; written_theoretical_cost: number; method: string }>(
     `/api/orders/${orderId}/apply-projected-cost`,
+  ).then((r) => r.data);
+
+// 一键 AI 重算兜底: 把 85% 兜底的定制单用本地 AI 重估并写回 theoretical_cost (规则算出的不动)
+export const aiRecomputeCustom = () =>
+  api.post<{ filled: number; ai_unavailable: boolean }>(
+    '/api/orders/custom-reconcile/ai-recompute',
   ).then((r) => r.data);
 
 export const getReconApiUrl = () =>

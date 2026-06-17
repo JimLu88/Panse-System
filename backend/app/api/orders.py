@@ -1250,3 +1250,11 @@ def apply_projected_cost(order_id: int, db: Session = Depends(get_db)):
     if not res.get("ok"):
         raise HTTPException(400, res.get("error", "写入失败"))
     return res
+
+
+@router.post("/custom-reconcile/ai-recompute")
+def custom_reconcile_ai_recompute(db: Session = Depends(get_db)):
+    """一键 AI 重算: 缺成本的定制单跑 规则→本地AI→85%, 把 85% 兜底的升级成 AI 估算并写回 theoretical_cost
+    (规则已算出的保持不变, 确定性)。本地模型不可达(PC没开机)→飞书报警 + 维持 85% (用户拍板 2026-06-17)。"""
+    from app.services import custom_order_reconcile_service as svc
+    return svc.auto_backfill_custom_costs(db, use_ai=True)

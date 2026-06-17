@@ -345,6 +345,23 @@ export default function AccessoryPurchasePage() {
             rowKey="material_code" loading={isLoading} dataSource={compFiltered}
             columns={componentColumns as any} size="small" pagination={false}
             locale={{ emptyText: '当前没有待采购的配件（都已到货，或还没生成配件清单）' }}
+            expandable={{
+              // 点击展开看每个 SKU 的尺寸 (用户拍板 2026-06-17): SKU 名通常含尺寸
+              defaultExpandAllRows: false,
+              expandedRowRender: (g) => (
+                <Table
+                  rowKey="id" dataSource={g.items} size="small" pagination={false}
+                  columns={[
+                    { title: 'SKU (含尺寸)', dataIndex: 'sku', render: (v: string | null, r: any) => v ?? r.sku_code ?? '—' },
+                    { title: '产品', dataIndex: 'product_name', width: 150, ellipsis: true, render: (v: string | null) => v ?? '—' },
+                    { title: '配件尺寸', dataIndex: 'size', width: 100, render: (v: string | null) => v ?? <span style={{ color: '#ccc' }}>—</span> },
+                    { title: '数量', dataIndex: 'qty_required', width: 80, align: 'right' as const, render: (v: string) => `${v}${g.unit ?? ''}` },
+                    { title: '状态', dataIndex: 'status', width: 80, render: (v: string) => <Tag color={STATUS_COLOR[v] ?? 'default'}>{v}</Tag> },
+                    { title: '订单号', dataIndex: 'order_no', width: 165, render: (v: string) => <code style={{ fontSize: 12 }}>{v}</code> },
+                  ]}
+                />
+              ),
+            }}
           />
         ) : (
           <Table<OrderGroup>

@@ -890,8 +890,8 @@ def scan_custom_order_missing_cost_basis(db: Session) -> int:
             continue  # 已有工厂实际成本 → 不动
         if o.custom_surcharge is not None:
             continue  # 已有定制加价 → 可算预计成本, 不报
-        if o.theoretical_cost is not None and float(o.theoretical_cost) > 0:
-            continue  # 已有推演成本(定制单核对自动写回) → 不再报缺依据 (用户拍板 2026-06-17)
+        if o.theoretical_cost is not None:
+            continue  # 已有推演成本(定制单核对自动写回, 含成本=0) → 不再报缺依据 (用户拍板 2026-06-17)
         _record(
             db,
             source_table="orders",
