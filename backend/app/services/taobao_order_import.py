@@ -58,27 +58,32 @@ _STATUS_MAP = {
 }
 
 
-def _map_status(raw: Any) -> str:
+def _resolve_status(raw: Any) -> tuple[str, bool]:
+    """返回 (内部状态, 是否识别)。无法识别(空/陌生文字, 走最后默认)→ recognized=False,
+    供导入拦截报异常 (用户拍板 2026-06-18: 状态无法识别的单先拦截, 异常清除后再入库)。"""
     if not raw:
-        return "pending_payment"
+        return "pending_payment", False
     s = str(raw).strip()
     if s in _STATUS_MAP:
-        return _STATUS_MAP[s]
-    # 模糊兜底
+        return _STATUS_MAP[s], True
     if "退款" in s:
-        return "aftersales"
+        return "aftersales", True
     if "关闭" in s:
-        return "cancelled"
+        return "cancelled", True
     # 成交完结类: 成功/收货/签收/完成/已结算/待评价 → 已签收 (扩展, 防"已收货"这类掉进待付款)
     if any(k in s for k in ("成功", "收货", "签收", "交易完成", "已完成", "已结算", "待评价")):
-        return "signed"
+        return "signed", True
     if "发货" in s and "等待买家" in s:
-        return "shipped"
+        return "shipped", True
     if "付款" in s and "等待卖家" in s:
-        return "paid"
+        return "paid", True
     if "等待买家付款" in s:
-        return "pending_payment"
-    return "pending_payment"
+        return "pending_payment", True
+    return "pending_payment", False
+
+
+def _map_status(raw: Any) -> str:
+    return _resolve_status(raw)[0]
 
 
 # ── 字段转换 ──────────────────────────────────────────────────────────────────
@@ -181,6 +186,7 @@ class TaobaoImportReport:
     status_changed: int = 0         # 重导时状态被覆盖的单数 (日报用)
     amount_changed: int = 0         # 重导时实付/退款被覆盖的单数 (日报用)
     vanished: int = 0               # 库里有、新文件里没有的单数 (报异常, 不动行)
+    held_unrecognized: int = 0      # 状态无法识别+无收款凭据 → 拦截未入库 (报异常待人工)
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
 
@@ -511,7 +517,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             _shop = hit.get("shop") or _shop
 
         # 财务字段 (淘宝导出为准): 应付/实付/实收/平台费/退款/发货日
-        status = _map_status(o.status_text)
+        status, _recognized = _resolve_status(o.status_text)
         payable = _to_decimal(o.buyer_payable)
         paid = _to_decimal(o.paid_real) or _to_decimal(o.paid_amount)
         received = _to_decimal(o.shop_received)
@@ -519,12 +525,28 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         refund = _to_decimal(o.refund)
         ship_dt = _to_date(o.ship_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
-        # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款。
+        # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款(视为已识别)。
         # ⚠ 不用物流单号作凭据: 实测物流号会出现在 ¥0/补拍/未成交单上, 不可靠(全刷会把假单也算进来)。
         if status == "pending_payment":
             _paid_real = _to_decimal(o.paid_real)
             if (received and received > 0) or (_paid_real and _paid_real > 0):
                 status = "paid"
+                _recognized = True
+        # 状态无法识别 且 无收款凭据 → 拦截不入库, 报异常待人工 (用户拍板 2026-06-18:
+        # 不再默默塞成"待付款"被全系统漏算; 补好状态映射后重导即可入库)。
+        if not _recognized:
+            rep.held_unrecognized += 1
+            try:
+                from app.services import exception_service
+                exception_service.record(
+                    db, source_table="orders", source_pk=no,
+                    exception_type="order_unrecognized_status", severity="warning",
+                    description=f"订单 {no} 的订单状态「{o.status_text}」系统无法识别, 已拦截不入库, "
+                                f"避免被错标待付款漏算。请补状态映射或确认后重新导入。",
+                    suggestion_action="补订单状态映射(taobao_order_import._STATUS_MAP)后重新导入该单")
+            except Exception:  # noqa: BLE001
+                pass
+            continue
 
         existing = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if existing is not None:
@@ -798,8 +820,9 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
                 db,
                 (f"订单重导完成: 解析 {len(orders)} 单 — 新增 {rep.inserted}, "
                  f"更新 {rep.updated} (状态变更 {rep.status_changed}, 金额变更 {rep.amount_changed}), "
-                 f"重复 {rep.skipped_duplicate}, 无效 {rep.skipped_invalid}。"
-                 "变更明细见 工具→修改档案 (来源筛「导入覆盖」)。" + vanish_line),
+                 f"重复 {rep.skipped_duplicate}, 无效 {rep.skipped_invalid}"
+                 + (f", ⚠拦截 {rep.held_unrecognized}(状态无法识别, 见异常页)" if rep.held_unrecognized else "")
+                 + "。变更明细见 工具→修改档案 (来源筛「导入覆盖」)。" + vanish_line),
                 level="warning" if rep.vanished else "info",
                 title="畔色 ERP · 订单导入日报",
             )
