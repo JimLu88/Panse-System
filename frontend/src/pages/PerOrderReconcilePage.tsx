@@ -5,12 +5,16 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  Alert, Card, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography,
+  Alert, Button, Card, Input, InputNumber, Modal, Segmented, Select, Space, Statistic,
+  Switch, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
+import { DeleteOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
-import { useQuery } from '@tanstack/react-query';
-import { PerOrderRow, fetchPerOrderReconcile } from '../api/operations';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  FixedCostItem, PerOrderRow, fetchPerOrderReconcile, getFixedCostItems, putFixedCostItems,
+} from '../api/operations';
 
 const { Title, Text } = Typography;
 
@@ -48,6 +52,26 @@ export default function PerOrderReconcilePage() {
   }, [data, onlyProblem]);
 
   const st = data?.subtotal;
+
+  // 固定成本/管理费用 自定义编辑
+  const qc = useQueryClient();
+  const [fixedOpen, setFixedOpen] = useState(false);
+  const [draft, setDraft] = useState<FixedCostItem[]>([]);
+  const openFixed = async () => {
+    try { const r = await getFixedCostItems(); setDraft(r.items); } catch { setDraft([]); }
+    setFixedOpen(true);
+  };
+  const saveFixed = useMutation({
+    mutationFn: () => putFixedCostItems(draft.filter((i) => i.name.trim())),
+    onSuccess: () => {
+      message.success('固定成本已保存');
+      setFixedOpen(false);
+      qc.invalidateQueries({ queryKey: ['per-order-reconcile'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+  const setItem = (i: number, patch: Partial<FixedCostItem>) =>
+    setDraft((d) => d.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
 
   const costCell = (estimatedFlag = false) => (v: number, r: PerOrderRow) =>
     estimatedFlag && r.cost_estimated
@@ -172,7 +196,7 @@ export default function PerOrderReconcilePage() {
         />
       </Card>
 
-      {/* 本月真实净利 = 行净利合计 − 推广费 − 人员成本 */}
+      {/* 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定成本 + 补单净 */}
       {st && (
         <Card size="small" style={{ marginTop: 12, background: '#f6ffed', borderColor: '#b7eb8f' }}>
           <Space size="large" wrap split={<Text type="secondary">|</Text>}>
@@ -180,6 +204,15 @@ export default function PerOrderReconcilePage() {
             <span>− 推广费 <Text type="danger">{yuan2(st.promo_expense)}</Text></span>
             <span>− 人员成本 <Text type="danger">{yuan2(st.outsourcing_expense)}</Text>
               {st.outsourcing_estimated && <Tag color="blue" style={{ marginLeft: 4 }}>估</Tag>}</span>
+            <span>
+              <Tooltip title={(st.fixed_cost_items ?? []).map((i) => `${i.name} ¥${i.amount}/${i.period === 'yearly' ? '年' : '月'}`).join('; ') || '未设置'}>
+                − 固定成本 <Text type="danger">{yuan2(st.fixed_costs)}</Text>
+              </Tooltip>
+              <Button type="link" size="small" icon={<SettingOutlined />} onClick={openFixed} style={{ paddingInline: 4 }}>设置</Button>
+            </span>
+            <Tooltip title={`补单(补差价/补邮费)收入 ¥${st.refill_revenue} − 估算成本 ¥${st.refill_cost}`}>
+              <span>+ 补单净 <Text type={st.refill_net >= 0 ? 'success' : 'danger'}>{yuan2(st.refill_net)}</Text></span>
+            </Tooltip>
             <span>=&nbsp; 本月真实净利{' '}
               <Text strong style={{ fontSize: 18, color: st.period_net_profit >= 0 ? '#389e0d' : '#cf1322' }}>
                 {yuan2(st.period_net_profit)}
@@ -189,6 +222,36 @@ export default function PerOrderReconcilePage() {
           </Space>
         </Card>
       )}
+
+      {/* 固定成本/管理费用 自定义编辑 (房租/水电/软件/折旧…, 年度项自动÷12) */}
+      <Modal title="固定成本 / 管理费用 (按月分摊计入利润)" open={fixedOpen}
+        onCancel={() => setFixedOpen(false)} onOk={() => saveFixed.mutate()}
+        confirmLoading={saveFixed.isPending} okText="保存" width={620}>
+        <Typography.Paragraph type="secondary" style={{ fontSize: 12 }}>
+          这些费用会按月计入「本月真实净利」。选「年」的项自动 ÷12 摊到每月(如房租 ¥40000/年 = ¥3333.33/月)。可自由增删。
+        </Typography.Paragraph>
+        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+          {draft.map((it, i) => (
+            <Space key={i} wrap>
+              <Input placeholder="名称(如 房租)" value={it.name} style={{ width: 150 }}
+                onChange={(e) => setItem(i, { name: e.target.value })} />
+              <InputNumber placeholder="金额" value={it.amount} min={0} step={100} style={{ width: 130 }}
+                onChange={(v) => setItem(i, { amount: Number(v ?? 0) })} addonAfter="元" />
+              <Select<'monthly' | 'yearly'> value={it.period} style={{ width: 80 }}
+                onChange={(v) => setItem(i, { period: v })}
+                options={[{ label: '每月', value: 'monthly' }, { label: '每年', value: 'yearly' }]} />
+              <Switch checked={it.active} checkedChildren="启用" unCheckedChildren="停用"
+                onChange={(v) => setItem(i, { active: v })} />
+              <Button danger type="text" icon={<DeleteOutlined />}
+                onClick={() => setDraft((d) => d.filter((_, idx) => idx !== i))} />
+            </Space>
+          ))}
+          <Button type="dashed" icon={<PlusOutlined />} block
+            onClick={() => setDraft((d) => [...d, { name: '', amount: 0, period: 'monthly', active: true }])}>
+            添加一项
+          </Button>
+        </Space>
+      </Modal>
 
       <style>{`.per-order-loss-row > td { background: #fff1f0 !important; }`}</style>
     </div>

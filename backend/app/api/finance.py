@@ -1713,3 +1713,42 @@ def put_financial_coefficients(
             changed[k] = v
     db.commit()
     return {"changed": changed, "coefficients": get_financial_coefficients(db)}
+
+
+@router.get("/fixed-cost-items")
+def get_fixed_cost_items(db: Session = Depends(get_db)):
+    """自定义固定成本/管理费用项 (房租/水电/软件/折旧…) + 每月合计 (年度项÷12)。"""
+    from app.services import order_financials as ofin
+    return {"items": ofin.fixed_cost_items(db), "monthly_total": float(ofin.fixed_costs_monthly(db))}
+
+
+@router.put("/fixed-cost-items")
+def put_fixed_cost_items(
+    payload: dict = Body(...),
+    user: User = Depends(require_role("admin", "operator")),
+    db: Session = Depends(get_db),
+):
+    """改自定义固定成本项。items=[{name, amount, period('monthly'|'yearly'), active}] (用户可自由增删)。"""
+    import json
+
+    from app.services import order_financials as ofin, settings_service as _ss
+    items = payload.get("items")
+    if not isinstance(items, list):
+        raise HTTPException(400, "items 应为数组")
+    clean = []
+    for it in items:
+        name = str(it.get("name") or "").strip()
+        if not name:
+            continue
+        try:
+            amt = float(it.get("amount") or 0)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"{name} 金额无效")
+        if amt < 0:
+            raise HTTPException(400, f"{name} 金额应 ≥0")
+        period = "yearly" if str(it.get("period")) == "yearly" else "monthly"
+        clean.append({"name": name, "amount": amt, "period": period, "active": bool(it.get("active", True))})
+    _ss.set_value(db, "fin_fixed_cost_items", json.dumps(clean, ensure_ascii=False),
+                  description="财务: 自定义固定成本/管理费用项 (房租等)")
+    db.commit()
+    return {"items": ofin.fixed_cost_items(db), "monthly_total": float(ofin.fixed_costs_monthly(db))}

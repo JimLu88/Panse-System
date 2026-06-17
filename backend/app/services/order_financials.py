@@ -152,6 +152,49 @@ def extra_aftersales(db: Session, start: date, end: date) -> Decimal:
     return sum((_d(x) for x in row), Decimal("0"))
 
 
+_DEFAULT_FIXED_COSTS = [{"name": "房租", "amount": 40000, "period": "yearly", "active": True}]
+
+
+def fixed_cost_items(db: Session) -> list[dict]:
+    """自定义固定成本/管理费用项 (房租/水电/软件/折旧…)。存 setting fin_fixed_cost_items(JSON)。
+    未设置过 → 返回默认 [房租 ¥40000/年]; 已设置(哪怕空[]) → 用存的, 这样用户可自由增删 (用户拍板 2026-06-18)。"""
+    import json
+    raw = settings_service.get(db, "fin_fixed_cost_items", env_fallback=False)
+    if raw is None:
+        return [dict(x) for x in _DEFAULT_FIXED_COSTS]
+    try:
+        items = json.loads(raw)
+        return items if isinstance(items, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def fixed_costs_monthly(db: Session) -> Decimal:
+    """每月固定成本合计 (年度项 ÷12)。"""
+    total = Decimal("0")
+    for it in fixed_cost_items(db):
+        if not it.get("active", True):
+            continue
+        amt = _d(it.get("amount"))
+        if str(it.get("period")) == "yearly":
+            amt = amt / 12
+        total += amt
+    return total.quantize(Decimal("0.01"))
+
+
+def refill_pnl(db: Session, start: date, end: date) -> tuple[Decimal, Decimal]:
+    """补单(is_refill) 本月损益: (补付收入, 估算成本)。补单多是补差价/补邮费/补配件小额款,
+    客户补付的钱→收入; 履约成本按实付×85%兜底估 (无成本依据, 同定制兜底口径)。返回 (收入, 成本)。"""
+    from app.models.order import Order
+    rev = _d(db.execute(
+        select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
+            Order.is_refill == True,  # noqa: E712
+            Order.order_date >= start, Order.order_date <= end)
+    ).scalar() or 0)
+    cost = (rev * Decimal("0.85")).quantize(Decimal("0.01"))
+    return rev, cost
+
+
 def extra_aftersales_by_order(db: Session) -> dict[str, Decimal]:
     """各订单"退款之外"的额外售后合计 (after_sales.platform_order_no → 金额)。逐单核对用。"""
     from app.models.marketing import AfterSales

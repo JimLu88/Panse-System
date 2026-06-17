@@ -906,7 +906,12 @@ def per_order_reconcile(
     ).scalar() or 0)
     _os, os_est = _ofin.outsourcing_for_range(db, start, end, coef)
     outsourcing = float(_os)
-    period_net = sums["net_profit"] - promo - outsourcing
+    fixed_costs = float(_ofin.fixed_costs_monthly(db))            # 固定成本/管理费用 (房租等, 年度÷12)
+    _rrev, _rcost = _ofin.refill_pnl(db, start, end)             # 补单(补差价/补邮费) 损益
+    refill_rev, refill_cost = float(_rrev), float(_rcost)
+    refill_net = round(refill_rev - refill_cost, 2)
+    # 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定成本 + 补单净(收入−成本)
+    period_net = sums["net_profit"] - promo - outsourcing - fixed_costs + refill_net
 
     # 问题单高亮: 亏损 / 支付宝未覆盖 (用推演是常态——未对账, 单列标蓝, 不算问题, 否则会全是问题)
     problem_count = sum(1 for r in rows if r["is_loss"] or not r["alipay_covered"])
@@ -929,6 +934,11 @@ def per_order_reconcile(
             "promo_expense": round(promo, 2),
             "outsourcing_expense": round(outsourcing, 2),
             "outsourcing_estimated": os_est,
+            "fixed_costs": round(fixed_costs, 2),
+            "fixed_cost_items": _ofin.fixed_cost_items(db),
+            "refill_revenue": round(refill_rev, 2),
+            "refill_cost": round(refill_cost, 2),
+            "refill_net": refill_net,
             "period_net_profit": round(period_net, 2),
             "period_net_margin": round(period_net / sums["revenue"] * 100, 1) if sums["revenue"] else 0.0,
         },

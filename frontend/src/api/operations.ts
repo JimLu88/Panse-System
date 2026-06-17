@@ -275,11 +275,19 @@ export interface PerOrderRow {
   cost_estimated: boolean;
   is_loss: boolean;
 }
+export interface FixedCostItem {
+  name: string;
+  amount: number;
+  period: 'monthly' | 'yearly';
+  active: boolean;
+}
 export interface PerOrderSubtotal {
   paid_amount: number; refund_amount: number; revenue: number;
   cost_goods: number; cost_freight: number; cost_install: number; cost_platform: number;
   cost_tax: number; cost_aftersales: number; cost_total: number; net_profit: number;
   promo_expense: number; outsourcing_expense: number; outsourcing_estimated: boolean;
+  fixed_costs: number; fixed_cost_items: FixedCostItem[];
+  refill_revenue: number; refill_cost: number; refill_net: number;
   period_net_profit: number; period_net_margin: number;
 }
 export interface PerOrderReconcileResult {
@@ -295,6 +303,14 @@ export interface PerOrderReconcileResult {
 export const fetchPerOrderReconcile = (year: number, month: number) =>
   api
     .get<PerOrderReconcileResult>('/api/reports/per-order-reconcile', { params: { year, month } })
+    .then((r) => r.data);
+
+// 自定义固定成本/管理费用项 (房租/水电/软件…) — 用户可自增删
+export const getFixedCostItems = () =>
+  api.get<{ items: FixedCostItem[]; monthly_total: number }>('/api/finance/fixed-cost-items')
+    .then((r) => r.data);
+export const putFixedCostItems = (items: FixedCostItem[]) =>
+  api.put<{ items: FixedCostItem[]; monthly_total: number }>('/api/finance/fixed-cost-items', { items })
     .then((r) => r.data);
 
 export interface KnowledgeRow {
