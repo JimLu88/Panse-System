@@ -8,6 +8,7 @@
  */
 import {
   Alert,
+  Button,
   Card,
   Col,
   Row,
@@ -17,14 +18,39 @@ import {
   Tabs,
   Tag,
   Typography,
+  message,
 } from 'antd';
+import { DownloadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
+  api,
   fetchForecast30d,
   fetchSlowMoving,
   fetchStockAdvice,
 } from '../api/client';
 import ProductThumb from '../components/ProductThumb';
+
+// 导出当前数据为 Excel (复用页面导出端点, 记录进 资料存档库→页面导出)
+async function exportPageXlsx(title: string, columns: { key: string; title: string }[], rows: any[]) {
+  if (!rows.length) { message.warning('没有可导出的数据'); return; }
+  try {
+    const resp = await api.post('/api/exports/page', { title, columns, rows }, { responseType: 'blob' });
+    const url = window.URL.createObjectURL(resp.data as Blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `${title}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    window.URL.revokeObjectURL(url);
+    message.success('已导出 (记录存 资料存档库→页面导出)');
+  } catch (e: any) {
+    message.error(e?.response?.data?.detail ?? '导出失败');
+  }
+}
+
+// 某产品的 SKU 列表按 60 天销量占比拆出 30 天预测
+function skuForecast(r: any, s: any): number {
+  const total = (r.skus ?? []).reduce((sum: number, x: any) => sum + (x.qty_60d || 0), 0) || 1;
+  return Math.round(((s.qty_60d || 0) / total) * (r.forecast_30d || 0));
+}
 
 // SKU 构成标签 (按产品聚合后的明细; 定制咨询类 SKU 也归并在所属产品下)
 function skuTags(r: any) {
@@ -68,12 +94,46 @@ function ForecastTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['forecast-30d'], queryFn: fetchForecast30d,
   });
+  const exportForecast = () => {
+    const cols = [
+      { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
+      { key: 'sku', title: 'SKU' }, { key: 'qty_60d', title: 'SKU 60天销量' },
+      { key: 'sku_forecast', title: 'SKU 预测30天' },
+      { key: 'forecast_30d', title: '产品预测30天' }, { key: 'last_60d_total', title: '产品60天总销' },
+      { key: 'avg_daily', title: '产品日均' },
+    ];
+    const rows: any[] = [];
+    for (const r of (data?.forecast ?? [])) {
+      const skus = (r as any).skus ?? [];
+      if (!skus.length) {
+        rows.push({ product_name: r.product_name, product_code: r.product_code, sku: '(无SKU明细)',
+          qty_60d: null, sku_forecast: null, forecast_30d: r.forecast_30d, last_60d_total: r.last_60d_total, avg_daily: r.avg_daily });
+      } else {
+        for (const s of skus) rows.push({ product_name: r.product_name, product_code: r.product_code, sku: s.sku,
+          qty_60d: s.qty_60d, sku_forecast: skuForecast(r, s), forecast_30d: r.forecast_30d, last_60d_total: r.last_60d_total, avg_daily: r.avg_daily });
+      }
+    }
+    exportPageXlsx('未来30天销售预测', cols, rows);
+  };
   return (
-    <Card size="small" title="未来 30 天预测销量 (基于过去 60 天移动平均 × 1.2)">
+    <Card size="small" title="未来 30 天预测销量 (基于过去 60 天移动平均 × 1.2) · 点行展开看该产品全部 SKU"
+      extra={<Button icon={<DownloadOutlined />} onClick={exportForecast} disabled={!data?.forecast?.length}>导出 Excel</Button>}>
       <Table
         size="small" loading={isLoading}
         rowKey="product_code"
         dataSource={data?.forecast ?? []}
+        expandable={{
+          rowExpandable: (r: any) => ((r.skus?.length ?? 0) > 0),
+          expandedRowRender: (r: any) => (
+            <Table size="small" pagination={false} rowKey={(s: any) => s.sku}
+              dataSource={r.skus ?? []}
+              columns={[
+                { title: 'SKU', dataIndex: 'sku' },
+                { title: '过去 60 天销量', dataIndex: 'qty_60d', width: 150 },
+                { title: '预测 30 天 (按占比)', width: 160, render: (_: any, s: any) => <Tag color="blue">{skuForecast(r, s)}</Tag> },
+              ]} />
+          ),
+        }}
         columns={[
           { title: '产品', width: 240, render: (_: any, r: any) => productCell(r),
             sorter: (a: any, b: any) => String(a.product_name ?? a.product_code).localeCompare(String(b.product_name ?? b.product_code)) },
@@ -95,12 +155,22 @@ function AdviceTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['stock-advice'], queryFn: fetchStockAdvice,
   });
+  const exportProducts = () => exportPageXlsx('备货建议-产能缺口', [
+    { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
+    { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' }, { key: 'need_to_produce', title: '需生产' },
+  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, need_to_produce: r.need_to_produce })));
+  const exportMaterials = () => exportPageXlsx('备货建议-物料下单', [
+    { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '需求量' },
+    { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
+    { key: 'alert_at', title: '建议下单日' }, { key: 'should_order_now', title: '现在该下单' },
+  ], (data?.materials ?? []).map((r: any) => ({ material_code: r.material_code, material_name: r.material_name, need_qty: r.need_qty, have_qty: r.have_qty, missing: r.missing, lead_time_days: r.lead_time_days, alert_at: r.alert_at, should_order_now: r.should_order_now ? '是' : '否' })));
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="智能提前备货 = 按预测 30 天销量 + BOM 倒推每个物料的需求, 减去现库存"
              description="补货周期 lead_time_days 天的物料, 应在第 (30 - lead) 天前下单. should_order_now=true 表示现在就该下单了" />
-      <Card size="small" title="按产品: 未来 30 天产能缺口">
+      <Card size="small" title="按产品: 未来 30 天产能缺口"
+        extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
           size="small" loading={isLoading}
           rowKey={(r: any) => `${r.product_code}`}
@@ -119,7 +189,8 @@ function AdviceTab() {
           ]}
         />
       </Card>
-      <Card size="small" title="按物料: 应下单时间">
+      <Card size="small" title="按物料: 应下单时间"
+        extra={<Button icon={<DownloadOutlined />} onClick={exportMaterials} disabled={!data?.materials?.length}>导出 Excel</Button>}>
         <Table
           size="small" loading={isLoading}
           rowKey={(r: any) => r.material_code}
