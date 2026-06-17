@@ -322,12 +322,13 @@ export interface SalesSummary {
   top_products_by_profit_rate: Array<Record<string, any>>;
 }
 
-export const fetchSalesSummary = (period: '7d' | '30d' | 'month' | 'year', platform?: string, brand?: string) =>
+// period: 7d/30d/month/year/last_month/YYYY-MM (按月下拉, 2026-06-17)
+export const fetchSalesSummary = (period: string, platform?: string, brand?: string) =>
   api.get<SalesSummary>('/api/reports/sales/summary', {
     params: { period, ...(platform ? { platform } : {}), ...(brand ? { brand } : {}) },
   }).then((r) => r.data);
 
-export const fetchSalesBreakdown = (period: '7d' | '30d' | 'month' | 'year', brand?: string) =>
+export const fetchSalesBreakdown = (period: string, brand?: string) =>
   api.get<{ period_start: string; period_end: string; rows: Array<Record<string, any>> }>(
     '/api/reports/sales/breakdown', { params: { period, ...(brand ? { brand } : {}) } },
   ).then((r) => r.data);
@@ -344,7 +345,7 @@ export interface OperatingAnalysis {
   net_profit_rate: number;
 }
 
-export const fetchOperatingAnalysis = (period: '7d' | '30d' | 'month' | 'year') =>
+export const fetchOperatingAnalysis = (period: string) =>
   api.get<OperatingAnalysis>('/api/reports/operating-analysis', { params: { period } })
     .then((r) => r.data);
 
