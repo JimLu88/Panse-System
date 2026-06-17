@@ -375,6 +375,12 @@ def category_cost_ratios(db: Session, *, min_orders: int = 5) -> dict:
     tot_rev = tot_cost = Decimal("0")
     for cat, paid, cost in rows:
         paid = Decimal(str(paid)); cost = Decimal(str(cost))
+        if paid <= 0:
+            continue
+        # 剔除离群单: 补差价/部分付款/错配单 (实付远低于成本, 成本率>1.2 或 <0.1) 会把比例带歪, 不计入
+        r = float(cost / paid)
+        if r < 0.1 or r > 1.2:
+            continue
         c = cat or "_uncat"
         cat_rev[c] += paid; cat_cost[c] += cost; cat_n[c] += 1
         tot_rev += paid; tot_cost += cost
