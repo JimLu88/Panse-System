@@ -176,6 +176,51 @@ def reconciliation_diagnostics(
     return recon_diagnostics_service.diagnostics(db)
 
 
+@router.get("/reconciliation/problem-flows")
+def reconciliation_problem_flows(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """所有没对上的支付宝流水(含流水号 + 原因), 供页面展开核对。"""
+    rows = recon_diagnostics_service.problem_flows(db)
+    return {"count": len(rows), "rows": rows}
+
+
+@router.get("/reconciliation/problem-flows.xlsx")
+def reconciliation_problem_flows_xlsx(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """导出所有没对上的支付宝流水为 Excel: 账户/支付宝流水号/时间/类型/金额/对手方/订单号/归类/备注/原因。"""
+    import io
+
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+
+    rows = recon_diagnostics_service.problem_flows(db)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "问题流水"
+    headers = ["账户", "支付宝流水号", "交易时间", "类型", "金额",
+               "对手方", "关联订单号", "归类", "备注", "原因"]
+    ws.append(headers)
+    for r in rows:
+        ws.append([
+            r["account"], r["transaction_no"], r["transaction_time"], r["transaction_type"],
+            r["amount"], r["counterparty"], r["related_order_no"],
+            r["reconciliation_type"], r["remark"], r["reason"],
+        ])
+    ws.freeze_panes = "A2"
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=problem_flows.xlsx"},
+    )
+
+
 @router.get("/reconciliation")
 def reconciliation_list(
     limit: int = Query(200, le=2000),

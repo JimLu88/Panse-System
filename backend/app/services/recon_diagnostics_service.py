@@ -94,6 +94,44 @@ def flow_coverage_by_account(db: Session) -> dict:
     return {"accounts": rows}
 
 
+def problem_flows(db: Session) -> list[dict]:
+    """所有"没对上"的支付宝流水, 每条带【支付宝流水号】+【原因】 —— 供页面展开看 + 导出核对。
+
+    口径: 未核销(status != matched/ignored/opening_balance) 的流水, 按原因分类:
+      孤儿流水(无订单无归类) / 有订单号未核销(金额对不上?) / 已归类未核销(待对账) / (附)缺日期。
+    用户痛点: 界面只说"有问题"却不给流水号, 没法去支付宝查这笔钱。这里把流水号+原因都列出来。
+    """
+    flows = db.execute(select(AlipayFlow)).scalars().all()
+    out: list[dict] = []
+    for f in flows:
+        status = f.reconciliation_status or "open"
+        if status in ("matched", "ignored", "opening_balance"):
+            continue
+        reasons: list[str] = []
+        if not f.related_order_no and not f.reconciliation_type:
+            reasons.append("孤儿流水(无关联订单、未归类)")
+        elif f.related_order_no:
+            reasons.append("有订单号但未核销(金额对不上?)")
+        elif f.reconciliation_type:
+            reasons.append("已归类但未核销(待对账)")
+        if f.transaction_time is None:
+            reasons.append("缺交易日期")
+        out.append({
+            "account": f.account,
+            "transaction_no": f.transaction_no,
+            "transaction_time": f.transaction_time.isoformat() if f.transaction_time else None,
+            "transaction_type": f.transaction_type,
+            "amount": float(f.amount or 0),
+            "counterparty": f.counterparty,
+            "related_order_no": f.related_order_no,
+            "reconciliation_type": f.reconciliation_type,
+            "remark": (f.remark or "")[:120],
+            "reason": "; ".join(reasons) or "未核销",
+        })
+    out.sort(key=lambda r: abs(r["amount"]), reverse=True)
+    return out
+
+
 def diagnostics(db: Session) -> dict:
     """汇总三项对账诊断。"""
     return {
