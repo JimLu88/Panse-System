@@ -86,6 +86,22 @@ def _map_status(raw: Any) -> str:
     return _resolve_status(raw)[0]
 
 
+_SERVICE_NAME_KW = ("送货", "入户", "安装", "上门")
+
+
+def _is_service_line_name(name: Any) -> bool:
+    """送货入户/商家安装/上门 等服务行 (多行订单里不该抢主商品名)。"""
+    n = str(name or "")
+    return any(k in n for k in _SERVICE_NAME_KW)
+
+
+def _norm_pps_code(code: Any) -> Any:
+    """历史 P+数字 编码统一成 PPS (用户拍板 2026-06-18: 以后全 PPS, 不再用 P 开头)。PFG/PPS 不动。"""
+    if isinstance(code, str) and len(code) > 1 and code[0] == "P" and code[1].isdigit():
+        return "PPS" + code[1:]
+    return code
+
+
 # ── 字段转换 ──────────────────────────────────────────────────────────────────
 def extract_sku(attr: Any) -> str:
     """商品属性 '颜色分类:xxx[规格];安装方式:yyy' → 'xxx' (去[..]与;后内容)。"""
@@ -485,11 +501,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if _od is not None and _od.year < 2026:
             continue
 
-        # 主商品行: 取金额最大的一行 (定制差价等小额行不抢主位)
+        # 主商品行: 优先在"非服务行"里取金额最大的一行 —— 送货入户/商家安装等服务行(常为¥0)不抢主位
+        # (用户实测 2026-06-18: ¥11212 的餐边柜单被错标成"送货入户")。全是服务行才退而取金额最大。
         lines = o.lines or [{}]
         if len(lines) > 1:
             rep.multi_line_orders += 1
-        primary = max(lines, key=lambda x: (x.get("amount") or Decimal(0)))
+        _non_service = [l for l in lines if not _is_service_line_name(l.get("product_name"))]
+        primary = max(_non_service or lines, key=lambda x: (x.get("amount") or Decimal(0)))
 
         remark = None
         if len(lines) > 1:
@@ -504,8 +522,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
 
         _pname = _clean(primary.get("product_name"))
         _sku = _clean(primary.get("sku"))
-        _product_code = primary.get("product_code") or None
-        _sku_code = primary.get("sku_code")
+        # 历史 P+数字 编码统一成 PPS (用户拍板 2026-06-18: 以后不再用 P 开头), 否则匹配不到产品/成本
+        _product_code = _norm_pps_code(primary.get("product_code") or None)
+        _sku_code = _norm_pps_code(primary.get("sku_code"))
         _shop = _clean(o.shop)
         # Task 6: 用对应表按 skuId(精确) / 16位商家编码 反查 SKU编码/产品编码/店铺
         hit = taobao_listing_service.resolve_line(

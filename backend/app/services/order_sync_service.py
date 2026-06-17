@@ -153,7 +153,15 @@ def backfill_product_code(db: Session) -> int:
     且同款拆成多行。sku_code 本就内含产品编码(如 PPS2398001060612 = PPS23980010606 + sku 12), 经
     定价表 PricingSku(sku_code→product_code) 精确回填。幂等。
     """
+    from sqlalchemy import text as _text
+
     from app.models.pricing import PricingSku
+    # 历史 P+数字 编码统一成 PPS (用户拍板 2026-06-18: 以后全 PPS, 不再用 P 开头)。否则匹配不到
+    # 产品/定价/成本(1月那批就因此没成本)。PFG(孚格)/PPS 不动。幂等(改完没有 P+数字 残留)。
+    db.execute(_text("update orders set product_code = 'PPS' || substring(product_code from 2) "
+                     "where product_code ~ '^P[0-9]'"))
+    db.execute(_text("update orders set sku_code = 'PPS' || substring(sku_code from 2) "
+                     "where sku_code ~ '^P[0-9]'"))
     sku2code = {s: c for s, c in db.execute(
         select(PricingSku.sku_code, PricingSku.product_code)).all() if s}
     n = 0
