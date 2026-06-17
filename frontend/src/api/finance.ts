@@ -99,12 +99,12 @@ export const deriveOpeningBalance = (account: string, targetDate: string) =>
 export const deleteBalance = (id: number) =>
   api.delete<{ deleted: number }>(`/api/finance/accounts/${id}`).then((r) => r.data);
 
-// 删除整个账户的全部余额记录 (清理重复/废弃账户, 如把旧『企业号』并入自动抓取的『支付宝-企业账号』)
-export const deleteAccountByName = (accountName: string) =>
+// 删除整个账户的全部余额记录 (高危: 需登录密码二次确认 + 前端再输一遍账户名)
+export const deleteAccountByName = (accountName: string, password: string) =>
   api
     .delete<{ deleted_account: string; deleted_rows: number }>(
       '/api/finance/accounts/by-name/all',
-      { params: { account_name: accountName } },
+      { params: { account_name: accountName }, data: { password } },
     )
     .then((r) => r.data);
 

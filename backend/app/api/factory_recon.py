@@ -30,6 +30,9 @@ def import_factory_recon(
         "backfilled_cost": rep.backfilled_cost,
     })
     db.commit()
+    # 实时同步: 工厂对账单导入后自动跑全流水线(工厂流水匹配+货款对账+成本), 不用再手点
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:factory-recon")
     return {
         "inserted": rep.inserted, "skipped_invalid": rep.skipped_invalid,
         "skipped_duplicate": rep.skipped_duplicate, "backfilled_cost": rep.backfilled_cost,

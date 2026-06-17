@@ -168,11 +168,16 @@ export default function AccountBalancesPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '删除失败'),
   });
 
-  // 整账删除: 清理重复/废弃账户的全部余额记录 (如旧『企业号』并入自动抓取的『支付宝-企业账号』)
+  // 整账删除 (高危): 需二次确认 — 输入账户名 + 登录密码
+  const [delAccount, setDelAccount] = useState<string | null>(null);
+  const [delConfirmName, setDelConfirmName] = useState('');
+  const [delPassword, setDelPassword] = useState('');
   const delAccountMut = useMutation({
-    mutationFn: (accountName: string) => deleteAccountByName(accountName),
+    mutationFn: ({ accountName, password }: { accountName: string; password: string }) =>
+      deleteAccountByName(accountName, password),
     onSuccess: (r) => {
       message.success(`已删除账户『${r.deleted_account}』共 ${r.deleted_rows} 条记录`);
+      setDelAccount(null); setDelConfirmName(''); setDelPassword('');
       qc.invalidateQueries({ queryKey: ['account-balances'] });
       qc.invalidateQueries({ queryKey: ['cash-flow'] });
     },
@@ -326,22 +331,14 @@ export default function AccountBalancesPage() {
                   <Space size={4}>
                     {r.account_name}
                     <Tag color={freshness(r.as_of_date).color}>{r.period_year}-{String(r.period_month).padStart(2, '0')}</Tag>
-                    <Popconfirm
-                      title={`删除整个『${r.account_name}』账户?`}
-                      description="将清除该账户的全部余额记录, 不可恢复 (用于去掉重复/废弃账户)"
-                      okText="整账删除"
-                      okButtonProps={{ danger: true }}
-                      onConfirm={() => delAccountMut.mutate(r.account_name)}
-                    >
-                      <Button
-                        size="small"
-                        type="text"
-                        danger
-                        icon={<DeleteOutlined />}
-                        loading={delAccountMut.isPending && delAccountMut.variables === r.account_name}
-                        title="删除整个账户"
-                      />
-                    </Popconfirm>
+                    <Button
+                      size="small"
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      title="删除整个账户 (需密码二次确认)"
+                      onClick={() => { setDelAccount(r.account_name); setDelConfirmName(''); setDelPassword(''); }}
+                    />
                   </Space>
                 )}
                 value={Number(r.closing_balance)}
@@ -435,6 +432,40 @@ export default function AccountBalancesPage() {
           </Row>
           <Form.Item name="remark" label="备注 (可选)">
             <Input.TextArea rows={2} />
+          </Form.Item>
+        </Form>
+      </Modal>
+
+      {/* 整账删除二次确认: 输入账户名 + 登录密码 (高危, 用户拍板 2026-06-17) */}
+      <Modal
+        open={!!delAccount}
+        title={<span style={{ color: '#cf1322' }}>⚠️ 整账删除 —「{delAccount}」</span>}
+        onCancel={() => setDelAccount(null)}
+        okText="确认删除"
+        okButtonProps={{
+          danger: true,
+          disabled: delConfirmName.trim() !== (delAccount ?? '') || !delPassword,
+          loading: delAccountMut.isPending,
+        }}
+        onOk={() => delAccount && delAccountMut.mutate({ accountName: delAccount, password: delPassword })}
+        destroyOnClose
+      >
+        <Alert type="error" showIcon style={{ marginBottom: 12 }}
+          message="将永久删除该账户的全部余额记录, 不可恢复"
+          description="此操作仅用于清理重复/废弃账户。请再次输入账户名并填登录密码以确认。" />
+        <Form layout="vertical">
+          <Form.Item label={`再次输入账户名「${delAccount}」`}>
+            <Input value={delConfirmName} onChange={(e) => setDelConfirmName(e.target.value)}
+                   placeholder="逐字输入账户名" autoComplete="off" />
+          </Form.Item>
+          <Form.Item label="你的登录密码">
+            <Input.Password value={delPassword} onChange={(e) => setDelPassword(e.target.value)}
+                            placeholder="输入登录密码确认" autoComplete="new-password"
+                            onPressEnter={() => {
+                              if (delAccount && delConfirmName.trim() === delAccount && delPassword) {
+                                delAccountMut.mutate({ accountName: delAccount, password: delPassword });
+                              }
+                            }} />
           </Form.Item>
         </Form>
       </Modal>

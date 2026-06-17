@@ -29,38 +29,53 @@ _last_result: dict = {}
 
 
 def _do_resync() -> dict:
-    """跑一轮全量同步 (成本兜底 + 对账写异常池)。用独立 Session。"""
+    """跑一轮全量自动对账流水线 (用独立 Session)。
+
+    用户拍板 2026-06-17: 财务对账面板右侧那一排按钮(归类流水/退款识别/工厂流水匹配/重新核销/
+    经营支出配流水/立即对账)全部改成自动 —— 导入后/每日由本流水线跑, 用户不用再点。
+    每步独立 try+commit, 一步失败不连累后面。AI走查(花钱)与工厂别名(配置)仍手动, 不进自动。
+    """
     from app.database import SessionLocal
-    from app.services import order_cost_service, reconciliation_service
 
     out: dict = {}
     db = SessionLocal()
+
+    def _step(name: str, fn) -> None:
+        try:
+            r = fn(db)
+            db.commit()
+            out[name] = r if isinstance(r, (dict, int)) else "ok"
+        except Exception as e:  # noqa: BLE001
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            out[name] = f"err: {type(e).__name__}"
+            _logger.exception("实时同步-%s 失败: %s", name, e)
+
     try:
-        # 1) 成本兜底 + 缺成本异常 (含退款/关闭/旧单跳过, 见 #30); 内部自带 commit
-        try:
-            out["cost"] = order_cost_service.auto_cost_backfill(db)
-        except Exception as e:  # noqa: BLE001
-            _logger.exception("实时同步-成本兜底失败: %s", e)
-            db.rollback()
-            out["cost_error"] = f"{type(e).__name__}: {e}"
-        # 2) 14 条对账规则 → 写异常池 (幂等: 同 rule:key 已 open 则跳过)
-        try:
-            reconciliation_service.run_all(db, record_exceptions=True)
-            db.commit()
-            out["reconcile"] = "ok"
-        except Exception as e:  # noqa: BLE001
-            _logger.exception("实时同步-对账失败: %s", e)
-            db.rollback()
-            out["reconcile_error"] = f"{type(e).__name__}: {e}"
-        # 3) 批量销账: 有检查器的异常类型, 条件已不成立的(数据已修)自动关闭 → 待办即时清
-        try:
-            from app.services import exception_recheck_service
-            out["closed"] = exception_recheck_service.bulk_close_resolved(db)
-            db.commit()
-        except Exception as e:  # noqa: BLE001
-            _logger.exception("实时同步-批量销账失败: %s", e)
-            db.rollback()
-            out["close_error"] = f"{type(e).__name__}: {e}"
+        from app.services import (
+            alipay_amount_match_service, alipay_flow_router_service,
+            exception_recheck_service, expense_flow_match_service, flow_refund_service,
+            factory_reconciliation_service, order_cost_service, reconciliation_service,
+            smart_matching_service,
+        )
+        # ── 1) 支付宝流水归类/核销/配单 (原「重新核销」「归类流水」「自动配流水」按钮) ──
+        _step("smart_match", lambda d: smart_matching_service.run(d) and None)
+        _step("route_flows", lambda d: alipay_flow_router_service.run_all(d) and None)
+        _step("amount_match", lambda d: alipay_amount_match_service.match(d) and None)
+        # ── 2) 退款对识别 (原「退款对识别」按钮) ──
+        _step("detect_refunds", lambda d: flow_refund_service.detect_refunds(d))
+        # ── 3) 工厂流水匹配 (原「工厂流水匹配」按钮); 导入工厂对账单后自动配支付宝付款 ──
+        _step("factory_match", lambda d: factory_reconciliation_service.match_factory_alipay_by_bill_amount(d))
+        # ── 4) 经营支出配流水 (原「自动配流水」按钮) ──
+        _step("expense_match", lambda d: expense_flow_match_service.match_expense_flows(d) and None)
+        # ── 5) 成本兜底 + 缺成本异常 (#30) ──
+        _step("cost", lambda d: order_cost_service.auto_cost_backfill(d))
+        # ── 6) 14 条对账规则写异常池 (原「立即对账」按钮) ──
+        _step("reconcile", lambda d: reconciliation_service.run_all(d, record_exceptions=True) and "ok")
+        # ── 7) 批量销账: 数据已修的异常自动关闭 ──
+        _step("closed", lambda d: exception_recheck_service.bulk_close_resolved(d))
     finally:
         db.close()
     return out

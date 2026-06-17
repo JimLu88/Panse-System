@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 
@@ -696,13 +696,18 @@ def delete_balance(balance_id: int, db: Session = Depends(get_db)):
 @router.delete("/accounts/by-name/all")
 def delete_account_all(
     account_name: str = Query(..., min_length=1, description="要整账删除的账户名"),
+    password: str = Body(..., embed=True, description="登录密码二次确认"),
+    user: User = Depends(require_role("admin", "operator")),
     db: Session = Depends(get_db),
 ):
     """删除某账户的**全部**余额快照 (清理重复/废弃账户)。
 
-    用例: 旧手填的『企业号』与自动抓取的『支付宝-企业账号』是同一账号, 把旧的整账删掉,
-    以自动取数的为准 (用户拍板 2026-06-17)。自动取数只写『支付宝-企业账号』, 删后不会重现。
+    高危操作 (用户拍板 2026-06-17): 需登录密码二次确认 (前端还要再输一遍账户名)。
+    用例: 旧手填的『企业号』与自动抓取的『支付宝-企业账号』是同一账号, 把旧的整账删掉。
     """
+    from app.services import auth_service
+    if not user.password_hash or not auth_service.verify_password(password, user.password_hash):
+        raise HTTPException(403, "密码不正确, 整账删除已取消")
     name = account_name.strip()
     rows = db.execute(
         select(AccountBalance).where(AccountBalance.account_name == name)
