@@ -309,6 +309,139 @@ def refill_date_from_filename(name: str, *, today=None):
     return t
 
 
+# ---------------- 补单流水明细 (逐单, 用户「补单记录.xlsx」下半部分主数据) ---------- #
+# 真表头(约第45行): 支付时间|补单团队|订单号|买家昵称|打款日期|打款金额|是否回款|回款金额|
+#   check|补单佣金|补单快递费|平台服务费|88vip消费券技术服务费|备注。一行 = 一个补单(刷单)订单。
+_ORDER_NO_RE = re.compile(r"^\d{6,}$")
+
+
+def _find_refill_detail_header(ws) -> Optional[tuple[int, dict]]:
+    """找「补单流水明细」逐单表头(含 订单号 + 打款金额), 返回 (行号1-indexed, {字段:列}); 无则 None。
+
+    文件上半部是月度汇总(分月核算/补单流水), 下半部才是逐单明细 — 逐单是主数据。
+    """
+    limit = min(ws.max_row or 60, 80)
+    for ridx in range(1, limit + 1):
+        cells = [str(c.value).strip() if c.value is not None else "" for c in ws[ridx]]
+        if "订单号" not in cells:
+            continue
+        joined = "".join(cells)
+        if "打款金额" not in joined and "金额" not in joined:
+            continue
+        col: dict = {}
+        for i, h in enumerate(cells):
+            if h == "订单号" or h.endswith("订单号"):
+                col.setdefault("order_no", i)
+            elif "买家" in h:
+                col["buyer_nick"] = i
+            elif "支付时间" in h or h == "打款日期":
+                col.setdefault("date", i)
+            elif "打款金额" in h or h == "金额":
+                col["amount"] = i
+            elif "佣金" in h:
+                col["commission"] = i
+            elif "快递" in h or "运费" in h:
+                col["freight"] = i
+            elif "平台服务费" in h:
+                col["platform_fee"] = i
+            elif "技术服务费" in h or "88vip" in h.lower():
+                col["tech_fee"] = i
+            elif "团队" in h:
+                col["team"] = i
+            elif h == "备注":
+                col["remark"] = i
+        if "order_no" in col and "amount" in col:
+            return ridx, col
+    return None
+
+
+def is_refill_detail_xlsx(wb) -> bool:
+    try:
+        return _find_refill_detail_header(wb.worksheets[0]) is not None
+    except (IndexError, AttributeError):
+        return False
+
+
+def import_refill_detail_xlsx(db: Session, wb, *, ws=None,
+                              import_job_id: Optional[int] = None) -> BillImportReport:
+    """补单流水明细(逐单) → 每个补单订单一条 RefillRecord (order_no = 真实淘宝订单号)。
+
+    幂等: 按 order_no upsert(重导覆盖, 不堆积)。导入后把命中订单标 is_refill=True 并
+    rederive_refill_flags(双向重判 + 重算成本) —— 这一步会让这些刷单订单不再当真实销售,
+    其「缺成本」异常也随之自动消解(成本兜底跳过补单)。answers「导入后自动关联相关异常」。
+    """
+    from sqlalchemy import select
+    rep = BillImportReport()
+    ws = ws if ws is not None else wb.worksheets[0]
+    found = _find_refill_detail_header(ws)
+    if found is None:
+        rep.errors.append("未找到补单流水明细表头(订单号+打款金额)")
+        return rep
+    hdr, col = found
+    # 清掉旧的月度合成行(补单月度-YYYY-MM): 逐单明细是更细的真值, 月度汇总会与之重复双算佣金/快递
+    for stale in db.execute(
+        select(RefillRecord).where(RefillRecord.order_no.like("补单月度-%"))
+    ).scalars().all():
+        db.delete(stale)
+    db.flush()
+    existing = {r.order_no: r for r in db.execute(select(RefillRecord)).scalars().all()}
+
+    def _c(row, key):
+        i = col.get(key)
+        return row[i] if i is not None and i < len(row) else None
+
+    flagged = 0
+    for row in ws.iter_rows(min_row=hdr + 1, values_only=True):
+        if not row:
+            continue
+        order_no = import_clean.clean_no(_c(row, "order_no"))
+        if not order_no or not _ORDER_NO_RE.match(order_no):
+            continue  # 跳过空行/小计/"*标红色订单被查"等非订单行
+        rec = existing.get(order_no)
+        if rec is None:
+            rec = RefillRecord(order_no=order_no)
+            db.add(rec)
+            existing[order_no] = rec
+            rep.inserted += 1
+        else:
+            rep.skipped_duplicate += 1  # 已存在 → 覆盖更新
+        nick = _c(row, "buyer_nick")
+        rec.buyer_nick = str(nick).strip() if nick is not None and str(nick).strip() else rec.buyer_nick
+        d = _date(_c(row, "date"))
+        if d is not None:
+            rec.refill_date = d
+        amount = _decimal(_c(row, "amount"))
+        if amount is not None:
+            rec.order_amount = amount
+        rec.commission = _decimal(_c(row, "commission"))
+        rec.refill_freight = _decimal(_c(row, "freight"))
+        rec.platform_fee = _decimal(_c(row, "platform_fee"))
+        team = _c(row, "team")
+        tech = _decimal(_c(row, "tech_fee"))
+        bits = []
+        if team is not None and str(team).strip():
+            bits.append(f"团队:{str(team).strip()}")
+        if tech is not None and tech != 0:
+            bits.append(f"88vip技术服务费:{tech}")
+        rec.fee_remark = "; ".join(bits) if bits else None
+        rmk = _c(row, "remark")
+        rec.remark = str(rmk).strip() if rmk is not None and str(rmk).strip() else None
+        # 命中订单 → 标补单 (不当真实销售; 其缺成本异常随后自动消解)
+        o = db.query(Order).filter(Order.order_no == order_no).first()
+        if o is not None and not o.is_refill:
+            o.is_refill = True
+            flagged += 1
+    db.flush()
+    # L3 闭环: 双向重判 is_refill + 重算成本 (与 CSV 路径一致, 自动关联异常)
+    if rep.inserted or rep.skipped_duplicate:
+        try:
+            from app.services import order_sync_service
+            order_sync_service.rederive_refill_flags(db)
+        except Exception:  # pragma: no cover - 兜底不阻断导入
+            pass
+    return rep
+
+
 # ---------------- 月度补单汇总表 (用户 2026-06 起统一格式, 无订单号) -------------- #
 # 用户的「补单记录.xlsx」: 一行一个月, 列= 分月核算 | 补单流水 | 补单佣金 | 补单快递费 |
 #   平台服务费 | 88vip消费券技术服务费。没有订单号, 旧的逐单导入器会报「缺订单号」。
@@ -428,7 +561,10 @@ def import_refill_simple_xlsx(db: Session, wb, *, refill_date,
     2026-06 起用户改用「月度补单汇总表」(分月核算/补单流水, 无订单号) — 自动识别并转月度路径。
     """
     from sqlalchemy import select
-    # 月度补单汇总表 → 走月度合成路径 (无订单号, 旧逐单逻辑会报错)
+    # 补单流水明细(逐单, 真实订单号) → 优先走逐单路径 (用户「补单记录.xlsx」主数据在下半部)
+    if is_refill_detail_xlsx(wb):
+        return import_refill_detail_xlsx(db, wb, import_job_id=import_job_id)
+    # 月度补单汇总表(无逐单明细时) → 月度合成路径
     if is_monthly_refill_xlsx(wb):
         return import_refill_monthly_xlsx(db, wb, import_job_id=import_job_id)
     rep = BillImportReport()

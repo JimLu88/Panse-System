@@ -720,8 +720,8 @@ def _commit_wanshifu_bill(
 def _maybe_commit_refill_monthly(
     db: Session, *, file_bytes: bytes, sheet_name: str, dry_run: bool,
 ) -> Optional[dict]:
-    """该 sheet 若是「月度补单汇总表」(分月核算/补单流水, 无订单号) → 合成月度 RefillRecord;
-    否则返回 None 让调用方走通用逐单 upsert 路径。"""
+    """该 sheet 若是补单表 → 优先逐单明细(订单号+打款金额), 否则月度汇总(分月核算/补单流水);
+    都不是则返回 None 让调用方走通用逐单 upsert 路径。"""
     from app.services import bill_import_service as bis
 
     try:
@@ -729,11 +729,15 @@ def _maybe_commit_refill_monthly(
     except Exception:  # noqa: BLE001
         return None
     ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.worksheets[0]
-    if not bis.is_monthly_refill_ws(ws):
+    is_detail = bis._find_refill_detail_header(ws) is not None
+    is_monthly = (not is_detail) and bis.is_monthly_refill_ws(ws)
+    if not is_detail and not is_monthly:
         wb.close()
         return None
+    kind = "逐单明细" if is_detail else "月度汇总"
     try:
-        rep = bis.import_refill_monthly_xlsx(db, wb, ws=ws)
+        rep = (bis.import_refill_detail_xlsx(db, wb, ws=ws) if is_detail
+               else bis.import_refill_monthly_xlsx(db, wb, ws=ws))
         if dry_run:
             db.rollback()
         else:
@@ -743,16 +747,19 @@ def _maybe_commit_refill_monthly(
             db.rollback()
         except Exception:
             pass
-        _logger.exception("  [%s] 月度补单导入失败: %s", sheet_name, e)
+        _logger.exception("  [%s] 补单(%s)导入失败: %s", sheet_name, kind, e)
         wb.close()
         return {"sheet_name": sheet_name, "error": f"{type(e).__name__}: {e}"}
     wb.close()
+    warn = ("补单逐单明细: 每个补单订单一条记录, 命中订单已标 is_refill 并重算"
+            if is_detail else
+            "月度补单汇总: 每月一条合成记录(无订单号), 88vip技术服务费记入费用备注")
     return {
         "sheet_name": sheet_name, "entity_type": "refill_record",
-        "total_rows": rep.inserted, "inserted_parents": rep.inserted,
-        "inserted_children": 0, "skipped_rows": rep.skipped_invalid,
-        "errors": rep.errors[:10],
-        "warnings": ["月度补单汇总: 每月一条合成记录(无订单号), 88vip技术服务费记入费用备注"],
+        "total_rows": rep.inserted + rep.skipped_duplicate,
+        "inserted_parents": rep.inserted, "inserted_children": 0,
+        "skipped_rows": rep.skipped_invalid + rep.skipped_duplicate,
+        "errors": rep.errors[:10], "warnings": [warn],
         "conflicts": [], "unmapped_columns": [],
     }
 
