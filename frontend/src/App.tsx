@@ -154,6 +154,7 @@ export default function App() {
       children: [
         { key: 'products', label: <Link to="/products">产品总表</Link> },
         { key: 'bom-list', label: <Link to="/bom-list">BOM 清单</Link> },
+        { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
         { key: 'new-product', label: <Link to="/new-product">新产品录入</Link> },
         { key: 'taobao-listings', label: <Link to="/taobao-listings">淘宝对应表</Link> },
       ],
@@ -216,7 +217,6 @@ export default function App() {
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
         { key: 'factory-orders', label: <Link to="/factory-orders">工厂下单表</Link> },
         { key: 'factory-statement', label: <Link to="/factory-statement">工厂对账单</Link> },
-        { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
       ],
     },
     {
