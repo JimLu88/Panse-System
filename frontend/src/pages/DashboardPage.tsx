@@ -1,5 +1,6 @@
-import { lazy, Suspense, type CSSProperties } from 'react';
-import { Card, Col, Progress, Row, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import { lazy, Suspense, useState, type CSSProperties } from 'react';
+import { Card, Col, DatePicker, Row, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
@@ -143,9 +144,13 @@ function CashFlowBanner() {
 
 export default function DashboardPage() {
   const nav = useNavigate();
+  // #8 自选日期: 控制「订单趋势 / 近30天收入」区间 (库存/异常/健康度等现状指标不随区间变)
+  const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
+  const startStr = range?.[0]?.format('YYYY-MM-DD');
+  const endStr = range?.[1]?.format('YYYY-MM-DD');
   const { data, isLoading } = useQuery({
-    queryKey: ['dashboard'],
-    queryFn: getDashboard,
+    queryKey: ['dashboard', startStr, endStr],
+    queryFn: () => getDashboard(startStr && endStr ? { start: startStr, end: endStr } : undefined),
     refetchInterval: 60_000,
   });
 
@@ -223,13 +228,30 @@ export default function DashboardPage() {
     ],
   };
 
-  const healthStroke = health.health_score >= 80 ? M.emerald : health.health_score >= 60 ? M.violet : M.rose;
-
   return (
     <div style={{ background: M.bg, minHeight: '100%', padding: '6px 6px 28px' }}>
-      <div style={{ margin: '2px 2px 18px' }}>
-        <Typography.Title level={4} style={{ margin: 0, color: M.ink, fontWeight: 800 }}>运营大盘</Typography.Title>
-        <Typography.Text style={{ color: M.sub, fontSize: 13 }}>实时经营概览 · 每分钟自动刷新</Typography.Text>
+      <div style={{ margin: '2px 2px 18px', display: 'flex', alignItems: 'flex-end', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <Typography.Title level={4} style={{ margin: 0, color: M.ink, fontWeight: 800 }}>运营大盘</Typography.Title>
+          <Typography.Text style={{ color: M.sub, fontSize: 13 }}>实时经营概览 · 每分钟自动刷新</Typography.Text>
+        </div>
+        <div style={{ textAlign: 'right' }}>
+          <Typography.Text style={{ color: M.sub, fontSize: 12, marginRight: 8 }}>订单趋势/收入区间:</Typography.Text>
+          <DatePicker.RangePicker
+            value={range as any} onChange={(v) => setRange(v as any)} allowClear
+            presets={[
+              { label: '近30天', value: [dayjs().add(-30, 'day'), dayjs()] },
+              { label: '本月', value: [dayjs().startOf('month'), dayjs()] },
+              { label: '上月', value: [dayjs().add(-1, 'month').startOf('month'), dayjs().add(-1, 'month').endOf('month')] },
+              { label: '今年', value: [dayjs().startOf('year'), dayjs()] },
+            ]}
+          />
+          {(data.orders as any).trend_window?.is_custom && (
+            <div style={{ color: M.sub, fontSize: 11, marginTop: 2 }}>
+              趋势/收入已按 {(data.orders as any).trend_window.start} ~ {(data.orders as any).trend_window.end}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* 剩余流水 · 可用资金 (实时, 含数据红绿灯; 点击进完整页) */}
@@ -242,13 +264,13 @@ export default function DashboardPage() {
 
       {/* KPI 卡片行 — 每张卡点击进它关联最高的页面 (用户要求) */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8}>
           <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
             <Statistic title="近 7 天订单" value={orders.count_7d} prefix={<ShoppingOutlined style={{ color: M.violet }} />} suffix="单"
               valueStyle={{ ...bigNum }} />
           </MCard>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8}>
           <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
             <Statistic title="近 30 天收入 (不含补单)" value={orders.revenue_30d} precision={0}
               prefix={<DollarOutlined style={{ color: M.indigo }} />}
@@ -268,22 +290,13 @@ export default function DashboardPage() {
             )}
           </MCard>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8}>
           <MCard onClick={() => nav('/exceptions')} style={{ cursor: 'pointer' }}>
             <Statistic title="待处理异常" value={health.open_exceptions} prefix={<AlertOutlined />}
               valueStyle={{ ...bigNum, color: health.open_exceptions > 10 ? M.rose : health.open_exceptions > 3 ? M.amber : M.emerald }} />
           </MCard>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
-          <MCard title="数据健康度" onClick={() => nav('/reports')} style={{ cursor: 'pointer' }}>
-            <div style={{ display: 'flex', justifyContent: 'center' }}>
-              <Progress type="dashboard" percent={health.health_score} strokeColor={healthStroke} trailColor="#eef2f7" size={84} />
-            </div>
-            {(health as any).health_note && (
-              <div style={{ color: '#bbb', fontSize: 11, textAlign: 'center', marginTop: 4 }}>{(health as any).health_note}</div>
-            )}
-          </MCard>
-        </Col>
+        {/* #20: 数据健康度卡片已移到「待办事项」页 (OpsChecklistPage) */}
       </Row>
 
       {/* 图表行 */}
@@ -422,7 +435,7 @@ export default function DashboardPage() {
       {/* 库存运营 */}
       <Typography.Title level={5} style={sectionTitle}>库存运营</Typography.Title>
       <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8}>
           <MCard title="配件库存">
             <Statistic title="品种数" value={inventory.part_total} valueStyle={midNum} />
             <div style={{ marginTop: 8 }}>
@@ -432,7 +445,7 @@ export default function DashboardPage() {
             </div>
           </MCard>
         </Col>
-        <Col xs={24} sm={12} lg={6}>
+        <Col xs={24} sm={12} lg={8}>
           <MCard title="成品库存">
             <Statistic title="品种数" value={inventory.product_total} valueStyle={midNum} />
             {inventory.product_low_stock > 0 && (

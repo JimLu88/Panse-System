@@ -5,7 +5,7 @@
 import { Button, Card, Checkbox, Progress, Space, Tag, Typography, message } from 'antd';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { OpsGroup, fetchOpsChecklist, toggleOpsTask } from '../api/operations';
+import { OpsGroup, fetchOpsChecklist, getDashboard, toggleOpsTask } from '../api/operations';
 import AutomationStatusCard from '../components/AutomationStatusCard';   // #6 从首页移来
 
 const FREQ_COLOR: Record<string, string> = { daily: 'blue', weekly: 'purple', monthly: 'orange' };
@@ -15,6 +15,12 @@ export default function OpsChecklistPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['ops-checklist'],
     queryFn: fetchOpsChecklist,
+  });
+  // #20 数据健康度卡从运营大盘移来 (复用 dashboard 数据, 与大盘同 key 去重)
+  const { data: dash } = useQuery({
+    queryKey: ['dashboard', undefined, undefined],
+    queryFn: () => getDashboard(),
+    staleTime: 60_000,
   });
   const mut = useMutation({
     mutationFn: ({ key, done }: { key: string; done: boolean }) => toggleOpsTask(key, done),
@@ -33,6 +39,25 @@ export default function OpsChecklistPage() {
         </Typography.Text>
       </div>
       <AutomationStatusCard />
+      {dash?.health && (
+        <Card size="small" title="数据健康度">
+          <Link to="/reports">
+            <Space size={16} align="center" style={{ cursor: 'pointer' }}>
+              <Progress type="dashboard"
+                percent={dash.health.health_score}
+                strokeColor={dash.health.health_score >= 80 ? '#10b981' : dash.health.health_score >= 60 ? '#8b5cf6' : '#f43f5e'}
+                trailColor="#eef2f7" size={84} />
+              <div>
+                <div style={{ fontWeight: 600, fontSize: 15 }}>待处理异常 {dash.health.open_exceptions} 条</div>
+                {(dash.health as any).health_note && (
+                  <div style={{ color: '#999', fontSize: 12 }}>{(dash.health as any).health_note}</div>
+                )}
+                <div style={{ color: '#1677ff', fontSize: 12 }}>点开看异常中心 / 健康报表 →</div>
+              </div>
+            </Space>
+          </Link>
+        </Card>
+      )}
       {data.login_status && data.login_status.length > 0 && (
         <Card size="small" title="各平台登录状态 (自动取数用)">
           <Space direction="vertical" style={{ width: '100%' }} size={6}>

@@ -587,8 +587,8 @@ export interface DashboardData {
   };
   health: { open_exceptions: number; health_score: number };
 }
-export const getDashboard = () =>
-  api.get<DashboardData>('/api/dashboard').then(r => r.data);
+export const getDashboard = (params?: { start?: string; end?: string }) =>
+  api.get<DashboardData>('/api/dashboard', { params }).then(r => r.data);
 
 // -- 微定制 AI 报价
 export interface AiQuoteBreakdown {

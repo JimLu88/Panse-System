@@ -5,7 +5,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -29,12 +29,17 @@ def _safe_decimal(v) -> float:
 
 @router.get("")
 def get_dashboard(
+    start: Optional[date] = Query(None, description="趋势/收入 起始日 (默认近30天)"),
+    end: Optional[date] = Query(None, description="趋势/收入 截止日 (默认今天)"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     today = date.today()
     last_30 = today - timedelta(days=30)
     last_7 = today - timedelta(days=7)
+    # #8 自选日期筛选: 订单趋势/收入区间 (默认近30天; 其余"现状"指标如库存/异常不随区间变)
+    win_start = start or last_30
+    win_end = end or today
 
     # ── 订单概览 ──────────────────────────────────────────────
     status_counts = dict(
@@ -48,7 +53,8 @@ def get_dashboard(
     # 退款金额单独列(refund_30d), 不在此从收入里扣(净额由前端/财务页按需扣)。
     trend_rows = (
         db.query(Order.order_date, func.count(Order.id), func.sum(Order.paid_amount))
-        .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
+        .filter(Order.order_date >= win_start, Order.order_date <= win_end,
+                Order.is_historical == False,  # noqa: E712
                 Order.is_refill == False, Order.status != "cancelled")  # noqa: E712
         .group_by(Order.order_date)
         .order_by(Order.order_date)
@@ -56,12 +62,14 @@ def get_dashboard(
     )
     refund_30d = float(
         db.query(func.coalesce(func.sum(Order.refund_amount), 0))
-        .filter(Order.order_date >= last_30, Order.is_historical == False)  # noqa: E712
+        .filter(Order.order_date >= win_start, Order.order_date <= win_end,
+                Order.is_historical == False)  # noqa: E712
         .scalar() or 0
     )
     refill_excluded_30d = float(
         db.query(func.coalesce(func.sum(Order.paid_amount), 0))
-        .filter(Order.order_date >= last_30, Order.is_historical == False,  # noqa: E712
+        .filter(Order.order_date >= win_start, Order.order_date <= win_end,
+                Order.is_historical == False,  # noqa: E712
                 Order.is_refill == True)  # noqa: E712
         .scalar() or 0
     )
@@ -289,6 +297,8 @@ def get_dashboard(
             "refund_30d": refund_30d,                     # #11 近30天退款额(单独列, 未从收入扣)
             "revenue_caliber": "买家实付(paid_amount)·不含补单/关闭单·退款另列",  # #11 口径说明
             "count_7d": orders_7d,
+            "trend_window": {"start": str(win_start), "end": str(win_end),
+                             "is_custom": bool(start or end)},   # #8 趋势/收入生效区间
         },
         "inventory": {
             "part_total": part_total,
