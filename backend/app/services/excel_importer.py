@@ -1981,6 +1981,19 @@ def _h_promotion_flow(db, data, key_field, ctx=None):
     if not payload:
         return "promotion_flow", "skipped"
     payload.setdefault("amount", 0)   # amount NOT NULL
+    # 按 交易日+金额+类型 去重: "现金消耗"路径无 sync_key, 重导 / 与取数"wxt:"路径会重复
+    # (2026-05 推广翻倍¥16657 的根因, 用户拍板 2026-06-18)。已有同(日,额,类型)的就跳过。
+    txd, amt, ftype = payload.get("transaction_date"), payload.get("amount"), payload.get("flow_type")
+    if txd is not None and amt is not None:
+        dup = db.execute(
+            select(PromotionFlow.id).where(
+                PromotionFlow.transaction_date == txd,
+                PromotionFlow.amount == amt,
+                PromotionFlow.flow_type == ftype,
+            ).limit(1)
+        ).first()
+        if dup:
+            return "promotion_flow", "skipped"
     db.add(PromotionFlow(**payload))
     return "promotion_flow", "inserted"
 
