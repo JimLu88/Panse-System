@@ -652,10 +652,11 @@ def scan_promotion_recharge_unmatched(db: Session) -> int:
     真配不上才报异常 (2026-06-17 用户: 支付宝企业号是系统自动拉的, 该能对上)。"""
     from decimal import Decimal as _D
     from datetime import timedelta as _td
-    # 支付宝里推广类支出流水 (amount<0) + 已被其它充值占用的流水号
+    # 支付宝里推广类(或尚未归类)的支出流水 (amount<0) + 已被其它充值占用的流水号
     promo_flows = db.query(AlipayFlow).filter(
-        AlipayFlow.reconciliation_type == "promotion", AlipayFlow.amount < 0,
-        AlipayFlow.transaction_time.isnot(None)).all()
+        (AlipayFlow.reconciliation_type == "promotion")
+        | (AlipayFlow.reconciliation_type.is_(None)),
+        AlipayFlow.amount < 0, AlipayFlow.transaction_time.isnot(None)).all()
     used = {n for (n,) in db.query(PromotionFlow.alipay_flow_no).filter(
         PromotionFlow.alipay_flow_no.isnot(None), PromotionFlow.alipay_flow_no != "").all()}
     count = 0
