@@ -136,12 +136,11 @@ def fallback_85(o: Order) -> dict:
 
 # ── 本地 AI (qwen2.5vl) ──────────────────────────────────────────────────────
 def build_ai(db: Session):
-    """构造本地模型 provider (OpenAI 兼容/Ollama)。配置缺失返回 None。"""
-    from app.services.ai_provider import build_provider
-    base = settings_service.get(db, AI_BASE_URL_KEY, env_fallback=False) or _AI_BASE_DEFAULT
-    model = settings_service.get(db, AI_MODEL_KEY, env_fallback=False) or _AI_MODEL_DEFAULT
+    """AI 经取数 agent(:8500, 已 LAN 可达+token) 代理本机 Ollama, 免 NAS→PC:11434 防火墙。
+    agent 在线返回 True, 否则 None (复杂单直接落 85% 兜底)。"""
+    from app.services import web_agent_service
     try:
-        return build_provider({"provider": "openai", "api_key": "ollama", "model": model, "base_url": base})
+        return True if web_agent_service.health(db).get("online") else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -151,12 +150,17 @@ _AI_SYS = ("你是家具定制工厂成本估算助手。根据订单备注里�
            "完全无法估算就 cost 给 null。不要输出 JSON 以外的任何字符。")
 
 
-def ai_estimate(provider, o: Order, txt: str) -> Optional[dict]:
-    """调本地大模型估算。模型不可达 → 抛 AiUnavailable (上层据此飞书报警)。"""
+def ai_estimate(db: Session, o: Order, txt: str) -> Optional[dict]:
+    """经 agent 调本机大模型估算。agent/模型不可达 → 抛 AiUnavailable (上层据此飞书报警)。"""
+    from app.services import web_agent_service
+    from app.services.ai_provider import AiUnavailable
     user = (f"备注: {txt}\n基础产品: {o.product_name or o.product_code or ''}\n"
             f"买家实付: {float(o.paid_amount or 0)} 元")
-    resp = provider.chat(system=_AI_SYS, user=user, max_tokens=200)  # 不可达会抛 AiUnavailable
-    m = re.search(r"\{.*\}", resp.text or "", re.S)
+    resp = web_agent_service._post(db, "/api/ai/chat",
+                                   {"system": _AI_SYS, "user": user, "max_tokens": 200}, timeout=130)
+    if not resp.get("ok"):
+        raise AiUnavailable(resp.get("error", "本地模型/agent 不可达"))
+    m = re.search(r"\{.*\}", resp.get("text") or "", re.S)
     if not m:
         return None
     try:
@@ -232,7 +236,7 @@ def list_custom_reconcile(db: Session, *, only_missing: bool = True, use_ai: boo
         r = resolve_rules(db, o, txt)
         if r is None and provider is not None and not ai_dead:
             try:
-                r = ai_estimate(provider, o, txt)
+                r = ai_estimate(db, o, txt)
                 ai_used += 1
             except AiUnavailable:
                 ai_dead = True
@@ -276,7 +280,7 @@ def auto_backfill_custom_costs(db: Session, *, use_ai: bool = False) -> dict:
         r = resolve_rules(db, o, txt)
         if r is None and provider is not None and not ai_dead:
             try:
-                r = ai_estimate(provider, o, txt)
+                r = ai_estimate(db, o, txt)
             except AiUnavailable:
                 ai_dead = True
                 _alert_pc_off(db)
