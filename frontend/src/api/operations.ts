@@ -223,17 +223,15 @@ export interface BusinessMonthRow {
   cogs_estimated?: boolean;
   freight_expense?: number;           // 物流费
   install_upstairs_expense?: number;  // 安装上楼
+  platform_deduction?: number;        // 平台扣点 (实付−实收, 统一口径)
+  tax_expense?: number;
   aftersales_compensation: number;
   aftersales_count: number;
   aftersales_rate: number;
   outsourcing_expense: number;
   outsourcing_estimated?: boolean;
-  platform_fee: number;
-  platform_fee_estimated?: boolean;
-  tax_expense?: number;
-  tax_estimated?: boolean;
-  platform_activity_expense?: number;
-  platform_activity_estimated?: boolean;
+  fixed_costs?: number;               // 固定成本/管理费用 (房租等)
+  refill_cost?: number;               // 补单(刷单)成本
   total_expense: number;
   net_profit: number;
   net_profit_rate: number;

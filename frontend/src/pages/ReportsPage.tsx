@@ -555,20 +555,21 @@ function BusinessMonthlyTab() {
           ),
         },
         {
+          title: <Tooltip title="平台扣点 = 实付−店铺实收(含手续费/活动抽成/平台优惠券)">平台扣点</Tooltip>,
+          dataIndex: 'platform_deduction', width: 90, render: fmtY,
+        },
+        { title: '税费', dataIndex: 'tax_expense', width: 85, render: fmtY },
+        {
           title: '人员外包', dataIndex: 'outsourcing_expense', width: 90,
           render: estCell('outsourcing_estimated', '无实际录入, 5月起按 ¥10000/月预估'),
         },
         {
-          title: '平台费', dataIndex: 'platform_fee', width: 90,
-          render: estCell('platform_fee_estimated', '实付×0.6% 手续费'),
+          title: <Tooltip title="固定成本/管理费用(房租等), 在「逐单核对」页设置">固定成本</Tooltip>,
+          dataIndex: 'fixed_costs', width: 85, render: fmtY,
         },
         {
-          title: '税费', dataIndex: 'tax_expense', width: 90,
-          render: estCell('tax_estimated', '未填税的单按 实付×2% 预估'),
-        },
-        {
-          title: '平台活动2%', dataIndex: 'platform_activity_expense', width: 100,
-          render: estCell('platform_activity_estimated', '实付×2% 活动抽成(5月起)'),
+          title: <Tooltip title="补单=刷单的纯成本(平台扣点+税+佣金), 本金来回滚不算收入">补单成本</Tooltip>,
+          dataIndex: 'refill_cost', width: 85, render: fmtY,
         },
         { title: '支出合计', dataIndex: 'total_expense', width: 100, render: fmtY },
       ],
@@ -612,16 +613,15 @@ function BusinessMonthlyTab() {
       </Typography.Text>
       <Alert
         type="info" showIcon
-        message={<span><Tag color="blue">估</Tag> 蓝色 = 预估值（非实际录入），鼠标悬浮看口径</span>}
+        message={<span>全系统统一口径(与 经营状况/逐单核对/数据大盘 完全一致)。<Tag color="blue" style={{ marginLeft: 6 }}>估</Tag> 蓝色 = 预估值</span>}
         description={
           <Typography.Text style={{ fontSize: 12 }}>
-            <b>平台费</b> = 实付×0.6%（手续费，列里基本没单独录）；
-            <b>平台活动2%</b> = 实付×2%（5月起）；
-            <b>税费</b> = 已填税用实际，未填的按实付×2%；
-            <b>人员外包</b> = 有录入用实际，5月起无录入按 ¥10,000/月（可在「管理→财务系数设置」改）；
-            <b>商品成本</b> = 已对账用工厂账单，未对账月用逐单成本（含定制单推演）。
+            净利润 = 真实收入(实付−退款) − 支出合计。<b>支出合计</b> = 商品成本 + 物流 + 安装上楼 + 平台扣点 + 税 + 额外售后 + 推广 + 人员 + 固定成本 + 补单成本。
             <br />
-            <b>实际录入（非预估）</b>：推广费 / 工厂账单 / 物流费 / 安装上楼 / <b>售后赔付</b>（只算退款之外的额外售后：直接赔付/二次上门/返厂运费/万师傅扣款等；平台内退款已在收入里扣过，不重复计）。
+            <b>平台扣点</b> = 实付−店铺实收(含手续费/活动/平台优惠券, 真实)；<b>商品成本</b> = 已对账用实际, 未对账用逐单推演(蓝色)；
+            <b>额外售后</b> = 退款之外的额外赔付(货损/补发运费/万师傅扣款…, 按订单归属；客户退款已在收入扣过, 不算售后)；
+            <b>人员外包</b> = 有录入用实际, 5月起无录入按¥10,000/月(财务系数设置可改)；
+            <b>固定成本</b>(房租等)在「逐单核对」页设置；<b>补单</b>=刷单纯成本(平台扣点+税+佣金, 本金回流不算收入)。
           </Typography.Text>
         }
         style={{ marginBottom: 4 }}

@@ -141,7 +141,7 @@ def sales_mix(db: Session, *, year: int, month: int, by: str = "product", top: i
         if any(k in name for k in ("送货", "入户", "安装")) or any(
                 k in (o.product_name or "") for k in ("送货", "入户", "安装")):
             continue
-        rev = Decimal(o.paid_amount or 0)
+        rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)   # 真实收入(扣退款) 统一口径
         qty = int(o.qty or 1)
         b = buckets.setdefault(name, {"name": name, "revenue": Decimal("0"), "qty": 0})
         b["revenue"] += rev

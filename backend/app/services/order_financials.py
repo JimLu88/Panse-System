@@ -107,16 +107,22 @@ def order_tax(o: Order, coef: dict) -> Decimal:
     return (_d(o.paid_amount) * coef["tax_rate"]).quantize(Decimal("0.01"))
 
 
-def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> dict:
-    """会计总成本逐项明细 (供页面"说明里列明细")。"""
+def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
+                   aftersales: "Decimal | None" = None) -> dict:
+    """会计总成本逐项明细 (供页面"说明里列明细")。
+    aftersales 显式传入(按订单归属, 退款外额外售后)时直接用它; 否则回退 本单冗余列→人均均摊(旧)。"""
     paid = _d(o.paid_amount)
     phys = physical_cost(o)
     freight = _d(o.actual_freight)
     install = _d(o.install_fee) + _d(o.upstairs_fee)
-    asales = order_aftersales(o)
-    asales_est = asales == 0
-    if asales_est:
-        asales = as_avg
+    if aftersales is not None:
+        asales = _d(aftersales)
+        asales_est = False
+    else:
+        asales = order_aftersales(o)
+        asales_est = asales == 0
+        if asales_est:
+            asales = as_avg
     platform = platform_deduction(o, coef)
     tax = order_tax(o, coef)
     total = phys + freight + install + asales + platform + tax
@@ -127,14 +133,16 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> dict
     }
 
 
-def accounting_cost(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> Decimal:
+def accounting_cost(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
+                    aftersales: "Decimal | None" = None) -> Decimal:
     """会计总成本 (全扣项)。"""
-    return cost_breakdown(o, coef, as_avg)["total"]
+    return cost_breakdown(o, coef, as_avg, aftersales)["total"]
 
 
-def net_profit(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> Decimal:
+def net_profit(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
+               aftersales: "Decimal | None" = None) -> Decimal:
     """利润 = 实付 − 退款 − 会计总成本。"""
-    return _d(o.paid_amount) - _d(o.refund_amount) - accounting_cost(o, coef, as_avg)
+    return _d(o.paid_amount) - _d(o.refund_amount) - accounting_cost(o, coef, as_avg, aftersales)
 
 
 # ── 月度/区间报表共用口径 (月度经营数据 与 经营状况 统一, 用户拍板 2026-06-17) ──────────────
@@ -205,6 +213,65 @@ def refill_cost(db: Session, start: date, end: date, coef: dict) -> dict:
     return {"count": len(orders), "gmv": gmv.quantize(Decimal("0.01")),
             "platform": platform.quantize(Decimal("0.01")), "tax": tax.quantize(Decimal("0.01")),
             "freight": freight.quantize(Decimal("0.01")), "commission": commission, "total": total}
+
+
+def accounting_summary(db: Session, start: date, end: date) -> dict:
+    """全系统统一会计 P&L (用户拍板 2026-06-18: 月度经营/经营状况/逐单核对/销售汇总/大盘 同口径)。
+
+    收入 = Σ(实付 − 退款)  [真实成交、非补单]
+    逐单成本 = 商品 + 物流 + 安装上楼 + 平台扣点(实付−实收) + 税 + 额外售后(按订单归属, 退款不重复计)
+    区间成本 = 推广 + 人员外包 + 固定成本(房租等) + 补单(刷单)成本
+    净利 = 收入 − 逐单成本 − 区间成本
+    退款≠售后: 退款已从收入扣过, 售后只算退款之外的额外赔付。
+    """
+    from app.models.marketing import PromotionFlow
+    from app.models.order import Order
+    from app.services import sales_analytics
+    coef = load_coefficients(db)
+    as_by_order = extra_aftersales_by_order(db)
+    orders = db.execute(
+        select(Order).where(
+            Order.order_date >= start, Order.order_date <= end,
+            sales_analytics.settled_sale_clause(), Order.is_refill == False)  # noqa: E712
+    ).scalars().all()
+    revenue = refund = goods = freight = install = platform = tax = aftersales = Decimal("0")
+    goods_est = False
+    as_count = 0
+    for o in orders:
+        rf = _d(o.refund_amount)
+        revenue += _d(o.paid_amount) - rf
+        refund += rf
+        b = cost_breakdown(o, coef, Decimal("0"))   # as_avg=0: 不用人均均摊, 售后改按订单
+        goods += b["physical"]; freight += b["freight"]; install += b["install_upstairs"]
+        platform += b["platform"]; tax += b["tax"]
+        _as = _d(as_by_order.get(o.order_no, 0))
+        aftersales += _as
+        if _as > 0:
+            as_count += 1
+        if o.actual_cost is None:
+            goods_est = True   # 用推演商品成本(工厂未对账)
+    promo = _d(db.execute(
+        select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+            PromotionFlow.flow_type == "支出",
+            PromotionFlow.transaction_date >= start, PromotionFlow.transaction_date <= end)
+    ).scalar() or 0)
+    outsourcing, os_est = outsourcing_for_range(db, start, end, coef)
+    fixed = fixed_costs_monthly(db)
+    rc = refill_cost(db, start, end, coef)
+    order_cost = goods + freight + install + platform + tax + aftersales
+    period_cost = promo + outsourcing + fixed + rc["total"]
+    net = revenue - order_cost - period_cost
+    return {
+        "count": len(orders), "revenue": revenue, "refund": refund,
+        "goods": goods, "goods_estimated": goods_est,
+        "freight": freight, "install": install, "platform": platform,
+        "tax": tax, "aftersales": aftersales, "aftersales_count": as_count, "order_cost": order_cost,
+        "promo": promo, "outsourcing": outsourcing, "outsourcing_estimated": os_est,
+        "fixed": fixed, "refill": rc, "period_cost": period_cost,
+        "total_cost": order_cost + period_cost, "net": net,
+        "net_margin": (net / revenue * 100) if revenue else Decimal("0"),
+        "coef": coef,
+    }
 
 
 def extra_aftersales_by_order(db: Session) -> dict[str, Decimal]:

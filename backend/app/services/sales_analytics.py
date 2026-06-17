@@ -67,12 +67,13 @@ class SalesSummary:
     bottom_products_by_profit: list[dict] = field(default_factory=list)  # 低利润榜: 亏得最多在前
 
 
-def _profit_for(o: Order, coef: dict, as_avg: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
-    """统一会计成本口径 (用户拍板 2026-06-17): 返回 (实付, 会计总成本, 利润, 物理成本)。
-    会计总成本=物理+物流+安装/上楼+售后+平台扣点(0.6%+2%活动/或实付−实收)+税(2%); 利润=实付−退款−会计总成本。"""
+def _profit_for(o: Order, coef: dict, aftersales: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """统一会计成本口径 (用户拍板 2026-06-18 全系统同口径): 返回 (真实收入, 会计总成本, 利润, 物理成本)。
+    真实收入=实付−退款; 会计总成本=物理+物流+安装/上楼+额外售后(按订单归属)+平台扣点(实付−实收)+税。"""
     from app.services import order_financials as ofin
-    paid = Decimal(o.paid_amount or 0)
-    return paid, ofin.accounting_cost(o, coef, as_avg), ofin.net_profit(o, coef, as_avg), ofin.physical_cost(o)
+    revenue = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)   # 收入扣退款 (统一口径)
+    return (revenue, ofin.accounting_cost(o, coef, aftersales=aftersales),
+            ofin.net_profit(o, coef, aftersales=aftersales), ofin.physical_cost(o))
 
 
 def brand_of(o: Order) -> Optional[str]:
@@ -111,12 +112,12 @@ def summary(db: Session, *, start: date, end: date,
 
     from app.services import order_financials as ofin
     coef = ofin.load_coefficients(db)
-    as_avg = ofin.aftersales_avg(db)
+    as_by_order = ofin.extra_aftersales_by_order(db)   # 售后按订单归属 (统一口径)
 
     s = SalesSummary(period_start=start, period_end=end)
     by_product: dict[str, dict] = {}
     for o in orders:
-        revenue, cost, net, phys = _profit_for(o, coef, as_avg)
+        revenue, cost, net, phys = _profit_for(o, coef, Decimal(as_by_order.get(o.order_no, 0)))
         s.order_count += 1
         s.revenue += revenue
         s.cost += cost                  # 会计总成本(全扣项)
@@ -167,10 +168,10 @@ def product_breakdown(
     name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
     from app.services import order_financials as ofin
     coef = ofin.load_coefficients(db)
-    as_avg = ofin.aftersales_avg(db)
+    as_by_order = ofin.extra_aftersales_by_order(db)   # 售后按订单归属 (统一口径)
     by_sku: dict[str, dict] = {}
     for o in orders:
-        revenue, cost, net, phys = _profit_for(o, coef, as_avg)
+        revenue, cost, net, phys = _profit_for(o, coef, Decimal(as_by_order.get(o.order_no, 0)))
         key = (o.product_code or "?", o.sku_code or o.sku or "?")
         d = by_sku.setdefault("|".join(key), {
             "product_code": o.product_code,
