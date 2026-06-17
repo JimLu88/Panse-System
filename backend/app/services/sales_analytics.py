@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import and_, func, not_, select
+from sqlalchemy import and_, func, not_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.bom import BomLine
@@ -42,14 +42,20 @@ def _is_service_line(name) -> bool:
 
 
 def settled_sale_clause():
-    """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款 且 非服务行项。不含 is_refill 过滤。"""
+    """SQL 条件: 已付款成交(非待付款/取消/关闭) 且 未全额退款 且 非纯服务行项。不含 is_refill 过滤。
+
+    口径修正 (用户实测 2026-06-18):
+    - 全额退款含 paid=0 但有退款的"退款单"(原只判 paid>0 → 那种单算出 −退款 的负收入)。
+    - 服务行项(送货/安装)**只在 实付=0(免费附加行) 时排除**; 有实付的是被误标成"送货入户"的真实产品单(如¥11212的餐边柜), 必须保留。
+    """
     paid = func.coalesce(Order.paid_amount, 0)
     refund = func.coalesce(Order.refund_amount, 0)
     name = func.coalesce(Order.product_name, "")
+    is_service = or_(*[name.contains(k) for k in SERVICE_KEYWORDS])
     return and_(
         Order.status.in_(SETTLED_SALE_STATUSES),
-        not_(and_(paid > 0, refund >= paid * Decimal("0.99"))),  # 全额退款不算成交
-        *[not_(name.contains(k)) for k in SERVICE_KEYWORDS],     # 送货/安装等服务费不算营收
+        not_(and_(refund > 0, refund >= paid * Decimal("0.99"))),  # 全额退款(含paid=0的退款单)不算成交
+        not_(and_(is_service, paid <= 0)),                          # 仅排除 ¥0 的纯服务附加行
     )
 
 
@@ -59,9 +65,9 @@ def is_settled_sale(o) -> bool:
         return False
     paid = Decimal(str(o.paid_amount or 0))
     refund = Decimal(str(getattr(o, "refund_amount", 0) or 0))
-    if paid > 0 and refund >= paid * Decimal("0.99"):
+    if refund > 0 and refund >= paid * Decimal("0.99"):   # 全额退款(含 paid=0 退款单)
         return False
-    if _is_service_line(getattr(o, "product_name", "")):
+    if _is_service_line(getattr(o, "product_name", "")) and paid <= 0:  # 仅 ¥0 纯服务附加行
         return False
     return True
 
