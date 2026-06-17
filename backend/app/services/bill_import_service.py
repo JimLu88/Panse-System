@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import csv
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
@@ -308,14 +309,128 @@ def refill_date_from_filename(name: str, *, today=None):
     return t
 
 
+# ---------------- 月度补单汇总表 (用户 2026-06 起统一格式, 无订单号) -------------- #
+# 用户的「补单记录.xlsx」: 一行一个月, 列= 分月核算 | 补单流水 | 补单佣金 | 补单快递费 |
+#   平台服务费 | 88vip消费券技术服务费。没有订单号, 旧的逐单导入器会报「缺订单号」。
+_MONTH_LABEL_RE = re.compile(r"(\d{4})\s*年\s*(\d{1,2})\s*月")
+_MONTHLY_SKIP_LABELS = ("total", "合计", "总计", "小计")
+
+
+def _find_monthly_refill_header(ws) -> Optional[tuple[int, dict]]:
+    """在前 6 行找月度补单汇总表头, 返回 (表头行号 1-indexed, {字段: 列号}); 对不上 None。"""
+    for ridx in range(1, 7):
+        cells = [str(c.value).strip() if c.value is not None else "" for c in ws[ridx]]
+        if "补单流水" not in "".join(cells):
+            continue
+        col: dict = {}
+        for i, h in enumerate(cells):
+            if "分月核算" in h or h in ("月份", "月度"):
+                col.setdefault("month", i)
+            elif "补单流水" in h:
+                col["amount"] = i
+            elif "佣金" in h:
+                col["commission"] = i
+            elif "快递" in h or "运费" in h:
+                col["freight"] = i
+            elif "平台服务费" in h:
+                col["platform_fee"] = i
+            elif "技术服务费" in h or "88vip" in h.lower():
+                col["tech_fee"] = i
+        if "month" in col and "amount" in col:
+            return ridx, col
+    return None
+
+
+def is_monthly_refill_ws(ws) -> bool:
+    """判断单个 worksheet 是否为「月度补单汇总」格式。"""
+    return _find_monthly_refill_header(ws) is not None
+
+
+def is_monthly_refill_xlsx(wb) -> bool:
+    """判断 wb 第一个 sheet 是否为「月度补单汇总」格式。"""
+    try:
+        return is_monthly_refill_ws(wb.worksheets[0])
+    except (IndexError, AttributeError):
+        return False
+
+
+def import_refill_monthly_xlsx(db: Session, wb, *, ws=None,
+                               import_job_id: Optional[int] = None) -> BillImportReport:
+    """月度补单汇总表 → 每月一条合成 RefillRecord (order_no='补单月度-YYYY-MM')。
+
+    幂等 upsert: 同月已有则覆盖各项金额 (用户每月重导整表也不会重复堆积)。
+    跳过 Total/合计/<日期 等汇总边界行 + 整行无任何流水/费用的空月份。
+    88vip 技术服务费无独立列, 记入 fee_remark。
+    """
+    from sqlalchemy import select
+    rep = BillImportReport()
+    ws = ws if ws is not None else wb.worksheets[0]
+    found = _find_monthly_refill_header(ws)
+    if found is None:
+        rep.errors.append("未识别为月度补单汇总表 (缺「分月核算/补单流水」表头)")
+        return rep
+    header_row, col = found
+
+    existing = {
+        r.order_no: r for r in db.execute(
+            select(RefillRecord).where(RefillRecord.order_no.like("补单月度-%"))
+        ).scalars().all()
+    }
+
+    def _cell(row, key):
+        i = col.get(key)
+        return row[i] if i is not None and i < len(row) else None
+
+    for row in ws.iter_rows(min_row=header_row + 1, values_only=True):
+        if not row:
+            continue
+        label = str(_cell(row, "month") or "").strip()
+        if not label or "<" in label or any(s in label.lower() for s in _MONTHLY_SKIP_LABELS):
+            continue
+        m = _MONTH_LABEL_RE.search(label)
+        if not m:
+            continue
+        year, month = int(m.group(1)), int(m.group(2))
+        if not (1 <= month <= 12):
+            continue
+        amount = _decimal(_cell(row, "amount"))
+        commission = _decimal(_cell(row, "commission"))
+        freight = _decimal(_cell(row, "freight"))
+        platform_fee = _decimal(_cell(row, "platform_fee"))
+        tech_fee = _decimal(_cell(row, "tech_fee"))
+        if not any(v and v != 0 for v in (amount, commission, freight, platform_fee, tech_fee)):
+            continue  # 未来空月份
+        order_no = f"补单月度-{year:04d}-{month:02d}"
+        rec = existing.get(order_no)
+        if rec is None:
+            rec = RefillRecord(order_no=order_no)
+            db.add(rec)
+            existing[order_no] = rec
+        rec.refill_date = date(year, month, 1)
+        rec.order_amount = amount
+        rec.commission = commission
+        rec.refill_freight = freight
+        rec.platform_fee = platform_fee
+        rec.fee_remark = f"88vip技术服务费:{tech_fee}" if tech_fee else None
+        rec.remark = "月度补单汇总(整月合计, 非单条)"
+        rep.inserted += 1
+    db.flush()
+    return rep
+
+
 def import_refill_simple_xlsx(db: Session, wb, *, refill_date,
                               freight_default=None,
                               import_job_id: Optional[int] = None) -> BillImportReport:
     """补单简表 xlsx → RefillRecord。去重: (订单号, 补单日期) 已有则跳过。
 
     freight_default: 补单快递费缺省 (用户拍板 ¥5, settings refill_freight_default 可调)。
+
+    2026-06 起用户改用「月度补单汇总表」(分月核算/补单流水, 无订单号) — 自动识别并转月度路径。
     """
     from sqlalchemy import select
+    # 月度补单汇总表 → 走月度合成路径 (无订单号, 旧逐单逻辑会报错)
+    if is_monthly_refill_xlsx(wb):
+        return import_refill_monthly_xlsx(db, wb, import_job_id=import_job_id)
     rep = BillImportReport()
     ws = wb.worksheets[0]
     headers = [str(c.value).strip() if c.value is not None else "" for c in ws[1]]

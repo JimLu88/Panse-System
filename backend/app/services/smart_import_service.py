@@ -618,6 +618,16 @@ def smart_commit(
                                "error": f"{type(e).__name__}: {e}"}
             reports.append(report_dict)
             continue
+        # 月度补单汇总表 (分月核算/补单流水, 无订单号): 走专用合成路径; 普通逐单补单表继续走通用 upsert
+        if entity == "refill_record":
+            handled = _maybe_commit_refill_monthly(
+                db, file_bytes=file_bytes, sheet_name=sheet_name,
+                dry_run=item.get("dry_run", False))
+            if handled is not None:
+                _logger.info("  [%s] refill_record 月度汇总 %s", sheet_name,
+                             "试运行" if item.get("dry_run") else "已提交")
+                reports.append(handled)
+                continue
         # 智能 commit 借用 excel_importer.commit_sheet, 但要先把 header_row 适配
         # commit_sheet 假设 header 在第 1 行, 我们要把多余的前置行用 io 流改造
         try:
@@ -704,6 +714,46 @@ def _commit_wanshifu_bill(
         "skipped_rows": rep.skipped_invalid + rep.skipped_duplicate,
         "errors": rep.errors[:10], "warnings": warnings,
         "conflicts": [], "unmapped_columns": rep.unmapped_columns,
+    }
+
+
+def _maybe_commit_refill_monthly(
+    db: Session, *, file_bytes: bytes, sheet_name: str, dry_run: bool,
+) -> Optional[dict]:
+    """该 sheet 若是「月度补单汇总表」(分月核算/补单流水, 无订单号) → 合成月度 RefillRecord;
+    否则返回 None 让调用方走通用逐单 upsert 路径。"""
+    from app.services import bill_import_service as bis
+
+    try:
+        wb = load_workbook(BytesIO(file_bytes), data_only=True)
+    except Exception:  # noqa: BLE001
+        return None
+    ws = wb[sheet_name] if sheet_name in wb.sheetnames else wb.worksheets[0]
+    if not bis.is_monthly_refill_ws(ws):
+        wb.close()
+        return None
+    try:
+        rep = bis.import_refill_monthly_xlsx(db, wb, ws=ws)
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+    except Exception as e:  # noqa: BLE001 - 单 sheet 失败不连累其他
+        try:
+            db.rollback()
+        except Exception:
+            pass
+        _logger.exception("  [%s] 月度补单导入失败: %s", sheet_name, e)
+        wb.close()
+        return {"sheet_name": sheet_name, "error": f"{type(e).__name__}: {e}"}
+    wb.close()
+    return {
+        "sheet_name": sheet_name, "entity_type": "refill_record",
+        "total_rows": rep.inserted, "inserted_parents": rep.inserted,
+        "inserted_children": 0, "skipped_rows": rep.skipped_invalid,
+        "errors": rep.errors[:10],
+        "warnings": ["月度补单汇总: 每月一条合成记录(无订单号), 88vip技术服务费记入费用备注"],
+        "conflicts": [], "unmapped_columns": [],
     }
 
 

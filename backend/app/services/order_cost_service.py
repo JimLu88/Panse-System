@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -58,6 +59,37 @@ def zero_cost_reason(order: Order) -> Optional[str]:
     text = f"{order.sku or ''} {order.sku_code or ''} {order.product_name or ''}"
     if any(k in text for k in ZERO_COST_KEYWORDS):
         return "商家安装/淘宝官方服务 SKU, 无实际成本"
+    return None
+
+
+# 不在产销售的订单关键词/口径: 退款/退货/关闭 这类订单不是真实在产销售,
+# 不该按成本率估算成本、更不该报「缺成本」异常 (用户拍板 2026-06-17)。
+_REFUND_KEYWORDS = ("退款", "退货", "关闭")
+# 只对 2026-01-01 起的订单做成本估算/异常 (更早的旧单不纳入, 用户拍板 2026-06-17)。
+_COST_ESTIMATE_CUTOFF = date(2026, 1, 1)
+# 全额退款判定阈值: 退款金额 ≥ 实付 × 此比例 视为整单退掉。
+_FULL_REFUND_RATIO = Decimal("0.9")
+
+
+def _skip_cost_estimate(order: Order) -> Optional[str]:
+    """判断订单是否应跳过「成本率估算 + 缺成本异常」, 满足任一即跳过, 返回原因 (否则 None)。
+
+    用户拍板 2026-06-17: 退款单 / 关闭单 / 2026 年以前的旧单不是真实在产销售,
+    不该估算成本也不该进异常台账。这些订单只用真实 BOM/定价反推 (查不到就留空)。
+    """
+    od = order.order_date
+    if od is not None and od < _COST_ESTIMATE_CUTOFF:
+        return f"订单日期 {od} 早于 {_COST_ESTIMATE_CUTOFF} (旧单, 不纳入成本估算)"
+    if order.status in ("cancelled", "closed"):
+        return f"订单状态 {order.status} (已取消/关闭)"
+    rs = order.refund_status or ""
+    if any(k in rs for k in _REFUND_KEYWORDS):
+        return f"退款状态「{rs}」(退款/退货/关闭单)"
+    paid = order.paid_amount
+    refund = order.refund_amount
+    if paid is not None and refund is not None and Decimal(str(paid)) > 0:
+        if Decimal(str(refund)) >= Decimal(str(paid)) * _FULL_REFUND_RATIO:
+            return f"全额退款 (退款¥{refund} ≥ 实付¥{paid}×{_FULL_REFUND_RATIO})"
     return None
 
 
@@ -506,8 +538,10 @@ def _flag_cost_exceptions(db: Session, estimated_nos: list[str]) -> dict:
         ))
         open_pks.add(no)
         created += 1
-    # 自动关闭: 之前估算、现已录入实际成本(actual_cost>0)的异常
-    resolved = 0
+    # 自动关闭: ① 之前估算、现已录入实际成本(actual_cost>0)的异常;
+    #           ② 退款/关闭/旧单 误报的异常 — 同时清掉它们被估算出来的 theoretical_cost
+    #             (这些不是真实在产销售, 估算值会拖累利润, 用户拍板 2026-06-17)。
+    resolved = resolved_refund = 0
     for ex in db.execute(
         select(DataException).where(
             DataException.source_table == "orders",
@@ -516,10 +550,16 @@ def _flag_cost_exceptions(db: Session, estimated_nos: list[str]) -> dict:
         )
     ).scalars().all():
         o = db.execute(select(Order).where(Order.order_no == ex.source_pk)).scalar_one_or_none()
-        if o is not None and o.actual_cost is not None and Decimal(str(o.actual_cost)) > 0:
+        if o is None:
+            continue
+        if o.actual_cost is not None and Decimal(str(o.actual_cost)) > 0:
             ex.status = "resolved"
             resolved += 1
-    return {"created": created, "resolved": resolved}
+        elif _skip_cost_estimate(o) is not None:
+            ex.status = "resolved"
+            o.theoretical_cost = None  # 清掉错误的成本率估算值
+            resolved_refund += 1
+    return {"created": created, "resolved": resolved, "resolved_refund_old": resolved_refund}
 
 
 def auto_cost_backfill(db: Session) -> dict:
@@ -533,9 +573,18 @@ def auto_cost_backfill(db: Session) -> dict:
     orders = db.execute(
         select(Order).where(or_(Order.theoretical_cost.is_(None), Order.theoretical_cost == 0))
     ).scalars().all()
-    updated = skipped = estimated = 0
+    updated = skipped = estimated = skipped_refund = 0
     est_nos: list[str] = []
     for o in orders:
+        # 退款/关闭/旧单: 只用真实 BOM/定价反推 (ratios=None, 不走率兜底), 不进异常台账
+        if _skip_cost_estimate(o) is not None:
+            bd = recompute_and_save(db, o, ratios=None)
+            if bd.resolved:
+                updated += 1
+            else:
+                skipped += 1
+            skipped_refund += 1
+            continue
         bd = recompute_and_save(db, o, ratios=ratios)
         if bd.resolved:
             updated += 1
@@ -549,6 +598,7 @@ def auto_cost_backfill(db: Session) -> dict:
     db.commit()
     return {
         "updated": updated, "estimated_by_ratio": estimated, "still_missing": skipped,
+        "skipped_refund_old": skipped_refund,
         "exceptions": exc, "store_ratio": ratios.get("_store"),
         "category_ratios": {k: v for k, v in ratios.items() if k != "_store"},
     }

@@ -69,3 +69,66 @@ def test_estimated_exception_auto_resolves_when_actual_cost_entered(db_session):
     ocs.auto_cost_backfill(db)
     ex = db.execute(select(DataException).where(DataException.source_pk == "N2")).scalar_one()
     assert ex.status == "resolved"
+
+
+def _seed_store_ratio(db):
+    """撑起全店成本率(避免 ratios 为空), 一笔正式有成本单。"""
+    db.add(Order(platform="淘宝", order_no="BASE", product_code=None,
+                 qty=1, order_date=date(2026, 6, 1), status="paid",
+                 paid_amount=Decimal("1000"), theoretical_cost=Decimal("600")))
+
+
+def test_refund_and_old_orders_skip_estimate_and_exception(db_session):
+    """退款单 / 关闭单 / 2026 前旧单: 不按率估算成本, 不进缺成本异常 (用户拍板 2026-06-17)。"""
+    db = db_session
+    _seed_store_ratio(db)
+    # 退款单(refund_status 含「退款」)
+    db.add(Order(platform="淘宝", order_no="R1", product_code=None, qty=1,
+                 order_date=date(2026, 6, 2), status="paid",
+                 paid_amount=Decimal("2000"), refund_status="退款成功"))
+    # 全额退款单(退款额 ≥ 实付×0.9)
+    db.add(Order(platform="淘宝", order_no="R2", product_code=None, qty=1,
+                 order_date=date(2026, 6, 2), status="paid",
+                 paid_amount=Decimal("1000"), refund_amount=Decimal("1000")))
+    # 关闭/取消单
+    db.add(Order(platform="淘宝", order_no="R3", product_code=None, qty=1,
+                 order_date=date(2026, 6, 2), status="cancelled",
+                 paid_amount=Decimal("1500")))
+    # 2026 年以前旧单
+    db.add(Order(platform="淘宝", order_no="R4", product_code=None, qty=1,
+                 order_date=date(2025, 12, 20), status="paid",
+                 paid_amount=Decimal("1800")))
+    db.flush()
+
+    res = ocs.auto_cost_backfill(db)
+
+    for no in ("R1", "R2", "R3", "R4"):
+        o = db.execute(select(Order).where(Order.order_no == no)).scalar_one()
+        assert o.theoretical_cost in (None, Decimal("0")), f"{no} 不应被估算成本"
+        ex = db.execute(select(DataException).where(
+            DataException.source_table == "orders",
+            DataException.source_pk == no)).scalar_one_or_none()
+        assert ex is None, f"{no} 不应进缺成本异常"
+    assert res["skipped_refund_old"] >= 4
+
+
+def test_existing_exception_resolved_for_refund_order(db_session):
+    """历史已生成的缺成本异常, 若其订单属退款/旧单 → 自动关闭并清掉估算成本。"""
+    db = db_session
+    _seed_store_ratio(db)
+    db.add(Order(platform="淘宝", order_no="RX", product_code=None, qty=1,
+                 order_date=date(2026, 6, 2), status="paid",
+                 paid_amount=Decimal("2000"), refund_status="退货退款",
+                 theoretical_cost=Decimal("1200")))  # 上一版误估的成本
+    db.add(DataException(
+        source_table="orders", source_pk="RX",
+        exception_type="cost_missing_estimated", severity="warning", status="open",
+        description="历史误报"))
+    db.flush()
+
+    ocs.auto_cost_backfill(db)
+
+    ex = db.execute(select(DataException).where(DataException.source_pk == "RX")).scalar_one()
+    assert ex.status == "resolved"
+    rx = db.execute(select(Order).where(Order.order_no == "RX")).scalar_one()
+    assert rx.theoretical_cost is None  # 误估成本已清
