@@ -601,6 +601,21 @@ function DiffTable({ rule, result, writtenOff, onWriteoff }: {
       columns={columns as any}
       size="small"
       pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
+      expandable={{
+        rowExpandable: (r) => (r.related_records?.length ?? 0) > 0,
+        expandedRowRender: (r) => (
+          <div style={{ paddingLeft: 24 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              涉及明细单号 (拿去核对): 支付宝流水号 / 工厂单号 / 淘宝订单号
+            </Typography.Text>
+            <ul style={{ margin: '4px 0 0', fontSize: 12, lineHeight: 1.8 }}>
+              {(r.related_records ?? []).map((s, i) => (
+                <li key={i}><Typography.Text copyable={{ text: s }} style={{ fontSize: 12 }}>{s}</Typography.Text></li>
+              ))}
+            </ul>
+          </div>
+        ),
+      }}
     />
   );
 }

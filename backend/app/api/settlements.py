@@ -35,6 +35,8 @@ def import_settlements(
         import_storage.update_summary(db, arch.file.id, result)
         result = {**result, "archived_file_id": arch.file.id, "duplicate_upload": arch.is_duplicate}
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:settlement")
     return result
 
 
@@ -113,6 +115,8 @@ def import_prepay(
         "inserted": r.inserted, "skipped_duplicate": r.skipped_duplicate, "category": category,
     })
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:prepay")
     return {
         "inserted": r.inserted, "skipped_invalid": r.skipped_invalid,
         "skipped_duplicate": r.skipped_duplicate, "unmapped_columns": r.unmapped_columns,

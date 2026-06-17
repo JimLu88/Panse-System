@@ -126,6 +126,7 @@ export interface ReconciliationDiff {
   diff: string | null;
   severity: 'ok' | 'warning' | 'error' | 'not_available';
   message: string;
+  related_records?: string[];  // 涉及的明细单号(支付宝流水号/工厂单号/订单号), 供核对
 }
 
 export interface ReconciliationResult {

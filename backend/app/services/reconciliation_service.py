@@ -219,15 +219,51 @@ def run_factory_payment(
         k = _canon_factory(name, aliases) if name else "(未匹配)"
         paid_by_factory[k] = paid_by_factory.get(k, Decimal("0")) + Decimal(paid or 0)
 
+    # 明细单号 (供用户去核对到底是哪几笔): 应付侧=工厂下单单号(+淘宝单号), 实付侧=支付宝流水号
+    fo_detail = select(FactoryOrder.factory_name, FactoryOrder.factory_order_no,
+                       FactoryOrder.platform_order_no, FactoryOrder.factory_bill_amount)
+    if period_start:
+        fo_detail = fo_detail.where(FactoryOrder.order_date >= period_start)
+    if period_end:
+        fo_detail = fo_detail.where(FactoryOrder.order_date <= period_end)
+    fo_records: dict[str, list[str]] = {}
+    for fname, fono, pono, amt in db.execute(fo_detail).all():
+        if amt is None or Decimal(amt or 0) == 0:
+            continue
+        k = _canon_factory(fname, aliases)
+        lab = f"工厂单 {fono or '?'}" + (f"(淘宝{pono})" if pono else "") + f" 应付¥{Decimal(amt or 0)}"
+        fo_records.setdefault(k, []).append(lab)
+
+    flow_detail = select(AlipayFlow.counterparty, AlipayFlow.transaction_no,
+                         AlipayFlow.transaction_time, AlipayFlow.amount).where(
+        AlipayFlow.reconciliation_type == "factory_payment")
+    if period_start:
+        flow_detail = flow_detail.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        flow_detail = flow_detail.where(AlipayFlow.transaction_time <= period_end)
+    flow_records: dict[str, list[str]] = {}
+    for cp, tn, tt, amt in db.execute(flow_detail).all():
+        k = _canon_factory(cp, aliases) if cp else "(未匹配)"
+        d = tt.strftime("%Y-%m-%d") if tt else "无日期"
+        flow_records.setdefault(k, []).append(f"支付宝流水 {tn} 实付¥{-Decimal(amt or 0)} ({d})")
+
+    _CAP = 30  # 每侧最多列 30 条单号, 防止单元格过长; message 里给总笔数
     diffs: list[ReconciliationDiff] = []
     for factory in set(billed_by_factory) | set(paid_by_factory):
         billed = billed_by_factory.get(factory, Decimal("0"))
         paid = paid_by_factory.get(factory, Decimal("0"))
         diff = paid - billed
         sev = _classify(diff, base=billed)
-        msg = f"{factory}: 应付 ¥{billed}, 实付 ¥{paid}, 差 ¥{diff}"
+        fos = fo_records.get(factory, [])
+        fls = flow_records.get(factory, [])
+        msg = (f"{factory}: 应付 ¥{billed}, 实付 ¥{paid}, 差 ¥{diff} "
+               f"({len(fos)}笔工厂单 / {len(fls)}笔支付宝流水)")
+        related = fos[:_CAP] + fls[:_CAP]
+        if len(fos) > _CAP or len(fls) > _CAP:
+            related.append(f"… 仅列前{_CAP}, 共 {len(fos)}工厂单/{len(fls)}流水")
         diffs.append(ReconciliationDiff(
             key=factory, expected=billed, actual=paid, diff=diff, severity=sev, message=msg,
+            related_records=related,
         ))
         if sev != "ok" and record_exceptions:
             _record_exception(db, rule="factory_payment", key=factory, diff_amount=diff, message=msg)
@@ -294,6 +330,20 @@ def run_promotion(
             continue
         by_month_af[(int(y), int(m))] = Decimal(paid or 0)
 
+    # 每月支付宝推广流水号 (供核对): reconciliation_type='promotion' 的支出
+    pf_detail = select(AlipayFlow.transaction_time, AlipayFlow.transaction_no,
+                       AlipayFlow.amount).where(AlipayFlow.reconciliation_type == "promotion")
+    if period_start:
+        pf_detail = pf_detail.where(AlipayFlow.transaction_time >= period_start)
+    if period_end:
+        pf_detail = pf_detail.where(AlipayFlow.transaction_time <= period_end)
+    flow_by_month: dict[tuple[int, int], list[str]] = {}
+    for tt, tn, amt in db.execute(pf_detail).all():
+        if tt is None:
+            continue
+        flow_by_month.setdefault((tt.year, tt.month), []).append(
+            f"支付宝流水 {tn} ¥{-Decimal(amt or 0)} ({tt.strftime('%Y-%m-%d')})")
+
     diffs: list[ReconciliationDiff] = []
     for key in sorted(set(by_month_pf) | set(by_month_af)):
         y, m = key
@@ -302,10 +352,11 @@ def run_promotion(
         diff = actual - expected
         sev = _classify(diff, base=expected)
         period_key = f"{y}-{m:02d}"
-        msg = f"{period_key}: {pf_label} ¥{expected}, 支付宝打款 ¥{actual}, 差 ¥{diff}"
+        fls = flow_by_month.get(key, [])
+        msg = f"{period_key}: {pf_label} ¥{expected}, 支付宝打款 ¥{actual}, 差 ¥{diff} ({len(fls)}笔支付宝流水)"
         diffs.append(ReconciliationDiff(
             key=period_key, expected=expected, actual=actual, diff=diff,
-            severity=sev, message=msg,
+            severity=sev, message=msg, related_records=fls[:50],
         ))
         if sev != "ok" and record_exceptions:
             _record_exception(db, rule="promotion", key=period_key, diff_amount=diff, message=msg)

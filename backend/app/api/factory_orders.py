@@ -210,6 +210,11 @@ async def import_factory_bill(
     from app.services import factory_bill_import_service
     content = await file.read()
     try:
-        return factory_bill_import_service.import_bill(db, content, dry_run=dry_run)
+        result = factory_bill_import_service.import_bill(db, content, dry_run=dry_run)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(400, f"对账单解析失败: {e}")
+    if not dry_run:
+        # 实时同步: 工厂对账单导入后立即重算货款对账
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger("import:factory-bill")
+    return result

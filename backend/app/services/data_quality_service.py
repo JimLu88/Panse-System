@@ -380,6 +380,56 @@ def scan_alipay_balance_gap(db: Session) -> int:
     return count
 
 
+def balance_gap_details(db: Session, *, account_kw: str = "企业号", window: int = 4) -> list[dict]:
+    """诊断支付宝余额断链 (只读): 对每条断链流水, 列出本账户按时间相邻的前后几条流水
+    (含 balance/amount/是否空余额), 让人看清到底是真漏了一笔, 还是前驱流水余额为空导致的假断链。
+
+    用户拍板 2026-06-17: 企业号流水由系统自动导出, 理论上不该缺 → 先查清这 6 条是真缺还是误报。
+    """
+    from decimal import Decimal
+    out: list[dict] = []
+    accounts = [a[0] for a in db.query(AlipayFlow.account).distinct().all()
+                if a[0] and account_kw in a[0]]
+    for account in accounts:
+        rows = (db.query(AlipayFlow)
+                .filter(AlipayFlow.account == account)
+                .order_by(AlipayFlow.transaction_time.asc(), AlipayFlow.id.asc()).all())
+        bal_set = {r.balance for r in rows if r.balance is not None}
+        balrows = [r for r in rows if r.balance is not None]
+        if not balrows:
+            continue
+        earliest_id = min(balrows, key=lambda r: (r.transaction_time, r.id)).id
+        for idx, r in enumerate(rows):
+            if r.balance is None:
+                continue
+            pred = (r.balance or Decimal("0")) - (r.amount or Decimal("0"))
+            if pred in bal_set or r.id == earliest_id:
+                continue
+            lo, hi = max(0, idx - window), min(len(rows), idx + 2)
+            null_before = any(rows[j].balance is None for j in range(lo, idx))
+            out.append({
+                "account": account,
+                "gap_txn_no": r.transaction_no,
+                "time": r.transaction_time.isoformat() if r.transaction_time else None,
+                "balance": float(r.balance),
+                "amount": float(r.amount or 0),
+                "expected_prev_balance": float(pred),
+                "null_balance_flow_nearby": null_before,
+                "likely_cause": ("前驱流水余额为空(假断链, 非真漏)" if null_before
+                                 else "前后流水均有余额 → 疑似真漏一笔"),
+                "context_flows": [{
+                    "txn_no": x.transaction_no,
+                    "time": x.transaction_time.isoformat() if x.transaction_time else None,
+                    "type": x.transaction_type,
+                    "amount": float(x.amount or 0),
+                    "balance": (float(x.balance) if x.balance is not None else None),
+                    "null_balance": x.balance is None,
+                    "is_gap_row": x.id == r.id,
+                } for x in rows[lo:hi]],
+            })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # B13 — 木材损耗率异常偏高
 # ---------------------------------------------------------------------------

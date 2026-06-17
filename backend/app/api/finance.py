@@ -103,6 +103,9 @@ async def import_alipay(
         "skipped_invalid": r.skipped_invalid, "account": account,
     })
     db.commit()
+    # 实时同步: 支付宝流水导入后立即重算对账(流水喂全部对账规则)
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger(f"import:alipay:{account}")
     return AlipayImportResult(
         inserted=r.inserted,
         skipped_duplicate=r.skipped_duplicate,
@@ -455,6 +458,8 @@ async def import_wanshifu_orders(file: UploadFile = File(...), db: Session = Dep
     from app.services import aftersales_auto_service
     aftersales_n = aftersales_auto_service.create_from_wanshifu(db)
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:wanshifu-orders")
     return {"parsed": rep.parsed, "inserted": rep.inserted, "updated": rep.updated,
             "match": counts, "aftersales_created": aftersales_n}
 
@@ -566,6 +571,8 @@ async def import_promotion_flows(file: UploadFile = File(...), db: Session = Dep
     text = await _read_csv(file)
     r = bill_import_service.import_promotion_flows_csv(db, text)
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:promotion")
     return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
@@ -576,6 +583,8 @@ async def import_refill_records(file: UploadFile = File(...), db: Session = Depe
     text = await _read_csv(file)
     r = bill_import_service.import_refill_records_csv(db, text)
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:refill-csv")
     return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
@@ -586,6 +595,8 @@ async def import_account_balances(file: UploadFile = File(...), db: Session = De
     text = await _read_csv(file)
     r = bill_import_service.import_account_balances_csv(db, text)
     db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:account-balance")
     return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
@@ -747,6 +758,7 @@ class DiffOut(BaseModel):
     diff: Optional[Decimal]
     severity: str
     message: str
+    related_records: list[str] = []  # 该差异涉及的明细单号(支付宝流水号/工厂单号/订单号), 供核对
 
 
 class ReconciliationOut(BaseModel):
@@ -982,6 +994,19 @@ def realtime_sync_now():
 def realtime_sync_status():
     from app.services import realtime_sync_service
     return realtime_sync_service.status()
+
+
+@router.get("/alipay-balance-gaps")
+def alipay_balance_gaps(account_kw: str = Query("企业号"), db: Session = Depends(get_db)):
+    """诊断支付宝余额断链: 每条断链给出前后相邻流水 + 是否前驱余额为空(假断链) vs 真漏一笔。"""
+    from app.services import data_quality_service
+    rows = data_quality_service.balance_gap_details(db, account_kw=account_kw)
+    false_alarm = sum(1 for r in rows if r["null_balance_flow_nearby"])
+    return {
+        "account_kw": account_kw, "gap_count": len(rows),
+        "likely_false_alarm": false_alarm, "likely_real_missing": len(rows) - false_alarm,
+        "gaps": rows,
+    }
 
 
 @router.get("/reconciliation-accuracy")
