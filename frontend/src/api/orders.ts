@@ -440,3 +440,48 @@ export const backfillCompensation = () =>
   api.post<{ aftersales_scanned: number; orders_updated: number; total_compensation: string }>(
     '/api/orders/backfill-compensation',
   ).then((r) => r.data);
+
+// ── 定制单核对 (推演成本; 工厂成本填入后覆盖) ──────────────────────────────────
+export interface CustomReconcileRow {
+  order_id: number;
+  order_no: string;
+  product_name: string | null;
+  product_code: string | null;
+  sku: string | null;
+  qty: number;
+  status: string;
+  paid_amount: number;
+  remark: string;
+  actual_cost: number | null;
+  projected_cost: number | null;
+  method: string;
+  detail: string;
+  source: string;
+  is_final: boolean;
+  projected_margin: number | null;
+  projected_margin_rate: number | null;
+  needs_compute: boolean;
+}
+export interface CustomReconcileResp {
+  rows: CustomReconcileRow[];
+  count: number;
+  needs_compute_count: number;
+  external_api_configured: boolean;
+  socket_material_code: string;
+}
+
+export const fetchCustomReconcile = (onlyMissing = true) =>
+  api.get<CustomReconcileResp>('/api/orders/custom-reconcile', {
+    params: { only_missing: onlyMissing },
+  }).then((r) => r.data);
+
+export const applyProjectedCost = (orderId: number) =>
+  api.post<{ ok: boolean; order_no: string; written_theoretical_cost: number; method: string }>(
+    `/api/orders/${orderId}/apply-projected-cost`,
+  ).then((r) => r.data);
+
+export const getReconApiUrl = () =>
+  api.get<{ url: string }>('/api/orders/custom-reconcile/external-api').then((r) => r.data);
+
+export const putReconApiUrl = (url: string) =>
+  api.put<{ url: string }>('/api/orders/custom-reconcile/external-api', { url }).then((r) => r.data);

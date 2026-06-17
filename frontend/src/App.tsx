@@ -43,6 +43,7 @@ const AssetsPage = lazy(() => import('./pages/AssetsPage'));
 const AssetsCashflowPage = lazy(() => import('./pages/AssetsCashflowPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
+const CustomReconcilePage = lazy(() => import('./pages/CustomReconcilePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
@@ -185,6 +186,7 @@ export default function App() {
       children: [
         { key: 'orders', label: <Link to="/orders">订单</Link> },
         { key: 'orders-kanban', label: <Link to="/orders/kanban">看板（含配件备料）</Link> },
+        { key: 'custom-reconcile', label: <Link to="/orders/custom-reconcile">定制单核对</Link> },
         { key: 'customers', label: <Link to="/customers">客户</Link> },
         { key: 'aftersales', label: <Link to="/aftersales">退货/售后</Link> },
       ],
@@ -341,6 +343,7 @@ export default function App() {
             <Route path="/samples" element={<SampleInventoryPage />} />
             <Route path="/orders" element={<OrdersPage />} />
             <Route path="/orders/kanban" element={<OrdersKanbanPage />} />
+            <Route path="/orders/custom-reconcile" element={<CustomReconcilePage />} />
             <Route path="/orders/:orderId/factory-sheet" element={<FactorySheetPage />} />
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customization" element={<CustomizationPage />} />
