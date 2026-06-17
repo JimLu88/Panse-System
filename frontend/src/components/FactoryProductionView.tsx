@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react';
 import {
   Alert, Button, Card, Col, DatePicker, Empty, Input, Modal, Row, Segmented, Space, Tag, Typography, message,
 } from 'antd';
-import { PrinterOutlined, ProfileOutlined } from '@ant-design/icons';
+import { DownloadOutlined, PrinterOutlined, ProfileOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 
@@ -126,6 +126,38 @@ export default function FactoryProductionView() {
     setEditNote(c.production_note || '');
   };
 
+  // #23: 导出当前筛选的工厂制作单为 Excel (复用页面导出端点, 记录进 资料存档库→页面导出)
+  const exportExcel = async () => {
+    const cols = [
+      { key: 'order_no', title: '订单号' }, { key: 'order_date', title: '下单日期' },
+      { key: 'ship_date', title: '发货截止' }, { key: 'days_left', title: '剩余天数' },
+      { key: 'status_label', title: '紧急度' }, { key: 'customer_name', title: '客户' },
+      { key: 'customer_address', title: '地址' }, { key: 'product_name', title: '产品' },
+      { key: 'sku', title: 'SKU' }, { key: 'remark', title: '备注' },
+    ];
+    const rows = visible.map((c: any) => ({
+      order_no: c.order_no, order_date: c.order_date,
+      ship_date: c.ship_date ?? c.ship_deadline ?? c.ship_eta ?? null,
+      days_left: c.days_left ?? c.days ?? null,
+      status_label: STATUS_META[c.status]?.label ?? c.status,
+      customer_name: c.customer_name, customer_address: c.customer_address,
+      product_name: c.product_name, sku: c.sku, remark: c.remark ?? c.note ?? null,
+    }));
+    try {
+      const { api } = await import('../api/client');
+      const resp = await api.post('/api/exports/page',
+        { title: '工厂制作单', columns: cols, rows }, { responseType: 'blob' });
+      const url = window.URL.createObjectURL(resp.data as Blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `工厂制作单_${dayjs().format('YYYY-MM-DD')}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      window.URL.revokeObjectURL(url);
+      message.success('已导出 (记录存 工具→资料存档库→页面导出)');
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '导出失败');
+    }
+  };
+
   // 打印 (图5 优化): 不走 window.print() 受 app 布局拖累(首页空白/卡片被 flex 列截断),
   // 而是开干净的新窗口、用 CSS Grid 渲染卡片、每卡 break-inside:avoid 不跨页断, 再调打印。
   const printCards = () => {
@@ -192,6 +224,7 @@ export default function FactoryProductionView() {
         <Button type="primary" icon={<PrinterOutlined />} onClick={printCards}>
           打印 / 存 PDF (一排三个)
         </Button>
+        <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出 Excel</Button>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           打开干净的打印页(无导航、卡片不跨页截断)、一排三张; 对话框里选「另存为 PDF」发同事。打印当前筛选下的 {visible.length} 单。
         </Typography.Text>
