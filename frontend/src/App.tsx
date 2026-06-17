@@ -44,6 +44,7 @@ const AssetsCashflowPage = lazy(() => import('./pages/AssetsCashflowPage'));
 const CustomersPage = lazy(() => import('./pages/CustomersPage'));
 const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
 const CustomReconcilePage = lazy(() => import('./pages/CustomReconcilePage'));
+const PerOrderReconcilePage = lazy(() => import('./pages/PerOrderReconcilePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
@@ -99,6 +100,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
   'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
+  'per-order-reconcile': 'g-finance',
   reconciliation: 'g-finance', 'refill-records': 'g-finance', 'recon-diagnostics': 'g-finance', 'prepay-ledger': 'g-finance',
   'factory-recon': 'g-finance', 'shop-deposits': 'g-finance', 'promotion-flows': 'g-finance',
   accounting: 'g-finance', assets: 'g-finance', 'assets-cashflow': 'g-finance',
@@ -228,6 +230,7 @@ export default function App() {
         { key: 'assets-cashflow', label: <Link to="/assets-cashflow">资产 &amp; 流水</Link> },
         { key: 'alipay', label: <Link to="/alipay">支付宝流水</Link> },
         { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
+        { key: 'per-order-reconcile', label: <Link to="/per-order-reconcile">逐单核对</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'recon-center', label: <Link to="/recon-center">对账中心 (结算/诊断/工厂/代付)</Link> },
         { key: 'promotion-flows', label: <Link to="/promotion-flows">推广费流水</Link> },
@@ -362,6 +365,7 @@ export default function App() {
             <Route path="/alipay" element={<AlipayPage />} />
             <Route path="/account-balances" element={<AccountBalancesPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />
+            <Route path="/per-order-reconcile" element={<PerOrderReconcilePage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />
             <Route path="/factory-orders" element={<FactoryOrdersPage />} />

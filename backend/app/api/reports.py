@@ -842,3 +842,94 @@ def business_monthly_table(
     }
 
     return {"rows": rows, "summary": summary}
+
+
+@router.get("/per-order-reconcile")
+def per_order_reconcile(
+    year: int = Query(2026),
+    month: int = Query(..., ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """逐单核对 (财务) — 某月每笔真实成交订单的完整成本拆解 + 支付宝覆盖/对账状态 + 问题单高亮。
+    口径与经营状况一致 (order_financials 会计成本); 合计再减该月推广费、人员外包 = 本月真实净利。
+    """
+    start, end = _month_range(year, month)
+    from app.services import order_financials as _ofin, sales_analytics
+    coef = _ofin.load_coefficients(db)
+    as_by_order = _ofin.extra_aftersales_by_order(db)
+
+    orders = db.execute(
+        select(Order).where(
+            Order.order_date >= start, Order.order_date <= end,
+            sales_analytics.settled_sale_clause(), Order.is_refill == False,  # noqa: E712
+        )
+    ).scalars().all()
+
+    rows = []
+    SUM_KEYS = ("paid_amount", "refund_amount", "revenue", "cost_goods", "cost_freight",
+                "cost_install", "cost_platform", "cost_tax", "cost_aftersales", "cost_total", "net_profit")
+    sums = {k: 0.0 for k in SUM_KEYS}
+    for o in orders:
+        paid = float(o.paid_amount or 0)
+        refund = float(o.refund_amount or 0)
+        revenue = paid - refund
+        b = _ofin.cost_breakdown(o, coef, Decimal("0"))   # 售后改逐单口径, 不用人均均摊
+        goods = float(b["physical"]); freight = float(b["freight"]); install = float(b["install_upstairs"])
+        platform = float(b["platform"]); tax = float(b["tax"])
+        aftersales = float(as_by_order.get(o.order_no, 0))
+        cost_total = goods + freight + install + platform + tax + aftersales
+        net = revenue - cost_total
+        cost_estimated = o.actual_cost is None   # 用推演成本(未对账), 非工厂实报
+        row = {
+            "order_no": o.order_no,
+            "product_name": o.product_name or o.product_code or "",
+            "is_custom": bool(o.is_custom),
+            "order_date": o.order_date.isoformat() if o.order_date else None,
+            "paid_amount": round(paid, 2), "refund_amount": round(refund, 2), "revenue": round(revenue, 2),
+            "cost_goods": round(goods, 2), "cost_freight": round(freight, 2), "cost_install": round(install, 2),
+            "cost_platform": round(platform, 2), "cost_tax": round(tax, 2), "cost_aftersales": round(aftersales, 2),
+            "cost_total": round(cost_total, 2), "net_profit": round(net, 2),
+            "net_margin": round(net / revenue * 100, 1) if revenue else 0.0,
+            "alipay_covered": o.alipay_flow_no is not None,    # 已配上支付宝到账流水
+            "cost_reconciled": o.actual_cost is not None,      # 工厂成本已对账(非推演)
+            "cost_estimated": cost_estimated,
+            "is_loss": net < 0,
+        }
+        rows.append(row)
+        for k in SUM_KEYS:
+            sums[k] += row[k]
+
+    promo = float(db.execute(
+        select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+            PromotionFlow.flow_type == "支出",
+            PromotionFlow.transaction_date >= start, PromotionFlow.transaction_date <= end)
+    ).scalar() or 0)
+    _os, os_est = _ofin.outsourcing_for_range(db, start, end, coef)
+    outsourcing = float(_os)
+    period_net = sums["net_profit"] - promo - outsourcing
+
+    # 问题单高亮: 亏损 / 支付宝未覆盖 (用推演是常态——未对账, 单列标蓝, 不算问题, 否则会全是问题)
+    problem_count = sum(1 for r in rows if r["is_loss"] or not r["alipay_covered"])
+    rows.sort(key=lambda r: (
+        0 if r["is_loss"] else 1,
+        0 if not r["alipay_covered"] else 1,
+        -r["paid_amount"],
+    ))
+
+    return {
+        "period": f"{year}-{month:02d}",
+        "order_count": len(rows),
+        "problem_count": problem_count,
+        "loss_count": sum(1 for r in rows if r["is_loss"]),
+        "uncovered_count": sum(1 for r in rows if not r["alipay_covered"]),
+        "estimated_count": sum(1 for r in rows if r["cost_estimated"]),
+        "rows": rows,
+        "subtotal": {
+            **{k: round(v, 2) for k, v in sums.items()},
+            "promo_expense": round(promo, 2),
+            "outsourcing_expense": round(outsourcing, 2),
+            "outsourcing_estimated": os_est,
+            "period_net_profit": round(period_net, 2),
+            "period_net_margin": round(period_net / sums["revenue"] * 100, 1) if sums["revenue"] else 0.0,
+        },
+    }

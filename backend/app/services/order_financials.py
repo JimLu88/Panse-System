@@ -152,6 +152,19 @@ def extra_aftersales(db: Session, start: date, end: date) -> Decimal:
     return sum((_d(x) for x in row), Decimal("0"))
 
 
+def extra_aftersales_by_order(db: Session) -> dict[str, Decimal]:
+    """各订单"退款之外"的额外售后合计 (after_sales.platform_order_no → 金额)。逐单核对用。"""
+    from app.models.marketing import AfterSales
+    cols = [func.coalesce(func.sum(getattr(AfterSales, f)), 0) for f in _AS_EXTRA_FIELDS]
+    out: dict[str, Decimal] = {}
+    for row in db.execute(
+        select(AfterSales.platform_order_no, *cols).group_by(AfterSales.platform_order_no)
+    ).all():
+        if row[0]:
+            out[row[0]] = sum((_d(x) for x in row[1:]), Decimal("0"))
+    return out
+
+
 def _iter_months(start: date, end: date):
     y, m = start.year, start.month
     while (y, m) <= (end.year, end.month):

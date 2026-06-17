@@ -252,6 +252,51 @@ export const fetchBusinessMonthly = (fromYear = 2026, fromMonth = 1) =>
     })
     .then((r) => r.data);
 
+// 逐单核对 (财务) — 某月每笔订单的完整成本拆解 + 支付宝覆盖/对账 + 问题单
+export interface PerOrderRow {
+  order_no: string;
+  product_name: string;
+  is_custom: boolean;
+  order_date: string | null;
+  paid_amount: number;
+  refund_amount: number;
+  revenue: number;
+  cost_goods: number;
+  cost_freight: number;
+  cost_install: number;
+  cost_platform: number;
+  cost_tax: number;
+  cost_aftersales: number;
+  cost_total: number;
+  net_profit: number;
+  net_margin: number;
+  alipay_covered: boolean;
+  cost_reconciled: boolean;
+  cost_estimated: boolean;
+  is_loss: boolean;
+}
+export interface PerOrderSubtotal {
+  paid_amount: number; refund_amount: number; revenue: number;
+  cost_goods: number; cost_freight: number; cost_install: number; cost_platform: number;
+  cost_tax: number; cost_aftersales: number; cost_total: number; net_profit: number;
+  promo_expense: number; outsourcing_expense: number; outsourcing_estimated: boolean;
+  period_net_profit: number; period_net_margin: number;
+}
+export interface PerOrderReconcileResult {
+  period: string;
+  order_count: number;
+  problem_count: number;
+  loss_count: number;
+  uncovered_count: number;
+  estimated_count: number;
+  rows: PerOrderRow[];
+  subtotal: PerOrderSubtotal;
+}
+export const fetchPerOrderReconcile = (year: number, month: number) =>
+  api
+    .get<PerOrderReconcileResult>('/api/reports/per-order-reconcile', { params: { year, month } })
+    .then((r) => r.data);
+
 export interface KnowledgeRow {
   id: number;
   exception_type: string;

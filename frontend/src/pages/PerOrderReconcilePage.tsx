@@ -1,0 +1,196 @@
+/**
+ * 逐单核对 (财务) — 某月每笔真实成交订单的完整成本拆解 + 支付宝覆盖/对账状态 + 问题单高亮。
+ * 方案1(完整明细宽表) + 方案5(问题单高亮) 合并。合计再减推广费、人员成本 = 本月真实净利。
+ * 口径与「经营状况」一致 (order_financials 会计成本)。用户拍板 2026-06-18。
+ */
+import { useMemo, useState } from 'react';
+import {
+  Alert, Card, Segmented, Select, Space, Statistic, Table, Tag, Tooltip, Typography,
+} from 'antd';
+import type { ColumnsType } from 'antd/es/table';
+import dayjs from 'dayjs';
+import { useQuery } from '@tanstack/react-query';
+import { PerOrderRow, fetchPerOrderReconcile } from '../api/operations';
+
+const { Title, Text } = Typography;
+
+const yuan = (v: number | null | undefined) =>
+  v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
+const yuan2 = (v: number | null | undefined) =>
+  v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+// 2026 年 1 月到当前月
+function monthOptions(): string[] {
+  const out: string[] = [];
+  const now = dayjs();
+  let d = dayjs('2026-01-01');
+  while (d.isBefore(now) || d.isSame(now, 'month')) {
+    out.push(d.format('YYYY-MM'));
+    d = d.add(1, 'month');
+  }
+  return out.reverse();
+}
+
+export default function PerOrderReconcilePage() {
+  const opts = useMemo(monthOptions, []);
+  const [period, setPeriod] = useState<string>(opts[0] ?? '2026-06');
+  const [onlyProblem, setOnlyProblem] = useState(false);
+  const [y, m] = period.split('-').map(Number);
+
+  const { data, isLoading } = useQuery({
+    queryKey: ['per-order-reconcile', period],
+    queryFn: () => fetchPerOrderReconcile(y, m),
+  });
+
+  const rows = useMemo(() => {
+    const all = data?.rows ?? [];
+    return onlyProblem ? all.filter((r) => r.is_loss || !r.alipay_covered) : all;
+  }, [data, onlyProblem]);
+
+  const st = data?.subtotal;
+
+  const costCell = (estimatedFlag = false) => (v: number, r: PerOrderRow) =>
+    estimatedFlag && r.cost_estimated
+      ? <Tooltip title="用推演成本(工厂未对账)"><span style={{ color: '#1677ff' }}>{yuan(v)}</span></Tooltip>
+      : <span>{yuan(v)}</span>;
+
+  const cols: ColumnsType<PerOrderRow> = [
+    { title: '订单号', dataIndex: 'order_no', width: 150, fixed: 'left',
+      render: (v: string, r) => (
+        <Space size={2}>
+          <Text copyable={{ text: v }} style={{ fontSize: 11 }}>{v.length > 14 ? v.slice(0, 14) + '…' : v}</Text>
+          {r.is_custom && <Tag color="purple" style={{ marginInlineEnd: 0, padding: '0 3px', fontSize: 10 }}>定制</Tag>}
+        </Space>
+      ) },
+    { title: '产品', dataIndex: 'product_name', width: 130, ellipsis: true,
+      render: (v: string) => <Tooltip title={v}><span style={{ fontSize: 12 }}>{v || '—'}</span></Tooltip> },
+    { title: '订单金额', dataIndex: 'paid_amount', width: 90, align: 'right', render: yuan },
+    { title: '退款', dataIndex: 'refund_amount', width: 75, align: 'right',
+      render: (v: number) => v > 0 ? <Text type="warning">−{yuan(v)}</Text> : '—' },
+    { title: '真实收入', dataIndex: 'revenue', width: 90, align: 'right',
+      render: (v: number) => <Text strong>{yuan(v)}</Text> },
+    { title: '商品成本', dataIndex: 'cost_goods', width: 90, align: 'right', render: costCell(true) },
+    { title: '物流', dataIndex: 'cost_freight', width: 70, align: 'right', render: (v: number) => yuan(v) },
+    { title: '安装', dataIndex: 'cost_install', width: 70, align: 'right', render: (v: number) => yuan(v) },
+    { title: '平台扣点', dataIndex: 'cost_platform', width: 80, align: 'right', render: (v: number) => yuan(v) },
+    { title: '税', dataIndex: 'cost_tax', width: 65, align: 'right', render: (v: number) => yuan(v) },
+    { title: '售后', dataIndex: 'cost_aftersales', width: 70, align: 'right',
+      render: (v: number) => v > 0 ? yuan(v) : '—' },
+    { title: '成本合计', dataIndex: 'cost_total', width: 95, align: 'right',
+      render: (v: number) => <Text strong>{yuan(v)}</Text> },
+    { title: '净利', dataIndex: 'net_profit', width: 90, align: 'right',
+      render: (v: number) => <Text strong type={v >= 0 ? 'success' : 'danger'}>{yuan(v)}</Text> },
+    { title: '净利率', dataIndex: 'net_margin', width: 70, align: 'right',
+      render: (v: number) => <span style={{ color: v >= 15 ? '#52c41a' : v >= 0 ? '#fa8c16' : '#ff4d4f' }}>{v.toFixed(1)}%</span> },
+    { title: '支付宝', dataIndex: 'alipay_covered', width: 75, align: 'center',
+      render: (v: boolean) => v
+        ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已覆盖</Tag>
+        : <Tag color="red" style={{ marginInlineEnd: 0 }}>未覆盖</Tag> },
+    { title: '对账', dataIndex: 'cost_reconciled', width: 75, align: 'center',
+      render: (v: boolean) => v
+        ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已对账</Tag>
+        : <Tag color="blue" style={{ marginInlineEnd: 0 }}>推演</Tag> },
+    { title: '问题', width: 90, fixed: 'right',
+      render: (_: unknown, r) => (
+        <Space size={2} wrap>
+          {r.is_loss && <Tag color="red" style={{ marginInlineEnd: 0 }}>亏损</Tag>}
+          {!r.alipay_covered && <Tag color="orange" style={{ marginInlineEnd: 0 }}>未覆盖</Tag>}
+        </Space>
+      ) },
+  ];
+
+  // 合计行: 各列求和 (取 subtotal)
+  const sumRow = st && (
+    <Table.Summary fixed>
+      <Table.Summary.Row style={{ background: '#fafafa', fontWeight: 600 }}>
+        <Table.Summary.Cell index={0}>合计 {rows.length} 单</Table.Summary.Cell>
+        <Table.Summary.Cell index={1} />
+        <Table.Summary.Cell index={2} align="right">{yuan(st.paid_amount)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={3} align="right">{st.refund_amount > 0 ? `−${yuan(st.refund_amount)}` : '—'}</Table.Summary.Cell>
+        <Table.Summary.Cell index={4} align="right">{yuan(st.revenue)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={5} align="right">{yuan(st.cost_goods)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={6} align="right">{yuan(st.cost_freight)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={7} align="right">{yuan(st.cost_install)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={8} align="right">{yuan(st.cost_platform)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={9} align="right">{yuan(st.cost_tax)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={10} align="right">{yuan(st.cost_aftersales)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={11} align="right">{yuan(st.cost_total)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={12} align="right">
+          <Text strong type={st.net_profit >= 0 ? 'success' : 'danger'}>{yuan(st.net_profit)}</Text>
+        </Table.Summary.Cell>
+        <Table.Summary.Cell index={13} />
+        <Table.Summary.Cell index={14} />
+        <Table.Summary.Cell index={15} />
+        <Table.Summary.Cell index={16} />
+      </Table.Summary.Row>
+    </Table.Summary>
+  );
+
+  return (
+    <div style={{ padding: 16 }}>
+      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 12 }} wrap>
+        <Title level={4} style={{ margin: 0 }}>逐单核对</Title>
+        <Space wrap>
+          <Segmented value={onlyProblem ? 'problem' : 'all'}
+            onChange={(v) => setOnlyProblem(v === 'problem')}
+            options={[{ label: '全部', value: 'all' }, { label: '只看问题单', value: 'problem' }]} />
+          <Select value={period} style={{ width: 130 }} onChange={setPeriod}
+            options={opts.map((p) => ({ label: p, value: p }))} />
+        </Space>
+      </Space>
+
+      <Alert type="info" showIcon style={{ marginBottom: 12 }}
+        message="每笔订单的完整成本拆解 — 与「经营状况」同口径(会计成本)"
+        description={
+          <Text style={{ fontSize: 12 }}>
+            净利 = 真实收入(实付−退款) − 成本合计(商品+物流+安装+平台扣点+税+额外售后)。
+            <b style={{ color: '#1677ff' }}>蓝色商品成本=推演</b>(工厂未对账,实际成本到位后覆盖);
+            <b>支付宝「已覆盖」</b>=该单已配上支付宝到账流水;<b>对账「推演」</b>=用估算成本。
+            合计行下方再减该月<b>推广费、人员成本</b> = 本月真实净利。
+          </Text>
+        } />
+
+      <Space size="large" style={{ marginBottom: 12 }} wrap>
+        <Statistic title="订单数" value={data?.order_count ?? 0} />
+        <Statistic title="问题单 (亏损/未覆盖)" value={data?.problem_count ?? 0}
+          valueStyle={{ color: (data?.problem_count ?? 0) > 0 ? '#cf1322' : '#3f8600' }} />
+        <Statistic title="亏损单" value={data?.loss_count ?? 0}
+          valueStyle={{ color: (data?.loss_count ?? 0) > 0 ? '#cf1322' : undefined }} />
+        <Statistic title="支付宝未覆盖" value={data?.uncovered_count ?? 0}
+          valueStyle={{ color: (data?.uncovered_count ?? 0) > 0 ? '#cf1322' : undefined }} />
+        <Statistic title="用推演成本(未对账)" value={data?.estimated_count ?? 0} />
+      </Space>
+
+      <Card size="small" styles={{ body: { padding: 0 } }}>
+        <Table<PerOrderRow>
+          rowKey="order_no" size="small" loading={isLoading}
+          columns={cols} dataSource={rows}
+          scroll={{ x: 1500, y: 520 }}
+          pagination={{ pageSize: 100, showSizeChanger: true, showTotal: (t) => `${t} 单` }}
+          rowClassName={(r) => r.is_loss ? 'per-order-loss-row' : ''}
+          summary={() => sumRow}
+        />
+      </Card>
+
+      {/* 本月真实净利 = 行净利合计 − 推广费 − 人员成本 */}
+      {st && (
+        <Card size="small" style={{ marginTop: 12, background: '#f6ffed', borderColor: '#b7eb8f' }}>
+          <Space size="large" wrap split={<Text type="secondary">|</Text>}>
+            <span>行净利合计 <Text strong>{yuan2(st.net_profit)}</Text></span>
+            <span>− 推广费 <Text type="danger">{yuan2(st.promo_expense)}</Text></span>
+            <span>− 人员成本 <Text type="danger">{yuan2(st.outsourcing_expense)}</Text>
+              {st.outsourcing_estimated && <Tag color="blue" style={{ marginLeft: 4 }}>估</Tag>}</span>
+            <span>=&nbsp; 本月真实净利{' '}
+              <Text strong style={{ fontSize: 18, color: st.period_net_profit >= 0 ? '#389e0d' : '#cf1322' }}>
+                {yuan2(st.period_net_profit)}
+              </Text>{' '}
+              <Text type="secondary">({st.period_net_margin.toFixed(1)}%)</Text>
+            </span>
+          </Space>
+        </Card>
+      )}
+
+      <style>{`.per-order-loss-row > td { background: #fff1f0 !important; }`}</style>
+    </div>
+  );
+}
