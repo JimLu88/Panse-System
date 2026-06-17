@@ -25,13 +25,12 @@ const CONF: Record<string, { color: string; label: string }> = {
 export default function CustomReconcilePage() {
   const qc = useQueryClient();
   const [onlyMissing, setOnlyMissing] = useState(true);
-  const [useAi, setUseAi] = useState(false);
   const [apiOpen, setApiOpen] = useState(false);
   const [apiUrl, setApiUrl] = useState('');
 
   const { data, isLoading, refetch, isFetching } = useQuery({
-    queryKey: ['custom-reconcile', onlyMissing, useAi],
-    queryFn: () => fetchCustomReconcile(onlyMissing, useAi),
+    queryKey: ['custom-reconcile', onlyMissing],
+    queryFn: () => fetchCustomReconcile(onlyMissing),
   });
 
   const applyMut = useMutation({
@@ -43,14 +42,10 @@ export default function CustomReconcilePage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '写回失败'),
   });
 
-  // 一键 AI 重算兜底: 把 85% 兜底的用本地 AI 重估并写回(规则算出的不动)
+  // 一键 AI 重算兜底(后台): 把 85% 兜底的用本地 AI 重估并写回(规则算出的不动)。45 单跑 AI 要几分钟 → 异步。
   const recomputeMut = useMutation({
     mutationFn: aiRecomputeCustom,
-    onSuccess: (r) => {
-      if (r.ai_unavailable) message.warning('本地模型不可达(PC/Ollama没开?), 已飞书报警, 维持 85% 兜底');
-      else message.success(`AI 重算完成: 已写回 ${r.filled} 单`);
-      qc.invalidateQueries({ queryKey: ['custom-reconcile'] });
-    },
+    onSuccess: (r) => message.success(r.note ?? 'AI 重算已在后台开始, 完成后点刷新'),
     onError: (e: any) => message.error(e?.response?.data?.detail ?? 'AI 重算失败'),
   });
 
@@ -117,17 +112,10 @@ export default function CustomReconcilePage() {
           <Segmented value={onlyMissing ? 'missing' : 'all'}
             onChange={(v) => setOnlyMissing(v === 'missing')}
             options={[{ label: '只看缺工厂成本', value: 'missing' }, { label: '全部定制单', value: 'all' }]} />
-          <Tooltip title="复杂备注(改尺寸/材质)交本地大模型 qwen2.5vl 估算预览(不写回); PC没开机会飞书报警并暂用85%兜底">
-            <Button type={useAi ? 'primary' : 'default'} icon={<RobotOutlined />}
-              loading={useAi && isFetching}
-              onClick={() => { setUseAi(true); }}>
-              AI 估算复杂单
-            </Button>
-          </Tooltip>
-          <Popconfirm title="一键 AI 重算兜底并写回?"
-            description="把 85% 兜底的定制单用本地 AI 重估、写回理论成本(规则已算出的不动)。PC/Ollama 没开会飞书报警并维持 85%。"
+          <Popconfirm title="一键 AI 重算兜底并写回?(后台跑)"
+            description="把 85% 兜底的定制单(改尺寸/材质等)用本地大模型 qwen2.5vl 重估、写回理论成本(规则已算出的不动)。45 单约 1-3 分钟, 后台异步; 完成后点刷新。PC/Ollama 没开会飞书报警并维持 85%。"
             onConfirm={() => recomputeMut.mutate()}>
-            <Button danger icon={<RobotOutlined />} loading={recomputeMut.isPending}>AI 重算兜底(写回)</Button>
+            <Button type="primary" icon={<RobotOutlined />} loading={recomputeMut.isPending}>AI 重算兜底(后台写回)</Button>
           </Popconfirm>
           <Button icon={<ReloadOutlined />} loading={isFetching} onClick={() => refetch()}>刷新</Button>
           <Tooltip title="本地 AI 模型地址 (Ollama OpenAI-compat); 留空用默认 PC Ollama">
@@ -142,22 +130,19 @@ export default function CustomReconcilePage() {
         description={
           <Paragraph style={{ marginBottom: 0 }}>
             规则先算: <b>写明成本/百分比</b>→直接取；<b>插座</b>→{data?.socket_material_code ?? 'AC-1007'}；
-            复杂的（改尺寸/材质）点「<b>AI 估算复杂单</b>」走本地大模型；都不中 → <b style={{ color: '#cf1322' }}>实付×85% 兜底(标红, 待人工/工厂价覆盖)</b>。
+            都不中 → <b style={{ color: '#cf1322' }}>实付×85% 兜底(标红, 待人工/工厂价覆盖)</b>。
+            复杂的（改尺寸/材质）点「<b>AI 重算兜底(后台写回)</b>」交本地大模型 qwen2.5vl 估算并写回(几分钟, 完成后刷新)；PC/Ollama 没开会飞书报警并维持 85%。
             推演<b>只展示不入账</b>，点「写回推演」才写成理论成本。
           </Paragraph>
         }
       />
-      {data?.ai_unavailable && (
-        <Alert type="error" showIcon style={{ marginBottom: 12 }}
-          message="本地模型不可达 — 已飞书报警, 复杂单暂用 85% 兜底"
-          description="多半是取数 PC 没开机 / Ollama 未启动。开机后再点「AI 估算复杂单」即可。" />
-      )}
 
       <Space size="large" style={{ marginBottom: 12 }}>
         <Statistic title="定制单" value={data?.count ?? 0} />
         <Statistic title="待人工核价 (85%兜底·标红)" value={data?.low_confidence_count ?? 0}
           valueStyle={{ color: (data?.low_confidence_count ?? 0) > 0 ? '#cf1322' : '#3f8600' }} />
-        {(data?.ai_enabled) && <Statistic title="本地AI已估算" value={data?.ai_used ?? 0} />}
+        <Statistic title="本地AI已估算(写回)" value={data?.ai_count ?? 0}
+          valueStyle={{ color: (data?.ai_count ?? 0) > 0 ? '#3f8600' : undefined }} />
       </Space>
 
       <Card size="small">

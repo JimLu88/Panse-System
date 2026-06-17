@@ -467,16 +467,14 @@ export interface CustomReconcileResp {
   rows: CustomReconcileRow[];
   count: number;
   low_confidence_count: number;
-  ai_used: number;
-  ai_unavailable: boolean;   // 本地模型不可达(已飞书报警)
-  ai_enabled: boolean;
+  ai_count: number;            // 已是 AI 估算(写回)的单数
   socket_material_code: string;
   fallback_rate: number;
 }
 
-export const fetchCustomReconcile = (onlyMissing = true, ai = false) =>
+export const fetchCustomReconcile = (onlyMissing = true) =>
   api.get<CustomReconcileResp>('/api/orders/custom-reconcile', {
-    params: { only_missing: onlyMissing, ai },
+    params: { only_missing: onlyMissing },
   }).then((r) => r.data);
 
 export const applyProjectedCost = (orderId: number) =>
@@ -484,9 +482,9 @@ export const applyProjectedCost = (orderId: number) =>
     `/api/orders/${orderId}/apply-projected-cost`,
   ).then((r) => r.data);
 
-// 一键 AI 重算兜底: 把 85% 兜底的定制单用本地 AI 重估并写回 theoretical_cost (规则算出的不动)
+// 一键 AI 重算兜底(后台): 把 85% 兜底的定制单用本地 AI 重估并写回 theoretical_cost (规则算出的不动)
 export const aiRecomputeCustom = () =>
-  api.post<{ filled: number; ai_unavailable: boolean }>(
+  api.post<{ started: boolean; note: string }>(
     '/api/orders/custom-reconcile/ai-recompute',
   ).then((r) => r.data);
 

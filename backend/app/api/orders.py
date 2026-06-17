@@ -4,7 +4,7 @@ from datetime import date as _date
 from decimal import Decimal as _Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, select
@@ -1212,11 +1212,10 @@ def accessories_pending_summary(db: Session = Depends(get_db)):
 
 # ─── 定制单核对 (推演成本; 工厂成本填入后全覆盖) — 用户拍板 2026-06-17 ──────────
 @router.get("/custom-reconcile")
-def custom_reconcile(only_missing: bool = True, ai: bool = False, db: Session = Depends(get_db)):
-    """定制单核对: 分级混合推演工厂成本 (规则→本地AI→85%兜底)。
-    only_missing=true 只看缺工厂成本的; ai=true 复杂单走本地大模型(慢, 按需点)。"""
+def custom_reconcile(only_missing: bool = True, db: Session = Depends(get_db)):
+    """定制单核对: 规则推演 + 已写回(85%/AI)展示。AI 估算走后台「AI 重算兜底」按钮(避免同步超时)。"""
     from app.services import custom_order_reconcile_service as svc
-    return svc.list_custom_reconcile(db, only_missing=only_missing, use_ai=ai)
+    return svc.list_custom_reconcile(db, only_missing=only_missing)
 
 
 class _ReconApiUrl(BaseModel):
@@ -1253,8 +1252,10 @@ def apply_projected_cost(order_id: int, db: Session = Depends(get_db)):
 
 
 @router.post("/custom-reconcile/ai-recompute")
-def custom_reconcile_ai_recompute(db: Session = Depends(get_db)):
-    """一键 AI 重算: 缺成本的定制单跑 规则→本地AI→85%, 把 85% 兜底的升级成 AI 估算并写回 theoretical_cost
-    (规则已算出的保持不变, 确定性)。本地模型不可达(PC没开机)→飞书报警 + 维持 85% (用户拍板 2026-06-17)。"""
+def custom_reconcile_ai_recompute(background_tasks: BackgroundTasks):
+    """一键 AI 重算(后台): 缺成本的定制单跑 规则→本地AI→85%, 把 85% 兜底的升级成 AI 估算并写回
+    theoretical_cost(规则已算出的不动)。45 单跑 AI 要几分钟 → 后台异步, 立即返回, 完成后刷新看。
+    本地模型不可达(PC没开机)→飞书报警 + 维持 85% (用户拍板 2026-06-17)。"""
     from app.services import custom_order_reconcile_service as svc
-    return svc.auto_backfill_custom_costs(db, use_ai=True)
+    background_tasks.add_task(svc.auto_backfill_custom_costs_bg, True)
+    return {"started": True, "note": "AI 重算已在后台开始, 约 1-3 分钟, 完成后点刷新查看"}

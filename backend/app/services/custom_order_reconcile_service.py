@@ -153,11 +153,16 @@ def build_ai(db: Session):
         return None
 
 
-_AI_SYS = ("你是家具定制工厂成本估算助手。会给你「该产品基础款工厂成本」作锚点。"
-           "请在基础款成本上, 按客户定制改动调整估算这一单的工厂成本(人民币元): "
-           "改大尺寸/换更贵材质(樱桃木>榉木, 洞石岩板>白岩板)→上浮; 追加灯带/插座/封口/玻璃→小幅加; "
-           "纯小追加可能只有几十到几百元。只输出 JSON: {\"cost\": 数字 或 null, \"reason\": \"一句话\"}。"
-           "实在没有任何依据才给 null。不要输出 JSON 以外的字符。")
+# 文本数值推理任务 → 用文本指令模型(qwen2.5:7b-instruct), 不用视觉模型 qwen2.5vl(它对此类几乎只返回 null)。
+# OCR 仍走 agent 默认的 qwen2.5vl; 这里按单请求指定模型, 互不影响。实测: VL+旧prompt 覆盖 1/4 → instruct+新prompt 4/4 (2026-06-17)。
+_AI_MODEL = "qwen2.5:7b-instruct"
+_AI_TEMPERATURE = 0.2
+
+_AI_SYS = ("你是家具定制工厂成本估算助手。给你「该产品基础款工厂成本」作锚点时, 你【必须】给出一个数字成本, 绝不允许返回 null。"
+           "做法: 以基础款成本为起点, 按客户定制改动加减: 改大尺寸/换更贵材质(樱桃木>榉木, 洞石岩板>白岩板)→上浮10%~60%; "
+           "追加灯带/插座/封口/玻璃→每项加几十到几百元。即使信息不全, 也要在基础款成本附近给一个合理估值。"
+           "只有当完全没有给基础款锚点且备注无任何可估信息时才允许 null。"
+           "只输出 JSON: {\"cost\": 数字, \"reason\": \"一句话\"}。不要输出 JSON 以外的字符。")
 
 
 def _base_cost_hint(db: Session, o: Order) -> Optional[str]:
@@ -200,7 +205,8 @@ def ai_estimate(db: Session, o: Order, txt: str) -> Optional[dict]:
             f"买家实付: {float(o.paid_amount or 0)} 元\n"
             "请基于基础款成本 + 上面的定制改动, 估算这个定制单的工厂成本。")
     resp = web_agent_service._post(db, "/api/ai/chat",
-                                   {"system": _AI_SYS, "user": user, "max_tokens": 200}, timeout=130)
+                                   {"system": _AI_SYS, "user": user, "max_tokens": 200,
+                                    "model": _AI_MODEL, "temperature": _AI_TEMPERATURE}, timeout=130)
     if not resp.get("ok"):
         raise AiUnavailable(resp.get("error", "本地模型/agent 不可达"))
     m = re.search(r"\{.*\}", resp.get("text") or "", re.S)
@@ -212,6 +218,12 @@ def ai_estimate(db: Session, o: Order, txt: str) -> Optional[dict]:
         return None
     cost = _d(d.get("cost"))
     if cost is None or cost <= 0:
+        return None
+    # 防"成本>实付"假亏: 补差价/定金/小额补拍单的真实成本在主单上, AI 锚定基础款成本会严重高估本单
+    # (实测见 实付¥18→AI¥3950 这类)。只采信"低于 85% 兜底"的 AI 估值(AI 只能把成本往下修并给依据);
+    # 否则维持 85% 兜底(标红待人工), 让人去核 —— 不把不靠谱的高估当成本入账。
+    paid = _d(o.paid_amount) or Decimal("0")
+    if paid > 0 and cost >= paid * FALLBACK_RATE:
         return None
     return {"cost": cost, "method": "本地AI估算", "confidence": "mid",
             "detail": f"AI: {str(d.get('reason') or '')[:40]}", "source": "ai"}
@@ -260,12 +272,26 @@ def _row(db: Session, o: Order, r: dict) -> dict:
     }
 
 
-def list_custom_reconcile(db: Session, *, only_missing: bool = True, use_ai: bool = False) -> dict:
-    """定制单核对清单。use_ai=True 时复杂单走本地大模型(慢, 按需点); 否则规则+85%兜底。"""
-    from app.services.ai_provider import AiUnavailable
-    provider = build_ai(db) if use_ai else None
-    ai_dead = False
-    ai_used = 0
+def _display_resolve(db: Session, o: Order, txt: str) -> dict:
+    """页面展示口径: 规则优先; 规则没中时显示已写回的 theoretical_cost(85% 或 AI), 否则现算 85%。
+    (AI 走后台『AI 重算兜底』写回 theoretical_cost, 列表读它 —— 避免同步跑 AI 超时 504)。"""
+    r = resolve_rules(db, o, txt)
+    if r is not None:
+        return r
+    tc = o.theoretical_cost
+    if tc is not None:
+        paid = _d(o.paid_amount) or Decimal("0")
+        is_85 = abs(float(tc) - round(float(paid) * float(FALLBACK_RATE), 2)) < 0.5
+        if is_85:
+            return {"cost": _d(tc), "method": "85%兜底(待人工核价)", "confidence": "low",
+                    "detail": "实付×85% (粗估, 等工厂成本/人工/AI覆盖)", "source": "fallback"}
+        return {"cost": _d(tc), "method": "本地AI估算(已写回)", "confidence": "mid",
+                "detail": "AI 估算并写回; 工厂成本到位后覆盖", "source": "ai"}
+    return fallback_85(o)
+
+
+def list_custom_reconcile(db: Session, *, only_missing: bool = True) -> dict:
+    """定制单核对清单。规则 + 已写回(85%/AI)展示; AI 估算走后台写回 (避免同步超时)。"""
     rows: list[dict] = []
     for o in db.query(Order).filter(
         Order.is_refill == False,                  # noqa: E712
@@ -275,29 +301,26 @@ def list_custom_reconcile(db: Session, *, only_missing: bool = True, use_ai: boo
             continue
         if only_missing and o.actual_cost is not None:
             continue
-        txt = remark_text(o)
-        r = resolve_rules(db, o, txt)
-        if r is None and provider is not None and not ai_dead:
-            try:
-                r = ai_estimate(db, o, txt)
-                ai_used += 1
-            except AiUnavailable:
-                ai_dead = True
-                _alert_pc_off(db)
-        if r is None:
-            r = fallback_85(o)
-        rows.append(_row(db, o, r))
+        rows.append(_row(db, o, _display_resolve(db, o, remark_text(o))))
     rows.sort(key=lambda r: ({"low": 0, "mid": 1, "high": 2}.get(r["confidence"], 0), -(r["paid_amount"] or 0)))
     return {
         "rows": rows,
         "count": len(rows),
         "low_confidence_count": sum(1 for r in rows if r["needs_review"]),
-        "ai_used": ai_used,
-        "ai_unavailable": ai_dead,           # 本地模型不可达(已飞书报警)
-        "ai_enabled": use_ai,
+        "ai_count": sum(1 for r in rows if r["source"] == "ai"),
         "socket_material_code": SOCKET_MATERIAL_CODE,
         "fallback_rate": float(FALLBACK_RATE),
     }
+
+
+def auto_backfill_custom_costs_bg(use_ai: bool = True) -> dict:
+    """后台跑 (自带 session): 给「AI 重算兜底」按钮用, 避免同步 45 单跑 AI 超时 504。"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        return auto_backfill_custom_costs(db, use_ai=use_ai)
+    finally:
+        db.close()
 
 
 def auto_backfill_custom_costs(db: Session, *, use_ai: bool = False) -> dict:
@@ -328,6 +351,10 @@ def auto_backfill_custom_costs(db: Session, *, use_ai: bool = False) -> dict:
                 ai_dead = True
                 _alert_pc_off(db)
         if r is None:
+            # 兜底只填空缺, 绝不覆盖已有的更可信推演(规则/AI 之前写的)。
+            # 否则每次取数同步(use_ai=False)都会把 AI 估值打回 85%。规则/AI(r 非 None)仍照常写。
+            if o.theoretical_cost is not None:
+                continue
             r = fallback_85(o)
         cost = r.get("cost")
         if cost is not None and cost >= 0:
