@@ -83,8 +83,10 @@ def _skip_cost_estimate(order: Order) -> Optional[str]:
     if od is not None and od < _COST_ESTIMATE_CUTOFF:
         return f"订单日期 {od} 早于 {_COST_ESTIMATE_CUTOFF} (旧单, 不纳入成本估算)"
     st = order.status or ""
-    if st in ("cancelled", "closed") or "关闭" in st or "取消" in st:
-        return f"订单状态 {st} (已取消/关闭)"
+    # 只对已成交(paid/shipped/signed)的单估算成本; 待付款/退款/取消/关闭 都不是真实在产销售
+    if (st in ("cancelled", "closed", "pending_payment", "aftersales")
+            or "关闭" in st or "取消" in st or "待付款" in st):
+        return f"订单状态 {st} (未成交/退款/取消/关闭, 不纳入成本估算)"
     rs = order.refund_status or ""
     if any(k in rs for k in _REFUND_KEYWORDS):
         return f"退款状态「{rs}」(退款/退货/关闭单)"
