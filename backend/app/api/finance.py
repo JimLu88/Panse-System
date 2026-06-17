@@ -1036,6 +1036,19 @@ def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optiona
     }
 
 
+@router.post("/refill-records/purge-pre-2026")
+def purge_pre_2026_refills(db: Session = Depends(get_db)):
+    """删除 2025 及以前的补单记录 (系统从 2026 起算, 用户拍板 2026-06-17)。"""
+    from datetime import date as _d
+    from app.models.finance import RefillRecord as _RR
+    rows = db.execute(select(_RR).where(_RR.refill_date < _d(2026, 1, 1))).scalars().all()
+    n = len(rows)
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"deleted_pre_2026_refills": n}
+
+
 @router.get("/exception-audit")
 def exception_audit(db: Session = Depends(get_db)):
     """诊断 cost_missing_estimated 异常构成(关闭/非产品/真缺) + 补单按年分布。"""

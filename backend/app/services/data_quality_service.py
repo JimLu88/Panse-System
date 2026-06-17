@@ -348,10 +348,8 @@ def scan_factory_recon_incomplete(db: Session) -> int:
         missing = []
         if r.bill_amount is None:
             missing.append("bill_amount (工厂账单金额)")
-        if r.paid_amount is None:
-            missing.append("paid_amount (实际支付)")
-        if not r.alipay_flow_no:
-            missing.append("alipay_flow_no (支付流水号)")
+        # paid_amount/alipay_flow_no 不再单独报异常 (2026-06-17 用户拍板): 应付↔实付的对账已由
+        # 「货款对账」(工厂应付 vs 支付宝 factory_payment) 整体覆盖, 这里逐行缺实付/流水号是噪声。
         if missing:
             _record(
                 db,
@@ -650,12 +648,35 @@ def scan_factory_order_uncovered(db: Session) -> int:
 # ---------------------------------------------------------------------------
 
 def scan_promotion_recharge_unmatched(db: Session) -> int:
-    """推广 '充值' 记录缺 alipay_flow_no → 无法与支付宝充值支出核对。"""
+    """推广 '充值' 记录缺 alipay_flow_no → 先按金额+日期窗口自动配支付宝推广支出流水(自动填号),
+    真配不上才报异常 (2026-06-17 用户: 支付宝企业号是系统自动拉的, 该能对上)。"""
+    from decimal import Decimal as _D
+    from datetime import timedelta as _td
+    # 支付宝里推广类支出流水 (amount<0) + 已被其它充值占用的流水号
+    promo_flows = db.query(AlipayFlow).filter(
+        AlipayFlow.reconciliation_type == "promotion", AlipayFlow.amount < 0,
+        AlipayFlow.transaction_time.isnot(None)).all()
+    used = {n for (n,) in db.query(PromotionFlow.alipay_flow_no).filter(
+        PromotionFlow.alipay_flow_no.isnot(None), PromotionFlow.alipay_flow_no != "").all()}
     count = 0
     for r in db.query(PromotionFlow).filter(
         PromotionFlow.flow_type == "充值",
         (PromotionFlow.alipay_flow_no.is_(None)) | (PromotionFlow.alipay_flow_no == ""),
     ).all():
+        # 自动配: 同金额、日期 ±10 天内、未被占用的支付宝推广支出
+        amt = _D(str(r.amount or 0))
+        hit = None
+        for pf in promo_flows:
+            if pf.transaction_no in used:
+                continue
+            if abs(_D(str(pf.amount or 0))) == amt and r.transaction_date and \
+                    abs((pf.transaction_time.date() - r.transaction_date).days) <= 10:
+                hit = pf
+                break
+        if hit is not None:
+            r.alipay_flow_no = hit.transaction_no  # 自动填号, 不报异常
+            used.add(hit.transaction_no)
+            continue
         _record(
             db,
             source_table="promotion_flows",

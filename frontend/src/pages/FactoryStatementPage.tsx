@@ -116,6 +116,9 @@ export default function FactoryStatementPage() {
     }
   };
 
+  // 进页面 / 切月份 自动生成, 不用手点「生成对账单」(用户拍板 2026-06-17)
+  useEffect(() => { gen(); }, [period]);  // eslint-disable-line react-hooks/exhaustive-deps
+
   const exportXlsx = () => {
     window.open('/api/factory-statement/export' + (period ? `?period=${period}` : ''), '_blank');
   };
