@@ -679,6 +679,28 @@ def delete_balance(balance_id: int, db: Session = Depends(get_db)):
     return {"deleted": balance_id}
 
 
+@router.delete("/accounts/by-name/all")
+def delete_account_all(
+    account_name: str = Query(..., min_length=1, description="要整账删除的账户名"),
+    db: Session = Depends(get_db),
+):
+    """删除某账户的**全部**余额快照 (清理重复/废弃账户)。
+
+    用例: 旧手填的『企业号』与自动抓取的『支付宝-企业账号』是同一账号, 把旧的整账删掉,
+    以自动取数的为准 (用户拍板 2026-06-17)。自动取数只写『支付宝-企业账号』, 删后不会重现。
+    """
+    name = account_name.strip()
+    rows = db.execute(
+        select(AccountBalance).where(AccountBalance.account_name == name)
+    ).scalars().all()
+    if not rows:
+        raise HTTPException(404, f"账户『{name}』无余额记录")
+    for r in rows:
+        db.delete(r)
+    db.commit()
+    return {"deleted_account": name, "deleted_rows": len(rows)}
+
+
 class RecomputeIn(BaseModel):
     account_name: str
     year: int

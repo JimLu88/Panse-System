@@ -28,6 +28,7 @@ import {
   AccountBalanceRow,
   BalanceUpsertPayload,
   DeriveOpeningResult,
+  deleteAccountByName,
   deleteBalance,
   deriveOpeningBalance,
   importAccountBalancesCsv,
@@ -165,6 +166,17 @@ export default function AccountBalancesPage() {
       qc.invalidateQueries({ queryKey: ['cash-flow'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '删除失败'),
+  });
+
+  // 整账删除: 清理重复/废弃账户的全部余额记录 (如旧『企业号』并入自动抓取的『支付宝-企业账号』)
+  const delAccountMut = useMutation({
+    mutationFn: (accountName: string) => deleteAccountByName(accountName),
+    onSuccess: (r) => {
+      message.success(`已删除账户『${r.deleted_account}』共 ${r.deleted_rows} 条记录`);
+      qc.invalidateQueries({ queryKey: ['account-balances'] });
+      qc.invalidateQueries({ queryKey: ['cash-flow'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '整账删除失败'),
   });
 
   const importMut = useMutation({
@@ -310,7 +322,28 @@ export default function AccountBalancesPage() {
           {latestPerAccount.map((r) => (
             <Col key={r.account_name}>
               <Statistic
-                title={<Space size={4}>{r.account_name}<Tag color={freshness(r.as_of_date).color}>{r.period_year}-{String(r.period_month).padStart(2, '0')}</Tag></Space>}
+                title={(
+                  <Space size={4}>
+                    {r.account_name}
+                    <Tag color={freshness(r.as_of_date).color}>{r.period_year}-{String(r.period_month).padStart(2, '0')}</Tag>
+                    <Popconfirm
+                      title={`删除整个『${r.account_name}』账户?`}
+                      description="将清除该账户的全部余额记录, 不可恢复 (用于去掉重复/废弃账户)"
+                      okText="整账删除"
+                      okButtonProps={{ danger: true }}
+                      onConfirm={() => delAccountMut.mutate(r.account_name)}
+                    >
+                      <Button
+                        size="small"
+                        type="text"
+                        danger
+                        icon={<DeleteOutlined />}
+                        loading={delAccountMut.isPending && delAccountMut.variables === r.account_name}
+                        title="删除整个账户"
+                      />
+                    </Popconfirm>
+                  </Space>
+                )}
                 value={Number(r.closing_balance)}
                 precision={2}
                 prefix="¥"
