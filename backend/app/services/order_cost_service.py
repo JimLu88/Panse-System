@@ -16,13 +16,17 @@ from dataclasses import dataclass, field
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from collections import defaultdict
+
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.bom import BomLine
+from app.models.exception import DataException
 from app.models.material import Material
 from app.models.order import Order
 from app.models.pricing import PricingSku
+from app.models.product import Product
 from app.services import sku_utils
 
 _CENTS = Decimal("0.01")
@@ -342,10 +346,76 @@ def cost_completeness_scan(db: Session) -> dict:
     }
 
 
-def recompute_and_save(db: Session, order: Order) -> CostBreakdown:
+# ----------------------------- 类目/全店成本率 (用户拍板 2026-06-17) ------------ #
+
+_SALE_STATUSES = ("paid", "shipped", "signed", "production", "aftersales")
+
+
+def category_cost_ratios(db: Session, *, min_orders: int = 5) -> dict:
+    """动态算「成本÷营收」比例: 每个产品类目一个 (成本=actual或theoretical, 营收=实付),
+    类目订单数 < min_orders → 该类目退用全店平均。返回 {"_store": 比例, 类目: 比例, ...},
+    比例 clamp 到 [0.2, 0.95]。用户拍板 2026-06-17: 写进系统动态算, 类目不足退全店。
+
+    给「查不到 SKU 成本的订单」按 实付 × 此比例 兜底成本 (账面不虚高)。
+    """
+    eff_cost = func.coalesce(Order.actual_cost, Order.theoretical_cost)
+    rows = db.execute(
+        select(Product.category, Order.paid_amount, eff_cost)
+        .join(Product, Product.code == Order.product_code, isouter=True)
+        .where(
+            Order.is_refill == False,             # noqa: E712
+            Order.status.in_(_SALE_STATUSES),
+            Order.paid_amount.isnot(None), Order.paid_amount > 0,
+            eff_cost.isnot(None), eff_cost > 0,
+        )
+    ).all()
+    cat_rev: dict = defaultdict(lambda: Decimal("0"))
+    cat_cost: dict = defaultdict(lambda: Decimal("0"))
+    cat_n: dict = defaultdict(int)
+    tot_rev = tot_cost = Decimal("0")
+    for cat, paid, cost in rows:
+        paid = Decimal(str(paid)); cost = Decimal(str(cost))
+        c = cat or "_uncat"
+        cat_rev[c] += paid; cat_cost[c] += cost; cat_n[c] += 1
+        tot_rev += paid; tot_cost += cost
+
+    def _clamp(r: float) -> float:
+        return round(min(max(r, 0.2), 0.95), 4)
+
+    store = _clamp(float(tot_cost / tot_rev)) if tot_rev > 0 else 0.6
+    out: dict = {"_store": store}
+    for c, n in cat_n.items():
+        if c == "_uncat":
+            continue
+        if n >= min_orders and cat_rev[c] > 0:
+            out[c] = _clamp(float(cat_cost[c] / cat_rev[c]))
+    return out
+
+
+def _sales_ratio_cost(db: Session, order: Order, ratios: dict) -> Optional[Decimal]:
+    """实付 × 类目成本率 (类目缺/不足 → 全店平均)。查不到产品类目也用全店平均。"""
+    paid = Decimal(str(order.paid_amount or 0))
+    if paid <= 0:
+        return None
+    cat = None
+    if order.product_code:
+        cat = db.execute(
+            select(Product.category).where(Product.code == order.product_code)
+        ).scalar_one_or_none()
+    ratio = ratios.get(cat) if cat else None
+    if ratio is None:
+        ratio = ratios.get("_store")
+    if not ratio:
+        return None
+    return (paid * Decimal(str(ratio))).quantize(_CENTS)
+
+
+def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
     补单/安装SKU 直接归 0, 不走 BOM 反推。
+    传 ratios (类目/全店成本率) 时, BOM/定价表都查不到的订单按 实付×成本率 兜底 (用户拍板 2026-06-17),
+    标记为「估算」并由 auto_cost_backfill 写异常待人工补实际成本。
     """
     reason = zero_cost_reason(order)
     if reason is not None:
@@ -367,6 +437,18 @@ def recompute_and_save(db: Session, order: Order) -> CostBreakdown:
         bd.total_cost = (bd.unit_cost * bd.qty).quantize(_CENTS)
         bd.resolved = True
         bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表会计总成本"
+        return bd
+    # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
+    if ratios is not None:
+        est = _sales_ratio_cost(db, order, ratios)
+        if est is not None and est > 0:
+            order.theoretical_cost = est
+            bd.unit_cost = est
+            bd.total_cost = (est * bd.qty).quantize(_CENTS)
+            bd.resolved = True
+            bd.cost_incomplete = True
+            bd.note = ((bd.note + " | ") if bd.note else "") + \
+                f"⚠按销售额×成本率估算 ¥{est} (缺SKU成本, 已进异常待补实际)"
     return bd
 
 
@@ -391,6 +473,79 @@ def recompute_all(db: Session, *, only_missing: bool = True) -> dict:
         else:
             skipped += 1
     return {"updated": updated, "skipped_no_bom": skipped, "total": len(orders)}
+
+
+# ------------------- 全自动成本兜底 + 缺成本异常 (用户拍板 2026-06-17) ----------- #
+
+
+def _flag_cost_exceptions(db: Session, estimated_nos: list[str]) -> dict:
+    """给「成本靠销售额估算」的已付款订单写异常(待人工补实际成本); 已补 actual_cost 的自动关掉。幂等去重。"""
+    et = "cost_missing_estimated"
+    open_pks = set(db.execute(
+        select(DataException.source_pk).where(
+            DataException.source_table == "orders",
+            DataException.exception_type == et,
+            DataException.status == "open",
+        )
+    ).scalars().all())
+    created = 0
+    for no in estimated_nos:
+        if not no or no in open_pks:
+            continue
+        db.add(DataException(
+            source_table="orders", source_pk=no, exception_type=et,
+            severity="warning", status="open",
+            description=f"订单 {no} 缺工厂/SKU成本, 系统已按销售额×成本率估算入账, 请补录实际工厂成本。",
+            suggestion_action="补录工厂成本",
+        ))
+        open_pks.add(no)
+        created += 1
+    # 自动关闭: 之前估算、现已录入实际成本(actual_cost>0)的异常
+    resolved = 0
+    for ex in db.execute(
+        select(DataException).where(
+            DataException.source_table == "orders",
+            DataException.exception_type == et,
+            DataException.status == "open",
+        )
+    ).scalars().all():
+        o = db.execute(select(Order).where(Order.order_no == ex.source_pk)).scalar_one_or_none()
+        if o is not None and o.actual_cost is not None and Decimal(str(o.actual_cost)) > 0:
+            ex.status = "resolved"
+            resolved += 1
+    return {"created": created, "resolved": resolved}
+
+
+def auto_cost_backfill(db: Session) -> dict:
+    """全自动成本兜底 (用户拍板 2026-06-17, 后台定时自动跑, 不用点按钮):
+       1) 对所有"未反推"(NULL/0)订单跑 BOM/定价表反推;
+       2) 仍查不到 SKU/产品成本的 → 按 实付×类目成本率(类目不足退全店) 兜底, 账面不虚高;
+       3) 给"靠估算/缺成本"的已付款订单写异常待人工补实际成本 (补了自动关闭)。
+    返回统计。替代旧 _job_cost_recompute 的 recompute_all。
+    """
+    ratios = category_cost_ratios(db)
+    orders = db.execute(
+        select(Order).where(or_(Order.theoretical_cost.is_(None), Order.theoretical_cost == 0))
+    ).scalars().all()
+    updated = skipped = estimated = 0
+    est_nos: list[str] = []
+    for o in orders:
+        bd = recompute_and_save(db, o, ratios=ratios)
+        if bd.resolved:
+            updated += 1
+            if "按销售额×成本率估算" in (bd.note or ""):
+                estimated += 1
+                est_nos.append(o.order_no)
+        else:
+            skipped += 1
+    db.flush()
+    exc = _flag_cost_exceptions(db, est_nos)
+    db.commit()
+    return {
+        "updated": updated, "estimated_by_ratio": estimated, "still_missing": skipped,
+        "exceptions": exc, "store_ratio": ratios.get("_store"),
+        "category_ratios": {k: v for k, v in ratios.items() if k != "_store"},
+    }
 
 
 # ----------------------------- 定价表回填 ---------------------------- #

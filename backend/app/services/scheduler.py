@@ -374,9 +374,10 @@ def _job_accessory_alert_refresh(db: Session) -> dict:
 
 
 def _job_cost_recompute(db: Session) -> dict:
-    """理论成本每日兜底反推 — 补任何仍"未反推"(NULL/0)的订单 (导入时已即时反推, 这里收尾)。"""
+    """理论成本每日全自动兜底 (用户拍板 2026-06-17): BOM/定价表反推 + 查不到SKU成本的按
+    实付×类目成本率(不足退全店)兜底 + 缺成本订单进异常待补。导入即时反推, 这里收尾并兜底缺编码单。"""
     from app.services import order_cost_service
-    return order_cost_service.recompute_all(db, only_missing=True)
+    return order_cost_service.auto_cost_backfill(db)
 
 
 def _job_accessory_backfill(db: Session) -> dict:
