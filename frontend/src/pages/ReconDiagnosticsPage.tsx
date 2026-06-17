@@ -3,17 +3,17 @@
  * 只读体检, 帮老板定位"该补哪批流水、哪些钱没归类、哪本余额表对不平"。
  */
 import {
-  Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography,
+  Alert, Button, Card, Col, Row, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
-import { fetchReconDiagnostics } from '../api/settlements';
+import { downloadProblemFlows, fetchReconDiagnostics } from '../api/settlements';
 import ReconConfigCard from '../components/ReconConfigCard';
 
-// 导出所有"没对上"的支付宝流水(含流水号+原因)。同源 /api 由 nginx 反代, 直接下载。
+// 导出所有"没对上"的支付宝流水(含流水号+原因)。走带鉴权 axios 取 blob (直链会 401)。
 const exportProblemFlows = () =>
-  window.open('/api/settlements/reconciliation/problem-flows.xlsx', '_blank');
+  downloadProblemFlows().catch(() => message.error('导出失败'));
 
 const yuan = (v: number | null | undefined) =>
   v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;

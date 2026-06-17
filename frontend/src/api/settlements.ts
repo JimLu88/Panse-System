@@ -120,6 +120,19 @@ export interface ReconDiagnostics {
 export const fetchReconDiagnostics = () =>
   api.get<ReconDiagnostics>('/api/settlements/reconciliation/diagnostics').then((r) => r.data);
 
+// 导出所有"没对上"的支付宝流水(含流水号+原因)。直链会丢 Authorization 头 → 401, 故走带鉴权 axios 取 blob。
+export async function downloadProblemFlows() {
+  const resp = await api.get('/api/settlements/reconciliation/problem-flows.xlsx', { responseType: 'blob' });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '问题流水.xlsx';
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // ---- 代付台账 (prepay ledger: 补单佣金/补单快递/售后 实际打款) ----
 export interface PrepayRow {
   id: number; category: string; pay_no: string | null; order_no: string | null;
