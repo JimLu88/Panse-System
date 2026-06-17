@@ -996,6 +996,41 @@ def realtime_sync_status():
     return realtime_sync_service.status()
 
 
+@router.get("/cost-anomaly")
+def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optional[date] = Query(None),
+                 product_code: Optional[str] = Query(None), db: Session = Depends(get_db)):
+    """诊断销售成本异常: 错配单(成本>实付) + 成本口径。默认本年。供解释利润率偏低/总利润为负。"""
+    from datetime import date as _d
+    from app.models.order import Order as _O
+    start = period_start or _d(_d.today().year, 1, 1)
+    end = period_end or _d.today()
+    q = select(_O).where(_O.order_date >= start, _O.order_date <= end,
+                         _O.status.in_(("paid", "shipped", "signed")))
+    if product_code:
+        q = q.where(_O.product_code == product_code)
+    orders = db.execute(q).scalars().all()
+    tot_rev = tot_cost = Decimal("0")
+    mism = []
+    for o in orders:
+        rev = Decimal(o.paid_amount or 0)
+        cost = Decimal(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0))
+        tot_rev += rev
+        tot_cost += cost
+        if cost > rev:
+            mism.append({"order_no": o.order_no, "product_code": o.product_code,
+                         "product_name": o.product_name, "paid": float(rev), "cost": float(cost),
+                         "excess": float(cost - rev),
+                         "cost_src": "actual" if o.actual_cost is not None else "theoretical"})
+    mism.sort(key=lambda r: r["excess"], reverse=True)
+    return {
+        "period": [start.isoformat(), end.isoformat()], "orders": len(orders),
+        "total_revenue": float(tot_rev), "total_cost": float(tot_cost),
+        "cost_minus_revenue": float(tot_cost - tot_rev),
+        "mismatched_count": len(mism), "mismatched_excess_total": round(sum(m["excess"] for m in mism), 2),
+        "samples": mism[:40],
+    }
+
+
 @router.get("/order-payment-diagnosis")
 def order_payment_diagnosis(order_nos: str = Query(..., description="逗号分隔订单号"),
                             db: Session = Depends(get_db)):

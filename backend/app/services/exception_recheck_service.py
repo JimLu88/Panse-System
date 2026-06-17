@@ -143,6 +143,14 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
     # 月度货款对账兜底。仅当连打款金额都没有才是真缺收款凭据 (2026-06-15 用户拍板)。
     if o.shop_received_amount and o.shop_received_amount > 0:
         return None
+    # 非产品(安装/送货/补差价)单 + 下单14天内新单 不报缺收款 (与 scanner 同口径, 2026-06-17)
+    from app.services.data_quality_service import _NON_PRODUCT_KW
+    _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+    if any(k in _txt for k in _NON_PRODUCT_KW):
+        return None
+    from datetime import date as _d, timedelta as _td
+    if o.order_date and o.order_date >= _d.today() - _td(days=14):
+        return None
     return f"订单 {o.order_no} 已成交却无任何收款凭据(支付宝流水/聚合结算/淘宝打款金额均无)"
 
 

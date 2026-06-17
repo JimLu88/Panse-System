@@ -6,7 +6,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,6 +15,9 @@ from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.finance import AlipayFlow, RefillRecord, FactoryReconciliation
 from app.models.marketing import OutsourcingExpense, AfterSales, PromotionFlow, Sample, WoodLoss
 from app.services import exception_service, settings_service
+
+# 非产品订单关键词: 安装/送货/补差价/官方服务 这类单从不走正常收款流水, 不该报「缺收款凭据」
+_NON_PRODUCT_KW = ("安装", "送货", "入户", "补差价", "官方服务", "上门服务")
 
 _log = logging.getLogger("panse.data_quality")
 
@@ -125,7 +128,14 @@ def scan_order_missing_alipay(db: Session) -> int:
         # (2026-06-15 用户拍板: 交易成功+有打款金额=货款到账)
         if o.shop_received_amount and o.shop_received_amount > 0:
             continue
-        # 已成交 + 无流水 + 无聚合 + 连淘宝打款金额都没有 → 真·缺收款凭据, 逐单留异常便于人工定位
+        # 非产品订单(安装/送货/补差价/官方服务)从不走收款流水, 不该当缺收款异常 (2026-06-17)
+        _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+        if any(k in _txt for k in _NON_PRODUCT_KW):
+            continue
+        # 宽限期: 下单 14 天内货款多在结算途中(淘宝 T+7~14), 暂不报缺收款 (避免新单噪声)
+        if o.order_date and o.order_date >= date.today() - timedelta(days=14):
+            continue
+        # 已成交 + 无流水 + 无聚合 + 连淘宝打款金额都没有 + 非新单/非服务单 → 真·缺收款凭据
         _record(
             db,
             source_table="orders",
@@ -162,16 +172,27 @@ def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
         st_income = float(sum((s.income or 0) for s in st))
         shop = o.shop_received_amount
         has_evidence = bool(af) or bool(st) or (shop is not None and shop > 0)
+        _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+        is_non_product = any(k in _txt for k in _NON_PRODUCT_KW)
+        recent = bool(o.order_date and o.order_date >= date.today() - timedelta(days=14))
+        if has_evidence:
+            verdict = "已有收款凭据 → 异常应清除(过期)"
+        elif is_non_product:
+            verdict = "非产品单(安装/送货/补差价)→ 本就无收款流水, 不该报异常(已改为跳过)"
+        elif recent:
+            verdict = "下单14天内新单, 货款多在结算途中 → 暂不报(已加宽限期)"
+        else:
+            verdict = "真·缺收款凭据(请导入覆盖该单的支付宝/聚合账单)"
         out.append({
             "order_no": ono, "found": True, "status": o.status,
             "order_date": o.order_date.isoformat() if o.order_date else None,
-            "paid_amount": float(o.paid_amount or 0),
+            "product_name": o.product_name, "paid_amount": float(o.paid_amount or 0),
             "shop_received_amount": (float(shop) if shop is not None else None),
             "alipay_flow_linked": [t for t, _a in af][:5],
             "settlement_rows": len(st), "settlement_income": st_income,
+            "is_non_product": is_non_product, "is_recent": recent,
             "has_payment_evidence_now": has_evidence,
-            "verdict": ("已有收款凭据 → 异常应清除(过期)" if has_evidence
-                        else "确实仍无任何收款凭据(流水/聚合/打款金额均无)"),
+            "verdict": verdict,
         })
     return out
 
