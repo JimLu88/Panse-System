@@ -123,17 +123,112 @@ def remove_dynamic_todo(db: Session, key: str) -> None:
     settings_service.set_value(db, _DYN, json.dumps(items), description="运营待办-动态项")
 
 
+def _auto_done(db: Session, today: date) -> set[str]:
+    """按数据自动判定哪些"导入类"例行项已自动完成(本周期已有数据进库)。
+    用户拍板 2026-06-17: 自动完成的就别当待办催了, 每天导入时自动检查, 只把没导的留着提醒。"""
+    from sqlalchemy import func, select as _sel
+    done: set[str] = set()
+    y, m = today.year, today.month
+
+    def _has(stmt) -> bool:
+        try:
+            return bool(db.execute(stmt).scalar())
+        except Exception:
+            return False
+
+    # 每日: 今天导入过淘宝订单 (今天 created_at 的订单)
+    try:
+        from app.models.order import Order
+        if _has(_sel(func.count()).select_from(Order).where(func.date(Order.created_at) == today)):
+            done.add("daily_import_orders")
+    except Exception:
+        pass
+
+    # 每月: 当月已有数据 = 已导入
+    try:
+        from app.models.finance import (AccountBalance, AlipayFlow, FactoryReconciliation,
+                                         LogisticsBill, RefillRecord, WanshifuBill)
+        from app.models.marketing import PromotionFlow
+        month_checks = [
+            ("monthly_alipay", AlipayFlow, AlipayFlow.transaction_time),
+            ("monthly_promotion", PromotionFlow, PromotionFlow.transaction_date),
+            ("monthly_refill_records", RefillRecord, RefillRecord.refill_date),
+            ("monthly_logistics_bill", LogisticsBill, LogisticsBill.bill_date),
+            ("monthly_wanshifu_bill", WanshifuBill, WanshifuBill.bill_date),
+            ("monthly_factory_recon", FactoryReconciliation, FactoryReconciliation.period_end),
+        ]
+        for key, model, col in month_checks:
+            if _has(_sel(func.count()).select_from(model).where(
+                    func.extract("year", col) == y, func.extract("month", col) == m)):
+                done.add(key)
+        if _has(_sel(func.count()).select_from(AccountBalance).where(
+                AccountBalance.period_year == y, AccountBalance.period_month == m)):
+            done.add("monthly_account_balance")
+    except Exception:
+        pass
+    return done
+
+
+# 各平台 web-agent 取数源 → 中文名 (登录状态用)
+_PLATFORMS = [
+    ("taobao_report", "淘宝 (订单/报表)"),
+    ("promotion", "推广 (直通车/万相台)"),
+    ("wanshifu", "万师傅"),
+    ("settlement", "结算账单"),
+    ("alipay", "支付宝流水"),
+]
+
+
+def platform_login_status(db: Session) -> list[dict]:
+    """各平台登录状态 (给待办台账, 用户拍板 2026-06-17):
+       - web_agent_pending_scan 里有该平台 → 需扫码, 列出扫码内容;
+       - 否则 → "现在可以登录，无需扫码", 附最近成功取数时间。"""
+    state: dict = {}
+    pending: list = []
+    try:
+        state = json.loads(settings_service.get(db, "web_agent_state", env_fallback=False) or "{}")
+    except Exception:
+        state = {}
+    try:
+        pending = json.loads(settings_service.get(db, "web_agent_pending_scan", env_fallback=False) or "[]")
+    except Exception:
+        pending = []
+    pending_map: dict = {}
+    for p in pending if isinstance(pending, list) else []:
+        if isinstance(p, dict):
+            k = p.get("source") or p.get("platform") or p.get("key") or ""
+            pending_map[str(k)] = p
+        elif isinstance(p, str):
+            pending_map[p] = {"message": "需要扫码登录"}
+    out: list[dict] = []
+    for key, label in _PLATFORMS:
+        ps = pending_map.get(key)
+        if ps:
+            out.append({"platform": label, "need_scan": True,
+                        "message": ps.get("message") or ps.get("content") or "需要扫码登录",
+                        "scan_url": ps.get("url") or ps.get("qr"),
+                        "last_ok": state.get(key) if isinstance(state, dict) else None})
+        else:
+            out.append({"platform": label, "need_scan": False,
+                        "message": "现在可以登录，无需扫码",
+                        "last_ok": state.get(key) if isinstance(state, dict) else None})
+    return out
+
+
 def status(db: Session) -> dict:
     today = date.today()
     done = _load(db)
+    auto = _auto_done(db, today)
     groups: dict[str, list] = {"daily": [], "weekly": [], "monthly": []}
     for t in OPS_TASKS:
         pk = _period_key(t["freq"], today)
         mark = f"{t['key']}@{pk}"
+        is_auto = t["key"] in auto
         groups[t["freq"]].append({
             "key": t["key"], "title": t["title"], "detail": t["detail"],
             "route": t.get("route"),
-            "done": mark in done, "done_at": done.get(mark), "dynamic": False,
+            "done": (mark in done) or is_auto, "done_at": done.get(mark),
+            "dynamic": False, "auto": is_auto,
         })
     for t in _load_dynamic(db):
         freq = t.get("freq", "daily")
@@ -154,7 +249,8 @@ def status(db: Session) -> dict:
             "done_count": sum(1 for i in items if i["done"]), "total": len(items),
             "tasks": items,
         })
-    return {"groups": out, "today": today.isoformat()}
+    return {"groups": out, "today": today.isoformat(),
+            "login_status": platform_login_status(db)}
 
 
 def toggle(db: Session, task_key: str, done: bool, actor: Optional[str] = None) -> dict:

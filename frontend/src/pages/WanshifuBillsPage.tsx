@@ -120,11 +120,11 @@ export default function WanshifuBillsPage() {
         <Tag color="blue">物流 · 安装</Tag>
       </Space>
       <Tabs
-        defaultActiveKey="bills"
+        defaultActiveKey="orders"
         destroyInactiveTabPane
         items={[
-          { key: 'bills', label: '月结账单 (对账)', children: billsTab },
           { key: 'orders', label: '安装订单档案 (配对淘宝订单)', children: <WanshifuOrdersTab /> },
+          { key: 'bills', label: '月结账单 (对账, 充值制可不用)', children: billsTab },
         ]}
       />
     </Space>

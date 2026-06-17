@@ -425,6 +425,7 @@ export interface OpsTask {
   route?: string | null;
   done: boolean;
   done_at: string | null;
+  auto?: boolean;   // 系统按数据自动判完成(导入类), 不用手动勾
 }
 export interface OpsGroup {
   freq: string;
@@ -434,9 +435,17 @@ export interface OpsGroup {
   total: number;
   tasks: OpsTask[];
 }
+export interface PlatformLogin {
+  platform: string;
+  need_scan: boolean;
+  message: string;
+  scan_url?: string | null;
+  last_ok?: string | null;
+}
 export interface OpsChecklist {
   groups: OpsGroup[];
   today: string;
+  login_status?: PlatformLogin[];
 }
 export const fetchOpsChecklist = () =>
   api.get<OpsChecklist>('/api/ops-checklist').then((r) => r.data);

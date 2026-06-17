@@ -192,7 +192,8 @@ export default function App() {
       label: '物流',
       children: [
         { key: 'logistics-bills', label: <Link to="/logistics-bills">物流账单</Link> },
-        // #28: 「万师傅对账单」tab 删除 (万师傅是充值制, 不需月结对账; 路由/页面保留, 仅撤出菜单)
+        // 万师傅: 月结对账(充值制可不用) + 安装订单档案(配对淘宝订单, 需要); 恢复入口, 默认进安装订单档案
+        { key: 'wanshifu-bills', label: <Link to="/wanshifu-bills">万师傅</Link> },
       ],
     },
     {

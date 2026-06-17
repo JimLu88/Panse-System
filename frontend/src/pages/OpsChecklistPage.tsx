@@ -33,6 +33,23 @@ export default function OpsChecklistPage() {
         </Typography.Text>
       </div>
       <AutomationStatusCard />
+      {data.login_status && data.login_status.length > 0 && (
+        <Card size="small" title="各平台登录状态 (自动取数用)">
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            {data.login_status.map((p) => (
+              <Space key={p.platform} size={8} wrap>
+                <Tag color={p.need_scan ? 'red' : 'green'} style={{ minWidth: 130, textAlign: 'center' }}>{p.platform}</Tag>
+                <span style={{ fontSize: 13, color: p.need_scan ? '#cf1322' : '#52c41a' }}>
+                  {p.need_scan ? `⚠ 需扫码登录: ${p.message}` : p.message}
+                </span>
+                {p.last_ok && (
+                  <span style={{ fontSize: 11, color: '#aaa' }}>上次成功取数 {String(p.last_ok).slice(0, 16).replace('T', ' ')}</span>
+                )}
+              </Space>
+            ))}
+          </Space>
+        </Card>
+      )}
       {data.groups.map((g: OpsGroup) => {
         const pending = g.total - g.done_count;
         const pct = g.total > 0 ? Math.round((g.done_count / g.total) * 100) : 0;
@@ -60,11 +77,13 @@ export default function OpsChecklistPage() {
                 <div key={t.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '5px 0' }}>
                   <Checkbox
                     checked={t.done}
+                    disabled={t.auto}
                     onChange={(e) => mut.mutate({ key: t.key, done: e.target.checked })}
                   />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, textDecoration: t.done ? 'line-through' : 'none', color: t.done ? '#aaa' : undefined }}>
                       {t.route ? <Link to={t.route}>{t.title}</Link> : t.title}
+                      {t.auto && <Tag color="cyan" style={{ marginLeft: 6, fontSize: 11 }}>已自动完成</Tag>}
                     </div>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t.detail}</Typography.Text>
                   </div>

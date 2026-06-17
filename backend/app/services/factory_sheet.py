@@ -276,6 +276,16 @@ def build_from_fields(
         ).scalar_one_or_none()
     if pricing_sku:
         image_url = pricing_sku.image_url
+    # 配图回退 (2026-06-17): SKU 匹配不到/该 SKU 无图时(定制单、缺 sku_code 单), 用同产品
+    # 任一有图 SKU 的图 —— 淘宝 CDN 链接 wkhtmltoimage 能直接取, 让下单图不再"无产品图"。
+    if not image_url and product_code:
+        image_url = db.execute(
+            select(PricingSku.image_url).where(
+                PricingSku.product_code == product_code,
+                PricingSku.image_url.isnot(None),
+                PricingSku.image_url != "",
+            ).limit(1)
+        ).scalar_one_or_none()
 
     # 是否定制 sku — "-改" 编码即定制单 (custom_variants 没录档案也算定制, 2026-06-12)
     is_custom = False

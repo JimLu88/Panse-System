@@ -976,7 +976,7 @@ class WanshifuBillOut(BaseModel):
     bill_date: Optional[date]
     order_no: Optional[str]
     service_type: Optional[str]
-    amount: Decimal
+    amount: Optional[Decimal] = None   # 防 amount 为 null 时 500 (序列化报错)
     status: Optional[str]
     remark: Optional[str]
 
