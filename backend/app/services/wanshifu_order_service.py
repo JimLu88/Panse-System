@@ -27,10 +27,14 @@ from app.models.finance import WanshifuOrder
 from app.models.order import Order
 
 METHOD_CN = {
+    "remark": "备注淘宝单号", "remark_unmatched": "备注单号(订单未导入)",
     "phone_full": "手机号全等", "phone_base": "手机号主段", "track": "物流单号",
     "name_city": "姓名+城市", "name_unique": "姓名唯一",
     "multi": "多候选待人工", "none": "未匹配", "manual": "人工指定",
 }
+
+# 万师傅「常用备注」列常直接填淘宝订单号 (用户的"合并单号匹配") — 提取这串数字
+_TB_NO_RE = re.compile(r"\d{12,}")
 
 # 表头第 2 行字段名 → 模型字段 (按列名取, 不按列号 — 万师傅加列不怕)
 _HEADER_MAP = {
@@ -42,6 +46,7 @@ _HEADER_MAP = {
     "客户姓名": "customer_name",
     "客户手机号": "customer_phone",
     "客户旺旺号": "remark_ww",       # 暂存, 有值拼进 remark
+    "常用备注": "remark_taobao_no",  # 常直接填淘宝订单号 = 用户的"合并单号匹配"(最高优先配对)
     "订单总净额": "net_amount",
     "订单服务费": "service_fee",
     "下单时间": "created_time",
@@ -130,7 +135,14 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
         return rep
     rep.parsed = len(recs)
     existing = {o.wsf_order_no: o for o in db.execute(select(WanshifuOrder)).scalars().all()}
+    # 全部淘宝订单号 (用于判定「常用备注」里的单号是否真实存在 → 可直接配对)
+    valid_order_nos = {no for (no,) in db.execute(select(Order.order_no)).all() if no}
     for rec in recs:
+        # 常用备注里的淘宝订单号 (用户的"合并单号匹配") — 最高优先配对依据
+        tb_no = None
+        m = _TB_NO_RE.search(str(rec.get("remark_taobao_no") or ""))
+        if m:
+            tb_no = m.group(0)
         vals = dict(
             service_type=_s(rec.get("service_type")),
             status=_s(rec.get("status")),
@@ -149,24 +161,43 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
             source_shop=_s(rec.get("source_shop")),
         )
         ww = _s(rec.get("remark_ww"))
+        remark_bits = []
+        if tb_no:
+            remark_bits.append(f"淘宝单号:{tb_no}")
         if ww:
-            vals["remark"] = f"旺旺号:{ww}"
+            remark_bits.append(f"旺旺号:{ww}")
+        if remark_bits:
+            vals["remark"] = "; ".join(remark_bits)
+        # 备注单号命中真实订单 → 直接配对 (权威, 覆盖启发式; 不覆盖人工指定)
+        tb_match = tb_no if (tb_no and tb_no in valid_order_nos) else None
         old = existing.get(rec["wsf_order_no"])
         if old is None:
             obj = WanshifuOrder(wsf_order_no=rec["wsf_order_no"],
                                 import_job_id=import_job_id, **vals)
+            if tb_match:
+                obj.matched_order_no = tb_match
+                obj.match_method = "remark"
+                obj.match_note = None
+            elif tb_no:
+                obj.match_note = f"备注淘宝单号 {tb_no} 未在订单库 (主订单未导入?)"
             db.add(obj)
             # 万师傅导出同一单可能出现多行 (商品2/重复行) — 记入 existing,
             # 同文件后续行走更新路径, 否则批内重复撞唯一约束直接 500
             existing[rec["wsf_order_no"]] = obj
             rep.inserted += 1
         else:
-            # 重导更新非空字段 (状态/完工时间会推进); 配对结果不在此覆盖
+            # 重导更新非空字段 (状态/完工时间会推进)
             changed = False
             for k, v in vals.items():
                 if v is not None and getattr(old, k) != v:
                     setattr(old, k, v)
                     changed = True
+            # 备注单号权威配对: 覆盖非人工的旧配对结果 (以用户提供的备注为准)
+            if tb_match and old.match_method != "manual" and old.matched_order_no != tb_match:
+                old.matched_order_no = tb_match
+                old.match_method = "remark"
+                old.match_note = None
+                changed = True
             if changed:
                 rep.updated += 1
     db.flush()

@@ -58,3 +58,58 @@ def test_match_phone_and_unmatched_reasons(db_session):
     w101 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P101").one()
     assert w101.match_method == "none"
     assert "2025" in (w101.match_note or "")
+
+
+def _wb_with_remark():
+    """带「常用备注」列(=淘宝订单号, 用户的合并单号匹配)的最小 wb。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["订单信息"])
+    ws.append(["订单编号", "服务类目/类型", "订单状态", "商品类别", "客户姓名",
+               "客户手机号", "客户地址", "", "", "", "订单服务费", "下单时间",
+               "物流公司", "物流单号", "常用备注"])
+    ws.append(["", "", "", "", "", "", "省", "市", "区", "详细地址", "", "", "", "", ""])
+    ws.append(["P200", "家具|安装", "交易成功", "桌类-餐台/餐桌", "王五测",
+               "13700000003", "广东", "深圳", "南山区", "某路3号",
+               "68", "2026-05-12 10:00:00", "", "", "3016793965259618396"])
+    ws.append(["P201", "家具|安装", "交易成功", "柜类-餐边柜", "赵六测",
+               "13600000004", "北京", "北京", "海淀区", "某街4号",
+               "88", "2026-05-13 11:00:00", "", "", "9999999999999999999"])  # 备注单号不在订单库
+    return wb
+
+
+def test_remark_taobao_no_is_authoritative_match(db_session):
+    """常用备注里的淘宝订单号 = 用户"合并单号匹配", 命中订单库即权威配对(method=remark)。"""
+    # 订单库里有 P200 备注指向的淘宝单, 没有 P201 的
+    db_session.add(Order(platform="淘宝", order_no="3016793965259618396", qty=1,
+                         customer_name="某客户", order_date=date(2026, 5, 1)))
+    db_session.flush()
+
+    wsf.import_workbook(db_session, _wb_with_remark())
+
+    w200 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P200").one()
+    assert w200.matched_order_no == "3016793965259618396"
+    assert w200.match_method == "remark"
+    assert "淘宝单号:3016793965259618396" in (w200.remark or "")
+
+    # P201 备注单号不在订单库 → 不强配, 但留备注提示
+    w201 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P201").one()
+    assert w201.matched_order_no is None
+    assert "未在订单库" in (w201.match_note or "")
+
+
+def test_remark_match_overrides_heuristic_on_reimport(db_session):
+    """备注单号权威: 即便之前被启发式配过, 重导也以备注为准(非人工)。"""
+    db_session.add(Order(platform="淘宝", order_no="3016793965259618396", qty=1,
+                         customer_name="某客户", order_date=date(2026, 5, 1)))
+    db_session.flush()
+    wsf.import_workbook(db_session, _wb_with_remark())
+    w = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P200").one()
+    w.matched_order_no = "WRONG-001"
+    w.match_method = "name_unique"
+    db_session.flush()
+    # 重导 → 备注覆盖
+    wsf.import_workbook(db_session, _wb_with_remark())
+    w = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P200").one()
+    assert w.matched_order_no == "3016793965259618396"
+    assert w.match_method == "remark"

@@ -424,6 +424,9 @@ async def import_refill_xlsx(file: UploadFile = File(...), db: Session = Depends
         "skipped_invalid": rep.skipped_invalid, "note": f"补单日期 {refill_date}",
     })
     db.commit()
+    # 实时同步: 补单导入后立即重算成本/对账, 待办异常即时跟上 (后台, 不阻塞)
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("import:refill-xlsx")
     return {"inserted": rep.inserted, "skipped_duplicate": rep.skipped_duplicate,
             "skipped_invalid": rep.skipped_invalid, "refill_date": str(refill_date),
             "archived": not arch.is_duplicate}
@@ -962,6 +965,23 @@ def run_all_rules(
         db, record_exceptions=False, period_start=period_start, period_end=period_end,
     )
     return {name: _to_out(r) for name, r in results.items()}
+
+
+@router.post("/realtime-sync")
+def realtime_sync_now():
+    """手动「立即同步」: 重算成本兜底 + 14 条对账规则写异常池, 跑完返回结果。
+
+    平时导入(补单/异步导入等)会自动后台触发同一逻辑; 这里给个手动入口,
+    清理异常或改了数据后想立刻让待办/异常清单跟上时点一下。
+    """
+    from app.services import realtime_sync_service
+    return realtime_sync_service.run_sync_blocking("manual")
+
+
+@router.get("/realtime-sync/status")
+def realtime_sync_status():
+    from app.services import realtime_sync_service
+    return realtime_sync_service.status()
 
 
 @router.get("/reconciliation-accuracy")

@@ -339,6 +339,12 @@ def _run_job(
         j.report = asdict(report)
         s.commit()
     _cleanup_file(file_path)
+    # 实时同步: 导入完成后立即重算成本+对账写异常池 (后台, 不阻塞), 不等每日 09:50
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger(f"import-job:{entity_type}")
+    except Exception:  # pragma: no cover - 同步触发失败不影响导入结果
+        pass
 
 
 # ----------------------------- 取消 ------------------------------- #
