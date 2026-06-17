@@ -314,36 +314,34 @@ export default function ReconciliationPage() {
       )}
       <FactoryAliasModal open={aliasOpen} onClose={() => setAliasOpen(false)} />
 
-      <Row gutter={[12, 12]}>
+      <Row gutter={[8, 8]}>
         {Object.entries(data).map(([rule, res]) => (
-          <Col span={8} key={rule}>
+          <Col xs={12} sm={8} md={6} xl={4} key={rule}>
             <Card size="small" hoverable
+              styles={{ body: { padding: 8 } }}
               onClick={() => {
                 setActiveRule(rule);
                 document.getElementById('recon-detail-tabs')?.scrollIntoView({ behavior: 'smooth' });
               }}
               title={
-              <Space>
-                <span>{RULE_LABELS[rule]?.label ?? rule}</span>
-                {res.error_count > 0 && <Tag color="red">{res.error_count} 严重</Tag>}
-                {res.warning_count > 0 && <Tag color="orange">{res.warning_count} 提示</Tag>}
+              <Space size={4} style={{ fontSize: 13 }}>
+                <span title={RULE_LABELS[rule]?.desc}>{RULE_LABELS[rule]?.label ?? rule}</span>
+                {res.error_count > 0 && <Tag color="red" style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}>{res.error_count}严</Tag>}
+                {res.warning_count > 0 && <Tag color="orange" style={{ marginInlineEnd: 0, fontSize: 11, lineHeight: '16px', padding: '0 4px' }}>{res.warning_count}提</Tag>}
                 {(res as any).unresolved_count > 0 && (
-                  <Badge count={(res as any).unresolved_count} title="未对清异常数" />
+                  <Badge count={(res as any).unresolved_count} title="未对清异常数" size="small" />
                 )}
               </Space>
             }>
-              <Space>
-                <Statistic title="OK" value={res.ok_count} valueStyle={{ color: '#3f8600' }} />
+              <Space size={12}>
+                <Statistic title="OK" value={res.ok_count} valueStyle={{ color: '#3f8600', fontSize: 18 }} />
                 <Statistic
                   title="差异"
                   value={res.warning_count + res.error_count}
-                  valueStyle={{ color: res.error_count > 0 ? '#cf1322' : '#d4b106' }}
+                  valueStyle={{ color: res.error_count > 0 ? '#cf1322' : '#d4b106', fontSize: 18 }}
                 />
-                <Statistic title="总计" value={res.total_diffs} />
+                <Statistic title="总计" value={res.total_diffs} valueStyle={{ fontSize: 18 }} />
               </Space>
-              <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-                {RULE_LABELS[rule]?.desc}
-              </div>
             </Card>
           </Col>
         ))}
@@ -381,7 +379,6 @@ export default function ReconciliationPage() {
           message={`已人工做平 ${writeoffs!.count} 条差异, 涉及金额合计 ¥${Math.round(writeoffs!.grand_total).toLocaleString()}`}
           description="做平是永久豁免 — 金额持续变大说明有系统性问题被掩盖, 请定期复查 (明细见 工具→修改档案 搜「做平」)。" />
       )}
-      <SnapshotTrendCard />
 
       <div id="recon-detail-tabs">
       <Tabs
@@ -398,6 +395,9 @@ export default function ReconciliationPage() {
         }))}
       />
       </div>
+
+      {/* 差异趋势图移到最底部 (用户 2026-06-17): 上方卡片+明细优先, 趋势图放最后 */}
+      <SnapshotTrendCard />
       </Space>
       )}
     </Space>
