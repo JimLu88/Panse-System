@@ -84,9 +84,9 @@ def _detail_wb():
     ws.append(["支付时间", "补单团队", "订单号", "买家昵称", "打款日期", "打款金额",
                "是否回款", "回款金额", "check", "补单佣金", "补单快递费",
                "平台服务费", "88vip消费券技术服务费", "备注"])
-    ws.append(["2025-01-01", "水冰月", "4187154529820670323", "太阳花3512", "2025-01-01",
+    ws.append(["2026-01-01", "水冰月", "4187154529820670323", "太阳花3512", "2026-01-01",
                943.93, "是", 943.93, 0, 15, 5, 5.66, 0, None])
-    ws.append(["2025-01-02", "水冰月", "2427781476059576866", "林彩霞", "2025-01-02",
+    ws.append(["2026-01-02", "水冰月", "2427781476059576866", "林彩霞", "2026-01-02",
                2771.33, "是", 2771.33, 0, 16.62, 5, 16.62, 0, None])
     ws.append(["合计", None, None, None, None, 3715, None, None, None, 31, 10])  # 非订单行→跳过
     return wb
@@ -111,7 +111,7 @@ def test_import_detail_creates_one_row_per_order_and_flags_orders(db_session):
     assert set(rows) == {"4187154529820670323", "2427781476059576866"}
     r0 = rows["4187154529820670323"]
     assert r0.buyer_nick == "太阳花3512"
-    assert r0.refill_date == date(2025, 1, 1)
+    assert r0.refill_date == date(2026, 1, 1)
     assert r0.order_amount == Decimal("943.93")
     assert r0.commission == Decimal("15")
     assert r0.refill_freight == Decimal("5")

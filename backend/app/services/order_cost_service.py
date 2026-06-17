@@ -82,8 +82,9 @@ def _skip_cost_estimate(order: Order) -> Optional[str]:
     od = order.order_date
     if od is not None and od < _COST_ESTIMATE_CUTOFF:
         return f"订单日期 {od} 早于 {_COST_ESTIMATE_CUTOFF} (旧单, 不纳入成本估算)"
-    if order.status in ("cancelled", "closed"):
-        return f"订单状态 {order.status} (已取消/关闭)"
+    st = order.status or ""
+    if st in ("cancelled", "closed") or "关闭" in st or "取消" in st:
+        return f"订单状态 {st} (已取消/关闭)"
     rs = order.refund_status or ""
     if any(k in rs for k in _REFUND_KEYWORDS):
         return f"退款状态「{rs}」(退款/退货/关闭单)"
@@ -560,6 +561,11 @@ def _flag_cost_exceptions(db: Session, estimated_nos: list[str]) -> dict:
         elif _skip_cost_estimate(o) is not None:
             ex.status = "resolved"
             o.theoretical_cost = None  # 清掉错误的成本率估算值
+            resolved_refund += 1
+        elif zero_cost_reason(o) is not None or o.theoretical_cost is None \
+                or Decimal(str(o.theoretical_cost or 0)) == 0:
+            # 非产品单(差价/样品)已归0, 或成本已不是"按率估算" → 不再算缺成本, 销账
+            ex.status = "resolved"
             resolved_refund += 1
     return {"created": created, "resolved": resolved, "resolved_refund_old": resolved_refund}
 

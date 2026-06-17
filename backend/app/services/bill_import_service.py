@@ -383,6 +383,11 @@ def import_refill_detail_xlsx(db: Session, wb, *, ws=None,
         select(RefillRecord).where(RefillRecord.order_no.like("补单月度-%"))
     ).scalars().all():
         db.delete(stale)
+    # 清掉 2025 及以前的补单记录 (系统从 2026 起算, 用户拍板 2026-06-17): 它们的订单不在系统、徒增异常
+    for old in db.execute(
+        select(RefillRecord).where(RefillRecord.refill_date < date(2026, 1, 1))
+    ).scalars().all():
+        db.delete(old)
     db.flush()
     existing = {r.order_no: r for r in db.execute(select(RefillRecord)).scalars().all()}
 
@@ -397,6 +402,11 @@ def import_refill_detail_xlsx(db: Session, wb, *, ws=None,
         order_no = import_clean.clean_no(_c(row, "order_no"))
         if not order_no or not _ORDER_NO_RE.match(order_no):
             continue  # 跳过空行/小计/"*标红色订单被查"等非订单行
+        # 自动排除 2025 及以前 (用户拍板 2026-06-17: 系统从 2026 起算, 旧补单不导, 去掉大批未匹配异常)
+        _rd = _date(_c(row, "date"))
+        if _rd is not None and _rd < date(2026, 1, 1):
+            rep.skipped_invalid += 1
+            continue
         rec = existing.get(order_no)
         if rec is None:
             rec = RefillRecord(order_no=order_no)

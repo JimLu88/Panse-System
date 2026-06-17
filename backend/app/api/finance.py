@@ -1036,6 +1036,40 @@ def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optiona
     }
 
 
+@router.get("/exception-audit")
+def exception_audit(db: Session = Depends(get_db)):
+    """诊断 cost_missing_estimated 异常构成(关闭/非产品/真缺) + 补单按年分布。"""
+    from sqlalchemy import extract, func as _f
+    from app.models.exception import DataException
+    from app.models.order import Order as _O
+    from app.models.finance import RefillRecord as _RR
+    from app.services import order_cost_service as ocs
+    status_counts: dict = {}
+    skip_e = zero_e = real_e = 0
+    for ex in db.execute(select(DataException).where(
+        DataException.exception_type == "cost_missing_estimated",
+        DataException.status == "open")).scalars().all():
+        o = db.execute(select(_O).where(_O.order_no == ex.source_pk)).scalar_one_or_none()
+        if o is None:
+            continue
+        status_counts[o.status or "?"] = status_counts.get(o.status or "?", 0) + 1
+        if ocs._skip_cost_estimate(o) is not None:
+            skip_e += 1
+        elif ocs.zero_cost_reason(o) is not None or not o.theoretical_cost:
+            zero_e += 1
+        else:
+            real_e += 1
+    ry: dict = {}
+    for y, c in db.execute(select(extract("year", _RR.refill_date), _f.count())
+                           .group_by(extract("year", _RR.refill_date))).all():
+        ry[str(int(y)) if y else "null"] = c
+    return {
+        "cost_missing_status_counts": status_counts,
+        "cme_skip_eligible(关闭/退款/旧)": skip_e, "cme_zero_nonproduct": zero_e,
+        "cme_real_missing": real_e, "refill_by_year": ry,
+    }
+
+
 @router.get("/orders-missing-code")
 def orders_missing_code(db: Session = Depends(get_db)):
     """诊断: 2026 销售订单里 product_code 为空的, 看能否经 sku_code→定价表 解出产品编码+短名。"""

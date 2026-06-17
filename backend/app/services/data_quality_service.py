@@ -295,6 +295,9 @@ def scan_refill_unmatched(db: Session) -> int:
     known_orders = {o.order_no for o in db.query(Order.order_no).all()}
     count = 0
     for r in db.query(RefillRecord).all():
+        # 2025 及以前的补单不纳入(系统从 2026 起算, 旧单订单本就不在系统, 2026-06-17)
+        if r.refill_date is not None and r.refill_date < date(2026, 1, 1):
+            continue
         if r.order_no not in known_orders:
             _record(
                 db,
