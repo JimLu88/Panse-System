@@ -8,6 +8,7 @@ import {
   Empty,
   Progress,
   Row,
+  Segmented,
   Select,
   Space,
   Spin,
@@ -304,11 +305,34 @@ function OperatingTab() {
 function SalesSummaryTab() {
   const [period, setPeriod] = useState<Period>('30d');
   const [brand, setBrand] = useState('');
+  // 排行切换 (用户拍板 2026-06-17): 按利润 / 按利润率, 用同一张表
+  const [rankBy, setRankBy] = useState<'profit' | 'rate'>('profit');
   const { data, isLoading } = useQuery({
     queryKey: ['sales-summary', period, brand],
     queryFn: () => fetchSalesSummary(period, undefined, brand || undefined),
   });
   if (isLoading || !data) return <Spin />;
+
+  const yuan = (v: number) => `¥${(v ?? 0).toFixed(2)}`;
+  // 利润/利润率排行 共用列 (净利→利润, 不含推广)
+  const rankCols = [
+    { title: '产品', dataIndex: 'product_code' },
+    { title: '名称', dataIndex: 'product_name' },
+    { title: '订单数', dataIndex: 'order_count', width: 80 },
+    { title: '销售额', dataIndex: 'revenue', width: 110, render: (v: number) => yuan(v) },
+    { title: '成本', dataIndex: 'cost', width: 110, render: (v: number) => yuan(v) },
+    {
+      title: '利润', dataIndex: 'net_profit', width: 110,
+      render: (v: number) => <Tag color={v >= 0 ? 'green' : 'red'}>{yuan(v)}</Tag>,
+    },
+    {
+      title: '利润率', dataIndex: 'profit_rate', width: 90,
+      render: (v: number) => `${((v ?? 0) * 100).toFixed(1)}%`,
+    },
+  ];
+  const rankData = rankBy === 'profit' ? data.top_products_by_profit : data.top_products_by_profit_rate;
+  const lowData = data.bottom_products_by_profit ?? [];
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Space>
@@ -320,48 +344,26 @@ function SalesSummaryTab() {
         <Col span={4}><Card size="small"><Statistic title="销售额" value={data.revenue.toFixed(2)} prefix="¥" /></Card></Col>
         <Col span={4}><Card size="small"><Statistic title="成本" value={data.cost.toFixed(2)} prefix="¥" /></Card></Col>
         <Col span={4}><Card size="small"><Statistic title="毛利" value={data.gross_profit.toFixed(2)} prefix="¥" valueStyle={{ color: '#52c41a' }} /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="净利" value={data.net_profit.toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="利润" value={data.net_profit.toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
         <Col span={4}><Card size="small">
           <Statistic title="利润率"
                      value={data.revenue > 0 ? (data.net_profit / data.revenue * 100).toFixed(1) : 0}
                      suffix="%" />
         </Card></Col>
       </Row>
-      <Card size="small" title="产品利润排行 Top 10">
+      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        「利润」= 实付 − 成本 − 运费 − 安装 − 上楼 − 售后赔付，<b>不含推广 / 平台费 / 人员外包</b>
+        （这些月度费用见「月度经营数据」的净利润；本页利润与其差额≈当期推广费）。已剔除补单/刷单。
+      </Typography.Text>
+      <Card size="small" title="产品利润排行 Top 10"
+            extra={<Segmented size="small" value={rankBy} onChange={(v) => setRankBy(v as 'profit' | 'rate')}
+                     options={[{ label: '按利润', value: 'profit' }, { label: '按利润率', value: 'rate' }]} />}>
         <Table size="small" rowKey={(r) => r.product_code || r.product_name}
-               pagination={false}
-               dataSource={data.top_products_by_profit}
-               columns={[
-                 { title: '产品', dataIndex: 'product_code' },
-                 { title: '名称', dataIndex: 'product_name' },
-                 { title: '订单数', dataIndex: 'order_count', width: 80 },
-                 { title: '销售额', dataIndex: 'revenue', width: 120,
-                   render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
-                 { title: '成本', dataIndex: 'cost', width: 120,
-                   render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
-                 { title: '净利', dataIndex: 'net_profit', width: 120,
-                   render: (v: number) =>
-                     <Tag color={v >= 0 ? 'green' : 'red'}>¥{(v ?? 0).toFixed(2)}</Tag> },
-                 { title: '利润率', dataIndex: 'profit_rate', width: 90,
-                   render: (v: number) => `${((v ?? 0) * 100).toFixed(1)}%` },
-               ]} />
+               pagination={false} dataSource={rankData} columns={rankCols} />
       </Card>
-      <Card size="small" title="产品利润率排行 Top 10">
+      <Card size="small" title="产品低利润排行 Top 10（亏损最多在前）">
         <Table size="small" rowKey={(r) => r.product_code || r.product_name}
-               pagination={false}
-               dataSource={data.top_products_by_profit_rate}
-               columns={[
-                 { title: '产品', dataIndex: 'product_code' },
-                 { title: '名称', dataIndex: 'product_name' },
-                 { title: '订单数', dataIndex: 'order_count', width: 80 },
-                 { title: '利润率', dataIndex: 'profit_rate', width: 120,
-                   render: (v: number) =>
-                     <Tag color={v > 0.3 ? 'green' : v > 0.1 ? 'orange' : 'red'}>
-                       {((v ?? 0) * 100).toFixed(1)}%
-                     </Tag> },
-                 { title: '净利', dataIndex: 'net_profit', width: 120,
-                   render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
-               ]} />
+               pagination={false} dataSource={lowData} columns={rankCols} />
       </Card>
     </Space>
   );
@@ -396,12 +398,12 @@ function SalesBreakdownTab() {
                    render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
                  { title: '成本', dataIndex: 'cost', width: 110,
                    render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
-                 { title: '净利', dataIndex: 'net_profit', width: 110,
+                 { title: '利润', dataIndex: 'net_profit', width: 110,
                    render: (v: number) =>
                      <Tag color={v >= 0 ? 'green' : 'red'}>¥{(v ?? 0).toFixed(2)}</Tag> },
                  { title: '毛利率', dataIndex: 'gross_profit_rate', width: 90,
                    render: (v: number) => `${((v ?? 0) * 100).toFixed(1)}%` },
-                 { title: '净利率', dataIndex: 'net_profit_rate', width: 90,
+                 { title: '利润率', dataIndex: 'net_profit_rate', width: 90,
                    render: (v: number) =>
                      <Tag color={v > 0.3 ? 'green' : v > 0.1 ? 'orange' : 'red'}>
                        {((v ?? 0) * 100).toFixed(1)}%

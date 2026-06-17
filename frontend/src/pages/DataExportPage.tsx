@@ -15,7 +15,9 @@ export default function DataExportPage() {
   const handleExport = async () => {
     setLoading(true);
     try {
-      const resp = await api.post('/api/exports/full', null, { responseType: 'blob' });
+      // 全量导出要建 28 个 Sheet + 公式 + 样式, 后端要几十秒; 默认 30s 会超时报"导出失败",
+      // 但服务端其实已生成成功并入档 → 调到 5 分钟 (用户拍板 2026-06-17)
+      const resp = await api.post('/api/exports/full', null, { responseType: 'blob', timeout: 300000 });
       const sheets = resp.headers['x-export-sheets'];
       const rotated = resp.headers['x-export-rotated'];
       const url = window.URL.createObjectURL(resp.data as Blob);

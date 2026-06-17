@@ -282,7 +282,8 @@ export default function DashboardPage() {
             )}
             {((orders as any).refund_30d ?? 0) > 0 && (
               <div style={{ color: '#999', fontSize: 12 }}>
-                已退款 ¥{Math.round((orders as any).refund_30d).toLocaleString()}(未从收入扣)
+                已退款 ¥{Math.round((orders as any).refund_30d).toLocaleString()}
+                <span style={{ color: '#52c41a' }}>（已从此处扣除）</span>
               </div>
             )}
             {(orders as any).revenue_caliber && (

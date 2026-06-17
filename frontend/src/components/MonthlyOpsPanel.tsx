@@ -32,12 +32,21 @@ export default function MonthlyOpsPanel() {
 
   const pieOption = useMemo(() => ({
     tooltip: { trigger: 'item', formatter: '{b}<br/>¥{c} ({d}%)' },
-    legend: { type: 'scroll', orient: 'vertical', right: 4, top: 'center', textStyle: { fontSize: 11 } },
+    // 图例(带圆点图标, 可滚动; 长名截断) + 扇形上直接标名称与百分比 (用户拍板 2026-06-17)
+    legend: {
+      type: 'scroll', orient: 'vertical', right: 6, top: 'middle', icon: 'circle',
+      textStyle: { fontSize: 11 }, itemWidth: 10, itemHeight: 10,
+      formatter: (name: string) => (name && name.length > 11 ? name.slice(0, 11) + '…' : name),
+    },
     color: PIE_COLORS,
     series: [{
-      type: 'pie', radius: ['42%', '70%'], center: ['32%', '50%'],
+      type: 'pie', radius: ['40%', '66%'], center: ['34%', '50%'],
+      minShowLabelAngle: 6,   // 太小的扇形不挤标签
       data: (mix?.slices ?? []).map((s) => ({ name: s.name, value: s.revenue })),
-      label: { show: false },
+      label: {
+        show: true, formatter: '{b}\n{d}%', fontSize: 11, color: '#475569', lineHeight: 14,
+      },
+      labelLine: { show: true, length: 8, length2: 8 },
     }],
   }), [mix]);
 

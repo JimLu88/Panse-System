@@ -37,6 +37,7 @@ class SalesSummary:
     net_profit: Decimal = Decimal("0")           # gross - 安装 - 上楼费 - 补偿
     top_products_by_profit: list[dict] = field(default_factory=list)
     top_products_by_profit_rate: list[dict] = field(default_factory=list)
+    bottom_products_by_profit: list[dict] = field(default_factory=list)  # 低利润榜: 亏得最多在前
 
 
 def _profit_for(o: Order) -> tuple[Decimal, Decimal, Decimal]:
@@ -74,6 +75,7 @@ def summary(db: Session, *, start: date, end: date,
         Order.order_date >= start,
         Order.order_date <= end,
         Order.status.in_(("paid", "shipped", "signed")),
+        Order.is_refill == False,   # noqa: E712  # 剔除补单/刷单(¥0成本会造成100%利润假象, 用户拍板 2026-06-17)
     )
     if platform:
         q = q.where(Order.platform == platform)
@@ -115,6 +117,8 @@ def summary(db: Session, *, start: date, end: date,
     s.top_products_by_profit_rate = sorted(
         rows, key=lambda r: r["profit_rate"], reverse=True,
     )[:10]
+    # 低利润榜 (用户拍板 2026-06-17): 亏得最多(负值)在前; 只收真正亏损/微利的, 至少留 10 条
+    s.bottom_products_by_profit = sorted(rows, key=lambda r: r["net_profit"])[:10]
     return s
 
 
@@ -127,6 +131,7 @@ def product_breakdown(
         select(Order).where(
             Order.order_date >= start, Order.order_date <= end,
             Order.status.in_(("paid", "shipped", "signed")),
+            Order.is_refill == False,   # noqa: E712  # 剔除补单/刷单(用户拍板 2026-06-17)
         )
     ).scalars().all()
     if brand:

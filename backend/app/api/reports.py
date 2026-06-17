@@ -149,6 +149,7 @@ class SalesSummaryOut(BaseModel):
     net_profit: float
     top_products_by_profit: list[dict]
     top_products_by_profit_rate: list[dict]
+    bottom_products_by_profit: list[dict] = []
 
 
 def _dec(d) -> float:
@@ -177,6 +178,7 @@ def sales_summary(
         gross_profit=_dec(s.gross_profit), net_profit=_dec(s.net_profit),
         top_products_by_profit=_ser(s.top_products_by_profit),
         top_products_by_profit_rate=_ser(s.top_products_by_profit_rate),
+        bottom_products_by_profit=_ser(s.bottom_products_by_profit),
     )
 
 
@@ -396,6 +398,7 @@ def operating_analysis(
         func.coalesce(func.sum(Order.platform_fee), 0),
     ).where(
         Order.order_date >= start, Order.order_date <= end,
+        Order.is_refill == False,   # noqa: E712  # 经营状况也剔除补单(用户拍板 2026-06-17)
     )
     if platform:
         fee_q = fee_q.where(Order.platform == platform)

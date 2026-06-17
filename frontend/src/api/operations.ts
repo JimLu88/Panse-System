@@ -320,6 +320,7 @@ export interface SalesSummary {
   net_profit: number;
   top_products_by_profit: Array<Record<string, any>>;
   top_products_by_profit_rate: Array<Record<string, any>>;
+  bottom_products_by_profit?: Array<Record<string, any>>;
 }
 
 // period: 7d/30d/month/year/last_month/YYYY-MM (按月下拉, 2026-06-17)

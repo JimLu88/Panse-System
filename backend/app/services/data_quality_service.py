@@ -878,9 +878,12 @@ def scan_custom_order_missing_cost_basis(db: Session) -> int:
     from sqlalchemy import or_
     count = 0
     for o in db.query(Order).filter(
-        Order.is_refill == False,       # noqa: E712
+        Order.is_refill == False,       # noqa: E712  # 补单/刷单不挂缺成本(¥0成本正常)
         Order.status.notin_(["cancelled"]),
     ).all():
+        # 强制确保不是刷单/非产品再录异常 (用户拍板 2026-06-17): 非实物(差价/邮费/样品/专链)直接跳过
+        if is_non_product_order(o):
+            continue
         if not is_custom_order(o):
             continue  # 仅定制单: is_custom / 「改」后缀 / 数字尾号≥90(99/98…), DB 无关
         if o.actual_cost is not None:

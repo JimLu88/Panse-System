@@ -284,6 +284,9 @@ def _check_custom_order_missing_cost_basis(db: Session, exc: DataException) -> O
     o = _get_order(db, exc)
     if o is None:
         return None
+    # 补单/刷单不该挂"缺成本"(¥0成本是正常的)→ 后来被判为补单的自动销账 (用户拍板 2026-06-17)
+    if getattr(o, "is_refill", False):
+        return None
     if o.actual_cost is not None or o.custom_surcharge is not None:
         return None
     if (o.status or "") == "cancelled":

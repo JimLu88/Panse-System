@@ -60,10 +60,12 @@ def get_dashboard(
         .order_by(Order.order_date)
         .all()
     )
+    # 退款额: 口径与收入一致(同窗口、排补单/关闭单), 用于从收入中扣除 (用户拍板 2026-06-17)
     refund_30d = float(
         db.query(func.coalesce(func.sum(Order.refund_amount), 0))
         .filter(Order.order_date >= win_start, Order.order_date <= win_end,
-                Order.is_historical == False)  # noqa: E712
+                Order.is_historical == False,  # noqa: E712
+                Order.is_refill == False, Order.status != "cancelled")  # noqa: E712
         .scalar() or 0
     )
     refill_excluded_30d = float(
@@ -79,7 +81,9 @@ def get_dashboard(
     ]
 
     total_orders_30d = sum(r["count"] for r in order_trend)
-    total_revenue_30d = sum(r["revenue"] for r in order_trend)
+    total_revenue_30d_gross = sum(r["revenue"] for r in order_trend)
+    # 收入已扣退款 (用户拍板 2026-06-17: 退款要从这里扣掉, 并在前端标"已从此处扣除")
+    total_revenue_30d = round(total_revenue_30d_gross - refund_30d, 2)
 
     orders_7d = (
         db.query(func.count(Order.id))
@@ -294,8 +298,10 @@ def get_dashboard(
             "total_30d": total_orders_30d,
             "revenue_30d": total_revenue_30d,
             "refill_excluded_30d": refill_excluded_30d,   # 注释用: 有补单 ¥X 未计入
-            "refund_30d": refund_30d,                     # #11 近30天退款额(单独列, 未从收入扣)
-            "revenue_caliber": "买家实付(paid_amount)·不含补单/关闭单·退款另列",  # #11 口径说明
+            "refund_30d": refund_30d,                     # 近30天退款额(已从收入扣除)
+            "refund_deducted": True,                      # 前端据此显示"已从此处扣除"
+            "revenue_gross_30d": round(total_revenue_30d_gross, 2),  # 扣退款前的毛收入(供核对)
+            "revenue_caliber": "买家实付(paid_amount)·不含补单/关闭单·已扣退款",  # 口径说明
             "count_7d": orders_7d,
             "trend_window": {"start": str(win_start), "end": str(win_end),
                              "is_custom": bool(start or end)},   # #8 趋势/收入生效区间
