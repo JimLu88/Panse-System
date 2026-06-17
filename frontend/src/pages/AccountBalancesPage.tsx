@@ -37,9 +37,9 @@ import {
 } from '../api/finance';
 import PresetTable from '../components/PresetTable';
 
-// 常见账户名 (支付宝 4 个号 + 聚合/推广/银行/保证金/个体户私账); 可自由输入新名字
+// 常见账户名 (支付宝企业号自动取数写「支付宝-企业账号」, 以它为准); 可自由输入新名字
 const ACCOUNT_SUGGESTIONS = [
-  '企业号', '爱群号', '主力号', '佳宝号', '个体户私账',
+  '支付宝-企业账号', '主力号', '佳宝号', '个体户私账',
   '聚合余额', '推广余额', '平台保证金', '银行卡',
 ];
 
@@ -59,7 +59,7 @@ const fmt = (v: string | null | undefined) =>
 function DeriveOpeningModal({ open, onClose, onWritten }: {
   open: boolean; onClose: () => void; onWritten: () => void;
 }) {
-  const [account, setAccount] = useState('企业号');
+  const [account, setAccount] = useState('支付宝-企业账号');
   const [target, setTarget] = useState(() => dayjs().startOf('month'));
   const [result, setResult] = useState<DeriveOpeningResult | null>(null);
   const deriveMut = useMutation({
