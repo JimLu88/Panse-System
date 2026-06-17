@@ -210,8 +210,8 @@ export default function PerOrderReconcilePage() {
               </Tooltip>
               <Button type="link" size="small" icon={<SettingOutlined />} onClick={openFixed} style={{ paddingInline: 4 }}>设置</Button>
             </span>
-            <Tooltip title={`补单(补差价/补邮费)收入 ¥${st.refill_revenue} − 估算成本 ¥${st.refill_cost}`}>
-              <span>+ 补单净 <Text type={st.refill_net >= 0 ? 'success' : 'danger'}>{yuan2(st.refill_net)}</Text></span>
+            <Tooltip title={`补单=刷单(${st.refill_count}单, 流水¥${st.refill_gmv}本金来回滚抵销不算收入)。纯支出=平台扣点¥${st.refill_platform}+税¥${st.refill_tax}+佣金¥${st.refill_commission}`}>
+              <span>− 补单成本(刷单) <Text type="danger">{yuan2(st.refill_cost)}</Text></span>
             </Tooltip>
             <span>=&nbsp; 本月真实净利{' '}
               <Text strong style={{ fontSize: 18, color: st.period_net_profit >= 0 ? '#389e0d' : '#cf1322' }}>

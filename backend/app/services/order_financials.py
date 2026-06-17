@@ -31,6 +31,7 @@ DEFAULTS = {
     "fin_tax_rate": "0.02",                       # 税费 2%
     "fin_outsourcing_monthly": "10000",           # 人员外包预估 (无实际录入时, 5月起按此/月预估)
     "fin_outsourcing_est_since": "2026-05-01",    # 人员外包预估生效起始月
+    "fin_refill_commission_rate": "0",            # 刷单(补单)佣金率 (占刷单流水, 默认0=没付佣金)
 }
 COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
@@ -39,6 +40,7 @@ COEF_LABELS = {
     "fin_tax_rate": "税率",
     "fin_outsourcing_monthly": "人员外包预估(元/月)",
     "fin_outsourcing_est_since": "人员外包预估生效起始月",
+    "fin_refill_commission_rate": "刷单佣金率(占刷单流水)",
 }
 
 # 售后费用字段 (订单总表内冗余列; 缺则用均值)
@@ -182,17 +184,27 @@ def fixed_costs_monthly(db: Session) -> Decimal:
     return total.quantize(Decimal("0.01"))
 
 
-def refill_pnl(db: Session, start: date, end: date) -> tuple[Decimal, Decimal]:
-    """补单(is_refill) 本月损益: (补付收入, 估算成本)。补单多是补差价/补邮费/补配件小额款,
-    客户补付的钱→收入; 履约成本按实付×85%兜底估 (无成本依据, 同定制兜底口径)。返回 (收入, 成本)。"""
+def refill_cost(db: Session, start: date, end: date, coef: dict) -> dict:
+    """补单=刷单 的纯成本 (用户拍板 2026-06-18): 流水本金来回滚抵销(非收入), 真正花出去的是
+    平台扣点 + 税费 + 运费 + 佣金。不计商品成本(刷单货回流/不消耗), 不计收入(本金回流)。
+    佣金 = 刷单流水(实付) × fin_refill_commission_rate (默认0, 在财务系数设置里填)。"""
     from app.models.order import Order
-    rev = _d(db.execute(
-        select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
+    orders = db.execute(
+        select(Order).where(
             Order.is_refill == True,  # noqa: E712
             Order.order_date >= start, Order.order_date <= end)
-    ).scalar() or 0)
-    cost = (rev * Decimal("0.85")).quantize(Decimal("0.01"))
-    return rev, cost
+    ).scalars().all()
+    gmv = platform = tax = freight = Decimal("0")
+    for o in orders:
+        gmv += _d(o.paid_amount)
+        platform += platform_deduction(o, coef)
+        tax += order_tax(o, coef)
+        freight += _d(o.actual_freight)
+    commission = (gmv * _d(coef.get("fin_refill_commission_rate") or "0")).quantize(Decimal("0.01"))
+    total = (platform + tax + freight + commission).quantize(Decimal("0.01"))
+    return {"count": len(orders), "gmv": gmv.quantize(Decimal("0.01")),
+            "platform": platform.quantize(Decimal("0.01")), "tax": tax.quantize(Decimal("0.01")),
+            "freight": freight.quantize(Decimal("0.01")), "commission": commission, "total": total}
 
 
 def extra_aftersales_by_order(db: Session) -> dict[str, Decimal]:

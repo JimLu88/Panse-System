@@ -287,7 +287,8 @@ export interface PerOrderSubtotal {
   cost_tax: number; cost_aftersales: number; cost_total: number; net_profit: number;
   promo_expense: number; outsourcing_expense: number; outsourcing_estimated: boolean;
   fixed_costs: number; fixed_cost_items: FixedCostItem[];
-  refill_revenue: number; refill_cost: number; refill_net: number;
+  refill_count: number; refill_gmv: number; refill_cost: number;
+  refill_platform: number; refill_tax: number; refill_commission: number;
   period_net_profit: number; period_net_margin: number;
 }
 export interface PerOrderReconcileResult {
