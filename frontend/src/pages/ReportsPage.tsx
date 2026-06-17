@@ -47,6 +47,7 @@ const RECON_RULE_LABELS: Record<string, string> = {
 
 export default function ReportsPage() {
   const [period, setPeriod] = useState(() => dayjs());
+  const [activeTab, setActiveTab] = useState('monthly');
 
   const { data, isLoading } = useQuery({
     queryKey: ['report', period.year(), period.month() + 1],
@@ -63,15 +64,19 @@ export default function ReportsPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>
           数据健康报告
         </Typography.Title>
-        <DatePicker.MonthPicker
-          value={period}
-          onChange={(v) => v && setPeriod(v)}
-          allowClear={false}
-        />
+        {/* 月份选择器只在「本月健康度」tab 显示 (它才用; 销售汇总等用各自的按月下拉) */}
+        {activeTab === 'health' && (
+          <DatePicker.MonthPicker
+            value={period}
+            onChange={(v) => v && setPeriod(v)}
+            allowClear={false}
+          />
+        )}
       </Space>
 
       <Tabs
-        defaultActiveKey="monthly"
+        activeKey={activeTab}
+        onChange={setActiveTab}
         items={[
           { key: 'monthly', label: '月度经营数据', children: <BusinessMonthlyTab /> },
           { key: 'operating', label: '经营状况', children: <OperatingTab /> },
@@ -218,16 +223,41 @@ function ReportTab({ data, isLoading }: { data?: HealthReport; isLoading: boolea
   );
 }
 
-type Period = '7d' | '30d' | 'month' | 'year';
+type Period = string; // '7d'|'30d'|'month'|'year'|'last_month'|'YYYY-MM'
+
+// 按月下拉选项: 本月 / 上月 / 最近若干月 (用户拍板 2026-06-17)
+const MONTH_OPTS = (() => {
+  const opts: { value: string; label: string }[] = [
+    { value: 'month', label: '本月' },
+    { value: 'last_month', label: '上月' },
+  ];
+  const now = dayjs();
+  const seen = new Set(['month', 'last_month']);
+  for (let i = 0; i < 10; i++) {
+    const d = now.subtract(i, 'month');
+    const v = d.format('YYYY-MM');
+    if (!seen.has(v)) { seen.add(v); opts.push({ value: v, label: d.format('YYYY年M月') }); }
+  }
+  return opts;
+})();
 
 function PeriodPicker({ value, onChange }: { value: Period; onChange: (v: Period) => void }) {
+  const monthMode = value === 'month' || value === 'last_month' || /^\d{4}-\d{1,2}$/.test(value);
   return (
-    <Radio.Group value={value} onChange={(e) => onChange(e.target.value)}>
-      <Radio.Button value="7d">7 天</Radio.Button>
-      <Radio.Button value="30d">30 天</Radio.Button>
-      <Radio.Button value="month">本月</Radio.Button>
-      <Radio.Button value="year">本年</Radio.Button>
-    </Radio.Group>
+    <Space size={4}>
+      <Radio.Group
+        value={monthMode ? '__month__' : value}
+        onChange={(e) => onChange(e.target.value === '__month__' ? 'month' : e.target.value)}
+      >
+        <Radio.Button value="7d">7 天</Radio.Button>
+        <Radio.Button value="30d">30 天</Radio.Button>
+        <Radio.Button value="__month__">按月</Radio.Button>
+        <Radio.Button value="year">本年</Radio.Button>
+      </Radio.Group>
+      {monthMode && (
+        <Select size="small" value={value} onChange={onChange} options={MONTH_OPTS} style={{ width: 110 }} />
+      )}
+    </Space>
   );
 }
 
@@ -539,6 +569,8 @@ function BusinessMonthlyTab() {
     <Space direction="vertical" style={{ width: '100%' }}>
       <Typography.Text type="secondary">
         数据范围：2026年1月至今，每月一行，合计行在底部。补单占比 &gt;30% 或售后率偏高时红色提示。
+        <br />
+        「真实订单」金额 = 正式订单（已剔除补单、取消/关闭单）的买家实付合计；退款未逐单扣减（退款在「退款对账」单独核算）。
       </Typography.Text>
       <Table<BusinessMonthRow>
         rowKey="period"

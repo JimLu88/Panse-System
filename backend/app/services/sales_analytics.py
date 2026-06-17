@@ -81,6 +81,9 @@ def summary(db: Session, *, start: date, end: date,
     if brand:
         orders = [o for o in orders if brand_of(o) == brand]
 
+    # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
+    name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
+
     s = SalesSummary(period_start=start, period_end=end)
     by_product: dict[str, dict] = {}
     for o in orders:
@@ -93,7 +96,7 @@ def summary(db: Session, *, start: date, end: date,
         key = o.product_code or o.product_name or "未知"
         d = by_product.setdefault(key, {
             "product_code": o.product_code,
-            "product_name": o.product_name,
+            "product_name": name_map.get(o.product_code) or o.product_name,
             "order_count": 0, "revenue": Decimal("0"),
             "cost": Decimal("0"), "net_profit": Decimal("0"),
         })
@@ -128,12 +131,15 @@ def product_breakdown(
     ).scalars().all()
     if brand:
         orders = [o for o in orders if brand_of(o) == brand]
+    # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
+    name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
     by_sku: dict[str, dict] = {}
     for o in orders:
         revenue, cost, net = _profit_for(o)
         key = (o.product_code or "?", o.sku_code or o.sku or "?")
         d = by_sku.setdefault("|".join(key), {
-            "product_code": o.product_code, "product_name": o.product_name,
+            "product_code": o.product_code,
+            "product_name": name_map.get(o.product_code) or o.product_name,
             "sku_code": o.sku_code, "sku": o.sku,
             "qty": 0, "revenue": Decimal("0"),
             "cost": Decimal("0"), "net_profit": Decimal("0"),

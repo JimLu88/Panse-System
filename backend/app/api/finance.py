@@ -996,6 +996,15 @@ def realtime_sync_status():
     return realtime_sync_service.status()
 
 
+@router.get("/order-payment-diagnosis")
+def order_payment_diagnosis(order_nos: str = Query(..., description="逗号分隔订单号"),
+                            db: Session = Depends(get_db)):
+    """诊断「订单缺支付宝收款流水」: 这几单现在到底有没有收款凭据, 异常该不该清。"""
+    from app.services import data_quality_service
+    nos = [x.strip() for x in order_nos.split(",") if x.strip()]
+    return {"rows": data_quality_service.order_payment_diagnosis(db, nos)}
+
+
 @router.get("/alipay-balance-gaps")
 def alipay_balance_gaps(account_kw: str = Query("企业号"), db: Session = Depends(get_db)):
     """诊断支付宝余额断链: 每条断链给出前后相邻流水 + 是否前驱余额为空(假断链) vs 真漏一笔。"""

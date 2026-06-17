@@ -141,6 +141,40 @@ def scan_order_missing_alipay(db: Session) -> int:
     return count
 
 
+def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
+    """诊断「订单缺支付宝收款流水」(只读): 对给定订单号, 查它现在到底有没有收款凭据
+    (支付宝流水关联 / 聚合结算 / 淘宝打款金额), 以及现在是否还该被标异常。
+
+    用户拍板 2026-06-17: 6/2-6/3 的几单当时可能流水还没到, 现在导入后应已正常 → 查清+清掉。
+    """
+    from app.models.settlement import OrderSettlement
+    out: list[dict] = []
+    for ono in order_nos:
+        ono = (ono or "").strip()
+        o = db.execute(select(Order).where(Order.order_no == ono)).scalar_one_or_none()
+        if o is None:
+            out.append({"order_no": ono, "found": False})
+            continue
+        af = db.execute(select(AlipayFlow.transaction_no, AlipayFlow.amount).where(
+            AlipayFlow.related_order_no == ono)).all()
+        st = db.execute(select(OrderSettlement).where(OrderSettlement.order_no == ono)).scalars().all()
+        st_income = float(sum((s.income or 0) for s in st))
+        shop = o.shop_received_amount
+        has_evidence = bool(af) or bool(st) or (shop is not None and shop > 0)
+        out.append({
+            "order_no": ono, "found": True, "status": o.status,
+            "order_date": o.order_date.isoformat() if o.order_date else None,
+            "paid_amount": float(o.paid_amount or 0),
+            "shop_received_amount": (float(shop) if shop is not None else None),
+            "alipay_flow_linked": [t for t, _a in af][:5],
+            "settlement_rows": len(st), "settlement_income": st_income,
+            "has_payment_evidence_now": has_evidence,
+            "verdict": ("已有收款凭据 → 异常应清除(过期)" if has_evidence
+                        else "确实仍无任何收款凭据(流水/聚合/打款金额均无)"),
+        })
+    return out
+
+
 # ---------------------------------------------------------------------------
 # B3 — 导入陈旧提醒 (> N 天无新订单)
 # ---------------------------------------------------------------------------

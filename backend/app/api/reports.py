@@ -39,7 +39,18 @@ def _range_for(period: str) -> tuple[_date, _date]:
         return today.replace(day=1), today
     if period == "year":
         return today.replace(month=1, day=1), today
-    raise HTTPException(400, f"未知 period: {period} (允许 7d/30d/month/year)")
+    if period == "last_month":  # 上个月整月
+        prev_last = today.replace(day=1) - timedelta(days=1)
+        return prev_last.replace(day=1), prev_last
+    # 具体月份 YYYY-MM (用户拍板 2026-06-17: 时间筛选支持按月下拉)
+    import re
+    from calendar import monthrange
+    mm = re.fullmatch(r"(\d{4})-(\d{1,2})", period or "")
+    if mm:
+        y, mo = int(mm.group(1)), int(mm.group(2))
+        if 1 <= mo <= 12:
+            return _date(y, mo, 1), _date(y, mo, monthrange(y, mo)[1])
+    raise HTTPException(400, f"未知 period: {period} (允许 7d/30d/month/year/last_month/YYYY-MM)")
 
 
 class ShopStatOut(BaseModel):
@@ -185,6 +196,46 @@ def sales_breakdown(
             d[k] = _dec(v) if isinstance(v, Decimal) else v
         out.append(d)
     return {"period_start": start.isoformat(), "period_end": end.isoformat(), "rows": out}
+
+
+@router.get("/sales/cost-anomaly")
+def sales_cost_anomaly(
+    period: str = Query("year"),
+    product_code: Optional[str] = Query(None, description="只看某产品 (如 PPS24210070901)"),
+    db: Session = Depends(get_db),
+):
+    """诊断销售汇总成本异常: 找『实付小却背全额成本』的错配单(成本>实付), 量化它们把总成本拉高多少。
+    用于解释为何某产品利润率偏低 / 总利润为负。"""
+    from app.models.order import Order as _O
+    start, end = _range_for(period)
+    q = select(_O).where(_O.order_date >= start, _O.order_date <= end,
+                         _O.status.in_(("paid", "shipped", "signed")))
+    if product_code:
+        q = q.where(_O.product_code == product_code)
+    orders = db.execute(q).scalars().all()
+    tot_rev = tot_cost = Decimal("0")
+    mism = []
+    for o in orders:
+        rev = Decimal(o.paid_amount or 0)
+        cost = Decimal(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0))
+        tot_rev += rev
+        tot_cost += cost
+        if cost > rev:
+            mism.append({
+                "order_no": o.order_no, "product_code": o.product_code,
+                "paid": float(rev), "cost": float(cost), "excess": float(cost - rev),
+                "cost_src": "actual" if o.actual_cost is not None else "theoretical",
+                "status": o.status,
+            })
+    mism.sort(key=lambda r: r["excess"], reverse=True)
+    return {
+        "period_start": start.isoformat(), "period_end": end.isoformat(),
+        "orders": len(orders), "total_revenue": float(tot_rev), "total_cost": float(tot_cost),
+        "cost_minus_revenue": float(tot_cost - tot_rev),
+        "mismatched_count": len(mism),
+        "mismatched_excess_total": round(sum(m["excess"] for m in mism), 2),
+        "samples": mism[:40],
+    }
 
 
 @router.get("/sales/ranking")

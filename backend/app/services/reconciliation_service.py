@@ -776,7 +776,8 @@ def run_revenue_alipay(
         order_month[k] = _month_key(d) or "(无日期)"
 
     from sqlalchemy import or_ as _or
-    af_stmt = select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.related_order_no).where(
+    af_stmt = select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.related_order_no,
+                     AlipayFlow.transaction_no).where(
         AlipayFlow.amount > 0,
         AlipayFlow.related_order_no.isnot(None),
         # 用户拍板 (2026-06-11 建议3): 退款回流不算该单收入, 否则退款多的单差额虚高
@@ -788,14 +789,18 @@ def run_revenue_alipay(
     if period_end:
         af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
     flow_income: dict[str, Decimal] = {}        # 订单键 → 收入合计
+    flow_nos_by_order: dict[str, list[str]] = {}      # 订单键 → 支付宝流水号(供核对)
     orphan_income_by_month: dict[str, Decimal] = {}   # 配不到订单的收入按月兜底
-    for t, amt, ron in db.execute(af_stmt).all():
+    orphan_flow_nos_by_month: dict[str, list[str]] = {}
+    for t, amt, ron, tn in db.execute(af_stmt).all():
         k = _okey(ron)
         if k and k in order_paid:
             flow_income[k] = flow_income.get(k, Decimal("0")) + Decimal(amt or 0)
+            flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{Decimal(amt or 0)}")
         else:
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
             orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + Decimal(amt or 0)
+            orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{Decimal(amt or 0)} (订单{ron})")
 
     if not order_paid and not flow_income and not orphan_income_by_month:
         return _result("revenue_alipay", period_start, period_end, [ReconciliationDiff(
@@ -820,7 +825,8 @@ def run_revenue_alipay(
             continue
         msg = f"订单 {k}: 订单实付 ¥{paid}, 支付宝该单收入 ¥{got}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(key=k, expected=paid, actual=got, diff=diff,
-                                        severity=sev, message=msg))
+                                        severity=sev, message=msg,
+                                        related_records=[f"订单号 {k}"] + flow_nos_by_order.get(k, [])[:20]))
         if record_exceptions:
             _record_exception(db, rule="revenue_alipay", key=k, diff_amount=diff, message=msg)
 
@@ -837,7 +843,8 @@ def run_revenue_alipay(
         msg = (f"{mk} (月度兜底, 仅未逐单配对部分): 未配到流水的订单实付 ¥{exp}, "
                f"未配到订单的支付宝收入 ¥{act}, 差 ¥{diff}")
         diffs.append(ReconciliationDiff(key=f"{mk} 兜底", expected=exp, actual=act,
-                                        diff=diff, severity=sev, message=msg))
+                                        diff=diff, severity=sev, message=msg,
+                                        related_records=orphan_flow_nos_by_month.get(mk, [])[:30]))
         if sev != "ok" and record_exceptions:
             _record_exception(db, rule="revenue_alipay", key=f"{mk} 兜底", diff_amount=diff, message=msg)
     if record_exceptions:
@@ -916,12 +923,14 @@ def run_operating_expense(
     # 只对"有流水号但流水找不到"的记录报 warning；有流水且匹配则按月汇总差异
     expected: dict[str, Decimal] = {}
     actual: dict[str, Decimal] = {}
+    op_records_by_month: dict[str, list[str]] = {}   # 月 → 该月明细(源记录+流水号), 供核对
     diffs: list[ReconciliationDiff] = []
     for source, d, amt, flow_no, key in records:
         if amt <= 0:
             continue
         month = _month_key(d) or "(无日期)"
         expected[month] = expected.get(month, Decimal("0")) + amt
+        op_records_by_month.setdefault(month, []).append(f"[{source}]{key} ¥{amt} 支付宝流水{flow_no}")
         if flow_no in flow_map:
             actual[month] = actual.get(month, Decimal("0")) + flow_map[flow_no]
         else:
@@ -929,6 +938,7 @@ def run_operating_expense(
             msg = f"[{source}] {key}: 流水号 {flow_no} 无对应支付宝记录, 请确认号码或补导入流水"
             diffs.append(ReconciliationDiff(
                 key=key, expected=amt, actual=None, diff=None, severity="warning", message=msg,
+                related_records=[f"[{source}]{key} ¥{amt}", f"支付宝流水号 {flow_no} (查无)"],
             ))
             if record_exceptions:
                 _record_exception(db, rule="operating_expense", key=key, diff_amount=amt, message=msg)
@@ -941,6 +951,7 @@ def run_operating_expense(
         msg = f"{month}: 经营已关联支出 ¥{exp}, 支付宝实付 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=month, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
+            related_records=op_records_by_month.get(month, [])[:30],
         ))
         if sev != "ok" and record_exceptions:
             _record_exception(db, rule="operating_expense", key=month, diff_amount=diff, message=msg)
@@ -991,6 +1002,7 @@ def run_purchase_payment(
 
     expected: dict[str, Decimal] = {}
     actual: dict[str, Decimal] = {}
+    pp_records_by_month: dict[str, list[str]] = {}   # 月 → 采购单+流水号明细, 供核对
     diffs: list[ReconciliationDiff] = []
     for p in rows:
         d = p.payment_date or p.purchase_date
@@ -1006,11 +1018,14 @@ def run_purchase_payment(
             # 有流水且能匹配 → 计入月度汇总对比
             expected[month] = expected.get(month, Decimal("0")) + amt
             actual[month] = actual.get(month, Decimal("0")) + flow_map[p.alipay_flow_no]
+            pp_records_by_month.setdefault(month, []).append(
+                f"采购单 {p.purchase_no} ¥{amt} 支付宝流水{p.alipay_flow_no}")
         elif "付" in (p.payment_status or "") and not p.alipay_flow_no:
             # 已标记付款但未填流水号 → 独立 warning, 不进月度汇总 (避免双重计数)
             msg = f"采购单 {p.purchase_no}: 已标记付款 ¥{amt} 但未填支付宝流水号"
             diffs.append(ReconciliationDiff(
                 key=p.purchase_no, expected=amt, actual=None, diff=None, severity="warning", message=msg,
+                related_records=[f"采购单 {p.purchase_no} ¥{amt}", "支付宝流水号: 未填"],
             ))
             if record_exceptions:
                 _record_exception(db, rule="purchase_payment", key=p.purchase_no, diff_amount=amt, message=msg)
@@ -1019,6 +1034,7 @@ def run_purchase_payment(
             msg = f"采购单 {p.purchase_no}: 流水号 {p.alipay_flow_no} 无对应支付宝记录"
             diffs.append(ReconciliationDiff(
                 key=p.purchase_no, expected=amt, actual=None, diff=None, severity="warning", message=msg,
+                related_records=[f"采购单 {p.purchase_no} ¥{amt}", f"支付宝流水号 {p.alipay_flow_no} (查无)"],
             ))
             if record_exceptions:
                 _record_exception(db, rule="purchase_payment", key=p.purchase_no, diff_amount=amt, message=msg)
@@ -1032,6 +1048,7 @@ def run_purchase_payment(
         msg = f"{month}: 采购应付 ¥{exp}, 支付宝匹配 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(
             key=month, expected=exp, actual=act, diff=diff, severity=sev, message=msg,
+            related_records=pp_records_by_month.get(month, [])[:30],
         ))
         if sev != "ok" and record_exceptions:
             _record_exception(db, rule="purchase_payment", key=month, diff_amount=diff, message=msg)
@@ -1312,7 +1329,8 @@ def run_ledger_check(
 # 规则注册表
 RULES: dict[RuleName, callable] = {
     "factory_payment": run_factory_payment,
-    "install_fee": run_install_fee,
+    # install_fee 已彻底关闭 (用户拍板 2026-06-17): 充值制不需万师傅月结对账, 且月结账单本就不导。
+    # 保留 run_install_fee 函数与 RuleName 字面量, 仅从 RULES 摘除 → 面板不再出现这张卡。
     "promotion": run_promotion,
     "refill_compensation": run_refill_compensation,
     "inventory_value": run_inventory_value,

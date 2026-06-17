@@ -138,8 +138,10 @@ def test_promotion_returns_not_available(db_session):
 
 def test_run_all_executes_all_rules(db_session):
     results = recon.run_all(db_session)
+    # install_fee 已从 RULES 摘除 (2026-06-17 用户拍板: 充值制不需万师傅月结对账)
+    assert "install_fee" not in results
     assert set(results.keys()) == {
-        "factory_payment", "install_fee", "promotion",
+        "factory_payment", "promotion",
         "refill_compensation", "inventory_value", "logistics_fee",
         "revenue_alipay", "operating_expense", "purchase_payment",
         # WS4 代付台账三规则 (补单佣金/补单快递/售后 实付↔应摊)

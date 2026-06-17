@@ -145,6 +145,7 @@ export default function App() {
         { key: 'dashboard', label: <Link to="/dashboard">数据大盘</Link> },
         { key: 'sales-ranking', label: <Link to="/sales-ranking">销售排行榜</Link> },
         { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
+        { key: 'reports', label: <Link to="/reports">报表</Link> },  // #分析合并: 报表并入数据分析
       ],
     },
     {
@@ -234,15 +235,8 @@ export default function App() {
         // { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
       ],
     },
-    {
-      key: 'g-analysis',
-      label: '分析',
-      children: [
-        { key: 'reports', label: <Link to="/reports">报表</Link> },
-        { key: 'exceptions', label: <Link to="/exceptions">异常</Link> },
-      ],
-    },
-    // #24: 「待办事项」提到顶层 (分析 与 工具 之间), 原在「数据分析」组内名「待办台账」
+    // 「分析」组已撤 (2026-06-17): 报表并入「数据分析」; 异常右上角已有入口, 不再重复
+    // #24: 「待办事项」提到顶层, 原在「数据分析」组内名「待办台账」
     { key: 'ops-checklist', label: <Link to="/ops-checklist">待办事项</Link> },
     {
       key: 'g-tools',
