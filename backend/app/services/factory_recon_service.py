@@ -19,8 +19,52 @@ from sqlalchemy.orm import Session
 
 from app.models.factory_recon_item import FactoryReconItem
 from app.models.finance import AlipayFlow
+from app.models.order import FactoryOrder, Order
 
 _TOLERANCE = Decimal("5")   # 应付 vs 实付 对平容差 (元)
+
+
+def preview_from_orders(db: Session, *, limit: int = 2000) -> dict:
+    """工厂对账单未导入时, 用我方「工厂下单」数据生成逐单预估 (只读, 不写 FactoryReconItem)。
+
+    应付 = 工厂账单额(factory_bill_amount); 缺则退回该订单理论成本(预估)。让用户在工厂对账单
+    没到之前, 也能逐单看「我方应付」, 待工厂对账单到了再正式核对。用户拍板 2026-06-17:
+    系统不能凭空造工厂的对账单价, 但我方下单数据本就有, 拿来预估总比空页强。
+    """
+    fos = db.execute(
+        select(FactoryOrder).order_by(FactoryOrder.order_date.desc().nulls_last())
+    ).scalars().all()
+    # 理论成本兜底: 按淘宝单号取 Order.theoretical_cost
+    theo: dict[str, Decimal] = {}
+    pono_list = [f.platform_order_no for f in fos if f.platform_order_no]
+    if pono_list:
+        for no, tc in db.execute(
+            select(Order.order_no, Order.theoretical_cost).where(Order.order_no.in_(pono_list))
+        ).all():
+            if tc is not None:
+                theo[no] = tc
+    rows = []
+    for fo in fos[:limit]:
+        payable = fo.factory_bill_amount
+        src = "工厂账单额"
+        if payable is None and fo.platform_order_no and fo.platform_order_no in theo:
+            payable = theo[fo.platform_order_no]
+            src = "订单理论成本(预估)"
+        rows.append({
+            "factory_order_no": fo.factory_order_no,
+            "platform_order_no": fo.platform_order_no,
+            "internal_order_no": fo.internal_order_no,
+            "factory_name": fo.factory_name,
+            "payable": float(payable) if payable is not None else None,
+            "payable_source": src if payable is not None else "未知(无账单额/无理论成本)",
+            "order_date": fo.order_date.isoformat() if fo.order_date else None,
+        })
+    total_payable = sum((r["payable"] or 0) for r in rows)
+    return {
+        "total": len(fos), "rows": rows, "total_payable": round(total_payable, 2),
+        "note": "我方工厂下单数据生成的逐单预估(非工厂对账单)。应付优先取工厂账单额, "
+                "缺则取订单理论成本。工厂正式对账单导入后以对账单为准。",
+    }
 
 
 def _month_key(d) -> Optional[str]:

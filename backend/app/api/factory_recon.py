@@ -47,6 +47,15 @@ def factory_recon_summary(
     return factory_recon_service.summary(db)
 
 
+@router.get("/preview-from-orders")
+def factory_recon_preview_from_orders(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """工厂对账单未导入时的逐单预估: 用我方「工厂下单」数据(应付=账单额/理论成本), 只读不写。"""
+    return factory_recon_service.preview_from_orders(db)
+
+
 @router.get("/items")
 def factory_recon_items(
     period: str | None = Query(None, description="YYYY-MM"),

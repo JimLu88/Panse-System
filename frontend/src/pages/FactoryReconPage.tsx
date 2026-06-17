@@ -11,9 +11,29 @@ import {
 import { UploadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  FactoryReconItem, RESOLUTION_KINDS, confirmFactoryReconItem, fetchFactoryReconSummary,
+  FactoryReconItem, FactoryReconPreviewRow, RESOLUTION_KINDS, confirmFactoryReconItem,
+  fetchFactoryReconPreview, fetchFactoryReconSummary,
   importFactoryRecon, listFactoryReconItems, resolveFactoryReconItem, splitFactoryReconItem,
 } from '../api/factoryRecon';
+
+function PreviewTable({ rows }: { rows: FactoryReconPreviewRow[] }) {
+  return (
+    <PresetTable<FactoryReconPreviewRow>
+      tableKey="factory_recon_preview"
+      rowKey="factory_order_no" size="small" dataSource={rows}
+      pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (t) => `共 ${t} 单` }}
+      columns={[
+        { title: '工厂单号', dataIndex: 'factory_order_no', width: 150, render: (v) => v || '-' },
+        { title: '淘宝订单号', dataIndex: 'platform_order_no', width: 175, render: (v) => v || '-' },
+        { title: '工厂', dataIndex: 'factory_name', width: 130, ellipsis: true, render: (v) => v || '-' },
+        { title: '应付(预估)', dataIndex: 'payable', width: 100, align: 'right' as const,
+          render: (v: number | null) => (v == null ? <Tag>无</Tag> : `¥${v.toFixed(0)}`) },
+        { title: '应付来源', dataIndex: 'payable_source', width: 150, render: (v) => <span style={{ fontSize: 12, color: '#888' }}>{v}</span> },
+        { title: '下单', dataIndex: 'order_date', width: 100, render: (v) => v || '-' },
+      ]}
+    />
+  );
+}
 
 const STATUS_TAG: Record<string, { color: string; label: string }> = {
   balanced: { color: 'green', label: '已对平' },
@@ -36,6 +56,14 @@ export default function FactoryReconPage() {
       status: statusFilter === 'all' ? undefined : statusFilter,
       period, q: q || undefined,
     }),
+  });
+
+  // 工厂对账单未导入(逐单明细为空)时, 拉「我方下单逐单预估」补上, 不再空页
+  const noBillItems = !isLoading && (items?.rows?.length ?? 0) === 0;
+  const { data: preview } = useQuery({
+    queryKey: ['factory-recon-preview'],
+    queryFn: fetchFactoryReconPreview,
+    enabled: noBillItems,
   });
 
   const refresh = () => {
@@ -197,6 +225,15 @@ export default function FactoryReconPage() {
           }}
         />
       </Card>
+
+      {noBillItems && (
+        <Card size="small" title={`我方下单逐单预估 (工厂对账单未导入)${preview ? ` · 应付合计 ¥${preview.total_payable.toLocaleString()}` : ''}`}>
+          <Alert type="info" showIcon style={{ marginBottom: 12 }}
+            message="工厂逐单明细需导入工厂正式对账单才有(系统不能凭空造工厂的结算价)。下方是用『我方工厂下单』数据生成的逐单预估应付, 工厂对账单到了以对账单为准。"
+            description={preview?.note} />
+          <PreviewTable rows={preview?.rows ?? []} />
+        </Card>
+      )}
 
       <Modal
         title="填原因做平"

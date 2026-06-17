@@ -67,6 +67,22 @@ export const importFactoryRecon = (file: File) => {
 export const fetchFactoryReconSummary = () =>
   api.get<FactoryReconSummary>('/api/factory-recon/summary').then((r) => r.data);
 
+// 工厂对账单未导入时的逐单预估 (我方下单数据, 应付=账单额/理论成本)
+export interface FactoryReconPreviewRow {
+  factory_order_no: string;
+  platform_order_no: string | null;
+  internal_order_no: string | null;
+  factory_name: string | null;
+  payable: number | null;
+  payable_source: string;
+  order_date: string | null;
+}
+export interface FactoryReconPreview {
+  total: number; total_payable: number; note: string; rows: FactoryReconPreviewRow[];
+}
+export const fetchFactoryReconPreview = () =>
+  api.get<FactoryReconPreview>('/api/factory-recon/preview-from-orders').then((r) => r.data);
+
 export const listFactoryReconItems = (params: {
   period?: string; status?: string; q?: string; limit?: number; offset?: number;
 }) => api.get<FactoryReconItemList>('/api/factory-recon/items', { params }).then((r) => r.data);
