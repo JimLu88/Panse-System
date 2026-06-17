@@ -253,6 +253,43 @@ def list_custom_reconcile(db: Session, *, only_missing: bool = True, use_ai: boo
     }
 
 
+def auto_backfill_custom_costs(db: Session, *, use_ai: bool = False) -> dict:
+    """自动给「缺成本依据」的定制单写推演成本到 theoretical_cost (规则→[AI]→85%兜底)。
+
+    工厂实际成本(actual_cost)/定制加价(custom_surcharge) 已有的不动 (它们更权威);
+    写到 theoretical_cost 后, 全系统会计成本(order_financials)自动用上 —— 即"和所有核算做钩子"。
+    用户拍板 2026-06-17: 实时同步里自动跑, 不用手点; AI 默认关(慢/依赖PC), 复杂单先落 85% 兜底。
+    """
+    from app.services.ai_provider import AiUnavailable
+    provider = build_ai(db) if use_ai else None
+    ai_dead = False
+    filled = 0
+    for o in db.query(Order).filter(
+        Order.is_refill == False,                  # noqa: E712
+        Order.status.notin_(["cancelled"]),
+    ).all():
+        if not is_custom_order(o):
+            continue
+        if o.actual_cost is not None or o.custom_surcharge is not None:
+            continue   # 已有权威成本依据, 不动
+        txt = remark_text(o)
+        r = resolve_rules(db, o, txt)
+        if r is None and provider is not None and not ai_dead:
+            try:
+                r = ai_estimate(provider, o, txt)
+            except AiUnavailable:
+                ai_dead = True
+                _alert_pc_off(db)
+        if r is None:
+            r = fallback_85(o)
+        cost = r.get("cost")
+        if cost is not None and cost >= 0:
+            o.theoretical_cost = cost   # 定制单推演成本写回 → 喂给全系统会计成本
+            filled += 1
+    db.commit()
+    return {"filled": filled, "ai_unavailable": ai_dead}
+
+
 def apply_projected_cost(db: Session, order_id: int) -> dict:
     """把推演成本写回 theoretical_cost (逐单确认; 工厂成本优先, 已有则拒绝)。"""
     o = db.get(Order, order_id)

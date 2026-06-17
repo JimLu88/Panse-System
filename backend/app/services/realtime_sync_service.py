@@ -55,7 +55,8 @@ def _do_resync() -> dict:
 
     try:
         from app.services import (
-            alipay_amount_match_service, alipay_flow_router_service, data_quality_service,
+            alipay_amount_match_service, alipay_flow_router_service,
+            custom_order_reconcile_service, data_quality_service,
             exception_recheck_service, expense_flow_match_service, flow_refund_service,
             factory_reconciliation_service, order_cost_service, order_sync_service,
             reconciliation_service, scanner_service, smart_matching_service,
@@ -74,6 +75,9 @@ def _do_resync() -> dict:
         _step("expense_match", lambda d: expense_flow_match_service.match_expense_flows(d) and None)
         # ── 5) 成本兜底 + 缺成本异常 (#30) ──
         _step("cost", lambda d: order_cost_service.auto_cost_backfill(d))
+        # ── 5a) 定制单推演成本: 缺成本依据的定制单自动算成本(规则→85%兜底)写回 theoretical_cost,
+        #        喂给全系统会计成本计算; 清「定制订单缺成本依据」异常 (用户拍板 2026-06-17) ──
+        _step("custom_cost", lambda d: custom_order_reconcile_service.auto_backfill_custom_costs(d))
         # ── 5b) 数据质量扫描写异常池 (含错配单 cost_exceeds_paid 等 23 项) ──
         _step("data_quality", lambda d: data_quality_service.run_all(d))
         # ── 5c) 旧版完整性扫描 (负库存/发货早于下单/非正价/定制缺价/悬空编码/重复流水 6 项) ──

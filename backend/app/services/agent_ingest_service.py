@@ -737,6 +737,20 @@ def orchestrate(db: Session, *, force: bool = False) -> dict:
         out["tasks"].append(item)
 
     out["ingest"] = run_ingest(db)
+
+    # 取数「全部成功」(无待扫码/无失败任务) → 立刻补生成工厂下单图 (静默, 不推飞书; 推送仍按 18:00)。
+    # 有报错/需扫码 → 跳过, 等今天重新扫码全部成功后再生成 (用户拍板 2026-06-17)。
+    all_ok = (not out.get("pending_manual")) and all(
+        (t.get("status") or "").lower() in ("done", "ok", "success") for t in out["tasks"])
+    if all_ok:
+        try:
+            from app.services import order_sheet_archive_service
+            out["order_sheets"] = order_sheet_archive_service.generate_pending(db)
+        except Exception as e:  # noqa: BLE001
+            out["order_sheets"] = {"error": f"{type(e).__name__}: {e}"}
+    else:
+        out["order_sheets"] = {"skipped": "取数未全部成功(有报错/需扫码), 等重新扫码全部成功后再生成下单图"}
+
     out["finished_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
     db.commit()
