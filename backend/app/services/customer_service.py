@@ -55,11 +55,11 @@ def aggregate_all(db: Session, *, include_historical: bool = True) -> dict:
     Plan C1: include_historical=False 时排除历史导入订单 (Order.is_historical),
     默认 True 维持现状 — 两种口径由前端开关切换。
     """
+    from app.services.sales_analytics import settled_sale_clause
     conds = [
-        # 导入订单多为历史 + 中文状态; 收录所有真实成交客户, 仅排除关闭/取消
-        Order.status.notin_(("cancelled",)),
-        ~Order.status.like("%关闭%"),
-        ~Order.status.like("%取消%"),
+        # 统一成交口径 (用户拍板 2026-06-17): 排待付款/取消/关闭/全额退款; 补单不计客户成交
+        settled_sale_clause(),
+        Order.is_refill == False,  # noqa: E712
     ]
     if not include_historical:
         conds.append(Order.is_historical == False)  # noqa: E712

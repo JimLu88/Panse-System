@@ -1663,3 +1663,45 @@ class ReconciliationDiagnosisOut(BaseModel):
     findings_count: int
     ai_available: bool
     model: Optional[str] = None
+
+
+# -------- 财务系数设置 (会计成本费率; 用户拍板 2026-06-17) --------
+
+@router.get("/financial-coefficients")
+def get_financial_coefficients(db: Session = Depends(get_db)):
+    """读财务系数 (平台手续费率/活动抽成率/生效日/税率)。会计成本/利润全系统用它。"""
+    from app.services import order_financials as ofin, settings_service as _ss
+    return {k: (_ss.get(db, k, env_fallback=False) or ofin.DEFAULTS[k]) for k in ofin.DEFAULTS}
+
+
+@router.put("/financial-coefficients")
+def put_financial_coefficients(
+    payload: dict = Body(...),
+    user: User = Depends(require_role("admin", "operator")),
+    db: Session = Depends(get_db),
+):
+    """改财务系数 (高危: 影响全系统所有利润口径)。需登录密码二次确认 (前端再 2 次严重警告)。"""
+    import re as _re
+
+    from app.services import auth_service, order_financials as ofin, settings_service as _ss
+    pwd = str(payload.get("password") or "")
+    if not user.password_hash or not auth_service.verify_password(pwd, user.password_hash):
+        raise HTTPException(403, "密码不正确, 财务系数未修改")
+    changed: dict = {}
+    for k in ofin.DEFAULTS:
+        if k in payload and payload[k] not in (None, ""):
+            v = str(payload[k]).strip()
+            if k == "fin_platform_activity_since":
+                if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
+                    raise HTTPException(400, "生效日格式应为 YYYY-MM-DD")
+            else:
+                try:
+                    fv = float(v)
+                    if not (0 <= fv < 1):
+                        raise ValueError
+                except ValueError:
+                    raise HTTPException(400, f"{ofin.COEF_LABELS.get(k, k)} 应为 0~1 的小数 (如 0.02 = 2%)")
+            _ss.set_value(db, k, v, description=f"财务系数: {ofin.COEF_LABELS.get(k, k)}")
+            changed[k] = v
+    db.commit()
+    return {"changed": changed, "coefficients": get_financial_coefficients(db)}

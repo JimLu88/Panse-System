@@ -23,6 +23,7 @@ def compute_shop_stats(
     include_refill: bool = False,
 ) -> list[dict]:
     """返回 [{shop, order_count, total_qty, total_revenue}], 按销售额降序。"""
+    from app.services.sales_analytics import settled_sale_clause
     stmt = (
         select(
             Order.shop,
@@ -30,9 +31,7 @@ def compute_shop_stats(
             func.coalesce(func.sum(Order.qty), 0),
             func.coalesce(func.sum(Order.paid_amount), 0),
         )
-        .where(Order.status != "cancelled")
-        .where(~Order.status.like("%关闭%"))
-        .where(~Order.status.like("%取消%"))
+        .where(settled_sale_clause())   # 统一成交口径: 排待付款/取消/关闭/全额退款 (用户拍板 2026-06-17)
     )
     if not include_refill:
         stmt = stmt.where(Order.is_refill == False)  # noqa: E712

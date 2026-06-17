@@ -224,6 +224,8 @@ export interface BusinessMonthRow {
   aftersales_rate: number;
   outsourcing_expense: number;
   platform_fee: number;
+  tax_expense?: number;
+  platform_activity_expense?: number;
   total_expense: number;
   net_profit: number;
   net_profit_rate: number;

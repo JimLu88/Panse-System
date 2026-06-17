@@ -67,16 +67,12 @@ class SalesSummary:
     bottom_products_by_profit: list[dict] = field(default_factory=list)  # 低利润榜: 亏得最多在前
 
 
-def _profit_for(o: Order) -> tuple[Decimal, Decimal, Decimal]:
-    """返回 (revenue, cost, net_profit)."""
+def _profit_for(o: Order, coef: dict, as_avg: Decimal) -> tuple[Decimal, Decimal, Decimal, Decimal]:
+    """统一会计成本口径 (用户拍板 2026-06-17): 返回 (实付, 会计总成本, 利润, 物理成本)。
+    会计总成本=物理+物流+安装/上楼+售后+平台扣点(0.6%+2%活动/或实付−实收)+税(2%); 利润=实付−退款−会计总成本。"""
+    from app.services import order_financials as ofin
     paid = Decimal(o.paid_amount or 0)
-    cost = Decimal(o.actual_cost or o.theoretical_cost or 0)
-    freight = Decimal(o.actual_freight or 0)
-    upstairs = Decimal(o.upstairs_fee or 0)
-    install = Decimal(o.install_fee or 0)
-    comp = Decimal(o.compensation_fee or 0)
-    net = paid - cost - freight - upstairs - install - comp
-    return paid, cost, net
+    return paid, ofin.accounting_cost(o, coef, as_avg), ofin.net_profit(o, coef, as_avg), ofin.physical_cost(o)
 
 
 def brand_of(o: Order) -> Optional[str]:
@@ -113,15 +109,19 @@ def summary(db: Session, *, start: date, end: date,
     # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
     name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
 
+    from app.services import order_financials as ofin
+    coef = ofin.load_coefficients(db)
+    as_avg = ofin.aftersales_avg(db)
+
     s = SalesSummary(period_start=start, period_end=end)
     by_product: dict[str, dict] = {}
     for o in orders:
-        revenue, cost, net = _profit_for(o)
+        revenue, cost, net, phys = _profit_for(o, coef, as_avg)
         s.order_count += 1
         s.revenue += revenue
-        s.cost += cost
+        s.cost += cost                  # 会计总成本(全扣项)
         s.net_profit += net
-        s.gross_profit += revenue - cost
+        s.gross_profit += revenue - phys  # 毛利 = 销售额 − 物理产品成本
         key = o.product_code or o.product_name or "未知"
         d = by_product.setdefault(key, {
             "product_code": o.product_code,
@@ -165,24 +165,28 @@ def product_breakdown(
         orders = [o for o in orders if brand_of(o) == brand]
     # 产品名用内部短名 (Product.name), 不用淘宝长标题 (用户拍板 2026-06-17)
     name_map, _ = _internal_names(db, {o.product_code for o in orders if o.product_code})
+    from app.services import order_financials as ofin
+    coef = ofin.load_coefficients(db)
+    as_avg = ofin.aftersales_avg(db)
     by_sku: dict[str, dict] = {}
     for o in orders:
-        revenue, cost, net = _profit_for(o)
+        revenue, cost, net, phys = _profit_for(o, coef, as_avg)
         key = (o.product_code or "?", o.sku_code or o.sku or "?")
         d = by_sku.setdefault("|".join(key), {
             "product_code": o.product_code,
             "product_name": name_map.get(o.product_code) or o.product_name,
             "sku_code": o.sku_code, "sku": o.sku,
-            "qty": 0, "revenue": Decimal("0"),
+            "qty": 0, "revenue": Decimal("0"), "phys": Decimal("0"),
             "cost": Decimal("0"), "net_profit": Decimal("0"),
         })
         d["qty"] += o.qty or 1
         d["revenue"] += revenue
-        d["cost"] += cost
+        d["cost"] += cost              # 会计总成本
+        d["phys"] += phys              # 物理成本 (算毛利率用)
         d["net_profit"] += net
     for r in by_sku.values():
         r["gross_profit_rate"] = (
-            ((r["revenue"] - r["cost"]) / r["revenue"]) if r["revenue"] > 0 else Decimal("0")
+            ((r["revenue"] - r["phys"]) / r["revenue"]) if r["revenue"] > 0 else Decimal("0")
         )
         r["net_profit_rate"] = (
             (r["net_profit"] / r["revenue"]) if r["revenue"] > 0 else Decimal("0")

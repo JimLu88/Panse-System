@@ -617,3 +617,16 @@ export interface RecomputeCostResult { updated: number; skipped_no_bom: number; 
 export const recomputeOrderCosts = (only_missing = true) =>
   api.post<RecomputeCostResult>('/api/orders/recompute-costs', null, { params: { only_missing } })
     .then((r) => r.data);
+
+// 财务系数设置 (会计成本费率; 用户拍板 2026-06-17) — 全系统利润口径
+export interface FinCoefficients {
+  fin_platform_handling_rate: string;     // 平台手续费率 (0.006 = 0.6%)
+  fin_platform_activity_rate: string;     // 平台活动抽成率 (0.02 = 2%)
+  fin_platform_activity_since: string;    // 活动抽成生效日 YYYY-MM-DD
+  fin_tax_rate: string;                   // 税率 (0.02 = 2%)
+}
+export const getFinancialCoefficients = () =>
+  api.get<FinCoefficients>('/api/finance/financial-coefficients').then((r) => r.data);
+export const putFinancialCoefficients = (
+  payload: Partial<FinCoefficients> & { password: string },
+) => api.put('/api/finance/financial-coefficients', payload).then((r) => r.data);

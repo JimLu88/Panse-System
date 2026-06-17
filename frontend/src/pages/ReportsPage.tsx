@@ -352,8 +352,9 @@ function SalesSummaryTab() {
         </Card></Col>
       </Row>
       <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-        「利润」= 实付 − 成本 − 运费 − 安装 − 上楼 − 售后赔付，<b>不含推广 / 平台费 / 人员外包</b>
-        （这些月度费用见「月度经营数据」的净利润；本页利润与其差额≈当期推广费）。已剔除补单/刷单。
+        「成本」= <b>会计总成本</b> = 物理产品成本(工厂价/含木作·打包·外采配件) + 物流 + 安装/上楼 + 售后 +
+        <b>平台扣点(手续费0.6%+活动抽成2%，或实付−店铺实收) + 税费2%</b>；
+        「利润」= 实付 − 退款 − 会计总成本。费率在「管理→财务系数设置」可改。已剔除补单/刷单/待付款/退款单。
       </Typography.Text>
       <Card size="small" title="产品利润排行 Top 10"
             extra={<Segmented size="small" value={rankBy} onChange={(v) => setRankBy(v as 'profit' | 'rate')}
@@ -535,6 +536,8 @@ function BusinessMonthlyTab() {
         },
         { title: '人员外包', dataIndex: 'outsourcing_expense', width: 90, render: fmtY },
         { title: '平台费', dataIndex: 'platform_fee', width: 90, render: fmtY },
+        { title: '税费', dataIndex: 'tax_expense', width: 90, render: fmtY },
+        { title: '平台活动2%', dataIndex: 'platform_activity_expense', width: 100, render: fmtY },
         { title: '支出合计', dataIndex: 'total_expense', width: 100, render: fmtY },
       ],
     },
