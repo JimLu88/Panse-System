@@ -57,9 +57,11 @@ def _do_resync() -> dict:
         from app.services import (
             alipay_amount_match_service, alipay_flow_router_service, data_quality_service,
             exception_recheck_service, expense_flow_match_service, flow_refund_service,
-            factory_reconciliation_service, order_cost_service, reconciliation_service,
-            smart_matching_service,
+            factory_reconciliation_service, order_cost_service, order_sync_service,
+            reconciliation_service, smart_matching_service,
         )
+        # ── 0) 订单缺 product_code 经 sku_code 回填 (导入丢编码补救; 排行/汇总短名都靠它) ──
+        _step("backfill_product_code", lambda d: order_sync_service.backfill_product_code(d))
         # ── 1) 支付宝流水归类/核销/配单 (原「重新核销」「归类流水」「自动配流水」按钮) ──
         _step("smart_match", lambda d: smart_matching_service.run(d) and None)
         _step("route_flows", lambda d: alipay_flow_router_service.run_all(d) and None)

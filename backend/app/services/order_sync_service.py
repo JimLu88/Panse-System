@@ -146,6 +146,30 @@ def refresh_order_compensation(db: Session, order_no: str) -> bool:
     return True
 
 
+def backfill_product_code(db: Session) -> int:
+    """订单缺 product_code 但 sku_code 能在定价表对上 → 回填 product_code (导入丢编码的补救)。
+
+    用户拍板 2026-06-17: 排行/销售汇总按产品分组+显示内部短名都靠 product_code, 缺了就显淘宝长标题、
+    且同款拆成多行。sku_code 本就内含产品编码(如 PPS2398001060612 = PPS23980010606 + sku 12), 经
+    定价表 PricingSku(sku_code→product_code) 精确回填。幂等。
+    """
+    from app.models.pricing import PricingSku
+    sku2code = {s: c for s, c in db.execute(
+        select(PricingSku.sku_code, PricingSku.product_code)).all() if s}
+    n = 0
+    for o in db.execute(
+        select(Order).where(Order.product_code.is_(None), Order.sku_code.isnot(None))
+    ).scalars().all():
+        code = sku2code.get(o.sku_code)
+        if code:
+            o.product_code = code
+            n += 1
+    if n:
+        db.flush()
+    _logger.info("backfill_product_code: 回填 %d 条订单", n)
+    return n
+
+
 def backfill_warehouse(db: Session) -> int:
     """存量订单仓库回填: 对 warehouse 为空的订单用 default_warehouse_for 自动判定。幂等。"""
     orders = db.execute(
