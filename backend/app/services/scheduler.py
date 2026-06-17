@@ -696,9 +696,26 @@ def _job_web_agent_daily(db: Session) -> dict:
 
 def _job_ingest_scan(db: Session) -> dict:
     """#15 每小时扫共享目录导入 PC 自跑下载的报表(不开浏览器、不驱动 agent)。
-    解决"只靠 18:00 编排"的脆弱: PC 自己下载的文件每小时自动进库。幂等(file_hash 防重)。"""
-    from app.services import agent_ingest_service
-    return agent_ingest_service.run_ingest(db)
+    解决"只靠 18:00 编排"的脆弱: PC 自己下载的文件每小时自动进库。幂等(file_hash 防重)。
+
+    导入全部成功(无错误 + 无平台需扫码) → 立刻补生成下单图 (用户拍板 2026-06-17);
+    有报错/需扫码 → 跳过, 等重新扫码全部成功后再生成。与 orchestrate 路径同一口径。
+    generate_pending 幂等(已生成的不重复, 不推飞书 — 推送仍按 18:00)。"""
+    from app.services import agent_ingest_service, web_agent_service
+    ing = agent_ingest_service.run_ingest(db)
+    try:
+        hb = web_agent_service.health(db)
+        tasks = (web_agent_service.list_tasks(db).get("tasks") or []) if hb.get("online") else []
+        need_scan = [t for t in tasks
+                     if not t.get("has_session") and not agent_ingest_service.SKIPPED_TASKS.get(t.get("id"))]
+        if ing.get("errors", 0) == 0 and not need_scan and ing.get("imported", 0) > 0:
+            from app.services import order_sheet_archive_service
+            ing["order_sheets"] = order_sheet_archive_service.generate_pending(db)
+        elif need_scan:
+            ing["order_sheets"] = {"skipped": "有平台需重新扫码, 等全部成功后再生成下单图"}
+    except Exception:  # noqa: BLE001
+        pass
+    return ing
 
 
 def _job_order_sheets_daily(db: Session) -> dict:
