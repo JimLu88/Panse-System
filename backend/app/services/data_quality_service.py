@@ -147,6 +147,7 @@ def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
 
     用户拍板 2026-06-17: 6/2-6/3 的几单当时可能流水还没到, 现在导入后应已正常 → 查清+清掉。
     """
+    from sqlalchemy import select
     from app.models.settlement import OrderSettlement
     out: list[dict] = []
     for ono in order_nos:
