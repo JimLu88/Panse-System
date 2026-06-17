@@ -153,17 +153,52 @@ def build_ai(db: Session):
         return None
 
 
-_AI_SYS = ("你是家具定制工厂成本估算助手。根据订单备注里的定制要求(改尺寸/改材质/追加部件等),"
-           "估算这一单的工厂成本(人民币元, 只要数字)。只输出 JSON: {\"cost\": 数字 或 null, \"reason\": \"一句话\"}。"
-           "完全无法估算就 cost 给 null。不要输出 JSON 以外的任何字符。")
+_AI_SYS = ("你是家具定制工厂成本估算助手。会给你「该产品基础款工厂成本」作锚点。"
+           "请在基础款成本上, 按客户定制改动调整估算这一单的工厂成本(人民币元): "
+           "改大尺寸/换更贵材质(樱桃木>榉木, 洞石岩板>白岩板)→上浮; 追加灯带/插座/封口/玻璃→小幅加; "
+           "纯小追加可能只有几十到几百元。只输出 JSON: {\"cost\": 数字 或 null, \"reason\": \"一句话\"}。"
+           "实在没有任何依据才给 null。不要输出 JSON 以外的字符。")
+
+
+def _base_cost_hint(db: Session, o: Order) -> Optional[str]:
+    """该订单产品的基础款工厂成本参考(给 AI 当锚点): 优先定价表 factory_cost, 兜底同款已填 actual_cost。"""
+    from app.models.pricing import PricingSku
+    pc = o.product_code
+    codes: set = set()
+    if pc:
+        codes.add(pc)
+        if pc.startswith("P") and not pc.startswith("PPS"):
+            codes.add("PPS" + pc[1:])
+        elif pc.startswith("PPS"):
+            codes.add("P" + pc[3:])
+    costs: list[float] = []
+    if codes:
+        for s in db.execute(select(PricingSku).where(PricingSku.product_code.in_(codes))).scalars().all():
+            if s.factory_cost is not None and float(s.factory_cost) > 0:
+                costs.append(float(s.factory_cost))
+        if not costs:   # 兜底: 同款其它订单已填的工厂实际成本
+            for (ac,) in db.execute(select(Order.actual_cost).where(
+                    Order.product_code.in_(codes), Order.actual_cost.isnot(None))).all():
+                if ac and float(ac) > 0:
+                    costs.append(float(ac))
+    if not costs:
+        return None
+    lo, hi, typ = min(costs), max(costs), sorted(costs)[len(costs) // 2]
+    if lo == hi:
+        return f"该产品基础款工厂成本约 ¥{typ:.0f}"
+    return f"该产品基础款工厂成本约 ¥{typ:.0f} (同款各规格 ¥{lo:.0f}~¥{hi:.0f})"
 
 
 def ai_estimate(db: Session, o: Order, txt: str) -> Optional[dict]:
     """经 agent 调本机大模型估算。agent/模型不可达 → 抛 AiUnavailable (上层据此飞书报警)。"""
     from app.services import web_agent_service
     from app.services.ai_provider import AiUnavailable
-    user = (f"备注: {txt}\n基础产品: {o.product_name or o.product_code or ''}\n"
-            f"买家实付: {float(o.paid_amount or 0)} 元")
+    hint = _base_cost_hint(db, o)
+    user = (f"产品: {o.product_name or o.product_code or ''}\n"
+            + (f"{hint}\n" if hint else "")
+            + f"客户定制要求(备注): {txt}\n"
+            f"买家实付: {float(o.paid_amount or 0)} 元\n"
+            "请基于基础款成本 + 上面的定制改动, 估算这个定制单的工厂成本。")
     resp = web_agent_service._post(db, "/api/ai/chat",
                                    {"system": _AI_SYS, "user": user, "max_tokens": 200}, timeout=130)
     if not resp.get("ok"):
