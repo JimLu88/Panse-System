@@ -136,7 +136,7 @@ async def preview(
 class CommitIn(BaseModel):
     file_b64: str
     sheet_name: str
-    entity_type: str = Field(..., pattern=r"^(delivery_note|factory_order|alipay_flow)$")
+    entity_type: str = Field(..., pattern=r"^(delivery_note|factory_order|alipay_flow|factory_recon)$")
     mapping: dict[str, str]   # target_field -> excel_column
     auto_create_suppliers: bool = True
     auto_match_orders: bool = True

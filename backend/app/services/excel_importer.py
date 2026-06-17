@@ -446,6 +446,14 @@ def commit_sheet(
                              progress_callback=progress_callback,
                              cancel_callback=cancel_callback,
                              import_batch_id=import_batch_id)
+    elif entity_type == "factory_recon":
+        # 工厂对账单(逐单) → 复用 factory_recon_import_service: 写明细 + 回填 Order.actual_cost
+        # + 触发货款对账/成本核算。用户拍板 2026-06-18: 通用 Excel 导入也要能写"实际成本", 数据进财务中心。
+        _fb = file_bytes
+        if not _fb and file_path:
+            with open(file_path, "rb") as _f:
+                _fb = _f.read()
+        _commit_factory_recon(db, _fb or b"", report, dry_run=dry_run)
     elif entity_type in ("product", "material", "bom_line", "product_inventory",
                           "part_inventory", "order", "account_balance", "pricing_sku",
                           "refill_record", "factory_reconciliation",
@@ -1778,6 +1786,28 @@ def _h_refill_record(db, data, key_field, ctx=None):
         return "refill_record", _apply_update(existing, payload, ctx, "refill_records", order_no, db)
     db.add(RefillRecord(**payload))
     return "refill_record", "inserted"
+
+
+def _commit_factory_recon(db, file_bytes: bytes, report, *, dry_run: bool = False) -> None:
+    """工厂对账单(逐单) 入库 → 复用 factory_recon_import_service (写 FactoryReconItem + 回填
+    Order.actual_cost + 触发货款对账/成本核算)。用户拍板 2026-06-18: 通用导入也要能写实际成本。"""
+    from app.services import factory_recon_import_service
+    if not file_bytes:
+        raise ImporterError("工厂对账单导入需要原始文件内容")
+    rep = factory_recon_import_service.import_factory_recon_xlsx(db, file_bytes)
+    report.inserted_parents = rep.inserted
+    report.matched_lines = rep.backfilled_cost           # 回填了实际成本的订单数
+    report.skipped_rows = rep.skipped_invalid + rep.skipped_duplicate
+    report.errors.extend(rep.errors or [])
+    report.warnings.append(
+        f"工厂对账单: 入库结算明细 {rep.inserted} 条, 回填订单实际成本 {rep.backfilled_cost} 单, "
+        f"跳过 {rep.skipped_invalid + rep.skipped_duplicate} (无效/重复)。")
+    if not dry_run:
+        try:   # 触发货款对账/成本核算流水线 (与「工厂对账单导入」入口一致, 数据进财务中心)
+            from app.services import realtime_sync_service
+            realtime_sync_service.trigger("import:factory-recon")
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _h_factory_reconciliation(db, data, key_field, ctx=None):

@@ -514,6 +514,16 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         pfee = _to_decimal(o.platform_fee)
         refund = _to_decimal(o.refund)
         ship_dt = _to_date(o.ship_time)
+        # 防错标"待付款" (用户拍板 2026-06-18): 订单状态文本不在映射表里(如"已收货"/CSV无状态列)会默认"待付款",
+        # 但若有 物流单号/发货日(已发货)或 店铺实收/买家实付>0(已收钱), 必然是真实成交 → 据证据纠正状态,
+        # 否则这些真单被"真实成交"过滤掉, 收入/利润全系统少算 (1月就因此 ¥17万 显示成 ¥7万)。
+        # 注意: paid_amount 列其实是"买家应付", 不能当付款凭据; 只认 实付(paid_real)/店铺实收(received)/物流。
+        if status == "pending_payment":
+            _paid_real = _to_decimal(o.paid_real)
+            if _clean(o.tracking_no) or ship_dt:
+                status = "shipped"
+            elif (received and received > 0) or (_paid_real and _paid_real > 0):
+                status = "paid"
 
         existing = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if existing is not None:
