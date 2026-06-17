@@ -291,7 +291,13 @@ def _display_resolve(db: Session, o: Order, txt: str) -> dict:
 
 
 def list_custom_reconcile(db: Session, *, only_missing: bool = True) -> dict:
-    """定制单核对清单。规则 + 已写回(85%/AI)展示; AI 估算走后台写回 (避免同步超时)。"""
+    """定制单核对清单。规则 + 已写回(85%/AI)展示; AI 估算走后台写回 (避免同步超时)。
+
+    打开页面即自动把缺成本单的推演写回 theoretical_cost(规则→85%), 无需逐单点"写回"
+    (用户拍板 2026-06-17: 去掉写回按钮, 推演本就是预算价, 实际工厂成本到位后自动覆盖)。
+    auto_backfill 只填空缺、不覆盖已有规则/AI 推演, 幂等可重入。
+    """
+    auto_backfill_custom_costs(db, use_ai=False)
     rows: list[dict] = []
     for o in db.query(Order).filter(
         Order.is_refill == False,                  # noqa: E712

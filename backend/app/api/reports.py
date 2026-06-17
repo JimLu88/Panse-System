@@ -387,37 +387,37 @@ def operating_analysis(
     """
     start, end = _range_for(period)
     s = sales_analytics.summary(db, start=start, end=end, platform=platform)
-    revenue = Decimal(s.revenue or 0)
+    revenue_gross = Decimal(s.revenue or 0)
 
-    # 订单级会计成本逐项 (统一口径 order_financials: 物理/物流/安装上楼/售后/平台扣点/税) —
-    # 与销售汇总同源, 避免双算 (用户拍板 2026-06-17)
+    # 订单级会计成本逐项 (统一口径 order_financials: 物理/物流/安装上楼/平台扣点/税) —
+    # 与销售汇总、月度经营数据同源, 避免双算 (用户拍板 2026-06-17)
     from app.services import order_financials as _ofin
     _coef = _ofin.load_coefficients(db)
-    _as_avg = _ofin.aftersales_avg(db)
     _oq = select(Order).where(
         Order.order_date >= start, Order.order_date <= end,
         sales_analytics.settled_sale_clause(), Order.is_refill == False,  # noqa: E712
     )
     if platform:
         _oq = _oq.where(Order.platform == platform)
-    physical = freight = install_upstairs = aftersales_c = platform_ded = tax_c = Decimal("0")
+    physical = freight = install_upstairs = platform_ded = tax_c = refund_total = Decimal("0")
     for _o in db.execute(_oq).scalars().all():
-        _b = _ofin.cost_breakdown(_o, _coef, _as_avg)
+        _b = _ofin.cost_breakdown(_o, _coef, Decimal("0"))   # 售后不再用人均均摊 (改额外售后口径)
         physical += _b["physical"]; freight += _b["freight"]; install_upstairs += _b["install_upstairs"]
-        aftersales_c += _b["aftersales"]; platform_ded += _b["platform"]; tax_c += _b["tax"]
+        platform_ded += _b["platform"]; tax_c += _b["tax"]
+        refund_total += Decimal(str(_o.refund_amount or 0))
 
-    # 推广支出 (PromotionFlow 支出) 与 人员外包
+    # 收入扣退款 (与月度经营数据一致; 修原毛实付不扣退款导致两表对不上, 用户 2026-06-17)
+    revenue = revenue_gross - refund_total
+    # 售后费 = 退款之外的额外售后 (与月度同口径, 用户 Q2 拍板); 人员外包 5月起按¥10000/月预估
+    aftersales_c = _ofin.extra_aftersales(db, start, end)
+    personnel, _os_est = _ofin.outsourcing_for_range(db, start, end, _coef)
+
+    # 推广支出 (PromotionFlow 支出)
     promo = db.execute(
         select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
             PromotionFlow.flow_type == "支出",
             PromotionFlow.transaction_date >= start,
             PromotionFlow.transaction_date <= end,
-        )
-    ).scalar() or 0
-    personnel = db.execute(
-        select(func.coalesce(func.sum(OutsourcingExpense.amount), 0)).where(
-            OutsourcingExpense.payment_date >= start,
-            OutsourcingExpense.payment_date <= end,
         )
     ).scalar() or 0
 
@@ -428,7 +428,7 @@ def operating_analysis(
         {"name": "物理产品成本", "amount": _dec(physical), "pct": _pct(physical)},
         {"name": "物流费", "amount": _dec(freight), "pct": _pct(freight)},
         {"name": "安装/上楼", "amount": _dec(install_upstairs), "pct": _pct(install_upstairs)},
-        {"name": "售后费", "amount": _dec(aftersales_c), "pct": _pct(aftersales_c)},
+        {"name": "售后费(退款外额外)", "amount": _dec(aftersales_c), "pct": _pct(aftersales_c)},
         {"name": "平台扣点(手续费+活动抽成)", "amount": _dec(platform_ded), "pct": _pct(platform_ded)},
         {"name": "税费", "amount": _dec(tax_c), "pct": _pct(tax_c)},
         {"name": "推广费", "amount": _dec(promo), "pct": _pct(promo)},
@@ -638,8 +638,6 @@ def _business_month(db: Session, year: int, month: int) -> dict:
     # 补单 (监控用, 统计当月全部补单, 不限成交状态)
     refill_count = _qc(*base, Order.is_refill == True)  # noqa: E712
     refill_revenue = _qs(Order.paid_amount, *base, Order.is_refill == True)  # noqa: E712
-    platform_fee = _qs(Order.platform_fee, *real)
-
     # 支出
     promo = float(db.execute(
         select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
@@ -656,40 +654,52 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         )
     ).scalar() or 0)
 
-    aftersales_rows = db.execute(
-        select(AfterSales).where(
-            AfterSales.processed_at >= start,
-            AfterSales.processed_at <= end,
-        )
-    ).scalars().all()
-    aftersales_comp = sum(
-        float((a.factory_compensation or 0) + (a.logistics_compensation or 0) + (a.compensation_fee or 0))
-        for a in aftersales_rows
-    )
-    aftersales_count = len(aftersales_rows)
-
-    outsourcing = float(db.execute(
-        select(func.coalesce(func.sum(OutsourcingExpense.amount), 0)).where(
-            OutsourcingExpense.payment_date >= start,
-            OutsourcingExpense.payment_date <= end,
-        )
-    ).scalar() or 0)
-
-    # 主口径 = 正式销售额 (剔除补单, 用户拍板 2026-06-12); refill_revenue 仅作"未计入"注释
-    total_revenue = real_revenue + refill_revenue   # 总流水 (含补单, 仅参考)
-    # 商品成本(COGS, #17 修复): 每单 actual_cost(已对账)否则 theoretical_cost(BOM预估) —— 未对账月也有成本,
-    # 利润不再虚高(原 total_expense 漏算商品成本 = 1月"25万假利润"根因)。已对账时 actual_cost≈factory_bill, 用它进利润不重复计。
-    effective_cost = _qs(func.coalesce(Order.actual_cost, Order.theoretical_cost, 0), *real)
-    cogs = max(effective_cost, factory_bill)   # 取更全的: 有工厂账单用账单, 否则用逐单成本估算(未对账月也有成本)
-    # 税费 + 平台活动抽成 (用户拍板 2026-06-17: 所有扣项都要算进去, 之前漏了税)
     from app.services import order_financials as _ofin
     _coef = _ofin.load_coefficients(db)
+
+    # 物流费 / 安装上楼 (经营状况一直在算, 月度之前漏了 → 两表对不上的主因, 用户 2026-06-17 要求补全)
+    freight = _qs(func.coalesce(Order.actual_freight, 0), *real)
+    install_upstairs = _qs(
+        func.coalesce(Order.install_fee, 0) + func.coalesce(Order.upstairs_fee, 0), *real)
+
+    # 商品成本(COGS): 每单 actual_cost(已对账)否则 theoretical_cost(含定制推演); 与工厂账单取更全。
+    effective_cost = _qs(func.coalesce(Order.actual_cost, Order.theoretical_cost, 0), *real)
+    cogs = max(effective_cost, factory_bill)
+    cogs_estimated = cogs > factory_bill   # 没用工厂账单对账, 靠逐单(含定制推演)估算
+
+    # 售后赔付 = 退款之外的额外售后 (用户 Q2 拍板: 平台内售后总成本多半=已从收入扣过的退款, 不重复计)
+    aftersales_comp = float(_ofin.extra_aftersales(db, start, end))
+    aftersales_count = int(db.execute(
+        select(func.count()).select_from(AfterSales).where(
+            AfterSales.processed_at >= start, AfterSales.processed_at <= end)
+    ).scalar() or 0)
+
+    # 人员外包: 有实际录入用实际; 5月起无录入按 ¥10000/月预估 (用户拍板 2026-06-17)
+    _os_total, outsourcing_estimated = _ofin.outsourcing_for_range(db, start, end, _coef)
+    outsourcing = float(_os_total)
+
+    # 平台费(手续费 0.6%): Order.platform_fee 列基本是空的 → 按 实付×手续费率 预估 (用户拍板"就是千分之六")
+    platform_fee_actual = _qs(func.coalesce(Order.platform_fee, 0), *real)
+    platform_fee_estimated = platform_fee_actual <= 0
+    platform_fee = (round(real_revenue * float(_coef["handling_rate"]), 2)
+                    if platform_fee_estimated else platform_fee_actual)
+
+    # 税费: 本单已填 tax 用实际, 未填的按 实付×税率 预估
     tax_filled = _qs(func.coalesce(Order.tax, 0), *real)
     tax_est_base = _qs(Order.paid_amount, *real, Order.tax.is_(None))
     tax_expense = tax_filled + tax_est_base * float(_coef["tax_rate"])
+    tax_estimated = tax_est_base > 0
+
+    # 平台活动抽成 2% (5月起): 实付×活动率, 预估
     activity_base = _qs(Order.paid_amount, *real, Order.order_date >= _coef["activity_since"])
     platform_activity = activity_base * float(_coef["activity_rate"])
-    total_expense = cogs + promo + aftersales_comp + outsourcing + platform_fee + tax_expense + platform_activity
+    platform_activity_estimated = activity_base > 0
+
+    # 主口径 = 正式销售额 (剔除补单, 用户拍板 2026-06-12); refill_revenue 仅作"未计入"注释
+    total_revenue = real_revenue + refill_revenue   # 总流水 (含补单, 仅参考)
+    # 会计总成本口径(与经营状况一致): 商品+物流+安装+推广+额外售后+人员+平台费+税+活动
+    total_expense = (cogs + freight + install_upstairs + promo + aftersales_comp
+                     + outsourcing + platform_fee + tax_expense + platform_activity)
     net_profit = real_revenue - total_expense
     total_orders = real_count + refill_count
 
@@ -725,14 +735,21 @@ def _business_month(db: Session, year: int, month: int) -> dict:
         "promo_expense": round(promo, 2),
         "promo_ratio": promo_ratio,
         "factory_bill": round(factory_bill, 2),
-        "effective_cost": round(cogs, 2),   # #17 商品成本(工厂账单与逐单估算取更全), 进利润计算
-        "aftersales_compensation": round(aftersales_comp, 2),
+        "effective_cost": round(cogs, 2),   # 商品成本(工厂账单与逐单估算取更全)
+        "cogs_estimated": cogs_estimated,
+        "freight_expense": round(freight, 2),                    # 物流费 (新增, 补全口径)
+        "install_upstairs_expense": round(install_upstairs, 2),  # 安装上楼 (新增, 补全口径)
+        "aftersales_compensation": round(aftersales_comp, 2),    # 退款外的额外售后 (用户 Q2 拍板)
         "aftersales_count": aftersales_count,
         "aftersales_rate": aftersales_rate,
         "outsourcing_expense": round(outsourcing, 2),
+        "outsourcing_estimated": outsourcing_estimated,          # 5月起按¥10000/月预估
         "platform_fee": round(platform_fee, 2),
-        "tax_expense": round(tax_expense, 2),                     # 税费 (用户拍板 2026-06-17 补)
-        "platform_activity_expense": round(platform_activity, 2),  # 平台活动抽成 2% (5月起)
+        "platform_fee_estimated": platform_fee_estimated,        # 实付×0.6% 预估
+        "tax_expense": round(tax_expense, 2),                    # 税费 (实际+未填的按2%预估)
+        "tax_estimated": tax_estimated,
+        "platform_activity_expense": round(platform_activity, 2),  # 平台活动抽成 2% (5月起, 预估)
+        "platform_activity_estimated": platform_activity_estimated,
         "total_expense": round(total_expense, 2),
         "net_profit": round(net_profit, 2),
         "net_profit_rate": round(net_profit / real_revenue * 100, 1) if real_revenue else 0.0,
@@ -786,29 +803,41 @@ def business_monthly_table(
     total_promo = _sum("promo_expense")
     total_exp = _sum("total_expense")
     total_net = _sum("net_profit")
+    total_real_rev = _sum("real_revenue")
+
+    def _any(key):
+        return any(bool(r.get(key)) for r in rows)
 
     summary = {
         "period": "合计",
         "real_order_count": total_real,
         "refill_order_count": total_refill,
-        "real_revenue": _sum("real_revenue"),
+        "real_revenue": total_real_rev,
         "refill_revenue": total_refill_rev,
         "total_revenue": total_rev,
         "refill_order_ratio": round(total_refill / (total_real + total_refill) * 100, 1) if (total_real + total_refill) else 0.0,
         "refill_cost_ratio": round(total_refill_rev / total_rev * 100, 1) if total_rev else 0.0,
         "promo_expense": total_promo,
-        "promo_ratio": round(total_promo / total_rev * 100, 1) if total_rev else 0.0,
+        "promo_ratio": round(total_promo / total_real_rev * 100, 1) if total_real_rev else 0.0,
         "factory_bill": _sum("factory_bill"),
+        "effective_cost": _sum("effective_cost"),
+        "cogs_estimated": _any("cogs_estimated"),
+        "freight_expense": _sum("freight_expense"),
+        "install_upstairs_expense": _sum("install_upstairs_expense"),
         "aftersales_compensation": _sum("aftersales_compensation"),
         "aftersales_count": sum(r["aftersales_count"] for r in rows),
         "aftersales_rate": round(sum(r["aftersales_count"] for r in rows) / total_real * 100, 1) if total_real else 0.0,
         "outsourcing_expense": _sum("outsourcing_expense"),
+        "outsourcing_estimated": _any("outsourcing_estimated"),
         "platform_fee": _sum("platform_fee"),
+        "platform_fee_estimated": _any("platform_fee_estimated"),
         "tax_expense": _sum("tax_expense"),
+        "tax_estimated": _any("tax_estimated"),
         "platform_activity_expense": _sum("platform_activity_expense"),
+        "platform_activity_estimated": _any("platform_activity_estimated"),
         "total_expense": total_exp,
         "net_profit": total_net,
-        "net_profit_rate": round(total_net / total_rev * 100, 1) if total_rev else 0.0,
+        "net_profit_rate": round(total_net / total_real_rev * 100, 1) if total_real_rev else 0.0,
         "avg_lead_time_days": None,
     }
 

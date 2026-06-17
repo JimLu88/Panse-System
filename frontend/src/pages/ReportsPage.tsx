@@ -16,6 +16,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -466,6 +467,19 @@ function pct(v: number | null | undefined): string {
   return `${v.toFixed(1)}%`;
 }
 
+// 预估值标蓝(带"估"角标 + 悬浮说明); 实际值正常显示。用户拍板 2026-06-17: 蓝色标注哪些是预估。
+const estCell = (estKey: keyof BusinessMonthRow, tip: string) =>
+  (v: number, r: BusinessMonthRow) =>
+    r[estKey]
+      ? (
+        <Tooltip title={`预估: ${tip}`}>
+          <span style={{ color: '#1677ff' }}>
+            {fmtY(v)}<sup style={{ fontSize: 9, marginLeft: 1 }}>估</sup>
+          </span>
+        </Tooltip>
+      )
+      : <span>{fmtY(v)}</span>;
+
 function BusinessMonthlyTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['business-monthly'],
@@ -522,7 +536,13 @@ function BusinessMonthlyTab() {
             </Space>
           ),
         },
-        { title: '工厂账单', dataIndex: 'factory_bill', width: 100, render: fmtY },
+        { title: '工厂账单', dataIndex: 'factory_bill', width: 95, render: fmtY },
+        {
+          title: '商品成本', dataIndex: 'effective_cost', width: 100,
+          render: estCell('cogs_estimated', '未对账月用逐单成本估算(含定制推演)'),
+        },
+        { title: '物流费', dataIndex: 'freight_expense', width: 85, render: fmtY },
+        { title: '安装上楼', dataIndex: 'install_upstairs_expense', width: 90, render: fmtY },
         {
           title: '售后赔付', dataIndex: 'aftersales_compensation', width: 100,
           render: (v: number, r: BusinessMonthRow) => (
@@ -534,10 +554,22 @@ function BusinessMonthlyTab() {
             </Space>
           ),
         },
-        { title: '人员外包', dataIndex: 'outsourcing_expense', width: 90, render: fmtY },
-        { title: '平台费', dataIndex: 'platform_fee', width: 90, render: fmtY },
-        { title: '税费', dataIndex: 'tax_expense', width: 90, render: fmtY },
-        { title: '平台活动2%', dataIndex: 'platform_activity_expense', width: 100, render: fmtY },
+        {
+          title: '人员外包', dataIndex: 'outsourcing_expense', width: 90,
+          render: estCell('outsourcing_estimated', '无实际录入, 5月起按 ¥10000/月预估'),
+        },
+        {
+          title: '平台费', dataIndex: 'platform_fee', width: 90,
+          render: estCell('platform_fee_estimated', '实付×0.6% 手续费'),
+        },
+        {
+          title: '税费', dataIndex: 'tax_expense', width: 90,
+          render: estCell('tax_estimated', '未填税的单按 实付×2% 预估'),
+        },
+        {
+          title: '平台活动2%', dataIndex: 'platform_activity_expense', width: 100,
+          render: estCell('platform_activity_estimated', '实付×2% 活动抽成(5月起)'),
+        },
         { title: '支出合计', dataIndex: 'total_expense', width: 100, render: fmtY },
       ],
     },
@@ -576,15 +608,31 @@ function BusinessMonthlyTab() {
         数据范围：2026年1月至今，每月一行，合计行在底部。补单占比 &gt;30% 或售后率偏高时红色提示。
         <br />
         「真实订单」= <b>已付款且成交</b>的正式订单（已剔除 <b>待付款 / 取消 / 关闭 / 全额退款 / 补单</b>）；
-        金额 = 买家实付 − 部分退款（真实到手）。与上方各页口径一致。
+        金额 = 买家实付 − 部分退款（真实到手）。净利润 = 真实金额 − 支出合计（完整会计成本），口径与「经营状况」一致。
       </Typography.Text>
+      <Alert
+        type="info" showIcon
+        message={<span><Tag color="blue">估</Tag> 蓝色 = 预估值（非实际录入），鼠标悬浮看口径</span>}
+        description={
+          <Typography.Text style={{ fontSize: 12 }}>
+            <b>平台费</b> = 实付×0.6%（手续费，列里基本没单独录）；
+            <b>平台活动2%</b> = 实付×2%（5月起）；
+            <b>税费</b> = 已填税用实际，未填的按实付×2%；
+            <b>人员外包</b> = 有录入用实际，5月起无录入按 ¥10,000/月（可在「管理→财务系数设置」改）；
+            <b>商品成本</b> = 已对账用工厂账单，未对账月用逐单成本（含定制单推演）。
+            <br />
+            <b>实际录入（非预估）</b>：推广费 / 工厂账单 / 物流费 / 安装上楼 / <b>售后赔付</b>（只算退款之外的额外售后：直接赔付/二次上门/返厂运费/万师傅扣款等；平台内退款已在收入里扣过，不重复计）。
+          </Typography.Text>
+        }
+        style={{ marginBottom: 4 }}
+      />
       <Table<BusinessMonthRow>
         rowKey="period"
         columns={columns}
         dataSource={allRows}
         loading={isLoading}
         pagination={false}
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1720 }}
         size="small"
         bordered
         rowClassName={(r) => r.period.includes('合计') ? 'ant-table-summary-row' : ''}

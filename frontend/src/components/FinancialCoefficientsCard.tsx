@@ -17,6 +17,7 @@ export default function FinancialCoefficientsCard() {
   const [activity, setActivity] = useState<number | null>(null);   // %
   const [tax, setTax] = useState<number | null>(null);             // %
   const [since, setSince] = useState<string>('2026-05-01');
+  const [outsourcing, setOutsourcing] = useState<number | null>(null);  // 元/月
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
   const [saving, setSaving] = useState(false);
@@ -27,6 +28,7 @@ export default function FinancialCoefficientsCard() {
       setActivity(pct(data.fin_platform_activity_rate));
       setTax(pct(data.fin_tax_rate));
       setSince(data.fin_platform_activity_since || '2026-05-01');
+      setOutsourcing(data.fin_outsourcing_monthly != null ? Number(data.fin_outsourcing_monthly) : 10000);
     }
   }, [data]);
 
@@ -52,6 +54,7 @@ export default function FinancialCoefficientsCard() {
         fin_platform_activity_rate: String((activity ?? 0) / 100),
         fin_tax_rate: String((tax ?? 0) / 100),
         fin_platform_activity_since: since,
+        fin_outsourcing_monthly: String(outsourcing ?? 10000),
         password: pw,
       });
       message.success('财务系数已修改, 全系统已生效');
@@ -77,6 +80,10 @@ export default function FinancialCoefficientsCard() {
           <span><Text>活动抽成生效起始日</Text>{' '}
             <DatePicker value={since ? dayjs(since) : null}
               onChange={(d) => setSince(d ? d.format('YYYY-MM-DD') : '2026-05-01')} /></span>
+          <span><Text>人员外包预估</Text>{' '}
+            <InputNumber min={0} step={1000} value={outsourcing} onChange={setOutsourcing}
+              addonAfter="元/月" style={{ width: 150 }} />
+            <Text type="secondary" style={{ fontSize: 12 }}> (无实际录入时, 5月起按此预估)</Text></span>
         </Space>
         <Button danger onClick={onSave}>保存财务系数（需 2 次警告 + 密码）</Button>
       </Space>

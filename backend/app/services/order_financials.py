@@ -29,12 +29,16 @@ DEFAULTS = {
     "fin_platform_activity_rate": "0.02",         # 平台活动抽成 2% (如有)
     "fin_platform_activity_since": "2026-05-01",  # 活动抽成生效起始日 (5月起有, 1-4月无)
     "fin_tax_rate": "0.02",                       # 税费 2%
+    "fin_outsourcing_monthly": "10000",           # 人员外包预估 (无实际录入时, 5月起按此/月预估)
+    "fin_outsourcing_est_since": "2026-05-01",    # 人员外包预估生效起始月
 }
 COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
     "fin_platform_activity_rate": "平台活动抽成率",
     "fin_platform_activity_since": "平台活动抽成生效起始日",
     "fin_tax_rate": "税率",
+    "fin_outsourcing_monthly": "人员外包预估(元/月)",
+    "fin_outsourcing_est_since": "人员外包预估生效起始月",
 }
 
 # 售后费用字段 (订单总表内冗余列; 缺则用均值)
@@ -129,3 +133,56 @@ def accounting_cost(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> Dec
 def net_profit(o: Order, coef: dict, as_avg: Decimal = Decimal("0")) -> Decimal:
     """利润 = 实付 − 退款 − 会计总成本。"""
     return _d(o.paid_amount) - _d(o.refund_amount) - accounting_cost(o, coef, as_avg)
+
+
+# ── 月度/区间报表共用口径 (月度经营数据 与 经营状况 统一, 用户拍板 2026-06-17) ──────────────
+# 退款之外的"额外售后"列: 直接赔付客户/二次上门/返厂打包运费/补发运费/万师傅扣款/好评返。
+# 不含 平台内·外售后总成本 与 订单赔付费 —— 那些多半就是已从收入扣过的退款, 再计会重复 (用户 Q2 拍板)。
+_AS_EXTRA_FIELDS = ("direct_compensation", "second_visit_fee", "return_pack_freight",
+                    "refill_freight", "wanshifu_deduction", "good_review_refund")
+
+
+def extra_aftersales(db: Session, start: date, end: date) -> Decimal:
+    """区间内"退款之外"的额外售后支出合计 (按 processed_at)。两个报表共用, 口径一致。"""
+    from app.models.marketing import AfterSales
+    cols = [func.coalesce(func.sum(getattr(AfterSales, f)), 0) for f in _AS_EXTRA_FIELDS]
+    row = db.execute(
+        select(*cols).where(AfterSales.processed_at >= start, AfterSales.processed_at <= end)
+    ).one()
+    return sum((_d(x) for x in row), Decimal("0"))
+
+
+def _iter_months(start: date, end: date):
+    y, m = start.year, start.month
+    while (y, m) <= (end.year, end.month):
+        yield y, m
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+
+
+def outsourcing_for_range(db: Session, start: date, end: date, coef: dict) -> tuple[Decimal, bool]:
+    """人员外包: 当月有实际录入用实际; 否则自 fin_outsourcing_est_since 起按 fin_outsourcing_monthly/月预估。
+    返回 (合计, 是否含预估)。两个报表共用 (用户拍板 2026-06-17: 5月起 ¥10000/月预估)。"""
+    from app.models.marketing import OutsourcingExpense
+    monthly_est = _d(coef.get("fin_outsourcing_monthly") or "10000")
+    try:
+        ey, em, _ = (int(x) for x in str(coef.get("fin_outsourcing_est_since") or "2026-05-01").split("-"))
+        est_since = date(ey, em, 1)
+    except Exception:  # noqa: BLE001
+        est_since = date(2026, 5, 1)
+    rows = db.execute(
+        select(func.to_char(OutsourcingExpense.payment_date, "YYYY-MM"),
+               func.coalesce(func.sum(OutsourcingExpense.amount), 0))
+        .where(OutsourcingExpense.payment_date >= start, OutsourcingExpense.payment_date <= end)
+        .group_by(func.to_char(OutsourcingExpense.payment_date, "YYYY-MM"))
+    ).all()
+    actual = {ym: _d(amt) for ym, amt in rows}
+    total = Decimal("0")
+    estimated = False
+    for y, m in _iter_months(start, end):
+        a = actual.get(f"{y}-{m:02d}", Decimal("0"))
+        if a > 0:
+            total += a
+        elif date(y, m, 1) >= est_since:
+            total += monthly_est
+            estimated = True
+    return total, estimated

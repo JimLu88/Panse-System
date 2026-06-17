@@ -1687,13 +1687,21 @@ def put_financial_coefficients(
     pwd = str(payload.get("password") or "")
     if not user.password_hash or not auth_service.verify_password(pwd, user.password_hash):
         raise HTTPException(403, "密码不正确, 财务系数未修改")
+    _DATE_KEYS = ("fin_platform_activity_since", "fin_outsourcing_est_since")
+    _MONEY_KEYS = ("fin_outsourcing_monthly",)   # 金额(元), 非 0~1 费率
     changed: dict = {}
     for k in ofin.DEFAULTS:
         if k in payload and payload[k] not in (None, ""):
             v = str(payload[k]).strip()
-            if k == "fin_platform_activity_since":
+            if k in _DATE_KEYS:
                 if not _re.fullmatch(r"\d{4}-\d{2}-\d{2}", v):
-                    raise HTTPException(400, "生效日格式应为 YYYY-MM-DD")
+                    raise HTTPException(400, f"{ofin.COEF_LABELS.get(k, k)} 格式应为 YYYY-MM-DD")
+            elif k in _MONEY_KEYS:
+                try:
+                    if float(v) < 0:
+                        raise ValueError
+                except ValueError:
+                    raise HTTPException(400, f"{ofin.COEF_LABELS.get(k, k)} 应为 ≥0 的金额 (元)")
             else:
                 try:
                     fv = float(v)
