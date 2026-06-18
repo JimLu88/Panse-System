@@ -304,13 +304,17 @@ def outsourcing_for_range(db: Session, start: date, end: date, coef: dict) -> tu
         est_since = date(ey, em, 1)
     except Exception:  # noqa: BLE001
         est_since = date(2026, 5, 1)
+    # 按年月聚合在 Python 做 (跨库: to_char 只 Postgres 有, sqlite 单测会崩)。
     rows = db.execute(
-        select(func.to_char(OutsourcingExpense.payment_date, "YYYY-MM"),
-               func.coalesce(func.sum(OutsourcingExpense.amount), 0))
+        select(OutsourcingExpense.payment_date, OutsourcingExpense.amount)
         .where(OutsourcingExpense.payment_date >= start, OutsourcingExpense.payment_date <= end)
-        .group_by(func.to_char(OutsourcingExpense.payment_date, "YYYY-MM"))
     ).all()
-    actual = {ym: _d(amt) for ym, amt in rows}
+    actual: dict[str, Decimal] = {}
+    for pdate, amt in rows:
+        if pdate is None:
+            continue
+        ym = f"{pdate.year}-{pdate.month:02d}"
+        actual[ym] = actual.get(ym, Decimal("0")) + _d(amt)
     total = Decimal("0")
     estimated = False
     for y, m in _iter_months(start, end):

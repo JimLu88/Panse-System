@@ -7,9 +7,15 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 
 from app.database import get_db
+from app.dependencies import get_current_user
 from app.main import app
 from app.models import Base
+from app.models.auth import User
 from app.models.finance import AccountBalance
+from app.services import auth_service
+
+# 整账删除是高危操作: 需 admin/operator 登录 + 登录密码二次确认 (用户拍板 2026-06-17)
+_TEST_PW = "pw123456"
 
 
 def _make_client():
@@ -27,7 +33,12 @@ def _make_client():
         finally:
             s.close()
 
+    def override_user():
+        return User(username="admin", role="admin", is_active=True,
+                    password_hash=auth_service.hash_password(_TEST_PW))
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_current_user] = override_user
     client = TestClient(app)
     return client, TestingSession, lambda: app.dependency_overrides.clear()
 
@@ -49,8 +60,8 @@ def test_delete_whole_account_removes_all_rows():
     client, sf, cleanup = _make_client()
     try:
         _seed(sf)
-        r = client.delete("/api/finance/accounts/by-name/all",
-                          params={"account_name": "企业号"})
+        r = client.request("DELETE", "/api/finance/accounts/by-name/all",
+                           params={"account_name": "企业号"}, json={"password": _TEST_PW})
         assert r.status_code == 200, r.text
         assert r.json()["deleted_rows"] == 2
 
@@ -67,8 +78,8 @@ def test_delete_unknown_account_404():
     client, sf, cleanup = _make_client()
     try:
         _seed(sf)
-        r = client.delete("/api/finance/accounts/by-name/all",
-                          params={"account_name": "不存在的账户"})
+        r = client.request("DELETE", "/api/finance/accounts/by-name/all",
+                           params={"account_name": "不存在的账户"}, json={"password": _TEST_PW})
         assert r.status_code == 404
     finally:
         cleanup()

@@ -117,13 +117,14 @@ def test_asset_breakdown_includes_new_terms(db_session):
     assert s.breakdown["未付人员费"] == 3000.0
 
 
-def test_run_all_includes_install_and_logistics(db_session):
-    """run_all 跑全部规则, 至少含 install_fee / logistics_fee 这两条核心规则."""
+def test_run_all_includes_core_rules(db_session):
+    """run_all 跑全部规则, 至少含核心几条。install_fee 已按用户拍板 2026-06-17 彻底关闭
+    (充值制不需万师傅月结对账), 不再产出 → 此处确认它不回归。"""
     results = reconciliation_service.run_all(db_session, record_exceptions=False)
-    assert "install_fee" in results
     assert "logistics_fee" in results
-    # 核心六条全在 (允许后续追加更多规则)
+    # 核心规则全在 (允许后续追加更多规则)
     assert {
-        "factory_payment", "install_fee", "promotion",
+        "factory_payment", "promotion",
         "refill_compensation", "inventory_value", "logistics_fee",
     }.issubset(set(results))
+    assert "install_fee" not in results   # 已关闭, 锁定不回归

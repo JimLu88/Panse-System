@@ -90,8 +90,9 @@ def test_summary_by_order(db_session, order_with_bom):
     svc.generate_for_order(db_session, order_with_bom.id)
     s = svc.summary_by_order(db_session)
     entry = s[order_with_bom.id]
-    assert entry["total"] == 2          # AC-0001 + MW-0001
-    assert entry["done"] == 1           # MW-0001 工厂提供 → 算配齐
+    # 工厂提供(MW-0001)不算外购配件, summary_by_order 只统计需采购的 (用户拍板 2026-06-17)
+    assert entry["total"] == 1          # 仅 AC-0001 (需采购), MW-0001 工厂提供已排除
+    assert entry["done"] == 0           # AC-0001 未采购 → 还没配齐
     assert entry["pending"] == 1        # AC-0001 未采购 → 还缺
 
 
@@ -141,14 +142,19 @@ def test_resync_bumps_untouched_woodwork_to_done(db_session):
 
 def test_by_component_aggregates_across_orders(db_session):
     db = db_session
+    # by_component 只统计「在制」(已付款待发货)订单的配件, 故先建对应在制订单 (用户拍板 2026-06-17)
+    orders = [Order(platform="淘宝", order_no=f"O{i}", product_code="P", sku_code="S",
+                    qty=1, status="paid") for i in (1, 2, 3, 4)]
+    db.add_all(orders); db.flush()
+    oid = {o.order_no: o.id for o in orders}
     db.add_all([
-        OrderAccessoryItem(order_id=1, order_no="O1", material_code="AC-RAIL", material_name="电力轨道1米",
+        OrderAccessoryItem(order_id=oid["O1"], order_no="O1", material_code="AC-RAIL", material_name="电力轨道1米",
                            qty_required=Decimal("2"), unit="根", source="bom", status="未采购", is_factory_provided=False),
-        OrderAccessoryItem(order_id=2, order_no="O2", material_code="AC-RAIL", material_name="电力轨道1米",
+        OrderAccessoryItem(order_id=oid["O2"], order_no="O2", material_code="AC-RAIL", material_name="电力轨道1米",
                            qty_required=Decimal("3"), unit="根", source="bom", status="已下单", is_factory_provided=False),
-        OrderAccessoryItem(order_id=3, order_no="O3", material_code="MW-X", material_name="木作",
+        OrderAccessoryItem(order_id=oid["O3"], order_no="O3", material_code="MW-X", material_name="木作",
                            qty_required=Decimal("1"), source="bom", status="工厂提供", is_factory_provided=True),
-        OrderAccessoryItem(order_id=4, order_no="O4", material_code="AC-RAIL", material_name="电力轨道1米",
+        OrderAccessoryItem(order_id=oid["O4"], order_no="O4", material_code="AC-RAIL", material_name="电力轨道1米",
                            qty_required=Decimal("5"), unit="根", source="bom", status="已到货", is_factory_provided=False),
     ])
     db.commit()
