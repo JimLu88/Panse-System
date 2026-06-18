@@ -245,6 +245,14 @@ def build_from_fields(
     product = None
     pricing_sku = None
     image_url = material_desc = None
+    # 订单缺 product_code 但有 sku_code → 从定价表反查 product_code (孚格PFG单、或 sku→编码回填未跑完的单)。
+    # 否则下方所有按 product_code 的查找(产品总表/图库主图/SKU尺寸图/配图兜底)全落空 → 下单图无产品图。
+    if not product_code and sku_code:
+        _pc = db.execute(
+            select(PricingSku.product_code).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if _pc:
+            product_code = _pc
     if product_code:
         product = db.execute(
             select(Product).where(Product.code == product_code)
@@ -276,6 +284,10 @@ def build_from_fields(
         ).scalar_one_or_none()
     if pricing_sku:
         image_url = pricing_sku.image_url
+    # item 页链接(item.htm/item.taobao)是商品详情页、不是图片, wkhtmltoimage 渲不出 → 当无图,
+    # 走下面同产品配图兜底 / 图库 (修"产品图空白": 部分定价行 image_url 被导成了 item 页链接)。
+    if image_url and ("item.htm" in image_url or "item.taobao" in image_url):
+        image_url = None
     # 配图回退 (2026-06-17): SKU 匹配不到/该 SKU 无图时(定制单、缺 sku_code 单), 用同产品
     # 任一有图 SKU 的图 —— 淘宝 CDN 链接 wkhtmltoimage 能直接取, 让下单图不再"无产品图"。
     if not image_url and product_code:
@@ -284,6 +296,8 @@ def build_from_fields(
                 PricingSku.product_code == product_code,
                 PricingSku.image_url.isnot(None),
                 PricingSku.image_url != "",
+                ~PricingSku.image_url.like("%item.htm%"),
+                ~PricingSku.image_url.like("%item.taobao%"),
             ).limit(1)
         ).scalar_one_or_none()
 

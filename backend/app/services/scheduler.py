@@ -709,7 +709,12 @@ def _job_ingest_scan(db: Session) -> dict:
         need_scan = [t for t in tasks
                      if not t.get("has_session") and not agent_ingest_service.SKIPPED_TASKS.get(t.get("id"))]
         if ing.get("errors", 0) == 0 and not need_scan and ing.get("imported", 0) > 0:
-            from app.services import order_sheet_archive_service
+            from app.services import order_sheet_archive_service, order_sync_service
+            # 生成下单图前先把编码回填: sku_code→product_code (孚格PFG单导入时无编码) + 标题→编码。
+            # 否则下单图按 product_code 查图库/产品总表/配图全落空 → 无产品图 (用户实测 2026-06-18)。
+            order_sync_service.backfill_product_code(db)
+            order_sync_service.backfill_code_from_taobao_title(db)
+            db.commit()
             ing["order_sheets"] = order_sheet_archive_service.generate_pending(db)
         elif need_scan:
             ing["order_sheets"] = {"skipped": "有平台需重新扫码, 等全部成功后再生成下单图"}
