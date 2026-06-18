@@ -16,9 +16,11 @@ def _order(db, order_no="O1", sku_code="SKU1", product_code="P1", qty=1, status=
     return o
 
 
-def _pricing(db, sku_code="SKU1", product_code="P1", accounting_cost=None, wood_cost=None):
+def _pricing(db, sku_code="SKU1", product_code="P1", accounting_cost=None, wood_cost=None,
+             physical_cost=None):
     ps = PricingSku(product_code=product_code, sku_code=sku_code,
-                    accounting_cost=accounting_cost, wood_cost=wood_cost)
+                    accounting_cost=accounting_cost, wood_cost=wood_cost,
+                    physical_cost=physical_cost)
     db.add(ps)
     db.flush()
     return ps
@@ -77,7 +79,9 @@ def test_wood_missing_pricing_flags_note(db_session):
 # ----------------- 定价表回填理论成本 ----------------- #
 
 def test_backfill_theoretical_from_pricing(db_session):
-    _pricing(db_session, sku_code="SKU1", accounting_cost=Decimal("2811.21"))
+    # 口径(2026-06-18): 理论成本=物理总成本(商品+物流+安装), 税/扣点由会计汇总按实付另算
+    _pricing(db_session, sku_code="SKU1", physical_cost=Decimal("2811.21"),
+             accounting_cost=Decimal("3100"))
     o = _order(db_session)
     assert o.theoretical_cost is None
 
@@ -101,7 +105,8 @@ def test_backfill_skips_cancelled(db_session):
 
 def test_backfill_falls_back_to_product_code(db_session):
     """sku_code 在定价表查不到时, 退到 product_code 任一有成本的定价行."""
-    _pricing(db_session, sku_code="SKU_OTHER", product_code="P1", accounting_cost=Decimal("888"))
+    _pricing(db_session, sku_code="SKU_OTHER", product_code="P1", physical_cost=Decimal("888"),
+             accounting_cost=Decimal("1000"))
     o = _order(db_session, sku_code="SKU_NOPRICE", product_code="P1")
 
     res = order_cost_service.backfill_theoretical_from_pricing(db_session)

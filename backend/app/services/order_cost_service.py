@@ -190,8 +190,6 @@ def compute(db: Session, order: Order) -> CostBreakdown:
                 ("工厂成本", "出厂成本(定价表, 含全套配件)", ps.factory_cost),
                 ("运费", "物流运输费(定价表)", ps.logistics_cost),
                 ("安装", "安装费(定价表)", ps.install_cost),
-                ("税费", "税费(定价表)", ps.tax),
-                ("扣点", "平台扣点(定价表)", ps.platform_fee_rate),  # 列名为 rate, 实存金额
             ):
                 if val is None or Decimal(str(val)) == 0:
                     continue
@@ -204,13 +202,14 @@ def compute(db: Session, order: Order) -> CostBreakdown:
             comp_sum = sum(
                 (ln.line_cost for ln in lines if ln.line_cost is not None), Decimal("0")
             ).quantize(_CENTS)
-            # 合计以定价表会计总成本为准 (组件缺列时兜底用组件合计)
-            unit_cost = (Decimal(str(ps.accounting_cost)).quantize(_CENTS)
-                         if ps.accounting_cost is not None else comp_sum)
+            # 理论成本 = 物理总成本(商品+物流+安装), 不含税/平台扣点: 会计汇总(accounting_summary)
+            # 已按实付另算这两项, 计进理论成本会被重复扣减 (用户拍板 2026-06-18 实测修正)。
+            unit_cost = (Decimal(str(ps.physical_cost)).quantize(_CENTS)
+                         if ps.physical_cost is not None else comp_sum)
             qty = int(order.qty or 1)
-            note = "口径: 定价表工厂成本+费用 (已知 SKU 不走 BOM, BOM 仅用于定制估算)"
-            if ps.accounting_cost is not None and comp_sum != unit_cost:
-                note += f" | 组件合计 ¥{comp_sum} 与会计总成本差 ¥{(unit_cost - comp_sum).quantize(_CENTS)}"
+            note = "口径: 定价表物理总成本(商品+物流+安装); 税/扣点由会计汇总按实付另算, 不计入理论成本"
+            if ps.physical_cost is not None and comp_sum != unit_cost:
+                note += f" | 组件合计 ¥{comp_sum} 与物理总成本差 ¥{(unit_cost - comp_sum).quantize(_CENTS)}"
             return CostBreakdown(
                 order_no=order.order_no, sku_code=sku_code, qty=qty,
                 unit_cost=unit_cost,
@@ -266,11 +265,10 @@ def compute(db: Session, order: Order) -> CostBreakdown:
         if ps is not None:
             if ps.accounting_cost is not None:
                 pricing_acc = Decimal(str(ps.accounting_cost))
+            # 理论成本只含 商品+物流+安装; 税/平台扣点由会计汇总按实付另算, 不在此累加 (避免重复)。
             for code, name, val in (
                 ("运费", "物流运输费(定价表)", ps.logistics_cost),
                 ("安装", "安装费(定价表)", ps.install_cost),
-                ("税费", "税费(定价表)", ps.tax),
-                ("扣点", "平台扣点(定价表)", ps.platform_fee_rate),
             ):
                 if val is None or Decimal(str(val)) == 0:
                     continue
@@ -633,20 +631,25 @@ _CLOSED_STATUSES = {"cancelled"}
 
 
 def _pricing_cost_for(db: Session, order: Order) -> Optional[Decimal]:
-    """按 sku_code (其次 product_code) 从定价表取会计总成本 accounting_cost。"""
+    """按 sku_code (其次 product_code) 从定价表取物理总成本 physical_cost (商品+物流+安装)。
+
+    用物理成本而非会计总成本: 税/平台扣点由会计汇总(accounting_summary)按实付另算,
+    这里若返回含税/扣点的会计成本会被重复扣减 (用户拍板 2026-06-18)。physical 缺则退回出厂成本。
+    """
+    cost_col = func.coalesce(PricingSku.physical_cost, PricingSku.factory_cost)
     sku_code = _resolve_sku_code(db, order)
     if sku_code:
         c = db.execute(
-            select(PricingSku.accounting_cost).where(PricingSku.sku_code == sku_code)
+            select(cost_col).where(PricingSku.sku_code == sku_code)
         ).scalar_one_or_none()
         if c is not None:
             return Decimal(str(c))
     # 退一步: 用 product_code 取该产品任一有成本的定价行 (同产品不同 SKU 成本接近)
     if order.product_code:
         c = db.execute(
-            select(PricingSku.accounting_cost)
+            select(cost_col)
             .where(PricingSku.product_code == order.product_code,
-                   PricingSku.accounting_cost.isnot(None))
+                   func.coalesce(PricingSku.physical_cost, PricingSku.factory_cost).isnot(None))
             .limit(1)
         ).scalar_one_or_none()
         if c is not None:

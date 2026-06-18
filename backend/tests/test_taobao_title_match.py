@@ -12,9 +12,10 @@ from app.services import taobao_title_import_service as tts
 
 
 def _seed_pricing(db):
+    # 理论成本口径(2026-06-18)=物理总成本(商品+物流+安装), 不含税/扣点; 会计成本(含税扣点)仅供对账
     db.add(PricingSku(product_code="PPS2398001060612", sku_code="PPS2398001060612",
-                      sku="樱桃木-1.4米", accounting_cost=Decimal("5000"),
-                      factory_cost=Decimal("4200")))
+                      sku="樱桃木-1.4米", physical_cost=Decimal("4500"),
+                      accounting_cost=Decimal("5000"), factory_cost=Decimal("4200")))
     db.flush()
 
 
@@ -48,8 +49,25 @@ def test_no_code_order_matched_by_title_uses_pricing_cost(db_session):
     o = db.execute(select(Order).where(Order.order_no == "N1")).scalar_one()
     assert o.product_code == "PPS2398001060612"
     assert o.sku_code == "PPS2398001060612"
-    # 成本来自定价表会计总成本 5000, 不是 实付×百分比
-    assert o.theoretical_cost is not None and float(o.theoretical_cost) == 5000.0
+    # 成本来自定价表物理总成本 4500 (商品+物流+安装, 不含税/扣点), 不是 实付×百分比
+    assert o.theoretical_cost is not None and float(o.theoretical_cost) == 4500.0
+
+
+def test_small_payment_fragment_not_matched(db_session):
+    db = db_session
+    _seed_pricing(db)  # physical_cost=4500
+    tts.import_titles(db, [tts.TitleRow(product_code="PPS2398001060612",
+                                        sku_code="PPS2398001060612",
+                                        title="畔色实木餐边柜樱桃木一体")])
+    # 实付¥200 远低于 4500×0.5 → 用柜子链接付的差价/定金片段, 不挂整柜成本
+    db.add(Order(platform="淘宝", order_no="F1", product_code=None, sku_code=None,
+                 product_name="畔色实木餐边柜樱桃木一体", sku="",
+                 qty=1, order_date=date(2026, 1, 6), status="paid",
+                 paid_amount=Decimal("200")))
+    db.flush()
+    order_sync_service.backfill_code_from_taobao_title(db)
+    f = db.execute(select(Order).where(Order.order_no == "F1")).scalar_one()
+    assert f.product_code is None
 
 
 def test_zero_cost_link_order_not_matched(db_session):
