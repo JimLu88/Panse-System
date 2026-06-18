@@ -38,6 +38,7 @@ class PricingSkuOut(BaseModel):
     product_code: str
     sku: Optional[str]
     sku_code: str
+    taobao_title: Optional[str] = None
     size_category: Optional[str]
     list_price: Optional[Decimal]
     daily_price: Optional[Decimal]
@@ -68,6 +69,7 @@ class PricingSkuIn(BaseModel):
     product_code: str
     sku_code: str
     sku: Optional[str] = None
+    taobao_title: Optional[str] = None
     size_category: Optional[str] = None
     list_price: Optional[Decimal] = None
     daily_price: Optional[Decimal] = None
@@ -89,6 +91,7 @@ class PricingSkuIn(BaseModel):
 
 class PricingSkuPatch(BaseModel):
     sku: Optional[str] = None
+    taobao_title: Optional[str] = None
     size_category: Optional[str] = None
     list_price: Optional[Decimal] = None
     daily_price: Optional[Decimal] = None
@@ -389,6 +392,36 @@ def run_promo_price_check(
     r = promo_price_check_service.check_all(db)
     db.commit()
     return r
+
+
+@router.post("/import-taobao-titles")
+async def import_taobao_titles(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """上传淘宝商品导出 xlsx → 回填定价表 taobao_title, 再把无编码订单按标题对回编码+重算成本。
+
+    用户拍板 2026-06-18: 解决「只带宝贝长标题、没商家编码」的订单对不到定价表、只能按百分比估成本。
+    """
+    from app.services import taobao_title_import_service, order_sync_service
+    raw = await file.read()
+    try:
+        res = taobao_title_import_service.import_from_xlsx_bytes(db, raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"解析失败: {type(e).__name__}: {e}") from e
+    db.commit()
+    # 标题入库后立即把无编码订单按标题回填编码并重算成本
+    backfilled = order_sync_service.backfill_code_from_taobao_title(db)
+    db.commit()
+    return {
+        "parsed_rows": res.parsed_rows,
+        "filled_by_sku_code": res.by_sku_code,
+        "filled_by_product_code": res.by_product_code,
+        "distinct_titles": res.distinct_titles,
+        "unmatched_titles": res.unmatched_titles[:50],
+        "orders_code_backfilled": backfilled,
+    }
 
 
 @router.post("", response_model=PricingSkuOut, status_code=201)

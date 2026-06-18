@@ -16,9 +16,10 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Upload,
   message,
 } from 'antd';
-import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined, QuestionCircleOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined, QuestionCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ProductThumb from '../components/ProductThumb';
@@ -42,6 +43,7 @@ import {
   downloadTaobaoExport,
   getCoefficientStats,
   runPromoPriceCheck,
+  importTaobaoTitles,
   type CoefficientStat,
 } from '../api/client';
 
@@ -109,6 +111,7 @@ const BASE_FIELDS: PresetField[] = [
 ];
 const ALL_FIELDS: PresetField[] = [
   ...BASE_FIELDS,
+  { key: 'taobao_title', label: '淘宝标题', group: '淘宝/活动价' },
   ...ACCESSORY_FIELDS.map((f) => ({ ...f, group: '配件成本' })),
   ...ACCESSORY_TEXT_FIELDS.map((f) => ({ ...f, group: '配件成本' })),
   ...PROMO_FIELDS.filter((f) => !f.key.startsWith('xhs')).map((f) => ({ key: f.key, label: f.label, group: '淘宝/活动价' })),
@@ -118,7 +121,7 @@ const _baseKeys = ['product_code', 'sku_code', 'sku', 'image_url'];
 const PRESET_DEFAULTS = [
   { name: '成本基础价', fields: [..._baseKeys, 'factory_cost', 'wood_cost', 'logistics_cost', 'install_cost', 'packaging_cost', 'external_parts_cost', 'accounting_cost', 'physical_cost', 'list_price', 'daily_price', 'gross_margin_rate'] },
   { name: '配件成本', fields: [..._baseKeys, ...ACCESSORY_FIELDS.map((f) => f.key), ...ACCESSORY_TEXT_FIELDS.map((f) => f.key)] },
-  { name: '淘宝', fields: [..._baseKeys, 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'big_promo_margin', ...PROMO_FIELDS.filter((f) => !f.key.startsWith('xhs')).map((f) => f.key)] },
+  { name: '淘宝', fields: [..._baseKeys, 'taobao_title', 'list_price', 'daily_price', 'small_promo', 'mid_promo', 'big_promo', 'big_promo_margin', ...PROMO_FIELDS.filter((f) => !f.key.startsWith('xhs')).map((f) => f.key)] },
   { name: '小红书', fields: [..._baseKeys, 'list_price', 'daily_price', ...PROMO_FIELDS.filter((f) => f.key.startsWith('xhs')).map((f) => f.key)] },
 ];
 
@@ -368,6 +371,7 @@ export default function PricingPage() {
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(50);
   const [createOpen, setCreateOpen] = useState(false);
+  const [importingTitles, setImportingTitles] = useState(false);
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
   // 统一编辑器 (可拖动, 字段级历史, 一键覆盖同产品)
   const [editorRow, setEditorRow] = useState<PricingSku | null>(null);
@@ -596,7 +600,13 @@ export default function PricingPage() {
       </Tooltip>
     );
   };
-  const promoColumns: any[] = PROMO_FIELDS.map((f) => ({
+  const taobaoTitleCol: any = {
+    title: '淘宝标题', dataIndex: 'taobao_title', width: 240, ellipsis: true,
+    render: (v: any) => (v
+      ? <Tooltip title={v}><span>{String(v)}</span></Tooltip>
+      : <Typography.Text type="secondary" title="上传「淘宝商品导出」可批量填充">—</Typography.Text>),
+  };
+  const promoColumns: any[] = [taobaoTitleCol, ...PROMO_FIELDS.map((f) => ({
     title: COEFF_COLOR.includes(f.key) ? coeffTitle(f) : f.label,
     dataIndex: f.key, width: f.kind === 'text' ? 130 : 100, ellipsis: f.kind === 'text',
     render: (v: any, r: PricingSku) => {
@@ -613,7 +623,7 @@ export default function PricingPage() {
         </Tooltip>
       );
     },
-  }));
+  }))];
   const actionsCol = {
     title: '操作', width: cw('actions', 70), fixed: 'right' as const,
     render: (_: unknown, row: PricingSku) => <Button size="small" icon={<EditOutlined />} onClick={() => setEditorRow(row)}>编辑</Button>,
@@ -632,6 +642,7 @@ export default function PricingPage() {
   };
   ACCESSORY_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fbf4ff'; });
   PROMO_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fff0f6'; });
+  GROUP_BG['taobao_title'] = '#fff0f6';
   const withGroupColor = (cols: any[]) => cols.map((c) => {
     const bg = GROUP_BG[c.dataIndex as string];
     if (!bg) return c;
@@ -668,6 +679,28 @@ export default function PricingPage() {
               menu={{ items: (exportTypes ?? []).map((t) => ({ key: t.key, label: t.label, onClick: () => handleExport(t.key, t.label) })) }}>
               <Button icon={<ExportOutlined />}>批量导出（填好数据）</Button>
             </Dropdown>
+          </Tooltip>
+          <Tooltip title="上传「淘宝商品导出.xlsx」(宝贝标题↔商家编码), 自动填入定价表淘宝标题, 并把只带长标题、没编码的订单对回编码、按定价表重算成本">
+            <Upload
+              accept=".xlsx,.xls"
+              showUploadList={false}
+              beforeUpload={(file) => {
+                setImportingTitles(true);
+                importTaobaoTitles(file as File)
+                  .then((r) => {
+                    message.success(
+                      `淘宝标题已导入: 定价表填充 ${r.filled_by_sku_code + r.filled_by_product_code} 个SKU` +
+                      `, 订单回填编码 ${r.orders_code_backfilled} 笔` +
+                      (r.unmatched_titles.length ? `；${r.unmatched_titles.length} 个宝贝定价表里没有(需补SKU)` : ''));
+                    invalidatePricing();
+                  })
+                  .catch((e: any) => message.error(e?.response?.data?.detail ?? '导入失败'))
+                  .finally(() => setImportingTitles(false));
+                return false;
+              }}
+            >
+              <Button icon={<UploadOutlined />} loading={importingTitles}>导入淘宝标题</Button>
+            </Upload>
           </Tooltip>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => { setCreateOpen(true); form.resetFields(); }}>新增定价</Button>
         </Space>

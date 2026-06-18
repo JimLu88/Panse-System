@@ -6,7 +6,7 @@
  *  - 「保存并覆盖同产品全部 SKU」一键铺到全产品 (二次确认)
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Collapse, InputNumber, Modal, Space, Typography, message } from 'antd';
+import { Alert, Button, Collapse, Input, InputNumber, Modal, Space, Typography, message } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -86,6 +86,9 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
   const qc = useQueryClient();
   const [vals, setVals] = useState<Record<string, number | null>>({});
   const [base, setBase] = useState<Record<string, number | null>>({});
+  // 淘宝宝贝标题 (文本, 宝贝级) — 单独管理, 不进数值 vals
+  const [title, setTitle] = useState<string>('');
+  const [titleBase, setTitleBase] = useState<string>('');
   const [saving, setSaving] = useState(false);
   // 公式字段解锁集合 (每次打开编辑器重置)
   const [unlocked, setUnlocked] = useState<Set<string>>(new Set());
@@ -98,6 +101,8 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
       const seeded = { ...seed(row, SKU_FIELDS), ...seed(row, COSTS_FIELDS), ...seed(row, PROMO_FIELDS_E) };
       setVals(seeded);
       setBase(seeded);
+      setTitle(row.taobao_title ?? '');
+      setTitleBase(row.taobao_title ?? '');
       setOffset({ x: 0, y: 0 });
       setUnlocked(new Set());
     }
@@ -133,12 +138,15 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
   const promoDiff = diffOf(
     Object.fromEntries(PROMO_FIELDS_E.map((d) => [d.key, vals[d.key]])),
     Object.fromEntries(PROMO_FIELDS_E.map((d) => [d.key, base[d.key]])));
-  const dirtyCount = Object.keys(skuDiff).length + Object.keys(costsDiff).length + Object.keys(promoDiff).length;
+  const titleDirty = title.trim() !== titleBase.trim();
+  const dirtyCount = Object.keys(skuDiff).length + Object.keys(costsDiff).length + Object.keys(promoDiff).length + (titleDirty ? 1 : 0);
+  // 主表补丁 = 数值差异 + (改过的)淘宝标题
+  const skuPatch = (): Record<string, unknown> => ({ ...skuDiff, ...(titleDirty ? { taobao_title: title.trim() || null } : {}) });
 
   const saveOne = async () => {
     setSaving(true);
     try {
-      if (Object.keys(skuDiff).length) await updatePricingSku(row.id, skuDiff);
+      if (Object.keys(skuPatch()).length) await updatePricingSku(row.id, skuPatch());
       if (Object.keys(costsDiff).length) await upsertSkuCosts(row.sku_code, costsDiff);
       if (Object.keys(promoDiff).length) await upsertSkuPromo(row.sku_code, promoDiff);
       message.success(`已保存 ${dirtyCount} 个字段 (含联动重算)`);
@@ -162,7 +170,7 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
         setSaving(true);
         try {
           const r = await updatePricingByProduct(row.product_code, {
-            sku: Object.keys(skuDiff).length ? skuDiff : undefined,
+            sku: Object.keys(skuPatch()).length ? skuPatch() : undefined,
             costs: Object.keys(costsDiff).length ? costsDiff : undefined,
             promo: Object.keys(promoDiff).length ? promoDiff : undefined,
           });
@@ -250,6 +258,16 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
     >
       <Alert type="info" showIcon style={{ marginBottom: 10 }}
              message="改完点保存才生效, 系统自动联动重算 (促销价/会计成本/利润等)。每个字段右侧 ⏱ 可看最近 30 份修改记录。" />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ width: 64, flexShrink: 0, fontSize: 13 }}>淘宝标题</span>
+        <Input
+          size="small" allowClear
+          placeholder="淘宝宝贝标题 (订单只带长标题没编码时, 系统按它对回本产品算成本)"
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+        />
+        {titleDirty && <Typography.Text type="warning" style={{ fontSize: 11, flexShrink: 0 }}>改</Typography.Text>}
+      </div>
       <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
         <Collapse
           defaultActiveKey={['price']}

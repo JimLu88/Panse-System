@@ -21,6 +21,9 @@ class PricingSku(Base, TimestampMixin):
     id: Mapped[int] = mapped_column(primary_key=True)
     product_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     product_name: Mapped[Optional[str]] = mapped_column(String(255))  # 产品名称
+    # 淘宝宝贝标题 (宝贝级, 同产品所有 SKU 共用): 订单导入只带这个长标题、不带编码时,
+    # 按 order.product_name == taobao_title 精确匹配回填 product_code → 走定价表算成本而非百分比。
+    taobao_title: Mapped[Optional[str]] = mapped_column(String(255), index=True)
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     sku_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     size_category: Mapped[Optional[str]] = mapped_column(String(16))  # 小型 / 中型 / 大型

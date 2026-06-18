@@ -178,6 +178,73 @@ def backfill_product_code(db: Session) -> int:
     return n
 
 
+def backfill_code_from_taobao_title(db: Session) -> int:
+    """无 product_code 的订单, 按 product_name == pricing_sku.taobao_title 精确匹配回填编码。
+
+    用户拍板 2026-06-18: 那批只带宝贝长标题、没商家编码的订单(6-07 导入丢编码), 在定价表补了
+    taobao_title 后即可对回宝贝 → 立刻按定价表算真实成本, 不再走 实付×类目成本率 的百分比兜底。
+
+    - 只用「唯一标题→唯一宝贝」映射 (一个标题对到多个宝贝则丢弃, 避免误配);
+    - 命中后立即用 recompute_and_save 按定价表重算, 覆盖旧的百分比估算值;
+    - 顺带按 SKU 描述对上具体 sku_code (对不上不影响, 成本引擎按 product_code 退价);
+    - 差价/样品/专链等非产品单跳过 (本就该归 0, 不挂产品编码);
+    - 命中订单的「缺成本估算」异常顺手销账。幂等。
+    """
+    from app.models.exception import DataException
+    from app.models.pricing import PricingSku
+    from app.services import order_cost_service
+
+    title_pc: dict[str, set[str]] = defaultdict(set)
+    pc_skus: dict[str, list[tuple[str, str]]] = defaultdict(list)
+    for ps in db.execute(
+        select(PricingSku).where(PricingSku.taobao_title.isnot(None))
+    ).scalars().all():
+        t = (ps.taobao_title or "").strip()
+        if not t:
+            continue
+        pc = (ps.product_code or "").strip()
+        title_pc[t].add(pc)
+        pc_skus[pc].append((ps.sku_code, (ps.sku or "").strip()))
+    title2pc = {t: next(iter(s)) for t, s in title_pc.items() if len(s) == 1}
+
+    n = 0
+    fixed_nos: list[str] = []
+    for o in db.execute(
+        select(Order).where(Order.product_code.is_(None))
+    ).scalars().all():
+        if order_cost_service.zero_cost_reason(o) is not None:
+            continue
+        pc = title2pc.get((o.product_name or "").strip())
+        if not pc:
+            continue
+        o.product_code = pc
+        if not o.sku_code and o.sku:
+            want = (o.sku or "").strip()
+            for sc, stext in pc_skus.get(pc, []):
+                if stext and stext == want:
+                    o.sku_code = sc
+                    break
+        # 立刻按定价表重算, 覆盖旧的百分比估算 (不传 ratios → 不再走率兜底)
+        order_cost_service.recompute_and_save(db, o)
+        fixed_nos.append(o.order_no)
+        n += 1
+
+    # 销账: 这批订单之前的「缺成本估算」异常已不成立
+    if fixed_nos:
+        for ex in db.execute(
+            select(DataException).where(
+                DataException.source_table == "orders",
+                DataException.exception_type == "cost_missing_estimated",
+                DataException.status == "open",
+                DataException.source_pk.in_(fixed_nos),
+            )
+        ).scalars().all():
+            ex.status = "resolved"
+        db.flush()
+    _logger.info("backfill_code_from_taobao_title: 按标题回填 %d 条订单编码", n)
+    return n
+
+
 def backfill_warehouse(db: Session) -> int:
     """存量订单仓库回填: 对 warehouse 为空的订单用 default_warehouse_for 自动判定。幂等。"""
     orders = db.execute(

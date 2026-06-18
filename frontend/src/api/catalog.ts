@@ -6,6 +6,7 @@ export interface PricingSku {
   product_code: string;
   sku: string | null;
   sku_code: string;
+  taobao_title?: string | null;   // 淘宝宝贝标题 (订单无编码时按它匹配回编码)
   size_category: string | null;
   list_price: number | null;
   daily_price: number | null;
@@ -637,7 +638,7 @@ export const listProductSkus = (product_code: string) =>
 
 // -- 定价录入/编辑
 export interface PricingSkuCreate {
-  product_code: string; sku_code: string; sku?: string; size_category?: string;
+  product_code: string; sku_code: string; sku?: string; taobao_title?: string; size_category?: string;
   list_price?: number; daily_price?: number; small_promo?: number; mid_promo?: number; big_promo?: number;
   accounting_cost?: number; physical_cost?: number; platform_fee_rate?: number; tax?: number; image_url?: string;
 }
@@ -645,6 +646,23 @@ export const createPricingSku = (payload: PricingSkuCreate) =>
   api.post<PricingSku>('/api/pricing-skus', payload).then(r => r.data);
 export const updatePricingSku = (id: number, payload: Partial<PricingSkuCreate>) =>
   api.patch<PricingSku>(`/api/pricing-skus/${id}`, payload).then(r => r.data);
+
+// -- 上传淘宝商品导出 xlsx → 回填定价表 taobao_title + 无编码订单按标题对回编码
+export interface ImportTaobaoTitlesResult {
+  parsed_rows: number;
+  filled_by_sku_code: number;
+  filled_by_product_code: number;
+  distinct_titles: number;
+  unmatched_titles: string[];
+  orders_code_backfilled: number;
+}
+export const importTaobaoTitles = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api.post<ImportTaobaoTitlesResult>('/api/pricing-skus/import-taobao-titles', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }).then(r => r.data);
+};
 export const recomputePricingSku = (id: number) =>
   api.post<PricingSku>(`/api/pricing-skus/${id}/recompute`).then(r => r.data);
 

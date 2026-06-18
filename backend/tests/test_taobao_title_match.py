@@ -1,0 +1,70 @@
+# -*- coding: utf-8 -*-
+"""淘宝标题 → 定价表回填 + 无编码订单按标题对回编码走定价表成本 (用户拍板 2026-06-18)。"""
+from datetime import date
+from decimal import Decimal
+
+from sqlalchemy import select
+
+from app.models.order import Order
+from app.models.pricing import PricingSku
+from app.services import order_sync_service
+from app.services import taobao_title_import_service as tts
+
+
+def _seed_pricing(db):
+    db.add(PricingSku(product_code="PPS2398001060612", sku_code="PPS2398001060612",
+                      sku="樱桃木-1.4米", accounting_cost=Decimal("5000"),
+                      factory_cost=Decimal("4200")))
+    db.flush()
+
+
+def test_import_titles_fills_pricing(db_session):
+    db = db_session
+    _seed_pricing(db)
+    rows = [tts.TitleRow(product_code="PPS2398001060612",
+                         sku_code="PPS2398001060612",
+                         title="畔色实木餐边柜樱桃木一体")]
+    res = tts.import_titles(db, rows)
+    assert res.by_sku_code == 1
+    ps = db.execute(select(PricingSku)).scalar_one()
+    assert ps.taobao_title == "畔色实木餐边柜樱桃木一体"
+
+
+def test_no_code_order_matched_by_title_uses_pricing_cost(db_session):
+    db = db_session
+    _seed_pricing(db)
+    tts.import_titles(db, [tts.TitleRow(product_code="PPS2398001060612",
+                                        sku_code="PPS2398001060612",
+                                        title="畔色实木餐边柜樱桃木一体")])
+    # 无编码订单, 名字 == 淘宝标题, 描述 == SKU 描述
+    db.add(Order(platform="淘宝", order_no="N1", product_code=None, sku_code=None,
+                 product_name="畔色实木餐边柜樱桃木一体", sku="樱桃木-1.4米",
+                 qty=1, order_date=date(2026, 1, 4), status="paid",
+                 paid_amount=Decimal("11000")))
+    db.flush()
+
+    n = order_sync_service.backfill_code_from_taobao_title(db)
+    assert n == 1
+    o = db.execute(select(Order).where(Order.order_no == "N1")).scalar_one()
+    assert o.product_code == "PPS2398001060612"
+    assert o.sku_code == "PPS2398001060612"
+    # 成本来自定价表会计总成本 5000, 不是 实付×百分比
+    assert o.theoretical_cost is not None and float(o.theoretical_cost) == 5000.0
+
+
+def test_zero_cost_link_order_not_matched(db_session):
+    db = db_session
+    _seed_pricing(db)
+    tts.import_titles(db, [tts.TitleRow(product_code="PPS2398001060612",
+                                        sku_code="PPS2398001060612",
+                                        title="畔色实木餐边柜樱桃木一体")])
+    # 差价/专链单 — 即便没编码也不该被挂产品编码 (zero_cost_reason 命中)
+    db.add(Order(platform="淘宝", order_no="Z1", product_code=None, sku_code=None,
+                 product_name="畔色木作 差价邮费补拍专链", sku="补差价",
+                 qty=1, order_date=date(2026, 1, 5), status="paid",
+                 paid_amount=Decimal("100")))
+    db.flush()
+
+    order_sync_service.backfill_code_from_taobao_title(db)
+    z = db.execute(select(Order).where(Order.order_no == "Z1")).scalar_one()
+    assert z.product_code is None
