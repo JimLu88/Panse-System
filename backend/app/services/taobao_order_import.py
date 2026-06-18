@@ -538,7 +538,10 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         # 财务字段 (淘宝导出为准): 应付/实付/实收/平台费/退款/发货日
         status, _recognized = _resolve_status(o.status_text)
         payable = _to_decimal(o.buyer_payable)
-        paid = _to_decimal(o.paid_real) or _to_decimal(o.paid_amount)
+        # 实付优先, 但「买家实付列存在且=0」必须保留 0 (关闭/未付款单), 不能 `0 or 应付` 退回应付——
+        # 否则关闭单(实付0)会拿到应付货款当假收入混进成交 (用户实测 2026-06-18)。仅当实付列缺失才退应付。
+        _paid_real_d = _to_decimal(o.paid_real)
+        paid = _paid_real_d if _paid_real_d is not None else _to_decimal(o.paid_amount)
         received = _to_decimal(o.shop_received)
         pfee = _to_decimal(o.platform_fee)
         refund = _to_decimal(o.refund)

@@ -54,7 +54,8 @@ def settled_sale_clause():
     is_service = or_(*[name.contains(k) for k in SERVICE_KEYWORDS])
     return and_(
         Order.status.in_(SETTLED_SALE_STATUSES),
-        not_(and_(refund > 0, refund >= paid * Decimal("0.99"))),  # 全额退款(含paid=0的退款单)不算成交
+        paid > 0,                                                   # 必须有真实付款: 关闭/未付款单(实付0)不算成交
+        not_(and_(refund > 0, refund >= paid * Decimal("0.99"))),  # 全额退款不算成交
         not_(and_(is_service, paid <= 0)),                          # 仅排除 ¥0 的纯服务附加行
     )
 
@@ -65,7 +66,9 @@ def is_settled_sale(o) -> bool:
         return False
     paid = Decimal(str(o.paid_amount or 0))
     refund = Decimal(str(getattr(o, "refund_amount", 0) or 0))
-    if refund > 0 and refund >= paid * Decimal("0.99"):   # 全额退款(含 paid=0 退款单)
+    if paid <= 0:                                          # 关闭/未付款单(实付0)不算成交
+        return False
+    if refund > 0 and refund >= paid * Decimal("0.99"):   # 全额退款
         return False
     if _is_service_line(getattr(o, "product_name", "")) and paid <= 0:  # 仅 ¥0 纯服务附加行
         return False

@@ -196,7 +196,6 @@ def backfill_code_from_taobao_title(db: Session) -> int:
 
     title_pc: dict[str, set[str]] = defaultdict(set)
     pc_skus: dict[str, list[tuple[str, str]]] = defaultdict(list)
-    pc_min_phys: dict[str, Decimal] = {}
     for ps in db.execute(
         select(PricingSku).where(PricingSku.taobao_title.isnot(None))
     ).scalars().all():
@@ -206,11 +205,6 @@ def backfill_code_from_taobao_title(db: Session) -> int:
         pc = (ps.product_code or "").strip()
         title_pc[t].add(pc)
         pc_skus[pc].append((ps.sku_code, (ps.sku or "").strip()))
-        phys = ps.physical_cost if ps.physical_cost is not None else ps.factory_cost
-        if phys is not None:
-            phys = Decimal(str(phys))
-            if pc not in pc_min_phys or phys < pc_min_phys[pc]:
-                pc_min_phys[pc] = phys
     title2pc = {t: next(iter(s)) for t, s in title_pc.items() if len(s) == 1}
 
     n = 0
@@ -223,12 +217,8 @@ def backfill_code_from_taobao_title(db: Session) -> int:
         pc = title2pc.get((o.product_name or "").strip())
         if not pc:
             continue
-        # 实付远低于该宝贝最低成本 → 差价/定金/补拍片段(用柜子链接付小额), 不是整件成交,
-        # 不挂整柜成本 (否则 ¥200 订单背 ¥8721 整柜成本, 把月度成本拉爆)。留作无编码, 走小额兜底。
-        phys = pc_min_phys.get(pc)
-        paid = Decimal(str(o.paid_amount or 0))
-        if phys is not None and phys > 0 and paid < phys * Decimal("0.5"):
-            continue
+        # 命中后挂编码; 若是差价/定金片段(实付远低于整件成本), 成本由 recompute_and_save 的
+        # 片段规则按 实付×85% 兜底 (保留编码以保产品链接, 不挂整柜成本)。
         o.product_code = pc
         if not o.sku_code and o.sku:
             want = (o.sku or "").strip()

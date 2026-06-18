@@ -451,6 +451,33 @@ def _sales_ratio_cost(db: Session, order: Order, ratios: dict) -> Optional[Decim
     return (paid * Decimal(str(ratio))).quantize(_CENTS)
 
 
+# 差价/定金/补拍片段判定 (用户拍板 2026-06-18): 实付远低于整件产品成本 → 不是整件成交,
+# 而是用产品链接付的小额(补差价/定金/补拍邮费)。这类按 实付×85% 兜底成本(留15%毛利),
+# 不挂整柜成本 (否则 ¥200 订单背 ¥8721 整柜成本, 月度成本被拉爆)。
+_FRAGMENT_PAID_RATIO = Decimal("0.5")    # 实付 < 产品成本×此比例 → 判为片段
+_FRAGMENT_COST_RATE = Decimal("0.85")    # 片段成本 = 实付 × 此率
+
+
+def _apply_fragment_rule(order: Order, bd: CostBreakdown) -> Decimal:
+    """若订单是差价/定金片段(实付 < 产品成本×50%) → 理论成本=实付×85%; 否则原成本。
+
+    只对非定制单生效(定制有独立核算); bd 已带整件产品成本(bd.unit_cost)。原地改 bd 并返回单件成本。
+    """
+    cost = bd.unit_cost
+    if order.is_custom:
+        return cost
+    paid = Decimal(str(order.paid_amount or 0))
+    if cost and cost > 0 and paid > 0 and paid < cost * _FRAGMENT_PAID_RATIO:
+        capped = (paid * _FRAGMENT_COST_RATE).quantize(_CENTS)
+        bd.unit_cost = capped
+        bd.total_cost = (capped * bd.qty).quantize(_CENTS)
+        bd.cost_incomplete = True
+        bd.note = ((bd.note + " | ") if bd.note else "") + \
+            f"差价/定金片段(实付¥{paid}<整件成本¥{cost}×50%) → 实付×85%兜底 ¥{capped}"
+        return capped
+    return cost
+
+
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
@@ -468,16 +495,16 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         )
     bd = compute(db, order)
     if bd.resolved:
-        order.theoretical_cost = bd.unit_cost
+        order.theoretical_cost = _apply_fragment_rule(order, bd)
         return bd
-    # 无 BOM → 回退定价表会计总成本 (口径同样含运费/安装/税/扣点)
+    # 无 BOM → 回退定价表物理总成本
     cost = _pricing_cost_for(db, order)
     if cost is not None:
-        order.theoretical_cost = cost.quantize(_CENTS)
         bd.unit_cost = cost.quantize(_CENTS)
         bd.total_cost = (bd.unit_cost * bd.qty).quantize(_CENTS)
         bd.resolved = True
-        bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表会计总成本"
+        bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表物理总成本"
+        order.theoretical_cost = _apply_fragment_rule(order, bd)
         return bd
     # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
     if ratios is not None:
