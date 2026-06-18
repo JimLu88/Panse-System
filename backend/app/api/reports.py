@@ -209,17 +209,19 @@ def sales_cost_anomaly(
     """诊断销售汇总成本异常: 找『实付小却背全额成本』的错配单(成本>实付), 量化它们把总成本拉高多少。
     用于解释为何某产品利润率偏低 / 总利润为负。"""
     from app.models.order import Order as _O
+    from app.services import sales_analytics, order_financials as ofin
     start, end = _range_for(period)
     q = select(_O).where(_O.order_date >= start, _O.order_date <= end,
-                         _O.status.in_(("paid", "shipped", "signed")))
+                         sales_analytics.settled_sale_clause(),  # 统一成交口径
+                         _O.is_refill == False)  # noqa: E712
     if product_code:
         q = q.where(_O.product_code == product_code)
     orders = db.execute(q).scalars().all()
     tot_rev = tot_cost = Decimal("0")
     mism = []
     for o in orders:
-        rev = Decimal(o.paid_amount or 0)
-        cost = Decimal(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0))
+        rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)
+        cost = ofin.physical_cost(o)   # 统一物理成本(含片段85%兜底)
         tot_rev += rev
         tot_cost += cost
         if cost > rev:

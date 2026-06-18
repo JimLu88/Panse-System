@@ -83,7 +83,7 @@ def test_import_qianniu_multi(db_session):
     assert rep.detected_format == "qianniu_multi"
     assert rep.inserted == 1
     o = db_session.query(Order).filter_by(order_no="A100").one()
-    assert o.product_code == "P26380040225"     # PPS→P 还原
+    assert o.product_code == "PPS26380040225"   # 导入统一 P→PPS (用户拍板: 以后全 PPS)
     assert o.sku == "榉木床头柜-标准"             # 商品属性提取
     assert o.sku_code == "PPS2638004022511"
     assert o.qty == 2
@@ -103,7 +103,7 @@ def test_import_sales_detail_csv(db_session):
     assert rep.detected_format == "sales_detail"
     assert rep.inserted == 1
     o = db_session.query(Order).filter_by(order_no="B200").one()
-    assert o.product_code == "P23210020201"
+    assert o.product_code == "PPS23210020201"   # 导入统一 P→PPS (用户拍板: 以后全 PPS)
     assert o.sku == "砂白色2.0米岩板餐桌"
     assert o.status == "signed"
 

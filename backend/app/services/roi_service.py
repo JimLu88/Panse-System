@@ -91,10 +91,11 @@ def monthly_breakdown(db: Session, *, year: Optional[int] = None) -> dict:
             PromotionFlow.transaction_date.isnot(None),
         )
     ).all()
+    from app.services.sales_analytics import settled_sale_clause
     order_rows = db.execute(
-        select(Order.order_date, Order.paid_amount).where(
+        select(Order.order_date, Order.paid_amount, Order.refund_amount).where(
             Order.is_refill == False,  # noqa: E712
-            Order.status != "cancelled",
+            settled_sale_clause(),     # 统一成交口径(排待付款/取消/关闭/全退/实付≤0), 与 compute() 一致
             Order.order_date.isnot(None),
         )
     ).all()
@@ -108,11 +109,11 @@ def monthly_breakdown(db: Session, *, year: Optional[int] = None) -> dict:
 
     rev_by: dict[str, Decimal] = {}
     cnt_by: dict[str, int] = {}
-    for d, paid in order_rows:
+    for d, paid, refund in order_rows:
         if year and d.year != year:
             continue
         k = f"{d.year:04d}-{d.month:02d}"
-        rev_by[k] = rev_by.get(k, Decimal("0")) + Decimal(paid or 0)
+        rev_by[k] = rev_by.get(k, Decimal("0")) + (Decimal(paid or 0) - Decimal(refund or 0))
         cnt_by[k] = cnt_by.get(k, 0) + 1
 
     months: list[dict] = []

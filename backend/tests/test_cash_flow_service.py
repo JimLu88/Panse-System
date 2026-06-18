@@ -97,7 +97,18 @@ def test_total_profit_excludes_refill_and_flags_missing_cost(db_session):
     p = cash_flow_service.compute_total_profit(db)
     assert p["order_count"] == 2                          # 补单被排除
     assert p["orders_missing_cost"] == 1                  # P2 缺成本
-    assert p["net_profit"] == Decimal("2600.00")         # (1000-400) + (2000-0)
+    # 统一会计口径(2026-06-18): 净利 = Σ(实付−退款) − Σ会计总成本(含平台扣点+税), 故 < 旧的 2600
+    from app.services import order_financials as ofin
+    from app.models.order import Order as _O
+    from sqlalchemy import select as _select
+    coef = ofin.load_coefficients(db)
+    settled = [o for o in db.execute(_select(_O)).scalars().all() if not o.is_refill]
+    expected_net = sum(
+        (Decimal(str(o.paid_amount or 0)) - Decimal(str(o.refund_amount or 0))
+         - ofin.accounting_cost(o, coef, aftersales=Decimal("0")) for o in settled),
+        Decimal("0")).quantize(Decimal("0.01"))
+    assert p["net_profit"] == expected_net
+    assert p["net_profit"] < Decimal("2600.00")           # 含平台扣点+税后低于旧口径
 
 
 def test_freshness_uses_as_of_date_not_import_time(db_session):

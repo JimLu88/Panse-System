@@ -43,13 +43,23 @@ def test_summary_basic(db_session):
                                 end=today)
     assert s.order_count == 3
     assert s.revenue == Decimal("3000")
-    assert s.cost == Decimal("1800")
+    # 毛利 = 销售额 − 物理产品成本(3×600), 不含平台/税 → 保持 1200
     assert s.gross_profit == Decimal("1200")
-    # net = revenue - cost - 其他费 (这里其他费都是 0)
-    assert s.net_profit == Decimal("1200")
-    # top_products: 单一产品聚合
+    # 统一会计口径(2026-06-18): cost = 会计总成本 = 物理 + 平台扣点 + 税 (>物理成本),
+    # 故净利 = 销售额 − 会计总成本 < 毛利。断言与 accounting_cost 一致, 而非写死数字。
+    from app.services import order_financials as ofin
+    from app.models.order import Order as _O
+    coef = ofin.load_coefficients(db_session)
+    expected_cost = sum(
+        (ofin.accounting_cost(o, coef) for o in db_session.execute(select(_O)).scalars().all()),
+        Decimal("0"))
+    assert s.cost == expected_cost
+    assert s.cost > Decimal("1800")               # 含了平台扣点+税
+    assert s.net_profit == s.revenue - expected_cost
+    assert s.net_profit < s.gross_profit
+    # top_products: 单一产品聚合, 净利与汇总一致
     assert len(s.top_products_by_profit) == 1
-    assert s.top_products_by_profit[0]["net_profit"] == Decimal("1200")
+    assert s.top_products_by_profit[0]["net_profit"] == s.net_profit
 
 
 def test_summary_includes_historical(db_session):

@@ -211,48 +211,35 @@ def _refill_unpaid_commission(db: Session) -> Decimal:
 
 
 def compute_total_profit(db: Session) -> dict:
-    """累计总利润 — 与总投资对比看回本。口径: 真实销售(非补单/非取消/有收入信号)。
+    """累计总利润 — 与总投资对比看回本。统一会计口径 (与 accounting_summary/逐单核对/资产公式B 一致):
 
-    单单净利 = 营收 − 成本 − 售后费用
-      营收 = 店铺实收; 缺则 应付−2%税−平台费; 再缺退买家实付
-      成本 = 实际成本 or 理论(预测)成本; 缺则计 0 (计入 orders_missing_cost, 利润会偏高)
-      售后费用 = 运费 + 安装 + 上楼 + 赔付 + 退款
+    成交口径 = settled_sale_clause (已付款·非待付款/取消/关闭·非全额退款) + 排补单;
+    单单净利 = (实付−退款) − 会计总成本(物理+物流+安装+平台扣点+税+额外售后)。
+    旧版营收用店铺实收、成本不含平台/税、售后单列, 与月度报表对不上, 故 2026-06-18 统一。
     """
+    from app.services import order_financials as ofin
     from app.services.sales_analytics import settled_sale_clause
+    coef = ofin.load_coefficients(db)
+    as_by_order = ofin.extra_aftersales_by_order(db)
     orders = db.execute(
         select(Order).where(
             Order.is_refill == False,  # noqa: E712
-            settled_sale_clause(),     # 真实成交(排待付款/取消/全退) 用户拍板 2026-06-17
-            (Order.shop_received_amount.isnot(None))
-            | (Order.paid_amount.isnot(None))
-            | (Order.buyer_payable_amount.isnot(None)),
+            settled_sale_clause(),
         )
     ).scalars().all()
-    revenue = cost = expense = Decimal("0")
+    revenue = cost = Decimal("0")
     missing_cost = 0
     for o in orders:
-        if o.shop_received_amount is not None:
-            rev = _d(o.shop_received_amount)
-        elif o.buyer_payable_amount is not None:
-            tax = _d(o.tax) if o.tax is not None else (_d(o.buyer_payable_amount) * _TAX_RATE)
-            rev = _d(o.buyer_payable_amount) - tax - _d(o.platform_fee)
-        else:
-            rev = _d(o.paid_amount)
-        c = o.actual_cost if o.actual_cost is not None else o.theoretical_cost
-        if c is None:
+        revenue += _d(o.paid_amount) - _d(o.refund_amount)
+        if o.actual_cost is None and o.theoretical_cost is None:
             missing_cost += 1
-            c = Decimal("0")
-        exp = (_d(o.actual_freight) + _d(o.install_fee) + _d(o.upstairs_fee)
-               + _d(o.compensation_fee) + _d(o.refund_amount))
-        revenue += rev
-        cost += _d(c)
-        expense += exp
-    net = (revenue - cost - expense).quantize(_Q)
+        cost += ofin.accounting_cost(o, coef, aftersales=_d(as_by_order.get(o.order_no, 0)))
+    net = (revenue - cost).quantize(_Q)
     return {
         "order_count": len(orders),
         "revenue": revenue.quantize(_Q),
         "cost": cost.quantize(_Q),
-        "expense": expense.quantize(_Q),
+        "expense": Decimal("0.00"),   # 物流/安装/平台/税/售后已并入会计总成本, 不再单列
         "net_profit": net,
         "orders_missing_cost": missing_cost,
     }

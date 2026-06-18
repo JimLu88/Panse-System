@@ -49,11 +49,13 @@ def _bom_cost(db: Session, product_code: str) -> Decimal:
 
 
 def _historical_avg(db: Session, product_code: str, sku_code: Optional[str], days=30) -> Decimal:
+    from app.services.sales_analytics import settled_sale_clause
     cutoff = date.today() - timedelta(days=days)
     q = select(Order).where(
         Order.product_code == product_code,
         Order.order_date >= cutoff,
-        Order.status.in_(("paid", "shipped", "signed")),
+        settled_sale_clause(),       # 统一成交口径(排待付款/取消/关闭/全退/实付≤0)
+        Order.is_refill == False,    # noqa: E712
     )
     if sku_code:
         q = q.where(Order.sku_code == sku_code)
@@ -64,7 +66,8 @@ def _historical_avg(db: Session, product_code: str, sku_code: Optional[str], day
     count = 0
     for o in orders:
         if o.paid_amount and o.qty:
-            total += Decimal(o.paid_amount) / Decimal(o.qty)
+            rev = Decimal(o.paid_amount) - Decimal(o.refund_amount or 0)   # 实际收入(扣退款)
+            total += rev / Decimal(o.qty)
             count += 1
     return total / count if count > 0 else Decimal("0")
 

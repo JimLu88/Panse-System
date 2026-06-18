@@ -543,6 +543,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         _paid_real_d = _to_decimal(o.paid_real)
         paid = _paid_real_d if _paid_real_d is not None else _to_decimal(o.paid_amount)
         received = _to_decimal(o.shop_received)
+        # 销售明细-only 导入(无订单报表 sheet)时订单级金额可能落在 ¥0 服务行上 → 用所有商品行
+        # 金额之和兜底 应付/实付(真实订单总额), 否则整单 ¥0 被漏算。实付列明确为0(关闭单)不兜底。
+        _line_total = sum((ln.get("amount") or Decimal("0")) for ln in lines)
+        if (payable is None or payable == 0) and _line_total > 0:
+            payable = _line_total
+        if _paid_real_d is None and (paid is None or paid == 0) and _line_total > 0:
+            paid = _line_total
         pfee = _to_decimal(o.platform_fee)
         refund = _to_decimal(o.refund)
         ship_dt = _to_date(o.ship_time)
@@ -553,6 +560,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             _paid_real = _to_decimal(o.paid_real)
             if (received and received > 0) or (_paid_real and _paid_real > 0):
                 status = "paid"
+                _recognized = True
+        # 导出无「订单状态」列(部分千牛订单报表/销售明细)→ status_text 为空, 上面落"未识别"。
+        # 只要有付款凭据(实付/实收/应付任一>0)就是真实成交单, 当已签收完结, 不该拦截整批历史明细;
+        # 真关闭/未付款单(实付0)后续在 settled_sale_clause(实付>0) 里自然排除。区别于"状态有值但陌生"(仍拦截)。
+        if not _recognized and not str(o.status_text or "").strip():
+            if (paid and paid > 0) or (received and received > 0) or (payable and payable > 0):
+                status = "signed"
                 _recognized = True
         # 状态无法识别 且 无收款凭据 → 拦截不入库, 报异常待人工 (用户拍板 2026-06-18:
         # 不再默默塞成"待付款"被全系统漏算; 补好状态映射后重导即可入库)。

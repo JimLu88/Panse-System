@@ -193,22 +193,26 @@ def _pending_personnel_cost(db: Session) -> Decimal:
 
 
 def _total_order_profit(db: Session) -> Decimal:
-    """所有 status in (paid/shipped/signed) 订单的累计净利润."""
+    """所有真实成交订单的累计净利润 (统一会计口径, 与 accounting_summary/逐单核对一致)。
+
+    成交口径 = settled_sale_clause (已付款·非待付款/取消/关闭·非全额退款) + 排补单;
+    单单利润 = (实付−退款) − 会计总成本(物理+物流+安装+平台扣点+税+额外售后)。
+    旧版硬编码状态、按 paid_amount 不扣退款、成本不含平台/税, 故偏高 (2026-06-18 统一)。
+    """
+    from app.services import order_financials as ofin, sales_analytics
+    coef = ofin.load_coefficients(db)
+    as_by_order = ofin.extra_aftersales_by_order(db)
     orders = db.execute(
         select(Order).where(
-            Order.is_historical == False,  # noqa: E712
-            Order.status.in_(("paid", "shipped", "signed")),
+            sales_analytics.settled_sale_clause(),
+            Order.is_refill == False,  # noqa: E712
         )
     ).scalars().all()
     total = Decimal("0")
     for o in orders:
-        paid = Decimal(o.paid_amount or 0)
-        cost = Decimal(o.actual_cost or o.theoretical_cost or 0)
-        freight = Decimal(o.actual_freight or 0)
-        upstairs = Decimal(o.upstairs_fee or 0)
-        install = Decimal(o.install_fee or 0)
-        comp = Decimal(o.compensation_fee or 0)
-        total += paid - cost - freight - upstairs - install - comp
+        revenue = Decimal(str(o.paid_amount or 0)) - Decimal(str(o.refund_amount or 0))
+        cost = ofin.accounting_cost(o, coef, aftersales=Decimal(str(as_by_order.get(o.order_no, 0))))
+        total += revenue - cost
     return total
 
 
@@ -294,21 +298,22 @@ def diff_drilldown(db: Session) -> dict:
             FactoryOrder.voided_at.is_(None),
         ).order_by(FactoryOrder.factory_bill_amount.desc().nulls_last()).limit(30)
     ).scalars().all()
-    # 订单累计利润: 贡献最大/最小的单 (公式 B 侧异常常在这)
+    # 订单累计利润: 贡献最大/最小的单 (公式 B 侧异常常在这); 口径同 _total_order_profit
+    from app.services import order_financials as ofin, sales_analytics
+    coef = ofin.load_coefficients(db)
+    as_by_order = ofin.extra_aftersales_by_order(db)
     orders = db.execute(
         select(Order).where(
-            Order.is_historical == False,  # noqa: E712
-            Order.status.in_(("paid", "shipped", "signed")),
+            sales_analytics.settled_sale_clause(),
+            Order.is_refill == False,  # noqa: E712
         )
     ).scalars().all()
     contrib = []
     for o in orders:
-        profit = (Decimal(o.paid_amount or 0) - Decimal(o.actual_cost or o.theoretical_cost or 0)
-                  - Decimal(o.actual_freight or 0) - Decimal(o.upstairs_fee or 0)
-                  - Decimal(o.install_fee or 0) - Decimal(o.compensation_fee or 0))
-        contrib.append({"order_no": o.order_no, "profit": float(profit),
-                        "paid": float(o.paid_amount or 0),
-                        "cost": float(o.actual_cost or o.theoretical_cost or 0)})
+        revenue = Decimal(str(o.paid_amount or 0)) - Decimal(str(o.refund_amount or 0))
+        cost = ofin.accounting_cost(o, coef, aftersales=Decimal(str(as_by_order.get(o.order_no, 0))))
+        contrib.append({"order_no": o.order_no, "profit": float(revenue - cost),
+                        "paid": float(o.paid_amount or 0), "cost": float(cost)})
     contrib.sort(key=lambda x: x["profit"])
     return {
         "库存账面明细": inv_detail[:50],
