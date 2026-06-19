@@ -98,8 +98,14 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     )
     rows = []
 
-    def _row(k: str, v: str, color: str = "") -> None:
-        style = f" style='color:{color}'" if color else ""
+    def _row(k: str, v: str, color: str = "", big: bool = False) -> None:
+        # big: 备注类重点字段 — 大两号(≈19px) + 加粗 + 标红, 工厂一眼看到 (用户拍板 2026-06-19)
+        if big:
+            style = " style='font-size:19px;font-weight:800;color:#dc2626;line-height:1.4'"
+        elif color:
+            style = f" style='color:{color}'"
+        else:
+            style = ""
         rows.append(f"<div class='row'><div class='k'>{e(k)}</div><div{style}>{v}</div></div>")
 
     _row("产品", f"{e(sheet.product_name or '-')} <span style='color:#9ca3af'>({e(sheet.product_code or '-')})</span>")
@@ -115,9 +121,9 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     if sheet.material_desc:
         _row("说明", e(sheet.material_desc), color="#888")
     if sheet.remark:
-        _row("备注", e(sheet.remark), color="#a8743a")
+        _row("备注", e(sheet.remark), big=True)
     if sheet.production_note:
-        _row("生产备注", e(sheet.production_note), color="#a8743a")
+        _row("生产备注", e(sheet.production_note), big=True)
     # 产品主图: 优先真实 image_url(淘宝CDN http链接); 缺则用图库主图(内嵌base64)。
     # SKU尺寸图: 一律内嵌图库 SKU 图 (用户拍板 2026-06-18: 下单图都要连着 SKU 图一起发)。
     _main = sheet.image_url if (sheet.image_url and str(sheet.image_url).startswith("http")) \
@@ -200,25 +206,25 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
 
 
 def _archived_order_nos(db: Session) -> set[str]:
-    """已归档下单图的订单号集合 (从文件名 下单图_{order_no}.html 反解)。"""
+    """已归档下单图的订单号集合 (兼容 下单图_X.html / {date}_X.jpg 两种命名)。"""
     names = db.execute(
         select(ImportedFile.original_filename).where(ImportedFile.kind == "order_sheet")
     ).scalars().all()
-    out = set()
-    for n in names:
-        if n and n.startswith("下单图_") and n.endswith(".html"):
-            out.add(n[len("下单图_"):-len(".html")])
-    return out
+    return {no for n in names if (no := _order_no_from_name(n))}
 
 
 def generate_for_order(db: Session, order: Order, *, source: str = "auto") -> Optional[dict]:
-    """生成一张下单图 HTML 并归档。返回 {order_no, file_id, duplicate} 或 None (失败)。"""
+    """生成一张下单图 JPEG 并归档 (命名 {下单日期}_{订单号}.jpg)。返回 {order_no, file_id, duplicate} 或 None。
+
+    用户拍板 2026-06-19: 存档直接存成图片 (非 HTML), 日期+订单号命名, 打开即看、可直接转发工厂。
+    """
     try:
         sheet = factory_sheet.build(db, order.id)
-        html = render_html(sheet)
+        jpg = render_png(sheet)   # render_png 现已输出 JPEG 字节
+        d = order.order_date or date.today()
         res = import_storage.archive(
-            db, content=html.encode("utf-8"),
-            original_name=f"下单图_{order.order_no}.html",
+            db, content=jpg,
+            original_name=f"{d.isoformat()}_{order.order_no}.jpg",
             kind="order_sheet", source=source,
             on_date=order.order_date,
         )
@@ -281,9 +287,18 @@ def render_png(sheet) -> bytes:
 
 
 def _order_no_from_name(name: Optional[str]) -> Optional[str]:
-    """从归档文件名 下单图_{order_no}.html 反解订单号。"""
-    if name and name.startswith("下单图_") and name.endswith(".html"):
+    """从下单图归档文件名反解订单号 — 兼容新旧两种命名。
+
+    旧: 下单图_{order_no}.html  ;  新(2026-06-19): {下单日期}_{order_no}.jpg (日期 YYYY-MM-DD 不含下划线)
+    """
+    if not name:
+        return None
+    if name.startswith("下单图_") and name.endswith(".html"):
         return name[len("下单图_"):-len(".html")]
+    if name.endswith(".jpg"):
+        parts = name[:-len(".jpg")].split("_")
+        if len(parts) == 2:        # {日期}_{订单号}
+            return parts[1]
     return None
 
 
@@ -422,15 +437,24 @@ _VOID_OVERLAY = """
 """
 
 
+def _void_order_no_from_name(name: Optional[str]) -> Optional[str]:
+    """作废图文件名反解订单号 — 旧: 作废图_X.html ; 新(2026-06-19): {退款日期}_X_已作废.jpg"""
+    if not name:
+        return None
+    if name.startswith("作废图_") and name.endswith(".html"):
+        return name[len("作废图_"):-len(".html")]
+    if name.endswith("_已作废.jpg"):
+        parts = name[:-len("_已作废.jpg")].split("_")
+        if len(parts) == 2:        # {日期}_{订单号}
+            return parts[1]
+    return None
+
+
 def _voided_order_nos(db: Session) -> set[str]:
     names = db.execute(
         select(ImportedFile.original_filename).where(ImportedFile.kind == "order_sheet_void")
     ).scalars().all()
-    out = set()
-    for n in names:
-        if n and n.startswith("作废图_") and n.endswith(".html"):
-            out.add(n[len("作废图_"):-len(".html")])
-    return out
+    return {no for n in names if (no := _void_order_no_from_name(n))}
 
 
 def generate_void_sheets(db: Session, *, limit: int = 100) -> dict:
@@ -451,22 +475,21 @@ def generate_void_sheets(db: Session, *, limit: int = 100) -> dict:
         try:
             sheet = factory_sheet.build(db, o.id)
             html = render_html(sheet).replace("</body>", _VOID_OVERLAY + "</body>")
+            d = o.refund_date or date.today()
             import_storage.archive(
-                db, content=html.encode("utf-8"),
-                original_name=f"作废图_{o.order_no}.html",
+                db, content=_html_to_png(html),   # 作废图也存成 JPEG (红叉随 HTML 一起渲染进图)
+                original_name=f"{d.isoformat()}_{o.order_no}_已作废.jpg",
                 kind="order_sheet_void", source="auto",
                 on_date=o.refund_date or date.today(),
                 row_summary={"note": f"退款作废 ¥{o.refund_amount or 0}"},
             )
-            # 删掉原下单图 (用户拍板) — 工厂只该看到作废版
-            old_ids = db.execute(
-                select(ImportedFile.id).where(
-                    ImportedFile.kind == "order_sheet",
-                    ImportedFile.original_filename == f"下单图_{o.order_no}.html",
-                )
-            ).scalars().all()
-            for fid in old_ids:
-                import_storage.delete_record(db, fid)
+            # 删掉原下单图 (用户拍板) — 工厂只该看到作废版; 按订单号匹配 (兼容新旧命名)
+            for fid, fname in db.execute(
+                select(ImportedFile.id, ImportedFile.original_filename).where(
+                    ImportedFile.kind == "order_sheet")
+            ).all():
+                if _order_no_from_name(fname) == o.order_no:
+                    import_storage.delete_record(db, fid)
             voided.append(o.order_no)
         except Exception:  # pragma: no cover - 单张失败不阻断
             _logger.warning("作废图生成失败 %s", o.order_no, exc_info=True)

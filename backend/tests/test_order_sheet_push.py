@@ -20,7 +20,8 @@ def _feishu_stub(monkeypatch):
     sent: list[str] = []
     # 测试环境 conftest 设了 PANSE_DISABLE_NOTIFY 兜底防真发; 这里已 mock 外发, 放行推送逻辑
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
-    monkeypatch.setattr(osa, "render_png", lambda sheet: b"PNG-BYTES")
+    # 每单返回不同字节 — 否则存档按内容 hash 去重会把第二单误判重复 (真实渲染每单不同)
+    monkeypatch.setattr(osa, "render_png", lambda sheet: f"PNG-{sheet.order_no}".encode())
     monkeypatch.setattr("app.services.feishu_client.upload_image", lambda db, png: "img_key_xyz")
     monkeypatch.setattr("app.services.feishu_client.send_text", lambda db, cid, text: {"sent": True})
 
@@ -39,8 +40,11 @@ def _add_paid_order(db, no: str, day: int = 8):
 
 
 def _sheet_rec(db, no: str) -> ImportedFile:
-    return db.query(ImportedFile).filter_by(
-        kind="order_sheet", original_filename=f"下单图_{no}.html").one()
+    # 2026-06-19: 下单图存档命名改为 {日期}_{订单号}.jpg, 按解析出的订单号定位 (兼容新旧命名)。
+    for r in db.query(ImportedFile).filter_by(kind="order_sheet").all():
+        if osa._order_no_from_name(r.original_filename) == no:
+            return r
+    raise AssertionError(f"未找到 {no} 的下单图归档")
 
 
 def test_push_decoupled_from_generation(db_session, _feishu_stub):

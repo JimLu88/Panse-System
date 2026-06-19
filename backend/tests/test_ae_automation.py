@@ -36,8 +36,12 @@ def test_void_sheet_once_and_deletes_original(db_session):
     db_session.add(o)
     db_session.flush()
     osa.generate_pending(db_session)
-    assert db_session.query(ImportedFile).filter_by(
-        kind="order_sheet", original_filename="下单图_AE-VOID.html").count() == 1
+
+    def _os_count(no):  # 按解析出的订单号数下单图 (2026-06-19 命名改 {日期}_{单号}.jpg)
+        return sum(1 for r in db_session.query(ImportedFile).filter_by(kind="order_sheet").all()
+                   if osa._order_no_from_name(r.original_filename) == no)
+
+    assert _os_count("AE-VOID") == 1
 
     # 重导刷出退款
     o.refund_amount = Decimal("800")
@@ -47,11 +51,10 @@ def test_void_sheet_once_and_deletes_original(db_session):
     r1 = osa.generate_void_sheets(db_session)
     assert r1["voided"] == 1
     # 原下单图已删, 作废图已建
-    assert db_session.query(ImportedFile).filter_by(
-        kind="order_sheet", original_filename="下单图_AE-VOID.html").count() == 0
+    assert _os_count("AE-VOID") == 0
     voids = db_session.query(ImportedFile).filter_by(kind="order_sheet_void").all()
     assert len(voids) == 1
-    assert voids[0].original_filename == "作废图_AE-VOID.html"
+    assert osa._void_order_no_from_name(voids[0].original_filename) == "AE-VOID"
 
     # 幂等: 第二次跑不再作废
     r2 = osa.generate_void_sheets(db_session)

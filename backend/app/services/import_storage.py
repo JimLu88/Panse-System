@@ -33,9 +33,26 @@ KINDS = (
 )
 
 
-def folder_for(kind: str, year: int, month: int) -> Path:
+# 物理文件夹中文名 (用户拍板 2026-06-19: 直接浏览文件时能看懂)。
+# 注意: DB 里的 ImportedFile.kind 仍是英文 key (所有 kind== 查询不受影响), 只有落盘文件夹改中文。
+_KIND_FOLDER = {
+    "orders": "订单", "taobao": "淘宝", "alipay": "支付宝", "settlement": "淘宝结算",
+    "wanshifu": "万师傅", "wanshifu_orders": "万师傅订单", "logistics": "物流",
+    "promotion": "大促", "aftersales": "售后", "refill": "补单",
+    "account_balance": "账户余额", "factory_recon": "工厂对账", "purchase": "采购",
+    "screenshot": "截图", "order_sheet": "工厂下单图", "order_sheet_void": "作废下单图",
+    "page_export": "页面导出", "full_export": "全量导出", "generic": "其他",
+}
+
+
+def folder_name_for(kind: str) -> str:
+    """kind → 物理文件夹名 (中文); 未知 kind 归「其他」。"""
     safe_kind = kind if kind in KINDS else "generic"
-    return get_root() / "imports" / safe_kind / str(year) / f"{month:02d}"
+    return _KIND_FOLDER.get(safe_kind, safe_kind)
+
+
+def folder_for(kind: str, year: int, month: int) -> Path:
+    return get_root() / "imports" / folder_name_for(kind) / str(year) / f"{month:02d}"
 
 
 @dataclass
