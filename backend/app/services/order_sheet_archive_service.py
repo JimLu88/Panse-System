@@ -207,6 +207,10 @@ def generate_for_order(db: Session, order: Order, *, source: str = "auto") -> Op
 
     用户拍板 2026-06-19: 存档直接存成图片 (非 HTML), 日期+订单号命名, 打开即看、可直接转发工厂。
     """
+    # 铁律 (用户拍板 2026-06-20): 未付款单【永不】生成工厂下单图 —— 付了定金(paid_amount>0)
+    # 但 status=pending_payment 的也算未付款, 大概率会取消, 绝不能给工厂下单/编号。
+    if (order.status or "") == "pending_payment":
+        return None
     try:
         sheet = factory_sheet.build(db, order.id)
         jpg = render_png(sheet)   # render_png 现已输出 JPEG 字节
@@ -237,8 +241,8 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
     for o in orders:
         if o.order_no in done or len(generated) >= limit:
             continue
-        if (o.status or "") == "cancelled":
-            continue
+        if (o.status or "") in ("cancelled", "pending_payment"):
+            continue   # 取消 + 未付款(含付定金的待付款)永不生成 (用户拍板 2026-06-20 铁律)
         if not _is_paid(o):   # 用户拍板: 必须已付款才生成下单图
             continue
         if _is_refunded(o):   # 已退款/退货/关闭 → 不生成也不推送 (改走作废图流程)
