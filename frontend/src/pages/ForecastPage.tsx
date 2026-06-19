@@ -206,7 +206,7 @@ function AdviceTab() {
             { title: '需求量', dataIndex: 'need_qty', width: 100 },
             { title: '现库存', dataIndex: 'have_qty', width: 80 },
             { title: '缺口', dataIndex: 'missing', width: 90,
-              render: (v: number) => v > 0 ? <Tag color="red">{v.toFixed(0)}</Tag> : '-',
+              render: (v: number) => v > 0 ? <Tag color="red">{Number(v).toFixed(0)}</Tag> : '-',
             },
             { title: '补货周期', dataIndex: 'lead_time_days', width: 90,
               render: (v: number) => `${v} 天`,

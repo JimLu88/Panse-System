@@ -34,7 +34,7 @@ const STATUS_META: Record<string, { color: string; text: string }> = {
 function diffCell(v: number | null) {
   if (v == null) return <span style={{ color: '#bbb' }}>-</span>;
   const color = Math.abs(v) < 0.005 ? '#888' : v > 0 ? '#389e0d' : '#cf1322';
-  return <span style={{ color }}>{v > 0 ? '+' : ''}{v.toFixed(2)}</span>;
+  return <span style={{ color }}>{v > 0 ? '+' : ''}{Number(v).toFixed(2)}</span>;
 }
 
 const numCol = (
@@ -366,8 +366,8 @@ function SettlementDetailTab() {
             { title: '入账时间', dataIndex: 'settle_time', width: 160, render: (v) => v ? new Date(v).toLocaleString('zh-CN') : <Tag color="warning">无日期</Tag> },
             { title: '淘宝订单编号', dataIndex: 'order_no', width: 180, render: (v) => v || '-' },
             { title: '入账类型', dataIndex: 'entry_type', width: 100 },
-            { title: '收款', dataIndex: 'income', width: 100, align: 'right' as const, render: (v) => v > 0 ? `¥${v.toFixed(2)}` : '-' },
-            { title: '扣款', dataIndex: 'expense', width: 100, align: 'right' as const, render: (v) => v > 0 ? <span style={{ color: '#cf1322' }}>¥{v.toFixed(2)}</span> : '-' },
+            { title: '收款', dataIndex: 'income', width: 100, align: 'right' as const, render: (v) => v > 0 ? `¥${Number(v).toFixed(2)}` : '-' },
+            { title: '扣款', dataIndex: 'expense', width: 100, align: 'right' as const, render: (v) => v > 0 ? <span style={{ color: '#cf1322' }}>¥{Number(v).toFixed(2)}</span> : '-' },
             { title: '业务描述', dataIndex: 'description', ellipsis: true },
           ]}
         />

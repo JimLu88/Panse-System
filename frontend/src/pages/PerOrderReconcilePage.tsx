@@ -106,7 +106,7 @@ export default function PerOrderReconcilePage() {
     { title: '净利', dataIndex: 'net_profit', width: 90, align: 'right',
       render: (v: number) => <Text strong type={v >= 0 ? 'success' : 'danger'}>{yuan(v)}</Text> },
     { title: '净利率', dataIndex: 'net_margin', width: 70, align: 'right',
-      render: (v: number) => <span style={{ color: v >= 15 ? '#52c41a' : v >= 0 ? '#fa8c16' : '#ff4d4f' }}>{v.toFixed(1)}%</span> },
+      render: (v: number) => <span style={{ color: v >= 15 ? '#52c41a' : v >= 0 ? '#fa8c16' : '#ff4d4f' }}>{Number(v).toFixed(1)}%</span> },
     { title: '支付宝', dataIndex: 'alipay_covered', width: 75, align: 'center',
       render: (v: boolean) => v
         ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已覆盖</Tag>
@@ -224,7 +224,7 @@ export default function PerOrderReconcilePage() {
               <Text strong style={{ fontSize: 18, color: st.period_net_profit >= 0 ? '#389e0d' : '#cf1322' }}>
                 {yuan2(st.period_net_profit)}
               </Text>{' '}
-              <Text type="secondary">({st.period_net_margin.toFixed(1)}%)</Text>
+              <Text type="secondary">({Number(st.period_net_margin).toFixed(1)}%)</Text>
             </span>
           </Space>
         </Card>

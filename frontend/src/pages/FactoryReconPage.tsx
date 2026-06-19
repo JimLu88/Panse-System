@@ -27,7 +27,7 @@ function PreviewTable({ rows }: { rows: FactoryReconPreviewRow[] }) {
         { title: '淘宝订单号', dataIndex: 'platform_order_no', width: 175, render: (v) => v || '-' },
         { title: '工厂', dataIndex: 'factory_name', width: 130, ellipsis: true, render: (v) => v || '-' },
         { title: '应付(预估)', dataIndex: 'payable', width: 100, align: 'right' as const,
-          render: (v: number | null) => (v == null ? <Tag>无</Tag> : `¥${v.toFixed(0)}`) },
+          render: (v: number | null) => (v == null ? <Tag>无</Tag> : `¥${Number(v).toFixed(0)}`) },
         { title: '应付来源', dataIndex: 'payable_source', width: 150, render: (v) => <span style={{ fontSize: 12, color: '#888' }}>{v}</span> },
         { title: '下单', dataIndex: 'order_date', width: 100, render: (v) => v || '-' },
       ]}
@@ -158,9 +158,9 @@ export default function FactoryReconPage() {
             onRow={(m) => ({ onClick: () => setPeriod(period === m.period ? undefined : m.period), style: { cursor: 'pointer' } })}
             columns={[
               { title: '月份', dataIndex: 'period', render: (v) => <Tag color={period === v ? 'geekblue' : undefined}>{v}</Tag> },
-              { title: '应付(结算价)', dataIndex: 'billed', align: 'right' as const, render: (v: number) => `¥${v.toFixed(0)}` },
-              { title: '实付(factory_payment)', dataIndex: 'paid', align: 'right' as const, render: (v: number) => `¥${v.toFixed(0)}` },
-              { title: '差额', dataIndex: 'diff', align: 'right' as const, render: (v: number) => <span style={{ color: Math.abs(v) > 5 ? '#cf1322' : '#3f8600' }}>¥{v.toFixed(0)}</span> },
+              { title: '应付(结算价)', dataIndex: 'billed', align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(0)}` },
+              { title: '实付(factory_payment)', dataIndex: 'paid', align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(0)}` },
+              { title: '差额', dataIndex: 'diff', align: 'right' as const, render: (v: number) => <span style={{ color: Math.abs(v) > 5 ? '#cf1322' : '#3f8600' }}>¥{Number(v).toFixed(0)}</span> },
               { title: '条目/已做平', render: (_, m) => `${m.items_resolved}/${m.items_total}` },
               { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={STATUS_TAG[s]?.color}>{STATUS_TAG[s]?.label ?? s}</Tag> },
             ]}
@@ -192,7 +192,7 @@ export default function FactoryReconPage() {
             { title: '订单号', dataIndex: 'order_no', width: 175, render: (v) => v || '-' },
             { title: '详情', dataIndex: 'detail', ellipsis: true },
             { title: '数量', dataIndex: 'qty', width: 56, align: 'center' as const },
-            { title: '结算价', dataIndex: 'settle_price', width: 90, align: 'right' as const, render: (v: number) => `¥${v.toFixed(0)}` },
+            { title: '结算价', dataIndex: 'settle_price', width: 90, align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(0)}` },
             { title: '客户', dataIndex: 'customer_info', width: 110, render: (v) => v || '-' },
             { title: '下单', dataIndex: 'order_date', width: 100, render: (v) => v || '-' },
             { title: '做平', dataIndex: 'resolved', width: 130, render: (r: boolean, row) => (
@@ -247,7 +247,7 @@ export default function FactoryReconPage() {
         okText="做平"
       >
         <p style={{ color: '#888' }}>
-          订单 {resolving?.order_no} · 结算价 ¥{resolving?.settle_price?.toFixed(0)}。
+          订单 {resolving?.order_no} · 结算价 ¥{resolving?.settle_price != null ? Number(resolving.settle_price).toFixed(0) : '—'}。
           应付与实付对不上时, 在此记录扣减/减免/差异原因后标记为已做平。
         </p>
         <Input.TextArea
@@ -257,7 +257,7 @@ export default function FactoryReconPage() {
       </Modal>
 
       <Modal
-        title={`拆分归因 — ${splitting?.order_no || ''} (原额 ¥${splitting?.settle_price?.toFixed(2) ?? '—'})`}
+        title={`拆分归因 — ${splitting?.order_no || ''} (原额 ¥${splitting?.settle_price != null ? Number(splitting.settle_price).toFixed(2) : '—'})`}
         open={!!splitting}
         onCancel={() => setSplitting(null)}
         onOk={() => splitMut.mutate()}
@@ -288,7 +288,7 @@ export default function FactoryReconPage() {
         <div>
           <Button size="small" onClick={() => setSplitParts((arr) => [...arr, { amount: 0, kind: '其他', remark: '' }])}>+ 加一行</Button>
           <span style={{ marginLeft: 12, color: Math.abs(splitSum - (splitting?.settle_price ?? 0)) > 0.005 ? '#cf1322' : '#389e0d' }}>
-            合计 ¥{splitSum.toFixed(2)} / 需 ¥{splitting?.settle_price?.toFixed(2) ?? '—'}
+            合计 ¥{splitSum.toFixed(2)} / 需 ¥{splitting?.settle_price != null ? Number(splitting.settle_price).toFixed(2) : '—'}
           </span>
         </div>
       </Modal>

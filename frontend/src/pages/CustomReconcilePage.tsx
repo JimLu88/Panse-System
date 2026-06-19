@@ -17,7 +17,7 @@ import {
 
 const { Title, Text, Paragraph } = Typography;
 
-const yuan = (v: number | null | undefined) => (v == null ? '—' : `¥${v.toFixed(2)}`);
+const yuan = (v: number | null | undefined) => (v == null ? '—' : `¥${Number(v).toFixed(2)}`);
 const CONF: Record<string, { color: string; label: string }> = {
   high: { color: 'green', label: '🟢高' }, mid: { color: 'orange', label: '🟡中' }, low: { color: 'red', label: '🔴低' },
 };

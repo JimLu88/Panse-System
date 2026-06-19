@@ -291,14 +291,14 @@ function OperatingTab() {
           <Statistic title="净利" value={Math.round(data.net_profit)} prefix="¥"
                      valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} />
         </Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="净利率" value={data.net_profit_rate.toFixed(1)} suffix="%" /></Card></Col>
+        <Col span={6}><Card size="small"><Statistic title="净利率" value={Number(data.net_profit_rate).toFixed(1)} suffix="%" /></Card></Col>
       </Row>
       <Card size="small" title={`支出占比 (占销售额 %, ${data.period_start} ~ ${data.period_end})`}>
         {data.expense_items.map((i) => (
           <div key={i.name} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
             <span style={{ width: 72, flexShrink: 0 }}>{i.name}</span>
-            <Progress percent={Math.min(100, Number(i.pct.toFixed(1)))} size="small" style={{ flex: 1 }}
-                      format={() => `¥${Math.round(i.amount).toLocaleString()} · ${i.pct.toFixed(1)}%`} />
+            <Progress percent={Math.min(100, Number(Number(i.pct).toFixed(1)))} size="small" style={{ flex: 1 }}
+                      format={() => `¥${Math.round(i.amount).toLocaleString()} · ${Number(i.pct).toFixed(1)}%`} />
           </div>
         ))}
       </Card>
@@ -317,7 +317,7 @@ function SalesSummaryTab() {
   });
   if (isLoading || !data) return <Spin />;
 
-  const yuan = (v: number) => `¥${(v ?? 0).toFixed(2)}`;
+  const yuan = (v: number) => `¥${Number(v ?? 0).toFixed(2)}`;
   // 利润/利润率排行 共用列 (净利→利润, 不含推广)
   const rankCols = [
     { title: '产品', dataIndex: 'product_code' },
@@ -345,10 +345,10 @@ function SalesSummaryTab() {
       </Space>
       <Row gutter={12}>
         <Col span={4}><Card size="small"><Statistic title="订单数" value={data.order_count} /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="销售额" value={data.revenue.toFixed(2)} prefix="¥" /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="成本" value={data.cost.toFixed(2)} prefix="¥" /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="毛利" value={data.gross_profit.toFixed(2)} prefix="¥" valueStyle={{ color: '#52c41a' }} /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="利润" value={data.net_profit.toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="销售额" value={Number(data.revenue).toFixed(2)} prefix="¥" /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="成本" value={Number(data.cost).toFixed(2)} prefix="¥" /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="毛利" value={Number(data.gross_profit).toFixed(2)} prefix="¥" valueStyle={{ color: '#52c41a' }} /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="利润" value={Number(data.net_profit).toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
         <Col span={4}><Card size="small">
           <Statistic title="利润率"
                      value={data.revenue > 0 ? (data.net_profit / data.revenue * 100).toFixed(1) : 0}
@@ -400,12 +400,12 @@ function SalesBreakdownTab() {
                  { title: 'SKU 名', dataIndex: 'sku' },
                  { title: '件数', dataIndex: 'qty', width: 70 },
                  { title: '销售额', dataIndex: 'revenue', width: 110,
-                   render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
+                   render: (v: number) => `¥${Number(v ?? 0).toFixed(2)}` },
                  { title: '成本', dataIndex: 'cost', width: 110,
-                   render: (v: number) => `¥${(v ?? 0).toFixed(2)}` },
+                   render: (v: number) => `¥${Number(v ?? 0).toFixed(2)}` },
                  { title: '利润', dataIndex: 'net_profit', width: 110,
                    render: (v: number) =>
-                     <Tag color={v >= 0 ? 'green' : 'red'}>¥{(v ?? 0).toFixed(2)}</Tag> },
+                     <Tag color={v >= 0 ? 'green' : 'red'}>¥{Number(v ?? 0).toFixed(2)}</Tag> },
                  { title: '毛利率', dataIndex: 'gross_profit_rate', width: 90,
                    render: (v: number) => `${((v ?? 0) * 100).toFixed(1)}%` },
                  { title: '利润率', dataIndex: 'net_profit_rate', width: 90,
@@ -467,7 +467,7 @@ function fmtY(v: number | null | undefined): string {
 
 function pct(v: number | null | undefined): string {
   if (v === null || v === undefined) return '—';
-  return `${v.toFixed(1)}%`;
+  return `${Number(v).toFixed(1)}%`;
 }
 
 // 预估值标蓝(带"估"角标 + 悬浮说明); 实际值正常显示。用户拍板 2026-06-17: 蓝色标注哪些是预估。

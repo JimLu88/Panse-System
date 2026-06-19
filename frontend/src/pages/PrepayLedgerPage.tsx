@@ -87,7 +87,7 @@ export default function PrepayLedgerPage() {
             { title: '打款日期', dataIndex: 'pay_date', width: 110, render: (v) => v || '-' },
             { title: '打款流水号', dataIndex: 'pay_no', width: 200, render: (v) => v || '-' },
             { title: '订单号', dataIndex: 'order_no', width: 180, render: (v) => v || '-' },
-            { title: '金额', dataIndex: 'amount', width: 110, align: 'right' as const, render: (v: number) => `¥${v.toFixed(2)}` },
+            { title: '金额', dataIndex: 'amount', width: 110, align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(2)}` },
             { title: '收款方', dataIndex: 'payee', width: 120, render: (v) => v || '-' },
             { title: '备注', dataIndex: 'remark', ellipsis: true, render: (v) => v || '-' },
           ]}

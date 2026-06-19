@@ -76,24 +76,24 @@ export default function AssetsPage() {
       <Row gutter={12}>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="资产总额" value={data.total.toFixed(2)} suffix="元" />
+            <Statistic title="资产总额" value={Number(data.total).toFixed(2)} suffix="元" />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="公式 A (账面)" value={data.formula_a.toFixed(2)} suffix="元" />
+            <Statistic title="公式 A (账面)" value={Number(data.formula_a).toFixed(2)} suffix="元" />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
-            <Statistic title="公式 B (订单+余额)" value={data.formula_b.toFixed(2)} suffix="元" />
+            <Statistic title="公式 B (订单+余额)" value={Number(data.formula_b).toFixed(2)} suffix="元" />
           </Card>
         </Col>
         <Col span={6}>
           <Card size="small">
             <Statistic
               title="差额 A - B"
-              value={data.diff.toFixed(2)} suffix="元"
+              value={Number(data.diff).toFixed(2)} suffix="元"
               valueStyle={{ color: hasGap ? '#cf1322' : '#3f8600' }}
             />
           </Card>
@@ -103,7 +103,7 @@ export default function AssetsPage() {
       {hasGap && (
         <Alert
           type="warning" showIcon
-          message={`检测到账面差额 ${data.diff.toFixed(2)} 元`}
+          message={`检测到账面差额 ${Number(data.diff).toFixed(2)} 元`}
           description={(unmatched?.rows.length ?? 0) > 0
             ? `这部分可能藏在最近 7 天 ${unmatched?.rows.length} 条未核销流水里, 看下面表格.`
             : '账上没有未核销流水, 差额可能源自历史脏数据 (建议调整 期初余额 重置)'}
@@ -122,7 +122,7 @@ export default function AssetsPage() {
               columns={[
                 { title: '类别', dataIndex: 'name', width: 160 },
                 { title: '金额 (元)', dataIndex: 'amount',
-                  render: (v: number) => v.toFixed(2) },
+                  render: (v: number) => Number(v).toFixed(2) },
                 { title: '占比', render: (_: any, r: any) =>
                   data.total > 0 ?
                     <Tag>{((r.amount / data.total) * 100).toFixed(1)}%</Tag> : '-',
@@ -150,7 +150,7 @@ export default function AssetsPage() {
               { title: '金额', dataIndex: 'amount', width: 100,
                 render: (v: number) => (
                   <span style={{ color: v < 0 ? '#cf1322' : '#3f8600' }}>
-                    {v.toFixed(2)}
+                    {Number(v).toFixed(2)}
                   </span>
                 ),
               },

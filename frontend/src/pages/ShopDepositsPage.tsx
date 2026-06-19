@@ -73,7 +73,7 @@ export default function ShopDepositsPage() {
           columns={[
             { title: '平台', dataIndex: 'platform', width: 120, render: (v) => v || '-' },
             { title: '店铺名', dataIndex: 'shop_name', width: 200 },
-            { title: '保证金额', dataIndex: 'amount', width: 140, align: 'right' as const, render: (v: number) => `¥${v.toFixed(2)}` },
+            { title: '保证金额', dataIndex: 'amount', width: 140, align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(2)}` },
             { title: '备注', dataIndex: 'remark', ellipsis: true, render: (v) => v || '-' },
             { title: '操作', width: 130, render: (_, row) => (
               <Space>
