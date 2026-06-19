@@ -744,24 +744,33 @@ class TestReconcileWalkthrough:
         s.close()
 
     def test_groups_refill_mismatches(self, db):
-        from app.models.finance import RefillRecord
-        from app.models.order import Order
-        from app.services import ai_assistant
-        # 2026-06-11 拍板: 主订单未导入 = not_available (不进 findings);
-        # 真实差额 (主单实付≠补单成本) 才聚合成 warning/error finding。
+        # 刷单对账(2026-06-19 重做): 转徐晶晶(b流水/Y) ↔ 当日补单(Σ订单额/Σ佣金) 不平 → finding。
         from datetime import date as _date
-        _today = _date.today()   # 财务起始线 2026-01-01: 无日期补单会被排除, 测试数据带今天日期
-        db.add(Order(platform="淘宝", order_no="R1", qty=1, paid_amount=Decimal("999")))
+        from datetime import datetime as _dt
+        from datetime import timezone as _tz
+
+        from app.models.finance import AlipayFlow, RefillRecord
+        from app.services import ai_assistant
+        _today = _date.today()                 # 财务起始线 2026-01-01: 带今天日期
+        tag = "%d.%d" % (_today.month, _today.day)
+        tt = _dt(_today.year, _today.month, _today.day, tzinfo=_tz.utc)
+        # 账上当日补单: Σ订单额=100, Σ佣金=20
         db.add_all([
-            RefillRecord(order_no="R1", total_cost=Decimal("10"), refill_date=_today),   # 真差额
-            RefillRecord(order_no="R2", total_cost=Decimal("20"), refill_date=_today),   # 主单未导入 → 不报
-            RefillRecord(order_no="R3", total_cost=Decimal("30"), refill_date=_today),   # 主单未导入 → 不报
+            RefillRecord(order_no="R1", refill_date=_today, order_amount=Decimal("60"), commission=Decimal("10")),
+            RefillRecord(order_no="R2", refill_date=_today, order_amount=Decimal("40"), commission=Decimal("10")),
+        ])
+        # 实际转徐晶晶: 订单额只转80(差-20→异常), 佣金转20(对平)
+        db.add_all([
+            AlipayFlow(account="t", transaction_no="TX-b", counterparty="徐晶晶",
+                       amount=Decimal("-80"), remark=tag + "-b流水", transaction_time=tt),
+            AlipayFlow(account="t", transaction_no="TX-y", counterparty="徐晶晶",
+                       amount=Decimal("-20"), remark=tag + "-Y", transaction_time=tt),
         ])
         db.commit()
         findings = ai_assistant.collect_reconcile_findings(db)
-        refill = [f for f in findings if f.rule == "refill_compensation"]
-        assert len(refill) == 1
-        assert refill[0].count == 1          # 只有真实差额那条
+        refill = [f for f in findings if f.rule == "refill_transfer"]
+        assert len(refill) == 1              # 只有订单额那条不平
+        assert refill[0].count == 1
         assert refill[0].severity in ("warning", "error")
         assert refill[0].suggestion  # 有修复建议
 

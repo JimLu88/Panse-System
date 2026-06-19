@@ -28,7 +28,8 @@ def daily_summary(db: Session) -> dict:
     """
     # 查所有 paid 订单
     paid_orders = db.execute(
-        select(Order).where(Order.status == "paid", Order.is_historical == False)  # noqa: E712
+        select(Order).where(Order.status == "paid", Order.is_historical == False,  # noqa: E712
+                            Order.is_refill == False)  # 刷单是假单, 不进工厂生产 (2026-06-19)
     ).scalars().all()
 
     if not paid_orders:

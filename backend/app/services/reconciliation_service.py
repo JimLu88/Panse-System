@@ -35,6 +35,7 @@ RuleName = Literal[
     "install_fee",
     "promotion",
     "refill_compensation",
+    "refill_transfer",
     "inventory_value",
     "logistics_fee",
     "revenue_alipay",
@@ -485,6 +486,89 @@ def run_refill_compensation(
     if record_exceptions:
         db.flush()
     return _result("refill_compensation", period_start, period_end, diffs, db)
+
+
+# -------- Rule 4 重做 (2026-06-19): 刷单对账 (补单按日汇总 ↔ 转徐晶晶 b流水/Y 两笔) --------
+# 旧「补单赔实付」run_refill_compensation 假设补单是真卖货、有产品本金、实付≈本金 —— 对刷单(假单)
+# 完全是错的, 只会产生假异常, 已从 RULES 摘除(保留函数)。补单 = 刷单: 钱按日批量转给中间人徐晶晶,
+# 支付宝流水 remark = '{月.日}-b流水'(当日订单额汇总) / '{月.日}-Y'(当日佣金汇总), 两笔分开转。
+# 本规则核对: 账上该转(补单按 refill_date 汇总) ↔ 实际转(支付宝转徐晶晶), 订单额/佣金各一条。
+
+_REFILL_PAYEE = "%晶晶%"   # 中间人对手方 LIKE (用户拍板 2026-06-19: 每次都是徐晶晶; 用 LIKE 兼容 sqlite 测试)
+
+
+def run_refill_transfer(
+    db: Session, *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
+) -> ReconciliationResult:
+    """刷单对账: 当日补单 Σ订单额/Σ佣金 ↔ 支付宝转徐晶晶的 b流水/Y 两笔 (按业务日逐日核)。"""
+    import re
+    from collections import defaultdict
+
+    # 1. 账上该转: 补单(刷单)按 refill_date 汇总 — 订单额 / 佣金
+    ref_amt: dict[date, Decimal] = defaultdict(Decimal)
+    ref_comm: dict[date, Decimal] = defaultdict(Decimal)
+    for d, amt, comm in db.execute(
+        select(RefillRecord.refill_date, RefillRecord.order_amount, RefillRecord.commission)
+        .where(RefillRecord.refill_date.isnot(None))
+    ).all():
+        ref_amt[d] += Decimal(amt or 0)
+        ref_comm[d] += Decimal(comm or 0)
+
+    # 2. 实际转: 支付宝转徐晶晶(amount<0), remark '{月.日}-{Y佣金 / b流水订单额}' 解析到业务日
+    tr_amt: dict[date, Decimal] = defaultdict(Decimal)
+    tr_comm: dict[date, Decimal] = defaultdict(Decimal)
+    for amt, rk, tt in db.execute(
+        select(AlipayFlow.amount, AlipayFlow.remark, AlipayFlow.transaction_time)
+        .where(AlipayFlow.counterparty.like(_REFILL_PAYEE), AlipayFlow.amount < 0)
+    ).all():
+        m = re.match(r"^\s*(\d{1,2})\.(\d{1,2})\s*-?\s*(\S+)", rk or "")
+        if not m:
+            continue
+        mo, da, typ = int(m.group(1)), int(m.group(2)), m.group(3)
+        yr = tt.year if tt else date.today().year
+        if tt and mo > tt.month + 1:    # remark 月份超前于转账月份 → 跨年(上一年)
+            yr -= 1
+        try:
+            bd = date(yr, mo, da)
+        except ValueError:
+            continue
+        val = abs(Decimal(amt or 0))
+        if typ.startswith("Y"):
+            tr_comm[bd] += val
+        elif "b" in typ or "流水" in typ:
+            tr_amt[bd] += val
+
+    # 3. 逐业务日对比: 订单额一条 + 佣金一条
+    diffs: list[ReconciliationDiff] = []
+    for d in sorted(set(ref_amt) | set(ref_comm) | set(tr_amt) | set(tr_comm)):
+        if period_start and d < period_start:
+            continue
+        if period_end and d > period_end:
+            continue
+        for label, ref, tr in (
+            ("订单额", ref_amt.get(d, Decimal(0)), tr_amt.get(d, Decimal(0))),
+            ("佣金", ref_comm.get(d, Decimal(0)), tr_comm.get(d, Decimal(0))),
+        ):
+            key = f"{d}-{label}"
+            # 账上有、还没转 → 待转/流水未导, 报"暂无法对比"而非差错 (避免近期未转批量误报)
+            if ref > 0 and tr == 0:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=ref, actual=None, diff=None, severity="not_available",
+                    message=f"刷单 {d} {label}: 账上Σ¥{ref}, 尚无转徐晶晶记录(待转或支付宝流水未导)"))
+                continue
+            diff = tr - ref
+            sev = _classify(diff, base=ref, abs_floor=Decimal("1"), pct=Decimal("0.01"))
+            msg = f"刷单 {d} {label}: 账上Σ¥{ref} ↔ 实际转徐晶晶¥{tr}, 差¥{diff}"
+            diffs.append(ReconciliationDiff(
+                key=key, expected=ref, actual=tr, diff=diff, severity=sev, message=msg))
+            if sev not in ("ok", "not_available") and record_exceptions:
+                _record_exception(db, rule="refill_transfer", key=key, diff_amount=diff, message=msg)
+    if record_exceptions:
+        db.flush()
+    return _result("refill_transfer", period_start, period_end, diffs, db)
 
 
 # -------- Rule 5: 库存资产估值 --------
@@ -1332,7 +1416,9 @@ RULES: dict[RuleName, callable] = {
     # install_fee 已彻底关闭 (用户拍板 2026-06-17): 充值制不需万师傅月结对账, 且月结账单本就不导。
     # 保留 run_install_fee 函数与 RuleName 字面量, 仅从 RULES 摘除 → 面板不再出现这张卡。
     "promotion": run_promotion,
-    "refill_compensation": run_refill_compensation,
+    # 「补单赔实付」已废 (用户拍板 2026-06-19): 补单=刷单, 该规则假设有产品本金对刷单是错的, 只产生假异常。
+    # 保留 run_refill_compensation 函数与 Literal, 仅从 RULES 摘除 → 改用「刷单对账」run_refill_transfer。
+    "refill_transfer": run_refill_transfer,
     "inventory_value": run_inventory_value,
     "logistics_fee": run_logistics_fee,
     "revenue_alipay": run_revenue_alipay,

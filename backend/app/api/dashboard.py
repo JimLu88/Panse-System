@@ -44,7 +44,8 @@ def get_dashboard(
     # ── 订单概览 ──────────────────────────────────────────────
     status_counts = dict(
         db.query(Order.status, func.count(Order.id))
-        .filter(Order.is_historical == False)  # noqa: E712
+        .filter(Order.is_historical == False,  # noqa: E712
+                Order.is_refill == False)  # 刷单是假单, 不进订单状态分布 (2026-06-19)
         .group_by(Order.status)
         .all()
     )
@@ -89,7 +90,8 @@ def get_dashboard(
 
     orders_7d = (
         db.query(func.count(Order.id))
-        .filter(Order.order_date >= last_7, Order.is_historical == False)  # noqa: E712
+        .filter(Order.order_date >= last_7, Order.is_historical == False,  # noqa: E712
+                Order.is_refill == False)  # 刷单是假单, 不进7天计数 (2026-06-19)
         .scalar() or 0
     )
 
@@ -178,7 +180,7 @@ def get_dashboard(
         "factory_payment": "货款对账",
         "install_fee": "安装费",
         "promotion": "推广支出",
-        "refill_compensation": "补单赔付",
+        "refill_transfer": "刷单对账",
         "inventory_value": "库存资产",
         "logistics_fee": "物流费",
         "revenue_alipay": "收入对账",

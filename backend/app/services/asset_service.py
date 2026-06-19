@@ -136,6 +136,7 @@ def _pending_shipment_value(db: Session) -> Decimal:
         select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
             Order.status == "paid",
             Order.is_historical == False,  # noqa: E712
+            Order.is_refill == False,  # 刷单是假单, 不算真实资产 (2026-06-19)
         )
     ).scalar()
     return Decimal(rows or 0)
@@ -147,6 +148,7 @@ def _pending_confirm_value(db: Session) -> Decimal:
         select(func.coalesce(func.sum(Order.paid_amount), 0)).where(
             Order.status == "shipped",
             Order.is_historical == False,  # noqa: E712
+            Order.is_refill == False,  # 刷单是假单, 不算真实资产 (2026-06-19)
         )
     ).scalar()
     return Decimal(rows or 0)

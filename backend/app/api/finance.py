@@ -1010,6 +1010,7 @@ def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optiona
     start = period_start or _d(_d.today().year, 1, 1)
     end = period_end or _d.today()
     q = select(_O).where(_O.order_date >= start, _O.order_date <= end,
+                         _O.is_refill == False,  # 刷单是假单, 不进成本异常诊断 (2026-06-19)
                          _O.status.in_(("paid", "shipped", "signed")))
     if product_code:
         q = q.where(_O.product_code == product_code)
@@ -1112,6 +1113,7 @@ def orders_missing_code(db: Session = Depends(get_db)):
     from app.models.product import Product as _P
     orders = db.execute(select(_O).where(
         _O.product_code.is_(None), _O.order_date >= _d(2026, 1, 1),
+        _O.is_refill == False,  # 刷单本就无产品编码, 不算缺编码异常 (2026-06-19)
         _O.status.in_(("paid", "shipped", "signed")))).scalars().all()
     sku2code = {s: c for s, c in db.execute(select(PricingSku.sku_code, PricingSku.product_code)).all() if s}
     code2name = {c: n for c, n in db.execute(select(_P.code, _P.name)).all()}

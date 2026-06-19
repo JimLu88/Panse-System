@@ -93,6 +93,43 @@ def test_refill_mismatch_writes_exception(db_session):
     assert db_session.query(DataException).count() == 1
 
 
+# -------- Rule 4 重做: refill_transfer 刷单对账 --------
+
+def test_refill_transfer_matches_and_flags(db_session):
+    """刷单对账: 转徐晶晶(b流水/Y) ↔ 当日补单(Σ订单额/Σ佣金)。"""
+    from datetime import datetime, timezone
+
+    from app.models.finance import AlipayFlow
+    d = date(2026, 4, 15)
+    tt = datetime(2026, 4, 18, tzinfo=timezone.utc)   # 转账日晚于业务日, remark 带业务日
+    db_session.add_all([
+        RefillRecord(order_no="R1", refill_date=d, order_amount=Decimal("60"), commission=Decimal("10")),
+        RefillRecord(order_no="R2", refill_date=d, order_amount=Decimal("40"), commission=Decimal("10")),
+    ])
+    # 订单额转对(100), 佣金少转(15 vs 应20 → 异常)
+    db_session.add_all([
+        AlipayFlow(account="t", transaction_no="TX-b", counterparty="徐晶晶",
+                   amount=Decimal("-100"), remark="4.15-b流水", transaction_time=tt),
+        AlipayFlow(account="t", transaction_no="TX-y", counterparty="徐晶晶",
+                   amount=Decimal("-15"), remark="4.15-Y", transaction_time=tt),
+    ])
+    db_session.flush()
+    r = recon.run_refill_transfer(db_session, record_exceptions=False)
+    by = {x.key: x for x in r.diffs}
+    assert by["2026-04-15-订单额"].severity == "ok"          # 100 == 100
+    assert by["2026-04-15-佣金"].severity in ("warning", "error")  # 15 != 20
+    assert by["2026-04-15-佣金"].diff == Decimal("-5")
+
+
+def test_refill_transfer_pending_when_no_transfer(db_session):
+    """账上有补单但还没转徐晶晶 → not_available(待转), 不报差错。"""
+    db_session.add(RefillRecord(order_no="R9", refill_date=date(2026, 5, 1),
+                                order_amount=Decimal("50"), commission=Decimal("10")))
+    db_session.flush()
+    r = recon.run_refill_transfer(db_session, record_exceptions=False)
+    assert all(d.severity == "not_available" for d in r.diffs)
+
+
 # -------- Rule 5 inventory_value --------
 
 def test_inventory_value_basic(db_session):
@@ -142,7 +179,7 @@ def test_run_all_executes_all_rules(db_session):
     assert "install_fee" not in results
     assert set(results.keys()) == {
         "factory_payment", "promotion",
-        "refill_compensation", "inventory_value", "logistics_fee",
+        "refill_transfer", "inventory_value", "logistics_fee",
         "revenue_alipay", "operating_expense", "purchase_payment",
         # WS4 代付台账三规则 (补单佣金/补单快递/售后 实付↔应摊)
         "refill_commission_payout", "refill_express_payout", "aftersales_payout",

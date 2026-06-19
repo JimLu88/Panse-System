@@ -125,6 +125,6 @@ def test_run_all_includes_core_rules(db_session):
     # 核心规则全在 (允许后续追加更多规则)
     assert {
         "factory_payment", "promotion",
-        "refill_compensation", "inventory_value", "logistics_fee",
+        "refill_transfer", "inventory_value", "logistics_fee",
     }.issubset(set(results))
     assert "install_fee" not in results   # 已关闭, 锁定不回归

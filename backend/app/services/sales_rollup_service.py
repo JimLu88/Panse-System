@@ -29,6 +29,7 @@ def rollup_day(db: Session, target: date) -> int:
         select(Order).where(
             Order.order_date == target,
             Order.is_historical == False,  # noqa: E712
+            Order.is_refill == False,  # 刷单是假单, 不进销售日汇总 (2026-06-19)
             Order.status.in_(("paid", "shipped", "signed")),
         )
     ).scalars().all()
