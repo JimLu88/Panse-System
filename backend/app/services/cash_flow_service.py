@@ -147,10 +147,13 @@ def _factory_unpaid_bill(db: Session, *, has_platform_no: bool) -> Decimal:
 
 
 def _predicted_factory_cost(db: Session, order: Order) -> Optional[Decimal]:
-    """单订单工厂制造成本预估(订单总额): theoretical_cost×qty > 现算BOM total > 定价表 factory_cost×qty。"""
+    """单订单工厂制造成本预估(订单总额): theoretical_cost(已是订单总额) > 现算BOM total > 定价表 factory_cost×qty。
+
+    注(2026-06-20): theoretical_cost 改为存「订单总额」(单件×真实计价件数), 故此处不再 ×qty
+    (原 ×qty 对 qty 脏单 —— 如餐边柜 qty=16 —— 会把成本虚高 16 倍)。"""
     qty = Decimal(int(order.qty or 1))
     if order.theoretical_cost is not None:
-        return _d(order.theoretical_cost) * qty
+        return _d(order.theoretical_cost)
     try:
         bd = order_cost_service.compute(db, order)
         if bd.resolved and not bd.cost_incomplete and bd.total_cost:

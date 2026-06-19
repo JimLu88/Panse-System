@@ -478,6 +478,20 @@ def _apply_fragment_rule(order: Order, bd: CostBreakdown) -> Decimal:
     return cost
 
 
+def _effective_qty(order: Order, unit_cost: Decimal) -> int:
+    """真实计价件数(修「买N件只算1件成本」bug)。
+
+    默认 1; 仅当 qty>1 且**非定制** 且**件均实付 ≥ 单件成本**(确认是真多件,
+    而非「拍N件凑价」的定金/差价/链接单 —— 那些 qty 是脏数据)时返回 qty。
+    用户拍板 2026-06-20: qty bug 全量修复须排除定制单。
+    注: 仅用于 BOM/定价表「单件」成本路径; 实付×成本率兜底已是订单总额, 不乘。"""
+    qty = int(order.qty or 1)
+    if qty <= 1 or order.is_custom or unit_cost is None or unit_cost <= 0:
+        return 1
+    paid = Decimal(str(order.paid_amount or 0))
+    return qty if paid > 0 and (paid / qty) >= unit_cost else 1
+
+
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
@@ -495,7 +509,8 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         )
     bd = compute(db, order)
     if bd.resolved:
-        order.theoretical_cost = _apply_fragment_rule(order, bd)
+        _unit = _apply_fragment_rule(order, bd)
+        order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
         return bd
     # 无 BOM → 回退定价表物理总成本
     cost = _pricing_cost_for(db, order)
@@ -504,7 +519,8 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         bd.total_cost = (bd.unit_cost * bd.qty).quantize(_CENTS)
         bd.resolved = True
         bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表物理总成本"
-        order.theoretical_cost = _apply_fragment_rule(order, bd)
+        _unit = _apply_fragment_rule(order, bd)
+        order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
         return bd
     # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
     if ratios is not None:
@@ -713,7 +729,8 @@ def backfill_theoretical_from_pricing(
             continue
         cost = _pricing_cost_for(db, o)
         if cost is not None:
-            o.theoretical_cost = cost.quantize(_CENTS)
+            _u = cost.quantize(_CENTS)
+            o.theoretical_cost = (_u * _effective_qty(o, _u)).quantize(_CENTS)
             updated += 1
         else:
             no_pricing += 1
