@@ -27,6 +27,8 @@ class PricingSku(Base, TimestampMixin):
     sku: Mapped[Optional[str]] = mapped_column(String(255))
     sku_code: Mapped[str] = mapped_column(String(32), unique=True, nullable=False, index=True)
     size_category: Mapped[Optional[str]] = mapped_column(String(16))  # 小型 / 中型 / 大型
+    # 按 SKU 的成品尺寸 (2026-06-19: 从 SKU 尺寸图读出回填; 下单图按订单 sku_code 取此, 多规格不再选错)
+    size_info: Mapped[Optional[str]] = mapped_column(String(255))
 
     # 四档售价 (轻定制)
     list_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))     # 标价计算

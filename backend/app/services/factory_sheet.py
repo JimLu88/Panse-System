@@ -372,6 +372,10 @@ def build_from_fields(
     # 备注只展示不解析 — 自由文本机器提尺寸容易错单, 以人工核对为准。
     if dim_changes:
         size_info = "定制: " + "；".join(f"{k} {v}" for k, v in dim_changes.items())
+    elif pricing_sku and getattr(pricing_sku, "size_info", None):
+        # 该 SKU 自己录的成品尺寸 (2026-06-19: 从 SKU 尺寸图读出, 按 sku_code 取)。
+        # 多规格(标准/窄款...)从此精确取本变体尺寸, 不再整段堆产品表 size_detail / 选错款。
+        size_info = pricing_sku.size_info
     elif sku and re.search(r"\d+(?:\.\d+)?\s*(?:米|m|M|cm|CM|mm|MM)", sku):
         # SKU 名带明确尺寸 (1.4米/45cm/1200mm) → 以 SKU 为准:
         # 产品表 size_detail 是默认款尺寸, 对非默认尺寸的 SKU 会误导工厂备料。
