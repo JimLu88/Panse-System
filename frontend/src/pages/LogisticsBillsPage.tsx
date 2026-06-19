@@ -79,7 +79,7 @@ export default function LogisticsBillsPage() {
     { title: '运单号', dataIndex: 'tracking_no', width: 160, ellipsis: true },
     { title: '订单号', dataIndex: 'order_no', width: 160, ellipsis: true },
     { title: '重量(kg)', dataIndex: 'weight_kg', width: 90, align: 'right' as const,
-      render: (v: number | null) => v != null ? v.toFixed(3) : '-' },
+      render: (v: number | string | null) => v != null ? Number(v).toFixed(3) : '-' },
     { title: '运费', dataIndex: 'freight_amount', width: 100, align: 'right' as const,
       render: (v: number) => <span style={{ color: '#cf1322' }}>¥{Number(v).toFixed(2)}</span> },
     { title: '备注', dataIndex: 'remark', ellipsis: true },
