@@ -52,7 +52,7 @@ def _int_qty(v) -> str:
     return str(d.normalize())
 
 
-def _gallery_data_uri(rel, max_w: int = 560):
+def _gallery_data_uri(rel, max_w: int = 440):
     """图库相对路径 → 缩放后的 base64 data URI, 内嵌进下单图。
 
     wkhtmltoimage / 浏览器都能可靠渲染, 不依赖 /api/gallery/file 的会话鉴权 (PNG 渲染取不到 cookie)。
@@ -267,7 +267,7 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
             f.write(html)
         # 官方 patched-qt 版本自带无头, 直接跑 (不要 xvfb-run, 会冲突报错)
         subprocess.run(
-            ["wkhtmltoimage", "--format", "png", "--quality", "92",
+            ["wkhtmltoimage", "--format", "jpeg", "--quality", "82",
              "--encoding", "utf-8", "--width", str(width), "--disable-smart-width", hp, op],
             check=True, capture_output=True, timeout=90,
         )

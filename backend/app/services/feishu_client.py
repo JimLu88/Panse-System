@@ -136,11 +136,13 @@ def patch_card(db: Session, message_id: str, card: dict) -> dict:
 def upload_image(db: Session, png_bytes: bytes) -> str:
     """上传图片到飞书, 返回 image_key (im/v1/images, image_type=message)。"""
     url = f"{_BASE}/im/v1/images"
+    # 按字节签名识别格式 (下单图改用 JPEG 体积小10倍, 二维码仍 PNG); content-type 与字节一致, 防飞书拒收。
+    _fmt = "jpeg" if png_bytes[:3] == b"\xff\xd8\xff" else "png"
     try:
         r = httpx.post(
             url,
             headers={"Authorization": f"Bearer {get_tenant_access_token(db)}"},
-            files={"image": ("qr.png", png_bytes, "image/png")},
+            files={"image": (f"img.{_fmt}", png_bytes, f"image/{_fmt}")},
             data={"image_type": "message"},
             timeout=_TIMEOUT,
         )
