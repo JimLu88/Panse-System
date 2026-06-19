@@ -14,7 +14,7 @@ from decimal import Decimal
 from html import escape
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
@@ -347,6 +347,16 @@ def count_pending_push(db: Session, *, include_baseline: bool = True) -> int:
     return len(_pending_push_records(db, include_baseline=include_baseline))
 
 
+# 工厂制单编号: 历史(<6/19)靠 ZIP 回填; 6/19 起新单推送时按订单顺序自动顺排 (用户拍板 2026-06-19)
+_AUTO_NUMBER_SINCE = date(2026, 6, 19)
+
+
+def _next_factory_no(db: Session) -> int:
+    """下一个工厂制单编号 = 现有最大 + 1 (新单按订单顺序往后排)。"""
+    mx = db.execute(select(func.max(Order.factory_no))).scalar()
+    return (mx or 241) + 1
+
+
 def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
     """把本批下单图打成 ZIP 发飞书 (用户拍板 2026-06-19: 每次推送末尾附 ZIP, 含所有订单图)。
 
@@ -401,6 +411,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             continue
         if (order.status or "") == "cancelled" or _is_refunded(order):
             continue   # 退款/取消单不推工厂 (走作废图流程, 不在此补推)
+        # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)
+        if (getattr(order, "factory_no", None) is None and order.order_date
+                and order.order_date >= _AUTO_NUMBER_SINCE):
+            order.factory_no = _next_factory_no(db)
+            db.flush()
         try:
             png = render_png(factory_sheet.build(db, order.id))
             key = feishu_client.upload_image(db, png)
