@@ -52,6 +52,34 @@ def _int_qty(v) -> str:
     return str(d.normalize())
 
 
+def _gallery_data_uri(rel, max_w: int = 560):
+    """图库相对路径 → 缩放后的 base64 data URI, 内嵌进下单图。
+
+    wkhtmltoimage / 浏览器都能可靠渲染, 不依赖 /api/gallery/file 的会话鉴权 (PNG 渲染取不到 cookie)。
+    读不到 / 出错一律返回 None (图库问题绝不阻断下单图生成)。
+    """
+    if not rel:
+        return None
+    try:
+        import base64
+        import io
+
+        from PIL import Image
+
+        from app.services.gallery_lookup import _root
+        p = _root() / rel
+        if not p.is_file():
+            return None
+        im = Image.open(p).convert("RGB")
+        if im.width > max_w:
+            im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
+        buf = io.BytesIO()
+        im.save(buf, format="JPEG", quality=78)
+        return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception:  # noqa: BLE001 - 图库读取/解码失败不阻断
+        return None
+
+
 def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     """下单图 HTML — 方向二「图文卡片」版式 (用户拍板 2026-06-12)。
 
@@ -90,8 +118,17 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
         _row("备注", e(sheet.remark), color="#a8743a")
     if sheet.production_note:
         _row("生产备注", e(sheet.production_note), color="#a8743a")
-    img = (f"<img class='pimg' src='{e(sheet.image_url)}' alt='产品图'/>"
-           if sheet.image_url else "<div class='noimg'>无产品图</div>")
+    # 产品主图: 优先真实 image_url(淘宝CDN http链接); 缺则用图库主图(内嵌base64)。
+    # SKU尺寸图: 一律内嵌图库 SKU 图 (用户拍板 2026-06-18: 下单图都要连着 SKU 图一起发)。
+    _main = sheet.image_url if (sheet.image_url and str(sheet.image_url).startswith("http")) \
+        else _gallery_data_uri(getattr(sheet, "gallery_main_image", None))
+    _sku = _gallery_data_uri(getattr(sheet, "sku_image", None))
+    _parts = [f"<img class='pimg' src='{e(_main)}' alt='产品图'/>" if _main
+              else "<div class='noimg'>无产品图</div>"]
+    if _sku:
+        _parts.append("<div class='skucap'>SKU 尺寸图</div>"
+                      f"<img class='skimg' src='{e(_sku)}' alt='SKU尺寸图'/>")
+    img = "".join(_parts)
     custom_tag = ""
     if sheet.is_custom_variant:
         dims = " ".join(f"{k}={v}" for k, v in (sheet.dimension_changes or {}).items())
@@ -113,6 +150,8 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
   .pimg {{ width:230px; max-height:260px; object-fit:contain; border:1px solid #f0f0f0; border-radius:8px; }}
   .noimg {{ width:230px; height:180px; border:1px dashed #ccc; border-radius:8px; display:flex;
             align-items:center; justify-content:center; color:#bbb; }}
+  .skucap {{ font-size:12px; color:#888; margin:10px 0 2px; }}
+  .skimg {{ width:230px; max-height:240px; object-fit:contain; border:1px solid #f0f0f0; border-radius:8px; }}
   .kv {{ flex:1; min-width:0; }}
   .lbl {{ color:#888; font-size:13px; }}
   .size {{ font-size:22px; font-weight:800; color:#1a7a3c; line-height:1.35; margin:2px 0 4px; }}
