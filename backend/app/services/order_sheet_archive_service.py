@@ -9,6 +9,7 @@ E: 订单 (order_date >= 2026-06-06) 自动生成下单图 HTML → 存导入档
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date
 from decimal import Decimal
 from html import escape
@@ -52,7 +53,7 @@ def _int_qty(v) -> str:
     return str(d.normalize())
 
 
-def _gallery_data_uri(rel, max_w: int = 440):
+def _gallery_data_uri(rel, max_w: int = 900):
     """图库相对路径 → 缩放后的 base64 data URI, 内嵌进下单图。
 
     wkhtmltoimage / 浏览器都能可靠渲染, 不依赖 /api/gallery/file 的会话鉴权 (PNG 渲染取不到 cookie)。
@@ -74,152 +75,117 @@ def _gallery_data_uri(rel, max_w: int = 440):
         if im.width > max_w:
             im = im.resize((max_w, max(1, int(im.height * max_w / im.width))))
         buf = io.BytesIO()
-        im.save(buf, format="JPEG", quality=78)
+        im.save(buf, format="JPEG", quality=88)
         return "data:image/jpeg;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
     except Exception:  # noqa: BLE001 - 图库读取/解码失败不阻断
         return None
 
 
-def render_html(sheet: "factory_sheet.FactorySheet") -> str:
-    """下单图 HTML — 方向二「图文卡片」版式 (用户拍板 2026-06-12)。
+def _fmt_size(s: Optional[str]) -> Optional[str]:
+    """成品尺寸紧凑化: 长度：450mm；深度：400mm；高度：450mm → 450mm（长）* 400mm（深）* 450mm（高）。"""
+    if not s:
+        return None
+    _short = {"长度": "长", "深度": "深", "高度": "高", "宽度": "宽", "直径": "径"}
+    out = []
+    for seg in re.split(r"[；;]", s):
+        m = re.match(r"\s*([^：:]+)[：:]\s*(.+)", seg)
+        if m:
+            out.append(f"{m.group(2).strip()}({_short.get(m.group(1).strip(), m.group(1).strip())})")
+        elif seg.strip():
+            out.append(seg.strip())
+    return "*".join(out) if out else s
 
-    品牌绿横幅 + 左图右信息(规格尺寸大字); 时间只写下单/发货日期 (不标"+25天")。
-    独立文件, 打印即 A4 单页。
+
+def render_html(sheet: "factory_sheet.FactorySheet") -> str:
+    """下单图 HTML — 藏青蓝 A4 横版工厂生产单 (用户拍板 2026-06-19, 方案C·藏青蓝)。
+
+    A4 横版(渲染 1684×1190) + 四周安全留白; 藏青蓝顶栏; 图左规格右分区;
+    成品尺寸/制单/发货 红字大字; 辅料只写 BOM(去木作); 加急红敲印;
+    无编号标"未能匹配工厂订单号"; 无尺寸标红"未对应尺寸"。
     """
     e = escape
-    mat_rows = "".join(
-        f"<tr><td><code>{e(m.material_code)}</code></td>"
-        f"<td>{e(m.material_name or m.material_code)}</td>"
-        f"<td class='c'>{_int_qty(m.qty_per_product)}</td>"
-        f"<td class='c'>× {sheet.qty} = <b>{_int_qty(m.total_qty)}</b></td>"
-        f"<td class='c'>{e(m.unit or '件')}</td>"
-        f"<td>{e(m.spec or m.note or '')}</td></tr>"
-        for m in sheet.materials
-    )
-    rows = []
-
-    def _row(k: str, v: str, color: str = "", big: bool = False) -> None:
-        # big: 备注类重点字段 — 大两号(≈19px) + 加粗 + 标红, 工厂一眼看到 (用户拍板 2026-06-19)
-        if big:
-            style = " style='font-size:19px;font-weight:800;color:#dc2626;line-height:1.4'"
-        elif color:
-            style = f" style='color:{color}'"
-        else:
-            style = ""
-        rows.append(f"<div class='row'><div class='k'>{e(k)}</div><div{style}>{v}</div></div>")
-
-    _row("产品", f"{e(sheet.product_name or '-')} <span style='color:#9ca3af'>({e(sheet.product_code or '-')})</span>")
-    addr = "，".join(x for x in (sheet.customer_name, sheet.customer_phone, sheet.customer_address) if x) or "-"
-    _row("收件", e(addr))
-    # 用户拍板 (2026-06-12): 只写下单/发货日期, 不标注"+25天"
-    _row("时间", f"下单 {sheet.order_date or '-'} → 发货 <b>{sheet.ship_date or '-'}</b>")
-    # 图4 (2026-06-12): 下单图先主材后辅材
-    if getattr(sheet, "main_material", None):
-        _row("主材", e(sheet.main_material), color="#222")
-    if getattr(sheet, "aux_material", None):
-        _row("辅材", e(sheet.aux_material), color="#555")
-    if sheet.material_desc:
-        _row("说明", e(sheet.material_desc), color="#888")
-    if sheet.remark:
-        _row("备注", e(sheet.remark), big=True)
-    if sheet.production_note:
-        _row("生产备注", e(sheet.production_note), big=True)
-    # 产品主图: 优先真实 image_url(淘宝CDN http链接); 缺则用图库主图(内嵌base64)。
-    # SKU尺寸图: 一律内嵌图库 SKU 图 (用户拍板 2026-06-18: 下单图都要连着 SKU 图一起发)。
-    _main = sheet.image_url if (sheet.image_url and str(sheet.image_url).startswith("http")) \
-        else _gallery_data_uri(getattr(sheet, "gallery_main_image", None))
-    _sku = _gallery_data_uri(getattr(sheet, "sku_image", None))
-    _parts = [f"<img class='pimg' src='{e(_main)}' alt='产品图'/>" if _main
-              else "<div class='noimg'>无产品图</div>"]
-    if _sku:
-        _parts.append("<div class='skucap'>SKU 尺寸图</div>"
-                      f"<img class='skimg' src='{e(_sku)}' alt='SKU尺寸图'/>")
-    img = "".join(_parts)
-    custom_tag = ""
-    if sheet.is_custom_variant:
-        dims = " ".join(f"{k}={v}" for k, v in (sheet.dimension_changes or {}).items())
-        custom_tag = f"<span class='tag'>尺寸定制 {e(dims)}</span>"
-    # 工厂制单编号 + 制单日期 (用户拍板 2026-06-19: 工厂按"畔色 X 单"编号下单; 无编号则醒目标出)
-    _md = sheet.made_date or ""
+    A = "#1f3a5f"  # 藏青蓝 主色
     if sheet.factory_no:
-        fno_html = (f"<div class='fno'>畔色 {sheet.factory_no} 单"
-                    f"<span class='md'>制单日期 {_md}</span></div>")
+        no_html = f"<div class='no'>畔色 {sheet.factory_no} 单</div>"
     else:
-        fno_html = ("<div class='fno nomatch'>未能匹配工厂订单号"
-                    f"<span class='md'>制单日期 {_md}</span></div>")
-    # 规格尺寸: 无尺寸 → 红字"未对应尺寸"(便于一眼找出哪些 SKU 没录尺寸)
-    size_html = (f"<div class='size'>{e(sheet.size_info)}</div>" if sheet.size_info
-                 else "<div class='size nosize'>未对应尺寸</div>")
-    return f"""<!DOCTYPE html>
-<html lang="zh"><head><meta charset="utf-8"/>
-<title>{e(sheet.sheet_title)}</title>
-<style>
-  body {{ font-family: "Microsoft YaHei", "PingFang SC", sans-serif; margin: 0; color: #1f2937;
-          background:#f3f4f6; }}
-  .card {{ max-width: 760px; margin: 18px auto; background:#fff; border-radius:14px;
-           overflow:hidden; box-shadow:0 2px 14px rgba(0,0,0,.12); }}
-  .banner {{ background:linear-gradient(95deg,#1a7a3c,#2f9b58); color:#fff; padding:14px 20px;
-             display:flex; justify-content:space-between; align-items:center; }}
-  .banner .t {{ font-size:18px; font-weight:700; }}
-  .banner .no {{ background:rgba(255,255,255,.18); border-radius:99px; padding:4px 14px; font-size:13px; }}
-  .fno {{ font-size:30px; font-weight:900; text-align:center; padding:12px 20px 6px;
-          color:#1a7a3c; letter-spacing:3px; }}
-  .fno.nomatch {{ color:#dc2626; font-size:22px; letter-spacing:1px; }}
-  .fno .md {{ display:block; font-size:13px; font-weight:600; color:#6b7280; letter-spacing:0; margin-top:4px; }}
-  .size.nosize {{ color:#dc2626; }}
-  .main {{ display:flex; gap:18px; padding:18px 20px; }}
-  .pics {{ width:230px; flex-shrink:0; }}
-  .pimg {{ width:230px; max-height:260px; object-fit:contain; border:1px solid #f0f0f0; border-radius:8px; }}
-  .noimg {{ width:230px; height:180px; border:1px dashed #ccc; border-radius:8px; display:flex;
-            align-items:center; justify-content:center; color:#bbb; }}
-  .skucap {{ font-size:12px; color:#888; margin:10px 0 2px; }}
-  .skimg {{ width:230px; max-height:240px; object-fit:contain; border:1px solid #f0f0f0; border-radius:8px; }}
-  .kv {{ flex:1; min-width:0; }}
-  .lbl {{ color:#888; font-size:13px; }}
-  .size {{ font-size:22px; font-weight:800; color:#1a7a3c; line-height:1.35; margin:2px 0 4px; }}
-  .qty {{ font-size:14px; font-weight:600; color:#5b8c6e; margin-bottom:8px; }}
-  .row {{ display:flex; padding:7px 0; border-bottom:1px dashed #e5e7eb; font-size:14px; }}
-  .row .k {{ width:64px; color:#999; flex-shrink:0; }}
-  .tag {{ display:inline-block; font-size:12px; padding:2px 10px; border-radius:99px;
-          background:#fff4e0; color:#b76e00; margin-right:8px; }}
-  .ono {{ color:#bbb; font-size:12px; font-family:monospace; }}
-  .mat {{ margin:0 20px 18px; }}
-  .mat h3 {{ margin:4px 0 8px; font-size:14px; }}
-  .mat h3 span {{ font-weight:normal; color:#999; font-size:12px; }}
-  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
-  th {{ text-align:left; color:#888; font-weight:600; padding:6px 8px; border-bottom:2px solid #1a7a3c; }}
-  td {{ padding:6px 8px; border-bottom:1px solid #f0f0f0; }}
-  tr:nth-child(even) td {{ background:#fafcfa; }}
-  td.c {{ text-align:center; }}
-  .foot {{ padding:0 20px 16px; font-size:11px; color:#9ca3af; }}
-  @media print {{ body {{ background:#fff; }} .card {{ box-shadow:none; margin:0; max-width:none; }} }}
-</style></head><body>
-<div class="card">
-  {fno_html}
-  <div class="banner">
-    <div class="t">畔色木作 · 工厂下单图</div>
-    <div class="no">{e(sheet.sheet_title)}</div>
-  </div>
-  <div class="main">
-    <div class="pics">{img}</div>
-    <div class="kv">
-      <div class="lbl">规格尺寸</div>
-      {size_html}
-      <div class="qty">数量 {sheet.qty} 件</div>
-      {''.join(rows)}
-      <div style="margin-top:10px">{custom_tag}<span class="ono">{e(sheet.order_no)}</span></div>
-    </div>
-  </div>
-  <div class="mat">
-    <h3>物料明细 <span>(供配件采购, 工厂备料参考)</span></h3>
-    <table>
-      <tr><th style="width:90px">物料编码</th><th>物料名称</th><th style="width:60px">单件</th><th style="width:110px">总量</th><th style="width:50px">单位</th><th>备注</th></tr>
-      {mat_rows or "<tr><td colspan='6' style='color:#9ca3af'>无 BOM 物料</td></tr>"}
-    </table>
-  </div>
-  <div class="foot">畔色孚格 ERP 自动生成 · 单号 {e(sheet.order_no)}</div>
-</div>
-</body></html>"""
+        no_html = "<div class='no' style='color:#fda4a4'>未能匹配工厂订单号</div>"
+    # 成品尺寸 (无 → 红字"未对应尺寸")
+    _szt = _fmt_size(sheet.size_info)
+    if _szt:
+        _n = len(_szt)
+        _szfs = 52 if _n <= 16 else (44 if _n <= 28 else 32)
+        _nw = "white-space:nowrap;" if _n <= 28 else ""   # 长尺寸(箱体床等)允许换行不裁切
+        size_html = f"<div class='sz' style='font-size:{_szfs}px;{_nw}'>{e(_szt)}</div>"
+    else:
+        size_html = "<div class='sz'>未对应尺寸</div>"
+    # 材质 = 主材 · 辅材 (去掉工艺/说明)
+    _mat = [x for x in (getattr(sheet, "main_material", None), getattr(sheet, "aux_material", None)) if x]
+    mat_txt = e(" · ".join(_mat)) if _mat else "—"
+    # 辅料 BOM: 去木作 + 简化为 "名称 ×数量 单位" (给木作厂看, 不写木作本身)
+    bom = []
+    for m in sheet.materials:
+        code = (m.material_code or "").upper()
+        nm = m.material_name or m.material_code or ""
+        if code.startswith("WD") or "木作" in nm:
+            continue
+        bom.append(f"{e(nm)}　×{_int_qty(m.total_qty)} {e(m.unit or '件')}")
+    bom_txt = "<br>".join(bom) if bom else "—"
+    # 图纸: 优先 SKU 尺寸图(高清内嵌 900px), 回退主图
+    _sku = _gallery_data_uri(getattr(sheet, "sku_image", None))
+    _main = (sheet.image_url if (sheet.image_url and str(sheet.image_url).startswith("http"))
+             else _gallery_data_uri(getattr(sheet, "gallery_main_image", None)))
+    _img = _sku or _main
+    pic_html = f"<img src='{e(_img)}'>" if _img else "<div class='noimg'>无产品图纸</div>"
+    stamp_html = "<div class='stamp'>加急</div>" if sheet.urgent else ""
+    made, ship, odate = sheet.made_date or "-", sheet.ship_date or "-", sheet.order_date or "-"
+    return f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
+<title>{e(sheet.sheet_title)}</title><style>
+*{{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}}
+body{{background:#fff;}}
+.page{{width:1684px;height:1190px;background:#fff;padding:22px;}}
+.card{{position:relative;width:1640px;height:1146px;background:#fff;border:3px solid {A};}}
+table{{border-collapse:collapse;}}
+.hd{{width:100%;height:120px;background:{A};color:#fff;}}
+.hd .co{{font-size:36px;font-weight:900;padding-left:28px;}}
+.hd .co small{{display:block;font-size:17px;opacity:.82;letter-spacing:2px;margin-top:5px;}}
+.hd .r{{text-align:right;padding-right:28px;}}
+.hd .no{{font-size:50px;font-weight:900;}}
+.hd .ono{{font-size:22px;opacity:.92;margin-top:4px;font-family:monospace;letter-spacing:1px;}}
+.mid{{width:100%;height:740px;}}
+.mid .pic{{width:660px;border-right:3px solid {A};text-align:center;vertical-align:middle;}}
+.mid .pic img{{max-width:640px;max-height:700px;}}
+.mid .noimg{{color:#bbb;font-size:30px;}}
+.zwrap{{vertical-align:top;}}
+.z{{border-bottom:2px solid {A};}}
+.zt{{background:#eef2f7;color:{A};font-size:22px;font-weight:800;padding:10px 24px;letter-spacing:1px;}}
+.zb{{padding:16px 26px;font-size:31px;line-height:1.35;word-break:break-all;}}
+.sz{{font-size:58px;font-weight:900;color:#dc2626;letter-spacing:1px;line-height:1.15;}}
+.dt{{font-size:38px;font-weight:900;color:#dc2626;}}
+.ft{{width:100%;border-top:3px solid {A};}}
+.ft td{{padding:18px 26px;vertical-align:top;font-size:30px;}}
+.ft .l{{font-size:20px;color:{A};font-weight:800;letter-spacing:1px;}}
+.stamp{{position:absolute;top:150px;right:800px;border:5px double #dc2626;color:#dc2626;
+        font-size:46px;font-weight:900;padding:3px 20px;transform:rotate(-13deg);border-radius:10px;
+        letter-spacing:8px;z-index:9;background:rgba(255,255,255,.4);}}
+@media print{{.page{{padding:14px;}}}}
+</style></head><body><div class="page"><div class="card">
+<table class="hd" style="width:100%"><tr>
+  <td class="co">畔色木作<small>工厂生产单 · PRODUCTION ORDER</small></td>
+  <td class="r">{no_html}<div class="ono">订单编号：{e(sheet.order_no)}</div></td>
+</tr></table>
+<table class="mid"><tr>
+  <td class="pic">{pic_html}</td>
+  <td class="zwrap">
+    <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
+    <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}<div class="dt">制单 {made}</div><div class="dt" style="margin-top:6px">发货 {ship}</div></div></div>
+    <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
+  </td></tr></table>
+<table class="ft" style="width:100%"><tr>
+  <td><div class="l">收货信息 SHIP TO</div>{e(sheet.customer_name or '')}　{e(sheet.customer_phone or '')}<br>{e(sheet.customer_address or '—')}</td>
+  <td style="text-align:right;width:360px;border-left:2px solid #ccc"><div class="l">下单日期</div><span>{odate}</span></td>
+</tr></table>
+{stamp_html}
+</div></div></body></html>"""
 
 
 def _archived_order_nos(db: Session) -> set[str]:
@@ -299,8 +265,8 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 
 
 def render_png(sheet) -> bytes:
-    """下单图 → PNG 字节 (发飞书图片用)。"""
-    return _html_to_png(render_html(sheet))
+    """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
+    return _html_to_png(render_html(sheet), width=1684)
 
 
 def _order_no_from_name(name: Optional[str]) -> Optional[str]:

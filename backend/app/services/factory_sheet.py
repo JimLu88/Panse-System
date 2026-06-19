@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
@@ -88,6 +88,7 @@ class FactorySheet:
     # 工厂制单编号 (用户拍板 2026-06-19: 工厂按"畔色 X 单"编号下单)
     factory_no: Optional[int] = None         # 工厂下单编号; 无则下单图标"未能匹配工厂订单号"
     made_date: Optional[date] = None         # 制单日期 = 生成下单图当天
+    urgent: bool = False                     # 加急 (备注含加急/急件/尽快 或 要求工期<下单+25天 → 红敲印)
 
     # 图库配图 (2026-06-11 用户需求: 主图之外再配 SKU 尺寸图, 下单更标准)
     # 相对图库根路径, 前端拼 /api/gallery/file?path=…&max_edge=1600 显示
@@ -160,6 +161,28 @@ def _sheet_title(order_no: str, order_date: Optional[date]) -> str:
     if not order_date:
         return f"订单 {order_no}"
     return f"{order_date.month}月{order_date.day}日 订单 {order_no[-4:]}"
+
+
+_URGENT_KW = ("加急", "急件", "尽快", "赶工", "越快越好", "尽早", "催货", "催单", "快点", "急要")
+
+
+def _detect_urgent(texts: list[Optional[str]], order_date: Optional[date]) -> bool:
+    """加急判定: 备注/生产备注含加急词, 或备注里要求日期早于 下单+25天 (用户拍板 2026-06-19)。"""
+    blob = " ".join(t for t in texts if t)
+    if not blob:
+        return False
+    if any(k in blob for k in _URGENT_KW):
+        return True
+    if order_date:
+        deadline = order_date + timedelta(days=25)
+        for mo in re.finditer(r"(\d{1,2})\s*[月./\-]\s*(\d{1,2})", blob):
+            try:
+                d = date(order_date.year, int(mo.group(1)), int(mo.group(2)))
+            except ValueError:
+                continue
+            if order_date <= d < deadline:
+                return True
+    return False
 
 
 def build(db: Session, order_id: int) -> FactorySheet:
@@ -436,4 +459,5 @@ def build_from_fields(
         warnings=warnings,
         factory_no=factory_no,
         made_date=date.today(),
+        urgent=_detect_urgent([remark, production_note], order_date),
     )
