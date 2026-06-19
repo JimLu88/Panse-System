@@ -172,6 +172,33 @@ def send_image(db: Session, receive_id: str, image_key: str,
     return _req(db, "POST", url, json=body)
 
 
+def upload_file(db: Session, file_bytes: bytes, file_name: str, *, file_type: str = "stream") -> str:
+    """上传文件到飞书, 返回 file_key (im/v1/files)。zip/excel 等非图片用 file_type=stream。"""
+    url = f"{_BASE}/im/v1/files"
+    try:
+        r = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {get_tenant_access_token(db)}"},
+            files={"file": (file_name, file_bytes, "application/octet-stream")},
+            data={"file_type": file_type, "file_name": file_name},
+            timeout=_TIMEOUT,
+        )
+    except httpx.HTTPError as e:
+        raise FeishuError(f"飞书上传文件网络失败: {e}") from e
+    data = _json(r)
+    if data.get("code") != 0:
+        raise FeishuError(f"飞书上传文件失败: {data.get('msg')} (code={data.get('code')})")
+    return (data.get("data") or {}).get("file_key", "")
+
+
+def send_file(db: Session, receive_id: str, file_key: str, *, id_type: str = "chat_id") -> dict:
+    """主动给指定会话发文件 (im/v1/messages, msg_type=file)。"""
+    url = f"{_BASE}/im/v1/messages?receive_id_type={id_type}"
+    body = {"receive_id": receive_id, "msg_type": "file",
+            "content": json.dumps({"file_key": file_key}, ensure_ascii=False)}
+    return _req(db, "POST", url, json=body)
+
+
 def list_records(db: Session, app_token: str, table_id: str,
                  *, page_size: int = 500) -> list[dict]:
     """拉取一张 Bitable 表的全部记录 (自动翻页).

@@ -139,6 +139,17 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     if sheet.is_custom_variant:
         dims = " ".join(f"{k}={v}" for k, v in (sheet.dimension_changes or {}).items())
         custom_tag = f"<span class='tag'>尺寸定制 {e(dims)}</span>"
+    # 工厂制单编号 + 制单日期 (用户拍板 2026-06-19: 工厂按"畔色 X 单"编号下单; 无编号则醒目标出)
+    _md = sheet.made_date or ""
+    if sheet.factory_no:
+        fno_html = (f"<div class='fno'>畔色 {sheet.factory_no} 单"
+                    f"<span class='md'>制单日期 {_md}</span></div>")
+    else:
+        fno_html = ("<div class='fno nomatch'>未能匹配工厂订单号"
+                    f"<span class='md'>制单日期 {_md}</span></div>")
+    # 规格尺寸: 无尺寸 → 红字"未对应尺寸"(便于一眼找出哪些 SKU 没录尺寸)
+    size_html = (f"<div class='size'>{e(sheet.size_info)}</div>" if sheet.size_info
+                 else "<div class='size nosize'>未对应尺寸</div>")
     return f"""<!DOCTYPE html>
 <html lang="zh"><head><meta charset="utf-8"/>
 <title>{e(sheet.sheet_title)}</title>
@@ -151,6 +162,11 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
              display:flex; justify-content:space-between; align-items:center; }}
   .banner .t {{ font-size:18px; font-weight:700; }}
   .banner .no {{ background:rgba(255,255,255,.18); border-radius:99px; padding:4px 14px; font-size:13px; }}
+  .fno {{ font-size:30px; font-weight:900; text-align:center; padding:12px 20px 6px;
+          color:#1a7a3c; letter-spacing:3px; }}
+  .fno.nomatch {{ color:#dc2626; font-size:22px; letter-spacing:1px; }}
+  .fno .md {{ display:block; font-size:13px; font-weight:600; color:#6b7280; letter-spacing:0; margin-top:4px; }}
+  .size.nosize {{ color:#dc2626; }}
   .main {{ display:flex; gap:18px; padding:18px 20px; }}
   .pics {{ width:230px; flex-shrink:0; }}
   .pimg {{ width:230px; max-height:260px; object-fit:contain; border:1px solid #f0f0f0; border-radius:8px; }}
@@ -179,6 +195,7 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
   @media print {{ body {{ background:#fff; }} .card {{ box-shadow:none; margin:0; max-width:none; }} }}
 </style></head><body>
 <div class="card">
+  {fno_html}
   <div class="banner">
     <div class="t">畔色木作 · 工厂下单图</div>
     <div class="no">{e(sheet.sheet_title)}</div>
@@ -187,7 +204,7 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     <div class="pics">{img}</div>
     <div class="kv">
       <div class="lbl">规格尺寸</div>
-      <div class="size">{e(sheet.size_info or sheet.sku or '-')}</div>
+      {size_html}
       <div class="qty">数量 {sheet.qty} 件</div>
       {''.join(rows)}
       <div style="margin-top:10px">{custom_tag}<span class="ono">{e(sheet.order_no)}</span></div>
@@ -330,6 +347,32 @@ def count_pending_push(db: Session, *, include_baseline: bool = True) -> int:
     return len(_pending_push_records(db, include_baseline=include_baseline))
 
 
+def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
+    """把本批下单图打成 ZIP 发飞书 (用户拍板 2026-06-19: 每次推送末尾附 ZIP, 含所有订单图)。
+
+    items: [(order, jpg_bytes), ...]; 文件名 畔色{编号}单_{订单号}.jpg / 未匹配_{订单号}.jpg。
+    """
+    if not items:
+        return
+    import io
+    import zipfile
+    from datetime import date as _date
+
+    from app.services import feishu_client
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for order, png in items:
+            fno = getattr(order, "factory_no", None)
+            prefix = f"畔色{fno}单_" if fno else "未匹配_"
+            zf.writestr(f"{prefix}{order.order_no}.jpg", png)
+    try:
+        fk = feishu_client.upload_file(db, buf.getvalue(), f"工厂下单图_{_date.today().isoformat()}.zip")
+        feishu_client.send_text(db, chat_id, f"以上 {len(items)} 张工厂下单图打包(ZIP)如下:")
+        feishu_client.send_file(db, chat_id, fk)
+    except Exception:  # noqa: BLE001 - ZIP 发送失败不阻断主推送
+        _logger.warning("工厂下单图 ZIP 发送失败", exc_info=True)
+
+
 def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
 
@@ -350,6 +393,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 "order_nos": [], "reason": "no_chat_id"}
     pushed = failed = 0
     sent_nos: list[str] = []
+    _zip_items: list = []
     for rec in _pending_push_records(db, include_baseline=include_baseline)[:limit]:
         no = _order_no_from_name(rec.original_filename)
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
@@ -360,17 +404,21 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         try:
             png = render_png(factory_sheet.build(db, order.id))
             key = feishu_client.upload_image(db, png)
-            cap = f"工厂下单图 · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
+            _fno = (f"畔色 {order.factory_no} 单" if getattr(order, "factory_no", None)
+                    else "未能匹配工厂订单号")
+            cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
             feishu_client.send_text(db, chat_id, cap)
             feishu_client.send_image(db, chat_id, key)
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True}
             db.commit()
             pushed += 1
             sent_nos.append(no)
+            _zip_items.append((order, png))
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             failed += 1
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
+    _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos}

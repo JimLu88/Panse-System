@@ -85,6 +85,10 @@ class FactorySheet:
     size_info: Optional[str] = None          # SKU 完整尺寸 (产品表 size_value/size_detail)
     production_note: Optional[str] = None    # 店铺/生产备注 (与客户备注一并完整显示)
 
+    # 工厂制单编号 (用户拍板 2026-06-19: 工厂按"畔色 X 单"编号下单)
+    factory_no: Optional[int] = None         # 工厂下单编号; 无则下单图标"未能匹配工厂订单号"
+    made_date: Optional[date] = None         # 制单日期 = 生成下单图当天
+
     # 图库配图 (2026-06-11 用户需求: 主图之外再配 SKU 尺寸图, 下单更标准)
     # 相对图库根路径, 前端拼 /api/gallery/file?path=…&max_edge=1600 显示
     gallery_main_image: Optional[str] = None
@@ -194,6 +198,7 @@ def build(db: Session, order_id: int) -> FactorySheet:
         # 店铺/生产备注 = 人工生产备注 优先, 回退 商家备注(平台)
         production_note=(getattr(order, "production_note", None)
                          or getattr(order, "seller_memo", None)),
+        factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
     )
 
 
@@ -214,6 +219,7 @@ def build_from_fields(
     remark: Optional[str],
     extra_accessories: Optional[list[dict]] = None,
     production_note: Optional[str] = None,
+    factory_no: Optional[int] = None,
 ) -> FactorySheet:
     """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。
 
@@ -391,7 +397,7 @@ def build_from_fields(
         ))
     if size_info is None and product is not None:
         size_info = _clean_size(product.size_value) or _clean_size(product.size_detail)
-    size_info = size_info or sku
+    # 无任何真实尺寸来源 → size_info 留 None, 下单图标红"未对应尺寸" (2026-06-19, 便于找出缺尺寸的SKU)
 
     # 图库配图: 主图 + SKU 尺寸图 (图库缺失/未挂载时悄悄留空, 不影响下单图)
     gallery_main = sku_img = None
@@ -428,4 +434,6 @@ def build_from_fields(
         is_custom_variant=is_custom,
         dimension_changes=dim_changes,
         warnings=warnings,
+        factory_no=factory_no,
+        made_date=date.today(),
     )

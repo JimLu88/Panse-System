@@ -32,6 +32,8 @@ class Order(Base, TimestampMixin):
     shop: Mapped[Optional[str]] = mapped_column(String(32), index=True)  # 店铺(畔色店/孚格店) — 分店统计 (migration 0052)
     order_no: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     is_refill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # 是否补单
+    # 工厂制单编号 (用户拍板 2026-06-19: 工厂按"畔色 X 单"下单; 历史读ZIP回填, 新单按下单序顺排)
+    factory_no: Mapped[Optional[int]] = mapped_column(Integer, index=True)
 
     order_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     ship_date: Mapped[Optional[date]] = mapped_column(Date)
