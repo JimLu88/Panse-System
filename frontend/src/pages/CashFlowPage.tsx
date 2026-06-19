@@ -8,6 +8,7 @@ import {
 } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import PresetTable from '../components/PresetTable';
+import RefillCallout from '../components/RefillCallout';
 import {
   CashFlowFreshness, CashFlowLine, CashFlowSummary, getCashFlow, updateCashFlowSettings,
   backfillFactoryPayment, recomputeOrderCosts,
@@ -143,6 +144,9 @@ export default function CashFlowPage() {
           </Button>
         </Space>
       </Row>
+
+      {/* 刷单(补单)单列提示 — 快照类, 无账期 */}
+      <RefillCallout />
 
       {/* 主数字 */}
       <Card style={{ marginBottom: 16, background: 'linear-gradient(135deg,#0f2d4a,#15466e)', border: 'none' }}>

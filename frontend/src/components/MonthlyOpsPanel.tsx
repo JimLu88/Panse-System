@@ -6,6 +6,7 @@ import { lazy, Suspense, useMemo, useState } from 'react';
 import { Alert, Card, Col, Row, Segmented, Select, Spin, Statistic, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMonthlyPnl, fetchSalesMix } from '../api/reports';
+import RefillCallout from './RefillCallout';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
 
@@ -52,8 +53,18 @@ export default function MonthlyOpsPanel() {
 
   const isRef = selRow?.recon_status === 'reference_only';
 
+  // 选中月份首尾日(YYYY-MM-DD), 传给刷单单列提示; sel 未就绪时不传(无参=本年至今)
+  const validMonth = !!sel && y > 0 && m >= 1 && m <= 12;
+  const monthStart = validMonth ? `${y}-${String(m).padStart(2, '0')}-01` : undefined;
+  const monthEnd = validMonth
+    ? `${y}-${String(m).padStart(2, '0')}-${String(new Date(y, m, 0).getDate()).padStart(2, '0')}`
+    : undefined;
+
   return (
     <div style={{ marginTop: 18 }}>
+      {/* 刷单(补单)单列提示 — 跟随所选月份; 已从下方月度经营数据剔除, 单独亮出 */}
+      <RefillCallout periodStart={monthStart} periodEnd={monthEnd} />
+
       <Row justify="space-between" align="middle" style={{ margin: '0 2px 10px' }}>
         <Typography.Text style={{ fontWeight: 700, fontSize: 15 }}>月度经营(工厂口径)</Typography.Text>
         <Select

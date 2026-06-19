@@ -21,6 +21,7 @@ import {
 } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchAssetDrilldown, fetchAssets, fetchUnmatchedFlows } from '../api/client';
+import RefillCallout from '../components/RefillCallout';
 
 
 // Plan L6: 差额下钻抽屉 — 每个科目的构成明细 TopN
@@ -70,6 +71,8 @@ export default function AssetsPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <RefillCallout />
+
       <Row gutter={12}>
         <Col span={6}>
           <Card size="small">

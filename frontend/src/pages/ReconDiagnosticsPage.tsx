@@ -10,6 +10,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
 import { downloadProblemFlows, fetchReconDiagnostics } from '../api/settlements';
 import ReconConfigCard from '../components/ReconConfigCard';
+import RefillCallout from '../components/RefillCallout';
 
 // 导出所有"没对上"的支付宝流水(含流水号+原因)。走带鉴权 axios 取 blob (直链会 401)。
 const exportProblemFlows = () =>
@@ -51,6 +52,8 @@ export default function ReconDiagnosticsPage() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Typography.Title level={4} style={{ margin: 0 }}>对账诊断</Typography.Title>
+      {/* 刷单(补单)单列提示 — 体检快照, 无账期 */}
+      <RefillCallout />
       <Alert
         type="info" showIcon
         message="对账缺口体检 (只读)"

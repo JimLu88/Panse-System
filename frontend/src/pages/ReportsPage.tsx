@@ -37,6 +37,7 @@ import {
 } from '../api/client';
 import { Radio } from 'antd';
 import BriefingBanner from '../components/BriefingBanner';
+import RefillCallout from '../components/RefillCallout';
 
 // 对账规则中文名 (与对账面板一致, 用户要求界面不出现英文)
 const RECON_RULE_LABELS: Record<string, string> = {
@@ -62,6 +63,8 @@ export default function ReportsPage() {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <BriefingBanner />
+      {/* 刷单(补单)单列提示 — 各 tab 各自账期, 这里用本年至今统一亮出被剔除的刷单 */}
+      <RefillCallout />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>
           数据健康报告

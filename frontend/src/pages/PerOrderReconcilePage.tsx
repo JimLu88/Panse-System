@@ -12,6 +12,7 @@ import { DeleteOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import RefillCallout from '../components/RefillCallout';
 import {
   FixedCostItem, PerOrderRow, fetchPerOrderReconcile, getFixedCostItems, putFixedCostItems,
 } from '../api/operations';
@@ -162,6 +163,12 @@ export default function PerOrderReconcilePage() {
             options={opts.map((p) => ({ label: p, value: p }))} />
         </Space>
       </Space>
+
+      {/* 刷单(补单)单列提示 — 账期=所选月份 */}
+      <RefillCallout
+        periodStart={dayjs(period + '-01').startOf('month').format('YYYY-MM-DD')}
+        periodEnd={dayjs(period + '-01').endOf('month').format('YYYY-MM-DD')}
+      />
 
       <Alert type="info" showIcon style={{ marginBottom: 12 }}
         message="每笔订单的完整成本拆解 — 与「经营状况」同口径(会计成本)"

@@ -2,6 +2,19 @@ import { api } from './base';
 import { CsvImportReport } from './orders';
 
 // ----- Finance -----
+
+// 刷单(补单)单列汇总 — 所有算账页面统一展示「刷单已剔除、单列于此」(2026-06-19)
+export interface RefillSummary {
+  period: [string, string];
+  count: number;
+  gmv: number;    // 刷单流水(订单额)总额
+  cost: number;   // 刷单真实成本(平台扣点+税+运费+佣金)
+  note: string;
+}
+
+export const getRefillSummary = (params: { period_start?: string; period_end?: string } = {}) =>
+  api.get<RefillSummary>('/api/finance/refill-summary', { params }).then((r) => r.data);
+
 export interface AlipayFlow {
   id: number;
   account: string;

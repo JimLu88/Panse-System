@@ -10,6 +10,7 @@
  */
 import { Tabs } from 'antd';
 import { useSearchParams } from 'react-router-dom';
+import RefillCallout from '../components/RefillCallout';
 import SettlementsPage from './SettlementsPage';
 import ReconDiagnosticsPage from './ReconDiagnosticsPage';
 import FactoryReconPage from './FactoryReconPage';
@@ -19,16 +20,20 @@ export default function ReconCenterPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'settlements';
   return (
-    <Tabs
-      activeKey={tab}
-      onChange={(k) => setParams(k === 'settlements' ? {} : { tab: k }, { replace: true })}
-      destroyInactiveTabPane
-      items={[
+    <>
+      {/* 刷单(补单)单列提示 — 对账中心顶部, 无账期 */}
+      <RefillCallout />
+      <Tabs
+        activeKey={tab}
+        onChange={(k) => setParams(k === 'settlements' ? {} : { tab: k }, { replace: true })}
+        destroyInactiveTabPane
+        items={[
         { key: 'settlements', label: '结算对账 (平台打款)', children: <SettlementsPage /> },
         { key: 'diagnostics', label: '对账诊断 (找原因)', children: <ReconDiagnosticsPage /> },
         { key: 'factory', label: '工厂逐单对账', children: <FactoryReconPage /> },
         { key: 'prepay', label: '代付台账', children: <PrepayLedgerPage /> },
-      ]}
-    />
+        ]}
+      />
+    </>
   );
 }

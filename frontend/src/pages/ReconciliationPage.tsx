@@ -22,6 +22,7 @@ import {
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
+import RefillCallout from '../components/RefillCallout';
 import { ThunderboltOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -200,6 +201,12 @@ export default function ReconciliationPage() {
         </Typography.Text>
       )}
       <FactoryAliasModal open={aliasOpen} onClose={() => setAliasOpen(false)} />
+
+      {/* 刷单(补单)单列提示 — 财务对账仍保留刷单, 但单列亮出规模 */}
+      <RefillCallout
+        periodStart={periodParams?.period_start}
+        periodEnd={periodParams?.period_end}
+      />
 
       <Row gutter={[8, 8]}>
         {Object.entries(data).map(([rule, res]) => (

@@ -29,6 +29,7 @@ import {
   fetchStockAdvice,
 } from '../api/client';
 import ProductThumb from '../components/ProductThumb';
+import RefillCallout from '../components/RefillCallout';
 
 // 导出当前数据为 Excel (复用页面导出端点, 记录进 资料存档库→页面导出)
 async function exportPageXlsx(title: string, columns: { key: string; title: string }[], rows: any[]) {
@@ -82,11 +83,14 @@ function productCell(r: any) {
 
 export default function ForecastPage() {
   return (
-    <Tabs items={[
-      { key: 'forecast', label: '销售预测 (30 天)', children: <ForecastTab /> },
-      { key: 'advice', label: '备货建议', children: <AdviceTab /> },
-      { key: 'slow', label: '滞销分类', children: <SlowMovingTab /> },
-    ]} />
+    <>
+      <RefillCallout />
+      <Tabs items={[
+        { key: 'forecast', label: '销售预测 (30 天)', children: <ForecastTab /> },
+        { key: 'advice', label: '备货建议', children: <AdviceTab /> },
+        { key: 'slow', label: '滞销分类', children: <SlowMovingTab /> },
+      ]} />
+    </>
   );
 }
 

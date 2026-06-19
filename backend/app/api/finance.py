@@ -1037,6 +1037,29 @@ def cost_anomaly(period_start: Optional[date] = Query(None), period_end: Optiona
     }
 
 
+@router.get("/refill-summary")
+def refill_summary(period_start: Optional[date] = Query(None), period_end: Optional[date] = Query(None),
+                   db: Session = Depends(get_db)):
+    """刷单(补单)单列汇总 — 给所有算账页面统一展示「刷单 X笔 ¥Y 已单列、不计入经营数据」。
+
+    刷单是假单(流水来回滚抵销、非真销售), 已从所有营收/利润/成交/资产/现金流/大盘/排行/预测/报表
+    剔除; 本接口把被剔除的那部分单独算出来给前端单列提示。
+    """
+    from datetime import date as _d
+    from app.services import order_financials
+    start = period_start or _d(_d.today().year, 1, 1)
+    end = period_end or _d.today()
+    coef = order_financials.load_coefficients(db)
+    r = order_financials.refill_cost(db, start, end, coef)
+    return {
+        "period": [start.isoformat(), end.isoformat()],
+        "count": r["count"],
+        "gmv": float(r["gmv"]),        # 刷单流水(订单额)总额
+        "cost": float(r["total"]),     # 刷单真实成本(平台扣点+税+运费+佣金)
+        "note": "刷单(补单)为假单, 已从上方所有经营/财务数据中剔除、单列于此",
+    }
+
+
 @router.post("/refill-records/purge-pre-2026")
 def purge_pre_2026_refills(db: Session = Depends(get_db)):
     """删除 2025 及以前的补单记录 (系统从 2026 起算, 用户拍板 2026-06-17)。"""
