@@ -138,6 +138,12 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
     pic_html = f"<img src='{e(_img)}'>" if _img else "<div class='noimg'>无产品图纸</div>"
     stamp_html = "<div class='stamp'>加急</div>" if sheet.urgent else ""
     made, ship, odate = sheet.made_date or "-", sheet.ship_date or "-", sheet.order_date or "-"
+    # 收货: 全空(淘宝解密额度不足/未抓到) → 红字提示, 但编号照常 (用户拍板 2026-06-20)
+    if sheet.customer_name or sheet.customer_phone or sheet.customer_address:
+        ship_html = (f"{e(sheet.customer_name or '')}　{e(sheet.customer_phone or '')}"
+                     f"<br>{e(sheet.customer_address or '—')}")
+    else:
+        ship_html = "<span style='color:#dc2626;font-weight:800'>⚠ 没有抓取到收货地址（淘宝解密额度不足，待提升后重拉）</span>"
     return f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
 <title>{e(sheet.sheet_title)}</title><style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}}
@@ -181,7 +187,7 @@ table{{border-collapse:collapse;}}
     <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
   </td></tr></table>
 <table class="ft" style="width:100%"><tr>
-  <td><div class="l">收货信息 SHIP TO</div>{e(sheet.customer_name or '')}　{e(sheet.customer_phone or '')}<br>{e(sheet.customer_address or '—')}</td>
+  <td><div class="l">收货信息 SHIP TO</div>{ship_html}</td>
   <td style="text-align:right;width:360px;border-left:2px solid #ccc"><div class="l">下单日期</div><span>{odate}</span></td>
 </tr></table>
 {stamp_html}
@@ -323,6 +329,24 @@ def _next_factory_no(db: Session) -> int:
     return (mx or 241) + 1
 
 
+def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
+    """无收货地址的单 → 飞书提示哪些单缺地址 + 提醒去淘宝后台提升解密额度 (用户拍板 2026-06-20)。
+
+    missing: [(order_no, factory_no), ...]; 这些单已做制单图(带编号)推送, 但收货为空。
+    """
+    if not missing:
+        return
+    from app.services import feishu_client
+    lines = [f"  · {('畔色 '+str(fno)+' 单') if fno else '未编号'}　订单号 {no}" for no, fno in missing]
+    txt = (f"⚠️ 下列 {len(missing)} 单【没有抓取到收货地址】(已做制单图+编号一并推送, 但收货栏为空):\n"
+           + "\n".join(lines)
+           + "\n👉 大概率是淘宝后台每日可解密收货信息额度不足。请去后台【提升解密额度】, 然后让我对这些单重新拉取, 收货就能补上。")
+    try:
+        feishu_client.send_text(db, chat_id, txt)
+    except Exception:  # noqa: BLE001
+        _logger.warning("无收货地址提示发送失败", exc_info=True)
+
+
 def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
     """把本批下单图打成 ZIP 发飞书 (用户拍板 2026-06-19: 每次推送末尾附 ZIP, 含所有订单图)。
 
@@ -370,13 +394,14 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     pushed = failed = 0
     sent_nos: list[str] = []
     _zip_items: list = []
+    _missing_addr: list = []
     for rec in _pending_push_records(db, include_baseline=include_baseline)[:limit]:
         no = _order_no_from_name(rec.original_filename)
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order:
             continue
-        if (order.status or "") == "cancelled" or _is_refunded(order):
-            continue   # 退款/取消单不推工厂 (走作废图流程, 不在此补推)
+        if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue   # 取消/退款/待付款 不推工厂 (待付款大概率会取消, 用户拍板 2026-06-20)
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)
         if (getattr(order, "factory_no", None) is None and order.order_date
                 and order.order_date >= _AUTO_NUMBER_SINCE):
@@ -395,11 +420,14 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             pushed += 1
             sent_nos.append(no)
             _zip_items.append((order, png))
+            if not (order.customer_name or order.customer_phone or order.customer_address):
+                _missing_addr.append((no, order.factory_no))
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             failed += 1
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
     _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
+    _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos}
