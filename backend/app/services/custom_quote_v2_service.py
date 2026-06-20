@@ -71,11 +71,40 @@ def _parse_json(text) -> dict:
 # ───────────────────────── 工具: 尺寸解析 + 插值 ───────────────────────── #
 
 def parse_length_m(text: Optional[str]) -> Optional[float]:
-    """从 SKU 名/文本里抽长度(米)。匹配「1.4米 / 1.4m / 1.4 米」。无→None。"""
+    """从 SKU 名/文本里抽长度(米)。优先「长/长度X米」(防描述里"高度2.3米"被当长度);
+    无显式"长"则回退首个米数(SKU 名通常只有长度)。无→None。"""
     if not text:
         return None
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m\b|M\b)", text)
+    m = re.search(r"(?:长度|长)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:米|m\b|M\b)", text)
+    if not m:
+        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m\b|M\b)", text)
     return float(m.group(1)) if m else None
+
+
+def parse_height_cm(text: Optional[str]) -> Optional[float]:
+    """从文本抽高度(cm)。匹配「高度2.3米 / 高2.3m / 高度230cm / 总高2300mm」。无→None。"""
+    if not text:
+        return None
+    m = re.search(r"(?:总高|高度|高)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(毫米|厘米|mm|cm|米|m)", text)
+    if not m:
+        return None
+    v, u = float(m.group(1)), m.group(2)
+    if u in ("米", "m"):
+        return round(v * 100, 1)
+    if u in ("mm", "毫米"):
+        return round(v / 10, 1)
+    return round(v, 1)   # cm / 厘米
+
+
+def _auto_top_cabinet(text: Optional[str], add_parts: list) -> list:
+    """描述提到「顶柜」或「高出(来的)部分加(到)顶/上柜」→ 确保 add_parts 含一个顶柜部位
+    (顶柜高度=总高−标准高 由 quote_light 的 _autofill_box_parts 自动算)。"""
+    parts = list(add_parts or [])
+    t = text or ""
+    wants_top = ("顶柜" in t) or (("高出" in t or "高过" in t) and ("顶" in t or "上柜" in t))
+    if wants_top and not any("顶柜" in (p.get("material") or p.get("name") or "") for p in parts):
+        parts.append({"material": "顶柜", "qty": 1})
+    return parts
 
 
 def interp(points: list[tuple[float, float]], x: float) -> tuple[Optional[float], str]:
@@ -707,13 +736,17 @@ _CLASSIFY_AI_SYSTEM = """你是家具定制报价分类助手。标准产品库(
   "customization_type": "普通定制" 或 "特殊定制",
   "matched_product_name": "命中的标准产品名(尽量完整), 无则 null",
   "target_length_m": 目标整体长度(米,数字) 或 null,
+  "target_width_cm": 目标深度/宽(厘米,数字) 或 null,
+  "target_height_cm": 目标整体高度(厘米,数字; "高度2.3米"→230) 或 null,
   "target_material": "目标主材(如 黑胡桃/樱桃木/榉木) 或 null",
   "add_parts": [{{"material": "部位/材料名", "qty": 1}}],
   "remove_parts": [{{"material": "部位名", "qty": 1}}],
   "confidence": 0到1的数字,
   "reasoning": "一句话理由"
 }}
-规则: 命中标准库且只改尺寸/材质/颜色/简单增减 → 普通定制; 全新结构或库里没有 → 特殊定制。"""
+规则: 命中标准库且只改尺寸/材质/颜色/简单增减 → 普通定制; 全新结构或库里没有 → 特殊定制。
+尺寸: "高度/总高 X米/Xcm" 填 target_height_cm(厘米), "长度 X米" 填 target_length_m(米) —— 别把高度当长度。
+顶柜: 客户说"高出来的部分加到顶柜"/"加顶柜"/"顶上加柜" → add_parts 里加 {{"material": "顶柜", "qty": 1}}(高度差额系统自动算, 你不用算)。"""
 
 
 def classify_ai(db: Session, *, text: str = "", images=None, provider=None, model: str = "") -> Optional[dict]:
@@ -746,9 +779,11 @@ def classify_ai(db: Session, *, text: str = "", images=None, provider=None, mode
         "customization_type": data["customization_type"],
         "base_product_code": code,
         "base_product_name": pname or mname,
-        "target_length_m": data.get("target_length_m"),
+        "target_length_m": data.get("target_length_m") or parse_length_m(text),
+        "target_width_cm": data.get("target_width_cm"),
+        "target_height_cm": data.get("target_height_cm") or parse_height_cm(text),
         "target_material": data.get("target_material"),
-        "add_parts": data.get("add_parts") or [],
+        "add_parts": _auto_top_cabinet(text, data.get("add_parts") or []),
         "remove_parts": data.get("remove_parts") or [],
         "confidence": round(float(data.get("confidence") or 0.7), 2),
         "reasoning": data.get("reasoning") or "AI 判定",
@@ -775,8 +810,9 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
                 m = m2
     base = {
         "target_length_m": parse_length_m(text),
+        "target_height_cm": parse_height_cm(text),
         "target_material": detect_wood(text),
-        "add_parts": [],
+        "add_parts": _auto_top_cabinet(text, []),
         "remove_parts": [],
         "ai_used": False,
     }

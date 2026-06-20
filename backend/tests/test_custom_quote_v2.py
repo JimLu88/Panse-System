@@ -130,6 +130,18 @@ def test_box_part_pricing_and_autoheight():
     assert not out2[0].get("height_cm")
 
 
+def test_parse_height_and_auto_top_cabinet():
+    """高度提取(优先长度不抢高度) + 顶柜自动加部位(用户拍板 2026-06-20: 一句话自动提取高度+加顶柜)。"""
+    from app.services.custom_quote_v2_service import parse_length_m, parse_height_cm, _auto_top_cabinet
+    txt = "定制榉木洞石餐边柜；高度2.3米，长度1.5米，高出来的部分加到顶柜"
+    assert parse_length_m(txt) == 1.5          # 优先"长度1.5米", 不抢"高度2.3米"
+    assert parse_height_cm(txt) == 230.0       # 高度2.3米→230cm
+    assert parse_height_cm("总高2300mm") == 230.0 and parse_height_cm("高度230cm") == 230.0
+    assert any(p["material"] == "顶柜" for p in _auto_top_cabinet(txt, []))
+    assert len(_auto_top_cabinet(txt, [{"material": "顶柜", "qty": 1}])) == 1   # 不重复加
+    assert _auto_top_cabinet("加个抽屉", []) == []                              # 没提顶柜不加
+
+
 # ───────── 盈亏平衡工厂价 (净不亏红线) ─────────
 
 def test_break_even_light():

@@ -38,6 +38,8 @@ interface ClassifyResult {
   confidence: number;
   reasoning: string;
   target_length_m?: number | null;
+  target_width_cm?: number | null;
+  target_height_cm?: number | null;
   target_material?: string | null;
   add_parts?: { material: string; qty: number }[];
   remove_parts?: { material: string; qty: number }[];
@@ -605,6 +607,8 @@ export default function CustomQuoteV2Page() {
       setSelectedSku(undefined);
       if (r.base_product_code) setPcode(r.base_product_code);
       if (r.target_length_m) setLen(r.target_length_m);
+      if (r.target_height_cm) setHgt(r.target_height_cm);
+      if (r.target_width_cm) setWid(r.target_width_cm);
       if (r.target_material) setMat(r.target_material);
       // 分类器识别出的增减部位 → 自动填入可编辑表(用户可改/删/加)
       const detected: EditPart[] = [];
@@ -616,7 +620,7 @@ export default function CustomQuoteV2Page() {
       // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
       if (autoQuote && !ac.signal.aborted) {
         if (r.customization_type === '普通定制' && r.base_product_code) {
-          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal);
+          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, selectedSku, r.target_height_cm ?? null, r.target_width_cm ?? null);
         } else if (r.customization_type === '特殊定制') {
           message.info('特殊定制: 已分类, 请在③填品类+外形(自动出板)或板单再算价');
         }
@@ -651,6 +655,8 @@ export default function CustomQuoteV2Page() {
     signal?: AbortSignal,
     tierVal: string = tier,
     skuVal: string | undefined = selectedSku,
+    hgtVal: number | null = hgt,
+    widVal: number | null = wid,
   ) => {
     if (!code.trim()) {
       message.warning('请填基础产品编码');
@@ -662,8 +668,8 @@ export default function CustomQuoteV2Page() {
       const r = await apiPost<LightResult>('/v2/quote-light', {
         base_product_code: code.trim(),
         target_length_m: lenM ?? undefined,
-        target_width_cm: wid ?? undefined,
-        target_height_cm: hgt ?? undefined,
+        target_width_cm: widVal ?? undefined,
+        target_height_cm: hgtVal ?? undefined,
         target_material: matStr.trim() || undefined,
         add_parts: partsList
           .filter((p) => p.change === 'add' && p.material.trim())
