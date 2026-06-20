@@ -63,6 +63,56 @@ def test_factory_payment_within_tolerance_no_exception(db_session):
     assert db_session.query(DataException).count() == 0
 
 
+# -------- Rule 7 revenue_alipay 淘金币豁免 (2026-06-21) --------
+
+def _rev_order(db, no, paid):
+    db.add(Order(platform="淘宝", order_no=no, qty=1, paid_amount=Decimal(str(paid)),
+                 order_date=date(2026, 5, 17), status="signed"))
+
+
+def test_revenue_alipay_taojinbi_small_positive_exempt(db_session):
+    """支付宝该单收入 > 实付 的小额正差(淘金币补贴, 单条付款)→ 不报异常。"""
+    _rev_order(db_session, "5115819387933109739", 3576.91)
+    db_session.add(AlipayFlow(
+        account="企业号", transaction_no="TX1", transaction_time=datetime(2026, 5, 17),
+        amount=Decimal("3692.69"), related_order_no="5115819387933109739",
+        reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == "5115819387933109739" for d in r.diffs)   # 淘金币豁免, 不入异常列表
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == "revenue_alipay:5115819387933109739").count() == 0
+
+
+def test_revenue_alipay_duplicate_flow_still_flags(db_session):
+    """同号客户付款重复入库(差≈100%)→ 仍报(不当淘金币放行)。"""
+    no = "9000000000000000001"
+    _rev_order(db_session, no, 1000)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="DUP", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("1000"), related_order_no=no,
+                              transaction_type="付款", reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="DUP", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("1000"), related_order_no=no,
+                              transaction_type="交易付款", reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert any(d.key == no and d.severity != "ok" for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == f"revenue_alipay:{no}").count() == 1
+
+
+def test_revenue_alipay_shortfall_still_flags(db_session):
+    """支付宝该单收入 < 实付(真短收, 差为负)→ 仍报。"""
+    no = "9000000000000000002"
+    _rev_order(db_session, no, 1000)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TS1", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("900"), related_order_no=no,
+                              reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert any(d.key == no and d.severity != "ok" for d in r.diffs)
+
+
 # -------- Rule 4 refill_compensation --------
 
 def test_refill_no_matching_order(db_session):

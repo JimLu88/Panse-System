@@ -810,6 +810,11 @@ def run_logistics_fee(
 
 # -------- Rule 7: 收入对账 (订单营收 ↔ 支付宝收入) --------
 
+# 淘金币豁免阈值: 支付宝该单收入 > 实付 且 正差 ≤ 实付×此比例 → 判为平台淘金币补贴(不报)。
+# 淘金币实测占实付 1-9%; 重复流水差≈100% 远超此阈值, 不会被误豁免 (用户拍板 2026-06-21)。
+_TAOJINBI_MAX_RATIO = Decimal("0.20")
+
+
 def run_revenue_alipay(
     db: Session, *,
     period_start: Optional[date] = None,
@@ -874,6 +879,7 @@ def run_revenue_alipay(
         af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
     flow_income: dict[str, Decimal] = {}        # 订单键 → 收入合计
     flow_nos_by_order: dict[str, list[str]] = {}      # 订单键 → 支付宝流水号(供核对)
+    flow_txns_by_order: dict[str, list] = {}          # 订单键 → 交易流水号(查同号重复入库用)
     orphan_income_by_month: dict[str, Decimal] = {}   # 配不到订单的收入按月兜底
     orphan_flow_nos_by_month: dict[str, list[str]] = {}
     for t, amt, ron, tn in db.execute(af_stmt).all():
@@ -881,6 +887,7 @@ def run_revenue_alipay(
         if k and k in order_paid:
             flow_income[k] = flow_income.get(k, Decimal("0")) + Decimal(amt or 0)
             flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{Decimal(amt or 0)}")
+            flow_txns_by_order.setdefault(k, []).append(tn)
         else:
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
             orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + Decimal(amt or 0)
@@ -907,7 +914,18 @@ def run_revenue_alipay(
         if sev == "ok":
             matched_ok += 1
             continue
+        # 淘金币豁免 (用户拍板 2026-06-21): 支付宝该单收入 > 实付 的"小额正差" = 平台淘金币补贴
+        # —— 客户用淘金币抵扣→实付是抵扣后净额, 平台把淘金币打给店铺→支付宝收入 = 实付 + 淘金币。
+        # 仅 单条客户付款(无同号重复入库) 且 正差 ≤ 实付×20% 才豁免; "重复流水"(差≈100%、同号付款
+        # 重复入库, 去重bug)仍要报, "真短收"(支付宝<实付, 差为负)也仍要报。
+        _txns = flow_txns_by_order.get(k, [])
+        _dup_flow = len(_txns) != len(set(_txns))
+        if diff > 0 and not _dup_flow and paid > 0 and diff <= paid * _TAOJINBI_MAX_RATIO:
+            matched_ok += 1
+            continue
         msg = f"订单 {k}: 订单实付 ¥{paid}, 支付宝该单收入 ¥{got}, 差 ¥{diff}"
+        if _dup_flow:
+            msg += " (疑同号付款流水重复入库, 非淘金币)"
         diffs.append(ReconciliationDiff(key=k, expected=paid, actual=got, diff=diff,
                                         severity=sev, message=msg,
                                         related_records=[f"订单号 {k}"] + flow_nos_by_order.get(k, [])[:20]))
