@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.models.order import Order
 from app.models.sales_rollup import SalesDailyRollup
+from app.services import order_financials as ofin, sales_analytics as sa
 
 _logger = logging.getLogger("panse.sales_rollup")
 
@@ -30,7 +31,7 @@ def rollup_day(db: Session, target: date) -> int:
             Order.order_date == target,
             Order.is_historical == False,  # noqa: E712
             Order.is_refill == False,  # 刷单是假单, 不进销售日汇总 (2026-06-19)
-            Order.status.in_(("paid", "shipped", "signed")),
+            sa.settled_sale_clause(),   # 统一成交口径(状态6态+实付>0+非全退+非¥0服务行), 与全系统对齐
         )
     ).scalars().all()
     by_key: dict[tuple, dict] = {}
@@ -43,10 +44,14 @@ def rollup_day(db: Session, target: date) -> int:
         d["order_count"] += 1
         d["qty"] += o.qty or 0
         paid = Decimal(o.paid_amount or 0)
-        cost = Decimal(o.actual_cost or o.theoretical_cost or 0)
-        freight = Decimal(o.actual_freight or 0)
-        upstairs = Decimal(o.upstairs_fee or 0)
-        install = Decimal(o.install_fee or 0)
+        cost = ofin.physical_cost(o)   # 统一口径: 片段封顶(实付<成本50%→实付×85%)
+        # 双算护栏: theoretical(含预测物流安装)的单不另加运费/安装; actual_cost(工厂价不含)的单才加
+        if o.actual_cost is not None:
+            freight = Decimal(o.actual_freight or 0)
+            upstairs = Decimal(o.upstairs_fee or 0)
+            install = Decimal(o.install_fee or 0)
+        else:
+            freight = upstairs = install = Decimal("0")
         comp = Decimal(o.compensation_fee or 0)
         d["revenue"] += paid
         d["cost"] += cost
