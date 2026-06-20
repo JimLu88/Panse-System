@@ -115,6 +115,32 @@ export default function PerOrderReconcilePage() {
       render: (v: boolean) => v
         ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已对账</Tag>
         : <Tag color="blue" style={{ marginInlineEnd: 0 }}>推演</Tag> },
+    {
+      title: '工厂成本核对(预算 vs 实际,账单仅木作)',
+      children: [
+        { title: '工厂账单', dataIndex: 'factory_bill_recorded', width: 80, align: 'center',
+          render: (v: boolean) => v
+            ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已入账</Tag>
+            : <Text type="secondary" style={{ fontSize: 11 }}>未入账</Text> },
+        { title: '预算木作', dataIndex: 'predicted_wood', width: 80, align: 'right',
+          render: (v: number | null) => v == null ? <Text type="secondary">—</Text> : yuan(v) },
+        { title: '预估配件', dataIndex: 'est_parts', width: 75, align: 'right',
+          render: (v: number | null) => v == null ? <Text type="secondary">—</Text>
+            : <Tooltip title="定价表预估(工厂账单不含配件)"><span style={{ color: '#8c8c8c' }}>{yuan(v)}</span></Tooltip> },
+        { title: '预估打包', dataIndex: 'est_packaging', width: 75, align: 'right',
+          render: (v: number | null) => v == null ? <Text type="secondary">—</Text>
+            : <Tooltip title="定价表预估(工厂账单不含打包)"><span style={{ color: '#8c8c8c' }}>{yuan(v)}</span></Tooltip> },
+        { title: '实际木作', dataIndex: 'actual_wood', width: 85, align: 'right',
+          render: (v: number | null) => v == null
+            ? <Tooltip title="工厂账单未入账"><Text type="secondary">—</Text></Tooltip>
+            : <Text strong style={{ color: '#389e0d' }}>{yuan(v)}</Text> },
+        { title: '木作差额', dataIndex: 'wood_diff', width: 90, align: 'right',
+          render: (v: number | null) => v == null ? <Text type="secondary">—</Text>
+            : <Tooltip title="实际工厂木作 − 预算木作; 正(红)=工厂报价超预算, 负(绿)=省">
+                <Text strong type={v > 0 ? 'danger' : 'success'}>{v > 0 ? '+' : ''}{yuan(v)}</Text>
+              </Tooltip> },
+      ],
+    },
     { title: '问题', width: 90, fixed: 'right',
       render: (_: unknown, r) => (
         <Space size={2} wrap>
@@ -147,6 +173,16 @@ export default function PerOrderReconcilePage() {
         <Table.Summary.Cell index={14} />
         <Table.Summary.Cell index={15} />
         <Table.Summary.Cell index={16} />
+        <Table.Summary.Cell index={17} align="right">{yuan(st.predicted_wood)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={18} align="right">{yuan(st.est_parts)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={19} align="right">{yuan(st.est_packaging)}</Table.Summary.Cell>
+        <Table.Summary.Cell index={20} align="right">
+          <Text strong style={{ color: '#389e0d' }}>{yuan(st.actual_wood)}</Text>
+        </Table.Summary.Cell>
+        <Table.Summary.Cell index={21} align="right">
+          <Text strong type={st.wood_diff > 0 ? 'danger' : 'success'}>{st.wood_diff > 0 ? '+' : ''}{yuan(st.wood_diff)}</Text>
+        </Table.Summary.Cell>
+        <Table.Summary.Cell index={22} />
       </Table.Summary.Row>
     </Table.Summary>
   );
@@ -177,6 +213,9 @@ export default function PerOrderReconcilePage() {
             净利 = 真实收入(实付−退款) − 成本合计(商品+物流+安装+平台扣点+税+额外售后)。
             <b style={{ color: '#1677ff' }}>蓝色商品成本=推演</b>(工厂未对账,实际成本到位后覆盖);
             <b>支付宝「已覆盖」</b>=该单已配上支付宝到账流水;<b>对账「推演」</b>=用估算成本。
+            <br /><b style={{ color: '#389e0d' }}>工厂成本核对</b>:预算木作/配件/打包来自定价表(预估);
+            <b>实际木作</b>=工厂账单(actual_cost,仅木作,「已入账」才有);
+            <b>木作差额</b>=实际−预算(<Text type="danger">正=工厂报价超预算</Text>)。配件/打包工厂账单不含、恒为预估。
             合计行下方再减该月<b>推广费、人员成本</b> = 本月真实净利。
           </Text>
         } />
@@ -196,7 +235,7 @@ export default function PerOrderReconcilePage() {
         <Table<PerOrderRow>
           rowKey="order_no" size="small" loading={isLoading}
           columns={cols} dataSource={rows}
-          scroll={{ x: 1500, y: 520 }}
+          scroll={{ x: 2030, y: 520 }}
           pagination={{ pageSize: 100, showSizeChanger: true, showTotal: (t) => `${t} 单` }}
           rowClassName={(r) => r.is_loss ? 'per-order-loss-row' : ''}
           summary={() => sumRow}

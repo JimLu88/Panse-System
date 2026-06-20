@@ -272,6 +272,13 @@ export interface PerOrderRow {
   cost_reconciled: boolean;
   cost_estimated: boolean;
   is_loss: boolean;
+  // 工厂成本核对 (预算 vs 实际): 工厂账单只含木作, 配件/打包恒为预估
+  factory_bill_recorded: boolean;        // 工厂账单已入账
+  predicted_wood: number | null;         // 预算木作(定价表)
+  est_parts: number | null;              // 预估配件
+  est_packaging: number | null;          // 预估打包
+  actual_wood: number | null;            // 实际木作(工厂账单)
+  wood_diff: number | null;              // 木作差额(实际−预算)
 }
 export interface FixedCostItem {
   name: string;
@@ -283,6 +290,8 @@ export interface PerOrderSubtotal {
   paid_amount: number; refund_amount: number; revenue: number;
   cost_goods: number; cost_freight: number; cost_install: number; cost_platform: number;
   cost_tax: number; cost_aftersales: number; cost_total: number; net_profit: number;
+  // 工厂成本核对合计
+  predicted_wood: number; est_parts: number; est_packaging: number; actual_wood: number; wood_diff: number;
   promo_expense: number; outsourcing_expense: number; outsourcing_estimated: boolean;
   fixed_costs: number; fixed_cost_items: FixedCostItem[];
   refill_count: number; refill_gmv: number; refill_cost: number;

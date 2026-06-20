@@ -790,10 +790,22 @@ def per_order_reconcile(
         )
     ).scalars().all()
 
+    # 工厂成本核对 (用户 2026-06-20): 每单 预算(定价表 木作/配件/打包) vs 实际(工厂账单 actual_cost, 仅木作) + 差额。
+    from app.models.pricing import PricingSku
+    _codes = {o.sku_code for o in orders if o.sku_code}
+    _ps_by_code = {ps.sku_code: ps for ps in db.execute(
+        select(PricingSku).where(PricingSku.sku_code.in_(_codes))).scalars()} if _codes else {}
+    _skus = {o.sku for o in orders if not o.sku_code and o.sku}
+    _ps_by_sku = {ps.sku: ps for ps in db.execute(
+        select(PricingSku).where(PricingSku.sku.in_(_skus))).scalars()} if _skus else {}
+
     rows = []
     SUM_KEYS = ("paid_amount", "refund_amount", "revenue", "cost_goods", "cost_freight",
                 "cost_install", "cost_platform", "cost_tax", "cost_aftersales", "cost_total", "net_profit")
     sums = {k: 0.0 for k in SUM_KEYS}
+    # 工厂成本核对合计 (None 当 0)。wood_diff 合计=有账单单的(实际−预算)之和。
+    BSUM_KEYS = ("predicted_wood", "est_parts", "est_packaging", "actual_wood", "wood_diff")
+    bsum = {k: 0.0 for k in BSUM_KEYS}
     for o in orders:
         paid = float(o.paid_amount or 0)
         refund = float(o.refund_amount or 0)
@@ -805,6 +817,16 @@ def per_order_reconcile(
         cost_total = goods + freight + install + platform + tax + aftersales
         net = revenue - cost_total
         cost_estimated = o.actual_cost is None   # 用推演成本(未对账), 非工厂实报
+        # 工厂成本核对: 预算(定价表) vs 实际(工厂账单 actual_cost, 仅木作) + 木作差额
+        _ps = _ps_by_code.get(o.sku_code) or (_ps_by_sku.get(o.sku) if o.sku else None)
+        _qty = int(o.qty or 1)
+        pred_wood = (round(float(o.wood_cost_est), 2) if o.wood_cost_est
+                     else (round(float(_ps.wood_cost) * _qty, 2) if (_ps and _ps.wood_cost) else None))
+        est_parts = round(float(_ps.external_parts_cost) * _qty, 2) if (_ps and _ps.external_parts_cost) else None
+        est_packaging = round(float(_ps.packaging_cost) * _qty, 2) if (_ps and _ps.packaging_cost) else None
+        actual_wood = round(float(o.actual_cost), 2) if o.actual_cost is not None else None
+        wood_diff = (round(actual_wood - pred_wood, 2)
+                     if (actual_wood is not None and pred_wood is not None) else None)
         row = {
             "order_no": o.order_no,
             "product_name": o.product_name or o.product_code or "",
@@ -819,10 +841,19 @@ def per_order_reconcile(
             "cost_reconciled": o.actual_cost is not None,      # 工厂成本已对账(非推演)
             "cost_estimated": cost_estimated,
             "is_loss": net < 0,
+            # 工厂成本核对列 (预算 vs 实际): 工厂账单只含木作, 配件/打包恒为预估
+            "factory_bill_recorded": o.actual_cost is not None,   # 工厂账单已入账
+            "predicted_wood": pred_wood,                          # 预算木作(定价表/wood_cost_est)
+            "est_parts": est_parts,                               # 预估配件(外采)
+            "est_packaging": est_packaging,                       # 预估打包
+            "actual_wood": actual_wood,                           # 实际木作(工厂账单 actual_cost)
+            "wood_diff": wood_diff,                               # 木作差额(实际−预算; +超支/−省)
         }
         rows.append(row)
         for k in SUM_KEYS:
             sums[k] += row[k]
+        for k in BSUM_KEYS:
+            bsum[k] += row[k] or 0
 
     promo = float(db.execute(
         select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
@@ -855,6 +886,7 @@ def per_order_reconcile(
         "rows": rows,
         "subtotal": {
             **{k: round(v, 2) for k, v in sums.items()},
+            **{k: round(v, 2) for k, v in bsum.items()},   # 工厂成本核对合计(预算木作/配件/打包/实际木作)
             "promo_expense": round(promo, 2),
             "outsourcing_expense": round(outsourcing, 2),
             "outsourcing_estimated": os_est,
