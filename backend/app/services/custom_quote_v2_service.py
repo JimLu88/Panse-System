@@ -316,9 +316,11 @@ def quote_light(
     depth_pts, height_pts = _dim_points(skus)
     std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
     std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
+    # 有"顶柜等木作盒子"部位时: 高出部分由顶柜单独算价, 整柜不再按高缩放(避免重复计价; 用户拍板 2026-06-20)
+    has_box_part = any(_is_box_part((p.get("material") or p.get("name") or "")) for p in (add_parts or []))
     if anchor_wood and std_w and std_h and (target_width_cm or target_height_cm):
         tw = float(target_width_cm or std_w)
-        th = float(target_height_cm or std_h)
+        th = float(std_h if has_box_part else (target_height_cm or std_h))   # 有顶柜→高不计入整柜缩放
         size_factor = (tw / std_w) * (th / std_h)
         if abs(size_factor - 1) > 1e-3:
             size_delta = round(float(anchor_wood) * (size_factor - 1) * (1 + factory_profit_rate), 2)
@@ -333,6 +335,14 @@ def quote_light(
     from app.services import custom_quote_config_service as ccfg
     cfg = ccfg.get_config(db)
     category = (prod.category if prod else None) or base_product_code
+    # 顶柜等木作盒子: 总高>标准高 → 自动算 顶柜高=总高−标准高、长=柜宽、宽=柜深、木种=柜体木 (用户拍板 2026-06-20)
+    _box_wood = target_material
+    if not _box_wood and prod:
+        _box_wood = detect_wood(prod.name or "") or detect_wood(prod.main_material or "")
+    _box_wood = _box_wood or "樱桃木"
+    add_parts = _autofill_box_parts(
+        add_parts, length_m=target_length_m, depth_cm=target_width_cm, std_w=std_w,
+        total_h_cm=target_height_cm, std_h=std_h, box_wood=_box_wood)
     addrm_delta, addrm_lines, parts_detail = style_delta(
         db, category=category, length_m=target_length_m,
         add_parts=add_parts, remove_parts=remove_parts, modify_parts=modify_parts, cfg=cfg,
@@ -474,6 +484,43 @@ def _cost_by_unit(price: float, unit: str, qty: float,
     return qty * price, f"{qty:g}×{price:g}", 0.0
 
 
+def _is_box_part(name: str) -> bool:
+    """名字含「柜」→ 木作盒子(顶柜/吊柜/边柜/地柜…), 配合 height_cm>0 走6块板算价。"""
+    return bool(name) and ("柜" in name)
+
+
+def _box_material_cost(length_cm: float, width_cm: float, height_cm: float,
+                       qty: float, wood_unit: float) -> tuple[float, float, str]:
+    """木作盒子: 顶+底+1层板(3×长宽) + 左右2侧(2×宽高) + 背(长高) 板面积 × 木单价 → (材料成本, 面积㎡, 公式)。"""
+    L, W, H = length_cm, width_cm, height_cm
+    area = (3 * (L * W) + 2 * (W * H) + (L * H)) / 10000.0
+    cost = area * qty * wood_unit
+    formula = f"盒{area:.3f}㎡(顶底层3×{L:.0f}×{W:.0f}+2侧2×{W:.0f}×{H:.0f}+背{L:.0f}×{H:.0f})×{wood_unit:g}"
+    return round(cost, 2), area, formula
+
+
+def _autofill_box_parts(add_parts, *, length_m, depth_cm, std_w, total_h_cm, std_h, box_wood):
+    """顶柜等木作盒子: 总高>标准高 → 自动算 高=总高−标准高(高出部分)、长=柜宽、宽=柜深、木种=柜体木
+    (用户拍板 2026-06-20: 高出部分加到顶柜, 自动重算顶柜尺寸)。已显式填的字段不覆盖。"""
+    if not add_parts:
+        return add_parts
+    out = []
+    for p in (add_parts or []):
+        p = dict(p)
+        name = (p.get("material") or p.get("name") or "")
+        if _is_box_part(name):
+            if not float(p.get("height_cm") or 0) and total_h_cm and std_h and float(total_h_cm) > float(std_h):
+                p["height_cm"] = round(float(total_h_cm) - float(std_h), 1)
+            if not float(p.get("length_cm") or 0) and length_m:
+                p["length_cm"] = round(float(length_m) * 100, 1)
+            if not float(p.get("width_cm") or 0):
+                p["width_cm"] = round(float(depth_cm or std_w or 0), 1)
+            if not (p.get("material_real") or "").strip() and box_wood:
+                p["material_real"] = box_wood
+        out.append(p)
+    return out
+
+
 def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
     """解析一个增/删部位 → 完整明细。尺寸优先显式(可手调), 否则木作用模板几何;
     材料优先显式, 否则模板该部位材料, 再否则部位名本身(配件如「电力轨道」直查物料表)。
@@ -484,6 +531,19 @@ def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
     material = (part.get("material_real") or "").strip() or (tdims[3] if tdims else "") or name
     length_cm = float(part.get("length_cm") or 0) or (float(tdims[0]) if tdims else 0.0)
     width_cm = float(part.get("width_cm") or 0) or (float(tdims[1]) if tdims else 0.0)
+    height_cm = float(part.get("height_cm") or 0)
+    # 木作盒子(顶柜等, 名含「柜」且有高度): 6块板面积×木单价, 不查物料表 (用户拍板 2026-06-20)
+    if _is_box_part(name) and height_cm > 0 and length_cm > 0 and width_cm > 0:
+        box_wood = (part.get("material_real") or "").strip() or material or "樱桃木"
+        wu = _wood_unit_price(db, box_wood) or 0.0
+        cost, area, formula = _box_material_cost(length_cm, width_cm, height_cm, qty, wu)
+        return {
+            "name": name, "material": box_wood, "unit": "盒(6板)",
+            "qty": qty, "length_cm": round(length_cm, 1), "width_cm": round(width_cm, 1),
+            "height_cm": round(height_cm, 1), "area_m2": round(area, 3), "unit_price": wu,
+            "material_cost": cost, "formula": formula,
+            "panse_purchased": False, "priced": wu > 0,
+        }
     price, unit = _material_price_unit(db, material)
     if price is None and material != name:
         price, unit = _material_price_unit(db, name)   # 配件名直查

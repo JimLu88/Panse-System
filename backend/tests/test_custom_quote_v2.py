@@ -112,6 +112,24 @@ def test_material_delta_sibling_is_reference_only():
     assert "参考现成同款" in (r["breakdown"][-1]["note"] or "")
 
 
+def test_box_part_pricing_and_autoheight():
+    """顶柜木作盒子: 6块板面积×木单价; 总高>标准高 → 顶柜高=总高−标准高自动算(用户拍板 2026-06-20)。"""
+    from app.services.custom_quote_v2_service import _is_box_part, _box_material_cost, _autofill_box_parts
+    assert _is_box_part("顶柜") and _is_box_part("吊柜") and not _is_box_part("背板")
+    # 盒 150×50×20: 面积=(3×150×50+2×50×20+150×20)/10000=2.75㎡; 成本=2.75×300=825
+    cost, area, _f = _box_material_cost(150, 50, 20, 1, 300)
+    assert area == 2.75 and cost == 825.0
+    # 自动填: 总高230−标准210=顶柜高20; 长150(柜宽1.5m); 宽50(柜深); 木种榉木
+    out = _autofill_box_parts([{"material": "顶柜"}], length_m=1.5, depth_cm=None, std_w=50,
+                              total_h_cm=230, std_h=210, box_wood="榉木")
+    assert out[0]["height_cm"] == 20.0 and out[0]["length_cm"] == 150.0
+    assert out[0]["width_cm"] == 50.0 and out[0]["material_real"] == "榉木"
+    # 总高≤标准高 → 不自动加高度(留空手填)
+    out2 = _autofill_box_parts([{"material": "顶柜"}], length_m=1.5, depth_cm=None, std_w=50,
+                               total_h_cm=200, std_h=210, box_wood="榉木")
+    assert not out2[0].get("height_cm")
+
+
 # ───────── 盈亏平衡工厂价 (净不亏红线) ─────────
 
 def test_break_even_light():
