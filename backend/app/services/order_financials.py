@@ -86,10 +86,23 @@ def aftersales_avg(db: Session) -> Decimal:
 def physical_cost(o: Order) -> Decimal:
     """物理产品成本 = 工厂实报成本优先, 否则系统推算 (含木作/打包/外采配件)。
 
+    非木作补回(2026-06-20 用户拍板): 工厂对账单只含木作, actual_cost=木作实报(不含打包/配件/物流/
+    安装/税/平台)。直接用 actual_cost 当物理成本会漏算非木作 → 利润虚高。故有 wood_cost_est(该单匹配
+    SKU 定价表木作)时, 用 actual_cost + max(0, theoretical_cost − wood_cost_est) 补回非木作估算。
+    wood_cost_est 缺(没匹配到定价木作)→ 退回旧行为, actual_cost 直接当物理成本。
+
     片段封顶(2026-06-20 用户选c): 定金/分期/差价单 实付远小于成本(实付<成本×50%)时不背整份成本
     —— 工厂账单按订单号回填会把整份工厂成本配到定金小单上(实测 ...228259 实付¥2335背¥8200=率351%),
     按 实付×85% 封顶; 货款付齐(实付≥成本×50%)自动回全成本。与 order_cost_service 片段规则一致。"""
-    cost = _d(o.actual_cost) if o.actual_cost is not None else _d(o.theoretical_cost)
+    if o.actual_cost is not None:
+        cost = _d(o.actual_cost)
+        wood_est = _d(getattr(o, "wood_cost_est", None))
+        if wood_est > 0 and o.theoretical_cost is not None:
+            non_wood = _d(o.theoretical_cost) - wood_est
+            if non_wood > 0:
+                cost += non_wood
+    else:
+        cost = _d(o.theoretical_cost)
     paid = _d(o.paid_amount)
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
         return (paid * Decimal("0.85")).quantize(Decimal("0.01"))
@@ -130,8 +143,10 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
     phys = physical_cost(o)
     # 双算护栏(2026-06-20): theoretical_cost(=定价表物理总成本)已内含预测物流+安装;
     # 用 theoretical 的单不再单独加运费/安装行(否则双算)。
-    # 用 actual_cost(=工厂结算价, 不含物流安装)的单才单独加实际运费/安装。税/平台扣点本就不在理论成本里, 无此问题。
-    if o.actual_cost is not None:
+    # 已补非木作的工厂账单单(wood_cost_est 非空): physical_cost 已用 theoretical 的非木作部分
+    # (含预测物流安装)补回, 此处也不再单独加(防双算)。
+    # 仅"未补非木作的纯工厂账单单"(actual_cost 非空 且 wood_cost_est 空)才单独加实际运费/安装(向后兼容)。
+    if o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)):
         freight = _d(o.actual_freight)
         install = _d(o.install_fee) + _d(o.upstairs_fee)
     else:

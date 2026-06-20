@@ -58,6 +58,10 @@ class Order(Base, TimestampMixin):
     # 成本/费用
     theoretical_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 木作估算 (migration 0085): 工厂账单只含木作, actual_cost 是木作实报; wood_cost_est =
+    # 该单匹配 SKU 的定价表 wood_cost(多产品单=各商品行之和)。physical_cost 用它补回非木作
+    # 成本(打包/配件/物流/安装)= actual_cost + max(0, theoretical_cost − wood_cost_est)。
+    wood_cost_est: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     # 定制加价 (方案B): is_custom 单的理论成本 = 基础BOM成本 + 此加价; 可由定制报价单回填或手填 (migration 0053)
     custom_surcharge: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

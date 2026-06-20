@@ -528,6 +528,69 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
     return total if total > 0 else None
 
 
+def _pricing_wood_for(db: Session, order: Order) -> Optional[Decimal]:
+    """该单匹配 SKU 的定价表 wood_cost (木作成本)。与 _pricing_cost_for 对称: 先 sku_code 再 product_code。
+
+    工厂账单只含木作, actual_cost 是木作实报; 这里取定价表里的木作部分, 供 physical_cost 反推非木作
+    (= theoretical − wood_est)。取不到 → None (physical_cost 退回旧行为)。"""
+    sku_code = _resolve_sku_code(db, order)
+    if sku_code:
+        wc = db.execute(
+            select(PricingSku.wood_cost).where(PricingSku.sku_code == sku_code)
+        ).scalar_one_or_none()
+        if wc is not None:
+            return Decimal(str(wc))
+    if order.product_code:
+        wc = db.execute(
+            select(PricingSku.wood_cost)
+            .where(PricingSku.product_code == order.product_code,
+                   PricingSku.wood_cost.isnot(None))
+            .limit(1)
+        ).scalar_one_or_none()
+        if wc is not None:
+            return Decimal(str(wc))
+    return None
+
+
+def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
+    """一单多宝贝 → 各 import 商品行 SKU 的定价表 wood_cost × qty 之和。与 _multi_product_cost 对称。
+
+    任一商品行查不到 wood_cost → None (整单木作估算不完整, 不写 wood_cost_est, physical_cost 退回旧行为)。
+    """
+    from app.models.order import OrderDetail
+    lines = db.execute(
+        select(OrderDetail).where(
+            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
+    ).scalars().all()
+    if len(lines) < 2:
+        return None
+    total = Decimal("0")
+    for ln in lines:
+        wc = None
+        if ln.sku_code:
+            wc = db.execute(
+                select(PricingSku.wood_cost).where(PricingSku.sku_code == ln.sku_code)
+            ).scalar_one_or_none()
+        if wc is None and ln.product_code:
+            wc = db.execute(
+                select(PricingSku.wood_cost)
+                .where(PricingSku.product_code == ln.product_code,
+                       PricingSku.wood_cost.isnot(None))
+                .limit(1)
+            ).scalar_one_or_none()
+        if wc is None:
+            return None
+        total += Decimal(str(wc)) * int(ln.qty or 1)
+    return total if total > 0 else None
+
+
+def _set_wood_est(order: Order, wood: Optional[Decimal]) -> None:
+    """写 order.wood_cost_est (木作估算)。取不到(None/≤0) → 不写, 留原值,
+    让 physical_cost 退回旧行为(actual_cost 直接当物理成本)。"""
+    if wood is not None and wood > 0:
+        order.wood_cost_est = wood.quantize(_CENTS)
+
+
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
@@ -535,6 +598,8 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     传 ratios (类目/全店成本率) 时, BOM/定价表都查不到的订单按 实付×成本率 兜底 (用户拍板 2026-06-17),
     标记为「估算」并由 auto_cost_backfill 写异常待人工补实际成本。
     """
+    # 每次重算从干净状态开始: 木作估算只在能取到的分支回填, 旧值不残留(防改判后污染 physical_cost)
+    order.wood_cost_est = None
     reason = zero_cost_reason(order)
     if reason is not None:
         order.theoretical_cost = Decimal("0")
@@ -547,6 +612,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     _mp = _multi_product_cost(db, order)
     if _mp is not None:
         order.theoretical_cost = _mp.quantize(_CENTS)
+        _set_wood_est(order, _multi_product_wood(db, order))
         return CostBreakdown(
             order_no=order.order_no, sku_code=order.sku_code, qty=int(order.qty or 1),
             unit_cost=_mp, total_cost=_mp, resolved=True,
@@ -556,6 +622,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     if bd.resolved:
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
+        _set_wood_est(order, _pricing_wood_for(db, order))
         return bd
     # 无 BOM → 回退定价表物理总成本
     cost = _pricing_cost_for(db, order)
@@ -566,6 +633,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         bd.note = ((bd.note + " | ") if bd.note else "") + "已回退定价表物理总成本"
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
+        _set_wood_est(order, _pricing_wood_for(db, order))
         return bd
     # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
     if ratios is not None:
