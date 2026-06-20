@@ -238,20 +238,35 @@ def backfill_order_actual_cost(db: Session, restrict_to: Optional[set] = None) -
             FactoryReconItem.extra_order_no1.in_(ids),
             FactoryReconItem.extra_order_no2.in_(ids),
         ))
-    sums: dict[str, Decimal] = {}
-    for it in db.execute(stmt).scalars().all():
+    items = db.execute(stmt).scalars().all()
+    # 一行结算 = 一件家具的木作价, 只算一次成本。一物多单(主单+追加号)→ 归到该结算组里
+    # 第一个真实存在的订单, 不给主+追加各加一遍(否则成本翻倍, 2026-06-21 修)。0 价(退货)跳过。
+    cands: set = set()
+    for it in items:
         for no in (it.order_no, it.extra_order_no1, it.extra_order_no2):
-            n = (no or "").strip()
-            if n and (restrict_to is None or n in restrict_to):
-                sums[n] = sums.get(n, Decimal("0")) + (it.settle_price or Decimal("0"))
-    if not sums:
-        return 0
+            if (no or "").strip():
+                cands.add(no.strip())
+    existing = {
+        o.order_no: o for o in db.execute(
+            select(Order).where(Order.order_no.in_(list(cands)))
+        ).scalars().all()
+    } if cands else {}
+    sums: dict[str, Decimal] = {}
+    for it in items:
+        if not it.settle_price or it.settle_price <= 0:
+            continue
+        primary = next(
+            (n.strip() for n in (it.order_no, it.extra_order_no1, it.extra_order_no2)
+             if (n or "").strip() and n.strip() in existing
+             and (restrict_to is None or n.strip() in restrict_to)),
+            None,
+        )
+        if primary:
+            sums[primary] = sums.get(primary, Decimal("0")) + it.settle_price
     filled = 0
-    orders = db.execute(
-        select(Order).where(Order.order_no.in_(list(sums.keys())))
-    ).scalars().all()
-    for o in orders:
-        if o.actual_cost is None and o.order_no in sums:
-            o.actual_cost = sums[o.order_no]
+    for ono, total in sums.items():
+        o = existing.get(ono)
+        if o is not None and o.actual_cost is None:
+            o.actual_cost = total
             filled += 1
     return filled
