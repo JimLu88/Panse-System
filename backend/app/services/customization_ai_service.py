@@ -96,7 +96,8 @@ def _estimate_size_category(dims: dict) -> str:
     return "小型"
 
 
-_WOOD_KEYWORDS = ["黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木", "橡木"]
+_WOOD_KEYWORDS = ["黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木", "橡木",
+                  "多层板", "海洋板"]
 
 
 def _detect_target_wood(material_changes: list[str]) -> Optional[str]:

@@ -27,8 +27,10 @@ from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services.product_match_service import match
 
-# 木种关键词 (材质识别 / 反推材质delta用); 与 customization_ai_service._WOOD_KEYWORDS 同源
-_WOOD_KEYWORDS = ["黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木", "橡木", "松木"]
+# 木种/板材关键词 (材质识别 / 反推材质delta用); 与 customization_ai_service._WOOD_KEYWORDS 同源
+# 板材(多层板/海洋板)放末尾: detect_wood 取最先命中, 实木主材优先, 板材不抢识别。
+_WOOD_KEYWORDS = ["黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木", "橡木", "松木",
+                  "多层板", "海洋板"]
 
 _PRICE_TIERS = {
     "list": "list_price", "daily": "daily_price",
@@ -132,7 +134,14 @@ def _wood_unit_price(db: Session, wood: str) -> Optional[float]:
         ).all()
     if not rows:
         return None
-    rows.sort(key=lambda m: (0 if "2.2" in (m.name or "") else 1, len(m.name or "")))
+    def _thick_rank(nm: str) -> int:
+        nm = nm or ""
+        if "2.2" in nm:
+            return 0          # 实木主材优先 2.2cm 厚
+        if "1.8" in nm or "18mm" in nm:
+            return 1          # 板材(多层板/海洋板)取 1.8cm/18mm, 避开 0.9cm 薄背板
+        return 2
+    rows.sort(key=lambda m: (_thick_rank(m.name), len(m.name or "")))
     return float(rows[0].price)
 
 
