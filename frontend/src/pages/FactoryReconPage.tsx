@@ -4,6 +4,7 @@
  */
 import { useState } from 'react';
 import PresetTable from '../components/PresetTable';
+import FactoryCostComparePanel from '../components/FactoryCostComparePanel';
 import {
   Alert, Button, Card, Col, Dropdown, Input, InputNumber, Modal, Row, Segmented, Select, Space, Statistic,
   Table, Tag, Typography, Upload, message,
@@ -141,6 +142,8 @@ export default function FactoryReconPage() {
           <Col span={4}><Card size="small"><Statistic title="已做平条目" value={sum.resolved_items} /></Card></Col>
         </Row>
       )}
+
+      <FactoryCostComparePanel />
 
       <Card size="small" title="导入工厂侧对账单">
         <Upload accept=".xlsx,.xls" showUploadList={false} beforeUpload={(file) => { importMut.mutate(file as File); return false; }}>

@@ -101,3 +101,21 @@ export const splitFactoryReconItem = (
   id: number,
   parts: Array<{ amount: string; resolution_kind: string; remark?: string }>,
 ) => api.post(`/api/factory-recon/items/${id}/split`, { parts }).then((r) => r.data);
+
+// 工厂实收(actual_cost) vs 我方预测(pricing factory_cost) 按月对比饼图
+export interface FactoryCostCompareMonth {
+  month: string;
+  predicted: number;
+  actual: number;
+  diff: number;
+  diff_pct: number;
+  n_actual: number;
+  n_total: number;
+  coverage_pct: number;
+}
+export interface FactoryCostCompare {
+  months: FactoryCostCompareMonth[];
+  totals: { predicted: number; actual: number; diff: number; diff_pct: number };
+}
+export const fetchFactoryCostComparison = () =>
+  api.get<FactoryCostCompare>('/api/factory-recon/cost-comparison').then((r) => r.data);
