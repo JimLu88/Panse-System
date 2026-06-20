@@ -108,8 +108,8 @@ def platform_deduction(o: Order, coef: dict) -> Decimal:
     if o.order_date and o.order_date >= coef["activity_since"]:
         rate += coef["activity_rate"]
     if recv > 0 and recv < paid:
-        diff = paid - recv
-        if diff <= paid * Decimal("0.08"):
+        diff = paid - recv - _d(getattr(o, "refund_amount", 0))   # recv已是退款后净额, paid是毛额, 扣掉退款只留纯平台费(防退款双扣: 收入侧已减过退款)
+        if Decimal("0") <= diff <= paid * Decimal("0.08"):
             return diff
         # diff 远超合理扣点 → 分期/部分到账, 落到下面率算法, 不把未到账款当平台费
     return (paid * rate).quantize(Decimal("0.01"))

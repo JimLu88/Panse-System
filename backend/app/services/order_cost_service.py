@@ -70,7 +70,7 @@ _REFUND_KEYWORDS = ("退款", "退货", "关闭")
 # 只对 2026-01-01 起的订单做成本估算/异常 (更早的旧单不纳入, 用户拍板 2026-06-17)。
 _COST_ESTIMATE_CUTOFF = date(2026, 1, 1)
 # 全额退款判定阈值: 退款金额 ≥ 实付 × 此比例 视为整单退掉。
-_FULL_REFUND_RATIO = Decimal("0.9")
+_FULL_REFUND_RATIO = Decimal("0.99")   # 与 sales_analytics.settled_sale_clause 的 0.99 统一: 90~99%退款带不再"算收入不算成本"
 
 
 def _skip_cost_estimate(order: Order) -> Optional[str]:
@@ -506,18 +506,26 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
     if len(lines) < 2:
         return None
     total = Decimal("0")
-    n_priced = 0
     for ln in lines:
-        if not ln.sku_code:
-            continue
-        ps = db.execute(
-            select(PricingSku).where(PricingSku.sku_code == ln.sku_code)
-        ).scalar_one_or_none()
-        if ps is None or ps.physical_cost is None:
-            continue
-        total += Decimal(str(ps.physical_cost)) * int(ln.qty or 1)
-        n_priced += 1
-    return total if (total > 0 and n_priced >= 2) else None
+        cost = None
+        if ln.sku_code:
+            ps = db.execute(
+                select(PricingSku).where(PricingSku.sku_code == ln.sku_code)
+            ).scalar_one_or_none()
+            if ps is not None and ps.physical_cost is not None:
+                cost = Decimal(str(ps.physical_cost))
+        if cost is None and ln.product_code:   # 退一步: 同产品任一有价行
+            ps2 = db.execute(
+                select(PricingSku).where(
+                    PricingSku.product_code == ln.product_code,
+                    PricingSku.physical_cost.isnot(None))
+            ).scalars().first()
+            if ps2 is not None:
+                cost = Decimal(str(ps2.physical_cost))
+        if cost is None:
+            return None   # 有商品行查不到定价 → 整单成本不完整, 回退兜底路径(勿把缺行的部分和当整单成本, 否则漏算副商品→利润虚高)
+        total += cost * int(ln.qty or 1)
+    return total if total > 0 else None
 
 
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
@@ -716,7 +724,12 @@ def _pricing_cost_for(db: Session, order: Order) -> Optional[Decimal]:
     用物理成本而非会计总成本: 税/平台扣点由会计汇总(accounting_summary)按实付另算,
     这里若返回含税/扣点的会计成本会被重复扣减 (用户拍板 2026-06-18)。physical 缺则退回出厂成本。
     """
-    cost_col = func.coalesce(PricingSku.physical_cost, PricingSku.factory_cost)
+    # physical_cost 缺时回退「出厂价 + 物流 + 安装」(=物理总成本), 不能只回退裸出厂价 ——
+    # 否则下游双算护栏(theoretical 已含物流安装→运费/安装置0)会把这单的物流安装永久漏掉, 利润虚高。
+    cost_col = func.coalesce(
+        PricingSku.physical_cost,
+        PricingSku.factory_cost + func.coalesce(PricingSku.logistics_cost, 0) + func.coalesce(PricingSku.install_cost, 0),
+    )
     sku_code = _resolve_sku_code(db, order)
     if sku_code:
         c = db.execute(

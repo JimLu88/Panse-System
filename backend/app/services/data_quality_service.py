@@ -1056,6 +1056,43 @@ def scan_product_missing_taobao_ids(db: Session) -> int:
     return count
 
 
+def scan_factory_bill_on_dead_order(db: Session) -> int:
+    """工厂账单挂在「已取消/全额退款」的订单上 → 异常: 工厂已下单、成本真实发生, 但该销售单作废/退款
+    已被成交口径排除出财务, 成本会"悄悄丢失"或需重新归属到客户的重下单(像那次的床¥3400)。供人工改归属。
+    口径: factory_recon_items.order_no 对应 Order 是 cancelled, 或全额退款(refund≥实付×0.99 且实付>0)。"""
+    from decimal import Decimal
+    from sqlalchemy import text
+    bills = dict(db.execute(text(
+        "SELECT order_no, COALESCE(SUM(settle_price),0) FROM factory_recon_items "
+        "WHERE order_no IS NOT NULL GROUP BY order_no")).all())
+    if not bills:
+        return 0
+    count = 0
+    for o in db.query(Order).filter(Order.order_no.in_(list(bills.keys()))).all():
+        bill = Decimal(str(bills.get(o.order_no) or 0))
+        if bill <= 0:
+            continue
+        paid = Decimal(str(o.paid_amount or 0))
+        refund = Decimal(str(o.refund_amount or 0))
+        is_cancelled = (o.status or "") == "cancelled"
+        is_full_refund = paid > 0 and refund >= paid * Decimal("0.99")
+        if not (is_cancelled or is_full_refund):
+            continue
+        reason = "已取消" if is_cancelled else "全额退款"
+        _record(
+            db, source_table="orders", source_pk=o.id,
+            exception_type="factory_bill_on_dead_order", severity="warning",
+            description=(f"工厂账单 ¥{bill} 挂在「{reason}」的订单 {o.order_no} 上 —— 工厂已下单、成本真实发生, "
+                        f"但该销售单作废/退款已被排除出财务, 成本会丢失或需重新归属到客户的重下单。"),
+            suggestion_action=("核实工厂这单货是否给了客户的重下单: 是 → 把工厂账单 order_no 改到重下单"
+                               "(或在重下单填 actual_cost); 否(工厂未真做/已退) → 可忽略。"),
+            context={"order_no": o.order_no, "factory_bill": str(bill), "status": o.status},
+        )
+        count += 1
+    _log.info("scan_factory_bill_on_dead_order: %d", count)
+    return count
+
+
 def run_all(db: Session) -> dict[str, int]:
     results: dict[str, int] = {}
     scanners = [
@@ -1069,6 +1106,7 @@ def run_all(db: Session) -> dict[str, int]:
         ("alipay_duplicate_flow", scan_alipay_duplicate_flow),
         ("factory_recon_incomplete", scan_factory_recon_incomplete),
         ("factory_recon_unbalanced", scan_factory_recon_unbalanced),
+        ("factory_bill_on_dead_order", scan_factory_bill_on_dead_order),
         ("unclassified_purchase", scan_unclassified_purchase),
         ("misclassified_purchase", scan_misclassified_purchase),
         ("outsourcing_missing", scan_outsourcing_missing),
