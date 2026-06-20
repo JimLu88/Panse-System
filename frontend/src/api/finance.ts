@@ -636,6 +636,7 @@ export interface FinCoefficients {
   fin_platform_handling_rate: string;     // 平台手续费率 (0.006 = 0.6%)
   fin_platform_activity_rate: string;     // 平台活动抽成率 (0.02 = 2%)
   fin_platform_activity_since: string;    // 活动抽成生效日 YYYY-MM-DD
+  fin_platform_activity_until: string;    // 活动抽成截止日 YYYY-MM-DD (只 5-6 月有)
   fin_tax_rate: string;                   // 税率 (0.02 = 2%)
   fin_outsourcing_monthly?: string;       // 人员外包预估 (元/月, 5月起无实际录入时用)
   fin_outsourcing_est_since?: string;     // 人员外包预估生效起始月 YYYY-MM-DD

@@ -38,3 +38,29 @@ def test_no_recv_uses_rate():
 def test_exactly_8pct_still_real():
     # 差额恰=8% → 仍视作真实扣点(边界)
     assert platform_deduction(_o("1000", "920"), _coef()) == Decimal("80")
+
+
+# ---- 活动抽成区间 [生效日, 截止日] (用户拍板 2026-06-21: 只 5-6 月有活动) ----
+def _coef_bounded():
+    return {"handling_rate": Decimal("0.006"), "activity_rate": Decimal("0.02"),
+            "activity_since": date(2026, 5, 1), "activity_until": date(2026, 6, 30)}
+
+
+def test_activity_in_window_may():
+    # 5月单(无实收, 走率) → 含活动抽成 2.6% → 1000×0.026 = ¥26
+    assert platform_deduction(_o("1000", "0", date(2026, 5, 15)), _coef_bounded()) == Decimal("26.00")
+
+
+def test_activity_in_window_june():
+    # 6月单 → 仍含活动抽成 2.6%
+    assert platform_deduction(_o("1000", "0", date(2026, 6, 30)), _coef_bounded()) == Decimal("26.00")
+
+
+def test_no_activity_before_window_april():
+    # 4月单 → 早于生效日, 只有手续费 0.6% → ¥6
+    assert platform_deduction(_o("1000", "0", date(2026, 4, 21)), _coef_bounded()) == Decimal("6.00")
+
+
+def test_no_activity_after_window_july():
+    # 7月单 → 晚于截止日, 活动抽成不再加, 只有手续费 0.6% → ¥6
+    assert platform_deduction(_o("1000", "0", date(2026, 7, 1)), _coef_bounded()) == Decimal("6.00")

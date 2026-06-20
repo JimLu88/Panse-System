@@ -17,6 +17,7 @@ export default function FinancialCoefficientsCard() {
   const [activity, setActivity] = useState<number | null>(null);   // %
   const [tax, setTax] = useState<number | null>(null);             // %
   const [since, setSince] = useState<string>('2026-05-01');
+  const [until, setUntil] = useState<string>('2026-06-30');
   const [outsourcing, setOutsourcing] = useState<number | null>(null);  // 元/月
   const [pwOpen, setPwOpen] = useState(false);
   const [pw, setPw] = useState('');
@@ -28,6 +29,7 @@ export default function FinancialCoefficientsCard() {
       setActivity(pct(data.fin_platform_activity_rate));
       setTax(pct(data.fin_tax_rate));
       setSince(data.fin_platform_activity_since || '2026-05-01');
+      setUntil(data.fin_platform_activity_until || '2026-06-30');
       setOutsourcing(data.fin_outsourcing_monthly != null ? Number(data.fin_outsourcing_monthly) : 10000);
     }
   }, [data]);
@@ -54,6 +56,7 @@ export default function FinancialCoefficientsCard() {
         fin_platform_activity_rate: String((activity ?? 0) / 100),
         fin_tax_rate: String((tax ?? 0) / 100),
         fin_platform_activity_since: since,
+        fin_platform_activity_until: until,
         fin_outsourcing_monthly: String(outsourcing ?? 10000),
         password: pw,
       });
@@ -80,6 +83,10 @@ export default function FinancialCoefficientsCard() {
           <span><Text>活动抽成生效起始日</Text>{' '}
             <DatePicker value={since ? dayjs(since) : null}
               onChange={(d) => setSince(d ? d.format('YYYY-MM-DD') : '2026-05-01')} /></span>
+          <span><Text>活动抽成截止日</Text>{' '}
+            <DatePicker value={until ? dayjs(until) : null}
+              onChange={(d) => setUntil(d ? d.format('YYYY-MM-DD') : '2026-06-30')} />
+            <Text type="secondary" style={{ fontSize: 12 }}> (只 5-6 月有活动抽成, 7月起无)</Text></span>
           <span><Text>人员外包预估</Text>{' '}
             <InputNumber min={0} step={1000} value={outsourcing} onChange={setOutsourcing}
               addonAfter="元/月" style={{ width: 150 }} />

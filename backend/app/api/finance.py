@@ -1712,7 +1712,7 @@ def put_financial_coefficients(
     pwd = str(payload.get("password") or "")
     if not user.password_hash or not auth_service.verify_password(pwd, user.password_hash):
         raise HTTPException(403, "密码不正确, 财务系数未修改")
-    _DATE_KEYS = ("fin_platform_activity_since", "fin_outsourcing_est_since")
+    _DATE_KEYS = ("fin_platform_activity_since", "fin_platform_activity_until", "fin_outsourcing_est_since")
     _MONEY_KEYS = ("fin_outsourcing_monthly",)   # 金额(元), 非 0~1 费率
     changed: dict = {}
     for k in ofin.DEFAULTS:

@@ -28,6 +28,7 @@ DEFAULTS = {
     "fin_platform_handling_rate": "0.006",        # 平台手续费 0.6%
     "fin_platform_activity_rate": "0.02",         # 平台活动抽成 2% (如有)
     "fin_platform_activity_since": "2026-05-01",  # 活动抽成生效起始日 (5月起有, 1-4月无)
+    "fin_platform_activity_until": "2026-06-30",  # 活动抽成截止日 (只 5-6 月有, 7 月起无, 用户拍板 2026-06-21)
     "fin_tax_rate": "0.02",                       # 税费 2%
     "fin_outsourcing_monthly": "10000",           # 人员外包预估 (无实际录入时, 5月起按此/月预估)
     "fin_outsourcing_est_since": "2026-05-01",    # 人员外包预估生效起始月
@@ -37,6 +38,7 @@ COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
     "fin_platform_activity_rate": "平台活动抽成率",
     "fin_platform_activity_since": "平台活动抽成生效起始日",
+    "fin_platform_activity_until": "平台活动抽成截止日",
     "fin_tax_rate": "税率",
     "fin_outsourcing_monthly": "人员外包预估(元/月)",
     "fin_outsourcing_est_since": "人员外包预估生效起始月",
@@ -67,6 +69,11 @@ def load_coefficients(db: Session) -> dict:
         out["activity_since"] = date(y, m, dd)
     except Exception:  # noqa: BLE001
         out["activity_since"] = date(2026, 5, 1)
+    try:
+        y, m, dd = (int(x) for x in str(raw["fin_platform_activity_until"]).split("-"))
+        out["activity_until"] = date(y, m, dd)
+    except Exception:  # noqa: BLE001
+        out["activity_until"] = date(2026, 6, 30)
     return out
 
 
@@ -118,7 +125,11 @@ def platform_deduction(o: Order, coef: dict) -> Decimal:
     paid = _d(o.paid_amount)
     recv = _d(o.shop_received_amount)
     rate = coef["handling_rate"]
-    if o.order_date and o.order_date >= coef["activity_since"]:
+    # 活动抽成只在 [生效日, 截止日] 区间内加 (用户拍板 2026-06-21: 只 5-6 月有活动, 4月前/7月后都没有)。
+    # activity_until 缺省(老式手搓 coef)→ 退回只有下界的旧行为, 防 KeyError。
+    _until = coef.get("activity_until")
+    if (o.order_date and o.order_date >= coef["activity_since"]
+            and (_until is None or o.order_date <= _until)):
         rate += coef["activity_rate"]
     if recv > 0 and recv < paid:
         diff = paid - recv - _d(getattr(o, "refund_amount", 0))   # recv已是退款后净额, paid是毛额, 扣掉退款只留纯平台费(防退款双扣: 收入侧已减过退款)
