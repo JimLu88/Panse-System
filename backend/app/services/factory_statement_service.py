@@ -134,6 +134,8 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
 
     rows: list[dict] = []
     tot_revenue = tot_predicted = tot_break_even = tot_buffer = 0.0
+    # 逐单核对拆解列合计 (None 当 0 累加)
+    tot_pred_wood = tot_actual_wood = tot_pred_parts = tot_logistics = tot_install = 0.0
     missing = 0
     for o in orders:
         ps = ps_by_code.get(o.sku_code) or (ps_by_sku.get(o.sku) if o.sku else None)
@@ -174,6 +176,19 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
         elif not revenue:
             note = (note + "; " if note else "") + "缺售价(实收)→ 无法算红线"
 
+        # 逐单核对拆解: 预测/实收 木作 + 预估配件 + 物流 + 安装 (用已取到的 ps 和 o)
+        predicted_wood = round(float(ps.wood_cost) * qty, 2) if (ps and ps.wood_cost) else None
+        actual_wood = float(o.actual_cost) if o.actual_cost is not None else None
+        predicted_parts = (
+            round(max(0.0, float(ps.factory_cost or 0) - float(ps.wood_cost or 0)) * qty, 2)
+            if (ps and ps.factory_cost) else None
+        )
+        actual_parts = None  # 无实收配件来源 → 前端显示"缺实际配件价格/预估"
+        logistics = round(float(ps.logistics_cost or 0) * qty, 2) if ps else None
+        install = round(float(ps.install_cost or 0) * qty, 2) if ps else None
+        missing_factory_price = o.actual_cost is None  # 缺实际工厂(木作)价格
+        missing_parts_price = True  # 实际配件价一直缺
+
         rows.append({
             "order_no": o.order_no,
             "order_date": o.order_date.isoformat() if o.order_date else None,
@@ -187,7 +202,21 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
             "break_even_buffer": buffer,
             "estimated": estimated,
             "note": note,
+            # 逐单核对: 预测vs实收 拆解列
+            "predicted_wood": predicted_wood,
+            "actual_wood": actual_wood,
+            "predicted_parts": predicted_parts,
+            "actual_parts": actual_parts,
+            "logistics": logistics,
+            "install": install,
+            "missing_factory_price": missing_factory_price,
+            "missing_parts_price": missing_parts_price,
         })
+        tot_pred_wood += predicted_wood or 0
+        tot_actual_wood += actual_wood or 0
+        tot_pred_parts += predicted_parts or 0
+        tot_logistics += logistics or 0
+        tot_install += install or 0
         if predicted is not None:
             tot_predicted += predicted
         if revenue:
@@ -208,6 +237,11 @@ def generate(db: Session, *, period: Optional[str] = None, limit: int = 5000) ->
             "factory_predicted": round(tot_predicted, 2),
             "break_even_factory": round(tot_break_even, 2),
             "break_even_buffer": round(tot_buffer, 2),
+            "predicted_wood": round(tot_pred_wood, 2),
+            "actual_wood": round(tot_actual_wood, 2),
+            "predicted_parts": round(tot_pred_parts, 2),
+            "logistics": round(tot_logistics, 2),
+            "install": round(tot_install, 2),
         },
         "rows": rows,
     }

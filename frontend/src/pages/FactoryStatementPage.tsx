@@ -18,6 +18,14 @@ interface StatementRow {
   break_even_buffer: number | null;
   estimated: boolean;
   note: string | null;
+  predicted_wood: number | null;
+  actual_wood: number | null;
+  predicted_parts: number | null;
+  actual_parts: number | null;
+  logistics: number | null;
+  install: number | null;
+  missing_factory_price: boolean;
+  missing_parts_price: boolean;
 }
 interface Statement {
   period: string | null;
@@ -28,6 +36,11 @@ interface Statement {
     factory_predicted: number;
     break_even_factory: number;
     break_even_buffer: number;
+    predicted_wood: number;
+    actual_wood: number;
+    predicted_parts: number;
+    logistics: number;
+    install: number;
   };
   rows: StatementRow[];
 }
@@ -77,6 +90,32 @@ const cols: ColumnsType<StatementRow> = [
       <Text style={{ color: v != null && v >= 0 ? '#389e0d' : '#cf1322' }}>{yuan(v)}</Text>
     ),
   },
+  // 逐单核对: 预测vs实收 拆解列
+  { title: '预测木作', dataIndex: 'predicted_wood', key: 'pw', width: 90, align: 'right', render: yuan },
+  {
+    title: '实收木作',
+    dataIndex: 'actual_wood',
+    key: 'aw',
+    width: 110,
+    align: 'right',
+    render: (v: number | null) =>
+      v == null ? <Text style={{ color: '#cf1322', fontSize: 12 }}>缺实际工厂价格</Text> : yuan(v),
+  },
+  {
+    title: '预估配件',
+    dataIndex: 'predicted_parts',
+    key: 'pp',
+    width: 100,
+    align: 'right',
+    render: (v: number | null) => (
+      <span>
+        {yuan(v)}
+        {v != null ? <Tag style={{ marginLeft: 4 }}>预估</Tag> : null}
+      </span>
+    ),
+  },
+  { title: '物流', dataIndex: 'logistics', key: 'lg', width: 80, align: 'right', render: yuan },
+  { title: '安装', dataIndex: 'install', key: 'in', width: 80, align: 'right', render: yuan },
   {
     title: '备注',
     dataIndex: 'note',
@@ -176,8 +215,45 @@ export default function FactoryStatementPage() {
             rowKey="order_no"
             columns={cols}
             dataSource={data.rows}
-            scroll={{ x: 1150 }}
+            scroll={{ x: 1650 }}
             pagination={{ pageSize: 50, showSizeChanger: true }}
+            summary={() => (
+              <Table.Summary fixed>
+                <Table.Summary.Row>
+                  <Table.Summary.Cell index={0} colSpan={5}>
+                    <Text strong>合计</Text>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={5} align="right">
+                    {yuan(data.totals.revenue)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={6} align="right">
+                    {yuan(data.totals.factory_predicted)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={7} align="right">
+                    <Text strong style={{ color: '#cf1322' }}>{yuan(data.totals.break_even_factory)}</Text>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={8} align="right">
+                    <Text style={{ color: '#389e0d' }}>{yuan(data.totals.break_even_buffer)}</Text>
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={9} align="right">
+                    {yuan(data.totals.predicted_wood)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={10} align="right">
+                    {yuan(data.totals.actual_wood)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={11} align="right">
+                    {yuan(data.totals.predicted_parts)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={12} align="right">
+                    {yuan(data.totals.logistics)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={13} align="right">
+                    {yuan(data.totals.install)}
+                  </Table.Summary.Cell>
+                  <Table.Summary.Cell index={14} />
+                </Table.Summary.Row>
+              </Table.Summary>
+            )}
           />
         </>
       )}

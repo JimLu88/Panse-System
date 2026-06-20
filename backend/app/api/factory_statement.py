@@ -41,20 +41,26 @@ def export(period: Optional[str] = None, db: Session = Depends(get_db)):
     ws.title = "工厂对账单"
     ws.append([
         "订单号", "下单日期", "产品", "SKU", "数量", "定制",
-        "售价(实收)", "预测工厂价", "盈亏平衡价(红线)", "安全垫(工厂可再高)", "备注",
+        "售价(实收)", "预测工厂价", "盈亏平衡价(红线)", "安全垫(工厂可再高)",
+        "预测木作", "实收木作", "预估配件", "物流", "安装", "备注",
     ])
     for r in data["rows"]:
         ws.append([
             r["order_no"], r["order_date"], r["product_name"], r["sku"], r["qty"],
             "是" if r["is_custom"] else "",
             r["revenue"], r["factory_predicted"], r["break_even_factory"],
-            r["break_even_buffer"], r["note"],
+            r["break_even_buffer"],
+            r["predicted_wood"],
+            "缺实际工厂价格" if r["actual_wood"] is None else r["actual_wood"],
+            r["predicted_parts"], r["logistics"], r["install"], r["note"],
         ])
     t = data["totals"]
     ws.append([])
     ws.append([
         "合计", "", "", "", data["count"], "", t["revenue"],
         t["factory_predicted"], t["break_even_factory"], t["break_even_buffer"],
+        t["predicted_wood"], t["actual_wood"], t["predicted_parts"],
+        t["logistics"], t["install"],
         f"缺数据 {data['missing']} 单",
     ])
     buf = io.BytesIO()
