@@ -334,10 +334,14 @@ def _iter_months(start: date, end: date):
 
 
 def outsourcing_for_range(db: Session, start: date, end: date, coef: dict) -> tuple[Decimal, bool]:
-    """人员外包: 当月有实际录入用实际; 否则自 fin_outsourcing_est_since 起按 fin_outsourcing_monthly/月预估。
-    返回 (合计, 是否含预估)。两个报表共用 (用户拍板 2026-06-17: 5月起 ¥10000/月预估)。"""
+    """人员外包 (G): 每月预估 = Σ 当月在职人员月工资 (staff_salary_service.monthly_total);
+    该月无在职人员(合计=0)时回落 coef fin_outsourcing_monthly。
+    当月有实际 OutsourcingExpense 录入时用实际, 但实际 < 工资预估则取工资预估(地板,
+    防部分录入月漏算)。返回 (合计, 是否含预估)。
+    """
     from app.models.marketing import OutsourcingExpense
-    monthly_est = _d(coef.get("fin_outsourcing_monthly") or "10000")
+    from app.services import staff_salary_service
+    fallback_est = _d(coef.get("fin_outsourcing_monthly") or "10000")
     try:
         ey, em, _ = (int(x) for x in str(coef.get("fin_outsourcing_est_since") or "2026-05-01").split("-"))
         est_since = date(ey, em, 1)
@@ -357,10 +361,18 @@ def outsourcing_for_range(db: Session, start: date, end: date, coef: dict) -> tu
     total = Decimal("0")
     estimated = False
     for y, m in _iter_months(start, end):
+        # 月度工资预估: Σ在职人员月工资; 无在职人员则回落写死预估。
+        salary_est = staff_salary_service.monthly_total(db, y, m)
+        month_est = salary_est if salary_est > 0 else fallback_est
         a = actual.get(f"{y}-{m:02d}", Decimal("0"))
         if a > 0:
-            total += a
+            # 实际 < 工资预估时取工资预估(地板, 修部分录入月漏算)。
+            if date(y, m, 1) >= est_since and month_est > a:
+                total += month_est
+                estimated = True
+            else:
+                total += a
         elif date(y, m, 1) >= est_since:
-            total += monthly_est
+            total += month_est
             estimated = True
     return total, estimated

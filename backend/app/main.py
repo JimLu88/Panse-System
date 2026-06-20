@@ -43,6 +43,7 @@ from app.api import factory_statement as factory_statement_api
 from app.api import cs_integration as cs_integration_api
 from app.api import competitor as competitor_api
 from app.api import shop_deposits as shop_deposits_api
+from app.api import staff_salary as staff_salary_api
 from app.api import imports as imports_api
 from app.api import ai as ai_api
 from app.api import alerts as alerts_api
@@ -328,6 +329,7 @@ app.include_router(factory_statement_api.router)
 app.include_router(cs_integration_api.router)
 app.include_router(competitor_api.router)
 app.include_router(shop_deposits_api.router)
+app.include_router(staff_salary_api.router)
 app.include_router(imports_api.router)
 app.include_router(exceptions_api.router)
 app.include_router(feishu_api.router)

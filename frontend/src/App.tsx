@@ -26,6 +26,7 @@ const OrdersPage = lazy(() => import('./pages/OrdersPage'));
 const ProducibilityPage = lazy(() => import('./pages/ProducibilityPage'));
 const AlipayPage = lazy(() => import('./pages/AlipayPage'));
 const AccountBalancesPage = lazy(() => import('./pages/AccountBalancesPage'));
+const StaffSalaryPage = lazy(() => import('./pages/StaffSalaryPage'));
 const ReconciliationPage = lazy(() => import('./pages/ReconciliationPage'));
 const AiAssistantPage = lazy(() => import('./pages/AiAssistantPage'));
 const MarketingPage = lazy(() => import('./pages/MarketingPage'));
@@ -100,6 +101,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
   'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
+  'staff-salary': 'g-finance',
   'per-order-reconcile': 'g-finance',
   reconciliation: 'g-finance', 'refill-records': 'g-finance', 'recon-diagnostics': 'g-finance', 'prepay-ledger': 'g-finance',
   'factory-recon': 'g-finance', 'shop-deposits': 'g-finance', 'promotion-flows': 'g-finance',
@@ -230,6 +232,7 @@ export default function App() {
         { key: 'assets-cashflow', label: <Link to="/assets-cashflow">资产 &amp; 流水</Link> },
         { key: 'alipay', label: <Link to="/alipay">支付宝流水</Link> },
         { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
+        { key: 'staff-salary', label: <Link to="/staff-salary">人员工资</Link> },
         { key: 'per-order-reconcile', label: <Link to="/per-order-reconcile">逐单核对</Link> },
         { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'recon-center', label: <Link to="/recon-center">对账中心 (结算/诊断/工厂/代付)</Link> },
@@ -364,6 +367,7 @@ export default function App() {
             <Route path="/pricing-formulas" element={<PricingFormulaPage />} />
             <Route path="/alipay" element={<AlipayPage />} />
             <Route path="/account-balances" element={<AccountBalancesPage />} />
+            <Route path="/staff-salary" element={<StaffSalaryPage />} />
             <Route path="/reconciliation" element={<ReconciliationPage />} />
             <Route path="/per-order-reconcile" element={<PerOrderReconcilePage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />

@@ -122,6 +122,25 @@ class RefillRecord(Base, TimestampMixin):
     sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
 
 
+class StaffSalary(Base, TimestampMixin):
+    """人员/工资档案 (G: 自由增减人员、改月工资)。
+
+    外包成本口径挂钩: order_financials.outsourcing_for_range 每月预估额改为
+    Σ 当月在职人员 monthly_cost (替代写死 ¥10000)。
+    在职判定: active_from <= 月末 且 (active_to is None 或 active_to >= 月初)。
+    """
+
+    __tablename__ = "staff_salaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    monthly_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), default=Decimal("0"), nullable=False)
+    role: Mapped[Optional[str]] = mapped_column(String(32))
+    active_from: Mapped[date] = mapped_column(Date, nullable=False)
+    active_to: Mapped[Optional[date]] = mapped_column(Date)  # None = 至今
+    remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
 class WanshifuBill(Base, TimestampMixin):
     """万师傅安装账单 — 按月从万师傅后台导出 CSV 导入。
 
