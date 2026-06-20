@@ -982,7 +982,7 @@ def per_order_reconcile_export(
         mc.number_format, mc.alignment = "0.0%", rgt
         mc.font = Font(color=(GREEN if mg >= 15 else ORANGE if mg >= 0 else RED), size=10)
         _tag(ri, 15, "已覆盖" if r["alipay_covered"] else "未覆盖", GREEN if r["alipay_covered"] else RED)
-        _tag(ri, 16, "已对账" if r["cost_reconciled"] else "推演", GREEN if r["cost_reconciled"] else BLUE)
+        _tag(ri, 16, "仅木作入账" if r["cost_reconciled"] else "推演", GREEN if r["cost_reconciled"] else BLUE)
         prob = (("亏损 " if r["is_loss"] else "") + ("未覆盖" if not r["alipay_covered"] else "")).strip()
         _tag(ri, 17, prob, RED if r["is_loss"] else ORANGE)
         _tag(ri, 18, "已入账" if r["factory_bill_recorded"] else "未入账",

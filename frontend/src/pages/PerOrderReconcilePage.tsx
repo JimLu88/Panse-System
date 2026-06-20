@@ -112,9 +112,10 @@ export default function PerOrderReconcilePage() {
       render: (v: boolean) => v
         ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已覆盖</Tag>
         : <Tag color="red" style={{ marginInlineEnd: 0 }}>未覆盖</Tag> },
-    { title: '对账', dataIndex: 'cost_reconciled', width: 75, align: 'center',
+    { title: '对账', dataIndex: 'cost_reconciled', width: 100, align: 'center',
       render: (v: boolean) => v
-        ? <Tag color="green" style={{ marginInlineEnd: 0 }}>已对账</Tag>
+        ? <Tooltip title="仅木作已对工厂账单; 配件/打包/物流/安装仍为定价表预估">
+            <Tag color="green" style={{ marginInlineEnd: 0 }}>仅木作入账</Tag></Tooltip>
         : <Tag color="blue" style={{ marginInlineEnd: 0 }}>推演</Tag> },
     {
       title: '工厂成本核对(预算 vs 实际,账单仅木作)',
