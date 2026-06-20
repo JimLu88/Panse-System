@@ -89,14 +89,21 @@ def physical_cost(o: Order) -> Decimal:
 
 
 def platform_deduction(o: Order, coef: dict) -> Decimal:
-    """平台扣点: 有店铺实收→实付−实收(真实); 否则 实付×(手续费率+活动抽成率[按生效月])。"""
+    """平台扣点: 有店铺实收→实付−实收(真实); 否则 实付×(手续费率+活动抽成率[按生效月])。
+
+    护栏(2026-06-20): 分期购/部分到账单 实收 远小于 实付, 直接取 实付−实收 会把"未到账分期款"
+    误当平台费(实测 5117408713503179541 分期被算成实付58%的扣点, 单笔虚增费用¥3698)。
+    故 实付−实收 超过合理扣点上限(实付×8%, 正常平台扣点仅2-4%)时, 判为部分到账, 改用率算法。"""
     paid = _d(o.paid_amount)
     recv = _d(o.shop_received_amount)
-    if recv > 0 and recv < paid:
-        return paid - recv
     rate = coef["handling_rate"]
     if o.order_date and o.order_date >= coef["activity_since"]:
         rate += coef["activity_rate"]
+    if recv > 0 and recv < paid:
+        diff = paid - recv
+        if diff <= paid * Decimal("0.08"):
+            return diff
+        # diff 远超合理扣点 → 分期/部分到账, 落到下面率算法, 不把未到账款当平台费
     return (paid * rate).quantize(Decimal("0.01"))
 
 
