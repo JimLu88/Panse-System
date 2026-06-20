@@ -129,8 +129,8 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     from app.services import feishu_client, notify_service
     result: dict = {"feishu": None, "wechat": None}
 
-    # 扫码相关纯文本 → 飞书 (扫码这件事整个在飞书对话里完成)
-    if payload.kind in ("scan_needed", "scan_timeout"):
+    # 扫码相关纯文本 → 飞书 (扫码这件事整个在飞书对话里完成); scan_ok = 扫码成功回执
+    if payload.kind in ("scan_needed", "scan_timeout", "scan_ok"):
         chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
         if chat_id and payload.text:
             try:
