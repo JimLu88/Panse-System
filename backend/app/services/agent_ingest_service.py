@@ -86,8 +86,11 @@ def _add_pending_scan(db: Session, task_id: str) -> None:
 
 
 # 默认可扫码刷新的余额任务 (淘宝聚合一扫覆盖淘宝SSO的推广/万师傅)。
-# 不含支付宝: 企业号走 API、主力号(8812)需专门触发, 避免裸『扫码』误弹支付宝二维码 (2026-06-12)。
-DEFAULT_SCAN_TASKS = ["bal_taobao_aggregate", "bal_ads", "bal_wanshifu"]
+# 企业号余额走 API 不扫码; 主力号(8812 个人号)余额 bal_alipay_main 加入扫码流(用户拍板 2026-06-20):
+# 该任务一直在 Web-Agent definitions.py(整页截图+OCR), 但 2026-06-12 改动把它移出触发清单后成了孤儿、
+# 永不执行 → 主力号余额停在5月。回"扫码"后依次扫, 主力号QR在淘宝之后单独推(不混); 登录态有效则免扫直接截图。
+# (仍不进 BALANCE_FLOW_TASKS 自动编排, 避免无人时自动弹支付宝码——只在用户回"扫码"时跑。)
+DEFAULT_SCAN_TASKS = ["bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main"]
 
 
 def start_pending_scans(db: Session) -> dict:
