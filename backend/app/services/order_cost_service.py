@@ -492,6 +492,34 @@ def _effective_qty(order: Order, unit_cost: Decimal) -> int:
     return qty if paid > 0 and (paid / qty) >= unit_cost else 1
 
 
+def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
+    """一单多宝贝 → 按 order_details(source='import')各商品行 pricing物理成本×qty 汇总成本。
+
+    需 ≥2 个能取到定价的商品行才算多产品(否则 None, 走原单SKU路径, 保留BOM精度)。
+    杜绝塌单漏算(餐桌+床这类: 导入只留主商品, 成本只算一个 → 这里按全部商品行汇总)。
+    """
+    from app.models.order import OrderDetail
+    lines = db.execute(
+        select(OrderDetail).where(
+            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
+    ).scalars().all()
+    if len(lines) < 2:
+        return None
+    total = Decimal("0")
+    n_priced = 0
+    for ln in lines:
+        if not ln.sku_code:
+            continue
+        ps = db.execute(
+            select(PricingSku).where(PricingSku.sku_code == ln.sku_code)
+        ).scalar_one_or_none()
+        if ps is None or ps.physical_cost is None:
+            continue
+        total += Decimal(str(ps.physical_cost)) * int(ln.qty or 1)
+        n_priced += 1
+    return total if (total > 0 and n_priced >= 2) else None
+
+
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
@@ -506,6 +534,15 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
             order_no=order.order_no, sku_code=order.sku_code, qty=int(order.qty or 1),
             unit_cost=Decimal("0"), total_cost=Decimal("0"),
             resolved=True, note=f"理论成本归0: {reason}",
+        )
+    # 一单多宝贝: 按 order_details(source='import')各商品行汇总成本(杜绝塌单漏算; 片段封顶在 physical_cost 读取时统一处理)
+    _mp = _multi_product_cost(db, order)
+    if _mp is not None:
+        order.theoretical_cost = _mp.quantize(_CENTS)
+        return CostBreakdown(
+            order_no=order.order_no, sku_code=order.sku_code, qty=int(order.qty or 1),
+            unit_cost=_mp, total_cost=_mp, resolved=True,
+            note=f"一单多宝贝: order_details 各商品行汇总 ¥{_mp.quantize(_CENTS)}",
         )
     bd = compute(db, order)
     if bd.resolved:

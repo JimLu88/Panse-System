@@ -239,6 +239,10 @@ class OrderDetail(Base, TimestampMixin):
     bom_material_code: Mapped[Optional[str]] = mapped_column(String(64))
     material_name: Mapped[Optional[str]] = mapped_column(String(255))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # 行级商品列 (migration 0084): source='import' = 一单多宝贝的商品行(成本按行汇总, 杜绝塌单漏算)
+    qty: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
 
 
 # 配件状态枚举

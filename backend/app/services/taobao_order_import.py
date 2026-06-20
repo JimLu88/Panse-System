@@ -33,7 +33,7 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.services import order_cost_service, taobao_listing_service
 
 # ── 格式指纹 ──────────────────────────────────────────────────────────────────
@@ -480,6 +480,35 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
     return orders
 
 
+def _persist_order_lines(db: Session, order_no: str, lines: list, resolver) -> None:
+    """一单多宝贝 → 把每个商品行 upsert 到 order_details(source='import'), 供成本按行汇总(杜绝塌单漏算)。
+
+    sku_code 经对应表 resolve 成 PPS 编码(否则匹配不到定价/成本); 服务行(送货/安装)不写; 幂等(按 sync_key)。
+    """
+    for idx, ln in enumerate(lines):
+        if _is_service_line_name(ln.get("product_name")):
+            continue
+        scode = _norm_pps_code(ln.get("sku_code"))
+        pcode = _norm_pps_code(ln.get("product_code") or None)
+        hit = taobao_listing_service.resolve_line(
+            resolver, sku_id=ln.get("sku_id"), merchant_code=ln.get("sku_code"))
+        if hit:
+            scode = hit.get("sku_code") or scode
+            pcode = hit.get("product_code") or pcode
+        sync_key = f"line:{order_no}:{idx}"
+        row = db.execute(select(OrderDetail).where(OrderDetail.sync_key == sync_key)).scalar_one_or_none()
+        vals = dict(
+            order_no=order_no, product_code=pcode, sku_code=scode,
+            product_name=_clean(ln.get("product_name")),
+            qty=_to_int(ln.get("qty"), default=1),
+            amount=_to_decimal(ln.get("amount")), source="import")
+        if row:
+            for k, v in vals.items():
+                setattr(row, k, v)
+        else:
+            db.add(OrderDetail(sync_key=sync_key, **vals))
+
+
 # ── 聚合订单行 → Order 入库 ───────────────────────────────────────────────────
 def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                    rep: TaobaoImportReport) -> None:
@@ -506,6 +535,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         lines = o.lines or [{}]
         if len(lines) > 1:
             rep.multi_line_orders += 1
+            _persist_order_lines(db, no, lines, resolver)   # 写各商品行 → 成本按行汇总(防塌单漏算)
         _non_service = [l for l in lines if not _is_service_line_name(l.get("product_name"))]
         primary = max(_non_service or lines, key=lambda x: (x.get("amount") or Decimal(0)))
 
