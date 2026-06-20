@@ -101,14 +101,15 @@ def test_material_delta_via_woodcost():
     assert r["final_price"] == 2000.0 + 968.75
 
 
-def test_material_delta_prefers_sibling():
-    """有现成黑胡桃款 → 用其真实价差 (比反推优先)。"""
+def test_material_delta_sibling_is_reference_only():
+    """有现成黑胡桃款 → 仍只减材质差额(反推), 现成款仅作"可切换"参考提示, 绝不换产品。
+    用户拍板 2026-06-20: 换料只减两者木材差额, 不能切到另一个产品减掉整份价。"""
     db = _db()
     _seed_bed(db, with_walnut_sibling=True)
     r = v2.quote_light(db, base_product_code="B1", target_length_m=1.5, target_material="黑胡桃")
-    assert r["material_delta"] == 800.0          # 2800(现成款真实价) − 2000(锚点)
-    assert r["final_price"] == 2800.0
-    assert "现成款" in r["breakdown"][-1]["label"]
+    assert r["material_delta"] == 968.75          # 只减材质差额(同 via_woodcost), 不是切现成款的800
+    assert r["final_price"] == 2000.0 + 968.75
+    assert "参考现成同款" in (r["breakdown"][-1]["note"] or "")
 
 
 # ───────── 盈亏平衡工厂价 (净不亏红线) ─────────

@@ -285,7 +285,11 @@ def quote_light(
             breakdown.append({"label": f"换料→{target_material}", "amount": 0.0,
                               "note": "该材质不在物料库, 需人工核价"})
         elif orig_u and abs(new_u - orig_u) > 1e-6:                  # 价差非0(换料/换厚度)才算
+            # 换料只调"材质成本差额"(同一产品, 不换产品): (新木单价−原木单价)×木作面积×(1+厂利)。
+            # 用户拍板 2026-06-20: 樱桃木→榉木应只减两者木材差额, 绝不能减掉整份产品价(原 −8757 是
+            # 错误地切到另一个更便宜的现成产品)。现成同款只作"可切换"参考提示, 不替换价格。
             sib = _find_sibling_by_material(db, prod, tgt) if (prod and tgt != base_wood) else None
+            sib_note = ""
             if sib:
                 sib_skus = db.query(PricingSku).filter(
                     PricingSku.product_code == sib.code).all()
@@ -295,17 +299,16 @@ def quote_light(
                 else:
                     sib_price = float(getattr(sib_skus[0], tier_col, None) or 0) if sib_skus else 0
                 if sib_price:
-                    material_delta = round(sib_price - anchor, 2)
-                    breakdown.append({"label": f"换料→{target_material}(现成款)", "amount": material_delta,
-                                      "note": f"切到 {sib.code} {sib.name} 真实价 {round(sib_price,2)}"})
-            if material_delta == 0.0 and anchor_wood:
+                    sib_note = f"; 参考现成同款 {sib.code} {sib.name} ¥{round(sib_price,2)}(客户认可可直接切该款)"
+            if anchor_wood:
                 area = anchor_wood / orig_u
                 material_delta = round((new_u - orig_u) * area * (1 + factory_profit_rate), 2)
-                breakdown.append({"label": f"换料→{target_material}(反推)", "amount": material_delta,
-                                  "note": f"面积≈{area:.2f}㎡(wood_cost{anchor_wood:.0f}÷{orig_u:.0f}) ×({new_u:.0f}−{orig_u:.0f})×{1+factory_profit_rate}"})
-            elif material_delta == 0.0:
+                breakdown.append({"label": f"换料→{target_material}", "amount": material_delta,
+                                  "note": f"只调材质差额: 面积≈{area:.2f}㎡(wood{anchor_wood:.0f}÷原{orig_u:.0f})"
+                                          f"×(新{new_u:.0f}−原{orig_u:.0f})×(1+{factory_profit_rate}){sib_note}"})
+            else:
                 breakdown.append({"label": f"换料→{target_material}", "amount": 0.0,
-                                  "note": "缺木作成本(wood_cost)无法反推面积, 需人工核"})
+                                  "note": f"缺木作成本(wood_cost)无法反推面积, 需人工核{sib_note}"})
     final += material_delta
 
     # ── 尺寸(宽高)变体 delta ── 长度已含在锚点插值; 宽/高偏离"该长度的标准宽高"→ 按面积比例缩放木作×(1+厂利) ──
@@ -333,6 +336,7 @@ def quote_light(
     addrm_delta, addrm_lines, parts_detail = style_delta(
         db, category=category, length_m=target_length_m,
         add_parts=add_parts, remove_parts=remove_parts, modify_parts=modify_parts, cfg=cfg,
+        depth_cm=target_width_cm, height_cm=target_height_cm,   # 部位尺寸随总宽/高联动(用户 2026-06-20: 高出部分加到顶柜)
     )
     breakdown.extend(addrm_lines)
     final += addrm_delta
