@@ -330,6 +330,8 @@ class V2ClassifyIn(BaseModel):
 class V2QuoteLightIn(BaseModel):
     base_product_code: str = Field(..., min_length=1)
     target_length_m: Optional[float] = None
+    target_width_cm: Optional[float] = None
+    target_height_cm: Optional[float] = None
     target_material: Optional[str] = None
     add_parts: list[dict] = Field(default_factory=list)
     remove_parts: list[dict] = Field(default_factory=list)
@@ -411,7 +413,9 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
     from app.services import custom_quote_v2_service as v2
     r = v2.quote_light(
         db, base_product_code=payload.base_product_code,
-        target_length_m=payload.target_length_m, target_material=payload.target_material,
+        target_length_m=payload.target_length_m,
+        target_width_cm=payload.target_width_cm, target_height_cm=payload.target_height_cm,
+        target_material=payload.target_material,
         add_parts=payload.add_parts, remove_parts=payload.remove_parts,
         modify_parts=payload.modify_parts, price_tier=payload.price_tier,
         base_sku_code=payload.base_sku_code,

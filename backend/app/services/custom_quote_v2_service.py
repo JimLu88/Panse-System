@@ -162,6 +162,36 @@ def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
     return price_pts, wood_pts
 
 
+def _parse_size_info(size_info: Optional[str]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """'长度：1400mm；深度：750mm；高度：750mm' → (长cm, 深/宽cm, 高cm)。缺→None。mm→cm(÷10)。"""
+    import re
+    if not size_info:
+        return None, None, None
+
+    def _g(pat: str) -> Optional[float]:
+        m = re.search(pat, size_info)
+        return round(float(m.group(1)) / 10.0, 1) if m else None
+
+    return (_g(r"长\s*度?\s*[：:]\s*(\d+(?:\.\d+)?)"),
+            _g(r"(?:深|宽)\s*度?\s*[：:]\s*(\d+(?:\.\d+)?)"),
+            _g(r"高\s*度?\s*[：:]\s*(\d+(?:\.\d+)?)"))
+
+
+def _dim_points(skus: list[PricingSku]) -> tuple[list, list]:
+    """同款多档 SKU 的 size_info → (长m, 深/宽cm) + (长m, 高cm) 点集, 供按目标长度插值出"标准宽高"。"""
+    depth_pts, height_pts = [], []
+    for s in skus:
+        ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+        if ln is None:
+            continue
+        _l, d, h = _parse_size_info(s.size_info)
+        if d is not None:
+            depth_pts.append((ln, d))
+        if h is not None:
+            height_pts.append((ln, h))
+    return depth_pts, height_pts
+
+
 def product_margin(skus: list[PricingSku]) -> Optional[float]:
     """本款「大促毛利率」(实时算, 不写死): 平均 (1 − 会计成本 / 大促价)。
 
@@ -185,6 +215,8 @@ def quote_light(
     *,
     base_product_code: str,
     target_length_m: Optional[float] = None,
+    target_width_cm: Optional[float] = None,
+    target_height_cm: Optional[float] = None,
     target_material: Optional[str] = None,
     add_parts: Optional[list[dict]] = None,
     remove_parts: Optional[list[dict]] = None,
@@ -265,6 +297,24 @@ def quote_light(
                                   "note": "缺木作成本(wood_cost)无法反推面积, 需人工核"})
     final += material_delta
 
+    # ── 尺寸(宽高)变体 delta ── 长度已含在锚点插值; 宽/高偏离"该长度的标准宽高"→ 按面积比例缩放木作×(1+厂利) ──
+    size_delta = 0.0
+    depth_pts, height_pts = _dim_points(skus)
+    std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
+    std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
+    if anchor_wood and std_w and std_h and (target_width_cm or target_height_cm):
+        tw = float(target_width_cm or std_w)
+        th = float(target_height_cm or std_h)
+        size_factor = (tw / std_w) * (th / std_h)
+        if abs(size_factor - 1) > 1e-3:
+            size_delta = round(float(anchor_wood) * (size_factor - 1) * (1 + factory_profit_rate), 2)
+            breakdown.append({
+                "label": f"尺寸变体(宽{tw:.0f}×高{th:.0f}, 标准{std_w:.0f}×{std_h:.0f}cm)",
+                "amount": size_delta,
+                "note": f"木作{float(anchor_wood):.0f}×(面积比{size_factor:.3f}−1)×(1+{factory_profit_rate})",
+            })
+    final += size_delta
+
     # ── 增减部位 delta (逐部位 cascade: 木作用模板几何×木单价 / 配件×计价单位 → ×人工×厂利÷畔色) ──
     from app.services import custom_quote_config_service as ccfg
     cfg = ccfg.get_config(db)
@@ -316,6 +366,9 @@ def quote_light(
         "anchor": round(anchor, 2),
         "anchor_method": note,
         "material_delta": material_delta,
+        "size_delta": size_delta,
+        "std_width_cm": round(std_w, 1) if std_w else None,    # 该长度的标准宽/深(cm), 前端预填
+        "std_height_cm": round(std_h, 1) if std_h else None,
         "addremove_delta": round(addrm_delta, 2),
         "final_price": round(final, 2),
         "factory_predicted": factory_predicted,     # 预测工厂价(定价表 factory_cost 插值, 缺则 None)

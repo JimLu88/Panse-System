@@ -89,6 +89,9 @@ interface LightResult {
   anchor: number;
   anchor_method: string;
   material_delta: number;
+  size_delta?: number;
+  std_width_cm?: number | null;
+  std_height_cm?: number | null;
   addremove_delta: number;
   base_product_name?: string | null;
   category?: string;
@@ -527,6 +530,8 @@ export default function CustomQuoteV2Page() {
   // ── 普通定制 ──
   const [pcode, setPcode] = useState('');
   const [len, setLen] = useState<number | null>(null);
+  const [wid, setWid] = useState<number | null>(null);   // 宽/深(cm), 空=该长度的标准宽
+  const [hgt, setHgt] = useState<number | null>(null);   // 高(cm), 空=标准高
   const [mat, setMat] = useState('');
   const [tier, setTier] = useState('big');   // 报价档位 (默认大促)
   const [lightLoading, setLightLoading] = useState(false);
@@ -657,6 +662,8 @@ export default function CustomQuoteV2Page() {
       const r = await apiPost<LightResult>('/v2/quote-light', {
         base_product_code: code.trim(),
         target_length_m: lenM ?? undefined,
+        target_width_cm: wid ?? undefined,
+        target_height_cm: hgt ?? undefined,
         target_material: matStr.trim() || undefined,
         add_parts: partsList
           .filter((p) => p.change === 'add' && p.material.trim())
@@ -1037,6 +1044,31 @@ export default function CustomQuoteV2Page() {
                 </Button>
               </Space>
             </Space>
+          </Card>
+
+          {/* 尺寸微调: 长(米)×宽(cm)×高(cm) → 宽高偏离标准按面积比例算尺寸变体价 (用户拍板 2026-06-20) */}
+          <Card
+            size="small"
+            type="inner"
+            title="尺寸微调(长×宽×高 → 算尺寸变体价)"
+            styles={{ body: { padding: 8 } }}
+          >
+            <Space wrap align="center">
+              <InputNumber addonBefore="长(米)" value={len} step={0.1} min={0.1}
+                onChange={(v) => setLen(v)} style={{ width: 148 }} />
+              <InputNumber addonBefore="宽(cm)" value={wid} step={1} min={1}
+                placeholder={light?.std_width_cm ? `标准${light.std_width_cm}` : '标准'}
+                onChange={(v) => setWid(v)} style={{ width: 148 }} />
+              <InputNumber addonBefore="高(cm)" value={hgt} step={1} min={1}
+                placeholder={light?.std_height_cm ? `标准${light.std_height_cm}` : '标准'}
+                onChange={(v) => setHgt(v)} style={{ width: 148 }} />
+              <Button type="primary" size="small" loading={lightLoading} onClick={doLight}>算尺寸变体价</Button>
+            </Space>
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+              {light?.std_width_cm
+                ? `标准@${len}m ≈ ${light.std_width_cm}×${light.std_height_cm}cm。宽高留空=标准(不调价);改宽高→按面积比例缩放木作成本算变体价。`
+                : '先算一次价, 这里会显示该长度的标准宽高, 再微调宽高算变体价。'}
+            </Text>
           </Card>
 
           {light && light.final_price != null && (
