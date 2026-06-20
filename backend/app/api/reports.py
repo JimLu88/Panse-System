@@ -902,3 +902,133 @@ def per_order_reconcile(
             "period_net_margin": round(period_net / sums["revenue"] * 100, 1) if sums["revenue"] else 0.0,
         },
     }
+
+
+@router.get("/per-order-reconcile/export")
+def per_order_reconcile_export(
+    year: int = Query(2026),
+    month: int = Query(..., ge=1, le=12),
+    db: Session = Depends(get_db),
+):
+    """逐单核对 → 带颜色/格式的 xlsx (与页面同口径同配色, 客户自核对)。内存生成不落盘。"""
+    import io
+    from urllib.parse import quote as _q
+
+    import openpyxl
+    from fastapi.responses import StreamingResponse
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    data = per_order_reconcile(year=year, month=month, db=db)
+    rows, st = data["rows"], data["subtotal"]
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = f"逐单核对{data['period']}"
+
+    GREEN, RED, BLUE, ORANGE, GREY = "389E0D", "CF1322", "1677FF", "FA8C16", "8C8C8C"
+    MONEY = "¥#,##0;-¥#,##0"
+    f_hdr = Font(bold=True, color="FFFFFF", size=10)
+    fill_hdr = PatternFill("solid", fgColor="1F3A5F")
+    fill_hdr2 = PatternFill("solid", fgColor="2E6CA8")
+    fill_loss = PatternFill("solid", fgColor="FFF1F0")
+    fill_sum = PatternFill("solid", fgColor="F0F0F0")
+    side = Side(style="thin", color="E0E0E0")
+    border = Border(left=side, right=side, top=side, bottom=side)
+    ctr = Alignment(horizontal="center", vertical="center")
+    rgt = Alignment(horizontal="right")
+
+    headers = ["订单号", "产品", "订单金额", "退款", "真实收入", "商品成本", "物流", "安装",
+               "平台扣点", "税", "售后", "成本合计", "净利", "净利率", "支付宝", "对账", "问题",
+               "工厂账单", "预算木作", "预估配件", "预估打包", "实际木作", "木作差额"]
+    widths = [20, 24, 11, 10, 11, 11, 8, 8, 10, 7, 8, 11, 11, 9, 9, 9, 10, 10, 11, 11, 11, 11, 11]
+    FACTORY_FROM = 18
+
+    ws.append(headers)
+    for ci, _h in enumerate(headers, 1):
+        c = ws.cell(1, ci)
+        c.font, c.alignment, c.border = f_hdr, ctr, border
+        c.fill = fill_hdr2 if ci >= FACTORY_FROM else fill_hdr
+        ws.column_dimensions[get_column_letter(ci)].width = widths[ci - 1]
+    ws.freeze_panes = "C2"
+    ws.row_dimensions[1].height = 22
+
+    def _money(ri, ci, v, color=None, bold=False):
+        c = ws.cell(ri, ci, float(v) if v is not None else None)
+        c.number_format, c.alignment = MONEY, rgt
+        if color or bold:
+            c.font = Font(color=color, bold=bold, size=10)
+
+    def _tag(ri, ci, txt, color):
+        c = ws.cell(ri, ci, txt)
+        c.alignment, c.font = ctr, Font(color=color, size=10)
+
+    for r in rows:
+        ri = ws.max_row + 1
+        ws.cell(ri, 1, r["order_no"])
+        ws.cell(ri, 2, r["product_name"])
+        _money(ri, 3, r["paid_amount"])
+        _money(ri, 4, -r["refund_amount"] if r["refund_amount"] else None, color=ORANGE)
+        _money(ri, 5, r["revenue"], bold=True)
+        _money(ri, 6, r["cost_goods"], color=(BLUE if r["cost_estimated"] else None))
+        _money(ri, 7, r["cost_freight"])
+        _money(ri, 8, r["cost_install"])
+        _money(ri, 9, r["cost_platform"])
+        _money(ri, 10, r["cost_tax"])
+        _money(ri, 11, r["cost_aftersales"] or None)
+        _money(ri, 12, r["cost_total"], bold=True)
+        _money(ri, 13, r["net_profit"], color=(GREEN if r["net_profit"] >= 0 else RED), bold=True)
+        mg = r["net_margin"] or 0
+        mc = ws.cell(ri, 14, mg / 100)
+        mc.number_format, mc.alignment = "0.0%", rgt
+        mc.font = Font(color=(GREEN if mg >= 15 else ORANGE if mg >= 0 else RED), size=10)
+        _tag(ri, 15, "已覆盖" if r["alipay_covered"] else "未覆盖", GREEN if r["alipay_covered"] else RED)
+        _tag(ri, 16, "已对账" if r["cost_reconciled"] else "推演", GREEN if r["cost_reconciled"] else BLUE)
+        prob = (("亏损 " if r["is_loss"] else "") + ("未覆盖" if not r["alipay_covered"] else "")).strip()
+        _tag(ri, 17, prob, RED if r["is_loss"] else ORANGE)
+        _tag(ri, 18, "已入账" if r["factory_bill_recorded"] else "未入账",
+             GREEN if r["factory_bill_recorded"] else GREY)
+        _money(ri, 19, r["predicted_wood"])
+        _money(ri, 20, r["est_parts"], color=GREY)
+        _money(ri, 21, r["est_packaging"], color=GREY)
+        _money(ri, 22, r["actual_wood"], color=(GREEN if r["actual_wood"] is not None else None))
+        wd = r["wood_diff"]
+        _money(ri, 23, wd, color=(RED if (wd or 0) > 0 else GREEN if wd is not None else None),
+               bold=(wd is not None))
+        for ci in range(1, len(headers) + 1):
+            cc = ws.cell(ri, ci)
+            cc.border = border
+            if r["is_loss"]:
+                cc.fill = fill_loss
+
+    sr = ws.max_row + 1
+    ws.cell(sr, 1, f"合计 {len(rows)} 单").font = Font(bold=True, size=10)
+    sum_map = {3: "paid_amount", 5: "revenue", 6: "cost_goods", 7: "cost_freight",
+               8: "cost_install", 9: "cost_platform", 10: "cost_tax", 11: "cost_aftersales",
+               12: "cost_total", 13: "net_profit", 19: "predicted_wood", 20: "est_parts",
+               21: "est_packaging", 22: "actual_wood", 23: "wood_diff"}
+    sum_map[4] = "__refund__"
+    for ci, key in sum_map.items():
+        v = -st["refund_amount"] if key == "__refund__" else st.get(key)
+        cc = ws.cell(sr, ci, float(v) if v else None)
+        cc.number_format, cc.alignment, cc.font = MONEY, rgt, Font(bold=True, size=10)
+    for ci in range(1, len(headers) + 1):
+        cc = ws.cell(sr, ci)
+        cc.fill, cc.border = fill_sum, border
+
+    fr = ws.max_row + 2
+    line = (f"行净利合计 ¥{st['net_profit']:,.0f}   − 推广费 ¥{st['promo_expense']:,.0f}   "
+            f"− 人员成本 ¥{st['outsourcing_expense']:,.0f}   − 固定成本 ¥{st['fixed_costs']:,.0f}   "
+            f"− 补单成本 ¥{st['refill_cost']:,.0f}   =   本月真实净利 ¥{st['period_net_profit']:,.0f} "
+            f"({st['period_net_margin']}%)")
+    fc = ws.cell(fr, 1, line)
+    fc.font = Font(bold=True, size=11, color=GREEN if st["period_net_profit"] >= 0 else RED)
+    ws.merge_cells(start_row=fr, start_column=1, end_row=fr, end_column=13)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = f"逐单核对_{data['period']}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_q(fname)}"},
+    )

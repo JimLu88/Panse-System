@@ -8,7 +8,7 @@ import {
   Alert, Button, Card, Input, InputNumber, Modal, Segmented, Select, Space, Statistic,
   Switch, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { DeleteOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
+import { DeleteOutlined, FileExcelOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import dayjs from 'dayjs';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -197,6 +197,13 @@ export default function PerOrderReconcilePage() {
             options={[{ label: '全部', value: 'all' }, { label: '只看问题单', value: 'problem' }]} />
           <Select value={period} style={{ width: 130 }} onChange={setPeriod}
             options={opts.map((p) => ({ label: p, value: p }))} />
+          <Button icon={<FileExcelOutlined />} disabled={!data}
+            onClick={() => {
+              const [y, mo] = period.split('-');
+              window.open(`/api/reports/per-order-reconcile/export?year=${y}&month=${Number(mo)}`, '_blank');
+            }}>
+            导出 Excel
+          </Button>
         </Space>
       </Space>
 
