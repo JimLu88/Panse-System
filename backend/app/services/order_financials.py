@@ -219,9 +219,11 @@ def refill_cost(db: Session, start: date, end: date, coef: dict) -> dict:
     平台扣点 + 税费 + 运费 + 佣金。不计商品成本(刷单货回流/不消耗), 不计收入(本金回流)。
     佣金 = 刷单流水(实付) × fin_refill_commission_rate (默认0, 在财务系数设置里填)。"""
     from app.models.order import Order
+    from app.services.sales_analytics import settled_sale_clause
     orders = db.execute(
         select(Order).where(
             Order.is_refill == True,  # noqa: E712
+            settled_sale_clause(),    # 关闭/取消/全退的补单不计刷单成本(用户铁律: 关闭单100%排除出财务)
             Order.order_date >= start, Order.order_date <= end)
     ).scalars().all()
     gmv = platform = tax = freight = Decimal("0")

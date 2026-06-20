@@ -156,9 +156,10 @@ def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict) -> dict:
 
 
 def _base_query():
-    """纳入逐笔对账的订单: 真实销售 (非补单) 且至少有一个金额信号。"""
+    """纳入逐笔对账的订单: 真实销售 (非补单/非关闭) 且至少有一个金额信号。"""
     return select(Order).where(
         Order.is_refill == False,  # noqa: E712
+        Order.status.is_distinct_from("cancelled"),  # 关闭单=正常退款无货品交易, 不进对账(¥183万假付款脏值, 用户铁律); NULL-safe 保留未知状态
         (Order.buyer_payable_amount.isnot(None))
         | (Order.paid_amount.isnot(None))
         | (Order.shop_received_amount.isnot(None)),

@@ -607,8 +607,8 @@ def _business_month(db: Session, year: int, month: int) -> dict:
     s = _ofin.accounting_summary(db, start, end)
     real_count = _qc(*real)
     real_revenue = round(float(s["revenue"]), 2)
-    refill_count = _qc(*base, Order.is_refill == True)  # noqa: E712
-    refill_revenue = _qs(Order.paid_amount, *base, Order.is_refill == True)  # noqa: E712
+    refill_count = _qc(*base, _settled, Order.is_refill == True)  # noqa: E712  # 排关闭/取消的补单
+    refill_revenue = _qs(Order.paid_amount, *base, _settled, Order.is_refill == True)  # noqa: E712
 
     factory_bill = float(db.execute(
         select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(

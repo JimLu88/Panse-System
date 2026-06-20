@@ -26,7 +26,7 @@ def test_generate_break_even():
                       factory_cost=D("1000"), accounting_cost=D("1400")))
     db.add(Order(platform="淘宝", order_no="O1", product_code="P1", product_name="餐桌",
                  sku="餐桌-1.4米", sku_code="P1-1.4", qty=1, order_date=date(2026, 6, 1),
-                 shop_received_amount=D("3000")))
+                 status="signed", paid_amount=D("3000"), shop_received_amount=D("3000")))
     db.commit()
     r = fss.generate(db, period="2026-06")
     assert r["count"] == 1
@@ -52,8 +52,10 @@ def test_excludes_refill_and_no_product():
 def test_period_filter_and_available():
     from app.models.order import Order
     db = _db()
-    db.add(Order(platform="淘宝", order_no="O4", product_code="P1", qty=1, order_date=date(2026, 5, 1)))
-    db.add(Order(platform="淘宝", order_no="O5", product_code="P1", qty=1, order_date=date(2026, 6, 1)))
+    db.add(Order(platform="淘宝", order_no="O4", product_code="P1", qty=1, order_date=date(2026, 5, 1),
+                 status="signed", paid_amount=D("100")))
+    db.add(Order(platform="淘宝", order_no="O5", product_code="P1", qty=1, order_date=date(2026, 6, 1),
+                 status="signed", paid_amount=D("100")))
     db.commit()
     assert fss.available_periods(db) == ["2026-06", "2026-05"]
     assert fss.generate(db, period="2026-05")["count"] == 1
@@ -65,7 +67,8 @@ def test_excludes_sample_sale_order():
     from app.models.marketing import Sample
     db = _db()
     db.add(Order(platform="淘宝", order_no="S1", product_code="P1", qty=1,
-                 order_date=date(2026, 6, 1), shop_received_amount=D("2000")))
+                 order_date=date(2026, 6, 1), status="signed", paid_amount=D("2000"),
+                 shop_received_amount=D("2000")))
     db.add(Sample(sample_no="SP1", product_code="P1", status="已售", related_order_no="S1"))
     db.commit()
     assert fss.generate(db, period="2026-06")["count"] == 0
@@ -75,7 +78,8 @@ def test_missing_factory_cost_flagged():
     from app.models.order import Order
     db = _db()
     db.add(Order(platform="淘宝", order_no="O6", product_code="P9", product_name="无价品",
-                 sku="未知", qty=1, order_date=date(2026, 6, 1), shop_received_amount=D("500")))
+                 sku="未知", qty=1, order_date=date(2026, 6, 1),
+                 status="signed", paid_amount=D("500"), shop_received_amount=D("500")))
     db.commit()
     r = fss.generate(db, period="2026-06")
     row = r["rows"][0]

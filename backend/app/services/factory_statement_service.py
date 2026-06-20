@@ -50,9 +50,12 @@ def available_periods(db: Session, *, limit: int = 36) -> list[str]:
 
 
 def _excluded_reason(order: Order) -> Optional[str]:
-    """该单是否排除出工厂对账单(补单/零成本服务/无产品)→ 原因; 否则 None。"""
+    """该单是否排除出工厂对账单(补单/未成交/零成本服务/无产品)→ 原因; 否则 None。"""
     if order.is_refill:
         return "补单"
+    from app.services.sales_analytics import is_settled_sale
+    if not is_settled_sale(order):
+        return "未成交(取消/待付款/全退)"  # 关闭单不向工厂下单, 不进工厂对账(用户铁律: 关闭单无货品交易)
     if not order.product_code:
         return "无产品"
     zc = order_cost_service.zero_cost_reason(order)
