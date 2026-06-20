@@ -5,7 +5,7 @@ size_info 解析 + 按目标长度插值出"标准宽高" + 宽高偏离按面�
 """
 from types import SimpleNamespace
 
-from app.services.custom_quote_v2_service import _parse_size_info, _dim_points, interp
+from app.services.custom_quote_v2_service import _parse_size_info, _dim_points, interp, _resolve_length_m
 
 
 def test_parse_size_info():
@@ -26,6 +26,19 @@ def test_dim_points_and_std_interp():
     # 1.5m 的标准深(宽) = 75 与 80 中点 = 77.5cm
     assert interp(depth_pts, 1.5)[0] == 77.5
     assert interp(height_pts, 1.5)[0] == 75.0
+
+
+def test_resolve_length_fallback_to_size_info():
+    # SKU 名有「X米」→ 用名字(餐桌)
+    assert _resolve_length_m(SimpleNamespace(
+        sku="榉木餐桌-1.4米", sku_code="X", size_info="长度：1400mm；深度：750mm")) == 1.4
+    # SKU 名只叫「标准/窄款」无「X米」(床头柜)→ 退回 size_info 长度 cm÷100
+    assert _resolve_length_m(SimpleNamespace(
+        sku="榉木床头柜-标准", sku_code="X", size_info="长度：450mm；深度：400mm；高度：450mm")) == 0.45
+    assert _resolve_length_m(SimpleNamespace(
+        sku="榉木床头柜-窄款", sku_code="X", size_info="长度：250mm；深度：400mm")) == 0.25
+    # 名字+size_info 都没有 → None
+    assert _resolve_length_m(SimpleNamespace(sku="无尺寸款", sku_code="X", size_info=None)) is None
 
 
 def test_size_factor_math():

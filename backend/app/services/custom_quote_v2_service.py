@@ -151,7 +151,7 @@ def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
     """从同款多档 SKU 构造 (长度, 价) 与 (长度, wood_cost) 点集。"""
     price_pts, wood_pts = [], []
     for s in skus:
-        ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+        ln = _resolve_length_m(s)
         if ln is None:
             continue
         price = getattr(s, tier_col, None)
@@ -177,11 +177,22 @@ def _parse_size_info(size_info: Optional[str]) -> tuple[Optional[float], Optiona
             _g(r"高\s*度?\s*[：:]\s*(\d+(?:\.\d+)?)"))
 
 
+def _resolve_length_m(s) -> Optional[float]:
+    """SKU 的主变体长度(米): 优先 SKU 名/编码的「X米」, 否则退回 size_info 长度(cm÷100)。
+    修床头柜等按 size_info 尺寸分档(SKU 名只叫「标准/窄款」无「X米」)的产品 —— 否则解析不到长度
+    → price_pts 空 → 退回代表档固定价(改长度/宽高价都不动)。"""
+    ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+    if ln is not None:
+        return ln
+    l_cm, _d, _h = _parse_size_info(s.size_info)
+    return round(l_cm / 100.0, 3) if l_cm else None
+
+
 def _dim_points(skus: list[PricingSku]) -> tuple[list, list]:
     """同款多档 SKU 的 size_info → (长m, 深/宽cm) + (长m, 高cm) 点集, 供按目标长度插值出"标准宽高"。"""
     depth_pts, height_pts = [], []
     for s in skus:
-        ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+        ln = _resolve_length_m(s)
         if ln is None:
             continue
         _l, d, h = _parse_size_info(s.size_info)
@@ -252,7 +263,7 @@ def quote_light(
         anchor_wood, _ = interp(wood_pts, target_length_m) if wood_pts else (None, "no-data")
         note = f"策略C 多档插值@{target_length_m}m ({method}, {len(price_pts)}档)"
     else:
-        rep = sorted(skus, key=lambda s: parse_length_m(s.sku) or 0)[len(skus) // 2]
+        rep = sorted(skus, key=lambda s: _resolve_length_m(s) or 0)[len(skus) // 2]
         anchor = float(getattr(rep, tier_col, None) or rep.daily_price or rep.list_price or 0)
         anchor_wood = float(rep.wood_cost) if rep.wood_cost is not None else None
         note = f"代表档 {rep.sku or rep.sku_code}"
@@ -329,7 +340,7 @@ def quote_light(
     # ── 工厂价预测 + 盈亏平衡 (定价表 factory_cost/accounting_cost 插值; accounting 已含真实扣点/税) ──
     fac_pts, acc_pts = [], []
     for s in skus:
-        ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)
+        ln = _resolve_length_m(s)
         if ln is None:
             continue
         if getattr(s, "factory_cost", None) is not None:
