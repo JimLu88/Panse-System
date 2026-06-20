@@ -44,6 +44,8 @@ def rollup_day(db: Session, target: date) -> int:
         d["order_count"] += 1
         d["qty"] += o.qty or 0
         paid = Decimal(o.paid_amount or 0)
+        refund = Decimal(o.refund_amount or 0)
+        revenue = paid - refund        # 真实收入=实付−退款, 与 accounting_summary 完全一致(2026-06-20 补D: 原漏减部分退款)
         cost = ofin.physical_cost(o)   # 统一口径: 片段封顶(实付<成本50%→实付×85%)
         # 双算护栏: theoretical(含预测物流安装)的单不另加运费/安装; actual_cost(工厂价不含)的单才加
         if o.actual_cost is not None:
@@ -53,9 +55,9 @@ def rollup_day(db: Session, target: date) -> int:
         else:
             freight = upstairs = install = Decimal("0")
         comp = Decimal(o.compensation_fee or 0)
-        d["revenue"] += paid
+        d["revenue"] += revenue
         d["cost"] += cost
-        d["net_profit"] += paid - cost - freight - upstairs - install - comp
+        d["net_profit"] += revenue - cost - freight - upstairs - install - comp
 
     for (pc, sku, plat), d in by_key.items():
         db.add(SalesDailyRollup(
