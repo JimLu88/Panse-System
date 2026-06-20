@@ -313,6 +313,22 @@ export const fetchPerOrderReconcile = (year: number, month: number) =>
     .get<PerOrderReconcileResult>('/api/reports/per-order-reconcile', { params: { year, month } })
     .then((r) => r.data);
 
+// 通过带鉴权的 axios 实例取 blob 再触发下载 (window.open 直链会丢 Authorization 头 → 401「需要登录」)
+export async function downloadPerOrderReconcile(year: number, month: number) {
+  const resp = await api.get('/api/reports/per-order-reconcile/export', {
+    params: { year, month },
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `逐单核对_${year}-${String(month).padStart(2, '0')}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // 自定义固定成本/管理费用项 (房租/水电/软件…) — 用户可自增删
 export const getFixedCostItems = () =>
   api.get<{ items: FixedCostItem[]; monthly_total: number }>('/api/finance/fixed-cost-items')

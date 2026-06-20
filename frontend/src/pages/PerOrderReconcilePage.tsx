@@ -15,6 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import RefillCallout from '../components/RefillCallout';
 import {
   FixedCostItem, PerOrderRow, fetchPerOrderReconcile, getFixedCostItems, putFixedCostItems,
+  downloadPerOrderReconcile,
 } from '../api/operations';
 
 const { Title, Text } = Typography;
@@ -198,9 +199,13 @@ export default function PerOrderReconcilePage() {
           <Select value={period} style={{ width: 130 }} onChange={setPeriod}
             options={opts.map((p) => ({ label: p, value: p }))} />
           <Button icon={<FileExcelOutlined />} disabled={!data}
-            onClick={() => {
-              const [y, mo] = period.split('-');
-              window.open(`/api/reports/per-order-reconcile/export?year=${y}&month=${Number(mo)}`, '_blank');
+            onClick={async () => {
+              const [yy, mo] = period.split('-').map(Number);
+              try {
+                await downloadPerOrderReconcile(yy, mo);
+              } catch (e: any) {
+                message.error(e?.response?.data?.detail ?? '导出失败');
+              }
             }}>
             导出 Excel
           </Button>
