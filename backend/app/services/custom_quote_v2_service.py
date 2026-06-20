@@ -230,14 +230,19 @@ def quote_light(
 
     final = anchor
 
-    # ── 材质 delta ── 优先同材种现成款; 否则 wood_cost 反推面积 ──
+    # ── 材质 delta ── target_material 为物料库全名(带厚度/贴皮, 表驱动下拉)精确取价; 换料/换厚度均算 ──
     material_delta = 0.0
     if target_material:
         base_wood = detect_wood(prod.name if prod else "") or detect_wood(
             (prod.main_material if prod else "") or "")
-        tgt = detect_wood(target_material) or target_material
-        if base_wood and tgt and tgt not in (base_wood, ""):
-            sib = _find_sibling_by_material(db, prod, tgt) if prod else None
+        tgt = detect_wood(target_material) or target_material        # 短木名(找现成同款)
+        new_u = _wood_unit_price(db, target_material)                # 全名精确取价(带厚度)
+        orig_u = _wood_unit_price(db, base_wood) if base_wood else None
+        if not new_u:
+            breakdown.append({"label": f"换料→{target_material}", "amount": 0.0,
+                              "note": "该材质不在物料库, 需人工核价"})
+        elif orig_u and abs(new_u - orig_u) > 1e-6:                  # 价差非0(换料/换厚度)才算
+            sib = _find_sibling_by_material(db, prod, tgt) if (prod and tgt != base_wood) else None
             if sib:
                 sib_skus = db.query(PricingSku).filter(
                     PricingSku.product_code == sib.code).all()
@@ -248,19 +253,16 @@ def quote_light(
                     sib_price = float(getattr(sib_skus[0], tier_col, None) or 0) if sib_skus else 0
                 if sib_price:
                     material_delta = round(sib_price - anchor, 2)
-                    breakdown.append({"label": f"换料→{tgt}(现成款)", "amount": material_delta,
+                    breakdown.append({"label": f"换料→{target_material}(现成款)", "amount": material_delta,
                                       "note": f"切到 {sib.code} {sib.name} 真实价 {round(sib_price,2)}"})
-            if material_delta == 0.0:
-                orig_u = _wood_unit_price(db, base_wood)
-                new_u = _wood_unit_price(db, tgt)
-                if orig_u and new_u and anchor_wood:
-                    area = anchor_wood / orig_u
-                    material_delta = round((new_u - orig_u) * area * (1 + factory_profit_rate), 2)
-                    breakdown.append({"label": f"换料→{tgt}(反推)", "amount": material_delta,
-                                      "note": f"面积≈{area:.2f}㎡(wood_cost{anchor_wood:.0f}÷{orig_u:.0f}) ×({new_u:.0f}−{orig_u:.0f})×{1+factory_profit_rate}"})
-                else:
-                    breakdown.append({"label": f"换料→{tgt}", "amount": 0.0,
-                                      "note": "缺原料价/木作成本, 需人工核"})
+            if material_delta == 0.0 and anchor_wood:
+                area = anchor_wood / orig_u
+                material_delta = round((new_u - orig_u) * area * (1 + factory_profit_rate), 2)
+                breakdown.append({"label": f"换料→{target_material}(反推)", "amount": material_delta,
+                                  "note": f"面积≈{area:.2f}㎡(wood_cost{anchor_wood:.0f}÷{orig_u:.0f}) ×({new_u:.0f}−{orig_u:.0f})×{1+factory_profit_rate}"})
+            elif material_delta == 0.0:
+                breakdown.append({"label": f"换料→{target_material}", "amount": 0.0,
+                                  "note": "缺木作成本(wood_cost)无法反推面积, 需人工核"})
     final += material_delta
 
     # ── 增减部位 delta (逐部位 cascade: 木作用模板几何×木单价 / 配件×计价单位 → ×人工×厂利÷畔色) ──
@@ -856,9 +858,13 @@ def part_options(db: Session, *, category: str = "") -> dict:
         seen.add(name)
         mats.append(name)
     mats.sort()
-    # A: 改材质下拉用的木材类型(全部放上去, 不靠大模型识别); detect_wood 也认这些
+    # A: 改材质下拉 = 物料库 MW 木材/板材全名(自带厚度/贴皮, 表驱动); detect_wood 仍用短名做文本识别
+    wood_rows = db.query(Material.name).filter(
+        Material.code.like("MW%"), Material.price.isnot(None)).all()
+    woods = sorted({nm for (nm,) in wood_rows if nm and not any(
+        x in nm for x in ("样块", "样品", "小样"))})
     return {"parts": parts, "materials": mats[:400], "segments": segs or [],
-            "woods": list(_WOOD_KEYWORDS)}
+            "woods": woods}
 
 
 # 自动推五金阈值 (后台可调; 逻辑借鉴参考项目, 数据用我们自己的)

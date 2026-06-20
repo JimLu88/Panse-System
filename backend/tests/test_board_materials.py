@@ -18,9 +18,16 @@ def _db():
 
 
 def test_board_materials_in_dropdown():
+    from app.models.material import Material
     db = _db()
+    db.add(Material(code="MW-001", name="樱桃木-2.2cm厚度", price=D("300"), unit="每平米"))
+    db.add(Material(code="MW-HY", name="海洋板1.8cm", price=D("100"), unit="每平米"))
+    db.add(Material(code="MW-HYP", name="18mm贴皮海洋板", price=D("180"), unit="每平米"))
+    db.commit()
     woods = v2.part_options(db)["woods"]
-    assert "多层板" in woods and "海洋板" in woods
+    # 下拉表驱动: 列 MW 材质全名(自带厚度), 不再是短关键词
+    assert "樱桃木-2.2cm厚度" in woods
+    assert "海洋板1.8cm" in woods and "18mm贴皮海洋板" in woods
 
 
 def test_plywood_price_prefers_18mm_over_9mm():
