@@ -361,18 +361,20 @@ def outsourcing_for_range(db: Session, start: date, end: date, coef: dict) -> tu
     total = Decimal("0")
     estimated = False
     for y, m in _iter_months(start, end):
-        # 月度工资预估: Σ在职人员月工资; 无在职人员则回落写死预估。
+        # 月度人力成本: Σ当月在职人员月工资 (每人有明确在职起 active_from, 本身即时间门)。
         salary_est = staff_salary_service.monthly_total(db, y, m)
-        month_est = salary_est if salary_est > 0 else fallback_est
         a = actual.get(f"{y}-{m:02d}", Decimal("0"))
-        if a > 0:
-            # 实际 < 工资预估时取工资预估(地板, 修部分录入月漏算)。
-            if date(y, m, 1) >= est_since and month_est > a:
-                total += month_est
-                estimated = True
-            else:
+        if salary_est > 0:
+            # 有在职人员: 工资即该月人力成本, 不受 est_since 限制 (在职起已是时间门)。
+            # 实际外包录入更高则取实际(地板防漏), 否则用工资。
+            if a > salary_est:
                 total += a
+            else:
+                total += salary_est
+                estimated = True
+        elif a > 0:
+            total += a  # 无在职人员但有实际外包记录 → 用实际
         elif date(y, m, 1) >= est_since:
-            total += month_est
+            total += fallback_est  # 无人无实际 → 回落写死占位 (仅 est_since 后, 防历史月凭空加成本)
             estimated = True
     return total, estimated

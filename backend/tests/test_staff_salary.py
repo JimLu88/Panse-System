@@ -135,8 +135,26 @@ def test_outsourcing_salary_floor_when_actual_below(db_session):
     assert est is True
 
 
-def test_outsourcing_before_est_since_skipped(db_session):
-    # 4月在 est_since(5月)之前 且无实际 → 不计入
+def test_outsourcing_active_staff_counts_even_before_est_since(db_session):
+    # 在职人员从1月起 → 即使查4月(est_since 5月之前)也按工资计入(active_from 本身即时间门)
     _add(db_session, "A", 8000, date(2026, 1, 1))
+    total, est = outsourcing_for_range(db_session, date(2026, 4, 1), date(2026, 4, 30), _coef())
+    assert total == Decimal("8000")
+    assert est is True
+
+
+def test_outsourcing_active_staff_floor_over_actual_before_est_since(db_session):
+    # 4月工资10000 > 实际外包5000, est_since 之前也取工资(地板) — 复现并修复用户踩的坑
+    _add(db_session, "A", 5000, date(2026, 1, 1))
+    _add(db_session, "B", 5000, date(2026, 4, 1))
+    db_session.add(OutsourcingExpense(payee="外包甲", payment_date=date(2026, 4, 10), amount=Decimal("5000")))
+    db_session.commit()
+    total, est = outsourcing_for_range(db_session, date(2026, 4, 1), date(2026, 4, 30), _coef())
+    assert total == Decimal("10000")
+    assert est is True
+
+
+def test_outsourcing_no_staff_before_est_since_skipped(db_session):
+    # 无在职人员 且 无实际 且 在 est_since(5月)之前 → 不凭空加成本
     total, _ = outsourcing_for_range(db_session, date(2026, 4, 1), date(2026, 4, 30), _coef())
     assert total == Decimal("0")

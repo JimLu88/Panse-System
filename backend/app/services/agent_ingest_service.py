@@ -48,9 +48,11 @@ ORDERS_TASKS = ["taobao_orders"]
 BALANCE_FLOW_TASKS = [
     "wechat_bill", "wanxiangtai", "wanshifu",
     "bal_taobao_aggregate", "bal_ads", "bal_wanshifu",
-    # 支付宝不进自动编排 (2026-06-12 修复误发二维码):
-    #   · 企业号(9a) 余额走官方 API, 每次编排已用 refresh_alipay_balances 精确刷, 永不浏览器扫码;
-    #   · 主力号(8812/main) 是个人号无 API, 改成"只在用户专门触发时才扫", 不自动排队弹码。
+    # 主力号(8812 个人号)余额: 进自动编排 (用户拍板 2026-06-20「以后都要自动」)。
+    #   下方 orchestrate 的 has_session 闸门保证: 登录态有效才跑(直接截图, 不弹码);
+    #   登录态失效则跳过 + 记入待扫清单 + 飞书提示(绝不无人时弹码挂起) → 真·自动又不误弹。
+    "bal_alipay_main",
+    # 企业号(9a) 余额走官方 API, 每次编排已用 refresh_alipay_balances 精确刷, 永不浏览器扫码。
 ]
 # 暂不编排: 支付宝流水 (企业号待官方 API 上线; 主力号需每次扫码, 待飞书推码方案)
 SKIPPED_TASKS = {
