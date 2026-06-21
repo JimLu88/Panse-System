@@ -67,3 +67,25 @@ def test_import_dedup_only_when_type_and_amount_match(db_session):
     r = alipay_import.import_alipay_csv(db_session, csv_text, account="企业号")
     assert r.inserted == 2
     assert r.skipped_duplicate == 1
+
+
+def test_import_dedup_normalizes_fenzhang_label(db_session):
+    """『分账』与『交易分账』是同一笔结算的不同标签 — 同号同额视为重复, 只入一条 (2026-06-22)。"""
+    csv_text = (
+        "交易时间,交易流水号,交易类型,收支金额\n"
+        "2026-04-28,T300,分账,2658.36\n"
+        "2026-04-28,T300,交易分账,2658.36\n"   # 同号同额, 仅标签不同 → 去重
+    )
+    r = alipay_import.import_alipay_csv(db_session, csv_text, account="企业号")
+    assert r.inserted == 1
+    assert r.skipped_duplicate == 1
+
+
+def test_import_dedup_normalizes_across_separate_imports(db_session):
+    """先导『分账』, 再导同号同额『交易分账』(另一次导入) — DB 存在性检查也去重。"""
+    alipay_import.import_alipay_csv(
+        db_session, "交易时间,交易流水号,交易类型,收支金额\n2026-04-28,T301,分账,99.00\n", account="企业号")
+    r = alipay_import.import_alipay_csv(
+        db_session, "交易时间,交易流水号,交易类型,收支金额\n2026-04-28,T301,交易分账,99.00\n", account="企业号")
+    assert r.inserted == 0
+    assert r.skipped_duplicate == 1

@@ -176,6 +176,16 @@ def import_alipay_bill(
     return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
 
 
+# 同一笔分账在不同支付宝导出里可能标 "分账" 或 "交易分账" — 去重时归一为同类,
+# 防同一笔结算因标签不同被重复入库 (2026-06-22; 历史已清 6 条双算)。
+_DEDUP_TYPE_ALIASES = {"交易分账": "分账"}
+
+
+def _dedup_type(t: Optional[str]) -> str:
+    s = (t or "").strip()
+    return _DEDUP_TYPE_ALIASES.get(s, s)
+
+
 def import_alipay_rows(
     db: Session, rows: list[dict[str, Any]], *, account: str,
     report: Optional[AlipayImportReport] = None, commit: bool = True,
@@ -195,15 +205,20 @@ def import_alipay_rows(
             report.skipped_invalid += 1
             continue
         tx_type = payload.get("transaction_type")
-        nat_key = (tx_no, tx_type, amount)
+        nat_type = _dedup_type(tx_type)   # 分账/交易分账 归一, 防同笔双入
+        nat_key = (tx_no, nat_type, amount)
         if nat_key in seen:
             report.skipped_duplicate += 1
             continue
+        # DB 存在性: 归一类型(分账∪交易分账)匹配所有别名; 其它(含 NULL)保持原精确比对(== 处理 IS NULL)
+        variants = [nat_type] + [k for k, v in _DEDUP_TYPE_ALIASES.items() if v == nat_type]
+        type_cond = (AlipayFlow.transaction_type.in_(variants) if len(variants) > 1
+                     else AlipayFlow.transaction_type == tx_type)
         if db.execute(
             select(AlipayFlow.id).where(
                 AlipayFlow.account == account,
                 AlipayFlow.transaction_no == tx_no,
-                AlipayFlow.transaction_type == tx_type,
+                type_cond,
                 AlipayFlow.amount == amount,
             )
         ).first():
