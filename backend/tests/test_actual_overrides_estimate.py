@@ -99,3 +99,20 @@ def test_exact_sku_estimate_preferred_over_base(db_session):
     o = db_session.query(Order).filter_by(order_no="N1").first()
     assert o.est_packing == Decimal("360")     # 180 × qty2
     assert o.est_logistics == Decimal("560")   # 280 × qty2
+
+
+def test_ratio_fallback_for_no_sku_order(db_session):
+    """无 SKU/产品 预估的单(差价/邮费专链)→ 系统平均比例(预估÷实付)× 本单实付。"""
+    from app.models.pricing import PricingSku
+    from app.services import order_fee_actual_service as svc
+    db_session.add(PricingSku(product_code="P3", sku_code="PPS9999999990011",
+                              packaging_cost=Decimal("100"), logistics_cost=Decimal("200")))
+    db_session.add(Order(platform="淘宝", order_no="R0", qty=1, status="signed",
+                         paid_amount=Decimal("1000"), sku_code="PPS9999999990011"))  # ratio 0.1/0.2
+    db_session.add(Order(platform="淘宝", order_no="R1", qty=1, status="signed",
+                         paid_amount=Decimal("141"), sku_code="PPS0000000800000"))   # 无对应预估
+    db_session.flush()
+    svc.sync_fee_components(db_session)
+    o = db_session.query(Order).filter_by(order_no="R1").first()
+    assert o.est_packing == Decimal("14.10")    # 0.1 × 141
+    assert o.est_logistics == Decimal("28.20")  # 0.2 × 141

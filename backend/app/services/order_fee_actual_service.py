@@ -22,6 +22,9 @@ from app.models.pricing import PricingSku
 from app.services import sku_utils
 
 
+_CENTS = Decimal("0.01")
+
+
 def _d(v) -> Optional[Decimal]:
     return Decimal(str(v)) if v is not None else None
 
@@ -74,12 +77,37 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
     if order_nos:
         o_stmt = o_stmt.where(Order.order_no.in_(order_nos))
     orders = db.execute(o_stmt).scalars().all()
-    est_set = 0
+    # 第一遍: 精确SKU / 基础产品码中位数 算订单级预估
+    est = {}  # order_no -> [pk, lg]
     for o in orders:
         pk, lg = estimate_fee(o.sku_code, by_sku, base_pk, base_lg)
         qty = int(o.qty or 1)
-        new_pk = (pk * qty) if pk is not None else None
-        new_lg = (lg * qty) if lg is not None else None
+        est[o.order_no] = [(pk * qty) if pk is not None else None,
+                           (lg * qty) if lg is not None else None]
+    # 系统平均比例 = Σ预估 / Σ实付 (有预估且实付>0的单); 给取不到SKU/产品预估的单兜底
+    # (用户 2026-06-21: 差价/邮费专链等按系统平均比例×订单金额)。
+    pk_num = pk_den = lg_num = lg_den = Decimal("0")
+    for o in orders:
+        paid = _d(o.paid_amount)
+        if not paid or paid <= 0:
+            continue
+        epk, elg = est[o.order_no]
+        if epk is not None:
+            pk_num += epk
+            pk_den += paid
+        if elg is not None:
+            lg_num += elg
+            lg_den += paid
+    ratio_pk = (pk_num / pk_den) if pk_den > 0 else None
+    ratio_lg = (lg_num / lg_den) if lg_den > 0 else None
+    est_set = 0
+    for o in orders:
+        new_pk, new_lg = est[o.order_no]
+        paid = _d(o.paid_amount)
+        if new_pk is None and ratio_pk is not None and paid and paid > 0:
+            new_pk = (ratio_pk * paid).quantize(_CENTS)
+        if new_lg is None and ratio_lg is not None and paid and paid > 0:
+            new_lg = (ratio_lg * paid).quantize(_CENTS)
         if o.est_packing != new_pk or o.est_logistics != new_lg:
             o.est_packing, o.est_logistics = new_pk, new_lg
             est_set += 1
