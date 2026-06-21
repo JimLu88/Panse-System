@@ -32,6 +32,7 @@ const METHOD_LABEL: Record<string, { text: string; color: string }> = {
   track: { text: '运单号匹配', color: 'green' },
   name_prov: { text: '姓名+省市', color: 'green' },
   name_unique: { text: '姓名唯一', color: 'cyan' },
+  name_addr: { text: '姓名+地址', color: 'cyan' },
   multi: { text: '多候选待人工', color: 'orange' },
   manual: { text: '人工指定', color: 'blue' },
   none: { text: '未能自动匹配', color: 'red' },
@@ -39,6 +40,18 @@ const METHOD_LABEL: Record<string, { text: string; color: string }> = {
 
 function ym(d: string | null): string {
   return d ? d.slice(0, 7) : '未知月';
+}
+
+// 客户端生成 CSV 下载 (带 BOM, Excel 中文不乱码)
+export function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
+  const esc = (v: string | number) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+  const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 export default function LogisticsBillsPage() {
@@ -91,19 +104,31 @@ export default function LogisticsBillsPage() {
     return false;
   };
 
-  // 手动重新配单 (运单号 / 收货人+省市 → 订单号)
-  const handleMatch = async () => {
+  // 手动重新配单 (运单号 / 收货人+省市 → 订单号); loose=true 加宽松档(姓名在地址+省市)
+  const handleMatch = async (loose = false) => {
     setMatching(true);
     try {
       const r = await api.post<{ matched: number; multi: number; none: number }>(
-        '/api/finance/logistics-bills/match');
-      message.success(`配单完成：命中 ${r.data.matched} 单，多候选 ${r.data.multi} 单，未能匹配 ${r.data.none} 单`);
+        '/api/finance/logistics-bills/match', null, { params: { loose } });
+      message.success(`${loose ? '放宽' : ''}配单完成：命中 ${r.data.matched} 单，多候选 ${r.data.multi} 单，未能匹配 ${r.data.none} 单`);
       qc.invalidateQueries({ queryKey: ['logistics-bills'] });
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '配单失败');
     } finally {
       setMatching(false);
     }
+  };
+
+  // 导出「未能匹配」的逐单 → CSV (供人工补订单号)
+  const handleExportUnmatched = () => {
+    const un = lineRows.filter(r => !r.order_no && (r.match_method === 'none' || r.match_method === 'multi'));
+    if (!un.length) { message.info('没有未匹配的逐单，全部配上了'); return; }
+    downloadCsv('物流账单_未匹配.csv',
+      ['账单日期', '承运商', '运单号', '收货人', '目的地', '运费', '匹配情况', '请填订单号'],
+      un.map(r => [r.bill_date ?? '', r.carrier ?? '', r.tracking_no ?? '', r.recipient_name ?? '',
+        r.destination ?? '', Number(r.freight_amount).toFixed(2),
+        r.match_method === 'multi' ? '多候选待人工' : '未能匹配', '']));
+    message.success(`已导出 ${un.length} 条未匹配，填好订单号后可人工核对`);
   };
 
   // 逐单行 (line) 与月结汇总行 (summary) 分开: 逐单进主表, 汇总挪表底
@@ -194,8 +219,14 @@ export default function LogisticsBillsPage() {
         <Upload accept=".xlsx" multiple showUploadList={false} beforeUpload={handleImportXlsx}>
           <Button type="primary" icon={<InboxOutlined />} loading={importing}>导入账单 xlsx (壹米滴答/德邦)</Button>
         </Upload>
-        <Button icon={<LinkOutlined />} loading={matching} onClick={handleMatch}>
+        <Button icon={<LinkOutlined />} loading={matching} onClick={() => handleMatch(false)}>
           重新配单
+        </Button>
+        <Button icon={<LinkOutlined />} loading={matching} onClick={() => handleMatch(true)}>
+          放宽再配单
+        </Button>
+        <Button icon={<DownloadOutlined />} onClick={handleExportUnmatched}>
+          导出未匹配
         </Button>
         <Button icon={<DownloadOutlined />}
           onClick={() => window.open('/api/finance/logistics-bills/template.csv')}>

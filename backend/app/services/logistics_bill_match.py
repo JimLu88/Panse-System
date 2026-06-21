@@ -24,7 +24,8 @@ from app.services.sales_analytics import SETTLED_SALE_STATUSES
 
 METHOD_CN = {
     "track": "运单号全等", "name_prov": "姓名+省市", "name_unique": "姓名唯一",
-    "multi": "多候选待人工", "none": "未能自动匹配", "manual": "人工指定",
+    "name_addr": "姓名在地址(宽松)", "multi": "多候选待人工",
+    "none": "未能自动匹配", "manual": "人工指定",
 }
 
 # 目的地里的省/市/区 词 (用来和订单地址交叉验证同名是否同地)
@@ -48,8 +49,12 @@ def _place_tokens(text: Optional[str]) -> list[str]:
     return out
 
 
-def match_logistics_bills(db: Session, *, only_unmatched: bool = True) -> dict:
-    """给逐单物流账单配淘宝订单。返回 {matched, multi, none, skipped} 计数。"""
+def match_logistics_bills(db: Session, *, only_unmatched: bool = True, loose: bool = False) -> dict:
+    """给逐单物流账单配淘宝订单。返回 {matched, multi, none, skipped} 计数。
+
+    loose=True: 多加一档「宽松」匹配 — 收货人姓名出现在订单收货地址里 + 目的地省市也对上 →
+    命中唯一则配(应对 订单存买家昵称、物流写收货人真名 的错位)。仍要求唯一, 不乱配。
+    """
     orders = db.execute(
         select(Order.order_no, Order.customer_name, Order.customer_address, Order.tracking_no)
         .where(Order.status.in_(SETTLED_SALE_STATUSES))  # 铁律: 只配已发货成交单, 排除关闭/未付款
@@ -84,6 +89,16 @@ def match_logistics_bills(db: Session, *, only_unmatched: bool = True) -> dict:
                 method, nos = "name_unique", {nc[0].order_no}
             elif len(nc) > 1:
                 method, nos = "multi", {o.order_no for o in nc}
+        # 宽松档: 收货人姓名(≥2字)出现在订单收货地址里 + 目的地省市也在 → 唯一才配
+        if not method and loose and b.recipient_name and len(b.recipient_name.strip()) >= 2:
+            nm = b.recipient_name.strip()
+            tokens = _place_tokens(b.destination)
+            ac = {o.order_no for o in orders if o.customer_address and nm in o.customer_address
+                  and (not tokens or any(t in o.customer_address for t in tokens))}
+            if len(ac) == 1:
+                method, nos = "name_addr", ac
+            elif len(ac) > 1:
+                method, nos = "multi", ac
         if method and method != "multi" and len(nos) == 1:
             b.order_no = next(iter(nos))
             b.match_method = method

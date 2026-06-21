@@ -3,16 +3,18 @@ import {
   Alert, Button, Checkbox, Input, InputNumber, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
-import { DeleteOutlined, InboxOutlined, PlusOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, InboxOutlined, LinkOutlined, PlusOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  commitPackingBill, listPackingBills, packingSummary, parsePackingBill,
+  commitPackingBill, listPackingBills, packingSummary, parsePackingBill, rematchPackingBills,
   type PackingRowParsed, type PackingBillRow,
 } from '../api/screenshots';
+import { downloadCsv } from './LogisticsBillsPage';
 
 const MATCH_LABEL: Record<string, { text: string; color: string }> = {
   order_no: { text: '单号匹配', color: 'green' },
   name_unique: { text: '客户名唯一', color: 'green' },
+  name_addr: { text: '姓名+地址', color: 'cyan' },
   multi: { text: '多候选待人工', color: 'orange' },
   manual: { text: '人工指定', color: 'blue' },
   none: { text: '未能自动匹配', color: 'red' },
@@ -54,6 +56,29 @@ export default function PackingBillsPage() {
       setParsing(false);
     }
     return false;
+  };
+
+  // 未配单行重跑配单 (放宽: 客户名在订单地址+省份)
+  const handleRematch = async () => {
+    try {
+      const r = await rematchPackingBills(true);
+      message.success(`放宽配单完成：命中 ${r.matched} 单，多候选 ${r.multi}，仍未匹配 ${r.none}`);
+      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '配单失败');
+    }
+  };
+
+  // 导出「未配单」行 → CSV (供人工补订单号)
+  const handleExportUnmatched = () => {
+    const un = saved.filter(r => !r.matched_order_no && !r.excluded);
+    if (!un.length) { message.info('没有未配单的行'); return; }
+    downloadCsv(`打包费账单_未匹配_${billMonth}.csv`,
+      ['账期', '日期', '客户', '打包费', '备注', '请填订单号'],
+      un.map(r => [r.bill_month ?? '', r.row_date ?? '', r.customer_name ?? '',
+        Number(r.packing_fee ?? 0).toFixed(2), r.note ?? '', '']));
+    message.success(`已导出 ${un.length} 条未配单，填好订单号后可人工核对`);
   };
 
   const setCell = (i: number, patch: Partial<PackingRowParsed>) =>
@@ -184,6 +209,8 @@ export default function PackingBillsPage() {
         <Typography.Title level={5} style={{ margin: 0 }}>本月已入库 ({billMonth})</Typography.Title>
         <Button size="small" icon={<SyncOutlined />}
           onClick={() => { qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] }); qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] }); }}>刷新</Button>
+        <Button size="small" icon={<LinkOutlined />} onClick={handleRematch}>放宽配单</Button>
+        <Button size="small" icon={<DownloadOutlined />} onClick={handleExportUnmatched}>导出未匹配</Button>
         {summary && (
           <Typography.Text type="secondary">
             应付 <strong style={{ color: '#cf1322' }}>¥{summary.payable_total.toFixed(2)}</strong>

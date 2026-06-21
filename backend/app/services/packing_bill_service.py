@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -25,9 +26,13 @@ EXCLUDE_KEYWORDS = ("改客户", "不计入", "不算", "作废", "退了", "退
                     "不是我们", "划掉", "取消", "删除")
 
 MATCH_CN = {
-    "order_no": "单号匹配", "name_unique": "客户名唯一", "multi": "多候选待人工",
-    "none": "未能自动匹配", "manual": "人工指定",
+    "order_no": "单号匹配", "name_unique": "客户名唯一", "name_addr": "姓名在地址(宽松)",
+    "multi": "多候选待人工", "none": "未能自动匹配", "manual": "人工指定",
 }
+
+_PROV_RE = re.compile(r"^(北京|天津|上海|重庆|河北|山西|辽宁|吉林|黑龙江|江苏|浙江|安徽|福建|江西|"
+                      r"山东|河南|湖北|湖南|广东|广西|海南|四川|贵州|云南|陕西|甘肃|青海|台湾|内蒙古|"
+                      r"西藏|宁夏|新疆|香港|澳门)")
 
 
 def _dec(v: Any) -> Optional[Decimal]:
@@ -189,3 +194,54 @@ def month_summary(db: Session, bill_month: Optional[str]) -> dict:
         "excluded_rows": sum(1 for b in bills if b.excluded),
         "unmatched_rows": sum(1 for b in bills if not b.matched_order_no and not b.excluded),
     }
+
+
+def _note_province(note: Optional[str]) -> Optional[str]:
+    """从打包备注(我存成『省份 产品…』)抽省份首词, 给宽松匹配交叉验证。"""
+    if not note:
+        return None
+    m = _PROV_RE.match(note.strip())
+    return m.group(1) if m else None
+
+
+def rematch_packing_bills(db: Session, *, loose: bool = True) -> dict:
+    """对未配单(且非剔除/非人工)的打包费行重跑配单。loose=True 多一档:
+    客户名(≥2字)出现在订单收货地址里 + 备注省份也对上 → 唯一才配
+    (应对 订单存买家昵称、打包本写客户真名 的错位)。返回 {matched, multi, none}。"""
+    valid_nos, by_name = _order_indices(db)
+    addr_orders = []
+    if loose:
+        addr_orders = db.execute(
+            select(Order.order_no, Order.customer_name, Order.customer_address)
+            .where(Order.status.in_(SETTLED_SALE_STATUSES))
+        ).all()
+    bills = db.execute(
+        select(PackingBill).where(
+            PackingBill.matched_order_no.is_(None),
+            PackingBill.excluded == False,  # noqa: E712
+            (PackingBill.match_method.is_(None)) | (PackingBill.match_method != "manual"),
+        )
+    ).scalars().all()
+    counts = {"matched": 0, "multi": 0, "none": 0}
+    for b in bills:
+        _match_row(b, valid_nos, by_name)
+        if not b.matched_order_no and loose and b.customer_name and len(b.customer_name.strip()) >= 2:
+            nm = b.customer_name.strip()
+            prov = _note_province(b.note)
+            cand = {o.order_no for o in addr_orders if o.customer_address and nm in o.customer_address
+                    and (not prov or prov in o.customer_address)}
+            if len(cand) == 1:
+                b.matched_order_no = next(iter(cand))
+                b.match_method = "name_addr"
+                b.match_note = None
+            elif len(cand) > 1:
+                b.match_method = "multi"
+                b.match_note = f"客户「{nm}」地址命中多单待人工"
+        if b.matched_order_no:
+            counts["matched"] += 1
+        elif b.match_method == "multi":
+            counts["multi"] += 1
+        else:
+            counts["none"] += 1
+    db.flush()
+    return counts

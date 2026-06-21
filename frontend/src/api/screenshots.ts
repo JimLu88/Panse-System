@@ -256,3 +256,8 @@ export const packingSummary = (billMonth?: string) =>
     .get<Omit<PackingCommitResp, 'inserted' | 'skipped' | 'matched' | 'excluded'>>(
       '/api/finance/packing-bills/summary', { params: { bill_month: billMonth } })
     .then((r) => r.data);
+export const rematchPackingBills = (loose = true) =>
+  api
+    .post<{ matched: number; multi: number; none: number }>(
+      '/api/finance/packing-bills/rematch', null, { params: { loose } })
+    .then((r) => r.data);
