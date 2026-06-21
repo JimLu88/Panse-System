@@ -75,10 +75,43 @@ export default function PerOrderReconcilePage() {
   const setItem = (i: number, patch: Partial<FixedCostItem>) =>
     setDraft((d) => d.map((it, idx) => (idx === i ? { ...it, ...patch } : it)));
 
-  const costCell = (estimatedFlag = false) => (v: number, r: PerOrderRow) =>
-    estimatedFlag && r.cost_estimated
-      ? <Tooltip title="用推演成本(工厂未对账)"><span style={{ color: '#1677ff' }}>{yuan(v)}</span></Tooltip>
-      : <span>{yuan(v)}</span>;
+  // 商品成本悬浮: 计算公式 + 本单实际分项拆解 (推演 / 仅木作入账 / 片段封顶 / 无定价兜底)
+  const costCell = () => (v: number, r: PerOrderRow) => {
+    const reconciled = r.factory_bill_recorded;                 // 工厂账单已入账=已对账
+    const wood = reconciled ? r.actual_wood : r.predicted_wood; // 已对账用实际木作, 否则定价木作
+    const parts = r.est_parts;
+    const pack = r.est_packaging;
+    const hasPricing = wood != null || parts != null || pack != null;
+    const w = wood ?? 0, p = parts ?? 0, k = pack ?? 0;
+    const freightInstall = Math.round((v - (w + p + k)) * 100) / 100;  // 物流+安装(嵌在物理成本里, 反推)
+    let body: JSX.Element;
+    if (!hasPricing) {
+      body = <div>无定价匹配 → 按「实付 × 类目成本率」兜底估算 = <b>{yuan(v)}</b></div>;
+    } else if ((w + p + k) > v + 0.5) {
+      body = <div>差价/定金小单(实付 &lt; 成本×50%)→ 按「实付 × 85%」封顶 = <b>{yuan(v)}</b></div>;
+    } else {
+      body = (
+        <div>
+          {reconciled ? '实际木作(工厂账单)' : '木作(定价表)'} {yuan(w)}<br />
+          + 配件 {yuan(p)} + 打包 {yuan(k)} + 物流安装 {yuan(freightInstall)}<br />
+          = <b>{yuan(v)}</b>
+        </div>
+      );
+    }
+    const tip = (
+      <div style={{ fontSize: 12, lineHeight: 1.7, maxWidth: 300 }}>
+        <div style={{ marginBottom: 4 }}>
+          <b>{reconciled ? '商品成本 = 实际木作 + 非木作估算' : '商品成本 = 定价表物理总成本(推演)'}</b>
+        </div>
+        {body}
+        <div style={{ color: '#8c8c8c', marginTop: 6 }}>
+          工厂账单只含木作; 配件/打包/物流/安装恒按定价表估算。实付&lt;成本×50% 按实付×85%封顶。
+          {r.cost_estimated ? ' 本单工厂未对账=全推演(蓝色)。' : ' 本单木作已对工厂账单。'}
+        </div>
+      </div>
+    );
+    return <Tooltip title={tip}><span style={{ color: r.cost_estimated ? '#1677ff' : undefined }}>{yuan(v)}</span></Tooltip>;
+  };
 
   const cols: ColumnsType<PerOrderRow> = [
     { title: '订单号', dataIndex: 'order_no', width: 150, fixed: 'left',
@@ -95,7 +128,7 @@ export default function PerOrderReconcilePage() {
       render: (v: number) => v > 0 ? <Text type="warning">−{yuan(v)}</Text> : '—' },
     { title: '真实收入', dataIndex: 'revenue', width: 90, align: 'right',
       render: (v: number) => <Text strong>{yuan(v)}</Text> },
-    { title: '商品成本', dataIndex: 'cost_goods', width: 90, align: 'right', render: costCell(true) },
+    { title: '商品成本', dataIndex: 'cost_goods', width: 90, align: 'right', render: costCell() },
     { title: '物流', dataIndex: 'cost_freight', width: 70, align: 'right', render: (v: number) => yuan(v) },
     { title: '安装', dataIndex: 'cost_install', width: 70, align: 'right', render: (v: number) => yuan(v) },
     { title: '平台扣点', dataIndex: 'cost_platform', width: 80, align: 'right', render: (v: number) => yuan(v) },
