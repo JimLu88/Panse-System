@@ -105,6 +105,28 @@ def _bill_importer(fn_name: str, label: str) -> Callable:
     return _imp
 
 
+def _imp_logistics(db: Session, content: bytes, filename: Optional[str]) -> dict:
+    """物流账单导入(飞书发文件/网页统一从这里进, 导入后都自动配单):
+       - 文件名含「德邦/壹米滴答」的月结账单(逐单运费/月结总额, 靠文件名识别承运商)→ 专用 xlsx 导入
+         (德邦逐单带收货人/目的地 + 月结汇总行)。
+       - 其余通用物流表(标准列 承运商/运单号/运费/收货人…)→ csv 映射导入。"""
+    from app.services import bill_import_service
+    name = filename or ""
+    if name.lower().endswith((".xlsx", ".xls")) and any(k in name for k in ("德邦", "壹米", "滴答")):
+        import io
+        import openpyxl
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        rep = bill_import_service.import_logistics_xlsx(db, wb, source_name=name)
+    else:
+        text = tabular.to_csv_text(content, filename)
+        rep = bill_import_service.import_logistics_csv(db, text)
+    if rep.errors:
+        return {"ok": False, "summary": f"物流账单导入失败: {'; '.join(map(str, rep.errors[:2]))}"}
+    return {"ok": True, "summary": (
+        f"物流账单导入完成: 新增 **{rep.inserted}**, 重复 {rep.skipped_duplicate}, "
+        f"无效 {rep.skipped_invalid} · 已自动按运单号/收货人配单。")}
+
+
 def _imp_part_purchase(db: Session, content: bytes, filename: Optional[str]) -> dict:
     """配件采购表 (飞书直接传 Excel/CSV 也能入库, 与网页上传共用核心)。"""
     from app.services import purchase_table_import
@@ -172,9 +194,9 @@ TABLE_TYPES: dict[str, dict] = {
     },
     "logistics": {
         "label": "物流账单", "archive": "logistics",
-        "keywords": ["物流", "运费", "承运"],   # 不用"快递"(代付台账有"快递代付"会冲突), 靠这些或表头
-        "fingerprint": ["承运商", "运单号", "运费", "重量(kg)", "重量"],
-        "importer": _bill_importer("import_logistics_csv", "物流账单"),
+        "keywords": ["物流", "运费", "承运", "德邦", "壹米", "顺丰"],
+        "fingerprint": ["承运商", "运单号", "运费", "实收运费", "收货人", "重量(kg)", "重量"],
+        "importer": _imp_logistics,   # xlsx 走 import_logistics_xlsx(收货人+汇总行+自动配单)
     },
     "promotion": {
         "label": "推广费流水", "archive": "promotion",

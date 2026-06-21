@@ -29,12 +29,14 @@ _WANSHIFU_MAP = {
 }
 
 _LOGISTICS_MAP = {
-    "日期": "bill_date", "账单日期": "bill_date",
+    "日期": "bill_date", "账单日期": "bill_date", "业务日期": "bill_date", "寄件时间": "bill_date",
     "承运商": "carrier", "物流公司": "carrier", "快递公司": "carrier",
     "运单号": "tracking_no", "快递单号": "tracking_no", "物流单号": "tracking_no",
     "订单号": "order_no", "关联订单号": "order_no",
-    "重量": "weight_kg", "重量(kg)": "weight_kg", "重量（kg）": "weight_kg",
-    "运费": "freight_amount", "费用": "freight_amount", "金额": "freight_amount",
+    "重量": "weight_kg", "重量(kg)": "weight_kg", "重量（kg）": "weight_kg", "计费重量": "weight_kg",
+    "运费": "freight_amount", "费用": "freight_amount", "金额": "freight_amount", "实收运费": "freight_amount",
+    "收货人": "recipient_name", "收件人": "recipient_name", "收件人姓名": "recipient_name",
+    "目的地": "destination", "目的站": "destination", "收件人省市区": "destination",
     "备注": "remark",
 }
 
@@ -185,11 +187,19 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
             order_no=import_clean.clean_no(rec.get("order_no")),
             weight_kg=_decimal(rec.get("weight_kg")),
             freight_amount=freight,
+            recipient_name=(rec.get("recipient_name") or None),
+            destination=(rec.get("destination") or None),
             remark=(rec.get("remark") or None),
             import_job_id=import_job_id,
         ))
         rep.inserted += 1
     db.flush()
+    # 导入后自动配淘宝订单 (用户 2026-06-21: 每次导入都自己匹配订单号)
+    try:
+        from app.services import logistics_bill_match
+        logistics_bill_match.match_logistics_bills(db, only_unmatched=True)
+    except Exception:  # noqa: BLE001 — 配对失败不阻断导入
+        pass
     return rep
 
 
