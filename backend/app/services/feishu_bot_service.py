@@ -49,6 +49,7 @@ IMAGE_TYPES = {
     "purchase": "采购单/进货单",
     "factory_recon": "工厂对账单截图",
     "alipay_flow": "支付宝流水截图",
+    "packing_bill": "打包费手写账单",
 }
 
 _CLASSIFY_SYSTEM = (
@@ -57,8 +58,10 @@ _CLASSIFY_SYSTEM = (
     "supplier_note=供应商送货单(送来成品/货物的清单); "
     "purchase=采购单/进货单(我方向供应商买配件/物料的单据); "
     "factory_recon=工厂对账单(工厂列出的下单/账单/已付金额对账表); "
-    "alipay_flow=支付宝账单/流水/收支明细截图; unknown=都不像。\n"
-    '输出: {"kind": "order_table|order_image|supplier_note|purchase|factory_recon|alipay_flow|unknown", '
+    "alipay_flow=支付宝账单/流水/收支明细截图; "
+    "packing_bill=打包工手写的打包费本/便签(手写体, 逐行 客户名+省+产品+打包费金额, 常有'合计'数字); "
+    "unknown=都不像。\n"
+    '输出: {"kind": "order_table|order_image|supplier_note|purchase|factory_recon|alipay_flow|packing_bill|unknown", '
     '"confidence": 0~1}'
 )
 
@@ -136,6 +139,7 @@ def _picker_card(message_id: str, *, hint: str = "我不太确定这张图的类
                 _btn("采购单/进货单", {"op": "pick", "message_id": message_id, "kind": "purchase"}),
                 _btn("工厂对账单", {"op": "pick", "message_id": message_id, "kind": "factory_recon"}),
                 _btn("支付宝流水", {"op": "pick", "message_id": message_id, "kind": "alipay_flow"}),
+                _btn("打包费手写账单", {"op": "pick", "message_id": message_id, "kind": "packing_bill"}),
                 _btn("取消", {"op": "cancel", "message_id": message_id}, "danger"),
             ]},
         ],
@@ -320,6 +324,15 @@ def _import_alipay_flows(db: Session, parsed: dict) -> dict:
             "warnings": parsed.get("ocr_warnings") or []}
 
 
+def _infer_packing_month(rows: list) -> str:
+    """从打包费行的日期推断账期 YYYY-MM(取众数); 全无日期 → 当月。"""
+    from collections import Counter
+    from datetime import date
+    months = [str(r.get("row_date") or "")[:7] for r in rows
+              if len(str(r.get("row_date") or "")) >= 7 and str(r.get("row_date"))[4:5] == "-"]
+    return Counter(months).most_common(1)[0][0] if months else date.today().strftime("%Y-%m")
+
+
 def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
                      supplier_id: Optional[int] = None) -> dict:
     """按类型解析图片并入库, 返回结果摘要 {ok, summary}。"""
@@ -370,6 +383,23 @@ def _dispatch_import(db: Session, kind: str, image_bytes: bytes, *,
         msg = f"工厂对账入库完成: 新增 **{r['inserted']}** 行, 跳过(已存在) {r.get('skipped', 0)} 行。"
         if r["warnings"]:
             msg += f"\n⚠️ OCR 提示: {'; '.join(map(str, r['warnings'][:3]))}"
+        return {"ok": True, "summary": msg}
+    if kind == "packing_bill":
+        parsed = vision_ocr_service.parse_packing_bill(db, image_bytes)
+        rows = parsed.get("rows") or []
+        from app.services import packing_bill_service
+        bm = _infer_packing_month(rows)
+        r = packing_bill_service.commit_packing_parsed(
+            db, rows, bill_month=bm, declared_total=parsed.get("declared_total"))
+        if r["inserted"] == 0 and r["skipped"] == 0:
+            return {"ok": False, "summary": (
+                "没识别到打包费明细(客户名/金额)。换张更清晰的手写账单, 或点「换个类型」。")}
+        msg = (f"打包费账单入库({bm}): 新增 **{r['inserted']}** 行, 配单 {r['matched']}, "
+               f"剔除(改客户/不计入) {r['excluded']}, 当月应付 **¥{r['payable_total']:.0f}**。")
+        if r.get("total_mismatch"):
+            msg += (f"\n⚠️ 本子合计与系统应付差 ¥{r['total_mismatch']:.0f}, **已挂异常**, "
+                    f"请核对手写金额。")
+        msg += "\n（手写识别难免出错 → 到 物流→打包费账单 复核 / 改账期。）"
         return {"ok": True, "summary": msg}
     if kind == "supplier_note":
         if not supplier_id:

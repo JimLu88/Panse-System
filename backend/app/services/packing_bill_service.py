@@ -100,11 +100,14 @@ def _match_row(bill: PackingBill, valid_nos: set, by_name: dict) -> None:
 
 
 def commit_packing_parsed(db: Session, rows: list[dict], *, bill_month: Optional[str] = None,
+                          declared_total: Optional[float] = None,
                           source_image: Optional[str] = None,
                           import_job_id: Optional[int] = None) -> dict:
     """确认后的打包费账单行 → 入库 PackingBill, 逐行配单 + 自动剔除「不计入」行。
 
     去重: 同 (bill_month, customer_name, packing_fee, row_date) 已存在则跳过 (防重复发图翻倍)。
+    declared_total: 手写本上的「合计」数字; 与系统应付对不上(>¥0.5)→ 挂异常待人工核对
+    (用户 2026-06-21: 加总不对就让系统挂异常)。
     """
     valid_nos, by_name = _order_indices(db)
     existing = {
@@ -145,8 +148,30 @@ def commit_packing_parsed(db: Session, rows: list[dict], *, bill_month: Optional
         if is_excl:
             excluded += 1
     db.flush()
+    summary = month_summary(db, bill_month)
+    # 本子合计 vs 系统应付对不上 → 挂异常 (用户 2026-06-21: 加总不对就让系统挂异常)
+    mismatch = None
+    if declared_total is not None:
+        try:
+            dt = Decimal(str(declared_total))
+            diff = dt - Decimal(str(summary["payable_total"]))
+            if abs(diff) > Decimal("0.5"):
+                mismatch = float(diff)
+                from app.services import exception_service
+                exception_service.record(
+                    db, source_table="packing_bills", source_pk=bill_month,
+                    exception_type="packing_total_mismatch", severity="warning",
+                    description=(f"打包费账单 {bill_month or '(未填账期)'}: 本子合计 ¥{dt} 与系统"
+                                 f"应付 ¥{summary['payable_total']} 差 ¥{diff}, 请核对手写本逐行金额。"),
+                    suggestion_action="review_packing_rows",
+                    context={"bill_month": bill_month, "declared_total": float(dt),
+                             "payable_total": summary["payable_total"], "diff": float(diff)},
+                )
+                db.flush()
+        except (InvalidOperation, ValueError):
+            pass
     return {"inserted": inserted, "skipped": skipped, "matched": matched,
-            "excluded": excluded, **month_summary(db, bill_month)}
+            "excluded": excluded, "total_mismatch": mismatch, **summary}
 
 
 def month_summary(db: Session, bill_month: Optional[str]) -> dict:

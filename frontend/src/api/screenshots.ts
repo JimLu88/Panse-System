@@ -223,6 +223,7 @@ export interface PackingCommitResp {
 }
 export const commitPackingBill = (payload: {
   bill_month?: string;
+  declared_total?: number;
   source_image?: string;
   rows: PackingRowParsed[];
 }) =>

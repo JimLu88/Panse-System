@@ -74,10 +74,14 @@ export default function PackingBillsPage() {
     if (!rows.length) { message.warning('没有可入库的行'); return; }
     setSaving(true);
     try {
-      const r = await commitPackingBill({ bill_month: billMonth, rows });
+      const r = await commitPackingBill({
+        bill_month: billMonth, declared_total: declaredTotal ?? undefined, rows });
       message.success(
         `入库 ${r.inserted} 行（去重 ${r.skipped}）· 配单 ${r.matched} · 剔除 ${r.excluded} · ` +
         `当月应付 ¥${r.payable_total.toFixed(2)}`);
+      if (declaredTotal != null && Math.abs(declaredTotal - r.payable_total) > 0.5) {
+        message.warning(`本子合计 ¥${declaredTotal} 与系统应付 ¥${r.payable_total.toFixed(0)} 对不上，已挂异常待核对`);
+      }
       setRows([]);
       setDeclaredTotal(null);
       setOcrWarnings([]);

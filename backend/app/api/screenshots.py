@@ -539,6 +539,7 @@ class PackingRowIn(BaseModel):
 
 class CommitPackingIn(BaseModel):
     bill_month: Optional[str] = None   # 账期 YYYY-MM
+    declared_total: Optional[float] = None  # 本子「合计」; 与系统应付对不上→挂异常
     source_image: Optional[str] = None
     rows: list[PackingRowIn]
 
@@ -553,6 +554,7 @@ def commit_packing_bill_ep(
     from app.services import packing_bill_service
     rows = [r.model_dump() for r in payload.rows]
     result = packing_bill_service.commit_packing_parsed(
-        db, rows, bill_month=payload.bill_month, source_image=payload.source_image)
+        db, rows, bill_month=payload.bill_month, declared_total=payload.declared_total,
+        source_image=payload.source_image)
     db.commit()
     return result
