@@ -96,32 +96,68 @@ def _fmt_size(s: Optional[str]) -> Optional[str]:
     return "*".join(out) if out else s
 
 
-def render_html(sheet: "factory_sheet.FactorySheet") -> str:
-    """下单图 HTML — 藏青蓝 A4 横版工厂生产单 (用户拍板 2026-06-19, 方案C·藏青蓝)。
+def _cn_date(d) -> str:
+    """date → 2026年6月20日; 非日期/空 → 原值/'-'。"""
+    if d is None:
+        return "-"
+    if hasattr(d, "year") and hasattr(d, "month") and hasattr(d, "day"):
+        return f"{d.year}年{d.month}月{d.day}日"
+    return str(d)
 
-    A4 横版(渲染 1684×1190) + 四周安全留白; 藏青蓝顶栏; 图左规格右分区;
-    成品尺寸/制单/发货 红字大字; 辅料只写 BOM(去木作); 加急红敲印;
-    无编号标"未能匹配工厂订单号"; 无尺寸标红"未对应尺寸"。
+
+_CIRCLED = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮"
+
+
+def _spec_items(sheet) -> list:
+    """产品规格分项: ① 主材, 其后辅材按「短标签：值」拆分编号 (值含空格不被拆)。"""
+    out = []
+    mm = getattr(sheet, "main_material", None)
+    am = getattr(sheet, "aux_material", None)
+    if mm and str(mm).strip():
+        out.append(str(mm).strip())
+    if am and str(am).strip():
+        for seg in re.split(r"\s+(?=[一-龥A-Za-z]{1,6}[：:])", str(am).strip()):
+            if seg.strip():
+                out.append(seg.strip())
+    return out
+
+
+def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar") -> str:
+    """下单图 HTML — A4 横版工厂生产单 (黑白线框版, 打印友好; 2026-06-21 改版)。
+
+    去掉藏青蓝填充色 → 黑线框 + 红字强调(尺寸/发货/敲章), 打印不费墨。
+    header_style 头部 3 选 1: classic(公文双线) / bar(左竖标) / outline(描边框)。
+    头部加高加大; 制单日期入头部; 发货日期入页脚(下单日期下方, 红字大字);
+    产品规格 ①②③ 编号分项; 定制单自动敲「确认定制单」红章; 加急敲「加急」红章。
     """
     e = escape
-    A = "#1f3a5f"  # 藏青蓝 主色
+    A = "#1a1a1a"  # 主线条色 (黑, 打印友好; 原藏青蓝填充已去)
+    made, ship, odate = sheet.made_date, sheet.ship_date, sheet.order_date
+    # 头部右: 畔色 N 单 + 制单日期 + 订单编号
     if sheet.factory_no:
         no_html = f"<div class='no'>畔色 {sheet.factory_no} 单</div>"
     else:
-        no_html = "<div class='no' style='color:#fda4a4'>未能匹配工厂订单号</div>"
+        no_html = "<div class='no' style='color:#dc2626'>未能匹配工厂订单号</div>"
+    made_html = f"<div class='mk'>制单日期：{e(_cn_date(made))}</div>"
     # 成品尺寸 (无 → 红字"未对应尺寸")
     _szt = _fmt_size(sheet.size_info)
     if _szt:
         _n = len(_szt)
-        _szfs = 52 if _n <= 16 else (44 if _n <= 28 else 32)
-        _nw = "white-space:nowrap;" if _n <= 28 else ""   # 长尺寸(箱体床等)允许换行不裁切
+        _szfs = 52 if _n <= 15 else (40 if _n <= 30 else 30)
+        _nw = "white-space:nowrap;" if _n <= 30 else ""
         size_html = f"<div class='sz' style='font-size:{_szfs}px;{_nw}'>{e(_szt)}</div>"
     else:
         size_html = "<div class='sz'>未对应尺寸</div>"
-    # 材质 = 主材 · 辅材 (去掉工艺/说明)
-    _mat = [x for x in (getattr(sheet, "main_material", None), getattr(sheet, "aux_material", None)) if x]
-    mat_txt = e(" · ".join(_mat)) if _mat else "—"
-    # 辅料 BOM: 去木作 + 简化为 "名称 ×数量 单位" (给木作厂看, 不写木作本身)
+    # 产品规格分项 (①②③ 编号)
+    _items = _spec_items(sheet)
+    if _items:
+        mat_txt = "　　".join(
+            f"<b style='color:{A}'>{_CIRCLED[i] if i < len(_CIRCLED) else str(i + 1)}</b> {e(it)}"
+            for i, it in enumerate(_items)
+        )
+    else:
+        mat_txt = "—"
+    # 辅料 BOM: 去木作 + "名称 ×数量 单位"
     bom = []
     for m in sheet.materials:
         code = (m.material_code or "").upper()
@@ -130,20 +166,31 @@ def render_html(sheet: "factory_sheet.FactorySheet") -> str:
             continue
         bom.append(f"{e(nm)}　×{_int_qty(m.total_qty)} {e(m.unit or '件')}")
     bom_txt = "<br>".join(bom) if bom else "—"
-    # 图纸: 优先 SKU 尺寸图(高清内嵌 900px), 回退主图
+    # 图纸: 优先 SKU 尺寸图(高清内嵌), 回退主图
     _sku = _gallery_data_uri(getattr(sheet, "sku_image", None))
     _main = (sheet.image_url if (sheet.image_url and str(sheet.image_url).startswith("http"))
              else _gallery_data_uri(getattr(sheet, "gallery_main_image", None)))
     _img = _sku or _main
     pic_html = f"<img src='{e(_img)}'>" if _img else "<div class='noimg'>无产品图纸</div>"
-    stamp_html = "<div class='stamp'>加急</div>" if sheet.urgent else ""
-    made, ship, odate = sheet.made_date or "-", sheet.ship_date or "-", sheet.order_date or "-"
-    # 收货: 全空(淘宝解密额度不足/未抓到) → 红字提示, 但编号照常 (用户拍板 2026-06-20)
+    # 敲章: 加急 + 定制(自动识别 is_custom_variant)
+    stamps = ""
+    if sheet.urgent:
+        stamps += "<div class='stamp stamp-urgent'>加急</div>"
+    if getattr(sheet, "is_custom_variant", False):
+        stamps += "<div class='stamp stamp-custom'>确认定制单</div>"
+    # 收货: 全空 → 红字提示, 编号照常
     if sheet.customer_name or sheet.customer_phone or sheet.customer_address:
-        ship_html = (f"{e(sheet.customer_name or '')}　{e(sheet.customer_phone or '')}"
-                     f"<br>{e(sheet.customer_address or '—')}")
+        ship_to = (f"{e(sheet.customer_name or '')}　{e(sheet.customer_phone or '')}"
+                   f"<br>{e(sheet.customer_address or '—')}")
     else:
-        ship_html = "<span style='color:#dc2626;font-weight:800'>⚠ 没有抓取到收货地址（淘宝解密额度不足，待提升后重拉）</span>"
+        ship_to = "<span style='color:#dc2626;font-weight:800'>⚠ 没有抓取到收货地址（淘宝解密额度不足，待提升后重拉）</span>"
+    # 头部样式 3 选 1 (无填充, 仅黑线)
+    if header_style == "bar":
+        hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
+    elif header_style == "outline":
+        hd_extra = f".hd{{border:2.5px solid {A};}}"
+    else:  # classic
+        hd_extra = f".hd{{border-bottom:5px double {A};}}"
     return f"""<!DOCTYPE html><html lang="zh"><head><meta charset="utf-8"/>
 <title>{e(sheet.sheet_title)}</title><style>
 *{{margin:0;padding:0;box-sizing:border-box;font-family:"Microsoft YaHei","PingFang SC",sans-serif;}}
@@ -151,46 +198,53 @@ body{{background:#fff;}}
 .page{{width:1684px;height:1190px;background:#fff;padding:22px;}}
 .card{{position:relative;width:1640px;height:1146px;background:#fff;border:3px solid {A};}}
 table{{border-collapse:collapse;}}
-.hd{{width:100%;height:120px;background:{A};color:#fff;}}
-.hd .co{{font-size:36px;font-weight:900;padding-left:28px;}}
-.hd .co small{{display:block;font-size:17px;opacity:.82;letter-spacing:2px;margin-top:5px;}}
-.hd .r{{text-align:right;padding-right:28px;}}
-.hd .no{{font-size:50px;font-weight:900;}}
-.hd .ono{{font-size:22px;opacity:.92;margin-top:4px;font-family:monospace;letter-spacing:1px;}}
-.mid{{width:100%;height:740px;}}
+.hd{{width:100%;height:150px;background:none;color:#000;}}
+{hd_extra}
+.hd .co{{font-size:46px;font-weight:900;padding-left:30px;color:#000;vertical-align:middle;}}
+.hd .co small{{display:block;font-size:18px;font-weight:600;color:#444;letter-spacing:2px;margin-top:6px;}}
+.hd .co .ono{{display:block;font-size:20px;color:#555;margin-top:8px;font-family:monospace;letter-spacing:1px;font-weight:400;}}
+.hd .r{{text-align:right;padding-right:30px;vertical-align:middle;}}
+.hd .no{{font-size:58px;font-weight:900;color:#1f3a5f;}}
+.hd .mk{{font-size:30px;font-weight:900;color:#dc2626;margin-top:10px;}}
+.mid{{width:100%;height:706px;}}
 .mid .pic{{width:660px;border-right:3px solid {A};text-align:center;vertical-align:middle;}}
-.mid .pic img{{max-width:640px;max-height:700px;}}
+.mid .pic img{{max-width:640px;max-height:676px;}}
 .mid .noimg{{color:#bbb;font-size:30px;}}
 .zwrap{{vertical-align:top;}}
 .z{{border-bottom:2px solid {A};}}
-.zt{{background:#eef2f7;color:{A};font-size:22px;font-weight:800;padding:10px 24px;letter-spacing:1px;}}
-.zb{{padding:16px 26px;font-size:31px;line-height:1.35;word-break:break-all;}}
-.sz{{font-size:58px;font-weight:900;color:#dc2626;letter-spacing:1px;line-height:1.15;}}
-.dt{{font-size:38px;font-weight:900;color:#dc2626;}}
+.zt{{background:#f0f0f0;color:#000;font-size:22px;font-weight:800;padding:10px 24px;letter-spacing:1px;border-bottom:1px solid #ccc;}}
+.zb{{padding:16px 26px;font-size:30px;line-height:1.4;word-break:break-all;overflow-wrap:anywhere;}}
+.sz{{font-size:56px;font-weight:900;color:#dc2626;letter-spacing:0;line-height:1.15;}}
 .ft{{width:100%;border-top:3px solid {A};}}
 .ft td{{padding:18px 26px;vertical-align:top;font-size:30px;}}
-.ft .l{{font-size:20px;color:{A};font-weight:800;letter-spacing:1px;}}
-.stamp{{position:absolute;top:150px;right:800px;border:5px double #dc2626;color:#dc2626;
-        font-size:46px;font-weight:900;padding:3px 20px;transform:rotate(-13deg);border-radius:10px;
-        letter-spacing:8px;z-index:9;background:rgba(255,255,255,.4);}}
+.ft .l{{font-size:20px;color:#000;font-weight:800;letter-spacing:1px;}}
+.ft .odt{{font-size:30px;}}
+.ft .shipdt{{font-size:40px;font-weight:900;color:#dc2626;margin-top:4px;}}
+.stamp{{position:absolute;border:5px double #dc2626;color:#dc2626;font-weight:900;
+        transform:rotate(-13deg);border-radius:10px;background:rgba(255,255,255,.45);z-index:9;}}
+.stamp-urgent{{top:175px;right:720px;font-size:46px;padding:3px 20px;letter-spacing:8px;}}
+.stamp-custom{{top:470px;left:120px;font-size:38px;padding:4px 18px;letter-spacing:4px;}}
 @media print{{.page{{padding:14px;}}}}
 </style></head><body><div class="page"><div class="card">
 <table class="hd" style="width:100%"><tr>
-  <td class="co">畔色木作<small>工厂生产单 · PRODUCTION ORDER</small></td>
-  <td class="r">{no_html}<div class="ono">订单编号：{e(sheet.order_no)}</div></td>
+  <td class="co">畔色木作<small>工厂生产单 · PRODUCTION ORDER</small><div class="ono">订单编号：{e(sheet.order_no)}</div></td>
+  <td class="r">{no_html}{made_html}</td>
 </tr></table>
 <table class="mid"><tr>
   <td class="pic">{pic_html}</td>
   <td class="zwrap">
     <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
-    <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}<div class="dt">制单 {made}</div><div class="dt" style="margin-top:6px">发货 {ship}</div></div></div>
+    <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}</div></div>
     <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
   </td></tr></table>
 <table class="ft" style="width:100%"><tr>
-  <td><div class="l">收货信息 SHIP TO</div>{ship_html}</td>
-  <td style="text-align:right;width:360px;border-left:2px solid #ccc"><div class="l">下单日期</div><span>{odate}</span></td>
+  <td><div class="l">收货信息 SHIP TO</div>{ship_to}</td>
+  <td style="text-align:right;width:400px;border-left:2px solid #ccc">
+    <div class="l">下单日期</div><div class="odt">{e(_cn_date(odate))}</div>
+    <div class="l" style="margin-top:14px">发货日期</div><div class="shipdt">{e(_cn_date(ship))}</div>
+  </td>
 </tr></table>
-{stamp_html}
+{stamps}
 </div></div></body></html>"""
 
 

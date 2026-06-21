@@ -222,6 +222,7 @@ def build(db: Session, order_id: int) -> FactorySheet:
         production_note=(getattr(order, "production_note", None)
                          or getattr(order, "seller_memo", None)),
         factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
+        order_is_custom=bool(getattr(order, "is_custom", False)),   # 订单级定制标记 → 定制敲章
     )
 
 
@@ -243,6 +244,7 @@ def build_from_fields(
     extra_accessories: Optional[list[dict]] = None,
     production_note: Optional[str] = None,
     factory_no: Optional[int] = None,
+    order_is_custom: bool = False,
 ) -> FactorySheet:
     """从订单字段直接生成制单图 (不要求订单已入库, 供千牛截图预览「生成下单图」用)。
 
@@ -330,8 +332,8 @@ def build_from_fields(
             ).limit(1)
         ).scalar_one_or_none()
 
-    # 是否定制 sku — "-改" 编码即定制单 (custom_variants 没录档案也算定制, 2026-06-12)
-    is_custom = False
+    # 是否定制 sku — 订单级定制标记(颜色分类/标题判定) 或 "-改" 编码即定制单 (2026-06-12; 2026-06-21 接入 order_is_custom)
+    is_custom = bool(order_is_custom)
     dim_changes = None
     if sku_code and "改" in sku_code:
         is_custom = True
