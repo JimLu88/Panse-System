@@ -217,6 +217,14 @@ class LogisticsBill(Base, TimestampMixin):
     weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 3))
     freight_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # 逐单行(德邦)的收货人 + 目的地 — 用来按人名(+省)配淘宝订单 (用户 2026-06-21)。
+    recipient_name: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    destination: Mapped[Optional[str]] = mapped_column(String(128))
+    # 配单结果: track/name_prov/name_unique/multi/none/manual; summary 行无需配 → 留空。
+    match_method: Mapped[Optional[str]] = mapped_column(String(32))
+    match_note: Mapped[Optional[str]] = mapped_column(Text)
+    # line=逐单行(参与"各单相加"); summary=月结汇总行(挪到表底, 与逐单合计互核)。
+    row_type: Mapped[str] = mapped_column(String(16), default="line", nullable=False)
     import_job_id: Mapped[Optional[int]] = mapped_column(
         Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True,
     )

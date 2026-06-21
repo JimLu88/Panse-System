@@ -1223,6 +1223,11 @@ class LogisticsBillOut(BaseModel):
     weight_kg: Optional[Decimal]
     freight_amount: Decimal
     remark: Optional[str]
+    recipient_name: Optional[str] = None
+    destination: Optional[str] = None
+    match_method: Optional[str] = None
+    match_note: Optional[str] = None
+    row_type: str = "line"
 
 
 class PromotionFlowOut(BaseModel):
@@ -1279,6 +1284,16 @@ def list_logistics_bills(
         stmt = stmt.where(extract("year", LogisticsBill.bill_date) == year)
     stmt = stmt.order_by(LogisticsBill.bill_date.desc().nulls_last()).limit(limit)
     return db.execute(stmt).scalars().all()
+
+
+@router.post("/logistics-bills/match")
+def match_logistics_bills_ep(only_unmatched: bool = True, db: Session = Depends(get_db)):
+    """物流费账单逐单行 → 淘宝订单 自动配对 (运单号 / 收货人+省市)。
+    返回 {matched, multi, none}; 配不到的行 match_method='none' (前端显示「未能自动匹配」)。"""
+    from app.services import logistics_bill_match
+    counts = logistics_bill_match.match_logistics_bills(db, only_unmatched=only_unmatched)
+    db.commit()
+    return counts
 
 
 @router.get("/promotion-flows", response_model=list[PromotionFlowOut])

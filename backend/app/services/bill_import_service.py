@@ -266,9 +266,23 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
                 bill_date=bdate, carrier="德邦", tracking_no=track, order_no=None,
                 weight_kg=(_decimal(r[c_wt]) if c_wt is not None else None),
                 freight_amount=fee, remark=f"德邦 收货:{to} 目的:{dest}".strip(),
+                recipient_name=(to or None), destination=(dest or None), row_type="line",
                 import_job_id=import_job_id, sync_key=sk,
             ))
             rep.inserted += 1
+        # 德邦文件名若声明了月结总额 (如「德邦…账单 14540元」), 补一条汇总行 (row_type='summary'),
+        # 供前端核对"月结总额 vs 各逐单相加"。逐单合计只数 line 行, 汇总行不参与求和不双算。
+        if fname_total is not None and month_end is not None:
+            sk_sum = f"logi|德邦|{year}-{month or 0:02d}|summary"
+            if sk_sum not in existing and sk_sum not in seen:
+                seen.add(sk_sum)
+                db.add(LogisticsBill(
+                    bill_date=month_end, carrier="德邦", tracking_no=None, order_no=None,
+                    weight_kg=None, freight_amount=fname_total, row_type="summary",
+                    remark=f"德邦 {year}年{month}月月结账单总额(文件名声明), 与逐单相加互核",
+                    import_job_id=import_job_id, sync_key=sk_sum,
+                ))
+                rep.inserted += 1
     else:
         if fname_total is None:
             rep.errors.append(f"{source_name}: 壹米滴答月结需在文件名给总额(如「…账单 14540元」)")
@@ -280,12 +294,18 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
         else:
             db.add(LogisticsBill(
                 bill_date=month_end, carrier="壹米滴答", tracking_no=None, order_no=None,
-                weight_kg=None, freight_amount=fname_total,
+                weight_kg=None, freight_amount=fname_total, row_type="summary",
                 remark=f"壹米滴答 {year}年{month}月月结汇总, 共{cnt}单(逐单运费未单独提供, 总额取自账单)",
                 import_job_id=import_job_id, sync_key=sk,
             ))
             rep.inserted += 1
     db.flush()
+    # 逐单行导入后自动配淘宝订单 (用户 2026-06-21): 运单号/收货人+省 → order_no
+    try:
+        from app.services import logistics_bill_match
+        logistics_bill_match.match_logistics_bills(db, only_unmatched=True)
+    except Exception:  # noqa: BLE001 — 配对失败不阻断导入
+        pass
     return rep
 
 
