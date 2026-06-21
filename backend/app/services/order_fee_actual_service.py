@@ -38,105 +38,112 @@ def _median(vals: list[Decimal]) -> Optional[Decimal]:
     return s[n // 2] if n % 2 else ((s[n // 2 - 1] + s[n // 2]) / 2)
 
 
-def estimate_fee(sku_code, by_sku: dict, base_pk: dict, base_lg: dict):
-    """该 SKU 的 (预估打包, 预估物流) 单价:
+def _pick(ps, field: str, base_map: dict, base: Optional[str]):
+    """精确 SKU 有该费用值优先; 否则按基础产品码兄弟 SKU 中位数。"""
+    v = getattr(ps, field, None) if ps else None
+    if v is not None:
+        return _d(v)
+    return base_map.get(base) if base else None
+
+
+def estimate_fee(sku_code, by_sku: dict, base_maps: dict):
+    """该 SKU 的 (预估打包, 预估物流, 预估安装) 单价:
        精确 SKU 有值优先; 否则(定制尾号≥90 / 定价表缺该 SKU)按 **基础产品码** 兄弟 SKU 中位数
        (用户 2026-06-21: 定制按产品编码取费, 一般相同)。任何口径都可调本函数。"""
     ps = by_sku.get(sku_code) if sku_code else None
     base = sku_utils.base_product_code(sku_code)
-    pk = _d(ps.packaging_cost) if (ps and ps.packaging_cost is not None) else (base_pk.get(base) if base else None)
-    lg = _d(ps.logistics_cost) if (ps and ps.logistics_cost is not None) else (base_lg.get(base) if base else None)
-    return pk, lg
+    return (_pick(ps, "packaging_cost", base_maps["pk"], base),
+            _pick(ps, "logistics_cost", base_maps["lg"], base),
+            _pick(ps, "install_cost", base_maps["inst"], base))
 
 
 def _build_price_maps(db: Session):
     rows = db.execute(select(
-        PricingSku.sku_code, PricingSku.packaging_cost, PricingSku.logistics_cost)).all()
+        PricingSku.sku_code, PricingSku.packaging_cost,
+        PricingSku.logistics_cost, PricingSku.install_cost)).all()
     by_sku = {p.sku_code: p for p in rows}
-    pk_lists: dict[str, list] = {}
-    lg_lists: dict[str, list] = {}
+    lists = {"pk": {}, "lg": {}, "inst": {}}
+    fields = {"pk": "packaging_cost", "lg": "logistics_cost", "inst": "install_cost"}
     for p in rows:
         base = sku_utils.base_product_code(p.sku_code)
         if not base:
             continue
-        if p.packaging_cost is not None:
-            pk_lists.setdefault(base, []).append(_d(p.packaging_cost))
-        if p.logistics_cost is not None:
-            lg_lists.setdefault(base, []).append(_d(p.logistics_cost))
-    base_pk = {b: _median(v) for b, v in pk_lists.items()}
-    base_lg = {b: _median(v) for b, v in lg_lists.items()}
-    return by_sku, base_pk, base_lg
+        for k, fld in fields.items():
+            v = getattr(p, fld)
+            if v is not None:
+                lists[k].setdefault(base, []).append(_d(v))
+    base_maps = {k: {b: _median(v) for b, v in d.items()} for k, d in lists.items()}
+    return by_sku, base_maps
 
 
 def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -> dict:
     """回填订单的 est_packing/est_logistics(定价表×qty) + actual_packing/actual_logistics(账单Σ)。
     order_nos=None → 全部订单。返回 {est_set, actual_packing_set, actual_logistics_set}。"""
-    # ---- 预估: 精确 SKU 优先, 定制/缺失按基础产品码兄弟中位数, × qty ----
-    by_sku, base_pk, base_lg = _build_price_maps(db)
+    # ---- 预估(打包/物流/安装): 精确SKU优先, 定制/缺失按基础产品码兄弟中位数, 都无则系统比例×实付, × qty ----
+    by_sku, base_maps = _build_price_maps(db)
     o_stmt = select(Order)
     if order_nos:
         o_stmt = o_stmt.where(Order.order_no.in_(order_nos))
     orders = db.execute(o_stmt).scalars().all()
-    # 第一遍: 精确SKU / 基础产品码中位数 算订单级预估
-    est = {}  # order_no -> [pk, lg]
+    KS = ("pk", "lg", "inst")
+    est: dict[str, dict] = {}
     for o in orders:
-        pk, lg = estimate_fee(o.sku_code, by_sku, base_pk, base_lg)
+        units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps)))
         qty = int(o.qty or 1)
-        est[o.order_no] = [(pk * qty) if pk is not None else None,
-                           (lg * qty) if lg is not None else None]
-    # 系统平均比例 = Σ预估 / Σ实付 (有预估且实付>0的单); 给取不到SKU/产品预估的单兜底
-    # (用户 2026-06-21: 差价/邮费专链等按系统平均比例×订单金额)。
-    pk_num = pk_den = lg_num = lg_den = Decimal("0")
+        est[o.order_no] = {k: (units[k] * qty) if units[k] is not None else None for k in KS}
+    # 系统平均比例 = Σ预估 / Σ实付 (用户: 差价/邮费等无SKU预估的单按比例×订单实付兜底)
+    num = {k: Decimal("0") for k in KS}
+    den = {k: Decimal("0") for k in KS}
     for o in orders:
         paid = _d(o.paid_amount)
         if not paid or paid <= 0:
             continue
-        epk, elg = est[o.order_no]
-        if epk is not None:
-            pk_num += epk
-            pk_den += paid
-        if elg is not None:
-            lg_num += elg
-            lg_den += paid
-    ratio_pk = (pk_num / pk_den) if pk_den > 0 else None
-    ratio_lg = (lg_num / lg_den) if lg_den > 0 else None
+        for k in KS:
+            if est[o.order_no][k] is not None:
+                num[k] += est[o.order_no][k]
+                den[k] += paid
+    ratio = {k: (num[k] / den[k]) if den[k] > 0 else None for k in KS}
     est_set = 0
     for o in orders:
-        new_pk, new_lg = est[o.order_no]
         paid = _d(o.paid_amount)
-        if new_pk is None and ratio_pk is not None and paid and paid > 0:
-            new_pk = (ratio_pk * paid).quantize(_CENTS)
-        if new_lg is None and ratio_lg is not None and paid and paid > 0:
-            new_lg = (ratio_lg * paid).quantize(_CENTS)
-        if o.est_packing != new_pk or o.est_logistics != new_lg:
-            o.est_packing, o.est_logistics = new_pk, new_lg
+        new = {}
+        for k in KS:
+            v = est[o.order_no][k]
+            if v is None and ratio[k] is not None and paid and paid > 0:
+                v = (ratio[k] * paid).quantize(_CENTS)
+            new[k] = v
+        if (o.est_packing != new["pk"] or o.est_logistics != new["lg"]
+                or o.est_install != new["inst"]):
+            o.est_packing, o.est_logistics, o.est_install = new["pk"], new["lg"], new["inst"]
             est_set += 1
 
-    # ---- 实际: 账单按订单 Σ ----
-    pk_stmt = select(PackingBill.matched_order_no,
-                     PackingBill.packing_fee).where(
-        PackingBill.matched_order_no.isnot(None), PackingBill.excluded == False)  # noqa: E712
+    # ---- 实际: 打包账单Σ / 德邦逐单Σ / 安装=订单 install_fee+upstairs_fee(已在订单上) ----
     pk_sum: dict[str, Decimal] = {}
-    for no, fee in db.execute(pk_stmt).all():
+    for no, fee in db.execute(select(PackingBill.matched_order_no, PackingBill.packing_fee).where(
+            PackingBill.matched_order_no.isnot(None), PackingBill.excluded == False)).all():  # noqa: E712
         if fee is not None:
             pk_sum[no] = pk_sum.get(no, Decimal("0")) + _d(fee)
-    lg_stmt = select(LogisticsBill.order_no, LogisticsBill.freight_amount).where(
-        LogisticsBill.order_no.isnot(None), LogisticsBill.row_type == "line")
     lg_sum: dict[str, Decimal] = {}
-    for no, fee in db.execute(lg_stmt).all():
+    for no, fee in db.execute(select(LogisticsBill.order_no, LogisticsBill.freight_amount).where(
+            LogisticsBill.order_no.isnot(None), LogisticsBill.row_type == "line")).all():
         if fee is not None:
             lg_sum[no] = lg_sum.get(no, Decimal("0")) + _d(fee)
 
-    ap_set = al_set = 0
+    ap_set = al_set = ai_set = 0
     for o in orders:
         new_ap = pk_sum.get(o.order_no)
         new_al = lg_sum.get(o.order_no)
+        if_, uf = _d(o.install_fee), _d(o.upstairs_fee)
+        new_ai = ((if_ or Decimal("0")) + (uf or Decimal("0"))) if (if_ is not None or uf is not None) else None
         if o.actual_packing != new_ap:
             o.actual_packing = new_ap
             ap_set += 1
         if o.actual_logistics != new_al:
             o.actual_logistics = new_al
             al_set += 1
+        if o.actual_install != new_ai:
+            o.actual_install = new_ai
+            ai_set += 1
     db.flush()
     return {"est_set": est_set, "actual_packing_set": ap_set, "actual_logistics_set": al_set,
-            "orders_scanned": len(orders)}
+            "actual_install_set": ai_set, "orders_scanned": len(orders)}

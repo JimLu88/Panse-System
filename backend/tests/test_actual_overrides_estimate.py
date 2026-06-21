@@ -33,10 +33,31 @@ def test_both_swapped(db_session):
     assert physical_cost(o) == Decimal("1030")    # 1000 −100+150 −200+180
 
 
+def test_install_actual_replaces_estimate(db_session):
+    o = _o(theoretical_cost=Decimal("1000"), est_install=Decimal("100"), actual_install=Decimal("120"))
+    assert physical_cost(o) == Decimal("1020")     # 1000 − 100 + 120
+
+
 def test_unmatched_keeps_estimate(db_session):
     """没有 actual(没配到)→ 不替换, 保持预估总成本。"""
     o = _o(theoretical_cost=Decimal("1000"), est_packing=Decimal("100"))
     assert physical_cost(o) == Decimal("1000")
+
+
+def test_install_est_actual_sync(db_session):
+    """安装: est=定价表 install_cost×qty, actual=订单 install_fee+upstairs_fee。"""
+    from app.models.pricing import PricingSku
+    from app.services import order_fee_actual_service as svc
+    db_session.add(PricingSku(product_code="PI", sku_code="PPS1111111110011",
+                              install_cost=Decimal("150")))
+    db_session.add(Order(platform="淘宝", order_no="I1", qty=1, status="signed",
+                         paid_amount=Decimal("3000"), sku_code="PPS1111111110011",
+                         install_fee=Decimal("130"), upstairs_fee=Decimal("20")))
+    db_session.flush()
+    svc.sync_fee_components(db_session)
+    o = db_session.query(Order).filter_by(order_no="I1").first()
+    assert o.est_install == Decimal("150")
+    assert o.actual_install == Decimal("150")   # 130 + 20
 
 
 def test_no_estimate_no_swap(db_session):

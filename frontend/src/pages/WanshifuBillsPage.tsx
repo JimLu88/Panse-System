@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
+import FeeVariancePanel from '../components/FeeVariancePanel';
 
 interface WanshifuBill {
   id: number;
@@ -127,6 +128,7 @@ export default function WanshifuBillsPage() {
           { key: 'bills', label: '月结账单 (对账, 充值制可不用)', children: billsTab },
         ]}
       />
+      <FeeVariancePanel url="/api/finance/install/variance" label="安装费" queryKey="install-variance" />
     </Space>
   );
 }

@@ -74,6 +74,9 @@ class Order(Base, TimestampMixin):
     est_logistics: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_packing: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_logistics: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 安装 (migration 0090): est=定价表 install_cost×qty; actual=install_fee+upstairs_fee(已在订单上)
+    est_install: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    actual_install: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

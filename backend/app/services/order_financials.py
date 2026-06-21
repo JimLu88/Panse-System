@@ -118,10 +118,13 @@ def physical_cost(o: Order) -> Decimal:
     if swap_ok:
         _ap, _ep = getattr(o, "actual_packing", None), getattr(o, "est_packing", None)
         _al, _el = getattr(o, "actual_logistics", None), getattr(o, "est_logistics", None)
+        _ai, _ei = getattr(o, "actual_install", None), getattr(o, "est_install", None)
         if _ap is not None and _ep is not None:
             cost = cost - _d(_ep) + _d(_ap)
         if _al is not None and _el is not None:
             cost = cost - _d(_el) + _d(_al)
+        if _ai is not None and _ei is not None:
+            cost = cost - _d(_ei) + _d(_ai)
         if cost < 0:
             cost = Decimal("0")
     paid = _d(o.paid_amount)

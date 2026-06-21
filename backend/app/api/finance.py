@@ -1371,6 +1371,12 @@ def packing_fee_variance(db: Session = Depends(get_db)):
     return _fee_variance(db, "est_packing", "actual_packing")
 
 
+@router.get("/install/variance")
+def install_fee_variance(db: Session = Depends(get_db)):
+    """安装费 实际(订单 install_fee+upstairs_fee) vs 预估(定价表) 逐单偏差 + 总计。"""
+    return _fee_variance(db, "est_install", "actual_install")
+
+
 class PackingBillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
