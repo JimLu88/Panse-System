@@ -223,7 +223,7 @@ table{{border-collapse:collapse;}}
 .stamp{{position:absolute;border:5px double #dc2626;color:#dc2626;font-weight:900;
         transform:rotate(-13deg);border-radius:10px;background:rgba(255,255,255,.45);z-index:9;}}
 .stamp-urgent{{top:175px;right:720px;font-size:46px;padding:3px 20px;letter-spacing:8px;}}
-.stamp-custom{{top:470px;left:120px;font-size:38px;padding:4px 18px;letter-spacing:4px;}}
+.stamp-custom{{top:30px;left:340px;font-size:34px;padding:3px 16px;letter-spacing:3px;}}
 @media print{{.page{{padding:14px;}}}}
 </style></head><body><div class="page"><div class="card">
 <table class="hd" style="width:100%"><tr>
