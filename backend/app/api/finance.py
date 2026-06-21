@@ -1319,7 +1319,9 @@ def sync_fee_components_ep(db: Session = Depends(get_db)):
 
 
 def _fee_variance(db: Session, est_attr: str, actual_attr: str) -> dict:
-    """逐单 实际 vs 预估 偏差(只列配到实际的单)+ 总计 + 偏差%。"""
+    """逐单 实际 vs 预估 偏差。区分:
+       rows  = 有预估(参与成本替换)的单 — 总计/偏差只算这些(=真实成本影响);
+       gaps  = 配到实际但 SKU 缺定价预估(未替换)的单 — 单列提醒补价。"""
     from app.models.order import Order
     from app.services.sales_analytics import SETTLED_SALE_STATUSES
     stmt = select(Order.order_no, Order.customer_name, Order.product_name,
@@ -1328,11 +1330,16 @@ def _fee_variance(db: Session, est_attr: str, actual_attr: str) -> dict:
         Order.status.in_(SETTLED_SALE_STATUSES),
         Order.is_refill == False,  # noqa: E712
     )
-    rows = []
-    tot_est = tot_act = Decimal("0")
+    rows, gaps = [], []
+    tot_est = tot_act = gap_act = Decimal("0")
     for no, cust, prod, est, act in db.execute(stmt).all():
-        est_d = est or Decimal("0")
         act_d = act or Decimal("0")
+        if est is None:   # SKU 缺定价预估 → 未替换, 单列
+            gaps.append({"order_no": no, "customer_name": cust,
+                         "product_name": prod, "actual": float(act_d)})
+            gap_act += act_d
+            continue
+        est_d = Decimal(str(est))
         diff = act_d - est_d
         rows.append({
             "order_no": no, "customer_name": cust, "product_name": prod,
@@ -1348,6 +1355,7 @@ def _fee_variance(db: Session, est_attr: str, actual_attr: str) -> dict:
         "total_est": float(tot_est), "total_actual": float(tot_act),
         "total_diff": float(tot_diff),
         "diff_pct": (round(float(tot_diff / tot_est * 100), 1) if tot_est else None),
+        "gaps": gaps, "gap_count": len(gaps), "gap_actual": float(gap_act),
     }
 
 

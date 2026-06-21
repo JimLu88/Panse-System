@@ -10,6 +10,7 @@ import {
   type PackingRowParsed, type PackingBillRow,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
+import FeeVariancePanel from '../components/FeeVariancePanel';
 
 const MATCH_LABEL: Record<string, { text: string; color: string }> = {
   order_no: { text: '单号匹配', color: 'green' },
@@ -231,6 +232,8 @@ export default function PackingBillsPage() {
       </Space>
       <Table rowKey="id" size="small" dataSource={saved} columns={savedColumns}
         pagination={{ defaultPageSize: 50 }} scroll={{ x: 760 }} />
+
+      <FeeVariancePanel url="/api/finance/packing-bills/variance" label="打包费" queryKey="packing-variance" />
     </Space>
   );
 }

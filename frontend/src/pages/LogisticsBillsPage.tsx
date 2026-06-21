@@ -5,6 +5,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
+import FeeVariancePanel from '../components/FeeVariancePanel';
 
 interface LogisticsBill {
   id: number;
@@ -260,6 +261,8 @@ export default function LogisticsBillsPage() {
           />
         </Space>
       )}
+
+      <FeeVariancePanel url="/api/finance/logistics-bills/variance" label="物流费" queryKey="logistics-variance" />
       </>)}
     </Space>
   );
