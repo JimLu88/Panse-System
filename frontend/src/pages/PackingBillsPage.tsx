@@ -3,10 +3,10 @@ import {
   Alert, Button, Checkbox, Input, InputNumber, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
-import { DeleteOutlined, DownloadOutlined, InboxOutlined, LinkOutlined, PlusOutlined, SaveOutlined, SyncOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, InboxOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  commitPackingBill, listPackingBills, packingSummary, parsePackingBill, rematchPackingBills,
+  commitPackingBill, listPackingBills, packingSummary, parsePackingBill,
   type PackingRowParsed, type PackingBillRow,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
@@ -72,18 +72,6 @@ export default function PackingBillsPage() {
       setParsing(false);
     }
     return false;
-  };
-
-  // 未配单行重跑配单 (放宽: 客户名在订单地址+省份)
-  const handleRematch = async () => {
-    try {
-      const r = await rematchPackingBills(true);
-      message.success(`放宽配单完成：命中 ${r.matched} 单，多候选 ${r.multi}，仍未匹配 ${r.none}`);
-      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
-      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail ?? '配单失败');
-    }
   };
 
   // 导出「未配单」行 → CSV (供人工补订单号)
@@ -232,9 +220,6 @@ export default function PackingBillsPage() {
 
       <Space align="center" style={{ marginTop: 8 }}>
         <Typography.Title level={5} style={{ margin: 0 }}>本月已入库 ({billMonth})</Typography.Title>
-        <Button size="small" icon={<SyncOutlined />}
-          onClick={() => { qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] }); qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] }); }}>刷新</Button>
-        <Button size="small" icon={<LinkOutlined />} onClick={handleRematch}>放宽配单</Button>
         <Button size="small" icon={<DownloadOutlined />} onClick={handleExportUnmatched}>导出未匹配</Button>
         {summary && (
           <Typography.Text type="secondary">

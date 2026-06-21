@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Alert, Button, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
-import { DownloadOutlined, InboxOutlined, LinkOutlined, SyncOutlined } from '@ant-design/icons';
+import { DownloadOutlined, InboxOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
@@ -57,7 +57,6 @@ export function downloadCsv(filename: string, headers: string[], rows: (string |
 export default function LogisticsBillsPage() {
   const qc = useQueryClient();
   const [importing, setImporting] = useState(false);
-  const [matching, setMatching] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data = [], isLoading } = useQuery<LogisticsBill[]>({
@@ -104,19 +103,10 @@ export default function LogisticsBillsPage() {
     return false;
   };
 
-  // 手动重新配单 (运单号 / 收货人+省市 → 订单号); loose=true 加宽松档(姓名在地址+省市)
-  const handleMatch = async (loose = false) => {
-    setMatching(true);
-    try {
-      const r = await api.post<{ matched: number; multi: number; none: number }>(
-        '/api/finance/logistics-bills/match', null, { params: { loose } });
-      message.success(`${loose ? '放宽' : ''}配单完成：命中 ${r.data.matched} 单，多候选 ${r.data.multi} 单，未能匹配 ${r.data.none} 单`);
-      qc.invalidateQueries({ queryKey: ['logistics-bills'] });
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail ?? '配单失败');
-    } finally {
-      setMatching(false);
-    }
+  // 导入账单: 一个按钮通吃 CSV/Excel, 按扩展名走对应导入(系统自动识别承运商 + 导入后自动配单)
+  const handleImportAny = (file: File) => {
+    const n = file.name.toLowerCase();
+    return n.endsWith('.csv') ? handleImport(file) : handleImportXlsx(file);
   };
 
   // 导出「未能匹配」的逐单 → CSV (供人工补订单号)
@@ -213,32 +203,16 @@ export default function LogisticsBillsPage() {
       {viewMode === 'full' && <FullColumnView entity="logistics_bill" />}
       {viewMode === 'curated' && (<>
       <Space wrap>
-        <Upload accept=".csv" showUploadList={false} beforeUpload={handleImport}>
-          <Button icon={<InboxOutlined />} loading={importing}>导入 CSV</Button>
+        <Upload accept=".csv,.xlsx,.xls" multiple showUploadList={false} beforeUpload={handleImportAny}>
+          <Button type="primary" icon={<InboxOutlined />} loading={importing}>导入账单 (壹米滴答/德邦，CSV/Excel 均可)</Button>
         </Upload>
-        <Upload accept=".xlsx" multiple showUploadList={false} beforeUpload={handleImportXlsx}>
-          <Button type="primary" icon={<InboxOutlined />} loading={importing}>导入账单 xlsx (壹米滴答/德邦)</Button>
-        </Upload>
-        <Button icon={<LinkOutlined />} loading={matching} onClick={() => handleMatch(false)}>
-          重新配单
-        </Button>
-        <Button icon={<LinkOutlined />} loading={matching} onClick={() => handleMatch(true)}>
-          放宽再配单
-        </Button>
         <Button icon={<DownloadOutlined />} onClick={handleExportUnmatched}>
           导出未匹配
-        </Button>
-        <Button icon={<DownloadOutlined />}
-          onClick={() => window.open('/api/finance/logistics-bills/template.csv')}>
-          下载模板
-        </Button>
-        <Button icon={<SyncOutlined />} onClick={() => qc.invalidateQueries({ queryKey: ['logistics-bills'] })}>
-          刷新
         </Button>
         {lineRows.length > 0 && (
           <Typography.Text type="secondary">
             逐单 {lineRows.length} 条 · 合计运费 <strong>¥{lineTotal.toLocaleString('zh', { minimumFractionDigits: 2 })}</strong>
-            {unmatched > 0 && <span style={{ color: '#cf1322' }}> · 待人工 {unmatched} 单</span>}
+            {unmatched > 0 && <span style={{ color: '#cf1322' }}> · 待人工 {unmatched} 单（导入时已自动配单）</span>}
           </Typography.Text>
         )}
       </Space>
