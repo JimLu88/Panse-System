@@ -101,6 +101,7 @@ def physical_cost(o: Order) -> Decimal:
     片段封顶(2026-06-20 用户选c): 定金/分期/差价单 实付远小于成本(实付<成本×50%)时不背整份成本
     —— 工厂账单按订单号回填会把整份工厂成本配到定金小单上(实测 ...228259 实付¥2335背¥8200=率351%),
     按 实付×85% 封顶; 货款付齐(实付≥成本×50%)自动回全成本。与 order_cost_service 片段规则一致。"""
+    swap_ok = False   # 预估打包/物流是否真的在 cost 里(才能换成实际, 防双减)
     if o.actual_cost is not None:
         cost = _d(o.actual_cost)
         wood_est = _d(getattr(o, "wood_cost_est", None))
@@ -108,8 +109,21 @@ def physical_cost(o: Order) -> Decimal:
             non_wood = _d(o.theoretical_cost) - wood_est
             if non_wood > 0:
                 cost += non_wood
+                swap_ok = True   # 预估非木作(含打包/物流)已补进 cost
     else:
         cost = _d(o.theoretical_cost)
+        swap_ok = True           # theoretical 内含预估打包/物流
+    # 实际账单覆盖预估 (用户 2026-06-21): 精确配到逐单账单时, 该分量从预估换成实际
+    # (成本 = 原成本 − 预估 + 实际); 只换配到的, 未配/月结汇总保持预估。
+    if swap_ok:
+        _ap, _ep = getattr(o, "actual_packing", None), getattr(o, "est_packing", None)
+        _al, _el = getattr(o, "actual_logistics", None), getattr(o, "est_logistics", None)
+        if _ap is not None and _ep is not None:
+            cost = cost - _d(_ep) + _d(_ap)
+        if _al is not None and _el is not None:
+            cost = cost - _d(_el) + _d(_al)
+        if cost < 0:
+            cost = Decimal("0")
     paid = _d(o.paid_amount)
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
         return (paid * Decimal("0.85")).quantize(Decimal("0.01"))

@@ -1309,6 +1309,60 @@ def rematch_packing_bills_ep(loose: bool = True, db: Session = Depends(get_db)):
     return counts
 
 
+@router.post("/orders/sync-fee-components")
+def sync_fee_components_ep(db: Session = Depends(get_db)):
+    """回填订单的 预估/实际 打包+物流费分量(供 physical_cost 实际替预估)。返回回填计数。"""
+    from app.services import order_fee_actual_service
+    r = order_fee_actual_service.sync_fee_components(db)
+    db.commit()
+    return r
+
+
+def _fee_variance(db: Session, est_attr: str, actual_attr: str) -> dict:
+    """逐单 实际 vs 预估 偏差(只列配到实际的单)+ 总计 + 偏差%。"""
+    from app.models.order import Order
+    from app.services.sales_analytics import SETTLED_SALE_STATUSES
+    stmt = select(Order.order_no, Order.customer_name, Order.product_name,
+                  getattr(Order, est_attr), getattr(Order, actual_attr)).where(
+        getattr(Order, actual_attr).isnot(None),
+        Order.status.in_(SETTLED_SALE_STATUSES),
+        Order.is_refill == False,  # noqa: E712
+    )
+    rows = []
+    tot_est = tot_act = Decimal("0")
+    for no, cust, prod, est, act in db.execute(stmt).all():
+        est_d = est or Decimal("0")
+        act_d = act or Decimal("0")
+        diff = act_d - est_d
+        rows.append({
+            "order_no": no, "customer_name": cust, "product_name": prod,
+            "est": float(est_d), "actual": float(act_d), "diff": float(diff),
+            "diff_pct": (round(float(diff / est_d * 100), 1) if est_d else None),
+        })
+        tot_est += est_d
+        tot_act += act_d
+    rows.sort(key=lambda r: abs(r["diff"]), reverse=True)
+    tot_diff = tot_act - tot_est
+    return {
+        "rows": rows, "count": len(rows),
+        "total_est": float(tot_est), "total_actual": float(tot_act),
+        "total_diff": float(tot_diff),
+        "diff_pct": (round(float(tot_diff / tot_est * 100), 1) if tot_est else None),
+    }
+
+
+@router.get("/logistics-bills/variance")
+def logistics_fee_variance(db: Session = Depends(get_db)):
+    """物流费 实际(德邦逐单) vs 预估(定价表) 逐单偏差 + 总计。"""
+    return _fee_variance(db, "est_logistics", "actual_logistics")
+
+
+@router.get("/packing-bills/variance")
+def packing_fee_variance(db: Session = Depends(get_db)):
+    """打包费 实际(手写账单) vs 预估(定价表) 逐单偏差 + 总计。"""
+    return _fee_variance(db, "est_packing", "actual_packing")
+
+
 class PackingBillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int

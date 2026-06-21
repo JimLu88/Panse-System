@@ -119,4 +119,10 @@ def match_logistics_bills(db: Session, *, only_unmatched: bool = True, loose: bo
                 b.match_note = f"有同名「{b.recipient_name}」但目的地省市对不上"
             counts["none"] += 1
     db.flush()
+    # 配单后回填订单的 实际物流费分量, 供 physical_cost 用实际替预估 (用户 2026-06-21)
+    try:
+        from app.services import order_fee_actual_service
+        order_fee_actual_service.sync_fee_components(db)
+    except Exception:  # noqa: BLE001 — 回填失败不阻断配单
+        pass
     return counts

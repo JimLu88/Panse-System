@@ -153,6 +153,12 @@ def commit_packing_parsed(db: Session, rows: list[dict], *, bill_month: Optional
         if is_excl:
             excluded += 1
     db.flush()
+    # 配单后回填订单的 实际打包费分量, 供 physical_cost 用实际替预估 (用户 2026-06-21)
+    try:
+        from app.services import order_fee_actual_service
+        order_fee_actual_service.sync_fee_components(db)
+    except Exception:  # noqa: BLE001
+        pass
     summary = month_summary(db, bill_month)
     # 本子合计 vs 系统应付对不上 → 挂异常 (用户 2026-06-21: 加总不对就让系统挂异常)
     mismatch = None
@@ -244,4 +250,9 @@ def rematch_packing_bills(db: Session, *, loose: bool = True) -> dict:
         else:
             counts["none"] += 1
     db.flush()
+    try:
+        from app.services import order_fee_actual_service
+        order_fee_actual_service.sync_fee_components(db)
+    except Exception:  # noqa: BLE001
+        pass
     return counts

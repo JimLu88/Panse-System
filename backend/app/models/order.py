@@ -67,6 +67,13 @@ class Order(Base, TimestampMixin):
     actual_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     upstairs_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     install_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 实际账单覆盖预估 (migration 0089, 用户 2026-06-21): 预估来自定价表(packaging_cost/
+    # logistics_cost × qty); 精确配到逐单账单时 actual_* 填实际值, physical_cost 用
+    # 成本 = 原成本 − 预估 + 实际 替换(只换配到的, 未配/月结汇总保持预估)。
+    est_packing: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    est_logistics: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    actual_packing: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    actual_logistics: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
