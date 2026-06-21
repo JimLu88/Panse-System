@@ -39,18 +39,23 @@ export default function FeeVariancePanel({ url, label, queryKey }:
   }
 
   const up = data.total_diff > 0;   // 实际 > 预估 = 成本升、利润降
-  const pieOption = {
-    tooltip: { trigger: 'item', formatter: (p: any) => `${p.name}: ${yuan(p.value)} (${p.percent}%)` },
-    legend: { bottom: 0, itemWidth: 12, itemHeight: 12 },
-    series: [{
-      type: 'pie', radius: ['45%', '70%'], center: ['50%', '44%'],
-      avoidLabelOverlap: true,
-      label: { formatter: '{b}\n{c}', fontSize: 12 },
-      data: [
-        { name: '预估', value: Math.round(data.total_est), itemStyle: { color: '#94a3b8' } },
-        { name: '实际', value: Math.round(data.total_actual), itemStyle: { color: '#6366f1' } },
-      ],
-    }],
+  // 逐单 预估 vs 实际 分组条形图(按偏差大小排前12单, 直观看哪单实际偏离预估)
+  const topN = data.rows.slice(0, 12);
+  const labelOf = (r: VRow) => (r.customer_name || r.order_no.slice(-6)) + ` ·${r.order_no.slice(-4)}`;
+  const barOption = {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' },
+      valueFormatter: (v: number) => yuan(v) },
+    legend: { top: 0, itemWidth: 12, itemHeight: 12 },
+    grid: { left: 8, right: 24, top: 30, bottom: 6, containLabel: true },
+    xAxis: { type: 'value', axisLabel: { formatter: (v: number) => yuan(v) } },
+    yAxis: { type: 'category', inverse: true, data: topN.map(labelOf),
+      axisLabel: { fontSize: 11 } },
+    series: [
+      { name: '预估', type: 'bar', data: topN.map(r => Math.round(r.est)),
+        itemStyle: { color: '#94a3b8' } },
+      { name: '实际', type: 'bar', data: topN.map(r => Math.round(r.actual)),
+        itemStyle: { color: '#6366f1' } },
+    ],
   };
 
   const columns = [
@@ -70,19 +75,25 @@ export default function FeeVariancePanel({ url, label, queryKey }:
 
   return (
     <Card size="small" title={`${label} · 实际 vs 预估 对比`} style={{ marginTop: 8 }}>
-      <Space size="large" align="start" wrap style={{ width: '100%' }}>
-        <Space size="large" wrap>
-          <Statistic title="预估合计" value={data.total_est} prefix="¥" valueStyle={{ fontSize: 20 }} />
-          <Statistic title="实际合计" value={data.total_actual} prefix="¥" valueStyle={{ fontSize: 20, color: '#6366f1' }} />
-          <Statistic title={up ? '偏差(成本↑利润↓)' : '偏差(成本↓利润↑)'} value={Math.abs(data.total_diff)}
-            prefix={up ? '+¥' : '−¥'} valueStyle={{ fontSize: 20, color: up ? '#cf1322' : '#389e0d' }}
-            suffix={data.diff_pct != null ? `  (${data.diff_pct > 0 ? '+' : ''}${data.diff_pct}%)` : ''} />
-          <Statistic title="参与替换单数" value={data.count} suffix="单" valueStyle={{ fontSize: 20 }} />
-        </Space>
-        <Suspense fallback={<div style={{ width: 240, height: 200 }} />}>
-          <ReactECharts option={pieOption} style={{ width: 240, height: 200 }} />
-        </Suspense>
+      <Space size="large" wrap style={{ width: '100%' }}>
+        <Statistic title="预估合计" value={data.total_est} prefix="¥" valueStyle={{ fontSize: 20 }} />
+        <Statistic title="实际合计" value={data.total_actual} prefix="¥" valueStyle={{ fontSize: 20, color: '#6366f1' }} />
+        <Statistic title={up ? '偏差(成本↑利润↓)' : '偏差(成本↓利润↑)'} value={Math.abs(data.total_diff)}
+          prefix={up ? '+¥' : '−¥'} valueStyle={{ fontSize: 20, color: up ? '#cf1322' : '#389e0d' }}
+          suffix={data.diff_pct != null ? `  (${data.diff_pct > 0 ? '+' : ''}${data.diff_pct}%)` : ''} />
+        <Statistic title="参与替换单数" value={data.count} suffix="单" valueStyle={{ fontSize: 20 }} />
       </Space>
+      {topN.length > 0 && (
+        <>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            逐单 预估 vs 实际（按偏差排序{data.rows.length > 12 ? '，前 12 单' : ''}）：
+          </Typography.Text>
+          <Suspense fallback={<div style={{ height: 240 }} />}>
+            <ReactECharts option={barOption}
+              style={{ width: '100%', height: Math.max(220, topN.length * 28 + 50) }} />
+          </Suspense>
+        </>
+      )}
 
       {data.gap_count > 0 && (
         <Alert type="warning" showIcon style={{ margin: '8px 0' }}
