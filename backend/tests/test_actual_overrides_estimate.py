@@ -67,3 +67,35 @@ def test_fragment_cap_after_swap(db_session):
            est_logistics=Decimal("200"), actual_logistics=Decimal("180"))
     # swap → 980; 实付100 < 980×50% → 100×0.85 = 85
     assert physical_cost(o) == Decimal("85.00")
+
+
+def test_custom_sku_estimate_uses_base_product_median(db_session):
+    """定制 SKU(尾号≥90)定价表无此行 → 按基础产品码兄弟 SKU 中位数取预估(用户 2026-06-21)。"""
+    from app.models.pricing import PricingSku
+    from app.services import order_fee_actual_service as svc
+    db_session.add(PricingSku(product_code="P1", sku_code="PPS2421007090113",
+                              packaging_cost=Decimal("180"), logistics_cost=Decimal("280")))
+    db_session.add(PricingSku(product_code="P1", sku_code="PPS2421007090115",
+                              packaging_cost=Decimal("120"), logistics_cost=Decimal("300")))
+    db_session.add(Order(platform="淘宝", order_no="C1", qty=1, status="signed",
+                         paid_amount=Decimal("5000"), sku_code="PPS2421007090199"))  # 定制尾号99
+    db_session.flush()
+    svc.sync_fee_components(db_session)
+    o = db_session.query(Order).filter_by(order_no="C1").first()
+    assert o.est_packing == Decimal("150")     # 中位数[120,180]
+    assert o.est_logistics == Decimal("290")   # 中位数[280,300]
+
+
+def test_exact_sku_estimate_preferred_over_base(db_session):
+    """精确 SKU 有费用 → 优先用它, 不走基础产品码兜底。"""
+    from app.models.pricing import PricingSku
+    from app.services import order_fee_actual_service as svc
+    db_session.add(PricingSku(product_code="P2", sku_code="PPS2421007090113",
+                              packaging_cost=Decimal("180"), logistics_cost=Decimal("280")))
+    db_session.add(Order(platform="淘宝", order_no="N1", qty=2, status="signed",
+                         paid_amount=Decimal("5000"), sku_code="PPS2421007090113"))
+    db_session.flush()
+    svc.sync_fee_components(db_session)
+    o = db_session.query(Order).filter_by(order_no="N1").first()
+    assert o.est_packing == Decimal("360")     # 180 × qty2
+    assert o.est_logistics == Decimal("560")   # 280 × qty2
