@@ -84,21 +84,35 @@ def test_revenue_alipay_taojinbi_small_positive_exempt(db_session):
         DataException.source_pk == "revenue_alipay:5115819387933109739").count() == 0
 
 
-def test_revenue_alipay_duplicate_flow_still_flags(db_session):
-    """同号客户付款重复入库(差≈100%)→ 仍报(不当淘金币放行)。"""
+def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
+    """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
+    分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""
     no = "9000000000000000001"
-    _rev_order(db_session, no, 1000)
-    db_session.add(AlipayFlow(account="企业号", transaction_no="DUP", transaction_time=datetime(2026, 5, 17),
-                              amount=Decimal("1000"), related_order_no=no,
-                              transaction_type="付款", reconciliation_type="customer_payment"))
-    db_session.add(AlipayFlow(account="企业号", transaction_no="DUP", transaction_time=datetime(2026, 5, 17),
-                              amount=Decimal("1000"), related_order_no=no,
+    _rev_order(db_session, no, 2837.75)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXP", transaction_time=datetime(2026, 5, 18),
+                              amount=Decimal("2837.75"), related_order_no=no,
                               transaction_type="交易付款", reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXP", transaction_time=datetime(2026, 5, 26),
+                              amount=Decimal("278.73"), related_order_no=no,
+                              transaction_type="交易分账", reconciliation_type="customer_payment"))
     db_session.flush()
     r = recon.run_revenue_alipay(db_session, record_exceptions=True)
-    assert any(d.key == no and d.severity != "ok" for d in r.diffs)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
     assert db_session.query(DataException).filter(
-        DataException.source_pk == f"revenue_alipay:{no}").count() == 1
+        DataException.source_pk == f"revenue_alipay:{no}").count() == 0
+
+
+def test_revenue_alipay_different_txn_deposit_and_balance_both_count(db_session):
+    """定金 + 尾款 是不同交易号 → 各自保留相加, 不被同号去重误伤(回归)。"""
+    no = "9000000000000000003"
+    _rev_order(db_session, no, 1500)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="DEP", transaction_time=datetime(2026, 5, 10),
+                              amount=Decimal("500"), related_order_no=no, reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="BAL", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("1000"), related_order_no=no, reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)   # 500+1000=1500=实付
 
 
 def test_revenue_alipay_shortfall_still_flags(db_session):

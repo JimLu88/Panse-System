@@ -882,16 +882,25 @@ def run_revenue_alipay(
     flow_txns_by_order: dict[str, list] = {}          # 订单键 → 交易流水号(查同号重复入库用)
     orphan_income_by_month: dict[str, Decimal] = {}   # 配不到订单的收入按月兜底
     orphan_flow_nos_by_month: dict[str, list[str]] = {}
+    # 同一交易号下『交易付款 + 分账/交易分账』是同一笔的支付与结算, 收入只能算一次(取最大额=付款额),
+    # 否则分账叠加在付款上 → 该单收入虚高 (2026-06-22)。先按 (订单, 交易号) 取最大, 再汇总;
+    # 定金/尾款是不同交易号, 各自保留相加, 不受影响。
+    _txn_max: dict[str, dict] = {}                     # 订单键 → {交易号: 该号最大金额}
     for t, amt, ron, tn in db.execute(af_stmt).all():
         k = _okey(ron)
+        amt_d = Decimal(amt or 0)
         if k and k in order_paid:
-            flow_income[k] = flow_income.get(k, Decimal("0")) + Decimal(amt or 0)
-            flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{Decimal(amt or 0)}")
+            cur = _txn_max.setdefault(k, {})
+            if tn not in cur or amt_d > cur[tn]:
+                cur[tn] = amt_d
+            flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{amt_d}")
             flow_txns_by_order.setdefault(k, []).append(tn)
         else:
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
-            orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + Decimal(amt or 0)
-            orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{Decimal(amt or 0)} (订单{ron})")
+            orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + amt_d
+            orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{amt_d} (订单{ron})")
+    for _k, _m in _txn_max.items():
+        flow_income[_k] = sum(_m.values(), Decimal("0"))
 
     if not order_paid and not flow_income and not orphan_income_by_month:
         return _result("revenue_alipay", period_start, period_end, [ReconciliationDiff(
