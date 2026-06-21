@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Alert, Button, Checkbox, Input, InputNumber, Space, Statistic, Table, Tag,
   Typography, Upload, message,
@@ -26,7 +26,7 @@ function thisMonth(): string {
 
 export default function PackingBillsPage() {
   const qc = useQueryClient();
-  const [billMonth, setBillMonth] = useState<string>(thisMonth());
+  const [billMonth, setBillMonth] = useState<string>('');
   const [parsing, setParsing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rows, setRows] = useState<PackingRowParsed[]>([]);
@@ -36,11 +36,27 @@ export default function PackingBillsPage() {
   const { data: saved = [] } = useQuery<PackingBillRow[]>({
     queryKey: ['packing-bills', billMonth],
     queryFn: () => listPackingBills(billMonth),
+    enabled: !!billMonth,
   });
   const { data: summary } = useQuery({
     queryKey: ['packing-summary', billMonth],
     queryFn: () => packingSummary(billMonth),
+    enabled: !!billMonth,
   });
+
+  // 有数据的账期(默认跳到最近有数据的月, 免得停在空白当月)
+  const { data: allBills = [] } = useQuery<PackingBillRow[]>({
+    queryKey: ['packing-all'],
+    queryFn: () => listPackingBills(),
+  });
+  const availableMonths = useMemo(() => {
+    const s = new Set<string>();
+    allBills.forEach(b => { if (b.bill_month) s.add(b.bill_month); });
+    return Array.from(s).sort().reverse();
+  }, [allBills]);
+  useEffect(() => {
+    if (!billMonth) setBillMonth(availableMonths[0] ?? thisMonth());
+  }, [availableMonths, billMonth]);
 
   const handleParse = async (file: File) => {
     setParsing(true);
@@ -170,6 +186,15 @@ export default function PackingBillsPage() {
         <Tag color="gold">打包</Tag>
         <Input addonBefore="账期" value={billMonth} style={{ width: 180 }}
           placeholder="2026-06" onChange={e => setBillMonth(e.target.value)} />
+        {availableMonths.length > 0 && (
+          <Space size={4}>
+            <Typography.Text type="secondary">有数据:</Typography.Text>
+            {availableMonths.map(m => (
+              <Tag key={m} color={m === billMonth ? 'blue' : 'default'}
+                style={{ cursor: 'pointer' }} onClick={() => setBillMonth(m)}>{m}</Tag>
+            ))}
+          </Space>
+        )}
       </Space>
 
       <Alert type="warning" showIcon
