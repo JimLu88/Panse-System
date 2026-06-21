@@ -327,6 +327,57 @@ def parse_promo_signup(
     return data
 
 
+_PACKING_BILL_SYSTEM = """你是「打包费手写账单」识别助手。图片是打包工人手写的笔记本/便签照片,逐行记录每单的打包费。
+请逐行提取, 输出严格 JSON (不要 markdown 代码块):
+{
+  "rows": [
+    {
+      "row_date": "YYYY-MM-DD 或 null (常只写几号, 如'5号'→当月; 看不清 null)",
+      "customer_name": "客户/收货人姓名 (手写, 尽量识别)",
+      "order_no": "订单号 (本子上很少写, 没有就 null)",
+      "product": "产品/款式简述 (可空)",
+      "packing_fee": 数字 (这单的打包费金额, 元, 不带符号),
+      "excluded": true/false (这行是否被标注为「不算/不计入/改客户/非本店/作废/划掉」等 → true),
+      "exclude_reason": "若 excluded=true, 写本子上的原话 (如'改客户'/'退了')",
+      "note": "其它备注原话",
+      "confidence": 0.0-1.0 (这一行手写识别的把握),
+      "warnings": ["这行里看不清的字段, 尤其姓名/金额"]
+    }
+  ],
+  "declared_total": 数字或 null (本子上若写了「合计/总计 XXX 元」, 填那个数, 用来和各行相加互核),
+  "ocr_warnings": ["全局问题, 如字迹潦草/被遮挡/可能漏行"]
+}
+
+规则:
+- 这是手写体, 中文姓名极易认错 — 没把握的姓名照样填但 confidence 调低并写进 warnings, 绝不编造。
+- 金额只填纯数字; 划掉/涂改的行 excluded=true 并尽量读出原值。
+- 「改客户」「不是我们的」「作废」「不算」「退了」等批注 → excluded=true。
+- 只输出 JSON, 不要解释。"""
+
+
+def parse_packing_bill(
+    db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
+) -> dict:
+    """解析打包费手写账单照片. 返回 {"rows": [...], "declared_total": ..., "ocr_warnings": [...]}.
+
+    手写中文姓名识别准确率有限 (~60-80%), 故走 parse→预览→人工复核→commit, 不无人值守入库。
+    """
+    resp = _ocr_image_resp(
+        db, system=_PACKING_BILL_SYSTEM, user="请逐行识别这张手写打包费账单, 输出 JSON.",
+        image_bytes=image_bytes, mime=mime, max_tokens=4000,
+    )
+    try:
+        data = _extract_json(resp.text)
+    except ValueError as e:
+        raise AiUnavailable(f"AI 返回无法解析: {e}")
+    data.setdefault("rows", [])
+    data.setdefault("ocr_warnings", [])
+    data.setdefault("declared_total", None)
+    if not isinstance(data["rows"], list):
+        data["rows"] = []
+    return data
+
+
 def parse_alipay_flow_screenshot(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:

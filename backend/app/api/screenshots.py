@@ -494,3 +494,65 @@ def commit_factory_recon(
         inserted += 1
     db.commit()
     return {"inserted": inserted, "skipped": skipped}
+
+
+# --------------------------- 打包费手写账单 (用户 2026-06-21, C) --------------------------- #
+
+
+@router.post("/packing-bill/parse")
+@limiter.limit("10/minute")
+async def parse_packing_bill_ep(
+    request: Request,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """打包工手写打包费本拍照 → AI 逐行识别 (不入库, 返回预览供人工复核)。
+
+    手写中文姓名识别准确率有限 (~60-80%), 故必须在前端复核每行姓名/金额再 commit。
+    """
+    content = await file.read()
+    img, mime = _read_image(file, content)
+    _archive_original(db, img, file.filename or "packing_bill.jpg", "packing_bill")
+    try:
+        data = await asyncio.to_thread(vision_ocr_service.parse_packing_bill, db, img, mime=mime)
+    except AiUnavailable as e:
+        raise HTTPException(503, str(e))
+    return {
+        "image_b64": base64.b64encode(img).decode("ascii"),
+        "mime": mime,
+        **data,
+    }
+
+
+class PackingRowIn(BaseModel):
+    row_date: Optional[str] = None     # YYYY-MM-DD
+    customer_name: Optional[str] = None
+    order_no: Optional[str] = None
+    product: Optional[str] = None
+    packing_fee: Optional[float] = None
+    excluded: bool = False
+    exclude_reason: Optional[str] = None
+    note: Optional[str] = None
+    confidence: Optional[float] = None
+
+
+class CommitPackingIn(BaseModel):
+    bill_month: Optional[str] = None   # 账期 YYYY-MM
+    source_image: Optional[str] = None
+    rows: list[PackingRowIn]
+
+
+@router.post("/packing-bill/commit")
+def commit_packing_bill_ep(
+    payload: CommitPackingIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """人工复核后的打包费账单行 → 入库 + 配单 + 自动剔除「不计入」行。返回入库统计 + 当月核算。"""
+    from app.services import packing_bill_service
+    rows = [r.model_dump() for r in payload.rows]
+    result = packing_bill_service.commit_packing_parsed(
+        db, rows, bill_month=payload.bill_month, source_image=payload.source_image)
+    db.commit()
+    return result

@@ -16,7 +16,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.models.finance import (
     AccountBalance, AlipayFlow, FactoryReconciliation, LogisticsBill,
-    RefillRecord, WanshifuBill,
+    PackingBill, RefillRecord, WanshifuBill,
 )
 from app.models.marketing import PromotionFlow
 from app.services import (
@@ -1294,6 +1294,47 @@ def match_logistics_bills_ep(only_unmatched: bool = True, db: Session = Depends(
     counts = logistics_bill_match.match_logistics_bills(db, only_unmatched=only_unmatched)
     db.commit()
     return counts
+
+
+class PackingBillOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    bill_month: Optional[str]
+    row_date: Optional[date]
+    customer_name: Optional[str]
+    order_no: Optional[str]
+    matched_order_no: Optional[str]
+    match_method: Optional[str]
+    match_note: Optional[str]
+    product: Optional[str]
+    packing_fee: Optional[Decimal]
+    excluded: bool = False
+    exclude_reason: Optional[str]
+    confidence: Optional[Decimal]
+    note: Optional[str]
+
+
+@router.get("/packing-bills", response_model=list[PackingBillOut])
+def list_packing_bills(
+    bill_month: Optional[str] = None,
+    limit: int = Query(1000, le=5000),
+    db: Session = Depends(get_db),
+):
+    """打包费手写账单逐行列表 (按账期/最新优先)。"""
+    stmt = select(PackingBill)
+    if bill_month:
+        stmt = stmt.where(PackingBill.bill_month == bill_month)
+    stmt = stmt.order_by(PackingBill.bill_month.desc().nulls_last(),
+                         PackingBill.row_date.desc().nulls_last(),
+                         PackingBill.id.desc()).limit(limit)
+    return db.execute(stmt).scalars().all()
+
+
+@router.get("/packing-bills/summary")
+def packing_bills_summary(bill_month: Optional[str] = None, db: Session = Depends(get_db)):
+    """当月打包费核算: 应付(已剔除不计入) / 剔除额 / 未配单数 — 与本子合计互核。"""
+    from app.services import packing_bill_service
+    return packing_bill_service.month_summary(db, bill_month)
 
 
 @router.get("/promotion-flows", response_model=list[PromotionFlowOut])

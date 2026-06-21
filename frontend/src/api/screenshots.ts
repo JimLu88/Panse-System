@@ -179,3 +179,79 @@ export const commitFactoryReconScreenshot = (rows: FactoryReconRowParsed[]) =>
       { rows },
     )
     .then((r) => r.data);
+
+// ----- 打包费手写账单 (用户 2026-06-21, C) -----
+export interface PackingRowParsed {
+  row_date?: string | null;
+  customer_name?: string | null;
+  order_no?: string | null;
+  product?: string | null;
+  packing_fee?: number | null;
+  excluded?: boolean;
+  exclude_reason?: string | null;
+  note?: string | null;
+  confidence?: number | null;
+  warnings?: string[];
+}
+export interface PackingParseResp {
+  image_b64: string;
+  mime: string;
+  rows: PackingRowParsed[];
+  declared_total?: number | null;
+  ocr_warnings: string[];
+}
+export const parsePackingBill = (file: File) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api
+    .post<PackingParseResp>('/api/screenshots/packing-bill/parse', fd, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 120000,
+    })
+    .then((r) => r.data);
+};
+export interface PackingCommitResp {
+  inserted: number;
+  skipped: number;
+  matched: number;
+  excluded: number;
+  rows_total: number;
+  payable_total: number;
+  excluded_total: number;
+  excluded_rows: number;
+  unmatched_rows: number;
+}
+export const commitPackingBill = (payload: {
+  bill_month?: string;
+  source_image?: string;
+  rows: PackingRowParsed[];
+}) =>
+  api
+    .post<PackingCommitResp>('/api/screenshots/packing-bill/commit', payload)
+    .then((r) => r.data);
+
+export interface PackingBillRow {
+  id: number;
+  bill_month?: string | null;
+  row_date?: string | null;
+  customer_name?: string | null;
+  order_no?: string | null;
+  matched_order_no?: string | null;
+  match_method?: string | null;
+  match_note?: string | null;
+  product?: string | null;
+  packing_fee?: number | null;
+  excluded: boolean;
+  exclude_reason?: string | null;
+  confidence?: number | null;
+  note?: string | null;
+}
+export const listPackingBills = (billMonth?: string) =>
+  api
+    .get<PackingBillRow[]>('/api/finance/packing-bills', { params: { bill_month: billMonth } })
+    .then((r) => r.data);
+export const packingSummary = (billMonth?: string) =>
+  api
+    .get<Omit<PackingCommitResp, 'inserted' | 'skipped' | 'matched' | 'excluded'>>(
+      '/api/finance/packing-bills/summary', { params: { bill_month: billMonth } })
+    .then((r) => r.data);

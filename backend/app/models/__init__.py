@@ -14,7 +14,9 @@ from app.models.finance import (
     AlipayFlow,
     FactoryReconciliation,
     LogisticsBill,
+    PackingBill,
     RefillRecord,
+    StaffSalary,
     WanshifuBill,
     WanshifuOrder,
 )
@@ -90,6 +92,8 @@ __all__ = [
     "WanshifuBill",
     "WanshifuOrder",
     "LogisticsBill",
+    "PackingBill",
+    "StaffSalary",
     "AiChatLog",
     "AiCodePatch",
     "Sample",

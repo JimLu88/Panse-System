@@ -61,6 +61,7 @@ const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage
 const CustomQuoteV2Page = lazy(() => import('./pages/CustomQuoteV2Page'));
 const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
 const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
+const PackingBillsPage = lazy(() => import('./pages/PackingBillsPage'));
 const RefillRecordsPage = lazy(() => import('./pages/RefillRecordsPage'));
 const CashFlowPage = lazy(() => import('./pages/CashFlowPage'));
 const DataExplorerPage = lazy(() => import('./pages/DataExplorerPage'));
@@ -200,6 +201,7 @@ export default function App() {
       label: '物流',
       children: [
         { key: 'logistics-bills', label: <Link to="/logistics-bills">物流账单</Link> },
+        { key: 'packing-bills', label: <Link to="/packing-bills">打包费账单</Link> },
         // 万师傅: 月结对账(充值制可不用) + 安装订单档案(配对淘宝订单, 需要); 恢复入口, 默认进安装订单档案
         { key: 'wanshifu-bills', label: <Link to="/wanshifu-bills">万师傅</Link> },
       ],
@@ -387,6 +389,7 @@ export default function App() {
             <Route path="/ops-tools" element={<OpsToolsPage />} />
             <Route path="/wanshifu-bills" element={<WanshifuBillsPage />} />
             <Route path="/logistics-bills" element={<LogisticsBillsPage />} />
+            <Route path="/packing-bills" element={<PackingBillsPage />} />
             <Route path="/refill-records" element={<RefillRecordsPage />} />
             <Route path="/cash-flow" element={<CashFlowPage />} />
             <Route path="/recon-center" element={<ReconCenterPage />} />

@@ -5,7 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -230,6 +230,36 @@ class LogisticsBill(Base, TimestampMixin):
     )
     # 飞书同步配对键, 由事件钩子自动生成
     sync_key: Mapped[Optional[str]] = mapped_column(String(160), index=True)
+
+
+class PackingBill(Base, TimestampMixin):
+    """打包费手写账单 — 打包工逐单手写本拍照 OCR 后逐行入库 (用户 2026-06-21)。
+
+    用途: Σ packing_fee (excluded=False) = 当月应付打包费。
+    手写姓名 OCR 准确率有限 (~60-80%) → 走 parse→预览→人工复核→commit, 不无人值守。
+    配单按 matched_order_no (OCR单号优先, 否则客户名唯一匹配; 排除关闭单)。
+    「改客户/不计入/作废」行 excluded=True 自动剔除, 不计入应付总额 (用户 C②)。
+    """
+    __tablename__ = "packing_bills"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    bill_month: Mapped[Optional[str]] = mapped_column(String(7), index=True)   # 账期 YYYY-MM
+    row_date: Mapped[Optional[date]] = mapped_column(Date)
+    customer_name: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    order_no: Mapped[Optional[str]] = mapped_column(String(64))
+    matched_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    match_method: Mapped[Optional[str]] = mapped_column(String(32))   # order_no/name_unique/multi/none/manual
+    match_note: Mapped[Optional[str]] = mapped_column(Text)
+    product: Mapped[Optional[str]] = mapped_column(String(128))
+    packing_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    excluded: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    exclude_reason: Mapped[Optional[str]] = mapped_column(String(128))
+    confidence: Mapped[Optional[Decimal]] = mapped_column(Numeric(3, 2))
+    note: Mapped[Optional[str]] = mapped_column(Text)
+    source_image: Mapped[Optional[str]] = mapped_column(String(255))
+    import_job_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True,
+    )
 
 
 class FactoryReconciliation(Base, TimestampMixin):
