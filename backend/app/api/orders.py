@@ -156,12 +156,47 @@ def factory_production(
         for code, c in db.execute(select(Product.code, Product.category).where(Product.code.in_(codes))).all():
             cat[code] = c
     today = _date.today()
-    # 远期单关键字: 客户备注里出现这些 → 自动归为远期(等通知再发)
-    REMOTE_KW = ("等通知", "通知后", "通知再发", "客户通知", "待通知", "暂不发", "暂缓", "不急", "等客户")
+    import re as _re
+    # 远期单关键字 (2026-06-21 扩充 + 全字段命中: 备注/生产备注/买家留言/商家备注 任一含即远期)
+    REMOTE_KW = (
+        "远期", "走远期",
+        "等通知", "等客户通知", "通知后", "通知再发", "通知再做", "客户通知", "待通知", "等客户",
+        "收到通知", "随时通知", "等确认", "确认后再", "确认再发",
+        "暂不发", "暂不生产", "暂不制作", "先不发", "先不做", "先别发", "先别做", "先放", "先压着",
+        "押后", "暂缓", "缓发", "缓一缓", "延后发", "延期发", "延迟发", "推迟发", "晚点发", "迟点发",
+        "装修好", "装修完", "房子好", "房子装好", "新房", "入住前", "还没装修", "房子还没",
+        "别提前", "不要提前", "别太早", "不要太早",
+    )
 
-    def _status(o: Order, days: Optional[int]) -> str:
-        if o.is_remote_ship or any(k in (o.remark or "") for k in REMOTE_KW):
-            return "remote"        # 远期: 等客户通知再发
+    def _remote_text(o: Order) -> str:
+        return " ".join(t for t in (
+            o.remark, getattr(o, "production_note", None),
+            getattr(o, "buyer_message", None), getattr(o, "seller_memo", None),
+        ) if t)
+
+    def _resume_date(text: str, od: Optional[_date]) -> Optional[_date]:
+        """备注解析「X号/X月X日 (以后/再)发(货)」预定发货日 → 到期自动排产; 取不到 None。"""
+        if not text:
+            return None
+        by, bm = (od.year, od.month) if od else (today.year, today.month)
+        m = _re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?\s*(?:以?后|再|左右)?\s*发", text)
+        if m:
+            try:
+                return _date(by, int(m.group(1)), int(m.group(2)))
+            except ValueError:
+                return None
+        m = _re.search(r"(\d{1,2})\s*[日号]\s*(?:以?后|之?后|左右|再)?\s*发", text)
+        if m:
+            try:
+                d = _date(by, bm, int(m.group(1)))
+                if od and d < od:   # 该日早于下单 → 顺延下月
+                    d = _date(by + (1 if bm == 12 else 0), 1 if bm == 12 else bm + 1, int(m.group(1)))
+                return d
+            except ValueError:
+                return None
+        return None
+
+    def _by_days(days: Optional[int]) -> str:
         if days is None:
             return "normal"
         if days < 0:
@@ -177,8 +212,21 @@ def factory_production(
     out = []
     for o in orders:
         base = o.order_date
-        eff = o.ship_deadline or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
-        days = (eff - today).days if eff else None
+        _txt = _remote_text(o)
+        _rdate = _resume_date(_txt, base)
+        if o.is_remote_ship:                                # 手动设为远期: 无期限
+            eff, days, st = None, None, "remote"
+        elif o.ship_deadline:                               # 人工设了截止 → 正常倒计时
+            eff = o.ship_deadline; days = (eff - today).days; st = _by_days(days)
+        elif _rdate is not None:                            # 备注带发货日: 截止=该日; 距今>工期仍远期(太早别做), 否则到期排产
+            eff = _rdate; days = (eff - today).days
+            st = "remote" if days > DEFAULT_SHIP_DAYS else _by_days(days)
+        elif any(k in _txt for k in REMOTE_KW):             # 关键词远期(等通知/装修好…): 无期限, 等客户通知
+            eff, days, st = None, None, "remote"
+        else:                                               # 普通: 下单 + 工期
+            eff = (base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None
+            days = (eff - today).days if eff else None
+            st = _by_days(days)
         out.append({
             "id": o.id,
             "order_no": o.order_no,
@@ -186,6 +234,7 @@ def factory_production(
             "ship_deadline": o.ship_deadline.isoformat() if o.ship_deadline else None,
             "effective_deadline": eff.isoformat() if eff else None,
             "days_left": days,
+            "remote_resume_date": _rdate.isoformat() if _rdate else None,   # 备注解析出的预定发货日(到期自动排产)
             "customer_name": o.customer_name,
             "customer_phone": o.customer_phone,
             "customer_address": o.customer_address,
@@ -198,7 +247,7 @@ def factory_production(
             "production_note": o.production_note,
             "is_custom": o.is_custom,
             "is_remote_ship": o.is_remote_ship,
-            "status": _status(o, days),   # remote/overdue/critical/urgent/normal
+            "status": st,   # remote/overdue/critical/urgent/normal
             "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
         })
     return out
