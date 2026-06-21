@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Button, Select, Space, Statistic, Table, Tag, Typography, message } from 'antd';
 import { FileExcelOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
+import FeeVariancePanel from '../components/FeeVariancePanel';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -257,6 +258,7 @@ export default function FactoryStatementPage() {
           />
         </>
       )}
+      <FeeVariancePanel url="/api/finance/factory-wood/variance" label="工厂木作" queryKey="factory-wood-variance" />
     </div>
   );
 }

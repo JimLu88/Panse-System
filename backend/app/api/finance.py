@@ -1377,6 +1377,12 @@ def install_fee_variance(db: Session = Depends(get_db)):
     return _fee_variance(db, "est_install", "actual_install")
 
 
+@router.get("/factory-wood/variance")
+def factory_wood_variance(db: Session = Depends(get_db)):
+    """工厂木作 实际(工厂对账单 actual_cost) vs 预估(定价表 wood_cost_est) 逐单偏差 + 总计。"""
+    return _fee_variance(db, "wood_cost_est", "actual_cost")
+
+
 class PackingBillOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
