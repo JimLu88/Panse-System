@@ -1415,7 +1415,8 @@ def run_refund_reconciliation(db: Session, *, period_start=None, period_end=None
 # -------- Rule 14: 总账级勾稽 (账户余额月变动 ↔ 支付宝流水净额) --------
 
 # U3 拍板 (2026-06): 爱群号曾混用私人支出, 流水天然不连续 → 不做流水勾稽, 只查账面自洽。
-_LEDGER_FLOW_EXEMPT = ("爱群号",)
+# 佳宝号 (2026-06-23): 只导了「转账红包」子集(非整账户), 流水不完整, 流水勾稽必假报 → 同样豁免, 只查账面自洽。
+_LEDGER_FLOW_EXEMPT = ("爱群号", "佳宝号")
 
 
 def run_ledger_check(
