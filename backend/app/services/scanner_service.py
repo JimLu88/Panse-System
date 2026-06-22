@@ -63,6 +63,8 @@ def scan_dangling_order_product(db: Session) -> list[ScanFinding]:
     existing_codes = {c for (c,) in db.execute(select(Product.code)).all()}
     rows = db.execute(select(Order).where(Order.product_code.is_not(None))).scalars().all()
     for o in rows:
+        if (o.status or "") == "cancelled":
+            continue  # 交易关闭单无收入/不生产, 产品编码坏不坏无所谓, 不报 (用户 2026-06-22)
         if o.product_code and o.product_code not in existing_codes:
             out.append(ScanFinding(
                 source_table="orders",

@@ -24,6 +24,14 @@ def test_dangling_product_code_detected(db_session):
     assert r.findings[0].context["product_code"] == "PPS999"
 
 
+def test_dangling_product_code_skips_cancelled(db_session):
+    """交易关闭单无收入/不生产, 引用坏产品编码也不报 (用户 2026-06-22)。"""
+    db_session.add(Order(platform="淘宝", order_no="OC", product_code="PPS999", qty=1, status="cancelled"))
+    db_session.flush()
+    r = svc.run_scanner(db_session, "dangling_order_product", dry_run=True)
+    assert len(r.findings) == 0
+
+
 def test_dangling_product_writes_exception(db_session):
     db_session.add(Order(platform="淘宝", order_no="O1", product_code="MISSING", qty=1))
     db_session.flush()
