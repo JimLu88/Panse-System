@@ -194,6 +194,17 @@ def test_refill_transfer_pending_when_no_transfer(db_session):
     assert all(d.severity == "not_available" for d in r.diffs)
 
 
+def test_refill_express_annual_suppresses_zero_paid(db_session):
+    """补单运费年结口径: 代付台账无实付(实付0) → 不报月差(年结未结) (2026-06-22)。"""
+    db_session.add(RefillRecord(order_no="RFX1", refill_date=date(2026, 5, 1), refill_freight=Decimal("615")))
+    db_session.add(RefillRecord(order_no="RFX2", refill_date=date(2026, 1, 10), refill_freight=Decimal("240")))
+    db_session.flush()
+    r = recon.run_refill_express_payout(db_session, record_exceptions=True)
+    assert not any(d.severity in ("error", "warning") for d in r.diffs)   # 实付0年结未结, 不报
+    assert db_session.query(DataException).filter(
+        DataException.source_pk.like("refill_express_payout:%")).count() == 0
+
+
 # -------- Rule 5 inventory_value --------
 
 def test_inventory_value_basic(db_session):

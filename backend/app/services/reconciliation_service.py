@@ -1221,12 +1221,26 @@ def _prepay_income_by_month(db: Session, category: str,
 def _run_prepay(db: Session, *, rule: RuleName, category: str,
                 billed_by_month: dict[str, Decimal],
                 ps: Optional[date], pe: Optional[date], record_exceptions: bool,
-                noun: str = "费用", source_hint: str = "业务表") -> ReconciliationResult:
+                noun: str = "费用", source_hint: str = "业务表",
+                annual: bool = False, suppress_zero_paid: bool = False) -> ReconciliationResult:
     """通用: 应摊(出项, billed_by_month) ↔ 代付台账实付(进项)。差额=实付-应摊。
 
     noun/source_hint 用于把差异说明写成人话 (用户反馈"应摊¥300"看不懂)。
+    annual=True: 按年聚合比对(年结口径, 不逐月报)。
+    suppress_zero_paid=True: 代付台账还没实付(实付0)时不报差(年结未结); 实付登记后再比对 (用户 2026-06-22)。
     """
     paid = _prepay_income_by_month(db, category, ps, pe)
+    period_word = "月"
+    if annual:
+        def _by_year(d: dict[str, Decimal]) -> dict[str, Decimal]:
+            out: dict[str, Decimal] = {}
+            for k, v in d.items():
+                y = (k or "")[:4] or "(无年)"
+                out[y] = out.get(y, Decimal("0")) + v
+            return out
+        billed_by_month = _by_year(billed_by_month)
+        paid = _by_year(paid)
+        period_word = "年"
     if not billed_by_month and not paid:
         return _result(rule, ps, pe, [ReconciliationDiff(
             key="all", expected=None, actual=None, diff=None, severity="not_available",
@@ -1238,10 +1252,14 @@ def _run_prepay(db: Session, *, rule: RuleName, category: str,
         act = paid.get(key, Decimal("0"))               # 实际代付
         diff = act - exp
         sev = _classify(diff, base=exp)
-        msg = (f"{key} 月{noun}: {source_hint}里登记该月共 ¥{exp} (=应摊), "
+        if suppress_zero_paid and act == 0:
+            sev = "ok"   # 年结口径: 代付台账未实付=未到年结, 不报差 (用户 2026-06-22)
+        msg = (f"{key} {period_word}{noun}: {source_hint}里登记该{period_word}共 ¥{exp} (=应摊), "
                f"代付台账里实际付出 ¥{act}, 两边差 ¥{diff}。")
         if act == 0 and exp > 0:
-            msg += " 实付为 0 通常是该月代付台账还没导入, 或这笔钱没走代付。"
+            msg += (" (年结口径: 未到年结/代付台账未实付, 暂不报差; 年结实付登记后再比对)"
+                    if suppress_zero_paid else
+                    " 实付为 0 通常是该月代付台账还没导入, 或这笔钱没走代付。")
         elif exp == 0 and act > 0:
             msg += f" 应摊为 0 说明{source_hint}里没登记这笔, 请补录或核对月份归属。"
         diffs.append(ReconciliationDiff(key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg))
@@ -1268,7 +1286,9 @@ def run_refill_commission_payout(db: Session, *, period_start=None, period_end=N
 
 def run_refill_express_payout(db: Session, *, period_start=None, period_end=None,
                               record_exceptions: bool = True) -> ReconciliationResult:
-    """补单快递: 订单应摊 RefillRecord.refill_freight ↔ 代付台账 refill_express 实付 (按月)。"""
+    """补单快递: 订单应摊 RefillRecord.refill_freight ↔ 代付台账 refill_express 实付。
+    年结口径 (用户 2026-06-22): 补单运费按年结算, 不逐月报; 代付台账未实付(年结未结)时不报差,
+    年结实付登记后按年比对, 对不上才报。"""
     stmt = select(RefillRecord.refill_date, RefillRecord.refill_freight).where(RefillRecord.refill_freight.isnot(None))
     if period_start:
         stmt = stmt.where(RefillRecord.refill_date >= period_start)
@@ -1277,7 +1297,8 @@ def run_refill_express_payout(db: Session, *, period_start=None, period_end=None
     billed = _sum_by_month(db.execute(stmt).all())
     return _run_prepay(db, rule="refill_express_payout", category="refill_express",
                        billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions,
-                       noun="补单快递费", source_hint="补单记录(补单运费字段)")
+                       noun="补单快递费", source_hint="补单记录(补单运费字段)",
+                       annual=True, suppress_zero_paid=True)
 
 
 def run_aftersales_payout(db: Session, *, period_start=None, period_end=None,
