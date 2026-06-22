@@ -763,6 +763,29 @@ def auto_cost_backfill(db: Session) -> dict:
     if rezeroed:
         db.flush()
 
+    # 多产品单成本自愈 (2026-06-22 用户拍板口径A): 若多产品单(≥2 import子行)当前 theoretical_cost
+    # ≠ 子行汇总成本(_multi_product_cost), 重置为 None 待下面按口径A重算。
+    # 防"分两次导入"(先订单报表落单产品成本、后销售明细加子行→成本已落不再刷新)的塌单漏算复发。
+    # 护栏返回 None 的(成本和>实付的部分付款/qty异常单)与不可定价子行的单 _mp=None → 不动(保留单SKU)。
+    from app.models.order import OrderDetail as _OD
+    from sqlalchemy import func as _func
+    mp_reset = 0
+    _multi_nos = db.execute(
+        select(_OD.order_no).where(_OD.source == "import")
+        .group_by(_OD.order_no).having(_func.count() > 1)
+    ).scalars().all()
+    for _ono in _multi_nos:
+        _o = db.execute(select(Order).where(Order.order_no == _ono)).scalar_one_or_none()
+        if _o is None or getattr(_o, "is_custom", False):
+            continue
+        _mp = _multi_product_cost(db, _o)
+        if _mp is not None and Decimal(str(_o.theoretical_cost or 0)) != _mp.quantize(_CENTS):
+            _o.theoretical_cost = None
+            _o.actual_cost = None    # 多产品按子行汇总; 留 actual 会让 physical_cost 忽略汇总
+            mp_reset += 1
+    if mp_reset:
+        db.flush()
+
     ratios = category_cost_ratios(db)
     orders = db.execute(
         select(Order).where(or_(Order.theoretical_cost.is_(None), Order.theoretical_cost == 0))
