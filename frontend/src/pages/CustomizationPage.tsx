@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Dispatch, SetStateAction } from 'react';
 import {
   Alert,
@@ -508,24 +508,26 @@ function CompetitorTab() {
   const [addOpen, setAddOpen] = useState(false);
   const [addForm] = Form.useForm();
   const search = async () => {
-    if (!q.trim()) { setRows([]); return; }
     setLoading(true);
-    try { setRows(await competitorsTop(q, 20)); }
+    // 空搜索 → 显示最近录入的竞品(进页面/导入后直接可见); 有词 → 按匹配度 Top-N
+    try { setRows(await competitorsTop(q.trim(), q.trim() ? 20 : 100)); }
     catch { message.error('查询失败'); }
     finally { setLoading(false); }
   };
+  // 进页面先加载最近录入的竞品(不必先搜)
+  useEffect(() => { search(); }, []);  // eslint-disable-line react-hooks/exhaustive-deps
   const submitAdd = async (v: any) => {
     try {
       await addCompetitor(v);
       message.success('已添加竞品');
       setAddOpen(false); addForm.resetFields();
-      if (q.trim()) search();
+      search();
     } catch { message.error('添加失败'); }
   };
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
-        message="竞品价库: 按 产品/SKU/木材 搜索 Top-N (匹配度排序)。可点「添加竞品」手动录入; 最新价由外部采集回灌或点刷新尽力抓; 价格均为叠券前, 券后价已注明减额。" />
+        message="竞品价库: 不搜索默认显示最近录入; 按 产品/SKU/木材 搜索 Top-N (匹配度排序)。可点「添加竞品」手动录入; 最新价由外部采集回灌或点刷新尽力抓; 价格均为叠券前, 券后价已注明减额。" />
       <Space style={{ width: '100%', justifyContent: 'space-between' }} wrap>
         <Space.Compact style={{ width: '100%', maxWidth: 480 }}>
           <Input placeholder="如: 黑胡桃 餐边柜 1.5米" value={q}
@@ -542,7 +544,7 @@ function CompetitorTab() {
                 headers: { 'Content-Type': 'multipart/form-data' },
               });
               message.success(`竞品价库导入完成: 新增 ${r.data.inserted}, 更新 ${r.data.updated}, 跳过 ${r.data.skipped}; 原文件已存档`);
-              if (q.trim()) search();
+              search();
             } catch (e: any) {
               message.error(e?.response?.data?.detail ?? '导入失败');
             }

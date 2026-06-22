@@ -63,7 +63,11 @@ def competitors_top(q: str = "", limit: int = 10, db: Session = Depends(get_db))
     from app.services.product_match_service import _similarity
 
     if not q.strip():
-        return []
+        # 空搜索: 返回最近录入的竞品(让导入后/进页面直接看到数据, 不必先搜) (2026-06-22)
+        rows = db.execute(
+            select(CompetitorPrice).order_by(CompetitorPrice.id.desc()).limit(limit)
+        ).scalars().all()
+        return [_comp_out(db, r, 0.0) for r in rows]
     rows = db.execute(select(CompetitorPrice)).scalars().all()
     scored = []
     for r in rows:
