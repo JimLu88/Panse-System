@@ -508,6 +508,14 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
     ).scalars().all()
     if len(lines) < 2:
         return None
+    # 口径A(用户拍板 2026-06-22): 成本只算"留下的"子产品。排除被退的那一行
+    # (其 amount ≈ 订单剩余退款额 refund_amount; refund 已被 _normalize_refund 归0的单无需排除→全留)。
+    _refund = Decimal(str(getattr(order, "refund_amount", None) or 0))
+    if _refund > 0:
+        lines = [ln for ln in lines
+                 if abs(Decimal(str(ln.amount or 0)) - _refund) >= Decimal("0.5")]
+        if len(lines) < 1:
+            return None
     total = Decimal("0")
     for ln in lines:
         cost = None
