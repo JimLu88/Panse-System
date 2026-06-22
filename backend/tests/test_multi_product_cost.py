@@ -80,3 +80,12 @@ def test_no_refund_sums_all_lines():
     _seed_amt(db, "R2", [("S1", 2080, 1, 2705.19), ("S2", 730, 2, 1795.17)])
     assert _multi_product_cost(db, SimpleNamespace(order_no="R2", refund_amount=D("0"))) == D("3540")
     assert _multi_product_cost(db, SimpleNamespace(order_no="R2")) == D("3540")  # 无 refund_amount 属性
+
+
+def test_cost_exceeds_paid_returns_none():
+    # 护栏: 子行成本和 > 实付×1.1 → None (实付只覆盖部分子产品, 不硬套汇总造假亏)
+    db = _db()
+    _seed_amt(db, "G1", [("S1", 820, 1, 1054.90), ("S2", 770, 1, 989.67)])
+    assert _multi_product_cost(db, SimpleNamespace(order_no="G1", paid_amount=D("989.67"))) is None
+    # 实付够(两个都付) → 成本和1590 ≤ 2044×1.1 → 1590
+    assert _multi_product_cost(db, SimpleNamespace(order_no="G1", paid_amount=D("2044.57"))) == D("1590")

@@ -536,7 +536,14 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
         if cost is None:
             return None   # 有商品行查不到定价 → 整单成本不完整, 回退兜底路径(勿把缺行的部分和当整单成本, 否则漏算副商品→利润虚高)
         total += cost * int(ln.qty or 1)
-    return total if total > 0 else None
+    if total <= 0:
+        return None
+    # 口径A护栏(2026-06-22): 子行成本和 > 实付×1.1 → 实付只覆盖了部分子产品(部分付款/漏退/qty异常),
+    # 无法可靠判定"留下哪些", 返回 None 回退单SKU路径, 不硬套汇总造成假亏(交人工核实实付/qty)。
+    _paid = Decimal(str(getattr(order, "paid_amount", None) or 0))
+    if _paid > 0 and total > _paid * Decimal("1.1"):
+        return None
+    return total
 
 
 def _pricing_wood_for(db: Session, order: Order) -> Optional[Decimal]:
