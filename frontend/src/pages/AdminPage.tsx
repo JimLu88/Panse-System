@@ -93,7 +93,6 @@ import {
 } from '../api/client';
 import { syncAllShipments } from '../api/shipments';
 import { useAuth } from '../auth/AuthProvider';
-import FinancialCoefficientsCard from '../components/FinancialCoefficientsCard';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -121,7 +120,6 @@ export default function AdminPage() {
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
           { key: 'runtime-logs', label: <Space><WarningOutlined />运行日志 / 错误排查</Space>, children: <RuntimeLogsTab /> },
           { key: 'data-reset', label: <Space><DeleteOutlined />数据管理</Space>, children: <DataResetTab /> },
-          { key: 'fin-coef', label: '💰 财务系数设置', children: <FinancialCoefficientsCard /> },
           { key: 'ops-tools', label: '运维工具', children: <OpsToolsPage /> },
         ]}
       />
