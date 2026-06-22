@@ -255,7 +255,7 @@ export default function App() {
         { key: 'audit-trail', label: <Link to="/audit-trail">修改历史</Link> },
         // 全列数据浏览已裁撤 (各页自带"全部列"视图, 重复) — 路由保留, 直链仍可用
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
-        // 「管理」已移到右上角 小人菜单 → 系统设置 / 账户设置 (2026-06-22); 路由 /admin 保留
+        // 「管理」已移到右上角 小人菜单 → 系统设置 (2026-06-22; 账户设置 Tab 于 2026-06-23 去掉, 用户管理在系统设置内); 路由 /admin 保留
       ],
     },
   ];
@@ -315,7 +315,6 @@ export default function App() {
           menu={{
             items: [
               ...(user.role === 'admin' ? [
-                { key: 'account', icon: <UserOutlined />, label: <Link to="/admin?tab=users">账户设置</Link> },
                 { key: 'system', icon: <SettingOutlined />, label: <Link to="/admin">系统设置</Link> },
                 { type: 'divider' as const },
               ] : []),

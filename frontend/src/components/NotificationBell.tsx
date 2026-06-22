@@ -1,25 +1,14 @@
 /**
- * 顶部通知铃铛 (Phase 1B, 业务需求 4/5/6/8/9/11).
+ * 顶部「异常」入口 + 紧急告警强弹 modal (原通知铃铛已于 2026-06-23 移除)。
  *
- * - 每 30s 轮询 /api/alerts/active 拉未解决告警
- * - 角标显示总数; critical 数显示在红色徽标里
- * - 点击展开下拉; 高优 critical 不可 dismiss (sticky)
- * - 全局 modal: critical 第一次出现强弹一次, 用户点 "知道了" 后 5 分钟内不再弹
+ * 用户拍板 2026-06-23: 顶部铃铛(通知中心)与右上角「异常」计数作用重复 → 去掉铃铛, 只留「异常」入口。
+ * 文件名/导出名沿用 NotificationBell 以免改 App.tsx 引用; 现在只负责:
+ *  - ① 右上角「异常 N」计数标签 (每 60s 轮询未处理异常数; 点击进 /exceptions)
+ *  - ② critical / 退款待处理 告警的全局强弹 modal (安全网; 5 分钟冷却, 刷新不重弹)
  */
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Badge, Button, List, Modal, Space, Tag, Typography } from 'antd';
 import {
-  Badge,
-  Button,
-  Dropdown,
-  Empty,
-  List,
-  Modal,
-  Space,
-  Tag,
-  Typography,
-} from 'antd';
-import {
-  BellOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
   WarningOutlined,
@@ -73,7 +62,7 @@ export default function NotificationBell() {
     refetchInterval: 5 * 60 * 1000,
   });
 
-  // Phase 12: 订阅 SSE, 收到 alert 事件就刷新缓存
+  // Phase 12: 订阅 SSE, 收到 alert 事件就刷新缓存 (供紧急强弹 modal 用)
   useEffect(() => {
     const token = localStorage.getItem('panse_token');
     if (!token) return;
@@ -87,14 +76,6 @@ export default function NotificationBell() {
     };
     return () => es.close();
   }, [qc]);
-
-  const counts = useMemo(() => {
-    const out = { info: 0, warn: 0, critical: 0 };
-    alerts.forEach((a) => {
-      out[a.severity] = (out[a.severity] ?? 0) + 1;
-    });
-    return out;
-  }, [alerts]);
 
   const [modalShownIds, setModalShownIds] = useState<Set<number>>(loadShownIds);
   const [modalOpen, setModalOpen] = useState(false);
@@ -169,25 +150,6 @@ export default function NotificationBell() {
     </List.Item>
   );
 
-  const dropdown = (
-    <div style={{ width: 420, maxHeight: 540, overflow: 'auto',
-                  background: '#fff', boxShadow: '0 6px 16px -8px rgba(0,0,0,.2)',
-                  borderRadius: 8 }}>
-      <div style={{ padding: '12px 16px', borderBottom: '1px solid #f0f0f0',
-                    fontWeight: 600 }}>
-        通知中心
-        <span style={{ float: 'right', fontSize: 12, color: '#999', fontWeight: 'normal' }}>
-          critical {counts.critical} · warn {counts.warn} · info {counts.info}
-        </span>
-      </div>
-      {alerts.length === 0 ? (
-        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="目前没有未处理告警" />
-      ) : (
-        <List dataSource={alerts} renderItem={itemFor} />
-      )}
-    </div>
-  );
-
   const { data: excData } = useQuery({
     queryKey: ['open-exception-count'],
     queryFn: getOpenExceptionCount,
@@ -195,9 +157,6 @@ export default function NotificationBell() {
   });
   const openExceptions = excData?.count ?? 0;
   const excColor = openExceptions > 10 ? '#cf1322' : openExceptions > 3 ? '#fa8c16' : '#52c41a';
-
-  const total = alerts.length;
-  const colorByPriority = counts.critical > 0 ? '#cf1322' : counts.warn > 0 ? '#fa8c16' : '#1677ff';
 
   return (
     <>
@@ -211,17 +170,6 @@ export default function NotificationBell() {
           </Badge>
         </Link>
       )}
-      <Dropdown popupRender={() => dropdown} trigger={['click']} placement="bottomRight">
-        <Button
-          type="text"
-          icon={
-            <Badge count={total} size="small" style={{ backgroundColor: colorByPriority }}>
-              <BellOutlined style={{ color: 'white', fontSize: 18 }} />
-            </Badge>
-          }
-          style={{ marginRight: 16 }}
-        />
-      </Dropdown>
       <Modal
         title={<Space><CloseCircleOutlined style={{ color: '#cf1322' }} />紧急告警</Space>}
         open={modalOpen}
@@ -233,7 +181,7 @@ export default function NotificationBell() {
       >
         <List dataSource={modalAlerts} renderItem={itemFor} />
         <Typography.Text type="secondary" style={{ fontSize: 11 }}>
-          (5 分钟内不再弹出, 在右上角铃铛可继续查看)
+          (5 分钟内不再弹出; 可在右上角「异常」入口或对应页面继续处理)
         </Typography.Text>
       </Modal>
     </>
