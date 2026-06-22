@@ -133,7 +133,7 @@ def cs_product_detail(
         "size": _parse_size(p.size_detail), "size_detail": p.size_detail, "size_value": p.size_value,
         "main_material": p.main_material, "aux_material": p.aux_material,
         "description": p.description, "taobao_id": p.taobao_id,
-        "image_url": p.image_url, "gallery_image_url": p.gallery_image_url,
+        "image_url": p.image_url,   # 图库另由下方 gallery 字段提供 (Product 无 gallery_image_url, 误访问致500)
         "skus": [{
             "sku_code": s.sku_code, "sku": s.sku,
             "list_price": float(s.list_price) if s.list_price is not None else None,
