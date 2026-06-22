@@ -243,6 +243,12 @@ export default function PerOrderReconcilePage() {
             }}>
             导出 Excel
           </Button>
+          <Tooltip title="导出该月「成本只能估算、未录工厂账单」的订单, 对着把工厂对账单补录进系统">
+            <Button icon={<FileExcelOutlined />}
+              onClick={() => window.open('/api/factory-statement/missing-bill-export?period=' + period, '_blank')}>
+              导出未录工厂账单订单
+            </Button>
+          </Tooltip>
         </Space>
       </Space>
 

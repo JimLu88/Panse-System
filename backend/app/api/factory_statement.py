@@ -71,3 +71,61 @@ def export(period: Optional[str] = None, db: Session = Depends(get_db)):
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename={fname}"},
     )
+
+
+@router.get("/missing-bill-export")
+def missing_bill_export(period: Optional[str] = None, db: Session = Depends(get_db)):
+    """导出"未录工厂账单"的订单 xlsx (用户需求 2026-06-22)。
+
+    口径: 真实成交(settled)、非补单、未对账(actual_cost 为空)、有商品成本(theoretical_cost>0)的单
+    —— 即工厂账单列没覆盖、商品成本只能用估算的那些。供把工厂对账单补录进系统。period='YYYY-MM' 按下单月筛。
+    """
+    import openpyxl
+    from calendar import monthrange
+    from datetime import date as _date
+    from sqlalchemy import select
+    from app.models.order import Order
+    from app.services.sales_analytics import settled_sale_clause
+
+    stmt = select(Order).where(
+        settled_sale_clause(), Order.is_refill == False,  # noqa: E712
+        Order.actual_cost.is_(None),
+        Order.theoretical_cost.isnot(None), Order.theoretical_cost > 0,
+    )
+    if period:
+        try:
+            y, m = (int(x) for x in str(period).split("-")[:2])
+            stmt = stmt.where(
+                Order.order_date >= _date(y, m, 1),
+                Order.order_date <= _date(y, m, monthrange(y, m)[1]),
+            )
+        except (ValueError, TypeError):
+            pass
+    rows = db.execute(stmt.order_by(Order.order_date, Order.order_no)).scalars().all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "未录工厂账单订单"
+    ws.append(["订单号", "下单日期", "工厂编号", "产品", "SKU", "数量",
+               "实付", "估算商品成本", "实际工厂账单(待填)", "状态"])
+    total_est = 0.0
+    for o in rows:
+        est = float(o.theoretical_cost or 0)
+        total_est += est
+        ws.append([
+            o.order_no,
+            o.order_date.isoformat() if o.order_date else "",
+            getattr(o, "factory_no", "") or "",
+            o.product_name or "", o.sku or "", int(o.qty or 1),
+            float(o.paid_amount or 0), round(est, 2), "", o.status or "",
+        ])
+    ws.append([])
+    ws.append(["合计", "", "", "", "", len(rows), "", round(total_est, 2), "", ""])
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = f"missing_factory_bill_{period or 'all'}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )

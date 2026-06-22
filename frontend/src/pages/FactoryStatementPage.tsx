@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Select, Space, Statistic, Table, Tag, Typography, message } from 'antd';
+import { Button, Select, Space, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { FileExcelOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import FeeVariancePanel from '../components/FeeVariancePanel';
@@ -163,6 +163,11 @@ export default function FactoryStatementPage() {
     window.open('/api/factory-statement/export' + (period ? `?period=${period}` : ''), '_blank');
   };
 
+  // 导出"未录工厂账单"的订单(成本只能估算的单), 供把工厂对账单补录进系统 (用户需求 2026-06-22)
+  const exportMissingBill = () => {
+    window.open('/api/factory-statement/missing-bill-export' + (period ? `?period=${period}` : ''), '_blank');
+  };
+
   return (
     <div style={{ padding: 16 }}>
       <Title level={4}>工厂对账单生成</Title>
@@ -185,6 +190,11 @@ export default function FactoryStatementPage() {
         <Button icon={<FileExcelOutlined />} onClick={exportXlsx} disabled={!data}>
           导出 Excel
         </Button>
+        <Tooltip title="导出该月「成本只能估算、未录工厂账单」的订单, 对着把工厂对账单补录进系统">
+          <Button icon={<FileExcelOutlined />} onClick={exportMissingBill}>
+            导出未录工厂账单订单
+          </Button>
+        </Tooltip>
       </Space>
 
       {data && (
