@@ -1,10 +1,10 @@
 import { lazy, Suspense, useState, type CSSProperties } from 'react';
-import { Card, Col, DatePicker, Row, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import { Card, Col, DatePicker, Row, Segmented, Space, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
-import { getDashboard } from '../api/client';
+import { getDashboard, api } from '../api/client';
 import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
 import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
 import RefillCallout from '../components/RefillCallout';
@@ -154,6 +154,13 @@ export default function DashboardPage() {
     queryFn: () => getDashboard(startStr && endStr ? { start: startStr, end: endStr } : undefined),
     refetchInterval: 60_000,
   });
+  // 财务概览时间段 (今日/昨日/近7天/近30天/YYYY-MM) — 独立按时段算
+  const [finPeriod, setFinPeriod] = useState<string>('30d');
+  const { data: finOv } = useQuery({
+    queryKey: ['finance-overview', finPeriod],
+    queryFn: () => api.get('/api/dashboard/finance-overview', { params: { period: finPeriod } }).then((r) => r.data),
+    refetchInterval: 60_000,
+  });
 
   if (isLoading || !data) {
     return (
@@ -164,6 +171,14 @@ export default function DashboardPage() {
   }
 
   const { orders, inventory, finance, health, recon_rules, health_dimensions, monthly_close } = data as any;
+  // 财务概览按所选时段(finOv); 未加载时回退大盘默认近30天
+  const fin: any = finOv ?? {
+    order_revenue: finance.order_revenue_30d, theoretical_cost: finance.theoretical_cost_30d,
+    actual_cost: finance.actual_cost_30d, gross_profit: finance.gross_profit_30d,
+    gross_margin_rate: finance.gross_margin_rate, alipay_income: finance.alipay_income_30d,
+    reconciliation_unresolved: finance.reconciliation_unresolved,
+    aftersales_count: finance.aftersales_count, aftersales_cost: finance.aftersales_cost,
+  };
 
   // 五维健康雷达
   const radarOption = {
@@ -322,42 +337,51 @@ export default function DashboardPage() {
         </Col>
       </Row>
 
-      {/* 财务概览 (近 30 天) */}
-      <Typography.Title level={5} style={sectionTitle}>财务概览 (近 30 天)</Typography.Title>
+      {/* 财务概览 (可选时间段, 用户需求 2026-06-22): 今日/昨日/近7天/近30天 + 月份 */}
+      <Space wrap style={{ marginBottom: 8 }}>
+        <Typography.Title level={5} style={{ ...sectionTitle, margin: 0 }}>财务概览</Typography.Title>
+        <Segmented size="small"
+          value={['today', 'yesterday', '7d', '30d'].includes(finPeriod) ? finPeriod : ''}
+          onChange={(v) => setFinPeriod(v as string)}
+          options={[{ label: '今日', value: 'today' }, { label: '昨日', value: 'yesterday' }, { label: '近7天', value: '7d' }, { label: '近30天', value: '30d' }]} />
+        <DatePicker picker="month" size="small" placeholder="选月份" allowClear
+          value={/^\d{4}-\d{2}$/.test(finPeriod) ? dayjs(finPeriod + '-01') : null}
+          onChange={(d) => setFinPeriod(d ? d.format('YYYY-MM') : '30d')} />
+      </Space>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}><Statistic title="订单收入" value={finance.order_revenue_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}><Statistic title="订单收入" value={fin.order_revenue} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/pricing')} style={{ cursor: 'pointer' }}><Statistic title="理论成本" value={finance.theoretical_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/pricing')} style={{ cursor: 'pointer' }}><Statistic title="理论成本" value={fin.theoretical_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="实际成本" value={finance.actual_cost_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="实际成本" value={fin.actual_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
           <MCard onClick={() => nav('/assets-cashflow')} style={{ cursor: 'pointer' }}>
-            <Statistic title="毛利" value={finance.gross_profit_30d} formatter={(v) => money(Number(v))}
-              valueStyle={{ ...midNum, color: finance.gross_profit_30d >= 0 ? M.emerald : M.rose }} />
+            <Statistic title="毛利" value={fin.gross_profit} formatter={(v) => money(Number(v))}
+              valueStyle={{ ...midNum, color: fin.gross_profit >= 0 ? M.emerald : M.rose }} />
             <Tag style={{ marginTop: 8, borderRadius: 8 }}
-              color={finance.gross_margin_rate >= 0.15 ? 'success' : finance.gross_margin_rate >= 0 ? 'warning' : 'error'}>
-              毛利率 {(finance.gross_margin_rate * 100).toFixed(1)}%
+              color={fin.gross_margin_rate >= 0.15 ? 'success' : fin.gross_margin_rate >= 0 ? 'warning' : 'error'}>
+              毛利率 {(fin.gross_margin_rate * 100).toFixed(1)}%
             </Tag>
           </MCard>
         </Col>
       </Row>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/alipay')} style={{ cursor: 'pointer' }}><Statistic title="支付宝收入" value={finance.alipay_income_30d} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/alipay')} style={{ cursor: 'pointer' }}><Statistic title="支付宝收入" value={fin.alipay_income} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="对账未清" value={finance.reconciliation_unresolved} suffix="条"
-            valueStyle={{ ...midNum, color: finance.reconciliation_unresolved > 0 ? M.amber : M.emerald }} /></MCard>
+          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="对账未清" value={fin.reconciliation_unresolved} suffix="条"
+            valueStyle={{ ...midNum, color: fin.reconciliation_unresolved > 0 ? M.amber : M.emerald }} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后笔数" value={finance.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
+          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后笔数" value={fin.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后成本" value={finance.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
+          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后成本" value={fin.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
         </Col>
       </Row>
 

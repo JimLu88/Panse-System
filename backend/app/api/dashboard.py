@@ -27,6 +27,73 @@ def _safe_decimal(v) -> float:
     return float(Decimal(str(v)))
 
 
+def _period_range(period: str, today: date) -> tuple[date, date]:
+    """财务概览时间段 period → (start, end). today/yesterday/7d/30d/YYYY-MM (默认30d)."""
+    if period == "today":
+        return today, today
+    if period == "yesterday":
+        y = today - timedelta(days=1)
+        return y, y
+    if period == "7d":
+        return today - timedelta(days=7), today
+    if period and "-" in str(period):  # YYYY-MM
+        try:
+            from calendar import monthrange
+            yy, mm = (int(x) for x in str(period).split("-")[:2])
+            return date(yy, mm, 1), date(yy, mm, monthrange(yy, mm)[1])
+        except (ValueError, TypeError):
+            pass
+    return today - timedelta(days=30), today
+
+
+@router.get("/finance-overview")
+def finance_overview(
+    period: str = Query("30d", description="today/yesterday/7d/30d/YYYY-MM"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """财务概览(按时间段, 用户需求 2026-06-22): 订单收入/理论成本/实际成本/毛利/支付宝收入 按所选时段;
+    售后笔数/成本、对账未清沿用现状口径(与原 dashboard 财务概览一致)。"""
+    from app.services.sales_analytics import settled_sale_clause
+    _settled = settled_sale_clause()
+    today = date.today()
+    start, end = _period_range(period, today)
+
+    base = (Order.order_date >= start, Order.order_date <= end,
+            Order.is_historical == False, Order.is_refill == False, _settled)  # noqa: E712
+    revenue = _safe_decimal(db.query(func.coalesce(func.sum(
+        func.coalesce(Order.paid_amount, 0) - func.coalesce(Order.refund_amount, 0)), 0)).filter(*base).scalar())
+    eff_cost_expr = func.coalesce(Order.actual_cost, Order.theoretical_cost, 0)
+    ca = db.query(
+        func.coalesce(func.sum(Order.theoretical_cost), 0),
+        func.coalesce(func.sum(Order.actual_cost), 0),
+        func.coalesce(func.sum(eff_cost_expr), 0),
+    ).filter(*base).one()
+    theoretical_cost = _safe_decimal(ca[0])
+    actual_cost = _safe_decimal(ca[1])
+    effective_cost = _safe_decimal(ca[2])
+    gross_profit = round(revenue - effective_cost, 2)
+    alipay_income = _safe_decimal(db.query(func.sum(AlipayFlow.amount)).filter(
+        AlipayFlow.amount > 0,
+        func.date(AlipayFlow.transaction_time) >= start,
+        func.date(AlipayFlow.transaction_time) <= end,
+    ).scalar())
+    recon_unresolved = db.query(func.count(DataException.id)).filter(
+        DataException.status == "open", DataException.exception_type == "reconciliation_diff").scalar() or 0
+    af_cost_expr = func.coalesce(AfterSales.in_platform_total, 0) + func.coalesce(AfterSales.out_platform_total, 0)
+    aftersales_count = db.query(func.count(AfterSales.id)).scalar() or 0
+    aftersales_cost = _safe_decimal(db.query(func.sum(af_cost_expr)).scalar())
+    return {
+        "period": period, "start": start.isoformat(), "end": end.isoformat(),
+        "order_revenue": revenue, "theoretical_cost": theoretical_cost,
+        "actual_cost": actual_cost, "effective_cost": effective_cost,
+        "gross_profit": gross_profit,
+        "gross_margin_rate": round(gross_profit / revenue, 4) if revenue else 0.0,
+        "alipay_income": alipay_income, "reconciliation_unresolved": recon_unresolved,
+        "aftersales_count": aftersales_count, "aftersales_cost": aftersales_cost,
+    }
+
+
 @router.get("")
 def get_dashboard(
     start: Optional[date] = Query(None, description="趋势/收入 起始日 (默认近30天)"),
