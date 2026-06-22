@@ -5,6 +5,7 @@
 import { useState } from 'react';
 import PresetTable from '../components/PresetTable';
 import FactoryCostComparePanel from '../components/FactoryCostComparePanel';
+import PerOrderReconcilePage from './PerOrderReconcilePage';
 import {
   Alert, Button, Card, Col, Dropdown, Input, InputNumber, Modal, Row, Segmented, Select, Space, Statistic,
   Table, Tag, Typography, Upload, message,
@@ -172,62 +173,8 @@ export default function FactoryReconPage() {
         </Card>
       )}
 
-      <Card
-        size="small"
-        title={`逐单明细${period ? ` · ${period}` : ''}`}
-        extra={(
-          <Space>
-            <Input.Search allowClear placeholder="订单号/客户/详情" style={{ width: 220 }}
-              onSearch={setQ} onChange={(e) => { if (!e.target.value) setQ(''); }} />
-            <Segmented
-              value={statusFilter} onChange={(v) => setStatusFilter(v as string)}
-              options={[{ value: 'all', label: '全部' }, { value: 'open', label: '未做平' }, { value: 'resolved', label: '已做平' }]}
-            />
-          </Space>
-        )}
-      >
-        <PresetTable<FactoryReconItem>
-          tableKey="factory_recon_item"
-          rowKey="id" size="small" loading={isLoading} dataSource={items?.rows ?? []}
-          pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200], showTotal: (t) => `共 ${t} 笔` }}
-          columns={[
-            { title: '单号', dataIndex: 'doc_no', width: 70, render: (v) => v || '-' },
-            { title: '订单号', dataIndex: 'order_no', width: 175, render: (v) => v || '-' },
-            { title: '详情', dataIndex: 'detail', ellipsis: true },
-            { title: '数量', dataIndex: 'qty', width: 56, align: 'center' as const },
-            { title: '结算价', dataIndex: 'settle_price', width: 90, align: 'right' as const, render: (v: number) => `¥${Number(v).toFixed(0)}` },
-            { title: '客户', dataIndex: 'customer_info', width: 110, render: (v) => v || '-' },
-            { title: '下单', dataIndex: 'order_date', width: 100, render: (v) => v || '-' },
-            { title: '做平', dataIndex: 'resolved', width: 130, render: (r: boolean, row) => (
-              r ? <Tag color="blue" title={row.settle_reason || ''}>已做平</Tag>
-                : <Tag color="default">未做平</Tag>
-            ) },
-            { title: '操作', width: 210, render: (_, row) => (
-              row.resolved
-                ? <Button size="small" type="link" onClick={() => resolveMut.mutate({ id: row.id, reason: '', resolved: false })}>撤销</Button>
-                : <Space size={0}>
-                    <Button size="small" type="link" onClick={() => { setResolving(row); setReason(''); }}>做平</Button>
-                    <Dropdown menu={{
-                      items: RESOLUTION_KINDS.map((k) => ({ key: k, label: k })),
-                      onClick: ({ key }) => confirmMut.mutate({ id: row.id, kind: key }),
-                    }}>
-                      <Button size="small" type="link">确认归因</Button>
-                    </Dropdown>
-                    <Button size="small" type="link" onClick={() => openSplit(row)}>拆分</Button>
-                  </Space>
-            ) },
-          ]}
-          expandable={{
-            expandedRowRender: (row) => (
-              <div style={{ fontSize: 12, color: '#555' }}>
-                追加单: {row.extra_order_no1 || '-'} / {row.extra_order_no2 || '-'} ·
-                来源: {row.source_sheet} · 备注: {row.remark || '-'}
-                {row.resolved && <> · 做平原因: <b>{row.settle_reason}</b> ({row.resolved_by || '?'})</>}
-              </div>
-            ),
-          }}
-        />
-      </Card>
+      {/* 逐单核对(替代原工厂逐单明细, 用户需求 2026-06-22): 复用财务「逐单核对」全功能 */}
+      <PerOrderReconcilePage />
 
       {noBillItems && (
         <Card size="small" title={`我方下单逐单预估 (工厂对账单未导入)${preview ? ` · 应付合计 ¥${preview.total_payable.toLocaleString()}` : ''}`}>

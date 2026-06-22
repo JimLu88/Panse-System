@@ -29,7 +29,10 @@ export default function AutomationStatusCard() {
   const rows = jobs.map((j) => {
     const run = latest[j.job_id];
     const state = !run ? 'never' : OK.has((run.status || '').toLowerCase()) ? 'ok' : 'fail';
-    return { ...j, run, state, rank: state === 'fail' ? 0 : state === 'never' ? 1 : 2 };
+    // 排序: 异常0 > 应跑未跑(下次时间已过)1 > 正常2 > 未跑但还没到点3 (挪到最后, 免得看着像没完成)
+    const overdue = state === 'never' && j.next_run_at != null && new Date(j.next_run_at) < new Date();
+    const rank = state === 'fail' ? 0 : overdue ? 1 : state === 'ok' ? 2 : 3;
+    return { ...j, run, state, rank };
   }).sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
 
   const failN = rows.filter((r) => r.state === 'fail').length;

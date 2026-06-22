@@ -15,6 +15,7 @@ import SettlementsPage from './SettlementsPage';
 import ReconDiagnosticsPage from './ReconDiagnosticsPage';
 import FactoryReconPage from './FactoryReconPage';
 import PrepayLedgerPage from './PrepayLedgerPage';
+import ReconciliationPage from './ReconciliationPage';
 
 export default function ReconCenterPage() {
   const [params, setParams] = useSearchParams();
@@ -28,6 +29,7 @@ export default function ReconCenterPage() {
         onChange={(k) => setParams(k === 'settlements' ? {} : { tab: k }, { replace: true })}
         destroyInactiveTabPane
         items={[
+        { key: 'reconciliation', label: '对账 (订单↔收款)', children: <ReconciliationPage /> },
         { key: 'settlements', label: '结算对账 (平台打款)', children: <SettlementsPage /> },
         { key: 'diagnostics', label: '对账诊断 (找原因)', children: <ReconDiagnosticsPage /> },
         { key: 'factory', label: '工厂逐单对账', children: <FactoryReconPage /> },

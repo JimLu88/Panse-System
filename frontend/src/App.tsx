@@ -210,7 +210,9 @@ export default function App() {
       label: '营销',
       children: [
         { key: 'marketing-promotion', label: <Link to="/marketing?tab=promotion">推广记录</Link> },
+        { key: 'promotion-flows', label: <Link to="/promotion-flows">推广费流水</Link> },
         { key: 'marketing-brand', label: <Link to="/marketing?tab=brand">品牌营销</Link> },
+        { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'marketing-daily', label: <Link to="/marketing?tab=daily">日常经营</Link> },
         { key: 'marketing-outsourcing', label: <Link to="/marketing?tab=outsourcing">人员外包</Link> },
       ],
@@ -235,10 +237,7 @@ export default function App() {
         { key: 'account-balances', label: <Link to="/account-balances">账户余额</Link> },
         { key: 'staff-salary', label: <Link to="/staff-salary">人员工资</Link> },
         { key: 'per-order-reconcile', label: <Link to="/per-order-reconcile">逐单核对</Link> },
-        { key: 'reconciliation', label: <Link to="/reconciliation">对账</Link> },
         { key: 'recon-center', label: <Link to="/recon-center">对账中心 (结算/诊断/工厂/代付)</Link> },
-        { key: 'promotion-flows', label: <Link to="/promotion-flows">推广费流水</Link> },
-        { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         // 会计期间(关账)暂时隐藏 (用户 2026-06-12: 没有专业财务先不用) —
         // 路由保留, 需要时直接访问 /accounting 或恢复此行
         // { key: 'accounting', label: <Link to="/accounting">会计期间</Link> },
