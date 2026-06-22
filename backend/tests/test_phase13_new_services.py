@@ -226,8 +226,8 @@ class TestDataQualityService:
         assert db.query(DataException).filter(
             DataException.exception_type == "order_missing_alipay").count() == 0
 
-    def test_missing_alipay_skips_refill_order(self, db):
-        """补单(刷单/假单)走补单回款, 无正常收款流水, 不报缺收款 (2026-06-22)。"""
+    def test_missing_alipay_flags_refill_without_payment(self, db):
+        """补单(刷单)也有正常收款流水 → 缺收款时照样要报(2026-06-22 用户纠正)。"""
         from datetime import date
         db.add(Order(platform="taobao", order_no="5027779368272592526", qty=1, status="signed",
                      is_historical=False, is_refill=True, paid_amount=Decimal("10"),
@@ -235,7 +235,7 @@ class TestDataQualityService:
         db.commit()
         data_quality_service.run_all(db)
         assert db.query(DataException).filter(
-            DataException.exception_type == "order_missing_alipay").count() == 0
+            DataException.exception_type == "order_missing_alipay").count() == 1
 
     def test_missing_alipay_skips_fully_refunded(self, db):
         """已退款单(退款≥实付)货款已退, 不报缺收款 (2026-06-22)。"""

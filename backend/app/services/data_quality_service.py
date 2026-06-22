@@ -123,8 +123,9 @@ def scan_order_missing_alipay(db: Session) -> int:
     for o in db.query(Order).filter(
         Order.status.in_(SETTLED_STATES),
         Order.is_historical == False,  # noqa: E712
-        Order.is_refill == False,      # noqa: E712  # 补单=刷单/假单, 走补单→徐晶晶回款, 无正常收款流水 (2026-06-22)
     ).all():
+        # 注: 补单(is_refill)『有正常收款流水』(假客户那笔货款照进支付宝, 转徐晶晶是另外的刷单成本),
+        # 故补单也要核收款, 不能排除 (用户 2026-06-22 纠正)。
         if _okey(o.order_no) in linked:
             continue
         # 已退款单(退款≥实付)是退款交易, 货款已退, 不该要求收款凭据 (2026-06-22)
@@ -222,8 +223,6 @@ def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
         recent = bool(o.order_date and o.order_date >= date.today() - timedelta(days=14))
         if has_evidence:
             verdict = "已有收款凭据 → 异常应清除(过期)"
-        elif o.is_refill:
-            verdict = "补单(刷单/假单)→ 走补单回款, 无正常收款流水, 不该报缺收款(已改为跳过)"
         elif is_refunded:
             verdict = "已退款单(退款≥实付)→ 货款已退, 不该要求收款凭据(已改为跳过)"
         elif is_non_product:
