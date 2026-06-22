@@ -235,6 +235,38 @@ def test_promotion_returns_not_available(db_session):
     assert r.diffs[0].severity == "not_available"
 
 
+def test_promotion_recharge_with_flow_no_balances(db_session):
+    """改口径: 万相台充值都带充值流水号 → 推广充值 == 有号佐证 → 不报异常 (2026-06-22)。"""
+    from app.models.marketing import PromotionFlow
+    for d in (5, 12, 19):
+        db_session.add(PromotionFlow(transaction_date=date(2026, 6, d), flow_type="充值",
+                                     amount=Decimal("5000"), remark="充值 支付宝在线充值",
+                                     alipay_flow_no=f"15707{d:02d}000"))
+    db_session.flush()
+    r = recon.run_promotion(db_session, record_exceptions=True)
+    jun = next(d for d in r.diffs if d.key == "2026-06")
+    assert jun.expected == Decimal("15000") and jun.actual == Decimal("15000")
+    assert jun.severity == "ok"
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == "promotion:2026-06").count() == 0
+
+
+def test_promotion_recharge_missing_flow_no_flags(db_session):
+    """充值缺充值流水号 → 有号佐证 < 推广充值 → 报差(缺号那笔)。"""
+    from app.models.marketing import PromotionFlow
+    db_session.add(PromotionFlow(transaction_date=date(2026, 6, 5), flow_type="充值",
+                                 amount=Decimal("5000"), remark="充值 支付宝在线充值",
+                                 alipay_flow_no="1570700000"))
+    db_session.add(PromotionFlow(transaction_date=date(2026, 6, 12), flow_type="充值",
+                                 amount=Decimal("5000"), remark="充值 支付宝在线充值",
+                                 alipay_flow_no=None))   # 缺号
+    db_session.flush()
+    r = recon.run_promotion(db_session, record_exceptions=True)
+    jun = next(d for d in r.diffs if d.key == "2026-06")
+    assert jun.expected == Decimal("10000") and jun.actual == Decimal("5000")
+    assert jun.severity != "ok"
+
+
 # -------- run_all --------
 
 def test_run_all_executes_all_rules(db_session):

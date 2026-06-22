@@ -281,12 +281,14 @@ def run_promotion(
     period_end: Optional[date] = None,
     record_exceptions: bool = True,
 ) -> ReconciliationResult:
-    """推广记录 (15) ↔ 支付宝(reconciliation_type=promotion)。
+    """推广充值闭环 (15) — 万相台充值是否都有支付宝充值流水号佐证。
 
-    按月汇总比较：promotion_flows 里的 ‘支出’ 与同期 alipay_flows.amount<0 的
-    promotion 类型流水。差异超阈值入异常。period_start/period_end 限定账期。
+    改口径 (2026-06-22): 万相台充值即支付宝出账, CSV 每笔充值都带充值流水号; 真实扣款发生在
+    绑定的广告支付宝/银行卡(未导入本主账户), 旧口径找 reconciliation_type='promotion' 的流水
+    永远≈0 → 误报「支付宝打款¥0」。改为: 推广充值(全部充值记录) ↔ 有充值流水号佐证的充值,
+    缺号(B16 数据质量另扫)才算差。period_start/period_end 限定账期。
     """
-    from sqlalchemy import extract
+    from sqlalchemy import extract, or_
 
     def _pf_by_month(flow_type: str) -> dict[tuple[int, int], Decimal]:
         stmt = select(
@@ -306,44 +308,50 @@ def run_promotion(
             out[(int(y), int(m))] = Decimal(amt or 0)
         return out
 
-    # 对账建议 4 (充值/退款闭环): 支付宝打出去的钱对应的是推广账户「充值」,
-    # 「支出(消耗)」发生在平台内部 — 推广表有充值记录时按充值口径比对, 否则退回旧口径(支出)。
-    by_month_recharge = _pf_by_month("充值")
-    by_month_spend = _pf_by_month("支出")
-    use_recharge = bool(by_month_recharge)
-    by_month_pf = by_month_recharge if use_recharge else by_month_spend
-    pf_label = "推广充值" if use_recharge else "推广支出"
+    # 改口径: 充值按备注识别(在线充值/自动充值), 排除「现金消耗」(消耗, 备注空+号='现金消耗')与退回。
+    def _recharge_by_month(funded_only: bool) -> dict[tuple[int, int], Decimal]:
+        st = select(
+            extract("year", PromotionFlow.transaction_date).label("y"),
+            extract("month", PromotionFlow.transaction_date).label("m"),
+            func.coalesce(func.sum(PromotionFlow.amount), 0).label("amt"),
+        ).where(or_(PromotionFlow.remark.like("%在线充值%"),
+                    PromotionFlow.remark.like("%自动充值%")))
+        if funded_only:
+            st = st.where(PromotionFlow.alipay_flow_no.isnot(None),
+                          PromotionFlow.alipay_flow_no != "",
+                          PromotionFlow.alipay_flow_no != "现金消耗")
+        if period_start:
+            st = st.where(PromotionFlow.transaction_date >= period_start)
+        if period_end:
+            st = st.where(PromotionFlow.transaction_date <= period_end)
+        out: dict[tuple[int, int], Decimal] = {}
+        for y, m, amt in db.execute(st.group_by("y", "m")).all():
+            if y is not None and m is not None:
+                out[(int(y), int(m))] = Decimal(amt or 0)
+        return out
 
-    # 支付宝里 reconciliation_type='promotion' 的支出按月
-    af_stmt = select(
-        extract("year", AlipayFlow.transaction_time).label("y"),
-        extract("month", AlipayFlow.transaction_time).label("m"),
-        func.coalesce(func.sum(-AlipayFlow.amount), 0).label("paid"),
-    ).where(AlipayFlow.reconciliation_type == "promotion")
-    if period_start:
-        af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
-    if period_end:
-        af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
-    af_stmt = af_stmt.group_by("y", "m")
-    by_month_af: dict[tuple[int, int], Decimal] = {}
-    for y, m, paid in db.execute(af_stmt).all():
-        if y is None or m is None:
-            continue
-        by_month_af[(int(y), int(m))] = Decimal(paid or 0)
+    by_month_recharge = _recharge_by_month(funded_only=False)   # 全部万相台充值
+    by_month_spend = _pf_by_month("支出")                        # 消耗(供余额勾稽)
+    use_recharge = True
+    by_month_pf = by_month_recharge
+    pf_label = "推广充值"
+    by_month_af = _recharge_by_month(funded_only=True)          # 有充值流水号佐证的充值
 
-    # 每月支付宝推广流水号 (供核对): reconciliation_type='promotion' 的支出
-    pf_detail = select(AlipayFlow.transaction_time, AlipayFlow.transaction_no,
-                       AlipayFlow.amount).where(AlipayFlow.reconciliation_type == "promotion")
+    # 每月充值流水号 (供核对)
+    rc_detail = select(PromotionFlow.transaction_date, PromotionFlow.amount,
+                       PromotionFlow.alipay_flow_no).where(
+        or_(PromotionFlow.remark.like("%在线充值%"),
+            PromotionFlow.remark.like("%自动充值%")))
     if period_start:
-        pf_detail = pf_detail.where(AlipayFlow.transaction_time >= period_start)
+        rc_detail = rc_detail.where(PromotionFlow.transaction_date >= period_start)
     if period_end:
-        pf_detail = pf_detail.where(AlipayFlow.transaction_time <= period_end)
+        rc_detail = rc_detail.where(PromotionFlow.transaction_date <= period_end)
     flow_by_month: dict[tuple[int, int], list[str]] = {}
-    for tt, tn, amt in db.execute(pf_detail).all():
-        if tt is None:
+    for td, amt, fno in db.execute(rc_detail).all():
+        if td is None:
             continue
-        flow_by_month.setdefault((tt.year, tt.month), []).append(
-            f"支付宝流水 {tn} ¥{-Decimal(amt or 0)} ({tt.strftime('%Y-%m-%d')})")
+        flow_by_month.setdefault((td.year, td.month), []).append(
+            f"充值 ¥{Decimal(amt or 0)} 流水号{fno or '(缺)'} ({td.strftime('%Y-%m-%d')})")
 
     diffs: list[ReconciliationDiff] = []
     for key in sorted(set(by_month_pf) | set(by_month_af)):
@@ -354,7 +362,7 @@ def run_promotion(
         sev = _classify(diff, base=expected)
         period_key = f"{y}-{m:02d}"
         fls = flow_by_month.get(key, [])
-        msg = f"{period_key}: {pf_label} ¥{expected}, 支付宝打款 ¥{actual}, 差 ¥{diff} ({len(fls)}笔支付宝流水)"
+        msg = f"{period_key}: {pf_label} ¥{expected}, 有支付宝充值号佐证 ¥{actual}, 差 ¥{diff} ({len(fls)}笔充值)"
         diffs.append(ReconciliationDiff(
             key=period_key, expected=expected, actual=actual, diff=diff,
             severity=sev, message=msg, related_records=fls[:50],
@@ -392,7 +400,7 @@ def run_promotion(
             _record_exception(db, rule="promotion", key=k_r, diff_amount=d_r, message=msg_r)
 
     # 余额勾稽提示: 累计充值 vs 累计消耗 (消耗 > 充值 = 推广账户在吃老本或数据缺)
-    if use_recharge:
+    if by_month_recharge or by_month_spend:
         total_recharge = sum(by_month_recharge.values(), Decimal("0"))
         total_spend = sum(by_month_spend.values(), Decimal("0"))
         diffs.append(ReconciliationDiff(
