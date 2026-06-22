@@ -134,6 +134,20 @@ def product_code_from_merchant(mc: Any) -> str:
     return ""
 
 
+def _normalize_refund(payable: Any, paid: Any, refund: Any) -> Any:
+    """根治"优惠/取消产品被当退款双扣" (2026-06-22 用户拍板)。
+
+    淘宝「退款金额」里混着买家优惠差额 / 多产品订单中取消的子产品金额, 而「买家实付」已是净额
+    (= 应付 − 这部分)。若 ``应付 − 实付 ≈ 退款``, 说明这笔"退款"已经体现在实付里、不是真退款
+    (真退款是买家付了全款后再退, 那时 应付 = 实付、应付−实付 ≠ 退款), 归 0 ——
+    否则收入口径(实付 − 退款, asset/cash_flow/dashboard/sales/smart_pricing 6+ 处)会把同一笔再扣一遍 → 假亏。
+    """
+    if payable is not None and paid is not None and refund and refund > Decimal("0"):
+        if abs((payable - paid) - refund) < Decimal("0.01"):
+            return Decimal("0")
+    return refund
+
+
 def _is_sci(v: Any) -> bool:
     """检测科学计数法损坏的订单号 (含 E+ / e+)。"""
     return v is not None and re.search(r"\d[eE]\+?\d+", str(v)) is not None
@@ -581,7 +595,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if _paid_real_d is None and (paid is None or paid == 0) and _line_total > 0:
             paid = _line_total
         pfee = _to_decimal(o.platform_fee)
-        refund = _to_decimal(o.refund)
+        refund = _normalize_refund(payable, paid, _to_decimal(o.refund))
         ship_dt = _to_date(o.ship_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
         # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款(视为已识别)。
