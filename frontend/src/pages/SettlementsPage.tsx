@@ -7,7 +7,7 @@
 import { useState, type ReactNode } from 'react';
 import PresetTable from '../components/PresetTable';
 import {
-  Alert, Button, Card, Col, Drawer, Input, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Tooltip,
+  Alert, Button, Card, Col, Collapse, Drawer, Input, Row, Segmented, Space, Statistic, Table, Tabs, Tag, Tooltip,
   Typography, Upload, message,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
@@ -15,9 +15,9 @@ import { UploadOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  ReconGap, ReconGapDetail, ReconRow, SettlementRow,
-  fetchReconGap, fetchReconGapDetail, fetchReconSummary, fetchSettlementSummary, importSettlementBill,
-  listReconciliation, listSettlements,
+  CouponPending, ReconGap, ReconGapDetail, ReconRow, SettlementRow,
+  fetchCouponPending, fetchReconGap, fetchReconGapDetail, fetchReconSummary, fetchSettlementSummary,
+  importSettlementBill, listReconciliation, listSettlements,
 } from '../api/settlements';
 
 const SOURCE_LABEL: Record<string, string> = { wechat: '微信/聚合', alipay: '支付宝' };
@@ -29,6 +29,7 @@ const STATUS_META: Record<string, { color: string; text: string }> = {
   matched: { color: 'success', text: '已对平' },
   diff: { color: 'error', text: '有差异' },
   pending: { color: 'default', text: '待补流水' },
+  coupon_pending: { color: 'default', text: '消费券待补' },  // 低优灰: 约2月分批补回, 不催
 };
 
 function diffCell(v: number | null) {
@@ -236,10 +237,11 @@ function ReconciliationTab() {
             <Col span={4}><Card size="small"><Statistic title="平台补贴合计" value={sum.subsidy_sum} precision={2} prefix="¥" /></Card></Col>
           </Row>
           <Row gutter={12}>
-            <Col span={5}><Card size="small"><Statistic title="实际到账合计" value={sum.arrived_sum} precision={2} prefix="¥" valueStyle={{ color: '#1677ff' }} /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="已对平" value={sum.matched} suffix="单" valueStyle={{ color: '#389e0d' }} /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="有差异" value={sum.diff} suffix="单" valueStyle={{ color: '#cf1322' }} /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="待补流水" value={sum.pending} suffix="单" /></Card></Col>
+            <Col span={4}><Card size="small"><Statistic title="实际到账合计" value={sum.arrived_sum} precision={2} prefix="¥" valueStyle={{ color: '#1677ff' }} /></Card></Col>
+            <Col span={4}><Card size="small"><Statistic title="已对平" value={sum.matched} suffix="单" valueStyle={{ color: '#389e0d' }} /></Card></Col>
+            <Col span={4}><Card size="small"><Statistic title="有差异" value={sum.diff} suffix="单" valueStyle={{ color: '#cf1322' }} /></Card></Col>
+            <Col span={4}><Card size="small"><Statistic title="待补流水" value={sum.pending} suffix="单" /></Card></Col>
+            <Col span={4}><Card size="small"><Tooltip title="消费券代付扣回未补回的单，平台约2月分批补回，不算真差异"><Statistic title="消费券待补" value={sum.coupon_pending} suffix="单" valueStyle={{ color: '#999', fontSize: 18 }} /></Tooltip></Card></Col>
             <Col span={4}><Card size="small"><Statistic title="到账覆盖率" value={sum.coverage_pct} suffix="%" /></Card></Col>
           </Row>
           {sum.coverage_pct < 50 && (
@@ -293,6 +295,50 @@ function ReconciliationTab() {
         />
       </Card>
     </Space>
+  );
+}
+
+// 消费券应补未补 — 低优, 默认折叠 (用户拍板 2026-06-23: 约2月分批补回, 别醒目挂着影响心情)
+function CouponPendingPanel() {
+  const { data } = useQuery<CouponPending>({ queryKey: ['coupon-pending'], queryFn: fetchCouponPending });
+  if (!data) return null;
+  const pendingTxt = data.pending > 0.5
+    ? `≈ ¥${data.pending.toLocaleString('zh-CN', { maximumFractionDigits: 0 })}（平台约2个月分批补回，留意即可）`
+    : '（已基本补平）';
+  return (
+    <Collapse
+      ghost
+      style={{ background: '#fafafa', borderRadius: 8 }}
+      items={[{
+        key: 'coupon',
+        label: <span style={{ color: '#8c8c8c', fontSize: 13 }}>消费券应补未补 {pendingTxt}</span>,
+        children: (
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              平台把消费券先垫进货款，又「消费券代付资金扣回」扣走，之后按「超过封顶金额的平台出资合作费用」分批补回（约2个月）。
+              这是<b>现金到账时序，不影响利润</b>；这里仅供留意有没有该补没补到账的。
+            </Typography.Text>
+            <Row gutter={12}>
+              <Col span={6}><Statistic title="累计扣回" value={data.clawback} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col span={6}><Statistic title="平台已补回" value={data.cofund} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col span={6}><Statistic title="已退回" value={data.refunded} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col span={6}><Statistic title="应补未补" value={data.pending} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: data.pending > 0.5 ? '#d48806' : '#52c41a' }} /></Col>
+            </Row>
+            {data.by_month.length > 0 && (
+              <Table<CouponPending['by_month'][number]>
+                size="small" pagination={false} rowKey="month"
+                dataSource={data.by_month}
+                columns={[
+                  { title: '月份', dataIndex: 'month', width: 110 },
+                  { title: '当月净应补', dataIndex: 'net_pending', align: 'right' as const,
+                    render: (v: number) => <span style={{ color: v > 0 ? '#d48806' : '#999' }}>¥{Number(v).toFixed(2)}</span> },
+                ]}
+              />
+            )}
+          </Space>
+        ),
+      }]}
+    />
   );
 }
 
@@ -372,6 +418,9 @@ function SettlementDetailTab() {
           ]}
         />
       </Card>
+
+      {/* 消费券应补未补 — 折叠在最不显眼处, 不催 (用户拍板 2026-06-23) */}
+      <CouponPendingPanel />
     </Space>
   );
 }

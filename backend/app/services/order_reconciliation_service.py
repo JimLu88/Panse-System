@@ -23,7 +23,7 @@ from collections import defaultdict
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.finance import AlipayFlow
@@ -56,13 +56,52 @@ def _wechat_net_by_order(db: Session) -> dict[str, Decimal]:
 
 
 def _alipay_net_by_flow_no(db: Session) -> dict[str, Decimal]:
-    """支付宝按交易流水号汇总金额 (同号货款+分账成对, 取净额)。"""
+    """支付宝按交易流水号汇总金额 (同号货款+分账成对, 取净额)。
+
+    排除订单级分账 (related_order_no 以 T200P 开头): 这些已由 settlement_import_service.route_alipay_flows
+    路由进 order_settlements, 走微信口径按订单号汇总; 若这里再按 flow_no 算一遍会双算到账 (用户拍板 2026-06-23)。
+    """
     out: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     for no, amt in db.execute(
-        select(AlipayFlow.transaction_no, AlipayFlow.amount).where(AlipayFlow.transaction_no.isnot(None))
+        select(AlipayFlow.transaction_no, AlipayFlow.amount).where(
+            AlipayFlow.transaction_no.isnot(None),
+            or_(AlipayFlow.related_order_no.is_(None),
+                AlipayFlow.related_order_no.notlike("T200P%")),
+        )
     ).all():
         out[str(no).strip()] += (amt or Decimal("0"))
     return dict(out)
+
+
+def _coupon_clawback_by_order(db: Session) -> dict[str, Decimal]:
+    """每单消费券代付扣回金额 (order_settlements 里 description 含「消费券」的支出之和)。
+
+    用于把「消费券待补」单标成低优状态 (status='coupon_pending'): 平台先垫消费券进货款又扣回,
+    要约 2 月后才分批补回 (出资合作), 这期间该单到账差额是已知的、不该当真·有差异红着催 (用户拍板 2026-06-23)。
+    """
+    out: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    for ono, exp in db.execute(
+        select(OrderSettlement.order_no, OrderSettlement.expense).where(
+            OrderSettlement.order_no.isnot(None),
+            OrderSettlement.description.like("%消费券%"),
+        )
+    ).all():
+        out[str(ono).strip()] += (exp or Decimal("0"))
+    return dict(out)
+
+
+def _alipay_settled_orders(db: Session) -> set[str]:
+    """order_settlements 里 source='alipay' 的订单号 — 这些到账来自支付宝企业号分账路由,
+    渠道应标「支付宝」而非「微信」(到账证据都进 order_settlements, 单靠表无法分渠道, 用 source 区分)。"""
+    return {
+        str(o).strip()
+        for (o,) in db.execute(
+            select(OrderSettlement.order_no).where(
+                OrderSettlement.order_no.isnot(None),
+                OrderSettlement.source == "alipay",
+            )
+        ).all()
+    }
 
 
 def _tax_of(o: Order, cfg: dict) -> Optional[Decimal]:
@@ -93,7 +132,8 @@ def _tolerance(base: Optional[Decimal], cfg: dict) -> Decimal:
     return max(floor, (abs(base) * pct).quantize(_CENT))
 
 
-def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict) -> dict:
+def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict, coupon: Optional[dict] = None,
+               alipay_orders: Optional[set] = None) -> dict:
     payable = _d(o.buyer_payable_amount)
     paid = _d(o.paid_amount)
     received = _d(o.shop_received_amount)
@@ -107,18 +147,23 @@ def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict) -> dict:
     alipay = anet.get(o.alipay_flow_no) if o.alipay_flow_no else None
     channels = []
     if wechat is not None:
-        channels.append("微信")
-    if alipay is not None:
+        # order_settlements 来源可能是 微信/聚合 或 支付宝企业号(路由进来的) — 按 source 标对渠道
+        channels.append("支付宝" if (alipay_orders and o.order_no in alipay_orders) else "微信")
+    if alipay is not None and "支付宝" not in channels:
         channels.append("支付宝")
     has_evidence = bool(channels)
     arrived = (wechat or Decimal("0")) + (alipay or Decimal("0")) if has_evidence else None
 
     expected = _expected_net(o, tax, fee)
     diff = (arrived - expected) if (arrived is not None and expected is not None) else None
+    coupon_clawback = (coupon or {}).get(o.order_no, Decimal("0"))
     if not has_evidence:
         status = "pending"
     elif diff is not None and abs(diff) <= _tolerance(expected, cfg):
         status = "matched"
+    elif coupon_clawback > 0:
+        # 该单有消费券代付扣回未补回 → 到账差额是已知的「消费券待补」(约2月分批补回), 低优不催, 不算真差异
+        status = "coupon_pending"
     else:
         status = "diff"
 
@@ -147,6 +192,7 @@ def _build_row(o: Order, wnet: dict, anet: dict, cfg: dict) -> dict:
         "channels": channels,
         "diff": _f(diff),
         "status": status,
+        "coupon_clawback": _f(coupon_clawback) if coupon_clawback > 0 else None,  # 消费券代付扣回(约2月补回)
         # 成本侧 (四方对账 3/4)
         "theoretical_cost": _f(theo),
         "actual_cost": _f(actual),
@@ -174,6 +220,8 @@ def per_order(
     """逐笔对账列表 (分页 + 状态/渠道/关键词筛选)。"""
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    coupon = _coupon_clawback_by_order(db)
+    alipay_orders = _alipay_settled_orders(db)
     cfg = recon_config_service.get_config(db)
 
     stmt = _base_query()
@@ -183,7 +231,7 @@ def per_order(
     stmt = stmt.order_by(Order.order_date.desc().nulls_last(), Order.id.desc())
     orders = db.execute(stmt).scalars().all()
 
-    rows = [_build_row(o, wnet, anet, cfg) for o in orders]
+    rows = [_build_row(o, wnet, anet, cfg, coupon, alipay_orders) for o in orders]
     if status:
         rows = [r for r in rows if r["status"] == status]
     if channel == "wechat":
@@ -205,6 +253,7 @@ def coverage_gap(db: Session) -> dict:
     """
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    alipay_settled = _alipay_settled_orders(db)
     cfg = recon_config_service.get_config(db)
     orders = db.execute(_base_query()).scalars().all()
 
@@ -212,7 +261,7 @@ def coverage_gap(db: Session) -> dict:
     tot_orders = tot_evidence = 0
     tot_pending_amt = Decimal("0")
     for o in orders:
-        r = _build_row(o, wnet, anet, cfg)
+        r = _build_row(o, wnet, anet, cfg, None, alipay_settled)
         mk = o.order_date.strftime("%Y-%m") if o.order_date else "无日期"
         b = by_month.setdefault(mk, {
             "period": mk, "orders": 0, "evidence": 0, "pending": 0,
@@ -296,14 +345,16 @@ def summary(db: Session) -> dict:
     """全量汇总 (不分页): 各金额合计 + 对账状态分布 + 到账覆盖率。"""
     wnet = _wechat_net_by_order(db)
     anet = _alipay_net_by_flow_no(db)
+    coupon = _coupon_clawback_by_order(db)
+    alipay_settled = _alipay_settled_orders(db)
     cfg = recon_config_service.get_config(db)
     orders = db.execute(_base_query()).scalars().all()
 
     agg = {k: Decimal("0") for k in
            ("payable", "paid", "received", "tax", "platform_fee", "subsidy", "arrived")}
-    matched = diff = pending = evidence = wechat_orders = alipay_orders = 0
+    matched = diff = pending = coupon_pending = evidence = wechat_orders = alipay_orders = 0
     for o in orders:
-        r = _build_row(o, wnet, anet, cfg)
+        r = _build_row(o, wnet, anet, cfg, coupon, alipay_settled)
         for k in agg:
             v = r.get(k)
             if v is not None:
@@ -312,6 +363,7 @@ def summary(db: Session) -> dict:
         matched += status == "matched"
         diff += status == "diff"
         pending += status == "pending"
+        coupon_pending += status == "coupon_pending"
         if r["channels"]:
             evidence += 1
         if "微信" in r["channels"]:
@@ -332,6 +384,7 @@ def summary(db: Session) -> dict:
         "matched": matched,
         "diff": diff,
         "pending": pending,
+        "coupon_pending": coupon_pending,   # 消费券待补(低优, 约2月补回; 不计入有差异)
         "evidence_orders": evidence,
         "wechat_orders": wechat_orders,
         "alipay_orders": alipay_orders,

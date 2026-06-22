@@ -62,7 +62,8 @@ export interface ReconRow {
   alipay_net: number | null;
   channels: string[];
   diff: number | null;          // 到账 - 理论
-  status: 'matched' | 'diff' | 'pending';
+  status: 'matched' | 'diff' | 'pending' | 'coupon_pending';
+  coupon_clawback: number | null;  // 消费券代付扣回 (约2月分批补回; 低优待补, 不算真差异)
   theoretical_cost: number | null;
   actual_cost: number | null;
   cost_diff: number | null;
@@ -81,6 +82,7 @@ export interface ReconSummary {
   matched: number;
   diff: number;
   pending: number;
+  coupon_pending: number;   // 消费券待补(低优, 约2月补回; 不计入有差异)
   evidence_orders: number;
   wechat_orders: number;
   alipay_orders: number;
@@ -208,3 +210,14 @@ export interface ReconGapDetail {
 }
 export const fetchReconGapDetail = (period: string) =>
   api.get<ReconGapDetail>(`/api/settlements/reconciliation/gap/${period}`).then((r) => r.data);
+
+// ---- 消费券应补未补 (低优提醒, 约2月分批到账; 不进利润, 纯现金时序) ----
+export interface CouponPending {
+  clawback: number;   // 平台扣回的消费券代付 (累计支出)
+  refunded: number;   // 已退回
+  cofund: number;     // 平台已补回 (超过封顶金额的出资合作费用)
+  pending: number;    // 应补未补 = 扣回 - 退回 - 补回 (>0 = 平台还欠你的)
+  by_month: Array<{ month: string; net_pending: number }>;
+}
+export const fetchCouponPending = () =>
+  api.get<CouponPending>('/api/settlements/coupon-pending').then((r) => r.data);

@@ -262,7 +262,15 @@ def _job_data_reconcile(db: Session) -> dict:
     from app.models.exception import DataException
     from app.services import (
         alert_service, asset_service, ops_checklist_service, reconciliation_service,
+        settlement_import_service,
     )
+
+    # 先把支付宝企业号订单级分账(T200P)路由进 order_settlements, 让支付宝订单也进逐笔对账 (用户拍板 2026-06-23)
+    try:
+        settlement_import_service.route_alipay_flows(db)
+        db.flush()
+    except Exception:  # noqa: BLE001 — 路由失败不该挡住后续对账
+        db.rollback()
 
     def _open_recon_pks() -> set[str]:
         rows = db.execute(

@@ -48,6 +48,27 @@ def get_summary(
     return settlement_import_service.summary(db)
 
 
+@router.post("/route-alipay")
+def route_alipay(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """把支付宝企业号订单级分账(T200P: 货款/软件费/消费券代付扣回)路由进 order_settlements,
+    让这些订单进入逐笔结算对账。幂等, 可重复跑 (日常自动跑, 这里供手动补一次)。"""
+    result = settlement_import_service.route_alipay_flows(db)
+    db.commit()
+    return result
+
+
+@router.get("/coupon-pending")
+def coupon_pending(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """消费券应补未补 (低优提醒): 平台垫付消费券扣回 vs 已补回, 约2月分批到账; 不进利润, 纯现金时序。"""
+    return settlement_import_service.coupon_pending_summary(db)
+
+
 @router.get("")
 def list_settlements(
     limit: int = Query(100, le=2000),

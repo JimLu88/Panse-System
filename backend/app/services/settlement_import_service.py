@@ -5,6 +5,7 @@ billDetail 列: 入账时间 / 支付流水号 / 淘宝订单编号 / 入账类�
 """
 from __future__ import annotations
 
+import hashlib
 import io
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -123,4 +124,128 @@ def summary(db: Session) -> dict:
         "count": len(rows), "orders": orders,
         "income": float(income), "expense": float(expense), "net": float(income - expense),
         "by_source": by_source,
+    }
+
+
+# ── 支付宝企业号 订单级分账 → order_settlements 自动路由 (用户拍板 2026-06-23) ──────────
+# 淘宝订单走支付宝企业号结算时, 一笔订单的「货款收款 / 软件服务费 / 消费券代付资金扣回」三条
+# 交易分账共用一个交易流水号, related_order_no = "T200P" + 淘宝订单号。把它们落进 order_settlements,
+# 让这些订单也进入逐笔结算对账 (此前只有微信/聚合账单才进, 支付宝订单一直是「待补流水」)。
+# 防双算: order_reconciliation._alipay_net_by_flow_no 已排除 T200P 流水, 实际到账只由这里提供。
+_T200P_PREFIX = "T200P"
+
+
+def _settlement_description(remark: str | None, txn_type: str | None) -> str:
+    rmk = remark or ""
+    if "消费券" in rmk and "扣回" in rmk:
+        return "营销支出-消费券代付扣回"
+    if "消费券" in rmk:
+        return "营销支出-消费券"
+    if "软件服务费" in rmk:
+        return "软件服务费-基础"
+    if (txn_type or "") in ("交易付款", "收入"):
+        return "货款收款"
+    return (txn_type or "结算")
+
+
+def _is_order_settlement_flow(remark: str | None, txn_type: str | None) -> bool:
+    """T200P 流水里只取真·订单结算行: 买家货款收款(交易付款/收入) 或 平台软件费/消费券扣费。
+
+    排除 店铺过户(账户迁移, 不是该单到账) 与其它泛分账, 否则会把内部转账当成订单到账 → 到账虚高。
+    """
+    rmk = remark or ""
+    if "店铺过户" in rmk:
+        return False
+    if (txn_type or "") in ("交易付款", "收入"):
+        return True
+    return ("软件服务费" in rmk) or ("消费券" in rmk)
+
+
+def route_alipay_flows(db: Session) -> dict:
+    """把支付宝企业号里订单级结算行(related_order_no 以 T200P 开头)路由进 order_settlements。
+
+    只取真结算行(货款收款 + / 软件服务费 − / 消费券代付扣回 −; 排除店铺过户等内部转账)。
+    幂等(pay_no = 'ali:' + 业务键md5, 定长且与账单导入的纯数字 pay_no 不冲突)。可重复跑, 只补缺/改现。
+    """
+    from app.models.finance import AlipayFlow
+
+    flows = db.execute(
+        select(AlipayFlow).where(AlipayFlow.related_order_no.like(f"{_T200P_PREFIX}%"))
+    ).scalars().all()
+    existing = {p for (p,) in db.execute(select(OrderSettlement.pay_no)).all()}
+    seen: set[str] = set()
+    inserted = updated = 0
+    for f in flows:
+        if not _is_order_settlement_flow(f.remark, f.transaction_type):
+            continue
+        order_no = (f.related_order_no or "")[len(_T200P_PREFIX):].strip()
+        if not order_no:
+            continue
+        amt = f.amount or Decimal("0")
+        key = f"{f.account}:{f.transaction_no}:{f.transaction_type}:{amt}:{f.balance}"
+        pay_no = "ali:" + hashlib.md5(key.encode("utf-8")).hexdigest()  # noqa: S324 — 仅作幂等去重键, 非安全用途
+        if pay_no in seen:
+            continue
+        seen.add(pay_no)
+        if pay_no in existing:
+            rec = db.execute(
+                select(OrderSettlement).where(OrderSettlement.pay_no == pay_no)
+            ).scalar_one()
+            updated += 1
+        else:
+            rec = OrderSettlement(pay_no=pay_no, source="alipay")
+            db.add(rec)
+            existing.add(pay_no)
+            inserted += 1
+        rec.source = "alipay"
+        rec.order_no = order_no
+        rec.settle_time = f.transaction_time
+        rec.entry_type = f.transaction_type
+        rec.income = amt if amt > 0 else Decimal("0")
+        rec.expense = (-amt) if amt < 0 else Decimal("0")
+        rec.description = _settlement_description(f.remark, f.transaction_type)
+        rec.remark = f.remark
+    db.flush()
+    return {"routed_flows": len(flows), "inserted": inserted, "updated": updated}
+
+
+def coupon_pending_summary(db: Session) -> dict:
+    """消费券应补未补 (低优提醒, 约 2 月到账, 用户拍板 2026-06-23 折叠不催)。
+
+    平台把消费券先垫进货款(交易付款), 又「消费券代付资金扣回」扣走(支出); 之后按「超过封顶金额的
+    平台出资合作费用」分批补回(收入)。应补未补 = 扣回 − 已退回 − 已补回。pending>0 = 平台还欠的消费券。
+    口径只读支付宝流水(出资合作是无订单号的批量转账, 不在 order_settlements 里), 不进利润、纯现金时序。
+    """
+    from app.models.finance import AlipayFlow
+
+    rows = db.execute(
+        select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.remark)
+        .where(AlipayFlow.remark.isnot(None))
+    ).all()
+    clawback = refunded = cofund = Decimal("0")
+    by_month: dict[str, Decimal] = {}
+    for t, amt, rmk in rows:
+        amt = amt or Decimal("0")
+        ym = t.strftime("%Y-%m") if t else "未知"
+        delta = Decimal("0")
+        if "消费券" in rmk and "扣回" in rmk:
+            if amt < 0:
+                clawback += -amt
+                delta = -amt           # 当月新增应补
+            else:
+                refunded += amt
+                delta = -amt           # 退回冲减
+        elif "出资合作" in rmk and amt > 0:
+            cofund += amt
+            delta = -amt               # 平台补回冲减
+        if delta != 0:
+            by_month[ym] = by_month.get(ym, Decimal("0")) + delta
+    pending = clawback - refunded - cofund
+    months = [
+        {"month": m, "net_pending": float(by_month[m])}
+        for m in sorted(by_month.keys())
+    ]
+    return {
+        "clawback": float(clawback), "refunded": float(refunded), "cofund": float(cofund),
+        "pending": float(pending), "by_month": months,
     }
