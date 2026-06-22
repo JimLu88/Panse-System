@@ -9,6 +9,8 @@ import { fetchMonthlyPnl, fetchSalesMix } from '../api/reports';
 import RefillCallout from './RefillCallout';
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
+const SalesRankingPage = lazy(() => import('../pages/SalesRankingPage'));   // 销售排行榜 嵌进大盘
+const ForecastPage = lazy(() => import('../pages/ForecastPage'));           // 销售预测 嵌进大盘
 
 const money = (v: number | null | undefined) =>
   v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
@@ -18,6 +20,7 @@ const PIE_COLORS = ['#6366f1', '#38bdf8', '#10b981', '#f59e0b', '#f43f5e', '#8b5
 export default function MonthlyOpsPanel() {
   const [period, setPeriod] = useState<string | undefined>(undefined);
   const [by, setBy] = useState<'product' | 'shop'>('product');
+  const [salesView, setSalesView] = useState<'ranking' | 'forecast'>('ranking');  // 销售: 排行榜 ⇄ 预测
 
   const { data: pnl, isLoading } = useQuery({ queryKey: ['monthly-pnl'], queryFn: fetchMonthlyPnl });
   const rows = pnl?.rows ?? [];
@@ -126,6 +129,17 @@ export default function MonthlyOpsPanel() {
           </Card></Col>
         </Row>
       )}
+
+      {/* 销售 (排行榜 ⇄ 预测) — 嵌进大盘, 月度经营下方 (用户需求 2026-06-22) */}
+      <Card
+        size="small" title="销售" style={{ marginTop: 12 }}
+        extra={<Segmented size="small" value={salesView} onChange={(v) => setSalesView(v as 'ranking' | 'forecast')}
+          options={[{ label: '销售排行榜', value: 'ranking' }, { label: '销售预测', value: 'forecast' }]} />}
+      >
+        <Suspense fallback={<div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
+          {salesView === 'ranking' ? <SalesRankingPage /> : <ForecastPage />}
+        </Suspense>
+      </Card>
 
       <Card
         size="small" title={`${sel ?? ''} 销售占比`} style={{ marginTop: 12 }}

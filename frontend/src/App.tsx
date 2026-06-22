@@ -149,9 +149,7 @@ export default function App() {
       label: '数据分析',
       children: [
         { key: 'dashboard', label: <Link to="/dashboard">数据大盘</Link> },
-        { key: 'sales-ranking', label: <Link to="/sales-ranking">销售排行榜</Link> },
-        { key: 'forecast', label: <Link to="/forecast">销售预测</Link> },
-        { key: 'reports', label: <Link to="/reports">报表</Link> },  // #分析合并: 报表并入数据分析
+        { key: 'reports', label: <Link to="/reports">报表</Link> },  // #分析合并: 报表并入数据分析 (销售排行榜/预测已嵌入数据大盘)
       ],
     },
     {

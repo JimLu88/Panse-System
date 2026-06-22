@@ -361,6 +361,29 @@ export default function DashboardPage() {
         </Col>
       </Row>
 
+      {/* 库存运营 (调到对账健康前, 用户需求 2026-06-22) */}
+      <Typography.Title level={5} style={sectionTitle}>库存运营</Typography.Title>
+      <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
+        <Col xs={24} sm={12} lg={8}>
+          <MCard title="配件库存">
+            <Statistic title="品种数" value={inventory.part_total} valueStyle={midNum} />
+            <div style={{ marginTop: 8 }}>
+              {inventory.part_negative > 0 && <Tag color="error" style={{ borderRadius: 8 }}>负库存 {inventory.part_negative}</Tag>}
+              {inventory.part_below_safety > 0 && <Tag color="warning" style={{ borderRadius: 8 }}>缺料 {inventory.part_below_safety}</Tag>}
+              {inventory.part_oversold > 0 && <Tag color="volcano" style={{ borderRadius: 8 }}>超卖 {inventory.part_oversold}</Tag>}
+            </div>
+          </MCard>
+        </Col>
+        <Col xs={24} sm={12} lg={8}>
+          <MCard title="成品库存">
+            <Statistic title="品种数" value={inventory.product_total} valueStyle={midNum} />
+            {inventory.product_low_stock > 0 && (
+              <Tag color="warning" style={{ marginTop: 8, borderRadius: 8 }}>低库存 {inventory.product_low_stock} 种</Tag>
+            )}
+          </MCard>
+        </Col>
+      </Row>
+
       {/* 对账健康 */}
       <Typography.Title level={5} style={sectionTitle}>对账健康</Typography.Title>
       <Row gutter={[12, 12]} style={{ marginBottom: 8 }}>
@@ -437,28 +460,6 @@ export default function DashboardPage() {
         </Col>
       </Row>
 
-      {/* 库存运营 */}
-      <Typography.Title level={5} style={sectionTitle}>库存运营</Typography.Title>
-      <Row gutter={[16, 16]}>
-        <Col xs={24} sm={12} lg={8}>
-          <MCard title="配件库存">
-            <Statistic title="品种数" value={inventory.part_total} valueStyle={midNum} />
-            <div style={{ marginTop: 8 }}>
-              {inventory.part_negative > 0 && <Tag color="error" style={{ borderRadius: 8 }}>负库存 {inventory.part_negative}</Tag>}
-              {inventory.part_below_safety > 0 && <Tag color="warning" style={{ borderRadius: 8 }}>缺料 {inventory.part_below_safety}</Tag>}
-              {inventory.part_oversold > 0 && <Tag color="volcano" style={{ borderRadius: 8 }}>超卖 {inventory.part_oversold}</Tag>}
-            </div>
-          </MCard>
-        </Col>
-        <Col xs={24} sm={12} lg={8}>
-          <MCard title="成品库存">
-            <Statistic title="品种数" value={inventory.product_total} valueStyle={midNum} />
-            {inventory.product_low_stock > 0 && (
-              <Tag color="warning" style={{ marginTop: 8, borderRadius: 8 }}>低库存 {inventory.product_low_stock} 种</Tag>
-            )}
-          </MCard>
-        </Col>
-      </Row>
     </div>
   );
 }
