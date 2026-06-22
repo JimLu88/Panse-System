@@ -490,6 +490,12 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             "sku_id": _clean(gv(row, "skuId", "sku id", "SKU ID", "sku_id")),
             "qty": gv(row, "购买数量", "数量"),
             "amount": _to_decimal(gv(row, "买家应付货款", "价格", "商品价格")),
+            # 乙(用户拍板 2026-06-23): 每个子订单行的财务列都留下, 供 _commit_orders 按主订单求和
+            # (此前订单级金额只取第一行 → 多产品单漏抓其余产品的实付/实收/应付)。
+            "paid_real": _to_decimal(gv(row, "买家实付金额", "买家实际支付金额")),
+            "shop_received": _to_decimal(gv(row, "打款商家金额")),
+            "platform_fee": _to_decimal(gv(row, "卖家服务费", "平台服务费")),
+            "refund": _to_decimal(gv(row, "退款金额")),
         })
     return orders
 
@@ -595,7 +601,28 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         if _paid_real_d is None and (paid is None or paid == 0) and _line_total > 0:
             paid = _line_total
         pfee = _to_decimal(o.platform_fee)
-        refund = _normalize_refund(payable, paid, _to_decimal(o.refund))
+        _refund_raw = _to_decimal(o.refund)
+        # 乙(用户拍板 2026-06-23): 一单多宝贝 → 订单级金额按【子订单行求和】, 替代只取第一行
+        # (此前多产品单只抓第一个子订单的实付/实收/应付 → 收入漏记其余产品; 实付被低估又连累口径A成本护栏
+        #  误回退成单产品成本 → 毛利虚高)。单产品单(1行)求和=第一行, 行为不变。退款随行求和后归一;
+        # 成本侧由 auto_cost_backfill 的口径A按子行汇总(实付修对后护栏放行)并排除被退子行。
+        if len(lines) > 1:
+            def _sum_ln(key):
+                vals = [ln.get(key) for ln in lines if ln.get(key) is not None]
+                return sum(vals, Decimal("0")) if vals else None
+            _s_pay, _s_paid = _sum_ln("amount"), _sum_ln("paid_real")
+            _s_recv, _s_fee, _s_refund = _sum_ln("shop_received"), _sum_ln("platform_fee"), _sum_ln("refund")
+            if _s_pay is not None and _s_pay > 0:
+                payable = _s_pay
+            if _s_paid is not None and _s_paid > 0:
+                paid = _paid_real_d = _s_paid
+            if _s_recv is not None and _s_recv > 0:
+                received = _s_recv
+            if _s_fee is not None:
+                pfee = _s_fee
+            if _s_refund is not None:
+                _refund_raw = _s_refund
+        refund = _normalize_refund(payable, paid, _refund_raw)
         ship_dt = _to_date(o.ship_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
         # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款(视为已识别)。
