@@ -583,11 +583,44 @@ function BusinessMonthlyTab() {
         { title: '总收入', dataIndex: 'total_revenue', width: 100, render: fmtY },
         {
           title: '净利润', dataIndex: 'net_profit', width: 100,
-          render: (v: number) => (
-            <Typography.Text type={v >= 0 ? 'success' : 'danger'} strong>
-              {fmtY(v)}
-            </Typography.Text>
-          ),
+          render: (v: number, r: BusinessMonthRow) => {
+            const revenue = (r.net_profit ?? 0) + (r.total_expense ?? 0);
+            const line = (label: string, val: number | null | undefined, strong = false) => (
+              <div key={label} style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontWeight: strong ? 700 : 400 }}>
+                <span>{label}</span><span>{fmtY(val)}</span>
+              </div>
+            );
+            const tip = (
+              <div style={{ fontSize: 12, lineHeight: 1.65, minWidth: 210 }}>
+                <div style={{ fontWeight: 700, marginBottom: 4 }}>净利润 = 真实收入 − 支出合计</div>
+                {line('真实收入(实付−退款)', revenue)}
+                {line('− 支出合计', r.total_expense)}
+                <div style={{ borderTop: '1px solid #ffffff44', margin: '3px 0' }} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 16, fontWeight: 700 }}>
+                  <span>= 净利润</span><span>{fmtY(v)} ({pct(r.net_profit_rate)})</span>
+                </div>
+                <div style={{ marginTop: 6, marginBottom: 2, opacity: 0.8 }}>── 支出合计 拆解 ──</div>
+                {line('商品成本', r.effective_cost)}
+                {line('推广费', r.promo_expense)}
+                {line('平台扣点', r.platform_deduction)}
+                {line('税费', r.tax_expense)}
+                {line('人员外包', r.outsourcing_expense)}
+                {line('固定成本', r.fixed_costs)}
+                {line('售后赔付', r.aftersales_compensation)}
+                {line('物流费', r.freight_expense)}
+                {line('安装上楼', r.install_upstairs_expense)}
+                {line('补单成本', r.refill_cost)}
+              </div>
+            );
+            return (
+              <Tooltip title={tip} overlayStyle={{ maxWidth: 340 }}>
+                <Typography.Text type={v >= 0 ? 'success' : 'danger'} strong
+                  style={{ cursor: 'help', borderBottom: '1px dotted currentColor' }}>
+                  {fmtY(v)}
+                </Typography.Text>
+              </Tooltip>
+            );
+          },
         },
         {
           title: '净利率', dataIndex: 'net_profit_rate', width: 80,
