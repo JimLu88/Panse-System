@@ -220,7 +220,7 @@ function ManualQuoteTab() {
   );
 }
 
-function QuoteSettingsTab() {
+export function QuoteSettingsTab() {
   const qc = useQueryClient();
   const { data: cfg, isLoading } = useQuery({ queryKey: ['quote-config'], queryFn: getQuoteConfig });
   const [draft, setDraft] = useState<QuoteConfig | null>(null);
@@ -588,17 +588,8 @@ export default function CustomizationPage() {
       <Typography.Title level={4} style={{ margin: 0 }}>
         尺寸微定制 <Tag color="orange">业务需求 §2</Tag>
       </Typography.Title>
-      <Tabs
-        activeKey={activeKey}
-        onChange={(k) => setParams(k === 'full' ? {} : { tab: k }, { replace: true })}
-        items={[
-          { key: 'full', label: <><RobotOutlined /> 全定制报价</>, children: <FullCustomTab /> },
-          { key: 'ai', label: 'AI 截图报价', children: <AiQuoteTab /> },
-          { key: 'manual', label: '手动定制向导', children: <ManualQuoteTab /> },
-          { key: 'competitor', label: '竞品价库', children: <CompetitorTab /> },
-          { key: 'settings', label: <><SettingOutlined /> 报价参数设置</>, children: <QuoteSettingsTab /> },
-        ]}
-      />
+      {/* 全定制/AI截图/手动向导 已在「定制报价·智能算价」(V2), 报价参数设置已移到 V2 标题旁; 这里只留竞品价库 */}
+      <CompetitorTab />
     </Space>
   );
 }

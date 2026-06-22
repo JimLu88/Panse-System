@@ -181,7 +181,6 @@ export default function App() {
         { key: 'inventory', label: <Link to="/inventory">配件库存</Link> },
         { key: 'product-inventory', label: <Link to="/product-inventory">成品库存</Link> },
         { key: 'samples', label: <Link to="/samples">样品库存</Link> },
-        { key: 'producibility', label: <Link to="/producibility">可生产数</Link> },
         { key: 'marketing-wood', label: <Link to="/marketing?tab=wood_loss">木材损耗</Link> },
       ],
     },

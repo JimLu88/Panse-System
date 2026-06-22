@@ -10,6 +10,7 @@ import {
   InputNumber,
   Row,
   Select,
+  Modal,
   Space,
   Table,
   Tag,
@@ -23,9 +24,11 @@ import {
   PictureOutlined,
   PlusOutlined,
   RobotOutlined,
+  SettingOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { CompetitorImportButton } from '../components/CompetitorImportButton';
+import { QuoteSettingsTab } from './CustomizationPage';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -819,15 +822,23 @@ export default function CustomQuoteV2Page() {
       },
     ]);
   const delBoard = (key: number) => setBoards((prev) => prev.filter((b) => b.key !== key));
+  const [paramOpen, setParamOpen] = useState(false);  // 报价参数设置弹窗 (从尺寸微定制移来)
 
   return (
     <Space direction="vertical" style={{ width: '100%', maxWidth: 1180 }} size="middle">
-      <Space align="center">
-        <Title level={4} style={{ margin: 0 }}>
-          定制报价 · 智能算价
-        </Title>
-        <Tag color="green" icon={<ThunderboltOutlined />}>v2</Tag>
+      <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
+        <Space align="center">
+          <Title level={4} style={{ margin: 0 }}>
+            定制报价 · 智能算价
+          </Title>
+          <Tag color="green" icon={<ThunderboltOutlined />}>v2</Tag>
+        </Space>
+        <Button icon={<SettingOutlined />} onClick={() => setParamOpen(true)}>报价参数设置</Button>
       </Space>
+      <Modal title="报价参数设置" open={paramOpen} onCancel={() => setParamOpen(false)}
+        width={1000} footer={null} destroyOnClose>
+        <QuoteSettingsTab />
+      </Modal>
       <Alert
         type="info"
         showIcon

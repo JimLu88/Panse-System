@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import ProducibilityPage from './ProducibilityPage';
 import {
   Alert,
   AutoComplete,
@@ -516,6 +517,8 @@ export default function ProductInventoryPage() {
           <Form.Item name="remark" label="备注"><Input /></Form.Item>
         </Form>
       </Modal>
+      {/* 可生产数计算 — 从独立页合并进来 (用户需求 2026-06-22) */}
+      <ProducibilityPage />
     </Space>
   );
 }
