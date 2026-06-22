@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -1218,18 +1219,54 @@ def _prepay_income_by_month(db: Session, category: str,
     return _sum_by_month(db.execute(stmt).all())
 
 
+# 补单佣金按当日总和转给徐晶晶(用户拍板 2026-06-23): 支付宝备注 "M.D-Y" = 当日补单佣金实付,
+# "M.D-b流水" = 当日货款本金(非佣金, 跳过)。代付台账没登记佣金时, 用徐晶晶支付宝 Y 转账当实付凭据。
+_XJJ_Y_RE = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})-Y")
+
+
+def _xjj_commission_paid_by_month(db: Session, ps: Optional[date], pe: Optional[date]) -> dict[str, Decimal]:
+    """徐晶晶支付宝里 备注 'M.D-Y' 的转账 = 当日补单佣金实付, 按补单月(remark 日期)汇总。"""
+    out: dict[str, Decimal] = {}
+    rows = db.execute(
+        select(AlipayFlow.amount, AlipayFlow.remark, AlipayFlow.transaction_time).where(
+            AlipayFlow.counterparty.like("%晶晶%"), AlipayFlow.remark.isnot(None))
+    ).all()
+    for amt, rmk, txn in rows:
+        m = _XJJ_Y_RE.match(rmk or "")
+        if not m:
+            continue
+        mon, day = int(m.group(1)), int(m.group(2))
+        ty = txn.year if txn else date.today().year
+        year = ty - 1 if (txn and mon == 12 and txn.month == 1) else ty   # 跨年(补单12月/付款1月)回退一年
+        try:
+            d = date(year, mon, day)
+        except ValueError:
+            continue
+        if (ps and d < ps) or (pe and d > pe):
+            continue
+        key = _month_key(d) or "(无日期)"
+        out[key] = out.get(key, Decimal("0")) + abs(Decimal(str(amt or 0)))
+    return out
+
+
 def _run_prepay(db: Session, *, rule: RuleName, category: str,
                 billed_by_month: dict[str, Decimal],
                 ps: Optional[date], pe: Optional[date], record_exceptions: bool,
                 noun: str = "费用", source_hint: str = "业务表",
-                annual: bool = False, suppress_zero_paid: bool = False) -> ReconciliationResult:
-    """通用: 应摊(出项, billed_by_month) ↔ 代付台账实付(进项)。差额=实付-应摊。
+                annual: bool = False, suppress_zero_paid: bool = False,
+                extra_paid_by_month: Optional[dict[str, Decimal]] = None,
+                paid_hint: str = "代付台账") -> ReconciliationResult:
+    """通用: 应摊(出项, billed_by_month) ↔ 实付(进项: 代付台账 + extra_paid_by_month)。差额=实付-应摊。
 
     noun/source_hint 用于把差异说明写成人话 (用户反馈"应摊¥300"看不懂)。
     annual=True: 按年聚合比对(年结口径, 不逐月报)。
-    suppress_zero_paid=True: 代付台账还没实付(实付0)时不报差(年结未结); 实付登记后再比对 (用户 2026-06-22)。
+    suppress_zero_paid=True: 实付还没登记(实付0)时不报差(年结未结); 实付登记后再比对 (用户 2026-06-22)。
+    extra_paid_by_month: 代付台账之外的实付凭据 (补单佣金=徐晶晶支付宝Y转账, 用户拍板 2026-06-23)。
     """
     paid = _prepay_income_by_month(db, category, ps, pe)
+    if extra_paid_by_month:
+        for _k, _v in extra_paid_by_month.items():
+            paid[_k] = paid.get(_k, Decimal("0")) + _v
     period_word = "月"
     if annual:
         def _by_year(d: dict[str, Decimal]) -> dict[str, Decimal]:
@@ -1255,11 +1292,11 @@ def _run_prepay(db: Session, *, rule: RuleName, category: str,
         if suppress_zero_paid and act == 0:
             sev = "ok"   # 年结口径: 代付台账未实付=未到年结, 不报差 (用户 2026-06-22)
         msg = (f"{key} {period_word}{noun}: {source_hint}里登记该{period_word}共 ¥{exp} (=应摊), "
-               f"代付台账里实际付出 ¥{act}, 两边差 ¥{diff}。")
+               f"{paid_hint}里实际付出 ¥{act}, 两边差 ¥{diff}。")
         if act == 0 and exp > 0:
-            msg += (" (年结口径: 未到年结/代付台账未实付, 暂不报差; 年结实付登记后再比对)"
+            msg += (" (年结口径: 未到年结/未实付, 暂不报差; 年结实付登记后再比对)"
                     if suppress_zero_paid else
-                    " 实付为 0 通常是该月代付台账还没导入, 或这笔钱没走代付。")
+                    f" 实付为 0 通常是该月 {paid_hint} 还没导入, 或这笔钱没走这个渠道。")
         elif exp == 0 and act > 0:
             msg += f" 应摊为 0 说明{source_hint}里没登记这笔, 请补录或核对月份归属。"
         diffs.append(ReconciliationDiff(key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg))
@@ -1272,16 +1309,22 @@ def _run_prepay(db: Session, *, rule: RuleName, category: str,
 
 def run_refill_commission_payout(db: Session, *, period_start=None, period_end=None,
                                  record_exceptions: bool = True) -> ReconciliationResult:
-    """补单佣金: 订单应摊 RefillRecord.commission ↔ 代付台账 refill_commission 实付 (按月)。"""
+    """补单佣金: 订单应摊 RefillRecord.commission ↔ 实付 (代付台账 + 徐晶晶支付宝Y转账, 按月)。
+
+    用户拍板 2026-06-23: 补单佣金按当日总和转给徐晶晶, 凭据在支付宝(备注 M.D-Y), 代付台账常为空;
+    故把徐晶晶支付宝 Y 转账并入实付源 → 已付的月份(如4月¥2475)自动对平, 漏记的月份显真实差额。
+    """
     stmt = select(RefillRecord.refill_date, RefillRecord.commission).where(RefillRecord.commission.isnot(None))
     if period_start:
         stmt = stmt.where(RefillRecord.refill_date >= period_start)
     if period_end:
         stmt = stmt.where(RefillRecord.refill_date <= period_end)
     billed = _sum_by_month(db.execute(stmt).all())
+    xjj = _xjj_commission_paid_by_month(db, period_start, period_end)   # 徐晶晶支付宝Y转账 = 实付凭据
     return _run_prepay(db, rule="refill_commission_payout", category="refill_commission",
                        billed_by_month=billed, ps=period_start, pe=period_end, record_exceptions=record_exceptions,
-                       noun="补单佣金", source_hint="补单记录(佣金字段)")
+                       noun="补单佣金", source_hint="补单记录(佣金字段)",
+                       extra_paid_by_month=xjj, paid_hint="代付台账+徐晶晶支付宝Y转账")
 
 
 def run_refill_express_payout(db: Session, *, period_start=None, period_end=None,
