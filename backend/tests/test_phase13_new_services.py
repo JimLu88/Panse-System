@@ -226,6 +226,17 @@ class TestDataQualityService:
         assert db.query(DataException).filter(
             DataException.exception_type == "order_missing_alipay").count() == 0
 
+    def test_missing_alipay_skips_refill_order(self, db):
+        """补单(刷单/假单)走补单回款, 无正常收款流水, 不报缺收款 (2026-06-22)。"""
+        from datetime import date
+        db.add(Order(platform="taobao", order_no="5027779368272592526", qty=1, status="signed",
+                     is_historical=False, is_refill=True, paid_amount=Decimal("10"),
+                     order_date=date(2026, 1, 22), product_name="餐桌"))
+        db.commit()
+        data_quality_service.run_all(db)
+        assert db.query(DataException).filter(
+            DataException.exception_type == "order_missing_alipay").count() == 0
+
     def test_missing_alipay_skips_fully_refunded(self, db):
         """已退款单(退款≥实付)货款已退, 不报缺收款 (2026-06-22)。"""
         from datetime import date
