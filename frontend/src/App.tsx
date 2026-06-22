@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, UserOutlined } from '@ant-design/icons';
+import { CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import ForcePasswordChange from './components/ForcePasswordChange';
@@ -255,10 +255,7 @@ export default function App() {
         { key: 'audit-trail', label: <Link to="/audit-trail">修改历史</Link> },
         // 全列数据浏览已裁撤 (各页自带"全部列"视图, 重复) — 路由保留, 直链仍可用
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
-        // 运维工具 (2026-06-12) 并入「管理」页内, 不再单列菜单 (用户从不用、避免菜单膨胀); 路由保留
-        ...(user.role === 'admin'
-          ? [{ key: 'admin', label: <Link to="/admin">管理</Link> }]
-          : []),
+        // 「管理」已移到右上角 小人菜单 → 系统设置 / 账户设置 (2026-06-22); 路由 /admin 保留
       ],
     },
   ];
@@ -317,6 +314,11 @@ export default function App() {
         <Dropdown
           menu={{
             items: [
+              ...(user.role === 'admin' ? [
+                { key: 'account', icon: <UserOutlined />, label: <Link to="/admin?tab=users">账户设置</Link> },
+                { key: 'system', icon: <SettingOutlined />, label: <Link to="/admin">系统设置</Link> },
+                { type: 'divider' as const },
+              ] : []),
               { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: logout },
             ],
           }}
