@@ -1,6 +1,6 @@
 import { Suspense, lazy } from 'react';
 import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
+import { BulbFilled, BulbOutlined, CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import ForcePasswordChange from './components/ForcePasswordChange';
@@ -9,6 +9,7 @@ import CommandPalette from './components/CommandPalette';
 import AiAssistantWidget from './components/AiAssistantWidget';
 import VersionTag from './components/VersionTag';
 import { useAuth } from './auth/AuthProvider';
+import { useThemeMode } from './theme/ThemeProvider';
 
 // 全部页面 lazy load
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
@@ -116,6 +117,7 @@ export default function App() {
   const { user, loading, logout } = useAuth();
   const loc = useLocation();
   const nav = useNavigate();
+  const { mode, toggle: toggleTheme } = useThemeMode();
 
   if (loading) {
     return (
@@ -309,6 +311,14 @@ export default function App() {
         >
           搜索
         </Button>
+        <Button
+          icon={mode === 'dark' ? <BulbFilled /> : <BulbOutlined />}
+          size="small"
+          ghost
+          onClick={toggleTheme}
+          style={{ marginRight: 8, flexShrink: 0, borderColor: 'rgba(255,255,255,0.45)', color: 'rgba(255,255,255,0.85)' }}
+          title={mode === 'dark' ? '切换到浅色模式' : '切换到深色模式'}
+        />
         <VersionTag />
         <NotificationBell />
         <Dropdown

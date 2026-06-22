@@ -1,28 +1,48 @@
-/* 全局字体基线 — 按苹果排版规范 (Apple HIG / apple.com)。
-   字体: 苹方(中文) + San Francisco(英文/数字), 系统自带, 无需下载。
-   渲染: 开启抗锯齿, 让字看起来更细更清晰 — 苹果同款观感。
-   字距: 轻微收紧 (negative tracking), 大标题收得更紧。
-   行距/字号/文字色 由 antd 主题 token 统一控制 (见 main.tsx)。 */
-
-:root {
-  --apple-font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
-    "Helvetica Neue", "PingFang SC", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
-}
+/* 全局字体/排版基线 — 畔色 ERP 设计系统 (2026-06-23 接入)。
+   字体: Noto Sans SC 优先 + 系统中文回退 (见 design-tokens.css)。
+   颜色/底色用语义 token (--text-primary / --bg-app), 随 <html data-theme> 浅/深自动切换。 */
 
 html,
 body {
-  font-family: var(--apple-font);
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  letter-spacing: var(--tracking-snug);
+  color: var(--text-primary);
+  background: var(--bg-app);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.01em;
-  color: #1d1d1f;
+  text-rendering: optimizeLegibility;
 }
 
-/* 标题用更紧的字距 — 苹果大字排版规范 */
-h1,
-h2,
-h3,
-h4,
-h5 {
-  letter-spacing: -0.022em;
+/* 标题用更紧的字距 — 设计系统大字排版 */
+h1, h2, h3, h4, h5 {
+  letter-spacing: var(--tracking-tight);
+}
+
+/* 等宽数字工具类 — 金额/编号/对账列逐位对齐 */
+.tnum {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+  letter-spacing: 0;
+}
+
+/* 滚动条 — 细、低调 (随主题中性色) */
+* { scrollbar-width: thin; scrollbar-color: var(--slate-300) transparent; }
+*::-webkit-scrollbar { width: 10px; height: 10px; }
+*::-webkit-scrollbar-thumb {
+  background: var(--slate-300);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover { background: var(--slate-400); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    transition-duration: .001ms !important;
+  }
 }

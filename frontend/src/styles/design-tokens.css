@@ -1,0 +1,91 @@
+/* 畔色 ERP 设计系统 — 设计 token (2026-06-23 接入)
+   来源: 畔色 ERP Design System / tokens/*.css。主色 Google 蓝 #1a73e8、slate 中性、卡片圆角16、柔和阴影、深色模式。
+   说明: 原设计系统用 Google Fonts 托管 Noto Sans SC; 为避免国内 CDN 慢/不可达, 这里只用字体栈(系统中文字体回退),
+   不做 @import 远程加载。视觉主色/间距/圆角/阴影/深色才是设计系统的核心识别。 */
+
+:root {
+  /* ----- 字体栈 (Noto Sans SC 优先, 回退系统中文/英文; 不远程加载) ----- */
+  --font-sans: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "PingFang SC", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "Menlo",
+    "Cascadia Code", Consolas, monospace;
+
+  /* ----- 排版基线 ----- */
+  --text-md: 15px;
+  --leading-normal: 1.47;
+  --leading-tight: 1.25;
+  --tracking-snug: -0.01em;
+  --tracking-tight: -0.022em;
+  --weight-bold: 700;
+
+  /* ----- 品牌主色 · Google 蓝 ----- */
+  --blue-50: #e8f0fe; --blue-100: #d2e3fc; --blue-200: #aecbfa; --blue-300: #8ab4f8;
+  --blue-400: #669df6; --blue-500: #4285f4; --blue-600: #1a73e8; --blue-700: #1967d2;
+  --blue-800: #185abc; --blue-900: #174ea6;
+  /* 历史别名 --teal-* 指向 Google 蓝 (旧代码兼容) */
+  --teal-50: var(--blue-50); --teal-100: var(--blue-100); --teal-200: var(--blue-200);
+  --teal-300: var(--blue-300); --teal-400: var(--blue-400); --teal-500: var(--blue-500);
+  --teal-600: var(--blue-600); --teal-700: var(--blue-700); --teal-800: var(--blue-800); --teal-900: var(--blue-900);
+
+  /* ----- 中性色 · slate ----- */
+  --slate-50: #f8fafc; --slate-100: #f1f5f9; --slate-200: #e8edf2; --slate-300: #cbd5e1;
+  --slate-400: #94a3b8; --slate-500: #64748b; --slate-600: #475569; --slate-700: #334155;
+  --slate-800: #1e293b; --slate-900: #0f172a; --white: #ffffff;
+
+  /* ----- 语义/状态色 ----- */
+  --green-500: #10b981; --green-50: #ecfdf5; --green-200: #a7f3d0;
+  --amber-500: #f59e0b; --amber-50: #fffbeb; --amber-200: #fde68a;
+  --red-500: #f43f5e; --red-50: #fef2f4; --red-200: #fecdd3;
+  --sky-500: #0ea5e9; --sky-50: #eff6ff; --sky-200: #bae6fd;
+  --violet-500: #8b5cf6; --indigo-500: #6366f1;
+
+  /* ===== 语义别名 (浅色 · 默认) ===== */
+  --bg-app: var(--slate-50); --surface-card: var(--white); --surface-sunken: var(--slate-100);
+  --surface-hover: #f3f6f9; --surface-overlay: rgba(15,23,42,.45);
+  --text-primary: var(--slate-800); --text-secondary: var(--slate-500); --text-tertiary: var(--slate-400);
+  --text-inverse: var(--white); --text-link: var(--blue-600);
+  --border: var(--slate-200); --border-strong: var(--slate-300); --border-subtle: #eef2f7;
+  --primary: var(--blue-600); --primary-hover: var(--blue-700); --primary-active: var(--blue-800);
+  --primary-soft: var(--blue-50); --primary-border: var(--blue-200); --on-primary: var(--white);
+  --success: var(--green-500); --success-soft: var(--green-50); --success-border: var(--green-200);
+  --warning: var(--amber-500); --warning-soft: var(--amber-50); --warning-border: var(--amber-200);
+  --danger: var(--red-500); --danger-soft: var(--red-50); --danger-border: var(--red-200);
+  --info: var(--sky-500); --info-soft: var(--sky-50); --info-border: var(--sky-200);
+  --nav-bg: var(--blue-900); --nav-text: rgba(255,255,255,.78); --nav-text-strong: #ffffff;
+  --nav-active: var(--blue-300); --nav-active-bg: rgba(138,180,248,.18);
+  --chart-1: var(--blue-500); --chart-2: var(--amber-500); --chart-3: var(--green-500);
+  --chart-4: var(--violet-500); --chart-5: var(--sky-500); --chart-6: var(--indigo-500); --chart-7: var(--red-500);
+
+  /* ----- 间距 / 圆角 / 阴影 ----- */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 20px;
+  --space-6: 24px; --space-8: 32px; --space-10: 40px; --space-12: 48px; --space-16: 64px;
+  --radius-xs: 6px; --radius-sm: 8px; --radius-md: 10px; --radius-lg: 12px;
+  --radius-xl: 16px; --radius-2xl: 20px; --radius-pill: 999px;
+  --shadow-xs: 0 1px 2px rgba(15,23,42,.04);
+  --shadow-sm: 0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  --shadow-md: 0 4px 12px rgba(15,23,42,.08);
+  --shadow-lg: 0 12px 32px rgba(15,23,42,.12);
+  --shadow-xl: 0 24px 56px rgba(15,23,42,.16);
+  --focus-ring: 0 0 0 3px rgba(26,115,232,.18);
+  --ease-out: cubic-bezier(.16,.84,.44,1); --ease-in-out: cubic-bezier(.45,0,.25,1);
+  --dur-fast: 120ms; --dur-base: 180ms; --dur-slow: 280ms;
+}
+
+/* ===== 深色模式 — [data-theme="dark"] 覆盖语义别名 (深蓝灰底, 主色提亮) ===== */
+[data-theme="dark"] {
+  --bg-app: #0d1320; --surface-card: #161d2c; --surface-sunken: #111825;
+  --surface-hover: #1d2738; --surface-overlay: rgba(0,0,0,.6);
+  --text-primary: #e7ecf3; --text-secondary: #9fabbf; --text-tertiary: #6b7689;
+  --text-inverse: #0d1320; --text-link: var(--blue-300);
+  --border: #283246; --border-strong: #38445c; --border-subtle: #1e2738;
+  --primary: var(--blue-300); --primary-hover: var(--blue-200); --primary-active: var(--blue-400);
+  --primary-soft: rgba(138,180,248,.16); --primary-border: rgba(138,180,248,.36); --on-primary: #07203f;
+  --success-soft: rgba(16,185,129,.14); --success-border: rgba(16,185,129,.34);
+  --warning-soft: rgba(245,158,11,.14); --warning-border: rgba(245,158,11,.34);
+  --danger-soft: rgba(244,63,94,.14); --danger-border: rgba(244,63,94,.34);
+  --info-soft: rgba(14,165,233,.14); --info-border: rgba(14,165,233,.34);
+  --nav-bg: #0a2a5e;
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.4); --shadow-sm: 0 1px 3px rgba(0,0,0,.5);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.5); --shadow-lg: 0 12px 32px rgba(0,0,0,.6);
+  --focus-ring: 0 0 0 3px rgba(138,180,248,.30);
+}
