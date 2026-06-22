@@ -145,8 +145,12 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
         return None
     if o.is_historical or (o.status or "") not in ("signed", "completed", "success", "finished"):
         return None
+    # 已退款单(退款≥实付)货款已退, 不该要求收款凭据 (2026-06-22)
+    if o.refund_amount and o.paid_amount and o.refund_amount >= o.paid_amount:
+        return None
+    # 归一: 支付宝 related_order_no 常带 T200P 前缀 → 用 LIKE 匹配核心订单号 (2026-06-22)
     n = db.execute(select(func.count()).select_from(AlipayFlow)
-                   .where(AlipayFlow.related_order_no == o.order_no)).scalar() or 0
+                   .where(AlipayFlow.related_order_no.like(f"%{o.order_no}%"))).scalar() or 0
     if n:
         return None
     m = db.execute(select(func.count()).select_from(OrderSettlement)

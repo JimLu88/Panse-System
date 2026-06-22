@@ -211,6 +211,32 @@ class TestDataQualityService:
         ).count()
         assert count == 0
 
+    def test_missing_alipay_matches_prefixed_related_order_no(self, db):
+        """支付宝 related_order_no 带 T200P 前缀也算已收款, 不误报缺收款 (2026-06-22)。"""
+        from datetime import datetime, date
+        from app.models.finance import AlipayFlow
+        db.add(Order(platform="taobao", order_no="3232689493377181868", qty=1, status="signed",
+                     is_historical=False, paid_amount=Decimal("5546"),
+                     order_date=date(2026, 1, 6), product_name="餐桌"))
+        db.add(AlipayFlow(account="企业号", transaction_no="T1", transaction_type="分账",
+                          amount=Decimal("5512.72"), related_order_no="T200P3232689493377181868",
+                          transaction_time=datetime(2026, 1, 6, 10)))
+        db.commit()
+        data_quality_service.run_all(db)
+        assert db.query(DataException).filter(
+            DataException.exception_type == "order_missing_alipay").count() == 0
+
+    def test_missing_alipay_skips_fully_refunded(self, db):
+        """已退款单(退款≥实付)货款已退, 不报缺收款 (2026-06-22)。"""
+        from datetime import date
+        db.add(Order(platform="taobao", order_no="3306449066917022381", qty=1, status="signed",
+                     is_historical=False, paid_amount=Decimal("2651.83"),
+                     refund_amount=Decimal("2703.16"), order_date=date(2026, 1, 7), product_name="柜"))
+        db.commit()
+        data_quality_service.run_all(db)
+        assert db.query(DataException).filter(
+            DataException.exception_type == "order_missing_alipay").count() == 0
+
     def test_alipay_paired_flow_not_flagged_as_duplicate(self, db):
         """同号『在线支付 + 分账』正常配对, 不应报重复。"""
         from datetime import datetime

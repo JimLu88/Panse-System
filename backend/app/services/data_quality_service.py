@@ -104,13 +104,16 @@ def scan_order_missing_alipay(db: Session) -> int:
     # (OrderSettlement.order_no, 由 settlement_import 导入)。故"已收款"= 支付宝流水
     # (AlipayFlow.related_order_no) 或 聚合结算(OrderSettlement.order_no) 任一有记录。
     from app.models.settlement import OrderSettlement
+    from app.services.smart_matching_service import _order_key as _okey
+    # 归一 (2026-06-22): 支付宝 related_order_no 常带 T200P 前缀/空格, 原值精确比对会漏匹配
+    # (实测 T200P3232689… 收款¥5512 误报"无收款") → 用 _okey 抽核心订单号, 与 revenue_alipay 口径一致。
     linked = {
-        r for (r,) in db.query(AlipayFlow.related_order_no)
-        .filter(AlipayFlow.related_order_no.isnot(None)).all()
+        _okey(r) for (r,) in db.query(AlipayFlow.related_order_no)
+        .filter(AlipayFlow.related_order_no.isnot(None)).all() if _okey(r)
     }
     linked |= {
-        r for (r,) in db.query(OrderSettlement.order_no)
-        .filter(OrderSettlement.order_no.isnot(None)).all()
+        _okey(r) for (r,) in db.query(OrderSettlement.order_no)
+        .filter(OrderSettlement.order_no.isnot(None)).all() if _okey(r)
     }
     # 只查『货款应已到账』的订单 —— 交易成功(signed)/已完成。担保交易中的 paid(买家已付款待发货)/
     # shipped(已发货待确认收货) 货款仍在淘宝担保未释放, 本就无收款流水, 不算缺失(在途, 归现金流预测);
@@ -121,7 +124,10 @@ def scan_order_missing_alipay(db: Session) -> int:
         Order.status.in_(SETTLED_STATES),
         Order.is_historical == False,  # noqa: E712
     ).all():
-        if o.order_no in linked:
+        if _okey(o.order_no) in linked:
+            continue
+        # 已退款单(退款≥实付)是退款交易, 货款已退, 不该要求收款凭据 (2026-06-22)
+        if o.refund_amount and o.paid_amount and o.refund_amount >= o.paid_amount:
             continue
         # 淘宝企业单走批量结算, 逐单支付宝流水拿不到; 但淘宝订单报表已逐单给出『打款商家金额』
         # (淘宝实际打给卖家的货款)。有该金额 = 淘宝已逐单确认放款 → 视为已收款, 不逐单误报;
@@ -204,16 +210,19 @@ def order_payment_diagnosis(db: Session, order_nos: list[str]) -> list[dict]:
             out.append({"order_no": ono, "found": False})
             continue
         af = db.execute(select(AlipayFlow.transaction_no, AlipayFlow.amount).where(
-            AlipayFlow.related_order_no == ono)).all()
+            AlipayFlow.related_order_no.like(f"%{ono}%"))).all()   # 归一 T200P 前缀
         st = db.execute(select(OrderSettlement).where(OrderSettlement.order_no == ono)).scalars().all()
         st_income = float(sum((s.income or 0) for s in st))
         shop = o.shop_received_amount
+        is_refunded = bool(o.refund_amount and o.paid_amount and o.refund_amount >= o.paid_amount)
         has_evidence = bool(af) or bool(st) or (shop is not None and shop > 0)
         _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
         is_non_product = any(k in _txt for k in _NON_PRODUCT_KW)
         recent = bool(o.order_date and o.order_date >= date.today() - timedelta(days=14))
         if has_evidence:
             verdict = "已有收款凭据 → 异常应清除(过期)"
+        elif is_refunded:
+            verdict = "已退款单(退款≥实付)→ 货款已退, 不该要求收款凭据(已改为跳过)"
         elif is_non_product:
             verdict = "非产品单(安装/送货/补差价)→ 本就无收款流水, 不该报异常(已改为跳过)"
         elif recent:
