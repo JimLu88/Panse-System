@@ -1532,14 +1532,55 @@ RULES: dict[RuleName, callable] = {
 }
 
 
+def _autoclose_resolved_diffs(db: Session, results: dict) -> int:
+    """对账重算后, 把"差异已消失/已对平"的 open reconciliation_diff 自动销账。
+
+    治本「关了又冒 / 僵尸告警」(2026-06-23): _record_exception 只幂等创建、不会在差异修好后自动关
+    (期初/收支/余额录对后旧告警永远挂着)。这里用本轮已算好的 diffs 反向核对: open 异常的
+    (rule:key) 不在本轮"仍超阈值"集合里 = 已对平 → 自动 resolved。零额外查询(复用 results)。
+    只在全量重算时调用(见 run_all), 避免窄账期重算误关其它月份的异常。被人工 ignored 的不动。
+    """
+    from datetime import datetime, timezone
+
+    from app.models.exception import DataException
+    still_off = {
+        f"{rule}:{d.key}"
+        for rule, res in results.items()
+        for d in res.diffs
+        if d.severity not in ("ok", "not_available")
+    }
+    now = datetime.now(timezone.utc).isoformat()
+    closed = 0
+    for ex in db.query(DataException).filter(
+        DataException.source_table == "reconciliation",
+        DataException.exception_type == "reconciliation_diff",
+        DataException.status == "open",
+    ).all():
+        if (ex.source_pk or "") not in still_off:
+            ex.status = "resolved"
+            ex.resolved_by = ex.resolved_by or "auto"
+            ex.resolved_at = ex.resolved_at or now
+            ex.description = (ex.description or "") + \
+                " | 自动关闭(2026-06-23): 对账重算后该差异已消失/已对平。"
+            closed += 1
+    if closed:
+        db.flush()
+    return closed
+
+
 def run_all(db: Session, **kwargs) -> dict[RuleName, ReconciliationResult]:
     load_thresholds(db)   # 阈值可配 (对账建议 9)
+    # 全量重算 = 调用方未限定账期 → 才能安全自动关已对平的旧异常 (窄账期重算只覆盖部分月, 不可关其它月)
+    full_rerun = not (kwargs.get("period_start") or kwargs.get("period_end"))
     # 财务起始线: 未显式传账期时默认从 2026-01-01 起 (2025 不导入, 用户拍板)
     if not kwargs.get("period_start"):
         kwargs["period_start"] = _finance_start(db)
     results = {name: fn(db, **kwargs) for name, fn in RULES.items()}
-    # 异常池同步时间 (对账建议 9/审计): 记录最近一次"写异常"的对账时间
     if kwargs.get("record_exceptions", True):
+        # 治本: 全量重算后把差异已消失的 open reconciliation_diff 自动销账 (修好自愈, 不再僵尸/关了又冒)
+        if full_rerun:
+            _autoclose_resolved_diffs(db, results)
+        # 异常池同步时间 (对账建议 9/审计): 记录最近一次"写异常"的对账时间
         try:
             from datetime import datetime, timezone
 

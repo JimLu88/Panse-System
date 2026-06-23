@@ -373,6 +373,27 @@ def _check_alipay_balance_gap(db: Session, exc: DataException) -> Optional[str]:
     return f"流水 {f.id} 余额断链 (前驱应为 ¥{pred}, 无对应流水)"
 
 
+def _check_reconciliation_diff(db: Session, exc: DataException) -> Optional[str]:
+    """对账差异复核(ledger_check/货款/营收等所有规则): 重算该规则, 看这条 key 的差异是否已消失
+    /已对平 → 可销账。与每日对账自动关闭同口径(severity 不在 ok/not_available 即仍有差)。
+    修(2026-06-23): reconciliation_diff 之前无复核器 → resolve 拦不住未对平的、/recheck-all 不关
+    已修好的(对账 _record_exception 只幂等建、不自动关)。规则已摘除/老异常缺 context → 不拦留人工。"""
+    ctx = exc.context or {}
+    rule = ctx.get("rule")
+    key = ctx.get("key")
+    from app.services.reconciliation_service import RULES
+    if not rule or rule not in RULES or not key:
+        return None
+    try:
+        res = RULES[rule](db, record_exceptions=False)
+    except Exception:  # pragma: no cover - 重算故障不拦人工
+        return None
+    for d in res.diffs:
+        if d.key == key and d.severity not in ("ok", "not_available"):
+            return f"对账 {rule} / {key} 仍有差异 ¥{getattr(d, 'diff', '?')}, 未对平"
+    return None
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "alipay_balance_gap": _check_alipay_balance_gap,
@@ -391,6 +412,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "promotion_recharge_unmatched": _check_promotion_recharge_unmatched,
     "custom_order_missing_cost_basis": _check_custom_order_missing_cost_basis,
     "missing_taobao_mapping": _check_missing_taobao_mapping,
+    "reconciliation_diff": _check_reconciliation_diff,
 }
 
 
