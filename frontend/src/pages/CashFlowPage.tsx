@@ -28,14 +28,18 @@ const FRESH_META: Record<string, { color: string; dot: string; text: string }> =
   unknown: { color: 'default', dot: '⚪', text: '无数据' },
 };
 
+// 这些来源基本不会更新(人工偶尔填一次), 不按新鲜度判定 → 一律灰色 + 不显示"X天前"(免得误当过期)
+const STATIC_FRESH_SOURCES = ['总投资费用', '店铺保证金'];
+
 function FreshnessBadge({ f }: { f: CashFlowFreshness }) {
+  const isStatic = STATIC_FRESH_SOURCES.some((s) => (f.source || '').includes(s));
   const meta = FRESH_META[f.status] || FRESH_META.unknown;
   const ago = f.days_ago == null ? '—' : f.days_ago === 0 ? '今天' : `${f.days_ago} 天前`;
   const asOf = f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录';
   return (
     <Tooltip title={`数据截至 ${asOf}`}>
-      <Tag color={meta.color} style={{ fontSize: 13, padding: '2px 10px', marginBottom: 6 }}>
-        {meta.dot} {f.source} · {ago}
+      <Tag color={isStatic ? 'default' : meta.color} style={{ fontSize: 13, padding: '2px 10px', marginBottom: 6 }}>
+        {isStatic ? '⚪' : meta.dot} {f.source}{isStatic ? '' : ` · ${ago}`}
       </Tag>
     </Tooltip>
   );
