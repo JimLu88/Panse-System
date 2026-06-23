@@ -7,7 +7,6 @@ import { useQuery } from '@tanstack/react-query';
 import { getDashboard, api } from '../api/client';
 import { getCashFlow, type CashFlowSummary, type CashFlowFreshness } from '../api/finance';
 import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
-import RefillCallout from '../components/RefillCallout';
 // #6 自动化任务清单已移到「待办台账」(OpsChecklistPage), 首页不再引用
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
@@ -270,10 +269,8 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* 刷单(补单)单列提示 — 已从下方经营数据剔除, 单独亮出。窗口跟随上方日期区间 */}
-      <RefillCallout periodStart={startStr} periodEnd={endStr} />
-
       {/* 剩余流水 · 可用资金 (实时, 含数据红绿灯; 点击进完整页) */}
+      {/* 刷单(补单)单列提示已下移到「月度经营」面板内 (用户 2026-06-23) */}
       <CashFlowBanner />
 
       {/* 月度经营 (工厂口径利润/ROI + 销售占比饼图, 可切月; 未对清月标仅供参考) */}

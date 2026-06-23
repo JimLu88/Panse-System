@@ -43,3 +43,16 @@
   border-radius: 0;
   border-left-width: 4px;
 }
+
+/* ===== Alert 紧凑化 — 缩小信息/警告模块的字体与体积 (用户 2026-06-23) ===== */
+.ant-alert {
+  padding-block: 6px;
+  padding-inline: 12px;
+}
+.ant-alert .ant-alert-message { font-size: 13px; }
+.ant-alert .ant-alert-description { font-size: 12px; line-height: 1.45; }
+.ant-alert .ant-alert-icon { font-size: 15px; margin-inline-end: 8px; }
+
+/* ===== 同行卡片等高 — Row 内卡片撑满列高, 同行外框尺寸统一 (用户规范 2026-06-23) =====
+   不同行可不等高; 同行卡片不论内容多少, 外框等大。 */
+.ant-row > .ant-col > .ant-card { height: 100%; }

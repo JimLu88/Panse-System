@@ -3,7 +3,7 @@
  * 未对清月份(recon_status=reference_only)整块标「仅供参考」。
  */
 import { lazy, Suspense, useMemo, useState } from 'react';
-import { Alert, Card, Col, Row, Segmented, Select, Spin, Statistic, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Row, Segmented, Select, Spin, Statistic, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMonthlyPnl, fetchSalesMix } from '../api/reports';
 import RefillCallout from './RefillCallout';
@@ -16,6 +16,9 @@ const money = (v: number | null | undefined) =>
   v == null ? '-' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 
 const PIE_COLORS = ['#6366f1', '#38bdf8', '#10b981', '#f59e0b', '#f43f5e', '#8b5cf6', '#14b8a6', '#fb923c', '#a3a3a3', '#0ea5e9', '#cbd5e1'];
+
+// 月度经营 KPI 蓝色板块 (用户 2026-06-23: 试蓝色看效果) — 浅 Google 蓝底 + 蓝描边
+const BLUE_CARD = { background: '#eef4ff', borderColor: '#d6e4ff' } as const;
 
 export default function MonthlyOpsPanel() {
   const [period, setPeriod] = useState<string | undefined>(undefined);
@@ -65,8 +68,8 @@ export default function MonthlyOpsPanel() {
 
   return (
     <div style={{ marginTop: 18 }}>
-      {/* 刷单(补单)单列提示 — 跟随所选月份; 已从下方月度经营数据剔除, 单独亮出 */}
-      <RefillCallout periodStart={monthStart} periodEnd={monthEnd} />
+      {/* 刷单(补单)单列提示 — 跟随所选月份; 已从下方月度经营数据剔除, 单独亮出 (紧凑) */}
+      <RefillCallout periodStart={monthStart} periodEnd={monthEnd} compact />
 
       <Row justify="space-between" align="middle" style={{ margin: '0 2px 10px' }}>
         <Typography.Text style={{ fontWeight: 700, fontSize: 15 }}>月度经营(工厂口径)</Typography.Text>
@@ -83,11 +86,16 @@ export default function MonthlyOpsPanel() {
       {isRef && (
         <Alert
           type="warning" showIcon style={{ marginBottom: 10 }}
-          message={`${sel} 未完全核对完成,数据仅供参考`}
-          description={
-            selRow && selRow.factory_recon_count === 0
-              ? '该月暂无工厂对账记录;利润为预估值。完成工厂对账后自动转为「准确」。'
-              : `该月有 ${selRow?.unbalanced_factories ?? 0} 个工厂未对清。完成工厂对账后自动转为「准确」。`
+          message={
+            <span>
+              {sel} 未完全核对 · 数据仅供参考
+              <Typography.Text type="secondary" style={{ marginLeft: 6, fontSize: 12 }}>
+                {selRow && selRow.factory_recon_count === 0
+                  ? '(暂无工厂对账, 利润为预估)'
+                  : `(${selRow?.unbalanced_factories ?? 0} 个工厂未对清)`}
+                ，完成工厂对账后自动转「准确」
+              </Typography.Text>
+            </span>
           }
         />
       )}
@@ -95,18 +103,15 @@ export default function MonthlyOpsPanel() {
       {selRow && (
         <Row gutter={[12, 12]}>
           <Col span={4}>
-            <Card size="small">
+            <Card size="small" style={BLUE_CARD}>
               <Statistic title="当月利润" value={selRow.net_profit ?? 0} precision={0} prefix="¥"
                 valueStyle={{ color: (selRow.net_profit ?? 0) >= 0 ? '#389e0d' : '#cf1322', fontSize: 18 }} />
-              <Tag color={isRef ? 'warning' : 'success'} style={{ marginTop: 4 }}>
-                {isRef ? '仅供参考' : '已核对'}
-              </Tag>
             </Card>
           </Col>
-          <Col span={4}><Card size="small">
+          <Col span={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="利润率" value={selRow.net_profit_rate ?? 0} suffix="%" precision={1} />
           </Card></Col>
-          <Col span={4}><Card size="small">
+          <Col span={4}><Card size="small" style={BLUE_CARD}>
             {/* 销售额口径 = 剔除补单 (用户拍板 2026-06-12), 补单金额单独注释 */}
             <Statistic title="当月营收 (不含补单)" value={selRow.real_revenue ?? 0} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
             {(selRow.refill_revenue ?? 0) > 0 && (
@@ -115,14 +120,14 @@ export default function MonthlyOpsPanel() {
               </div>
             )}
           </Card></Col>
-          <Col span={4}><Card size="small">
+          <Col span={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="推广ROI" value={selRow.promo_roi ?? 0} precision={2} suffix="×" />
             <div style={{ color: '#999', fontSize: 12 }}>推广占比 {selRow.promo_spend_ratio != null ? `${(selRow.promo_spend_ratio * 100).toFixed(1)}%` : '-'}</div>
           </Card></Col>
-          <Col span={4}><Card size="small">
+          <Col span={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="累计利润" value={selRow.cumulative_profit} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
           </Card></Col>
-          <Col span={4}><Card size="small">
+          <Col span={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="投资回收率" value={selRow.recovery_rate != null ? selRow.recovery_rate * 100 : 0} suffix="%" precision={1}
               valueStyle={{ color: '#1677ff' }} />
             <div style={{ color: '#999', fontSize: 12 }}>总投资 {money(pnl?.total_investment)}</div>

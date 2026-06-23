@@ -36,10 +36,10 @@ export default function RefillCallout({
       banner={compact}
       style={{ marginBottom: compact ? 8 : 12 }}
       message={
-        <Typography.Text>
+        <Typography.Text style={{ fontSize: 13 }}>
           刷单(补单) <b>{data.count}</b> 笔 · 流水 <b>{yuan(data.gmv)}</b> · 成本{' '}
           <b>{yuan(data.cost)}</b>
-          <Typography.Text type="secondary" style={{ marginLeft: 8 }}>
+          <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
             —— 已单列, 不计入上方经营数据
           </Typography.Text>
         </Typography.Text>
