@@ -1221,7 +1221,10 @@ def _prepay_income_by_month(db: Session, category: str,
 
 # 补单佣金按当日总和转给徐晶晶(用户拍板 2026-06-23): 支付宝备注 "M.D-Y" = 当日补单佣金实付,
 # "M.D-b流水" = 当日货款本金(非佣金, 跳过)。代付台账没登记佣金时, 用徐晶晶支付宝 Y 转账当实付凭据。
-_XJJ_Y_RE = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})-Y")
+# 合并备注(2026-06-23): 多日佣金并一笔转时备注作 "M.D.D-Y"/"M.D-M.D-Y"(如 3.21.22-Y = 3.21+3.22),
+# 旧正则只认单日 → 这类整笔漏算、那几天误报"没付"。放宽: 抓首个日期定月份/业务日, 中间允许多日与
+# 连字符, 末尾 -Y。b流水(订单额)备注不含 -Y, 自然排除, 不会误并进佣金。
+_XJJ_Y_RE = re.compile(r"^\s*(\d{1,2})\.(\d{1,2})[\d.\-]*-Y")
 
 
 def _xjj_commission_paid_by_month(db: Session, ps: Optional[date], pe: Optional[date]) -> dict[str, Decimal]:
