@@ -15,6 +15,7 @@ from app.models.auth import User
 from app.models.order import Order
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.finance import AlipayFlow
+from app.services.reconciliation_service import _NON_REVENUE_ACCOUNTS
 from app.models.marketing import AfterSales
 from app.models.exception import DataException
 
@@ -75,6 +76,7 @@ def finance_overview(
     gross_profit = round(revenue - effective_cost, 2)
     alipay_income = _safe_decimal(db.query(func.sum(AlipayFlow.amount)).filter(
         AlipayFlow.amount > 0,
+        AlipayFlow.account.notin_(_NON_REVENUE_ACCOUNTS),   # 货款/采购/个人户正流水非客户回款
         func.date(AlipayFlow.transaction_time) >= start,
         func.date(AlipayFlow.transaction_time) <= end,
     ).scalar())
@@ -194,6 +196,7 @@ def get_dashboard(
         db.query(func.sum(AlipayFlow.amount))
         .filter(
             AlipayFlow.amount > 0,
+            AlipayFlow.account.notin_(_NON_REVENUE_ACCOUNTS),   # 同上: 排除非客户回款账户
             AlipayFlow.transaction_time >= func.date(str(last_30)),
         )
         .scalar()
