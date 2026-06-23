@@ -21,7 +21,7 @@ class DataException(Base, TimestampMixin):
     exception_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     severity: Mapped[str] = mapped_column(String(16), default="warning", nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
-    suggestion_action: Mapped[Optional[str]] = mapped_column(String(64))
+    suggestion_action: Mapped[Optional[str]] = mapped_column(Text)   # 建议文案常>64字, 用 TEXT (migration 0091)
     context: Mapped[Optional[dict]] = mapped_column(JSON)
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)
     resolved_by: Mapped[Optional[str]] = mapped_column(String(64))
