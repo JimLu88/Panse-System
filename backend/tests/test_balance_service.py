@@ -94,3 +94,16 @@ def test_recompute_includes_null_reconciliation_type(db_session):
     assert row.income == Decimal("1000")
     assert row.expense == Decimal("400")
     assert row.closing_balance == Decimal("600.00")
+
+
+def test_recompute_excludes_internal_transfer(db_session):
+    # 理财申购/赎回/余额宝/资金互转 = internal_transfer, 钱在自己口袋间挪, 非账户经营收支
+    # (2026-06-23 用户拍板剔除佳宝号理财申购, 以后不再计入收支)。
+    _flow(db_session, "佳宝号", datetime(2026, 5, 10), 1000, "T1")                                 # 真收入
+    _flow(db_session, "佳宝号", datetime(2026, 5, 12), -300, "T2")                                 # 真支出
+    _flow(db_session, "佳宝号", datetime(2026, 5, 15), -482655, "T3", type_="internal_transfer")   # 理财申购→剔除
+    _flow(db_session, "佳宝号", datetime(2026, 5, 18), 480000, "T4", type_="internal_transfer")    # 理财赎回→剔除
+    row = balance_service.recompute_month(db_session, account="佳宝号", year=2026, month=5)
+    assert row.income == Decimal("1000")          # 理财赎回 480000 不计入
+    assert row.expense == Decimal("300")          # 理财申购 482655 不计入
+    assert row.closing_balance == Decimal("700.00")

@@ -37,7 +37,9 @@ def recompute_month(
             extract("month", AlipayFlow.transaction_time) == month,
             or_(
                 AlipayFlow.reconciliation_type.is_(None),
-                AlipayFlow.reconciliation_type != "opening",
+                # 排除 opening(期初调整行) + internal_transfer(理财申购/赎回/余额宝/资金互转 =
+                # 钱在自己口袋间挪, 非账户经营收支; 2026-06-23 用户拍板剔除佳宝号理财申购, 以后不再计入)
+                AlipayFlow.reconciliation_type.notin_(("opening", "internal_transfer")),
             ),
         )
     )
@@ -49,7 +51,9 @@ def recompute_month(
             extract("month", AlipayFlow.transaction_time) == month,
             or_(
                 AlipayFlow.reconciliation_type.is_(None),
-                AlipayFlow.reconciliation_type != "opening",
+                # 排除 opening(期初调整行) + internal_transfer(理财申购/赎回/余额宝/资金互转 =
+                # 钱在自己口袋间挪, 非账户经营收支; 2026-06-23 用户拍板剔除佳宝号理财申购, 以后不再计入)
+                AlipayFlow.reconciliation_type.notin_(("opening", "internal_transfer")),
             ),
         )
     )
