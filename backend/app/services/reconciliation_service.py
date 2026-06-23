@@ -882,12 +882,15 @@ def run_revenue_alipay(
         k = _okey(no)
         if not k:
             continue
-        # 营收对账口径(2026-06-23 用户拍板 平台券+退差价根治): 比对基准 = 买家应付 − 退款。
+        # 营收对账口径: 比对基准 = max(买家应付, 实付) − 退款。
         # 支付宝该单收入正是"买家应付"(平台把买家用的平台券/红包补给店铺, 店铺到账=应付)。
-        #   平台券: 应付>实付(实付=扣券净额) → 用应付对平, 不再误报正差(平台券是平台出资);
-        #   退差价: 应付=实付、退款>0 → 应付−退款=支付宝净额 → 对平。
-        # 应付缺失(老导入未抓)则退回实付兜底。注: 营收/利润口径另用实付(扣券), 不受此对账口径影响。
-        base = Decimal(payable if payable is not None else (paid or 0))
+        #   平台券: 应付>实付(实付=扣券净额) → 用应付对平, 不误报正差(平台券是平台出资);
+        #   退差价: 应付=实付、退款>0 → 应付−退款=支付宝净额 → 对平;
+        #   应付漏抓: 多产品/单品只抓部分子订单 → 应付<实付 而实付=支付宝该单收入 → 用实付兜底
+        #     (2026-06-24: 应付漏抓残留单不再误报正差; 实付是对的)。应付缺失同样退回实付。
+        # 注: 营收/利润口径另用实付(扣券), 不受此对账口径影响。
+        _paid_d = Decimal(paid or 0)
+        base = max(Decimal(payable), _paid_d) if payable is not None else _paid_d
         order_paid[k] = order_paid.get(k, Decimal("0")) + base - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
 
