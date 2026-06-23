@@ -857,7 +857,8 @@ def run_revenue_alipay(
     from app.services.smart_matching_service import _order_key as _okey
 
     o_rows = db.execute(
-        select(Order.order_no, Order.order_date, Order.paid_amount, Order.refund_amount).where(
+        select(Order.order_no, Order.order_date, Order.paid_amount,
+               Order.buyer_payable_amount, Order.refund_amount).where(
             Order.status.notin_(["cancelled", "pending_payment"]),
             Order.order_date.isnot(None),
             *( [Order.order_date >= period_start] if period_start else [] ),
@@ -866,13 +867,17 @@ def run_revenue_alipay(
     ).all()
     order_paid: dict[str, Decimal] = {}
     order_month: dict[str, str] = {}
-    for no, d, paid, refund in o_rows:
+    for no, d, paid, payable, refund in o_rows:
         k = _okey(no)
         if not k:
             continue
-        # 退差价/退款(2026-06-23 用户拍板): 订单营收按"净额=实付−退款"对账, 与支付宝该单净收入(已排
-        # refund_in)对称 → 客户确认收货后退的差价(系统已记 refund_amount)自动对平, 不再误报。
-        order_paid[k] = order_paid.get(k, Decimal("0")) + Decimal(paid or 0) - Decimal(refund or 0)
+        # 营收对账口径(2026-06-23 用户拍板 平台券+退差价根治): 比对基准 = 买家应付 − 退款。
+        # 支付宝该单收入正是"买家应付"(平台把买家用的平台券/红包补给店铺, 店铺到账=应付)。
+        #   平台券: 应付>实付(实付=扣券净额) → 用应付对平, 不再误报正差(平台券是平台出资);
+        #   退差价: 应付=实付、退款>0 → 应付−退款=支付宝净额 → 对平。
+        # 应付缺失(老导入未抓)则退回实付兜底。注: 营收/利润口径另用实付(扣券), 不受此对账口径影响。
+        base = Decimal(payable if payable is not None else (paid or 0))
+        order_paid[k] = order_paid.get(k, Decimal("0")) + base - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
 
     from sqlalchemy import or_ as _or
@@ -905,7 +910,7 @@ def run_revenue_alipay(
             if tn not in cur or amt_d > cur[tn]:
                 cur[tn] = amt_d
             flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{amt_d}")
-            flow_txns_by_order.setdefault(k, []).append(tn)
+            flow_txns_by_order.setdefault(k, []).append((tn, amt_d))  # 存(交易号,金额)对: 真重复=同号同额
         else:
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
             orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + amt_d
@@ -938,7 +943,9 @@ def run_revenue_alipay(
         # —— 客户用淘金币抵扣→实付是抵扣后净额, 平台把淘金币打给店铺→支付宝收入 = 实付 + 淘金币。
         # 仅 单条客户付款(无同号重复入库) 且 正差 ≤ 实付×20% 才豁免; "重复流水"(差≈100%、同号付款
         # 重复入库, 去重bug)仍要报, "真短收"(支付宝<实付, 差为负)也仍要报。
-        _txns = flow_txns_by_order.get(k, [])
+        # 真重复入库 = 同交易号"且同金额"出现多次(去重bug); 担保交易正常的"收入+分账"是同号"不同额", 不算
+        # (2026-06-23 修: 旧版只看交易号 → 误把正常收入+分账判成重复, 错误关掉了平台券/淘金币正差豁免)。
+        _txns = flow_txns_by_order.get(k, [])   # 元素 = (交易号, 金额) 对
         _dup_flow = len(_txns) != len(set(_txns))
         if diff > 0 and not _dup_flow and paid > 0 and diff <= paid * _TAOJINBI_MAX_RATIO:
             matched_ok += 1

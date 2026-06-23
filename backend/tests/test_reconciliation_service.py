@@ -101,6 +101,27 @@ def test_revenue_alipay_refund_diff_netted(db_session):
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
 
 
+def test_revenue_alipay_platform_coupon_netted(db_session):
+    """平台券: 买家应付>实付(实付=扣券净额), 支付宝该单收入=应付 → 用应付对账自动对平, 不报
+    (2026-06-23: 平台券是平台出资; 旧版只比实付→恒报正差, 且被同号"收入+分账"误判成重复入库)。"""
+    no = "5083434002324457345"
+    db_session.add(Order(platform="淘宝", order_no=no, qty=1,
+                         paid_amount=Decimal("2723.77"), buyer_payable_amount=Decimal("2928.78"),
+                         order_date=date(2026, 5, 17), status="signed"))
+    # 担保交易正常的 收入 + 分账(同交易号、不同金额, 不是重复入库)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXC", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("2928.78"), related_order_no=no,
+                              transaction_type="收入", reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXC", transaction_time=datetime(2026, 6, 1),
+                              amount=Decimal("2911.21"), related_order_no=no,
+                              transaction_type="交易分账", reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == f"revenue_alipay:{no}").count() == 0
+
+
 def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
     """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
     分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""
