@@ -106,9 +106,10 @@ export default function OpsChecklistPage() {
                     onChange={(e) => mut.mutate({ key: t.key, done: e.target.checked })}
                   />
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, textDecoration: t.done ? 'line-through' : 'none', color: t.done ? '#aaa' : undefined }}>
+                    <div style={{ fontWeight: 600, textDecoration: t.done ? 'line-through' : 'none', color: t.done ? '#aaa' : t.overdue ? '#cf1322' : undefined }}>
                       {t.route ? <Link to={t.route}>{t.title}</Link> : t.title}
                       {t.auto && <Tag color="cyan" style={{ marginLeft: 6, fontSize: 11 }}>已自动完成</Tag>}
+                      {t.overdue && <Tag color="red" style={{ marginLeft: 6, fontSize: 11 }}>⚠ 超时</Tag>}
                     </div>
                     <Typography.Text type="secondary" style={{ fontSize: 12 }}>{t.detail}</Typography.Text>
                   </div>

@@ -27,8 +27,9 @@ OPS_TASKS = [
      "detail": "导入 企业号(9A) / 爱群号(9C) 当月支付宝流水"},
     {"key": "monthly_factory_recon", "freq": "monthly", "title": "导入工厂对账单(逐单)", "route": "/factory-recon",
      "detail": "工厂逐单对账: 上传工厂侧对账单 xlsx(价格=工厂结算价=成本), 逐月对账并对差异填原因做平; 自动回填订单成本"},
-    {"key": "monthly_logistics_bill", "freq": "monthly", "title": "导入物流公司账单", "route": "/logistics-bills",
-     "detail": "物流公司账单 CSV: 上传当月运费明细, 供物流费对账"},
+    # —— 每周 ——
+    {"key": "weekly_logistics_recon", "freq": "weekly", "title": "导入物流对账", "route": "/logistics-bills",
+     "detail": "每周导入一次物流公司账单 CSV(运费明细), 供物流费对账", "overdue_after_days": 4},
     {"key": "monthly_prepay_ledger", "freq": "monthly", "title": "导入代付台账(补单佣金/快递/售后打款)", "route": "/prepay-ledger",
      "detail": "代付台账 CSV: 分别上传 补单佣金 / 补单快递 / 售后打款 三类实际打款, 作为这三类对账的进项来源"},
     {"key": "monthly_refill_records", "freq": "monthly", "title": "导入补单对账表", "route": "/refill-records",
@@ -41,6 +42,14 @@ OPS_TASKS = [
      "detail": "财务→剩余流水: 编辑总投资费用, 重新测算可用资金"},
     {"key": "monthly_product_stock", "freq": "monthly", "title": "成品/配件库存月度盘点", "route": "/product-inventory",
      "detail": "成品库存 + 配件库存: 核对现货/可用, 修正盘库偏差, 看缺货/低于预警线补货 (原『配件库存盘点』已并入此项)"},
+    {"key": "monthly_packing_recon", "freq": "monthly", "title": "导入打包对账", "route": "/packing-bills",
+     "detail": "打包费账单(手写本拍照 OCR)逐行入库, 供打包费对账", "overdue_after_days": 15},
+    {"key": "monthly_glass_recon", "freq": "monthly", "title": "玻璃对账", "route": "/recon-center",
+     "detail": "与玻璃供应商核对当月玻璃用料/金额, 做平差异", "overdue_after_days": 15},
+    {"key": "monthly_rockslab_recon", "freq": "monthly", "title": "岩板对账", "route": "/recon-center",
+     "detail": "与岩板供应商核对当月岩板用料/金额, 做平差异", "overdue_after_days": 15},
+    {"key": "monthly_electric_rail_recon", "freq": "monthly", "title": "电力轨道对账", "route": "/recon-center",
+     "detail": "与电力轨道供应商核对当月电力轨道用料/金额, 做平差异", "overdue_after_days": 15},
 ]
 
 _FREQ_LABEL = {"daily": "每日", "weekly": "每周", "monthly": "每月"}
@@ -53,6 +62,24 @@ def _period_key(freq: str, today: date) -> str:
         y, w, _ = today.isocalendar()
         return f"{y}-W{w:02d}"
     return today.strftime("%Y-%m")  # monthly
+
+
+def _period_start(freq: str, today: date) -> date:
+    """当前周期的起点: 日=今天, 周=本周一, 月=1号。供超时判定算"已进入周期几天"。"""
+    if freq == "daily":
+        return today
+    if freq == "weekly":
+        from datetime import timedelta
+        return today - timedelta(days=today.weekday())
+    return today.replace(day=1)
+
+
+def _is_overdue(task: dict, done: bool, today: date) -> bool:
+    """超时 = 设了 overdue_after_days、本周期未完成、且已过周期起点这么多天。"""
+    oad = task.get("overdue_after_days")
+    if oad is None or done:
+        return False
+    return (today - _period_start(task["freq"], today)).days >= int(oad)
 
 
 def _load(db: Session) -> dict:
@@ -126,13 +153,12 @@ def _auto_done(db: Session, today: date) -> set[str]:
     # 每月: 当月已有数据 = 已导入
     try:
         from app.models.finance import (AccountBalance, AlipayFlow, FactoryReconciliation,
-                                         LogisticsBill, RefillRecord, WanshifuBill)
+                                         LogisticsBill, PackingBill, RefillRecord, WanshifuBill)
         from app.models.marketing import PromotionFlow
         month_checks = [
             ("monthly_alipay", AlipayFlow, AlipayFlow.transaction_time),
             ("monthly_promotion", PromotionFlow, PromotionFlow.transaction_date),
             ("monthly_refill_records", RefillRecord, RefillRecord.refill_date),
-            ("monthly_logistics_bill", LogisticsBill, LogisticsBill.bill_date),
             ("monthly_wanshifu_bill", WanshifuBill, WanshifuBill.bill_date),
             ("monthly_factory_recon", FactoryReconciliation, FactoryReconciliation.period_end),
         ]
@@ -143,6 +169,16 @@ def _auto_done(db: Session, today: date) -> set[str]:
         if _has(_sel(func.count()).select_from(AccountBalance).where(
                 AccountBalance.period_year == y, AccountBalance.period_month == m)):
             done.add("monthly_account_balance")
+        # 打包对账: 按 bill_month (YYYY-MM) 配本月已导
+        if _has(_sel(func.count()).select_from(PackingBill).where(
+                PackingBill.bill_month == f"{y:04d}-{m:02d}")):
+            done.add("monthly_packing_recon")
+        # 物流对账(每周): 本 ISO 周内有物流账单 = 已导
+        from datetime import timedelta as _td
+        wk_start = today - _td(days=today.weekday())
+        if _has(_sel(func.count()).select_from(LogisticsBill).where(
+                LogisticsBill.bill_date >= wk_start, LogisticsBill.bill_date <= wk_start + _td(days=6))):
+            done.add("weekly_logistics_recon")
     except Exception:
         pass
     return done
@@ -203,11 +239,13 @@ def status(db: Session) -> dict:
         pk = _period_key(t["freq"], today)
         mark = f"{t['key']}@{pk}"
         is_auto = t["key"] in auto
+        is_done = (mark in done) or is_auto
         groups[t["freq"]].append({
             "key": t["key"], "title": t["title"], "detail": t["detail"],
             "route": t.get("route"),
-            "done": (mark in done) or is_auto, "done_at": done.get(mark),
+            "done": is_done, "done_at": done.get(mark),
             "dynamic": False, "auto": is_auto,
+            "overdue": _is_overdue(t, is_done, today),
         })
     for t in _load_dynamic(db):
         freq = t.get("freq", "daily")
@@ -249,3 +287,49 @@ def toggle(db: Session, task_key: str, done: bool, actor: Optional[str] = None) 
         state.pop(mark, None)
     settings_service.set_value(db, _SETTING, json.dumps(state), description="运营待办完成状态")
     return status(db)
+
+
+def overdue_items(db: Session, today: Optional[date] = None) -> list[dict]:
+    """所有"超时未完成"的静态例行待办 (仅设了 overdue_after_days 的项)。"""
+    today = today or date.today()
+    done = _load(db)
+    auto = _auto_done(db, today)
+    out: list[dict] = []
+    for t in OPS_TASKS:
+        if t.get("overdue_after_days") is None:
+            continue
+        mark = f"{t['key']}@{_period_key(t['freq'], today)}"
+        is_done = (mark in done) or (t["key"] in auto)
+        if _is_overdue(t, is_done, today):
+            out.append({
+                "key": t["key"], "title": t["title"], "freq": t["freq"],
+                "route": t.get("route"),
+                "days_into_period": (today - _period_start(t["freq"], today)).days,
+                "overdue_after_days": int(t["overdue_after_days"]),
+                "period_key": _period_key(t["freq"], today),
+            })
+    return out
+
+
+def check_and_alert_overdue(db: Session) -> dict:
+    """调度器调用: 对超时未完成的例行待办生成 Alert (并入综合日报统一推, 不单独刷屏)。
+    dedupe_key 带周期键 → 同周期同任务只一条, 新周期 (新周/新月) 自动重开。"""
+    from app.services import alert_service
+    items = overdue_items(db)
+    for it in items:
+        freq_label = _FREQ_LABEL.get(it["freq"], it["freq"])
+        alert_service.upsert(
+            db,
+            kind="ops_overdue",
+            severity="warn",
+            title=f"待办超时: {it['title']}",
+            body=(f"{freq_label}例行待办「{it['title']}」本周期已 {it['days_into_period']} 天未完成 "
+                  f"(超 {it['overdue_after_days']} 天阈值), 请尽快处理。"),
+            dedupe_key=f"ops_overdue:{it['key']}:{it['period_key']}",
+            related_url=it.get("route") or "/ops-checklist",
+            context={"key": it["key"], "freq": it["freq"], "days": it["days_into_period"]},
+            auto_resolve_after_minutes=60 * 24 * 2,
+        )
+    if items:
+        db.flush()
+    return {"overdue": len(items), "items": [i["key"] for i in items]}

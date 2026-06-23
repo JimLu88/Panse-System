@@ -496,6 +496,13 @@ def _job_monthly_data_remind(db: Session) -> dict:
     return data_freshness_service.monthly_batch_remind(db)
 
 
+def _job_ops_checklist_overdue(db: Session) -> dict:
+    """每日 09:05: 例行待办超时报警 — 物流(周)/打包/玻璃/岩板/电力轨道对账(月)等
+    超时未完成则写 Alert (并入 10:00 综合日报统一推送, 不单独刷屏)。"""
+    from app.services import ops_checklist_service
+    return ops_checklist_service.check_and_alert_overdue(db)
+
+
 def _job_email_poll_alipay(db: Session) -> dict:
     """每 6 小时轮询邮箱, 自动导入支付宝账单附件 CSV。"""
     from app.services import email_import_service
@@ -1013,6 +1020,8 @@ def _register_default_jobs() -> None:
                  _job_data_freshness_remind, cron={"hour": 9, "minute": 0})
     register_job("monthly_01_data_remind", "月初数据更新提醒",
                  _job_monthly_data_remind, cron={"day": 1, "hour": 8, "minute": 30})
+    register_job("daily_0905_ops_overdue", "例行待办超时报警 (物流/打包/玻璃/岩板/电力轨道对账)",
+                 _job_ops_checklist_overdue, cron={"hour": 9, "minute": 5})
     register_job("daily_08_data_quality", "数据完整性扫描 (B1-B11)",
                  _job_data_quality, cron={"hour": 8, "minute": 0})
     register_job("email_poll_alipay_6h", "邮箱轮询支付宝流水",

@@ -523,6 +523,7 @@ export interface OpsTask {
   done: boolean;
   done_at: string | null;
   auto?: boolean;   // 系统按数据自动判完成(导入类), 不用手动勾
+  overdue?: boolean;   // 设了超时阈值且本周期未完成 → 已超时(系统发报警)
 }
 export interface OpsGroup {
   freq: string;
