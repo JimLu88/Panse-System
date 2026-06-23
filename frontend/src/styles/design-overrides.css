@@ -1,0 +1,45 @@
+/* 畔色 ERP 设计系统 — AntD 组件质感微调 (2026-06-23)。
+   目标: 让既有页面贴近设计系统观感 —— 卡片有柔和阴影/干净描边(不再发灰发平),
+   Alert 从"整片高饱和黄/绿"改成"白底 + 左侧强调条"(克制、不刺眼)。只调质感, 不改业务语义色。 */
+
+/* ===== 卡片: 柔和阴影 + 干净描边, 让白卡从浅底上"浮"起来 ===== */
+.ant-card {
+  box-shadow: var(--shadow-sm);
+  border-color: var(--border);
+}
+.ant-card.ant-card-hoverable:hover {
+  box-shadow: var(--shadow-md);
+  border-color: var(--primary-border);
+}
+/* 嵌套卡(卡中卡)不叠阴影, 避免发闷 */
+.ant-card .ant-card {
+  box-shadow: none;
+}
+
+/* ===== Alert: 克制化 — 白底 + 左侧 4px 语义强调条, 取代默认整片黄/绿 ===== */
+.ant-alert {
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+}
+.ant-alert.ant-alert-warning {
+  background: var(--surface-card);
+  border-left-color: var(--warning);
+}
+.ant-alert.ant-alert-error {
+  background: var(--surface-card);
+  border-left-color: var(--danger);
+}
+.ant-alert.ant-alert-success {
+  background: var(--surface-card);
+  border-left-color: var(--success);
+}
+.ant-alert.ant-alert-info {
+  background: var(--surface-card);
+  border-left-color: var(--info);
+}
+/* banner 形态(贴顶通栏)也走同一套, 但不要圆角 */
+.ant-alert.ant-alert-banner {
+  border-radius: 0;
+  border-left-width: 4px;
+}

@@ -95,7 +95,7 @@ export default function MonthlyOpsPanel() {
       {selRow && (
         <Row gutter={[12, 12]}>
           <Col span={4}>
-            <Card size="small" style={{ background: isRef ? '#fffbe6' : undefined }}>
+            <Card size="small">
               <Statistic title="当月利润" value={selRow.net_profit ?? 0} precision={0} prefix="¥"
                 valueStyle={{ color: (selRow.net_profit ?? 0) >= 0 ? '#389e0d' : '#cf1322', fontSize: 18 }} />
               <Tag color={isRef ? 'warning' : 'success'} style={{ marginTop: 4 }}>
@@ -103,7 +103,7 @@ export default function MonthlyOpsPanel() {
               </Tag>
             </Card>
           </Col>
-          <Col span={4}><Card size="small" style={{ background: isRef ? '#fffbe6' : undefined }}>
+          <Col span={4}><Card size="small">
             <Statistic title="利润率" value={selRow.net_profit_rate ?? 0} suffix="%" precision={1} />
           </Card></Col>
           <Col span={4}><Card size="small">

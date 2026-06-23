@@ -8,6 +8,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import { ThemeProvider } from './theme/ThemeProvider';
 import './styles/design-tokens.css';
 import './styles/global.css';
+import './styles/design-overrides.css';
 
 const qc = new QueryClient({
   defaultOptions: { queries: { staleTime: 5_000, refetchOnWindowFocus: false } },

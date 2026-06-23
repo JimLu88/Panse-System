@@ -96,7 +96,7 @@ export default function SalesRankingPage() {
       {champ && (
         <Row gutter={12}>
           <Col span={10}>
-            <Card size="small" style={{ background: 'linear-gradient(135deg,#fff7e6,#fffbe6)' }}>
+            <Card size="small" style={{ borderColor: '#fde68a' }}>
               <Statistic
                 title={`🏆 ${gLabel}冠军 · ${sel}`}
                 value={champ.champion_name ?? '-'}
