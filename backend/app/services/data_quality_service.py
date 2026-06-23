@@ -160,28 +160,88 @@ def scan_order_missing_alipay(db: Session) -> int:
     return count
 
 
+# 「实付远小于成本」错配判据用的在售状态 (scan 与自动关闭共用一套, 杜绝两边漂移)
+_COST_PAID_SALE_STATUS = ("paid", "shipped", "signed", "completed", "success", "finished")
+
+
+def _cost_exceeds_paid_qualifies(o) -> bool:
+    """订单是否构成「实付远小于成本」错配 (scan 与自动关闭共用同一判据)。
+
+    口径: 正式销售(非补单/非取消) + 成本(actual 或 theoretical) > 实付×1.5 且超额 ≥¥300;
+    非产品单(安装/送货/差价/样品 — 应已归0)除外。
+    """
+    from decimal import Decimal
+    if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
+        return False
+    paid = Decimal(str(o.paid_amount or 0))
+    cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+    if paid <= 0 or cost <= 0:
+        return False
+    if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
+        return False
+    txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+    if any(k in txt for k in _NON_PRODUCT_KW):
+        return False
+    return True
+
+
+def _close_stale_cost_exceeds_paid(db: Session) -> int:
+    """自动关闭已不符合错配条件的 open cost_exceeds_paid 异常(成本已修正/已取消/实付已补齐)。
+
+    治本「关了又冒 / 僵尸告警」: 扫描器对 still-open 幂等, 一旦人工只关告警、订单数据没改, 次日又新建。
+    这里每轮扫描前按当前订单数据复核, 不符合就自动销账。**只动 cost_exceeds_paid 一类**, 不碰公共
+    _record、不影响其它异常 (镜像 order_cost_service 的自动关闭模式)。
+    """
+    from app.models.exception import DataException
+    closed = 0
+    for ex in db.query(DataException).filter(
+        DataException.source_table == "orders",
+        DataException.exception_type == "cost_exceeds_paid",
+        DataException.status == "open",
+    ).all():
+        pk = (ex.source_pk or "").strip()
+        if not pk.isdigit():
+            continue
+        o = db.query(Order).filter(Order.id == int(pk)).first()
+        if o is None:
+            continue  # 订单已不存在 → 留人工, 不擅自销账
+        if not _cost_exceeds_paid_qualifies(o):
+            ex.status = "resolved"
+            ex.resolved_by = ex.resolved_by or "auto"
+            ex.description = (ex.description or "") + \
+                " | 自动关闭: 订单已不符合错配条件(成本已修正/已取消/实付已补齐)。"
+            closed += 1
+    if closed:
+        _log.info("auto-closed stale cost_exceeds_paid: %d", closed)
+    return closed
+
+
 def scan_cost_exceeds_paid(db: Session) -> int:
     """错配单: 实付明显小于成本(背了整份SKU成本)的正式订单 → 异常, 供人工查原因。
 
     用户拍板 2026-06-17: 那批"实付几十却背一整套餐边柜成本"的单, 关键词抓不到的(补差价/部分付款
-    /错配)列入异常逐单看。口径: 正式销售(非补单/非取消), 成本(actual或theoretical) > 实付×1.5
-    且超额 ≥¥300; 非产品单(安装/送货/差价/样品 —— 应已归0)除外。
+    /错配)列入异常逐单看。口径见 _cost_exceeds_paid_qualifies。
+    2026-06-23 治本: ① 每轮先自动关闭已修正/已不符合的旧告警; ② 被人工「忽略」的订单不再重报。
     """
     from decimal import Decimal
-    SALE = ("paid", "shipped", "signed", "completed", "success", "finished")
+    from app.models.exception import DataException
+    _close_stale_cost_exceeds_paid(db)
+    # 被人工显式「忽略」的订单(拍过"就这样别再报") → 本轮不再新建, 尊重人工决定 (治本"关了又冒")
+    ignored_pks = {
+        str(pk) for (pk,) in db.query(DataException.source_pk).filter(
+            DataException.source_table == "orders",
+            DataException.exception_type == "cost_exceeds_paid",
+            DataException.status == "ignored",
+        ).all()
+    }
     count = 0
     for o in db.query(Order).filter(
-        Order.status.in_(SALE), Order.is_refill == False,  # noqa: E712
+        Order.status.in_(_COST_PAID_SALE_STATUS), Order.is_refill == False,  # noqa: E712
     ).all():
+        if not _cost_exceeds_paid_qualifies(o) or str(o.id) in ignored_pks:
+            continue
         paid = Decimal(str(o.paid_amount or 0))
         cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
-        if paid <= 0 or cost <= 0:
-            continue
-        if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
-            continue
-        txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
-        if any(k in txt for k in _NON_PRODUCT_KW):
-            continue  # 这类应已归0; 双保险
         _record(
             db, source_table="orders", source_pk=o.id,
             exception_type="cost_exceeds_paid", severity="warning",
@@ -192,7 +252,7 @@ def scan_cost_exceeds_paid(db: Session) -> int:
                      "product_name": o.product_name},
         )
         count += 1
-    _log.info("scan_cost_exceeds_paid: %d", count)
+    _log.info("scan_cost_exceeds_paid: created=%d", count)
     return count
 
 
