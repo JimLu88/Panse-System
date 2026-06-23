@@ -857,7 +857,7 @@ def run_revenue_alipay(
     from app.services.smart_matching_service import _order_key as _okey
 
     o_rows = db.execute(
-        select(Order.order_no, Order.order_date, Order.paid_amount).where(
+        select(Order.order_no, Order.order_date, Order.paid_amount, Order.refund_amount).where(
             Order.status.notin_(["cancelled", "pending_payment"]),
             Order.order_date.isnot(None),
             *( [Order.order_date >= period_start] if period_start else [] ),
@@ -866,11 +866,13 @@ def run_revenue_alipay(
     ).all()
     order_paid: dict[str, Decimal] = {}
     order_month: dict[str, str] = {}
-    for no, d, paid in o_rows:
+    for no, d, paid, refund in o_rows:
         k = _okey(no)
         if not k:
             continue
-        order_paid[k] = order_paid.get(k, Decimal("0")) + Decimal(paid or 0)
+        # 退差价/退款(2026-06-23 用户拍板): 订单营收按"净额=实付−退款"对账, 与支付宝该单净收入(已排
+        # refund_in)对称 → 客户确认收货后退的差价(系统已记 refund_amount)自动对平, 不再误报。
+        order_paid[k] = order_paid.get(k, Decimal("0")) + Decimal(paid or 0) - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
 
     from sqlalchemy import or_ as _or

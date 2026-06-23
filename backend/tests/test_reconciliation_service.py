@@ -84,6 +84,23 @@ def test_revenue_alipay_taojinbi_small_positive_exempt(db_session):
         DataException.source_pk == "revenue_alipay:5115819387933109739").count() == 0
 
 
+def test_revenue_alipay_refund_diff_netted(db_session):
+    """退差价(客户确认收货后退): 订单按净额(实付−退款)对账, 与支付宝该单净收入对平, 不报异常
+    (2026-06-23: 旧版只比毛额实付 → 退差价单恒报负差, 现减 refund_amount 后自动平)。"""
+    no = "3300165627049005492"
+    db_session.add(Order(platform="淘宝", order_no=no, qty=1,
+                         paid_amount=Decimal("2711.05"), refund_amount=Decimal("500.00"),
+                         order_date=date(2026, 5, 17), status="signed"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXR", transaction_time=datetime(2026, 5, 21),
+                              amount=Decimal("2211.05"), related_order_no=no,
+                              transaction_type="交易付款", reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == f"revenue_alipay:{no}").count() == 0
+
+
 def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
     """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
     分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""
