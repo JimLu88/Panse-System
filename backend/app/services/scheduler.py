@@ -985,8 +985,10 @@ def _job_promo_price_check(db: Session) -> dict:
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
+    # 夜间模式 (2026-06-23): 深夜任务挪到 22:3x-22:5x 批量跑完, 让 NAS 盘 23:00-06:30 连续休眠
+    # (job_id 保留旧名防丢调度覆盖配置; 实际执行时间以此处 cron 为准)。
     register_job("daily_03_audit_prune", "审计日志留存清理",
-                 _job_audit_prune, cron={"hour": 3, "minute": 30})
+                 _job_audit_prune, cron={"hour": 22, "minute": 40})
     register_job("monthly_01_financial_report", "月度财务报表推送",
                  _job_monthly_financial_report, cron={"day": 1, "hour": 9, "minute": 10})
     register_job("daily_17_refund_check", "17:00 退款订单检查",
@@ -1043,13 +1045,13 @@ def _register_default_jobs() -> None:
     register_job("daily_0900_aftersales_auto", "售后自动建条(万师傅/流水/退款)",
                  _job_aftersales_auto, cron={"hour": 9, "minute": 0})
     register_job("daily_0230_orders_maintain", "订单自动维护(成本/状态/细节)",
-                 _job_orders_maintain, cron={"hour": 2, "minute": 30})
+                 _job_orders_maintain, cron={"hour": 22, "minute": 50})   # 夜间模式: 挪 02:30→22:50
     register_job("notify_retry_30min", "失败通知重发(指数退避)",
                  _job_notify_retry, interval_minutes=30)
     register_job("monthly_thumb_cleanup", "图库缩略图缓存月度清理",
-                 _job_thumb_cache_cleanup, cron={"day": 1, "hour": 4, "minute": 0})
+                 _job_thumb_cache_cleanup, cron={"day": 1, "hour": 22, "minute": 35})   # 夜间模式: 挪 04:00→22:35
     register_job("daily_2330_recon_snapshot", "对账结果每日快照",
-                 _job_recon_snapshot, cron={"hour": 23, "minute": 30})
+                 _job_recon_snapshot, cron={"hour": 22, "minute": 45})   # 夜间模式: 挪 23:30→22:45
     register_job("hourly_order_sheets_catchup", "下单图增量补生成(导入后1小时内)",
                  _job_order_sheets_catchup, interval_minutes=60)
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
@@ -1059,7 +1061,7 @@ def _register_default_jobs() -> None:
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
     register_job("daily_02_data_backup", "全量数据备份 (按配置间隔, 默认7天)",
-                 _job_data_backup, cron={"hour": 2, "minute": 0})
+                 _job_data_backup, cron={"hour": 22, "minute": 55})   # 夜间模式: 挪 02:00→22:55
     register_job("accessory_tracking_2h", "配件物流实时刷新 (快递100)",
                  _job_accessory_tracking_refresh, interval_minutes=120)
     register_job("shipments_tracking_6h", "全表物流实时刷新 (shipments: 订单/售后/工厂/补单/采购)",
