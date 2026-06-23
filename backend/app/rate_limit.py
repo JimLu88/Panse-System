@@ -17,8 +17,22 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 
+def _client_ip(request: Request) -> str:
+    """反代后取真实客户端 IP。
+
+    app 只经 DSM 反代 + web nginx(已配 X-Forwarded-For)到达, 直连地址会是代理 IP,
+    导致所有外部请求共用一个限速桶(误伤)。取 X-Forwarded-For 最左(原始客户端)修正。
+    """
+    xff = request.headers.get("X-Forwarded-For", "")
+    if xff:
+        first = xff.split(",")[0].strip()
+        if first:
+            return first
+    return get_remote_address(request)
+
+
 def _key_func(request: Request) -> str:
-    """优先用 JWT 里的 username 限速, 否则用 IP."""
+    """优先用 JWT 里的 username 限速, 否则用真实客户端 IP."""
     auth = request.headers.get("Authorization", "")
     if auth.startswith("Bearer "):
         try:
@@ -30,7 +44,7 @@ def _key_func(request: Request) -> str:
                 return f"user:{uname}"
         except Exception:
             pass
-    return f"ip:{get_remote_address(request)}"
+    return f"ip:{_client_ip(request)}"
 
 
 limiter = Limiter(

@@ -80,6 +80,31 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+# 常见弱密码黑名单 (小写比对) — 公网暴露下挡掉撞库首选目标
+_WEAK_PASSWORDS = frozenset({
+    "password", "passw0rd", "password123", "12345678", "123456789", "1234567890",
+    "qwertyuiop", "qwerty123", "admin12345", "administrator", "panse123456",
+    "111111111111", "000000000000", "abcd1234abcd", "iloveyou123", "8888888888",
+    "a123456789b", "1q2w3e4r5t", "1qaz2wsx3edc", "woaini1314520", "123123123123",
+})
+
+
+def validate_password_strength(password: str, username: Optional[str] = None) -> None:
+    """密码强度校验 (公网暴露后加固; 仅在创建/改密的 API 层调用)。不合格抛 ValueError。
+
+    只约束"新设的密码"; 现有账号的旧密码不受影响, 不强制改密。
+    """
+    if len(password) < 12:
+        raise ValueError("密码至少 12 位")
+    low = password.lower()
+    if low in _WEAK_PASSWORDS:
+        raise ValueError("密码过于常见, 容易被撞库, 请换一个")
+    if username and len(username) >= 3 and username.lower() in low:
+        raise ValueError("密码不能包含用户名")
+    if len(set(password)) <= 3:
+        raise ValueError("密码字符过于单一")
+
+
 # -------- JWT (HS256) --------
 
 def _b64url_encode(data: bytes) -> str:
@@ -198,12 +223,64 @@ def update_user(
     return user
 
 
+# -------- 登录失败锁定 (内存; api 单进程, 无需建表) --------
+# 公网暴露后防在线爆破: 同一用户名在窗口内连续失败到阈值 → 临时锁定。
+# 按"账号"锁(与 IP 无关) → 攻击者换 IP / 伪造 X-Forwarded-For 也绕不过。
+_LOCK_THRESHOLD = 10     # 窗口内连续失败次数上限 (正常用户极少触发)
+_LOCK_WINDOW = 900       # 失败计数窗口 (秒); 超过无新失败则计数清零
+_LOCK_DURATION = 900     # 锁定时长 (秒) = 15 分钟
+_login_fail_state: dict[str, dict[str, float]] = {}
+
+
+class LoginLocked(Exception):
+    """账号因连续登录失败被临时锁定。remaining = 剩余锁定秒数。"""
+    def __init__(self, remaining: int):
+        self.remaining = remaining
+        super().__init__(f"locked for {remaining}s")
+
+
+def _lock_remaining(username: str) -> int:
+    st = _login_fail_state.get(username.lower())
+    if not st:
+        return 0
+    rem = st.get("locked_until", 0.0) - time.time()
+    return int(rem) if rem > 0 else 0
+
+
+def _record_login_fail(username: str) -> None:
+    now = time.time()
+    key = username.lower()
+    st = _login_fail_state.get(key) or {"fails": 0.0, "last_fail": 0.0, "locked_until": 0.0}
+    if now - st["last_fail"] > _LOCK_WINDOW:
+        st["fails"] = 0.0
+    st["fails"] += 1
+    st["last_fail"] = now
+    if st["fails"] >= _LOCK_THRESHOLD:
+        st["locked_until"] = now + _LOCK_DURATION
+        st["fails"] = 0.0
+    _login_fail_state[key] = st
+    if len(_login_fail_state) > 1000:   # 防内存膨胀: 清过期条目
+        for k in [k for k, v in _login_fail_state.items()
+                  if v.get("locked_until", 0.0) < now and now - v.get("last_fail", 0.0) > _LOCK_WINDOW]:
+            _login_fail_state.pop(k, None)
+
+
+def reset_login_lockstate() -> None:
+    """测试/管理用: 清空登录失败计数与锁定。"""
+    _login_fail_state.clear()
+
+
 def authenticate(db: Session, username: str, password: str) -> Optional[User]:
+    remaining = _lock_remaining(username)
+    if remaining > 0:
+        raise LoginLocked(remaining)
     u = db.execute(select(User).where(User.username == username)).scalar_one_or_none()
     if u is None or not u.is_active:
         return None
     if not verify_password(password, u.password_hash):
+        _record_login_fail(username)   # 仅对真实活跃账号计数 (不存在的用户名不记, 防内存膨胀)
         return None
+    _login_fail_state.pop(username.lower(), None)   # 成功 → 清零
     return u
 
 

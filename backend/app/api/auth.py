@@ -43,7 +43,11 @@ LoginOut.model_rebuild()
 @router.post("/login", response_model=LoginOut)
 @limiter.limit("10/minute")
 def login(request: Request, payload: LoginIn, db: Session = Depends(get_db)):
-    user = auth_service.authenticate(db, payload.username, payload.password)
+    try:
+        user = auth_service.authenticate(db, payload.username, payload.password)
+    except auth_service.LoginLocked as e:
+        mins = max(1, (e.remaining + 59) // 60)
+        raise HTTPException(429, f"登录失败次数过多, 账号已临时锁定, 请约 {mins} 分钟后再试") from e
     if user is None:
         raise HTTPException(401, "用户名或密码错误")
     user.last_login_at = datetime.now(timezone.utc)
@@ -90,7 +94,7 @@ def me(user: User = Depends(get_current_user)):
 
 class UserCreateIn(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
-    password: str = Field(..., min_length=6)
+    password: str = Field(..., min_length=12)
     role: str = Field("viewer")
     display_name: Optional[str] = None
 
@@ -102,6 +106,7 @@ def create_user(
     _admin: User = Depends(require_role("admin")),
 ):
     try:
+        auth_service.validate_password_strength(payload.password, payload.username)
         u = auth_service.create_user(
             db, username=payload.username, password=payload.password,
             role=payload.role, display_name=payload.display_name,
@@ -151,7 +156,7 @@ def update_user(
 
 
 class PasswordResetIn(BaseModel):
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=12)
 
 
 @router.post("/users/{user_id}/password", status_code=204)
@@ -164,13 +169,17 @@ def reset_password(
     u = db.get(User, user_id)
     if u is None:
         raise HTTPException(404, "用户不存在")
+    try:
+        auth_service.validate_password_strength(payload.new_password, u.username)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     auth_service.set_password(db, u, payload.new_password)
     db.commit()
 
 
 class ChangePasswordIn(BaseModel):
     old_password: str
-    new_password: str = Field(..., min_length=6)
+    new_password: str = Field(..., min_length=12)
 
 
 @router.post("/me/password", status_code=204)
@@ -181,6 +190,10 @@ def change_my_password(
 ):
     if not auth_service.verify_password(payload.old_password, user.password_hash):
         raise HTTPException(400, "原密码错误")
+    try:
+        auth_service.validate_password_strength(payload.new_password, user.username)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
     auth_service.set_password(db, user, payload.new_password)
     db.commit()
 
