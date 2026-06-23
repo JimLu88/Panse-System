@@ -31,6 +31,9 @@ install_ring_buffer()
 # apscheduler 启动时每个 job 刷一行 "Added job"(~90 行)会顶掉 /api/logs/recent 的有效日志 → 降噪到 WARNING
 logging.getLogger("apscheduler").setLevel(logging.WARNING)
 _req_logger = logging.getLogger("panse.request")
+# 高频轻量请求降到 DEBUG → 不写 INFO 访问日志, 减少磁盘琐碎写入(让 NAS 盘能休眠, 2026-06-23 降负载):
+# /api/health(healthcheck)、/api/alerts/stream(SSE保活流)、/api/logs/*(日志查看器自身轮询)。
+_QUIET_LOG_PATHS = frozenset({"/api/health", "/api/alerts/stream"})
 
 from app.api import accounting as accounting_api
 from app.api import admin as admin_api
@@ -265,8 +268,9 @@ async def _log_requests(request: Request, call_next):
         raise
     dur = (time.monotonic() - start) * 1000
     response.headers["X-Request-ID"] = rid
-    # 健康检查太频繁, 降级到 debug; 慢请求 (>3s) 升到 warning
-    if path == "/api/health":
+    # 高频轻量请求(健康检查/SSE保活流/日志轮询)降到 debug, 不写 INFO 访问日志(减少磁盘琐碎写入);
+    # 慢请求 (>3s) 升到 warning
+    if path in _QUIET_LOG_PATHS or path.startswith("/api/logs/"):
         level = logging.DEBUG
     elif dur > 3000:
         level = logging.WARNING

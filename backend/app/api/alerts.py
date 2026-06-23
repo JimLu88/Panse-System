@@ -134,9 +134,14 @@ async def alert_stream(request: Request):
         # heartbeat 注释 (浏览器/代理保活)
         yield ": connected\n\n"
         try:
-            async for msg in sse_bus.subscribe():
+            async for msg in sse_bus.subscribe(heartbeat_s=25.0):
                 if await request.is_disconnected():
                     break
+                if msg.get("event") == "_heartbeat":
+                    # 25s 保活注释: 连接每 25s 有数据流动 < nginx proxy_read_timeout(120s),
+                    # 不再被当超时断开 → 前端不再每 ~120s 重连一次 (砍掉日志/磁盘琐碎写入, NAS 盘能睡)
+                    yield ": ping\n\n"
+                    continue
                 event_name = msg.get("event", "message")
                 data = json.dumps(msg.get("data", {}), ensure_ascii=False)
                 yield f"event: {event_name}\ndata: {data}\n\n"
