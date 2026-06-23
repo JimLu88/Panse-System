@@ -106,6 +106,40 @@ def test_dynamic_factory_name_match(db_session):
     assert r.tagged == {"factory_payment": 1}
 
 
+def test_refund_precedence_over_factory_match(db_session):
+    """退款优先(治本): 退给买家的钱(amt<0)挂客户订单, 该单又有工厂单 →
+    不能像段1那样误判 factory_payment, 必须判 refund (实测 23 笔虚高工厂货款的根因)。"""
+    from app.models.order import FactoryOrder
+    db_session.add(FactoryOrder(factory_order_no="FO9", platform_order_no="3165874608994317861",
+                                factory_name="博冠"))
+    db_session.flush()
+    f = _flow(db_session, "TR1", -50, remark="售后退款-2026010522001186861400199190-T200P3165874608994317861",
+              related_order_no="3165874608994317861_258419316786316178")
+    f.transaction_type = "交易退款"
+    db_session.flush()
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"refund": 1}           # 不是 factory_payment
+    db_session.refresh(f)
+    assert f.reconciliation_type == "refund"
+
+
+def test_reclassify_refund_mislabels(db_session):
+    """存量纠正: 被误标 factory_payment 的交易退款(amt<0) → 改判 refund; 真货款 + 已 refund 的不动。"""
+    a = _flow(db_session, "MR1", -50, remark="售后退款 T200P x")
+    a.transaction_type = "交易退款"; a.reconciliation_type = "factory_payment"
+    b = _flow(db_session, "MR2", -16536, counterparty="博冠家具", remark="付货款")
+    b.reconciliation_type = "factory_payment"   # 真工厂货款, 无退款字样 → 不动
+    c = _flow(db_session, "MR3", -30, remark="售后退款")
+    c.transaction_type = "交易退款"; c.reconciliation_type = "refund"  # 已正确 → 不重复
+    db_session.flush()
+    detail = smart_matching_service.reclassify_refund_mislabels(db_session)
+    db_session.refresh(a); db_session.refresh(b); db_session.refresh(c)
+    assert a.reconciliation_type == "refund"
+    assert b.reconciliation_type == "factory_payment"
+    assert c.reconciliation_type == "refund"
+    assert detail.get("factory_payment", {}).get("count") == 1
+
+
 def test_order_key_normalization():
     from app.services.smart_matching_service import _order_key
     assert _order_key("T200P2701846635029001 070") == "2701846635029001070"

@@ -62,6 +62,11 @@ PLATFORM_FEE_KEYS = (
 )
 # 消费者保证金充值 → 平台保证金 (资产, 非费用)
 PLATFORM_DEPOSIT_KEYS = ("消费者保证金", "保证金充值")
+# 退款 (2026-06-24, 治本; 同 line 59-61 平台费的修法): 交易退款/售后退款 = 退给买家的钱(amt<0),
+# 挂在客户订单上。该客户订单常同时有工厂下单 → 若进段1按订单号命中工厂单会误判 factory_payment
+# (实测 23 笔 -¥16536.59 工厂货款虚高)。故退款判定提到段0、早于段1。仅 amt<0 (退款支出);
+# amt>0 的"退款"(退款撤销回款)留段1当客户回款。
+REFUND_KEYS = ("交易退款", "售后退款", "退款", "退货")
 
 
 def _matches(text: Optional[str], keys: tuple[str, ...]) -> bool:
@@ -118,6 +123,9 @@ def _classify(flow: AlipayFlow, lk: _Lookups) -> Optional[str]:
         return "platform_deposit"
     if _matches(desc, PLATFORM_FEE_KEYS):
         return "platform_fee"
+    # 退款优先 (早于段1): 退给买家的钱(amt<0)挂客户订单, 该单常有工厂单 → 段1会误判 factory_payment。
+    if amt < 0 and _matches(desc, REFUND_KEYS):
+        return "refund"
 
     # 段 1: 关联订单号直挂 (归一化后比对真实订单/工厂下单)
     if ron:
@@ -144,6 +152,30 @@ def _classify(flow: AlipayFlow, lk: _Lookups) -> Optional[str]:
         # 收入且带关联订单号 → 客户回款 (兜底, 即使订单未导入)
         return "customer_payment"
     return None
+
+
+def reclassify_refund_mislabels(db: Session) -> dict:
+    """一次性纠正存量: amt<0 且描述含"退款" 但 reconciliation_type != 'refund' → 改判 refund。
+
+    根因同 _classify 的退款优先修复: 此前段1按订单号命中工厂单, 把退给买家的钱误判成 factory_payment
+    (实测 23 笔 -¥16536.59 让工厂货款虚高)。本函数把这些(及未分类/other 的退款)归位成 refund。
+    幂等: 已是 refund 的不动。返回 {原type: {'count', 'sum'}} 明细供核对。
+    """
+    rows = db.execute(select(AlipayFlow).where(AlipayFlow.amount < 0)).scalars().all()
+    detail: dict[str, dict] = {}
+    for f in rows:
+        if (f.reconciliation_type or "") == "refund":
+            continue
+        desc = " ".join(filter(None, [f.counterparty, f.remark, f.transaction_type]))
+        if not _matches(desc, REFUND_KEYS):
+            continue
+        old = f.reconciliation_type or "(未分类)"
+        d = detail.setdefault(old, {"count": 0, "sum": 0.0})
+        d["count"] += 1
+        d["sum"] += float(f.amount or 0)
+        f.reconciliation_type = "refund"
+    db.flush()
+    return detail
 
 
 def run(db: Session, *, account: Optional[str] = None) -> MatchResult:
