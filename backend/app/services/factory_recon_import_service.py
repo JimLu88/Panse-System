@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
@@ -131,12 +132,19 @@ def import_factory_recon_xlsx(db: Session, content: bytes) -> FactoryReconImport
         rep.errors.append(f"无法读取 xlsx: {e}")
         return rep
 
-    # 现有去重键 (统一键)
+    # 现有去重键 (统一键; 仅有订单号/单号的行参与跨批内容去重)
     existing_keys: set = {
         _dedup_key(it.source_sheet, it.doc_no, it.order_no, it.detail,
                    it.customer_info, it.order_date, it.qty, it.settle_price)
         for it in db.execute(select(FactoryReconItem)).scalars().all()
     }
+
+    # 方案A (2026-06-24): 无订单号无单号的行(备货)不按内容去重(同表多张相同备货全保留),
+    # 改按"整份文件 sha256"挡重复导入 —— 同一份文件再导一次才判重。
+    file_hash = hashlib.sha256(content).hexdigest()
+    file_seen_before = bool(db.execute(
+        select(FactoryReconItem.id).where(FactoryReconItem.source_file_hash == file_hash).limit(1)
+    ).first())
 
     seen_keys: set = set()
     unmapped: set = set()
@@ -186,14 +194,22 @@ def import_factory_recon_xlsx(db: Session, content: bytes) -> FactoryReconImport
                 rep.skipped_invalid += 1
                 continue
 
-            key = _dedup_key(ws.title, doc_no, order_no, detail, customer, order_date, qty, settle_price)
-            if key in existing_keys or key in seen_keys:
-                rep.skipped_duplicate += 1
-                continue
-            seen_keys.add(key)
+            if not order_no and not doc_no:
+                # 备货等"无订单号无单号"行: 不按内容去重(同表多张同价同品的备货全保留, 不再误删),
+                # 只靠"整份文件已导过"挡重复导入。
+                if file_seen_before:
+                    rep.skipped_duplicate += 1
+                    continue
+            else:
+                key = _dedup_key(ws.title, doc_no, order_no, detail, customer, order_date, qty, settle_price)
+                if key in existing_keys or key in seen_keys:
+                    rep.skipped_duplicate += 1
+                    continue
+                seen_keys.add(key)
 
             item = FactoryReconItem(
                 source_sheet=ws.title,
+                source_file_hash=file_hash,
                 doc_no=doc_no,
                 order_no=order_no,
                 extra_order_no1=_to_str(rec.get("extra_order_no1")),

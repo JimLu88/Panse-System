@@ -21,6 +21,7 @@ class FactoryReconItem(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     source_sheet: Mapped[Optional[str]] = mapped_column(String(64))   # 来源 sheet (26年1月 / 26年 对账单)
+    source_file_hash: Mapped[Optional[str]] = mapped_column(String(64), index=True)  # 源文件 sha256: 无订单号(备货)行按"整份文件"去重, 同份重导才判重、同内容多行不误删 (2026-06-24)
     doc_no: Mapped[Optional[str]] = mapped_column(String(32))         # 单号 (工厂内部流水, 会重复)
     order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)  # 订单号 (平台单号)
     extra_order_no1: Mapped[Optional[str]] = mapped_column(String(64))  # 追加订单号1

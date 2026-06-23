@@ -52,6 +52,41 @@ def test_import_parses_serial_dates_and_dedup(db_session):
     assert rep2.skipped_duplicate == 2
 
 
+def _build_stock_xlsx(n=3, sheet="26年1月") -> bytes:
+    """造一张含 n 张「无订单号无单号、同价同品」备货行的对账单(测方案A: 不误删)。"""
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = sheet
+    ws.append(["畔色 月度生产明细表"])
+    ws.append(["单号", "订单号", "追加订单号1", "备注", "详情", "数量", "价格",
+               "客户信息", "下单时间", "发货时间"])
+    for _ in range(n):
+        ws.append(["", "", "", "", "备货 樱桃木窄柜160*85", 1, 1350, "", "", ""])
+    return _to_bytes(wb)
+
+
+def test_stock_rows_no_orderno_not_deduped_within_sheet(db_session):
+    """方案A: 无订单号无单号的备货行(同价同品)同表多张全保留, 不再误删。"""
+    db = db_session
+    data = _build_stock_xlsx(3)
+    rep = imp.import_factory_recon_xlsx(db, data)
+    assert rep.inserted == 3                       # 3 张相同备货全保留
+    assert db.query(FactoryReconItem).count() == 3
+    # 同一份文件(同 bytes)再导 → 整份判重(source_file_hash), 不重复
+    rep2 = imp.import_factory_recon_xlsx(db, data)
+    assert rep2.inserted == 0
+    assert rep2.skipped_duplicate == 3
+    assert db.query(FactoryReconItem).count() == 3
+
+
+def test_stock_rows_different_files_both_kept(db_session):
+    """不同月份(不同文件 → 不同 hash)的相同备货 → 各自保留, 不跨文件误删。"""
+    db = db_session
+    imp.import_factory_recon_xlsx(db, _build_stock_xlsx(2, sheet="26年1月"))
+    imp.import_factory_recon_xlsx(db, _build_stock_xlsx(2, sheet="26年2月"))
+    assert db.query(FactoryReconItem).count() == 4
+
+
 def test_backfill_order_actual_cost(db_session):
     db = db_session
     db.add(Order(platform="淘宝", order_no="ORD001", status="signed",
