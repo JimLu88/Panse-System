@@ -412,9 +412,9 @@ export default function ExceptionsPage() {
       cats.push({
         key: 'muted',
         meta: {
-          label: '不重要异常',
-          color: 'default',
-          desc: '低关注 info 级提示: 不影响业务、可能长期存在。默认折叠, 不用处理。',
+          label: '待录入/未完成',
+          color: 'green',
+          desc: '信息待补齐或流程未走完，不影响当前业务，有空再处理即可。',
         },
         groups: muted,
         total: muted.reduce((s, g) => s + g.items.length, 0),
@@ -630,15 +630,18 @@ export default function ExceptionsPage() {
       ) : (
         <Space direction="vertical" style={{ width: '100%' }} size="large">
           {categories.map((cat) => (
-            <div key={cat.key} style={cat.key === 'muted' ? { opacity: 0.6 } : undefined}>
+            <div key={cat.key}>
               <Space style={{ marginBottom: 8 }} align="center">
                 <Tag color={cat.meta.color} style={{ fontSize: 14, padding: '2px 10px', margin: 0 }}>
                   {cat.meta.label}
                 </Tag>
-                <Tag color={cat.worst >= 3 ? 'red' : cat.worst === 2 ? 'orange' : 'blue'}>
+                <Tag color={cat.key === 'muted' ? 'green' : cat.worst >= 3 ? 'red' : cat.worst === 2 ? 'orange' : 'blue'}>
                   共 {cat.total} 条
                 </Tag>
-                <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                <Typography.Text
+                  type={cat.key === 'muted' ? undefined : 'secondary'}
+                  style={{ fontSize: 12, ...(cat.key === 'muted' ? { color: '#389e0d' } : {}) }}
+                >
                   {cat.meta.desc}
                 </Typography.Text>
               </Space>
