@@ -823,6 +823,17 @@ def run_logistics_fee(
 # 淘金币实测占实付 1-9%; 重复流水差≈100% 远超此阈值, 不会被误豁免 (用户拍板 2026-06-21)。
 _TAOJINBI_MAX_RATIO = Decimal("0.20")
 
+# 营收对账收入侧只认"真淘宝收款账户"(企业号 / 个体户私账)。
+# 爱群号 / 佳宝号 / 主力号 = 货款/采购/对外付款 + 老板个人消费账户:
+#   ① 订单号是 1570… 合成号 / 商户号 → 配不到任何真订单 (实测这三户逐单匹配收入=0);
+#   ② 金额丢了收/支符号 (全存正数) → 对外付款被当成客户收入;
+#   ③ 还有部分双重导入 (爱群号同一笔货款在 17011/88330 两套合成交易号各录一遍、佳宝号 17 组真同号重复)。
+# 三者叠加 → 只会污染"配不到订单的收入"月度兜底 (2026-06-23 实测: (无日期)兜底 ¥92.7万 + 2026-01..04 正差
+# ¥55.7万 全部来自这三户)。这三户已在总账勾稽 (_LEDGER_FLOW_EXEMPT) 按"流水不完整/不连续"豁免, 营收对账同理排除。
+# 注: 排除只针对营收逐单/兜底对账, 不丢任何真实匹配收入; 这三户的现金流/资产仍按金额计 (原始数据本身
+# 待支付宝原始账单清洗后再修符号去重, 用户暂无 CSV)。
+_NON_REVENUE_ACCOUNTS = ("爱群号", "佳宝号", "主力号")
+
 
 def run_revenue_alipay(
     db: Session, *,
@@ -885,6 +896,8 @@ def run_revenue_alipay(
                      AlipayFlow.transaction_no).where(
         AlipayFlow.amount > 0,
         AlipayFlow.related_order_no.isnot(None),
+        AlipayFlow.related_order_no != "",                   # 空订单号配不到单, 只会进兜底污染
+        AlipayFlow.account.notin_(_NON_REVENUE_ACCOUNTS),    # 货款/采购/个人户(合成号+丢符号+双导)不算营收
         # 用户拍板 (2026-06-11 建议3): 退款回流不算该单收入, 否则退款多的单差额虚高
         _or(AlipayFlow.reconciliation_type.is_(None),
             AlipayFlow.reconciliation_type != "refund_in"),

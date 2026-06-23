@@ -122,6 +122,35 @@ def test_revenue_alipay_platform_coupon_netted(db_session):
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
 
 
+def test_revenue_alipay_excludes_payment_accounts_and_empty_orderno(db_session):
+    """治本2 (2026-06-23): 货款/采购账户(爱群号/佳宝号/主力号)的正金额流水 + 空订单号流水
+    不算营收收入 → 不污染"配不到订单的收入"月度兜底; 真淘宝账户(企业号)照常逐单对账。"""
+    # 真实匹配: 企业号客户付款对上订单
+    _rev_order(db_session, "5200000000000000001", 1000)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="E1", transaction_time=datetime(2026, 5, 17),
+                              amount=Decimal("1000.00"), related_order_no="5200000000000000001",
+                              reconciliation_type="customer_payment"))
+    # 应被排除的污染: 爱群号货款(正金额+合成号)、主力号(正金额)、佳宝号(空订单号)
+    db_session.add(AlipayFlow(account="爱群号", transaction_no="1570767231890317011",
+                              transaction_time=datetime(2026, 5, 10),
+                              amount=Decimal("157129.00"), related_order_no="1570767231890317011",
+                              transaction_type="转账", reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="主力号", transaction_no="ZL1", transaction_time=datetime(2026, 5, 11),
+                              amount=Decimal("20000.00"), related_order_no="99999999999999999",
+                              transaction_type="转账红包", reconciliation_type="customer_payment"))
+    db_session.add(AlipayFlow(account="佳宝号", transaction_no="JB1", transaction_time=datetime(2026, 5, 12),
+                              amount=Decimal("50000.00"), related_order_no="",
+                              transaction_type="转账红包"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    # 订单对上, 不报; 且没有任何月度兜底异常 (污染流水全被排除)
+    assert not any(d.key == "5200000000000000001" and d.severity != "ok" for d in r.diffs)
+    assert not any("兜底" in str(d.key) and d.severity != "ok" for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_table == "reconciliation",
+        DataException.source_pk.like("revenue_alipay:%")).count() == 0
+
+
 def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
     """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
     分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""
