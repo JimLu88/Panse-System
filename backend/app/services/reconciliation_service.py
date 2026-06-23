@@ -869,7 +869,8 @@ def run_revenue_alipay(
 
     o_rows = db.execute(
         select(Order.order_no, Order.order_date, Order.paid_amount,
-               Order.buyer_payable_amount, Order.refund_amount).where(
+               Order.buyer_payable_amount, Order.refund_amount,
+               Order.buyer_freight).where(
             Order.status.notin_(["cancelled", "pending_payment"]),
             Order.order_date.isnot(None),
             *( [Order.order_date >= period_start] if period_start else [] ),
@@ -878,19 +879,22 @@ def run_revenue_alipay(
     ).all()
     order_paid: dict[str, Decimal] = {}
     order_month: dict[str, str] = {}
-    for no, d, paid, payable, refund in o_rows:
+    for no, d, paid, payable, refund, freight in o_rows:
         k = _okey(no)
         if not k:
             continue
-        # 营收对账口径: 比对基准 = max(买家应付, 实付) − 退款。
+        # 营收对账口径: 比对基准 = max(买家应付, 实付) + 买家应付邮费 − 退款。
         # 支付宝该单收入正是"买家应付"(平台把买家用的平台券/红包补给店铺, 店铺到账=应付)。
         #   平台券: 应付>实付(实付=扣券净额) → 用应付对平, 不误报正差(平台券是平台出资);
         #   退差价: 应付=实付、退款>0 → 应付−退款=支付宝净额 → 对平;
         #   应付漏抓: 多产品/单品只抓部分子订单 → 应付<实付 而实付=支付宝该单收入 → 用实付兜底
         #     (2026-06-24: 应付漏抓残留单不再误报正差; 实付是对的)。应付缺失同样退回实付。
-        # 注: 营收/利润口径另用实付(扣券), 不受此对账口径影响。
+        #   买家应付邮费 (2026-06-24): 买家额外付的运费=代收, 不进货款/实付列, 但支付宝该单收入含它
+        #     → 加进基准, 否则被误报"正差"(分不清是运费还是退款)。运费缺失(None)按 0, 行为不变。
+        # 注: 营收/利润口径另用实付(扣券), 不含运费(代收代付对利润中性), 不受此对账口径影响。
         _paid_d = Decimal(paid or 0)
         base = max(Decimal(payable), _paid_d) if payable is not None else _paid_d
+        base = base + Decimal(freight or 0)
         order_paid[k] = order_paid.get(k, Decimal("0")) + base - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
 

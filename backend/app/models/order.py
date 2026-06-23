@@ -84,6 +84,9 @@ class Order(Base, TimestampMixin):
 
     # 订单 P&L 扩展 (Excel 表 5-订单总表 的财务列, migration 0046)
     buyer_payable_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 买家应付金额
+    # 买家应付邮费 (migration 0093): 买家额外付的运费=代收, 不进货款/实付列。营收对账基准要加它
+    # (支付宝该单收入含此运费), 否则被误报"正差"; 营收/利润口径不含(运费≈代收代付, 对利润中性)。
+    buyer_freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))           # 买家应付邮费
     shop_received_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 店铺实收金额
     tax: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))                    # 税费
     other_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))              # 其它费用

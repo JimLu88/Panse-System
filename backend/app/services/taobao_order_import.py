@@ -240,6 +240,7 @@ class _OrderRow:
     shop_received: Any = None        # 打款商家金额 (店铺实收, 历史CSV有)
     platform_fee: Any = None         # 卖家服务费 (平台服务费)
     refund: Any = None               # 退款金额
+    buyer_freight: Any = None        # 买家应付邮费 (买家额外付的运费=代收, 对账基准要加)
     ship_time: Any = None            # 发货时间
     confirm_time: Any = None         # 确认收货时间
     shop: Any = None                 # 店铺名称
@@ -353,6 +354,7 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "shop_received": g(row, "打款商家金额"),
                 "platform_fee": g(row, "卖家服务费", "平台服务费"),
                 "refund": g(row, "退款金额"),
+                "buyer_freight": g(row, "买家应付邮费", "买家承担邮费", "邮费"),
                 "ship_time": g(row, "发货时间"),
                 "confirm_time": g(row, "确认收货时间"),
                 "shop": g(row, "店铺名称"),
@@ -408,6 +410,7 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                     shop_received=r.get("shop_received"),
                     platform_fee=r.get("platform_fee"),
                     refund=r.get("refund") or g3(row, "退款金额"),
+                    buyer_freight=r.get("buyer_freight") or g3(row, "买家应付邮费", "买家承担邮费", "邮费"),
                     ship_time=r.get("ship_time") or g3(row, "发货时间"),
                     confirm_time=r.get("confirm_time") or g3(row, "确认收货时间"),
                     shop=r.get("shop"),
@@ -474,6 +477,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
                 shop_received=gv(row, "打款商家金额"),
                 platform_fee=gv(row, "卖家服务费", "平台服务费"),
                 refund=gv(row, "退款金额"),
+                buyer_freight=gv(row, "买家应付邮费", "买家承担邮费", "邮费"),
                 ship_time=gv(row, "发货时间"),
                 confirm_time=gv(row, "确认收货时间"),
                 shop=gv(row, "店铺名称"),
@@ -496,6 +500,8 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             "shop_received": _to_decimal(gv(row, "打款商家金额")),
             "platform_fee": _to_decimal(gv(row, "卖家服务费", "平台服务费")),
             "refund": _to_decimal(gv(row, "退款金额")),
+            # 邮费是订单级(一单一次), 多产品行可能重复或只落某行 → _commit_orders 取 max 不求和
+            "buyer_freight": _to_decimal(gv(row, "买家应付邮费", "买家承担邮费", "邮费")),
         })
     return orders
 
@@ -602,6 +608,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             paid = _line_total
         pfee = _to_decimal(o.platform_fee)
         _refund_raw = _to_decimal(o.refund)
+        freight = _to_decimal(o.buyer_freight)   # 买家应付邮费 (订单级, 代收运费)
         # 乙(用户拍板 2026-06-23): 一单多宝贝 → 订单级金额按【子订单行求和】, 替代只取第一行
         # (此前多产品单只抓第一个子订单的实付/实收/应付 → 收入漏记其余产品; 实付被低估又连累口径A成本护栏
         #  误回退成单产品成本 → 毛利虚高)。单产品单(1行)求和=第一行, 行为不变。退款随行求和后归一;
@@ -622,6 +629,12 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 pfee = _s_fee
             if _s_refund is not None:
                 _refund_raw = _s_refund
+            # 邮费是订单级(一单一次): 多产品行可能重复(每行同值)或只落某行 → 取 max, 不求和(防重复计)
+            _f_vals = [ln.get("buyer_freight") for ln in lines if ln.get("buyer_freight") is not None]
+            if _f_vals:
+                _m_freight = max(_f_vals)
+                if freight is None or _m_freight > freight:
+                    freight = _m_freight
         refund = _normalize_refund(payable, paid, _refund_raw)
         ship_dt = _to_date(o.ship_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
@@ -691,6 +704,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 if _trace("refund_amount", "退款金额", existing.refund_amount, refund):
                     rep.amount_changed += 1
                 existing.refund_amount = refund
+            if freight is not None:
+                _trace("buyer_freight", "买家应付邮费", existing.buyer_freight, freight)
+                existing.buyer_freight = freight
             if ship_dt is not None:
                 _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt
@@ -753,6 +769,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             shop_received_amount=received,
             platform_fee=pfee,
             refund_amount=refund,
+            buyer_freight=freight,
             status=status,
             # 现金流"待确认收货/未发货"靠活跃单的金额; 故不再一律 historical
             is_historical=False,

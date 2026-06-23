@@ -168,6 +168,25 @@ def test_revenue_alipay_payable_undercaptured_uses_paid(db_session):
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
 
 
+def test_revenue_alipay_buyer_freight_added_to_base(db_session):
+    """买家应付邮费=代收运费, 支付宝该单收入含它 → 加进对账基准, 不再误报正差。
+    5111173 形态: 货款75/实付75/运费60, 支付宝135; 正差60 > 实付×20%=15 不在淘金币豁免内,
+    必须靠邮费对平 (否则会误报为'退款没回填'类正差)。"""
+    no = "5111173982824026244"
+    db_session.add(Order(platform="淘宝", order_no=no, qty=1,
+                         paid_amount=Decimal("75.00"), buyer_payable_amount=Decimal("75.00"),
+                         buyer_freight=Decimal("60.00"),
+                         order_date=date(2026, 4, 23), status="signed"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXF", transaction_time=datetime(2026, 4, 23),
+                              amount=Decimal("135.00"), related_order_no=no,
+                              reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == f"revenue_alipay:{no}").count() == 0
+
+
 def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
     """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
     分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""

@@ -130,6 +130,51 @@ def test_reimport_updates_status_and_amount(db_session):
     assert o2.buyer_payable_amount == Decimal("2933.78")  # 金额回填
 
 
+def _freight_csv_bytes(freight="60.00") -> bytes:
+    rows = [
+        ["子订单编号", "主订单编号", "标题", "价格", "购买数量", "外部系统编号", "商品属性",
+         "订单状态", "商家编码", "买家应付货款", "买家实付金额", "买家应付邮费", "退款状态", "退款金额", "订单创建时间"],
+        ["F1", "F500", "畔色胡桃木双人床", "1000.00", "1", "23210020201", "颜色分类：胡桃木1.8米",
+         "交易成功", "23210020201", "75.00", "75.00", freight, "没有申请退款", "无退款申请", "2026-04-23 14:38:45"],
+    ]
+    out = io.StringIO()
+    csv.writer(out).writerows(rows)
+    return out.getvalue().encode("gbk")
+
+
+def test_import_maps_buyer_freight(db_session):
+    """买家应付邮费=代收运费, 单列落 buyer_freight, 不混进货款/实付 (5111173 真实形态: 货款75/实付75/运费60)。"""
+    rep = tio.import_taobao_orders(db_session, "ItemList.csv", _freight_csv_bytes())
+    assert rep.inserted == 1
+    o = db_session.query(Order).filter_by(order_no="F500").one()
+    assert o.paid_amount == Decimal("75.00")          # 实付不含运费
+    assert o.buyer_freight == Decimal("60.00")        # 运费单列
+
+
+def _multi_freight_csv_bytes() -> bytes:
+    """一单两宝贝, 每行都带同一笔订单级邮费 60 (淘宝常把订单级字段在子行重复)。"""
+    rows = [
+        ["子订单编号", "主订单编号", "商品标题", "商品价格", "购买数量", "商家编码", "商品属性",
+         "订单状态", "买家应付货款", "买家实付金额", "买家应付邮费", "退款金额", "订单创建时间"],
+        ["M1", "M600", "畔色岩板餐桌", "3000.00", "1", "23210020201", "颜色分类：砂白2.0米",
+         "交易成功", "3000.00", "3000.00", "60.00", "", "2026-04-23 14:38:45"],
+        ["M2", "M600", "畔色实木餐椅", "800.00", "2", "23250050202", "颜色分类：胡桃木",
+         "交易成功", "800.00", "800.00", "60.00", "", "2026-04-23 14:38:45"],
+    ]
+    out = io.StringIO()
+    csv.writer(out).writerows(rows)
+    return out.getvalue().encode("gbk")
+
+
+def test_import_multi_product_freight_max_not_sum(db_session):
+    """多产品单: 实付按子订单求和(3000+800=3800), 但邮费是订单级 → 取 max(60) 不求和(120)。"""
+    rep = tio.import_taobao_orders(db_session, "ItemList.csv", _multi_freight_csv_bytes())
+    assert rep.inserted == 1
+    o = db_session.query(Order).filter_by(order_no="M600").one()
+    assert o.paid_amount == Decimal("3800.00")        # 实付逐子订单求和
+    assert o.buyer_freight == Decimal("60.00")        # 邮费取 max, 不被重复行求和成 120
+
+
 def test_import_multi_line_order(db_session):
     """一单多商品: 聚合为一行 Order, 取主商品(金额最大), 备注其余。"""
     wb = Workbook(); wb.remove(wb.active)
