@@ -367,6 +367,45 @@ _BG_THREAD = None   # type: ignore[var-annotated]
 _BG_STOP = None     # type: ignore[var-annotated]
 
 
+def _quiet_hours_window():
+    """夜间安静时段 [start, end) 小时 (用户拍板 2026-06-23 夜间模式: 让 NAS 盘连续休眠几小时)。
+    env PANSE_QUIET_HOURS="23-7"(默认); "off"/"none"/"0" 禁用。返回 (start, end) 或 None。"""
+    raw = (os.environ.get("PANSE_QUIET_HOURS", "23-7") or "").strip().lower()
+    if raw in ("", "off", "none", "disabled", "0"):
+        return None
+    try:
+        s, e = raw.split("-")
+        return (int(s) % 24, int(e) % 24)
+    except Exception:
+        return (23, 7)
+
+
+def _in_quiet_hours(now_hour: int | None = None) -> bool:
+    win = _quiet_hours_window()
+    if win is None:
+        return False
+    if now_hour is None:
+        from datetime import datetime
+        now_hour = datetime.now().hour
+    s, e = win
+    return (now_hour >= s or now_hour < e) if s > e else (s <= now_hour < e)
+
+
+def _quiet_fail_alert(db, results) -> None:
+    """夜间检测到异常: 落库 + critical 告警(推送), 但不自动重启(用户拍板: 夜里崩溃留早上人工)。"""
+    from app.services import alert_service
+    bad = [c for c in results if c.status == "fail"]
+    body = "; ".join(f"{c.name}: {c.detail}" for c in bad) or "未知"
+    alert_service.upsert(
+        db, kind="watchdog", severity="critical",
+        title="夜间模式: 系统异常(已暂停自动重启)",
+        body=f"安静时段 {_quiet_hours_window()} 检测到异常, 按夜间模式不自动重启, 请人工介入:\n{body}",
+        dedupe_key="watchdog_quiet_fail",
+        related_url="/admin", auto_resolve_after_minutes=60 * 12,
+    )
+    db.commit()
+
+
 def _background_loop_sync(interval_sec: int, stop_event) -> None:
     """看门狗循环 — 跑在独立 OS 线程 (评审#6): 业务 event loop 被慢 SQL / 外部 HTTP
     阻塞时, 看门狗仍能照常体检 + 自救, 不会跟着冻住。"""
@@ -375,12 +414,21 @@ def _background_loop_sync(interval_sec: int, stop_event) -> None:
         try:
             db = SessionLocal()
             try:
-                run_checks(db, persist=True)
-                db.commit()
-                # 业务需求 6: 看门狗自救
-                triggered = maybe_auto_restart(db)
-                if triggered:
-                    _logger.warning("看门狗自救已触发: %s", triggered)
+                if _in_quiet_hours():
+                    # 夜间模式 (用户拍板 2026-06-23): 健康则 persist=False 不写盘 → NAS 盘能连续休眠;
+                    # 仅在检测到 fail 时破例落库 + critical 告警(保留崩溃告警), 但不自动重启(留早上人工)。
+                    results = run_checks(db, persist=False)
+                    if any(c.status == "fail" for c in results):
+                        run_checks(db, persist=True)
+                        db.commit()
+                        _quiet_fail_alert(db, results)
+                else:
+                    run_checks(db, persist=True)
+                    db.commit()
+                    # 业务需求 6: 看门狗自救
+                    triggered = maybe_auto_restart(db)
+                    if triggered:
+                        _logger.warning("看门狗自救已触发: %s", triggered)
             finally:
                 db.close()
         except Exception as e:  # pragma: no cover
