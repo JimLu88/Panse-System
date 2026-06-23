@@ -11,7 +11,6 @@ import PresetTable from '../components/PresetTable';
 import RefillCallout from '../components/RefillCallout';
 import {
   CashFlowFreshness, CashFlowLine, CashFlowSummary, getCashFlow, updateCashFlowSettings,
-  backfillFactoryPayment, recomputeOrderCosts,
 } from '../api/finance';
 
 const { Title, Text } = Typography;
@@ -99,24 +98,6 @@ export default function CashFlowPage() {
     onError: () => message.error('更新失败'),
   });
 
-  const recomputeMut = useMutation({
-    mutationFn: () => recomputeOrderCosts(true),
-    onSuccess: (r) => {
-      message.success(`已反推理论成本: 补齐 ${r.updated} 单${r.skipped_no_bom ? `，${r.skipped_no_bom} 单无BOM跳过` : ''}`);
-      qc.invalidateQueries({ queryKey: ['cash-flow'] });
-    },
-    onError: () => message.error('反推失败'),
-  });
-
-  const factoryBackfillMut = useMutation({
-    mutationFn: () => backfillFactoryPayment({}),
-    onSuccess: (r) => {
-      message.success(`工厂欠款回填: 证据 ${r.by_evidence} 单 + 已结算推断 ${r.by_settled} 单 → 已付，剩 ${r.still_unpaid} 单未付`);
-      qc.invalidateQueries({ queryKey: ['cash-flow'] });
-    },
-    onError: () => message.error('回填失败'),
-  });
-
   if (isLoading || !data) {
     return <div style={{ display: 'flex', justifyContent: 'center', padding: 64 }}><Spin size="large" /></div>;
   }
@@ -136,12 +117,6 @@ export default function CashFlowPage() {
       <Row justify="space-between" align="middle" style={{ marginBottom: 16 }}>
         <Title level={4} style={{ margin: 0 }}>剩余流水 · 可用资金</Title>
         <Space>
-          <Tooltip title="对活跃单反推 BOM 理论成本，让「工厂未开账单预估」不再缺成本">
-            <Button loading={recomputeMut.isPending} onClick={() => recomputeMut.mutate()}>反推理论成本</Button>
-          </Tooltip>
-          <Tooltip title="把确有付款证据 / 关联订单已签收且超结算周期的工厂单标已付，消除欠款虚高">
-            <Button loading={factoryBackfillMut.isPending} onClick={() => factoryBackfillMut.mutate()}>工厂欠款回填</Button>
-          </Tooltip>
           <Button icon={<EditOutlined />} onClick={openEdit}>编辑手动项</Button>
           <Button icon={<ReloadOutlined />} onClick={() => qc.invalidateQueries({ queryKey: ['cash-flow'] })}>
             刷新
@@ -238,8 +213,8 @@ export default function CashFlowPage() {
           {data.investment.profit_detail.orders_missing_cost > 0 && (
             <Alert
               type="warning" showIcon style={{ marginTop: 12 }}
-              message={`有 ${data.investment.profit_detail.orders_missing_cost} 单缺成本(未反推理论成本)，按 0 计入 → 累计总利润偏高`}
-              description="可在 订单/成本 反推理论成本后更准。"
+              message={`有 ${data.investment.profit_detail.orders_missing_cost} 单缺成本(理论成本未反推)，按 0 计入 → 累计总利润偏高`}
+              description="系统每日自动反推 BOM 理论成本(导入即时反推 + 06:50 兜底)；仍缺的多为无 BOM / 缺编码单，补全编码或 BOM 后即自动补成本。"
             />
           )}
           <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 8 }}>
