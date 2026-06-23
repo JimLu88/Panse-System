@@ -119,16 +119,20 @@ def _check_order_missing_tracking(db: Session, exc: DataException) -> Optional[s
 
 
 def _check_cost_exceeds_paid(db: Session, exc: DataException) -> Optional[str]:
-    """错配单复核: 成本已不再明显高于实付(已并单/改 actual_cost) → 销账。与 scanner 同口径。"""
+    """错配单复核: 成本已不再明显高于实付(已并单/改 actual_cost/已取消/非产品) → 销账。
+
+    与 scanner 同一判据 `_cost_exceeds_paid_qualifies`(避免口径漂移 + 去重复逻辑)。
+    修(2026-06-23): 旧实现漏 import Decimal → NameError 被 recheck 吞成 None, 检查器形同
+    虚设(resolve 复核拦不住、/recheck-all 会误关真错配)。本文件多处已本地 import data_quality。"""
     o = _get_order(db, exc)
     if o is None:
         return None
+    from decimal import Decimal
+    from app.services.data_quality_service import _cost_exceeds_paid_qualifies
+    if not _cost_exceeds_paid_qualifies(o):
+        return None
     paid = Decimal(str(o.paid_amount or 0))
     cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
-    if paid <= 0 or cost <= 0:
-        return None
-    if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
-        return None
     return f"订单 {o.order_no} 实付 ¥{paid} 仍背成本 ¥{cost}, 错配未解决"
 
 

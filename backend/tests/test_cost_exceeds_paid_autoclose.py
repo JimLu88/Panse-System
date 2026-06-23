@@ -110,3 +110,42 @@ def test_non_product_excluded():
     n = dq.scan_cost_exceeds_paid(db); db.commit()
     assert n == 0
     assert len(_opens(db)) == 0
+
+
+# --- recheck 检查器回归 (2026-06-23: 修 _check_cost_exceeds_paid 漏 import Decimal) ---
+
+def _exc(db, oid):
+    ex = DataException(source_table="orders", source_pk=str(oid),
+                       exception_type="cost_exceeds_paid", severity="warning",
+                       status="open", description="x")
+    db.add(ex); db.commit()
+    return ex
+
+
+def test_recheck_flags_real_mismatch():
+    # 真错配 → recheck 返回原因。旧版漏 import Decimal 时会 NameError 被吞成 None → 此断言失败
+    from app.services import exception_recheck_service as rk
+    db = _db()
+    _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    reason = rk.recheck(db, _exc(db, 1))
+    assert reason and "错配未解决" in reason
+
+
+def test_recheck_clears_when_fixed():
+    # 成本归零 → recheck 返回 None; bulk_close_resolved 据此自动销账
+    from app.services import exception_recheck_service as rk
+    db = _db()
+    _order(db, 1, "O1", paid=100, actual=0, theoretical=0)
+    ex = _exc(db, 1)
+    assert rk.recheck(db, ex) is None
+    closed = rk.bulk_close_resolved(db, types=["cost_exceeds_paid"])
+    assert closed.get("cost_exceeds_paid") == 1
+    assert ex.status == "resolved"
+
+
+def test_recheck_clears_when_cancelled():
+    # 已取消 → 与 scanner 同判据 → recheck 返回 None (口径对齐: 旧版不查状态会误判"仍错配")
+    from app.services import exception_recheck_service as rk
+    db = _db()
+    _order(db, 1, "O1", paid=100, theoretical=4631.83, status="cancelled")
+    assert rk.recheck(db, _exc(db, 1)) is None
