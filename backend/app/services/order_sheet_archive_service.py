@@ -398,7 +398,11 @@ def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
     lines = [f"  · {('畔色 '+str(fno)+' 单') if fno else '未编号'}　订单号 {no}" for no, fno in missing]
     txt = (f"⚠️ 下列 {len(missing)} 单【没有抓取到收货地址】(已做制单图+编号一并推送, 但收货栏为空):\n"
            + "\n".join(lines)
-           + "\n👉 大概率是淘宝后台每日可解密收货信息额度不足。请去后台【提升解密额度】, 然后让我对这些单重新拉取, 收货就能补上。")
+           + "\n👉 补齐两步(缺一不可):"
+           + "\n  ① 淘宝后台【提升每日收货信息解密额度】—— 额度不够时, 超额的单收货地址会被星号脱敏, 系统不收, 故为空;"
+           + "\n  ② 在订单页点「更新拉取订单」重新拉取, 然后把淘宝发的『发货密码 xxxx』转发到这里"
+           + " —— 我会自动解密发货报表、补上收货地址并重推这些单的下单图。"
+           + "\n(发货报表是淘宝固定加密的, 每天新导出都要重发一次密码; 密码 60 分钟内有效。)")
     try:
         feishu_client.send_text(db, chat_id, txt)
     except Exception:  # noqa: BLE001
