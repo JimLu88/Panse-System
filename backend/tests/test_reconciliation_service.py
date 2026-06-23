@@ -187,6 +187,26 @@ def test_revenue_alipay_buyer_freight_added_to_base(db_session):
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
 
 
+def test_revenue_alipay_settlement_window_excludes_recent_unsettled(db_session):
+    """方案A: 下单<45天、担保放款未到的订单(无匹配流水)不进月度兜底; 老的未配单照常报。"""
+    from datetime import timedelta
+    recent = date.today() - timedelta(days=5)
+    old = date.today() - timedelta(days=90)
+    db_session.add(Order(platform="淘宝", order_no="9100000000000000001", qty=1,
+                         paid_amount=Decimal("5000"), order_date=recent, status="signed"))
+    db_session.add(Order(platform="淘宝", order_no="9100000000000000002", qty=1,
+                         paid_amount=Decimal("3000"), order_date=old, status="signed"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    # 近单(结算窗口内)不应出现在任何兜底里
+    assert not any("9100000000000000001" in (d.message or "") for d in r.diffs)
+    # 老单 ¥3000 进其下单月兜底
+    old_mk = old.strftime("%Y-%m")
+    assert any(d.key == f"{old_mk} 兜底" and d.expected == Decimal("3000") for d in r.diffs)
+    # 有一条"结算窗口内待放款"信息行, 金额=近单实付
+    assert any(d.key == "结算窗口内待放款" and d.expected == Decimal("5000") for d in r.diffs)
+
+
 def test_revenue_alipay_same_txn_payment_plus_split_counts_once(db_session):
     """同一交易号『交易付款 + 交易分账』是同一笔的支付与结算, 收入取最大额(=付款)只算一次,
     分账不叠加 → 不虚高 (5115065 实例; 同号重复入库另由 alipay_duplicate_flow 规则告警, 2026-06-22)。"""

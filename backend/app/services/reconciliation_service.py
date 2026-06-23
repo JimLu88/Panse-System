@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Literal, Optional
 
@@ -835,6 +835,13 @@ _TAOJINBI_MAX_RATIO = Decimal("0.20")
 _NON_REVENUE_ACCOUNTS = ("爱群号", "佳宝号", "主力号")
 
 
+# 担保交易结算窗口: 淘宝买家付款先进担保, 确认收货后才放款到店铺支付宝, 比下单晚 1-4 周。
+# 故"下单距今 < N 天"的订单, 其支付宝回款本就还没到 —— 月度兜底里不能算它"未配到流水"
+# (否则当月/上月永远冒巨额假正差, 实测 2026-06 下单 ¥44万 几乎全在担保中未放款)。
+# 永久逻辑: 每次跑都按 date.today() 滚动窗口, 新月份自动不再误报。
+_SETTLEMENT_WINDOW_DAYS = 45
+
+
 def run_revenue_alipay(
     db: Session, *,
     period_start: Optional[date] = None,
@@ -879,6 +886,7 @@ def run_revenue_alipay(
     ).all()
     order_paid: dict[str, Decimal] = {}
     order_month: dict[str, str] = {}
+    order_date_by_key: dict[str, Optional[date]] = {}   # 结算窗口判断用 (下单距今<45天放款未到)
     for no, d, paid, payable, refund, freight in o_rows:
         k = _okey(no)
         if not k:
@@ -897,6 +905,7 @@ def run_revenue_alipay(
         base = base + Decimal(freight or 0)
         order_paid[k] = order_paid.get(k, Decimal("0")) + base - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
+        order_date_by_key[k] = d
 
     from sqlalchemy import or_ as _or
     af_stmt = select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.related_order_no,
@@ -947,10 +956,17 @@ def run_revenue_alipay(
     diffs: list[ReconciliationDiff] = []
     matched_ok = 0
     unmatched_paid_by_month: dict[str, Decimal] = {}   # 没配到任何流水的订单 → 月兜底
+    settling_recent = Decimal("0")                     # 下单<45天、担保放款未到 → 不计兜底(避免假正差)
+    settling_cutoff = date.today() - timedelta(days=_SETTLEMENT_WINDOW_DAYS)
     for k, paid in order_paid.items():
         got = flow_income.get(k)
         if got is None:
             if paid > 0:
+                _od = order_date_by_key.get(k)
+                if _od is not None and _od >= settling_cutoff:
+                    # 担保交易结算窗口内: 回款还没到账是正常的, 不算"未配到流水", 否则当月永远假报。
+                    settling_recent += paid
+                    continue
                 mk = order_month.get(k, "(无日期)")
                 unmatched_paid_by_month[mk] = unmatched_paid_by_month.get(mk, Decimal("0")) + paid
             continue
@@ -983,6 +999,12 @@ def run_revenue_alipay(
         key="逐单配对", expected=None, actual=None, diff=None, severity="ok",
         message=f"逐单配对一致 {matched_ok} 单 (差额≤容差不逐条列出)",
     ))
+    if settling_recent > 0:
+        diffs.append(ReconciliationDiff(
+            key="结算窗口内待放款", expected=settling_recent, actual=None, diff=None, severity="ok",
+            message=f"下单<{_SETTLEMENT_WINDOW_DAYS}天、担保交易放款未到的订单实付 ¥{settling_recent} "
+                    f"已排除出月度兜底(回款到账后自然配上, 非异常)。",
+        ))
     # 月度兜底: 两侧各自配不上的部分按月对照 (到账跨月/未导流水/未导订单)
     for mk in sorted(set(unmatched_paid_by_month) | set(orphan_income_by_month)):
         exp = unmatched_paid_by_month.get(mk, Decimal("0"))
