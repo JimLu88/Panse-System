@@ -1,12 +1,16 @@
 import { api } from './base';
 
 // 销售排行榜 (/api/reports/sales/ranking)
+export type RankMetric = 'revenue' | 'qty' | 'profit';   // +利润率(profit) 2026-06-25
+
 export interface RankRow {
   rank: number;
   product_code: string | null;
   product_name: string;
   qty: number;
   revenue: number;
+  net_profit?: number;    // 利润额 (¥) — metric=profit 时返回
+  profit_rate?: number;   // 利润率 (0~1) — metric=profit 时返回
   order_count: number;
 }
 
@@ -15,14 +19,18 @@ export interface RankPeriod {
   champion_name: string | null;
   champion_qty: number;
   champion_revenue: number;
+  champion_profit?: number;        // 冠军利润额 (¥)
+  champion_profit_rate?: number;   // 冠军利润率 (0~1)
   total_qty: number;
   total_revenue: number;
+  total_profit?: number;           // 本期合计利润 (¥)
+  total_profit_rate?: number;      // 本期合计利润率 (0~1)
   product_kinds: number;
 }
 
 export interface SalesRanking {
   granularity: 'month' | 'year';
-  metric: 'revenue' | 'qty';
+  metric: RankMetric;
   selected_period: string | null;
   periods: RankPeriod[];
   ranking: RankRow[];

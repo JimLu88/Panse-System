@@ -245,12 +245,12 @@ def sales_cost_anomaly(
 @router.get("/sales/ranking")
 def sales_ranking(
     granularity: str = Query("month", description="month(按月) / year(按年)"),
-    metric: str = Query("revenue", description="revenue(销售额) / qty(销量)"),
+    metric: str = Query("revenue", description="revenue(销售额) / qty(销量) / profit(利润率)"),
     period: Optional[str] = Query(None, description="指定周期 2026-04 / 2026; 缺省取最新"),
     limit: int = Query(30, le=100),
     db: Session = Depends(get_db),
 ):
-    """销售排行榜: 按月/年 分产品 销量/销售额 排行 + 每期冠军时间线 (正式销售, 不含补单)."""
+    """销售排行榜: 按月/年 分产品 销量/销售额/利润率 排行 + 每期冠军时间线 (正式销售, 不含补单)."""
     return sales_analytics.product_ranking(
         db, granularity=granularity, metric=metric, period=period, limit=limit,
     )

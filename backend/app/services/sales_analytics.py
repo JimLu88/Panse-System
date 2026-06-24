@@ -523,17 +523,25 @@ def _internal_names(db: Session, codes: set[str]) -> tuple[dict[str, str], dict[
 def product_ranking(
     db: Session, *,
     granularity: str = "month",   # month(按月) / year(按年)
-    metric: str = "revenue",      # revenue(销售额) / qty(销量)
+    metric: str = "revenue",      # revenue(销售额) / qty(销量) / profit(利润率)
     period: Optional[str] = None,  # 指定周期 (如 2026-04 / 2026); 缺省取最新
     limit: int = 30,
 ) -> dict:
-    """销售排行榜: 按月/按年, 分产品的销量/销售额排行 + 每期冠军时间线。
+    """销售排行榜: 按月/按年, 分产品的 销量/销售额/利润率 排行 + 每期冠军时间线。
 
-    口径: 正式销售 (非补单 is_refill=False, 未取消, 有下单日期)。销售额=买家实付 paid_amount。
+    口径: 正式销售 (非补单 is_refill=False, 未取消, 有下单日期)。销售额=买家实付−退款。
+    利润 (metric=profit, 用户 2026-06-25): 净利=实付−退款−会计总成本 (商品+物流+安装+平台扣点+税+
+      额外售后), 与逐单核对/月度P&L 完全同口径; 利润率榜按 净利率(净利/销售额) 排序, 每行同时给出
+      利润额(¥)与利润率(%), 便于看「哪个产品贡献利润」。注意: 此处为逐单净利之和(产品维度),
+      不再分摊推广/人员/固定成本 (那些是区间级费用, 见月度经营)。
     返回 {granularity, metric, selected_period, periods[每期冠军], ranking[选定期排行]}。
     """
     granularity = "year" if granularity == "year" else "month"
-    metric = "qty" if metric == "qty" else "revenue"
+    metric = metric if metric in ("qty", "profit") else "revenue"  # +利润率(profit) (用户 2026-06-25)
+
+    from app.services import order_financials as ofin
+    coef = ofin.load_coefficients(db)                 # 利润榜走全系统统一会计口径 (与月度P&L/逐单核对一致)
+    as_by_order = ofin.extra_aftersales_by_order(db)  # 额外售后按订单归属 (退款不重复计)
 
     orders = db.execute(
         select(Order).where(
@@ -563,7 +571,7 @@ def product_ranking(
         bp = buckets.setdefault(pk, {})
         d = bp.setdefault(key, {
             "product_code": canon, "product_name": name,
-            "qty": 0, "revenue": Decimal("0"), "order_count": 0,
+            "qty": 0, "revenue": Decimal("0"), "net_profit": Decimal("0"), "order_count": 0,
         })
         if iname and d["product_name"] != iname:
             d["product_name"] = iname     # 优先内部短名 (同款 P/PPS 合并后统一显示)
@@ -571,22 +579,39 @@ def product_ranking(
         # #25 总销售额去退款: 实付 - 退款 (全退订单计 0)
         rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)
         d["revenue"] += rev if rev > 0 else Decimal("0")
+        # 净利 = 实付−退款−会计总成本; 与逐单核对/月度P&L 同口径 (order_financials.net_profit)
+        d["net_profit"] += ofin.net_profit(o, coef, aftersales=Decimal(as_by_order.get(o.order_no, 0)))
         d["order_count"] += 1
 
+    def _rate(np_: Decimal, rev: Decimal) -> float:
+        """净利率 = 净利 / 销售额 (无营收→0)。"""
+        return float(np_ / rev) if rev and rev > 0 else 0.0
+
     def metric_val(d: dict):
-        return d["qty"] if metric == "qty" else d["revenue"]
+        if metric == "qty":
+            return d["qty"]
+        if metric == "profit":
+            # 利润率榜: 按净利率排序; 无营收产品(理论上成交单不会出现)排末位
+            return _rate(d["net_profit"], d["revenue"]) if d["revenue"] > 0 else -9.99
+        return d["revenue"]
 
     periods_out: list[dict] = []
     for pk in sorted(buckets.keys(), reverse=True):
         rows = list(buckets[pk].values())
         champ = max(rows, key=metric_val) if rows else None
+        total_profit = sum((r["net_profit"] for r in rows), Decimal("0"))
+        total_revenue = sum((r["revenue"] for r in rows), Decimal("0"))
         periods_out.append({
             "period": pk,
             "champion_name": champ["product_name"] if champ else None,
             "champion_qty": int(champ["qty"]) if champ else 0,
             "champion_revenue": float(champ["revenue"]) if champ else 0.0,
+            "champion_profit": float(champ["net_profit"]) if champ else 0.0,
+            "champion_profit_rate": _rate(champ["net_profit"], champ["revenue"]) if champ else 0.0,
             "total_qty": int(sum(r["qty"] for r in rows)),
-            "total_revenue": float(sum((r["revenue"] for r in rows), Decimal("0"))),
+            "total_revenue": float(total_revenue),
+            "total_profit": float(total_profit),
+            "total_profit_rate": _rate(total_profit, total_revenue),
             "product_kinds": len(rows),
         })
 
@@ -601,6 +626,8 @@ def product_ranking(
                 "product_name": r["product_name"],
                 "qty": int(r["qty"]),
                 "revenue": float(r["revenue"]),
+                "net_profit": float(r["net_profit"]),       # 利润额 (¥) — 利润率榜旁显示 (用户要)
+                "profit_rate": _rate(r["net_profit"], r["revenue"]),  # 利润率 (0~1)
                 "order_count": r["order_count"],
             })
 
