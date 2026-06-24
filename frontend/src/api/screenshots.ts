@@ -261,3 +261,14 @@ export const rematchPackingBills = (loose = true) =>
     .post<{ matched: number; multi: number; none: number }>(
       '/api/finance/packing-bills/rematch', null, { params: { loose } })
     .then((r) => r.data);
+export const updatePackingBill = (
+  id: number,
+  patch: {
+    customer_name?: string;
+    packing_fee?: number | null;
+    matched_order_no?: string;   // 手动指定订单号; 空串=清空配单
+    excluded?: boolean;
+    note?: string;
+    rematch?: boolean;           // 改完客户名后按名自动重配
+  },
+) => api.patch<PackingBillRow>(`/api/finance/packing-bills/${id}`, patch).then((r) => r.data);

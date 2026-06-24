@@ -1545,6 +1545,27 @@ def packing_bills_summary(bill_month: Optional[str] = None, db: Session = Depend
     return packing_bill_service.month_summary(db, bill_month)
 
 
+class PackingBillPatch(BaseModel):
+    customer_name: Optional[str] = None
+    packing_fee: Optional[Decimal] = None
+    matched_order_no: Optional[str] = None   # 手动指定订单号; 空串 = 清空配单
+    excluded: Optional[bool] = None
+    note: Optional[str] = None
+    rematch: bool = False                    # 改完客户名后按名自动重配
+
+
+@router.patch("/packing-bills/{bill_id}", response_model=PackingBillOut)
+def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = Depends(get_db)):
+    """手动编辑一行打包费账单: 改客户名/打包费/手动配单 (用户 2026-06-24)。只更新请求里出现的字段。"""
+    from app.services import packing_bill_service
+    fields = payload.model_dump(exclude_unset=True)
+    rematch = bool(fields.pop("rematch", False))
+    b = packing_bill_service.update_row(db, bill_id, rematch=rematch, **fields)
+    if b is None:
+        raise HTTPException(404, "打包费账单行不存在")
+    return b
+
+
 @router.get("/promotion-flows", response_model=list[PromotionFlowOut])
 def list_promotion_flows(
     flow_type: Optional[str] = None,

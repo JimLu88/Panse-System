@@ -210,6 +210,54 @@ def _note_province(note: Optional[str]) -> Optional[str]:
     return m.group(1) if m else None
 
 
+_UNSET = object()
+
+
+def update_row(
+    db: Session,
+    bill_id: int,
+    *,
+    customer_name=_UNSET,
+    packing_fee=_UNSET,
+    matched_order_no=_UNSET,
+    excluded=_UNSET,
+    note=_UNSET,
+    rematch: bool = False,
+) -> Optional[PackingBill]:
+    """手动编辑一行打包费账单 (用户 2026-06-24): 改客户名/打包费/手动配单。
+    - 传 matched_order_no 非空 → 人工指定配单 (match_method='manual'); 传空字符串 → 清空配单退回自动。
+    - rematch=True 且当前未配单 → 按(可能改过的)客户名自动重配一次, 让"改对名字就能配上"。"""
+    b = db.get(PackingBill, bill_id)
+    if b is None:
+        return None
+    if customer_name is not _UNSET:
+        b.customer_name = (customer_name or "").strip() or None
+    if packing_fee is not _UNSET:
+        b.packing_fee = _dec(packing_fee)
+    if excluded is not _UNSET:
+        b.excluded = bool(excluded)
+        if not excluded:
+            b.exclude_reason = None
+    if note is not _UNSET:
+        b.note = note
+    if matched_order_no is not _UNSET:
+        mo = (matched_order_no or "").strip()
+        if mo:
+            b.matched_order_no = mo
+            b.order_no = mo
+            b.match_method = "manual"
+            b.match_note = None
+        else:
+            b.matched_order_no = None
+            b.match_method = None
+            b.match_note = None
+    if rematch and not b.matched_order_no and not b.excluded:
+        valid_nos, by_name = _order_indices(db)
+        _match_row(b, valid_nos, by_name)
+    db.flush()
+    return b
+
+
 def rematch_packing_bills(db: Session, *, loose: bool = True) -> dict:
     """对未配单(且非剔除/非人工)的打包费行重跑配单。loose=True 多一档:
     客户名(≥2字)出现在订单收货地址里 + 备注省份也对上 → 唯一才配

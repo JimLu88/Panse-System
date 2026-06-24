@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Checkbox, Input, InputNumber, Space, Statistic, Table, Tag,
+  Alert, Button, Checkbox, Input, InputNumber, Modal, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
-import { DeleteOutlined, DownloadOutlined, InboxOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  commitPackingBill, listPackingBills, packingSummary, parsePackingBill,
+  commitPackingBill, listPackingBills, packingSummary, parsePackingBill, updatePackingBill,
   type PackingRowParsed, type PackingBillRow,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
@@ -33,6 +33,45 @@ export default function PackingBillsPage() {
   const [rows, setRows] = useState<PackingRowParsed[]>([]);
   const [declaredTotal, setDeclaredTotal] = useState<number | null>(null);
   const [ocrWarnings, setOcrWarnings] = useState<string[]>([]);
+  // 已入库行的手动编辑 (用户 2026-06-24): 改 客户名/打包费/配单
+  const [editRow, setEditRow] = useState<PackingBillRow | null>(null);
+  const [eName, setEName] = useState('');
+  const [eFee, setEFee] = useState<number | null>(null);
+  const [eOrder, setEOrder] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
+
+  const openEdit = (r: PackingBillRow) => {
+    setEditRow(r);
+    setEName(r.customer_name ?? '');
+    setEFee(r.packing_fee ?? null);
+    setEOrder(r.matched_order_no ?? r.order_no ?? '');
+  };
+
+  const saveEdit = async () => {
+    if (!editRow) return;
+    setSavingEdit(true);
+    try {
+      const o = eOrder.trim();
+      const patch: Parameters<typeof updatePackingBill>[1] =
+        { customer_name: eName, packing_fee: eFee };
+      if (o) {
+        patch.matched_order_no = o;               // 手动指定订单号 → 人工配单
+      } else {
+        patch.matched_order_no = '';              // 清空配单
+        patch.rematch = true;                     // 按(改过的)客户名自动重配
+      }
+      await updatePackingBill(editRow.id, patch);
+      message.success(o ? '已保存并配单' : '已保存，按客户名重新匹配');
+      setEditRow(null);
+      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-all'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   const { data: saved = [] } = useQuery<PackingBillRow[]>({
     queryKey: ['packing-bills', billMonth],
@@ -166,6 +205,8 @@ export default function PackingBillsPage() {
     { title: '剔除', dataIndex: 'excluded', width: 110, render: (v: boolean, r: PackingBillRow) =>
       v ? <Tag color="red">{r.exclude_reason || '不计入'}</Tag> : <Tag color="green">计入</Tag> },
     { title: '备注', dataIndex: 'note', ellipsis: true },
+    { title: '操作', dataIndex: 'op', width: 76, fixed: 'right' as const, render: (_: any, r: PackingBillRow) => (
+      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>) },
   ];
 
   return (
@@ -234,6 +275,35 @@ export default function PackingBillsPage() {
         pagination={{ defaultPageSize: 50 }} scroll={{ x: 760 }} />
 
       <FeeVariancePanel url="/api/finance/packing-bills/variance" label="打包费" queryKey="packing-variance" />
+
+      <Modal
+        title={`编辑打包费 · ${editRow?.row_date ?? ''}`}
+        open={!!editRow}
+        onCancel={() => setEditRow(null)}
+        onOk={saveEdit}
+        confirmLoading={savingEdit}
+        okText="保存"
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>客户/收货人</div>
+            <Input value={eName} placeholder="客户姓名 (识别错可改)" onChange={e => setEName(e.target.value)} />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>打包费</div>
+            <InputNumber value={eFee ?? undefined} min={0} prefix="¥" style={{ width: '100%' }}
+              onChange={v => setEFee((v as number) ?? null)} />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>配单订单号</div>
+            <Input value={eOrder} placeholder="填订单号 = 人工指定配单" onChange={e => setEOrder(e.target.value)} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              留空保存 → 按(改过的)客户名自动重新匹配；填了订单号 → 直接人工配到该单。
+            </Typography.Text>
+          </div>
+        </Space>
+      </Modal>
     </Space>
   );
 }
