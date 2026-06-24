@@ -723,6 +723,28 @@ def scan_promotion_recharge_unmatched(db: Session) -> int:
     真配不上才报异常 (2026-06-17 用户: 支付宝企业号是系统自动拉的, 该能对上)。"""
     from decimal import Decimal as _D
     from datetime import timedelta as _td
+    # 退余额自动识别 (用户 2026-06-24 方案A): 之前因 io=收入 被误归"充值"的退回余额 → 改归"退余额"
+    # (冲减推广投入、不再报"充值缺流水"); 并尽量配上那条退回收入流水核销。既修历史也自愈未来误标。
+    _income_flows = db.query(AlipayFlow).filter(
+        AlipayFlow.amount > 0, AlipayFlow.transaction_time.isnot(None)).all()
+    _used_in = {n for (n,) in db.query(PromotionFlow.alipay_flow_no).filter(
+        PromotionFlow.alipay_flow_no.isnot(None), PromotionFlow.alipay_flow_no != "").all()}
+    for r in db.query(PromotionFlow).filter(
+        PromotionFlow.flow_type == "充值",
+        (PromotionFlow.remark.like("%退余额%")) | (PromotionFlow.remark.like("%退回余额%")),
+    ).all():
+        r.flow_type = "退余额"
+        if not (r.alipay_flow_no or "").strip() and r.transaction_date:
+            _amt = _D(str(r.amount or 0))
+            for pf in _income_flows:
+                if pf.transaction_no in _used_in:
+                    continue
+                if _D(str(pf.amount or 0)) == _amt and "退" in (pf.transaction_type or "") \
+                        and abs((pf.transaction_time.date() - r.transaction_date).days) <= 10:
+                    r.alipay_flow_no = pf.transaction_no
+                    _used_in.add(pf.transaction_no)
+                    break
+    db.flush()
     # 支付宝里推广类(或尚未归类)的支出流水 (amount<0) + 已被其它充值占用的流水号
     promo_flows = db.query(AlipayFlow).filter(
         (AlipayFlow.reconciliation_type == "promotion")

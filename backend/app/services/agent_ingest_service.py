@@ -258,7 +258,11 @@ def _import_wanxiangtai_csv(db: Session, raw: bytes) -> dict:
         db.add(PromotionFlow(
             sync_key=sync_key,
             transaction_date=tdate,
-            flow_type="充值" if io_type == "收入" else "支出",
+            # 退余额(推广没扣完关闭后冻结金额退回)≠充值: 自动识别归"退余额", 后续冲减推广投入 (用户 2026-06-24 方案A)
+            flow_type=(
+                "退余额" if any(("退余额" in p or "退回余额" in p) for p in remark_parts)
+                else ("充值" if io_type == "收入" else "支出")
+            ),
             amount=Decimal(cells[i_amt].replace(",", "") or "0"),
             remark=" ".join(p for p in remark_parts if p)[:500] or None,
         ))

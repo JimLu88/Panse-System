@@ -43,6 +43,9 @@ def compute(
     recharge_q = select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
         PromotionFlow.flow_type == "充值"
     )
+    refund_balance_q = select(func.coalesce(func.sum(PromotionFlow.amount), 0)).where(
+        PromotionFlow.flow_type == "退余额"   # 推广关闭退回的冻结余额, 冲减净充值 (用户 2026-06-24 方案A)
+    )
     from app.services.sales_analytics import settled_sale_clause
     order_revenue_q = select(
         func.coalesce(func.sum(Order.paid_amount), 0).label("rev"),
@@ -52,14 +55,17 @@ def compute(
     if period_start:
         spend_q = spend_q.where(PromotionFlow.transaction_date >= period_start)
         recharge_q = recharge_q.where(PromotionFlow.transaction_date >= period_start)
+        refund_balance_q = refund_balance_q.where(PromotionFlow.transaction_date >= period_start)
         order_revenue_q = order_revenue_q.where(Order.order_date >= period_start)
     if period_end:
         spend_q = spend_q.where(PromotionFlow.transaction_date <= period_end)
         recharge_q = recharge_q.where(PromotionFlow.transaction_date <= period_end)
+        refund_balance_q = refund_balance_q.where(PromotionFlow.transaction_date <= period_end)
         order_revenue_q = order_revenue_q.where(Order.order_date <= period_end)
 
     spend = Decimal(db.execute(spend_q).scalar() or 0)
     recharge = Decimal(db.execute(recharge_q).scalar() or 0)
+    recharge = recharge - Decimal(db.execute(refund_balance_q).scalar() or 0)  # 净充值 = 充值 − 退余额 (方案A)
     rev, cnt = db.execute(order_revenue_q).one()
     rev = Decimal(rev or 0)
     cnt = int(cnt or 0)
