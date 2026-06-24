@@ -149,3 +149,13 @@ def test_breakdown_cap_flags_final_equals_physical_cost():
     assert b["precap_total"] == Decimal("637.5")
     assert b["cap_mode"] == "推演封顶85"
     assert b["final"] == Decimal("467.50") == ofin.physical_cost(cap)
+
+
+def test_breakdown_negative_precap_zeroed():
+    """加法分量算出负数(物流实际远小于预估) → 归零, 标记 归零; final=0=physical_cost。"""
+    o = Order(order_no="Z1", actual_cost=None, paid_amount=Decimal("1000"),
+              theoretical_cost=Decimal("100"), actual_logistics=Decimal("0"), est_logistics=Decimal("500"))
+    b = ofin.physical_cost_breakdown(o)
+    assert b["precap_total"] == Decimal("-400")
+    assert b["cap_mode"] == "归零"
+    assert b["final"] == Decimal("0") == ofin.physical_cost(o)

@@ -151,6 +151,8 @@ def physical_cost_breakdown(o: Order) -> dict:
             cap_mode, cap_label = "推演封顶85", "推演成本>实付→实付×85%封顶"
     if cost < 0:
         cost = Decimal("0")
+        if cap_mode == "none":   # 加法分量算出负数(罕见, 物流/安装实际远小于预估)→ 归零, 标记便于导出按实值显示
+            cap_mode, cap_label = "归零", "成本分量计算为负→归零"
     # 片段封顶(定金/分期/差价: 实付 < 成本×50% → 不背整份成本)
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
         cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))

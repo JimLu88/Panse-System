@@ -1105,13 +1105,17 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
 
         for r in rows:
             ri = ws.max_row + 1
-            capped = r.get("cost_cap_mode", "none") != "none"
-            if capped:
-                src, col, fillc = "实付×85%(" + r.get("cost_cap_mode", "") + ")", ORANGE, fill_cap
-            elif r.get("cost_reconciled"):
-                src, col, fillc = "工厂账单实报", GREEN, fill_actual
-            else:
-                src, col, fillc = "定价表推演", BLUE, fill_est
+            cap = r.get("cost_cap_mode", "none")
+            if cap == "none":
+                src, col, fillc = (("工厂账单实报", GREEN, fill_actual) if r.get("cost_reconciled")
+                                   else ("定价表推演", BLUE, fill_est))
+                goods_cell = f"=G{ri}+H{ri}+I{ri}"            # 商品成本 = 工厂木作 + 定价估算 + 打包
+            elif cap.endswith("85"):
+                src, col, fillc = "实付×85%(" + cap + ")", ORANGE, fill_cap
+                goods_cell = f"=D{ri}*0.85"                   # 兜底/封顶 = 实付×85%
+            else:   # 归零 等
+                src, col, fillc = cap, GREY, fill_sum
+                goods_cell = float(r["cost_goods"])           # 归零等: 直接取实值
             ws.cell(ri, 1, r["order_no"]); ws.cell(ri, 2, r["product_name"]); ws.cell(ri, 3, r["order_date"])
             _money(C_PAID, ri, r["paid_amount"])
             _money(C_REFUND, ri, r["refund_amount"] or None, color=ORANGE)
@@ -1120,7 +1124,7 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
             _money(C_FWOOD, ri, r.get("cost_factory_wood"), color=GREY)
             _money(C_EST, ri, r.get("cost_estimate_part"), color=GREY)
             _money(C_PACK, ri, r.get("cost_packing"), color=GREY)
-            gc = ws.cell(ri, C_GOODS, f"=D{ri}*0.85" if capped else f"=G{ri}+H{ri}+I{ri}")
+            gc = ws.cell(ri, C_GOODS, goods_cell)
             gc.number_format, gc.alignment, gc.fill = MONEY, rgt, fillc
             gc.font = Font(color=col, bold=True, size=10)
             gc.comment = Comment(
