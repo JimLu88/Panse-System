@@ -172,14 +172,39 @@ def scan_missing_custom_price(db: Session) -> list[ScanFinding]:
 
 # -------- Scanner 6: 重复 alipay 流水 (account 内 transaction_no 已唯一约束，但跨账户可能重复) --------
 
+def _is_benign_cross_account_dup(flows) -> bool:
+    """跨账户同交易号是否为"良性"(内部流转/店铺过户分账, 非录入错误), flows=该交易号全部流水。
+
+    ① 内部转账: 金额一出一入(混正负), 或标 internal_transfer, 或对方是我方账户主人
+       (魏佳英/Klossy·Lee 等账户之间挪钱, 同一笔在两账户各记收/支一面);
+    ② 店铺过户分账/同单: 各账户共享同一订单号(老店铺收款 + 过户后新店铺分账, 或同单退款)。
+    实测 120 笔跨账户"重复" = 30 内部转账 + 90 同订单, 真录入重复 0 笔。
+    """
+    from app.services import internal_accounts
+    from app.services.smart_matching_service import _order_key
+    amts = [float(f.amount or 0) for f in flows]
+    if any(a > 0 for a in amts) and any(a < 0 for a in amts):
+        return True
+    if any((getattr(f, "reconciliation_type", None) == "internal_transfer") for f in flows):
+        return True
+    if any(internal_accounts.is_internal_counterparty(getattr(f, "counterparty", None)) for f in flows):
+        return True
+    okeys = {_order_key(getattr(f, "related_order_no", None)) for f in flows if getattr(f, "related_order_no", None)}
+    okeys.discard(None)
+    if len(okeys) == 1:   # 各账户同一订单 → 店铺过户分账/同单
+        return True
+    return False
+
+
 def scan_duplicate_alipay_cross_account(db: Session) -> list[ScanFinding]:
-    """同一 transaction_no 出现在「多个不同账户」→ 多半是数据录入错误。
+    """同一 transaction_no 出现在「多个不同账户」→ 可能是数据录入错误。
 
     注意: 同一账户内同一流水号出现多条是正常的 —— 一笔淘宝收款会产生
     『在线支付(收款) + 分账(手续费)』两条共用同一流水号的配对流水。
     因此这里必须按「不同账户数」判重 (count(distinct account) > 1),
     而不是按行数, 否则会把正常配对流水误报成重复。
     同账户内的真重复由 data_quality_service.scan_alipay_duplicate_flow 负责。
+    2026-06-24: 跨账户同号若是内部流转/店铺过户分账(_is_benign_cross_account_dup)→ 不报。
     """
     out: list[ScanFinding] = []
     from sqlalchemy import func
@@ -192,9 +217,14 @@ def scan_duplicate_alipay_cross_account(db: Session) -> list[ScanFinding]:
         .having(func.count(func.distinct(AlipayFlow.account)) > 1)
     )
     for tx_no, n_acct in db.execute(dup_q).all():
-        accounts = sorted({a for (a,) in db.execute(
-            select(AlipayFlow.account).where(AlipayFlow.transaction_no == tx_no)
-        ).all()})
+        flows = db.execute(
+            select(AlipayFlow.account, AlipayFlow.amount, AlipayFlow.reconciliation_type,
+                   AlipayFlow.counterparty, AlipayFlow.related_order_no)
+            .where(AlipayFlow.transaction_no == tx_no)
+        ).all()
+        if _is_benign_cross_account_dup(flows):
+            continue   # 内部流转/店铺过户分账 → 不报
+        accounts = sorted({f.account for f in flows})
         out.append(ScanFinding(
             source_table="alipay_flows",
             source_pk=tx_no,

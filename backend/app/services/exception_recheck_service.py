@@ -394,8 +394,27 @@ def _check_reconciliation_diff(db: Session, exc: DataException) -> Optional[str]
     return None
 
 
+def _check_duplicate_alipay_cross_account(db: Session, exc: DataException) -> Optional[str]:
+    """跨账户重复流水复核: 该交易号已不再跨账户, 或判定为良性(内部流转/店铺过户分账) → 销账。
+    (source_pk = 交易号; 2026-06-24 加, 配合 scanner 跳过内部流转。)"""
+    from app.models.finance import AlipayFlow
+    from app.services.scanner_service import _is_benign_cross_account_dup
+    flows = db.execute(
+        select(AlipayFlow.account, AlipayFlow.amount, AlipayFlow.reconciliation_type,
+               AlipayFlow.counterparty, AlipayFlow.related_order_no)
+        .where(AlipayFlow.transaction_no == exc.source_pk)
+    ).all()
+    accts = {f.account for f in flows}
+    if len(accts) <= 1:
+        return None   # 已不再跨账户
+    if _is_benign_cross_account_dup(flows):
+        return None   # 内部流转/店铺过户分账 = 非录入错误
+    return f"交易号 {exc.source_pk} 仍在 {len(accts)} 个账户出现且非内部流转"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
+    "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
     "alipay_balance_gap": _check_alipay_balance_gap,
     "bom_product_collision": _check_bom_product_collision,
     "import_missing": _check_import_missing,

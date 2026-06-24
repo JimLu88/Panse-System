@@ -140,6 +140,26 @@ def test_duplicate_alipay_flow_detected(db_session):
     assert set(r.findings[0].context["accounts"]) == {"A", "B"}
 
 
+def test_cross_account_internal_transfer_not_flagged(db_session):
+    """内部转账(一出一入)跨账户同交易号 → 良性, 不报 (用户 2026-06-24)。"""
+    db_session.add(AlipayFlow(account="佳宝号", transaction_no="TR", amount=Decimal("20000")))
+    db_session.add(AlipayFlow(account="个体户私账", transaction_no="TR", amount=Decimal("-20000")))
+    db_session.flush()
+    r = svc.run_scanner(db_session, "duplicate_alipay_cross_account", dry_run=True)
+    assert not any(f.source_pk == "TR" for f in r.findings)
+
+
+def test_cross_account_same_order_not_flagged(db_session):
+    """店铺过户分账: 同订单号跨账户同交易号(老店铺收款+新店铺分账) → 良性, 不报。"""
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TO", amount=Decimal("2320"),
+                              related_order_no="T200P3183055466322228259"))
+    db_session.add(AlipayFlow(account="个体户私账", transaction_no="TO", amount=Decimal("2334"),
+                              related_order_no="3183055466322228259"))
+    db_session.flush()
+    r = svc.run_scanner(db_session, "duplicate_alipay_cross_account", dry_run=True)
+    assert not any(f.source_pk == "TO" for f in r.findings)
+
+
 # -------- meta --------
 
 def test_run_all_executes_every_scanner(db_session):
