@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, Button, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Input, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, InboxOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
@@ -21,6 +21,8 @@ interface LogisticsBill {
   match_method: string | null;
   match_note: string | null;
   row_type: string;
+  order_customer_name: string | null;
+  order_customer_address: string | null;
 }
 
 interface ImportResult {
@@ -43,6 +45,49 @@ function ym(d: string | null): string {
   return d ? d.slice(0, 7) : '未知月';
 }
 
+// 逐行可编辑订单号 — 人工核对/纠正匹配。填=人工指定(manual); 空=取消匹配。
+function OrderNoCell({ row, onSaved }: { row: LogisticsBill; onSaved: () => void }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState(row.order_no ?? '');
+  const [saving, setSaving] = useState(false);
+  const m = row.match_method ? METHOD_LABEL[row.match_method] : null;
+  if (row.row_type === 'summary') return <Typography.Text type="secondary">-</Typography.Text>;
+  const save = async () => {
+    setSaving(true);
+    try {
+      await api.patch(`/api/finance/logistics-bills/${row.id}/match`,
+        { order_no: val.trim() || null });
+      message.success(val.trim() ? '已指定订单号' : '已取消匹配');
+      setEditing(false);
+      onSaved();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+  if (editing) {
+    return (
+      <Space.Compact style={{ width: '100%' }}>
+        <Input size="small" value={val} autoFocus placeholder="订单号(留空=取消匹配)"
+          onChange={e => setVal(e.target.value)} onPressEnter={save} style={{ width: 180 }} />
+        <Button size="small" type="primary" loading={saving} onClick={save}>存</Button>
+        <Button size="small" onClick={() => { setEditing(false); setVal(row.order_no ?? ''); }}>×</Button>
+      </Space.Compact>
+    );
+  }
+  return (
+    <Space size={4}>
+      {row.order_no
+        ? <Typography.Text copyable={{ text: row.order_no }} style={{ fontSize: 12 }}>{row.order_no}</Typography.Text>
+        : <Typography.Text type="secondary">未匹配</Typography.Text>}
+      {m && <Tag color={m.color} title={row.match_note ?? ''} style={{ marginInlineEnd: 0 }}>{m.text}</Tag>}
+      <Button size="small" type="link" style={{ padding: 0 }}
+        onClick={() => { setVal(row.order_no ?? ''); setEditing(true); }}>改</Button>
+    </Space>
+  );
+}
+
 // 客户端生成 CSV 下载 (带 BOM, Excel 中文不乱码)
 export function downloadCsv(filename: string, headers: string[], rows: (string | number)[][]) {
   const esc = (v: string | number) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -59,6 +104,7 @@ export default function LogisticsBillsPage() {
   const qc = useQueryClient();
   const [importing, setImporting] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [reviewFilter, setReviewFilter] = useState<'all' | 'todo' | 'done'>('all');
 
   const { data = [], isLoading } = useQuery<LogisticsBill[]>({
     queryKey: ['logistics-bills'],
@@ -125,6 +171,12 @@ export default function LogisticsBillsPage() {
   // 逐单行 (line) 与月结汇总行 (summary) 分开: 逐单进主表, 汇总挪表底
   const lineRows = useMemo(() => data.filter(r => r.row_type !== 'summary'), [data]);
   const summaryRows = useMemo(() => data.filter(r => r.row_type === 'summary'), [data]);
+  // 待核查 = 未匹配/多候选; 已匹配 = 有订单号 (含人工/自动, 供复核收货人是否对得上)
+  const displayRows = useMemo(() => {
+    if (reviewFilter === 'todo') return lineRows.filter(r => !r.order_no);
+    if (reviewFilter === 'done') return lineRows.filter(r => !!r.order_no);
+    return lineRows;
+  }, [lineRows, reviewFilter]);
 
   // 核对: 每个 (承运商, 月) 的逐单相加 vs 月结汇总行声明的总额是否相等
   const crossCheck = useMemo(() => {
@@ -157,21 +209,21 @@ export default function LogisticsBillsPage() {
     { title: '运单号', dataIndex: 'tracking_no', width: 150, ellipsis: true },
     { title: '收货人', dataIndex: 'recipient_name', width: 80, render: (v: string | null) => v || '-' },
     { title: '目的地', dataIndex: 'destination', width: 130, ellipsis: true, render: (v: string | null) => v || '-' },
-    { title: '订单号 / 匹配', dataIndex: 'order_no', width: 200,
+    { title: '订单号 / 匹配 (可改)', dataIndex: 'order_no', width: 250,
+      render: (_: string | null, row: LogisticsBill) =>
+        <OrderNoCell row={row} onSaved={() => qc.invalidateQueries({ queryKey: ['logistics-bills'] })} /> },
+    { title: '匹配到的订单客户 (核对)', dataIndex: 'order_customer_name', width: 200,
       render: (v: string | null, row: LogisticsBill) => {
-        const m = row.match_method ? METHOD_LABEL[row.match_method] : null;
-        if (v) {
-          return (
-            <Space size={4}>
-              <Typography.Text copyable={{ text: v }} style={{ fontSize: 12 }}>{v}</Typography.Text>
-              {m && <Tag color={m.color} style={{ marginInlineEnd: 0 }}>{m.text}</Tag>}
-            </Space>
-          );
-        }
-        if (m) {
-          return <Tag color={m.color} title={row.match_note ?? ''}>{m.text}</Tag>;
-        }
-        return <Typography.Text type="secondary">-</Typography.Text>;
+        if (row.row_type === 'summary' || !row.order_no) return <Typography.Text type="secondary">-</Typography.Text>;
+        if (!v) return <Tag color="warning">订单库无此单</Tag>;
+        return (
+          <div style={{ fontSize: 12, lineHeight: 1.3 }}>
+            <div>{v}</div>
+            <Typography.Text type="secondary" style={{ fontSize: 11 }} ellipsis title={row.order_customer_address ?? ''}>
+              {row.order_customer_address ?? ''}
+            </Typography.Text>
+          </div>
+        );
       } },
     { title: '重量(kg)', dataIndex: 'weight_kg', width: 80, align: 'right' as const,
       render: (v: number | string | null) => v != null ? Number(v).toFixed(3) : '-' },
@@ -191,7 +243,7 @@ export default function LogisticsBillsPage() {
       </Space>
 
       <Alert type="info" showIcon
-        message="德邦逐单账单导入后自动按『运单号 / 收货人+省市』配淘宝订单；配不到的显示「未能自动匹配」。月结汇总行挪到表底，并核对『月结总额 vs 各单相加』。已同步飞书。" />
+        message="德邦 / 壹米滴答逐单账单导入后自动按『运单号 / 收货人+省市』配淘宝订单。点订单号旁「改」可人工指定/纠正匹配（填=人工指定，空=取消）；右侧「匹配到的订单客户」用来核对收货人/目的地是否真对得上。配单表带『匹配订单号』列的，导入时直接采用。月结汇总行挪到表底核对总额。" />
 
       <Segmented
         value={viewMode}
@@ -211,6 +263,17 @@ export default function LogisticsBillsPage() {
           导出未匹配
         </Button>
         {lineRows.length > 0 && (
+          <Segmented
+            value={reviewFilter}
+            onChange={(v) => setReviewFilter(v as 'all' | 'todo' | 'done')}
+            options={[
+              { label: `全部 ${lineRows.length}`, value: 'all' },
+              { label: `待核查 ${lineRows.filter(r => !r.order_no).length}`, value: 'todo' },
+              { label: `已匹配 ${lineRows.filter(r => !!r.order_no).length}`, value: 'done' },
+            ]}
+          />
+        )}
+        {lineRows.length > 0 && (
           <Typography.Text type="secondary">
             逐单 {lineRows.length} 条 · 合计运费 <strong>¥{lineTotal.toLocaleString('zh', { minimumFractionDigits: 2 })}</strong>
             {unmatched > 0 && <span style={{ color: '#cf1322' }}> · 待人工 {unmatched} 单（导入时已自动配单）</span>}
@@ -223,10 +286,10 @@ export default function LogisticsBillsPage() {
         size="small"
         loading={isLoading}
         rowKey="id"
-        dataSource={lineRows}
+        dataSource={displayRows}
         columns={columns}
         pagination={{ defaultPageSize: 100, showSizeChanger: true }}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1200 }}
       />
 
       {/* 月结汇总 + 核对: 挪到表格最下方 */}

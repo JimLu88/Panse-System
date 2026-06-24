@@ -1228,6 +1228,9 @@ class LogisticsBillOut(BaseModel):
     match_method: Optional[str] = None
     match_note: Optional[str] = None
     row_type: str = "line"
+    # 匹配到的订单的客户名/收货地址 — 供人工核对"收货人/目的地"是否真的对得上(查匹配错误)
+    order_customer_name: Optional[str] = None
+    order_customer_address: Optional[str] = None
 
 
 class PromotionFlowOut(BaseModel):
@@ -1283,7 +1286,59 @@ def list_logistics_bills(
         from sqlalchemy import extract
         stmt = stmt.where(extract("year", LogisticsBill.bill_date) == year)
     stmt = stmt.order_by(LogisticsBill.bill_date.desc().nulls_last()).limit(limit)
-    return db.execute(stmt).scalars().all()
+    bills = db.execute(stmt).scalars().all()
+    return _enrich_logistics_bills(db, bills)
+
+
+def _enrich_logistics_bills(db: Session, bills: list) -> list[LogisticsBillOut]:
+    """给每条逐单行补上"匹配到的订单"的客户名/收货地址, 供前端核对收货人/目的地是否真对得上。"""
+    from app.models.order import Order
+    onos = {b.order_no for b in bills if b.order_no}
+    omap: dict[str, tuple] = {}
+    if onos:
+        for ono, nm, addr in db.execute(
+            select(Order.order_no, Order.customer_name, Order.customer_address)
+            .where(Order.order_no.in_(onos))
+        ).all():
+            omap[ono] = (nm, addr)
+    out: list[LogisticsBillOut] = []
+    for b in bills:
+        d = LogisticsBillOut.model_validate(b)
+        if b.order_no and b.order_no in omap:
+            d.order_customer_name, d.order_customer_address = omap[b.order_no]
+        out.append(d)
+    return out
+
+
+class LogisticsBillMatchIn(BaseModel):
+    order_no: Optional[str] = None   # 填订单号=人工指定匹配; 空=取消匹配
+
+
+@router.patch("/logistics-bills/{bill_id}/match", response_model=LogisticsBillOut)
+def set_logistics_bill_match(bill_id: int, payload: LogisticsBillMatchIn,
+                             db: Session = Depends(get_db)):
+    """人工核对: 改某条逐单行的订单号。填=manual(自动配单不再覆盖), 空=取消(none)。
+    改后回填该订单实际物流费 (与自动配单一致)。"""
+    b = db.get(LogisticsBill, bill_id)
+    if not b:
+        raise HTTPException(404, "账单行不存在")
+    ono = (payload.order_no or "").strip()
+    if ono:
+        b.order_no = ono
+        b.match_method = "manual"
+        b.match_note = None
+    else:
+        b.order_no = None
+        b.match_method = "none"
+        b.match_note = "人工取消匹配"
+    db.commit()
+    try:
+        from app.services import order_fee_actual_service
+        order_fee_actual_service.sync_fee_components(db)
+        db.commit()
+    except Exception:  # noqa: BLE001 — 回填失败不阻断改匹配
+        pass
+    return _enrich_logistics_bills(db, [b])[0]
 
 
 @router.post("/logistics-bills/match")

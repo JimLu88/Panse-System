@@ -217,6 +217,18 @@ def parse_logi_bill_filename(name: str):
     return year, month, total
 
 
+def _detect_carrier(name: str) -> str:
+    """按文件名识别承运商。李爱群账户付的快递走壹米滴答; 默认壹米滴答(月结快递)。"""
+    n = name or ""
+    if "德邦" in n:
+        return "德邦"
+    if "顺丰" in n:
+        return "顺丰"
+    if "京东" in n:
+        return "京东"
+    return "壹米滴答"
+
+
 def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
                           import_job_id: Optional[int] = None) -> BillImportReport:
     """物流账单 xlsx 统一导入, 按文件名自动识别承运商 (用户 2026-06-15):
@@ -247,65 +259,77 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
     existing = {k for (k,) in db.execute(
         select(LogisticsBill.sync_key).where(LogisticsBill.sync_key.isnot(None))).all()}
     seen: set = set()
+    carrier = _detect_carrier(source_name)
     c_track = col("运单号")
+    c_fee = col("运费合计", "实收运费", "运费", "费用", "金额")
+    c_date = col("业务日期", "寄件时间", "日期")
+    c_wt = col("计费重量", "重量")
+    c_to = col("收货人", "收件人姓名", "收件人")
+    c_dest = col("目的地", "目的站", "收件人省市区")
+    c_order = col("匹配订单号", "订单号", "关联订单号")
 
-    if "德邦" in (source_name or ""):
-        c_fee = col("实收运费", "运费")
-        c_date = col("业务日期", "寄件时间", "日期")
-        c_wt = col("计费重量")
-        c_to = col("收货人", "收件人姓名")
-        c_dest = col("目的地", "目的站", "收件人省市区")
-        if c_track is None or c_fee is None:
-            rep.errors.append(f"{source_name}: 德邦表缺『运单号』或『运费』列")
-            return rep
+    def _cell(r, i):
+        return r[i] if (i is not None and i < len(r)) else None
+
+    # 逐单模式: 有『运单号』+『运费』列 且 行内有运费 → 逐单(德邦/壹米滴答/顺丰通用, 不再只认德邦文件名)。
+    has_per_order = (
+        c_track is not None and c_fee is not None
+        and any(_decimal(_cell(r, c_fee)) is not None for r in body)
+    )
+
+    if has_per_order:
         for r in body:
-            track = import_clean.clean_no(r[c_track])
-            fee = _decimal(r[c_fee])
-            if not track or fee is None:
+            track = import_clean.clean_no(_cell(r, c_track))
+            fee = _decimal(_cell(r, c_fee))
+            to = str(_cell(r, c_to)).strip() if _cell(r, c_to) else ""
+            if fee is None or (not track and not to):   # 合计行/空行
                 rep.skipped_invalid += 1
                 continue
-            bdate = (_date(r[c_date]) if c_date is not None else None) or month_end
-            to = str(r[c_to]).strip() if (c_to is not None and r[c_to]) else ""
-            dest = str(r[c_dest]).strip() if (c_dest is not None and r[c_dest]) else ""
-            sk = f"logi|德邦|{bdate}|{track}|{fee}|{to}"
+            dest = str(_cell(r, c_dest)).strip() if _cell(r, c_dest) else ""
+            # 人工已填的订单号 → 直接采用并标 manual, 自动配单(match_logistics_bills)不再覆盖。
+            o_cell = _cell(r, c_order)
+            o_manual = (import_clean.clean_no(o_cell) or str(o_cell).strip()) if o_cell not in (None, "") else None
+            bdate = _date(_cell(r, c_date)) or month_end
+            sk = f"logi|{carrier}|{bdate}|{track or to}|{fee}|{to}"
             if sk in existing or sk in seen:
                 rep.skipped_duplicate += 1
                 continue
             seen.add(sk)
             db.add(LogisticsBill(
-                bill_date=bdate, carrier="德邦", tracking_no=track, order_no=None,
-                weight_kg=(_decimal(r[c_wt]) if c_wt is not None else None),
-                freight_amount=fee, remark=f"德邦 收货:{to} 目的:{dest}".strip(),
+                bill_date=bdate, carrier=carrier, tracking_no=track,
+                order_no=o_manual, match_method=("manual" if o_manual else None),
+                weight_kg=_decimal(_cell(r, c_wt)),
+                freight_amount=fee, remark=f"{carrier} 收货:{to} 目的:{dest}".strip(),
                 recipient_name=(to or None), destination=(dest or None), row_type="line",
                 import_job_id=import_job_id, sync_key=sk,
             ))
             rep.inserted += 1
-        # 德邦文件名若声明了月结总额 (如「德邦…账单 14540元」), 补一条汇总行 (row_type='summary'),
-        # 供前端核对"月结总额 vs 各逐单相加"。逐单合计只数 line 行, 汇总行不参与求和不双算。
+        # 文件名若声明了月结总额 (如「…账单 14540元」), 补一条汇总行供"月结总额 vs 逐单相加"互核。
         if fname_total is not None and month_end is not None:
-            sk_sum = f"logi|德邦|{year}-{month or 0:02d}|summary"
+            sk_sum = f"logi|{carrier}|{year}-{month or 0:02d}|summary"
             if sk_sum not in existing and sk_sum not in seen:
                 seen.add(sk_sum)
                 db.add(LogisticsBill(
-                    bill_date=month_end, carrier="德邦", tracking_no=None, order_no=None,
+                    bill_date=month_end, carrier=carrier, tracking_no=None, order_no=None,
                     weight_kg=None, freight_amount=fname_total, row_type="summary",
-                    remark=f"德邦 {year}年{month}月月结账单总额(文件名声明), 与逐单相加互核",
+                    remark=f"{carrier} {year}年{month}月月结账单总额(文件名声明), 与逐单相加互核",
                     import_job_id=import_job_id, sync_key=sk_sum,
                 ))
                 rep.inserted += 1
     else:
+        # 无逐单明细(纯月结) → 仅一条汇总行, 总额取自文件名。
         if fname_total is None:
-            rep.errors.append(f"{source_name}: 壹米滴答月结需在文件名给总额(如「…账单 14540元」)")
+            rep.errors.append(f"{source_name}: 无逐单明细且文件名未给月结总额(如「…账单 14540元」)")
             return rep
-        cnt = sum(1 for r in body if c_track is not None and r[c_track])
-        sk = f"logi|壹米滴答|{year}-{month or 0:02d}|summary"
+        cnt = sum(1 for r in body if _cell(r, c_track))
+        sk = f"logi|{carrier}|{year}-{month or 0:02d}|summary"
         if sk in existing:
             rep.skipped_duplicate += 1
         else:
             db.add(LogisticsBill(
-                bill_date=month_end, carrier="壹米滴答", tracking_no=None, order_no=None,
+                bill_date=month_end, carrier=carrier, tracking_no=None, order_no=None,
                 weight_kg=None, freight_amount=fname_total, row_type="summary",
-                remark=f"壹米滴答 {year}年{month}月月结汇总, 共{cnt}单(逐单运费未单独提供, 总额取自账单)",
+                remark=f"{carrier} {year}年{month}月月结汇总, 共{cnt}单(逐单运费未单独提供, 总额取自账单)",
                 import_job_id=import_job_id, sync_key=sk,
             ))
             rep.inserted += 1

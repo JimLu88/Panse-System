@@ -80,6 +80,32 @@ def test_summary_row_not_matched(db_session):
     assert s.order_no is None
 
 
+def test_import_yimidida_per_order_and_manual_orderno(db_session):
+    """壹米滴答账单(非德邦文件名)有逐单运单号+运费 → 逐单导入(carrier=壹米滴答);
+    『匹配订单号』列填了的行 → order_no + manual(自动配单不覆盖); 文件名总额 → 一条 summary。"""
+    from datetime import datetime
+    from openpyxl import Workbook
+    from app.services import bill_import_service as bi
+    wb = Workbook()
+    ws = wb.active
+    ws.append(["运单号", "寄件时间", "计费重量", "收件人姓名", "收件人省市区", "运费", "匹配订单号"])
+    ws.append(["700897665404", datetime(2026, 1, 2), 267, "施施", "上海-上海市-浦东新区-三林镇", 269, "5052881700882748539"])
+    ws.append(["700897667062", datetime(2026, 1, 3), 275, "刘岳", "黑龙江省-哈尔滨市-南岗区-王岗镇", 515, ""])
+    rep = bi.import_logistics_xlsx(db_session, wb, source_name="李爱群 2026年1月账单 14540元.xlsx")
+    assert rep.inserted == 3   # 2 逐单 + 1 汇总
+    lines = db_session.query(LogisticsBill).filter_by(row_type="line").all()
+    assert len(lines) == 2
+    assert all(b.carrier == "壹米滴答" for b in lines)
+    b1 = next(b for b in lines if b.recipient_name == "施施")
+    assert b1.order_no == "5052881700882748539"     # 人工填的订单号被采用
+    assert b1.match_method == "manual"
+    assert b1.freight_amount == Decimal("269")
+    b2 = next(b for b in lines if b.recipient_name == "刘岳")
+    assert b2.order_no is None                       # 没填 + 库里无此单 → 自动配单标 none
+    summ = db_session.query(LogisticsBill).filter_by(row_type="summary").all()
+    assert len(summ) == 1 and summ[0].freight_amount == Decimal("14540")
+
+
 def test_manual_match_not_overwritten(db_session):
     """人工指定过的不重算 (only_unmatched 跳过 manual)."""
     _order(db_session, "O6", "孙八", "山东省青岛市", track="DB6")
