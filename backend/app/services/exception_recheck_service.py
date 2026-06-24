@@ -557,12 +557,13 @@ def _check_cost_ratio_outlier(db: Session, exc: DataException) -> Optional[str]:
     """成本率离群: 修好 = 该单成本率已回正常带(或补了工厂实际成本)→ _cost_ratio_reason 返回 None。"""
     from app.models.order import Order
     from app.services.data_quality_service import _cost_ratio_reason
+    from app.services.order_financials import load_coefficients
     o = None
     if exc.source_pk and str(exc.source_pk).isdigit():
         o = db.get(Order, int(exc.source_pk))
     if o is None:
         return None
-    return _cost_ratio_reason(o)
+    return _cost_ratio_reason(o, load_coefficients(db))
 
 
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {

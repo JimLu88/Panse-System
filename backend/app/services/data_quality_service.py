@@ -1192,46 +1192,55 @@ def scan_factory_bill_on_dead_order(db: Session) -> int:
     return count
 
 
-def _cost_ratio_reason(o) -> Optional[str]:
-    """成本率审查 (用户 2026-06-24): 成本÷实付 <60% 或 >90% → 待人工逐单核;
-    差价/小额单(备注含差价, 实付≥200, 按85%估算)也单列待核。返回原因 (无 → None)。
-    口径: 已成交非补单非全退; 归0单(官方服务/小额差价)不审; >150% 留 cost_exceeds_paid 管。"""
+def _cost_ratio_reason(o, coef) -> Optional[str]:
+    """成本率审查 (用户 2026-06-24): 会计总成本(物理 + 平台扣点 + 税 + 运费/安装/售后) ÷ 实付
+    <60% 或 >90% → 待人工逐单核。返回原因 (无 → None)。
+    排除: 样块/样品; 补差价/差价/小额追加片段(实付低、成本天然小, 是补差价不是异常); >150% 留 cost_exceeds_paid。"""
     from decimal import Decimal
     if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
-        return None
-    # 样块/样品本就低成本(物理成本约¥13、售¥16-44), 成本率天然偏低, 不算异常 (用户 2026-06-24)
-    _t = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
-    if any(k in _t for k in ("样块", "样品", "小样")):
         return None
     paid = Decimal(str(o.paid_amount or 0))
     if paid <= 0:
         return None
     if o.refund_amount and Decimal(str(o.refund_amount)) >= paid * Decimal("0.99"):
         return None   # 全额退款单不审
+    # 样块/样品本就低成本(物理成本约¥13、售¥16-44), 成本率天然偏低, 不算异常
+    _t = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+    if any(k in _t for k in ("样块", "样品", "小样")):
+        return None
+    # 补差价/差价/小额追加片段: 实付低、成本天然小(插座/隔板/尺寸差价等), 是补差价不是异常 (用户 2026-06-24)
+    _memo = " ".join(str(getattr(o, f, None) or "") for f in ("seller_memo", "remark", "buyer_message"))
+    _all = _t + " " + _memo
+    if any(k in _all for k in ("差价", "补差价")):
+        return None
+    if ("追加" in _memo or "补拍" in _memo) and paid < Decimal("1500"):
+        return None
     if o.actual_cost is None and o.theoretical_cost is None:
         return None   # 完全无成本依据 → 归"缺成本"异常管, 不在成本率审查
-    # 成本基准 = 全口径物理成本 (用户 2026-06-24 修): 工厂账单 actual_cost 只含木作, 不能直接当成本,
-    # 否则成本率虚低(~50%)误报。physical_cost 已补回非木作(打包/物流/安装, 实际优先否则预估)。
-    from app.services.order_financials import physical_cost
-    cost = physical_cost(o)
+    # 成本基准 = 会计总成本 (用户 2026-06-24): 物理成本(已补非木作+打包/物流/安装) + 平台扣点 + 税。
+    # 不能用 actual_cost(只工厂木作)裸值, 也不止物理成本 —— 要算上税和平台扣点才是真毛利, 与月度报表口径对齐。
+    from app.services.order_financials import accounting_cost
+    cost = accounting_cost(o, coef)
     if cost <= 0:
-        return None   # 归0单(官方服务/小额差价)不在成本率审查
+        return None
     ratio = cost / paid
     if ratio < Decimal("0.6"):
-        return f"物理成本¥{cost:.0f}仅占实付¥{paid:.0f}的{ratio:.0%}(毛利偏高, 疑成本估低/漏配件)"
+        return f"会计成本¥{cost:.0f}仅占实付¥{paid:.0f}的{ratio:.0%}(毛利偏高, 疑成本估低/漏配件)"
     if Decimal("0.9") < ratio <= Decimal("1.5"):
-        return f"物理成本¥{cost:.0f}占实付¥{paid:.0f}的{ratio:.0%}(毛利偏低或亏, 疑成本估高)"
+        return f"会计成本¥{cost:.0f}占实付¥{paid:.0f}的{ratio:.0%}(毛利偏低或亏, 疑成本估高/漏收入)"
     return None
 
 
 def scan_cost_ratio_outlier(db: Session) -> int:
     """成本率离群单挂异常, 供逐单核对 (用户 2026-06-24)。info 级, 录入实际成本后自动销账。"""
+    from app.services.order_financials import load_coefficients
+    coef = load_coefficients(db)
     count = 0
     for o in db.query(Order).filter(
         Order.status.in_(_COST_PAID_SALE_STATUS),
         Order.is_refill == False,  # noqa: E712
     ).all():
-        reason = _cost_ratio_reason(o)
+        reason = _cost_ratio_reason(o, coef)
         if reason is None:
             continue
         _record(
