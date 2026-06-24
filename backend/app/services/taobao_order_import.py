@@ -429,7 +429,7 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "amount": _to_decimal(g3(row, "买家应付货款", "商品价格")),
             })
     wb.close()
-    return orders
+    return orders, ship
 
 
 # ── 解析: 销售明细 CSV / 单 Sheet xlsx ─────────────────────────────────────────
@@ -846,8 +846,9 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     fmt = force_format or detect_format(filename, raw)
     rep.detected_format = fmt
 
+    ship_info: dict = {}
     if fmt == "qianniu_multi":
-        orders = _parse_qianniu_multi(raw, rep)
+        orders, ship_info = _parse_qianniu_multi(raw, rep)
     elif fmt == "sales_detail":
         orders = _parse_sales_detail(filename, raw, rep)
     elif fmt == "order_master":
@@ -875,6 +876,29 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
     _commit_orders(db, orders, platform, rep)
     if apply_refill_flags(db):   # 用补单对账回标 is_refill (导入后立即匹配, 优先级最高)
         db.commit()
+
+    # 发货报表收货人姓名兜底回填 (用户 2026-06-24): 销售明细没覆盖、但发货报表里有姓名的【已存在】
+    # 订单, 把空的 客户名/电话/地址补上。每天解密发货报表都经此回填; 只更新已存在订单、只补空字段, 不新建。
+    if ship_info:
+        from app.models.order import Order as _OrderM
+        nm_filled = 0
+        for _sno, _info in ship_info.items():
+            _nm, _ph, _ad = _clean(_info.get("name")), _clean(_info.get("phone")), _clean(_info.get("addr"))
+            if not (_nm or _ph or _ad):
+                continue
+            _o = db.execute(select(_OrderM).where(_OrderM.order_no == _sno)).scalar_one_or_none()
+            if _o is None:
+                continue
+            if _nm and not (_o.customer_name or "").strip():
+                _o.customer_name = _nm
+                nm_filled += 1
+            if _ph and not (_o.customer_phone or "").strip():
+                _o.customer_phone = _ph
+            if _ad and not (_o.customer_address or "").strip():
+                _o.customer_address = _ad
+        if nm_filled:
+            db.commit()
+            rep.warnings.append(f"发货报表回填客户姓名 {nm_filled} 单")
 
     # 理论成本自动反推 (用户拍板 2026-06-12: 订单导入进来就应自动推算, 不再"未反推")。
     # only_missing=True 只补未算/为0的 (已算的不动); 失败不阻断导入。
