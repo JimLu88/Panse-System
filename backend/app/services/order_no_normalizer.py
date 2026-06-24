@@ -34,6 +34,15 @@ def _rule_raw_19(related: str, provided: Optional[str]) -> Optional[str]:
     return related if _RE_19.match(related) else None
 
 
+def _rule_19_underscore(related: str, provided: Optional[str]) -> Optional[str]:
+    """淘宝『订单号_子订单号』(企业号订单级结算行常见, 如 4502117053076082343_386256494716764259):
+    取下划线前段, 为 19 位纯数字即采用 (用户 2026-06-24 确认: 前段就是平台订单号)。"""
+    if "_" not in related:
+        return None
+    head = related.split("_", 1)[0].strip()
+    return head if _RE_19.match(head) else None
+
+
 def _rule_t200p(related: str, provided: Optional[str]) -> Optional[str]:
     """企业号: 'T200P{中段} {尾段}' → 去前缀 T200P 与空格, 拼成纯数字平台订单号。
     兼容已去空格的输入 (导入时关联订单号会先去全部空白)。"""
@@ -47,6 +56,7 @@ def _rule_t200p(related: str, provided: Optional[str]) -> Optional[str]:
 _RULES: list[tuple[str, RuleFn]] = [
     ("平台订单号列直给", _rule_provided),
     ("本身即19位", _rule_raw_19),
+    ("订单号_子订单号取前19位", _rule_19_underscore),
     ("企业号T200P", _rule_t200p),
 ]
 
@@ -83,7 +93,7 @@ _NON_ORDER_COUNTERPARTY_KW = (
 )
 _NON_ORDER_REMARK_KW = (
     "亲情卡", "万相台", "扫码充值", "充值", "收钱码", "提现", "缴税", "缴费",
-    "散单运费", "运费", "代付", "商户单号", "理财", "余额宝",
+    "散单运费", "运费", "代付", "商户单号", "理财", "余额宝", "过户",
 )
 
 
