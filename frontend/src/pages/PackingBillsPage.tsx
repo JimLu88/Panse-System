@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Space, Statistic, Table, Tag,
+  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Select, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
@@ -8,7 +8,8 @@ import dayjs from 'dayjs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   commitPackingBill, listPackingBills, packingSummary, parsePackingBill, updatePackingBill,
-  type PackingRowParsed, type PackingBillRow,
+  packingMatchCandidates,
+  type PackingRowParsed, type PackingBillRow, type PackingCandidate,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
 import FeeVariancePanel from '../components/FeeVariancePanel';
@@ -40,12 +41,22 @@ export default function PackingBillsPage() {
   const [eFee, setEFee] = useState<number | null>(null);
   const [eOrder, setEOrder] = useState('');
   const [savingEdit, setSavingEdit] = useState(false);
+  const [cands, setCands] = useState<PackingCandidate[]>([]);
+  const [candLoading, setCandLoading] = useState(false);
 
+  const loadCands = async (id: number, nameOverride?: string) => {
+    setCandLoading(true);
+    try { setCands(await packingMatchCandidates(id, nameOverride, 5)); }
+    catch { setCands([]); }
+    finally { setCandLoading(false); }
+  };
   const openEdit = (r: PackingBillRow) => {
     setEditRow(r);
     setEName(r.customer_name ?? '');
     setEFee(r.packing_fee ?? null);
     setEOrder(r.matched_order_no ?? r.order_no ?? '');
+    setCands([]);
+    loadCands(r.id);   // 进来就按客户名列候选订单(下拉自选)
   };
 
   const saveEdit = async () => {
@@ -53,16 +64,11 @@ export default function PackingBillsPage() {
     setSavingEdit(true);
     try {
       const o = eOrder.trim();
+      // 填了订单号=人工配到该单; 留空=清空配单。不再自动按名乱配(用户反馈会配错/配到多单)。
       const patch: Parameters<typeof updatePackingBill>[1] =
-        { customer_name: eName, packing_fee: eFee };
-      if (o) {
-        patch.matched_order_no = o;               // 手动指定订单号 → 人工配单
-      } else {
-        patch.matched_order_no = '';              // 清空配单
-        patch.rematch = true;                     // 按(改过的)客户名自动重配
-      }
+        { customer_name: eName, packing_fee: eFee, matched_order_no: o };
       await updatePackingBill(editRow.id, patch);
-      message.success(o ? '已保存并配单' : '已保存，按客户名重新匹配');
+      message.success(o ? '已保存并配单' : '已保存');
       setEditRow(null);
       qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
@@ -74,30 +80,6 @@ export default function PackingBillsPage() {
     }
   };
 
-  // 用(改过的)客户名重新匹配订单 (用户 2026-06-24): 先存新名+清配单+按名重配, 即时回填结果
-  const [rematching, setRematching] = useState(false);
-  const rematchByName = async () => {
-    if (!editRow) return;
-    setRematching(true);
-    try {
-      const u = await updatePackingBill(editRow.id, { customer_name: eName, matched_order_no: '', rematch: true });
-      if (u.matched_order_no) {
-        setEOrder(u.matched_order_no);
-        message.success(`已匹配到订单 ${u.matched_order_no}（${MATCH_LABEL[u.match_method ?? '']?.text ?? u.match_method ?? ''}）`);
-      } else {
-        setEOrder('');
-        message.warning(u.match_note || '仍未匹配到：订单库里没有这个客户名，或主订单还没导入');
-      }
-      setEditRow({ ...editRow, ...u });
-      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
-      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
-      qc.invalidateQueries({ queryKey: ['packing-all'] });
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail ?? '重新匹配失败');
-    } finally {
-      setRematching(false);
-    }
-  };
 
   const { data: saved = [] } = useQuery<PackingBillRow[]>({
     queryKey: ['packing-bills', billMonth],
@@ -349,12 +331,25 @@ export default function PackingBillsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4, color: '#666' }}>配单订单号</div>
+            <Input value={eOrder} placeholder="手填订单号, 或从下方候选里选" onChange={e => setEOrder(e.target.value)} style={{ marginBottom: 8 }} />
+            <div style={{ marginBottom: 4, color: '#666' }}>候选订单（按客户名匹配度高→低）</div>
             <Space.Compact style={{ width: '100%' }}>
-              <Input value={eOrder} placeholder="填订单号 = 人工指定配单" onChange={e => setEOrder(e.target.value)} />
-              <Button icon={<ReloadOutlined />} loading={rematching} onClick={rematchByName}>用客户名重新匹配</Button>
+              <Select
+                style={{ flex: 1 }}
+                loading={candLoading}
+                value={cands.some(c => c.order_no === eOrder) ? eOrder : undefined}
+                placeholder={candLoading ? '加载候选中…' : (cands.length ? '选一个候选订单填入' : '暂无候选（改对客户名后点右侧刷新）')}
+                onChange={(v) => setEOrder(v)}
+                options={cands.map(c => ({
+                  value: c.order_no,
+                  label: `${Math.round(c.score * 100)}% · ${c.customer_name} · ${c.order_no}${c.product_name ? ' · ' + c.product_name : ''}`,
+                }))}
+              />
+              <Button icon={<ReloadOutlined />} loading={candLoading}
+                onClick={() => editRow && loadCands(editRow.id, eName)}>按客户名找候选</Button>
             </Space.Compact>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              改对客户名后点「用客户名重新匹配」即按新名字配单；或直接填订单号人工指定。留空保存也会按客户名重配。
+              候选按客户名相似度排序取前 5；选中即填入上面订单号，保存后人工配到该单。改了客户名点「按客户名找候选」刷新候选。
             </Typography.Text>
           </div>
         </Space>

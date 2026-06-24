@@ -272,3 +272,14 @@ export const updatePackingBill = (
     rematch?: boolean;           // 改完客户名后按名自动重配
   },
 ) => api.patch<PackingBillRow>(`/api/finance/packing-bills/${id}`, patch).then((r) => r.data);
+export interface PackingCandidate {
+  order_no: string;
+  customer_name: string;
+  product_name?: string | null;
+  paid_amount?: number | null;
+  order_date?: string | null;
+  score: number;   // 0~1 匹配度
+}
+export const packingMatchCandidates = (id: number, name?: string, limit = 5) =>
+  api.get<PackingCandidate[]>(`/api/finance/packing-bills/${id}/match-candidates`, { params: { limit, name } })
+    .then((r) => r.data);

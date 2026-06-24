@@ -258,6 +258,48 @@ def update_row(
     return b
 
 
+def match_candidates(db: Session, bill_id: int, limit: int = 5,
+                     name_override: Optional[str] = None) -> list[dict]:
+    """按客户名相似度给一行打包费账单列候选订单(供人工下拉选), 按匹配度高→低排序取前 N。
+    name_override: 传入则用它(而非已存客户名)算相似度 —— 让"改了名字还没保存"也能即时看候选。
+    (用户 2026-06-24: 自动配会配错/配到多单, 改成下拉自选, 按相似百分比排序)"""
+    import difflib
+    b = db.get(PackingBill, bill_id)
+    if b is None:
+        return []
+    name = ((name_override if name_override is not None else b.customer_name) or "").strip()
+    if not name:
+        return []
+    rows = db.execute(
+        select(Order.order_no, Order.customer_name, Order.product_name, Order.paid_amount, Order.order_date)
+        .where(Order.status.in_(SETTLED_SALE_STATUSES))
+    ).all()
+    scored = []
+    for o in rows:
+        cn = (o.customer_name or "").strip()
+        if not o.order_no or not cn:
+            continue
+        if cn == name:
+            score = 1.0
+        elif name in cn or cn in name:
+            score = 0.9
+        else:
+            score = difflib.SequenceMatcher(None, name, cn).ratio()
+        scored.append((score, o.order_no, cn, o.product_name, o.paid_amount, o.order_date))
+    scored.sort(key=lambda x: (-x[0], str(x[5] or ""), x[1]))
+    out = []
+    for score, ono, cn, prod, paid, odate in scored[:limit]:
+        out.append({
+            "order_no": ono,
+            "customer_name": cn,
+            "product_name": prod,
+            "paid_amount": float(paid) if paid is not None else None,
+            "order_date": str(odate) if odate else None,
+            "score": round(float(score), 3),
+        })
+    return out
+
+
 def rematch_packing_bills(db: Session, *, loose: bool = True) -> dict:
     """对未配单(且非剔除/非人工)的打包费行重跑配单。loose=True 多一档:
     客户名(≥2字)出现在订单收货地址里 + 备注省份也对上 → 唯一才配

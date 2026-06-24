@@ -1563,7 +1563,21 @@ def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = D
     b = packing_bill_service.update_row(db, bill_id, rematch=rematch, **fields)
     if b is None:
         raise HTTPException(404, "打包费账单行不存在")
+    db.commit()          # get_db 不自动提交, 必须显式 commit, 否则手动编辑不落库 (修 2026-06-24)
+    db.refresh(b)
     return b
+
+
+@router.get("/packing-bills/{bill_id}/match-candidates")
+def packing_bill_match_candidates(
+    bill_id: int,
+    limit: int = Query(5, le=20),
+    name: Optional[str] = None,   # 传入则按这个(改过的)客户名算相似度
+    db: Session = Depends(get_db),
+):
+    """按客户名相似度列候选订单(供下拉自选), 匹配度高→低, 默认前 5 (用户 2026-06-24)。"""
+    from app.services import packing_bill_service
+    return packing_bill_service.match_candidates(db, bill_id, limit=limit, name_override=name)
 
 
 @router.get("/promotion-flows", response_model=list[PromotionFlowOut])
