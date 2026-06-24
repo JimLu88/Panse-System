@@ -106,6 +106,30 @@ def test_import_yimidida_per_order_and_manual_orderno(db_session):
     assert len(summ) == 1 and summ[0].freight_amount == Decimal("14540")
 
 
+def test_reimport_logistics_no_duplicate(db_session):
+    """重导同一份壹米滴答账单 → 逐单+汇总都不重复(归一化业务键去重, 不受 sync_key 事件覆盖/14540 vs 14540.00 影响)。"""
+    from datetime import datetime
+    from openpyxl import Workbook
+    from app.services import bill_import_service as bi
+
+    def mk():
+        wb = Workbook(); ws = wb.active
+        ws.append(["运单号", "寄件时间", "收件人姓名", "收件人省市区", "运费"])
+        ws.append(["700897665404", datetime(2026, 1, 2), "施施", "上海-上海市-浦东新区", 269])
+        ws.append(["700897667062", datetime(2026, 1, 3), "刘岳", "黑龙江省-哈尔滨市", 515])
+        return wb
+
+    bi.import_logistics_xlsx(db_session, mk(), source_name="李爱群 2026年1月账单 784元.xlsx")
+    n_line = db_session.query(LogisticsBill).filter_by(row_type="line").count()
+    n_sum = db_session.query(LogisticsBill).filter_by(row_type="summary").count()
+    assert (n_line, n_sum) == (2, 1)
+    rep2 = bi.import_logistics_xlsx(db_session, mk(), source_name="李爱群 2026年1月账单 784元.xlsx")
+    assert rep2.inserted == 0
+    assert rep2.skipped_duplicate == 3   # 2 逐单 + 1 汇总 全判重
+    assert db_session.query(LogisticsBill).filter_by(row_type="line").count() == 2
+    assert db_session.query(LogisticsBill).filter_by(row_type="summary").count() == 1
+
+
 def test_manual_match_not_overwritten(db_session):
     """人工指定过的不重算 (only_unmatched 跳过 manual)."""
     _order(db_session, "O6", "孙八", "山东省青岛市", track="DB6")

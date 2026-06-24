@@ -256,9 +256,23 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
 
     year, month, fname_total = parse_logi_bill_filename(source_name)
     month_end = date(year, month, calendar.monthrange(year, month)[1]) if month else None
-    existing = {k for (k,) in db.execute(
-        select(LogisticsBill.sync_key).where(LogisticsBill.sync_key.isnot(None))).all()}
-    seen: set = set()
+    # 去重用归一化业务键 (不依赖 sync_key —— 它被 before_insert 事件覆盖成 log::… 格式, 且 14540 vs
+    # 14540.00 表示不同会漏判): 逐单=(承运商,日期,运单号,收件人,运费); 汇总=(承运商,月末)。每承运商每月仅一条 summary。
+    def _qf(v):
+        d = _decimal(v)
+        return d.quantize(Decimal("0.01")) if d is not None else None
+    ex_line: set = set()
+    ex_summary: set = set()
+    for c_, d_, t_, rcp_, f_, rt_ in db.execute(
+        select(LogisticsBill.carrier, LogisticsBill.bill_date, LogisticsBill.tracking_no,
+               LogisticsBill.recipient_name, LogisticsBill.freight_amount, LogisticsBill.row_type)
+    ).all():
+        if rt_ == "summary":
+            ex_summary.add((c_, d_))
+        else:
+            ex_line.add((c_, d_, (t_ or "").strip(), (rcp_ or "").strip(), _qf(f_)))
+    seen_line: set = set()
+    seen_summary: set = set()
     carrier = _detect_carrier(source_name)
     c_track = col("运单号")
     c_fee = col("运费合计", "实收运费", "运费", "费用", "金额")
@@ -290,47 +304,49 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
             o_cell = _cell(r, c_order)
             o_manual = (import_clean.clean_no(o_cell) or str(o_cell).strip()) if o_cell not in (None, "") else None
             bdate = _date(_cell(r, c_date)) or month_end
-            sk = f"logi|{carrier}|{bdate}|{track or to}|{fee}|{to}"
-            if sk in existing or sk in seen:
+            key = (carrier, bdate, (track or "").strip(), to, _qf(fee))
+            if key in ex_line or key in seen_line:
                 rep.skipped_duplicate += 1
                 continue
-            seen.add(sk)
+            seen_line.add(key)
             db.add(LogisticsBill(
                 bill_date=bdate, carrier=carrier, tracking_no=track,
                 order_no=o_manual, match_method=("manual" if o_manual else None),
                 weight_kg=_decimal(_cell(r, c_wt)),
                 freight_amount=fee, remark=f"{carrier} 收货:{to} 目的:{dest}".strip(),
                 recipient_name=(to or None), destination=(dest or None), row_type="line",
-                import_job_id=import_job_id, sync_key=sk,
+                import_job_id=import_job_id,
             ))
             rep.inserted += 1
         # 文件名若声明了月结总额 (如「…账单 14540元」), 补一条汇总行供"月结总额 vs 逐单相加"互核。
         if fname_total is not None and month_end is not None:
-            sk_sum = f"logi|{carrier}|{year}-{month or 0:02d}|summary"
-            if sk_sum not in existing and sk_sum not in seen:
-                seen.add(sk_sum)
+            skey = (carrier, month_end)
+            if skey not in ex_summary and skey not in seen_summary:
+                seen_summary.add(skey)
                 db.add(LogisticsBill(
                     bill_date=month_end, carrier=carrier, tracking_no=None, order_no=None,
                     weight_kg=None, freight_amount=fname_total, row_type="summary",
                     remark=f"{carrier} {year}年{month}月月结账单总额(文件名声明), 与逐单相加互核",
-                    import_job_id=import_job_id, sync_key=sk_sum,
+                    import_job_id=import_job_id,
                 ))
                 rep.inserted += 1
+            else:
+                rep.skipped_duplicate += 1
     else:
         # 无逐单明细(纯月结) → 仅一条汇总行, 总额取自文件名。
         if fname_total is None:
             rep.errors.append(f"{source_name}: 无逐单明细且文件名未给月结总额(如「…账单 14540元」)")
             return rep
         cnt = sum(1 for r in body if _cell(r, c_track))
-        sk = f"logi|{carrier}|{year}-{month or 0:02d}|summary"
-        if sk in existing:
+        skey = (carrier, month_end)
+        if skey in ex_summary or skey in seen_summary:
             rep.skipped_duplicate += 1
         else:
             db.add(LogisticsBill(
                 bill_date=month_end, carrier=carrier, tracking_no=None, order_no=None,
                 weight_kg=None, freight_amount=fname_total, row_type="summary",
                 remark=f"{carrier} {year}年{month}月月结汇总, 共{cnt}单(逐单运费未单独提供, 总额取自账单)",
-                import_job_id=import_job_id, sync_key=sk,
+                import_job_id=import_job_id,
             ))
             rep.inserted += 1
     db.flush()
