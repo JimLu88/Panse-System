@@ -759,12 +759,21 @@ def run_logistics_fee(
     """
     has_bills = db.execute(select(func.count(LogisticsBill.id))).scalar_one() > 0
     if has_bills:
-        lb_stmt = select(LogisticsBill.bill_date, LogisticsBill.freight_amount)
+        # 应付 = 逐单行(line)相加; 月结汇总行(summary)是"文件名声明总额"仅供互核, 不参与求和
+        # (否则 line+summary 双算 → 应付翻倍, 实测 1月 14540 被算成 29080)。某月若只有汇总
+        # 行、无逐单明细 → 用汇总兜底(setdefault)。
+        _w = []
         if period_start:
-            lb_stmt = lb_stmt.where(LogisticsBill.bill_date >= period_start)
+            _w.append(LogisticsBill.bill_date >= period_start)
         if period_end:
-            lb_stmt = lb_stmt.where(LogisticsBill.bill_date <= period_end)
-        billed = _sum_by_month(db.execute(lb_stmt).all())
+            _w.append(LogisticsBill.bill_date <= period_end)
+        line_rows = db.execute(select(LogisticsBill.bill_date, LogisticsBill.freight_amount)
+                               .where(LogisticsBill.row_type == "line", *_w)).all()
+        sum_rows = db.execute(select(LogisticsBill.bill_date, LogisticsBill.freight_amount)
+                              .where(LogisticsBill.row_type == "summary", *_w)).all()
+        billed = _sum_by_month(line_rows)
+        for _m, _s in _sum_by_month(sum_rows).items():
+            billed.setdefault(_m, _s)   # 仅当该月无逐单时, 用月结汇总兜底
         source = "物流公司账单"
     else:
         # 对账建议 6: 物流账单未导入时不再用订单 actual_freight 做"假对比"

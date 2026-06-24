@@ -95,6 +95,28 @@ def test_logistics_fee_unsettled_no_payment_is_ok(db_session):
         DataException.source_pk == "logistics_fee:2026-05").count() == 0
 
 
+def test_logistics_fee_line_plus_summary_not_double_counted(db_session):
+    """应付只算逐单行; 月结汇总行(同月)不参与求和 → 不双算(14540 不是 29080)。"""
+    db_session.add(LogisticsBill(bill_date=date(2026, 1, 2), carrier="壹米滴答",
+                                 freight_amount=Decimal("14540"), row_type="line"))
+    db_session.add(LogisticsBill(bill_date=date(2026, 1, 31), carrier="壹米滴答",
+                                 freight_amount=Decimal("14540"), row_type="summary"))
+    db_session.flush()
+    r = reconciliation_service.run_logistics_fee(db_session, record_exceptions=False)
+    d = next(d for d in r.diffs if d.key == "2026-01")
+    assert d.expected == Decimal("14540")
+
+
+def test_logistics_fee_summary_only_fallback(db_session):
+    """某月只有月结汇总(无逐单明细) → 用汇总作应付。"""
+    db_session.add(LogisticsBill(bill_date=date(2026, 2, 28), carrier="壹米滴答",
+                                 freight_amount=Decimal("7988"), row_type="summary"))
+    db_session.flush()
+    r = reconciliation_service.run_logistics_fee(db_session, record_exceptions=False)
+    d = next(d for d in r.diffs if d.key == "2026-02")
+    assert d.expected == Decimal("7988")
+
+
 def test_logistics_fee_fallback_to_order_freight(db_session):
     """2026-06-11 拍板 (对账建议 6): 物流账单未导入时不再用订单运费假对比 → not_available."""
     db_session.add(Order(
