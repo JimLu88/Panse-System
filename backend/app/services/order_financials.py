@@ -90,18 +90,21 @@ def aftersales_avg(db: Session) -> Decimal:
     return (total / cnt).quantize(Decimal("0.01")) if cnt else Decimal("0")
 
 
-def physical_cost(o: Order) -> Decimal:
-    """物理产品成本 = 工厂实报成本优先, 否则系统推算 (含木作/打包/外采配件)。
+def physical_cost_breakdown(o: Order) -> dict:
+    """物理产品成本(商品成本)的加法拆解 + 封顶 —— 供逐单核对导出逐项公式回推。physical_cost() 复用本函数。
 
-    非木作补回(2026-06-20 用户拍板): 工厂对账单只含木作, actual_cost=木作实报(不含打包/配件/物流/
-    安装/税/平台)。直接用 actual_cost 当物理成本会漏算非木作 → 利润虚高。故有 wood_cost_est(该单匹配
-    SKU 定价表木作)时, 用 actual_cost + max(0, theoretical_cost − wood_cost_est) 补回非木作估算。
-    wood_cost_est 缺(没匹配到定价木作)→ 退回旧行为, actual_cost 直接当物理成本。
+    返回:
+      factory_wood   工厂账单木作(actual_cost; 无账单=0)
+      estimate_part  定价表估算(配件+物流+安装; 含物流/安装实际调整。推演单=定价表物理整件)
+      packing        打包(实际优先否则预估)
+      precap_total   = factory_wood + estimate_part + packing (封顶前)
+      cap_mode       封顶模式: none / 缺配件85 / 推演封顶85 / 片段85
+      cap_label      封顶说明
+      final          最终物理成本(封顶后); 触发封顶时 = 实付×0.85
 
-    片段封顶(2026-06-20 用户选c): 定金/分期/差价单 实付远小于成本(实付<成本×50%)时不背整份成本
-    —— 工厂账单按订单号回填会把整份工厂成本配到定金小单上(实测 ...228259 实付¥2335背¥8200=率351%),
-    按 实付×85% 封顶; 货款付齐(实付≥成本×50%)自动回全成本。与 order_cost_service 片段规则一致。"""
-    # 非木作一律补齐 (用户 2026-06-25): 工厂账单只含木作, 物流/安装/打包/配件 都要加上(实际优先否则预估)。
+    口径同历史(2026-06-20/25): 工厂账单只含木作→非木作按定价表补; 定制单缺配件→至少实付×85%;
+    推演成本>实付→实付×85%; 定金/分期/差价片段(实付<成本×50%)→实付×85%。
+    """
     from app.services import sku_utils
     nz = lambda a, e: _d(a) if a is not None else _d(e)   # 实际优先, 否则预估
     paid = _d(o.paid_amount)
@@ -109,45 +112,62 @@ def physical_cost(o: Order) -> Decimal:
         getattr(o, "sku_code", None), getattr(o, "product_code", None))
     _al, _el = getattr(o, "actual_logistics", None), getattr(o, "est_logistics", None)
     _ai, _ei = getattr(o, "actual_install", None), getattr(o, "est_install", None)
+    packing = nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
+    cap_mode, cap_label = "none", ""
+
     if o.actual_cost is not None:
         wood_est = _d(getattr(o, "wood_cost_est", None))
-        cost = _d(o.actual_cost)   # 工厂账单 = 木作
+        factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
         # 能否从定价表还原非木作(配件+物流+安装 = 定价表物理 − 木作): 需有 wood_est 且 定价表物理 > 木作
         can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
                            and (_d(o.theoretical_cost) - wood_est) > 0)
         if can_reconstruct:
-            # 有定价表参照: 补非木作(配件+物流+安装 = 定价表物理 − 木作), 物流/安装再换实际
-            cost += _d(o.theoretical_cost) - wood_est
+            estimate_part = _d(o.theoretical_cost) - wood_est   # 非木作(配件+物流+安装)
             if _al is not None and _el is not None:
-                cost += _d(_al) - _d(_el)
+                estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
             if _ai is not None and _ei is not None:
-                cost += _d(_ai) - _d(_ei)
+                estimate_part += _d(_ai) - _d(_ei)              # 安装换实际(差额)
         else:
-            # 无定价表参照(配件无法还原): 补 物流+安装(实际优先否则预估)
-            cost += nz(_al, _el) + nz(_ai, _ei)
-        # 打包: 定价表物理成本不含打包, 一律单独加(实际优先否则预估), 不做 swap (修打包被错减的双减 bug)
-        cost += nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
-        # 定制单工厂账单只回填木作、又无定价表配件参照 → 视为"回填不完整", 至少按 实付×85% 兜底
-        # (用户 2026-06-25: 工厂价优先, 但缺配件就全按 85%; 取 max 保证只升不降, 已重建的物流/安装/打包不丢;
-        #  片段定金单随后仍由下方"片段封顶"按实付×85%处理, 不受影响)。
+            estimate_part = nz(_al, _el) + nz(_ai, _ei)         # 无定价参照: 补 物流+安装
+        precap = factory_wood + estimate_part + packing
+        cost = precap
+        # 定制单工厂账单只回填木作、又无定价表配件参照 → 至少 实付×85% 兜底(取 max 只升不降)
         if _is_custom and not can_reconstruct and paid > 0:
-            cost = max(cost, (paid * Decimal("0.85")).quantize(Decimal("0.01")))
+            floor = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+            if floor > cost:
+                cost, cap_mode, cap_label = floor, "缺配件85", "定制单缺配件参照→实付×85%兜底"
     else:
-        cost = _d(o.theoretical_cost)   # 定价表物理(含物流/安装预估)
+        factory_wood = Decimal("0")
+        estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装预估)
         if _al is not None and _el is not None:
-            cost += _d(_al) - _d(_el)
+            estimate_part += _d(_al) - _d(_el)
         if _ai is not None and _ei is not None:
-            cost += _d(_ai) - _d(_ei)
-        cost += nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
-        # 推演单(无工厂账单): 推演成本 > 实付 → 多为 追加/差价/凑单 片段(实付只是零头), 不背整件估算成本,
-        # 按 实付×85% 封顶(假定15%毛利, 与片段规则一致); 工厂账单到了 actual_cost 覆盖为准 (用户 2026-06-25 选A)。
+            estimate_part += _d(_ai) - _d(_ei)
+        precap = factory_wood + estimate_part + packing
+        cost = precap
+        # 推演单(无工厂账单): 推演成本 > 实付 → 实付×85%封顶(追加/差价/凑单片段, 用户 2026-06-25 选A)
         if paid > 0 and cost > paid:
             cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+            cap_mode, cap_label = "推演封顶85", "推演成本>实付→实付×85%封顶"
     if cost < 0:
         cost = Decimal("0")
+    # 片段封顶(定金/分期/差价: 实付 < 成本×50% → 不背整份成本)
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
-        return (paid * Decimal("0.85")).quantize(Decimal("0.01"))
-    return cost
+        cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+        cap_mode, cap_label = "片段85", "片段(实付<成本×50%)→实付×85%封顶"
+    return {
+        "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
+        "precap_total": precap, "cap_mode": cap_mode, "cap_label": cap_label, "final": cost,
+    }
+
+
+def physical_cost(o: Order) -> Decimal:
+    """物理产品成本 = 工厂实报成本优先, 否则系统推算 (含木作/打包/外采配件)。
+
+    实现委托 physical_cost_breakdown(o)["final"](单一真源, 同时供导出逐项公式回推)。口径:
+    非木作补回(工厂账单只含木作→按定价表补配件/物流/安装) / 定制单缺配件→实付×85% /
+    推演成本>实付→实付×85% / 定金片段(实付<成本×50%)→实付×85%。详见 physical_cost_breakdown。"""
+    return physical_cost_breakdown(o)["final"]
 
 
 def platform_deduction(o: Order, coef: dict) -> Decimal:

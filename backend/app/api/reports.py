@@ -811,6 +811,7 @@ def per_order_reconcile(
         refund = float(o.refund_amount or 0)
         revenue = paid - refund
         b = _ofin.cost_breakdown(o, coef, Decimal("0"))   # 售后改逐单口径, 不用人均均摊
+        pb = _ofin.physical_cost_breakdown(o)             # 物理成本加法拆解 (导出逐项公式回推用)
         goods = float(b["physical"]); freight = float(b["freight"]); install = float(b["install_upstairs"])
         platform = float(b["platform"]); tax = float(b["tax"])
         aftersales = float(as_by_order.get(o.order_no, 0))
@@ -834,6 +835,11 @@ def per_order_reconcile(
             "order_date": o.order_date.isoformat() if o.order_date else None,
             "paid_amount": round(paid, 2), "refund_amount": round(refund, 2), "revenue": round(revenue, 2),
             "cost_goods": round(goods, 2), "cost_freight": round(freight, 2), "cost_install": round(install, 2),
+            # 物理成本(商品成本)加法拆解 — 导出逐项公式回推: 商品成本 = 工厂木作 + 定价表估算 + 打包 (或 实付×85%)
+            "cost_factory_wood": round(float(pb["factory_wood"]), 2),
+            "cost_estimate_part": round(float(pb["estimate_part"]), 2),
+            "cost_packing": round(float(pb["packing"]), 2),
+            "cost_cap_mode": pb["cap_mode"],
             "cost_platform": round(platform, 2), "cost_tax": round(tax, 2), "cost_aftersales": round(aftersales, 2),
             "cost_total": round(cost_total, 2), "net_profit": round(net, 2),
             "net_margin": round(net / revenue * 100, 1) if revenue else 0.0,
@@ -1035,8 +1041,10 @@ def per_order_reconcile_export(
 
 
 def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
-    """逐单核对 多月工作簿: 每月一 sheet; 派生值(真实收入/成本合计/净利/净利率/木作差额)用 Excel 公式;
-    商品成本走 实付×85% 的单写成 =实付×0.85 公式; 颜色+来源列+批注 标注 实际/预估/兜底。纯函数, 便于测试。"""
+    """逐单核对 多月工作簿: 每月一 sheet; **每个金额都可公式回推**:
+    真实收入=实付−退款; 商品成本=工厂木作+定价表估算+打包(或 实付×85%); 成本合计=商品成本+物流+安装+平台+税+售后;
+    净利=收入−成本合计; 净利率=净利/收入; 木作差额=实际−预算 —— 全为 Excel 公式, 改任一基础值自动重算。
+    颜色+来源列+批注 标注: 绿=工厂账单实报 / 蓝=定价表推演 / 橙=实付×85%兜底封顶。纯函数, 便于测试。"""
     import openpyxl
     from openpyxl.comments import Comment
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -1056,15 +1064,17 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
     ctr = Alignment(horizontal="center", vertical="center")
     rgt = Alignment(horizontal="right")
 
-    HEAD = ["订单号", "产品", "下单日", "实付", "退款", "真实收入", "商品成本", "物流", "安装",
-            "平台扣点", "税", "售后", "成本合计", "净利", "净利率", "成本来源",
-            "预算木作", "预估配件", "预估打包", "实际木作", "木作差额"]
-    WID = [20, 22, 11, 10, 9, 11, 11, 8, 8, 10, 8, 8, 11, 11, 9, 18, 10, 10, 10, 10, 10]
-    # 列号 (1-indexed)
-    C_PAID, C_REFUND, C_GOODS = 4, 5, 7
-    C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS = 8, 9, 10, 11, 12
-    C_TOTAL, C_NET, C_MARGIN, C_SRC = 13, 14, 15, 16
-    C_PRED, C_PARTS, C_PACK, C_AWOOD, C_WDIFF = 17, 18, 19, 20, 21
+    HEAD = ["订单号", "产品", "下单日", "实付", "退款", "真实收入",
+            "工厂木作账单", "定价表估算(配件+物流+安装)", "打包", "商品成本",
+            "物流(额外)", "安装(额外)", "平台扣点", "税", "售后", "成本合计", "净利", "净利率",
+            "成本来源", "预算木作", "实际木作", "木作差额"]
+    WID = [20, 22, 11, 10, 9, 11, 12, 20, 8, 11, 10, 10, 10, 8, 8, 11, 11, 9, 18, 10, 10, 10]
+    # 列号 (1-indexed): D实付 E退款 F收入 | G工厂木作 H定价估算 I打包 J商品成本 | K物流 L安装 M平台 N税 O售后 P成本合计 Q净利 R净利率 | S来源 T预算木作 U实际木作 V木作差额
+    C_PAID, C_REFUND, C_REV = 4, 5, 6
+    C_FWOOD, C_EST, C_PACK, C_GOODS = 7, 8, 9, 10
+    C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS = 11, 12, 13, 14, 15
+    C_TOTAL, C_NET, C_MARGIN, C_SRC = 16, 17, 18, 19
+    C_PRED, C_AWOOD, C_WDIFF = 20, 21, 22
 
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
@@ -1076,7 +1086,8 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
             continue
         any_sheet = True
         ws = wb.create_sheet(title=f"{yy}-{mm:02d}")
-        ws.cell(1, 1, "图例: 绿=工厂账单实报 · 蓝=定价表推演 · 橙=实付×85%兜底/封顶 ｜ 真实收入/成本合计/净利/净利率/木作差额=Excel公式(改值自动重算)").font = Font(size=9, color=GREY)
+        ws.cell(1, 1, "图例: 绿=工厂账单实报 · 蓝=定价表推演 · 橙=实付×85%兜底/封顶 ｜ 蓝字均为公式(改任一基础值自动重算): "
+                      "真实收入=实付−退款 · 商品成本=工厂木作+定价估算+打包(或实付×85%) · 成本合计=商品成本+物流+安装+平台+税+售后 · 净利=收入−成本合计").font = Font(size=9, color=GREY)
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(HEAD))
         for ci, h in enumerate(HEAD, 1):
             c = ws.cell(2, ci, h)
@@ -1094,10 +1105,9 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
 
         for r in rows:
             ri = ws.max_row + 1
-            paid = float(r["paid_amount"]); goods = float(r["cost_goods"])
-            cap85 = paid > 0 and abs(goods - round(paid * 0.85, 2)) < 0.5
-            if cap85:
-                src, col, fillc = "实付×85%(兜底/封顶/片段)", ORANGE, fill_cap
+            capped = r.get("cost_cap_mode", "none") != "none"
+            if capped:
+                src, col, fillc = "实付×85%(" + r.get("cost_cap_mode", "") + ")", ORANGE, fill_cap
             elif r.get("cost_reconciled"):
                 src, col, fillc = "工厂账单实报", GREEN, fill_actual
             else:
@@ -1105,48 +1115,53 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
             ws.cell(ri, 1, r["order_no"]); ws.cell(ri, 2, r["product_name"]); ws.cell(ri, 3, r["order_date"])
             _money(C_PAID, ri, r["paid_amount"])
             _money(C_REFUND, ri, r["refund_amount"] or None, color=ORANGE)
-            ws.cell(ri, 6, f"=D{ri}-E{ri}").number_format = MONEY            # 真实收入=实付−退款
-            gc = ws.cell(ri, C_GOODS, f"=D{ri}*0.85" if cap85 else goods)    # 商品成本(兜底→公式)
+            ws.cell(ri, C_REV, f"=D{ri}-E{ri}").number_format = MONEY        # 真实收入=实付−退款
+            # 商品成本拆解: 工厂木作 + 定价表估算 + 打包 (= 商品成本); 封顶单商品成本=实付×85%
+            _money(C_FWOOD, ri, r.get("cost_factory_wood"), color=GREY)
+            _money(C_EST, ri, r.get("cost_estimate_part"), color=GREY)
+            _money(C_PACK, ri, r.get("cost_packing"), color=GREY)
+            gc = ws.cell(ri, C_GOODS, f"=D{ri}*0.85" if capped else f"=G{ri}+H{ri}+I{ri}")
             gc.number_format, gc.alignment, gc.fill = MONEY, rgt, fillc
             gc.font = Font(color=col, bold=True, size=10)
             gc.comment = Comment(
-                f"成本来源: {src}\n商品成本 = 工厂账单木作(实际优先) + 配件/物流/安装/打包(定价表预估或实际);\n"
-                f"走兜底/封顶时 = 实付×0.85。预算木作/实际木作见右侧核对列。", "系统")
+                f"成本来源: {src}\n"
+                f"商品成本 = 工厂木作账单(G) + 定价表估算·配件物流安装(H) + 打包(I);\n"
+                f"工厂账单未到→工厂木作=0、整件走定价表估算(H); 走兜底/封顶时 商品成本=实付×0.85(G/H/I 仅供参考)。", "系统")
             _money(C_FREIGHT, ri, r["cost_freight"]); _money(C_INSTALL, ri, r["cost_install"])
             _money(C_PLAT, ri, r["cost_platform"]); _money(C_TAX, ri, r["cost_tax"]); _money(C_AS, ri, r["cost_aftersales"] or None)
-            ws.cell(ri, C_TOTAL, f"=G{ri}+H{ri}+I{ri}+J{ri}+K{ri}+L{ri}").number_format = MONEY   # 成本合计
-            nc = ws.cell(ri, C_NET, f"=F{ri}-M{ri}"); nc.number_format = MONEY; nc.font = Font(bold=True, size=10)  # 净利
-            ws.cell(ri, C_MARGIN, f"=IF(F{ri}=0,0,N{ri}/F{ri})").number_format = PCT   # 净利率
+            ws.cell(ri, C_TOTAL, f"=J{ri}+K{ri}+L{ri}+M{ri}+N{ri}+O{ri}").number_format = MONEY   # 成本合计
+            nc = ws.cell(ri, C_NET, f"=F{ri}-P{ri}"); nc.number_format = MONEY; nc.font = Font(bold=True, size=10)  # 净利=收入−成本合计
+            ws.cell(ri, C_MARGIN, f"=IF(F{ri}=0,0,Q{ri}/F{ri})").number_format = PCT   # 净利率
             sc = ws.cell(ri, C_SRC, src); sc.font = Font(color=col, size=9); sc.alignment = ctr
             _money(C_PRED, ri, r.get("predicted_wood"), color=GREY)
-            _money(C_PARTS, ri, r.get("est_parts"), color=GREY); _money(C_PACK, ri, r.get("est_packaging"), color=GREY)
             _money(C_AWOOD, ri, r.get("actual_wood"), color=(GREEN if r.get("actual_wood") is not None else None))
             if r.get("predicted_wood") is not None and r.get("actual_wood") is not None:
-                ws.cell(ri, C_WDIFF, f"=T{ri}-Q{ri}").number_format = MONEY   # 木作差额=实际−预算
+                ws.cell(ri, C_WDIFF, f"=U{ri}-T{ri}").number_format = MONEY   # 木作差额=实际−预算
             for ci in range(1, len(HEAD) + 1):
                 ws.cell(ri, ci).border = border
         last = ws.max_row
 
         sr = last + 1   # 合计行 (SUM 公式)
         ws.cell(sr, 1, f"合计 {len(rows)} 单").font = Font(bold=True, size=10)
-        for ci in (C_PAID, C_REFUND, 6, C_GOODS, C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS, C_TOTAL, C_NET):
+        for ci in (C_PAID, C_REFUND, C_REV, C_FWOOD, C_EST, C_PACK, C_GOODS,
+                   C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS, C_TOTAL, C_NET):
             L = get_column_letter(ci)
             cc = ws.cell(sr, ci, f"=SUM({L}{first}:{L}{last})")
             cc.number_format, cc.font = MONEY, Font(bold=True, size=10)
-        ws.cell(sr, C_MARGIN, f"=IF(F{sr}=0,0,N{sr}/F{sr})").number_format = PCT
+        ws.cell(sr, C_MARGIN, f"=IF(F{sr}=0,0,Q{sr}/F{sr})").number_format = PCT
         for ci in range(1, len(HEAD) + 1):
             ws.cell(sr, ci).fill = fill_sum; ws.cell(sr, ci).border = border
 
-        st = data["subtotal"]   # 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定 − 补单 (全公式)
+        st = data["subtotal"]   # 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定 − 补单 (公式)
         fr2 = sr + 2
         items = [("推广费", st["promo_expense"]), ("人员外包", st["outsourcing_expense"]),
                  ("固定成本", st["fixed_costs"]), ("补单成本", st["refill_cost"])]
         ws.cell(fr2, 1, "本月真实净利 = 行净利合计 − 推广 − 人员 − 固定 − 补单 :").font = Font(bold=True, size=10)
         for i, (name, val) in enumerate(items, 1):
             ws.cell(fr2 + i, 1, name)
-            mc = ws.cell(fr2 + i, 2, float(val)); mc.number_format = MONEY
+            ws.cell(fr2 + i, 2, float(val)).number_format = MONEY
         ws.cell(fr2 + 5, 1, "本月真实净利").font = Font(bold=True, size=11)
-        rn = ws.cell(fr2 + 5, 2, f"=N{sr}-B{fr2 + 1}-B{fr2 + 2}-B{fr2 + 3}-B{fr2 + 4}")
+        rn = ws.cell(fr2 + 5, 2, f"=Q{sr}-B{fr2 + 1}-B{fr2 + 2}-B{fr2 + 3}-B{fr2 + 4}")
         rn.number_format, rn.font = MONEY, Font(bold=True, size=11, color=GREEN)
 
     if not any_sheet:
