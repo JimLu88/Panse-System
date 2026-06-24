@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, type CSSProperties } from 'react';
-import { Card, Col, DatePicker, Grid, Row, Segmented, Space, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Col, DatePicker, Grid, Row, Segmented, Space, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -89,10 +89,10 @@ function CashFlowBanner() {
   const invest = data.subtractions.find((s) => s.key === 'total_investment');
   return (
     <MCard
-      hoverable
-      onClick={() => nav('/cash-flow')}
+      hoverable={!isMobile}
+      onClick={isMobile ? undefined : () => nav('/cash-flow')}
       style={{
-        marginBottom: 16, cursor: 'pointer',
+        marginBottom: 16, cursor: isMobile ? 'default' : 'pointer',
         background: 'linear-gradient(135deg,#ffffff 0%,#f5f3ff 100%)',
         borderColor: hasStale ? '#fecaca' : '#e9d5ff',
       }}
@@ -148,7 +148,10 @@ function CashFlowBanner() {
                   </div>
                 ),
               )}
-              <div style={{ textAlign: 'center', marginTop: 2, fontSize: 13, color: M.indigo, fontWeight: 600 }}>点击查看完整明细 →</div>
+              <div onClick={() => nav('/cash-flow')}
+                style={{ textAlign: 'center', marginTop: 4, padding: '8px', fontSize: 13, color: M.indigo, fontWeight: 600, cursor: 'pointer' }}>
+                点击查看完整明细 →
+              </div>
             </div>
           ) : (
             <>
@@ -180,6 +183,10 @@ function CashFlowBanner() {
 
 export default function DashboardPage() {
   const nav = useNavigate();
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
+  // 手机端: 卡片不再整块点击跳转(用户要求 2026-06-24, 避免误触/突兀跳转); 需要进入处用显式按钮。桌面端保持可点。
+  const navProps = (path: string) => (isMobile ? {} : { onClick: () => nav(path), style: { cursor: 'pointer' as const } });
   // #8 自选日期: 控制「订单趋势 / 近30天收入」区间 (库存/异常/健康度等现状指标不随区间变)
   const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
   const startStr = range?.[0]?.format('YYYY-MM-DD');
@@ -241,16 +248,20 @@ export default function DashboardPage() {
   // 订单状态环图
   const pieOption = {
     tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { orient: 'vertical', right: 10, top: 'center', textStyle: { color: M.sub, fontSize: 12 } },
+    // 手机端: 图例移到底部可滚动, 不在扇形上标字(防重叠); 桌面端右侧竖排图例 + 扇形标百分比
+    legend: isMobile
+      ? { orient: 'horizontal', bottom: 0, left: 'center', type: 'scroll', textStyle: { color: M.sub, fontSize: 11 } }
+      : { orient: 'vertical', right: 10, top: 'center', textStyle: { color: M.sub, fontSize: 12 } },
     series: [{
       type: 'pie',
       radius: ['58%', '78%'],
-      center: ['36%', '50%'],
+      center: isMobile ? ['50%', '42%'] : ['36%', '50%'],
       itemStyle: { borderColor: '#fff', borderWidth: 3, borderRadius: 6 },
       data: Object.entries(orders.status_counts as Record<string, number>)
         .filter(([, v]) => v > 0)
         .map(([k, v]) => ({ name: STATUS_LABELS[k] || k, value: v, itemStyle: { color: STATUS_COLORS[k] } })),
-      label: { show: true, formatter: '{b} {d}%', color: M.sub, fontSize: 11 },   // #10 直接标百分比
+      label: isMobile ? { show: false } : { show: true, formatter: '{b} {d}%', color: M.sub, fontSize: 11 },   // #10 直接标百分比
+      labelLayout: { hideOverlap: true },
     }],
   };
 
@@ -317,13 +328,13 @@ export default function DashboardPage() {
       {/* KPI 卡片行 — 每张卡点击进它关联最高的页面 (用户要求) */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} sm={12} lg={8}>
-          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
+          <MCard {...navProps('/orders')}>
             <Statistic title="近 7 天订单" value={orders.count_7d} prefix={<ShoppingOutlined style={{ color: M.violet }} />} suffix="单"
               valueStyle={{ ...bigNum }} />
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={8}>
-          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
+          <MCard {...navProps('/orders')}>
             <Statistic title="近 30 天收入 (不含补单)" value={orders.revenue_30d} precision={0}
               prefix={<DollarOutlined style={{ color: M.indigo }} />}
               formatter={(v) => `¥${Number(v).toLocaleString()}`} valueStyle={{ ...bigNum }} />
@@ -344,9 +355,14 @@ export default function DashboardPage() {
           </MCard>
         </Col>
         <Col xs={24} sm={12} lg={8}>
-          <MCard onClick={() => nav('/exceptions')} style={{ cursor: 'pointer' }}>
+          <MCard {...(isMobile ? {} : { onClick: () => nav('/exceptions'), style: { cursor: 'pointer' } })}>
             <Statistic title="待处理异常" value={health.open_exceptions} prefix={<AlertOutlined />}
               valueStyle={{ ...bigNum, color: health.open_exceptions > 10 ? M.rose : health.open_exceptions > 3 ? M.amber : M.emerald }} />
+            {isMobile && (
+              <Button size="small" block style={{ marginTop: 10 }} onClick={() => nav('/exceptions')}>
+                查看异常 →
+              </Button>
+            )}
           </MCard>
         </Col>
         {/* #20: 数据健康度卡片已移到「待办事项」页 (OpsChecklistPage) */}
@@ -355,14 +371,14 @@ export default function DashboardPage() {
       {/* 图表行 */}
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={24} lg={12}>
-          <MCard title="订单状态分布" onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
+          <MCard title="订单状态分布" {...navProps('/orders')}>
             <Suspense fallback={<ChartPlaceholder />}>
-              <ReactECharts option={pieOption} style={{ height: 240 }} />
+              <ReactECharts option={pieOption} style={{ height: isMobile ? 280 : 240 }} />
             </Suspense>
           </MCard>
         </Col>
         <Col xs={24} lg={12}>
-          <MCard title="近 30 天订单趋势" onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}>
+          <MCard title="近 30 天订单趋势" {...navProps('/orders')}>
             <Suspense fallback={<ChartPlaceholder />}>
               <ReactECharts option={trendOption} style={{ height: 240 }} />
             </Suspense>
@@ -383,16 +399,16 @@ export default function DashboardPage() {
       </Space>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/orders')} style={{ cursor: 'pointer' }}><Statistic title="订单收入" value={fin.order_revenue} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard {...navProps('/orders')}><Statistic title="订单收入" value={fin.order_revenue} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/pricing')} style={{ cursor: 'pointer' }}><Statistic title="理论成本" value={fin.theoretical_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard {...navProps('/pricing')}><Statistic title="理论成本" value={fin.theoretical_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="实际成本" value={fin.actual_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard {...navProps('/reconciliation')}><Statistic title="实际成本" value={fin.actual_cost} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/assets-cashflow')} style={{ cursor: 'pointer' }}>
+          <MCard {...navProps('/assets-cashflow')}>
             <Statistic title="毛利" value={fin.gross_profit} formatter={(v) => money(Number(v))}
               valueStyle={{ ...midNum, color: fin.gross_profit >= 0 ? M.emerald : M.rose }} />
             <Tag style={{ marginTop: 8, borderRadius: 8 }}
@@ -404,17 +420,17 @@ export default function DashboardPage() {
       </Row>
       <Row gutter={[16, 16]} style={{ marginBottom: 16 }}>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/alipay')} style={{ cursor: 'pointer' }}><Statistic title="支付宝收入" value={fin.alipay_income} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
+          <MCard {...navProps('/alipay')}><Statistic title="支付宝收入" value={fin.alipay_income} formatter={(v) => money(Number(v))} valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/reconciliation')} style={{ cursor: 'pointer' }}><Statistic title="对账未清" value={fin.reconciliation_unresolved} suffix="条"
+          <MCard {...navProps('/reconciliation')}><Statistic title="对账未清" value={fin.reconciliation_unresolved} suffix="条"
             valueStyle={{ ...midNum, color: fin.reconciliation_unresolved > 0 ? M.amber : M.emerald }} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后笔数" value={fin.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
+          <MCard {...navProps('/aftersales')}><Statistic title="售后笔数" value={fin.aftersales_count} suffix="单" valueStyle={midNum} /></MCard>
         </Col>
         <Col xs={12} lg={6}>
-          <MCard onClick={() => nav('/aftersales')} style={{ cursor: 'pointer' }}><Statistic title="售后成本" value={fin.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
+          <MCard {...navProps('/aftersales')}><Statistic title="售后成本" value={fin.aftersales_cost} formatter={(v) => money(Number(v))} valueStyle={{ ...midNum, color: M.rose }} /></MCard>
         </Col>
       </Row>
 
@@ -457,9 +473,9 @@ export default function DashboardPage() {
             <Col key={rule.key} xs={12} sm={8} md={4}>
               <Tooltip title={tip}>
                 <MCard
-                  hoverable
-                  onClick={() => nav('/reconciliation')}
-                  style={{ borderColor, cursor: 'pointer', textAlign: 'center' }}
+                  hoverable={!isMobile}
+                  onClick={isMobile ? undefined : () => nav('/reconciliation')}
+                  style={{ borderColor, cursor: isMobile ? 'default' : 'pointer', textAlign: 'center' }}
                   styles={{ body: { padding: '10px 4px' } }}
                 >
                   <div style={{ fontSize: 18, marginBottom: 2 }}>{icon}</div>
@@ -496,13 +512,13 @@ export default function DashboardPage() {
                 <Col key={m.category + m.key} xs={12} sm={8}>
                   <Tooltip title={m.detail}>
                     <div
-                      onClick={() => m.category === '对账' ? nav('/reconciliation') : undefined}
+                      onClick={isMobile ? undefined : () => (m.category === '对账' ? nav('/reconciliation') : undefined)}
                       style={{
                         display: 'flex', alignItems: 'center', gap: 6,
                         padding: '6px 10px', borderRadius: 10,
                         background: m.done ? '#f0fdf4' : '#fffbeb',
                         border: `1px solid ${m.done ? '#bbf7d0' : '#fde68a'}`,
-                        cursor: m.category === '对账' ? 'pointer' : 'default',
+                        cursor: !isMobile && m.category === '对账' ? 'pointer' : 'default',
                       }}>
                       {m.done
                         ? <CheckCircleOutlined style={{ color: M.emerald }} />

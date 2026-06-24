@@ -3,7 +3,7 @@
  * 未对清月份(recon_status=reference_only)整块标「仅供参考」。
  */
 import { lazy, Suspense, useMemo, useState } from 'react';
-import { Alert, Card, Col, Row, Segmented, Select, Spin, Statistic, Typography } from 'antd';
+import { Alert, Card, Col, Grid, Row, Segmented, Select, Spin, Statistic, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMonthlyPnl, fetchSalesMix } from '../api/reports';
 import RefillCallout from './RefillCallout';
@@ -24,6 +24,8 @@ export default function MonthlyOpsPanel() {
   const [period, setPeriod] = useState<string | undefined>(undefined);
   const [by, setBy] = useState<'product' | 'shop'>('product');
   const [salesView, setSalesView] = useState<'ranking' | 'forecast'>('ranking');  // 销售: 排行榜 ⇄ 预测
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
 
   const { data: pnl, isLoading } = useQuery({ queryKey: ['monthly-pnl'], queryFn: fetchMonthlyPnl });
   const rows = pnl?.rows ?? [];
@@ -39,23 +41,32 @@ export default function MonthlyOpsPanel() {
 
   const pieOption = useMemo(() => ({
     tooltip: { trigger: 'item', formatter: '{b}<br/>¥{c} ({d}%)' },
-    // 图例(带圆点图标, 可滚动; 长名截断) + 扇形上直接标名称与百分比 (用户拍板 2026-06-17)
-    legend: {
-      type: 'scroll', orient: 'vertical', right: 6, top: 'middle', icon: 'circle',
-      textStyle: { fontSize: 11 }, itemWidth: 10, itemHeight: 10,
-      formatter: (name: string) => (name && name.length > 11 ? name.slice(0, 11) + '…' : name),
-    },
+    // 手机端: 图例移底部可滚动, 扇形上不标字(防文字重叠); 桌面端右侧竖排图例 + 扇形标名称/百分比 (用户拍板 2026-06-17)
+    legend: isMobile
+      ? {
+          type: 'scroll', orient: 'horizontal', bottom: 0, left: 'center', icon: 'circle',
+          textStyle: { fontSize: 11 }, itemWidth: 10, itemHeight: 10,
+          formatter: (name: string) => (name && name.length > 8 ? name.slice(0, 8) + '…' : name),
+        }
+      : {
+          type: 'scroll', orient: 'vertical', right: 6, top: 'middle', icon: 'circle',
+          textStyle: { fontSize: 11 }, itemWidth: 10, itemHeight: 10,
+          formatter: (name: string) => (name && name.length > 11 ? name.slice(0, 11) + '…' : name),
+        },
     color: PIE_COLORS,
     series: [{
-      type: 'pie', radius: ['40%', '66%'], center: ['34%', '50%'],
+      type: 'pie',
+      radius: isMobile ? ['40%', '64%'] : ['40%', '66%'],
+      center: isMobile ? ['50%', '42%'] : ['34%', '50%'],
       minShowLabelAngle: 6,   // 太小的扇形不挤标签
       data: (mix?.slices ?? []).map((s) => ({ name: s.name, value: s.revenue })),
-      label: {
-        show: true, formatter: '{b}\n{d}%', fontSize: 11, color: '#475569', lineHeight: 14,
-      },
-      labelLine: { show: true, length: 8, length2: 8 },
+      label: isMobile
+        ? { show: false }   // 手机端不在扇形上标字, 防重叠; 看图例/点击看 tooltip
+        : { show: true, formatter: '{b}\n{d}%', fontSize: 11, color: '#475569', lineHeight: 14 },
+      labelLine: isMobile ? { show: false } : { show: true, length: 8, length2: 8 },
+      labelLayout: { hideOverlap: true },
     }],
-  }), [mix]);
+  }), [mix, isMobile]);
 
   const isRef = selRow?.recon_status === 'reference_only';
 
@@ -155,7 +166,7 @@ export default function MonthlyOpsPanel() {
           <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' }}>该月暂无销售数据</div>
         ) : (
           <Suspense fallback={<div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
-            <ReactECharts option={pieOption} style={{ height: 260 }} />
+            <ReactECharts option={pieOption} style={{ height: isMobile ? 300 : 260 }} />
           </Suspense>
         )}
       </Card>
