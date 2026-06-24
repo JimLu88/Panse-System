@@ -65,7 +65,7 @@ export default function WebAgentPage() {
     mutationFn: ingestNow,
     onSuccess: (r) => {
       message.success(`扫描完成: 新导入 ${r?.imported ?? 0} 份`);
-      qc.invalidateQueries({ queryKey: ['web-agent-status'] });
+      qc.invalidateQueries();   // 扫描导入了新数据 → 失效全部缓存, 大盘/各列表即时刷新 (用户 2026-06-24)
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '扫描失败'),
   });

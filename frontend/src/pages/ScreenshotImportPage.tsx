@@ -25,7 +25,7 @@ import {
   message,
 } from 'antd';
 import { CloudUploadOutlined, FileImageOutlined, InboxOutlined, PrinterOutlined, SearchOutlined } from '@ant-design/icons';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   FactoryReconParseResp,
   FactoryReconRowParsed,
@@ -85,6 +85,7 @@ function editCell(
 }
 
 function QianniuTab() {
+  const qc = useQueryClient();
   const [resp, setResp] = useState<QianniuParseResp | null>(null);
   const [orders, setOrders] = useState<QianniuOrderParsed[]>([]);
   const [matchStates, setMatchStates] = useState<Record<number, MatchState>>({});
@@ -114,6 +115,7 @@ function QianniuTab() {
       setResp(null);
       setOrders([]);
       setMatchStates({});
+      qc.invalidateQueries();   // 订单入库 → 失效全部缓存, 大盘/订单/对账即时刷新 (用户 2026-06-24)
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '入库失败'),
   });

@@ -194,14 +194,14 @@ export default function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', startStr, endStr],
     queryFn: () => getDashboard(startStr && endStr ? { start: startStr, end: endStr } : undefined),
-    refetchInterval: 60_000,
+    refetchInterval: 600_000,   // 10 分钟背景刷新 (用户 2026-06-24); 导入完成会即时失效缓存强刷, 不必每分钟轮询
   });
   // 财务概览时间段 (今日/昨日/近7天/近30天/YYYY-MM) — 独立按时段算
   const [finPeriod, setFinPeriod] = useState<string>('30d');
   const { data: finOv } = useQuery({
     queryKey: ['finance-overview', finPeriod],
     queryFn: () => api.get('/api/dashboard/finance-overview', { params: { period: finPeriod } }).then((r) => r.data),
-    refetchInterval: 60_000,
+    refetchInterval: 600_000,   // 10 分钟背景刷新 (用户 2026-06-24); 导入完成会即时失效缓存强刷, 不必每分钟轮询
   });
 
   if (isLoading || !data) {

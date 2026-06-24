@@ -82,7 +82,7 @@ export default function CashFlowPage() {
   const { data, isLoading } = useQuery<CashFlowSummary>({
     queryKey: ['cash-flow'],
     queryFn: getCashFlow,
-    refetchInterval: 60_000,
+    refetchInterval: 600_000,   // 10 分钟 (用户 2026-06-24); 导入完成会即时失效缓存强刷
   });
 
   const saveMut = useMutation({

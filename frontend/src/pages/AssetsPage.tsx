@@ -56,7 +56,7 @@ function DiffDrilldownDrawer({ open, onClose }: { open: boolean; onClose: () => 
 export default function AssetsPage() {
   const [drillOpen, setDrillOpen] = useState(false);
   const { data, isLoading } = useQuery({
-    queryKey: ['assets'], queryFn: fetchAssets, refetchInterval: 60000,
+    queryKey: ['assets'], queryFn: fetchAssets, refetchInterval: 600000,   // 10 分钟 (用户 2026-06-24); 导入完成会即时失效缓存强刷
   });
   const { data: unmatched } = useQuery({
     queryKey: ['unmatched-flows'], queryFn: () => fetchUnmatchedFlows(7),
