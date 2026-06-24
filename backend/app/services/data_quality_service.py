@@ -1233,13 +1233,22 @@ def _cost_ratio_reason(o, coef) -> Optional[str]:
 
 def scan_cost_ratio_outlier(db: Session) -> int:
     """成本率离群单挂异常, 供逐单核对 (用户 2026-06-24)。info 级, 录入实际成本后自动销账。"""
+    from app.models.exception import DataException
     from app.services.order_financials import load_coefficients
     coef = load_coefficients(db)
+    # 白名单 (用户 2026-06-24): 人工"忽略"过的订单(确认低利正常, 如新品故意压低利润)永久跳过, 刷新异常不再报。
+    whitelisted = {
+        e.source_pk for e in db.query(DataException).filter(
+            DataException.exception_type == "cost_ratio_outlier",
+            DataException.status == "ignored").all()
+    }
     count = 0
     for o in db.query(Order).filter(
         Order.status.in_(_COST_PAID_SALE_STATUS),
         Order.is_refill == False,  # noqa: E712
     ).all():
+        if str(o.id) in whitelisted:
+            continue   # 已忽略=白名单, 不再报
         reason = _cost_ratio_reason(o, coef)
         if reason is None:
             continue
