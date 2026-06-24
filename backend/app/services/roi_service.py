@@ -48,7 +48,9 @@ def compute(
     )
     from app.services.sales_analytics import settled_sale_clause
     order_revenue_q = select(
-        func.coalesce(func.sum(Order.paid_amount), 0).label("rev"),
+        # 营收 = 实付 − 退款 (与 monthly_breakdown / 会计口径统一; 原先只 Σ实付 未减退款 → ROI 营收虚高, 2026-06-25 修)
+        (func.coalesce(func.sum(Order.paid_amount), 0)
+         - func.coalesce(func.sum(Order.refund_amount), 0)).label("rev"),
         func.count(Order.id).label("cnt"),
     ).where(settled_sale_clause(), Order.is_refill == False)  # noqa: E712 真实成交·剔除补单 (2026-06-17)
 

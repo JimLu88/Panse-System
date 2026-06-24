@@ -111,12 +111,11 @@ def physical_cost(o: Order) -> Decimal:
     _ai, _ei = getattr(o, "actual_install", None), getattr(o, "est_install", None)
     if o.actual_cost is not None:
         wood_est = _d(getattr(o, "wood_cost_est", None))
-        # 定制单工厂账单只回填了木作、又无定价表非木作参照(wood_est空) → 工厂账单不完整 → 整单 85% 兜底
-        # (用户 2026-06-25: 定制单要么能拼全成本, 要么用85%, 不留"只木作"的残值)。
-        if _is_custom and wood_est <= 0:
-            return (paid * Decimal("0.85")).quantize(Decimal("0.01")) if paid > 0 else _d(o.actual_cost)
         cost = _d(o.actual_cost)   # 工厂账单 = 木作
-        if wood_est > 0 and o.theoretical_cost is not None and (_d(o.theoretical_cost) - wood_est) > 0:
+        # 能否从定价表还原非木作(配件+物流+安装 = 定价表物理 − 木作): 需有 wood_est 且 定价表物理 > 木作
+        can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
+                           and (_d(o.theoretical_cost) - wood_est) > 0)
+        if can_reconstruct:
             # 有定价表参照: 补非木作(配件+物流+安装 = 定价表物理 − 木作), 物流/安装再换实际
             cost += _d(o.theoretical_cost) - wood_est
             if _al is not None and _el is not None:
@@ -124,10 +123,15 @@ def physical_cost(o: Order) -> Decimal:
             if _ai is not None and _ei is not None:
                 cost += _d(_ai) - _d(_ei)
         else:
-            # 无定价表参照(罕见的非定制): 直接补 物流+安装(实际优先否则预估)
+            # 无定价表参照(配件无法还原): 补 物流+安装(实际优先否则预估)
             cost += nz(_al, _el) + nz(_ai, _ei)
         # 打包: 定价表物理成本不含打包, 一律单独加(实际优先否则预估), 不做 swap (修打包被错减的双减 bug)
         cost += nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
+        # 定制单工厂账单只回填木作、又无定价表配件参照 → 视为"回填不完整", 至少按 实付×85% 兜底
+        # (用户 2026-06-25: 工厂价优先, 但缺配件就全按 85%; 取 max 保证只升不降, 已重建的物流/安装/打包不丢;
+        #  片段定金单随后仍由下方"片段封顶"按实付×85%处理, 不受影响)。
+        if _is_custom and not can_reconstruct and paid > 0:
+            cost = max(cost, (paid * Decimal("0.85")).quantize(Decimal("0.01")))
     else:
         cost = _d(o.theoretical_cost)   # 定价表物理(含物流/安装预估)
         if _al is not None and _el is not None:

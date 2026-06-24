@@ -239,11 +239,14 @@ def import_factory_recon_xlsx(db: Session, content: bytes) -> FactoryReconImport
 
 
 def backfill_order_actual_cost(db: Session, restrict_to: Optional[set] = None) -> int:
-    """按 订单号(含追加1/2) 把工厂结算价回填到 Order.actual_cost (仅填空, best-effort)。
+    """按 订单号(含追加1/2) 把工厂结算价回填到 Order.actual_cost (覆盖重算, 幂等)。
 
-    一个订单可能拆多行(追加单) → 按订单号汇总 settle_price 求和后回填。
-    restrict_to: 只处理这些订单号(本次导入新出现的), 避免跨批/跨表对同一订单重复累加。
+    一个订单可能拆多行(追加单)或分批开票(多次导入) → 取该单名下【全部批次】结算行 settle_price 求和,
+    覆盖写 actual_cost (用户 2026-06-25 修 D4: 原先"仅 actual_cost 为空才填"会丢失第2批账单 → 改重算覆盖)。
+    restrict_to: 只重算这些订单号(本次导入涉及的), 避免全表扫描; 但求和取该单全部批次行(不限本批)。
+    一物多单(主单+追加号)按"第一个真实存在的订单"归组, 不给主+追加各加一遍(防成本翻倍)。0 价(退货)跳过。
     """
+    # 1) 本次导入涉及的候选订单号
     stmt = select(FactoryReconItem)
     if restrict_to is not None:
         if not restrict_to:
@@ -254,35 +257,46 @@ def backfill_order_actual_cost(db: Session, restrict_to: Optional[set] = None) -
             FactoryReconItem.extra_order_no1.in_(ids),
             FactoryReconItem.extra_order_no2.in_(ids),
         ))
-    items = db.execute(stmt).scalars().all()
-    # 一行结算 = 一件家具的木作价, 只算一次成本。一物多单(主单+追加号)→ 归到该结算组里
-    # 第一个真实存在的订单, 不给主+追加各加一遍(否则成本翻倍, 2026-06-21 修)。0 价(退货)跳过。
     cands: set = set()
-    for it in items:
+    for it in db.execute(stmt).scalars().all():
         for no in (it.order_no, it.extra_order_no1, it.extra_order_no2):
             if (no or "").strip():
                 cands.add(no.strip())
+    if not cands:
+        return 0
     existing = {
         o.order_no: o for o in db.execute(
             select(Order).where(Order.order_no.in_(list(cands)))
         ).scalars().all()
-    } if cands else {}
+    }
+    if not existing:
+        return 0
+    # 2) 拉这些候选订单名下【全部批次】结算行(不限本批), 按 primary 重算 Σ
+    cand_list = list(cands)
+    all_items = db.execute(select(FactoryReconItem).where(or_(
+        FactoryReconItem.order_no.in_(cand_list),
+        FactoryReconItem.extra_order_no1.in_(cand_list),
+        FactoryReconItem.extra_order_no2.in_(cand_list),
+    ))).scalars().all()
     sums: dict[str, Decimal] = {}
-    for it in items:
+    for it in all_items:
         if not it.settle_price or it.settle_price <= 0:
             continue
         primary = next(
             (n.strip() for n in (it.order_no, it.extra_order_no1, it.extra_order_no2)
-             if (n or "").strip() and n.strip() in existing
-             and (restrict_to is None or n.strip() in restrict_to)),
+             if (n or "").strip() and n.strip() in existing),
             None,
         )
         if primary:
             sums[primary] = sums.get(primary, Decimal("0")) + it.settle_price
+    # 3) 覆盖写(幂等): 只动本次候选订单, SET = 该单全部批次 Σ (与现值不同才写)
     filled = 0
-    for ono, total in sums.items():
+    for ono in cands:
         o = existing.get(ono)
-        if o is not None and o.actual_cost is None:
+        if o is None:
+            continue
+        total = sums.get(ono, Decimal("0"))
+        if total > 0 and (o.actual_cost is None or Decimal(str(o.actual_cost)) != total):
             o.actual_cost = total
             filled += 1
     return filled

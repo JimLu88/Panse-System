@@ -57,6 +57,10 @@ def rollup_day(db: Session, target: date) -> int:
         comp = Decimal(o.compensation_fee or 0)
         d["revenue"] += revenue
         d["cost"] += cost
+        # ⚠ D1(2026-06-25): 此 net_profit 只扣 物理成本+运费+安装+赔付, 【未扣平台扣点/税/额外售后】,
+        #   是"毛估利润"非会计净利(比 accounting_summary 偏高 ~2-5%)。此预聚合表目前【无前端消费】
+        #   (/sales/rollup-summary 无调用方), 仅作快速毛估。**若要喂月度P&L/经营表, 必须先补齐
+        #   platform_deduction + order_tax + 额外售后, 否则会低估成本、虚高利润。**
         d["net_profit"] += revenue - cost - freight - upstairs - install - comp
 
     for (pc, sku, plat), d in by_key.items():
