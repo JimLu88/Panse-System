@@ -1051,7 +1051,7 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
     from openpyxl.utils import get_column_letter
 
     GREEN, BLUE, ORANGE, GREY = "389E0D", "1677FF", "FA8C16", "8C8C8C"
-    MONEY = "¥#,##0;-¥#,##0"
+    MONEY = "¥#,##0.00;-¥#,##0.00"   # 2位小数: 逐单核对要精确到分
     PCT = "0.0%"
     f_hdr = Font(bold=True, color="FFFFFF", size=10)
     fill_hdr = PatternFill("solid", fgColor="1F3A5F")
