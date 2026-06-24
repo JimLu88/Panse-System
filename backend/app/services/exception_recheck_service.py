@@ -431,6 +431,46 @@ def _check_dangling_product_code(db: Session, exc: DataException) -> Optional[st
     return None if exists else f"订单 {o.order_no} 仍引用不存在的产品编码 {code}"
 
 
+def _check_factory_recon_incomplete(db: Session, exc: DataException) -> Optional[str]:
+    """工厂对账缺字段: 现版本只在缺 bill_amount 时报 (paid_amount/支付流水号 2026-06-17 起已不报)。
+    修好 = 记录已删 / bill_amount 已补。只缺 paid_amount/流水号的旧异常 → 直接销账 (用户 2026-06-24)。"""
+    from app.models.finance import FactoryReconciliation
+    try:
+        rid = int(exc.source_pk)
+    except (TypeError, ValueError):
+        return None
+    r = db.query(FactoryReconciliation).filter(FactoryReconciliation.id == rid).first()
+    if r is None or r.bill_amount is not None:
+        return None
+    return "工厂对账仍缺账单金额(bill_amount)"
+
+
+def _check_factory_recon_pending_delivery(db: Session, exc: DataException) -> Optional[str]:
+    """遗留异常类型: 现版本已不再产生 factory_recon_pending_delivery
+    (在产/未发货待付不再单独报)。一律可销账 (用户 2026-06-24: 把旧的去掉)。"""
+    return None
+
+
+def _check_factory_recon_unbalanced(db: Session, exc: DataException) -> Optional[str]:
+    """工厂对账不平: 修好 = 记录已删 / 已对平(status 非 underpaid|overpaid) /
+    未付清但仍在账期内(账单周期结束 ≤60 天, 月结正常未付, 用户 2026-06-24)。"""
+    from datetime import date
+    from app.models.finance import FactoryReconciliation
+    try:
+        rid = int(exc.source_pk)
+    except (TypeError, ValueError):
+        return None
+    r = db.query(FactoryReconciliation).filter(FactoryReconciliation.id == rid).first()
+    if r is None or r.status not in ("underpaid", "overpaid"):
+        return None
+    if r.status == "underpaid":
+        ref = r.period_end or r.reconciled_at
+        if ref is not None and (date.today() - ref).days <= 60:
+            return None  # 账期内未付, 正常月结, 销账
+        return f"工厂对账 [{r.factory_name}] 账期结束已超60天仍未付清 ¥{r.diff_amount}"
+    return f"工厂对账 [{r.factory_name}] 超付 ¥{-(r.diff_amount or 0)}"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
@@ -452,6 +492,9 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "missing_taobao_mapping": _check_missing_taobao_mapping,
     "reconciliation_diff": _check_reconciliation_diff,
     "dangling_product_code": _check_dangling_product_code,
+    "factory_recon_incomplete": _check_factory_recon_incomplete,
+    "factory_recon_pending_delivery": _check_factory_recon_pending_delivery,
+    "factory_recon_unbalanced": _check_factory_recon_unbalanced,
 }
 
 

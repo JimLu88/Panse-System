@@ -774,13 +774,19 @@ def scan_factory_recon_unbalanced(db: Session) -> int:
     区别于 factory_recon_incomplete (缺字段): 这条是金额对不上的实质差异,
     让"4月差¥13389未付清""某期超付"这类口子在异常中心冒出来, 而不是只算个 diff 藏着。
     """
+    from datetime import date as _date
     count = 0
     for r in db.query(FactoryReconciliation).filter(
         FactoryReconciliation.status.in_(["underpaid", "overpaid"]),
     ).all():
         diff = r.diff_amount or 0
         if r.status == "underpaid":
-            sev, label, act = "error", "未付清", f"账单 ¥{r.bill_amount} > 实付 ¥{r.paid_amount}, 尚欠 ¥{diff}。请确认是否漏付或分期。"
+            # 工厂月结: 发货后约一个月才付货款, "未付清"是常态(在产/未发货/远期单更甚)。
+            # 仅当账单周期结束已超 60 天仍未付清才报 (用户 2026-06-24), 否则属正常账期内, 不报。
+            ref = r.period_end or r.reconciled_at
+            if ref is not None and (_date.today() - ref).days <= 60:
+                continue
+            sev, label, act = "error", "未付清(账期已超60天)", f"账单 ¥{r.bill_amount} > 实付 ¥{r.paid_amount}, 尚欠 ¥{diff}, 账单周期结束已超60天。请确认是否漏付或分期。"
         else:
             sev, label, act = "warning", "超付", f"实付 ¥{r.paid_amount} > 账单 ¥{r.bill_amount}, 多付 ¥{-diff}。请确认是否预付或重复支付。"
         _record(
