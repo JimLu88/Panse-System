@@ -18,7 +18,7 @@ import {
   Typography,
   message,
 } from 'antd';
-import { DownOutlined, EditOutlined, RobotOutlined, UpOutlined } from '@ant-design/icons';
+import { DownOutlined, EditOutlined, ReloadOutlined, RobotOutlined, UpOutlined } from '@ant-design/icons';
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -29,6 +29,7 @@ import {
   fixException,
   getExceptionsSummary,
   listExceptions,
+  refreshExceptions,
   resolveException,
   resolveImportConflict,
 } from '../api/client';
@@ -335,6 +336,16 @@ export default function ExceptionsPage() {
   });
 
   // scanMut / dqMut / recheckMut 已删 (用户拍板 2026-06-17): 扫描+复核全部并入实时同步, 不再手动触发。
+  // 刷新异常 (用户 2026-06-24): 一键 重新扫描(纳入新异常) + 销账已解决, 手动触发那套自动流程。
+  const refreshMut = useMutation({
+    mutationFn: refreshExceptions,
+    onSuccess: (r) => {
+      message.success(`刷新完成：新增 ${r.new_found} 条，清除已解决 ${r.closed} 条，当前未处理 ${r.open_now} 条`);
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '刷新失败'),
+  });
 
   const fixMut = useMutation({
     mutationFn: ({ id, fields }: { id: number; fields: Record<string, unknown> }) =>
@@ -568,8 +579,15 @@ export default function ExceptionsPage() {
           >
             导出批注表
           </Button>
-          {/* 扫描/复核按钮已撤 (用户拍板 2026-06-17): 所有问题都实时进异常 —— 每次导入 +
-              「立即同步」都自动跑 数据质量扫描 + 旧版完整性扫描 + 对账 + 复核销账, 无需手动点。 */}
+          {/* 刷新异常 (用户 2026-06-24): 实时同步外, 给一个手动入口 —— 扫新异常进来 + 销账已解决的。 */}
+          <Button
+            type="primary"
+            icon={<ReloadOutlined />}
+            loading={refreshMut.isPending}
+            onClick={() => refreshMut.mutate()}
+          >
+            刷新异常
+          </Button>
           <Button
             icon={allExpanded ? <UpOutlined /> : <DownOutlined />}
             onClick={toggleAll}

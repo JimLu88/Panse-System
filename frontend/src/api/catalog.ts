@@ -869,6 +869,10 @@ export const runDataQuality = () =>
   api.post<Record<string, number>>('/api/exceptions/run-data-quality').then(r => r.data);
 export const recheckAllExceptions = () =>
   api.post<{ closed: number; by_type: Record<string, number> }>('/api/exceptions/recheck-all').then(r => r.data);
+export const refreshExceptions = () =>
+  api.post<{ open_before: number; open_now: number; new_found: number; closed: number; closed_by_type: Record<string, number> }>(
+    '/api/exceptions/refresh',
+  ).then(r => r.data);
 export const getExceptionCounts = () =>
   api.get<Record<string, number>>('/api/exceptions/counts-by-type').then(r => r.data);
 export const getOpenExceptionCount = () =>

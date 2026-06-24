@@ -209,6 +209,33 @@ def recheck_all(
     return {"closed": sum(closed.values()), "by_type": closed}
 
 
+@router.post("/refresh", response_model=dict)
+def refresh_exceptions(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """异常刷新 (用户 2026-06-24): 一键 ①重新全量扫描, 把新异常纳入 ②把已解决的批量销账。
+    = 扫描器(外键/库存/数值…) + 数据完整性(B 系列) + 复核销账, 等价于导入后的自动流程, 手动触发。"""
+    from sqlalchemy import func, select as _select
+    from app.models.exception import DataException as _DE
+    from app.services import scanner_service
+    from app.services.exception_recheck_service import bulk_close_resolved
+
+    open_before = db.execute(_select(func.count(_DE.id)).where(_DE.status == "open")).scalar() or 0
+    scanner_service.run_all(db)        # 外键断裂/负库存/数值范围 等扫描器
+    data_quality_service.run_all(db)   # 数据完整性 B 系列检查
+    db.flush()
+    closed = bulk_close_resolved(db)   # 已解决的批量销账
+    open_now = db.execute(_select(func.count(_DE.id)).where(_DE.status == "open")).scalar() or 0
+    return {
+        "open_before": open_before,
+        "open_now": open_now,
+        "new_found": max(0, open_now - open_before + sum(closed.values())),
+        "closed": sum(closed.values()),
+        "closed_by_type": closed,
+    }
+
+
 @router.get("/counts-by-type", response_model=dict)
 def counts_by_type(
     status: str = Query("open"),
