@@ -1,6 +1,6 @@
-import { Suspense, lazy } from 'react';
-import { Avatar, Button, Dropdown, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { BulbFilled, BulbOutlined, CameraOutlined, EditOutlined, LogoutOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
+import { Suspense, lazy, useState } from 'react';
+import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Space, Spin, Tag } from 'antd';
+import { BulbFilled, BulbOutlined, CameraOutlined, EditOutlined, LogoutOutlined, MenuOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import ForcePasswordChange from './components/ForcePasswordChange';
@@ -118,6 +118,9 @@ export default function App() {
   const loc = useLocation();
   const nav = useNavigate();
   const { mode, toggle: toggleTheme } = useThemeMode();
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;   // <768px: 收起顶栏巨菜单, 改抽屉导航 (=== false 防桌面首屏闪烁)
+  const [navOpen, setNavOpen] = useState(false);
 
   if (loading) {
     return (
@@ -267,7 +270,41 @@ export default function App() {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', paddingRight: 16, gap: 0 }}>
+      <Header style={{ display: 'flex', alignItems: 'center', paddingRight: isMobile ? 8 : 16, gap: 0 }}>
+        {isMobile ? (
+          <>
+            <Button
+              type="text" aria-label="菜单"
+              icon={<MenuOutlined style={{ fontSize: 18 }} />}
+              onClick={() => setNavOpen(true)}
+              style={{ color: '#fff', flexShrink: 0, marginRight: 4 }}
+            />
+            <div style={{ color: 'white', fontWeight: 600, whiteSpace: 'nowrap', flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              畔色孚格 ERP
+            </div>
+            <Button
+              type="text" aria-label="搜索"
+              icon={<SearchOutlined style={{ fontSize: 16 }} />}
+              onClick={() => window.dispatchEvent(new Event('panse:open-search'))}
+              style={{ color: 'rgba(255,255,255,0.9)', flexShrink: 0 }}
+            />
+            <NotificationBell />
+            <Dropdown
+              menu={{
+                items: [
+                  ...(user.role === 'admin' ? [
+                    { key: 'system', icon: <SettingOutlined />, label: <Link to="/admin">系统设置</Link> },
+                    { type: 'divider' as const },
+                  ] : []),
+                  { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', onClick: logout },
+                ],
+              }}
+            >
+              <Avatar size="small" icon={<UserOutlined />} style={{ marginLeft: 6, flexShrink: 0, cursor: 'pointer' }} />
+            </Dropdown>
+          </>
+        ) : (
+          <>
         <div style={{ color: 'white', fontWeight: 600, marginRight: 16, whiteSpace: 'nowrap' }}>
           畔色孚格 ERP
         </div>
@@ -338,7 +375,35 @@ export default function App() {
             <Tag color={ROLE_COLOR[user.role]}>{user.role}</Tag>
           </Space>
         </Dropdown>
+          </>
+        )}
       </Header>
+      {isMobile && (
+        <Drawer
+          title={<span style={{ fontWeight: 700 }}>畔色孚格 ERP</span>}
+          placement="left"
+          open={navOpen}
+          onClose={() => setNavOpen(false)}
+          width={284}
+          styles={{ body: { padding: 0 } }}
+        >
+          <div style={{ padding: '12px 12px 4px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <Button icon={<CameraOutlined />} block onClick={() => { nav('/screenshots'); setNavOpen(false); }}>截图录单</Button>
+            <Button icon={<EditOutlined />} block onClick={() => { nav('/custom-quote-v2'); setNavOpen(false); }}>定制报价</Button>
+            <Button icon={mode === 'dark' ? <BulbFilled /> : <BulbOutlined />} block onClick={toggleTheme}>
+              {mode === 'dark' ? '浅色模式' : '深色模式'}
+            </Button>
+          </div>
+          <Menu
+            mode="inline"
+            selectedKeys={selectedKeys}
+            defaultOpenKeys={group ? [group] : []}
+            items={menuItems}
+            onClick={() => setNavOpen(false)}
+            style={{ borderInlineEnd: 0 }}
+          />
+        </Drawer>
+      )}
       <CommandPalette />
       <AiAssistantWidget />
       <Content style={{ padding: 24 }}>

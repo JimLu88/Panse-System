@@ -102,16 +102,16 @@ export default function MonthlyOpsPanel() {
 
       {selRow && (
         <Row gutter={[12, 12]}>
-          <Col span={4}>
+          <Col xs={12} sm={8} md={4}>
             <Card size="small" style={BLUE_CARD}>
               <Statistic title="当月利润" value={selRow.net_profit ?? 0} precision={0} prefix="¥"
                 valueStyle={{ color: (selRow.net_profit ?? 0) >= 0 ? '#389e0d' : '#cf1322', fontSize: 18 }} />
             </Card>
           </Col>
-          <Col span={4}><Card size="small" style={BLUE_CARD}>
+          <Col xs={12} sm={8} md={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="利润率" value={selRow.net_profit_rate ?? 0} suffix="%" precision={1} />
           </Card></Col>
-          <Col span={4}><Card size="small" style={BLUE_CARD}>
+          <Col xs={12} sm={8} md={4}><Card size="small" style={BLUE_CARD}>
             {/* 销售额口径 = 剔除补单 (用户拍板 2026-06-12), 补单金额单独注释 */}
             <Statistic title="当月营收 (不含补单)" value={selRow.real_revenue ?? 0} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
             {(selRow.refill_revenue ?? 0) > 0 && (
@@ -120,14 +120,14 @@ export default function MonthlyOpsPanel() {
               </div>
             )}
           </Card></Col>
-          <Col span={4}><Card size="small" style={BLUE_CARD}>
+          <Col xs={12} sm={8} md={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="推广ROI" value={selRow.promo_roi ?? 0} precision={2} suffix="×" />
             <div style={{ color: '#999', fontSize: 12 }}>推广占比 {selRow.promo_spend_ratio != null ? `${(selRow.promo_spend_ratio * 100).toFixed(1)}%` : '-'}</div>
           </Card></Col>
-          <Col span={4}><Card size="small" style={BLUE_CARD}>
+          <Col xs={12} sm={8} md={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="累计利润" value={selRow.cumulative_profit} precision={0} prefix="¥" valueStyle={{ fontSize: 18 }} />
           </Card></Col>
-          <Col span={4}><Card size="small" style={BLUE_CARD}>
+          <Col xs={12} sm={8} md={4}><Card size="small" style={BLUE_CARD}>
             <Statistic title="投资回收率" value={selRow.recovery_rate != null ? selRow.recovery_rate * 100 : 0} suffix="%" precision={1}
               valueStyle={{ color: '#1677ff' }} />
             <div style={{ color: '#999', fontSize: 12 }}>总投资 {money(pnl?.total_investment)}</div>
