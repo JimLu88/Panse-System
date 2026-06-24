@@ -56,12 +56,42 @@ def recompute_and_save(db: Session, sku_id: int) -> PricingSku:
     return sku
 
 
-def recompute_promo(promo: PricingSkuPromo, sku: PricingSku) -> None:
-    """按公式重算活动价各派生字段. promo 和 sku 对象直接 mutate."""
+# 活动价全局参数(按档)默认值 —— 复刻改造前口径: 平台立减(力度)12%; 88VIP佣金 中促1%/大促0%。
+# 以此为默认时, 下面的到手价/店铺到账/会员价与改造前【完全一致】(核对吻合用)。
+PROMO_PARAM_DEFAULTS = {
+    "mid_platform_discount": "0.12", "mid_vip_commission": "0.01",
+    "big_platform_discount": "0.12", "big_vip_commission": "0.00",
+}
+
+
+def get_promo_params(db) -> dict:
+    """读活动价全局参数(平台立减/88VIP佣金, 按中促/大促分档), 存 system_settings;
+    没配过 → 用 PROMO_PARAM_DEFAULTS(=改造前口径, 保证数字不变)。"""
+    from decimal import Decimal as D
+    from app.services import settings_service
+    out: dict = {}
+    for k, dflt in PROMO_PARAM_DEFAULTS.items():
+        raw = settings_service.get(db, f"promo_{k}", env_fallback=False)
+        try:
+            out[k] = D(str(raw)) if raw not in (None, "") else D(dflt)
+        except Exception:
+            out[k] = D(dflt)
+    return out
+
+
+def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[dict] = None) -> None:
+    """按公式重算活动价各派生字段. promo 和 sku 对象直接 mutate.
+    params: 活动价全局参数(平台立减/88VIP佣金, 按档); 不传 → PROMO_PARAM_DEFAULTS(=改造前口径)。
+    口径: 到手 = 日常 ×(1−平台立减)× 店铺宝系数; 店铺到账 = 到手 ×(1−88VIP佣金); 会员价 = 到手 −150。"""
     from decimal import Decimal as D, ROUND_HALF_UP
     daily = sku.daily_price
     if daily is None:
         return
+    p = params or {k: D(v) for k, v in PROMO_PARAM_DEFAULTS.items()}
+    mid_disc = D(str(p.get("mid_platform_discount", PROMO_PARAM_DEFAULTS["mid_platform_discount"])))
+    mid_comm = D(str(p.get("mid_vip_commission", PROMO_PARAM_DEFAULTS["mid_vip_commission"])))
+    big_disc = D(str(p.get("big_platform_discount", PROMO_PARAM_DEFAULTS["big_platform_discount"])))
+    big_comm = D(str(p.get("big_vip_commission", PROMO_PARAM_DEFAULTS["big_vip_commission"])))
     promo.taobao_activity_price = daily
     promo.xhs_list_price = daily
     # 小促
@@ -69,16 +99,20 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku) -> None:
         promo.shop_internal_final = (daily * promo.shop_promo_rate).quantize(D("0.01"), ROUND_HALF_UP)
     # 无国补中促
     if promo.mid_shop_rate and daily:
-        mid = (daily * D("0.88") * promo.mid_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
+        mid = (daily * (D("1") - mid_disc) * promo.mid_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
         promo.mid_buyer_price = mid
-        promo.mid_shop_receipt = (mid * D("0.99")).quantize(D("0.01"), ROUND_HALF_UP)
+        promo.mid_shop_receipt = (mid * (D("1") - mid_comm)).quantize(D("0.01"), ROUND_HALF_UP)
         promo.mid_vip_final = mid - D("150")
+        promo.mid_platform_discount = mid_disc      # 记录所用力度/佣金, 供前端单列展示
+        promo.mid_vip_commission = mid_comm
     # 无国补大促
     if promo.big_shop_rate and daily:
-        big = (daily * D("0.88") * promo.big_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
+        big = (daily * (D("1") - big_disc) * promo.big_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
         promo.big_buyer_price = big
-        promo.big_shop_receipt = big
+        promo.big_shop_receipt = (big * (D("1") - big_comm)).quantize(D("0.01"), ROUND_HALF_UP)
         promo.big_vip_final = big - D("150")
+        promo.big_platform_discount = big_disc
+        promo.big_vip_commission = big_comm
     # 小红书
     if promo.xhs_activity_price:
         discount = promo.xhs_promo_discount or D("0.15")

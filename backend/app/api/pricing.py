@@ -247,7 +247,7 @@ def update_pricing_by_product(
             field_change_service.diff_and_apply(
                 db, promo, body.promo, table="pricing_sku_promo", pk=sku.sku_code,
                 actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
-            pricing_calc_service.recompute_promo(promo, sku)
+            pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
         pricing_calc_service.recompute(sku)
         updated += 1
     db.commit()
@@ -1112,7 +1112,7 @@ def create_sku_promo(
     sku = _get_sku_or_404(db, sku_code)
     promo = PricingSkuPromo(sku_code=sku_code, **body.model_dump(exclude_none=True))
     db.add(promo)
-    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
     pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(promo)
@@ -1138,11 +1138,49 @@ def upsert_sku_promo(
         table="pricing_sku_promo", pk=sku_code,
         actor=getattr(_, "username", None), row_label=sku.sku or sku.product_code,
     )
-    pricing_calc_service.recompute_promo(promo, sku)
+    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
     pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(promo)
     return PricingSkuPromoOut.model_validate(promo)
+
+
+class PromoParamsIn(BaseModel):
+    mid_platform_discount: Optional[Decimal] = None   # 中促 平台立减(力度)
+    mid_vip_commission: Optional[Decimal] = None       # 中促 88VIP佣金
+    big_platform_discount: Optional[Decimal] = None    # 大促 平台立减(力度)
+    big_vip_commission: Optional[Decimal] = None        # 大促 88VIP佣金
+
+
+@router.get("/promo-params")
+def get_promo_params_ep(db: Session = Depends(get_db)):
+    """活动价全局参数(按档): 平台立减(力度) + 88VIP佣金。返回当前值(小数, 如 0.12)。"""
+    p = pricing_calc_service.get_promo_params(db)
+    return {k: float(v) for k, v in p.items()}
+
+
+@router.put("/promo-params")
+def set_promo_params_ep(
+    body: PromoParamsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """设活动价全局参数 + 用新参数重算全部活动价(到手/店铺到账/会员价)。只更新传入的字段。"""
+    from app.services import settings_service
+    for k, v in body.model_dump(exclude_unset=True).items():
+        if v is not None:
+            settings_service.set_value(db, f"promo_{k}", str(v),
+                                       description="活动价全局参数(平台立减/88VIP佣金)")
+    params = pricing_calc_service.get_promo_params(db)
+    sku_map = {s.sku_code: s for s in db.query(PricingSku).all()}
+    n = 0
+    for pr in db.query(PricingSkuPromo).all():
+        sku = sku_map.get(pr.sku_code)
+        if sku is not None:
+            pricing_calc_service.recompute_promo(pr, sku, params)
+            n += 1
+    db.commit()
+    return {"params": {k: float(v) for k, v in params.items()}, "recomputed": n}
 
 
 # ===========================================================================
