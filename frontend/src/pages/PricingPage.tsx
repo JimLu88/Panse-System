@@ -69,20 +69,23 @@ const ACCESSORY_FIELDS: { key: string; label: string }[] = [
 const ACCESSORY_TEXT_FIELDS: { key: string; label: string }[] = [
   { key: 'other_desc', label: '外配件说明' }, { key: 'parts_remark', label: '配件备注' },
 ];
-type PromoField = { key: string; label: string; kind: 'num' | 'text'; editable: boolean };
+type PromoField = { key: string; label: string; kind: 'num' | 'text'; editable: boolean; pct?: boolean };
 const PROMO_FIELDS: PromoField[] = [
   { key: 'taobao_item_id', label: '淘宝商品ID', kind: 'text', editable: true },
   { key: 'taobao_sku_id', label: '淘宝SKUID', kind: 'text', editable: true },
   { key: 'taobao_activity_price', label: '淘宝活动报名价', kind: 'num', editable: false },
-  { key: 'shop_promo_rate', label: '店铺宝系数', kind: 'num', editable: true },
-  { key: 'shop_internal_promo', label: '店铺宝设置', kind: 'num', editable: false },
+  { key: 'shop_promo_rate', label: '小促店铺宝设置%', kind: 'num', editable: true, pct: true },
   { key: 'shop_internal_final', label: '小促到手价', kind: 'num', editable: false },
-  { key: 'mid_shop_rate', label: '中促系数', kind: 'num', editable: true },
+  { key: 'mid_platform_discount', label: '中促力度%', kind: 'num', editable: false, pct: true },
+  { key: 'mid_shop_rate', label: '中促店铺宝设置%', kind: 'num', editable: true, pct: true },
   { key: 'mid_buyer_price', label: '中促到手价', kind: 'num', editable: false },
+  { key: 'mid_vip_commission', label: '中促88VIP佣金%', kind: 'num', editable: false, pct: true },
   { key: 'mid_shop_receipt', label: '中促店铺到账', kind: 'num', editable: false },
   { key: 'mid_vip_final', label: '中促会员价', kind: 'num', editable: false },
-  { key: 'big_shop_rate', label: '大促系数', kind: 'num', editable: true },
+  { key: 'big_platform_discount', label: '大促力度%', kind: 'num', editable: false, pct: true },
+  { key: 'big_shop_rate', label: '大促店铺宝设置%', kind: 'num', editable: true, pct: true },
   { key: 'big_buyer_price', label: '大促到手价', kind: 'num', editable: false },
+  { key: 'big_vip_commission', label: '大促88VIP佣金%', kind: 'num', editable: false, pct: true },
   { key: 'big_shop_receipt', label: '大促店铺到账', kind: 'num', editable: false },
   { key: 'big_vip_final', label: '大促会员价', kind: 'num', editable: false },
   { key: 'xhs_item_id', label: '小红书商品ID', kind: 'text', editable: true },
@@ -93,6 +96,17 @@ const PROMO_FIELDS: PromoField[] = [
   { key: 'xhs_promo_discount', label: '小红书折扣率', kind: 'num', editable: true },
   { key: 'xhs_promo_price', label: '小红书促销价', kind: 'num', editable: false },
 ];
+// 活动价计算列的公式说明 (鼠标悬停显示: 引用了哪个数字 + 用了什么系数)
+const PROMO_FORMULA: Record<string, string> = {
+  taobao_activity_price: '活动报名价 = 日常价',
+  shop_internal_final: '小促到手价 = 日常价 × 小促店铺宝设置%',
+  mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促店铺宝设置%',
+  mid_shop_receipt: '中促店铺到账 = 中促到手价 × (1 − 88VIP佣金%)',
+  mid_vip_final: '中促会员价 = 中促到手价 − 阶梯消费券(按到手价档位)',
+  big_buyer_price: '大促到手价 = 日常价 × (1 − 大促力度%) × 大促店铺宝设置%',
+  big_shop_receipt: '大促店铺到账 = 大促到手价 × (1 − 88VIP佣金%)',
+  big_vip_final: '大促会员价 = 大促到手价 − 阶梯消费券(按到手价档位)',
+};
 
 // 字段总表(供快捷按钮勾选, 带分组) + 内置默认按钮
 const BASE_FIELDS: PresetField[] = [
@@ -610,9 +624,19 @@ export default function PricingPage() {
     title: COEFF_COLOR.includes(f.key) ? coeffTitle(f) : f.label,
     dataIndex: f.key, width: f.kind === 'text' ? 130 : 100, ellipsis: f.kind === 'text',
     render: (v: any, r: PricingSku) => {
-      if (!f.editable) return f.kind === 'num' ? money(num(v)) : (str(v) || <Typography.Text type="secondary">—</Typography.Text>);
+      if (!f.editable) {
+        if (f.kind !== 'num') return str(v) || <Typography.Text type="secondary">—</Typography.Text>;
+        if (f.pct) return num(v) == null ? '—' : `${(num(v)! * 100).toFixed(1)}%`;
+        const tip = PROMO_FORMULA[f.key];
+        const body = money(num(v));
+        return tip
+          ? <Tooltip title={tip}><span style={{ borderBottom: '1px dotted #d9d9d9', cursor: 'help' }}>{body}</span></Tooltip>
+          : body;
+      }
       if (f.kind !== 'num') return <EditableTextCell value={str(v)} onSave={(nv) => savePromo(r, f.key, nv)} />;
-      const cell = <EditableNumberCell value={num(v)} unit={f.key.endsWith('_rate') || f.key.endsWith('_discount') ? '' : '¥'} onSave={(nv) => savePromo(r, f.key, nv)} />;
+      const cell = f.pct
+        ? <EditableNumberCell value={num(v) == null ? null : num(v)! * 100} unit="%" onSave={(nv) => savePromo(r, f.key, nv == null ? nv : (nv as number) / 100)} />
+        : <EditableNumberCell value={num(v)} unit={f.key.endsWith('_rate') || f.key.endsWith('_discount') ? '' : '¥'} onSave={(nv) => savePromo(r, f.key, nv)} />;
       const meta = coeffByField[f.key];
       const val = num(v);
       const override = COEFF_COLOR.includes(f.key) && meta?.mode != null && val != null && Math.abs(val - meta.mode) > 1e-6;
@@ -641,8 +665,8 @@ export default function PricingPage() {
     external_parts_cost: '#f6ffed', platform_fee_rate: '#f6ffed', tax: '#f6ffed',
   };
   ACCESSORY_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fbf4ff'; });
-  PROMO_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#fff0f6'; });
-  GROUP_BG['taobao_title'] = '#fff0f6';
+  PROMO_FIELDS.forEach((f) => { GROUP_BG[f.key] = '#eef4ff'; });
+  GROUP_BG['taobao_title'] = '#eef4ff';
   const withGroupColor = (cols: any[]) => cols.map((c) => {
     const bg = GROUP_BG[c.dataIndex as string];
     if (!bg) return c;
