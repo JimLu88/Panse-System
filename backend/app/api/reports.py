@@ -1032,3 +1032,159 @@ def per_order_reconcile_export(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_q(fname)}"},
     )
+
+
+def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
+    """逐单核对 多月工作簿: 每月一 sheet; 派生值(真实收入/成本合计/净利/净利率/木作差额)用 Excel 公式;
+    商品成本走 实付×85% 的单写成 =实付×0.85 公式; 颜色+来源列+批注 标注 实际/预估/兜底。纯函数, 便于测试。"""
+    import openpyxl
+    from openpyxl.comments import Comment
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+
+    GREEN, BLUE, ORANGE, GREY = "389E0D", "1677FF", "FA8C16", "8C8C8C"
+    MONEY = "¥#,##0;-¥#,##0"
+    PCT = "0.0%"
+    f_hdr = Font(bold=True, color="FFFFFF", size=10)
+    fill_hdr = PatternFill("solid", fgColor="1F3A5F")
+    fill_sum = PatternFill("solid", fgColor="F0F0F0")
+    fill_actual = PatternFill("solid", fgColor="F6FFED")   # 绿底=实际账单
+    fill_est = PatternFill("solid", fgColor="E6F4FF")      # 蓝底=定价表推演
+    fill_cap = PatternFill("solid", fgColor="FFF7E6")      # 橙底=85%兜底/封顶
+    side = Side(style="thin", color="E0E0E0")
+    border = Border(left=side, right=side, top=side, bottom=side)
+    ctr = Alignment(horizontal="center", vertical="center")
+    rgt = Alignment(horizontal="right")
+
+    HEAD = ["订单号", "产品", "下单日", "实付", "退款", "真实收入", "商品成本", "物流", "安装",
+            "平台扣点", "税", "售后", "成本合计", "净利", "净利率", "成本来源",
+            "预算木作", "预估配件", "预估打包", "实际木作", "木作差额"]
+    WID = [20, 22, 11, 10, 9, 11, 11, 8, 8, 10, 8, 8, 11, 11, 9, 18, 10, 10, 10, 10, 10]
+    # 列号 (1-indexed)
+    C_PAID, C_REFUND, C_GOODS = 4, 5, 7
+    C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS = 8, 9, 10, 11, 12
+    C_TOTAL, C_NET, C_MARGIN, C_SRC = 13, 14, 15, 16
+    C_PRED, C_PARTS, C_PACK, C_AWOOD, C_WDIFF = 17, 18, 19, 20, 21
+
+    wb = openpyxl.Workbook()
+    wb.remove(wb.active)
+    any_sheet = False
+    for (yy, mm) in months:
+        data = per_order_reconcile(year=yy, month=mm, db=db)
+        rows = data["rows"]
+        if not rows:
+            continue
+        any_sheet = True
+        ws = wb.create_sheet(title=f"{yy}-{mm:02d}")
+        ws.cell(1, 1, "图例: 绿=工厂账单实报 · 蓝=定价表推演 · 橙=实付×85%兜底/封顶 ｜ 真实收入/成本合计/净利/净利率/木作差额=Excel公式(改值自动重算)").font = Font(size=9, color=GREY)
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(HEAD))
+        for ci, h in enumerate(HEAD, 1):
+            c = ws.cell(2, ci, h)
+            c.font, c.alignment, c.fill, c.border = f_hdr, ctr, fill_hdr, border
+            ws.column_dimensions[get_column_letter(ci)].width = WID[ci - 1]
+        ws.freeze_panes = "D3"
+        first = 3
+
+        def _money(ri, ci, v, color=None, bold=False):
+            c = ws.cell(ri, ci, float(v) if v is not None else None)
+            c.number_format, c.alignment = MONEY, rgt
+            if color or bold:
+                c.font = Font(color=color, bold=bold, size=10)
+            return c
+
+        for r in rows:
+            ri = ws.max_row + 1
+            paid = float(r["paid_amount"]); goods = float(r["cost_goods"])
+            cap85 = paid > 0 and abs(goods - round(paid * 0.85, 2)) < 0.5
+            if cap85:
+                src, col, fillc = "实付×85%(兜底/封顶/片段)", ORANGE, fill_cap
+            elif r.get("cost_reconciled"):
+                src, col, fillc = "工厂账单实报", GREEN, fill_actual
+            else:
+                src, col, fillc = "定价表推演", BLUE, fill_est
+            ws.cell(ri, 1, r["order_no"]); ws.cell(ri, 2, r["product_name"]); ws.cell(ri, 3, r["order_date"])
+            _money(C_PAID, ri, r["paid_amount"])
+            _money(C_REFUND, ri, r["refund_amount"] or None, color=ORANGE)
+            ws.cell(ri, 6, f"=D{ri}-E{ri}").number_format = MONEY            # 真实收入=实付−退款
+            gc = ws.cell(ri, C_GOODS, f"=D{ri}*0.85" if cap85 else goods)    # 商品成本(兜底→公式)
+            gc.number_format, gc.alignment, gc.fill = MONEY, rgt, fillc
+            gc.font = Font(color=col, bold=True, size=10)
+            gc.comment = Comment(
+                f"成本来源: {src}\n商品成本 = 工厂账单木作(实际优先) + 配件/物流/安装/打包(定价表预估或实际);\n"
+                f"走兜底/封顶时 = 实付×0.85。预算木作/实际木作见右侧核对列。", "系统")
+            _money(C_FREIGHT, ri, r["cost_freight"]); _money(C_INSTALL, ri, r["cost_install"])
+            _money(C_PLAT, ri, r["cost_platform"]); _money(C_TAX, ri, r["cost_tax"]); _money(C_AS, ri, r["cost_aftersales"] or None)
+            ws.cell(ri, C_TOTAL, f"=G{ri}+H{ri}+I{ri}+J{ri}+K{ri}+L{ri}").number_format = MONEY   # 成本合计
+            nc = ws.cell(ri, C_NET, f"=F{ri}-M{ri}"); nc.number_format = MONEY; nc.font = Font(bold=True, size=10)  # 净利
+            ws.cell(ri, C_MARGIN, f"=IF(F{ri}=0,0,N{ri}/F{ri})").number_format = PCT   # 净利率
+            sc = ws.cell(ri, C_SRC, src); sc.font = Font(color=col, size=9); sc.alignment = ctr
+            _money(C_PRED, ri, r.get("predicted_wood"), color=GREY)
+            _money(C_PARTS, ri, r.get("est_parts"), color=GREY); _money(C_PACK, ri, r.get("est_packaging"), color=GREY)
+            _money(C_AWOOD, ri, r.get("actual_wood"), color=(GREEN if r.get("actual_wood") is not None else None))
+            if r.get("predicted_wood") is not None and r.get("actual_wood") is not None:
+                ws.cell(ri, C_WDIFF, f"=T{ri}-Q{ri}").number_format = MONEY   # 木作差额=实际−预算
+            for ci in range(1, len(HEAD) + 1):
+                ws.cell(ri, ci).border = border
+        last = ws.max_row
+
+        sr = last + 1   # 合计行 (SUM 公式)
+        ws.cell(sr, 1, f"合计 {len(rows)} 单").font = Font(bold=True, size=10)
+        for ci in (C_PAID, C_REFUND, 6, C_GOODS, C_FREIGHT, C_INSTALL, C_PLAT, C_TAX, C_AS, C_TOTAL, C_NET):
+            L = get_column_letter(ci)
+            cc = ws.cell(sr, ci, f"=SUM({L}{first}:{L}{last})")
+            cc.number_format, cc.font = MONEY, Font(bold=True, size=10)
+        ws.cell(sr, C_MARGIN, f"=IF(F{sr}=0,0,N{sr}/F{sr})").number_format = PCT
+        for ci in range(1, len(HEAD) + 1):
+            ws.cell(sr, ci).fill = fill_sum; ws.cell(sr, ci).border = border
+
+        st = data["subtotal"]   # 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定 − 补单 (全公式)
+        fr2 = sr + 2
+        items = [("推广费", st["promo_expense"]), ("人员外包", st["outsourcing_expense"]),
+                 ("固定成本", st["fixed_costs"]), ("补单成本", st["refill_cost"])]
+        ws.cell(fr2, 1, "本月真实净利 = 行净利合计 − 推广 − 人员 − 固定 − 补单 :").font = Font(bold=True, size=10)
+        for i, (name, val) in enumerate(items, 1):
+            ws.cell(fr2 + i, 1, name)
+            mc = ws.cell(fr2 + i, 2, float(val)); mc.number_format = MONEY
+        ws.cell(fr2 + 5, 1, "本月真实净利").font = Font(bold=True, size=11)
+        rn = ws.cell(fr2 + 5, 2, f"=N{sr}-B{fr2 + 1}-B{fr2 + 2}-B{fr2 + 3}-B{fr2 + 4}")
+        rn.number_format, rn.font = MONEY, Font(bold=True, size=11, color=GREEN)
+
+    if not any_sheet:
+        ws = wb.create_sheet(title="无数据")
+        ws.cell(1, 1, "该时间段无成交订单")
+    return wb
+
+
+@router.get("/per-order-reconcile/export-all")
+def per_order_reconcile_export_all(
+    from_year: int = Query(2026),
+    from_month: int = Query(1, ge=1, le=12),
+    to_year: Optional[int] = Query(None),
+    to_month: Optional[int] = Query(None, ge=1, le=12),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """逐单核对 · 多月导出 → xlsx (每月一 sheet, 金额带公式可回推, 标注 预估/实际/85%兜底)。用户 2026-06-25。"""
+    import io
+    from urllib.parse import quote as _q
+
+    today = _date.today()
+    end_year = to_year or today.year
+    end_month = to_month or today.month
+    months: list[tuple[int, int]] = []
+    y, m = from_year, from_month
+    while (y, m) <= (end_year, end_month):
+        months.append((y, m))
+        m += 1
+        if m > 12:
+            m, y = 1, y + 1
+
+    wb = _build_reconcile_workbook_all(db, months)
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = f"逐单核对_{from_year}-{from_month:02d}_至_{end_year}-{end_month:02d}.xlsx"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{_q(fname)}"},
+    )

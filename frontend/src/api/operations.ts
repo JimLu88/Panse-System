@@ -329,6 +329,22 @@ export async function downloadPerOrderReconcile(year: number, month: number) {
   window.URL.revokeObjectURL(url);
 }
 
+// 逐单核对 多月导出: 每月一 sheet, 金额带 Excel 公式(可回推), 标注 预估/实际/85%兜底 (2026-06-25)
+export async function downloadPerOrderReconcileAll(fromYear = 2026, fromMonth = 1) {
+  const resp = await api.get('/api/reports/per-order-reconcile/export-all', {
+    params: { from_year: fromYear, from_month: fromMonth },
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `逐单核对_全部按月_${fromYear}起.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // 自定义固定成本/管理费用项 (房租/水电/软件…) — 用户可自增删
 export const getFixedCostItems = () =>
   api.get<{ items: FixedCostItem[]; monthly_total: number }>('/api/finance/fixed-cost-items')

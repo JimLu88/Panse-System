@@ -15,7 +15,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import RefillCallout from '../components/RefillCallout';
 import {
   FixedCostItem, PerOrderRow, fetchPerOrderReconcile, getFixedCostItems, putFixedCostItems,
-  downloadPerOrderReconcile,
+  downloadPerOrderReconcile, downloadPerOrderReconcileAll,
 } from '../api/operations';
 
 const { Title, Text } = Typography;
@@ -247,6 +247,18 @@ export default function PerOrderReconcilePage() {
             <Button icon={<FileExcelOutlined />}
               onClick={() => window.open('/api/factory-statement/missing-bill-export?period=' + period, '_blank')}>
               导出未录订单
+            </Button>
+          </Tooltip>
+          <Tooltip title="导出 2026 起每月一个 sheet; 真实收入/成本合计/净利/净利率/木作差额 全带 Excel 公式可回推; 颜色+来源列+批注 标注 实际/预估/85%兜底">
+            <Button type="primary" ghost icon={<FileExcelOutlined />}
+              onClick={async () => {
+                try {
+                  await downloadPerOrderReconcileAll(2026, 1);
+                } catch (e: any) {
+                  message.error(e?.response?.data?.detail ?? '导出失败');
+                }
+              }}>
+              导出全部(按月·公式)
             </Button>
           </Tooltip>
         </Space>
