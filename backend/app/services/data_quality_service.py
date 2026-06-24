@@ -1199,6 +1199,10 @@ def _cost_ratio_reason(o) -> Optional[str]:
     from decimal import Decimal
     if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
         return None
+    # 样块/样品本就低成本(物理成本约¥13、售¥16-44), 成本率天然偏低, 不算异常 (用户 2026-06-24)
+    _t = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+    if any(k in _t for k in ("样块", "样品", "小样")):
+        return None
     paid = Decimal(str(o.paid_amount or 0))
     if paid <= 0:
         return None
