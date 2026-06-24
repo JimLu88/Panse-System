@@ -221,7 +221,25 @@ def _check_alipay_flow_no_missing(db: Session, exc: DataException) -> Optional[s
                "factory_compensation", "logistics_compensation")
     if not any(any((getattr(r, f, None) or 0) > 0 for f in _PAYOUT) for r in rows):
         return None
-    return f"售后单 {exc.source_pk} (有额外赔付) 仍缺支付宝流水号"
+    # 自动关联 (用户 2026-06-24): 平台订单的退款一定在支付宝流水里 → 按平台订单号找"退款"流水回填流水号。
+    # related_order_no 形如 T200P<订单号>, 故用 LIKE 含订单号匹配; 只在唯一一条退款流水时自动配, 避免错配。
+    from sqlalchemy import or_
+    from app.models.finance import AlipayFlow
+    flows = db.execute(
+        select(AlipayFlow).where(or_(
+            AlipayFlow.related_order_no.like(f"%{exc.source_pk}%"),
+            AlipayFlow.platform_order_no.like(f"%{exc.source_pk}%"),
+        ))
+    ).scalars().all()
+    refunds = [f for f in flows if "退款" in (f.transaction_type or "")]
+    if len(refunds) == 1:
+        txn = refunds[0].transaction_no
+        for r in rows:
+            if not (r.alipay_flow_no or "").strip():
+                r.alipay_flow_no = txn
+        db.flush()
+        return None  # 已按平台订单号自动配上退款流水, 销账
+    return f"售后单 {exc.source_pk} (有额外赔付) 仍缺支付宝流水号 (订单库未找到唯一退款流水, 请人工核对)"
 
 
 def _check_refill_record_missing(db: Session, exc: DataException) -> Optional[str]:
