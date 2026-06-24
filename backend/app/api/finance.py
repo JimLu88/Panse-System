@@ -71,6 +71,60 @@ def list_alipay(
     return db.execute(stmt).scalars().all()
 
 
+class AlipayFlowEditIn(BaseModel):
+    reconciliation_type: Optional[str] = None   # 给值=改核销类型(空串=清空); None=不改
+    amount: Optional[Decimal] = None            # 给值=改金额(爱群号丢符号: 支出应为负)
+    transaction_time: Optional[datetime] = None  # 给值=改交易时间(补无日期流水)
+
+
+@router.patch("/alipay-flows/{flow_id}", response_model=AlipayFlowOut)
+def edit_alipay_flow(
+    flow_id: int,
+    payload: AlipayFlowEditIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """手动修正流水(系统入口, 替代手填库): 改 核销类型 / 金额 / 交易时间。
+    用于爱群号等脏流水的纠正(丢符号→改金额符号、无日期→补日期、错分类→改类型)。
+    每处改动记字段修改档案(可回溯), 改后触发对账重算。"""
+    f = db.get(AlipayFlow, flow_id)
+    if not f:
+        raise HTTPException(404, "流水不存在")
+    from app.services import field_change_service
+    actor = ("手动修正:" + (getattr(user, "username", "") or "")).rstrip(": ")
+    label = (f.counterparty or f.remark or f.transaction_no or "")[:40]
+    changed = False
+    if payload.reconciliation_type is not None:
+        new_rt = payload.reconciliation_type.strip() or None
+        if new_rt != f.reconciliation_type:
+            field_change_service.record(db, table="alipay_flows", pk=str(flow_id), field="reconciliation_type",
+                old=f.reconciliation_type, new=new_rt, actor=actor, source="manual",
+                row_label=label, field_label="核销类型")
+            f.reconciliation_type = new_rt
+            changed = True
+    if payload.amount is not None and payload.amount != f.amount:
+        field_change_service.record(db, table="alipay_flows", pk=str(flow_id), field="amount",
+            old=str(f.amount), new=str(payload.amount), actor=actor, source="manual",
+            row_label=label, field_label="金额")
+        f.amount = payload.amount
+        changed = True
+    if payload.transaction_time is not None and payload.transaction_time != f.transaction_time:
+        field_change_service.record(db, table="alipay_flows", pk=str(flow_id), field="transaction_time",
+            old=str(f.transaction_time), new=str(payload.transaction_time), actor=actor, source="manual",
+            row_label=label, field_label="交易时间")
+        f.transaction_time = payload.transaction_time
+        changed = True
+    db.commit()
+    if changed:
+        try:
+            from app.services import realtime_sync_service
+            realtime_sync_service.trigger(f"edit:alipay:{flow_id}")
+        except Exception:  # noqa: BLE001
+            pass
+    db.refresh(f)
+    return f
+
+
 class AlipayImportResult(BaseModel):
     inserted: int
     skipped_duplicate: int

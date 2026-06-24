@@ -80,6 +80,21 @@ def test_logistics_fee_matches_bill_and_flow(db_session):
     assert d.severity == "ok"
 
 
+def test_logistics_fee_unsettled_no_payment_is_ok(db_session):
+    """未结款 (用户 2026-06-24): 账单已出但无支付宝实付流水(实付0) → 不报异常, 标 ok「待结款后比对」。"""
+    db_session.add(LogisticsBill(
+        bill_date=date(2026, 5, 1), carrier="壹米滴答", freight_amount=Decimal("5893"),
+    ))
+    db_session.flush()
+    r = reconciliation_service.run_logistics_fee(db_session, record_exceptions=True)
+    d = next(d for d in r.diffs if d.key == "2026-05")
+    assert d.severity == "ok"
+    assert "结款" in (d.message or "")
+    from app.models.exception import DataException
+    assert db_session.query(DataException).filter(
+        DataException.source_pk == "logistics_fee:2026-05").count() == 0
+
+
 def test_logistics_fee_fallback_to_order_freight(db_session):
     """2026-06-11 拍板 (对账建议 6): 物流账单未导入时不再用订单运费假对比 → not_available."""
     db_session.add(Order(

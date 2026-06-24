@@ -805,6 +805,14 @@ def run_logistics_fee(
         exp = billed.get(key, Decimal("0"))
         act = paid.get(key, Decimal("0"))
         diff = act - exp
+        # 未结款 (用户拍板 2026-06-24): 账单已出但还没付款(无支付宝实付记录) → 不算异常,
+        # 等结款后有支付宝实付流水再比对。仅 应付>0 且 实付=0 视为待结款; 实付>0 仍正常对账。
+        if exp > 0 and act == 0:
+            diffs.append(ReconciliationDiff(
+                key=key, expected=exp, actual=act, diff=diff, severity="ok",
+                message=f"{key}: 应付物流费 ¥{exp} ({source}), 尚未结款(无支付宝实付记录), 待结款后比对",
+            ))
+            continue
         sev = _classify(diff, base=exp)
         msg = f"{key}: 应付物流费 ¥{exp} ({source}), 支付宝实付 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(

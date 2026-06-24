@@ -4,8 +4,12 @@ import {
   Alert,
   Button,
   Dropdown,
+  Form,
+  Input,
+  InputNumber,
   Modal,
   Segmented,
+  Select,
   Space,
   Table,
   Tag,
@@ -21,6 +25,7 @@ import {
   importAlipayCsv,
   listAlipayFlows,
 } from '../api/client';
+import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
 
@@ -70,6 +75,35 @@ export default function AlipayPage() {
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '导入失败'),
   });
 
+  // 手动修正流水 (系统入口, 替代手填库): 爱群号等脏流水改 类型/金额/时间
+  const [editFlow, setEditFlow] = useState<AlipayFlow | null>(null);
+  const [form] = Form.useForm();
+  const editMut = useMutation({
+    mutationFn: (vals: any) => api.patch(`/api/finance/alipay-flows/${editFlow!.id}`, vals),
+    onSuccess: () => {
+      message.success('已修正，对账已重算');
+      setEditFlow(null);
+      qc.invalidateQueries({ queryKey: ['alipay'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '修正失败'),
+  });
+  const openEdit = (f: AlipayFlow) => {
+    setEditFlow(f);
+    form.setFieldsValue({
+      reconciliation_type: f.reconciliation_type ?? '',
+      amount: f.amount,
+      transaction_time: f.transaction_time ? f.transaction_time.slice(0, 16).replace('T', ' ') : '',
+    });
+  };
+  const submitEdit = () => {
+    form.validateFields().then((vals) => {
+      const payload: any = { reconciliation_type: vals.reconciliation_type ?? '', amount: vals.amount };
+      const t = (vals.transaction_time || '').trim();
+      if (t) payload.transaction_time = t.replace(' ', 'T');
+      editMut.mutate(payload);
+    });
+  };
+
   const columns = [
     { title: '时间', dataIndex: 'transaction_time', width: 140,
       // 去掉 ISO 串里的 T / Z (T00:00:00 是日期时间分隔符, 用户看着别扭)
@@ -110,6 +144,10 @@ export default function AlipayPage() {
           </Tag>
         );
       } },
+    { title: '操作', dataIndex: 'id', width: 70, fixed: 'right' as const,
+      render: (_: number, row: AlipayFlow) => (
+        <Button size="small" type="link" style={{ padding: 0 }} onClick={() => openEdit(row)}>修正</Button>
+      ) },
   ];
 
   return (
@@ -192,6 +230,39 @@ export default function AlipayPage() {
             {importResult.errors.length > 0 && (
               <Alert type="error" showIcon message={importResult.errors.join('\n')} />
             )}
+          </Space>
+        )}
+      </Modal>
+
+      <Modal
+        open={!!editFlow}
+        title="修正流水"
+        onCancel={() => setEditFlow(null)}
+        onOk={submitEdit}
+        confirmLoading={editMut.isPending}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        {editFlow && (
+          <Space direction="vertical" style={{ width: '100%' }} size="small">
+            <Alert type="info" showIcon style={{ marginBottom: 8 }}
+              message={`${editFlow.account} · ${editFlow.counterparty ?? ''} · 备注: ${editFlow.remark ?? '-'}`}
+              description="用于纠正爱群号等脏流水：金额符号（支出应为负）、补交易时间、改核销类型。改后自动重算对账，并留修改档案可回溯。" />
+            <Form form={form} layout="vertical">
+              <Form.Item label="核销类型" name="reconciliation_type">
+                <Select
+                  allowClear
+                  options={[{ value: '', label: '未分类（清空）' },
+                    ...Object.entries(RECON_LABELS).map(([v, l]) => ({ value: v, label: l }))]} />
+              </Form.Item>
+              <Form.Item label="金额（支出为负，如 -14540）" name="amount">
+                <InputNumber stringMode step={0.01} style={{ width: '100%' }} />
+              </Form.Item>
+              <Form.Item label="交易时间（无日期可补，如 2026-01-31）" name="transaction_time">
+                <Input placeholder="YYYY-MM-DD 或 YYYY-MM-DD HH:mm" />
+              </Form.Item>
+            </Form>
           </Space>
         )}
       </Modal>
