@@ -62,12 +62,25 @@ PROMO_PARAM_DEFAULTS = {
     "mid_platform_discount": "0.12", "mid_vip_commission": "0.01",
     "big_platform_discount": "0.12", "big_vip_commission": "0.00",
 }
+# 88VIP 消费券阶梯默认 (来自用户活动报名表): 到手价 ≥阈值 → 减额。降序匹配, 取满足的最高一档。
+COUPON_TIERS_DEFAULT = [[1500, 150], [800, 80], [500, 50], [200, 20]]
+
+
+def _coupon_deduction(amount, tiers):
+    """按消费券阶梯求减额: 取「阈值 ≤ 到手价」中阈值最高那档的减额; 都不满足=0。"""
+    from decimal import Decimal as D
+    best = D("0")
+    for thr, ded in sorted(tiers, key=lambda x: x[0], reverse=True):
+        if amount >= thr:
+            return D(str(ded))
+    return best
 
 
 def get_promo_params(db) -> dict:
-    """读活动价全局参数(平台立减/88VIP佣金, 按中促/大促分档), 存 system_settings;
-    没配过 → 用 PROMO_PARAM_DEFAULTS(=改造前口径, 保证数字不变)。"""
+    """读活动价全局参数(平台立减/88VIP佣金/消费券阶梯, 按中促/大促分档), 存 system_settings;
+    没配过 → 用默认(平台立减/佣金=改造前口径; 消费券阶梯=活动表口径)。"""
     from decimal import Decimal as D
+    import json
     from app.services import settings_service
     out: dict = {}
     for k, dflt in PROMO_PARAM_DEFAULTS.items():
@@ -76,6 +89,18 @@ def get_promo_params(db) -> dict:
             out[k] = D(str(raw)) if raw not in (None, "") else D(dflt)
         except Exception:
             out[k] = D(dflt)
+    # 消费券阶梯 (按档), 存 JSON: [[阈值, 减额], ...]
+    for tier_key in ("mid_coupon_tiers", "big_coupon_tiers"):
+        raw = settings_service.get(db, f"promo_{tier_key}", env_fallback=False)
+        tiers = None
+        if raw:
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list) and parsed:
+                    tiers = [[D(str(a)), D(str(b))] for a, b in parsed]
+            except Exception:
+                tiers = None
+        out[tier_key] = tiers or [[D(str(a)), D(str(b))] for a, b in COUPON_TIERS_DEFAULT]
     return out
 
 
@@ -92,6 +117,8 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
     mid_comm = D(str(p.get("mid_vip_commission", PROMO_PARAM_DEFAULTS["mid_vip_commission"])))
     big_disc = D(str(p.get("big_platform_discount", PROMO_PARAM_DEFAULTS["big_platform_discount"])))
     big_comm = D(str(p.get("big_vip_commission", PROMO_PARAM_DEFAULTS["big_vip_commission"])))
+    mid_tiers = p.get("mid_coupon_tiers") or [[D(str(a)), D(str(b))] for a, b in COUPON_TIERS_DEFAULT]
+    big_tiers = p.get("big_coupon_tiers") or [[D(str(a)), D(str(b))] for a, b in COUPON_TIERS_DEFAULT]
     promo.taobao_activity_price = daily
     promo.xhs_list_price = daily
     # 小促
@@ -102,7 +129,7 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
         mid = (daily * (D("1") - mid_disc) * promo.mid_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
         promo.mid_buyer_price = mid
         promo.mid_shop_receipt = (mid * (D("1") - mid_comm)).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.mid_vip_final = mid - D("150")
+        promo.mid_vip_final = mid - _coupon_deduction(mid, mid_tiers)
         promo.mid_platform_discount = mid_disc      # 记录所用力度/佣金, 供前端单列展示
         promo.mid_vip_commission = mid_comm
     # 无国补大促
@@ -110,7 +137,7 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
         big = (daily * (D("1") - big_disc) * promo.big_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
         promo.big_buyer_price = big
         promo.big_shop_receipt = (big * (D("1") - big_comm)).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.big_vip_final = big - D("150")
+        promo.big_vip_final = big - _coupon_deduction(big, big_tiers)
         promo.big_platform_discount = big_disc
         promo.big_vip_commission = big_comm
     # 小红书

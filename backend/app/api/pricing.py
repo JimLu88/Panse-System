@@ -1150,13 +1150,24 @@ class PromoParamsIn(BaseModel):
     mid_vip_commission: Optional[Decimal] = None       # 中促 88VIP佣金
     big_platform_discount: Optional[Decimal] = None    # 大促 平台立减(力度)
     big_vip_commission: Optional[Decimal] = None        # 大促 88VIP佣金
+    mid_coupon_tiers: Optional[list] = None            # 中促消费券阶梯 [[阈值,减额],...]
+    big_coupon_tiers: Optional[list] = None            # 大促消费券阶梯
+
+
+def _serialize_promo_params(p: dict) -> dict:
+    out: dict = {}
+    for k, v in p.items():
+        if k.endswith("_coupon_tiers"):
+            out[k] = [[float(a), float(b)] for a, b in v]
+        else:
+            out[k] = float(v)
+    return out
 
 
 @router.get("/promo-params")
 def get_promo_params_ep(db: Session = Depends(get_db)):
-    """活动价全局参数(按档): 平台立减(力度) + 88VIP佣金。返回当前值(小数, 如 0.12)。"""
-    p = pricing_calc_service.get_promo_params(db)
-    return {k: float(v) for k, v in p.items()}
+    """活动价全局参数(按档): 平台立减(力度) + 88VIP佣金 + 消费券阶梯。"""
+    return _serialize_promo_params(pricing_calc_service.get_promo_params(db))
 
 
 @router.put("/promo-params")
@@ -1166,11 +1177,14 @@ def set_promo_params_ep(
     _: User = Depends(require_role("admin", "operator")),
 ):
     """设活动价全局参数 + 用新参数重算全部活动价(到手/店铺到账/会员价)。只更新传入的字段。"""
+    import json
     from app.services import settings_service
     for k, v in body.model_dump(exclude_unset=True).items():
-        if v is not None:
-            settings_service.set_value(db, f"promo_{k}", str(v),
-                                       description="活动价全局参数(平台立减/88VIP佣金)")
+        if v is None:
+            continue
+        val = json.dumps(v) if k.endswith("_coupon_tiers") else str(v)
+        settings_service.set_value(db, f"promo_{k}", val,
+                                   description="活动价全局参数(平台立减/88VIP佣金/消费券阶梯)")
     params = pricing_calc_service.get_promo_params(db)
     sku_map = {s.sku_code: s for s in db.query(PricingSku).all()}
     n = 0
@@ -1180,7 +1194,7 @@ def set_promo_params_ep(
             pricing_calc_service.recompute_promo(pr, sku, params)
             n += 1
     db.commit()
-    return {"params": {k: float(v) for k, v in params.items()}, "recomputed": n}
+    return {"params": _serialize_promo_params(params), "recomputed": n}
 
 
 # ===========================================================================
