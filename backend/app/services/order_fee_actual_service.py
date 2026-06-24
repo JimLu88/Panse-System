@@ -57,13 +57,21 @@ def estimate_fee(sku_code, by_sku: dict, base_maps: dict):
             _pick(ps, "install_cost", base_maps["inst"], base))
 
 
+def _unit_physical(sku_code, by_sku: dict, base_maps: dict):
+    """该 SKU 单件物理成本(定价表): 精确SKU优先, 否则基础产品码中位数。供 _effective_qty 判真多件用。"""
+    return _pick(by_sku.get(sku_code) if sku_code else None, "physical_cost",
+                 base_maps.get("phys", {}), sku_utils.base_product_code(sku_code))
+
+
 def _build_price_maps(db: Session):
     rows = db.execute(select(
         PricingSku.sku_code, PricingSku.packaging_cost,
-        PricingSku.logistics_cost, PricingSku.install_cost)).all()
+        PricingSku.logistics_cost, PricingSku.install_cost,
+        PricingSku.physical_cost)).all()
     by_sku = {p.sku_code: p for p in rows}
-    lists = {"pk": {}, "lg": {}, "inst": {}}
-    fields = {"pk": "packaging_cost", "lg": "logistics_cost", "inst": "install_cost"}
+    lists = {"pk": {}, "lg": {}, "inst": {}, "phys": {}}
+    fields = {"pk": "packaging_cost", "lg": "logistics_cost", "inst": "install_cost",
+              "phys": "physical_cost"}
     for p in rows:
         base = sku_utils.base_product_code(p.sku_code)
         if not base:
@@ -85,32 +93,30 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
     if order_nos:
         o_stmt = o_stmt.where(Order.order_no.in_(order_nos))
     orders = db.execute(o_stmt).scalars().all()
+    from app.services.order_cost_service import _effective_qty
     KS = ("pk", "lg", "inst")
     est: dict[str, dict] = {}
     for o in orders:
         units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps)))
-        qty = int(o.qty or 1)
-        est[o.order_no] = {k: (units[k] * qty) if units[k] is not None else None for k in KS}
-    # 系统平均比例 = Σ预估 / Σ实付 (用户: 差价/邮费等无SKU预估的单按比例×订单实付兜底)
-    num = {k: Decimal("0") for k in KS}
-    den = {k: Decimal("0") for k in KS}
-    for o in orders:
-        paid = _d(o.paid_amount)
-        if not paid or paid <= 0:
-            continue
-        for k in KS:
-            if est[o.order_no][k] is not None:
-                num[k] += est[o.order_no][k]
-                den[k] += paid
-    ratio = {k: (num[k] / den[k]) if den[k] > 0 else None for k in KS}
+        # 真实计价件数: 与 theoretical_cost 同口径(_effective_qty) —— 定制单 / 凑价单(件均实付<单件成本)
+        # 按 1 件算, 否则 qty。修(用户 2026-06-25): 原来 ×原始qty 会把固定费用×10(定制凑价单qty=10)
+        # 估成垃圾(餐桌物流估成¥5000), 现按真实件数乘。
+        eff_qty = _effective_qty(o, _unit_physical(o.sku_code, by_sku, base_maps))
+        est[o.order_no] = {k: (units[k] * eff_qty) if units[k] is not None else None for k in KS}
+    # 兜底(estimate_fee 取不到定价表费用时): 用 全局中位数(定价表该费用)。
+    # 修(用户 2026-06-25): 原"比例×实付"会把固定费用随实付放大成垃圾(餐桌物流估成¥5000) —
+    # 打包/物流/安装是按件大致固定的费用, 不随订单金额线性放大, 故改用所有有值单的中位数兜底。
+    med = {}
+    for k in KS:
+        vals = sorted(v for v in (est[o.order_no][k] for o in orders) if v is not None)
+        med[k] = vals[len(vals) // 2] if vals else None
     est_set = 0
     for o in orders:
-        paid = _d(o.paid_amount)
         new = {}
         for k in KS:
             v = est[o.order_no][k]
-            if v is None and ratio[k] is not None and paid and paid > 0:
-                v = (ratio[k] * paid).quantize(_CENTS)
+            if v is None:
+                v = med[k]   # 全局中位数兜底(固定费用, 不随实付放大)
             new[k] = v
         if (o.est_packing != new["pk"] or o.est_logistics != new["lg"]
                 or o.est_install != new["inst"]):
