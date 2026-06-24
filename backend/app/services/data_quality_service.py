@@ -1208,23 +1208,19 @@ def _cost_ratio_reason(o) -> Optional[str]:
         return None
     if o.refund_amount and Decimal(str(o.refund_amount)) >= paid * Decimal("0.99"):
         return None   # 全额退款单不审
-    cost_raw = o.actual_cost if o.actual_cost is not None else o.theoretical_cost
-    if cost_raw is None:
-        return None
-    cost = Decimal(str(cost_raw))
+    if o.actual_cost is None and o.theoretical_cost is None:
+        return None   # 完全无成本依据 → 归"缺成本"异常管, 不在成本率审查
+    # 成本基准 = 全口径物理成本 (用户 2026-06-24 修): 工厂账单 actual_cost 只含木作, 不能直接当成本,
+    # 否则成本率虚低(~50%)误报。physical_cost 已补回非木作(打包/物流/安装, 实际优先否则预估)。
+    from app.services.order_financials import physical_cost
+    cost = physical_cost(o)
     if cost <= 0:
         return None   # 归0单(官方服务/小额差价)不在成本率审查
     ratio = cost / paid
     if ratio < Decimal("0.6"):
-        return f"成本¥{cost}仅占实付¥{paid}的{ratio:.0%}(毛利偏高, 疑成本估低/漏配件)"
+        return f"物理成本¥{cost:.0f}仅占实付¥{paid:.0f}的{ratio:.0%}(毛利偏高, 疑成本估低/漏配件)"
     if Decimal("0.9") < ratio <= Decimal("1.5"):
-        return f"成本¥{cost}占实付¥{paid}的{ratio:.0%}(毛利偏低或亏, 疑成本估高)"
-    # 差价/小额单按85%估算(0.85在60~90带内, 但仍是估算, 待人工核实际成本)
-    if o.actual_cost is None and paid >= Decimal("200"):
-        txt = " ".join(str(getattr(o, f, None) or "")
-                       for f in ("seller_memo", "remark", "buyer_message"))
-        if any(k in txt for k in ("差价", "补差价")) and abs(ratio - Decimal("0.85")) < Decimal("0.02"):
-            return f"差价/小额单按实付×85%估算¥{cost}(待人工核工厂实际成本)"
+        return f"物理成本¥{cost:.0f}占实付¥{paid:.0f}的{ratio:.0%}(毛利偏低或亏, 疑成本估高)"
     return None
 
 
