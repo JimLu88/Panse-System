@@ -4,7 +4,7 @@
  */
 import { useState } from 'react';
 import {
-  Alert, Card, Col, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography,
+  Alert, Card, Col, Grid, Row, Segmented, Select, Space, Statistic, Table, Tag, Typography,
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useQuery } from '@tanstack/react-query';
@@ -15,10 +15,63 @@ import RefillCallout from '../components/RefillCallout';
 const yuan = (v: number) => `¥${Number(v || 0).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 const medal = (r: number) => (r === 1 ? '🥇' : r === 2 ? '🥈' : r === 3 ? '🥉' : `#${r}`);
 
+// 手机端: 排行榜用「列表」而非挤压的表格 (研究结论: ranked content 用 list)。产品名为主, 名次徽章 + 主指标右侧高亮。
+function MobileRankList({ rows, metric }: { rows: RankRow[]; metric: 'revenue' | 'qty' }) {
+  if (!rows.length) return <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>暂无数据</div>;
+  return (
+    <div>
+      {rows.map((row) => {
+        const sub = metric === 'revenue'
+          ? `销量 ${row.qty} 件 · 订单 ${row.order_count} 单`
+          : `销售额 ${yuan(row.revenue)} · 订单 ${row.order_count} 单`;
+        return (
+          <div key={row.rank} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 2px', borderBottom: '1px solid #f1f5f9' }}>
+            <div style={{ width: 32, textAlign: 'center', flexShrink: 0, fontSize: row.rank <= 3 ? 22 : 15, fontWeight: 600, color: row.rank <= 3 ? undefined : '#94a3b8' }}>{medal(row.rank)}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontWeight: 600, color: '#1e293b', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {row.product_name || '(未命名)'}
+                {row.product_code ? <Tag style={{ marginLeft: 6 }}>{row.product_code}</Tag> : null}
+              </div>
+              <div style={{ marginTop: 2, fontSize: 12, color: '#94a3b8' }}>{sub}</div>
+            </div>
+            <div style={{ flexShrink: 0, fontWeight: 700, color: '#1677ff', fontSize: 15 }}>
+              {metric === 'revenue' ? yuan(row.revenue) : `${row.qty} 件`}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// 手机端: 冠军时间线列表 (点周期切换该期排行)
+function MobileChampionList({ periods, sel, metric, onPick }: { periods: RankPeriod[]; sel: string | null; metric: 'revenue' | 'qty'; onPick: (p: string) => void }) {
+  if (!periods.length) return <div style={{ padding: 24, textAlign: 'center', color: '#94a3b8' }}>暂无数据</div>;
+  return (
+    <div>
+      {periods.map((p) => (
+        <div key={p.period} onClick={() => onPick(p.period)}
+          style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10, padding: '10px 8px', borderBottom: '1px solid #f1f5f9', cursor: 'pointer', borderRadius: 8, background: p.period === sel ? '#e6f4ff' : undefined }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontWeight: p.period === sel ? 700 : 600 }}>{p.period}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>🏆 {p.champion_name || '-'}</div>
+          </div>
+          <div style={{ textAlign: 'right', flexShrink: 0 }}>
+            <div style={{ fontWeight: 600, fontSize: 13 }}>{metric === 'qty' ? `${p.champion_qty} 件` : yuan(p.champion_revenue)}</div>
+            <div style={{ fontSize: 12, color: '#94a3b8' }}>合计 {metric === 'qty' ? `${p.total_qty} 件` : yuan(p.total_revenue)}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function SalesRankingPage() {
   const [granularity, setGranularity] = useState<'month' | 'year'>('month');
   const [metric, setMetric] = useState<'revenue' | 'qty'>('revenue');
   const [period, setPeriod] = useState<string | undefined>(undefined);
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
 
   const { data, isLoading } = useQuery({
     queryKey: ['sales-ranking', granularity, metric, period],
@@ -129,24 +182,32 @@ export default function SalesRankingPage() {
       <Row gutter={12}>
         <Col xs={24} sm={14}>
           <Card size="small" title={`${sel ?? ''} 产品排行 (Top 30)`}>
-            <PresetTable<RankRow>
-              tableKey="sales_ranking"
-              rowKey="rank" size="small" loading={isLoading}
-              dataSource={data?.ranking ?? []} pagination={false}
-              scroll={{ y: 520 }}
-              columns={rankCols}
-            />
+            {isMobile ? (
+              <MobileRankList rows={data?.ranking ?? []} metric={metric} />
+            ) : (
+              <PresetTable<RankRow>
+                tableKey="sales_ranking"
+                rowKey="rank" size="small" loading={isLoading}
+                dataSource={data?.ranking ?? []} pagination={false}
+                scroll={{ y: 520 }}
+                columns={rankCols}
+              />
+            )}
           </Card>
         </Col>
         <Col xs={24} sm={12} md={10}>
           <Card size="small" title="冠军时间线 (点周期查看该期排行)">
-            <Table<RankPeriod>
-              rowKey="period" size="small" loading={isLoading}
-              dataSource={periods} pagination={false}
-              scroll={{ y: 520 }}
-              columns={periodCols}
-              rowClassName={(r) => (r.period === sel ? 'ant-table-row-selected' : '')}
-            />
+            {isMobile ? (
+              <MobileChampionList periods={periods} sel={sel} metric={metric} onPick={setPeriod} />
+            ) : (
+              <Table<RankPeriod>
+                rowKey="period" size="small" loading={isLoading}
+                dataSource={periods} pagination={false}
+                scroll={{ y: 520 }}
+                columns={periodCols}
+                rowClassName={(r) => (r.period === sel ? 'ant-table-row-selected' : '')}
+              />
+            )}
           </Card>
         </Col>
       </Row>

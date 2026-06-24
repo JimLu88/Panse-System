@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, type CSSProperties } from 'react';
-import { Card, Col, DatePicker, Row, Segmented, Space, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import { Card, Col, DatePicker, Grid, Row, Segmented, Space, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -72,6 +72,8 @@ function freshAgo(f: CashFlowFreshness) {
 // 运营大盘上的「剩余流水 / 可用资金」卡片: 复用 /api/finance/cash-flow, 点击进完整页
 function CashFlowBanner() {
   const nav = useNavigate();
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
   const { data, isLoading } = useQuery<CashFlowSummary>({
     queryKey: ['cash-flow'], queryFn: getCashFlow, refetchInterval: 60_000,
   });
@@ -118,24 +120,58 @@ function CashFlowBanner() {
           </div>
         </Col>
         <Col xs={24} md={14}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
-            {data.freshness.map((f) =>
-              /投资|保证金/.test(f.source) ? (
-                // #5 投资费用/保证金: 变化小, 不显示天数 → 蓝色可点链接, 直接进更新入口
-                <Tag key={f.source} color="blue" style={{ borderRadius: 8, marginInlineEnd: 0, cursor: 'pointer' }}
-                  onClick={(e) => { e.stopPropagation(); nav('/cash-flow'); }}>
-                  {f.source} · 更新 →
-                </Tag>
-              ) : (
-                <Tooltip key={f.source} title={`数据截至 ${f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录'}`}>
-                  <Tag color={FRESH_DOT[f.status]?.color || 'default'} style={{ borderRadius: 8, marginInlineEnd: 0 }}>
-                    {FRESH_DOT[f.status]?.dot} {f.source} · {freshAgo(f)}
-                  </Tag>
-                </Tooltip>
-              ),
-            )}
-          </div>
-          <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: M.indigo }}>点击查看完整明细 →</div>
+          {isMobile ? (
+            // 手机端: 每条状态独占一行, 名称左对齐 / 时间右对齐 —— 整列对齐, 不再参差换行
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {data.freshness.map((f) =>
+                /投资|保证金/.test(f.source) ? (
+                  <div key={f.source}
+                    onClick={(e) => { e.stopPropagation(); nav('/cash-flow'); }}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '9px 12px', borderRadius: 10, background: '#eef4ff',
+                      color: M.indigo, fontSize: 13, fontWeight: 600,
+                    }}>
+                    <span>{f.source}</span><span>更新 →</span>
+                  </div>
+                ) : (
+                  <div key={f.source}
+                    style={{
+                      display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                      padding: '9px 12px', borderRadius: 10,
+                      background: '#f8fafc', border: '1px solid #eef0f4', fontSize: 13,
+                    }}>
+                    <span style={{ color: M.ink, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {FRESH_DOT[f.status]?.dot} {f.source}
+                    </span>
+                    <span style={{ color: M.sub, flexShrink: 0, marginLeft: 8 }}>{freshAgo(f)}</span>
+                  </div>
+                ),
+              )}
+              <div style={{ textAlign: 'center', marginTop: 2, fontSize: 13, color: M.indigo, fontWeight: 600 }}>点击查看完整明细 →</div>
+            </div>
+          ) : (
+            <>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, justifyContent: 'flex-end' }}>
+                {data.freshness.map((f) =>
+                  /投资|保证金/.test(f.source) ? (
+                    // #5 投资费用/保证金: 变化小, 不显示天数 → 蓝色可点链接, 直接进更新入口
+                    <Tag key={f.source} color="blue" style={{ borderRadius: 8, marginInlineEnd: 0, cursor: 'pointer' }}
+                      onClick={(e) => { e.stopPropagation(); nav('/cash-flow'); }}>
+                      {f.source} · 更新 →
+                    </Tag>
+                  ) : (
+                    <Tooltip key={f.source} title={`数据截至 ${f.as_of ? new Date(f.as_of).toLocaleDateString('zh-CN') : '无记录'}`}>
+                      <Tag color={FRESH_DOT[f.status]?.color || 'default'} style={{ borderRadius: 8, marginInlineEnd: 0 }}>
+                        {FRESH_DOT[f.status]?.dot} {f.source} · {freshAgo(f)}
+                      </Tag>
+                    </Tooltip>
+                  ),
+                )}
+              </div>
+              <div style={{ textAlign: 'right', marginTop: 8, fontSize: 12, color: M.indigo }}>点击查看完整明细 →</div>
+            </>
+          )}
         </Col>
       </Row>
     </MCard>
