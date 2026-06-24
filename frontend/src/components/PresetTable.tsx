@@ -8,7 +8,7 @@
  * 不必再各自重复 useState/FieldPresetBar/applyPreset 的样板。
  */
 import { useState, type ReactNode } from 'react';
-import { Button, Table, message } from 'antd';
+import { Button, Grid, Table, message } from 'antd';
 import { FileExcelOutlined } from '@ant-design/icons';
 import type { TableProps } from 'antd';
 import FieldPresetBar, { fieldsFromColumns, applyPreset } from './FieldPresetBar';
@@ -58,10 +58,15 @@ export default function PresetTable<T extends object = any>({
   presetDefaults = [],
   columns = [],
   title,
+  scroll,
   ...rest
 }: PresetTableProps<T>) {
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
   const cols = columns as any[];
+  // 手机端: 表格横向可滑(列不被挤垮, GitHub 式横滑) + 冻结首列(订单号/名称等标识列常驻); 桌面端用调用方原样 scroll
+  const mergedScroll = isMobile ? { x: 'max-content' as const, ...((scroll as object) ?? {}) } : scroll;
 
   const renderTitle = (data: readonly T[]): ReactNode => (
     <div
@@ -93,10 +98,17 @@ export default function PresetTable<T extends object = any>({
     </div>
   );
 
+  let appliedCols = applyPreset(cols, visibleKeys) as any[];
+  // 手机端: 给首列加 fixed:'left' 冻结(仅当首列有明确宽度, 避免 AntD 无宽 fixed 警告/错位)
+  if (isMobile && Array.isArray(appliedCols) && appliedCols.length > 1 && appliedCols[0]?.width) {
+    appliedCols = [{ ...appliedCols[0], fixed: 'left' }, ...appliedCols.slice(1)];
+  }
+
   return (
     <Table<T>
       {...rest}
-      columns={applyPreset(cols, visibleKeys) as TableProps<T>['columns']}
+      scroll={mergedScroll}
+      columns={appliedCols as TableProps<T>['columns']}
       title={renderTitle}
     />
   );

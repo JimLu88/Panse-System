@@ -5,7 +5,7 @@
  * 覆盖率低的月(如 5/6月 工厂尚未结算)用红色标注 —— 对比仅代表已结算部分。
  */
 import { lazy, Suspense } from 'react';
-import { Alert, Card, Col, Row, Spin, Statistic, Tag, Typography } from 'antd';
+import { Alert, Card, Col, Grid, Row, Spin, Statistic, Tag, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchFactoryCostComparison, FactoryCostCompareMonth } from '../api/factoryRecon';
 
@@ -17,7 +17,7 @@ const money = (v: number | null | undefined) =>
 // 实收 > 预测 = 比预想多付给工厂(偏贵, 红); 实收 < 预测 = 少付(偏省, 绿)
 const diffColor = (d: number) => (d > 0 ? '#cf1322' : '#3f8600');
 
-function monthDonut(m: FactoryCostCompareMonth) {
+function monthDonut(m: FactoryCostCompareMonth, isMobile: boolean) {
   return {
     tooltip: { trigger: 'item', formatter: '{b}: ¥{c} ({d}%)' },
     color: ['#94a3b8', '#6366f1'], // 预测 灰, 实收 靛
@@ -29,13 +29,17 @@ function monthDonut(m: FactoryCostCompareMonth) {
         { name: '预测', value: Math.round(m.predicted) },
         { name: '实收', value: Math.round(m.actual) },
       ],
-      label: { show: true, formatter: '{b}\n¥{c}', fontSize: 10, color: '#475569', lineHeight: 13 },
-      labelLine: { show: true, length: 6, length2: 6 },
+      // 手机端小饼不在扇形上标字(防文字重叠/出界), 看 tooltip; 桌面端标名称+金额
+      label: isMobile ? { show: false } : { show: true, formatter: '{b}\n¥{c}', fontSize: 10, color: '#475569', lineHeight: 13 },
+      labelLine: isMobile ? { show: false } : { show: true, length: 6, length2: 6 },
+      labelLayout: { hideOverlap: true },
     }],
   };
 }
 
 export default function FactoryCostComparePanel() {
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;
   const { data, isLoading } = useQuery({
     queryKey: ['factory-cost-comparison'],
     queryFn: fetchFactoryCostComparison,
@@ -75,7 +79,7 @@ export default function FactoryCostComparePanel() {
             <Card size="small" styles={{ body: { padding: 8 } }}>
               <div style={{ textAlign: 'center', fontWeight: 600 }}>{m.month}</div>
               <Suspense fallback={<Spin />}>
-                <ReactECharts option={monthDonut(m)} style={{ height: 150 }} />
+                <ReactECharts option={monthDonut(m, isMobile)} style={{ height: 150 }} />
               </Suspense>
               <div style={{ textAlign: 'center', fontSize: 12 }}>
                 差 <span style={{ color: diffColor(m.diff) }}>{m.diff_pct > 0 ? '+' : ''}{m.diff_pct.toFixed(1)}%</span>
