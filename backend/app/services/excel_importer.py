@@ -963,12 +963,18 @@ def _commit_alipay_flows(
             counterparty_filled += 1
         # 平台订单号还原: 多规则按序检索 (平台列直给 / 本身19位 / 企业号T200P / …),
         # 命中即用; 有关联订单号但都不命中 → 计入"待补规则"汇总, 不逐行刷异常。
-        from app.services.order_no_normalizer import resolve_platform_order_no
+        from app.services.order_no_normalizer import (
+            is_non_order_reference, resolve_platform_order_no)
         _resolved = resolve_platform_order_no(
             projected.get("related_order_no"), projected.get("platform_order_no"))
         if _resolved:
             projected["platform_order_no"] = _resolved
-        elif projected.get("related_order_no"):
+        elif projected.get("related_order_no") and not is_non_order_reference(
+            projected.get("related_order_no"), projected.get("counterparty"),
+            projected.get("remark"),
+        ):
+            # 个人号的安装费/亲情卡/推广/拼多多/快递/提现/代付等"非淘宝订单引用"不计入待补规则,
+            # 它们永远还原不出 19 位淘宝单号, 由 smart_matching 按对方归类即可 (用户 #7)。
             unresolved_refs += 1
             if len(unresolved_samples) < 5:
                 unresolved_samples.append(str(projected.get("related_order_no"))[:48])

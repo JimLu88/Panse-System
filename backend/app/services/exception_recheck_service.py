@@ -493,7 +493,41 @@ def _check_factory_recon_unbalanced(db: Session, exc: DataException) -> Optional
     return f"工厂对账 [{r.factory_name}] 超付 ¥{-(r.diff_amount or 0)}"
 
 
+def _check_order_no_unresolved(db: Session, exc: DataException) -> Optional[str]:
+    """支付宝「关联订单号格式未识别」: 修好 = 该账户里"本该是淘宝订单却还原不出"的流水为 0。
+
+    用户 #7 (2026-06-24): 个人号(主力号等)的关联订单号大量是安装费/亲情卡/推广充值/拼多多/
+    快递/提现/代付/缴税/收钱码等非淘宝引用 (is_non_order_reference), 永远还原不出 19 位淘宝单号,
+    不算"待补规则"。只有"形似淘宝订单却还原失败"的才算仍未解决。
+    """
+    from app.models.finance import AlipayFlow
+    from app.services.order_no_normalizer import (
+        is_non_order_reference, resolve_platform_order_no)
+    acct = exc.source_pk
+    accts = {a for (a,) in db.execute(select(AlipayFlow.account).distinct()).all()}
+    q = select(AlipayFlow).where(AlipayFlow.related_order_no.isnot(None))
+    if acct in accts:                      # source_pk=导入时 sheet_account; 命中真账户则按户复核
+        q = q.where(AlipayFlow.account == acct)
+    genuine = 0
+    for f in db.execute(q).scalars().all():
+        ron = (f.related_order_no or "").strip()
+        if not ron:
+            continue
+        if getattr(f, "platform_order_no", None):       # 已还原, 跳过
+            continue
+        if resolve_platform_order_no(ron, getattr(f, "platform_order_no", None)):
+            continue
+        if is_non_order_reference(ron, f.counterparty, f.remark):
+            continue
+        genuine += 1
+    if genuine:
+        return (f"账户「{acct}」仍有 {genuine} 条疑似淘宝订单的关联订单号无法还原, "
+                f"需在 order_no_normalizer 补还原规则")
+    return None
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
+    "order_no_unresolved": _check_order_no_unresolved,
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
     "alipay_balance_gap": _check_alipay_balance_gap,

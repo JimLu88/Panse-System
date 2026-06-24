@@ -69,3 +69,43 @@ def resolve_with_rule(
 def resolve_platform_order_no(related: object, provided: object = None) -> Optional[str]:
     """便捷版: 只返回还原出的平台订单号 (无则 None)。"""
     return resolve_with_rule(related, provided)[0]
+
+
+# ── 非淘宝订单引用识别 (2026-06-24, 用户 #7) ─────────────────────────────────
+# 个人号(主力号/个体户私账等)的「关联订单号」列里, 大量值压根不是淘宝平台订单号, 而是各类
+# 真实业务的对方流水号: 安装费(万师傅/闪装)、亲情卡(李爱群)、推广充值(阿里妈妈)、拼多多、
+# 快递运费、银行提现、缴税、收钱码收款、员工代付等。它们【永远】还原不出 19 位淘宝单号,
+# 不该被当成"格式未识别待补规则"刷异常。按对方/摘要/号码形态识别, 命中即视为"非订单引用"。
+_NON_ORDER_COUNTERPARTY_KW = (
+    "万师傅", "闪装", "阿里妈妈", "李爱群", "Klossy", "拼多多",
+    "中通", "顺丰", "圆通", "韵达", "申通", "极兔", "邮政", "京东物流",
+    "银行", "税务", "十足",
+)
+_NON_ORDER_REMARK_KW = (
+    "亲情卡", "万相台", "扫码充值", "充值", "收钱码", "提现", "缴税", "缴费",
+    "散单运费", "运费", "代付", "商户单号", "理财", "余额宝",
+)
+
+
+def is_non_order_reference(
+    related: object, counterparty: object = None, remark: object = None,
+) -> bool:
+    """该「关联订单号」是否明显【不是】淘宝平台订单 (个人号的安装费/亲情卡/推广/拼多多/快递/
+    提现/代付/缴税/收钱码等)。命中则不应计入"待补规则"异常。
+
+    判据 (任一命中即 True):
+      1) 对方公司名含已知非订单关键词 (万师傅/阿里妈妈/李爱群/拼多多/快递/银行/税务…);
+      2) 摘要含已知非订单关键词 (亲情卡/万相台充值/收钱码/提现/缴税/运费/代付…);
+      3) 号码形态非淘宝单号: 以 'P' 开头(万师傅/闪装单号) 或 含字母/+/=//(base64 类推广号)。
+    纯数字但位数≠19 不在此判 —— 交由调用方结合账户判断, 避免误伤个别 18 位真单。
+    """
+    cp = "" if counterparty is None else str(counterparty)
+    rm = "" if remark is None else str(remark)
+    rel = "" if related is None else str(related).strip()
+    if any(k in cp for k in _NON_ORDER_COUNTERPARTY_KW):
+        return True
+    if any(k in rm for k in _NON_ORDER_REMARK_KW):
+        return True
+    if rel.startswith("P") or re.search(r"[A-Za-z=+/]", rel):
+        return True
+    return False
