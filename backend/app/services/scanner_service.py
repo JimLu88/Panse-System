@@ -23,6 +23,7 @@ from app.models.material import Material
 from app.models.order import Order
 from app.models.product import Product
 from app.services import exception_service
+from app.services.sku_utils import get_threshold, is_custom_sku_code
 
 
 @dataclass
@@ -61,11 +62,16 @@ def _exists_open_exception(db: Session, *, source_table: str, source_pk: str, ex
 def scan_dangling_order_product(db: Session) -> list[ScanFinding]:
     out: list[ScanFinding] = []
     existing_codes = {c for (c,) in db.execute(select(Product.code)).all()}
+    threshold = get_threshold(db)
     rows = db.execute(select(Order).where(Order.product_code.is_not(None))).scalars().all()
     for o in rows:
         if (o.status or "") == "cancelled":
             continue  # 交易关闭单无收入/不生产, 产品编码坏不坏无所谓, 不报 (用户 2026-06-22)
         if o.product_code and o.product_code not in existing_codes:
+            # 定制单(数字尾号≥90 / 「改」后缀)用的就是不在产品总表里的定制编码, 非"产品缺档", 跳过 (用户 2026-06-24)
+            sku_for_check = getattr(o, "sku_code", None) or o.product_code
+            if is_custom_sku_code(sku_for_check, threshold=threshold):
+                continue
             out.append(ScanFinding(
                 source_table="orders",
                 source_pk=o.order_no,

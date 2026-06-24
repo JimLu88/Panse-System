@@ -412,6 +412,25 @@ def _check_duplicate_alipay_cross_account(db: Session, exc: DataException) -> Op
     return f"交易号 {exc.source_pk} 仍在 {len(accts)} 个账户出现且非内部流转"
 
 
+def _check_dangling_product_code(db: Session, exc: DataException) -> Optional[str]:
+    """订单引用未知产品编码: 修好 = 编码已建档 / 是定制单(数字尾号≥90 或「改」后缀) / 订单已取消或不存在。
+    (用户 2026-06-24: 尾号≥90 一律定制, 不该当"产品缺档"报错; 与 scanner 同步, 让历史误报自动销账)"""
+    from app.models.order import Order
+    from app.models.product import Product
+    from app.services.sku_utils import get_threshold, is_custom_sku_code
+    o = db.query(Order).filter(Order.order_no == exc.source_pk).first()
+    if o is None or (o.status or "") == "cancelled":
+        return None
+    code = o.product_code
+    if not code:
+        return None
+    sku_for_check = getattr(o, "sku_code", None) or code
+    if is_custom_sku_code(sku_for_check, threshold=get_threshold(db)):
+        return None  # 定制单用的就是定制编码, 非"产品缺档"
+    exists = db.query(Product.code).filter(Product.code == code).first() is not None
+    return None if exists else f"订单 {o.order_no} 仍引用不存在的产品编码 {code}"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
@@ -432,6 +451,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "custom_order_missing_cost_basis": _check_custom_order_missing_cost_basis,
     "missing_taobao_mapping": _check_missing_taobao_mapping,
     "reconciliation_diff": _check_reconciliation_diff,
+    "dangling_product_code": _check_dangling_product_code,
 }
 
 
