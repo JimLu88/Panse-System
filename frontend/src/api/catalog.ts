@@ -384,6 +384,21 @@ export const getCoefficientStats = () =>
     .get<{ coefficients: CoefficientStat[] }>('/api/pricing-skus/coefficient-stats')
     .then((r) => r.data.coefficients);
 
+// 活动价全局参数(按档): 平台立减(力度) / 88VIP佣金 / 消费券阶梯
+export interface PromoParams {
+  mid_platform_discount: number;
+  mid_vip_commission: number;
+  big_platform_discount: number;
+  big_vip_commission: number;
+  mid_coupon_tiers: number[][];   // [[阈值, 减额], ...]
+  big_coupon_tiers: number[][];
+}
+export const getPromoParams = () =>
+  api.get<PromoParams>('/api/pricing-skus/promo-params').then((r) => r.data);
+export const setPromoParams = (body: Partial<PromoParams>) =>
+  api.put<{ params: PromoParams; recomputed: number }>('/api/pricing-skus/promo-params', body)
+    .then((r) => r.data);
+
 export const createProduct = (payload: {
   name: string;
   brand: string;

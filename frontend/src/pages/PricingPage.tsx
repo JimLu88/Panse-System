@@ -44,6 +44,8 @@ import {
   getCoefficientStats,
   runPromoPriceCheck,
   importTaobaoTitles,
+  getPromoParams,
+  setPromoParams,
   type CoefficientStat,
 } from '../api/client';
 
@@ -107,6 +109,88 @@ const PROMO_FORMULA: Record<string, string> = {
   big_shop_receipt: '大促店铺到账 = 大促到手价 × (1 − 88VIP佣金%)',
   big_vip_final: '大促会员价 = 大促到手价 − 阶梯消费券(按到手价档位)',
 };
+
+// 消费券阶梯编辑器 (到手价 ≥阈值 → 减额)
+function PromoTiersEditor({ title, tiers, setTiers }: { title: string; tiers: number[][]; setTiers: (t: number[][]) => void }) {
+  return (
+    <div>
+      <div style={{ marginBottom: 4, color: '#666' }}>{title} 消费券阶梯（到手价 ≥阈值 → 减额）</div>
+      {tiers.map((t, i) => (
+        <Space key={i} style={{ marginBottom: 4 }} size={4}>
+          <span>≥</span>
+          <InputNumber size="small" value={t[0]} min={0} style={{ width: 110 }}
+            onChange={(v) => setTiers(tiers.map((x, j) => (j === i ? [Number(v) || 0, x[1]] : x)))} />
+          <span>→ 减</span>
+          <InputNumber size="small" value={t[1]} min={0} prefix="¥" style={{ width: 110 }}
+            onChange={(v) => setTiers(tiers.map((x, j) => (j === i ? [x[0], Number(v) || 0] : x)))} />
+          <Button size="small" type="text" danger onClick={() => setTiers(tiers.filter((_, j) => j !== i))}>删</Button>
+        </Space>
+      ))}
+      <Button size="small" onClick={() => setTiers([...tiers, [0, 0]])}>+ 加一档</Button>
+    </div>
+  );
+}
+
+// 本次活动参数设置 (全局按档: 力度/佣金/消费券阶梯) → 保存即全表重算
+function PromoParamsModal({ open, onClose, onSaved }: { open: boolean; onClose: () => void; onSaved: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [midDisc, setMidDisc] = useState(12);
+  const [midComm, setMidComm] = useState(1);
+  const [bigDisc, setBigDisc] = useState(12);
+  const [bigComm, setBigComm] = useState(0);
+  const [midTiers, setMidTiers] = useState<number[][]>([]);
+  const [bigTiers, setBigTiers] = useState<number[][]>([]);
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    getPromoParams().then((p) => {
+      const pc = (x: number) => Number((x * 100).toFixed(2));
+      setMidDisc(pc(p.mid_platform_discount)); setMidComm(pc(p.mid_vip_commission));
+      setBigDisc(pc(p.big_platform_discount)); setBigComm(pc(p.big_vip_commission));
+      setMidTiers(p.mid_coupon_tiers || []); setBigTiers(p.big_coupon_tiers || []);
+    }).catch(() => {}).finally(() => setLoading(false));
+  }, [open]);
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await setPromoParams({
+        mid_platform_discount: midDisc / 100, mid_vip_commission: midComm / 100,
+        big_platform_discount: bigDisc / 100, big_vip_commission: bigComm / 100,
+        mid_coupon_tiers: midTiers, big_coupon_tiers: bigTiers,
+      });
+      message.success(`已保存，按新参数重算了 ${r.recomputed} 条活动价`);
+      onSaved();
+      onClose();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Modal title="本次活动参数（全局按档，改一次全表重算）" open={open} onCancel={onClose}
+      onOk={save} confirmLoading={saving} okText="保存并重算全部活动价" width={640} destroyOnClose>
+      {loading ? <div style={{ padding: 24, textAlign: 'center' }}>加载中…</div> : (
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            每次活动的力度/佣金/消费券都可能不同，在这里改一次，保存后全表活动价按新参数重算（到手价/店铺到账/会员价）。
+          </Typography.Text>
+          <Space size="large" wrap>
+            <span>中促力度% <InputNumber value={midDisc} min={0} max={100} style={{ width: 90 }} onChange={(v) => setMidDisc(Number(v) || 0)} /></span>
+            <span>中促88VIP佣金% <InputNumber value={midComm} min={0} max={100} style={{ width: 90 }} onChange={(v) => setMidComm(Number(v) || 0)} /></span>
+          </Space>
+          <Space size="large" wrap>
+            <span>大促力度% <InputNumber value={bigDisc} min={0} max={100} style={{ width: 90 }} onChange={(v) => setBigDisc(Number(v) || 0)} /></span>
+            <span>大促88VIP佣金% <InputNumber value={bigComm} min={0} max={100} style={{ width: 90 }} onChange={(v) => setBigComm(Number(v) || 0)} /></span>
+          </Space>
+          <PromoTiersEditor title="中促" tiers={midTiers} setTiers={setMidTiers} />
+          <PromoTiersEditor title="大促" tiers={bigTiers} setTiers={setBigTiers} />
+        </Space>
+      )}
+    </Modal>
+  );
+}
 
 // 字段总表(供快捷按钮勾选, 带分组) + 内置默认按钮
 const BASE_FIELDS: PresetField[] = [
@@ -389,6 +473,7 @@ export default function PricingPage() {
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
   // 统一编辑器 (可拖动, 字段级历史, 一键覆盖同产品)
   const [editorRow, setEditorRow] = useState<PricingSku | null>(null);
+  const [promoParamsOpen, setPromoParamsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);   // null = 全部字段
   const [form] = Form.useForm();
@@ -691,6 +776,11 @@ export default function PricingPage() {
         onClose={() => setEditorRow(null)}
         onSaved={invalidatePricing}
       />
+      <PromoParamsModal
+        open={promoParamsOpen}
+        onClose={() => setPromoParamsOpen(false)}
+        onSaved={invalidatePricing}
+      />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
@@ -749,6 +839,7 @@ export default function PricingPage() {
                     `活动价核对: 查 ${r.checked} 条, ${r.mismatch_count} 条不符${r.mismatch_count ? ' — 详见异常中心' : ''}`);
                 } catch { message.error('核对失败'); }
               }}>活动价核对</Button>
+              <Button size="small" type="primary" ghost onClick={() => setPromoParamsOpen(true)}>活动参数</Button>
               {/* 「BOM漂移检查」按钮已撤 (用户拍板 2026-06-12: BOM单价只用于预估/定制报价) */}
             </>
           )}
