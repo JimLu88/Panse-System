@@ -232,8 +232,12 @@ def _check_alipay_flow_no_missing(db: Session, exc: DataException) -> Optional[s
         ))
     ).scalars().all()
     refunds = [f for f in flows if "退款" in (f.transaction_type or "")]
-    if len(refunds) == 1:
-        txn = refunds[0].transaction_no
+    # 同一笔退款可能有多条(原始 + 分账拆分 *<单号>_<id> 合成号), 按真实流水号(去掉 * 后缀)归并;
+    # 全部归到同一笔真实退款时即可自动回填那笔真实流水号 (用户 2026-06-24)。
+    bases = {(f.transaction_no or "").split("*")[0] for f in refunds}
+    bases.discard("")
+    if len(bases) == 1:
+        txn = next(iter(bases))
         for r in rows:
             if not (r.alipay_flow_no or "").strip():
                 r.alipay_flow_no = txn
