@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Checkbox, Input, InputNumber, Modal, Space, Statistic, Table, Tag,
+  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
-import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, SaveOutlined } from '@ant-design/icons';
+import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
+import dayjs from 'dayjs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   commitPackingBill, listPackingBills, packingSummary, parsePackingBill, updatePackingBill,
@@ -73,6 +74,31 @@ export default function PackingBillsPage() {
     }
   };
 
+  // 用(改过的)客户名重新匹配订单 (用户 2026-06-24): 先存新名+清配单+按名重配, 即时回填结果
+  const [rematching, setRematching] = useState(false);
+  const rematchByName = async () => {
+    if (!editRow) return;
+    setRematching(true);
+    try {
+      const u = await updatePackingBill(editRow.id, { customer_name: eName, matched_order_no: '', rematch: true });
+      if (u.matched_order_no) {
+        setEOrder(u.matched_order_no);
+        message.success(`已匹配到订单 ${u.matched_order_no}（${MATCH_LABEL[u.match_method ?? '']?.text ?? u.match_method ?? ''}）`);
+      } else {
+        setEOrder('');
+        message.warning(u.match_note || '仍未匹配到：订单库里没有这个客户名，或主订单还没导入');
+      }
+      setEditRow({ ...editRow, ...u });
+      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-all'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '重新匹配失败');
+    } finally {
+      setRematching(false);
+    }
+  };
+
   const { data: saved = [] } = useQuery<PackingBillRow[]>({
     queryKey: ['packing-bills', billMonth],
     queryFn: () => listPackingBills(billMonth),
@@ -85,7 +111,7 @@ export default function PackingBillsPage() {
   });
 
   // 有数据的账期(默认跳到最近有数据的月, 免得停在空白当月)
-  const { data: allBills = [] } = useQuery<PackingBillRow[]>({
+  const { data: allBills = [], isFetched: allFetched } = useQuery<PackingBillRow[]>({
     queryKey: ['packing-all'],
     queryFn: () => listPackingBills(),
   });
@@ -94,9 +120,12 @@ export default function PackingBillsPage() {
     allBills.forEach(b => { if (b.bill_month) s.add(b.bill_month); });
     return Array.from(s).sort().reverse();
   }, [allBills]);
+  // 自动进入: 优先停在「最近有数据的月」; 数据还没拉到时先别退回空白当月(否则会卡在没数据的当月) (用户 2026-06-24)
   useEffect(() => {
-    if (!billMonth) setBillMonth(availableMonths[0] ?? thisMonth());
-  }, [availableMonths, billMonth]);
+    if (billMonth) return;
+    if (availableMonths.length > 0) setBillMonth(availableMonths[0]);
+    else if (allFetched) setBillMonth(thisMonth());
+  }, [availableMonths, billMonth, allFetched]);
 
   const handleParse = async (file: File) => {
     setParsing(true);
@@ -214,8 +243,10 @@ export default function PackingBillsPage() {
       <Space align="center">
         <Typography.Title level={4} style={{ margin: 0 }}>打包费手写账单</Typography.Title>
         <Tag color="gold">打包</Tag>
-        <Input addonBefore="账期" value={billMonth} style={{ width: 180 }}
-          placeholder="2026-06" onChange={e => setBillMonth(e.target.value)} />
+        <Typography.Text type="secondary">账期</Typography.Text>
+        <DatePicker picker="month" allowClear={false} placeholder="选择月份" style={{ width: 140 }}
+          value={billMonth ? dayjs(billMonth + '-01') : null}
+          onChange={(d) => setBillMonth(d ? d.format('YYYY-MM') : '')} />
         {availableMonths.length > 0 && (
           <Space size={4}>
             <Typography.Text type="secondary">有数据:</Typography.Text>
@@ -297,9 +328,12 @@ export default function PackingBillsPage() {
           </div>
           <div>
             <div style={{ marginBottom: 4, color: '#666' }}>配单订单号</div>
-            <Input value={eOrder} placeholder="填订单号 = 人工指定配单" onChange={e => setEOrder(e.target.value)} />
+            <Space.Compact style={{ width: '100%' }}>
+              <Input value={eOrder} placeholder="填订单号 = 人工指定配单" onChange={e => setEOrder(e.target.value)} />
+              <Button icon={<ReloadOutlined />} loading={rematching} onClick={rematchByName}>用客户名重新匹配</Button>
+            </Space.Compact>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              留空保存 → 按(改过的)客户名自动重新匹配；填了订单号 → 直接人工配到该单。
+              改对客户名后点「用客户名重新匹配」即按新名字配单；或直接填订单号人工指定。留空保存也会按客户名重配。
             </Typography.Text>
           </div>
         </Space>
