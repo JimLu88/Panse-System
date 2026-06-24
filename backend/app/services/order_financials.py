@@ -139,6 +139,10 @@ def physical_cost(o: Order) -> Decimal:
         if _ai is not None and _ei is not None:
             cost += _d(_ai) - _d(_ei)
         cost += nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
+        # 推演单(无工厂账单): 推演成本 > 实付 → 多为 追加/差价/凑单 片段(实付只是零头), 不背整件估算成本,
+        # 按 实付×85% 封顶(假定15%毛利, 与片段规则一致); 工厂账单到了 actual_cost 覆盖为准 (用户 2026-06-25 选A)。
+        if paid > 0 and cost > paid:
+            cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
     if cost < 0:
         cost = Decimal("0")
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):

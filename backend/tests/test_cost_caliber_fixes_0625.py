@@ -88,3 +88,26 @@ def test_backfill_sums_multi_batch(db_session):
     fr.backfill_order_actual_cost(db_session, restrict_to={"F2"})
     o = db_session.execute(select(Order).where(Order.order_no == "F2")).scalar_one()
     assert o.actual_cost == Decimal("500")
+
+
+# ───────── E. 推演单(无工厂账单)成本>实付 → 实付×85% 封顶 (用户 2026-06-25 选A) ─────────
+
+def test_estimate_over_paid_caps_to_85():
+    """无工厂账单(全推演), 推演物理成本(467.5定价+170打包=637.5) > 实付550 → 封顶 550×0.85=467.5。"""
+    o = Order(order_no="E1", actual_cost=None, paid_amount=Decimal("550"),
+              theoretical_cost=Decimal("467.5"), est_packing=Decimal("170"))
+    assert ofin.physical_cost(o) == Decimal("467.50")
+
+
+def test_estimate_under_paid_unchanged():
+    """推演成本(300) ≤ 实付(550) → 不封顶, 保持 300。"""
+    o = Order(order_no="E2", actual_cost=None, paid_amount=Decimal("550"),
+              theoretical_cost=Decimal("300"))
+    assert ofin.physical_cost(o) == Decimal("300")
+
+
+def test_actual_bill_over_paid_not_capped_by_estimate_rule():
+    """有工厂账单 actual_cost=600 > 实付550 → 不被推演封顶规则改(以账单为准, 仅受50%片段封顶约束)。"""
+    o = Order(order_no="E3", is_custom=False, sku_code="PPS900", actual_cost=Decimal("600"),
+              wood_cost_est=Decimal("0"), theoretical_cost=None, paid_amount=Decimal("550"))
+    assert ofin.physical_cost(o) == Decimal("600")
