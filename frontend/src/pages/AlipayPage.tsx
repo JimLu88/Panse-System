@@ -60,10 +60,11 @@ export default function AlipayPage() {
   const [account, setAccount] = useState<string>(ACCOUNTS[0]);
   const [importResult, setImportResult] = useState<CsvImportReport | null>(null);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [q, setQ] = useState('');
 
   const { data, isLoading } = useQuery({
-    queryKey: ['alipay', account],
-    queryFn: () => listAlipayFlows({ account, limit: 200 }),
+    queryKey: ['alipay', account, q],
+    queryFn: () => listAlipayFlows({ account, q: q || undefined, limit: 500 }),
   });
 
   const importMut = useMutation({
@@ -198,6 +199,14 @@ export default function AlipayPage() {
             >
               <Button size="small">未来停用账号 ▾</Button>
             </Dropdown>
+            <Input.Search
+              allowClear
+              placeholder="搜 备注/对方/流水号（如 壹米运费）"
+              defaultValue={q}
+              onSearch={(v) => setQ(v.trim())}
+              style={{ width: 280 }}
+            />
+            {q && <Tag color="blue">搜索: {q}（{data?.length ?? 0} 条）</Tag>}
           </>
         )}
       </Space>

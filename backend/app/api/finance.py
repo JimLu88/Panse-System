@@ -58,6 +58,8 @@ class AlipayFlowOut(BaseModel):
 def list_alipay(
     account: Optional[str] = None,
     recon_type: Optional[str] = None,
+    q: Optional[str] = None,           # 搜索: 备注/对方/流水号(应对爱群号海量+无日期流水翻不到)
+    only_unclassified: bool = False,   # 只看未分类(reconciliation_type 为空)
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -67,6 +69,16 @@ def list_alipay(
         stmt = stmt.where(AlipayFlow.account == account)
     if recon_type:
         stmt = stmt.where(AlipayFlow.reconciliation_type == recon_type)
+    if only_unclassified:
+        stmt = stmt.where(AlipayFlow.reconciliation_type.is_(None))
+    if q and q.strip():
+        from sqlalchemy import or_
+        like = f"%{q.strip()}%"
+        stmt = stmt.where(or_(
+            AlipayFlow.remark.ilike(like),
+            AlipayFlow.counterparty.ilike(like),
+            AlipayFlow.transaction_no.ilike(like),
+        ))
     stmt = stmt.order_by(AlipayFlow.transaction_time.desc().nulls_last(), AlipayFlow.id.desc()).limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
 

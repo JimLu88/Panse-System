@@ -33,6 +33,8 @@ export interface AlipayFlow {
 export const listAlipayFlows = (params: {
   account?: string;
   recon_type?: string;
+  q?: string;
+  only_unclassified?: boolean;
   limit?: number;
 } = {}) =>
   api.get<AlipayFlow[]>('/api/finance/alipay-flows', { params: { limit: 100, ...params } })
