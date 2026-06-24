@@ -139,6 +139,37 @@ def confirm_factory_recon_item(
     return out
 
 
+@router.get("/dead-order/{order_no}/rematch-candidates")
+def dead_order_rematch_candidates(
+    order_no: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """工厂账单挂在已取消单 → 列出同客户其它有效单候选(按产品/时间排序, 供重新匹配选择)。"""
+    return factory_recon_service.dead_order_rematch_candidates(db, order_no)
+
+
+@router.post("/dead-order/{order_no}/rematch")
+def dead_order_rematch(
+    order_no: str,
+    new_order_no: str = Body(..., embed=True),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """确定重新匹配: 把该已取消单上的全部工厂账单改挂到目标(同客户)有效单, 挪成本, 并销该异常。"""
+    try:
+        out = factory_recon_service.rematch_dead_order_bills(
+            db, order_no, (new_order_no or "").strip(),
+            actor=getattr(user, "username", None),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("factory-recon:rematch")
+    return out
+
+
 def _month_key(o: Order) -> str | None:
     d = o.order_date or o.ship_date
     return d.strftime("%Y-%m") if d else None

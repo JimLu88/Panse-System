@@ -10,6 +10,7 @@ import {
   InputNumber,
   Modal,
   Popconfirm,
+  Radio,
   Segmented,
   Space,
   Spin,
@@ -19,13 +20,15 @@ import {
   message,
 } from 'antd';
 import { DownOutlined, EditOutlined, ReloadOutlined, RobotOutlined, UpOutlined } from '@ant-design/icons';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AiDiagnoseResult,
   DataException,
   aiDiagnose,
+  factoryDeadOrderCandidates,
+  factoryDeadOrderRematch,
   fixException,
   getExceptionsSummary,
   listExceptions,
@@ -189,6 +192,8 @@ const TYPE_META: Record<string, TypeMeta> = {
     hint: '同一个料号, 在「物料库」和「BOM」里写的名称不一样, 等于同一编码指了两种物料。请统一成正确的名称。' },
   flow_not_found: { category: 'finance', label: '工厂对账的支付宝流水号找不到',
     hint: '工厂对账里填的支付宝流水号, 在支付宝流水表里查不到。请核对流水号是否填错, 或该流水是否还没导入。' },
+  factory_bill_on_dead_order: { category: 'finance', label: '工厂账单挂在已取消/退款单上',
+    hint: '工厂已下单、成本真实发生, 但它挂着的销售单已取消或全额退款 —— 成本会"丢失"。多半是客户取消后又重下了一单, 货其实做给了重下单。点「重新匹配」, 系统会按【同客户】列出其它有效订单候选, 选中后把这笔工厂成本改挂过去并自动消异常。' },
 };
 
 const typeMeta = (t: string): TypeMeta =>
@@ -283,9 +288,87 @@ function ImportConflictDetail({ exc }: { exc: DataException }) {
   );
 }
 
+// #6 工厂账单挂已取消单 → 重新匹配到同客户其它有效单
+function RematchModal({
+  exc, onClose, onResolved,
+}: { exc: DataException | null; onClose: () => void; onResolved: () => void }) {
+  const cancelledNo = (exc?.context as { order_no?: string } | null)?.order_no;
+  const [picked, setPicked] = useState<string | undefined>(undefined);
+  useEffect(() => { setPicked(undefined); }, [exc?.id]);
+  const { data, isLoading } = useQuery({
+    queryKey: ['factory-dead-cands', cancelledNo],
+    queryFn: () => factoryDeadOrderCandidates(cancelledNo as string),
+    enabled: !!exc && !!cancelledNo,
+  });
+  const mut = useMutation({
+    mutationFn: (newNo: string) => factoryDeadOrderRematch(cancelledNo as string, newNo),
+    onSuccess: (r) => {
+      message.success(`已把 ¥${r.moved_amount} 工厂成本改挂到 ${r.new_order_no}，并清除 ${r.closed_exceptions} 条异常`);
+      onResolved();
+      onClose();
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '重新匹配失败'),
+  });
+  return (
+    <Modal
+      title="工厂账单 → 重新匹配到同客户有效单"
+      open={!!exc}
+      onCancel={onClose}
+      onOk={() => picked && mut.mutate(picked)}
+      okText="确定重新匹配"
+      okButtonProps={{ disabled: !picked, loading: mut.isPending }}
+      destroyOnClose
+      width={680}
+    >
+      {exc && (
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message={`原单(已取消/退款): ${cancelledNo ?? '—'}　客户: ${data?.customer_name ?? '—'}　工厂成本合计 ¥${data?.bill_total ?? '?'}`}
+            description={data?.bill_detail ? `账单详情: ${data.bill_detail}` : undefined}
+          />
+          {isLoading ? (
+            <div style={{ textAlign: 'center', padding: 24 }}><Spin /></div>
+          ) : data && data.candidates.length > 0 ? (
+            <>
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                选择把这笔工厂成本改挂到该客户的哪个有效订单（按产品相似度排序，成本会随之搬过去）：
+              </Typography.Text>
+              <Radio.Group
+                value={picked}
+                onChange={(e) => setPicked(e.target.value)}
+                style={{ width: '100%' }}
+              >
+                <Space direction="vertical" style={{ width: '100%' }}>
+                  {data.candidates.map((c) => (
+                    <Radio key={c.order_no} value={c.order_no} style={{ width: '100%' }}>
+                      <Space wrap size="small">
+                        <Tag color="blue">{c.match_pct}%</Tag>
+                        <code style={{ fontSize: 12 }}>{c.order_no}</code>
+                        <Tag>{c.status}</Tag>
+                        <span style={{ fontSize: 12 }}>{c.order_date ?? ''}</span>
+                        <span style={{ fontSize: 12, color: '#888' }}>{(c.product_name ?? '').slice(0, 20)}</span>
+                        {c.has_actual_cost && <Tag color="orange">已有成本</Tag>}
+                      </Space>
+                    </Radio>
+                  ))}
+                </Space>
+              </Radio.Group>
+            </>
+          ) : (
+            <Empty description={data?.note ?? '同客户无其它有效单，请人工核实'} />
+          )}
+        </Space>
+      )}
+    </Modal>
+  );
+}
+
 export default function ExceptionsPage() {
   const qc = useQueryClient();
   const navigate = useNavigate();
+  const [rematchOpen, setRematchOpen] = useState<DataException | null>(null);
   const [status, setStatus] = useState<'open' | 'resolved' | 'ignored'>('open');
   const [diagnoseOpen, setDiagnoseOpen] = useState<{ exc: DataException; result?: AiDiagnoseResult } | null>(null);
   const [fixOpen, setFixOpen] = useState<DataException | null>(null);
@@ -480,6 +563,27 @@ export default function ExceptionsPage() {
                 onClick={() => setConflictOpen(row)}
               >
                 查看差异并裁决
+              </Button>
+              <Popconfirm
+                title="强制忽略此异常?"
+                description="忽略 = 永久不再提醒, 问题本身不会被修复。"
+                okText="确认忽略" okButtonProps={{ danger: true }}
+                onConfirm={() => resolveMut.mutate({ id: row.id, s: 'ignored', f: true })}
+              >
+                <Button size="small">强制忽略</Button>
+              </Popconfirm>
+            </Space>
+          );
+        }
+        // 工厂账单挂已取消单: 专用「重新匹配」到同客户有效单 (用户 #6)
+        if (row.exception_type === 'factory_bill_on_dead_order') {
+          return (
+            <Space size="small" wrap>
+              <Button size="small" type="primary" onClick={() => setRematchOpen(row)}>
+                重新匹配
+              </Button>
+              <Button size="small" icon={<RobotOutlined />} onClick={() => handleDiagnose(row)}>
+                AI 分析
               </Button>
               <Popconfirm
                 title="强制忽略此异常?"
@@ -802,6 +906,16 @@ export default function ExceptionsPage() {
           </Space>
         )}
       </Modal>
+
+      {/* #6 工厂账单重新匹配到同客户有效单 */}
+      <RematchModal
+        exc={rematchOpen}
+        onClose={() => setRematchOpen(null)}
+        onResolved={() => {
+          qc.invalidateQueries({ queryKey: ['exceptions'] });
+          qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+        }}
+      />
 
       {/* 内联补填弹窗 */}
       <Modal

@@ -888,6 +888,39 @@ export const refreshExceptions = () =>
   api.post<{ open_before: number; open_now: number; new_found: number; closed: number; closed_by_type: Record<string, number> }>(
     '/api/exceptions/refresh',
   ).then(r => r.data);
+// #6 工厂账单挂已取消单 → 改挂同客户其它有效单
+export interface FactoryDeadOrderCandidate {
+  order_no: string;
+  status: string;
+  order_date: string | null;
+  product_name: string | null;
+  sku_code: string | null;
+  paid_amount: number;
+  has_actual_cost: boolean;
+  match_pct: number;
+}
+export interface FactoryDeadOrderCandidates {
+  cancelled_order_no: string;
+  customer_name: string | null;
+  bill_total: number;
+  bill_detail: string;
+  candidates: FactoryDeadOrderCandidate[];
+  note: string | null;
+}
+export const factoryDeadOrderCandidates = (orderNo: string) =>
+  api
+    .get<FactoryDeadOrderCandidates>(
+      `/api/factory-recon/dead-order/${encodeURIComponent(orderNo)}/rematch-candidates`,
+    )
+    .then(r => r.data);
+export const factoryDeadOrderRematch = (orderNo: string, newOrderNo: string) =>
+  api
+    .post<{ moved_bills: number; moved_amount: number; new_order_no: string; new_actual_cost: number; closed_exceptions: number }>(
+      `/api/factory-recon/dead-order/${encodeURIComponent(orderNo)}/rematch`,
+      { new_order_no: newOrderNo },
+    )
+    .then(r => r.data);
+
 export const getExceptionCounts = () =>
   api.get<Record<string, number>>('/api/exceptions/counts-by-type').then(r => r.data);
 export const getOpenExceptionCount = () =>

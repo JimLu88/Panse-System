@@ -526,8 +526,36 @@ def _check_order_no_unresolved(db: Session, exc: DataException) -> Optional[str]
     return None
 
 
+def _check_factory_bill_on_dead_order(db: Session, exc: DataException) -> Optional[str]:
+    """工厂账单挂在已取消/全额退款单: 修好 = 该单上已无工厂账单行(已重新匹配走), 或该单已不再是死单。"""
+    from decimal import Decimal
+    from app.models.factory_recon_item import FactoryReconItem
+    from app.models.order import Order
+    ono = (exc.context or {}).get("order_no") if exc.context else None
+    if not ono and exc.source_pk and str(exc.source_pk).isdigit():
+        o0 = db.get(Order, int(exc.source_pk))
+        ono = o0.order_no if o0 else None
+    if not ono:
+        return None
+    o = db.execute(select(Order).where(Order.order_no == ono)).scalar_one_or_none()
+    if o is None:
+        return None
+    bill = db.execute(
+        select(func.coalesce(func.sum(FactoryReconItem.settle_price), 0))
+        .where(FactoryReconItem.order_no == ono)).scalar() or 0
+    if Decimal(str(bill)) <= 0:
+        return None   # 账单已改挂走 → 销账
+    paid = Decimal(str(o.paid_amount or 0))
+    refund = Decimal(str(o.refund_amount or 0))
+    dead = (o.status or "") == "cancelled" or (paid > 0 and refund >= paid * Decimal("0.99"))
+    if not dead:
+        return None   # 该单已不再是死单 → 销账
+    return f"工厂账单 ¥{bill} 仍挂在已取消/退款单 {ono} 上, 请「重新匹配」到该客户的有效订单"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_no_unresolved": _check_order_no_unresolved,
+    "factory_bill_on_dead_order": _check_factory_bill_on_dead_order,
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
     "alipay_balance_gap": _check_alipay_balance_gap,

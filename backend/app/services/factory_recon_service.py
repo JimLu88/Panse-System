@@ -10,11 +10,12 @@
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+import re
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.factory_recon_item import FactoryReconItem
@@ -277,3 +278,150 @@ def resolve(db: Session, item_id: int, *, reason: str, actor: Optional[str] = No
         it.resolved_at = None
     db.flush()
     return {"id": it.id, "resolved": it.resolved, "settle_reason": it.settle_reason}
+
+
+# ── #6 工厂账单挂已取消单 → 改挂同客户其它有效单 (用户 2026-06-24) ───────────────
+# 异常 factory_bill_on_dead_order 已由 data_quality.scan_factory_bill_on_dead_order 报出;
+# 这里提供「同客户候选 + 确定重新匹配」: 把该已取消单上的全部工厂账单行 order_no 改到选中的
+# 有效订单, 并把工厂成本(actual_cost)从已取消单挪到目标单, 然后销该异常。
+_DEAD_STATUSES = {"cancelled", "closed", "trade_closed", "refunded"}
+
+
+def _is_dead_order(o: Order) -> bool:
+    """与 scan_factory_bill_on_dead_order 同口径: 已取消 或 全额退款(退款≥实付×0.99 且实付>0)。"""
+    if (o.status or "") == "cancelled":
+        return True
+    paid = Decimal(str(o.paid_amount or 0))
+    refund = Decimal(str(o.refund_amount or 0))
+    return paid > 0 and refund >= paid * Decimal("0.99")
+
+
+def _zh_bigrams(s: str) -> set:
+    """只保留中文字符后的 2-gram 集合 (剔除数字/标点噪声, 适配中文产品名匹配)。"""
+    z = re.sub(r"[^一-鿿]", "", s or "")
+    return {z[i:i + 2] for i in range(len(z) - 1)} if len(z) >= 2 else ({z} if z else set())
+
+
+def _text_sim(a: str, b: str) -> float:
+    """中文产品名相似度 = 2-gram Jaccard。比 difflib 更能凸显共有的关键词(如「箱体床」)。"""
+    A, B = _zh_bigrams(a), _zh_bigrams(b)
+    if not A or not B:
+        return 0.0
+    return len(A & B) / len(A | B)
+
+
+def _bills_on(db: Session, order_no: str) -> list[FactoryReconItem]:
+    return db.execute(
+        select(FactoryReconItem).where(FactoryReconItem.order_no == order_no)
+    ).scalars().all()
+
+
+def _recompute_actual_cost(db: Session, o: Order) -> None:
+    """按当前挂在该订单号上的工厂账单行 Σ结算价 重算 actual_cost(无则置空)。"""
+    s = db.execute(
+        select(func.coalesce(func.sum(FactoryReconItem.settle_price), 0))
+        .where(FactoryReconItem.order_no == o.order_no)
+    ).scalar() or Decimal("0")
+    o.actual_cost = s if Decimal(str(s)) > 0 else None
+
+
+def dead_order_rematch_candidates(db: Session, cancelled_order_no: str, *, limit: int = 5) -> dict:
+    """工厂账单挂在已取消单时, 找【同客户】其它有效单作重新匹配候选,
+    按 产品名↔账单详情 相似度(difflib) + 下单时间近 排序, 取前 limit 个。"""
+    cancelled = db.execute(
+        select(Order).where(Order.order_no == cancelled_order_no)
+    ).scalar_one_or_none()
+    bills = _bills_on(db, cancelled_order_no)
+    bill_total = sum((b.settle_price or Decimal("0")) for b in bills)
+    bill_detail = " ".join((b.detail or "") for b in bills).strip()
+    out = {"cancelled_order_no": cancelled_order_no,
+           "customer_name": (cancelled.customer_name if cancelled else None),
+           "bill_total": float(bill_total), "bill_detail": bill_detail[:80],
+           "candidates": [], "note": None}
+    if cancelled is None:
+        out["note"] = "已取消单不在系统里"
+        return out
+    cust = (cancelled.customer_name or "").strip()
+    if not cust:
+        out["note"] = "已取消单无客户姓名, 无法按同客户搜索 — 请人工指定目标订单号"
+        return out
+    others = db.execute(
+        select(Order).where(Order.customer_name == cust,
+                            Order.order_no != cancelled_order_no)
+    ).scalars().all()
+    scored = []
+    for o in others:
+        if _is_dead_order(o):
+            continue
+        prod = o.product_name or ""
+        score = _text_sim(bill_detail, prod) if bill_detail and prod else 0.0
+        scored.append((score, o.order_date or date.min, o))
+    scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
+    out["candidates"] = [{
+        "order_no": o.order_no, "status": o.status,
+        "order_date": o.order_date.isoformat() if o.order_date else None,
+        "product_name": o.product_name, "sku_code": o.sku_code,
+        "paid_amount": float(o.paid_amount or 0),
+        "has_actual_cost": o.actual_cost is not None,
+        "match_pct": round(score * 100),
+    } for score, _d, o in scored[:limit]]
+    if not out["candidates"]:
+        out["note"] = "同客户无其它有效单 — 请人工核实(可能工厂未真做或货款另算)"
+    return out
+
+
+def rematch_dead_order_bills(db: Session, cancelled_order_no: str, new_order_no: str,
+                             *, actor: Optional[str] = None) -> dict:
+    """把已取消单上的全部工厂账单行改挂到目标(同客户)有效单, 挪成本, 并销该异常。"""
+    cancelled = db.execute(
+        select(Order).where(Order.order_no == cancelled_order_no)).scalar_one_or_none()
+    new = db.execute(
+        select(Order).where(Order.order_no == new_order_no)).scalar_one_or_none()
+    if cancelled is None:
+        raise ValueError(f"已取消单不存在: {cancelled_order_no}")
+    if new is None:
+        raise ValueError(f"目标订单不存在: {new_order_no}")
+    if new.order_no == cancelled.order_no:
+        raise ValueError("目标订单不能是原单本身")
+    if _is_dead_order(new):
+        raise ValueError(f"目标订单 {new_order_no} 也是已取消/全额退款单, 不能挂载")
+    c_cust = (cancelled.customer_name or "").strip()
+    n_cust = (new.customer_name or "").strip()
+    if c_cust and n_cust and c_cust != n_cust:
+        raise ValueError(f"目标订单客户「{n_cust}」与原单客户「{c_cust}」不一致, 拒绝挂载")
+    bills = _bills_on(db, cancelled_order_no)
+    if not bills:
+        raise ValueError(f"已取消单 {cancelled_order_no} 上没有工厂账单行")
+    stamp = datetime.now(timezone.utc)
+    note = (f"[重新匹配 {stamp.date()}] 原挂已取消单 {cancelled_order_no} → {new_order_no}"
+            + (f" (by {actor})" if actor else ""))
+    moved = Decimal("0")
+    for b in bills:
+        b.order_no = new_order_no
+        b.remark = ((b.remark + " | ") if b.remark else "") + note
+        b.remark = b.remark[:2000]
+        moved += (b.settle_price or Decimal("0"))
+    db.flush()   # 关键: autoflush=False, 必须先把 order_no 改动落库, 重算 Σ 才看得到新归属
+    # 成本随账单走: 重算两单 actual_cost (原单挪空→None, 目标单=其名下账单 Σ)
+    _recompute_actual_cost(db, cancelled)
+    _recompute_actual_cost(db, new)
+    # 销该已取消单对应的 factory_bill_on_dead_order 异常
+    from app.models.exception import DataException
+    excs = db.execute(
+        select(DataException).where(
+            DataException.exception_type == "factory_bill_on_dead_order",
+            DataException.status == "open")
+    ).scalars().all()
+    closed = 0
+    now_s = datetime.now().isoformat(timespec="seconds")
+    for e in excs:
+        ctx_no = (e.context or {}).get("order_no") if e.context else None
+        if ctx_no == cancelled_order_no or str(e.source_pk) == str(cancelled.id):
+            e.status = "resolved"
+            e.resolved_by = actor or "系统(重新匹配)"
+            e.resolved_at = now_s
+            closed += 1
+    db.flush()
+    return {"moved_bills": len(bills), "moved_amount": float(moved),
+            "cancelled_order_no": cancelled_order_no, "new_order_no": new_order_no,
+            "new_actual_cost": float(new.actual_cost or 0), "closed_exceptions": closed}
