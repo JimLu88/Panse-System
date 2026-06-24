@@ -154,6 +154,26 @@ export default function PackingBillsPage() {
     message.success(`已导出 ${un.length} 条未配单，填好订单号后可人工核对`);
   };
 
+  // 导出所有月份账单 (用户 2026-06-24): 含手写识别的客户/打包费/配单/匹配方式, 离线逐行核对
+  const handleExportAll = () => {
+    if (!allBills.length) { message.info('暂无账单数据'); return; }
+    const sorted = [...allBills].sort((a, b) =>
+      (b.bill_month ?? '').localeCompare(a.bill_month ?? '')
+      || (b.row_date ?? '').localeCompare(a.row_date ?? ''));
+    downloadCsv('打包费账单_全部月份.csv',
+      ['账期', '日期', '客户', '打包费', '配单订单号', '匹配方式', '是否计入', '剔除原因', '备注'],
+      sorted.map(r => [
+        r.bill_month ?? '', r.row_date ?? '', r.customer_name ?? '',
+        Number(r.packing_fee ?? 0).toFixed(2),
+        r.matched_order_no ?? '',
+        r.match_method ? (MATCH_LABEL[r.match_method]?.text ?? r.match_method) : '',
+        r.excluded ? '不计入' : '计入',
+        r.exclude_reason ?? '',
+        r.note ?? '',
+      ]));
+    message.success(`已导出全部 ${sorted.length} 条打包费账单（${availableMonths.length} 个月）`);
+  };
+
   const setCell = (i: number, patch: Partial<PackingRowParsed>) =>
     setRows(rows.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
   const delRow = (i: number) => setRows(rows.filter((_, idx) => idx !== i));
@@ -294,6 +314,7 @@ export default function PackingBillsPage() {
       <Space align="center" style={{ marginTop: 8 }}>
         <Typography.Title level={5} style={{ margin: 0 }}>本月已入库 ({billMonth})</Typography.Title>
         <Button size="small" icon={<DownloadOutlined />} onClick={handleExportUnmatched}>导出未匹配</Button>
+        <Button size="small" icon={<DownloadOutlined />} onClick={handleExportAll}>导出所有月账单</Button>
         {summary && (
           <Typography.Text type="secondary">
             应付 <strong style={{ color: '#cf1322' }}>¥{summary.payable_total.toFixed(2)}</strong>
