@@ -28,7 +28,11 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.models.base import Base, TimestampMixin
 
 
-SUPPLIER_TYPES = ("woodwork", "rock_slab", "glass", "hardware", "logistics", "other")
+SUPPLIER_TYPES = (
+    "woodwork", "rock_slab", "glass", "hardware", "logistics",
+    "veneer", "power_track", "beech_wood", "plywood", "finish_panel",
+    "other",
+)
 
 
 class Supplier(Base, TimestampMixin):

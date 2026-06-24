@@ -86,6 +86,11 @@ const SUPPLIER_TYPE_LABEL: Record<string, string> = {
   glass: '玻璃',
   hardware: '五金',
   logistics: '物流',
+  veneer: '贴皮',
+  power_track: '电力轨道',
+  beech_wood: '榉木木材',
+  plywood: '多层板',
+  finish_panel: '饰面板',
   other: '其他',
 };
 const SUPPLIER_TYPE_COLOR: Record<string, string> = {
@@ -94,6 +99,11 @@ const SUPPLIER_TYPE_COLOR: Record<string, string> = {
   glass: 'cyan',
   hardware: 'geekblue',
   logistics: 'purple',
+  veneer: 'orange',
+  power_track: 'red',
+  beech_wood: 'lime',
+  plywood: 'green',
+  finish_panel: 'blue',
   other: 'default',
 };
 const STATUS_LABEL: Record<string, string> = {
@@ -1139,6 +1149,11 @@ function AlipaySupplierModal({ open, onClose, source = 'alipay' }: { open: boole
             { value: 'glass', label: '玻璃厂' },
             { value: 'hardware', label: '五金/配件' },
             { value: 'logistics', label: '物流' },
+            { value: 'veneer', label: '贴皮' },
+            { value: 'power_track', label: '电力轨道' },
+            { value: 'beech_wood', label: '榉木木材' },
+            { value: 'plywood', label: '多层板' },
+            { value: 'finish_panel', label: '饰面板' },
             { value: 'other', label: '其他' },
           ]}
         />
