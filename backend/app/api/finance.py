@@ -1427,6 +1427,12 @@ def rematch_packing_bills_ep(loose: bool = True, db: Session = Depends(get_db)):
     from app.services import packing_bill_service
     counts = packing_bill_service.rematch_packing_bills(db, loose=loose)
     db.commit()
+    try:  # 批量配单后, 把实际打包费回填到订单(覆盖预估), 与物流同一套 (用户 2026-06-24)
+        from app.services import order_fee_actual_service
+        order_fee_actual_service.sync_fee_components(db)
+        db.commit()
+    except Exception:
+        db.rollback()
     return counts
 
 
@@ -1558,6 +1564,8 @@ class PackingBillPatch(BaseModel):
 def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = Depends(get_db)):
     """手动编辑一行打包费账单: 改客户名/打包费/手动配单 (用户 2026-06-24)。只更新请求里出现的字段。"""
     from app.services import packing_bill_service
+    existing = db.get(PackingBill, bill_id)
+    old_match = existing.matched_order_no if existing else None
     fields = payload.model_dump(exclude_unset=True)
     rematch = bool(fields.pop("rematch", False))
     b = packing_bill_service.update_row(db, bill_id, rematch=rematch, **fields)
@@ -1565,6 +1573,16 @@ def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = D
         raise HTTPException(404, "打包费账单行不存在")
     db.commit()          # get_db 不自动提交, 必须显式 commit, 否则手动编辑不落库 (修 2026-06-24)
     db.refresh(b)
+    # 配单变化 → 把实际打包费回填到对应订单(actual_packing 覆盖 est_packing, 进而覆盖物理成本/利润),
+    # 与物流账单/木作账单同一套实际覆盖预估机制 (用户 2026-06-24)。回填失败不阻断改匹配。
+    affected = [o for o in {old_match, b.matched_order_no} if o]
+    if affected:
+        try:
+            from app.services import order_fee_actual_service
+            order_fee_actual_service.sync_fee_components(db, order_nos=affected)
+            db.commit()
+        except Exception:
+            db.rollback()
     return b
 
 
