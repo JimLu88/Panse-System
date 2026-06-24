@@ -74,22 +74,22 @@ export default function AssetsPage() {
       <RefillCallout />
 
       <Row gutter={12}>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic title="资产总额" value={Number(data.total).toFixed(2)} suffix="元" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic title="公式 A (账面)" value={Number(data.formula_a).toFixed(2)} suffix="元" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic title="公式 B (订单+余额)" value={Number(data.formula_b).toFixed(2)} suffix="元" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic
               title="差额 A - B"
@@ -115,7 +115,7 @@ export default function AssetsPage() {
 
       <Card size="small" title="资产分类">
         <Row>
-          <Col span={12}>
+          <Col xs={24} sm={12}>
             <Table
               size="small" rowKey="name" pagination={false}
               dataSource={data.categories}
@@ -130,7 +130,7 @@ export default function AssetsPage() {
               ]}
             />
           </Col>
-          <Col span={12}>
+          <Col xs={24} sm={12}>
             <PieChart categories={data.categories} total={data.total} />
           </Col>
         </Row>

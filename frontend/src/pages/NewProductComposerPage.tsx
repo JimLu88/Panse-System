@@ -499,7 +499,7 @@ function SkuCostsTab({
 
       <Row gutter={[16, 8]}>
         {COST_FIELDS.map(({ field, label }) => (
-          <Col span={12} key={field}>
+          <Col xs={24} sm={12} key={field}>
             <Space>
               <Typography.Text style={{ width: 130, display: 'inline-block' }}>{label}</Typography.Text>
               <ValueHintInput
@@ -655,19 +655,19 @@ function SkuPromoTab({
 
       <Divider orientation="left" style={{ margin: '8px 0' }}>淘宝</Divider>
       <Row gutter={[16, 8]}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>淘宝商品ID</Typography.Text>
             <Input size="small" style={{ width: 200 }} value={localPromo.taobao_item_id ?? ''} onChange={(e) => patch({ taobao_item_id: e.target.value })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>淘宝SKU_ID</Typography.Text>
             <Input size="small" style={{ width: 200 }} value={localPromo.taobao_sku_id ?? ''} onChange={(e) => patch({ taobao_sku_id: e.target.value })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>淘宝活动报名价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.taobao_activity_price ?? '—'}</span>
@@ -677,7 +677,7 @@ function SkuPromoTab({
 
       <Divider orientation="left" style={{ margin: '8px 0' }}>店内活动（小促）</Divider>
       <Row gutter={[16, 8]}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>店铺宝系数</Typography.Text>
             <ValueHintInput table="promo" field="shop_promo_rate" category={category} isRate
@@ -685,7 +685,7 @@ function SkuPromoTab({
               onChange={(n) => patch({ shop_promo_rate: n ?? undefined })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>小促到手价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.shop_internal_final ?? '—'}</span>
@@ -695,7 +695,7 @@ function SkuPromoTab({
 
       <Divider orientation="left" style={{ margin: '8px 0' }}>无国补中促</Divider>
       <Row gutter={[16, 8]}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>中促店铺系数</Typography.Text>
             <ValueHintInput table="promo" field="mid_shop_rate" category={category} isRate
@@ -703,19 +703,19 @@ function SkuPromoTab({
               onChange={(n) => patch({ mid_shop_rate: n ?? undefined })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>买家到手价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.mid_buyer_price ?? '—'}</span>
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>商家实收（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.mid_shop_receipt ?? '—'}</span>
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>88VIP最终价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.mid_vip_final ?? '—'}</span>
@@ -725,7 +725,7 @@ function SkuPromoTab({
 
       <Divider orientation="left" style={{ margin: '8px 0' }}>无国补大促</Divider>
       <Row gutter={[16, 8]}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>大促店铺系数</Typography.Text>
             <ValueHintInput table="promo" field="big_shop_rate" category={category} isRate
@@ -733,19 +733,19 @@ function SkuPromoTab({
               onChange={(n) => patch({ big_shop_rate: n ?? undefined })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>买家到手价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.big_buyer_price ?? '—'}</span>
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>商家实收（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.big_shop_receipt ?? '—'}</span>
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>88VIP最终价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.big_vip_final ?? '—'}</span>
@@ -755,31 +755,31 @@ function SkuPromoTab({
 
       <Divider orientation="left" style={{ margin: '8px 0' }}>小红书</Divider>
       <Row gutter={[16, 8]}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>小红书商品ID</Typography.Text>
             <Input size="small" style={{ width: 200 }} value={localPromo.xhs_item_id ?? ''} onChange={(e) => patch({ xhs_item_id: e.target.value })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>小红书SKU名称</Typography.Text>
             <Input size="small" style={{ width: 200 }} value={localPromo.xhs_sku_name ?? ''} onChange={(e) => patch({ xhs_sku_name: e.target.value })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>小红书SKU_ID</Typography.Text>
             <Input size="small" style={{ width: 200 }} value={localPromo.xhs_sku_id ?? ''} onChange={(e) => patch({ xhs_sku_id: e.target.value })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>挂牌价（自动=日常价）</Typography.Text>
             <span style={readonlyStyle}>{computed.xhs_list_price ?? '—'}</span>
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>RN单品宝报名价</Typography.Text>
             <ValueHintInput table="promo" field="xhs_activity_price" category={category}
@@ -787,7 +787,7 @@ function SkuPromoTab({
               onChange={(n) => patch({ xhs_activity_price: n ?? undefined })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>活动折扣（默认0.15）</Typography.Text>
             <InputNumber size="small" style={{ width: 100 }} min={0} max={1} step={0.01}
@@ -795,7 +795,7 @@ function SkuPromoTab({
               onChange={(n) => patch({ xhs_promo_discount: n ?? 0.15 })} />
           </Space>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Space>
             <Typography.Text style={labelStyle}>活动价（自动）</Typography.Text>
             <span style={readonlyStyle}>{computed.xhs_promo_price ?? '—'}</span>

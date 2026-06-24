@@ -95,7 +95,7 @@ export default function SalesRankingPage() {
 
       {champ && (
         <Row gutter={12}>
-          <Col span={10}>
+          <Col xs={24} sm={12} md={10}>
             <Card size="small" style={{ borderColor: '#fde68a' }}>
               <Statistic
                 title={`🏆 ${gLabel}冠军 · ${sel}`}
@@ -109,8 +109,8 @@ export default function SalesRankingPage() {
               </div>
             </Card>
           </Col>
-          <Col span={7}><Card size="small"><Statistic title={`${sel} 总销售额`} value={champ.total_revenue} precision={0} prefix="¥" /></Card></Col>
-          <Col span={7}><Card size="small"><Statistic title={`${sel} 总销量`} value={champ.total_qty} suffix="件" /></Card></Col>
+          <Col xs={12} sm={8} md={7}><Card size="small"><Statistic title={`${sel} 总销售额`} value={champ.total_revenue} precision={0} prefix="¥" /></Card></Col>
+          <Col xs={12} sm={8} md={7}><Card size="small"><Statistic title={`${sel} 总销量`} value={champ.total_qty} suffix="件" /></Card></Col>
         </Row>
       )}
 
@@ -127,7 +127,7 @@ export default function SalesRankingPage() {
       )}
 
       <Row gutter={12}>
-        <Col span={14}>
+        <Col xs={24} sm={14}>
           <Card size="small" title={`${sel ?? ''} 产品排行 (Top 30)`}>
             <PresetTable<RankRow>
               tableKey="sales_ranking"
@@ -138,7 +138,7 @@ export default function SalesRankingPage() {
             />
           </Card>
         </Col>
-        <Col span={10}>
+        <Col xs={24} sm={12} md={10}>
           <Card size="small" title="冠军时间线 (点周期查看该期排行)">
             <Table<RankPeriod>
               rowKey="period" size="small" loading={isLoading}

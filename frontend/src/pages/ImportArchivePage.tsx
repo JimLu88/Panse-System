@@ -172,8 +172,8 @@ export default function ImportArchivePage() {
 
       {sum && (
         <Row gutter={12}>
-          <Col span={6}><Card size="small"><Statistic title="归档文件总数" value={sum.total} /></Card></Col>
-          <Col span={18}>
+          <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="归档文件总数" value={sum.total} /></Card></Col>
+          <Col xs={24} md={18}>
             <Card size="small" title={<span style={{ fontSize: 13 }}>分类入口 (点击进入该分类)</span>}>
               <Space wrap>
                 {Object.entries(sum.by_kind).map(([k, n]) => (

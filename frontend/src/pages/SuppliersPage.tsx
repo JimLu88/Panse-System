@@ -440,13 +440,13 @@ function SupplierDetailPanel({
       }
     >
       <Row gutter={12} style={{ marginBottom: 16 }}>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic title="单据数" value={stats.count} />
         </Col>
-        <Col span={5}>
+        <Col xs={12} sm={8} md={5}>
           <Statistic title="合计" value={stats.total} precision={2} prefix="¥" />
         </Col>
-        <Col span={5}>
+        <Col xs={12} sm={8} md={5}>
           <Statistic
             title="已付"
             value={stats.paid}
@@ -455,7 +455,7 @@ function SupplierDetailPanel({
             valueStyle={{ color: '#3f8600' }}
           />
         </Col>
-        <Col span={5}>
+        <Col xs={12} sm={8} md={5}>
           <Statistic
             title="未付"
             value={stats.unpaid}
@@ -464,7 +464,7 @@ function SupplierDetailPanel({
             valueStyle={{ color: '#cf1322' }}
           />
         </Col>
-        <Col span={5}>
+        <Col xs={12} sm={8} md={5}>
           <Statistic
             title="OCR 低置信"
             value={stats.lowConf}
@@ -655,7 +655,7 @@ function DeliveryNoteDetail({ noteId }: { noteId: number }) {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Row gutter={16}>
-        <Col span={10}>
+        <Col xs={24} sm={12} md={10}>
           <Card size="small" title={<><FileImageOutlined /> 原图</>}>
             {note.source_file_id ? (
               <Image
@@ -668,7 +668,7 @@ function DeliveryNoteDetail({ noteId }: { noteId: number }) {
             )}
           </Card>
         </Col>
-        <Col span={14}>
+        <Col xs={24} sm={14}>
           <Card size="small" title="OCR 结果">
             <Form
               layout="vertical"
@@ -681,7 +681,7 @@ function DeliveryNoteDetail({ noteId }: { noteId: number }) {
               onValuesChange={() => {}}
             >
               <Row gutter={8}>
-                <Col span={8}>
+                <Col xs={24} sm={12} md={8}>
                   <Form.Item label="单号">
                     <Input
                       defaultValue={note.note_no ?? ''}
@@ -691,7 +691,7 @@ function DeliveryNoteDetail({ noteId }: { noteId: number }) {
                     />
                   </Form.Item>
                 </Col>
-                <Col span={8}>
+                <Col xs={24} sm={12} md={8}>
                   <Form.Item label="送货日期">
                     <Input
                       defaultValue={note.delivery_date ?? ''}
@@ -702,7 +702,7 @@ function DeliveryNoteDetail({ noteId }: { noteId: number }) {
                     />
                   </Form.Item>
                 </Col>
-                <Col span={8}>
+                <Col xs={24} sm={12} md={8}>
                   <Form.Item label="合计金额">
                     <Input
                       type="number"
@@ -951,7 +951,7 @@ function FolderModal({
       ) : (
         <Row gutter={[12, 12]}>
           {data.files.map((f) => (
-            <Col span={6} key={f.id}>
+            <Col xs={12} sm={8} md={6} key={f.id}>
               <Card
                 size="small"
                 cover={
@@ -1289,34 +1289,34 @@ function ReconcileModal({ onClose }: { onClose: () => void }) {
       {preview && (
         <>
           <Row gutter={8} style={{ marginBottom: 16 }}>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic title="扫描流水" value={preview.scanned} />
             </Col>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic
                 title="自动匹配"
                 value={preview.matched_count}
                 valueStyle={{ color: '#3f8600' }}
               />
             </Col>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic
                 title="待复核"
                 value={preview.needs_review}
                 valueStyle={{ color: '#fa8c16' }}
               />
             </Col>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic
                 title="未识别供应商"
                 value={preview.no_supplier}
                 valueStyle={{ color: '#bfbfbf' }}
               />
             </Col>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic title="无候选" value={preview.no_candidates} />
             </Col>
-            <Col span={4}>
+            <Col xs={12} sm={8} md={4}>
               <Statistic title="跳过" value={preview.skipped} />
             </Col>
           </Row>

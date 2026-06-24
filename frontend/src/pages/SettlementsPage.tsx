@@ -229,20 +229,20 @@ function ReconciliationTab() {
       {sum && (
         <>
           <Row gutter={12}>
-            <Col span={4}><Card size="small"><Statistic title="纳入订单" value={sum.orders} /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="买家应付合计" value={sum.payable_sum} precision={2} prefix="¥" /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="店铺实收合计" value={sum.received_sum} precision={2} prefix="¥" /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="补贴税合计(2%)" value={sum.tax_sum} precision={2} prefix="¥" valueStyle={{ color: '#d46b08' }} /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="软件费合计" value={sum.platform_fee_sum} precision={2} prefix="¥" /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="平台补贴合计" value={sum.subsidy_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="纳入订单" value={sum.orders} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="买家应付合计" value={sum.payable_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="店铺实收合计" value={sum.received_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="补贴税合计(2%)" value={sum.tax_sum} precision={2} prefix="¥" valueStyle={{ color: '#d46b08' }} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="软件费合计" value={sum.platform_fee_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="平台补贴合计" value={sum.subsidy_sum} precision={2} prefix="¥" /></Card></Col>
           </Row>
           <Row gutter={12}>
-            <Col span={4}><Card size="small"><Statistic title="实际到账合计" value={sum.arrived_sum} precision={2} prefix="¥" valueStyle={{ color: '#1677ff' }} /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="已对平" value={sum.matched} suffix="单" valueStyle={{ color: '#389e0d' }} /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="有差异" value={sum.diff} suffix="单" valueStyle={{ color: '#cf1322' }} /></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="待补流水" value={sum.pending} suffix="单" /></Card></Col>
-            <Col span={4}><Card size="small"><Tooltip title="消费券代付扣回未补回的单，平台约2月分批补回，不算真差异"><Statistic title="消费券待补" value={sum.coupon_pending} suffix="单" valueStyle={{ color: '#999', fontSize: 18 }} /></Tooltip></Card></Col>
-            <Col span={4}><Card size="small"><Statistic title="到账覆盖率" value={sum.coverage_pct} suffix="%" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="实际到账合计" value={sum.arrived_sum} precision={2} prefix="¥" valueStyle={{ color: '#1677ff' }} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="已对平" value={sum.matched} suffix="单" valueStyle={{ color: '#389e0d' }} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="有差异" value={sum.diff} suffix="单" valueStyle={{ color: '#cf1322' }} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="待补流水" value={sum.pending} suffix="单" /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Tooltip title="消费券代付扣回未补回的单，平台约2月分批补回，不算真差异"><Statistic title="消费券待补" value={sum.coupon_pending} suffix="单" valueStyle={{ color: '#999', fontSize: 18 }} /></Tooltip></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="到账覆盖率" value={sum.coverage_pct} suffix="%" /></Card></Col>
           </Row>
           {sum.coverage_pct < 50 && (
             <Alert
@@ -319,10 +319,10 @@ function CouponPendingPanel() {
               这是<b>现金到账时序，不影响利润</b>；这里仅供留意有没有该补没补到账的。
             </Typography.Text>
             <Row gutter={12}>
-              <Col span={6}><Statistic title="累计扣回" value={data.clawback} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
-              <Col span={6}><Statistic title="平台已补回" value={data.cofund} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
-              <Col span={6}><Statistic title="已退回" value={data.refunded} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
-              <Col span={6}><Statistic title="应补未补" value={data.pending} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: data.pending > 0.5 ? '#d48806' : '#52c41a' }} /></Col>
+              <Col xs={12} sm={8} md={6}><Statistic title="累计扣回" value={data.clawback} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col xs={12} sm={8} md={6}><Statistic title="平台已补回" value={data.cofund} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col xs={12} sm={8} md={6}><Statistic title="已退回" value={data.refunded} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: '#8c8c8c' }} /></Col>
+              <Col xs={12} sm={8} md={6}><Statistic title="应补未补" value={data.pending} precision={0} prefix="¥" valueStyle={{ fontSize: 15, color: data.pending > 0.5 ? '#d48806' : '#52c41a' }} /></Col>
             </Row>
             {data.by_month.length > 0 && (
               <Table<CouponPending['by_month'][number]>
@@ -394,11 +394,11 @@ function SettlementDetailTab() {
 
       {sum && (
         <Row gutter={12}>
-          <Col span={5}><Card size="small"><Statistic title="结算笔数" value={sum.count} /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="覆盖订单数" value={sum.orders} /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="收款合计" value={sum.income} precision={2} prefix="¥" /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="扣款合计" value={sum.expense} precision={2} prefix="¥" valueStyle={{ color: '#cf1322' }} /></Card></Col>
-          <Col span={4}><Card size="small"><Statistic title="净到账" value={sum.net} precision={2} prefix="¥" valueStyle={{ color: '#389e0d' }} /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="结算笔数" value={sum.count} /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="覆盖订单数" value={sum.orders} /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="收款合计" value={sum.income} precision={2} prefix="¥" /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="扣款合计" value={sum.expense} precision={2} prefix="¥" valueStyle={{ color: '#cf1322' }} /></Card></Col>
+          <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="净到账" value={sum.net} precision={2} prefix="¥" valueStyle={{ color: '#389e0d' }} /></Card></Col>
         </Row>
       )}
 

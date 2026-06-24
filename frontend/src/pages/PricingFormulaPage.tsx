@@ -433,7 +433,7 @@ export default function PricingFormulaPage() {
       </Row>
 
       <Row gutter={16} style={{ marginBottom: 16 }}>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Descriptions column={1} size="small">
               <Descriptions.Item label="公式总数">{rules.length}</Descriptions.Item>
@@ -443,7 +443,7 @@ export default function PricingFormulaPage() {
             </Descriptions>
           </Card>
         </Col>
-        <Col span={18}>
+        <Col xs={24} md={18}>
           <Card size="small">
             <Text type="secondary">
               <strong>使用说明：</strong>

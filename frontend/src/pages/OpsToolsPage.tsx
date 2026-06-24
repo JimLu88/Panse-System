@@ -45,14 +45,14 @@ export default function OpsToolsPage() {
               {h.healthy ? '一切正常' : '有事项需处理'}
             </Tag>
             <Row gutter={16}>
-              <Col span={6}><Statistic title="待处理异常" value={h.open_exceptions}
+              <Col xs={12} sm={8} md={6}><Statistic title="待处理异常" value={h.open_exceptions}
                 valueStyle={{ color: h.open_exceptions ? '#cf1322' : undefined }} /></Col>
-              <Col span={6}><Statistic title="失败的定时任务" value={h.failing_jobs.length}
+              <Col xs={12} sm={8} md={6}><Statistic title="失败的定时任务" value={h.failing_jobs.length}
                 valueStyle={{ color: h.failing_jobs.length ? '#cf1322' : undefined }} /></Col>
-              <Col span={6}><Statistic title="最新备份距今(小时)"
+              <Col xs={12} sm={8} md={6}><Statistic title="最新备份距今(小时)"
                 value={h.latest_backup_age_h ?? '—'}
                 valueStyle={{ color: h.backup_stale ? '#cf1322' : undefined }} /></Col>
-              <Col span={6}><Statistic title="最新备份大小(MB)" value={h.latest_backup_size_mb ?? '—'} /></Col>
+              <Col xs={12} sm={8} md={6}><Statistic title="最新备份大小(MB)" value={h.latest_backup_size_mb ?? '—'} /></Col>
             </Row>
             {h.backup_stale && <Alert style={{ marginTop: 12 }} type="warning" showIcon
               message="最新备份过旧或缺失,请检查备份是否正常运行。" />}
@@ -74,11 +74,11 @@ export default function OpsToolsPage() {
         </Space>
         {fin.data && (
           <Row gutter={16} style={{ marginTop: 16 }}>
-            <Col span={4}><Statistic title="订单数" value={fin.data.order_count} /></Col>
-            <Col span={5}><Statistic title="营收" prefix="¥" value={fin.data.revenue} precision={2} /></Col>
-            <Col span={5}><Statistic title="成本" prefix="¥" value={fin.data.cost} precision={2} /></Col>
-            <Col span={5}><Statistic title="毛利" prefix="¥" value={fin.data.gross_profit} precision={2} /></Col>
-            <Col span={5}><Statistic title="净利" prefix="¥" value={fin.data.net_profit} precision={2} /></Col>
+            <Col xs={12} sm={8} md={4}><Statistic title="订单数" value={fin.data.order_count} /></Col>
+            <Col xs={12} sm={8} md={5}><Statistic title="营收" prefix="¥" value={fin.data.revenue} precision={2} /></Col>
+            <Col xs={12} sm={8} md={5}><Statistic title="成本" prefix="¥" value={fin.data.cost} precision={2} /></Col>
+            <Col xs={12} sm={8} md={5}><Statistic title="毛利" prefix="¥" value={fin.data.gross_profit} precision={2} /></Col>
+            <Col xs={12} sm={8} md={5}><Statistic title="净利" prefix="¥" value={fin.data.net_profit} precision={2} /></Col>
           </Row>
         )}
       </Card>

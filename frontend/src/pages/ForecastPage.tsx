@@ -240,7 +240,7 @@ function SlowMovingTab() {
         message={`阈值: ${data?.thresholds?.long_no_sale_days ?? 60} 天未售 = 长期滞销; > ${data?.thresholds?.overstock_ratio ?? 3} 倍预测 = 超大库存`}
       />
       <Row gutter={16}>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Card size="small" title="长期未售 (物料)">
             <Table size="small" loading={isLoading}
                    rowKey="material_code"
@@ -256,7 +256,7 @@ function SlowMovingTab() {
                    ]} />
           </Card>
         </Col>
-        <Col span={12}>
+        <Col xs={24} sm={12}>
           <Card size="small" title="超大库存 (成品)">
             <Table size="small" loading={isLoading}
                    rowKey={(r: any) => `${r.product_code}_${r.sku}`}

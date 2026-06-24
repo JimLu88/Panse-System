@@ -53,10 +53,10 @@ export default function FactoryCostComparePanel() {
       title={<span>工厂实收 vs 我方预测 — 按月对比饼图<Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>(仅统计已生成工厂价的单)</Typography.Text></span>}
     >
       <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={6}><Card size="small"><Statistic title="预测工厂成本合计" value={t.predicted} precision={0} prefix="¥" /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="工厂实收合计" value={t.actual} precision={0} prefix="¥" /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="差额(实收-预测)" value={t.diff} precision={0} prefix="¥" valueStyle={{ color: diffColor(t.diff) }} /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="偏差率" value={t.diff_pct} precision={1} suffix="%" valueStyle={{ color: diffColor(t.diff) }} /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="预测工厂成本合计" value={t.predicted} precision={0} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="工厂实收合计" value={t.actual} precision={0} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="差额(实收-预测)" value={t.diff} precision={0} prefix="¥" valueStyle={{ color: diffColor(t.diff) }} /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="偏差率" value={t.diff_pct} precision={1} suffix="%" valueStyle={{ color: diffColor(t.diff) }} /></Card></Col>
       </Row>
 
       {lowCoverage.length > 0 && (

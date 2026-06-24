@@ -136,11 +136,11 @@ export default function FactoryReconPage() {
 
       {sum && (
         <Row gutter={12}>
-          <Col span={5}><Card size="small"><Statistic title="对账明细笔数" value={sum.total_items} /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="应付合计(结算价)" value={sum.total_billed} precision={0} prefix="¥" /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="实付合计(factory_payment)" value={sum.total_paid} precision={0} prefix="¥" /></Card></Col>
-          <Col span={5}><Card size="small"><Statistic title="差额(实付-应付)" value={sum.total_diff} precision={0} prefix="¥" valueStyle={{ color: Math.abs(sum.total_diff) > 5 ? '#cf1322' : '#3f8600' }} /></Card></Col>
-          <Col span={4}><Card size="small"><Statistic title="已做平条目" value={sum.resolved_items} /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="对账明细笔数" value={sum.total_items} /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="应付合计(结算价)" value={sum.total_billed} precision={0} prefix="¥" /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="实付合计(factory_payment)" value={sum.total_paid} precision={0} prefix="¥" /></Card></Col>
+          <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="差额(实付-应付)" value={sum.total_diff} precision={0} prefix="¥" valueStyle={{ color: Math.abs(sum.total_diff) > 5 ? '#cf1322' : '#3f8600' }} /></Card></Col>
+          <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="已做平条目" value={sum.resolved_items} /></Card></Col>
         </Row>
       )}
 

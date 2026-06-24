@@ -105,7 +105,7 @@ function ReportTab({ data, isLoading }: { data?: HealthReport; isLoading: boolea
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Row gutter={12}>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card>
             <Statistic
               title="数据完整性评分"
@@ -121,7 +121,7 @@ function ReportTab({ data, isLoading }: { data?: HealthReport; isLoading: boolea
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card>
             <Statistic
               title="未处理异常"
@@ -140,13 +140,13 @@ function ReportTab({ data, isLoading }: { data?: HealthReport; isLoading: boolea
             </div>
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card>
             <Statistic title="本月订单" value={data.orders.month_count} />
             <Statistic title="营收" value={data.orders.month_revenue} prefix="¥" />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card>
             <Statistic title="库存账面" value={data.inventory.book_value} prefix="¥" />
             <div style={{ fontSize: 12, color: '#999' }}>
@@ -285,13 +285,13 @@ function OperatingTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <PeriodPicker value={period} onChange={setPeriod} />
       <Row gutter={12}>
-        <Col span={6}><Card size="small"><Statistic title="销售额" value={Math.round(data.revenue)} prefix="¥" /></Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="总支出" value={Math.round(data.total_expense)} prefix="¥" /></Card></Col>
-        <Col span={6}><Card size="small">
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="销售额" value={Math.round(data.revenue)} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="总支出" value={Math.round(data.total_expense)} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small">
           <Statistic title="净利" value={Math.round(data.net_profit)} prefix="¥"
                      valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} />
         </Card></Col>
-        <Col span={6}><Card size="small"><Statistic title="净利率" value={Number(data.net_profit_rate).toFixed(1)} suffix="%" /></Card></Col>
+        <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="净利率" value={Number(data.net_profit_rate).toFixed(1)} suffix="%" /></Card></Col>
       </Row>
       <Card size="small" title={`支出占比 (占销售额 %, ${data.period_start} ~ ${data.period_end})`}>
         {data.expense_items.map((i) => (
@@ -344,12 +344,12 @@ function SalesSummaryTab() {
         <Select size="small" value={brand} onChange={setBrand} options={BRAND_OPTS} style={{ width: 130 }} />
       </Space>
       <Row gutter={12}>
-        <Col span={4}><Card size="small"><Statistic title="订单数" value={data.order_count} /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="销售额" value={Number(data.revenue).toFixed(2)} prefix="¥" /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="成本" value={Number(data.cost).toFixed(2)} prefix="¥" /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="毛利" value={Number(data.gross_profit).toFixed(2)} prefix="¥" valueStyle={{ color: '#52c41a' }} /></Card></Col>
-        <Col span={4}><Card size="small"><Statistic title="利润" value={Number(data.net_profit).toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
-        <Col span={4}><Card size="small">
+        <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="订单数" value={data.order_count} /></Card></Col>
+        <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="销售额" value={Number(data.revenue).toFixed(2)} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="成本" value={Number(data.cost).toFixed(2)} prefix="¥" /></Card></Col>
+        <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="毛利" value={Number(data.gross_profit).toFixed(2)} prefix="¥" valueStyle={{ color: '#52c41a' }} /></Card></Col>
+        <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="利润" value={Number(data.net_profit).toFixed(2)} prefix="¥" valueStyle={{ color: data.net_profit >= 0 ? '#52c41a' : '#cf1322' }} /></Card></Col>
+        <Col xs={12} sm={8} md={4}><Card size="small">
           <Statistic title="利润率"
                      value={data.revenue > 0 ? (data.net_profit / data.revenue * 100).toFixed(1) : 0}
                      suffix="%" />

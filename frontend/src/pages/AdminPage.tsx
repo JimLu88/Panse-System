@@ -1052,7 +1052,7 @@ function MonitorTab() {
       />
 
       <Row gutter={12}>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic
               title="数据库"
@@ -1062,7 +1062,7 @@ function MonitorTab() {
             />
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic
               title="磁盘"
@@ -1084,7 +1084,7 @@ function MonitorTab() {
             </Typography.Text>
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic
               title="内存"
@@ -1106,7 +1106,7 @@ function MonitorTab() {
             </Typography.Text>
           </Card>
         </Col>
-        <Col span={6}>
+        <Col xs={12} sm={8} md={6}>
           <Card size="small">
             <Statistic
               title="送货单原图占用"
@@ -1259,7 +1259,7 @@ function SystemEventsCard() {
         message={`上次重启完成: ${new Date(lastStart.created_at).toLocaleString('zh-CN')} (由 ${lastRestart.actor ?? '?'} 触发)`}
         description={
           <Row gutter={16} style={{ marginTop: 4 }}>
-            <Col span={6}>
+            <Col xs={12} sm={8} md={6}>
               <Statistic
                 title="内存变化"
                 value={`${(before?.mem_used_pct ?? 0).toFixed(1)} → ${(after?.mem_used_pct ?? 0).toFixed(1)} %`}
@@ -1269,14 +1269,14 @@ function SystemEventsCard() {
                 }}
               />
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={8} md={6}>
               <Statistic
                 title="DB 延迟变化"
                 value={`${before?.db_latency_ms ?? '?'} → ${after?.db_latency_ms ?? '?'} ms`}
                 valueStyle={{ fontSize: 16 }}
               />
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={8} md={6}>
               <Statistic
                 title="fail 数变化"
                 value={`${before?.fail_count ?? 0} → ${after?.fail_count ?? 0}`}
@@ -1286,7 +1286,7 @@ function SystemEventsCard() {
                 }}
               />
             </Col>
-            <Col span={6}>
+            <Col xs={12} sm={8} md={6}>
               <Statistic
                 title="重启原因"
                 value={lastRestart.detail ?? '-'}

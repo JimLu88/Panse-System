@@ -77,10 +77,10 @@ export default function ReconDiagnosticsPage() {
         </Button>}>
         {of && (
           <Row gutter={12} style={{ marginBottom: 12 }}>
-            <Col span={6}><Statistic title="孤儿笔数" value={of.orphan_count} suffix={`/ ${of.total_flows}`} valueStyle={{ color: of.orphan_count ? '#d46b08' : undefined }} /></Col>
-            <Col span={6}><Statistic title="未认领收入" value={of.orphan_income} precision={0} prefix="¥" valueStyle={{ color: '#389e0d' }} /></Col>
-            <Col span={6}><Statistic title="未认领支出" value={of.orphan_expense} precision={0} prefix="¥" valueStyle={{ color: '#cf1322' }} /></Col>
-            <Col span={6}><div style={{ color: '#888', fontSize: 12 }}>按账户: {Object.entries(of.by_account).map(([k, v]) => `${k}:${v}`).join('  ') || '—'}</div></Col>
+            <Col xs={12} sm={8} md={6}><Statistic title="孤儿笔数" value={of.orphan_count} suffix={`/ ${of.total_flows}`} valueStyle={{ color: of.orphan_count ? '#d46b08' : undefined }} /></Col>
+            <Col xs={12} sm={8} md={6}><Statistic title="未认领收入" value={of.orphan_income} precision={0} prefix="¥" valueStyle={{ color: '#389e0d' }} /></Col>
+            <Col xs={12} sm={8} md={6}><Statistic title="未认领支出" value={of.orphan_expense} precision={0} prefix="¥" valueStyle={{ color: '#cf1322' }} /></Col>
+            <Col xs={12} sm={8} md={6}><div style={{ color: '#888', fontSize: 12 }}>按账户: {Object.entries(of.by_account).map(([k, v]) => `${k}:${v}`).join('  ') || '—'}</div></Col>
           </Row>
         )}
         <Table rowKey="transaction_no" size="small" pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}

@@ -395,12 +395,12 @@ export default function AccountBalancesPage() {
             <Input placeholder="手机号/卡号尾号等, 仅备注用" />
           </Form.Item>
           <Row gutter={12}>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="period" label="所属月份" rules={[{ required: true, message: '请选月份' }]}>
                 <DatePicker.MonthPicker style={{ width: '100%' }} placeholder="YYYY-MM" />
               </Form.Item>
             </Col>
-            <Col span={12}>
+            <Col xs={24} sm={12}>
               <Form.Item name="as_of_date" label="统计日期 (这条余额是哪天的)">
                 <DatePicker style={{ width: '100%' }} placeholder="如 2026-05-20" />
               </Form.Item>
@@ -414,17 +414,17 @@ export default function AccountBalancesPage() {
             <InputNumber style={{ width: '100%' }} addonBefore="¥" step={100} placeholder="账户当前余额数字" />
           </Form.Item>
           <Row gutter={12}>
-            <Col span={8}>
+            <Col xs={24} sm={12} md={8}>
               <Form.Item name="opening_balance" label="期初 (可选)">
                 <InputNumber style={{ width: '100%' }} addonBefore="¥" />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col xs={24} sm={12} md={8}>
               <Form.Item name="income" label="收入 (可选)">
                 <InputNumber style={{ width: '100%' }} addonBefore="¥" />
               </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col xs={24} sm={12} md={8}>
               <Form.Item name="expense" label="支出 (可选)">
                 <InputNumber style={{ width: '100%' }} addonBefore="¥" />
               </Form.Item>

@@ -162,15 +162,15 @@ export default function FactoryOrdersPage() {
       {s && (
         <>
           <Row gutter={12} style={{ marginTop: 12 }}>
-            <Col span={4}><Card size="small"><Statistic title="单数" value={s.count} /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="推算合计(应付)" value={s.expected_sum} precision={2} prefix="¥" /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="工厂实际合计" value={s.actual_sum} precision={2} prefix="¥" /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="差异合计" value={s.diff_sum} precision={2} prefix="¥" valueStyle={{ color: Math.abs(s.diff_sum) >= 1 ? '#cf1322' : undefined }} /></Card></Col>
-            <Col span={5}><Card size="small"><Statistic title="已核对" value={s.reconciled_pct} precision={1} suffix={`% (${s.reconciled}/${s.count})`} /></Card></Col>
+            <Col xs={12} sm={8} md={4}><Card size="small"><Statistic title="单数" value={s.count} /></Card></Col>
+            <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="推算合计(应付)" value={s.expected_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="工厂实际合计" value={s.actual_sum} precision={2} prefix="¥" /></Card></Col>
+            <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="差异合计" value={s.diff_sum} precision={2} prefix="¥" valueStyle={{ color: Math.abs(s.diff_sum) >= 1 ? '#cf1322' : undefined }} /></Card></Col>
+            <Col xs={12} sm={8} md={5}><Card size="small"><Statistic title="已核对" value={s.reconciled_pct} precision={1} suffix={`% (${s.reconciled}/${s.count})`} /></Card></Col>
           </Row>
           <Row gutter={12} style={{ margin: '12px 0' }}>
-            <Col span={12}><Card size="small"><Statistic title="已付(工厂)" value={s.paid_sum} precision={2} prefix="¥" suffix={` · ${s.paid_count}单`} valueStyle={{ color: '#1677ff' }} /></Card></Col>
-            <Col span={12}><Card size="small"><Statistic title="未付(待付)" value={s.unpaid_sum} precision={2} prefix="¥" suffix={` · ${s.unpaid_count}单`} valueStyle={{ color: s.unpaid_sum >= 1 ? '#fa8c16' : undefined }} /></Card></Col>
+            <Col xs={24} sm={12}><Card size="small"><Statistic title="已付(工厂)" value={s.paid_sum} precision={2} prefix="¥" suffix={` · ${s.paid_count}单`} valueStyle={{ color: '#1677ff' }} /></Card></Col>
+            <Col xs={24} sm={12}><Card size="small"><Statistic title="未付(待付)" value={s.unpaid_sum} precision={2} prefix="¥" suffix={` · ${s.unpaid_count}单`} valueStyle={{ color: s.unpaid_sum >= 1 ? '#fa8c16' : undefined }} /></Card></Col>
           </Row>
         </>
       )}

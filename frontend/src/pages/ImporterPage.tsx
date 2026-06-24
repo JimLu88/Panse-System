@@ -315,7 +315,7 @@ function SheetEditor({
       )}
 
       <Row gutter={16}>
-        <Col span={8}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" title="实体类型">
             <Select
               style={{ width: '100%' }}
@@ -336,7 +336,7 @@ function SheetEditor({
             )}
           </Card>
         </Col>
-        <Col span={16}>
+        <Col xs={24} md={16}>
           <Card size="small" title="选项">
             <Space direction="vertical">
               <Checkbox checked={autoCreate} onChange={(e) => setAutoCreate(e.target.checked)}>
@@ -500,34 +500,34 @@ function ImportReportView({ report }: { report: ImportReport }) {
       }
     >
       <Row gutter={12} style={{ marginBottom: 12 }}>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic title="总行数" value={report.total_rows} />
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic
             title="入库主记录"
             value={report.inserted_parents}
             valueStyle={{ color: '#52c41a' }}
           />
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic title="入库明细行" value={report.inserted_children} />
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic
             title="跳过"
             value={report.skipped_rows}
             valueStyle={{ color: report.skipped_rows > 0 ? '#fa8c16' : undefined }}
           />
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic
             title="订单匹配命中"
             value={report.matched_lines}
             valueStyle={{ color: '#1677ff' }}
           />
         </Col>
-        <Col span={4}>
+        <Col xs={12} sm={8} md={4}>
           <Statistic
             title="自动创建供应商"
             value={report.auto_created_suppliers.length}
@@ -1477,7 +1477,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Row gutter={16}>
-        <Col span={8}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" title="质量评分">
             <Statistic value={sheet.quality_score} suffix="/ 100"
                        valueStyle={{ color: { good: '#52c41a', needs_review: '#fa8c16',
@@ -1485,7 +1485,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
             <Tag color={qm.color}>{qm.label}</Tag> — {qm.advice}
           </Card>
         </Col>
-        <Col span={8}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" title="AI 判断">
             <Space direction="vertical">
               <Space>
@@ -1500,7 +1500,7 @@ function SmartSheetEditor({ sheet, state, onStateChange }: {
             </Space>
           </Card>
         </Col>
-        <Col span={8}>
+        <Col xs={24} sm={12} md={8}>
           <Card size="small" title="实体类型 (可改)">
             <Select style={{ width: '100%' }}
                     value={entityType}

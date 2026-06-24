@@ -53,9 +53,9 @@ export default function PrepayLedgerPage() {
 
       {sum && (
         <Row gutter={12}>
-          <Col span={6}><Card size="small"><Statistic title="台账总笔数" value={sum.total} /></Card></Col>
+          <Col xs={12} sm={8} md={6}><Card size="small"><Statistic title="台账总笔数" value={sum.total} /></Card></Col>
           {CATS.map((c) => (
-            <Col span={6} key={c.value}>
+            <Col xs={12} sm={8} md={6} key={c.value}>
               <Card size="small">
                 <Statistic title={c.label} value={sum.by_category[c.value]?.amount ?? 0} precision={0} prefix="¥" />
                 <div style={{ color: '#999', fontSize: 12 }}>{sum.by_category[c.value]?.count ?? 0} 笔</div>
