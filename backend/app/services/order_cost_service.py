@@ -40,8 +40,12 @@ WOOD_PREFIX = "WD"
 # 注: "样品"/"样块" 不再归零 —— 木块小样是真实售卖的有成本商品(售价¥16-44, 物理成本约¥13),
 # 按实际成本入账(用户拍板 2026-06-21)。淘宝标题"...样品样块"同含两词, 必须两词都不归零,
 # 否则 any() 仍会被"样品"命中。default_warehouse_for 用自有字面量判仓库, 不受此影响。
-ZERO_COST_KEYWORDS = ("安装", "官方服务", "上门服务", "送货", "补差价", "差价",
-                      "专链", "补拍", "邮费")
+# 淘宝官方服务/服务类商品(按标题/SKU 判): 无生产成本 → 理论成本归 0。
+_OFFICIAL_SERVICE_KW = ("安装", "官方服务", "上门服务", "送货", "邮费", "专链", "补拍")
+# 差价/补差价: 按「备注」判, 不读标题/SKU (标题易被误标; 真实判据是人工备注 —— 用户 2026-06-24)。
+# 不在此直接归 0, 交差价/小额规则: 实付<200 归0; ≥200 按实付×85% + 挂异常待人工核。
+_DIFF_KEYWORDS = ("补差价", "差价")
+ZERO_COST_KEYWORDS = _OFFICIAL_SERVICE_KW + _DIFF_KEYWORDS   # 兼容旧引用
 
 
 def default_warehouse_for(product_name: Optional[str], sku: Optional[str],
@@ -62,8 +66,9 @@ def zero_cost_reason(order: Order) -> Optional[str]:
     if order.is_refill:
         return "补单(刷单)无真实生产成本, 成本在补单记录核算"
     text = f"{order.sku or ''} {order.sku_code or ''} {order.product_name or ''}"
-    if any(k in text for k in ZERO_COST_KEYWORDS):
+    if any(k in text for k in _OFFICIAL_SERVICE_KW):
         return "商家安装/淘宝官方服务 SKU, 无实际成本"
+    # 差价/补差价不再按标题归0 —— 交差价/小额规则(读备注 + 金额阈值), 见 _apply_fragment_rule。
     return None
 
 
@@ -90,9 +95,9 @@ def _skip_cost_estimate(order: Order) -> Optional[str]:
     if (st in ("cancelled", "closed", "pending_payment", "aftersales")
             or "关闭" in st or "取消" in st or "待付款" in st):
         return f"订单状态 {st} (未成交/退款/取消/关闭, 不纳入成本估算)"
-    rs = order.refund_status or ""
-    if any(k in rs for k in _REFUND_KEYWORDS):
-        return f"退款状态「{rs}」(退款/退货/关闭单)"
+    # 用户 2026-06-24: 只跳「全额退款」。部分退款(如一单多子订单退一个、还剩一个)绝不跳过,
+    # 否则剩余产品的成本会丢失。原先"退款状态含退款/退货即跳"的逻辑会误伤部分退款单 —— 已去掉,
+    # 改为只看下方全额退款金额判定(退款≥实付×99%)。
     paid = order.paid_amount
     refund = order.refund_amount
     if paid is not None and refund is not None and Decimal(str(paid)) > 0:
@@ -459,26 +464,43 @@ def _sales_ratio_cost(db: Session, order: Order, ratios: dict) -> Optional[Decim
 # 不挂整柜成本 (否则 ¥200 订单背 ¥8721 整柜成本, 月度成本被拉爆)。
 _FRAGMENT_PAID_RATIO = Decimal("0.5")    # 实付 < 产品成本×此比例 → 判为片段
 _FRAGMENT_COST_RATE = Decimal("0.85")    # 片段成本 = 实付 × 此率
+_DIFF_ZERO_BELOW = Decimal("200")        # 差价/小额单: 实付 < 此额 → 成本归0 (用户 2026-06-24)
+
+
+def _is_diff_remark(order: Order) -> bool:
+    """备注(商家备注+ERP备注+买家留言)含 差价/补差价 → 差价单 (不读标题/SKU, 用户 2026-06-24)。"""
+    txt = " ".join(str(getattr(order, f, None) or "")
+                   for f in ("seller_memo", "remark", "buyer_message"))
+    return any(k in txt for k in _DIFF_KEYWORDS)
 
 
 def _apply_fragment_rule(order: Order, bd: CostBreakdown) -> Decimal:
-    """若订单是差价/定金片段(实付 < 产品成本×50%) → 理论成本=实付×85%; 否则原成本。
+    """差价/小额单兜底 (用户 2026-06-24 重定): 非定制单, 若是差价单(备注含差价/补差价)或
+    片段(实付<整件成本×50%) → 实付<200 成本归0; 实付≥200 成本=实付×85%(留毛利, 后续挂异常待人工核)。
 
-    只对非定制单生效(定制有独立核算); bd 已带整件产品成本(bd.unit_cost)。原地改 bd 并返回单件成本。
+    只对非定制单生效(定制单走定制报价/独立核算); bd 已带整件产品成本(bd.unit_cost)。原地改 bd。
     """
     cost = bd.unit_cost
     if order.is_custom:
         return cost
     paid = Decimal(str(order.paid_amount or 0))
-    if cost and cost > 0 and paid > 0 and paid < cost * _FRAGMENT_PAID_RATIO:
-        capped = (paid * _FRAGMENT_COST_RATE).quantize(_CENTS)
-        bd.unit_cost = capped
-        bd.total_cost = (capped * bd.qty).quantize(_CENTS)
+    is_fragment = bool(cost and cost > 0 and paid > 0 and paid < cost * _FRAGMENT_PAID_RATIO)
+    if not (_is_diff_remark(order) or is_fragment):
+        return cost
+    if paid < _DIFF_ZERO_BELOW:                         # 实付<200 → 归0
+        bd.unit_cost = Decimal("0")
+        bd.total_cost = Decimal("0")
         bd.cost_incomplete = True
         bd.note = ((bd.note + " | ") if bd.note else "") + \
-            f"差价/定金片段(实付¥{paid}<整件成本¥{cost}×50%) → 实付×85%兜底 ¥{capped}"
-        return capped
-    return cost
+            f"差价/小额单(实付¥{paid}<200) → 成本归0"
+        return Decimal("0")
+    capped = (paid * _FRAGMENT_COST_RATE).quantize(_CENTS)   # 实付≥200 → 实付×85%
+    bd.unit_cost = capped
+    bd.total_cost = (capped * bd.qty).quantize(_CENTS)
+    bd.cost_incomplete = True
+    bd.note = ((bd.note + " | ") if bd.note else "") + \
+        f"差价/小额单(实付¥{paid}≥200) → 实付×85%兜底 ¥{capped} (待人工核价)"
+    return capped
 
 
 def _effective_qty(order: Order, unit_cost: Decimal) -> int:

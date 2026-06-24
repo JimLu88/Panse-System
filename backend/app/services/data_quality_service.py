@@ -1192,9 +1192,65 @@ def scan_factory_bill_on_dead_order(db: Session) -> int:
     return count
 
 
+def _cost_ratio_reason(o) -> Optional[str]:
+    """成本率审查 (用户 2026-06-24): 成本÷实付 <60% 或 >90% → 待人工逐单核;
+    差价/小额单(备注含差价, 实付≥200, 按85%估算)也单列待核。返回原因 (无 → None)。
+    口径: 已成交非补单非全退; 归0单(官方服务/小额差价)不审; >150% 留 cost_exceeds_paid 管。"""
+    from decimal import Decimal
+    if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
+        return None
+    paid = Decimal(str(o.paid_amount or 0))
+    if paid <= 0:
+        return None
+    if o.refund_amount and Decimal(str(o.refund_amount)) >= paid * Decimal("0.99"):
+        return None   # 全额退款单不审
+    cost_raw = o.actual_cost if o.actual_cost is not None else o.theoretical_cost
+    if cost_raw is None:
+        return None
+    cost = Decimal(str(cost_raw))
+    if cost <= 0:
+        return None   # 归0单(官方服务/小额差价)不在成本率审查
+    ratio = cost / paid
+    if ratio < Decimal("0.6"):
+        return f"成本¥{cost}仅占实付¥{paid}的{ratio:.0%}(毛利偏高, 疑成本估低/漏配件)"
+    if Decimal("0.9") < ratio <= Decimal("1.5"):
+        return f"成本¥{cost}占实付¥{paid}的{ratio:.0%}(毛利偏低或亏, 疑成本估高)"
+    # 差价/小额单按85%估算(0.85在60~90带内, 但仍是估算, 待人工核实际成本)
+    if o.actual_cost is None and paid >= Decimal("200"):
+        txt = " ".join(str(getattr(o, f, None) or "")
+                       for f in ("seller_memo", "remark", "buyer_message"))
+        if any(k in txt for k in ("差价", "补差价")) and abs(ratio - Decimal("0.85")) < Decimal("0.02"):
+            return f"差价/小额单按实付×85%估算¥{cost}(待人工核工厂实际成本)"
+    return None
+
+
+def scan_cost_ratio_outlier(db: Session) -> int:
+    """成本率离群单挂异常, 供逐单核对 (用户 2026-06-24)。info 级, 录入实际成本后自动销账。"""
+    count = 0
+    for o in db.query(Order).filter(
+        Order.status.in_(_COST_PAID_SALE_STATUS),
+        Order.is_refill == False,  # noqa: E712
+    ).all():
+        reason = _cost_ratio_reason(o)
+        if reason is None:
+            continue
+        _record(
+            db, source_table="orders", source_pk=o.id,
+            exception_type="cost_ratio_outlier", severity="info",
+            description=f"订单 {o.order_no}: {reason}",
+            suggestion_action="逐单核实成本是否正确(定制/差价/漏配件); 补录工厂实际成本后自动消除。",
+            context={"order_no": o.order_no, "paid": str(o.paid_amount),
+                     "cost": str(o.actual_cost if o.actual_cost is not None else o.theoretical_cost)},
+        )
+        count += 1
+    _log.info("scan_cost_ratio_outlier: %d", count)
+    return count
+
+
 def run_all(db: Session) -> dict[str, int]:
     results: dict[str, int] = {}
     scanners = [
+        ("cost_ratio_outlier", scan_cost_ratio_outlier),
         ("order_missing_cost", scan_order_missing_cost),
         ("cost_exceeds_paid", scan_cost_exceeds_paid),
         ("order_missing_alipay", scan_order_missing_alipay),

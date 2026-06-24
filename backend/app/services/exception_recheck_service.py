@@ -553,9 +553,22 @@ def _check_factory_bill_on_dead_order(db: Session, exc: DataException) -> Option
     return f"工厂账单 ¥{bill} 仍挂在已取消/退款单 {ono} 上, 请「重新匹配」到该客户的有效订单"
 
 
+def _check_cost_ratio_outlier(db: Session, exc: DataException) -> Optional[str]:
+    """成本率离群: 修好 = 该单成本率已回正常带(或补了工厂实际成本)→ _cost_ratio_reason 返回 None。"""
+    from app.models.order import Order
+    from app.services.data_quality_service import _cost_ratio_reason
+    o = None
+    if exc.source_pk and str(exc.source_pk).isdigit():
+        o = db.get(Order, int(exc.source_pk))
+    if o is None:
+        return None
+    return _cost_ratio_reason(o)
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_no_unresolved": _check_order_no_unresolved,
     "factory_bill_on_dead_order": _check_factory_bill_on_dead_order,
+    "cost_ratio_outlier": _check_cost_ratio_outlier,
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,
     "duplicate_alipay_flow": _check_duplicate_alipay_cross_account,
     "alipay_balance_gap": _check_alipay_balance_gap,
