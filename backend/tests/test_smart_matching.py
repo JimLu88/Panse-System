@@ -34,6 +34,13 @@ def test_logistics_tagged(db_session):
     assert r.tagged == {"logistics": 1}
 
 
+def test_logistics_yimidida_tagged(db_session):
+    """壹米滴答运费(支出) → logistics (用户 2026-06-24 加关键字)。"""
+    _flow(db_session, "TY", -11345, remark="江西壹米滴答12月运费")
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"logistics": 1}
+
+
 def test_salary_tagged(db_session):
     _flow(db_session, "T1", -5000, counterparty="李爱群", remark="工资")
     r = smart_matching_service.run(db_session)
