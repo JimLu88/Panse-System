@@ -5,9 +5,10 @@
       群晖部署时只改 docker-compose 卷的主机路径, 代码零改动。
 结构: 「PPS编码 产品名…」文件夹 / 「主图|SKU 图|详情页」子目录 / 图片文件。
 匹配: 文件夹名以产品编码开头 → 自动对应产品总表。
-性能: 列表用 ?thumb=1 缩略图 (最长边 480px 的 WebP, 磁盘缓存),
-      点开大图走 ?max_edge=1600 压缩版 (同样缓存) — 外网带宽友好;
+性能: 列表用 ?thumb=1 缩略图 (最长边 320px 的 WebP, 磁盘缓存),
+      点开大图走 ?max_edge=1280 压缩版 (同样缓存) — 外网带宽友好;
       原图仅在需要时显式请求。缓存放 storage/gallery_thumbs (随 storage 卷持久)。
+      压缩限并发 + JPEG draft 降采样, 防一夹大图同时压垮弱 CPU (见 _compressed)。
 安全: 相对路径 resolve 后必须仍在 GALLERY_ROOT 内, 否则 403 (防 ../ 穿越)。
 """
 from __future__ import annotations
@@ -15,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Optional
 
@@ -33,6 +35,18 @@ _CODE_RE = re.compile(r"^(P[A-Z]{0,3}\d{8,})")   # 文件夹名开头的产品�
 _ROOT_GROUP = "(根目录)"           # tree 里直接放文件夹根的图片用这个组名
 _MAX_UPLOAD_BYTES = 30 * 1024 * 1024   # 单张上限 30MB
 _UNSAFE_NAME_RE = re.compile(r'[\\/:*?"<>|\x00-\x1f]')   # 文件名里不许出现的字符
+
+# 缩略/预览压缩参数 (2026-06-25 图库性能优化):
+#   源图多是 6-8MB / 24MP 相机原图, 弱 CPU(群晖 2 核) 现场压缩极慢; 一夹 169 张
+#   首访=169 张同时解码+编码 → CPU 过载、请求超时 → 平板上一片裂图。对策:
+#   - 列表缩略 320px (120px 槽位 @2.6x 够清晰; 原 480 偏大、4 倍像素白烧 CPU)
+#   - 预览默认 1280px (平板足够锐, 比 1600 省 ~1/3 解码+带宽)
+#   - 全局信号量限并发: 再多请求一起来, 也只放 N 张进 PIL, 其余排队不压垮 NAS
+#     (可经环境变量 GALLERY_COMPRESS_CONCURRENCY 调; 默认 3 ≈ 群晖核数)
+_THUMB_EDGE = 320
+_PREVIEW_EDGE = 1280
+_COMPRESS_CONCURRENCY = max(1, int(os.environ.get("GALLERY_COMPRESS_CONCURRENCY", "3")))
+_compress_sem = threading.Semaphore(_COMPRESS_CONCURRENCY)
 
 
 def _root() -> Path:
@@ -356,16 +370,31 @@ def scan_gallery(
 
 
 def _compressed(src: Path, max_edge: int) -> Path:
-    """生成/复用压缩 WebP (按 源路径+mtime+尺寸 哈希缓存, 源图更新自动失效)。"""
-    key = hashlib.md5(f"{src}|{src.stat().st_mtime_ns}|{max_edge}".encode()).hexdigest()
+    """生成/复用压缩 WebP (按 源路径+mtime+尺寸 哈希缓存, 源图更新自动失效)。
+
+    弱 CPU 优化:
+      - 信号量限并发: 任一时刻最多 _COMPRESS_CONCURRENCY 张进 PIL, 余者排队,
+        防 169 张大图同时压垮群晖 (这是平板上"缩略图全裂"的根因)。
+      - JPEG draft 解码期降采样: 24MP 原图按 1/8 解码再缩, 快约一个量级 (非 JPEG 空操作)。
+      - EXIF 方向矫正: 相机竖拍图缩略不躺倒。
+      - 原子落盘 (临时文件改名): 读到的要么不存在、要么是完整文件, 杜绝半截缓存→裂图。
+    """
+    key = hashlib.md5(f"{src}|{src.stat().st_mtime_ns}|{max_edge}|v2".encode()).hexdigest()
     out = _thumb_cache_dir() / f"{key}.webp"
     if out.exists():
         return out
-    from PIL import Image
-    with Image.open(src) as im:
-        im = im.convert("RGB")
-        im.thumbnail((max_edge, max_edge))
-        im.save(out, "WEBP", quality=80)
+    with _compress_sem:
+        if out.exists():        # 等锁期间已被别的线程生成
+            return out
+        from PIL import Image, ImageOps
+        tmp = out.with_name(f"{out.stem}.{os.getpid()}.{threading.get_ident()}.tmp")
+        with Image.open(src) as im:
+            im.draft("RGB", (max_edge, max_edge))   # 大 JPEG 解码期降采样 (非 JPEG 无副作用)
+            im2 = ImageOps.exif_transpose(im)       # 尊重相机方向
+            im2 = im2.convert("RGB")
+            im2.thumbnail((max_edge, max_edge))
+            im2.save(tmp, "WEBP", quality=80, method=4)
+        os.replace(tmp, out)    # 原子改名: 半截 .tmp 永不会被当缓存返回
     return out
 
 
@@ -379,12 +408,13 @@ def serve_file(
     p = _safe_resolve(path)
     if not p.is_file() or p.suffix.lower() not in _IMAGE_EXT:
         raise HTTPException(404, "图片不存在")
-    edge = 480 if thumb else (max_edge if 0 < max_edge <= 4000 else 0)
+    edge = _THUMB_EDGE if thumb else (max_edge if 0 < max_edge <= 4000 else 0)
     if edge:
         try:
             cached = _compressed(p, edge)
+            # 压缩图 key 含源 mtime, 内容不变 → 30 天 immutable, 浏览器连 304 都省
             return FileResponse(cached, media_type="image/webp",
-                                headers={"Cache-Control": "public, max-age=86400"})
+                                headers={"Cache-Control": "public, max-age=2592000, immutable"})
         except Exception:
             pass   # 压缩失败回退原图
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})

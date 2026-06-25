@@ -1,8 +1,9 @@
 /**
  * 产品图库弹窗 (用户需求 2026-06-11):
  * 产品总表行点「图库」→ 自动匹配 D:\畔色 产品图库 下以该编码开头的文件夹,
- * 按 主图/SKU图/详情页 分组浏览。列表加载 480px WebP 缩略图 (秒开),
- * 点开预览加载 1600px 压缩版 — 外网访问带宽友好。
+ * 按 主图/SKU图/详情页 分组浏览。列表加载 320px WebP 缩略图 (秒开),
+ * 点开预览加载 1280px 压缩版 — 外网访问带宽友好。
+ * 每组分页渲染 (48/页) + 后端限并发压缩, 防大场景图夹一次性压垮弱 CPU NAS。
  */
 import { useMemo, useState } from 'react';
 import {
@@ -13,13 +14,57 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/base';
 
 const thumbUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&thumb=1`;
-const previewUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&max_edge=1600`;
+const previewUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&max_edge=1280`;
+
+// 一组先渲染这么多张, 其余点「加载更多」追加 — 防一夹 169 张一次性全请求, 压垮弱 CPU NAS。
+const GROUP_PAGE_SIZE = 48;
 
 const ROOT_GROUP = '(根目录)';
 // 上传分组候选: 库内已有分组 + 常用分组, 去重
 const COMMON_GROUPS = ['主图', 'SKU 图', '场景图', '详情页', ROOT_GROUP];
 
 interface TreeGroup { group: string; images: string[] }
+
+/**
+ * 单个分组的缩略图墙, 自带分页 (用户 2026-06-25 优化):
+ * 大场景图夹动辄 169 张, 一次性全渲染 = 169 个并发请求现场压缩, 把弱 CPU NAS 打爆、
+ * 平板上全裂图。这里先渲染 48 张, 其余点「加载更多」按需追加; 配合后端限并发, 稳。
+ */
+function GalleryGroup({ group, images }: TreeGroup) {
+  const [shown, setShown] = useState(GROUP_PAGE_SIZE);
+  const visible = images.slice(0, shown);
+  const rest = images.length - visible.length;
+  return (
+    <div>
+      <Typography.Title level={5} style={{ margin: '8px 0' }}>
+        {group} <Tag>{images.length} 张</Tag>
+      </Typography.Title>
+      <Image.PreviewGroup>
+        <Space wrap size={8}>
+          {visible.map((p) => (
+            <Image
+              key={p}
+              width={120}
+              height={120}
+              style={{ objectFit: 'cover', borderRadius: 6 }}
+              src={thumbUrl(p)}
+              preview={{ src: previewUrl(p) }}
+              loading="lazy"
+              decoding="async"
+            />
+          ))}
+        </Space>
+      </Image.PreviewGroup>
+      {rest > 0 && (
+        <div style={{ marginTop: 8 }}>
+          <Button size="small" onClick={() => setShown((s) => s + GROUP_PAGE_SIZE)}>
+            加载更多（剩余 {rest} 张）
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function GalleryModal({ productCode, onClose }: {
   productCode: string | null; onClose: () => void;
@@ -131,26 +176,7 @@ export default function GalleryModal({ productCode, onClose }: {
           {uploadBar}
           {loadingTree && <Spin />}
           {(tree ?? []).map((g) => (
-            <div key={g.group}>
-              <Typography.Title level={5} style={{ margin: '8px 0' }}>
-                {g.group} <Tag>{g.images.length} 张</Tag>
-              </Typography.Title>
-              <Image.PreviewGroup>
-                <Space wrap size={8}>
-                  {g.images.map((p) => (
-                    <Image
-                      key={p}
-                      width={120}
-                      height={120}
-                      style={{ objectFit: 'cover', borderRadius: 6 }}
-                      src={thumbUrl(p)}
-                      preview={{ src: previewUrl(p) }}
-                      loading="lazy"
-                    />
-                  ))}
-                </Space>
-              </Image.PreviewGroup>
-            </div>
+            <GalleryGroup key={g.group} group={g.group} images={g.images} />
           ))}
         </Space>
       )}
