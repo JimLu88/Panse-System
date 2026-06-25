@@ -9,12 +9,14 @@ import { useMemo, useState } from 'react';
 import {
   Button, Empty, Image, message, Modal, Select, Space, Spin, Tag, Typography, Upload,
 } from 'antd';
-import { UploadOutlined } from '@ant-design/icons';
+import { ExpandOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/base';
 
 const thumbUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&thumb=1`;
 const previewUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}&max_edge=1280`;
+// 不带压缩参数 = 原图 (8MB/4000万像素), 仅「打开原图」按钮按需拉, 点图默认不碰
+const originalUrl = (p: string) => `/api/gallery/file?path=${encodeURIComponent(p)}`;
 
 // 一组先渲染这么多张, 其余点「加载更多」追加 — 防一夹 169 张一次性全请求, 压垮弱 CPU NAS。
 const GROUP_PAGE_SIZE = 48;
@@ -39,7 +41,28 @@ function GalleryGroup({ group, images }: TreeGroup) {
       <Typography.Title level={5} style={{ margin: '8px 0' }}>
         {group} <Tag>{images.length} 张</Tag>
       </Typography.Title>
-      <Image.PreviewGroup>
+      <Image.PreviewGroup
+        preview={{
+          // 预览工具条加「打开原图」: 点图看的是 1280 清晰预览(秒开), 要抠细节再点这个拉原图 (用户 2026-06-25)
+          toolbarRender: (originalNode, { current }) => (
+            <Space size="middle" align="center">
+              {originalNode}
+              <Button
+                size="small"
+                type="primary"
+                ghost
+                icon={<ExpandOutlined />}
+                onClick={() => {
+                  const p = visible[current];
+                  if (p) window.open(originalUrl(p), '_blank', 'noopener,noreferrer');
+                }}
+              >
+                打开原图
+              </Button>
+            </Space>
+          ),
+        }}
+      >
         <Space wrap size={8}>
           {visible.map((p) => (
             <Image

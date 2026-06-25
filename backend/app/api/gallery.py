@@ -231,6 +231,11 @@ async def upload_image(
         out.unlink(missing_ok=True)
         # 卷只读 / 磁盘满 等
         raise HTTPException(500, f"写入失败(图库卷是否可写?): {e}")
+    # 预热: 立即生成该图缩略图, 上传后浏览即秒开 (用户 2026-06-25)
+    try:
+        _compressed(out, _THUMB_EDGE)
+    except Exception:  # noqa: BLE001 — 预热失败不影响上传成功
+        pass
     rel = str(out.relative_to(root.resolve())).replace("\\", "/")
     return {"ok": True, "folder": folder_name, "group": grp or _ROOT_GROUP,
             "path": rel, "filename": out.name, "size": size}
@@ -369,6 +374,12 @@ def scan_gallery(
     return {"new_folders": news, "created": created}
 
 
+def _thumb_cache_path(src: Path, max_edge: int) -> Path:
+    """压缩图缓存路径 (key 含源 mtime+尺寸, 源图改自动失效)。供 _compressed 与预热共用 — key 逻辑只此一处, 防漂移。"""
+    key = hashlib.md5(f"{src}|{src.stat().st_mtime_ns}|{max_edge}|v2".encode()).hexdigest()
+    return _thumb_cache_dir() / f"{key}.webp"
+
+
 def _compressed(src: Path, max_edge: int) -> Path:
     """生成/复用压缩 WebP (按 源路径+mtime+尺寸 哈希缓存, 源图更新自动失效)。
 
@@ -379,8 +390,7 @@ def _compressed(src: Path, max_edge: int) -> Path:
       - EXIF 方向矫正: 相机竖拍图缩略不躺倒。
       - 原子落盘 (临时文件改名): 读到的要么不存在、要么是完整文件, 杜绝半截缓存→裂图。
     """
-    key = hashlib.md5(f"{src}|{src.stat().st_mtime_ns}|{max_edge}|v2".encode()).hexdigest()
-    out = _thumb_cache_dir() / f"{key}.webp"
+    out = _thumb_cache_path(src, max_edge)
     if out.exists():
         return out
     with _compress_sem:

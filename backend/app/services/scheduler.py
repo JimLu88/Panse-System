@@ -609,6 +609,19 @@ def _job_thumb_cache_cleanup(db: Session) -> dict:
     return {"deleted": deleted}
 
 
+def _job_gallery_thumb_warm(db: Session) -> dict:
+    """图库缩略图预热 (用户 2026-06-25: 全部先跑完直接秒开, 新图自动补)。
+
+    增量幂等: 只给缺缩略图的图生成, 已缓存的跳过(纯 stat, 快)。每轮预算 GALLERY_WARM_BUDGET
+    (默认 800)张, 多轮累计跑完全量, 稳态近空跑。白天每小时跑(cron hour=7-22), 避开夜间盘休眠。
+    复用 gallery._compressed(限并发信号量), 不压垮弱 CPU NAS。新图(丢文件夹/上传)下轮自动补。
+    """
+    import os as _os
+    from app.services import gallery_warm_service
+    budget = int(_os.environ.get("GALLERY_WARM_BUDGET", "800"))
+    return gallery_warm_service.warm_thumbnails(max_new=budget)
+
+
 def _job_recon_snapshot(db: Session) -> dict:
     """每天 23:30: 留存当日对账结果快照 (看差异是在收敛还是恶化 — 对账建议 13)。"""
     from datetime import date as _date
@@ -1050,6 +1063,8 @@ def _register_default_jobs() -> None:
                  _job_notify_retry, interval_minutes=30)
     register_job("monthly_thumb_cleanup", "图库缩略图缓存月度清理",
                  _job_thumb_cache_cleanup, cron={"day": 1, "hour": 22, "minute": 35})   # 夜间模式: 挪 04:00→22:35
+    register_job("hourly_gallery_thumb_warm", "图库缩略图预热 (增量; 白天每小时; 新图自动补)",
+                 _job_gallery_thumb_warm, cron={"hour": "7-22", "minute": 20})   # 避开夜间盘休眠(23-06:30)
     register_job("daily_2330_recon_snapshot", "对账结果每日快照",
                  _job_recon_snapshot, cron={"hour": 22, "minute": 45})   # 夜间模式: 挪 23:30→22:45
     register_job("hourly_order_sheets_catchup", "下单图增量补生成(导入后1小时内)",
