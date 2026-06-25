@@ -612,14 +612,18 @@ def _job_thumb_cache_cleanup(db: Session) -> dict:
 def _job_gallery_thumb_warm(db: Session) -> dict:
     """图库缩略图预热 (用户 2026-06-25: 全部先跑完直接秒开, 新图自动补)。
 
-    增量幂等: 只给缺缩略图的图生成, 已缓存的跳过(纯 stat, 快)。每轮预算 GALLERY_WARM_BUDGET
-    (默认 800)张, 多轮累计跑完全量, 稳态近空跑。白天每小时跑(cron hour=7-22), 避开夜间盘休眠。
-    复用 gallery._compressed(限并发信号量), 不压垮弱 CPU NAS。新图(丢文件夹/上传)下轮自动补。
+    增量幂等: 给缺缓存的图生成 缩略(320)+预览(1280) 两个尺寸, 已缓存跳过(纯 stat, 快)。每轮预算
+    GALLERY_WARM_BUDGET(默认 800, 跨两尺寸合计), 多轮累计跑完全量, 稳态近空跑。白天每小时跑
+    (cron hour=7-22), 避开夜间盘休眠。复用 gallery._compressed(限并发信号量), 不压垮弱 CPU NAS。
+    新图(丢文件夹/上传)下轮自动补。试生成但全失败(存储只读/编码器坏)→ 抛错触发"连续失败"告警, 不静默。
     """
     import os as _os
     from app.services import gallery_warm_service
     budget = int(_os.environ.get("GALLERY_WARM_BUDGET", "800"))
-    return gallery_warm_service.warm_thumbnails(max_new=budget)
+    res = gallery_warm_service.warm_thumbnails(max_new=budget)
+    if res.get("attempted", 0) > 0 and res.get("generated", 0) == 0:
+        raise RuntimeError(f"图库预热: {res.get('attempted')} 张全部生成失败(疑似存储只读/编码器坏) {res}")
+    return res
 
 
 def _job_recon_snapshot(db: Session) -> dict:

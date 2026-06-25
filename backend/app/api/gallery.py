@@ -231,11 +231,12 @@ async def upload_image(
         out.unlink(missing_ok=True)
         # 卷只读 / 磁盘满 等
         raise HTTPException(500, f"写入失败(图库卷是否可写?): {e}")
-    # 预热: 立即生成该图缩略图, 上传后浏览即秒开 (用户 2026-06-25)
-    try:
-        _compressed(out, _THUMB_EDGE)
-    except Exception:  # noqa: BLE001 — 预热失败不影响上传成功
-        pass
+    # 预热: 立即生成该图 缩略+预览 两个尺寸, 上传后浏览/点开大图即秒开 (用户 2026-06-25)
+    for _e in (_THUMB_EDGE, _PREVIEW_EDGE):
+        try:
+            _compressed(out, _e)
+        except Exception:  # noqa: BLE001 — 预热失败不影响上传成功
+            pass
     rel = str(out.relative_to(root.resolve())).replace("\\", "/")
     return {"ok": True, "folder": folder_name, "group": grp or _ROOT_GROUP,
             "path": rel, "filename": out.name, "size": size}
