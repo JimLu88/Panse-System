@@ -94,15 +94,36 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
         o_stmt = o_stmt.where(Order.order_no.in_(order_nos))
     orders = db.execute(o_stmt).scalars().all()
     from app.services.order_cost_service import _effective_qty
+    from app.models.order import OrderDetail
     KS = ("pk", "lg", "inst")
+    # 多商品单(≥2导入产品行): fee 按各行汇总(行 sku × 行 qty), 与 theoretical 的 _multi_product_cost 同口径。
+    # 否则只取主 SKU → 副商品的打包/物流没进 est, 打包修复时只减了主SKU嵌入打包→多商品单仍残留副商品打包重复(用户 2026-06-26)。
+    lines_by_order: dict[str, list] = {}
+    for ln in db.execute(select(
+            OrderDetail.order_no, OrderDetail.sku_code, OrderDetail.qty
+        ).where(OrderDetail.source == "import")).all():
+        lines_by_order.setdefault(ln.order_no, []).append(ln)
     est: dict[str, dict] = {}
     for o in orders:
-        units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps)))
-        # 真实计价件数: 与 theoretical_cost 同口径(_effective_qty) —— 定制单 / 凑价单(件均实付<单件成本)
-        # 按 1 件算, 否则 qty。修(用户 2026-06-25): 原来 ×原始qty 会把固定费用×10(定制凑价单qty=10)
-        # 估成垃圾(餐桌物流估成¥5000), 现按真实件数乘。
-        eff_qty = _effective_qty(o, _unit_physical(o.sku_code, by_sku, base_maps))
-        est[o.order_no] = {k: (units[k] * eff_qty) if units[k] is not None else None for k in KS}
+        lns = lines_by_order.get(o.order_no, [])
+        if len(lns) >= 2:
+            agg = {k: Decimal("0") for k in KS}
+            ok = {k: False for k in KS}
+            for ln in lns:
+                u = dict(zip(KS, estimate_fee(ln.sku_code, by_sku, base_maps)))
+                q = int(ln.qty or 1)
+                for k in KS:
+                    if u[k] is not None:
+                        agg[k] += u[k] * q
+                        ok[k] = True
+            est[o.order_no] = {k: (agg[k] if ok[k] else None) for k in KS}
+        else:
+            units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps)))
+            # 真实计价件数: 与 theoretical_cost 同口径(_effective_qty) —— 定制单 / 凑价单(件均实付<单件成本)
+            # 按 1 件算, 否则 qty。修(用户 2026-06-25): 原来 ×原始qty 会把固定费用×10(定制凑价单qty=10)
+            # 估成垃圾(餐桌物流估成¥5000), 现按真实件数乘。
+            eff_qty = _effective_qty(o, _unit_physical(o.sku_code, by_sku, base_maps))
+            est[o.order_no] = {k: (units[k] * eff_qty) if units[k] is not None else None for k in KS}
     # 兜底(estimate_fee 取不到定价表费用时): 用 全局中位数(定价表该费用)。
     # 修(用户 2026-06-25): 原"比例×实付"会把固定费用随实付放大成垃圾(餐桌物流估成¥5000) —
     # 打包/物流/安装是按件大致固定的费用, 不随订单金额线性放大, 故改用所有有值单的中位数兜底。

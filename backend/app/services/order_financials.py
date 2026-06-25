@@ -161,6 +161,14 @@ def physical_cost_breakdown(o: Order) -> dict:
     est_pack = _d(getattr(o, "est_packing", None))
     cap_mode, cap_label = "none", ""
 
+    # 非产品单(官方服务/专链/邮费/补拍/安装/送货)整单成本归零 (用户 2026-06-26; 复用系统权威检测器
+    # zero_cost_reason — 不含样块/样品[另按实际¥13], 不含差价[走片段规则])。否则残留 配件/物流 估值。
+    from app.services.order_cost_service import zero_cost_reason
+    if not bool(getattr(o, "is_refill", False)) and zero_cost_reason(o):
+        return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"), "packing": Decimal("0"),
+                "precap_total": Decimal("0"), "cap_mode": "非产品归零",
+                "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
+
     if o.actual_cost is not None:
         factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
         if _is_custom:
@@ -244,7 +252,10 @@ def platform_deduction(o: Order, coef: dict) -> Decimal:
             and (_until is None or o.order_date <= _until)):
         rate += coef["activity_rate"]
     if recv > 0 and recv < paid:
-        diff = paid - recv - _d(getattr(o, "refund_amount", 0))   # recv已是退款后净额, paid是毛额, 扣掉退款只留纯平台费(防退款双扣: 收入侧已减过退款)
+        # recv 视为退款后净额→扣退款只留纯平台费(防退款双扣: 收入侧已减过退款)。
+        # 钳制(2026-06-26): 退款最多扣到 实付−实收, 防个别单 recv 非退款后净额(毛额)时把退款多扣→平台费虚低/转负落率算法。
+        _gap = paid - recv
+        diff = _gap - min(_d(getattr(o, "refund_amount", 0)), _gap)
         if Decimal("0") <= diff <= paid * Decimal("0.08"):
             return diff
         # diff 远超合理扣点 → 分期/部分到账, 落到下面率算法, 不把未到账款当平台费

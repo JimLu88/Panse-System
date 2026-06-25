@@ -47,8 +47,12 @@ def rollup_day(db: Session, target: date) -> int:
         refund = Decimal(o.refund_amount or 0)
         revenue = paid - refund        # 真实收入=实付−退款, 与 accounting_summary 完全一致(2026-06-20 补D: 原漏减部分退款)
         cost = ofin.physical_cost(o)   # 统一口径: 片段封顶(实付<成本50%→实付×85%)
-        # 双算护栏: theoretical(含预测物流安装)的单不另加运费/安装; actual_cost(工厂价不含)的单才加
-        if o.actual_cost is not None:
+        # 双算护栏(与 cost_breakdown 对齐, 2026-06-26): physical 已含物流安装的单不另加 —
+        # theoretical派生(actual_cost空)、已补非木作(wood_cost_est非空)、定制(走木作占比)都不加;
+        # 仅"未补非木作的纯工厂账单单(actual_cost 且 无wood_cost_est 且 非定制)"才加实际运费/安装。
+        from app.services import sku_utils
+        _cust = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(o.sku_code, o.product_code)
+        if o.actual_cost is not None and not Decimal(str(o.wood_cost_est or 0)) and not _cust:
             freight = Decimal(o.actual_freight or 0)
             upstairs = Decimal(o.upstairs_fee or 0)
             install = Decimal(o.install_fee or 0)
