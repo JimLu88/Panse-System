@@ -1096,8 +1096,8 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
         ws.freeze_panes = "D3"
         first = 3
 
-        def _money(ri, ci, v, color=None, bold=False):
-            c = ws.cell(ri, ci, float(v) if v is not None else None)
+        def _money(col, row, v, color=None, bold=False):   # 调用约定: _money(列, 行, 值)
+            c = ws.cell(row, col, float(v) if v is not None else None)
             c.number_format, c.alignment = MONEY, rgt
             if color or bold:
                 c.font = Font(color=color, bold=bold, size=10)

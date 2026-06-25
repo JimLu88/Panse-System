@@ -32,6 +32,11 @@ def test_export_all_capped_order_formulas(db_session):
     # 兜底单: 商品成本=实付×85% 公式, 来源标注橙
     assert str(ws["J3"].value) == "=D3*0.85"
     assert ws["S3"].value.startswith("实付×85%")
+    # 值单元格必须落在正确列(防 _money 行列错位回归): 实付D / 工厂木作G / 定价估算H / 打包I
+    assert ws["D3"].value == 550.0     # 实付
+    assert ws["G3"].value == 0.0       # 工厂木作账单(无账单→0)
+    assert ws["H3"].value == 467.5     # 定价表估算(=theoretical, 推演)
+    assert ws["I3"].value == 170.0     # 打包
 
 
 def test_export_all_normal_order_goods_is_sum_formula(db_session):
@@ -44,6 +49,8 @@ def test_export_all_normal_order_goods_is_sum_formula(db_session):
     ws = wb["2026-05"]
     assert str(ws["J3"].value) == "=G3+H3+I3"   # 商品成本=工厂木作+定价估算+打包
     assert ws["S3"].value == "定价表推演"
+    assert ws["D3"].value == 3000.0    # 实付 落在 D 列(防错位)
+    assert ws["H3"].value == 1000.0    # 定价表估算=theoretical
 
 
 def test_export_all_empty_period_has_placeholder(db_session):
