@@ -123,37 +123,37 @@ def test_actual_bill_over_paid_not_capped_by_estimate_rule():
 # ───────── F. physical_cost_breakdown 拆解自洽 (导出公式回推依赖此) ─────────
 
 def test_breakdown_estimate_reconciles():
-    """推演单: final = 工厂木作0 + 定价表估算 + 打包, 无封顶。"""
+    """推演单: 估算已不含嵌入打包(=theoretical−est_pack), final = 0 + 估算 + 打包(一次)。(2026-06-26 打包修复)"""
     o = Order(order_no="B1", actual_cost=None, paid_amount=Decimal("5000"),
               theoretical_cost=Decimal("2000"), est_packing=Decimal("100"))
     b = ofin.physical_cost_breakdown(o)
     assert b["cap_mode"] == "none"
     assert b["factory_wood"] == Decimal("0")
-    assert b["estimate_part"] == Decimal("2000")
+    assert b["estimate_part"] == Decimal("1900")   # 2000 − 嵌入打包100
     assert b["packing"] == Decimal("100")
-    assert b["precap_total"] == Decimal("2100")
-    assert b["final"] == Decimal("2100") == ofin.physical_cost(o)
+    assert b["precap_total"] == Decimal("2000")
+    assert b["final"] == Decimal("2000") == ofin.physical_cost(o)
 
 
 def test_breakdown_actual_reconstruct_reconciles():
-    """有账单可还原: final = 木作账单 + (定价表物理−木作) + 打包。"""
+    """有账单可还原: final = 木作账单 + (定价表物理−木作−嵌入打包) + 打包(一次)。(2026-06-26 打包修复)"""
     o = Order(order_no="B2", actual_cost=Decimal("1000"), wood_cost_est=Decimal("800"),
               theoretical_cost=Decimal("2000"), paid_amount=Decimal("5000"), est_packing=Decimal("50"))
     b = ofin.physical_cost_breakdown(o)
     assert b["factory_wood"] == Decimal("1000")
-    assert b["estimate_part"] == Decimal("1200")     # 2000 − 800
+    assert b["estimate_part"] == Decimal("1150")     # 2000 − 800 − 嵌入打包50
     assert b["packing"] == Decimal("50")
     assert b["cap_mode"] == "none"
     assert b["factory_wood"] + b["estimate_part"] + b["packing"] == b["precap_total"]
-    assert b["final"] == Decimal("2250") == ofin.physical_cost(o)
+    assert b["final"] == Decimal("2200") == ofin.physical_cost(o)
 
 
 def test_breakdown_cap_flags_final_equals_physical_cost():
-    """各封顶模式: final 始终等于 physical_cost; 推演封顶/片段 标记正确。"""
+    """各封顶模式: final 始终等于 physical_cost; 推演封顶/片段 标记正确。(2026-06-26: 打包不再虚增 precap)"""
     cap = Order(order_no="B3", actual_cost=None, paid_amount=Decimal("550"),
-                theoretical_cost=Decimal("467.5"), est_packing=Decimal("170"))
+                theoretical_cost=Decimal("800"), est_packing=Decimal("170"))
     b = ofin.physical_cost_breakdown(cap)
-    assert b["precap_total"] == Decimal("637.5")
+    assert b["precap_total"] == Decimal("800")   # 估算(800−170) + 打包170
     assert b["cap_mode"] == "推演封顶85"
     assert b["final"] == Decimal("467.50") == ofin.physical_cost(cap)
 

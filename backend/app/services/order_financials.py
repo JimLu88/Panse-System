@@ -68,12 +68,18 @@ _wood_ratio_cache = {"v": _WOOD_RATIO_DEFAULT}
 
 
 def _pricing_wood_ratio_median(db: Session):
-    """定价表 木作占比 (wood_cost / physical_cost) 中位数; 无数据返回 None。"""
+    """定价表 木作占比 = wood_cost / (physical_cost − packaging_cost) 中位数; 无数据返回 None。
+
+    分母排除打包(2026-06-26): 让占比反推出的"整件物理"不含打包, 打包再由 physical_cost_breakdown
+    单独 +packing 算一次, 否则定制单(木作÷占比已隐含打包)会与 packing 重复。
+    """
     from app.models.pricing import PricingSku
     rs = []
-    for w, p in db.execute(select(PricingSku.wood_cost, PricingSku.physical_cost)).all():
-        if w and p and float(p) > 0:
-            r = float(w) / float(p)
+    for w, p, pk in db.execute(select(
+            PricingSku.wood_cost, PricingSku.physical_cost, PricingSku.packaging_cost)).all():
+        denom = (float(p) - float(pk or 0)) if p is not None else 0.0
+        if w and denom > 0:
+            r = float(w) / denom
             if 0.1 <= r <= 1.0:
                 rs.append(r)
     if not rs:
@@ -150,6 +156,9 @@ def physical_cost_breakdown(o: Order) -> dict:
     _al, _el = getattr(o, "actual_logistics", None), getattr(o, "est_logistics", None)
     _ai, _ei = getattr(o, "actual_install", None), getattr(o, "est_install", None)
     packing = nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))
+    # 嵌入 theoretical 的预估打包(定价表 physical_cost 含 packaging, theoretical=physical×件数 故含打包)。
+    # 凡 estimate_part 从 theoretical 派生的分支, 先减掉它, 再由上面 packing 项统一算一次(防与打包重复, 2026-06-26 修)。
+    est_pack = _d(getattr(o, "est_packing", None))
     cap_mode, cap_label = "none", ""
 
     if o.actual_cost is not None:
@@ -172,7 +181,7 @@ def physical_cost_breakdown(o: Order) -> dict:
             can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
                                and (_d(o.theoretical_cost) - wood_est) > 0)
             if can_reconstruct:
-                estimate_part = _d(o.theoretical_cost) - wood_est
+                estimate_part = _d(o.theoretical_cost) - wood_est - est_pack   # 减嵌入打包(下面统一 +packing 一次)
                 if _al is not None and _el is not None:
                     estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
                 if _ai is not None and _ei is not None:
@@ -183,7 +192,9 @@ def physical_cost_breakdown(o: Order) -> dict:
             cost = precap
     else:
         factory_wood = Decimal("0")
-        estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装预估)
+        estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装/打包预估)
+        if not _is_custom:
+            estimate_part -= est_pack   # 非定制 theoretical=定价表physical(含打包)→减嵌入打包; 定制 theoretical 来自定制报价/兜底(不含打包)不减
         if _al is not None and _el is not None:
             estimate_part += _d(_al) - _d(_el)
         if _ai is not None and _ei is not None:
@@ -251,14 +262,18 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
                    aftersales: "Decimal | None" = None) -> dict:
     """会计总成本逐项明细 (供页面"说明里列明细")。
     aftersales 显式传入(按订单归属, 退款外额外售后)时直接用它; 否则回退 本单冗余列→人均均摊(旧)。"""
+    from app.services import sku_utils
     paid = _d(o.paid_amount)
     phys = physical_cost(o)
     # 双算护栏(2026-06-20): theoretical_cost(=定价表物理总成本)已内含预测物流+安装;
     # 用 theoretical 的单不再单独加运费/安装行(否则双算)。
     # 已补非木作的工厂账单单(wood_cost_est 非空): physical_cost 已用 theoretical 的非木作部分
     # (含预测物流安装)补回, 此处也不再单独加(防双算)。
-    # 仅"未补非木作的纯工厂账单单"(actual_cost 非空 且 wood_cost_est 空)才单独加实际运费/安装(向后兼容)。
-    if o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)):
+    # 定制单(2026-06-26): physical 走木作占比反推已隐含物流安装, 也不单独加(否则双算; 定制恒无 wood_cost_est)。
+    # 仅"未补非木作的纯工厂账单单"(actual_cost 非空 且 wood_cost_est 空 且 非定制)才单独加实际运费/安装(向后兼容)。
+    _is_custom_o = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
+        getattr(o, "sku_code", None), getattr(o, "product_code", None))
+    if o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)) and not _is_custom_o:
         freight = _d(o.actual_freight)
         install = _d(o.install_fee) + _d(o.upstairs_fee)
     else:
