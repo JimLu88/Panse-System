@@ -43,15 +43,16 @@ function GalleryGroup({ group, images }: TreeGroup) {
       </Typography.Title>
       <Image.PreviewGroup
         preview={{
-          // 预览工具条加「打开原图」: 点图看的是 1280 清晰预览(秒开), 要抠细节再点这个拉原图 (用户 2026-06-25)
+          // 预览工具条加「打开原图」: 点图看的是 1280 清晰预览(秒开), 要抠细节再点这个拉原图 (用户 2026-06-25)。
+          // 2026-06-26: 工具条加深色药丸底+白图标(原默认太暗看不清), 不换行横滑(手机端原会挤到下一排);
+          //   「打开原图」改实心高亮(原 ghost 透明蓝字在暗条上看不清)。样式见 global.css / mobile.css。
           toolbarRender: (originalNode, { current }) => (
-            <Space size="middle" align="center">
+            <div className="gallery-preview-toolbar">
               {originalNode}
               <Button
-                size="small"
                 type="primary"
-                ghost
                 icon={<ExpandOutlined />}
+                className="gallery-open-original-btn"
                 onClick={() => {
                   const p = visible[current];
                   if (p) window.open(originalUrl(p), '_blank', 'noopener,noreferrer');
@@ -59,7 +60,7 @@ function GalleryGroup({ group, images }: TreeGroup) {
               >
                 打开原图
               </Button>
-            </Space>
+            </div>
           ),
         }}
       >

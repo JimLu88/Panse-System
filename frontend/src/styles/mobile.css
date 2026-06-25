@@ -166,4 +166,19 @@
   .ant-float-btn {
     bottom: calc(20px + env(safe-area-inset-bottom)) !important;
   }
+
+  /* ============ 图库大图预览工具条: 触控加大 + 横滑不换行 + 避让 home 条 (2026-06-26) ============ */
+  .ant-image-preview-operations {
+    margin-bottom: calc(14px + env(safe-area-inset-bottom)) !important;   /* 避让 home 条 */
+  }
+  .gallery-preview-toolbar { gap: 4px; }
+  .gallery-preview-toolbar .anticon,
+  .gallery-preview-toolbar .ant-image-preview-operations-operation {
+    font-size: 22px;          /* 手机上图标更大好点 */
+    padding: 8px 8px !important;
+  }
+  .gallery-open-original-btn {
+    min-height: 36px;
+    padding-inline: 12px;
+  }
 }

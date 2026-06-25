@@ -46,3 +46,41 @@ h1, h2, h3, h4, h5 {
     transition-duration: .001ms !important;
   }
 }
+
+/* ===== 图库大图预览工具条 (2026-06-26: 用户反馈最下排按钮太暗看不清 + 手机端换行) ===== */
+/* 样式落到自有类 .gallery-preview-toolbar(toolbarRender 返回的 div), 不依赖 antd 内部 class, 必生效。
+   做成一颗深色毛玻璃药丸: 白底大图上图标/按钮都清晰; 不换行, 超宽横滑(防手机端挤到下一排)。 */
+.gallery-preview-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: nowrap !important;
+  background: rgba(18, 18, 20, 0.66);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  border-radius: 999px;
+  padding: 6px 14px;
+  max-width: calc(100vw - 20px);
+  overflow-x: auto;
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.45);
+}
+.gallery-preview-toolbar::-webkit-scrollbar { height: 0; display: none; }
+/* 默认图标(缩放/旋转/翻转): 纯白高对比 + 加大可点 */
+.gallery-preview-toolbar .anticon,
+.gallery-preview-toolbar .ant-image-preview-operations-operation {
+  color: #fff !important;
+  font-size: 20px;
+  opacity: 1 !important;
+}
+.gallery-preview-toolbar .ant-image-preview-operations-operation { padding: 6px 8px !important; }
+/* antd 容器去掉默认底/换行, 让我的药丸干净居中显示 */
+.ant-image-preview-operations {
+  background: transparent !important;
+  flex-wrap: nowrap !important;
+}
+/* 「打开原图」: 实心高亮按钮(原 ghost 透明蓝字在暗条上看不清) */
+.gallery-open-original-btn {
+  font-weight: 600;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+  flex: 0 0 auto;
+}
