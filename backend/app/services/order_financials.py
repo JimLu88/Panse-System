@@ -33,6 +33,7 @@ DEFAULTS = {
     "fin_outsourcing_monthly": "10000",           # 人员外包预估 (无实际录入时, 5月起按此/月预估)
     "fin_outsourcing_est_since": "2026-05-01",    # 人员外包预估生效起始月
     "fin_refill_commission_rate": "0",            # 刷单(补单)佣金率 (占刷单流水, 默认0=没付佣金)
+    "fin_wood_cost_ratio": "",                    # 木作占比(定制单非木作推算; 空=自动取定价表中位≈0.67), 用户 2026-06-25 选A
 }
 COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
@@ -43,6 +44,7 @@ COEF_LABELS = {
     "fin_outsourcing_monthly": "人员外包预估(元/月)",
     "fin_outsourcing_est_since": "人员外包预估生效起始月",
     "fin_refill_commission_rate": "刷单佣金率(占刷单流水)",
+    "fin_wood_cost_ratio": "木作占比(定制单非木作推算; 空=自动取定价表中位)",
 }
 
 # 售后费用字段 (订单总表内冗余列; 缺则用均值)
@@ -55,6 +57,34 @@ def _d(v) -> Decimal:
         return Decimal(str(v))
     except Exception:  # noqa: BLE001
         return Decimal("0")
+
+
+# 木作占比 (用户 2026-06-25 选A): 定制单工厂账单只含木作, base-SKU 定价表非木作不准 →
+# 改按 整件物理成本 ≈ 木作账单 ÷ 木作占比 推算(非木作随真实账单等比放大, 不靠定价表)。
+# 占比默认取定价表中位(≈0.67), 可在财务系数(fin_wood_cost_ratio)调。
+_WOOD_RATIO_DEFAULT = Decimal("0.67")
+_WOOD_EST_MAX_MARGIN = Decimal("0.30")   # 定制单按占比推算后毛利 > 此 → 账单像零头(账单<<真实) → 退回 实付×85% 兜底
+_wood_ratio_cache = {"v": _WOOD_RATIO_DEFAULT}
+
+
+def _pricing_wood_ratio_median(db: Session):
+    """定价表 木作占比 (wood_cost / physical_cost) 中位数; 无数据返回 None。"""
+    from app.models.pricing import PricingSku
+    rs = []
+    for w, p in db.execute(select(PricingSku.wood_cost, PricingSku.physical_cost)).all():
+        if w and p and float(p) > 0:
+            r = float(w) / float(p)
+            if 0.1 <= r <= 1.0:
+                rs.append(r)
+    if not rs:
+        return None
+    rs.sort()
+    return Decimal(str(round(rs[len(rs) // 2], 2)))
+
+
+def wood_cost_ratio() -> Decimal:
+    """当前木作占比 (模块缓存; load_coefficients 时按 设置→定价表中位→0.67 刷新)。"""
+    return _wood_ratio_cache["v"]
 
 
 def load_coefficients(db: Session) -> dict:
@@ -74,6 +104,13 @@ def load_coefficients(db: Session) -> dict:
         out["activity_until"] = date(y, m, dd)
     except Exception:  # noqa: BLE001
         out["activity_until"] = date(2026, 6, 30)
+    # 木作占比 (定制单非木作推算): 设置优先, 否则定价表中位, 兜底 0.67, clamp [0.3, 0.95]
+    _wr = str(raw.get("fin_wood_cost_ratio") or "").strip()
+    wr = _d(_wr) if _wr else (_pricing_wood_ratio_median(db) or _WOOD_RATIO_DEFAULT)
+    if not (Decimal("0.3") <= wr <= Decimal("0.95")):
+        wr = _WOOD_RATIO_DEFAULT
+    out["wood_cost_ratio"] = wr
+    _wood_ratio_cache["v"] = wr        # 刷新模块缓存, 供 physical_cost_breakdown(无 coef) 用
     return out
 
 
@@ -116,26 +153,34 @@ def physical_cost_breakdown(o: Order) -> dict:
     cap_mode, cap_label = "none", ""
 
     if o.actual_cost is not None:
-        wood_est = _d(getattr(o, "wood_cost_est", None))
         factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
-        # 能否从定价表还原非木作(配件+物流+安装 = 定价表物理 − 木作): 需有 wood_est 且 定价表物理 > 木作
-        can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
-                           and (_d(o.theoretical_cost) - wood_est) > 0)
-        if can_reconstruct:
-            estimate_part = _d(o.theoretical_cost) - wood_est   # 非木作(配件+物流+安装)
-            if _al is not None and _el is not None:
-                estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
-            if _ai is not None and _ei is not None:
-                estimate_part += _d(_ai) - _d(_ei)              # 安装换实际(差额)
+        if _is_custom:
+            # 定制单(用户 2026-06-25 选A): base-SKU 定价表非木作不准 → 非木作 = 木作账单×(1/占比−1) 推算,
+            # 整件物理 ≈ 木作账单 ÷ 木作占比 (随真实账单等比放大, 不靠定价表)。
+            ratio = wood_cost_ratio()
+            estimate_part = (factory_wood * (Decimal("1") / ratio - Decimal("1"))
+                             if (ratio > 0 and factory_wood > 0) else Decimal("0"))
+            precap = factory_wood + estimate_part + packing
+            cost = precap
+            # 再85%兜底: 账单是零头(账单<<真实, 推算后毛利>阈值) → 退回 实付×85%
+            if paid > 0 and cost < paid * (Decimal("1") - _WOOD_EST_MAX_MARGIN):
+                cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+                cap_mode, cap_label = "占比偏低85", f"工厂账单像零头(推算毛利>{int(_WOOD_EST_MAX_MARGIN * 100)}%)→实付×85%兜底"
         else:
-            estimate_part = nz(_al, _el) + nz(_ai, _ei)         # 无定价参照: 补 物流+安装
-        precap = factory_wood + estimate_part + packing
-        cost = precap
-        # 定制单工厂账单只回填木作、又无定价表配件参照 → 至少 实付×85% 兜底(取 max 只升不降)
-        if _is_custom and not can_reconstruct and paid > 0:
-            floor = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
-            if floor > cost:
-                cost, cap_mode, cap_label = floor, "缺配件85", "定制单缺配件参照→实付×85%兜底"
+            # 非定制单: 定价表准 → 用定价表补非木作(配件+物流+安装 = 定价表物理 − 木作)
+            wood_est = _d(getattr(o, "wood_cost_est", None))
+            can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
+                               and (_d(o.theoretical_cost) - wood_est) > 0)
+            if can_reconstruct:
+                estimate_part = _d(o.theoretical_cost) - wood_est
+                if _al is not None and _el is not None:
+                    estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
+                if _ai is not None and _ei is not None:
+                    estimate_part += _d(_ai) - _d(_ei)              # 安装换实际(差额)
+            else:
+                estimate_part = nz(_al, _el) + nz(_ai, _ei)         # 无定价参照: 补 物流+安装
+            precap = factory_wood + estimate_part + packing
+            cost = precap
     else:
         factory_wood = Decimal("0")
         estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装预估)

@@ -27,12 +27,19 @@ def test_custom_missing_parts_floors_to_85pct():
     assert ofin.physical_cost(o) == Decimal("1700.00")
 
 
-def test_custom_reconstructable_unchanged():
-    """定制单有定价表参照(theoretical>wood) → 正常补非木作(1000+1200=2200), 不走85% floor。"""
-    o = Order(order_no="C2", is_custom=True, paid_amount=Decimal("5000"),
-              actual_cost=Decimal("1000"), wood_cost_est=Decimal("800"),
-              theoretical_cost=Decimal("2000"))
-    assert ofin.physical_cost(o) == Decimal("2200")
+def test_custom_full_bill_uses_wood_ratio():
+    """定制单(有账单, 账单合理): 物理成本 = 木作账单 ÷ 木作占比(默认0.67) = 2010/0.67 ≈ 3000 (毛利25%<阈值, 用推算, 不靠定价表)。"""
+    o = Order(order_no="C2a", is_custom=True, paid_amount=Decimal("4000"), actual_cost=Decimal("2010"))
+    phys = ofin.physical_cost(o)
+    assert abs(phys - Decimal("3000")) < Decimal("1")
+    assert phys < Decimal("4000")   # 没被 85% 兜底抬高
+
+
+def test_custom_partial_bill_falls_back_85():
+    """定制单工厂账单像零头(账单1000 vs 实付5000, 推算毛利70%>30%阈值) → 退回 实付×85% = 4250。"""
+    o = Order(order_no="C2b", is_custom=True, paid_amount=Decimal("5000"),
+              actual_cost=Decimal("1000"), wood_cost_est=Decimal("800"), theoretical_cost=Decimal("2000"))
+    assert ofin.physical_cost(o) == Decimal("4250.00")
 
 
 def test_custom_fragment_still_capped():
