@@ -38,6 +38,8 @@ import DispositionModal, { type DispositionRequest } from '../components/Disposi
 import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { fieldsFromColumns, applyPreset } from '../components/FieldPresetBar';
 import { Drawer, Spin, Table as AntTable } from 'antd';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { StatusCard, type StatusTone } from '../components/MobileCards';
 
 function fmtMoney(v: string | null | undefined): string {
   if (v === null || v === undefined || v === '') return '—';
@@ -53,6 +55,11 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
   signed: { label: '已签收', color: 'green' },
   aftersales: { label: '售后中', color: 'orange' },
   cancelled: { label: '已取消', color: 'red' },
+};
+
+// 状态色 → 手机端状态卡色调 (StatusCard tone)
+const STATUS_TONE: Record<string, StatusTone> = {
+  default: 'info', gold: 'wait', orange: 'wait', blue: 'ship', cyan: 'ship', green: 'done', red: 'close',
 };
 
 // 合法迁移图（前端镜像后端）
@@ -481,19 +488,51 @@ export default function OrdersPage() {
       {viewMode === 'full' && <FullColumnView entity="order" defaultShowAll />}
 
       {viewMode === 'curated' && (
-      <Table<Order>
-        rowKey="id"
+      <ResponsiveTable<Order>
+        desktop={
+          <Table<Order>
+            rowKey="id"
+            loading={isLoading}
+            dataSource={data}
+            columns={applyPreset(columns, visibleKeys) as any}
+            rowSelection={{
+              selectedRowKeys: selectedKeys,
+              onChange: setSelectedKeys,
+              preserveSelectedRowKeys: true,
+            }}
+            scroll={{ x: 1870 }}
+            pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
+            size="middle"
+          />
+        }
+        data={data ?? []}
+        rowKey={(r) => r.id}
         loading={isLoading}
-        dataSource={data}
-        columns={applyPreset(columns, visibleKeys) as any}
-        rowSelection={{
-          selectedRowKeys: selectedKeys,
-          onChange: setSelectedKeys,
-          preserveSelectedRowKeys: true,
+        emptyText="暂无订单"
+        renderCard={(o) => {
+          const sv = (o as any).display_status ?? o.status;
+          const meta = STATUS_META[sv];
+          const label = meta?.label ?? sv;
+          const tone = STATUS_TONE[meta?.color ?? 'default'] ?? 'info';
+          return (
+            <StatusCard
+              title={(o as any).internal_product_name || o.product_name || o.order_no}
+              status={label}
+              tone={tone}
+              fields={[
+                { label: '客户', value: o.customer_name || '—' },
+                { label: '下单', value: o.order_date || '—' },
+                ...(o.is_custom ? [{ label: '', value: <Tag color="orange">定制</Tag> }] : []),
+                ...(o.is_refill ? [{ label: '', value: <Tag color="purple">补单</Tag> }] : []),
+              ]}
+              amount={fmtMoney((o as any).paid_amount)}
+              actions={[
+                { label: '成本明细', primary: true, onClick: () => openCost(o.id, o.order_no) },
+                { label: '制单图', onClick: () => window.open(`/orders/${o.id}/factory-sheet`, '_blank') },
+              ]}
+            />
+          );
         }}
-        scroll={{ x: 1870 }}
-        pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
-        size="middle"
       />
       )}
 
