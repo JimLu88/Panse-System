@@ -37,9 +37,14 @@ function openExportPrint(d: ShippedOrdersExport) {
   let body = '';
   if (d.material_key) {
     body = d.orders.map((o) => {
-      const partRows = (o.bom_parts || []).map((p) => `<tr>
+      const partRows = (o.bom_parts || []).map((p) => {
+        const warn = p.size_uncertain
+          ? ` <span class="warn">⚠ ${p.alt_size_count ? `模板${(p.alt_size_count ?? 0) + 1}种尺寸已取最大, ` : ''}请确认尺寸是否正确</span>`
+          : '';
+        return `<tr>
         <td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td>
-        <td>${esc(p.size_note ?? '—')}</td></tr>`).join('');
+        <td>${esc(p.size_note ?? '—')}${warn}</td></tr>`;
+      }).join('');
       const custom = o.is_custom ? ' <span class="warn">⚠定制·BOM为模板, 以实际为准</span>' : '';
       return `<div class="ordsec"><div class="ordh">${esc(o.order_no)}${o.ship_date ? ' · 发货 ' + esc(o.ship_date) : ''}${o.product_name ? ' · ' + esc(o.product_name) : ''}${o.sku ? ' · ' + esc(o.sku) : ''}${custom}</div>
         <table><thead><tr><th>类别</th><th>部位 / 料</th><th>数量</th><th>预设尺寸(实际可能有出入)</th></tr></thead>

@@ -651,6 +651,8 @@ export interface ShippedOrderBomPart {
   qty: number;
   unit: string | null;
   size_note: string | null;   // 预设尺寸/工艺说明
+  size_uncertain?: boolean;    // 定制单同料合并: 模板有多个尺寸已取最大, 需人工确认
+  alt_size_count?: number;     // 被合并掉的其它尺寸数
 }
 export interface ShippedOrderRow {
   order_no: string;

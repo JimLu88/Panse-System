@@ -100,4 +100,53 @@ def test_aggregate_related_purchases_dryrun_then_apply(db_session):
     db.refresh(o)
     assert o.actual_parts == Decimal("500.00")   # 已落库, 排除了「服务费」99
 
+# ── 定制单 BOM 模板: 同料多尺寸合并为一行 (用户 2026-06-27 洞洞板问题) ──────────
+def test_custom_order_collapses_duplicate_material(db_session):
+    """定制单 BOM 是模板(同一洞洞板堆 1155/955/755 三个尺寸)→ 同料只取一行(面积最大 1155×660)
+    + 标 size_uncertain/alt_size_count; 不同料(隔板轨道)不受影响, 单尺寸不标记。"""
+    db = db_session
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    db.add(Material(code="AC-DD", name="MDF洞洞板-茶色", unit="每平米", price=Decimal("50"), category="杂项"))
+    db.add(Material(code="AC-RAIL", name="银色隔板轨道", unit="每米", price=Decimal("10"), category="杂项"))
+    for sz in ["1155*660 打孔", "955*660 打孔", "755*660 打孔"]:
+        db.add(BomLine(product_code="PPSCUST01", sku_code="SC1", material_code="AC-DD",
+                       material_name="MDF洞洞板-茶色", qty_per_product=Decimal("1"), remark=sz))
+    db.add(BomLine(product_code="PPSCUST01", sku_code="SC1", material_code="AC-RAIL",
+                   material_name="银色隔板轨道", qty_per_product=Decimal("2"), remark=None))
+    o = Order(platform="淘宝", order_no="CUST1", product_code="PCUST01", sku_code="SC1",
+              qty=1, is_custom=True, order_date=date(2026, 6, 1), ship_date=date(2026, 6, 5),
+              status="signed", paid_amount=Decimal("3000"))
+    db.add(o)
+    db.flush()
+    mat_info, bom_by_pcsku, bom_by_pc = prs._load_bom_and_materials(db)
+    cons = prs._order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
+    mats = cons["杂项"]["materials"]
+    dd = [m for m in mats if m["material_code"] == "AC-DD"]
+    rail = [m for m in mats if m["material_code"] == "AC-RAIL"]
+    assert len(dd) == 1                              # 洞洞板只 1 行(不再 3 行)
+    assert dd[0]["size_uncertain"] is True and dd[0]["alt_size_count"] == 2
+    assert dd[0]["size_note"] == "1155*660 打孔"     # 取面积最大
+    assert len(rail) == 1 and "size_uncertain" not in rail[0]   # 单尺寸料不合并不标记
+
+
+def test_noncustom_keeps_distinct_sizes(db_session):
+    """非定制单: 同料不同尺寸照常各算一行(不合并)。"""
+    db = db_session
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    db.add(Material(code="AC-DD", name="MDF洞洞板", unit="每平米", price=Decimal("50"), category="杂项"))
+    for sz in ["1155*660", "955*660"]:
+        db.add(BomLine(product_code="PPSNORM01", sku_code="SN1", material_code="AC-DD",
+                       material_name="MDF洞洞板", qty_per_product=Decimal("1"), remark=sz))
+    o = Order(platform="淘宝", order_no="NORM1", product_code="PNORM01", sku_code="SN1",
+              qty=1, is_custom=False, order_date=date(2026, 6, 1), ship_date=date(2026, 6, 5),
+              status="signed", paid_amount=Decimal("3000"))
+    db.add(o)
+    db.flush()
+    mat_info, bom_by_pcsku, bom_by_pc = prs._load_bom_and_materials(db)
+    cons = prs._order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
+    assert len([m for m in cons["杂项"]["materials"] if m["material_code"] == "AC-DD"]) == 2
+
+
 # (大宗对账已改「分类+BOM 驱动」, 对账/导出测试见 test_parts_monthly_recon_0626.py)

@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 from collections import defaultdict
 from datetime import date
 from decimal import Decimal
@@ -42,6 +43,16 @@ def _d(v) -> Decimal:
 
 def _ym(d: Optional[date]) -> Optional[str]:
     return f"{d.year:04d}-{d.month:02d}" if d else None
+
+
+def _size_area(size: Optional[str]) -> Decimal:
+    """从尺寸备注取前两个数相乘当"面积"(定制单同料合并时取最大者偏保守)。无数→0。"""
+    if not size:
+        return Decimal("0")
+    nums = re.findall(r"\d+(?:\.\d+)?", size)
+    if len(nums) >= 2:
+        return Decimal(nums[0]) * Decimal(nums[1])
+    return Decimal(nums[0]) if nums else Decimal("0")
 
 
 def _looks_non_part(p: PartPurchase) -> bool:
@@ -188,14 +199,45 @@ def _order_bom_lines(o: Order, bom_by_pcsku, bom_by_pc) -> list:
     return []
 
 
-def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> dict[str, dict]:
-    """该订单按分类的外采配件消耗: {category: {amount, materials:[{...}]}}。
+def _order_is_custom(o: Order) -> bool:
+    if bool(getattr(o, "is_custom", False)):
+        return True
+    from app.services import sku_utils
+    try:
+        return bool(sku_utils.is_custom_sku_code(o.sku_code, o.product_code))
+    except Exception:  # noqa: BLE001
+        return False
 
-    排木作/工厂自备(WD/MW/MP); 同料同尺寸去重(定制模板会堆叠重复行); qty = qty_per_product × 订单件数。
+
+def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> dict[str, dict]:
+    """该订单按分类的外采配件消耗: {category: {amount, materials:[{...}]}}。排木作/工厂自备(WD/MW/MP);
+    qty = qty_per_product × 订单件数。
+
+    - 非定制: 同料同尺寸去重。
+    - 定制单(用户 2026-06-27): BOM 是"模板"(同一种料堆了多个尺寸, 如洞洞板 1155/955/755), 实际一单只用
+      一种 → **同料只取一行**(面积最大者, 成本偏保守); 模板有多个尺寸时标 `size_uncertain` 让清单提示
+      人工确认尺寸。这同时修正了对账预估对定制单的"同料多算"。
     """
     qmul = Decimal(int(o.qty or 1))
+    is_custom = _order_is_custom(o)
     by_cat: dict[str, dict] = {}
     seen: set = set()
+    custom_pick: dict[str, dict] = {}   # 定制单: mcode -> 选中料(面积最大) + alt(被合并的其它尺寸数)
+
+    def _emit(mcode, q, price, size, cat, name, info, alt=0):
+        amt = (q * price).quantize(_CENTS)
+        c = by_cat.setdefault(cat, {"amount": Decimal("0"), "materials": []})
+        c["amount"] += amt
+        m = {
+            "material_code": mcode, "part_name": name, "category": cat,
+            "qty": float(q), "unit": info.get("unit"), "price": float(price),
+            "amount": float(amt), "size_note": size,
+        }
+        if alt > 0:
+            m["size_uncertain"] = True
+            m["alt_size_count"] = alt
+        c["materials"].append(m)
+
     for mcode, qty, remark, mname in _order_bom_lines(o, bom_by_pcsku, bom_by_pc):
         if (mcode or "").split("-", 1)[0].upper() in _FACTORY_PREFIXES:
             continue
@@ -203,20 +245,28 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
         cat = info.get("category") or _UNCATEGORIZED
         name = info.get("name") or mname or mcode
         size = (remark or "").strip() or None
+        q = qty * qmul
+        price = info.get("price", Decimal("0"))
+        if is_custom:
+            area = _size_area(size)
+            prev = custom_pick.get(mcode)
+            if prev is None:
+                custom_pick[mcode] = {"q": q, "price": price, "size": size, "cat": cat,
+                                      "name": name, "info": info, "area": area, "alt": 0}
+            else:
+                prev["alt"] += 1
+                if area > prev["area"]:
+                    custom_pick[mcode] = {"q": q, "price": price, "size": size, "cat": cat,
+                                          "name": name, "info": info, "area": area, "alt": prev["alt"]}
+            continue
         dk = (mcode, "".join(size.split()) if size else "")
         if dk in seen:
             continue
         seen.add(dk)
-        q = qty * qmul
-        price = info.get("price", Decimal("0"))
-        amt = (q * price).quantize(_CENTS)
-        c = by_cat.setdefault(cat, {"amount": Decimal("0"), "materials": []})
-        c["amount"] += amt
-        c["materials"].append({
-            "material_code": mcode, "part_name": name, "category": cat,
-            "qty": float(q), "unit": info.get("unit"), "price": float(price),
-            "amount": float(amt), "size_note": size,
-        })
+        _emit(mcode, q, price, size, cat, name, info)
+
+    for mcode, p in custom_pick.items():
+        _emit(mcode, p["q"], p["price"], p["size"], p["cat"], p["name"], p["info"], alt=p["alt"])
     return by_cat
 
 
@@ -391,6 +441,8 @@ def export_shipped_orders(db: Session, *, year_month: str,
                     "part_name": p["part_name"], "material_code": p["material_code"],
                     "category": p["category"], "qty": p["qty"], "unit": p["unit"],
                     "size_note": p["size_note"],
+                    "size_uncertain": p.get("size_uncertain", False),
+                    "alt_size_count": p.get("alt_size_count", 0),
                 } for p in parts],
             })
     else:

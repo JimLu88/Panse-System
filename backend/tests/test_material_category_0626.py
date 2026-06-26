@@ -60,7 +60,7 @@ def test_ensure_consumables_creates_and_adds_to_bom(db_session):
     names = {m.name for m in db.execute(select(Material)).scalars().all()}
     assert "双面胶" in names and "螺丝" in names
     tape = db.execute(select(Material).where(Material.name == "双面胶")).scalar_one()
-    assert tape.category == "五金" and float(tape.price) == 0.1 and tape.unit == "个"
+    assert tape.category == "杂项" and float(tape.price) == 0.1 and tape.unit == "个"   # 用户 2026-06-27: 改归杂项
     assert res["bom_anchors"] == 2 and res["bom_lines_added"] == 4   # 2 锚点 × 2 消耗料
     res2 = mcs.ensure_consumables_in_boms(db, apply=True)
     assert res2["bom_lines_added"] == 0   # 幂等
