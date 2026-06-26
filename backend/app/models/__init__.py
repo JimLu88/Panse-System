@@ -20,7 +20,7 @@ from app.models.finance import (
     WanshifuBill,
     WanshifuOrder,
 )
-from app.models.order import FactoryOrder, Order, PartPurchase
+from app.models.order import FactoryOrder, Order, PartPurchase, PartsMonthlyRecon
 from app.models.shipment import Shipment
 from app.models.ai import AiChatLog, AiCodePatch
 from app.models.auth import AuditLog, User
@@ -85,6 +85,7 @@ __all__ = [
     "Order",
     "FactoryOrder",
     "PartPurchase",
+    "PartsMonthlyRecon",
     "AlipayFlow",
     "AccountBalance",
     "RefillRecord",

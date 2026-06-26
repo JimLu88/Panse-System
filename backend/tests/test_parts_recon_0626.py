@@ -120,11 +120,11 @@ def test_bulk_recon_uses_ship_date_not_order_date(db_session):
     assert res["ship_date_basis"] is True
     dongshi = next(m for m in res["materials"] if m["key"] == "dongshi")
     periods = {r["period"]: r for r in dongshi["periods"]}
-    # 2月: 标准300(发货在2月) + 实际采购400 → 差异100
+    # 2月: 预估300(发货在2月) + 采购发票400(参考); 未录工厂月度对账 → 差异空
     assert "2026-02" in periods
     assert periods["2026-02"]["standard_consume"] == 300.0
-    assert periods["2026-02"]["actual_purchase"] == 400.0
-    assert periods["2026-02"]["variance"] == 100.0
+    assert periods["2026-02"]["purchase_invoice"] == 400.0
+    assert periods["2026-02"]["variance"] is None
     # 关键: 1月(下单月)不应出现标准消耗
     assert "2026-01" not in periods or periods["2026-01"]["standard_consume"] == 0.0
 
@@ -158,6 +158,6 @@ def test_bulk_recon_per_order_flat_counts_shipped(db_session):
     res = prs.bulk_material_recon(db)
     tape = next(m for m in res["materials"] if m["key"] == "tape")
     p = {r["period"]: r for r in tape["periods"]}
-    assert p["2026-03"]["actual_purchase"] == 120.0
+    assert p["2026-03"]["purchase_invoice"] == 120.0
     assert p["2026-03"]["order_count"] == 1
     assert p["2026-03"]["standard_consume"] == 0.0   # flat_per_order=0

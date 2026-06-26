@@ -248,6 +248,26 @@ class PurchaseFile(Base, TimestampMixin):
     )
 
 
+class PartsMonthlyRecon(Base, TimestampMixin):
+    """配件「工厂月度对账」总额 (migration 0096, 用户 2026-06-26)。
+
+    大宗配件厂手写单、无法逐笔配单 → 按月对账: 导出当月「已发货」订单清单给工厂, 工厂返月度总额,
+    此表每材料每月每供应商存一行。bulk_material_recon 求和作「实际」列, 与预估/历史平均对比。
+    """
+    __tablename__ = "parts_monthly_recon"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_key: Mapped[str] = mapped_column(String(32), nullable=False, index=True)   # BULK_MATERIALS.key
+    year_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)       # 'YYYY-MM' (发货月)
+    supplier: Mapped[Optional[str]] = mapped_column(String(128))                         # 哪家工厂(可多家)
+    actual_total: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)        # 工厂返回当月总额
+    note: Mapped[Optional[str]] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("ix_parts_monthly_recon_mk_ym", "material_key", "year_month"),
+    )
+
+
 class OrderDetail(Base, TimestampMixin):
     """订单细节 — 飞书 tblYLdjivHwpu5ea，记录每个 SKU 行级订单与物料对应关系。"""
     __tablename__ = "order_details"

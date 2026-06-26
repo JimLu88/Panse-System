@@ -342,3 +342,69 @@ def backfill_est_parts(
     res = order_cost_service.backfill_est_parts(db)
     db.commit()
     return res
+
+
+# ── 工厂月度对账 + 当月发货清单导出 (用户 2026-06-26) ────────────────────────
+class MonthlyReconIn(BaseModel):
+    material_key: str
+    year_month: str                  # 'YYYY-MM' (发货月)
+    actual_total: Decimal            # 工厂返回的当月总额
+    supplier: Optional[str] = None
+    note: Optional[str] = None
+    recon_id: Optional[int] = None   # 给了=更新该行, 否则新增
+
+
+@router.get("/monthly-recon", response_model=list[dict])
+def list_monthly_recon(
+    material_key: Optional[str] = None,
+    year_month: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """列出已录入的工厂月度对账总额。"""
+    from app.services import parts_recon_service
+    return parts_recon_service.list_monthly_recon(db, material_key=material_key, year_month=year_month)
+
+
+@router.post("/monthly-recon", response_model=dict)
+def save_monthly_recon(
+    body: MonthlyReconIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """录入/更新 某材料某月工厂返回的对账总额(作为大宗材料对账的「实际」列)。"""
+    from app.services import parts_recon_service
+    try:
+        return parts_recon_service.save_monthly_recon(
+            db, material_key=body.material_key, year_month=body.year_month,
+            actual_total=body.actual_total, supplier=body.supplier,
+            note=body.note, recon_id=body.recon_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@router.delete("/monthly-recon/{recon_id}", response_model=dict)
+def delete_monthly_recon(
+    recon_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import parts_recon_service
+    ok = parts_recon_service.delete_monthly_recon(db, recon_id)
+    if not ok:
+        raise HTTPException(404, "对账记录不存在")
+    return {"deleted": True, "id": recon_id}
+
+
+@router.get("/shipped-orders-export", response_model=dict)
+def shipped_orders_export(
+    year_month: str = Query(..., description="发货月 'YYYY-MM'"),
+    material_key: Optional[str] = Query(None, description="给了=按该材料筛+展开BOM明细; 空=全部发货单"),
+    db: Session = Depends(get_db),
+):
+    """导出当月『已发货』成交订单清单(发给工厂对账)。
+
+    material_key 空=全部发货单(基础列); 给了=只列用该材料的发货单 + 逐单 BOM 部位/预设尺寸明细。
+    **按发货日期 ship_date 圈定。**
+    """
+    from app.services import parts_recon_service
+    return parts_recon_service.export_shipped_orders(db, year_month=year_month, material_key=material_key)

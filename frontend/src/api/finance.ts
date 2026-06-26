@@ -562,21 +562,25 @@ export const purchaseFileImageUrl = (fileId: number) =>
 
 // ----- 配件成本对账 (配件 epic P2) -----
 export interface BulkMaterialPeriod {
-  period: string;             // YYYY-MM (按发货日期)
-  actual_purchase: number;    // 当期实际采购额
-  standard_consume: number;   // 当期标准估值消耗 (Σ est_parts / flat×单数)
-  variance: number;           // 实际 − 标准
+  period: string;                  // YYYY-MM (按发货日期)
+  historical_avg: number;          // 历史平均 (过去已对账月每单实际均值×本月单数; 无历史=预估)
+  standard_consume: number;        // 预估 (Σ est_parts / flat×单数)
+  factory_actual: number | null;   // 实际 (工厂月度对账总额; 没录入=null)
+  has_factory_actual: boolean;
+  variance: number | null;         // 实际 − 预估 (没录入实际=null)
   variance_pct: number | null;
+  purchase_invoice: number;        // 采购发票合计 (PartPurchase, 参考)
   order_count: number;
-  missing_est: number;        // 命中但 est_parts 缺 (覆盖率)
+  missing_est: number;             // 命中但 est_parts 缺 (覆盖率)
 }
 export interface BulkMaterial {
   key: string;
   name: string;
   mode: 'by_order_kw' | 'per_order_flat';
   periods: BulkMaterialPeriod[];
-  total_actual: number;
   total_standard: number;
+  total_factory_actual: number;
+  total_purchase_invoice: number;
   total_variance: number;
   total_variance_pct: number | null;
 }
@@ -618,6 +622,59 @@ export const backfillEstParts = () =>
   api
     .post<{ set: number; skipped_no_pricing: number; skipped_closed: number; total: number }>(
       '/api/purchases/backfill-est-parts')
+    .then((r) => r.data);
+
+// ----- 工厂月度对账总额 (实际列) -----
+export interface MonthlyReconRow {
+  id: number;
+  material_key: string;
+  material_name: string | null;
+  year_month: string;        // 'YYYY-MM'
+  supplier: string | null;
+  actual_total: number;
+  note: string | null;
+}
+export const listMonthlyRecon = (materialKey?: string, yearMonth?: string) =>
+  api
+    .get<MonthlyReconRow[]>('/api/purchases/monthly-recon',
+      { params: { material_key: materialKey, year_month: yearMonth } })
+    .then((r) => r.data);
+export const saveMonthlyRecon = (body: {
+  material_key: string; year_month: string; actual_total: number;
+  supplier?: string | null; note?: string | null; recon_id?: number | null;
+}) => api.post<MonthlyReconRow>('/api/purchases/monthly-recon', body).then((r) => r.data);
+export const deleteMonthlyRecon = (reconId: number) =>
+  api.delete<{ deleted: boolean; id: number }>(`/api/purchases/monthly-recon/${reconId}`).then((r) => r.data);
+
+// ----- 当月「已发货」订单清单导出 (发给工厂对账) -----
+export interface ShippedOrderBomPart {
+  part_name: string;
+  material_code: string;
+  qty: number;
+  unit: string | null;
+  size_note: string | null;   // 预设尺寸/工艺说明
+}
+export interface ShippedOrderRow {
+  order_no: string;
+  ship_date: string | null;
+  customer_name: string | null;
+  product_name: string | null;
+  sku: string | null;
+  est_parts: number;
+  bom_parts?: ShippedOrderBomPart[];   // 仅按材料导出时有
+}
+export interface ShippedOrdersExport {
+  year_month: string;
+  material_key: string | null;
+  material_name: string | null;
+  order_count: number;
+  total_est_parts: number;
+  orders: ShippedOrderRow[];
+}
+export const fetchShippedOrdersExport = (yearMonth: string, materialKey?: string) =>
+  api
+    .get<ShippedOrdersExport>('/api/purchases/shipped-orders-export',
+      { params: { year_month: yearMonth, material_key: materialKey } })
     .then((r) => r.data);
 
 // ----- 剩余流水（可用资金）测算 -----
