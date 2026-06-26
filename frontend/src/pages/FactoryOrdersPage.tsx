@@ -10,6 +10,8 @@ import {
   listFactoryOrders, factoryOrderAccessories, reconcileFactoryOrder, syncFactoryOrdersFromOrders,
   importFactoryBill, type FactoryOrderRow,
 } from '../api/client';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { StatusCard } from '../components/MobileCards';
 
 const { Title, Text } = Typography;
 const money = (n: number | null | undefined) =>
@@ -211,18 +213,40 @@ export default function FactoryOrdersPage() {
           <Button loading={billMut.isPending}>导入工厂对账单</Button>
         </Upload>
       </Space>
-      <Table<FactoryOrderRow>
-        rowKey="id"
+      <ResponsiveTable<FactoryOrderRow>
+        data={data?.rows || []}
+        rowKey={(r) => r.id}
         loading={isLoading}
-        dataSource={data?.rows || []}
-        columns={columns}
-        size="small"
-        scroll={{ x: 1400 }}
-        pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 单` }}
-        expandable={{
-          expandedRowRender: (r) => <AccessoryPanel no={r.factory_order_no} />,
-          rowExpandable: () => true,
-        }}
+        emptyText="暂无工厂单"
+        renderCard={(r) => (
+          <StatusCard
+            title={r.product_name || r.factory_order_no}
+            status={r.reconciled ? '已核对' : '待核对'}
+            tone={r.reconciled ? 'done' : 'wait'}
+            fields={[
+              { label: '工厂单', value: r.factory_order_no },
+              { label: '工厂', value: r.factory_name || '—' },
+              { label: '支付', value: r.payment_status === 'paid' ? '已付' : '未付' },
+            ]}
+            amount={money(r.factory_bill_amount ?? r.expected_amount)}
+            actions={[{ label: '核对', primary: true, onClick: () => openReconcile(r) }]}
+          />
+        )}
+        desktop={
+          <Table<FactoryOrderRow>
+            rowKey="id"
+            loading={isLoading}
+            dataSource={data?.rows || []}
+            columns={columns}
+            size="small"
+            scroll={{ x: 1400 }}
+            pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 单` }}
+            expandable={{
+              expandedRowRender: (r) => <AccessoryPanel no={r.factory_order_no} />,
+              rowExpandable: () => true,
+            }}
+          />
+        }
       />
       <Modal
         title={`核对工厂单 ${editing?.factory_order_no || ''}`}

@@ -31,6 +31,8 @@ import {
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { StatusCard, type StatusTone } from '../components/MobileCards';
 import {
   AfterSalesItem,
   DisassemblyLogRow,
@@ -83,6 +85,11 @@ const STATUS_LABEL: Record<string, string> = {
   received_pending_inspection: '已签收 / 待检查',
   returned_in_stock: '已入库',
   damaged_not_inbound: '损坏未入库',
+};
+
+const STATUS_TONE: Record<string, StatusTone> = {
+  pending_return: 'wait', received_pending_inspection: 'ship',
+  returned_in_stock: 'done', damaged_not_inbound: 'close',
 };
 
 
@@ -191,6 +198,25 @@ export default function AfterSalesPage() {
                 <Button type="primary" onClick={() => setCreateOpen(true)}>新建退货</Button>
               </Space>
             }>
+        <ResponsiveTable<AfterSalesItem>
+          data={rows}
+          rowKey={(r) => r.id}
+          emptyText="暂无售后"
+          renderCard={(r) => (
+            <StatusCard
+              title={r.product_name || '(未关联产品)'}
+              status={STATUS_LABEL[r.status ?? ''] ?? r.status ?? '—'}
+              tone={STATUS_TONE[r.status ?? ''] ?? 'info'}
+              fields={[
+                { label: '订单', value: r.platform_order_no || '—' },
+                { label: '客户', value: r.customer_name || '未关联' },
+                { label: '原因', value: r.reason || '—' },
+              ]}
+              amount={r.total_cost != null && Number(r.total_cost) ? `¥${Number(r.total_cost).toLocaleString()}` : undefined}
+              actions={[{ label: '拆BOM', onClick: () => confirmDisassemble(r) }]}
+            />
+          )}
+          desktop={
         <PresetTable
           tableKey="aftersales"
           size="small"
@@ -266,6 +292,8 @@ export default function AfterSalesPage() {
               ),
             },
           ]}
+        />
+        }
         />
       </Card>
       )}

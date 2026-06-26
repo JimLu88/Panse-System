@@ -17,6 +17,8 @@ import {
   FixedCostItem, PerOrderRow, fetchPerOrderReconcile, getFixedCostItems, putFixedCostItems,
   downloadPerOrderReconcile, downloadPerOrderReconcileAll,
 } from '../api/operations';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { MetricCard } from '../components/MobileCards';
 
 const { Title, Text } = Typography;
 
@@ -295,16 +297,46 @@ export default function PerOrderReconcilePage() {
         <Statistic title="用推演成本(未对账)" value={data?.estimated_count ?? 0} />
       </Space>
 
-      <Card size="small" styles={{ body: { padding: 0 } }}>
-        <Table<PerOrderRow>
-          rowKey="order_no" size="small" loading={isLoading}
-          columns={cols} dataSource={rows}
-          scroll={{ x: 2030, y: 520 }}
-          pagination={{ pageSize: 100, showSizeChanger: true, showTotal: (t) => `${t} 单` }}
-          rowClassName={(r) => r.is_loss ? 'per-order-loss-row' : ''}
-          summary={() => sumRow}
-        />
-      </Card>
+      <ResponsiveTable<PerOrderRow>
+        data={rows}
+        rowKey={(r) => r.order_no}
+        loading={isLoading}
+        emptyText="本月暂无订单"
+        renderCard={(r) => (
+          <MetricCard
+            title={r.product_name || r.order_no}
+            profit={r.net_profit}
+            profitRate={r.net_margin}
+            kpis={[
+              { label: '销售额', value: yuan(r.revenue) },
+              { label: '商品成本', value: yuan(r.cost_goods) },
+              { label: '总成本', value: yuan(r.cost_total) },
+            ]}
+            moreRows={[
+              { label: '订单号', value: r.order_no },
+              { label: '实付', value: yuan(r.paid_amount) },
+              { label: '退款', value: r.refund_amount ? `−${yuan(r.refund_amount)}` : '—' },
+              { label: '物流', value: yuan(r.cost_freight) },
+              { label: '安装上楼', value: yuan(r.cost_install) },
+              { label: '平台扣点', value: yuan(r.cost_platform) },
+              { label: '税费', value: yuan(r.cost_tax) },
+              { label: '额外售后', value: yuan(r.cost_aftersales) },
+            ]}
+          />
+        )}
+        desktop={
+          <Card size="small" styles={{ body: { padding: 0 } }}>
+            <Table<PerOrderRow>
+              rowKey="order_no" size="small" loading={isLoading}
+              columns={cols} dataSource={rows}
+              scroll={{ x: 2030, y: 520 }}
+              pagination={{ pageSize: 100, showSizeChanger: true, showTotal: (t) => `${t} 单` }}
+              rowClassName={(r) => r.is_loss ? 'per-order-loss-row' : ''}
+              summary={() => sumRow}
+            />
+          </Card>
+        }
+      />
 
       {/* 本月真实净利 = 行净利合计 − 推广 − 人员 − 固定成本 + 补单净 */}
       {st && (

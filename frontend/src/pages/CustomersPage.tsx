@@ -7,6 +7,8 @@ import {
 } from 'antd';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { StatusCard, type StatusTone } from '../components/MobileCards';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -22,6 +24,10 @@ const TIER_COLOR: Record<string, string> = {
 
 const TIER_LABEL: Record<string, string> = {
   bronze: '青铜', silver: '白银', gold: '黄金', platinum: '铂金',
+};
+
+const TIER_TONE: Record<string, StatusTone> = {
+  bronze: 'info', silver: 'ship', gold: 'wait', platinum: 'done',
 };
 
 
@@ -85,6 +91,26 @@ export default function CustomersPage() {
           </Space>
         }
       >
+        <ResponsiveTable<CustomerItem>
+          data={customers}
+          rowKey={(r) => r.id}
+          loading={isLoading}
+          emptyText="暂无客户"
+          renderCard={(r) => (
+            <StatusCard
+              title={r.name || `客户#${r.id}`}
+              status={TIER_LABEL[r.tier] ?? r.tier ?? '—'}
+              tone={TIER_TONE[r.tier] ?? 'info'}
+              fields={[
+                { label: '电话', value: r.phone || '—' },
+                { label: '订单', value: `${r.total_orders ?? 0} 单` },
+                { label: '最后下单', value: r.last_order_at ? new Date(r.last_order_at).toLocaleDateString('zh-CN') : '—' },
+              ]}
+              amount={`¥${Number(r.total_revenue ?? 0).toLocaleString()}`}
+              actions={[{ label: '历史订单', primary: true, onClick: () => setDetailId(r.id) }]}
+            />
+          )}
+          desktop={
         <PresetTable<CustomerItem>
           tableKey="customer"
           size="small" loading={isLoading} rowKey="id"
@@ -124,6 +150,8 @@ export default function CustomersPage() {
               ),
             },
           ]}
+        />
+        }
         />
       </Card>
       )}

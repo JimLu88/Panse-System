@@ -48,6 +48,8 @@ import {
   setPromoParams,
   type CoefficientStat,
 } from '../api/client';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { CatalogCard } from '../components/MobileCards';
 
 // 表格金额统一口径: 无小数(四舍五入) + ¥ 前缀; 悬浮公式里保留两位看精确值
 function money(v: number | null) {
@@ -863,6 +865,20 @@ export default function PricingPage() {
       )}
 
       {viewMode === 'curated' && (
+      <ResponsiveTable<PricingSku>
+        data={items}
+        rowKey={(r) => r.id}
+        loading={isFetching}
+        emptyText="暂无定价"
+        renderCard={(r) => (
+          <CatalogCard
+            image={(r as any).gallery_image_url || (r as any).image_url}
+            title={r.sku || r.sku_code}
+            code={r.sku_code}
+            meta={[(r as any).size_category, (r as any).daily_price != null ? `日常¥${(r as any).daily_price}` : null].filter(Boolean).join(' · ')}
+          />
+        )}
+        desktop={
       <Table<PricingSku>
         size="small"
         sticky
@@ -900,6 +916,8 @@ export default function PricingPage() {
           onChange: (p, ps) => { setPage(p); setPageSize(ps); },
         }}
         columns={visibleColumns as any}
+      />
+        }
       />
       )}
 
