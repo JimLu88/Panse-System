@@ -82,14 +82,61 @@ def relabel_supplier_from_remark(db: Session, *, apply: bool = False) -> dict:
     return {"applied": apply, "relabeled": len(relabeled), "items": relabeled[:50]}
 
 
+def match_material_code(db: Session, *, apply: bool = False) -> dict:
+    """给没料号的配件采购匹配 material_code(→分类), 让它进大宗对账"零星实际"按分类汇总。
+
+    ① 物料名子串命中某 Material 名 → 用该料号;
+    ② 否则按类别关键词(复用配件库归类规则)推出分类 → 取该分类一个代表料号。
+    只填空、幂等。
+    """
+    from app.models.material import Material
+    from app.services import material_category_service as mcs
+    mats = db.execute(select(Material)).scalars().all()
+    by_name = [((m.name or "").strip(), m.code) for m in mats if m.name and m.code]
+    by_name.sort(key=lambda x: -len(x[0]))   # 长名优先, 避免短词误命中
+    cat_rep: dict[str, str] = {}
+    for m in mats:
+        if m.category and (m.code or "").upper().startswith("AC") and m.category not in cat_rep:
+            cat_rep[m.category] = m.code
+    rows = db.execute(
+        select(PartPurchase).where(
+            or_(PartPurchase.material_code.is_(None), PartPurchase.material_code == ""),
+            PartPurchase.material_name.isnot(None),
+        )
+    ).scalars().all()
+    matched: list[dict] = []
+    for p in rows:
+        name = (p.material_name or "").strip()
+        if not name:
+            continue
+        code = how = None
+        for mname, mcode in by_name:
+            if len(mname) >= 2 and (mname in name or (len(name) >= 3 and name in mname)):
+                code, how = mcode, "名称"
+                break
+        if not code:
+            cat = mcs._ac_category(name)   # 类别关键词 → 分类
+            if cat and cat in cat_rep:
+                code, how = cat_rep[cat], f"类别({cat})"
+        if code:
+            if apply:
+                p.material_code = code
+            matched.append({"purchase_no": p.purchase_no, "material_name": name,
+                            "material_code": code, "by": how})
+    if apply and matched:
+        db.commit()
+    return {"applied": apply, "matched": len(matched), "items": matched[:50]}
+
+
 def run_capture(db: Session, *, apply: bool = False) -> dict:
-    """一键: 解析订单号 + 改挂匿名供应商 + 把关联订单的采购汇总进 actual_parts。"""
+    """一键: 料号/分类匹配 + 解析订单号 + 改挂匿名供应商 + 把关联订单的采购汇总进 actual_parts。"""
+    mats = match_material_code(db, apply=apply)
     orders = link_orders_from_remark(db, apply=apply)
     suppliers = relabel_supplier_from_remark(db, apply=apply)
     parts = {}
     if apply:
         from app.services import parts_recon_service
         parts = parts_recon_service.aggregate_related_purchases(db, apply=True)
-    return {"applied": apply, "order_link": orders, "supplier_relabel": suppliers,
+    return {"applied": apply, "material_match": mats, "order_link": orders, "supplier_relabel": suppliers,
             "actual_parts": ({"matched_orders": parts.get("matched_orders"),
                               "total": parts.get("total_parts_amount")} if apply else None)}

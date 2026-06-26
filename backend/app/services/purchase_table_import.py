@@ -104,6 +104,7 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
                 amount=amount,
                 total_amount=amount,
                 tracking_no=import_clean.clean_no(rec.get("tracking_no")),
+                remark=(rec.get("remark") or None),   # 备注(可能含订单号/人名)→ 供导入后自动匹配解析
                 purchase_type="表格导入",
                 payment_status="paid",
             )
@@ -112,8 +113,23 @@ def import_purchases_table_core(db: Session, raw: bytes, filename: Optional[str]
             existing[key] = row
             inserted += 1
     db.commit()
+    # 导入后【自动匹配】(用户 2026-06-27): 料号→分类 + 备注订单号→related_order_no(→汇总进 actual_parts)
+    # + 匿名付款码采购按人名改挂供应商。失败不让导入整体失败。
+    auto: dict = {}
+    if inserted or updated:
+        try:
+            from app.services import accessory_capture_service
+            cap = accessory_capture_service.run_capture(db, apply=True)
+            auto = {"material_matched": cap["material_match"]["matched"],
+                    "order_linked": cap["order_link"]["linked"],
+                    "supplier_relabeled": cap["supplier_relabel"]["relabeled"]}
+        except Exception:  # noqa: BLE001 - 自动匹配失败不阻断导入
+            db.rollback()
+            auto = {"error": "自动匹配已跳过(导入仍成功)"}
     unmapped = sorted(unmapped_all)
+    auto_msg = (f"; 自动匹配 料号{auto.get('material_matched', 0)}/订单{auto.get('order_linked', 0)}"
+                if auto and "error" not in auto else "")
     return {"inserted": inserted, "updated": updated, "skipped_duplicate": 0,
-            "skipped_invalid": skipped_invalid, "unmapped_columns": unmapped,
-            "message": (f"导入 {inserted} 条, 更新 {updated} 条采购记录"
+            "skipped_invalid": skipped_invalid, "unmapped_columns": unmapped, "auto_match": auto,
+            "message": (f"导入 {inserted} 条, 更新 {updated} 条采购记录" + auto_msg
                         + (f", 未识别列: {','.join(unmapped)}" if unmapped else ""))}
