@@ -762,9 +762,16 @@ def _job_order_sheets_daily(db: Session) -> dict:
 
 
 def _job_order_sheets_catchup(db: Session) -> dict:
-    """每小时: 导入新订单后尽快补生成下单图 (静默, 不推送; 日报在 18:00)。"""
-    from app.services import order_sheet_archive_service
-    return order_sheet_archive_service.generate_pending(db)
+    """每小时: 导入新订单后补生成下单图 + 静默自愈补推飞书 (单张图即时到工厂群)。
+
+    修复"三天两头坏"(用户 2026-06-26): 原来只生成不推, 推送只在 18:00 跑一次 ——
+    与 18:00 的订单拉取撞车、或 api 重启误过 18:00 → 当天订单整天不进工厂群。
+    改成每小时补推 (quiet: 不发 ZIP/无地址提醒, 那两样留 18:00 日报), 订单 1 小时内必达、自愈。
+    """
+    from app.services import order_sheet_archive_service as oss
+    gen = oss.generate_pending(db)
+    push = oss.push_pending_images(db, limit=20, include_baseline=False, quiet=True)
+    return {"generated": gen, "images_pushed": push["pushed"], "remaining": push["remaining"]}
 
 
 def _job_void_sheets(db: Session) -> dict:

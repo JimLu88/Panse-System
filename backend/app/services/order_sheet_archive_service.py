@@ -435,8 +435,12 @@ def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
         _logger.warning("工厂下单图 ZIP 发送失败", exc_info=True)
 
 
-def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False) -> dict:
+def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False,
+                        quiet: bool = False) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
+
+    quiet=True (每小时自愈补推用): 只推单张图片, 跳过末尾 ZIP 打包 + 无收货地址提醒
+    (那两样留给 18:00 日报一次性发, 避免每小时刷屏)。
 
     与"生成 HTML"彻底解耦 —— 不论 HTML 是 18:00 日推、每小时补生成、还是手动生成的,
     只要这条归档还没推过图就在这里补推一次。修复历史 bug: 旧逻辑只推「本次新生成」的单号,
@@ -488,8 +492,9 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             db.rollback()
             failed += 1
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
-    _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
-    _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
+    if not quiet:
+        _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
+        _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos}
@@ -624,13 +629,23 @@ def push_void_daily(db: Session) -> dict:
         text = (f"{n} 张工厂下单图因订单退款已作废 (原图已删, 作废图存「工具 → 导入档案 → 作废图」):\n"
                 + "、".join(result["order_nos"][:10]) + ("…" if n > 10 else "")
                 + "\n请通知工厂停止/确认这些单的生产。")
+        title = "畔色 ERP [下单图作废提醒]"
         try:
             from app.services import notify_service
-            ok, _ = notify_service.notify(db, text, level="warning",
-                                          title="畔色 ERP [下单图作废提醒]")
+            ok, _ = notify_service.notify(db, text, level="warning", title=title)
             result["pushed"] = bool(ok)
         except Exception:  # pragma: no cover
             result["pushed"] = False
+        # 同步推飞书工厂群 (用户 2026-06-26: 微信的作废提醒内容也要进飞书)
+        try:
+            from app.services import feishu_client, settings_service
+            chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+            if chat_id:
+                feishu_client.send_text(db, chat_id, f"【{title}】\n{text}")
+                result["feishu_pushed"] = True
+        except Exception:  # pragma: no cover
+            result["feishu_pushed"] = False
+            _logger.warning("作废提醒推飞书失败", exc_info=True)
     else:
         result["pushed"] = False
     return result
