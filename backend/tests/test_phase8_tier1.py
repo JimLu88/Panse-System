@@ -183,7 +183,9 @@ def test_supplier_score_basic(db_session):
     )
     assert len(rows) == 1
     assert rows[0].total_orders == 1
-    assert rows[0].score is not None
+    # 单笔不可追溯货款(无关联订单/送货单/同料对标) → 评分"数据不足"(score=None), 但仍捕获采购规模 + 排名
+    assert rows[0].score is None
+    assert (rows[0].detail_json or {}).get("scale", {}).get("total_amount") == 250.0
     assert rows[0].rank == 1
 
 

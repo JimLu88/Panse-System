@@ -188,7 +188,12 @@ def compute_for_month(db: Session, year: int, month: int) -> list[SupplierScore]
             k = _mat_key(p)
             if not k or peer_avg.get(k, Decimal("0")) <= 0:
                 continue
+            if len(mat_suppliers.get(k, set())) < 2:
+                continue   # 只此一家供的料无从比价(对标自己永远=1, 无意义)
             up = _d(p.unit_price) if p.unit_price is not None else None
+            if up is None or up <= 0:
+                q = _d(p.qty)
+                up = (_purch_amount(p) / q) if q > 0 else None   # 没单价用 金额/数量 兜底
             if up is None or up <= 0:
                 continue
             ratio = up / peer_avg[k]
@@ -214,12 +219,13 @@ def compute_for_month(db: Session, year: int, month: int) -> list[SupplierScore]
             ln_total = ln_matched = Decimal("0")
         denom = total_amount + ln_total
         matched_amt = traced + ln_matched
-        if denom > 0:
+        if denom > 0 and (traced > 0 or ln_total > 0):
             rc = matched_amt / denom
             subs["recon_consistency"] = rc
             detail["recon_consistency"] = {"matched_rate": float(rc), "basis": "可追溯订单金额占比"}
         else:
-            detail["recon_consistency"] = {"matched_rate": None}
+            # 纯货款流水(无订单关联、无送货单)→ 无对账基础, 记"数据不足"而非 0(避免误导性 0 分)
+            detail["recon_consistency"] = {"matched_rate": None, "basis": "无订单关联/送货单可对账"}
 
         # 6) 采购规模/依赖度 (风险上下文, 不计分)
         share = (total_amount / grand_total) if grand_total > 0 else Decimal("0")

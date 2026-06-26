@@ -42,10 +42,10 @@ def test_six_dim_scoring_auto(db_session):
     # 甲: 按时率 1.0(5/10≤5/20) + 对账一致 1.0(可追溯 O1)
     assert a.detail_json["on_time"]["rate"] == 1.0
     assert a.detail_json["recon_consistency"]["matched_rate"] == 1.0
-    # 乙: 无关联订单 → 按时无可评估 + 对账 0(不可追溯)
+    # 乙: 无关联订单/送货单 → 按时无可评估 + 对账"数据不足"(None, 不记误导性 0)
     assert b.detail_json["on_time"]["rate"] is None
-    assert b.detail_json["recon_consistency"]["matched_rate"] == 0.0
-    # 综合: 甲 > 乙 + 排名甲第一
+    assert b.detail_json["recon_consistency"]["matched_rate"] is None
+    # 综合: 甲(按时+对账+竞争力全满) > 乙(只价格竞争力) + 排名甲第一
     assert a.score > b.score and a.rank == 1
     # 采购规模/依赖度: 占比 > 0
     assert "scale" in a.detail_json and a.detail_json["scale"]["share_pct"] > 0
