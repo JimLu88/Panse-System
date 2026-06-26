@@ -22,7 +22,8 @@ def _feishu_stub(monkeypatch):
     monkeypatch.setattr("app.services.feishu_client.send_image", lambda db, cid, key: {"sent": True})
 
 
-def _add_paid_order(db, no: str, day: int = 8):
+def _add_paid_order(db, no: str, day: int = 20):
+    # 默认 6/20 ≥ _AUTO_NUMBER_SINCE(6/19): 新单会被自动顺排编号, 正常自动推送。
     db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"测试产品{no}",
                  order_date=date(2026, 6, day), status="paid", paid_amount=Decimal("1000")))
     db.flush()
@@ -47,6 +48,37 @@ def test_quiet_skips_zip_and_notice(db_session, _feishu_stub, monkeypatch):
     res2 = osa.push_pending_images(db_session, quiet=False)
     assert res2["pushed"] == 1
     assert zip_calls == [1] and notice_calls == [1]
+
+
+def test_auto_push_skips_unnumbered_old_order(db_session, _feishu_stub):
+    """自动推送(catchup/18:00, include_baseline=False)跳过【无工厂编号】的老单(<6/19),
+    不再往工厂群刷"未能匹配工厂订单号"; 手动按钮(include_baseline=True)仍可在补号后推。
+
+    根因(用户 2026-06-26 "飞书不停跳"): 每小时 catchup 把从未推过、也没编号的 6/06-6/18 积压老单
+    20 张/小时往工厂群灌, 全是红字"未能匹配工厂订单号"。
+    """
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory")
+    _add_paid_order(db_session, "OLD-1", day=10)   # 6/10 < 6/19 → 不会被自动编号 → factory_no 仍为空
+    osa.generate_pending(db_session)
+
+    # 自动路径: 无编号老单被跳过, 一张不推 (remaining 仍计入, 但不再刷屏)
+    res = osa.push_pending_images(db_session, include_baseline=False, quiet=True)
+    assert res["pushed"] == 0
+
+    # 手动按钮: 用户明确要推, 无编号也照推 (补号/确认后)
+    res2 = osa.push_pending_images(db_session, include_baseline=True)
+    assert res2["pushed"] == 1
+
+
+def test_auto_push_sends_numbered_new_order(db_session, _feishu_stub):
+    """对照: 新单(≥6/19)自动顺排到工厂编号 → 自动推送照常发出 (不被上面的守卫误伤)。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory")
+    _add_paid_order(db_session, "NEW-1", day=20)   # 6/20 ≥ 6/19 → push 内自动顺排编号
+    osa.generate_pending(db_session)
+    res = osa.push_pending_images(db_session, include_baseline=False, quiet=True)
+    assert res["pushed"] == 1
+    o = db_session.query(Order).filter_by(order_no="NEW-1").one()
+    assert o.factory_no is not None   # 已自动编号
 
 
 def test_void_reminder_also_pushes_feishu(db_session, monkeypatch):

@@ -33,7 +33,9 @@ def _feishu_stub(monkeypatch):
     return sent
 
 
-def _add_paid_order(db, no: str, day: int = 8):
+def _add_paid_order(db, no: str, day: int = 20):
+    # 默认 6/20 ≥ _AUTO_NUMBER_SINCE(6/19): 新单会被自动顺排工厂编号, 故能正常自动推送。
+    # (老单 <6/19 无编号现在被自动推送跳过, 见 test_order_sheet_push_0626 的专项回归)
     db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"测试产品{no}",
                  order_date=date(2026, 6, day), status="paid", paid_amount=Decimal("1000")))
     db.flush()

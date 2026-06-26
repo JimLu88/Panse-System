@@ -473,6 +473,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 and order.order_date >= _AUTO_NUMBER_SINCE):
             order.factory_no = _next_factory_no(db)
             db.flush()
+        # 自动推送(catchup/18:00, include_baseline=False)【绝不】推没有工厂编号的老单(<6/19 且未 ZIP 回填):
+        # 它们渲染出来是红字"未能匹配工厂订单号", 推给工厂只是噪音 (用户 2026-06-26: 飞书一直跳这些)。
+        # 新单上面已自动顺排到号; 没号的只剩历史老单, 留给「资料存档库」手动按钮(include_baseline=True)人工补号后再推。
+        if getattr(order, "factory_no", None) is None and not include_baseline:
+            continue
         try:
             png = render_png(factory_sheet.build(db, order.id))
             key = feishu_client.upload_image(db, png)
