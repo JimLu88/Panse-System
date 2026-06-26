@@ -329,6 +329,19 @@ def aggregate_related_parts(
     return parts_recon_service.aggregate_related_purchases(db, apply=apply)
 
 
+@router.post("/capture-accessory-remarks", response_model=dict)
+def capture_accessory_remarks(
+    apply: bool = Query(False, description="True=落库; False=只预览"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """配件采购"备注识别"(零星采购, 用户 2026-06-27): 从采购备注解析订单号 → 填 related_order_no
+    (→ 汇总进 Order.actual_parts); 匿名付款码采购按备注里的人名改挂到真实供应商。
+    默认 dry-run 预览, apply=True 才落库。认不出的仍由"待归类配件采购"异常兜底。"""
+    from app.services import accessory_capture_service
+    return accessory_capture_service.run_capture(db, apply=apply)
+
+
 @router.post("/backfill-est-parts", response_model=dict)
 def backfill_est_parts(
     db: Session = Depends(get_db),

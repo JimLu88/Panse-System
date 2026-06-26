@@ -340,12 +340,19 @@ def _job_alipay_match_pipeline(db: Session) -> dict:
     bf = alipay_backfill_service.backfill(db, only_missing=True)
     db.flush()
     am = alipay_amount_match_service.match(db)
+    # 配件采购"备注识别"(零星采购, 用户 2026-06-27): 解析采购备注里的订单号→related_order_no→汇总进
+    # actual_parts; 匿名付款码采购按备注人名改挂供应商。幂等只填空。
+    from app.services import accessory_capture_service
+    cap = accessory_capture_service.run_capture(db, apply=True)
+    db.flush()
     return {
         "route": {"purchases_created": getattr(route, "purchases_created", 0),
                   "factory_flipped": getattr(route, "factory_flipped", 0)},
         "backfill": {"matched_orders": bf.matched_orders, "filled_flow_no": bf.filled_flow_no},
         "amount_match": {"matched": am.matched, "linked_flow_no": am.linked_flow_no,
                          "by_rule": am.by_rule},
+        "accessory_capture": {"order_linked": cap["order_link"]["linked"],
+                              "supplier_relabeled": cap["supplier_relabel"]["relabeled"]},
     }
 
 
