@@ -114,11 +114,11 @@ def test_export_excludes_woodwork_and_dedups(db_session):
     db.add(Material(code="AC-FM", name="洞石纹理饰面板", price=Decimal("60"), unit="块"))
     db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="WD-9",
                    material_name="木作", qty_per_product=Decimal("1")))
-    # 同料同尺寸重复两行(模拟定制大杂烩模板堆叠) → 去重只留一行(图二 bug)
+    # 同料同尺寸重复两行(模拟定制大杂烩模板堆叠), 且尺寸写法空格不一致 → 仍去重只留一行(图二 bug)
     db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
                    material_name="x", qty_per_product=Decimal("1"), remark="1200*480"))
     db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
-                   material_name="x", qty_per_product=Decimal("1"), remark="1200*480"))
+                   material_name="x", qty_per_product=Decimal("1"), remark="1200 *480"))
     db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-FM",
                    material_name="x", qty_per_product=Decimal("1")))
     o = Order(platform="淘宝", order_no="DUP1", product_code="PPSDUP1", sku_code="SDUP",

@@ -423,7 +423,8 @@ def export_shipped_orders(db: Session, *, year_month: str,
                 if not (_match_kw(nm, bom_kw) or _match_kw(code, bom_kw)):
                     continue
                 size = (line.remark or "").strip() or None
-                dk = (code, size)
+                # 去重键去掉所有空白再比 —— 源数据同尺寸写法不一致("岩板 1000"/"岩板1000")否则漏去重
+                dk = (code, "".join(size.split()) if size else "")
                 if dk in seen_p:
                     continue   # 定制单共用模板 BOM 会堆叠重复行(同料同尺寸) → 去重只列一次
                 seen_p.add(dk)
