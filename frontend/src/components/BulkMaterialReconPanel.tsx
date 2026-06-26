@@ -124,33 +124,41 @@ function ActualEntryModal({ info, onClose, onSaved }: {
   );
 }
 
-function periodColumns(onExport: (period: string) => void, onEnterActual: (period: string) => void) {
+function periodColumns(onExport: (period: string) => void, onEnterActual: (period: string) => void,
+                       settleMode?: '月结' | '零星') {
+  const isMonthly = settleMode !== '零星';   // 月结=工厂月度对账+导清单; 零星=采购单自动归账
   return [
     { title: '周期(发货)', dataIndex: 'period', width: 96 },
     { title: '历史平均', dataIndex: 'historical_avg', width: 96, align: 'right' as const, render: yuan },
     { title: '预估', dataIndex: 'standard_consume', width: 100, align: 'right' as const, render: yuan },
     {
-      title: '实际(工厂)', dataIndex: 'factory_actual', width: 104, align: 'right' as const,
-      render: (v: number | null) => v == null ? <span style={{ color: '#bbb' }}>未录</span> : <b>{yuan(v)}</b>,
+      title: isMonthly ? '实际(工厂月结)' : '实际(采购)', dataIndex: 'actual', width: 116, align: 'right' as const,
+      render: (v: number | null) => v == null
+        ? <span style={{ color: '#bbb' }}>{isMonthly ? '未录' : '无采购'}</span> : <b>{yuan(v)}</b>,
     },
     {
       title: '差异%', dataIndex: 'variance_pct', width: 84, align: 'right' as const,
-      render: (v: number | null, r: BulkMaterialPeriod) => (!r.has_factory_actual || v == null) ? '—'
+      render: (v: number | null, r: BulkMaterialPeriod) => (!r.has_actual || v == null) ? '—'
         : <span style={{ color: varColor(v), fontWeight: 600 }}>{v > 0 ? '+' : ''}{v.toFixed(1)}%</span>,
     },
     { title: '发货单', dataIndex: 'order_count', width: 64, align: 'right' as const,
       render: (v: number) => v || <span style={{ color: '#bbb' }}>0</span> },
     {
-      title: '操作', width: 168,
-      render: (_: unknown, r: BulkMaterialPeriod) => (
+      title: '操作', width: 184,
+      render: (_: unknown, r: BulkMaterialPeriod) => isMonthly ? (
         <Space size="small">
-          <Tooltip title={r.order_count ? '导出该分类当月发货单(含BOM部位/尺寸)' : '该月无此料发货单'}>
+          <Tooltip title={r.order_count ? '导出该分类当月发货单给工厂填月度总额(含BOM部位/尺寸)' : '该月无此料发货单'}>
             <Button size="small" icon={<PrinterOutlined />} disabled={!r.order_count}
               onClick={() => onExport(r.period)}>导清单</Button>
           </Tooltip>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => onEnterActual(r.period)}>
             {r.has_factory_actual ? '改实际' : '录实际'}</Button>
-        </Space>),
+        </Space>
+      ) : (
+        <Tooltip title="零星类: 实际从支付宝备注/导入的真实采购单自动归账, 无需导清单给对方、也不手录工厂月度">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>🏷️零星 · 采购自动归账</Typography.Text>
+        </Tooltip>
+      ),
     },
   ];
 }
@@ -200,29 +208,34 @@ export default function BulkMaterialReconPanel() {
   const [activeKeys, setActiveKeys] = useState<string[]>([]);
   const cats = data?.materials ?? [];
 
-  const collapseItems = cats.map((m: BulkMaterial) => ({
-    key: m.key,
-    label: (
-      <Space size="middle" wrap>
-        <b style={{ fontSize: 14 }}>{m.name}</b>
-        <Typography.Text type="secondary">预估 {yuan(m.total_standard)} · 实际 {yuan(m.total_factory_actual)}</Typography.Text>
-        {m.total_factory_actual > 0 && (
-          <span style={{ color: varColor(m.total_variance), fontWeight: 700 }}>
-            差异 {m.total_variance > 0 ? '+' : ''}{yuan(m.total_variance)}
-            {m.total_variance_pct != null && `（${m.total_variance_pct > 0 ? '+' : ''}${m.total_variance_pct.toFixed(1)}%）`}
-          </span>)}
-        <Tag>{m.periods.length} 个月</Tag>
-      </Space>
-    ),
-    children: (
-      <Table<BulkMaterialPeriod> rowKey="period" dataSource={m.periods} size="small" pagination={false}
-        scroll={{ x: 700 }} locale={{ emptyText: '该分类暂无发货 / 对账记录' }}
-        columns={periodColumns(
-          (period) => doExport(period, m.key),
-          (period) => setActualModal({ categoryKey: m.key, yearMonth: period }),
-        ) as any} />
-    ),
-  }));
+  const collapseItems = cats.map((m: BulkMaterial) => {
+    const actual = m.total_actual ?? m.total_factory_actual;   // 月结=工厂月度 / 零星=采购单
+    return {
+      key: m.key,
+      label: (
+        <Space size="middle" wrap>
+          <Tag color={m.settle_mode === '零星' ? 'gold' : 'blue'}>{m.settle_mode || '月结'}</Tag>
+          <b style={{ fontSize: 14 }}>{m.name}</b>
+          <Typography.Text type="secondary">预估 {yuan(m.total_standard)} · 实际 {yuan(actual)}</Typography.Text>
+          {actual > 0 && (
+            <span style={{ color: varColor(m.total_variance), fontWeight: 700 }}>
+              差异 {m.total_variance > 0 ? '+' : ''}{yuan(m.total_variance)}
+              {m.total_variance_pct != null && `（${m.total_variance_pct > 0 ? '+' : ''}${m.total_variance_pct.toFixed(1)}%）`}
+            </span>)}
+          <Tag>{m.periods.length} 个月</Tag>
+        </Space>
+      ),
+      children: (
+        <Table<BulkMaterialPeriod> rowKey="period" dataSource={m.periods} size="small" pagination={false}
+          scroll={{ x: 720 }} locale={{ emptyText: '该分类暂无发货 / 对账记录' }}
+          columns={periodColumns(
+            (period) => doExport(period, m.key),
+            (period) => setActualModal({ categoryKey: m.key, yearMonth: period }),
+            m.settle_mode,
+          ) as any} />
+      ),
+    };
+  });
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">

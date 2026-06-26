@@ -595,8 +595,13 @@ export interface BulkMaterialPeriod {
   period: string;                  // YYYY-MM (按发货日期)
   historical_avg: number;          // 历史平均 (过去已对账月每单实际均值×本月单数; 无历史=预估)
   standard_consume: number;        // 预估 (Σ 发货单 BOM 里该分类外采配件 price×qty)
-  factory_actual: number | null;   // 实际 (工厂月度对账总额; 没录入=null)
+  factory_actual: number | null;   // 月结类实际 (工厂月度对账总额; 没录入=null)
   has_factory_actual: boolean;
+  actual_purchase?: number | null;  // 零星类实际 (Σ真实采购单 PartPurchase, 按分类×采购月)
+  has_actual_purchase?: boolean;
+  settle_mode?: '月结' | '零星';
+  actual?: number | null;           // 按结算模式取的"实际"(月结=工厂月度/零星=采购单)
+  has_actual?: boolean;
   variance: number | null;         // 实际 − 预估 (没录入实际=null)
   variance_pct: number | null;
   order_count: number;             // 该分类该月命中发货单数
@@ -604,9 +609,12 @@ export interface BulkMaterialPeriod {
 export interface BulkMaterial {       // 现在 key/name = 配件分类(category)
   key: string;
   name: string;
+  settle_mode?: '月结' | '零星';     // 月结(五金/电力轨道/岩板) | 零星(其余, 实际从采购单)
   periods: BulkMaterialPeriod[];
   total_standard: number;
   total_factory_actual: number;
+  total_actual_purchase?: number;
+  total_actual?: number;
   total_variance: number;
   total_variance_pct: number | null;
 }

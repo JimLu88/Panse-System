@@ -32,6 +32,15 @@ _CENTS = Decimal("0.01")
 _FACTORY_PREFIXES = ("WD", "MW", "MP")
 _UNCATEGORIZED = "未分类"
 
+# 结算模式 (用户 2026-06-27): 五金都在五金店买 → 月结(月度总额对账, 工厂/供应商填);
+# 其余(杂项/岩板/洞石饰面板/玻璃/大宗料…)= 零星采购(用了才买, 支付宝备注/导入逐项归账, 实际=Σ真实采购)。
+# 月结类才"导清单给对方填总额"; 零星类没"对方", 实际从采购单(PartPurchase)来。
+_MONTHLY_SETTLE_CATEGORIES = ("五金", "电力轨道", "岩板")   # 有固定供应商、按月对账的; 杂项/洞石饰面板/玻璃/木皮等=零星
+
+
+def _settle_mode(category: str) -> str:
+    return "月结" if category in _MONTHLY_SETTLE_CATEGORIES else "零星"
+
 # 非配件采购(代扣/理财/服务费/淘天扣款…)排除关键词 — 与 purchases.list_purchases 一致。
 _NON_PART_KW = ("代扣", "代付", "资金扣回", "消费券", "理财", "申购",
                 "服务费", "手续费", "余额宝", "转入", "转出", "单次转", "转账")
@@ -310,41 +319,68 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
     ).all():
         fact_all[key][ym] += _d(amt)
 
+    # 零星类"实际" = 真实采购单(支付宝备注/导入)按分类×采购月汇总 (用户 2026-06-27)。
+    # 经 PartPurchase.material_code → 配件库分类; 未编码的采购映射不到分类(诚实留空, 进未分类不强塞)。
+    purch_all: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    for mcode, amt, pdate in db.execute(
+        select(PartPurchase.material_code, PartPurchase.amount, PartPurchase.purchase_date)
+        .where(PartPurchase.amount.isnot(None))
+    ).all():
+        cat = (mat_info.get(mcode) or {}).get("category") if mcode else None
+        ym = _ym(pdate)
+        if cat and ym and (mcode or "").split("-", 1)[0].upper() not in _FACTORY_PREFIXES:
+            purch_all[cat][ym] += _d(abs(amt))
+
     out_cats = []
-    all_keys = sorted(set(_ac_categories(db)) | set(std.keys()) | set(fact_all.keys()))
+    all_keys = sorted(set(_ac_categories(db)) | set(std.keys()) | set(fact_all.keys()) | set(purch_all.keys()))
     for cat in all_keys:
-        std_p, cnt_p, fact_p = std.get(cat, {}), cnt.get(cat, {}), fact_all.get(cat, {})
-        periods = sorted(set(std_p) | set(cnt_p) | set(fact_p))
+        mode = _settle_mode(cat)   # 月结(五金/电力轨道) | 零星(其余)
+        std_p, cnt_p = std.get(cat, {}), cnt.get(cat, {})
+        fact_p, purch_p = fact_all.get(cat, {}), purch_all.get(cat, {})
+        periods = sorted(set(std_p) | set(cnt_p) | set(fact_p) | set(purch_p))
         rows = []
-        t_std = t_fact = Decimal("0")
+        t_std = t_fact = t_purch = t_actual = Decimal("0")
         hist_rates: list[Decimal] = []
         for ym in periods:
             s = std_p.get(ym, Decimal("0")).quantize(_CENTS)
             c = cnt_p.get(ym, 0)
             has_fact = ym in fact_p
             fact = fact_p.get(ym, Decimal("0")).quantize(_CENTS) if has_fact else None
+            has_purch = ym in purch_p
+            purch = purch_p.get(ym, Decimal("0")).quantize(_CENTS) if has_purch else None
+            # 月结类"实际"=工厂月度对账总额; 零星类"实际"=真实采购单(支付宝备注/导入)
+            actual = fact if mode == "月结" else purch
+            has_actual = has_fact if mode == "月结" else has_purch
             if hist_rates and c > 0:
                 hist = ((sum(hist_rates, Decimal("0")) / Decimal(len(hist_rates))) * c).quantize(_CENTS)
             else:
                 hist = s
-            var = (fact - s).quantize(_CENTS) if has_fact else None
-            var_pct = float((var / s * 100).quantize(_CENTS)) if (has_fact and s > 0) else None
+            var = (actual - s).quantize(_CENTS) if (has_actual and actual is not None) else None
+            var_pct = float((var / s * 100).quantize(_CENTS)) if (var is not None and s > 0) else None
             rows.append({
                 "period": ym, "historical_avg": float(hist), "standard_consume": float(s),
                 "factory_actual": float(fact) if has_fact else None, "has_factory_actual": has_fact,
-                "variance": float(var) if has_fact else None, "variance_pct": var_pct,
+                "actual_purchase": float(purch) if has_purch else None, "has_actual_purchase": has_purch,
+                "settle_mode": mode,
+                "actual": float(actual) if (has_actual and actual is not None) else None, "has_actual": has_actual,
+                "variance": float(var) if var is not None else None, "variance_pct": var_pct,
                 "order_count": c,
             })
             t_std += s
             if has_fact:
                 t_fact += fact
+            if has_purch:
+                t_purch += purch
+            if has_actual and actual is not None:
+                t_actual += actual
                 if c > 0:
-                    hist_rates.append(fact / Decimal(c))
-        t_var = (t_fact - t_std).quantize(_CENTS)
+                    hist_rates.append(actual / Decimal(c))
+        t_var = (t_actual - t_std).quantize(_CENTS)
         out_cats.append({
-            "key": cat, "name": cat, "periods": rows,
-            "total_standard": float(t_std), "total_factory_actual": float(t_fact),
-            "total_variance": float(t_var),
+            "key": cat, "name": cat, "settle_mode": mode, "periods": rows,
+            "total_standard": float(t_std),
+            "total_factory_actual": float(t_fact), "total_actual_purchase": float(t_purch),
+            "total_actual": float(t_actual), "total_variance": float(t_var),
             "total_variance_pct": float((t_var / t_std * 100).quantize(_CENTS)) if t_std > 0 else None,
         })
     return {"granularity": granularity, "ship_date_basis": True, "category_driven": True, "materials": out_cats}

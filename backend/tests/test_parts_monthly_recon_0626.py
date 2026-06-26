@@ -120,6 +120,40 @@ def test_historical_avg_rolls(db_session):
     assert p["2026-03"]["historical_avg"] == 300.0   # 2 月每单 100 × 3 单
 
 
+# ── 结算模式: 零星类实际来自真实采购单 (用户 2026-06-27) ─────────────────────
+def test_零星_actual_from_purchase(db_session):
+    """零星类(杂项)实际来自真实采购单 PartPurchase(按分类×采购月), 不走工厂月度对账; settle_mode=零星。"""
+    db = db_session
+    from app.models.order import PartPurchase
+    _mat(db, "AC-DD", "洞洞板", 50, "杂项")
+    _bom(db, "AC-DD", "洞洞板", 2)              # 每单 2 块 → 标准 100/单
+    _order(db, "Z1", date(2026, 2, 10))         # 2月发货1单 → 标准 100
+    db.add(PartPurchase(purchase_no="ZP1", supplier="某五金", material_code="AC-DD",
+                        material_name="洞洞板", qty=Decimal("2"), amount=Decimal("120"),
+                        purchase_date=date(2026, 2, 15)))   # 真实采购 ¥120
+    db.flush()
+    za = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "杂项")
+    assert za["settle_mode"] == "零星"
+    p = {r["period"]: r for r in za["periods"]}["2026-02"]
+    assert p["standard_consume"] == 100.0
+    assert p["actual_purchase"] == 120.0 and p["actual"] == 120.0   # 零星实际=采购单
+    assert p["variance"] == 20.0                                     # 120 − 100
+    assert p["factory_actual"] is None                              # 零星不走工厂月度对账
+
+
+def test_岩板_is_monthly_settle(db_session):
+    """岩板=月结类: settle_mode=月结, 实际看工厂月度对账(非采购单)。"""
+    db = db_session
+    _seed_yanban(db)
+    _order(db, "Y1", date(2026, 2, 10))
+    db.flush()
+    prs.save_monthly_recon(db, material_key="岩板", year_month="2026-02", actual_total=Decimal("100"))
+    yan = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "岩板")
+    assert yan["settle_mode"] == "月结"
+    p = {r["period"]: r for r in yan["periods"]}["2026-02"]
+    assert p["actual"] == 100.0 and p["factory_actual"] == 100.0   # 月结实际=工厂月度对账
+
+
 # ── 导出 ────────────────────────────────────────────────────────────────────
 def test_export_all_shipped_by_ship_date(db_session):
     db = db_session
