@@ -63,7 +63,8 @@ def _d(v) -> Decimal:
 # 改按 整件物理成本 ≈ 木作账单 ÷ 木作占比 推算(非木作随真实账单等比放大, 不靠定价表)。
 # 占比默认取定价表中位(≈0.67), 可在财务系数(fin_wood_cost_ratio)调。
 _WOOD_RATIO_DEFAULT = Decimal("0.67")
-_WOOD_EST_MAX_MARGIN = Decimal("0.30")   # 定制单按占比推算后毛利 > 此 → 账单像零头(账单<<真实) → 退回 实付×85% 兜底
+_WOOD_EST_MAX_MARGIN = Decimal("0.15")   # 定制单 floor (用户 2026-06-26 选A): 木作占比推算后毛利 > 此(即成本<实付×85%) → 兜底实付×85%, 让定制单成本恒≥实付×85%(净利≤~15%, 工厂木作账单只含木作不足信)。floor 只升不降: 账单高于此则保留真实推算
+_CUSTOM_FLOOR_MIN_PAID = Decimal("1500")  # 定制 floor 下限: 实付<此 的小额单(仅追加插座/隔板/差价片段, 成本就该是那点) 不 floor
 _wood_ratio_cache = {"v": _WOOD_RATIO_DEFAULT}
 
 
@@ -179,10 +180,11 @@ def physical_cost_breakdown(o: Order) -> dict:
                              if (ratio > 0 and factory_wood > 0) else Decimal("0"))
             precap = factory_wood + estimate_part + packing
             cost = precap
-            # 再85%兜底: 账单是零头(账单<<真实, 推算后毛利>阈值) → 退回 实付×85%
-            if paid > 0 and cost < paid * (Decimal("1") - _WOOD_EST_MAX_MARGIN):
+            # floor (用户 2026-06-26 选A): 定制单成本恒兜底至 实付×85%(工厂木作账单不足信), 即
+            # max(木作占比推算, 实付×85%); 仅排除小额追加/差价片段(实付<_CUSTOM_FLOOR_MIN_PAID, 成本就该是那点)。
+            if paid >= _CUSTOM_FLOOR_MIN_PAID and cost < paid * (Decimal("1") - _WOOD_EST_MAX_MARGIN):
                 cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
-                cap_mode, cap_label = "占比偏低85", f"工厂账单像零头(推算毛利>{int(_WOOD_EST_MAX_MARGIN * 100)}%)→实付×85%兜底"
+                cap_mode, cap_label = "定制兜底85", "定制单工厂木作账单不足信→成本兜底至实付×85%"
         else:
             # 非定制单: 定价表准 → 用定价表补非木作(配件+物流+安装 = 定价表物理 − 木作)
             wood_est = _d(getattr(o, "wood_cost_est", None))

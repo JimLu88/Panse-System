@@ -28,11 +28,12 @@ def test_custom_missing_parts_floors_to_85pct():
 
 
 def test_custom_full_bill_uses_wood_ratio():
-    """定制单(有账单, 账单合理): 物理成本 = 木作账单 ÷ 木作占比(默认0.67) = 2010/0.67 ≈ 3000 (毛利25%<阈值, 用推算, 不靠定价表)。"""
-    o = Order(order_no="C2a", is_custom=True, paid_amount=Decimal("4000"), actual_cost=Decimal("2010"))
+    """定制单账单合理且【高于实付×85%floor】: 物理成本 = 木作账单÷木作占比(默认0.67) = 2400/0.67 ≈ 3582,
+    保留真实推算 (floor 只升不降, 实付×85%=3400 低于推算 → 不抬高也不压低)。"""
+    o = Order(order_no="C2a", is_custom=True, paid_amount=Decimal("4000"), actual_cost=Decimal("2400"))
     phys = ofin.physical_cost(o)
-    assert abs(phys - Decimal("3000")) < Decimal("1")
-    assert phys < Decimal("4000")   # 没被 85% 兜底抬高
+    assert abs(phys - Decimal("3582")) < Decimal("2")
+    assert Decimal("3400") < phys < Decimal("4000")   # 高于85%floor → 不被floor抬高, 也未超实付
 
 
 def test_custom_partial_bill_falls_back_85():
