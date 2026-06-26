@@ -205,6 +205,21 @@ def _material_bom_kw(mat: dict) -> list[str]:
     return mat.get("order_kw") or mat.get("purchase_kw") or []
 
 
+# 木作(WD-)/工厂自备(MW-/MP-)不是外采配件 → 不进配件对账清单 (用户 2026-06-26)。
+# 必须按料号前缀排除, 不能靠名字: 木作行名常含产品名(如"黑胡桃木岩板餐桌-木作部分")会被"岩板"误命中。
+_EXCLUDE_BOM_PREFIXES = ("WD", "MW", "MP")
+
+
+def _part_category(name: str) -> str:
+    """配件大类: 岩板(板材) / 洞石饰面板(饰面) / 其他 —— 用户要求「洞石岩板」与「洞石装饰板」分开列。"""
+    n = name or ""
+    if "岩板" in n:
+        return "岩板"
+    if "饰面板" in n or "纹理饰面" in n:
+        return "洞石饰面板"
+    return "其他"
+
+
 def _factory_actual_by_period(db: Session, material_key: str) -> dict[str, Decimal]:
     """该材料每月「工厂月度对账总额」(多供应商求和)。"""
     out: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
@@ -391,6 +406,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
     t_est = Decimal("0")
 
     if mat is not None:
+        from app.services import sku_utils
         from app.services.accessory_checklist_service import _bom_rows_for_order
         bom_kw = _material_bom_kw(mat)
         okw = mat.get("order_kw") or bom_kw
@@ -398,18 +414,30 @@ def export_shipped_orders(db: Session, *, year_month: str,
             hit_by_name = bool(_match_kw(o.sku, okw) or _match_kw(o.product_name, okw)
                                or _match_kw(o.sku_code, okw))
             bom_parts = []
+            seen_p: set = set()
             for line, mat_name, mat_unit in _bom_rows_for_order(db, o):
+                code = line.material_code or ""
+                if code.split("-", 1)[0].upper() in _EXCLUDE_BOM_PREFIXES:
+                    continue   # 木作/工厂自备 不是外采配件(名字含产品名"岩板"会误命中, 按料号前缀硬排)
                 nm = mat_name or line.material_name or ""
-                if not (_match_kw(nm, bom_kw) or _match_kw(line.material_code, bom_kw)):
+                if not (_match_kw(nm, bom_kw) or _match_kw(code, bom_kw)):
                     continue
+                size = (line.remark or "").strip() or None
+                dk = (code, size)
+                if dk in seen_p:
+                    continue   # 定制单共用模板 BOM 会堆叠重复行(同料同尺寸) → 去重只列一次
+                seen_p.add(dk)
                 qty = _d(line.qty_per_product) * Decimal(int(o.qty or 1))
                 bom_parts.append({
                     "part_name": nm,
-                    "material_code": line.material_code,
+                    "material_code": code,
+                    "category": _part_category(nm),
                     "qty": float(qty),
                     "unit": line.unit or mat_unit,
-                    "size_note": (line.remark or "").strip() or None,   # 预设尺寸/工艺说明
+                    "size_note": size,                  # 预设尺寸/工艺说明
                 })
+            # 分开列: 岩板 → 洞石饰面板 → 其他, 同类按名 (用户: 两类是两码事, 要分开)
+            bom_parts.sort(key=lambda p: ({"岩板": 0, "洞石饰面板": 1}.get(p["category"], 2), p["part_name"]))
             # 选配型(by_order_kw): 名字命中 或 BOM 有该料才算; 通用消耗型: BOM 里确实有该料才列
             if mat["mode"] == "by_order_kw":
                 if not hit_by_name and not bom_parts:
@@ -425,6 +453,9 @@ def export_shipped_orders(db: Session, *, year_month: str,
                 "product_name": o.product_name,
                 "sku": o.sku,                       # SKU 名通常含整体尺寸
                 "est_parts": float(est),
+                # 定制单共用通用编码、BOM 是大杂烩模板 → 标记, 清单里提示"以实际为准"(去重后仍非精确)
+                "is_custom": bool(getattr(o, "is_custom", False))
+                or sku_utils.is_custom_sku_code(o.sku_code, o.product_code),
                 "bom_parts": bom_parts,
             })
     else:

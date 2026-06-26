@@ -101,4 +101,37 @@ def test_export_by_material_includes_bom_parts(db_session):
     parts = o["bom_parts"]
     assert len(parts) == 1 and parts[0]["part_name"] == "洞石饰面板"
     assert parts[0]["qty"] == 2.0
+    assert parts[0]["category"] == "洞石饰面板"            # 分类(与岩板分开列)
     assert "1180" in (parts[0]["size_note"] or "")       # 预设尺寸列出, 方便工厂对照
+
+
+def test_export_excludes_woodwork_and_dedups(db_session):
+    """图一/图二修复: 木作(WD-)即使名字含"岩板"也排除; 模板堆叠的同料同尺寸去重; 岩板/饰面板分类。"""
+    db = db_session
+    # 物料名(Material.name)是清单显示名; 木作名里带"岩板"(产品名) → 名字会误命中, 必须按料号前缀排除(图一 bug)
+    db.add(Material(code="WD-9", name="黑胡桃木岩板餐桌-木作部分", price=Decimal("0"), unit="套"))
+    db.add(Material(code="AC-RB", name="洞石岩板", price=Decimal("90"), unit="块"))
+    db.add(Material(code="AC-FM", name="洞石纹理饰面板", price=Decimal("60"), unit="块"))
+    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="WD-9",
+                   material_name="木作", qty_per_product=Decimal("1")))
+    # 同料同尺寸重复两行(模拟定制大杂烩模板堆叠) → 去重只留一行(图二 bug)
+    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
+                   material_name="x", qty_per_product=Decimal("1"), remark="1200*480"))
+    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
+                   material_name="x", qty_per_product=Decimal("1"), remark="1200*480"))
+    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-FM",
+                   material_name="x", qty_per_product=Decimal("1")))
+    o = Order(platform="淘宝", order_no="DUP1", product_code="PPSDUP1", sku_code="SDUP",
+              sku="岩板餐桌", product_name="岩板餐桌", qty=1, order_date=date(2026, 1, 1),
+              ship_date=date(2026, 2, 10), status="signed", paid_amount=Decimal("4000"),
+              est_parts=Decimal("200"))
+    db.add(o)
+    db.flush()
+    res = prs.export_shipped_orders(db, year_month="2026-02", material_key="dongshi")
+    parts = res["orders"][0]["bom_parts"]
+    names = [p["part_name"] for p in parts]
+    assert "黑胡桃木岩板餐桌-木作部分" not in names      # 木作按前缀排除(名字含"岩板"也不进)
+    assert names.count("洞石岩板") == 1                  # 同料同尺寸去重(模板堆叠塌成一行)
+    assert "洞石纹理饰面板" in names                      # 饰面板保留
+    cats = [p["category"] for p in parts]
+    assert cats == ["岩板", "洞石饰面板"]                 # 分开列: 岩板 在 洞石饰面板 前

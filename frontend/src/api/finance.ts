@@ -650,6 +650,7 @@ export const deleteMonthlyRecon = (reconId: number) =>
 export interface ShippedOrderBomPart {
   part_name: string;
   material_code: string;
+  category: string;           // 岩板 / 洞石饰面板 / 其他 (分开列)
   qty: number;
   unit: string | null;
   size_note: string | null;   // 预设尺寸/工艺说明
@@ -661,6 +662,7 @@ export interface ShippedOrderRow {
   product_name: string | null;
   sku: string | null;
   est_parts: number;
+  is_custom?: boolean;        // 定制单 BOM 为模板, 仅供参考
   bom_parts?: ShippedOrderBomPart[];   // 仅按材料导出时有
 }
 export interface ShippedOrdersExport {

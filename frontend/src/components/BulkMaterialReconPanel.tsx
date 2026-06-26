@@ -39,11 +39,12 @@ function openExportPrint(d: ShippedOrdersExport) {
   if (d.material_key) {
     body = d.orders.map((o) => {
       const partRows = (o.bom_parts || []).map((p) => `<tr>
-        <td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td>
+        <td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td>
         <td>${esc(p.size_note ?? '—')}</td></tr>`).join('');
-      return `<div class="ordsec"><div class="ordh">${esc(o.order_no)}${o.ship_date ? ' · 发货 ' + esc(o.ship_date) : ''}${o.product_name ? ' · ' + esc(o.product_name) : ''}${o.sku ? ' · ' + esc(o.sku) : ''}</div>
-        <table><thead><tr><th>部位 / 料</th><th>数量</th><th>预设尺寸(实际可能有出入)</th></tr></thead>
-        <tbody>${partRows || '<tr><td colspan="3" class="muted">无 BOM 明细</td></tr>'}</tbody></table></div>`;
+      const custom = o.is_custom ? ' <span class="warn">⚠定制·BOM为模板, 以实际为准</span>' : '';
+      return `<div class="ordsec"><div class="ordh">${esc(o.order_no)}${o.ship_date ? ' · 发货 ' + esc(o.ship_date) : ''}${o.product_name ? ' · ' + esc(o.product_name) : ''}${o.sku ? ' · ' + esc(o.sku) : ''}${custom}</div>
+        <table><thead><tr><th>类别</th><th>部位 / 料</th><th>数量</th><th>预设尺寸(实际可能有出入)</th></tr></thead>
+        <tbody>${partRows || '<tr><td colspan="4" class="muted">无 BOM 明细</td></tr>'}</tbody></table></div>`;
     }).join('');
   } else {
     const rows = d.orders.map((o) => `<tr>
@@ -56,7 +57,7 @@ function openExportPrint(d: ShippedOrdersExport) {
     <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,"Microsoft YaHei",sans-serif;color:#222;padding:10mm}
     h1{font-size:16px;margin-bottom:4px}.sub{color:#666;font-size:12px;margin-bottom:10px}
     table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left}
-    th{background:#f5f5f5}.num{text-align:right}.code{font-family:monospace}.muted{color:#999}
+    th{background:#f5f5f5}.num{text-align:right}.code{font-family:monospace}.muted{color:#999}.warn{color:#cf1322;font-weight:600;font-size:11px}
     .ordsec{break-inside:avoid;page-break-inside:avoid;margin-bottom:8px}
     .ordh{font-weight:700;background:#f0f5ff;padding:4px 6px;border-left:3px solid #1677ff}
     @page{size:A4 portrait;margin:12mm}</style></head><body>${head}${body}</body></html>`);
