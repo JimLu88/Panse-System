@@ -180,11 +180,6 @@ def physical_cost_breakdown(o: Order) -> dict:
                              if (ratio > 0 and factory_wood > 0) else Decimal("0"))
             precap = factory_wood + estimate_part + packing
             cost = precap
-            # floor (用户 2026-06-26 选A): 定制单成本恒兜底至 实付×85%(工厂木作账单不足信), 即
-            # max(木作占比推算, 实付×85%); 仅排除小额追加/差价片段(实付<_CUSTOM_FLOOR_MIN_PAID, 成本就该是那点)。
-            if paid >= _CUSTOM_FLOOR_MIN_PAID and cost < paid * (Decimal("1") - _WOOD_EST_MAX_MARGIN):
-                cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
-                cap_mode, cap_label = "定制兜底85", "定制单工厂木作账单不足信→成本兜底至实付×85%"
         else:
             # 非定制单: 定价表准 → 用定价表补非木作(配件+物流+安装 = 定价表物理 − 木作)
             wood_est = _d(getattr(o, "wood_cost_est", None))
@@ -215,6 +210,14 @@ def physical_cost_breakdown(o: Order) -> dict:
         if paid > 0 and cost > paid:
             cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
             cap_mode, cap_label = "推演封顶85", "推演成本>实付→实付×85%封顶"
+    # 定制单 floor (用户 2026-06-26 选A): 不论有无工厂账单, 定制单成本恒兜底至 实付×85%
+    # (= max(木作推算/定制报价, 实付×85%); 工厂木作账单只含木作、定制报价也常偏低 → 至少留~15%毛利)。
+    # 仅排除小额追加/差价片段(实付<_CUSTOM_FLOOR_MIN_PAID, 成本就该是那点); cap_mode 仍 none 才 floor
+    # (推演封顶85 已把超实付的压到实付×85%, 不重复)。
+    if (_is_custom and cap_mode == "none" and paid >= _CUSTOM_FLOOR_MIN_PAID
+            and cost < paid * (Decimal("1") - _WOOD_EST_MAX_MARGIN)):
+        cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
+        cap_mode, cap_label = "定制兜底85", "定制单成本兜底至实付×85%(工厂木作账单/定制报价不足信)"
     if cost < 0:
         cost = Decimal("0")
         if cap_mode == "none":   # 加法分量算出负数(罕见, 物流/安装实际远小于预估)→ 归零, 标记便于导出按实值显示
