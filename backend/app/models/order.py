@@ -77,6 +77,9 @@ class Order(Base, TimestampMixin):
     # 安装 (migration 0090): est=定价表 install_cost×qty; actual=install_fee+upstairs_fee(已在订单上)
     est_install: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     actual_install: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 逐单配件真实成本 (migration 0094, 用户 2026-06-26): 配件(外采)真实值; 来源=配件采购单 related_order_no
+    # 汇总(能逐单的料) 或 大宗材料差异逐单建议值人工回填。非空 → physical_cost 改逐项真实计价(不估不floor)。
+    actual_parts: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

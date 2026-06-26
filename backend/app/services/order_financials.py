@@ -170,6 +170,20 @@ def physical_cost_breakdown(o: Order) -> dict:
                 "precap_total": Decimal("0"), "cap_mode": "非产品归零",
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
 
+    # 逐单真实配件 (用户 2026-06-26): actual_parts 非空 → 改逐项真实计价(木作+物流+安装+打包+真实配件),
+    # 跳过占比估算与实付×85% floor。各分项 actual 优先否则 est; 木作取工厂账单否则定价木作估。
+    _aparts = getattr(o, "actual_parts", None)
+    if _aparts is not None:
+        factory_wood = nz(o.actual_cost, getattr(o, "wood_cost_est", None))
+        estimate_part = nz(_al, _el) + nz(_ai, _ei) + _d(_aparts)   # 物流 + 安装 + 真实配件
+        precap = factory_wood + estimate_part + packing
+        cost = precap if precap > 0 else Decimal("0")
+        return {
+            "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
+            "precap_total": precap, "cap_mode": "实配件分项",
+            "cap_label": "逐单真实配件→逐项真实计价(木作+物流+安装+打包+真实配件), 不估不封顶", "final": cost,
+        }
+
     if o.actual_cost is not None:
         factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
         if _is_custom:
