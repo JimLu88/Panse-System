@@ -7,11 +7,12 @@
  * 这是「管理按钮全铺所有页面」的统一载体: 每个列表页只需 import + 换标签 + 传 tableKey,
  * 不必再各自重复 useState/FieldPresetBar/applyPreset 的样板。
  */
-import { useState, type ReactNode } from 'react';
-import { Button, Grid, Table, message } from 'antd';
+import { useState, type Key, type ReactNode } from 'react';
+import { Button, Empty, Grid, Table, message } from 'antd';
 import { FileExcelOutlined } from '@ant-design/icons';
 import type { TableProps } from 'antd';
 import FieldPresetBar, { fieldsFromColumns, applyPreset } from './FieldPresetBar';
+import { GenericTableCard } from './MobileCards';
 
 // 导出当页为 Excel (用户需求 2026-06-11: 每个页面都要有, 导出记录进 工具→导入档案→页面导出)
 async function exportToExcel(tableKey: string, cols: any[], rows: readonly any[]) {
@@ -62,6 +63,7 @@ export default function PresetTable<T extends object = any>({
   ...rest
 }: PresetTableProps<T>) {
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);
+  const [mobileLimit, setMobileLimit] = useState(40);
   const screens = Grid.useBreakpoint();
   const isMobile = screens.md === false;
   const cols = columns as any[];
@@ -102,6 +104,36 @@ export default function PresetTable<T extends object = any>({
   // 手机端: 给首列加 fixed:'left' 冻结(仅当首列有明确宽度, 避免 AntD 无宽 fixed 警告/错位)
   if (isMobile && Array.isArray(appliedCols) && appliedCols.length > 1 && appliedCols[0]?.width) {
     appliedCols = [{ ...appliedCols[0], fixed: 'left' }, ...appliedCols.slice(1)];
+  }
+
+  // 手机端 (<768px): 表格 → 通用卡片列表 (一处改, 所有 PresetTable 页全覆盖; 桌面端不变)。
+  // 复用列的 render; 标题智能挑名称列; 多字段「展开全部」; 操作列在卡底。
+  if (isMobile) {
+    const ds = (rest.dataSource ?? []) as readonly T[];
+    const rkProp = (rest as any).rowKey;
+    const rk = (row: T, i: number): Key =>
+      typeof rkProp === 'function' ? rkProp(row) : (rkProp ? (row as any)[rkProp] : i);
+    const shown = ds.slice(0, mobileLimit);
+    return (
+      <div>
+        <div style={{ marginBottom: 10 }}>{renderTitle(ds)}</div>
+        {ds.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无数据" style={{ padding: '28px 0' }} />
+        ) : (
+          <>
+            {shown.map((row, i) => (
+              <GenericTableCard key={rk(row, i)} row={row} columns={appliedCols} index={i} />
+            ))}
+            {ds.length > mobileLimit && (
+              <button onClick={() => setMobileLimit((n) => n + 40)}
+                style={{ width: '100%', padding: 10, margin: '4px 0 0', border: '1px solid #d9d9d9', borderRadius: 10, background: '#fff', color: '#1a73e8', fontWeight: 600, cursor: 'pointer' }}>
+                加载更多({ds.length - mobileLimit})
+              </button>
+            )}
+          </>
+        )}
+      </div>
+    );
   }
 
   return (

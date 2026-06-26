@@ -120,10 +120,10 @@ export function MetricCard({ title, profit, profitRate, kpis, moreRows, highligh
 }
 
 // ── 目录型: CatalogCard (媒体列表卡) ─────────────────────────────────────────
-export function CatalogCard({ image, category, title, code, brand, meta, onGallery, onEdit, renderExpand }: {
+export function CatalogCard({ image, category, title, code, brand, meta, onGallery, onEdit, renderExpand, expandLabel = 'SKU' }: {
   image?: string | null; category?: string | null; title: ReactNode; code?: string;
   brand?: string | null; meta?: string; onGallery?: () => void; onEdit?: () => void;
-  renderExpand?: () => ReactNode;
+  renderExpand?: () => ReactNode; expandLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
   const codeChip: CSSProperties = { fontFamily: 'ui-monospace,Menlo,Consolas,monospace', fontSize: 10.5, color: SUB, background: BG, padding: '1px 6px', borderRadius: 5 };
@@ -150,7 +150,7 @@ export function CatalogCard({ image, category, title, code, brand, meta, onGalle
       {renderExpand && (
         <>
           <div onClick={() => setOpen((o) => !o)} style={{ fontSize: 11, color: BLUE, padding: '0 13px 9px', cursor: 'pointer' }}>
-            {open ? '收起 ▲' : '展开 SKU ▼'}
+            {open ? '收起 ▲' : `展开 ${expandLabel} ▼`}
           </div>
           {open && <div style={{ borderTop: `1px solid ${LINE}`, background: '#fafbfc', padding: '8px 12px' }}>{renderExpand()}</div>}
         </>
@@ -195,6 +195,62 @@ export function StatusCard({ title, status, tone = 'info', fields, amount, actio
               {a.label}
             </div>
           ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── 通用表格卡片: 任意 PresetTable 自动按列生成 (覆盖所有列表页, 无需逐页定制) ────────
+function _colLabel(c: any): ReactNode {
+  return typeof c?.title === 'string' ? c.title : (c?.title ?? c?.key ?? String(c?.dataIndex ?? ''));
+}
+function _cellVal(c: any, row: any, i: number): ReactNode {
+  const di = c?.dataIndex;
+  const v = di == null ? undefined
+    : (Array.isArray(di) ? di.reduce((o: any, k: any) => (o == null ? o : o[k]), row) : row[di]);
+  const out = c?.render ? c.render(v, row, i) : v;
+  return (out === undefined || out === null || out === '') ? '—' : out;
+}
+const _TITLE_KEYS = ['name', 'order_no', 'product_name', 'title', 'sku', 'material_name',
+  'customer_name', 'platform_order_no', 'factory_order_no', 'purchase_no', 'supplier'];
+
+/** 任意表格的行 → 卡片: 标题(智能挑名称列) + 前4字段预览 + 展开全部 + 操作列。 */
+export function GenericTableCard({ row, columns, index }: { row: any; columns: any[]; index: number }) {
+  const [open, setOpen] = useState(false);
+  const isAction = (c: any) => c && (c.key === 'actions' || c.fixed === 'right'
+    || (typeof c.title === 'string' && c.title.includes('操作')));
+  const cols = columns.filter((c: any) => c && (c.dataIndex != null || c.render));
+  const actionCols = cols.filter(isAction);
+  const bodyCols = cols.filter((c: any) => !actionCols.includes(c));
+  const titleCol = bodyCols.find((c: any) => _TITLE_KEYS.includes(c.dataIndex))
+    || bodyCols.find((c: any) => c.dataIndex !== 'id') || bodyCols[0];
+  const fieldCols = bodyCols.filter((c: any) => c !== titleCol);
+  const preview = fieldCols.slice(0, 4), rest = fieldCols.slice(4);
+  const KV = ({ c }: { c: any }) => (
+    <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12, padding: '4px 0', fontSize: 12.5, borderBottom: `1px solid ${LINE}` }}>
+      <span style={{ color: SUB, flex: '0 0 auto', maxWidth: '42%' }}>{_colLabel(c)}</span>
+      <span style={{ textAlign: 'right', minWidth: 0, overflowWrap: 'anywhere', fontVariantNumeric: 'tabular-nums' }}>{_cellVal(c, row, index)}</span>
+    </div>
+  );
+  return (
+    <div style={card}>
+      <div style={{ padding: 11 }}>
+        <div style={{ fontWeight: 600, fontSize: 14.5, lineHeight: 1.35, marginBottom: 7, ...clamp2 }}>
+          {titleCol ? _cellVal(titleCol, row, index) : `#${index + 1}`}
+        </div>
+        {preview.map((c, i) => <KV key={i} c={c} />)}
+        {open && rest.map((c, i) => <KV key={`r${i}`} c={c} />)}
+        {rest.length > 0 && (
+          <button onClick={() => setOpen((o) => !o)}
+            style={{ marginTop: 6, width: '100%', background: 'none', border: 0, color: BLUE, fontSize: 12.5, fontWeight: 600, padding: 6, cursor: 'pointer' }}>
+            {open ? '收起 ▲' : `展开全部 ${rest.length} 项 ▼`}
+          </button>
+        )}
+      </div>
+      {actionCols.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, borderTop: `1px solid ${LINE}`, background: '#fafbfc', padding: '8px 11px', alignItems: 'center' }}>
+          {actionCols.map((c, i) => <span key={i}>{_cellVal(c, row, index)}</span>)}
         </div>
       )}
     </div>

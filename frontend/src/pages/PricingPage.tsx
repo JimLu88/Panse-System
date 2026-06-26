@@ -876,6 +876,29 @@ export default function PricingPage() {
             title={r.sku || r.sku_code}
             code={r.sku_code}
             meta={[(r as any).size_category, (r as any).daily_price != null ? `日常¥${(r as any).daily_price}` : null].filter(Boolean).join(' · ')}
+            expandLabel="价格/成本"
+            renderExpand={() => {
+              const pr = (k: string) => (r as any)[k];
+              const gm = pr('gross_margin_rate');
+              const ROWS: [string, any][] = [
+                ['产品编码', r.product_code], ['标价', pr('list_price')], ['日常价', pr('daily_price')],
+                ['小促', pr('small_promo')], ['中促', pr('mid_promo')], ['大促', pr('big_promo')],
+                ['毛利率', gm != null ? `${(Number(gm) * 100).toFixed(1)}%` : null],
+                ['物理成本', pr('physical_cost')], ['会计成本', pr('accounting_cost')],
+                ['木作', pr('wood_cost')], ['配件(外采)', pr('external_parts_cost')], ['打包', pr('packaging_cost')],
+                ['物流', pr('logistics_cost')], ['安装', pr('install_cost')], ['工厂成本', pr('factory_cost')],
+              ];
+              return (
+                <div>
+                  {ROWS.filter(([, v]) => v != null && v !== '').map(([k, v], i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12.5, borderBottom: '1px solid #f0f0f0' }}>
+                      <span style={{ color: '#5f6368' }}>{k}</span>
+                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{String(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              );
+            }}
           />
         )}
         desktop={
