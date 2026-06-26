@@ -652,6 +652,20 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             if (paid and paid > 0) or (received and received > 0) or (payable and payable > 0):
                 status = "signed"
                 _recognized = True
+        # 多宝贝订单纠偏 (用户实测 2026-06-26, 订单 5115237121779012546): 一单多商品时整单状态在
+        # _parse 阶段只取了该主订单号【首个子订单行】的「订单状态」(后续行只进 lines)。若首行恰是被
+        # 退款/关闭的子单 → 整单被误标 cancelled/aftersales, 连带把另一件【真实成交】产品一起漏出销售口径。
+        # 有真实收款证据 (店铺实收>0, 或 已付款单的部分退款) 且非全额退款 → 纠正为已成交 (signed)。
+        # ⚠ 仅限多商品单 (len(lines)>1): 单商品关闭单不动 (实测那批多为拍下未付款·实收0, 本就该被排除)。
+        if status in ("cancelled", "aftersales") and len(lines) > 1:
+            _paid_g = paid or Decimal("0")
+            _refund_g = refund or Decimal("0")
+            _recv_g = received or Decimal("0")
+            _is_full_refund = _paid_g > 0 and _refund_g >= _paid_g * Decimal("0.99")
+            _has_real_money = _recv_g > 0 or (_refund_g > 0 and _paid_g > 0)
+            if _has_real_money and not _is_full_refund:
+                status = "signed"
+                _recognized = True
         # 状态无法识别 且 无收款凭据 → 拦截不入库, 报异常待人工 (用户拍板 2026-06-18:
         # 不再默默塞成"待付款"被全系统漏算; 补好状态映射后重导即可入库)。
         if not _recognized:
