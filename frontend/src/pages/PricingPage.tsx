@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState, type Key, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from 'react';
 import {
   Button,
   Card,
   Dropdown,
   Form,
+  Grid,
   Image,
   Input,
   InputNumber,
@@ -463,6 +464,82 @@ function CoefficientLegend({ coeffs }: { coeffs: CoefficientStat[] }) {
   );
 }
 
+// ── 手机端: 定价按【产品】聚合成一张卡, 两级展开 (用户 2026-06-27) ──
+// 一个产品一张卡(不再每个 SKU 一张); 第一步点卡展开列出该产品所有 SKU; 第二步点某个 SKU 展开它的价格/成本明细。
+interface ProductGroup { product_code: string; product_name: string; image: string | null; skus: PricingSku[] }
+
+function _skuVariant(sku: PricingSku, productName: string): string {
+  const full = (sku.sku || '').trim();
+  const stripped = productName && full.startsWith(productName)
+    ? full.slice(productName.length).replace(/^[\s\-·_]+/, '') : full;
+  return stripped || (sku as any).size_category || sku.sku_code || full;
+}
+
+// 第二级: 单个 SKU 行 — 点开展开它的价格/成本全明细
+function SkuPriceRow({ sku, productName, onEdit }: { sku: PricingSku; productName: string; onEdit: (s: PricingSku) => void }) {
+  const [open, setOpen] = useState(false);
+  const pr = (k: string) => (sku as any)[k];
+  const m = (v: any) => (v == null || v === '' ? null : `¥${Math.round(Number(v)).toLocaleString()}`);
+  const gm = pr('gross_margin_rate');
+  const daily = pr('daily_price');
+  const ROWS: [string, string | null][] = [
+    ['标价', m(pr('list_price'))], ['日常价', m(daily)],
+    ['小促', m(pr('small_promo'))], ['中促', m(pr('mid_promo'))], ['大促', m(pr('big_promo'))],
+    ['毛利率', gm != null ? `${(Number(gm) * 100).toFixed(1)}%` : null],
+    ['物理成本', m(pr('physical_cost'))], ['会计成本', m(pr('accounting_cost'))],
+    ['木作', m(pr('wood_cost'))], ['配件(外采)', m(pr('external_parts_cost'))], ['打包', m(pr('packaging_cost'))],
+    ['物流', m(pr('logistics_cost'))], ['安装', m(pr('install_cost'))], ['工厂成本', m(pr('factory_cost'))],
+  ];
+  return (
+    <div style={{ borderBottom: '1px solid #eef0f2' }}>
+      <div onClick={() => setOpen((o) => !o)}
+        style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 2px', cursor: 'pointer' }}>
+        <span style={{ fontWeight: 600, fontSize: 13 }}>{_skuVariant(sku, productName)}</span>
+        {(sku as any).size_category && <span style={{ fontSize: 11, color: '#80868b' }}>{(sku as any).size_category}</span>}
+        <span style={{ marginLeft: 'auto', fontSize: 13, fontWeight: 600, fontVariantNumeric: 'tabular-nums' }}>
+          {daily != null ? `日常¥${Math.round(Number(daily)).toLocaleString()}` : '—'}
+        </span>
+        <span style={{ color: '#1a73e8', fontSize: 11, whiteSpace: 'nowrap' }}>{open ? '收起 ▲' : '价格/成本 ▼'}</span>
+      </div>
+      {open && (
+        <div style={{ padding: '0 2px 10px' }}>
+          {ROWS.filter(([, v]) => v != null).map(([k, v], i) => (
+            <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12.5, borderBottom: '1px solid #f4f5f6' }}>
+              <span style={{ color: '#5f6368' }}>{k}</span>
+              <span style={{ fontVariantNumeric: 'tabular-nums' }}>{v}</span>
+            </div>
+          ))}
+          <Button size="small" block icon={<EditOutlined />} style={{ marginTop: 8 }} onClick={() => onEdit(sku)}>编辑此 SKU</Button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// 第一级: 产品卡 — 标题=产品名, 展开列出该产品全部 SKU
+function ProductPricingCard({ group, onEdit }: { group: ProductGroup; onEdit: (s: PricingSku) => void }) {
+  const skus = group.skus;
+  const dailies = skus.map((s) => (s as any).daily_price).filter((v) => v != null).map(Number);
+  const lo = dailies.length ? Math.min(...dailies) : null;
+  const hi = dailies.length ? Math.max(...dailies) : null;
+  const priceMeta = lo == null || hi == null ? '' : lo === hi
+    ? `日常¥${Math.round(lo).toLocaleString()}` : `日常¥${Math.round(lo).toLocaleString()}~${Math.round(hi).toLocaleString()}`;
+  const meta = [`${skus.length} 款`, priceMeta].filter(Boolean).join(' · ');
+  return (
+    <CatalogCard
+      image={group.image}
+      category={group.product_name}
+      title={group.product_name}
+      code={group.product_code}
+      meta={meta}
+      expandLabel={`${skus.length} 个 SKU`}
+      renderExpand={() => (
+        <div>{skus.map((s) => <SkuPriceRow key={s.id} sku={s} productName={group.product_name} onEdit={onEdit} />)}</div>
+      )}
+    />
+  );
+}
+
 export default function PricingPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
@@ -479,6 +556,8 @@ export default function PricingPage() {
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);   // null = 全部字段
   const [form] = Form.useForm();
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;   // <768px: 卡片按产品聚合, 一次加载全量便于分组(桌面仍分页)
 
   const { data: categories = [] } = useQuery({ queryKey: ['product-categories'], queryFn: listProductCategories, staleTime: 5 * 60 * 1000 });
   const { data: formulaRules = [] } = useQuery({ queryKey: ['pricing-formula-rules-min'], queryFn: listFormulaRules, staleTime: 60 * 1000 });
@@ -496,9 +575,10 @@ export default function PricingPage() {
   };
 
   const { data, isFetching } = useQuery({
-    queryKey: ['pricing-skus', q, sizeCategory, category, page, pageSize],
+    queryKey: ['pricing-skus', q, sizeCategory, category, page, pageSize, isMobile],
     queryFn: () =>
-      listPricingSkus({ q: q || undefined, size_category: sizeCategory, category, limit: pageSize, offset: (page - 1) * pageSize }),
+      listPricingSkus({ q: q || undefined, size_category: sizeCategory, category,
+        limit: isMobile ? 1000 : pageSize, offset: isMobile ? 0 : (page - 1) * pageSize }),
     placeholderData: keepPreviousData,
   });
 
@@ -570,6 +650,20 @@ export default function PricingPage() {
   const mkResize = (key: string) => () => ({ width: colW[key], onResize: (w: number) => setColW((p) => ({ ...p, [key]: w })) });
 
   const items = data?.items ?? [];
+
+  // 手机端: 把扁平的 SKU 列表按产品(product_code)聚合 → 一个产品一张卡 (同产品多尺寸 SKU 共享 product_code)
+  const productGroups = useMemo<ProductGroup[]>(() => {
+    const map = new Map<string, ProductGroup>();
+    for (const r of items) {
+      const pc = r.product_code || r.sku_code || '—';
+      let g = map.get(pc);
+      if (!g) { g = { product_code: pc, product_name: (r as any).product_name || pc, image: null, skus: [] }; map.set(pc, g); }
+      g.skus.push(r);
+      if (!g.image) g.image = (r as any).gallery_image_url || (r as any).image_url || null;
+      if ((!g.product_name || g.product_name === pc) && (r as any).product_name) g.product_name = (r as any).product_name;
+    }
+    return Array.from(map.values());
+  }, [items]);
 
   const saveField = (id: number, field: string, value: number | null) => updateMut.mutate({ id, patch: { [field]: value } });
   const saveCost = (row: PricingSku, field: string, value: number | string | null) => costMut.mutate({ skuCode: row.sku_code, patch: { [field]: value } });
@@ -865,42 +959,12 @@ export default function PricingPage() {
       )}
 
       {viewMode === 'curated' && (
-      <ResponsiveTable<PricingSku>
-        data={items}
-        rowKey={(r) => r.id}
+      <ResponsiveTable<ProductGroup>
+        data={productGroups}
+        rowKey={(g) => g.product_code}
         loading={isFetching}
         emptyText="暂无定价"
-        renderCard={(r) => (
-          <CatalogCard
-            image={(r as any).gallery_image_url || (r as any).image_url}
-            title={r.sku || r.sku_code}
-            code={r.sku_code}
-            meta={[(r as any).size_category, (r as any).daily_price != null ? `日常¥${(r as any).daily_price}` : null].filter(Boolean).join(' · ')}
-            expandLabel="价格/成本"
-            renderExpand={() => {
-              const pr = (k: string) => (r as any)[k];
-              const gm = pr('gross_margin_rate');
-              const ROWS: [string, any][] = [
-                ['产品编码', r.product_code], ['标价', pr('list_price')], ['日常价', pr('daily_price')],
-                ['小促', pr('small_promo')], ['中促', pr('mid_promo')], ['大促', pr('big_promo')],
-                ['毛利率', gm != null ? `${(Number(gm) * 100).toFixed(1)}%` : null],
-                ['物理成本', pr('physical_cost')], ['会计成本', pr('accounting_cost')],
-                ['木作', pr('wood_cost')], ['配件(外采)', pr('external_parts_cost')], ['打包', pr('packaging_cost')],
-                ['物流', pr('logistics_cost')], ['安装', pr('install_cost')], ['工厂成本', pr('factory_cost')],
-              ];
-              return (
-                <div>
-                  {ROWS.filter(([, v]) => v != null && v !== '').map(([k, v], i) => (
-                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', fontSize: 12.5, borderBottom: '1px solid #f0f0f0' }}>
-                      <span style={{ color: '#5f6368' }}>{k}</span>
-                      <span style={{ fontVariantNumeric: 'tabular-nums' }}>{String(v)}</span>
-                    </div>
-                  ))}
-                </div>
-              );
-            }}
-          />
-        )}
+        renderCard={(g) => <ProductPricingCard group={g} onEdit={setEditorRow} />}
         desktop={
       <Table<PricingSku>
         size="small"

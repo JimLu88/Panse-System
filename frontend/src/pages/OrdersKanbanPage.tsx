@@ -6,7 +6,7 @@
  * 配件视图: 按配件汇总的全局采购清单 (原「配件备料」并入此处, 不再单开页面)。
  */
 import { useState, type ReactNode } from 'react';
-import { Alert, Button, Card, Col, Empty, Input, Row, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Dropdown, Empty, Grid, Input, Row, Segmented, Space, Tag, Tooltip, Typography, message } from 'antd';
 import { QuestionCircleOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
@@ -129,6 +129,9 @@ function OrdersBoard() {
   const [q, setQ] = useState('');   // 按 订单号 / 产品名 / 客户名 过滤(用户要求: 订单视图加搜索)
   // 「已确定」只在本次会话内提示(拖完即时反馈), 不读后端 kanban_confirmed → 下次登录不再显示。
   const [justConfirmed, setJustConfirmed] = useState<Set<number>>(new Set());
+  const screens = Grid.useBreakpoint();
+  const isMobile = screens.md === false;   // <768px: 4列看板会裂成一字一行 → 改「状态分段 + 整宽卡片竖列」
+  const [mobStatus, setMobStatus] = useState('paid');   // 手机端当前查看的状态列(默认已付款)
 
   const { data: orders = [], isLoading } = useQuery({
     queryKey: ['orders-kanban'],
@@ -202,6 +205,63 @@ function OrdersBoard() {
     if (!o || normStatus(o.status) === over) return;   // 没移动 / 同列 → 不动
     transMut.mutate({ id: o.id, status: over });
   };
+
+  // ── 手机端 (<768px): 4列看板会被压成一字一行 → 改「状态分段 + 整宽卡片竖列」, 换状态用卡上「移到…」下拉 ──
+  if (isMobile) {
+    const cur = COLUMNS.find((c) => c.key === mobStatus) || COLUMNS[1];
+    const list = grouped[mobStatus] || [];
+    return (
+      <Space direction="vertical" style={{ width: '100%' }} size={12}>
+        <Input.Search allowClear placeholder="搜索 订单号 / 产品名 / 客户名" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Segmented block value={mobStatus} onChange={(v) => setMobStatus(v as string)}
+          options={COLUMNS.map((c) => ({ label: `${c.label} ${grouped[c.key]?.length ?? 0}`, value: c.key }))} />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          点卡片右下「移到…」改状态(可任意方向)。已完结不展示: 已签收 {hidden.signed} · 已关闭 {hidden.cancelled}{hidden.other ? ` · 其他 ${hidden.other}` : ''}。
+        </Typography.Text>
+        {list.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="无" style={{ padding: '28px 0' }} />
+        ) : (
+          list.map((o) => {
+            const moveItems = COLUMNS.filter((c) => c.key !== mobStatus).map((c) => ({
+              key: c.key, label: `移到「${c.label}」`, onClick: () => transMut.mutate({ id: o.id, status: c.key }),
+            }));
+            return (
+              <Card key={o.id} size="small" styles={{ body: { padding: 11 } }}
+                style={{ borderColor: justConfirmed.has(o.id) ? '#52c41a' : (o.signoff_questioned ? '#faad14' : undefined) }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <strong style={{ fontSize: 13 }}>{o.order_no}</strong>
+                  {justConfirmed.has(o.id) && <Tag color="success" style={{ marginInlineEnd: 0 }}>已确定</Tag>}
+                  <Tag color={cur.color} style={{ marginInlineEnd: 0, marginLeft: 'auto' }}>{cur.label}</Tag>
+                </div>
+                <div style={{ fontSize: 12.5, color: '#5f6368', marginTop: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {(o.customer_name || '-')} · {(o.product_name || '-')} ×{o.qty}
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                  <span style={{ fontSize: 16, fontWeight: 800, fontVariantNumeric: 'tabular-nums' }}>¥{o.paid_amount ?? '0'}</span>
+                  {o.signoff_questioned && <Tag color="warning" icon={<QuestionCircleOutlined />} style={{ marginInlineEnd: 0 }}>签收疑问</Tag>}
+                  <span style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center' }}>
+                    <Button size="small" onClick={() => setAccessoryFor({ id: o.id, order_no: o.order_no })}>配件</Button>
+                    {mobStatus !== 'pending_payment' && <AccessoryTag acc={accSummary[o.id]} />}
+                    <Dropdown menu={{ items: moveItems }} trigger={['click']}>
+                      <Button size="small" type="primary" ghost>移到 ▾</Button>
+                    </Dropdown>
+                  </span>
+                </div>
+              </Card>
+            );
+          })
+        )}
+        <DispositionModal
+          req={dispReq} loading={transMut.isPending} onCancel={() => setDispReq(null)}
+          onSubmit={(d) => dispReq && transMut.mutate({ id: dispReq.orderId, status: dispReq.status, opts: { disposition: d.disposition, plannedShipDate: d.plannedShipDate } })}
+        />
+        <AccessoryChecklistDrawer
+          orderId={accessoryFor?.id ?? null} orderNo={accessoryFor?.order_no}
+          open={accessoryFor !== null} onClose={() => setAccessoryFor(null)}
+        />
+      </Space>
+    );
+  }
 
   return (
     <DndContext
