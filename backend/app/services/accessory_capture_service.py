@@ -90,6 +90,7 @@ def match_material_code(db: Session, *, apply: bool = False) -> dict:
     只填空、幂等。
     """
     from app.models.material import Material
+    from app.models.supplier import Supplier
     from app.services import material_category_service as mcs
     mats = db.execute(select(Material)).scalars().all()
     by_name = [((m.name or "").strip(), m.code) for m in mats if m.name and m.code]
@@ -98,6 +99,14 @@ def match_material_code(db: Session, *, apply: bool = False) -> dict:
     for m in mats:
         if m.category and (m.code or "").upper().startswith("AC") and m.category not in cat_rep:
             cat_rep[m.category] = m.code
+    # 原料类供应商(木材/木作/多层板)的采购是原料不是外采配件 → 不走类别关键词回退,
+    # 防"储物床真皮软包"这种产品描述名误命中软包/五金。映射 供应商关键字 → 类型。
+    _RAW_TYPES = {"woodwork", "beech_wood", "plywood"}
+    sup_type: list[tuple[str, str]] = []
+    for s in db.execute(select(Supplier)).scalars().all():
+        for kw in list(s.alipay_counterparty_keywords or []) + [s.name]:
+            if kw and len(kw) >= 2:
+                sup_type.append((kw, s.supplier_type))
     rows = db.execute(
         select(PartPurchase).where(
             or_(PartPurchase.material_code.is_(None), PartPurchase.material_code == ""),
@@ -115,9 +124,12 @@ def match_material_code(db: Session, *, apply: bool = False) -> dict:
                 code, how = mcode, "名称"
                 break
         if not code:
-            cat = mcs._ac_category(name)   # 类别关键词 → 分类
-            if cat and cat in cat_rep:
-                code, how = cat_rep[cat], f"类别({cat})"
+            sup = p.supplier or ""
+            stype = next((t for k, t in sup_type if k in sup), None)
+            if stype not in _RAW_TYPES:   # 原料类供应商跳过类别回退
+                cat = mcs._ac_category(name)   # 类别关键词 → 分类
+                if cat and cat in cat_rep:
+                    code, how = cat_rep[cat], f"类别({cat})"
         if code:
             if apply:
                 p.material_code = code
