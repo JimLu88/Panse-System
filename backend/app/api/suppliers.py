@@ -172,6 +172,54 @@ def list_suppliers(
     return [_supplier_out(s, latest.get(s.id)) for s in rows]
 
 
+class SupplierScoreHistoryOut(BaseModel):
+    year: int
+    month: int
+    period: str
+    score: Optional[float] = None
+    rank: Optional[int] = None
+    on_time_rate: Optional[float] = None
+    return_rate: Optional[float] = None
+    price_variance_pct: Optional[float] = None
+    total_orders: int = 0
+    total_amount: Optional[float] = None
+    detail: dict = {}
+
+
+@router.get("/suppliers/{supplier_id}/scores", response_model=list[SupplierScoreHistoryOut])
+def supplier_score_history(
+    supplier_id: int,
+    limit: int = Query(12, ge=1, le=36),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """某供应商最近 N 期评分(新→旧) + 各维度明细 — 供供应商详情页评分卡 + 趋势。"""
+    from app.services import supplier_score_service
+    rows = supplier_score_service.history_for_supplier(db, supplier_id, limit=limit)
+    f = lambda v: float(v) if v is not None else None  # noqa: E731
+    return [SupplierScoreHistoryOut(
+        year=r.year, month=r.month, period=f"{r.year}-{r.month:02d}",
+        score=f(r.score), rank=r.rank,
+        on_time_rate=f(r.on_time_rate), return_rate=f(r.return_rate),
+        price_variance_pct=f(r.price_variance_pct),
+        total_orders=r.total_orders, total_amount=f(r.total_amount),
+        detail=r.detail_json or {},
+    ) for r in rows]
+
+
+@router.post("/suppliers/recompute-scores")
+def recompute_supplier_scores(
+    year: int = Query(...), month: int = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """手动重算某月全部供应商评分(默认调度器每月1号自动跑, 这里给「立即重算」按钮用)。"""
+    from app.services import supplier_score_service
+    rows = supplier_score_service.compute_for_month(db, year, month)
+    db.commit()
+    return {"computed": len(rows), "year": year, "month": month}
+
+
 @router.post("/suppliers", response_model=SupplierOut, status_code=201)
 def create_supplier(
     payload: SupplierIn,

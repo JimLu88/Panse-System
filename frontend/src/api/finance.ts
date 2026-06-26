@@ -341,6 +341,36 @@ export interface FolderListing {
 export const listSuppliers = (activeOnly = true) =>
   api.get<Supplier[]>('/api/suppliers', { params: { active_only: activeOnly } }).then((r) => r.data);
 
+// 供应商评分(6维全自动) — 详情页评分卡 + 趋势
+export interface SupplierScoreRow {
+  year: number;
+  month: number;
+  period: string;
+  score: number | null;
+  rank: number | null;
+  on_time_rate: number | null;
+  return_rate: number | null;
+  price_variance_pct: number | null;
+  total_orders: number;
+  total_amount: number | null;
+  detail: {
+    on_time?: { rate: number | null; assessable?: number; basis?: string };
+    return?: { rate: number | null; disputed?: number; notes?: number; basis?: string };
+    price_variance_pct?: number | null;
+    price_competitiveness?: { score: number | null; basis?: string };
+    recon_consistency?: { matched_rate: number | null; basis?: string };
+    scale?: { total_amount: number; share_pct: number; single_source_materials: string[]; single_source_count: number };
+    dims_real?: string[];
+    weights_used?: Record<string, number>;
+  };
+}
+export const getSupplierScores = (id: number, limit = 12) =>
+  api.get<SupplierScoreRow[]>(`/api/suppliers/${id}/scores`, { params: { limit } }).then((r) => r.data);
+export const recomputeSupplierScores = (year: number, month: number) =>
+  api
+    .post<{ computed: number; year: number; month: number }>('/api/suppliers/recompute-scores', null, { params: { year, month } })
+    .then((r) => r.data);
+
 // #3: 从支付宝流水挖候选 + 批量建供应商
 export interface AlipaySupplierCandidate {
   counterparty: string;

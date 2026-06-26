@@ -21,6 +21,7 @@ import {
   List,
   Modal,
   Popconfirm,
+  Progress,
   Row,
   Segmented,
   Select,
@@ -68,6 +69,9 @@ import {
   listSuppliers,
   getAlipaySupplierCandidates,
   getPurchaseSupplierCandidates,
+  getSupplierScores,
+  recomputeSupplierScores,
+  type SupplierScoreRow,
   autoCreateSuppliers,
   patchLineMatch,
   patchSupplier,
@@ -379,6 +383,105 @@ function SupplierListPanel({
 
 // ----------------------------- 主面板 -------------------------------- //
 
+// ----------------------------- 供应商评分卡 (用户 2026-06-27: 评分集成进供应商页, 6维全自动) ----- //
+
+function _dimColor(v: number) {
+  return v >= 0.8 ? '#52c41a' : v >= 0.6 ? '#faad14' : '#ff4d4f';
+}
+
+function SupplierScoreCard({ supplierId }: { supplierId: number }) {
+  const qc = useQueryClient();
+  const { data: history } = useQuery({
+    queryKey: ['supplier-scores', supplierId],
+    queryFn: () => getSupplierScores(supplierId, 12),
+  });
+  const recomputeMut = useMutation({
+    mutationFn: () => {
+      const last = dayjs().subtract(1, 'month');
+      return recomputeSupplierScores(last.year(), last.month() + 1);
+    },
+    onSuccess: (r) => {
+      message.success(`已重算 ${r.computed} 家供应商评分 (${r.year}-${String(r.month).padStart(2, '0')})`);
+      qc.invalidateQueries({ queryKey: ['supplier-scores'] });
+      qc.invalidateQueries({ queryKey: ['suppliers'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '重算失败'),
+  });
+  const latest: SupplierScoreRow | undefined = history?.[0];
+  const scoreColor = (s: number | null | undefined) =>
+    s == null ? '#999' : s >= 80 ? '#52c41a' : s >= 60 ? '#faad14' : '#ff4d4f';
+
+  const dims = latest ? [
+    { label: '按时率', sub: latest.detail.on_time?.rate ?? null,
+      raw: latest.detail.on_time?.rate != null ? `${(latest.detail.on_time.rate * 100).toFixed(0)}%` : '待接', basis: latest.detail.on_time?.basis },
+    { label: '问题率(退/争议)', sub: latest.detail.return?.rate != null ? 1 - latest.detail.return.rate : null,
+      raw: latest.detail.return?.rate != null ? `${(latest.detail.return.rate * 100).toFixed(0)}%` : '待接', basis: latest.detail.return?.basis },
+    { label: '价格竞争力', sub: latest.detail.price_competitiveness?.score ?? null,
+      raw: latest.detail.price_competitiveness?.score != null ? `${(latest.detail.price_competitiveness.score * 100).toFixed(0)}` : '无同料', basis: latest.detail.price_competitiveness?.basis },
+    { label: '对账一致性', sub: latest.detail.recon_consistency?.matched_rate ?? null,
+      raw: latest.detail.recon_consistency?.matched_rate != null ? `${(latest.detail.recon_consistency.matched_rate * 100).toFixed(0)}%` : '—', basis: latest.detail.recon_consistency?.basis },
+    { label: '价格波动', sub: latest.detail.price_variance_pct != null ? Math.max(0, 1 - Math.min(Math.abs(latest.detail.price_variance_pct) / 50, 1)) : null,
+      raw: latest.detail.price_variance_pct != null ? `${latest.detail.price_variance_pct > 0 ? '+' : ''}${latest.detail.price_variance_pct.toFixed(0)}%` : '无环比', basis: '单价环比波动(越小越稳)' },
+  ] : [];
+  const scale = latest?.detail.scale;
+  const trend = (history ?? []).slice(0, 6).reverse();
+
+  return (
+    <Card
+      size="small"
+      style={{ marginBottom: 12, background: '#fafcff' }}
+      title={<Space>⭐ 供应商评分{latest && <Tag>{latest.period}</Tag>}{latest?.rank != null && <Tag color="blue">排名 #{latest.rank}</Tag>}</Space>}
+      extra={<Button size="small" loading={recomputeMut.isPending} onClick={() => recomputeMut.mutate()}>重算上月</Button>}
+    >
+      {!latest ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无评分 — 点「重算上月」按现有采购/送货数据自动生成" style={{ padding: '12px 0' }} />
+      ) : (
+        <Row gutter={16} align="middle">
+          <Col flex="116px" style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: 40, fontWeight: 800, lineHeight: 1.1, color: scoreColor(latest.score) }}>
+              {latest.score != null ? latest.score.toFixed(0) : '—'}
+            </div>
+            <div style={{ fontSize: 11, color: '#999' }}>综合分 · {latest.detail.dims_real?.length ?? 0} 维有数据</div>
+            {trend.length > 1 && (
+              <div style={{ fontSize: 10, color: '#bbb', marginTop: 4 }}>
+                趋势 {trend.map((t) => (t.score != null ? t.score.toFixed(0) : '–')).join(' › ')}
+              </div>
+            )}
+          </Col>
+          <Col flex="auto" style={{ minWidth: 240 }}>
+            {dims.map((d, i) => (
+              <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                <span style={{ fontSize: 12, color: '#5f6368', flex: '0 0 104px' }}>{d.label}</span>
+                <Progress
+                  percent={d.sub != null ? Math.round(d.sub * 100) : 0}
+                  showInfo={false} size="small"
+                  strokeColor={d.sub != null ? _dimColor(d.sub) : '#eee'}
+                  style={{ flex: 1, margin: 0 }}
+                />
+                <Tooltip title={d.basis}>
+                  <span style={{ textAlign: 'right', fontSize: 12, fontWeight: 600, flex: '0 0 62px', color: d.sub == null ? '#bbb' : '#333' }}>{d.raw}</span>
+                </Tooltip>
+              </div>
+            ))}
+          </Col>
+          <Col flex="172px">
+            <div style={{ fontSize: 11, color: '#999' }}>采购规模 / 依赖度</div>
+            <div style={{ fontSize: 13, fontWeight: 600 }}>
+              ¥{scale ? Math.round(scale.total_amount).toLocaleString() : 0}
+              <span style={{ fontSize: 11, color: '#999', fontWeight: 400 }}> · 占 {scale?.share_pct.toFixed(1) ?? 0}%</span>
+            </div>
+            {!!scale?.single_source_count && (
+              <Tooltip title={`单一来源料(只此一家供应): ${scale.single_source_materials.join('、')}`}>
+                <Tag color="red" style={{ marginTop: 6 }}>⚠ 单一来源 {scale.single_source_count} 种料</Tag>
+              </Tooltip>
+            )}
+          </Col>
+        </Row>
+      )}
+    </Card>
+  );
+}
+
 function SupplierDetailPanel({
   supplier,
   period,
@@ -439,6 +542,8 @@ function SupplierDetailPanel({
         </Space>
       }
     >
+      <SupplierScoreCard supplierId={supplier.id} />
+
       <Row gutter={12} style={{ marginBottom: 16 }}>
         <Col xs={12} sm={8} md={4}>
           <Statistic title="单据数" value={stats.count} />

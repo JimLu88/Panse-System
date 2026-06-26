@@ -1,153 +1,274 @@
-"""供应商月度评分卡 (Phase 8, Tier 1 #5, 借鉴 Tesla 供应商管理).
+"""供应商月度评分卡 — 6 维全自动 (用户 2026-06-27: 全部从现有数据算, 不手填才更准)。
 
-每月 1 号 09:00 调度器跑一次, 算上月数据 → 写 SupplierScore.
+每月 1 号 09:00 调度器跑一次, 算上月数据 → 写 SupplierScore (新维度存 detail_json, 免迁移)。
 
-评分项:
-    on_time_rate         按时送达 = 1 - (晚到 > 3 天数 / 总单数)
-    return_rate          退货率   = AfterSales 涉及该供应商比例
-    price_variance       单价波动 vs 上月 (-100 ~ +100)
-    score                综合分:
-                         on_time × 0.5 + (1 - return_rate) × 0.3 + price_stability × 0.2
-                         × 100
+评分维度 (子分 0-1, 加权 ×100):
+    on_time          按时率   —— 采购到货(purchase_date)≤ 关联订单发货日(ship_date) 的比例。
+                                  ⚠真要准得记「应到货日」, 现以"赶在发货前到"为代理。
+    quality(退货/问题) 退货率   —— 争议(disputed)送货单占比 (真正"供应商缺陷退货"系统无干净关联, 先以争议代理)。
+    price_competitiveness 价格竞争力 —— 这家同料单价 vs 全体均价(同行对标), 越便宜越高 (按金额加权)。
+    recon_consistency 对账一致性 —— 采购/送货能对上系统订单的比例(可追溯到订单 = 账实), 按金额加权。
+    price_stability   价格稳定 —— 单价环比波动越小越高。
+采购规模/依赖度 (采购额/占比/单一来源) 作【风险上下文】展示, 不计入质量分。
 
-数据来自:
-    - DeliveryNote (送达 vs 期望)
-    - PartPurchase (采购单价)
-    - AfterSales (退货 — 这块挂粗略关联, 后续可细)
+综合分 = Σ(权重 × 可得子分) / Σ(可得权重) × 100 (缺数据的维度不拖分, 只用算得出的)。
+数据: PartPurchase(supplier 名匹配) + DeliveryNote(supplier_id) + Order(ship_date/est_parts)。
 """
 from __future__ import annotations
 
 import logging
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.order import PartPurchase
-from app.models.supplier import Supplier
+from app.models.order import Order, PartPurchase
+from app.models.supplier import DeliveryNote, DeliveryNoteLine, Supplier
 from app.models.supplier_score import SupplierScore
 
 _logger = logging.getLogger("panse.supplier_score")
 
+# 质量分权重 (采购规模/依赖度不计入分, 作风险上下文)
+_WEIGHTS = {
+    "on_time": Decimal("0.25"),
+    "quality": Decimal("0.20"),               # = 1 - 退货率
+    "price_competitiveness": Decimal("0.25"),
+    "recon_consistency": Decimal("0.20"),
+    "price_stability": Decimal("0.10"),
+}
+
+# 非配件采购(代扣/理财/服务费…)排除关键词 — 与 parts_recon 一致
+_NON_PART_KW = ("代扣", "代付", "资金扣回", "消费券", "理财", "申购",
+                "服务费", "手续费", "余额宝", "转入", "转出", "单次转", "转账")
+
+
+def _d(v) -> Decimal:
+    return Decimal(str(v)) if v is not None else Decimal("0")
+
+
+def _month_bounds(year: int, month: int) -> tuple[date, date]:
+    start = date(year, month, 1)
+    end = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(days=1)
+    return start, end
+
+
+def _is_part(p: PartPurchase) -> bool:
+    name = p.material_name or ""
+    if any(k in name for k in _NON_PART_KW):
+        return False
+    if p.supplier and "淘天" in p.supplier:
+        return False
+    return True
+
+
+def _mat_key(p: PartPurchase) -> Optional[str]:
+    """同料对标的键: 优先料号, 否则物料名去空白。"""
+    if p.material_code:
+        return p.material_code.strip()
+    if p.material_name:
+        return "".join(p.material_name.split())
+    return None
+
+
+def _avg_unit_price(purchases: list) -> Decimal:
+    tq = ta = Decimal("0")
+    for p in purchases:
+        qty = _d(p.qty)
+        if p.unit_price is not None and qty > 0:
+            tq += qty
+            ta += qty * _d(p.unit_price)
+        elif p.amount is not None and qty > 0:
+            tq += qty
+            ta += _d(p.amount)
+    return (ta / tq) if tq > 0 else Decimal("0")
+
+
+def _purch_amount(p: PartPurchase) -> Decimal:
+    return _d(p.total_amount if p.total_amount is not None else p.amount)
+
 
 def compute_for_month(db: Session, year: int, month: int) -> list[SupplierScore]:
-    """算指定月所有供应商的评分."""
-    start = date(year, month, 1)
-    if month == 12:
-        end = date(year + 1, 1, 1) - timedelta(days=1)
-    else:
-        end = date(year, month + 1, 1) - timedelta(days=1)
+    """算指定月所有活跃供应商的 6 维评分 (全自动)。"""
+    start, end = _month_bounds(year, month)
     prev_year, prev_month = (year - 1, 12) if month == 1 else (year, month - 1)
-    prev_start = date(prev_year, prev_month, 1)
-    prev_end = start - timedelta(days=1)
+    prev_start, prev_end = _month_bounds(prev_year, prev_month)
 
-    # 拉所有 supplier
-    suppliers = db.execute(select(Supplier).where(Supplier.is_active == True)).scalars().all()  # noqa
+    # ── 当月全体配件采购 (对标/规模/单一来源 用) ──
+    all_purch = [p for p in db.execute(
+        select(PartPurchase).where(
+            PartPurchase.purchase_date >= start, PartPurchase.purchase_date <= end)
+    ).scalars().all() if _is_part(p)]
+    by_supplier: dict[str, list] = defaultdict(list)
+    for p in all_purch:
+        if p.supplier:
+            by_supplier[p.supplier].append(p)
+    # 同料全体均价(对标基准) + 该料的供货商集合(单一来源)
+    mat_all: dict[str, list] = defaultdict(list)
+    mat_suppliers: dict[str, set] = defaultdict(set)
+    for p in all_purch:
+        k = _mat_key(p)
+        if k:
+            mat_all[k].append(p)
+            if p.supplier:
+                mat_suppliers[k].add(p.supplier)
+    peer_avg = {k: _avg_unit_price(ps) for k, ps in mat_all.items()}
+    grand_total = sum((_purch_amount(p) for p in all_purch), Decimal("0"))
+
+    # 关联订单 → (发货日, 配件标准估值) 查表
+    onos = {(p.related_order_no or "").strip() for p in all_purch if p.related_order_no}
+    order_info: dict[str, tuple] = {}
+    onos = {x for x in onos if x}
+    if onos:
+        for o in db.execute(select(Order).where(Order.order_no.in_(list(onos)))).scalars().all():
+            order_info[o.order_no] = (o.ship_date, o.est_parts)
+
+    suppliers = db.execute(select(Supplier).where(Supplier.is_active == True)).scalars().all()  # noqa: E712
     out: list[SupplierScore] = []
     for sup in suppliers:
-        # 采购单 (这个月)
-        purchases = db.execute(
+        purchases = by_supplier.get(sup.name, [])
+        prev_purchases = [p for p in db.execute(
             select(PartPurchase).where(
                 PartPurchase.supplier == sup.name,
-                PartPurchase.purchase_date >= start,
-                PartPurchase.purchase_date <= end,
-            )
+                PartPurchase.purchase_date >= prev_start, PartPurchase.purchase_date <= prev_end)
+        ).scalars().all() if _is_part(p)]
+        notes = db.execute(
+            select(DeliveryNote).where(
+                DeliveryNote.supplier_id == sup.id,
+                DeliveryNote.delivery_date >= start, DeliveryNote.delivery_date <= end)
         ).scalars().all()
-        prev_purchases = db.execute(
-            select(PartPurchase).where(
-                PartPurchase.supplier == sup.name,
-                PartPurchase.purchase_date >= prev_start,
-                PartPurchase.purchase_date <= prev_end,
-            )
-        ).scalars().all()
-
-        total = len(purchases)
-        if total == 0:
+        if not purchases and not notes:
             continue
-        total_amount = sum(
-            (Decimal(p.total_amount or p.amount or 0) for p in purchases),
-            Decimal("0"),
-        )
-        # 按时率: 占位 — 没有 expected_delivery 字段, 默认 0.95
-        # (后续 PartPurchase 增加 expected_delivery 字段后真算)
-        on_time_rate = Decimal("0.95")
 
-        # 退货率: 占位 — 没有清晰 supplier 关联
-        return_rate = Decimal("0.02")
+        total_amount = sum((_purch_amount(p) for p in purchases), Decimal("0"))
+        subs: dict[str, Decimal] = {}   # 维度 → 子分 0-1 (只放算得出的)
+        detail: dict = {}
 
-        # 价格波动
-        cur_avg_price = _avg_unit_price(purchases)
-        prev_avg_price = _avg_unit_price(prev_purchases)
-        if prev_avg_price > 0:
-            variance_pct = (cur_avg_price - prev_avg_price) / prev_avg_price * 100
+        # 1) 按时率: 采购到货 ≤ 订单发货日 (代理)
+        assessable = ontime = 0
+        for p in purchases:
+            ono = (p.related_order_no or "").strip()
+            info = order_info.get(ono)
+            if info and info[0] and p.purchase_date:
+                assessable += 1
+                if p.purchase_date <= info[0]:
+                    ontime += 1
+        if assessable:
+            r = Decimal(ontime) / Decimal(assessable)
+            subs["on_time"] = r
+            detail["on_time"] = {"rate": float(r), "assessable": assessable, "basis": "代理(到货≤发货日)"}
         else:
-            variance_pct = Decimal("0")
+            detail["on_time"] = {"rate": None, "assessable": 0, "basis": "无可评估(缺应到货日)"}
 
-        # 综合分 (0-100)
-        price_stability = Decimal("1") - min(abs(variance_pct) / Decimal("100"),
-                                              Decimal("1"))
-        score = (
-            on_time_rate * Decimal("0.5") +
-            (Decimal("1") - return_rate) * Decimal("0.3") +
-            price_stability * Decimal("0.2")
-        ) * Decimal("100")
+        # 2) 退货/问题率: 争议送货单占比 (代理)
+        if notes:
+            disputed = sum(1 for n in notes if n.status == "disputed")
+            rr = Decimal(disputed) / Decimal(len(notes))
+            subs["quality"] = Decimal("1") - rr
+            detail["return"] = {"rate": float(rr), "disputed": disputed, "notes": len(notes), "basis": "代理(争议单)"}
+        else:
+            detail["return"] = {"rate": None, "notes": 0, "basis": "本月无送货单"}
+
+        # 3) 价格波动 (稳定子分)
+        cur_avg, prev_avg = _avg_unit_price(purchases), _avg_unit_price(prev_purchases)
+        if prev_avg > 0:
+            var = (cur_avg - prev_avg) / prev_avg * Decimal("100")
+            stab = Decimal("1") - min(abs(var) / Decimal("50"), Decimal("1"))
+            subs["price_stability"] = stab
+            detail["price_variance_pct"] = float(var)
+        else:
+            detail["price_variance_pct"] = None
+            var = Decimal("0")
+
+        # 4) 价格竞争力: 同料 vs 全体均价 (越便宜越高, 按金额加权)
+        comp_w = comp_s = Decimal("0")
+        for p in purchases:
+            k = _mat_key(p)
+            if not k or peer_avg.get(k, Decimal("0")) <= 0:
+                continue
+            up = _d(p.unit_price) if p.unit_price is not None else None
+            if up is None or up <= 0:
+                continue
+            ratio = up / peer_avg[k]
+            s = max(Decimal("0"), min(Decimal("1"), Decimal("2") - ratio))  # 同行价→1, 贵20%→0.8
+            w = _purch_amount(p)
+            comp_w += w
+            comp_s += s * w
+        if comp_w > 0:
+            cs = comp_s / comp_w
+            subs["price_competitiveness"] = cs
+            detail["price_competitiveness"] = {"score": float(cs), "basis": "同料对标全体均价(金额加权)"}
+        else:
+            detail["price_competitiveness"] = {"score": None, "basis": "无同料可对标"}
+
+        # 5) 对账一致性: 能追溯到订单的金额占比 (账实)
+        traced = sum((_purch_amount(p) for p in purchases if (p.related_order_no or "").strip()), Decimal("0"))
+        note_ids = [n.id for n in notes]
+        if note_ids:
+            lines = db.execute(select(DeliveryNoteLine).where(DeliveryNoteLine.delivery_note_id.in_(note_ids))).scalars().all()
+            ln_total = sum((_d(l.amount) for l in lines), Decimal("0"))
+            ln_matched = sum((_d(l.amount) for l in lines if l.matched_order_no), Decimal("0"))
+        else:
+            ln_total = ln_matched = Decimal("0")
+        denom = total_amount + ln_total
+        matched_amt = traced + ln_matched
+        if denom > 0:
+            rc = matched_amt / denom
+            subs["recon_consistency"] = rc
+            detail["recon_consistency"] = {"matched_rate": float(rc), "basis": "可追溯订单金额占比"}
+        else:
+            detail["recon_consistency"] = {"matched_rate": None}
+
+        # 6) 采购规模/依赖度 (风险上下文, 不计分)
+        share = (total_amount / grand_total) if grand_total > 0 else Decimal("0")
+        single_src = sorted({k for p in purchases if (k := _mat_key(p)) and len(mat_suppliers.get(k, set())) == 1})
+        detail["scale"] = {
+            "total_amount": float(total_amount), "share_pct": float((share * 100).quantize(Decimal("0.01"))),
+            "single_source_materials": single_src[:20], "single_source_count": len(single_src),
+        }
+
+        # ── 综合分 (只用算得出的维度, 缺的不拖分) ──
+        avail_w = sum((_WEIGHTS[k] for k in subs), Decimal("0"))
+        if avail_w > 0:
+            score = (sum((_WEIGHTS[k] * subs[k] for k in subs), Decimal("0")) / avail_w * Decimal("100")).quantize(Decimal("0.01"))
+        else:
+            score = None
+        detail["weights_used"] = {k: float(_WEIGHTS[k]) for k in subs}
+        detail["dims_real"] = sorted(subs.keys())
 
         # upsert
-        existing = db.execute(
-            select(SupplierScore).where(
-                SupplierScore.supplier_id == sup.id,
-                SupplierScore.year == year, SupplierScore.month == month,
-            )
-        ).scalar_one_or_none()
+        existing = db.execute(select(SupplierScore).where(
+            SupplierScore.supplier_id == sup.id, SupplierScore.year == year, SupplierScore.month == month
+        )).scalar_one_or_none()
+        on_time_col = subs.get("on_time")
+        return_col = (Decimal("1") - subs["quality"]) if "quality" in subs else None
         if existing is None:
             s = SupplierScore(
                 supplier_id=sup.id, year=year, month=month,
-                on_time_rate=on_time_rate, return_rate=return_rate,
-                price_variance_pct=variance_pct,
-                total_orders=total, total_amount=total_amount,
-                score=score.quantize(Decimal("0.01")),
-                detail_json={
-                    "avg_unit_price": float(cur_avg_price),
-                    "prev_avg_unit_price": float(prev_avg_price),
-                },
-            )
+                on_time_rate=on_time_col, return_rate=return_col,
+                price_variance_pct=var if prev_avg > 0 else None,
+                total_orders=len(purchases), total_amount=total_amount,
+                score=score, detail_json=detail)
             db.add(s)
         else:
             s = existing
-            s.on_time_rate = on_time_rate
-            s.return_rate = return_rate
-            s.price_variance_pct = variance_pct
-            s.total_orders = total
+            s.on_time_rate = on_time_col
+            s.return_rate = return_col
+            s.price_variance_pct = var if prev_avg > 0 else None
+            s.total_orders = len(purchases)
             s.total_amount = total_amount
-            s.score = score.quantize(Decimal("0.01"))
+            s.score = score
+            s.detail_json = detail
         out.append(s)
     db.flush()
 
-    # 算 rank
-    out.sort(key=lambda x: x.score or Decimal("0"), reverse=True)
+    out.sort(key=lambda x: (x.score if x.score is not None else Decimal("-1")), reverse=True)
     for i, s in enumerate(out, start=1):
         s.rank = i
     db.flush()
     return out
-
-
-def _avg_unit_price(purchases: list) -> Decimal:
-    if not purchases:
-        return Decimal("0")
-    total_qty = Decimal("0")
-    total_amount = Decimal("0")
-    for p in purchases:
-        qty = Decimal(p.qty or 0)
-        if p.unit_price is not None:
-            total_qty += qty
-            total_amount += qty * Decimal(p.unit_price)
-        elif p.amount is not None and qty > 0:
-            total_qty += qty
-            total_amount += Decimal(p.amount)
-    return (total_amount / total_qty) if total_qty > 0 else Decimal("0")
 
 
 def list_for_month(db: Session, year: int, month: int) -> list[SupplierScore]:
@@ -155,4 +276,12 @@ def list_for_month(db: Session, year: int, month: int) -> list[SupplierScore]:
         select(SupplierScore).where(
             SupplierScore.year == year, SupplierScore.month == month,
         ).order_by(SupplierScore.rank.asc().nulls_last())
+    ).scalars())
+
+
+def history_for_supplier(db: Session, supplier_id: int, *, limit: int = 12) -> list[SupplierScore]:
+    """某供应商最近 N 个月的评分(新→旧), 给详情页评分卡 + 趋势用。"""
+    return list(db.execute(
+        select(SupplierScore).where(SupplierScore.supplier_id == supplier_id)
+        .order_by(SupplierScore.year.desc(), SupplierScore.month.desc()).limit(limit)
     ).scalars())
