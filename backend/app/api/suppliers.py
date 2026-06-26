@@ -318,6 +318,20 @@ def auto_create_suppliers(
     return {"created": created, "count": len(created)}
 
 
+@router.post("/suppliers/auto-build-from-purchases")
+def auto_build_suppliers_from_purchases(
+    apply: bool = Query(False, description="false=预览, true=建档"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """按配件采购记录逐供应商建档 + 按料自动推断类型(岩板厂/贴皮/木材/五金/木作…)。
+
+    用户 2026-06-27: 根据主要供应商自动建分类。排平台/内部噪音; 名字写进支付宝关键字便于后续归账。
+    """
+    from app.services import supplier_build_service
+    return supplier_build_service.auto_build_from_purchases(db, apply=apply)
+
+
 @router.get("/suppliers/purchase-candidates")
 def purchase_supplier_candidates(
     min_count: int = Query(1, ge=1, description="至少出现几次才算候选"),
