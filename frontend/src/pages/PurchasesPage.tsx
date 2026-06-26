@@ -17,6 +17,7 @@ import { CUTE_IMG } from '../components/ProductThumb';
 import ShipmentTracker from '../components/ShipmentTracker';
 import PresetTable from '../components/PresetTable';
 import UrgentShortageGate from '../components/UrgentShortageGate';
+import BulkMaterialReconPanel from '../components/BulkMaterialReconPanel';
 import { InboxOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { UploadProps } from 'antd';
@@ -34,7 +35,7 @@ const { Title, Text, Paragraph } = Typography;
 export default function PurchasesPage() {
   const qc = useQueryClient();
   const [lastResult, setLastResult] = useState<PurchaseOcrResult | null>(null);
-  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [viewMode, setViewMode] = useState<'curated' | 'full' | 'recon'>('curated');
 
   const { data: rows = [], isLoading } = useQuery({
     queryKey: ['purchases'],
@@ -144,13 +145,15 @@ export default function PurchasesPage() {
       <Title level={3}>配件采购 (拍照识别入库)</Title>
       <Segmented
         value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
+        onChange={(v) => setViewMode(v as 'curated' | 'full' | 'recon')}
         options={[
           { label: '精选视图', value: 'curated' },
           { label: '全部列', value: 'full' },
+          { label: '大宗材料对账', value: 'recon' },
         ]}
         style={{ marginBottom: 16 }}
       />
+      {viewMode === 'recon' && <BulkMaterialReconPanel />}
       {viewMode === 'full' && <FullColumnView entity="part_purchase" />}
       {viewMode === 'curated' && (<>
       <Paragraph type="secondary">

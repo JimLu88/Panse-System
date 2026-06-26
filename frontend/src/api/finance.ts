@@ -560,6 +560,66 @@ export const purchaseSourceImageUrl = (purchaseId: number) =>
 export const purchaseFileImageUrl = (fileId: number) =>
   `/api/purchases/files/${fileId}/image`;
 
+// ----- 配件成本对账 (配件 epic P2) -----
+export interface BulkMaterialPeriod {
+  period: string;             // YYYY-MM (按发货日期)
+  actual_purchase: number;    // 当期实际采购额
+  standard_consume: number;   // 当期标准估值消耗 (Σ est_parts / flat×单数)
+  variance: number;           // 实际 − 标准
+  variance_pct: number | null;
+  order_count: number;
+  missing_est: number;        // 命中但 est_parts 缺 (覆盖率)
+}
+export interface BulkMaterial {
+  key: string;
+  name: string;
+  mode: 'by_order_kw' | 'per_order_flat';
+  periods: BulkMaterialPeriod[];
+  total_actual: number;
+  total_standard: number;
+  total_variance: number;
+  total_variance_pct: number | null;
+}
+export interface BulkMaterialRecon {
+  granularity: string;
+  ship_date_basis: boolean;
+  materials: BulkMaterial[];
+}
+export interface AggregateRelatedItem {
+  order_no: string;
+  matched: boolean;
+  purchases: number;
+  product_name?: string | null;
+  is_custom?: boolean;
+  old_actual_parts?: number | null;
+  new_actual_parts?: number;
+  old_physical_cost?: number;
+  new_physical_cost?: number;
+  physical_delta?: number;
+  parts_total?: number;
+}
+export interface AggregateRelatedResult {
+  applied: boolean;
+  applied_count: number;
+  matched_orders: number;
+  unmatched_orders: number;
+  total_parts_amount: number;
+  items: AggregateRelatedItem[];
+}
+export const fetchBulkMaterialRecon = (granularity = 'month') =>
+  api
+    .get<BulkMaterialRecon>('/api/purchases/bulk-material-recon', { params: { granularity } })
+    .then((r) => r.data);
+export const aggregateRelatedParts = (apply = false) =>
+  api
+    .post<AggregateRelatedResult>('/api/purchases/aggregate-related-parts', null, { params: { apply } })
+    .then((r) => r.data);
+export const backfillEstParts = () =>
+  api
+    .post<{ set: number; skipped_no_pricing: number; skipped_closed: number; total: number }>(
+      '/api/purchases/backfill-est-parts')
+    .then((r) => r.data);
+
 // ----- 剩余流水（可用资金）测算 -----
 export interface CashFlowLine {
   key: string;

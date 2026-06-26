@@ -80,6 +80,10 @@ class Order(Base, TimestampMixin):
     # 逐单配件真实成本 (migration 0094, 用户 2026-06-26): 配件(外采)真实值; 来源=配件采购单 related_order_no
     # 汇总(能逐单的料) 或 大宗材料差异逐单建议值人工回填。非空 → physical_cost 改逐项真实计价(不估不floor)。
     actual_parts: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 配件标准估值 (migration 0095, 配件 epic P2): = 匹配 SKU 定价表 external_parts_cost × 真实计价件数
+    # (与 wood_cost_est 对称, 由 recompute_and_save/backfill 派生)。不进 physical_cost(那里走 theoretical
+    # 反推/actual_parts), 仅作大宗材料对账「标准消耗」基线 + P3 差异逐单建议值分摊基数。
+    est_parts: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))

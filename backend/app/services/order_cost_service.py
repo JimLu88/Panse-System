@@ -631,6 +631,64 @@ def _set_wood_est(order: Order, wood: Optional[Decimal]) -> None:
         order.wood_cost_est = wood.quantize(_CENTS)
 
 
+def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
+    """该单匹配 SKU 的定价表 external_parts_cost (配件/外采标准估值, 单件)。与 _pricing_wood_for 对称。
+
+    SKU 命中 → 返回 external_parts_cost(None 视作 0, 表示该产品标准无外采配件);
+    无任何 SKU/产品命中 → None(est_parts 不写, 留空表示"未知/无定价参照")。"""
+    sku_code = _resolve_sku_code(db, order)
+    if sku_code:
+        row = db.execute(
+            select(PricingSku.external_parts_cost).where(PricingSku.sku_code == sku_code)
+        ).first()
+        if row is not None:
+            return Decimal(str(row[0] or 0))
+    if order.product_code:
+        row = db.execute(
+            select(PricingSku.external_parts_cost)
+            .where(PricingSku.product_code == order.product_code)
+            .limit(1)
+        ).first()
+        if row is not None:
+            return Decimal(str(row[0] or 0))
+    return None
+
+
+def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
+    """一单多宝贝 → 各 import 商品行 SKU 的定价表 external_parts_cost × qty 之和。与 _multi_product_wood 对称。
+
+    < 2 行 → None(非多宝贝, 走单 SKU 路径)。某行查不到配件估值视作 0(配件可选, 不像木作要求齐全)。"""
+    from app.models.order import OrderDetail
+    lines = db.execute(
+        select(OrderDetail).where(
+            OrderDetail.order_no == order.order_no, OrderDetail.source == "import")
+    ).scalars().all()
+    if len(lines) < 2:
+        return None
+    total = Decimal("0")
+    for ln in lines:
+        ep = None
+        if ln.sku_code:
+            ep = db.execute(
+                select(PricingSku.external_parts_cost).where(PricingSku.sku_code == ln.sku_code)
+            ).scalar_one_or_none()
+        if ep is None and ln.product_code:
+            ep = db.execute(
+                select(PricingSku.external_parts_cost)
+                .where(PricingSku.product_code == ln.product_code).limit(1)
+            ).scalar_one_or_none()
+        total += Decimal(str(ep or 0)) * int(ln.qty or 1)
+    return total
+
+
+def _set_parts_est(order: Order, parts_unit: Optional[Decimal], eff_qty: int) -> None:
+    """写 order.est_parts (配件标准估值 = 单件 external_parts_cost × 真实计价件数)。
+
+    parts_unit None(无定价参照) → 不写, 留 reset 后的 None。0(产品标准无配件) → 写 0。"""
+    if parts_unit is not None:
+        order.est_parts = (parts_unit * eff_qty).quantize(_CENTS)
+
+
 def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = None) -> CostBreakdown:
     """反推并把单件理论成本写回 order.theoretical_cost (不动 actual_cost).
 
@@ -638,8 +696,9 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     传 ratios (类目/全店成本率) 时, BOM/定价表都查不到的订单按 实付×成本率 兜底 (用户拍板 2026-06-17),
     标记为「估算」并由 auto_cost_backfill 写异常待人工补实际成本。
     """
-    # 每次重算从干净状态开始: 木作估算只在能取到的分支回填, 旧值不残留(防改判后污染 physical_cost)
+    # 每次重算从干净状态开始: 木作估算/配件标准估值只在能取到的分支回填, 旧值不残留(防改判后污染)
     order.wood_cost_est = None
+    order.est_parts = None       # 配件标准估值(派生列); 不碰 actual_parts(真实值, 人工/汇总设)
     reason = zero_cost_reason(order)
     if reason is not None:
         order.theoretical_cost = Decimal("0")
@@ -653,6 +712,9 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
     if _mp is not None:
         order.theoretical_cost = _mp.quantize(_CENTS)
         _set_wood_est(order, _multi_product_wood(db, order))
+        _mpp = _multi_product_parts(db, order)
+        if _mpp is not None:
+            order.est_parts = _mpp.quantize(_CENTS)
         return CostBreakdown(
             order_no=order.order_no, sku_code=order.sku_code, qty=int(order.qty or 1),
             unit_cost=_mp, total_cost=_mp, resolved=True,
@@ -663,6 +725,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
         _set_wood_est(order, _pricing_wood_for(db, order))
+        _set_parts_est(order, _pricing_parts_for(db, order), _effective_qty(order, _unit))
         return bd
     # 无 BOM → 回退定价表物理总成本
     cost = _pricing_cost_for(db, order)
@@ -674,6 +737,7 @@ def recompute_and_save(db: Session, order: Order, *, ratios: Optional[dict] = No
         _unit = _apply_fragment_rule(order, bd)
         order.theoretical_cost = (_unit * _effective_qty(order, _unit)).quantize(_CENTS)
         _set_wood_est(order, _pricing_wood_for(db, order))
+        _set_parts_est(order, _pricing_parts_for(db, order), _effective_qty(order, _unit))
         return bd
     # 最终兜底: 实付 × 类目/全店成本率 (查不到任何 SKU/产品成本时, 如缺产品编码的订单)
     if ratios is not None:
@@ -919,6 +983,45 @@ def backfill_theoretical_from_pricing(
     return {
         "updated": updated,
         "zeroed_refill_install": zeroed,
+        "skipped_no_pricing": no_pricing,
+        "skipped_closed": closed,
+        "total": len(orders),
+    }
+
+
+def backfill_est_parts(db: Session, *, skip_closed: bool = True) -> dict:
+    """一次性回填 order.est_parts (配件标准估值 = 定价 external_parts_cost × 真实计价件数)。
+
+    与 recompute_and_save 同口径, 供存量订单冷启动(recompute 未必全量跑过)。
+    非产品单(补单/专链/服务)→ 标准配件 0; 无定价参照 → 留 None。est_parts 仅作大宗材料
+    对账基线 + P3 分摊基数, 不进 physical_cost, 回填零财务风险。
+    Returns: {set, skipped_no_pricing, skipped_closed, total}。"""
+    orders = db.execute(select(Order)).scalars().all()
+    set_cnt = no_pricing = closed = 0
+    for o in orders:
+        if skip_closed and o.status in _CLOSED_STATUSES:
+            closed += 1
+            continue
+        if zero_cost_reason(o) is not None:
+            o.est_parts = Decimal("0")
+            set_cnt += 1
+            continue
+        _mpp = _multi_product_parts(db, o)
+        if _mpp is not None:
+            o.est_parts = _mpp.quantize(_CENTS)
+            set_cnt += 1
+            continue
+        pu = _pricing_parts_for(db, o)
+        if pu is not None:
+            _uc = _pricing_cost_for(db, o)   # 真多件判据(与 theoretical 同源单件成本)
+            eff = _effective_qty(o, _uc) if _uc is not None else 1
+            o.est_parts = (pu * eff).quantize(_CENTS)
+            set_cnt += 1
+        else:
+            no_pricing += 1
+    db.flush()
+    return {
+        "set": set_cnt,
         "skipped_no_pricing": no_pricing,
         "skipped_closed": closed,
         "total": len(orders),

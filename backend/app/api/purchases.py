@@ -299,3 +299,46 @@ def get_file_image(file_id: int, db: Session = Depends(get_db)):
     except (FileNotFoundError, PermissionError) as e:
         raise HTTPException(404, str(e))
     return Response(content=data, media_type=pf.mime_type or "application/octet-stream")
+
+
+# ── 配件成本对账 (配件 epic P2, 用户 2026-06-26) ────────────────────────────
+@router.get("/bulk-material-recon", response_model=dict)
+def bulk_material_recon(
+    granularity: str = Query("month", description="周期粒度 (暂支持 month)"),
+    db: Session = Depends(get_db),
+):
+    """大宗/消耗材料 × 采购周期 对账 (实际采购 vs 标准消耗 vs 差异%)。
+
+    **消费窗口按订单发货日期 ship_date 圈定** (生产周期~30天, 料在发货前才裁切消耗)。
+    """
+    from app.services import parts_recon_service
+    return parts_recon_service.bulk_material_recon(db, granularity=granularity)
+
+
+@router.post("/aggregate-related-parts", response_model=dict)
+def aggregate_related_parts(
+    apply: bool = Query(False, description="True=写 Order.actual_parts 落库; False=只出预览"),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """配件采购单(填了 related_order_no)→ 按订单汇总写 Order.actual_parts(逐项真实计价)。
+
+    默认 dry-run 出预览(含每单 physical_cost 变化); apply=True 才落库。
+    """
+    from app.services import parts_recon_service
+    return parts_recon_service.aggregate_related_purchases(db, apply=apply)
+
+
+@router.post("/backfill-est-parts", response_model=dict)
+def backfill_est_parts(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """一次性回填 Order.est_parts(配件标准估值 = 定价 external_parts_cost × 真实计价件数)。
+
+    est_parts 仅作大宗材料对账「标准消耗」基线 + P3 分摊基数, 不进 physical_cost, 零财务风险。
+    """
+    from app.services import order_cost_service
+    res = order_cost_service.backfill_est_parts(db)
+    db.commit()
+    return res
