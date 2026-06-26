@@ -176,6 +176,7 @@ export interface Material {
   price: string | null;
   remark: string | null;
   is_custom: boolean;
+  category: string | null;
 }
 
 export interface PartInventory {
@@ -212,12 +213,15 @@ export interface DataException {
   created_at: string;
 }
 
-export const listMaterials = (q?: string, isCustom?: boolean) =>
+export const listMaterials = (q?: string, isCustom?: boolean, category?: string) =>
   api
     .get<Material[]>('/api/materials', {
-      params: { q, is_custom: isCustom, limit: 500 },
+      params: { q, is_custom: isCustom, category, limit: 500 },
     })
     .then((r) => r.data);
+
+export const listMaterialCategories = () =>
+  api.get<{ categories: string[] }>('/api/materials/categories').then((r) => r.data.categories);
 
 export const updateMaterial = (id: number, patch: Partial<Material>) =>
   api.patch<Material>(`/api/materials/${id}`, patch).then((r) => r.data);
@@ -230,6 +234,7 @@ export const createMaterial = (payload: {
   unit?: string;
   price?: number;
   remark?: string;
+  category?: string;
 }) => api.post<Material>('/api/materials', payload).then((r) => r.data);
 
 export const getNextMaterialCode = (prefix: string) =>

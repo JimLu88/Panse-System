@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import {
+  AutoComplete,
   Button,
   Form,
   Input,
@@ -18,7 +19,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { fieldsFromColumns, applyPreset } from '../components/FieldPresetBar';
-import { Material, createMaterial, getMaterialUsedInProducts, getNextMaterialCode, listMaterials, updateMaterial } from '../api/client';
+import { Material, createMaterial, getMaterialUsedInProducts, getNextMaterialCode, listMaterialCategories, listMaterials, updateMaterial } from '../api/client';
 
 // #5: 物料反推产品 — 点「查看」弹出 BOM 里用到此物料的产品(懒加载)
 function UsedInCell({ code }: { code: string }) {
@@ -79,6 +80,13 @@ export default function MaterialsPage() {
   const [bedboard, setBedboard] = useState('all');
   const [sizeType, setSizeType] = useState<string | undefined>(undefined);
   const [unitF, setUnitF] = useState<string | undefined>(undefined);
+  const [categoryF, setCategoryF] = useState<string | undefined>(undefined);
+
+  const { data: cats = [] } = useQuery({
+    queryKey: ['material-categories'],
+    queryFn: listMaterialCategories,
+  });
+  const catOptions = cats.map((c) => ({ value: c, label: c }));
 
   const fetchPreview = async (prefix: string) => {
     setPreviewLoading(true);
@@ -115,6 +123,7 @@ export default function MaterialsPage() {
     if (bedboard === 'nonbed' && /铺板/.test(m.name || '')) return false;
     if (sizeType && m.size_type !== sizeType) return false;
     if (unitF && m.unit !== unitF) return false;
+    if (categoryF && m.category !== categoryF) return false;
     return true;
   });
 
@@ -125,6 +134,7 @@ export default function MaterialsPage() {
       message.success('已保存');
       setEditing(null);
       qc.invalidateQueries({ queryKey: ['materials'] });
+      qc.invalidateQueries({ queryKey: ['material-categories'] });
     },
   });
 
@@ -134,6 +144,7 @@ export default function MaterialsPage() {
       message.success(`配件已创建，编码 ${mat.code}`);
       setCreating(false);
       qc.invalidateQueries({ queryKey: ['materials'] });
+      qc.invalidateQueries({ queryKey: ['material-categories'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '创建失败'),
   });
@@ -147,6 +158,10 @@ export default function MaterialsPage() {
         row.is_custom ? <Tag color="orange">{v}</Tag> : v,
     },
     { title: '名称', dataIndex: 'name', ellipsis: true },
+    {
+      title: '分类', dataIndex: 'category', width: 110,
+      render: (v: string | null) => v ? <Tag color="geekblue">{v}</Tag> : <span style={{ color: '#bbb' }}>未分类</span>,
+    },
     { title: '尺寸类型', dataIndex: 'size_type', width: 100 },
     { title: '单位', dataIndex: 'unit', width: 80 },
     {
@@ -236,6 +251,8 @@ export default function MaterialsPage() {
             options={sizeOpts.map((s) => ({ value: s, label: s }))} />
           <Select size="middle" allowClear placeholder="单位" style={{ width: 110 }} value={unitF} onChange={setUnitF}
             options={unitOpts.map((s) => ({ value: s, label: s }))} />
+          <Select size="middle" allowClear showSearch placeholder="分类" style={{ width: 150 }} value={categoryF} onChange={setCategoryF}
+            options={catOptions} />
           <Typography.Text type="secondary">共 {filtered.length} 项</Typography.Text>
         </Space>
       )}
@@ -284,6 +301,11 @@ export default function MaterialsPage() {
           <Form.Item name="name" label="配件名称" rules={[{ required: true }]}>
             <Input placeholder="如：餐桌-人工费-中型" />
           </Form.Item>
+          <Form.Item name="category" label="分类" tooltip="选已有分类或直接输入新分类(联动配件库)">
+            <AutoComplete options={catOptions} allowClear
+              placeholder="如 五金/玻璃/岩板/洞石饰面板/电力轨道/铝合金槽/杂项/床铺板/软包…"
+              filterOption={(input, opt) => String(opt?.value ?? '').includes(input)} />
+          </Form.Item>
           <Form.Item name="unit" label="单位">
             <Input placeholder="如：条/个/套/m²" />
           </Form.Item>
@@ -315,6 +337,11 @@ export default function MaterialsPage() {
         >
           <Form.Item name="name" label="名称" rules={[{ required: true }]}>
             <Input />
+          </Form.Item>
+          <Form.Item name="category" label="分类" tooltip="选已有分类或直接输入新分类(联动配件库)">
+            <AutoComplete options={catOptions} allowClear
+              placeholder="如 五金/玻璃/岩板/洞石饰面板/电力轨道/铝合金槽/杂项/床铺板/软包…"
+              filterOption={(input, opt) => String(opt?.value ?? '').includes(input)} />
           </Form.Item>
           <Form.Item name="size_type" label="尺寸类型">
             <Input placeholder="如 组合 / 个数 / 长度" />

@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/materials", tags=["materials"])
 def list_materials(
     q: Optional[str] = Query(None, description="按编码或名称模糊"),
     is_custom: Optional[bool] = None,
+    category: Optional[str] = Query(None, description="按分类筛选"),
     limit: int = Query(100, le=500),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -31,8 +32,21 @@ def list_materials(
             stmt = stmt.where(fc)
     if is_custom is not None:
         stmt = stmt.where(Material.is_custom == is_custom)
+    if category:
+        stmt = stmt.where(Material.category == category)
     stmt = stmt.order_by(Material.code).limit(limit).offset(offset)
     return db.execute(stmt).scalars().all()
+
+
+@router.get("/categories", response_model=dict)
+def list_material_categories(db: Session = Depends(get_db)):
+    """配件库里已用到的分类(去重, 供前端下拉/折叠)。"""
+    from sqlalchemy import func
+    cats = db.execute(
+        select(func.distinct(Material.category)).where(Material.category.isnot(None))
+        .order_by(Material.category)
+    ).scalars().all()
+    return {"categories": [c for c in cats if c]}
 
 
 class MaterialUsedInOut(BaseModel):
@@ -105,6 +119,7 @@ def create_material(payload: MaterialCreate, db: Session = Depends(get_db)):
         unit=payload.unit,
         price=payload.price,
         remark=payload.remark,
+        category=payload.category,
         is_custom=False,
     )
     db.add(mat)
@@ -134,3 +149,24 @@ def update_material(material_id: int, payload: MaterialUpdate, db: Session = Dep
     db.commit()
     db.refresh(mat)
     return mat
+
+
+@router.post("/auto-categorize", response_model=dict)
+def auto_categorize(
+    apply: bool = Query(False, description="True=写库; False=只出预览"),
+    only_empty: bool = Query(True, description="True=只补未分类(不覆盖人工已设)"),
+    db: Session = Depends(get_db),
+):
+    """按名字规则批量给物料归类(配件分类)。默认 dry-run 预览, apply=True 落库。"""
+    from app.services import material_category_service
+    return material_category_service.auto_categorize(db, apply=apply, only_empty=only_empty)
+
+
+@router.post("/ensure-consumables", response_model=dict)
+def ensure_consumables(
+    apply: bool = Query(False, description="True=建物料+加BOM落库; False=只预览"),
+    db: Session = Depends(get_db),
+):
+    """通用消耗配件(双面胶/螺丝)建成 AC 物料 + 加进每个产品每个 SKU 的 BOM(0.1元/个, 幂等)。"""
+    from app.services import material_category_service
+    return material_category_service.ensure_consumables_in_boms(db, apply=apply)

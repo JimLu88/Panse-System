@@ -1,14 +1,13 @@
 /**
- * 大宗/消耗材料对账面板 — 配件 epic (用户 2026-06-26)。
+ * 配件对账面板 — 方向1: 按「配件分类」折叠 + BOM 驱动 (用户 2026-06-26)。
  *
- * 配件厂多是当地小厂、手写单、一次付款盖到哪些订单无法回推 → 改「按月对账」:
- *   导出当月【已发货】订单(按发货日期, 100% 真实消耗了配件)给工厂 → 工厂返月度总额 → 填「实际」列。
- * 每材料每月并排: 历史平均 | 预估(Σest_parts) | 实际(工厂月度对账) | 差异%。全部按发货日期 ship_date。
- * 导出两份: 全部发货单(给工厂自己挑) + 按材料(逐单展开 BOM 部位/预设尺寸, 方便对照)。
+ * 分类来自配件库(Material.category)。每个分类一个折叠块, 收起只看分类小计, 展开看逐月
+ * 历史平均 | 预估(Σ发货单BOM该类配件 price×qty) | 实际(工厂月度对账) | 差异%。全部按发货日期 ship_date。
+ * 导清单: 当月该分类发货单 + 逐单 BOM 部位/预设尺寸; 录实际: 工厂返回的月度总额。
  */
 import { useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Form, Input, InputNumber, Modal, Popconfirm, Select,
+  Alert, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { ReloadOutlined, MergeCellsOutlined, PrinterOutlined, EditOutlined } from '@ant-design/icons';
@@ -66,20 +65,20 @@ function openExportPrint(d: ShippedOrdersExport) {
   setTimeout(() => win.print(), 400);
 }
 
-// ── 录入工厂月度对账总额 (可多家工厂) ────────────────────────────────────────
+// ── 录入工厂月度对账总额 (按分类, 可多家工厂) ────────────────────────────────
 function ActualEntryModal({ info, onClose, onSaved }: {
-  info: { materialKey: string; materialName: string; yearMonth: string };
+  info: { categoryKey: string; yearMonth: string };
   onClose: () => void;
   onSaved: () => void;
 }) {
   const { data: rows = [], refetch } = useQuery({
-    queryKey: ['monthly-recon', info.materialKey, info.yearMonth],
-    queryFn: () => listMonthlyRecon(info.materialKey, info.yearMonth),
+    queryKey: ['monthly-recon', info.categoryKey, info.yearMonth],
+    queryFn: () => listMonthlyRecon(info.categoryKey, info.yearMonth),
   });
   const [form] = Form.useForm();
   const saveMut = useMutation({
     mutationFn: (v: { supplier?: string; actual_total: number; note?: string }) =>
-      saveMonthlyRecon({ material_key: info.materialKey, year_month: info.yearMonth,
+      saveMonthlyRecon({ material_key: info.categoryKey, year_month: info.yearMonth,
         actual_total: v.actual_total, supplier: v.supplier, note: v.note }),
     onSuccess: () => { message.success('已保存'); form.resetFields(); refetch(); onSaved(); },
     onError: (e: any) => message.error(`保存失败: ${e?.response?.data?.detail || e?.message || e}`),
@@ -90,10 +89,10 @@ function ActualEntryModal({ info, onClose, onSaved }: {
   });
   const total = rows.reduce((s, r) => s + (r.actual_total || 0), 0);
   return (
-    <Modal open width={640} title={`录入工厂月度对账 · ${info.materialName} · ${info.yearMonth} 发货`}
+    <Modal open width={640} title={`录入工厂月度对账 · ${info.categoryKey} · ${info.yearMonth} 发货`}
       onCancel={onClose} footer={<Button onClick={onClose}>关闭</Button>}>
       <Alert type="info" showIcon style={{ marginBottom: 12 }}
-        message="把工厂返回的当月总额填这里(同一材料多家工厂可各填一行)。系统把这些行求和, 作该料该月的「实际」与预估对比。" />
+        message="把工厂返回的当月总额填这里(同一分类多家工厂可各填一行)。系统求和作该分类该月的「实际」与预估对比。" />
       <Table rowKey="id" size="small" dataSource={rows} pagination={false} style={{ marginBottom: 8 }}
         locale={{ emptyText: '还没录入工厂总额' }}
         columns={[
@@ -120,21 +119,11 @@ function ActualEntryModal({ info, onClose, onSaved }: {
   );
 }
 
-function MaterialCard({ m, onExport, onEnterActual }: {
-  m: BulkMaterial;
-  onExport: (period: string) => void;
-  onEnterActual: (period: string) => void;
-}) {
-  const columns = [
+function periodColumns(onExport: (period: string) => void, onEnterActual: (period: string) => void) {
+  return [
     { title: '周期(发货)', dataIndex: 'period', width: 96 },
     { title: '历史平均', dataIndex: 'historical_avg', width: 96, align: 'right' as const, render: yuan },
-    {
-      title: '预估', dataIndex: 'standard_consume', width: 100, align: 'right' as const,
-      render: (v: number, r: BulkMaterialPeriod) => (
-        <span>{yuan(v)}{r.missing_est > 0 && (
-          <Tooltip title={`${r.missing_est} 单命中但缺标准估值(est_parts 未回填)`}>
-            <Tag color="orange" style={{ marginLeft: 4 }}>缺{r.missing_est}</Tag></Tooltip>)}</span>),
-    },
+    { title: '预估', dataIndex: 'standard_consume', width: 100, align: 'right' as const, render: yuan },
     {
       title: '实际(工厂)', dataIndex: 'factory_actual', width: 104, align: 'right' as const,
       render: (v: number | null) => v == null ? <span style={{ color: '#bbb' }}>未录</span> : <b>{yuan(v)}</b>,
@@ -150,29 +139,15 @@ function MaterialCard({ m, onExport, onEnterActual }: {
       title: '操作', width: 168,
       render: (_: unknown, r: BulkMaterialPeriod) => (
         <Space size="small">
-          <Button size="small" icon={<PrinterOutlined />} onClick={() => onExport(r.period)}>导清单</Button>
+          <Tooltip title={r.order_count ? '导出该分类当月发货单(含BOM部位/尺寸)' : '该月无此料发货单'}>
+            <Button size="small" icon={<PrinterOutlined />} disabled={!r.order_count}
+              onClick={() => onExport(r.period)}>导清单</Button>
+          </Tooltip>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => onEnterActual(r.period)}>
             {r.has_factory_actual ? '改实际' : '录实际'}</Button>
         </Space>),
     },
   ];
-  return (
-    <Card size="small" style={{ marginBottom: 12 }}
-      title={<Space><b>{m.name}</b>
-        <Tag color={m.mode === 'by_order_kw' ? 'blue' : 'purple'}>
-          {m.mode === 'by_order_kw' ? '选配型(按订单估值)' : '通用消耗型(每单标准×单数)'}</Tag></Space>}
-      extra={<Space size="large">
-        <Typography.Text type="secondary">预估 {yuan(m.total_standard)} · 实际 {yuan(m.total_factory_actual)}</Typography.Text>
-        {m.total_factory_actual > 0 && (
-          <span style={{ color: varColor(m.total_variance), fontWeight: 700 }}>
-            差异 {m.total_variance > 0 ? '+' : ''}{yuan(m.total_variance)}
-            {m.total_variance_pct != null && `（${m.total_variance_pct > 0 ? '+' : ''}${m.total_variance_pct.toFixed(1)}%）`}
-          </span>)}</Space>}>
-      <Table<BulkMaterialPeriod> rowKey="period" dataSource={m.periods} columns={columns as any}
-        size="small" pagination={false} scroll={{ x: 720 }}
-        locale={{ emptyText: '该材料暂无发货 / 对账记录' }} />
-    </Card>
-  );
 }
 
 export default function BulkMaterialReconPanel() {
@@ -198,7 +173,6 @@ export default function BulkMaterialReconPanel() {
     onError: () => message.error('落库失败'),
   });
 
-  // 导出月份: 取数据里出现过的发货月, 默认最新
   const allMonths = useMemo(() => {
     const s = new Set<string>();
     (data?.materials ?? []).forEach((m) => m.periods.forEach((p) => s.add(p.period)));
@@ -207,25 +181,50 @@ export default function BulkMaterialReconPanel() {
   const [expMonth, setExpMonth] = useState<string | undefined>(undefined);
   const effMonth = expMonth || allMonths[0];
 
-  const doExport = async (yearMonth: string, materialKey?: string) => {
+  const doExport = async (yearMonth: string, categoryKey?: string) => {
     try {
-      const d = await fetchShippedOrdersExport(yearMonth, materialKey);
-      if (!d.order_count) { message.info(`${yearMonth} 没有${materialKey ? '该材料的' : ''}已发货订单`); return; }
+      const d = await fetchShippedOrdersExport(yearMonth, categoryKey);
+      if (!d.order_count) { message.info(`${yearMonth} 没有${categoryKey ? '该分类的' : ''}已发货订单`); return; }
       openExportPrint(d);
     } catch (e: any) {
       message.error(`导出失败: ${e?.response?.data?.detail || e?.message || e}`);
     }
   };
 
-  const [actualModal, setActualModal] =
-    useState<{ materialKey: string; materialName: string; yearMonth: string } | null>(null);
+  const [actualModal, setActualModal] = useState<{ categoryKey: string; yearMonth: string } | null>(null);
+  const [activeKeys, setActiveKeys] = useState<string[]>([]);
+  const cats = data?.materials ?? [];
+
+  const collapseItems = cats.map((m: BulkMaterial) => ({
+    key: m.key,
+    label: (
+      <Space size="middle" wrap>
+        <b style={{ fontSize: 14 }}>{m.name}</b>
+        <Typography.Text type="secondary">预估 {yuan(m.total_standard)} · 实际 {yuan(m.total_factory_actual)}</Typography.Text>
+        {m.total_factory_actual > 0 && (
+          <span style={{ color: varColor(m.total_variance), fontWeight: 700 }}>
+            差异 {m.total_variance > 0 ? '+' : ''}{yuan(m.total_variance)}
+            {m.total_variance_pct != null && `（${m.total_variance_pct > 0 ? '+' : ''}${m.total_variance_pct.toFixed(1)}%）`}
+          </span>)}
+        <Tag>{m.periods.length} 个月</Tag>
+      </Space>
+    ),
+    children: (
+      <Table<BulkMaterialPeriod> rowKey="period" dataSource={m.periods} size="small" pagination={false}
+        scroll={{ x: 700 }} locale={{ emptyText: '该分类暂无发货 / 对账记录' }}
+        columns={periodColumns(
+          (period) => doExport(period, m.key),
+          (period) => setActualModal({ categoryKey: m.key, yearMonth: period }),
+        ) as any} />
+    ),
+  }));
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Alert type="info" showIcon message="大宗/消耗材料对账（历史平均 · 预估 · 工厂实际 · 差异%）"
-        description={<>配件厂多是当地小厂、手写单、一次付款无法回推到具体订单 → 改<b>按月对账</b>:
-          导出当月「已发货」订单(按<b>发货日期</b>, 100% 真实消耗)给工厂 → 工厂返月度总额 → 点「录实际」填进去, 即可和预估并排看准不准。
-          消费窗口按发货日期(生产周期~30天)。</>} />
+      <Alert type="info" showIcon message="配件对账（按分类折叠 · 历史平均 · 预估 · 工厂实际 · 差异%）"
+        description={<>分类来自<b>配件库</b>(物料的「分类」字段), 对账由 <b>BOM 驱动</b>(谁用了什么由 BOM 说了算, 不靠关键词)。
+          每月导当月「已发货」订单给工厂 → 工厂返月度总额 → 点「录实际」填进去与预估比。
+          消费窗口按<b>发货日期</b>(生产周期~30天)。配件库里改物料分类即时联动这里。</>} />
       <Space wrap>
         <Button icon={<ReloadOutlined />} loading={backfillMut.isPending} onClick={() => backfillMut.mutate()}>回填配件标准估值</Button>
         <Tooltip title="填了订单号的配件采购单 → 按订单汇总成真实配件成本(先预览再落库)">
@@ -237,15 +236,20 @@ export default function BulkMaterialReconPanel() {
           <Button icon={<PrinterOutlined />} style={{ marginLeft: 8 }} disabled={!effMonth}
             onClick={() => effMonth && doExport(effMonth)}>导出当月全部发货单</Button>
         </span>
+        {cats.length > 0 && (
+          <Button type="link" size="small"
+            onClick={() => setActiveKeys(activeKeys.length === cats.length ? [] : cats.map((m) => m.key))}>
+            {activeKeys.length === cats.length ? '全部收起' : '全部展开'}
+          </Button>)}
       </Space>
 
-      {(data?.materials ?? []).map((m) => (
-        <MaterialCard key={m.key} m={m}
-          onExport={(period) => doExport(period, m.key)}
-          onEnterActual={(period) => setActualModal({ materialKey: m.key, materialName: m.name, yearMonth: period })} />
-      ))}
-      {!isLoading && (data?.materials?.length ?? 0) === 0 && (
-        <Typography.Text type="secondary">暂无对账数据</Typography.Text>
+      {cats.length > 0 ? (
+        <Collapse items={collapseItems} activeKey={activeKeys}
+          onChange={(k) => setActiveKeys(k as string[])} />
+      ) : !isLoading && (
+        <Typography.Text type="secondary">
+          暂无分类数据 —— 去配件库给物料设「分类」(或先点上方回填), 这里就会按分类出对账。
+        </Typography.Text>
       )}
 
       <Modal open={!!preview} width={820} title="逐单配件采购汇总 — 预览(确认后写入 actual_parts)"

@@ -564,30 +564,27 @@ export const purchaseFileImageUrl = (fileId: number) =>
 export interface BulkMaterialPeriod {
   period: string;                  // YYYY-MM (按发货日期)
   historical_avg: number;          // 历史平均 (过去已对账月每单实际均值×本月单数; 无历史=预估)
-  standard_consume: number;        // 预估 (Σ est_parts / flat×单数)
+  standard_consume: number;        // 预估 (Σ 发货单 BOM 里该分类外采配件 price×qty)
   factory_actual: number | null;   // 实际 (工厂月度对账总额; 没录入=null)
   has_factory_actual: boolean;
   variance: number | null;         // 实际 − 预估 (没录入实际=null)
   variance_pct: number | null;
-  purchase_invoice: number;        // 采购发票合计 (PartPurchase, 参考)
-  order_count: number;
-  missing_est: number;             // 命中但 est_parts 缺 (覆盖率)
+  order_count: number;             // 该分类该月命中发货单数
 }
-export interface BulkMaterial {
+export interface BulkMaterial {       // 现在 key/name = 配件分类(category)
   key: string;
   name: string;
-  mode: 'by_order_kw' | 'per_order_flat';
   periods: BulkMaterialPeriod[];
   total_standard: number;
   total_factory_actual: number;
-  total_purchase_invoice: number;
   total_variance: number;
   total_variance_pct: number | null;
 }
 export interface BulkMaterialRecon {
   granularity: string;
   ship_date_basis: boolean;
-  materials: BulkMaterial[];
+  category_driven?: boolean;
+  materials: BulkMaterial[];       // 每条 = 一个配件分类
 }
 export interface AggregateRelatedItem {
   order_no: string;

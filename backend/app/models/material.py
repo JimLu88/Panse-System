@@ -30,6 +30,9 @@ class Material(Base, TimestampMixin):
     price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     remark: Mapped[Optional[str]] = mapped_column(String(255))
     is_custom: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 配件分类 (migration 0097, 用户 2026-06-26): 用户自定义文字(五金/玻璃/岩板/洞石饰面板/电力轨道/
+    # 铝合金槽/杂项/床铺板/软包…); 配件库UI管理, 大宗材料对账按它+BOM分组(取代硬编码关键词登记表)。
+    category: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
     # Phase 4 智能提前备货 / 库存预警用
     lead_time_days: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

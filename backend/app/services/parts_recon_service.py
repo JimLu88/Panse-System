@@ -1,15 +1,13 @@
 # -*- coding: utf-8 -*-
-"""配件(外采)对账服务 — 配件 epic P2 (用户 2026-06-26)。
+"""配件(外采)对账服务 — 配件 epic (用户 2026-06-26; 方向1: 分类 + BOM 驱动)。
 
-两件事:
-  A. aggregate_related_purchases —— 把「能逐单」的配件采购单(PartPurchase.related_order_no 填了订单号)
-     按订单号汇总, 写进 Order.actual_parts → 该单 physical_cost 改逐项真实计价(不估不 floor)。
-     默认 dry-run(apply=False)只出预览(含 physical_cost 变化), 确认无误再 apply。
-
-  B. bulk_material_recon —— 大宗/消耗型材料(洞石板/木皮/双面胶/螺丝…)工厂混裁、说不清对应哪单,
-     无法逐单。改按「材料 × 采购周期」对账: 当期实际采购额 vs 标准估值消耗, 出差异%。
-     **⚠ 铁律(用户 2026-06-26): 消费窗口一律按订单「发货日期 ship_date」圈定, 不用下单日期。**
-     因生产周期~30天: 某段时间采购的料被那段时间【发货】的订单消耗。差异喂 P3 逐单建议值回推。
+三件事:
+  A. aggregate_related_purchases —— 填了 related_order_no 的配件采购单按订单汇总写 Order.actual_parts。
+  B. bulk_material_recon —— **按 Material.category 分组、BOM 驱动** 的对账: 每分类每发货月
+     历史平均 | 预估(Σ发货单BOM里该类外采配件 price×qty) | 实际(工厂月度对账总额) | 差异%。
+     **铁律: 消费窗口按订单「发货日期 ship_date」圈定(生产周期~30天)。** 取代旧硬编码关键词登记表。
+  C. 工厂月度对账总额录入(PartsMonthlyRecon, material_key 存「分类」)。
+  D. export_shipped_orders —— 导当月发货单清单(全部 / 按分类逐单展开 BOM 部位+预设尺寸)给工厂对账。
 
 口径: 总账准(差异落当期); 逐单这块是有界/可校准的近似(物理限制绕不开)。
 """
@@ -23,50 +21,15 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.material import Material
 from app.models.order import Order, PartPurchase, PartsMonthlyRecon
 from app.services import sales_analytics
 
 _CENTS = Decimal("0.01")
 
-
-# ── 大宗/消耗材料登记表 ────────────────────────────────────────────────────
-# 每条: key/name 显示; mode 决定「标准消耗」怎么算; purchase_kw 匹配采购侧(配件名/规格/供应商)。
-#   mode='by_order_kw'  : 标准 = Σ est_parts of 命中 order_kw 的成交单(发货在窗口内)。
-#                         适用「选配型」材料(只有部分订单选, 且其外采配件就是这个料, 如洞石/岩板饰面板)。
-#   mode='per_order_flat': 标准 = flat_per_order × 当期发货成交单数。
-#                         适用「通用消耗型」(几乎每单都用, 订单侧无关键词, 如双面胶/螺丝/木皮)。
-#                         flat_per_order = 每单标准用量(¥); 设 0 → 仅显示实际采购, 待用户填标准后比对。
-# 关键词可按实际发票/SKU 命名增删(模块常量, 改后重部署生效)。
-BULK_MATERIALS: list[dict] = [
-    {
-        "key": "dongshi",
-        "name": "洞石/岩板饰面板",
-        "mode": "by_order_kw",
-        "purchase_kw": ["洞石", "岩板", "饰面板", "饰面", "台面板"],
-        "order_kw": ["洞石", "岩板"],
-    },
-    {
-        "key": "muphi",
-        "name": "木皮饰面",
-        "mode": "per_order_flat",
-        "purchase_kw": ["木皮"],
-        "flat_per_order": Decimal("0"),
-    },
-    {
-        "key": "tape",
-        "name": "双面胶",
-        "mode": "per_order_flat",
-        "purchase_kw": ["双面胶"],
-        "flat_per_order": Decimal("0"),
-    },
-    {
-        "key": "screw",
-        "name": "螺丝",
-        "mode": "per_order_flat",
-        "purchase_kw": ["螺丝"],
-        "flat_per_order": Decimal("0"),
-    },
-]
+# 工厂自备/木作/人工(WD-/MW-/MP-)不是外采配件 → 不进配件对账 (按料号前缀硬排, 名字会误命中)。
+_FACTORY_PREFIXES = ("WD", "MW", "MP")
+_UNCATEGORIZED = "未分类"
 
 # 非配件采购(代扣/理财/服务费/淘天扣款…)排除关键词 — 与 purchases.list_purchases 一致。
 _NON_PART_KW = ("代扣", "代付", "资金扣回", "消费券", "理财", "申购",
@@ -82,7 +45,6 @@ def _ym(d: Optional[date]) -> Optional[str]:
 
 
 def _looks_non_part(p: PartPurchase) -> bool:
-    """该采购行像非配件支出(代扣/服务费/淘天)→ 不计入配件对账。"""
     name = (p.material_name or "")
     if any(k in name for k in _NON_PART_KW):
         return True
@@ -92,18 +54,11 @@ def _looks_non_part(p: PartPurchase) -> bool:
 
 
 def _purchase_amount(p: PartPurchase) -> Optional[Decimal]:
-    """采购金额取数: total_amount(含运费总额)优先, 否则 amount(明细金额)。"""
     if p.total_amount is not None:
         return _d(p.total_amount)
     if p.amount is not None:
         return _d(p.amount)
     return None
-
-
-def _match_kw(text: Optional[str], kws: list[str]) -> bool:
-    if not text:
-        return False
-    return any(k in text for k in kws)
 
 
 # ── A. 逐单配件采购 → actual_parts 汇总 ──────────────────────────────────────
@@ -176,9 +131,9 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
     }
 
 
-# ── B. 大宗材料 × 采购周期 对账 (发货日期口径) ───────────────────────────────
+# ── BOM 驱动的物料消耗 (取代硬编码关键词; 用户 2026-06-26 方向1) ──────────────
 def _settled_shipped_orders(db: Session) -> list[Order]:
-    """成交 + 已发货(ship_date 非空) + 非补单 的订单 (大宗对账的消费窗口基底, 按发货日期)。"""
+    """成交 + 已发货(ship_date 非空) + 非补单 的订单(对账消费窗口基底, 按发货日期)。"""
     return db.execute(
         select(Order).where(
             sales_analytics.settled_sale_clause(),
@@ -188,156 +143,164 @@ def _settled_shipped_orders(db: Session) -> list[Order]:
     ).scalars().all()
 
 
-def _material_for_key(material_key: str) -> Optional[dict]:
-    for m in BULK_MATERIALS:
-        if m["key"] == material_key:
-            return m
-    return None
+def _product_code_variants(code: Optional[str]) -> list[str]:
+    """订单 product_code 用 P+11, BOM 用 PPS+11 → 两形态都试(镜像 accessory_checklist)。"""
+    if not code:
+        return []
+    code = code.strip()
+    out = {code}
+    if code.startswith("PPS"):
+        out.add("P" + code[3:])
+    elif code.startswith("P"):
+        out.add("PPS" + code[1:])
+    return list(out)
 
 
-def _material_name(material_key: str) -> Optional[str]:
-    m = _material_for_key(material_key)
-    return m["name"] if m else None
-
-
-def _material_bom_kw(mat: dict) -> list[str]:
-    """该材料在 BOM/订单侧的匹配关键词: by_order_kw 用 order_kw, 否则用 purchase_kw。"""
-    return mat.get("order_kw") or mat.get("purchase_kw") or []
-
-
-# 木作(WD-)/工厂自备(MW-/MP-)不是外采配件 → 不进配件对账清单 (用户 2026-06-26)。
-# 必须按料号前缀排除, 不能靠名字: 木作行名常含产品名(如"黑胡桃木岩板餐桌-木作部分")会被"岩板"误命中。
-_EXCLUDE_BOM_PREFIXES = ("WD", "MW", "MP")
-
-
-def _part_category(name: str) -> str:
-    """配件大类: 岩板(板材) / 洞石饰面板(饰面) / 其他 —— 用户要求「洞石岩板」与「洞石装饰板」分开列。"""
-    n = name or ""
-    if "岩板" in n:
-        return "岩板"
-    if "饰面板" in n or "纹理饰面" in n:
-        return "洞石饰面板"
-    return "其他"
-
-
-def _factory_actual_by_period(db: Session, material_key: str) -> dict[str, Decimal]:
-    """该材料每月「工厂月度对账总额」(多供应商求和)。"""
-    out: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-    for ym, amt in db.execute(
-        select(PartsMonthlyRecon.year_month, PartsMonthlyRecon.actual_total)
-        .where(PartsMonthlyRecon.material_key == material_key)
+def _load_bom_and_materials(db: Session):
+    """一次性载入: 物料(category/price/name/unit) + BOM(按 (product_code,sku_code) 与 product_code 两键)。"""
+    from app.models.bom import BomLine
+    mat_info: dict[str, dict] = {}
+    for code, name, unit, price, cat in db.execute(
+        select(Material.code, Material.name, Material.unit, Material.price, Material.category)
     ).all():
-        out[ym] += _d(amt)
-    return out
+        mat_info[code] = {"name": name, "unit": unit, "price": _d(price), "category": cat}
+    bom_by_pcsku: dict[tuple, list] = defaultdict(list)
+    bom_by_pc: dict[str, list] = defaultdict(list)
+    for pc, sc, mcode, qty, remark, mname in db.execute(
+        select(BomLine.product_code, BomLine.sku_code, BomLine.material_code,
+               BomLine.qty_per_product, BomLine.remark, BomLine.material_name)
+    ).all():
+        rec = (mcode, _d(qty), remark, mname)
+        bom_by_pcsku[(pc, sc)].append(rec)
+        bom_by_pc[pc].append(rec)
+    return mat_info, bom_by_pcsku, bom_by_pc
 
 
-def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
-    """大宗/消耗材料对账: 每材料每月 历史平均 | 预估 | 实际(工厂月度对账) | 差异%。
+def _order_bom_lines(o: Order, bom_by_pcsku, bom_by_pc) -> list:
+    """该订单的 BOM 行(镜像 _bom_rows_for_order: 先 product_code+sku_code 精确, 再 product_code 回退)。"""
+    pcs = _product_code_variants(o.product_code)
+    for pc in pcs:
+        if (pc, o.sku_code) in bom_by_pcsku:
+            return bom_by_pcsku[(pc, o.sku_code)]
+    for pc in pcs:
+        if pc in bom_by_pc:
+            return bom_by_pc[pc]
+    return []
 
-    **消费窗口按订单 ship_date(发货日期)圈定** —— 生产周期~30天, 料在发货前才裁切消耗。
-    - 预估 standard_consume = Σ est_parts of 命中该料的发货成交单(by_order_kw)/ flat×单数(per_order_flat)。
-    - 实际 factory_actual = 该月工厂返回的对账总额(PartsMonthlyRecon 多供应商求和; 没录入=None)。
-    - 历史平均 historical_avg = 过去已对账月份「每单实际」均值 × 本月发货单数(无历史→回退预估)。
-    - 采购发票 purchase_invoice = PartPurchase 命中该料的当月发票合计(参考; 大宗多走支付宝常为空)。
-    granularity 暂支持 'month'(YYYY-MM)。
+
+def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> dict[str, dict]:
+    """该订单按分类的外采配件消耗: {category: {amount, materials:[{...}]}}。
+
+    排木作/工厂自备(WD/MW/MP); 同料同尺寸去重(定制模板会堆叠重复行); qty = qty_per_product × 订单件数。
     """
-    purchases = db.execute(select(PartPurchase)).scalars().all()
+    qmul = Decimal(int(o.qty or 1))
+    by_cat: dict[str, dict] = {}
+    seen: set = set()
+    for mcode, qty, remark, mname in _order_bom_lines(o, bom_by_pcsku, bom_by_pc):
+        if (mcode or "").split("-", 1)[0].upper() in _FACTORY_PREFIXES:
+            continue
+        info = mat_info.get(mcode) or {}
+        cat = info.get("category") or _UNCATEGORIZED
+        name = info.get("name") or mname or mcode
+        size = (remark or "").strip() or None
+        dk = (mcode, "".join(size.split()) if size else "")
+        if dk in seen:
+            continue
+        seen.add(dk)
+        q = qty * qmul
+        price = info.get("price", Decimal("0"))
+        amt = (q * price).quantize(_CENTS)
+        c = by_cat.setdefault(cat, {"amount": Decimal("0"), "materials": []})
+        c["amount"] += amt
+        c["materials"].append({
+            "material_code": mcode, "part_name": name, "category": cat,
+            "qty": float(q), "unit": info.get("unit"), "price": float(price),
+            "amount": float(amt), "size_note": size,
+        })
+    return by_cat
+
+
+def _ac_categories(db: Session) -> list[str]:
+    """配件库里 AC(外采)物料用到的分类(去重, 排工厂自备前缀)。"""
+    cats: set = set()
+    for code, cat in db.execute(
+        select(Material.code, Material.category).where(Material.category.isnot(None))
+    ).all():
+        if (code or "").split("-", 1)[0].upper() in _FACTORY_PREFIXES:
+            continue
+        if cat:
+            cats.add(cat)
+    return sorted(cats)
+
+
+# ── B. 分类 × 发货月 对账 (BOM 驱动, 发货日期口径) ───────────────────────────
+def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
+    """配件对账(方向1, 分类+BOM 驱动): 每分类每发货月 历史平均 | 预估 | 实际(工厂月度) | 差异%。
+
+    - 预估 standard_consume = Σ(发货成交单 BOM 里该分类外采配件 price×qty)(按 ship_date 分月)。
+    - 实际 factory_actual = 工厂月度对账总额(PartsMonthlyRecon, key=分类, 多供应商求和; 没录=None)。
+    - 历史平均 historical_avg = 过去已对账月「每单实际」均值 × 本月发货单数(无历史→回退预估)。
+    """
+    mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
     orders = _settled_shipped_orders(db)
 
-    materials_out: list[dict] = []
-    for mat in BULK_MATERIALS:
-        pkw = mat["purchase_kw"]
-        # 实际采购: 按采购日期(purchase_date)分月
-        actual_by_p: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-        for p in purchases:
-            if _looks_non_part(p):
-                continue
-            if not (_match_kw(p.material_name, pkw) or _match_kw(p.spec, pkw)
-                    or _match_kw(p.supplier, pkw)):
-                continue
-            amt = _purchase_amount(p)
-            ym = _ym(p.purchase_date)
-            if amt is None or ym is None:
-                continue
-            actual_by_p[ym] += amt
+    std: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    cnt: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for o in orders:
+        ym = _ym(o.ship_date)
+        if ym is None:
+            continue
+        for cat, c in _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc).items():
+            std[cat][ym] += c["amount"]
+            cnt[cat][ym] += 1
 
-        # 标准消耗: 按发货日期(ship_date)分月
-        std_by_p: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-        cnt_by_p: dict[str, int] = defaultdict(int)
-        miss_by_p: dict[str, int] = defaultdict(int)   # 命中但 est_parts 缺(覆盖率)
-        mode = mat["mode"]
-        for o in orders:
-            ym = _ym(o.ship_date)
-            if ym is None:
-                continue
-            if mode == "by_order_kw":
-                okw = mat["order_kw"]
-                if not (_match_kw(o.sku, okw) or _match_kw(o.product_name, okw)
-                        or _match_kw(o.sku_code, okw)):
-                    continue
-                cnt_by_p[ym] += 1
-                if o.est_parts is None:
-                    miss_by_p[ym] += 1
-                else:
-                    std_by_p[ym] += _d(o.est_parts)
-            else:  # per_order_flat: 每单标准用量 × 当期发货成交单数
-                cnt_by_p[ym] += 1
-                std_by_p[ym] += _d(mat.get("flat_per_order"))
+    fact_all: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    for key, ym, amt in db.execute(
+        select(PartsMonthlyRecon.material_key, PartsMonthlyRecon.year_month, PartsMonthlyRecon.actual_total)
+    ).all():
+        fact_all[key][ym] += _d(amt)
 
-        fact_by_p = _factory_actual_by_period(db, mat["key"])
-        periods = sorted(set(actual_by_p) | set(std_by_p) | set(cnt_by_p) | set(fact_by_p))
+    out_cats = []
+    all_keys = sorted(set(_ac_categories(db)) | set(std.keys()) | set(fact_all.keys()))
+    for cat in all_keys:
+        std_p, cnt_p, fact_p = std.get(cat, {}), cnt.get(cat, {}), fact_all.get(cat, {})
+        periods = sorted(set(std_p) | set(cnt_p) | set(fact_p))
         rows = []
-        t_std = t_fact = t_invoice = Decimal("0")
-        hist_rates: list[Decimal] = []   # 过去已对账月份的「每单实际」均价, 滚动喂历史平均
+        t_std = t_fact = Decimal("0")
+        hist_rates: list[Decimal] = []
         for ym in periods:
-            std = std_by_p.get(ym, Decimal("0")).quantize(_CENTS)
-            invoice = actual_by_p.get(ym, Decimal("0")).quantize(_CENTS)   # 采购发票合计(参考)
-            cnt = cnt_by_p.get(ym, 0)
-            has_fact = ym in fact_by_p
-            fact = fact_by_p.get(ym, Decimal("0")).quantize(_CENTS) if has_fact else None
-            # 历史平均 = 过去已对账月份「每单实际」均值 × 本月发货单数; 无历史 → 回退预估
-            if hist_rates and cnt > 0:
-                avg_rate = sum(hist_rates, Decimal("0")) / Decimal(len(hist_rates))
-                hist = (avg_rate * cnt).quantize(_CENTS)
+            s = std_p.get(ym, Decimal("0")).quantize(_CENTS)
+            c = cnt_p.get(ym, 0)
+            has_fact = ym in fact_p
+            fact = fact_p.get(ym, Decimal("0")).quantize(_CENTS) if has_fact else None
+            if hist_rates and c > 0:
+                hist = ((sum(hist_rates, Decimal("0")) / Decimal(len(hist_rates))) * c).quantize(_CENTS)
             else:
-                hist = std
-            var = (fact - std).quantize(_CENTS) if has_fact else None
-            var_pct = float((var / std * 100).quantize(_CENTS)) if (has_fact and std > 0) else None
+                hist = s
+            var = (fact - s).quantize(_CENTS) if has_fact else None
+            var_pct = float((var / s * 100).quantize(_CENTS)) if (has_fact and s > 0) else None
             rows.append({
-                "period": ym,
-                "historical_avg": float(hist),
-                "standard_consume": float(std),
-                "factory_actual": float(fact) if has_fact else None,
-                "has_factory_actual": has_fact,
-                "variance": float(var) if has_fact else None,
-                "variance_pct": var_pct,
-                "purchase_invoice": float(invoice),
-                "order_count": cnt,
-                "missing_est": miss_by_p.get(ym, 0),
+                "period": ym, "historical_avg": float(hist), "standard_consume": float(s),
+                "factory_actual": float(fact) if has_fact else None, "has_factory_actual": has_fact,
+                "variance": float(var) if has_fact else None, "variance_pct": var_pct,
+                "order_count": c,
             })
-            t_std += std
-            t_invoice += invoice
+            t_std += s
             if has_fact:
                 t_fact += fact
-                if cnt > 0:
-                    hist_rates.append(fact / Decimal(cnt))
+                if c > 0:
+                    hist_rates.append(fact / Decimal(c))
         t_var = (t_fact - t_std).quantize(_CENTS)
-        materials_out.append({
-            "key": mat["key"],
-            "name": mat["name"],
-            "mode": mode,
-            "periods": rows,
-            "total_standard": float(t_std),
-            "total_factory_actual": float(t_fact),
-            "total_purchase_invoice": float(t_invoice),
+        out_cats.append({
+            "key": cat, "name": cat, "periods": rows,
+            "total_standard": float(t_std), "total_factory_actual": float(t_fact),
             "total_variance": float(t_var),
             "total_variance_pct": float((t_var / t_std * 100).quantize(_CENTS)) if t_std > 0 else None,
         })
+    return {"granularity": granularity, "ship_date_basis": True, "category_driven": True, "materials": out_cats}
 
-    return {"granularity": granularity, "ship_date_basis": True, "materials": materials_out}
 
-
-# ── C. 工厂月度对账总额 录入/查询/删除 ──────────────────────────────────────
+# ── C. 工厂月度对账总额 录入/查询/删除 (material_key 存「分类」) ──────────────
 def list_monthly_recon(db: Session, *, material_key: Optional[str] = None,
                        year_month: Optional[str] = None) -> list[dict]:
     q = select(PartsMonthlyRecon)
@@ -349,7 +312,7 @@ def list_monthly_recon(db: Session, *, material_key: Optional[str] = None,
         q.order_by(PartsMonthlyRecon.year_month.desc(), PartsMonthlyRecon.id.desc())
     ).scalars().all()
     return [{
-        "id": r.id, "material_key": r.material_key, "material_name": _material_name(r.material_key),
+        "id": r.id, "material_key": r.material_key, "material_name": r.material_key,
         "year_month": r.year_month, "supplier": r.supplier,
         "actual_total": float(_d(r.actual_total)), "note": r.note,
     } for r in rows]
@@ -358,9 +321,10 @@ def list_monthly_recon(db: Session, *, material_key: Optional[str] = None,
 def save_monthly_recon(db: Session, *, material_key: str, year_month: str, actual_total,
                        supplier: Optional[str] = None, note: Optional[str] = None,
                        recon_id: Optional[int] = None) -> dict:
-    """录入/更新 工厂月度对账总额。recon_id 给了=更新该行, 否则新增一行(同料同月可多供应商)。"""
-    if _material_for_key(material_key) is None:
-        raise ValueError(f"未知材料 {material_key}")
+    """录入/更新 某分类某月工厂返回的对账总额。recon_id 给了=更新, 否则新增(同分类同月可多供应商)。"""
+    material_key = (material_key or "").strip()
+    if not material_key:
+        raise ValueError("分类不能为空")
     amt = _d(actual_total)
     if recon_id is not None:
         row = db.get(PartsMonthlyRecon, recon_id)
@@ -374,7 +338,7 @@ def save_monthly_recon(db: Session, *, material_key: str, year_month: str, actua
         db.add(row)
     db.commit()
     db.refresh(row)
-    return {"id": row.id, "material_key": row.material_key, "material_name": _material_name(row.material_key),
+    return {"id": row.id, "material_key": row.material_key, "material_name": row.material_key,
             "year_month": row.year_month, "supplier": row.supplier,
             "actual_total": float(_d(row.actual_total)), "note": row.note}
 
@@ -395,69 +359,39 @@ def _orders_shipped_in(db: Session, year_month: str) -> list[Order]:
 
 def export_shipped_orders(db: Session, *, year_month: str,
                           material_key: Optional[str] = None) -> dict:
-    """导出当月(发货月)已发货成交订单清单, 发给工厂对账。
+    """导当月(发货月)已发货成交订单清单。
 
-    material_key 空 = 全部发货单(基础列, 给工厂自己挑); 给了 = 只列用该材料的发货单, 且逐单展开
-    BOM 部位/预设尺寸明细(实际可能有出入, 列出方便对照)。按发货日期口径(ship_date)。
+    material_key(=分类)空 = 全部发货单(基础列, 工厂自挑); 给了 = 只列 BOM 里有该分类外采配件的单,
+    逐单展开该分类的配件部位 + 预设尺寸(去重、排木作)。按发货日期口径(ship_date)。
     """
     orders = _orders_shipped_in(db, year_month)
-    mat = _material_for_key(material_key) if material_key else None
     out_orders: list[dict] = []
     t_est = Decimal("0")
 
-    if mat is not None:
+    if material_key:
         from app.services import sku_utils
-        from app.services.accessory_checklist_service import _bom_rows_for_order
-        bom_kw = _material_bom_kw(mat)
-        okw = mat.get("order_kw") or bom_kw
+        mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
         for o in orders:
-            hit_by_name = bool(_match_kw(o.sku, okw) or _match_kw(o.product_name, okw)
-                               or _match_kw(o.sku_code, okw))
-            bom_parts = []
-            seen_p: set = set()
-            for line, mat_name, mat_unit in _bom_rows_for_order(db, o):
-                code = line.material_code or ""
-                if code.split("-", 1)[0].upper() in _EXCLUDE_BOM_PREFIXES:
-                    continue   # 木作/工厂自备 不是外采配件(名字含产品名"岩板"会误命中, 按料号前缀硬排)
-                nm = mat_name or line.material_name or ""
-                if not (_match_kw(nm, bom_kw) or _match_kw(code, bom_kw)):
-                    continue
-                size = (line.remark or "").strip() or None
-                # 去重键去掉所有空白再比 —— 源数据同尺寸写法不一致("岩板 1000"/"岩板1000")否则漏去重
-                dk = (code, "".join(size.split()) if size else "")
-                if dk in seen_p:
-                    continue   # 定制单共用模板 BOM 会堆叠重复行(同料同尺寸) → 去重只列一次
-                seen_p.add(dk)
-                qty = _d(line.qty_per_product) * Decimal(int(o.qty or 1))
-                bom_parts.append({
-                    "part_name": nm,
-                    "material_code": code,
-                    "category": _part_category(nm),
-                    "qty": float(qty),
-                    "unit": line.unit or mat_unit,
-                    "size_note": size,                  # 预设尺寸/工艺说明
-                })
-            # 分开列: 岩板 → 洞石饰面板 → 其他, 同类按名 (用户: 两类是两码事, 要分开)
-            bom_parts.sort(key=lambda p: ({"岩板": 0, "洞石饰面板": 1}.get(p["category"], 2), p["part_name"]))
-            # 选配型(by_order_kw): 名字命中 或 BOM 有该料才算; 通用消耗型: BOM 里确实有该料才列
-            if mat["mode"] == "by_order_kw":
-                if not hit_by_name and not bom_parts:
-                    continue
-            elif not bom_parts:
+            cons = _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc).get(material_key)
+            if not cons:
                 continue
-            est = _d(o.est_parts)
+            parts = sorted(cons["materials"], key=lambda p: p["part_name"])
+            est = cons["amount"]
             t_est += est
             out_orders.append({
                 "order_no": o.order_no,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
                 "product_name": o.product_name,
-                "sku": o.sku,                       # SKU 名通常含整体尺寸
+                "sku": o.sku,
                 "est_parts": float(est),
-                # 定制单共用通用编码、BOM 是大杂烩模板 → 标记, 清单里提示"以实际为准"(去重后仍非精确)
                 "is_custom": bool(getattr(o, "is_custom", False))
                 or sku_utils.is_custom_sku_code(o.sku_code, o.product_code),
-                "bom_parts": bom_parts,
+                "bom_parts": [{
+                    "part_name": p["part_name"], "material_code": p["material_code"],
+                    "category": p["category"], "qty": p["qty"], "unit": p["unit"],
+                    "size_note": p["size_note"],
+                } for p in parts],
             })
     else:
         for o in orders:
@@ -476,7 +410,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
     return {
         "year_month": year_month,
         "material_key": material_key,
-        "material_name": mat["name"] if mat else None,
+        "material_name": material_key,
         "order_count": len(out_orders),
         "total_est_parts": float(t_est.quantize(_CENTS)),
         "orders": out_orders,

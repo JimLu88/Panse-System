@@ -12,6 +12,7 @@ class MaterialBase(BaseModel):
     price: Optional[Decimal] = None
     remark: Optional[str] = None
     is_custom: bool = False
+    category: Optional[str] = Field(None, max_length=64)
 
 
 class MaterialCreate(BaseModel):
@@ -22,6 +23,7 @@ class MaterialCreate(BaseModel):
     unit: Optional[str] = None
     price: Optional[Decimal] = None
     remark: Optional[str] = None
+    category: Optional[str] = Field(None, max_length=64)
 
 
 class MaterialUpdate(BaseModel):
@@ -30,6 +32,7 @@ class MaterialUpdate(BaseModel):
     unit: Optional[str] = None
     price: Optional[Decimal] = None
     remark: Optional[str] = None
+    category: Optional[str] = Field(None, max_length=64)
 
 
 class MaterialOut(MaterialBase):

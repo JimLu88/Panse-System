@@ -1,7 +1,8 @@
 # -*- coding: utf-8 -*-
-"""配件「工厂月度对账」(用户 2026-06-26): 月度总额录入 + 历史平均/预估/实际三列 + 当月发货清单导出。
+"""配件对账(方向1, 分类+BOM驱动) + 工厂月度对账 + 当月发货清单导出 (用户 2026-06-26)。
 
-口径: 按发货日期 ship_date 圈当月; 实际=工厂返回月度总额; 历史平均=过去已对账月每单实际均值×本月单数。
+对账不再靠关键词: 由 Material.category + BOM 驱动。预估 = Σ(发货成交单 BOM 里该分类外采配件
+price×qty), 按发货日期 ship_date 分月; 实际 = 工厂月度对账总额(PartsMonthlyRecon, key=分类)。
 """
 from datetime import date
 from decimal import Decimal
@@ -14,124 +15,137 @@ from app.models.order import Order
 from app.services import parts_recon_service as prs
 
 
-def _dongshi_order(db, no, ship, est=Decimal("300"), product_code="PPSDS01", sku_code="SDS"):
-    o = Order(platform="淘宝", order_no=no, product_code=product_code, sku_code=sku_code,
-              sku="洞石餐边柜-1.2米", product_name="洞石餐边柜", qty=1,
-              order_date=date(2026, 1, 1), ship_date=ship, status="signed",
-              paid_amount=Decimal("5000"), est_parts=est)
+def _mat(db, code, name, price, category, unit="块"):
+    db.add(Material(code=code, name=name, price=Decimal(str(price)), category=category, unit=unit))
+
+
+def _bom(db, mcode, mname, qty=1, remark=None, pc="PPSDS01", sc="SDS"):
+    db.add(BomLine(product_code=pc, sku_code=sc, material_code=mcode, material_name=mname,
+                   qty_per_product=Decimal(str(qty)), remark=remark))
+
+
+def _order(db, no, ship, pc="PPSDS01", sc="SDS", sku="洞石餐边柜-1.2米", qty=1, est=Decimal("300")):
+    o = Order(platform="淘宝", order_no=no, product_code=pc, sku_code=sc, sku=sku,
+              product_name="洞石餐边柜", qty=qty, order_date=date(2026, 1, 1), ship_date=ship,
+              status="signed", paid_amount=Decimal("5000"), est_parts=est)
     db.add(o)
     return o
 
 
+def _seed_yanban(db):
+    """岩板分类: 产品 PPSDS01 的 BOM 有 AC-RB(岩板¥90) + WD木作(应排除)。"""
+    _mat(db, "AC-RB", "洞石岩板", 90, "岩板")
+    _mat(db, "WD-1", "木作部分", 0, "木作")
+    _bom(db, "AC-RB", "洞石岩板", 1, "1200*480")
+    _bom(db, "WD-1", "木作", 1)
+
+
+# ── 工厂月度对账 CRUD (material_key 现在是分类) ──────────────────────────────
 def test_save_list_delete_monthly_recon(db_session):
     db = db_session
-    r = prs.save_monthly_recon(db, material_key="dongshi", year_month="2026-02",
+    r = prs.save_monthly_recon(db, material_key="岩板", year_month="2026-02",
                                actual_total=Decimal("8600"), supplier="宋磊岩板")
-    assert r["id"] and r["actual_total"] == 8600.0 and r["material_name"]
-    rows = prs.list_monthly_recon(db, material_key="dongshi")
+    assert r["id"] and r["actual_total"] == 8600.0 and r["material_name"] == "岩板"
+    rows = prs.list_monthly_recon(db, material_key="岩板")
     assert len(rows) == 1 and rows[0]["year_month"] == "2026-02"
-    r2 = prs.save_monthly_recon(db, material_key="dongshi", year_month="2026-02",
+    r2 = prs.save_monthly_recon(db, material_key="岩板", year_month="2026-02",
                                 actual_total=Decimal("9000"), recon_id=r["id"])
-    assert r2["actual_total"] == 9000.0                      # 更新而非新增
-    assert len(prs.list_monthly_recon(db, material_key="dongshi")) == 1
+    assert r2["actual_total"] == 9000.0
+    assert len(prs.list_monthly_recon(db, material_key="岩板")) == 1
     assert prs.delete_monthly_recon(db, r["id"]) is True
-    assert prs.list_monthly_recon(db, material_key="dongshi") == []
+    assert prs.list_monthly_recon(db, material_key="岩板") == []
 
 
-def test_save_unknown_material_rejected(db_session):
+def test_save_empty_category_rejected(db_session):
     with pytest.raises(ValueError):
-        prs.save_monthly_recon(db_session, material_key="nope", year_month="2026-02",
+        prs.save_monthly_recon(db_session, material_key="   ", year_month="2026-02",
                                actual_total=Decimal("100"))
 
 
-def test_recon_includes_factory_actual_and_variance(db_session):
+# ── 对账: BOM 驱动、按分类、工厂实际/差异 ───────────────────────────────────
+def test_recon_category_driven_standard_and_variance(db_session):
     db = db_session
-    _dongshi_order(db, "D1", date(2026, 2, 10), est=Decimal("300"))
-    _dongshi_order(db, "D2", date(2026, 2, 20), est=Decimal("300"))
+    _seed_yanban(db)
+    _order(db, "D1", date(2026, 2, 10))
+    _order(db, "D2", date(2026, 2, 20))
     db.flush()
-    prs.save_monthly_recon(db, material_key="dongshi", year_month="2026-02", actual_total=Decimal("800"))
-    ds = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "dongshi")
-    p = {r["period"]: r for r in ds["periods"]}["2026-02"]
-    assert p["standard_consume"] == 600.0       # 预估 Σest
-    assert p["factory_actual"] == 800.0          # 实际(工厂月度)
-    assert p["has_factory_actual"] is True
-    assert p["variance"] == 200.0                # 实际 − 预估
+    prs.save_monthly_recon(db, material_key="岩板", year_month="2026-02", actual_total=Decimal("220"))
+    rc = prs.bulk_material_recon(db)
+    assert rc["category_driven"] is True
+    yan = next(m for m in rc["materials"] if m["key"] == "岩板")
+    p = {r["period"]: r for r in yan["periods"]}["2026-02"]
+    assert p["standard_consume"] == 180.0      # 2 单 × (1×90)
+    assert p["factory_actual"] == 220.0
+    assert p["variance"] == 40.0               # 220 − 180
     assert p["order_count"] == 2
-    assert ds["total_factory_actual"] == 800.0
+    assert all(m["key"] != "木作" for m in rc["materials"])   # 木作不进对账
 
 
-def test_historical_avg_rolls_from_past_reconciled_months(db_session):
+def test_recon_uses_ship_date_not_order_date(db_session):
     db = db_session
-    _dongshi_order(db, "A1", date(2026, 2, 10))
-    _dongshi_order(db, "A2", date(2026, 2, 20))      # 2月2单
-    _dongshi_order(db, "B1", date(2026, 3, 5))
-    _dongshi_order(db, "B2", date(2026, 3, 6))
-    _dongshi_order(db, "B3", date(2026, 3, 7))       # 3月3单(未对账)
+    _seed_yanban(db)
+    _order(db, "S1", date(2026, 2, 15))   # 下单 1 月、发货 2 月
     db.flush()
-    prs.save_monthly_recon(db, material_key="dongshi", year_month="2026-02", actual_total=Decimal("800"))
-    ds = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "dongshi")
-    p = {r["period"]: r for r in ds["periods"]}
-    assert p["2026-02"]["historical_avg"] == 600.0       # 无更早历史 → 回退预估
-    assert p["2026-03"]["historical_avg"] == 1200.0      # 2月每单400 × 3单
-    assert p["2026-03"]["has_factory_actual"] is False
+    yan = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "岩板")
+    p = {r["period"]: r for r in yan["periods"]}
+    assert "2026-02" in p and p["2026-02"]["standard_consume"] == 90.0
+    assert "2026-01" not in p
 
 
-def test_export_all_shipped_orders_by_ship_date(db_session):
+def test_recon_excludes_unshipped_and_refill(db_session):
     db = db_session
-    _dongshi_order(db, "S1", date(2026, 2, 10))
-    _dongshi_order(db, "S2", date(2026, 3, 1))           # 不在2月
+    _seed_yanban(db)
+    db.add(Order(platform="淘宝", order_no="U1", product_code="PPSDS01", sku_code="SDS", sku="x",
+                 qty=1, ship_date=None, status="signed", paid_amount=Decimal("4000")))
+    db.add(Order(platform="淘宝", order_no="U2", is_refill=True, product_code="PPSDS01", sku_code="SDS",
+                 sku="x", qty=1, ship_date=date(2026, 2, 10), status="signed", paid_amount=Decimal("4000")))
+    db.flush()
+    yan = [m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "岩板"]
+    assert (not yan) or yan[0]["total_standard"] == 0.0   # 未发货/补单都不消耗
+
+
+def test_historical_avg_rolls(db_session):
+    db = db_session
+    _seed_yanban(db)
+    _order(db, "A1", date(2026, 2, 10))
+    _order(db, "A2", date(2026, 2, 20))      # 2 月 2 单 → 预估 180
+    _order(db, "B1", date(2026, 3, 5))
+    _order(db, "B2", date(2026, 3, 6))
+    _order(db, "B3", date(2026, 3, 7))       # 3 月 3 单
+    db.flush()
+    prs.save_monthly_recon(db, material_key="岩板", year_month="2026-02", actual_total=Decimal("200"))
+    yan = next(m for m in prs.bulk_material_recon(db)["materials"] if m["key"] == "岩板")
+    p = {r["period"]: r for r in yan["periods"]}
+    assert p["2026-02"]["historical_avg"] == 180.0   # 无更早 → 回退预估
+    assert p["2026-03"]["historical_avg"] == 300.0   # 2 月每单 100 × 3 单
+
+
+# ── 导出 ────────────────────────────────────────────────────────────────────
+def test_export_all_shipped_by_ship_date(db_session):
+    db = db_session
+    _seed_yanban(db)
+    _order(db, "S1", date(2026, 2, 10))
+    _order(db, "S2", date(2026, 3, 1))
     db.flush()
     res = prs.export_shipped_orders(db, year_month="2026-02")
     assert res["material_key"] is None
-    assert [o["order_no"] for o in res["orders"]] == ["S1"]   # 只列2月发货
+    assert [o["order_no"] for o in res["orders"]] == ["S1"]   # 只 2 月发货
 
 
-def test_export_by_material_includes_bom_parts(db_session):
+def test_export_by_category_bom_detail_dedup_and_woodwork(db_session):
     db = db_session
-    db.add(Material(code="AC-DS", name="洞石饰面板", price=Decimal("85"), unit="张"))
-    db.add(BomLine(product_code="PPSDS01", sku_code="SDS", material_code="AC-DS",
-                   material_name="洞石饰面板", qty_per_product=Decimal("2"), unit="张",
-                   remark="背板 1180×680mm"))
-    _dongshi_order(db, "M1", date(2026, 2, 10))
+    _mat(db, "AC-RB", "洞石岩板", 90, "岩板")
+    _mat(db, "AC-FM", "洞石纹理饰面板", 60, "洞石饰面板")
+    _mat(db, "WD-1", "黑胡桃木岩板餐桌-木作部分", 0, "木作")   # 名字带"岩板"但按料号前缀排
+    _bom(db, "AC-RB", "洞石岩板", 1, "1200*480")
+    _bom(db, "AC-RB", "洞石岩板", 1, "1200 *480")   # 空格不一致 → 去重只留一行
+    _bom(db, "AC-FM", "洞石纹理饰面板", 1)
+    _bom(db, "WD-1", "木作", 1)
+    _order(db, "M1", date(2026, 2, 10))
     db.flush()
-    res = prs.export_shipped_orders(db, year_month="2026-02", material_key="dongshi")
-    assert res["material_name"] and len(res["orders"]) == 1
-    o = res["orders"][0]
-    assert o["order_no"] == "M1" and o["sku"] == "洞石餐边柜-1.2米"
-    parts = o["bom_parts"]
-    assert len(parts) == 1 and parts[0]["part_name"] == "洞石饰面板"
-    assert parts[0]["qty"] == 2.0
-    assert parts[0]["category"] == "洞石饰面板"            # 分类(与岩板分开列)
-    assert "1180" in (parts[0]["size_note"] or "")       # 预设尺寸列出, 方便工厂对照
-
-
-def test_export_excludes_woodwork_and_dedups(db_session):
-    """图一/图二修复: 木作(WD-)即使名字含"岩板"也排除; 模板堆叠的同料同尺寸去重; 岩板/饰面板分类。"""
-    db = db_session
-    # 物料名(Material.name)是清单显示名; 木作名里带"岩板"(产品名) → 名字会误命中, 必须按料号前缀排除(图一 bug)
-    db.add(Material(code="WD-9", name="黑胡桃木岩板餐桌-木作部分", price=Decimal("0"), unit="套"))
-    db.add(Material(code="AC-RB", name="洞石岩板", price=Decimal("90"), unit="块"))
-    db.add(Material(code="AC-FM", name="洞石纹理饰面板", price=Decimal("60"), unit="块"))
-    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="WD-9",
-                   material_name="木作", qty_per_product=Decimal("1")))
-    # 同料同尺寸重复两行(模拟定制大杂烩模板堆叠), 且尺寸写法空格不一致 → 仍去重只留一行(图二 bug)
-    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
-                   material_name="x", qty_per_product=Decimal("1"), remark="1200*480"))
-    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-RB",
-                   material_name="x", qty_per_product=Decimal("1"), remark="1200 *480"))
-    db.add(BomLine(product_code="PPSDUP1", sku_code="SDUP", material_code="AC-FM",
-                   material_name="x", qty_per_product=Decimal("1")))
-    o = Order(platform="淘宝", order_no="DUP1", product_code="PPSDUP1", sku_code="SDUP",
-              sku="岩板餐桌", product_name="岩板餐桌", qty=1, order_date=date(2026, 1, 1),
-              ship_date=date(2026, 2, 10), status="signed", paid_amount=Decimal("4000"),
-              est_parts=Decimal("200"))
-    db.add(o)
-    db.flush()
-    res = prs.export_shipped_orders(db, year_month="2026-02", material_key="dongshi")
-    parts = res["orders"][0]["bom_parts"]
-    names = [p["part_name"] for p in parts]
-    assert "黑胡桃木岩板餐桌-木作部分" not in names      # 木作按前缀排除(名字含"岩板"也不进)
-    assert names.count("洞石岩板") == 1                  # 同料同尺寸去重(模板堆叠塌成一行)
-    assert "洞石纹理饰面板" in names                      # 饰面板保留
-    cats = [p["category"] for p in parts]
-    assert cats == ["岩板", "洞石饰面板"]                 # 分开列: 岩板 在 洞石饰面板 前
+    res = prs.export_shipped_orders(db, year_month="2026-02", material_key="岩板")
+    names = [p["part_name"] for p in res["orders"][0]["bom_parts"]]
+    assert names == ["洞石岩板"]          # 只岩板分类; 去重 1 行; 木作排除; 饰面板属另一分类
+    assert res["orders"][0]["bom_parts"][0]["category"] == "岩板"
+    res2 = prs.export_shipped_orders(db, year_month="2026-02", material_key="洞石饰面板")
+    assert [p["part_name"] for p in res2["orders"][0]["bom_parts"]] == ["洞石纹理饰面板"]
