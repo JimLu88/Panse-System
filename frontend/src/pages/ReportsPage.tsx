@@ -38,6 +38,8 @@ import {
 import { Radio } from 'antd';
 import BriefingBanner from '../components/BriefingBanner';
 import RefillCallout from '../components/RefillCallout';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { MetricCard } from '../components/MobileCards';
 
 // 对账规则中文名 (与对账面板一致, 用户要求界面不出现英文)
 const RECON_RULE_LABELS: Record<string, string> = {
@@ -662,16 +664,51 @@ function BusinessMonthlyTab() {
         }
         style={{ marginBottom: 4 }}
       />
-      <Table<BusinessMonthRow>
-        rowKey="period"
-        columns={columns}
-        dataSource={allRows}
+      <ResponsiveTable<BusinessMonthRow>
+        desktop={
+          <Table<BusinessMonthRow>
+            rowKey="period"
+            columns={columns}
+            dataSource={allRows}
+            loading={isLoading}
+            pagination={false}
+            scroll={{ x: 1720 }}
+            size="small"
+            bordered
+            rowClassName={(r) => r.period.includes('合计') ? 'ant-table-summary-row' : ''}
+          />
+        }
+        data={allRows}
+        rowKey={(r) => r.period}
         loading={isLoading}
-        pagination={false}
-        scroll={{ x: 1720 }}
-        size="small"
-        bordered
-        rowClassName={(r) => r.period.includes('合计') ? 'ant-table-summary-row' : ''}
+        renderCard={(r) => (
+          <MetricCard
+            title={r.period}
+            highlight={r.period.includes('合计')}
+            profit={r.net_profit}
+            profitRate={r.net_profit_rate}
+            kpis={[
+              { label: '销售额', value: fmtY(r.real_revenue) },
+              { label: '商品成本', value: fmtY(r.effective_cost) },
+              { label: '推广费', value: fmtY(r.promo_expense) },
+            ]}
+            moreRows={[
+              { label: '真实订单', value: `${fmt(r.real_order_count)} 笔` },
+              { label: '工厂账单', value: fmtY(r.factory_bill) },
+              { label: '物流费', value: fmtY(r.freight_expense) },
+              { label: '安装上楼', value: fmtY(r.install_upstairs_expense) },
+              { label: '售后赔付', value: fmtY(r.aftersales_compensation) },
+              { label: '平台扣点', value: fmtY(r.platform_deduction) },
+              { label: '税费', value: fmtY(r.tax_expense) },
+              { label: '人员外包', value: fmtY(r.outsourcing_expense) },
+              { label: '固定成本', value: fmtY(r.fixed_costs) },
+              { label: '补单成本', value: fmtY(r.refill_cost) },
+              { label: '补单', value: `${fmt(r.refill_order_count)} 笔 · ${pct(r.refill_order_ratio)}` },
+              { label: '支出合计', value: fmtY(r.total_expense) },
+              { label: '总收入', value: fmtY(r.total_revenue) },
+            ]}
+          />
+        )}
       />
     </Space>
   );

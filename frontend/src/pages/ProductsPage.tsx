@@ -26,6 +26,8 @@ import GalleryModal from '../components/GalleryModal';
 import { CUTE_IMG } from '../components/ProductThumb';
 import { PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct } from '../api/client';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
+import ResponsiveTable from '../components/ResponsiveTable';
+import { CatalogCard } from '../components/MobileCards';
 
 const PRODUCT_FIELDS: PresetField[] = [
   { key: 'code', label: '编码', group: '字段' },
@@ -506,30 +508,66 @@ export default function ProductsPage() {
       {viewMode === 'full' && <FullColumnView entity="product" defaultShowAll />}
 
       {viewMode === 'curated' && (
-      <Image.PreviewGroup>
-      <Table<Product>
-        rowKey="id"
+      <ResponsiveTable<Product>
+        desktop={
+          <Image.PreviewGroup>
+          <Table<Product>
+            rowKey="id"
+            loading={isLoading}
+            dataSource={data}
+            columns={applyView(columns) as any}
+            components={{ header: { cell: ResizableTitle } }}
+            scroll={{ x: 'max-content' }}
+            pagination={{
+              pageSize,
+              showSizeChanger: true,
+              pageSizeOptions: [20, 50, 100, 200],
+              onShowSizeChange: (_, size) => setPageSize(size),
+            }}
+            expandable={{
+              expandedRowRender: (record) => (
+                <div style={{ padding: '8px 0' }}>
+                  <ProductDetailSection product={record} />
+                  <SkuExpandedRow productCode={record.code} />
+                </div>
+              ),
+            }}
+          />
+          </Image.PreviewGroup>
+        }
+        data={data ?? []}
+        rowKey={(r) => r.id}
         loading={isLoading}
-        dataSource={data}
-        columns={applyView(columns) as any}
-        components={{ header: { cell: ResizableTitle } }}
-        scroll={{ x: 'max-content' }}
-        pagination={{
-          pageSize,
-          showSizeChanger: true,
-          pageSizeOptions: [20, 50, 100, 200],
-          onShowSizeChange: (_, size) => setPageSize(size),
-        }}
-        expandable={{
-          expandedRowRender: (record) => (
-            <div style={{ padding: '8px 0' }}>
-              <ProductDetailSection product={record} />
-              <SkuExpandedRow productCode={record.code} />
-            </div>
-          ),
-        }}
+        emptyText="暂无产品"
+        renderCard={(p) => (
+          <CatalogCard
+            image={(p as any).gallery_image_url || p.image_url}
+            category={p.category}
+            title={p.name}
+            code={p.code}
+            brand={p.brand}
+            meta={p.category ?? undefined}
+            onGallery={() => setGalleryFor(p.code)}
+            onEdit={() => {
+              setEditTarget(p);
+              editForm.setFieldsValue({
+                name: p.name, sub_name: p.sub_name ?? '', brand: p.brand ?? '',
+                category: p.category ?? '', priority: p.priority ?? 'mid', remark: p.remark,
+                image_url: p.image_url ?? '', custom_scope: p.custom_scope ?? '',
+                size_value: p.size_value ?? '', size_detail: p.size_detail ?? '',
+                main_material: p.main_material ?? '', aux_material: p.aux_material ?? '',
+                accessory_desc: p.accessory_desc ?? '', description: p.description ?? '',
+              });
+            }}
+            renderExpand={() => (
+              <div>
+                <ProductDetailSection product={p} />
+                <SkuExpandedRow productCode={p.code} />
+              </div>
+            )}
+          />
+        )}
       />
-      </Image.PreviewGroup>
       )}
 
       <Modal
