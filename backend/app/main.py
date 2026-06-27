@@ -85,6 +85,7 @@ from app.api import scheduler as scheduler_api
 from app.api import screenshots as screenshots_api
 from app.api import suppliers as suppliers_api
 from app.api import purchases as purchases_api
+from app.api import monthly_settlement as monthly_settlement_api
 from app.api import field_changes as field_changes_api
 from app.api import exports as exports_api
 from app.api import gallery as gallery_api
@@ -351,6 +352,7 @@ app.include_router(customization_api.router)
 app.include_router(admin_api.router)
 app.include_router(suppliers_api.router)
 app.include_router(purchases_api.router)
+app.include_router(monthly_settlement_api.router)
 app.include_router(field_changes_api.router)
 app.include_router(exports_api.router)
 app.include_router(gallery_api.router)

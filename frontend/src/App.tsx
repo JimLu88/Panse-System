@@ -55,6 +55,7 @@ const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OpsChecklistPage = lazy(() => import('./pages/OpsChecklistPage'));
 const SalesRankingPage = lazy(() => import('./pages/SalesRankingPage'));
 const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
+const MonthlySettlementCenterPage = lazy(() => import('./pages/MonthlySettlementCenterPage'));
 const FactoryOrdersPage = lazy(() => import('./pages/FactoryOrdersPage'));
 const FactoryStatementPage = lazy(() => import('./pages/FactoryStatementPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
@@ -226,6 +227,7 @@ export default function App() {
         { key: 'suppliers', label: <Link to="/suppliers">供应商</Link> },
         { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
+        { key: 'monthly-settlement', label: <Link to="/monthly-settlement">月结对账中心</Link> },
         { key: 'factory-orders', label: <Link to="/factory-orders">工厂下单表</Link> },
         { key: 'factory-statement', label: <Link to="/factory-statement">工厂对账单</Link> },
       ],
@@ -445,6 +447,7 @@ export default function App() {
             <Route path="/per-order-reconcile" element={<PerOrderReconcilePage />} />
             <Route path="/suppliers" element={<SuppliersPage />} />
             <Route path="/purchases" element={<PurchasesPage />} />
+            <Route path="/monthly-settlement" element={<MonthlySettlementCenterPage />} />
             <Route path="/factory-orders" element={<FactoryOrdersPage />} />
             <Route path="/factory-statement" element={<FactoryStatementPage />} />
             <Route path="/importer" element={<ImporterPage />} />

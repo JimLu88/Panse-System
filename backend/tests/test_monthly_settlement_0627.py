@@ -1,0 +1,72 @@
+"""月度对账中心 service 单测 (用户 2026-06-27, 方向三)。
+
+纯函数覆盖 variance 数学 + 导出结构; DB 聚合(打包/运费/配件)已在 NAS 真数据验证
+(2026-05 打包 预估¥11178 vs 实际¥11205, 差 +0.24%)。
+"""
+from decimal import Decimal
+
+from app.services import monthly_settlement_service as mss
+
+
+def test_variance_row_basic():
+    r = mss._variance_row("2026-05", Decimal("100"), Decimal("120"), order_count=10)
+    assert r["estimate"] == 100.0 and r["actual"] == 120.0
+    assert r["variance"] == 20.0 and r["variance_pct"] == 20.0
+    assert r["order_count"] == 10
+
+
+def test_variance_row_actual_missing():
+    r = mss._variance_row("2026-05", Decimal("100"), None)
+    assert r["actual"] is None and r["variance"] is None and r["variance_pct"] is None
+
+
+def test_variance_row_zero_estimate_no_pct():
+    # 预估=0 不算百分比(避免除零), 但差异照算。
+    r = mss._variance_row("2026-05", Decimal("0"), Decimal("50"))
+    assert r["variance"] == 50.0 and r["variance_pct"] is None
+
+
+def test_simple_domain_totals_and_missing_actual():
+    est = {"2026-04": Decimal("8624"), "2026-05": Decimal("11178")}
+    act = {"2026-05": Decimal("11205")}  # 4月无账单 → 未录
+    cnt = {"2026-04": 52, "2026-05": 72}
+    dom = mss._simple_domain("packing", "打包月结", "hint", est, act, cnt)
+    assert dom["key"] == "packing" and len(dom["groups"]) == 1
+    g = dom["groups"][0]
+    rows = {r["period"]: r for r in g["rows"]}
+    assert rows["2026-04"]["actual"] is None and rows["2026-04"]["variance"] is None
+    assert rows["2026-05"]["variance"] == 27.0          # 11205 - 11178
+    assert rows["2026-05"]["order_count"] == 72
+    assert g["total_estimate"] == 19802.0               # 8624 + 11178
+    assert g["total_actual"] == 11205.0                 # 只累计有账单的月
+    assert g["total_variance"] == 11205.0 - 19802.0     # -8597
+
+
+def test_export_workbook_sheets(monkeypatch):
+    fake = {
+        "domains": [
+            {"key": "parts", "label": "配件月结", "settle_hint": "h",
+             "groups": [{"key": "五金", "label": "五金",
+                         "rows": [{"period": "2026-05", "estimate": 100.0, "actual": 110.0,
+                                   "variance": 10.0, "variance_pct": 10.0, "order_count": 5}],
+                         "total_estimate": 100.0, "total_actual": 110.0,
+                         "total_variance": 10.0, "total_variance_pct": 10.0}]},
+            {"key": "packing", "label": "打包月结", "settle_hint": "h",
+             "groups": [{"key": "packing", "label": "打包",
+                         "rows": [{"period": "2026-05", "estimate": 200.0, "actual": None,
+                                   "variance": None, "variance_pct": None, "order_count": 7}],
+                         "total_estimate": 200.0, "total_actual": 0.0,
+                         "total_variance": -200.0, "total_variance_pct": None}]},
+        ],
+        "caliber": "x", "ship_date_basis": True,
+    }
+    monkeypatch.setattr(mss, "build_center", lambda db: fake)
+    wb = mss.build_export_workbook(db=None)
+    titles = wb.sheetnames
+    assert "月度对账汇总" in titles
+    assert "配件月结" in titles and "打包月结" in titles
+    summary_rows = list(wb["月度对账汇总"].iter_rows(values_only=True))
+    assert summary_rows[0] == ("域", "分类", "月份", "预估应付", "实际账单", "差异", "差异%", "发货单数")
+    # 未录的打包行: 实际列文案="未录"
+    packing_rows = [r for r in summary_rows if r[0] == "打包月结"]
+    assert packing_rows and packing_rows[0][4] == "未录"
