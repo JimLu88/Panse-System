@@ -435,3 +435,21 @@ async def feishu_webhook(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(401, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+
+
+class RelayPwdIn(BaseModel):
+    pwd: str
+
+
+@router.post("/relay-shipping-password")
+def relay_shipping_password(payload: RelayPwdIn, request: Request, db: Session = Depends(get_db)):
+    """跨机转发接收端 (根治飞书↔报表分离, 用户 2026-06-27): 取数机(PC)收到飞书发货口令后转发到
+    报表所在的生产机(NAS), 在此解密入库。用飞书 verification_token 当机器间共享密钥(两机同值)。
+    无登录鉴权(机器对机器), 仅靠 X-Relay-Token 校验; LAN 内调用。"""
+    from app.services import feishu_bot_service
+    token = settings_service.get(db, "feishu_verification_token", env_fallback=False) or ""
+    if not token or request.headers.get("X-Relay-Token") != token:
+        raise HTTPException(403, "invalid relay token")
+    r = feishu_bot_service.apply_shipping_password(db, (payload.pwd or "").strip())
+    return {"imported": r.get("imported") or 0, "updated": r.get("updated") or 0,
+            "tried": r.get("tried") or 0}

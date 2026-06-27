@@ -812,33 +812,65 @@ def _extract_shipping_password(text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
-def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
-    """存最新发货报表口令 + 时间戳, 然后立刻用它重试待解密的加密发货报表, 回执告知结果。
+def apply_shipping_password(db: Session, pwd: str) -> dict:
+    """存最新发货报表口令 + 时间戳, 立刻用它重试解密待解的加密发货报表; 返回 reingest 结果。
 
-    修复 (2026-06-15): 以前只存口令、回"下次导入时再解密", 但文件早已归档(hash-known)→
-    下次 ingest 当"已知文件"跳过→永不解密 (用户每次都得叫我手动导一遍)。现在收到口令即
-    调 reingest_pending_shipping 自动解密入库, 真正打通"发口令→入库"闭环。"""
-    from datetime import datetime, timezone
+    纯落地(不回飞书卡、不转发), 供本地飞书入站处理 + 跨机转发端点共用。
+    修复 (2026-06-15): 收到口令即 reingest_pending_shipping 自动解密入库, 打通"发口令→入库"。"""
     settings_service.set_value(db, "taobao_shipping_pwd_latest", pwd,
                                description="淘宝发货报表最新解密口令(一次一密)")
     settings_service.set_value(db, "taobao_shipping_pwd_at",
                                datetime.now(timezone.utc).isoformat(),
                                description="发货报表口令收到时间")
     db.commit()
-    imported = 0
-    body = "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。"
     try:
         from app.services import agent_ingest_service
-        r = agent_ingest_service.reingest_pending_shipping(db)
-        imported = r.get("imported") or 0
-        if imported:
-            body = (f"已用口令自动解密并导入 {imported} 份发货报表 "
-                    f"(更新订单 {r.get('updated') or 0} 单)。")
-        elif r.get("tried"):
-            body = ("口令已存, 但当前待解密的发货报表用它仍打不开 (可能这条口令对应另一份"
-                    "报表 —— 一报一密)。已留待匹配, 收到对应口令会自动入库。")
-    except Exception:
-        pass
+        return agent_ingest_service.reingest_pending_shipping(db)
+    except Exception:  # noqa: BLE001
+        return {"imported": 0, "tried": 0}
+
+
+def _relay_shipping_password(db: Session, pwd: str) -> Optional[dict]:
+    """根治飞书↔报表分离 (用户 2026-06-27): 飞书事件进取数机(PC), 但加密发货报表+生产库在 NAS。
+    取数机上配 ``shipping_pwd_relay_url`` 指向生产机 → 收到口令即转发, 让报表所在机解密入库。
+    生产机不配此项 → 不转发(同份代码两机共用, 靠配置区分)。机器间用飞书 verification_token 当共享密钥。
+    返回 None=未配置/转发失败; dict=生产机 reingest 结果。"""
+    url = (settings_service.get(db, "shipping_pwd_relay_url", env_fallback=False) or "").strip()
+    if not url:
+        return None
+    token = settings_service.get(db, "feishu_verification_token", env_fallback=False) or ""
+    try:
+        import httpx
+        resp = httpx.post(url.rstrip("/") + "/api/feishu/relay-shipping-password",
+                          json={"pwd": pwd}, headers={"X-Relay-Token": token}, timeout=120)
+        if resp.status_code == 200:
+            return resp.json()
+        logging.getLogger("panse.feishu_bot").warning(
+            "发货口令转发失败 HTTP %s: %s", resp.status_code, resp.text[:120])
+    except Exception as e:  # noqa: BLE001 —— 转发失败不阻断本地处理
+        logging.getLogger("panse.feishu_bot").warning("发货口令转发异常: %s", e)
+    return None
+
+
+def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
+    """收到飞书发货口令: 本地落地(存+解密) + 转发生产机(若配置) + 回执卡片。"""
+    r = apply_shipping_password(db, pwd)
+    imported = r.get("imported") or 0
+    if imported:
+        body = (f"已用口令自动解密并导入 {imported} 份发货报表 (更新订单 {r.get('updated') or 0} 单)。")
+    elif r.get("tried"):
+        body = "口令已存, 但本机待解密的发货报表用它仍打不开 (一报一密)。"
+    else:
+        body = "下次导入加密发货报表时将自动用它解密 (一次一密, 仅最近一条有效)。"
+    # 根治飞书↔报表分离: 把口令转发给报表所在的生产机
+    relay = _relay_shipping_password(db, pwd)
+    if relay is not None:
+        ri = relay.get("imported") or 0
+        if ri:
+            body += f" 已同步生产机并解密 {ri} 份(更新 {relay.get('updated') or 0} 单)。"
+            imported = imported or ri
+        else:
+            body += " 已同步生产机(暂无可解报表)。"
     _safe_reply(db, message_id, _result_card("已收到发货报表口令", body, "green"))
     return {"message_id": message_id, "kind": "shipping_password",
             "captured": True, "imported": imported}
