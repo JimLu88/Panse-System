@@ -182,13 +182,14 @@ def get_ai_config(db: Session, kind: str) -> dict:
     # 没配就返回空, 让调用方跳过。主 OCR 额度用光/报错时自动切到它, 保持自动化不退人工。
     if kind == "ocr_fallback":
         own = _raw_ai_config(db, "ocr_fallback")
-        # 默认就指向本机 Ollama 标准端点: 用户只要 `ollama pull qwen2.5vl` 即自动兜底, 零配置。
+        # 默认指向本机 Ollama 标准端点(OCR 兜底, 视觉模型): 用户 `ollama pull qwen2.5vl` 即自动兜底。
         # (Ollama 没起/没拉模型时, 兜底调用会连接失败 → 调用方安全报异常, 不会写错数据)
+        # 注: OCR 主路径走云端(uniapi); qwen3.5/qwen3-vl 思考型不适合 OCR(答案落 thinking), 故 OCR 兜底仍用 qwen2.5vl。
         return {
             "provider": own["provider"] or "openai",   # Ollama 走 OpenAI 兼容协议
             "base_url": own["base_url"] or "http://host.docker.internal:11434/v1",
             "api_key": own["api_key"] or "ollama",      # Ollama 不校验 key, 占位即可
-            "model": own["model"] or "qwen2.5vl",
+            "model": own["model"] or "qwen2.5vl",       # OCR 兜底用视觉模型 qwen2.5vl(非思考型)
             "user_agent": own.get("user_agent") or "",
         }
     # custom (定制报价分类器): 没配 key 回落到 ocr; diagnose↔ocr 互相回落

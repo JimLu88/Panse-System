@@ -35,7 +35,7 @@ FALLBACK_RATE = Decimal("0.85")             # 85% 兜底 (用户拍板 2026-06-1
 AI_BASE_URL_KEY = "custom_reconcile_ai_base_url"
 AI_MODEL_KEY = "custom_reconcile_ai_model"
 _AI_BASE_DEFAULT = "http://192.168.31.91:11434/v1"
-_AI_MODEL_DEFAULT = "qwen2.5vl:7b"
+_AI_MODEL_DEFAULT = "qwen2.5vl:7b"   # agent OCR 默认(视觉); 文本推理另用 _AI_MODEL(qwen3.5:9b)
 
 
 def _d(v) -> Optional[Decimal]:
@@ -153,9 +153,10 @@ def build_ai(db: Session):
         return None
 
 
-# 文本数值推理任务 → 用文本指令模型(qwen2.5:7b-instruct), 不用视觉模型 qwen2.5vl(它对此类几乎只返回 null)。
-# OCR 仍走 agent 默认的 qwen2.5vl; 这里按单请求指定模型, 互不影响。实测: VL+旧prompt 覆盖 1/4 → instruct+新prompt 4/4 (2026-06-17)。
-_AI_MODEL = "qwen2.5:7b-instruct"
+# 文本数值推理任务模型 (用户 2026-06-27 本地升级): 旧 qwen2.5:7b-instruct → qwen3.5:9b。
+# ⚠ qwen3.5 是思考型: 必须 think=False(由取数 agent /api/ai/chat 关思考)否则答案落 thinking、content 空。
+# 实测 qwen3.5:9b+think=False 干净返回 JSON(9.6s)。(qwen3-vl 思考停不下来不适合, 故文本仍用纯文本 qwen3.5)
+_AI_MODEL = "qwen3.5:9b"
 _AI_TEMPERATURE = 0.2
 
 _AI_SYS = ("你是家具定制工厂成本估算助手。给你「该产品基础款工厂成本」作锚点时, 你【必须】给出一个数字成本, 绝不允许返回 null。"
