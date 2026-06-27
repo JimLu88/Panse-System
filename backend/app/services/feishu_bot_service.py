@@ -825,9 +825,23 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     db.commit()
     try:
         from app.services import agent_ingest_service
-        return agent_ingest_service.reingest_pending_shipping(db)
+        r = agent_ingest_service.reingest_pending_shipping(db)
     except Exception:  # noqa: BLE001
         return {"imported": 0, "tried": 0}
+    # 飞书成功推送 (用户 2026-06-28): 解密成功 → 推到飞书群, 清晰可见(不只回卡)。
+    # 在本核心做 → 无论本地飞书入站还是跨机转发(NAS reingest), 实际解密成功的那台都会推。
+    imp = r.get("imported") or 0
+    if imp:
+        try:
+            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+            if chat:
+                feishu_client.send_text(
+                    db, chat,
+                    f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
+                    f"收货地址已入库,可正常发下单图。")
+        except Exception:  # noqa: BLE001 —— 推送失败不阻断解密
+            logging.getLogger("panse.feishu_bot").warning("解密成功飞书推送失败")
+    return r
 
 
 def _relay_shipping_password(db: Session, pwd: str) -> Optional[dict]:
