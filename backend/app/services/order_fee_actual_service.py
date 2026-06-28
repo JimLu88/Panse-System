@@ -142,7 +142,9 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
             v = est[o.order_no][k]
             if v is None:
                 v = med[k]   # 全局中位数兜底(固定费用, 不随实付放大)
-            new[k] = v
+            # 量化到分(列是 Numeric(12,2)): 中位数会算出 3 位小数(如 336.665)→ 存库被 DB
+            # 截成 336.67 → 下次又算 336.665 != 336.67 → 永久翻动。量化后 sync 才幂等(用户 2026-06-28)。
+            new[k] = v.quantize(_CENTS) if v is not None else None
         if (o.est_packing != new["pk"] or o.est_logistics != new["lg"]
                 or o.est_install != new["inst"]):
             o.est_packing, o.est_logistics, o.est_install = new["pk"], new["lg"], new["inst"]
