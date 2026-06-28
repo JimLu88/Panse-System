@@ -28,8 +28,11 @@ from app.services import sales_analytics
 
 _CENTS = Decimal("0.01")
 
-# 工厂自备/木作/人工(WD-/MW-/MP-)不是外采配件 → 不进配件对账 (按料号前缀硬排, 名字会误命中)。
+# 工厂自备/木作/木材/人工(WD-/MW-/MP-)在 BOM 里是工厂自备 → 不进 BOM 驱动的配件「标准消耗」对账。
 _FACTORY_PREFIXES = ("WD", "MW", "MP")
+# 但「支付宝自购采购」侧只排纯工厂服务(木作 WD / 人工 MP); 自购木材(MW, 如榉木自采、工厂未含)与
+# 特殊件按用户口径(2026-06-29)当零星采购照常记入(不在 BOM 的会标 not_in_bom 待逐单核对)。
+_PURCHASE_EXCLUDE_PREFIXES = ("WD", "MP")
 _UNCATEGORIZED = "未分类"
 
 # 结算模式 (用户 2026-06-27): 五金都在五金店买 → 月结(月度总额对账, 工厂/供应商填);
@@ -71,9 +74,9 @@ def _looks_non_part(p: PartPurchase) -> bool:
         return True
     if p.supplier and "淘天" in p.supplier:
         return True
-    # 工厂自备/木作/人工/木材(WD/MW/MP)= 原料/货款, 不是外采配件 → 不进 actual_parts(防原料/货款泄漏);
-    # 与 _order_category_consumption / purch_all 同口径(按料号前缀硬排, 名字会误命中)。
-    if (p.material_code or "").split("-", 1)[0].upper() in _FACTORY_PREFIXES:
+    # 纯工厂服务(木作 WD / 人工 MP)= 工厂账单覆盖, 不是自购配件 → 不进 actual_parts(防货款双算);
+    # 自购木材(MW, 榉木自采)/特殊件按用户口径当零星照常记(用户 2026-06-29), 不在此排除。
+    if (p.material_code or "").split("-", 1)[0].upper() in _PURCHASE_EXCLUDE_PREFIXES:
         return True
     return False
 
@@ -529,7 +532,8 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
     ).all():
         cat = (mat_info.get(mcode) or {}).get("category") if mcode else None
         ym = _ym(pdate)
-        if cat and ym and (mcode or "").split("-", 1)[0].upper() not in _FACTORY_PREFIXES:
+        # 自购木材(MW)等零星采购计入对账; 仅排纯工厂服务(木作 WD/人工 MP)(用户 2026-06-29)。
+        if cat and ym and (mcode or "").split("-", 1)[0].upper() not in _PURCHASE_EXCLUDE_PREFIXES:
             purch_all[cat][ym] += _d(abs(amt))
 
     out_cats = []

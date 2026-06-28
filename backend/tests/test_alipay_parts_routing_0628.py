@@ -139,20 +139,30 @@ def test_monthly_supplier_not_treated_as_sporadic(db_session):
     assert prs.detect_sporadic_monthly_overlap(db) == []
 
 
-# ── 复核 must-fix 1: 原料/货款(WD/MW/MP)不得泄漏进 actual_parts ───────────────
-def test_raw_material_prefix_excluded_from_actual_parts(db_session):
+# ── 用户口径 2026-06-29: 自购木材(MW)当零星记入; 纯工厂木作(WD)/人工(MP)仍排除 ──
+def test_self_purchased_wood_recorded_factory_service_excluded(db_session):
     db = db_session
     _mat(db, "AC-RB", "岩板", 90, "岩板")
-    _mat(db, "MW-OAK", "榉木大板", 0, "木材")          # MW 前缀 = 原料/货款
+    _mat(db, "MW-OAK", "榉木大板", 0, "木材")     # 自购木材 → 记入(标 not_in_bom)
+    _mat(db, "WD-LAB", "木作加工", 0, "木作")     # 纯工厂木作 → 排除
     _bom(db, "PPSR", "SR", "AC-RB", "岩板", 1, "1000*1000")
     o = _order(db, "R1", "PPSR", "SR")
-    db.add(PartPurchase(purchase_no="RAW1", supplier="木材厂", material_code="MW-OAK",
+    o2 = _order(db, "R2", "PPSR", "SR")
+    db.add(PartPurchase(purchase_no="WD1", supplier="木材厂", material_code="MW-OAK",
                         material_name="榉木大板", amount=Decimal("800"),
                         related_order_no="R1", purchase_date=date(2026, 2, 12)))
+    db.add(PartPurchase(purchase_no="LAB1", supplier="某工厂", material_code="WD-LAB",
+                        material_name="木作加工", amount=Decimal("500"),
+                        related_order_no="R2", purchase_date=date(2026, 2, 12)))
     db.flush()
-    prs.aggregate_related_purchases(db, apply=True)
-    db.refresh(o)
-    assert o.actual_parts is None   # 木材货款被排除, 不污染产品成本
+    r = prs.aggregate_related_purchases(db, apply=True)
+    db.refresh(o); db.refresh(o2)
+    # 自购榉木记入产品成本: R1 = 岩板est90 + 木材real800 = 890, 木材不在BOM→标记待核
+    assert o.actual_parts == Decimal("890.00")
+    item = next(i for i in r["items"] if i["order_no"] == "R1")
+    assert item["not_in_bom_categories"] == 1
+    # 纯工厂木作(WD)被排除: R2 不记 actual_parts
+    assert o2.actual_parts is None
 
 
 # ── 复核 must-fix 2: 料号命中 BOM → 真实覆盖对应预估(不叠加双算) ──────────────
