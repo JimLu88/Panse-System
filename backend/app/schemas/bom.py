@@ -22,6 +22,9 @@ class BomLineOut(BaseModel):
     material_height_mm: Optional[Decimal] = None
     material_area: Optional[Decimal] = None
     material_size_type: Optional[str] = None
+    # AI 推演/确认尺寸 (配件 epic 阶段1)
+    est_size: Optional[str] = None
+    size_status: Optional[str] = None
 
 
 class BomLineUpdate(BaseModel):
@@ -52,3 +55,31 @@ class BomLineGroup(BaseModel):
     sku: Optional[str]
     sku_code: Optional[str]
     lines: list[BomLineOut]
+
+
+class SizeReviewRow(BaseModel):
+    """BOM 尺寸复核行 (配件 epic 阶段1d): AI 推演的面积料尺寸, 供人工核对/编辑。"""
+    id: int
+    product_code: str
+    product_name: Optional[str] = None
+    sku: Optional[str] = None
+    material_code: str
+    material_name: Optional[str] = None
+    category: Optional[str] = None
+    remark: Optional[str] = None       # 原备注(可能含真实尺寸; 计算时优先于 est_size)
+    est_size: Optional[str] = None     # 推演/确认尺寸串 "长*深"
+    size_status: Optional[str] = None  # inferred | confirmed
+    area: Optional[float] = None       # 用于分摊的面积(remark 优先, 缺则 est_size)
+
+
+class SizeReviewPatch(BaseModel):
+    """编辑一行推演尺寸。confirm=True 时置为「已确认」(前端二次确认后)。"""
+    est_size: str
+    confirm: bool = False
+
+
+class SizeInferRunIn(BaseModel):
+    """触发尺寸推演(可指定分类; apply=False 仅预览)。"""
+    categories: Optional[list[str]] = None
+    apply: bool = False
+    use_ai: bool = False

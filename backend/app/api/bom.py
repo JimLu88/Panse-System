@@ -8,7 +8,10 @@ from app.database import get_db
 from app.models.bom import BomLine
 from app.models.material import Material
 from app.models.product import Product
-from app.schemas.bom import BomLineCreate, BomLineGroup, BomLineOut, BomLineUpdate
+from app.schemas.bom import (
+    BomLineCreate, BomLineGroup, BomLineOut, BomLineUpdate,
+    SizeInferRunIn, SizeReviewPatch, SizeReviewRow,
+)
 from app.services import field_change_service
 
 router = APIRouter(prefix="/api/bom", tags=["bom"])
@@ -184,6 +187,85 @@ def create_bom_line(payload: BomLineCreate, db: Session = Depends(get_db)):
     db.refresh(line)
     _auto_resync_orders(db, product_code)
     return _line_out(db, line)
+
+
+# ── BOM 尺寸复核 (配件 epic 阶段1d) ──────────────────────────────────────
+# 注: 这些静态路径必须声明在 /{product_code} 之前, 否则会被当成 product_code 捕获。
+
+@router.get("/size-review", response_model=list[SizeReviewRow])
+def list_size_review(
+    status: str | None = Query("inferred", description="inferred|confirmed|all"),
+    category: str | None = Query(None, description="按配件分类筛 (岩板/玻璃/…)"),
+    db: Session = Depends(get_db),
+):
+    """列出 AI 推演/已确认的面积料 BOM 尺寸, 供人工复核编辑。"""
+    from app.services.parts_recon_service import _size_area
+    stmt = (
+        select(BomLine, Material.name.label("mname"), Material.category.label("cat"),
+               Product.name.label("pname"))
+        .join(Material, BomLine.material_code == Material.code, isouter=True)
+        .join(Product, BomLine.product_code == Product.code, isouter=True)
+    )
+    if status == "inferred":
+        stmt = stmt.where(BomLine.size_status == "inferred")
+    elif status == "confirmed":
+        stmt = stmt.where(BomLine.size_status == "confirmed")
+    else:
+        stmt = stmt.where(BomLine.size_status.isnot(None))
+    if category:
+        stmt = stmt.where(Material.category == category)
+    stmt = stmt.order_by(BomLine.product_code, BomLine.id)
+    out = []
+    for line, mname, cat, pname in db.execute(stmt).all():
+        # 面积: remark 有真实尺寸优先, 缺则用 est_size (与分摊口径一致)
+        area = _size_area(line.remark)
+        if area <= 0:
+            area = _size_area(line.est_size)
+        out.append(SizeReviewRow(
+            id=line.id, product_code=line.product_code, product_name=pname or line.product_name,
+            sku=line.sku, material_code=line.material_code, material_name=mname or line.material_name,
+            category=cat, remark=line.remark, est_size=line.est_size, size_status=line.size_status,
+            area=float(area) if area else 0.0,
+        ))
+    return out
+
+
+@router.patch("/size-review/{line_id}", response_model=SizeReviewRow)
+def patch_size_review(line_id: int, payload: SizeReviewPatch, db: Session = Depends(get_db)):
+    """编辑一行推演尺寸 est_size; confirm=True → 置「已确认」(前端二次确认后)。不动 remark。"""
+    from app.services.parts_recon_service import _size_area
+    line = db.get(BomLine, line_id)
+    if not line:
+        raise HTTPException(404, "bom line not found")
+    new = (payload.est_size or "").strip()
+    if not new or _size_area(new) <= 0:
+        raise HTTPException(400, "尺寸需至少含两个数字, 如 1800*800")
+    old = line.est_size
+    line.est_size = new
+    line.size_status = "confirmed" if payload.confirm else (line.size_status or "inferred")
+    field_change_service.record(
+        db, table="bom_lines", pk=str(line.id), field="est_size", old=old, new=new,
+        actor="尺寸复核", source="web", row_label=f"BOM {line.sku or line.product_code}",
+        field_label="推演尺寸")
+    db.commit()
+    db.refresh(line)
+    mat = db.execute(select(Material.name, Material.category).where(Material.code == line.material_code)).first()
+    area = _size_area(line.remark) or _size_area(line.est_size)
+    return SizeReviewRow(
+        id=line.id, product_code=line.product_code, product_name=line.product_name,
+        sku=line.sku, material_code=line.material_code,
+        material_name=(mat.name if mat else line.material_name),
+        category=(mat.category if mat else None), remark=line.remark,
+        est_size=line.est_size, size_status=line.size_status,
+        area=float(area) if area else 0.0)
+
+
+@router.post("/size-review/run")
+def run_size_inference(payload: SizeInferRunIn, db: Session = Depends(get_db)):
+    """触发面积料尺寸推演。apply=False 仅预览; apply=True 落库(标 inferred)。"""
+    from app.services import bom_size_infer_service
+    cats = tuple(payload.categories) if payload.categories else None
+    return bom_size_infer_service.run(db, categories=cats, apply=payload.apply, use_ai=payload.use_ai)
 
 
 @router.get("/{product_code}", response_model=list[BomLineGroup])
