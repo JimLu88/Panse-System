@@ -113,6 +113,10 @@ def _infer_one(db: Session, b: BomLine, *, use_ai: bool) -> Optional[dict]:
     if ln is not None:
         if dp is not None:
             source = "sku长×sku深"
+        elif "圆桌" in ((b.product_name or "") + (b.sku or "")):
+            # 圆桌: 岩板是直径=长的圆台面 → 用 d×d 方形外接近似(深=长), 比餐桌默认深 800 更贴切
+            dp = ln
+            source = "圆桌(d×d方形近似)"
         else:
             dp = _default_depth_mm(b.product_name, b.sku)
             source = "sku长×品类默认深"
