@@ -71,6 +71,10 @@ def _looks_non_part(p: PartPurchase) -> bool:
         return True
     if p.supplier and "淘天" in p.supplier:
         return True
+    # 工厂自备/木作/人工/木材(WD/MW/MP)= 原料/货款, 不是外采配件 → 不进 actual_parts(防原料/货款泄漏);
+    # 与 _order_category_consumption / purch_all 同口径(按料号前缀硬排, 名字会误命中)。
+    if (p.material_code or "").split("-", 1)[0].upper() in _FACTORY_PREFIXES:
+        return True
     return False
 
 
@@ -82,15 +86,87 @@ def _purchase_amount(p: PartPurchase) -> Optional[Decimal]:
     return None
 
 
-# ── A. 逐单配件采购 → actual_parts 汇总 ──────────────────────────────────────
-def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
-    """填了 related_order_no 的配件采购单 → 按订单号汇总写 Order.actual_parts。
+# ── 零星采购 → 订单(多单按 BOM 占比分摊) 的共用拆分逻辑 ───────────────────────
+def _split_order_nos(s: Optional[str]) -> list[str]:
+    """related_order_no 拆成订单号 token 列表(一笔零星采购可对应多个平台订单号, \n/空格/逗号分隔)。
 
-    apply=False(默认): 只算预览, 不落库; 返回每单 physical_cost 变化供人工核对。
-    apply=True: 写 actual_parts 并 commit(该单 physical_cost 转「逐项真实计价」)。
+    按 token 精确比对 Order.order_no(不抽数字), 故 26-28 位支付宝商户号会作单 token 比对、对不上→
+    自然落 unmatched, 不会误抠出假订单号; 同时兼容非纯数字订单号(测试/历史)。去重保序。
     """
-    from app.services.order_financials import physical_cost
+    if not s:
+        return []
+    seen: set = set()
+    out: list[str] = []
+    for tok in re.split(r"[\s,;]+", str(s).strip()):
+        tok = tok.strip()
+        if tok and tok not in seen:
+            seen.add(tok)
+            out.append(tok)
+    return out
 
+
+def _purchase_category(p: PartPurchase, mat_info: dict) -> str:
+    """该采购的配件分类: 料号→分类优先; 无料号/无分类则按物料名关键词推断。"""
+    if p.material_code:
+        cat = (mat_info.get(p.material_code) or {}).get("category")
+        if cat:
+            return cat
+    from app.services.material_category_service import _ac_category
+    return _ac_category(p.material_name or "") or _UNCATEGORIZED
+
+
+def _resolve_purchase_cat(p: PartPurchase, cons_o: dict, mat_info: dict) -> tuple[str, bool]:
+    """把一笔采购在某订单上锚定到该单 BOM 的料/分类, 返回 (分类, 是否在该单BOM内)。
+
+    防分类错配致双算(用户红线): 真实采购必须覆盖该单 BOM 里"对应那一类"的预估, 而非凭独立推断
+    新增一类(否则 real(X)+est(Y) 同一笔配件钱算两次)。
+      1) 料号命中该单 BOM 某料 → 用该料在 BOM 的分类(保证 real 覆盖对应 est);
+      2) 否则关键词分类若也在该单 BOM 分类集合里 → 用之(可覆盖);
+      3) 都不在 → (关键词分类, False): 该料不在该单 BOM, 标记待人工确认(不静默与其它类 est 叠加误读)。
+    """
+    if p.material_code:
+        for cat, c in cons_o.items():
+            for m in c.get("materials", []):
+                if m.get("material_code") == p.material_code:
+                    return cat, True
+    pc = _purchase_category(p, mat_info)
+    return (pc, True) if pc in cons_o else (pc, False)
+
+
+def _monthly_supplier_names(db: Session) -> set:
+    """payment_terms 含「月结」的供应商名(用于把零星采购里偶发的月结供应商排除出"零星覆盖")。"""
+    from app.models.supplier import Supplier
+    out: set = set()
+    for name, terms in db.execute(select(Supplier.name, Supplier.payment_terms)).all():
+        if name and terms and "月结" in terms:
+            out.add(name)
+    return out
+
+
+def _category_usage(cons_cat: Optional[dict]) -> Decimal:
+    """该订单某分类的"用量"权重(多单分摊用): 面积料(尺寸可解析)按面积, 计数料按数量, ×该行件数。
+
+    实现用户口径「按各单该配件 BOM 用量(面积/数量)占比分摊」: 同一笔采购的同种料跨单, 面积大的单分得多。
+    """
+    if not cons_cat:
+        return Decimal("0")
+    total = Decimal("0")
+    for m in cons_cat.get("materials", []):
+        area = _size_area(m.get("size_note"))
+        unit = area if area > 0 else Decimal("1")
+        total += unit * _d(m.get("qty"))
+    return total
+
+
+def _allocate_purchases(db: Session, mat_info, bom_by_pcsku, bom_by_pc):
+    """把所有有效配件采购单按平台订单号拆分(多单按该分类 BOM 用量占比分摊金额), 返回:
+      order_real     {order_no: {category: Decimal}}   每单每类的真实采购成本(已分摊, 含月结+零星)
+      order_objs     {order_no: Order}
+      sporadic_cover {(order_no, category): [evidence...]}  非月结供应商的零星覆盖
+                     (供月结导出/对账扣除 + 红字提示; evidence 含 流水号/金额/供应商)
+      unmatched      [平台订单号都对不上真实订单的采购]
+    """
+    monthly = _monthly_supplier_names(db)
     rows = db.execute(
         select(PartPurchase).where(
             PartPurchase.related_order_no.isnot(None),
@@ -98,55 +174,166 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
         )
     ).scalars().all()
 
-    by_order: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
-    counts: dict[str, int] = defaultdict(int)
+    order_objs: dict[str, Order] = {}
+
+    def _order(no: str):
+        if no not in order_objs:
+            order_objs[no] = db.execute(
+                select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        return order_objs[no]
+
+    cons_cache: dict[str, dict] = {}
+
+    def _cons(o: Order):
+        if o.order_no not in cons_cache:
+            cons_cache[o.order_no] = _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
+        return cons_cache[o.order_no]
+
+    order_real: dict[str, dict] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
+    sporadic_cover: dict[tuple, list] = defaultdict(list)
+    unmatched: list[dict] = []
+
     for p in rows:
         if _looks_non_part(p):
             continue
         amt = _purchase_amount(p)
         if amt is None or amt <= 0:
             continue
-        ono = (p.related_order_no or "").strip()
-        if not ono:
+        amt = amt.quantize(_CENTS)
+        valid = [(no, _order(no)) for no in _split_order_nos(p.related_order_no)]
+        valid = [(no, o) for no, o in valid if o is not None]
+        if not valid:
+            unmatched.append({"purchase_no": p.purchase_no, "related_order_no": p.related_order_no,
+                              "amount": float(amt), "material_name": p.material_name,
+                              "supplier": p.supplier})
             continue
-        by_order[ono] += amt
-        counts[ono] += 1
+        is_monthly = bool(p.supplier and p.supplier in monthly)
+        # 逐单把采购锚定到该单 BOM 的料/分类(防分类错配致双算), 并取该类用量作分摊权重
+        per: list[tuple] = []   # (order, cat, in_bom, usage)
+        for no, o in valid:
+            cons_o = _cons(o)
+            cat, in_bom = _resolve_purchase_cat(p, cons_o, mat_info)
+            per.append((o, cat, in_bom, _category_usage(cons_o.get(cat))))
+        # 分摊金额: 单单全额; 多单按用量占比(无用量→均分), 余额给用量最大的单, 保证 Σ=amt 守恒。
+        n = len(per)
+        if n == 1:
+            shares = [amt]
+        else:
+            weights = [w for (_, _, _, w) in per]
+            tot = sum(weights, Decimal("0"))
+            if tot > 0:
+                shares = [(amt * w / tot).quantize(_CENTS) for w in weights]
+                lead = max(range(n), key=lambda i: weights[i])
+            else:
+                each = (amt / n).quantize(_CENTS)
+                shares = [each] * n
+                lead = 0
+            shares[lead] += amt - sum(shares, Decimal("0"))   # 余额给主单, 守恒不漏分
+        for (o, cat, in_bom, _w), sh in zip(per, shares):
+            if sh <= 0:
+                continue
+            order_real[o.order_no][cat] += sh
+            if not is_monthly:
+                sporadic_cover[(o.order_no, cat)].append({
+                    "purchase_no": p.purchase_no, "flow_no": p.alipay_flow_no,
+                    "supplier": p.supplier, "amount": float(sh),
+                    "material_name": p.material_name, "in_bom": in_bom,
+                })
+    return order_real, order_objs, sporadic_cover, unmatched
+
+
+def _sporadic_covered(db: Session, mat_info, bom_by_pcsku, bom_by_pc) -> dict:
+    """{(order_no, category): [evidence...]} —— 非月结(零星/现付)供应商已覆盖的(订单×分类)。"""
+    return _allocate_purchases(db, mat_info, bom_by_pcsku, bom_by_pc)[2]
+
+
+def _sporadic_note(cover: list) -> str:
+    """红字提示文案: 含已付金额 + 支付宝流水号证据, 让月结供应商核对、勿重复计入。"""
+    total = sum((_d(e.get("amount")) for e in cover), Decimal("0")).quantize(_CENTS)
+    flows = [str(e.get("flow_no")) for e in cover if e.get("flow_no")]
+    tail = (" 流水" + "/".join(flows[:3])) if flows else ""
+    return f"查看是否为零星采购,非月结付款 — 已走支付宝现付 ¥{total}{tail},请勿计入月结"
+
+
+# ── A. 逐单配件采购 → actual_parts 汇总 ──────────────────────────────────────
+def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
+    """填了 related_order_no 的配件采购单 → 按订单(多单按 BOM 占比分摊)写 Order.actual_parts。
+
+    - 多单: 一笔零星采购对应多个平台订单号 → 按各单该分类 BOM 用量占比分摊金额(无 BOM 用量→均分)。
+    - 逐类覆盖: actual_parts = Σ各分类[有真实零星采购→真实金额(覆盖该类预估), 否则→该类 BOM 预估],
+      即只覆盖"对应的零星配件预估", 其它分类保留 BOM 预估(用户 2026-06-28 口径)。
+    apply=False(默认): 只算预览, 不落库; 返回每单 physical_cost 变化 + 逐类明细供人工核对。
+    apply=True: 写 actual_parts 并 commit(该单 physical_cost 转「逐项真实计价」)。
+    """
+    from app.services.order_financials import physical_cost
+
+    mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
+    order_real, order_objs, sporadic_cover, unmatched = _allocate_purchases(
+        db, mat_info, bom_by_pcsku, bom_by_pc)
 
     items: list[dict] = []
     applied = 0
-    for ono, total in sorted(by_order.items()):
-        total = total.quantize(_CENTS)
-        o = db.execute(select(Order).where(Order.order_no == ono)).scalar_one_or_none()
+    for ono in sorted(order_real):
+        o = order_objs.get(ono)
+        real = order_real[ono]
         if o is None:
-            items.append({"order_no": ono, "matched": False, "purchases": counts[ono],
-                          "parts_total": float(total)})
+            items.append({"order_no": ono, "matched": False,
+                          "parts_total": float(sum(real.values(), Decimal("0")))})
             continue
+        cons = _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
+        cats = set(cons) | set(real)
+        new_parts = Decimal("0")
+        cat_rows: list[dict] = []
+        not_in_bom_n = 0
+        for c in sorted(cats):
+            r = real.get(c)
+            est = _d(cons.get(c, {}).get("amount"))
+            val = (r if r is not None else est).quantize(_CENTS)
+            new_parts += val
+            # 真实采购的分类不在该单 BOM 里 → 该料未在 BOM, 作额外项加入(无对应 est 可覆盖);
+            # 标记供人工核对(若实为 BOM 某料的错配, 应订正料号/分类, 否则可能高估)。
+            not_in_bom = (r is not None and c not in cons)
+            if not_in_bom:
+                not_in_bom_n += 1
+            cat_rows.append({
+                "category": c, "is_real": r is not None,
+                "real": float(r) if r is not None else None, "est": float(est),
+                "not_in_bom": not_in_bom,
+                "evidence": sporadic_cover.get((ono, c), []),
+            })
+        new_parts = new_parts.quantize(_CENTS)
         old_parts = o.actual_parts
         old_phys = physical_cost(o)
-        o.actual_parts = total          # 临时置入算新成本
+        o.actual_parts = new_parts
         new_phys = physical_cost(o)
         if apply:
             applied += 1
         else:
-            o.actual_parts = old_parts  # dry-run 还原
+            o.actual_parts = old_parts   # dry-run 还原
         items.append({
-            "order_no": ono, "matched": True, "purchases": counts[ono],
+            "order_no": ono, "matched": True, "categories_count": len(real),
             "product_name": o.product_name, "is_custom": bool(o.is_custom),
             "old_actual_parts": float(_d(old_parts)) if old_parts is not None else None,
-            "new_actual_parts": float(total),
+            "new_actual_parts": float(new_parts),
             "old_physical_cost": float(old_phys), "new_physical_cost": float(new_phys),
             "physical_delta": float((new_phys - old_phys).quantize(_CENTS)),
+            "not_in_bom_categories": not_in_bom_n,
+            "categories": cat_rows,
         })
 
     if apply:
         db.commit()
 
-    matched = [i for i in items if i["matched"]]
+    matched = [i for i in items if i.get("matched")]
     return {
         "applied": apply,
         "applied_count": applied,
         "matched_orders": len(matched),
-        "unmatched_orders": len(items) - len(matched),
+        # unmatched = 平台订单号全部对不上真实订单的"采购单"数(非订单数)
+        "unmatched_purchases_count": len(unmatched),
+        "unmatched_purchases": unmatched,
+        # 真实采购分类不在该单 BOM 内、需人工核对的订单数(防分类错配高估)
+        "flagged_not_in_bom_orders": sum(1 for i in matched if i.get("not_in_bom_categories")),
         "total_parts_amount": float(sum((_d(i.get("new_actual_parts")) for i in matched), Decimal("0"))),
         "items": items,
     }
@@ -303,14 +490,27 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
     """
     mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
     orders = _settled_shipped_orders(db)
+    sporadic_cover = _sporadic_covered(db, mat_info, bom_by_pcsku, bom_by_pc)
 
     std: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     cnt: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    spor: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: Decimal("0")))
     for o in orders:
         ym = _ym(o.ship_date)
         if ym is None:
             continue
         for cat, c in _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc).items():
+            cover = sporadic_cover.get((o.order_no, cat))
+            # 月结类里, 该单该类已走零星采购(支付宝现付)的部分 → 从月结预估「按金额净额」扣除(防月结多付),
+            # 已现付额单列 sporadic_excluded; 剩余额(该类还有别的料没现付)仍按月结计入。零星类不受影响。
+            if cover and _settle_mode(cat) == "月结":
+                cover_total = sum((_d(e.get("amount")) for e in cover), Decimal("0"))
+                spor[cat][ym] += cover_total
+                remain = _d(c["amount"]) - cover_total
+                if remain > 0:                       # 仅扣已现付, 剩余仍进月结预估(不丢整类)
+                    std[cat][ym] += remain
+                    cnt[cat][ym] += 1
+                continue
             std[cat][ym] += c["amount"]
             cnt[cat][ym] += 1
 
@@ -338,9 +538,10 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
         mode = _settle_mode(cat)   # 月结(五金/电力轨道) | 零星(其余)
         std_p, cnt_p = std.get(cat, {}), cnt.get(cat, {})
         fact_p, purch_p = fact_all.get(cat, {}), purch_all.get(cat, {})
-        periods = sorted(set(std_p) | set(cnt_p) | set(fact_p) | set(purch_p))
+        spor_p = spor.get(cat, {})
+        periods = sorted(set(std_p) | set(cnt_p) | set(fact_p) | set(purch_p) | set(spor_p))
         rows = []
-        t_std = t_fact = t_purch = t_actual = Decimal("0")
+        t_std = t_fact = t_purch = t_actual = t_spor = Decimal("0")
         hist_rates: list[Decimal] = []
         for ym in periods:
             s = std_p.get(ym, Decimal("0")).quantize(_CENTS)
@@ -358,6 +559,7 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
                 hist = s
             var = (actual - s).quantize(_CENTS) if (has_actual and actual is not None) else None
             var_pct = float((var / s * 100).quantize(_CENTS)) if (var is not None and s > 0) else None
+            sp = spor_p.get(ym, Decimal("0")).quantize(_CENTS)
             rows.append({
                 "period": ym, "historical_avg": float(hist), "standard_consume": float(s),
                 "factory_actual": float(fact) if has_fact else None, "has_factory_actual": has_fact,
@@ -366,8 +568,11 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
                 "actual": float(actual) if (has_actual and actual is not None) else None, "has_actual": has_actual,
                 "variance": float(var) if var is not None else None, "variance_pct": var_pct,
                 "order_count": c,
+                # 月结类里已走零星采购、已从月结预估扣除的金额(防双算多付; 见 export 红字提示)
+                "sporadic_excluded": float(sp),
             })
             t_std += s
+            t_spor += sp
             if has_fact:
                 t_fact += fact
             if has_purch:
@@ -382,6 +587,7 @@ def bulk_material_recon(db: Session, *, granularity: str = "month") -> dict:
             "total_standard": float(t_std),
             "total_factory_actual": float(t_fact), "total_actual_purchase": float(t_purch),
             "total_actual": float(t_actual), "total_variance": float(t_var),
+            "total_sporadic_excluded": float(t_spor),
             "total_variance_pct": float((t_var / t_std * 100).quantize(_CENTS)) if t_std > 0 else None,
         })
     return {"granularity": granularity, "ship_date_basis": True, "category_driven": True, "materials": out_cats}
@@ -458,6 +664,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
     if material_key:
         from app.services import sku_utils
         mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
+        sporadic_cover = _sporadic_covered(db, mat_info, bom_by_pcsku, bom_by_pc)
         for o in orders:
             cons = _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc).get(material_key)
             if not cons:
@@ -465,6 +672,8 @@ def export_shipped_orders(db: Session, *, year_month: str,
             parts = sorted(cons["materials"], key=lambda p: p["part_name"])
             est = cons["amount"]
             t_est += est
+            # 该单该类已走零星采购(支付宝现付) → 红字提示工厂勿计入月结(防多付); 带流水号证据。
+            cover = sporadic_cover.get((o.order_no, material_key))
             out_orders.append({
                 "order_no": o.order_no,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
@@ -472,6 +681,8 @@ def export_shipped_orders(db: Session, *, year_month: str,
                 "product_name": o.product_name,
                 "sku": o.sku,
                 "est_parts": float(est),
+                "sporadic": bool(cover),
+                "sporadic_note": _sporadic_note(cover) if cover else None,
                 "is_custom": bool(getattr(o, "is_custom", False))
                 or sku_utils.is_custom_sku_code(o.sku_code, o.product_code),
                 "bom_parts": [{
@@ -504,3 +715,27 @@ def export_shipped_orders(db: Session, *, year_month: str,
         "total_est_parts": float(t_est.quantize(_CENTS)),
         "orders": out_orders,
     }
+
+
+# ── E. 双算自检: 月结分类里被零星采购覆盖的(订单×分类) ──────────────────────────
+def detect_sporadic_monthly_overlap(db: Session) -> list[dict]:
+    """列出「月结分类却已走零星采购」的(订单×分类) —— 这些已从月结预估扣除/在导出标红,
+    供人工核对、防工厂月结重复计费多付。空列表=无重叠(干净)。
+    """
+    mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
+    sporadic_cover = _sporadic_covered(db, mat_info, bom_by_pcsku, bom_by_pc)
+    out: list[dict] = []
+    for (ono, cat), cover in sporadic_cover.items():
+        if _settle_mode(cat) != "月结":
+            continue
+        o = db.execute(select(Order).where(Order.order_no == ono)).scalar_one_or_none()
+        total = sum((_d(e.get("amount")) for e in cover), Decimal("0")).quantize(_CENTS)
+        out.append({
+            "order_no": ono, "category": cat,
+            "ship_month": _ym(o.ship_date) if o else None,
+            "product_name": o.product_name if o else None,
+            "sporadic_amount": float(total),
+            "evidence": cover,
+        })
+    out.sort(key=lambda x: (x.get("ship_month") or "", x["category"], x["order_no"]))
+    return out

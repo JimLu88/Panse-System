@@ -218,7 +218,8 @@ class PartPurchase(Base, TimestampMixin):
     freight: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     total_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     purchase_type: Mapped[Optional[str]] = mapped_column(String(32))  # 备货 / 单单采 / ...
-    related_order_no: Mapped[Optional[str]] = mapped_column(String(64))
+    # 平台订单号(淘宝/PDD); 一笔零星采购可对应多单(\n/空格分隔) → Text 不限长 (migration 0099)
+    related_order_no: Mapped[Optional[str]] = mapped_column(Text)
     payment_method: Mapped[Optional[str]] = mapped_column(String(32))
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)

@@ -345,7 +345,9 @@ def create_purchases_from_unclassified(db: Session) -> int:
             unit_price=amount,
             amount=amount,
             total_amount=amount,
-            related_order_no=f.related_order_no,
+            # 归账用淘宝平台订单号(对得上 Order.order_no), 而非支付宝商户单号(related_order_no);
+            # 平台订单号可多单(\n 分隔) → 交给 parts_recon.aggregate_related_purchases 拆单按 BOM 占比分摊。
+            related_order_no=(f.platform_order_no or None),
             purchase_type=ptype,
             payment_method="支付宝",
             payment_status="paid",

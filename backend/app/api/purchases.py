@@ -315,6 +315,18 @@ def bulk_material_recon(
     return parts_recon_service.bulk_material_recon(db, granularity=granularity)
 
 
+@router.get("/sporadic-monthly-overlap", response_model=list[dict])
+def sporadic_monthly_overlap(
+    db: Session = Depends(get_db),
+):
+    """双算自检: 列出「月结分类却已走零星采购(支付宝现付)」的(订单×分类)。
+
+    这些已从月结预估扣除、并在发货清单导出标红, 供人工核对、防工厂月结重复计费多付。空=干净。
+    """
+    from app.services import parts_recon_service
+    return parts_recon_service.detect_sporadic_monthly_overlap(db)
+
+
 @router.post("/aggregate-related-parts", response_model=dict)
 def aggregate_related_parts(
     apply: bool = Query(False, description="True=写 Order.actual_parts 落库; False=只出预览"),

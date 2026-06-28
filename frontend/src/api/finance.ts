@@ -700,6 +700,8 @@ export interface ShippedOrderRow {
   sku: string | null;
   est_parts: number;
   is_custom?: boolean;        // 定制单 BOM 为模板, 仅供参考
+  sporadic?: boolean;         // 该单该类已走零星采购(支付宝现付) → 红字提示工厂勿计入月结
+  sporadic_note?: string | null;   // 红字文案(含已付金额 + 支付宝流水号证据)
   bom_parts?: ShippedOrderBomPart[];   // 仅按材料导出时有
 }
 export interface ShippedOrdersExport {

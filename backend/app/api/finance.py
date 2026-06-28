@@ -296,6 +296,19 @@ def amount_match_alipay_flows(
     }
 
 
+@router.get("/alipay-flows/sign-audit", response_model=dict)
+def alipay_sign_audit(
+    account: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """只读: 审计「历史符号脏数据」—— 金额为正但疑似支出的流水(尤其交易类型=支出却为正)。
+
+    按账户汇总 strong(高置信错符号)/weak(文本疑似)+样例, 供人工确认。不改任何数据;
+    修正(原地翻符号)需先据此清单人工确认后另行执行。"""
+    from app.services import alipay_sign_audit_service
+    return alipay_sign_audit_service.audit_wrong_sign(db, account=account)
+
+
 @router.post("/alipay-flows/detect-refunds", response_model=dict)
 def detect_refunds(db: Session = Depends(get_db)):
     """识别退款对: 同关联订单号下金额相等、方向相反的两条流水标为 refund_in/refund_out。
