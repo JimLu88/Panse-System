@@ -812,7 +812,7 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
             },
             "amount": {
                 "type": "decimal", "required": True,
-                "desc": "金额 (正=收入, 负=支出; 如果 Excel 是 收入/支出 分开两列, 请只选其一并加负号)",
+                "desc": "金额 (正=收入, 负=支出; 若另有『交易类型』列为收入/支出, 系统按它自动定符号; 收入/支出分两列时请只选其一并加负号)",
                 "aliases": ["收支金额", "金额", "收支", "Amount"],
             },
             "balance": {

@@ -910,6 +910,32 @@ def _commit_factory_orders(
 # ----------------------------- alipay_flow ----------------------- #
 
 
+def _signed_alipay_amount(amount, transaction_type):
+    """按『交易类型』把支付宝金额归一成模型约定『正=收入, 负=支出』。
+
+    背景: 部分账户/格式(如爱群号等手填/导出表)的『收支金额』恒为正数, 收支方向写在单独的
+    『交易类型』列(收入/支出)。这类表若原样入库, 支出会被存成正数 → 污染 amount<0/>0 的
+    全部下游(分类/采购/余额勾稽)。
+
+    规则(安全、幂等):
+      - 交易类型明确含『支出』→ -abs(amount)  (取绝对值再加负, 源已带负也不会被翻回正)
+      - 交易类型明确含『收入』→  abs(amount)
+      - 其它类型(在线支付/分账/转账等无方向词)→ 原样返回, 信任源带的符号
+        (标准支付宝导出的支出本就带负号; 企业号对账单走 alipay_import.import_alipay_bill
+         另一条路径已正确合成符号, 不经过这里)。
+    """
+    if amount is None:
+        return amount
+    t = (transaction_type or "").strip()
+    if not t:
+        return amount
+    if "支出" in t:
+        return -abs(amount)
+    if "收入" in t:
+        return abs(amount)
+    return amount
+
+
 def _commit_alipay_flows(
     db: Session, *, rows: list[dict], mapping: dict[str, str], report: ImportReport,
     sheet_account: Optional[str] = None,
@@ -957,6 +983,9 @@ def _commit_alipay_flows(
             report.skipped_rows += 1
             report.errors.append(f"第 {i + 1} 行: 账户/流水号/金额 任一为空")
             continue
+        # 符号归一: 『收支金额』恒正 + 单独『交易类型』(收入/支出) 的表 → 按交易类型定符号(支出→负)。
+        # 必须在去重键(含 amount)与入库前完成, 否则支出会以正数入库污染下游。
+        amount = _signed_alipay_amount(amount, projected.get("transaction_type"))
         # 交易对象为空 → 置'待确认' (爱群号等待补填的表), 汇总计数避免逐行刷异常
         if not projected.get("counterparty"):
             projected["counterparty"] = "待确认"
