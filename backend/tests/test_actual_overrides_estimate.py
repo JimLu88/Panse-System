@@ -60,6 +60,23 @@ def test_install_est_actual_sync(db_session):
     assert o.actual_install == Decimal("150")   # 130 + 20
 
 
+def test_estimate_fee_product_fallback_when_sku_missing():
+    """sku_code 缺失 → 用 product_code 兜底取该产品兄弟SKU中位数, 不落全局中位 (用户 2026-06-28)。
+
+    根因: sku_code=None 的单, est 落全局中位、而 theoretical 按 product_code 命中定价表 →
+    两者口径不一致 → physical_cost swap 基线错、有实际账单时把物流/安装多算。"""
+    from app.services.order_fee_actual_service import estimate_fee
+    by_sku: dict = {}   # 定价表查不到该 sku
+    base_maps = {"pk": {"PPS24250080801": Decimal("450")},
+                 "lg": {"PPS24250080801": Decimal("750")},
+                 "inst": {"PPS24250080801": Decimal("250")}, "phys": {}}
+    # 有 product_code 兜底 → 取该产品中位数
+    assert estimate_fee(None, by_sku, base_maps, fallback_base="PPS24250080801") == (
+        Decimal("450"), Decimal("750"), Decimal("250"))
+    # 旧行为(无兜底)→ 落空, 由上层全局中位再兜
+    assert estimate_fee(None, by_sku, base_maps) == (None, None, None)
+
+
 def test_no_estimate_no_swap(db_session):
     """有 actual 但无 est(定价表缺)→ 不替换(防乱减), 保持原样。"""
     o = _o(theoretical_cost=Decimal("1000"), actual_packing=Decimal("150"))

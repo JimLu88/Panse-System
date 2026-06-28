@@ -46,12 +46,16 @@ def _pick(ps, field: str, base_map: dict, base: Optional[str]):
     return base_map.get(base) if base else None
 
 
-def estimate_fee(sku_code, by_sku: dict, base_maps: dict):
+def estimate_fee(sku_code, by_sku: dict, base_maps: dict, fallback_base: Optional[str] = None):
     """该 SKU 的 (预估打包, 预估物流, 预估安装) 单价:
        精确 SKU 有值优先; 否则(定制尾号≥90 / 定价表缺该 SKU)按 **基础产品码** 兄弟 SKU 中位数
-       (用户 2026-06-21: 定制按产品编码取费, 一般相同)。任何口径都可调本函数。"""
+       (用户 2026-06-21: 定制按产品编码取费, 一般相同)。任何口径都可调本函数。
+
+       fallback_base (用户 2026-06-28): sku_code 为空/解析不出 base 时, 用订单 product_code 兜底
+       取该产品兄弟 SKU 中位数 —— 否则 sku_code=None 的单只能落全局中位数, 与 theoretical(按
+       product_code 命中定价表)口径不一致, 导致 physical_cost swap 基线错、有实际账单时多算。"""
     ps = by_sku.get(sku_code) if sku_code else None
-    base = sku_utils.base_product_code(sku_code)
+    base = sku_utils.base_product_code(sku_code) or fallback_base
     return (_pick(ps, "packaging_cost", base_maps["pk"], base),
             _pick(ps, "logistics_cost", base_maps["lg"], base),
             _pick(ps, "install_cost", base_maps["inst"], base))
@@ -110,7 +114,7 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
             agg = {k: Decimal("0") for k in KS}
             ok = {k: False for k in KS}
             for ln in lns:
-                u = dict(zip(KS, estimate_fee(ln.sku_code, by_sku, base_maps)))
+                u = dict(zip(KS, estimate_fee(ln.sku_code, by_sku, base_maps, fallback_base=o.product_code)))
                 q = int(ln.qty or 1)
                 for k in KS:
                     if u[k] is not None:
@@ -118,7 +122,7 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None) -
                         ok[k] = True
             est[o.order_no] = {k: (agg[k] if ok[k] else None) for k in KS}
         else:
-            units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps)))
+            units = dict(zip(KS, estimate_fee(o.sku_code, by_sku, base_maps, fallback_base=o.product_code)))
             # 真实计价件数: 与 theoretical_cost 同口径(_effective_qty) —— 定制单 / 凑价单(件均实付<单件成本)
             # 按 1 件算, 否则 qty。修(用户 2026-06-25): 原来 ×原始qty 会把固定费用×10(定制凑价单qty=10)
             # 估成垃圾(餐桌物流估成¥5000), 现按真实件数乘。
