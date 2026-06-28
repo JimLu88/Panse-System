@@ -2044,6 +2044,8 @@ def put_financial_coefficients(
         raise HTTPException(403, "密码不正确, 财务系数未修改")
     _DATE_KEYS = ("fin_platform_activity_since", "fin_platform_activity_until", "fin_outsourcing_est_since")
     _MONEY_KEYS = ("fin_outsourcing_monthly",)   # 金额(元), 非 0~1 费率
+    _FLAG_KEYS = ("fin_custom_cost_v2",)          # 0/1 灰度开关, 非 0~1 费率 (否则"1"被 <1 校验误拒)
+    _TRUE = ("1", "on", "true", "yes")
     changed: dict = {}
     for k in ofin.DEFAULTS:
         if k in payload and payload[k] not in (None, ""):
@@ -2057,6 +2059,10 @@ def put_financial_coefficients(
                         raise ValueError
                 except ValueError:
                     raise HTTPException(400, f"{ofin.COEF_LABELS.get(k, k)} 应为 ≥0 的金额 (元)")
+            elif k in _FLAG_KEYS:
+                if v.lower() not in _TRUE + ("0", "off", "false", "no"):
+                    raise HTTPException(400, f"{ofin.COEF_LABELS.get(k, k)} 应为开关 0 或 1")
+                v = "1" if v.lower() in _TRUE else "0"   # 归一化为 0/1
             else:
                 try:
                     fv = float(v)

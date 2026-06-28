@@ -87,3 +87,18 @@ def test_v2_on_noncustom_unchanged():
         assert ofin.physical_cost(o) == Decimal("170")
     finally:
         _set_v2(False)
+
+
+def test_v2_setting_round_trip(db_session):
+    """启用路径: 设置 fin_custom_cost_v2='1' → load_coefficients → custom_cost_v2_on() True; '0' → False。
+    (修 PUT /financial-coefficients 把 '1' 当 0~1 费率误拒的 bug 后, 该开关才能经财务系数页正常落地。)"""
+    from app.services import settings_service
+    try:
+        settings_service.set_value(db_session, "fin_custom_cost_v2", "1")
+        ofin.load_coefficients(db_session)
+        assert ofin.custom_cost_v2_on() is True
+        settings_service.set_value(db_session, "fin_custom_cost_v2", "0")
+        ofin.load_coefficients(db_session)
+        assert ofin.custom_cost_v2_on() is False
+    finally:
+        ofin._cost_v2_cache["on"] = False
