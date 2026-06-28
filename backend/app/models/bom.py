@@ -27,3 +27,8 @@ class BomLine(Base, TimestampMixin):
     remark: Mapped[Optional[str]] = mapped_column(Text)   # 备注(尺寸/工艺说明, 可能很长 → Text 不限长)
     product_name: Mapped[Optional[str]] = mapped_column(String(255))   # 产品名称 (冗余, 方便对账)
     material_name: Mapped[Optional[str]] = mapped_column(String(255))  # 物料名称 (冗余, 方便对账)
+    # AI 推演/人工确认的尺寸串(如 "1800*800"), 不覆盖原 remark(配件 epic 阶段1; 用户 2026-06-28)。
+    # 计算面积时 remark 优先、缺则用 est_size; 多单 BOM 用量占比分摊成本时用此尺寸。
+    est_size: Mapped[Optional[str]] = mapped_column(String(128))
+    # 'inferred'=AI预估(可改) | 'confirmed'=人工确认(前端二次确认过) | NULL=未推演
+    size_status: Mapped[Optional[str]] = mapped_column(String(16))
