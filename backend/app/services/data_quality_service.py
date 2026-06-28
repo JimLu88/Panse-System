@@ -163,6 +163,9 @@ def scan_order_missing_alipay(db: Session) -> int:
 # 「实付远小于成本」错配判据用的在售状态 (scan 与自动关闭共用一套, 杜绝两边漂移)
 _COST_PAID_SALE_STATUS = ("paid", "shipped", "signed", "completed", "success", "finished")
 
+# 定制配件估值缺失检测的实付下限(元): 小额追加/差价片段不报 (用户 2026-06-29)
+_CUSTOM_PARTS_MIN_PAID = 500
+
 
 def _cost_exceeds_paid_qualifies(o) -> bool:
     """订单是否构成「实付远小于成本」错配 (scan 与自动关闭共用同一判据)。
@@ -253,6 +256,88 @@ def scan_cost_exceeds_paid(db: Session) -> int:
         )
         count += 1
     _log.info("scan_cost_exceeds_paid: created=%d", count)
+    return count
+
+
+# ── 定制单配件估值缺失 (用户 2026-06-29, 配合定制成本v2 的反向安全网) ──────────────────────
+# 方向与 cost_exceeds_paid 相反: 那个抓"成本>实付"(成本过高), 这个抓"定制单配件估值缺失→新口径下
+# 非木作会少算配件、成本被低估、利润虚高"。v2 分桶已让这类单仍走旧兜底(不会真虚高), 但根因是定价表
+# 配件没填 → 挂异常提醒人工补; 补齐后该单才能进 v2 真口径。这是"每改成本口径必配自愈检测"铁律的落地。
+def _custom_parts_missing_qualifies(o) -> bool:
+    """有真实工厂账单的定制单 + 定价表配件估值(est_parts)缺失/为0 (排非产品/碎单)。scan 与自动关闭共用。"""
+    from decimal import Decimal
+    from app.services import sku_utils
+    if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
+        return False
+    is_custom = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
+        getattr(o, "sku_code", None), getattr(o, "product_code", None))
+    if not is_custom:
+        return False
+    if Decimal(str(o.actual_cost or 0)) <= 0:                 # 无工厂账单 → v2 不生效, 不报
+        return False
+    if Decimal(str(o.est_parts or 0)) > 0:                    # 配件估值已有 → 不报
+        return False
+    if Decimal(str(o.paid_amount or 0)) < Decimal(_CUSTOM_PARTS_MIN_PAID):  # 碎单/小额追加 → 不报
+        return False
+    txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
+    if any(k in txt for k in _NON_PRODUCT_KW):
+        return False
+    return True
+
+
+def _close_stale_custom_parts_missing(db: Session) -> int:
+    """自动关闭已补齐配件估值/已不符合的 open custom_parts_missing 异常 (镜像 cost_exceeds_paid 自愈)。"""
+    from app.models.exception import DataException
+    closed = 0
+    for ex in db.query(DataException).filter(
+        DataException.source_table == "orders",
+        DataException.exception_type == "custom_parts_missing",
+        DataException.status == "open",
+    ).all():
+        pk = (ex.source_pk or "").strip()
+        if not pk.isdigit():
+            continue
+        o = db.query(Order).filter(Order.id == int(pk)).first()
+        if o is None:
+            continue
+        if not _custom_parts_missing_qualifies(o):
+            ex.status = "resolved"
+            closed += 1
+    if closed:
+        _log.info("_close_stale_custom_parts_missing: resolved=%d", closed)
+    return closed
+
+
+def scan_custom_parts_missing(db: Session) -> int:
+    """定制单配件估值缺失 (配合定制成本v2): 有工厂账单的定制单 + 定价表配件=0 → 提醒人工补配件估值。"""
+    from app.models.exception import DataException
+    _close_stale_custom_parts_missing(db)
+    ignored_pks = {
+        str(pk) for (pk,) in db.query(DataException.source_pk).filter(
+            DataException.source_table == "orders",
+            DataException.exception_type == "custom_parts_missing",
+            DataException.status == "ignored",
+        ).all()
+    }
+    count = 0
+    for o in db.query(Order).filter(
+        Order.status.in_(_COST_PAID_SALE_STATUS), Order.is_refill == False,  # noqa: E712
+    ).all():
+        if not _custom_parts_missing_qualifies(o) or str(o.id) in ignored_pks:
+            continue
+        _record(
+            db, source_table="orders", source_pk=o.id,
+            exception_type="custom_parts_missing", severity="warning",
+            description=(f"定制单 {o.order_no}({o.product_name or ''}) 有工厂账单 ¥{o.actual_cost} 但定价表"
+                        f"配件估值缺失/为0 → 新成本口径(v2)下非木作会少算配件、利润虚高(当前已被分桶兜底保护)。"
+                        f"请在定价表给该产品补配件成本。"),
+            suggestion_action="去定价表给该产品填 external_parts_cost(配件成本); 补齐后重跑配件回填, 该单即进 v2 真口径并自动销账。",
+            context={"order_no": o.order_no, "actual_cost": str(o.actual_cost),
+                     "est_parts": str(o.est_parts), "product_code": o.product_code,
+                     "product_name": o.product_name},
+        )
+        count += 1
+    _log.info("scan_custom_parts_missing: created=%d", count)
     return count
 
 
@@ -1197,6 +1282,7 @@ def run_all(db: Session) -> dict[str, int]:
     scanners = [
         ("order_missing_cost", scan_order_missing_cost),
         ("cost_exceeds_paid", scan_cost_exceeds_paid),
+        ("custom_parts_missing", scan_custom_parts_missing),
         ("order_missing_alipay", scan_order_missing_alipay),
         ("stale_import", scan_stale_import),
         ("order_missing_tracking", scan_order_missing_tracking),

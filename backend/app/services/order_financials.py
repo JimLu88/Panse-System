@@ -34,6 +34,10 @@ DEFAULTS = {
     "fin_outsourcing_est_since": "2026-05-01",    # 人员外包预估生效起始月
     "fin_refill_commission_rate": "0",            # 刷单(补单)佣金率 (占刷单流水, 默认0=没付佣金)
     "fin_wood_cost_ratio": "",                    # 木作占比(定制单非木作推算; 空=自动取定价表中位≈0.67), 用户 2026-06-25 选A
+    # 定制成本v2 灰度开关 (用户 2026-06-29): 默认 "0"=关=旧口径完全不变。开="1": 方案A(有真实工厂账单的定制单
+    # 不再兜底实付×85%)+方案4(非木作改用定价表配件 est_parts+物流+安装, 不再木作÷占比放大), 且**仅对
+    # est_parts>0(定价表配件可信)的有账单定制单生效**; est_parts=0/空(配件不可信)仍走旧口径占比放大+兜底(分桶安全闸)。
+    "fin_custom_cost_v2": "0",
 }
 COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
@@ -45,6 +49,7 @@ COEF_LABELS = {
     "fin_outsourcing_est_since": "人员外包预估生效起始月",
     "fin_refill_commission_rate": "刷单佣金率(占刷单流水)",
     "fin_wood_cost_ratio": "木作占比(定制单非木作推算; 空=自动取定价表中位)",
+    "fin_custom_cost_v2": "定制成本v2(方案A去兜底+方案4定价表配件; 默认关; 仅对配件可信的有账单定制单生效)",
 }
 
 # 售后费用字段 (订单总表内冗余列; 缺则用均值)
@@ -66,6 +71,13 @@ _WOOD_RATIO_DEFAULT = Decimal("0.67")
 _WOOD_EST_MAX_MARGIN = Decimal("0.15")   # 定制单 floor (用户 2026-06-26 选A): 木作占比推算后毛利 > 此(即成本<实付×85%) → 兜底实付×85%, 让定制单成本恒≥实付×85%(净利≤~15%, 工厂木作账单只含木作不足信)。floor 只升不降: 账单高于此则保留真实推算
 _CUSTOM_FLOOR_MIN_PAID = Decimal("1500")  # 定制 floor 下限: 实付<此 的小额单(仅追加插座/隔板/差价片段, 成本就该是那点) 不 floor
 _wood_ratio_cache = {"v": _WOOD_RATIO_DEFAULT}
+# 定制成本v2 灰度开关 模块缓存 (load_coefficients 刷新, 供 physical_cost_breakdown 无 coef 时读)。默认关。
+_cost_v2_cache = {"on": False}
+
+
+def custom_cost_v2_on() -> bool:
+    """定制成本v2 是否开启 (模块缓存; load_coefficients 时按设置 fin_custom_cost_v2 刷新)。默认 False=旧口径。"""
+    return _cost_v2_cache["on"]
 
 
 def _pricing_wood_ratio_median(db: Session):
@@ -118,6 +130,9 @@ def load_coefficients(db: Session) -> dict:
         wr = _WOOD_RATIO_DEFAULT
     out["wood_cost_ratio"] = wr
     _wood_ratio_cache["v"] = wr        # 刷新模块缓存, 供 physical_cost_breakdown(无 coef) 用
+    # 定制成本v2 灰度开关刷新 (默认关; 任何非真值字符串都视为关)
+    out["custom_cost_v2"] = str(raw.get("fin_custom_cost_v2") or "0").strip().lower() in ("1", "true", "on", "yes")
+    _cost_v2_cache["on"] = out["custom_cost_v2"]
     return out
 
 
@@ -187,13 +202,23 @@ def physical_cost_breakdown(o: Order) -> dict:
     if o.actual_cost is not None:
         factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
         if _is_custom:
-            # 定制单(用户 2026-06-25 选A): base-SKU 定价表非木作不准 → 非木作 = 木作账单×(1/占比−1) 推算,
-            # 整件物理 ≈ 木作账单 ÷ 木作占比 (随真实账单等比放大, 不靠定价表)。
-            ratio = wood_cost_ratio()
-            estimate_part = (factory_wood * (Decimal("1") / ratio - Decimal("1"))
-                             if (ratio > 0 and factory_wood > 0) else Decimal("0"))
-            precap = factory_wood + estimate_part + packing
-            cost = precap
+            _ep = _d(getattr(o, "est_parts", None))
+            if custom_cost_v2_on() and _ep > 0:
+                # 定制成本v2 灰度(用户 2026-06-29, 默认关; 仅 est_parts>0 配件可信 才进):
+                #   方案4: 非木作 = 定价表配件(est_parts) + 物流 + 安装 (不再木作÷占比放大);
+                #   方案A: 设 cap_mode='v2实配件' → 下方"定制兜底85"因 cap_mode!='none' 自动跳过(不再兜底)。
+                estimate_part = _ep + nz(_al, _el) + nz(_ai, _ei)
+                precap = factory_wood + estimate_part + packing
+                cost = precap
+                cap_mode, cap_label = "v2实配件", "定制v2: 非木作=定价表配件+物流+安装(不÷占比); 有账单不兜底"
+            else:
+                # 旧口径 / 配件不可信(est_parts=0)分桶回退(用户 2026-06-25 选A): base-SKU 定价表非木作不准
+                # → 非木作 = 木作账单×(1/占比−1) 推算, 整件物理 ≈ 木作账单 ÷ 木作占比, 下方仍兜底实付×85%。
+                ratio = wood_cost_ratio()
+                estimate_part = (factory_wood * (Decimal("1") / ratio - Decimal("1"))
+                                 if (ratio > 0 and factory_wood > 0) else Decimal("0"))
+                precap = factory_wood + estimate_part + packing
+                cost = precap
         else:
             # 非定制单: 定价表准 → 用定价表补非木作(配件+物流+安装 = 定价表物理 − 木作)
             wood_est = _d(getattr(o, "wood_cost_est", None))
