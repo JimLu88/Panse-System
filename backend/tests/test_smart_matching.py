@@ -153,3 +153,41 @@ def test_order_key_normalization():
     assert _order_key("淘宝123") is None       # 短串不当订单号
     assert _order_key(None) is None
     assert _order_key("  ") is None
+
+
+# -------- 账户角色闸① (用户 2026-06-29, #1+#2): 货款户/内部户按账户归类, 不被误打 factory_payment --------
+
+def test_boguan_account_flow_not_factory_payment(db_session):
+    """博冠货款户(主力号)流水即便对方名含"工厂" → boguan_payment 而非 factory_payment(根治僵尸复发)。"""
+    from app.services import account_registry_service as reg
+    reg.invalidate()
+    f = _flow(db_session, "GB", -1000, counterparty="某某工厂", account="主力号")
+    smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert f.reconciliation_type == "boguan_payment"
+
+
+def test_internal_counterparty_flow_internal_transfer(db_session):
+    """对手方是内部人员(魏佳英)+ 转账 → internal_transfer(只对账不记账)。"""
+    from app.services import account_registry_service as reg
+    reg.invalidate()
+    f = _flow(db_session, "GI", -2000, counterparty="魏佳英", account="主力号")
+    f.transaction_type = "转账"
+    db_session.flush()
+    smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert f.reconciliation_type == "internal_transfer"
+
+
+def test_revenue_account_customer_payment_unaffected(db_session):
+    """经营户(企业号)带订单号回款 → customer_payment(闸①不误伤经营户)。"""
+    from datetime import date
+    from app.models.order import Order
+    from app.services import account_registry_service as reg
+    reg.invalidate()
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000099", qty=1,
+                         order_date=date(2026, 5, 1), paid_amount=Decimal("100")))
+    f = _flow(db_session, "GR", 100, related_order_no="5100000000000000099", account="企业号")
+    smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert f.reconciliation_type == "customer_payment"

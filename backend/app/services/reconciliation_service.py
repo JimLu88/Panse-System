@@ -219,6 +219,12 @@ def run_factory_payment(
     def _is_supplier_cp(cp: Optional[str]) -> bool:
         return bool(cp) and any(kw in cp for kw in _sup_kws)
 
+    # #1 账户角色: 货款户(爱群号/主力号)/内部户(佳宝号)= 非营收账户, 其支出走博冠按月货款专用对账(#8)
+    # /送货单对账, 不是通用工厂货款。它们的脏流水(符号丢/双导)被误标 factory_payment 也在此【按账户】排除
+    # → 根治"伟男(主力号)/**男(爱群号) 漏进工厂对账报假差 + 僵尸复发"(用户 2026-06-29: 博冠走李爱群+主账号)。
+    from app.services import account_registry_service as _acct_reg
+    _non_rev_accts = _acct_reg.non_revenue_accounts(db)
+
     # 流水里查 reconciliation_type = factory_payment 的支出 (amount < 0)
     # 评审财务#1: 付款侧也要按账期过滤 (与 promotion/install/logistics/revenue 一致);
     # 原来只过滤了应付侧(order_date), 付款侧取全量 → 传 period 时"当期应付 vs 历史全量实付"虚假大额差。
@@ -226,6 +232,8 @@ def run_factory_payment(
         AlipayFlow.counterparty,
         func.coalesce(func.sum(-AlipayFlow.amount), 0).label("paid"),
     ).where(AlipayFlow.reconciliation_type == "factory_payment")
+    if _non_rev_accts:
+        flow_stmt = flow_stmt.where(AlipayFlow.account.notin_(_non_rev_accts))
     if period_start:
         flow_stmt = flow_stmt.where(AlipayFlow.transaction_time >= period_start)
     if period_end:
@@ -257,6 +265,8 @@ def run_factory_payment(
     flow_detail = select(AlipayFlow.counterparty, AlipayFlow.transaction_no,
                          AlipayFlow.transaction_time, AlipayFlow.amount).where(
         AlipayFlow.reconciliation_type == "factory_payment")
+    if _non_rev_accts:
+        flow_detail = flow_detail.where(AlipayFlow.account.notin_(_non_rev_accts))
     if period_start:
         flow_detail = flow_detail.where(AlipayFlow.transaction_time >= period_start)
     if period_end:

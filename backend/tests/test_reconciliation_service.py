@@ -95,6 +95,30 @@ def test_factory_payment_supplier_with_order_kept(db_session):
     assert any(d.key == "双重身份厂" for d in r.diffs)   # 有工厂单 → 仍参与对账
 
 
+def test_factory_payment_excludes_boguan_account(db_session):
+    """货款户(主力号/爱群号=博冠货款户)的 factory_payment 流水 → 不进通用工厂对账
+    (用户 2026-06-29: 伟男在主力号的67081假差应消失, 博冠货款走 #8 专用对账)。"""
+    db_session.add(AlipayFlow(account="主力号", transaction_no="TWN", transaction_time=datetime(2026, 5, 20),
+                              counterparty="伟男(**男)", amount=Decimal("67081"),  # 脏数据存正数
+                              reconciliation_type="factory_payment"))
+    db_session.flush()
+    r = recon.run_factory_payment(db_session, record_exceptions=True)
+    assert not any("伟男" in (d.key or "") for d in r.diffs)              # 主力号被按账户排除
+    assert db_session.query(DataException).filter(
+        DataException.source_pk.like("factory_payment:%伟男%")).count() == 0
+
+
+def test_factory_payment_revenue_account_still_reconciled(db_session):
+    """经营户(企业号)的真实工厂付款 → 仍正常对账(账户排除只针对货款户)。"""
+    db_session.add(FactoryOrder(factory_order_no="FE", factory_name="乙工厂", order_date=date(2026, 5, 1),
+                                qty=1, factory_bill_amount=Decimal("8000")))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TE", transaction_time=datetime(2026, 5, 20),
+                              counterparty="乙工厂", amount=Decimal("-7000"), reconciliation_type="factory_payment"))
+    db_session.flush()
+    r = recon.run_factory_payment(db_session, record_exceptions=False)
+    assert next(d for d in r.diffs if d.key == "乙工厂").diff == Decimal("-1000")
+
+
 # -------- Rule 7 revenue_alipay 淘金币豁免 (2026-06-21) --------
 
 def _rev_order(db, no, paid):

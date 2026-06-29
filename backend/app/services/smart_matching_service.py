@@ -109,13 +109,24 @@ class MatchResult:
     untouched: int
 
 
-def _classify(flow: AlipayFlow, lk: _Lookups) -> Optional[str]:
+def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> Optional[str]:
     if flow.reconciliation_type:  # 已经有标了, 不动
         return None
     amt = float(flow.amount or 0)
     has_ron = bool((flow.related_order_no or "").strip())
     ron = _order_key(flow.related_order_no)
     desc = " ".join(filter(None, [flow.counterparty, flow.remark, flow.transaction_type]))
+
+    # 闸①(用户 2026-06-29, #1+#2): 只对【博冠货款户(爱群号/主力号)】的流水按账户角色判, 不再被对方名/
+    # 关键字误打 factory_payment(根治"伟男/博冠货款被当工厂对账 + 僵尸复发")。仅在传 db 时生效, 不传退回旧行为。
+    # 作用域限定 boguan 账户: 不动其它账户的对方名/关键字分类(避免误改 salary/promotion 等)。
+    if db is not None:
+        from app.services import account_registry_service as _reg
+        if _reg.is_boguan_account(db, flow.account):
+            from app.services import internal_accounts as _ia
+            if _ia.is_internal_flow(db, flow):
+                return "internal_transfer"      # 货款户内部挪钱(对方是我方账户主人/内部人员) → 只对账不记账
+            return "boguan_payment"             # 货款户其余流水 → 博冠货款(走 #8 专用对账, 不进通用工厂对账)
 
     # 段 0: 用户写死的确定性规则, 优先于一切 (理财转移/平台代扣费/保证金)
     if _matches(desc, INTERNAL_TRANSFER_KEYS):
@@ -188,7 +199,7 @@ def run(db: Session, *, account: Optional[str] = None) -> MatchResult:
     rows = db.execute(stmt).scalars().all()
     tagged: dict[str, int] = {}
     for r in rows:
-        category = _classify(r, lk)
+        category = _classify(r, lk, db)
         if category:
             r.reconciliation_type = category
             tagged[category] = tagged.get(category, 0) + 1

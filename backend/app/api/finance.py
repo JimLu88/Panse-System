@@ -980,6 +980,76 @@ def put_factory_aliases(
     return {"ok": True, "count": len(aliases)}
 
 
+# ── #1 账户角色注册表 + #2 内部登记中心 (用户 2026-06-29): 账户角色/内部主体后台可配 ──
+
+@router.get("/reconciliation/account-roles")
+def get_account_roles(db: Session = Depends(get_db)):
+    """账户角色映射 {账户名: [角色]} — 角色: revenue/boguan_payment/internal/ledger_exempt。"""
+    from app.services import account_registry_service
+    return {"account_roles": account_registry_service._load_roles(db),
+            "all_accounts": list(account_registry_service.all_known_accounts(db))}
+
+
+@router.put("/reconciliation/account-roles")
+def put_account_roles(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """保存账户角色 (留痕 + 清缓存)。body: {"account_roles": {"爱群号": ["boguan_payment"]}}"""
+    import json
+
+    from app.services import account_registry_service, field_change_service, settings_service
+    roles = payload.get("account_roles")
+    if not isinstance(roles, dict):
+        raise HTTPException(400, "account_roles 必须是 {账户名: [角色]} 对象")
+    old = account_registry_service._load_roles(db)
+    settings_service.set_value(db, "account_roles", json.dumps(roles, ensure_ascii=False))
+    field_change_service.record(
+        db, table="system_settings", pk="account_roles", field="account_roles",
+        old=json.dumps(old, ensure_ascii=False), new=json.dumps(roles, ensure_ascii=False),
+        actor=getattr(user, "username", None), row_label="账户角色注册表", field_label="账户角色",
+    )
+    db.commit()
+    account_registry_service.invalidate()
+    return {"ok": True, "count": len(roles)}
+
+
+@router.get("/reconciliation/internal-entities")
+def get_internal_entities(db: Session = Depends(get_db)):
+    """内部主体登记 {owners, proxies, extra} + 当前生效关键词(种子∪配置)。"""
+    from app.services import internal_accounts, settings_service
+    import json as _json
+    raw = settings_service.get(db, "internal_entities", env_fallback=False)
+    cfg = _json.loads(raw) if raw else {}
+    return {"internal_entities": cfg if isinstance(cfg, dict) else {},
+            "effective_keywords": list(internal_accounts.internal_counterparty_keywords(db))}
+
+
+@router.put("/reconciliation/internal-entities")
+def put_internal_entities(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """保存内部主体登记 (留痕)。body: {"internal_entities": {"owners":[...],"proxies":[...],"extra":[...]}}"""
+    import json
+
+    from app.services import field_change_service, settings_service
+    ents = payload.get("internal_entities")
+    if not isinstance(ents, dict):
+        raise HTTPException(400, "internal_entities 必须是 {owners, proxies, extra} 对象")
+    raw = settings_service.get(db, "internal_entities", env_fallback=False)
+    settings_service.set_value(db, "internal_entities", json.dumps(ents, ensure_ascii=False))
+    field_change_service.record(
+        db, table="system_settings", pk="internal_entities", field="internal_entities",
+        old=raw or "{}", new=json.dumps(ents, ensure_ascii=False),
+        actor=getattr(user, "username", None), row_label="内部主体登记", field_label="内部主体",
+    )
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/reconciliation/match-expense-flows")
 def match_expense_flows_api(
     db: Session = Depends(get_db),
