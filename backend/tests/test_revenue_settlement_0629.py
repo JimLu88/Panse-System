@@ -39,3 +39,26 @@ def test_settlement_deduction_not_counted_as_income(db_session):
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
     march = [d for d in res.diffs if d.key == "2026-03 兜底"]
     assert not march or (march[0].expected or 0) == 0
+
+
+def test_unsigned_order_not_flagged_unmatched(db_session):
+    """未签收订单(status=paid, 担保未放款)即便>45天、无流水 → 不算"未配到流水"。"""
+    from datetime import timedelta
+    old = date.today() - timedelta(days=60)
+    db_session.add(Order(platform="淘宝", order_no="UNSIGNED1", status="paid", is_refill=False,
+                         order_date=old, paid_amount=Decimal("5000"), buyer_payable_amount=Decimal("5000")))
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    assert all((d.expected or 0) == 0 for d in res.diffs if d.key and "兜底" in d.key)
+
+
+def test_signed_order_no_flow_still_flagged(db_session):
+    """已签收订单(放款应已触发)>45天、无流水 → 仍报"未配到流水"(真缺口)。"""
+    from datetime import timedelta
+    old = date.today() - timedelta(days=60)
+    db_session.add(Order(platform="淘宝", order_no="SIGNEDNOFLOW", status="signed", is_refill=False,
+                         order_date=old, paid_amount=Decimal("5000"), buyer_payable_amount=Decimal("5000")))
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    total = sum(float(d.expected or 0) for d in res.diffs if d.key and "兜底" in d.key)
+    assert total == 5000.0

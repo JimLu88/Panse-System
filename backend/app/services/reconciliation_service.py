@@ -895,7 +895,7 @@ def run_revenue_alipay(
     o_rows = db.execute(
         select(Order.order_no, Order.order_date, Order.paid_amount,
                Order.buyer_payable_amount, Order.refund_amount,
-               Order.buyer_freight).where(
+               Order.buyer_freight, Order.status).where(
             Order.status.notin_(["cancelled", "pending_payment"]),
             Order.order_date.isnot(None),
             *( [Order.order_date >= period_start] if period_start else [] ),
@@ -905,7 +905,8 @@ def run_revenue_alipay(
     order_paid: dict[str, Decimal] = {}
     order_month: dict[str, str] = {}
     order_date_by_key: dict[str, Optional[date]] = {}   # 结算窗口判断用 (下单距今<45天放款未到)
-    for no, d, paid, payable, refund, freight in o_rows:
+    order_status_by_key: dict[str, Optional[str]] = {}  # 未签收(paid/shipped)=担保未放款, 不算"未配"
+    for no, d, paid, payable, refund, freight, ostatus in o_rows:
         k = _okey(no)
         if not k:
             continue
@@ -924,6 +925,7 @@ def run_revenue_alipay(
         order_paid[k] = order_paid.get(k, Decimal("0")) + base - Decimal(refund or 0)
         order_month[k] = _month_key(d) or "(无日期)"
         order_date_by_key[k] = d
+        order_status_by_key[k] = ostatus
 
     from sqlalchemy import or_ as _or
     af_stmt = select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.related_order_no,
@@ -997,8 +999,9 @@ def run_revenue_alipay(
         if got is None:
             if paid > 0:
                 _od = order_date_by_key.get(k)
-                if _od is not None and _od >= settling_cutoff:
-                    # 担保交易结算窗口内: 回款还没到账是正常的, 不算"未配到流水", 否则当月永远假报。
+                if (_od is not None and _od >= settling_cutoff) or order_status_by_key.get(k) in ("paid", "shipped"):
+                    # 担保未放款不算"未配到流水"(否则当月永远假报):
+                    #   ① 下单<45天 结算窗口内; ② 未签收(paid/shipped) — 淘宝确认收货才放款, 家具交付周期长常>45天。
                     settling_recent += paid
                     continue
                 mk = order_month.get(k, "(无日期)")
