@@ -205,6 +205,20 @@ def run_factory_payment(
         k = _canon_factory(name, aliases)
         billed_by_factory[k] = billed_by_factory.get(k, Decimal("0")) + Decimal(billed or 0)
 
+    # 已登记的物料/配件供应商(木隅大板/岩板/玻璃/五金…)走【送货单对账】, 不是 FactoryOrder 成品工厂。
+    # 它们的付款也标 factory_payment(供 supplier_payment_matcher 配送货单), 但【无工厂下单】→ 若进
+    # 本对账会假报"应付0 实付X"。故: 对手方命中已登记供应商关键字、且该对手方无任何工厂单的, 在此排除
+    # (用户 2026-06-29: 木隅工厂其实是配件采购被误当工厂对账)。
+    from app.models.supplier import Supplier as _Supplier
+    _sup_kws: list[str] = []
+    for _sn, _kws in db.execute(
+        select(_Supplier.name, _Supplier.alipay_counterparty_keywords).where(_Supplier.is_active.is_(True))
+    ).all():
+        _sup_kws.extend(k.strip() for k in (list(_kws or []) + [_sn]) if k and str(k).strip())
+
+    def _is_supplier_cp(cp: Optional[str]) -> bool:
+        return bool(cp) and any(kw in cp for kw in _sup_kws)
+
     # 流水里查 reconciliation_type = factory_payment 的支出 (amount < 0)
     # 评审财务#1: 付款侧也要按账期过滤 (与 promotion/install/logistics/revenue 一致);
     # 原来只过滤了应付侧(order_date), 付款侧取全量 → 传 period 时"当期应付 vs 历史全量实付"虚假大额差。
@@ -218,9 +232,12 @@ def run_factory_payment(
         flow_stmt = flow_stmt.where(AlipayFlow.transaction_time <= period_end)
     flow_stmt = flow_stmt.group_by(AlipayFlow.counterparty)
     paid_by_factory: dict[str, Decimal] = {}
+    factory_has_nonsupplier: set[str] = set()   # 该 canon key 是否有"非供应商"对手方贡献(有则保留对账)
     for name, paid in db.execute(flow_stmt).all():
         k = _canon_factory(name, aliases) if name else "(未匹配)"
         paid_by_factory[k] = paid_by_factory.get(k, Decimal("0")) + Decimal(paid or 0)
+        if not _is_supplier_cp(name):
+            factory_has_nonsupplier.add(k)
 
     # 明细单号 (供用户去核对到底是哪几笔): 应付侧=工厂下单单号(+淘宝单号), 实付侧=支付宝流水号
     fo_detail = select(FactoryOrder.factory_name, FactoryOrder.factory_order_no,
@@ -255,6 +272,9 @@ def run_factory_payment(
     for factory in set(billed_by_factory) | set(paid_by_factory):
         billed = billed_by_factory.get(factory, Decimal("0"))
         paid = paid_by_factory.get(factory, Decimal("0"))
+        # 无工厂下单(应付0)、付款全来自已登记供应商 → 是配件/物料采购, 走送货单对账, 不在工厂货款里报假差
+        if billed == 0 and factory not in factory_has_nonsupplier:
+            continue
         diff = paid - billed
         sev = _classify(diff, base=billed)
         fos = fo_records.get(factory, [])

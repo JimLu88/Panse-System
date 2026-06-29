@@ -63,6 +63,38 @@ def test_factory_payment_within_tolerance_no_exception(db_session):
     assert db_session.query(DataException).count() == 0
 
 
+# -------- factory_payment 排除已登记物料/配件供应商 (用户 2026-06-29: 木隅其实是配件采购) --------
+
+def test_factory_payment_excludes_registered_supplier(db_session):
+    """已登记供应商(木隅大板)的 factory_payment 付款、无工厂下单 → 不报工厂货款假差。"""
+    from app.models.supplier import Supplier
+    db_session.add(Supplier(name="木隅工厂(*凯)", supplier_type="plywood", is_active=True,
+                            alipay_counterparty_keywords=["木隅工厂(*凯)"]))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TMY", transaction_time=datetime(2026, 5, 20),
+                              counterparty="木隅工厂(*凯)", amount=Decimal("-596"),
+                              reconciliation_type="factory_payment"))
+    db_session.flush()
+    r = recon.run_factory_payment(db_session, record_exceptions=True)
+    assert not any("木隅" in (d.key or "") for d in r.diffs)
+    assert db_session.query(DataException).filter(
+        DataException.source_pk.like("factory_payment:%木隅%")).count() == 0
+
+
+def test_factory_payment_supplier_with_order_kept(db_session):
+    """既是登记供应商又有工厂下单(应付>0) → billed>0 护栏: 不排除, 照常对账。"""
+    from app.models.supplier import Supplier
+    db_session.add(Supplier(name="双重身份厂", supplier_type="woodwork", is_active=True,
+                            alipay_counterparty_keywords=["双重身份厂"]))
+    db_session.add(FactoryOrder(factory_order_no="F9", factory_name="双重身份厂", order_date=date(2026, 5, 1),
+                                qty=1, factory_bill_amount=Decimal("5000")))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TD", transaction_time=datetime(2026, 5, 20),
+                              counterparty="双重身份厂", amount=Decimal("-5000"),
+                              reconciliation_type="factory_payment"))
+    db_session.flush()
+    r = recon.run_factory_payment(db_session, record_exceptions=False)
+    assert any(d.key == "双重身份厂" for d in r.diffs)   # 有工厂单 → 仍参与对账
+
+
 # -------- Rule 7 revenue_alipay 淘金币豁免 (2026-06-21) --------
 
 def _rev_order(db, no, paid):
