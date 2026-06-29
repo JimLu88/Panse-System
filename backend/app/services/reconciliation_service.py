@@ -29,6 +29,7 @@ from app.models.marketing import AfterSales, BrandMarketing, DailyOperation, Out
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order, PartPurchase
 from app.models.prepay_ledger import PrepayLedger
+from app.models.settlement import OrderSettlement
 from app.services import exception_service
 
 RuleName = Literal[
@@ -963,6 +964,22 @@ def run_revenue_alipay(
             orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{amt_d} (订单{ron})")
     for _k, _m in _txn_max.items():
         flow_income[_k] = sum(_m.values(), Decimal("0"))
+
+    # 聚合结算账户(微信/聚合)收款走 order_settlements 的『交易收款』(billDetail 导入), 不进 alipay_flows
+    # → 营收对账过去只看 alipay_flows, 聚合付款订单假报"未配到流水" (2026-06-29)。把它并入该单收入。
+    # 安全: 已验 0 单两表重复 —— 『交易收款』仅聚合源(agent/wechat), 与 source=alipay 的『交易付款』口径不撞。
+    _st = select(OrderSettlement.order_no, func.sum(OrderSettlement.income)).where(
+        OrderSettlement.entry_type == "交易收款", OrderSettlement.income > 0,
+    )
+    if period_start:
+        _st = _st.where(OrderSettlement.settle_time >= period_start)
+    if period_end:
+        _st = _st.where(OrderSettlement.settle_time <= period_end)
+    for _ron, _inc in db.execute(_st.group_by(OrderSettlement.order_no)).all():
+        _k = _okey(_ron)
+        if _k and _k in order_paid:
+            flow_income[_k] = flow_income.get(_k, Decimal("0")) + Decimal(_inc or 0)
+            flow_nos_by_order.setdefault(_k, []).append(f"聚合结算 交易收款 ¥{Decimal(_inc or 0)}")
 
     if not order_paid and not flow_income and not orphan_income_by_month:
         return _result("revenue_alipay", period_start, period_end, [ReconciliationDiff(
