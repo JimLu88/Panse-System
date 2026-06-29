@@ -167,6 +167,26 @@ def test_boguan_account_flow_not_factory_payment(db_session):
     assert f.reconciliation_type == "boguan_payment"
 
 
+def test_boguan_account_parts_remark_left_unclassified(db_session):
+    """货款户(混合户)里备注是配件材料的支出 → 不当博冠货款, 留未归类供配件采购归账(用户 2026-06-29)。"""
+    from app.services import account_registry_service as reg
+    reg.invalidate()
+    f = _flow(db_session, "GP", -1130, counterparty="*丽", remark="山东岩板：冯玥 2米备货", account="主力号")
+    smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert f.reconciliation_type is None   # 备注含"岩板" → 留未归类(走配件采购), 不是 boguan_payment
+
+
+def test_boguan_account_goods_payment_still_boguan(db_session):
+    """货款户里没有材料词的支出(真货款) → 仍 boguan_payment。"""
+    from app.services import account_registry_service as reg
+    reg.invalidate()
+    f = _flow(db_session, "GG", -8000, counterparty="*伟", remark="3月货款", account="主力号")
+    smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert f.reconciliation_type == "boguan_payment"
+
+
 def test_internal_counterparty_flow_internal_transfer(db_session):
     """对手方是内部人员(魏佳英)+ 转账 → internal_transfer(只对账不记账)。"""
     from app.services import account_registry_service as reg

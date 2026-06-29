@@ -109,6 +109,26 @@ class MatchResult:
     untouched: int
 
 
+# 货款户(爱群号/主力号)是混合户(用户 2026-06-29确认): 也走零星配件采购。备注命中这些材料词的支出
+# 不当博冠货款, 留作未归类 → 由配件采购归账(create_purchases→actual_parts)。与"X月货款/博冠"区分。
+_PARTS_REMARK_KEYS = ("岩板", "玻璃", "榉木", "木材", "大板", "贴皮", "木皮", "洞石",
+                      "轨道", "灯带", "五金", "配件", "软包", "螺丝", "双面胶",
+                      "把手", "铰链", "拉手", "台面", "桌面", "板材")
+
+
+_PLAT_ORDER_RE = re.compile(r"\d{15,19}")
+
+
+def _is_parts_flow(flow: AlipayFlow) -> bool:
+    """货款户里这笔支出是否为"零星配件采购"(而非博冠货款): 备注命中材料词, 或带淘宝平台订单号
+    (按订单的配件采购, 货款不会带平台订单号)。两条任一命中即判配件。"""
+    if any(k in (flow.remark or "") for k in _PARTS_REMARK_KEYS):
+        return True
+    if _PLAT_ORDER_RE.search(flow.platform_order_no or ""):
+        return True
+    return False
+
+
 def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> Optional[str]:
     if flow.reconciliation_type:  # 已经有标了, 不动
         return None
@@ -126,6 +146,10 @@ def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> O
             from app.services import internal_accounts as _ia
             if _ia.is_internal_flow(db, flow):
                 return "internal_transfer"      # 货款户内部挪钱(对方是我方账户主人/内部人员) → 只对账不记账
+            # 混合户: 支出且备注是配件材料(岩板/玻璃/榉木/轨道…) → 不当博冠货款, 留未归类供配件采购归账
+            # (用户 2026-06-29: 爱群号既有博冠货款也有零星配件采购)。货款("X月货款"/博冠)无材料词 → 仍博冠货款。
+            if amt < 0 and _is_parts_flow(flow):
+                return None
             return "boguan_payment"             # 货款户其余流水 → 博冠货款(走 #8 专用对账, 不进通用工厂对账)
 
     # 段 0: 用户写死的确定性规则, 优先于一切 (理财转移/平台代扣费/保证金)
