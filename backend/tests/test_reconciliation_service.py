@@ -119,6 +119,23 @@ def test_factory_payment_revenue_account_still_reconciled(db_session):
     assert next(d for d in r.diffs if d.key == "乙工厂").diff == Decimal("-1000")
 
 
+def test_factory_payment_separate_recon_factory_excluded(db_session):
+    """配置 factories_separate_recon 的工厂(博冠走货款户专用月度对账)→ 不在通用工厂货款对账报差。"""
+    import json
+    from app.services import settings_service
+    settings_service.set_value(db_session, "factories_separate_recon", json.dumps(["玉山县博冠家具有限公司"]))
+    db_session.add(FactoryOrder(factory_order_no="B1", factory_name="玉山县博冠家具有限公司",
+                                order_date=date(2026, 5, 1), qty=1, factory_bill_amount=Decimal("381900")))
+    db_session.flush()
+    try:
+        r = recon.run_factory_payment(db_session, record_exceptions=True)
+        assert not any("博冠" in (d.key or "") for d in r.diffs)
+        assert db_session.query(DataException).filter(
+            DataException.source_pk.like("factory_payment:%博冠%")).count() == 0
+    finally:
+        settings_service.set_value(db_session, "factories_separate_recon", "[]")
+
+
 # -------- Rule 7 revenue_alipay 淘金币豁免 (2026-06-21) --------
 
 def _rev_order(db, no, paid):

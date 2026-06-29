@@ -200,6 +200,17 @@ def run_factory_payment(
 
     # 两侧名称都先过别名映射 (对账建议 3: "**晶"等掩码/简称对不上标准工厂名)
     aliases = _factory_aliases(db)
+    # 博冠等"货款走个人账户(爱群号/主力号)、单独按月对账"的工厂, 从通用工厂货款对账排除:
+    # 它们的实付在货款户里(被 #1+#2 account 角色排出 factory_payment 流水), 通用对账永远看不到→假报"实付0"。
+    # 走专用月度对账(#8)。配置 system_settings['factories_separate_recon'] = ["玉山县博冠家具有限公司"] (用户 2026-06-29)。
+    import json as _json_sep
+    try:
+        from app.services import settings_service as _ss_sep
+        _sep_raw = _ss_sep.get(db, "factories_separate_recon", env_fallback=False)
+        _separate_factories = {_canon_factory(str(n).strip(), aliases)
+                               for n in (_json_sep.loads(_sep_raw) if _sep_raw else []) if str(n).strip()}
+    except Exception:  # pragma: no cover - 配置坏不拦对账
+        _separate_factories = set()
     billed_by_factory: dict[str, Decimal] = {}
     for name, billed in db.execute(fo_stmt).all():
         k = _canon_factory(name, aliases)
@@ -280,6 +291,8 @@ def run_factory_payment(
     _CAP = 30  # 每侧最多列 30 条单号, 防止单元格过长; message 里给总笔数
     diffs: list[ReconciliationDiff] = []
     for factory in set(billed_by_factory) | set(paid_by_factory):
+        if factory in _separate_factories:
+            continue   # 博冠等走专用月度对账(#8), 不在通用工厂货款对账报(实付在货款户, 这里永远0)
         billed = billed_by_factory.get(factory, Decimal("0"))
         paid = paid_by_factory.get(factory, Decimal("0"))
         # 无工厂下单(应付0)、付款全来自已登记供应商 → 是配件/物料采购, 走送货单对账, 不在工厂货款里报假差
