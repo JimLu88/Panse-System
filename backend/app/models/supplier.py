@@ -74,7 +74,7 @@ class DeliveryNote(Base, TimestampMixin):
     # pending_review / confirmed / billed / paid / disputed
     reconciled_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
     paid_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 

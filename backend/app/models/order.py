@@ -111,7 +111,7 @@ class Order(Base, TimestampMixin):
     refund_date: Mapped[Optional[date]] = mapped_column(Date)                         # 退款日期
 
     # 支付宝流水号 (由 alipay_backfill_service 从流水反向匹配回填, 订单表 5 表 AM 列)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128), index=True)
 
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
@@ -185,7 +185,7 @@ class FactoryOrder(Base, TimestampMixin):
     payment_method: Mapped[Optional[str]] = mapped_column(String(32))  # 月结 / 现付 / 预付
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     carrier: Mapped[Optional[str]] = mapped_column(String(64))
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
@@ -223,7 +223,7 @@ class PartPurchase(Base, TimestampMixin):
     payment_method: Mapped[Optional[str]] = mapped_column(String(32))
     payment_status: Mapped[str] = mapped_column(String(32), default="unpaid", nullable=False)
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)   # 备注 (migration 0046)
     # 配件采购发票原图 (OCR 识别来源, 历史发票留存可点击查看)
     source_file_id: Mapped[Optional[int]] = mapped_column(ForeignKey("purchase_files.id"))

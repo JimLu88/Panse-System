@@ -114,7 +114,7 @@ class RefillRecord(Base, TimestampMixin):
     total_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     # 表 8-补单记录 字段补全 (Excel 导入)
     supplier_payment: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 供应商打款费用
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))            # 支付宝流水号
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))            # 支付宝流水号
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128))              # 物流单号
     fee_remark: Mapped[Optional[str]] = mapped_column(Text)                      # 费用备注
     remark: Mapped[Optional[str]] = mapped_column(String(255))   # 备注 / 补单状态
@@ -280,7 +280,7 @@ class FactoryReconciliation(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False)
     diff_amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), default=Decimal("0"))
     diff_reason: Mapped[Optional[str]] = mapped_column(Text)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
     # 导入批次追踪 (C2)

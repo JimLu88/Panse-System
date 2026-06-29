@@ -50,7 +50,7 @@ class BrandMarketing(Base, TimestampMixin):
     payment_date: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[Optional[str]] = mapped_column(String(32))
     effect_eval: Mapped[Optional[str]] = mapped_column(Text)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
 
@@ -63,7 +63,7 @@ class PromotionFlow(Base, TimestampMixin):
     transaction_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     flow_type: Mapped[Optional[str]] = mapped_column(String(32))  # 充值 / 支出 / 退款
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     remark: Mapped[Optional[str]] = mapped_column(Text)
 
 
@@ -73,7 +73,7 @@ class OutsourcingExpense(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     payee: Mapped[str] = mapped_column(String(128), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     project: Mapped[Optional[str]] = mapped_column(String(128))
@@ -107,7 +107,7 @@ class AfterSales(Base, TimestampMixin):
     wanshifu_deduction: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 万师傅扣款
     factory_compensation: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     logistics_compensation: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     second_inbound_confirmed: Mapped[Optional[str]] = mapped_column(String(8))
     processed_at: Mapped[Optional[date]] = mapped_column(Date)
     status: Mapped[Optional[str]] = mapped_column(String(32))
@@ -152,6 +152,6 @@ class DailyOperation(Base, TimestampMixin):
     expense_type: Mapped[Optional[str]] = mapped_column(String(64))      # 支出类型
     recipient: Mapped[Optional[str]] = mapped_column(String(128))        # 支付对象
     payment_method: Mapped[Optional[str]] = mapped_column(String(64))    # 支付方式
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))    # 支付宝流水号
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))    # 支付宝流水号
     invoice_status: Mapped[Optional[str]] = mapped_column(String(32))    # 发票状态
     remark: Mapped[Optional[str]] = mapped_column(Text)

@@ -80,7 +80,7 @@ class PartReturn(Base, TimestampMixin):
     reason: Mapped[Optional[str]] = mapped_column(String(255))
     supplier: Mapped[Optional[str]] = mapped_column(String(128))
     related_purchase_no: Mapped[Optional[str]] = mapped_column(String(32))
-    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(64))
+    alipay_flow_no: Mapped[Optional[str]] = mapped_column(String(128))
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), default="open", nullable=False, index=True)  # open/settled
     actor: Mapped[Optional[str]] = mapped_column(String(64))
