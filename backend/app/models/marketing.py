@@ -88,7 +88,9 @@ class AfterSales(Base, TimestampMixin):
     __tablename__ = "after_sales"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    platform_order_no: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # 多订单合并退款/赔付时 related_order_no 可为多个 19 位平台单号拼接(已超 64 字符), 故用 Text
+    # (与 part_purchases.related_order_no 同口径, migration 0100; 原 String(64) 致 09:40 自动匹配截断失败)。
+    platform_order_no: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     reason: Mapped[Optional[str]] = mapped_column(String(255))
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     good_review_refund: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 好评/差价返

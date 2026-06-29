@@ -1013,6 +1013,111 @@ def _job_promo_price_check(db: Session) -> dict:
     return promo_price_check_service.check_all(db)
 
 
+def _job_ingest_health_check(db: Session) -> dict:
+    """每天 20:00 取数体检 (用户拍板 2026-06-29): 检查今日订单/余额/导入是否真的更新了。
+
+    背景: 18:00 编排可能"跑成功了"但没拉到新数据 (订单报表无新单 / 加密发货报表缺口令 /
+    PC Agent 离线)。这类"静默没更新"光看任务状态(ok)发现不了。本任务专门核对结果是否真的前进,
+    有问题就主动推 飞书 + 企业微信 (区别于只写站内 alert, 确保人能收到)。
+    一天一条, 无异常则完全静默不打扰。'今日无新订单'必推 (用户明确要求)。
+    """
+    import json as _json
+    import os as _os
+    from datetime import date as _date, datetime as _dt
+    from sqlalchemy import func, select
+    from app.models.order import Order
+    from app.services import settings_service, web_agent_service
+
+    today = _date.today()
+    new_orders = db.execute(
+        select(func.count(Order.id)).where(func.date(Order.created_at) == today)
+    ).scalar() or 0
+    last_order_at = db.execute(select(func.max(Order.created_at))).scalar()
+
+    try:
+        state = _json.loads(settings_service.get(db, "web_agent_state", env_fallback=False) or "{}")
+    except (ValueError, TypeError):
+        state = {}
+
+    def _stale_days(key: str) -> Optional[int]:
+        v = state.get(key)
+        if not v:
+            return None
+        try:
+            return (_dt.now() - _dt.fromisoformat(v)).days
+        except ValueError:
+            return None
+
+    bal_stale = _stale_days("balance")
+
+    try:
+        online = bool(web_agent_service.health(db).get("online"))
+    except Exception:  # noqa: BLE001 — 探活失败按离线算, 不抛
+        online = False
+
+    pwd_at = settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False)
+    pwd_stale_h: Optional[float] = None
+    if pwd_at:
+        try:
+            ts = _dt.fromisoformat(pwd_at)
+            now_ = _dt.now(ts.tzinfo) if ts.tzinfo else _dt.now()
+            pwd_stale_h = (now_ - ts).total_seconds() / 3600
+        except ValueError:
+            pass
+
+    problems: list[str] = []
+    if new_orders == 0:
+        lo = last_order_at.strftime("%m-%d %H:%M") if last_order_at else "无记录"
+        problems.append(f"今日无新订单 (最近订单 {lo})")
+    if not online:
+        problems.append("PC 取数 Agent 离线 (订单/余额无法自动拉取)")
+    if bal_stale is not None and bal_stale >= 4:
+        problems.append(f"余额已 {bal_stale} 天未更新")
+    if pwd_stale_h is not None and pwd_stale_h > 24:
+        problems.append(f"发货口令已过期 {pwd_stale_h:.0f} 小时 (加密发货报表地址进不来)")
+
+    result = {
+        "date": today.isoformat(),
+        "new_orders_today": int(new_orders),
+        "last_order_at": last_order_at.isoformat() if last_order_at else None,
+        "agent_online": online,
+        "balance_stale_days": bal_stale,
+        "last_ingest_at": state.get("last_ingest_at"),
+        "problems": problems,
+        "pushed": [],
+    }
+    if not problems:
+        return result
+
+    lines = [f"⚠️ {today.month}月{today.day}日 自动取数体检发现问题:", ""]
+    lines += [f"• {p}" for p in problems]
+    lines += ["", "请确认: 千牛是否有新单 / PC 是否开机且 Web-Agent 在跑 / 发货口令是否已转发飞书。"]
+    msg = "\n".join(lines)
+
+    if _os.environ.get("PANSE_DISABLE_NOTIFY"):
+        result["pushed"] = ["disabled"]
+        return result
+
+    # 飞书 (用户拍板: 今日无新订单必推飞书)
+    try:
+        from app.services import feishu_client
+        chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+        if chat:
+            feishu_client.send_text(db, chat, msg)
+            result["pushed"].append("feishu")
+    except Exception:  # noqa: BLE001
+        _logger.warning("取数体检 飞书推送失败", exc_info=True)
+    # 企业微信 (用户配置的群机器人 webhook)
+    try:
+        from app.services import notify_service
+        ok, _ = notify_service.notify(db, msg, level="warn", title="畔色 ERP | 取数体检异常")
+        if ok:
+            result["pushed"].append("wechat")
+    except Exception:  # noqa: BLE001
+        _logger.warning("取数体检 企业微信推送失败", exc_info=True)
+    return result
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -1069,6 +1174,8 @@ def _register_default_jobs() -> None:
                  _job_web_agent_daily, cron={"hour": 18, "minute": 0})
     register_job("hourly_ingest_scan", "每小时扫共享目录导入(PC自跑报表 #15)",
                  _job_ingest_scan, interval_minutes=60)
+    register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/口令过期 → 微信+飞书)",
+                 _job_ingest_health_check, cron={"hour": 20, "minute": 0})
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",
