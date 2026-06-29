@@ -941,7 +941,7 @@ def run_revenue_alipay(
 
     from sqlalchemy import or_ as _or
     af_stmt = select(AlipayFlow.transaction_time, AlipayFlow.amount, AlipayFlow.related_order_no,
-                     AlipayFlow.transaction_no).where(
+                     AlipayFlow.transaction_no, AlipayFlow.transaction_type).where(
         AlipayFlow.amount > 0,
         AlipayFlow.related_order_no.isnot(None),
         AlipayFlow.related_order_no != "",                   # 空订单号配不到单, 只会进兜底污染
@@ -959,17 +959,22 @@ def run_revenue_alipay(
     flow_txns_by_order: dict[str, list] = {}          # 订单键 → 交易流水号(查同号重复入库用)
     orphan_income_by_month: dict[str, Decimal] = {}   # 配不到订单的收入按月兜底
     orphan_flow_nos_by_month: dict[str, list[str]] = {}
-    # 同一交易号下『交易付款 + 分账/交易分账』是同一笔的支付与结算, 收入只能算一次(取最大额=付款额),
-    # 否则分账叠加在付款上 → 该单收入虚高 (2026-06-22)。先按 (订单, 交易号) 取最大, 再汇总;
-    # 定金/尾款是不同交易号, 各自保留相加, 不受影响。
-    _txn_max: dict[str, dict] = {}                     # 订单键 → {交易号: 该号最大金额}
-    for t, amt, ron, tn in db.execute(af_stmt).all():
+    # 同一交易号下可能有 ①交易付款(真实收款) ②分账/交易分账(同一笔钱的结算镜像)。收入 = 该号下
+    # 真实付款之和 —— 分账不重复计(否则虚高 2 倍, 2026-06-22);而定金+尾款即便共用同一交易号也都是
+    # 真实付款, 各自相加(2026-06-29 修 5117408 定金+尾款共号被『取最大』误并少算 ¥2706)。
+    # 真实付款按金额去重(同号同额多条=重复入库, 只算一次), 不同额(定金≠尾款)都保留。
+    # 若某交易号下只有分账没有付款 → 回退取最大(保旧口径不丢收入)。
+    _txn_pay: dict[str, dict] = {}                     # 订单键 → {交易号: {真实付款金额集合}}
+    _txn_all: dict[str, dict] = {}                     # 订单键 → {交易号: 该号见过的最大额(回退用)}
+    for t, amt, ron, tn, tt in db.execute(af_stmt).all():
         k = _okey(ron)
         amt_d = Decimal(amt or 0)
         if k and k in order_paid:
-            cur = _txn_max.setdefault(k, {})
-            if tn not in cur or amt_d > cur[tn]:
-                cur[tn] = amt_d
+            _all = _txn_all.setdefault(k, {})
+            if tn not in _all or amt_d > _all[tn]:
+                _all[tn] = amt_d
+            if "分账" not in (tt or ""):                # 非分账 = 真实付款(交易付款/在线支付…)
+                _txn_pay.setdefault(k, {}).setdefault(tn, set()).add(amt_d)
             flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{amt_d}")
             flow_txns_by_order.setdefault(k, []).append((tn, amt_d))  # 存(交易号,金额)对: 真重复=同号同额
         else:
@@ -978,8 +983,13 @@ def run_revenue_alipay(
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
             orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + amt_d
             orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{amt_d} (订单{ron})")
-    for _k, _m in _txn_max.items():
-        flow_income[_k] = sum(_m.values(), Decimal("0"))
+    for _k, _all in _txn_all.items():
+        _pay = _txn_pay.get(_k, {})
+        total = Decimal("0")
+        for tn, max_amt in _all.items():
+            amts = _pay.get(tn)
+            total += sum(amts, Decimal("0")) if amts else max_amt   # 有付款→付款去重相加; 仅分账→取最大
+        flow_income[_k] = total
 
     # 聚合结算账户(微信/聚合)收款走 order_settlements 的『交易收款』(billDetail 导入), 不进 alipay_flows
     # → 营收对账过去只看 alipay_flows, 聚合付款订单假报"未配到流水" (2026-06-29)。把它并入该单收入。

@@ -92,3 +92,56 @@ def test_real_digit_orphan_still_flagged(db_session):
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
     total_act = sum(float(d.actual or 0) for d in res.diffs if d.key and "兜底" in d.key)
     assert total_act == 3000.0
+
+
+# --- 同交易号去重: 定金+尾款共号相加 vs 付款+分账不双算 (用户 2026-06-29, 修 5117408) ---
+
+def _flow(db, *, txn, order_no, amt, ttype, day=10):
+    from datetime import datetime, timezone
+    from app.models.finance import AlipayFlow
+    db.add(AlipayFlow(account="企业号", transaction_no=txn, related_order_no=order_no,
+                      amount=Decimal(str(amt)), transaction_type=ttype,
+                      transaction_time=datetime(2026, 5, day, tzinfo=timezone.utc)))
+
+
+def _order(db, order_no, paid):
+    db.add(Order(platform="淘宝", order_no=order_no, status="signed", is_refill=False,
+                 order_date=date(2026, 5, 1), paid_amount=Decimal(str(paid)),
+                 buyer_payable_amount=Decimal(str(paid))))
+
+
+def _order_diff(res, order_no):
+    """该订单的逐单差(平账则不在 diffs 里 → None)。"""
+    hits = [d for d in res.diffs if d.key == order_no]
+    return hits[0] if hits else None
+
+
+def test_deposit_and_final_same_txn_summed(db_session):
+    """定金+尾款共用同一交易号(都是交易付款)→ 相加 6333.66 = 实付, 平账(旧『取最大』会少算 2706 误报短收)。"""
+    _order(db_session, "5117408713503179541", 6333.66)
+    _flow(db_session, txn="TXNSHARED", order_no="5117408713503179541", amt=3627.49, ttype="交易付款", day=8)
+    _flow(db_session, txn="TXNSHARED", order_no="5117408713503179541", amt=2706.17, ttype="交易付款", day=20)
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    assert _order_diff(res, "5117408713503179541") is None   # 6333.66 对平, 无短收异常
+
+
+def test_payment_plus_split_not_doubled(db_session):
+    """交易付款 + 分账(同号同额=同一笔钱的镜像)→ 只算一次 1000, 不虚高 2 倍(守住旧去重不变)。"""
+    _order(db_session, "5100000000000000021", 1000)
+    _flow(db_session, txn="TXNMIRROR", order_no="5100000000000000021", amt=1000, ttype="交易付款")
+    _flow(db_session, txn="TXNMIRROR", order_no="5100000000000000021", amt=1000, ttype="分账")
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    d = _order_diff(res, "5100000000000000021")
+    assert d is None or float(d.actual or 0) == 1000.0   # 收入认 1000 非 2000
+
+
+def test_only_split_falls_back_to_max(db_session):
+    """某交易号下只有分账没有交易付款 → 回退取最大(不丢收入)。"""
+    _order(db_session, "5100000000000000022", 500)
+    _flow(db_session, txn="TXNONLYSPLIT", order_no="5100000000000000022", amt=500, ttype="交易分账")
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    d = _order_diff(res, "5100000000000000022")
+    assert d is None or float(d.actual or 0) == 500.0

@@ -26,6 +26,19 @@ _logger = logging.getLogger("panse.flow_refund")
 _CENTS = Decimal("0.01")
 _MAX_TIME = datetime.max  # 缺失 transaction_time 的流水排序时垫底
 
+# 这些交易类型不可能是"退给买家的订单退款" → 不进退款配对 (用户 2026-06-29 根治误标)。
+# 真订单退款的交易类型是 交易退款/退款/退货; 这些是内部划转/报销/理财等非交易类。
+# 只看交易类型、不看对手方名 —— 买家名常被打码(王**英), 用内部名单匹配会误伤真买家退款。
+_NON_REFUND_TYPE_KW = ("交通出行", "转账", "转入", "转出", "提现", "工资", "报销",
+                       "保证金", "理财", "余额宝", "红包", "花呗", "借呗", "充值")
+
+
+def _cannot_be_refund(f: AlipayFlow) -> bool:
+    """这条流水不可能是订单退款 → 不参与等额退款配对 (修魏佳英『交通出行』被误标 refund_out)。
+    交易类型属非退款类(交通出行/转账/工资…)即排除; 真退款是 交易退款/退款, 不在此列。"""
+    tt = f.transaction_type or ""
+    return any(k in tt for k in _NON_REFUND_TYPE_KW)
+
 
 def detect_refunds(db: Session) -> int:
     """扫描支付宝流水, 识别退款对并打标。返回识别到的退款对数量。
@@ -37,6 +50,17 @@ def detect_refunds(db: Session) -> int:
     """
     flows = db.execute(select(AlipayFlow)).scalars().all()
 
+    # 自愈: 把此前被等额盲配误标的非退款流水(交通出行/转账等)的 refund_* 标签清掉,
+    # 退回未分类, 让 smart_matching 重新归类 (修魏佳英两笔交通出行被误当退款, 用户 2026-06-29)。
+    unmarked = 0
+    for f in flows:
+        if (f.reconciliation_type or "").startswith("refund_") and _cannot_be_refund(f):
+            f.reconciliation_type = None
+            f.reconciliation_status = "open"
+            unmarked += 1
+    if unmarked:
+        _logger.info("退款误标自愈: 清掉 %d 条非退款流水的 refund_* 标签", unmarked)
+
     # 按 related_order_no 分组
     by_order: dict[str, list[AlipayFlow]] = {}
     for f in flows:
@@ -44,6 +68,8 @@ def detect_refunds(db: Session) -> int:
             continue
         if (f.reconciliation_type or "").startswith("refund_"):
             continue  # 已处理
+        if _cannot_be_refund(f):
+            continue  # 内部划转/非退款交易类型 → 不进退款配对 (用户 2026-06-29)
         by_order.setdefault(f.related_order_no, []).append(f)
 
     pairs_found = 0
