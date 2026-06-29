@@ -852,6 +852,18 @@ _TAOJINBI_MAX_RATIO = Decimal("0.20")
 # 待支付宝原始账单清洗后再修符号去重, 用户暂无 CSV)。
 _NON_REVENUE_ACCOUNTS = ("爱群号", "佳宝号", "主力号")
 
+# 配不到订单的支付宝收入里, 这些"伪订单号"是平台结算/消费券(T200P)/退款(F-refundplatform)/资金(F-capital)/
+# 商户结算(HJCAEB==)/某渠道(C-aerith), 非淘宝订单收入 → 不该进营收对账月度兜底 (用户 2026-06-29 全排;
+# 实测无纯数字单号 orphan, 真缺单的订单号是纯数字、仍会被正常报出)。
+_NON_TAOBAO_SETTLE_PREFIXES = ("T200P", "F-", "C-", "HJCAEB")
+
+
+def _is_non_taobao_settlement(ron) -> bool:
+    if not ron:
+        return False
+    s = str(ron).strip()
+    return ("==" in s) or s.startswith(_NON_TAOBAO_SETTLE_PREFIXES)
+
 
 # 担保交易结算窗口: 淘宝买家付款先进担保, 确认收货后才放款到店铺支付宝, 比下单晚 1-4 周。
 # 故"下单距今 < N 天"的订单, 其支付宝回款本就还没到 —— 月度兜底里不能算它"未配到流水"
@@ -961,6 +973,8 @@ def run_revenue_alipay(
             flow_nos_by_order.setdefault(k, []).append(f"支付宝流水 {tn} ¥{amt_d}")
             flow_txns_by_order.setdefault(k, []).append((tn, amt_d))  # 存(交易号,金额)对: 真重复=同号同额
         else:
+            if _is_non_taobao_settlement(ron):
+                continue   # 伪订单号=平台结算/消费券/退款/商户结算, 非淘宝订单收入 → 不计兜底 (用户 2026-06-29 全排)
             mk = _month_key(t.date() if hasattr(t, "date") else t) or "(无日期)"
             orphan_income_by_month[mk] = orphan_income_by_month.get(mk, Decimal("0")) + amt_d
             orphan_flow_nos_by_month.setdefault(mk, []).append(f"支付宝流水 {tn} ¥{amt_d} (订单{ron})")

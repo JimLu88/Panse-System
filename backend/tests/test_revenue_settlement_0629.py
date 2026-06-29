@@ -62,3 +62,33 @@ def test_signed_order_no_flow_still_flagged(db_session):
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
     total = sum(float(d.expected or 0) for d in res.diffs if d.key and "兜底" in d.key)
     assert total == 5000.0
+
+
+def test_settlement_noise_orphan_excluded(db_session):
+    """伪订单号(T200P消费券/HJCAEB商户号等)的支付宝收入配不到订单 → 全排, 不进月度兜底收入侧 (用户 2026-06-29)。"""
+    from datetime import datetime, timezone
+    from app.models.finance import AlipayFlow
+    # 一个已配平的真单(走聚合结算 order_settlements)
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000009", status="signed", is_refill=False,
+                         order_date=date(2026, 5, 1), paid_amount=Decimal("100"), buyer_payable_amount=Decimal("100")))
+    db_session.add(OrderSettlement(source="agent", pay_no="PAY9", order_no="5100000000000000009",
+                                   entry_type="交易收款", income=Decimal("100"), expense=Decimal("0")))
+    # 一笔 T200P 消费券噪音(配不到任何订单)
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TNNOISE1", related_order_no="T200P4931308621633047840",
+                              amount=Decimal("5000"), transaction_time=datetime(2026, 5, 15, tzinfo=timezone.utc)))
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    # 收入侧(actual)应全 0:T200P 被排除, 月度兜底无差
+    assert all((d.actual or 0) == 0 for d in res.diffs if d.key and "兜底" in d.key)
+
+
+def test_real_digit_orphan_still_flagged(db_session):
+    """纯数字订单号但配不到系统订单(疑漏导真单)→ 仍报收入侧(精确: 只排噪音不掩真缺单)。"""
+    from datetime import datetime, timezone
+    from app.models.finance import AlipayFlow
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TNREAL1", related_order_no="5119999999999999999",
+                              amount=Decimal("3000"), transaction_time=datetime(2026, 5, 16, tzinfo=timezone.utc)))
+    db_session.flush()
+    res = rs.run_revenue_alipay(db_session, record_exceptions=False)
+    total_act = sum(float(d.actual or 0) for d in res.diffs if d.key and "兜底" in d.key)
+    assert total_act == 3000.0
