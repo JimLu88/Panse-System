@@ -14,10 +14,10 @@ from app.services import reconciliation_service as rs
 
 def test_revenue_alipay_counts_aggregate_settlement(db_session):
     """聚合付款订单(收款仅在 order_settlements 交易收款)→ 营收对账认它为该单收入, 不算"未配到流水"。"""
-    db_session.add(Order(platform="淘宝", order_no="AGG1", status="signed", is_refill=False,
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000001", status="signed", is_refill=False,
                          order_date=date(2026, 3, 1), paid_amount=Decimal("3183.78"),
                          buyer_payable_amount=Decimal("3183.78")))
-    db_session.add(OrderSettlement(source="agent", pay_no="PAYAGG1", order_no="AGG1",
+    db_session.add(OrderSettlement(source="agent", pay_no="PAYAGG1", order_no="5100000000000000001",
                                    entry_type="交易收款", income=Decimal("3183.78"), expense=Decimal("0")))
     db_session.flush()
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
@@ -28,12 +28,12 @@ def test_revenue_alipay_counts_aggregate_settlement(db_session):
 
 def test_settlement_deduction_not_counted_as_income(db_session):
     """『扣款』(软件服务费, income=0) 不算收款 → 不影响该单收入认领。"""
-    db_session.add(Order(platform="淘宝", order_no="AGG2", status="signed", is_refill=False,
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000002", status="signed", is_refill=False,
                          order_date=date(2026, 3, 1), paid_amount=Decimal("100"),
                          buyer_payable_amount=Decimal("100")))
-    db_session.add(OrderSettlement(source="agent", pay_no="PAYAGG2", order_no="AGG2",
+    db_session.add(OrderSettlement(source="agent", pay_no="PAYAGG2", order_no="5100000000000000002",
                                    entry_type="交易收款", income=Decimal("100"), expense=Decimal("0")))
-    db_session.add(OrderSettlement(source="agent", pay_no="FEEAGG2", order_no="AGG2",
+    db_session.add(OrderSettlement(source="agent", pay_no="FEEAGG2", order_no="5100000000000000002",
                                    entry_type="扣款", income=Decimal("0"), expense=Decimal("0.13")))
     db_session.flush()
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
@@ -45,7 +45,7 @@ def test_unsigned_order_not_flagged_unmatched(db_session):
     """未签收订单(status=paid, 担保未放款)即便>45天、无流水 → 不算"未配到流水"。"""
     from datetime import timedelta
     old = date.today() - timedelta(days=60)
-    db_session.add(Order(platform="淘宝", order_no="UNSIGNED1", status="paid", is_refill=False,
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000003", status="paid", is_refill=False,
                          order_date=old, paid_amount=Decimal("5000"), buyer_payable_amount=Decimal("5000")))
     db_session.flush()
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
@@ -56,7 +56,7 @@ def test_signed_order_no_flow_still_flagged(db_session):
     """已签收订单(放款应已触发)>45天、无流水 → 仍报"未配到流水"(真缺口)。"""
     from datetime import timedelta
     old = date.today() - timedelta(days=60)
-    db_session.add(Order(platform="淘宝", order_no="SIGNEDNOFLOW", status="signed", is_refill=False,
+    db_session.add(Order(platform="淘宝", order_no="5100000000000000004", status="signed", is_refill=False,
                          order_date=old, paid_amount=Decimal("5000"), buyer_payable_amount=Decimal("5000")))
     db_session.flush()
     res = rs.run_revenue_alipay(db_session, record_exceptions=False)
