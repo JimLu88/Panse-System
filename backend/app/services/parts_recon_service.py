@@ -327,6 +327,18 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
         old_phys = physical_cost(o)
         o.actual_parts = new_parts
         new_phys = physical_cost(o)
+        # 健全性门: 归账是"用真实配件替换配件预估", 整单物理成本最多只该上升≈新增的真实配件额。
+        # 若成本上升远超真实配件额(多因 wood_cost_est 与 theoretical_cost 数据不一致 → actual_parts 分支
+        # 换算木作基线致整单虚高, 如 theo=2108 却 wood_est=5200)→ 还原并跳过, 不动该单成本, 列出供人工核对。
+        if (new_phys - old_phys) > real_total + Decimal("100"):
+            o.actual_parts = old_parts
+            skipped.append({
+                "order_no": ono,
+                "reason": "成本异常上升%.0f(>真实配件%.0f, 疑 wood_est/理论成本不一致)" % (
+                    float(new_phys - old_phys), float(real_total)),
+                "real_parts": float(real_total),
+            })
+            continue
         if apply:
             applied += 1
         else:

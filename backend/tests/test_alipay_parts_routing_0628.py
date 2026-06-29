@@ -227,7 +227,8 @@ def test_est_parts_base_no_balloon(db_session):
     _mat(db, "AC-FM", "洞石饰面板", 60, "洞石饰面板")
     _bom(db, "PPSE", "SE", "AC-FM", "洞石饰面板", 1, "1000*1000")
     o = _order(db, "E1", "PPSE", "SE")
-    o.est_parts = Decimal("500")          # 该单原配件预估(定价口径)
+    # 真实订单口径: 理论成本含配件预估在内(估≈2000), 木作估1200 → 老成本已含 est_parts(健全性门成立)
+    o.est_parts = Decimal("500"); o.theoretical_cost = Decimal("2000"); o.wood_cost_est = Decimal("1200")
     db.add(PartPurchase(purchase_no="EP1", supplier="山东张", material_code="AC-X未知",
                         material_name="未知件", amount=Decimal("200"),
                         related_order_no="E1", purchase_date=date(2026, 2, 12)))
