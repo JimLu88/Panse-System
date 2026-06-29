@@ -222,10 +222,12 @@ def update_row(
     matched_order_no=_UNSET,
     excluded=_UNSET,
     note=_UNSET,
+    bill_month=_UNSET,
     rematch: bool = False,
 ) -> Optional[PackingBill]:
-    """手动编辑一行打包费账单 (用户 2026-06-24): 改客户名/打包费/手动配单。
+    """手动编辑一行打包费账单 (用户 2026-06-24): 改客户名/打包费/手动配单/改账期。
     - 传 matched_order_no 非空 → 人工指定配单 (match_method='manual'); 传空字符串 → 清空配单退回自动。
+    - 传 bill_month 非空 → 改账期 (手写本错填月份/OCR错识别月份时挪正确账期, 用户 2026-06-29)。
     - rematch=True 且当前未配单 → 按(可能改过的)客户名自动重配一次, 让"改对名字就能配上"。"""
     b = db.get(PackingBill, bill_id)
     if b is None:
@@ -234,6 +236,8 @@ def update_row(
         b.customer_name = (customer_name or "").strip() or None
     if packing_fee is not _UNSET:
         b.packing_fee = _dec(packing_fee)
+    if bill_month is not _UNSET and bill_month:
+        b.bill_month = str(bill_month).strip()
     if excluded is not _UNSET:
         b.excluded = bool(excluded)
         if not excluded:

@@ -98,3 +98,29 @@ def test_total_match_no_exception(db_session):
     assert r["total_mismatch"] is None
     assert db_session.query(DataException).filter_by(
         exception_type="packing_total_mismatch").count() == 0
+
+
+def test_update_row_changes_bill_month(db_session):
+    """改账期: update_row 传 bill_month → 行挪到新账期 (用户 2026-06-29, 错挂月份挪正确账期)。"""
+    _order(db_session, "PBM", "孟一")
+    svc.commit_packing_parsed(db_session, [
+        {"customer_name": "孟一", "packing_fee": 30},
+    ], bill_month="2026-05")
+    pb = db_session.query(PackingBill).filter_by(customer_name="孟一").first()
+    svc.update_row(db_session, pb.id, bill_month="2026-03")
+    db_session.refresh(pb)
+    assert pb.bill_month == "2026-03"
+    # 旧账期不再有它, 新账期算得到
+    assert svc.month_summary(db_session, "2026-05")["payable_total"] == 0.0
+    assert svc.month_summary(db_session, "2026-03")["payable_total"] == 30.0
+
+
+def test_update_row_bill_month_blank_keeps_old(db_session):
+    """改账期传空 → 不动账期 (与其它 _UNSET 字段一致, 只改请求里出现且非空的)。"""
+    svc.commit_packing_parsed(db_session, [
+        {"customer_name": "孟二", "packing_fee": 10},
+    ], bill_month="2026-05")
+    pb = db_session.query(PackingBill).filter_by(customer_name="孟二").first()
+    svc.update_row(db_session, pb.id, bill_month="")
+    db_session.refresh(pb)
+    assert pb.bill_month == "2026-05"

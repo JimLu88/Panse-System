@@ -1570,6 +1570,7 @@ class PackingBillPatch(BaseModel):
     matched_order_no: Optional[str] = None   # 手动指定订单号; 空串 = 清空配单
     excluded: Optional[bool] = None
     note: Optional[str] = None
+    bill_month: Optional[str] = None         # 改账期 YYYY-MM (手写本错填月份/OCR错识别月份时挪正确账期)
     rematch: bool = False                    # 改完客户名后按名自动重配
 
 
@@ -1581,6 +1582,10 @@ def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = D
     old_match = existing.matched_order_no if existing else None
     fields = payload.model_dump(exclude_unset=True)
     rematch = bool(fields.pop("rematch", False))
+    if fields.get("bill_month"):
+        import re as _re
+        if not _re.fullmatch(r"\d{4}-\d{2}", str(fields["bill_month"]).strip()):
+            raise HTTPException(400, "账期格式应为 YYYY-MM")
     b = packing_bill_service.update_row(db, bill_id, rematch=rematch, **fields)
     if b is None:
         raise HTTPException(404, "打包费账单行不存在")
@@ -1597,6 +1602,26 @@ def update_packing_bill(bill_id: int, payload: PackingBillPatch, db: Session = D
         except Exception:
             db.rollback()
     return b
+
+
+@router.delete("/packing-bills/{bill_id}")
+def delete_packing_bill(bill_id: int, db: Session = Depends(get_db)):
+    """删除一行打包费账单 (用户 2026-06-29: 清理重复导入的账册行)。
+    删前记下已配的订单号, 删后回退该订单的 actual_packing(回到 est_packing, 正确物理成本/利润)。"""
+    b = db.get(PackingBill, bill_id)
+    if b is None:
+        raise HTTPException(404, "打包费账单行不存在")
+    affected = b.matched_order_no
+    db.delete(b)
+    db.commit()
+    if affected:
+        try:
+            from app.services import order_fee_actual_service
+            order_fee_actual_service.sync_fee_components(db, order_nos=[affected])
+            db.commit()
+        except Exception:
+            db.rollback()
+    return {"deleted": bill_id, "affected_order_no": affected}
 
 
 @router.get("/packing-bills/{bill_id}/match-candidates")
