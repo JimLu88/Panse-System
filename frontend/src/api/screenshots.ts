@@ -269,9 +269,13 @@ export const updatePackingBill = (
     matched_order_no?: string;   // 手动指定订单号; 空串=清空配单
     excluded?: boolean;
     note?: string;
+    bill_month?: string;         // 改账期 YYYY-MM (手写本错填月份时挪正确账期)
     rematch?: boolean;           // 改完客户名后按名自动重配
   },
 ) => api.patch<PackingBillRow>(`/api/finance/packing-bills/${id}`, patch).then((r) => r.data);
+export const deletePackingBill = (id: number) =>
+  api.delete<{ deleted: number; affected_order_no: string | null }>(
+    `/api/finance/packing-bills/${id}`).then((r) => r.data);
 export interface PackingCandidate {
   order_no: string;
   customer_name: string;

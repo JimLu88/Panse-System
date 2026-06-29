@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Select, Space, Statistic, Table, Tag,
+  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
@@ -8,7 +8,7 @@ import dayjs from 'dayjs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   commitPackingBill, listPackingBills, packingSummary, parsePackingBill, updatePackingBill,
-  packingMatchCandidates,
+  deletePackingBill, packingMatchCandidates,
   type PackingRowParsed, type PackingBillRow, type PackingCandidate,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
@@ -40,6 +40,8 @@ export default function PackingBillsPage() {
   const [eName, setEName] = useState('');
   const [eFee, setEFee] = useState<number | null>(null);
   const [eOrder, setEOrder] = useState('');
+  const [eNote, setENote] = useState('');             // 备注 (用户 2026-06-29)
+  const [eBillMonth, setEBillMonth] = useState('');   // 改账期 YYYY-MM (错填月份时挪正确账期)
   const [savingEdit, setSavingEdit] = useState(false);
   const [cands, setCands] = useState<PackingCandidate[]>([]);
   const [candLoading, setCandLoading] = useState(false);
@@ -55,6 +57,8 @@ export default function PackingBillsPage() {
     setEName(r.customer_name ?? '');
     setEFee(r.packing_fee ?? null);
     setEOrder(r.matched_order_no ?? r.order_no ?? '');
+    setENote(r.note ?? '');
+    setEBillMonth(r.bill_month ?? '');
     setCands([]);
     loadCands(r.id);   // 进来就按客户名列候选订单(下拉自选)
   };
@@ -66,7 +70,9 @@ export default function PackingBillsPage() {
       const o = eOrder.trim();
       // 填了订单号=人工配到该单; 留空=清空配单。不再自动按名乱配(用户反馈会配错/配到多单)。
       const patch: Parameters<typeof updatePackingBill>[1] =
-        { customer_name: eName, packing_fee: eFee, matched_order_no: o };
+        { customer_name: eName, packing_fee: eFee, matched_order_no: o, note: eNote };
+      const bm = eBillMonth.trim();
+      if (bm && bm !== (editRow.bill_month ?? '')) patch.bill_month = bm;  // 改了账期才传
       await updatePackingBill(editRow.id, patch);
       message.success(o ? '已保存并配单' : '已保存');
       setEditRow(null);
@@ -77,6 +83,19 @@ export default function PackingBillsPage() {
       message.error(e?.response?.data?.detail ?? '保存失败');
     } finally {
       setSavingEdit(false);
+    }
+  };
+
+  // 删除一行打包费账单 (用户 2026-06-29): 清理重复导入/错行; 删后回退该单实际打包费
+  const handleDelete = async (r: PackingBillRow) => {
+    try {
+      await deletePackingBill(r.id);
+      message.success('已删除该行');
+      qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-all'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '删除失败');
     }
   };
 
@@ -236,8 +255,15 @@ export default function PackingBillsPage() {
     { title: '剔除', dataIndex: 'excluded', width: 110, render: (v: boolean, r: PackingBillRow) =>
       v ? <Tag color="red">{r.exclude_reason || '不计入'}</Tag> : <Tag color="green">计入</Tag> },
     { title: '备注', dataIndex: 'note', ellipsis: true },
-    { title: '操作', dataIndex: 'op', width: 76, fixed: 'right' as const, render: (_: any, r: PackingBillRow) => (
-      <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>) },
+    { title: '操作', dataIndex: 'op', width: 140, fixed: 'right' as const, render: (_: any, r: PackingBillRow) => (
+      <Space size={4}>
+        <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(r)}>编辑</Button>
+        <Popconfirm title="删除这行打包费?" description="删后会回退该单的实际打包费, 不可撤销"
+          okText="删除" okButtonProps={{ danger: true }} cancelText="取消"
+          onConfirm={() => handleDelete(r)}>
+          <Button size="small" type="text" danger icon={<DeleteOutlined />} />
+        </Popconfirm>
+      </Space>) },
   ];
 
   return (
@@ -330,6 +356,11 @@ export default function PackingBillsPage() {
               onChange={v => setEFee((v as number) ?? null)} />
           </div>
           <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>备注</div>
+            <Input.TextArea value={eNote} rows={2} placeholder="本子上的批注/省份/产品等"
+              onChange={e => setENote(e.target.value)} />
+          </div>
+          <div>
             <div style={{ marginBottom: 4, color: '#666' }}>配单订单号</div>
             <Input value={eOrder} placeholder="手填订单号, 或从下方候选里选" onChange={e => setEOrder(e.target.value)} style={{ marginBottom: 8 }} />
             <div style={{ marginBottom: 4, color: '#666' }}>候选订单（按客户名匹配度高→低）</div>
@@ -350,6 +381,15 @@ export default function PackingBillsPage() {
             </Space.Compact>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               候选按客户名相似度排序取前 5；选中即填入上面订单号，保存后人工配到该单。改了客户名点「按客户名找候选」刷新候选。
+            </Typography.Text>
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>账期(改账期)</div>
+            <DatePicker picker="month" style={{ width: '100%' }} placeholder="挪到正确月份"
+              value={eBillMonth ? dayjs(eBillMonth + '-01') : null}
+              onChange={(d) => setEBillMonth(d ? d.format('YYYY-MM') : '')} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              手写本错填月份/OCR 识别错月时, 把这行挪到正确账期(留空不改)。
             </Typography.Text>
           </div>
         </Space>
