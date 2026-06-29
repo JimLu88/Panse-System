@@ -200,6 +200,43 @@ def test_purchase_category_not_in_bom_flagged(db_session):
     assert fm["not_in_bom"] is True
 
 
+# ── 用户 2026-06-29 抽查纠错: 取消单/定金片段单不覆盖成本; 以 est_parts 为基线不虚高 ──────
+def test_aggregate_skips_cancelled_and_capped_orders(db_session):
+    db = db_session
+    _mat(db, "AC-RB", "岩板", 90, "岩板")
+    _bom(db, "PPSK", "SK", "AC-RB", "岩板", 1, "1000*1000")
+    c = _order(db, "K1", "PPSK", "SK"); c.status = "cancelled"          # 取消单
+    fr = _order(db, "K2", "PPSK", "SK")                                 # 定金/片段单(实付<<理论成本→封顶)
+    fr.paid_amount = Decimal("2000"); fr.theoretical_cost = Decimal("10000")
+    ok = _order(db, "K3", "PPSK", "SK")                                 # 正常成交单(未封顶)→ 应覆盖
+    for no in ("K1", "K2", "K3"):
+        db.add(PartPurchase(purchase_no="KP_" + no, supplier="山东张", material_code="AC-RB",
+                            material_name="岩板", amount=Decimal("300"),
+                            related_order_no=no, purchase_date=date(2026, 2, 12)))
+    db.flush()
+    r = prs.aggregate_related_purchases(db, apply=True)
+    db.refresh(c); db.refresh(fr); db.refresh(ok)
+    assert c.actual_parts is None and fr.actual_parts is None   # 取消单/片段单不覆盖
+    assert ok.actual_parts == Decimal("300.00")                # 正常单覆盖(base=BOM90, real300覆盖→300)
+    assert r["skipped_orders"] == 2
+
+
+def test_est_parts_base_no_balloon(db_session):
+    """覆盖以 est_parts 为基线: 真实采购的料不在BOM(额外项)→ est_parts + real, 不用 BOM 全类汇总致虚高。"""
+    db = db_session
+    _mat(db, "AC-FM", "洞石饰面板", 60, "洞石饰面板")
+    _bom(db, "PPSE", "SE", "AC-FM", "洞石饰面板", 1, "1000*1000")
+    o = _order(db, "E1", "PPSE", "SE")
+    o.est_parts = Decimal("500")          # 该单原配件预估(定价口径)
+    db.add(PartPurchase(purchase_no="EP1", supplier="山东张", material_code="AC-X未知",
+                        material_name="未知件", amount=Decimal("200"),
+                        related_order_no="E1", purchase_date=date(2026, 2, 12)))
+    db.flush()
+    prs.aggregate_related_purchases(db, apply=True)
+    db.refresh(o)
+    assert o.actual_parts == Decimal("700.00")   # est_parts 500 + 不在BOM的真实 200 = 700(非 BOM 汇总)
+
+
 # ── 复核 must-fix 3: 月结部分覆盖按金额净额扣除(不丢整类) ─────────────────────
 def test_monthly_partial_cover_nets_not_whole(db_session):
     db = db_session

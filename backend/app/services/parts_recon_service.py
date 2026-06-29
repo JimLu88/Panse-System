@@ -268,13 +268,14 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
     apply=False(默认): 只算预览, 不落库; 返回每单 physical_cost 变化 + 逐类明细供人工核对。
     apply=True: 写 actual_parts 并 commit(该单 physical_cost 转「逐项真实计价」)。
     """
-    from app.services.order_financials import physical_cost
+    from app.services.order_financials import physical_cost, physical_cost_breakdown
 
     mat_info, bom_by_pcsku, bom_by_pc = _load_bom_and_materials(db)
     order_real, order_objs, sporadic_cover, unmatched = _allocate_purchases(
         db, mat_info, bom_by_pcsku, bom_by_pc)
 
     items: list[dict] = []
+    skipped: list[dict] = []
     applied = 0
     for ono in sorted(order_real):
         o = order_objs.get(ono)
@@ -283,28 +284,45 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
             items.append({"order_no": ono, "matched": False,
                           "parts_total": float(sum(real.values(), Decimal("0")))})
             continue
+        # 安全门(用户 2026-06-29 抽查纠错): 只对【正常成交 + 非定制 + 非补单 + 成本未被封顶】的订单覆盖。
+        # 取消/未付款=非成交; 定制单 BOM 是模板不可靠; 定金/片段/兜底单(实付远低于整件)用真实配件会虚高
+        # (逐项真实计价分支去掉了实付×85%封顶)→ 一律跳过, 不动这些单的成本。
+        bd = physical_cost_breakdown(o)   # 当前 actual_parts 为空 → 该单"自然"封顶状态
+        reason = None
+        if (o.status or "") in ("cancelled", "pending_payment"):
+            reason = "非成交单(%s)" % o.status
+        elif bool(getattr(o, "is_refill", False)):
+            reason = "补单"
+        elif bool(getattr(o, "is_custom", False)):
+            reason = "定制单(BOM为模板)"
+        elif bd.get("cap_mode") not in (None, "", "none"):
+            reason = "成本被封顶(%s)" % bd.get("cap_mode")
+        if reason:
+            skipped.append({"order_no": ono, "reason": reason,
+                            "real_parts": float(sum(real.values(), Decimal("0")))})
+            continue
         cons = _order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
-        cats = set(cons) | set(real)
-        new_parts = Decimal("0")
+        # 基线 = 该单原本的配件预估 est_parts(缺则退回 BOM 估总额)。只把"被真实采购覆盖的分类"换成真实值,
+        # 其余配件仍按原预估 —— 不用 BOM 全类汇总(否则会比定价预估大很多 → 整单成本虚高)。
+        base = _d(o.est_parts) if o.est_parts is not None else sum(
+            (_d(c.get("amount")) for c in cons.values()), Decimal("0"))
+        real_total = sum(real.values(), Decimal("0"))
+        est_covered = sum((_d(cons[c].get("amount")) for c in real if c in cons), Decimal("0"))
+        new_parts = (base - est_covered + real_total).quantize(_CENTS)
+        if new_parts < 0:
+            new_parts = real_total.quantize(_CENTS)
         cat_rows: list[dict] = []
         not_in_bom_n = 0
-        for c in sorted(cats):
-            r = real.get(c)
-            est = _d(cons.get(c, {}).get("amount"))
-            val = (r if r is not None else est).quantize(_CENTS)
-            new_parts += val
-            # 真实采购的分类不在该单 BOM 里 → 该料未在 BOM, 作额外项加入(无对应 est 可覆盖);
-            # 标记供人工核对(若实为 BOM 某料的错配, 应订正料号/分类, 否则可能高估)。
-            not_in_bom = (r is not None and c not in cons)
-            if not_in_bom:
+        for c in sorted(real):
+            in_bom = c in cons
+            if not in_bom:
                 not_in_bom_n += 1
             cat_rows.append({
-                "category": c, "is_real": r is not None,
-                "real": float(r) if r is not None else None, "est": float(est),
-                "not_in_bom": not_in_bom,
+                "category": c, "real": float(real[c]),
+                "est": float(_d(cons.get(c, {}).get("amount"))),
+                "not_in_bom": (not in_bom),
                 "evidence": sporadic_cover.get((ono, c), []),
             })
-        new_parts = new_parts.quantize(_CENTS)
         old_parts = o.actual_parts
         old_phys = physical_cost(o)
         o.actual_parts = new_parts
@@ -316,6 +334,7 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
         items.append({
             "order_no": ono, "matched": True, "categories_count": len(real),
             "product_name": o.product_name, "is_custom": bool(o.is_custom),
+            "est_parts_base": float(base), "real_total": float(real_total),
             "old_actual_parts": float(_d(old_parts)) if old_parts is not None else None,
             "new_actual_parts": float(new_parts),
             "old_physical_cost": float(old_phys), "new_physical_cost": float(new_phys),
@@ -332,6 +351,9 @@ def aggregate_related_purchases(db: Session, *, apply: bool = False) -> dict:
         "applied": apply,
         "applied_count": applied,
         "matched_orders": len(matched),
+        # 跳过的订单(取消/定制/补单/成本被封顶) — 不覆盖成本, 列出原因供人工核对
+        "skipped_orders": len(skipped),
+        "skipped": skipped,
         # unmatched = 平台订单号全部对不上真实订单的"采购单"数(非订单数)
         "unmatched_purchases_count": len(unmatched),
         "unmatched_purchases": unmatched,
