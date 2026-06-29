@@ -30,6 +30,7 @@ class OrderUpdate(BaseModel):
     ship_date: Optional[date] = None
     actual_cost: Optional[Decimal] = None
     actual_freight: Optional[Decimal] = None
+    buyer_freight: Optional[Decimal] = None   # 买家应付邮费(买家付的运费), 计入实收对账口径
     remark: Optional[str] = None
 
 

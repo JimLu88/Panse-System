@@ -437,6 +437,7 @@ def update_order(order_id: int, payload: OrderUpdate, db: Session = Depends(get_
         db, o, payload.model_dump(exclude_unset=True),
         table="orders", pk=o.order_no, row_label=o.product_name,
         field_labels={"actual_cost": "实际成本", "actual_freight": "实际运费",
+                      "buyer_freight": "买家应付邮费",
                       "tracking_no": "快递单号", "carrier": "承运商",
                       "ship_date": "发货日期", "remark": "备注"},
     )
