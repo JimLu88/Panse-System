@@ -3,10 +3,14 @@ from __future__ import annotations
 
 import os
 import signal
+import sys
 import time
 from unittest.mock import patch
 
 import pytest
+
+# SIGKILL 仅 *nix 有(看门狗跑在群晖 Linux); Windows 本机无此信号 → 跳过该用例
+_skip_on_windows = pytest.mark.skipif(sys.platform == "win32", reason="signal.SIGKILL 仅 Linux(看门狗在NAS)")
 
 from app.models.system_event import SystemEvent
 from app.models.system_health import SystemHealthLog
@@ -83,6 +87,7 @@ def test_claim_pid_file_overwrites_dead_pid(pid_tmp, db_session):
     assert open(pid_tmp).read().strip() == str(os.getpid())
 
 
+@_skip_on_windows
 def test_claim_pid_file_kills_live_orphan(pid_tmp, db_session):
     """文件里有一个真活着的 PID (非自己) → 应 SIGTERM, 等不退就 SIGKILL."""
     # 模拟一个永活进程

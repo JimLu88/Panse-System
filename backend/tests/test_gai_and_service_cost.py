@@ -37,7 +37,9 @@ def test_gai_order_cost_is_base_bom_plus_surcharge(db_session):
     assert o.theoretical_cost == Decimal("70")   # 基础20(去改查到BOM) + 加价50
 
 
-@pytest.mark.parametrize("name", ["送货入户", "补差价专用", "商家安装"])
+# 注: "补差价"已不再按标题归0(2026 起走片段/小额规则, 读备注+金额阈值, 见 order_cost_service.zero_cost_reason),
+# 故从本"官方服务标题归0"用例移除; 仅保留真·官方服务关键词。
+@pytest.mark.parametrize("name", ["送货入户", "商家安装"])
 def test_service_order_zero_cost(db_session, name):
     o = Order(platform="淘宝", order_no="S-" + name, sku=name, product_name=name)
     db_session.add(o)

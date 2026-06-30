@@ -16,12 +16,13 @@ from app.services import scanner_service as svc
 
 def test_dangling_product_code_detected(db_session):
     db_session.add(Product(code="PPS001", name="X"))
-    db_session.add(Order(platform="淘宝", order_no="O1", product_code="PPS999", qty=1))
+    # 用尾号<90 的编码: 尾号≥90 会被 is_custom_sku_code 判为定制编码而跳过(2026-06-24 口径)
+    db_session.add(Order(platform="淘宝", order_no="O1", product_code="PPS010", qty=1))
     db_session.flush()
     r = svc.run_scanner(db_session, "dangling_order_product", dry_run=True)
     assert len(r.findings) == 1
     assert r.findings[0].source_pk == "O1"
-    assert r.findings[0].context["product_code"] == "PPS999"
+    assert r.findings[0].context["product_code"] == "PPS010"
 
 
 def test_dangling_product_code_skips_cancelled(db_session):

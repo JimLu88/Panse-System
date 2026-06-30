@@ -10,6 +10,16 @@ from app.models.marketing import AfterSales
 from app.models.order import Order
 from app.services import aftersales_auto_service, order_sheet_archive_service as osa
 from app.services import bill_import_service as bis
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _mock_render_png(monkeypatch):
+    """本机无 wkhtmltoimage(渲染二进制), docker 生产镜像有。下单图/作废图渲染 mock 成字节,
+    这些用例测的是流程(付款条件/作废幂等/删原图), 非像素。
+    _html_to_png 是底层渲染(render_png 与作废图 generate_void_sheets 都走它), mock 它即全覆盖。"""
+    monkeypatch.setattr(osa, "_html_to_png", lambda html, **kw: b"PNG", raising=False)
+    monkeypatch.setattr(osa, "render_png", lambda sheet: b"PNG", raising=False)
 
 
 # -------- 下单图: 只给已付款订单生成 --------

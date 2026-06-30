@@ -39,7 +39,17 @@ def test_weekly_logistics_auto_done_clears_overdue(db_session):
     assert "weekly_logistics_recon" not in keys
 
 
-def test_check_and_alert_overdue_writes_alerts(db_session):
+def test_check_and_alert_overdue_writes_alerts(db_session, monkeypatch):
+    # 固定"今天"到月中(≥15号): 月度对账 overdue_after_days=15, 月初运行时未到超时点会得0
+    # → 原测试随运行日期 flake。锁死日期使其确定 (这条就是历史遗留的"隔离 flake")。
+    import datetime as _dt
+
+    class _Mid(_dt.date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 6, 20)
+
+    monkeypatch.setattr(ops, "date", _Mid)
     res = ops.check_and_alert_overdue(db_session)
     assert res["overdue"] >= 3   # 至少 玻璃/岩板/电力轨道 (运行日 ≥ 当月15号时还含打包)
     cnt = db_session.query(Alert).filter(Alert.kind == "ops_overdue",

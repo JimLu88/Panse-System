@@ -23,7 +23,9 @@ def _o(actual=None, theo=None, paid="0", freight="0", install="0", upstairs="0")
         theoretical_cost=Decimal(theo) if theo else None,
         paid_amount=Decimal(paid), actual_freight=Decimal(freight),
         install_fee=Decimal(install), upstairs_fee=Decimal(upstairs),
-        tax=None, shop_received_amount=Decimal("0"), order_date=date(2026, 5, 1))
+        tax=None, shop_received_amount=Decimal("0"), order_date=date(2026, 5, 1),
+        # 真实 Order 必有的字段 (zero_cost_reason 直读): 补齐过时 mock, 防 AttributeError
+        is_refill=False, sku=None, sku_code=None, product_name=None)
 
 
 def test_fragment_cap_actual():

@@ -78,9 +78,10 @@ def test_estimate_fee_product_fallback_when_sku_missing():
 
 
 def test_no_estimate_no_swap(db_session):
-    """有 actual 但无 est(定价表缺)→ 不替换(防乱减), 保持原样。"""
+    """无 est_packing 可减 → 不做替换式扣减; 但实际打包(actual_packing)仍计入
+    (第16条: physical 含打包; 真实单 est_packing 会先减再加, 此处 mock 无 est 故净加)。"""
     o = _o(theoretical_cost=Decimal("1000"), actual_packing=Decimal("150"))
-    assert physical_cost(o) == Decimal("1000")
+    assert physical_cost(o) == Decimal("1150")   # 1000 + 150 实际打包(无 est 可减)
 
 
 def test_factory_actual_cost_with_wood_est_swaps(db_session):
@@ -129,29 +130,32 @@ def test_exact_sku_estimate_preferred_over_base(db_session):
     """精确 SKU 有费用 → 优先用它, 不走基础产品码兜底。"""
     from app.models.pricing import PricingSku
     from app.services import order_fee_actual_service as svc
+    # physical_cost 必填: _effective_qty 靠它判「真多件」(件均实付≥单件成本)才按 qty 乘, 否则保守按1件
     db_session.add(PricingSku(product_code="P2", sku_code="PPS2421007090113",
-                              packaging_cost=Decimal("180"), logistics_cost=Decimal("280")))
+                              packaging_cost=Decimal("180"), logistics_cost=Decimal("280"),
+                              physical_cost=Decimal("460")))
     db_session.add(Order(platform="淘宝", order_no="N1", qty=2, status="signed",
                          paid_amount=Decimal("5000"), sku_code="PPS2421007090113"))
     db_session.flush()
     svc.sync_fee_components(db_session)
     o = db_session.query(Order).filter_by(order_no="N1").first()
-    assert o.est_packing == Decimal("360")     # 180 × qty2
+    assert o.est_packing == Decimal("360")     # 180 × qty2 (件均2500≥460→真多件)
     assert o.est_logistics == Decimal("560")   # 280 × qty2
 
 
-def test_ratio_fallback_for_no_sku_order(db_session):
-    """无 SKU/产品 预估的单(差价/邮费专链)→ 系统平均比例(预估÷实付)× 本单实付。"""
+def test_median_fallback_for_no_sku_order(db_session):
+    """无 SKU/产品 预估的单(差价/邮费专链)→ 全局中位数兜底
+    (用户 2026-06-25: 打包/物流是按件大致固定的费, 不随实付线性放大, 故改中位数兜底, 非比例×实付)。"""
     from app.models.pricing import PricingSku
     from app.services import order_fee_actual_service as svc
     db_session.add(PricingSku(product_code="P3", sku_code="PPS9999999990011",
                               packaging_cost=Decimal("100"), logistics_cost=Decimal("200")))
     db_session.add(Order(platform="淘宝", order_no="R0", qty=1, status="signed",
-                         paid_amount=Decimal("1000"), sku_code="PPS9999999990011"))  # ratio 0.1/0.2
+                         paid_amount=Decimal("1000"), sku_code="PPS9999999990011"))  # est 100/200
     db_session.add(Order(platform="淘宝", order_no="R1", qty=1, status="signed",
-                         paid_amount=Decimal("141"), sku_code="PPS0000000800000"))   # 无对应预估
+                         paid_amount=Decimal("141"), sku_code="PPS0000000800000"))   # 无对应预估→中位数兜底
     db_session.flush()
     svc.sync_fee_components(db_session)
     o = db_session.query(Order).filter_by(order_no="R1").first()
-    assert o.est_packing == Decimal("14.10")    # 0.1 × 141
-    assert o.est_logistics == Decimal("28.20")  # 0.2 × 141
+    assert o.est_packing == Decimal("100")      # 全局中位数(唯一有值的 R0=100), 不随实付放大
+    assert o.est_logistics == Decimal("200")

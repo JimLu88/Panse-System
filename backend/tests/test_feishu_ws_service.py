@@ -1,10 +1,19 @@
 # -*- coding: utf-8 -*-
 """飞书机器人长连接(WebSocket) 接入 可测部分单测 (不起真连接/真飞书/真AI)。"""
+import importlib.util
 import time
+
+import pytest
 
 from app.models.order import Order
 from app.services import feishu_bot_service as B
 from app.services import feishu_client, feishu_ws_service as W, vision_ocr_service
+
+# _on_card 内部 import lark_oapi 构造卡片响应; 生产 docker 镜像装了, 本机为可选依赖。
+# 缺时优雅跳过这两条(其余测试不依赖 lark)。
+_skip_no_lark = pytest.mark.skipif(
+    importlib.util.find_spec("lark_oapi") is None,
+    reason="lark_oapi 未安装(docker 生产镜像有; 本机可选依赖)")
 
 
 def test_parse_card_event_variants():
@@ -22,6 +31,7 @@ def test_to_dict_passthrough():
     assert W._to_dict({"message": {"y": 2}}) == {"message": {"y": 2}}
 
 
+@_skip_no_lark
 def test_on_card_pick_acks_and_schedules(monkeypatch):
     called = {}
     monkeypatch.setattr(B, "process_pick", lambda *a, **k: called.update(args=a))
@@ -32,6 +42,7 @@ def test_on_card_pick_acks_and_schedules(monkeypatch):
     assert called["args"] == ("m1", "order_table", "c1")
 
 
+@_skip_no_lark
 def test_on_card_cancel(monkeypatch):
     monkeypatch.setattr(W, "_patch", lambda *a, **k: None)
     resp = W._on_card({"action": {"value": {"op": "cancel", "message_id": "m1"}},

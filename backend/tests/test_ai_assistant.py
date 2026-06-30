@@ -3,9 +3,16 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import importlib.util as _ilu
+
 from app.models.ai import AiChatLog
 from app.models.exception import DataException
 from app.services import ai_assistant
+
+# "无 key" 路径需 anthropic 已安装才走到"缺 key"分支(docker 镜像有; 本机为可选依赖, 缺则优雅跳过)
+_skip_no_anthropic = pytest.mark.skipif(
+    _ilu.find_spec("anthropic") is None,
+    reason="anthropic 未安装(可选依赖, docker 镜像有)")
 
 
 def _fake_anthropic_response(text="【发生了什么】测试。", in_tok=100, out_tok=50, cache_read=80):
@@ -52,6 +59,7 @@ def test_diagnose_writes_log_and_back_to_exception(db_session):
     assert exc.ai_analysis == "diagnose ok"
 
 
+@_skip_no_anthropic
 def test_diagnose_no_api_key_returns_log_with_error(db_session, monkeypatch):
     monkeypatch.setattr(ai_assistant.settings, "anthropic_api_key", "")
     exc = DataException(
@@ -87,6 +95,7 @@ def test_chat_success(db_session):
     assert log.input_tokens == 100
 
 
+@_skip_no_anthropic
 def test_chat_no_api_key(db_session, monkeypatch):
     monkeypatch.setattr(ai_assistant.settings, "anthropic_api_key", "")
     log, ai = ai_assistant.chat(db_session, user_message="hi")

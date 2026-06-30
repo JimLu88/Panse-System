@@ -83,9 +83,11 @@ def test_refund_and_old_orders_skip_estimate_and_exception(db_session):
     db = db_session
     _seed_store_ratio(db)
     # 退款单(refund_status 含「退款」)
+    # 全额退款(2026-06-24 口径: 只跳全额退款, refund_status 单独不再跳, 防误伤部分退款)
     db.add(Order(platform="淘宝", order_no="R1", product_code=None, qty=1,
                  order_date=date(2026, 6, 2), status="paid",
-                 paid_amount=Decimal("2000"), refund_status="退款成功"))
+                 paid_amount=Decimal("2000"), refund_status="退款成功",
+                 refund_amount=Decimal("2000")))
     # 全额退款单(退款额 ≥ 实付×0.9)
     db.add(Order(platform="淘宝", order_no="R2", product_code=None, qty=1,
                  order_date=date(2026, 6, 2), status="paid",
@@ -119,6 +121,7 @@ def test_existing_exception_resolved_for_refund_order(db_session):
     db.add(Order(platform="淘宝", order_no="RX", product_code=None, qty=1,
                  order_date=date(2026, 6, 2), status="paid",
                  paid_amount=Decimal("2000"), refund_status="退货退款",
+                 refund_amount=Decimal("2000"),  # 全额退款(2026-06-24 口径才跳过)
                  theoretical_cost=Decimal("1200")))  # 上一版误估的成本
     db.add(DataException(
         source_table="orders", source_pk="RX",
