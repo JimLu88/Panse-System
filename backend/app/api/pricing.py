@@ -226,6 +226,8 @@ def update_pricing_by_product(
             for k, v in body.sku.items():
                 if hasattr(sku, k):
                     setattr(sku, k, v)
+            if "factory_cost" in body.sku:
+                sku.factory_cost_override = True   # 覆盖全产品时手填工厂成本 → 标覆盖
         if body.costs:
             costs = db.query(PricingSkuCosts).filter(
                 PricingSkuCosts.sku_code == sku.sku_code).first()
@@ -455,6 +457,8 @@ def update_pricing_sku(
     _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
     for k, v in changes.items():
         setattr(sku, k, v)
+    if "factory_cost" in changes:
+        sku.factory_cost_override = True   # 手改工厂成本 → 标覆盖, recompute 不再自动派生(保住手改值)
     pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(sku)

@@ -9,7 +9,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Index, Numeric, String, Text
+from sqlalchemy import Boolean, Index, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -50,6 +50,9 @@ class PricingSku(Base, TimestampMixin):
     wood_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))       # 木作成本
     packaging_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     external_parts_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 工厂成本手动覆盖: True=用户在定价表手改过工厂成本(不再按 木作+包装+外配件 自动派生, 保住手改值);
+    # False=自动派生。物理成本恒 = 工厂成本+物流+安装。改于 2026-07-01: 治"改工厂成本不联动重算"。
+    factory_cost_override: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     image_url: Mapped[Optional[str]] = mapped_column(String(512))
     remark: Mapped[Optional[str]] = mapped_column(Text)  # 备注

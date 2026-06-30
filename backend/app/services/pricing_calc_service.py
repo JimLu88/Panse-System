@@ -21,22 +21,37 @@ def _d(v) -> Optional[Decimal]:
 
 
 def recompute(sku: PricingSku) -> None:
-    """原地按【定价总表口径】重算 平台费/税/会计成本/大促利润/毛利率。
+    """原地按【定价总表口径】重算整条 成本链 + 利润链 (2026-07-01 补全, 治"改工厂成本/组件不联动")。
 
-    依赖 大促价(K) 与 物理成本(Q):
+    成本链(自下而上):
+      工厂成本 = 木作 + 包装 + 外配件   (除非 factory_cost_override=True 手动覆盖 → 保留手改值)
+      物理成本 = 工厂成本 + 物流 + 安装
+    利润链(原有, 依赖 大促价 K 与 物理成本 Q):
       平台费 O = 大促价 × 0.6% ; 税 P = 大促价 × 2%
       会计成本 N = 物理成本 + 平台费 + 税
       大促利润 L = 大促价 − 会计成本 ; 毛利率 M = 大促利润 ÷ 大促价
-    只让利润链跟随, 不动 物流/安装/出厂/物理 等成本输入(可手填/按SKU调整)。
     """
     cent = Decimal("0.01")
+    zero = Decimal("0")
+    # 1) 工厂成本: 未手动覆盖时 = 木作+包装+外配件 (改组件即联动); 覆盖时保留用户手改值
+    if not getattr(sku, "factory_cost_override", False):
+        wood, pack, ext = _d(sku.wood_cost), _d(sku.packaging_cost), _d(sku.external_parts_cost)
+        if any(v is not None for v in (wood, pack, ext)):
+            sku.factory_cost = ((wood or zero) + (pack or zero) + (ext or zero)).quantize(
+                cent, rounding=ROUND_HALF_UP)
+    # 2) 物理成本 = 工厂成本 + 物流 + 安装 (改工厂成本/物流/安装即联动)
+    fac = _d(sku.factory_cost)
+    if fac is not None:
+        sku.physical_cost = (fac + (_d(sku.logistics_cost) or zero)
+                             + (_d(sku.install_cost) or zero)).quantize(cent, rounding=ROUND_HALF_UP)
+    # 3) 利润链
     big = _d(sku.big_promo)
     phys = _d(sku.physical_cost)
     if big is not None:
         sku.platform_fee_rate = (big * Decimal("0.006")).quantize(cent, rounding=ROUND_HALF_UP)
         sku.tax = (big * Decimal("0.02")).quantize(cent, rounding=ROUND_HALF_UP)
-    pf = _d(sku.platform_fee_rate) or Decimal("0")
-    tax = _d(sku.tax) or Decimal("0")
+    pf = _d(sku.platform_fee_rate) or zero
+    tax = _d(sku.tax) or zero
     if phys is not None:
         sku.accounting_cost = (phys + pf + tax).quantize(cent, rounding=ROUND_HALF_UP)
     cost = _d(sku.accounting_cost)
