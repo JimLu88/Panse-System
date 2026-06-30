@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
     NpdInspectionTemplate, NpdInspectionItem,
-    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine,
 )
 
 # ---- 设置键 ----
@@ -414,6 +414,115 @@ def update_obj(db: Session, obj, patch: dict):
     db.commit()
     db.refresh(obj)
     return obj
+
+
+# ----------------------------- 设计 BOM + 自动建档 (P2a) ----------------------------- #
+
+def list_bom_lines(db: Session, project_id: int) -> list[NpdBomLine]:
+    return list(db.execute(
+        select(NpdBomLine).where(NpdBomLine.project_id == project_id)
+        .order_by(NpdBomLine.id)
+    ).scalars().all())
+
+
+def add_bom_line(db: Session, project_id: int, **kw) -> NpdBomLine:
+    obj = NpdBomLine(project_id=project_id, **kw)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def delete_bom_line(db: Session, line: NpdBomLine) -> None:
+    db.delete(line)
+    db.commit()
+
+
+def materialize_project(db: Session, project: NpdProject, *, brand: str,
+                        category_code: str, actor: Optional[str] = None) -> dict:
+    """设计落地自动建档 (用户拍板 #3): 新配件按询价价建 Material → 建 Product+BomLine
+    → draft PricingSku(physical_cost=ΣBOM, 价=价位靶, recompute) → 绑 product_code。
+
+    复用 material_coder/product_coder/pricing_calc_service 现成口径, 不另造。幂等保护: 已建档则拒。
+    """
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+    from app.services import material_coder, pricing_calc_service, product_coder
+
+    if project.product_code:
+        raise ValueError(f"该项目已生成产品档案 {project.product_code}, 勿重复生成")
+    lines = list_bom_lines(db, project.id)
+    if not lines:
+        raise ValueError("请先录入设计 BOM 再生成产品档案")
+    if not brand or len(brand.strip()) != 2 or not brand.strip().isalpha():
+        raise ValueError("请提供 2 位字母品牌码")
+    if not category_code or not category_code.strip().isdigit() or len(category_code.strip()) != 2:
+        raise ValueError("请提供 2 位数字类目码")
+    brand = brand.strip().upper()
+    category_code = category_code.strip()
+
+    # 1) 解析/新建物料 (新配件按 name 查重, 无则建)
+    resolved: dict[int, str] = {}
+    materials_created = 0
+    for ln in lines:
+        if ln.material_code:
+            m = db.execute(select(Material).where(Material.code == ln.material_code)).scalars().first()
+            if not m:
+                raise ValueError(f"BOM 行物料编码 {ln.material_code} 在物料库不存在")
+            resolved[ln.id] = m.code
+            continue
+        name = (ln.material_name or "").strip()
+        if not name:
+            raise ValueError("BOM 行既无编码也无名称, 无法建档")
+        existing = db.execute(select(Material).where(Material.name == name)).scalars().first()
+        if existing:
+            resolved[ln.id] = existing.code
+            continue
+        prefix = "MW" if (ln.category and "木" in ln.category) else "AC"
+        code = material_coder.next_code(db, prefix)
+        db.add(Material(code=code, name=name, price=ln.unit_price,
+                        category=ln.category, unit=ln.unit, size_type=ln.size_type))
+        db.flush()
+        resolved[ln.id] = code
+        materials_created += 1
+
+    # 2) 建产品
+    pcode = product_coder.next_product_code(db, brand=brand, category=category_code)
+    db.add(Product(code=pcode, name=project.name, brand=brand,
+                   category=project.category or category_code, remark=project.remark,
+                   alt_taobao_ids=[]))
+    db.flush()
+
+    # 3) BOM 行 + 物理成本累计
+    phys = Decimal("0")
+    for ln in lines:
+        mcode = resolved[ln.id]
+        m = db.execute(select(Material).where(Material.code == mcode)).scalars().first()
+        qty = ln.qty or Decimal("1")
+        db.add(BomLine(product_code=pcode, product_name=project.name, material_code=mcode,
+                       material_name=(m.name if m else ln.material_name), unit=ln.unit,
+                       qty_per_product=qty, size_type=ln.size_type, remark=ln.remark))
+        if m and m.price is not None:
+            phys += m.price * qty
+
+    # 4) draft 定价表 (=定位表): 成本来自 BOM, 价取价位靶, recompute 派生
+    sku = PricingSku(product_code=pcode, sku_code=f"{pcode}11",
+                     physical_cost=(phys if phys > 0 else None),
+                     daily_price=project.target_price, big_promo=project.target_price)
+    pricing_calc_service.recompute(sku)
+    db.add(sku)
+
+    # 5) 绑定
+    project.product_code = pcode
+    db.commit()
+    db.refresh(project)
+    return {
+        "product_code": pcode, "sku_code": f"{pcode}11",
+        "materials_created": materials_created, "bom_lines": len(lines),
+        "physical_cost": str(phys),
+    }
 
 
 def mass_production_enabled(db: Session) -> bool:

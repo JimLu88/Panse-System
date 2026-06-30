@@ -23,7 +23,7 @@ from app.dependencies import require_role
 from app.models.auth import User
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdTask, NpdInspectionItem,
-    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine,
 )
 from app.services import npd_service
 
@@ -207,12 +207,26 @@ class SupplierOut(BaseModel):
     remark: Optional[str] = None
 
 
+class BomLineOut(BaseModel):
+    id: int
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    category: Optional[str] = None
+    unit: Optional[str] = None
+    qty: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+    size_type: Optional[str] = None
+    is_new: bool = False
+    remark: Optional[str] = None
+
+
 class ProjectDetailOut(BaseModel):
     project: ProjectOut
     timeline: list[TimelineItem]
     cost_gate: Optional[CostGateOut] = None
     craft_issues: list[CraftIssueOut] = []
     suppliers: list[SupplierOut] = []
+    bom_lines: list[BomLineOut] = []
 
 
 def _task_out(t: NpdTask) -> TaskOut:
@@ -295,6 +309,31 @@ class SupplierIn(BaseModel):
     craft_solution: Optional[str] = None
     solved_cost: Optional[Decimal] = None
     remark: Optional[str] = None
+
+
+def _bom_out(b: NpdBomLine) -> BomLineOut:
+    return BomLineOut(
+        id=b.id, material_code=b.material_code, material_name=b.material_name,
+        category=b.category, unit=b.unit, qty=b.qty, unit_price=b.unit_price,
+        size_type=b.size_type, is_new=b.is_new, remark=b.remark,
+    )
+
+
+class BomLineIn(BaseModel):
+    material_code: Optional[str] = None
+    material_name: Optional[str] = None
+    category: Optional[str] = None
+    unit: Optional[str] = None
+    qty: Optional[Decimal] = None
+    unit_price: Optional[Decimal] = None
+    size_type: Optional[str] = None
+    is_new: Optional[bool] = None
+    remark: Optional[str] = None
+
+
+class MaterializeIn(BaseModel):
+    brand: str          # 2 位字母
+    category_code: str  # 2 位数字
 
 
 # ----------------------------- 端点 ----------------------------- #
@@ -429,6 +468,7 @@ def project_detail(
         cost_gate=_costgate_out(npd_service.get_cost_gate(db, proj.id)),
         craft_issues=[_craft_out(c) for c in npd_service.list_craft_issues(db, proj.id)],
         suppliers=[_supplier_out(s) for s in npd_service.list_suppliers(db, proj.id)],
+        bom_lines=[_bom_out(b) for b in npd_service.list_bom_lines(db, proj.id)],
     )
 
 
@@ -534,6 +574,52 @@ def update_supplier(
         raise HTTPException(404, "供应商候选不存在")
     npd_service.update_obj(db, s, payload.model_dump(exclude_unset=True))
     return _supplier_out(s)
+
+
+@router.post("/projects/{project_id}/bom-lines", response_model=BomLineOut)
+def add_bom_line(
+    project_id: int,
+    payload: BomLineIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    if db.get(NpdProject, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    data = payload.model_dump(exclude_none=True)
+    b = npd_service.add_bom_line(db, project_id, **data)
+    return _bom_out(b)
+
+
+@router.delete("/bom-lines/{line_id}")
+def delete_bom_line(
+    line_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    b = db.get(NpdBomLine, line_id)
+    if b is None:
+        raise HTTPException(404, "BOM 行不存在")
+    npd_service.delete_bom_line(db, b)
+    return {"deleted": True}
+
+
+@router.post("/projects/{project_id}/materialize")
+def materialize_project(
+    project_id: int,
+    payload: MaterializeIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    proj = db.get(NpdProject, project_id)
+    if proj is None:
+        raise HTTPException(404, "项目不存在")
+    try:
+        return npd_service.materialize_project(
+            db, proj, brand=payload.brand, category_code=payload.category_code,
+            actor=getattr(user, "username", None),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
 
 
 @router.get("/settings")

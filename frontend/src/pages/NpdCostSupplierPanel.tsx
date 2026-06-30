@@ -1,9 +1,12 @@
 import { useState } from 'react';
 import {
   Card, Tag, Typography, Space, InputNumber, Input, Button, Table, message, Checkbox,
+  Modal, Popconfirm,
 } from 'antd';
 import {
-  saveNpdCostGate, addNpdCraftIssue, addNpdSupplier, type NpdProjectDetail,
+  saveNpdCostGate, addNpdCraftIssue, addNpdSupplier,
+  addNpdBomLine, deleteNpdBomLine, materializeNpdProject,
+  type NpdProjectDetail,
 } from '../api/client';
 
 export default function NpdCostSupplierPanel(
@@ -66,8 +69,100 @@ export default function NpdCostSupplierPanel(
     }
   };
 
+  const proj = detail.project;
+  const [bmName, setBmName] = useState('');
+  const [bmCode, setBmCode] = useState('');
+  const [bmCat, setBmCat] = useState('');
+  const [bmUnit, setBmUnit] = useState('');
+  const [bmQty, setBmQty] = useState<string>('1');
+  const [bmPrice, setBmPrice] = useState<string>('');
+  const addBom = async () => {
+    if (!bmCode.trim() && !bmName.trim()) { message.warning('填物料名或已有编码'); return; }
+    try {
+      await addNpdBomLine(projectId, {
+        material_code: bmCode.trim() || null, material_name: bmName.trim() || null,
+        category: bmCat || null, unit: bmUnit || null,
+        qty: bmQty === '' ? 1 : bmQty, unit_price: bmPrice === '' ? null : bmPrice,
+        is_new: !bmCode.trim(),
+      });
+      setBmName(''); setBmCode(''); setBmCat(''); setBmUnit(''); setBmQty('1'); setBmPrice('');
+      message.success('已加 BOM 行'); onChange();
+    } catch (e: any) { message.error(e?.response?.data?.detail ?? '失败'); }
+  };
+  const delBom = async (id: number) => {
+    try { await deleteNpdBomLine(id); onChange(); }
+    catch (e: any) { message.error(e?.response?.data?.detail ?? '删除失败'); }
+  };
+  const [matOpen, setMatOpen] = useState(false);
+  const [brand, setBrand] = useState('');
+  const [catCode, setCatCode] = useState('');
+  const [materializing, setMaterializing] = useState(false);
+  const doMaterialize = async () => {
+    if (!/^[A-Za-z]{2}$/.test(brand.trim())) { message.warning('品牌码=2位字母'); return; }
+    if (!/^\d{2}$/.test(catCode.trim())) { message.warning('类目码=2位数字'); return; }
+    setMaterializing(true);
+    try {
+      const r = await materializeNpdProject(projectId, { brand: brand.trim(), category_code: catCode.trim() });
+      message.success(`已生成产品档案 ${r.product_code} (新建配件 ${r.materials_created} 个)`);
+      setMatOpen(false); onChange();
+    } catch (e: any) { message.error(e?.response?.data?.detail ?? '生成失败'); }
+    finally { setMaterializing(false); }
+  };
+
   return (
     <>
+      <Card
+        size="small" title="设计 BOM → 自动建档" style={{ marginTop: 16 }}
+        extra={proj.product_code
+          ? <Tag color="green">已生成 {proj.product_code}</Tag>
+          : <Button type="primary" disabled={!detail.bom_lines.length} onClick={() => setMatOpen(true)}>生成产品档案</Button>}
+      >
+        {!proj.product_code && (
+          <Space wrap style={{ marginBottom: 8 }}>
+            <Input placeholder="物料名(新配件)" value={bmName} onChange={(e) => setBmName(e.target.value)} style={{ width: 170 }} />
+            <Input placeholder="或已有编码" value={bmCode} onChange={(e) => setBmCode(e.target.value)} style={{ width: 110 }} />
+            <Input placeholder="分类" value={bmCat} onChange={(e) => setBmCat(e.target.value)} style={{ width: 90 }} />
+            <Input placeholder="单位" value={bmUnit} onChange={(e) => setBmUnit(e.target.value)} style={{ width: 64 }} />
+            <InputNumber placeholder="数量" min={0} style={{ width: 84 }}
+              value={bmQty === '' ? null : Number(bmQty)} onChange={(v) => setBmQty(v == null ? '' : String(v))} />
+            <InputNumber placeholder="新配件单价¥" min={0} style={{ width: 130 }}
+              value={bmPrice === '' ? null : Number(bmPrice)} onChange={(v) => setBmPrice(v == null ? '' : String(v))} />
+            <Button onClick={addBom}>加BOM</Button>
+          </Space>
+        )}
+        <Table size="small" rowKey="id" pagination={false} dataSource={detail.bom_lines}
+          locale={{ emptyText: '暂无 BOM,先录设计物料清单' }}
+          columns={[
+            { title: '物料', dataIndex: 'material_name', render: (v: string, r: any) => v || r.material_code || '-' },
+            { title: '编码', dataIndex: 'material_code', width: 110, render: (v: string) => v || <Tag color="orange">新</Tag> },
+            { title: '分类', dataIndex: 'category', width: 90 },
+            { title: '数量', dataIndex: 'qty', width: 70 },
+            { title: '单价', dataIndex: 'unit_price', width: 90 },
+            ...(proj.product_code ? [] : [{
+              title: '', key: 'del', width: 46,
+              render: (_: unknown, r: any) => (
+                <Popconfirm title="删除?" onConfirm={() => delBom(r.id)}>
+                  <Button type="link" size="small" danger>删</Button>
+                </Popconfirm>
+              ),
+            }]),
+          ]} />
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          生成后: 新配件按单价自动入物料库、建产品+BOM、按 BOM 成本生成定价表草稿(价取价位靶, 到定价页细化)。
+        </Typography.Text>
+      </Card>
+
+      <Modal title="生成产品档案" open={matOpen} confirmLoading={materializing}
+        onOk={doMaterialize} onCancel={() => setMatOpen(false)} destroyOnClose>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text type="secondary">将建 产品+BOM、新配件入库、定价表草稿。产品编码需:</Typography.Text>
+          <Input addonBefore="品牌码 2位字母(PS/FG)" value={brand} maxLength={2}
+            onChange={(e) => setBrand(e.target.value.toUpperCase())} />
+          <Input addonBefore="类目码 2位数字(如33)" value={catCode} maxLength={2}
+            onChange={(e) => setCatCode(e.target.value)} />
+        </Space>
+      </Modal>
+
       <Card size="small" title="成本门 G3 (量产成本 vs 价位靶)" style={{ marginTop: 16 }}>
         <Space wrap>
           <Typography.Text type="secondary">目标售价 {cg?.target_price ?? detail.project.target_price ?? '-'}</Typography.Text>

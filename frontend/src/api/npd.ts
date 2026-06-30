@@ -138,12 +138,26 @@ export interface NpdSupplierCandidate {
   remark: string | null;
 }
 
+export interface NpdBomLine {
+  id: number;
+  material_code: string | null;
+  material_name: string | null;
+  category: string | null;
+  unit: string | null;
+  qty: string | null;
+  unit_price: string | null;
+  size_type: string | null;
+  is_new: boolean;
+  remark: string | null;
+}
+
 export interface NpdProjectDetail {
   project: NpdProject;
   timeline: NpdTimelineItem[];
   cost_gate: NpdCostGate | null;
   craft_issues: NpdCraftIssue[];
   suppliers: NpdSupplierCandidate[];
+  bom_lines: NpdBomLine[];
 }
 
 export const listNpdStages = (includeMassProduction?: boolean) =>
@@ -194,6 +208,17 @@ export const addNpdSupplier = (projectId: number, payload: Record<string, unknow
 
 export const updateNpdSupplier = (id: number, payload: Record<string, unknown>) =>
   api.put<NpdSupplierCandidate>(`/api/npd/suppliers/${id}`, payload).then((r) => r.data);
+
+export const addNpdBomLine = (projectId: number, payload: Record<string, unknown>) =>
+  api.post<NpdBomLine>(`/api/npd/projects/${projectId}/bom-lines`, payload).then((r) => r.data);
+
+export const deleteNpdBomLine = (id: number) =>
+  api.delete(`/api/npd/bom-lines/${id}`).then((r) => r.data);
+
+export const materializeNpdProject = (projectId: number, payload: { brand: string; category_code: string }) =>
+  api.post<{ product_code: string; sku_code: string; materials_created: number; bom_lines: number; physical_cost: string }>(
+    `/api/npd/projects/${projectId}/materialize`, payload,
+  ).then((r) => r.data);
 
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);

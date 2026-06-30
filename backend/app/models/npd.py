@@ -225,3 +225,23 @@ class NpdSupplierCandidate(Base, TimestampMixin):
     craft_solution: Mapped[Optional[str]] = mapped_column(Text)
     solved_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdBomLine(Base, TimestampMixin):
+    """新品设计 BOM (P2a): 设计落地时据此自动建 Material(新配件按询价价)+Product+BomLine+定价。
+    material_code 留空=新配件(按 material_name 查重/新建)。"""
+    __tablename__ = "npd_bom_lines"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    material_code: Mapped[Optional[str]] = mapped_column(String(32))   # 已有物料编码; 空=新配件
+    material_name: Mapped[Optional[str]] = mapped_column(String(255))
+    category: Mapped[Optional[str]] = mapped_column(String(64))
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+    qty: Mapped[Decimal] = mapped_column(Numeric(12, 3), nullable=False, default=Decimal("1"))
+    unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 新配件单价(询价选定价)
+    size_type: Mapped[Optional[str]] = mapped_column(String(32))
+    is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    remark: Mapped[Optional[str]] = mapped_column(Text)
