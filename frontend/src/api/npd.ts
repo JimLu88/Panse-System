@@ -60,6 +60,39 @@ export interface NpdSettings {
   min_supplier_candidates: number;
 }
 
+export interface NpdTask {
+  id: number;
+  title: string;
+  category: string;
+  is_required: boolean;
+  status: string;
+  assignee: string | null;
+  stage_code: string | null;
+  due_date: string | null;
+  done_at: string | null;
+  done_by: string | null;
+  remark: string | null;
+}
+
+export interface NpdTimelineItem {
+  stage_id: number;
+  code: string;
+  name: string;
+  group: string;
+  is_gate: boolean;
+  is_current: boolean;
+  instance_status: string | null;
+  entered_at: string | null;
+  deadline: string | null;
+  completed_at: string | null;
+  tasks: NpdTask[];
+}
+
+export interface NpdProjectDetail {
+  project: NpdProject;
+  timeline: NpdTimelineItem[];
+}
+
 export const listNpdStages = (includeMassProduction?: boolean) =>
   api.get<NpdStage[]>('/api/npd/stages', {
     params: includeMassProduction === undefined ? {} : { include_mass_production: includeMassProduction },
@@ -74,8 +107,14 @@ export const createNpdProject = (payload: NpdProjectIn) =>
 export const updateNpdProject = (id: number, patch: Partial<NpdProjectIn> & Record<string, unknown>) =>
   api.put<NpdProject>(`/api/npd/projects/${id}`, patch).then((r) => r.data);
 
-export const moveNpdProject = (id: number, stageId: number) =>
-  api.put<NpdProject>(`/api/npd/projects/${id}/move`, { stage_id: stageId }).then((r) => r.data);
+export const moveNpdProject = (id: number, stageId: number, force = false) =>
+  api.put<NpdProject>(`/api/npd/projects/${id}/move`, { stage_id: stageId, force }).then((r) => r.data);
+
+export const getNpdProjectDetail = (id: number) =>
+  api.get<NpdProjectDetail>(`/api/npd/projects/${id}/detail`).then((r) => r.data);
+
+export const toggleNpdTask = (id: number, done: boolean) =>
+  api.put<NpdTask>(`/api/npd/tasks/${id}`, { done }).then((r) => r.data);
 
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);

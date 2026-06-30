@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
-from app.models.npd import NpdProject, NpdStage, NpdStageInstance
+from app.models.npd import NpdProject, NpdStage, NpdStageInstance, NpdTask
 from app.services import npd_service
 
 router = APIRouter(prefix="/api/npd", tags=["npd"])
@@ -119,6 +119,54 @@ class ProjectPatch(BaseModel):
 
 class MoveIn(BaseModel):
     stage_id: int
+    force: bool = False
+
+
+class TaskToggleIn(BaseModel):
+    done: bool
+
+
+class TaskOut(BaseModel):
+    id: int
+    title: str
+    category: str
+    is_required: bool
+    status: str
+    assignee: Optional[str] = None
+    stage_code: Optional[str] = None
+    due_date: Optional[str] = None
+    done_at: Optional[str] = None
+    done_by: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class TimelineItem(BaseModel):
+    stage_id: int
+    code: str
+    name: str
+    group: str
+    is_gate: bool
+    is_current: bool
+    instance_status: Optional[str] = None
+    entered_at: Optional[str] = None
+    deadline: Optional[str] = None
+    completed_at: Optional[str] = None
+    tasks: list[TaskOut] = []
+
+
+class ProjectDetailOut(BaseModel):
+    project: ProjectOut
+    timeline: list[TimelineItem]
+
+
+def _task_out(t: NpdTask) -> TaskOut:
+    return TaskOut(
+        id=t.id, title=t.title, category=t.category, is_required=t.is_required,
+        status=t.status, assignee=t.assignee, stage_code=t.stage_code,
+        due_date=t.due_date.isoformat() if t.due_date else None,
+        done_at=t.done_at.isoformat() if t.done_at else None,
+        done_by=t.done_by, remark=t.remark,
+    )
 
 
 # ----------------------------- 端点 ----------------------------- #
@@ -216,11 +264,51 @@ def move_project(
         raise HTTPException(404, "项目不存在")
     try:
         npd_service.move_project(db, proj, payload.stage_id,
-                                 actor=getattr(user, "username", None))
+                                 actor=getattr(user, "username", None), force=payload.force)
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
     stages, deadlines = _load_ctx(db)
     return _project_out(proj, stages, deadlines)
+
+
+@router.get("/projects/{project_id}/detail", response_model=ProjectDetailOut)
+def project_detail(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    proj = db.get(NpdProject, project_id)
+    if proj is None:
+        raise HTTPException(404, "项目不存在")
+    stages, deadlines = _load_ctx(db)
+    items: list[TimelineItem] = []
+    for row in npd_service.project_timeline(db, proj):
+        s = row["stage"]
+        ins = row["instance"]
+        items.append(TimelineItem(
+            stage_id=s.id, code=s.code, name=s.name, group=s.group, is_gate=s.is_gate,
+            is_current=row["is_current"],
+            instance_status=(ins.status if ins else None),
+            entered_at=(ins.entered_at.isoformat() if ins and ins.entered_at else None),
+            deadline=(ins.deadline.isoformat() if ins and ins.deadline else None),
+            completed_at=(ins.completed_at.isoformat() if ins and ins.completed_at else None),
+            tasks=[_task_out(t) for t in row["tasks"]],
+        ))
+    return ProjectDetailOut(project=_project_out(proj, stages, deadlines), timeline=items)
+
+
+@router.put("/tasks/{task_id}", response_model=TaskOut)
+def toggle_task(
+    task_id: int,
+    payload: TaskToggleIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    t = db.get(NpdTask, task_id)
+    if t is None:
+        raise HTTPException(404, "任务不存在")
+    npd_service.toggle_task(db, t, payload.done, by=getattr(user, "username", None))
+    return _task_out(t)
 
 
 @router.get("/settings")

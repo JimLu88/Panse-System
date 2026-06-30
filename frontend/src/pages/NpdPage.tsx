@@ -5,6 +5,7 @@ import {
 } from 'antd';
 import { PlusOutlined, DownOutlined } from '@ant-design/icons';
 import type { MenuProps } from 'antd';
+import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import PresetTable from '../components/PresetTable';
 import {
@@ -30,6 +31,7 @@ export default function NpdPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const nav = useNavigate();
   const screens = Grid.useBreakpoint();
   const isMobile = screens.md === false;
 
@@ -89,7 +91,7 @@ export default function NpdPage() {
     <Card key={p.id} size="small" style={{ marginBottom: 8 }}>
       <Space direction="vertical" size={4} style={{ width: '100%' }}>
         <Space style={{ justifyContent: 'space-between', width: '100%' }} wrap>
-          <Typography.Text strong>{p.name}</Typography.Text>
+          <Typography.Link strong onClick={() => nav(`/npd/${p.id}`)}>{p.name}</Typography.Link>
           <Tag>{p.code}</Tag>
         </Space>
         <Space wrap size={4}>
@@ -105,9 +107,12 @@ export default function NpdPage() {
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
             {(p.category || '-') + ' · ' + (p.owner || '-')}
           </Typography.Text>
-          <Dropdown menu={moveMenu(p)} trigger={['click']}>
-            <Button size="small">移到 <DownOutlined /></Button>
-          </Dropdown>
+          <Space size={4}>
+            <Button size="small" onClick={() => nav(`/npd/${p.id}`)}>详情</Button>
+            <Dropdown menu={moveMenu(p)} trigger={['click']}>
+              <Button size="small">移到 <DownOutlined /></Button>
+            </Dropdown>
+          </Space>
         </Space>
       </Space>
     </Card>
@@ -153,6 +158,12 @@ export default function NpdPage() {
       title: '状态', dataIndex: 'state', width: 80,
       render: (v: string) => (v === 'done' ? <Tag color="green">完成</Tag>
         : v === 'rework' ? <Tag color="orange">返工</Tag> : <Tag>进行</Tag>),
+    },
+    {
+      title: '操作', key: 'act', width: 70,
+      render: (_: unknown, r: NpdProject) => (
+        <Button type="link" size="small" onClick={() => nav(`/npd/${r.id}`)}>详情</Button>
+      ),
     },
   ];
 

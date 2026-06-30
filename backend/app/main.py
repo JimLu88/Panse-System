@@ -158,10 +158,11 @@ async def _lifespan(app: FastAPI):
         from app.services import npd_service
         with _SL_N() as _s:
             n = npd_service.seed_stages(_s)
-            if n:
-                logging.getLogger("panse.startup").info("NPD 阶段种入 %d 条", n)
+            nt = npd_service.seed_task_templates(_s)
+            if n or nt:
+                logging.getLogger("panse.startup").info("NPD 种入: 阶段 %d / 任务模板 %d 条", n, nt)
     except Exception:  # pragma: no cover - 种入失败不阻断启动
-        logging.getLogger("panse.startup").warning("NPD 阶段种入失败", exc_info=True)
+        logging.getLogger("panse.startup").warning("NPD 种入失败", exc_info=True)
 
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":

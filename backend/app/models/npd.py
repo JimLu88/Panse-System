@@ -88,3 +88,41 @@ class NpdStageInstance(Base, TimestampMixin):
     gate_result: Mapped[Optional[str]] = mapped_column(String(8))   # go/kill/hold/rework (仅门阶段)
     gate_decided_by: Mapped[Optional[str]] = mapped_column(String(64))
     gate_comment: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdStageTaskTemplate(Base):
+    """阶段待办模板: 项目进入某阶段时按此 instantiate 出一组任务 (P1)。"""
+    __tablename__ = "npd_stage_task_templates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    stage_code: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(16), nullable=False, default="通用")  # 通用/设计/工厂/采购/摄影/成本
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 必做→影响过门
+    offset_days: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class NpdTask(Base, TimestampMixin):
+    """项目阶段下的待办任务实例 (P1)。"""
+    __tablename__ = "npd_tasks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_instance_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("npd_stage_instances.id", ondelete="CASCADE"), index=True
+    )
+    stage_code: Mapped[Optional[str]] = mapped_column(String(8), index=True)
+    template_id: Mapped[Optional[int]] = mapped_column(Integer)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    category: Mapped[str] = mapped_column(String(16), nullable=False, default="通用")
+    assignee: Mapped[Optional[str]] = mapped_column(String(64))
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="open")  # open/done
+    due_date: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    done_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    done_by: Mapped[Optional[str]] = mapped_column(String(64))
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    remark: Mapped[Optional[str]] = mapped_column(Text)

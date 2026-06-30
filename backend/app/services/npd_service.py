@@ -12,7 +12,9 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.npd import NpdProject, NpdStage, NpdStageInstance
+from app.models.npd import (
+    NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
+)
 
 # ---- 设置键 ----
 KEY_MASS_PRODUCTION = "npd_mass_production_enabled"   # 生产线开关, 默认关
@@ -79,6 +81,112 @@ def seed_stages(db: Session) -> int:
     return n
 
 
+# 阶段待办模板 (P1): stage_code -> [(title, category, is_required)]; sort 按列表顺序。
+_TASK_TEMPLATE_SEED: dict[str, list[tuple]] = {
+    "S01": [("填写机会陈述(解决什么痛点)", "通用", True),
+            ("设定目标价位+目标毛利率(成本门基线)", "成本", True),
+            ("战略契合度自评", "通用", False)],
+    "S02": [("竞品3-5款参数/价格对标", "通用", True),
+            ("目标客群+使用场景", "通用", False),
+            ("初步销量预估", "通用", False)],
+    "S03": [("定设计边界(尺寸/主辅材/价位/品牌语言)", "设计", True),
+            ("AI检索同类案例/材质建议", "设计", False)],
+    "S04": [("出概念图/效果图", "设计", True), ("上传图库", "设计", False)],
+    "S05": [("按评审意见修改设计", "设计", True), ("更新策划", "通用", False)],
+    "S06": [("再设计定稿候选", "设计", True)],
+    "S07": [("列工艺难点+工厂可行性确认", "工厂", True),
+            ("登记≥2家后备供应商候选", "采购", True),
+            ("AI给材质/配件工艺方法+设计边界", "设计", False)],
+    "S08": [("按工程反馈修改设计", "设计", True)],
+    "S09": [("设计冻结定稿", "设计", True),
+            ("生成产品档案(产品+BOM+定价)", "通用", True),
+            ("出BOM+线框尺寸图", "设计", False)],
+    "S10": [("对每家候选发询价(AI话术)", "采购", True),
+            ("收齐报价并选定供应商", "采购", True)],
+    "S11": [("下采购单", "采购", True), ("跟进配件到货", "工厂", False)],
+    "S12": [("工厂生产工程样首件", "工厂", True),
+            ("樱桃木等易变色木材中途先做防护", "工厂", True),
+            ("配件到场对照BOM核对", "工厂", False),
+            ("记录打样工艺问题点", "工厂", False)],
+    "S13": [("白胚逐项验收(尺寸/结构/含水率/无开裂)", "工厂", True)],
+    "S14": [("返工项记录", "工厂", False), ("复验通过", "工厂", True)],
+    "S15": [("外观/饰面定稿", "设计", True),
+            ("送检甲醛/承重/力学并上传报告", "工厂", True),
+            ("道具采买计划", "摄影", False)],
+    "S17": [("整体安装验收(装好再打包)", "工厂", True)],
+    "S18": [("包装方案设计", "通用", True), ("运输破损测试", "工厂", True)],
+    "S16": [("产线一致性/良率/色差检查", "工厂", True)],
+    "S19": [("量产排期确认", "工厂", False)],
+    "S20": [("道具采买(确认清单+预算)", "摄影", True),
+            ("样品搬运到摄影场地", "摄影", True),
+            ("评价图拍摄", "摄影", True),
+            ("评价图策划(场景/构图)", "摄影", False)],
+    "S21": [("详情页摄影", "摄影", True), ("详情页拍摄策划(卖点分镜)", "摄影", False)],
+    "S22": [("详情页设计排版", "摄影", True), ("文案撰写(可AI辅助)", "通用", False)],
+    "S23": [("定价录入", "成本", True), ("淘宝上架", "通用", True),
+            ("库存/重新入库就绪", "通用", True)],
+    "S24": [("实际成本vs估算成本对比", "成本", True),
+            ("销量/退货/口碑回收→反哺选品", "通用", True)],
+    "G3": [("算工艺改进后量产成本对比价位靶(红绿灯)", "成本", True)],
+}
+
+
+def seed_task_templates(db: Session) -> int:
+    """幂等种入阶段待办模板。已存在(按 stage_code+title)则跳过。"""
+    existing = {
+        (sc, t) for (sc, t) in db.execute(
+            select(NpdStageTaskTemplate.stage_code, NpdStageTaskTemplate.title)
+        ).all()
+    }
+    n = 0
+    for stage_code, items in _TASK_TEMPLATE_SEED.items():
+        for sort, (title, category, is_required) in enumerate(items):
+            if (stage_code, title) in existing:
+                continue
+            db.add(NpdStageTaskTemplate(
+                stage_code=stage_code, title=title, category=category,
+                is_required=is_required, sort=sort,
+            ))
+            n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def _instantiate_stage_tasks(db: Session, project_id: int, inst: NpdStageInstance,
+                             stage_code: str, deadline) -> int:
+    """按模板给某阶段实例生成任务。幂等: 该 stage_instance 已有任务则跳过。"""
+    has = db.execute(
+        select(NpdTask.id).where(NpdTask.stage_instance_id == inst.id).limit(1)
+    ).first()
+    if has:
+        return 0
+    tmpls = db.execute(
+        select(NpdStageTaskTemplate).where(NpdStageTaskTemplate.stage_code == stage_code)
+        .order_by(NpdStageTaskTemplate.sort)
+    ).scalars().all()
+    n = 0
+    for t in tmpls:
+        db.add(NpdTask(
+            project_id=project_id, stage_instance_id=inst.id, stage_code=stage_code,
+            template_id=t.id, title=t.title, category=t.category,
+            is_required=t.is_required, status="open", due_date=deadline, sort=t.sort,
+        ))
+        n += 1
+    return n
+
+
+def undone_required_tasks(db: Session, stage_instance_id: int) -> list[str]:
+    rows = db.execute(
+        select(NpdTask.title).where(
+            NpdTask.stage_instance_id == stage_instance_id,
+            NpdTask.is_required.is_(True),
+            NpdTask.status != "done",
+        )
+    ).scalars().all()
+    return list(rows)
+
+
 def mass_production_enabled(db: Session) -> bool:
     from app.services import settings_service
     raw = settings_service.get(db, KEY_MASS_PRODUCTION, env_fallback=False)
@@ -116,12 +224,15 @@ def _default_stage(db: Session) -> Optional[NpdStage]:
     return s
 
 
-def _open_instance(db: Session, project_id: int, stage_id: int, sla_days: int) -> None:
+def _open_instance(db: Session, project_id: int, stage_id: int, sla_days: int) -> NpdStageInstance:
     now = datetime.now(timezone.utc)
-    db.add(NpdStageInstance(
+    inst = NpdStageInstance(
         project_id=project_id, stage_id=stage_id, status="active",
         entered_at=now, deadline=now + timedelta(days=max(0, sla_days)),
-    ))
+    )
+    db.add(inst)
+    db.flush()
+    return inst
 
 
 def create_project(db: Session, *, name: str, category: Optional[str] = None,
@@ -142,7 +253,8 @@ def create_project(db: Session, *, name: str, category: Optional[str] = None,
     db.add(proj)
     db.flush()
     if stage is not None:
-        _open_instance(db, proj.id, stage.id, stage.default_sla_days)
+        inst = _open_instance(db, proj.id, stage.id, stage.default_sla_days)
+        _instantiate_stage_tasks(db, proj.id, inst, stage.code, inst.deadline)
     db.commit()
     db.refresh(proj)
     return proj
@@ -156,19 +268,35 @@ def _percent_for_stage(db: Session, stage_id: int) -> int:
 
 
 def move_project(db: Session, project: NpdProject, target_stage_id: int,
-                 *, actor: Optional[str] = None) -> NpdProject:
-    """流转到目标阶段: 关当前实例 → 改 current_stage_id → 开新实例 → 更新进度/终态。"""
+                 *, actor: Optional[str] = None, force: bool = False) -> NpdProject:
+    """流转到目标阶段: (前进时校验当前阶段必做项) → 关当前实例 → 改 current_stage_id
+    → 开新实例 + 按模板生成待办 → 更新进度/终态。
+
+    过门 (用户拍板"完成才能下一步"): 向后(sequence 增大)流转前, 当前阶段必做任务必须全完成,
+    否则抛 ValueError(列出未完成项); force=True 可强制(管理员跳过)。
+    """
     target = db.get(NpdStage, target_stage_id)
     if target is None:
         raise ValueError(f"阶段 {target_stage_id} 不存在")
     now = datetime.now(timezone.utc)
-    # 关掉当前 active 实例
     cur = db.execute(
         select(NpdStageInstance).where(
             NpdStageInstance.project_id == project.id,
             NpdStageInstance.status == "active",
         ).order_by(NpdStageInstance.id.desc())
     ).scalars().first()
+    cur_stage = db.get(NpdStage, project.current_stage_id) if project.current_stage_id else None
+
+    # 过门校验: 仅"前进"时卡; 返工/回退不卡
+    if (not force and cur is not None and cur_stage is not None
+            and target.sequence > cur_stage.sequence):
+        undone = undone_required_tasks(db, cur.id)
+        if undone:
+            raise ValueError(
+                f"当前阶段「{cur_stage.name}」还有必做项未完成, 不能进入下一步: "
+                + "、".join(undone[:8]) + ("…" if len(undone) > 8 else "")
+            )
+
     if cur is not None and cur.stage_id != target_stage_id:
         cur.status = "done"
         cur.completed_at = now
@@ -178,9 +306,56 @@ def move_project(db: Session, project: NpdProject, target_stage_id: int,
         project.state = "done"
     elif project.state == "done":
         project.state = "active"
-    # 开目标阶段实例(同阶段重复点不重复开)
     if cur is None or cur.stage_id != target_stage_id:
-        _open_instance(db, project.id, target_stage_id, target.default_sla_days)
+        inst = _open_instance(db, project.id, target_stage_id, target.default_sla_days)
+        _instantiate_stage_tasks(db, project.id, inst, target.code, inst.deadline)
     db.commit()
     db.refresh(project)
     return project
+
+
+def get_active_instance(db: Session, project_id: int) -> Optional[NpdStageInstance]:
+    return db.execute(
+        select(NpdStageInstance).where(
+            NpdStageInstance.project_id == project_id,
+            NpdStageInstance.status == "active",
+        ).order_by(NpdStageInstance.id.desc())
+    ).scalars().first()
+
+
+def toggle_task(db: Session, task: NpdTask, done: bool, *, by: Optional[str] = None) -> NpdTask:
+    task.status = "done" if done else "open"
+    task.done_at = datetime.now(timezone.utc) if done else None
+    task.done_by = by if done else None
+    db.commit()
+    db.refresh(task)
+    return task
+
+
+def project_timeline(db: Session, project: NpdProject) -> list[dict]:
+    """单品详情时间线: 可见阶段 + 每阶段实例状态 + 该阶段任务。"""
+    stages = list_stages(db)
+    # 实例: 每 stage_id 取最新一条
+    inst_by_stage: dict[int, NpdStageInstance] = {}
+    for ins in db.execute(
+        select(NpdStageInstance).where(NpdStageInstance.project_id == project.id)
+        .order_by(NpdStageInstance.id)
+    ).scalars().all():
+        inst_by_stage[ins.stage_id] = ins
+    tasks = db.execute(
+        select(NpdTask).where(NpdTask.project_id == project.id)
+        .order_by(NpdTask.sort, NpdTask.id)
+    ).scalars().all()
+    tasks_by_inst: dict[int, list[NpdTask]] = {}
+    for t in tasks:
+        tasks_by_inst.setdefault(t.stage_instance_id or 0, []).append(t)
+    out: list[dict] = []
+    for s in stages:
+        ins = inst_by_stage.get(s.id)
+        out.append({
+            "stage": s,
+            "instance": ins,
+            "tasks": tasks_by_inst.get(ins.id, []) if ins else [],
+            "is_current": project.current_stage_id == s.id,
+        })
+    return out

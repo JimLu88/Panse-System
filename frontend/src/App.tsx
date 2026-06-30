@@ -62,6 +62,7 @@ const FactoryStatementPage = lazy(() => import('./pages/FactoryStatementPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
 const NpdPage = lazy(() => import('./pages/NpdPage'));
+const NpdDetailPage = lazy(() => import('./pages/NpdDetailPage'));
 const CustomQuoteV2Page = lazy(() => import('./pages/CustomQuoteV2Page'));
 const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
 const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
@@ -461,6 +462,7 @@ export default function App() {
             <Route path="/taobao-listings" element={<TaobaoListingsPage />} />
             <Route path="/new-product" element={<NewProductComposerPage />} />
             <Route path="/npd" element={<NpdPage />} />
+            <Route path="/npd/:id" element={<NpdDetailPage />} />
             <Route path="/ai" element={<AiAssistantPage />} />
             <Route path="/marketing" element={<MarketingPage />} />
             <Route path="/exceptions" element={<ExceptionsPage />} />
