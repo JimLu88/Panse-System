@@ -933,7 +933,7 @@ def scan_unclassified_purchase(db: Session) -> int:
             source_table="part_purchases",
             source_pk=r.id,
             exception_type="unclassified_purchase",
-            severity="warning",
+            severity="info",   # 提示级(非警告): 系统自动归类待人工核, 不影响业务 → 归"待录入/未完成"组 (用户 2026-06-30)
             description=(f"采购记录 {r.purchase_no} (¥{r.amount}, {r.supplier or '未知对手方'}) "
                          f"由支付宝流水自动归类, 实际用途存疑, 需人工确认是否为采购。"),
             suggestion_action="核对该笔支出真实用途 (采购/日常经营/外包/其它), 修正归类或补全配件信息。",
