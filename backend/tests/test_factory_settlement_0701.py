@@ -69,3 +69,79 @@ def test_parse_remark_negative_first():
     r2 = fss.parse_settlement_remark("四月已结清", year=2026)
     assert r2["action"] == "settle" and r2["months"] == ["2026-04"]
     assert fss.parse_settlement_remark("货款", year=2026)["action"] is None
+
+
+def test_route_alipay_keyword_autosettle(db_session):
+    """P2: 货款出账(别名识别)→纠正归类 factory_payment; 备注「5月已付清」自动销账; 否定不销; 幂等。"""
+    from datetime import datetime, timezone
+
+    from sqlalchemy import select
+    from app.models.finance import AlipayFlow
+
+    db = db_session
+    fss.seed_default_aliases(db)
+    _fo(db, "K1", order_date=date(2026, 5, 3), bill="20000")
+    _fo(db, "K2", order_date=date(2026, 5, 9), bill="18490")
+    _fo(db, "K3", order_date=date(2026, 4, 1), bill="5000")
+    db.add(AlipayFlow(account="支付宝-企业账号", transaction_no="TXN-MAY", amount=Decimal("-38490"),
+                      counterparty="**男", remark="5月货款已付清", reconciliation_type="customer_payment",
+                      transaction_time=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    db.add(AlipayFlow(account="支付宝-企业账号", transaction_no="TXN-APR", amount=Decimal("-5000"),
+                      counterparty="**男", remark="4月货款还没付清", reconciliation_type="customer_payment",
+                      transaction_time=datetime(2026, 6, 1, tzinfo=timezone.utc)))
+    db.flush()
+
+    r = fss.route_alipay_settlements(db)
+    assert r["flipped"] == 2 and "2026-05" in r["settled_months"]
+    flows = {f.transaction_no: f for f in db.execute(select(AlipayFlow)).scalars().all()}
+    assert flows["TXN-MAY"].reconciliation_type == "factory_payment"   # 纠正货款误归类
+    assert flows["TXN-APR"].reconciliation_type == "factory_payment"   # 否定单也纠正归类(但不销账)
+    by = {m["month"]: m for m in fss.month_breakdown(db)["months"]}
+    assert by["2026-05"]["unpaid"] == Decimal("0.00")                  # 5月已销
+    assert by["2026-04"]["unpaid"] == Decimal("5000.00")              # 4月否定→未销
+    assert fss.route_alipay_settlements(db)["flipped"] == 0           # 幂等
+
+
+def test_p3_exception_open_and_selfheal(db_session):
+    """P3: 未付清月开异常; 销账后 recheck 自动销账(自愈)。"""
+    from sqlalchemy import select
+    from app.models.exception import DataException
+    from app.services import exception_recheck_service, scanner_service
+
+    db = db_session
+    _fo(db, "E1", order_date=date(2026, 5, 3), bill="38490")
+    db.flush()
+    res = scanner_service.run_scanner(db, "factory_bill_unpaid")
+    assert res.written == 1
+    exc = db.execute(
+        select(DataException).where(DataException.exception_type == "factory_bill_unpaid")
+    ).scalar_one()
+    assert exc.status == "open" and "2026-05" in exc.source_pk
+    assert exception_recheck_service.recheck(db, exc) is not None     # 未销 → 仍开
+    fss.settle_month(db, month="2026-05")
+    assert exception_recheck_service.recheck(db, exc) is None         # 已销 → 自愈销账
+
+
+def test_p4_missing_orders(db_session):
+    """P4: 已发货未被任何工厂账单覆盖=漏单; 剔除已覆盖/样块/未来月; 按发货月累计。"""
+    from app.models.order import FactoryOrder, Order
+
+    db = db_session
+    db.add_all([
+        Order(platform="淘宝", order_no="MO1", status="shipped", paid_amount=Decimal("999"),
+              ship_date=date(2026, 5, 10), product_name="餐桌"),               # 漏单
+        Order(platform="淘宝", order_no="MO2", status="shipped", paid_amount=Decimal("888"),
+              ship_date=date(2026, 5, 11), product_name="书桌"),               # 有账单 → 不漏
+        Order(platform="淘宝", order_no="MO3", status="shipped", paid_amount=Decimal("16"),
+              ship_date=date(2026, 5, 12), product_name="榉木样块"),           # 样块 → 排除
+        Order(platform="淘宝", order_no="MO4", status="shipped", paid_amount=Decimal("500"),
+              ship_date=date(2026, 6, 1), product_name="柜子"),                # 6月发货 → up_to=5月不计
+    ])
+    db.add(FactoryOrder(factory_order_no="FBMO2", factory_name=SUP, platform_order_no="MO2",
+                        factory_bill_amount=Decimal("600"), payment_status="unpaid"))
+    db.flush()
+
+    r = fss.missing_orders(db, up_to_month="2026-05")
+    assert {x["order_no"] for x in r["orders"]} == {"MO1"}
+    assert r["count"] == 1
+    assert fss.missing_orders_xlsx_bytes(db, up_to_month="2026-05")[:2] == b"PK"   # xlsx=zip

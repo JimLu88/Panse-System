@@ -243,6 +243,34 @@ def scan_duplicate_alipay_cross_account(db: Session) -> list[ScanFinding]:
     return out
 
 
+# -------- Scanner: 木作工厂月结账单未付清 (用户 2026-07-01) --------
+
+def scan_factory_bill_unpaid(db: Session) -> list[ScanFinding]:
+    """木作供应商(博冠)各结算月「已开账单未付清」→ 逐月提醒。
+
+    付清后在「工厂月结销账」点该月「已付清」(或支付宝备注「X月已付清」自动销账),
+    本异常由 _check_factory_bill_unpaid 自动复核销账。source_pk = 'supplier|YYYY-MM'。
+    """
+    from app.services import factory_settlement_service as fss
+    out: list[ScanFinding] = []
+    bd = fss.month_breakdown(db)
+    for m in bd["months"]:
+        if Decimal(str(m["unpaid"])) <= 0:
+            continue
+        out.append(ScanFinding(
+            source_table="factory_settlement",
+            source_pk=f'{bd["supplier"]}|{m["month"]}',
+            exception_type="factory_bill_unpaid",
+            severity="info",
+            description=(f'{bd["supplier"]} {m["month"]} 工厂账单未付清: 未付 ¥{m["unpaid"]}'
+                        f'（{m["order_count"]}单, 状态 {m["status"]}）'),
+            suggestion_action="付清后在「工厂月结销账」点该月「已付清」, 或支付宝备注「X月已付清」自动销账",
+            context={"supplier": bd["supplier"], "month": m["month"], "unpaid": str(m["unpaid"]),
+                     "order_count": m["order_count"], "status": m["status"]},
+        ))
+    return out
+
+
 # -------- 注册表 + 跑器 --------
 
 SCANNERS: dict[str, Callable[[Session], list[ScanFinding]]] = {
@@ -252,6 +280,7 @@ SCANNERS: dict[str, Callable[[Session], list[ScanFinding]]] = {
     "date_logic": scan_date_logic,
     "missing_custom_price": scan_missing_custom_price,
     "duplicate_alipay_cross_account": scan_duplicate_alipay_cross_account,
+    "factory_bill_unpaid": scan_factory_bill_unpaid,
 }
 
 

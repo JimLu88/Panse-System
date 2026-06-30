@@ -149,6 +149,20 @@ _FACTORY_KEYWORDS = ("博冠", "玉山", "家具", "板材", "木")
 _BILL_MATCH_TOLERANCE = Decimal("20")   # 账单金额 ±20 元容差
 
 
+def _strip_mask(s: Optional[str]) -> str:
+    import re
+    return re.sub(r"[\s*＊·]", "", s or "")
+
+
+def _is_factory_counterparty(cp: Optional[str], alias_norms: list[str]) -> bool:
+    """对手方是否=工厂/货款户(硬过滤用, C19 用户 2026-07-01): 含工厂关键字 或 命中货款户别名(去星号双向)。"""
+    s = cp or ""
+    if any(k in s for k in _FACTORY_KEYWORDS):
+        return True
+    cpn = _strip_mask(s)
+    return bool(cpn) and any(an and (an in cpn or cpn in an) for an in alias_norms)
+
+
 def match_factory_alipay_by_bill_amount(db: Session, *, factory_name: Optional[str] = None) -> int:
     """按对账周期账单金额汇总, 去支付宝支出流水找等额一笔 (±容差), 回填工厂订单 alipay_flow_no。
 
@@ -181,6 +195,11 @@ def match_factory_alipay_by_bill_amount(db: Session, *, factory_name: Optional[s
         q = q.where(FactoryOrder.factory_name == factory_name)
     fos = db.execute(q).scalars().all()
 
+    # 货款户别名(去星号), 供硬过滤: 博冠走个人账户(伟男/程卫燕)无工厂关键字, 靠别名识别 (C19)
+    from app.models.factory_settlement import FactorySupplierAlias
+    alias_norms = [_strip_mask(a.alias) for a in db.execute(select(FactorySupplierAlias)).scalars().all()]
+    alias_norms = [a for a in alias_norms if a]
+
     # 按 (工厂, 年月) 分组
     buckets: dict[tuple[str, int, int], list[FactoryOrder]] = defaultdict(list)
     for fo in fos:
@@ -204,10 +223,11 @@ def match_factory_alipay_by_bill_amount(db: Session, *, factory_name: Optional[s
             diff = abs(flow_abs - bill_total)
             if diff > _BILL_MATCH_TOLERANCE:
                 continue
-            # 优先对手方含工厂关键词
-            cp = (f.counterparty or "").lower()
-            is_factory = any(k in cp for k in _FACTORY_KEYWORDS)
-            if best_flow is None or diff < best_diff or (diff == best_diff and is_factory):
+            # 硬过滤(C19, 用户 2026-07-01): 只配"对手方=工厂/货款户(别名)"的等额支出,
+            # 不再把任意等额支出盲配成工厂付款 (博冠走个人账户 → 靠别名表识别)。
+            if not _is_factory_counterparty(f.counterparty, alias_norms):
+                continue
+            if best_flow is None or diff < best_diff:
                 best_flow = f
                 best_diff = diff
 

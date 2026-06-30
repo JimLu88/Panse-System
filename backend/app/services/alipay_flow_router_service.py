@@ -399,6 +399,15 @@ def run_all(db: Session, *, create_purchases: bool = True) -> RouteResult:
     if create_purchases:
         res.purchases_created = create_purchases_from_unclassified(db)
     res.factory_flipped = flip_factory_payment(db)
+    # 木作月结: 识别货款出账(别名)→纠正归类 factory_payment + 备注「X月已付清」自动销账 (用户 2026-07-01)
+    try:
+        from app.services import factory_settlement_service as _fss
+        _fs = _fss.route_alipay_settlements(db)
+        if _fs.get("flagged") or _fs.get("flipped"):
+            _logger.info("木作货款归类 %d 笔, 关键词自动销账翻 %d 单, 月份 %s",
+                         _fs["flagged"], _fs["flipped"], _fs["settled_months"])
+    except Exception:  # noqa: BLE001 - 自动销账失败不阻断主对账
+        _logger.warning("木作货款自动销账失败", exc_info=True)
     # 售后新建后立即回写订单赔付成本
     if res.aftersales_created > 0:
         order_sync_service.backfill_compensation_from_aftersales(db)

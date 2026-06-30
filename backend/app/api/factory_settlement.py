@@ -12,7 +12,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -74,6 +74,36 @@ def reverse(payment_id: int, db: Session = Depends(get_db),
         raise HTTPException(400, res["error"])
     db.commit()
     return res
+
+
+@router.post("/scan-alipay")
+def scan_alipay(db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin", "operator"))):
+    """手动扫支付宝出账: 识别木作货款(纠正归类)+ 备注「X月已付清」自动销账。"""
+    res = fss.route_alipay_settlements(db)
+    db.commit()
+    return res
+
+
+@router.get("/missing-orders")
+def missing_orders(up_to_month: Optional[str] = None, supplier: Optional[str] = None,
+                   db: Session = Depends(get_db),
+                   _: User = Depends(require_role("admin", "operator"))):
+    """漏单: 已发货但未被任何工厂账单覆盖的单(按发货月累计到 up_to_month)。"""
+    return fss.missing_orders(db, up_to_month=up_to_month, supplier=supplier or DEFAULT_WOOD_SUPPLIER)
+
+
+@router.get("/missing-orders.xlsx")
+def missing_orders_xlsx(up_to_month: Optional[str] = None, supplier: Optional[str] = None,
+                        db: Session = Depends(get_db),
+                        _: User = Depends(require_role("admin", "operator"))):
+    data = fss.missing_orders_xlsx_bytes(db, up_to_month=up_to_month, supplier=supplier or DEFAULT_WOOD_SUPPLIER)
+    fname = f"factory_missing_orders_{up_to_month or 'all'}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={fname}"},
+    )
 
 
 @router.get("/aliases")

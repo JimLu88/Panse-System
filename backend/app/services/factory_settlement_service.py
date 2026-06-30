@@ -272,3 +272,135 @@ def parse_settlement_remark(text: Optional[str], *, year: int) -> dict:
     if any(k in t for k in _POS_KEYWORDS):
         return {"action": "settle", "months": months}
     return {"action": None, "months": months}
+
+
+# ── P2: 支付宝出账自动识别木作货款 + 关键词自动销账 ──────────────
+def route_alipay_settlements(db: Session, *, default_year: Optional[int] = None) -> dict:
+    """扫支付宝出账流水(amount<0), 识别木作供应商货款(别名匹配), 自动处理:
+
+    1. 纠正归类: reconciliation_type → 'factory_payment'(根治货款被误判成 customer_payment, 审计 C16/口径)。
+    2. 备注含「X月已付清/已结清…」(肯定, 否定优先排除"还没付清") → 自动 settle_month(trigger=keyword)。
+    幂等: 同 (flow_no, month) 已有未撤销销账记录则跳过。返回 {flagged, settled_months, flipped}。
+    """
+    from app.models.finance import AlipayFlow
+    flows = db.execute(select(AlipayFlow).where(AlipayFlow.amount < 0)).scalars().all()
+    done = {(p.alipay_flow_no, p.settlement_month) for p in db.execute(
+        select(FactorySettlementPayment).where(FactorySettlementPayment.reversed_at.is_(None))
+    ).scalars().all() if p.alipay_flow_no}
+    flagged = flipped = 0
+    settled_months: list[str] = []
+    for f in flows:
+        sup = match_supplier(db, f.counterparty)
+        if not sup:
+            continue
+        if f.reconciliation_type != "factory_payment":
+            f.reconciliation_type = "factory_payment"   # 纠正: 这是付工厂货款, 非客户回款
+            flagged += 1
+        yr = (f.transaction_time.year if f.transaction_time else None) or default_year or date.today().year
+        parsed = parse_settlement_remark(f.remark, year=yr)
+        if parsed["action"] != "settle" or not parsed["months"]:
+            continue
+        for m in parsed["months"]:
+            if (f.transaction_no, m) in done:
+                continue
+            r = settle_month(db, supplier=sup, month=m, trigger="keyword",
+                             flow_no=f.transaction_no, paid_amount=abs(f.amount or Decimal("0")),
+                             note=(f.remark or "")[:200])
+            if r.get("flipped"):
+                flipped += r["flipped"]
+                settled_months.append(m)
+                done.add((f.transaction_no, m))
+    db.flush()
+    return {"flagged": flagged, "settled_months": settled_months, "flipped": flipped}
+
+
+# ── P4: 漏单检测 (工厂账单没覆盖到的已发货单) ────────────────────
+def _is_sample(o) -> bool:
+    text = (getattr(o, "product_name", "") or "") + (getattr(o, "sku", "") or "")
+    return "样块" in text or "样品" in text
+
+
+def missing_orders(db: Session, *, up_to_month: Optional[str] = None,
+                   supplier: str = DEFAULT_WOOD_SUPPLIER) -> dict:
+    """漏单: 已发货真实成交单中, 没被任何工厂账单覆盖的 (按【发货月 ship_date】累计到 up_to_month)。
+
+    覆盖 = 订单号在 FactoryOrder(factory_bill_amount 非空) 或 导入的工厂对账单 FactoryReconItem 里。
+    剔除: 补单/刷单(is_refill)、取消/全额退款(settled_sale_clause)、样块(杭州发货)、未发货(无 ship_date)。
+    up_to_month("YYYY-MM"): 工厂出X月账单就查 1→X 月全部已发货漏单; None=不设上限。
+    返回 {up_to_month, count, total_paid, orders:[...]}。
+    """
+    from app.models.factory_recon_item import FactoryReconItem
+    from app.models.order import FactoryOrder, Order
+    from app.services.sales_analytics import settled_sale_clause
+
+    covered: set[str] = set()
+    for (ono,) in db.execute(
+        select(FactoryOrder.platform_order_no).where(
+            FactoryOrder.factory_bill_amount.isnot(None),
+            FactoryOrder.platform_order_no.isnot(None),
+        )
+    ).all():
+        if ono:
+            covered.add(ono)
+    for (ono,) in db.execute(
+        select(FactoryReconItem.order_no).where(FactoryReconItem.order_no.isnot(None))
+    ).all():
+        if ono:
+            covered.add(ono)
+
+    rows = db.execute(
+        select(Order).where(
+            Order.status.in_(("shipped", "signed")),   # 已发货(含已签收)才到开账时点
+            Order.is_refill == False,                    # noqa: E712 补单不开账
+            Order.is_historical == False,                # noqa: E712
+            Order.ship_date.isnot(None),
+            settled_sale_clause(),                       # 真实成交(实付>0、非全额退款)
+        )
+    ).scalars().all()
+
+    orders = []
+    total_paid = Decimal("0")
+    for o in rows:
+        if o.order_no in covered or _is_sample(o):
+            continue
+        m = o.ship_date.strftime("%Y-%m")
+        if up_to_month and m > up_to_month:
+            continue
+        paid = _d(o.paid_amount)
+        total_paid += paid
+        orders.append({
+            "order_no": o.order_no,
+            "product_name": o.product_name,
+            "sku": o.sku,
+            "qty": o.qty,
+            "ship_date": o.ship_date.isoformat() if o.ship_date else None,
+            "ship_month": m,
+            "order_date": o.order_date.isoformat() if o.order_date else None,
+            "paid_amount": str(paid),
+            "customer_name": o.customer_name,
+        })
+    orders.sort(key=lambda x: (x["ship_month"], x["order_no"] or ""))
+    return {"supplier": supplier, "up_to_month": up_to_month,
+            "count": len(orders), "total_paid": total_paid.quantize(_Q), "orders": orders}
+
+
+def missing_orders_xlsx_bytes(db: Session, *, up_to_month: Optional[str] = None,
+                              supplier: str = DEFAULT_WOOD_SUPPLIER) -> bytes:
+    """漏单导出 Excel (财务对账中心 / 工厂对账单 下载用)。"""
+    import openpyxl
+    from io import BytesIO
+
+    data = missing_orders(db, up_to_month=up_to_month, supplier=supplier)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "工厂漏单"
+    headers = ["发货月", "订单号", "产品", "SKU", "数量", "发货日", "下单日", "实付", "客户"]
+    ws.append(headers)
+    for o in data["orders"]:
+        ws.append([o["ship_month"], o["order_no"], o["product_name"], o["sku"], o["qty"],
+                   o["ship_date"], o["order_date"], o["paid_amount"], o["customer_name"]])
+    ws.append([])
+    ws.append([f"合计 {data['count']} 单", "", "", "", "", "", "", str(data["total_paid"]), ""])
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()

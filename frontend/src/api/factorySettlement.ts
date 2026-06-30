@@ -64,3 +64,44 @@ export const fsAddAlias = (payload: { alias: string; supplier?: string; note?: s
 
 export const fsDeleteAlias = (id: number) =>
   api.delete(`/api/factory-settlement/aliases/${id}`).then((r) => r.data);
+
+export const fsScanAlipay = () =>
+  api.post('/api/factory-settlement/scan-alipay').then((r) => r.data);
+
+export interface FsMissingOrder {
+  order_no: string;
+  product_name: string | null;
+  sku: string | null;
+  qty: number;
+  ship_date: string | null;
+  ship_month: string;
+  order_date: string | null;
+  paid_amount: string;
+  customer_name: string | null;
+}
+
+export interface FsMissing {
+  supplier: string;
+  up_to_month: string | null;
+  count: number;
+  total_paid: string;
+  orders: FsMissingOrder[];
+}
+
+export const getFsMissing = (upToMonth?: string) =>
+  api.get<FsMissing>('/api/factory-settlement/missing-orders', {
+    params: upToMonth ? { up_to_month: upToMonth } : {},
+  }).then((r) => r.data);
+
+export const downloadFsMissing = async (upToMonth?: string) => {
+  const res = await api.get('/api/factory-settlement/missing-orders.xlsx', {
+    params: upToMonth ? { up_to_month: upToMonth } : {},
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(res.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `工厂漏单_${upToMonth || 'all'}.xlsx`;
+  a.click();
+  window.URL.revokeObjectURL(url);
+};

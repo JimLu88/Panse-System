@@ -3,8 +3,8 @@ import {
   Alert, Button, Card, Input, message, Popconfirm, Space, Table, Tag, Typography,
 } from 'antd';
 import {
-  type FsAlias, type FsMonth, type FsOverview, type FsPayment,
-  fsAddAlias, fsDeleteAlias, fsReverse, fsSettle, getFsOverview,
+  type FsAlias, type FsMissing, type FsMissingOrder, type FsMonth, type FsOverview, type FsPayment,
+  downloadFsMissing, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, getFsMissing, getFsOverview,
 } from '../api/factorySettlement';
 
 const { Title, Text, Paragraph } = Typography;
@@ -19,6 +19,10 @@ export default function FactorySettlementPage() {
   const [data, setData] = useState<FsOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [aliasInput, setAliasInput] = useState('');
+  const [scanning, setScanning] = useState(false);
+  const [missing, setMissing] = useState<FsMissing | null>(null);
+  const [missLoading, setMissLoading] = useState(false);
+  const [upToMonth, setUpToMonth] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -70,6 +74,35 @@ export default function FactorySettlementPage() {
   const onDeleteAlias = async (id: number) => {
     try { await fsDeleteAlias(id); message.success('已删除'); load(); }
     catch (e: any) { message.error(e?.response?.data?.detail || '删除失败'); }
+  };
+
+  const onScan = async () => {
+    setScanning(true);
+    try {
+      const r = await fsScanAlipay();
+      message.success(`扫描完成: 货款归类 ${r.flagged || 0} 笔, 关键词自动销账翻 ${r.flipped || 0} 单`);
+      load();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '扫描失败');
+    } finally {
+      setScanning(false);
+    }
+  };
+
+  const loadMissing = async () => {
+    setMissLoading(true);
+    try {
+      setMissing(await getFsMissing(upToMonth || undefined));
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '漏单查询失败');
+    } finally {
+      setMissLoading(false);
+    }
+  };
+
+  const onDownloadMissing = async () => {
+    try { await downloadFsMissing(upToMonth || undefined); }
+    catch (e: any) { message.error(e?.response?.data?.detail || '导出失败'); }
   };
 
   const bd = data?.breakdown;
@@ -154,9 +187,25 @@ export default function FactorySettlementPage() {
     },
   ];
 
+  const missCols = [
+    { title: '发货月', dataIndex: 'ship_month', key: 'sm', width: 90 },
+    { title: '订单号', dataIndex: 'order_no', key: 'no', ellipsis: true },
+    { title: '产品', dataIndex: 'product_name', key: 'pn', ellipsis: true },
+    { title: '数量', dataIndex: 'qty', key: 'q', width: 60, align: 'right' as const },
+    { title: '发货日', dataIndex: 'ship_date', key: 'sd', width: 110 },
+    {
+      title: '实付', dataIndex: 'paid_amount', key: 'pa', align: 'right' as const,
+      render: (v: string) => `¥${v}`,
+    },
+    { title: '客户', dataIndex: 'customer_name', key: 'cn', width: 90, render: (v: string | null) => v || '—' },
+  ];
+
   return (
     <div style={{ padding: 16 }}>
-      <Title level={3}>工厂月结销账 · {bd?.supplier || '博冠'}</Title>
+      <Space style={{ width: '100%', justifyContent: 'space-between' }} align="start">
+        <Title level={3}>工厂月结销账 · {bd?.supplier || '博冠'}</Title>
+        <Button onClick={onScan} loading={scanning}>扫支付宝自动销账</Button>
+      </Space>
       <Alert
         type="info" style={{ marginBottom: 16 }}
         message="付了工厂月结货款后, 在这里把对应月份「已付清」, 现金流的「工厂结算(已开账单未付)」会随之下降。"
@@ -185,6 +234,34 @@ export default function FactorySettlementPage() {
           rowKey="id" size="small" pagination={{ pageSize: 10 }}
           columns={payCols} dataSource={data?.payments || []}
         />
+      </Card>
+
+      <Card
+        size="small" loading={missLoading} style={{ marginBottom: 16 }}
+        title="漏单检测 (已发货但没被任何工厂账单覆盖)"
+        extra={(
+          <Space>
+            <Text type="secondary">截至发货月</Text>
+            <Input placeholder="YYYY-MM 如 2026-05" value={upToMonth}
+              onChange={(e) => setUpToMonth(e.target.value)} style={{ width: 170 }} />
+            <Button onClick={loadMissing}>查询</Button>
+            <Button onClick={onDownloadMissing}>导出Excel</Button>
+          </Space>
+        )}
+      >
+        {missing ? (
+          <>
+            <Paragraph type="secondary" style={{ marginBottom: 8 }}>
+              共 <Text strong type="danger">{missing.count}</Text> 单未被工厂账单覆盖, 实付合计 ¥{missing.total_paid}
+              {missing.up_to_month ? `（截至 ${missing.up_to_month}, 按发货月累计）` : '（全部已发货）'}。
+              这些是工厂账单可能漏开的单, 拿去和工厂核对。
+            </Paragraph>
+            <Table<FsMissingOrder> rowKey="order_no" size="small" pagination={{ pageSize: 10 }}
+              columns={missCols} dataSource={missing.orders} />
+          </>
+        ) : (
+          <Text type="secondary">填「截至发货月」后点查询(留空=全部已发货)。工厂出几月账单就查到几月的漏单。</Text>
+        )}
       </Card>
 
       <Card size="small" loading={loading} title="供应商别名 (支付宝对手方 → 工厂, 用于关键词自动销账)">

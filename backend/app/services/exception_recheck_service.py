@@ -578,6 +578,22 @@ def _check_packing_total_mismatch(db: Session, exc: DataException) -> Optional[s
             f"¥{summary['payable_total']} 仍差 ¥{diff}, 请核对手写本逐行金额。")
 
 
+def _check_factory_bill_unpaid(db: Session, exc: DataException) -> Optional[str]:
+    """工厂账单未付清: 修好(销账) = 该供应商该月已无未付(已付清 / 该月单已清空)。
+    source_pk = 'supplier|YYYY-MM'。settle_month 翻已付后此月 unpaid=0 → 自动关。"""
+    from decimal import Decimal
+    from app.services import factory_settlement_service as fss
+    parts = (exc.source_pk or "").split("|")
+    if len(parts) != 2:
+        return None  # 脏 source_pk → 不阻塞, 销账
+    supplier, month = parts
+    bd = fss.month_breakdown(db, supplier)
+    row = next((m for m in bd["months"] if m["month"] == month), None)
+    if row is None or Decimal(str(row["unpaid"])) <= 0:
+        return None  # 已付清 / 该月已无未付 → 销账
+    return f"{supplier} {month} 工厂账单仍未付清 (未付 ¥{row['unpaid']})"
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_no_unresolved": _check_order_no_unresolved,
     "factory_bill_on_dead_order": _check_factory_bill_on_dead_order,
@@ -605,6 +621,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "factory_recon_pending_delivery": _check_factory_recon_pending_delivery,
     "factory_recon_unbalanced": _check_factory_recon_unbalanced,
     "packing_total_mismatch": _check_packing_total_mismatch,
+    "factory_bill_unpaid": _check_factory_bill_unpaid,
 }
 
 
