@@ -35,6 +35,8 @@ METHOD_CN = {
 
 # 万师傅「常用备注」列常直接填淘宝订单号 (用户的"合并单号匹配") — 提取这串数字
 _TB_NO_RE = re.compile(r"\d{12,}")
+# 「校对后匹配」人工列提取淘宝订单号 (16~19位; ≥15 位避免误抓万师傅单号/电话/样品等文字)
+_VERIFIED_NO_RE = re.compile(r"\d{15,}")
 
 # 表头第 2 行字段名 → 模型字段 (按列名取, 不按列号 — 万师傅加列不怕)
 _HEADER_MAP = {
@@ -58,12 +60,18 @@ _HEADER_MAP = {
 # 地址 4 列: r2 是「客户地址」+3个空列, r3 是 省/市/区/详细地址 → 按 r3 接管
 _ADDR_MAP = {"省": "province", "市": "city", "区": "district", "详细地址": "address"}
 
+# 用户人工加的「校对后匹配」列 = 人工核对后的真实淘宝订单号 = 最高权威匹配源
+# (自动配对按收货姓名常对不上 — 订单库多存旺旺昵称; 万师傅旺旺号/常用备注又多为空,
+#  故人工校对列是唯一可靠真值)。表头可能在分组行(r1)/字段行(r2)任一位置, 故三行都扫。
+_VERIFIED_HEADERS = {"校对后匹配", "人工匹配", "校对后订单号", "人工校对", "人工校对订单号"}
+
 
 @dataclass
 class WsfImportReport:
     parsed: int = 0
     inserted: int = 0
     updated: int = 0
+    verified_matched: int = 0   # 按「校对后匹配」人工列落库的单数 (方案1)
     skipped_invalid: int = 0
     errors: list[str] = field(default_factory=list)
 
@@ -99,6 +107,7 @@ def _s(v: Any) -> Optional[str]:
 def parse_workbook(wb) -> tuple[list[dict], list[str]]:
     """openpyxl workbook → 行字典列表。按表头文字定位列, 容忍加列/换序。"""
     ws = wb.worksheets[0]
+    rows1 = [c.value for c in ws[1]]   # 分组行 (用户加的「校对后匹配」表头常落在此)
     rows2 = [c.value for c in ws[2]]
     rows3 = [c.value for c in ws[3]] if ws.max_row >= 3 else []
     col_of: dict[str, int] = {}
@@ -110,6 +119,11 @@ def parse_workbook(wb) -> tuple[list[dict], list[str]]:
         key = _ADDR_MAP.get(str(h).strip()) if h else None
         if key:
             col_of[key] = i
+    # 「校对后匹配」人工列 — 表头可能在 r1/r2/r3 任一行 → 三行都扫, 命中即记为权威人工匹配源
+    for hdr in (rows1, rows2, rows3):
+        for i, h in enumerate(hdr):
+            if h and str(h).strip() in _VERIFIED_HEADERS:
+                col_of["verified_order_no"] = i
     missing = [k for k in ("wsf_order_no", "customer_name", "created_time") if k not in col_of]
     out = []
     if missing:
@@ -138,11 +152,17 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
     # 全部淘宝订单号 (用于判定「常用备注」里的单号是否真实存在 → 可直接配对)
     valid_order_nos = {no for (no,) in db.execute(select(Order.order_no)).all() if no}
     for rec in recs:
-        # 常用备注里的淘宝订单号 (用户的"合并单号匹配") — 最高优先配对依据
+        # 常用备注里的淘宝订单号 (用户的"合并单号匹配") — 次优先配对依据
         tb_no = None
         m = _TB_NO_RE.search(str(rec.get("remark_taobao_no") or ""))
         if m:
             tb_no = m.group(0)
+        # 「校对后匹配」人工核对号 = 最高权威 (覆盖一切启发式/备注; 含跨期/未导入单也照记)
+        verified_no = None
+        vm = _VERIFIED_NO_RE.search(str(rec.get("verified_order_no") or ""))
+        if vm:
+            verified_no = vm.group(0)
+            rep.verified_matched += 1
         vals = dict(
             service_type=_s(rec.get("service_type")),
             status=_s(rec.get("status")),
@@ -170,11 +190,18 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
             vals["remark"] = "; ".join(remark_bits)
         # 备注单号命中真实订单 → 直接配对 (权威, 覆盖启发式; 不覆盖人工指定)
         tb_match = tb_no if (tb_no and tb_no in valid_order_nos) else None
+        # 人工校对号在订单库 → 干净配对; 不在库 (早期单/未导入) 仍记匹配但批注提示
+        v_note = (None if (verified_no and verified_no in valid_order_nos)
+                  else "人工校对; 订单库暂无此单(早期单/待导入)")
         old = existing.get(rec["wsf_order_no"])
         if old is None:
             obj = WanshifuOrder(wsf_order_no=rec["wsf_order_no"],
                                 import_job_id=import_job_id, **vals)
-            if tb_match:
+            if verified_no:
+                obj.matched_order_no = verified_no
+                obj.match_method = "manual"
+                obj.match_note = v_note
+            elif tb_match:
                 obj.matched_order_no = tb_match
                 obj.match_method = "remark"
                 obj.match_note = None
@@ -192,8 +219,14 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
                 if v is not None and getattr(old, k) != v:
                     setattr(old, k, v)
                     changed = True
-            # 备注单号权威配对: 覆盖非人工的旧配对结果 (以用户提供的备注为准)
-            if tb_match and old.match_method != "manual" and old.matched_order_no != tb_match:
+            # 人工校对号最高权威: 以最新校对为准, 覆盖旧的一切匹配 (含旧 manual)
+            if verified_no and old.matched_order_no != verified_no:
+                old.matched_order_no = verified_no
+                old.match_method = "manual"
+                old.match_note = v_note
+                changed = True
+            # 否则备注单号权威配对: 覆盖非人工的旧配对结果 (以用户提供的备注为准)
+            elif (not verified_no) and tb_match and old.match_method != "manual" and old.matched_order_no != tb_match:
                 old.matched_order_no = tb_match
                 old.match_method = "remark"
                 old.match_note = None

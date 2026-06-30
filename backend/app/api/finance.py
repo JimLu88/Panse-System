@@ -540,6 +540,7 @@ async def import_wanshifu_orders(file: UploadFile = File(...), db: Session = Dep
     from app.services import realtime_sync_service
     realtime_sync_service.trigger("import:wanshifu-orders")
     return {"parsed": rep.parsed, "inserted": rep.inserted, "updated": rep.updated,
+            "verified_matched": rep.verified_matched,
             "match": counts, "aftersales_created": aftersales_n}
 
 
@@ -569,6 +570,47 @@ def list_wanshifu_orders(
         "match_method": METHOD_CN.get(w.match_method or "", w.match_method),
         "match_note": w.match_note,
     } for w in db.execute(stmt).scalars().all()]
+
+
+class WanshifuMatchUpdate(BaseModel):
+    matched_order_no: Optional[str] = None   # 人工指定淘宝订单号; 空 = 清除匹配
+
+
+@router.patch("/wanshifu-orders/{wsf_id}")
+def update_wanshifu_match(
+    wsf_id: int,
+    payload: WanshifuMatchUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """人工逐行确认/修正万师傅订单匹配 (方案2: 系统内校对落库, 留痕)。
+    设 match_method=manual (最高权威, 重配/重导都不覆盖); 订单库暂无此单仅批注提示不拦。"""
+    from app.models.finance import WanshifuOrder
+    from app.models.order import Order
+    w = db.get(WanshifuOrder, wsf_id)
+    if not w:
+        raise HTTPException(404, "万师傅订单不存在")
+    new_no = (payload.matched_order_no or "").strip() or None
+    old_no = w.matched_order_no
+    if new_no == old_no:
+        return {"ok": True, "matched_order_no": old_no, "unchanged": True}
+    in_lib = bool(new_no) and db.execute(
+        select(Order.order_no).where(Order.order_no == new_no).limit(1)).first() is not None
+    w.matched_order_no = new_no
+    w.match_method = "manual" if new_no else None
+    w.match_note = (None if (not new_no or in_lib)
+                    else "人工校对; 订单库暂无此单(早期单/待导入)")
+    from app.services import field_change_service
+    field_change_service.record(
+        db, table="wanshifu_orders", pk=str(w.id),
+        field="matched_order_no", old=old_no, new=new_no,
+        actor=getattr(user, "username", None),
+        row_label=f"万师傅单 {w.wsf_order_no}", field_label="匹配订单号(人工)",
+    )
+    db.commit()
+    from app.services import realtime_sync_service
+    realtime_sync_service.trigger("wanshifu:manual-match")
+    return {"ok": True, "matched_order_no": new_no, "in_lib": in_lib}
 
 
 @router.post("/wanshifu-orders/match")
