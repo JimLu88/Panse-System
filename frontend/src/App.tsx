@@ -59,6 +59,7 @@ const PurchasesPage = lazy(() => import('./pages/PurchasesPage'));
 const MonthlySettlementCenterPage = lazy(() => import('./pages/MonthlySettlementCenterPage'));
 const FactoryOrdersPage = lazy(() => import('./pages/FactoryOrdersPage'));
 const FactoryStatementPage = lazy(() => import('./pages/FactoryStatementPage'));
+const FactorySettlementPage = lazy(() => import('./pages/FactorySettlementPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
 const NpdPage = lazy(() => import('./pages/NpdPage'));
@@ -236,6 +237,7 @@ export default function App() {
         { key: 'monthly-settlement', label: <Link to="/monthly-settlement">月结对账中心</Link> },
         { key: 'factory-orders', label: <Link to="/factory-orders">工厂下单表</Link> },
         { key: 'factory-statement', label: <Link to="/factory-statement">工厂对账单</Link> },
+        { key: 'factory-settlement', label: <Link to="/factory-settlement">工厂月结销账</Link> },
       ],
     },
     {
@@ -457,6 +459,7 @@ export default function App() {
             <Route path="/monthly-settlement" element={<MonthlySettlementCenterPage />} />
             <Route path="/factory-orders" element={<FactoryOrdersPage />} />
             <Route path="/factory-statement" element={<FactoryStatementPage />} />
+            <Route path="/factory-settlement" element={<FactorySettlementPage />} />
             <Route path="/importer" element={<ImporterPage />} />
             <Route path="/web-agent" element={<WebAgentPage />} />
             <Route path="/taobao-listings" element={<TaobaoListingsPage />} />
