@@ -200,6 +200,11 @@ class FactoryOrder(Base, TimestampMixin):
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
 
+    # 木作月结销账 (用户 2026-07-01): 结算归属月 (YYYY-MM) = 工厂账单说的月; 缺省时按 order_date 月推断。
+    # settlement_payment_id = 把本单翻成已付的那笔销账记录 id, 供撤销时精确回滚本批翻过的单。
+    settlement_month: Mapped[Optional[str]] = mapped_column(String(7), index=True)
+    settlement_payment_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+
 
 class PartPurchase(Base, TimestampMixin):
     __tablename__ = "part_purchases"

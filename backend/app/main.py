@@ -93,6 +93,7 @@ from app.api import taobao_listings as taobao_listings_api
 from app.api import product_composer as product_composer_api
 from app.api import taobao_export as taobao_export_api
 from app.api import npd as npd_api
+from app.api import factory_settlement as factory_settlement_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
 
@@ -165,6 +166,17 @@ async def _lifespan(app: FastAPI):
                     "NPD 种入: 阶段 %d / 任务模板 %d / 验收模板 %d 条", n, nt, ni)
     except Exception:  # pragma: no cover - 种入失败不阻断启动
         logging.getLogger("panse.startup").warning("NPD 种入失败", exc_info=True)
+
+    try:
+        from app.database import SessionLocal as _SL_FS
+        from app.services import factory_settlement_service as _fss
+        with _SL_FS() as _s:
+            na = _fss.seed_default_aliases(_s)
+            if na:
+                _s.commit()
+                logging.getLogger("panse.startup").info("木作月结供应商别名种入 %d 条", na)
+    except Exception:  # pragma: no cover - 种入失败不阻断启动
+        logging.getLogger("panse.startup").warning("木作月结别名种入失败", exc_info=True)
 
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
@@ -393,6 +405,7 @@ app.include_router(product_composer_api.router)
 app.include_router(taobao_export_api.router)
 app.include_router(web_agent_api.router)
 app.include_router(npd_api.router)
+app.include_router(factory_settlement_api.router)
 
 
 @app.get("/api/health")
