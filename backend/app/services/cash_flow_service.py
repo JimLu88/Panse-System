@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.models.finance import AccountBalance, RefillRecord
 from app.models.order import FactoryOrder, Order
 from app.models.shop_deposit import ShopDeposit
-from app.services import factory_payment_service, order_cost_service, settings_service
+from app.services import factory_payment_service, settings_service
 
 # ── 手动常量配置键 ────────────────────────────────────────────
 SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
@@ -132,58 +132,49 @@ def _sum_paid(db: Session, status: str) -> Decimal:
     ).scalar())
 
 
-def _factory_unpaid_bill(db: Session, *, has_platform_no: bool) -> Decimal:
-    """未付工厂账单(已开票): factory_bill_amount 非空、未付、未作废, 按有无平台单号区分打样/结算。"""
-    cond = (FactoryOrder.platform_order_no.isnot(None) if has_platform_no
-            else FactoryOrder.platform_order_no.is_(None))
-    return _d(db.execute(
-        select(func.coalesce(func.sum(FactoryOrder.factory_bill_amount), 0)).where(
+def _classify_unpaid_factory_bills(db: Session) -> tuple[Decimal, Decimal, set, set]:
+    """未付·未作废·已开账单(factory_bill_amount 非空)的工厂单, 按【是否挂真实订单】分流:
+
+    - 已开结算账单(billed): 有平台单号 **或** 有 source_order_id(挂了真实订单, 只是没解析出平台号);
+    - 真打样费(sample): 既无平台单号也无 source_order_id(纯打样, 不对应任何客户订单)。
+
+    返回 (sample_total, billed_total, billed_order_nos, billed_order_ids)。
+    billed_order_nos/ids 供"未开账单预测成本"去重 —— 同一笔工厂义务不再被二次预估,
+    根治"已开账单但平台单号为空"的单同时进打样费+预测成本的双扣 (C9, 用户 2026-07-01)。
+    """
+    rows = db.execute(
+        select(FactoryOrder).where(
             FactoryOrder.payment_status == "unpaid",
             FactoryOrder.voided_at.is_(None),
             FactoryOrder.factory_bill_amount.isnot(None),
-            cond,
         )
-    ).scalar())
+    ).scalars().all()
+    sample = billed = Decimal("0")
+    billed_nos: set[str] = set()
+    billed_ids: set[int] = set()
+    for fo in rows:
+        amt = _d(fo.factory_bill_amount)
+        if fo.platform_order_no or fo.source_order_id:   # 挂了真实订单 → 是结算账单, 非打样
+            billed += amt
+            if fo.platform_order_no:
+                billed_nos.add(fo.platform_order_no)
+            if fo.source_order_id:
+                billed_ids.add(fo.source_order_id)
+        else:
+            sample += amt
+    return sample, billed, billed_nos, billed_ids
 
 
-def _predicted_factory_cost(db: Session, order: Order) -> Optional[Decimal]:
-    """单订单工厂制造成本预估(订单总额): theoretical_cost(已是订单总额) > 现算BOM total > 定价表 factory_cost×qty。
+def _factory_estimate_unbilled(db: Session, billed_nos: set, billed_ids: set) -> tuple[Decimal, int]:
+    """未开账单工厂结算预估: 活跃单(待发货+待确认收货)预测物理成本合计。
 
-    注(2026-06-20): theoretical_cost 改为存「订单总额」(单件×真实计价件数), 故此处不再 ×qty
-    (原 ×qty 对 qty 脏单 —— 如餐边柜 qty=16 —— 会把成本虚高 16 倍)。"""
-    qty = Decimal(int(order.qty or 1))
-    if order.theoretical_cost is not None:
-        return _d(order.theoretical_cost)
-    try:
-        bd = order_cost_service.compute(db, order)
-        if bd.resolved and not bd.cost_incomplete and bd.total_cost:
-            return _d(bd.total_cost)
-    except Exception:  # pragma: no cover - 成本反推失败不拖垮现金流
-        pass
-    from app.models.pricing import PricingSku
-    from app.services import sku_utils
-    if order.sku_code:
-        base = sku_utils.strip_custom_suffix(order.sku_code)
-        fc = db.execute(
-            select(PricingSku.factory_cost).where(PricingSku.sku_code == base)
-        ).scalar_one_or_none()
-        if fc is not None:
-            return _d(fc) * qty
-    return None
+    成本口径与"月度经营/逐单核对"完全一致 —— 用 order_financials.physical_cost(工厂实报优先,
+    否则定价表/BOM 推算, 含定制兜底 实付×85% / 推演封顶 实付×85%)。故"算不出工厂成本"的单
+    (定制/无定价的远期压货单)不再被静默丢弃、营收却已全额进加项 → 消除单边高估 (C3, 用户 2026-07-01)。
 
-
-def _factory_estimate_unbilled(db: Session) -> tuple[Decimal, int, int]:
-    """未开账单工厂结算预估: 活跃单(待发货+待确认收货)预测工厂制造成本合计。
-    已有工厂账单的订单跳过(已计入"已开账单未付", 防双算)。
-    定制单按基础成本估(缺定制需求的单见异常台账)。返回 (合计, 计入单数, 缺成本单数)。"""
-    billed_order_nos = {
-        r for (r,) in db.execute(
-            select(FactoryOrder.platform_order_no).where(
-                FactoryOrder.factory_bill_amount.isnot(None),
-                FactoryOrder.platform_order_no.isnot(None),
-            )
-        ).all()
-    }
+    已开账单的单跳过(平台单号 或 source_order_id 命中 billed_nos/billed_ids), 防与"已开账单未付"双算。
+    返回 (合计, 计入单数)。"""
+    from app.services import order_financials as ofin
     orders = db.execute(
         select(Order).where(
             Order.status.in_(("paid", "shipped")),
@@ -192,17 +183,41 @@ def _factory_estimate_unbilled(db: Session) -> tuple[Decimal, int, int]:
         )
     ).scalars().all()
     total = Decimal("0")
-    counted = missing = 0
+    counted = 0
     for o in orders:
-        if o.order_no in billed_order_nos:
+        if o.order_no in billed_nos or o.id in billed_ids:
             continue  # 已开账单 → 不重复预估
-        c = _predicted_factory_cost(db, o)
-        if c is None:
-            missing += 1
-        else:
+        c = ofin.physical_cost(o)
+        if c and c > 0:
             total += c
             counted += 1
-    return total.quantize(_Q), counted, missing
+    return total.quantize(_Q), counted
+
+
+def _platform_activity_fee(db: Session) -> Decimal:
+    """平台活动抽成(在途·按生效月): 活跃单(paid/shipped)中 order_date 落在财务设置活动窗口的,
+    按 paid_amount × activity_rate 估。窗口 = fin_platform_activity_since..until
+    (默认 2026-05-01..06-30) → 1-4月不计、5月起计(用户拍板 2026-07-01)。与利润口径活动抽成同源。"""
+    from app.services import order_financials as ofin
+    coef = ofin.load_coefficients(db)
+    rate = _d(coef.get("activity_rate"))
+    since = coef.get("activity_since")
+    until = coef.get("activity_until")
+    if rate <= 0 or since is None:
+        return Decimal("0")
+    conds = [
+        Order.status.in_(("paid", "shipped")),
+        Order.is_historical == False,  # noqa: E712
+        Order.is_refill == False,  # noqa: E712
+        Order.order_date.isnot(None),
+        Order.order_date >= since,
+    ]
+    if until is not None:
+        conds.append(Order.order_date <= until)
+    base = _d(db.execute(
+        select(func.coalesce(func.sum(Order.paid_amount), 0)).where(*conds)
+    ).scalar())
+    return (base * rate).quantize(_Q)
 
 
 def _refill_unpaid_commission(db: Session) -> Decimal:
@@ -292,9 +307,10 @@ def compute_summary(db: Session) -> dict:
     # ── 减项 ─────────────────────────────────────────────
     # 平台服务费: 卖家服务费列常为空, 直接按在途订单金额 ×千分之六 估
     platform_fee = (order_active * _PLATFORM_FEE_RATE).quantize(_Q)
-    factory_sample = _factory_unpaid_bill(db, has_platform_no=False)   # 工厂打样(待账单)
-    factory_billed = _factory_unpaid_bill(db, has_platform_no=True)    # 工厂结算-已开账单未付
-    factory_estimate, fe_counted, fe_missing = _factory_estimate_unbilled(db)  # 未开账单预估
+    activity_fee = _platform_activity_fee(db)   # 平台活动抽成 2% (按下单月活动窗口, 5月起)
+    # 已开账单按"是否挂真实订单"分流(打样 vs 结算), 并产出去重集供预测成本防双扣 (C9)
+    factory_sample, factory_billed, _billed_nos, _billed_ids = _classify_unpaid_factory_bills(db)
+    factory_estimate, fe_counted = _factory_estimate_unbilled(db, _billed_nos, _billed_ids)  # 未开账单预估
     refill_commission = _refill_unpaid_commission(db)
 
     additions = [
@@ -308,10 +324,11 @@ def compute_summary(db: Session) -> dict:
     ]
     subtractions = [
         {"key": "platform_fee", "label": "待扣平台服务费(在途×0.6%)", "amount": platform_fee, "manual": False, "source": "在途订单估算"},
-        {"key": "factory_sample", "label": "工厂打样费(未付·待账单)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号)"},
-        {"key": "factory_billed", "label": "工厂结算(已开账单未付)", "amount": factory_billed, "manual": False, "source": "工厂订单(未付·有平台单号)"},
+        {"key": "platform_activity", "label": "平台活动抽成(在途·生效月×2%)", "amount": activity_fee, "manual": False, "source": "在途订单(下单月在活动期)×2%"},
+        {"key": "factory_sample", "label": "工厂打样费(未付·待账单)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号无订单链接)"},
+        {"key": "factory_billed", "label": "工厂结算(已开账单未付)", "amount": factory_billed, "manual": False, "source": "工厂订单(未付·有平台单号或挂真实订单)"},
         {"key": "factory_estimate", "label": "工厂结算(未开账单·预测成本)", "amount": factory_estimate, "manual": False,
-         "source": f"活跃单预测成本({fe_counted}单" + (f", {fe_missing}单缺成本未计)" if fe_missing else ")")},
+         "source": f"活跃单预测成本({fe_counted}单·同月度经营口径)"},
         {"key": "refill_commission", "label": "代付补单佣金(未结)", "amount": refill_commission, "manual": False, "source": "补单记录"},
     ]
 

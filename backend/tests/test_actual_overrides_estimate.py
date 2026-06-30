@@ -93,10 +93,11 @@ def test_factory_actual_cost_with_wood_est_swaps(db_session):
 
 
 def test_factory_actual_cost_no_wood_est_no_swap(db_session):
-    """工厂账单单但无 wood_est(没补非木作)→ 预估不在 cost 里, 不替换(防双减)。"""
+    """工厂账单单但无 wood_est(没补非木作)→ 非木作预估不进 cost、不替换(防双减);
+    但打包费仍计入(第16条: physical_cost 本就含打包, actual_cost 仅木作)。"""
     o = _o(actual_cost=Decimal("700"),
            est_packing=Decimal("100"), actual_packing=Decimal("150"))
-    assert physical_cost(o) == Decimal("700")   # 保持 actual_cost, 不动
+    assert physical_cost(o) == Decimal("850")   # 700 木作 + 150 实际打包(不补非木作, 但含打包)
 
 
 def test_fragment_cap_after_swap(db_session):
