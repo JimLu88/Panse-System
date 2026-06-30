@@ -62,14 +62,12 @@ export interface PackingChecklistOrder {
   product_name: string | null;
   sku: string | null;
   est_packing: number;
-  actual_packing: number | null;
 }
 
 export interface PackingChecklist {
   year_month: string;
   order_count: number;
   total_est_packing: number;
-  total_actual_packing: number;
   orders: PackingChecklistOrder[];
 }
 
