@@ -614,6 +614,69 @@ def ai_design_suggest(db: Session, *, question: str, category: Optional[str] = N
     }
 
 
+# ----------------------------- 上市后复盘反哺 (P3) ----------------------------- #
+
+def review_project(db: Session, project: NpdProject) -> dict:
+    """复盘: 按 product_code 实时拉订单(排刷单)算 销量/营收/退货率/实际成本vs估算/实际毛利vs目标,
+    给反哺选品的结论。需已生成产品档案(product_code)。"""
+    if not project.product_code:
+        return {"available": False, "note": "尚未生成产品档案, 无销售数据可复盘"}
+    from app.models.order import Order
+    from app.services import product_coder
+
+    codes = list(product_coder.brand_variants(project.product_code) or {project.product_code})
+    orders = db.execute(
+        select(Order).where(Order.product_code.in_(codes), Order.is_refill.is_(False))
+    ).scalars().all()
+    paid = [o for o in orders
+            if (o.paid_amount or Decimal("0")) > 0 and o.status not in ("cancelled", "pending_payment")]
+    revenue = sum((Decimal(str(o.paid_amount or 0)) for o in paid), Decimal("0"))
+    refunds = sum((Decimal(str(o.refund_amount or 0)) for o in orders if o.refund_amount), Decimal("0"))
+    qty = sum((int(o.qty or 1) for o in paid), 0)
+    costs = [Decimal(str(o.actual_cost if o.actual_cost is not None else o.theoretical_cost))
+             for o in paid if (o.actual_cost is not None or o.theoretical_cost is not None)]
+    avg_cost = (sum(costs, Decimal("0")) / len(costs)) if costs else None
+    cg = get_cost_gate(db, project.id)
+    est = cg.est_mass_cost if cg else None
+    total_cost = (avg_cost * qty) if avg_cost is not None else Decimal("0")
+    net = revenue - refunds - total_cost
+    actual_margin = (net / revenue) if revenue > 0 else None
+    refund_rate = (refunds / revenue) if revenue > 0 else None
+    target_margin = project.target_margin_rate
+
+    recs: list[str] = []
+    if not paid:
+        recs.append("尚无成交, 动销慢或上架不久")
+    else:
+        if actual_margin is not None and target_margin is not None:
+            if actual_margin >= target_margin:
+                recs.append("毛利达标(实%.0f%% ≥ 目标%.0f%%), 可复制/加推"
+                            % (float(actual_margin) * 100, float(target_margin) * 100))
+            else:
+                recs.append("毛利不达标(实%.0f%% < 目标%.0f%%), 复盘成本/定价"
+                            % (float(actual_margin) * 100, float(target_margin) * 100))
+        if est is not None and avg_cost is not None and est > 0 and avg_cost > est * Decimal("1.1"):
+            recs.append("实际成本%.0f 高于量产估算%.0f(超10%%), 核工艺/采购"
+                        % (float(avg_cost), float(est)))
+        if refund_rate is not None and refund_rate > Decimal("0.1"):
+            recs.append("退货率%.0f%% 偏高, 排查质量/详情描述" % (float(refund_rate) * 100))
+
+    def _s(v, nd=2):
+        return str(round(v, nd)) if v is not None else None
+
+    return {
+        "available": True, "product_code": project.product_code,
+        "orders": len(paid), "qty": qty,
+        "revenue": str(revenue), "refunds": str(refunds),
+        "refund_rate": _s(refund_rate, 4),
+        "avg_cost_actual": _s(avg_cost, 2),
+        "est_mass_cost": (str(est) if est is not None else None),
+        "target_margin": (str(target_margin) if target_margin is not None else None),
+        "actual_margin": _s(actual_margin, 4),
+        "recommendations": recs,
+    }
+
+
 def mass_production_enabled(db: Session) -> bool:
     from app.services import settings_service
     raw = settings_service.get(db, KEY_MASS_PRODUCTION, env_fallback=False)

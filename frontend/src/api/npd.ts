@@ -250,6 +250,25 @@ export const listNpdKnowledgeNotes = (q?: string, category?: string) =>
 export const addNpdKnowledgeNote = (payload: Record<string, unknown>) =>
   api.post<NpdKnowledgeNote>('/api/npd/knowledge-notes', payload).then((r) => r.data);
 
+export interface NpdReview {
+  available: boolean;
+  note?: string | null;
+  product_code?: string;
+  orders?: number;
+  qty?: number;
+  revenue?: string;
+  refunds?: string;
+  refund_rate?: string | null;
+  avg_cost_actual?: string | null;
+  est_mass_cost?: string | null;
+  target_margin?: string | null;
+  actual_margin?: string | null;
+  recommendations?: string[];
+}
+
+export const getNpdReview = (id: number) =>
+  api.get<NpdReview>(`/api/npd/projects/${id}/review`).then((r) => r.data);
+
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);
 

@@ -624,6 +624,18 @@ def materialize_project(
         raise HTTPException(400, str(e)) from e
 
 
+@router.get("/projects/{project_id}/review")
+def project_review(
+    project_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    proj = db.get(NpdProject, project_id)
+    if proj is None:
+        raise HTTPException(404, "项目不存在")
+    return npd_service.review_project(db, proj)
+
+
 class AiSuggestIn(BaseModel):
     question: str
     category: Optional[str] = None

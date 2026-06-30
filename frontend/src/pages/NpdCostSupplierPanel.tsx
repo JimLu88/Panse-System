@@ -1,12 +1,12 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
   Card, Tag, Typography, Space, InputNumber, Input, Button, Table, message, Checkbox,
-  Modal, Popconfirm,
+  Modal, Popconfirm, Statistic, Row, Col,
 } from 'antd';
 import {
   saveNpdCostGate, addNpdCraftIssue, addNpdSupplier,
-  addNpdBomLine, deleteNpdBomLine, materializeNpdProject,
-  type NpdProjectDetail,
+  addNpdBomLine, deleteNpdBomLine, materializeNpdProject, getNpdReview,
+  type NpdProjectDetail, type NpdReview,
 } from '../api/client';
 
 export default function NpdCostSupplierPanel(
@@ -108,6 +108,11 @@ export default function NpdCostSupplierPanel(
     } catch (e: any) { message.error(e?.response?.data?.detail ?? '生成失败'); }
     finally { setMaterializing(false); }
   };
+
+  const [review, setReview] = useState<NpdReview | null>(null);
+  useEffect(() => {
+    if (proj.product_code) getNpdReview(projectId).then(setReview).catch(() => { /* ignore */ });
+  }, [proj.product_code, projectId]);
 
   return (
     <>
@@ -225,6 +230,30 @@ export default function NpdCostSupplierPanel(
             { title: '能解工艺', dataIndex: 'can_solve_craft_issue', width: 80, render: (v: boolean) => (v ? <Tag color="blue">能</Tag> : '') },
           ]} />
       </Card>
+
+      {review && review.available && (
+        <Card size="small" title="上市后复盘 (自动拉销量反哺)" style={{ marginTop: 16 }}>
+          <Row gutter={12} wrap>
+            <Col><Statistic title="成交单" value={review.orders ?? 0} /></Col>
+            <Col><Statistic title="销量" value={review.qty ?? 0} /></Col>
+            <Col><Statistic title="营收" prefix="¥" value={review.revenue ?? '0'} /></Col>
+            <Col><Statistic title="退款" prefix="¥" value={review.refunds ?? '0'} /></Col>
+            <Col><Statistic title="退货率" value={review.refund_rate != null ? `${(Number(review.refund_rate) * 100).toFixed(0)}%` : '-'} /></Col>
+            <Col><Statistic title="实际毛利" value={review.actual_margin != null ? `${(Number(review.actual_margin) * 100).toFixed(0)}%` : '-'} /></Col>
+          </Row>
+          <div style={{ marginTop: 8 }}>
+            <Typography.Text type="secondary">
+              实际均成本 {review.avg_cost_actual ?? '-'} · 量产估算 {review.est_mass_cost ?? '-'}
+              · 目标毛利 {review.target_margin != null ? `${(Number(review.target_margin) * 100).toFixed(0)}%` : '-'}
+            </Typography.Text>
+          </div>
+          {review.recommendations && review.recommendations.length > 0 && (
+            <ul style={{ marginTop: 8, marginBottom: 0 }}>
+              {review.recommendations.map((rc, i) => <li key={i}><Typography.Text>{rc}</Typography.Text></li>)}
+            </ul>
+          )}
+        </Card>
+      )}
     </>
   );
 }
