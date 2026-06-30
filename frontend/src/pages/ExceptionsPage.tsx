@@ -483,8 +483,10 @@ export default function ExceptionsPage() {
   const categories = useMemo(() => {
     // 不重要异常 (用户拍板 2026-06-12): 纯 info 级的组从主分类剥出来,
     // 收进页尾一个灰显、默认折叠的"不重要"分类 — 看不看都行, 不打扰主流程。
-    const muted = groups.filter((g) => g.worst <= 1);
-    const main = groups.filter((g) => g.worst > 1);
+    // 存疑采购(流水自动归类)恒归此组: 系统自动把支出"猜"成采购、待人工核归类, 不是真财务差错、不影响业务 (用户 2026-06-30)。
+    const ALWAYS_MUTED = new Set(['unclassified_purchase']);
+    const muted = groups.filter((g) => g.worst <= 1 || ALWAYS_MUTED.has(g.type));
+    const main = groups.filter((g) => g.worst > 1 && !ALWAYS_MUTED.has(g.type));
     const byCat = new Map<CategoryKey, typeof groups>();
     main.forEach((g) => {
       const cat = typeMeta(g.type).category;
