@@ -1118,6 +1118,82 @@ def _job_ingest_health_check(db: Session) -> dict:
     return result
 
 
+def _job_npd_stage_remind(db: Session) -> dict:
+    """每天 09:15: 新品开发阶段截止提醒 (用户拍板 2026-06-30: 飞书催设计师推进下一步)。
+
+    扫所有进行中项目的当前阶段实例: 距 deadline ≤ critical_days → critical(站内+飞书);
+    ≤ warn_days → warn(站内, 并入日报)。逾期同 critical。一阶段一条(dedupe), 不刷屏。
+    """
+    import os as _os
+    from datetime import datetime, timezone
+    from sqlalchemy import select
+    from app.models.npd import NpdProject, NpdStage, NpdStageInstance
+    from app.services import alert_service
+
+    now = datetime.now(timezone.utc)
+    rows = db.execute(
+        select(NpdStageInstance, NpdProject, NpdStage)
+        .join(NpdProject, NpdStageInstance.project_id == NpdProject.id)
+        .join(NpdStage, NpdStageInstance.stage_id == NpdStage.id)
+        .where(NpdStageInstance.status == "active",
+               NpdProject.state.in_(["active", "rework"]))
+    ).all()
+    due: list[tuple] = []
+    for inst, proj, stage in rows:
+        if not inst.deadline:
+            continue
+        dl = inst.deadline if inst.deadline.tzinfo else inst.deadline.replace(tzinfo=timezone.utc)
+        days_left = (dl - now).days
+        if days_left <= stage.critical_days:
+            level = "critical"
+        elif days_left <= stage.warn_days:
+            level = "warn"
+        else:
+            continue
+        due.append((proj, stage, days_left, level))
+        try:
+            alert_service.upsert(
+                db, kind="npd_stage_due",
+                severity=("critical" if level == "critical" else "warn"),
+                title=f"新品阶段临期: {proj.name}",
+                body=(f"{proj.code} {proj.name} 阶段「{stage.name}」"
+                      + ("已逾期 %d 天" % (-days_left) if days_left < 0 else "剩 %d 天" % days_left)
+                      + ", 请尽快推进下一步。"),
+                dedupe_key=f"npd_stage_due:{proj.id}:{stage.code}",
+                related_url=f"/npd/{proj.id}",
+            )
+        except Exception:  # noqa: BLE001
+            _logger.warning("NPD 阶段提醒 alert 失败", exc_info=True)
+    db.flush()
+
+    pushed = False
+    if due and not _os.environ.get("PANSE_DISABLE_NOTIFY"):
+        lines = ["🛎 新品开发阶段催办:"]
+        for proj, stage, days_left, level in sorted(due, key=lambda x: x[2]):
+            tag = ("🔴逾期%d天" % (-days_left)) if days_left < 0 else \
+                  (("🟠剩%d天" % days_left) if level == "critical" else ("🟡剩%d天" % days_left))
+            owner = (" @" + proj.owner) if proj.owner else ""
+            lines.append(f"{tag} {proj.name}「{stage.name}」{owner}")
+        msg = "\n".join(lines)
+        try:
+            from app.services import feishu_client, settings_service
+            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+            if chat:
+                feishu_client.send_text(db, chat, msg)
+                pushed = True
+        except Exception:  # noqa: BLE001
+            _logger.warning("NPD 阶段提醒飞书推送失败", exc_info=True)
+        if not pushed:
+            try:
+                from app.services import notify_service
+                notify_service.notify(db, msg, level="warn", title="新品开发阶段催办")
+            except Exception:  # noqa: BLE001
+                pass
+    db.commit()
+    return {"due": len(due),
+            "critical": sum(1 for d in due if d[3] == "critical"), "pushed": pushed}
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -1176,6 +1252,8 @@ def _register_default_jobs() -> None:
                  _job_ingest_scan, interval_minutes=60)
     register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/口令过期 → 微信+飞书)",
                  _job_ingest_health_check, cron={"hour": 20, "minute": 0})
+    register_job("daily_0915_npd_stage_remind", "新品开发阶段截止提醒 (飞书催设计师)",
+                 _job_npd_stage_remind, cron={"hour": 9, "minute": 15})
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",

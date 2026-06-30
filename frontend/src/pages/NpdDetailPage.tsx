@@ -10,6 +10,7 @@ import {
   getNpdProjectDetail, toggleNpdTask, saveNpdInspection,
   type NpdProjectDetail, type NpdTimelineItem, type NpdTask, type NpdInspection,
 } from '../api/client';
+import NpdCostSupplierPanel from './NpdCostSupplierPanel';
 
 function resultTag(r: string) {
   return r === 'pass' ? <Tag color="green">通过</Tag>
@@ -244,6 +245,8 @@ export default function NpdDetailPage() {
       <Card size="small" title="阶段进度 / 待办">
         <Timeline items={items} />
       </Card>
+
+      <NpdCostSupplierPanel detail={data} projectId={p.id} onChange={load} />
     </div>
   );
 }

@@ -169,3 +169,59 @@ class NpdInspectionItem(Base, TimestampMixin):
     result: Mapped[str] = mapped_column(String(8), nullable=False, default="pending")  # pass/fail/pending
     sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdCostGate(Base, TimestampMixin):
+    """成本预算门 G3 (P1c, 治"打样OK却量产巨亏"): 量产成本(含工艺改进上浮) vs 价位靶 → 红绿灯。
+    每项目一条(按 project_id upsert)。"""
+    __tablename__ = "npd_cost_gates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, unique=True, index=True
+    )
+    prototype_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 打样件成本
+    est_mass_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))    # 量产估算成本(含工艺上浮)
+    target_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))     # 价位靶(快照自项目)
+    target_margin: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 4))     # 目标毛利率
+    actual_margin: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4))     # 实算毛利率(可负)
+    verdict: Mapped[str] = mapped_column(String(8), nullable=False, default="pending")  # pass/fail/pending
+    decided_by: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdCraftIssue(Base, TimestampMixin):
+    """打样工艺问题台账 (P1c): 供应商承诺OK但打样出状况→改工艺→成本上浮; 记成本影响, 多供应商排查。"""
+    __tablename__ = "npd_craft_issues"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_code: Mapped[Optional[str]] = mapped_column(String(8))
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(Text)
+    root_cause: Mapped[Optional[str]] = mapped_column(Text)
+    cost_impact: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))   # 成本上浮金额
+    status: Mapped[str] = mapped_column(String(8), nullable=False, default="open")  # open/solved
+    chosen_supplier: Mapped[Optional[str]] = mapped_column(String(128))
+
+
+class NpdSupplierCandidate(Base, TimestampMixin):
+    """供应商候选 (P1c): 寻源前置≥N家 + 多供应商对齐工艺(后备可能低价解决工艺问题)。"""
+    __tablename__ = "npd_supplier_candidates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    material_category: Mapped[Optional[str]] = mapped_column(String(64))
+    supplier_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    is_backup: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    quote_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    quote_status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending/quoted/chosen
+    lead_time_days: Mapped[Optional[int]] = mapped_column(Integer)
+    can_solve_craft_issue: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    craft_solution: Mapped[Optional[str]] = mapped_column(Text)
+    solved_cost: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    remark: Mapped[Optional[str]] = mapped_column(Text)

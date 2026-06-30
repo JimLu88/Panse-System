@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
     NpdInspectionTemplate, NpdInspectionItem,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate,
 )
 
 # ---- 设置键 ----
@@ -318,6 +319,103 @@ def save_inspection_item(db: Session, item: NpdInspectionItem, *,
     return item
 
 
+# ----------------------------- 成本门 G3 (P1c) ----------------------------- #
+
+def get_cost_gate(db: Session, project_id: int) -> Optional[NpdCostGate]:
+    return db.execute(
+        select(NpdCostGate).where(NpdCostGate.project_id == project_id)
+    ).scalars().first()
+
+
+def _sum_open_craft_cost(db: Session, project_id: int) -> Decimal:
+    rows = db.execute(
+        select(NpdCraftIssue.cost_impact).where(
+            NpdCraftIssue.project_id == project_id, NpdCraftIssue.status == "open")
+    ).scalars().all()
+    return sum((c for c in rows if c is not None), Decimal("0"))
+
+
+def save_cost_gate(db: Session, project: NpdProject, *, prototype_cost: Optional[Decimal] = None,
+                   est_mass_cost: Optional[Decimal] = None, note: Optional[str] = None,
+                   decided_by: Optional[str] = None) -> NpdCostGate:
+    """量产成本 vs 价位靶 → verdict。量产成本未填则 = 打样成本 + Σ未解决工艺问题成本上浮。"""
+    g = get_cost_gate(db, project.id)
+    if g is None:
+        g = NpdCostGate(project_id=project.id)
+        db.add(g)
+    if prototype_cost is not None:
+        g.prototype_cost = prototype_cost
+    if est_mass_cost is not None:
+        g.est_mass_cost = est_mass_cost
+    if note is not None:
+        g.note = note
+    if decided_by is not None:
+        g.decided_by = decided_by
+    g.target_price = project.target_price
+    g.target_margin = project.target_margin_rate
+    est = g.est_mass_cost
+    if est is None and g.prototype_cost is not None:
+        est = g.prototype_cost + _sum_open_craft_cost(db, project.id)
+        g.est_mass_cost = est
+    if est is not None and project.target_price and project.target_price > 0:
+        margin = (project.target_price - est) / project.target_price
+        g.actual_margin = margin
+        target_m = project.target_margin_rate if project.target_margin_rate is not None else Decimal("0")
+        g.verdict = "pass" if margin >= target_m else "fail"
+    else:
+        g.actual_margin = None
+        g.verdict = "pending"
+    db.commit()
+    db.refresh(g)
+    return g
+
+
+def cost_gate_passed(db: Session, project_id: int) -> bool:
+    g = get_cost_gate(db, project_id)
+    return bool(g and g.verdict == "pass")
+
+
+# ----------------------------- 工艺问题台账 / 供应商候选 (P1c) ----------------------------- #
+
+def list_craft_issues(db: Session, project_id: int) -> list[NpdCraftIssue]:
+    return list(db.execute(
+        select(NpdCraftIssue).where(NpdCraftIssue.project_id == project_id)
+        .order_by(NpdCraftIssue.id)
+    ).scalars().all())
+
+
+def add_craft_issue(db: Session, project_id: int, **kw) -> NpdCraftIssue:
+    obj = NpdCraftIssue(project_id=project_id, **kw)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def list_suppliers(db: Session, project_id: int) -> list[NpdSupplierCandidate]:
+    return list(db.execute(
+        select(NpdSupplierCandidate).where(NpdSupplierCandidate.project_id == project_id)
+        .order_by(NpdSupplierCandidate.id)
+    ).scalars().all())
+
+
+def add_supplier(db: Session, project_id: int, **kw) -> NpdSupplierCandidate:
+    obj = NpdSupplierCandidate(project_id=project_id, **kw)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def update_obj(db: Session, obj, patch: dict):
+    for k, v in patch.items():
+        if hasattr(obj, k):
+            setattr(obj, k, v)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
 def mass_production_enabled(db: Session) -> bool:
     from app.services import settings_service
     raw = settings_service.get(db, KEY_MASS_PRODUCTION, env_fallback=False)
@@ -432,6 +530,11 @@ def move_project(db: Session, project: NpdProject, target_stage_id: int,
                 parts.append("验收未通过: " + "、".join(undone_insp[:6]) + ("…" if len(undone_insp) > 6 else ""))
             raise ValueError(
                 f"当前阶段「{cur_stage.name}」还有必做项, 不能进入下一步 —— " + "; ".join(parts)
+            )
+        if cur_stage.code == "G3" and not cost_gate_passed(db, project.id):
+            raise ValueError(
+                "成本门 G3 未通过: 量产成本未算 / 超价位靶(低于目标毛利)。"
+                "请在成本门填量产成本, 或扩大供应商池/启用后备降本(不建议靠加价)。"
             )
 
     if cur is not None and cur.stage_id != target_stage_id:

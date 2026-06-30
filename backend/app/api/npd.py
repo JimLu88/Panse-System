@@ -23,6 +23,7 @@ from app.dependencies import require_role
 from app.models.auth import User
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdTask, NpdInspectionItem,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate,
 )
 from app.services import npd_service
 
@@ -171,9 +172,47 @@ class TimelineItem(BaseModel):
     inspections: list[InspectionOut] = []
 
 
+class CostGateOut(BaseModel):
+    prototype_cost: Optional[Decimal] = None
+    est_mass_cost: Optional[Decimal] = None
+    target_price: Optional[Decimal] = None
+    target_margin: Optional[Decimal] = None
+    actual_margin: Optional[Decimal] = None
+    verdict: str = "pending"
+    note: Optional[str] = None
+
+
+class CraftIssueOut(BaseModel):
+    id: int
+    stage_code: Optional[str] = None
+    title: str
+    description: Optional[str] = None
+    root_cause: Optional[str] = None
+    cost_impact: Optional[Decimal] = None
+    status: str
+    chosen_supplier: Optional[str] = None
+
+
+class SupplierOut(BaseModel):
+    id: int
+    material_category: Optional[str] = None
+    supplier_name: str
+    is_backup: bool
+    quote_amount: Optional[Decimal] = None
+    quote_status: str
+    lead_time_days: Optional[int] = None
+    can_solve_craft_issue: bool
+    craft_solution: Optional[str] = None
+    solved_cost: Optional[Decimal] = None
+    remark: Optional[str] = None
+
+
 class ProjectDetailOut(BaseModel):
     project: ProjectOut
     timeline: list[TimelineItem]
+    cost_gate: Optional[CostGateOut] = None
+    craft_issues: list[CraftIssueOut] = []
+    suppliers: list[SupplierOut] = []
 
 
 def _task_out(t: NpdTask) -> TaskOut:
@@ -199,6 +238,62 @@ class InspectionSaveIn(BaseModel):
     result: Optional[str] = None
     min_val: Optional[Decimal] = None
     max_val: Optional[Decimal] = None
+    remark: Optional[str] = None
+
+
+def _costgate_out(g: Optional[NpdCostGate]) -> Optional[CostGateOut]:
+    if g is None:
+        return None
+    return CostGateOut(
+        prototype_cost=g.prototype_cost, est_mass_cost=g.est_mass_cost,
+        target_price=g.target_price, target_margin=g.target_margin,
+        actual_margin=g.actual_margin, verdict=g.verdict, note=g.note,
+    )
+
+
+def _craft_out(c: NpdCraftIssue) -> CraftIssueOut:
+    return CraftIssueOut(
+        id=c.id, stage_code=c.stage_code, title=c.title, description=c.description,
+        root_cause=c.root_cause, cost_impact=c.cost_impact, status=c.status,
+        chosen_supplier=c.chosen_supplier,
+    )
+
+
+def _supplier_out(s: NpdSupplierCandidate) -> SupplierOut:
+    return SupplierOut(
+        id=s.id, material_category=s.material_category, supplier_name=s.supplier_name,
+        is_backup=s.is_backup, quote_amount=s.quote_amount, quote_status=s.quote_status,
+        lead_time_days=s.lead_time_days, can_solve_craft_issue=s.can_solve_craft_issue,
+        craft_solution=s.craft_solution, solved_cost=s.solved_cost, remark=s.remark,
+    )
+
+
+class CostGateIn(BaseModel):
+    prototype_cost: Optional[Decimal] = None
+    est_mass_cost: Optional[Decimal] = None
+    note: Optional[str] = None
+
+
+class CraftIssueIn(BaseModel):
+    title: str
+    stage_code: Optional[str] = None
+    description: Optional[str] = None
+    root_cause: Optional[str] = None
+    cost_impact: Optional[Decimal] = None
+    status: Optional[str] = None
+    chosen_supplier: Optional[str] = None
+
+
+class SupplierIn(BaseModel):
+    supplier_name: str
+    material_category: Optional[str] = None
+    is_backup: Optional[bool] = None
+    quote_amount: Optional[Decimal] = None
+    quote_status: Optional[str] = None
+    lead_time_days: Optional[int] = None
+    can_solve_craft_issue: Optional[bool] = None
+    craft_solution: Optional[str] = None
+    solved_cost: Optional[Decimal] = None
     remark: Optional[str] = None
 
 
@@ -328,7 +423,13 @@ def project_detail(
             tasks=[_task_out(t) for t in row["tasks"]],
             inspections=[_inspection_out(it) for it in row["inspections"]],
         ))
-    return ProjectDetailOut(project=_project_out(proj, stages, deadlines), timeline=items)
+    return ProjectDetailOut(
+        project=_project_out(proj, stages, deadlines),
+        timeline=items,
+        cost_gate=_costgate_out(npd_service.get_cost_gate(db, proj.id)),
+        craft_issues=[_craft_out(c) for c in npd_service.list_craft_issues(db, proj.id)],
+        suppliers=[_supplier_out(s) for s in npd_service.list_suppliers(db, proj.id)],
+    )
 
 
 @router.put("/tasks/{task_id}", response_model=TaskOut)
@@ -360,6 +461,79 @@ def save_inspection(
         min_val=payload.min_val, max_val=payload.max_val, remark=payload.remark,
     )
     return _inspection_out(it)
+
+
+@router.put("/projects/{project_id}/cost-gate", response_model=CostGateOut)
+def save_cost_gate(
+    project_id: int,
+    payload: CostGateIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    proj = db.get(NpdProject, project_id)
+    if proj is None:
+        raise HTTPException(404, "项目不存在")
+    g = npd_service.save_cost_gate(
+        db, proj, prototype_cost=payload.prototype_cost, est_mass_cost=payload.est_mass_cost,
+        note=payload.note, decided_by=getattr(user, "username", None),
+    )
+    return _costgate_out(g)
+
+
+@router.post("/projects/{project_id}/craft-issues", response_model=CraftIssueOut)
+def add_craft_issue(
+    project_id: int,
+    payload: CraftIssueIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    if db.get(NpdProject, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    data = payload.model_dump(exclude_none=True)
+    c = npd_service.add_craft_issue(db, project_id, **data)
+    return _craft_out(c)
+
+
+@router.put("/craft-issues/{issue_id}", response_model=CraftIssueOut)
+def update_craft_issue(
+    issue_id: int,
+    payload: CraftIssueIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    c = db.get(NpdCraftIssue, issue_id)
+    if c is None:
+        raise HTTPException(404, "工艺问题不存在")
+    npd_service.update_obj(db, c, payload.model_dump(exclude_unset=True))
+    return _craft_out(c)
+
+
+@router.post("/projects/{project_id}/suppliers", response_model=SupplierOut)
+def add_supplier(
+    project_id: int,
+    payload: SupplierIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    if db.get(NpdProject, project_id) is None:
+        raise HTTPException(404, "项目不存在")
+    data = payload.model_dump(exclude_none=True)
+    s = npd_service.add_supplier(db, project_id, **data)
+    return _supplier_out(s)
+
+
+@router.put("/suppliers/{supplier_id}", response_model=SupplierOut)
+def update_supplier(
+    supplier_id: int,
+    payload: SupplierIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    s = db.get(NpdSupplierCandidate, supplier_id)
+    if s is None:
+        raise HTTPException(404, "供应商候选不存在")
+    npd_service.update_obj(db, s, payload.model_dump(exclude_unset=True))
+    return _supplier_out(s)
 
 
 @router.get("/settings")

@@ -68,6 +68,7 @@ from app.models.taobao_listing import TaobaoListing
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
     NpdInspectionTemplate, NpdInspectionItem,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate,
 )
 
 __all__ = [
@@ -78,6 +79,9 @@ __all__ = [
     "NpdTask",
     "NpdInspectionTemplate",
     "NpdInspectionItem",
+    "NpdCostGate",
+    "NpdCraftIssue",
+    "NpdSupplierCandidate",
     "Base",
     "TaobaoListing",
     "Material",

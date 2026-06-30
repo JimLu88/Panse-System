@@ -103,9 +103,47 @@ export interface NpdTimelineItem {
   inspections: NpdInspection[];
 }
 
+export interface NpdCostGate {
+  prototype_cost: string | null;
+  est_mass_cost: string | null;
+  target_price: string | null;
+  target_margin: string | null;
+  actual_margin: string | null;
+  verdict: string;       // pass / fail / pending
+  note: string | null;
+}
+
+export interface NpdCraftIssue {
+  id: number;
+  stage_code: string | null;
+  title: string;
+  description: string | null;
+  root_cause: string | null;
+  cost_impact: string | null;
+  status: string;        // open / solved
+  chosen_supplier: string | null;
+}
+
+export interface NpdSupplierCandidate {
+  id: number;
+  material_category: string | null;
+  supplier_name: string;
+  is_backup: boolean;
+  quote_amount: string | null;
+  quote_status: string;  // pending / quoted / chosen
+  lead_time_days: number | null;
+  can_solve_craft_issue: boolean;
+  craft_solution: string | null;
+  solved_cost: string | null;
+  remark: string | null;
+}
+
 export interface NpdProjectDetail {
   project: NpdProject;
   timeline: NpdTimelineItem[];
+  cost_gate: NpdCostGate | null;
+  craft_issues: NpdCraftIssue[];
+  suppliers: NpdSupplierCandidate[];
 }
 
 export const listNpdStages = (includeMassProduction?: boolean) =>
@@ -139,6 +177,23 @@ export const saveNpdInspection = (
     remark?: string | null;
   },
 ) => api.put<NpdInspection>(`/api/npd/inspections/${id}`, payload).then((r) => r.data);
+
+export const saveNpdCostGate = (
+  projectId: number,
+  payload: { prototype_cost?: number | string | null; est_mass_cost?: number | string | null; note?: string | null },
+) => api.put<NpdCostGate>(`/api/npd/projects/${projectId}/cost-gate`, payload).then((r) => r.data);
+
+export const addNpdCraftIssue = (projectId: number, payload: Record<string, unknown>) =>
+  api.post<NpdCraftIssue>(`/api/npd/projects/${projectId}/craft-issues`, payload).then((r) => r.data);
+
+export const updateNpdCraftIssue = (id: number, payload: Record<string, unknown>) =>
+  api.put<NpdCraftIssue>(`/api/npd/craft-issues/${id}`, payload).then((r) => r.data);
+
+export const addNpdSupplier = (projectId: number, payload: Record<string, unknown>) =>
+  api.post<NpdSupplierCandidate>(`/api/npd/projects/${projectId}/suppliers`, payload).then((r) => r.data);
+
+export const updateNpdSupplier = (id: number, payload: Record<string, unknown>) =>
+  api.put<NpdSupplierCandidate>(`/api/npd/suppliers/${id}`, payload).then((r) => r.data);
 
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);
