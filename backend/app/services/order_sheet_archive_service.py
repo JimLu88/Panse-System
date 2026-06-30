@@ -537,8 +537,13 @@ def find_pushed_without_address(db: Session) -> list[ImportedFile]:
     out: list[ImportedFile] = []
     for r in recs:
         st = r.row_summary or {}
-        if not st.get("pushed") or st.get("pushed_addr_ok"):
-            continue   # 没推过 / 上次已带地址 → 不重推
+        if not st.get("pushed"):
+            continue   # 没推过 → 不在重推范围
+        # 只重推【明确记录为缺地址被推】的 (pushed_addr_ok is False)。
+        # True=上次已带地址; None=本次部署前推的历史单(无此标记)——都不自动重推,
+        # 避免一次口令把整批历史已正确发送的单刷给工厂群 (安全默认: 靠新标记 opt-in)。
+        if st.get("pushed_addr_ok") is not False:
+            continue
         no = _order_no_from_name(r.original_filename)
         if not no:
             continue

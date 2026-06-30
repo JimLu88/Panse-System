@@ -75,6 +75,21 @@ def test_repush_only_for_orders_that_gained_address(db_session, _feishu_stub):
     assert osa.repush_after_address_fill(db_session)["repushed"] == 0
 
 
+def test_legacy_pushed_without_flag_never_repushed(db_session, _feishu_stub):
+    """安全默认: 部署前推送的历史单 (row_summary 只有 pushed, 无 pushed_addr_ok) 即使现在有地址,
+    也绝不被自动重推 —— 防一次口令把整批历史已发送单刷给工厂群。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "LEGACY-1", address="广东省深圳市福田区福华路1号")
+    osa.generate_pending(db_session)
+    # 模拟历史: 只标 pushed=True, 没有 pushed_addr_ok 键 (旧版本推送行为)
+    rec = _sheet_rec(db_session, "LEGACY-1")
+    rec.row_summary = {"pushed": True}
+    db_session.flush()
+
+    assert osa.find_pushed_without_address(db_session) == []
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 0
+
+
 def test_masked_address_counts_as_missing(db_session, _feishu_stub):
     """星号脱敏地址 = 缺地址: pushed_addr_ok=False, 解密成真实地址后可重推。"""
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
