@@ -70,3 +70,32 @@ def test_export_workbook_sheets(monkeypatch):
     # 未录的打包行: 实际列文案="未录"
     packing_rows = [r for r in summary_rows if r[0] == "打包月结"]
     assert packing_rows and packing_rows[0][4] == "未录"
+
+
+# ── 打包导清单 xlsx: 订单号文本格式(防科学计数法) + 结构 (用户 2026-06-30) ──────
+def test_packing_checklist_xlsx_text_order_no_and_structure(monkeypatch):
+    fake = {
+        "year_month": "2026-05", "order_count": 2,
+        "total_est_packing": 300.0, "total_actual_packing": 320.0,
+        "orders": [
+            {"order_no": "3303143544284025474", "order_date": "2026-05-01",
+             "ship_date": "2026-05-10", "customer_name": "张三", "product_name": "餐边柜",
+             "sku": "CBG2", "est_packing": 130.0, "actual_packing": 140.0},
+            {"order_no": "5116487257108037944", "order_date": "2026-05-02",
+             "ship_date": "2026-05-11", "customer_name": "李四", "product_name": "电视柜",
+             "sku": "DSG", "est_packing": 170.0, "actual_packing": 180.0},
+        ],
+    }
+    monkeypatch.setattr(mss, "packing_checklist", lambda db, *, year_month: fake)
+    wb, _ = mss.build_packing_checklist_xlsx(db=None, year_month="2026-05")
+    ws = wb.active
+    headers = [c.value for c in ws[1]]
+    assert headers[0] == "订单号"
+    assert headers[-2:] == ["预估打包费", "实际打包费"]
+    # 关键: 订单号列文本格式(@), 完整19位不变科学计数法
+    assert ws.cell(2, 1).number_format == "@"
+    assert ws.cell(2, 1).value == "3303143544284025474"
+    # 合计行 = 预估/实际打包费合计
+    assert "合计" in str(ws.cell(ws.max_row, 1).value)
+    assert ws.cell(ws.max_row, 7).value == 300.0
+    assert ws.cell(ws.max_row, 8).value == 320.0

@@ -8,12 +8,15 @@
  * (打包/运费早已计入每单 physical_cost)。全部按发货日期(ship_date)对账。
  */
 import { useState } from 'react';
-import { Alert, Button, Card, Collapse, Empty, Space, Table, Tag, Typography, message } from 'antd';
-import { DownloadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Collapse, Dropdown, Empty, Space, Table, Tag, Typography, message } from 'antd';
+import { DownloadOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useQuery } from '@tanstack/react-query';
 import {
   downloadMonthlySettlementAll,
+  downloadPackingChecklistXlsx,
   fetchMonthlySettlementCenter,
+  fetchPackingChecklist,
+  type PackingChecklist,
   type SettlementGroup,
   type SettlementRow,
 } from '../api/monthlySettlement';
@@ -23,7 +26,46 @@ const yuan = (v: number | null | undefined) => (v == null ? '—' : `¥${Math.ro
 const varColor = (v: number | null | undefined) =>
   v == null ? '#999' : Math.abs(v) < 1 ? '#999' : v > 0 ? '#cf1322' : '#389e0d';
 
-function GroupTable({ group }: { group: SettlementGroup }) {
+const escHtml = (v: unknown) =>
+  String(v ?? '').replace(/[&<>"]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[m] as string));
+
+// 打包导清单打印(A4横向扁平表格)。订单号在 HTML <td> 里就是文本, 无科学计数法问题。
+function openPackingChecklistPrint(d: PackingChecklist) {
+  const win = window.open('', '_blank', 'width=980,height=860');
+  if (!win) { message.warning('浏览器拦截了打印窗口, 请允许弹窗后重试'); return; }
+  const y2 = (v: number | null | undefined) => (v == null ? '—' : '¥' + Number(v).toFixed(2));
+  const rows = d.orders.map((o) => `<tr>
+    <td class="code">${escHtml(o.order_no)}</td><td>${escHtml(o.order_date ?? '')}</td><td>${escHtml(o.ship_date ?? '')}</td>
+    <td>${escHtml(o.customer_name ?? '')}</td><td>${escHtml(o.product_name ?? '')}</td><td>${escHtml(o.sku ?? '')}</td>
+    <td class="num">${y2(o.est_packing)}</td><td class="num">${y2(o.actual_packing)}</td></tr>`).join('');
+  const title = `打包对账清单 · ${d.year_month} 发货`;
+  win.document.write(`<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escHtml(title)}</title>
+    <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,"Microsoft YaHei",sans-serif;color:#222;padding:10mm}
+    h1{font-size:16px;margin-bottom:4px}.sub{color:#666;font-size:12px;margin-bottom:10px}
+    table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left}
+    th{background:#f5f5f5}.num{text-align:right;font-variant-numeric:tabular-nums}.code{font-family:monospace;font-size:10px;word-break:break-all}
+    .tot td{background:#f5f5f5;font-weight:700}@page{size:A4 landscape;margin:10mm}</style></head>
+    <body><h1>${escHtml(title)}</h1>
+    <div class="sub">共 ${d.order_count} 单 · 按发货日期(ship_date) · 预估打包费合计 ¥${Number(d.total_est_packing).toFixed(2)} &nbsp;|&nbsp; 请打包供应商核对</div>
+    <table><thead><tr><th>订单号</th><th>下单日期</th><th>发货日</th><th>客户</th><th>产品</th><th>SKU(含尺寸)</th><th>预估打包费</th><th>实际打包费</th></tr></thead>
+    <tbody>${rows}<tr class="tot"><td colspan="6" class="num">合计</td><td class="num">${y2(d.total_est_packing)}</td><td class="num">${y2(d.total_actual_packing)}</td></tr></tbody></table>
+    </body></html>`);
+  win.document.close();
+  win.focus();
+  setTimeout(() => win.print(), 400);
+}
+
+function GroupTable({ group, domainKey }: { group: SettlementGroup; domainKey: string }) {
+  const onChecklist = async (period: string, fmt: 'print' | 'xlsx') => {
+    try {
+      if (fmt === 'xlsx') { await downloadPackingChecklistXlsx(period); return; }
+      const d = await fetchPackingChecklist(period);
+      if (!d.order_count) { message.info(`${period} 没有已发货订单`); return; }
+      openPackingChecklistPrint(d);
+    } catch (e: any) {
+      message.error(`导出失败: ${e?.response?.data?.detail || e?.message || e}`);
+    }
+  };
   const columns = [
     { title: '月份', dataIndex: 'period', key: 'period', width: 100 },
     {
@@ -49,6 +91,17 @@ function GroupTable({ group }: { group: SettlementGroup }) {
       title: '发货单数', dataIndex: 'order_count', key: 'order_count', align: 'right' as const,
       render: (v: number | null) => v ?? '—',
     },
+    ...(domainKey === 'packing' ? [{
+      title: '导清单', key: 'checklist', width: 116,
+      render: (_: unknown, r: SettlementRow) => (
+        <Dropdown menu={{ items: [
+          { key: 'print', icon: <PrinterOutlined />, label: '打印清单 (A4)' },
+          { key: 'xlsx', icon: <DownloadOutlined />, label: '下载 Excel (.xlsx)' },
+        ], onClick: ({ key }) => onChecklist(r.period, key as 'print' | 'xlsx') }}>
+          <Button size="small" icon={<PrinterOutlined />} disabled={!r.order_count}>导清单</Button>
+        </Dropdown>
+      ),
+    }] : []),
   ];
   return (
     <Table<SettlementRow>
@@ -72,6 +125,7 @@ function GroupTable({ group }: { group: SettlementGroup }) {
             </b>
           </Table.Summary.Cell>
           <Table.Summary.Cell index={5} />
+          {domainKey === 'packing' && <Table.Summary.Cell index={6} />}
         </Table.Summary.Row>
       )}
     />
@@ -147,7 +201,7 @@ export default function MonthlySettlementCenterPage() {
               dom.groups.length === 0 ? (
                 <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该域暂无月结分类" />
               ) : dom.groups.length === 1 ? (
-                <GroupTable group={dom.groups[0]} />
+                <GroupTable group={dom.groups[0]} domainKey={dom.key} />
               ) : (
                 <Collapse
                   ghost
@@ -163,7 +217,7 @@ export default function MonthlySettlementCenterPage() {
                         </Typography.Text>
                       </Space>
                     ),
-                    children: <GroupTable group={g} />,
+                    children: <GroupTable group={g} domainKey={dom.key} />,
                   }))}
                 />
               ),

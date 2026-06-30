@@ -52,3 +52,43 @@ export async function downloadMonthlySettlementAll() {
   a.remove();
   window.URL.revokeObjectURL(url);
 }
+
+// ── 打包导清单(当月发货单 + 每单预估/实际打包费, 给打包供应商核对) ──────────────
+export interface PackingChecklistOrder {
+  order_no: string;
+  order_date: string | null;
+  ship_date: string | null;
+  customer_name: string | null;
+  product_name: string | null;
+  sku: string | null;
+  est_packing: number;
+  actual_packing: number | null;
+}
+
+export interface PackingChecklist {
+  year_month: string;
+  order_count: number;
+  total_est_packing: number;
+  total_actual_packing: number;
+  orders: PackingChecklistOrder[];
+}
+
+export const fetchPackingChecklist = (yearMonth: string) =>
+  api
+    .get<PackingChecklist>('/api/monthly-settlement/packing-checklist',
+      { params: { year_month: yearMonth } })
+    .then((r) => r.data);
+
+export async function downloadPackingChecklistXlsx(yearMonth: string) {
+  const resp = await api.get('/api/monthly-settlement/packing-checklist.xlsx', {
+    params: { year_month: yearMonth }, responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `打包对账清单_${yearMonth}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}

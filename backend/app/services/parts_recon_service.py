@@ -816,6 +816,9 @@ def build_shipped_orders_xlsx(db: Session, *, year_month: str,
         c.alignment = Alignment(vertical="center", wrap_text=True)
     for i, wd in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = wd
+    # 订单号列(第1列)强制文本(@) — 19位订单号防 Excel 转科学计数法丢精度
+    for (cell,) in ws.iter_rows(min_row=2, min_col=1, max_col=1):
+        cell.number_format = "@"
     for mc in money_cols:
         for (cell,) in ws.iter_rows(min_row=2, min_col=mc, max_col=mc):
             if isinstance(cell.value, (int, float)):

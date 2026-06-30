@@ -9,7 +9,7 @@ from __future__ import annotations
 import io
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
@@ -32,6 +32,28 @@ def export(db: Session = Depends(get_db)):
     buf = io.BytesIO()
     wb.save(buf)
     fname = "月度对账_全部月结.xlsx"
+    return StreamingResponse(
+        io.BytesIO(buf.getvalue()),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(fname)}"},
+    )
+
+
+@router.get("/packing-checklist")
+def packing_checklist(year_month: str = Query(..., description="发货月 'YYYY-MM'"),
+                      db: Session = Depends(get_db)) -> dict:
+    """打包导清单(JSON, 供前端打印): 当月发货单 + 每单预估/实际打包费, 给打包供应商核对。"""
+    return mss.packing_checklist(db, year_month=year_month)
+
+
+@router.get("/packing-checklist.xlsx")
+def packing_checklist_xlsx(year_month: str = Query(..., description="发货月 'YYYY-MM'"),
+                           db: Session = Depends(get_db)):
+    """打包导清单 xlsx 下载(订单号文本格式, 防 Excel 转科学计数法)。"""
+    wb, _ = mss.build_packing_checklist_xlsx(db, year_month=year_month)
+    buf = io.BytesIO()
+    wb.save(buf)
+    fname = f"打包对账清单_{year_month}.xlsx"
     return StreamingResponse(
         io.BytesIO(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
