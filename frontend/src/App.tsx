@@ -61,6 +61,7 @@ const FactoryOrdersPage = lazy(() => import('./pages/FactoryOrdersPage'));
 const FactoryStatementPage = lazy(() => import('./pages/FactoryStatementPage'));
 const TaobaoListingsPage = lazy(() => import('./pages/TaobaoListingsPage'));
 const NewProductComposerPage = lazy(() => import('./pages/NewProductComposerPage'));
+const NpdPage = lazy(() => import('./pages/NpdPage'));
 const CustomQuoteV2Page = lazy(() => import('./pages/CustomQuoteV2Page'));
 const WanshifuBillsPage = lazy(() => import('./pages/WanshifuBillsPage'));
 const LogisticsBillsPage = lazy(() => import('./pages/LogisticsBillsPage'));
@@ -98,6 +99,7 @@ function PageFallback() {
 const PATH_TO_GROUP: Record<string, string> = {
   dashboard: 'g-data', forecast: 'g-data', 'ops-checklist': 'g-data', 'sales-ranking': 'g-data',
   products: 'g-product', 'new-product': 'g-product', 'taobao-listings': 'g-product', bom: 'g-product',
+  npd: 'g-product',
   pricing: 'g-price', 'pricing-formulas': 'g-price', quote: 'g-price', customization: 'g-price',
   inventory: 'g-stock', 'product-inventory': 'g-stock', producibility: 'g-stock', samples: 'g-stock',
   orders: 'g-order', customers: 'g-order', aftersales: 'g-order',
@@ -168,6 +170,7 @@ export default function App() {
         { key: 'bom-size-review', label: <Link to="/bom-size-review">BOM尺寸复核</Link> },
         { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
         { key: 'new-product', label: <Link to="/new-product">新产品录入</Link> },
+        { key: 'npd', label: <Link to="/npd">新品开发</Link> },
         { key: 'taobao-listings', label: <Link to="/taobao-listings">淘宝对应表</Link> },
       ],
     },
@@ -457,6 +460,7 @@ export default function App() {
             <Route path="/web-agent" element={<WebAgentPage />} />
             <Route path="/taobao-listings" element={<TaobaoListingsPage />} />
             <Route path="/new-product" element={<NewProductComposerPage />} />
+            <Route path="/npd" element={<NpdPage />} />
             <Route path="/ai" element={<AiAssistantPage />} />
             <Route path="/marketing" element={<MarketingPage />} />
             <Route path="/exceptions" element={<ExceptionsPage />} />

@@ -92,6 +92,7 @@ from app.api import gallery as gallery_api
 from app.api import taobao_listings as taobao_listings_api
 from app.api import product_composer as product_composer_api
 from app.api import taobao_export as taobao_export_api
+from app.api import npd as npd_api
 from app.config import get_settings
 from app.middleware import AuditMiddleware
 
@@ -150,6 +151,17 @@ async def _lifespan(app: FastAPI):
                 logging.getLogger("panse.startup").info("公式规则种入 %d 条", inserted)
     except Exception:  # pragma: no cover - 种入失败不阻断启动
         logging.getLogger("panse.startup").warning("公式规则种入失败", exc_info=True)
+
+    # 新品开发(NPD)阶段定义种入 (P0): 新库/升级后启动即有 24阶段+5门, 幂等
+    try:
+        from app.database import SessionLocal as _SL_N
+        from app.services import npd_service
+        with _SL_N() as _s:
+            n = npd_service.seed_stages(_s)
+            if n:
+                logging.getLogger("panse.startup").info("NPD 阶段种入 %d 条", n)
+    except Exception:  # pragma: no cover - 种入失败不阻断启动
+        logging.getLogger("panse.startup").warning("NPD 阶段种入失败", exc_info=True)
 
     # 看门狗 (Phase 1+5: PID 文件 / 60s 健康检查)
     if os.environ.get("DISABLE_WATCHDOG") != "1":
@@ -377,6 +389,7 @@ app.include_router(taobao_listings_api.router)
 app.include_router(product_composer_api.router)
 app.include_router(taobao_export_api.router)
 app.include_router(web_agent_api.router)
+app.include_router(npd_api.router)
 
 
 @app.get("/api/health")

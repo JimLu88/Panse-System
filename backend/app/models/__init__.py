@@ -65,8 +65,12 @@ from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 from app.models.pricing_custom import PricingCustomField, PricingCustomValue
 from app.models.price_change import PriceChangeLog
 from app.models.taobao_listing import TaobaoListing
+from app.models.npd import NpdProject, NpdStage, NpdStageInstance
 
 __all__ = [
+    "NpdStage",
+    "NpdProject",
+    "NpdStageInstance",
     "Base",
     "TaobaoListing",
     "Material",
