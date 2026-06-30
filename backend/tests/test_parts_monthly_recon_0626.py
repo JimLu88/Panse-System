@@ -183,3 +183,62 @@ def test_export_by_category_bom_detail_dedup_and_woodwork(db_session):
     assert res["orders"][0]["bom_parts"][0]["category"] == "岩板"
     res2 = prs.export_shipped_orders(db, year_month="2026-02", material_key="洞石饰面板")
     assert [p["part_name"] for p in res2["orders"][0]["bom_parts"]] == ["洞石纹理饰面板"]
+
+
+# ── 导清单改造: 下单日期 + 逐件材料单价/总价 + 扁平 xlsx (用户 2026-06-30) ──────
+def test_export_includes_order_date_and_part_prices(db_session):
+    db = db_session
+    _mat(db, "AC-RB", "洞石岩板", 90, "岩板")
+    _bom(db, "AC-RB", "洞石岩板", 2, "1200*480")   # qty_per_product=2
+    _order(db, "M1", date(2026, 2, 10))
+    db.flush()
+    o = prs.export_shipped_orders(db, year_month="2026-02", material_key="岩板")["orders"][0]
+    assert o["order_date"] == "2026-01-01"          # 下单日期
+    assert o["ship_date"] == "2026-02-10"           # 发货日并列
+    p = o["bom_parts"][0]
+    assert p["unit_price"] == 90.0                   # 材料单价 = Material.price
+    assert p["total_price"] == 180.0                 # 总价 = 2 × 90
+
+
+def test_build_shipped_orders_xlsx_flat_table(db_session):
+    db = db_session
+    _mat(db, "AC-RB", "洞石岩板", 90, "岩板")
+    _bom(db, "AC-RB", "洞石岩板", 2, "1200*480")
+    _order(db, "M1", date(2026, 2, 10))
+    db.flush()
+    wb, d = prs.build_shipped_orders_xlsx(db, year_month="2026-02", material_key="岩板")
+    ws = wb.active
+    headers = [c.value for c in ws[1]]
+    assert headers[0] == "订单号"                     # 订单号在第一列
+    assert headers[1] == "下单日期"                   # 紧跟下单日期
+    assert headers[-2:] == ["材料单价", "总价"]        # 末尾两列
+    assert ws.cell(2, 1).value == "M1"                # 数据首列=订单号
+    last = ws.max_row
+    assert "合计" in str(ws.cell(last, 1).value)       # 末行合计
+    assert ws.cell(last, len(headers)).value == d["total_est_parts"] == 180.0
+
+
+def test_xlsx_repeats_order_no_on_every_part_row(db_session):
+    db = db_session
+    _mat(db, "AC-RB", "岩板A", 90, "岩板")
+    _mat(db, "AC-RB2", "岩板B", 50, "岩板")
+    _bom(db, "AC-RB", "岩板A", 1, "1200*480")
+    _bom(db, "AC-RB2", "岩板B", 1, "800*400")
+    _order(db, "M9", date(2026, 2, 10))
+    db.flush()
+    wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02", material_key="岩板")
+    ws = wb.active
+    assert ws.cell(2, 1).value == "M9"               # 同单两个部位行
+    assert ws.cell(3, 1).value == "M9"               # 订单号每行都重复
+    assert "合计" in str(ws.cell(4, 1).value)
+
+
+def test_xlsx_all_orders_branch_has_order_date_col(db_session):
+    db = db_session
+    _seed_yanban(db)
+    _order(db, "S1", date(2026, 2, 10))
+    db.flush()
+    wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02")   # 无 material_key
+    ws = wb.active
+    assert [c.value for c in ws[1]][:3] == ["订单号", "下单日期", "发货日"]
+    assert ws.cell(2, 2).value == "2026-01-01"       # 下单日期列

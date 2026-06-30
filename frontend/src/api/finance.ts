@@ -689,11 +689,14 @@ export interface ShippedOrderBomPart {
   qty: number;
   unit: string | null;
   size_note: string | null;   // 预设尺寸/工艺说明
+  unit_price?: number | null;  // 材料单价 (Material.price)
+  total_price?: number | null; // 总价 = 数量 × 单价
   size_uncertain?: boolean;    // 定制单同料合并: 模板有多个尺寸已取最大, 需人工确认
   alt_size_count?: number;     // 被合并掉的其它尺寸数
 }
 export interface ShippedOrderRow {
   order_no: string;
+  order_date: string | null;   // 下单日期 (区别于发货日 ship_date)
   ship_date: string | null;
   customer_name: string | null;
   product_name: string | null;
@@ -717,6 +720,22 @@ export const fetchShippedOrdersExport = (yearMonth: string, materialKey?: string
     .get<ShippedOrdersExport>('/api/purchases/shipped-orders-export',
       { params: { year_month: yearMonth, material_key: materialKey } })
     .then((r) => r.data);
+
+// 导清单 Excel(.xlsx)下载 — 后端 openpyxl 生成扁平表格, 走 api(带认证) blob 下载。
+export async function downloadShippedOrdersXlsx(yearMonth: string, materialKey?: string) {
+  const resp = await api.get('/api/purchases/shipped-orders-export.xlsx', {
+    params: { year_month: yearMonth, material_key: materialKey },
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `配件对账清单_${materialKey || '全部发货单'}_${yearMonth}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
 
 // ----- 剩余流水（可用资金）测算 -----
 export interface CashFlowLine {

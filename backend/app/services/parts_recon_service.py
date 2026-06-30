@@ -714,6 +714,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
             cover = sporadic_cover.get((o.order_no, material_key))
             out_orders.append({
                 "order_no": o.order_no,
+                "order_date": o.order_date.isoformat() if o.order_date else None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
                 "product_name": o.product_name,
@@ -727,6 +728,8 @@ def export_shipped_orders(db: Session, *, year_month: str,
                     "part_name": p["part_name"], "material_code": p["material_code"],
                     "category": p["category"], "qty": p["qty"], "unit": p["unit"],
                     "size_note": p["size_note"],
+                    # 单价(Material.price) + 总价(=qty×price), _emit 已算好直接透传
+                    "unit_price": p.get("price"), "total_price": p.get("amount"),
                     "size_uncertain": p.get("size_uncertain", False),
                     "alt_size_count": p.get("alt_size_count", 0),
                 } for p in parts],
@@ -737,6 +740,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
             t_est += est
             out_orders.append({
                 "order_no": o.order_no,
+                "order_date": o.order_date.isoformat() if o.order_date else None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
                 "product_name": o.product_name,
@@ -753,6 +757,75 @@ def export_shipped_orders(db: Session, *, year_month: str,
         "total_est_parts": float(t_est.quantize(_CENTS)),
         "orders": out_orders,
     }
+
+
+def build_shipped_orders_xlsx(db: Session, *, year_month: str,
+                              material_key: Optional[str] = None):
+    """导清单 → xlsx(扁平表格)。订单号首列且每行重复; 按分类时逐件展开 BOM 并带
+    材料单价 + 总价(=qty×price)+预估合计行; 下单日期(order_date)与发货日(ship_date)并列。
+    返回 (openpyxl.Workbook, data_dict)。零星/定制/尺寸提示折进产品/尺寸单元格。
+    """
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    d = export_shipped_orders(db, year_month=year_month, material_key=material_key)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = (material_key or "全部发货单")[:28]
+
+    if material_key:
+        headers = ["订单号", "下单日期", "发货日", "产品", "SKU(含尺寸)", "类别",
+                   "部位/料", "数量", "预设尺寸", "材料单价", "总价"]
+        widths = [22, 12, 12, 14, 18, 10, 16, 8, 22, 11, 11]
+        money_cols = [10, 11]
+        ws.append(headers)
+        for o in d["orders"]:
+            prod = o.get("product_name") or ""
+            if o.get("is_custom"):
+                prod = (prod + " ⚠定制·模板").strip()
+            if o.get("sporadic"):
+                prod = (prod + " ⚠已零星现付·勿计月结").strip()
+            for p in (o.get("bom_parts") or [{}]):
+                size = p.get("size_note") or "—"
+                if p.get("size_uncertain"):
+                    size = f"{size} ⚠模板尺寸取最大,请确认"
+                ws.append([
+                    o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
+                    prod, o.get("sku") or "", p.get("category") or "",
+                    p.get("part_name") or "", p.get("qty"), size,
+                    p.get("unit_price"), p.get("total_price"),
+                ])
+        ws.append(["合计(预估,请工厂核对)", "", "", "", "", "", "", "", "", "",
+                   d["total_est_parts"]])
+    else:
+        headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估配件"]
+        widths = [22, 12, 12, 12, 16, 20, 11]
+        money_cols = [7]
+        ws.append(headers)
+        for o in d["orders"]:
+            ws.append([o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
+                       o.get("customer_name") or "", o.get("product_name") or "",
+                       o.get("sku") or "", o.get("est_parts")])
+        ws.append(["合计(预估)", "", "", "", "", "", d["total_est_parts"]])
+
+    head_fill = PatternFill("solid", fgColor="E6F1FB")
+    for c in ws[1]:
+        c.font = Font(bold=True)
+        c.fill = head_fill
+        c.alignment = Alignment(vertical="center", wrap_text=True)
+    for i, wd in enumerate(widths, 1):
+        ws.column_dimensions[get_column_letter(i)].width = wd
+    for mc in money_cols:
+        for (cell,) in ws.iter_rows(min_row=2, min_col=mc, max_col=mc):
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = "0.00"
+            cell.alignment = Alignment(horizontal="right")
+    for c in ws[ws.max_row]:
+        c.font = Font(bold=True)
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+    return wb, d
 
 
 # ── E. 双算自检: 月结分类里被零星采购覆盖的(订单×分类) ──────────────────────────

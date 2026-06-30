@@ -7,14 +7,14 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  Alert, Button, Collapse, Form, Input, InputNumber, Modal, Popconfirm, Select,
+  Alert, Button, Collapse, Dropdown, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
-import { ReloadOutlined, MergeCellsOutlined, PrinterOutlined, EditOutlined } from '@ant-design/icons';
+import { ReloadOutlined, MergeCellsOutlined, PrinterOutlined, EditOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  aggregateRelatedParts, backfillEstParts, deleteMonthlyRecon, fetchBulkMaterialRecon,
-  fetchShippedOrdersExport, listMonthlyRecon, saveMonthlyRecon,
+  aggregateRelatedParts, backfillEstParts, deleteMonthlyRecon, downloadShippedOrdersXlsx,
+  fetchBulkMaterialRecon, fetchShippedOrdersExport, listMonthlyRecon, saveMonthlyRecon,
   type AggregateRelatedResult, type BulkMaterial, type BulkMaterialPeriod, type ShippedOrdersExport,
 } from '../api/client';
 
@@ -36,39 +36,45 @@ function openExportPrint(d: ShippedOrdersExport) {
       &nbsp;|&nbsp; 请工厂核对后填【本月实际总额】: ____________ 元</div>`;
   let body = '';
   if (d.material_key) {
-    body = d.orders.map((o) => {
-      const partRows = (o.bom_parts || []).map((p) => {
-        const warn = p.size_uncertain
-          ? ` <span class="warn">⚠ ${p.alt_size_count ? `模板${(p.alt_size_count ?? 0) + 1}种尺寸已取最大, ` : ''}请确认尺寸是否正确</span>`
-          : '';
-        return `<tr>
-        <td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td>
-        <td>${esc(p.size_note ?? '—')}${warn}</td></tr>`;
+    // 扁平表格: 订单号首列且每行重复 + 下单日期/发货日 + 末尾材料单价/总价 + 预估合计行
+    const rows = d.orders.map((o) => {
+      const prodWarn = o.is_custom ? ' <span class="warn">⚠定制·模板</span>' : '';
+      const lead = `<td class="code">${esc(o.order_no)}</td><td>${esc(o.order_date ?? '')}</td><td>${esc(o.ship_date ?? '')}</td><td>${esc(o.product_name ?? '')}${prodWarn}</td><td>${esc(o.sku ?? '')}</td>`;
+      const parts = o.bom_parts || [];
+      const partRows = (parts.length ? parts : [null]).map((p) => {
+        if (!p) return `<tr>${lead}<td colspan="6" class="muted">无 BOM 明细</td></tr>`;
+        const sw = p.size_uncertain ? ` <span class="warn">⚠模板尺寸取最大</span>` : '';
+        const up = p.unit_price != null ? '¥' + Number(p.unit_price).toFixed(2) : '—';
+        const tp = p.total_price != null ? '¥' + Number(p.total_price).toFixed(2) : '—';
+        return `<tr>${lead}<td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td><td>${esc(p.size_note ?? '—')}${sw}</td><td class="num">${up}</td><td class="num">${tp}</td></tr>`;
       }).join('');
-      const custom = o.is_custom ? ' <span class="warn">⚠定制·BOM为模板, 以实际为准</span>' : '';
       const spor = o.sporadic
-        ? `<div class="spor">⚠ ${esc(o.sporadic_note || '查看是否为零星采购,非月结付款')}</div>`
+        ? `<tr><td colspan="11" class="spor">⚠ ${esc(o.sporadic_note || '该单已走零星采购, 非月结付款, 工厂勿计入')}</td></tr>`
         : '';
-      return `<div class="ordsec"><div class="ordh">${esc(o.order_no)}${o.ship_date ? ' · 发货 ' + esc(o.ship_date) : ''}${o.product_name ? ' · ' + esc(o.product_name) : ''}${o.sku ? ' · ' + esc(o.sku) : ''}${custom}</div>${spor}
-        <table><thead><tr><th>类别</th><th>部位 / 料</th><th>数量</th><th>预设尺寸(实际可能有出入)</th></tr></thead>
-        <tbody>${partRows || '<tr><td colspan="4" class="muted">无 BOM 明细</td></tr>'}</tbody></table></div>`;
+      return partRows + spor;
     }).join('');
+    const totalStr = Number(d.total_est_parts).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    body = `<table><thead><tr>
+      <th>订单号</th><th>下单日期</th><th>发货日</th><th>产品</th><th>SKU(含尺寸)</th>
+      <th>类别</th><th>部位 / 料</th><th>数量</th><th>预设尺寸</th><th>材料单价</th><th>总价</th>
+    </tr></thead><tbody>${rows}
+      <tr class="tot"><td colspan="10" class="num">预估合计（请工厂核对）</td><td class="num">¥${totalStr}</td></tr>
+    </tbody></table>`;
   } else {
     const rows = d.orders.map((o) => `<tr>
-      <td class="code">${esc(o.order_no)}</td><td>${esc(o.ship_date ?? '')}</td>
+      <td class="code">${esc(o.order_no)}</td><td>${esc(o.order_date ?? '')}</td><td>${esc(o.ship_date ?? '')}</td>
       <td>${esc(o.customer_name ?? '')}</td><td>${esc(o.product_name ?? '')}</td>
       <td>${esc(o.sku ?? '')}</td><td class="num">¥${Math.round(o.est_parts).toLocaleString()}</td></tr>`).join('');
-    body = `<table><thead><tr><th>订单号</th><th>发货日</th><th>客户</th><th>产品</th><th>SKU(含尺寸)</th><th>预估配件</th></tr></thead><tbody>${rows}</tbody></table>`;
+    body = `<table><thead><tr><th>订单号</th><th>下单日期</th><th>发货日</th><th>客户</th><th>产品</th><th>SKU(含尺寸)</th><th>预估配件</th></tr></thead><tbody>${rows}</tbody></table>`;
   }
   win.document.write(`<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${esc(title)}</title>
     <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,"Microsoft YaHei",sans-serif;color:#222;padding:10mm}
     h1{font-size:16px;margin-bottom:4px}.sub{color:#666;font-size:12px;margin-bottom:10px}
     table{width:100%;border-collapse:collapse;font-size:12px;margin-bottom:8px}th,td{border:1px solid #bbb;padding:4px 6px;text-align:left}
-    th{background:#f5f5f5}.num{text-align:right}.code{font-family:monospace}.muted{color:#999}.warn{color:#cf1322;font-weight:600;font-size:11px}
-    .spor{color:#cf1322;font-weight:700;font-size:11px;background:#fff1f0;border:1px solid #ffccc7;padding:3px 6px;margin:3px 0 6px}
-    .ordsec{break-inside:avoid;page-break-inside:avoid;margin-bottom:8px}
-    .ordh{font-weight:700;background:#f0f5ff;padding:4px 6px;border-left:3px solid #1677ff}
-    @page{size:A4 portrait;margin:12mm}</style></head><body>${head}${body}</body></html>`);
+    th{background:#f5f5f5}.num{text-align:right;font-variant-numeric:tabular-nums}.code{font-family:monospace;font-size:10px;word-break:break-all}.muted{color:#999}.warn{color:#cf1322;font-weight:600;font-size:11px}
+    .spor{color:#cf1322;font-weight:700;font-size:11px;background:#fff1f0}
+    .tot td{background:#f5f5f5;font-weight:700}
+    @page{size:A4 landscape;margin:10mm}</style></head><body>${head}${body}</body></html>`);
   win.document.close();
   win.focus();
   setTimeout(() => win.print(), 400);
@@ -128,7 +134,8 @@ function ActualEntryModal({ info, onClose, onSaved }: {
   );
 }
 
-function periodColumns(onExport: (period: string) => void, onEnterActual: (period: string) => void,
+function periodColumns(onExport: (period: string, fmt: 'print' | 'xlsx') => void,
+                       onEnterActual: (period: string) => void,
                        settleMode?: '月结' | '零星') {
   const isMonthly = settleMode !== '零星';   // 月结=工厂月度对账+导清单; 零星=采购单自动归账
   return [
@@ -151,10 +158,13 @@ function periodColumns(onExport: (period: string) => void, onEnterActual: (perio
       title: '操作', width: 184,
       render: (_: unknown, r: BulkMaterialPeriod) => isMonthly ? (
         <Space size="small">
-          <Tooltip title={r.order_count ? '导出该分类当月发货单给工厂填月度总额(含BOM部位/尺寸)' : '该月无此料发货单'}>
-            <Button size="small" icon={<PrinterOutlined />} disabled={!r.order_count}
-              onClick={() => onExport(r.period)}>导清单</Button>
-          </Tooltip>
+          <Dropdown disabled={!r.order_count}
+            menu={{ items: [
+              { key: 'print', icon: <PrinterOutlined />, label: '打印清单 (A4)' },
+              { key: 'xlsx', icon: <DownloadOutlined />, label: '下载 Excel (.xlsx)' },
+            ], onClick: ({ key }) => onExport(r.period, key as 'print' | 'xlsx') }}>
+            <Button size="small" icon={<PrinterOutlined />} disabled={!r.order_count}>导清单</Button>
+          </Dropdown>
           <Button size="small" type="link" icon={<EditOutlined />} onClick={() => onEnterActual(r.period)}>
             {r.has_factory_actual ? '改实际' : '录实际'}</Button>
         </Space>
@@ -198,8 +208,12 @@ export default function BulkMaterialReconPanel() {
   const [expMonth, setExpMonth] = useState<string | undefined>(undefined);
   const effMonth = expMonth || allMonths[0];
 
-  const doExport = async (yearMonth: string, categoryKey?: string) => {
+  const doExport = async (yearMonth: string, categoryKey?: string, fmt: 'print' | 'xlsx' = 'print') => {
     try {
+      if (fmt === 'xlsx') {
+        await downloadShippedOrdersXlsx(yearMonth, categoryKey);
+        return;
+      }
       const d = await fetchShippedOrdersExport(yearMonth, categoryKey);
       if (!d.order_count) { message.info(`${yearMonth} 没有${categoryKey ? '该分类的' : ''}已发货订单`); return; }
       openExportPrint(d);
@@ -233,7 +247,7 @@ export default function BulkMaterialReconPanel() {
         <Table<BulkMaterialPeriod> rowKey="period" dataSource={m.periods} size="small" pagination={false}
           scroll={{ x: 720 }} locale={{ emptyText: '该分类暂无发货 / 对账记录' }}
           columns={periodColumns(
-            (period) => doExport(period, m.key),
+            (period, fmt) => doExport(period, m.key, fmt),
             (period) => setActualModal({ categoryKey: m.key, yearMonth: period }),
             m.settle_mode,
           ) as any} />
@@ -255,8 +269,13 @@ export default function BulkMaterialReconPanel() {
         <span style={{ borderLeft: '1px solid #eee', paddingLeft: 12 }}>
           <Select value={effMonth} onChange={setExpMonth} style={{ width: 120 }} placeholder="选发货月"
             options={allMonths.map((mo) => ({ label: mo, value: mo }))} />
-          <Button icon={<PrinterOutlined />} style={{ marginLeft: 8 }} disabled={!effMonth}
-            onClick={() => effMonth && doExport(effMonth)}>导出当月全部发货单</Button>
+          <Dropdown disabled={!effMonth}
+            menu={{ items: [
+              { key: 'print', icon: <PrinterOutlined />, label: '打印 (A4)' },
+              { key: 'xlsx', icon: <DownloadOutlined />, label: '下载 Excel (.xlsx)' },
+            ], onClick: ({ key }) => effMonth && doExport(effMonth, undefined, key as 'print' | 'xlsx') }}>
+            <Button icon={<PrinterOutlined />} style={{ marginLeft: 8 }} disabled={!effMonth}>导出当月全部发货单</Button>
+          </Dropdown>
         </span>
         {cats.length > 0 && (
           <Button type="link" size="small"

@@ -433,3 +433,27 @@ def shipped_orders_export(
     """
     from app.services import parts_recon_service
     return parts_recon_service.export_shipped_orders(db, year_month=year_month, material_key=material_key)
+
+
+@router.get("/shipped-orders-export.xlsx")
+def shipped_orders_export_xlsx(
+    year_month: str = Query(..., description="发货月 'YYYY-MM'"),
+    material_key: Optional[str] = Query(None, description="给了=按分类逐件展开 BOM + 单价/总价"),
+    db: Session = Depends(get_db),
+):
+    """导清单 xlsx 下载(扁平表格: 订单号首列且每行重复 + 下单日期 + 末尾材料单价/总价 + 预估合计)。"""
+    import io
+    from urllib.parse import quote
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services import parts_recon_service
+    wb, _ = parts_recon_service.build_shipped_orders_xlsx(
+        db, year_month=year_month, material_key=material_key)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    name = f"配件对账清单_{material_key or '全部发货单'}_{year_month}.xlsx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
