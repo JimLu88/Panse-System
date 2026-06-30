@@ -245,3 +245,17 @@ class NpdBomLine(Base, TimestampMixin):
     size_type: Mapped[Optional[str]] = mapped_column(String(32))
     is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdKnowledgeNote(Base, TimestampMixin):
+    """设计知识库笔记 (P2b): 材质/工艺/设计边界经验沉淀, 供后续项目检索 + AI 上下文。"""
+    __tablename__ = "npd_knowledge_notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    category: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    material: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    tags: Mapped[Optional[str]] = mapped_column(String(255))
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    body: Mapped[Optional[str]] = mapped_column(Text)
+    source_project_id: Mapped[Optional[int]] = mapped_column(Integer)
+    usage_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -23,7 +23,7 @@ from app.dependencies import require_role
 from app.models.auth import User
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdTask, NpdInspectionItem,
-    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine, NpdKnowledgeNote,
 )
 from app.services import npd_service
 
@@ -44,6 +44,8 @@ class StageOut(BaseModel):
     is_final: bool
     requires_mass_production: bool
     default_sla_days: int
+    warn_days: int = 5
+    critical_days: int = 2
 
 
 class ProjectOut(BaseModel):
@@ -349,7 +351,7 @@ def list_stages(
         id=s.id, code=s.code, name=s.name, group=s.group, sequence=s.sequence,
         color=s.color, is_gate=s.is_gate, is_default=s.is_default, is_final=s.is_final,
         requires_mass_production=s.requires_mass_production,
-        default_sla_days=s.default_sla_days,
+        default_sla_days=s.default_sla_days, warn_days=s.warn_days, critical_days=s.critical_days,
     ) for s in stages]
 
 
@@ -622,6 +624,75 @@ def materialize_project(
         raise HTTPException(400, str(e)) from e
 
 
+class AiSuggestIn(BaseModel):
+    question: str
+    category: Optional[str] = None
+    material: Optional[str] = None
+
+
+@router.post("/ai-suggest")
+def ai_suggest(
+    payload: AiSuggestIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    if not (payload.question or "").strip():
+        raise HTTPException(400, "请输入问题")
+    return npd_service.ai_design_suggest(
+        db, question=payload.question.strip(),
+        category=payload.category, material=payload.material,
+    )
+
+
+class KnowledgeNoteOut(BaseModel):
+    id: int
+    category: Optional[str] = None
+    material: Optional[str] = None
+    tags: Optional[str] = None
+    title: str
+    body: Optional[str] = None
+    usage_count: int = 0
+    created_at: Optional[str] = None
+
+
+class KnowledgeNoteIn(BaseModel):
+    title: str
+    category: Optional[str] = None
+    material: Optional[str] = None
+    tags: Optional[str] = None
+    body: Optional[str] = None
+
+
+def _note_out(n: NpdKnowledgeNote) -> KnowledgeNoteOut:
+    return KnowledgeNoteOut(
+        id=n.id, category=n.category, material=n.material, tags=n.tags, title=n.title,
+        body=n.body, usage_count=n.usage_count,
+        created_at=n.created_at.isoformat() if n.created_at else None,
+    )
+
+
+@router.get("/knowledge-notes", response_model=list[KnowledgeNoteOut])
+def list_knowledge_notes(
+    q: Optional[str] = None,
+    category: Optional[str] = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    return [_note_out(n) for n in npd_service.list_knowledge_notes(db, q=q, category=category)]
+
+
+@router.post("/knowledge-notes", response_model=KnowledgeNoteOut)
+def add_knowledge_note(
+    payload: KnowledgeNoteIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    if not (payload.title or "").strip():
+        raise HTTPException(400, "标题必填")
+    n = npd_service.add_knowledge_note(db, **payload.model_dump(exclude_none=True))
+    return _note_out(n)
+
+
 @router.get("/settings")
 def get_settings(
     db: Session = Depends(get_db),
@@ -633,7 +704,63 @@ def get_settings(
         min_suppliers = int(raw_min) if raw_min else 2
     except (TypeError, ValueError):
         min_suppliers = 2
+    raw_th = settings_service.get(db, "npd_cost_overrun_threshold", env_fallback=False)
     return {
         "mass_production_enabled": npd_service.mass_production_enabled(db),
         "min_supplier_candidates": min_suppliers,
+        "cost_overrun_threshold": raw_th or "",
     }
+
+
+class SettingsIn(BaseModel):
+    mass_production_enabled: Optional[bool] = None
+    min_supplier_candidates: Optional[int] = None
+    cost_overrun_threshold: Optional[Decimal] = None
+
+
+@router.put("/settings")
+def update_settings(
+    payload: SettingsIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    from app.services import settings_service
+    if payload.mass_production_enabled is not None:
+        settings_service.set_value(db, npd_service.KEY_MASS_PRODUCTION,
+                                   "1" if payload.mass_production_enabled else "0")
+    if payload.min_supplier_candidates is not None:
+        settings_service.set_value(db, npd_service.KEY_MIN_SUPPLIERS,
+                                   str(int(payload.min_supplier_candidates)))
+    if payload.cost_overrun_threshold is not None:
+        settings_service.set_value(db, "npd_cost_overrun_threshold",
+                                   str(payload.cost_overrun_threshold))
+    db.commit()
+    return get_settings(db=db, _=_)
+
+
+class StageEditIn(BaseModel):
+    default_sla_days: Optional[int] = None
+    warn_days: Optional[int] = None
+    critical_days: Optional[int] = None
+
+
+@router.put("/stages/{stage_id}", response_model=StageOut)
+def edit_stage(
+    stage_id: int,
+    payload: StageEditIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    s = db.get(NpdStage, stage_id)
+    if s is None:
+        raise HTTPException(404, "阶段不存在")
+    for f, v in payload.model_dump(exclude_unset=True).items():
+        setattr(s, f, max(0, int(v)) if v is not None else v)
+    db.commit()
+    db.refresh(s)
+    return StageOut(
+        id=s.id, code=s.code, name=s.name, group=s.group, sequence=s.sequence,
+        color=s.color, is_gate=s.is_gate, is_default=s.is_default, is_final=s.is_final,
+        requires_mass_production=s.requires_mass_production, default_sla_days=s.default_sla_days,
+        warn_days=s.warn_days, critical_days=s.critical_days,
+    )

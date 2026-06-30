@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
     NpdInspectionTemplate, NpdInspectionItem,
-    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine,
+    NpdCostGate, NpdCraftIssue, NpdSupplierCandidate, NpdBomLine, NpdKnowledgeNote,
 )
 
 # ---- 设置键 ----
@@ -522,6 +522,95 @@ def materialize_project(db: Session, project: NpdProject, *, brand: str,
         "product_code": pcode, "sku_code": f"{pcode}11",
         "materials_created": materials_created, "bom_lines": len(lines),
         "physical_cost": str(phys),
+    }
+
+
+# ----------------------------- AI 设计知识库 (P2b) ----------------------------- #
+
+def list_knowledge_notes(db: Session, *, q: Optional[str] = None,
+                         category: Optional[str] = None) -> list[NpdKnowledgeNote]:
+    from sqlalchemy import or_
+    query = select(NpdKnowledgeNote).order_by(NpdKnowledgeNote.id.desc())
+    conds = []
+    if q:
+        like = f"%{q}%"
+        conds.append(or_(NpdKnowledgeNote.title.ilike(like),
+                         NpdKnowledgeNote.body.ilike(like),
+                         NpdKnowledgeNote.material.ilike(like)))
+    if category:
+        conds.append(NpdKnowledgeNote.category == category)
+    if conds:
+        query = query.where(*conds)
+    return list(db.execute(query.limit(50)).scalars().all())
+
+
+def add_knowledge_note(db: Session, **kw) -> NpdKnowledgeNote:
+    obj = NpdKnowledgeNote(**kw)
+    db.add(obj)
+    db.commit()
+    db.refresh(obj)
+    return obj
+
+
+def ai_design_suggest(db: Session, *, question: str, category: Optional[str] = None,
+                      material: Optional[str] = None) -> dict:
+    """检索本库(知识库笔记/物料/品类工艺) → 喂 AI 给设计/材质/工艺/询价建议。
+    护栏: 区分'本库已有'vs'AI推断', AI 不可用则只回检索结果, 绝不编造检测/价格/合规。"""
+    from sqlalchemy import or_
+    from app.models.material import Material
+
+    sources: list[dict] = []
+    ctx_parts: list[str] = []
+    for n in list_knowledge_notes(db, q=(material or category)):
+        if len(sources) >= 5:
+            break
+        sources.append({"type": "note", "name": n.title, "detail": (n.body or "")[:120]})
+        ctx_parts.append(f"[知识库] {n.title}: {(n.body or '')[:300]}")
+    conds = []
+    if category:
+        conds.append(Material.category == category)
+    if material:
+        conds.append(Material.name.ilike(f"%{material}%"))
+    if conds:
+        for m in db.execute(select(Material).where(or_(*conds)).limit(8)).scalars().all():
+            sources.append({"type": "material", "name": m.name,
+                            "detail": f"{m.category or ''} 单价{m.price}"})
+            ctx_parts.append(f"[物料] {m.name} 分类{m.category or '-'} 单价{m.price} 单位{m.unit or '-'}")
+    try:
+        from app.services import custom_board_template as cbt
+        prof = getattr(cbt, "CATEGORY_PROFILE", {})
+        if category and isinstance(prof, dict):
+            for k, v in prof.items():
+                if category in str(k) or str(k) in str(category):
+                    ctx_parts.append(f"[品类工艺/几何] {k}: {str(v)[:200]}")
+                    sources.append({"type": "profile", "name": str(k), "detail": str(v)[:120]})
+                    break
+    except Exception:  # noqa: BLE001
+        pass
+
+    ctx = "\n".join(ctx_parts)
+    if ctx:
+        extra = ("以下是本系统已有的相关数据(物料库/知识库/品类工艺), 回答时优先据此, "
+                 "明确区分「本库已有」与「通用推断」; 不确定就说不确定; "
+                 "绝不编造检测数值/价格/合规结论。\n" + ctx)
+    else:
+        extra = ("回答家具设计/材质/工艺/询价问题。明确区分事实与推断; 不确定就说; "
+                 "绝不编造检测数值/价格/合规结论。")
+
+    suggestion = None
+    ai_available = False
+    try:
+        from app.services import ai_assistant
+        resp = ai_assistant._call_ai(db, kind="npd", user_message=question,
+                                     extra_system=extra, max_tokens=900)
+        suggestion = getattr(resp, "text", None)
+        ai_available = bool(suggestion)
+    except Exception:  # noqa: BLE001 - AI 不可用不报错, 降级给检索
+        ai_available = False
+
+    return {
+        "suggestion": suggestion, "ai_available": ai_available, "sources": sources,
+        "note": None if ai_available else "AI 暂不可用, 仅返回本库检索结果(可去 后台→AI 配置 接入)",
     }
 
 

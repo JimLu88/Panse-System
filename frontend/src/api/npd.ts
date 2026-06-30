@@ -14,6 +14,8 @@ export interface NpdStage {
   is_final: boolean;
   requires_mass_production: boolean;
   default_sla_days: number;
+  warn_days?: number;
+  critical_days?: number;
 }
 
 export interface NpdProject {
@@ -58,6 +60,7 @@ export interface NpdProjectIn {
 export interface NpdSettings {
   mass_production_enabled: boolean;
   min_supplier_candidates: number;
+  cost_overrun_threshold?: string;
 }
 
 export interface NpdTask {
@@ -220,5 +223,41 @@ export const materializeNpdProject = (projectId: number, payload: { brand: strin
     `/api/npd/projects/${projectId}/materialize`, payload,
   ).then((r) => r.data);
 
+export interface NpdKnowledgeNote {
+  id: number;
+  category: string | null;
+  material: string | null;
+  tags: string | null;
+  title: string;
+  body: string | null;
+  usage_count: number;
+  created_at: string | null;
+}
+
+export interface NpdAiSuggest {
+  suggestion: string | null;
+  ai_available: boolean;
+  sources: { type: string; name: string; detail: string }[];
+  note: string | null;
+}
+
+export const aiSuggestNpd = (payload: { question: string; category?: string | null; material?: string | null }) =>
+  api.post<NpdAiSuggest>('/api/npd/ai-suggest', payload).then((r) => r.data);
+
+export const listNpdKnowledgeNotes = (q?: string, category?: string) =>
+  api.get<NpdKnowledgeNote[]>('/api/npd/knowledge-notes', { params: { q, category } }).then((r) => r.data);
+
+export const addNpdKnowledgeNote = (payload: Record<string, unknown>) =>
+  api.post<NpdKnowledgeNote>('/api/npd/knowledge-notes', payload).then((r) => r.data);
+
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);
+
+export const updateNpdSettings = (payload: {
+  mass_production_enabled?: boolean; min_supplier_candidates?: number;
+  cost_overrun_threshold?: number | string;
+}) => api.put<NpdSettings>('/api/npd/settings', payload).then((r) => r.data);
+
+export const editNpdStage = (id: number, payload: {
+  default_sla_days?: number; warn_days?: number; critical_days?: number;
+}) => api.put<NpdStage>(`/api/npd/stages/${id}`, payload).then((r) => r.data);

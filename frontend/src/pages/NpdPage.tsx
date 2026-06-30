@@ -8,6 +8,8 @@ import type { MenuProps } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import dayjs from 'dayjs';
 import PresetTable from '../components/PresetTable';
+import NpdSettingsPanel from './NpdSettingsPanel';
+import NpdKnowledgePanel from './NpdKnowledgePanel';
 import {
   listNpdStages, listNpdProjects, createNpdProject, moveNpdProject,
   type NpdStage, type NpdProject,
@@ -24,7 +26,7 @@ const PRIORITY = [
 function priorityLabel(p: string) { return p === 'high' ? '高' : p === 'low' ? '低' : '中'; }
 
 export default function NpdPage() {
-  const [view, setView] = useState<'board' | 'list'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'knowledge' | 'settings'>('board');
   const [stages, setStages] = useState<NpdStage[]>([]);
   const [projects, setProjects] = useState<NpdProject[]>([]);
   const [loading, setLoading] = useState(false);
@@ -200,24 +202,26 @@ export default function NpdPage() {
           <Typography.Title level={4} style={{ margin: 0 }}>新品开发</Typography.Title>
           <Segmented
             value={view}
-            onChange={(val) => setView(val as 'board' | 'list')}
-            options={[{ label: '看板', value: 'board' }, { label: '清单', value: 'list' }]}
+            onChange={(val) => setView(val as 'board' | 'list' | 'knowledge' | 'settings')}
+            options={[{ label: '看板', value: 'board' }, { label: '清单', value: 'list' }, { label: '知识库', value: 'knowledge' }, { label: '设置', value: 'settings' }]}
           />
         </Space>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setModalOpen(true)}>立项</Button>
       </Space>
 
-      {loading ? <Spin /> : view === 'board' ? board : (
-        <PresetTable
-          tableKey="npd"
-          rowKey="id"
-          size="small"
-          columns={columns as any}
-          dataSource={projects}
-          pagination={{ pageSize: 50 }}
-          scroll={{ x: 1100 }}
-        />
-      )}
+      {view === 'settings' ? <NpdSettingsPanel />
+        : view === 'knowledge' ? <NpdKnowledgePanel />
+        : loading ? <Spin /> : view === 'board' ? board : (
+          <PresetTable
+            tableKey="npd"
+            rowKey="id"
+            size="small"
+            columns={columns as any}
+            dataSource={projects}
+            pagination={{ pageSize: 50 }}
+            scroll={{ x: 1100 }}
+          />
+        )}
 
       <Modal
         title="新品立项"
