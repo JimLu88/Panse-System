@@ -832,13 +832,24 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     # 在本核心做 → 无论本地飞书入站还是跨机转发(NAS reingest), 实际解密成功的那台都会推。
     imp = r.get("imported") or 0
     if imp:
+        # 解密补上收货地址后, 自动重推此前【缺地址被推】的下单图。
+        # 根治用户 2026-06-30 反馈"飞书里解密后为什么没有进一步自动重新发下单图":
+        # 缺地址的下单图推过一次即标 pushed, 自动推送永久跳过, 地址回来也不再发。
+        repushed = 0
+        try:
+            from app.services import order_sheet_archive_service as _osa
+            repushed = _osa.repush_after_address_fill(db, quiet=True).get("repushed", 0)
+        except Exception:  # noqa: BLE001 —— 重推失败不阻断解密入库
+            logging.getLogger("panse.feishu_bot").warning("解密后重推下单图失败", exc_info=True)
+        r["repushed"] = repushed
         try:
             chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
             if chat:
-                feishu_client.send_text(
-                    db, chat,
-                    f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
-                    f"收货地址已入库,可正常发下单图。")
+                msg = (f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
+                       f"收货地址已入库")
+                msg += (f", 并已自动重推 {repushed} 张此前缺地址的下单图到工厂群。"
+                        if repushed else ",可正常发下单图。")
+                feishu_client.send_text(db, chat, msg)
         except Exception:  # noqa: BLE001 —— 推送失败不阻断解密
             logging.getLogger("panse.feishu_bot").warning("解密成功飞书推送失败")
     return r

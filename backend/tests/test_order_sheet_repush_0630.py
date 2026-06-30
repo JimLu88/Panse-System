@@ -1,0 +1,114 @@
+"""解密补地址后自动重推下单图 (用户 2026-06-30: "飞书里解密后为什么没有进一步自动重新发下单图")。
+
+根治: 缺地址的下单图推过一次即标 pushed=True, 自动推送永久跳过; 口令解密补上地址后
+repush_after_address_fill 把它们清标记并定向重推一次, 幂等 (重推后 pushed_addr_ok=True)。
+"""
+from datetime import date
+from decimal import Decimal
+
+import pytest
+
+from app.models.import_file import ImportedFile
+from app.models.order import Order
+from app.services import order_sheet_archive_service as osa
+from app.services import settings_service
+
+
+@pytest.fixture
+def _feishu_stub(monkeypatch):
+    """挡掉真实飞书外发 + 渲染, 记录被推送(send_image)的次数。"""
+    sent: list[str] = []
+    monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
+    monkeypatch.setattr(osa, "render_png", lambda sheet: f"PNG-{sheet.order_no}".encode())
+    monkeypatch.setattr("app.services.feishu_client.upload_image", lambda db, png: "img_key")
+    monkeypatch.setattr("app.services.feishu_client.send_text", lambda db, cid, text: {"sent": True})
+    monkeypatch.setattr("app.services.feishu_client.send_image",
+                        lambda db, cid, key: sent.append(cid) or {"sent": True})
+    return sent
+
+
+def _sheet_rec(db, no: str) -> ImportedFile:
+    for r in db.query(ImportedFile).filter_by(kind="order_sheet").all():
+        if osa._order_no_from_name(r.original_filename) == no:
+            return r
+    raise AssertionError(f"未找到 {no} 的下单图归档")
+
+
+def _add_order(db, no: str, *, address: str | None):
+    db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"产品{no}",
+                 order_date=date(2026, 6, 20), status="paid", paid_amount=Decimal("1000"),
+                 customer_name=("张三" if address else None),
+                 customer_phone=("13800000000" if address else None),
+                 customer_address=address))
+    db.flush()
+
+
+def test_repush_only_for_orders_that_gained_address(db_session, _feishu_stub):
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "NOADDR-1", address=None)                       # 无地址
+    _add_order(db_session, "HASADDR-1", address="广东省深圳市南山区科技园路1号")  # 有地址
+    osa.generate_pending(db_session)
+
+    # 首推: 两张都推; 地址完整与否记录在 pushed_addr_ok
+    res = osa.push_pending_images(db_session, include_baseline=False)
+    assert res["pushed"] == 2
+    assert _sheet_rec(db_session, "NOADDR-1").row_summary.get("pushed_addr_ok") is False
+    assert _sheet_rec(db_session, "HASADDR-1").row_summary.get("pushed_addr_ok") is True
+
+    # 地址还没补 → 没有可重推的
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 0
+
+    # 解密把地址补上
+    o = db_session.query(Order).filter_by(order_no="NOADDR-1").one()
+    o.customer_name, o.customer_phone = "李四", "13900000000"
+    o.customer_address = "浙江省杭州市西湖区文一路100号"
+    db_session.flush()
+
+    # 重推: 只重推刚补上地址的那张, 有地址那张不受影响
+    r = osa.repush_after_address_fill(db_session)
+    assert r["repushed"] == 1
+    assert r["order_nos"] == ["NOADDR-1"]
+    rec = _sheet_rec(db_session, "NOADDR-1").row_summary
+    assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True
+
+    # 幂等: 已带地址, 再调用为 0 (不会无限重推)
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 0
+
+
+def test_masked_address_counts_as_missing(db_session, _feishu_stub):
+    """星号脱敏地址 = 缺地址: pushed_addr_ok=False, 解密成真实地址后可重推。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "MASK-1", address="广东省***************")
+    osa.generate_pending(db_session)
+    osa.push_pending_images(db_session, include_baseline=False)
+    assert _sheet_rec(db_session, "MASK-1").row_summary.get("pushed_addr_ok") is False
+
+    o = db_session.query(Order).filter_by(order_no="MASK-1").one()
+    o.customer_address = "广东省广州市天河区天河路385号"
+    db_session.flush()
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 1
+
+
+def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monkeypatch):
+    """端到端: 收到飞书口令解密入库成功 → apply_shipping_password 自动重推缺地址单。"""
+    from app.services import feishu_bot_service
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "PWD-1", address=None)
+    osa.generate_pending(db_session)
+    osa.push_pending_images(db_session, include_baseline=False)
+    assert _sheet_rec(db_session, "PWD-1").row_summary.get("pushed_addr_ok") is False
+
+    # 模拟"口令解密入库"补上地址 + 返回 imported=1
+    def _fake_reingest(db):
+        o = db.query(Order).filter_by(order_no="PWD-1").one()
+        o.customer_name, o.customer_phone = "王五", "13700000000"
+        o.customer_address = "江苏省南京市玄武区中山路1号"
+        db.flush()
+        return {"imported": 1, "updated": 1, "tried": 1}
+
+    monkeypatch.setattr("app.services.agent_ingest_service.reingest_pending_shipping", _fake_reingest)
+    r = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
+    assert r.get("imported") == 1
+    assert r.get("repushed") == 1
+    rec = _sheet_rec(db_session, "PWD-1").row_summary
+    assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True

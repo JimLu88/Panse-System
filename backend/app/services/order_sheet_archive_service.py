@@ -387,6 +387,19 @@ def _next_factory_no(db: Session) -> int:
     return (mx or 241) + 1
 
 
+def _addr_ok_for_factory(order: Order) -> bool:
+    """收货地址是否可用于发工厂下单图: 非空 且 未被星号脱敏/加密。
+
+    与下单图自身的红字"没有抓取到收货地址"判据 (factory_sheet 用 validation.is_address_encrypted)
+    保持一致 —— 决定一张下单图是「地址完整推送」还是「缺地址被推」(后者待解密后重推)。
+    """
+    addr = order.customer_address
+    if not addr:
+        return False
+    from app.services import validation
+    return not validation.is_address_encrypted(addr).is_encrypted
+
+
 def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
     """无收货地址的单 → 飞书提示哪些单缺地址 + 提醒去淘宝后台提升解密额度 (用户拍板 2026-06-20)。
 
@@ -436,7 +449,7 @@ def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
 
 
 def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False,
-                        quiet: bool = False) -> dict:
+                        quiet: bool = False, only_order_nos: "set[str] | None" = None) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
 
     quiet=True (每小时自愈补推用): 只推单张图片, 跳过末尾 ZIP 打包 + 无收货地址提醒
@@ -461,7 +474,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     sent_nos: list[str] = []
     _zip_items: list = []
     _missing_addr: list = []
-    for rec in _pending_push_records(db, include_baseline=include_baseline)[:limit]:
+    records = _pending_push_records(db, include_baseline=include_baseline)
+    if only_order_nos is not None:
+        # 定向重推 (解密补地址后): 只推指定单号, 不误扫其它待推/历史基线
+        records = [r for r in records if _order_no_from_name(r.original_filename) in only_order_nos]
+    for rec in records[:limit]:
         no = _order_no_from_name(rec.original_filename)
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order:
@@ -486,12 +503,15 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
             feishu_client.send_text(db, chat_id, cap)
             feishu_client.send_image(db, chat_id, key)
-            rec.row_summary = {**(rec.row_summary or {}), "pushed": True}
+            addr_ok = _addr_ok_for_factory(order)
+            # pushed_addr_ok 记录"这张图推送时收货地址是否完整": False=缺地址被推,
+            # 待飞书口令解密补上地址后由 repush_after_address_fill 自动重推 (用户 2026-06-30)。
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": addr_ok}
             db.commit()
             pushed += 1
             sent_nos.append(no)
             _zip_items.append((order, png))
-            if not (order.customer_name or order.customer_phone or order.customer_address):
+            if not addr_ok:
                 _missing_addr.append((no, order.factory_no))
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
@@ -503,6 +523,56 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos}
+
+
+def find_pushed_without_address(db: Session) -> list[ImportedFile]:
+    """此前【缺地址被推】、而对应订单现在已有可用收货地址的下单图归档记录。
+
+    判据: row_summary.pushed=True 且 pushed_addr_ok=False (上次推时没地址/被脱敏),
+    且订单当前 _addr_ok_for_factory()=True (口令解密后地址已补上)。这些就是值得重推的单。
+    """
+    recs = db.execute(
+        select(ImportedFile).where(ImportedFile.kind == "order_sheet").order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    out: list[ImportedFile] = []
+    for r in recs:
+        st = r.row_summary or {}
+        if not st.get("pushed") or st.get("pushed_addr_ok"):
+            continue   # 没推过 / 上次已带地址 → 不重推
+        no = _order_no_from_name(r.original_filename)
+        if not no:
+            continue
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order or not _addr_ok_for_factory(order):
+            continue   # 订单不存在 / 仍无可用地址 → 重推也还是空, 不推
+        out.append(r)
+    return out
+
+
+def repush_after_address_fill(db: Session, *, limit: int = 50, quiet: bool = True) -> dict:
+    """飞书口令解密补上收货地址后, 自动重推此前【缺地址被推】的下单图 (用户 2026-06-30)。
+
+    根治: 缺地址的下单图被推一次后即标 pushed=True, 任何自动推送都会永久跳过它 ——
+    地址解密回来也不会再发。这里把这些单的 pushed 标记清掉再定向重推一次。
+    幂等: 重推成功后 pushed_addr_ok 置 True (push_pending_images 内), 不会再被选中。
+    quiet=True: 不重复发 ZIP / 无地址提醒 (这些单已补上地址)。
+    返回 {repushed, failed, order_nos, candidates}。
+    """
+    targets = find_pushed_without_address(db)
+    if not targets:
+        return {"repushed": 0, "failed": 0, "order_nos": [], "candidates": 0}
+    order_nos: set[str] = set()
+    for r in targets[:limit]:
+        no = _order_no_from_name(r.original_filename)
+        if not no:
+            continue
+        r.row_summary = {**(r.row_summary or {}), "pushed": False}   # 清标记, 让 push 重新选中
+        order_nos.add(no)
+    db.commit()
+    res = push_pending_images(db, limit=max(limit, len(order_nos)),
+                              include_baseline=True, quiet=quiet, only_order_nos=order_nos)
+    return {"repushed": res.get("pushed", 0), "failed": res.get("failed", 0),
+            "order_nos": res.get("order_nos", []), "candidates": len(order_nos)}
 
 
 def baseline_existing_sheets(db: Session) -> int:
