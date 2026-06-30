@@ -126,3 +126,46 @@ class NpdTask(Base, TimestampMixin):
     done_by: Mapped[Optional[str]] = mapped_column(String(64))
     sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+
+
+class NpdInspectionTemplate(Base):
+    """验收检验项模板 (P1b, 借 ERPNext Quality): 挂在打样/验收阶段。
+    check_type: pass=勾选通过 / numeric=填实测值(可设 min/max 自动判) / text=填期望值匹配。"""
+    __tablename__ = "npd_inspection_templates"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    stage_code: Mapped[str] = mapped_column(String(8), nullable=False, index=True)
+    item_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    check_type: Mapped[str] = mapped_column(String(16), nullable=False, default="pass")
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+    min_val: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    max_val: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    expected: Mapped[Optional[str]] = mapped_column(String(64))
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class NpdInspectionItem(Base, TimestampMixin):
+    """项目阶段下的验收项实例: 填实测/勾选 → 自动或人工判 result。"""
+    __tablename__ = "npd_inspection_items"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("npd_projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    stage_instance_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("npd_stage_instances.id", ondelete="CASCADE"), index=True
+    )
+    stage_code: Mapped[Optional[str]] = mapped_column(String(8), index=True)
+    template_id: Mapped[Optional[int]] = mapped_column(Integer)
+    item_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    check_type: Mapped[str] = mapped_column(String(16), nullable=False, default="pass")
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+    min_val: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    max_val: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 3))
+    expected: Mapped[Optional[str]] = mapped_column(String(64))
+    is_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    reading: Mapped[Optional[str]] = mapped_column(String(128))   # 实测值/勾选记录
+    result: Mapped[str] = mapped_column(String(8), nullable=False, default="pending")  # pass/fail/pending
+    sort: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    remark: Mapped[Optional[str]] = mapped_column(Text)

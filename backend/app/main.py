@@ -159,8 +159,10 @@ async def _lifespan(app: FastAPI):
         with _SL_N() as _s:
             n = npd_service.seed_stages(_s)
             nt = npd_service.seed_task_templates(_s)
-            if n or nt:
-                logging.getLogger("panse.startup").info("NPD 种入: 阶段 %d / 任务模板 %d 条", n, nt)
+            ni = npd_service.seed_inspection_templates(_s)
+            if n or nt or ni:
+                logging.getLogger("panse.startup").info(
+                    "NPD 种入: 阶段 %d / 任务模板 %d / 验收模板 %d 条", n, nt, ni)
     except Exception:  # pragma: no cover - 种入失败不阻断启动
         logging.getLogger("panse.startup").warning("NPD 种入失败", exc_info=True)
 

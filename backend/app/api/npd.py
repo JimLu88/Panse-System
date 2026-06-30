@@ -21,7 +21,9 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
-from app.models.npd import NpdProject, NpdStage, NpdStageInstance, NpdTask
+from app.models.npd import (
+    NpdProject, NpdStage, NpdStageInstance, NpdTask, NpdInspectionItem,
+)
 from app.services import npd_service
 
 router = APIRouter(prefix="/api/npd", tags=["npd"])
@@ -140,6 +142,20 @@ class TaskOut(BaseModel):
     remark: Optional[str] = None
 
 
+class InspectionOut(BaseModel):
+    id: int
+    item_name: str
+    check_type: str
+    unit: Optional[str] = None
+    min_val: Optional[Decimal] = None
+    max_val: Optional[Decimal] = None
+    expected: Optional[str] = None
+    is_required: bool
+    reading: Optional[str] = None
+    result: str
+    remark: Optional[str] = None
+
+
 class TimelineItem(BaseModel):
     stage_id: int
     code: str
@@ -152,6 +168,7 @@ class TimelineItem(BaseModel):
     deadline: Optional[str] = None
     completed_at: Optional[str] = None
     tasks: list[TaskOut] = []
+    inspections: list[InspectionOut] = []
 
 
 class ProjectDetailOut(BaseModel):
@@ -167,6 +184,22 @@ def _task_out(t: NpdTask) -> TaskOut:
         done_at=t.done_at.isoformat() if t.done_at else None,
         done_by=t.done_by, remark=t.remark,
     )
+
+
+def _inspection_out(it: NpdInspectionItem) -> InspectionOut:
+    return InspectionOut(
+        id=it.id, item_name=it.item_name, check_type=it.check_type, unit=it.unit,
+        min_val=it.min_val, max_val=it.max_val, expected=it.expected,
+        is_required=it.is_required, reading=it.reading, result=it.result, remark=it.remark,
+    )
+
+
+class InspectionSaveIn(BaseModel):
+    reading: Optional[str] = None
+    result: Optional[str] = None
+    min_val: Optional[Decimal] = None
+    max_val: Optional[Decimal] = None
+    remark: Optional[str] = None
 
 
 # ----------------------------- 端点 ----------------------------- #
@@ -293,6 +326,7 @@ def project_detail(
             deadline=(ins.deadline.isoformat() if ins and ins.deadline else None),
             completed_at=(ins.completed_at.isoformat() if ins and ins.completed_at else None),
             tasks=[_task_out(t) for t in row["tasks"]],
+            inspections=[_inspection_out(it) for it in row["inspections"]],
         ))
     return ProjectDetailOut(project=_project_out(proj, stages, deadlines), timeline=items)
 
@@ -309,6 +343,23 @@ def toggle_task(
         raise HTTPException(404, "任务不存在")
     npd_service.toggle_task(db, t, payload.done, by=getattr(user, "username", None))
     return _task_out(t)
+
+
+@router.put("/inspections/{item_id}", response_model=InspectionOut)
+def save_inspection(
+    item_id: int,
+    payload: InspectionSaveIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    it = db.get(NpdInspectionItem, item_id)
+    if it is None:
+        raise HTTPException(404, "验收项不存在")
+    npd_service.save_inspection_item(
+        db, it, reading=payload.reading, result=payload.result,
+        min_val=payload.min_val, max_val=payload.max_val, remark=payload.remark,
+    )
+    return _inspection_out(it)
 
 
 @router.get("/settings")

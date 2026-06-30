@@ -74,6 +74,20 @@ export interface NpdTask {
   remark: string | null;
 }
 
+export interface NpdInspection {
+  id: number;
+  item_name: string;
+  check_type: string;        // pass / numeric / text
+  unit: string | null;
+  min_val: string | null;
+  max_val: string | null;
+  expected: string | null;
+  is_required: boolean;
+  reading: string | null;
+  result: string;            // pass / fail / pending
+  remark: string | null;
+}
+
 export interface NpdTimelineItem {
   stage_id: number;
   code: string;
@@ -86,6 +100,7 @@ export interface NpdTimelineItem {
   deadline: string | null;
   completed_at: string | null;
   tasks: NpdTask[];
+  inspections: NpdInspection[];
 }
 
 export interface NpdProjectDetail {
@@ -115,6 +130,15 @@ export const getNpdProjectDetail = (id: number) =>
 
 export const toggleNpdTask = (id: number, done: boolean) =>
   api.put<NpdTask>(`/api/npd/tasks/${id}`, { done }).then((r) => r.data);
+
+export const saveNpdInspection = (
+  id: number,
+  payload: {
+    reading?: string | null; result?: string | null;
+    min_val?: number | string | null; max_val?: number | string | null;
+    remark?: string | null;
+  },
+) => api.put<NpdInspection>(`/api/npd/inspections/${id}`, payload).then((r) => r.data);
 
 export const getNpdSettings = () =>
   api.get<NpdSettings>('/api/npd/settings').then((r) => r.data);

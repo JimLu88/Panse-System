@@ -67,6 +67,7 @@ from app.models.price_change import PriceChangeLog
 from app.models.taobao_listing import TaobaoListing
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
+    NpdInspectionTemplate, NpdInspectionItem,
 )
 
 __all__ = [
@@ -75,6 +76,8 @@ __all__ = [
     "NpdStageInstance",
     "NpdStageTaskTemplate",
     "NpdTask",
+    "NpdInspectionTemplate",
+    "NpdInspectionItem",
     "Base",
     "TaobaoListing",
     "Material",

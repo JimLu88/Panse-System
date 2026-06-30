@@ -2,14 +2,81 @@ import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Card, Tag, Progress, Timeline, Checkbox, Typography, Space, Spin, Button,
-  message, Empty, Descriptions,
+  message, Empty, Descriptions, InputNumber, Segmented,
 } from 'antd';
 import { ArrowLeftOutlined } from '@ant-design/icons';
 import dayjs from 'dayjs';
 import {
-  getNpdProjectDetail, toggleNpdTask,
-  type NpdProjectDetail, type NpdTimelineItem, type NpdTask,
+  getNpdProjectDetail, toggleNpdTask, saveNpdInspection,
+  type NpdProjectDetail, type NpdTimelineItem, type NpdTask, type NpdInspection,
 } from '../api/client';
+
+function resultTag(r: string) {
+  return r === 'pass' ? <Tag color="green">通过</Tag>
+    : r === 'fail' ? <Tag color="red">不通过</Tag> : <Tag>待检</Tag>;
+}
+
+function InspectionRow({ item, onSaved }: { item: NpdInspection; onSaved: (it: NpdInspection) => void }) {
+  const [reading, setReading] = useState<string>(item.reading ?? '');
+  const [lo, setLo] = useState<string>(item.min_val ?? '');
+  const [hi, setHi] = useState<string>(item.max_val ?? '');
+  const [saving, setSaving] = useState(false);
+  const isNum = item.check_type === 'numeric';
+
+  const setResult = async (result: string) => {
+    try {
+      onSaved(await saveNpdInspection(item.id, { result }));
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    }
+  };
+  const saveNum = async () => {
+    setSaving(true);
+    try {
+      onSaved(await saveNpdInspection(item.id, {
+        reading: reading === '' ? null : String(reading),
+        min_val: lo === '' ? null : lo,
+        max_val: hi === '' ? null : hi,
+      }));
+      message.success('已保存');
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 8, padding: '2px 0' }}>
+      <span style={{ minWidth: 180 }}>
+        {item.is_required && <Typography.Text type="danger">★ </Typography.Text>}{item.item_name}
+      </span>
+      {isNum ? (
+        <Space size={4} wrap>
+          <InputNumber
+            size="small" placeholder="实测" style={{ width: 130 }}
+            value={reading === '' ? null : Number(reading)}
+            onChange={(v) => setReading(v == null ? '' : String(v))}
+            addonAfter={item.unit || undefined}
+          />
+          <InputNumber size="small" placeholder="下限" style={{ width: 86 }}
+            value={lo === '' ? null : Number(lo)} onChange={(v) => setLo(v == null ? '' : String(v))} />
+          <InputNumber size="small" placeholder="上限" style={{ width: 86 }}
+            value={hi === '' ? null : Number(hi)} onChange={(v) => setHi(v == null ? '' : String(v))} />
+          <Button size="small" loading={saving} onClick={saveNum}>保存</Button>
+        </Space>
+      ) : (
+        <Segmented
+          size="small"
+          value={item.result === 'pass' ? 'pass' : item.result === 'fail' ? 'fail' : ''}
+          onChange={(v) => setResult(String(v))}
+          options={[{ label: '通过', value: 'pass' }, { label: '不通过', value: 'fail' }]}
+        />
+      )}
+      {resultTag(item.result)}
+    </div>
+  );
+}
 
 const GROUP_LABEL: Record<string, string> = {
   plan: '立项', design: '设计', sourcing: '寻源', prototype: '打样',
@@ -52,6 +119,16 @@ export default function NpdDetailPage() {
     }
   };
 
+  const onInspSaved = (it: NpdInspection) => {
+    setData((prev) => prev && {
+      ...prev,
+      timeline: prev.timeline.map((row) => ({
+        ...row,
+        inspections: row.inspections.map((x) => (x.id === it.id ? it : x)),
+      })),
+    });
+  };
+
   if (loading) return <div style={{ padding: 24 }}><Spin /></div>;
   if (!data) return <div style={{ padding: 24 }}><Empty description="未找到项目" /></div>;
 
@@ -84,6 +161,26 @@ export default function NpdDetailPage() {
     );
   };
 
+  const inspectionList = (row: NpdTimelineItem) => {
+    if (!row.inspections.length) return null;
+    const undone = row.inspections.filter((i) => i.is_required && i.result !== 'pass').length;
+    return (
+      <div style={{ marginTop: 8 }}>
+        <Typography.Text strong style={{ fontSize: 12 }}>
+          验收清单
+          {row.is_current && undone > 0 && (
+            <Typography.Text type="warning"> (还有 {undone} 项必检未通过)</Typography.Text>
+          )}
+        </Typography.Text>
+        <div style={{ marginTop: 4 }}>
+          {row.inspections.map((it) => (
+            <InspectionRow key={it.id} item={it} onSaved={onInspSaved} />
+          ))}
+        </div>
+      </div>
+    );
+  };
+
   const items = data.timeline.map((row) => {
     const done = row.instance_status === 'done';
     const color = row.is_current ? 'blue' : done ? 'green' : 'gray';
@@ -106,6 +203,7 @@ export default function NpdDetailPage() {
             )}
           </Space>
           {taskList(row)}
+          {inspectionList(row)}
         </div>
       ),
     };

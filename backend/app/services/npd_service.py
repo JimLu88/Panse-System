@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,
+    NpdInspectionTemplate, NpdInspectionItem,
 )
 
 # ---- 设置键 ----
@@ -187,6 +188,136 @@ def undone_required_tasks(db: Session, stage_instance_id: int) -> list[str]:
     return list(rows)
 
 
+# ---- 验收检验项模板 (P1b): stage_code -> [(item_name, check_type, unit, is_required)] ----
+_INSPECTION_SEED: dict[str, list[tuple]] = {
+    # 白胚验收: 尺寸/含水率/结构, 上漆前最后能改的节点
+    "S13": [
+        ("长", "numeric", "mm", True), ("宽", "numeric", "mm", True),
+        ("高", "numeric", "mm", True), ("对角线差(验方正)", "numeric", "mm", True),
+        ("板厚", "numeric", "mm", False), ("五金孔距/孔位", "numeric", "mm", False),
+        ("含水率", "numeric", "%", True),
+        ("结构/榫卯牢固", "pass", None, True),
+        ("拼板平整无高低差", "pass", None, True),
+        ("无开裂/虫眼/腐朽/大节疤", "pass", None, True),
+        ("板面无补土过度/无砂痕", "pass", None, False),
+        ("樱桃木等易变色木材已做防氧化防护", "pass", None, True),
+    ],
+    # 确认样 DVT: 外观/饰面定稿
+    "S15": [
+        ("表面无划痕/磕碰", "pass", None, True),
+        ("无气泡/流挂/橘皮(漆面)", "pass", None, True),
+        ("封边平整无翘起/无开胶", "pass", None, True),
+        ("颜色对标准色卡无明显色差", "pass", None, True),
+        ("木纹/拼缝对称美观、缝隙均匀", "pass", None, False),
+        ("五金外露件无瑕疵/无锈", "pass", None, True),
+        ("无补土痕/砂痕", "pass", None, False),
+        ("整体观感(对称/比例/手感)合格", "pass", None, True),
+        ("贴皮诚实标注+封边无翘/无气泡", "pass", None, False),
+        ("玻璃钢化3C标识/磨边倒角", "pass", None, False),
+        ("岩板无暗裂/崩边/平整", "pass", None, False),
+    ],
+    # 整体安装验收: 全部装好再打包
+    "S17": [
+        ("全部安装后整体试装通过", "pass", None, True),
+        ("整体外观/缝隙均匀", "pass", None, True),
+        ("五金开合顺滑/承重正常", "pass", None, False),
+        ("配件齐全对照BOM", "pass", None, True),
+        ("装好再打包+标配件+附安装说明", "pass", None, True),
+    ],
+}
+
+
+def seed_inspection_templates(db: Session) -> int:
+    """幂等种入验收模板。已存在(按 stage_code+item_name)则跳过。"""
+    existing = {
+        (sc, n) for (sc, n) in db.execute(
+            select(NpdInspectionTemplate.stage_code, NpdInspectionTemplate.item_name)
+        ).all()
+    }
+    n = 0
+    for stage_code, items in _INSPECTION_SEED.items():
+        for sort, (item_name, check_type, unit, is_required) in enumerate(items):
+            if (stage_code, item_name) in existing:
+                continue
+            db.add(NpdInspectionTemplate(
+                stage_code=stage_code, item_name=item_name, check_type=check_type,
+                unit=unit, is_required=is_required, sort=sort,
+            ))
+            n += 1
+    if n:
+        db.commit()
+    return n
+
+
+def _instantiate_stage_inspections(db: Session, project_id: int,
+                                   inst: NpdStageInstance, stage_code: str) -> int:
+    """按验收模板给某阶段实例生成检验项。幂等。"""
+    has = db.execute(
+        select(NpdInspectionItem.id).where(NpdInspectionItem.stage_instance_id == inst.id).limit(1)
+    ).first()
+    if has:
+        return 0
+    tmpls = db.execute(
+        select(NpdInspectionTemplate).where(NpdInspectionTemplate.stage_code == stage_code)
+        .order_by(NpdInspectionTemplate.sort)
+    ).scalars().all()
+    n = 0
+    for t in tmpls:
+        db.add(NpdInspectionItem(
+            project_id=project_id, stage_instance_id=inst.id, stage_code=stage_code,
+            template_id=t.id, item_name=t.item_name, check_type=t.check_type, unit=t.unit,
+            min_val=t.min_val, max_val=t.max_val, expected=t.expected,
+            is_required=t.is_required, result="pending", sort=t.sort,
+        ))
+        n += 1
+    return n
+
+
+def undone_required_inspections(db: Session, stage_instance_id: int) -> list[str]:
+    """必检项中尚未 pass 的(pending 或 fail 都算未过)。"""
+    rows = db.execute(
+        select(NpdInspectionItem.item_name).where(
+            NpdInspectionItem.stage_instance_id == stage_instance_id,
+            NpdInspectionItem.is_required.is_(True),
+            NpdInspectionItem.result != "pass",
+        )
+    ).scalars().all()
+    return list(rows)
+
+
+def _judge_inspection(item: NpdInspectionItem, reading: Optional[str],
+                      result: Optional[str]) -> str:
+    """数值项有 min/max 且读数可解析 → 自动判; 否则用传入 result(勾选/人工)。"""
+    if item.check_type == "numeric" and reading not in (None, "") \
+            and (item.min_val is not None or item.max_val is not None):
+        try:
+            v = Decimal(str(reading))
+        except (ArithmeticError, ValueError, TypeError):
+            return result or "pending"
+        lo = item.min_val if item.min_val is not None else v
+        hi = item.max_val if item.max_val is not None else v
+        return "pass" if lo <= v <= hi else "fail"
+    return result or item.result or "pending"
+
+
+def save_inspection_item(db: Session, item: NpdInspectionItem, *,
+                         reading: Optional[str] = None, result: Optional[str] = None,
+                         min_val: Optional[Decimal] = None, max_val: Optional[Decimal] = None,
+                         remark: Optional[str] = None) -> NpdInspectionItem:
+    if reading is not None:
+        item.reading = reading
+    if min_val is not None:
+        item.min_val = min_val
+    if max_val is not None:
+        item.max_val = max_val
+    if remark is not None:
+        item.remark = remark
+    item.result = _judge_inspection(item, item.reading, result)
+    db.commit()
+    db.refresh(item)
+    return item
+
+
 def mass_production_enabled(db: Session) -> bool:
     from app.services import settings_service
     raw = settings_service.get(db, KEY_MASS_PRODUCTION, env_fallback=False)
@@ -255,6 +386,7 @@ def create_project(db: Session, *, name: str, category: Optional[str] = None,
     if stage is not None:
         inst = _open_instance(db, proj.id, stage.id, stage.default_sla_days)
         _instantiate_stage_tasks(db, proj.id, inst, stage.code, inst.deadline)
+        _instantiate_stage_inspections(db, proj.id, inst, stage.code)
     db.commit()
     db.refresh(proj)
     return proj
@@ -291,10 +423,15 @@ def move_project(db: Session, project: NpdProject, target_stage_id: int,
     if (not force and cur is not None and cur_stage is not None
             and target.sequence > cur_stage.sequence):
         undone = undone_required_tasks(db, cur.id)
-        if undone:
+        undone_insp = undone_required_inspections(db, cur.id)
+        if undone or undone_insp:
+            parts = []
+            if undone:
+                parts.append("待办未完成: " + "、".join(undone[:6]) + ("…" if len(undone) > 6 else ""))
+            if undone_insp:
+                parts.append("验收未通过: " + "、".join(undone_insp[:6]) + ("…" if len(undone_insp) > 6 else ""))
             raise ValueError(
-                f"当前阶段「{cur_stage.name}」还有必做项未完成, 不能进入下一步: "
-                + "、".join(undone[:8]) + ("…" if len(undone) > 8 else "")
+                f"当前阶段「{cur_stage.name}」还有必做项, 不能进入下一步 —— " + "; ".join(parts)
             )
 
     if cur is not None and cur.stage_id != target_stage_id:
@@ -309,6 +446,7 @@ def move_project(db: Session, project: NpdProject, target_stage_id: int,
     if cur is None or cur.stage_id != target_stage_id:
         inst = _open_instance(db, project.id, target_stage_id, target.default_sla_days)
         _instantiate_stage_tasks(db, project.id, inst, target.code, inst.deadline)
+        _instantiate_stage_inspections(db, project.id, inst, target.code)
     db.commit()
     db.refresh(project)
     return project
@@ -349,6 +487,13 @@ def project_timeline(db: Session, project: NpdProject) -> list[dict]:
     tasks_by_inst: dict[int, list[NpdTask]] = {}
     for t in tasks:
         tasks_by_inst.setdefault(t.stage_instance_id or 0, []).append(t)
+    insp = db.execute(
+        select(NpdInspectionItem).where(NpdInspectionItem.project_id == project.id)
+        .order_by(NpdInspectionItem.sort, NpdInspectionItem.id)
+    ).scalars().all()
+    insp_by_inst: dict[int, list[NpdInspectionItem]] = {}
+    for it in insp:
+        insp_by_inst.setdefault(it.stage_instance_id or 0, []).append(it)
     out: list[dict] = []
     for s in stages:
         ins = inst_by_stage.get(s.id)
@@ -356,6 +501,7 @@ def project_timeline(db: Session, project: NpdProject) -> list[dict]:
             "stage": s,
             "instance": ins,
             "tasks": tasks_by_inst.get(ins.id, []) if ins else [],
+            "inspections": insp_by_inst.get(ins.id, []) if ins else [],
             "is_current": project.current_stage_id == s.id,
         })
     return out
