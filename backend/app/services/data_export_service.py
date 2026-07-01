@@ -462,6 +462,61 @@ def _apply_pricing_formulas(ws, *, col_offset: int = 0, data_start_row: int = 2)
             ws[f"{rate}{r}"] = f'=IFERROR({marg}{r}/{bp}{r},"")'
 
 
+def _coupon_if(cellref: str, tiers) -> str:
+    """88VIP 消费券阶梯 → 嵌套 IF (降序匹配最高满足档)。tiers: [[阈值, 减额], ...]。"""
+    from decimal import Decimal as D
+    expr = "0"
+    for thr, ded in sorted(tiers, key=lambda t: D(str(t[0]))):
+        expr = f"IF({cellref}>={float(thr):g},{float(ded):g},{expr})"
+    return expr
+
+
+def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
+                          mid_tiers, big_tiers) -> None:
+    """平台活动价派生列改活公式 (复刻 pricing_calc_service.recompute_promo):
+      淘宝活动价/小红书标价 = 日常价; 店内到手 = 日常×店铺宝系数;
+      中促买家价 = 日常×(1−平台立减)×中促系数; 中促店铺到手 = 买家×(1−88VIP佣金);
+      中促VIP到手 = 买家 − 消费券(嵌套IF); 大促同理; 小红书促销价 = 小红书活动价×(1−折扣)。
+    仅在该行相关输入(系数/活动价)非空时写 → 与引擎一致, 不破坏无该档的行。"""
+    from openpyxl.utils import get_column_letter
+    def L(f):
+        i = pos.get(f)
+        return get_column_letter(i) if i else None
+    daily = L("daily_price")
+    if not daily:
+        return
+    C = {f: L(f) for f in (
+        "taobao_activity_price", "xhs_list_price", "shop_internal_final", "shop_promo_rate",
+        "mid_buyer_price", "mid_platform_discount", "mid_shop_rate", "mid_vip_commission",
+        "mid_shop_receipt", "mid_vip_final", "big_buyer_price", "big_platform_discount",
+        "big_shop_rate", "big_vip_commission", "big_shop_receipt", "big_vip_final",
+        "xhs_promo_price", "xhs_activity_price", "xhs_promo_discount")}
+    def has(col, r):
+        return bool(col) and ws[f"{col}{r}"].value not in (None, "")
+    def put(f, r, formula):
+        if C.get(f):
+            ws[f"{C[f]}{r}"] = formula
+    for r in range(data_start_row, ws.max_row + 1):
+        if not has(daily, r):
+            continue
+        put("taobao_activity_price", r, f"={daily}{r}")
+        put("xhs_list_price", r, f"={daily}{r}")
+        if has(C["shop_promo_rate"], r):
+            put("shop_internal_final", r, f'={daily}{r}*{C["shop_promo_rate"]}{r}')
+        if has(C["mid_shop_rate"], r):
+            mbp = f'{C["mid_buyer_price"]}{r}'
+            put("mid_buyer_price", r, f'={daily}{r}*(1-{C["mid_platform_discount"]}{r})*{C["mid_shop_rate"]}{r}')
+            put("mid_shop_receipt", r, f'={mbp}*(1-{C["mid_vip_commission"]}{r})')
+            put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
+        if has(C["big_shop_rate"], r):
+            bbp = f'{C["big_buyer_price"]}{r}'
+            put("big_buyer_price", r, f'={daily}{r}*(1-{C["big_platform_discount"]}{r})*{C["big_shop_rate"]}{r}')
+            put("big_shop_receipt", r, f'={bbp}*(1-{C["big_vip_commission"]}{r})')
+            put("big_vip_final", r, f'={bbp}-({_coupon_if(bbp, big_tiers)})')
+        if has(C["xhs_activity_price"], r):
+            put("xhs_promo_price", r, f'={C["xhs_activity_price"]}{r}*(1-{C["xhs_promo_discount"]}{r})')
+
+
 # ── 定价总表: 中文表头 + 平台活动价(淘宝/小红书)补全 + 分类配色 (用户 2026-07-01) ──────
 # PricingSkuPromo 追加列 (顺序即列序): 淘宝/店内 → 无国补中促 → 无国补大促 → 小红书
 _PRICING_PROMO_FIELDS = [
@@ -501,7 +556,23 @@ _PRICING_CN: dict[str, str] = {
     "xhs_item_id": "小红书商品ID", "xhs_sku_name": "小红书SKU名", "xhs_sku_id": "小红书SKU ID",
     "xhs_list_price": "小红书标价", "xhs_activity_price": "小红书活动价",
     "xhs_promo_discount": "小红书折扣率", "xhs_promo_price": "小红书促销价",
+    # 配件成本明细 (PricingSkuCosts, 工厂成本拆到每个配件)
+    "rock_slab": "岩板", "drawer_rail": "抽屉轨道", "led_strip": "灯带", "glass": "玻璃",
+    "electric_rail": "电力轨道", "packing_sheet": "打包纸片", "iron_pin": "铁销", "connector": "连接片",
+    "aluminum_rail": "铝合金轨道", "plastic_rail": "塑料轨道", "mini_handle": "mini把手",
+    "nail_free_glue": "免钉胶", "engraving": "雕刻", "acrylic_strip": "亚克力条",
+    "embedded_sleeve": "预埋套杆", "cable_mgmt": "理线架+插排", "back_panel": "背板",
+    "stainless_trim": "装饰条(不锈钢)", "leg": "腿部", "soft_pack": "软包", "bed_board": "床铺板",
+    "other_cost": "其他配件", "other_desc": "外配件说明", "parts_remark": "配件备注",
 }
+# 配件成本明细字段 (PricingSkuCosts, 仅图册导出展开工厂成本用); 前 22 为数值配件, 后 2 为文本
+_PRICING_COST_NUM_FIELDS = [
+    "rock_slab", "drawer_rail", "led_strip", "glass", "electric_rail", "packing_sheet",
+    "iron_pin", "connector", "aluminum_rail", "plastic_rail", "mini_handle", "nail_free_glue",
+    "engraving", "acrylic_strip", "embedded_sleeve", "cable_mgmt", "back_panel", "stainless_trim",
+    "leg", "soft_pack", "bed_board", "other_cost",
+]
+_PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
 # 分类 → (表头底色, 字段列表); 表头按分类上色, 排版一眼分区
 _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("标识", "1F4E79", ["id", "product_code", "product_name", "taobao_title", "sku", "sku_code", "size_category", "size_info"]),
@@ -514,6 +585,7 @@ _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("淘宝中促", "EF6C00", ["mid_platform_discount", "mid_shop_rate", "mid_buyer_price", "mid_vip_commission", "mid_shop_receipt", "mid_vip_final"]),
     ("淘宝大促", "F57F17", ["big_platform_discount", "big_shop_rate", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
     ("小红书", "AD1457", ["xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price", "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price"]),
+    ("配件成本明细", "5D4037", _PRICING_COST_FIELDS),   # 工厂成本拆到每个配件 (图册导出)
 ]
 _PRICING_FIELD_COLOR: dict[str, str] = {f: color for _n, color, fs in _PRICING_CATEGORIES for f in fs}
 
@@ -590,6 +662,7 @@ _CATALOG_DATA_ROW_PT = 20     # 其余 SKU 行行高
 _CATALOG_WIDE = {             # 文本列加宽
     "product_name": 22, "taobao_title": 26, "sku": 18, "size_info": 16,
     "remark": 18, "taobao_url": 22, "xhs_sku_name": 16, "image_url": 22,
+    "other_desc": 18, "parts_remark": 18,
 }
 
 
@@ -603,12 +676,12 @@ def build_catalog_xlsx(db: Session):
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
     from app.models.pricing import PricingSku
-    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
     from app.models.product import Product
     from app.services.pricing_catalog_service import _is_real_product, product_image_map
 
     base_cols = [c.key for c in PricingSku.__table__.columns]
-    all_fields = base_cols + _PRICING_PROMO_FIELDS
+    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_COST_FIELDS   # +配件成本明细
     IMG_COL = 1
     FIRST_DATA_COL = 2
     field_pos = {f: FIRST_DATA_COL + i for i, f in enumerate(all_fields)}
@@ -619,6 +692,7 @@ def build_catalog_xlsx(db: Session):
     ).scalars().all()
     prod_by_code = {p.code: p for p in db.execute(select(Product)).scalars().all()}
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    costs_by_sku = {c.sku_code: c for c in db.execute(select(PricingSkuCosts)).scalars().all()}
 
     groups: list[tuple[str, list]] = []
     cur = None
@@ -648,11 +722,14 @@ def build_catalog_xlsx(db: Session):
     # 数字格式
     model_cols = {c.key: c for c in PricingSku.__table__.columns}
     promo_cols = {c.key: c for c in PricingSkuPromo.__table__.columns}
+    cost_cols = {c.key: c for c in PricingSkuCosts.__table__.columns}
     col_fmt: dict[int, str] = {}
     for f, ci in field_pos.items():
         col = model_cols.get(f)
         if col is None:
             col = promo_cols.get(f)
+        if col is None:
+            col = cost_cols.get(f)
         if col is not None:
             fmt = _num_fmt(f, _col_type(col))
             if fmt:
@@ -702,17 +779,26 @@ def build_catalog_xlsx(db: Session):
     ws.row_dimensions[2].height = 28
 
     # 数据行 + 产品图
+    from app.services import pricing_calc_service
+    promo_params = pricing_calc_service.get_promo_params(db)   # 平台立减/佣金口径 (回填空系数用)
     gray = Font(color="94A3B8")
     keep_alive: list = []
+    override_by_row: dict[int, bool] = {}
     r = 3
     for code, gs in groups:
         r0 = r
         for s in gs:
             p = promo_by_sku.get(s.sku_code)
+            costs = costs_by_sku.get(s.sku_code)
+            override_by_row[r] = bool(getattr(s, "factory_cost_override", False))
             for f in all_fields:
                 ci = field_pos[f]
-                v = (_translate(f, _cell(getattr(s, f, None))) if f in model_cols
-                     else (_cell(getattr(p, f, None)) if p is not None else None))
+                if f in model_cols:
+                    v = _translate(f, _cell(getattr(s, f, None)))
+                elif f in promo_cols:
+                    v = _cell(getattr(p, f, None)) if p is not None else None
+                else:                                      # 配件成本明细 (PricingSkuCosts)
+                    v = _cell(getattr(costs, f, None)) if costs is not None else None
                 cell = ws.cell(r, ci, v)
                 cell.border = border
                 if ci in col_fmt:
@@ -720,6 +806,23 @@ def build_catalog_xlsx(db: Session):
                     cell.alignment = right
                 else:
                     cell.alignment = vcenter
+            # 部分促销系数在库里未持久化(空) → 回填当前口径值, 让派生列都能做活公式且口径正确
+            if p is not None:
+                def _bf(field, val):
+                    bci = field_pos.get(field)
+                    if bci and getattr(p, field, None) is None and val is not None:
+                        ws.cell(r, bci, float(val))
+                # 店铺宝系数(小促): 未存 → 用隐含系数(店内到手÷日常)回填
+                if p.shop_promo_rate is None and p.shop_internal_final and s.daily_price:
+                    _bf("shop_promo_rate", round(float(p.shop_internal_final) / float(s.daily_price), 6))
+                if p.mid_shop_rate is not None:       # 参与中促 → 补平台立减/88VIP佣金口径
+                    _bf("mid_platform_discount", promo_params.get("mid_platform_discount"))
+                    _bf("mid_vip_commission", promo_params.get("mid_vip_commission"))
+                if p.big_shop_rate is not None:       # 参与大促
+                    _bf("big_platform_discount", promo_params.get("big_platform_discount"))
+                    _bf("big_vip_commission", promo_params.get("big_vip_commission"))
+                if p.xhs_activity_price is not None:  # 上小红书 → 默认折扣 15%
+                    _bf("xhs_promo_discount", 0.15)
             ws.row_dimensions[r].height = _CATALOG_IMG_ROW_PT if r == r0 else _CATALOG_DATA_ROW_PT
             r += 1
         r1 = r - 1
@@ -749,9 +852,31 @@ def build_catalog_xlsx(db: Session):
         ws.column_dimensions[get_column_letter(field_pos[f])].width = _CATALOG_WIDE.get(f, 12)
     ws.freeze_panes = "B3"
 
-    # 派生列改活公式(改工厂成本/物流/安装/基数 → 价格与利润 Excel 内自动联动, 与定价总表导出同口径)
-    # 图册首列是产品图 → 字段整体右移 1 列; 分类色带+表头占前 2 行 → 数据从第 3 行起
+    # ── 全链活公式 (改任一配件/成本/系数 → 外配件/工厂/物理/价格/利润/平台价 Excel 内全联动) ──
+    # 1) 配件明细 → 外配件(SUM) → 工厂成本(木作+包装+外配件); override 行保留手改工厂值。先写, 让物理链认它。
+    acc_cols = [field_pos[f] for f in _PRICING_COST_NUM_FIELDS if f in field_pos]
+    ext_i = field_pos.get("external_parts_cost")
+    fac_i = field_pos.get("factory_cost")
+    wood_i = field_pos.get("wood_cost")
+    pack_i = field_pos.get("packaging_cost")
+
+    def _present(rr, ci):
+        return bool(ci) and ws.cell(rr, ci).value not in (None, "")
+
+    for rr in range(3, ws.max_row + 1):
+        if ext_i and acc_cols and any(_present(rr, c) for c in acc_cols):
+            refs = ",".join(f"{get_column_letter(c)}{rr}" for c in acc_cols)
+            ws.cell(rr, ext_i).value = f"=SUM({refs})"
+        if (fac_i and wood_i and pack_i and ext_i and not override_by_row.get(rr)
+                and any(_present(rr, c) for c in (wood_i, pack_i, ext_i))):
+            ws.cell(rr, fac_i).value = (f"={get_column_letter(wood_i)}{rr}+"
+                                        f"{get_column_letter(pack_i)}{rr}+{get_column_letter(ext_i)}{rr}")
+    # 2) 物理成本 → 各档价 → 会计/利润/毛利率 (图册首列是产品图→字段右移1列; 数据从第3行)
     _apply_pricing_formulas(ws, col_offset=1, data_start_row=3)
+    # 3) 平台活动价 (淘宝/店内/中促/大促/小红书) 派生列 → 活公式 (含 88VIP 消费券阶梯)
+    _apply_promo_formulas(ws, field_pos, data_start_row=3,
+                          mid_tiers=promo_params.get("mid_coupon_tiers"),
+                          big_tiers=promo_params.get("big_coupon_tiers"))
 
     out = _io.BytesIO()
     wb.save(out)

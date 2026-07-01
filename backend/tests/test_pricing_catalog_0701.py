@@ -105,3 +105,43 @@ def test_catalog_xlsx_has_live_formulas(db_session, monkeypatch):
     assert f("会计总成本").startswith("=")
     assert f("大促利润").startswith("=")
     assert f("毛利率").startswith("=")               # 一个都不能少
+
+
+def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatch):
+    """配件成本明细列 + 配件→外配件→工厂 活公式 + 平台活动价活公式(淘宝/店内/中促/大促/小红书)。"""
+    import io
+    import openpyxl
+    from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
+    from app.services.data_export_service import build_catalog_xlsx
+    monkeypatch.setattr(pcs, "product_image_map", lambda codes, url_by_code, **k: {})
+    db_session.add(Product(code="G1", name="配件促销测试"))
+    db_session.add(PricingSku(product_code="G1", sku_code="G1-A", sku="1.2米",
+                              wood_cost=Decimal("500"), packaging_cost=Decimal("50"),
+                              daily_price=Decimal("1000")))
+    db_session.add(PricingSkuCosts(sku_code="G1-A", rock_slab=Decimal("200"), glass=Decimal("100")))
+    db_session.add(PricingSkuPromo(
+        sku_code="G1-A", shop_promo_rate=Decimal("0.68"),
+        mid_platform_discount=Decimal("0.12"), mid_shop_rate=Decimal("0.771"), mid_vip_commission=Decimal("0.01"),
+        big_platform_discount=Decimal("0.12"), big_shop_rate=Decimal("0.7355"), big_vip_commission=Decimal("0"),
+        xhs_activity_price=Decimal("900"), xhs_promo_discount=Decimal("0.15")))
+    db_session.commit()
+
+    wb = openpyxl.load_workbook(io.BytesIO(build_catalog_xlsx(db_session).getvalue()))
+    ws = wb["定价图册"]
+    hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
+    def f(name):
+        return str(ws.cell(3, hdr[name]).value or "")
+    # 配件成本明细列都在
+    for acc in ("岩板", "玻璃", "灯带", "腿部", "软包", "床铺板", "配件备注"):
+        assert acc in hdr, f"缺配件列: {acc}"
+    assert ws.cell(3, hdr["岩板"]).value == 200      # 配件值落格
+    # 配件 → 外配件 → 工厂 活公式
+    assert f("外采配件成本合计").startswith("=SUM")
+    assert f("总出厂成本").startswith("=")
+    # 平台活动价 活公式 (淘宝/店内/中促/大促/小红书)
+    assert f("店内到手价(小促)").startswith("=")
+    assert f("中促买家价").startswith("=")
+    assert f("大促买家价").startswith("=")
+    assert "IF" in f("中促VIP到手价")                 # 88VIP 消费券阶梯
+    assert f("店内到手价(小促)").startswith("=")       # 店铺宝系数在 → 活公式
+    assert f("小红书促销价").startswith("=")
