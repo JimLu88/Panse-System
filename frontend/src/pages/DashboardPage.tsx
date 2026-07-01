@@ -5,7 +5,8 @@ import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, E
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
-// 剩余流水/月度经营/财务概览 三块已移到「报表」页顶部 (2026-07-01), 首页不再展示
+import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
+// 剩余流水/月度经营KPI/财务概览 已移到「报表」页顶部 (2026-07-01); 销售排行榜(show=sales)留在本页
 // #6 自动化任务清单已移到「待办台账」(OpsChecklistPage), 首页不再引用
 
 const ReactECharts = lazy(() => import('echarts-for-react'));
@@ -169,7 +170,10 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* 剩余流水/月度经营/财务概览 已移到「报表」页顶部 (2026-07-01) */}
+      {/* 剩余流水/月度经营KPI/财务概览 已移到「报表」页顶部 (2026-07-01) */}
+      {/* 销售排行榜 + 销售占比 留在运营大盘原位置 (用户 2026-07-01) */}
+      <MonthlyOpsPanel show="sales" />
+
       {/* #6 自动化任务清单已移到「待办台账」, 首页不再展示(用户拍板 2026-06-17) */}
 
       {/* KPI 卡片行 — 每张卡点击进它关联最高的页面 (用户要求) */}

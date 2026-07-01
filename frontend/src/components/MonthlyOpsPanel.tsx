@@ -20,7 +20,10 @@ const PIE_COLORS = ['#6366f1', '#38bdf8', '#10b981', '#f59e0b', '#f43f5e', '#8b5
 // 月度经营 KPI 蓝色板块 (用户 2026-06-23: 试蓝色看效果) — 浅 Google 蓝底 + 蓝描边
 const BLUE_CARD = { background: '#eef4ff', borderColor: '#d6e4ff' } as const;
 
-export default function MonthlyOpsPanel() {
+// show: 'all'=全部(默认) | 'kpi'=只显示月度经营KPI(报表页用) | 'sales'=只显示销售排行榜+占比(运营大盘用)
+export default function MonthlyOpsPanel({ show = 'all' }: { show?: 'all' | 'kpi' | 'sales' }) {
+  const showKpi = show === 'all' || show === 'kpi';
+  const showSales = show === 'all' || show === 'sales';
   const [period, setPeriod] = useState<string | undefined>(undefined);
   const [by, setBy] = useState<'product' | 'shop'>('product');
   const [salesView, setSalesView] = useState<'ranking' | 'forecast'>('ranking');  // 销售: 排行榜 ⇄ 预测
@@ -80,10 +83,10 @@ export default function MonthlyOpsPanel() {
   return (
     <div style={{ marginTop: 18 }}>
       {/* 刷单(补单)单列提示 — 跟随所选月份; 已从下方月度经营数据剔除, 单独亮出 (紧凑) */}
-      <RefillCallout periodStart={monthStart} periodEnd={monthEnd} compact />
+      {showKpi && <RefillCallout periodStart={monthStart} periodEnd={monthEnd} compact />}
 
       <Row justify="space-between" align="middle" style={{ margin: '0 2px 10px' }}>
-        <Typography.Text style={{ fontWeight: 700, fontSize: 15 }}>月度经营(工厂口径)</Typography.Text>
+        <Typography.Text style={{ fontWeight: 700, fontSize: 15 }}>{showKpi ? '月度经营(工厂口径)' : '销售'}</Typography.Text>
         <Select
           size="small" style={{ width: 120 }} value={sel} loading={isLoading}
           onChange={setPeriod}
@@ -94,7 +97,7 @@ export default function MonthlyOpsPanel() {
         />
       </Row>
 
-      {isRef && (
+      {showKpi && isRef && (
         <Alert
           type="warning" showIcon style={{ marginBottom: 10 }}
           message={
@@ -111,7 +114,7 @@ export default function MonthlyOpsPanel() {
         />
       )}
 
-      {selRow && (
+      {showKpi && selRow && (
         <Row gutter={[12, 12]}>
           <Col xs={12} sm={8} md={4}>
             <Card size="small" style={BLUE_CARD}>
@@ -146,30 +149,34 @@ export default function MonthlyOpsPanel() {
         </Row>
       )}
 
-      {/* 销售 (排行榜 ⇄ 预测) — 嵌进大盘, 月度经营下方 (用户需求 2026-06-22) */}
-      <Card
-        size="small" title="销售" style={{ marginTop: 12 }}
-        extra={<Segmented size="small" value={salesView} onChange={(v) => setSalesView(v as 'ranking' | 'forecast')}
-          options={[{ label: '销售排行榜', value: 'ranking' }, { label: '销售预测', value: 'forecast' }]} />}
-      >
-        <Suspense fallback={<div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
-          {salesView === 'ranking' ? <SalesRankingPage /> : <ForecastPage />}
-        </Suspense>
-      </Card>
-
-      <Card
-        size="small" title={`${sel ?? ''} 销售占比`} style={{ marginTop: 12 }}
-        extra={<Segmented size="small" value={by} onChange={(v) => setBy(v as 'product' | 'shop')}
-          options={[{ label: '按产品', value: 'product' }, { label: '按店铺', value: 'shop' }]} />}
-      >
-        {(mix?.slices?.length ?? 0) === 0 ? (
-          <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' }}>该月暂无销售数据</div>
-        ) : (
-          <Suspense fallback={<div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
-            <ReactECharts option={pieOption} style={{ height: isMobile ? 300 : 260 }} />
+      {/* 销售 (排行榜 ⇄ 预测) — 运营大盘用 (用户 2026-07-01: 销售排行榜留在大盘, 不随月度经营搬去报表) */}
+      {showSales && (
+        <Card
+          size="small" title="销售" style={{ marginTop: 12 }}
+          extra={<Segmented size="small" value={salesView} onChange={(v) => setSalesView(v as 'ranking' | 'forecast')}
+            options={[{ label: '销售排行榜', value: 'ranking' }, { label: '销售预测', value: 'forecast' }]} />}
+        >
+          <Suspense fallback={<div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
+            {salesView === 'ranking' ? <SalesRankingPage /> : <ForecastPage />}
           </Suspense>
-        )}
-      </Card>
+        </Card>
+      )}
+
+      {showSales && (
+        <Card
+          size="small" title={`${sel ?? ''} 销售占比`} style={{ marginTop: 12 }}
+          extra={<Segmented size="small" value={by} onChange={(v) => setBy(v as 'product' | 'shop')}
+            options={[{ label: '按产品', value: 'product' }, { label: '按店铺', value: 'shop' }]} />}
+        >
+          {(mix?.slices?.length ?? 0) === 0 ? (
+            <div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#999' }}>该月暂无销售数据</div>
+          ) : (
+            <Suspense fallback={<div style={{ height: 260, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
+              <ReactECharts option={pieOption} style={{ height: isMobile ? 300 : 260 }} />
+            </Suspense>
+          )}
+        </Card>
+      )}
     </div>
   );
 }
