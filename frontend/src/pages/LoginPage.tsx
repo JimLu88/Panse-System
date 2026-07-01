@@ -15,7 +15,11 @@ export default function LoginPage() {
     try {
       await login(v.username, v.password);
       message.success('登录成功');
-      nav(loc.state?.from || '/products', { replace: true });
+      // 落地页: 深链(如 /orders)原样回跳; 空 / 根 / 旧默认 /dashboard 一律走 "/" →
+      // 由 App 的 "/" 路由解析成该账号有权的首页(admin→大盘, 子账号→第一个有权页, 通常产品总表)。
+      const from = loc.state?.from;
+      const dest = from && from !== '/' && from !== '/dashboard' ? from : '/';
+      nav(dest, { replace: true });
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '登录失败');
     } finally {

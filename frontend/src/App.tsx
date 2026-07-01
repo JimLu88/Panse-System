@@ -4,7 +4,7 @@ import { BulbFilled, BulbOutlined, EditOutlined, LogoutOutlined, MenuOutlined, S
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
 import ProgramErrorPage from './pages/ProgramErrorPage';
-import { canAccessPerm, filterMenuByPerms, resolvePagePerm } from './auth/permissions';
+import { canAccessPerm, filterMenuByPerms, homePathFor, resolvePagePerm } from './auth/permissions';
 import ForcePasswordChange from './components/ForcePasswordChange';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
@@ -155,6 +155,8 @@ export default function App() {
   // 子账号页面权限: 当前页需要的 permKey + 能否访问 (admin/主账号恒可)
   const currentPerm = resolvePagePerm(loc.pathname, loc.search);
   const pageAllowed = canAccessPerm(user, currentPerm);
+  // 登录后落地页: admin→数据大盘; 受限子账号→第一个有权页面(通常产品总表), 避免落到无权的大盘看「程序错误」
+  const homePath = homePathFor(user);
 
   const menuItems = [
     {
@@ -412,8 +414,8 @@ export default function App() {
         <Suspense fallback={<PageFallback />}>
           {!pageAllowed ? <ProgramErrorPage /> : (
           <Routes>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/login" element={<Navigate to="/dashboard" replace />} />
+            <Route path="/" element={<Navigate to={homePath} replace />} />
+            <Route path="/login" element={<Navigate to={homePath} replace />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/ops-checklist" element={<OpsChecklistPage />} />
             <Route path="/sales-ranking" element={<SalesRankingPage />} />

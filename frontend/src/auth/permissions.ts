@@ -164,6 +164,33 @@ export function canAccessPerm(user: MeUser | null | undefined, permKey: string |
   return (user!.page_perms || []).includes(permKey);
 }
 
+// permKey → 落地路由 (多数 = /{key}; 少数带 ?tab= 或子路由的在此列出)
+const PERM_KEY_TO_PATH: Record<string, string> = {
+  'marketing-promotion': '/marketing?tab=promotion',
+  'marketing-brand': '/marketing?tab=brand',
+  'marketing-daily': '/marketing?tab=daily',
+  'marketing-wood': '/marketing?tab=wood_loss',
+  'customization': '/customization?tab=competitor',
+  'orders-kanban': '/orders/kanban',
+  'custom-reconcile': '/orders/custom-reconcile',
+  'custom-quote-v2': '/custom-quote-v2',
+};
+function pathForPermKey(key: string): string {
+  return PERM_KEY_TO_PATH[key] ?? `/${key}`;
+}
+
+/** 登录后的落地页: admin/主账号→数据大盘; 受限子账号→其第一个有权的页面(按菜单顺序, 通常是产品总表)。 */
+export function homePathFor(user: MeUser | null | undefined): string {
+  if (isUnrestricted(user)) return '/dashboard';
+  const allowed = new Set(user!.page_perms || []);
+  for (const g of PERM_TREE) {
+    for (const c of g.children) {
+      if (allowed.has(c.key)) return pathForPermKey(c.key);
+    }
+  }
+  return '/dashboard';   // 兜底 (受限账号理论上至少开通一页)
+}
+
 interface MenuNode { key: string; label?: unknown; children?: MenuNode[] }
 
 /** 按权限过滤 antd 菜单项: 删掉无权叶子, 再删掉空了的分组。 */
