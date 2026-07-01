@@ -15,7 +15,7 @@ export default function ProgramErrorPage() {
       title="程序错误"
       subTitle="抱歉，该页面无法访问，请返回首页后重试。"
       extra={
-        <Button type="primary" onClick={() => nav('/dashboard')}>
+        <Button type="primary" onClick={() => nav('/')}>
           返回首页
         </Button>
       }
