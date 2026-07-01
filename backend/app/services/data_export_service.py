@@ -411,6 +411,54 @@ def _build_product_sku_sheet(db: Session, wb, used: set[str], pricing_sheet: Opt
     return ws
 
 
+# ── 定价总表 sheet: 派生列改活公式 (编辑成本→价格/利润 Excel 内自动重算) ─────────────
+def _apply_pricing_formulas(ws) -> None:
+    """把定价总表 sheet 的派生列(物理/各档价/平台费/税/会计/利润/毛利率)改成活公式,
+    口径复刻 pricing_calc_service.recompute (2026-07-01 用户拍板对齐 Excel):
+      物理 = 工厂 + 物流 + 安装 ; 会计基准 = 物理 / (1 − 2.6%)
+      标价/小促/中促/大促 = ROUNDUP(会计基准 / 对应基数, −1) ; 日常 = 标价 × 0.75
+      平台费 = 大促×0.6% ; 税 = 大促×2% ; 会计 = 物理+平台费+税 ; 利润 = 大促−会计 ; 毛利率 = 利润/大促
+    价格公式仅在该行有对应基数(base_*)时写(无基数保原值, 与引擎一致); 利润链恒随大促联动。
+    → 导出的 Excel 里改工厂成本/物流/安装/基数, 价格与利润会像用户原表一样自动联动。"""
+    from openpyxl.utils import get_column_letter
+    cols = [c.key for c in PricingSku.__table__.columns]
+    idx = {c: i + 1 for i, c in enumerate(cols)}
+    if "physical_cost" not in idx or "big_promo" not in idx:
+        return
+    def L(f):
+        return get_column_letter(idx[f])
+    RATE = "0.026"
+    fac, log, ins, phys = L("factory_cost"), L("logistics_cost"), L("install_cost"), L("physical_cost")
+    bl, bs, bm, bb = L("base_list"), L("base_small"), L("base_mid"), L("base_big")
+    lp, dp, sp, mp, bp = L("list_price"), L("daily_price"), L("small_promo"), L("mid_promo"), L("big_promo")
+    plat, tax, acct, marg, rate = (L("platform_fee_rate"), L("tax"), L("accounting_cost"),
+                                   L("big_promo_margin"), L("gross_margin_rate"))
+    for r in range(2, ws.max_row + 1):
+        first = ws.cell(r, 1).value
+        if isinstance(first, str) and first.startswith("──"):
+            break  # 到达表尾"孤儿异常"提示区, 停止
+        has = lambda col: ws[f"{col}{r}"].value not in (None, "")
+        if not has(fac):
+            continue
+        ws[f"{phys}{r}"] = f"=SUM({fac}{r},{log}{r},{ins}{r})"
+        base_expr = f"({phys}{r}/(1-{RATE}))"          # 会计基准 = Excel 成本总计
+        if has(bl):
+            ws[f"{lp}{r}"] = f"=ROUNDUP({base_expr}/{bl}{r},-1)"
+            ws[f"{dp}{r}"] = f"={lp}{r}*0.75"
+        if has(bs):
+            ws[f"{sp}{r}"] = f"=ROUNDUP({base_expr}/{bs}{r},-1)"
+        if has(bm):
+            ws[f"{mp}{r}"] = f"=ROUNDUP({base_expr}/{bm}{r},-1)"
+        if has(bb):
+            ws[f"{bp}{r}"] = f"=ROUNDUP({base_expr}/{bb}{r},-1)"
+        if has(bp):                                    # 大促(公式或原值)在 → 利润链联动
+            ws[f"{plat}{r}"] = f"={bp}{r}*0.006"
+            ws[f"{tax}{r}"] = f"={bp}{r}*0.02"
+            ws[f"{acct}{r}"] = f"={phys}{r}+{plat}{r}+{tax}{r}"
+            ws[f"{marg}{r}"] = f"={bp}{r}-{acct}{r}"
+            ws[f"{rate}{r}"] = f'=IFERROR({marg}{r}/{bp}{r},"")'
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl
@@ -426,6 +474,7 @@ def build_full_export_workbook(db: Session):
         ws = _build_entity_sheet(db, wb, key, cfg, used)
         if key == "pricing_sku":
             pricing_name = ws.title
+            _apply_pricing_formulas(ws)     # 定价总表派生列改活公式(改成本→价格/利润联动)
 
     _build_product_sku_sheet(db, wb, used, pricing_name)
 
