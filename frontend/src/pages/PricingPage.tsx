@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type Key, type ReactNode } from '
 import {
   Button,
   Card,
+  DatePicker,
   Dropdown,
   Form,
   Grid,
@@ -20,7 +21,7 @@ import {
   Upload,
   message,
 } from 'antd';
-import { DownloadOutlined, EditOutlined, ExportOutlined, PlusOutlined, QuestionCircleOutlined, UploadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, ExportOutlined, HistoryOutlined, PlusOutlined, QuestionCircleOutlined, UploadOutlined } from '@ant-design/icons';
 import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ProductThumb from '../components/ProductThumb';
@@ -47,6 +48,8 @@ import {
   importTaobaoTitles,
   getPromoParams,
   setPromoParams,
+  listPriceVersions,
+  type PriceVersion,
   type CoefficientStat,
 } from '../api/client';
 import ResponsiveTable from '../components/ResponsiveTable';
@@ -556,6 +559,14 @@ export default function PricingPage() {
   const [editorRow, setEditorRow] = useState<PricingSku | null>(null);
   // 刚改过的行 → 「描述」列临时标绿; 改下一行或刷新页面自动消失 (只记最近一行)
   const [recentEditedId, setRecentEditedId] = useState<number | null>(null);
+  // 工厂调价历史 (有效期定价) 浏览
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySku, setHistorySku] = useState<string>('');
+  const { data: priceVersions = [], isFetching: pvLoading } = useQuery({
+    queryKey: ['price-versions', historySku],
+    queryFn: () => listPriceVersions(historySku.trim() ? { sku_code: historySku.trim(), limit: 500 } : { limit: 500 }),
+    enabled: historyOpen,
+  });
   const [promoParamsOpen, setPromoParamsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);   // null = 全部字段
@@ -681,6 +692,7 @@ export default function PricingPage() {
   const [batchField, setBatchField] = useState<string>('big_promo');
   const [batchMode, setBatchMode] = useState<'set' | 'multiply' | 'base'>('multiply');
   const [batchValue, setBatchValue] = useState<number | null>(null);
+  const [batchEffFrom, setBatchEffFrom] = useState<any>(null);   // 批量调价生效日(选填): 此日前订单按老价
   const [batchRunning, setBatchRunning] = useState(false);
   const BATCH_FIELDS = [
     { value: 'list_price', label: '标价' }, { value: 'daily_price', label: '日常价' },
@@ -693,27 +705,29 @@ export default function PricingPage() {
     const byId = new Map(items.map((r) => [r.id, r]));
     const tasks: Promise<unknown>[] = [];
     let skipped = 0;
+    // 批量生效日(选填): 带则每单先封存旧值为历史区间, 此日前订单仍按老价; 不带=立即生效
+    const eff = batchEffFrom ? { effective_from: batchEffFrom.format('YYYY-MM-DD') } : {};
     for (const id of ids) {
       const row = byId.get(id);
-      if (batchMode === 'set') { tasks.push(updatePricingSku(id, { [batchField]: batchValue })); }
+      if (batchMode === 'set') { tasks.push(updatePricingSku(id, { [batchField]: batchValue, ...eff })); }
       else if (batchMode === 'base') {
         // 设基数(小/中/大促): 写 base_* 列, 后端 recompute 按 ROUNDUP(物理÷(1−2.6%)÷基数,−1) 逐行用自己物理成本联动派生。
         // 不再前端算价直写(旧公式)→ 存基数, 成本一变价格自动跟, 且不与新引擎冲突。
         const baseCol = ({ small_promo: 'base_small', mid_promo: 'base_mid', big_promo: 'base_big' } as Record<string, string>)[batchField];
         if (!baseCol || batchValue <= 0) { skipped += 1; continue; }
-        tasks.push(updatePricingSku(id, { [baseCol]: batchValue }));
+        tasks.push(updatePricingSku(id, { [baseCol]: batchValue, ...eff }));
       }
       else {
         if (!row) { skipped += 1; continue; }
         const cur = Number((row as any)[batchField] ?? 0);
-        tasks.push(updatePricingSku(id, { [batchField]: Math.round(cur * batchValue * 100) / 100 }));
+        tasks.push(updatePricingSku(id, { [batchField]: Math.round(cur * batchValue * 100) / 100, ...eff }));
       }
     }
     setBatchRunning(true);
     try {
       await Promise.all(tasks);
-      message.success(`已套用 ${tasks.length} 个 SKU${skipped ? `（${skipped} 个跨页未加载，已跳过）` : ''}`);
-      setSelectedKeys([]); invalidatePricing();
+      message.success(`已套用 ${tasks.length} 个 SKU${skipped ? `（${skipped} 个跨页未加载，已跳过）` : ''}${batchEffFrom ? `（生效日 ${batchEffFrom.format('YYYY-MM-DD')}，此日前订单按老价）` : ''}`);
+      setSelectedKeys([]); setBatchEffFrom(null); invalidatePricing();
     } catch { message.error('批量套用失败'); }
     finally { setBatchRunning(false); }
   }
@@ -896,6 +910,36 @@ export default function PricingPage() {
         onClose={() => setPromoParamsOpen(false)}
         onSaved={invalidatePricing}
       />
+      <Modal open={historyOpen} onCancel={() => setHistoryOpen(false)} width={980}
+        title="工厂调价历史 (有效期定价)"
+        footer={<Button onClick={() => setHistoryOpen(false)}>关闭</Button>}>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Space wrap>
+            <Input.Search size="small" allowClear placeholder="按 SKU 编码筛选(留空=全部)" style={{ width: 260 }}
+              onSearch={(v) => setHistorySku(v)} onChange={(e) => { if (!e.target.value) setHistorySku(''); }} />
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              每行 = 该「适用区间」内使用的旧价; 「生效日」当天起改用新价, 该日之前的订单仍按此行老价核算。最新价见定价表本身。
+            </Typography.Text>
+          </Space>
+          <Table<PriceVersion>
+            size="small" rowKey="id" loading={pvLoading} dataSource={priceVersions}
+            pagination={{ pageSize: 20, size: 'small' }} scroll={{ x: 940 }}
+            locale={{ emptyText: '暂无调价历史 (还没有做过"带生效日"的调价)' }}
+            columns={[
+              { title: '生效日', dataIndex: 'period_end', width: 100 },
+              { title: 'SKU编码', dataIndex: 'sku_code', width: 150 },
+              { title: '品名', dataIndex: 'sku', width: 180, ellipsis: true },
+              { title: '适用区间(老价)', width: 175, render: (_: unknown, r: PriceVersion) => `${r.period_start ?? ''} ~ ${r.period_end ?? ''}` },
+              { title: '老物理成本', dataIndex: 'physical_cost', width: 100, render: (v: number | null) => money(v) },
+              { title: '老工厂成本', dataIndex: 'factory_cost', width: 100, render: (v: number | null) => money(v) },
+              { title: '老大促', dataIndex: 'big_promo', width: 90, render: (v: number | null) => money(v) },
+              { title: '老标价', dataIndex: 'list_price', width: 90, render: (v: number | null) => money(v) },
+              { title: '操作人', dataIndex: 'created_by', width: 90 },
+              { title: '记录时间', dataIndex: 'created_at', width: 145, render: (v: string | null) => v ? v.replace('T', ' ').slice(0, 16) : '' },
+            ]}
+          />
+        </Space>
+      </Modal>
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
@@ -908,6 +952,9 @@ export default function PricingPage() {
               menu={{ items: (exportTypes ?? []).map((t) => ({ key: t.key, label: t.label, onClick: () => handleExport(t.key, t.label) })) }}>
               <Button icon={<ExportOutlined />}>批量导出（填好数据）</Button>
             </Dropdown>
+          </Tooltip>
+          <Tooltip title="工厂/销售价的调价历史: 每条=某SKU某段时间使用的旧价, 分界日之前的订单按此老价核算">
+            <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>调价历史</Button>
           </Tooltip>
           <Tooltip title="上传「淘宝商品导出.xlsx」(宝贝标题↔商家编码), 自动填入定价表淘宝标题, 并把只带长标题、没编码的订单对回编码、按定价表重算成本">
             <Upload
@@ -971,8 +1018,10 @@ export default function PricingPage() {
             <Select size="small" style={{ width: 160 }} value={batchMode} onChange={(v) => setBatchMode(v as 'set' | 'multiply' | 'base')}
               options={[{ value: 'multiply', label: '× 系数' }, { value: 'set', label: '设为固定值' }, { value: 'base', label: '设基数(小/中/大促)' }]} />
             <InputNumber size="small" style={{ width: 130 }} value={batchValue} onChange={setBatchValue} placeholder={batchMode === 'multiply' ? '如 0.95' : batchMode === 'base' ? '基数 如 0.87' : '如 1999'} />
+            <DatePicker size="small" style={{ width: 150 }} value={batchEffFrom} onChange={setBatchEffFrom} allowClear placeholder="生效日(选填)" />
             <Button size="small" type="primary" loading={batchRunning} onClick={batchApply}>套用</Button>
             <Button size="small" type="text" onClick={() => setSelectedKeys([])}>取消</Button>
+            {batchEffFrom && <Typography.Text type="warning" style={{ fontSize: 12 }}>此日之前的订单仍按老价, 不受本次批量影响</Typography.Text>}
           </Space>
         </div>
       )}

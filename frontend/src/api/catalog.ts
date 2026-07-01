@@ -661,6 +661,9 @@ export interface PricingSkuCreate {
   product_code: string; sku_code: string; sku?: string; taobao_title?: string; size_category?: string;
   list_price?: number; daily_price?: number; small_promo?: number; mid_promo?: number; big_promo?: number;
   accounting_cost?: number; physical_cost?: number; platform_fee_rate?: number; tax?: number; image_url?: string;
+  // 成本加成基数(改系数) + 有效期定价生效日
+  base_list?: number; base_small?: number; base_mid?: number; base_big?: number;
+  effective_from?: string;   // YYYY-MM-DD; 带则此日之前的订单仍按老价
 }
 export const createPricingSku = (payload: PricingSkuCreate) =>
   api.post<PricingSku>('/api/pricing-skus', payload).then(r => r.data);
@@ -685,6 +688,18 @@ export const importTaobaoTitles = (file: File) => {
 };
 export const recomputePricingSku = (id: number) =>
   api.post<PricingSku>(`/api/pricing-skus/${id}/recompute`).then(r => r.data);
+
+// -- 工厂调价历史 (有效期定价): 列出定价版本区间, 每行=该[period_start,period_end)区间的旧值
+export interface PriceVersion {
+  id: number; sku_code: string; sku: string | null; product_code: string | null;
+  period_start: string | null; period_end: string | null;
+  physical_cost: number | null; factory_cost: number | null;
+  list_price: number | null; daily_price: number | null;
+  small_promo: number | null; mid_promo: number | null; big_promo: number | null;
+  note: string | null; created_by: string | null; created_at: string | null;
+}
+export const listPriceVersions = (params?: { sku_code?: string; product_code?: string; limit?: number }) =>
+  api.get<PriceVersion[]>('/api/pricing/version-history', { params }).then(r => r.data);
 
 // -- 淘宝批量操作模板下载
 export interface TaobaoTemplate {

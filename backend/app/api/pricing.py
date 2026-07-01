@@ -1356,6 +1356,44 @@ def recompute_all_skus(
     return {"updated": updated, "message": f"已重算 {updated} 个 SKU"}
 
 
+@formula_router.get("/version-history")
+def list_price_versions(
+    sku_code: Optional[str] = Query(None, description="按 SKU 编码筛选"),
+    product_code: Optional[str] = Query(None, description="按产品编码筛选"),
+    limit: int = Query(300, le=1000),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """工厂调价历史: 列出定价版本区间。每行 = 该 [period_start, period_end) 区间使用的**旧值**
+    (即在 period_end 这天调价前的价), period_end = 调价生效日; 最新价见定价表本身。"""
+    from app.models.pricing_version import PricingSkuVersion
+    q = select(PricingSkuVersion)
+    if sku_code:
+        q = q.where(PricingSkuVersion.sku_code == sku_code)
+    if product_code:
+        q = q.where(PricingSkuVersion.product_code == product_code)
+    q = q.order_by(PricingSkuVersion.created_at.desc()).limit(limit)
+    rows = db.execute(q).scalars().all()
+    codes = {r.sku_code for r in rows}
+    names = (dict(db.execute(
+        select(PricingSku.sku_code, PricingSku.sku).where(PricingSku.sku_code.in_(codes))).all())
+        if codes else {})
+
+    def _m(v):
+        return float(v) if v is not None else None
+
+    return [{
+        "id": r.id, "sku_code": r.sku_code, "sku": names.get(r.sku_code), "product_code": r.product_code,
+        "period_start": r.period_start.isoformat() if r.period_start else None,
+        "period_end": r.period_end.isoformat() if r.period_end else None,
+        "physical_cost": _m(r.physical_cost), "factory_cost": _m(r.factory_cost),
+        "list_price": _m(r.list_price), "daily_price": _m(r.daily_price),
+        "small_promo": _m(r.small_promo), "mid_promo": _m(r.mid_promo), "big_promo": _m(r.big_promo),
+        "note": r.note, "created_by": r.created_by,
+        "created_at": r.created_at.isoformat() if r.created_at else None,
+    } for r in rows]
+
+
 # ===========================================================================
 # 定价表自定义列 (EAV) — 用户自建任意列(数值/文本)、可改名, 按 SKU 填值
 # ===========================================================================
