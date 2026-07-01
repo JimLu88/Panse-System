@@ -921,11 +921,19 @@ def _pricing_cost_for(db: Session, order: Order) -> Optional[Decimal]:
     """
     # physical_cost 缺时回退「出厂价 + 物流 + 安装」(=物理总成本), 不能只回退裸出厂价 ——
     # 否则下游双算护栏(theoretical 已含物流安装→运费/安装置0)会把这单的物流安装永久漏掉, 利润虚高。
+    sku_code = _resolve_sku_code(db, order)
+    # 有效期定价 (工厂调价历史): 订单按 order_date 命中的历史版本优先 (老单老价);
+    # 无任何版本 / 落在最后边界之后 → 返回 None → 落到下方 live pricing_sku 逻辑 (=改造前行为, 不影响存量)。
+    from app.services import pricing_version_service
+    _vp = pricing_version_service.physical_at(
+        db, sku_code=sku_code, product_code=order.product_code,
+        on_date=getattr(order, "order_date", None))
+    if _vp is not None:
+        return _vp
     cost_col = func.coalesce(
         PricingSku.physical_cost,
         PricingSku.factory_cost + func.coalesce(PricingSku.logistics_cost, 0) + func.coalesce(PricingSku.install_cost, 0),
     )
-    sku_code = _resolve_sku_code(db, order)
     if sku_code:
         c = db.execute(
             select(cost_col).where(PricingSku.sku_code == sku_code)

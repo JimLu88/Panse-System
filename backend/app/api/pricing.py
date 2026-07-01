@@ -1,6 +1,7 @@
 """定价总表 API — 读取 + 录入 + 编辑 + 成本重算."""
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
 
@@ -114,6 +115,8 @@ class PricingSkuPatch(BaseModel):
     base_small: Optional[Decimal] = None
     base_mid: Optional[Decimal] = None
     base_big: Optional[Decimal] = None
+    # 有效期定价(工厂调价历史): 填了生效日 → 先把改前(旧)值封存为历史区间, 该日之前的订单仍按老价/老成本。
+    effective_from: Optional[date] = None
 
 
 # 档价 → 该档基数: 手动直接改档价(没同时改基数) → 清该档基数, 让 recompute 不再派生此档(手动值锁定)。
@@ -467,6 +470,14 @@ def update_pricing_sku(
     if not sku:
         raise HTTPException(404, "Not found")
     changes = body.model_dump(exclude_unset=True)
+    eff = changes.pop("effective_from", None)   # 控制参数, 非 sku 列
+    if eff is not None:
+        # 调价"从 eff 起生效": 先把改前(旧)定价值封存为历史区间 → eff 之前的订单仍按老价/老成本(利润不追溯改)
+        from app.services import pricing_version_service
+        try:
+            pricing_version_service.record_dated_change(db, sku, eff, actor=getattr(_, "username", None))
+        except ValueError as e:
+            raise HTTPException(400, str(e))
     _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
     for k, v in changes.items():
         setattr(sku, k, v)

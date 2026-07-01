@@ -65,6 +65,7 @@ from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 from app.models.pricing_custom import PricingCustomField, PricingCustomValue
 from app.models.price_change import PriceChangeLog
+from app.models.pricing_version import PricingSkuVersion  # noqa: F401 - 工厂调价历史(有效期定价)
 from app.models.taobao_listing import TaobaoListing
 from app.models.npd import (
     NpdProject, NpdStage, NpdStageInstance, NpdStageTaskTemplate, NpdTask,

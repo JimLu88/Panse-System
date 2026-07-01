@@ -6,7 +6,7 @@
  *  - 「保存并覆盖同产品全部 SKU」一键铺到全产品 (二次确认)
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Button, Collapse, Input, InputNumber, Modal, Space, Typography, message } from 'antd';
+import { Alert, Button, Collapse, DatePicker, Input, InputNumber, Modal, Space, Typography, message } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -93,6 +93,8 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
   const [saving, setSaving] = useState(false);
   // 公式字段解锁集合 (每次打开编辑器重置)
   const [unlocked, setUnlocked] = useState<Set<string>>(new Set());
+  // 调价生效日 (选填): 选了则此日之前的订单仍按老价/老成本, 历史利润不追溯改写
+  const [effFrom, setEffFrom] = useState<any>(null);
   // 可拖动: 抓标题栏平移
   const [offset, setOffset] = useState({ x: 0, y: 0 });
   const drag = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null);
@@ -106,6 +108,7 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
       setTitleBase(row.taobao_title ?? '');
       setOffset({ x: 0, y: 0 });
       setUnlocked(new Set());
+      setEffFrom(null);
     }
   }, [row]);
 
@@ -142,7 +145,12 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
   const titleDirty = title.trim() !== titleBase.trim();
   const dirtyCount = Object.keys(skuDiff).length + Object.keys(costsDiff).length + Object.keys(promoDiff).length + (titleDirty ? 1 : 0);
   // 主表补丁 = 数值差异 + (改过的)淘宝标题
-  const skuPatch = (): Record<string, unknown> => ({ ...skuDiff, ...(titleDirty ? { taobao_title: title.trim() || null } : {}) });
+  const skuPatch = (): Record<string, unknown> => ({
+    ...skuDiff,
+    ...(titleDirty ? { taobao_title: title.trim() || null } : {}),
+    // 选了生效日且有价格/成本改动 → 后端把改前值封存历史, 此日前订单按老价
+    ...(effFrom && Object.keys(skuDiff).length ? { effective_from: effFrom.format('YYYY-MM-DD') } : {}),
+  });
 
   // 有改动才写库; 返回是否成功(无改动=直接算成功, 供"改下行"纯跳转)
   const persist = async (): Promise<boolean> => {
@@ -282,6 +290,18 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
         />
         {titleDirty && <Typography.Text type="warning" style={{ fontSize: 11, flexShrink: 0 }}>改</Typography.Text>}
       </div>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+        <span style={{ width: 64, flexShrink: 0, fontSize: 13 }}>调价生效日</span>
+        <DatePicker size="small" allowClear value={effFrom} onChange={setEffFrom}
+          placeholder="选填: 此日之前的订单仍按老价/老成本" style={{ width: 260 }} />
+        {effFrom && <Typography.Text type="warning" style={{ fontSize: 11, flexShrink: 0 }}>
+          此日前订单不受本次改价影响
+        </Typography.Text>}
+      </div>
+      {effFrom && (
+        <Alert type="warning" showIcon style={{ marginBottom: 10 }}
+          message={`本次价格/成本改动将从 ${effFrom.format('YYYY-MM-DD')} 起生效; 该日之前的历史订单仍按调价前的老成本/老价核算, 利润不被追溯改写。`} />
+      )}
       <div style={{ maxHeight: '60vh', overflowY: 'auto', paddingRight: 4 }}>
         <Collapse
           defaultActiveKey={['price']}
