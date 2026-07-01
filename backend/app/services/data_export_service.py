@@ -473,14 +473,14 @@ def _coupon_if(cellref: str, tiers) -> str:
 
 def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
                           mid_tiers, big_tiers) -> None:
-    """店铺宝(小/中/大促)系数 = 反推 (报名价=日常价 与 促销到手价), 复刻用户 Excel「活动价」表:
-      小促店铺宝系数 = 小促到手价 ÷ 日常价                    (Excel Q = R/P)
-      中促系数       = 中促买家到手 ÷ (日常价 ×(1−平台立减))   (Excel U = V/(S×T))
-      大促系数       = 大促买家到手 ÷ (日常价 ×(1−平台立减))   (Excel AB = AC/(Z×AA))
-    → 到手价是「锚」(手填/存量, 保持静态), 系数是反推结果(活公式); 改日常价/到手价, 系数自动重算,
-      算出的就是要往淘宝店铺宝工具里填的那个数。
-    另: 淘宝活动价/小红书标价 = 日常; 店铺到手 = 买家到手×(1−88VIP佣金);
-        VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯); 小红书促销价 = 活动价×(1−折扣)。"""
+    """活动价倒推链改活公式 (2026-07-02 复刻用户 Excel「活动价」表, 锚 = 各档店铺实收 = 小/中/大促价):
+      日常价 = 标价×0.75; 小/中/大促价(=店铺实收) 由售价档位列驱动(成本加成或手填)。
+      小促: 买家到手 = 小促价; 店铺宝系数 = 小促价 ÷ 日常                    (Excel Q = R/P)
+      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 店铺宝系数 = 买家到手 ÷ (日常×(1−中促立减)) (Excel U)
+            店铺到手 = 中促价(实收); VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯)
+      大促: 同中促, 换大促价/大促佣金/大促立减                                (Excel AB)
+    → 改 小/中/大促价 (或日常价), 买家到手/系数/店铺到手/VIP 全自动重算; 系数就是要填进淘宝店铺宝的数。
+    另: 淘宝活动价/小红书标价 = 日常; 小红书促销价 = 活动价×(1−折扣)。"""
     from openpyxl.utils import get_column_letter
     def L(f):
         i = pos.get(f)
@@ -489,9 +489,9 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
     if not daily:
         return
     C = {f: L(f) for f in (
-        "taobao_activity_price", "xhs_list_price", "shop_internal_final", "shop_promo_rate",
-        "mid_buyer_price", "mid_platform_discount", "mid_shop_rate", "mid_vip_commission",
-        "mid_shop_receipt", "mid_vip_final", "big_buyer_price", "big_platform_discount",
+        "taobao_activity_price", "xhs_list_price", "small_promo", "shop_internal_final", "shop_promo_rate",
+        "mid_promo", "mid_buyer_price", "mid_platform_discount", "mid_shop_rate", "mid_vip_commission",
+        "mid_shop_receipt", "mid_vip_final", "big_promo", "big_buyer_price", "big_platform_discount",
         "big_shop_rate", "big_vip_commission", "big_shop_receipt", "big_vip_final",
         "xhs_promo_price", "xhs_activity_price", "xhs_promo_discount")}
     def has(col, r):
@@ -504,20 +504,24 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
             continue
         put("taobao_activity_price", r, f"={daily}{r}")
         put("xhs_list_price", r, f"={daily}{r}")
-        # 小促: 店铺宝系数 = 小促到手价 ÷ 日常价 (到手价保持静态锚)
-        if has(C["shop_internal_final"], r):
-            put("shop_promo_rate", r, f'=IFERROR({C["shop_internal_final"]}{r}/{daily}{r},"")')
-        # 中促: 系数 = 中促买家到手 ÷ (日常 ×(1−立减)); 店铺到手/VIP到手 由买家到手正推
-        if has(C["mid_buyer_price"], r):
-            mbp = f'{C["mid_buyer_price"]}{r}'
+        # 小促: 店铺实收 = 小促价; 买家到手 = 小促价; 系数 = 小促价 ÷ 日常
+        if has(C["small_promo"], r):
+            sp = f'{C["small_promo"]}{r}'
+            put("shop_internal_final", r, f'={sp}')
+            put("shop_promo_rate", r, f'=IFERROR({sp}/{daily}{r},"")')
+        # 中促: 店铺实收 = 中促价; 买家到手 = 中促价÷(1−佣金); 系数 = 买家÷(日常×(1−立减))
+        if has(C["mid_promo"], r):
+            mp, mbp = f'{C["mid_promo"]}{r}', f'{C["mid_buyer_price"]}{r}'
+            put("mid_buyer_price", r, f'=IFERROR({mp}/(1-{C["mid_vip_commission"]}{r}),"")')
+            put("mid_shop_receipt", r, f'={mp}')
             put("mid_shop_rate", r, f'=IFERROR({mbp}/({daily}{r}*(1-{C["mid_platform_discount"]}{r})),"")')
-            put("mid_shop_receipt", r, f'={mbp}*(1-{C["mid_vip_commission"]}{r})')
             put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
         # 大促: 同理
-        if has(C["big_buyer_price"], r):
-            bbp = f'{C["big_buyer_price"]}{r}'
+        if has(C["big_promo"], r):
+            bp, bbp = f'{C["big_promo"]}{r}', f'{C["big_buyer_price"]}{r}'
+            put("big_buyer_price", r, f'=IFERROR({bp}/(1-{C["big_vip_commission"]}{r}),"")')
+            put("big_shop_receipt", r, f'={bp}')
             put("big_shop_rate", r, f'=IFERROR({bbp}/({daily}{r}*(1-{C["big_platform_discount"]}{r})),"")')
-            put("big_shop_receipt", r, f'={bbp}*(1-{C["big_vip_commission"]}{r})')
             put("big_vip_final", r, f'={bbp}-({_coupon_if(bbp, big_tiers)})')
         if has(C["xhs_activity_price"], r):
             put("xhs_promo_price", r, f'={C["xhs_activity_price"]}{r}*(1-{C["xhs_promo_discount"]}{r})')

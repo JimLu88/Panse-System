@@ -49,6 +49,7 @@ const CustomReconcilePage = lazy(() => import('./pages/CustomReconcilePage'));
 const PerOrderReconcilePage = lazy(() => import('./pages/PerOrderReconcilePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
+const ShopPriceBoardPage = lazy(() => import('./pages/ShopPriceBoardPage'));
 const PricingFormulaPage = lazy(() => import('./pages/PricingFormulaPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const OpsChecklistPage = lazy(() => import('./pages/OpsChecklistPage'));
@@ -443,6 +444,7 @@ export default function App() {
             <Route path="/producibility" element={<ProducibilityPage />} />
             <Route path="/quote" element={<QuotePage />} />
             <Route path="/pricing" element={<PricingPage />} />
+            <Route path="/shop-price-board" element={<ShopPriceBoardPage />} />
             <Route path="/pricing-formulas" element={<PricingFormulaPage />} />
             <Route path="/alipay" element={<AlipayPage />} />
             <Route path="/account-balances" element={<AccountBalancesPage />} />

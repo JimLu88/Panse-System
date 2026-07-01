@@ -117,13 +117,14 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     db_session.add(Product(code="G1", name="配件促销测试"))
     db_session.add(PricingSku(product_code="G1", sku_code="G1-A", sku="1.2米",
                               wood_cost=Decimal("500"), packaging_cost=Decimal("50"),
-                              daily_price=Decimal("1000")))
+                              daily_price=Decimal("1000"),
+                              small_promo=Decimal("680"), mid_promo=Decimal("678"),  # 店铺实收(锚)
+                              big_promo=Decimal("647")))
     db_session.add(PricingSkuCosts(sku_code="G1-A", rock_slab=Decimal("200"), glass=Decimal("100")))
     db_session.add(PricingSkuPromo(
         sku_code="G1-A",
-        shop_internal_final=Decimal("680"),                  # 小促到手价 (锚)
-        mid_platform_discount=Decimal("0.12"), mid_buyer_price=Decimal("678"), mid_vip_commission=Decimal("0.01"),
-        big_platform_discount=Decimal("0.12"), big_buyer_price=Decimal("647"), big_vip_commission=Decimal("0"),
+        mid_platform_discount=Decimal("0.12"), mid_vip_commission=Decimal("0.01"),
+        big_platform_discount=Decimal("0.12"), big_vip_commission=Decimal("0"),
         xhs_activity_price=Decimal("900"), xhs_promo_discount=Decimal("0.15")))
     db_session.commit()
 
@@ -139,11 +140,11 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     # 配件 → 外配件 → 工厂 活公式
     assert f("外采配件成本合计").startswith("=SUM")
     assert f("总出厂成本").startswith("=")
-    # 店铺宝系数 = 反推(到手价 ÷ (日常 ×(1−立减))) → 活公式 (按用户 Excel 方式)
-    assert f("店铺宝系数").startswith("=")                          # 小促 = 到手/日常
+    # 锚 = 售价档位(小/中/大促价=店铺实收); 系数/买家到手/VIP 全反推为活公式 (用户 Excel 方式)
+    assert f("店铺宝系数").startswith("=")                          # 小促 = 小促价/日常
     assert f("中促店铺系数").startswith("=") and "/" in f("中促店铺系数")
     assert f("大促店铺系数").startswith("=") and "/" in f("大促店铺系数")
-    # 到手价是「锚」, 保持静态(不是公式)
-    assert not str(ws.cell(3, hdr["中促买家价"]).value or "").startswith("=")
-    assert "IF" in f("中促VIP到手价")                               # 88VIP 消费券阶梯 (由到手价正推)
+    assert f("中促买家价").startswith("=")                          # 买家到手 = 中促价/(1−佣金), 派生
+    assert f("中促店铺到手").startswith("=")                        # 店铺到手 = 中促价(实收)
+    assert "IF" in f("中促VIP到手价")                               # 88VIP 消费券阶梯 (由买家到手)
     assert f("小红书促销价").startswith("=")

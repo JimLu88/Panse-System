@@ -153,13 +153,22 @@ def get_promo_params(db) -> dict:
 
 
 def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[dict] = None) -> None:
-    """按公式重算活动价各派生字段. promo 和 sku 对象直接 mutate.
-    params: 活动价全局参数(平台立减/88VIP佣金, 按档); 不传 → PROMO_PARAM_DEFAULTS(=改造前口径)。
-    口径: 到手 = 日常 ×(1−平台立减)× 店铺宝系数; 店铺到账 = 到手 ×(1−88VIP佣金); 会员价 = 到手 −150。"""
+    """倒推活动价 (2026-07-02 用户改回 Excel「活动价」表方式)。
+
+    输入 = 各档【店铺实收价】= 小促价/中促价/大促价 (存在 sku.small_promo/mid_promo/big_promo);
+    输出 = 【店铺宝系数】(要填进淘宝店铺宝工具的那个数) + 买家到手/店铺到手/88VIP到手。
+    口径复刻用户 Excel Q/U/AB:
+      日常价 = sku.daily_price
+      小促: 无平台立减/佣金 → 买家到手 = 小促价(店铺实收); 店铺宝系数 = 小促价 ÷ 日常
+      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 店铺宝系数 = 买家到手 ÷ (日常 ×(1−中促立减));
+            店铺到手 = 中促价(实收); 88VIP到手 = 买家到手 − 88VIP消费券(阶梯)
+      大促: 同中促, 换大促价/大促佣金/大促立减
+    立减/佣金取全局参数(改参数→「活动参数」页一键全表重算); 记录回 promo 供前端展示。
+    ⚠必须在 recompute(sku) 之后调 (要读到最新的 小促/中促/大促价)。"""
     from decimal import Decimal as D, ROUND_HALF_UP
-    daily = sku.daily_price
-    if daily is None:
+    if sku.daily_price is None or D(str(sku.daily_price)) == 0:
         return
+    daily = D(str(sku.daily_price))
     p = params or {k: D(v) for k, v in PROMO_PARAM_DEFAULTS.items()}
     mid_disc = D(str(p.get("mid_platform_discount", PROMO_PARAM_DEFAULTS["mid_platform_discount"])))
     mid_comm = D(str(p.get("mid_vip_commission", PROMO_PARAM_DEFAULTS["mid_vip_commission"])))
@@ -167,31 +176,38 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
     big_comm = D(str(p.get("big_vip_commission", PROMO_PARAM_DEFAULTS["big_vip_commission"])))
     mid_tiers = p.get("mid_coupon_tiers") or [[D(str(a)), D(str(b))] for a, b in COUPON_TIERS_DEFAULT]
     big_tiers = p.get("big_coupon_tiers") or [[D(str(a)), D(str(b))] for a, b in COUPON_TIERS_DEFAULT]
+    cent, rate_q = D("0.01"), D("0.000001")
     promo.taobao_activity_price = daily
     promo.xhs_list_price = daily
-    # 小促
-    if promo.shop_promo_rate and daily:
-        promo.shop_internal_final = (daily * promo.shop_promo_rate).quantize(D("0.01"), ROUND_HALF_UP)
-    # 无国补中促
-    if promo.mid_shop_rate and daily:
-        mid = (daily * (D("1") - mid_disc) * promo.mid_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.mid_buyer_price = mid
-        promo.mid_shop_receipt = (mid * (D("1") - mid_comm)).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.mid_vip_final = mid - _coupon_deduction(mid, mid_tiers)
-        promo.mid_platform_discount = mid_disc      # 记录所用力度/佣金, 供前端单列展示
+    # 小促: 店铺实收 = 小促价; 无立减/佣金 → 买家到手 = 店铺实收; 系数 = 小促价 ÷ 日常
+    if sku.small_promo is not None:
+        recv = D(str(sku.small_promo))
+        promo.shop_internal_final = recv
+        promo.shop_promo_rate = (recv / daily).quantize(rate_q, ROUND_HALF_UP)
+    # 中促: 店铺实收 = 中促价
+    if sku.mid_promo is not None and (D("1") - mid_comm) != 0 and (D("1") - mid_disc) != 0:
+        recv = D(str(sku.mid_promo))
+        buyer = (recv / (D("1") - mid_comm)).quantize(cent, ROUND_HALF_UP)      # 买家到手(不含消费券)
+        promo.mid_buyer_price = buyer
+        promo.mid_shop_receipt = recv                                          # 店铺到手 = 实收 = 中促价
+        promo.mid_shop_rate = (buyer / (daily * (D("1") - mid_disc))).quantize(rate_q, ROUND_HALF_UP)
+        promo.mid_vip_final = buyer - _coupon_deduction(buyer, mid_tiers)
+        promo.mid_platform_discount = mid_disc
         promo.mid_vip_commission = mid_comm
-    # 无国补大促
-    if promo.big_shop_rate and daily:
-        big = (daily * (D("1") - big_disc) * promo.big_shop_rate).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.big_buyer_price = big
-        promo.big_shop_receipt = (big * (D("1") - big_comm)).quantize(D("0.01"), ROUND_HALF_UP)
-        promo.big_vip_final = big - _coupon_deduction(big, big_tiers)
+    # 大促: 店铺实收 = 大促价
+    if sku.big_promo is not None and (D("1") - big_comm) != 0 and (D("1") - big_disc) != 0:
+        recv = D(str(sku.big_promo))
+        buyer = (recv / (D("1") - big_comm)).quantize(cent, ROUND_HALF_UP)
+        promo.big_buyer_price = buyer
+        promo.big_shop_receipt = recv
+        promo.big_shop_rate = (buyer / (daily * (D("1") - big_disc))).quantize(rate_q, ROUND_HALF_UP)
+        promo.big_vip_final = buyer - _coupon_deduction(buyer, big_tiers)
         promo.big_platform_discount = big_disc
         promo.big_vip_commission = big_comm
-    # 小红书
+    # 小红书 (不变): 促销价 = 活动价 ×(1−折扣)
     if promo.xhs_activity_price:
-        discount = promo.xhs_promo_discount or D("0.15")
-        promo.xhs_promo_price = (promo.xhs_activity_price * (D("1") - discount)).quantize(D("0.01"), ROUND_HALF_UP)
+        discount = promo.xhs_promo_discount if promo.xhs_promo_discount is not None else D("0.15")
+        promo.xhs_promo_price = (D(str(promo.xhs_activity_price)) * (D("1") - discount)).quantize(cent, ROUND_HALF_UP)
 
 
 def recompute_costs(costs: PricingSkuCosts, sku: PricingSku) -> None:

@@ -255,6 +255,7 @@ def update_pricing_by_product(
                 db, costs, body.costs, table="pricing_sku_costs", pk=sku.sku_code,
                 actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
             pricing_calc_service.recompute_costs(costs, sku)
+        pricing_calc_service.recompute(sku)      # 先算成本→价格链, 再由价格倒推店铺宝系数
         if body.promo:
             promo = db.query(PricingSkuPromo).filter(
                 PricingSkuPromo.sku_code == sku.sku_code).first()
@@ -266,7 +267,6 @@ def update_pricing_by_product(
                 db, promo, body.promo, table="pricing_sku_promo", pk=sku.sku_code,
                 actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
             pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
-        pricing_calc_service.recompute(sku)
         updated += 1
     db.commit()
     return {"product_code": product_code, "updated": updated,
@@ -488,9 +488,125 @@ def update_pricing_sku(
         if tier_field in changes and changes.get(tier_field) is not None and base_field not in changes:
             setattr(sku, base_field, None)
     pricing_calc_service.recompute(sku)
+    # 促价/日常价 一变 → 同步倒推店铺宝系数 (2026-07-02 改回 Excel 倒推法), 让「改价台」/主表改价后系数即时更新
+    if any(getattr(sku, f) is not None for f in ("small_promo", "mid_promo", "big_promo")):
+        promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
+        if promo is None:
+            promo = PricingSkuPromo(sku_code=sku.sku_code)
+            db.add(promo)
+            db.flush()
+        pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
     db.commit()
     db.refresh(sku)
     return PricingSkuOut.model_validate(sku)
+
+
+# ── 改价台 (2026-07-02): Excel 式内联改店铺实收价(小/中/大促价) → 倒推店铺宝系数 ────────
+class ShopPriceRow(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    product_code: str
+    product_name: Optional[str] = None
+    sku: Optional[str] = None
+    size_info: Optional[str] = None
+    image: Optional[str] = None
+    daily_price: Optional[Decimal] = None
+    small_promo: Optional[Decimal] = None      # 店铺实收 = 小促价
+    mid_promo: Optional[Decimal] = None         # 店铺实收 = 中促价
+    big_promo: Optional[Decimal] = None         # 店铺实收 = 大促价
+    shop_promo_rate: Optional[Decimal] = None   # 小促店铺宝系数(反推)
+    mid_shop_rate: Optional[Decimal] = None     # 中促店铺宝系数(反推)
+    big_shop_rate: Optional[Decimal] = None     # 大促店铺宝系数(反推)
+
+
+def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
+    return ShopPriceRow(
+        id=sku.id, product_code=sku.product_code, product_name=name,
+        sku=sku.sku, size_info=sku.size_info, image=image,
+        daily_price=sku.daily_price, small_promo=sku.small_promo,
+        mid_promo=sku.mid_promo, big_promo=sku.big_promo,
+        shop_promo_rate=getattr(promo, "shop_promo_rate", None),
+        mid_shop_rate=getattr(promo, "mid_shop_rate", None),
+        big_shop_rate=getattr(promo, "big_shop_rate", None),
+    )
+
+
+@router.get("/shop-price-board", response_model=list[ShopPriceRow])
+def shop_price_board(
+    q: Optional[str] = Query(None, description="按 产品/SKU 模糊搜"),
+    limit: int = Query(1000, ge=1, le=3000),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """改价台取数: 产品图/名/SKU/日常价 + 三档店铺实收价(小/中/大促价) + 三档反推店铺宝系数。"""
+    from app.models.product import Product
+    from app.services.gallery_lookup import sku_gallery_url_map
+    stmt = select(PricingSku)
+    if q:
+        from app.services.fuzzy_search import fuzzy_clause
+        fc = fuzzy_clause(q, like_cols=[
+            PricingSku.product_code, PricingSku.sku_code, PricingSku.sku, PricingSku.product_name],
+            gap_cols=[PricingSku.sku, PricingSku.product_name])
+        if fc is not None:
+            stmt = stmt.where(fc)
+    rows = db.execute(
+        stmt.order_by(PricingSku.product_code, PricingSku.sku_code).limit(limit)
+    ).scalars().all()
+    codes = [r.sku_code for r in rows if r.sku_code]
+    promo_map = {p.sku_code: p for p in db.execute(
+        select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(codes))).scalars()} if codes else {}
+    name_map = dict(db.execute(select(Product.code, Product.name)).all())
+    gallery = sku_gallery_url_map([(r.product_code, r.sku_code, r.sku) for r in rows])
+    return [
+        _shop_price_row(r, promo_map.get(r.sku_code),
+                        name_map.get(r.product_code) or r.product_name,
+                        gallery.get(r.sku_code) or r.image_url)
+        for r in rows
+    ]
+
+
+class ShopPricePatch(BaseModel):
+    small_promo: Optional[Decimal] = None
+    mid_promo: Optional[Decimal] = None
+    big_promo: Optional[Decimal] = None
+
+
+@router.patch("/{sku_id}/shop-price", response_model=ShopPriceRow)
+def update_shop_price(
+    sku_id: int,
+    body: ShopPricePatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """改价台: 改某档店铺实收价(小/中/大促价) → 清该档基数(手动定价, 手动/联动互斥) →
+    recompute(成本/价格链) + recompute_promo(倒推店铺宝系数) → 返回含最新系数的行。"""
+    sku = db.get(PricingSku, sku_id)
+    if not sku:
+        raise HTTPException(404, "Not found")
+    changes = body.model_dump(exclude_unset=True)
+    if not changes:
+        raise HTTPException(400, "无改动")
+    _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
+    for k, v in changes.items():
+        setattr(sku, k, v)
+        base = _TIER_TO_BASE.get(k)
+        if base and v is not None:
+            setattr(sku, base, None)   # 手动改价 → 清基数, 锁定手动值(否则 recompute 会用基数覆盖回去)
+    pricing_calc_service.recompute(sku)
+    promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
+    if promo is None:
+        promo = PricingSkuPromo(sku_code=sku.sku_code)
+        db.add(promo)
+        db.flush()
+    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
+    db.commit()
+    db.refresh(sku)
+    db.refresh(promo)
+    from app.models.product import Product
+    from app.services.gallery_lookup import sku_gallery_url_map
+    name = db.execute(select(Product.name).where(Product.code == sku.product_code)).scalar()
+    img = sku_gallery_url_map([(sku.product_code, sku.sku_code, sku.sku)]).get(sku.sku_code) or sku.image_url
+    return _shop_price_row(sku, promo, name or sku.product_name, img)
 
 
 _TRACKED_PRICE_FIELDS = {
@@ -1144,8 +1260,8 @@ def create_sku_promo(
     sku = _get_sku_or_404(db, sku_code)
     promo = PricingSkuPromo(sku_code=sku_code, **body.model_dump(exclude_none=True))
     db.add(promo)
+    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推店铺宝系数
     pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
-    pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(promo)
     return PricingSkuPromoOut.model_validate(promo)
@@ -1170,8 +1286,8 @@ def upsert_sku_promo(
         table="pricing_sku_promo", pk=sku_code,
         actor=getattr(_, "username", None), row_label=sku.sku or sku.product_code,
     )
+    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推店铺宝系数
     pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
-    pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(promo)
     return PricingSkuPromoOut.model_validate(promo)

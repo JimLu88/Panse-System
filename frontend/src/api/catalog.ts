@@ -720,6 +720,30 @@ export const downloadPricingTemplate = (key: string) =>
     })
     .then(r => r.data as Blob);
 
+// 改价台 (2026-07-02): 改店铺实收价(小/中/大促价) → 后端倒推店铺宝系数
+export interface ShopPriceRow {
+  id: number;
+  product_code: string;
+  product_name?: string | null;
+  sku?: string | null;
+  size_info?: string | null;
+  image?: string | null;
+  daily_price?: number | null;
+  small_promo?: number | null;
+  mid_promo?: number | null;
+  big_promo?: number | null;
+  shop_promo_rate?: number | null;
+  mid_shop_rate?: number | null;
+  big_shop_rate?: number | null;
+}
+export const fetchShopPriceBoard = (q?: string) =>
+  api.get<ShopPriceRow[]>('/api/pricing-skus/shop-price-board', { params: q ? { q } : {} })
+    .then(r => r.data);
+export const updateShopPrice = (
+  id: number,
+  patch: { small_promo?: number | null; mid_promo?: number | null; big_promo?: number | null },
+) => api.patch<ShopPriceRow>(`/api/pricing-skus/${id}/shop-price`, patch).then(r => r.data);
+
 // -- 淘宝商品导出对应表 (Task 5)
 export interface TaobaoListing {
   id: number;

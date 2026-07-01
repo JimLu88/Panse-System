@@ -21,7 +21,8 @@ import {
   Upload,
   message,
 } from 'antd';
-import { DownloadOutlined, EditOutlined, ExportOutlined, HistoryOutlined, PlusOutlined, QuestionCircleOutlined, UploadOutlined } from '@ant-design/icons';
+import { DownloadOutlined, EditOutlined, ExportOutlined, HistoryOutlined, PlusOutlined, QuestionCircleOutlined, TableOutlined, UploadOutlined } from '@ant-design/icons';
+import { Link } from 'react-router-dom';
 import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ProductThumb from '../components/ProductThumb';
@@ -938,6 +939,9 @@ export default function PricingPage() {
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
+          <Tooltip title="改价台: Excel 式逐个改 小/中/大促价(店铺实收), 店铺宝系数当场反推">
+            <Link to="/shop-price-board"><Button type="primary" icon={<TableOutlined />}>改价台</Button></Link>
+          </Tooltip>
           <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">
             <Button icon={<ExportOutlined />} onClick={handleExportCatalog}>批量导出带图</Button>
           </Tooltip>

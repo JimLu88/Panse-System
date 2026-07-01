@@ -104,6 +104,8 @@ const EXACT_PATH_PERM: Record<string, string> = {
   '/npd': 'npd',
   '/taobao-listings': 'taobao-listings',
   '/pricing': 'pricing', '/pricing-formulas': 'pricing', '/quote': 'pricing',
+  '/shop-price-board': 'pricing',
+
   '/customization': 'customization',
   '/custom-quote-v2': 'custom-quote-v2',
   '/inventory': 'inventory',
