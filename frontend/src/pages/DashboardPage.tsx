@@ -3,7 +3,7 @@ import { Button, Card, Col, Grid, Row, Segmented, Spin, Statistic, Tag, Tooltip,
 import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { getDashboard } from '../api/client';
 import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
 // 剩余流水/月度经营KPI/财务概览 已移到「报表」页顶部 (2026-07-01); 销售排行榜(show=sales)留在本页
@@ -75,6 +75,9 @@ export default function DashboardPage() {
     queryKey: ['dashboard', startStr, endStr],
     queryFn: () => getDashboard(startStr && endStr ? { start: startStr, end: endStr } : undefined),
     refetchInterval: 600_000,   // 10 分钟背景刷新 (用户 2026-06-24); 导入完成会即时失效缓存强刷, 不必每分钟轮询
+    // 切月份换 queryKey 时保留上一份数据, 避免整页短暂 !data → 走下方 Spin 早退 → 卸载并重置
+    // MonthlyOpsPanel 的所选月份 (2026-07-01 修「月份要点两次才生效」的根因)
+    placeholderData: keepPreviousData,
   });
   if (isLoading || !data) {
     return (
