@@ -215,7 +215,8 @@ def test_build_shipped_orders_xlsx_flat_table(db_session):
     assert ws.cell(2, 1).value == "M1"                # 数据首列=订单号
     last = ws.max_row
     assert "合计" in str(ws.cell(last, 1).value)       # 末行合计
-    assert ws.cell(last, len(headers)).value == d["total_est_parts"] == 180.0
+    assert ws.cell(last, len(headers)).value is None    # 总价不预填内部估算, 留空给工厂核对填写
+    assert d["total_est_parts"] == 180.0                # 预估值仍在返回数据里(供页面预估/差异%对比用)
 
 
 def test_xlsx_repeats_order_no_on_every_part_row(db_session):

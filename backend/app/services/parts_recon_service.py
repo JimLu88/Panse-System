@@ -794,10 +794,9 @@ def build_shipped_orders_xlsx(db: Session, *, year_month: str,
                     o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
                     prod, o.get("sku") or "", p.get("category") or "",
                     p.get("part_name") or "", p.get("qty"), size,
-                    p.get("unit_price"), p.get("total_price"),
+                    None, None,   # 材料单价/总价: 不预填内部估算, 留空给工厂核对填写
                 ])
-        ws.append(["合计(预估,请工厂核对)", "", "", "", "", "", "", "", "", "",
-                   d["total_est_parts"]])
+        ws.append(["合计(工厂核对填写)", "", "", "", "", "", "", "", "", "", None])
     else:
         headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估配件"]
         widths = [22, 12, 12, 12, 16, 20, 11]

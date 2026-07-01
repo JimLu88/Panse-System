@@ -31,12 +31,14 @@ function openExportPrint(d: ShippedOrdersExport) {
   const title = d.material_key
     ? `配件对账清单 · ${d.material_name} · ${d.year_month} 发货`
     : `当月发货订单清单 · ${d.year_month} 发货`;
-  const head = `<h1>${esc(title)}</h1>
-    <div class="sub">共 ${d.order_count} 单 · 按发货日期(ship_date) · 预估配件合计 ¥${Math.round(d.total_est_parts).toLocaleString()}
-      &nbsp;|&nbsp; 请工厂核对后填【本月实际总额】: ____________ 元</div>`;
+  const summary = d.material_key
+    ? `共 ${d.order_count} 单 · 按发货日期(ship_date) · 请工厂核对后填【本月实际总额】: ____________ 元`
+    : `共 ${d.order_count} 单 · 按发货日期(ship_date) · 预估配件合计 ¥${Math.round(d.total_est_parts).toLocaleString()}
+      &nbsp;|&nbsp; 请工厂核对后填【本月实际总额】: ____________ 元`;
+  const head = `<h1>${esc(title)}</h1><div class="sub">${summary}</div>`;
   let body = '';
   if (d.material_key) {
-    // 扁平表格: 订单号首列且每行重复 + 下单日期/发货日 + 末尾材料单价/总价 + 预估合计行
+    // 扁平表格: 订单号首列且每行重复 + 下单日期/发货日; 材料单价/总价不预填内部估算, 留空给工厂核对填写
     const rows = d.orders.map((o) => {
       const prodWarn = o.is_custom ? ' <span class="warn">⚠定制·模板</span>' : '';
       const lead = `<td class="code">${esc(o.order_no)}</td><td>${esc(o.order_date ?? '')}</td><td>${esc(o.ship_date ?? '')}</td><td>${esc(o.product_name ?? '')}${prodWarn}</td><td>${esc(o.sku ?? '')}</td>`;
@@ -44,21 +46,18 @@ function openExportPrint(d: ShippedOrdersExport) {
       const partRows = (parts.length ? parts : [null]).map((p) => {
         if (!p) return `<tr>${lead}<td colspan="6" class="muted">无 BOM 明细</td></tr>`;
         const sw = p.size_uncertain ? ` <span class="warn">⚠模板尺寸取最大</span>` : '';
-        const up = p.unit_price != null ? '¥' + Number(p.unit_price).toFixed(2) : '—';
-        const tp = p.total_price != null ? '¥' + Number(p.total_price).toFixed(2) : '—';
-        return `<tr>${lead}<td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td><td>${esc(p.size_note ?? '—')}${sw}</td><td class="num">${up}</td><td class="num">${tp}</td></tr>`;
+        return `<tr>${lead}<td>${esc(p.category)}</td><td>${esc(p.part_name)}</td><td class="num">${esc(p.qty)}${esc(p.unit ?? '')}</td><td>${esc(p.size_note ?? '—')}${sw}</td><td class="num"></td><td class="num"></td></tr>`;
       }).join('');
       const spor = o.sporadic
         ? `<tr><td colspan="11" class="spor">⚠ ${esc(o.sporadic_note || '该单已走零星采购, 非月结付款, 工厂勿计入')}</td></tr>`
         : '';
       return partRows + spor;
     }).join('');
-    const totalStr = Number(d.total_est_parts).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     body = `<table><thead><tr>
       <th>订单号</th><th>下单日期</th><th>发货日</th><th>产品</th><th>SKU(含尺寸)</th>
       <th>类别</th><th>部位 / 料</th><th>数量</th><th>预设尺寸</th><th>材料单价</th><th>总价</th>
     </tr></thead><tbody>${rows}
-      <tr class="tot"><td colspan="10" class="num">预估合计（请工厂核对）</td><td class="num">¥${totalStr}</td></tr>
+      <tr class="tot"><td colspan="10" class="num">合计（工厂核对填写）</td><td class="num"></td></tr>
     </tbody></table>`;
   } else {
     const rows = d.orders.map((o) => `<tr>
