@@ -19,7 +19,7 @@ def test_perm_for_path_finance_subprefix_precision():
     # /api/finance 是大杂烩: 敏感子路径逐个精确命中, 顶层其余共享诊断放行
     assert pp.perm_for_path("/api/finance/alipay-flows") == "alipay"
     assert pp.perm_for_path("/api/finance/accounts") == "account-balances"
-    assert pp.perm_for_path("/api/finance/cash-flow") == "assets-cashflow"
+    assert pp.perm_for_path("/api/finance/cash-flow") == ("assets-cashflow", "reports")  # 剩余流水嵌报表页
     assert pp.perm_for_path("/api/finance/reconciliation/writeoff") == "recon-center"
     assert pp.perm_for_path("/api/finance/order-flow-match/backfill") is None  # 共享诊断→放行
     assert pp.perm_for_path("/api/finance") is None
@@ -56,6 +56,14 @@ def test_is_user_allowed_restricted():
     assert pp.is_user_allowed("operator", perms, "/api/finance/alipay-flows") is False
     assert pp.is_user_allowed("operator", perms, "/api/admin/x") is False   # admin-only 拦住受限号
     assert pp.is_user_allowed("operator", perms, "/api/auth/me") is True    # 放行路径
+
+
+def test_is_user_allowed_shared_dashboard_reports_any_of():
+    # 运营大盘嵌销售排行榜(/api/reports/*)、报表页嵌财务概览(/api/dashboard/*): 有 dashboard 或 reports 其一即可
+    assert pp.is_user_allowed("operator", ["dashboard"], "/api/reports/monthly-pnl") is True
+    assert pp.is_user_allowed("operator", ["dashboard"], "/api/reports/sales/ranking") is True
+    assert pp.is_user_allowed("operator", ["reports"], "/api/dashboard/finance-overview") is True
+    assert pp.is_user_allowed("operator", ["orders"], "/api/reports/monthly-pnl") is False  # 两者都无 → 拒
 
 
 def test_is_user_allowed_empty_list_sees_only_allowlist():

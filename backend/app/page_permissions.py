@@ -75,11 +75,13 @@ _API_PERM_RULES: dict[str, Optional[str]] = {
     "/api/table-explorer": ADMIN_ONLY,
     "/api/cs": ADMIN_ONLY,
     # --- 数据分析 ---
-    "/api/dashboard": "dashboard",
-    "/api/briefings": "dashboard",
-    "/api/scanners": "dashboard",
-    "/api/exceptions": "dashboard",
-    "/api/reports": "reports",
+    # 大盘/报表 数据接口跨页共享 (运营大盘嵌销售排行榜=/api/reports/*; 报表页嵌财务概览=/api/dashboard/*),
+    # 用 any-of 元组: 有 dashboard 或 reports 任一权限即可取数, 否则子账号进得去页面却全空。
+    "/api/dashboard": ("dashboard", "reports"),
+    "/api/briefings": ("dashboard", "reports"),
+    "/api/scanners": ("dashboard", "reports"),
+    "/api/exceptions": ("dashboard", "reports"),
+    "/api/reports": ("dashboard", "reports"),
     # --- 产品 ---
     "/api/products": "products",
     "/api/bom": "bom-list",
@@ -127,7 +129,7 @@ _API_PERM_RULES: dict[str, Optional[str]] = {
     "/api/finance/alipay-flows": "alipay",
     "/api/finance/accounts": "account-balances",
     "/api/finance/balances": "account-balances",
-    "/api/finance/cash-flow": "assets-cashflow",
+    "/api/finance/cash-flow": ("assets-cashflow", "reports"),   # 剩余流水卡也嵌在报表页顶部
     "/api/finance/reconciliation": "recon-center",
     "/api/finance/factory-reconciliation": "recon-center",
     "/api/finance/factory-payment": "factory-settlement",
@@ -162,8 +164,9 @@ _SORTED_RULES: list[tuple[str, Optional[str]]] = sorted(
 )
 
 
-def perm_for_path(path: str) -> Optional[str]:
-    """给定 API 路径, 返回访问所需的 permKey; None = 永远放行 (未命中也放行, fail-open)。"""
+def perm_for_path(path: str):
+    """给定 API 路径, 返回访问所需的 permKey; None = 永远放行 (未命中也放行, fail-open)。
+    返回值可为 str(单权限) / tuple(any-of, 拥有其一即可) / None(放行)。"""
     for prefix, perm in _SORTED_RULES:
         if path == prefix or path.startswith(prefix + "/"):
             return perm
@@ -173,7 +176,7 @@ def perm_for_path(path: str) -> Optional[str]:
 def is_user_allowed(role: Optional[str], page_perms: Optional[list], path: str) -> bool:
     """该用户能否访问该 API 路径。
 
-    admin / 无 page_perms 限制 → 放行; 命中的 permKey 在其清单内 → 放行; 否则拒。
+    admin / 无 page_perms 限制 → 放行; 命中的 permKey 在其清单内 → 放行 (元组=拥有其一即可); 否则拒。
     """
     if role == "admin":
         return True
@@ -182,7 +185,10 @@ def is_user_allowed(role: Optional[str], page_perms: Optional[list], path: str) 
     perm = perm_for_path(path)
     if perm is None:
         return True
-    return perm in page_perms
+    perms = set(page_perms or [])
+    if isinstance(perm, tuple):
+        return any(p in perms for p in perm)   # any-of: 跨页共享接口, 有其一即可
+    return perm in perms
 
 
 def sanitize_perms(perms: Optional[list]) -> Optional[list]:
