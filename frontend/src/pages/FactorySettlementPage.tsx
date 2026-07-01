@@ -4,7 +4,7 @@ import {
 } from 'antd';
 import {
   type FsAlias, type FsMissing, type FsMissingOrder, type FsMonth, type FsOverview, type FsPayment,
-  downloadFsMissing, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, getFsMissing, getFsOverview,
+  downloadFsMissing, downloadFsDetail, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, getFsMissing, getFsOverview,
 } from '../api/factorySettlement';
 
 const { Title, Text, Paragraph } = Typography;
@@ -220,6 +220,9 @@ export default function FactorySettlementPage() {
             <Text>应付合计 <Text strong>¥{bd.total_billed}</Text></Text>
             <Text>已付 <Text strong style={{ color: '#3f8600' }}>¥{bd.total_paid}</Text></Text>
             <Text>未付 <Text strong type="danger">¥{bd.total_unpaid}</Text></Text>
+            <Button size="small" onClick={() => downloadFsDetail(bd?.supplier || undefined)}>
+              导出明细Excel(账单+已付)
+            </Button>
           </Space>
         )}
       >

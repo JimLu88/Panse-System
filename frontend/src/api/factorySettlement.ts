@@ -105,3 +105,17 @@ export const downloadFsMissing = async (upToMonth?: string) => {
   a.click();
   window.URL.revokeObjectURL(url);
 };
+
+// 月结明细导出: 月度汇总 + 逐单明细(每张工厂账单金额 + 已付金额), 看清应付/已付怎么来的
+export const downloadFsDetail = async (supplier?: string) => {
+  const res = await api.get('/api/factory-settlement/detail.xlsx', {
+    params: supplier ? { supplier } : {},
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(res.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = '工厂月结明细.xlsx';
+  a.click();
+  window.URL.revokeObjectURL(url);
+};

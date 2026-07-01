@@ -106,6 +106,19 @@ def missing_orders_xlsx(up_to_month: Optional[str] = None, supplier: Optional[st
     )
 
 
+@router.get("/detail.xlsx")
+def detail_xlsx(supplier: Optional[str] = None, db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin", "operator"))):
+    """月结明细导出: Sheet1 月度汇总(应付/已付/未付/单数); Sheet2 逐单明细(每张工厂账单金额 + 已付金额)。
+    让用户看清: 应付=该月所有账单额之和; 已付=其中已销账(付清)那些单的账单额之和。"""
+    data = fss.settlement_detail_xlsx_bytes(db, supplier or DEFAULT_WOOD_SUPPLIER)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=factory_settlement_detail.xlsx"},
+    )
+
+
 @router.get("/aliases")
 def aliases(supplier: Optional[str] = None, db: Session = Depends(get_db),
             _: User = Depends(require_role("admin", "operator"))):

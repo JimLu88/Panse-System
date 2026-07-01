@@ -404,3 +404,85 @@ def missing_orders_xlsx_bytes(db: Session, *, up_to_month: Optional[str] = None,
     buf = BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+
+def settlement_detail_rows(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER) -> list[dict]:
+    """逐单明细: 该供应商每张「已开账单」工厂单一行。口径与月度台账完全一致——
+    应付(账单) = Σ factory_bill_amount; 已付 = Σ (payment_status='paid' 的 factory_bill_amount)。"""
+    rows = db.execute(
+        select(FactoryOrder).where(
+            FactoryOrder.factory_name == supplier,
+            FactoryOrder.voided_at.is_(None),
+            FactoryOrder.factory_bill_amount.isnot(None),
+        )
+    ).scalars().all()
+    out = []
+    for fo in rows:
+        amt = _d(fo.factory_bill_amount)
+        is_paid = (fo.payment_status or "") == "paid"
+        out.append({
+            "settlement_month": _order_month(fo) or "(无日期)",
+            "factory_order_no": fo.factory_order_no,
+            "platform_order_no": fo.platform_order_no,
+            "product_name": fo.product_name,
+            "sku": fo.sku,
+            "qty": fo.qty,
+            "bill_amount": amt.quantize(_Q),
+            "payment_status": "已付" if is_paid else "未付",
+            "paid_amount": (amt if is_paid else Decimal("0")).quantize(_Q),
+            "payment_date": fo.payment_date.isoformat() if fo.payment_date else None,
+            "alipay_flow_no": fo.alipay_flow_no,
+            "order_date": fo.order_date.isoformat() if fo.order_date else None,
+            "remark": fo.remark,
+        })
+    out.sort(key=lambda x: (x["settlement_month"], x["factory_order_no"] or ""))
+    return out
+
+
+def settlement_detail_xlsx_bytes(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER) -> bytes:
+    """月结明细导出: Sheet1 月度汇总(应付/已付/未付/单数, 对齐台账口径); Sheet2 逐单明细(每张账单+已付),
+    让用户看清「应付 = 该月所有账单额之和; 已付 = 其中已销账(付清)那些单的账单额之和」。"""
+    import openpyxl
+    from io import BytesIO
+    from openpyxl.styles import Font, PatternFill
+
+    detail = settlement_detail_rows(db, supplier)
+    bd = month_breakdown(db, supplier)
+    _STAT = {"paid": "已付清", "partial": "部分付清", "unpaid": "未付清"}
+    head_fill = PatternFill("solid", fgColor="1F4E78")
+
+    def _style_header(ws, row_idx):
+        for cell in ws[row_idx]:
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = head_fill
+
+    wb = openpyxl.Workbook()
+    ws1 = wb.active
+    ws1.title = "月度汇总"
+    ws1.append([f"工厂月结 · {supplier}  (应付=该月账单总额; 已付=其中已销账单的账单额之和; 未付=应付−已付)"])
+    ws1.append(["结算月", "应付(账单)", "已付", "未付", "单数", "已付单数", "状态"])
+    _style_header(ws1, 2)
+    for m in bd["months"]:
+        ws1.append([m["month"], float(m["billed"]), float(m["paid"]), float(m["unpaid"]),
+                    m["order_count"], m["paid_count"], _STAT.get(m["status"], m["status"])])
+    ws1.append([])
+    ws1.append(["合计", float(bd["total_billed"]), float(bd["total_paid"]), float(bd["total_unpaid"])])
+    for i, w in enumerate([12, 14, 12, 12, 8, 10, 10], 1):
+        ws1.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+
+    ws2 = wb.create_sheet("逐单明细")
+    hdr = ["结算月", "工厂单号", "平台订单号", "产品", "SKU", "数量",
+           "账单金额", "付款状态", "已付金额", "付款日", "销账流水号", "下单日", "备注"]
+    ws2.append(hdr)
+    _style_header(ws2, 1)
+    for r in detail:
+        ws2.append([r["settlement_month"], r["factory_order_no"], r["platform_order_no"],
+                    r["product_name"], r["sku"], r["qty"], float(r["bill_amount"]),
+                    r["payment_status"], float(r["paid_amount"]), r["payment_date"],
+                    r["alipay_flow_no"], r["order_date"], r["remark"]])
+    ws2.freeze_panes = "A2"
+    for i, w in enumerate([10, 18, 20, 22, 18, 6, 12, 10, 12, 12, 22, 12, 24], 1):
+        ws2.column_dimensions[openpyxl.utils.get_column_letter(i)].width = w
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
