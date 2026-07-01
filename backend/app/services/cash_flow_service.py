@@ -248,10 +248,12 @@ def _tax_paid_quarters(db: Session) -> set:
         return set()
 
 
-def _quarterly_tax(db: Session) -> dict:
+def _quarterly_tax(db: Session, *, today: Optional[date] = None) -> dict:
     """待缴税费(按季度): 销售税 = 已成交真实销售(排补单/取消/全退) 的 (实付−退款) × 税率, 按 order_date 季度累计。
 
-    税费每季缴一次(口径从支付宝出账看): **当季恒计(未缴)**; **上季手选「已缴纳」→ 不计入减项**。
+    税费每季缴一次(口径从支付宝出账看): **当季(=今天所在自然季)恒计(未缴, 不可标已缴)**;
+    **已过去的季度手选「已缴纳」→ 不计入减项**。季度一翻页(如 7/1 进 Q3), 上一季 Q2 立即变成可勾的过去季。
+    今天所在季用日历日期判定(不是最新订单日期), 否则季度结束后旧季会一直卡在"当季"。
     返回 {quarters:[{quarter, tax, is_current, paid}], counted_total, current_quarter}。
     """
     from app.services import order_financials as ofin
@@ -265,15 +267,12 @@ def _quarterly_tax(db: Session) -> dict:
         )
     ).all()
     by_q: dict[str, Decimal] = {}
-    max_d: Optional[date] = None
     for od, paid, refund in rows:
         if od is None:
             continue
         q = _quarter_of(od)
         by_q[q] = by_q.get(q, Decimal("0")) + (_d(paid) - _d(refund))
-        if max_d is None or od > max_d:
-            max_d = od
-    current_q = _quarter_of(max_d) if max_d else None
+    current_q = _quarter_of(today or date.today())   # 当季 = 今天所在自然季 (日历判定)
     paid_set = _tax_paid_quarters(db)
     quarters = []
     counted = Decimal("0")
