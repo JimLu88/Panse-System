@@ -1220,8 +1220,10 @@ def _register_default_jobs() -> None:
     register_job("daily_06_forecast_refresh", "销售预测重算",
                  _job_forecast_refresh, cron={"hour": 6, "minute": 0})
     # Phase 8 Tier 1
-    register_job("daily_09_briefing", "AI 每日经营简报",
-                 _job_daily_briefing, cron={"hour": 9, "minute": 30})
+    # AI 每日经营简报已停用 (用户 2026-07-01: 报表顶部每日总结不要了, 别每天调 AI 生成)。
+    # 不再注册此定时任务 → 不再每天 9:30 调用 AI; _job_daily_briefing 函数保留, 需要时可恢复此行。
+    # register_job("daily_09_briefing", "AI 每日经营简报",
+    #              _job_daily_briefing, cron={"hour": 9, "minute": 30})
     register_job("monthly_supplier_score", "月初供应商评分",
                  _job_supplier_score, cron={"day": 1, "hour": 10, "minute": 0})
     register_job("daily_06_sales_rollup", "每日销售汇总 (rollup)",

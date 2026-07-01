@@ -36,7 +36,9 @@ import {
   listKnowledge,
 } from '../api/client';
 import { Radio } from 'antd';
-import BriefingBanner from '../components/BriefingBanner';
+import CashFlowBanner from '../components/CashFlowBanner';
+import MonthlyOpsPanel from '../components/MonthlyOpsPanel';
+import FinanceOverviewPanel from '../components/FinanceOverviewPanel';
 import RefillCallout from '../components/RefillCallout';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { MetricCard } from '../components/MobileCards';
@@ -64,7 +66,10 @@ export default function ReportsPage() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <BriefingBanner />
+      {/* 运营大盘的财务三块移到报表顶部 (2026-07-01): 剩余流水+可用资金 / 月度经营 / 财务概览; 原每日AI总结已撤 */}
+      <CashFlowBanner />
+      <MonthlyOpsPanel />
+      <FinanceOverviewPanel />
       {/* 刷单(补单)单列提示 — 各 tab 各自账期, 这里用本年至今统一亮出被剔除的刷单 */}
       <RefillCallout />
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
