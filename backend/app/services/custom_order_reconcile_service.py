@@ -101,10 +101,28 @@ def _r_percent(db, o, txt):
             "source": "percent", "confidence": "high"}
 
 
-# 数量: "插座×3" / "插座 3" (数字在后) 或 "3个插座" / "2插座" (数字在前) 都要取到 (审计修 2026-06-17)
-_SOCKET_QTY = re.compile(r"插座\s*[x×\*]?\s*(\d+)|(\d+)\s*个?\s*插座")
+# 中文数量词(→阿拉伯数字), 如"两个插座"。备注常用中文数字, 不是阿拉伯数字。
+_CN_NUM = {"一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5,
+           "六": 6, "七": 7, "八": 8, "九": 9, "十": 10}
+# 中文数量 + 可选"个" + 可选型号片段(字母/数字/连字符, 如"T25") + "插座", 如"两个T25插座"。
+_SOCKET_QTY_CN = re.compile(r"([一二两三四五六七八九十])\s*个?\s*[A-Za-z0-9\-]{0,8}\s*插座")
+# 阿拉伯数量: "插座×3"/"插座 3"(数字在后, 紧跟插座) 或 "3个插座"/"2插座"(数字在前, 数字前不能紧贴
+# 字母/数字 —— 防"T25插座"把型号编号"25"误当数量, 审计修 2026-07-02: 63×25=1575 曾把一单插座成本
+# 算出 25 倍, 真实数量"两个"在"两"字, 不是"T25"的"25")。
+_SOCKET_QTY = re.compile(r"插座\s*[x×\*]?\s*(\d+)|(?<![A-Za-z0-9])(\d+)\s*个?\s*插座")
 # 大件关键词: 备注里有这些 → 不是纯插座追加, 别只算插座(会严重低估), 交 AI/85% 兜底
 _BIG_ITEM_KW = ("柜", "桌", "床", "灯带", "岩板", "玻璃", "水管", "移门", "背板", "抽屉", "大板")
+_SOCKET_FREIGHT = Decimal("8")   # 插座补发单次运费(不随数量翻倍, 用户拍板 2026-07-02)
+
+
+def _socket_qty(txt: str) -> int:
+    """插座数量: 中文数字("两个[型号]插座")优先, 否则阿拉伯数字(数字前不能贴字母/数字, 防型号编号
+    误判), 都没匹配到默认 1。"""
+    cn = _SOCKET_QTY_CN.search(txt)
+    if cn:
+        return _CN_NUM[cn.group(1)]
+    m = _SOCKET_QTY.search(txt)
+    return int(m.group(1) or m.group(2)) if m else 1
 
 
 def _r_socket(db, o, txt):
@@ -112,14 +130,14 @@ def _r_socket(db, o, txt):
         return None
     if any(k in txt for k in _BIG_ITEM_KW):
         return None   # 插座与大件混在一起 → 非纯插座单, 不能只算 ¥63 (审计修 2026-06-17)
-    m = _SOCKET_QTY.search(txt)
-    qty = int(m.group(1) or m.group(2)) if m else 1
+    qty = _socket_qty(txt)
     mat = db.execute(select(Material).where(Material.code == SOCKET_MATERIAL_CODE)).scalar_one_or_none()
     price = _d(mat.price) if (mat and mat.price is not None) else None
     if price is None:
         return None   # 无单价 → 让后面 AI/兜底接手
-    return {"cost": price * qty, "method": "插座→AC-1007", "confidence": "high",
-            "detail": f"AC-1007 单价 {price} × {qty}", "source": "socket"}
+    cost = price * qty + _SOCKET_FREIGHT
+    return {"cost": cost, "method": "插座→AC-1007", "confidence": "high",
+            "detail": f"AC-1007 单价 {price} × {qty} + 运费{_SOCKET_FREIGHT}", "source": "socket"}
 
 
 _RULE_RESOLVERS = [_r_actual, _r_surcharge, _r_cost_keyword, _r_percent, _r_socket]
