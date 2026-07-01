@@ -12,6 +12,8 @@ import { AutoComplete, Empty, Input, Modal, Space, Tag, Typography } from 'antd'
 import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { globalSearch } from '../api/client';
+import { useAuth } from '../auth/AuthProvider';
+import { canAccessPerm, resolvePagePerm } from '../auth/permissions';
 
 const QUICK_ACTIONS = [
   { label: '本周销售', url: '/reports', kw: '本周 销售 报表 sales' },
@@ -39,6 +41,19 @@ export default function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  // 按子账号权限过滤快捷动作: 无权页面(如 admin 专属的「管理/系统监控」「会计期间」)不出现在搜索里
+  const visibleActions = useMemo(
+    () =>
+      QUICK_ACTIONS.filter((a) => {
+        const qi = a.url.indexOf('?');
+        const path = qi >= 0 ? a.url.slice(0, qi) : a.url;
+        const search = qi >= 0 ? a.url.slice(qi) : '';
+        return canAccessPerm(user, resolvePagePerm(path, search));
+      }),
+    [user],
+  );
 
   // ⌘K / Ctrl+K 触发
   useEffect(() => {
@@ -70,12 +85,12 @@ export default function CommandPalette() {
   });
 
   const actionMatches = useMemo(() => {
-    if (!trimmed) return QUICK_ACTIONS;
+    if (!trimmed) return visibleActions;
     const lower = trimmed.toLowerCase();
-    return QUICK_ACTIONS.filter(
+    return visibleActions.filter(
       (a) => a.label.toLowerCase().includes(lower) || a.kw.toLowerCase().includes(lower),
     );
-  }, [trimmed]);
+  }, [trimmed, visibleActions]);
 
   const options = useMemo(() => {
     const out: any[] = [];
