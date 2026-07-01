@@ -109,6 +109,19 @@ class PricingSkuPatch(BaseModel):
     wood_cost: Optional[Decimal] = None
     packaging_cost: Optional[Decimal] = None
     external_parts_cost: Optional[Decimal] = None
+    # 成本加成基数 (改系数): 填了 → recompute 按 各档价=ROUNDUP(物理÷(1−2.6%)÷基数,−1) 联动派生。
+    base_list: Optional[Decimal] = None
+    base_small: Optional[Decimal] = None
+    base_mid: Optional[Decimal] = None
+    base_big: Optional[Decimal] = None
+
+
+# 档价 → 该档基数: 手动直接改档价(没同时改基数) → 清该档基数, 让 recompute 不再派生此档(手动值锁定)。
+# 改基数(base_*)则相反: recompute 按基数派生该档价(联动)。二者互斥, 由前端"手动改值/改系数"决定发哪个。
+_TIER_TO_BASE = {
+    "list_price": "base_list", "daily_price": "base_list",
+    "small_promo": "base_small", "mid_promo": "base_mid", "big_promo": "base_big",
+}
 
 
 _EXT_SKIP = {"id", "sku_code", "created_at", "updated_at"}
@@ -459,6 +472,10 @@ def update_pricing_sku(
         setattr(sku, k, v)
     if "factory_cost" in changes:
         sku.factory_cost_override = True   # 手改工厂成本 → 标覆盖, recompute 不再自动派生(保住手改值)
+    # 手动直接改某档价(没同时改该档基数) → 清该档基数, 让 recompute 不覆盖此手动值(手动/联动互斥)
+    for tier_field, base_field in _TIER_TO_BASE.items():
+        if tier_field in changes and changes.get(tier_field) is not None and base_field not in changes:
+            setattr(sku, base_field, None)
     pricing_calc_service.recompute(sku)
     db.commit()
     db.refresh(sku)

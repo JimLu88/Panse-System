@@ -318,27 +318,29 @@ function EditableTextCell({ value }: { value: string | null; onSave?: (v: string
 // 价格档位格: 点击弹出「手动改值(仅这行) / 改系数(仅这行)」—— 都只改当前 SKU, 不影响别人。
 // 中促/大促有「按SKU系数」(中促系数/大促系数): 改系数=给一个独立数字框, 用正确公式即时预览并只存这一行。
 function PriceCell({
-  value, physicalCost, baseLabel, feeTax, formulaText, onSaveValue,
+  value, physicalCost, baseLabel, feeTax, formulaText, onSaveValue, onSaveBase,
 }: {
   value: number | null;
   physicalCost: number | null;
   baseLabel?: string;        // 有则=促销档(小/中/大促), 可改"基数"; 无则=结构档(标价/日常)只能手动改值
   feeTax: number;            // 抽佣+税 = 0.026
   formulaText: string;
-  onSaveValue: (v: number | null) => void;
+  onSaveValue: (v: number | null) => void;   // 手动改值 → 存价(后端清该档基数, 手动锁定)
+  onSaveBase?: (base: number | null) => void; // 改系数 → 存基数(后端按公式联动派生该档价)
 }) {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<'value' | 'base'>('value');
   const [val, setVal] = useState<number | null>(value);
-  // 价 = 物理 ÷ (基数 − feeTax) → 基数 = 物理 ÷ 价 + feeTax (从现价反解, 不需存字段)
+  // 会计基准 = 物理 ÷ (1 − feeTax); 基数 = 会计基准 ÷ 现价 (从现价反解显示当前基数)
   const curBase = baseLabel && value && physicalCost
-    ? Math.round((physicalCost / value + feeTax) * 10000) / 10000 : null;
+    ? Math.round((physicalCost / (1 - feeTax) / value) * 10000) / 10000 : null;
   const [base, setBase] = useState<number | null>(curBase);
   useEffect(() => { setVal(value); }, [value]);
   useEffect(() => { setBase(curBase); }, [curBase]);
 
-  const preview = baseLabel && base != null && physicalCost && base - feeTax > 0
-    ? Math.round((physicalCost / (base - feeTax)) * 100) / 100 : null;
+  // 预览 = ROUNDUP(会计基准 ÷ 基数, 到10) —— 与后端 recompute / 用户 Excel 口径一致
+  const preview = baseLabel && base != null && base > 0 && physicalCost
+    ? Math.ceil((physicalCost / (1 - feeTax) / base) / 10) * 10 : null;
 
   const panel = (
     <div style={{ width: 340 }}>
@@ -354,19 +356,19 @@ function PriceCell({
       ) : baseLabel ? (
         <div style={{ marginTop: 10 }}>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            {baseLabel}：价 = 物理成本 ÷ ({baseLabel} − 0.02抽佣 − 0.006税)。基数越大→越便宜。
+            {baseLabel}：价 = ROUNDUP(物理成本 ÷ (1 − 2.6%) ÷ {baseLabel}, 到10)。基数越大→越便宜(毛利≈1−基数)。
           </Typography.Text>
           <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <span style={{ fontSize: 13 }}>{baseLabel}</span>
-            <InputNumber size="small" value={base} precision={4} min={0} max={1} step={0.01} onChange={setBase} style={{ width: 120 }} />
+            <InputNumber size="small" value={base} precision={4} min={0} max={1.2} step={0.01} onChange={setBase} style={{ width: 120 }} />
             <span style={{ color: '#999', fontSize: 13 }}>→ 预览 <b>¥{preview ?? '—'}</b></span>
           </div>
           <Button size="small" type="primary" style={{ marginTop: 10 }}
-            disabled={preview == null}
-            onClick={() => { if (preview != null) { onSaveValue(preview); setOpen(false); } }}>
+            disabled={base == null || !onSaveBase}
+            onClick={() => { if (base != null && onSaveBase) { onSaveBase(base); setOpen(false); } }}>
             保存（只改这一行）
           </Button>
-          <div style={{ marginTop: 6, fontSize: 11, color: '#52c41a' }}>✓ 只改这一个 SKU；口径与定价总表一致：物理 ÷ (基数 − 0.026)</div>
+          <div style={{ marginTop: 6, fontSize: 11, color: '#52c41a' }}>✓ 存的是「基数」，成本一变价格自动联动；口径与定价总表/你的Excel一致</div>
         </div>
       ) : (
         <div style={{ marginTop: 12, fontSize: 12, color: '#999' }}>
@@ -552,6 +554,8 @@ export default function PricingPage() {
   const [editRow, setEditRow] = useState<PricingSku | null>(null);
   // 统一编辑器 (可拖动, 字段级历史, 一键覆盖同产品)
   const [editorRow, setEditorRow] = useState<PricingSku | null>(null);
+  // 刚改过的行 → 「描述」列临时标绿; 改下一行或刷新页面自动消失 (只记最近一行)
+  const [recentEditedId, setRecentEditedId] = useState<number | null>(null);
   const [promoParamsOpen, setPromoParamsOpen] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [visibleKeys, setVisibleKeys] = useState<string[] | null>(null);   // null = 全部字段
@@ -665,7 +669,9 @@ export default function PricingPage() {
     return Array.from(map.values());
   }, [items]);
 
-  const saveField = (id: number, field: string, value: number | null) => updateMut.mutate({ id, patch: { [field]: value } });
+  const saveField = (id: number, field: string, value: number | null) => { setRecentEditedId(id); updateMut.mutate({ id, patch: { [field]: value } }); };
+  // 改基数(改系数): 写 base_* 列, 后端 recompute 按 ROUNDUP(物理÷(1−2.6%)÷基数,−1) 联动派生该档价
+  const saveBase = (id: number, baseField: string, base: number | null) => { setRecentEditedId(id); updateMut.mutate({ id, patch: { [baseField]: base } }); };
   const saveCost = (row: PricingSku, field: string, value: number | string | null) => costMut.mutate({ skuCode: row.sku_code, patch: { [field]: value } });
   const savePromo = (row: PricingSku, field: string, value: number | string | null) => promoMut.mutate({ skuCode: row.sku_code, patch: { [field]: value } });
 
@@ -691,10 +697,11 @@ export default function PricingPage() {
       const row = byId.get(id);
       if (batchMode === 'set') { tasks.push(updatePricingSku(id, { [batchField]: batchValue })); }
       else if (batchMode === 'base') {
-        // 设基数(小/中/大促): 价 = 物理成本 ÷ (基数 − 0.026), 每行用自己的物理成本 → 这就是 V6 的"分组档"批量套用
-        const phys = row ? Number((row as any).physical_cost) : 0;
-        if (!row || !phys || batchValue - 0.026 <= 0) { skipped += 1; continue; }
-        tasks.push(updatePricingSku(id, { [batchField]: Math.round((phys / (batchValue - 0.026)) * 100) / 100 }));
+        // 设基数(小/中/大促): 写 base_* 列, 后端 recompute 按 ROUNDUP(物理÷(1−2.6%)÷基数,−1) 逐行用自己物理成本联动派生。
+        // 不再前端算价直写(旧公式)→ 存基数, 成本一变价格自动跟, 且不与新引擎冲突。
+        const baseCol = ({ small_promo: 'base_small', mid_promo: 'base_mid', big_promo: 'base_big' } as Record<string, string>)[batchField];
+        if (!baseCol || batchValue <= 0) { skipped += 1; continue; }
+        tasks.push(updatePricingSku(id, { [baseCol]: batchValue }));
       }
       else {
         if (!row) { skipped += 1; continue; }
@@ -720,6 +727,7 @@ export default function PricingPage() {
   // 小促/中促/大促 = 物理成本 ÷ (基数 − 0.02 − 0.006); 基数按 SKU 不同(从现价反解)。改基数=只改这一行。
   const FEE_TAX = 0.026; // 平台抽佣 0.02 + 税 0.006
   const TIER_BASE: Record<string, string> = { small_promo: '小促基数', mid_promo: '中促基数', big_promo: '大促基数' };
+  const TIER_BASE_COL: Record<string, string> = { small_promo: 'base_small', mid_promo: 'base_mid', big_promo: 'base_big' };
   // 各成本/计算列的真实公式(取自定价总表的单元格公式) — 悬浮显示。录入值的列标注来源。
   const COL_FORMULA: Record<string, string> = {
     accounting_cost: '会计总成本 = 物理总成本 + 平台费 + 税费',
@@ -748,6 +756,7 @@ export default function PricingPage() {
         value={num(v)} physicalCost={num(r.physical_cost)}
         baseLabel={TIER_BASE[key]} feeTax={FEE_TAX} formulaText={`公式：${fmtFormula[key]}`}
         onSaveValue={(nv) => saveField(r.id, key, nv)}
+        onSaveBase={TIER_BASE_COL[key] ? (b) => saveBase(r.id, TIER_BASE_COL[key], b) : undefined}
       />
     ),
   });
@@ -757,7 +766,10 @@ export default function PricingPage() {
     { title: '产品编码', dataIndex: 'product_code', width: cw('product_code', 110), onHeaderCell: mkResize('product_code') },
     // 「漂移」标签已撤 (用户拍板 2026-06-12: BOM 单价只用于预估/定制报价, 不与定价对照)
     { title: 'SKU 编码', dataIndex: 'sku_code', width: cw('sku_code', 120), onHeaderCell: mkResize('sku_code') },
-    { title: '描述', dataIndex: 'sku', width: cw('sku', 160), ellipsis: true, onHeaderCell: mkResize('sku') },
+    { title: '描述', dataIndex: 'sku', width: cw('sku', 160), ellipsis: true, onHeaderCell: mkResize('sku'),
+      render: (v: any, r: PricingSku) => r.id === recentEditedId
+        ? <span style={{ background: '#b7eb8f', padding: '2px 6px', borderRadius: 4 }} title="刚改过这一行">{str(v)}</span>
+        : str(v) },
     { title: '分类', dataIndex: 'size_category', width: cw('size_category', 70), onHeaderCell: mkResize('size_category') },
     { title: '图片', dataIndex: 'image_url', width: cw('image_url', 60), onHeaderCell: mkResize('image_url'),
       // SKU 图全部图库优先 (用户拍板 2026-06-12); 图库没有才回退淘宝 image_url
@@ -870,7 +882,14 @@ export default function PricingPage() {
       <PricingEditorModal
         row={editorRow}
         onClose={() => setEditorRow(null)}
-        onSaved={invalidatePricing}
+        onSaved={() => { if (editorRow) setRecentEditedId(editorRow.id); invalidatePricing(); }}
+        onSaveNext={() => {
+          if (!editorRow) return;
+          setRecentEditedId(editorRow.id);
+          const idx = items.findIndex((x) => x.id === editorRow.id);
+          setEditorRow(idx >= 0 && idx + 1 < items.length ? items[idx + 1] : null);
+          if (idx >= 0 && idx + 1 >= items.length) message.info('已是最后一行');
+        }}
       />
       <PromoParamsModal
         open={promoParamsOpen}

@@ -80,8 +80,9 @@ function diffOf(vals: Record<string, number | null>, base: Record<string, number
   return out;
 }
 
-export default function PricingEditorModal({ row, onClose, onSaved }: {
+export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }: {
   row: PricingSku | null; onClose: () => void; onSaved: () => void;
+  onSaveNext?: () => void;   // 保存(有改动才存)后自动跳到下一行继续编辑
 }) {
   const qc = useQueryClient();
   const [vals, setVals] = useState<Record<string, number | null>>({});
@@ -143,7 +144,9 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
   // 主表补丁 = 数值差异 + (改过的)淘宝标题
   const skuPatch = (): Record<string, unknown> => ({ ...skuDiff, ...(titleDirty ? { taobao_title: title.trim() || null } : {}) });
 
-  const saveOne = async () => {
+  // 有改动才写库; 返回是否成功(无改动=直接算成功, 供"改下行"纯跳转)
+  const persist = async (): Promise<boolean> => {
+    if (!dirtyCount) return true;
     setSaving(true);
     try {
       if (Object.keys(skuPatch()).length) await updatePricingSku(row.id, skuPatch());
@@ -152,13 +155,18 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
       message.success(`已保存 ${dirtyCount} 个字段 (含联动重算)`);
       qc.invalidateQueries({ queryKey: ['pricing-skus'] });
       onSaved();
-      onClose();
+      return true;
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '保存失败');
+      return false;
     } finally {
       setSaving(false);
     }
   };
+
+  const saveOne = async () => { if (await persist()) onClose(); };
+  // 保存并改下一行: 存当前(有改动才存)→ 由父级把编辑器切到下一行 (row 变 → useEffect 重载表单)
+  const saveAndNext = async () => { if (await persist()) onSaveNext?.(); };
 
   const saveAll = () => {
     Modal.confirm({
@@ -250,6 +258,12 @@ export default function PricingEditorModal({ row, onClose, onSaved }: {
           <Button type="primary" loading={saving} disabled={!dirtyCount} onClick={saveOne}>
             仅保存这一行
           </Button>
+          {onSaveNext && (
+            <Button type="primary" ghost loading={saving} onClick={saveAndNext}
+              title="保存本行(有改动才存)并自动跳到下一行继续编辑">
+              保存并改下一行 →
+            </Button>
+          )}
           <Button danger loading={saving} disabled={!dirtyCount} onClick={saveAll}>
             保存并覆盖同产品全部 SKU
           </Button>
