@@ -738,12 +738,19 @@ export async function downloadShippedOrdersXlsx(yearMonth: string, materialKey?:
 }
 
 // ----- 剩余流水（可用资金）测算 -----
+export interface TaxQuarter {
+  quarter: string;      // "2026-Q1"
+  tax: string;          // 该季销售税额
+  is_current: boolean;  // 当季(恒计, 不可标已缴)
+  paid: boolean;        // 上季手选已缴(不计入减项)
+}
 export interface CashFlowLine {
   key: string;
   label: string;
   amount: string;
   manual: boolean;
   source: string;
+  detail?: TaxQuarter[] | null;   // 待缴税费的逐季度明细
 }
 export interface CashFlowFreshness {
   source: string;
@@ -775,7 +782,10 @@ export interface CashFlowSummary {
   investment?: CashFlowInvestment | null;
   other_account_balance: string;
   freshness: CashFlowFreshness[];
-  manual?: { shop_deposit: string; total_investment: string; factory_settlement_days: number };
+  manual?: {
+    shop_deposit: string; total_investment: string; factory_settlement_days: number;
+    tax_current_quarter?: string | null; tax_quarters?: TaxQuarter[]; tax_paid_quarters?: string[];
+  };
   generated_at: string;
 }
 
@@ -786,6 +796,7 @@ export const updateCashFlowSettings = (payload: {
   shop_deposit?: string;
   total_investment?: string;
   factory_settlement_days?: number;
+  tax_paid_quarters?: string[];   // 已缴税季度(手选), 如 ["2026-Q1"]
 }) =>
   api.put<CashFlowSummary>('/api/finance/cash-flow/settings', payload).then((r) => r.data);
 

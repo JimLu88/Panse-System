@@ -2084,6 +2084,7 @@ class CashFlowLineOut(BaseModel):
     amount: Decimal
     manual: bool
     source: str
+    detail: Optional[list] = None   # 明细 (如 待缴税费 的逐季度 [{quarter,tax,is_current,paid}])
 
 
 class CashFlowFreshnessOut(BaseModel):
@@ -2102,6 +2103,7 @@ class CashFlowSummaryOut(BaseModel):
     investment: dict | None = None   # 投资回收: 总投资/累计总利润/回收率 (单列, 不进可用资金)
     other_account_balance: Decimal
     freshness: list[CashFlowFreshnessOut]
+    manual: dict | None = None       # 手动常量 + 税季度明细 (tax_quarters/tax_paid_quarters 供前端手选已缴)
     generated_at: str
 
 
@@ -2115,16 +2117,18 @@ class CashFlowSettingsIn(BaseModel):
     shop_deposit: Optional[Decimal] = None
     total_investment: Optional[Decimal] = None
     factory_settlement_days: Optional[int] = None   # 工厂结算周期(天), 工厂欠款回填规则B用
+    tax_paid_quarters: Optional[list[str]] = None   # 已缴税季度(手选), 如 ["2026-Q1"]; 不计入减项
 
 
 @router.put("/cash-flow/settings", response_model=CashFlowSummaryOut)
 def update_cash_flow_settings(payload: CashFlowSettingsIn, db: Session = Depends(get_db)):
-    """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期），返回重新测算后的结果。"""
+    """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期 / 已缴税季度），返回重新测算后的结果。"""
     cash_flow_service.update_manual(
         db,
         shop_deposit=payload.shop_deposit,
         total_investment=payload.total_investment,
         factory_settlement_days=payload.factory_settlement_days,
+        tax_paid_quarters=payload.tax_paid_quarters,
     )
     db.commit()
     return cash_flow_service.compute_summary(db)

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Col, Empty, InputNumber, Modal, Row, Space, Spin, Statistic,
+  Alert, Button, Card, Checkbox, Col, Empty, InputNumber, Modal, Row, Space, Spin, Statistic,
   Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
@@ -78,6 +78,7 @@ export default function CashFlowPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [investment, setInvestment] = useState<number | null>(null);
   const [settlementDays, setSettlementDays] = useState<number | null>(null);
+  const [taxPaid, setTaxPaid] = useState<string[]>([]);   // 已缴税季度(手选)
 
   const { data, isLoading } = useQuery<CashFlowSummary>({
     queryKey: ['cash-flow'],
@@ -89,6 +90,7 @@ export default function CashFlowPage() {
     mutationFn: () => updateCashFlowSettings({
       total_investment: investment == null ? undefined : String(investment),
       factory_settlement_days: settlementDays == null ? undefined : settlementDays,
+      tax_paid_quarters: taxPaid,
     }),
     onSuccess: (fresh) => {
       qc.setQueryData(['cash-flow'], fresh);
@@ -109,6 +111,7 @@ export default function CashFlowPage() {
     // 平台保证金改在「资产 & 流水 → 平台保证金」标签页维护, 此处不再手填
     setInvestment(data.investment ? Number(data.investment.total_investment) : 0);
     setSettlementDays(data.manual?.factory_settlement_days ?? 45);
+    setTaxPaid(data.manual?.tax_paid_quarters ?? []);
     setEditOpen(true);
   };
 
@@ -254,6 +257,31 @@ export default function CashFlowPage() {
               「工厂欠款回填」用：关联订单已签收且工厂下单超过此天数 → 判定已结。按你家工厂月结习惯填（默认 45）。
             </Text>
           </div>
+          {data.manual?.tax_quarters && data.manual.tax_quarters.length > 0 && (
+            <div>
+              <Text>税费（按季度缴 · 勾选=已缴纳则不计入减项）</Text>
+              <div style={{ marginTop: 6 }}>
+                {data.manual.tax_quarters.map((q) => (
+                  <div key={q.quarter} style={{ marginBottom: 4 }}>
+                    {q.is_current ? (
+                      <Text><Tag color="orange">本季·必扣</Tag>{q.quarter}：¥{Number(q.tax).toLocaleString()}</Text>
+                    ) : (
+                      <Checkbox
+                        checked={taxPaid.includes(q.quarter)}
+                        onChange={(e) => setTaxPaid((prev) =>
+                          e.target.checked ? Array.from(new Set([...prev, q.quarter])) : prev.filter((x) => x !== q.quarter))}
+                      >
+                        {q.quarter}：¥{Number(q.tax).toLocaleString()}（勾选=已缴纳）
+                      </Checkbox>
+                    )}
+                  </div>
+                ))}
+              </div>
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                税费 = 成交销售 × 2%，每季度缴一次（口径从支付宝出账看）。当季永远计入减项（未缴）；上季缴完就勾上，立即从减项去掉。
+              </Text>
+            </div>
+          )}
         </Space>
       </Modal>
 

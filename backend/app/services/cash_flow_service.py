@@ -43,6 +43,8 @@ from app.services import factory_payment_service, settings_service
 # ── 手动常量配置键 ────────────────────────────────────────────
 SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
 SETTING_TOTAL_INVESTMENT = "cashflow_total_investment"
+# 税费按季度缴(每季一次); 已缴季度存 JSON 列表如 ["2026-Q1"] → 不再计入减项。当季恒计(未缴)。
+SETTING_TAX_PAID_QUARTERS = "cashflow_tax_paid_quarters"
 DEFAULT_TOTAL_INVESTMENT = Decimal("669871")
 DEFAULT_SHOP_DEPOSIT = Decimal("0")
 
@@ -229,6 +231,62 @@ def _refill_unpaid_commission(db: Session) -> Decimal:
     ).scalar())
 
 
+def _quarter_of(d: date) -> str:
+    return f"{d.year}-Q{(d.month - 1) // 3 + 1}"
+
+
+def _tax_paid_quarters(db: Session) -> set:
+    """已缴税季度集合 (用户在减项手选「已缴纳」); 存 system_settings JSON 列表。"""
+    import json
+    raw = settings_service.get(db, SETTING_TAX_PAID_QUARTERS, env_fallback=False)
+    if not raw:
+        return set()
+    try:
+        v = json.loads(raw)
+        return set(v) if isinstance(v, list) else set()
+    except Exception:
+        return set()
+
+
+def _quarterly_tax(db: Session) -> dict:
+    """待缴税费(按季度): 销售税 = 已成交真实销售(排补单/取消/全退) 的 (实付−退款) × 税率, 按 order_date 季度累计。
+
+    税费每季缴一次(口径从支付宝出账看): **当季恒计(未缴)**; **上季手选「已缴纳」→ 不计入减项**。
+    返回 {quarters:[{quarter, tax, is_current, paid}], counted_total, current_quarter}。
+    """
+    from app.services import order_financials as ofin
+    from app.services.sales_analytics import settled_sale_clause
+    rate = _d(ofin.load_coefficients(db).get("tax_rate")) or _TAX_RATE
+    rows = db.execute(
+        select(Order.order_date, Order.paid_amount, Order.refund_amount).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.order_date.isnot(None),
+            settled_sale_clause(),
+        )
+    ).all()
+    by_q: dict[str, Decimal] = {}
+    max_d: Optional[date] = None
+    for od, paid, refund in rows:
+        if od is None:
+            continue
+        q = _quarter_of(od)
+        by_q[q] = by_q.get(q, Decimal("0")) + (_d(paid) - _d(refund))
+        if max_d is None or od > max_d:
+            max_d = od
+    current_q = _quarter_of(max_d) if max_d else None
+    paid_set = _tax_paid_quarters(db)
+    quarters = []
+    counted = Decimal("0")
+    for q in sorted(by_q.keys()):
+        tax = (by_q[q] * rate).quantize(_Q)
+        is_current = (q == current_q)
+        paid_flag = (not is_current) and (q in paid_set)   # 当季不可标已缴; 上季手选
+        if is_current or not paid_flag:
+            counted += tax
+        quarters.append({"quarter": q, "tax": tax, "is_current": is_current, "paid": paid_flag})
+    return {"quarters": quarters, "counted_total": counted.quantize(_Q), "current_quarter": current_q}
+
+
 def compute_total_profit(db: Session) -> dict:
     """累计总利润 — 与总投资对比看回本。统一会计口径 (与 accounting_summary/逐单核对/资产公式B 一致):
 
@@ -312,6 +370,7 @@ def compute_summary(db: Session) -> dict:
     factory_sample, factory_billed, _billed_nos, _billed_ids = _classify_unpaid_factory_bills(db)
     factory_estimate, fe_counted = _factory_estimate_unbilled(db, _billed_nos, _billed_ids)  # 未开账单预估
     refill_commission = _refill_unpaid_commission(db)
+    tax_q = _quarterly_tax(db)   # 待缴税费(季度): 当季必扣 + 上季未标已缴的
 
     additions = [
         {"key": "shop_deposit", "label": "平台保证金", "amount": shop_deposit, "manual": True, "source": deposit_source},
@@ -325,6 +384,8 @@ def compute_summary(db: Session) -> dict:
     subtractions = [
         {"key": "platform_fee", "label": "待扣平台服务费(在途×0.6%)", "amount": platform_fee, "manual": False, "source": "在途订单估算"},
         {"key": "platform_activity", "label": "平台活动抽成(在途·生效月×2%)", "amount": activity_fee, "manual": False, "source": "在途订单(下单月在活动期)×2%"},
+        {"key": "tax_quarterly", "label": "待缴税费(季度·当季必扣)", "amount": tax_q["counted_total"], "manual": True,
+         "source": f"成交销售×2% 按季累计; 当季{tax_q['current_quarter'] or '—'}必扣, 上季手选已缴则不计", "detail": tax_q["quarters"]},
         {"key": "factory_sample", "label": "工厂打样费(未付·待账单)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号无订单链接)"},
         {"key": "factory_billed", "label": "工厂结算(已开账单未付)", "amount": factory_billed, "manual": False, "source": "工厂订单(未付·有平台单号或挂真实订单)"},
         {"key": "factory_estimate", "label": "工厂结算(未开账单·预测成本)", "amount": factory_estimate, "manual": False,
@@ -385,6 +446,9 @@ def compute_summary(db: Session) -> dict:
             "shop_deposit": shop_deposit,
             "total_investment": total_investment,
             "factory_settlement_days": factory_payment_service.get_settlement_days(db),
+            "tax_current_quarter": tax_q["current_quarter"],
+            "tax_quarters": tax_q["quarters"],          # [{quarter, tax, is_current, paid}] 供前端手选已缴
+            "tax_paid_quarters": sorted(_tax_paid_quarters(db)),
         },
         "generated_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -410,8 +474,9 @@ def update_manual(
     shop_deposit: Optional[Decimal] = None,
     total_investment: Optional[Decimal] = None,
     factory_settlement_days: Optional[int] = None,
+    tax_paid_quarters: Optional[list] = None,
 ) -> None:
-    """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期）。"""
+    """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期 / 已缴税季度）。"""
     if shop_deposit is not None:
         settings_service.set_value(
             db, SETTING_SHOP_DEPOSIT, str(shop_deposit), description="剩余流水-店铺保证金",
@@ -422,3 +487,10 @@ def update_manual(
         )
     if factory_settlement_days is not None:
         factory_payment_service.set_settlement_days(db, factory_settlement_days)
+    if tax_paid_quarters is not None:
+        import json
+        clean = sorted({str(q) for q in tax_paid_quarters if str(q).strip()})
+        settings_service.set_value(
+            db, SETTING_TAX_PAID_QUARTERS, json.dumps(clean),
+            description="剩余流水-已缴税季度(手选, 不计入减项)",
+        )
