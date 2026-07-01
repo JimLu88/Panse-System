@@ -3,7 +3,7 @@
  * 促价 = ROUNDUP(成本 ÷ 基数, 进位到10) 自动算出来; 右侧附带反推的「店铺宝系数」(填淘宝用)。
  * 你改基数, 价格立刻变(和你原表一样); 价格/店铺宝系数都是只读输出。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, Image, Input, InputNumber, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery } from '@tanstack/react-query';
@@ -17,16 +17,25 @@ const pct = (v?: number | null) => (v == null ? '—' : `${(Number(v) * 100).toF
 type BaseTier = 'base_small' | 'base_mid' | 'base_big';
 
 // 「定价基数」单元格: 点着改(0.86 这种小数), 回车/失焦保存(只在真变了才存)。
-function BaseCell({ value, onSave }: { value?: number | null; onSave: (v: number) => void }) {
-  const [v, setV] = useState<number | null | undefined>(value);
-  useEffect(() => { setV(value); }, [value]);
+// ⚠后端 Decimal 序列化成字符串("0.8600"), 必须转数字比较, 否则每次失焦都误判"变了"→重复保存(触发幂等 409)。
+function BaseCell({ value, onSave }: { value?: number | string | null; onSave: (v: number) => void }) {
+  const num = (x: unknown) => (x == null || x === '' ? null : Number(x));
+  const [v, setV] = useState<number | null>(num(value));
+  const sent = useRef<number | null>(null);   // 本轮已发出的值, 防 onPressEnter+onBlur 双发
+  useEffect(() => { setV(num(value)); sent.current = null; }, [value]);
   const commit = () => {
-    if (v != null && Number(v) > 0 && Number(v) !== (value ?? null)) onSave(Number(v));
-    else setV(value);   // 空/非正/没变 → 回退
+    const nv = num(v);
+    const cur = num(value);
+    if (nv != null && nv > 0 && nv !== cur && nv !== sent.current) {
+      sent.current = nv;
+      onSave(nv);
+    } else if (nv == null || nv <= 0) {
+      setV(cur);   // 空/非正 → 回退, 不发
+    }
   };
   return (
     <InputNumber
-      value={v as number} onChange={(x) => setV(x as number)}
+      value={v} onChange={(x) => setV(x as number)}
       onPressEnter={commit} onBlur={commit}
       controls={false} min={0.01} max={5} step={0.01} style={{ width: '100%' }}
     />
@@ -49,7 +58,12 @@ export default function ShopPriceBoardPage() {
       setRows((rs) => rs.map((r) => (r.id === row.id ? row : r)));   // 回值刷新该行(价格+系数)
       message.success({ content: '已改基数, 价格与系数已联动', key: 'sp', duration: 1.4 });
     },
-    onError: () => message.error({ content: '保存失败', key: 'sp' }),
+    onError: (err: unknown) => {
+      // 409 = 幂等重复(前一次其实已成功), 忽略, 别吓用户
+      const st = (err as { response?: { status?: number } })?.response?.status;
+      if (st === 409) return;
+      message.error({ content: '保存失败', key: 'sp' });
+    },
   });
 
   const baseCol = (title: string, tier: BaseTier): ColumnsType<ShopPriceRow>[number] => ({
