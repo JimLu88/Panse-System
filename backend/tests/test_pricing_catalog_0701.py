@@ -120,9 +120,10 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
                               daily_price=Decimal("1000")))
     db_session.add(PricingSkuCosts(sku_code="G1-A", rock_slab=Decimal("200"), glass=Decimal("100")))
     db_session.add(PricingSkuPromo(
-        sku_code="G1-A", shop_promo_rate=Decimal("0.68"),
-        mid_platform_discount=Decimal("0.12"), mid_shop_rate=Decimal("0.771"), mid_vip_commission=Decimal("0.01"),
-        big_platform_discount=Decimal("0.12"), big_shop_rate=Decimal("0.7355"), big_vip_commission=Decimal("0"),
+        sku_code="G1-A",
+        shop_internal_final=Decimal("680"),                  # 小促到手价 (锚)
+        mid_platform_discount=Decimal("0.12"), mid_buyer_price=Decimal("678"), mid_vip_commission=Decimal("0.01"),
+        big_platform_discount=Decimal("0.12"), big_buyer_price=Decimal("647"), big_vip_commission=Decimal("0"),
         xhs_activity_price=Decimal("900"), xhs_promo_discount=Decimal("0.15")))
     db_session.commit()
 
@@ -138,10 +139,11 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     # 配件 → 外配件 → 工厂 活公式
     assert f("外采配件成本合计").startswith("=SUM")
     assert f("总出厂成本").startswith("=")
-    # 平台活动价 活公式 (淘宝/店内/中促/大促/小红书)
-    assert f("店内到手价(小促)").startswith("=")
-    assert f("中促买家价").startswith("=")
-    assert f("大促买家价").startswith("=")
-    assert "IF" in f("中促VIP到手价")                 # 88VIP 消费券阶梯
-    assert f("店内到手价(小促)").startswith("=")       # 店铺宝系数在 → 活公式
+    # 店铺宝系数 = 反推(到手价 ÷ (日常 ×(1−立减))) → 活公式 (按用户 Excel 方式)
+    assert f("店铺宝系数").startswith("=")                          # 小促 = 到手/日常
+    assert f("中促店铺系数").startswith("=") and "/" in f("中促店铺系数")
+    assert f("大促店铺系数").startswith("=") and "/" in f("大促店铺系数")
+    # 到手价是「锚」, 保持静态(不是公式)
+    assert not str(ws.cell(3, hdr["中促买家价"]).value or "").startswith("=")
+    assert "IF" in f("中促VIP到手价")                               # 88VIP 消费券阶梯 (由到手价正推)
     assert f("小红书促销价").startswith("=")

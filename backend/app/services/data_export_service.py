@@ -473,11 +473,14 @@ def _coupon_if(cellref: str, tiers) -> str:
 
 def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
                           mid_tiers, big_tiers) -> None:
-    """平台活动价派生列改活公式 (复刻 pricing_calc_service.recompute_promo):
-      淘宝活动价/小红书标价 = 日常价; 店内到手 = 日常×店铺宝系数;
-      中促买家价 = 日常×(1−平台立减)×中促系数; 中促店铺到手 = 买家×(1−88VIP佣金);
-      中促VIP到手 = 买家 − 消费券(嵌套IF); 大促同理; 小红书促销价 = 小红书活动价×(1−折扣)。
-    仅在该行相关输入(系数/活动价)非空时写 → 与引擎一致, 不破坏无该档的行。"""
+    """店铺宝(小/中/大促)系数 = 反推 (报名价=日常价 与 促销到手价), 复刻用户 Excel「活动价」表:
+      小促店铺宝系数 = 小促到手价 ÷ 日常价                    (Excel Q = R/P)
+      中促系数       = 中促买家到手 ÷ (日常价 ×(1−平台立减))   (Excel U = V/(S×T))
+      大促系数       = 大促买家到手 ÷ (日常价 ×(1−平台立减))   (Excel AB = AC/(Z×AA))
+    → 到手价是「锚」(手填/存量, 保持静态), 系数是反推结果(活公式); 改日常价/到手价, 系数自动重算,
+      算出的就是要往淘宝店铺宝工具里填的那个数。
+    另: 淘宝活动价/小红书标价 = 日常; 店铺到手 = 买家到手×(1−88VIP佣金);
+        VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯); 小红书促销价 = 活动价×(1−折扣)。"""
     from openpyxl.utils import get_column_letter
     def L(f):
         i = pos.get(f)
@@ -501,16 +504,19 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
             continue
         put("taobao_activity_price", r, f"={daily}{r}")
         put("xhs_list_price", r, f"={daily}{r}")
-        if has(C["shop_promo_rate"], r):
-            put("shop_internal_final", r, f'={daily}{r}*{C["shop_promo_rate"]}{r}')
-        if has(C["mid_shop_rate"], r):
+        # 小促: 店铺宝系数 = 小促到手价 ÷ 日常价 (到手价保持静态锚)
+        if has(C["shop_internal_final"], r):
+            put("shop_promo_rate", r, f'=IFERROR({C["shop_internal_final"]}{r}/{daily}{r},"")')
+        # 中促: 系数 = 中促买家到手 ÷ (日常 ×(1−立减)); 店铺到手/VIP到手 由买家到手正推
+        if has(C["mid_buyer_price"], r):
             mbp = f'{C["mid_buyer_price"]}{r}'
-            put("mid_buyer_price", r, f'={daily}{r}*(1-{C["mid_platform_discount"]}{r})*{C["mid_shop_rate"]}{r}')
+            put("mid_shop_rate", r, f'=IFERROR({mbp}/({daily}{r}*(1-{C["mid_platform_discount"]}{r})),"")')
             put("mid_shop_receipt", r, f'={mbp}*(1-{C["mid_vip_commission"]}{r})')
             put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
-        if has(C["big_shop_rate"], r):
+        # 大促: 同理
+        if has(C["big_buyer_price"], r):
             bbp = f'{C["big_buyer_price"]}{r}'
-            put("big_buyer_price", r, f'={daily}{r}*(1-{C["big_platform_discount"]}{r})*{C["big_shop_rate"]}{r}')
+            put("big_shop_rate", r, f'=IFERROR({bbp}/({daily}{r}*(1-{C["big_platform_discount"]}{r})),"")')
             put("big_shop_receipt", r, f'={bbp}*(1-{C["big_vip_commission"]}{r})')
             put("big_vip_final", r, f'={bbp}-({_coupon_if(bbp, big_tiers)})')
         if has(C["xhs_activity_price"], r):
@@ -812,10 +818,11 @@ def build_catalog_xlsx(db: Session):
                     bci = field_pos.get(field)
                     if bci and getattr(p, field, None) is None and val is not None:
                         ws.cell(r, bci, float(val))
-                # 店铺宝系数(小促): 未存 → 用隐含系数(店内到手÷日常)回填
-                if p.shop_promo_rate is None and p.shop_internal_final and s.daily_price:
-                    _bf("shop_promo_rate", round(float(p.shop_internal_final) / float(s.daily_price), 6))
-                if p.mid_shop_rate is not None:       # 参与中促 → 补平台立减/88VIP佣金口径
+                # 店铺宝系数由公式反推 (店内到手÷日常), 不再回填隐含值; 但补上反推分母要用的立减/佣金
+                if p.mid_shop_rate is not None or p.mid_buyer_price is not None:   # 参与中促 → 补平台立减/佣金
+                    _bf("mid_platform_discount", promo_params.get("mid_platform_discount"))
+                    _bf("mid_vip_commission", promo_params.get("mid_vip_commission"))
+                if p.big_shop_rate is not None or p.big_buyer_price is not None:   # 参与大促
                     _bf("mid_platform_discount", promo_params.get("mid_platform_discount"))
                     _bf("mid_vip_commission", promo_params.get("mid_vip_commission"))
                 if p.big_shop_rate is not None:       # 参与大促
