@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -15,18 +15,35 @@ from sqlalchemy.orm import Session
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 
+# 成本加成 gross-up 率 = 平台手续费 0.6% + 税 2% = 2.6% (对齐用户 Excel List 表 AH 列 "淘宝支付手续费")。
+# 会计基准(=Excel 成本总计 O) = 物理成本 ÷ (1 − 此率); 各档价 = ROUNDUP(会计基准 ÷ 基数, −1)。
+# 注: 这是"定价设计口径"; 逐单实际利润仍由 order_financials 按实付×费率另算(第16条 铁律不变)。
+PRICING_GROSSUP_RATE = Decimal("0.026")
+
 
 def _d(v) -> Optional[Decimal]:
     return Decimal(str(v)) if v is not None else None
 
 
+def _roundup10(x: Optional[Decimal]) -> Optional[Decimal]:
+    """ROUNDUP(x, −1): 向上取整到最近的 10 (复刻 Excel List 表价格公式)。"""
+    if x is None:
+        return None
+    return (Decimal(x) / Decimal("10")).to_integral_value(rounding=ROUND_CEILING) * Decimal("10")
+
+
 def recompute(sku: PricingSku) -> None:
-    """原地按【定价总表口径】重算整条 成本链 + 利润链 (2026-07-01 补全, 治"改工厂成本/组件不联动")。
+    """原地按【定价总表口径】重算整条 成本链 + (成本加成)价格链 + 利润链 (2026-07-01)。
 
     成本链(自下而上):
       工厂成本 = 木作 + 包装 + 外配件   (除非 factory_cost_override=True 手动覆盖 → 保留手改值)
       物理成本 = 工厂成本 + 物流 + 安装
-    利润链(原有, 依赖 大促价 K 与 物理成本 Q):
+    价格链(成本加成, cost-plus; **仅当该 SKU 有基数时**, 对齐用户 Excel List 表定价法):
+      会计基准 = 物理成本 ÷ (1 − 2.6%)           (= Excel 成本总计 O)
+      标价 = ROUNDUP(会计基准 ÷ base_list, −1) ; 日常 = 标价 × 0.75
+      小促/中促/大促 = ROUNDUP(会计基准 ÷ base_small/mid/big, −1)
+      无基数(base_* 全空)→ 跳过价格链, 大促价保持原输入值(不破坏未对齐 SKU / 既有测试)。
+    利润链(依赖 大促价 K 与 物理成本 Q; 上面若联动改了大促, 这里随之全部重算):
       平台费 O = 大促价 × 0.6% ; 税 P = 大促价 × 2%
       会计成本 N = 物理成本 + 平台费 + 税
       大促利润 L = 大促价 − 会计成本 ; 毛利率 M = 大促利润 ÷ 大促价
@@ -44,6 +61,22 @@ def recompute(sku: PricingSku) -> None:
     if fac is not None:
         sku.physical_cost = (fac + (_d(sku.logistics_cost) or zero)
                              + (_d(sku.install_cost) or zero)).quantize(cent, rounding=ROUND_HALF_UP)
+    # 2.5) 成本加成价格链 (cost-plus, 对齐 Excel): 仅当有基数时触发 → 成本一涨价格自动抬、保毛利。
+    #      base_* 全空的 SKU 完全跳过此段, 大促价保持原样 (保护未对齐 SKU 与既有"大促当输入"测试)。
+    phys = _d(sku.physical_cost)
+    if phys is not None:
+        acct_base = phys / (Decimal("1") - PRICING_GROSSUP_RATE)   # 会计基准 = Excel 成本总计 O
+        b_list, b_small = _d(sku.base_list), _d(sku.base_small)
+        b_mid, b_big = _d(sku.base_mid), _d(sku.base_big)
+        if b_list:
+            sku.list_price = _roundup10(acct_base / b_list)
+            sku.daily_price = (sku.list_price * Decimal("0.75")).quantize(cent, rounding=ROUND_HALF_UP)
+        if b_small:
+            sku.small_promo = _roundup10(acct_base / b_small)
+        if b_mid:
+            sku.mid_promo = _roundup10(acct_base / b_mid)
+        if b_big:
+            sku.big_promo = _roundup10(acct_base / b_big)
     # 3) 利润链
     big = _d(sku.big_promo)
     phys = _d(sku.physical_cost)

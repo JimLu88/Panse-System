@@ -54,6 +54,15 @@ class PricingSku(Base, TimestampMixin):
     # False=自动派生。物理成本恒 = 工厂成本+物流+安装。改于 2026-07-01: 治"改工厂成本不联动重算"。
     factory_cost_override: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
+    # 成本加成基数 (2026-07-01 用户拍板对齐 Excel 定价法, 迁移0110): 各档价 = ROUNDUP(会计基准 ÷ 基数, −1),
+    # 会计基准 = 物理成本 ÷ (1 − 平台税率2.6%)。基数逐 SKU/逐档不同 (来自用户 Excel List 表公式:
+    # 标价基数≈0.4, 小促/中促/大促基数按 SKU 手定, 毛利率≈1−基数)。**仅"已对齐 Excel"的 SKU 填**,
+    # 其余留空(None) → recompute 不走 cost-plus 推导, 保持"大促当输入"原口径(不破坏未对齐 SKU/既有测试)。
+    base_list: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4))    # 标价基数 (Excel 通常 0.4)
+    base_small: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4))   # 小促基数
+    base_mid: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4))     # 中促基数
+    base_big: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4))     # 大促基数
+
     image_url: Mapped[Optional[str]] = mapped_column(String(512))
     remark: Mapped[Optional[str]] = mapped_column(Text)  # 备注
 

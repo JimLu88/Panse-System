@@ -54,3 +54,57 @@ def test_no_override_default_false():
     pc.recompute(s)
     assert s.factory_cost == Decimal("100.00")      # 非override → 回到组件和, 不留 999
     assert s.physical_cost == Decimal("100.00")
+
+
+# ── 成本加成价格链 (2026-07-01 对齐用户 Excel 定价法; 边柜榉木黑实数) ──────────────
+def test_cost_plus_derives_excel_prices_from_base():
+    """有基数 → 各档价 = ROUNDUP(物理÷(1−2.6%)÷基数,−1), 复刻用户 Excel 边柜价 (690/740/1460...)。"""
+    s = _sku(factory_cost=Decimal("515"), factory_cost_override=True,
+             logistics_cost=Decimal("50"), install_cost=Decimal("0"),
+             base_list=Decimal("0.4"), base_small=Decimal("0.79"),
+             base_mid=Decimal("0.85"), base_big=Decimal("0.85"))
+    pc.recompute(s)
+    assert s.physical_cost == Decimal("565.00")     # 515+50+0
+    # 会计基准 = 565/0.974 = 580.082... → 各档 ROUNDUP 到 10
+    assert s.list_price == Decimal("1460")          # ⌈580.08/0.4⌉10 = ⌈1450.2⌉10
+    assert s.daily_price == Decimal("1095.00")      # 1460×0.75
+    assert s.small_promo == Decimal("740")          # ⌈580.08/0.79⌉10 = ⌈734.3⌉10
+    assert s.mid_promo == Decimal("690")            # ⌈580.08/0.85⌉10
+    assert s.big_promo == Decimal("690")            # ⌈580.08/0.85⌉10 (Excel 边柜大促=690)
+    assert s.gross_margin_rate > 0                   # 不再亏本 (原冻结价 503.25 时为 −14.9%)
+
+
+def test_cost_up_raises_price_and_holds_margin():
+    """核心诉求: 工厂成本一涨 → 大促价自动抬高 → 仍不亏 (毛利率保持正)。"""
+    s = _sku(factory_cost=Decimal("515"), factory_cost_override=True,
+             logistics_cost=Decimal("50"), install_cost=Decimal("0"), base_big=Decimal("0.85"))
+    pc.recompute(s)
+    big_before, rate_before = s.big_promo, s.gross_margin_rate
+    assert big_before == Decimal("690")
+    # 工厂成本涨 100 → 物理 665 → 大促应随之抬高、毛利率仍正
+    s.factory_cost = Decimal("615")
+    pc.recompute(s)
+    assert s.physical_cost == Decimal("665.00")
+    assert s.big_promo == Decimal("810")            # ⌈665/0.974/0.85⌉10 = ⌈803.2⌉10
+    assert s.big_promo > big_before                  # 成本涨→价格涨 (联动!)
+    assert s.gross_margin_rate > 0                   # 抬价后仍不亏
+    assert abs(s.gross_margin_rate - rate_before) < Decimal("0.02")  # 毛利率大致守住
+
+
+def test_no_base_preserves_input_big_promo():
+    """无基数(base_* 全空) → 不走 cost-plus, 大促价保持原输入 (保护未对齐 SKU / 既有口径)。"""
+    s = _sku(factory_cost=Decimal("515"), factory_cost_override=True,
+             logistics_cost=Decimal("50"), install_cost=Decimal("0"), big_promo=Decimal("503.25"))
+    pc.recompute(s)
+    assert s.big_promo == Decimal("503.25")         # 未被推导覆盖
+    assert s.list_price is None                      # 无 base_list → 不派生标价
+
+
+def test_partial_base_only_big_leaves_others():
+    """只填大促基数 → 只推导大促, 其余档 (标价等) 保持原值不动。"""
+    s = _sku(factory_cost=Decimal("515"), factory_cost_override=True,
+             logistics_cost=Decimal("50"), install_cost=Decimal("0"),
+             list_price=Decimal("9999"), base_big=Decimal("0.85"))
+    pc.recompute(s)
+    assert s.big_promo == Decimal("690")            # 大促被推导
+    assert s.list_price == Decimal("9999")          # 无 base_list → 标价保持原值
