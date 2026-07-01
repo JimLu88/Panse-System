@@ -1,7 +1,7 @@
 /**
- * 改价台 (2026-07-02) — Excel 式逐个改价: 点「小/中/大促价」(=店铺实收) 直接改, 回车/Tab 跳下一格,
- * 后端按用户 Excel 口径倒推「店铺宝系数」(要填进淘宝的那个数) + 买家到手/VIP到手, 当场刷新。
- * 锚 = 店铺实收 = 小促价/中促价/大促价; 系数 = 反推结果 (只读, 灰显)。
+ * 改价台 (2026-07-02) — 复刻用户 Excel List 表: 改「定价基数」(0.86/0.88/0.9 这个除数),
+ * 促价 = ROUNDUP(成本 ÷ 基数, 进位到10) 自动算出来; 右侧附带反推的「店铺宝系数」(填淘宝用)。
+ * 你改基数, 价格立刻变(和你原表一样); 价格/店铺宝系数都是只读输出。
  */
 import { useEffect, useState } from 'react';
 import { Alert, Image, Input, InputNumber, Space, Table, Tag, Typography, message } from 'antd';
@@ -14,21 +14,21 @@ const yuan = (v?: number | null) =>
   v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 const pct = (v?: number | null) => (v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`);
 
-type Tier = 'small_promo' | 'mid_promo' | 'big_promo';
+type BaseTier = 'base_small' | 'base_mid' | 'base_big';
 
-// 单个「到手价」单元格: 点着改, 回车/失焦保存(只在真变了才存)。受控 + 服务端回值同步。
-function PriceCell({ value, onSave }: { value?: number | null; onSave: (v: number | null) => void }) {
+// 「定价基数」单元格: 点着改(0.86 这种小数), 回车/失焦保存(只在真变了才存)。
+function BaseCell({ value, onSave }: { value?: number | null; onSave: (v: number) => void }) {
   const [v, setV] = useState<number | null | undefined>(value);
-  useEffect(() => { setV(value); }, [value]);   // 保存成功后服务端值回填 → 同步
+  useEffect(() => { setV(value); }, [value]);
   const commit = () => {
-    const nv = v == null ? null : Number(v);
-    if (nv !== (value ?? null)) onSave(nv);
+    if (v != null && Number(v) > 0 && Number(v) !== (value ?? null)) onSave(Number(v));
+    else setV(value);   // 空/非正/没变 → 回退
   };
   return (
     <InputNumber
       value={v as number} onChange={(x) => setV(x as number)}
       onPressEnter={commit} onBlur={commit}
-      controls={false} min={0} style={{ width: '100%' }} placeholder="—"
+      controls={false} min={0.01} max={5} step={0.01} style={{ width: '100%' }}
     />
   );
 }
@@ -43,35 +43,39 @@ export default function ShopPriceBoardPage() {
   useEffect(() => { if (data) setRows(data); }, [data]);
 
   const saveMut = useMutation({
-    mutationFn: ({ id, tier, value }: { id: number; tier: Tier; value: number | null }) =>
+    mutationFn: ({ id, tier, value }: { id: number; tier: BaseTier; value: number }) =>
       updateShopPrice(id, { [tier]: value }),
     onSuccess: (row) => {
-      setRows((rs) => rs.map((r) => (r.id === row.id ? row : r)));   // 用回值刷新该行(系数/买家到手)
-      message.success({ content: '已保存并反推系数', key: 'sp', duration: 1.2 });
+      setRows((rs) => rs.map((r) => (r.id === row.id ? row : r)));   // 回值刷新该行(价格+系数)
+      message.success({ content: '已改基数, 价格与系数已联动', key: 'sp', duration: 1.4 });
     },
     onError: () => message.error({ content: '保存失败', key: 'sp' }),
   });
 
-  const priceCol = (title: string, tier: Tier): ColumnsType<ShopPriceRow>[number] => ({
-    title, dataIndex: tier, width: 108, align: 'right',
+  const baseCol = (title: string, tier: BaseTier): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: tier, width: 96, align: 'right',
     render: (v: number | null, row) => (
-      <PriceCell value={v} onSave={(nv) => saveMut.mutate({ id: row.id, tier, value: nv })} />
+      <BaseCell value={v} onSave={(nv) => saveMut.mutate({ id: row.id, tier, value: nv })} />
     ),
   });
-  const rateCol = (title: string, key: keyof ShopPriceRow): ColumnsType<ShopPriceRow>[number] => ({
+  const priceCol = (title: string, key: keyof ShopPriceRow): ColumnsType<ShopPriceRow>[number] => ({
     title, dataIndex: key as string, width: 92, align: 'right',
-    render: (v: number | null) => <span style={{ color: '#64748b' }}>{pct(v)}</span>,
+    render: (v: number | null) => <span style={{ fontWeight: 500 }}>{yuan(v)}</span>,
+  });
+  const rateCol = (title: string, key: keyof ShopPriceRow): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: key as string, width: 88, align: 'right',
+    render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{pct(v)}</span>,
   });
 
   const columns: ColumnsType<ShopPriceRow> = [
     {
-      title: '图片', dataIndex: 'image', width: 68, align: 'center',
+      title: '图片', dataIndex: 'image', width: 60, align: 'center', fixed: 'left',
       render: (src: string | null) =>
-        <Image src={src || CUTE_IMG} fallback={CUTE_IMG} width={52} height={52}
+        <Image src={src || CUTE_IMG} fallback={CUTE_IMG} width={46} height={46}
           style={{ objectFit: 'cover', borderRadius: 8 }} />,
     },
     {
-      title: '产品', dataIndex: 'product_name', ellipsis: true,
+      title: '产品', dataIndex: 'product_name', width: 190, ellipsis: true, fixed: 'left',
       render: (v: string, row) => (
         <div>
           <div style={{ fontWeight: 500 }}>{v || '(未命名)'}</div>
@@ -80,7 +84,7 @@ export default function ShopPriceBoardPage() {
       ),
     },
     {
-      title: 'SKU', dataIndex: 'sku', width: 180, ellipsis: true,
+      title: 'SKU', dataIndex: 'sku', width: 160, ellipsis: true,
       render: (v: string, row) => (
         <div>
           <div>{v || '默认'}</div>
@@ -88,14 +92,17 @@ export default function ShopPriceBoardPage() {
         </div>
       ),
     },
-    { title: '日常价', dataIndex: 'daily_price', width: 90, align: 'right',
+    { title: '日常价', dataIndex: 'daily_price', width: 84, align: 'right',
       render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{yuan(v)}</span> },
+    baseCol('小促基数', 'base_small'),
+    baseCol('中促基数', 'base_mid'),
+    baseCol('大促基数', 'base_big'),
     priceCol('小促价', 'small_promo'),
     priceCol('中促价', 'mid_promo'),
     priceCol('大促价', 'big_promo'),
-    rateCol('小促系数', 'shop_promo_rate'),
-    rateCol('中促系数', 'mid_shop_rate'),
-    rateCol('大促系数', 'big_shop_rate'),
+    rateCol('小促店铺宝', 'shop_promo_rate'),
+    rateCol('中促店铺宝', 'mid_shop_rate'),
+    rateCol('大促店铺宝', 'big_shop_rate'),
   ];
 
   return (
@@ -103,8 +110,8 @@ export default function ShopPriceBoardPage() {
       <Typography.Title level={4} style={{ margin: 0 }}>改价台</Typography.Title>
       <Alert
         type="info" showIcon
-        message="点「小/中/大促价」格子直接改数字(=店铺实收价), 回车或点别处即保存; 右侧灰色「店铺宝系数」= 后端按你 Excel 口径当场反推(要填进淘宝店铺宝的那个数)。"
-        description="口径: 小促系数 = 小促价 ÷ 日常价; 中促/大促系数 = 买家到手 ÷ (日常 × 88%), 买家到手 = 促价 ÷ (1−佣金)。改价即「手动定价」, 会覆盖该档成本加成价。"
+        message="点「小/中/大促基数」格子改数字(0.86 / 0.88 / 0.9 这种除数), 回车即存; 「促价」= ROUNDUP(成本 ÷ 基数, 进位到10) 自动算(和你 Excel List 表一致, 会以 0 结尾)。"
+        description="最右三列「店铺宝」= 价格反推出的、要填进淘宝店铺宝工具的系数。基数越小价格越高。"
       />
       <Input.Search
         placeholder="按 产品名 / 编码 / SKU 搜 (先搜到再改)" allowClear
@@ -114,7 +121,7 @@ export default function ShopPriceBoardPage() {
         rowKey="id" size="small" loading={isLoading || saveMut.isPending}
         dataSource={rows} columns={columns}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 个 SKU` }}
-        scroll={{ x: 1000 }}
+        scroll={{ x: 1180 }}
       />
     </Space>
   );

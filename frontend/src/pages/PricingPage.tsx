@@ -939,7 +939,7 @@ export default function PricingPage() {
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
-          <Tooltip title="改价台: Excel 式逐个改 小/中/大促价(店铺实收), 店铺宝系数当场反推">
+          <Tooltip title="改价台: Excel 式逐个改 定价基数(0.86/0.88/0.9), 促价=ROUNDUP(成本÷基数)自动算 + 店铺宝系数反推">
             <Link to="/shop-price-board"><Button type="primary" icon={<TableOutlined />}>改价台</Button></Link>
           </Tooltip>
           <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">

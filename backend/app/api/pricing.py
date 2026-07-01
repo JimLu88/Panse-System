@@ -501,7 +501,8 @@ def update_pricing_sku(
     return PricingSkuOut.model_validate(sku)
 
 
-# ── 改价台 (2026-07-02): Excel 式内联改店铺实收价(小/中/大促价) → 倒推店铺宝系数 ────────
+# ── 改价台 (2026-07-02): Excel 式改「定价基数」(0.86/0.88/0.9) → 价格=ROUNDUP(成本÷基数,10) 联动 ──
+# 复刻用户 List 表: 促价由基数(系数)算出来; 用户改基数, 价格自动变。右侧附带反推的店铺宝系数(填淘宝用)。
 class ShopPriceRow(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -511,20 +512,23 @@ class ShopPriceRow(BaseModel):
     size_info: Optional[str] = None
     image: Optional[str] = None
     daily_price: Optional[Decimal] = None
-    small_promo: Optional[Decimal] = None      # 店铺实收 = 小促价
-    mid_promo: Optional[Decimal] = None         # 店铺实收 = 中促价
-    big_promo: Optional[Decimal] = None         # 店铺实收 = 大促价
-    shop_promo_rate: Optional[Decimal] = None   # 小促店铺宝系数(反推)
-    mid_shop_rate: Optional[Decimal] = None     # 中促店铺宝系数(反推)
-    big_shop_rate: Optional[Decimal] = None     # 大促店铺宝系数(反推)
+    base_small: Optional[Decimal] = None        # 小促定价基数 (=Excel系数 0.86, 可改)
+    base_mid: Optional[Decimal] = None           # 中促定价基数 (0.88)
+    base_big: Optional[Decimal] = None           # 大促定价基数 (0.9)
+    small_promo: Optional[Decimal] = None        # 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
+    mid_promo: Optional[Decimal] = None
+    big_promo: Optional[Decimal] = None
+    shop_promo_rate: Optional[Decimal] = None    # 小促店铺宝系数(反推, 填淘宝用)
+    mid_shop_rate: Optional[Decimal] = None
+    big_shop_rate: Optional[Decimal] = None
 
 
 def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
     return ShopPriceRow(
         id=sku.id, product_code=sku.product_code, product_name=name,
-        sku=sku.sku, size_info=sku.size_info, image=image,
-        daily_price=sku.daily_price, small_promo=sku.small_promo,
-        mid_promo=sku.mid_promo, big_promo=sku.big_promo,
+        sku=sku.sku, size_info=sku.size_info, image=image, daily_price=sku.daily_price,
+        base_small=sku.base_small, base_mid=sku.base_mid, base_big=sku.base_big,
+        small_promo=sku.small_promo, mid_promo=sku.mid_promo, big_promo=sku.big_promo,
         shop_promo_rate=getattr(promo, "shop_promo_rate", None),
         mid_shop_rate=getattr(promo, "mid_shop_rate", None),
         big_shop_rate=getattr(promo, "big_shop_rate", None),
@@ -538,7 +542,7 @@ def shop_price_board(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """改价台取数: 产品图/名/SKU/日常价 + 三档店铺实收价(小/中/大促价) + 三档反推店铺宝系数。"""
+    """改价台取数: 产品图/名/SKU/日常价 + 三档定价基数(可改) + 三档促价(算出来) + 三档店铺宝系数(反推)。"""
     from app.models.product import Product
     from app.services.gallery_lookup import sku_gallery_url_map
     stmt = select(PricingSku)
@@ -566,9 +570,9 @@ def shop_price_board(
 
 
 class ShopPricePatch(BaseModel):
-    small_promo: Optional[Decimal] = None
-    mid_promo: Optional[Decimal] = None
-    big_promo: Optional[Decimal] = None
+    base_small: Optional[Decimal] = None    # 小促定价基数(除数, =Excel系数 0.86)
+    base_mid: Optional[Decimal] = None       # 中促 0.88
+    base_big: Optional[Decimal] = None       # 大促 0.9
 
 
 @router.patch("/{sku_id}/shop-price", response_model=ShopPriceRow)
@@ -578,27 +582,27 @@ def update_shop_price(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
 ):
-    """改价台: 改某档店铺实收价(小/中/大促价) → 清该档基数(手动定价, 手动/联动互斥) →
-    recompute(成本/价格链) + recompute_promo(倒推店铺宝系数) → 返回含最新系数的行。"""
+    """改价台: 改某档【定价基数】(0.86/0.88/0.9) → recompute 按 价格=ROUNDUP(成本÷基数,10) 联动出促价
+    → recompute_promo 反推店铺宝系数 → 返回含最新价格+系数的行 (复刻用户 List 表口径)。"""
     sku = db.get(PricingSku, sku_id)
     if not sku:
         raise HTTPException(404, "Not found")
     changes = body.model_dump(exclude_unset=True)
     if not changes:
         raise HTTPException(400, "无改动")
+    for k, v in changes.items():
+        if v is not None and Decimal(str(v)) <= 0:
+            raise HTTPException(400, f"{k} 必须 > 0 (它是除数/定价基数)")
     _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
     for k, v in changes.items():
         setattr(sku, k, v)
-        base = _TIER_TO_BASE.get(k)
-        if base and v is not None:
-            setattr(sku, base, None)   # 手动改价 → 清基数, 锁定手动值(否则 recompute 会用基数覆盖回去)
-    pricing_calc_service.recompute(sku)
+    pricing_calc_service.recompute(sku)      # 基数→价格链 (价格=ROUNDUP(成本÷基数,10))
     promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
     if promo is None:
         promo = PricingSkuPromo(sku_code=sku.sku_code)
         db.add(promo)
         db.flush()
-    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
+    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))  # 价格→店铺宝系数
     db.commit()
     db.refresh(sku)
     db.refresh(promo)

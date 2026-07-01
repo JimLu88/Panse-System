@@ -720,7 +720,7 @@ export const downloadPricingTemplate = (key: string) =>
     })
     .then(r => r.data as Blob);
 
-// 改价台 (2026-07-02): 改店铺实收价(小/中/大促价) → 后端倒推店铺宝系数
+// 改价台 (2026-07-02): 改「定价基数」(0.86/0.88/0.9) → 价格=ROUNDUP(成本÷基数,10) 联动 + 反推店铺宝系数
 export interface ShopPriceRow {
   id: number;
   product_code: string;
@@ -729,10 +729,13 @@ export interface ShopPriceRow {
   size_info?: string | null;
   image?: string | null;
   daily_price?: number | null;
-  small_promo?: number | null;
+  base_small?: number | null;   // 小促定价基数(=Excel系数 0.86, 可改)
+  base_mid?: number | null;
+  base_big?: number | null;
+  small_promo?: number | null;  // 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
   mid_promo?: number | null;
   big_promo?: number | null;
-  shop_promo_rate?: number | null;
+  shop_promo_rate?: number | null;  // 店铺宝系数(反推, 填淘宝用)
   mid_shop_rate?: number | null;
   big_shop_rate?: number | null;
 }
@@ -741,7 +744,7 @@ export const fetchShopPriceBoard = (q?: string) =>
     .then(r => r.data);
 export const updateShopPrice = (
   id: number,
-  patch: { small_promo?: number | null; mid_promo?: number | null; big_promo?: number | null },
+  patch: { base_small?: number | null; base_mid?: number | null; base_big?: number | null },
 ) => api.patch<ShopPriceRow>(`/api/pricing-skus/${id}/shop-price`, patch).then(r => r.data);
 
 // -- 淘宝商品导出对应表 (Task 5)
