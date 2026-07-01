@@ -62,12 +62,14 @@ export interface PackingChecklistOrder {
   product_name: string | null;
   sku: string | null;
   est_packing: number;
+  actual_packing: number | null;   // 已配打包账单回填的实付, 未配到账单为 null
 }
 
 export interface PackingChecklist {
   year_month: string;
   order_count: number;
   total_est_packing: number;
+  total_actual_packing: number;
   orders: PackingChecklistOrder[];
 }
 

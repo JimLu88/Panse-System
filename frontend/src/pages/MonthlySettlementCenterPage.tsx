@@ -37,7 +37,7 @@ function openPackingChecklistPrint(d: PackingChecklist) {
   const rows = d.orders.map((o) => `<tr>
     <td class="code">${escHtml(o.order_no)}</td><td>${escHtml(o.order_date ?? '')}</td><td>${escHtml(o.ship_date ?? '')}</td>
     <td>${escHtml(o.customer_name ?? '')}</td><td>${escHtml(o.product_name ?? '')}</td><td>${escHtml(o.sku ?? '')}</td>
-    <td class="num">${y2(o.est_packing)}</td></tr>`).join('');
+    <td class="num">${y2(o.actual_packing)}</td></tr>`).join('');
   const title = `打包对账清单 · ${d.year_month} 发货`;
   win.document.write(`<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>${escHtml(title)}</title>
     <style>*{box-sizing:border-box;margin:0;padding:0}body{font-family:-apple-system,"Microsoft YaHei",sans-serif;color:#222;padding:10mm}
@@ -46,9 +46,9 @@ function openPackingChecklistPrint(d: PackingChecklist) {
     th{background:#f5f5f5}.num{text-align:right;font-variant-numeric:tabular-nums}.code{font-family:monospace;font-size:10px;word-break:break-all}
     .tot td{background:#f5f5f5;font-weight:700}@page{size:A4 landscape;margin:10mm}</style></head>
     <body><h1>${escHtml(title)}</h1>
-    <div class="sub">共 ${d.order_count} 单 · 按发货日期(ship_date) · 预估打包费合计 ¥${Number(d.total_est_packing).toFixed(2)} &nbsp;|&nbsp; 请打包供应商核对</div>
-    <table><thead><tr><th>订单号</th><th>下单日期</th><th>发货日</th><th>客户</th><th>产品</th><th>SKU(含尺寸)</th><th>预估打包费</th></tr></thead>
-    <tbody>${rows}<tr class="tot"><td colspan="6" class="num">合计</td><td class="num">${y2(d.total_est_packing)}</td></tr></tbody></table>
+    <div class="sub">共 ${d.order_count} 单 · 按发货日期(ship_date) · 实际打包费合计 ¥${Number(d.total_actual_packing).toFixed(2)} &nbsp;|&nbsp; 空=该单打包账单未配到</div>
+    <table><thead><tr><th>订单号</th><th>下单日期</th><th>发货日</th><th>客户</th><th>产品</th><th>SKU(含尺寸)</th><th>实际打包费</th></tr></thead>
+    <tbody>${rows}<tr class="tot"><td colspan="6" class="num">合计</td><td class="num">${y2(d.total_actual_packing)}</td></tr></tbody></table>
     </body></html>`);
   win.document.close();
   win.focus();

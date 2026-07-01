@@ -179,17 +179,19 @@ def build_export_workbook(db: Session):
 
 # ── 打包导清单: 当月发货单 + 每单预估/实际打包费 (给打包供应商核对账单) ──────────
 def packing_checklist(db: Session, *, year_month: str) -> dict:
-    """某发货月已发货成交单 + 每单 预估打包费(est_packing)。口径与打包月结预估一致
-    (_settled_shipped_orders, ship_date 分月; 预估合计 = 打包月结该月预估)。给打包供应商核对账单用。
-    实际付费走打包月结(账单月口径), 不在此逐单列 —— 否则发货月口径 vs 账单月口径对不上、且很多单
-    actual 为空, 反生困惑。只读。"""
+    """某发货月已发货成交单 + 每单 实际打包费(actual_packing, 已配打包账单回填的实付)。
+    实际=发货月口径每单实付(未配到账单的单为空); 其合计与打包月结[账单月口径]口径不同、不必相等。
+    est_packing(预估)一并带出备用。只读。"""
     out_orders: list[dict] = []
-    t_est = Decimal("0")
+    t_est, t_act = Decimal("0"), Decimal("0")
     for o in prs._settled_shipped_orders(db):
         if prs._ym(o.ship_date) != year_month:
             continue
         est = _q(o.est_packing)
+        act = _q(o.actual_packing) if o.actual_packing is not None else None
         t_est += est
+        if act is not None:
+            t_act += act
         out_orders.append({
             "order_no": o.order_no,
             "order_date": o.order_date.isoformat() if o.order_date else None,
@@ -198,12 +200,14 @@ def packing_checklist(db: Session, *, year_month: str) -> dict:
             "product_name": o.product_name,
             "sku": o.sku,
             "est_packing": float(est),
+            "actual_packing": float(act) if act is not None else None,
         })
     out_orders.sort(key=lambda x: (x["ship_date"] or "", x["order_no"]))
     return {
         "year_month": year_month,
         "order_count": len(out_orders),
         "total_est_packing": float(t_est.quantize(_CENTS)),
+        "total_actual_packing": float(t_act.quantize(_CENTS)),
         "orders": out_orders,
     }
 
@@ -219,16 +223,16 @@ def build_packing_checklist_xlsx(db: Session, *, year_month: str):
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = f"打包{year_month}"[:28]
-    headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估打包费"]
+    headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "实际打包费"]
     widths = [22, 12, 12, 12, 16, 22, 12]
     ws.append(headers)
     for o in d["orders"]:
         ws.append([
             o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
             o.get("customer_name") or "", o.get("product_name") or "", o.get("sku") or "",
-            o.get("est_packing"),
+            o.get("actual_packing"),
         ])
-    ws.append(["合计(预估)", "", "", "", "", "", d["total_est_packing"]])
+    ws.append(["合计(实际)", "", "", "", "", "", d["total_actual_packing"]])
 
     head_fill = PatternFill("solid", fgColor="E6F1FB")
     for c in ws[1]:
@@ -240,7 +244,7 @@ def build_packing_checklist_xlsx(db: Session, *, year_month: str):
     # 订单号列强制文本(@) — 19位订单号防 Excel 自动转科学计数法丢精度
     for (cell,) in ws.iter_rows(min_row=2, min_col=1, max_col=1):
         cell.number_format = "@"
-    for (cell,) in ws.iter_rows(min_row=2, min_col=7, max_col=7):   # 预估打包费 → 两位小数右对齐
+    for (cell,) in ws.iter_rows(min_row=2, min_col=7, max_col=7):   # 实际打包费 → 两位小数右对齐
         if isinstance(cell.value, (int, float)):
             cell.number_format = "0.00"
         cell.alignment = Alignment(horizontal="right")
