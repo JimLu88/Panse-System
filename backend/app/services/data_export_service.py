@@ -459,6 +459,127 @@ def _apply_pricing_formulas(ws) -> None:
             ws[f"{rate}{r}"] = f'=IFERROR({marg}{r}/{bp}{r},"")'
 
 
+# ── 定价总表: 中文表头 + 平台活动价(淘宝/小红书)补全 + 分类配色 (用户 2026-07-01) ──────
+# PricingSkuPromo 追加列 (顺序即列序): 淘宝/店内 → 无国补中促 → 无国补大促 → 小红书
+_PRICING_PROMO_FIELDS = [
+    "taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price",
+    "shop_promo_rate", "shop_internal_promo", "shop_internal_final",
+    "mid_platform_discount", "mid_shop_rate", "mid_buyer_price",
+    "mid_vip_commission", "mid_shop_receipt", "mid_vip_final",
+    "big_platform_discount", "big_shop_rate", "big_buyer_price",
+    "big_vip_commission", "big_shop_receipt", "big_vip_final",
+    "xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price",
+    "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price",
+]
+# 字段 → 中文表头
+_PRICING_CN: dict[str, str] = {
+    "id": "ID", "product_code": "产品编码", "product_name": "产品名称", "taobao_title": "淘宝标题",
+    "sku": "SKU描述", "sku_code": "SKU编码", "size_category": "大小分类", "size_info": "成品尺寸",
+    "list_price": "标价", "daily_price": "日常价/单品宝", "small_promo": "小促价",
+    "mid_promo": "中促价", "big_promo": "大促价",
+    "big_promo_margin": "大促利润", "gross_margin_rate": "毛利率",
+    "accounting_cost": "会计总成本", "platform_fee_rate": "平台费率", "tax": "税费",
+    "physical_cost": "物理总成本", "logistics_cost": "物流成本", "install_cost": "安装成本",
+    "factory_cost": "总出厂成本", "wood_cost": "木作成本", "packaging_cost": "包装成本",
+    "external_parts_cost": "外采配件成本合计", "factory_cost_override": "工厂成本手动覆盖",
+    "base_list": "标价基数", "base_small": "小促基数", "base_mid": "中促基数", "base_big": "大促基数",
+    "image_url": "图片链接", "remark": "备注", "created_at": "创建时间", "updated_at": "更新时间",
+    # 淘宝 / 店内活动
+    "taobao_item_id": "淘宝商品ID", "taobao_url": "淘宝链接", "taobao_sku_id": "淘宝SKU ID",
+    "taobao_activity_price": "淘宝活动价", "shop_promo_rate": "店铺宝系数",
+    "shop_internal_promo": "店铺宝设置价", "shop_internal_final": "店内到手价(小促)",
+    # 无国补中促
+    "mid_platform_discount": "中促平台立减", "mid_shop_rate": "中促店铺系数", "mid_buyer_price": "中促买家价",
+    "mid_vip_commission": "中促88VIP佣金", "mid_shop_receipt": "中促店铺到手", "mid_vip_final": "中促VIP到手价",
+    # 无国补大促
+    "big_platform_discount": "大促平台立减", "big_shop_rate": "大促店铺系数", "big_buyer_price": "大促买家价",
+    "big_vip_commission": "大促88VIP佣金", "big_shop_receipt": "大促店铺到手", "big_vip_final": "大促VIP到手价",
+    # 小红书
+    "xhs_item_id": "小红书商品ID", "xhs_sku_name": "小红书SKU名", "xhs_sku_id": "小红书SKU ID",
+    "xhs_list_price": "小红书标价", "xhs_activity_price": "小红书活动价",
+    "xhs_promo_discount": "小红书折扣率", "xhs_promo_price": "小红书促销价",
+}
+# 分类 → (表头底色, 字段列表); 表头按分类上色, 排版一眼分区
+_PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
+    ("标识", "1F4E79", ["id", "product_code", "product_name", "taobao_title", "sku", "sku_code", "size_category", "size_info"]),
+    ("售价档位", "2E7D32", ["list_price", "daily_price", "small_promo", "mid_promo", "big_promo"]),
+    ("利润", "00838F", ["big_promo_margin", "gross_margin_rate"]),
+    ("成本", "6A1B9A", ["accounting_cost", "platform_fee_rate", "tax", "physical_cost", "logistics_cost", "install_cost", "factory_cost", "wood_cost", "packaging_cost", "external_parts_cost"]),
+    ("加成系数", "B8860B", ["factory_cost_override", "base_list", "base_small", "base_mid", "base_big"]),
+    ("备注/时间", "607D8B", ["image_url", "remark", "created_at", "updated_at"]),
+    ("淘宝/店内", "E65100", ["taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price", "shop_promo_rate", "shop_internal_promo", "shop_internal_final"]),
+    ("淘宝中促", "EF6C00", ["mid_platform_discount", "mid_shop_rate", "mid_buyer_price", "mid_vip_commission", "mid_shop_receipt", "mid_vip_final"]),
+    ("淘宝大促", "F57F17", ["big_platform_discount", "big_shop_rate", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
+    ("小红书", "AD1457", ["xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price", "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price"]),
+]
+_PRICING_FIELD_COLOR: dict[str, str] = {f: color for _n, color, fs in _PRICING_CATEGORIES for f in fs}
+
+
+def _build_pricing_sheet(db: Session, wb, used: set[str]):
+    """定价总表(全列): PricingSku 全列(模型顺序, 保 VLOOKUP/公式列位不变) + 追加平台活动价
+    (淘宝/店内/中促大促/小红书) + 中文表头 + 按分类给表头上色。"""
+    from openpyxl.comments import Comment
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from app.models.pricing_ext import PricingSkuPromo
+
+    label = ENTITY_MODELS.get("pricing_sku", {}).get("label", "定价总表 (全列)")
+    ws = wb.create_sheet(_safe_sheet_name(label, used))
+
+    base_cols = [c.key for c in PricingSku.__table__.columns]   # 模型顺序 → 与 VLOOKUP/公式列位一致
+    all_fields = base_cols + _PRICING_PROMO_FIELDS
+    headers = [_PRICING_CN.get(f) or _cn_header("pricing_sku", f) for f in all_fields] + ["异常批注"]
+    ws.append(headers)
+
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    # number_format
+    model_cols = {c.key: c for c in PricingSku.__table__.columns}
+    promo_cols = {c.key: c for c in PricingSkuPromo.__table__.columns}
+    col_fmts: dict[int, str] = {}
+    for i, f in enumerate(all_fields, start=1):
+        col = model_cols.get(f)
+        if col is None:
+            col = promo_cols.get(f)
+        if col is not None:
+            fmt = _num_fmt(f, _col_type(col))
+            if fmt:
+                col_fmts[i] = fmt
+
+    notes = _exception_notes(db, "pricing_sku")
+    exc_col_idx = len(all_fields) + 1
+    note_rows: set[int] = set()
+    for s in db.execute(select(PricingSku).order_by(PricingSku.sku_code)).scalars().all():
+        p = promo_by_sku.get(s.sku_code)
+        row = [_translate(f, _cell(getattr(s, f, None))) for f in base_cols]
+        row += [_cell(getattr(p, f, None)) if p is not None else None for f in _PRICING_PROMO_FIELDS]
+        matched: list[str] = []
+        for k in {str(getattr(s, "id", "") or ""), str(s.sku_code or "")}:
+            if k and k in notes:
+                matched.extend(notes[k])
+        note = _join_notes(matched) if matched else None
+        row.append(note)
+        ws.append(row)
+        if note:
+            rid = ws.max_row
+            note_rows.add(rid)
+            ws.cell(rid, exc_col_idx).comment = Comment(note, "异常中心")
+
+    _apply_table_style(ws, headers, exc_col_idx=exc_col_idx, note_rows=note_rows,
+                       col_fmts=col_fmts, data_end_row=ws.max_row)
+
+    # 分类配色: 覆盖表头底色 (_apply_table_style 默认深蓝; 这里按分类改)
+    white = Font(bold=True, color="FFFFFF", size=11)
+    center = Alignment(horizontal="center", vertical="center")
+    for ci, f in enumerate(all_fields, start=1):
+        color = _PRICING_FIELD_COLOR.get(f)
+        if color:
+            c = ws.cell(1, ci)
+            c.fill = PatternFill("solid", fgColor=color)
+            c.font = white
+            c.alignment = center
+    return ws
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl
@@ -467,14 +588,15 @@ def build_full_export_workbook(db: Session):
     wb.remove(wb.active)
     used: set[str] = set()
 
-    pricing_name: Optional[str] = None
     for key, cfg in ENTITY_MODELS.items():
-        if key == "product":
-            continue                      # 产品总表特殊处理, 放最后建(需引用定价表名)
-        ws = _build_entity_sheet(db, wb, key, cfg, used)
-        if key == "pricing_sku":
-            pricing_name = ws.title
-            _apply_pricing_formulas(ws)     # 定价总表派生列改活公式(改成本→价格/利润联动)
+        if key in ("product", "pricing_sku"):
+            continue                      # 产品总表/定价总表 特殊处理 (专用 builder)
+        _build_entity_sheet(db, wb, key, cfg, used)
+
+    # 定价总表: 专用 builder (补全平台活动价 + 中文表头 + 分类配色), 再改派生列为活公式
+    ws_p = _build_pricing_sheet(db, wb, used)
+    pricing_name: Optional[str] = ws_p.title
+    _apply_pricing_formulas(ws_p)         # 定价总表派生列改活公式(改成本→价格/利润联动)
 
     _build_product_sku_sheet(db, wb, used, pricing_name)
 
