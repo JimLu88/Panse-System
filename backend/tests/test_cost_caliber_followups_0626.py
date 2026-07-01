@@ -46,17 +46,27 @@ def test_sample_block_not_zeroed_by_rule_a():
     assert ofin.physical_cost(o) != Decimal("0")
 
 
-def test_custom_official_service_keyword_not_zeroed():
-    """定制单排除(2026-07-02 修): 「差价邮费补拍专链」是定制单常用的通用收款链接, 备注/推演常有
-    真实成本(如插座规则写回的 theoretical_cost) —— 不该被官方服务关键词整单归零(会把已推演的真实
-    成本吃掉)。定制单交 theoretical_cost 走, 推演>实付 时仍按 85% 封顶(不是离谱原值, 也不是 0)。"""
+def test_custom_link_without_socket_still_zeroed():
+    """专链/补拍 定制单, 备注无插座 → 仍整单归零 (用户 2026-07-02 拍板: 只有备注追加插座的
+    才走插座成本, 其他差价单不套插座成本; 残留 est_packing 等不该叠加)。"""
     o = Order(order_no="NP5", is_custom=True, product_name="畔色木作 差价邮费补拍专链",
-              actual_cost=None, paid_amount=Decimal("199.76"),
-              theoretical_cost=Decimal("1575"), est_packing=Decimal("0"))
+              actual_cost=None, paid_amount=Decimal("199.76"), remark="补差价",
+              theoretical_cost=Decimal("169.80"), est_packing=Decimal("170"))
     bd = ofin.physical_cost_breakdown(o)
-    assert bd["cap_mode"] != "非产品归零"
-    assert bd["cap_mode"] == "推演封顶85"
-    assert bd["final"] == Decimal("169.80")   # 199.76 × 0.85, 不是 0 也不是原值 1575
+    assert bd["cap_mode"] == "非产品归零"
+    assert bd["final"] == Decimal("0")
+
+
+def test_custom_link_with_socket_uses_socket_estimate_only():
+    """专链/补拍 定制单, 备注追加插座 → 成本 = 插座推演(theoretical_cost, 已含运费), 【不叠加】
+    残留的大件打包/物流/安装(那些 est_* 是脏值)。真单曾算成 198(=插座118+打包170−安装90), 应为 118。"""
+    o = Order(order_no="NP6", is_custom=True, product_name="畔色木作 差价邮费补拍专链",
+              actual_cost=None, paid_amount=Decimal("199.76"), remark="两个T25插座",
+              theoretical_cost=Decimal("118"), est_packing=Decimal("170"),
+              est_logistics=Decimal("300"), est_install=Decimal("90"))
+    bd = ofin.physical_cost_breakdown(o)
+    assert bd["cap_mode"] == "专链插座追加"
+    assert bd["final"] == Decimal("118")   # 不是 198
 
 
 # ───────── B. 平台费退款钳制 ─────────

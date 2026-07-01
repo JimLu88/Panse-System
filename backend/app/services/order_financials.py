@@ -179,12 +179,20 @@ def physical_cost_breakdown(o: Order) -> dict:
 
     # 非产品单(官方服务/专链/邮费/补拍/安装/送货)整单成本归零 (用户 2026-06-26; 复用系统权威检测器
     # zero_cost_reason — 不含样块/样品[另按实际¥13], 不含差价[走片段规则])。否则残留 配件/物流 估值。
-    # 定制单排除(2026-07-02 修): 关键词只查标题/SKU, 不看备注 —— 定制单常年用「差价邮费补拍专链」
-    # 这类通用链接收补发配件的钱(如"两个T25插座"), 备注里有真实成本依据(custom_order_reconcile_service
-    # 已按插座/配件规则推演写回 theoretical_cost); 整单归零会把这笔已推演的真实成本吃掉。定制单交下面
-    # 走 theoretical_cost, 该有的封顶/保底(推演封顶85/定制兜底85)照样生效, 不会因此算出离谱数字。
+    # 例外 — 专链/补拍单里「备注追加插座」的(2026-07-02 修, 用户拍板): 定制单常年用「差价邮费补拍专链」
+    # 这类通用链接收补发配件的钱(如"两个T25插座"), 该按插座真实成本算(theoretical_cost 已由
+    # custom_order_reconcile 的插座规则推演=AC-1007×数量+运费), 且【不叠加】大件物流/打包/安装 ——
+    # 这类补发小件的单常残留大件 est_packing/est_logistics/est_install 脏值(定价表其实为空), 叠上去会虚高。
+    # 只认「纯插座追加」(is_pure_socket_addon: 含插座且非大件); 其余专链/补拍/差价单仍整单归零(不走插座成本)。
     from app.services.order_cost_service import zero_cost_reason
-    if not bool(getattr(o, "is_refill", False)) and not _is_custom and zero_cost_reason(o):
+    if not bool(getattr(o, "is_refill", False)) and zero_cost_reason(o):
+        from app.services.custom_order_reconcile_service import is_pure_socket_addon, remark_text
+        if _is_custom and o.theoretical_cost is not None and is_pure_socket_addon(remark_text(o)):
+            tc = _d(o.theoretical_cost)
+            return {"factory_wood": Decimal("0"), "estimate_part": tc, "packing": Decimal("0"),
+                    "precap_total": tc, "cap_mode": "专链插座追加",
+                    "cap_label": "专链/补拍+备注插座→只算插座推演(含运费), 不叠加大件物流/打包/安装",
+                    "final": tc}
         return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"), "packing": Decimal("0"),
                 "precap_total": Decimal("0"), "cap_mode": "非产品归零",
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}

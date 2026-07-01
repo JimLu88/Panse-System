@@ -125,11 +125,17 @@ def _socket_qty(txt: str) -> int:
     return int(m.group(1) or m.group(2)) if m else 1
 
 
+def is_pure_socket_addon(txt: str) -> bool:
+    """纯插座追加单: 备注含「插座」且不含大件关键词(柜/桌/床…)。
+    成本口径单一真源(用户 2026-07-02): 只有纯插座追加单才按 AC-1007×数量+运费 算成本;
+    纯差价/邮费/专链(无插座) 或 插座混大件 都不走插座成本。插座规则(_r_socket)与逐单成本
+    拆解(order_financials 专链归零分支)共用此判断, 避免两处口径漂移。"""
+    return "插座" in txt and not any(k in txt for k in _BIG_ITEM_KW)
+
+
 def _r_socket(db, o, txt):
-    if "插座" not in txt:
-        return None
-    if any(k in txt for k in _BIG_ITEM_KW):
-        return None   # 插座与大件混在一起 → 非纯插座单, 不能只算 ¥63 (审计修 2026-06-17)
+    if not is_pure_socket_addon(txt):
+        return None   # 无插座 / 插座混大件 → 非纯插座单, 交后面 AI/85% 兜底 (审计修 2026-06-17)
     qty = _socket_qty(txt)
     mat = db.execute(select(Material).where(Material.code == SOCKET_MATERIAL_CODE)).scalar_one_or_none()
     price = _d(mat.price) if (mat and mat.price is not None) else None
