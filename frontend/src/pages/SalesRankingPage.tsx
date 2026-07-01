@@ -82,10 +82,19 @@ function MobileChampionList({ periods, sel, metric, onPick }: { periods: RankPer
   );
 }
 
-export default function SalesRankingPage() {
-  const [granularity, setGranularity] = useState<'month' | 'year'>('month');
+export default function SalesRankingPage(
+  { period: extPeriod, onPeriodChange }:
+  { period?: string; onPeriodChange?: (p: string | undefined) => void } = {},
+) {
+  // 受控模式 (extPeriod 传入): 周期由外部(运营大盘月份)驱动, 隐藏本页「统计粒度/周期」选择器, 只留「排行依据」。
+  const controlled = extPeriod !== undefined;
+  const [granularityState, setGranularityState] = useState<'month' | 'year'>('month');
   const [metric, setMetric] = useState<RankMetric>('revenue');
-  const [period, setPeriod] = useState<string | undefined>(undefined);
+  const [periodState, setPeriodState] = useState<string | undefined>(undefined);
+  const granularity = controlled ? 'month' : granularityState;
+  const period = controlled ? extPeriod : periodState;
+  const setPeriod = (p: string | undefined) => { if (controlled) onPeriodChange?.(p); else setPeriodState(p); };
+  const setGranularity = setGranularityState;
   const screens = Grid.useBreakpoint();
   const isMobile = screens.md === false;
   const isProfit = metric === 'profit';
@@ -162,6 +171,7 @@ export default function SalesRankingPage() {
 
       <Card size="small">
         <Space wrap size="large">
+          {!controlled && (
           <Space>
             <span>统计粒度:</span>
             <Segmented
@@ -169,6 +179,7 @@ export default function SalesRankingPage() {
               options={[{ label: '按月', value: 'month' }, { label: '按年', value: 'year' }]}
             />
           </Space>
+          )}
           <Space>
             <span>排行依据:</span>
             <Segmented
@@ -180,6 +191,7 @@ export default function SalesRankingPage() {
               ]}
             />
           </Space>
+          {!controlled && (
           <Space>
             <span>周期:</span>
             <Select
@@ -188,6 +200,7 @@ export default function SalesRankingPage() {
               options={periods.map((p) => ({ label: p.period, value: p.period }))}
             />
           </Space>
+          )}
         </Space>
       </Card>
 

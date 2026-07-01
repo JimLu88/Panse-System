@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState, type CSSProperties } from 'react';
-import { Button, Card, Col, DatePicker, Grid, Row, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
+import { Button, Card, Col, Grid, Row, Segmented, Spin, Statistic, Tag, Tooltip, Typography } from 'antd';
 import dayjs from 'dayjs';
 import { ShoppingOutlined, AlertOutlined, DollarOutlined, CheckCircleOutlined, ExclamationCircleOutlined, CloseCircleOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
@@ -58,9 +58,19 @@ export default function DashboardPage() {
   // 手机端: 卡片不再整块点击跳转(用户要求 2026-06-24, 避免误触/突兀跳转); 需要进入处用显式按钮。桌面端保持可点。
   const navProps = (path: string) => (isMobile ? {} : { onClick: () => nav(path), style: { cursor: 'pointer' as const } });
   // #8 自选日期: 控制「订单趋势 / 近30天收入」区间 (库存/异常/健康度等现状指标不随区间变)
-  const [range, setRange] = useState<[dayjs.Dayjs, dayjs.Dayjs] | null>(null);
-  const startStr = range?.[0]?.format('YYYY-MM-DD');
-  const endStr = range?.[1]?.format('YYYY-MM-DD');
+  // 全局月份 (由销售面板 MonthlyOpsPanel 报上来) + 订单趋势窗口模式 (用户 2026-07-01: 全局联动)
+  const [salesMonth, setSalesMonth] = useState<string | undefined>(undefined);   // YYYY-MM
+  const [trendMode, setTrendMode] = useState<'month' | '30d' | '7d'>('month');
+  // 订单趋势/收入 窗口: 默认跟随所选月份; 也可切近30天/近7天
+  let startStr: string | undefined;
+  let endStr: string | undefined;
+  if (trendMode === 'month' && salesMonth && /^\d{4}-\d{2}$/.test(salesMonth)) {
+    startStr = `${salesMonth}-01`;
+    endStr = dayjs(`${salesMonth}-01`).endOf('month').format('YYYY-MM-DD');
+  } else if (trendMode === '7d') {
+    startStr = dayjs().add(-6, 'day').format('YYYY-MM-DD');
+    endStr = dayjs().format('YYYY-MM-DD');
+  }   // '30d' → 不传, 后端默认近30天
   const { data, isLoading } = useQuery({
     queryKey: ['dashboard', startStr, endStr],
     queryFn: () => getDashboard(startStr && endStr ? { start: startStr, end: endStr } : undefined),
@@ -151,28 +161,14 @@ export default function DashboardPage() {
           <Typography.Title level={4} style={{ margin: 0, color: M.ink, fontWeight: 800 }}>运营大盘</Typography.Title>
           <Typography.Text style={{ color: M.sub, fontSize: 13 }}>实时经营概览 · 每分钟自动刷新</Typography.Text>
         </div>
-        <div style={{ textAlign: 'right' }}>
-          <Typography.Text style={{ color: M.sub, fontSize: 12, marginRight: 8 }}>订单趋势/收入区间:</Typography.Text>
-          <DatePicker.RangePicker
-            value={range as any} onChange={(v) => setRange(v as any)} allowClear
-            presets={[
-              { label: '近30天', value: [dayjs().add(-30, 'day'), dayjs()] },
-              { label: '本月', value: [dayjs().startOf('month'), dayjs()] },
-              { label: '上月', value: [dayjs().add(-1, 'month').startOf('month'), dayjs().add(-1, 'month').endOf('month')] },
-              { label: '今年', value: [dayjs().startOf('year'), dayjs()] },
-            ]}
-          />
-          {(data.orders as any).trend_window?.is_custom && (
-            <div style={{ color: M.sub, fontSize: 11, marginTop: 2 }}>
-              趋势/收入已按 {(data.orders as any).trend_window.start} ~ {(data.orders as any).trend_window.end}
-            </div>
-          )}
-        </div>
+        <Typography.Text style={{ color: M.sub, fontSize: 12 }}>
+          月份切换见下方「销售」右上角 —— 排行榜 / 占比 / 订单趋势 全页联动
+        </Typography.Text>
       </div>
 
       {/* 剩余流水/月度经营KPI/财务概览 已移到「报表」页顶部 (2026-07-01) */}
       {/* 销售排行榜 + 销售占比 留在运营大盘原位置 (用户 2026-07-01) */}
-      <MonthlyOpsPanel show="sales" />
+      <MonthlyOpsPanel show="sales" onMonthChange={setSalesMonth} />
 
       {/* #6 自动化任务清单已移到「待办台账」, 首页不再展示(用户拍板 2026-06-17) */}
 
@@ -229,7 +225,20 @@ export default function DashboardPage() {
           </MCard>
         </Col>
         <Col xs={24} lg={12}>
-          <MCard title="近 30 天订单趋势" {...navProps('/orders')}>
+          <MCard
+            title={trendMode === 'month' && salesMonth ? `${salesMonth} 订单趋势`
+              : trendMode === '7d' ? '近 7 天订单趋势' : '近 30 天订单趋势'}
+            extra={(
+              <span onClick={(e) => e.stopPropagation()}>
+                <Segmented
+                  size="small" value={trendMode}
+                  onChange={(v) => setTrendMode(v as 'month' | '30d' | '7d')}
+                  options={[{ label: '该月', value: 'month' }, { label: '近30天', value: '30d' }, { label: '近7天', value: '7d' }]}
+                />
+              </span>
+            )}
+            {...navProps('/orders')}
+          >
             <Suspense fallback={<ChartPlaceholder />}>
               <ReactECharts option={trendOption} style={{ height: 240 }} />
             </Suspense>

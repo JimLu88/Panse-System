@@ -2,7 +2,7 @@
  * 数据大盘 · 月度经营面板 — 工厂口径月度利润/ROI(可切月) + 销售占比饼图。
  * 未对清月份(recon_status=reference_only)整块标「仅供参考」。
  */
-import { lazy, Suspense, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import { Alert, Card, Col, Grid, Row, Segmented, Select, Spin, Statistic, Typography } from 'antd';
 import { useQuery } from '@tanstack/react-query';
 import { fetchMonthlyPnl, fetchSalesMix } from '../api/reports';
@@ -21,7 +21,10 @@ const PIE_COLORS = ['#6366f1', '#38bdf8', '#10b981', '#f59e0b', '#f43f5e', '#8b5
 const BLUE_CARD = { background: '#eef4ff', borderColor: '#d6e4ff' } as const;
 
 // show: 'all'=全部(默认) | 'kpi'=只显示月度经营KPI(报表页用) | 'sales'=只显示销售排行榜+占比(运营大盘用)
-export default function MonthlyOpsPanel({ show = 'all' }: { show?: 'all' | 'kpi' | 'sales' }) {
+// onMonthChange: 把当前所选月份(sel)报给父级(运营大盘用它联动"订单趋势")。
+export default function MonthlyOpsPanel(
+  { show = 'all', onMonthChange }: { show?: 'all' | 'kpi' | 'sales'; onMonthChange?: (m?: string) => void },
+) {
   const showKpi = show === 'all' || show === 'kpi';
   const showSales = show === 'all' || show === 'sales';
   const [period, setPeriod] = useState<string | undefined>(undefined);
@@ -34,6 +37,7 @@ export default function MonthlyOpsPanel({ show = 'all' }: { show?: 'all' | 'kpi'
   const rows = pnl?.rows ?? [];
   const sel = period ?? rows[0]?.period;
   const selRow = rows.find((r) => r.period === sel);
+  useEffect(() => { onMonthChange?.(sel); }, [sel, onMonthChange]);   // 报给父级联动订单趋势
 
   const [y, m] = (sel ?? '0-0').split('-').map(Number);
   const { data: mix } = useQuery({
@@ -157,7 +161,7 @@ export default function MonthlyOpsPanel({ show = 'all' }: { show?: 'all' | 'kpi'
             options={[{ label: '销售排行榜', value: 'ranking' }, { label: '销售预测', value: 'forecast' }]} />}
         >
           <Suspense fallback={<div style={{ height: 200, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><Spin /></div>}>
-            {salesView === 'ranking' ? <SalesRankingPage /> : <ForecastPage />}
+            {salesView === 'ranking' ? <SalesRankingPage period={sel} onPeriodChange={setPeriod} /> : <ForecastPage />}
           </Suspense>
         </Card>
       )}
