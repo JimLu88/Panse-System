@@ -97,7 +97,7 @@ def me(user: User = Depends(get_current_user)):
 
 class UserCreateIn(BaseModel):
     username: str = Field(..., min_length=3, max_length=64)
-    password: str = Field(..., min_length=12)
+    password: str = Field(..., min_length=8)
     role: str = Field("viewer")
     display_name: Optional[str] = None
     # 子账号页面权限: None=不受限; list[str]=只能看这些页面 (非法 key 会被后端过滤掉)。admin 恒不受限。
@@ -172,7 +172,7 @@ def update_user(
 
 
 class PasswordResetIn(BaseModel):
-    new_password: str = Field(..., min_length=12)
+    new_password: str = Field(..., min_length=8)
 
 
 @router.post("/users/{user_id}/password", status_code=204)
@@ -195,7 +195,7 @@ def reset_password(
 
 class ChangePasswordIn(BaseModel):
     old_password: str
-    new_password: str = Field(..., min_length=12)
+    new_password: str = Field(..., min_length=8)
 
 
 @router.post("/me/password", status_code=204)

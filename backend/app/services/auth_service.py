@@ -94,8 +94,8 @@ def validate_password_strength(password: str, username: Optional[str] = None) ->
 
     只约束"新设的密码"; 现有账号的旧密码不受影响, 不强制改密。
     """
-    if len(password) < 12:
-        raise ValueError("密码至少 12 位")
+    if len(password) < 8:
+        raise ValueError("密码至少 8 位")
     low = password.lower()
     if low in _WEAK_PASSWORDS:
         raise ValueError("密码过于常见, 容易被撞库, 请换一个")

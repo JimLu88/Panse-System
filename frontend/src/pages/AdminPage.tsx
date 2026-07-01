@@ -313,7 +313,7 @@ function UsersTab() {
           <Form.Item name="username" label="用户名" rules={[{ required: true, min: 3 }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="password" label="密码 (至少 12 位)" rules={[{ required: true, min: 12 }]}>
+          <Form.Item name="password" label="密码 (至少 8 位)" rules={[{ required: true, min: 8 }]}>
             <Input.Password />
           </Form.Item>
           <Form.Item name="display_name" label="显示名">
@@ -397,7 +397,7 @@ function UsersTab() {
           layout="vertical"
           onFinish={(v) => pwdFor && pwdMut.mutate({ id: pwdFor.id, pwd: v.new_password })}
         >
-          <Form.Item name="new_password" label="新密码" rules={[{ required: true, min: 6 }]}>
+          <Form.Item name="new_password" label="新密码 (至少 8 位)" rules={[{ required: true, min: 8 }]}>
             <Input.Password />
           </Form.Item>
         </Form>
