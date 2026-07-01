@@ -412,17 +412,20 @@ def _build_product_sku_sheet(db: Session, wb, used: set[str], pricing_sheet: Opt
 
 
 # ── 定价总表 sheet: 派生列改活公式 (编辑成本→价格/利润 Excel 内自动重算) ─────────────
-def _apply_pricing_formulas(ws) -> None:
+def _apply_pricing_formulas(ws, *, col_offset: int = 0, data_start_row: int = 2) -> None:
     """把定价总表 sheet 的派生列(物理/各档价/平台费/税/会计/利润/毛利率)改成活公式,
     口径复刻 pricing_calc_service.recompute (2026-07-01 用户拍板对齐 Excel):
       物理 = 工厂 + 物流 + 安装 ; 会计基准 = 物理 / (1 − 2.6%)
       标价/小促/中促/大促 = ROUNDUP(会计基准 / 对应基数, −1) ; 日常 = 标价 × 0.75
       平台费 = 大促×0.6% ; 税 = 大促×2% ; 会计 = 物理+平台费+税 ; 利润 = 大促−会计 ; 毛利率 = 利润/大促
     价格公式仅在该行有对应基数(base_*)时写(无基数保原值, 与引擎一致); 利润链恒随大促联动。
-    → 导出的 Excel 里改工厂成本/物流/安装/基数, 价格与利润会像用户原表一样自动联动。"""
+    → 导出的 Excel 里改工厂成本/物流/安装/基数, 价格与利润会像用户原表一样自动联动。
+
+    col_offset: 字段列整体右移几列 (图册 sheet 首列是产品图, 传 1); data_start_row: 数据起始行
+    (图册有 分类色带+表头 两行, 传 3)。默认 0/2 = 定价总表原布局。"""
     from openpyxl.utils import get_column_letter
     cols = [c.key for c in PricingSku.__table__.columns]
-    idx = {c: i + 1 for i, c in enumerate(cols)}
+    idx = {c: i + 1 + col_offset for i, c in enumerate(cols)}
     if "physical_cost" not in idx or "big_promo" not in idx:
         return
     def L(f):
@@ -433,7 +436,7 @@ def _apply_pricing_formulas(ws) -> None:
     lp, dp, sp, mp, bp = L("list_price"), L("daily_price"), L("small_promo"), L("mid_promo"), L("big_promo")
     plat, tax, acct, marg, rate = (L("platform_fee_rate"), L("tax"), L("accounting_cost"),
                                    L("big_promo_margin"), L("gross_margin_rate"))
-    for r in range(2, ws.max_row + 1):
+    for r in range(data_start_row, ws.max_row + 1):
         first = ws.cell(r, 1).value
         if isinstance(first, str) and first.startswith("──"):
             break  # 到达表尾"孤儿异常"提示区, 停止
@@ -745,6 +748,10 @@ def build_catalog_xlsx(db: Session):
     for f in all_fields:
         ws.column_dimensions[get_column_letter(field_pos[f])].width = _CATALOG_WIDE.get(f, 12)
     ws.freeze_panes = "B3"
+
+    # 派生列改活公式(改工厂成本/物流/安装/基数 → 价格与利润 Excel 内自动联动, 与定价总表导出同口径)
+    # 图册首列是产品图 → 字段整体右移 1 列; 分类色带+表头占前 2 行 → 数据从第 3 行起
+    _apply_pricing_formulas(ws, col_offset=1, data_start_row=3)
 
     out = _io.BytesIO()
     wb.save(out)

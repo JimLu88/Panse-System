@@ -77,3 +77,31 @@ def test_catalog_xlsx_structure(db_session, monkeypatch):
     assert ws.cell(3, 1).value == "暂无图片"                         # 无图占位
     vals = {ws.cell(r, c).value for r in range(3, ws.max_row + 1) for c in range(1, ws.max_column + 1)}
     assert 3060 in vals and 6880 in vals                            # 售价落格
+
+
+def test_catalog_xlsx_has_live_formulas(db_session, monkeypatch):
+    """图册派生列(物理/各档价/平台费/税/会计/利润/毛利率)必须是活公式, 与定价总表导出同口径。"""
+    import io
+    import openpyxl
+    from app.services.data_export_service import build_catalog_xlsx
+    monkeypatch.setattr(pcs, "product_image_map", lambda codes, url_by_code, **k: {})
+    db_session.add(Product(code="F1", name="公式测试桌"))
+    db_session.add(PricingSku(
+        product_code="F1", sku_code="F1-A", sku="1.2米",
+        factory_cost=Decimal("1000"), logistics_cost=Decimal("100"), install_cost=Decimal("50"),
+        base_list=Decimal("0.3"), base_small=Decimal("0.55"),
+        base_mid=Decimal("0.6"), base_big=Decimal("0.62")))
+    db_session.commit()
+
+    wb = openpyxl.load_workbook(io.BytesIO(build_catalog_xlsx(db_session).getvalue()))
+    ws = wb["定价图册"]
+    hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
+    def f(name):
+        return str(ws.cell(3, hdr[name]).value or "")
+    assert f("物理总成本").startswith("=SUM")        # 物理 = 工厂+物流+安装
+    assert f("标价").startswith("=ROUNDUP")
+    assert f("大促价").startswith("=ROUNDUP")
+    assert f("日常价/单品宝").startswith("=")
+    assert f("会计总成本").startswith("=")
+    assert f("大促利润").startswith("=")
+    assert f("毛利率").startswith("=")               # 一个都不能少
