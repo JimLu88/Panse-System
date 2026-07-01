@@ -55,3 +55,42 @@ def test_promo_reverse_skips_missing_tier():
     assert promo.shop_promo_rate is None         # 小促无价 → 不反推
     assert promo.mid_shop_rate is None
     assert promo.big_shop_rate is not None        # 大促有价 → 反推
+
+
+def test_version_record_snapshots_old_value(db_session):
+    """record_dated_change: 把改前(旧)值封存成一条区间; 之后改新值, 历史仍是旧值。"""
+    from datetime import date
+    from sqlalchemy import select
+    from app.models.pricing_version import PricingSkuVersion
+    from app.services import pricing_version_service as pvs
+    sku = PricingSku(product_code="VP1", sku_code="VP1-A", big_promo=D("3060"),
+                     physical_cost=D("2680"), base_big=D("0.9"))
+    db_session.add(sku); db_session.commit()
+    pvs.record_dated_change(db_session, sku, date(2026, 7, 2), actor="t", note="改价台改基数")
+    db_session.commit()
+    sku.big_promo = D("2900")     # 改新值
+    db_session.commit()
+    v = db_session.execute(select(PricingSkuVersion).where(
+        PricingSkuVersion.sku_code == "VP1-A")).scalars().one()
+    assert v.period_end == date(2026, 7, 2)
+    assert D(str(v.big_promo)) == D("3060")     # 历史封存的是旧大促价, 不追溯改写
+
+
+def test_version_prune_keeps_30(db_session):
+    """每个 SKU 只保留最新 30 个版本 (用户 2026-07-02: 20~30)。"""
+    from datetime import date, timedelta
+    from sqlalchemy import func, select
+    from app.models.pricing_version import PricingSkuVersion
+    from app.services import pricing_version_service as pvs
+    b = date(2025, 1, 1)
+    for i in range(35):
+        db_session.add(PricingSkuVersion(
+            sku_code="VP2-A", product_code="VP2",
+            period_start=b + timedelta(days=i), period_end=b + timedelta(days=i + 1),
+            snapshot="{}", big_promo=D("100")))
+    db_session.commit()
+    pvs.prune(db_session, "VP2-A")
+    db_session.commit()
+    n = db_session.execute(select(func.count(PricingSkuVersion.id)).where(
+        PricingSkuVersion.sku_code == "VP2-A")).scalar()
+    assert n == 30

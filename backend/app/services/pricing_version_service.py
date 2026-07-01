@@ -12,11 +12,14 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.models.pricing import PricingSku
 from app.models.pricing_version import SENTINEL_START, PricingSkuVersion
+
+# 每个 SKU 最多保留多少个调价版本 (用户 2026-07-02: 20~30 个; 取 30)。超出删最旧的。
+MAX_VERSIONS_PER_SKU = 30
 
 # 快照进版本行的定价值字段 (成本+售价+基数); 前段做真实列, 其余进 snapshot JSON。
 _COL_FIELDS = [
@@ -59,7 +62,22 @@ def record_dated_change(db: Session, sku: PricingSku, effective_from: date, *,
         **{f: getattr(sku, f, None) for f in _COL_FIELDS},
     )
     db.add(row)
+    db.flush()
+    prune(db, sku.sku_code)
     return row
+
+
+def prune(db: Session, sku_code: str, keep: int = MAX_VERSIONS_PER_SKU) -> int:
+    """只保留该 SKU 最新的 keep 条调价版本(按生效日/period_end 倒序), 删更旧的。返回删除条数。
+    删掉的是很久以前的老价区间; 那之前的订单会回退用 live 价(极老单, 影响可忽略)。"""
+    ids = db.execute(
+        select(PricingSkuVersion.id).where(PricingSkuVersion.sku_code == sku_code)
+        .order_by(PricingSkuVersion.period_end.desc(), PricingSkuVersion.id.desc())
+    ).scalars().all()
+    old = ids[keep:]
+    if old:
+        db.execute(delete(PricingSkuVersion).where(PricingSkuVersion.id.in_(old)))
+    return len(old)
 
 
 def values_at(db: Session, *, sku_code: Optional[str], product_code: Optional[str],

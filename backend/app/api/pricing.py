@@ -594,6 +594,15 @@ def update_shop_price(
         if v is not None and Decimal(str(v)) <= 0:
             raise HTTPException(400, f"{k} 必须 > 0 (它是除数/定价基数)")
     _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
+    # 记入「工厂调价历史」(有效期定价): 先把改前(旧)价/成本封存为 [上边界, 今天), 今天起用新价。
+    # 须早于写新值。同日已封存过一版(边界=今天)→ ValueError, 忽略即可(不重复封存)。
+    from datetime import date as _date
+    from app.services import pricing_version_service
+    try:
+        pricing_version_service.record_dated_change(
+            db, sku, _date.today(), actor=getattr(_, "username", None), note="改价台改基数")
+    except ValueError:
+        pass
     for k, v in changes.items():
         setattr(sku, k, v)
     pricing_calc_service.recompute(sku)      # 基数→价格链 (价格=ROUNDUP(成本÷基数,10))
