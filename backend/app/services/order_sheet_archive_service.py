@@ -372,12 +372,14 @@ def _pending_push_records(db: Session, *, include_baseline: bool) -> list[Import
     return out
 
 
-def _is_pushable(db: Session, rec: ImportedFile, *, include_baseline: bool) -> bool:
-    """这条待推记录是否『真的推得出去』—— 与 push_pending_images 的跳过逻辑保持一致。
+def _is_pushable(db: Session, rec: ImportedFile) -> bool:
+    """这条待推记录是否『真的推得出去（且值得推）』。
 
-    push 循环会跳过: 订单不存在 / 取消 / 待付款 / 退款; 自动档(include_baseline=False)还会跳过
-    没有工厂编号的历史老单(<6/19)(新单会自动顺排编号, 视为可推)。让角标计数用同一判据, 计数才不会
-    因为订单被删/取消/退款而永远停在一个推不掉的数字上。改这里务必与 push_pending_images 同步。
+    跳过: 订单不存在 / 取消 / 待付款 / 退款; 以及【没有工厂编号的历史老单(<6/19)】——
+    它们渲染出来是红字"未能匹配工厂订单号", 推给工厂只是噪音, 系统本就从不主动推它们
+    (见 push_pending_images 注释)。可自动顺排编号的新单(>=6/19)推送时会拿到号, 算可推。
+    与 include_baseline 无关: 手动按钮也不该把这些无号老单算进「待推」, 否则角标会像用户看到的
+    「待推 45」那样其实全是 6 月历史无号单, 怎么点都清不掉。
     """
     no = _order_no_from_name(rec.original_filename)
     if not no:
@@ -387,9 +389,9 @@ def _is_pushable(db: Session, rec: ImportedFile, *, include_baseline: bool) -> b
         return False
     if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
         return False
-    if not include_baseline and getattr(order, "factory_no", None) is None:
+    if getattr(order, "factory_no", None) is None:
         od = getattr(order, "order_date", None)
-        if not (od and od >= _AUTO_NUMBER_SINCE):   # 老单无编号且非可自动顺排的新单 → 自动档不推
+        if not (od and od >= _AUTO_NUMBER_SINCE):   # 无工厂编号的老单 → 推出去是噪音, 不算待推
             return False
     return True
 
@@ -397,12 +399,12 @@ def _is_pushable(db: Session, rec: ImportedFile, *, include_baseline: bool) -> b
 def count_pending_push(db: Session, *, include_baseline: bool = True) -> int:
     """待推飞书的下单图张数 (前端按钮角标用)。
 
-    只数『真的推得出去』的: 订单存在、非取消/待付款/退款 (自动档还要有工厂编号或为可顺排的新单)。
-    修复历史 bug (用户 2026-07-01: 资料存档库显示「待推 49」但其实全推过了): 订单被删/取消/退款后,
-    归档图 row_summary.pushed 仍为 False, 旧计数只看 pushed 标记 → 把这些推不掉的单永久计入, 角标卡死。
+    只数『真能推且值得推』的: 订单存在、非取消/待付款/退款、且有工厂编号(或为可自动顺排的新单)。
+    修复历史 bug (用户 2026-07-01: 资料存档库显示「待推 49」但其实全推过了): 旧计数只看 row_summary.pushed
+    标记, 把订单已删/取消/退款、以及 6 月无工厂编号的历史基线单也算进去 → 角标卡在一个怎么点都清不掉的数。
     """
     recs = _pending_push_records(db, include_baseline=include_baseline)
-    return sum(1 for r in recs if _is_pushable(db, r, include_baseline=include_baseline))
+    return sum(1 for r in recs if _is_pushable(db, r))
 
 
 # 工厂制单编号: 历史(<6/19)靠 ZIP 回填; 6/19 起新单推送时按订单顺序自动顺排 (用户拍板 2026-06-19)

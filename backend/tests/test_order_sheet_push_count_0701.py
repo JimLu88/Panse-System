@@ -55,6 +55,20 @@ def test_count_ignores_already_pushed(db_session):
     assert svc.count_pending_push(db_session) == 0
 
 
+def test_count_excludes_old_sheet_without_factory_no(db_session):
+    # 6月无工厂编号的历史单: 推出去是红字"未能匹配"噪音 → 不算待推 (用户看到的「待推45」正是这种)
+    _sheet(db_session, "OLD1")
+    _order(db_session, "OLD1", status="signed", factory_no=None, order_date=date(2026, 6, 10))
+    assert svc.count_pending_push(db_session) == 0
+
+
+def test_count_includes_new_order_pending_number(db_session):
+    # 6/19 起的新单暂无编号: 推送时会自动顺排编号 → 算可推
+    _sheet(db_session, "NEW1")
+    _order(db_session, "NEW1", status="signed", factory_no=None, order_date=date(2026, 6, 25))
+    assert svc.count_pending_push(db_session) == 1
+
+
 def test_stale_49_scenario_drops_to_real(db_session):
     # 模拟「待推 49」实为遗留: 40 张订单已删 + 5 张取消 + 4 张真待推 → 只应数 4
     for i in range(40):
