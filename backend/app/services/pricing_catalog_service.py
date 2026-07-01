@@ -88,6 +88,69 @@ def _img_data_uri(image_url: Optional[str]) -> Optional[str]:
         return None
 
 
+def _source_bytes(src: str) -> Optional[bytes]:
+    """图片来源 (http(s) URL 或 本地 path= URL) → 图片字节。取不到返回 None。"""
+    if src.startswith(("http://", "https://")):
+        req = urllib.request.Request(src, headers={
+            "User-Agent": "Mozilla/5.0", "Referer": "https://www.taobao.com/",
+        })
+        with urllib.request.urlopen(req, timeout=8) as r:   # noqa: S310 (只取自家商品图 URL)
+            return r.read()
+    rel = (parse_qs(urlparse(src).query).get("path") or [None])[0]
+    if not rel:
+        return None
+    from app.api.gallery import _compressed, _safe_resolve
+    p = _safe_resolve(rel)
+    if not p.is_file():
+        return None
+    return _compressed(p, _CATALOG_IMG_EDGE).read_bytes()
+
+
+def _to_png(data: bytes, max_edge: int) -> Optional[bytes]:
+    """图片字节 → 缩到 max_edge 的 PNG (Excel 内嵌只认 PNG/JPEG, 不认 WebP)。失败 None。"""
+    try:
+        from PIL import Image, ImageOps
+        im = ImageOps.exif_transpose(Image.open(io.BytesIO(data))).convert("RGB")
+        im.thumbnail((max_edge, max_edge))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:
+        return None
+
+
+def product_image_map(codes, url_by_code, max_edge: int = 240) -> dict[str, bytes]:
+    """产品编码 → PNG 图片字节 (供 Excel 内嵌)。本地图库主图优先, 否则 url_by_code 兜底
+    (淘宝 CDN)。并行抓取; 取不到的编码不入结果。"""
+    local_map: dict[str, str] = {}
+    try:
+        from app.services import gallery_lookup
+        local_map = gallery_lookup.main_image_url_map(list(codes))
+    except Exception:
+        local_map = {}
+    src_by_code: dict[str, str] = {}
+    for c in codes:
+        s = local_map.get(c) or (url_by_code.get(c) if url_by_code else None)
+        if s:
+            src_by_code[c] = s
+
+    def _one(item):
+        c, s = item
+        try:
+            raw = _source_bytes(s)
+            return (c, _to_png(raw, max_edge) if raw else None)
+        except Exception:
+            return (c, None)
+
+    out: dict[str, bytes] = {}
+    if src_by_code:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as ex:
+            for c, png in ex.map(_one, list(src_by_code.items())):
+                if png:
+                    out[c] = png
+    return out
+
+
 _CSS = """
 :root { --ink:#1e293b; --sub:#94a3b8; --line:#eef0f4; --bg:#f5f6f8;
         --green:#16a34a; --violet:#7c3aed; --chip:#eef2ff; }

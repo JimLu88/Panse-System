@@ -45,3 +45,35 @@ def test_catalog_skips_non_product_skus(db_session, monkeypatch):
     assert "孚格蜂蜜餐桌" in out
     for junk in ("作废洞石大柜链接", "商家安装sku", "全屋定制", "纯定制"):
         assert junk not in out
+
+
+def test_catalog_xlsx_structure(db_session, monkeypatch):
+    """带图 Excel: 中文表头 + 分类色带 + 同编码多 SKU 图列合并; 无图退占位; 作废剔除。"""
+    import io
+    import openpyxl
+    from app.services.data_export_service import build_catalog_xlsx
+    monkeypatch.setattr(pcs, "product_image_map", lambda codes, url_by_code, **k: {})  # 不碰真实图
+    db_session.add(Product(code="P1", name="测试岩板餐桌"))
+    db_session.add(PricingSku(product_code="P1", sku_code="P1-A", sku="1.2米",
+                              list_price=Decimal("6880"), big_promo=Decimal("3060")))
+    db_session.add(PricingSku(product_code="P1", sku_code="P1-B", sku="1.4米",
+                              list_price=Decimal("7880"), big_promo=Decimal("3560")))
+    db_session.add(Product(code="V1", name="作废旧链接"))            # 应被剔除
+    db_session.add(PricingSku(product_code="V1", sku_code="V1-A", big_promo=Decimal("1")))
+    db_session.commit()
+
+    wb = openpyxl.load_workbook(io.BytesIO(build_catalog_xlsx(db_session).getvalue()))
+    ws = wb["定价图册"]
+    assert ws.cell(1, 1).value == "产品图"                          # 图列表头
+    row1 = [c.value for c in ws[1] if c.value]
+    assert "售价档位" in row1 and "标识" in row1                     # 分类色带
+    hdr = {c.value: c.column for c in ws[2] if c.value}
+    for h in ("产品编码", "产品名称", "标价", "大促价", "淘宝标题", "小红书标价"):
+        assert h in hdr
+    pc = hdr["产品编码"]
+    codes = [ws.cell(r, pc).value for r in range(3, ws.max_row + 1)]
+    assert codes == ["P1", "P1"]                                    # 作废剔除, P1 两个SKU
+    assert "A3:A4" in {str(m) for m in ws.merged_cells.ranges}      # 图列纵向合并
+    assert ws.cell(3, 1).value == "暂无图片"                         # 无图占位
+    vals = {ws.cell(r, c).value for r in range(3, ws.max_row + 1) for c in range(1, ws.max_column + 1)}
+    assert 3060 in vals and 6880 in vals                            # 售价落格

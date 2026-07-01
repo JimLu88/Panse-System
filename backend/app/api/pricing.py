@@ -1284,6 +1284,25 @@ def pricing_catalog(
     return HTMLResponse(pricing_catalog_service.build_catalog_html(db, limit=limit or None))
 
 
+@formula_router.get("/catalog.xlsx")
+def pricing_catalog_xlsx(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """定价图册 (Excel, 带产品图): 一 SKU 一行, 首列产品图(同编码多 SKU 合并只放一张),
+    全字段 + 中文表头 + 分类色带配色。用户 2026-07-01: 要 Excel 不要 HTML。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    bio = data_export_service.build_catalog_xlsx(db)
+    fn = quote("畔色定价图册.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
 def update_formula_rule(
     rule_id: int,

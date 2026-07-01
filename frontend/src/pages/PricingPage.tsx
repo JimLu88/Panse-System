@@ -604,11 +604,13 @@ export default function PricingPage() {
       message.loading({ content: '正在生成带图图册 (含产品图, 稍候)…', key: 'catalog', duration: 0 });
       const blob = await downloadPricingCatalog();
       message.destroy('catalog');
-      const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }));
+      const url = URL.createObjectURL(new Blob([blob], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
       const a = document.createElement('a');
-      a.href = url; a.download = '畔色定价图册.html'; a.click();
+      a.href = url; a.download = '畔色定价图册.xlsx'; a.click();
       URL.revokeObjectURL(url);
-      message.success('已下载「定价图册」, 双击打开即可查看 / 打印成 PDF');
+      message.success('已下载「定价图册」Excel (带产品图)');
     } catch { message.destroy('catalog'); message.error('图册生成失败'); }
   }
 
@@ -936,7 +938,7 @@ export default function PricingPage() {
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
-          <Tooltip title="导出「定价图册」: 一产品一行, 左大图 + 各 SKU 五档售价; 下载 HTML, 双击打开即可查看 / 打印成 PDF">
+          <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">
             <Button icon={<ExportOutlined />} onClick={handleExportCatalog}>批量导出带图</Button>
           </Tooltip>
           <Tooltip title="工厂/销售价的调价历史: 每条=某SKU某段时间使用的旧价, 分界日之前的订单按此老价核算">

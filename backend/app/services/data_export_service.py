@@ -580,6 +580,178 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
     return ws
 
 
+# ── 定价图册 (带产品图的 Excel, 用户 2026-07-01「批量导出带图」要 Excel 不要 HTML) ──────
+_CATALOG_IMG_PX = 88          # 产品图在表内显示的最长边 (px)
+_CATALOG_IMG_ROW_PT = 70      # 每个产品组首行行高 (pt, 容得下图)
+_CATALOG_DATA_ROW_PT = 20     # 其余 SKU 行行高
+_CATALOG_WIDE = {             # 文本列加宽
+    "product_name": 22, "taobao_title": 26, "sku": 18, "size_info": 16,
+    "remark": 18, "taobao_url": 22, "xhs_sku_name": 16, "image_url": 22,
+}
+
+
+def build_catalog_xlsx(db: Session):
+    """定价图册 (Excel, 带产品图): 一 SKU 一行, 首列产品图(同编码多 SKU 只放一张、纵向合并),
+    全字段 + 中文表头 + 分类色带 (行1 分类 / 行2 表头, 按分类上色)。返回 BytesIO。
+    选图: 本地图库主图优先 → 淘宝 CDN 兜底 (见 pricing_catalog_service.product_image_map)。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.product import Product
+    from app.services.pricing_catalog_service import _is_real_product, product_image_map
+
+    base_cols = [c.key for c in PricingSku.__table__.columns]
+    all_fields = base_cols + _PRICING_PROMO_FIELDS
+    IMG_COL = 1
+    FIRST_DATA_COL = 2
+    field_pos = {f: FIRST_DATA_COL + i for i, f in enumerate(all_fields)}
+
+    # 数据: 按 产品编码 → SKU 分组 (剔除作废/服务/占位类非产品 SKU)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)
+    ).scalars().all()
+    prod_by_code = {p.code: p for p in db.execute(select(Product)).scalars().all()}
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    groups: list[tuple[str, list]] = []
+    cur = None
+    for s in skus:
+        prod = prod_by_code.get(s.product_code)
+        nm = (prod.name if prod else None) or s.product_name or ""
+        if not _is_real_product(nm, s.product_code):
+            continue
+        if s.product_code != cur:
+            groups.append((s.product_code, []))
+            cur = s.product_code
+        groups[-1][1].append(s)
+    groups = [g for g in groups if g[1]]
+
+    # 每产品兜底图 URL (本地图库优先由 product_image_map 内部处理)
+    url_by_code = {
+        c: ((prod_by_code.get(c).image_url if prod_by_code.get(c) else None)
+            or next((x.image_url for x in gs if x.image_url), None))
+        for c, gs in groups
+    }
+    img_map = product_image_map([c for c, _ in groups], url_by_code)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "定价图册"
+
+    # 数字格式
+    model_cols = {c.key: c for c in PricingSku.__table__.columns}
+    promo_cols = {c.key: c for c in PricingSkuPromo.__table__.columns}
+    col_fmt: dict[int, str] = {}
+    for f, ci in field_pos.items():
+        col = model_cols.get(f)
+        if col is None:
+            col = promo_cols.get(f)
+        if col is not None:
+            fmt = _num_fmt(f, _col_type(col))
+            if fmt:
+                col_fmt[ci] = fmt
+
+    thin = Side(style="thin", color="E2E8F0")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    white = Font(bold=True, color="FFFFFF", size=11)
+    band_font = Font(bold=True, color="FFFFFF", size=12)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    vcenter = Alignment(vertical="center")
+    right = Alignment(horizontal="right", vertical="center")
+
+    # 行1: 产品图表头 (A1:A2 合并, 深色)
+    ws.merge_cells(start_row=1, start_column=IMG_COL, end_row=2, end_column=IMG_COL)
+    a = ws.cell(1, IMG_COL, "产品图")
+    a.fill = PatternFill("solid", fgColor="0F172A"); a.font = white; a.alignment = center; a.border = border
+
+    # 行1: 分类色带 (按列序合并连续同类, 兼容任意列顺序)
+    cat_of = {f: n for n, _c, fs in _PRICING_CATEGORIES for f in fs}
+    color_of = {n: c for n, c, _fs in _PRICING_CATEGORIES}
+    col_cat = [(field_pos[f], cat_of.get(f)) for f in all_fields]   # 已按列序
+    j = 0
+    while j < len(col_cat):
+        pos, cat = col_cat[j]
+        k = j
+        while k + 1 < len(col_cat) and col_cat[k + 1][1] == cat and col_cat[k + 1][0] == col_cat[k][0] + 1:
+            k += 1
+        c0, c1 = col_cat[j][0], col_cat[k][0]
+        if cat:
+            if c1 > c0:
+                ws.merge_cells(start_row=1, start_column=c0, end_row=1, end_column=c1)
+            bc = ws.cell(1, c0, cat)
+            bc.fill = PatternFill("solid", fgColor=color_of[cat]); bc.font = band_font; bc.alignment = center
+        for ci in range(c0, c1 + 1):
+            ws.cell(1, ci).border = border
+        j = k + 1
+
+    # 行2: 中文表头 (按分类上色)
+    for f in all_fields:
+        ci = field_pos[f]
+        cc = ws.cell(2, ci, _PRICING_CN.get(f) or _cn_header("pricing_sku", f))
+        cc.fill = PatternFill("solid", fgColor=_PRICING_FIELD_COLOR.get(f, "334155"))
+        cc.font = white; cc.alignment = center; cc.border = border
+
+    ws.row_dimensions[1].height = 22
+    ws.row_dimensions[2].height = 28
+
+    # 数据行 + 产品图
+    gray = Font(color="94A3B8")
+    keep_alive: list = []
+    r = 3
+    for code, gs in groups:
+        r0 = r
+        for s in gs:
+            p = promo_by_sku.get(s.sku_code)
+            for f in all_fields:
+                ci = field_pos[f]
+                v = (_translate(f, _cell(getattr(s, f, None))) if f in model_cols
+                     else (_cell(getattr(p, f, None)) if p is not None else None))
+                cell = ws.cell(r, ci, v)
+                cell.border = border
+                if ci in col_fmt:
+                    cell.number_format = col_fmt[ci]
+                    cell.alignment = right
+                else:
+                    cell.alignment = vcenter
+            ws.row_dimensions[r].height = _CATALOG_IMG_ROW_PT if r == r0 else _CATALOG_DATA_ROW_PT
+            r += 1
+        r1 = r - 1
+        if r1 > r0:
+            ws.merge_cells(start_row=r0, start_column=IMG_COL, end_row=r1, end_column=IMG_COL)
+        acell = ws.cell(r0, IMG_COL)
+        acell.border = border
+        png = img_map.get(code)
+        if png:
+            acell.alignment = Alignment(horizontal="center", vertical="top")
+            bio = _io.BytesIO(png)
+            img = XLImage(bio)
+            scale = min(_CATALOG_IMG_PX / img.width, _CATALOG_IMG_PX / img.height, 1.0)
+            img.width = int(img.width * scale)
+            img.height = int(img.height * scale)
+            ws.add_image(img, f"{get_column_letter(IMG_COL)}{r0}")
+            keep_alive.append(bio)          # BytesIO 需存活到 wb.save()
+        else:
+            acell.value = "暂无图片"; acell.font = gray
+            acell.alignment = Alignment(horizontal="center", vertical="center")
+        for rr in range(r0, r1 + 1):        # 图列每行都描边
+            ws.cell(rr, IMG_COL).border = border
+
+    # 列宽 + 冻结 (锁产品图列 + 两行表头)
+    ws.column_dimensions[get_column_letter(IMG_COL)].width = 15
+    for f in all_fields:
+        ws.column_dimensions[get_column_letter(field_pos[f])].width = _CATALOG_WIDE.get(f, 12)
+    ws.freeze_panes = "B3"
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl

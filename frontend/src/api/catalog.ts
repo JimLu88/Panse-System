@@ -709,9 +709,10 @@ export interface TaobaoTemplate {
 }
 export const listPricingTemplates = () =>
   api.get<TaobaoTemplate[]>('/api/pricing-skus/templates').then(r => r.data);
-// 定价图册 (带图导出): 返回自包含 HTML blob (一产品一行 + 大图 + 售价), 前端在新标签打开/打印
+// 定价图册 (带图导出): 返回 Excel(.xlsx) blob — 一SKU一行, 首列产品图(同编码多SKU合并),
+// 全字段 + 中文表头 + 分类色带 (用户 2026-07-01: 要 Excel 不要 HTML)
 export const downloadPricingCatalog = () =>
-  api.get('/api/pricing/catalog', { responseType: 'blob' }).then((r) => r.data);
+  api.get('/api/pricing/catalog.xlsx', { responseType: 'blob' }).then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {
