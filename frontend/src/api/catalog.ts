@@ -709,6 +709,9 @@ export interface TaobaoTemplate {
 }
 export const listPricingTemplates = () =>
   api.get<TaobaoTemplate[]>('/api/pricing-skus/templates').then(r => r.data);
+// 定价图册 (带图导出): 返回自包含 HTML blob (一产品一行 + 大图 + 售价), 前端在新标签打开/打印
+export const downloadPricingCatalog = () =>
+  api.get('/api/pricing/catalog', { responseType: 'blob' }).then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {

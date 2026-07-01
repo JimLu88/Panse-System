@@ -8,7 +8,7 @@ from typing import Any, Optional
 from pathlib import Path
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -1270,6 +1270,18 @@ def list_formula_rules(
     _: User = Depends(get_current_user),
 ):
     return db.query(PricingFormulaRule).order_by(PricingFormulaRule.sort_order).all()
+
+
+@formula_router.get("/catalog", response_class=HTMLResponse)
+def pricing_catalog(
+    limit: int = Query(0, description="只取前 N 个产品 (预览用; 0=全部)"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """定价图册 (带图导出): 一产品一行, 左大图 + 右各 SKU 5 档售价。
+    自包含 HTML (图片 base64 内嵌), 浏览器直接打开即好看, Ctrl+P 可存 PDF。"""
+    from app.services import pricing_catalog_service
+    return HTMLResponse(pricing_catalog_service.build_catalog_html(db, limit=limit or None))
 
 
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)

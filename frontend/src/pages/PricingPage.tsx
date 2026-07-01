@@ -32,6 +32,7 @@ import {
   PricingFormulaRule,
   createPricingSku,
   downloadPricingTemplate,
+  downloadPricingCatalog,
   listPricingSkus,
   listPricingTemplates,
   listProductCategories,
@@ -597,26 +598,18 @@ export default function PricingPage() {
     placeholderData: keepPreviousData,
   });
 
-  const { data: templates } = useQuery({ queryKey: ['pricing-templates'], queryFn: listPricingTemplates, staleTime: 60 * 60 * 1000 });
-  const { data: exportTypes } = useQuery({ queryKey: ['taobao-export-types'], queryFn: listTaobaoExportTypes, staleTime: 60 * 60 * 1000 });
 
-  async function handleDownloadTemplate(key: string, label: string) {
+  async function handleExportCatalog() {
     try {
-      const blob = await downloadPricingTemplate(key);
-      const url = URL.createObjectURL(blob);
+      message.loading({ content: '正在生成带图图册 (含产品图, 稍候)…', key: 'catalog', duration: 0 });
+      const blob = await downloadPricingCatalog();
+      message.destroy('catalog');
+      const url = URL.createObjectURL(new Blob([blob], { type: 'text/html' }));
       const a = document.createElement('a');
-      a.href = url; a.download = `${label}.xlsx`; a.click();
+      a.href = url; a.download = '畔色定价图册.html'; a.click();
       URL.revokeObjectURL(url);
-    } catch { message.error('模板下载失败'); }
-  }
-  async function handleExport(exportType: string, label: string) {
-    try {
-      const blob = await downloadTaobaoExport(exportType);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `淘宝-${label}.xlsx`; a.click();
-      URL.revokeObjectURL(url);
-    } catch { message.error('导出失败'); }
+      message.success('已下载「定价图册」, 双击打开即可查看 / 打印成 PDF');
+    } catch { message.destroy('catalog'); message.error('图册生成失败'); }
   }
 
   const invalidatePricing = () => qc.invalidateQueries({ queryKey: ['pricing-skus'] });
@@ -943,15 +936,8 @@ export default function PricingPage() {
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
-          <Dropdown disabled={!templates || templates.length === 0}
-            menu={{ items: (templates ?? []).map((t) => ({ key: t.key, label: (<Space direction="vertical" size={0}><span>{t.label}</span><Typography.Text type="secondary" style={{ fontSize: 11 }}>{t.desc}</Typography.Text></Space>), onClick: () => handleDownloadTemplate(t.key, t.label) })) }}>
-            <Button icon={<DownloadOutlined />}>一键模板下载</Button>
-          </Dropdown>
-          <Tooltip title="把当前系统定价数据填入淘宝后台批量格式, 下载后可直接上传淘宝后台">
-            <Dropdown disabled={!exportTypes || exportTypes.length === 0}
-              menu={{ items: (exportTypes ?? []).map((t) => ({ key: t.key, label: t.label, onClick: () => handleExport(t.key, t.label) })) }}>
-              <Button icon={<ExportOutlined />}>批量导出（填好数据）</Button>
-            </Dropdown>
+          <Tooltip title="导出「定价图册」: 一产品一行, 左大图 + 各 SKU 五档售价; 下载 HTML, 双击打开即可查看 / 打印成 PDF">
+            <Button icon={<ExportOutlined />} onClick={handleExportCatalog}>批量导出带图</Button>
           </Tooltip>
           <Tooltip title="工厂/销售价的调价历史: 每条=某SKU某段时间使用的旧价, 分界日之前的订单按此老价核算">
             <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>调价历史</Button>
