@@ -7,15 +7,17 @@
 import { useState } from 'react';
 import {
   Alert, Button, Card, Form, Image, Input, InputNumber, Modal, Popconfirm,
-  Select, Space, Table, Tooltip, Typography, message,
+  Select, Space, Table, Tabs, Tooltip, Typography, message,
 } from 'antd';
 import { DeleteOutlined, EditOutlined, PlusOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 import { createBomLine, deleteBomLine, getNextMaterialCode, listBomLines, listProductCategories,
   updateBomLine } from '../api/client';
 import type { BomLineRow } from '../api/client';
 import ProductThumb from '../components/ProductThumb';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
+import BomSizeReviewPage from './BomSizeReviewPage';   // 尺寸复核并入本页做 Tab (2026-07-01)
 
 const BOM_FIELDS: PresetField[] = [
   { key: 'sku_code', label: 'SKU 编码', group: '字段' },
@@ -30,6 +32,8 @@ const BOM_PRESETS = [
 
 export default function BomListPage() {
   const qc = useQueryClient();
+  const [sp, setSp] = useSearchParams();
+  const tab = sp.get('tab') || 'list';   // list=BOM清单 (默认); size=BOM尺寸复核
   const [productCode, setProductCode] = useState('');
   const [productName, setProductName] = useState('');
   const [materialCode, setMaterialCode] = useState('');
@@ -130,9 +134,8 @@ export default function BomListPage() {
     },
   ];
 
-  return (
+  const listView = (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Typography.Title level={4} style={{ margin: 0 }}>BOM 清单</Typography.Title>
       <Alert
         type="info" showIcon
         message="按产品编码 / 物料编码筛 BOM 行。数据错了可直接「编辑」(改 SKU 归属/料号/单耗/单位)或「删除」。"
@@ -249,5 +252,17 @@ export default function BomListPage() {
         </Form>
       </Modal>
     </Space>
+  );
+
+  return (
+    <Tabs
+      activeKey={tab}
+      onChange={(k) => setSp(k === 'list' ? {} : { tab: k }, { replace: true })}
+      destroyInactiveTabPane
+      items={[
+        { key: 'list', label: 'BOM 清单', children: listView },
+        { key: 'size', label: 'BOM 尺寸复核', children: <BomSizeReviewPage /> },
+      ]}
+    />
   );
 }

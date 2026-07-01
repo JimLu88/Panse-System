@@ -15,6 +15,7 @@ import {
   Modal,
   Popconfirm,
   Progress,
+  Radio,
   Row,
   Select,
   Space,
@@ -23,6 +24,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tree,
   Typography,
   message,
 } from 'antd';
@@ -93,6 +95,7 @@ import {
 } from '../api/client';
 import { syncAllShipments } from '../api/shipments';
 import { useAuth } from '../auth/AuthProvider';
+import { PERM_TREE, ALL_PERM_KEYS } from '../auth/permissions';
 
 export default function AdminPage() {
   const { user } = useAuth();
@@ -127,6 +130,41 @@ export default function AdminPage() {
   );
 }
 
+// 子账号「可见页面」选择器: 全部 / 仅指定页面(勾选权限树)。新建/编辑用户共用。
+function PermPicker({ mode, setMode, checked, setChecked }: {
+  mode: 'all' | 'custom';
+  setMode: (m: 'all' | 'custom') => void;
+  checked: string[];
+  setChecked: (k: string[]) => void;
+}) {
+  const treeData = PERM_TREE.map((g) => ({
+    key: g.key, title: g.label,
+    children: g.children.map((c) => ({ key: c.key, title: c.label })),
+  }));
+  return (
+    <>
+      <Radio.Group value={mode} onChange={(e) => setMode(e.target.value)} style={{ marginBottom: 8 }}>
+        <Radio value="all">全部页面 (不受限)</Radio>
+        <Radio value="custom">仅指定页面</Radio>
+      </Radio.Group>
+      {mode === 'custom' && (
+        <Tree
+          checkable
+          selectable={false}
+          defaultExpandAll
+          treeData={treeData}
+          checkedKeys={checked}
+          onCheck={(keys) =>
+            setChecked((keys as React.Key[]).map(String).filter((k) => ALL_PERM_KEYS.includes(k)))
+          }
+          height={300}
+          style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 8 }}
+        />
+      )}
+    </>
+  );
+}
+
 function UsersTab() {
   const qc = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -135,6 +173,13 @@ function UsersTab() {
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
   const [pwdForm] = Form.useForm();
+  // 子账号页面权限: 新建/编辑弹窗共用 (同一时刻只开一个)
+  const [permMode, setPermMode] = useState<'all' | 'custom'>('custom');
+  const [checkedPerms, setCheckedPerms] = useState<string[]>([]);
+  const createRole = Form.useWatch('role', form);
+  const editRole = Form.useWatch('role', editForm);
+  const buildPagePerms = (role?: string): string[] | null =>
+    role === 'admin' || permMode === 'all' ? null : checkedPerms;
   const { data: users, isLoading } = useQuery({ queryKey: ['users'], queryFn: listAuthUsers });
   const { data: rolesInfo } = useQuery({ queryKey: ['roles'], queryFn: fetchRoles });
 
@@ -171,6 +216,9 @@ function UsersTab() {
 
   function openEdit(u: MeUser) {
     setEditing(u);
+    const restricted = u.page_perms != null;   // null=不受限, 数组=受限
+    setPermMode(restricted ? 'custom' : 'all');
+    setCheckedPerms(restricted ? (u.page_perms || []) : []);
     editForm.setFieldsValue({
       username: u.username,
       display_name: u.display_name,
@@ -187,7 +235,11 @@ function UsersTab() {
           showIcon
           message={`系统支持 3 个角色: ${rolesInfo?.roles.join(' / ')}`}
         />
-        <Button type="primary" icon={<UserAddOutlined />} onClick={() => setOpen(true)}>
+        <Button
+          type="primary"
+          icon={<UserAddOutlined />}
+          onClick={() => { setPermMode('custom'); setCheckedPerms([]); setOpen(true); }}
+        >
           新建用户
         </Button>
       </Space>
@@ -219,6 +271,15 @@ function UsersTab() {
             render: (v: boolean) => (v ? <Tag color="green">启用</Tag> : <Tag>停用</Tag>),
           },
           {
+            title: '可见页面',
+            dataIndex: 'page_perms',
+            width: 100,
+            render: (v: string[] | null | undefined, u: MeUser) =>
+              u.role === 'admin' || v == null
+                ? <Tag color="blue">全部</Tag>
+                : <Tag color="orange">{v.length} 个页面</Tag>,
+          },
+          {
             title: '操作',
             width: 160,
             render: (_: any, u: MeUser) => (
@@ -246,13 +307,13 @@ function UsersTab() {
         <Form
           form={form}
           layout="vertical"
-          onFinish={(v) => createMut.mutate(v)}
+          onFinish={(v) => createMut.mutate({ ...v, page_perms: buildPagePerms(v.role) })}
           initialValues={{ role: 'viewer' }}
         >
           <Form.Item name="username" label="用户名" rules={[{ required: true, min: 3 }]}>
             <Input />
           </Form.Item>
-          <Form.Item name="password" label="密码" rules={[{ required: true, min: 6 }]}>
+          <Form.Item name="password" label="密码 (至少 12 位)" rules={[{ required: true, min: 12 }]}>
             <Input.Password />
           </Form.Item>
           <Form.Item name="display_name" label="显示名">
@@ -266,6 +327,14 @@ function UsersTab() {
               }))}
             />
           </Form.Item>
+          {createRole !== 'admin' && (
+            <Form.Item
+              label="可见页面 (子账号权限)"
+              tooltip="只勾选的页面对该账号可见, 其余菜单隐藏、直接访问显示「程序错误」。选「全部页面」= 不受限。admin 角色恒不受限。"
+            >
+              <PermPicker mode={permMode} setMode={setPermMode} checked={checkedPerms} setChecked={setCheckedPerms} />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 
@@ -280,7 +349,7 @@ function UsersTab() {
         <Form
           form={editForm}
           layout="vertical"
-          onFinish={(v) => editing && updateMut.mutate({ id: editing.id, payload: v })}
+          onFinish={(v) => editing && updateMut.mutate({ id: editing.id, payload: { ...v, page_perms: buildPagePerms(v.role) } })}
         >
           <Form.Item name="username" label="用户名" rules={[{ required: true, min: 3 }]}>
             <Input />
@@ -304,6 +373,14 @@ function UsersTab() {
               ]}
             />
           </Form.Item>
+          {editRole !== 'admin' && (
+            <Form.Item
+              label="可见页面 (子账号权限)"
+              tooltip="只勾选的页面对该账号可见, 其余菜单隐藏、直接访问显示「程序错误」。选「全部页面」= 不受限。admin 角色恒不受限。"
+            >
+              <PermPicker mode={permMode} setMode={setPermMode} checked={checkedPerms} setChecked={setCheckedPerms} />
+            </Form.Item>
+          )}
         </Form>
       </Modal>
 

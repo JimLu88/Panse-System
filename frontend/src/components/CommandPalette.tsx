@@ -17,7 +17,6 @@ const QUICK_ACTIONS = [
   { label: '本周销售', url: '/reports', kw: '本周 销售 报表 sales' },
   { label: '资产 / 饼图', url: '/assets', kw: '资产 总额 饼图' },
   { label: '销售预测', url: '/forecast', kw: '销售 预测 forecast' },
-  { label: '截图录单', url: '/screenshots', kw: '截图 录单 千牛' },
   { label: '退货 / 售后', url: '/aftersales', kw: '退货 售后' },
   { label: '客户列表', url: '/customers', kw: '客户 customer' },
   { label: '管理 / 系统监控', url: '/admin', kw: '管理 监控 admin' },

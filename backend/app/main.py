@@ -5,7 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -95,6 +95,7 @@ from app.api import taobao_export as taobao_export_api
 from app.api import npd as npd_api
 from app.api import factory_settlement as factory_settlement_api
 from app.config import get_settings
+from app.dependencies import enforce_page_permission
 from app.middleware import AuditMiddleware
 
 settings = get_settings()
@@ -244,7 +245,12 @@ async def _lifespan(app: FastAPI):
         pass
 
 
-app = FastAPI(title="Panse ERP", version="0.1.0", lifespan=_lifespan)
+# 全局依赖 enforce_page_permission: 子账号页面权限的后端纵深防御 (受限子账号绕过前端直调 API 也拦 403)。
+# 挂全局 → 覆盖所有路由, 无需逐个 router 改; 放行路径/未登录/admin/不受限账号在依赖内快速短路。
+app = FastAPI(
+    title="Panse ERP", version="0.1.0", lifespan=_lifespan,
+    dependencies=[Depends(enforce_page_permission)],
+)
 
 app.add_middleware(
     CORSMiddleware,

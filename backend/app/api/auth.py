@@ -6,6 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import page_permissions
 from app.database import get_db
 from app.dependencies import get_current_user, require_role
 from app.models.auth import ROLES, User
@@ -35,6 +36,8 @@ class MeOut(BaseModel):
     role: str
     is_active: bool
     must_change_password: bool = False
+    # 子账号页面权限: None=不受限(全看); list[str]=仅这些页面 permKey 可见。前端据此过滤菜单+守卫路由。
+    page_perms: Optional[list[str]] = None
 
 
 LoginOut.model_rebuild()
@@ -97,6 +100,8 @@ class UserCreateIn(BaseModel):
     password: str = Field(..., min_length=12)
     role: str = Field("viewer")
     display_name: Optional[str] = None
+    # 子账号页面权限: None=不受限; list[str]=只能看这些页面 (非法 key 会被后端过滤掉)。admin 恒不受限。
+    page_perms: Optional[list[str]] = None
 
 
 @router.post("/users", response_model=MeOut, status_code=201)
@@ -113,6 +118,8 @@ def create_user(
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    # admin 恒不受限(None); 其余按传入清洗 (None=不受限, [...]=仅列出页面可见)
+    u.page_perms = None if u.role == "admin" else page_permissions.sanitize_perms(payload.page_perms)
     db.commit()
     db.refresh(u)
     return MeOut.model_validate(u)
@@ -131,6 +138,9 @@ class UserUpdateIn(BaseModel):
     display_name: Optional[str] = None
     role: Optional[str] = None
     is_active: Optional[bool] = None
+    # 子账号页面权限: 只有显式包含该字段才改 (借 model_fields_set 区分「没传」和「传 null」)。
+    # 传 [...]=设为仅这些页面; 传 null=恢复不受限; 不传=保持不变。admin 恒被强制不受限。
+    page_perms: Optional[list[str]] = None
 
 
 @router.patch("/users/{user_id}", response_model=MeOut)
@@ -150,6 +160,12 @@ def update_user(
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    # page_perms: 仅在请求显式带了该字段时更新 (None=不受限 / list=受限)
+    if "page_perms" in payload.model_fields_set:
+        u.page_perms = page_permissions.sanitize_perms(payload.page_perms)
+    # admin 恒不受限 — 即使改成 admin 或本就是 admin, 都清空 page_perms
+    if u.role == "admin":
+        u.page_perms = None
     db.commit()
     db.refresh(u)
     return MeOut.model_validate(u)

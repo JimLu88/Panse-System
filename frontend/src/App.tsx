@@ -1,12 +1,13 @@
 import { Suspense, lazy, useState } from 'react';
 import { Avatar, Button, Drawer, Dropdown, Grid, Layout, Menu, Space, Spin, Tag } from 'antd';
-import { BulbFilled, BulbOutlined, CameraOutlined, EditOutlined, LogoutOutlined, MenuOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
+import { BulbFilled, BulbOutlined, EditOutlined, LogoutOutlined, MenuOutlined, SearchOutlined, SettingOutlined, UserOutlined } from '@ant-design/icons';
 import { Link, Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import LoginPage from './pages/LoginPage';
+import ProgramErrorPage from './pages/ProgramErrorPage';
+import { canAccessPerm, filterMenuByPerms, resolvePagePerm } from './auth/permissions';
 import ForcePasswordChange from './components/ForcePasswordChange';
 import NotificationBell from './components/NotificationBell';
 import CommandPalette from './components/CommandPalette';
-import AiAssistantWidget from './components/AiAssistantWidget';
 import VersionTag from './components/VersionTag';
 import { useAuth } from './auth/AuthProvider';
 import { useThemeMode } from './theme/ThemeProvider';
@@ -21,7 +22,6 @@ const ProductInventoryPage = lazy(() => import('./pages/ProductInventoryPage'));
 const SampleInventoryPage = lazy(() => import('./pages/SampleInventoryPage'));
 const BomViewerPage = lazy(() => import('./pages/BomViewerPage'));
 const BomListPage = lazy(() => import('./pages/BomListPage'));
-const BomSizeReviewPage = lazy(() => import('./pages/BomSizeReviewPage'));
 const FeishuSettingsPage = lazy(() => import('./pages/FeishuSettingsPage'));
 const QuotePage = lazy(() => import('./pages/QuotePage'));
 const OrdersPage = lazy(() => import('./pages/OrdersPage'));
@@ -39,7 +39,6 @@ const SuppliersPage = lazy(() => import('./pages/SuppliersPage'));
 const ReportsPage = lazy(() => import('./pages/ReportsPage'));
 const FactorySheetPage = lazy(() => import('./pages/FactorySheetPage'));
 const CustomizationPage = lazy(() => import('./pages/CustomizationPage'));
-const ScreenshotImportPage = lazy(() => import('./pages/ScreenshotImportPage'));
 const AfterSalesPage = lazy(() => import('./pages/AfterSalesPage'));
 const ForecastPage = lazy(() => import('./pages/ForecastPage'));
 const AssetsPage = lazy(() => import('./pages/AssetsPage'));
@@ -49,7 +48,6 @@ const OrdersKanbanPage = lazy(() => import('./pages/OrdersKanbanPage'));
 const CustomReconcilePage = lazy(() => import('./pages/CustomReconcilePage'));
 const PerOrderReconcilePage = lazy(() => import('./pages/PerOrderReconcilePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
-const SupplierScoresPage = lazy(() => import('./pages/SupplierScoresPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
 const PricingFormulaPage = lazy(() => import('./pages/PricingFormulaPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
@@ -154,6 +152,10 @@ export default function App() {
   const group = PATH_TO_GROUP[seg] || '';
   const selectedKeys = group ? [seg, group] : [seg];
 
+  // 子账号页面权限: 当前页需要的 permKey + 能否访问 (admin/主账号恒可)
+  const currentPerm = resolvePagePerm(loc.pathname, loc.search);
+  const pageAllowed = canAccessPerm(user, currentPerm);
+
   const menuItems = [
     {
       key: 'g-data',
@@ -169,7 +171,6 @@ export default function App() {
       children: [
         { key: 'products', label: <Link to="/products">产品总表</Link> },
         { key: 'bom-list', label: <Link to="/bom-list">BOM 清单</Link> },
-        { key: 'bom-size-review', label: <Link to="/bom-size-review">BOM尺寸复核</Link> },
         { key: 'materials', label: <Link to="/materials">物料单价库</Link> },
         { key: 'new-product', label: <Link to="/new-product">新产品录入</Link> },
         { key: 'npd', label: <Link to="/npd">新品开发</Link> },
@@ -224,7 +225,6 @@ export default function App() {
         { key: 'marketing-brand', label: <Link to="/marketing?tab=brand">品牌营销</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'marketing-daily', label: <Link to="/marketing?tab=daily">日常经营</Link> },
-        { key: 'marketing-outsourcing', label: <Link to="/marketing?tab=outsourcing">人员外包</Link> },
       ],
     },
     {
@@ -232,7 +232,6 @@ export default function App() {
       label: '供应链',
       children: [
         { key: 'suppliers', label: <Link to="/suppliers">供应商</Link> },
-        { key: 'supplier-scores', label: <Link to="/supplier-scores">供应商评分</Link> },
         { key: 'purchases', label: <Link to="/purchases">配件采购</Link> },
         { key: 'monthly-settlement', label: <Link to="/monthly-settlement">月结对账中心</Link> },
         { key: 'factory-orders', label: <Link to="/factory-orders">工厂下单表</Link> },
@@ -274,7 +273,9 @@ export default function App() {
     },
   ];
 
-  const isScreenshots = loc.pathname === '/screenshots';
+  // 子账号: 按开通权限过滤菜单 (无权的叶子隐藏, 空了的分组整块不显示); admin/主账号原样全看
+  const visibleMenu = filterMenuByPerms(menuItems, user);
+
   const isCustomQuoteV2 = loc.pathname === '/custom-quote-v2';
 
   return (
@@ -322,20 +323,11 @@ export default function App() {
           mode="horizontal"
           selectedKeys={selectedKeys}
           style={{ flex: 1, minWidth: 0 }}
-          items={menuItems}
+          items={visibleMenu}
         />
-        {/* 工具按钮：截图录单 + 定制报价 */}
+        {/* 工具按钮：定制报价 (截图录单已停用, 改手动导订单 2026-07-01); 子账号无权则隐藏 */}
+        {canAccessPerm(user, 'custom-quote-v2') && (
         <Space style={{ marginLeft: 8, marginRight: 8, flexShrink: 0 }}>
-          <Button
-            icon={<CameraOutlined />}
-            size="small"
-            type={isScreenshots ? 'primary' : 'default'}
-            ghost={!isScreenshots}
-            onClick={() => nav('/screenshots')}
-            style={{ borderColor: isScreenshots ? undefined : 'rgba(255,255,255,0.45)', color: isScreenshots ? undefined : 'rgba(255,255,255,0.85)' }}
-          >
-            截图录单
-          </Button>
           <Button
             icon={<EditOutlined />}
             size="small"
@@ -347,6 +339,7 @@ export default function App() {
             定制报价
           </Button>
         </Space>
+        )}
         <Button
           icon={<SearchOutlined />}
           size="small"
@@ -397,8 +390,9 @@ export default function App() {
           styles={{ body: { padding: 0 } }}
         >
           <div style={{ padding: '12px 12px 4px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <Button icon={<CameraOutlined />} block onClick={() => { nav('/screenshots'); setNavOpen(false); }}>截图录单</Button>
-            <Button icon={<EditOutlined />} block onClick={() => { nav('/custom-quote-v2'); setNavOpen(false); }}>定制报价</Button>
+            {canAccessPerm(user, 'custom-quote-v2') && (
+              <Button icon={<EditOutlined />} block onClick={() => { nav('/custom-quote-v2'); setNavOpen(false); }}>定制报价</Button>
+            )}
             <Button icon={mode === 'dark' ? <BulbFilled /> : <BulbOutlined />} block onClick={toggleTheme}>
               {mode === 'dark' ? '浅色模式' : '深色模式'}
             </Button>
@@ -407,16 +401,16 @@ export default function App() {
             mode="inline"
             selectedKeys={selectedKeys}
             defaultOpenKeys={group ? [group] : []}
-            items={menuItems}
+            items={visibleMenu}
             onClick={() => setNavOpen(false)}
             style={{ borderInlineEnd: 0 }}
           />
         </Drawer>
       )}
       <CommandPalette />
-      <AiAssistantWidget />
       <Content style={{ padding: 24 }}>
         <Suspense fallback={<PageFallback />}>
+          {!pageAllowed ? <ProgramErrorPage /> : (
           <Routes>
             <Route path="/" element={<Navigate to="/dashboard" replace />} />
             <Route path="/login" element={<Navigate to="/dashboard" replace />} />
@@ -426,7 +420,8 @@ export default function App() {
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/bom/:productCode" element={<BomViewerPage />} />
             <Route path="/bom-list" element={<BomListPage />} />
-            <Route path="/bom-size-review" element={<BomSizeReviewPage />} />
+            {/* BOM尺寸复核已并入 BOM 清单页做 Tab; 旧链接重定向过去 (2026-07-01) */}
+            <Route path="/bom-size-review" element={<Navigate to="/bom-list?tab=size" replace />} />
             <Route path="/materials" element={<MaterialsPage />} />
             <Route path="/inventory" element={<PartInventoryPage />} />
             <Route path="/product-inventory" element={<ProductInventoryPage />} />
@@ -438,12 +433,10 @@ export default function App() {
             <Route path="/customers" element={<CustomersPage />} />
             <Route path="/customization" element={<CustomizationPage />} />
             <Route path="/custom-quote-v2" element={<CustomQuoteV2Page />} />
-            <Route path="/screenshots" element={<ScreenshotImportPage />} />
             <Route path="/aftersales" element={<AfterSalesPage />} />
             <Route path="/forecast" element={<ForecastPage />} />
             <Route path="/assets" element={<AssetsPage />} />
             <Route path="/assets-cashflow" element={<AssetsCashflowPage />} />
-            <Route path="/supplier-scores" element={<SupplierScoresPage />} />
             <Route path="/accounting" element={<AccountingPeriodsPage />} />
             <Route path="/producibility" element={<ProducibilityPage />} />
             <Route path="/quote" element={<QuotePage />} />
@@ -492,6 +485,7 @@ export default function App() {
             <Route path="/audit-trail" element={<AuditTrailPage />} />
             <Route path="/data-export" element={<DataExportPage />} />
           </Routes>
+          )}
         </Suspense>
       </Content>
     </Layout>

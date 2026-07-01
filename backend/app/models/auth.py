@@ -30,6 +30,10 @@ class User(Base, TimestampMixin):
     # 强制首次登录改密 (默认 admin/admin 创建时置 True; 改密后清零)
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     last_login_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    # 子账号页面权限 (页面级 RBAC): None = 不受限(admin/主账号/存量账号一律全看);
+    # list[str] = 仅可见列出的页面 permKey (见 app/page_permissions.py)。
+    # 与 role 正交: role 管「能不能写」, page_perms 管「能看到哪些页面」。admin 永远不受 page_perms 限制。
+    page_perms: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
 
 
 class AuditLog(Base, TimestampMixin):

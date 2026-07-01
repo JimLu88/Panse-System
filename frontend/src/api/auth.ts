@@ -8,6 +8,8 @@ export interface MeUser {
   role: string;
   is_active: boolean;
   must_change_password?: boolean;
+  // 子账号页面权限: null/缺省=不受限(全看); string[]=只可见这些页面 permKey
+  page_perms?: string[] | null;
 }
 
 export const login = (username: string, password: string) =>
@@ -30,11 +32,15 @@ export const createUser = (payload: {
   password: string;
   role: string;
   display_name?: string;
+  page_perms?: string[] | null;
 }) => api.post<MeUser>('/api/auth/users', payload).then((r) => r.data);
 
 export const updateUser = (
   id: number,
-  payload: { username?: string; display_name?: string; role?: string; is_active?: boolean },
+  payload: {
+    username?: string; display_name?: string; role?: string; is_active?: boolean;
+    page_perms?: string[] | null;
+  },
 ) => api.patch<MeUser>(`/api/auth/users/${id}`, payload).then((r) => r.data);
 
 export const adminResetPassword = (id: number, newPassword: string) =>
