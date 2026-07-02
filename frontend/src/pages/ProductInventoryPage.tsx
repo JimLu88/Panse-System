@@ -336,10 +336,20 @@ export default function ProductInventoryPage() {
         <Tooltip title="按「这个尺寸自己的日均」算(不再拿整个产品的总销量套到每个尺寸)。只有 A 类畅销款自动备货 = 补到(预警线 + 批量) − 可用 − 备货在产。预警线 = 该尺寸日均×提前期 + 安全库存; 批量 = 覆盖 N 天(设置里可调, 现为15天, 越大越凑批压价但压资金); 只扣「备货在产」(不挂客户、会入库的量), 客户单在产不抵。B/C 类 = 按需生产(0), 定制单不备成品。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
-      width: 90,
-      render: (v: number) => v > 0
-        ? <Tag color="blue">{v.toFixed(0)} {}</Tag>
-        : <Typography.Text type="secondary">充足</Typography.Text>,
+      width: 96,
+      render: (v: number, r: ProductInventoryRow) => {
+        const mult = r.season_multiplier;
+        const seasonHint = (mult != null && Math.abs(mult - 1) > 0.01) ? (
+          <Tooltip title={`重点备货月: 备货瞄准 ${r.season_target_month} 月, 该月季节倍数 ×${mult}(相对最近这段时间)。${mult > 1 ? '峰月将至→提前放大' : '峰后/淡季→压回常态'}`}>
+            <div style={{ fontSize: 11, color: mult > 1 ? '#cf1322' : '#1677ff' }}>
+              季×{mult}→{r.season_target_month}月
+            </div>
+          </Tooltip>
+        ) : null;
+        return v > 0
+          ? <Space direction="vertical" size={0}><Tag color="blue">{v.toFixed(0)}</Tag>{seasonHint}</Space>
+          : <Space direction="vertical" size={0}><Typography.Text type="secondary">充足</Typography.Text>{seasonHint}</Space>;
+      },
     },
     {
       title: '滞销阈值',
