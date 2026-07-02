@@ -379,10 +379,20 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
     pk_attr = ent.pk_attr
     pk_feishu = fm[pk_attr]
 
-    # 系统侧
+    # 系统侧 (按 binding.sys_filter 过滤: 多绑定映射同一表时按字段拆分, 如支付宝每张飞书表只推自己账户的流水)
+    stmt = select(ent.model)
+    sf = getattr(binding, "sys_filter", None)
+    if sf:
+        try:
+            for _k, _v in (json.loads(sf) or {}).items():
+                _col = getattr(ent.model, _k, None)
+                if _col is not None:
+                    stmt = stmt.where(_col == _v)
+        except (ValueError, TypeError):
+            _logger.warning("飞书同步[%s] sys_filter 非法 JSON, 忽略: %r", binding.system_table, sf)
     sys_rows = {
         str(getattr(r, pk_attr)): r
-        for r in db.execute(select(ent.model)).scalars()
+        for r in db.execute(stmt).scalars()
         if getattr(r, pk_attr) is not None
     }
     # 飞书侧

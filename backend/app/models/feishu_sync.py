@@ -47,6 +47,9 @@ class FeishuTableBinding(Base, TimestampMixin):
     feishu_table_id: Mapped[str] = mapped_column(String(64), nullable=False)
     direction: Mapped[str] = mapped_column(String(16), default="bidirectional")  # in / out / bidirectional
     field_mapping: Mapped[Optional[str]] = mapped_column(String(2048))  # JSON string
+    # 系统侧行过滤 (JSON, 如 {"account":"企业号"}): 多个绑定映射同一 system_table 时按字段拆分,
+    # 每张飞书表只同步匹配的行 (支付宝 5 账户表按 account 拆; 空=不过滤=全表)。
+    sys_filter: Mapped[Optional[str]] = mapped_column(String(255))
     enabled: Mapped[bool] = mapped_column(default=False, nullable=False)
 
     __table_args__ = (
