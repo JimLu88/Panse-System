@@ -71,6 +71,24 @@ def test_parse_remark_negative_first():
     assert fss.parse_settlement_remark("货款", year=2026)["action"] is None
 
 
+def test_parse_remark_expanded_keywords():
+    """扩充关键词(用户 2026-07-02): '货款…结算/已付款' 也销账; 杂费不销; 守住旧行为。"""
+    # 真实备注 '挚乐1月货款2025结算' → 结算 → 销 1 月
+    r = fss.parse_settlement_remark("挚乐1月货款2025结算", year=2026)
+    assert r["action"] == "settle" and "2026-01" in r["months"]
+    assert fss.parse_settlement_remark("3月货款结算", year=2026)["action"] == "settle"
+    assert fss.parse_settlement_remark("5月货款已结算", year=2026)["action"] == "settle"
+    assert fss.parse_settlement_remark("4月货款已付款", year=2026)["action"] == "settle"
+    # 杂费: 打包费/运费/配件采购/玻璃费/样品定金 → 不销货款账(fee)
+    for fee in ("挚乐2月打包费", "挚乐运费", "挚乐轨道灯带配件采购12-2月",
+                "2025年玻璃费用-挚乐", "榉木材料运费+叉车", "25年床样品货款定金"):
+        assert fss.parse_settlement_remark(fee, year=2026)["action"] != "settle"
+    # 否定优先(新增否定词'没结算'也拦得住)
+    assert fss.parse_settlement_remark("5月货款还没结算", year=2026)["action"] == "unsettle"
+    # 单独'货款'仍不销(可能只是部分付款)
+    assert fss.parse_settlement_remark("江西货款", year=2026)["action"] is None
+
+
 def test_route_alipay_keyword_autosettle(db_session):
     """P2: 货款出账(别名识别)→纠正归类 factory_payment; 备注「5月已付清」自动销账; 否定不销; 幂等。"""
     from datetime import datetime, timezone

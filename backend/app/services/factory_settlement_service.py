@@ -241,9 +241,20 @@ def match_supplier(db: Session, counterparty: Optional[str]) -> Optional[str]:
     return None
 
 
-# ── 支付宝备注关键词解析 (P2 用; 否定优先) ──────────────────────
-_NEG_KEYWORDS = ("未付清", "还没付清", "没付清", "未结清", "先付", "部分", "付一部分", "欠", "差")
-_POS_KEYWORDS = ("已付清", "已结清", "全部付清", "全款付清", "结清", "付清", "全款")
+# ── 支付宝备注关键词解析 (P2 用; 杂费排除 → 否定优先 → 肯定) ──────────────────────
+# 杂费(打包/运费/配件采购/样品/定金/加工…): 付的不是货款, 别拿它销货款账;
+# 例外: 明确"货款 + 结算/付清/结清"(整月款, 哪怕含打包费一起结)仍按货款销。
+_FEE_KEYWORDS = ("打包费", "运费", "到付", "叉车", "搬运", "配件", "采购",
+                 "玻璃", "灯带", "轨道", "样品", "样块", "定金", "材料费",
+                 "加工", "贴皮", "封边")
+_SETTLE_STRONG = ("结算", "付清", "结清")
+_NEG_KEYWORDS = ("未付清", "还没付清", "没付清", "未结清", "未结算", "没结算", "还没结",
+                 "先付", "部分", "付一部分", "欠", "差", "待付", "未付款", "没付款")
+# 肯定(整月已结)信号。"货款"单独不算 —— 可能只是一笔部分付款, 故不入表(见 test_parse_remark)。
+# 扩充点(用户 2026-07-02): 加入"结算/已结算/结算完/货款已付/已付款/已结/款已结",
+# 让"X月货款…结算""X月货款已付"等真实备注(如'挚乐1月货款2025结算')也能自动销账。
+_POS_KEYWORDS = ("已付清", "已结清", "全部付清", "全款付清", "结清", "付清", "全款",
+                 "结算", "已结算", "结算完", "货款已付", "已付款", "已结", "款已结")
 _MONTH_RE = re.compile(r"(\d{1,2})\s*月")
 _CN_NUM = {"一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
            "七": 7, "八": 8, "九": 9, "十": 10, "十一": 11, "十二": 12}
@@ -253,8 +264,10 @@ _CN_MONTH_RE = re.compile(r"([一二三四五六七八九十]{1,3})\s*月")
 def parse_settlement_remark(text: Optional[str], *, year: int) -> dict:
     """解析支付宝货款备注 → {action, months}。
 
-    action: 'settle'(肯定付清, 应销账) / 'unsettle'(否定, 别自动销且保持未结) / None(无信号)。
-    否定词优先(防"5月货款还没付清"被误判付清)。months=["YYYY-MM", ...](按 year 补全, 可多月)。
+    action: 'settle'(肯定整月结, 应销账) / 'unsettle'(否定, 别自动销且保持未结)
+            / 'fee'(杂费, 非货款结算, 不销货款) / None(无信号)。
+    顺序: 杂费排除(除非明确货款结算) → 否定优先(防"还没付清"误判) → 肯定。
+    months=["YYYY-MM", ...](按 year 补全, 可多月)。
     """
     t = text or ""
     months: list[str] = []
@@ -267,6 +280,10 @@ def parse_settlement_remark(text: Optional[str], *, year: int) -> dict:
         if mm:
             months.append(f"{year:04d}-{mm:02d}")
     months = sorted(set(months))
+    # 杂费付的不是货款 → 不销货款账; 但"货款 + 结算/付清/结清"明确整月结清的仍销。
+    is_goods_settle = "货款" in t and any(s in t for s in _SETTLE_STRONG)
+    if any(k in t for k in _FEE_KEYWORDS) and not is_goods_settle:
+        return {"action": "fee", "months": months}
     if any(k in t for k in _NEG_KEYWORDS):
         return {"action": "unsettle", "months": months}
     if any(k in t for k in _POS_KEYWORDS):
