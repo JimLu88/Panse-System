@@ -21,6 +21,7 @@
 """
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from decimal import Decimal
 from statistics import median
@@ -28,6 +29,18 @@ from typing import Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
+
+# 从库存行的 sku 名里抽尺寸口令(如 1.4米 / 80cm / 1200mm), 用来把日均/波动算到「该尺寸」自己头上,
+# 不再让同产品各尺寸共用产品总日均(否则每个尺寸都按整产品销量备货, 合计翻几倍)。
+_SIZE_RE = re.compile(r"\d+(?:\.\d+)?\s*(?:米|cm|mm|CM|MM|m|M)")
+
+
+def _size_token(name: Optional[str]) -> Optional[str]:
+    """从 sku 名抽出尺寸口令(如 '榉木餐桌-1.4米' → '1.4米'); 抽不到返回 None(退回产品级)。"""
+    if not name:
+        return None
+    m = _SIZE_RE.search(str(name))
+    return m.group(0).replace(" ", "") if m else None
 
 from app.models.inventory import ProductInventory
 from app.models.order import FactoryOrder, Order
@@ -169,6 +182,9 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
         ~Order.status.like("%取消%"),
         ~Order.status.like("%等待买家付款%"),
     )
+    size = _size_token(sku)   # 该库存行有尺寸口令 → 只算这个尺寸自己的销量(否则退回产品级)
+    if size:
+        base_filters = base_filters + (Order.sku.like(f"%{size}%"),)
     if cfg.get("mode") == "simple":
         total = float(db.execute(
             select(func.coalesce(func.sum(Order.qty), 0)).where(*base_filters)
@@ -206,21 +222,28 @@ def _canon_code(pc: str) -> str:
     return min(vs)
 
 
-def _daily_series(db: Session, product_code: str, cfg: dict) -> list[float]:
-    """窗口内按天发货量序列(缺销当天补0), 用于算日销标准差 σ。"""
+def _daily_series(db: Session, product_code: str, cfg: dict,
+                  sku: Optional[str] = None) -> list[float]:
+    """窗口内按天发货量序列(缺销当天补0), 用于算日销标准差 σ。
+    sku 带尺寸口令时只算该尺寸自己的波动(与 _compute_daily_sales 同口径)。"""
     window = int(cfg.get("window_days") or 60)
     cutoff = date.today() - timedelta(days=window)
     pc_candidates = product_coder.brand_variants(product_code) or {product_code}
+    conds = [
+        Order.product_code.in_(pc_candidates),
+        Order.is_refill == False,  # noqa: E712
+        Order.is_custom == False,  # noqa: E712  定制单不备成品
+        Order.order_date >= cutoff,
+        Order.status.notin_(["cancelled", "pending_payment"]),
+        ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
+        ~Order.status.like("%等待买家付款%"),
+    ]
+    size = _size_token(sku)
+    if size:
+        conds.append(Order.sku.like(f"%{size}%"))
     rows = db.execute(
-        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0)).where(
-            Order.product_code.in_(pc_candidates),
-            Order.is_refill == False,  # noqa: E712
-            Order.is_custom == False,  # noqa: E712  定制单不备成品
-            Order.order_date >= cutoff,
-            Order.status.notin_(["cancelled", "pending_payment"]),
-            ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
-            ~Order.status.like("%等待买家付款%"),
-        ).group_by(Order.order_date)
+        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0))
+        .where(*conds).group_by(Order.order_date)
     ).all()
     by_day = {d: float(q) for d, q in rows if d is not None}
     today = date.today()
@@ -354,7 +377,7 @@ def compute_product_stats(
     safety = float(inv.safety_stock or 0)
     if inv.safety_stock is None and do_stock:
         z = _z_for_service_level(cfg.get("service_level", 0.95))
-        sigma = _std(_daily_series(db, inv.product_code, cfg))
+        sigma = _std(_daily_series(db, inv.product_code, cfg, sku=inv.sku))
         safety = round(z * sigma * (effective_lead ** 0.5), 2)
 
     # 预警线: 手填优先; 否则 A类=日均×提前期+安全库存; 非备货类=0(不报缺货)

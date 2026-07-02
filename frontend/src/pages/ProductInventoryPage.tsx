@@ -223,7 +223,9 @@ export default function ProductInventoryPage() {
       },
     },
     {
-      title: '现货 / 可用',
+      title: (
+        <Tooltip title="现货 = 手动台账的快照(上次导入/盘点填的值), 不会自动倒扣历史订单。从今起发货会自动减、备货工厂单到货自动加(R3)。若这些其实早卖光了, 盘点一次改成真实数(纯接单生产不囤成品就填 0), 之后系统自动维护。可用 = 现货 − 已锁定。">现货 / 可用</Tooltip>
+      ),
       width: 118,
       render: (_: any, r: ProductInventoryRow) => (
         <Space direction="vertical" size={0}>
@@ -250,7 +252,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="该产品(所有尺寸合计)近30天真实订单日均发货量（不含补单）；同一产品各尺寸行共享此值">日均销量</Tooltip>
+        <Tooltip title="该尺寸自己近期真实订单的日均发货量(不含补单)。按 sku 名里的尺寸口令(如 1.4米/1.6米)匹配对应订单, 每个尺寸各算各的; sku 名里抽不到尺寸时才退回按整个产品算。">日均销量</Tooltip>
       ),
       dataIndex: 'daily_sales_30d',
       width: 90,
@@ -279,7 +281,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="安全库存：最低不能低于的库存量">安全库存</Tooltip>
+        <Tooltip title="安全库存 = 防断货的「缓冲垫」。因为销量忽多忽少、工厂交货有快有慢, 光按平均值备会有一半概率不够; 安全库存就是在平均需求之上多压一点, 让约 95%(服务水平)的情况下、在等工厂补货的这段时间里不断货。算法: 1.65(95%对应系数)×日销波动×√提前期。">安全库存</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => (
@@ -303,7 +305,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="只有 A 类畅销款(按常规订单)自动备货: 补到「预警线 + 批量」再扣掉「备货在产」。预警线 = 日均×提前期 + 安全库存(=Z(服务水平95%)×日销波动×√提前期); 批量 = 覆盖30天(凑批好压配件价); 只扣「备货在产」(不挂客户、会入库的量), 客户单在产不抵。B/C 类 = 按需生产(0)。定制单不备成品。">推荐备货</Tooltip>
+        <Tooltip title="按「这个尺寸自己的日均」算(不再拿整个产品的总销量套到每个尺寸)。只有 A 类畅销款自动备货 = 补到(预警线 + 批量) − 可用 − 备货在产。预警线 = 该尺寸日均×提前期 + 安全库存; 批量 = 覆盖 N 天(设置里可调, 现为15天, 越大越凑批压价但压资金); 只扣「备货在产」(不挂客户、会入库的量), 客户单在产不抵。B/C 类 = 按需生产(0), 定制单不备成品。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
       width: 90,
