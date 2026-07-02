@@ -406,6 +406,20 @@ def _quiet_fail_alert(db, results) -> None:
     db.commit()
 
 
+def _resolve_quiet_alert(db) -> None:
+    """自愈: 体检恢复正常时, 关掉之前的「夜间模式: 系统异常」告警。
+
+    例: 部署时先把新迁移文件放进容器、几秒后才 alembic upgrade, 夜间看门狗在这窗口内
+    体检会误报 migrations current<latest; upgrade 跑完后条件已恢复, 下一轮体检据此自动销警,
+    不必等 12h 自动过期、也不用人工点「已知晓」。"""
+    from app.services import alert_service
+    try:
+        if alert_service.resolve_by_dedupe(db, "watchdog_quiet_fail"):
+            db.commit()
+    except Exception as e:  # pragma: no cover - 防御性
+        _logger.warning("夜间告警自愈失败: %s", e)
+
+
 def _background_loop_sync(interval_sec: int, stop_event) -> None:
     """看门狗循环 — 跑在独立 OS 线程 (评审#6): 业务 event loop 被慢 SQL / 外部 HTTP
     阻塞时, 看门狗仍能照常体检 + 自救, 不会跟着冻住。"""
@@ -422,9 +436,13 @@ def _background_loop_sync(interval_sec: int, stop_event) -> None:
                         run_checks(db, persist=True)
                         db.commit()
                         _quiet_fail_alert(db, results)
+                    else:
+                        _resolve_quiet_alert(db)   # 自愈: 夜间异常已恢复 → 关掉夜间告警
                 else:
-                    run_checks(db, persist=True)
+                    results = run_checks(db, persist=True)
                     db.commit()
+                    if not any(c.status == "fail" for c in results):
+                        _resolve_quiet_alert(db)   # 夜里报的异常, 白天体检恢复也关掉
                     # 业务需求 6: 看门狗自救
                     triggered = maybe_auto_restart(db)
                     if triggered:
