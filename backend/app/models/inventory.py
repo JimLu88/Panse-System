@@ -128,3 +128,33 @@ class ProductInventory(Base, TimestampMixin):
     @property
     def available_qty(self) -> Decimal:
         return Decimal(self.physical_qty or 0) - Decimal(self.locked_qty or 0)
+
+
+class ProductStockMovement(Base, TimestampMixin):
+    """成品库存流水 (R3): 记录每一次「现货」的自动增减, 供审计 + 幂等 + 可逆。
+
+    reason:
+      ship            出库 —— 订单发货, 从现货扣 (qty<0)
+      restock_receipt 入库 —— 备货工厂单(非客户单)到货, 加现货 (qty>0)
+      reversal        冲正 —— 上述事件被撤销(退货/撤销发货/作废工厂单), 反向一笔
+      adjust          手工/盘点调整 (预留)
+    唯一 (reason, entity_type, entity_id) 保证同一业务事件只记一次(幂等)。
+    注: ProductInventory.physical_qty 仍是权威库存值; 本表是"发生了什么"的账,
+        增减在记录本流水时同步落到 physical_qty; 盘点/导入覆盖 physical_qty 时视为新基线。
+    """
+
+    __tablename__ = "product_stock_movement"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    warehouse: Mapped[str] = mapped_column(String(64), nullable=False, default="default", index=True)
+    product_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), nullable=False)   # 有符号: +入库 / −出库
+    reason: Mapped[str] = mapped_column(String(24), nullable=False, index=True)
+    entity_type: Mapped[Optional[str]] = mapped_column(String(24))         # order / factory_order
+    entity_id: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    occurred_on: Mapped[Optional[date]] = mapped_column(Date)
+    remark: Mapped[Optional[str]] = mapped_column(String(255))
+
+    __table_args__ = (
+        UniqueConstraint("reason", "entity_type", "entity_id", name="uq_prod_stock_move_event"),
+    )

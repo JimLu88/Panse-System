@@ -174,8 +174,16 @@ def transition(
                     db, order, reason=f"订单 {order.order_no} 取消",
                     actor=actor or "system",
                 )
+                if prev == "shipped":
+                    # R3: 发货后又取消 → 冲正出库, 现货退回
+                    from app.services import product_stock_ledger_service as psl
+                    psl.reverse(db, "ship", "order", order.id,
+                                note=f"订单 {order.order_no} 发货后取消, 现货退回")
             elif target == "shipped":
                 fos.ship_factory_orders_for(db, order, actor=actor or "system")
+                # R3: 若该款有备货现货, 发货即扣现货(MTO 款无现货 → 自动 no-op)
+                from app.services import product_stock_ledger_service as psl
+                psl.record_shipment(db, order)
         except Exception as e:  # pragma: no cover
             _logger.exception("订单状态联动失败 (不阻塞状态变更): %s", e)
             # 不静默吞掉: 库存/工厂单联动失败可能导致库存与订单不一致, 记异常待人工核对。

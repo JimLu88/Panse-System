@@ -181,6 +181,31 @@ def reconcile_factory_order(
     return _row(fo)
 
 
+@router.post("/{factory_order_no}/receive-restock")
+def receive_restock_factory_order(
+    factory_order_no: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """备货工厂单到货入库 (R3 生产入库): 设到货日 + 成品现货加回。
+
+    只对「备货单」(非客户单 source_order_id 为空)生效; 客户单(MTO)到货由订单发货处理。
+    幂等: 重复调用不会重复加库存。
+    """
+    from app.services import factory_order_service as fos
+    fo = db.execute(
+        select(FactoryOrder).where(FactoryOrder.factory_order_no == factory_order_no)
+    ).scalar_one_or_none()
+    if fo is None:
+        raise HTTPException(404, "工厂单不存在")
+    if fo.source_order_id is not None:
+        raise HTTPException(400, "这是客户单(MTO), 到货应随订单发货处理, 不作备货入库")
+    fos.mark_restock_delivered(db, fo.id, actor=getattr(user, "username", "system"))
+    db.commit()
+    db.refresh(fo)
+    return _row(fo)
+
+
 @router.post("/sync-from-orders")
 def sync_factory_orders_from_orders(
     db: Session = Depends(get_db),

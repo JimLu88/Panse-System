@@ -260,6 +260,10 @@ def void_factory_order(
     inventory_lock_service.release_factory_order_lock(
         db, fo.id, actor=actor, reason=reason,
     )
+    # R3: 若这张(备货)工厂单曾入库过成品现货, 作废时冲正扣回(非备货单为 no-op)
+    from app.services import product_stock_ledger_service as psl
+    psl.reverse(db, "restock_receipt", "factory_order", fo.id,
+                note=f"工厂单 {fo.factory_order_no} 作废: {reason}")
     return fo
 
 
@@ -285,6 +289,26 @@ def ship_factory_orders_for(
     # 更新 order.last_outbound_at
     order.last_outbound_at = datetime.now(timezone.utc)
     return n
+
+
+def mark_restock_delivered(
+    db: Session, factory_order_id: int, *, actor: str = "system",
+) -> Optional[FactoryOrder]:
+    """备货工厂单(非客户单)到货入库 (R3 生产入库): 设 actual_delivery + 成品现货加回。
+
+    只处理「备货单」(source_order_id 为空); 客户单(MTO)的到货随订单发货
+    (ship_factory_orders_for)处理, 不当可售现货入库。幂等(重复调用不重复加库存)。
+    """
+    fo = db.get(FactoryOrder, factory_order_id)
+    if fo is None or fo.voided_at is not None:
+        return fo
+    if fo.source_order_id is not None:
+        return fo   # 客户单(MTO): 不走备货入库
+    if fo.actual_delivery is None:
+        fo.actual_delivery = date.today()
+    from app.services import product_stock_ledger_service as psl
+    psl.record_restock_receipt(db, fo)
+    return fo
 
 
 # ----------------------------- 远期订单 (业务需求 10) ------------- #
