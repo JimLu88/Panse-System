@@ -280,20 +280,31 @@ def resolve_cost(db: Session, o: Order, txt: Optional[str] = None) -> dict:
 
 
 def _row(db: Session, o: Order, r: dict) -> dict:
+    """定制单核对行。第一阶段统一(用户 2026-07-02): 展示成本 = 「主单核对表」(逐单核对表)口径 ——
+    直接取 order_financials.physical_cost_breakdown(o), 与逐单核对表同一函数、同一个数, 两表天然一致。
+    r(规则链推演)仍用于 auto_backfill 写回 theoretical_cost(主口径的输入之一) + 提供 source 标记。
+    (针对产品/订单的精调——如套常规同尺寸款——放第二阶段, 在这个统一口径上从一处改, 两表同时生效。)"""
+    from app.services import order_financials as ofin
     paid = _d(o.paid_amount) or Decimal("0")
-    cost = r.get("cost")
+    bd = ofin.physical_cost_breakdown(o)          # 主口径: 与逐单核对表同源
+    cost = bd["final"]
+    cap = bd.get("cap_mode") or "none"
+    # 标红: 主口径走 85% 兜底/封顶(粗估) 且未填工厂实报 → 低置信待人工核价
+    low = o.actual_cost is None and cap in ("定制兜底85", "推演封顶85", "片段85", "缺配件85")
     return {
         "order_id": o.id, "order_no": o.order_no,
         "product_name": o.product_name, "product_code": o.product_code,
         "sku": o.sku_code, "qty": o.qty, "status": o.status,
         "paid_amount": float(paid), "remark": remark_text(o),
         "actual_cost": float(o.actual_cost) if o.actual_cost is not None else None,
-        "projected_cost": float(cost) if cost is not None else None,
-        "method": r["method"], "detail": r["detail"], "source": r["source"],
-        "confidence": r.get("confidence", "low"),
-        "is_final": bool(r.get("final")),
-        "projected_margin": float(paid - cost) if cost is not None else None,
-        "needs_review": r.get("confidence") == "low",   # 低置信(85%兜底) → 标红待人工
+        "projected_cost": float(cost),
+        "method": ("工厂成本(已覆盖)" if o.actual_cost is not None else cap),
+        "detail": (bd.get("cap_label") or "逐单核对表商品成本口径"),
+        "source": r.get("source", "breakdown"),
+        "confidence": ("high" if o.actual_cost is not None else ("low" if low else "mid")),
+        "is_final": o.actual_cost is not None,
+        "projected_margin": float(paid - cost),
+        "needs_review": low,
     }
 
 
