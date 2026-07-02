@@ -47,6 +47,7 @@ class ProductInventoryWithStats(ProductInventoryOut):
     safety_stock_computed: float
     reorder_point_computed: float
     days_of_stock: Optional[float]
-    warning_status: str          # ok / warning / danger / critical / excess
+    warning_status: str          # ok / warning / danger / critical / excess / mto(按需生产)
     auto_reorder_qty: float
     slow_moving_days: Optional[int]
+    abc_class: Optional[str] = None   # A=畅销自动备货 / B / C=按需生产(MTO); 只有 A 类给备货建议

@@ -65,8 +65,22 @@ def get_forecast_config(db: Session) -> dict:
             periods = _DEFAULT_PROMO_PERIODS
     except Exception:
         periods = _DEFAULT_PROMO_PERIODS
+    # 备货策略参数 (方向4 ABC分层 + 方向2 服务水平安全库存 + 批量)
+    def _f(key, dflt):
+        try:
+            v = settings_service.get(db, key, env_fallback=False)
+            return float(v) if v not in (None, "") else dflt
+        except (ValueError, TypeError):
+            return dflt
+    service_level = _f("stock_service_level", 0.95)      # 目标服务水平 → 安全库存 Z 值
+    batch_cover_days = _f("stock_batch_cover_days", 30)  # A类每批备货覆盖天数(凑批压价)
+    abc_a_share = _f("stock_abc_a_share", 0.80)          # 累计销量占比 ≤ 此 = A类
+    abc_b_share = _f("stock_abc_b_share", 0.95)          # ≤ 此 = B类, 其余 C类
+    stock_min_daily = _f("stock_min_daily", 0.2)         # A类还需日均≥此才备货(防长尾误入)
     return {"mode": mode, "halflife_days": halflife, "window_days": window,
-            "promo_periods": periods}
+            "promo_periods": periods, "service_level": service_level,
+            "batch_cover_days": batch_cover_days, "abc_a_share": abc_a_share,
+            "abc_b_share": abc_b_share, "stock_min_daily": stock_min_daily}
 
 
 def save_forecast_config(db: Session, cfg: dict) -> dict:
@@ -80,6 +94,9 @@ def save_forecast_config(db: Session, cfg: dict) -> dict:
         settings_service.set_value(db, "daily_sales_window", str(int(cfg["window_days"])))
     if isinstance(cfg.get("promo_periods"), list):
         settings_service.set_value(db, "promo_periods", json.dumps(cfg["promo_periods"], ensure_ascii=False))
+    for k in ("service_level", "batch_cover_days", "abc_a_share", "abc_b_share", "stock_min_daily"):
+        if cfg.get(k) is not None:
+            settings_service.set_value(db, f"stock_{k}" if not k.startswith("stock_") else k, str(cfg[k]))
     return get_forecast_config(db)
 
 
@@ -136,6 +153,7 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
     base_filters = (
         Order.product_code.in_(pc_candidates),
         Order.is_refill == False,  # noqa: E712  补单不算真实销量
+        Order.is_custom == False,  # noqa: E712  定制单不备成品(不能预产), 只算常规订单需求
         Order.order_date >= cutoff,
         Order.status.notin_(["cancelled", "pending_payment"]),
         ~Order.status.like("%关闭%"),
@@ -165,6 +183,81 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
     return round(weighted_sum / denom, 3) if denom else 0.0
 
 
+def _z_for_service_level(p: float) -> float:
+    """目标服务水平 → 正态分位 Z (安全库存用)。常用档位查表, 取最近的一档。"""
+    table = [(0.50, 0.0), (0.80, 0.84), (0.85, 1.04), (0.90, 1.28), (0.93, 1.48),
+             (0.95, 1.65), (0.975, 1.96), (0.98, 2.05), (0.99, 2.33), (0.995, 2.58)]
+    p = min(0.995, max(0.50, float(p)))
+    return min(table, key=lambda t: abs(t[0] - p))[1]
+
+
+def _canon_code(pc: str) -> str:
+    """把品牌变体(PPS/PFG/P…)归并到一个稳定代表码, 供 ABC 聚合/查询一致。"""
+    vs = product_coder.brand_variants(pc) or {pc}
+    return min(vs)
+
+
+def _daily_series(db: Session, product_code: str, cfg: dict) -> list[float]:
+    """窗口内按天发货量序列(缺销当天补0), 用于算日销标准差 σ。"""
+    window = int(cfg.get("window_days") or 60)
+    cutoff = date.today() - timedelta(days=window)
+    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
+    rows = db.execute(
+        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0)).where(
+            Order.product_code.in_(pc_candidates),
+            Order.is_refill == False,  # noqa: E712
+            Order.is_custom == False,  # noqa: E712  定制单不备成品
+            Order.order_date >= cutoff,
+            Order.status.notin_(["cancelled", "pending_payment"]),
+            ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
+            ~Order.status.like("%等待买家付款%"),
+        ).group_by(Order.order_date)
+    ).all()
+    by_day = {d: float(q) for d, q in rows if d is not None}
+    today = date.today()
+    return [by_day.get(today - timedelta(days=i), 0.0) for i in range(window)]
+
+
+def _std(series: list[float]) -> float:
+    n = len(series)
+    if n < 2:
+        return 0.0
+    m = sum(series) / n
+    return (sum((x - m) ** 2 for x in series) / (n - 1)) ** 0.5
+
+
+def compute_abc_map(db: Session, cfg: Optional[dict] = None) -> dict:
+    """按窗口真实销量做 ABC 分层(方向4): 产品按销量降序累计, ≤A线=A / ≤B线=B / 其余=C。
+    只有 A 类进入自动备货。返回 {规范product_code: 'A'|'B'|'C'}。"""
+    if cfg is None:
+        cfg = get_forecast_config(db)
+    window = int(cfg.get("window_days") or 60)
+    cutoff = date.today() - timedelta(days=window)
+    rows = db.execute(
+        select(Order.product_code, func.coalesce(func.sum(Order.qty), 0)).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.is_custom == False,  # noqa: E712  ABC 只按常规订单排(定制不备成品)
+            Order.order_date >= cutoff,
+            Order.status.notin_(["cancelled", "pending_payment"]),
+            ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
+            ~Order.status.like("%等待买家付款%"),
+        ).group_by(Order.product_code)
+    ).all()
+    agg: dict = {}
+    for pc, q in rows:
+        if pc:
+            agg[_canon_code(pc)] = agg.get(_canon_code(pc), 0.0) + float(q)
+    total = sum(agg.values())
+    if total <= 0:
+        return {}
+    a_line, b_line = cfg["abc_a_share"] * total, cfg["abc_b_share"] * total
+    out, cum = {}, 0.0
+    for pc, q in sorted(agg.items(), key=lambda x: x[1], reverse=True):
+        cum += q
+        out[pc] = "A" if cum <= a_line else ("B" if cum <= b_line else "C")
+    return out
+
+
 def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:
     """从工厂订单历史推算中位提前期（天）。只用有完整日期的记录。"""
     rows = db.execute(
@@ -186,39 +279,56 @@ def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:
 def compute_product_stats(
     db: Session,
     inv: ProductInventory,
+    abc_map: Optional[dict] = None,
+    cfg: Optional[dict] = None,
 ) -> dict:
-    """计算单条成品库存的所有推算字段，返回 dict 供 API 序列化或写回数据库。"""
-    daily = _compute_daily_sales(db, inv.product_code, inv.sku)
+    """计算单条成品库存的推算字段(方向4 ABC分层 + 方向2 服务水平安全库存 + 批量备货)。
 
-    # 提前期：优先手动设置值, 其次工厂历史推算 (lead_time 为 None = 二者都无, 前端显示默认值)
+    - ABC: 只有 A 类畅销款自动备货; B/C 类按需生产(MTO), 推荐=0、不报缺货警(缺货是常态)。
+      手动设过 安全库存/预警线 的行视为"要备"→ 无视 ABC 照常备货(留人工兜底口)。
+    - A 类安全库存 = Z(服务水平) × 日销标准差σ × √提前期 (按波动定, 稳的少备、波动大多备);
+      预警线 = 日均×提前期 + 安全库存; 推荐 = 补到(预警线 + 批量), 批量=覆盖N天(凑批压配件价)。
+    """
+    if cfg is None:
+        cfg = get_forecast_config(db)
+    if abc_map is None:
+        abc_map = compute_abc_map(db, cfg)
+    daily = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
+    abc_class = abc_map.get(_canon_code(inv.product_code), "C")
+
     lead_time = inv.lead_time_days
     if lead_time is None:
         lead_time = _compute_lead_time(db, inv.product_code)
-    # 兜底: 既无手填也无工厂历史 → 用一般家具默认提前期参与安全库存/预警线测算
     effective_lead = lead_time if lead_time is not None else _DEFAULT_LEAD_TIME_DAYS
-
     slow_days = inv.slow_moving_days or _DEFAULT_SLOW_MOVING_DAYS
-
-    # 安全库存
-    safety = float(inv.safety_stock or 0)
-    if safety == 0 and effective_lead and daily > 0:
-        safety = effective_lead * daily * 1.5  # 自动推算: 提前期用量 × 1.5
-
-    # 预警线
-    if inv.reorder_point is not None:
-        reorder_pt = float(inv.reorder_point)
-    else:
-        reorder_pt = safety + (effective_lead or 0) * daily
-
     available = float(inv.available_qty)
 
-    # 库存天数 (按日均销量折算)
-    days_of_stock: Optional[float] = None
-    if daily > 0:
-        days_of_stock = round(available / daily, 1)
+    # 是否自动备货: A类畅销 且 日均≥下限; 或人工设过安全库存/预警线(强制备货口)
+    manual = inv.safety_stock is not None or inv.reorder_point is not None
+    do_stock = manual or (abc_class == "A" and daily >= float(cfg.get("stock_min_daily", 0.2)))
 
-    # 警告状态
-    if available <= 0:
+    # 安全库存: 手填优先; 否则 A类=服务水平统计法(Z×σ×√提前期), 非备货类=0
+    safety = float(inv.safety_stock or 0)
+    if inv.safety_stock is None and do_stock:
+        z = _z_for_service_level(cfg.get("service_level", 0.95))
+        sigma = _std(_daily_series(db, inv.product_code, cfg))
+        safety = round(z * sigma * (effective_lead ** 0.5), 2)
+
+    # 预警线: 手填优先; 否则 A类=日均×提前期+安全库存; 非备货类=0(不报缺货)
+    if inv.reorder_point is not None:
+        reorder_pt = float(inv.reorder_point)
+    elif do_stock:
+        reorder_pt = round(effective_lead * daily + safety, 2)
+    else:
+        reorder_pt = 0.0
+
+    days_of_stock: Optional[float] = round(available / daily, 1) if daily > 0 else None
+
+    # 警告状态: 非备货(MTO)类缺货是常态不报警, 只标 滞销/按需
+    if not do_stock:
+        status = "excess" if (days_of_stock is not None and available > 0
+                              and days_of_stock > slow_days) else "mto"
+    elif available <= 0:
         status = "critical"
     elif reorder_pt > 0 and available < reorder_pt:
         status = "danger"
@@ -229,8 +339,11 @@ def compute_product_stats(
     else:
         status = "ok"
 
-    # 推荐备货量
-    auto_reorder = max(0.0, reorder_pt * 2 - available) if reorder_pt > 0 else 0.0
+    # 推荐备货: 只有备货类且低于预警线才补; 补到 目标位=预警线+批量(覆盖N天, 凑批压价)
+    auto_reorder = 0.0
+    if do_stock and reorder_pt > 0 and available < reorder_pt:
+        batch = float(cfg.get("batch_cover_days", 30)) * daily
+        auto_reorder = max(0.0, (reorder_pt + batch) - available)
 
     return {
         "daily_sales_30d": daily,
@@ -242,22 +355,24 @@ def compute_product_stats(
         "warning_status": status,
         "auto_reorder_qty": round(auto_reorder, 0),
         "slow_moving_days": slow_days,
+        "abc_class": abc_class,
     }
 
 
 def refresh_all_inventory(db: Session) -> int:
-    """批量把推算出的提前期/安全库存/预警线写回 ProductInventory 表。幂等。"""
+    """批量刷新推算字段。幂等。
+
+    ⚠只回填 lead_time_days(稳定, 便于展示); **不再自动回填 安全库存/预警线** ——
+    这两者现按 ABC+服务水平动态算, 自动写库会被误判成"人工设置"从而绕过 ABC 分层。
+    """
+    cfg = get_forecast_config(db)
+    abc_map = compute_abc_map(db, cfg)
     rows = db.execute(select(ProductInventory)).scalars().all()
     updated = 0
     for inv in rows:
-        stats = compute_product_stats(db, inv)
-        # 只回填「未手动设置」的字段
+        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg)
         if inv.lead_time_days is None and stats["lead_time_days_computed"] is not None:
             inv.lead_time_days = stats["lead_time_days_computed"]
-        if inv.safety_stock is None and stats["safety_stock_computed"] > 0:
-            inv.safety_stock = _D(str(stats["safety_stock_computed"]))
-        if inv.reorder_point is None and stats["reorder_point_computed"] > 0:
-            inv.reorder_point = _D(str(stats["reorder_point_computed"]))
         updated += 1
     db.flush()
     return updated

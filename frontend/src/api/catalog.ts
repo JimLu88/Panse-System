@@ -470,8 +470,9 @@ export interface ProductInventoryRow {
   safety_stock_computed: number;
   reorder_point_computed: number;
   days_of_stock: number | null;
-  warning_status: 'ok' | 'warning' | 'danger' | 'critical' | 'excess';
+  warning_status: 'ok' | 'warning' | 'danger' | 'critical' | 'excess' | 'mto';
   auto_reorder_qty: number;
+  abc_class?: 'A' | 'B' | 'C' | null;   // A=畅销备货 / B / C=按需生产(MTO)
 }
 
 export const listProductInventory = (warningOnly = false, includeAll = false) =>

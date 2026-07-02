@@ -118,6 +118,7 @@ const STATUS_CONFIG: Record<string, { color: string; label: string }> = {
   danger:   { color: 'error',   label: '低于预警线' },
   critical: { color: 'error',   label: '库存告急' },
   excess:   { color: 'default', label: '滞销/超量' },
+  mto:      { color: 'processing', label: '按需生产' },   // 定制/长尾: 接单再产, 不备成品
 };
 
 export default function ProductInventoryPage() {
@@ -196,6 +197,20 @@ export default function ProductInventoryPage() {
       },
     },
     {
+      title: (
+        <Tooltip title="ABC 分层(按常规订单销量): A=畅销款→自动备货; B/C=按需生产(MTO), 不备成品。定制单不计入。">
+          备货分类
+        </Tooltip>
+      ),
+      dataIndex: 'abc_class',
+      width: 92,
+      render: (c: string | null) => {
+        if (c === 'A') return <Tag color="green">A·备货</Tag>;
+        if (c === 'B') return <Tag color="blue">B</Tag>;
+        return <Tag color="default">{c === 'C' ? 'C·按需' : '按需'}</Tag>;
+      },
+    },
+    {
       title: '现货 / 可用',
       width: 110,
       render: (_: any, r: ProductInventoryRow) => (
@@ -262,7 +277,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="建议补货量 = 预警线×2 − 当前可用量">推荐备货</Tooltip>
+        <Tooltip title="只有 A 类畅销款(按常规订单)自动备货: 补到「预警线 + 批量」。预警线 = 日均×提前期 + 安全库存(=Z(服务水平95%)×日销波动×√提前期); 批量 = 覆盖30天(凑批好压配件价)。B/C 类 = 按需生产(0)。定制单不备成品。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
       width: 90,
@@ -305,12 +320,14 @@ export default function ProductInventoryPage() {
     },
   ];
 
-  const warningCount = data?.filter(r => r.warning_status !== 'ok').length ?? 0;
+  // 「需关注」不含 正常(ok) 和 按需生产(mto: 定制/长尾, 缺货是常态, 不报警)
+  const _calm = (s: string) => s === 'ok' || s === 'mto';
+  const warningCount = data?.filter(r => !_calm(r.warning_status)).length ?? 0;
 
-  // 三类: ① 需预警(全显示) ② 已建库存但不预警(折叠) ③ 还没建库存行的产品(折叠)
+  // 三类: ① 需预警(全显示) ② 已建库存但不预警/按需(折叠) ③ 还没建库存行的产品(折叠)
   const rows = data ?? [];
-  const alertRows = rows.filter((r) => r.warning_status !== 'ok');
-  const normalRows = rows.filter((r) => r.has_inventory !== false && r.warning_status === 'ok');
+  const alertRows = rows.filter((r) => !_calm(r.warning_status));
+  const normalRows = rows.filter((r) => r.has_inventory !== false && _calm(r.warning_status));
   const noInvRows = rows.filter((r) => r.has_inventory === false);
 
   const renderInvTable = (list: ProductInventoryRow[], paginate: boolean) => (
@@ -369,6 +386,22 @@ export default function ProductInventoryPage() {
           message={`${warningCount} 个 SKU 库存状态需关注（低于预警线、告急或滞销）`}
         />
       )}
+
+      <Alert
+        type="info"
+        showIcon
+        message="成品备货只按「常规订单」算 · 定制单不备成品"
+        description={
+          <>
+            这里的推荐备货<b>只统计常规订单</b>(定制单接单后才生产、无法预先备成品, 已从日均销量与 ABC 里剔除)。
+            按 <b>ABC 分层</b>: 只有 <b>A 类畅销款</b>自动备货(补到「预警线 + 30 天批量」, 便于凑批压配件价);
+            B/C 类 = <b>按需生产</b>, 不备成品。安全库存按「服务水平 95% × 日销波动」定, 不再是一刀切的倍数。
+            <br />
+            👉 <b>定制单的备货</b>(有些料通用、可提前囤): 见「销售 → 备货建议」里的<b>定制通用料计划</b>。
+          </>
+        }
+      />
+
 
       <Segmented
         value={viewMode}
