@@ -810,8 +810,8 @@ def per_order_reconcile(
         paid = float(o.paid_amount or 0)
         refund = float(o.refund_amount or 0)
         revenue = paid - refund
-        b = _ofin.cost_breakdown(o, coef, Decimal("0"))   # 售后改逐单口径, 不用人均均摊
-        pb = _ofin.physical_cost_breakdown(o)             # 物理成本加法拆解 (导出逐项公式回推用)
+        b = _ofin.cost_breakdown(o, coef, Decimal("0"), db=db)   # 售后逐单口径; db→定制套常规款
+        pb = _ofin.physical_cost_breakdown(o, db)               # 物理成本加法拆解; db→定制套常规款
         goods = float(b["physical"]); freight = float(b["freight"]); install = float(b["install_upstairs"])
         platform = float(b["platform"]); tax = float(b["tax"])
         aftersales = float(as_by_order.get(o.order_no, 0))

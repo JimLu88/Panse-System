@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -172,6 +173,112 @@ def _custom_estimate_cost(db: Session, order: Order) -> Optional[Decimal]:
         return None
     avg = sum((Decimal(str(v)) for v in vals), Decimal("0")) / Decimal(len(vals))
     return avg.quantize(_CENTS)
+
+
+# ── 定制单套常规同尺寸款 (第二阶段, 用户拍板 2026-07-02): 尺寸对标 + 全套护栏 ─────────────
+# 仅限岩板餐桌系列 (用户 2026-07-02: 其他产品不套); 白名单可在 system_settings 配 regular_size_product_codes。
+_REGULAR_SIZE_CODES_KEY = "regular_size_product_codes"
+# 用户 2026-07-02: 优先仅 PPS24210070901(榉木岩板餐桌)上线; 其他岩板餐桌系列(PPS24210050510/
+# PFG26210060102 等)验证无误后再在 system_settings 的 regular_size_product_codes 里逗号追加扩展。
+_REGULAR_SIZE_CODES_DEFAULT = "PPS24210070901"
+
+
+def _regular_size_whitelist(db: Session) -> set:
+    """套常规款生效的 product_code 白名单 (默认岩板餐桌 3 个系列; 后台可改)。"""
+    from app.services import settings_service
+    raw = settings_service.get(db, _REGULAR_SIZE_CODES_KEY, env_fallback=False) or _REGULAR_SIZE_CODES_DEFAULT
+    return {c.strip() for c in raw.split(",") if c.strip()}
+
+
+_LEN_RES = [
+    re.compile(r"(\d\.\d{1,2})\s*[×xX*]"),          # 小数米×: 1.35*0.6 / 1.6*0.75 → 长边 1.35米
+    re.compile(r"(\d(?:\.\d{1,2})?)\s*米"),         # 1.8米 / 1米
+    re.compile(r"(\d{3,4})\s*[×xX*]\s*\d{2,4}"),   # 整数×: 1800×750 / 140×80 → 取长边
+    re.compile(r"(\d{3,4})\s*mm"),                  # 1800mm
+    re.compile(r"(\d{3})\s*cm"),                    # 180cm
+]
+_MULTI_KW = ("本单含", "含2个商品", "含两个商品", "含3个商品", "含多个商品")  # 多商品单 → 不套
+_DONGSHI_KW = "洞石"                                # 洞石岩板 → 常规款(白岩板)基础上 +加价
+_DONGSHI_SURCHARGE = Decimal("300")                 # 洞石岩板配件加价 (用户拍板 2026-07-02)
+_SIZE_FRAGMENT_RATIO = Decimal("0.70")              # 片段护栏: 实付 < 匹配常规款physical×70% → 判片段, 不套
+
+
+def _parse_length_cm(txt: Optional[str]) -> Optional[int]:
+    """长度归一到厘米整数: 1800(mm)/1.8米/180cm/1800×750 → 180。取长边(第一个数); 取不到 → None。"""
+    if not txt:
+        return None
+    for p in _LEN_RES:
+        m = p.search(txt)
+        if not m:
+            continue
+        v = float(m.group(1))
+        if v >= 1000:            # mm
+            return int(round(v / 10))
+        if v < 10:               # 米
+            return int(round(v * 100))
+        if 100 <= v < 1000:      # cm
+            return int(round(v))
+    return None
+
+
+def _regular_physical_map(db: Session, product_code: Optional[str]) -> dict:
+    """该产品【常规款】(非定制SKU, physical_cost 非空) 的 {长度cm: 最小 physical_cost}。"""
+    d: dict = {}
+    if not product_code:
+        return d
+    for ps in db.execute(select(PricingSku).where(PricingSku.product_code == product_code)).scalars():
+        if sku_utils.is_custom_sku_code(ps.sku_code) or not ps.physical_cost or ps.physical_cost <= 0:
+            continue   # 跳过定制款 / physical≤0(如中古岩板餐桌未维护成本)
+        L = _parse_length_cm(ps.sku)
+        if L is None:
+            continue
+        v = Decimal(str(ps.physical_cost))
+        if L not in d or v < d[L]:
+            d[L] = v
+    return d
+
+
+def regular_size_cost(db: Session, order: Order) -> tuple[Optional[Decimal], str]:
+    """定制单套常规同尺寸款成本 (带全部护栏)。返回 (cost, kind):
+      cost=Decimal → 套用成功; cost=None → 不套(回落), kind 给原因(供缺尺寸异常/诊断)。
+
+    优先级/护栏 (用户拍板 2026-07-02):
+      not_custom  非定制单 → 不处理
+      multi       多商品单("本单含N个商品") → 不套(走多商品逻辑)
+      no_regular  该产品无常规款系列 → 不套
+      missing_size 完整单(实付达标)但解析不出尺寸 → 不套, 标「缺尺寸」提示人工补
+      fragment    片段/差价: 无尺寸小额, 或 实付 < 匹配常规physical×70% → 不套(维持封顶)
+      oversize    尺寸 > 最大常规款 → 不套(回落)
+      regular / regular_upsize (+_dongshi)  标准尺寸=直接套; 非标=向上取≥的最小常规款; 洞石+300
+    """
+    if not (order.is_custom or sku_utils.is_custom_sku_code(order.sku_code, order.product_code)):
+        return None, "not_custom"
+    if order.product_code not in _regular_size_whitelist(db):
+        return None, "not_applicable"   # 仅限岩板餐桌白名单; 其他产品不套 (用户 2026-07-02)
+    remark = order.remark or ""
+    if any(k in remark for k in _MULTI_KW):
+        return None, "multi"
+    regs = _regular_physical_map(db, order.product_code)
+    if not regs:
+        return None, "no_regular"
+    paid = Decimal(str(order.paid_amount or 0))
+    length = _parse_length_cm(f"{order.sku or ''} {remark}")
+    if length is None:
+        # 无尺寸: 完整单(实付≥最小常规×70%)→缺尺寸提示; 否则小额→片段
+        return None, ("missing_size" if paid >= min(regs.values()) * _SIZE_FRAGMENT_RATIO else "fragment")
+    if length in regs:
+        base, kind = regs[length], "regular"
+    else:
+        ups = sorted((l, p) for l, p in regs.items() if l >= length)
+        if not ups:
+            return None, "oversize"
+        base, kind = ups[0][1], "regular_upsize"
+    if _DONGSHI_KW in remark:
+        base = base + _DONGSHI_SURCHARGE
+        kind += "_dongshi"
+    if paid < base * _SIZE_FRAGMENT_RATIO:   # 片段护栏: 实付远小于套用成本 → 判片段
+        return None, "fragment"
+    return base.quantize(_CENTS), kind
 
 
 def compute(db: Session, order: Order) -> CostBreakdown:

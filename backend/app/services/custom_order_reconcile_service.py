@@ -286,7 +286,7 @@ def _row(db: Session, o: Order, r: dict) -> dict:
     (针对产品/订单的精调——如套常规同尺寸款——放第二阶段, 在这个统一口径上从一处改, 两表同时生效。)"""
     from app.services import order_financials as ofin
     paid = _d(o.paid_amount) or Decimal("0")
-    bd = ofin.physical_cost_breakdown(o)          # 主口径: 与逐单核对表同源
+    bd = ofin.physical_cost_breakdown(o, db)      # 主口径(与逐单核对表同源); db→定制套常规款(第二阶段)
     cost = bd["final"]
     cap = bd.get("cap_mode") or "none"
     # 标红: 主口径走 85% 兜底/封顶(粗估) 且未填工厂实报 → 低置信待人工核价

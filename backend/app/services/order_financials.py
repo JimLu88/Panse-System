@@ -149,7 +149,7 @@ def aftersales_avg(db: Session) -> Decimal:
     return (total / cnt).quantize(Decimal("0.01")) if cnt else Decimal("0")
 
 
-def physical_cost_breakdown(o: Order) -> dict:
+def physical_cost_breakdown(o: Order, db=None) -> dict:
     """物理产品成本(商品成本)的加法拆解 + 封顶 —— 供逐单核对导出逐项公式回推。physical_cost() 复用本函数。
 
     返回:
@@ -247,6 +247,16 @@ def physical_cost_breakdown(o: Order) -> dict:
             precap = factory_wood + estimate_part + packing
             cost = precap
     else:
+        # 套常规同尺寸款 (第二阶段, 用户拍板 2026-07-02): db 提供 + 定制单 + 过全部护栏 → 直接用常规款
+        # physical(完整物理成本), 不叠 est_ 也不 floor。护栏(多商品/片段/缺尺寸/超大)在 regular_size_cost
+        # 内部判, 不命中(cost=None)则落下面原逻辑(theoretical+est+floor)。db=None(其余调用点)保持旧口径不变。
+        if db is not None and _is_custom:
+            from app.services.order_cost_service import regular_size_cost
+            _rc, _kind = regular_size_cost(db, o)
+            if _rc is not None:
+                return {"factory_wood": Decimal("0"), "estimate_part": _rc, "packing": Decimal("0"),
+                        "precap_total": _rc, "cap_mode": "套常规同尺寸款",
+                        "cap_label": "定制尺寸→常规款physical(%s)" % _kind, "final": _rc}
         factory_wood = Decimal("0")
         estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装/打包预估)
         if not _is_custom:
@@ -283,13 +293,14 @@ def physical_cost_breakdown(o: Order) -> dict:
     }
 
 
-def physical_cost(o: Order) -> Decimal:
+def physical_cost(o: Order, db=None) -> Decimal:
     """物理产品成本 = 工厂实报成本优先, 否则系统推算 (含木作/打包/外采配件)。
 
     实现委托 physical_cost_breakdown(o)["final"](单一真源, 同时供导出逐项公式回推)。口径:
     非木作补回(工厂账单只含木作→按定价表补配件/物流/安装) / 定制单缺配件→实付×85% /
-    推演成本>实付→实付×85% / 定金片段(实付<成本×50%)→实付×85%。详见 physical_cost_breakdown。"""
-    return physical_cost_breakdown(o)["final"]
+    推演成本>实付→实付×85% / 定金片段(实付<成本×50%)→实付×85%。详见 physical_cost_breakdown。
+    db 传入: 定制单套常规同尺寸款(第二阶段); db=None 保持旧口径(其余调用点不受影响)。"""
+    return physical_cost_breakdown(o, db)["final"]
 
 
 def platform_deduction(o: Order, coef: dict) -> Decimal:
@@ -326,12 +337,13 @@ def order_tax(o: Order, coef: dict) -> Decimal:
 
 
 def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
-                   aftersales: "Decimal | None" = None) -> dict:
+                   aftersales: "Decimal | None" = None, db=None) -> dict:
     """会计总成本逐项明细 (供页面"说明里列明细")。
-    aftersales 显式传入(按订单归属, 退款外额外售后)时直接用它; 否则回退 本单冗余列→人均均摊(旧)。"""
+    aftersales 显式传入(按订单归属, 退款外额外售后)时直接用它; 否则回退 本单冗余列→人均均摊(旧)。
+    db 传入: 商品成本走"定制套常规款"口径(第二阶段); db=None 保持旧口径。"""
     from app.services import sku_utils
     paid = _d(o.paid_amount)
-    phys = physical_cost(o)
+    phys = physical_cost(o, db)
     # 双算护栏(2026-06-20): theoretical_cost(=定价表物理总成本)已内含预测物流+安装;
     # 用 theoretical 的单不再单独加运费/安装行(否则双算)。
     # 已补非木作的工厂账单单(wood_cost_est 非空): physical_cost 已用 theoretical 的非木作部分
