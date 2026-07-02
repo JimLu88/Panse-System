@@ -618,10 +618,21 @@ def _record_conflict(db, binding, ent, fm, pk, sys_row, fe_rec, sys_vals, fe_val
 
 def sync_all(db: Session) -> list[SyncResult]:
     out = []
-    for b in db.execute(
+    # 先物化绑定列表, 再逐表同步——每张表同步完立即 commit(隔离事务); 单表出错 rollback 跳过,
+    # 不让一张表的 DB 错误(InFailedSqlTransaction)污染后面所有表(否则整轮同步全废、30分钟任务反复重叠)。
+    bindings = db.execute(
         select(FeishuTableBinding).where(FeishuTableBinding.enabled.is_(True))
-    ).scalars():
-        out.append(sync_binding(db, b))
+    ).scalars().all()
+    for b in bindings:
+        try:
+            res = sync_binding(db, b)
+            db.commit()
+        except Exception as e:                 # noqa: BLE001 —— 单表任何异常都不许拖垮整轮
+            db.rollback()
+            res = SyncResult(system_table=b.system_table)
+            res.errors.append(f"同步异常(已回滚跳过): {e}")
+            _logger.exception("飞书同步[%s] 异常, 已回滚并跳过该表", b.system_table)
+        out.append(res)
     return out
 
 
