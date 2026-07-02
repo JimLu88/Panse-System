@@ -200,6 +200,14 @@ class _FakeFeishu:
     def delete_record(self, db, app_token, table_id, record_id):
         self.records.pop(record_id, None)
 
+    def batch_create_records(self, db, app_token, table_id, records_fields):
+        return [self.create_record(db, app_token, table_id, f) for f in records_fields]
+
+    def batch_update_records(self, db, app_token, table_id, updates):
+        for u in updates:
+            self.update_record(db, app_token, table_id, u["record_id"], u["fields"])
+        return []
+
 
 @pytest.fixture()
 def fake_feishu(monkeypatch):
@@ -211,6 +219,8 @@ def fake_feishu(monkeypatch):
     monkeypatch.setattr(feishu_sync_service.feishu_client, "create_record", fake.create_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "update_record", fake.update_record)
     monkeypatch.setattr(feishu_sync_service.feishu_client, "delete_record", fake.delete_record)
+    monkeypatch.setattr(feishu_sync_service.feishu_client, "batch_create_records", fake.batch_create_records)
+    monkeypatch.setattr(feishu_sync_service.feishu_client, "batch_update_records", fake.batch_update_records)
     return fake
 
 

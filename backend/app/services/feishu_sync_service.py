@@ -425,24 +425,22 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
     total = len(all_pks)
     if progress_cb:
         progress_cb(0, total)
+    batch: dict = {"create": [], "update": []}   # 决策阶段只收集新建/更新, 循环后一次性批量推
     for i, pk in enumerate(all_pks, 1):
         try:
             _sync_one(db, binding, ent, fm, fields, pk, sys_rows.get(pk),
                       fe_by_pk.get(pk), maps.get(pk), can_push, can_pull, first_sync, res,
-                      primary_fe)
+                      primary_fe, batch)
         except feishu_client.FeishuError as e:
             res.errors.append(f"{pk}: {e}")
             _logger.error("飞书同步[%s] 记录 %s 失败: %s", binding.system_table, pk, e)
         except Exception as e:  # pragma: no cover
             res.errors.append(f"{pk}: {type(e).__name__}: {e}")
             _logger.exception("飞书同步[%s] 记录 %s 异常", binding.system_table, pk)
-        # 每 25 条 (或最后一条) 更新一次进度 + 记日志, 让大表也能看到在走
-        if progress_cb and (i % 25 == 0 or i == total):
+        if progress_cb and (i % 500 == 0 or i == total):
             progress_cb(i, total)
-        if i % 50 == 0 or i == total:
-            _logger.info("飞书同步[%s] 进度 %d/%d (推%d 拉%d 新建飞书%d 错误%d)",
-                         binding.system_table, i, total,
-                         res.pushed, res.pulled, res.created_feishu, len(res.errors))
+    # 批量推送 (飞书 batch API, 每批 500 条, 比逐条快~100倍): 把决策阶段收集的新建/更新一次性刷出
+    _flush_push_batch(db, binding, res, batch)
     db.flush()
     if res.errors:
         _logger.warning("飞书同步[%s] 完成但有 %d 个错误: %s",
@@ -486,21 +484,56 @@ def _upsert_map(db: Session, binding, pk: str, sys_hash: str, fe_hash: str,
     db.execute(stmt)
 
 
+def _flush_push_batch(db, binding, res: "SyncResult", batch: dict) -> None:
+    """把决策阶段收集的新建/更新, 用飞书批量接口一次性推送(每批≤500), 再落映射。
+    新建按返回 record_id 顺序对齐建映射; 更新成功后刷映射 hash。失败记 res.errors, 下轮重试。"""
+    creates = batch.get("create") or []
+    updates = batch.get("update") or []
+    if creates:
+        rec_ids = feishu_client.batch_create_records(
+            db, binding.feishu_app_token, binding.feishu_table_id,
+            [f for (_pk, f, _h) in creates])
+        for (pk, _f, sys_hash), rid in zip(creates, rec_ids):
+            if not rid:
+                res.errors.append(f"{pk}: 批量新建飞书记录失败")
+                continue
+            _upsert_map(db, binding, pk, sys_hash, sys_hash, rid)
+            res.created_feishu += 1
+        _logger.info("飞书同步[%s] 批量新建 %d/%d 条", binding.system_table,
+                     res.created_feishu, len(creates))
+    if updates:
+        failed = set(feishu_client.batch_update_records(
+            db, binding.feishu_app_token, binding.feishu_table_id,
+            [{"record_id": rid, "fields": f} for (_pk, rid, f, _h, _m) in updates]))
+        now = datetime.now(timezone.utc)
+        for (pk, rid, _f, sys_hash, m) in updates:
+            if rid in failed:
+                res.errors.append(f"{pk}: 批量更新飞书记录失败")
+                continue
+            if m is not None:
+                m.system_hash = sys_hash
+                m.feishu_hash = sys_hash
+                m.last_sync_at = now
+            else:
+                _upsert_map(db, binding, pk, sys_hash, sys_hash, rid)
+            res.pushed += 1
+        _logger.info("飞书同步[%s] 批量更新 %d/%d 条", binding.system_table,
+                     res.pushed, len(updates))
+
+
 def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
               can_push, can_pull, first_sync, res: SyncResult,
-              primary_fe: Optional[str] = None) -> None:
+              primary_fe: Optional[str] = None, batch: Optional[dict] = None) -> None:
     pk_feishu = fm[ent.pk_attr]
+    if batch is None:                       # sync_binding 恒传 batch; 此兜底仅防直调时 AttributeError
+        batch = {"create": [], "update": []}
 
-    # a) 仅系统有 → push 新建到飞书
+    # a) 仅系统有 → push 新建到飞书 (只收集, 由 _flush_push_batch 批量建, 快~100倍)
     if sys_row is not None and fe_rec is None:
         if not can_push:
             return
-        rec_id = feishu_client.create_record(
-            db, binding.feishu_app_token, binding.feishu_table_id,
-            _to_feishu_fields(sys_row, fm, primary_fe))
         sys_hash = _hash(_system_values(sys_row, fields))
-        _upsert_map(db, binding, pk, sys_hash, sys_hash, rec_id)
-        res.created_feishu += 1
+        batch["create"].append((pk, _to_feishu_fields(sys_row, fm, primary_fe), sys_hash))
         return
 
     # b) 仅飞书有 → pull 新建到系统
@@ -531,12 +564,9 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         if sys_hash == fe_hash:
             _upsert_map(db, binding, pk, sys_hash, fe_hash, fe_rec["record_id"])
         elif first_sync and can_push:
-            # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突
-            feishu_client.update_record(
-                db, binding.feishu_app_token, binding.feishu_table_id,
-                fe_rec["record_id"], _to_feishu_fields(sys_row, fm, primary_fe))
-            _upsert_map(db, binding, pk, sys_hash, sys_hash, fe_rec["record_id"])
-            res.pushed += 1
+            # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突 (收集, 批量更新)
+            batch["update"].append(
+                (pk, fe_rec["record_id"], _to_feishu_fields(sys_row, fm, primary_fe), sys_hash, None))
         else:
             _record_conflict(db, binding, ent, fm, pk, sys_row, fe_rec, sys_vals, fe_vals)
             _upsert_map(db, binding, pk, sys_hash, fe_hash, fe_rec["record_id"])
@@ -552,12 +582,9 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         res.conflicts += 1
         return
     if sys_changed and can_push:
-        feishu_client.update_record(db, binding.feishu_app_token, binding.feishu_table_id,
-                                    m.feishu_record_id, _to_feishu_fields(sys_row, fm, primary_fe))
-        m.system_hash = sys_hash
-        m.feishu_hash = sys_hash
-        m.last_sync_at = datetime.now(timezone.utc)
-        res.pushed += 1
+        # 收集, 批量更新; 成功后由 _flush_push_batch 更新映射 hash + pushed 计数
+        batch["update"].append(
+            (pk, m.feishu_record_id, _to_feishu_fields(sys_row, fm, primary_fe), sys_hash, m))
     elif fe_changed and can_pull:
         # 飞书侧人工修改拉回 → 统一编辑历史档案 (来源标"飞书修改")
         from app.services import field_change_service

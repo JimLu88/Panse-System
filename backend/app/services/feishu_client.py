@@ -244,6 +244,65 @@ def delete_record(db: Session, app_token: str, table_id: str, record_id: str) ->
     _req(db, "DELETE", url)
 
 
+def batch_create_records(db: Session, app_token: str, table_id: str,
+                         records_fields: list[dict]) -> list[str]:
+    """批量新建记录 (每次最多 500 条, 自动分批, 比逐条快~100倍)。
+
+    调用: POST /bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create
+    body: {"records": [{"fields": {...}}, ...]}
+    返回新建记录的 record_id 列表, **与输入顺序一一对应**(某条降级失败 → 该位置为 "")。
+    整批失败(或返回数量对不上)→ 降级逐条创建, 一条坏不拖累其余条。
+    """
+    out: list[str] = []
+    if not records_fields:
+        return out
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_create"
+    for i in range(0, len(records_fields), 500):
+        chunk = records_fields[i:i + 500]
+        try:
+            data = _req(db, "POST", url, json={"records": [{"fields": f} for f in chunk]})
+            ids = [(rec or {}).get("record_id", "") for rec in (data.get("records") or [])]
+            if len(ids) == len(chunk):
+                out.extend(ids)
+                continue
+            _logger.warning("飞书 batch_create 返回数量(%d)与输入(%d)不符, 降级逐条", len(ids), len(chunk))
+        except FeishuError as e:
+            _logger.warning("飞书 batch_create 整批失败, 降级逐条: %s", e)
+        for f in chunk:
+            try:
+                out.append(create_record(db, app_token, table_id, f))
+            except FeishuError as e:
+                _logger.error("飞书 单条 create 失败(跳过): %s", e)
+                out.append("")
+    return out
+
+
+def batch_update_records(db: Session, app_token: str, table_id: str,
+                         updates: list[dict]) -> list[str]:
+    """批量更新记录 (每次最多 500 条, 自动分批)。updates=[{"record_id":.., "fields":{...}}, ...]。
+    返回**更新失败**的 record_id 列表(调用方据此跳过对应映射更新, 下轮重试)。
+    整批失败 → 降级逐条更新。
+    """
+    failed: list[str] = []
+    if not updates:
+        return failed
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/records/batch_update"
+    for i in range(0, len(updates), 500):
+        chunk = updates[i:i + 500]
+        try:
+            _req(db, "POST", url, json={"records": chunk})
+            continue
+        except FeishuError as e:
+            _logger.warning("飞书 batch_update 整批失败, 降级逐条: %s", e)
+        for u in chunk:
+            try:
+                update_record(db, app_token, table_id, u["record_id"], u["fields"])
+            except FeishuError as e:
+                _logger.error("飞书 单条 update 失败(跳过): %s", e)
+                failed.append(u["record_id"])
+    return failed
+
+
 # 飞书业务错误码
 ERR_RECORD_NOT_FOUND = 1254043   # RecordIdNotFound: 要删的记录已不存在
 ERR_TABLE_NOT_FOUND = 1254041    # TableIdNotFound: 表已不存在 (绑定失效)
