@@ -212,13 +212,20 @@ export default function ProductInventoryPage() {
     },
     {
       title: '现货 / 可用',
-      width: 110,
+      width: 118,
       render: (_: any, r: ProductInventoryRow) => (
         <Space direction="vertical" size={0}>
           <span>现货 {Number(r.physical_qty).toFixed(0)}</span>
           <Typography.Text type={r.available_qty < 0 ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
             可用 {r.available_qty.toFixed(0)}
           </Typography.Text>
+          {(r.in_production ?? 0) > 0 && (
+            <Tooltip title="已下工厂、还没到货的量。推荐备货已把它扣掉, 不用重复下单。">
+              <Typography.Text style={{ fontSize: 12, color: '#1677ff' }}>
+                在产 {Number(r.in_production).toFixed(0)}
+              </Typography.Text>
+            </Tooltip>
+          )}
         </Space>
       ),
     },
@@ -277,7 +284,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="只有 A 类畅销款(按常规订单)自动备货: 补到「预警线 + 批量」。预警线 = 日均×提前期 + 安全库存(=Z(服务水平95%)×日销波动×√提前期); 批量 = 覆盖30天(凑批好压配件价)。B/C 类 = 按需生产(0)。定制单不备成品。">推荐备货</Tooltip>
+        <Tooltip title="只有 A 类畅销款(按常规订单)自动备货: 补到「预警线 + 批量」再扣掉「在产/在途」。预警线 = 日均×提前期 + 安全库存(=Z(服务水平95%)×日销波动×√提前期); 批量 = 覆盖30天(凑批好压配件价); 在产/在途 = 已下工厂还没到货的量, 先扣掉避免重复下单。B/C 类 = 按需生产(0)。定制单不备成品。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
       width: 90,

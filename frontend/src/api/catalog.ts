@@ -473,6 +473,7 @@ export interface ProductInventoryRow {
   warning_status: 'ok' | 'warning' | 'danger' | 'critical' | 'excess' | 'mto';
   auto_reorder_qty: number;
   abc_class?: 'A' | 'B' | 'C' | null;   // A=畅销备货 / B / C=按需生产(MTO)
+  in_production?: number | null;        // R1 在产/在途(已下工厂未到货), 推荐备货已先扣掉
 }
 
 export const listProductInventory = (warningOnly = false, includeAll = false) =>

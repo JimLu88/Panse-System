@@ -258,6 +258,26 @@ def compute_abc_map(db: Session, cfg: Optional[dict] = None) -> dict:
     return out
 
 
+def compute_in_production_map(db: Session) -> dict:
+    """在产/在途量(已下工厂、未到货 actual_delivery 空、未作废)按规范产品码归集。
+
+    R1(ATP): 成品「推荐备货」要先扣掉在产——已经在做的量很快入库, 再下单就是重复备货。
+    与备货建议 sales_analytics._in_production_by_product 同口径。
+    """
+    rows = db.execute(
+        select(FactoryOrder.product_code, func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
+            FactoryOrder.actual_delivery.is_(None),   # 未到货 = 在产/在途
+            FactoryOrder.voided_at.is_(None),          # 未作废
+            FactoryOrder.product_code.isnot(None),
+        ).group_by(FactoryOrder.product_code)
+    ).all()
+    out: dict = {}
+    for pc, qty in rows:
+        if pc:
+            out[_canon_code(pc)] = out.get(_canon_code(pc), 0.0) + float(qty or 0)
+    return out
+
+
 def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:
     """从工厂订单历史推算中位提前期（天）。只用有完整日期的记录。"""
     rows = db.execute(
@@ -281,6 +301,7 @@ def compute_product_stats(
     inv: ProductInventory,
     abc_map: Optional[dict] = None,
     cfg: Optional[dict] = None,
+    in_production_map: Optional[dict] = None,
 ) -> dict:
     """计算单条成品库存的推算字段(方向4 ABC分层 + 方向2 服务水平安全库存 + 批量备货)。
 
@@ -288,13 +309,17 @@ def compute_product_stats(
       手动设过 安全库存/预警线 的行视为"要备"→ 无视 ABC 照常备货(留人工兜底口)。
     - A 类安全库存 = Z(服务水平) × 日销标准差σ × √提前期 (按波动定, 稳的少备、波动大多备);
       预警线 = 日均×提前期 + 安全库存; 推荐 = 补到(预警线 + 批量), 批量=覆盖N天(凑批压配件价)。
+    - R1(ATP): 推荐备货再扣掉「在产/在途」(已下工厂未到货), 避免对在做的量重复下单。
     """
     if cfg is None:
         cfg = get_forecast_config(db)
     if abc_map is None:
         abc_map = compute_abc_map(db, cfg)
+    if in_production_map is None:
+        in_production_map = compute_in_production_map(db)
     daily = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
     abc_class = abc_map.get(_canon_code(inv.product_code), "C")
+    in_production = float(in_production_map.get(_canon_code(inv.product_code), 0.0))
 
     lead_time = inv.lead_time_days
     if lead_time is None:
@@ -340,10 +365,11 @@ def compute_product_stats(
         status = "ok"
 
     # 推荐备货: 只有备货类且低于预警线才补; 补到 目标位=预警线+批量(覆盖N天, 凑批压价)
+    # R1: 已在产/在途(已下工厂未到货)视同即将入库, 从建议量里先扣掉, 避免重复下单
     auto_reorder = 0.0
     if do_stock and reorder_pt > 0 and available < reorder_pt:
         batch = float(cfg.get("batch_cover_days", 30)) * daily
-        auto_reorder = max(0.0, (reorder_pt + batch) - available)
+        auto_reorder = max(0.0, (reorder_pt + batch) - available - in_production)
 
     return {
         "daily_sales_30d": daily,
@@ -351,6 +377,7 @@ def compute_product_stats(
         "safety_stock_computed": round(safety, 2),
         "reorder_point_computed": round(reorder_pt, 2),
         "available_qty": round(available, 2),
+        "in_production": round(in_production, 2),   # R1 在产/在途(已下工厂未到货)
         "days_of_stock": days_of_stock,
         "warning_status": status,
         "auto_reorder_qty": round(auto_reorder, 0),
@@ -367,10 +394,11 @@ def refresh_all_inventory(db: Session) -> int:
     """
     cfg = get_forecast_config(db)
     abc_map = compute_abc_map(db, cfg)
+    in_prod_map = compute_in_production_map(db)
     rows = db.execute(select(ProductInventory)).scalars().all()
     updated = 0
     for inv in rows:
-        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg)
+        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg, in_production_map=in_prod_map)
         if inv.lead_time_days is None and stats["lead_time_days_computed"] is not None:
             inv.lead_time_days = stats["lead_time_days_computed"]
         updated += 1

@@ -84,9 +84,11 @@ def list_product_inventory(
     # 一次性算 ABC 分层 + 配置(方向4), 每行复用; 避免逐行重算全表排名
     _cfg = product_inventory_service.get_forecast_config(db)
     _abc = product_inventory_service.compute_abc_map(db, _cfg)
+    _inprod = product_inventory_service.compute_in_production_map(db)   # R1 在产/在途, 一次算全表复用
     for inv in rows:
         covered.add(inv.product_code)
-        stats = product_inventory_service.compute_product_stats(db, inv, abc_map=_abc, cfg=_cfg)
+        stats = product_inventory_service.compute_product_stats(
+            db, inv, abc_map=_abc, cfg=_cfg, in_production_map=_inprod)
         # 需关注筛选: 正常(ok) 和 按需生产(mto, 定制/长尾) 都不算"需关注"
         if warning_only and stats["warning_status"] in ("ok", "mto"):
             continue

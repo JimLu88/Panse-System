@@ -22,8 +22,9 @@ from sqlalchemy.orm import Session
 from app.models.bom import BomLine
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
-from app.models.order import Order
+from app.models.order import FactoryOrder, Order
 from app.models.product import Product
+from app.services import product_coder
 
 # ── 真实成交订单口径 (用户拍板 2026-06-17) ─────────────────────────────────────
 # 只算「买家已付款且成交」的单, 全系统统一口径, 不能疏漏:
@@ -328,9 +329,37 @@ def forecast_30d(db: Session, custom: Optional[bool] = None) -> list[dict]:
 # ----------------------------- 备货建议 ------------------------- #
 
 
-def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool):
+def _canon(pc: str) -> str:
+    """品牌变体(PPS/PFG/P…)归一到稳定代表码, 供在产/库存按物理实物归并 (与成品库存 ABC 同口径)。"""
+    vs = product_coder.brand_variants(pc) or {pc}
+    return min(vs)
+
+
+def _in_production_by_product(db: Session) -> dict[str, float]:
+    """在产/在途量: 已下工厂、尚未到货(actual_delivery 空)、未作废的工厂单, 按产品归集。
+
+    键用规范编码(品牌变体合并), 与备货/ABC 口径一致。
+    R1 真实缺口(ATP): 需生产要先扣掉这部分——它们很快到货, 再建议下单就是重复备货、数字虚高。
+    """
+    rows = db.execute(
+        select(FactoryOrder.product_code, func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
+            FactoryOrder.actual_delivery.is_(None),   # 未到货 = 还在产/在途
+            FactoryOrder.voided_at.is_(None),          # 未作废
+            FactoryOrder.product_code.isnot(None),
+        ).group_by(FactoryOrder.product_code)
+    ).all()
+    out: dict[str, float] = {}
+    for pc, qty in rows:
+        if pc:
+            out[_canon(pc)] = out.get(_canon(pc), 0.0) + float(qty or 0)
+    return out
+
+
+def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
+                       in_production: Optional[dict] = None):
     """按预测 + BOM 倒推每个物料的需求量。返回 (material_need{物料码:量}, products_out)。
-    use_stock=True: 先减成品现库存(常规成品可抵扣, 只算真缺口); False: 全量(定制无成品可抵)。"""
+    use_stock=True: 先减成品现库存 + **在产/在途(R1)**(常规成品可抵扣, 只算真缺口);
+    False: 全量(定制无成品可抵, 也不减在产)。"""
     material_need: dict[str, Decimal] = {}
     products_out = []
     for f in forecast:
@@ -341,13 +370,16 @@ def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool):
             pinv = db.execute(select(ProductInventory).where(
                 ProductInventory.product_code == pc).limit(1)).scalar_one_or_none()
             in_stock = float(pinv.physical_qty) if pinv else 0.0
-            need_to_produce = max(f["forecast_30d"] - in_stock, 0)
+            # R1: 已下工厂还没到货的量 = 即将入库, 先扣掉, 不重复建议
+            inprod = float((in_production or {}).get(_canon(pc), 0.0))
+            need_to_produce = max(f["forecast_30d"] - in_stock - inprod, 0)
         else:
-            in_stock, need_to_produce = 0.0, f["forecast_30d"]   # 定制无成品库存可抵扣
+            in_stock, inprod, need_to_produce = 0.0, 0.0, f["forecast_30d"]   # 定制无成品库存可抵扣
         products_out.append({
             "product_code": pc, "product_name": f.get("product_name"),
             "image_url": f.get("image_url"), "sku": f.get("sku"),
             "forecast_30d": f["forecast_30d"], "in_stock": in_stock,
+            "in_production": inprod,           # R1 在产/在途 (已下工厂未到货)
             "need_to_produce": need_to_produce,
         })
         if need_to_produce <= 0:
@@ -398,8 +430,13 @@ def stock_advice(db: Session) -> dict:
     定制单: 成品无法预备(接单再产), 但**通用料可提前囤** → 只列通用料的备货计划,
             定制专用料(is_custom)随单采购、不预囤。
     返回: {products, materials(常规), custom_products, custom_materials(定制通用料)}。
+
+    R1(ATP 真实缺口): 常规段的 需生产 = max(预测 − 现货 − 在产在途, 0), 扣掉已下工厂未到货的量,
+    不再重复建议; 定制段(接单再产)不减在产, 保守全量倒推通用料。
     """
-    reg_need, products_out = _bom_material_need(db, forecast_30d(db, custom=False), use_stock=True)
+    in_prod = _in_production_by_product(db)
+    reg_need, products_out = _bom_material_need(
+        db, forecast_30d(db, custom=False), use_stock=True, in_production=in_prod)
     materials_out = _materials_from_need(db, reg_need)
 
     cus_need, custom_products = _bom_material_need(db, forecast_30d(db, custom=True), use_stock=False)

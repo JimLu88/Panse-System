@@ -17,6 +17,7 @@ import {
   Table,
   Tabs,
   Tag,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -161,8 +162,9 @@ function AdviceTab() {
   });
   const exportProducts = () => exportPageXlsx('备货建议-产能缺口', [
     { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
-    { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' }, { key: 'need_to_produce', title: '需生产' },
-  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, need_to_produce: r.need_to_produce })));
+    { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' },
+    { key: 'in_production', title: '在产/在途' }, { key: 'need_to_produce', title: '需生产' },
+  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, in_production: r.in_production, need_to_produce: r.need_to_produce })));
   const exportMaterials = () => exportPageXlsx('备货建议-物料下单', [
     { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '需求量' },
     { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
@@ -177,7 +179,7 @@ function AdviceTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="备货建议 = 按预测30天销量 + BOM倒推物料需求 − 现库存 · 常规单与定制单分开"
-             description={<>常规单: 成品可提前生产/备货(产能缺口 = 预测 − 成品库存), 并倒推全部物料。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
+             description={<>常规单: 成品可提前生产/备货(需生产 = 预测 − 现成品库存 − <b>在产/在途</b>), 并倒推全部物料。「在产/在途」= 已下工厂还没到货的量, 会先扣掉, 避免重复下单。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
       <Card size="small" title="常规单 · 未来 30 天产能缺口"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
@@ -191,6 +193,11 @@ function AdviceTab() {
             { title: '预测 30 天', dataIndex: 'forecast_30d', width: 110,
               sorter: (a: any, b: any) => (a.forecast_30d ?? 0) - (b.forecast_30d ?? 0) },
             { title: '现成品库存', dataIndex: 'in_stock', width: 110 },
+            { title: '在产/在途', dataIndex: 'in_production', width: 110,
+              render: (v: number) => (v ?? 0) > 0 ?
+                <Tooltip title="已下工厂、还没到货的量。已从「需生产」里扣掉, 不用重复下单。">
+                  <Tag color="blue">{v}</Tag></Tooltip> : <span style={{ color: '#bbb' }}>0</span>,
+            },
             { title: '需生产', dataIndex: 'need_to_produce', width: 100,
               render: (v: number) => v > 0 ?
                 <Tag color="orange">{v}</Tag> : <Tag color="green">充足</Tag>,
