@@ -28,6 +28,7 @@ import {
   fetchForecastConfig,
   listProductInventory,
   listProducts,
+  recomputeSeasonalFactors,
   refreshProductInventoryStats,
   saveForecastConfig,
   syncProductInventoryParams,
@@ -70,6 +71,7 @@ function FormulaButton() {
           mode: d.mode, halflife_days: d.halflife_days,
           window_days: d.window_days, promo_periods: d.promo_periods,
           enable_semi_finished: d.enable_semi_finished,
+          seasonal_factors: d.seasonal_factors, enable_seasonal: d.enable_seasonal,
         })}
         confirmLoading={saveMut.isPending}
       >
@@ -106,6 +108,32 @@ function FormulaButton() {
               onClick={() => setDraft({ ...d, promo_periods: [...d.promo_periods, { name: '新时段', start: '01-01', end: '01-07' }] })}>
               加一个时段
             </Button>
+            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginTop: 4 }}>
+              <Space wrap>
+                <Switch checked={d.enable_seasonal !== false}
+                  onChange={(v) => setDraft({ ...d, enable_seasonal: v })} />
+                <span>启用「重点备货月」季节备货 (默认开)</span>
+                <Button size="small" onClick={async () => {
+                  try {
+                    const r = await recomputeSeasonalFactors();
+                    setDraft({ ...d, seasonal_factors: r.factors });
+                    message.info(r.note);
+                  } catch { message.error('从历史重算失败'); }
+                }}>从历史重算(建议)</Button>
+              </Space>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 4, marginBottom: 4 }}>
+                每月一个系数(平常月=1,峰月5-8,淡月&lt;1)。备货用「今天+提前期落在的月」的系数 → 自动提前为峰月备货、峰后回落。历史数据攒够后可「从历史重算」自动进化。
+              </Typography.Paragraph>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
+                {(d.seasonal_factors ?? []).map((f: number, i: number) => (
+                  <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                    <span style={{ fontSize: 12, width: 30, textAlign: 'right' }}>{i + 1}月</span>
+                    <InputNumber size="small" min={0} step={0.1} value={f} style={{ width: 62 }}
+                      onChange={(v) => { const a = [...(d.seasonal_factors ?? [])]; a[i] = Number(v) || 0; setDraft({ ...d, seasonal_factors: a }); }} />
+                  </span>
+                ))}
+              </div>
+            </div>
             <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginTop: 4 }}>
               <Space>
                 <Switch checked={!!d.enable_semi_finished}

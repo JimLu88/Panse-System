@@ -53,6 +53,9 @@ _DEFAULT_SLOW_MOVING_DAYS = 60
 # 实木定制家具下单到入库通常 2~4 周, 取 30 天稳健兜底。
 _DEFAULT_LEAD_TIME_DAYS = 30
 
+# 重点备货月季节系数种子(用户经验值, 相对平常月=1.0): 1..12 月
+_DEFAULT_SEASONAL_FACTORS = [1.0, 0.3, 1.0, 1.0, 6.0, 6.0, 0.7, 1.0, 1.0, 5.0, 7.0, 5.0]
+
 
 # ── 销量公式配置 (用户拍板 2026-06-11: 默认加权 — 越近的日期权重越高; 大促时段可配) ──
 _DEFAULT_PROMO_PERIODS = [
@@ -95,11 +98,31 @@ def get_forecast_config(db: Session) -> dict:
     _semi = settings_service.get(db, "enable_semi_finished", env_fallback=False)
     enable_semi_finished = (str(_semi).strip().lower() in ("1", "true", "yes", "on")
                             if _semi not in (None, "") else False)
+    # 重点备货月 / 季节系数: 12 个月各一个相对系数(平常月=1.0, 峰月 5-8, 淡月<1)。
+    # 备货用「目标月(今天+提前期落在的月)」的系数, 把最近日均去季节化后按目标月放大/压缩,
+    # 从而 4 月自动为 5-6 月峰期备货、7 月自动比 6 月峰回落。默认种子(用户经验值):
+    #   1月1 / 2月0.3(过年) / 3-4月1 / 5-6月6(618) / 7月0.7(618后) / 8-9月1 / 10月5 / 11月7(双11) / 12月5
+    raw_sf = settings_service.get(db, "seasonal_factors", env_fallback=False)
+    try:
+        sf = json.loads(raw_sf) if raw_sf else list(_DEFAULT_SEASONAL_FACTORS)
+        if not (isinstance(sf, list) and len(sf) == 12):
+            sf = list(_DEFAULT_SEASONAL_FACTORS)
+        sf = [max(0.0, float(x)) for x in sf]
+    except Exception:
+        sf = list(_DEFAULT_SEASONAL_FACTORS)
+    _es = settings_service.get(db, "enable_seasonal", env_fallback=False)
+    enable_seasonal = (str(_es).strip().lower() in ("1", "true", "yes", "on")
+                       if _es not in (None, "") else True)   # 默认开(用户明确要季节备货)
+    _sa = settings_service.get(db, "seasonal_auto", env_fallback=False)
+    seasonal_auto = (str(_sa).strip().lower() in ("1", "true", "yes", "on")
+                     if _sa not in (None, "") else False)    # 自动进化默认关(历史数据够了再开)
     return {"mode": mode, "halflife_days": halflife, "window_days": window,
             "promo_periods": periods, "service_level": service_level,
             "batch_cover_days": batch_cover_days, "abc_a_share": abc_a_share,
             "abc_b_share": abc_b_share, "stock_min_daily": stock_min_daily,
-            "enable_semi_finished": enable_semi_finished}
+            "enable_semi_finished": enable_semi_finished,
+            "seasonal_factors": sf, "enable_seasonal": enable_seasonal,
+            "seasonal_auto": seasonal_auto}
 
 
 def save_forecast_config(db: Session, cfg: dict) -> dict:
@@ -119,6 +142,16 @@ def save_forecast_config(db: Session, cfg: dict) -> dict:
     if cfg.get("enable_semi_finished") is not None:   # R5 半成品开关(默认关)
         settings_service.set_value(db, "enable_semi_finished",
                                    "1" if cfg["enable_semi_finished"] else "0")
+    sf = cfg.get("seasonal_factors")                  # 重点备货月 季节系数(12个)
+    if isinstance(sf, list) and len(sf) == 12:
+        settings_service.set_value(db, "seasonal_factors",
+                                   json.dumps([max(0.0, float(x)) for x in sf]))
+    if cfg.get("enable_seasonal") is not None:
+        settings_service.set_value(db, "enable_seasonal",
+                                   "1" if cfg["enable_seasonal"] else "0")
+    if cfg.get("seasonal_auto") is not None:
+        settings_service.set_value(db, "seasonal_auto",
+                                   "1" if cfg["seasonal_auto"] else "0")
     return get_forecast_config(db)
 
 
@@ -335,6 +368,32 @@ def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:
     return int(median(deltas))
 
 
+def _seasonal_effective_daily(cfg: dict, base_daily: float, effective_lead: int,
+                              today: Optional[date] = None) -> tuple:
+    """把「最近日均」换成「目标月预期日均」, 用于前瞻备货(重点备货月机制)。
+
+    目标月 = 今天 + 提前期 落在的月(现在下的货那会儿到货、开始卖那个月)。
+    公式: 目标日均 = 最近日均 × (目标月系数 ÷ 最近窗口平均系数)。
+      · 分母把「当前这段时间的季节虚高/虚低」还原成常态(如 7 月分母含 6 月峰→大, 把最近日均压下来);
+      · 分子按目标月放大/缩小(如 4 月目标是 5 月→系数高→放大, 提前为峰期备货)。
+    未开启季节 / 系数全 1 → 原样返回。返回 (目标日均, 目标月, 倍数)。
+    """
+    if not cfg.get("enable_seasonal"):
+        return base_daily, None, 1.0
+    factors = cfg.get("seasonal_factors") or _DEFAULT_SEASONAL_FACTORS
+    today = today or date.today()
+    window = max(1, int(cfg.get("window_days") or 60))
+    tot = 0.0
+    for i in range(window):
+        mm = (today - timedelta(days=i)).month
+        tot += float(factors[mm - 1]) if 1 <= mm <= 12 else 1.0
+    win_avg = (tot / window) or 1.0
+    target_month = (today + timedelta(days=int(effective_lead or _DEFAULT_LEAD_TIME_DAYS))).month
+    tf = float(factors[target_month - 1]) if 1 <= target_month <= 12 else 1.0
+    mult = tf / win_avg if win_avg > 0 else 1.0
+    return base_daily * mult, target_month, round(mult, 2)
+
+
 def compute_product_stats(
     db: Session,
     inv: ProductInventory,
@@ -369,6 +428,11 @@ def compute_product_stats(
     slow_days = inv.slow_moving_days or _DEFAULT_SLOW_MOVING_DAYS
     available = float(inv.available_qty)
 
+    # 重点备货月(季节前瞻): 备货「数量」用目标月(今天+提前期)的预期日均, 而不是最近日均 ——
+    # 4月自动为5-6月峰备货、7月自动比6月峰回落。是否备货仍看真实近况, 只放大/缩小数量。
+    daily_forward, season_target_month, season_mult = _seasonal_effective_daily(
+        cfg, daily, effective_lead)
+
     # 是否自动备货: A类畅销 且 日均≥下限; 或人工设过安全库存/预警线(强制备货口)
     manual = inv.safety_stock is not None or inv.reorder_point is not None
     do_stock = manual or (abc_class == "A" and daily >= float(cfg.get("stock_min_daily", 0.2)))
@@ -384,7 +448,7 @@ def compute_product_stats(
     if inv.reorder_point is not None:
         reorder_pt = float(inv.reorder_point)
     elif do_stock:
-        reorder_pt = round(effective_lead * daily + safety, 2)
+        reorder_pt = round(effective_lead * daily_forward + safety, 2)   # 季节前瞻日均
     else:
         reorder_pt = 0.0
 
@@ -409,7 +473,7 @@ def compute_product_stats(
     # R1(ATP): 只扣「自由在产(备货单, 会入库)」; 客户单在产是发给下单客户的, 不抵、避免误消成 0
     auto_reorder = 0.0
     if do_stock and reorder_pt > 0 and available < reorder_pt:
-        batch = float(cfg.get("batch_cover_days", 30)) * daily
+        batch = float(cfg.get("batch_cover_days", 30)) * daily_forward   # 季节前瞻日均
         auto_reorder = max(0.0, (reorder_pt + batch) - available - in_prod_free)
 
     return {
@@ -425,7 +489,49 @@ def compute_product_stats(
         "auto_reorder_qty": round(auto_reorder, 0),
         "slow_moving_days": slow_days,
         "abc_class": abc_class,
+        "season_target_month": season_target_month,   # 备货瞄准的月(今天+提前期); 未开季节=None
+        "season_multiplier": season_mult,             # 目标月系数 ÷ 最近窗口平均系数
     }
+
+
+def recompute_seasonal_factors(db: Session, *, min_units: int = 80) -> dict:
+    """自动进化(种子→实测): 用历史标品成交件重算 12 个月季节系数, **只对攒够干净数据的月**给实测值,
+    数据不足的月保留当前(手填种子)值。默认只「建议」不自动覆盖, 供人工确认后再保存。
+
+    月系数 = 该月历史平均(各年份同月, 标品成交件) / 全月平均。数据够 = 该月累计成交件 ≥ min_units。
+    返回 {factors(建议), current(现值), updated_months(用了实测的月), note}。
+    """
+    from collections import defaultdict
+    cfg = get_forecast_config(db)
+    cur = list(cfg.get("seasonal_factors") or _DEFAULT_SEASONAL_FACTORS)
+    rows = db.execute(
+        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0)).where(
+            Order.order_date.isnot(None),
+            Order.is_refill == False,  # noqa: E712
+            Order.is_custom == False,  # noqa: E712
+            Order.status.in_(["paid", "shipped", "signed"]),
+        ).group_by(Order.order_date)
+    ).all()
+    ym: dict = defaultdict(int)
+    for d, q in rows:
+        if d is not None:
+            ym[(d.year, d.month)] += int(q or 0)
+    by_month: dict = defaultdict(list)
+    for (y, m), v in ym.items():
+        by_month[m].append(v)
+    monthly_mean = {m: (sum(v) / len(v)) for m, v in by_month.items() if v}
+    overall = (sum(monthly_mean.values()) / len(monthly_mean)) if monthly_mean else 0.0
+    new = list(cur)
+    updated: list = []
+    if overall > 0:
+        for m in range(1, 13):
+            units = sum(by_month.get(m, []))
+            if units >= min_units and m in monthly_mean:
+                new[m - 1] = round(monthly_mean[m] / overall, 2)
+                updated.append(m)
+    return {"factors": new, "current": cur, "updated_months": updated,
+            "note": (f"仅 {updated or '无'} 月数据够(≥{min_units}件)用实测值, 其余保留手填种子; "
+                     f"数据攒满一年后建议再重算")}
 
 
 def refresh_all_inventory(db: Session) -> int:

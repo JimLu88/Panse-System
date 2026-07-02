@@ -68,6 +68,17 @@ def put_forecast_config_api(
     return {**cfg, "promo": svc.promo_status(db)}
 
 
+@router.post("/forecast-config/recompute-seasonal")
+def recompute_seasonal_api(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """重点备货月「自动进化」: 用历史销量给出建议的 12 个月季节系数(只对数据够的月给实测值,
+    其余保留手填种子)。只返回建议、不自动保存 —— 前端展示后由人工确认再保存。"""
+    from app.services import product_inventory_service as svc
+    return svc.recompute_seasonal_factors(db)
+
+
 @router.get("", response_model=list[ProductInventoryWithStats])
 def list_product_inventory(
     warehouse: Optional[str] = None,

@@ -91,6 +91,9 @@ export interface ForecastConfig {
   window_days: number;
   promo_periods: { name: string; start: string; end: string }[];
   enable_semi_finished?: boolean;   // R5 半成品/白坯备货 开关 (默认关)
+  seasonal_factors?: number[];      // 重点备货月: 12个月季节系数(平常月=1)
+  enable_seasonal?: boolean;        // 重点备货月机制 开关(默认开)
+  seasonal_auto?: boolean;          // 季节系数自动进化(默认关, 数据够了再开)
   promo?: {
     active: { name: string; start: string; end: string }[];
     upcoming: { name: string; start: string; end: string; days_to_start: number }[];
@@ -480,7 +483,14 @@ export interface ProductInventoryRow {
   abc_class?: 'A' | 'B' | 'C' | null;   // A=畅销备货 / B / C=按需生产(MTO)
   in_production_free?: number | null;        // R1 备货在产(会入库, 已从推荐备货扣掉)
   in_production_allocated?: number | null;   // R1 客户单在产(发给下单客户, 不抵, 仅展示)
+  season_target_month?: number | null;       // 重点备货月: 备货瞄准的月(今天+提前期)
+  season_multiplier?: number | null;         // 季节倍数(目标月系数÷最近窗口均值)
 }
+
+// 重点备货月「自动进化」: 用历史给出建议系数(只对数据够的月给实测值), 只建议不自动保存
+export const recomputeSeasonalFactors = () =>
+  api.post<{ factors: number[]; current: number[]; updated_months: number[]; note: string }>(
+    '/api/inventory/products/forecast-config/recompute-seasonal').then((r) => r.data);
 
 export const listProductInventory = (warningOnly = false, includeAll = false) =>
   api.get<ProductInventoryRow[]>('/api/inventory/products', {

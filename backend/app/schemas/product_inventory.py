@@ -53,3 +53,5 @@ class ProductInventoryWithStats(ProductInventoryOut):
     abc_class: Optional[str] = None   # A=畅销自动备货 / B / C=按需生产(MTO); 只有 A 类给备货建议
     in_production_free: Optional[float] = None       # R1 备货在产(会入库, 已从推荐备货扣掉)
     in_production_allocated: Optional[float] = None   # R1 客户单在产(发给下单客户, 不抵, 仅展示)
+    season_target_month: Optional[int] = None         # 重点备货月: 备货瞄准的月(今天+提前期)
+    season_multiplier: Optional[float] = None         # 季节倍数(目标月系数÷最近窗口均值)
