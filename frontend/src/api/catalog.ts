@@ -738,6 +738,9 @@ export interface ShopPriceRow {
   shop_promo_rate?: number | null;  // 店铺宝系数(反推, 填淘宝用)
   mid_shop_rate?: number | null;
   big_shop_rate?: number | null;
+  physical_cost?: number | null;      // 物理成本(工厂+物流+安装)
+  big_promo_margin?: number | null;   // 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%)
+  gross_margin_rate?: number | null;  // 大促利润率 = 大促利润 ÷ 大促价
 }
 export const fetchShopPriceBoard = (q?: string) =>
   api.get<ShopPriceRow[]>('/api/pricing-skus/shop-price-board', { params: q ? { q } : {} })

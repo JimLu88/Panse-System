@@ -521,6 +521,9 @@ class ShopPriceRow(BaseModel):
     shop_promo_rate: Optional[Decimal] = None    # 小促店铺宝系数(反推, 填淘宝用)
     mid_shop_rate: Optional[Decimal] = None
     big_shop_rate: Optional[Decimal] = None
+    physical_cost: Optional[Decimal] = None      # 物理成本(工厂+物流+安装), 大促利润的成本基
+    big_promo_margin: Optional[Decimal] = None   # 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%) (recompute 口径)
+    gross_margin_rate: Optional[Decimal] = None  # 大促利润率 = 大促利润 ÷ 大促价
 
 
 def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
@@ -532,6 +535,9 @@ def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
         shop_promo_rate=getattr(promo, "shop_promo_rate", None),
         mid_shop_rate=getattr(promo, "mid_shop_rate", None),
         big_shop_rate=getattr(promo, "big_shop_rate", None),
+        physical_cost=sku.physical_cost,
+        big_promo_margin=sku.big_promo_margin,
+        gross_margin_rate=sku.gross_margin_rate,
     )
 
 
