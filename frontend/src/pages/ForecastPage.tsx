@@ -168,12 +168,17 @@ function AdviceTab() {
     { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
     { key: 'alert_at', title: '建议下单日' }, { key: 'should_order_now', title: '现在该下单' },
   ], (data?.materials ?? []).map((r: any) => ({ material_code: r.material_code, material_name: r.material_name, need_qty: r.need_qty, have_qty: r.have_qty, missing: r.missing, lead_time_days: r.lead_time_days, alert_at: r.alert_at, should_order_now: r.should_order_now ? '是' : '否' })));
+  const exportCustomMaterials = () => exportPageXlsx('备货建议-定制通用料', [
+    { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '定制需求量' },
+    { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
+    { key: 'alert_at', title: '建议下单日' }, { key: 'should_order_now', title: '现在该下单' },
+  ], (data?.custom_materials ?? []).map((r: any) => ({ material_code: r.material_code, material_name: r.material_name, need_qty: r.need_qty, have_qty: r.have_qty, missing: r.missing, lead_time_days: r.lead_time_days, alert_at: r.alert_at, should_order_now: r.should_order_now ? '是' : '否' })));
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
-             message="智能提前备货 = 按预测 30 天销量 + BOM 倒推每个物料的需求, 减去现库存"
-             description="补货周期 lead_time_days 天的物料, 应在第 (30 - lead) 天前下单. should_order_now=true 表示现在就该下单了" />
-      <Card size="small" title="按产品: 未来 30 天产能缺口"
+             message="备货建议 = 按预测30天销量 + BOM倒推物料需求 − 现库存 · 常规单与定制单分开"
+             description={<>常规单: 成品可提前生产/备货(产能缺口 = 预测 − 成品库存), 并倒推全部物料。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
+      <Card size="small" title="常规单 · 未来 30 天产能缺口"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
           size="small" loading={isLoading}
@@ -193,7 +198,7 @@ function AdviceTab() {
           ]}
         />
       </Card>
-      <Card size="small" title="按物料: 应下单时间"
+      <Card size="small" title="常规单 · 按物料应下单时间"
         extra={<Button icon={<DownloadOutlined />} onClick={exportMaterials} disabled={!data?.materials?.length}>导出 Excel</Button>}>
         <Table
           size="small" loading={isLoading}
@@ -222,6 +227,30 @@ function AdviceTab() {
                 <Tag color="red">立即下单</Tag> :
                 <Tag color="default">未到时间</Tag>,
             },
+          ]}
+        />
+      </Card>
+      <Card size="small" title="定制单 · 通用料备货计划（可提前囤的料）"
+        extra={<Button icon={<DownloadOutlined />} onClick={exportCustomMaterials} disabled={!data?.custom_materials?.length}>导出 Excel</Button>}>
+        <Alert type="info" showIcon banner style={{ marginBottom: 8 }}
+          message="定制单不能预备成品, 但下面这些通用料在多款定制里都会用到, 可提前按量囤货备产。定制专用料不在此列(随单采购)。" />
+        <Table
+          size="small" loading={isLoading}
+          rowKey={(r: any) => r.material_code}
+          dataSource={data?.custom_materials ?? []}
+          locale={{ emptyText: '近60天无定制单, 或定制单未消耗通用料' }}
+          pagination={{ defaultPageSize: 30, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
+          columns={[
+            { title: '物料', dataIndex: 'material_code' },
+            { title: '名称', dataIndex: 'material_name' },
+            { title: '定制需求量', dataIndex: 'need_qty', width: 110 },
+            { title: '现库存', dataIndex: 'have_qty', width: 80 },
+            { title: '缺口', dataIndex: 'missing', width: 90,
+              render: (v: number) => v > 0 ? <Tag color="red">{Number(v).toFixed(0)}</Tag> : '-' },
+            { title: '补货周期', dataIndex: 'lead_time_days', width: 90, render: (v: number) => `${v} 天` },
+            { title: '建议下单日', dataIndex: 'alert_at', width: 120 },
+            { title: '现在该下单', dataIndex: 'should_order_now', width: 110,
+              render: (v: boolean) => v ? <Tag color="red">立即下单</Tag> : <Tag color="default">未到时间</Tag> },
           ]}
         />
       </Card>

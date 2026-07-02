@@ -220,21 +220,24 @@ def product_breakdown(
 # ----------------------------- 预测 ----------------------------- #
 
 
-def _sales_by_day(db: Session, days: int = 90) -> dict[str, dict[date, int]]:
+def _sales_by_day(db: Session, days: int = 90,
+                  custom: Optional[bool] = None) -> dict[str, dict[date, int]]:
     """过去 N 天每个 SKU 每天的销量. 返回 {sku_key: {date: qty}}.
 
     key 永远是 'product_code|sku_id' 形式 (无 product_code 用 '?', 无 sku 用 product_code).
+    custom: None=全部 / False=只常规单 / True=只定制单 (Order.is_custom)。
     """
     cutoff = date.today() - timedelta(days=days)
     # 只排补单 (刷的不是真实需求)。不排 is_historical: 本库导入路径给几乎所有
     # 真实订单都打了 historical 标 (529/530), 它不等于"旧数据", 排它=预测全空。
-    orders = db.execute(
-        select(Order).where(
-            Order.order_date >= cutoff,
-            Order.status.in_(("paid", "shipped", "signed")),
-            Order.is_refill == False,      # noqa: E712
-        )
-    ).scalars().all()
+    conds = [
+        Order.order_date >= cutoff,
+        Order.status.in_(("paid", "shipped", "signed")),
+        Order.is_refill == False,      # noqa: E712
+    ]
+    if custom is not None:
+        conds.append(Order.is_custom == custom)  # noqa: E712
+    orders = db.execute(select(Order).where(*conds)).scalars().all()
     out: dict[str, dict[date, int]] = {}
     for o in orders:
         if not o.order_date:
@@ -261,8 +264,10 @@ def _product_info_map(db: Session, codes: set[str]) -> dict[str, tuple]:
 _FORECAST_EXCLUDE_KW = ("全屋定制", "样块", "补差", "差价", "邮费", "定金", "运费")
 
 
-def forecast_30d(db: Session) -> list[dict]:
+def forecast_30d(db: Session, custom: Optional[bool] = None) -> list[dict]:
     """业务需求 7 + 8: 简单移动平均预测未来 30 天销量 (按产品聚合)。
+
+    custom: None=全部 / False=只常规单 / True=只定制单。
 
     用过去 60 天平均日销 × 30, 加 1.2 倍安全系数。
     排除补单 (is_refill); 用户拍板 (2026-06-11):
@@ -273,7 +278,7 @@ def forecast_30d(db: Session) -> list[dict]:
     返回: [{product_code, product_name, image_url, avg_daily, forecast_30d,
             last_60d_total, sku, skus: [{sku, qty_60d}]}]
     """
-    by_sku = _sales_by_day(db, days=60)
+    by_sku = _sales_by_day(db, days=60, custom=custom)
     # 先按产品聚合
     by_product: dict[str, dict] = {}
     for sku_key, day_map in by_sku.items():
@@ -323,75 +328,55 @@ def forecast_30d(db: Session) -> list[dict]:
 # ----------------------------- 备货建议 ------------------------- #
 
 
-def stock_advice(db: Session) -> dict:
-    """业务需求 7/8: 智能提前备货建议.
-
-    对每个 SKU:
-        - 预测下月销量 (forecast_30d)
-        - 现有成品库存 + 已锁定
-        - BOM 展开后每个物料 (qty_per_product * forecast) 需要的总量
-        - 每个物料对比现库存, 不足部分按 lead_time_days 倒推应在何时下单
-
-    返回:
-        {
-          "products": [{product_code, sku, forecast_30d, in_stock, need_to_produce}],
-          "materials": [{material_code, name, need_qty, have_qty, missing, lead_time_days,
-                         alert_at (推荐下单日)}],
-        }
-    """
-    forecast = forecast_30d(db)
-    # 收集物料汇总
+def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool):
+    """按预测 + BOM 倒推每个物料的需求量。返回 (material_need{物料码:量}, products_out)。
+    use_stock=True: 先减成品现库存(常规成品可抵扣, 只算真缺口); False: 全量(定制无成品可抵)。"""
     material_need: dict[str, Decimal] = {}
     products_out = []
     for f in forecast:
-        product_code = f["product_code"]
-        if not product_code:
+        pc = f["product_code"]
+        if not pc:
             continue
-        # 找成品库存
-        pinv = db.execute(
-            select(ProductInventory).where(
-                ProductInventory.product_code == product_code,
-            ).limit(1)
-        ).scalar_one_or_none()
-        in_stock = pinv.physical_qty if pinv else 0
-        need_to_produce = max(f["forecast_30d"] - in_stock, 0)
+        if use_stock:
+            pinv = db.execute(select(ProductInventory).where(
+                ProductInventory.product_code == pc).limit(1)).scalar_one_or_none()
+            in_stock = float(pinv.physical_qty) if pinv else 0.0
+            need_to_produce = max(f["forecast_30d"] - in_stock, 0)
+        else:
+            in_stock, need_to_produce = 0.0, f["forecast_30d"]   # 定制无成品库存可抵扣
         products_out.append({
-            "product_code": product_code,
-            "product_name": f.get("product_name"),
-            "image_url": f.get("image_url"),
-            "sku": f["sku"],
-            "forecast_30d": f["forecast_30d"],
-            "in_stock": in_stock,
+            "product_code": pc, "product_name": f.get("product_name"),
+            "image_url": f.get("image_url"), "sku": f.get("sku"),
+            "forecast_30d": f["forecast_30d"], "in_stock": in_stock,
             "need_to_produce": need_to_produce,
         })
         if need_to_produce <= 0:
             continue
-        # 拉 BOM 倒推每个物料的需求
-        bom = db.execute(
-            select(BomLine).where(BomLine.product_code == product_code)
-        ).scalars().all()
-        for line in bom:
+        for line in db.execute(select(BomLine).where(BomLine.product_code == pc)).scalars().all():
             per = Decimal(line.qty_per_product or 0)
-            need = (per * Decimal(need_to_produce)).quantize(Decimal("0.001"))
+            add = (per * Decimal(need_to_produce)).quantize(Decimal("0.001"))
             material_need[line.material_code] = (
-                material_need.get(line.material_code, Decimal("0")) + need
-            )
+                material_need.get(line.material_code, Decimal("0")) + add)
+    return material_need, products_out
 
-    materials_out = []
+
+def _materials_from_need(db: Session, need_map: dict, *, only_common: bool = False) -> list[dict]:
+    """{物料码:需求量} → 物料备货建议(含现库存/提前期/建议下单日)。
+    only_common=True: 只留**通用料**(Material.is_custom=False), 用于定制单可提前囤的料;
+    定制专用料随单采购、不预囤, 故剔除。"""
+    out = []
     today = date.today()
-    for mat_code, need in material_need.items():
-        mat = db.execute(
-            select(Material).where(Material.code == mat_code)
-        ).scalar_one_or_none()
-        inv = db.execute(
-            select(PartInventory).where(PartInventory.material_code == mat_code).limit(1)
-        ).scalar_one_or_none()
+    for mat_code, need in need_map.items():
+        mat = db.execute(select(Material).where(Material.code == mat_code)).scalar_one_or_none()
+        if only_common and mat is not None and mat.is_custom:
+            continue
+        inv = db.execute(select(PartInventory).where(
+            PartInventory.material_code == mat_code).limit(1)).scalar_one_or_none()
         have = float(inv.physical_qty) if inv else 0.0
         missing = float(need) - have
         lead = mat.lead_time_days if mat else 0
-        # 假设 30 天后需要交付, lead 天 → 应该在第 (30 - lead) 天前下单. 今天起算:
         alert_at = today + timedelta(days=max(30 - lead, 0))
-        materials_out.append({
+        out.append({
             "material_code": mat_code,
             "material_name": mat.name if mat else None,
             "need_qty": float(need),
@@ -401,8 +386,31 @@ def stock_advice(db: Session) -> dict:
             "alert_at": alert_at.isoformat(),
             "should_order_now": missing > 0 and lead >= (30 - (alert_at - today).days),
             "priority": mat.priority if mat else "mid",
+            "is_custom_material": bool(mat.is_custom) if mat else False,
         })
-    return {"products": products_out, "materials": materials_out}
+    return sorted(out, key=lambda m: m["missing"], reverse=True)
+
+
+def stock_advice(db: Session) -> dict:
+    """智能提前备货建议 —— 常规单 / 定制单 分开 (用户 2026-07-02)。
+
+    常规单: 成品可提前生产/备货 → 产能缺口(预测−成品库存) + 全部物料需求。
+    定制单: 成品无法预备(接单再产), 但**通用料可提前囤** → 只列通用料的备货计划,
+            定制专用料(is_custom)随单采购、不预囤。
+    返回: {products, materials(常规), custom_products, custom_materials(定制通用料)}。
+    """
+    reg_need, products_out = _bom_material_need(db, forecast_30d(db, custom=False), use_stock=True)
+    materials_out = _materials_from_need(db, reg_need)
+
+    cus_need, custom_products = _bom_material_need(db, forecast_30d(db, custom=True), use_stock=False)
+    custom_materials = _materials_from_need(db, cus_need, only_common=True)
+
+    return {
+        "products": products_out,
+        "materials": materials_out,
+        "custom_products": custom_products,
+        "custom_materials": custom_materials,
+    }
 
 
 # ----------------------------- 滞销分类 ------------------------- #
