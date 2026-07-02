@@ -33,6 +33,8 @@ class ProductUpdate(BaseModel):
     accessory_remark: Optional[str] = None
     listing_status: Optional[str] = None
     description: Optional[str] = None
+    semi_finished_eligible: Optional[bool] = None   # R5 可做白坯打标
+    semi_group: Optional[str] = None                 # R5 共享白坯分组码
 
 
 class TaobaoIdsUpdate(BaseModel):
@@ -65,3 +67,5 @@ class ProductOut(BaseModel):
     accessory_desc: Optional[str] = None
     accessory_remark: Optional[str] = None
     listing_status: Optional[str] = None
+    semi_finished_eligible: Optional[bool] = None
+    semi_group: Optional[str] = None

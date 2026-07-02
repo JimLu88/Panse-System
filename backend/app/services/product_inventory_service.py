@@ -267,24 +267,31 @@ def compute_abc_map(db: Session, cfg: Optional[dict] = None) -> dict:
     return out
 
 
-def compute_in_production_map(db: Session) -> dict:
-    """在产/在途量(已下工厂、未到货 actual_delivery 空、未作废)按规范产品码归集。
-
-    R1(ATP): 成品「推荐备货」要先扣掉在产——已经在做的量很快入库, 再下单就是重复备货。
-    与备货建议 sales_analytics._in_production_by_product 同口径。
+def compute_in_production_split(db: Session) -> tuple[dict, dict]:
+    """在产/在途(未到货未作废工厂单)拆两类(完整 ATP), 按规范产品码归集:
+       free = 备货单(source_order_id 空, 会入库) → 抵推荐备货;
+       allocated = 客户单MTO(source_order_id 有值, 发客户) → 不抵、仅展示。
+    与备货建议 sales_analytics._in_production_split 同口径。返回 (free_map, allocated_map)。
     """
     rows = db.execute(
-        select(FactoryOrder.product_code, func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
-            FactoryOrder.actual_delivery.is_(None),   # 未到货 = 在产/在途
-            FactoryOrder.voided_at.is_(None),          # 未作废
+        select(FactoryOrder.product_code, FactoryOrder.source_order_id,
+               func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
+            FactoryOrder.actual_delivery.is_(None),
+            FactoryOrder.voided_at.is_(None),
             FactoryOrder.product_code.isnot(None),
-        ).group_by(FactoryOrder.product_code)
+        ).group_by(FactoryOrder.product_code, FactoryOrder.source_order_id)
     ).all()
-    out: dict = {}
-    for pc, qty in rows:
-        if pc:
-            out[_canon_code(pc)] = out.get(_canon_code(pc), 0.0) + float(qty or 0)
-    return out
+    free: dict = {}
+    alloc: dict = {}
+    for pc, source_order_id, qty in rows:
+        if not pc:
+            continue
+        c = _canon_code(pc)
+        if source_order_id is None:
+            free[c] = free.get(c, 0.0) + float(qty or 0)
+        else:
+            alloc[c] = alloc.get(c, 0.0) + float(qty or 0)
+    return free, alloc
 
 
 def _compute_lead_time(db: Session, product_code: str) -> Optional[int]:
@@ -310,7 +317,7 @@ def compute_product_stats(
     inv: ProductInventory,
     abc_map: Optional[dict] = None,
     cfg: Optional[dict] = None,
-    in_production_map: Optional[dict] = None,
+    in_production_split: Optional[tuple] = None,
 ) -> dict:
     """计算单条成品库存的推算字段(方向4 ABC分层 + 方向2 服务水平安全库存 + 批量备货)。
 
@@ -324,11 +331,13 @@ def compute_product_stats(
         cfg = get_forecast_config(db)
     if abc_map is None:
         abc_map = compute_abc_map(db, cfg)
-    if in_production_map is None:
-        in_production_map = compute_in_production_map(db)
+    if in_production_split is None:
+        in_production_split = compute_in_production_split(db)
+    free_map, alloc_map = in_production_split
     daily = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
     abc_class = abc_map.get(_canon_code(inv.product_code), "C")
-    in_production = float(in_production_map.get(_canon_code(inv.product_code), 0.0))
+    in_prod_free = float(free_map.get(_canon_code(inv.product_code), 0.0))   # 备货在产, 抵推荐
+    in_prod_alloc = float(alloc_map.get(_canon_code(inv.product_code), 0.0)) # 客户单在产, 仅展示
 
     lead_time = inv.lead_time_days
     if lead_time is None:
@@ -374,11 +383,11 @@ def compute_product_stats(
         status = "ok"
 
     # 推荐备货: 只有备货类且低于预警线才补; 补到 目标位=预警线+批量(覆盖N天, 凑批压价)
-    # R1: 已在产/在途(已下工厂未到货)视同即将入库, 从建议量里先扣掉, 避免重复下单
+    # R1(ATP): 只扣「自由在产(备货单, 会入库)」; 客户单在产是发给下单客户的, 不抵、避免误消成 0
     auto_reorder = 0.0
     if do_stock and reorder_pt > 0 and available < reorder_pt:
         batch = float(cfg.get("batch_cover_days", 30)) * daily
-        auto_reorder = max(0.0, (reorder_pt + batch) - available - in_production)
+        auto_reorder = max(0.0, (reorder_pt + batch) - available - in_prod_free)
 
     return {
         "daily_sales_30d": daily,
@@ -386,7 +395,8 @@ def compute_product_stats(
         "safety_stock_computed": round(safety, 2),
         "reorder_point_computed": round(reorder_pt, 2),
         "available_qty": round(available, 2),
-        "in_production": round(in_production, 2),   # R1 在产/在途(已下工厂未到货)
+        "in_production_free": round(in_prod_free, 2),        # 备货在产(会入库, 已抵推荐)
+        "in_production_allocated": round(in_prod_alloc, 2),  # 客户单在产(发客户, 仅展示)
         "days_of_stock": days_of_stock,
         "warning_status": status,
         "auto_reorder_qty": round(auto_reorder, 0),
@@ -403,11 +413,11 @@ def refresh_all_inventory(db: Session) -> int:
     """
     cfg = get_forecast_config(db)
     abc_map = compute_abc_map(db, cfg)
-    in_prod_map = compute_in_production_map(db)
+    in_prod_split = compute_in_production_split(db)
     rows = db.execute(select(ProductInventory)).scalars().all()
     updated = 0
     for inv in rows:
-        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg, in_production_map=in_prod_map)
+        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg, in_production_split=in_prod_split)
         if inv.lead_time_days is None and stats["lead_time_days_computed"] is not None:
             inv.lead_time_days = stats["lead_time_days_computed"]
         updated += 1

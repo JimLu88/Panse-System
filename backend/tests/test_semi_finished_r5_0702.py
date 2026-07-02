@@ -52,3 +52,25 @@ def test_semi_finished_on_but_no_tagged_products(db_session):
     adv = sales_analytics.stock_advice(db)
     assert adv["semi_finished_enabled"] is True
     assert adv["semi_finished"] == []      # 没打标产品 → 空计划(前端提示去打标)
+
+
+def test_semi_finished_subtracts_on_hand_and_in_production(db_session):
+    """半成品库存台账里的 现有白坯 + 在产白坯 从建议里扣掉。"""
+    from app.models.inventory import SemiFinishedInventory
+    db = db_session
+    product_inventory_service.save_forecast_config(db, {"enable_semi_finished": True})
+    db.add_all([
+        Product(code="P1", name="榉木餐桌-原色", semi_finished_eligible=True, semi_group="WB1"),
+        Product(code="P2", name="榉木餐桌-岩板", semi_finished_eligible=True, semi_group="WB1"),
+    ])
+    _sales(db, "P1")
+    _sales(db, "P2")
+    db.add(SemiFinishedInventory(semi_group="WB1", on_hand_qty=Decimal("10"),
+                                 in_production_qty=Decimal("5")))
+    db.flush()
+    adv = sales_analytics.stock_advice(db)
+    grp = next(g for g in adv["semi_finished"] if g["semi_group"] == "WB1")
+    assert grp["pooled_forecast"] == 36
+    assert grp["on_hand"] == 10
+    assert grp["in_production"] == 5
+    assert grp["recommend_semi"] == 21     # 36 − 10 − 5

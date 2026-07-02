@@ -335,31 +335,41 @@ def _canon(pc: str) -> str:
     return min(vs)
 
 
-def _in_production_by_product(db: Session) -> dict[str, float]:
-    """在产/在途量: 已下工厂、尚未到货(actual_delivery 空)、未作废的工厂单, 按产品归集。
+def _in_production_split(db: Session) -> tuple[dict[str, float], dict[str, float]]:
+    """在产/在途(未到货未作废工厂单)拆两类 —— 完整 ATP 口径, 按规范产品码归集:
 
-    键用规范编码(品牌变体合并), 与备货/ABC 口径一致。
-    R1 真实缺口(ATP): 需生产要先扣掉这部分——它们很快到货, 再建议下单就是重复备货、数字虚高。
+      free      = 备货单(source_order_id 为空): 会进可售现货 → **抵未来预测缺口**。
+      allocated = 客户单 MTO(source_order_id 有值): 已卖给下单客户、到货即发走 → **不抵未来缺口**。
+
+    返回 (free_map, allocated_map)。这样"需生产"只减真正能补充库存的自由在产,
+    不会被"已排产给客户的量"误消成 0。
     """
     rows = db.execute(
-        select(FactoryOrder.product_code, func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
+        select(FactoryOrder.product_code, FactoryOrder.source_order_id,
+               func.coalesce(func.sum(FactoryOrder.qty), 0)).where(
             FactoryOrder.actual_delivery.is_(None),   # 未到货 = 还在产/在途
             FactoryOrder.voided_at.is_(None),          # 未作废
             FactoryOrder.product_code.isnot(None),
-        ).group_by(FactoryOrder.product_code)
+        ).group_by(FactoryOrder.product_code, FactoryOrder.source_order_id)
     ).all()
-    out: dict[str, float] = {}
-    for pc, qty in rows:
-        if pc:
-            out[_canon(pc)] = out.get(_canon(pc), 0.0) + float(qty or 0)
-    return out
+    free: dict[str, float] = {}
+    alloc: dict[str, float] = {}
+    for pc, source_order_id, qty in rows:
+        if not pc:
+            continue
+        c = _canon(pc)
+        if source_order_id is None:
+            free[c] = free.get(c, 0.0) + float(qty or 0)
+        else:
+            alloc[c] = alloc.get(c, 0.0) + float(qty or 0)
+    return free, alloc
 
 
 def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
-                       in_production: Optional[dict] = None):
+                       in_prod_free: Optional[dict] = None, in_prod_alloc: Optional[dict] = None):
     """按预测 + BOM 倒推每个物料的需求量。返回 (material_need{物料码:量}, products_out)。
-    use_stock=True: 先减成品现库存 + **在产/在途(R1)**(常规成品可抵扣, 只算真缺口);
-    False: 全量(定制无成品可抵, 也不减在产)。"""
+    use_stock=True: 需生产 = max(预测 − 现货 − **自由在产(备货单)**, 0)(只扣会入库的自由在产,
+                    客户单在产另列不抵扣); False: 全量(定制无成品可抵, 也不减在产)。"""
     material_need: dict[str, Decimal] = {}
     products_out = []
     for f in forecast:
@@ -370,16 +380,17 @@ def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
             pinv = db.execute(select(ProductInventory).where(
                 ProductInventory.product_code == pc).limit(1)).scalar_one_or_none()
             in_stock = float(pinv.physical_qty) if pinv else 0.0
-            # R1: 已下工厂还没到货的量 = 即将入库, 先扣掉, 不重复建议
-            inprod = float((in_production or {}).get(_canon(pc), 0.0))
-            need_to_produce = max(f["forecast_30d"] - in_stock - inprod, 0)
+            free = float((in_prod_free or {}).get(_canon(pc), 0.0))    # 备货在产, 会入库 → 抵扣
+            alloc = float((in_prod_alloc or {}).get(_canon(pc), 0.0))  # 客户单在产, 发客户 → 不抵扣
+            need_to_produce = max(f["forecast_30d"] - in_stock - free, 0)
         else:
-            in_stock, inprod, need_to_produce = 0.0, 0.0, f["forecast_30d"]   # 定制无成品库存可抵扣
+            in_stock, free, alloc, need_to_produce = 0.0, 0.0, 0.0, f["forecast_30d"]
         products_out.append({
             "product_code": pc, "product_name": f.get("product_name"),
             "image_url": f.get("image_url"), "sku": f.get("sku"),
             "forecast_30d": f["forecast_30d"], "in_stock": in_stock,
-            "in_production": inprod,           # R1 在产/在途 (已下工厂未到货)
+            "in_production_free": free,         # 备货在产(会入库, 已从需生产扣掉)
+            "in_production_allocated": alloc,   # 客户单在产(发给下单客户, 不抵未来缺口)
             "need_to_produce": need_to_produce,
         })
         if need_to_produce <= 0:
@@ -431,12 +442,12 @@ def stock_advice(db: Session) -> dict:
             定制专用料(is_custom)随单采购、不预囤。
     返回: {products, materials(常规), custom_products, custom_materials(定制通用料)}。
 
-    R1(ATP 真实缺口): 常规段的 需生产 = max(预测 − 现货 − 在产在途, 0), 扣掉已下工厂未到货的量,
-    不再重复建议; 定制段(接单再产)不减在产, 保守全量倒推通用料。
+    R1(ATP 真实缺口, 区分已占用): 需生产 = max(预测 − 现货 − 自由在产(备货单), 0)。
+    客户单在产(已卖给下单客户)另列展示、不抵未来缺口; 定制段不减在产, 保守全量倒推通用料。
     """
-    in_prod = _in_production_by_product(db)
+    free, alloc = _in_production_split(db)
     reg_need, products_out = _bom_material_need(
-        db, forecast_30d(db, custom=False), use_stock=True, in_production=in_prod)
+        db, forecast_30d(db, custom=False), use_stock=True, in_prod_free=free, in_prod_alloc=alloc)
     materials_out = _materials_from_need(db, reg_need)
 
     cus_need, custom_products = _bom_material_need(db, forecast_30d(db, custom=True), use_stock=False)
@@ -479,10 +490,14 @@ def semi_finished_plan(db: Session) -> list[dict]:
         demand = int(row["forecast_30d"]) if row else 0
         g["members"].append({"product_code": p.code, "product_name": p.name, "forecast_30d": demand})
         g["pooled_forecast"] += demand
+    from app.models.inventory import SemiFinishedInventory
+    inv_rows = {s.semi_group: s for s in
+                db.execute(select(SemiFinishedInventory)).scalars().all()}
     out = []
     for g in groups.values():
-        on_hand = 0        # 现有白坯 (暂无半成品库存表)
-        in_prod = 0        # 在产白坯
+        s = inv_rows.get(g["semi_group"])
+        on_hand = float(s.on_hand_qty) if s else 0.0        # 现有白坯 (半成品库存表)
+        in_prod = float(s.in_production_qty) if s else 0.0  # 在产白坯
         need = max(g["pooled_forecast"] - on_hand - in_prod, 0)
         out.append({**g, "on_hand": on_hand, "in_production": in_prod, "recommend_semi": need})
     return sorted(out, key=lambda x: -x["recommend_semi"])

@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import get_current_user
 from app.models.auth import User
-from app.models.inventory import ProductInventory
+from app.models.inventory import ProductInventory, SemiFinishedInventory
 from app.models.product import Product
 from app.schemas.product_inventory import (
     ProductInventoryCreate,
@@ -26,6 +26,13 @@ class ProductInventoryPatch(BaseModel):
     lead_time_days: Optional[int] = None
     slow_moving_days: Optional[int] = None
     reorder_point: Optional[Decimal] = None
+    remark: Optional[str] = None
+
+
+class SemiInventoryPatch(BaseModel):   # R5 半成品/白坯 库存维护
+    on_hand_qty: Optional[Decimal] = None
+    in_production_qty: Optional[Decimal] = None
+    name: Optional[str] = None
     remark: Optional[str] = None
 
 router = APIRouter(prefix="/api/inventory/products", tags=["inventory"])
@@ -84,11 +91,11 @@ def list_product_inventory(
     # 一次性算 ABC 分层 + 配置(方向4), 每行复用; 避免逐行重算全表排名
     _cfg = product_inventory_service.get_forecast_config(db)
     _abc = product_inventory_service.compute_abc_map(db, _cfg)
-    _inprod = product_inventory_service.compute_in_production_map(db)   # R1 在产/在途, 一次算全表复用
+    _inprod = product_inventory_service.compute_in_production_split(db)  # R1 在产拆自由/客户单, 一次算复用
     for inv in rows:
         covered.add(inv.product_code)
         stats = product_inventory_service.compute_product_stats(
-            db, inv, abc_map=_abc, cfg=_cfg, in_production_map=_inprod)
+            db, inv, abc_map=_abc, cfg=_cfg, in_production_split=_inprod)
         # 需关注筛选: 正常(ok) 和 按需生产(mto, 定制/长尾) 都不算"需关注"
         if warning_only and stats["warning_status"] in ("ok", "mto"):
             continue
@@ -259,3 +266,46 @@ def delete_product_inventory(inventory_id: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "inventory row not found")
     db.delete(inv)
     db.commit()
+
+
+# ---------------- R5 半成品/白坯 库存 (功能开关打开后用) ---------------- #
+
+@router.get("/semi-finished/list")
+def list_semi_finished_inventory(db: Session = Depends(get_db)):
+    """列出半成品/白坯库存 (现有/在产, 按 semi_group)。功能关时也可看, 通常为空。"""
+    rows = db.execute(
+        select(SemiFinishedInventory).order_by(SemiFinishedInventory.semi_group)
+    ).scalars().all()
+    return [{
+        "id": r.id, "semi_group": r.semi_group, "name": r.name,
+        "on_hand_qty": float(r.on_hand_qty or 0), "in_production_qty": float(r.in_production_qty or 0),
+        "remark": r.remark,
+    } for r in rows]
+
+
+@router.put("/semi-finished/{semi_group}")
+def upsert_semi_finished_inventory(
+    semi_group: str,
+    payload: SemiInventoryPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """维护某白坯分组的 现有白坯 / 在产白坯 (R5)。没有则新建。"""
+    row = db.execute(
+        select(SemiFinishedInventory).where(SemiFinishedInventory.semi_group == semi_group)
+    ).scalar_one_or_none()
+    if row is None:
+        row = SemiFinishedInventory(semi_group=semi_group, warehouse="default")
+        db.add(row)
+    if payload.on_hand_qty is not None:
+        row.on_hand_qty = payload.on_hand_qty
+    if payload.in_production_qty is not None:
+        row.in_production_qty = payload.in_production_qty
+    if payload.name is not None:
+        row.name = payload.name
+    if payload.remark is not None:
+        row.remark = payload.remark
+    db.commit()
+    db.refresh(row)
+    return {"semi_group": row.semi_group, "on_hand_qty": float(row.on_hand_qty or 0),
+            "in_production_qty": float(row.in_production_qty or 0)}

@@ -318,6 +318,8 @@ export interface Product {
   accessory_desc?: string | null;
   accessory_remark?: string | null;
   listing_status?: string | null;
+  semi_finished_eligible?: boolean | null;   // R5 可做白坯
+  semi_group?: string | null;                 // R5 白坯分组码
 }
 
 export const listProducts = (q?: string, params?: { category?: string; brand?: string }) =>
@@ -435,6 +437,8 @@ export const updateProduct = (id: number, payload: {
   accessory_remark?: string | null;
   listing_status?: string | null;
   description?: string | null;
+  semi_finished_eligible?: boolean | null;   // R5 可做白坯
+  semi_group?: string | null;                 // R5 白坯分组码
 }) => api.patch<Product>(`/api/products/${id}`, payload).then((r) => r.data);
 
 export interface DeleteProductResult {
@@ -474,7 +478,8 @@ export interface ProductInventoryRow {
   warning_status: 'ok' | 'warning' | 'danger' | 'critical' | 'excess' | 'mto';
   auto_reorder_qty: number;
   abc_class?: 'A' | 'B' | 'C' | null;   // A=畅销备货 / B / C=按需生产(MTO)
-  in_production?: number | null;        // R1 在产/在途(已下工厂未到货), 推荐备货已先扣掉
+  in_production_free?: number | null;        // R1 备货在产(会入库, 已从推荐备货扣掉)
+  in_production_allocated?: number | null;   // R1 客户单在产(发给下单客户, 不抵, 仅展示)
 }
 
 export const listProductInventory = (warningOnly = false, includeAll = false) =>

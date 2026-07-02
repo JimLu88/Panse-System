@@ -158,3 +158,21 @@ class ProductStockMovement(Base, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("reason", "entity_type", "entity_id", name="uq_prod_stock_move_event"),
     )
+
+
+class SemiFinishedInventory(Base, TimestampMixin):
+    """半成品/白坯库存 (R5, 功能开关打开后才用)。
+
+    按 semi_group(共享白坯分组)记 现有白坯 + 在产白坯; 备货建议的「半成品备货计划」
+    据此算池化缺口(Σ该组成品预测 − on_hand − in_production)。默认没数据 = 现有/在产按 0。
+    """
+
+    __tablename__ = "semi_finished_inventory"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    semi_group: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    warehouse: Mapped[str] = mapped_column(String(64), default="default", nullable=False)
+    name: Mapped[Optional[str]] = mapped_column(String(255))          # 白坯名称(可选)
+    on_hand_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    in_production_qty: Mapped[Decimal] = mapped_column(Numeric(14, 3), default=Decimal("0"), nullable=False)
+    remark: Mapped[Optional[str]] = mapped_column(String(255))

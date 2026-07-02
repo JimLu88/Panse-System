@@ -11,6 +11,7 @@ import {
   Button,
   Card,
   Col,
+  InputNumber,
   Row,
   Space,
   Statistic,
@@ -22,12 +23,13 @@ import {
   message,
 } from 'antd';
 import { DownloadOutlined } from '@ant-design/icons';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   api,
   fetchForecast30d,
   fetchSlowMoving,
   fetchStockAdvice,
+  upsertSemiFinished,
 } from '../api/client';
 import ProductThumb from '../components/ProductThumb';
 import RefillCallout from '../components/RefillCallout';
@@ -160,11 +162,22 @@ function AdviceTab() {
   const { data, isLoading } = useQuery({
     queryKey: ['stock-advice'], queryFn: fetchStockAdvice,
   });
+  const qc = useQueryClient();
+  const saveSemi = async (group: string, field: 'on_hand_qty' | 'in_production_qty', val: number) => {
+    try {
+      await upsertSemiFinished(group, { [field]: val });
+      qc.invalidateQueries({ queryKey: ['stock-advice'] });
+      message.success('已保存');
+    } catch {
+      message.error('保存半成品库存失败');
+    }
+  };
   const exportProducts = () => exportPageXlsx('备货建议-产能缺口', [
     { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
     { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' },
-    { key: 'in_production', title: '在产/在途' }, { key: 'need_to_produce', title: '需生产' },
-  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, in_production: r.in_production, need_to_produce: r.need_to_produce })));
+    { key: 'in_production_free', title: '备货在产(会入库)' }, { key: 'in_production_allocated', title: '客户单在产(发客户)' },
+    { key: 'need_to_produce', title: '需生产' },
+  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, in_production_free: r.in_production_free, in_production_allocated: r.in_production_allocated, need_to_produce: r.need_to_produce })));
   const exportMaterials = () => exportPageXlsx('备货建议-物料下单', [
     { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '需求量' },
     { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
@@ -179,7 +192,7 @@ function AdviceTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="备货建议 = 按预测30天销量 + BOM倒推物料需求 − 现库存 · 常规单与定制单分开"
-             description={<>常规单: 成品可提前生产/备货(需生产 = 预测 − 现成品库存 − <b>在产/在途</b>), 并倒推全部物料。「在产/在途」= 已下工厂还没到货的量, 会先扣掉, 避免重复下单。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
+             description={<>常规单: 需生产 = 预测 − 现成品库存 − <b>备货在产</b>。「备货在产」= 不挂客户的备货单在产, 到货会进可售库存, 已扣掉; 「客户单在产」= 已卖给下单客户的量, 到货即发走, <b>不抵未来缺口</b>(单独列出仅供参考)。并按需生产倒推全部物料。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
       <Card size="small" title="常规单 · 未来 30 天产能缺口"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
@@ -192,11 +205,16 @@ function AdviceTab() {
               sorter: (a: any, b: any) => String(a.product_name ?? a.product_code).localeCompare(String(b.product_name ?? b.product_code)) },
             { title: '预测 30 天', dataIndex: 'forecast_30d', width: 110,
               sorter: (a: any, b: any) => (a.forecast_30d ?? 0) - (b.forecast_30d ?? 0) },
-            { title: '现成品库存', dataIndex: 'in_stock', width: 110 },
-            { title: '在产/在途', dataIndex: 'in_production', width: 110,
+            { title: '现成品库存', dataIndex: 'in_stock', width: 100 },
+            { title: '备货在产', dataIndex: 'in_production_free', width: 100,
               render: (v: number) => (v ?? 0) > 0 ?
-                <Tooltip title="已下工厂、还没到货的量。已从「需生产」里扣掉, 不用重复下单。">
+                <Tooltip title="备货单在产(不挂客户)、到货会进可售库存 → 已从「需生产」扣掉, 不用重复下单。">
                   <Tag color="blue">{v}</Tag></Tooltip> : <span style={{ color: '#bbb' }}>0</span>,
+            },
+            { title: '客户单在产', dataIndex: 'in_production_allocated', width: 110,
+              render: (v: number) => (v ?? 0) > 0 ?
+                <Tooltip title="已卖给下单客户、到货即发走, 不算未来可用库存 → 不抵「需生产」。">
+                  <Tag>{v}</Tag></Tooltip> : <span style={{ color: '#bbb' }}>0</span>,
             },
             { title: '需生产', dataIndex: 'need_to_produce', width: 100,
               render: (v: number) => v > 0 ?
@@ -275,8 +293,12 @@ function AdviceTab() {
               { title: '白坯分组', dataIndex: 'semi_group', width: 160 },
               { title: '归集产品数', width: 110, render: (_: any, r: any) => (r.members?.length ?? 0) + ' 款' },
               { title: '池化预测(30天)', dataIndex: 'pooled_forecast', width: 130 },
-              { title: '现有白坯', dataIndex: 'on_hand', width: 100 },
-              { title: '在产白坯', dataIndex: 'in_production', width: 100 },
+              { title: '现有白坯', dataIndex: 'on_hand', width: 110,
+                render: (v: number, r: any) => <InputNumber size="small" min={0} defaultValue={v} style={{ width: 88 }}
+                  onBlur={(e) => saveSemi(r.semi_group, 'on_hand_qty', Number((e.target as HTMLInputElement).value) || 0)} /> },
+              { title: '在产白坯', dataIndex: 'in_production', width: 110,
+                render: (v: number, r: any) => <InputNumber size="small" min={0} defaultValue={v} style={{ width: 88 }}
+                  onBlur={(e) => saveSemi(r.semi_group, 'in_production_qty', Number((e.target as HTMLInputElement).value) || 0)} /> },
               { title: '建议备白坯', dataIndex: 'recommend_semi', width: 120,
                 render: (v: number) => v > 0 ? <Tag color="purple">{v}</Tag> : <Tag color="green">充足</Tag> },
             ]}

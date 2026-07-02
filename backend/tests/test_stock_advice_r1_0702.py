@@ -1,6 +1,7 @@
-"""R1 (ATP 真实缺口): 备货建议 / 成品库存推荐 要扣掉「在产/在途」(已下工厂未到货)。
+"""R1 (ATP 真实缺口, 区分已占用): 只扣「自由在产(备货单)」, 客户单在产另列不抵。
 
-场景: 预测 18 件, 现货 3 件, 在产 5 件 → 需生产 = max(18 − 3 − 5, 0) = 10 (旧口径会算 15)。
+场景: 预测 18, 现货 3, 自由在产 5 → 需生产 = max(18−3−5, 0) = 10。
+客户单(MTO, source_order_id 有值)在产 不参与抵扣, 仅在 in_production_allocated 展示。
 """
 from __future__ import annotations
 
@@ -27,7 +28,7 @@ def _seed_regular_sales(db, code="P1", n=30):
     db.flush()
 
 
-def test_stock_advice_subtracts_in_production(db_session):
+def test_free_in_production_subtracts_allocated_does_not(db_session):
     db = db_session
     db.add_all([
         Material(code="M1", name="木方", lead_time_days=10, priority="high"),
@@ -36,21 +37,27 @@ def test_stock_advice_subtracts_in_production(db_session):
     _seed_regular_sales(db, "P1")   # 预测 18
     db.add(ProductInventory(warehouse="default", product_code="P1", sku="主款",
                             physical_qty=Decimal("3")))
-    # 在产 5 件(未到货未作废)
-    db.add(FactoryOrder(factory_order_no="FO_IP", product_code="P1", qty=5,
-                        order_date=date.today() - timedelta(days=2), actual_delivery=None))
+    db.add_all([
+        # 自由在产(备货单, 无 source_order_id): 5 件 → 抵扣
+        FactoryOrder(factory_order_no="FO_FREE", product_code="P1", qty=5,
+                     order_date=date.today() - timedelta(days=2), actual_delivery=None),
+        # 客户单在产(MTO, 有 source_order_id): 40 件 → 不抵扣, 仅展示
+        FactoryOrder(factory_order_no="FO_MTO", product_code="P1", qty=40,
+                     order_date=date.today() - timedelta(days=2), actual_delivery=None,
+                     source_order_id=123),
+    ])
     db.flush()
 
     advice = sales_analytics.stock_advice(db)
     p = next(x for x in advice["products"] if x["product_code"] == "P1")
     assert p["forecast_30d"] == 18
     assert p["in_stock"] == 3
-    assert p["in_production"] == 5
-    assert p["need_to_produce"] == 10   # 18 − 3 − 5 (旧口径=15)
+    assert p["in_production_free"] == 5          # 只有备货单算
+    assert p["in_production_allocated"] == 40     # 客户单单独列, 不抵
+    assert p["need_to_produce"] == 10             # 18 − 3 − 5 (40 客户单不减!)
 
-    # 物料需求跟着降: 需生产 10 件 × BOM 2 = 20; 无库存 → missing 20
     m = next(x for x in advice["materials"] if x["material_code"] == "M1")
-    assert m["need_qty"] == 20
+    assert m["need_qty"] == 20                     # 10 × BOM 2
 
 
 def test_in_production_ignores_delivered_and_voided(db_session):
@@ -59,22 +66,19 @@ def test_in_production_ignores_delivered_and_voided(db_session):
     db.add(ProductInventory(warehouse="default", product_code="P1", sku="主款",
                             physical_qty=Decimal("0")))
     db.add_all([
-        # 已到货 → 不算在产
         FactoryOrder(factory_order_no="FO_done", product_code="P1", qty=4,
                      order_date=date.today() - timedelta(days=20),
-                     actual_delivery=date.today() - timedelta(days=1)),
-        # 已作废 → 不算在产
+                     actual_delivery=date.today() - timedelta(days=1)),      # 已到货, 不算
         FactoryOrder(factory_order_no="FO_void", product_code="P1", qty=7,
                      order_date=date.today() - timedelta(days=5),
-                     actual_delivery=None, voided_at=datetime.now(timezone.utc)),
-        # 真·在产 6 件
+                     actual_delivery=None, voided_at=datetime.now(timezone.utc)),  # 作废, 不算
         FactoryOrder(factory_order_no="FO_live", product_code="P1", qty=6,
-                     order_date=date.today() - timedelta(days=2), actual_delivery=None),
+                     order_date=date.today() - timedelta(days=2), actual_delivery=None),  # 自由在产 6
     ])
     db.flush()
     advice = sales_analytics.stock_advice(db)
     p = next(x for x in advice["products"] if x["product_code"] == "P1")
-    assert p["in_production"] == 6          # 只算 live 的 6
+    assert p["in_production_free"] == 6
     assert p["need_to_produce"] == 12       # 18 − 0 − 6
 
 
@@ -94,31 +98,36 @@ def test_custom_segment_does_not_subtract_in_production(db_session):
     db.flush()
     advice = sales_analytics.stock_advice(db)
     cp = next(x for x in advice["custom_products"] if x["product_code"] == "PC")
-    assert cp["in_production"] == 0            # 定制段不减在产
+    assert cp["in_production_free"] == 0
     assert cp["need_to_produce"] == cp["forecast_30d"]
 
 
-def test_product_stats_recommend_subtracts_in_production(db_session):
-    """成品库存页: A 类「推荐备货」也扣在产, 避免对在做的量重复下单。"""
+def test_product_stats_recommend_subtracts_free_not_allocated(db_session):
+    """成品库存页: 推荐备货只扣自由在产, 客户单在产另列不抵。"""
     db = db_session
-    _seed_regular_sales(db, "P1")          # 主销 30 单
-    _seed_regular_sales(db, "P2", n=8)     # 陪衬 8 单 → P1 累计占比进 A 线 → A 类
+    _seed_regular_sales(db, "P1")
+    _seed_regular_sales(db, "P2", n=8)     # 陪衬 → P1 进 A 类
     inv = ProductInventory(warehouse="default", product_code="P1", sku="主款",
                            physical_qty=Decimal("1"))
     db.add(inv)
-    db.add(FactoryOrder(factory_order_no="FO_ip2", product_code="P1", qty=8,
-                        order_date=date.today() - timedelta(days=1), actual_delivery=None))
+    db.add_all([
+        FactoryOrder(factory_order_no="FO_free2", product_code="P1", qty=8,
+                     order_date=date.today() - timedelta(days=1), actual_delivery=None),
+        FactoryOrder(factory_order_no="FO_mto2", product_code="P1", qty=30,
+                     order_date=date.today() - timedelta(days=1), actual_delivery=None,
+                     source_order_id=77),
+    ])
     db.flush()
     cfg = product_inventory_service.get_forecast_config(db)
     abc = product_inventory_service.compute_abc_map(db, cfg)
-    ip = product_inventory_service.compute_in_production_map(db)
+    split = product_inventory_service.compute_in_production_split(db)
     with_ip = product_inventory_service.compute_product_stats(
-        db, inv, abc_map=abc, cfg=cfg, in_production_map=ip)
-    without_ip = product_inventory_service.compute_product_stats(
-        db, inv, abc_map=abc, cfg=cfg, in_production_map={})
+        db, inv, abc_map=abc, cfg=cfg, in_production_split=split)
+    none_ip = product_inventory_service.compute_product_stats(
+        db, inv, abc_map=abc, cfg=cfg, in_production_split=({}, {}))
     assert with_ip["abc_class"] == "A"
-    assert with_ip["in_production"] == 8
-    assert with_ip["auto_reorder_qty"] <= without_ip["auto_reorder_qty"]
-    # 原推荐若 ≥8, 扣在产后恰好少 8
-    if without_ip["auto_reorder_qty"] >= 8:
-        assert without_ip["auto_reorder_qty"] - with_ip["auto_reorder_qty"] == 8
+    assert with_ip["in_production_free"] == 8
+    assert with_ip["in_production_allocated"] == 30
+    # 只扣自由在产 8 (不是 8+30=38)
+    if none_ip["auto_reorder_qty"] >= 8:
+        assert none_ip["auto_reorder_qty"] - with_ip["auto_reorder_qty"] == 8

@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Table,
   Tag,
   Typography,
@@ -557,6 +558,8 @@ export default function ProductsPage() {
                 size_value: p.size_value ?? '', size_detail: p.size_detail ?? '',
                 main_material: p.main_material ?? '', aux_material: p.aux_material ?? '',
                 accessory_desc: p.accessory_desc ?? '', description: p.description ?? '',
+                semi_finished_eligible: (p as any).semi_finished_eligible ?? false,
+                semi_group: (p as any).semi_group ?? '',
               });
             }}
             renderExpand={() => (
@@ -599,6 +602,8 @@ export default function ProductsPage() {
                 aux_material: v.aux_material || null,
                 accessory_desc: v.accessory_desc || null,
                 description: v.description || null,
+                semi_finished_eligible: !!v.semi_finished_eligible,
+                semi_group: v.semi_group || null,
               },
             })
           }
@@ -642,6 +647,18 @@ export default function ProductsPage() {
           <Form.Item name="description" label="产品文案">
             <Input.TextArea rows={3} />
           </Form.Item>
+          <div style={{ borderTop: '1px dashed #eee', paddingTop: 8 }}>
+            <Space size="large" align="baseline">
+              <Form.Item name="semi_finished_eligible" label="可做白坯(半成品)" valuePropName="checked"
+                tooltip="R5 半成品/白坯备货能力(默认关)。打勾表示该产品前段可做成通用白坯; 需在库存备货设置里打开开关后才生效。">
+                <Switch />
+              </Form.Item>
+              <Form.Item name="semi_group" label="白坯分组码" style={{ width: 220 }}
+                tooltip="共享同一白坯的产品填相同分组码(如 榉木餐桌1.4白坯), 备货建议按组池化算白坯备货量。">
+                <Input placeholder="留空=用产品编码单独成组" />
+              </Form.Item>
+            </Space>
+          </div>
         </Form>
       </Modal>
 

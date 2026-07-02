@@ -473,6 +473,12 @@ export const fetchStockAdvice = () =>
     semi_finished_enabled?: boolean; semi_finished?: any[] }>('/api/reports/stock-advice')
     .then((r) => r.data);
 
+// R5 半成品/白坯库存维护 (功能开关打开后用)
+export const upsertSemiFinished = (
+  semiGroup: string,
+  patch: { on_hand_qty?: number; in_production_qty?: number; name?: string; remark?: string },
+) => api.put(`/api/inventory/products/semi-finished/${encodeURIComponent(semiGroup)}`, patch).then((r) => r.data);
+
 export const fetchSlowMoving = (params: { long_no_sale_days?: number; overstock_ratio?: number } = {}) =>
   api.get<{ long_idle: any[]; overstock: any[]; thresholds: any }>(
     '/api/reports/slow-moving', { params },
