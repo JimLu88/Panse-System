@@ -358,9 +358,19 @@ def sync_binding(db: Session, binding: FeishuTableBinding,
         _logger.error("飞书同步[%s] 配置错误: %s", binding.system_table, res.errors[-1])
         return res
     if ent.pk_attr not in fm:
-        res.errors.append(f"field_mapping 必须包含主键字段 {ent.pk_attr}")
-        _logger.error("飞书同步[%s] 配置错误: %s", binding.system_table, res.errors[-1])
-        return res
+        # 主键字段没配映射 → 不再硬报错挡住同步。按「一键预设」自动补一个飞书列名并存回绑定,
+        # 下面 _ensure_feishu_fields 会在飞书表把这一列自动建出来(用户无需手动建字段)。
+        from app.services import feishu_preset
+        default_col = next(
+            (pr["field_mapping"][ent.pk_attr] for pr in feishu_preset.get_presets()
+             if pr["system_table"] == binding.system_table and ent.pk_attr in pr["field_mapping"]),
+            ent.pk_attr,
+        )
+        fm[ent.pk_attr] = default_col
+        binding.field_mapping = json.dumps(fm, ensure_ascii=False)
+        db.flush()
+        _logger.warning("飞书同步[%s] 主键字段 %s 缺映射 → 自动补飞书列「%s」并将自动建列",
+                        binding.system_table, ent.pk_attr, default_col)
 
     direction = binding.direction or "bidirectional"
     can_push = direction in ("out", "bidirectional")

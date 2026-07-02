@@ -110,11 +110,11 @@ const PROMO_FIELDS: PromoField[] = [
 const PROMO_FORMULA: Record<string, string> = {
   taobao_activity_price: '活动报名价 = 日常价',
   shop_internal_final: '小促到手价 = 日常价 × 小促店铺宝设置%',
-  mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促店铺宝设置%',
-  mid_shop_receipt: '中促店铺到账 = 中促到手价 × (1 − 88VIP佣金%)',
+  mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促店铺宝设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「中促店铺到账」= 到手价×(1−88VIP佣金2%)',
+  mid_shop_receipt: '中促店铺到账 = 中促到手价 × (1 − 88VIP佣金2%) ｜ 店铺实收(佣金后), 即定价总表「中促价」',
   mid_vip_final: '中促会员价 = 中促到手价 − 阶梯消费券(按到手价档位)',
-  big_buyer_price: '大促到手价 = 日常价 × (1 − 大促力度%) × 大促店铺宝设置%',
-  big_shop_receipt: '大促店铺到账 = 大促到手价 × (1 − 88VIP佣金%)',
+  big_buyer_price: '大促到手价 = 日常价 × (1 − 大促力度%) × 大促店铺宝设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「大促店铺到账」= 到手价×(1−88VIP佣金2%)',
+  big_shop_receipt: '大促店铺到账 = 大促到手价 × (1 − 88VIP佣金2%) ｜ 店铺实收(佣金后), 即定价总表「大促价」',
   big_vip_final: '大促会员价 = 大促到手价 − 阶梯消费券(按到手价档位)',
 };
 
@@ -729,13 +729,13 @@ export default function PricingPage() {
   }
 
   const fmtFormula: Record<string, string> = {
-    list_price: '物理成本 ÷ 0.4', daily_price: '标价 × 0.75',
-    small_promo: '物理成本 ÷ (小促基数 − 0.02抽佣 − 0.006税)',
-    mid_promo: '物理成本 ÷ (中促基数 − 0.02抽佣 − 0.006税)',
-    big_promo: '物理成本 ÷ (大促基数 − 0.02抽佣 − 0.006税)',
+    list_price: '标价 = 物理成本 ÷ (1 − 2.6%) ÷ 0.4', daily_price: '日常价 = 标价 × 0.75',
+    small_promo: '小促价 = 进位到10( 物理成本 ÷ (1 − 2.6%) ÷ 小促基数 )',
+    mid_promo: '中促价 = 进位到10( 物理成本 ÷ (1 − 2.6%) ÷ 中促基数 )',
+    big_promo: '大促价 = 进位到10( 物理成本 ÷ (1 − 2.6%) ÷ 大促基数 )',
   };
-  // 小促/中促/大促 = 物理成本 ÷ (基数 − 0.02 − 0.006); 基数按 SKU 不同(从现价反解)。改基数=只改这一行。
-  const FEE_TAX = 0.026; // 平台抽佣 0.02 + 税 0.006
+  // 小/中/大促 = 进位到10(物理成本 ÷ (1−2.6%) ÷ 基数); 基数按 SKU 不同(从现价反解)。改基数=只改这一行。
+  const FEE_TAX = 0.026; // 成本加成率 = 支付手续费 0.6% + 税 2%
   const TIER_BASE: Record<string, string> = { small_promo: '小促基数', mid_promo: '中促基数', big_promo: '大促基数' };
   const TIER_BASE_COL: Record<string, string> = { small_promo: 'base_small', mid_promo: 'base_mid', big_promo: 'base_big' };
   // 各成本/计算列的真实公式(取自定价总表的单元格公式) — 悬浮显示。录入值的列标注来源。
@@ -746,9 +746,9 @@ export default function PricingPage() {
     external_parts_cost: '外采配件成本 = 22 项配件成本之和（岩板…其他）',
     logistics_cost: '物流费 = 按尺寸：大型 700 / 中型 300 / 小型 80',
     install_cost: '安装费 = 按尺寸：大型 150 / 中型 100 / 小型 0',
-    platform_fee_rate: '平台费 = 大促价 × 0.6%（平台抽佣，这里是金额不是费率）',
+    platform_fee_rate: '支付手续费 = 大促价 × 0.6%（金额，非费率）',
     tax: '税费 = 大促价 × 2%',
-    big_promo_margin: '大促利润 = 大促价 − 会计总成本',
+    big_promo_margin: '大促利润 = 大促价 − 会计总成本(物理成本 + 支付手续费0.6% + 税2%)；大促价=店铺到账(已扣88VIP佣金2%)，故佣金也已反映',
     gross_margin_rate: '毛利率 = 大促利润 ÷ 大促价',
     wood_cost: '木作成本 = 录入值（来自 BOM 木料成本）',
     packaging_cost: '打包 = 录入值',
