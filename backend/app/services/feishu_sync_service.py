@@ -563,8 +563,8 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
         # 首次配对: 一致则直接建映射
         if sys_hash == fe_hash:
             _upsert_map(db, binding, pk, sys_hash, fe_hash, fe_rec["record_id"])
-        elif first_sync and can_push:
-            # 首次同步以系统为准: 系统值直接覆盖飞书, 不报冲突 (收集, 批量更新)
+        elif can_push and (first_sync or not can_pull):
+            # 首次同步 或 仅出方向: 系统值直接覆盖飞书, 不报冲突 (收集, 批量更新)
             batch["update"].append(
                 (pk, fe_rec["record_id"], _to_feishu_fields(sys_row, fm, primary_fe), sys_hash, None))
         else:
@@ -576,6 +576,13 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
     sys_changed = m.system_hash != sys_hash
     fe_changed = m.feishu_hash != fe_hash
     m.feishu_record_id = fe_rec["record_id"]
+
+    # 仅出(out): 系统永远为准 —— 系统改了、或飞书被人动过(漂移), 都用系统值覆盖飞书, 绝不产生冲突。
+    if can_push and not can_pull:
+        if sys_changed or fe_changed:
+            batch["update"].append(
+                (pk, m.feishu_record_id, _to_feishu_fields(sys_row, fm, primary_fe), sys_hash, m))
+        return
 
     if sys_changed and fe_changed:
         _record_conflict(db, binding, ent, fm, pk, sys_row, fe_rec, sys_vals, fe_vals)
