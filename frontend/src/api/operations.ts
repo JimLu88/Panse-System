@@ -469,7 +469,8 @@ export const fetchForecast30d = () =>
   api.get<{ forecast: Array<any> }>('/api/reports/forecast/30d').then((r) => r.data);
 
 export const fetchStockAdvice = () =>
-  api.get<{ products: any[]; materials: any[]; custom_products: any[]; custom_materials: any[] }>('/api/reports/stock-advice')
+  api.get<{ products: any[]; materials: any[]; custom_products: any[]; custom_materials: any[];
+    semi_finished_enabled?: boolean; semi_finished?: any[] }>('/api/reports/stock-advice')
     .then((r) => r.data);
 
 export const fetchSlowMoving = (params: { long_no_sale_days?: number; overstock_ratio?: number } = {}) =>

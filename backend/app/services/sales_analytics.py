@@ -442,12 +442,50 @@ def stock_advice(db: Session) -> dict:
     cus_need, custom_products = _bom_material_need(db, forecast_30d(db, custom=True), use_stock=False)
     custom_materials = _materials_from_need(db, cus_need, only_common=True)
 
+    from app.services import product_inventory_service as _pis
+    semi_enabled = bool(_pis.get_forecast_config(db).get("enable_semi_finished"))
     return {
         "products": products_out,
         "materials": materials_out,
         "custom_products": custom_products,
         "custom_materials": custom_materials,
+        # R5 半成品(白坯): 默认关闭时 semi_finished 为空、前端不显示; 打开后出池化备货计划
+        "semi_finished_enabled": semi_enabled,
+        "semi_finished": semi_finished_plan(db) if semi_enabled else [],
     }
+
+
+def semi_finished_plan(db: Session) -> list[dict]:
+    """R5 半成品(白坯)备货计划 —— 仅 enable_semi_finished 打开时有内容, 关闭返回 []。
+
+    池化: 把共享同一白坯(semi_group)的各成品30天预测归集, 合并算白坯备货量, 波动比分开囤小。
+      白坯备货量 = max(Σ该组成品预测 − 现有白坯 − 在产白坯, 0)。
+    现阶段无独立半成品库存表, 现有/在产白坯暂按 0(打开功能+量大后再接半成品库存与在产)。
+    """
+    from app.services import product_inventory_service as _pis
+    if not _pis.get_forecast_config(db).get("enable_semi_finished"):
+        return []
+    prods = db.execute(
+        select(Product).where(Product.semi_finished_eligible == True)  # noqa: E712
+    ).scalars().all()
+    if not prods:
+        return []
+    fc = {f["product_code"]: f for f in forecast_30d(db, custom=None)}
+    groups: dict[str, dict] = {}
+    for p in prods:
+        grp = p.semi_group or p.code
+        g = groups.setdefault(grp, {"semi_group": grp, "members": [], "pooled_forecast": 0})
+        row = fc.get(p.code)
+        demand = int(row["forecast_30d"]) if row else 0
+        g["members"].append({"product_code": p.code, "product_name": p.name, "forecast_30d": demand})
+        g["pooled_forecast"] += demand
+    out = []
+    for g in groups.values():
+        on_hand = 0        # 现有白坯 (暂无半成品库存表)
+        in_prod = 0        # 在产白坯
+        need = max(g["pooled_forecast"] - on_hand - in_prod, 0)
+        out.append({**g, "on_hand": on_hand, "in_production": in_prod, "recommend_semi": need})
+    return sorted(out, key=lambda x: -x["recommend_semi"])
 
 
 # ----------------------------- 滞销分类 ------------------------- #

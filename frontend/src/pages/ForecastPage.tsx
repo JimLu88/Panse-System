@@ -261,6 +261,28 @@ function AdviceTab() {
           ]}
         />
       </Card>
+      {data?.semi_finished_enabled && (
+        <Card size="small" title="半成品 / 白坯备货计划（池化归集）">
+          <Alert type="info" showIcon style={{ marginBottom: 8 }}
+                 message="把共享同一白坯的成品预测合并算备货量(池化, 波动比分开囤小)。给产品打标「可做白坯」并设同一白坯分组后, 这里出计划。" />
+          <Table
+            size="small" loading={isLoading}
+            rowKey={(r: any) => r.semi_group}
+            dataSource={data?.semi_finished ?? []}
+            locale={{ emptyText: '还没有打标「可做白坯」的产品(在产品总表给产品设 semi_group 后出计划)' }}
+            pagination={{ defaultPageSize: 20, showSizeChanger: true }}
+            columns={[
+              { title: '白坯分组', dataIndex: 'semi_group', width: 160 },
+              { title: '归集产品数', width: 110, render: (_: any, r: any) => (r.members?.length ?? 0) + ' 款' },
+              { title: '池化预测(30天)', dataIndex: 'pooled_forecast', width: 130 },
+              { title: '现有白坯', dataIndex: 'on_hand', width: 100 },
+              { title: '在产白坯', dataIndex: 'in_production', width: 100 },
+              { title: '建议备白坯', dataIndex: 'recommend_semi', width: 120,
+                render: (v: number) => v > 0 ? <Tag color="purple">{v}</Tag> : <Tag color="green">充足</Tag> },
+            ]}
+          />
+        </Card>
+      )}
     </Space>
   );
 }

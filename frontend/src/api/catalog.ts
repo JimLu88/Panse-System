@@ -90,6 +90,7 @@ export interface ForecastConfig {
   halflife_days: number;
   window_days: number;
   promo_periods: { name: string; start: string; end: string }[];
+  enable_semi_finished?: boolean;   // R5 半成品/白坯备货 开关 (默认关)
   promo?: {
     active: { name: string; start: string; end: string }[];
     upcoming: { name: string; start: string; end: string; days_to_start: number }[];

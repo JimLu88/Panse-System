@@ -1,6 +1,6 @@
 from typing import Optional
 
-from sqlalchemy import JSON, String
+from sqlalchemy import JSON, Boolean, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -43,3 +43,10 @@ class Product(Base, TimestampMixin):
     size_confirmed: Mapped[Optional[str]] = mapped_column(String(32))          # 尺寸是否确定
     sku: Mapped[Optional[str]] = mapped_column(String(255))                    # SKU 描述 (产品主表级)
     sku_code: Mapped[Optional[str]] = mapped_column(String(32), index=True)    # SKU 编码 (产品主表级)
+
+    # R5 半成品/白坯 (默认全 False, 功能开关 enable_semi_finished 打开后才用):
+    #   semi_finished_eligible = 该产品可用白坯前段生产 (前段共用、个性化靠后)
+    #   semi_group = 共享同一白坯的分组码 (同组产品的成品预测归集算白坯备货量, 池化省安全库存)
+    semi_finished_eligible: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False)
+    semi_group: Mapped[Optional[str]] = mapped_column(String(64), index=True)

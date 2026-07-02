@@ -69,6 +69,7 @@ function FormulaButton() {
         onOk={() => d && saveMut.mutate({
           mode: d.mode, halflife_days: d.halflife_days,
           window_days: d.window_days, promo_periods: d.promo_periods,
+          enable_semi_finished: d.enable_semi_finished,
         })}
         confirmLoading={saveMut.isPending}
       >
@@ -105,6 +106,17 @@ function FormulaButton() {
               onClick={() => setDraft({ ...d, promo_periods: [...d.promo_periods, { name: '新时段', start: '01-01', end: '01-07' }] })}>
               加一个时段
             </Button>
+            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginTop: 4 }}>
+              <Space>
+                <Switch checked={!!d.enable_semi_finished}
+                  onChange={(v) => setDraft({ ...d, enable_semi_finished: v })} />
+                <span>启用「半成品 / 白坯」备货 (默认关)</span>
+              </Space>
+              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 4, marginBottom: 0 }}>
+                关闭 = 统一按标品备货(现状)。打开后: 可给产品打标「可做白坯」、按共享白坯池化出「半成品备货计划」。
+                这是「以后量大 + 与工厂协商好」再开的能力(现在囤白坯工厂会有意见), 先建好、默认不启用。
+              </Typography.Paragraph>
+            </div>
           </Space>
         )}
       </Modal>

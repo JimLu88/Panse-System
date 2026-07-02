@@ -77,10 +77,16 @@ def get_forecast_config(db: Session) -> dict:
     abc_a_share = _f("stock_abc_a_share", 0.80)          # 累计销量占比 ≤ 此 = A类
     abc_b_share = _f("stock_abc_b_share", 0.95)          # ≤ 此 = B类, 其余 C类
     stock_min_daily = _f("stock_min_daily", 0.2)         # A类还需日均≥此才备货(防长尾误入)
+    # R5 半成品/白坯: 默认关闭。关=统一按标品备货(只跑R1+R2+R3); 开=出半成品(白坯)备货计划+产品打标。
+    # 打开是"以后量大 + 与工厂协商好"才做的事(现在囤白胚工厂会有意见), 先建能力、默认不启用。
+    _semi = settings_service.get(db, "enable_semi_finished", env_fallback=False)
+    enable_semi_finished = (str(_semi).strip().lower() in ("1", "true", "yes", "on")
+                            if _semi not in (None, "") else False)
     return {"mode": mode, "halflife_days": halflife, "window_days": window,
             "promo_periods": periods, "service_level": service_level,
             "batch_cover_days": batch_cover_days, "abc_a_share": abc_a_share,
-            "abc_b_share": abc_b_share, "stock_min_daily": stock_min_daily}
+            "abc_b_share": abc_b_share, "stock_min_daily": stock_min_daily,
+            "enable_semi_finished": enable_semi_finished}
 
 
 def save_forecast_config(db: Session, cfg: dict) -> dict:
@@ -97,6 +103,9 @@ def save_forecast_config(db: Session, cfg: dict) -> dict:
     for k in ("service_level", "batch_cover_days", "abc_a_share", "abc_b_share", "stock_min_daily"):
         if cfg.get(k) is not None:
             settings_service.set_value(db, f"stock_{k}" if not k.startswith("stock_") else k, str(cfg[k]))
+    if cfg.get("enable_semi_finished") is not None:   # R5 半成品开关(默认关)
+        settings_service.set_value(db, "enable_semi_finished",
+                                   "1" if cfg["enable_semi_finished"] else "0")
     return get_forecast_config(db)
 
 
