@@ -4,11 +4,12 @@
  * 你改基数, 价格立刻变(和你原表一样); 价格/店铺宝系数都是只读输出。
  */
 import { useEffect, useRef, useState } from 'react';
-import { Alert, Image, Input, InputNumber, Space, Table, Tag, Typography, message } from 'antd';
+import type { Key } from 'react';
+import { Alert, Button, Image, Input, InputNumber, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { CUTE_IMG } from '../components/ProductThumb';
-import { fetchShopPriceBoard, updateShopPrice, type ShopPriceRow } from '../api/catalog';
+import { fetchShopPriceBoard, updateShopPrice, bulkUpdateShopPrice, type ShopPriceRow } from '../api/catalog';
 
 const yuan = (v?: number | null) =>
   v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
@@ -65,6 +66,33 @@ export default function ShopPriceBoardPage() {
       message.error({ content: '保存失败', key: 'sp' });
     },
   });
+
+  // ── 批量改基数 (筛选后勾选/全选, 填一次基数一键套用, 免逐个点) ──
+  const [selectedKeys, setSelectedKeys] = useState<Key[]>([]);
+  const [bSmall, setBSmall] = useState<number | null>(null);
+  const [bMid, setBMid] = useState<number | null>(null);
+  const [bBig, setBBig] = useState<number | null>(null);
+  const hasBulkValue = [bSmall, bMid, bBig].some((v) => v != null && v > 0);
+  const bulkMut = useMutation({
+    mutationFn: (ids: number[]) => {
+      const patch: { base_small?: number; base_mid?: number; base_big?: number } = {};
+      if (bSmall != null && bSmall > 0) patch.base_small = bSmall;
+      if (bMid != null && bMid > 0) patch.base_mid = bMid;
+      if (bBig != null && bBig > 0) patch.base_big = bBig;
+      return bulkUpdateShopPrice(ids, patch);
+    },
+    onSuccess: (updated) => {
+      const map = new Map(updated.map((r) => [r.id, r]));
+      setRows((rs) => rs.map((r) => map.get(r.id) ?? r));   // 回值刷新各行(价格+系数+利润)
+      setSelectedKeys([]);
+      message.success({ content: `已批量改 ${updated.length} 个 SKU, 价格/系数/利润已联动`, key: 'spb', duration: 2 });
+    },
+    onError: () => message.error({ content: '批量保存失败', key: 'spb' }),
+  });
+  const applyBulk = () => {
+    if (!selectedKeys.length || !hasBulkValue) return;
+    bulkMut.mutate(selectedKeys.map(Number));
+  };
 
   const baseCol = (title: string, tier: BaseTier): ColumnsType<ShopPriceRow>[number] => ({
     title, dataIndex: tier, width: 96, align: 'right',
@@ -149,8 +177,31 @@ export default function ShopPriceBoardPage() {
         placeholder="按 产品名 / 编码 / SKU 搜 (先搜到再改)" allowClear
         style={{ maxWidth: 360 }} onSearch={setQ}
       />
+      {/* 批量改基数: 筛选 → 全选/勾选 → 填一次基数 → 一键套用 (比逐个点快, 还能跨页) */}
+      <Space wrap style={{ background: '#f5f7fa', padding: '8px 12px', borderRadius: 8, width: '100%' }}>
+        <span style={{ fontWeight: 500 }}>批量改基数：</span>
+        <InputNumber value={bSmall} onChange={(x) => setBSmall(x as number)} placeholder="小促基数"
+          controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
+        <InputNumber value={bMid} onChange={(x) => setBMid(x as number)} placeholder="中促基数"
+          controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
+        <InputNumber value={bBig} onChange={(x) => setBBig(x as number)} placeholder="大促基数"
+          controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
+        <Popconfirm title={`把填的基数套用到选中的 ${selectedKeys.length} 个 SKU?`}
+          onConfirm={applyBulk} okText="套用" cancelText="取消"
+          disabled={!selectedKeys.length || !hasBulkValue}>
+          <Button type="primary" disabled={!selectedKeys.length || !hasBulkValue} loading={bulkMut.isPending}>
+            应用到选中 {selectedKeys.length} 行
+          </Button>
+        </Popconfirm>
+        <Button onClick={() => setSelectedKeys(rows.map((r) => r.id))} disabled={!rows.length}>
+          全选筛选结果 ({rows.length})
+        </Button>
+        {selectedKeys.length > 0 && <Button type="link" onClick={() => setSelectedKeys([])}>清空选择</Button>}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>留空的档不改；套用后自动记入工厂调价历史</Typography.Text>
+      </Space>
       <Table<ShopPriceRow>
-        rowKey="id" size="small" loading={isLoading || saveMut.isPending}
+        rowKey="id" size="small" loading={isLoading || saveMut.isPending || bulkMut.isPending}
+        rowSelection={{ selectedRowKeys: selectedKeys, onChange: setSelectedKeys, preserveSelectedRowKeys: true }}
         dataSource={rows} columns={columns}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 个 SKU` }}
         scroll={{ x: 1300 }}

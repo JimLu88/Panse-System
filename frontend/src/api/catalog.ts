@@ -749,6 +749,11 @@ export const updateShopPrice = (
   id: number,
   patch: { base_small?: number | null; base_mid?: number | null; base_big?: number | null },
 ) => api.patch<ShopPriceRow>(`/api/pricing-skus/${id}/shop-price`, patch).then(r => r.data);
+// 批量: 把同一组定价基数(留空的档不改)套用到多个 SKU
+export const bulkUpdateShopPrice = (
+  sku_ids: number[],
+  patch: { base_small?: number | null; base_mid?: number | null; base_big?: number | null },
+) => api.patch<ShopPriceRow[]>('/api/pricing-skus/shop-price/bulk', { sku_ids, ...patch }).then(r => r.data);
 
 // -- 淘宝商品导出对应表 (Task 5)
 export interface TaobaoListing {

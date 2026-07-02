@@ -581,6 +581,37 @@ class ShopPricePatch(BaseModel):
     base_big: Optional[Decimal] = None       # 大促 0.9
 
 
+def _validate_base_changes(changes: dict) -> None:
+    if not changes:
+        raise HTTPException(400, "无改动")
+    for k, v in changes.items():
+        if v is not None and Decimal(str(v)) <= 0:
+            raise HTTPException(400, f"{k} 必须 > 0 (它是除数/定价基数)")
+
+
+def _apply_shop_price_change(db: Session, sku: PricingSku, changes: dict, *, actor, promo_params):
+    """改价台核心(单条/批量共用): 留痕 → 记工厂调价历史(先封存旧值) → 写新基数 → recompute(价格链)
+    → recompute_promo(店铺宝系数)。不 commit(由 caller 统一提交, 便于批量)。返回该 sku 的 promo 行。"""
+    from datetime import date as _date
+    from app.services import pricing_version_service
+    _record_price_changes(db, sku, changes, actor=actor)
+    # 记入「工厂调价历史」: 先把改前(旧)价封存为 [上边界, 今天); 同日重复改→ValueError忽略(不重复封存)
+    try:
+        pricing_version_service.record_dated_change(db, sku, _date.today(), actor=actor, note="改价台改基数")
+    except ValueError:
+        pass
+    for k, v in changes.items():
+        setattr(sku, k, v)
+    pricing_calc_service.recompute(sku)      # 基数→价格链 (价格=ROUNDUP(成本÷基数,10))
+    promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
+    if promo is None:
+        promo = PricingSkuPromo(sku_code=sku.sku_code)
+        db.add(promo)
+        db.flush()
+    pricing_calc_service.recompute_promo(promo, sku, promo_params)   # 价格→店铺宝系数
+    return promo
+
+
 @router.patch("/{sku_id}/shop-price", response_model=ShopPriceRow)
 def update_shop_price(
     sku_id: int,
@@ -594,30 +625,10 @@ def update_shop_price(
     if not sku:
         raise HTTPException(404, "Not found")
     changes = body.model_dump(exclude_unset=True)
-    if not changes:
-        raise HTTPException(400, "无改动")
-    for k, v in changes.items():
-        if v is not None and Decimal(str(v)) <= 0:
-            raise HTTPException(400, f"{k} 必须 > 0 (它是除数/定价基数)")
-    _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
-    # 记入「工厂调价历史」(有效期定价): 先把改前(旧)价/成本封存为 [上边界, 今天), 今天起用新价。
-    # 须早于写新值。同日已封存过一版(边界=今天)→ ValueError, 忽略即可(不重复封存)。
-    from datetime import date as _date
-    from app.services import pricing_version_service
-    try:
-        pricing_version_service.record_dated_change(
-            db, sku, _date.today(), actor=getattr(_, "username", None), note="改价台改基数")
-    except ValueError:
-        pass
-    for k, v in changes.items():
-        setattr(sku, k, v)
-    pricing_calc_service.recompute(sku)      # 基数→价格链 (价格=ROUNDUP(成本÷基数,10))
-    promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
-    if promo is None:
-        promo = PricingSkuPromo(sku_code=sku.sku_code)
-        db.add(promo)
-        db.flush()
-    pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))  # 价格→店铺宝系数
+    _validate_base_changes(changes)
+    promo = _apply_shop_price_change(
+        db, sku, changes, actor=getattr(_, "username", None),
+        promo_params=pricing_calc_service.get_promo_params(db))
     db.commit()
     db.refresh(sku)
     db.refresh(promo)
@@ -626,6 +637,52 @@ def update_shop_price(
     name = db.execute(select(Product.name).where(Product.code == sku.product_code)).scalar()
     img = sku_gallery_url_map([(sku.product_code, sku.sku_code, sku.sku)]).get(sku.sku_code) or sku.image_url
     return _shop_price_row(sku, promo, name or sku.product_name, img)
+
+
+class BulkShopPricePatch(BaseModel):
+    sku_ids: list[int]                       # 要批量套用的 SKU id 列表(筛选后全选)
+    base_small: Optional[Decimal] = None
+    base_mid: Optional[Decimal] = None
+    base_big: Optional[Decimal] = None
+
+
+@router.patch("/shop-price/bulk", response_model=list[ShopPriceRow])
+def bulk_update_shop_price(
+    body: BulkShopPricePatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """改价台批量: 把同一组定价基数(留空的档不改)套用到多个 SKU —— 筛选后全选一次改, 不用逐个点。
+    每个 SKU 都走单条同样的口径: 记工厂调价历史(封存旧值) + recompute + 反推系数。"""
+    changes = {k: v for k, v in body.model_dump(exclude_unset=True).items() if k != "sku_ids"}
+    _validate_base_changes(changes)
+    ids = list(dict.fromkeys(body.sku_ids or []))
+    if not ids:
+        raise HTTPException(400, "未选中任何 SKU")
+    if len(ids) > 2000:
+        raise HTTPException(400, "一次最多批量 2000 个 SKU")
+    params = pricing_calc_service.get_promo_params(db)
+    actor = getattr(_, "username", None)
+    skus = db.execute(select(PricingSku).where(PricingSku.id.in_(ids))).scalars().all()
+    promo_by_code: dict = {}
+    for sku in skus:
+        promo_by_code[sku.sku_code] = _apply_shop_price_change(
+            db, sku, dict(changes), actor=actor, promo_params=params)
+    db.commit()
+    from app.models.product import Product
+    from app.services.gallery_lookup import sku_gallery_url_map
+    name_map = dict(db.execute(select(Product.code, Product.name)).all())
+    gallery = sku_gallery_url_map([(s.product_code, s.sku_code, s.sku) for s in skus])
+    out: list[ShopPriceRow] = []
+    for sku in skus:
+        db.refresh(sku)
+        promo = promo_by_code.get(sku.sku_code)
+        if promo is not None:
+            db.refresh(promo)
+        out.append(_shop_price_row(
+            sku, promo, name_map.get(sku.product_code) or sku.product_name,
+            gallery.get(sku.sku_code) or sku.image_url))
+    return out
 
 
 _TRACKED_PRICE_FIELDS = {
