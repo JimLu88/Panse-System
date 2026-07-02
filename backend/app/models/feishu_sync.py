@@ -20,7 +20,7 @@ class FeishuSyncMap(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     system_table: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
-    system_pk: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    system_pk: Mapped[str] = mapped_column(String(255), nullable=False, index=True)  # 业务主键(支付宝 sync_key 可 >64)
     feishu_app_token: Mapped[str] = mapped_column(String(64), nullable=False)
     feishu_table_id: Mapped[str] = mapped_column(String(64), nullable=False)
     feishu_record_id: Mapped[str] = mapped_column(String(64), nullable=False)
