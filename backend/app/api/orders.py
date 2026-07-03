@@ -173,8 +173,20 @@ def factory_production(
         "开始制作", "现在制作", "立即制作", "马上制作", "可以制作", "安排制作",
         "开始生产", "可以生产", "安排生产", "投产", "上生产", "排产",
         "现在做", "可以做了", "开始做",
-        "现在发货", "可以发货", "安排发货", "通知发货", "已通知", "客户通知", "可发货", "可发",
+        "现在发货", "可以发货", "安排发货", "通知发货", "已通知", "客户通知", "可发货",
     )
+    # 激活词前若紧跟 等/待/不/别 等前缀 → 那是远期/否定语境, 不算激活
+    # (防"等通知发货""待通知发货""不可发货"被误判成激活 —— 2026-07-03 验证踩坑)。
+    _NOT_ACT_PRE = ("等", "待", "收到", "随时", "暂", "先", "不", "别", "勿", "没", "未", "无")
+
+    def _is_activated(text: str) -> bool:
+        for k in ACTIVATE_KW:
+            i = text.find(k)
+            while i != -1:
+                if not any(w in text[max(0, i - 2):i] for w in _NOT_ACT_PRE):
+                    return True
+                i = text.find(k, i + 1)
+        return False
 
     def _remote_text(o: Order) -> str:
         return " ".join(t for t in (
@@ -229,7 +241,7 @@ def factory_production(
         base = o.order_date
         _txt = _remote_text(o)
         _rdate = _resume_date(_txt, base)
-        if any(k in _txt for k in ACTIVATE_KW):             # 激活: 备注含"现在制作/通知发货"等 → 解除远期, 立即排产 (优先级最高)
+        if _is_activated(_txt):                             # 激活: 备注含激活词且非"等/待通知"语境 → 解除远期, 立即排产 (优先级最高)
             eff = _rdate or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
             days = (eff - today).days if eff else None
             st = _by_days(days)
