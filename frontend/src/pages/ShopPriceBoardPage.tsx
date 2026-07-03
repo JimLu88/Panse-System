@@ -4,8 +4,8 @@
  * 你改基数, 价格立刻变(和你原表一样); 价格/单品立减系数都是只读输出。
  */
 import { useEffect, useRef, useState } from 'react';
-import type { Key } from 'react';
-import { Alert, Button, Image, Input, InputNumber, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import type { CSSProperties, Key } from 'react';
+import { Alert, Button, Collapse, Image, Input, InputNumber, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CUTE_IMG } from '../components/ProductThumb';
@@ -17,6 +17,10 @@ import {
 const yuan = (v?: number | null) =>
   v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
 const pct = (v?: number | null) => (v == null ? '—' : `${(Number(v) * 100).toFixed(1)}%`);
+
+// 页面顶部「名词说明」样式
+const helpBox: CSSProperties = { fontSize: 13, lineHeight: 1.9, color: '#334155' };
+const helpP: CSSProperties = { margin: '4px 0' };
 
 type BaseTier = 'base_small' | 'base_mid' | 'base_big';
 
@@ -219,8 +223,56 @@ export default function ShopPriceBoardPage() {
       <Typography.Title level={4} style={{ margin: 0 }}>改价台</Typography.Title>
       <Alert
         type="info" showIcon
-        message="点「小/中/大促基数」格子改数字(0.86 / 0.88 / 0.9 这种除数), 回车即存; 「促价」= ROUNDUP(成本 ÷ 基数, 进位到10) 自动算(和你 Excel List 表一致, 会以 0 结尾)。"
-        description="「大促利润」= 大促价 −(物理成本 + 平台费0.6% + 税2%), 改基数当场联动(绿=正常 / 橙=薄利<10% / 红=亏)。「报名价A」= 大促到手÷0.88, 就是填进淘宝超级立减报名表的数(大促锚不动); 「合规 g」绿=可用同一报名价在中促场报得进, 红=需微升中促。最右三列「单品立减系数」= 空档期用单品立减做价的反推系数。"
+        message="改「基数」(0.86 / 0.88 / 0.9 这种除数), 回车即存 → 促价 = 进位到10(成本 ÷ 基数) 自动算(和你 Excel List 表一致, 以 0 结尾)。三档促价存的都是「店铺实收」(88VIP佣金后到账), 不是买家到手价。"
+        description="看不懂这些列(报名价A / 618报名价 / 空档价红线 / 合规 g / 中促基数为什么空)? 点开下面的「📖 名词说明」, 每一项都有大白话解释。"
+      />
+      <Collapse
+        size="small"
+        items={[
+          {
+            key: 'mid',
+            label: '📖 ① 中促基数为什么很多是空的? 中促 / 小促还有用吗?',
+            children: (
+              <div style={helpBox}>
+                <p style={helpP}><b>中促基数空着 = 故意锁定, 别去补。</b>「一键微升中促合规」把这些 SKU 的<b>中促价锁死在了刚好合规的精确值</b>(如 ¥532、¥1319.32), 不再由基数派生。你一旦填回中促基数, 系统重算会把中促价拉回基数算的值, <b>合规就被冲掉</b>。没被动过的 SKU(如柚色餐边柜 0.78)中促基数还在, 照常派生。</p>
+                <p style={helpP}><b>小促基数 / 大促基数 照常用</b>, 正常派生小促价 / 大促价。</p>
+                <p style={helpP}><b>中促、小促这两档没废, 是角色变了:</b> 以前是你分别报给淘宝的价; 现在你只报<b>一个报名价A</b>, 平台按场次自动打折。中促/小促现在的用途 = ① 算报名价A + 判合规的锚 ② 空档期底线(空档价红线 = 中促到手)③ 小促 = 空档/小活动用单品立减做的浅折价。</p>
+              </div>
+            ),
+          },
+          {
+            key: 'report',
+            label: '📖 ② 报名价A 是什么? 为什么和 618 报名价不一样?',
+            children: (
+              <div style={helpBox}>
+                <p style={helpP}><b>报名价A = 你填进淘宝「超级立减」报名表的那个数</b>, 不是买家看到的价。淘宝在这个数上按场次力度打折, <b>买家到手 = 报名价A ×(1 − 场次力度)</b>。</p>
+                <p style={helpP}>报名价A = <b>大促到手 ÷ 0.88</b>(0.88 = 1 − 大促力度12%)。锚在大促, 因为大促是你最深、也是绝不能动的那档; 这样大促场(打12%)买家正好落到大促到手价。</p>
+                <p style={helpP}><b>618 报名价更高的原因:</b> 618/双11 平台折扣更深(15% vs 大促12%)。要让买家在两种场次<b>都落到同一个大促到手价</b>, 越深的场越要报高一点去抵 —— 大促场报 ÷0.88、618 场报 ÷0.85(更高)。<b>两个数不同, 纯粹是两个场次打折力度不同, 不是算错。</b></p>
+                <p style={helpP}>想「一个报名价走天下」也行 —— 只有各场力度一样时两个才相等。三档力度(中促10% / 大促12% / 618 15%)在右上角<b>「报价参数设置」可调</b>; 把 618 改成 12%, 两个报名价就一样了。</p>
+              </div>
+            ),
+          },
+          {
+            key: 'terms',
+            label: '📖 ③ 空档价红线 / 合规 g / 单品立减系数 是什么?',
+            children: (
+              <div style={helpBox}>
+                <p style={helpP}><b>空档价红线 = 中促到手价。</b> 没活动的空档期, 你用单品立减做价<b>不能低于这条线</b>; 否则砸穿淘宝近15天最低价线, 下个大活动被冷却 / 报不进(要15天才洗回)。就是空档期你能做的最低价。</p>
+                <p style={helpP}><b>合规 g = 中促到手 ÷ 大促到手。</b> 判断「你的中促够不够高, 让同一个报名价A 在中促场也报得进」。需 <b>g ≥ 1.0227</b>(=0.90/0.88)才合规(绿); 低于就红 = 中促做太低、报名价在中促场会破线 → 点「一键微升中促合规」把中促抬到刚好 g=1.0227(<b>大促不动</b>)。</p>
+                <p style={helpP}><b>最右三列「单品立减系数」</b> = 空档期用单品立减把价做到目标水平时, 反推出来的那个系数(直接填淘宝单品立减用)。</p>
+              </div>
+            ),
+          },
+          {
+            key: 'big',
+            label: '📖 ④ 我的大促价会被改吗?',
+            children: (
+              <div style={helpBox}>
+                <p style={helpP}><b>不会。</b>「一键微升中促合规」只抬<b>中促</b>, 大促价一分不动(落库前后逐条校验大促未变, 变了整体回滚)。你改基数时也只按你改的那一档联动, 不碰其它档。</p>
+              </div>
+            ),
+          },
+        ]}
       />
       {/* 一键微升中促合规: 先 dry-run 拉不合规清单前后对比(大促价一分不动), 确认后才落库 */}
       <Space wrap style={{ background: '#fff7ed', padding: '8px 12px', borderRadius: 8, width: '100%' }}>
