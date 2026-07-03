@@ -475,11 +475,11 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
                           mid_tiers, big_tiers) -> None:
     """活动价倒推链改活公式 (2026-07-02 复刻用户 Excel「活动价」表, 锚 = 各档店铺实收 = 小/中/大促价):
       日常价 = 标价×0.75; 小/中/大促价(=店铺实收) 由售价档位列驱动(成本加成或手填)。
-      小促: 买家到手 = 小促价; 店铺宝系数 = 小促价 ÷ 日常                    (Excel Q = R/P)
-      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 店铺宝系数 = 买家到手 ÷ (日常×(1−中促立减)) (Excel U)
+      小促: 买家到手 = 小促价; 单品立减系数 = 小促价 ÷ 日常                    (Excel Q = R/P)
+      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 单品立减系数 = 买家到手 ÷ (日常×(1−中促立减)) (Excel U)
             店铺到手 = 中促价(实收); VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯)
       大促: 同中促, 换大促价/大促佣金/大促立减                                (Excel AB)
-    → 改 小/中/大促价 (或日常价), 买家到手/系数/店铺到手/VIP 全自动重算; 系数就是要填进淘宝店铺宝的数。
+    → 改 小/中/大促价 (或日常价), 买家到手/系数/店铺到手/VIP 全自动重算; 系数就是要填进淘宝单品立减的数。
     另: 淘宝活动价/小红书标价 = 日常; 小红书促销价 = 活动价×(1−折扣)。"""
     from openpyxl.utils import get_column_letter
     def L(f):
@@ -554,8 +554,8 @@ _PRICING_CN: dict[str, str] = {
     "image_url": "图片链接", "remark": "备注", "created_at": "创建时间", "updated_at": "更新时间",
     # 淘宝 / 店内活动
     "taobao_item_id": "淘宝商品ID", "taobao_url": "淘宝链接", "taobao_sku_id": "淘宝SKU ID",
-    "taobao_activity_price": "淘宝活动价", "shop_promo_rate": "店铺宝系数",
-    "shop_internal_promo": "店铺宝设置价", "shop_internal_final": "店内到手价(小促)",
+    "taobao_activity_price": "淘宝活动价", "shop_promo_rate": "单品立减系数",
+    "shop_internal_promo": "单品立减设置价", "shop_internal_final": "店内到手价(小促)",
     # 无国补中促
     "mid_platform_discount": "中促平台立减", "mid_shop_rate": "中促店铺系数", "mid_buyer_price": "中促买家价",
     "mid_vip_commission": "中促88VIP佣金", "mid_shop_receipt": "中促店铺到手", "mid_vip_final": "中促VIP到手价",
@@ -822,7 +822,7 @@ def build_catalog_xlsx(db: Session):
                     bci = field_pos.get(field)
                     if bci and getattr(p, field, None) is None and val is not None:
                         ws.cell(r, bci, float(val))
-                # 店铺宝系数由公式反推 (店内到手÷日常), 不再回填隐含值; 但补上反推分母要用的立减/佣金
+                # 单品立减系数由公式反推 (店内到手÷日常), 不再回填隐含值; 但补上反推分母要用的立减/佣金
                 if p.mid_shop_rate is not None or p.mid_buyer_price is not None:   # 参与中促 → 补平台立减/佣金
                     _bf("mid_platform_discount", promo_params.get("mid_platform_discount"))
                     _bf("mid_vip_commission", promo_params.get("mid_vip_commission"))

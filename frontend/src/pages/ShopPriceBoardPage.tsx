@@ -1,15 +1,18 @@
 /**
  * 改价台 (2026-07-02) — 复刻用户 Excel List 表: 改「定价基数」(0.86/0.88/0.9 这个除数),
- * 促价 = ROUNDUP(成本 ÷ 基数, 进位到10) 自动算出来; 右侧附带反推的「店铺宝系数」(填淘宝用)。
- * 你改基数, 价格立刻变(和你原表一样); 价格/店铺宝系数都是只读输出。
+ * 促价 = ROUNDUP(成本 ÷ 基数, 进位到10) 自动算出来; 右侧附带反推的「单品立减系数」(填淘宝用)。
+ * 你改基数, 价格立刻变(和你原表一样); 价格/单品立减系数都是只读输出。
  */
 import { useEffect, useRef, useState } from 'react';
 import type { Key } from 'react';
-import { Alert, Button, Image, Input, InputNumber, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Image, Input, InputNumber, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { CUTE_IMG } from '../components/ProductThumb';
-import { fetchShopPriceBoard, updateShopPrice, bulkUpdateShopPrice, type ShopPriceRow } from '../api/catalog';
+import {
+  fetchShopPriceBoard, updateShopPrice, bulkUpdateShopPrice, fixMidCompliance,
+  type ShopPriceRow, type FixMidComplianceResult, type FixMidComplianceChange,
+} from '../api/catalog';
 
 const yuan = (v?: number | null) =>
   v == null ? '—' : `¥${Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}`;
@@ -94,6 +97,24 @@ export default function ShopPriceBoardPage() {
     bulkMut.mutate(selectedKeys.map(Number));
   };
 
+  // ── 一键微升中促合规 (报名价模型): 先 dry-run 拉不合规清单前后对比给你看, 确认后才落库(大促价一分不动) ──
+  const qc = useQueryClient();
+  const [fixPreview, setFixPreview] = useState<FixMidComplianceResult | null>(null);
+  const dryRunMut = useMutation({
+    mutationFn: () => fixMidCompliance(false),
+    onSuccess: (res) => setFixPreview(res),
+    onError: () => message.error('验算失败'),
+  });
+  const applyFixMut = useMutation({
+    mutationFn: () => fixMidCompliance(true),
+    onSuccess: (res) => {
+      setFixPreview(null);
+      qc.invalidateQueries({ queryKey: ['shop-price-board'] });
+      message.success(`已微升中促 ${res.changed} 个 SKU, 大促价一分未动`, 3);
+    },
+    onError: () => message.error('落库失败'),
+  });
+
   const baseCol = (title: string, tier: BaseTier): ColumnsType<ShopPriceRow>[number] => ({
     title, dataIndex: tier, width: 96, align: 'right',
     render: (v: number | null, row) => (
@@ -160,9 +181,37 @@ export default function ShopPriceBoardPage() {
     priceCol('中促价', 'mid_promo'),
     priceCol('大促价', 'big_promo'),
     marginCol,
-    rateCol('小促店铺宝', 'shop_promo_rate'),
-    rateCol('中促店铺宝', 'mid_shop_rate'),
-    rateCol('大促店铺宝', 'big_shop_rate'),
+    // ── 报名价模型 (2026-07-03: 大促锚不动, 只动中促) ──
+    {
+      title: '报名价A', dataIndex: 'report_price', width: 100, align: 'right',
+      render: (v: number | null, row) => {
+        const ok = row.report_compliant;
+        const color = ok === false ? '#dc2626' : '#1a73e8';
+        return (
+          <div style={{ lineHeight: 1.15 }}>
+            <div style={{ fontWeight: 700, color }}>{yuan(v)}</div>
+            {ok === false
+              ? <div style={{ fontSize: 11, color: '#dc2626' }}>需微升中促</div>
+              : ok === true ? <div style={{ fontSize: 11, color: '#16a34a' }}>✓合规</div> : null}
+          </div>
+        );
+      },
+    },
+    { title: '618报名价', dataIndex: 'report_price_618', width: 92, align: 'right',
+      render: (v: number | null) => <span style={{ color: '#7c3aed', fontWeight: 500 }}>{yuan(v)}</span> },
+    { title: '空档价红线', dataIndex: 'gap_floor', width: 96, align: 'right',
+      render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{yuan(v)}</span> },
+    {
+      title: '合规 g', dataIndex: 'compliance_g', width: 92, align: 'center',
+      render: (v: number | null, row) => {
+        if (v == null) return <span style={{ color: '#cbd5e1' }}>—</span>;
+        const ok = row.report_compliant !== false;
+        return <Tag color={ok ? 'green' : 'red'}>{Number(v).toFixed(4)}</Tag>;
+      },
+    },
+    rateCol('小促单品立减', 'shop_promo_rate'),
+    rateCol('中促单品立减', 'mid_shop_rate'),
+    rateCol('大促单品立减', 'big_shop_rate'),
   ];
 
   return (
@@ -171,8 +220,18 @@ export default function ShopPriceBoardPage() {
       <Alert
         type="info" showIcon
         message="点「小/中/大促基数」格子改数字(0.86 / 0.88 / 0.9 这种除数), 回车即存; 「促价」= ROUNDUP(成本 ÷ 基数, 进位到10) 自动算(和你 Excel List 表一致, 会以 0 结尾)。"
-        description="「大促利润」= 大促价 −(物理成本 + 平台费0.6% + 税2%), 改基数当场联动(绿=正常 / 橙=薄利<10% / 红=亏)。最右三列「店铺宝」= 价格反推出的、填进淘宝店铺宝工具的系数。基数越小价格越高。"
+        description="「大促利润」= 大促价 −(物理成本 + 平台费0.6% + 税2%), 改基数当场联动(绿=正常 / 橙=薄利<10% / 红=亏)。「报名价A」= 大促到手÷0.88, 就是填进淘宝超级立减报名表的数(大促锚不动); 「合规 g」绿=可用同一报名价在中促场报得进, 红=需微升中促。最右三列「单品立减系数」= 空档期用单品立减做价的反推系数。"
       />
+      {/* 一键微升中促合规: 先 dry-run 拉不合规清单前后对比(大促价一分不动), 确认后才落库 */}
+      <Space wrap style={{ background: '#fff7ed', padding: '8px 12px', borderRadius: 8, width: '100%' }}>
+        <span style={{ fontWeight: 500, color: '#c2410c' }}>报名价合规：</span>
+        <Button danger onClick={() => dryRunMut.mutate()} loading={dryRunMut.isPending}>
+          一键微升中促合规（大促价不动）
+        </Button>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          扫全表, 把「中促到手÷大促到手 &lt; 0.90/0.88」的 SKU 抬中促令报名价能在中促场报得进; 点开先看清单再落库。
+        </Typography.Text>
+      </Space>
       <Input.Search
         placeholder="按 产品名 / 编码 / SKU 搜 (先搜到再改)" allowClear
         style={{ maxWidth: 360 }} onSearch={setQ}
@@ -206,6 +265,57 @@ export default function ShopPriceBoardPage() {
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 个 SKU` }}
         scroll={{ x: 1300 }}
       />
+
+      {/* 微升中促 dry-run 验算弹窗: 落库前给你看清单(大促价一分不动) */}
+      <Modal
+        open={!!fixPreview}
+        title="微升中促合规 — 验算清单（落库前核对）"
+        width={860}
+        onCancel={() => setFixPreview(null)}
+        footer={[
+          <Button key="cancel" onClick={() => setFixPreview(null)}>取消（不落库）</Button>,
+          <Popconfirm
+            key="apply"
+            title={`确认微升 ${fixPreview?.changed ?? 0} 个 SKU 的中促价？大促价一分不动。`}
+            onConfirm={() => applyFixMut.mutate()} okText="确认落库" cancelText="再想想"
+            disabled={!fixPreview?.changed}
+          >
+            <Button type="primary" danger loading={applyFixMut.isPending} disabled={!fixPreview?.changed}>
+              确认落库（微升 {fixPreview?.changed ?? 0} 个，大促不动）
+            </Button>
+          </Popconfirm>,
+        ]}
+      >
+        {fixPreview && (
+          <>
+            <Alert
+              type={fixPreview.changed ? 'warning' : 'success'} showIcon style={{ marginBottom: 12 }}
+              message={fixPreview.changed
+                ? `扫描 ${fixPreview.scanned} 个 SKU，其中 ${fixPreview.changed} 个不合规需微升中促（大促价全部不动）。`
+                : `扫描 ${fixPreview.scanned} 个 SKU，全部已合规，无需改动。`}
+            />
+            <Table<FixMidComplianceChange>
+              rowKey="sku_code" size="small" dataSource={fixPreview.changes}
+              pagination={{ pageSize: 12, showTotal: (t) => `共 ${t} 条` }}
+              scroll={{ y: 360 }}
+              columns={[
+                { title: '产品', dataIndex: 'product_name', ellipsis: true,
+                  render: (v: string, r) => <div><div>{v || '(未命名)'}</div>
+                    <span style={{ fontSize: 12, color: '#94a3b8' }}>{r.product_code} · {r.sku || '默认'}</span></div> },
+                { title: '大促价(不变)', dataIndex: 'big_promo', width: 110, align: 'right',
+                  render: (v: number) => <span style={{ color: '#16a34a', fontWeight: 600 }}>{yuan(v)}</span> },
+                { title: '中促价 前→后', width: 150, align: 'right',
+                  render: (_: unknown, r) => (
+                    <span><span style={{ color: '#94a3b8' }}>{yuan(r.mid_before)}</span>
+                      <span style={{ color: '#dc2626' }}> → {yuan(r.mid_after)}</span></span>) },
+                { title: 'g 现值 / 需达', width: 130, align: 'center',
+                  render: (_: unknown, r) => (
+                    <span><Tag color="red">{r.g_before.toFixed(4)}</Tag>→<Tag color="green">{r.g_min.toFixed(4)}</Tag></span>) },
+              ]}
+            />
+          </>
+        )}
+      </Modal>
     </Space>
   );
 }

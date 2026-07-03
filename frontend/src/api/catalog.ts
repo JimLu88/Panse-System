@@ -738,7 +738,7 @@ export const downloadPricingTemplate = (key: string) =>
     })
     .then(r => r.data as Blob);
 
-// 改价台 (2026-07-02): 改「定价基数」(0.86/0.88/0.9) → 价格=ROUNDUP(成本÷基数,10) 联动 + 反推店铺宝系数
+// 改价台 (2026-07-02): 改「定价基数」(0.86/0.88/0.9) → 价格=ROUNDUP(成本÷基数,10) 联动 + 反推单品立减系数
 export interface ShopPriceRow {
   id: number;
   product_code: string;
@@ -753,13 +753,41 @@ export interface ShopPriceRow {
   small_promo?: number | null;  // 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
   mid_promo?: number | null;
   big_promo?: number | null;
-  shop_promo_rate?: number | null;  // 店铺宝系数(反推, 填淘宝用)
+  shop_promo_rate?: number | null;  // 单品立减系数(反推, 填淘宝用)
   mid_shop_rate?: number | null;
   big_shop_rate?: number | null;
   physical_cost?: number | null;      // 物理成本(工厂+物流+安装)
   big_promo_margin?: number | null;   // 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%)
   gross_margin_rate?: number | null;  // 大促利润率 = 大促利润 ÷ 大促价
+  // 报名价模型 (2026-07-03: 大促锚不动, 只动中促) —— 派生, 填淘宝超级立减报名表
+  report_price?: number | null;       // 报名价 A = 大促到手 ÷ 0.88
+  report_price_618?: number | null;   // 618/双11 报名价 = 大促到手 ÷ 0.85
+  gap_floor?: number | null;          // 空档价红线 = 中促到手
+  compliance_g?: number | null;       // g = 中促到手 ÷ 大促到手
+  report_compliant?: boolean | null;  // g≥0.90/0.88 → 绿; 否则需微升中促(红)
 }
+
+// 一键微升中促合规 (报名价模型): dry-run 返回不合规清单前后对比; apply=true 才落库(大促价一分不动)
+export interface FixMidComplianceChange {
+  sku_code: string;
+  product_code: string;
+  product_name?: string | null;
+  sku?: string | null;
+  big_promo: number;
+  mid_before: number;
+  mid_after: number;
+  g_before: number;
+  g_min: number;
+}
+export interface FixMidComplianceResult {
+  apply: boolean;
+  scanned: number;
+  changed: number;
+  changes: FixMidComplianceChange[];
+}
+export const fixMidCompliance = (apply: boolean) =>
+  api.post<FixMidComplianceResult>('/api/pricing-skus/fix-mid-compliance', null, { params: { apply } })
+    .then(r => r.data);
 export const fetchShopPriceBoard = (q?: string) =>
   api.get<ShopPriceRow[]>('/api/pricing-skus/shop-price-board', { params: q ? { q } : {} })
     .then(r => r.data);

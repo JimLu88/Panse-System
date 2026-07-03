@@ -72,7 +72,8 @@ FIELD_MAP: dict[str, tuple[str, str]] = {
     "床铺板": ("costs", "bed_board"),
     "其他配件": ("costs", "other_cost"),
     # pricing_sku_promo
-    "店铺宝系数": ("promo", "shop_promo_rate"),
+    "单品立减系数": ("promo", "shop_promo_rate"),
+    "店铺宝系数": ("promo", "shop_promo_rate"),   # 旧名别名(店铺宝已停用): 保留令已存公式表达式不失效
     "小促到手价": ("promo", "shop_internal_final"),
     "无国补中促系数": ("promo", "mid_shop_rate"),
     "中促到手价": ("promo", "mid_buyer_price"),
@@ -187,8 +188,8 @@ BUILTIN_RULES = [
     {
         "field_name": "shop_internal_final",
         "display_name": "小促到手价",
-        "expression": "日常价 * 店铺宝系数",
-        "description": "店铺宝小促到手价 = 日常价 × 店铺宝系数",
+        "expression": "日常价 * 单品立减系数",
+        "description": "单品立减小促到手价 = 日常价 × 单品立减系数",
         "sort_order": 90,
     },
     {

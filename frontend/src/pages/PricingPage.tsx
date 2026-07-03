@@ -84,16 +84,16 @@ const PROMO_FIELDS: PromoField[] = [
   { key: 'taobao_item_id', label: '淘宝商品ID', kind: 'text', editable: true },
   { key: 'taobao_sku_id', label: '淘宝SKUID', kind: 'text', editable: true },
   { key: 'taobao_activity_price', label: '淘宝活动报名价', kind: 'num', editable: false },
-  { key: 'shop_promo_rate', label: '小促店铺宝设置%', kind: 'num', editable: true, pct: true },
+  { key: 'shop_promo_rate', label: '小促单品立减设置%', kind: 'num', editable: true, pct: true },
   { key: 'shop_internal_final', label: '小促到手价', kind: 'num', editable: false },
   { key: 'mid_platform_discount', label: '中促力度%', kind: 'num', editable: false, pct: true },
-  { key: 'mid_shop_rate', label: '中促店铺宝设置%', kind: 'num', editable: true, pct: true },
+  { key: 'mid_shop_rate', label: '中促单品立减设置%', kind: 'num', editable: true, pct: true },
   { key: 'mid_buyer_price', label: '中促到手价', kind: 'num', editable: false },
   { key: 'mid_vip_commission', label: '中促88VIP佣金%', kind: 'num', editable: false, pct: true },
   { key: 'mid_shop_receipt', label: '中促店铺到账', kind: 'num', editable: false },
   { key: 'mid_vip_final', label: '中促会员价', kind: 'num', editable: false },
   { key: 'big_platform_discount', label: '大促力度%', kind: 'num', editable: false, pct: true },
-  { key: 'big_shop_rate', label: '大促店铺宝设置%', kind: 'num', editable: true, pct: true },
+  { key: 'big_shop_rate', label: '大促单品立减设置%', kind: 'num', editable: true, pct: true },
   { key: 'big_buyer_price', label: '大促到手价', kind: 'num', editable: false },
   { key: 'big_vip_commission', label: '大促88VIP佣金%', kind: 'num', editable: false, pct: true },
   { key: 'big_shop_receipt', label: '大促店铺到账', kind: 'num', editable: false },
@@ -109,11 +109,11 @@ const PROMO_FIELDS: PromoField[] = [
 // 活动价计算列的公式说明 (鼠标悬停显示: 引用了哪个数字 + 用了什么系数)
 const PROMO_FORMULA: Record<string, string> = {
   taobao_activity_price: '活动报名价 = 日常价',
-  shop_internal_final: '小促到手价 = 日常价 × 小促店铺宝设置%',
-  mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促店铺宝设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「中促店铺到账」= 到手价×(1−88VIP佣金2%)',
+  shop_internal_final: '小促到手价 = 日常价 × 小促单品立减设置%',
+  mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促单品立减设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「中促店铺到账」= 到手价×(1−88VIP佣金2%)',
   mid_shop_receipt: '中促店铺到账 = 中促到手价 × (1 − 88VIP佣金2%) ｜ 店铺实收(佣金后), 即定价总表「中促价」',
   mid_vip_final: '中促会员价 = 中促到手价 − 阶梯消费券(按到手价档位)',
-  big_buyer_price: '大促到手价 = 日常价 × (1 − 大促力度%) × 大促店铺宝设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「大促店铺到账」= 到手价×(1−88VIP佣金2%)',
+  big_buyer_price: '大促到手价 = 日常价 × (1 − 大促力度%) × 大促单品立减设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「大促店铺到账」= 到手价×(1−88VIP佣金2%)',
   big_shop_receipt: '大促店铺到账 = 大促到手价 × (1 − 88VIP佣金2%) ｜ 店铺实收(佣金后), 即定价总表「大促价」',
   big_vip_final: '大促会员价 = 大促到手价 − 阶梯消费券(按到手价档位)',
 };
@@ -939,7 +939,7 @@ export default function PricingPage() {
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
-          <Tooltip title="改价台: Excel 式逐个改 定价基数(0.86/0.88/0.9), 促价=ROUNDUP(成本÷基数)自动算 + 店铺宝系数反推">
+          <Tooltip title="改价台: Excel 式逐个改 定价基数(0.86/0.88/0.9), 促价=ROUNDUP(成本÷基数)自动算 + 单品立减系数反推">
             <Link to="/shop-price-board"><Button type="primary" icon={<TableOutlined />}>改价台</Button></Link>
           </Tooltip>
           <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">

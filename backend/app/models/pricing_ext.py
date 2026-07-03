@@ -51,8 +51,8 @@ class PricingSkuPromo(Base, TimestampMixin):
     taobao_sku_id: Mapped[Optional[str]] = mapped_column(String(64))
     taobao_activity_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))  # = daily_price
     # 店内活动
-    shop_promo_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))         # 店铺宝系数
-    shop_internal_promo: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 店铺宝设置
+    shop_promo_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))         # 单品立减系数
+    shop_internal_promo: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 单品立减设置
     shop_internal_final: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 到手价=小促
     # 无国补中促 (user inputs: mid_shop_rate; rest computed)
     mid_platform_discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))  # 平台立减 12%

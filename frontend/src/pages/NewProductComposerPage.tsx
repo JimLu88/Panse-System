@@ -679,7 +679,7 @@ function SkuPromoTab({
       <Row gutter={[16, 8]}>
         <Col xs={24} sm={12}>
           <Space>
-            <Typography.Text style={labelStyle}>店铺宝系数</Typography.Text>
+            <Typography.Text style={labelStyle}>单品立减系数</Typography.Text>
             <ValueHintInput table="promo" field="shop_promo_rate" category={category} isRate
               value={localPromo.shop_promo_rate != null ? Number(localPromo.shop_promo_rate) : undefined}
               onChange={(n) => patch({ shop_promo_rate: n ?? undefined })} />

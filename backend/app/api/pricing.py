@@ -255,7 +255,7 @@ def update_pricing_by_product(
                 db, costs, body.costs, table="pricing_sku_costs", pk=sku.sku_code,
                 actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
             pricing_calc_service.recompute_costs(costs, sku)
-        pricing_calc_service.recompute(sku)      # 先算成本→价格链, 再由价格倒推店铺宝系数
+        pricing_calc_service.recompute(sku)      # 先算成本→价格链, 再由价格倒推单品立减系数
         if body.promo:
             promo = db.query(PricingSkuPromo).filter(
                 PricingSkuPromo.sku_code == sku.sku_code).first()
@@ -488,7 +488,7 @@ def update_pricing_sku(
         if tier_field in changes and changes.get(tier_field) is not None and base_field not in changes:
             setattr(sku, base_field, None)
     pricing_calc_service.recompute(sku)
-    # 促价/日常价 一变 → 同步倒推店铺宝系数 (2026-07-02 改回 Excel 倒推法), 让「改价台」/主表改价后系数即时更新
+    # 促价/日常价 一变 → 同步倒推单品立减系数 (2026-07-02 改回 Excel 倒推法), 让「改价台」/主表改价后系数即时更新
     if any(getattr(sku, f) is not None for f in ("small_promo", "mid_promo", "big_promo")):
         promo = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code == sku.sku_code).first()
         if promo is None:
@@ -502,7 +502,7 @@ def update_pricing_sku(
 
 
 # ── 改价台 (2026-07-02): Excel 式改「定价基数」(0.86/0.88/0.9) → 价格=ROUNDUP(成本÷基数,10) 联动 ──
-# 复刻用户 List 表: 促价由基数(系数)算出来; 用户改基数, 价格自动变。右侧附带反推的店铺宝系数(填淘宝用)。
+# 复刻用户 List 表: 促价由基数(系数)算出来; 用户改基数, 价格自动变。右侧附带反推的单品立减系数(填淘宝用)。
 class ShopPriceRow(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: int
@@ -518,15 +518,22 @@ class ShopPriceRow(BaseModel):
     small_promo: Optional[Decimal] = None        # 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
     mid_promo: Optional[Decimal] = None
     big_promo: Optional[Decimal] = None
-    shop_promo_rate: Optional[Decimal] = None    # 小促店铺宝系数(反推, 填淘宝用)
+    shop_promo_rate: Optional[Decimal] = None    # 小促单品立减系数(反推, 填淘宝用)
     mid_shop_rate: Optional[Decimal] = None
     big_shop_rate: Optional[Decimal] = None
     physical_cost: Optional[Decimal] = None      # 物理成本(工厂+物流+安装), 大促利润的成本基
     big_promo_margin: Optional[Decimal] = None   # 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%) (recompute 口径)
     gross_margin_rate: Optional[Decimal] = None  # 大促利润率 = 大促利润 ÷ 大促价
+    # 报名价模型 (2026-07-03: 大促锚不动, 只动中促) —— 派生, 不落库
+    report_price: Optional[Decimal] = None       # 报名价 A = 大促到手 ÷ 0.88 (填淘宝超级立减)
+    report_price_618: Optional[Decimal] = None   # 618/双11 报名价 = 大促到手 ÷ 0.85
+    gap_floor: Optional[Decimal] = None          # 空档价红线 = 中促到手 (空档期单品立减不得低于此)
+    compliance_g: Optional[Decimal] = None       # g = 中促到手 ÷ 大促到手
+    report_compliant: Optional[bool] = None      # g≥0.90/0.88 → 绿; False → 需微升中促(红)
 
 
 def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
+    rp = pricing_calc_service.report_prices(promo) if promo is not None else {}
     return ShopPriceRow(
         id=sku.id, product_code=sku.product_code, product_name=name,
         sku=sku.sku, size_info=sku.size_info, image=image, daily_price=sku.daily_price,
@@ -538,6 +545,11 @@ def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
         physical_cost=sku.physical_cost,
         big_promo_margin=sku.big_promo_margin,
         gross_margin_rate=sku.gross_margin_rate,
+        report_price=rp.get("report_price"),
+        report_price_618=rp.get("report_price_618"),
+        gap_floor=rp.get("gap_floor"),
+        compliance_g=rp.get("compliance_g"),
+        report_compliant=rp.get("report_compliant"),
     )
 
 
@@ -548,7 +560,7 @@ def shop_price_board(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """改价台取数: 产品图/名/SKU/日常价 + 三档定价基数(可改) + 三档促价(算出来) + 三档店铺宝系数(反推)。"""
+    """改价台取数: 产品图/名/SKU/日常价 + 三档定价基数(可改) + 三档促价(算出来) + 三档单品立减系数(反推)。"""
     from app.models.product import Product
     from app.services.gallery_lookup import sku_gallery_url_map
     stmt = select(PricingSku)
@@ -591,7 +603,7 @@ def _validate_base_changes(changes: dict) -> None:
 
 def _apply_shop_price_change(db: Session, sku: PricingSku, changes: dict, *, actor, promo_params):
     """改价台核心(单条/批量共用): 留痕 → 记工厂调价历史(先封存旧值) → 写新基数 → recompute(价格链)
-    → recompute_promo(店铺宝系数)。不 commit(由 caller 统一提交, 便于批量)。返回该 sku 的 promo 行。"""
+    → recompute_promo(单品立减系数)。不 commit(由 caller 统一提交, 便于批量)。返回该 sku 的 promo 行。"""
     from datetime import date as _date
     from app.services import pricing_version_service
     _record_price_changes(db, sku, changes, actor=actor)
@@ -608,7 +620,7 @@ def _apply_shop_price_change(db: Session, sku: PricingSku, changes: dict, *, act
         promo = PricingSkuPromo(sku_code=sku.sku_code)
         db.add(promo)
         db.flush()
-    pricing_calc_service.recompute_promo(promo, sku, promo_params)   # 价格→店铺宝系数
+    pricing_calc_service.recompute_promo(promo, sku, promo_params)   # 价格→单品立减系数
     return promo
 
 
@@ -620,7 +632,7 @@ def update_shop_price(
     _: User = Depends(require_role("admin", "operator")),
 ):
     """改价台: 改某档【定价基数】(0.86/0.88/0.9) → recompute 按 价格=ROUNDUP(成本÷基数,10) 联动出促价
-    → recompute_promo 反推店铺宝系数 → 返回含最新价格+系数的行 (复刻用户 List 表口径)。"""
+    → recompute_promo 反推单品立减系数 → 返回含最新价格+系数的行 (复刻用户 List 表口径)。"""
     sku = db.get(PricingSku, sku_id)
     if not sku:
         raise HTTPException(404, "Not found")
@@ -1027,20 +1039,25 @@ COEFFICIENT_CATALOG: list[dict] = [
      "meaning": "中促价 = 进位到10( 会计成本基准 ÷ 中促基数 )；在「改价台」按 SKU 可改，基数越小价越高（右侧为全表众数）"},
     {"field": "base_big", "label": "大促定价基数", "scope": "per_sku", "model": "sku",
      "meaning": "大促价 = 进位到10( 会计成本基准 ÷ 大促基数 )；在「改价台」按 SKU 可改，基数越小价越高（右侧为全表众数）"},
-    # ── 活动价系数 (全局默认, 可在「活动参数」调整; 用于从促价倒推店铺宝系数/到手价) ──
+    # ── 活动价系数 (全局默认, 可在「活动参数」调整; 用于从促价倒推单品立减系数/到手价) ──
     {"field": "platform_discount", "label": "平台立减(力度)", "scope": "global", "fixed": 0.12,
-     "meaning": "中/大促报名立减 12%（可在活动参数调）；买家到手 = 日常价 × (1 − 12%) × 店铺宝系数"},
+     "meaning": "中/大促报名立减 12%（可在活动参数调）；买家到手 = 日常价 × (1 − 12%) × 单品立减系数"},
     {"field": "vip_commission", "label": "88VIP佣金", "scope": "global", "fixed": 0.02,
      "meaning": "88VIP 佣金 2%（可在活动参数调）；店铺到账 = 买家到手 × (1 − 2%)，而「大促价」本身即店铺到账(佣金后净额)"},
     {"field": "vip_coupon", "label": "88VIP消费券(阶梯)", "scope": "global",
      "meaning": "会员价 = 买家到手 − 阶梯消费券：到手 ≥1500 减150 / ≥800 减80 / ≥500 减50 / ≥200 减20（可在活动参数调）"},
-    # ── 店铺宝系数 (每个 SKU 可不同; 来自 pricing_sku_promo, 填进淘宝店铺宝工具) ──
-    {"field": "shop_promo_rate", "label": "小促店铺宝系数", "scope": "per_sku", "model": "promo",
-     "meaning": "填进淘宝店铺宝的数；小促价 = 日常价 × 小促店铺宝系数（每个 SKU 可不同）"},
-    {"field": "mid_shop_rate", "label": "中促店铺宝系数", "scope": "per_sku", "model": "promo",
-     "meaning": "填进淘宝店铺宝的数；中促买家到手 = 日常价 × (1 − 立减12%) × 中促店铺宝系数（每个 SKU 可不同）"},
-    {"field": "big_shop_rate", "label": "大促店铺宝系数", "scope": "per_sku", "model": "promo",
-     "meaning": "填进淘宝店铺宝的数；大促买家到手 = 日常价 × (1 − 立减12%) × 大促店铺宝系数（每个 SKU 可不同）"},
+    # ── 单品立减系数 (每个 SKU 可不同; 来自 pricing_sku_promo; 店铺宝已停用, 空档期用单品立减做价) ──
+    {"field": "shop_promo_rate", "label": "小促单品立减系数", "scope": "per_sku", "model": "promo",
+     "meaning": "空档期用单品立减把价做到此水平；小促价 = 日常价 × 小促单品立减系数（每个 SKU 可不同）"},
+    {"field": "mid_shop_rate", "label": "中促单品立减系数", "scope": "per_sku", "model": "promo",
+     "meaning": "空档期用单品立减把价做到此水平；中促买家到手 = 日常价 × (1 − 立减12%) × 中促单品立减系数（每个 SKU 可不同）"},
+    {"field": "big_shop_rate", "label": "大促单品立减系数", "scope": "per_sku", "model": "promo",
+     "meaning": "空档期用单品立减把价做到此水平；大促买家到手 = 日常价 × (1 − 立减12%) × 大促单品立减系数（每个 SKU 可不同）"},
+    # ── 报名价模型 (超级立减报名价; 大促锚不动, 只动中促) ──
+    {"field": "report_price", "label": "报名价 A", "scope": "per_sku", "model": "derived",
+     "meaning": "填进淘宝超级立减报名表的数 = 大促到手 ÷ (1 − 大促力度12%)；中促场买家到手 = A × 0.90, 大促场 = A × 0.88, 618场 = A × 0.85"},
+    {"field": "compliance_g", "label": "中促合规比 g", "scope": "per_sku", "model": "derived",
+     "meaning": "g = 中促到手 ÷ 大促到手；g ≥ 0.90/0.88(=1.0227) 才能用同一报名价在中促场报得进；不足→「一键微升中促」抬中促(大促不动)"},
     {"field": "xhs_promo_discount", "label": "小红书折扣率", "scope": "per_sku", "model": "promo",
      "meaning": "小红书促销价 = 活动价 × (1 − 折扣率)，默认 0.15"},
 ]
@@ -1344,7 +1361,7 @@ def create_sku_promo(
     sku = _get_sku_or_404(db, sku_code)
     promo = PricingSkuPromo(sku_code=sku_code, **body.model_dump(exclude_none=True))
     db.add(promo)
-    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推店铺宝系数
+    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推单品立减系数
     pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
     db.commit()
     db.refresh(promo)
@@ -1370,7 +1387,7 @@ def upsert_sku_promo(
         table="pricing_sku_promo", pk=sku_code,
         actor=getattr(_, "username", None), row_label=sku.sku or sku.product_code,
     )
-    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推店铺宝系数
+    pricing_calc_service.recompute(sku)      # 先算好 小/中/大促价, 再由它倒推单品立减系数
     pricing_calc_service.recompute_promo(promo, sku, pricing_calc_service.get_promo_params(db))
     db.commit()
     db.refresh(promo)
@@ -1427,6 +1444,45 @@ def set_promo_params_ep(
             n += 1
     db.commit()
     return {"params": _serialize_promo_params(params), "recomputed": n}
+
+
+@router.post("/fix-mid-compliance", tags=["pricing"])
+def fix_mid_compliance(
+    apply: bool = Query(False, description="False=dry-run(只返回清单,不改库); True=落库并重算"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """一键微升中促合规 (2026-07-03 报名价模型): 扫全表, 把 中促到手÷大促到手 < 0.90/0.88 的 SKU
+    抬【中促实收】令 g=g_min(报名价 A 才在中促场报得进), **大促价一分不动**。
+    默认 dry-run 返回每条【中促前→后 + g】清单(=落库前给用户核对的验算); apply=true 才落库+重算促价链。"""
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.query(PricingSku).filter(
+        PricingSku.mid_promo.isnot(None), PricingSku.big_promo.isnot(None)).all()
+    codes = [s.sku_code for s in skus if s.sku_code]
+    promo_map = {p.sku_code: p for p in db.query(PricingSkuPromo).filter(
+        PricingSkuPromo.sku_code.in_(codes)).all()} if codes else {}
+    changes = []
+    for sku in skus:
+        r = pricing_calc_service.fix_mid_to_compliant(sku, params)
+        if not r:
+            continue
+        changes.append(r)
+        if apply:
+            promo = promo_map.get(sku.sku_code)
+            if promo is None:
+                promo = PricingSkuPromo(sku_code=sku.sku_code)
+                db.add(promo)
+                db.flush()
+            pricing_calc_service.recompute(sku)
+            pricing_calc_service.recompute_promo(promo, sku, params)
+    if apply:
+        db.commit()
+    else:
+        db.rollback()   # dry-run: 丢弃内存改动, 生产库零变动
+    return {
+        "apply": apply, "scanned": len(skus), "changed": len(changes),
+        "changes": sorted(changes, key=lambda x: x["g_before"]),
+    }
 
 
 # ===========================================================================

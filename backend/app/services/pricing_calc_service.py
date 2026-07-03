@@ -156,11 +156,11 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
     """倒推活动价 (2026-07-02 用户改回 Excel「活动价」表方式)。
 
     输入 = 各档【店铺实收价】= 小促价/中促价/大促价 (存在 sku.small_promo/mid_promo/big_promo);
-    输出 = 【店铺宝系数】(要填进淘宝店铺宝工具的那个数) + 买家到手/店铺到手/88VIP到手。
+    输出 = 【单品立减系数】(空档期用单品立减把价做到此水平的那个数) + 买家到手/店铺到手/88VIP到手。
     口径复刻用户 Excel Q/U/AB:
       日常价 = sku.daily_price
-      小促: 无平台立减/佣金 → 买家到手 = 小促价(店铺实收); 店铺宝系数 = 小促价 ÷ 日常
-      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 店铺宝系数 = 买家到手 ÷ (日常 ×(1−中促立减));
+      小促: 无平台立减/佣金 → 买家到手 = 小促价(店铺实收); 单品立减系数 = 小促价 ÷ 日常
+      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 单品立减系数 = 买家到手 ÷ (日常 ×(1−中促立减));
             店铺到手 = 中促价(实收); 88VIP到手 = 买家到手 − 88VIP消费券(阶梯)
       大促: 同中促, 换大促价/大促佣金/大促立减
     立减/佣金取全局参数(改参数→「活动参数」页一键全表重算); 记录回 promo 供前端展示。
@@ -208,6 +208,87 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
     if promo.xhs_activity_price:
         discount = promo.xhs_promo_discount if promo.xhs_promo_discount is not None else D("0.15")
         promo.xhs_promo_price = (D(str(promo.xhs_activity_price)) * (D("1") - discount)).quantize(cent, ROUND_HALF_UP)
+
+
+# ── 报名价模型 (2026-07-03: 店铺宝失效 → 超级立减「报名价」; 大促价为锚不动, 只动中促) ──────────
+# 超级立减是「报名表直接手填一个数(报名价 A)」, 买家到手 = A × (1 − 场次力度)。三档场次力度:
+#   中促(超值立减/88VIP场)10% · 大促(大促场)12% · 618/双11 15%。
+#   —— 独立于旧 mid/big_platform_discount(那是店铺宝反推系数用的口径, 勿混)。
+# 合规: 报名价 A 只报一个数, 要在中促场也报得进(不破平台线②最低普惠券后价), 必须
+#   中促到手 ÷ 大促到手 ≥ (1−中促力度)/(1−大促力度) = 0.90/0.88 = 1.02273 (记 g_min)。
+REPORT_LEVERAGE_DEFAULTS = {"mid": "0.10", "big": "0.12", "big618": "0.15"}
+
+
+def _report_leverage(params: Optional[dict]):
+    p = params or {}
+    return (
+        Decimal(str(p.get("report_mid_leverage", REPORT_LEVERAGE_DEFAULTS["mid"]))),
+        Decimal(str(p.get("report_big_leverage", REPORT_LEVERAGE_DEFAULTS["big"]))),
+        Decimal(str(p.get("report_618_leverage", REPORT_LEVERAGE_DEFAULTS["big618"]))),
+    )
+
+
+def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict:
+    """由 promo 的中/大促【买家到手】派生报名价模型输出 (纯读, 不改库):
+      报名价 A   = 大促到手 ÷ (1−大促力度12%)  —— 锚在大促, 大促价一分不动;
+      A中        = 中促到手 ÷ (1−中促力度10%)  (合规时应 = A);
+      618报名价  = 大促到手 ÷ (1−618力度15%);
+      空档价红线 = 中促到手 (空档期任何单件即享工具做的价不得低于它, 否则塌平台线②);
+      g          = 中促到手 ÷ 大促到手; 合规 ⟺ g ≥ g_min(=0.90/0.88)。
+    报名价取整到元(用户实际填淘宝的数); 佣金已内含在到手值里, 与佣金参数无关。"""
+    mid_lev, big_lev, lev618 = _report_leverage(params)
+    yuan, micro = Decimal("1"), Decimal("0.000001")
+    mid_buyer = _d(getattr(promo, "mid_buyer_price", None))
+    big_buyer = _d(getattr(promo, "big_buyer_price", None))
+    out = {"report_price": None, "report_price_mid": None, "report_price_618": None,
+           "gap_floor": None, "compliance_g": None, "report_compliant": None}
+    if big_buyer and big_buyer > 0 and (Decimal("1") - big_lev) != 0:
+        out["report_price"] = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_HALF_UP)
+        if (Decimal("1") - lev618) != 0:
+            out["report_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_HALF_UP)
+    if mid_buyer and mid_buyer > 0 and (Decimal("1") - mid_lev) != 0:
+        out["report_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_HALF_UP)
+        out["gap_floor"] = mid_buyer.quantize(Decimal("0.01"), ROUND_HALF_UP)
+    if mid_buyer and big_buyer and big_buyer > 0:
+        g = (mid_buyer / big_buyer).quantize(micro, ROUND_HALF_UP)
+        g_min = (Decimal("1") - mid_lev) / (Decimal("1") - big_lev)
+        out["compliance_g"] = g
+        out["report_compliant"] = bool(g >= g_min - Decimal("0.0001"))
+    return out
+
+
+def fix_mid_to_compliant(sku: PricingSku, params: Optional[dict] = None) -> Optional[dict]:
+    """若该 SKU 不合规(g<g_min), 抬【中促实收】令 中促到手 = 大促到手 × g_min(=0.90/0.88), 大促价一分不动。
+    只改 sku.mid_promo, 并清 sku.base_mid(=None)让 recompute 不用 cost-plus 覆盖此手改中促。
+    返回 {前后对比} 供 dry-run 展示; 已合规 / 缺大促或中促值 → None(不动)。
+    ⚠caller 改后需 recompute(sku) + recompute_promo(promo, sku, params) 刷新到手/系数。"""
+    mid_lev, big_lev, _ = _report_leverage(params)
+    p = params or {}
+    mid_comm = Decimal(str(p.get("mid_vip_commission", PROMO_PARAM_DEFAULTS["mid_vip_commission"])))
+    big_comm = Decimal(str(p.get("big_vip_commission", PROMO_PARAM_DEFAULTS["big_vip_commission"])))
+    big, mid = _d(sku.big_promo), _d(sku.mid_promo)
+    if not big or not mid or big <= 0 or mid <= 0:
+        return None
+    if (Decimal("1") - big_comm) == 0 or (Decimal("1") - mid_comm) == 0:
+        return None
+    big_buyer = big / (Decimal("1") - big_comm)            # 大促到手
+    cur_mid_buyer = mid / (Decimal("1") - mid_comm)        # 当前中促到手
+    g_min = (Decimal("1") - mid_lev) / (Decimal("1") - big_lev)   # 0.90/0.88 = 1.02273
+    g = cur_mid_buyer / big_buyer
+    if g >= g_min - Decimal("0.0001"):
+        return None                                        # 已合规, 不动
+    target_mid_recv = (big_buyer * g_min * (Decimal("1") - mid_comm)).quantize(
+        Decimal("0.01"), ROUND_HALF_UP)                    # 目标中促实收(到手=大促到手×g_min, 再×(1−佣金))
+    before = mid
+    sku.mid_promo = target_mid_recv
+    sku.base_mid = None                                    # 清基数: recompute 不再 cost-plus 覆盖手改中促
+    q4 = Decimal("0.0001")
+    return {
+        "sku_code": sku.sku_code, "product_code": sku.product_code,
+        "product_name": getattr(sku, "product_name", None), "sku": getattr(sku, "sku", None),
+        "big_promo": float(big), "mid_before": float(before), "mid_after": float(target_mid_recv),
+        "g_before": float(g.quantize(q4, ROUND_HALF_UP)), "g_min": float(g_min.quantize(q4, ROUND_HALF_UP)),
+    }
 
 
 def recompute_costs(costs: PricingSkuCosts, sku: PricingSku) -> None:

@@ -141,7 +141,7 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     assert f("外采配件成本合计").startswith("=SUM")
     assert f("总出厂成本").startswith("=")
     # 锚 = 售价档位(小/中/大促价=店铺实收); 系数/买家到手/VIP 全反推为活公式 (用户 Excel 方式)
-    assert f("店铺宝系数").startswith("=")                          # 小促 = 小促价/日常
+    assert f("单品立减系数").startswith("=")                        # 小促 = 小促价/日常
     assert f("中促店铺系数").startswith("=") and "/" in f("中促店铺系数")
     assert f("大促店铺系数").startswith("=") and "/" in f("大促店铺系数")
     assert f("中促买家价").startswith("=")                          # 买家到手 = 中促价/(1−佣金), 派生

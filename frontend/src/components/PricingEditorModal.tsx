@@ -43,7 +43,7 @@ const COSTS_FIELDS: FieldDef[] = [
   { key: 'bed_board', label: '床铺板' }, { key: 'other_cost', label: '其他' },
 ];
 const PROMO_FIELDS_E: FieldDef[] = [
-  { key: 'shop_promo_rate', label: '店铺宝系数', precision: 4 },
+  { key: 'shop_promo_rate', label: '单品立减系数', precision: 4 },
   { key: 'mid_shop_rate', label: '中促系数', precision: 4 },
   { key: 'big_shop_rate', label: '大促系数', precision: 4 },
   { key: 'xhs_promo_discount', label: '小红书折扣', precision: 4 },
@@ -58,7 +58,7 @@ const TABLE_OF: Record<'sku' | 'costs' | 'promo', string> = {
 // 公式推导的结果字段 (= 物理成本 ÷ (基数 − 费税), 由促销系数决定):
 // 用户拍板: 默认锁定, 提示改系数; 坚持直改需两次确认解锁。
 const FORMULA_LOCKED: Record<string, string> = {
-  small_promo: '小促价由「店铺宝系数」推导',
+  small_promo: '小促价由「单品立减系数」推导',
   mid_promo: '中促价由「中促系数」推导',
   big_promo: '大促价由「大促系数」推导',
 };
