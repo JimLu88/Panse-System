@@ -167,6 +167,14 @@ def factory_production(
         "装修好", "装修完", "房子好", "房子装好", "新房", "入住前", "还没装修", "房子还没",
         "别提前", "不要提前", "别太早", "不要太早",
     )
+    # 激活关键字 (用户 2026-07-03): 备注(全字段)含这些 = 客户已通知/该做了 → 优先级高于远期词,
+    # 即使还写着"等通知", 只要出现"现在制作/通知发货"就自动解除远期、转排产。
+    ACTIVATE_KW = (
+        "开始制作", "现在制作", "立即制作", "马上制作", "可以制作", "安排制作",
+        "开始生产", "可以生产", "安排生产", "投产", "上生产", "排产",
+        "现在做", "可以做了", "开始做",
+        "现在发货", "可以发货", "安排发货", "通知发货", "已通知", "客户通知", "可发货", "可发",
+    )
 
     def _remote_text(o: Order) -> str:
         return " ".join(t for t in (
@@ -194,6 +202,13 @@ def factory_production(
                 return d
             except ValueError:
                 return None
+        # 相对日期: 「N天后发货 / N天后发」→ 下单日 + N 天 (用户 2026-07-03)
+        m = _re.search(r"(\d{1,3})\s*天\s*[后之]?\s*(?:再)?\s*发", text)
+        if m and od:
+            try:
+                return od + timedelta(days=int(m.group(1)))
+            except (ValueError, OverflowError):
+                return None
         return None
 
     def _by_days(days: Optional[int]) -> str:
@@ -214,7 +229,11 @@ def factory_production(
         base = o.order_date
         _txt = _remote_text(o)
         _rdate = _resume_date(_txt, base)
-        if o.is_remote_ship:                                # 手动设为远期: 无期限
+        if any(k in _txt for k in ACTIVATE_KW):             # 激活: 备注含"现在制作/通知发货"等 → 解除远期, 立即排产 (优先级最高)
+            eff = _rdate or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
+            days = (eff - today).days if eff else None
+            st = _by_days(days)
+        elif o.is_remote_ship:                              # 手动设为远期: 无期限
             eff, days, st = None, None, "remote"
         elif o.ship_deadline:                               # 人工设了截止 → 正常倒计时
             eff = o.ship_deadline; days = (eff - today).days; st = _by_days(days)
