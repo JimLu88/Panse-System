@@ -277,8 +277,11 @@ def fix_mid_to_compliant(sku: PricingSku, params: Optional[dict] = None) -> Opti
     g = cur_mid_buyer / big_buyer
     if g >= g_min - Decimal("0.0001"):
         return None                                        # 已合规, 不动
+    # 目标中促实收(到手=大促到手×g_min, 再×(1−佣金))。合规要求 中促≥该 floor, 故向【上】取整到分。
+    # 先按 0.0001 HALF_UP 抹掉 Decimal 非整除残差(g_min=0.90/0.88 不终止, 880×g_min=900.0000…24),
+    # 再 CEILING 到分: 干净值(900.0000)不被多顶一分, 真有零头(¥20 样块 20.4545)才进位到 20.46, 保证 g≥g_min。
     target_mid_recv = (big_buyer * g_min * (Decimal("1") - mid_comm)).quantize(
-        Decimal("0.01"), ROUND_HALF_UP)                    # 目标中促实收(到手=大促到手×g_min, 再×(1−佣金))
+        Decimal("0.0001"), ROUND_HALF_UP).quantize(Decimal("0.01"), ROUND_CEILING)
     before = mid
     sku.mid_promo = target_mid_recv
     sku.base_mid = None                                    # 清基数: recompute 不再 cost-plus 覆盖手改中促
