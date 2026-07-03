@@ -41,9 +41,10 @@ def test_resolve_length_fallback_to_size_info():
     assert _resolve_length_m(SimpleNamespace(sku="无尺寸款", sku_code="X", size_info=None)) is None
 
 
-def test_size_factor_math():
-    # 面积比例 = (宽/宽0)×(高/高0): 标准→1(delta 0); 变宽→>1(加价); 变窄→<1(减价)
-    std_w, std_h = 77.5, 75.0
-    assert abs((std_w / std_w) * (std_h / std_h) - 1.0) < 1e-9      # 标准 → 0
-    assert (85 / std_w) * (75 / std_h) > 1.0                          # 变宽 → 加
-    assert (75 / std_w) * (75 / std_h) < 1.0                          # 变窄 → 减
+def test_height_factor_math():
+    # 2026-07-04 面积一致重定价后: 宽度已并入「底面积定价」锚点(见 test_custom_quote_v2 的
+    # test_quote_light_area_pricing_monotone), 尺寸变体只剩【高度】按 高比 缩木作。
+    std_h = 75.0
+    assert abs((80 / std_h) - 1.0) > 1e-3        # 高80 偏离标准75 → 有高度变体
+    assert (80 / std_h) > 1.0                     # 更高 → 加价
+    assert (70 / std_h) < 1.0                     # 更矮 → 减价

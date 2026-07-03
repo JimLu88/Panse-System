@@ -66,6 +66,45 @@ def test_quote_light_unknown_product():
     assert r["final_price"] is None and "无此产品" in r["error"]
 
 
+def _seed_slab_table(db):
+    """岩板餐桌 S1: 带 size_info(长/宽/高) 的多档 —— 触发「面积一致定价」路径。
+    价随长度增(2630→3100), 宽随长度增(75→85 后 plateau), 复刻生产 榉木岩板餐桌 形态。"""
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+    db.add(Product(code="S1", name="榉木岩板餐桌", category="餐厅-餐桌", main_material="榉木"))
+    for ln, depth_mm, price in [("1.4", 750, 2630), ("1.6", 800, 2710),
+                                ("1.8", 850, 2800), ("2.0", 850, 3100)]:
+        db.add(PricingSku(product_code="S1", sku=f"岩板餐桌-{ln}米", sku_code=f"S1-{ln}",
+                          size_category="中型", big_promo=D(str(price)), daily_price=D(str(price)),
+                          size_info=f"长度：{float(ln) * 1000:.0f}mm；深度：{depth_mm}mm；高度：750mm"))
+    db.commit()
+
+
+def test_quote_light_area_pricing_monotone():
+    """面积一致定价(修「越小越贵」): 固定宽85, 更短(1.45m)绝不比更长(1.5m)贵; 宽=标准≈老长度锚点; 加宽更贵。"""
+    from app.models.pricing import PricingSku
+    db = _db()
+    _seed_slab_table(db)
+    r145 = v2.quote_light(db, base_product_code="S1", target_length_m=1.45,
+                          target_width_cm=85, price_tier="big")
+    r150 = v2.quote_light(db, base_product_code="S1", target_length_m=1.5,
+                          target_width_cm=85, price_tier="big")
+    assert r145["final_price"] <= r150["final_price"]        # ★ 修复核心: 更短不再更贵
+    assert "面积定价" in r145["anchor_method"]
+    # 宽=标准(1.5m 标准宽=77.5) → 面积锚点 ≈ 老「按长度插值」(2670 附近)
+    r_std = v2.quote_light(db, base_product_code="S1", target_length_m=1.5, price_tier="big")
+    assert 2650 <= r_std["final_price"] <= 2690
+    # 同长度加宽(90>85) → 更贵(宽单调)
+    r_wide = v2.quote_light(db, base_product_code="S1", target_length_m=1.5,
+                            target_width_cm=90, price_tier="big")
+    assert r_wide["final_price"] >= r150["final_price"]
+    # 全长扫一遍(宽固定85): 应单调不降
+    prices = [v2.quote_light(db, base_product_code="S1", target_length_m=L,
+                             target_width_cm=85, price_tier="big")["final_price"]
+              for L in (1.3, 1.4, 1.5, 1.6, 1.8)]
+    assert prices == sorted(prices)                          # 更长必不更便宜
+
+
 # ───────── 普通定制: 材质 delta ─────────
 
 def _seed_bed(db, with_walnut_sibling=False):

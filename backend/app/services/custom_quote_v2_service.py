@@ -191,6 +191,39 @@ def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
     return price_pts, wood_pts
 
 
+def _area_points(skus: list[PricingSku], tier_col: str, depth_pts: list) -> tuple[list, list]:
+    """面积一致定价点云: (底面积㎡, 价) 与 (底面积㎡, wood_cost)。
+
+    宽取 size_info 的 深/宽; 缺则按 depth_pts 插值该长度的标准宽; 长或宽都拿不到 → 跳过该 SKU。
+    按面积排序后做「累计取大」(cummax): 保证 价/木作 随面积单调不降(更大绝不更便宜, 兜个别档倒挂)。
+    该款完全无宽数据(如部分床头柜)→ 返回空 → 调用方自动退回按长度插值(老口径, 行为不变)。"""
+    p_by_area: dict[float, float] = {}
+    w_by_area: dict[float, float] = {}
+    for s in skus:
+        ln = _resolve_length_m(s)
+        if ln is None:
+            continue
+        _l, w, _h = _parse_size_info(s.size_info)
+        if (w is None or w <= 0) and depth_pts:
+            w = interp(depth_pts, ln)[0]
+        if not w or w <= 0:
+            continue
+        area = round(ln * (float(w) / 100.0), 4)
+        price = getattr(s, tier_col, None)
+        if price is not None:
+            p_by_area[area] = float(price)          # 同面积(黑/白岩板)同价, 覆盖即可
+        if s.wood_cost is not None:
+            w_by_area[area] = float(s.wood_cost)
+
+    def _cummax(d: dict) -> list:
+        out, run = [], None
+        for a in sorted(d):
+            run = d[a] if run is None else max(run, d[a])
+            out.append((a, run))
+        return out
+    return _cummax(p_by_area), _cummax(w_by_area)
+
+
 def _parse_size_info(size_info: Optional[str]) -> tuple[Optional[float], Optional[float], Optional[float]]:
     """'长度：1400mm；深度：750mm；高度：750mm' → (长cm, 深/宽cm, 高cm)。缺→None。mm→cm(÷10)。"""
     import re
@@ -284,13 +317,28 @@ def quote_light(
 
     prod = db.query(Product).filter(Product.code == base_product_code).first()
     price_pts, wood_pts = _sku_points(skus, tier_col)
+    depth_pts, height_pts = _dim_points(skus)
+    std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
+    std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
+    eff_w = float(target_width_cm) if target_width_cm else std_w   # 没填宽 → 用该长度的标准宽
     breakdown: list[dict] = []
 
-    # ── 锚点价 (含尺寸) ── 策略C: 多档真实价插值到目标长度 ──
-    if target_length_m and price_pts:
+    # ── 锚点价 ── 面积一致定价 (2026-07-04 修「越小越贵」非单调 bug) ──
+    #   老法 = 按长度插锚点价 + 宽/高偏离"该长度标准宽"的木作溢价; 但标准宽随长度缩, 把绝对宽固定在
+    #   高于标准再缩长度 → 宽溢价暴涨盖过锚点跌 → 越短越贵 (岩板/玻璃桌尤甚, 锚点对长度不敏感)。
+    #   新法 = 按【实际底面积 长×宽】插真实 SKU 价, 长、宽同一 ¥/㎡ → 更大必更贵 (单调)。
+    #   宽=标准时与老口径吻合 (实测 2669≈2670); 该款无宽数据 → 自动退回按长度插值 (行为不变)。
+    area_price_pts, area_wood_pts = _area_points(skus, tier_col, depth_pts)
+    target_area = (target_length_m * eff_w / 100.0) if (target_length_m and eff_w) else None
+    used_area = bool(target_area and area_price_pts)
+    if used_area:
+        anchor, method = interp(area_price_pts, target_area)
+        anchor_wood, _ = interp(area_wood_pts, target_area) if area_wood_pts else (None, "no-data")
+        note = f"面积定价 {target_length_m}m×{eff_w:.0f}cm≈{target_area:.3f}㎡ ({method}, {len(area_price_pts)}点)"
+    elif target_length_m and price_pts:
         anchor, method = interp(price_pts, target_length_m)
         anchor_wood, _ = interp(wood_pts, target_length_m) if wood_pts else (None, "no-data")
-        note = f"策略C 多档插值@{target_length_m}m ({method}, {len(price_pts)}档)"
+        note = f"策略C 长度插值@{target_length_m}m ({method}, {len(price_pts)}档; 无宽数据退长度口径)"
     else:
         rep = sorted(skus, key=lambda s: _resolve_length_m(s) or 0)[len(skus) // 2]
         anchor = float(getattr(rep, tier_col, None) or rep.daily_price or rep.list_price or 0)
@@ -298,7 +346,8 @@ def quote_light(
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
         return {"error": "锚点价缺失(该产品4档价为空)", "final_price": None, "breakdown": []}
-    breakdown.append({"label": "标准原价(同尺寸)", "amount": round(anchor, 2), "note": note})
+    breakdown.append({"label": "底面积定价(长×宽)" if used_area else "标准原价(同尺寸)",
+                      "amount": round(anchor, 2), "note": note})
 
     final = anchor
 
@@ -340,23 +389,24 @@ def quote_light(
                                   "note": f"缺木作成本(wood_cost)无法反推面积, 需人工核{sib_note}"})
     final += material_delta
 
-    # ── 尺寸(宽高)变体 delta ── 长度已含在锚点插值; 宽/高偏离"该长度的标准宽高"→ 按面积比例缩放木作×(1+厂利) ──
+    # ── 尺寸变体 delta ── 宽度已并入上面「底面积定价」锚点(长宽同价/㎡, 不再单独加宽溢价);
+    #   这里只处理【高度】偏离标准高。有顶柜等木作盒子时: 高出部分由顶柜单独算价, 整柜不按高缩放
+    #   (避免重复计价; 用户拍板 2026-06-20)。std_w/std_h 已在锚点段算好。 ──
     size_delta = 0.0
-    depth_pts, height_pts = _dim_points(skus)
-    std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
-    std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
-    # 有"顶柜等木作盒子"部位时: 高出部分由顶柜单独算价, 整柜不再按高缩放(避免重复计价; 用户拍板 2026-06-20)
     has_box_part = any(_is_box_part((p.get("material") or p.get("name") or "")) for p in (add_parts or []))
-    if anchor_wood and std_w and std_h and (target_width_cm or target_height_cm):
-        tw = float(target_width_cm or std_w)
-        th = float(std_h if has_box_part else (target_height_cm or std_h))   # 有顶柜→高不计入整柜缩放
-        size_factor = (tw / std_w) * (th / std_h)
-        if abs(size_factor - 1) > 1e-3:
-            size_delta = round(float(anchor_wood) * (size_factor - 1) * (1 + factory_profit_rate), 2)
+    if used_area and target_width_cm and std_w and abs(float(target_width_cm) - std_w) > 0.1:
+        breakdown.append({
+            "label": f"宽 {float(target_width_cm):.0f}cm(标准{std_w:.0f}) 已计入底面积定价",
+            "amount": 0.0, "note": "长、宽同一 ¥/㎡, 宽度差异已体现在上面的底面积定价里"})
+    if anchor_wood and std_h and target_height_cm and not has_box_part:
+        th = float(target_height_cm)
+        height_factor = th / std_h
+        if abs(height_factor - 1) > 1e-3:
+            size_delta = round(float(anchor_wood) * (height_factor - 1) * (1 + factory_profit_rate), 2)
             breakdown.append({
-                "label": f"尺寸变体(宽{tw:.0f}×高{th:.0f}, 标准{std_w:.0f}×{std_h:.0f}cm)",
+                "label": f"高度变体(高{th:.0f}, 标准{std_h:.0f}cm)",
                 "amount": size_delta,
-                "note": f"木作{float(anchor_wood):.0f}×(面积比{size_factor:.3f}−1)×(1+{factory_profit_rate})",
+                "note": f"木作{float(anchor_wood):.0f}×(高比{height_factor:.3f}−1)×(1+{factory_profit_rate})",
             })
     final += size_delta
 
