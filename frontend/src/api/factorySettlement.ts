@@ -41,15 +41,33 @@ export interface FsAlias {
   note: string | null;
 }
 
+export interface FsDetailRow {
+  settlement_month: string;
+  factory_order_no: string | null;
+  platform_order_no: string | null;
+  product_name: string | null;
+  product_code: string | null;
+  sku: string | null;
+  qty: number | null;
+  bill_amount: string;
+  payment_status: string;
+  paid_amount: string;
+  payment_date: string | null;
+  alipay_flow_no: string | null;
+  order_date: string | null;
+  remark: string | null;
+}
+
 export interface FsOverview {
   breakdown: FsBreakdown;
   payments: FsPayment[];
   aliases: FsAlias[];
+  detail?: FsDetailRow[]; // 搜索 q 时返回匹配的逐单明细 (2026-07-03)
 }
 
-export const getFsOverview = (supplier?: string) =>
+export const getFsOverview = (supplier?: string, q?: string) =>
   api.get<FsOverview>('/api/factory-settlement/overview', {
-    params: supplier ? { supplier } : {},
+    params: { ...(supplier ? { supplier } : {}), ...(q && q.trim() ? { q: q.trim() } : {}) },
   }).then((r) => r.data);
 
 export const fsSettle = (payload: {

@@ -140,6 +140,28 @@ def test_p3_exception_open_and_selfheal(db_session):
     assert exception_recheck_service.recheck(db, exc) is None         # 已销 → 自愈销账
 
 
+def test_product_search_filters(db_session):
+    """q 模糊搜索(用户 2026-07-03): 台账/逐单明细只含 产品名/SKU/产品编码 匹配的工厂单。"""
+    db = db_session
+    db.add_all([
+        FactoryOrder(factory_order_no="S1", factory_name=SUP, factory_bill_amount=Decimal("1000"),
+                     payment_status="unpaid", order_date=date(2026, 5, 3),
+                     product_name="榉木岩板餐桌", sku="榉木-1.8米", product_code="PPS24210070901"),
+        FactoryOrder(factory_order_no="S2", factory_name=SUP, factory_bill_amount=Decimal("2000"),
+                     payment_status="unpaid", order_date=date(2026, 5, 4),
+                     product_name="樱桃木窄柜", sku="樱桃-窄柜", product_code="PPS99"),
+    ])
+    db.flush()
+    assert fss.month_breakdown(db, q="岩板")["total_billed"] == Decimal("1000.00")      # 产品名
+    assert fss.month_breakdown(db, q="窄柜")["total_billed"] == Decimal("2000.00")       # SKU
+    assert fss.month_breakdown(db, q="PPS24210070901")["total_billed"] == Decimal("1000.00")  # 编码
+    assert fss.month_breakdown(db)["total_billed"] == Decimal("3000.00")                 # 空q=全部
+    detail = fss.settlement_detail_rows(db, q="岩板")
+    assert len(detail) == 1 and detail[0]["factory_order_no"] == "S1"
+    assert detail[0]["product_code"] == "PPS24210070901"
+    assert len(fss.settlement_detail_rows(db)) == 2                                       # 空q=全部
+
+
 def test_p4_missing_orders(db_session):
     """P4: 已发货未被任何工厂账单覆盖=漏单; 剔除已覆盖/样块/未来月; 按发货月累计。"""
     from app.models.order import FactoryOrder, Order

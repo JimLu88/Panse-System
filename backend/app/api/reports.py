@@ -774,6 +774,7 @@ def per_order_reconcile(
     year: int = Query(2026),
     month: int = Query(..., ge=1, le=12),
     db: Session = Depends(get_db),
+    product_search: Optional[str] = None,   # 产品名/SKU/SKU编码/产品编码 模糊搜索 (FastAPI 自动当查询参数)
 ):
     """逐单核对 (财务) — 某月每笔真实成交订单的完整成本拆解 + 支付宝覆盖/对账状态 + 问题单高亮。
     口径与经营状况一致 (order_financials 会计成本); 合计再减该月推广费、人员外包 = 本月真实净利。
@@ -783,12 +784,17 @@ def per_order_reconcile(
     coef = _ofin.load_coefficients(db)
     as_by_order = _ofin.extra_aftersales_by_order(db)
 
-    orders = db.execute(
-        select(Order).where(
-            Order.order_date >= start, Order.order_date <= end,
-            sales_analytics.settled_sale_clause(), Order.is_refill == False,  # noqa: E712
-        )
-    ).scalars().all()
+    _stmt = select(Order).where(
+        Order.order_date >= start, Order.order_date <= end,
+        sales_analytics.settled_sale_clause(), Order.is_refill == False,  # noqa: E712
+    )
+    if product_search and product_search.strip():
+        _pq = f"%{product_search.strip()}%"
+        _stmt = _stmt.where(or_(
+            Order.product_name.ilike(_pq), Order.sku.ilike(_pq),
+            Order.sku_code.ilike(_pq), Order.product_code.ilike(_pq),
+        ))
+    orders = db.execute(_stmt).scalars().all()
 
     # 工厂成本核对 (用户 2026-06-20): 每单 预算(定价表 木作/配件/打包) vs 实际(工厂账单 actual_cost, 仅木作) + 差额。
     from app.models.pricing import PricingSku
@@ -831,6 +837,9 @@ def per_order_reconcile(
         row = {
             "order_no": o.order_no,
             "product_name": o.product_name or o.product_code or "",
+            "sku": o.sku,
+            "sku_code": o.sku_code,
+            "product_code": o.product_code,
             "is_custom": bool(o.is_custom),
             "order_date": o.order_date.isoformat() if o.order_date else None,
             "paid_amount": round(paid, 2), "refund_amount": round(refund, 2), "revenue": round(revenue, 2),

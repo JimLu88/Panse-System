@@ -18,7 +18,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.factory_settlement import (
@@ -47,18 +47,33 @@ def _order_month(fo: FactoryOrder) -> Optional[str]:
 
 
 # ── 月度欠款台账 ──────────────────────────────────────────────
-def month_breakdown(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER) -> dict:
+def _apply_product_search(stmt, q: Optional[str]):
+    """按 产品名/SKU/产品编码 模糊搜索过滤工厂单 (q 为空则不过滤)。"""
+    if q and q.strip():
+        pq = f"%{q.strip()}%"
+        stmt = stmt.where(or_(
+            FactoryOrder.product_name.ilike(pq),
+            FactoryOrder.sku.ilike(pq),
+            FactoryOrder.product_code.ilike(pq),
+        ))
+    return stmt
+
+
+def month_breakdown(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER,
+                    q: Optional[str] = None) -> dict:
     """按结算月汇总该供应商「已开账单」工厂单: 应付/已付/未付/状态。
 
     返回 {supplier, months:[{month, billed, paid, unpaid, order_count, paid_count, status}], total_*}。
     status: paid(已付清) / unpaid(未付清) / partial(部分付清)。
+    q: 产品名/SKU/产品编码 模糊搜索, 只汇总匹配的单 (用户 2026-07-03)。
     """
     rows = db.execute(
-        select(FactoryOrder).where(
-            FactoryOrder.factory_name == supplier,
-            FactoryOrder.voided_at.is_(None),
-            FactoryOrder.factory_bill_amount.isnot(None),
-        )
+        _apply_product_search(
+            select(FactoryOrder).where(
+                FactoryOrder.factory_name == supplier,
+                FactoryOrder.voided_at.is_(None),
+                FactoryOrder.factory_bill_amount.isnot(None),
+            ), q)
     ).scalars().all()
     agg: dict[str, dict] = {}
     for fo in rows:
@@ -423,15 +438,18 @@ def missing_orders_xlsx_bytes(db: Session, *, up_to_month: Optional[str] = None,
     return buf.getvalue()
 
 
-def settlement_detail_rows(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER) -> list[dict]:
+def settlement_detail_rows(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER,
+                           q: Optional[str] = None) -> list[dict]:
     """逐单明细: 该供应商每张「已开账单」工厂单一行。口径与月度台账完全一致——
-    应付(账单) = Σ factory_bill_amount; 已付 = Σ (payment_status='paid' 的 factory_bill_amount)。"""
+    应付(账单) = Σ factory_bill_amount; 已付 = Σ (payment_status='paid' 的 factory_bill_amount)。
+    q: 产品名/SKU/产品编码 模糊搜索 (用户 2026-07-03)。"""
     rows = db.execute(
-        select(FactoryOrder).where(
-            FactoryOrder.factory_name == supplier,
-            FactoryOrder.voided_at.is_(None),
-            FactoryOrder.factory_bill_amount.isnot(None),
-        )
+        _apply_product_search(
+            select(FactoryOrder).where(
+                FactoryOrder.factory_name == supplier,
+                FactoryOrder.voided_at.is_(None),
+                FactoryOrder.factory_bill_amount.isnot(None),
+            ), q)
     ).scalars().all()
     out = []
     for fo in rows:
@@ -442,6 +460,7 @@ def settlement_detail_rows(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER) -
             "factory_order_no": fo.factory_order_no,
             "platform_order_no": fo.platform_order_no,
             "product_name": fo.product_name,
+            "product_code": fo.product_code,
             "sku": fo.sku,
             "qty": fo.qty,
             "bill_amount": amt.quantize(_Q),

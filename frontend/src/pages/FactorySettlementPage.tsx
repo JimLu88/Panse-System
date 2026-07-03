@@ -3,7 +3,7 @@ import {
   Alert, Button, Card, Input, message, Popconfirm, Space, Table, Tag, Typography,
 } from 'antd';
 import {
-  type FsAlias, type FsMissing, type FsMissingOrder, type FsMonth, type FsOverview, type FsPayment,
+  type FsAlias, type FsDetailRow, type FsMissing, type FsMissingOrder, type FsMonth, type FsOverview, type FsPayment,
   downloadFsMissing, downloadFsDetail, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, getFsMissing, getFsOverview,
 } from '../api/factorySettlement';
 
@@ -19,15 +19,16 @@ export default function FactorySettlementPage() {
   const [data, setData] = useState<FsOverview | null>(null);
   const [loading, setLoading] = useState(false);
   const [aliasInput, setAliasInput] = useState('');
+  const [searchQ, setSearchQ] = useState(''); // 产品名/SKU/产品编码 模糊搜索 (2026-07-03)
   const [scanning, setScanning] = useState(false);
   const [missing, setMissing] = useState<FsMissing | null>(null);
   const [missLoading, setMissLoading] = useState(false);
   const [upToMonth, setUpToMonth] = useState('');
 
-  const load = async () => {
+  const load = async (q: string = searchQ) => {
     setLoading(true);
     try {
-      setData(await getFsOverview());
+      setData(await getFsOverview(undefined, q));
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '加载失败');
     } finally {
@@ -211,6 +212,49 @@ export default function FactorySettlementPage() {
         message="付了工厂月结货款后, 在这里把对应月份「已付清」, 现金流的「工厂结算(已开账单未付)」会随之下降。"
         description="销账按声明驱动(不卡金额, 工厂常有减免/加费)。结算月默认按下单月; 工厂账单另说月份时以账单为准。每笔销账可撤销。"
       />
+
+      <Card size="small" style={{ marginBottom: 16 }}>
+        <Space wrap>
+          <Text strong>产品查询</Text>
+          <Input.Search
+            placeholder="搜产品名 / SKU / 产品编码 (模糊)"
+            value={searchQ}
+            allowClear
+            enterButton="搜索"
+            style={{ width: 340 }}
+            onChange={(e) => { setSearchQ(e.target.value); if (!e.target.value) load(''); }}
+            onSearch={(v) => load(v)}
+          />
+          <Text type="secondary">
+            {searchQ && data?.detail
+              ? `匹配 ${data.detail.length} 单; 下方台账已按此筛选`
+              : '搜索后台账只汇总匹配单, 并列出逐单明细(工厂号/账单金额/付款状态)'}
+          </Text>
+        </Space>
+      </Card>
+
+      {searchQ && data?.detail && (
+        <Card size="small" loading={loading} style={{ marginBottom: 16 }}
+          title={`搜索结果 · 逐单明细 (${data.detail.length} 单)`}>
+          <Table<FsDetailRow>
+            rowKey={(r) => r.factory_order_no || String(r.platform_order_no)}
+            size="small" pagination={{ pageSize: 20 }}
+            columns={[
+              { title: '结算月', dataIndex: 'settlement_month', key: 'sm', width: 80 },
+              { title: '工厂单号', dataIndex: 'factory_order_no', key: 'fno', width: 90 },
+              { title: '产品', dataIndex: 'product_name', key: 'pn', ellipsis: true },
+              { title: 'SKU', dataIndex: 'sku', key: 'sku', width: 130, ellipsis: true },
+              { title: '产品编码', dataIndex: 'product_code', key: 'pc', width: 130 },
+              { title: '数量', dataIndex: 'qty', key: 'qty', width: 50 },
+              { title: '账单金额', dataIndex: 'bill_amount', key: 'ba', width: 90, render: (v: string) => `¥${v}` },
+              { title: '付款', dataIndex: 'payment_status', key: 'ps', width: 60,
+                render: (v: string) => <Tag color={v === '已付' ? 'green' : 'red'}>{v}</Tag> },
+              { title: '下单日', dataIndex: 'order_date', key: 'od', width: 100, render: (v: string | null) => v || '—' },
+            ]}
+            dataSource={data.detail}
+          />
+        </Card>
+      )}
 
       <Card
         size="small" loading={loading} style={{ marginBottom: 16 }}
