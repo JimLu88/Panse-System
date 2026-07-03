@@ -22,7 +22,7 @@ import logging
 import os
 import time as time_mod
 from dataclasses import asdict, is_dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Awaitable, Callable, Optional
 
 from sqlalchemy.orm import Session
@@ -818,6 +818,69 @@ def _job_weekly_purchase_remind(db: Session) -> dict:
     return {"items_count": len(top), "pushed": True}
 
 
+# 大促 SKU 轮换提醒窗口 (用户 2026-07-03 拍板): 618=5/13~6/18, 双11=10/10~11/11。
+# 方案三(按 SKU 校最低价): 大促期给主推大款做 SKU 轮换(删旧规格+加无历史新规格报深折),
+# 以便报官方深折活动还能保住利润。窗口/开关存 system_settings, 可在设置里调。
+_DEFAULT_ROTATION_WINDOWS = [
+    {"name": "618大促", "start": "05-13", "end": "06-18"},
+    {"name": "双11大促", "start": "10-10", "end": "11-11"},
+]
+
+
+def _rotation_windows(db: Session) -> list:
+    import json
+    from app.services import settings_service
+    raw = settings_service.get(db, "promo_rotation_windows", env_fallback=False)
+    try:
+        w = json.loads(raw) if raw else _DEFAULT_ROTATION_WINDOWS
+        return w if isinstance(w, list) and w else _DEFAULT_ROTATION_WINDOWS
+    except (ValueError, TypeError):
+        return _DEFAULT_ROTATION_WINDOWS
+
+
+def _active_rotation_window(today: date, windows: list) -> Optional[dict]:
+    """今天是否落在某个大促轮换窗口 (MM-DD, 跨年安全)。命中返回该窗口, 否则 None。"""
+    for w in windows or []:
+        try:
+            sm, sd = (int(x) for x in str(w.get("start", "")).split("-"))
+            em, ed = (int(x) for x in str(w.get("end", "")).split("-"))
+        except (ValueError, TypeError):
+            continue
+        for year in (today.year - 1, today.year):
+            try:
+                s = date(year, sm, sd)
+                e = date(year, em, ed)
+            except ValueError:
+                continue
+            if e < s:                       # 跨年窗口 (如 12-20 ~ 01-05)
+                e = date(year + 1, em, ed)
+            if s <= today <= e:
+                return w
+    return None
+
+
+def _job_promo_rotation_remind(db: Session) -> dict:
+    """大促 SKU 轮换提醒: 618(5/13~6/18)/双11(10/10~11/11) 窗口内每天早上提醒换新表报深折。"""
+    from app.services import notify_service, settings_service
+    en = settings_service.get(db, "promo_rotation_remind_enabled", env_fallback=False)
+    if en is not None and str(en).strip().lower() in ("0", "false", "off", "no"):
+        return {"in_window": False, "pushed": False, "reason": "disabled"}
+    w = _active_rotation_window(date.today(), _rotation_windows(db))
+    if not w:
+        return {"in_window": False, "pushed": False}
+    name, end = w.get("name", "大促"), w.get("end", "")
+    msg = (
+        f"🔁 大促 SKU 轮换提醒（{name}）\n"
+        f"现在是「{name}」报名/备战期，记得给主推大款做 SKU 轮换，才好报官方深折活动、还保住利润：\n"
+        f"　1) 在老宝贝里删掉一个没用的旧规格 → 新增一个规格（新 SKU_ID、价格历史干净）→ 用它报大促深折；\n"
+        f"　2) 热销大尺寸规格本身别动（保住它们的流量权重）；\n"
+        f"　3) 换完把「新规格 ↔ 主 SKU」的对应发我，我更新映射表（成本/备货/统计不乱、不用重导）。\n"
+        f"（本提醒每天一次，持续到 {end}；不需要可在设置里关。）"
+    )
+    notify_service.notify(db, msg, level="warn", title="畔色ERP | 大促SKU轮换")
+    return {"in_window": True, "window": name, "pushed": True}
+
+
 def _job_daily_10_comprehensive_report(db: Session) -> dict:
     """每天 10:00: 综合日报 — 把所有常规检查结果合并成一条推送.
 
@@ -1278,6 +1341,8 @@ def _register_default_jobs() -> None:
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
                  _job_weekly_purchase_remind, cron={"day_of_week": "mon", "hour": 9, "minute": 0})
+    register_job("daily_0905_promo_rotation_remind", "大促SKU轮换提醒(618/双11)",
+                 _job_promo_rotation_remind, cron={"hour": 9, "minute": 5})
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
     register_job("daily_02_data_backup", "全量数据备份 (按配置间隔, 默认7天)",
