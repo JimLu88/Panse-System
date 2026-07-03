@@ -95,7 +95,7 @@ from app.api import taobao_export as taobao_export_api
 from app.api import npd as npd_api
 from app.api import factory_settlement as factory_settlement_api
 from app.config import get_settings
-from app.dependencies import enforce_page_permission
+from app.dependencies import enforce_page_permission, require_authenticated
 from app.middleware import AuditMiddleware
 
 settings = get_settings()
@@ -249,7 +249,9 @@ async def _lifespan(app: FastAPI):
 # 挂全局 → 覆盖所有路由, 无需逐个 router 改; 放行路径/未登录/admin/不受限账号在依赖内快速短路。
 app = FastAPI(
     title="Panse ERP", version="0.1.0", lifespan=_lifespan,
-    dependencies=[Depends(enforce_page_permission)],
+    # authn 先于 authz: require_authenticated 堵匿名访问 (影子模式默认只记不拦),
+    # enforce_page_permission 再管子账号页面权限。
+    dependencies=[Depends(require_authenticated), Depends(enforce_page_permission)],
 )
 
 app.add_middleware(
