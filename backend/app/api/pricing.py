@@ -1461,6 +1461,8 @@ def fix_mid_compliance(
     codes = [s.sku_code for s in skus if s.sku_code]
     promo_map = {p.sku_code: p for p in db.query(PricingSkuPromo).filter(
         PricingSkuPromo.sku_code.in_(codes)).all()} if codes else {}
+    # 铁律: 大促价一分不动。落库前逐条快照大促价, 落库后校验没被动过, 否则整体回滚。
+    big_before = {s.sku_code: s.big_promo for s in skus}
     changes = []
     for sku in skus:
         r = pricing_calc_service.fix_mid_to_compliant(sku, params)
@@ -1473,9 +1475,16 @@ def fix_mid_compliance(
                 promo = PricingSkuPromo(sku_code=sku.sku_code)
                 db.add(promo)
                 db.flush()
-            pricing_calc_service.recompute(sku)
+            # 只刷单品立减系数(读新中促价)。绝不调 recompute(sku) —— 它在 base_big 有值的 SKU 上会按
+            # cost-plus 重算 big_promo, 破「大促价一分不动」。fix 已设好 mid_promo, 利润链(依赖大促价)不变。
             pricing_calc_service.recompute_promo(promo, sku, params)
     if apply:
+        touched_big = [s.sku_code for s in skus
+                       if s.sku_code in big_before and s.big_promo != big_before[s.sku_code]]
+        if touched_big:
+            db.rollback()
+            raise HTTPException(
+                500, f"中止: 检测到 {len(touched_big)} 条大促价被改动(破铁律), 已整体回滚: {touched_big[:10]}")
         db.commit()
     else:
         db.rollback()   # dry-run: 丢弃内存改动, 生产库零变动
