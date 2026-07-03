@@ -4,7 +4,7 @@
  * 你改基数, 价格立刻变(和你原表一样); 价格/单品立减系数都是只读输出。
  */
 import { useEffect, useRef, useState } from 'react';
-import type { CSSProperties, Key } from 'react';
+import type { CSSProperties, Key, ReactNode } from 'react';
 import { Alert, Button, Collapse, Image, Input, InputNumber, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -134,6 +134,25 @@ export default function ShopPriceBoardPage() {
     render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{pct(v)}</span>,
   });
 
+  // ── 中促/小促「当前不启用」列: 灰底 + 灰字 + 只读(能选中复制, 不能编辑); 未来启用中促时再放开 ──
+  const GRAY_LOCK = '#a3adba';
+  const lockedCell = () => ({ style: { background: '#f6f7f9' } });
+  const lockText = (children: ReactNode) => (
+    <span style={{ color: GRAY_LOCK, userSelect: 'text' }} title="当前不启用, 可复制、不可改">{children}</span>
+  );
+  const baseColLocked = (title: string, tier: BaseTier): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: tier, width: 96, align: 'right', onCell: lockedCell,
+    render: (v: number | null) => lockText(v == null ? '—' : Number(v)),
+  });
+  const priceColLocked = (title: string, key: keyof ShopPriceRow): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: key as string, width: 92, align: 'right', onCell: lockedCell,
+    render: (v: number | null) => lockText(yuan(v)),
+  });
+  const rateColLocked = (title: string, key: keyof ShopPriceRow): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: key as string, width: 88, align: 'right', onCell: lockedCell,
+    render: (v: number | null) => lockText(pct(v)),
+  });
+
   // 大促利润(实时): = 大促价 −(物理成本 + 平台费0.6% + 税2%); 改基数→价格变→利润当场联动。
   // 红=亏/≤0, 橙=薄利<10%, 绿=正常。金额大字 + 利润率小字。
   const marginCol: ColumnsType<ShopPriceRow>[number] = {
@@ -178,16 +197,16 @@ export default function ShopPriceBoardPage() {
     },
     { title: '日常价', dataIndex: 'daily_price', width: 84, align: 'right',
       render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{yuan(v)}</span> },
-    baseCol('小促基数', 'base_small'),
-    baseCol('中促基数', 'base_mid'),
+    baseColLocked('小促基数', 'base_small'),
+    baseColLocked('中促基数', 'base_mid'),
     baseCol('大促基数', 'base_big'),
-    priceCol('小促价', 'small_promo'),
-    priceCol('中促价', 'mid_promo'),
+    priceColLocked('小促价', 'small_promo'),
+    priceColLocked('中促价', 'mid_promo'),
     priceCol('大促价', 'big_promo'),
     marginCol,
     // ── 报名价模型 (2026-07-03: 大促锚不动, 只动中促) ──
     {
-      title: '报名价A', dataIndex: 'report_price', width: 100, align: 'right',
+      title: <span>88VIP大促<br />报名价</span>, dataIndex: 'report_price', width: 108, align: 'right',
       render: (v: number | null, row) => {
         const ok = row.report_compliant;
         const color = ok === false ? '#dc2626' : '#1a73e8';
@@ -201,7 +220,7 @@ export default function ShopPriceBoardPage() {
         );
       },
     },
-    { title: '618报名价', dataIndex: 'report_price_618', width: 92, align: 'right',
+    { title: <span>超大促报名价<br />(618/双11)</span>, dataIndex: 'report_price_618', width: 116, align: 'right',
       render: (v: number | null) => <span style={{ color: '#7c3aed', fontWeight: 500 }}>{yuan(v)}</span> },
     { title: '空档价红线', dataIndex: 'gap_floor', width: 96, align: 'right',
       render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{yuan(v)}</span> },
@@ -213,8 +232,8 @@ export default function ShopPriceBoardPage() {
         return <Tag color={ok ? 'green' : 'red'}>{Number(v).toFixed(4)}</Tag>;
       },
     },
-    rateCol('小促单品立减', 'shop_promo_rate'),
-    rateCol('中促单品立减', 'mid_shop_rate'),
+    rateColLocked('小促单品立减', 'shop_promo_rate'),
+    rateColLocked('中促单品立减', 'mid_shop_rate'),
     rateCol('大促单品立减', 'big_shop_rate'),
   ];
 
@@ -224,31 +243,32 @@ export default function ShopPriceBoardPage() {
       <Alert
         type="info" showIcon
         message="改「基数」(0.86 / 0.88 / 0.9 这种除数), 回车即存 → 促价 = 进位到10(成本 ÷ 基数) 自动算(和你 Excel List 表一致, 以 0 结尾)。三档促价存的都是「店铺实收」(88VIP佣金后到账), 不是买家到手价。"
-        description="看不懂这些列(报名价A / 618报名价 / 空档价红线 / 合规 g / 中促基数为什么空)? 点开下面的「📖 名词说明」, 每一项都有大白话解释。"
+        description="看不懂这些列(88VIP大促报名价 / 超大促报名价 / 空档价红线 / 合规 g / 中促·小促为什么灰)? 点开下面的「📖 名词说明」, 每一项都有大白话解释。"
       />
       <Collapse
         size="small"
         items={[
           {
             key: 'mid',
-            label: '📖 ① 中促基数为什么很多是空的? 中促 / 小促还有用吗?',
+            label: '📖 ① 为什么小促 / 中促各列是灰的? 还有用吗?',
             children: (
               <div style={helpBox}>
-                <p style={helpP}><b>中促基数空着 = 故意锁定, 别去补。</b>「一键微升中促合规」把这些 SKU 的<b>中促价锁死在了刚好合规的精确值</b>(如 ¥532、¥1319.32), 不再由基数派生。你一旦填回中促基数, 系统重算会把中促价拉回基数算的值, <b>合规就被冲掉</b>。没被动过的 SKU(如柚色餐边柜 0.78)中促基数还在, 照常派生。</p>
-                <p style={helpP}><b>小促基数 / 大促基数 照常用</b>, 正常派生小促价 / 大促价。</p>
-                <p style={helpP}><b>中促、小促这两档没废, 是角色变了:</b> 以前是你分别报给淘宝的价; 现在你只报<b>一个报名价A</b>, 平台按场次自动打折。中促/小促现在的用途 = ① 算报名价A + 判合规的锚 ② 空档期底线(空档价红线 = 中促到手)③ 小促 = 空档/小活动用单品立减做的浅折价。</p>
+                <p style={helpP}><b>现在只有「大促」这一档在用</b>: 大促基数可改 → 大促价、大促利润、两个报名价都跟着算。<b>小促 / 中促 各列已全部灰色只读</b>(能选中复制、不能改), 因为现阶段用不到; 未来要用中促时再放开。</p>
+                <p style={helpP}><b>中促基数为什么很多是空的:</b>「一键微升中促合规」把这些 SKU 的中促价锁在了刚好合规的精确值(如 ¥532、¥1319.32), 不再由基数派生 —— 空着是对的, 别去补。</p>
+                <p style={helpP}><b>中促、小促这两档没废, 只是角色变了:</b> 以前是你分别报给淘宝的价; 现在你只报<b>两个大促报名价</b>(88VIP大促 / 超大促), 平台按场次自动打折。中促/小促现在的用途 = ① 算报名价 + 判合规的锚 ② 空档期底线(空档价红线 = 中促到手)。</p>
               </div>
             ),
           },
           {
             key: 'report',
-            label: '📖 ② 报名价A 是什么? 为什么和 618 报名价不一样?',
+            label: '📖 ② 两个报名价(88VIP大促 / 超大促618双11)是什么? 为什么不一样?',
             children: (
               <div style={helpBox}>
-                <p style={helpP}><b>报名价A = 你填进淘宝「超级立减」报名表的那个数</b>, 不是买家看到的价。淘宝在这个数上按场次力度打折, <b>买家到手 = 报名价A ×(1 − 场次力度)</b>。</p>
-                <p style={helpP}>报名价A = <b>大促到手 ÷ 0.88</b>(0.88 = 1 − 大促力度12%)。锚在大促, 因为大促是你最深、也是绝不能动的那档; 这样大促场(打12%)买家正好落到大促到手价。</p>
-                <p style={helpP}><b>618 报名价更高的原因:</b> 618/双11 平台折扣更深(15% vs 大促12%)。要让买家在两种场次<b>都落到同一个大促到手价</b>, 越深的场越要报高一点去抵 —— 大促场报 ÷0.88、618 场报 ÷0.85(更高)。<b>两个数不同, 纯粹是两个场次打折力度不同, 不是算错。</b></p>
-                <p style={helpP}>想「一个报名价走天下」也行 —— 只有各场力度一样时两个才相等。这三档力度(中促10% / 大促12% / 618 15%)目前是<b>系统固定</b>的; 若你要 618 也按 12%(报名价A 和 618 报名价合并成同一个数), 跟运维说一声改下配置即可。</p>
+                <p style={helpP}><b>「报名价」= 你填进淘宝「超级立减」报名表的那个数</b>, 不是买家看到的价。淘宝在这个数上按场次力度打折, <b>买家到手 = 报名价 ×(1 − 该场力度)</b>。两个场次分别报, 不合并成一个。</p>
+                <p style={helpP}><b>「88VIP大促报名价」= 大促到手 ÷ 0.88</b>(88VIP 月度大促场打 12%)。</p>
+                <p style={helpP}><b>「超大促报名价(618/双11)」= 大促到手 ÷ 0.85</b>(618/双11 场打 15%, 打得更深)。</p>
+                <p style={helpP}><b>为什么两个不一样:</b> 两个场次打折力度不同(12% vs 15%), 但都要让买家最终落到<b>同一个「大促到手价」</b>。折扣越深的场(15%)要报越高的数去抵, 所以 超大促报名价 &gt; 88VIP大促报名价 —— 这是对的, 不是算错。</p>
+                <p style={helpP}>这两档力度(12% / 15%)目前系统固定, 不在页面上调。</p>
               </div>
             ),
           },
@@ -291,10 +311,10 @@ export default function ShopPriceBoardPage() {
       {/* 批量改基数: 筛选 → 全选/勾选 → 填一次基数 → 一键套用 (比逐个点快, 还能跨页) */}
       <Space wrap style={{ background: '#f5f7fa', padding: '8px 12px', borderRadius: 8, width: '100%' }}>
         <span style={{ fontWeight: 500 }}>批量改基数：</span>
-        <InputNumber value={bSmall} onChange={(x) => setBSmall(x as number)} placeholder="小促基数"
-          controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
-        <InputNumber value={bMid} onChange={(x) => setBMid(x as number)} placeholder="中促基数"
-          controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
+        <InputNumber value={bSmall} onChange={(x) => setBSmall(x as number)} disabled placeholder="小促基数(停用)"
+          controls={false} min={0.01} max={5} step={0.01} style={{ width: 118 }} />
+        <InputNumber value={bMid} onChange={(x) => setBMid(x as number)} disabled placeholder="中促基数(停用)"
+          controls={false} min={0.01} max={5} step={0.01} style={{ width: 118 }} />
         <InputNumber value={bBig} onChange={(x) => setBBig(x as number)} placeholder="大促基数"
           controls={false} min={0.01} max={5} step={0.01} style={{ width: 104 }} />
         <Popconfirm title={`把填的基数套用到选中的 ${selectedKeys.length} 个 SKU?`}
