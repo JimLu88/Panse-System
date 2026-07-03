@@ -470,6 +470,7 @@ export const fetchForecast30d = () =>
 
 export const fetchStockAdvice = () =>
   api.get<{ products: any[]; materials: any[]; custom_products: any[]; custom_materials: any[];
+    seasonal?: { enabled: boolean; target_month?: number | null; multiplier?: number | null };
     semi_finished_enabled?: boolean; semi_finished?: any[] }>('/api/reports/stock-advice')
     .then((r) => r.data);
 

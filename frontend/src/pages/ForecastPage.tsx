@@ -190,6 +190,13 @@ function AdviceTab() {
   ], (data?.custom_materials ?? []).map((r: any) => ({ material_code: r.material_code, material_name: r.material_name, need_qty: r.need_qty, have_qty: r.have_qty, missing: r.missing, lead_time_days: r.lead_time_days, alert_at: r.alert_at, should_order_now: r.should_order_now ? '是' : '否' })));
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      {data?.seasonal?.enabled && data.seasonal.multiplier != null && Math.abs((data.seasonal.multiplier ?? 1) - 1) > 0.01 && (
+        <Alert type={(data.seasonal.multiplier ?? 1) > 1 ? 'warning' : 'info'} showIcon
+               message={`重点备货月: 本页预测/需生产/物料需求 已按目标 ${data.seasonal.target_month} 月季节系数调整 ×${data.seasonal.multiplier}`}
+               description={(data.seasonal.multiplier ?? 1) > 1
+                 ? '峰月将至 → 已提前放大备货需求(现在下单的货正赶上峰月卖)。'
+                 : '峰后/淡季 → 已把近期峰值销量压回目标月常态, 避免照着大促势头囤货。系数可在 成品库存→设置 里调。'} />
+      )}
       <Alert type="info" showIcon
              message="备货建议 = 按预测30天销量 + BOM倒推物料需求 − 现库存 · 常规单与定制单分开"
              description={<>常规单: 需生产 = 预测 − 现成品库存 − <b>备货在产</b>。「备货在产」= 不挂客户的备货单在产, 到货会进可售库存, 已扣掉; 「客户单在产」= 已卖给下单客户的量, 到货即发走, <b>不抵未来缺口</b>(单独列出仅供参考)。并按需生产倒推全部物料。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />

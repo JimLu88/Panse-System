@@ -56,3 +56,56 @@ def test_recompute_keeps_seed_when_thin(db_session):
     assert len(r["factors"]) == 12
     assert r["updated_months"] == []                # 无数据 → 全保留种子
     assert r["factors"] == r["current"]
+
+
+def test_recompute_excludes_price_diff_links(db_session):
+    """差价/邮费补拍专链: qty=拍的¥1件数(补7660差价拍7660件), 不是家具件数 → 重算时排除。"""
+    from datetime import date as _date
+    from decimal import Decimal
+    from app.models.order import Order
+    db = db_session
+    db.add(Order(platform="淘宝", order_no="DIFF1", order_date=_date(2026, 1, 15),
+                 product_code="PX", product_name="畔色木作 差价邮费补拍专链",
+                 qty=5000, paid_amount=Decimal("5000"), status="signed", is_custom=False))
+    db.flush()
+    r = pis.recompute_seasonal_factors(db_session)
+    assert r["updated_months"] == []                # 5000件被排除 → 1月不达标(≥80), 保留种子
+
+
+def _seed_sales(db, code="P1", n=30):
+    from datetime import date as _date, timedelta as _td
+    from decimal import Decimal
+    from app.models.order import Order
+    today = _date.today()
+    for i in range(n):
+        db.add(Order(platform="淘宝", order_no=f"S{code}{i}",
+                     order_date=today - _td(days=i * 2),
+                     product_code=code, sku_code="S1", qty=1,
+                     paid_amount=Decimal("100"), status="shipped", is_custom=False))
+    db.flush()
+
+
+def test_stock_advice_applies_seasonal(db_session):
+    """备货建议与成品库存同口径: 预测按目标月(今天+30天)季节系数缩放, 并返回 seasonal 元信息。"""
+    from app.services import sales_analytics
+    db = db_session
+    _seed_sales(db, "P1")                            # 原始预测 18
+    pis.save_forecast_config(db, {"seasonal_factors": FACTORS, "enable_seasonal": True})
+    cfg = pis.get_forecast_config(db)
+    s_raw, s_month, _m = pis._seasonal_effective_daily(cfg, 1.0, 30)
+    adv = sales_analytics.stock_advice(db)
+    p = next(x for x in adv["products"] if x["product_code"] == "P1")
+    assert p["forecast_30d"] == int(round(18 * s_raw))   # 与成品库存同倍数
+    assert adv["seasonal"]["enabled"] is True
+    assert adv["seasonal"]["target_month"] == s_month
+
+
+def test_stock_advice_seasonal_off_unchanged(db_session):
+    from app.services import sales_analytics
+    db = db_session
+    _seed_sales(db, "P1")
+    pis.save_forecast_config(db, {"enable_seasonal": False})
+    adv = sales_analytics.stock_advice(db)
+    p = next(x for x in adv["products"] if x["product_code"] == "P1")
+    assert p["forecast_30d"] == 18                   # 关=原样
+    assert adv["seasonal"]["enabled"] is False

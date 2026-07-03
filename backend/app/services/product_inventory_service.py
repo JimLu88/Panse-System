@@ -383,11 +383,17 @@ def _seasonal_effective_daily(cfg: dict, base_daily: float, effective_lead: int,
     factors = cfg.get("seasonal_factors") or _DEFAULT_SEASONAL_FACTORS
     today = today or date.today()
     window = max(1, int(cfg.get("window_days") or 60))
-    tot = 0.0
+    # 分母(最近窗口平均系数)与「日均」同权: weighted 模式下日均按 0.5^(age/halflife) 指数加权,
+    # 分母也用同样权重, 否则过渡周(如 7 月初日均已多是 7 月低销)会去化过头/不足。
+    weighted = (cfg.get("mode") or "weighted") != "simple"
+    halflife = max(1, int(cfg.get("halflife_days") or 14))
+    tot = wsum = 0.0
     for i in range(window):
         mm = (today - timedelta(days=i)).month
-        tot += float(factors[mm - 1]) if 1 <= mm <= 12 else 1.0
-    win_avg = (tot / window) or 1.0
+        w = (0.5 ** (i / halflife)) if weighted else 1.0
+        tot += w * (float(factors[mm - 1]) if 1 <= mm <= 12 else 1.0)
+        wsum += w
+    win_avg = (tot / wsum) if wsum > 0 else 1.0
     target_month = (today + timedelta(days=int(effective_lead or _DEFAULT_LEAD_TIME_DAYS))).month
     tf = float(factors[target_month - 1]) if 1 <= target_month <= 12 else 1.0
     mult = tf / win_avg if win_avg > 0 else 1.0
@@ -502,20 +508,26 @@ def recompute_seasonal_factors(db: Session, *, min_units: int = 80) -> dict:
     返回 {factors(建议), current(现值), updated_months(用了实测的月), note}。
     """
     from collections import defaultdict
+    from app.services.sales_analytics import _is_non_product
     cfg = get_forecast_config(db)
     cur = list(cfg.get("seasonal_factors") or _DEFAULT_SEASONAL_FACTORS)
     rows = db.execute(
-        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0)).where(
+        select(Order.order_date, Order.product_name, Order.qty).where(
             Order.order_date.isnot(None),
             Order.is_refill == False,  # noqa: E712
             Order.is_custom == False,  # noqa: E712
             Order.status.in_(["paid", "shipped", "signed"]),
-        ).group_by(Order.order_date)
+        )
     ).all()
     ym: dict = defaultdict(int)
-    for d, q in rows:
-        if d is not None:
-            ym[(d.year, d.month)] += int(q or 0)
+    for d, name, q in rows:
+        if d is None:
+            continue
+        # 差价/邮费/补拍/专链 等非产品单: qty=拍的¥1件数(如补7660差价拍7660件), 不是家具件数,
+        # 计入会把当月销量灌成天文数字(实测 2026-01 因此虚出 6 万+件) → 一律排除。
+        if _is_non_product(name):
+            continue
+        ym[(d.year, d.month)] += int(q or 0)
     by_month: dict = defaultdict(list)
     for (y, m), v in ym.items():
         by_month[m].append(v)

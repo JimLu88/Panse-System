@@ -30,6 +30,8 @@ def _seed_regular_sales(db, code="P1", n=30):
 
 def test_free_in_production_subtracts_allocated_does_not(db_session):
     db = db_session
+    # 本测试只验 R1 在产抵扣口径, 关掉季节缩放以免预测数被目标月系数放大/压缩
+    product_inventory_service.save_forecast_config(db, {"enable_seasonal": False})
     db.add_all([
         Material(code="M1", name="木方", lead_time_days=10, priority="high"),
         BomLine(product_code="P1", material_code="M1", qty_per_product=Decimal("2")),
@@ -62,6 +64,7 @@ def test_free_in_production_subtracts_allocated_does_not(db_session):
 
 def test_in_production_ignores_delivered_and_voided(db_session):
     db = db_session
+    product_inventory_service.save_forecast_config(db, {"enable_seasonal": False})  # 只验在产口径
     _seed_regular_sales(db, "P1")   # 预测 18
     db.add(ProductInventory(warehouse="default", product_code="P1", sku="主款",
                             physical_qty=Decimal("0")))

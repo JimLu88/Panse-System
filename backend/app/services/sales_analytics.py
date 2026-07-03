@@ -445,21 +445,36 @@ def stock_advice(db: Session) -> dict:
     R1(ATP 真实缺口, 区分已占用): 需生产 = max(预测 − 现货 − 自由在产(备货单), 0)。
     客户单在产(已卖给下单客户)另列展示、不抵未来缺口; 定制段不减在产, 保守全量倒推通用料。
     """
+    from app.services import product_inventory_service as _pis
+    cfg = _pis.get_forecast_config(db)
+    # 重点备货月(与成品库存页同口径): 预测按「目标月(今天+30天生产提前期)」季节系数缩放 ——
+    # 4月自动为5-6月峰前瞻放大、7月自动比6月峰回落; 物料需求随缩放后的需生产联动。
+    s_raw, s_month, s_mult = _pis._seasonal_effective_daily(cfg, 1.0, 30)
+    fc_reg = forecast_30d(db, custom=False)
+    fc_cus = forecast_30d(db, custom=True)
+    if s_month is not None and abs(s_raw - 1.0) > 1e-9:
+        for f in fc_reg:
+            f["forecast_30d"] = int(round(f["forecast_30d"] * s_raw))
+        for f in fc_cus:
+            f["forecast_30d"] = int(round(f["forecast_30d"] * s_raw))
+
     free, alloc = _in_production_split(db)
     reg_need, products_out = _bom_material_need(
-        db, forecast_30d(db, custom=False), use_stock=True, in_prod_free=free, in_prod_alloc=alloc)
+        db, fc_reg, use_stock=True, in_prod_free=free, in_prod_alloc=alloc)
     materials_out = _materials_from_need(db, reg_need)
 
-    cus_need, custom_products = _bom_material_need(db, forecast_30d(db, custom=True), use_stock=False)
+    cus_need, custom_products = _bom_material_need(db, fc_cus, use_stock=False)
     custom_materials = _materials_from_need(db, cus_need, only_common=True)
 
-    from app.services import product_inventory_service as _pis
-    semi_enabled = bool(_pis.get_forecast_config(db).get("enable_semi_finished"))
+    semi_enabled = bool(cfg.get("enable_semi_finished"))
     return {
         "products": products_out,
         "materials": materials_out,
         "custom_products": custom_products,
         "custom_materials": custom_materials,
+        # 重点备货月: 预测/需生产/物料 已按目标月缩放(关=1.0原样); 前端横幅展示
+        "seasonal": {"enabled": bool(cfg.get("enable_seasonal")),
+                     "target_month": s_month, "multiplier": s_mult},
         # R5 半成品(白坯): 默认关闭时 semi_finished 为空、前端不显示; 打开后出池化备货计划
         "semi_finished_enabled": semi_enabled,
         "semi_finished": semi_finished_plan(db) if semi_enabled else [],

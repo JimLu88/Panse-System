@@ -125,6 +125,9 @@ def test_forecast_30d_uses_60_day_average(db_session):
 
 def test_stock_advice_recommends_material(db_session):
     """造一个 BOM + 库存不足时, stock_advice 给出物料缺货建议."""
+    # 本测试只验 BOM 物料倒推, 关掉重点备货月缩放(默认开, 会按目标月放大/压缩预测)
+    from app.services import product_inventory_service as _pis
+    _pis.save_forecast_config(db_session, {"enable_seasonal": False})
     db_session.add_all([
         Material(code="M1", name="木方", lead_time_days=10, priority="high"),
         BomLine(product_code="P1", material_code="M1", qty_per_product=Decimal("2")),
