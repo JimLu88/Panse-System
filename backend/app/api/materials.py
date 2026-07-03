@@ -145,7 +145,11 @@ def update_material(material_id: int, payload: MaterialUpdate, db: Session = Dep
     )
     # BOM漂移检查已停用 (用户拍板 2026-06-12): BOM 单价只用于预估/定制报价,
     # 不与批量定价对照, 物料改价不再触发 stale 标记/异常。
-    _ = price_changed
+    # 物料改价 → 记价格历史(按生效日版本化, 用户 2026-07-03): 成本计算按订单日取当时生效价 →
+    # 改价【前】的订单成本用旧价、改价【后】的订单用新价。
+    if price_changed and data.get("price") is not None:
+        from app.services import material_price_service
+        material_price_service.record_change(db, mat.code, data["price"])
     db.commit()
     db.refresh(mat)
     return mat
