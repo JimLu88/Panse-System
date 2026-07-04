@@ -725,6 +725,12 @@ def _resolve_shipped_orders(db: Session, year_month: Optional[str],
     raise ValueError("导出需给 year_month 或 date_from/date_to")
 
 
+def _product_name_map(db: Session) -> dict:
+    """{产品编码: 我们自己的产品名(Product.name 短名)} — 导出用短名替换淘宝长标题, 工厂看得清。"""
+    from app.models.product import Product
+    return {p.code: p.name for p in db.execute(select(Product)).scalars() if p.code and p.name}
+
+
 def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                           date_from=None, date_to=None,
                           material_key: Optional[str] = None) -> dict:
@@ -734,6 +740,11 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
     逐单展开该分类的配件部位 + 预设尺寸(去重、排木作)。按发货日期口径(ship_date)。
     """
     orders, period = _resolve_shipped_orders(db, year_month, date_from, date_to)
+    prod_map = _product_name_map(db)   # 产品编码 → 我们自己的短名(替换淘宝长标题, 工厂看得清)
+
+    def _disp(o) -> str:
+        return prod_map.get(o.product_code) or (o.product_name or o.product_code or "")[:24]
+
     out_orders: list[dict] = []
     t_est = Decimal("0")
 
@@ -756,6 +767,7 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
                 "product_name": o.product_name,
+                "product_display": _disp(o),
                 "sku": o.sku,
                 "est_parts": float(est),
                 "sporadic": bool(cover),
@@ -782,6 +794,7 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
                 "product_name": o.product_name,
+                "product_display": _disp(o),
                 "sku": o.sku,
                 "est_parts": float(est),
             })
@@ -798,83 +811,132 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
     }
 
 
-def _style_orders_ws(ws, headers, widths, money_cols) -> None:
-    """发货单清单页统一样式: 表头蓝底加粗 + 列宽 + 订单号列强制文本(防科学计数丢精度) +
-    金额列右对齐两位 + 合计行加粗 + 冻结首行 + 自动筛选。"""
-    from openpyxl.styles import Alignment, Font, PatternFill
+# ── 导出样式 (工厂对账用: 按月分组 + 配色区隔 + 高行距, 简单清晰) ──────────────────
+_C_HEADER = "1A73E8"      # 表头: 谷歌蓝底白字
+_C_MONTH = "D2E3FC"       # 月份分组标题: 浅蓝
+_C_ZEBRA = "F1F5FB"       # 斑马纹: 极浅蓝灰
+_C_SUBTOTAL = "FFF3CD"    # 月小计: 浅黄
+_C_TOTAL = "FCE3B4"       # 总计: 琥珀
+_C_BORDER = "C6CDD5"      # 边框: 浅灰
+
+
+def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = False) -> None:
+    """按发货月分组的漂亮清单页: 表头蓝底 + 每月分组标题 + 逐单斑马纹 + 月小计 + 总计, 全表边框、
+    高行距、产品用我们的短名(小字)。category=False 为『全部发货单』基础列; True 为某分类逐单展开 BOM。
+    工厂对账用(category 且 show_est_price=False)单价/金额留空给工厂填。"""
+    from itertools import groupby
+
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
     from openpyxl.utils import get_column_letter
-    head_fill = PatternFill("solid", fgColor="E6F1FB")
-    for c in ws[1]:
-        c.font = Font(bold=True)
-        c.fill = head_fill
-        c.alignment = Alignment(vertical="center", wrap_text=True)
+
+    thin = Side(style="thin", color=_C_BORDER)
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    A_CENTER = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    A_LEFT = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    A_RIGHT = Alignment(horizontal="right", vertical="center")
+
+    if category:
+        headers = ["订单号", "发货日", "产品", "部位 / 材料", "数量", "预设尺寸", "单价", "金额"]
+        widths = [22, 12, 15, 18, 7, 20, 10, 12]
+        money_cols, prod_col = [7, 8], 3
+    else:
+        headers = ["订单号", "发货日", "客户", "产品", "预估配件金额"]
+        widths = [22, 12, 12, 18, 15]
+        money_cols, prod_col = [5], 4
+    ncol = len(headers)
+    show_money = (not category) or show_est_price   # 工厂填价的分类页: 金额列留空
+
+    def _row(vals, *, fill=None, bold=False, fontcolor=None, height=21, prod_small=False):
+        ws.append(vals)
+        r = ws.max_row
+        ws.row_dimensions[r].height = height
+        for ci in range(1, ncol + 1):
+            c = ws.cell(row=r, column=ci)
+            c.border = BORDER
+            c.font = Font(bold=bold, color=fontcolor,
+                          size=10 if (prod_small and ci == prod_col) else 11)
+            if fill:
+                c.fill = PatternFill("solid", fgColor=fill)
+            if ci == 1:
+                c.number_format = "@"        # 19位订单号防科学计数
+                c.alignment = A_LEFT
+            elif ci in money_cols:
+                if isinstance(c.value, (int, float)):
+                    c.number_format = "#,##0.00"
+                c.alignment = A_RIGHT
+            elif ci == prod_col:
+                c.alignment = A_LEFT
+            else:
+                c.alignment = A_CENTER
+        return r
+
+    _row(headers, fill=_C_HEADER, bold=True, fontcolor="FFFFFF", height=26)
+
+    grand = Decimal("0")
+    for ym, grp in groupby(d["orders"], key=lambda o: (o.get("ship_date") or "")[:7] or "无发货日"):
+        grp = list(grp)
+        hr = _row([f"📅 {ym}　发货 {len(grp)} 单"] + [None] * (ncol - 1),
+                  fill=_C_MONTH, bold=True, height=24)
+        ws.merge_cells(start_row=hr, start_column=1, end_row=hr, end_column=ncol)
+        ws.cell(row=hr, column=1).alignment = A_LEFT
+        sub = Decimal("0")
+        for oi, o in enumerate(grp):
+            prod = o.get("product_display") or ""
+            tags = []
+            if o.get("is_custom"):
+                tags.append("定制")
+            if o.get("sporadic"):
+                tags.append("⚠已现付·勿计")
+            if tags:
+                prod = f"{prod}  【{'·'.join(tags)}】"
+            zebra = _C_ZEBRA if (oi % 2 == 1) else None
+            if category:
+                for pi, p in enumerate(o.get("bom_parts") or [{}]):
+                    size = p.get("size_note") or "—"
+                    if p.get("size_uncertain"):
+                        size = f"{size}(尺寸估)"
+                    up = tp = None
+                    if show_est_price:
+                        up, tp = p.get("unit_price"), p.get("total_price")
+                        if tp is not None and not o.get("sporadic"):
+                            sub += _d(tp)
+                    _row([o["order_no"] if pi == 0 else "",
+                          (o.get("ship_date") or "") if pi == 0 else "",
+                          prod if pi == 0 else "",
+                          p.get("part_name") or "", p.get("qty"), size, up, tp],
+                         fill=zebra, prod_small=True)
+            else:
+                sub += _d(o.get("est_parts"))
+                _row([o["order_no"], o.get("ship_date") or "", o.get("customer_name") or "—",
+                      prod, o.get("est_parts")], fill=zebra, prod_small=True)
+        srow = [None] * ncol
+        srow[0] = f"↳ {ym} 小计"
+        if show_money:
+            srow[money_cols[-1] - 1] = float(sub.quantize(_CENTS))
+        _row(srow, fill=_C_SUBTOTAL, bold=True, height=20)
+        grand += sub
+
+    trow = [None] * ncol
+    trow[0] = "总计（系统预估）" if show_money else "总计（工厂核对填写）"
+    if show_money:
+        trow[money_cols[-1] - 1] = float(grand.quantize(_CENTS))
+    _row(trow, fill=_C_TOTAL, bold=True, height=26)
+
     for i, wd in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = wd
-    for (cell,) in ws.iter_rows(min_row=2, min_col=1, max_col=1):
-        cell.number_format = "@"   # 19位订单号防 Excel 转科学计数法丢精度
-    for mc in money_cols:
-        for (cell,) in ws.iter_rows(min_row=2, min_col=mc, max_col=mc):
-            if isinstance(cell.value, (int, float)):
-                cell.number_format = "0.00"
-            cell.alignment = Alignment(horizontal="right")
-    for c in ws[ws.max_row]:
-        c.font = Font(bold=True)
     ws.freeze_panes = "A2"
-    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+    ws.sheet_view.showGridLines = False
 
 
 def _write_all_orders_ws(ws, d: dict) -> None:
-    """『全部发货单』基础列: 订单号/下单日期/发货日/客户/产品/SKU/预估配件 + 预估合计。"""
-    headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估配件"]
-    widths = [22, 12, 12, 12, 16, 20, 11]
-    ws.append(headers)
-    for o in d["orders"]:
-        ws.append([o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
-                   o.get("customer_name") or "", o.get("product_name") or "",
-                   o.get("sku") or "", o.get("est_parts")])
-    ws.append(["合计(预估)", "", "", "", "", "", d["total_est_parts"]])
-    _style_orders_ws(ws, headers, widths, money_cols=[7])
+    """『全部发货单』按月分组: 订单号/发货日/客户/产品(我们短名)/预估配件金额。"""
+    _write_grouped_sheet(ws, d, category=False)
 
 
 def _write_category_ws(ws, d: dict, *, show_est_price: bool = False) -> None:
-    """某分类逐单展开 BOM: 订单号/下单日期/发货日/产品/SKU/类别/部位料/数量/预设尺寸/材料单价/总价。
-
-    show_est_price=False(发给工厂对账): 单价/总价留空给工厂填, 合计行留空。
-    show_est_price=True(自己对账用): 填系统预估单价(Material.price)+总价(qty×price); 合计=非零星行之和
-      (零星现付行照常显示并标⚠, 但不计入合计, 与对账面「月结应付预估」口径一致)。
-    """
-    headers = ["订单号", "下单日期", "发货日", "产品", "SKU(含尺寸)", "类别",
-               "部位/料", "数量", "预设尺寸", "材料单价", "总价"]
-    widths = [22, 12, 12, 14, 18, 10, 16, 8, 22, 11, 11]
-    ws.append(headers)
-    t_total = Decimal("0")
-    for o in d["orders"]:
-        prod = o.get("product_name") or ""
-        if o.get("is_custom"):
-            prod = (prod + " ⚠定制·模板").strip()
-        if o.get("sporadic"):
-            prod = (prod + " ⚠已零星现付·勿计月结").strip()
-        for p in (o.get("bom_parts") or [{}]):
-            size = p.get("size_note") or "—"
-            if p.get("size_uncertain"):
-                size = f"{size} ⚠模板尺寸取最大,请确认"
-            if show_est_price:
-                up, tp = p.get("unit_price"), p.get("total_price")
-                if tp is not None and not o.get("sporadic"):
-                    t_total += _d(tp)
-            else:
-                up = tp = None   # 发给工厂: 留空给工厂填
-            ws.append([
-                o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
-                prod, o.get("sku") or "", p.get("category") or "",
-                p.get("part_name") or "", p.get("qty"), size, up, tp,
-            ])
-    if show_est_price:
-        ws.append(["合计(系统预估·已扣除⚠零星现付行)", "", "", "", "", "", "", "", "", "",
-                   float(t_total.quantize(_CENTS))])
-    else:
-        ws.append(["合计(工厂核对填写)", "", "", "", "", "", "", "", "", "", None])
-    _style_orders_ws(ws, headers, widths, money_cols=[10, 11])
+    """某分类逐单展开 BOM 按月分组。show_est_price=True 自己对账(填系统预估, 扣零星);
+    False 发给工厂(单价/金额留空给工厂填)。"""
+    _write_grouped_sheet(ws, d, category=True, show_est_price=show_est_price)
 
 
 def build_shipped_orders_xlsx(db: Session, *, year_month: Optional[str] = None,

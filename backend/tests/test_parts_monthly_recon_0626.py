@@ -210,12 +210,13 @@ def test_build_shipped_orders_xlsx_flat_table(db_session):
     ws = wb.active
     headers = [c.value for c in ws[1]]
     assert headers[0] == "订单号"                     # 订单号在第一列
-    assert headers[1] == "下单日期"                   # 紧跟下单日期
-    assert headers[-2:] == ["材料单价", "总价"]        # 末尾两列
-    assert ws.cell(2, 1).value == "M1"                # 数据首列=订单号
+    assert headers[1] == "发货日"                     # 按月分组后紧跟发货日(已去掉下单日期列)
+    assert headers[-2:] == ["单价", "金额"]            # 末尾两列
+    assert str(ws.cell(2, 1).value).startswith("📅")  # 第2行=发货月分组标题(按月分配)
+    assert ws.cell(3, 1).value == "M1"                # 月标题下是数据行, 首列=订单号
     last = ws.max_row
-    assert "合计" in str(ws.cell(last, 1).value)       # 末行合计
-    assert ws.cell(last, len(headers)).value is None    # 总价不预填内部估算, 留空给工厂核对填写
+    assert "总计" in str(ws.cell(last, 1).value)       # 末行总计
+    assert ws.cell(last, len(headers)).value is None    # 金额不预填, 留空给工厂核对填写
     assert d["total_est_parts"] == 180.0                # 预估值仍在返回数据里(供页面预估/差异%对比用)
 
 
@@ -229,9 +230,12 @@ def test_xlsx_repeats_order_no_on_every_part_row(db_session):
     db.flush()
     wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02", material_key="岩板")
     ws = wb.active
-    assert ws.cell(2, 1).value == "M9"               # 同单两个部位行
-    assert ws.cell(3, 1).value == "M9"               # 订单号每行都重复
-    assert "合计" in str(ws.cell(4, 1).value)
+    assert str(ws.cell(2, 1).value).startswith("📅")   # 第2行=发货月分组标题
+    assert ws.cell(3, 1).value == "M9"                # 同单第一个部位行带订单号
+    assert ws.cell(4, 1).value in ("", None)          # 续行订单号留空(视觉成块, 工厂看得清)
+    vals = [str(ws.cell(r, 1).value or "") for r in range(1, ws.max_row + 1)]
+    assert any("小计" in v for v in vals)              # 有月小计
+    assert any("总计" in v for v in vals)              # 有总计
 
 
 def test_xlsx_all_orders_branch_has_order_date_col(db_session):
@@ -241,5 +245,6 @@ def test_xlsx_all_orders_branch_has_order_date_col(db_session):
     db.flush()
     wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02")   # 无 material_key
     ws = wb.active
-    assert [c.value for c in ws[1]][:3] == ["订单号", "下单日期", "发货日"]
-    assert ws.cell(2, 2).value == "2026-01-01"       # 下单日期列
+    assert [c.value for c in ws[1]] == ["订单号", "发货日", "客户", "产品", "预估配件金额"]
+    assert str(ws.cell(2, 1).value).startswith("📅")   # 第2行=发货月分组标题(按月分配)
+    assert ws.cell(3, 1).value == "S1"                # 月标题下=数据行(订单号)
