@@ -120,3 +120,34 @@ def test_refunded_order_not_pushed(db_session, _feishu_stub):
     res = osa.push_pending_images(db_session, include_baseline=True)
     assert res["pushed"] == 0
     assert _feishu_stub == []
+
+
+def test_sample_order_not_pushed(db_session, _feishu_stub):
+    """样块/样品单永不推工厂下单图 (用户 2026-07-04), 真产品单照常推。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    db_session.add(Order(platform="淘宝", order_no="SAMPLE-1", qty=1,
+                         product_name="畔色木作木块小样樱桃木样品样块", sku="榉木样块",
+                         order_date=date(2026, 6, 20), status="paid", paid_amount=Decimal("30")))
+    _add_paid_order(db_session, "REAL-1")
+    db_session.flush()
+    osa.generate_pending(db_session)
+
+    res = osa.push_pending_images(db_session, include_baseline=True)
+    assert res["pushed"] == 1                       # 只推真产品
+    assert set(res["order_nos"]) == {"REAL-1"}
+    assert _feishu_stub == ["oc_factory_group"]      # 样块没发飞书
+    assert _sheet_rec(db_session, "SAMPLE-1").row_summary.get("skipped_sample") is True
+    # 幂等 + 样块不再占待推队列
+    assert osa.push_pending_images(db_session, include_baseline=True)["pushed"] == 0
+
+
+def test_is_sample_order_detection():
+    """检测器命中 281 样块单真实字段, 不误伤 282 真餐桌。"""
+    class _O:
+        def __init__(self, name, sku):
+            self.product_name = name
+            self.sku = sku
+    assert osa._is_sample_order(
+        _O("畔色木作木块小样樱桃木黑胡桃木白蜡木榉木红白橡木样品样块", "榉木样块")) is True
+    assert osa._is_sample_order(
+        _O("畔色 岩板实木餐桌日式简约长方形榉木书桌家用饭桌原木小户型桌", "砂白色1.6米岩板餐桌")) is False

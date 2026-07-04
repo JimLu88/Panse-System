@@ -478,6 +478,16 @@ def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
         _logger.warning("工厂下单图 ZIP 发送失败", exc_info=True)
 
 
+# 样块/样品/小样单: 永不推工厂下单图 (用户 2026-07-04: 样块只在系统里记成本, 绝不发飞书工厂群,
+# 也不占用「畔色X单」编号)。看 product_name + sku 关键词, 覆盖全部样块产品编码(如 PPS23980010606/50606)。
+_SAMPLE_KEYWORDS = ("样块", "样品", "小样", "样木")
+
+
+def _is_sample_order(o) -> bool:
+    text = (getattr(o, "product_name", "") or "") + " " + (getattr(o, "sku", "") or "")
+    return any(k in text for k in _SAMPLE_KEYWORDS)
+
+
 def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False,
                         quiet: bool = False, only_order_nos: "set[str] | None" = None) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
@@ -515,6 +525,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             continue
         if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
             continue   # 取消/退款/待付款 不推工厂 (待付款大概率会取消, 用户拍板 2026-06-20)
+        if _is_sample_order(order):
+            # 样块/样品单永不推工厂下单图 (用户 2026-07-04); 标记已处理, 清出待推队列 + 不占工厂编号。
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "skipped_sample": True}
+            db.commit()
+            continue
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)
         if (getattr(order, "factory_no", None) is None and order.order_date
                 and order.order_date >= _AUTO_NUMBER_SINCE):
