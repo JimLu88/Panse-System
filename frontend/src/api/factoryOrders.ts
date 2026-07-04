@@ -51,6 +51,7 @@ export const listFactoryOrders = (params?: {
   only_unreconciled?: boolean;
   only_diff?: boolean;
   month?: string;
+  product_search?: string;
 }) => api.get<FactoryOrderList>('/api/factory-orders', { params }).then((r) => r.data);
 
 export const factoryOrderAccessories = (no: string) =>

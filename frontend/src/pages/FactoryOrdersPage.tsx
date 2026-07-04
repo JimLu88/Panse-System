@@ -46,6 +46,7 @@ export default function FactoryOrdersPage() {
   const [month, setMonth] = useState<string | undefined>();
   const [payStatus, setPayStatus] = useState<string | undefined>();
   const [view, setView] = useState<'all' | 'unreconciled' | 'diff'>('all');
+  const [q, setQ] = useState('');   // 产品名/SKU/产品编码 模糊搜索
   const [editing, setEditing] = useState<FactoryOrderRow | null>(null);
   const [form] = Form.useForm();
 
@@ -55,7 +56,8 @@ export default function FactoryOrdersPage() {
     payment_status: payStatus,
     only_unreconciled: view === 'unreconciled',
     only_diff: view === 'diff',
-  }), [factory, month, payStatus, view]);
+    product_search: q.trim() || undefined,
+  }), [factory, month, payStatus, view, q]);
 
   const { data, isLoading } = useQuery({
     queryKey: ['factory-orders', params],
@@ -177,6 +179,14 @@ export default function FactoryOrdersPage() {
         </>
       )}
       <Space style={{ marginBottom: 12 }} wrap>
+        <Input.Search
+          allowClear
+          placeholder="搜产品名 / SKU / 产品编码 (模糊)"
+          style={{ width: 240 }}
+          defaultValue={q}
+          onSearch={(v) => setQ(v)}
+          onChange={(e) => { if (!e.target.value) setQ(''); }}
+        />
         <Segmented
           value={view}
           onChange={(v) => setView(v as 'all' | 'unreconciled' | 'diff')}

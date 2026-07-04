@@ -21,6 +21,7 @@ from app.models.auth import User
 from app.models.bom import BomLine
 from app.models.material import Material
 from app.models.order import FactoryOrder, Order
+from app.services import factory_settlement_service
 
 router = APIRouter(prefix="/api/factory-orders", tags=["factory-orders"])
 _CENTS = Decimal("0.01")
@@ -66,6 +67,7 @@ def list_factory_orders(
     only_unreconciled: bool = Query(False, description="只看未核对(未录工厂实际)"),
     only_diff: bool = Query(False, description="只看推算与实际有差异的"),
     month: Optional[str] = Query(None, description="YYYY-MM 按下单月"),
+    product_search: Optional[str] = Query(None, description="产品名/SKU/产品编码 模糊搜索"),
     db: Session = Depends(get_db),
     user: User = Depends(require_role("admin", "operator", "viewer")),
 ):
@@ -79,6 +81,7 @@ def list_factory_orders(
         stmt = stmt.where(FactoryOrder.factory_name == factory)
     if payment_status:
         stmt = stmt.where(FactoryOrder.payment_status == payment_status)
+    stmt = factory_settlement_service._apply_product_search(stmt, product_search)
     rows = [_row(fo) for fo in db.execute(stmt).scalars().all()]
     if month:
         rows = [r for r in rows if (r["order_date"] or "").startswith(month)]
