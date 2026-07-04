@@ -437,23 +437,51 @@ def shipped_orders_export(
 
 @router.get("/shipped-orders-export.xlsx")
 def shipped_orders_export_xlsx(
-    year_month: str = Query(..., description="发货月 'YYYY-MM'"),
+    year_month: Optional[str] = Query(None, description="发货月 'YYYY-MM'(与 date_from/to 二选一)"),
+    date_from: Optional[str] = Query(None, description="发货日起 'YYYY-MM-DD'"),
+    date_to: Optional[str] = Query(None, description="发货日止 'YYYY-MM-DD'"),
     material_key: Optional[str] = Query(None, description="给了=按分类逐件展开 BOM + 单价/总价"),
     db: Session = Depends(get_db),
 ):
-    """导清单 xlsx 下载(扁平表格: 订单号首列且每行重复 + 下单日期 + 末尾材料单价/总价 + 预估合计)。"""
+    """导清单 xlsx 下载(单月 year_month 或发货日区间 date_from~date_to)。发给工厂对账用。"""
     import io
     from urllib.parse import quote
 
     from fastapi.responses import StreamingResponse
 
     from app.services import parts_recon_service
-    wb, _ = parts_recon_service.build_shipped_orders_xlsx(
-        db, year_month=year_month, material_key=material_key)
+    wb, d = parts_recon_service.build_shipped_orders_xlsx(
+        db, year_month=year_month, date_from=date_from, date_to=date_to, material_key=material_key)
     buf = io.BytesIO()
     wb.save(buf)
     buf.seek(0)
-    name = f"配件对账清单_{material_key or '全部发货单'}_{year_month}.xlsx"
+    name = f"配件对账清单_{material_key or '全部发货单'}_{d.get('period') or year_month}.xlsx"
+    return StreamingResponse(
+        buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})
+
+
+@router.get("/bulk-recon-export.xlsx")
+def bulk_recon_export_xlsx(
+    date_from: Optional[str] = Query(None, description="发货日起 'YYYY-MM-DD'"),
+    date_to: Optional[str] = Query(None, description="发货日止 'YYYY-MM-DD'"),
+    year_month: Optional[str] = Query(None, description="单月 'YYYY-MM'(与区间二选一)"),
+    db: Session = Depends(get_db),
+):
+    """一份多 sheet 对账工作簿(自己对账所有月结账户用): sheet「全部发货单」+ 每个月结账户
+    (五金/电力轨道/岩板/玻璃)一页逐单展开 BOM + 系统预估单价/总价。按发货日期 ship_date 圈定。"""
+    import io
+    from urllib.parse import quote
+
+    from fastapi.responses import StreamingResponse
+
+    from app.services import parts_recon_service
+    wb, meta = parts_recon_service.build_bulk_recon_workbook(
+        db, date_from=date_from, date_to=date_to, year_month=year_month)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    name = f"月结对账_全部账户_{meta.get('period') or year_month or ''}.xlsx"
     return StreamingResponse(
         buf, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}"})

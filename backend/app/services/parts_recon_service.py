@@ -688,14 +688,52 @@ def _orders_shipped_in(db: Session, year_month: str) -> list[Order]:
     return [o for o in _settled_shipped_orders(db) if _ym(o.ship_date) == year_month]
 
 
-def export_shipped_orders(db: Session, *, year_month: str,
+def _orders_shipped_between(db: Session, d_from: date, d_to: date) -> list[Order]:
+    """同 _orders_shipped_in, 但按发货日期区间 [d_from, d_to] 圈定(含两端)。口径仍是 ship_date。"""
+    return [o for o in _settled_shipped_orders(db)
+            if o.ship_date and d_from <= o.ship_date <= d_to]
+
+
+def _parse_ymd(v) -> Optional[date]:
+    """'YYYY-MM-DD' / 'YYYY-MM'(取月初) / date → date; 空 → None。"""
+    if v is None or v == "":
+        return None
+    if isinstance(v, date):
+        return v
+    s = str(v).strip()
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        parts = s.split("-")
+        if len(parts) == 2:   # 允许传 'YYYY-MM' → 当月 1 号
+            return date(int(parts[0]), int(parts[1]), 1)
+        raise
+
+
+def _resolve_shipped_orders(db: Session, year_month: Optional[str],
+                            date_from, date_to) -> tuple[list[Order], str]:
+    """按 (date_from,date_to) 区间优先, 否则按 year_month 单月, 圈定发货单; 返回 (订单列表, 期间标签)。"""
+    df, dt = _parse_ymd(date_from), _parse_ymd(date_to)
+    if df or dt:
+        df = df or date(1970, 1, 1)
+        dt = dt or date(9999, 12, 31)
+        if df > dt:
+            df, dt = dt, df
+        return _orders_shipped_between(db, df, dt), f"{df.isoformat()}~{dt.isoformat()}"
+    if year_month:
+        return _orders_shipped_in(db, year_month), year_month
+    raise ValueError("导出需给 year_month 或 date_from/date_to")
+
+
+def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
+                          date_from=None, date_to=None,
                           material_key: Optional[str] = None) -> dict:
-    """导当月(发货月)已发货成交订单清单。
+    """导已发货成交订单清单(发货月单月 year_month, 或发货日区间 date_from~date_to, 二选一)。
 
     material_key(=分类)空 = 全部发货单(基础列, 工厂自挑); 给了 = 只列 BOM 里有该分类外采配件的单,
     逐单展开该分类的配件部位 + 预设尺寸(去重、排木作)。按发货日期口径(ship_date)。
     """
-    orders = _orders_shipped_in(db, year_month)
+    orders, period = _resolve_shipped_orders(db, year_month, date_from, date_to)
     out_orders: list[dict] = []
     t_est = Decimal("0")
 
@@ -751,6 +789,7 @@ def export_shipped_orders(db: Session, *, year_month: str,
     out_orders.sort(key=lambda x: (x["ship_date"] or "", x["order_no"]))
     return {
         "year_month": year_month,
+        "period": period,
         "material_key": material_key,
         "material_name": material_key,
         "order_count": len(out_orders),
@@ -759,55 +798,11 @@ def export_shipped_orders(db: Session, *, year_month: str,
     }
 
 
-def build_shipped_orders_xlsx(db: Session, *, year_month: str,
-                              material_key: Optional[str] = None):
-    """导清单 → xlsx(扁平表格)。订单号首列且每行重复; 按分类时逐件展开 BOM 并带
-    材料单价 + 总价(=qty×price)+预估合计行; 下单日期(order_date)与发货日(ship_date)并列。
-    返回 (openpyxl.Workbook, data_dict)。零星/定制/尺寸提示折进产品/尺寸单元格。
-    """
-    import openpyxl
+def _style_orders_ws(ws, headers, widths, money_cols) -> None:
+    """发货单清单页统一样式: 表头蓝底加粗 + 列宽 + 订单号列强制文本(防科学计数丢精度) +
+    金额列右对齐两位 + 合计行加粗 + 冻结首行 + 自动筛选。"""
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-
-    d = export_shipped_orders(db, year_month=year_month, material_key=material_key)
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = (material_key or "全部发货单")[:28]
-
-    if material_key:
-        headers = ["订单号", "下单日期", "发货日", "产品", "SKU(含尺寸)", "类别",
-                   "部位/料", "数量", "预设尺寸", "材料单价", "总价"]
-        widths = [22, 12, 12, 14, 18, 10, 16, 8, 22, 11, 11]
-        money_cols = [10, 11]
-        ws.append(headers)
-        for o in d["orders"]:
-            prod = o.get("product_name") or ""
-            if o.get("is_custom"):
-                prod = (prod + " ⚠定制·模板").strip()
-            if o.get("sporadic"):
-                prod = (prod + " ⚠已零星现付·勿计月结").strip()
-            for p in (o.get("bom_parts") or [{}]):
-                size = p.get("size_note") or "—"
-                if p.get("size_uncertain"):
-                    size = f"{size} ⚠模板尺寸取最大,请确认"
-                ws.append([
-                    o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
-                    prod, o.get("sku") or "", p.get("category") or "",
-                    p.get("part_name") or "", p.get("qty"), size,
-                    None, None,   # 材料单价/总价: 不预填内部估算, 留空给工厂核对填写
-                ])
-        ws.append(["合计(工厂核对填写)", "", "", "", "", "", "", "", "", "", None])
-    else:
-        headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估配件"]
-        widths = [22, 12, 12, 12, 16, 20, 11]
-        money_cols = [7]
-        ws.append(headers)
-        for o in d["orders"]:
-            ws.append([o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
-                       o.get("customer_name") or "", o.get("product_name") or "",
-                       o.get("sku") or "", o.get("est_parts")])
-        ws.append(["合计(预估)", "", "", "", "", "", d["total_est_parts"]])
-
     head_fill = PatternFill("solid", fgColor="E6F1FB")
     for c in ws[1]:
         c.font = Font(bold=True)
@@ -815,9 +810,8 @@ def build_shipped_orders_xlsx(db: Session, *, year_month: str,
         c.alignment = Alignment(vertical="center", wrap_text=True)
     for i, wd in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = wd
-    # 订单号列(第1列)强制文本(@) — 19位订单号防 Excel 转科学计数法丢精度
     for (cell,) in ws.iter_rows(min_row=2, min_col=1, max_col=1):
-        cell.number_format = "@"
+        cell.number_format = "@"   # 19位订单号防 Excel 转科学计数法丢精度
     for mc in money_cols:
         for (cell,) in ws.iter_rows(min_row=2, min_col=mc, max_col=mc):
             if isinstance(cell.value, (int, float)):
@@ -827,7 +821,113 @@ def build_shipped_orders_xlsx(db: Session, *, year_month: str,
         c.font = Font(bold=True)
     ws.freeze_panes = "A2"
     ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{ws.max_row}"
+
+
+def _write_all_orders_ws(ws, d: dict) -> None:
+    """『全部发货单』基础列: 订单号/下单日期/发货日/客户/产品/SKU/预估配件 + 预估合计。"""
+    headers = ["订单号", "下单日期", "发货日", "客户", "产品", "SKU(含尺寸)", "预估配件"]
+    widths = [22, 12, 12, 12, 16, 20, 11]
+    ws.append(headers)
+    for o in d["orders"]:
+        ws.append([o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
+                   o.get("customer_name") or "", o.get("product_name") or "",
+                   o.get("sku") or "", o.get("est_parts")])
+    ws.append(["合计(预估)", "", "", "", "", "", d["total_est_parts"]])
+    _style_orders_ws(ws, headers, widths, money_cols=[7])
+
+
+def _write_category_ws(ws, d: dict, *, show_est_price: bool = False) -> None:
+    """某分类逐单展开 BOM: 订单号/下单日期/发货日/产品/SKU/类别/部位料/数量/预设尺寸/材料单价/总价。
+
+    show_est_price=False(发给工厂对账): 单价/总价留空给工厂填, 合计行留空。
+    show_est_price=True(自己对账用): 填系统预估单价(Material.price)+总价(qty×price); 合计=非零星行之和
+      (零星现付行照常显示并标⚠, 但不计入合计, 与对账面「月结应付预估」口径一致)。
+    """
+    headers = ["订单号", "下单日期", "发货日", "产品", "SKU(含尺寸)", "类别",
+               "部位/料", "数量", "预设尺寸", "材料单价", "总价"]
+    widths = [22, 12, 12, 14, 18, 10, 16, 8, 22, 11, 11]
+    ws.append(headers)
+    t_total = Decimal("0")
+    for o in d["orders"]:
+        prod = o.get("product_name") or ""
+        if o.get("is_custom"):
+            prod = (prod + " ⚠定制·模板").strip()
+        if o.get("sporadic"):
+            prod = (prod + " ⚠已零星现付·勿计月结").strip()
+        for p in (o.get("bom_parts") or [{}]):
+            size = p.get("size_note") or "—"
+            if p.get("size_uncertain"):
+                size = f"{size} ⚠模板尺寸取最大,请确认"
+            if show_est_price:
+                up, tp = p.get("unit_price"), p.get("total_price")
+                if tp is not None and not o.get("sporadic"):
+                    t_total += _d(tp)
+            else:
+                up = tp = None   # 发给工厂: 留空给工厂填
+            ws.append([
+                o["order_no"], o.get("order_date") or "", o.get("ship_date") or "",
+                prod, o.get("sku") or "", p.get("category") or "",
+                p.get("part_name") or "", p.get("qty"), size, up, tp,
+            ])
+    if show_est_price:
+        ws.append(["合计(系统预估·已扣除⚠零星现付行)", "", "", "", "", "", "", "", "", "",
+                   float(t_total.quantize(_CENTS))])
+    else:
+        ws.append(["合计(工厂核对填写)", "", "", "", "", "", "", "", "", "", None])
+    _style_orders_ws(ws, headers, widths, money_cols=[10, 11])
+
+
+def build_shipped_orders_xlsx(db: Session, *, year_month: Optional[str] = None,
+                              date_from=None, date_to=None,
+                              material_key: Optional[str] = None):
+    """导清单 → xlsx(扁平表格)。单月(year_month)或发货日区间(date_from~date_to)。
+    发给工厂对账用: 材料单价/总价留空给工厂填。返回 (openpyxl.Workbook, data_dict)。
+    """
+    import openpyxl
+    d = export_shipped_orders(db, year_month=year_month, date_from=date_from,
+                              date_to=date_to, material_key=material_key)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = (material_key or "全部发货单")[:28]
+    if material_key:
+        _write_category_ws(ws, d, show_est_price=False)
+    else:
+        _write_all_orders_ws(ws, d)
     return wb, d
+
+
+def build_bulk_recon_workbook(db: Session, *, date_from=None, date_to=None,
+                              year_month: Optional[str] = None):
+    """一份多 sheet 对账工作簿(自己对账所有月结账户用):
+      · sheet「全部发货单」= 区间内所有已发货成交订单(基础列 + 预估配件合计);
+      · 每个『月结账户』(五金/电力轨道/岩板/玻璃)各一页 = 逐单展开 BOM + 系统预估单价/总价/合计。
+    让用户一次对完所有月结账户的应付预估。按发货日期 ship_date 圈定。返回 (Workbook, 摘要dict)。
+    """
+    import openpyxl
+    wb = openpyxl.Workbook()
+    d_all = export_shipped_orders(db, year_month=year_month, date_from=date_from,
+                                  date_to=date_to, material_key=None)
+    ws = wb.active
+    ws.title = "全部发货单"
+    _write_all_orders_ws(ws, d_all)
+
+    cats: list[dict] = []
+    for cat in _MONTHLY_SETTLE_CATEGORIES:
+        dc = export_shipped_orders(db, year_month=year_month, date_from=date_from,
+                                   date_to=date_to, material_key=cat)
+        cats.append({"category": cat, "order_count": dc["order_count"],
+                     "total_est_parts": dc["total_est_parts"]})
+        if not dc["orders"]:
+            continue   # 该月结账户区间内无发货单 → 跳过空页
+        wsx = wb.create_sheet(title=cat[:28])
+        _write_category_ws(wsx, dc, show_est_price=True)
+
+    return wb, {
+        "period": d_all["period"],
+        "all_order_count": d_all["order_count"],
+        "all_total_est_parts": d_all["total_est_parts"],
+        "monthly_categories": cats,
+    }
 
 
 # ── E. 双算自检: 月结分类里被零星采购覆盖的(订单×分类) ──────────────────────────
