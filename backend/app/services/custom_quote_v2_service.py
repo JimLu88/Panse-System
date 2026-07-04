@@ -960,8 +960,12 @@ def product_candidates(
 
     cands = []
     for x in match_ranked(db, core, "", limit=limit * 2):
-        conf = max(float(x["product_confidence"]), _overlap(x["product_name"]))
-        sku = (x.get("skus") or [{}])[0].get("sku")   # 代表SKU(匹配度最高那条), 同名产品靠它区分
+        top_sku = (x.get("skus") or [{}])[0]   # 匹配度最高的代表SKU, 同名产品靠它区分
+        # 纳入 SKU 级相关度: 玻璃底座/玻璃门等变体只在 SKU 名里体现, 产品名相似度低,
+        # 否则「樱桃木玻璃柜」这类靠变体命中的产品会被产品名分数压下、浮不上来 (2026-07-04)。
+        conf = max(float(x["product_confidence"]), float(top_sku.get("confidence") or 0),
+                   _overlap(x["product_name"]))
+        sku = top_sku.get("sku")
         cands.append({"product_code": x["product_code"], "product_name": x["product_name"],
                       "sku": sku, "confidence": round(conf, 2)})
     mc = round(float(matched_conf or 0.9), 2)

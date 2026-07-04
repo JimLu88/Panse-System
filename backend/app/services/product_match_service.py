@@ -39,19 +39,15 @@ def match(
         if row:
             return _hit(row, db, 1.0)
 
-    query_tokens = _tokens(combined)
-
-    # 2. PricingSku.sku token 匹配
+    # 2. PricingSku.sku 匹配 (中文友好: 字符 Jaccard, 见 _similarity)。
+    #    旧纯 token 法对整词中文如「樱桃木玻璃柜」恒得 0 → 匹配不到玻璃底座/玻璃门等 SKU 变体,
+    #    只能回落 AI 就近选一个普通柜。改用 _similarity 后玻璃变体能正确浮出 (2026-07-04)。
     best_sku: Optional[PricingSku] = None
     best_score = 0.0
     for row in db.query(PricingSku).all():
         if not row.sku:
             continue
-        sku_tokens = _tokens(row.sku)
-        if not sku_tokens:
-            continue
-        overlap = len(query_tokens & sku_tokens)
-        score = overlap / max(len(query_tokens), len(sku_tokens))
+        score = _similarity(combined, row.sku)
         if score > best_score:
             best_score = score
             best_sku = row
@@ -59,15 +55,13 @@ def match(
     if best_sku and best_score >= 0.4:
         return _hit(best_sku, db, round(min(best_score, 0.99), 2))
 
-    # 3. Product.name token 匹配
+    # 3. Product.name 匹配 (同上, 字符友好)。
     best_prod: Optional[Product] = None
     best_prod_score = 0.0
     for prod in db.query(Product).all():
-        prod_tokens = _tokens(prod.name)
-        if not prod_tokens:
+        if not prod.name:
             continue
-        overlap = len(query_tokens & prod_tokens)
-        score = overlap / max(len(query_tokens), len(prod_tokens))
+        score = _similarity(combined, prod.name)
         if score > best_prod_score:
             best_prod_score = score
             best_prod = prod
