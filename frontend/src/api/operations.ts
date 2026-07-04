@@ -254,6 +254,9 @@ export const fetchBusinessMonthly = (fromYear = 2026, fromMonth = 1) =>
 export interface PerOrderRow {
   order_no: string;
   product_name: string;
+  sku: string | null;
+  sku_code: string | null;
+  product_code: string | null;
   is_custom: boolean;
   order_date: string | null;
   paid_amount: number;
@@ -308,9 +311,11 @@ export interface PerOrderReconcileResult {
   rows: PerOrderRow[];
   subtotal: PerOrderSubtotal;
 }
-export const fetchPerOrderReconcile = (year: number, month: number) =>
+export const fetchPerOrderReconcile = (year: number, month: number, productSearch?: string) =>
   api
-    .get<PerOrderReconcileResult>('/api/reports/per-order-reconcile', { params: { year, month } })
+    .get<PerOrderReconcileResult>('/api/reports/per-order-reconcile', {
+      params: { year, month, ...(productSearch && productSearch.trim() ? { product_search: productSearch.trim() } : {}) },
+    })
     .then((r) => r.data);
 
 // 通过带鉴权的 axios 实例取 blob 再触发下载 (window.open 直链会丢 Authorization 头 → 401「需要登录」)

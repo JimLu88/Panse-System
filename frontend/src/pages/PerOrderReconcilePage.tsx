@@ -43,11 +43,13 @@ export default function PerOrderReconcilePage() {
   const opts = useMemo(monthOptions, []);
   const [period, setPeriod] = useState<string>(opts[0] ?? '2026-06');
   const [onlyProblem, setOnlyProblem] = useState(false);
+  const [searchInput, setSearchInput] = useState(''); // 输入框(未应用)
+  const [productSearch, setProductSearch] = useState(''); // 已应用的产品搜索 (2026-07-03)
   const [y, m] = period.split('-').map(Number);
 
   const { data, isLoading } = useQuery({
-    queryKey: ['per-order-reconcile', period],
-    queryFn: () => fetchPerOrderReconcile(y, m),
+    queryKey: ['per-order-reconcile', period, productSearch],
+    queryFn: () => fetchPerOrderReconcile(y, m, productSearch),
   });
 
   const rows = useMemo(() => {
@@ -234,6 +236,13 @@ export default function PerOrderReconcilePage() {
             options={[{ label: '全部', value: 'all' }, { label: '只看问题单', value: 'problem' }]} />
           <Select value={period} style={{ width: 130 }} onChange={setPeriod}
             options={opts.map((p) => ({ label: p, value: p }))} />
+          <Input.Search
+            placeholder="搜产品名/SKU/产品编码"
+            allowClear enterButton style={{ width: 240 }}
+            value={searchInput}
+            onChange={(e) => { setSearchInput(e.target.value); if (!e.target.value) setProductSearch(''); }}
+            onSearch={(v) => setProductSearch(v.trim())}
+          />
           <Button icon={<FileExcelOutlined />} disabled={!data}
             onClick={async () => {
               const [yy, mo] = period.split('-').map(Number);
