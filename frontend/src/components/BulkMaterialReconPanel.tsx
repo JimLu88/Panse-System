@@ -7,13 +7,13 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  Alert, Button, Collapse, Dropdown, Form, Input, InputNumber, Modal, Popconfirm, Select,
+  Alert, Button, Collapse, DatePicker, Dropdown, Form, Input, InputNumber, Modal, Popconfirm, Select,
   Space, Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import { ReloadOutlined, MergeCellsOutlined, PrinterOutlined, EditOutlined, DownloadOutlined } from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  aggregateRelatedParts, backfillEstParts, deleteMonthlyRecon, downloadShippedOrdersXlsx,
+  aggregateRelatedParts, backfillEstParts, deleteMonthlyRecon, downloadBulkReconXlsx, downloadShippedOrdersXlsx,
   fetchBulkMaterialRecon, fetchShippedOrdersExport, listMonthlyRecon, saveMonthlyRecon,
   type AggregateRelatedResult, type BulkMaterial, type BulkMaterialPeriod, type ShippedOrdersExport,
 } from '../api/client';
@@ -206,6 +206,7 @@ export default function BulkMaterialReconPanel() {
   }, [data]);
   const [expMonth, setExpMonth] = useState<string | undefined>(undefined);
   const effMonth = expMonth || allMonths[0];
+  const [range, setRange] = useState<[string, string] | null>(null);  // 发货日区间导出
 
   const doExport = async (yearMonth: string, categoryKey?: string, fmt: 'print' | 'xlsx' = 'print') => {
     try {
@@ -275,6 +276,16 @@ export default function BulkMaterialReconPanel() {
             ], onClick: ({ key }) => effMonth && doExport(effMonth, undefined, key as 'print' | 'xlsx') }}>
             <Button icon={<PrinterOutlined />} style={{ marginLeft: 8 }} disabled={!effMonth}>导出当月全部发货单</Button>
           </Dropdown>
+        </span>
+        <span style={{ borderLeft: '1px solid #eee', paddingLeft: 12 }}>
+          <DatePicker.RangePicker style={{ width: 240 }} allowClear placeholder={['发货起', '发货止']}
+            onChange={(_, ds) => setRange(ds && ds[0] && ds[1] ? [ds[0], ds[1]] : null)} />
+          <Tooltip title="一次导出该发货日区间(如1月到现在)内所有月结账户对账: 全部发货单 + 五金/电力轨道/岩板/玻璃各一页(逐单展开BOM+系统预估)">
+            <Button icon={<DownloadOutlined />} type="primary" ghost style={{ marginLeft: 8 }}
+              disabled={!range} onClick={() => range && downloadBulkReconXlsx(range[0], range[1])}>
+              导出日期范围·全部月结对账
+            </Button>
+          </Tooltip>
         </span>
         {cats.length > 0 && (
           <Button type="link" size="small"

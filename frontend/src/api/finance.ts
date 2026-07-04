@@ -737,6 +737,23 @@ export async function downloadShippedOrdersXlsx(yearMonth: string, materialKey?:
   window.URL.revokeObjectURL(url);
 }
 
+// 多 sheet 月结对账工作簿(全部发货单 + 每个月结账户一页, 系统预估)按【发货日区间】下载 —
+// 一次对完所有月结账户(五金/电力轨道/岩板/玻璃), 口径仍是 ship_date。
+export async function downloadBulkReconXlsx(dateFrom: string, dateTo: string) {
+  const resp = await api.get('/api/purchases/bulk-recon-export.xlsx', {
+    params: { date_from: dateFrom, date_to: dateTo },
+    responseType: 'blob',
+  });
+  const url = window.URL.createObjectURL(resp.data as Blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `月结对账_全部账户_${dateFrom}至${dateTo}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+}
+
 // ----- 剩余流水（可用资金）测算 -----
 export interface TaxQuarter {
   quarter: string;      // "2026-Q1"
