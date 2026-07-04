@@ -94,6 +94,18 @@ def test_aftersales_followup_skips_resolved(db_session):
     assert result["overdue_count"] == 0
 
 
+def test_aftersales_followup_skips_chinese_done(db_session):
+    """'已完成'(导入的中文状态)不算超时待处理 (用户 2026-07-03 修复; 原来只认英文 resolved/closed,
+    致 857 条已完成的被误报, 把提醒撑成 1091)。"""
+    db_session.add_all([
+        AfterSales(platform_order_no="ZH1", reason="平台退款", status="已完成", processed_at=None),
+        AfterSales(platform_order_no="ZH2", reason="平台退款", status="auto", processed_at=None),
+    ])
+    db_session.flush()
+    result = aftersales_followup_service.check_and_push(db_session)
+    assert result["overdue_count"] == 1  # 只 auto(ZH2) 待处理; 已完成(ZH1)不算
+
+
 def test_aftersales_reason_action_mapping():
     action = aftersales_followup_service._get_suggested_action("安装损坏")
     assert "万师傅" in action

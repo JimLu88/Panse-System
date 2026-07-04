@@ -40,6 +40,10 @@ _REASON_ACTION_MAP: dict[str, str] = {
 
 _DEFAULT_ACTION = "请核实情况并录入处理详情"
 _OVERDUE_DAYS = 3
+# 已解决状态白名单 —— 这些不算超时待处理。
+# 用户 2026-07-03 踩坑: 实际数据 status 是中文「已完成」(导入的), 但原来只认英文
+# resolved/closed → 857 条已完成的被误报成待处理, 把提醒从 ~237 撑成 1091。补齐中文值。
+_DONE_STATUSES = ("resolved", "closed", "已完成", "已解决", "已处理")
 
 
 def _get_suggested_action(reason: str) -> str:
@@ -64,7 +68,7 @@ def check_and_push(db: Session) -> dict:
     stmt = select(AfterSales).where(
         or_(
             AfterSales.status.is_(None),
-            ~AfterSales.status.in_(["resolved", "closed"]),
+            ~AfterSales.status.in_(_DONE_STATUSES),
         ),
         or_(
             AfterSales.processed_at.is_(None),

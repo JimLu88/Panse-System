@@ -343,6 +343,11 @@ def compute(db: Session, order: Order) -> CostBreakdown:
             .join(Material, BomLine.material_code == Material.code, isouter=True)
             .where(BomLine.sku_code == sku_code)
         ).all()
+        # 物料价按生效日版本化 (用户 2026-07-03): 成本取订单 order_date 当时生效价 →
+        # 改价前订单用旧价、改价后用新价; 无历史则回退当前 Material.price (行为不变)。
+        from datetime import date as _date_cls
+        from app.services import material_price_service as _mps
+        _on_date = order.order_date or _date_cls.today()
         for bom, mat_name, price in rows:
             qty_per = Decimal(str(bom.qty_per_product or 1))
             is_wood = (bom.material_code or "").upper().startswith(WOOD_PREFIX)
@@ -357,7 +362,8 @@ def compute(db: Session, order: Order) -> CostBreakdown:
                 line_cost = p.quantize(_CENTS) if p is not None else None
                 missing = wood_price is None
             else:
-                p = Decimal(str(price)) if price is not None else None
+                _eff = _mps.material_price_at(db, bom.material_code, _on_date)
+                p = Decimal(str(_eff)) if _eff is not None else None
                 line_cost = (qty_per * p).quantize(_CENTS) if p is not None else None
                 missing = p is None
             lines.append(CostLine(

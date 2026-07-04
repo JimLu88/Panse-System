@@ -40,14 +40,19 @@ class AliasIn(BaseModel):
 
 
 @router.get("/overview")
-def overview(supplier: Optional[str] = None, db: Session = Depends(get_db),
+def overview(supplier: Optional[str] = None, q: Optional[str] = None,
+             db: Session = Depends(get_db),
              _: User = Depends(require_role("admin", "operator"))):
+    """q: 产品名/SKU/产品编码 模糊搜索 —— 台账只汇总匹配单; 搜索时另回 detail 逐单明细。"""
     sup = supplier or DEFAULT_WOOD_SUPPLIER
-    return {
-        "breakdown": fss.month_breakdown(db, sup),
+    out = {
+        "breakdown": fss.month_breakdown(db, sup, q=q),
         "payments": fss.list_payments(db, sup),
         "aliases": fss.list_aliases(db),
     }
+    if q and q.strip():
+        out["detail"] = fss.settlement_detail_rows(db, sup, q=q)
+    return out
 
 
 @router.post("/settle")

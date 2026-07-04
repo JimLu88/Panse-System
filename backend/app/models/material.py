@@ -1,7 +1,8 @@
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import JSON, Boolean, Index, Integer, Numeric, String
+from sqlalchemy import JSON, Boolean, Date, Index, Integer, Numeric, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -67,3 +68,21 @@ class Material(Base, TimestampMixin):
             return int(self.code.split("-", 1)[1])
         except (IndexError, ValueError):
             return 0
+
+
+class MaterialPriceHistory(Base, TimestampMixin):
+    """物料价格历史 —— 按生效日版本化 (用户 2026-07-03)。
+
+    改物料价时记一行 (effective_from=改价日); 成本计算 (order_cost_service BOM 路径) 按订单
+    order_date 取"当时生效价" → 改价【前】的订单用旧价、改价【后】的用新价。
+    种子: 每物料当前价 effective_from=基线日(2025-01-01, 早于所有订单) → 存量成本零变化。
+    无历史时 material_price_at 回退当前 Material.price。
+    """
+
+    __tablename__ = "material_price_history"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    material_code: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    price: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False, index=True)
+    note: Mapped[Optional[str]] = mapped_column(String(255))

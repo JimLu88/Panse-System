@@ -1,5 +1,5 @@
 from app.models.base import Base
-from app.models.material import Material
+from app.models.material import Material, MaterialPriceHistory  # noqa: F401 - 物料价格历史(版本化)
 from app.models.pricing_formula import PricingFormulaRule  # noqa: F401 - 注册进 metadata, SQLite 测试库才建表 (Plan C2)
 from app.models.campaign_signup import CampaignSignupPrice  # noqa: F401 - 活动报名价 (Plan F1)
 from app.models.field_change import FieldChange  # noqa: F401 - 人工编辑历史档案 (方向2+4)
