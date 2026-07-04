@@ -29,6 +29,11 @@ if [[ "${BUILD:-0}" == "1" ]]; then
     --build-arg GIT_COMMIT="$gc" \
     --build-arg GIT_COMMIT_MSG="$(git log -1 --pretty=%s)" \
     --build-arg GIT_COMMIT_DATE="$(git log -1 --date=short --pretty=%cd)"
+  # 构建后自动回收 (2026-07-04): 悬空镜像 + 构建缓存压到 ≤6GB → 防 Docker vhdx 疯长吃满 C 盘。
+  # 保留 6GB 缓存让下次 build 仍走增量 (只重传改动层), 不至于全量重建。
+  echo "[build] 回收悬空镜像 + 压缩构建缓存(保留6GB)…"
+  docker image prune -f >/dev/null 2>&1 || true
+  docker builder prune -f --keep-storage=6GB >/dev/null 2>&1 || true
 fi
 
 echo "[1/5] 预检 SSH + 当前 panse-system 容器"
