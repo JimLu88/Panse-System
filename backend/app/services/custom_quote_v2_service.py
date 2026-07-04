@@ -985,7 +985,10 @@ def product_candidates(
                      .filter(Product.code.in_(_codes)).all()) if _codes else {}
         for c in cands:
             if not ccfg.size_plausible(_cfg, _cats.get(c["product_code"]), length_m):
-                c["confidence"] = round(c["confidence"] * 0.3, 2)
+                # 只标 ⚠ 警告、不埋没: 尺寸对该品类偏大仍按相关度保留在候选里。否则用户
+                # 明确点名的产品(如 1m「轻盈边柜」, 品类却标成床头柜上限0.5m)会被 ×0.3 踢出候选、
+                # 连手选都选不到。轻微降权让同相关度的它稍下沉即可 (2026-07-04)。
+                c["confidence"] = round(c["confidence"] * 0.9, 2)
                 c["size_flag"] = True
     cands.sort(key=lambda c: c["confidence"], reverse=True)
     return cands[:limit]
