@@ -208,12 +208,14 @@ def test_build_shipped_orders_xlsx_flat_table(db_session):
     db.flush()
     wb, d = prs.build_shipped_orders_xlsx(db, year_month="2026-02", material_key="岩板")
     ws = wb.active
-    headers = [c.value for c in ws[1]]
+    assert str(ws.cell(1, 1).value).startswith("⚠")   # 第1行=预估/常规警示横幅(分类页新增)
+    headers = [c.value for c in ws[2]]                 # 第2行=表头
     assert headers[0] == "订单号"                     # 订单号在第一列
     assert headers[1] == "发货日"                     # 按月分组后紧跟发货日(已去掉下单日期列)
     assert headers[-2:] == ["单价", "金额"]            # 末尾两列
-    assert str(ws.cell(2, 1).value).startswith("📅")  # 第2行=发货月分组标题(按月分配)
-    assert ws.cell(3, 1).value == "M1"                # 月标题下是数据行, 首列=订单号
+    assert "口径" in headers                           # 新增: 预估/常规 口径列
+    assert str(ws.cell(3, 1).value).startswith("📅")  # 第3行=发货月分组标题(按月分配)
+    assert ws.cell(4, 1).value == "M1"                # 月标题下是数据行, 首列=订单号
     last = ws.max_row
     assert "总计" in str(ws.cell(last, 1).value)       # 末行总计
     assert ws.cell(last, len(headers)).value is None    # 金额不预填, 留空给工厂核对填写
@@ -230,9 +232,9 @@ def test_xlsx_repeats_order_no_on_every_part_row(db_session):
     db.flush()
     wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02", material_key="岩板")
     ws = wb.active
-    assert str(ws.cell(2, 1).value).startswith("📅")   # 第2行=发货月分组标题
-    assert ws.cell(3, 1).value == "M9"                # 同单第一个部位行带订单号
-    assert ws.cell(4, 1).value in ("", None)          # 续行订单号留空(视觉成块, 工厂看得清)
+    assert str(ws.cell(3, 1).value).startswith("📅")   # 第3行=发货月分组(第1行横幅+第2行表头)
+    assert ws.cell(4, 1).value == "M9"                # 同单第一个部位行带订单号
+    assert ws.cell(5, 1).value in ("", None)          # 续行订单号留空(视觉成块, 工厂看得清)
     vals = [str(ws.cell(r, 1).value or "") for r in range(1, ws.max_row + 1)]
     assert any("小计" in v for v in vals)              # 有月小计
     assert any("总计" in v for v in vals)              # 有总计

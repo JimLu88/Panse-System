@@ -214,4 +214,32 @@ def test_noncustom_template_fallback_collapses_size_variants(db_session):
     assert trk[0]["alt_size_count"] == 3              # 合并其它 3 个尺寸(重复行已先去重)
 
 
+def test_custom_collapses_color_variants(db_session):
+    """定制单: 同一物理件的【颜色】变体(电力轨道 T25 银色↔黑色)也合成一行, 取价高者+标 size_uncertain;
+    不同子型号(U80 vs T25)仍分开。(2026-07-05 用户: 工厂看两行会多算钱)"""
+    db = db_session
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    mats = [("AC-T25S", "电力轨道-Xpower-T25-银色-1.158-2插座", "411.08"),
+            ("AC-T25B", "电力轨道-Xpower-T25-黑色-1.15-2插座", "421"),
+            ("AC-U80", "电力轨道-Xpower-U80-黑色-2.05-2插座", "655")]
+    for code, name, price in mats:
+        db.add(Material(code=code, name=name, unit="根", price=Decimal(price), category="电力轨道"))
+        db.add(BomLine(product_code="PPSCLR01", sku_code="SC1", material_code=code,
+                       material_name=name, qty_per_product=Decimal("1")))
+    o = Order(platform="淘宝", order_no="CLR1", product_code="PCLR01", sku_code="SC1", qty=1,
+              is_custom=True, order_date=date(2026, 6, 1), ship_date=date(2026, 6, 5),
+              status="signed", paid_amount=Decimal("5000"))
+    db.add(o)
+    db.flush()
+    mat_info, by_pcsku, by_pc = prs._load_bom_and_materials(db)
+    cons = prs._order_category_consumption(o, mat_info, by_pcsku, by_pc)
+    trk = cons["电力轨道"]["materials"]
+    assert len(trk) == 2                              # T25(银/黑合1) + U80 = 2 (不再 3)
+    t25 = [m for m in trk if "T25" in m["part_name"]]
+    assert len(t25) == 1 and t25[0]["material_code"] == "AC-T25B"   # 取价高(421>411.08)
+    assert t25[0]["size_uncertain"] is True and t25[0]["alt_size_count"] == 1
+    assert any("U80" in m["part_name"] for m in trk)   # U80 不同子型号 → 独立保留
+
+
 # (大宗对账已改「分类+BOM 驱动」, 对账/导出测试见 test_parts_monthly_recon_0626.py)

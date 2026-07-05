@@ -443,15 +443,33 @@ def _order_is_custom(o: Order) -> bool:
         return False
 
 
+def _order_is_estimate(o: Order, bom_by_pcsku) -> bool:
+    """该单配件是「预估」还是「常规」: 定制单 或 该 SKU 无精确 BOM(落产品级模板)→ 系统按模板估一种
+    款式/尺寸(**预估·待核对**); SKU 精确命中 BOM → 该 SKU 的真实用料(**常规**)。与 use_family 同判。"""
+    if _order_is_custom(o):
+        return True
+    pcs = _product_code_variants(o.product_code)
+    return not any((pc, o.sku_code) in bom_by_pcsku for pc in pcs)
+
+
 _SIZE_RE = re.compile(r"\d+\.\d+")   # 尺寸(小数, 如 2.05/1.75); 子型号整数(U80/T25)保留
+# 颜色/款式词: 定制或模板单一单只选一种颜色 → 归入"族"一起合并(长词在前, 免"哑光黑"被"黑色"截断)。
+_COLOR_WORDS = ("哑光黑", "哑光白", "曜石黑", "深空灰", "太空灰", "玫瑰金", "香槟金", "香槟色",
+                "胡桃木色", "樱桃木色", "原木色", "胡桃色", "樱桃色", "咖啡色", "钛黑", "钛金",
+                "超白", "超黑", "米白", "米色", "茶色", "纯黑", "纯白", "曜黑", "香槟",
+                "黑色", "白色", "银色", "金色", "灰色", "深灰", "浅灰")
+_COLOR_RE = re.compile("|".join(_COLOR_WORDS))
 
 
 def _family_key(name: Optional[str]) -> str:
-    """物料"族"键: 名字去掉尺寸(小数)后剩下的部分。同一物理件的不同尺寸变体(不同料号)归为一族,
-    供定制单 BOM"同料只取一行"去重 —— 修电力轨道(AC-0162/63/64/65)/床铺板等尺寸变体绑成多个料号
-    致对账预估虚高。保留子型号整数(U80/T25/K59)和"2插座", 避免误并不同件
-    (2026-07-05 验证设置类目 20 族均为同件尺寸变体, 松木/榉木、U80/T25 均分开)。"""
-    return _SIZE_RE.sub("", name or "").strip()
+    """物料"族"键: 名字去掉【尺寸(小数)+颜色/款式词+分隔符】后剩下的骨架。同一物理件的尺寸/颜色变体
+    (常是不同料号)归为一族, 供定制/模板单 BOM"同件只取一行"去重 —— 修电力轨道(U80/T25 银色↔黑色、
+    AC-0162/63/64/65 多尺寸)/岩板/玻璃等变体绑多料号致预估虚列多行(用户 2026-07-05: 工厂看两行会多算钱)。
+    **保留子型号整数(U80/T25/K59)与"插座"等骨架** → 不同子型号/不同基材仍分开(U80≠T25、9mm≠12mm、洞石≠纯板)。
+    仅在【一张订单的同一类目内】分组用, 不跨单跨类, 误并风险有界(且导出标『预估·待核对』人工兜底)。"""
+    s = _SIZE_RE.sub("", name or "")
+    s = _COLOR_RE.sub("", s)
+    return re.sub(r"[-\s]+", "", s).strip()   # 去残留分隔符/空格, 使 "…U80--2插座" 与 "…U80-2插座" 同键
 
 
 def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> dict[str, dict]:
@@ -507,7 +525,7 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
         if not use_family:
             _emit(mcode, q, price, size, cat, name, info)
             continue
-        # ② 按族(类目 + 名字去尺寸)合一行: 同一物理件的尺寸变体(常是不同料号)只留面积最大者
+        # ② 按族(类目 + 骨架)合一行: 同一物理件的尺寸/颜色变体只留【价高者】(保守, 免低估应付; 同价取面积大)
         area = _size_area(size)
         fk = (cat, _family_key(name))
         prev = fam_pick.get(fk)
@@ -516,7 +534,7 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
                             "name": name, "info": info, "area": area, "alt": 0}
         else:
             prev["alt"] += 1
-            if area > prev["area"]:
+            if (price, area) > (prev["price"], prev["area"]):
                 fam_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
                                 "name": name, "info": info, "area": area, "alt": prev["alt"]}
 
@@ -795,6 +813,7 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                 "sporadic_note": _sporadic_note(cover) if cover else None,
                 "is_custom": bool(getattr(o, "is_custom", False))
                 or sku_utils.is_custom_sku_code(o.sku_code, o.product_code),
+                "is_estimate": _order_is_estimate(o, bom_by_pcsku),  # True=预估(定制/模板估) False=常规(SKU精确BOM)
                 "bom_parts": [{
                     "part_name": p["part_name"], "material_code": p["material_code"],
                     "category": p["category"], "qty": p["qty"], "unit": p["unit"],
@@ -857,9 +876,9 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
     A_RIGHT = Alignment(horizontal="right", vertical="center")
 
     if category:
-        headers = ["订单号", "发货日", "产品", "部位 / 材料", "数量", "预设尺寸", "单价", "金额"]
-        widths = [22, 12, 15, 18, 7, 20, 10, 12]
-        money_cols, prod_col = [7, 8], 3
+        headers = ["订单号", "发货日", "产品", "部位 / 材料", "数量", "预设尺寸", "口径", "单价", "金额"]
+        widths = [22, 12, 15, 18, 7, 18, 13, 10, 12]
+        money_cols, prod_col = [8, 9], 3
     else:
         headers = ["订单号", "发货日", "客户", "产品", "预估配件金额"]
         widths = [22, 12, 12, 18, 15]
@@ -891,6 +910,19 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
                 c.alignment = A_CENTER
         return r
 
+    if category:
+        # 顶部警示横幅: 说明「预估」行是系统按模板估的, 一单只用一种, 勿按多行计费(用户 2026-07-05)。
+        ws.append(["⚠ 「口径=预估」的行 = 定制单 / 无精确BOM单, 系统按模板估了一种款式/尺寸(取价高者); "
+                   "一单实际只用一种, 请以订单为准, 切勿按多行计费。「常规」= 该SKU精确BOM的真实用料。"]
+                  + [None] * (ncol - 1))
+        br = ws.max_row
+        ws.merge_cells(start_row=br, start_column=1, end_row=br, end_column=ncol)
+        bc = ws.cell(row=br, column=1)
+        bc.fill = PatternFill("solid", fgColor=_C_SUBTOTAL)
+        bc.font = Font(bold=True, color="8A6D00", size=10)
+        bc.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        ws.row_dimensions[br].height = 32
+
     _row(headers, fill=_C_HEADER, bold=True, fontcolor="FFFFFF", height=26)
 
     grand = Decimal("0")
@@ -912,10 +944,16 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
                 prod = f"{prod}  【{'·'.join(tags)}】"
             zebra = _C_ZEBRA if (oi % 2 == 1) else None
             if category:
+                is_est = o.get("is_estimate")
                 for pi, p in enumerate(o.get("bom_parts") or [{}]):
                     size = p.get("size_note") or "—"
                     if p.get("size_uncertain"):
                         size = f"{size}(尺寸估)"
+                    # 口径: 预估(定制/无精确BOM单, 系统按模板估一种款式尺寸, 待核对) vs 常规(SKU精确BOM真实用料)
+                    if is_est:
+                        caliber = "预估·系统估款式/尺寸,待核对" if p.get("size_uncertain") else "预估·待核对"
+                    else:
+                        caliber = "常规"
                     up = tp = None
                     if show_est_price:
                         up, tp = p.get("unit_price"), p.get("total_price")
@@ -924,7 +962,7 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
                     _row([o["order_no"] if pi == 0 else "",
                           (o.get("ship_date") or "") if pi == 0 else "",
                           prod if pi == 0 else "",
-                          p.get("part_name") or "", p.get("qty"), size, up, tp],
+                          p.get("part_name") or "", p.get("qty"), size, caliber, up, tp],
                          fill=zebra, prod_small=True)
             else:
                 sub += _d(o.get("est_parts"))
@@ -945,7 +983,7 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
 
     for i, wd in enumerate(widths, 1):
         ws.column_dimensions[get_column_letter(i)].width = wd
-    ws.freeze_panes = "A2"
+    ws.freeze_panes = "A3" if category else "A2"   # 分类页多了顶部警示横幅, 冻结到表头下一行
     ws.sheet_view.showGridLines = False
 
 
