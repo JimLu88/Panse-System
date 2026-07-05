@@ -11,6 +11,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+# ── 放宽 multipart 单 part 大小上限 (Starlette 默认仅 1MB) ─────────────────────
+# 图库上传的产品照是 3-7MB/张; 默认 1MB 会被 multipart 解析器直接拒(报 "Part exceeded maximum
+# size of 1024KB"), 连既有 /api/gallery/upload 都传不了大图。抬到 32MB, 与各上传端点自身的
+# 30MB 单张上限对齐(仍受端点二次校验兜底)。FastAPI 调 request.form() 不传该参 → 改默认即全局生效。
+from starlette.formparsers import MultiPartParser as _MultiPartParser  # noqa: E402
+_MAX_PART_SIZE = 32 * 1024 * 1024
+try:
+    _MultiPartParser.max_part_size = _MAX_PART_SIZE          # 类属性
+    _kwd = getattr(_MultiPartParser.__init__, "__kwdefaults__", None)
+    if _kwd and "max_part_size" in _kwd:
+        _kwd["max_part_size"] = _MAX_PART_SIZE               # 构造参数默认(FastAPI 不传时用它)
+except Exception:  # noqa: BLE001 — 上游签名若变, 不因此崩启动
+    logging.getLogger("panse").warning("multipart max_part_size 放宽失败, 大图上传可能受限")
+
 # 每个请求一个 trace id, 贯穿日志与错误响应, 方便「按 id 串起一次请求」排查
 request_id_ctx: ContextVar[str] = ContextVar("request_id", default="-")
 
