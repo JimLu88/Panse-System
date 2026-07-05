@@ -241,6 +241,35 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
     return round(weighted_sum / denom, 3) if denom else 0.0
 
 
+def _unshipped_demand(db: Session, product_code: str, sku: Optional[str] = None) -> float:
+    """该成品被『已付未发』常规订单占用的量 (用户 2026-07-05 口径: 可用=现货−已付未发)。
+
+    - 已付 = 有实付入账(paid_amount>0)且非取消/非待付款; 未发 = ship_date 为空。
+    - 只算常规订单(is_custom=False): 定制单现产不吃现货, 不占用; 补单(刷单)也排除。
+    - 按 product_code(含品牌变体)聚合; 库存行有尺寸口令则只算该尺寸(与日均销量同口径)。
+    - 发货后 ship_date 一填, 该单自动掉出本汇总 → 可用实时回补(负9→负8), 无需额外逻辑。
+    """
+    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
+    filters = (
+        Order.product_code.in_(pc_candidates),
+        Order.is_refill == False,   # noqa: E712  补单不占现货
+        Order.is_custom == False,   # noqa: E712  定制单现产不吃现货
+        Order.ship_date.is_(None),  # 未发
+        Order.paid_amount.isnot(None),
+        Order.paid_amount > 0,      # 已付(有实付入账)
+        Order.status.notin_(["cancelled", "pending_payment"]),
+        ~Order.status.like("%关闭%"),
+        ~Order.status.like("%取消%"),
+        ~Order.status.like("%等待买家付款%"),
+    )
+    size = _size_token(sku)   # 该库存行有尺寸口令 → 只算这个尺寸自己的未发单(否则退回产品级)
+    if size:
+        filters = filters + (Order.sku.like(f"%{size}%"),)
+    return float(db.execute(
+        select(func.coalesce(func.sum(Order.qty), 0)).where(*filters)
+    ).scalar() or 0)
+
+
 def _z_for_service_level(p: float) -> float:
     """目标服务水平 → 正态分位 Z (安全库存用)。常用档位查表, 取最近的一档。"""
     table = [(0.50, 0.0), (0.80, 0.84), (0.85, 1.04), (0.90, 1.28), (0.93, 1.48),
@@ -432,7 +461,11 @@ def compute_product_stats(
         lead_time = _compute_lead_time(db, inv.product_code)
     effective_lead = lead_time if lead_time is not None else _DEFAULT_LEAD_TIME_DAYS
     slow_days = inv.slow_moving_days or _DEFAULT_SLOW_MOVING_DAYS
-    available = float(inv.available_qty)
+    # 展示「可用」= 现货 − 已付未发单(用户 2026-07-05 口径, 可负): 现货已被现有订单占用就不该显示有货。
+    # 物理可用(现货−locked)另留一份, 只给『备货推荐』用 —— 推荐不受未发单影响, 防超卖单在产致过量下单。
+    physical_available = float(inv.available_qty)
+    unshipped = _unshipped_demand(db, inv.product_code, inv.sku)
+    available = physical_available - unshipped
 
     # 重点备货月(季节前瞻): 备货「数量」用目标月(今天+提前期)的预期日均, 而不是最近日均 ——
     # 4月自动为5-6月峰备货、7月自动比6月峰回落。是否备货仍看真实近况, 只放大/缩小数量。
@@ -476,18 +509,21 @@ def compute_product_stats(
         status = "ok"
 
     # 推荐备货: 只有备货类且低于预警线才补; 补到 目标位=预警线+批量(覆盖N天, 凑批压价)
+    # 用【物理可用(现货−locked)】而非展示可用: 已付未发单已在产/待产, 不该再叠进备货量(否则重复下单)。
     # R1(ATP): 只扣「自由在产(备货单, 会入库)」; 客户单在产是发给下单客户的, 不抵、避免误消成 0
     auto_reorder = 0.0
-    if do_stock and reorder_pt > 0 and available < reorder_pt:
+    if do_stock and reorder_pt > 0 and physical_available < reorder_pt:
         batch = float(cfg.get("batch_cover_days", 30)) * daily_forward   # 季节前瞻日均
-        auto_reorder = max(0.0, (reorder_pt + batch) - available - in_prod_free)
+        auto_reorder = max(0.0, (reorder_pt + batch) - physical_available - in_prod_free)
 
     return {
         "daily_sales_30d": daily,
         "lead_time_days_computed": lead_time,
         "safety_stock_computed": round(safety, 2),
         "reorder_point_computed": round(reorder_pt, 2),
-        "available_qty": round(available, 2),
+        "available_qty": round(available, 2),                # 展示可用=现货−已付未发(可负, 用户口径)
+        "physical_available": round(physical_available, 2),  # 物理可用=现货−locked(备货推荐口径)
+        "unshipped_demand": round(unshipped, 2),             # 已付未发单占用(可用的扣减项)
         "in_production_free": round(in_prod_free, 2),        # 备货在产(会入库, 已抵推荐)
         "in_production_allocated": round(in_prod_alloc, 2),  # 客户单在产(发客户, 仅展示)
         "days_of_stock": days_of_stock,
