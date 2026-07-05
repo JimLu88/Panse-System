@@ -257,19 +257,8 @@ def ai_estimate(db: Session, o: Order, txt: str) -> Optional[dict]:
 def _alert_pc_off(db: Session) -> None:
     """本地模型不可达(多半 PC 没开机) → 飞书报警 (用户拍板 2026-06-17)。"""
     msg = "⚠️ 定制单核对: 取数 PC / 本地模型(qwen2.5vl)不可达, 复杂定制单无法 AI 计算价格, 已暂用 85% 兜底。请开机或检查 Ollama。"
-    try:
-        from app.services import feishu_client
-        chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if chat_id:
-            feishu_client.send_text(db, chat_id, msg)
-            return
-    except Exception:  # noqa: BLE001
-        pass
-    try:
-        from app.services import notify_service
-        notify_service.notify(db, msg, level="urgent", title="畔色 ERP [定制单核对]")
-    except Exception:  # noqa: BLE001
-        pass
+    from app.services import notify_service
+    notify_service.broadcast_text(db, msg, level="error", title="畔色 ERP [定制单核对]")
 
 
 def resolve_cost(db: Session, o: Order, txt: Optional[str] = None) -> dict:

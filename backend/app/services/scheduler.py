@@ -1161,23 +1161,9 @@ def _job_ingest_health_check(db: Session) -> dict:
         result["pushed"] = ["disabled"]
         return result
 
-    # 飞书 (用户拍板: 今日无新订单必推飞书)
-    try:
-        from app.services import feishu_client
-        chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if chat:
-            feishu_client.send_text(db, chat, msg)
-            result["pushed"].append("feishu")
-    except Exception:  # noqa: BLE001
-        _logger.warning("取数体检 飞书推送失败", exc_info=True)
-    # 企业微信 (用户配置的群机器人 webhook)
-    try:
-        from app.services import notify_service
-        ok, _ = notify_service.notify(db, msg, level="warn", title="畔色 ERP | 取数体检异常")
-        if ok:
-            result["pushed"].append("wechat")
-    except Exception:  # noqa: BLE001
-        _logger.warning("取数体检 企业微信推送失败", exc_info=True)
+    from app.services import notify_service
+    r = notify_service.broadcast_text(db, msg, level="warn", title="畔色 ERP | 取数体检异常")
+    result["pushed"] = [k for k, v in r.items() if v is True]
     return result
 
 
@@ -1238,20 +1224,9 @@ def _job_npd_stage_remind(db: Session) -> dict:
             owner = (" @" + proj.owner) if proj.owner else ""
             lines.append(f"{tag} {proj.name}「{stage.name}」{owner}")
         msg = "\n".join(lines)
-        try:
-            from app.services import feishu_client, settings_service
-            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if chat:
-                feishu_client.send_text(db, chat, msg)
-                pushed = True
-        except Exception:  # noqa: BLE001
-            _logger.warning("NPD 阶段提醒飞书推送失败", exc_info=True)
-        if not pushed:
-            try:
-                from app.services import notify_service
-                notify_service.notify(db, msg, level="warn", title="新品开发阶段催办")
-            except Exception:  # noqa: BLE001
-                pass
+        from app.services import notify_service
+        r = notify_service.broadcast_text(db, msg, level="warn", title="新品开发阶段催办")
+        pushed = any(v is True for v in r.values())
     db.commit()
     return {"due": len(due),
             "critical": sum(1 for d in due if d[3] == "critical"), "pushed": pushed}
@@ -1269,23 +1244,12 @@ def _job_review_asset_remind(db: Session) -> dict:
     res = _ras.run_daily_scan(db)
     db.commit()
     pushed = False
-    if res["has_content"] and not _os.environ.get("PANSE_DISABLE_NOTIFY"):
+    if res["has_content"]:
         msg = _ras.format_reminder(res)
         lvl = res["max_level"] or "info"
-        try:
-            from app.services import feishu_client, settings_service
-            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if chat:
-                feishu_client.send_text(db, chat, msg)
-                pushed = True
-        except Exception:  # noqa: BLE001
-            _logger.warning("评价资产提醒飞书推送失败", exc_info=True)
-        if not pushed:
-            try:
-                from app.services import notify_service
-                notify_service.notify(db, msg, level=lvl, title="评价资产日报")
-            except Exception:  # noqa: BLE001
-                pass
+        from app.services import notify_service
+        r = notify_service.broadcast_text(db, msg, title="评价资产日报", level=lvl)
+        pushed = any(v is True for v in r.values())
     return {
         "fold_error": len(res["fold_notify"]["error"]),
         "fold_warn": len(res["fold_notify"]["warn"]),

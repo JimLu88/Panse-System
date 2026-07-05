@@ -1767,7 +1767,7 @@ function NotifyConfigCard() {
   });
 
   const saveMut = useMutation({
-    mutationFn: (payload: { provider: string; webhook?: string }) => updateNotifyConfig(payload),
+    mutationFn: (payload: { provider?: string; webhook?: string; text_channels?: string }) => updateNotifyConfig(payload),
     onSuccess: () => {
       message.success('通知配置已保存');
       form.setFieldValue('webhook', '');
@@ -1837,8 +1837,8 @@ function NotifyConfigCard() {
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ provider: cfg.provider, webhook: '' }}
-        onFinish={(v) => saveMut.mutate(v)}
+        initialValues={{ provider: cfg.provider, webhook: '', text_channels: (cfg.text_channels || 'feishu,webhook').split(',') }}
+        onFinish={(v) => saveMut.mutate({ ...v, text_channels: Array.isArray(v.text_channels) ? v.text_channels.join(',') : v.text_channels })}
       >
         <Form.Item name="provider" label="通知平台" rules={[{ required: true }]}>
           <Select
@@ -1861,6 +1861,16 @@ function NotifyConfigCard() {
           extra="加密存储, 仅显示前 3 后 4 位"
         >
           <Input.Password placeholder={cfg.webhook_set ? '(已设置, 留空保留)' : '请输入完整 URL'} />
+        </Form.Item>
+        <Form.Item
+          name="text_channels"
+          label="纯文本通知推送到 (可多选 = 双推)"
+          extra="富内容(下单图/工厂单ZIP/交互卡片)始终走飞书; 此项只管纯文本提醒与日报(NPD/评价资产/体检/对账等)"
+        >
+          <Select
+            mode="multiple"
+            options={[{ label: '飞书群', value: 'feishu' }, { label: '企业微信', value: 'webhook' }]}
+          />
         </Form.Item>
         <Form.Item>
           <Button type="primary" htmlType="submit" loading={saveMut.isPending}>

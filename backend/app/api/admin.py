@@ -379,12 +379,14 @@ class NotifyConfigOut(BaseModel):
     webhook_masked: str
     webhook_set: bool
     supported_providers: list[dict]
+    text_channels: str  # 纯文本通知渠道, 逗号分隔 (feishu=飞书应用机器人 / webhook=notify provider,如企微)
 
 
 class NotifyConfigIn(BaseModel):
     provider: Optional[str] = Field(default=None,
                                     description="slack/wechat_work/dingtalk/feishu/none")
     webhook: Optional[str] = Field(default=None, description='完整 URL; "__CLEAR__" 清空')
+    text_channels: Optional[str] = Field(default=None, description="纯文本通知渠道 feishu,webhook 逗号分隔")
 
 
 class NotifyTestOut(BaseModel):
@@ -400,6 +402,8 @@ def _read_notify(db: Session) -> NotifyConfigOut:
         webhook_masked=settings_service.mask_secret(cfg["webhook"]),
         webhook_set=cfg["webhook_set"],
         supported_providers=list(notify_service.SUPPORTED_PROVIDERS),
+        text_channels=settings_service.get(db, "notify_text_channels", env_fallback=False)
+        or notify_service.DEFAULT_TEXT_CHANNELS,
     )
 
 
@@ -424,6 +428,8 @@ def put_notify_config(
             settings_service.set_value(db, "notify_webhook", "")
         elif payload.webhook:
             settings_service.set_value(db, "notify_webhook", payload.webhook.strip())
+    if payload.text_channels is not None:
+        settings_service.set_value(db, "notify_text_channels", payload.text_channels.strip())
     db.commit()
     return _read_notify(db)
 

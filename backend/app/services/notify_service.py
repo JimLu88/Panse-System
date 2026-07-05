@@ -179,3 +179,42 @@ def test_notify(db: Session) -> tuple[bool, str]:
         db, "畔色 ERP 通知测试 — 如果收到这条说明 webhook 配通了。",
         level="info", title="测试通知",
     )
+
+
+# ── 纯文本通知统一广播 (可切换/双推; 富内容[图/文件/卡片]不走这里, 仍直连 feishu_client) ──
+
+TEXT_CHANNELS_KEY = "notify_text_channels"
+DEFAULT_TEXT_CHANNELS = "feishu,webhook"  # 双推: 飞书应用机器人 + notify webhook(企微); 可在设置改单边
+
+
+def broadcast_text(
+    db: Session, text: str, *, title: Optional[str] = None, level: str = "info",
+) -> dict:
+    """纯文本通知统一入口, 按 notify_text_channels 推送 (逗号分隔):
+      - feishu  → 飞书应用机器人 feishu_client.send_text(chat=feishu_push_chat_id)
+      - webhook → notify() 走 notify_provider 配的 webhook (当前=企业微信)
+    默认双推。返回 {channel: ok}。永不抛 (通知失败不阻断业务)。
+    """
+    import os
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"disabled": True}
+    raw = settings_service.get(db, TEXT_CHANNELS_KEY, env_fallback=False)
+    channels = [c.strip() for c in (raw or DEFAULT_TEXT_CHANNELS).split(",") if c.strip()]
+    results: dict = {}
+    full = f"{title}\n{text}" if title else text
+    if "feishu" in channels:
+        try:
+            from app.services import feishu_client
+            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+            if chat:
+                feishu_client.send_text(db, chat, full)
+                results["feishu"] = True
+            else:
+                results["feishu"] = False
+        except Exception:  # noqa: BLE001 - 通知失败不阻断业务
+            _logger.warning("broadcast_text 飞书推送失败", exc_info=True)
+            results["feishu"] = False
+    if "webhook" in channels:
+        ok, _ = notify(db, text, level=level, title=title)
+        results["webhook"] = ok
+    return results

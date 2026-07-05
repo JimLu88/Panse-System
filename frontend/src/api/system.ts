@@ -366,6 +366,7 @@ export interface NotifyConfig {
   webhook_masked: string;
   webhook_set: boolean;
   supported_providers: NotifyProvider[];
+  text_channels: string;  // 纯文本通知渠道, 逗号分隔 (feishu,webhook)
 }
 
 export const fetchNotifyConfig = () =>
@@ -374,6 +375,7 @@ export const fetchNotifyConfig = () =>
 export const updateNotifyConfig = (payload: {
   provider?: string;
   webhook?: string;
+  text_channels?: string;
 }) => api.put<NotifyConfig>('/api/admin/notify-config', payload).then((r) => r.data);
 
 export const testNotifyConfig = () =>
