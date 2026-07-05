@@ -24,7 +24,7 @@ from app.services.delivery_storage import get_root
 KINDS = (
     "orders", "taobao", "alipay", "settlement", "wanshifu", "wanshifu_orders",
     "logistics", "promotion", "aftersales", "refill", "account_balance",
-    "factory_recon", "purchase", "screenshot",
+    "factory_recon", "purchase", "screenshot", "review",
     # 系统生成档案 (2026-06-11 用户需求: 下单图/作废图/页面导出 单独分类入口)
     "order_sheet", "order_sheet_void", "page_export",
     # 全类目 Excel 导出 (2026-06-12 用户需求: 资料存档库留存, 超30份轮转)
@@ -40,7 +40,7 @@ _KIND_FOLDER = {
     "wanshifu": "万师傅", "wanshifu_orders": "万师傅订单", "logistics": "物流",
     "promotion": "大促", "aftersales": "售后", "refill": "补单",
     "account_balance": "账户余额", "factory_recon": "工厂对账", "purchase": "采购",
-    "screenshot": "截图", "order_sheet": "工厂下单图", "order_sheet_void": "作废下单图",
+    "screenshot": "截图", "review": "评价", "order_sheet": "工厂下单图", "order_sheet_void": "作废下单图",
     "page_export": "页面导出", "full_export": "全量导出", "generic": "其他",
 }
 

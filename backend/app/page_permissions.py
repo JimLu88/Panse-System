@@ -41,7 +41,7 @@ PERM_KEYS: frozenset[str] = frozenset({
     "logistics-bills", "packing-bills", "wanshifu-bills",
     # 营销 (人员外包 2026-07-01 已删, 口径改走财务/人员工资)
     "marketing-promotion", "promotion-flows", "marketing-brand",
-    "refill-records", "marketing-daily",
+    "refill-records", "marketing-daily", "review-assets",
     # 供应链 (供应商评分 已并入供应商页)
     "suppliers", "purchases", "monthly-settlement",
     "factory-orders", "factory-statement", "factory-settlement",
@@ -113,6 +113,7 @@ _API_PERM_RULES: dict[str, Optional[str]] = {
     "/api/screenshots": None,
     # --- 营销 (多子页共享, 放行, 前端守卫分 tab) ---
     "/api/marketing": None,
+    "/api/review-assets": "review-assets",   # 评价资产台账 (Plan1 v2)
     # --- 供应链 (供应商评分已并入供应商页, 其接口归 suppliers) ---
     "/api/suppliers": "suppliers",
     "/api/supplier-scores": "suppliers",

@@ -95,6 +95,7 @@ from app.api import taobao_export as taobao_export_api
 from app.api import npd as npd_api
 from app.api import factory_settlement as factory_settlement_api
 from app.api import chatbi as chatbi_api
+from app.api import review_assets as review_assets_api
 from app.config import get_settings
 from app.dependencies import enforce_page_permission, require_authenticated
 from app.middleware import AuditMiddleware
@@ -367,6 +368,7 @@ app.include_router(settlements_api.router)
 app.include_router(factory_recon_api.router)
 app.include_router(factory_orders_api.router)
 app.include_router(chatbi_api.router)
+app.include_router(review_assets_api.router)
 app.include_router(factory_statement_api.router)
 app.include_router(cs_integration_api.router)
 app.include_router(competitor_api.router)

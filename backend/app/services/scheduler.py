@@ -1257,6 +1257,45 @@ def _job_npd_stage_remind(db: Session) -> dict:
             "critical": sum(1 for d in due if d[3] == "critical"), "pushed": pushed}
 
 
+def _job_review_asset_remind(db: Session) -> dict:
+    """每天 09:00: 评价资产折叠倒计时提醒 (Plan1 v2)。
+
+    多级 30·14·7 折叠提醒 + 待评价超时催办 + 产品低覆盖预警, 一条飞书汇总。
+    补单=刷单资产台账, 只提醒不产生经营数字。09:00 白天不受 PANSE_QUIET_HOURS 影响。
+    """
+    import os as _os
+    from app.services import review_asset_service as _ras
+
+    res = _ras.run_daily_scan(db)
+    db.commit()
+    pushed = False
+    if res["has_content"] and not _os.environ.get("PANSE_DISABLE_NOTIFY"):
+        msg = _ras.format_reminder(res)
+        lvl = res["max_level"] or "info"
+        try:
+            from app.services import feishu_client, settings_service
+            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+            if chat:
+                feishu_client.send_text(db, chat, msg)
+                pushed = True
+        except Exception:  # noqa: BLE001
+            _logger.warning("评价资产提醒飞书推送失败", exc_info=True)
+        if not pushed:
+            try:
+                from app.services import notify_service
+                notify_service.notify(db, msg, level=lvl, title="评价资产日报")
+            except Exception:  # noqa: BLE001
+                pass
+    return {
+        "fold_error": len(res["fold_notify"]["error"]),
+        "fold_warn": len(res["fold_notify"]["warn"]),
+        "fold_info": len(res["fold_notify"]["info"]),
+        "pending": len(res["pending"]),
+        "low_coverage": len(res["low_coverage"]),
+        "pushed": pushed,
+    }
+
+
 def _register_default_jobs() -> None:
     register_job("hourly_alert_expire", "告警自动过期清理",
                  _job_alert_expire, interval_minutes=60)
@@ -1319,6 +1358,9 @@ def _register_default_jobs() -> None:
                  _job_ingest_health_check, cron={"hour": 20, "minute": 0})
     register_job("daily_0915_npd_stage_remind", "新品开发阶段截止提醒 (飞书催设计师)",
                  _job_npd_stage_remind, cron={"hour": 9, "minute": 15})
+    register_job("daily_0900_review_asset_remind",
+                 "评价资产折叠倒计时提醒 (Plan1 v2: 多级30·14·7+待评价催办+覆盖预警)",
+                 _job_review_asset_remind, cron={"hour": 9, "minute": 0})
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",

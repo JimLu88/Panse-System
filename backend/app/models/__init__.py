@@ -30,6 +30,7 @@ from app.models.knowledge import AiKnowledge
 from app.models.settings import SystemSetting
 from app.models.system_event import SystemEvent
 from app.models.chatbi_query import ChatbiQuery  # noqa: F401 - ChatBI 问答审计
+from app.models.review_asset import ReviewAsset  # noqa: F401 - 评价资产台账 (Plan1 v2)
 from app.models.system_health import SystemHealthLog
 from app.models.import_job import ImportJob
 from app.models.import_file import ImportedFile

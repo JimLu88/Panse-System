@@ -12,3 +12,4 @@ export * from './screenshots';
 export * from './taobaoExport';
 export * from './factoryOrders';
 export * from './npd';
+export * from './reviewAssets';
