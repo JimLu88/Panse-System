@@ -10,11 +10,31 @@ from __future__ import annotations
 
 import csv
 import io
+import zipfile
 from datetime import date, datetime
 from typing import Optional
 
 _XLSX_MAGIC = b"PK\x03\x04"          # zip (xlsx/xlsm)
 _XLS_MAGIC = b"\xd0\xcf\x11\xe0"     # OLE2 (老 .xls)
+
+
+def _maybe_unzip_to_csv(content: bytes, filename: Optional[str]) -> tuple[bytes, Optional[str]]:
+    """普通 zip(内含 csv/txt, 如支付宝个人账单下载的 .zip) → 解出里面的 CSV 字节 + 内层文件名;
+    xlsx(本身也是 zip, 但有 [Content_Types].xml / xl/) 或普通文件 → 原样返回。
+    让所有导入口直接吃这种 zip, 用户不用先解压 (用户 2026-07-06: 支付宝流水下载就是 zip)。"""
+    if content[:2] != b"PK":               # 非 zip
+        return content, filename
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as zf:
+            names = [n for n in zf.namelist() if not n.endswith("/")]
+            if any(n == "[Content_Types].xml" or n.startswith("xl/") for n in names):
+                return content, filename    # 是 xlsx → 交给 xlsx 分支
+            member = next((n for n in names if n.lower().endswith((".csv", ".txt"))), None)
+            if member:
+                return zf.read(member), member.rsplit("/", 1)[-1]
+    except zipfile.BadZipFile:
+        pass
+    return content, filename
 
 
 def looks_like_xlsx(content: bytes, filename: Optional[str] = None) -> bool:
@@ -68,6 +88,7 @@ def to_csv_texts(content: bytes, filename: Optional[str] = None) -> list[tuple[s
 
     CSV 文件天然单 sheet, 返回一项。空 sheet 跳过。
     """
+    content, filename = _maybe_unzip_to_csv(content, filename)   # zip(内含csv, 如支付宝下载) 先解出
     if is_legacy_xls(content, filename) and not looks_like_xlsx(content, filename):
         raise ValueError("不支持老的 .xls 格式，请在 Excel 里『另存为 .xlsx』后再上传。")
     if not looks_like_xlsx(content, filename):
@@ -93,6 +114,7 @@ def to_csv_texts(content: bytes, filename: Optional[str] = None) -> list[tuple[s
 
 def to_csv_text(content: bytes, filename: Optional[str] = None) -> str:
     """xlsx/csv 字节 → CSV 文本。给所有按 CSV 文本工作的导入器复用。"""
+    content, filename = _maybe_unzip_to_csv(content, filename)   # zip(内含csv, 如支付宝下载) 先解出
     if is_legacy_xls(content, filename) and not looks_like_xlsx(content, filename):
         raise ValueError("不支持老的 .xls 格式，请在 Excel 里『另存为 .xlsx』后再上传。")
     if looks_like_xlsx(content, filename):
