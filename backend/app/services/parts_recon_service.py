@@ -458,16 +458,24 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
     """该订单按分类的外采配件消耗: {category: {amount, materials:[{...}]}}。排木作/工厂自备(WD/MW/MP);
     qty = qty_per_product × 订单件数。
 
-    - 非定制: 同料同尺寸去重。
-    - 定制单(用户 2026-06-27): BOM 是"模板"(同一种料堆了多个尺寸, 如洞洞板 1155/955/755), 实际一单只用
-      一种 → **同料只取一行**(面积最大者, 成本偏保守); 模板有多个尺寸时标 `size_uncertain` 让清单提示
-      人工确认尺寸。这同时修正了对账预估对定制单的"同料多算"。
+    两步:
+    ① 先按 (料号, 尺寸) 去掉 BOM 里重复列的完全相同行(有些产品 BOM 把同一尺寸重复列了 3-4 遍)。
+    ② 是否再"按族合一行":
+       - 定制单, 或 **BOM 走了产品级模板回退**(该 SKU 没有精确 BOM → 落到含【全部尺寸变体】的产品级
+         模板) → 一单实际只用一种尺寸 → **同一物理件的尺寸变体合成一行**(面积最大者, 偏保守), 标
+         `size_uncertain`+`alt_size_count` 提示人工确认。修电力轨道/床铺板等尺寸变体绑多料号致【预估虚高】。
+       - SKU 精确命中 BOM(该 SKU 的真实用料) → 尊重, **不合并**(可能真用到多件/多尺寸)。
+    只影响【预估(供应商应付)】侧, 不碰实际对账(工厂录入)与产品利润。
     """
     qmul = Decimal(int(o.qty or 1))
     is_custom = _order_is_custom(o)
+    # BOM 来源判定: 该 SKU 有精确 BOM 吗? 没有 → 落产品级模板(含全部尺寸变体) → 一单只用一种 → 需族合并。
+    pcs = _product_code_variants(o.product_code)
+    sku_specific = any((pc, o.sku_code) in bom_by_pcsku for pc in pcs)
+    use_family = is_custom or not sku_specific
     by_cat: dict[str, dict] = {}
-    seen: set = set()
-    custom_pick: dict[str, dict] = {}   # 定制单: mcode -> 选中料(面积最大) + alt(被合并的其它尺寸数)
+    seen: set = set()                   # ① 精确去重 (mcode, size): 先合掉 BOM 重复列的相同行
+    fam_pick: dict[tuple, dict] = {}    # ② 按族选中料(面积最大) + alt(被合并的其它尺寸数)
 
     def _emit(mcode, q, price, size, cat, name, info, alt=0):
         amt = (q * price).quantize(_CENTS)
@@ -492,29 +500,27 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
         size = (remark or "").strip() or None
         q = qty * qmul
         price = info.get("price", Decimal("0"))
-        if is_custom:
-            area = _size_area(size)
-            # 族键 (2026-07-05): 按 (类目, 名字去尺寸) 去重, 而非 material_code ——
-            # 同一物理件的尺寸变体常是【不同料号】(电力轨道 AC-0162/63/64/65、床铺板 AC-0001~04),
-            # 旧按 material_code 去重合不掉 → 一单算多条 → 对账预估虚高。改按族只取一行(面积最大)。
-            fk = (cat, _family_key(name))
-            prev = custom_pick.get(fk)
-            if prev is None:
-                custom_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
-                                   "name": name, "info": info, "area": area, "alt": 0}
-            else:
-                prev["alt"] += 1
-                if area > prev["area"]:
-                    custom_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
-                                       "name": name, "info": info, "area": area, "alt": prev["alt"]}
-            continue
         dk = (mcode, "".join(size.split()) if size else "")
-        if dk in seen:
+        if dk in seen:                  # ① BOM 里重复列的同料同尺寸行 → 只算一次
             continue
         seen.add(dk)
-        _emit(mcode, q, price, size, cat, name, info)
+        if not use_family:
+            _emit(mcode, q, price, size, cat, name, info)
+            continue
+        # ② 按族(类目 + 名字去尺寸)合一行: 同一物理件的尺寸变体(常是不同料号)只留面积最大者
+        area = _size_area(size)
+        fk = (cat, _family_key(name))
+        prev = fam_pick.get(fk)
+        if prev is None:
+            fam_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
+                            "name": name, "info": info, "area": area, "alt": 0}
+        else:
+            prev["alt"] += 1
+            if area > prev["area"]:
+                fam_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
+                                "name": name, "info": info, "area": area, "alt": prev["alt"]}
 
-    for _fk, p in custom_pick.items():
+    for _fk, p in fam_pick.items():
         _emit(p["mcode"], p["q"], p["price"], p["size"], p["cat"], p["name"], p["info"], alt=p["alt"])
     return by_cat
 

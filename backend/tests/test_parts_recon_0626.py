@@ -184,4 +184,34 @@ def test_custom_collapses_family_across_material_codes(db_session):
     assert len(t25_row) == 1                                   # T25 单独, 没被误并入 U80
 
 
+def test_noncustom_template_fallback_collapses_size_variants(db_session):
+    """非定制单但该 SKU 无精确 BOM → 落【产品级模板】(含全部尺寸变体、还重复列多遍)→ 一单只用一种
+    尺寸 → 按族合一行(面积最大)+标 size_uncertain。修万象餐边柜电力轨道一单虚列4行。(2026-07-05)"""
+    db = db_session
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    variants = [("AC-T162", "电力轨道-Xpower-U80-黑色-2.05-2插座", "655", "2.1米版"),
+                ("AC-T163", "电力轨道-Xpower-U80-黑色-1.75-2插座", "577", "1.8米版"),
+                ("AC-T164", "电力轨道-Xpower-U80-黑色-1.55-2插座", "534", "1.6米版"),
+                ("AC-T165", "电力轨道-Xpower-U80-黑色-1.15-2插座", "421", "1.2米版")]
+    for code, name, price, _sz in variants:
+        db.add(Material(code=code, name=name, unit="根", price=Decimal(price), category="电力轨道"))
+    # 产品级模板 BOM: 4 个尺寸变体各重复列 2 遍 = 8 行(脏 BOM), sku_code=None(非精确)
+    for code, name, _p, sz in variants * 2:
+        db.add(BomLine(product_code="PPSROT01", sku_code=None, material_code=code,
+                       material_name=name, qty_per_product=Decimal("1"), remark=sz))
+    o = Order(platform="淘宝", order_no="ROT1", product_code="PPSROT01", sku_code="SKU_NO_BOM",
+              sku="旋转餐边柜1.5米", qty=1, is_custom=False, order_date=date(2026, 6, 1),
+              ship_date=date(2026, 6, 5), status="signed", paid_amount=Decimal("5000"))
+    db.add(o)
+    db.flush()
+    mat_info, by_pcsku, by_pc = prs._load_bom_and_materials(db)
+    cons = prs._order_category_consumption(o, mat_info, by_pcsku, by_pc)
+    trk = cons["电力轨道"]["materials"]
+    assert len(trk) == 1                              # 4变体×2重复 → 合成 1 行(不再 4/8 行)
+    assert trk[0]["material_code"] == "AC-T162"       # 面积最大(2.05/2.1米版)
+    assert trk[0]["size_uncertain"] is True
+    assert trk[0]["alt_size_count"] == 3              # 合并其它 3 个尺寸(重复行已先去重)
+
+
 # (大宗对账已改「分类+BOM 驱动」, 对账/导出测试见 test_parts_monthly_recon_0626.py)
