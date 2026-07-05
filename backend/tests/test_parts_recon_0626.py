@@ -149,4 +149,39 @@ def test_noncustom_keeps_distinct_sizes(db_session):
     assert len([m for m in cons["杂项"]["materials"] if m["material_code"] == "AC-DD"]) == 2
 
 
+def test_custom_collapses_family_across_material_codes(db_session):
+    """定制单: 同一物理件的尺寸变体是【不同料号】(电力轨道 AC-0162/63/64/65)→ 按族(名字去尺寸)
+    只取一行(面积最大); 不同子型号(U80 vs T25)分开不误并。(2026-07-05 修多绑)"""
+    db = db_session
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    u80 = [("AC-T162", "电力轨道-Xpower-U80-黑色-2.05-2插座", "60", "2050*80"),
+           ("AC-T163", "电力轨道-Xpower-U80-黑色-1.75-2插座", "55", "1750*80"),
+           ("AC-T164", "电力轨道-Xpower-U80-黑色-1.45-2插座", "50", "1450*80"),
+           ("AC-T165", "电力轨道-Xpower-U80-黑色-1.15-2插座", "45", "1150*80")]
+    t25 = ("AC-T166", "电力轨道-Xpower-T25-黑色-2.0-2插座", "58", "2000*80")
+    for code, name, price, _sz in u80 + [t25]:
+        db.add(Material(code=code, name=name, unit="根", price=Decimal(price), category="电力轨道"))
+    for code, name, _price, sz in u80:
+        db.add(BomLine(product_code="PPSTRK01", sku_code="ST1", material_code=code,
+                       material_name=name, qty_per_product=Decimal("1"), remark=sz))
+    db.add(BomLine(product_code="PPSTRK01", sku_code="ST1", material_code=t25[0],
+                   material_name=t25[1], qty_per_product=Decimal("1"), remark=t25[3]))
+    o = Order(platform="淘宝", order_no="TRK1", product_code="PTRK01", sku_code="ST1",
+              qty=1, is_custom=True, order_date=date(2026, 6, 1), ship_date=date(2026, 6, 5),
+              status="signed", paid_amount=Decimal("5000"))
+    db.add(o)
+    db.flush()
+    mat_info, bom_by_pcsku, bom_by_pc = prs._load_bom_and_materials(db)
+    cons = prs._order_category_consumption(o, mat_info, bom_by_pcsku, bom_by_pc)
+    trk = cons["电力轨道"]["materials"]
+    assert len(trk) == 2                                       # U80 四码合1 + T25 一条 = 2 (不再 5)
+    u80_row = [m for m in trk if "U80" in m["part_name"]]
+    assert len(u80_row) == 1 and u80_row[0]["size_uncertain"] is True
+    assert u80_row[0]["material_code"] == "AC-T162"            # 取面积最大(2.05)
+    assert u80_row[0]["alt_size_count"] == 3                   # 合并了其它 3 个尺寸
+    t25_row = [m for m in trk if "T25" in m["part_name"]]
+    assert len(t25_row) == 1                                   # T25 单独, 没被误并入 U80
+
+
 # (大宗对账已改「分类+BOM 驱动」, 对账/导出测试见 test_parts_monthly_recon_0626.py)

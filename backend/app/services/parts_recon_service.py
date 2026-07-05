@@ -443,6 +443,17 @@ def _order_is_custom(o: Order) -> bool:
         return False
 
 
+_SIZE_RE = re.compile(r"\d+\.\d+")   # 尺寸(小数, 如 2.05/1.75); 子型号整数(U80/T25)保留
+
+
+def _family_key(name: Optional[str]) -> str:
+    """物料"族"键: 名字去掉尺寸(小数)后剩下的部分。同一物理件的不同尺寸变体(不同料号)归为一族,
+    供定制单 BOM"同料只取一行"去重 —— 修电力轨道(AC-0162/63/64/65)/床铺板等尺寸变体绑成多个料号
+    致对账预估虚高。保留子型号整数(U80/T25/K59)和"2插座", 避免误并不同件
+    (2026-07-05 验证设置类目 20 族均为同件尺寸变体, 松木/榉木、U80/T25 均分开)。"""
+    return _SIZE_RE.sub("", name or "").strip()
+
+
 def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> dict[str, dict]:
     """该订单按分类的外采配件消耗: {category: {amount, materials:[{...}]}}。排木作/工厂自备(WD/MW/MP);
     qty = qty_per_product × 订单件数。
@@ -483,15 +494,19 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
         price = info.get("price", Decimal("0"))
         if is_custom:
             area = _size_area(size)
-            prev = custom_pick.get(mcode)
+            # 族键 (2026-07-05): 按 (类目, 名字去尺寸) 去重, 而非 material_code ——
+            # 同一物理件的尺寸变体常是【不同料号】(电力轨道 AC-0162/63/64/65、床铺板 AC-0001~04),
+            # 旧按 material_code 去重合不掉 → 一单算多条 → 对账预估虚高。改按族只取一行(面积最大)。
+            fk = (cat, _family_key(name))
+            prev = custom_pick.get(fk)
             if prev is None:
-                custom_pick[mcode] = {"q": q, "price": price, "size": size, "cat": cat,
-                                      "name": name, "info": info, "area": area, "alt": 0}
+                custom_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
+                                   "name": name, "info": info, "area": area, "alt": 0}
             else:
                 prev["alt"] += 1
                 if area > prev["area"]:
-                    custom_pick[mcode] = {"q": q, "price": price, "size": size, "cat": cat,
-                                          "name": name, "info": info, "area": area, "alt": prev["alt"]}
+                    custom_pick[fk] = {"mcode": mcode, "q": q, "price": price, "size": size, "cat": cat,
+                                       "name": name, "info": info, "area": area, "alt": prev["alt"]}
             continue
         dk = (mcode, "".join(size.split()) if size else "")
         if dk in seen:
@@ -499,8 +514,8 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
         seen.add(dk)
         _emit(mcode, q, price, size, cat, name, info)
 
-    for mcode, p in custom_pick.items():
-        _emit(mcode, p["q"], p["price"], p["size"], p["cat"], p["name"], p["info"], alt=p["alt"])
+    for _fk, p in custom_pick.items():
+        _emit(p["mcode"], p["q"], p["price"], p["size"], p["cat"], p["name"], p["info"], alt=p["alt"])
     return by_cat
 
 
