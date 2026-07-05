@@ -95,7 +95,9 @@ def _to_int(v: Any) -> Optional[int]:
 def parse_rows(file_bytes: bytes) -> tuple[list[dict], list[str]]:
     """解析文件 → (记录列表, 警告列表). 不写库."""
     warnings: list[str] = []
-    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    # read_only=False: 淘宝商品导出文件的 worksheet dimensions 缓存缺失, read_only 模式会误读成
+    # 1列0行空表 → 找不到表头。非 read_only 会重算真实维度(实测 18列/几百行)。文件不大, 不需省内存。
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=False, data_only=True)
     ws = wb.active
     all_rows = list(ws.iter_rows(values_only=True))
     if not all_rows:
