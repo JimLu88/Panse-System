@@ -18,6 +18,38 @@ def test_import_basic_alipay_csv(db_session):
     assert all(r.account == "企业号" for r in rows)
 
 
+def test_import_personal_alipay_csv(db_session):
+    """个人号交易记录明细(consumeprod 高级查询下载, 2026-07-06): 前导/页脚跳过,
+    金额（元）无符号 + 收/支 合成带符号(支出负/收入正/不计收支正), 自动识别路由。"""
+    csv_text = (
+        "支付宝交易记录明细查询\n"
+        "账号:[15824198812]\n"
+        "起始日期:[2026-06-30 00:00:00]    终止日期:[2026-07-06 01:18:59]\n"
+        "---------------------------------交易记录明细列表---------------------------------\n"
+        "交易号,商家订单号,交易创建时间,付款时间,最近修改时间,交易来源地,类型,交易对方,商品名称,"
+        "金额（元）,收/支,交易状态,服务费（元）,成功退款（元）,备注,资金状态,\n"
+        "2026070500001,P100,2026-07-05 17:01:00,2026-07-05 17:01:00,,,转账,义乌畔色贸易,货款,"
+        "10000.00,收入,交易成功,0.00,0.00,,,\n"
+        "2026070500002,,2026-07-05 16:46:00,2026-07-05 16:46:00,,,支付,万师傅,安装费,"
+        "79.99,支出,交易成功,0.00,0.00,,,\n"
+        "2026070500003,,2026-07-05 12:00:00,,,,转入,余额宝,,"
+        "5000.00,不计收支,交易成功,0.00,0.00,,,\n"
+        "------------------------------------------------------------\n"
+        "已收入:1笔,10000.00元\n"
+        "已支出:1笔,79.99元\n"
+        "导出时间:[2026-07-06 01:18:59]    用户:陆振达\n"
+    )
+    r = alipay_import.import_alipay_csv(db_session, csv_text, account="主力号")
+    assert r.inserted == 3                                   # 3 数据行(前导+页脚都跳过)
+    rows = {x.transaction_no: x for x in db_session.query(AlipayFlow).all()}
+    assert rows["2026070500001"].amount == Decimal("10000.00")   # 收入 → 正
+    assert rows["2026070500002"].amount == Decimal("-79.99")     # 支出 → 负
+    assert rows["2026070500003"].amount == Decimal("5000.00")    # 不计收支 → 正(中性)
+    assert rows["2026070500002"].counterparty == "万师傅"
+    assert rows["2026070500001"].related_order_no == "P100"
+    assert all(x.account == "主力号" for x in rows.values())
+
+
 def test_import_dedup_per_account(db_session):
     csv_text = "交易时间,交易流水号,收支金额\n2026-04-28,T001,100\n"
     alipay_import.import_alipay_csv(db_session, csv_text, account="企业号")

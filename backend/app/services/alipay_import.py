@@ -86,6 +86,13 @@ def date_from_flow_no(no: Any) -> Optional[datetime]:
 
 
 def import_alipay_csv(db: Session, csv_text: str, *, account: str, commit: bool = True) -> AlipayImportReport:
+    # 自动识别格式(同一导入口吃三种): 个人号交易记录明细 / 商家资金账单 / 标准CSV。
+    head = csv_text[:2000]
+    if "支付宝交易记录明细查询" in head or ("交易号" in head and "收/支" in head):
+        return import_alipay_personal_csv(db, csv_text, account=account, commit=commit)
+    if "账务流水号" in head and "账户余额" in head:
+        return import_alipay_bill(db, csv_text, account=account, commit=commit)
+
     report = AlipayImportReport()
     reader = csv.DictReader(StringIO(csv_text))
     field_map: dict[str, str] = {}
@@ -172,6 +179,60 @@ def import_alipay_bill(
             "related_order_no": g("商户订单号"),
             "balance": g("账户余额"),
             "remark": " ".join(x for x in (g("商品名称"), g("备注")) if x)[:500] or None,
+        })
+    return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
+
+
+def import_alipay_personal_csv(
+    db: Session, csv_text: str, *, account: str, commit: bool = True,
+) -> AlipayImportReport:
+    """支付宝【个人号】交易记录明细 CSV (consumeprod 高级查询下载, 2026-07-06 主力号)。
+
+    结构: 前导 4 行(标题「支付宝交易记录明细查询」/账号/起止日期/分隔线) + 列头
+      (交易号,商家订单号,交易创建时间,付款时间,…,类型,交易对方,商品名称,金额（元）,收/支,交易状态,…,备注,资金状态) +
+      数据行 + 页脚(已收入/已支出合计/导出时间)。
+    金额（元）**无符号**, 由『收/支』定正负: 支出→负 / 收入→正 / 不计收支→正(中性)。无余额列。
+    """
+    report = AlipayImportReport()
+    lines = csv_text.splitlines()
+    hdr_idx = next((i for i, ln in enumerate(lines)
+                    if ln.lstrip().startswith("交易号") and "收/支" in ln), None)
+    if hdr_idx is None:
+        report.errors.append("非支付宝个人交易记录格式 (未找到『交易号…收/支』列头)")
+        return report
+    header = [h.strip() for h in lines[hdr_idx].split(",")]
+
+    def col(sub: str) -> Optional[int]:
+        return next((i for i, h in enumerate(header) if sub in h), None)
+
+    ci = {k: col(k) for k in ("交易号", "商家订单号", "交易创建时间", "类型",
+                              "交易对方", "金额", "收/支", "备注", "商品名称")}
+    _SKIP_PREFIXES = ("---", "已收入", "待收入", "已支出", "待支出", "导出时间", "用户:", "合计")
+    rows: list[dict[str, Any]] = []
+    for ln in lines[hdr_idx + 1:]:
+        s = ln.strip()
+        if not s or s.startswith(_SKIP_PREFIXES):
+            continue
+        cells = [c.strip() for c in ln.split(",")]
+
+        def g(k: str) -> Optional[str]:
+            i = ci.get(k)
+            return cells[i] if i is not None and i < len(cells) else None
+
+        no = (g("交易号") or "").strip()
+        if not no or not no[0].isdigit():   # 页脚/分隔行(交易号非数字)一律跳过
+            continue
+        mag = _decimal(g("金额")) or Decimal("0")
+        direction = (g("收/支") or "").strip()
+        amount = -mag if direction == "支出" else mag   # 收入/不计收支 → 正
+        rows.append({
+            "transaction_no": no,
+            "transaction_time": g("交易创建时间"),
+            "transaction_type": g("类型"),
+            "counterparty": g("交易对方"),
+            "amount": amount,
+            "related_order_no": g("商家订单号"),
+            "remark": (" ".join(x for x in (g("商品名称"), g("备注")) if x)[:500]) or None,
         })
     return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
 
