@@ -92,12 +92,20 @@ def _post_json(url: str, body: dict, *, timeout_sec: float = 5.0) -> tuple[bool,
 # ----------------------------- 公开 API --------------------------- #
 
 
+# 企微(微信)推送治理 (用户 2026-07-06: 微信只想收每天10点经营日报, 其余全是噪音)。
+# 默认 briefing_only: notify() 走的 webhook(企微)只放行标了 wechat_allowed=True 的调用(=经营日报/测试);
+# 其余静默(仍走各自飞书/业务群, 不受影响)。设 wechat_push_scope=all 可一键恢复全部企微推送。
+WECHAT_SCOPE_KEY = "wechat_push_scope"
+
+
 def notify(
     db: Session, text: str, *,
-    level: str = "info", title: Optional[str] = None,
+    level: str = "info", title: Optional[str] = None, wechat_allowed: bool = False,
 ) -> tuple[bool, str]:
-    """发送通知. provider=none 或 webhook 未配 时静默返回 (False, '未配置').
+    """发送通知到 notify webhook(当前=企业微信). provider=none 或 webhook 未配 时静默返回.
 
+    wechat_allowed: 是否放行到企微。默认 False —— 除非设置 wechat_push_scope=all, 否则只有
+      标了 wechat_allowed=True 的调用(经营日报/测试)才推企微, 其余静默(治噪音)。
     永远不抛异常 (即使发不出来也不能影响主业务流). 失败时 log.warning.
     """
     # 测试/维护环境总开关: 跑 pytest 时绝不往真实飞书群推 (2026-06-11: C6 并发测试
@@ -111,6 +119,11 @@ def notify(
     webhook = cfg["webhook"]
     if provider == "none" or not webhook:
         return False, "未配置通知 provider 或 webhook"
+
+    # 企微推送治理: 默认只放行经营日报; 其余静默(设 wechat_push_scope=all 恢复)
+    scope = settings_service.get(db, WECHAT_SCOPE_KEY, env_fallback=False) or "briefing_only"
+    if scope != "all" and not wechat_allowed:
+        return False, "企微推送已限为仅经营日报 (wechat_push_scope=briefing_only)"
 
     payload = _build_payload(provider, text, level=level, title=title)
     ok, resp = _post_json(webhook, payload)
@@ -177,7 +190,7 @@ def test_notify(db: Session) -> tuple[bool, str]:
     """admin 后台点 "测试通知" 时调用. 发一条 ping 消息."""
     return notify(
         db, "畔色 ERP 通知测试 — 如果收到这条说明 webhook 配通了。",
-        level="info", title="测试通知",
+        level="info", title="测试通知", wechat_allowed=True,   # 测试按钮需能真发, 放行企微
     )
 
 
@@ -189,11 +202,15 @@ DEFAULT_TEXT_CHANNELS = "feishu,webhook"  # 双推: 飞书应用机器人 + noti
 
 def broadcast_text(
     db: Session, text: str, *, title: Optional[str] = None, level: str = "info",
+    wechat_allowed: bool = False,
 ) -> dict:
     """纯文本通知统一入口, 按 notify_text_channels 推送 (逗号分隔):
       - feishu  → 飞书应用机器人 feishu_client.send_text(chat=feishu_push_chat_id)
       - webhook → notify() 走 notify_provider 配的 webhook (当前=企业微信)
-    默认双推。返回 {channel: ok}。永不抛 (通知失败不阻断业务)。
+
+    wechat_allowed 透传给 notify(): 默认 False, 配合 wechat_push_scope=briefing_only 时
+      企微静默 (只有经营日报等标 True 的才推企微); 飞书那条不受影响。
+    返回 {channel: ok}。永不抛 (通知失败不阻断业务)。
     """
     import os
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
@@ -215,6 +232,6 @@ def broadcast_text(
             _logger.warning("broadcast_text 飞书推送失败", exc_info=True)
             results["feishu"] = False
     if "webhook" in channels:
-        ok, _ = notify(db, text, level=level, title=title)
+        ok, _ = notify(db, text, level=level, title=title, wechat_allowed=wechat_allowed)
         results["webhook"] = ok
     return results

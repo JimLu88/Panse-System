@@ -934,56 +934,51 @@ def _job_daily_10_comprehensive_report(db: Session) -> dict:
     except Exception as e:
         _logger.warning("日报摘要读取失败 (不影响其余日报): %s", e)
 
-    # ── 组装消息 ─────────────────────────────────────────────────
+    # ── 6. 近 7/30 天销售 + TOP3 (用户 2026-07-06: 微信日报只要这几块) ──
+    from app.services import sales_analytics
+    w7 = sales_analytics.window_summary(db, days=7)
+    w30 = sales_analytics.window_summary(db, days=30, top_n=3)
+
+    # ── 组装消息 (用户 2026-07-06 精简: 只留 ①对账差异+未解决异常 ②近7天 ③近30天 ④销售榜TOP3) ──
+    def _yuan(v):
+        return f"¥{v:,.0f}"
+
     lines = [f"📊 畔色 ERP | {today.month}月{today.day}日 经营日报", ""]
 
-    # AI 简报摘要
-    if briefing_summary:
-        lines.append("🤖 今日简报")
-        lines.append(briefing_summary)
-        lines.append("")
-
-    # 对账状态
+    # ① 对账差异 + 未解决异常
     if recon_errors:
         lines.append("🚨 对账差异 (需处理)")
         for label, err, warn in recon_errors:
             w = f", 提示 {warn} 条" if warn else ""
             lines.append(f"  • {label}: 严重 {err} 条{w}")
-        lines.append("")
     elif recon_warnings:
         lines.append("⚠️ 对账提示")
         for label, warn in recon_warnings:
             lines.append(f"  • {label}: 提示 {warn} 条")
-        lines.append("")
     else:
         lines.append("✅ 对账: 全部规则正常")
-        lines.append("")
-
-    # 库存
-    inv_parts = []
-    if prod_low:
-        inv_parts.append(f"成品低库存 {prod_low} 项")
-    if part_neg:
-        inv_parts.append(f"配件负库存 {part_neg} 项")
-    if inv_parts:
-        lines.append(f"📦 库存预警: {', '.join(inv_parts)}")
-    else:
-        lines.append("📦 库存: 正常")
-
-    # 数据新鲜度
-    if stale_items:
-        stale_names = ", ".join(i.source for i in stale_items[:4])
-        if len(stale_items) > 4:
-            stale_names += f" 等 {len(stale_items)} 项"
-        lines.append(f"⏰ 数据待更新: {stale_names}")
-
-    # 未解决异常
     lines.append(f"📋 未解决异常: {open_exc} 条")
     lines.append("")
-    lines.append("详情请登录系统查看 → 首页大盘")
 
-    level = "error" if recon_errors else ("warn" if (recon_warnings or stale_items or inv_parts) else "info")
-    notify_service.notify(db, "\n".join(lines), level=level, title=f"畔色 ERP | {today.month}月{today.day}日 日报")
+    # ②③ 近 7 天 / 近 30 天 销售(按下单日期, 排补单/退款)
+    lines.append(f"📈 近7天: 销售额 {_yuan(w7['revenue'])} · {w7['order_count']} 单")
+    lines.append(f"📈 近30天: 销售额 {_yuan(w30['revenue'])} · {w30['order_count']} 单")
+    lines.append("")
+
+    # ④ 销售排行榜 TOP3 (近30天, 按销售额)
+    if w30["top"]:
+        lines.append("🏆 销售榜 TOP3 (近30天)")
+        medals = ["🥇", "🥈", "🥉"]
+        for i, t in enumerate(w30["top"]):
+            tag = medals[i] if i < len(medals) else f"{i + 1}."
+            lines.append(f"  {tag} {t['name']} {_yuan(t['revenue'])}")
+        lines.append("")
+    lines.append("详情登录系统 → 首页大盘")
+
+    level = "error" if recon_errors else ("warn" if recon_warnings else "info")
+    notify_service.notify(db, "\n".join(lines), level=level,
+                          title=f"畔色 ERP | {today.month}月{today.day}日 日报",
+                          wechat_allowed=True)   # 经营日报=唯一放行到企微的推送(其余静默)
 
     return {
         "recon_errors": len(recon_errors),

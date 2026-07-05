@@ -633,6 +633,52 @@ def _internal_names(db: Session, codes: set[str]) -> tuple[dict[str, str], dict[
     return name_map, canon_map
 
 
+def window_summary(db: Session, *, days: int, top_n: int = 3) -> dict:
+    """近 N 天(按下单日期)正式销售速览: 销售额 / 订单数 / 前 N 名产品(按销售额)。
+
+    口径与销售排行榜一致: settled_sale_clause(已付款成交·非取消/待付款/全退) + 排补单(is_refill)
+    + 排非产品单(差价/邮费/补拍) + 内部短名合并 P↔PPS。销售额=Σ max(实付−退款, 0)。
+    给每天 10 点经营日报用(用户 2026-07-06)。返回 {days, revenue, order_count, top:[{name,revenue}]}。
+    """
+    cutoff = date.today() - timedelta(days=days)
+    orders = db.execute(
+        select(Order).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.order_date >= cutoff,
+            Order.order_date.isnot(None),
+            settled_sale_clause(),
+        )
+    ).scalars().all()
+    name_map, canon_map = _internal_names(db, {o.product_code for o in orders if o.product_code})
+    revenue = Decimal("0")
+    count = 0
+    prod: dict[str, dict] = {}
+    for o in orders:
+        if _is_non_product(o.product_name):
+            continue
+        rev = Decimal(o.paid_amount or 0) - Decimal(o.refund_amount or 0)
+        rev = rev if rev > 0 else Decimal("0")
+        revenue += rev
+        count += 1
+        code = o.product_code
+        canon = canon_map.get(code, code) if code else None
+        iname = name_map.get(code) if code else None
+        key = canon or (iname or o.product_name or code or "未知产品")
+        d = prod.setdefault(key, {"name": iname or o.product_name or code or "未知产品",
+                                  "revenue": Decimal("0")})
+        if iname:
+            d["name"] = iname
+        d["revenue"] += rev
+    top = sorted(prod.values(), key=lambda x: x["revenue"], reverse=True)[:top_n]
+    cents = Decimal("0.01")
+    return {
+        "days": days,
+        "revenue": float(revenue.quantize(cents)),
+        "order_count": count,
+        "top": [{"name": t["name"], "revenue": float(t["revenue"].quantize(cents))} for t in top],
+    }
+
+
 def product_ranking(
     db: Session, *,
     granularity: str = "month",   # month(按月) / year(按年)

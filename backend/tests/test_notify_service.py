@@ -15,6 +15,14 @@ def _allow_notify_in_this_module(monkeypatch):
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def _wechat_scope_all(db_session):
+    """多数用例测 notify【发送机制】本身 → 放开企微门(scope=all);
+    企微门的默认拦截由 test_wechat_gate_* 在体内改回 briefing_only 单独验(2026-07-06)。"""
+    settings_service.set_value(db_session, "wechat_push_scope", "all")
+    db_session.commit()
+
+
 def test_notify_returns_false_when_no_config(db_session):
     """无 provider 配置 → 静默返回 (False, '未配置 ...')."""
     ok, detail = notify_service.notify(db_session, "test")
@@ -111,6 +119,43 @@ def test_notify_swallows_http_error(db_session):
         ok, detail = notify_service.notify(db_session, "test")
     assert ok is False
     assert "404" in detail
+
+
+def _cfg_wechat(db_session):
+    settings_service.set_value(db_session, "notify_provider", "wechat_work")
+    settings_service.set_value(db_session, "notify_webhook", "https://qyapi/x")
+    db_session.commit()
+
+
+def test_wechat_gate_blocks_noise_by_default(db_session):
+    """默认 briefing_only: 未标 wechat_allowed 的调用不推企微(静默, 不发请求)。"""
+    _cfg_wechat(db_session)
+    settings_service.set_value(db_session, "wechat_push_scope", "briefing_only")  # 覆盖 autouse
+    db_session.commit()
+    with patch("app.services.notify_service._post_json", return_value=(True, "ok")) as m:
+        ok, detail = notify_service.notify(db_session, "噪音推送")
+    assert ok is False and "仅经营日报" in detail
+    m.assert_not_called()
+
+
+def test_wechat_gate_allows_briefing(db_session):
+    """标 wechat_allowed=True(经营日报/测试) → 放行到企微。"""
+    _cfg_wechat(db_session)
+    settings_service.set_value(db_session, "wechat_push_scope", "briefing_only")
+    db_session.commit()
+    with patch("app.services.notify_service._post_json", return_value=(True, "ok")) as m:
+        ok, _ = notify_service.notify(db_session, "经营日报", wechat_allowed=True)
+    assert ok is True
+    m.assert_called_once()
+
+
+def test_wechat_gate_scope_all_restores_everything(db_session):
+    """设 wechat_push_scope=all → 全部放行(恢复旧行为)。"""
+    _cfg_wechat(db_session)  # autouse 已设 scope=all
+    with patch("app.services.notify_service._post_json", return_value=(True, "ok")) as m:
+        ok, _ = notify_service.notify(db_session, "随便一条")
+    assert ok is True
+    m.assert_called_once()
 
 
 def test_get_config_masks_webhook(db_session):

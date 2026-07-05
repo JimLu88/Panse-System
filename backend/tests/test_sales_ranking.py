@@ -34,6 +34,39 @@ def test_ranking_internal_name_pps_merge_and_refund(db_session):
     assert abs(row["revenue"] - 5000) < 0.01
 
 
+def test_window_summary_recent_sales_and_top(db_session):
+    """近N天销售速览(经营日报用): 窗口内正式成交计销售额+订单数, 窗口外/补单排除, top按销售额。"""
+    from datetime import timedelta
+    today = date.today()
+    db_session.add(Product(code="PPS30000000001", name="爆款餐桌"))
+    db_session.add(Product(code="PPS30000000002", name="次款椅子"))
+    db_session.add(Order(platform="淘宝", order_no="W1", product_code="PPS30000000001",
+                         product_name="爆款餐桌", qty=1, order_date=today - timedelta(days=1),
+                         status="paid", paid_amount=Decimal("3000")))
+    db_session.add(Order(platform="淘宝", order_no="W2", product_code="PPS30000000001",
+                         product_name="爆款餐桌", qty=1, order_date=today - timedelta(days=3),
+                         status="paid", paid_amount=Decimal("2000")))
+    db_session.add(Order(platform="淘宝", order_no="W3", product_code="PPS30000000002",
+                         product_name="次款椅子", qty=1, order_date=today - timedelta(days=5),
+                         status="paid", paid_amount=Decimal("1000")))
+    db_session.add(Order(platform="淘宝", order_no="W4", product_code="PPS30000000001",  # 20天前
+                         product_name="爆款餐桌", qty=1, order_date=today - timedelta(days=20),
+                         status="paid", paid_amount=Decimal("4000")))
+    db_session.add(Order(platform="淘宝", order_no="W5", product_code="PPS30000000001",  # 补单排除
+                         product_name="爆款餐桌", qty=1, order_date=today - timedelta(days=2),
+                         status="paid", paid_amount=Decimal("9999"), is_refill=True))
+    db_session.flush()
+
+    s7 = sa.window_summary(db_session, days=7)
+    assert s7["order_count"] == 3                       # W1,W2,W3 (补单W5排除, W4窗口外)
+    assert abs(s7["revenue"] - 6000) < 0.01             # 3000+2000+1000
+    assert s7["top"][0]["name"] == "爆款餐桌" and abs(s7["top"][0]["revenue"] - 5000) < 0.01
+
+    s30 = sa.window_summary(db_session, days=30, top_n=3)
+    assert s30["order_count"] == 4                       # +W4
+    assert abs(s30["revenue"] - 10000) < 0.01            # 6000 + 4000
+
+
 def test_ranking_falls_back_to_taobao_when_no_internal(db_session):
     """产品档案查不到 → 回退淘宝名(不致崩, 仍按 product_code 聚合去重)。"""
     db_session.add(Order(platform="淘宝", order_no="O3", product_code="P99999999999",
