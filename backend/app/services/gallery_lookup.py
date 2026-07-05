@@ -50,21 +50,25 @@ def _rel(p: Path) -> str:
 
 
 def _main_image_in(base: Path) -> Optional[str]:
-    """产品文件夹内找主图: 优先 主图/1-1 第一张, 其次 主图 下任意第一张。"""
+    """产品文件夹内找主图: 优先 主图/1-1→3-4→主图 第一张; 没有「主图」子目录(或其为空)
+    则兜底取文件夹根第一张 —— 相机直导的扁平文件夹(DSCF*.JPG 平铺)也能关联上主图。"""
     zhu = base / "主图"
-    if not zhu.is_dir():
-        return None
-    for sub in (zhu / "1-1", zhu / "3-4", zhu):
-        if not sub.is_dir():
-            continue
-        imgs = sorted(f for f in sub.iterdir()
+    if zhu.is_dir():
+        for sub in (zhu / "1-1", zhu / "3-4", zhu):
+            if not sub.is_dir():
+                continue
+            imgs = sorted(f for f in sub.iterdir()
+                          if f.is_file() and f.suffix.lower() in _IMAGE_EXT)
+            if imgs:
+                return _rel(imgs[0])
+        imgs = sorted(f for f in zhu.rglob("*")
                       if f.is_file() and f.suffix.lower() in _IMAGE_EXT)
         if imgs:
             return _rel(imgs[0])
-    # 兜底: 主图下递归第一张
-    imgs = sorted(f for f in zhu.rglob("*")
-                  if f.is_file() and f.suffix.lower() in _IMAGE_EXT)
-    return _rel(imgs[0]) if imgs else None
+    # 兜底: 无「主图」子目录 → 取文件夹根第一张图 (新拍产品扁平文件夹)
+    root_imgs = sorted(f for f in base.iterdir()
+                       if f.is_file() and f.suffix.lower() in _IMAGE_EXT)
+    return _rel(root_imgs[0]) if root_imgs else None
 
 
 def main_image_rel(product_code: str) -> Optional[str]:

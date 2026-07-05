@@ -242,6 +242,92 @@ async def upload_image(
             "path": rel, "filename": out.name, "size": size}
 
 
+@router.post("/import-folder")
+async def import_folder_bulk(
+    files: list[UploadFile] = File(...),
+    folder: Optional[str] = Form(None, description="目标文件夹名(优先); 空则据 product_code 定位/新建"),
+    product_code: Optional[str] = Form(None, description="产品编码: 定位既有「编码 产品名」文件夹, 无则按产品总表名新建"),
+    group: Optional[str] = Form(None, description="分组子目录; 空或(根目录)=放文件夹根(与相机直导扁平结构一致)"),
+    db: Session = Depends(get_db),
+):
+    """批量导入整个产品文件夹的图 (用户 2026-07-05: 网页选整个文件夹一次传, 自动关联产品)。
+
+    - 定位既有「编码 产品名」文件夹(品牌前缀宽匹配), 没有则按产品总表名新建;
+    - **同名跳过**(不覆盖、不建 _1 副本): 补缺不降质 —— 已在库的全尺寸原图不会被压缩副本顶掉;
+    - 每张新图预热 缩略+预览; 返回 added/skipped(已存在)/invalid 统计。需图库卷可写。
+    """
+    root = _root()
+    if not root.exists():
+        raise HTTPException(503, "图库目录未挂载")
+
+    # 1) 定位/新建目标文件夹
+    target_name = (folder or "").strip()
+    if not target_name:
+        pc = (product_code or "").strip()
+        if not pc:
+            raise HTTPException(400, "需提供 folder 或 product_code")
+        from app.services import gallery_lookup
+        existing = gallery_lookup.product_folder(pc)   # 宽匹配既有「编码 产品名」
+        if existing is not None:
+            target_name = existing.name
+        else:
+            prod = db.execute(select(Product).where(Product.code == pc)).scalar_one_or_none()
+            pname = (prod.name if prod and prod.name else "").strip()
+            target_name = f"{pc} {pname}".strip()       # 新建「编码 产品名」
+    base = _safe_resolve(target_name)
+    base.mkdir(parents=True, exist_ok=True)
+
+    grp = (group or "").strip()
+    if grp and grp != _ROOT_GROUP:
+        target_dir = _safe_resolve(str(Path(target_name) / grp))
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        target_dir = base
+
+    added = skipped = invalid = 0
+    saved: list[Path] = []
+    for f in files:
+        fname = _safe_filename(f.filename or "")
+        if Path(fname).suffix.lower() not in _IMAGE_EXT:
+            invalid += 1
+            continue
+        out = target_dir / fname
+        if out.exists():                # 同名跳过: 不覆盖原图、不建压缩副本
+            skipped += 1
+            continue
+        size = 0
+        ok = True
+        try:
+            with out.open("wb") as w:
+                while True:
+                    chunk = await f.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > _MAX_UPLOAD_BYTES:
+                        ok = False
+                        break
+                    w.write(chunk)
+        except OSError:
+            ok = False
+        if not ok:
+            out.unlink(missing_ok=True)
+            invalid += 1
+            continue
+        added += 1
+        saved.append(out)
+
+    # 预热: 新图立即生成 缩略+预览 两尺寸, 浏览/点开秒开 (失败不影响导入)
+    for out in saved:
+        for _e in (_THUMB_EDGE, _PREVIEW_EDGE):
+            try:
+                _compressed(out, _e)
+            except Exception:  # noqa: BLE001
+                pass
+    return {"ok": True, "folder": target_name, "group": grp or _ROOT_GROUP,
+            "added": added, "skipped": skipped, "invalid": invalid, "total": len(files)}
+
+
 @router.post("/refresh-images")
 def refresh_images(db: Session = Depends(get_db)):
     """刷新产品配图 (用户需求 2026-06-12): 把图库里的图刷进产品/定价表的图片列。

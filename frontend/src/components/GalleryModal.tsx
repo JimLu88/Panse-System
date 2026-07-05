@@ -9,7 +9,7 @@ import { useMemo, useState } from 'react';
 import {
   Button, Empty, Image, message, Modal, Select, Space, Spin, Tag, Typography, Upload,
 } from 'antd';
-import { ExpandOutlined, UploadOutlined } from '@ant-design/icons';
+import { ExpandOutlined, FolderOpenOutlined, UploadOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/base';
 
@@ -151,6 +151,46 @@ export default function GalleryModal({ productCode, onClose }: {
     }
   };
 
+  // 上传整个文件夹: 一次选中相机直导的产品文件夹(几百张), 分批传后端, 同名【跳过】不覆盖不降质。
+  const doFolderUpload = async (all: File[]) => {
+    const imgs = all.filter((f) => /\.(jpe?g|png|webp|gif|bmp)$/i.test(f.name));
+    if (!imgs.length) { message.warning('该文件夹里没有图片文件'); return; }
+    const CHUNK = 20;   // 分批传, 防一次几百张大图超请求体上限
+    const key = 'folder-import';
+    let added = 0; let skipped = 0; let invalid = 0;
+    message.open({ key, type: 'loading', content: `导入中 0/${imgs.length}…`, duration: 0 });
+    try {
+      for (let i = 0; i < imgs.length; i += CHUNK) {
+        const fd = new FormData();
+        // 有匹配文件夹就精确投它; 否则给产品编码让后端定位/新建「编码 产品名」
+        if (activeFolder) fd.append('folder', activeFolder);
+        if (productCode) fd.append('product_code', productCode);
+        fd.append('group', ROOT_GROUP);   // 放文件夹根, 与库内相机直导扁平结构一致
+        imgs.slice(i, i + CHUNK).forEach((f) => fd.append('files', f));
+        const r = await api.post<{ added: number; skipped: number; invalid: number }>(
+          '/api/gallery/import-folder', fd,
+          { headers: { 'Content-Type': undefined as unknown as string }, timeout: 300000 },
+        );
+        added += r.data.added; skipped += r.data.skipped; invalid += r.data.invalid;
+        message.open({
+          key, type: 'loading', duration: 0,
+          content: `导入中 ${Math.min(i + CHUNK, imgs.length)}/${imgs.length}…`,
+        });
+      }
+      message.open({
+        key, type: 'success', duration: 5,
+        content: `导入完成: 新增 ${added}, 跳过(已存在) ${skipped}${invalid ? `, 无效 ${invalid}` : ''}`,
+      });
+      queryClient.invalidateQueries({ queryKey: ['gallery-folders', productCode] });
+      queryClient.invalidateQueries({ queryKey: ['gallery-tree', activeFolder] });
+    } catch (e) {
+      const msg = (e as { response?: { data?: { detail?: string } }; message?: string })
+        ?.response?.data?.detail
+        || (e as { message?: string })?.message || '导入失败';
+      message.open({ key, type: 'error', content: msg, duration: 5 });
+    }
+  };
+
   const uploadBar = (
     <Space wrap>
       <Typography.Text type="secondary">上传到:</Typography.Text>
@@ -168,6 +208,17 @@ export default function GalleryModal({ productCode, onClose }: {
         beforeUpload={(file) => { void doUpload(file as File); return false; }}
       >
         <Button size="small" type="primary" icon={<UploadOutlined />}>上传新图</Button>
+      </Upload>
+      <Upload
+        directory
+        showUploadList={false}
+        beforeUpload={(file, fileList) => {
+          // directory 模式 beforeUpload 每文件触发一次; 只在首个文件时整批上传
+          if (file === fileList[0]) void doFolderUpload(fileList as unknown as File[]);
+          return false;
+        }}
+      >
+        <Button size="small" icon={<FolderOpenOutlined />}>上传整个文件夹</Button>
       </Upload>
     </Space>
   );
