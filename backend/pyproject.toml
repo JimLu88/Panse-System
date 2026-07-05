@@ -21,6 +21,7 @@ dependencies = [
     "lark-oapi>=1.2",
     "pillow>=10.0",
     "msoffcrypto-tool>=5.1",
+    "sqlglot>=25.0",
 ]
 
 [project.optional-dependencies]

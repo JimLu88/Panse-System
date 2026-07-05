@@ -35,6 +35,9 @@ _SECRET_KEYS = {
     # 快递查询凭证 (快递100 / 快递鸟) — 加密落库, 不再明文
     "kuaidi100_key",
     "kdniao_api_key",
+    # ChatBI 问数: 云端 LLM key + 只读角色 DSN (含密码) — 加密落库
+    "chatbi_cloud_api_key",
+    "chatbi_ro_dsn",
 }
 
 

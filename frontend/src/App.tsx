@@ -12,6 +12,9 @@ import VersionTag from './components/VersionTag';
 import { useAuth } from './auth/AuthProvider';
 import { useThemeMode } from './theme/ThemeProvider';
 
+// ChatBI 问数抽屉 (Plan4 v2, 仅 admin)
+const ChatBiDrawer = lazy(() => import('./components/chatbi/ChatBiDrawer'));
+
 // 全部页面 lazy load
 const MaterialsPage = lazy(() => import('./pages/MaterialsPage'));
 const WebAgentPage = lazy(() => import('./pages/WebAgentPage'));
@@ -126,6 +129,7 @@ export default function App() {
   const screens = Grid.useBreakpoint();
   const isMobile = screens.md === false;   // <768px: 收起顶栏巨菜单, 改抽屉导航 (=== false 防桌面首屏闪烁)
   const [navOpen, setNavOpen] = useState(false);
+  const [chatbiOpen, setChatbiOpen] = useState(false);
 
   if (loading) {
     return (
@@ -343,6 +347,17 @@ export default function App() {
           </Button>
         </Space>
         )}
+        {user.role === 'admin' && (
+        <Button
+          size="small"
+          ghost
+          onClick={() => setChatbiOpen(true)}
+          style={{ marginRight: 8, flexShrink: 0, borderColor: 'rgba(255,255,255,0.45)', color: 'rgba(255,255,255,0.85)' }}
+          title="自然语言问数 (ChatBI)：本月净利润 / 产品毛利率排行 / 退款率趋势…"
+        >
+          问数
+        </Button>
+        )}
         <Button
           icon={<SearchOutlined />}
           size="small"
@@ -383,6 +398,11 @@ export default function App() {
           </>
         )}
       </Header>
+      {user.role === 'admin' && (
+        <Suspense fallback={null}>
+          <ChatBiDrawer open={chatbiOpen} onClose={() => setChatbiOpen(false)} />
+        </Suspense>
+      )}
       {isMobile && (
         <Drawer
           title={<span style={{ fontWeight: 700 }}>畔色孚格 ERP</span>}
