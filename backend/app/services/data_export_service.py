@@ -978,12 +978,14 @@ def build_signup_form_xlsx(db: Session):
     # 行1: 口径说明
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     tip = ws.cell(1, 1,
-                  "淘宝加法口径: 到手 = 日常价 − 官方立减(日常10% / 88VIP大促12% / 618双11 15%) − 单品立减。"
-                  "『折』或『立减金额』二选一填淘宝『单品立减/单品补贴』(立减金额更精确, 到分)。"
-                  "报名价填淘宝超级立减/官方大促报名表。空格 = 该档官方立减已够, 不用叠单品立减。")
+                  "淘宝加法口径: 到手 = 活动价 − 官方立减 − 单品立减 (官方立减 日常10%/88VIP大促12%/618双11 15%, 平台自动扣)。"
+                  "★两种填法【二选一, 千万别混】: "
+                  "【① 常规·推荐】活动价填『日常价』, 再填『单品立减(折 或 立减金额)』→ 到手=各档「到手」列。 "
+                  "【② 报名价】活动价直接填『报名价』(这数已把官方立减算进去了), 单品立减就填0/不叠, 主要给618换SKU用。 "
+                  "⚠️绝不能『活动价填报名价』又『叠单品立减』—— 那是打两次折, 价格会砸穿(到手远低于目标)!")
     tip.font = Font(bold=True, color="B45309")
-    tip.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    ws.row_dimensions[1].height = 32
+    tip.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
+    ws.row_dimensions[1].height = 62
 
     # 行2: 表头
     for ci, h in enumerate(headers, start=1):
