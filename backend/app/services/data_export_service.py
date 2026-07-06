@@ -99,8 +99,8 @@ _VALUE_CN: dict[str, dict[str, str]] = {
 
 # 以小数存储的「比率」列 → 百分比格式 (gross_margin_rate=0.15 → 15.00%)
 _PCT_COLS = {
-    "gross_margin_rate", "platform_fee_rate", "shop_promo_rate", "mid_shop_rate",
-    "big_shop_rate", "mid_platform_discount", "big_platform_discount", "xhs_promo_discount",
+    "gross_margin_rate", "platform_fee_rate",
+    "mid_platform_discount", "big_platform_discount", "xhs_promo_discount",
 }
 
 # 类目分色调色板 (柔和, 不刺眼)
@@ -504,24 +504,20 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
             continue
         put("taobao_activity_price", r, f"={daily}{r}")
         put("xhs_list_price", r, f"={daily}{r}")
-        # 小促: 店铺实收 = 小促价; 买家到手 = 小促价; 系数 = 小促价 ÷ 日常
+        # 小促: 店内到手 = 小促价 (单品立减「折/降价金额」改用派生列 _PRICING_DISCOUNT_FIELDS, 不再输出乘法系数)
         if has(C["small_promo"], r):
-            sp = f'{C["small_promo"]}{r}'
-            put("shop_internal_final", r, f'={sp}')
-            put("shop_promo_rate", r, f'=IFERROR({sp}/{daily}{r},"")')
-        # 中促: 店铺实收 = 中促价; 买家到手 = 中促价÷(1−佣金); 系数 = 买家÷(日常×(1−立减))
+            put("shop_internal_final", r, f'={C["small_promo"]}{r}')
+        # 中促: 买家到手 = 中促价÷(1−佣金); 店铺到手 = 中促价; VIP = 买家 − 消费券
         if has(C["mid_promo"], r):
             mp, mbp = f'{C["mid_promo"]}{r}', f'{C["mid_buyer_price"]}{r}'
             put("mid_buyer_price", r, f'=IFERROR({mp}/(1-{C["mid_vip_commission"]}{r}),"")')
             put("mid_shop_receipt", r, f'={mp}')
-            put("mid_shop_rate", r, f'=IFERROR({mbp}/({daily}{r}*(1-{C["mid_platform_discount"]}{r})),"")')
             put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
         # 大促: 同理
         if has(C["big_promo"], r):
             bp, bbp = f'{C["big_promo"]}{r}', f'{C["big_buyer_price"]}{r}'
             put("big_buyer_price", r, f'=IFERROR({bp}/(1-{C["big_vip_commission"]}{r}),"")')
             put("big_shop_receipt", r, f'={bp}')
-            put("big_shop_rate", r, f'=IFERROR({bbp}/({daily}{r}*(1-{C["big_platform_discount"]}{r})),"")')
             put("big_vip_final", r, f'={bbp}-({_coupon_if(bbp, big_tiers)})')
         if has(C["xhs_activity_price"], r):
             put("xhs_promo_price", r, f'={C["xhs_activity_price"]}{r}*(1-{C["xhs_promo_discount"]}{r})')
@@ -531,10 +527,10 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
 # PricingSkuPromo 追加列 (顺序即列序): 淘宝/店内 → 无国补中促 → 无国补大促 → 小红书
 _PRICING_PROMO_FIELDS = [
     "taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price",
-    "shop_promo_rate", "shop_internal_promo", "shop_internal_final",
-    "mid_platform_discount", "mid_shop_rate", "mid_buyer_price",
+    "shop_internal_promo", "shop_internal_final",
+    "mid_platform_discount", "mid_buyer_price",
     "mid_vip_commission", "mid_shop_receipt", "mid_vip_final",
-    "big_platform_discount", "big_shop_rate", "big_buyer_price",
+    "big_platform_discount", "big_buyer_price",
     "big_vip_commission", "big_shop_receipt", "big_vip_final",
     "xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price",
     "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price",
@@ -564,6 +560,10 @@ _PRICING_CN: dict[str, str] = {
     "big_vip_commission": "大促88VIP佣金", "big_shop_receipt": "大促店铺到手", "big_vip_final": "大促VIP到手价",
     # 报名价 (派生, 填淘宝超级立减/官方大促报名表)
     "report_price": "88VIP大促报名价", "report_price_618": "超大促报名价(618/双11)",
+    # 单品立减 (派生, 加法口径: 淘宝该填的 折 + 降价金额, 每档不同)
+    "mid_disc_zhe": "中促单品立减(折)", "mid_disc_amt": "中促降价金额(元)",
+    "big_disc_zhe": "大促单品立减(折)", "big_disc_amt": "大促降价金额(元)",
+    "big618_disc_zhe": "超大促单品立减(折)", "big618_disc_amt": "超大促降价金额(元)",
     # 小红书
     "xhs_item_id": "小红书商品ID", "xhs_sku_name": "小红书SKU名", "xhs_sku_id": "小红书SKU ID",
     "xhs_list_price": "小红书标价", "xhs_activity_price": "小红书活动价",
@@ -585,8 +585,13 @@ _PRICING_COST_NUM_FIELDS = [
     "leg", "soft_pack", "bed_board", "other_cost",
 ]
 _PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
-# 报名价 (派生, 仅图册导出加这两列; 由 report_prices 计算, 填淘宝超级立减/官方大促报名表)
+# 报名价 (派生, 由 report_prices 计算, 填淘宝超级立减/官方大促报名表)
 _PRICING_REPORT_FIELDS = ["report_price", "report_price_618"]
+# 单品立减 (派生, 加法口径 single_item_discounts: 折 + 降价金额, 中促/大促/超大促; 替代旧乘法系数)
+#   *_disc_zhe = 折(如 7.92, = 加法折×10); *_disc_amt = 降价金额(元, 淘宝单品立减填这个更准)
+_PRICING_DISCOUNT_FIELDS = ["mid_disc_zhe", "mid_disc_amt",
+                            "big_disc_zhe", "big_disc_amt",
+                            "big618_disc_zhe", "big618_disc_amt"]
 # 分类 → (表头底色, 字段列表); 表头按分类上色, 排版一眼分区
 _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("标识", "1F4E79", ["id", "product_code", "product_name", "taobao_title", "sku", "sku_code", "size_category", "size_info"]),
@@ -595,10 +600,11 @@ _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("成本", "6A1B9A", ["accounting_cost", "platform_fee_rate", "tax", "physical_cost", "logistics_cost", "install_cost", "factory_cost", "wood_cost", "packaging_cost", "external_parts_cost"]),
     ("加成系数", "B8860B", ["factory_cost_override", "base_list", "base_small", "base_mid", "base_big"]),
     ("备注/时间", "607D8B", ["image_url", "remark", "created_at", "updated_at"]),
-    ("淘宝/店内", "E65100", ["taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price", "shop_promo_rate", "shop_internal_promo", "shop_internal_final"]),
-    ("淘宝中促", "EF6C00", ["mid_platform_discount", "mid_shop_rate", "mid_buyer_price", "mid_vip_commission", "mid_shop_receipt", "mid_vip_final"]),
-    ("淘宝大促", "F57F17", ["big_platform_discount", "big_shop_rate", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
+    ("淘宝/店内", "E65100", ["taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price", "shop_internal_promo", "shop_internal_final"]),
+    ("淘宝中促", "EF6C00", ["mid_platform_discount", "mid_buyer_price", "mid_vip_commission", "mid_shop_receipt", "mid_vip_final"]),
+    ("淘宝大促", "F57F17", ["big_platform_discount", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
     ("报名价", "1565C0", _PRICING_REPORT_FIELDS),
+    ("单品立减(淘宝填)", "0D9488", _PRICING_DISCOUNT_FIELDS),
     ("小红书", "AD1457", ["xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price", "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price"]),
     ("配件成本明细", "5D4037", _PRICING_COST_FIELDS),   # 工厂成本拆到每个配件 (图册导出)
 ]
@@ -615,8 +621,10 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
     label = ENTITY_MODELS.get("pricing_sku", {}).get("label", "定价总表 (全列)")
     ws = wb.create_sheet(_safe_sheet_name(label, used))
 
+    from app.services import pricing_calc_service
+    promo_params = pricing_calc_service.get_promo_params(db)
     base_cols = [c.key for c in PricingSku.__table__.columns]   # 模型顺序 → 与 VLOOKUP/公式列位一致
-    all_fields = base_cols + _PRICING_PROMO_FIELDS
+    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS + _PRICING_DISCOUNT_FIELDS
     headers = [_PRICING_CN.get(f) or _cn_header("pricing_sku", f) for f in all_fields] + ["异常批注"]
     ws.append(headers)
 
@@ -634,6 +642,10 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
             fmt = _num_fmt(f, _col_type(col))
             if fmt:
                 col_fmts[i] = fmt
+        elif f in _PRICING_REPORT_FIELDS:                    # 报名价(派生)→金额
+            col_fmts[i] = "#,##0.00"
+        elif f in _PRICING_DISCOUNT_FIELDS:                  # 单品立减(派生): 折 / 降价金额
+            col_fmts[i] = "0.00" if f.endswith("_zhe") else "#,##0.00"
 
     notes = _exception_notes(db, "pricing_sku")
     exc_col_idx = len(all_fields) + 1
@@ -642,6 +654,15 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
         p = promo_by_sku.get(s.sku_code)
         row = [_translate(f, _cell(getattr(s, f, None))) for f in base_cols]
         row += [_cell(getattr(p, f, None)) if p is not None else None for f in _PRICING_PROMO_FIELDS]
+        rp = pricing_calc_service.report_prices(p, promo_params) if p is not None else {}
+        sid = (pricing_calc_service.single_item_discounts(p, s.daily_price, promo_params)
+               if p is not None else {})
+        row += [float(rp.get(f)) if rp.get(f) is not None else None for f in _PRICING_REPORT_FIELDS]
+        _dv = {"mid_disc_zhe": sid.get("mid_discount"), "mid_disc_amt": sid.get("mid_deduct"),
+               "big_disc_zhe": sid.get("big_discount"), "big_disc_amt": sid.get("big_deduct"),
+               "big618_disc_zhe": sid.get("big618_discount"), "big618_disc_amt": sid.get("big618_deduct")}
+        row += [(round(float(_dv[f]) * 10, 2) if f.endswith("_zhe") else float(_dv[f]))
+                if _dv[f] is not None else None for f in _PRICING_DISCOUNT_FIELDS]
         matched: list[str] = []
         for k in {str(getattr(s, "id", "") or ""), str(s.sku_code or "")}:
             if k and k in notes:
@@ -696,7 +717,8 @@ def build_catalog_xlsx(db: Session):
     from app.services.pricing_catalog_service import _is_real_product, product_image_map
 
     base_cols = [c.key for c in PricingSku.__table__.columns]
-    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS + _PRICING_COST_FIELDS
+    all_fields = (base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS
+                  + _PRICING_DISCOUNT_FIELDS + _PRICING_COST_FIELDS)
     IMG_COL = 1
     FIRST_DATA_COL = 2
     field_pos = {f: FIRST_DATA_COL + i for i, f in enumerate(all_fields)}
@@ -752,6 +774,9 @@ def build_catalog_xlsx(db: Session):
     for f in _PRICING_REPORT_FIELDS:                       # 报名价(派生, 非模型列)→ 金额格式
         if f in field_pos:
             col_fmt[field_pos[f]] = "#,##0.00"
+    for f in _PRICING_DISCOUNT_FIELDS:                     # 单品立减(派生): 折 2位 / 降价金额 金额
+        if f in field_pos:
+            col_fmt[field_pos[f]] = "0.00" if f.endswith("_zhe") else "#,##0.00"
 
     thin = Side(style="thin", color="E2E8F0")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -809,12 +834,20 @@ def build_catalog_xlsx(db: Session):
             p = promo_by_sku.get(s.sku_code)
             costs = costs_by_sku.get(s.sku_code)
             rp = pricing_calc_service.report_prices(p, promo_params) if p is not None else {}
+            sid = (pricing_calc_service.single_item_discounts(p, s.daily_price, promo_params)
+                   if p is not None else {})
+            disc_vals = {"mid_disc_zhe": sid.get("mid_discount"), "mid_disc_amt": sid.get("mid_deduct"),
+                         "big_disc_zhe": sid.get("big_discount"), "big_disc_amt": sid.get("big_deduct"),
+                         "big618_disc_zhe": sid.get("big618_discount"), "big618_disc_amt": sid.get("big618_deduct")}
             override_by_row[r] = bool(getattr(s, "factory_cost_override", False))
             for f in all_fields:
                 ci = field_pos[f]
                 if f in _PRICING_REPORT_FIELDS:            # 报名价(派生) = 大促到手 ÷ 0.88 / ÷ 0.85
                     rv = rp.get(f)
                     v = float(rv) if rv is not None else None
+                elif f in _PRICING_DISCOUNT_FIELDS:        # 单品立减(派生): 折(×10) / 降价金额(元)
+                    dv = disc_vals.get(f)
+                    v = (round(float(dv) * 10, 2) if f.endswith("_zhe") else float(dv)) if dv is not None else None
                 elif f in model_cols:
                     v = _translate(f, _cell(getattr(s, f, None)))
                 elif f in promo_cols:

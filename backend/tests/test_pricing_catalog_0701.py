@@ -140,10 +140,11 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     # 配件 → 外配件 → 工厂 活公式
     assert f("外采配件成本合计").startswith("=SUM")
     assert f("总出厂成本").startswith("=")
-    # 锚 = 售价档位(小/中/大促价=店铺实收); 系数/买家到手/VIP 全反推为活公式 (用户 Excel 方式)
-    assert f("单品立减系数").startswith("=")                        # 小促 = 小促价/日常
-    assert f("中促店铺系数").startswith("=") and "/" in f("中促店铺系数")
-    assert f("大促店铺系数").startswith("=") and "/" in f("大促店铺系数")
+    # 单品立减改加法口径(折 + 降价金额, 中促/大促/超大促), 不再输出会误导的乘法系数
+    assert "大促店铺系数" not in hdr and "中促店铺系数" not in hdr and "单品立减系数" not in hdr
+    for h in ("中促单品立减(折)", "中促降价金额(元)", "大促单品立减(折)", "大促降价金额(元)",
+              "超大促单品立减(折)", "超大促降价金额(元)"):
+        assert h in hdr, f"图册缺列: {h}"
     assert f("中促买家价").startswith("=")                          # 买家到手 = 中促价/(1−佣金), 派生
     assert f("中促店铺到手").startswith("=")                        # 店铺到手 = 中促价(实收)
     assert "IF" in f("中促VIP到手价")                               # 88VIP 消费券阶梯 (由买家到手)
@@ -223,3 +224,38 @@ def test_single_item_discount_upload_xlsx(db_session):
     bio6, _ = build_single_item_discount_upload_xlsx(db_session, "big618")
     ws6 = openpyxl.load_workbook(io.BytesIO(bio6.getvalue())).active
     assert float(ws6.cell(2, 3).value) < float(ws.cell(2, 3).value)
+
+
+def test_catalog_and_total_sheet_have_discount_amounts(db_session, monkeypatch):
+    """图册 + 全量导出「定价总表」: 单品立减改加法(折 + 降价金额, 大促/超大促), 无旧乘法系数。
+    附图: 日常19575, 大促价12890, 佣金2% → 大促降价金额≈4073(7.92折), 超大促≈3486(8.22折)。"""
+    import io
+    import openpyxl
+    from decimal import Decimal as D
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service as pc
+    from app.services.data_export_service import build_catalog_xlsx, build_full_export_workbook
+    monkeypatch.setattr(pcs, "product_image_map", lambda codes, url_by_code, **k: {})
+    sku = PricingSku(product_code="P1", sku_code="P1-A", sku="1.2米",
+                     list_price=D("26100"), daily_price=D("19575"), big_promo=D("12890"))
+    promo = PricingSkuPromo(sku_code="P1-A")
+    db_session.add_all([Product(code="P1", name="曜黑餐边柜"), sku, promo])
+    db_session.commit()
+    pc.recompute_promo(promo, sku, {"big_vip_commission": D("0.02"), "mid_vip_commission": D("0.02")})
+    db_session.commit()
+
+    # 图册
+    ws = openpyxl.load_workbook(io.BytesIO(build_catalog_xlsx(db_session).getvalue()))["定价图册"]
+    hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
+    assert "大促店铺系数" not in hdr and "中促店铺系数" not in hdr        # 旧乘法系数已去
+    assert abs(float(ws.cell(3, hdr["大促降价金额(元)"]).value) - 4072.94) < 1.5
+    assert abs(float(ws.cell(3, hdr["大促单品立减(折)"]).value) - 7.92) < 0.02
+    assert (float(ws.cell(3, hdr["超大促降价金额(元)"]).value)
+            < float(ws.cell(3, hdr["大促降价金额(元)"]).value))       # 618官方减更多→单品立减更少
+
+    # 全量导出的「定价总表」sheet 也有这两列
+    wb2 = build_full_export_workbook(db_session)
+    pname = [t for t in wb2.sheetnames if "定价总表" in t][0]
+    ws2 = wb2[pname]
+    h2 = {ws2.cell(1, c).value: c for c in range(1, ws2.max_column + 1) if ws2.cell(1, c).value}
+    assert "大促降价金额(元)" in h2 and "超大促降价金额(元)" in h2 and "大促店铺系数" not in h2
