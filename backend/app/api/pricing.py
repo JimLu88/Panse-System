@@ -1600,6 +1600,29 @@ def activity_signup_form_xlsx(
     )
 
 
+@formula_router.get("/single-item-discount.xlsx")
+def single_item_discount_upload_xlsx(
+    tier: str = Query("big", description="档位: mid=超级立减10% / big=88VIP大促12% / big618=大促15%(618双11)"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """淘宝『单品立减』批量上传表 (SKU级别减钱口径, 表头与淘宝模板逐字一致, 可直接上传)。
+    每档一张(力度 10/12/15%), 数值每次下载实时算(成本/售价变即变)。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    from app.services.data_export_service import _TB_DISCOUNT_TIERS
+    if tier not in _TB_DISCOUNT_TIERS:
+        raise HTTPException(400, f"未知档位 {tier}; 可选 {list(_TB_DISCOUNT_TIERS)}")
+    bio, _stats = data_export_service.build_single_item_discount_upload_xlsx(db, tier)
+    fn = quote(f"淘宝单品立减_{_TB_DISCOUNT_TIERS[tier][0]}.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
 def update_formula_rule(
     rule_id: int,

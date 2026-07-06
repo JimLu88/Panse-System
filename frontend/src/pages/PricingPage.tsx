@@ -15,6 +15,7 @@ import {
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
@@ -27,6 +28,7 @@ import FullColumnView from '../components/FullColumnView';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ProductThumb from '../components/ProductThumb';
 import PricingEditorModal from '../components/PricingEditorModal';
+import PricingDownloadsTab from './PricingDownloadsTab';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -551,6 +553,7 @@ function ProductPricingCard({ group, onEdit }: { group: ProductGroup; onEdit: (s
 export default function PricingPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
+  const [downloadTab, setDownloadTab] = useState<'sheet' | 'downloads'>('sheet');
   const [sizeCategory, setSizeCategory] = useState<string | undefined>(undefined);
   const [category, setCategory] = useState<string | undefined>(undefined);
   const [page, setPage] = useState(1);
@@ -952,17 +955,22 @@ export default function PricingPage() {
           />
         </Space>
       </Modal>
+      <Tabs
+        activeKey={downloadTab}
+        onChange={(k) => setDownloadTab(k as 'sheet' | 'downloads')}
+        items={[{ key: 'sheet', label: '定价总表' }, { key: 'downloads', label: '📥 表格下载' }]}
+      />
+      {downloadTab === 'downloads' && <PricingDownloadsTab />}
+      {downloadTab === 'sheet' && (
+      <>
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>
         <Typography.Title level={4} style={{ margin: 0 }}>定价总表</Typography.Title>
         <Space>
           <Tooltip title="改价台: Excel 式逐个改 定价基数(0.86/0.88/0.9), 促价=ROUNDUP(成本÷基数)自动算 + 单品立减系数反推">
             <Link to="/shop-price-board"><Button type="primary" icon={<TableOutlined />}>改价台</Button></Link>
           </Tooltip>
-          <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">
-            <Button icon={<ExportOutlined />} onClick={handleExportCatalog}>批量导出带图</Button>
-          </Tooltip>
-          <Tooltip title="导出「活动报名表」Excel: 给同事填淘宝活动价用的精简表 — 产品图/名/规格 + 报名价(88VIP大促/超大促618) + 单品立减(折 + 立减金额, 三档10/12/15%, 加法口径), 去掉成本/编码/小红书等无关列">
-            <Button icon={<ExportOutlined />} onClick={handleExportSignup}>活动报名表</Button>
+          <Tooltip title="各类批量表格下载(定价图册 / 活动报名表 / 淘宝单品立减各档)已挪到上方「📥 表格下载」标签页">
+            <Button icon={<DownloadOutlined />} onClick={() => setDownloadTab('downloads')}>表格下载</Button>
           </Tooltip>
           <Tooltip title="工厂/销售价的调价历史: 每条=某SKU某段时间使用的旧价, 分界日之前的订单按此老价核算">
             <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>调价历史</Button>
@@ -1085,6 +1093,8 @@ export default function PricingPage() {
       />
         }
       />
+      )}
+      </>
       )}
 
       {/* 新增弹窗 */}

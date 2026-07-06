@@ -1053,6 +1053,90 @@ def build_signup_form_xlsx(db: Session):
     return out
 
 
+# ── 淘宝「单品立减」批量上传表 (2026-07-06 用户: 各档力度一张, 可直接上传淘宝) ──────────────
+# 表头与淘宝官方「单品立减批量模板」逐字一致 (含换行), 上传器按列位解析 → 生成的表可直接导入。
+_TB_DISCOUNT_HEADERS = [
+    "商品id\n(请使用文本格式)",
+    "SKU_ID\n(活动为SKU级别必填，商品级别不填,一行只能填写一个sku)",
+    ("优惠值：\n1.优惠方式为减钱时，填写该商品立减金额，单位元，如20（元）\n"
+     "2.优惠方式为打折时，填写该商品折扣，如9（折）\n注意：sku级别的活动不支持打折！"),
+    ("打折对应的优惠金额取值方式：\n不填：不抹分取整\n1：抹分（即向上取整到角,例如18.43变为18.5）请填写数字1\n"
+     "2：取整（即向上取整到元,例如18.43变为19）请填写数字2\n注意：\n"
+     "1.仅打折商品级活动支持优惠金额的抹分、取整\n2.打折是在标价的基础上打折，折扣实际对应的减钱金额会根据标价的变动而变动"),
+    "提醒:\n（1）填写表格时，请删除示例数据；\n（2）单元格不支持使用公式；",
+]
+# tier → (人看的档位名, single_item_discounts 里对应的【立减金额】字段)
+_TB_DISCOUNT_TIERS = {
+    "mid":    ("超级立减10%",          "mid_deduct"),
+    "big":    ("88VIP大促12%",         "big_deduct"),
+    "big618": ("大促15%(618双11)",     "big618_deduct"),
+}
+
+
+def build_single_item_discount_upload_xlsx(db: Session, tier: str):
+    """淘宝『单品立减』批量上传表 (SKU 级别, **减钱口径** —— 模板明确注: sku级别不支持打折, 故填立减金额)。
+    列 = 商品id / SKU_ID / 优惠值(=立减金额, 元) / 取值方式(留空) / 提醒(留空); 表头与淘宝模板逐字一致, 可直接上传。
+    tier: mid(超级立减10%) / big(88VIP大促12%) / big618(大促15% 618双11)。
+    只出「有淘宝商品id + SKU_ID + 该档立减金额」的行(缺 SKU_ID / 官方立减已够的跳过)。
+    数值 = single_item_discounts 加法口径, **每次下载实时算**(成本/售价一变即变)。返回 (BytesIO, 统计dict)。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service
+
+    if tier not in _TB_DISCOUNT_TIERS:
+        raise ValueError(f"未知档位 {tier}; 可选 {list(_TB_DISCOUNT_TIERS)}")
+    _tier_name, deduct_field = _TB_DISCOUNT_TIERS[tier]
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "单品立减"
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF", size=10)
+    wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    for ci, h in enumerate(_TB_DISCOUNT_HEADERS, start=1):
+        c = ws.cell(1, ci, h)
+        c.fill = head_fill; c.font = head_font; c.alignment = wrap
+    ws.row_dimensions[1].height = 78
+
+    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0}
+    r = 2
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id:
+            continue
+        if not p.taobao_sku_id:                       # SKU 级别必须有 SKU_ID
+            stats["skipped_no_skuid"] += 1
+            continue
+        sid = pricing_calc_service.single_item_discounts(p, s.daily_price, params)
+        d = sid.get(deduct_field)
+        if d is None:                                 # 官方立减已够 / 缺买家价 → 跳过
+            stats["skipped_no_deduct"] += 1
+            continue
+        ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 长号必须文本, 防科学计数
+        ws.cell(r, 2, str(p.taobao_sku_id)).number_format = "@"
+        ws.cell(r, 3, float(d)).number_format = "0.00"             # 立减金额(元)
+        r += 1
+    stats["rows"] = r - 2
+
+    widths = [22, 30, 30, 26, 26]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out, stats
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl

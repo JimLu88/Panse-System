@@ -734,6 +734,10 @@ export const downloadPricingCatalog = () =>
 // 活动报名表 (带图, 精简): 报名价 + 单品立减(折/立减金额, 加法口径), 给同事填淘宝活动价用
 export const downloadSignupForm = () =>
   api.get('/api/pricing/signup-form.xlsx', { responseType: 'blob' }).then((r) => r.data);
+// 淘宝「单品立减」批量上传表 (SKU级别减钱, 表头对齐淘宝模板可直接上传); tier: mid/big/big618
+export const downloadSingleItemDiscount = (tier: 'mid' | 'big' | 'big618') =>
+  api.get('/api/pricing/single-item-discount.xlsx', { params: { tier }, responseType: 'blob' })
+    .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {

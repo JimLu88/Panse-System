@@ -186,3 +186,40 @@ def test_signup_form_xlsx_additive_and_stripped(db_session, monkeypatch):
     assert abs(float(ws.cell(3, hdr["大促立减(元)"]).value) - 4072.94) < 1.5
     # 超大促(618, 15%) 比大促(12%)浅 3 个点 → 8.22 折
     assert abs(float(ws.cell(3, hdr["超大促单品立减(折)"]).value) - 8.22) < 0.02
+
+
+def test_single_item_discount_upload_xlsx(db_session):
+    """淘宝单品立减批量上传表: 表头逐字对齐模板; SKU级别减钱(立减金额); 缺SKU_ID跳过; 618金额<大促。"""
+    import io
+    import openpyxl
+    from decimal import Decimal as D
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service as pc
+    from app.services.data_export_service import (
+        build_single_item_discount_upload_xlsx, _TB_DISCOUNT_HEADERS)
+    sku = PricingSku(product_code="P1", sku_code="P1-A", sku="1.2米",
+                     daily_price=D("19575"), big_promo=D("12890"))
+    promo = PricingSkuPromo(sku_code="P1-A",
+                            taobao_item_id="917179577721", taobao_sku_id="6241018727157")
+    sku2 = PricingSku(product_code="P2", sku_code="P2-A", sku="x",
+                      daily_price=D("1000"), big_promo=D("600"))
+    promo2 = PricingSkuPromo(sku_code="P2-A", taobao_item_id="123")   # 无 SKU_ID → 跳过
+    db_session.add_all([Product(code="P1", name="a"), Product(code="P2", name="b"),
+                        sku, promo, sku2, promo2])
+    db_session.commit()
+    pc.recompute_promo(promo, sku, {"big_vip_commission": D("0.02"), "mid_vip_commission": D("0.02")})
+    pc.recompute_promo(promo2, sku2, {"big_vip_commission": D("0.02"), "mid_vip_commission": D("0.02")})
+    db_session.commit()
+
+    bio, stats = build_single_item_discount_upload_xlsx(db_session, "big")
+    ws = openpyxl.load_workbook(io.BytesIO(bio.getvalue())).active
+    assert [ws.cell(1, c).value for c in range(1, 6)] == _TB_DISCOUNT_HEADERS   # 表头逐字对齐
+    assert stats["rows"] == 1 and stats["skipped_no_skuid"] == 1                # P2 无SKU_ID被跳
+    assert ws.cell(2, 1).value == "917179577721"                               # 商品id 文本
+    assert ws.cell(2, 2).value == "6241018727157"                             # SKU_ID 文本
+    assert ws.cell(2, 1).number_format == "@"                                   # 长号文本防科学计数
+    assert abs(float(ws.cell(2, 3).value) - 4072.94) < 1.5                     # 大促立减金额(减钱)
+    # 618 档官方减更多 → 单品立减金额更少
+    bio6, _ = build_single_item_discount_upload_xlsx(db_session, "big618")
+    ws6 = openpyxl.load_workbook(io.BytesIO(bio6.getvalue())).active
+    assert float(ws6.cell(2, 3).value) < float(ws.cell(2, 3).value)
