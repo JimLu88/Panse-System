@@ -148,3 +148,41 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     assert f("中促店铺到手").startswith("=")                        # 店铺到手 = 中促价(实收)
     assert "IF" in f("中促VIP到手价")                               # 88VIP 消费券阶梯 (由买家到手)
     assert f("小红书促销价").startswith("=")
+
+
+def test_signup_form_xlsx_additive_and_stripped(db_session, monkeypatch):
+    """活动报名表: 报名价 + 单品立减(折/立减金额, 加法口径)正确; 无关列(成本/编码/小红书/乘法系数)已去掉。
+    附图口径: 日常19575, 大促价(店铺实收)12890, 佣金2% → 大促买家价13153 → 大促单品立减 7.92折 / 减4073元。"""
+    import io
+    import openpyxl
+    from decimal import Decimal as D
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service as pc
+    from app.services.data_export_service import build_signup_form_xlsx
+    monkeypatch.setattr(pcs, "product_image_map", lambda codes, url_by_code, **k: {})
+    sku = PricingSku(product_code="P1", sku_code="P1-A", sku="1.2米",
+                     list_price=D("26100"), daily_price=D("19575"), big_promo=D("12890"))
+    promo = PricingSkuPromo(sku_code="P1-A")
+    db_session.add(Product(code="P1", name="曜黑餐边柜"))
+    db_session.add(sku); db_session.add(promo)
+    db_session.commit()
+    pc.recompute_promo(promo, sku, {"big_vip_commission": D("0.02"), "mid_vip_commission": D("0.02")})
+    db_session.commit()
+
+    wb = openpyxl.load_workbook(io.BytesIO(build_signup_form_xlsx(db_session).getvalue()))
+    ws = wb["活动报名表"]
+    hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
+    # 必要列在
+    for h in ("产品图", "产品名称", "规格", "一口价", "日常价(活动价)", "大促到手",
+              "88VIP大促报名价", "超大促报名价(618/双11)",
+              "大促单品立减(折)", "大促立减(元)", "超大促单品立减(折)", "超大促立减(元)"):
+        assert h in hdr, f"缺列: {h}"
+    # 无关列已去掉
+    for junk in ("ID", "淘宝标题", "SKU编码", "产品编码", "小促价", "会计总成本",
+                 "物理总成本", "小红书标价", "岩板", "大促店铺系数", "大促基数"):
+        assert junk not in hdr, f"应去掉却还在: {junk}"
+    # 数值 (附图核准): 大促单品立减 = 7.92 折, 立减 = 4072.94 元
+    assert abs(float(ws.cell(3, hdr["大促单品立减(折)"]).value) - 7.92) < 0.02
+    assert abs(float(ws.cell(3, hdr["大促立减(元)"]).value) - 4072.94) < 1.5
+    # 超大促(618, 15%) 比大促(12%)浅 3 个点 → 8.22 折
+    assert abs(float(ws.cell(3, hdr["超大促单品立减(折)"]).value) - 8.22) < 0.02

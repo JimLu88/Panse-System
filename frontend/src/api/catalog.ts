@@ -731,6 +731,9 @@ export const listPricingTemplates = () =>
 // 全字段 + 中文表头 + 分类色带 (用户 2026-07-01: 要 Excel 不要 HTML)
 export const downloadPricingCatalog = () =>
   api.get('/api/pricing/catalog.xlsx', { responseType: 'blob' }).then((r) => r.data);
+// 活动报名表 (带图, 精简): 报名价 + 单品立减(折/立减金额, 加法口径), 给同事填淘宝活动价用
+export const downloadSignupForm = () =>
+  api.get('/api/pricing/signup-form.xlsx', { responseType: 'blob' }).then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {
@@ -753,9 +756,15 @@ export interface ShopPriceRow {
   small_promo?: number | null;  // 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
   mid_promo?: number | null;
   big_promo?: number | null;
-  shop_promo_rate?: number | null;  // 单品立减系数(反推, 填淘宝用)
-  mid_shop_rate?: number | null;
-  big_shop_rate?: number | null;
+  mid_buyer_price?: number | null;    // 中促买家到手 (日常10%场目标)
+  big_buyer_price?: number | null;    // 大促买家到手 (88VIP 12%/618 15%场目标)
+  // 单品立减 (加法口径): 淘宝该填的 折扣 + 立减金额, 三档场次力度 10/12/15%
+  mid_discount?: number | null;       // 中促(10%) 单品立减折 (0.79=7.9折)
+  mid_deduct?: number | null;         // 中促 立减金额(元)
+  big_discount?: number | null;       // 大促(12%) 单品立减折
+  big_deduct?: number | null;         // 大促 立减金额(元)
+  big618_discount?: number | null;    // 超大促(618/双11 15%) 单品立减折
+  big618_deduct?: number | null;      // 超大促 立减金额(元)
   physical_cost?: number | null;      // 物理成本(工厂+物流+安装)
   big_promo_margin?: number | null;   // 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%)
   gross_margin_rate?: number | null;  // 大促利润率 = 大促利润 ÷ 大促价

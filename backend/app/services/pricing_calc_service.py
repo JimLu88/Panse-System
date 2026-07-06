@@ -257,6 +257,45 @@ def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict
     return out
 
 
+def single_item_discounts(promo: PricingSkuPromo, daily_price, params: Optional[dict] = None) -> dict:
+    """由 中/大促【买家到手】+ 各场官方立减力度, 算淘宝『单品立减(单品补贴)』该填的 折扣 + 立减金额。
+
+    ★加法口径 (2026-07-06 用户附图核准): 淘宝官方大促 = 官方立减 + 单品补贴 两个折扣【从活动价各自减】,
+    不是乘法(旧 shop_rate 口径按 日常×(1−力度)×系数 是错的, 会差几百块)。活动价 = 日常价 = 标价×0.75:
+      到手 = 日常价 − 日常价×官方力度 − 单品立减金额
+      ⇒ 单品立减折 = 到手 ÷ 日常价 + 官方力度 ;  单品立减金额 = 日常价×(1−官方力度) − 到手
+    三档场次(官方力度, 目标到手): 中促(日常 10% → 中促买家价) / 大促(88VIP 12% → 大促买家价) /
+    超大促(618·双11 15% → 大促买家价, 同价换 SKU)。
+    折 ≥ 1(官方立减已 ≥ 目标, 单品立减无从做起)→ 该档 None(不给假数)。纯派生, 不落库。
+
+    返回 {mid_discount/mid_deduct, big_discount/big_deduct, big618_discount/big618_deduct}
+      *_discount = 折扣(小数, 0.7920 = 7.92 折 = 买家付日常价的 79.2%); *_deduct = 立减金额(元)。"""
+    mid_lev, big_lev, lev618 = _report_leverage(params)
+    daily = _d(daily_price)
+    out = {"mid_discount": None, "mid_deduct": None,
+           "big_discount": None, "big_deduct": None,
+           "big618_discount": None, "big618_deduct": None}
+    if not daily or daily <= 0:
+        return out
+    cent, q4 = Decimal("0.01"), Decimal("0.0001")
+
+    def _one(buyer, lev):
+        if buyer is None or buyer <= 0:
+            return None, None
+        disc = buyer / daily + lev                       # 单品立减折
+        if disc >= Decimal("1"):                          # 官方立减已 ≥ 目标 → 单品立减无从做起
+            return None, None
+        deduct = daily * (Decimal("1") - lev) - buyer     # 立减金额 = 日常×(1−力度) − 到手
+        return disc.quantize(q4, ROUND_HALF_UP), deduct.quantize(cent, ROUND_HALF_UP)
+
+    mid_buyer = _d(getattr(promo, "mid_buyer_price", None))
+    big_buyer = _d(getattr(promo, "big_buyer_price", None))
+    out["mid_discount"], out["mid_deduct"] = _one(mid_buyer, mid_lev)
+    out["big_discount"], out["big_deduct"] = _one(big_buyer, big_lev)
+    out["big618_discount"], out["big618_deduct"] = _one(big_buyer, lev618)
+    return out
+
+
 def fix_mid_to_compliant(sku: PricingSku, params: Optional[dict] = None) -> Optional[dict]:
     """若该 SKU 不合规(g<g_min), 抬【中促实收】令 中促到手 = 大促到手 × g_min(=0.90/0.88), 大促价一分不动。
     只改 sku.mid_promo, 并清 sku.base_mid(=None)让 recompute 不用 cost-plus 覆盖此手改中促。

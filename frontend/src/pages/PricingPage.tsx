@@ -34,6 +34,7 @@ import {
   createPricingSku,
   downloadPricingTemplate,
   downloadPricingCatalog,
+  downloadSignupForm,
   listPricingSkus,
   listPricingTemplates,
   listProductCategories,
@@ -615,6 +616,21 @@ export default function PricingPage() {
     } catch { message.destroy('catalog'); message.error('图册生成失败'); }
   }
 
+  async function handleExportSignup() {
+    try {
+      message.loading({ content: '正在生成活动报名表 (带图, 稍候)…', key: 'signup', duration: 0 });
+      const blob = await downloadSignupForm();
+      message.destroy('signup');
+      const url = URL.createObjectURL(new Blob([blob], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      }));
+      const a = document.createElement('a');
+      a.href = url; a.download = '畔色活动报名表.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+      message.success('已下载「活动报名表」Excel (报名价 + 单品立减折/立减金额)');
+    } catch { message.destroy('signup'); message.error('报名表生成失败'); }
+  }
+
   const invalidatePricing = () => qc.invalidateQueries({ queryKey: ['pricing-skus'] });
   const createMut = useMutation({
     mutationFn: createPricingSku,
@@ -944,6 +960,9 @@ export default function PricingPage() {
           </Tooltip>
           <Tooltip title="导出「定价图册」Excel: 一SKU一行, 首列产品图(同编码多SKU合并只放一张), 全字段 + 中文表头 + 分类色带">
             <Button icon={<ExportOutlined />} onClick={handleExportCatalog}>批量导出带图</Button>
+          </Tooltip>
+          <Tooltip title="导出「活动报名表」Excel: 给同事填淘宝活动价用的精简表 — 产品图/名/规格 + 报名价(88VIP大促/超大促618) + 单品立减(折 + 立减金额, 三档10/12/15%, 加法口径), 去掉成本/编码/小红书等无关列">
+            <Button icon={<ExportOutlined />} onClick={handleExportSignup}>活动报名表</Button>
           </Tooltip>
           <Tooltip title="工厂/销售价的调价历史: 每条=某SKU某段时间使用的旧价, 分界日之前的订单按此老价核算">
             <Button icon={<HistoryOutlined />} onClick={() => setHistoryOpen(true)}>调价历史</Button>

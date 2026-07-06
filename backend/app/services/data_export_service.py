@@ -562,6 +562,8 @@ _PRICING_CN: dict[str, str] = {
     # 无国补大促
     "big_platform_discount": "大促平台立减", "big_shop_rate": "大促店铺系数", "big_buyer_price": "大促买家价",
     "big_vip_commission": "大促88VIP佣金", "big_shop_receipt": "大促店铺到手", "big_vip_final": "大促VIP到手价",
+    # 报名价 (派生, 填淘宝超级立减/官方大促报名表)
+    "report_price": "88VIP大促报名价", "report_price_618": "超大促报名价(618/双11)",
     # 小红书
     "xhs_item_id": "小红书商品ID", "xhs_sku_name": "小红书SKU名", "xhs_sku_id": "小红书SKU ID",
     "xhs_list_price": "小红书标价", "xhs_activity_price": "小红书活动价",
@@ -583,6 +585,8 @@ _PRICING_COST_NUM_FIELDS = [
     "leg", "soft_pack", "bed_board", "other_cost",
 ]
 _PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
+# 报名价 (派生, 仅图册导出加这两列; 由 report_prices 计算, 填淘宝超级立减/官方大促报名表)
+_PRICING_REPORT_FIELDS = ["report_price", "report_price_618"]
 # 分类 → (表头底色, 字段列表); 表头按分类上色, 排版一眼分区
 _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("标识", "1F4E79", ["id", "product_code", "product_name", "taobao_title", "sku", "sku_code", "size_category", "size_info"]),
@@ -594,6 +598,7 @@ _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("淘宝/店内", "E65100", ["taobao_item_id", "taobao_url", "taobao_sku_id", "taobao_activity_price", "shop_promo_rate", "shop_internal_promo", "shop_internal_final"]),
     ("淘宝中促", "EF6C00", ["mid_platform_discount", "mid_shop_rate", "mid_buyer_price", "mid_vip_commission", "mid_shop_receipt", "mid_vip_final"]),
     ("淘宝大促", "F57F17", ["big_platform_discount", "big_shop_rate", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
+    ("报名价", "1565C0", _PRICING_REPORT_FIELDS),
     ("小红书", "AD1457", ["xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price", "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price"]),
     ("配件成本明细", "5D4037", _PRICING_COST_FIELDS),   # 工厂成本拆到每个配件 (图册导出)
 ]
@@ -691,7 +696,7 @@ def build_catalog_xlsx(db: Session):
     from app.services.pricing_catalog_service import _is_real_product, product_image_map
 
     base_cols = [c.key for c in PricingSku.__table__.columns]
-    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_COST_FIELDS   # +配件成本明细
+    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS + _PRICING_COST_FIELDS
     IMG_COL = 1
     FIRST_DATA_COL = 2
     field_pos = {f: FIRST_DATA_COL + i for i, f in enumerate(all_fields)}
@@ -744,6 +749,9 @@ def build_catalog_xlsx(db: Session):
             fmt = _num_fmt(f, _col_type(col))
             if fmt:
                 col_fmt[ci] = fmt
+    for f in _PRICING_REPORT_FIELDS:                       # 报名价(派生, 非模型列)→ 金额格式
+        if f in field_pos:
+            col_fmt[field_pos[f]] = "#,##0.00"
 
     thin = Side(style="thin", color="E2E8F0")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
@@ -800,10 +808,14 @@ def build_catalog_xlsx(db: Session):
         for s in gs:
             p = promo_by_sku.get(s.sku_code)
             costs = costs_by_sku.get(s.sku_code)
+            rp = pricing_calc_service.report_prices(p, promo_params) if p is not None else {}
             override_by_row[r] = bool(getattr(s, "factory_cost_override", False))
             for f in all_fields:
                 ci = field_pos[f]
-                if f in model_cols:
+                if f in _PRICING_REPORT_FIELDS:            # 报名价(派生) = 大促到手 ÷ 0.88 / ÷ 0.85
+                    rv = rp.get(f)
+                    v = float(rv) if rv is not None else None
+                elif f in model_cols:
                     v = _translate(f, _cell(getattr(s, f, None)))
                 elif f in promo_cols:
                     v = _cell(getattr(p, f, None)) if p is not None else None
@@ -888,6 +900,152 @@ def build_catalog_xlsx(db: Session):
     _apply_promo_formulas(ws, field_pos, data_start_row=3,
                           mid_tiers=promo_params.get("mid_coupon_tiers"),
                           big_tiers=promo_params.get("big_coupon_tiers"))
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out
+
+
+# ── 活动报名表 (2026-07-06 用户: 给同事填淘宝活动价用的精简表) ────────────────────────────
+def build_signup_form_xlsx(db: Session):
+    """活动报名表 (Excel, 带产品图): 一 SKU 一行, 只留填淘宝活动【必要】列 ——
+      产品图 / 产品名 / 规格 + 一口价 / 日常价(活动价) + 各档目标到手 +
+      报名价(88VIP大促 / 超大促618双11) + 单品立减(折 + 立减金额, 三档场次力度 10/12/15%)。
+    去掉 ID / 淘宝标题 / SKU编码 / 产品编码 / 大小 / 成品尺寸 / 小促价 / 成本全块 / 小红书 / 配件明细 /
+    旧乘法系数 等无关列 (用户 2026-07-06 指定)。数值口径 = single_item_discounts + report_prices (加法, 对齐淘宝)。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.drawing.image import Image as XLImage
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.product import Product
+    from app.services import pricing_calc_service
+    from app.services.pricing_catalog_service import _is_real_product, product_image_map
+
+    def _f(v):
+        return float(v) if v is not None else None
+
+    def _zhe(v):                          # 折扣小数 → 折 (0.792 → 7.92)
+        return round(float(v) * 10, 2) if v is not None else None
+
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    prod_by_code = {p.code: p for p in db.execute(select(Product)).scalars().all()}
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    # 分组(剔除作废/服务/占位非产品), 供产品图纵向合并
+    groups: list[tuple[str, list]] = []
+    cur = None
+    for s in skus:
+        prod = prod_by_code.get(s.product_code)
+        nm = (prod.name if prod else None) or s.product_name or ""
+        if not _is_real_product(nm, s.product_code):
+            continue
+        if s.product_code != cur:
+            groups.append((s.product_code, [])); cur = s.product_code
+        groups[-1][1].append(s)
+    groups = [g for g in groups if g[1]]
+    url_by_code = {
+        c: ((prod_by_code.get(c).image_url if prod_by_code.get(c) else None)
+            or next((x.image_url for x in gs if x.image_url), None))
+        for c, gs in groups}
+    img_map = product_image_map([c for c, _ in groups], url_by_code)
+
+    headers = ["产品图", "产品名称", "规格", "一口价", "日常价(活动价)",
+               "中促到手", "大促到手", "88VIP大促报名价", "超大促报名价(618/双11)",
+               "中促单品立减(折)", "中促立减(元)", "大促单品立减(折)", "大促立减(元)",
+               "超大促单品立减(折)", "超大促立减(元)"]
+    money = "#,##0.00"
+    money_cols = {4, 5, 6, 7, 8, 9, 11, 13, 15}     # 价格 + 立减金额列
+    zhe_cols = {10, 12, 14}                          # 折列
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "活动报名表"
+
+    thin = Side(style="thin", color="D9D9D9")
+    border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF", size=11)
+    center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    right = Alignment(horizontal="right", vertical="center")
+    vcenter = Alignment(vertical="center")
+
+    # 行1: 口径说明
+    ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
+    tip = ws.cell(1, 1,
+                  "淘宝加法口径: 到手 = 日常价 − 官方立减(日常10% / 88VIP大促12% / 618双11 15%) − 单品立减。"
+                  "『折』或『立减金额』二选一填淘宝『单品立减/单品补贴』(立减金额更精确, 到分)。"
+                  "报名价填淘宝超级立减/官方大促报名表。空格 = 该档官方立减已够, 不用叠单品立减。")
+    tip.font = Font(bold=True, color="B45309")
+    tip.alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    ws.row_dimensions[1].height = 32
+
+    # 行2: 表头
+    for ci, h in enumerate(headers, start=1):
+        c = ws.cell(2, ci, h)
+        c.fill = head_fill; c.font = head_font; c.alignment = center; c.border = border
+    ws.row_dimensions[2].height = 34
+
+    keep_alive: list = []
+    r = 3
+    for code, gs in groups:
+        r0 = r
+        prod = prod_by_code.get(code)
+        pname = (prod.name if prod else None) or (gs[0].product_name if gs else None) or code
+        for s in gs:
+            promo = promo_by_sku.get(s.sku_code)
+            rp = pricing_calc_service.report_prices(promo, params) if promo is not None else {}
+            sid = (pricing_calc_service.single_item_discounts(promo, s.daily_price, params)
+                   if promo is not None else {})
+            row_vals = [
+                None, pname, s.sku,
+                _f(s.list_price), _f(s.daily_price),
+                _f(getattr(promo, "mid_buyer_price", None)), _f(getattr(promo, "big_buyer_price", None)),
+                _f(rp.get("report_price")), _f(rp.get("report_price_618")),
+                _zhe(sid.get("mid_discount")), _f(sid.get("mid_deduct")),
+                _zhe(sid.get("big_discount")), _f(sid.get("big_deduct")),
+                _zhe(sid.get("big618_discount")), _f(sid.get("big618_deduct")),
+            ]
+            for ci, v in enumerate(row_vals, start=1):
+                cell = ws.cell(r, ci, v)
+                cell.border = border
+                if ci in money_cols and v is not None:
+                    cell.number_format = money; cell.alignment = right
+                elif ci in zhe_cols:
+                    cell.alignment = right
+                else:
+                    cell.alignment = vcenter
+            ws.row_dimensions[r].height = _CATALOG_IMG_ROW_PT if r == r0 else _CATALOG_DATA_ROW_PT
+            r += 1
+        r1 = r - 1
+        if r1 > r0:
+            ws.merge_cells(start_row=r0, start_column=1, end_row=r1, end_column=1)
+        acell = ws.cell(r0, 1)
+        acell.border = border
+        png = img_map.get(code)
+        if png:
+            acell.alignment = Alignment(horizontal="center", vertical="top")
+            bio = _io.BytesIO(png)
+            img = XLImage(bio)
+            scale = min(_CATALOG_IMG_PX / img.width, _CATALOG_IMG_PX / img.height, 1.0)
+            img.width = int(img.width * scale); img.height = int(img.height * scale)
+            ws.add_image(img, f"A{r0}")
+            keep_alive.append(bio)
+        else:
+            acell.value = "暂无图片"; acell.font = Font(color="94A3B8")
+            acell.alignment = Alignment(horizontal="center", vertical="center")
+        for rr in range(r0, r1 + 1):
+            ws.cell(rr, 1).border = border
+
+    widths = [15, 24, 16, 11, 13, 11, 11, 15, 17, 14, 12, 14, 12, 15, 13]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "C3"
 
     out = _io.BytesIO()
     wb.save(out)

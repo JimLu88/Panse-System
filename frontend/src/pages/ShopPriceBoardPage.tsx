@@ -116,6 +116,27 @@ export default function ShopPriceBoardPage() {
     render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{pct(v)}</span>,
   });
 
+  // 单品立减 (加法口径): 淘宝该填的『折扣 + 立减金额』。折 0.792 → 显示 7.92折; 立减金额取整到元。
+  // 折为空 = 官方立减已≥目标价, 该档单品立减不适用 (显示 —)。
+  const discountCol = (
+    title: ReactNode, dKey: keyof ShopPriceRow, amtKey: keyof ShopPriceRow,
+  ): ColumnsType<ShopPriceRow>[number] => ({
+    title, dataIndex: dKey as string, width: 106, align: 'right',
+    render: (d: number | null, row) => {
+      if (d == null)
+        return <span style={{ color: '#cbd5e1' }} title="官方立减已≥目标价, 该档不需再叠单品立减">—</span>;
+      const amt = row[amtKey] as number | null;
+      return (
+        <div style={{ lineHeight: 1.15 }}>
+          <div style={{ fontWeight: 700, color: '#0f766e' }}>{(d * 10).toFixed(2)}折</div>
+          {amt != null
+            ? <div style={{ fontSize: 12, color: '#0f766e' }}>减{yuan(amt)}</div>
+            : null}
+        </div>
+      );
+    },
+  });
+
   // ── 中促/小促「当前不启用」列: 灰底 + 灰字 + 只读(能选中复制, 不能编辑); 未来启用中促时再放开 ──
   const GRAY_LOCK = '#a3adba';
   const lockedCell = () => ({ style: { background: '#f6f7f9' } });
@@ -191,11 +212,14 @@ export default function ShopPriceBoardPage() {
       render: (v: number | null) => <span style={{ color: '#1a73e8', fontWeight: 700 }}>{yuan(v)}</span> },
     { title: <span>超大促报名价<br />(618/双11)</span>, dataIndex: 'report_price_618', width: 116, align: 'right',
       render: (v: number | null) => <span style={{ color: '#7c3aed', fontWeight: 500 }}>{yuan(v)}</span> },
+    { title: <span>大促到手<br />(买家实付)</span>, dataIndex: 'big_buyer_price', width: 96, align: 'right',
+      render: (v: number | null) => <span style={{ color: '#64748b' }}>{yuan(v)}</span> },
     { title: '空档价红线', dataIndex: 'gap_floor', width: 96, align: 'right',
       render: (v: number | null) => <span style={{ color: '#94a3b8' }}>{yuan(v)}</span> },
-    rateColLocked('小促单品立减', 'shop_promo_rate'),
-    rateColLocked('中促单品立减', 'mid_shop_rate'),
-    rateCol('大促单品立减', 'big_shop_rate'),
+    // ── 单品立减 (加法口径, 淘宝直接填): 折 + 立减金额, 三档场次力度 10/12/15% ──
+    discountCol(<span>中促单品立减<br />(日常10%)</span>, 'mid_discount', 'mid_deduct'),
+    discountCol(<span>大促单品立减<br />(88VIP 12%)</span>, 'big_discount', 'big_deduct'),
+    discountCol(<span>超大促单品立减<br />(618·双11 15%)</span>, 'big618_discount', 'big618_deduct'),
   ];
 
   return (
@@ -203,8 +227,8 @@ export default function ShopPriceBoardPage() {
       <Typography.Title level={4} style={{ margin: 0 }}>改价台</Typography.Title>
       <Alert
         type="info" showIcon
-        message="改「基数」(0.86 / 0.88 / 0.9 这种除数), 回车即存 → 促价 = 进位到10(成本 ÷ 基数) 自动算(和你 Excel List 表一致, 以 0 结尾)。三档促价存的都是「店铺实收」(88VIP佣金后到账), 不是买家到手价。"
-        description="看不懂这些列(88VIP大促报名价 / 超大促报名价 / 空档价红线 / 中促·小促为什么灰)? 点开下面的「📖 名词说明」, 每一项都有大白话解释。"
+        message="改「大促基数」(0.86 / 0.88 / 0.9 这种除数), 回车即存 → 大促价 = 进位到10(成本 ÷ 基数) 自动算 → 报名价/单品立减 全联动。三档促价存的都是「店铺实收」(88VIP佣金后到账), 不是买家到手价。"
+        description="最右三列「单品立减」= 淘宝直接填的『折扣 + 立减金额』(加法口径, 到手=日常−官方立减−单品立减)。看不懂点开下面「📖 名词说明」。"
       />
       <Collapse
         size="small"
@@ -235,11 +259,13 @@ export default function ShopPriceBoardPage() {
           },
           {
             key: 'terms',
-            label: '📖 ③ 空档价红线 / 单品立减系数 是什么?',
+            label: '📖 ③ 单品立减(折/立减金额) 怎么填? 空档价红线是什么?',
             children: (
               <div style={helpBox}>
-                <p style={helpP}><b>空档价红线 = 中促到手价。</b> 没活动的空档期, 你用单品立减做价<b>不能低于这条线</b>; 否则砸穿淘宝近15天最低价线, 下个大活动被冷却 / 报不进(要15天才洗回)。就是空档期你能做的最低价。</p>
-                <p style={helpP}><b>最右三列「单品立减系数」</b> = 空档期用单品立减把价做到目标水平时, 反推出来的那个系数(直接填淘宝单品立减用)。</p>
+                <p style={helpP}><b>淘宝是"加法": 到手 = 日常价 − 官方立减 − 单品立减。</b> 官方立减是各场固定力度(日常 10% / 88VIP大促 12% / 618·双11 15%), 单品立减是你自己再叠的那部分。</p>
+                <p style={helpP}><b>公式: 单品立减折 = 目标到手 ÷ 日常价 + 官方力度。</b> 最右三列已按这个算好 —— <b>「折」直接填淘宝单品立减/单品补贴, 或用下面的「减¥」立减金额(更精确, 到分)</b>。别再用旧的乘法系数(填了会差几百块, 就是同事那个 353 元的问题)。</p>
+                <p style={helpP}><b>三档不一样</b>: 官方力度越深, 单品立减打得越浅(超大促比大促浅 3 个点)。<b>每换一个活动力度都要重填</b>。折为「—」= 官方立减已够, 该档不用叠单品立减。</p>
+                <p style={helpP}><b>空档价红线 = 中促到手价。</b> 没活动的空档期, 单品立减做价<b>不能低于这条线</b>, 否则砸穿淘宝近 15 天最低价线, 下个大活动被冷却(要 15 天洗回)。</p>
               </div>
             ),
           },
@@ -285,7 +311,7 @@ export default function ShopPriceBoardPage() {
         rowSelection={{ selectedRowKeys: selectedKeys, onChange: setSelectedKeys, preserveSelectedRowKeys: true }}
         dataSource={rows} columns={columns}
         pagination={{ pageSize: 50, showSizeChanger: true, showTotal: (t) => `共 ${t} 个 SKU` }}
-        scroll={{ x: 1300 }}
+        scroll={{ x: 1560 }}
       />
 
     </Space>

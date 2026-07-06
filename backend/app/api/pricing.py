@@ -518,9 +518,17 @@ class ShopPriceRow(BaseModel):
     small_promo: Optional[Decimal] = None        # 小促价 = ROUNDUP(成本÷base_small,10) (算出来)
     mid_promo: Optional[Decimal] = None
     big_promo: Optional[Decimal] = None
-    shop_promo_rate: Optional[Decimal] = None    # 小促单品立减系数(反推, 填淘宝用)
-    mid_shop_rate: Optional[Decimal] = None
-    big_shop_rate: Optional[Decimal] = None
+    # 各档【买家到手】(目标价, = 促价÷(1−佣金)); 单品立减/报名价都对着它算
+    mid_buyer_price: Optional[Decimal] = None    # 中促买家到手 (日常 10% 场目标)
+    big_buyer_price: Optional[Decimal] = None    # 大促买家到手 (88VIP 12% / 618 15% 场目标)
+    # 单品立减 (加法口径, 2026-07-06 用户附图核准): 淘宝该填的 折扣 + 立减金额, 三档场次力度 10/12/15%
+    #   单品立减折 = 买家到手÷日常 + 官方力度 ; 立减金额 = 日常×(1−力度) − 买家到手
+    mid_discount: Optional[Decimal] = None       # 中促(日常10%) 单品立减折 (0.79 = 7.9折)
+    mid_deduct: Optional[Decimal] = None         # 中促 单品立减金额(元)
+    big_discount: Optional[Decimal] = None       # 大促(88VIP 12%) 单品立减折
+    big_deduct: Optional[Decimal] = None         # 大促 单品立减金额(元)
+    big618_discount: Optional[Decimal] = None    # 超大促(618/双11 15%) 单品立减折
+    big618_deduct: Optional[Decimal] = None      # 超大促 单品立减金额(元)
     physical_cost: Optional[Decimal] = None      # 物理成本(工厂+物流+安装), 大促利润的成本基
     big_promo_margin: Optional[Decimal] = None   # 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%) (recompute 口径)
     gross_margin_rate: Optional[Decimal] = None  # 大促利润率 = 大促利润 ÷ 大促价
@@ -532,16 +540,20 @@ class ShopPriceRow(BaseModel):
     report_compliant: Optional[bool] = None      # g≥0.90/0.88 → 绿; False → 需微升中促(红)
 
 
-def _shop_price_row(sku: PricingSku, promo, name, image) -> "ShopPriceRow":
-    rp = pricing_calc_service.report_prices(promo) if promo is not None else {}
+def _shop_price_row(sku: PricingSku, promo, name, image, params=None) -> "ShopPriceRow":
+    rp = pricing_calc_service.report_prices(promo, params) if promo is not None else {}
+    sid = (pricing_calc_service.single_item_discounts(promo, sku.daily_price, params)
+           if promo is not None else {})
     return ShopPriceRow(
         id=sku.id, product_code=sku.product_code, product_name=name,
         sku=sku.sku, size_info=sku.size_info, image=image, daily_price=sku.daily_price,
         base_small=sku.base_small, base_mid=sku.base_mid, base_big=sku.base_big,
         small_promo=sku.small_promo, mid_promo=sku.mid_promo, big_promo=sku.big_promo,
-        shop_promo_rate=getattr(promo, "shop_promo_rate", None),
-        mid_shop_rate=getattr(promo, "mid_shop_rate", None),
-        big_shop_rate=getattr(promo, "big_shop_rate", None),
+        mid_buyer_price=getattr(promo, "mid_buyer_price", None),
+        big_buyer_price=getattr(promo, "big_buyer_price", None),
+        mid_discount=sid.get("mid_discount"), mid_deduct=sid.get("mid_deduct"),
+        big_discount=sid.get("big_discount"), big_deduct=sid.get("big_deduct"),
+        big618_discount=sid.get("big618_discount"), big618_deduct=sid.get("big618_deduct"),
         physical_cost=sku.physical_cost,
         big_promo_margin=sku.big_promo_margin,
         gross_margin_rate=sku.gross_margin_rate,
@@ -1561,6 +1573,26 @@ def pricing_catalog_xlsx(
     from app.services import data_export_service
     bio = data_export_service.build_catalog_xlsx(db)
     fn = quote("畔色定价图册.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
+@formula_router.get("/signup-form.xlsx")
+def activity_signup_form_xlsx(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """活动报名表 (Excel, 带产品图): 给同事填淘宝活动价用的精简表 —— 产品图/名/规格 + 一口价/日常价 +
+    各档到手 + 报名价(88VIP大促/超大促618) + 单品立减(折 + 立减金额, 三档 10/12/15%, 加法口径)。
+    只留填淘宝必要列, 去掉 ID/标题/编码/成本/小红书/配件/旧乘法系数 等 (用户 2026-07-06)。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    bio = data_export_service.build_signup_form_xlsx(db)
+    fn = quote("畔色活动报名表.xlsx")
     return StreamingResponse(
         bio,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
