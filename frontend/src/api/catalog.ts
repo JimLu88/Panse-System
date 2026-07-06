@@ -738,6 +738,10 @@ export const downloadSignupForm = () =>
 export const downloadSingleItemDiscount = (tier: 'mid' | 'big' | 'big618') =>
   api.get('/api/pricing/single-item-discount.xlsx', { params: { tier }, responseType: 'blob' })
     .then((r) => r.data);
+// 淘宝「大促活动报名」批量导入表 (照千牛模板生成: 商品ID/SKUID/活动价, 其余留空); tier: mid/big/big618
+export const downloadPromoSignup = (tier: 'mid' | 'big' | 'big618') =>
+  api.get('/api/pricing/promo-signup.xlsx', { params: { tier }, responseType: 'blob' })
+    .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {

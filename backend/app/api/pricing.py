@@ -1623,6 +1623,30 @@ def single_item_discount_upload_xlsx(
     )
 
 
+@formula_router.get("/promo-signup.xlsx")
+def promo_signup_upload_xlsx(
+    tier: str = Query("big", description="档位: mid=超级立减10% / big=88VIP大促12% / big618=超级大促双11 15%"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """淘宝『大促活动报名』批量导入表 (千牛后台大促活动导入, SKU维度, 照模板生成可直接上传)。
+    只填 商品ID/SKUID/活动价(=报名价); 库存/发货时间/官方立减折扣/官方立减金额 留空。
+    超级立减10% 与 88VIP大促12% 用同一个报名价, 超级大促15% 用618报名价。实时算。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    from app.services.data_export_service import _PROMO_SIGNUP_TIERS
+    if tier not in _PROMO_SIGNUP_TIERS:
+        raise HTTPException(400, f"未知档位 {tier}; 可选 {list(_PROMO_SIGNUP_TIERS)}")
+    bio, _stats = data_export_service.build_promo_signup_upload_xlsx(db, tier)
+    fn = quote(f"大促活动报名_{_PROMO_SIGNUP_TIERS[tier][0]}.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
 def update_formula_rule(
     rule_id: int,

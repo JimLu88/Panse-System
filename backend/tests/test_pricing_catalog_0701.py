@@ -226,6 +226,40 @@ def test_single_item_discount_upload_xlsx(db_session):
     assert float(ws6.cell(2, 3).value) < float(ws.cell(2, 3).value)
 
 
+def test_promo_signup_upload_xlsx(db_session):
+    """大促活动报名导入表: 照千牛模板(2 sheet + 3行表头, 数据第4行起); 只填 商品ID/SKUID/活动价(报名价),
+    库存/发货时间/官方立减 留空; ★超级立减(mid) 与 88VIP大促(big) 活动价相同, 超大促(big618) 更高。"""
+    import io
+    import openpyxl
+    from decimal import Decimal as D
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service as pc
+    from app.services.data_export_service import build_promo_signup_upload_xlsx
+    sku = PricingSku(product_code="P1", sku_code="P1-A", sku="1.2米", daily_price=D("19575"),
+                     mid_promo=D("13183"), big_promo=D("12890"))
+    promo = PricingSkuPromo(sku_code="P1-A",
+                            taobao_item_id="917179577721", taobao_sku_id="6004770768019")
+    db_session.add_all([Product(code="P1", name="a"), sku, promo])
+    db_session.commit()
+    pc.recompute_promo(promo, sku, {"big_vip_commission": D("0.02"), "mid_vip_commission": D("0.02")})
+    db_session.commit()
+
+    def load(t):
+        bio, _st = build_promo_signup_upload_xlsx(db_session, t)
+        wb = openpyxl.load_workbook(io.BytesIO(bio.getvalue()))
+        assert "模版说明" in wb.sheetnames and "商品SKU导入列表" in wb.sheetnames   # 模板两sheet都在
+        ws = wb["商品SKU导入列表"]
+        assert [ws.cell(2, c).value for c in range(1, 4)] == ["商品ID", "SKUID", "活动价"]
+        return ws
+
+    wm, wb_, w6 = load("mid"), load("big"), load("big618")
+    assert wm.cell(4, 1).value == "917179577721" and wm.cell(4, 1).number_format == "@"   # 商品ID 文本
+    assert wm.cell(4, 2).value == "6004770768019"                                         # SKUID
+    assert all(wm.cell(4, c).value is None for c in (4, 5, 6, 7))   # 库存/发货时间/官方立减折扣/金额 留空
+    assert wm.cell(4, 3).value == wb_.cell(4, 3).value              # 超级立减 == 88VIP (同一报名价)
+    assert w6.cell(4, 3).value > wb_.cell(4, 3).value              # 超大促报名价更高
+
+
 def test_catalog_and_total_sheet_have_discount_amounts(db_session, monkeypatch):
     """图册 + 全量导出「定价总表」: 单品立减改加法(折 + 降价金额, 大促/超大促), 无旧乘法系数。
     附图: 日常19575, 大促价12890, 佣金2% → 大促降价金额≈4073(7.92折), 超大促≈3486(8.22折)。"""

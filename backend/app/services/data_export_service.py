@@ -1167,6 +1167,69 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
     return out, stats
 
 
+# ── 大促活动报名 批量导入表 (千牛后台「大促活动」导入, 2026-07-07 用户) ────────────────────
+# ★核心: 只有【两个】报名价 —— 超级立减10% 与 88VIP大促12% 用【同一个】report_price
+#   (平台力度不同 → 到手不同: 10%给中促到手 / 12%给大促到手), 平时不动;
+#   只有 超级大促(双11)15% 用 report_price_618 (要换SKU改价)。三张表只是分开写、方便运营看清。
+_PROMO_SIGNUP_TIERS = {
+    "mid":    ("超级立减10%",        "report_price"),      # 到手 = 活动价×0.90 = 中促到手
+    "big":    ("88VIP大促12%",       "report_price"),      # 到手 = 活动价×0.88 = 大促到手 (同一个报名价!)
+    "big618": ("超级大促双11 15%",    "report_price_618"),  # 到手 = 活动价×0.85 = 大促到手 (换SKU)
+}
+
+
+def build_promo_signup_upload_xlsx(db: Session, tier: str):
+    """淘宝『大促活动报名』批量导入表 (千牛后台大促活动导入, SKU 维度)。
+    模板 = assets/taobao_templates/promo_signup_sku.xlsx (原样保留 模版说明 sheet + 数据 sheet 前3行表头,
+    数据从第4行追加)。每行只填 商品ID / SKUID / 活动价(=报名价); 库存 / 发货时间 / 官方立减报名折扣 /
+    官方立减金额 全部留空 (用户 2026-07-07 指定)。活动价: 超级立减10% 与 88VIP大促12% 同价(report_price);
+    超级大促15% 用 report_price_618。数值每次下载实时算。返回 (BytesIO, stats)。"""
+    import io as _io
+    from pathlib import Path
+    import openpyxl
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service
+
+    if tier not in _PROMO_SIGNUP_TIERS:
+        raise ValueError(f"未知档位 {tier}; 可选 {list(_PROMO_SIGNUP_TIERS)}")
+    _tier_name, price_field = _PROMO_SIGNUP_TIERS[tier]
+    tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
+    wb = openpyxl.load_workbook(tpl)
+    ws = wb["商品SKU导入列表"]
+    if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
+        ws.delete_rows(4, ws.max_row - 3)
+
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0}
+    r = 4
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id:
+            continue
+        if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
+            stats["skipped_no_skuid"] += 1
+            continue
+        price = pricing_calc_service.report_prices(p, params).get(price_field)
+        if price is None:
+            stats["skipped_no_price"] += 1
+            continue
+        ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
+        ws.cell(r, 2, str(p.taobao_sku_id)).number_format = "@"     # SKUID 文本
+        ws.cell(r, 3, float(price)).number_format = "0.00"          # 活动价(=报名价)
+        # D 库存 / E 发货时间 / F 官方立减报名折扣 / G 官方立减金额 → 全部留空
+        r += 1
+    stats["rows"] = r - 4
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out, stats
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl
