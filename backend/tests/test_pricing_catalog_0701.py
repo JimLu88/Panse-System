@@ -142,8 +142,8 @@ def test_catalog_xlsx_accessory_detail_and_promo_formulas(db_session, monkeypatc
     assert f("总出厂成本").startswith("=")
     # 单品立减改加法口径(折 + 降价金额, 中促/大促/超大促), 不再输出会误导的乘法系数
     assert "大促店铺系数" not in hdr and "中促店铺系数" not in hdr and "单品立减系数" not in hdr
-    for h in ("中促单品立减(折)", "中促降价金额(元)", "大促单品立减(折)", "大促降价金额(元)",
-              "超大促单品立减(折)", "超大促降价金额(元)"):
+    assert "大促单品立减(折)" not in hdr and "中促单品立减(折)" not in hdr    # 只出减金额, 不出折
+    for h in ("中促降价金额(元)", "大促降价金额(元)", "超大促降价金额(元)"):
         assert h in hdr, f"图册缺列: {h}"
     assert f("中促买家价").startswith("=")                          # 买家到手 = 中促价/(1−佣金), 派生
     assert f("中促店铺到手").startswith("=")                        # 店铺到手 = 中促价(实收)
@@ -176,17 +176,17 @@ def test_signup_form_xlsx_additive_and_stripped(db_session, monkeypatch):
     # 必要列在
     for h in ("产品图", "产品名称", "规格", "一口价", "日常价(活动价)", "大促到手",
               "88VIP大促报名价", "超大促报名价(618/双11)",
-              "大促单品立减(折)", "大促立减(元)", "超大促单品立减(折)", "超大促立减(元)"):
+              "中促降价金额(元)", "大促降价金额(元)", "超大促降价金额(元)"):
         assert h in hdr, f"缺列: {h}"
-    # 无关列已去掉
+    # 单品立减只出减金额, 不出折; 无关列已去掉
     for junk in ("ID", "淘宝标题", "SKU编码", "产品编码", "小促价", "会计总成本",
-                 "物理总成本", "小红书标价", "岩板", "大促店铺系数", "大促基数"):
+                 "物理总成本", "小红书标价", "岩板", "大促店铺系数", "大促基数",
+                 "大促单品立减(折)", "大促立减(元)"):
         assert junk not in hdr, f"应去掉却还在: {junk}"
-    # 数值 (附图核准): 大促单品立减 = 7.92 折, 立减 = 4072.94 元
-    assert abs(float(ws.cell(3, hdr["大促单品立减(折)"]).value) - 7.92) < 0.02
-    assert abs(float(ws.cell(3, hdr["大促立减(元)"]).value) - 4072.94) < 1.5
-    # 超大促(618, 15%) 比大促(12%)浅 3 个点 → 8.22 折
-    assert abs(float(ws.cell(3, hdr["超大促单品立减(折)"]).value) - 8.22) < 0.02
+    # 数值 (附图核准): 大促降价金额 = 4072.94 元; 超大促(15%)官方减更多 → 减金额更少
+    assert abs(float(ws.cell(3, hdr["大促降价金额(元)"]).value) - 4072.94) < 1.5
+    assert (float(ws.cell(3, hdr["超大促降价金额(元)"]).value)
+            < float(ws.cell(3, hdr["大促降价金额(元)"]).value))
 
 
 def test_single_item_discount_upload_xlsx(db_session):
@@ -249,7 +249,7 @@ def test_catalog_and_total_sheet_have_discount_amounts(db_session, monkeypatch):
     hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
     assert "大促店铺系数" not in hdr and "中促店铺系数" not in hdr        # 旧乘法系数已去
     assert abs(float(ws.cell(3, hdr["大促降价金额(元)"]).value) - 4072.94) < 1.5
-    assert abs(float(ws.cell(3, hdr["大促单品立减(折)"]).value) - 7.92) < 0.02
+    assert "大促单品立减(折)" not in hdr                              # 只出减金额, 不出折
     assert (float(ws.cell(3, hdr["超大促降价金额(元)"]).value)
             < float(ws.cell(3, hdr["大促降价金额(元)"]).value))       # 618官方减更多→单品立减更少
 

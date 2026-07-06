@@ -587,11 +587,9 @@ _PRICING_COST_NUM_FIELDS = [
 _PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
 # 报名价 (派生, 由 report_prices 计算, 填淘宝超级立减/官方大促报名表)
 _PRICING_REPORT_FIELDS = ["report_price", "report_price_618"]
-# 单品立减 (派生, 加法口径 single_item_discounts: 折 + 降价金额, 中促/大促/超大促; 替代旧乘法系数)
-#   *_disc_zhe = 折(如 7.92, = 加法折×10); *_disc_amt = 降价金额(元, 淘宝单品立减填这个更准)
-_PRICING_DISCOUNT_FIELDS = ["mid_disc_zhe", "mid_disc_amt",
-                            "big_disc_zhe", "big_disc_amt",
-                            "big618_disc_zhe", "big618_disc_amt"]
+# 单品立减 (派生, 加法口径 single_item_discounts): 只出【降价金额】(淘宝单品立减/单品补贴直接填这个数,
+#   SKU级别不支持打折, 故不再出折), 中促/大促/超大促。替代旧乘法系数。
+_PRICING_DISCOUNT_FIELDS = ["mid_disc_amt", "big_disc_amt", "big618_disc_amt"]
 # 分类 → (表头底色, 字段列表); 表头按分类上色, 排版一眼分区
 _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("标识", "1F4E79", ["id", "product_code", "product_name", "taobao_title", "sku", "sku_code", "size_category", "size_info"]),
@@ -990,11 +988,10 @@ def build_signup_form_xlsx(db: Session):
 
     headers = ["产品图", "产品名称", "规格", "一口价", "日常价(活动价)",
                "中促到手", "大促到手", "88VIP大促报名价", "超大促报名价(618/双11)",
-               "中促单品立减(折)", "中促立减(元)", "大促单品立减(折)", "大促立减(元)",
-               "超大促单品立减(折)", "超大促立减(元)"]
+               "中促降价金额(元)", "大促降价金额(元)", "超大促降价金额(元)"]
     money = "#,##0.00"
-    money_cols = {4, 5, 6, 7, 8, 9, 11, 13, 15}     # 价格 + 立减金额列
-    zhe_cols = {10, 12, 14}                          # 折列
+    money_cols = {4, 5, 6, 7, 8, 9, 10, 11, 12}     # 价格 + 降价金额列 (单品立减全用减金额, 不再出折)
+    zhe_cols: set[int] = set()
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1013,7 +1010,7 @@ def build_signup_form_xlsx(db: Session):
     tip = ws.cell(1, 1,
                   "淘宝加法口径: 到手 = 活动价 − 官方立减 − 单品立减 (官方立减 日常10%/88VIP大促12%/618双11 15%, 平台自动扣)。"
                   "★两种填法【二选一, 千万别混】: "
-                  "【① 常规·推荐】活动价填『日常价』, 再填『单品立减(折 或 立减金额)』→ 到手=各档「到手」列。 "
+                  "【① 常规·推荐】活动价填『日常价』, 再填『单品立减(各档降价金额, 元)』→ 到手=各档「到手」列。 "
                   "【② 报名价】活动价直接填『报名价』(这数已把官方立减算进去了), 单品立减就填0/不叠, 主要给618换SKU用。 "
                   "⚠️绝不能『活动价填报名价』又『叠单品立减』—— 那是打两次折, 价格会砸穿(到手远低于目标)!")
     tip.font = Font(bold=True, color="B45309")
@@ -1042,9 +1039,7 @@ def build_signup_form_xlsx(db: Session):
                 _f(s.list_price), _f(s.daily_price),
                 _f(getattr(promo, "mid_buyer_price", None)), _f(getattr(promo, "big_buyer_price", None)),
                 _f(rp.get("report_price")), _f(rp.get("report_price_618")),
-                _zhe(sid.get("mid_discount")), _f(sid.get("mid_deduct")),
-                _zhe(sid.get("big_discount")), _f(sid.get("big_deduct")),
-                _zhe(sid.get("big618_discount")), _f(sid.get("big618_deduct")),
+                _f(sid.get("mid_deduct")), _f(sid.get("big_deduct")), _f(sid.get("big618_deduct")),
             ]
             for ci, v in enumerate(row_vals, start=1):
                 cell = ws.cell(r, ci, v)
@@ -1077,7 +1072,7 @@ def build_signup_form_xlsx(db: Session):
         for rr in range(r0, r1 + 1):
             ws.cell(rr, 1).border = border
 
-    widths = [15, 24, 16, 11, 13, 11, 11, 15, 17, 14, 12, 14, 12, 15, 13]
+    widths = [15, 24, 16, 11, 13, 11, 11, 15, 17, 15, 15, 16]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "C3"
