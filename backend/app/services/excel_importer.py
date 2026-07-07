@@ -1801,6 +1801,12 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
     # ── pricing_sku_promo (平台活动价) ──────────────────────────────────
     if promo_payload:
         promo_payload["sku_code"] = sku_code
+        # 一码多SKU: alt_taobao_sku_ids 入表是逗号/顿号分隔的字符串 → 转 list[str] 存 JSON 列
+        _alt = promo_payload.get("alt_taobao_sku_ids")
+        if isinstance(_alt, str):
+            import re as _re
+            promo_payload["alt_taobao_sku_ids"] = [
+                x.strip() for x in _re.split(r"[,，、;；\s]+", _alt) if x.strip()]
         promo_row = db.execute(
             select(PricingSkuPromo).where(PricingSkuPromo.sku_code == sku_code)
         ).scalar_one_or_none()

@@ -449,6 +449,9 @@ ENTITY_SCHEMAS: dict[str, EntitySchema] = {
                            "aliases": ["淘宝链接", "淘宝商品链接", "宝贝链接"]},
             "taobao_sku_id": {"type": "str", "required": False, "desc": "淘宝 SKU ID",
                               "aliases": ["淘宝SKUID", "淘宝SKU ID"]},
+            "alt_taobao_sku_ids": {"type": "str", "required": False,
+                                   "desc": "副淘宝SKUID(一码多SKU: 同商家编码挂的其它SKUID, 多个用逗号/顿号分隔)",
+                                   "aliases": ["副淘宝SKUID", "备用淘宝SKUID", "其它淘宝SKUID", "一码多SKU", "alt淘宝SKUID"]},
             "taobao_activity_price": {"type": "decimal", "required": False, "desc": "淘宝活动报名价 (= 日常价)",
                                       "aliases": ["淘宝活动报名价", "淘宝活动价", "淘宝报名价"]},
             # ── 店内活动价 (→ pricing_sku_promo) ─────────────────────

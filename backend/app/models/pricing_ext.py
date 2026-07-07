@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from typing import Optional
-from sqlalchemy import DateTime, Numeric, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base, TimestampMixin
 
@@ -49,6 +49,8 @@ class PricingSkuPromo(Base, TimestampMixin):
     taobao_item_id: Mapped[Optional[str]] = mapped_column(String(64))
     taobao_url: Mapped[Optional[str]] = mapped_column(String(512))  # 淘宝链接
     taobao_sku_id: Mapped[Optional[str]] = mapped_column(String(64))
+    # 一码多SKU: 同一商家编码在淘宝挂的其它 SKUID(主=taobao_sku_id)。导出报名/单品立减时, 主+每个alt 各出一行同价。
+    alt_taobao_sku_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     taobao_activity_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))  # = daily_price
     # 店内活动
     shop_promo_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))         # 单品立减系数

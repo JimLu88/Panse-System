@@ -1150,10 +1150,16 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
         if d is None:                                 # 官方立减已够 / 缺买家价 → 跳过
             stats["skipped_no_deduct"] += 1
             continue
-        ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 长号必须文本, 防科学计数
-        ws.cell(r, 2, str(p.taobao_sku_id)).number_format = "@"
-        ws.cell(r, 3, float(d)).number_format = "0.00"             # 立减金额(元)
-        r += 1
+        # 一码多SKU: 主 SKUID + 每个 alt 各出一行, 立减金额相同(去重去空)
+        ids = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid) not in ids:
+                ids.append(str(_sid))
+        for skuid in ids:
+            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 长号必须文本, 防科学计数
+            ws.cell(r, 2, skuid).number_format = "@"
+            ws.cell(r, 3, float(d)).number_format = "0.00"             # 立减金额(元)
+            r += 1
     stats["rows"] = r - 2
 
     widths = [22, 30, 30, 26, 26]
@@ -1217,11 +1223,17 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
         if price is None:
             stats["skipped_no_price"] += 1
             continue
-        ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
-        ws.cell(r, 2, str(p.taobao_sku_id)).number_format = "@"     # SKUID 文本
-        ws.cell(r, 3, float(price)).number_format = "0.00"          # 活动价(=报名价)
-        # D 库存 / E 发货时间 / F 官方立减报名折扣 / G 官方立减金额 → 全部留空
-        r += 1
+        # 一码多SKU: 主 SKUID + 每个 alt 各出一行, 报名价相同(去重去空)
+        ids = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid) not in ids:
+                ids.append(str(_sid))
+        for skuid in ids:
+            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
+            ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
+            ws.cell(r, 3, float(price)).number_format = "0.00"         # 活动价(=报名价)
+            # D 库存 / E 发货时间 / F 官方立减报名折扣 / G 官方立减金额 → 全部留空
+            r += 1
     stats["rows"] = r - 4
 
     out = _io.BytesIO()
