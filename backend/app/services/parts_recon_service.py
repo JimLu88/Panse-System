@@ -805,6 +805,7 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                 "order_date": o.order_date.isoformat() if o.order_date else None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
+                "customer_address": o.customer_address,
                 "product_name": o.product_name,
                 "product_display": _disp(o),
                 "sku": o.sku,
@@ -833,6 +834,7 @@ def export_shipped_orders(db: Session, *, year_month: Optional[str] = None,
                 "order_date": o.order_date.isoformat() if o.order_date else None,
                 "ship_date": o.ship_date.isoformat() if o.ship_date else None,
                 "customer_name": o.customer_name,
+                "customer_address": o.customer_address,
                 "product_name": o.product_name,
                 "product_display": _disp(o),
                 "sku": o.sku,
@@ -876,13 +878,13 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
     A_RIGHT = Alignment(horizontal="right", vertical="center")
 
     if category:
-        headers = ["订单号", "发货日", "产品", "部位 / 材料", "数量", "预设尺寸", "口径", "单价", "金额"]
-        widths = [22, 12, 15, 18, 7, 18, 13, 10, 12]
-        money_cols, prod_col = [8, 9], 3
+        headers = ["订单号", "发货日", "客户", "收货地址", "产品", "部位 / 材料", "数量", "预设尺寸", "口径", "单价", "金额"]
+        widths = [22, 12, 12, 26, 15, 18, 7, 18, 13, 10, 12]
+        money_cols, prod_col = [10, 11], 5
     else:
-        headers = ["订单号", "发货日", "客户", "产品", "预估配件金额"]
-        widths = [22, 12, 12, 18, 15]
-        money_cols, prod_col = [5], 4
+        headers = ["订单号", "发货日", "客户", "收货地址", "产品", "预估配件金额"]
+        widths = [22, 12, 12, 30, 18, 15]
+        money_cols, prod_col = [6], 5
     ncol = len(headers)
     show_money = (not category) or show_est_price   # 工厂填价的分类页: 金额列留空
 
@@ -961,13 +963,15 @@ def _write_grouped_sheet(ws, d: dict, *, category: bool, show_est_price: bool = 
                             sub += _d(tp)
                     _row([o["order_no"] if pi == 0 else "",
                           (o.get("ship_date") or "") if pi == 0 else "",
+                          (o.get("customer_name") or "—") if pi == 0 else "",
+                          (o.get("customer_address") or "—") if pi == 0 else "",
                           prod if pi == 0 else "",
                           p.get("part_name") or "", p.get("qty"), size, caliber, up, tp],
                          fill=zebra, prod_small=True)
             else:
                 sub += _d(o.get("est_parts"))
                 _row([o["order_no"], o.get("ship_date") or "", o.get("customer_name") or "—",
-                      prod, o.get("est_parts")], fill=zebra, prod_small=True)
+                      o.get("customer_address") or "—", prod, o.get("est_parts")], fill=zebra, prod_small=True)
         srow = [None] * ncol
         srow[0] = f"↳ {ym} 小计"
         if show_money:

@@ -61,11 +61,16 @@ def test_export_workbook_sheets(monkeypatch):
         "caliber": "x", "ship_date_basis": True,
     }
     monkeypatch.setattr(mss, "build_center", lambda db: fake)
+    # 新版: 配件明细走 export_shipped_orders(真DB) + 打包/运费逐单 → 单测里 mock 成空, 只验结构
+    monkeypatch.setattr(mss.prs, "export_shipped_orders",
+                        lambda db, **kw: {"orders": [], "period": "test"})
+    monkeypatch.setattr(mss, "_packing_freight_orders", lambda db, **kw: ([], []))
     wb = mss.build_export_workbook(db=None)
     titles = wb.sheetnames
-    assert "月度对账汇总" in titles
-    assert "配件月结" in titles and "打包月结" in titles
-    summary_rows = list(wb["月度对账汇总"].iter_rows(values_only=True))
+    assert "月结汇总" in titles                          # 汇总页(美化)
+    assert "配件-五金" in titles                          # 配件账户逐单明细页
+    assert "打包月结明细" in titles and "运费月结明细" in titles   # 打包/运费逐单明细页
+    summary_rows = list(wb["月结汇总"].iter_rows(values_only=True))
     assert summary_rows[0] == ("域", "分类", "月份", "预估应付", "实际账单", "差异", "差异%", "发货单数")
     # 未录的打包行: 实际列文案="未录"
     packing_rows = [r for r in summary_rows if r[0] == "打包月结"]

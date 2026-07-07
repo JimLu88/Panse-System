@@ -247,6 +247,6 @@ def test_xlsx_all_orders_branch_has_order_date_col(db_session):
     db.flush()
     wb, _ = prs.build_shipped_orders_xlsx(db, year_month="2026-02")   # 无 material_key
     ws = wb.active
-    assert [c.value for c in ws[1]] == ["订单号", "发货日", "客户", "产品", "预估配件金额"]
+    assert [c.value for c in ws[1]] == ["订单号", "发货日", "客户", "收货地址", "产品", "预估配件金额"]
     assert str(ws.cell(2, 1).value).startswith("📅")   # 第2行=发货月分组标题(按月分配)
     assert ws.cell(3, 1).value == "S1"                # 月标题下=数据行(订单号)

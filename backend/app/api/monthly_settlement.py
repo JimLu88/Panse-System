@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import io
+from typing import Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Query
@@ -26,12 +27,24 @@ def center(db: Session = Depends(get_db)) -> dict:
 
 
 @router.get("/export")
-def export(db: Session = Depends(get_db)):
-    """一键导出全部月结账单 xlsx(汇总 sheet + 每域 sheet, 内存生成不落盘)。"""
-    wb = mss.build_export_workbook(db)
+def export(
+    date_from: Optional[str] = Query(None, description="发货日起 'YYYY-MM-DD'(与 year_month 二选一)"),
+    date_to: Optional[str] = Query(None, description="发货日止 'YYYY-MM-DD'"),
+    year_month: Optional[str] = Query(None, description="单月 'YYYY-MM'"),
+    db: Session = Depends(get_db),
+):
+    """一键导出全部月结账单 xlsx(月结汇总 + 配件四账户逐单BOM明细 + 打包/运费逐单明细, 内存生成不落盘)。
+    不传日期=全部账期; 传 date_from/date_to 或 year_month = 按发货日圈定明细页。"""
+    wb = mss.build_export_workbook(db, date_from=date_from, date_to=date_to, year_month=year_month)
     buf = io.BytesIO()
     wb.save(buf)
-    fname = "月度对账_全部月结.xlsx"
+    if year_month:
+        tag = year_month
+    elif date_from or date_to:
+        tag = f"{date_from or ''}~{date_to or ''}"
+    else:
+        tag = "全部账期"
+    fname = f"月结账单_{tag}.xlsx"
     return StreamingResponse(
         io.BytesIO(buf.getvalue()),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

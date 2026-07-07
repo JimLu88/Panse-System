@@ -144,36 +144,168 @@ def build_center(db: Session) -> dict:
     }
 
 
-def build_export_workbook(db: Session):
-    """一键导出: 全部月结账单(每个月×每种月结)。汇总 sheet + 每域一个 sheet。"""
+def _write_summary_ws(ws, data: dict) -> None:
+    """月结汇总(美化): 域/分类/月/预估应付/实际账单/差异/差异%/发货单数; 蓝底表头 + 差异三色。"""
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    thin = Side(style="thin", color=prs._C_BORDER)
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    AC = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    headers = ["域", "分类", "月份", "预估应付", "实际账单", "差异", "差异%", "发货单数"]
+    ws.append(headers)
+    for ci in range(1, len(headers) + 1):
+        c = ws.cell(1, ci)
+        c.fill = PatternFill("solid", fgColor=prs._C_HEADER)
+        c.font = Font(bold=True, color="FFFFFF", size=11)
+        c.border = BORDER
+        c.alignment = AC
+    ws.row_dimensions[1].height = 24
+    r = 2
+    for dom in data["domains"]:
+        for g in dom["groups"]:
+            for row in g["rows"]:
+                ws.append([dom["label"], g["label"], row["period"], row["estimate"],
+                           row["actual"] if row["actual"] is not None else "未录",
+                           row["variance"] if row["variance"] is not None else "",
+                           f'{row["variance_pct"]}%' if row["variance_pct"] is not None else "",
+                           row.get("order_count") or ""])
+                for ci in range(1, len(headers) + 1):
+                    c = ws.cell(r, ci)
+                    c.border = BORDER
+                    c.alignment = AC
+                    if ci in (4, 5, 6) and isinstance(c.value, (int, float)):
+                        c.number_format = "#,##0.00"
+                var = row["variance"]
+                if var is not None:
+                    col = "16A34A" if var < 0 else ("DC2626" if var > 0 else "6B7280")
+                    ws.cell(r, 6).font = Font(color=col, bold=True)
+                r += 1
+    for i, w in enumerate([12, 16, 10, 14, 14, 13, 10, 10], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    ws.sheet_view.showGridLines = False
+
+
+def _write_settle_detail(ws, orders: list, *, est_label: str, act_label: str) -> None:
+    """打包/运费 逐单明细(美化, 按发货月分组): 订单号/发货日/客户/收货地址/产品/预估X/实际X + 月小计/总计。"""
+    from itertools import groupby
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.utils import get_column_letter
+    thin = Side(style="thin", color=prs._C_BORDER)
+    BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
+    AC = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    AL = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    AR = Alignment(horizontal="right", vertical="center")
+    headers = ["订单号", "发货日", "客户", "收货地址", "产品", est_label, act_label]
+    ncol, money_cols = len(headers), [6, 7]
+
+    def _row(vals, *, fill=None, bold=False, fc=None, h=21):
+        ws.append(vals)
+        rr = ws.max_row
+        ws.row_dimensions[rr].height = h
+        for ci in range(1, ncol + 1):
+            c = ws.cell(rr, ci)
+            c.border = BORDER
+            c.font = Font(bold=bold, color=fc, size=11)
+            if fill:
+                c.fill = PatternFill("solid", fgColor=fill)
+            if ci == 1:
+                c.number_format = "@"; c.alignment = AL
+            elif ci in money_cols:
+                if isinstance(c.value, (int, float)):
+                    c.number_format = "#,##0.00"
+                c.alignment = AR
+            elif ci in (4, 5):
+                c.alignment = AL
+            else:
+                c.alignment = AC
+        return rr
+
+    _row(headers, fill=prs._C_HEADER, bold=True, fc="FFFFFF", h=26)
+    ge = ga = Decimal("0")
+    for ym, grp in groupby(orders, key=lambda o: (o.get("ship_date") or "")[:7] or "无发货日"):
+        grp = list(grp)
+        hr = _row([f"📅 {ym}　发货 {len(grp)} 单"] + [None] * (ncol - 1), fill=prs._C_MONTH, bold=True, h=24)
+        ws.merge_cells(start_row=hr, start_column=1, end_row=hr, end_column=ncol)
+        ws.cell(hr, 1).alignment = AL
+        se = sa = Decimal("0")
+        for oi, o in enumerate(grp):
+            e, a = o.get("est"), o.get("act")
+            se += Decimal(str(e or 0))
+            sa += Decimal(str(a)) if a is not None else Decimal("0")
+            _row([o["order_no"], o.get("ship_date") or "", o.get("customer_name") or "—",
+                  o.get("customer_address") or "—", o.get("product") or "",
+                  e, (a if a is not None else "未录")], fill=(prs._C_ZEBRA if oi % 2 else None))
+        sr = [None] * ncol
+        sr[0] = f"↳ {ym} 小计"; sr[5] = float(se); sr[6] = float(sa)
+        _row(sr, fill=prs._C_SUBTOTAL, bold=True, h=20)
+        ge += se; ga += sa
+    tr = [None] * ncol
+    tr[0] = "总计"; tr[5] = float(ge); tr[6] = float(ga)
+    _row(tr, fill=prs._C_TOTAL, bold=True, h=26)
+    for i, w in enumerate([22, 12, 12, 30, 18, 13, 13], 1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    ws.sheet_view.showGridLines = False
+
+
+def _packing_freight_orders(db: Session, *, date_from=None, date_to=None, year_month=None):
+    """区间内 已成交已发货单 → (打包逐单, 运费逐单); 每单含 客户/收货地址/产品/预估/实际。"""
+    def _in_range(sd) -> bool:
+        if not sd:
+            return False
+        s = sd.isoformat()
+        if year_month:
+            return s[:7] == year_month
+        if date_from and s < date_from:
+            return False
+        if date_to and s > date_to:
+            return False
+        return True
+
+    pack, frgt = [], []
+    for o in prs._settled_shipped_orders(db):
+        if not _in_range(o.ship_date):
+            continue
+        base = {"order_no": o.order_no, "ship_date": o.ship_date.isoformat() if o.ship_date else "",
+                "customer_name": o.customer_name, "customer_address": o.customer_address,
+                "product": prs._disp(o)}
+        pack.append({**base, "est": float(o.est_packing or 0),
+                     "act": (float(o.actual_packing) if o.actual_packing is not None else None)})
+        frgt.append({**base, "est": float(o.est_logistics or 0),
+                     "act": (float(o.actual_logistics) if o.actual_logistics is not None else None)})
+    pack.sort(key=lambda x: (x["ship_date"], x["order_no"]))
+    frgt.sort(key=lambda x: (x["ship_date"], x["order_no"]))
+    return pack, frgt
+
+
+def build_export_workbook(db: Session, *, date_from=None, date_to=None, year_month=None):
+    """一键导出全部月结账单 xlsx(『配件采购』好格式): 月结汇总 + 配件四账户逐单BOM明细 +
+    打包/运费逐单明细。每单带客户名+收货地址。可选 发货日区间(date_from~date_to) 或单月(year_month)。"""
     import openpyxl
 
-    data = build_center(db)
+    data = build_center(db)     # 汇总仍是全量口径; 区间只影响下面明细页
     wb = openpyxl.Workbook()
-    head = ["域", "分类", "月份", "预估应付", "实际账单", "差异", "差异%", "发货单数"]
+    _write_summary_ws(wb.active, data)
+    wb.active.title = "月结汇总"
 
-    def _cells(dom_label, group_label, r):
-        return [dom_label, group_label, r["period"], r["estimate"],
-                r["actual"] if r["actual"] is not None else "未录",
-                r["variance"] if r["variance"] is not None else "",
-                f'{r["variance_pct"]}%' if r["variance_pct"] is not None else "",
-                r.get("order_count") or ""]
-
-    ws = wb.active
-    ws.title = "月度对账汇总"
-    ws.append(head)
+    # 配件四账户(五金/电力轨道/岩板/玻璃) 各一页逐单展开 BOM + 系统预估单价/金额(复用配件采购好格式)。
+    # export_shipped_orders 必须有日期圈定 → 无筛选(全部账期)时给全区间。
+    a_from, a_to, a_ym = date_from, date_to, year_month
+    if not (date_from or date_to or year_month):
+        a_from, a_to = "1970-01-01", "2999-12-31"
     for dom in data["domains"]:
+        if dom["key"] != "parts":
+            continue
         for g in dom["groups"]:
-            for r in g["rows"]:
-                ws.append(_cells(dom["label"], g["label"], r))
+            d = prs.export_shipped_orders(db, material_key=g["key"],
+                                          date_from=a_from, date_to=a_to, year_month=a_ym)
+            prs._write_category_ws(wb.create_sheet(("配件-" + g["label"])[:28]), d, show_est_price=True)
 
-    for dom in data["domains"]:
-        title = dom["label"][:31] or dom["key"]
-        ws = wb.create_sheet(title)
-        ws.append(head[1:])  # 该域内不重复"域"列
-        for g in dom["groups"]:
-            for r in g["rows"]:
-                ws.append(_cells(dom["label"], g["label"], r)[1:])
+    # 打包 / 运费 逐单明细
+    pack, frgt = _packing_freight_orders(db, date_from=date_from, date_to=date_to, year_month=year_month)
+    _write_settle_detail(wb.create_sheet("打包月结明细"), pack, est_label="预估打包", act_label="实际打包")
+    _write_settle_detail(wb.create_sheet("运费月结明细"), frgt, est_label="预估运费", act_label="实际运费")
     return wb
 
 
