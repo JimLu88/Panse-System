@@ -269,7 +269,7 @@ def _packing_freight_orders(db: Session, *, date_from=None, date_to=None, year_m
             continue
         base = {"order_no": o.order_no, "ship_date": o.ship_date.isoformat() if o.ship_date else "",
                 "customer_name": o.customer_name, "customer_address": o.customer_address,
-                "product": prs._disp(o)}
+                "product": (o.product_name or o.sku or o.product_code or "")[:24]}
         pack.append({**base, "est": float(o.est_packing or 0),
                      "act": (float(o.actual_packing) if o.actual_packing is not None else None)})
         frgt.append({**base, "est": float(o.est_logistics or 0),
