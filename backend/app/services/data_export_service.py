@@ -1145,8 +1145,12 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
         if not p.taobao_sku_id:                       # SKU 级别必须有 SKU_ID
             stats["skipped_no_skuid"] += 1
             continue
-        sid = pricing_calc_service.single_item_discounts(p, s.daily_price, params)
-        d = sid.get(deduct_field)
+        if getattr(s, "is_custom_placeholder", False):
+            # 定制占位符: 立减金额 = 现价 × 10% (定制9折: 到手=现价×0.9, 立减=现价−到手=现价×0.1)
+            d = round(float(s.daily_price) * 0.1, 2) if s.daily_price else None
+        else:
+            sid = pricing_calc_service.single_item_discounts(p, s.daily_price, params)
+            d = sid.get(deduct_field)
         if d is None:                                 # 官方立减已够 / 缺买家价 → 跳过
             stats["skipped_no_deduct"] += 1
             continue
@@ -1219,7 +1223,11 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
         if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
             stats["skipped_no_skuid"] += 1
             continue
-        price = pricing_calc_service.report_prices(p, params).get(price_field)
+        if getattr(s, "is_custom_placeholder", False):
+            # 定制占位符: 报名活动价 = 现价(daily_price) × 0.9 (定制9折, 不走标准报名价模型)
+            price = round(float(s.daily_price) * 0.9, 2) if s.daily_price else None
+        else:
+            price = pricing_calc_service.report_prices(p, params).get(price_field)
         if price is None:
             stats["skipped_no_price"] += 1
             continue

@@ -65,6 +65,10 @@ class PricingSku(Base, TimestampMixin):
 
     image_url: Mapped[Optional[str]] = mapped_column(String(512))
     remark: Mapped[Optional[str]] = mapped_column(Text)  # 备注
+    # 定制占位符 (2026-07-07): 淘宝上的"微定制/材质定制/尺寸定制/差价/追加配件"等占位链接SKU。
+    # 仅用于淘宝活动报名(导出活动价=现价×0.9); 不参与产品成本/利润/对账计算; 下单走现有定制计价流程
+    # (编码尾号≥90 本就被 sku_utils.is_custom_sku_code 判为定制)。recompute 对其直接跳过。
+    is_custom_placeholder: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
     __table_args__ = (
         Index("ix_pricing_sku_size", "size_category"),

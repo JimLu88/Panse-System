@@ -48,6 +48,9 @@ def recompute(sku: PricingSku) -> None:
       会计成本 N = 物理成本 + 平台费 + 税
       大促利润 L = 大促价 − 会计成本 ; 毛利率 M = 大促利润 ÷ 大促价
     """
+    # 定制占位符 (2026-07-07): 仅淘宝报名用, 不参与产品成本/价格链/利润计算 → 直接跳过, 保持 daily_price=现价 原值。
+    if getattr(sku, "is_custom_placeholder", False):
+        return
     cent = Decimal("0.01")
     zero = Decimal("0")
     # 1) 工厂成本: 未手动覆盖时 = 木作+包装+外配件 (改组件即联动); 覆盖时保留用户手改值
