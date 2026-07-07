@@ -763,8 +763,12 @@ def _job_ingest_scan(db: Session) -> dict:
 
 
 def _job_order_sheets_daily(db: Session) -> dict:
-    """每天 18:00: 给已付款新订单补生成下单图 → 存导入档案 → 推飞书群 (用户拍板)。"""
-    from app.services import order_sheet_archive_service
+    """每天 18:00: 给已付款新订单补生成下单图 → 存导入档案 → 推飞书群 (用户拍板)。
+    新鲜度门(2026-07-07): 今日订单未取数成功→暂缓推送, 防隔夜旧数据把已关闭单误推;
+    等 pull_catchup 把 PC 取数补上、数据新鲜后再推。"""
+    from app.services import agent_ingest_service, order_sheet_archive_service
+    if not agent_ingest_service.order_data_fresh(db):
+        return {"skipped": "stale_order_data", "note": "今日订单未取数, 暂缓推送(防旧数据误推)"}
     return order_sheet_archive_service.push_daily(db)
 
 
@@ -774,11 +778,56 @@ def _job_order_sheets_catchup(db: Session) -> dict:
     修复"三天两头坏"(用户 2026-06-26): 原来只生成不推, 推送只在 18:00 跑一次 ——
     与 18:00 的订单拉取撞车、或 api 重启误过 18:00 → 当天订单整天不进工厂群。
     改成每小时补推 (quiet: 不发 ZIP/无地址提醒, 那两样留 18:00 日报), 订单 1 小时内必达、自愈。
+    新鲜度门(2026-07-07): 今日订单未取数成功→不生成/不推(防旧数据把已关闭单误推), 等续跑补取数。
     """
-    from app.services import order_sheet_archive_service as oss
+    from app.services import agent_ingest_service, order_sheet_archive_service as oss
+    if not agent_ingest_service.order_data_fresh(db):
+        return {"skipped": "stale_order_data"}
     gen = oss.generate_pending(db)
     push = oss.push_pending_images(db, limit=20, include_baseline=False, quiet=True)
     return {"generated": gen, "images_pushed": push["pushed"], "remaining": push["remaining"]}
+
+
+def _now_hour() -> int:
+    """当前小时(0-23); 抽成函数便于测试 monkeypatch。"""
+    from datetime import datetime as _dt
+    return _dt.now().hour
+
+
+def _job_pull_catchup(db: Session) -> dict:
+    """每30分钟(日间8-22): PC上线后续跑当天没完成的取数+推送 (用户 2026-07-07)。
+    背景: 订单取数每日仅 18:00 一次; 那会儿 PC 关机/重启(如17:30重启)→ 当天订单整天不刷新,
+    已关闭/改备注的单同步不进来 → 旧数据误推 / 该推的没推。
+    机制: 今日订单数据未刷新时, 每30分钟探测 PC 是否在线; 在线即重跑编排补取数,
+    取数成功(数据变新鲜)后立即补推下单图并飞书告知一次; PC 仍离线则静默等下一轮。"""
+    from app.services import agent_ingest_service as ai, web_agent_service
+    if not (8 <= _now_hour() < 22):
+        return {"skipped": "off_hours"}
+    if ai.order_data_fresh(db):
+        return {"ok": "already_fresh"}
+    if ai.is_running():
+        return {"skipped": "orchestrate_running"}
+    if not web_agent_service.health(db).get("online"):
+        return {"waiting": "pc_offline"}          # PC 还没上线, 下个30分钟再探
+    res = ai.orchestrate(db, quiet=True)          # PC在线+今日陈旧 → 补取数(quiet防刷屏)
+    out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
+           "pending_manual": len(res.get("pending_manual", []))}
+    if ai.order_data_fresh(db):                   # 取数成功→数据新鲜→立即补生成+补推
+        from app.services import order_sheet_archive_service as oss
+        gen = oss.generate_pending(db)
+        push = oss.push_pending_images(db, limit=50, include_baseline=False, quiet=True)
+        out["generated"] = gen
+        out["images_pushed"] = push["pushed"]
+        try:
+            from app.services import notify_service
+            notify_service.notify(
+                db, f"✅ PC 已上线, 自动补取数完成并补推下单图 {push['pushed']} 张 (漏取数续跑)。",
+                level="info", title="畔色 ERP [取数续跑]")
+        except Exception:  # pragma: no cover
+            pass
+    else:
+        out["still_stale"] = True                 # 需扫码/导出失败 → 数据仍陈旧, 下轮再试
+    return out
 
 
 def _job_void_sheets(db: Session) -> dict:
@@ -1338,6 +1387,8 @@ def _register_default_jobs() -> None:
                  _job_recon_snapshot, cron={"hour": 22, "minute": 45})   # 夜间模式: 挪 23:30→22:45
     register_job("hourly_order_sheets_catchup", "下单图增量补生成(导入后1小时内)",
                  _job_order_sheets_catchup, interval_minutes=60)
+    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (漏取数补偿, 日间每30分钟)",
+                 _job_pull_catchup, interval_minutes=30)
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",

@@ -665,7 +665,22 @@ def _due(state: dict, category: str, interval_days: int, force: bool) -> bool:
         return True
 
 
-def orchestrate(db: Session, *, force: bool = False) -> dict:
+def order_data_fresh(db: Session, *, on=None) -> bool:
+    """今日淘宝订单数据是否已刷新 = web_agent_state.taobao_report 日期 >= 今天。
+    作自动推送的「新鲜度门」: 订单近3月全量取数成功(或当天有订单报表导入)才算新鲜 —
+    防用隔夜旧数据把已关闭/已退款的单误推工厂群 (2026-07-07 关闭单误推根治)。"""
+    from datetime import date as _date, datetime as _dt
+    state = _load_json(db, KEY_STATE)
+    tr = state.get("taobao_report")
+    if not tr:
+        return False
+    try:
+        return _dt.fromisoformat(tr).date() >= (on or _date.today())
+    except (ValueError, TypeError):
+        return False
+
+
+def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
                  "tasks": [], "pending_manual": [], "skipped": []}
@@ -764,18 +779,19 @@ def orchestrate(db: Session, *, force: bool = False) -> dict:
     _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
     db.commit()
 
-    # 飞书汇总 (复用机器人通道; 测试环境 PANSE_DISABLE_NOTIFY 静默)
-    try:
-        from app.services import notify_service
-        ing = out["ingest"]
-        text = (f"自动取数完成: 任务 {len(out['tasks'])} 个, "
-                f"新导入 {ing.get('imported', 0)} 份, 待人工 {len(out['pending_manual'])} 项。")
-        if out["pending_manual"]:
-            text += "\n待人工: " + "; ".join(
-                f"{p['task']}({p['reason'][:40]})" for p in out["pending_manual"][:5])
-        notify_service.notify(db, text, level="info", title="畔色 ERP [自动取数日报]")
-    except Exception:  # pragma: no cover
-        pass
+    # 飞书汇总 (复用机器人通道; 测试环境 PANSE_DISABLE_NOTIFY 静默; quiet=续跑补取数不刷屏)
+    if not quiet:
+        try:
+            from app.services import notify_service
+            ing = out["ingest"]
+            text = (f"自动取数完成: 任务 {len(out['tasks'])} 个, "
+                    f"新导入 {ing.get('imported', 0)} 份, 待人工 {len(out['pending_manual'])} 项。")
+            if out["pending_manual"]:
+                text += "\n待人工: " + "; ".join(
+                    f"{p['task']}({p['reason'][:40]})" for p in out["pending_manual"][:5])
+            notify_service.notify(db, text, level="info", title="畔色 ERP [自动取数日报]")
+        except Exception:  # pragma: no cover
+            pass
     return out
 
 
