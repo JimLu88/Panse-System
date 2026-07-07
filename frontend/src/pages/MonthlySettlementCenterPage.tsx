@@ -8,11 +8,13 @@
  * (打包/运费早已计入每单 physical_cost)。全部按发货日期(ship_date)对账。
  */
 import { useState } from 'react';
-import { Alert, Button, Card, Collapse, Dropdown, Empty, Space, Table, Tag, Typography, message } from 'antd';
-import { DownloadOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Collapse, DatePicker, Dropdown, Empty, Popover, Space, Table, Tag, Typography, message } from 'antd';
+import { CalendarOutlined, DownloadOutlined, PrinterOutlined, ReloadOutlined } from '@ant-design/icons';
+import type { Dayjs } from 'dayjs';
 import { useQuery } from '@tanstack/react-query';
 import {
   downloadMonthlySettlementAll,
+  downloadMonthlySettlementRange,
   downloadPackingChecklistXlsx,
   fetchMonthlySettlementCenter,
   fetchPackingChecklist,
@@ -134,6 +136,8 @@ function GroupTable({ group, domainKey }: { group: SettlementGroup; domainKey: s
 
 export default function MonthlySettlementCenterPage() {
   const [exporting, setExporting] = useState(false);
+  const [range, setRange] = useState<[Dayjs | null, Dayjs | null] | null>(null);
+  const [rangeOpen, setRangeOpen] = useState(false);
   const { data, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['monthly-settlement-center'],
     queryFn: fetchMonthlySettlementCenter,
@@ -144,6 +148,20 @@ export default function MonthlySettlementCenterPage() {
     try {
       await downloadMonthlySettlementAll();
       message.success('已导出全部月结账单');
+    } catch (e: any) {
+      message.error(`导出失败: ${e?.response?.data?.detail || e?.message || e}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const onExportRange = async () => {
+    if (!range || !range[0] || !range[1]) { message.warning('请先选发货日区间'); return; }
+    setExporting(true);
+    try {
+      await downloadMonthlySettlementRange(range[0].format('YYYY-MM-DD'), range[1].format('YYYY-MM-DD'));
+      message.success('已按日期导出月结账单');
+      setRangeOpen(false);
     } catch (e: any) {
       message.error(`导出失败: ${e?.response?.data?.detail || e?.message || e}`);
     } finally {
@@ -165,6 +183,22 @@ export default function MonthlySettlementCenterPage() {
           <Button type="primary" icon={<DownloadOutlined />} onClick={onExport} loading={exporting}>
             一键导出全部月结账单
           </Button>
+          <Popover
+            open={rangeOpen}
+            onOpenChange={setRangeOpen}
+            trigger="click"
+            placement="bottomRight"
+            title="按发货日区间导出(同款好格式)"
+            content={
+              <Space direction="vertical" size="small">
+                <DatePicker.RangePicker value={range as any} onChange={(v) => setRange(v as any)} />
+                <Button type="primary" size="small" block icon={<DownloadOutlined />}
+                  loading={exporting} onClick={onExportRange}>导出这段</Button>
+              </Space>
+            }
+          >
+            <Button icon={<CalendarOutlined />}>按日期导出</Button>
+          </Popover>
         </Space>
       </Space>
 

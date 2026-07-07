@@ -41,16 +41,28 @@ export const fetchMonthlySettlementCenter = () =>
   api.get<MonthlySettlementCenter>('/api/monthly-settlement/center').then((r) => r.data);
 
 // 通过带鉴权的 axios 实例取 blob 再触发下载 (window.open 直链会丢 Authorization 头 → 401)。
-export async function downloadMonthlySettlementAll() {
-  const resp = await api.get('/api/monthly-settlement/export', { responseType: 'blob' });
-  const url = window.URL.createObjectURL(resp.data as Blob);
+function _saveBlob(data: Blob, filename: string) {
+  const url = window.URL.createObjectURL(data);
   const a = document.createElement('a');
   a.href = url;
-  a.download = '月度对账_全部月结.xlsx';
+  a.download = filename;
   document.body.appendChild(a);
   a.click();
   a.remove();
   window.URL.revokeObjectURL(url);
+}
+
+export async function downloadMonthlySettlementAll() {
+  const resp = await api.get('/api/monthly-settlement/export', { responseType: 'blob' });
+  _saveBlob(resp.data as Blob, '月结账单_全部账期.xlsx');
+}
+
+/** 按发货日区间导出月结账单(好格式, 与一键导出同结构)。 */
+export async function downloadMonthlySettlementRange(dateFrom: string, dateTo: string) {
+  const resp = await api.get('/api/monthly-settlement/export', {
+    params: { date_from: dateFrom, date_to: dateTo }, responseType: 'blob',
+  });
+  _saveBlob(resp.data as Blob, `月结账单_${dateFrom}~${dateTo}.xlsx`);
 }
 
 // ── 打包导清单(当月发货单 + 每单预估/实际打包费, 给打包供应商核对) ──────────────
