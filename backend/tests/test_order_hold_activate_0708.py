@@ -98,3 +98,36 @@ def test_repush_activated_skips_normal_and_already_activated(db_session, monkeyp
     res = oss.repush_activated(db_session)
     assert "NORM2" not in res["reset_for_new_no"]   # 普通单不动
     assert "AL2" not in res["reset_for_new_no"]      # 已激活态推过, 不重复
+
+
+# ---- void_remote_pushed: 已推工厂但现延期的单 → 作废旧号+挂起 ----
+
+def test_void_remote_pushed_voids_delayed(db_session, monkeypatch):
+    monkeypatch.setattr(import_storage, "delete_record",
+                        lambda db, fid: db.delete(db.get(ImportedFile, fid)))
+    o = _order(order_no="DLY", remark="延迟等通知", factory_no=282)       # 已推 + 现延期
+    db_session.add(o)
+    db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_DLY.jpg",
+                                stored_path="/x/DLY.jpg", row_summary={"pushed": True}))
+    db_session.add(_order(order_no="OK", factory_no=283))                 # 普通已推 → 不动
+    db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_OK.jpg",
+                                stored_path="/x/OK.jpg", row_summary={"pushed": True}))
+    db_session.commit()
+    res = oss.void_remote_pushed(db_session)
+    assert "DLY" in res["voided_remote"]
+    assert "OK" not in res["voided_remote"]
+    db_session.refresh(o)
+    assert o.factory_no is None       # 延期单作废旧号 → 清号挂起
+
+
+def test_remind_remote_pushed_lists_delayed(db_session):
+    db_session.add(_order(order_no="DLY2", remark="装修好再发", factory_no=290))
+    db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_DLY2.jpg",
+                                stored_path="/x/DLY2.jpg", row_summary={"pushed": True}))
+    db_session.add(_order(order_no="OK2", factory_no=291))
+    db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_OK2.jpg",
+                                stored_path="/x/OK2.jpg", row_summary={"pushed": True}))
+    db_session.commit()
+    res = oss.remind_remote_pushed(db_session)   # PANSE_DISABLE_NOTIFY 下不真推, 只返回名单
+    assert "DLY2" in res["remind_remote"]
+    assert "OK2" not in res["remind_remote"]

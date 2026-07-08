@@ -698,12 +698,122 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
     return {"reset_for_new_no": changed}
 
 
+def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | None" = None) -> dict:
+    """已推工厂、但现在已延期/远期(挂起)的单 → 作废旧工厂号 + 通知工厂勿做 + 清号挂起 (用户 2026-07-08)。
+
+    **显式作废动作**(会给工厂群发"X号作废"): 只在用户确认后调用; order_nos 限定只作废指定单
+    (缺省 None = 全部延期挂号单, 慎用)。命中 = 有推过的下单图 + 现 is_remote(远期且未激活) + 未取消/退款
+    + 有工厂号。动作 = 飞书"X号作废(已延期)" + 删旧下单图 + 清 factory_no → 回到挂起态后续不再推;
+    等激活(开始制作)后再以新号重下。日常只【提醒】不自动作废 → 见 remind_remote_pushed。"""
+    from app.services import order_flags, feishu_client, settings_service
+    seen: dict = {}
+    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if not (rec.row_summary or {}).get("pushed"):
+            continue
+        no = _order_no_from_name(rec.original_filename)
+        if no:
+            seen.setdefault(no, []).append(rec)
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    voided: list = []
+    for no, recs in seen.items():
+        if len(voided) >= limit:
+            break
+        if order_nos is not None and no not in order_nos:
+            continue
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not order_flags.is_remote(order):
+            continue   # 现在不是远期挂起(已激活/普通) → 不作废
+        old_no = getattr(order, "factory_no", None)
+        if old_no is None:
+            continue
+        if chat_id:
+            try:
+                feishu_client.send_text(
+                    db, chat_id,
+                    f"⚠️ 订单 {no} 原【畔色 {old_no} 单】作废 —— 该单已备注延期/等通知, 请勿生产; "
+                    f"待客户通知开始制作后会以新号重下。")
+            except Exception:  # noqa: BLE001
+                _logger.warning("延期作废提示发送失败 %s", no, exc_info=True)
+        for r in recs:
+            import_storage.delete_record(db, r.id)
+        order.factory_no = None
+        db.flush()
+        voided.append(no)
+    if voided:
+        db.commit()
+    return {"voided_remote": voided}
+
+
+def remind_remote_pushed(db: Session) -> dict:
+    """已推工厂、但现在已延期/远期的单 → 只【提醒用户】(不自动作废, 防误废工厂已在做的单) (用户 2026-07-08)。
+    列出这些单发到用户通知渠道; 用户确认后再用 void_remote_pushed(order_nos=...) 作废其工厂号。"""
+    from app.services import order_flags
+    seen: set = set()
+    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if not (rec.row_summary or {}).get("pushed"):
+            continue
+        no = _order_no_from_name(rec.original_filename)
+        if no:
+            seen.add(no)
+    items: list = []
+    for no in seen:
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if getattr(order, "factory_no", None) is None:
+            continue
+        if order_flags.is_remote(order):
+            items.append((no, order.factory_no))
+    if items:
+        lines = "\n".join(f"  · 畔色 {fno} 单 (订单 {no})" for no, fno in sorted(items, key=lambda x: x[1]))
+        txt = (f"⚠️ 以下 {len(items)} 单已备注【延期/等通知】但仍挂着工厂制单号(已推工厂):\n{lines}\n"
+               f"👉 若确认要暂缓, 请作废其工厂号(客户通知开始制作后再以新号重下); 若工厂已在做则忽略。")
+        try:
+            from app.services import notify_service
+            notify_service.notify(db, txt, level="warn", title="畔色 ERP [延期单仍挂工厂号]")
+        except Exception:  # noqa: BLE001
+            _logger.warning("延期单提醒发送失败", exc_info=True)
+    return {"remind_remote": [no for no, _ in items]}
+
+
+def renumber_order(db: Session, order_no: str, *, reason: str = "重开") -> dict:
+    """把指定单作废旧工厂号、以【新工厂号】重推 (手动/激活老单重编号共用)。
+    删旧下单图 + 清 factory_no + 通知工厂旧号作废, 再生成新图 + 推 → 顺排新号。返回新旧号。"""
+    from app.services import feishu_client, settings_service
+    order = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if not order:
+        return {"error": "order_not_found", "order_no": order_no}
+    old_no = getattr(order, "factory_no", None)
+    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if _order_no_from_name(rec.original_filename) == order_no:
+            import_storage.delete_record(db, rec.id)
+    order.factory_no = None
+    db.flush()
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    if chat_id and old_no:
+        try:
+            feishu_client.send_text(
+                db, chat_id, f"⚠️ 订单 {order_no} 原【畔色 {old_no} 单】作废({reason}), 现以新号重推如下。")
+        except Exception:  # noqa: BLE001
+            _logger.warning("重编号作废提示发送失败 %s", order_no, exc_info=True)
+    db.commit()
+    generate_for_order(db, order)
+    db.commit()
+    push = push_pending_images(db, limit=5, include_baseline=False, only_order_nos={order_no})
+    db.refresh(order)
+    return {"order_no": order_no, "old_no": old_no, "new_no": getattr(order, "factory_no", None),
+            "pushed": push.get("pushed")}
+
+
 def push_daily(db: Session) -> dict:
     """每日 18:00: 补生成 + 把"还没推过图"的新下单图渲染成图片推飞书工厂群。
 
     历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
     """
-    repush_activated(db)   # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
+    remind_remote_pushed(db)   # 已推工厂但现已延期的单 → 只提醒用户(不自动作废工厂号) (用户 2026-07-08)
+    repush_activated(db)       # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
     result = generate_pending(db)
     n = result["generated"]
     push = push_pending_images(db, limit=20, include_baseline=False)
