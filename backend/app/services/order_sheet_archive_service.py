@@ -667,13 +667,13 @@ def baseline_existing_sheets(db: Session) -> int:
 
 
 def repush_activated(db: Session, *, limit: int = 50) -> dict:
-    """远期身份推过工厂的老单, 现已激活(备注开始制作) → 作废旧号 + 以新号重推 (用户 2026-07-08)。
+    """任何已推过图的单, 现备注改成【开始制作】(激活) → 作废旧号 + 以新号重推一次 (用户 2026-07-09:
+    不管是不是远期单, 读到开始制作都重推一次, 免遗漏; 原"仅远期身份"限制已去)。
 
-    新规则下远期单本就挂起不推; 此函数只清理【本次改版前已按远期身份推过】的存量老单(如 247):
-    命中 = 有推过的下单图 + 那张不是"激活态"推的(row_summary.activated != True) + 订单现已激活
-        + 曾是远期身份(is_remote_ship 或备注含远期词; 防普通单因加"开始制作"就误重编号)。
-    动作 = 给工厂群发一条"原X号作废"提示 + 删旧下单图归档 + 清 order.factory_no
-        → 随后 generate_pending/push_pending_images 会给它生成新图、顺排【新工厂号】重推(记 activated=True, 幂等)。
+    命中 = 有推过的下单图 + 那张不是"激活态"推的(row_summary.activated != True) + 订单现已激活。
+    幂等 = 激活态推的图带 activated=True 下次跳过; 未激活的单被上面 is_activated 判定挡掉, 不误动。
+    动作 = 有旧工厂号则给工厂群发"原X号作废"提示 + 删旧下单图归档 + 清 order.factory_no
+        → 随后 generate_pending/push_pending_images 生成新图、顺排【新工厂号】重推(记 activated=True)。
     """
     from app.services import order_flags, feishu_client, settings_service
     seen: dict = {}
@@ -695,8 +695,8 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
             continue
         if not order_flags.is_activated(order):
             continue   # 现在没激活(还是远期挂起) → 不动
-        if not (getattr(order, "is_remote_ship", False) or order_flags.has_remote_keyword(order)):
-            continue   # 不是远期身份 → 普通单不因加"开始制作"就重编号
+        # 用户 2026-07-09: 不管是不是远期单, 只要备注读到"开始制作"就重推一次(免遗漏)。
+        # 原限"曾是远期身份"已去掉; 幂等靠 activated=True 标记(激活态推过的不再进来)。
         old_no = getattr(order, "factory_no", None)
         if chat_id and old_no:
             try:

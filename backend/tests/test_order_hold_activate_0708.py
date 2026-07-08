@@ -83,21 +83,21 @@ def test_repush_activated_resets_legacy(db_session, monkeypatch):
     assert left == 0                  # 旧下单图归档已删
 
 
-def test_repush_activated_skips_normal_and_already_activated(db_session, monkeypatch):
+def test_repush_activated_covers_normal_but_idempotent(db_session, monkeypatch):
     monkeypatch.setattr(import_storage, "delete_record",
                         lambda db, fid: db.delete(db.get(ImportedFile, fid)))
-    # 普通单(非远期)加了"开始制作" → 不该重编号
+    # 普通单(非远期)加了"开始制作" → 现在也要重推一次 (用户 2026-07-09: 不管是否远期都重推, 免遗漏)
     db_session.add(_order(order_no="NORM2", remark="开始制作", factory_no=201))
     db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_NORM2.jpg",
                                 stored_path="/x/NORM2.jpg", row_summary={"pushed": True}))
-    # 已是激活态推过的远期单 → 不重复
+    # 已是激活态推过的单 → 幂等不重复
     db_session.add(_order(order_no="AL2", is_remote_ship=True, remark="开始制作", factory_no=202))
     db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_AL2.jpg",
                                 stored_path="/x/AL2.jpg", row_summary={"pushed": True, "activated": True}))
     db_session.commit()
     res = oss.repush_activated(db_session)
-    assert "NORM2" not in res["reset_for_new_no"]   # 普通单不动
-    assert "AL2" not in res["reset_for_new_no"]      # 已激活态推过, 不重复
+    assert "NORM2" in res["reset_for_new_no"]       # 普通单加开始制作也重推(不再遗漏)
+    assert "AL2" not in res["reset_for_new_no"]      # 已激活态推过, 幂等不重复
 
 
 # ---- void_remote_pushed: 已推工厂但现延期的单 → 作废旧号+挂起 ----
