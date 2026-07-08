@@ -38,7 +38,12 @@ def _is_refunded(o: Order) -> bool:
     """是否退款作废: 状态关闭/退货, 或退款状态含退款/退货, 或【全额(≥90%)退款】。
     小额差价/运费退款(如 ¥5)不算作废 (用户拍板 2026-06-12: 避免误把差价单作废/拦推送)。"""
     rs = o.refund_status or ""
-    if (o.status or "") == "cancelled" or any(k in rs for k in ("退款", "退货", "关闭")):
+    # 2026-07-08 修子串误判: 淘宝『没有申请退款』(正常无退款态)带"退款"二字被 `"退款" in rs`
+    # 误判成已退款 → 误拦下单图生成+工厂推送。先排除这些【含"退款"字样但实际没退】的状态。
+    _NOT_REFUND = ("没有申请退款", "未申请退款", "无退款", "退款关闭", "退款失败", "撤销退款", "买家撤销")
+    _refund_kw = (any(k in rs for k in ("退款", "退货", "关闭"))
+                  and not any(k in rs for k in _NOT_REFUND))
+    if (o.status or "") == "cancelled" or _refund_kw:
         return True
     ra = Decimal(str(o.refund_amount or 0))
     pa = Decimal(str(o.paid_amount or 0))
