@@ -59,6 +59,49 @@ def _apply_product_search(stmt, q: Optional[str]):
     return stmt
 
 
+def write_settlement_ws(wb, rows: Optional[list] = None, *, db: Optional[Session] = None) -> None:
+    """把木作工厂月结逐单明细写进 openpyxl workbook 的新 sheet「木作工厂月结」(两个导出共用, 用户 2026-07-08)。
+    复用 settlement_detail_rows(db)(默认木作供应商)。列: 结算月/工厂单号/平台订单号/产品/数量/账单金额/已付金额/付款状态。"""
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    if rows is None:
+        rows = settlement_detail_rows(db) if db is not None else []
+    ws = wb.create_sheet("木作工厂月结")
+    heads = ["结算月", "工厂单号", "平台订单号", "产品", "数量", "账单金额", "已付金额", "付款状态"]
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    for ci, h in enumerate(heads, start=1):
+        c = ws.cell(1, ci, h)
+        c.fill = head_fill
+        c.font = Font(bold=True, color="FFFFFF")
+        c.alignment = Alignment(horizontal="center", vertical="center")
+    paid_fill = PatternFill("solid", fgColor="E8F5E9")
+    unpaid_fill = PatternFill("solid", fgColor="FFF3E0")
+    r = 2
+    total = 0.0
+    for row in rows:
+        ws.cell(r, 1, row.get("settlement_month") or "")
+        ws.cell(r, 2, str(row.get("factory_order_no") or "")).number_format = "@"
+        ws.cell(r, 3, str(row.get("platform_order_no") or "")).number_format = "@"
+        ws.cell(r, 4, (row.get("product_name") or row.get("sku") or "")[:28])
+        ws.cell(r, 5, row.get("qty") or 0)
+        amt = float(row.get("bill_amount") or 0)
+        ws.cell(r, 6, amt).number_format = "0.00"
+        ws.cell(r, 7, float(row.get("paid_amount") or 0)).number_format = "0.00"
+        st = row.get("payment_status") or "未付"
+        sc = ws.cell(r, 8, st)
+        sc.fill = paid_fill if st == "已付" else unpaid_fill
+        total += amt
+        r += 1
+    if rows:
+        ws.cell(r + 1, 4, "合计").font = Font(bold=True)
+        tc = ws.cell(r + 1, 6, round(total, 2))
+        tc.number_format = "0.00"
+        tc.font = Font(bold=True)
+    for i, w in enumerate([10, 18, 20, 28, 6, 12, 12, 10], start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+
 def month_breakdown(db: Session, supplier: str = DEFAULT_WOOD_SUPPLIER,
                     q: Optional[str] = None) -> dict:
     """按结算月汇总该供应商「已开账单」工厂单: 应付/已付/未付/状态。

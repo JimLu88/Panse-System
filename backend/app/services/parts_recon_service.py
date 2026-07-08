@@ -1047,6 +1047,10 @@ def build_bulk_recon_workbook(db: Session, *, date_from=None, date_to=None,
         wsx = wb.create_sheet(title=cat[:28])
         _write_category_ws(wsx, dc, show_est_price=True)
 
+    # 木作工厂月结 逐单明细 (用户 2026-07-08: 供应链也要核对木作部分)
+    from app.services import factory_settlement_service as fss
+    fss.write_settlement_ws(wb, db=db)
+
     return wb, {
         "period": d_all["period"],
         "all_order_count": d_all["order_count"],

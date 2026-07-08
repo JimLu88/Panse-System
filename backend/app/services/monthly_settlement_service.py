@@ -306,6 +306,9 @@ def build_export_workbook(db: Session, *, date_from=None, date_to=None, year_mon
     pack, frgt = _packing_freight_orders(db, date_from=date_from, date_to=date_to, year_month=year_month)
     _write_settle_detail(wb.create_sheet("打包月结明细"), pack, est_label="预估打包", act_label="实际打包")
     _write_settle_detail(wb.create_sheet("运费月结明细"), frgt, est_label="预估运费", act_label="实际运费")
+    # 木作工厂月结 逐单明细 (用户 2026-07-08: 供应链也要核对木作部分)
+    from app.services import factory_settlement_service as fss
+    fss.write_settlement_ws(wb, db=db)
     return wb
 
 
