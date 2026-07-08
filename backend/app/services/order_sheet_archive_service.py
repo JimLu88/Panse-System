@@ -812,7 +812,7 @@ def push_daily(db: Session) -> dict:
 
     历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
     """
-    remind_remote_pushed(db)   # 已推工厂但现已延期的单 → 只提醒用户(不自动作废工厂号) (用户 2026-07-08)
+    void_remote_pushed(db)     # 已推工厂但现已延期/远期的单 → 自动作废旧工厂号+通知工厂勿做+挂起 (用户 2026-07-08: 18:30自动作废)
     repush_activated(db)       # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
     result = generate_pending(db)
     n = result["generated"]

@@ -814,7 +814,7 @@ def _job_pull_catchup(db: Session) -> dict:
            "pending_manual": len(res.get("pending_manual", []))}
     if ai.order_data_fresh(db):                   # 取数成功→数据新鲜→立即补生成+补推
         from app.services import order_sheet_archive_service as oss
-        oss.remind_remote_pushed(db)               # 已推工厂但现延期的单→只提醒用户(不自动作废)
+        oss.void_remote_pushed(db)                 # 已推工厂但现延期的单→自动作废旧号+通知工厂+挂起
         oss.repush_activated(db)                   # 远期老单激活→旧号作废清号(下面以新号重推)
         gen = oss.generate_pending(db)
         push = oss.push_pending_images(db, limit=50, include_baseline=False, quiet=True)
