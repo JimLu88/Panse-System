@@ -795,14 +795,14 @@ def _now_hour() -> int:
 
 
 def _job_pull_catchup(db: Session) -> dict:
-    """每30分钟(日间8-22): PC上线后续跑当天没完成的取数+推送 (用户 2026-07-07)。
-    背景: 订单取数每日仅 18:00 一次; 那会儿 PC 关机/重启(如17:30重启)→ 当天订单整天不刷新,
-    已关闭/改备注的单同步不进来 → 旧数据误推 / 该推的没推。
-    机制: 今日订单数据未刷新时, 每30分钟探测 PC 是否在线; 在线即重跑编排补取数,
-    取数成功(数据变新鲜)后立即补推下单图并飞书告知一次; PC 仍离线则静默等下一轮。"""
+    """每30分钟(仅18:00后至23:00): PC上线后续跑当天没完成的取数+推送 (用户 2026-07-07/08)。
+    背景: 订单取数每日仅 18:00 一次; 那会儿 PC 关机/重启(如17:30重启)→ 当天订单整天不刷新。
+    机制(2026-07-08 收窄): **只在每日定时点(18:00)之后**才补, 不抢在定时前跑; 今日订单未刷新时每30分钟
+    探测 PC 在线即重跑编排补取数, 取数成功(数据新鲜)后立即补推(含远期老单激活重推)+飞书告知一次;
+    **成功即停**(下轮见新鲜→already_fresh 不再动), PC 仍离线则静默等下一轮(只失败才不停重试)。"""
     from app.services import agent_ingest_service as ai, web_agent_service
-    if not (8 <= _now_hour() < 22):
-        return {"skipped": "off_hours"}
+    if not (18 <= _now_hour() < 23):
+        return {"skipped": "off_window"}
     if ai.order_data_fresh(db):
         return {"ok": "already_fresh"}
     if ai.is_running():
@@ -814,6 +814,7 @@ def _job_pull_catchup(db: Session) -> dict:
            "pending_manual": len(res.get("pending_manual", []))}
     if ai.order_data_fresh(db):                   # 取数成功→数据新鲜→立即补生成+补推
         from app.services import order_sheet_archive_service as oss
+        oss.repush_activated(db)                   # 远期老单激活→旧号作废清号(下面以新号重推)
         gen = oss.generate_pending(db)
         push = oss.push_pending_images(db, limit=50, include_baseline=False, quiet=True)
         out["generated"] = gen
@@ -1369,8 +1370,8 @@ def _register_default_jobs() -> None:
     register_job("daily_0900_review_asset_remind",
                  "评价资产折叠倒计时提醒 (Plan1 v2: 多级30·14·7+待评价催办+覆盖预警)",
                  _job_review_asset_remind, cron={"hour": 9, "minute": 0})
-    register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:00)",
-                 _job_order_sheets_daily, cron={"hour": 18, "minute": 0})
+    register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:30, 取数后)",
+                 _job_order_sheets_daily, cron={"hour": 18, "minute": 30})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",
                  _job_void_sheets, cron={"hour": 10, "minute": 0})
     register_job("daily_0900_aftersales_auto", "售后自动建条(万师傅/流水/退款)",
@@ -1385,9 +1386,9 @@ def _register_default_jobs() -> None:
                  _job_gallery_thumb_warm, cron={"hour": "7-22", "minute": 20})   # 避开夜间盘休眠(23-06:30)
     register_job("daily_2330_recon_snapshot", "对账结果每日快照",
                  _job_recon_snapshot, cron={"hour": 22, "minute": 45})   # 夜间模式: 挪 23:30→22:45
-    register_job("hourly_order_sheets_catchup", "下单图增量补生成(导入后1小时内)",
-                 _job_order_sheets_catchup, interval_minutes=60)
-    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (漏取数补偿, 日间每30分钟)",
+    # 2026-07-08 用户拍板: 去掉"每小时补推"—— 推送只在每日 18:30(取数成功后)一次; 失败才由
+    # pull_catchup 在 18:00 后每30分钟重试, 成功即停。故不再注册 hourly_order_sheets_catchup。
+    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (仅18:00后, 失败每30分钟重试, 成功即停)",
                  _job_pull_catchup, interval_minutes=30)
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})

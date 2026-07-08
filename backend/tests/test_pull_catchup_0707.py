@@ -66,19 +66,21 @@ def test_catchup_push_runs_when_fresh(db_session, monkeypatch):
 
 # ---------- pull_catchup 分支 ----------
 
-def test_pull_catchup_off_hours(db_session, monkeypatch):
-    monkeypatch.setattr(scheduler, "_now_hour", lambda: 23)
-    assert scheduler._job_pull_catchup(db_session) == {"skipped": "off_hours"}
+def test_pull_catchup_off_window(db_session, monkeypatch):
+    # 只在 18:00~23:00 补; 早上10点、晚23点都不跑(避免抢在每日定时前)
+    for h in (10, 23):
+        monkeypatch.setattr(scheduler, "_now_hour", lambda h=h: h)
+        assert scheduler._job_pull_catchup(db_session) == {"skipped": "off_window"}
 
 
 def test_pull_catchup_already_fresh(db_session, monkeypatch):
-    monkeypatch.setattr(scheduler, "_now_hour", lambda: 10)
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
     monkeypatch.setattr(ai, "order_data_fresh", lambda db: True)
     assert scheduler._job_pull_catchup(db_session) == {"ok": "already_fresh"}
 
 
 def test_pull_catchup_waits_when_pc_offline(db_session, monkeypatch):
-    monkeypatch.setattr(scheduler, "_now_hour", lambda: 10)
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
     monkeypatch.setattr(ai, "order_data_fresh", lambda db: False)
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": False})
@@ -86,7 +88,7 @@ def test_pull_catchup_waits_when_pc_offline(db_session, monkeypatch):
 
 
 def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
-    monkeypatch.setattr(scheduler, "_now_hour", lambda: 10)
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
     fresh = {"v": False}   # 一开始陈旧, orchestrate 后变新鲜
     monkeypatch.setattr(ai, "order_data_fresh", lambda db: fresh["v"])
     monkeypatch.setattr(ai, "is_running", lambda: False)
@@ -97,6 +99,7 @@ def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
         return {"tasks": [{"status": "done"}], "pending_manual": []}
 
     monkeypatch.setattr(ai, "orchestrate", _orch)
+    monkeypatch.setattr(oss, "repush_activated", lambda db, **k: {})
     monkeypatch.setattr(oss, "generate_pending", lambda db: {"generated": 1})
     monkeypatch.setattr(oss, "push_pending_images", lambda *a, **k: {"pushed": 2, "remaining": 0})
     res = scheduler._job_pull_catchup(db_session)
@@ -105,7 +108,7 @@ def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
 
 
 def test_pull_catchup_still_stale_when_pull_fails(db_session, monkeypatch):
-    monkeypatch.setattr(scheduler, "_now_hour", lambda: 10)
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
     monkeypatch.setattr(ai, "order_data_fresh", lambda db: False)   # 始终陈旧(取数失败)
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})

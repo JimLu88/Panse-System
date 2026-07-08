@@ -301,6 +301,9 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
             continue
         if _is_refunded(o):   # 已退款/退货/关闭 → 不生成也不推送 (改走作废图流程)
             continue
+        from app.services import order_flags
+        if order_flags.is_remote(o):
+            continue   # 远期挂起单: 不生成下单图, 等激活(备注开始制作)后再以新号推 (用户 2026-07-08)
         r = generate_for_order(db, o)
         if r and not r["duplicate"]:
             generated.append(r["order_no"])
@@ -525,6 +528,9 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             continue
         if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
             continue   # 取消/退款/待付款 不推工厂 (待付款大概率会取消, 用户拍板 2026-06-20)
+        from app.services import order_flags
+        if order_flags.is_remote(order):
+            continue   # 远期挂起单 不推工厂, 等激活后以新号推 (用户 2026-07-08; 挂起单本就没生成图, 此处双保险)
         if _is_sample_order(order):
             # 样块/样品单永不推工厂下单图 (用户 2026-07-04); 标记已处理, 清出待推队列 + 不占工厂编号。
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "skipped_sample": True}
@@ -551,7 +557,8 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             addr_ok = _addr_ok_for_factory(order)
             # pushed_addr_ok 记录"这张图推送时收货地址是否完整": False=缺地址被推,
             # 待飞书口令解密补上地址后由 repush_after_address_fill 自动重推 (用户 2026-06-30)。
-            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": addr_ok}
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": addr_ok,
+                               "activated": order_flags.is_activated(order)}   # 激活态推的图不再被 repush_activated 重推
             db.commit()
             pushed += 1
             sent_nos.append(no)
@@ -642,11 +649,61 @@ def baseline_existing_sheets(db: Session) -> int:
     return n
 
 
+def repush_activated(db: Session, *, limit: int = 50) -> dict:
+    """远期身份推过工厂的老单, 现已激活(备注开始制作) → 作废旧号 + 以新号重推 (用户 2026-07-08)。
+
+    新规则下远期单本就挂起不推; 此函数只清理【本次改版前已按远期身份推过】的存量老单(如 247):
+    命中 = 有推过的下单图 + 那张不是"激活态"推的(row_summary.activated != True) + 订单现已激活
+        + 曾是远期身份(is_remote_ship 或备注含远期词; 防普通单因加"开始制作"就误重编号)。
+    动作 = 给工厂群发一条"原X号作废"提示 + 删旧下单图归档 + 清 order.factory_no
+        → 随后 generate_pending/push_pending_images 会给它生成新图、顺排【新工厂号】重推(记 activated=True, 幂等)。
+    """
+    from app.services import order_flags, feishu_client, settings_service
+    seen: dict = {}
+    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if not (rec.row_summary or {}).get("pushed"):
+            continue
+        no = _order_no_from_name(rec.original_filename)
+        if no:
+            seen.setdefault(no, []).append(rec)
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    changed: list = []
+    for no, recs in seen.items():
+        if len(changed) >= limit:
+            break
+        if any((r.row_summary or {}).get("activated") is True for r in recs):
+            continue   # 已有"激活态"推的图 → 不再重推
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not order_flags.is_activated(order):
+            continue   # 现在没激活(还是远期挂起) → 不动
+        if not (getattr(order, "is_remote_ship", False) or order_flags.has_remote_keyword(order)):
+            continue   # 不是远期身份 → 普通单不因加"开始制作"就重编号
+        old_no = getattr(order, "factory_no", None)
+        if chat_id and old_no:
+            try:
+                feishu_client.send_text(
+                    db, chat_id,
+                    f"⚠️ 订单 {no} 原【畔色 {old_no} 单】作废 —— 客户已通知开始制作, 稍后以新号重推, 请以新号为准。")
+            except Exception:  # noqa: BLE001 - 通知失败不阻断
+                _logger.warning("重开作废提示发送失败 %s", no, exc_info=True)
+        for r in recs:
+            import_storage.delete_record(db, r.id)   # 删旧号下单图归档
+        order.factory_no = None                       # 清工厂号 → 重推时顺排新号
+        db.flush()
+        changed.append(no)
+    if changed:
+        db.commit()
+    return {"reset_for_new_no": changed}
+
+
 def push_daily(db: Session) -> dict:
     """每日 18:00: 补生成 + 把"还没推过图"的新下单图渲染成图片推飞书工厂群。
 
     历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
     """
+    repush_activated(db)   # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
     result = generate_pending(db)
     n = result["generated"]
     push = push_pending_images(db, limit=20, include_baseline=False)
