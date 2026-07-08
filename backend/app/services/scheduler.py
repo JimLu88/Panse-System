@@ -480,9 +480,17 @@ def _job_feishu_sync(db: Session) -> dict:
 
 
 def _job_data_quality(db: Session) -> dict:
-    """每日数据完整性扫描 (B1-B11)."""
-    from app.services import data_quality_service
-    return data_quality_service.run_all(db)
+    """每日数据完整性扫描 (B1-B11) + 数据扫描器(含配件采购价差) + 已修复项自愈销账 (用户 2026-07-08:
+    价差扫描进每日体检)。扫描器把新异常写异常池, 复核把已修好的(如已更新物料库)自动销账。"""
+    from app.services import data_quality_service, scanner_service
+    from app.services.exception_recheck_service import bulk_close_resolved
+    dq = data_quality_service.run_all(db)
+    scan = scanner_service.run_all(db)          # 含 purchase_price_variance 采购价差
+    db.flush()
+    closed = bulk_close_resolved(db)            # 已修复(如已更新物料库) → 自愈销账
+    return {"data_quality": dq,
+            "scanners": {k: v.written for k, v in scan.items()},
+            "self_healed": closed}
 
 
 def _job_post_import_logic_check(db: Session) -> dict:

@@ -301,6 +301,12 @@ export const resolveImportConflict = (id: number, choice: 'new' | 'old') =>
     .post<DataException>(`/api/exceptions/${id}/resolve-import-conflict`, { choice })
     .then((r) => r.data);
 
+// 配件采购价差异常处理: update_material=更新物料库标准价; fallback_085=按0.85兜底(不改标准价)
+export const resolvePriceVariance = (id: number, action: 'update_material' | 'fallback_085') =>
+  api
+    .post<DataException>(`/api/exceptions/${id}/resolve-price-variance`, { action })
+    .then((r) => r.data);
+
 // ----- Products -----
 export interface Product {
   id: number;

@@ -89,6 +89,46 @@ def resolve_exception(
     return exc
 
 
+class PriceVarianceResolveIn(BaseModel):
+    action: str  # "update_material" = 更新物料库标准价; "fallback_085" = 按0.85兜底(特殊情况,不改标准价)
+
+
+@router.post("/{exception_id}/resolve-price-variance", response_model=DataExceptionOut)
+def resolve_price_variance(
+    exception_id: int,
+    payload: PriceVarianceResolveIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """配件采购价差异常的两种处理 (用户 2026-07-08):
+      ① update_material: 采购价就是新标准 → 更新物料库标准价 (下次复核自动销账);
+      ② fallback_085:    特殊情况 → 按0.85兜底计算, 不改标准价, 直接销账留痕。"""
+    exc = db.get(DataException, exception_id)
+    if not exc:
+        raise HTTPException(404, "exception not found")
+    if exc.exception_type != "purchase_price_variance":
+        raise HTTPException(400, "该处理仅适用于配件采购价差异常")
+    who = getattr(user, "username", None) or str(getattr(user, "id", ""))
+    ctx = exc.context or {}
+    pno = ctx.get("purchase_no") or exc.source_pk
+    if payload.action == "update_material":
+        from app.services import scanner_service
+        r = scanner_service.apply_purchase_price(db, pno, by=who)
+        if not r.get("ok"):
+            raise HTTPException(400, r.get("error") or "更新物料库失败")
+        exc.status = "resolved"
+        exc.resolved_by = f"{who}·更新物料库({r['material_code']} ¥{r['old_price']}→¥{r['new_price']})"
+    elif payload.action == "fallback_085":
+        exc.status = "resolved"
+        exc.resolved_by = f"{who}·0.85兜底(特殊情况,不改标准价)"
+    else:
+        raise HTTPException(400, "action 必须是 update_material 或 fallback_085")
+    exc.resolved_at = datetime.now(timezone.utc).isoformat()
+    db.commit()
+    db.refresh(exc)
+    return exc
+
+
 class ImportConflictResolveIn(BaseModel):
     choice: str  # "new" = 采用导入值, "old" = 保留现有值
 

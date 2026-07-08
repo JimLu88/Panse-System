@@ -35,6 +35,7 @@ import {
   refreshExceptions,
   resolveException,
   resolveImportConflict,
+  resolvePriceVariance,
 } from '../api/client';
 
 const severityColor: Record<string, string> = {
@@ -412,6 +413,18 @@ export default function ExceptionsPage() {
     },
   });
 
+  // 配件采购价差: ①更新物料库标准价(采购价即新标准) ②0.85兜底(特殊情况不改标准价) — 用户 2026-07-08
+  const priceVarMut = useMutation({
+    mutationFn: ({ id, action }: { id: number; action: 'update_material' | 'fallback_085' }) =>
+      resolvePriceVariance(id, action),
+    onSuccess: (_r, vars) => {
+      message.success(vars.action === 'update_material' ? '已更新物料库标准价, 异常销账' : '已按0.85兜底处理, 异常销账');
+      qc.invalidateQueries({ queryKey: ['exceptions'] });
+      qc.invalidateQueries({ queryKey: ['exceptions-summary'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '处理失败'),
+  });
+
   const diagnoseMut = useMutation({
     mutationFn: (id: number) => aiDiagnose(id),
     onSuccess: (result) => {
@@ -597,6 +610,32 @@ export default function ExceptionsPage() {
               >
                 <Button size="small">强制忽略</Button>
               </Popconfirm>
+            </Space>
+          );
+        }
+        // 配件采购价差: ①更新物料库标准价(采购价即新标准) ②0.85兜底(特殊情况不改标准价) — 用户 2026-07-08
+        if (row.exception_type === 'purchase_price_variance') {
+          return (
+            <Space size="small" wrap>
+              <Popconfirm
+                title="把该配件的采购价写成物料库标准价?"
+                description="用于采购价才是正确标准、物料库价过期的情况。改后此类异常下次复核自动销账。"
+                okText="更新物料库"
+                onConfirm={() => priceVarMut.mutate({ id: row.id, action: 'update_material' })}
+              >
+                <Button size="small" type="primary">更新物料库</Button>
+              </Popconfirm>
+              <Popconfirm
+                title="按 0.85 兜底处理?"
+                description="用于特殊情况: 不改物料库标准价, 成本按 0.85 兜底计算, 直接销账。"
+                okText="0.85兜底"
+                onConfirm={() => priceVarMut.mutate({ id: row.id, action: 'fallback_085' })}
+              >
+                <Button size="small">0.85兜底</Button>
+              </Popconfirm>
+              <Button size="small" icon={<RobotOutlined />} onClick={() => handleDiagnose(row)}>
+                AI 分析
+              </Button>
             </Space>
           );
         }

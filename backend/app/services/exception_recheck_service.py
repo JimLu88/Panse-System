@@ -594,6 +594,32 @@ def _check_factory_bill_unpaid(db: Session, exc: DataException) -> Optional[str]
     return f"{supplier} {month} 工厂账单仍未付清 (未付 ¥{row['unpaid']})"
 
 
+def _check_purchase_price_variance(db: Session, exc: DataException) -> Optional[str]:
+    """配件采购价差: 更新物料库后偏离≤阈值 / 采购单没了 / 匹配不上 / 面积料 → 销账; 仍≥阈值 → 保留。
+    这样『更新物料库』把标准价改成采购价后, 下次复核偏离=0 自动销账 (自愈)。"""
+    from decimal import Decimal
+    from app.models.material import Material
+    from app.models.order import PartPurchase
+    from app.services import scanner_service as sc
+    ctx = exc.context or {}
+    pno = ctx.get("purchase_no") or exc.source_pk
+    p = db.execute(select(PartPurchase).where(PartPurchase.purchase_no == pno)).scalar_one_or_none()
+    if p is None or not p.unit_price or p.unit_price <= 0:
+        return None  # 采购单删了/无价 → 销账
+    mats = db.execute(select(Material)).scalars().all()
+    by_code = {m.code: m for m in mats if m.code}
+    by_name = {m.name.strip(): m for m in mats if m.name}
+    m = sc._match_purchase_material(p, by_code, by_name)
+    if m is None or m.price is None or m.price <= 0:
+        return None  # 匹配不上 / 无标准价 → 销账
+    if m.unit and any(u in str(m.unit) for u in ("平", "米")):
+        return None  # 面积/长度料本就跳过 → 销账
+    pct = abs(float((Decimal(p.unit_price) - Decimal(m.price)) / Decimal(m.price) * 100))
+    if pct >= sc._PURCHASE_VARIANCE_PCT:
+        return f"采购{pno}价差仍{pct:.0f}% (≥{sc._PURCHASE_VARIANCE_PCT:.0f}%)"
+    return None  # 已更新物料库 / 已≤阈值 → 销账
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "order_no_unresolved": _check_order_no_unresolved,
     "factory_bill_on_dead_order": _check_factory_bill_on_dead_order,
@@ -622,6 +648,7 @@ _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
     "factory_recon_unbalanced": _check_factory_recon_unbalanced,
     "packing_total_mismatch": _check_packing_total_mismatch,
     "factory_bill_unpaid": _check_factory_bill_unpaid,
+    "purchase_price_variance": _check_purchase_price_variance,
 }
 
 
