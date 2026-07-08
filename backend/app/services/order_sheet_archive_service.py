@@ -15,7 +15,7 @@ from decimal import Decimal
 from html import escape
 from typing import Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
@@ -282,12 +282,23 @@ def generate_for_order(db: Session, order: Order, *, source: str = "auto") -> Op
         return None
 
 
+def _activated_memo_filter():
+    """SQL 粗筛: 任一备注字段含【激活词】(开始制作/排产/投产…)。用于让【已激活的老远期单】
+    突破 order_date 起始线被补生成 —— 远期单本就早下(装修等), 激活时往往已老于 AUTO_SINCE,
+    若仍按日期切掉就永远不进工厂 (用户 2026-07-08 报: 5116855…3029039 备注开始制作却没推)。
+    精确判定(否定前缀等)仍靠循环内 order_flags.is_remote/is_activated。"""
+    from app.services.order_flags import ACTIVATE_KW
+    cols = (Order.remark, Order.production_note, Order.buyer_message, Order.seller_memo)
+    return or_(*[c.like(f"%{k}%") for k in ACTIVATE_KW for c in cols])
+
+
 def generate_pending(db: Session, *, limit: int = 200) -> dict:
-    """给 2026-06-06 起、还没归档过下单图的订单批量补生成 (导入兜底 + 日常增量)。"""
+    """给 2026-06-06 起、还没归档过下单图的订单批量补生成 (导入兜底 + 日常增量)。
+    另含【已激活的老远期单】(备注开始制作等, 不受 AUTO_SINCE 日期线限制) (用户 2026-07-08)。"""
     done = _archived_order_nos(db)
     orders = db.execute(
         select(Order).where(
-            Order.order_date >= AUTO_SINCE,
+            or_(Order.order_date >= AUTO_SINCE, _activated_memo_filter()),
             Order.is_refill == False,            # noqa: E712 - 补单不发工厂
         ).order_by(Order.id.desc()).limit(500)
     ).scalars().all()
@@ -536,9 +547,10 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "skipped_sample": True}
             db.commit()
             continue
-        # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)
+        # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)。
+        # 已激活的老远期单(备注开始制作)也顺排新号 —— 它们早下但现在要做, 不该被日期线卡住 (用户 2026-07-08)。
         if (getattr(order, "factory_no", None) is None and order.order_date
-                and order.order_date >= _AUTO_NUMBER_SINCE):
+                and (order.order_date >= _AUTO_NUMBER_SINCE or order_flags.is_activated(order))):
             order.factory_no = _next_factory_no(db)
             db.flush()
         # 自动推送(catchup/18:00, include_baseline=False)【绝不】推没有工厂编号的老单(<6/19 且未 ZIP 回填):
