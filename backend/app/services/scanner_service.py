@@ -20,7 +20,7 @@ from app.models.exception import DataException
 from app.models.finance import AlipayFlow, RefillRecord
 from app.models.inventory import PartInventory, ProductInventory
 from app.models.material import Material
-from app.models.order import Order
+from app.models.order import Order, PartPurchase
 from app.models.product import Product
 from app.services import exception_service
 from app.services.sku_utils import get_threshold, is_custom_sku_code
@@ -273,6 +273,72 @@ def scan_factory_bill_unpaid(db: Session) -> list[ScanFinding]:
 
 # -------- 注册表 + 跑器 --------
 
+# -------- Scanner 8: 配件采购↔物料库 价差预警 (用户 2026-07-08 安全版: 匹配+预警, 绝不自动改标准价) --------
+_PURCHASE_VARIANCE_PCT = 20.0   # 采购单价 vs 物料库标准价 偏离阈值(%)
+
+
+def _match_purchase_material(p: PartPurchase, by_code: dict, by_name: dict):
+    m = by_code.get((p.material_code or "").strip()) if p.material_code else None
+    if m is None and p.material_name:
+        m = by_name.get(p.material_name.strip())
+    return m
+
+
+def scan_purchase_price_outliers(db: Session) -> list[ScanFinding]:
+    """配件采购单价 vs 物料库标准价 偏离≥阈值 → 预警(近180天有单价的采购)。绝不自动改标准价。"""
+    from datetime import timedelta
+    mats = db.execute(select(Material)).scalars().all()
+    by_code = {m.code: m for m in mats if m.code}
+    by_name: dict = {}
+    for m in mats:
+        if m.name:
+            by_name.setdefault(m.name.strip(), m)
+    since = date.today() - timedelta(days=180)
+    out: list[ScanFinding] = []
+    for p in db.execute(select(PartPurchase).where(PartPurchase.unit_price.is_not(None))).scalars():
+        if (p.purchase_date and p.purchase_date < since) or not p.unit_price or p.unit_price <= 0:
+            continue
+        m = _match_purchase_material(p, by_code, by_name)
+        if m is None or m.price is None or m.price <= 0:
+            continue   # 匹配不上/无标准价 → 不预警(只核有标准价的)
+        if m.unit and any(u in str(m.unit) for u in ("平", "米")):
+            continue   # 按面积/长度计价(岩板/玻璃/线): 采购按块/根不可直接比单价 → 跳过防误报(待接入面积后精算)
+        std, buy = Decimal(m.price), Decimal(p.unit_price)
+        pct = float((buy - std) / std * 100)
+        if abs(pct) >= _PURCHASE_VARIANCE_PCT:
+            out.append(ScanFinding(
+                source_table="part_purchases",
+                source_pk=p.purchase_no,
+                exception_type="purchase_price_variance",
+                severity="warning",
+                description=(f"采购 {p.purchase_no} {m.name}({m.code}) 采购价¥{buy} vs 物料库标准¥{std} "
+                            f"偏离{pct:+.0f}% — 请核对(改标准价需人工确认)"),
+                suggestion_action="review_material_price",
+                context={"purchase_no": p.purchase_no, "material_code": m.code,
+                         "buy_price": float(buy), "std_price": float(std), "variance_pct": round(pct, 1)},
+            ))
+    return out
+
+
+def apply_purchase_price(db: Session, purchase_no: str, *, by: Optional[str] = None) -> dict:
+    """人工确认: 把某采购单价写成该料物料库标准价 (仅显式调用, 绝不自动)。返回新旧价。"""
+    p = db.execute(select(PartPurchase).where(PartPurchase.purchase_no == purchase_no)).scalar_one_or_none()
+    if p is None or not p.unit_price:
+        return {"ok": False, "error": "采购单不存在或无单价"}
+    mats = db.execute(select(Material)).scalars().all()
+    by_code = {m.code: m for m in mats if m.code}
+    by_name = {m.name.strip(): m for m in mats if m.name}
+    m = _match_purchase_material(p, by_code, by_name)
+    if m is None:
+        return {"ok": False, "error": "匹配不到物料库物料"}
+    old = m.price
+    m.price = Decimal(p.unit_price)
+    m.remark = (f"{(m.remark or '').strip()} | 采购{purchase_no}确认改价{('·' + by) if by else ''}").strip(" |")
+    db.commit()
+    return {"ok": True, "material_code": m.code, "material_name": m.name,
+            "old_price": float(old or 0), "new_price": float(m.price)}
+
+
 SCANNERS: dict[str, Callable[[Session], list[ScanFinding]]] = {
     "dangling_order_product": scan_dangling_order_product,
     "negative_inventory": scan_negative_inventory,
@@ -281,6 +347,7 @@ SCANNERS: dict[str, Callable[[Session], list[ScanFinding]]] = {
     "missing_custom_price": scan_missing_custom_price,
     "duplicate_alipay_cross_account": scan_duplicate_alipay_cross_account,
     "factory_bill_unpaid": scan_factory_bill_unpaid,
+    "purchase_price_variance": scan_purchase_price_outliers,
 }
 
 

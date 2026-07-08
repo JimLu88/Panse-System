@@ -369,6 +369,29 @@ def backfill_est_parts(
     return res
 
 
+@router.get("/price-variance", response_model=dict)
+def price_variance(
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """配件采购↔物料库 价差核对(只读, 用户 2026-07-08): 采购单价 vs 物料库标准价 偏离≥20% 的单
+    (按面积/长度计价料跳过, 待接入面积再精算)。只提示, 改标准价需人工调 apply-material-price。"""
+    from app.services import scanner_service
+    fs = scanner_service.scan_purchase_price_outliers(db)
+    return {"count": len(fs), "items": [f.context for f in fs]}
+
+
+@router.post("/{purchase_no}/apply-material-price", response_model=dict)
+def apply_material_price(
+    purchase_no: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """人工确认: 把该采购单价写成对应物料的物料库标准价 (绝不自动, 仅此显式操作)。"""
+    from app.services import scanner_service
+    return scanner_service.apply_purchase_price(db, purchase_no, by=getattr(user, "username", None))
+
+
 # ── 工厂月度对账 + 当月发货清单导出 (用户 2026-06-26) ────────────────────────
 class MonthlyReconIn(BaseModel):
     material_key: str
