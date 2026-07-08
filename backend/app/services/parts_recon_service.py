@@ -485,6 +485,15 @@ def _order_category_consumption(o: Order, mat_info, bom_by_pcsku, bom_by_pc) -> 
        - SKU 精确命中 BOM(该 SKU 的真实用料) → 尊重, **不合并**(可能真用到多件/多尺寸)。
     只影响【预估(供应商应付)】侧, 不碰实际对账(工厂录入)与产品利润。
     """
+    ov = getattr(o, "parts_override", None)
+    if ov is not None:                       # 逐单配件覆盖(追加/补差单人工指定): 用它替代整单BOM (空 {}=不配配件)
+        out: dict = {}
+        for cat, amt in (ov or {}).items():
+            d = Decimal(str(amt))
+            out[cat] = {"amount": d, "materials": [{
+                "material_code": "OVERRIDE", "part_name": "人工指定(追加/补差)", "category": cat,
+                "qty": 1.0, "unit": None, "price": float(d), "amount": float(d), "override": True}]}
+        return out
     qmul = Decimal(int(o.qty or 1))
     is_custom = _order_is_custom(o)
     # BOM 来源判定: 该 SKU 有精确 BOM 吗? 没有 → 落产品级模板(含全部尺寸变体) → 一单只用一种 → 需族合并。

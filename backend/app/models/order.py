@@ -84,6 +84,9 @@ class Order(Base, TimestampMixin):
     # (与 wood_cost_est 对称, 由 recompute_and_save/backfill 派生)。不进 physical_cost(那里走 theoretical
     # 反推/actual_parts), 仅作大宗材料对账「标准消耗」基线 + P3 差异逐单建议值分摊基数。
     est_parts: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
+    # 逐单配件覆盖 (migration 0123, 用户 2026-07-08): 追加/补差单人工指定配件 {分类:金额} (空 dict {}=不配配件);
+    # 非 None → 配件对账 _order_category_consumption 用它替代整单 BOM, 治「定制补差/追加单被算全套BOM双计」。
+    parts_override: Mapped[Optional[dict]] = mapped_column(JSON)
     compensation_fee: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))  # 订单赔付费
     paid_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
     discount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))
