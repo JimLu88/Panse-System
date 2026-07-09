@@ -5,7 +5,11 @@
 """
 from __future__ import annotations
 
+import re
+from datetime import date, timedelta
 from typing import Optional
+
+DEFAULT_SHIP_DAYS = 30   # 工厂默认工期(天); 备注预定发货日距今 > 此 = 太早别做 = 远期
 
 # 远期关键字 (备注/生产备注/买家留言/商家备注 任一含即远期)
 REMOTE_KW = (
@@ -66,3 +70,62 @@ def is_remote(o) -> bool:
     if is_activated(o):
         return False
     return bool(getattr(o, "is_remote_ship", False)) or has_remote_keyword(o)
+
+
+def factory_label(o) -> str:
+    """"工厂下单号"列的统一显示 (用户 2026-07-09): 正式单=`畔色N单`; 远期单=`远期单N`(内部序号);
+    两者都没有=空。远期单不占工厂号, 只发 remote_seq; 正式号(factory_no)优先显示。"""
+    fno = getattr(o, "factory_no", None)
+    if fno:
+        return f"畔色{fno}单"
+    rseq = getattr(o, "remote_seq", None)
+    if rseq:
+        return f"远期单{rseq}"
+    return ""
+
+
+def parse_resume_date(text: Optional[str], order_date, today) -> Optional[date]:
+    """备注解析预定发货日 (『X月X日(以后/再)发』/『X日发』/『N天后发』) → date; 取不到 None。
+    与 api/orders.py factory_production 同一套正则集中于此, 避免口径漂移 (用户 2026-07-09 统一)。"""
+    if not text:
+        return None
+    by, bm = (order_date.year, order_date.month) if order_date else (today.year, today.month)
+    m = re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?\s*(?:以?后|再|左右)?\s*发", text)
+    if m:
+        try:
+            return date(by, int(m.group(1)), int(m.group(2)))
+        except ValueError:
+            return None
+    m = re.search(r"(\d{1,2})\s*[日号]\s*(?:以?后|之?后|左右|再)?\s*发", text)
+    if m:
+        try:
+            d = date(by, bm, int(m.group(1)))
+            if order_date and d < order_date:   # 该日早于下单 → 顺延下月
+                d = date(by + (1 if bm == 12 else 0), 1 if bm == 12 else bm + 1, int(m.group(1)))
+            return d
+        except ValueError:
+            return None
+    m = re.search(r"(\d{1,3})\s*天\s*[后之]?\s*(?:再)?\s*发", text)
+    if m and order_date:
+        try:
+            return order_date + timedelta(days=int(m.group(1)))
+        except (ValueError, OverflowError):
+            return None
+    return None
+
+
+def is_factory_remote(o, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> bool:
+    """工厂看板口径的『远期挂起』(比 is_remote 多了【日期式延期】, 如"8月1日发货"):
+    未激活 且 (手动远期 / (无人工截止时)备注预定发货日距今 > 工期 / 关键词远期)。
+    与 api/orders.py factory_production 的 st=='remote' 级联完全一致 (用户 2026-07-09 统一)。"""
+    if is_activated(o):
+        return False
+    if getattr(o, "is_remote_ship", False):
+        return True
+    if getattr(o, "ship_deadline", None):
+        return False   # 人工设了发货截止 → 倒计时, 不算远期
+    today = today or date.today()
+    rdate = parse_resume_date(order_text(o), getattr(o, "order_date", None), today)
+    if rdate is not None:
+        return (rdate - today).days > ship_days   # 发货日太远 = 太早别做 = 远期
+    return has_remote_keyword(o)

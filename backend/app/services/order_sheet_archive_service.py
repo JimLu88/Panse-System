@@ -436,6 +436,33 @@ def _next_factory_no(db: Session) -> int:
     return (mx or 241) + 1
 
 
+def _next_remote_seq(db: Session) -> int:
+    """下一个远期单内部序号 = 现有最大 + 1 (顺序无所谓, 只要唯一)。"""
+    mx = db.execute(select(func.max(Order.remote_seq))).scalar()
+    return (mx or 0) + 1
+
+
+def assign_remote_seqs(db: Session) -> dict:
+    """给【现远期挂起(工厂看板口径, 含日期式延期)且还没序号】的单补发 remote_seq → 显示"远期单 N"。
+    幂等(已有号跳过)。远期单不占工厂号(畔色X单), 只发这个内部序号, 仅内部看 (用户 2026-07-09)。"""
+    from app.services import order_flags
+    today = date.today()
+    cols = (Order.remark, Order.production_note, Order.buyer_message, Order.seller_memo)
+    # 候选 = 手动远期 或 有任一备注(可能含远期词/日期式发货); 精确判定交给 is_factory_remote
+    cond = or_(Order.is_remote_ship.is_(True), *[c.is_not(None) for c in cols])
+    cands = db.execute(select(Order).where(cond, Order.remote_seq.is_(None))).scalars().all()
+    nxt = _next_remote_seq(db)
+    assigned: list = []
+    for o in cands:
+        if order_flags.is_factory_remote(o, today):
+            o.remote_seq = nxt
+            assigned.append((o.order_no, nxt))
+            nxt += 1
+    if assigned:
+        db.commit()
+    return {"assigned_remote_seq": len(assigned), "detail": assigned[:50]}
+
+
 def _addr_ok_for_factory(order: Order) -> bool:
     """收货地址是否可用于发工厂下单图: 非空 且 未被星号脱敏/加密。
 
@@ -831,6 +858,7 @@ def push_daily(db: Session) -> dict:
     """
     void_remote_pushed(db)     # 已推工厂但现已延期/远期的单 → 自动作废旧工厂号+通知工厂勿做+挂起 (用户 2026-07-08: 18:30自动作废)
     repush_activated(db)       # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
+    assign_remote_seqs(db)     # 远期挂起单发内部序号"远期单 N"(不占工厂号) (用户 2026-07-09)
     result = generate_pending(db)
     n = result["generated"]
     push = push_pending_images(db, limit=20, include_baseline=False)

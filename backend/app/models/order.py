@@ -33,7 +33,10 @@ class Order(Base, TimestampMixin):
     order_no: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
     is_refill: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # 是否补单
     # 工厂制单编号 (用户拍板 2026-06-19: 工厂按"畔色 X 单"下单; 历史读ZIP回填, 新单按下单序顺排)
+    # 只发给【正式开始制作/非远期】的单; 远期单不占此号, 改发 remote_seq (用户 2026-07-09)。
     factory_no: Mapped[Optional[int]] = mapped_column(Integer, index=True)
+    # 远期单内部序号: 远期单不占工厂号, 只发"远期单 N"内部编号(顺序无所谓, 仅内部看) (用户 2026-07-09)。
+    remote_seq: Mapped[Optional[int]] = mapped_column(Integer, index=True)
 
     order_date: Mapped[Optional[date]] = mapped_column(Date, index=True)
     ship_date: Mapped[Optional[date]] = mapped_column(Date)

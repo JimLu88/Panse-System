@@ -282,6 +282,11 @@ def factory_production(
             "is_custom": o.is_custom,
             "is_remote_ship": o.is_remote_ship,
             "status": st,   # remote/overdue/critical/urgent/normal
+            "factory_no": o.factory_no,
+            "remote_seq": o.remote_seq,
+            # 工厂下单号显示 (用户 2026-07-09): 远期单→"远期单N"(内部序号, 不占工厂号); 正式单→"畔色N单"; 未排→空
+            "order_label": (f"远期单{o.remote_seq}" if o.remote_seq else "远期单") if st == "remote"
+                           else (f"畔色{o.factory_no}单" if o.factory_no else ""),
             "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
         })
     return out
