@@ -189,6 +189,15 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
                    f"<br>{e(sheet.customer_address or '—')}")
     else:
         ship_to = "<span style='color:#dc2626;font-weight:800'>⚠ 没有抓取到收货地址（淘宝解密额度不足，待提升后重拉）</span>"
+    # 客户备注/生产备注: 定制/补拍链单的真实需求常只写在备注里(产品名是无意义的"补拍专链"),
+    # 必须显示给工厂, 否则工厂拿到的是空白单不知道做什么 (用户 2026-07-09)。
+    _notes = []
+    if getattr(sheet, "remark", None):
+        _notes.append(f"<b>客户备注</b> {e(sheet.remark)}")
+    if getattr(sheet, "production_note", None):
+        _notes.append(f"<b>生产备注</b> {e(sheet.production_note)}")
+    note_html = ("<div class='z'><div class='zt'>客户备注　NOTE</div>"
+                 f"<div class='zb' style='color:#dc2626;font-weight:700'>{'<br>'.join(_notes)}</div></div>") if _notes else ""
     # 头部样式 3 选 1 (无填充, 仅黑线)
     if header_style == "bar":
         hd_extra = f".hd{{border-bottom:2px solid {A};}}.hd .co{{border-left:14px solid {A};padding-left:22px;}}"
@@ -239,6 +248,7 @@ table{{border-collapse:collapse;}}
   <td class="pic">{pic_html}</td>
   <td class="zwrap">
     <div class="z"><div class="zt">产品 / 规格　PRODUCT</div><div class="zb">{e(sheet.product_name or '-')}　<span style="font-family:monospace;font-size:23px;color:#555">{e(sheet.product_code or '-')}</span><br>{mat_txt}</div></div>
+    {note_html}
     <div class="z"><div class="zt">成品尺寸　FINISHED SIZE (mm)</div><div class="zb">{size_html}</div></div>
     <div class="z" style="border-bottom:none"><div class="zt">辅料清单　BOM</div><div class="zb">{bom_txt}</div></div>
   </td></tr></table>
