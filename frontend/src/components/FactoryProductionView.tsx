@@ -7,7 +7,7 @@
  */
 import { useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Col, DatePicker, Empty, Input, Modal, Row, Segmented, Space, Tag, Typography, message,
+  Alert, Button, Card, Col, DatePicker, Empty, Input, Modal, Popconfirm, Row, Segmented, Space, Tag, Typography, message,
 } from 'antd';
 import { DownloadOutlined, PrinterOutlined, ProfileOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
@@ -24,7 +24,7 @@ const PRINT_CSS = `
 }`;
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFactoryProduction, updateOrderProduction, type FactoryCard } from '../api/client';
-import { listAccessories, markAllAccessoriesArrived, type AccessoryItem } from '../api/orders';
+import { listAccessories, markAllAccessoriesArrived, repushFactory, type AccessoryItem } from '../api/orders';
 
 // 颜色随剩余天数: 初始绿 → 蓝 → 橙 → 越近越红 → 超期深红
 function dayStyle(d: number | null): { color: string; weight: number } {
@@ -76,6 +76,16 @@ export default function FactoryProductionView() {
       qc.invalidateQueries({ queryKey: ['factory-production'] });
     },
     onError: () => message.error('保存失败'),
+  });
+
+  // 「重推给工厂」: 工厂没收到 / 改了备注 → 点一下重发那张下单图 (用户 2026-07-09)
+  const repushMut = useMutation({
+    mutationFn: (id: number) => repushFactory(id),
+    onSuccess: (r) => {
+      message.success(r.pushed > 0 ? `已重推「${r.order_label || '畔色' + r.factory_no + '单'}」到工厂群` : '未推送(检查工厂群配置)');
+      qc.invalidateQueries({ queryKey: ['factory-production'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '重推失败'),
   });
 
   // 配件配齐弹窗 (#12)
@@ -335,13 +345,22 @@ export default function FactoryProductionView() {
                       ⚠ {c.production_note}
                     </div>
                   )}
-                  <Space className="no-print" size={4} style={{ width: '100%' }}>
-                    <Button size="small" style={{ flex: 1 }} onClick={() => openEdit(c)}>编辑(截止/备注)</Button>
+                  <Space className="no-print" size={4} style={{ width: '100%' }} wrap>
+                    <Button size="small" onClick={() => openEdit(c)}>编辑(截止/备注)</Button>
                     <Button size="small" type={c.is_remote_ship ? 'primary' : 'default'}
                       onClick={() => saveMut.mutate({ id: c.id, patch: { is_remote_ship: !c.is_remote_ship } })}>
                       {c.is_remote_ship ? '取消远期' : '设为远期'}
                     </Button>
                     <Button size="small" onClick={() => setAccCard(c)}>配件</Button>
+                    <Popconfirm
+                      title="重推这张下单图到工厂群?"
+                      description="删掉旧图 → 按最新数据/备注重新生成 → 再推给工厂。"
+                      okText="重推" cancelText="取消"
+                      onConfirm={() => repushMut.mutate(c.id)}
+                    >
+                      <Button size="small" danger
+                        loading={repushMut.isPending && repushMut.variables === c.id}>重推工厂</Button>
+                    </Popconfirm>
                   </Space>
                 </Space>
               </Card>

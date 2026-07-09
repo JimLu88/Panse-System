@@ -315,6 +315,20 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
     return {"ok": True, "id": o.id}
 
 
+@router.post("/{order_id}/repush-factory")
+def repush_factory(order_id: int, db: Session = Depends(get_db)):
+    """工厂生产看板「重推给工厂」: 删旧下单图 → 按最新数据/备注重新生成 → 推工厂群 (用户 2026-07-09)。
+    用于工厂没收到 / 改了备注要重发; 远期挂起/取消/退款/样品单会被拒绝。"""
+    o = db.get(Order, order_id)
+    if not o:
+        raise HTTPException(404, "order not found")
+    from app.services import order_sheet_archive_service as osa
+    r = osa.repush_to_factory(db, o.order_no)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error") or "重推失败(工厂群未配置或推送失败)")
+    return r
+
+
 class CostLineOut(BaseModel):
     material_code: str
     material_name: Optional[str]

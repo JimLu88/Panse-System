@@ -120,6 +120,11 @@ export const updateOrderProduction = (
   patch: { ship_deadline?: string | null; production_note?: string | null; is_remote_ship?: boolean },
 ) => api.patch(`/api/orders/${id}/production`, patch).then((r) => r.data);
 
+// 工厂生产看板「重推给工厂」: 删旧下单图 → 按最新数据重生成 → 推工厂群
+export const repushFactory = (id: number) =>
+  api.post<{ ok: boolean; pushed: number; failed: number; factory_no: number | null; order_label: string }>(
+    `/api/orders/${id}/repush-factory`).then((r) => r.data);
+
 export interface CsvImportReport {
   inserted: number;
   skipped_duplicate: number;

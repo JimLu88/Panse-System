@@ -752,6 +752,35 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
     return {"reset_for_new_no": changed}
 
 
+def repush_to_factory(db: Session, order_no: str) -> dict:
+    """手动重推单张下单图到工厂群 (工厂生产看板「重推给工厂」按钮, 用户 2026-07-09):
+    删旧图 → 按最新数据/备注重新生成 → 推。用于"工厂没收到 / 改了备注要重发"。
+    远期挂起 / 取消 / 退款 / 未付款 / 样品单一律拒绝(它们本就不该进工厂)。"""
+    from app.services import order_flags
+    o = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
+    if o is None:
+        return {"ok": False, "error": "订单不存在"}
+    if (o.status or "") in ("cancelled", "pending_payment") or _is_refunded(o) or not _is_paid(o):
+        return {"ok": False, "error": "取消/退款/未付款单不推工厂"}
+    if order_flags.is_factory_remote(o):
+        return {"ok": False, "error": "远期挂起单不推工厂 —— 等客户通知「开始制作」后再推"}
+    if _is_sample_order(o):
+        return {"ok": False, "error": "样品/样块单不推工厂"}
+    # 正式单没工厂号 → 顺排一个(否则下单图是"未能匹配工厂订单号")
+    if getattr(o, "factory_no", None) is None:
+        o.factory_no = _next_factory_no(db)
+        db.flush()
+    # 删旧图(为了带上最新备注/数据重渲染) → 生成 → 定向推这一张
+    for r in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if order_no in (r.original_filename or ""):
+            import_storage.delete_record(db, r.id)
+    db.commit()
+    generate_for_order(db, o)
+    push = push_pending_images(db, limit=5, include_baseline=True, only_order_nos={order_no})
+    return {"ok": push["pushed"] > 0, "pushed": push["pushed"], "failed": push["failed"],
+            "factory_no": o.factory_no, "order_label": order_flags.factory_label(o)}
+
+
 def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | None" = None) -> dict:
     """已推工厂、但现在已延期/远期(挂起)的单 → 作废旧工厂号 + 通知工厂勿做 + 清号挂起 (用户 2026-07-08)。
 
