@@ -273,6 +273,16 @@ def parse_balance_screenshot(
         data = _extract_json(resp.text)
     except ValueError as e:
         raise AiUnavailable(f"AI 返回无法解析: {e}")
+    # 推广余额反向校验 (2026-07-09): 06-29 实测 OCR 把千牛资金页最上方『聚合结算账户』57855.45
+    # 误读成 57.85 记成推广余额。推广只认『万相台无界版·账户总余额』; 若读到的板块是聚合结算/保证金/
+    # 可提现/冻结 → 强制判低置信, 调用方就不写库(报异常待人工), 免得又把别的账户当推广余额落库。
+    _hint = account_hint or ""
+    if "推广" in _hint or "万相台" in _hint:
+        _label = str(data.get("label_found") or "")
+        if any(k in _label for k in ("聚合", "保证金", "可提现", "冻结")):
+            data["confidence"] = "low"
+            data["note"] = (str(data.get("note") or "") +
+                            f" | 反向校验: 推广余额只认万相台无界版, 却读到「{_label}」→ 判低置信不入库")
     return data
 
 
