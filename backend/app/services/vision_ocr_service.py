@@ -229,9 +229,7 @@ _BALANCE_SYSTEM = (
     "两个数, 取账户总余额, 如 3,047.73), 把它填进 available; 找到这个板块就是 high;\n"
     "  · 含『保证金』→ 保证金账户「可用余额」;\n"
     "  · 含『支付宝企业』→ 『支付宝企业账户』板块的「可用余额」;\n"
-    "  · 含『支付宝主力/主力』→ 支付宝个人主力号的「可用余额」; 若整页只有『支付宝企业账户』和『支付宝账单』"
-    "两张卡(商家平台工作台)、没有单独的主力号可用余额 → available=null, confidence=low, note 写明"
-    "『此页无主力号可用余额, 只有企业账户X和账单期初Y』(不要拿企业可用或账单期初冒充);\n"
+    "  · 含『支付宝主力/主力』→ 个人支付宝, 走专用 _BALANCE_MAIN_SYSTEM(不在本多板块规则内);\n"
     "  · 含『万师傅』→ 右上角账户余额(常为 0);\n"
     "  · 其余 → 页面最显著的主账户余额。\n"
     "只返回 JSON: {\"available\": 数字或null, \"label_found\": \"实际读的板块+余额项\", "
@@ -240,15 +238,35 @@ _BALANCE_SYSTEM = (
     "绝不编造、绝不拿别的板块的数冒充; 完全读不到就 available=null。"
 )
 
+# 支付宝【主力号=个人号】专用: 页面是个人支付宝『交易记录』页(consumeprod.alipay.com), 单一余额,
+# 不是并排板块结构 → 用多板块 _BALANCE_SYSTEM 会因"找不到叫主力号的板块"而误判 null。故单开简单提示词。
+# (2026-07-10: 主力号余额抓图从 b.alipay 企业平台改回个人网址后配套, 见 Web-Agent bal_alipay_main)
+_BALANCE_MAIN_SYSTEM = (
+    "你是财务OCR助手, 读【个人支付宝·交易记录页】截图里的账户可用余额。\n"
+    "页面顶部是『你好, 某某』, 中部『交易记录』标题右侧有一行绿色的『可用余额 X 元』——X 就是要读的可用余额。\n"
+    "⚠页面下方那张交易流水明细表里每一笔带 +/- 号的金额(如 +8000.00 / -67.99 / -150.00)都是交易流水, 不是余额, 绝不能取。\n"
+    "只返回 JSON: {\"available\": 数字或null, \"label_found\": \"实际读到的余额项\", "
+    "\"confidence\": \"high|low\", \"note\": \"简述\"}\n"
+    "数字去掉逗号和¥符号、保留两位小数。读到『可用余额』后的那个数 → confidence=high; "
+    "整页压根没有『可用余额』三个字(例如落到了登录页) → available=null、confidence=low。绝不编造。"
+)
+
 
 def parse_balance_screenshot(
     db: Session, image_bytes: bytes, *, mime: str = "image/png", account_hint: str = "",
 ) -> dict:
     """读余额截图的「可用余额」. 返回 {available, label_found, confidence, note}.
     调用方据 confidence/available 决定是否写库 (读不准不写, 报异常)。"""
+    # 主力号=个人支付宝, 页面是单一余额的『交易记录』页 → 用专用简单提示词;
+    # 多板块 _BALANCE_SYSTEM 会因"找不到叫主力号的板块"误判 null(2026-07-10 实测)。
+    if "主力" in (account_hint or ""):
+        system = _BALANCE_MAIN_SYSTEM
+        user = f"账户: {account_hint or '主力号'}。读这张个人支付宝交易记录页的可用余额, 输出 JSON."
+    else:
+        system = _BALANCE_SYSTEM
+        user = f"账户: {account_hint or '未知'}。按上面规则读这张截图里该账户对应板块的余额, 输出 JSON."
     resp = _ocr_image_resp(
-        db, system=_BALANCE_SYSTEM,
-        user=f"账户: {account_hint or '未知'}。按上面规则读这张截图里该账户对应板块的余额, 输出 JSON.",
+        db, system=system, user=user,
         image_bytes=image_bytes, mime=mime, max_tokens=500,
     )
     try:
