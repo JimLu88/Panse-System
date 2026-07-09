@@ -129,6 +129,7 @@ export default function FactoryProductionView() {
   // #23: 导出当前筛选的工厂制作单为 Excel (复用页面导出端点, 记录进 资料存档库→页面导出)
   const exportExcel = async () => {
     const cols = [
+      { key: 'order_label', title: '工厂下单号' },
       { key: 'order_no', title: '订单号' }, { key: 'order_date', title: '下单日期' },
       { key: 'ship_date', title: '发货截止' }, { key: 'days_left', title: '剩余天数' },
       { key: 'status_label', title: '紧急度' }, { key: 'customer_name', title: '客户' },
@@ -136,7 +137,7 @@ export default function FactoryProductionView() {
       { key: 'sku', title: 'SKU' }, { key: 'remark', title: '备注' },
     ];
     const rows = visible.map((c: any) => ({
-      order_no: c.order_no, order_date: c.order_date,
+      order_label: c.order_label, order_no: c.order_no, order_date: c.order_date,
       ship_date: c.ship_date ?? c.ship_deadline ?? c.ship_eta ?? null,
       days_left: c.days_left ?? c.days ?? null,
       status_label: STATUS_META[c.status]?.label ?? c.status,
@@ -172,7 +173,7 @@ export default function FactoryProductionView() {
       const ds = dayStyle(c.days_left);
       return `<div class="pc">
         <div class="hd">
-          <span class="no">${esc(c.order_no)}</span>
+          <span class="no">${esc(c.order_label || c.order_no)}</span>${c.order_label ? ` <span style="color:#888;font-size:11px">${esc(c.order_no)}</span>` : ''}
           <span class="badge" style="color:${sm.color};background:${sm.bg};border-color:${sm.color}">${esc(sm.label)}</span>
           ${c.is_custom ? '<span class="badge cust">定制</span>' : ''}
         </div>
@@ -289,7 +290,13 @@ export default function FactoryProductionView() {
               >
                 <Space direction="vertical" size={4} style={{ width: '100%' }}>
                   <Space style={{ width: '100%', justifyContent: 'space-between' }} align="start">
-                    <strong style={{ fontSize: 12 }}>{c.order_no}</strong>
+                    <div>
+                      {c.order_label && (
+                        <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.2,
+                          color: c.status === 'remote' ? '#722ed1' : '#c41d7f' }}>{c.order_label}</div>
+                      )}
+                      <span style={{ fontSize: 11, color: '#888' }}>{c.order_no}</span>
+                    </div>
                     <Space size={2}>
                       <Tag style={{ marginInlineEnd: 0, color: STATUS_META[c.status]?.color, borderColor: STATUS_META[c.status]?.color, background: STATUS_META[c.status]?.bg }}>
                         {STATUS_META[c.status]?.label ?? c.status}

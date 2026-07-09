@@ -107,6 +107,9 @@ export interface FactoryCard {
   is_custom: boolean;
   is_remote_ship: boolean;             // 远期单(等客户通知再发)
   status: 'remote' | 'overdue' | 'critical' | 'urgent' | 'normal';  // 紧急度分类
+  factory_no: number | null;           // 工厂号(畔色N单); 只有正式开始制作的单才有
+  remote_seq: number | null;           // 远期单内部序号(远期单不占工厂号)
+  order_label: string;                 // 工厂下单号显示: "畔色N单" / "远期单N" / ""(未排)
   accessory: AccessorySummary | null;  // 配件配齐进度 {total,done,pending}; null=未生成配件
 }
 export const fetchFactoryProduction = (product?: string) =>
