@@ -858,6 +858,15 @@ def _job_aftersales_followup(db: Session) -> dict:
     return aftersales_followup_service.check_and_push(db)
 
 
+def _job_flip_monitor(db: Session) -> dict:
+    """灰度监控 (2026-07-09): 扫仍在"翻烧饼"(实付/状态被重导反复横跳)的订单记异常 + 复核销账已稳定的。
+    部署幂等导入修复后盯一周: 异常页看 order_import_flip —— 修好则逐日清空, 仍翻的留人工定夺。"""
+    from app.services import exception_recheck_service, import_flip_monitor_service
+    scanned = import_flip_monitor_service.scan(db)
+    closed = exception_recheck_service.bulk_close_resolved(db, types=["order_import_flip"])
+    return {"scan": scanned, "closed": closed.get("order_import_flip", 0)}
+
+
 def _job_weekly_purchase_remind(db: Session) -> dict:
     """每周一 09:00: 生成本周备货清单并推送。"""
     from app.services import notify_service, sales_analytics
@@ -1372,6 +1381,8 @@ def _register_default_jobs() -> None:
                  _job_web_agent_daily, cron={"hour": 18, "minute": 0})
     register_job("hourly_ingest_scan", "每小时扫共享目录导入(PC自跑报表 #15)",
                  _job_ingest_scan, interval_minutes=60)
+    register_job("daily_2235_flip_monitor", "导入翻烧饼灰度监控(仍横跳→异常, 稳定→销账)",
+                 _job_flip_monitor, cron={"hour": 22, "minute": 35})
     register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/口令过期 → 微信+飞书)",
                  _job_ingest_health_check, cron={"hour": 20, "minute": 0})
     register_job("daily_0915_npd_stage_remind", "新品开发阶段截止提醒 (飞书催设计师)",

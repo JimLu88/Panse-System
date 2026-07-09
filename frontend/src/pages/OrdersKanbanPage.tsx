@@ -199,11 +199,13 @@ function OrdersBoard() {
 
   const onDragEnd = (e: DragEndEvent) => {
     setActiveId(null);
+    // 看板拖拽改状态已停用 (2026-07-09, 用户要求): 订单状态一律以最新导入为准, 不再用拖拽人工改,
+    // 避免与每日自动导入互相打架。看板仅作查看; 确需人工改状态请到订单详情页操作。
     const over = e.over?.id as string | undefined;
     if (!over) return;
     const o = orders.find((x) => x.id === e.active.id);
     if (!o || normStatus(o.status) === over) return;   // 没移动 / 同列 → 不动
-    transMut.mutate({ id: o.id, status: over });
+    message.info('看板拖拽改状态已停用 —— 订单状态以导入为准。如需手工改,请到订单页操作。');
   };
 
   // ── 手机端 (<768px): 4列看板会被压成一字一行 → 改「状态分段 + 整宽卡片竖列」, 换状态用卡上「移到…」下拉 ──

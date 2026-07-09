@@ -189,3 +189,114 @@ def test_import_multi_line_order(db_session):
     o = db_session.query(Order).filter_by(order_no="C300").one()
     assert o.product_name == "畔色实木餐边柜"   # 金额最大行为主
     assert "本单含2个商品" in (o.remark or "")
+
+
+# ── 重导幂等护栏 (2026-07-09): 根治 202 单实付/状态/退款被不同来源文件反复横跳 ──────────────
+def _csv(header: list, rows: list) -> bytes:
+    out = io.StringIO(); w = csv.writer(out); w.writerow(header)
+    for r in rows:
+        w.writerow(r)
+    return out.getvalue().encode("gbk")
+
+
+def test_idem_line_detail_keeps_authoritative_paid(db_session):
+    """行级销售明细(不完整, 只匹配到一件)不许覆盖订单报表的正确实付。实测 13263: 4500.36 被 1795.17 反复盖。"""
+    auth = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "退款金额", "商品属性", "商家编码", "订单创建时间"],
+                [["Z1", "买家已付款,等待卖家发货", "4500.36", "4500.36", "", "颜色分类:餐桌", "23210020201", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "orderlist.csv", auth)
+    assert db_session.query(Order).filter_by(order_no="Z1").one().paid_amount == Decimal("4500.36")
+    # 不完整销售明细(有子订单编号 → 行级源), 只有餐桌一件 1795.17
+    line = _csv(["子订单编号", "主订单编号", "订单状态", "商品标题", "商品属性", "买家应付货款", "买家实付金额", "商家编码", "订单创建时间"],
+                [["Z1a", "Z1", "买家已付款,等待卖家发货", "餐桌", "颜色分类:餐桌", "1795.17", "1795.17", "23210020201", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "detail.csv", line)
+    assert db_session.query(Order).filter_by(order_no="Z1").one().paid_amount == Decimal("4500.36")
+
+
+def test_idem_missing_paid_col_keeps_real_paid(db_session):
+    """缺「买家实付金额」列的稀疏导出不许用应付兜底盖掉真实实付。实测单产品单在 实付↔应付 之间翻。"""
+    auth = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                [["Z2", "交易成功", "2632.66", "2520.46", "颜色分类:椅", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "orderlist.csv", auth)
+    assert db_session.query(Order).filter_by(order_no="Z2").one().paid_amount == Decimal("2520.46")
+    sparse = _csv(["订单编号", "订单状态", "买家应付货款", "商品属性", "订单创建时间"],
+                  [["Z2", "交易成功", "2632.66", "颜色分类:椅", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "sparse.csv", sparse)
+    assert db_session.query(Order).filter_by(order_no="Z2").one().paid_amount == Decimal("2520.46")
+
+
+def test_idem_missing_status_col_keeps_status(db_session):
+    """缺「订单状态」列的文件其 status 是兜底默认 signed → 不许覆盖已有 paid(否则每天把未发货盖成已签收)。"""
+    auth = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                [["Z3", "买家已付款,等待卖家发货", "3000.00", "3000.00", "颜色分类:床", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "orderlist.csv", auth)
+    assert db_session.query(Order).filter_by(order_no="Z3").one().status == "paid"
+    nostatus = _csv(["订单编号", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                    [["Z3", "3000.00", "3000.00", "颜色分类:床", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "nostatus.csv", nostatus)
+    assert db_session.query(Order).filter_by(order_no="Z3").one().status == "paid"
+
+
+def test_idem_authoritative_still_updates(db_session):
+    """对照: 权威单级源(有状态列+实付列)该更新还得更新 —— 幂等护栏不能把正常更新也堵死。"""
+    a = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "退款金额", "商品属性", "订单创建时间"],
+             [["Z4", "买家已付款,等待卖家发货", "1000.00", "1000.00", "", "颜色分类:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "a.csv", a)
+    o = db_session.query(Order).filter_by(order_no="Z4").one()
+    assert o.status == "paid" and (o.refund_amount or Decimal("0")) == Decimal("0")
+    b = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "退款金额", "商品属性", "订单创建时间"],
+             [["Z4", "交易成功", "1000.00", "1000.00", "200.00", "颜色分类:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "b.csv", b)
+    o2 = db_session.query(Order).filter_by(order_no="Z4").one()
+    assert o2.status == "signed"                   # 权威源状态更新
+    assert o2.refund_amount == Decimal("200.00")   # 权威源退款更新
+
+
+def test_idem_qianniu_incomplete_detail_no_reduce(db_session):
+    """千牛三表: 订单报表单级 4500.36, 销售明细只覆盖到部分(1795.17+1000<4500.36) → 采用订单报表总额, 不被明细求和压低。"""
+    wb = Workbook(); wb.remove(wb.active)
+    o = wb.create_sheet("订单报表")
+    o.append(["订单编号", "买家应付货款", "买家实付金额", "订单状态", "订单创建时间"])
+    o.append(["Q1", "4500.36", "4500.36", "买家已付款,等待卖家发货", "2026-06-16 10:00:00"])
+    s = wb.create_sheet("销售明细")
+    s.append(["子订单编号", "主订单编号", "商品标题", "购买数量", "商家编码", "商品属性", "买家应付货款", "买家实付金额", "订单创建时间"])
+    s.append(["Q1a", "Q1", "餐桌", "1", "23210020201", "颜色分类:餐桌", "1795.17", "1795.17", "2026-06-16 10:00:00"])
+    s.append(["Q1b", "Q1", "椅子", "1", "23250050202", "颜色分类:椅", "1000.00", "1000.00", "2026-06-16 10:00:00"])
+    buf = io.BytesIO(); wb.save(buf)
+    tio.import_taobao_orders(db_session, "export.xlsx", buf.getvalue())
+    assert db_session.query(Order).filter_by(order_no="Q1").one().paid_amount == Decimal("4500.36")
+
+
+def test_idem_multiproduct_partial_refund_is_paid_not_signed(db_session):
+    """13263 型: 一单两件(床头柜退款 + 餐桌还在做), 已卖出宝贝导出整单状态=交易关闭 → 应判"进行中 paid",
+    不是 signed(否则跟订单报表的 paid 天天打架)也不是 cancelled(会把还在做的餐桌漏出销售)。"""
+    line = _csv(["子订单编号", "主订单编号", "订单状态", "商品标题", "商品属性", "买家应付货款", "买家实付金额", "退款金额", "商家编码", "订单创建时间"],
+                [["N1", "N900", "交易关闭", "床头柜", "颜色:柜", "1795.17", "1795.17", "1795.17", "23210020201", "2026-06-16 10:00:00"],
+                 ["N2", "N900", "交易关闭", "餐桌", "颜色:桌", "2705.19", "2705.19", "", "23210020202", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "detail.csv", line)
+    o = db_session.query(Order).filter_by(order_no="N900").one()
+    assert o.status == "paid"                    # 进行中, 不是 signed / cancelled
+    assert o.paid_amount == Decimal("4500.36")   # 两件求和, 不被压低
+
+
+def test_idem_zero_paid_does_not_wipe_real_paid(db_session):
+    """0护栏: order 源导出把老单实付报成 0 时, 不许清掉已有的真实实付(该单没关闭)。"""
+    auth = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                [["Z9", "买家已付款,等待卖家发货", "3326.63", "3326.63", "颜色:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "a.csv", auth)
+    assert db_session.query(Order).filter_by(order_no="Z9").one().paid_amount == Decimal("3326.63")
+    zero = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                [["Z9", "买家已付款,等待卖家发货", "3326.63", "0", "颜色:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "b.csv", zero)
+    assert db_session.query(Order).filter_by(order_no="Z9").one().paid_amount == Decimal("3326.63")  # 未被清零
+
+
+def test_idem_cancelled_order_may_zero_paid(db_session):
+    """对照: 单产品单确实关闭(交易关闭)时, 实付落 0 是合理的, 0护栏不该拦。"""
+    auth = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                [["Z7", "买家已付款,等待卖家发货", "1000.00", "1000.00", "颜色:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "a.csv", auth)
+    close = _csv(["订单编号", "订单状态", "买家应付货款", "买家实付金额", "商品属性", "订单创建时间"],
+                 [["Z7", "交易关闭", "1000.00", "0", "颜色:桌", "2026-06-16 10:00:00"]])
+    tio.import_taobao_orders(db_session, "b.csv", close)
+    o = db_session.query(Order).filter_by(order_no="Z7").one()
+    assert o.status == "cancelled" and o.paid_amount == Decimal("0")

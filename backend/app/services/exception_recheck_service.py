@@ -620,7 +620,14 @@ def _check_purchase_price_variance(db: Session, exc: DataException) -> Optional[
     return None  # 已更新物料库 / 已≤阈值 → 销账
 
 
+def _check_order_import_flip(db: Session, exc: DataException) -> Optional[str]:
+    """灰度监控: 该单近期不再被重导反复横跳(值回跳)→ 销账; 仍在翻 → 保留待人工。"""
+    from app.services import import_flip_monitor_service
+    return import_flip_monitor_service.check_resolved(db, exc)
+
+
 _CHECKERS: dict[str, Callable[[Session, DataException], Optional[str]]] = {
+    "order_import_flip": _check_order_import_flip,
     "order_no_unresolved": _check_order_no_unresolved,
     "factory_bill_on_dead_order": _check_factory_bill_on_dead_order,
     "alipay_duplicate_flow": _check_alipay_duplicate_flow,

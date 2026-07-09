@@ -246,6 +246,10 @@ class _OrderRow:
     shop: Any = None                 # 店铺名称
     buyer_message: Any = None        # 买家留言 (平台, 重导覆盖)
     seller_memo: Any = None          # 卖家备注/商家备注 (平台, 重导覆盖)
+    # 订单级财务权威度 (2026-07-09): "order"=单级权威源(订单报表/已卖出宝贝导出, 一单一行, 财务列完整);
+    # "line"=行级销售明细(一行一商品, 订单级金额需按行求和, 不完整时会低估)。重导幂等护栏据此决定
+    # 是否允许覆盖已有订单的订单级财务字段 —— 行级源不许覆盖(防不完整明细把订单报表的正确值压掉)。
+    fin_source: str = "order"
     lines: list[dict] = field(default_factory=list)   # 每个商品行
 
 
@@ -398,6 +402,8 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
             if o is None:
                 o = _OrderRow(
                     order_no=no, order_no_bad=_is_sci(main),
+                    # 有订单报表数据(r 非空)→ 订单级财务权威; 仅销售明细里的单 → 行级(不完整可能低估)
+                    fin_source=("order" if r else "line"),
                     order_date=r.get("create") or g3(row, "订单创建时间"),
                     customer_name=s.get("name"),
                     customer_phone=s.get("phone"),
@@ -436,17 +442,25 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
 def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> dict[str, _OrderRow]:
     name = (filename or "").lower()
     rows: list[dict] = []
+    _hdr: set[str] = set()
     if name.endswith((".xlsx", ".xlsm", ".xls")) or raw[:2] == b"PK":
         wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
         ws = wb[wb.sheetnames[0]]
         it = ws.iter_rows(values_only=True)
         header = [str(c).strip() if c is not None else "" for c in next(it)]
+        _hdr = set(header)
         for r in it:
             rows.append({header[i]: r[i] for i in range(min(len(header), len(r)))})
         wb.close()
     else:
         text = _decode(raw)
-        rows = list(csv.DictReader(io.StringIO(text)))
+        reader = csv.DictReader(io.StringIO(text))
+        rows = list(reader)
+        _hdr = set(reader.fieldnames or [])
+    # 行级销售明细判据 (2026-07-09): 表头含「子订单编号/主订单编号」= 一行一商品的销售明细(订单级金额需按行
+    # 求和, 明细不完整时低估); 单级导出(订单报表/已卖出宝贝)只有「订单编号」。行级源不权威于订单级财务 →
+    # 重导时不许覆盖已存在订单的实付/状态/退款(防不完整明细把订单报表的正确值压掉, 根治 202 单横跳)。
+    _fin_src = "line" if (_hdr & {"子订单编号", "主订单编号"}) else "order"
 
     def gv(row, *names):
         for n in names:
@@ -463,7 +477,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
         o = orders.get(no)
         if o is None:
             o = _OrderRow(
-                order_no=no, order_no_bad=_is_sci(main),
+                order_no=no, order_no_bad=_is_sci(main), fin_source=_fin_src,
                 order_date=gv(row, "订单创建时间", "订单付款时间", "下单时间"),
                 customer_name=gv(row, "收货人姓名", "买家昵称"),
                 customer_phone=gv(row, "联系手机", "联系电话", "手机"),
@@ -614,16 +628,21 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         #  误回退成单产品成本 → 毛利虚高)。单产品单(1行)求和=第一行, 行为不变。退款随行求和后归一;
         # 成本侧由 auto_cost_backfill 的口径A按子行汇总(实付修对后护栏放行)并排除被退子行。
         if len(lines) > 1:
+            # 订单报表单级值(销售明细求和前): 防【不完整明细】把订单报表的正确总额压低 (2026-07-09,
+            # 实测多产品单 13263 明细只匹配到餐桌一行 → 求和 1795.17 反把订单报表的 4500.36 覆盖掉)。
+            _ord_payable, _ord_paid = _to_decimal(o.buyer_payable), _paid_real_d
+            _ord_recv = _to_decimal(o.shop_received)
             def _sum_ln(key):
                 vals = [ln.get(key) for ln in lines if ln.get(key) is not None]
                 return sum(vals, Decimal("0")) if vals else None
             _s_pay, _s_paid = _sum_ln("amount"), _sum_ln("paid_real")
             _s_recv, _s_fee, _s_refund = _sum_ln("shop_received"), _sum_ln("platform_fee"), _sum_ln("refund")
-            if _s_pay is not None and _s_pay > 0:
+            # 求和 ≥ 订单报表单级值(明细完整)才采用; 求和更小 = 明细不完整 → 保留单级值, 不压低。
+            if _s_pay is not None and _s_pay > 0 and (_ord_payable is None or _s_pay >= _ord_payable):
                 payable = _s_pay
-            if _s_paid is not None and _s_paid > 0:
+            if _s_paid is not None and _s_paid > 0 and (_ord_paid is None or _s_paid >= _ord_paid):
                 paid = _paid_real_d = _s_paid
-            if _s_recv is not None and _s_recv > 0:
+            if _s_recv is not None and _s_recv > 0 and (_ord_recv is None or _s_recv >= _ord_recv):
                 received = _s_recv
             if _s_fee is not None:
                 pfee = _s_fee
@@ -655,8 +674,13 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         # 多宝贝订单纠偏 (用户实测 2026-06-26, 订单 5115237121779012546): 一单多商品时整单状态在
         # _parse 阶段只取了该主订单号【首个子订单行】的「订单状态」(后续行只进 lines)。若首行恰是被
         # 退款/关闭的子单 → 整单被误标 cancelled/aftersales, 连带把另一件【真实成交】产品一起漏出销售口径。
-        # 有真实收款证据 (店铺实收>0, 或 已付款单的部分退款) 且非全额退款 → 纠正为已成交 (signed)。
+        # 有真实收款证据 (店铺实收>0, 或 已付款单的部分退款) 且非全额退款 → 不该被整单当取消漏出销售口径。
         # ⚠ 仅限多商品单 (len(lines)>1): 单商品关闭单不动 (实测那批多为拍下未付款·实收0, 本就该被排除)。
+        # ── 2026-07-09 修盲区(实测 13263: 床头柜退款、餐桌还在工厂做): 原来一律纠成 signed(已签收),
+        # 漏了"退一件、剩下那件还在做/未发货"这第三种(它是【进行中 paid】, 不是签收)。已卖出宝贝导出把
+        # 退款件的"交易关闭"当整单状态 → 若一律判 signed, 就跟订单报表给的 paid 天天打架(paid↔signed 横跳)。
+        # 用【店铺实收 打款商家金额】区分留下那件: 实收>0 = 淘宝已放款 = 真成交结算 → signed(如 5115:
+        # 留下餐桌交易成功·实收883.30); 实收=0 = 还没结算(还在做/未发货)→ 进行中 paid(如 13263 餐桌·实收0)。
         if status in ("cancelled", "aftersales") and len(lines) > 1:
             _paid_g = paid or Decimal("0")
             _refund_g = refund or Decimal("0")
@@ -664,7 +688,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             _is_full_refund = _paid_g > 0 and _refund_g >= _paid_g * Decimal("0.99")
             _has_real_money = _recv_g > 0 or (_refund_g > 0 and _paid_g > 0)
             if _has_real_money and not _is_full_refund:
-                status = "signed"
+                status = "signed" if _recv_g > 0 else "paid"   # 实收>0 已结算→签收; 实收0 还在做→进行中
                 _recognized = True
         # 状态无法识别 且 无收款凭据 → 拦截不入库, 报异常待人工 (用户拍板 2026-06-18:
         # 不再默默塞成"待付款"被全系统漏算; 补好状态映射后重导即可入库)。
@@ -700,27 +724,39 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 except Exception:
                     pass
                 return True
-            if _trace("status", "订单状态", existing.status, status):
-                rep.status_changed += 1
+            # ── 幂等护栏 (2026-07-09): 只有【订单级权威源 fin_source=="order"(订单报表/已卖出导出)】
+            # 且【当前文件真带该列】才覆盖已存在订单的订单级财务字段; 行级销售明细 / 缺列的稀疏文件(如
+            # 发货报表)只回填空值, 不许拿降级/默认值覆盖已有正确值。根治 202 单实付/状态/退款被不同来源
+            # 文件反复横跳(实测 13263 在 4500.36↔1795.17、paid↔signed 之间弹 21 次)。
+            _auth = (o.fin_source == "order")
+            def _fin_overwrite(attr, value, present, fname=None, flabel=None, count=False, guard_zero=False):
+                cur = getattr(existing, attr)
+                if value is None or not ((present and _auth) or cur is None):
+                    return
+                # 0护栏 (2026-07-09): 不让"实付/应付/实收=0"把已有的正数金额清零 —— dry-run 实测有些
+                # order 源导出会把老单的这些列报成 0, 裸覆盖会误清真实金额。仅当该单确在关闭
+                # (status=cancelled)时才允许落 0(关闭单实付本就该是 0)。
+                if guard_zero and value <= 0 and cur is not None and cur > 0 and status != "cancelled":
+                    return
+                if fname and _trace(fname, flabel, cur, value) and count:
+                    rep.amount_changed += 1
+                setattr(existing, attr, value)
+
             existing.is_historical = False
-            existing.status = status
-            if payable is not None:
-                existing.buyer_payable_amount = payable
-            if paid is not None:
-                if _trace("paid_amount", "实付金额", existing.paid_amount, paid):
-                    rep.amount_changed += 1
-                existing.paid_amount = paid
-            if received is not None:
-                existing.shop_received_amount = received
-            if pfee is not None:
-                existing.platform_fee = pfee
-            if refund is not None:
-                if _trace("refund_amount", "退款金额", existing.refund_amount, refund):
-                    rep.amount_changed += 1
-                existing.refund_amount = refund
-            if freight is not None:
-                _trace("buyer_freight", "买家应付邮费", existing.buyer_freight, freight)
-                existing.buyer_freight = freight
+            # 状态: 仅当文件真带「订单状态」列(status_text 非空)才改。缺状态列的稀疏文件(发货报表/部分
+            # 明细)其 status 是兜底默认的 signed(见上文无状态列默认段)—— 不许覆盖已有状态, 否则每天把
+            # paid 盖成 signed。销售明细本身带订单级「订单状态」列, 属合法更新(与金额不同: 金额按行求和会
+            # 因明细不完整而低估, 故金额仍要求权威源; 状态是订单级单值, 明细里也准)。
+            if str(o.status_text or "").strip():
+                if _trace("status", "订单状态", existing.status, status):
+                    rep.status_changed += 1
+                existing.status = status
+            _fin_overwrite("buyer_payable_amount", payable, o.buyer_payable is not None, guard_zero=True)
+            _fin_overwrite("paid_amount", paid, o.paid_real is not None, "paid_amount", "实付金额", count=True, guard_zero=True)
+            _fin_overwrite("shop_received_amount", received, o.shop_received is not None, guard_zero=True)
+            _fin_overwrite("platform_fee", pfee, o.platform_fee is not None)
+            _fin_overwrite("refund_amount", refund, o.refund is not None, "refund_amount", "退款金额", count=True)
+            _fin_overwrite("buyer_freight", freight, o.buyer_freight is not None, "buyer_freight", "买家应付邮费")
             if ship_dt is not None:
                 _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt
