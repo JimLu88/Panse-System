@@ -155,3 +155,21 @@ def test_sheet_title_format(db_session):
     sheet = factory_sheet.build(db_session, o.id)
     assert "5月7日" in sheet.sheet_title
     assert "0242" in sheet.sheet_title  # 末 4 位订单号
+
+
+def test_render_shows_customer_note(db_session):
+    """补拍链/定制单真实需求只在备注(buyer_message)里, 下单图必须渲染出来给工厂 (2026-07-09)。"""
+    _setup(db_session)
+    from app.services.order_sheet_archive_service import render_html
+    o = Order(
+        platform="淘宝", order_no="X7", order_date=date(2026, 7, 8),
+        product_name="畔色木作 差价邮费补拍专链",
+        buyer_message="定制1.8*0.65白色岩板餐桌", qty=1, factory_no=293,
+    )
+    db_session.add(o)
+    db_session.flush()
+    sheet = factory_sheet.build(db_session, o.id)
+    assert sheet.remark == "定制1.8*0.65白色岩板餐桌"   # buyer_message → 客户备注
+    html = render_html(sheet)
+    assert "客户备注" in html                            # 有备注区
+    assert "定制1.8*0.65白色岩板餐桌" in html            # 备注内容渲染出来, 工厂知道做什么
