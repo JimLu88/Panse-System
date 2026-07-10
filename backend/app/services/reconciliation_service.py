@@ -1130,16 +1130,20 @@ def run_revenue_alipay(
 # -------- Rule 8: 经营支出对账 (日常经营/人员外包/品牌营销 ↔ 支付宝) --------
 
 def _alipay_flow_amount_map(db: Session) -> dict[str, Decimal]:
-    """transaction_no → 支出绝对金额 (amount<0 取负值)。用于按流水号反查实付。"""
+    """transaction_no → 支出合计 (仅 amount<0 的行, 取绝对值累加)。用于按流水号反查实付。
+
+    修 (2026-07-10): 支付宝同一交易号下常有多笔子流水(库唯一键本就允许, 如 -109.98玻璃/-2260备货/
+    -0.02尾差 共号), 原实现 `out[no]=abs(amt)` 同号互相覆盖只留最后一行, 且收入行(+2080"岩板费")
+    也被当支出 → 采购对账 2026-06 假差 +2150/+1790。改: 只累加支出行。"""
     out: dict[str, Decimal] = {}
     for no, amt in db.execute(
         select(AlipayFlow.transaction_no, AlipayFlow.amount).where(
             AlipayFlow.transaction_no.isnot(None), AlipayFlow.transaction_no != "",
         )
     ).all():
-        if not no:
+        if not no or amt is None or amt >= 0:
             continue
-        out[no] = abs(Decimal(amt or 0))
+        out[no] = out.get(no, Decimal("0")) + (-Decimal(amt))
     return out
 
 
@@ -1279,6 +1283,7 @@ def run_purchase_payment(
     actual: dict[str, Decimal] = {}
     pp_records_by_month: dict[str, list[str]] = {}   # 月 → 采购单+流水号明细, 供核对
     diffs: list[ReconciliationDiff] = []
+    _seen_flow_nos: set[str] = set()   # 多张采购单合付同一笔流水(同号) → 实付整号只计一次, 防双算
     for p in rows:
         d = p.payment_date or p.purchase_date
         if period_start and (d is None or d < period_start):
@@ -1290,9 +1295,13 @@ def run_purchase_payment(
             continue
         month = _month_key(d) or "(无日期)"
         if p.alipay_flow_no and p.alipay_flow_no in flow_map:
-            # 有流水且能匹配 → 计入月度汇总对比
+            # 有流水且能匹配 → 计入月度汇总对比。实付按流水号只计一次
+            # (2026-07-10: 同一交易号下多笔子流水对应多张采购单, 原逻辑每张单都加整号金额 → 双算,
+            #  实测 2026-06 玻璃109.98+备货2260 共号, 2260 被算两遍报假差 +2150.02)。
             expected[month] = expected.get(month, Decimal("0")) + amt
-            actual[month] = actual.get(month, Decimal("0")) + flow_map[p.alipay_flow_no]
+            if p.alipay_flow_no not in _seen_flow_nos:
+                _seen_flow_nos.add(p.alipay_flow_no)
+                actual[month] = actual.get(month, Decimal("0")) + flow_map[p.alipay_flow_no]
             pp_records_by_month.setdefault(month, []).append(
                 f"采购单 {p.purchase_no} ¥{amt} 支付宝流水{p.alipay_flow_no}")
         elif "付" in (p.payment_status or "") and not p.alipay_flow_no:
