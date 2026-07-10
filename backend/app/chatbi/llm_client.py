@@ -113,20 +113,24 @@ def _cloud_chat(c: dict, system: str, user: str, *, timeout: float,
 
 def chat(db: Session, system: str, user: str, *, timeout: float = 90.0,
          max_tokens: int = 512, temperature: float = 0.1) -> str | None:
-    """先本地 Ollama(主力), 失败再云端(兜底); 都失败返回 None(上层走程序)。"""
+    """配了云端就云端优先(PC 退役后主力, 快且稳), 云端失败再退本地; 都失败返回 None(上层走程序)。
+    没配云端则本地 Ollama 为主。"""
     c = cfg(db)
+    has_cloud = bool(c["cloud_key"] and c["cloud_base"] and c["cloud_model"])
+    if has_cloud:
+        try:
+            out = _cloud_chat(c, system, user, timeout=min(timeout, 60.0),
+                              max_tokens=max_tokens, temperature=temperature)
+            if out:
+                return out
+        except Exception as e:  # noqa: BLE001
+            _log.warning("云端 LLM 调用失败, 退本地: %s", e)
     try:
         out = _ollama_chat(c, system, user, timeout=timeout, max_tokens=max_tokens, temperature=temperature)
         if out:
             return out
     except Exception as e:  # noqa: BLE001
         _log.warning("本地 Ollama 调用失败: %s", e)
-    if c["cloud_key"] and c["cloud_base"] and c["cloud_model"]:
-        try:
-            return _cloud_chat(c, system, user, timeout=min(timeout, 60.0),
-                               max_tokens=max_tokens, temperature=temperature)
-        except Exception as e:  # noqa: BLE001
-            _log.warning("云端 LLM 调用失败(交回上层走程序): %s", e)
     return None
 
 
@@ -147,8 +151,11 @@ def warm(db: Session) -> bool:
 
 
 def warm_async(db: Session) -> None:
-    """后台线程预热 (抽屉打开时触发, 不阻塞请求); 同模型只并发一个。"""
+    """后台线程预热本地模型 (抽屉打开时触发, 不阻塞请求); 同模型只并发一个。
+    云端主力时无需预热本地, 直接跳过。"""
     c = cfg(db)
+    if c["cloud_key"] and c["cloud_base"] and c["cloud_model"]:
+        return
     key = c["base"] + "|" + c["model"]
     if key in _warming:
         return
