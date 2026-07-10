@@ -43,8 +43,11 @@ def cfg(db: Session) -> dict:
 
 
 def active_model(db: Session) -> str:
-    """当前实际用的模型名 (审计记录用)。"""
-    return cfg(db)["model"]
+    """当前实际主力模型名 (审计记录用)。配了云端则报云端模型 (云端优先)。"""
+    c = cfg(db)
+    if c["cloud_key"] and c["cloud_base"] and c["cloud_model"]:
+        return c["cloud_model"]
+    return c["model"]
 
 
 def is_available(db: Session) -> bool:
