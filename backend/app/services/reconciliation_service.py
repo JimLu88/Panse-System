@@ -1710,6 +1710,91 @@ def run_ledger_check(
                 if record_exceptions:
                     _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
             continue
+        # ── 企业号/主力号治本 (2026-07-10, 同推广/聚合思路): 收支恒0 → 老①每月必炸; 老②按自然月对
+        # as_of 快照也天然错位(流水T+1)。按账户特点分两档:
+        # · 企业号: 流水每笔都带 balance(1300/1300) → 【流水链自洽】精确核对: 锚点余额+窗口净额 =
+        #   窗口末笔余额, 漏导/重复分厘必现; 快照与链尾的差 = 未导天数+冻结, 只作提示不硬判。
+        # · 主力号: 流水不带 balance(1/466)、历史锚点曾被误读企业账户污染 → 只能滚动对快照; 流水没
+        #   补到快照日(个人号扫码停更)→ not_available 如实暂缓, 不拿半截流水硬判假差。
+        if ("企业" in (r.account_name or "")) or ("主力" in (r.account_name or "")):
+            _flow_acct = "企业号" if "企业" in (r.account_name or "") else "主力号"
+            _prev = _prev_map.get(id(r))
+            _p_asof = getattr(_prev, "as_of_date", None) if _prev is not None else None
+            _c_asof = getattr(r, "as_of_date", None)
+            _closing = Decimal(r.closing_balance or 0)
+            if _prev is None or _p_asof is None or _c_asof is None or _p_asof >= _c_asof:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=None, actual=_closing, diff=None,
+                    severity="not_available",
+                    message=f"{key}: 走流水滚动核对, 但缺上/本次快照统计日期(as_of)或锚点已作废 — 跳过",
+                ))
+                continue
+            _fl = db.execute(select(AlipayFlow).where(
+                AlipayFlow.account == _flow_acct,
+                AlipayFlow.reconciliation_status != "opening_balance",
+            )).scalars().all()
+            _win = sorted((f for f in _fl if f.transaction_time
+                           and _p_asof < f.transaction_time.date() <= _c_asof),
+                          key=lambda f: (f.transaction_time, f.id))
+            _net = sum((Decimal(str(f.amount or 0)) for f in _win), Decimal("0"))
+            _last_d = max((f.transaction_time.date() for f in _win), default=None)
+            if _flow_acct == "企业号":
+                # 流水链自洽: 锚点(≤上次快照日的末笔)余额 + 窗口净额 = 窗口末笔余额
+                _anchors = sorted((f for f in _fl if f.transaction_time and f.balance is not None
+                                   and f.transaction_time.date() <= _p_asof),
+                                  key=lambda f: (f.transaction_time, f.id))
+                if not _anchors or not _win or any(f.balance is None for f in _win):
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=None, actual=_closing, diff=None,
+                        severity="not_available",
+                        message=f"{key}: 企业号流水链核对缺锚点/窗口流水 — 跳过",
+                    ))
+                    continue
+                _anchor_bal = Decimal(str(_anchors[-1].balance))
+                _expected_last = _anchor_bal + _net
+                _actual_last = Decimal(str(_win[-1].balance))
+                _fdiff = _actual_last - _expected_last
+                if abs(_fdiff) <= Decimal("1"):
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=_expected_last, actual=_actual_last, diff=_fdiff, severity="ok",
+                        message=(f"{key}: 企业号流水链自洽({len(_win)}笔全带余额, 锚点{_p_asof} ¥{_anchor_bal}"
+                                 f" + 净额 ¥{_net} = 链尾 ¥{_actual_last}); 快照 ¥{_closing} 与链尾差"
+                                 f" ¥{_closing - _actual_last} 归因于流水只到 {_last_d}(快照{_c_asof})+冻结, 仅提示"),
+                    ))
+                else:
+                    _msg = (f"{key}: 企业号流水链断差 ¥{_fdiff} — 锚点({_p_asof}) ¥{_anchor_bal} + 窗口净额"
+                            f" ¥{_net} = ¥{_expected_last}, 但窗口末笔({_last_d})余额 ¥{_actual_last}"
+                            f" (当月流水有漏导/重复/符号错, 差额即缺口)")
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=_expected_last, actual=_actual_last, diff=_fdiff,
+                        severity=_classify(_fdiff, base=abs(_net)), message=_msg))
+                    if record_exceptions:
+                        _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
+            else:
+                # 主力号: 滚动对快照; 流水未覆盖到快照日 → 暂缓(个人号扫码停更是常态, 不硬判假差)
+                _expected = Decimal(_prev.closing_balance or 0) + _net
+                _fdiff = _closing - _expected
+                if _last_d is None or _last_d < _c_asof:
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=_expected, actual=_closing, diff=None,
+                        severity="not_available",
+                        message=(f"{key}: 主力号流水只到 {_last_d or '无'}(快照{_c_asof}), 粗差 ¥{_fdiff}"
+                                 f" 含未导天数进出, 暂无法定论 — 流水补齐(个人号需扫码拉账单)后自动复核"),
+                    ))
+                elif abs(_fdiff) <= Decimal("100"):
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=_expected, actual=_closing, diff=_fdiff, severity="ok",
+                        message=f"{key}: 主力号流水滚动对平 — 上次快照 + 净额 ¥{_net} ≈ 快照 ¥{_closing}",
+                    ))
+                else:
+                    _msg = (f"{key}: 主力号流水滚不平 — 上次快照({_p_asof}) ¥{Decimal(_prev.closing_balance or 0)}"
+                            f" + 净额 ¥{_net} = ¥{_expected}, 但快照({_c_asof})记 ¥{_closing}, 差 ¥{_fdiff}")
+                    diffs.append(ReconciliationDiff(
+                        key=key, expected=_expected, actual=_closing, diff=_fdiff,
+                        severity=_classify(_fdiff, base=abs(_net) + Decimal("1")), message=_msg))
+                    if record_exceptions:
+                        _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
+            continue
         opening = Decimal(r.opening_balance or 0)
         closing = Decimal(r.closing_balance or 0)
         income = Decimal(r.income or 0)
