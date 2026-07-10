@@ -279,6 +279,15 @@ _PURCHASE_VARIANCE_PCT = 20.0   # 采购单价 vs 物料库标准价 偏离阈�
 
 def _match_purchase_material(p: PartPurchase, by_code: dict, by_name: dict):
     m = by_code.get((p.material_code or "").strip()) if p.material_code else None
+    # 名字一致性护栏 (2026-07-10): 支付宝流水自动建的采购单, 编码是 difflib 模糊猜的
+    # (alipay_flow_router._guess_material), 实测"卓晔五金定金/挚乐轨道灯带/样品玻璃"全被猜成
+    # AC-1006 榉木床头柜金属侧板 → 价差体检拿错挂的标准价比出 +1889% 假偏离。编码命中但采购单
+    # 自己写的名字与物料名毫不相干 → 当匹配不上(不比价/不许把错料标准价写回)。
+    if m is not None and p.material_name and m.name:
+        _pn = p.material_name.strip().lower()
+        _mn = m.name.strip().lower()
+        if _mn not in _pn and _pn not in _mn:
+            m = None
     if m is None and p.material_name:
         m = by_name.get(p.material_name.strip())
     return m
