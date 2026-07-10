@@ -186,6 +186,20 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     # 只认「纯插座追加」(is_pure_socket_addon: 含插座且非大件); 其余专链/补拍/差价单仍整单归零(不走插座成本)。
     from app.services.order_cost_service import zero_cost_reason
     if not bool(getattr(o, "is_refill", False)) and zero_cost_reason(o):
+        # 有真实工厂账单的"专链/差价/补拍"单 = 通过通用链接收款的真生产单, 不归零 (2026-07-10,
+        # 实测 …95421412 差价专链收¥2680、工厂账单¥1280 被归零 → 成本0、利润虚高95%)。实证优先:
+        # 按实际入账 = 工厂账单 + 实际配件/物流/安装/打包(只取 actual_*, 不带 est —— 归零规则本就是
+        # 防这类单残留大件估值脏值, 本例外分支保持同样洁癖)。
+        if _d(o.actual_cost) > 0:
+            _fw = _d(o.actual_cost)
+            _ep = (_d(getattr(o, "actual_parts", None)) + _d(getattr(o, "actual_logistics", None))
+                   + _d(getattr(o, "actual_install", None)))
+            _pk = _d(getattr(o, "actual_packing", None))
+            _tot = _fw + _ep + _pk
+            return {"factory_wood": _fw, "estimate_part": _ep, "packing": _pk,
+                    "precap_total": _tot, "cap_mode": "专链实账",
+                    "cap_label": "专链/差价/补拍但有工厂账单→真生产单, 按实际入账(不带估算脏值)",
+                    "final": _tot}
         from app.services.custom_order_reconcile_service import is_pure_socket_addon, remark_text
         if _is_custom and o.theoretical_cost is not None and is_pure_socket_addon(remark_text(o)):
             tc = _d(o.theoretical_cost)

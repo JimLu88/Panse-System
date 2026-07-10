@@ -14,12 +14,19 @@ from app.services import order_financials as ofin
 # ───────── A. 非产品单整单归零 ─────────
 
 def test_nonproduct_link_zeroed():
-    """产品名含「专链」=官方服务/非产品 → 整单成本 0(连工厂账单/打包都不计)。"""
+    """专链单归零的边界 (2026-07-10 用户裁定更新, 实测 …95421412):
+    有真实工厂账单(¥1280) → 通过专链收款的真生产单, 按实际入账不归零(est_packing 脏值仍不计);
+    无工厂账单 → 照旧整单归零。"""
     o = Order(order_no="NP1", is_custom=False, product_name="畔色木作 差价邮费补拍专链",
               actual_cost=Decimal("1280"), paid_amount=Decimal("2680"),
               theoretical_cost=Decimal("0"), est_packing=Decimal("170"))
-    assert ofin.physical_cost(o) == Decimal("0")
-    assert ofin.physical_cost_breakdown(o)["cap_mode"] == "非产品归零"
+    assert ofin.physical_cost(o) == Decimal("1280")   # 工厂账单入账, est_packing(170) 不带
+    assert ofin.physical_cost_breakdown(o)["cap_mode"] == "专链实账"
+    o2 = Order(order_no="NP1b", is_custom=False, product_name="畔色木作 差价邮费补拍专链",
+               actual_cost=None, paid_amount=Decimal("50"),
+               theoretical_cost=Decimal("0"), est_packing=Decimal("170"))
+    assert ofin.physical_cost(o2) == Decimal("0")
+    assert ofin.physical_cost_breakdown(o2)["cap_mode"] == "非产品归零"
 
 
 def test_nonproduct_install_zeroed():
