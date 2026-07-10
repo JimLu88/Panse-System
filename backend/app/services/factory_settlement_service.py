@@ -368,6 +368,13 @@ def route_alipay_settlements(db: Session, *, default_year: Optional[int] = None)
         sup = match_supplier(db, f.counterparty)
         if not sup:
             continue
+        # 退款护栏 (2026-07-10): 客户退款流水绝不当工厂货款 —— 即使打码对手方名去星号后恰好【子串】命中
+        # 工厂别名(实测: 给客户「山**」的退款去星号=「山」, 命中「玉山」别名 → 被误改 factory_payment,
+        # 每天覆盖手工修复、逐笔退款对账反复报差)。判据: 类型/备注含退款/退货, 或已归 refund 家族。
+        _rt = (f.reconciliation_type or "").lower()
+        _txt = f"{f.transaction_type or ''}{f.remark or ''}"
+        if _rt in ("refund", "refund_out", "refund_in", "aftersales") or "退款" in _txt or "退货" in _txt:
+            continue
         if f.reconciliation_type != "factory_payment":
             f.reconciliation_type = "factory_payment"   # 纠正: 这是付工厂货款, 非客户回款
             flagged += 1

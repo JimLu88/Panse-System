@@ -1538,8 +1538,11 @@ def run_refund_reconciliation(db: Session, *, period_start=None, period_end=None
         o_stmt = o_stmt.where(Order.refund_date <= period_end)
     billed = _sum_by_month(db.execute(o_stmt).all())  # 应退
 
+    # 退款流出口径 (2026-07-10): 兼容两套标 —— smart_matching 打 'refund'、部分导入打 'refund_out',
+    # 都是退给买家的钱(amt<0)。原来只认 'refund_out' → 'refund' 那批(如流水19365)不被计入, 假报"实退0"。
     af_stmt = select(AlipayFlow.transaction_time, func.abs(AlipayFlow.amount)).where(
-        AlipayFlow.reconciliation_type == "refund_out",
+        AlipayFlow.reconciliation_type.in_(("refund_out", "refund")),
+        AlipayFlow.amount < 0,
     )
     if period_start:
         af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
