@@ -564,13 +564,18 @@ def run_refill_transfer(
     import re
     from collections import defaultdict
 
-    # 1. 账上该转: 补单(刷单)按 refill_date 汇总 — 订单额 / 佣金
+    # 1. 账上该转: 补单(刷单)按 refill_date 汇总 — 订单额 / 佣金。
+    # 非晶晶代付 (2026-07-10): 个别补单的本金/佣金走别的渠道直接转刷手/团队(实测 4-15 水冰月一笔
+    # 246.38+10 另付), 不进徐晶晶批次 → 标 fee_remark 含"非晶晶代付"的记录从本核对剔除, 防假差。
     ref_amt: dict[date, Decimal] = defaultdict(Decimal)
     ref_comm: dict[date, Decimal] = defaultdict(Decimal)
-    for d, amt, comm in db.execute(
-        select(RefillRecord.refill_date, RefillRecord.order_amount, RefillRecord.commission)
+    for d, amt, comm, frm in db.execute(
+        select(RefillRecord.refill_date, RefillRecord.order_amount, RefillRecord.commission,
+               RefillRecord.fee_remark)
         .where(RefillRecord.refill_date.isnot(None))
     ).all():
+        if "非晶晶代付" in str(frm or ""):
+            continue
         ref_amt[d] += Decimal(amt or 0)
         ref_comm[d] += Decimal(comm or 0)
 
