@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -299,6 +299,19 @@ def get_table_data(
             attr = getattr(model, fld, None)
             if attr is not None:
                 conds.append(attr.ilike(f"%{q}%"))
+        if entity == "pricing_sku":
+            # 淘宝/小红书 ID 也能搜 (用户需求 2026-07-10): ID 在 promo 子表 → IN 子查询挂回主表;
+            # alt_taobao_sku_ids 是 JSON 列表(一码多SKU), cast 成文本做包含匹配。
+            tq = q.strip()
+            conds.append(PricingSku.sku_code.in_(
+                select(PricingSkuPromo.sku_code).where(or_(
+                    PricingSkuPromo.taobao_item_id.like(f"%{tq}%"),
+                    PricingSkuPromo.taobao_sku_id.like(f"%{tq}%"),
+                    cast(PricingSkuPromo.alt_taobao_sku_ids, String).like(f"%{tq}%"),
+                    PricingSkuPromo.xhs_item_id.like(f"%{tq}%"),
+                    PricingSkuPromo.xhs_sku_id.like(f"%{tq}%"),
+                ))
+            ))
         if conds:
             stmt = stmt.where(or_(*conds))
 

@@ -74,9 +74,11 @@ function renderCell(value: any, type: string) {
 export default function FullColumnView({
   entity,
   defaultShowAll = false,
+  searchPlaceholder = '搜索...',
 }: {
   entity: string;
   defaultShowAll?: boolean;
+  searchPlaceholder?: string;
 }) {
   const [q, setQ] = useState('');
   const [search, setSearch] = useState('');
@@ -176,7 +178,7 @@ export default function FullColumnView({
     <Space direction="vertical" style={{ width: '100%' }} size="small">
       <Space wrap>
         <Input.Search
-          placeholder="搜索..."
+          placeholder={searchPlaceholder}
           value={q}
           onChange={(e) => setQ(e.target.value)}
           onSearch={(val) => {

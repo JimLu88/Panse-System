@@ -1006,7 +1006,7 @@ export default function PricingPage() {
             options={[{ label: '精选视图（可编辑）', value: 'curated' }, { label: '全部列', value: 'full' }]} />
           {viewMode === 'curated' && (
             <>
-              <Input.Search allowClear placeholder="搜产品编码 / SKU 编码 / 描述" style={{ width: 240 }} onSearch={(v) => { setQ(v); setPage(1); }} />
+              <Input.Search allowClear placeholder="搜编码 / 描述 / 淘宝商品ID / SKUID" style={{ width: 240 }} onSearch={(v) => { setQ(v); setPage(1); }} />
               <Select allowClear placeholder="大小分类" style={{ width: 110 }} value={sizeCategory} onChange={(v) => { setSizeCategory(v); setPage(1); }}
                 options={[{ value: '小型', label: '小型' }, { value: '中型', label: '中型' }, { value: '大型', label: '大型' }]} />
               <Select allowClear showSearch placeholder="按类目筛" style={{ width: 170 }} value={category} onChange={(v) => { setCategory(v); setPage(1); }}
@@ -1027,7 +1027,8 @@ export default function PricingPage() {
         </Space>
       </Card>
 
-      {viewMode === 'full' && <FullColumnView entity="pricing_sku" defaultShowAll />}
+      {viewMode === 'full' && <FullColumnView entity="pricing_sku" defaultShowAll
+        searchPlaceholder="搜编码 / 描述 / 淘宝商品ID / SKUID" />}
 
       {viewMode === 'curated' && selectedKeys.length > 0 && (
         <div style={{ background: '#f5f7fa', border: '1px solid #e6eaf0', borderRadius: 8, padding: '8px 12px' }}>

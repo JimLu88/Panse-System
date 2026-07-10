@@ -10,7 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, or_, select
+from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
@@ -162,8 +162,19 @@ def list_pricing_skus(
             PricingSku.product_code, PricingSku.sku_code,
             PricingSku.sku, PricingSku.product_name,
         ], gap_cols=[PricingSku.sku, PricingSku.product_name])
-        if fc is not None:
-            filters.append(fc)
+        # 淘宝/小红书 ID 也能搜 (用户需求 2026-07-10): 商品ID / SKUID / 一码多SKU的alt / 小红书ID。
+        # promo 是子表 → 用 IN 子查询挂回主表; alt_taobao_sku_ids 是 JSON 列表, cast 成文本做包含匹配。
+        tq = q.strip()
+        id_match = PricingSku.sku_code.in_(
+            select(PricingSkuPromo.sku_code).where(or_(
+                PricingSkuPromo.taobao_item_id.like(f"%{tq}%"),
+                PricingSkuPromo.taobao_sku_id.like(f"%{tq}%"),
+                cast(PricingSkuPromo.alt_taobao_sku_ids, String).like(f"%{tq}%"),
+                PricingSkuPromo.xhs_item_id.like(f"%{tq}%"),
+                PricingSkuPromo.xhs_sku_id.like(f"%{tq}%"),
+            ))
+        )
+        filters.append(or_(fc, id_match) if fc is not None else id_match)
     if size_category:
         filters.append(PricingSku.size_category == size_category)
     if category:
