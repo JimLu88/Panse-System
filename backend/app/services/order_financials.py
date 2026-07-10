@@ -141,6 +141,17 @@ def order_aftersales(o: Order) -> Decimal:
     return sum((_d(getattr(o, f, 0)) for f in _AS_FIELDS), Decimal("0"))
 
 
+# 样块/小样单判定 (2026-07-11 用户裁定: 每个样块订单固定¥5小包运费)。关键词与
+# order_cost_service.default_warehouse_for 的仓库判定同源; 实测全库仅命中
+# "畔色木作木块小样…样品样块"家族(117单, 实付≤¥85), 无真产品误伤。
+_SAMPLE_KEYWORDS = ("样块", "小样", "样品")
+
+
+def is_sample_order(o: Order) -> bool:
+    name = str(getattr(o, "product_name", "") or "")
+    return any(k in name for k in _SAMPLE_KEYWORDS)
+
+
 def aftersales_avg(db: Session) -> Decimal:
     """全局人均售后费 = 全部售后费 ÷ 订单数 (缺失/预测时填它, 用户拍板"算个总均值")。"""
     sums = db.execute(select(*[func.coalesce(func.sum(getattr(Order, f)), 0) for f in _AS_FIELDS])).one()
@@ -210,6 +221,18 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
         return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"), "packing": Decimal("0"),
                 "precap_total": Decimal("0"), "cap_mode": "非产品归零",
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
+
+    # 样块单 (2026-07-11 用户裁定): 有工厂账单(¥6/块) → 商品成本 = 木作账单 + 打包(实际优先);
+    # 运费固定 ¥5/单 由 cost_breakdown 单列(物流列), 这里不混入 —— 不再走下方"定价表重构"
+    # (1-4月逐单核对表合并把 actual_logistics 写成0, 会把嵌入 theoretical 的5元运费冲没;
+    # 双块单 est_* 缩放不一致时还会算出 1/0/负数等花数, 全库样块成本曾有 0/1/6/8/13/14 七种)。
+    # 无账单(近月工厂账单未导): 照旧走 theoretical 推演(13/26, 已含运费打包), 不在此加5防双算。
+    if is_sample_order(o) and _d(o.actual_cost) > 0:
+        _fw = _d(o.actual_cost)
+        _tot = _fw + packing
+        return {"factory_wood": _fw, "estimate_part": Decimal("0"), "packing": packing,
+                "precap_total": _tot, "cap_mode": "样块实账",
+                "cap_label": "样块: 木作账单+打包; 运费¥5/单走物流列", "final": _tot}
 
     # 逐单真实配件 (用户 2026-06-26): actual_parts 非空 → 改逐项真实计价(木作+物流+安装+打包+真实配件),
     # 跳过占比估算与实付×85% floor。各分项 actual 优先否则 est; 木作取工厂账单否则定价木作估。
@@ -366,7 +389,12 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
     # 仅"未补非木作的纯工厂账单单"(actual_cost 非空 且 wood_cost_est 空 且 非定制)才单独加实际运费/安装(向后兼容)。
     _is_custom_o = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
         getattr(o, "sku_code", None), getattr(o, "product_code", None))
-    if o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)) and not _is_custom_o:
+    if is_sample_order(o) and _d(o.actual_cost) > 0:
+        # 样块实账单 (2026-07-11 用户裁定): 运费固定¥5/单(小包快递, 不在大件物流账单里; 实报优先)。
+        # 无账单的样块不加(theoretical 推演已含运费, 防双算)。样块无安装。
+        freight = _d(o.actual_freight) if o.actual_freight is not None else Decimal("5")
+        install = Decimal("0")
+    elif o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)) and not _is_custom_o:
         freight = _d(o.actual_freight)
         install = _d(o.install_fee) + _d(o.upstairs_fee)
     else:
