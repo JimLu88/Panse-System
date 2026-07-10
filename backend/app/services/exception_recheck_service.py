@@ -170,8 +170,20 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
     _txt = f"{o.product_name or ''} {o.sku or ''} {o.sku_code or ''}"
     if any(k in _txt for k in _NON_PRODUCT_KW):
         return None
-    from datetime import date as _d, timedelta as _td
+    from datetime import date as _d, datetime as _dtt, timedelta as _td
     if o.order_date and o.order_date >= _d.today() - _td(days=14):
+        return None
+    # 签收宽限 (2026-07-10, 与 scanner 同口径): 刚转 signed(近5天, 查状态改动档案)/刚发货(近12天)
+    # 的单, 打款与流水还在 T+1~2 途中 → 视为暂无问题可销账; 凭据一直不来, 过宽限重扫仍会报。
+    from app.models.field_change import FieldChange as _FC
+    _fc = db.execute(select(_FC).where(
+        _FC.table_name == "orders", _FC.row_pk == o.order_no,
+        _FC.field == "status", _FC.new_value == "signed",
+        _FC.created_at >= _dtt.now() - _td(days=5),
+    )).scalars().first()
+    if _fc is not None:
+        return None
+    if o.ship_date and o.ship_date >= _d.today() - _td(days=12):
         return None
     return f"订单 {o.order_no} 已成交却无任何收款凭据(支付宝流水/聚合结算/淘宝打款金额均无)"
 
