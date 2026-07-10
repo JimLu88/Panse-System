@@ -162,7 +162,7 @@ def ask(db: Session, question: str, username: str | None = None, *, today: date 
     duration = int((time.monotonic() - t0) * 1000)
     llm_model = None
     if resp["route"] in ("semi", "generated"):
-        _, llm_model, _ = llm_client.cfg(db)
+        llm_model = llm_client.active_model(db)
     qid = _write_audit(db, username, question, resp, duration, status, error, llm_model)
     resp.update({"query_id": qid, "duration_ms": duration,
                  "data_as_of": _data_as_of(db), "suggestions": T.suggestions()})

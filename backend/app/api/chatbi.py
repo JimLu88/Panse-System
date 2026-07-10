@@ -47,7 +47,10 @@ def ask(body: AskIn, db: Session = Depends(get_db),
 @router.get("/suggestions")
 def suggestions(db: Session = Depends(get_db),
                 user: User = Depends(require_role("admin"))) -> dict:
-    return {"suggestions": T.suggestions(), "llm_online": llm_client.is_available(db)}
+    online = llm_client.is_available(db)
+    if online:
+        llm_client.warm_async(db)   # 抽屉打开即后台预热本地模型, 免问数时冷启动
+    return {"suggestions": T.suggestions(), "llm_online": online}
 
 
 @router.get("/history")
