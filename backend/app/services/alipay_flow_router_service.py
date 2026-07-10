@@ -36,6 +36,8 @@ _MATCH_WINDOW_DAYS = 10   # 金额相同时, 日期相差不超过 N 天才算�
 # 由 data_quality_service.scan_unclassified_purchase 捞成异常, 在异常中心提示人工确认,
 # 避免「系统替你猜成采购、你却不知道」的静默归类。
 UNCLASSIFIED_PURCHASE_TYPE = "存疑(支付宝流水自动归类)"
+# 对手方命中供应商档案关键词的自动建单: 真采购, 不进存疑/不刷 unclassified_purchase 异常 (2026-07-10)
+KNOWN_SUPPLIER_PURCHASE_TYPE = "配件采购(已知供应商)"
 
 def _q2(v) -> Decimal:
     return Decimal(str(abs(v))).quantize(Decimal("0.01"))
@@ -314,6 +316,25 @@ def create_purchases_from_unclassified(db: Session) -> int:
             if no:
                 referenced.add(no)
 
+    # 已知配件供应商关键词 (2026-07-10, 用户定性: 陈金贵=榉木木材/泰盛隆=榉木皮/和国=岩板/美丽=五金):
+    # 对手方命中 → 直接归"配件采购(已知供应商)", 不进存疑、不再逐条要人工确认。关键词≥2字防过宽。
+    _known_sup: list[tuple[str, str]] = []   # (关键词, 供应商名)
+    try:
+        from app.models.supplier import Supplier as _Sup
+        for _s in db.execute(select(_Sup).where(_Sup.is_active.is_(True))).scalars().all():
+            for _kw in list(_s.alipay_counterparty_keywords or []) + [_s.name]:
+                _kw = str(_kw or "").strip()
+                if len(_kw) >= 2:
+                    _known_sup.append((_kw, _s.name))
+    except Exception:  # pragma: no cover - 供应商表异常不拦建单
+        pass
+
+    def _match_known_supplier(cp: str) -> Optional[str]:
+        for _kw, _nm in _known_sup:
+            if _kw in cp:
+                return _nm
+        return None
+
     flows = db.execute(
         select(AlipayFlow).where(
             AlipayFlow.amount < 0,
@@ -332,9 +353,13 @@ def create_purchases_from_unclassified(db: Session) -> int:
         mat_code, hint = _guess_material(db, raw_name)
         mat_name = raw_name + (hint or "")
         # 员工代购: 对手方内部人员 + 真实货品备注 → 保留为采购但专门标记
-        ptype = (internal_accounts.EMPLOYEE_PROXY_PURCHASE_TYPE
-                 if internal_accounts.is_internal_counterparty(f.counterparty)
-                 else UNCLASSIFIED_PURCHASE_TYPE)
+        _sup_hit = _match_known_supplier(str(f.counterparty or ""))
+        if internal_accounts.is_internal_counterparty(f.counterparty):
+            ptype = internal_accounts.EMPLOYEE_PROXY_PURCHASE_TYPE
+        elif _sup_hit:
+            ptype = KNOWN_SUPPLIER_PURCHASE_TYPE   # 已知供应商 → 真采购, 免人工确认
+        else:
+            ptype = UNCLASSIFIED_PURCHASE_TYPE
         pp = PartPurchase(
             purchase_no=_next_purchase_no_yearly(db, when.year),
             supplier=f.counterparty,
