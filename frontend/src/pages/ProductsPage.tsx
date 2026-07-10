@@ -188,6 +188,39 @@ export default function ProductsPage() {
   const [editTarget, setEditTarget] = useState<Product | null>(null);
   // 产品图库弹窗 (按编码匹配 D:\畔色 产品图库 的文件夹)
   const [galleryFor, setGalleryFor] = useState<string | null>(null);
+  // 安装说明书: storage/manuals/{编码} 实时列取 (放群晖, 直接增改文件即生效); 单份直接开, 多份弹选择
+  const openManual = async (code: string) => {
+    try {
+      const { api } = await import('../api/client');
+      const r = await api.get(`/api/manuals/${code}`);
+      const files: { name: string; lang: string; url: string }[] = r.data?.files ?? [];
+      if (files.length === 0) {
+        message.info('该产品还没有说明书 (群晖 storage/manuals 下按编码建文件夹放 PDF 即可)');
+        return;
+      }
+      if (files.length === 1) {
+        window.open(files[0].url, '_blank', 'noopener,noreferrer');
+        return;
+      }
+      const label = (f: { name: string; lang: string }) =>
+        f.lang === 'cn' ? '中文版' : f.lang === 'en' ? '英文版' : f.name;
+      Modal.info({
+        title: '打开说明书',
+        content: (
+          <Space direction="vertical">
+            {files.map((f) => (
+              <Button key={f.name} onClick={() => window.open(f.url, '_blank', 'noopener,noreferrer')}>
+                {label(f)}
+              </Button>
+            ))}
+          </Space>
+        ),
+        okText: '关闭',
+      });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '打开说明书失败');
+    }
+  };
   const [editForm] = Form.useForm();
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   // 各列宽度 (可拖拽改); 表头拖右边缘即可
@@ -331,6 +364,7 @@ export default function ProductsPage() {
         <Space>
           <Link to={`/bom/${row.code}`}>查看 BOM</Link>
           <Button size="small" onClick={() => setGalleryFor(row.code)}>图库</Button>
+          <Button size="small" onClick={() => openManual(row.code)}>说明书</Button>
           <Button
             size="small"
             icon={<EditOutlined />}

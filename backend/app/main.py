@@ -89,6 +89,7 @@ from app.api import monthly_settlement as monthly_settlement_api
 from app.api import field_changes as field_changes_api
 from app.api import exports as exports_api
 from app.api import gallery as gallery_api
+from app.api import manuals as manuals_api
 from app.api import taobao_listings as taobao_listings_api
 from app.api import product_composer as product_composer_api
 from app.api import taobao_export as taobao_export_api
@@ -395,6 +396,7 @@ app.include_router(monthly_settlement_api.router)
 app.include_router(field_changes_api.router)
 app.include_router(exports_api.router)
 app.include_router(gallery_api.router)
+app.include_router(manuals_api.router)
 app.include_router(importer_api.router)
 app.include_router(logs_api.router)
 app.include_router(alerts_api.router)
