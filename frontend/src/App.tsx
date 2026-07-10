@@ -82,7 +82,6 @@ const PrepayLedgerPage = lazy(() => import('./pages/PrepayLedgerPage'));
 const FactoryReconPage = lazy(() => import('./pages/FactoryReconPage'));
 const ReconCenterPage = lazy(() => import('./pages/ReconCenterPage'));
 const PromotionFlowsPage = lazy(() => import('./pages/PromotionFlowsPage'));
-const ReviewAssetsPage = lazy(() => import('./pages/ReviewAssetsPage'));
 
 const { Header, Content } = Layout;
 
@@ -109,7 +108,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   inventory: 'g-stock', 'product-inventory': 'g-stock', producibility: 'g-stock', samples: 'g-stock',
   orders: 'g-order', customers: 'g-order', aftersales: 'g-order',
   'logistics-bills': 'g-logistics', 'wanshifu-bills': 'g-logistics',
-  marketing: 'g-marketing', 'review-assets': 'g-marketing',
+  marketing: 'g-marketing',
   suppliers: 'g-supply', 'supplier-scores': 'g-supply', purchases: 'g-supply', materials: 'g-supply',
   'cash-flow': 'g-finance', alipay: 'g-finance', 'account-balances': 'g-finance',
   'staff-salary': 'g-finance',
@@ -233,7 +232,6 @@ export default function App() {
         { key: 'marketing-brand', label: <Link to="/marketing?tab=brand">品牌营销</Link> },
         { key: 'refill-records', label: <Link to="/refill-records">补单记录</Link> },
         { key: 'marketing-daily', label: <Link to="/marketing?tab=daily">日常经营</Link> },
-        { key: 'review-assets', label: <Link to="/review-assets">评价资产</Link> },
       ],
     },
     {
@@ -479,7 +477,6 @@ export default function App() {
             <Route path="/factory-orders" element={<FactoryOrdersPage />} />
             <Route path="/factory-statement" element={<FactoryStatementPage />} />
             <Route path="/factory-settlement" element={<FactorySettlementPage />} />
-            <Route path="/review-assets" element={<ReviewAssetsPage />} />
             <Route path="/importer" element={<ImporterPage />} />
             <Route path="/web-agent" element={<WebAgentPage />} />
             <Route path="/taobao-listings" element={<TaobaoListingsPage />} />

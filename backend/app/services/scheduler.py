@@ -1376,9 +1376,7 @@ def _register_default_jobs() -> None:
                  _job_ingest_health_check, cron={"hour": 20, "minute": 0})
     register_job("daily_0915_npd_stage_remind", "新品开发阶段截止提醒 (飞书催设计师)",
                  _job_npd_stage_remind, cron={"hour": 9, "minute": 15})
-    register_job("daily_0900_review_asset_remind",
-                 "评价资产折叠倒计时提醒 (Plan1 v2: 多级30·14·7+待评价催办+覆盖预警)",
-                 _job_review_asset_remind, cron={"hour": 9, "minute": 0})
+    # 评价资产台账已废弃(2026-07-10拍板): 功能迁至独立评价程序 panse-review-program, job 不再注册
     register_job("daily_1810_order_sheets", "下单图自动生成+归档+飞书日报(18:30, 取数后)",
                  _job_order_sheets_daily, cron={"hour": 18, "minute": 30})
     register_job("daily_1000_void_sheets", "退款下单图作废检查(10:00)",

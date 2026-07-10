@@ -32,7 +32,6 @@ import {
   importOrdersCsv,
   listOrders,
   recomputeOrderCost,
-  reviewFromOrder,
 } from '../api/client';
 import AccessoryChecklistDrawer from '../components/AccessoryChecklistDrawer';
 import DispositionModal, { type DispositionRequest } from '../components/DispositionModal';
@@ -346,19 +345,6 @@ export default function OrdersPage() {
               onClick={() => setAccessoryFor({ id: r.id, order_no: r.order_no })}
             >
               配件
-            </Button>
-            <Button
-              size="small"
-              onClick={async () => {
-                try {
-                  const res = await reviewFromOrder(r.id);
-                  message.success(res.created ? '已生成评价资产 (待评价)' : '该订单已有评价资产');
-                } catch (e: any) {
-                  message.error(e?.response?.data?.detail ?? '生成评价资产失败');
-                }
-              }}
-            >
-              评价资产
             </Button>
             {next.length > 0 && (
               <Dropdown

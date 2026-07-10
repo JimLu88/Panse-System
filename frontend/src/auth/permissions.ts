@@ -60,7 +60,6 @@ export const PERM_TREE: PermGroup[] = [
     { key: 'marketing-brand', label: '品牌营销' },
     { key: 'refill-records', label: '补单记录' },
     { key: 'marketing-daily', label: '日常经营' },
-    { key: 'review-assets', label: '评价资产' },
   ] },
   { key: 'g-supply', label: '供应链', children: [
     { key: 'suppliers', label: '供应商 (含评分)' },
