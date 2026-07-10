@@ -225,7 +225,7 @@ export default function ProductsPage() {
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   // 各列宽度 (可拖拽改); 表头拖右边缘即可
   const [colW, setColW] = useState<Record<string, number>>({
-    code: 150, name: 240, brand: 90, category: 140, remark: 170, image: 110, actions: 220,
+    code: 150, name: 240, brand: 90, category: 140, status: 92, remark: 170, image: 110, actions: 220,
   });
   const handleResize = (key: string) => (w: number) =>
     setColW((prev) => ({ ...prev, [key]: w }));
@@ -327,6 +327,16 @@ export default function ProductsPage() {
     {
       title: '类目', dataIndex: 'category', key: 'category', width: colW.category, ellipsis: true,
       onHeaderCell: mkResize('category'),
+    },
+    {
+      // 上架状态 (用户需求 2026-07-10): 来源=产品档案 listing_status;
+      // 导入千牛「出售中」商品导出(定价页·淘宝标题导入)时见到即自动置「在售」, 下架需手改档案。
+      title: '上架状态', dataIndex: 'listing_status', key: 'status', width: colW.status, align: 'center' as const,
+      onHeaderCell: mkResize('status'),
+      render: (v: string | null) =>
+        v === '在售' ? <Tag color="green">在售</Tag>
+        : v === '下架' ? <Tag color="red">下架</Tag>
+        : v ? <Tag>{v}</Tag> : <Typography.Text type="secondary">—</Typography.Text>,
     },
     {
       title: '备注', dataIndex: 'remark', key: 'remark', width: colW.remark, ellipsis: true,

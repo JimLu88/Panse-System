@@ -450,6 +450,7 @@ async def import_taobao_titles(
         "distinct_titles": res.distinct_titles,
         "unmatched_titles": res.unmatched_titles[:50],
         "orders_code_backfilled": backfilled,
+        "listed_marked": res.listed_marked,   # 顺带标记为「在售」的产品数
     }
 
 

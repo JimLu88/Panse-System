@@ -31,6 +31,23 @@ def test_import_titles_fills_pricing(db_session):
     assert ps.taobao_title == "畔色实木餐边柜樱桃木一体"
 
 
+def test_import_titles_marks_product_listed(db_session):
+    # 在售导出=见到即在售 (2026-07-10): 命中产品 listing_status 置「在售」; 未见到的绝不反标下架
+    from app.models.product import Product
+    db = db_session
+    _seed_pricing(db)
+    db.add(Product(code="PPS2398001060612", name="测试餐边柜", listing_status="下架"))
+    db.add(Product(code="PPS9999", name="别的产品", listing_status="下架"))
+    db.flush()
+    res = tts.import_titles(db, [tts.TitleRow(product_code="PPS2398001060612",
+                                              sku_code="PPS2398001060612",
+                                              title="畔色实木餐边柜樱桃木一体")])
+    assert res.listed_marked == 1
+    got = {p.code: p.listing_status for p in db.execute(select(Product)).scalars()}
+    assert got["PPS2398001060612"] == "在售"
+    assert got["PPS9999"] == "下架"        # 缺席≠下架, 不反标
+
+
 def test_no_code_order_matched_by_title_uses_pricing_cost(db_session):
     db = db_session
     _seed_pricing(db)

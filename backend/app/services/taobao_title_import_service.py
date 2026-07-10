@@ -44,6 +44,7 @@ class ImportResult:
     parsed_rows: int = 0
     by_sku_code: int = 0          # 精确按 SKU 编码命中回填
     by_product_code: int = 0      # 兜底按宝贝编码回填
+    listed_marked: int = 0        # 顺带标记为「在售」的产品数 (在售导出=见到即在售)
     distinct_titles: int = 0
     unmatched_titles: list[str] = field(default_factory=list)  # 导出表有、定价表无的宝贝(供人工补 SKU)
 
@@ -121,6 +122,16 @@ def import_titles(db: Session, rows: list[TitleRow]) -> ImportResult:
     res.unmatched_titles = sorted({
         title for pc, title in pc2title.items() if pc not in matched_pcodes
     })
+
+    # 上架状态回填 (2026-07-10 用户需求): 在售导出=千牛「出售中」页面导出, 出现即在售。
+    # 只把「见到的」置为 在售, 绝不反向标下架 (导出按类目分多份, 单份缺席≠下架; 下架走产品编辑手改)。
+    from app.models.product import Product
+    seen_pcodes = {pc for pc in pc2title} | {pc for pc in matched_pcodes if pc}
+    if seen_pcodes:
+        for prod in db.execute(select(Product).where(Product.code.in_(seen_pcodes))).scalars():
+            if prod.listing_status != "在售":
+                prod.listing_status = "在售"
+                res.listed_marked += 1
     db.flush()
     _logger.info("淘宝标题导入: 解析%d 行, 按SKU回填%d, 按宝贝回填%d, 未建定价宝贝%d",
                  res.parsed_rows, res.by_sku_code, res.by_product_code, len(res.unmatched_titles))
