@@ -353,14 +353,17 @@ def run_promotion(
             out[(int(y), int(m))] = Decimal(amt or 0)
         return out
 
-    # 改口径: 充值按备注识别(在线充值/自动充值), 排除「现金消耗」(消耗, 备注空+号='现金消耗')与退回。
+    # 改口径: 充值按备注识别(在线/自动/扫码充值), 排除「现金消耗」(消耗, 备注空+号='现金消耗')与退回。
+    # 扫码充值 (2026-07-10): 万相台无界版扫码充值是第三种形态(实测 4-28/4-29/5-1/5-12 各¥5000,
+    # 支付宝对手=阿里妈妈备注"万相台无界版扫码充值"), 原来不识别 → 累计充值少2万, 假报"消耗超过充值"。
     def _recharge_by_month(funded_only: bool) -> dict[tuple[int, int], Decimal]:
         st = select(
             extract("year", PromotionFlow.transaction_date).label("y"),
             extract("month", PromotionFlow.transaction_date).label("m"),
             func.coalesce(func.sum(PromotionFlow.amount), 0).label("amt"),
         ).where(or_(PromotionFlow.remark.like("%在线充值%"),
-                    PromotionFlow.remark.like("%自动充值%")))
+                    PromotionFlow.remark.like("%自动充值%"),
+                    PromotionFlow.remark.like("%扫码充值%")))
         if funded_only:
             st = st.where(PromotionFlow.alipay_flow_no.isnot(None),
                           PromotionFlow.alipay_flow_no != "",
@@ -386,7 +389,8 @@ def run_promotion(
     rc_detail = select(PromotionFlow.transaction_date, PromotionFlow.amount,
                        PromotionFlow.alipay_flow_no).where(
         or_(PromotionFlow.remark.like("%在线充值%"),
-            PromotionFlow.remark.like("%自动充值%")))
+            PromotionFlow.remark.like("%自动充值%"),
+            PromotionFlow.remark.like("%扫码充值%")))
     if period_start:
         rc_detail = rc_detail.where(PromotionFlow.transaction_date >= period_start)
     if period_end:
