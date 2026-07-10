@@ -1662,6 +1662,54 @@ def run_ledger_check(
                 if record_exceptions:
                     _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
             continue
+        # ── 聚合户治本 (2026-07-10, 同推广户思路): 月度行收支恒0 → 老"账面自洽"每月必炸。聚合结算账户
+        # (千牛资金页, 只装微信钱)的真实明细在 order_settlements 的微信侧(source=wechat/agent, billDetail
+        # 每日自动拉+导, 实测好用) → 快照滚动核对: 上次快照 + 窗口微信净额 ≈ 本次快照(实测 06-29→07-09
+        # 净额 2634.00 与余额变动分毫不差)。⚠ 不能算 source=alipay 的行 —— 那是企业号支付宝分账, 钱在
+        # 支付宝企业账户, 不在聚合户(混入会虚高 +3.4万)。快照 18:00 截图、边界日晚间结算会错位 →
+        # 容差 = max(¥100, 两个边界日净额绝对值)。缺 as_of 定不了窗口 → not_available 跳过。
+        if "聚合" in (r.account_name or ""):
+            from app.models.settlement import OrderSettlement
+            _prev = _prev_map.get(id(r))
+            _p_asof = getattr(_prev, "as_of_date", None) if _prev is not None else None
+            _c_asof = getattr(r, "as_of_date", None)
+            _closing = Decimal(r.closing_balance or 0)
+            if _prev is None or _p_asof is None or _c_asof is None or _p_asof >= _c_asof:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=None, actual=_closing, diff=None,
+                    severity="not_available",
+                    message=f"{key}: 聚合户走微信明细滚动核对, 但缺上/本次快照统计日期(as_of), 无法定窗口 — 跳过",
+                ))
+                continue
+            _st = db.execute(select(OrderSettlement).where(
+                OrderSettlement.source.in_(("wechat", "agent")))).scalars().all()
+            def _net_of(rows_):
+                return sum((Decimal(str(s.income or 0)) - Decimal(str(s.expense or 0)) for s in rows_),
+                           Decimal("0"))
+            _win = [s for s in _st if s.settle_time and _p_asof < s.settle_time.date() <= _c_asof]
+            _net = _net_of(_win)
+            _base_bal = Decimal(_prev.closing_balance or 0)
+            _expected = _base_bal + _net
+            _fdiff = _closing - _expected
+            _edge = abs(_net_of([s for s in _st if s.settle_time
+                                 and s.settle_time.date() in (_p_asof, _c_asof)]))
+            _tol = max(Decimal("100"), _edge)
+            if abs(_fdiff) <= _tol:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=_expected, actual=_closing, diff=_fdiff, severity="ok",
+                    message=(f"{key}: 微信明细滚动对平 — 上次快照({_p_asof}) ¥{_base_bal} + 窗口净额 ¥{_net}"
+                             f" ≈ 本次快照({_c_asof}) ¥{_closing} (差 ¥{_fdiff}, 边界日容差内)"),
+                ))
+            else:
+                _msg = (f"{key}: 聚合微信明细滚不平 — 上次快照({_p_asof}) ¥{_base_bal} + 窗口净额 ¥{_net}"
+                        f" = ¥{_expected}, 但本次快照({_c_asof})记 ¥{_closing}, 差 ¥{_fdiff}"
+                        f" (超容差 ¥{_tol:.0f}: billDetail缺段/余额读错/有提现未入明细)")
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=_expected, actual=_closing, diff=_fdiff,
+                    severity=_classify(_fdiff, base=abs(_net) + _base_bal / 100), message=_msg))
+                if record_exceptions:
+                    _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
+            continue
         opening = Decimal(r.opening_balance or 0)
         closing = Decimal(r.closing_balance or 0)
         income = Decimal(r.income or 0)
