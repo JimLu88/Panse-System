@@ -82,7 +82,8 @@ def _ollama_chat(c: dict, system: str, user: str, *, timeout: float,
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": user})
-    with httpx.Client(timeout=timeout) as client:
+    # connect=5s: LLM 主机(PC)关机时秒级失败走降级, 不吃满读超时 (NAS 生产 PC 常不在线)
+    with httpx.Client(timeout=httpx.Timeout(timeout, connect=5.0)) as client:
         r = client.post(c["base"] + "/api/chat", json={
             "model": c["model"], "messages": messages, "stream": False,
             "think": False,                 # 思考型必须关, 否则答案落 thinking、content 空
@@ -100,7 +101,7 @@ def _cloud_chat(c: dict, system: str, user: str, *, timeout: float,
     if system:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": user})
-    with httpx.Client(timeout=timeout) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout, connect=8.0)) as client:
         r = client.post(str(c["cloud_base"]).rstrip("/") + "/chat/completions",
                         headers={"Authorization": "Bearer " + c["cloud_key"]},
                         json={"model": c["cloud_model"], "messages": messages,
