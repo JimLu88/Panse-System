@@ -40,12 +40,12 @@ def test_route_still_classifies_real_factory_payment(db_session):
     assert f.reconciliation_type == "factory_payment"
 
 
-def test_refund_recon_counts_refund_type(db_session):
-    """退款对账: reconciliation_type='refund' 的退款流出也计入"支付宝实退"(原来只认 refund_out → 假报实退0)。"""
+def test_refund_recon_counts_refund_out(db_session):
+    """退款对账: 归 refund_out 的退款流出计入"支付宝实退", 与订单应退相抵 → 平(19365 归 refund_out 后即此形态)。"""
     db_session.add(Order(platform="淘宝", order_no="RR1", refund_amount=Decimal("156.55"),
                          refund_date=date(2026, 2, 28)))
     db_session.add(_flow(account="个体户私账", transaction_no="RRFLOW1", transaction_type="退款",
-                         amount=Decimal("-156.55"), reconciliation_type="refund",
+                         amount=Decimal("-156.55"), reconciliation_type="refund_out",
                          transaction_time=datetime(2026, 2, 28, 10, 0)))
     db_session.commit()
     res = rec.run_refund_reconciliation(db_session, record_exceptions=False)
