@@ -111,6 +111,13 @@ def _answer_fallback(db: Session, question: str, today: date, r: "chatbi_router.
         return _refuse("AI 引擎离线, 请换用模板问法 (如: 本月净利润 / 产品毛利率排行 / 退款率趋势)",
                        badge=BADGE_REFUSED)
 
+    # 冷态(模型未常驻显存)→ 快速走程序, 不让用户干等冷启动; 同时后台预热, 热了再问就秒回。
+    if not llm_client.is_model_resident(db):
+        llm_client.warm_async(db)
+        return _refuse("本地 AI 模型正在后台加载(首次约1-2分钟; 显存紧张时可能被其它模型挤掉需重载)。"
+                       "这次先用下方模板问法; 模型热了以后, 长尾问题(如按店铺/平台拆的营收)就能直接问。",
+                       badge=BADGE_REFUSED)
+
     # 🟡 半生成: LLM 只选指标, 代码确定性拼 SQL
     spec = llm_client.gen_semi_spec(db, question)
     if spec:
