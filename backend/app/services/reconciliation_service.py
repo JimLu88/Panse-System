@@ -1598,6 +1598,14 @@ def run_ledger_check(
     from app.models.finance import ALIPAY_ACCOUNTS, AccountBalance
 
     rows = db.execute(select(AccountBalance)).scalars().all()
+    # 上一行(同账户按年月)索引: 推广户流水滚动核对要拿上次快照当基准 (2026-07-10)
+    _sorted_rows = sorted(rows, key=lambda x: (x.account_name, x.period_year, x.period_month))
+    _prev_map: dict[int, AccountBalance] = {}
+    _last_by_acct: dict[str, AccountBalance] = {}
+    for _r in _sorted_rows:
+        if _r.account_name in _last_by_acct:
+            _prev_map[id(_r)] = _last_by_acct[_r.account_name]
+        _last_by_acct[_r.account_name] = _r
     diffs: list[ReconciliationDiff] = []
     checked = 0
     for r in sorted(rows, key=lambda x: (x.account_name, x.period_year, x.period_month)):
@@ -1609,6 +1617,51 @@ def run_ledger_check(
             continue
         checked += 1
         key = f"{r.account_name} {r.period_year}-{r.period_month:02d}"
+        # ── 推广户治本 (2026-07-10): 月度行的收入/支出从来没人维护(恒0) → 老的"期初+0-0=期末"账面自洽
+        # 每月必炸、异常僵尸复发(实测 41698 挂了一周)。推广的真实收支在 promotion_flows(万相台CSV每日
+        # 自动导, 充值/扣款齐全) → 改为【流水滚动核对】: 上次快照(as_of) + 窗口充值 - 窗口扣款 ≈ 本次快照。
+        # 快照截图 18:00、当天扣款CSV次日才到 → 边界日天然错位, 容差 = max(¥100, 2×窗口日均扣款)。
+        # 缺 as_of(旧手填行)定不了窗口 → not_available 跳过, 不硬判。
+        if "推广" in (r.account_name or ""):
+            from app.models.marketing import PromotionFlow
+            _prev = _prev_map.get(id(r))
+            _p_asof = getattr(_prev, "as_of_date", None) if _prev is not None else None
+            _c_asof = getattr(r, "as_of_date", None)
+            _closing = Decimal(r.closing_balance or 0)
+            if _prev is None or _p_asof is None or _c_asof is None or _p_asof >= _c_asof:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=None, actual=_closing, diff=None,
+                    severity="not_available",
+                    message=f"{key}: 推广户走流水滚动核对, 但缺上/本次快照统计日期(as_of), 无法定窗口 — 跳过",
+                ))
+                continue
+            _pf = db.execute(select(PromotionFlow).where(
+                PromotionFlow.transaction_date > _p_asof,
+                PromotionFlow.transaction_date <= _c_asof,
+            )).scalars().all()
+            _recharge = sum((Decimal(str(p.amount or 0)) for p in _pf if p.flow_type == "充值"), Decimal("0"))
+            _spend = sum((Decimal(str(p.amount or 0)) for p in _pf if p.flow_type == "支出"), Decimal("0"))
+            _base_bal = Decimal(_prev.closing_balance or 0)
+            _expected = _base_bal + _recharge - _spend
+            _fdiff = _closing - _expected
+            _days = max((_c_asof - _p_asof).days, 1)
+            _tol = max(Decimal("100"), _spend / _days * 2)
+            if abs(_fdiff) <= _tol:
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=_expected, actual=_closing, diff=_fdiff, severity="ok",
+                    message=(f"{key}: 流水滚动对平 — 上次快照({_p_asof}) ¥{_base_bal} + 充值 ¥{_recharge}"
+                             f" - 扣款 ¥{_spend} ≈ 本次快照({_c_asof}) ¥{_closing} (差 ¥{_fdiff}, 边界日容差内)"),
+                ))
+            else:
+                _msg = (f"{key}: 推广流水滚不平 — 上次快照({_p_asof}) ¥{_base_bal} + 充值 ¥{_recharge}"
+                        f" - 扣款 ¥{_spend} = ¥{_expected}, 但本次快照({_c_asof})记 ¥{_closing}, 差 ¥{_fdiff}"
+                        f" (超容差 ¥{_tol:.0f}: 充值没导/扣款缺天/余额读错)")
+                diffs.append(ReconciliationDiff(
+                    key=key, expected=_expected, actual=_closing, diff=_fdiff,
+                    severity=_classify(_fdiff, base=_spend + _recharge), message=_msg))
+                if record_exceptions:
+                    _record_exception(db, rule="ledger_check", key=key, diff_amount=_fdiff, message=_msg)
+            continue
         opening = Decimal(r.opening_balance or 0)
         closing = Decimal(r.closing_balance or 0)
         income = Decimal(r.income or 0)
