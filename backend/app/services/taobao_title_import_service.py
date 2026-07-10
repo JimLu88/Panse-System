@@ -54,7 +54,9 @@ def parse_export_xlsx(raw: bytes) -> list[TitleRow]:
 
     import openpyxl
 
-    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+    # read_only=False: 淘宝导出是流式zip(无dimension元数据), read_only 模式 iter_rows 会一行都读不出
+    # (2026-07-10 实测静默回填0行)。导出才几百行, 全量加载无压力。
+    wb = openpyxl.load_workbook(io.BytesIO(raw), read_only=False, data_only=True)
     ws = wb.worksheets[0]
     rows: list[TitleRow] = []
     for r in ws.iter_rows(min_row=_DATA_START_ROW, values_only=True):
