@@ -845,16 +845,28 @@ def run_logistics_fee(
         billed = _sum_by_month(db.execute(o_stmt).all())
         source = "订单实际运费 (账单未导入, 回退口径)"
 
-    af_stmt = select(AlipayFlow.transaction_time, -AlipayFlow.amount).where(
+    # 运费月份标签 (2026-07-10): 物流费常"攒几个月一起付"(实测 06-27 一天四笔"挚乐2/3/4/5月运费"),
+    # 按交易月分桶会全堆到付款月、账单月全空。备注带「X月」标签的 → 记到标签月(跨年按 refill 同法推),
+    # 无标签才落交易月。
+    import re as _re
+    af_stmt = select(AlipayFlow.transaction_time, -AlipayFlow.amount, AlipayFlow.remark).where(
         AlipayFlow.reconciliation_type == "logistics",
     )
     if period_start:
         af_stmt = af_stmt.where(AlipayFlow.transaction_time >= period_start)
     if period_end:
         af_stmt = af_stmt.where(AlipayFlow.transaction_time <= period_end)
-    paid = _sum_by_month(
-        (t.date() if hasattr(t, "date") else t, a) for t, a in db.execute(af_stmt).all()
-    )
+    def _bucket_rows():
+        for t, a, rk in db.execute(af_stmt).all():
+            d = t.date() if hasattr(t, "date") else t
+            m = _re.search(r"(\d{1,2})\s*月", str(rk or ""))
+            if m and d is not None:
+                mo = int(m.group(1))
+                if 1 <= mo <= 12:
+                    yr = d.year - 1 if mo > d.month + 1 else d.year   # 标签月超前交易月 → 上一年
+                    d = date(yr, mo, 1)
+            yield d, a
+    paid = _sum_by_month(_bucket_rows())
 
     if not billed and not paid:
         return _result("logistics_fee", period_start, period_end, [ReconciliationDiff(
@@ -873,6 +885,15 @@ def run_logistics_fee(
             diffs.append(ReconciliationDiff(
                 key=key, expected=exp, actual=act, diff=diff, severity="ok",
                 message=f"{key}: 应付物流费 ¥{exp} ({source}), 尚未结款(无支付宝实付记录), 待结款后比对",
+            ))
+            continue
+        # 部分结款 (2026-07-10, 同"未结款"口径): 账单是多承运商合计(壹米/挚乐佳吉/德邦…), 各家分开付、
+        # 有的走银行卡/未导账户 → 实付<应付先当在途提示, 不报异常; 余款补齐/补导流水后自动转平。
+        if exp > 0 and Decimal("0") < act < exp:
+            diffs.append(ReconciliationDiff(
+                key=key, expected=exp, actual=act, diff=diff, severity="ok",
+                message=(f"{key}: 应付物流费 ¥{exp} ({source}), 已付 ¥{act} 差 ¥{-diff}"
+                         f" — 部分结款(余款或走其他渠道/未结), 待补齐后比对"),
             ))
             continue
         sev = _classify(diff, base=exp)
