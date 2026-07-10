@@ -522,19 +522,29 @@ def test_run_all_accepts_period(db_session):
 # -------- Rule 14 ledger_check (总账级勾稽) --------
 
 def test_ledger_check_balanced(db_session):
-    """余额变动 = 流水净额 → ok; 账面自洽不另报。"""
+    """余额变动 = 流水净额 → ok; 账面自洽不另报。
+    (2026-07-10 企业号改流水链自洽: 锚点余额+窗口净额=窗口末笔余额; 场景精神不变——对平→ok。)"""
+    from datetime import date as _date
     from app.models.finance import AccountBalance
+    db_session.add(AccountBalance(
+        account_name="企业号", period_year=2026, period_month=2,
+        opening_balance=Decimal("10000"), income=Decimal("0"),
+        expense=Decimal("0"), closing_balance=Decimal("10000"), as_of_date=_date(2026, 2, 28),
+    ))
     db_session.add(AccountBalance(
         account_name="企业号", period_year=2026, period_month=3,
         opening_balance=Decimal("10000"), income=Decimal("5000"),
-        expense=Decimal("2000"), closing_balance=Decimal("13000"),
+        expense=Decimal("2000"), closing_balance=Decimal("13000"), as_of_date=_date(2026, 3, 31),
     ))
+    db_session.add(AlipayFlow(   # 锚点(≤上次快照日)
+        account="企业号", transaction_no="L0",
+        transaction_time=datetime(2026, 2, 28, 9), amount=Decimal("100"), balance=Decimal("10000")))
     db_session.add(AlipayFlow(
         account="企业号", transaction_no="L1",
-        transaction_time=datetime(2026, 3, 10), amount=Decimal("5000")))
+        transaction_time=datetime(2026, 3, 10), amount=Decimal("5000"), balance=Decimal("15000")))
     db_session.add(AlipayFlow(
         account="企业号", transaction_no="L2",
-        transaction_time=datetime(2026, 3, 20), amount=Decimal("-2000")))
+        transaction_time=datetime(2026, 3, 20), amount=Decimal("-2000"), balance=Decimal("13000")))
     db_session.flush()
 
     r = recon.run_ledger_check(db_session, record_exceptions=False)
@@ -543,17 +553,32 @@ def test_ledger_check_balanced(db_session):
     assert flow.severity == "ok"
     assert flow.diff == Decimal("0")
     # 账面自洽 → 不产生 "账面" 差异行
-    assert not any("账面" in d.key for d in r.diffs)
+    assert not any("账面" in str(d.key) for d in r.diffs)
 
 
 def test_ledger_check_missing_flows_flagged(db_session):
-    """余额动了 ¥3000 但当月没导流水 → 差异 + 人话提示。"""
+    """当月流水有漏导(链尾余额对不上锚点+净额) → 差异 + 人话提示。
+    (2026-07-10 企业号改流水链自洽: 漏导的缺口 = 链尾余额 − (锚点+净额), 分厘必现。)"""
+    from datetime import date as _date
     from app.models.finance import AccountBalance
+    db_session.add(AccountBalance(
+        account_name="企业号", period_year=2026, period_month=3,
+        opening_balance=Decimal("13000"), income=Decimal("0"),
+        expense=Decimal("0"), closing_balance=Decimal("13000"), as_of_date=_date(2026, 3, 31),
+    ))
     db_session.add(AccountBalance(
         account_name="企业号", period_year=2026, period_month=4,
         opening_balance=Decimal("13000"), income=Decimal("3000"),
-        expense=Decimal("0"), closing_balance=Decimal("16000"),
+        expense=Decimal("0"), closing_balance=Decimal("16000"), as_of_date=_date(2026, 4, 30),
     ))
+    db_session.add(AlipayFlow(   # 锚点
+        account="企业号", transaction_no="M0",
+        transaction_time=datetime(2026, 3, 31, 9), amount=Decimal("100"), balance=Decimal("13000")))
+    # 真实链上 4月 有 +3000 但只导了这笔 +1000(其 balance=17000 暴露还有一笔+2000没入库... 用 16000+1000 口径:
+    # 链尾 balance 16000, 锚点13000+净额1000=14000 → 缺口 2000 = 漏导的流水
+    db_session.add(AlipayFlow(
+        account="企业号", transaction_no="M1",
+        transaction_time=datetime(2026, 4, 15), amount=Decimal("1000"), balance=Decimal("16000")))
     db_session.flush()
 
     r = recon.run_ledger_check(db_session, record_exceptions=False)
@@ -561,6 +586,7 @@ def test_ledger_check_missing_flows_flagged(db_session):
     flow = next(d for d in r.diffs if d.key == "企业号 2026-04")
     assert flow.severity in ("warning", "error")
     assert "漏导" in flow.message
+    assert abs(Decimal(str(flow.diff)) - Decimal("2000")) < Decimal("0.01")
 
 
 def test_ledger_check_book_inconsistent_and_exempt(db_session):
