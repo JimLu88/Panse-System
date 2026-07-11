@@ -580,6 +580,35 @@ def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
     return False, ""
 
 
+def _reclaim_remote_numbers(db: Session) -> list[dict]:
+    """远期单不占「畔色X单」号(只拿内部 remote_seq) —— 自动收回 (用户 2026-07-12: 299远期单占号留空洞)。
+
+    命中 = 有 factory_no + 现为远期挂起(is_remote) + 该单下单图【从没推给工厂】(工厂没见过这个号)。
+    时序漏洞根因: 编号时还不是远期(推送又失败), 之后客户备注延期才变远期 → 号卡在远期单手里。
+    已推过的远期单不在此动 —— 工厂见过号, 走 void_remote_pushed 显式作废(会通知工厂), 不悄悄收。"""
+    from app.services import order_flags
+    pushed_nos: set[str] = set()
+    for r in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
+        if (r.row_summary or {}).get("pushed"):
+            no = _order_no_from_name(r.original_filename)
+            if no:
+                pushed_nos.add(no)
+    reclaimed: list[dict] = []
+    for o in db.execute(select(Order).where(Order.factory_no.isnot(None))).scalars().all():
+        if o.order_no in pushed_nos or not order_flags.is_remote(o):
+            continue
+        old = o.factory_no
+        o.factory_no = None
+        if getattr(o, "remote_seq", None) is None:
+            o.remote_seq = _next_remote_seq(db)
+        db.flush()
+        reclaimed.append({"order_no": o.order_no, "old_factory_no": old, "remote_seq": o.remote_seq})
+        _logger.info("远期单收回工厂号: %s 原畔色%s单 → 远期单%s", o.order_no, old, o.remote_seq)
+    if reclaimed:
+        db.commit()
+    return reclaimed
+
+
 def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False,
                         quiet: bool = False, only_order_nos: "set[str] | None" = None) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
@@ -596,6 +625,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     import os
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return {"pushed": 0, "failed": 0, "remaining": 0, "order_nos": [], "reason": "notify_disabled"}
+    _reclaim_remote_numbers(db)   # 自愈: 编了号但没推过、现变远期的单 → 收回工厂号(远期单不占号)
     from app.services import feishu_client, settings_service
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
