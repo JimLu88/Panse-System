@@ -1690,6 +1690,17 @@ def activity_preflight_endpoint(
     return activity_preflight_service.activity_preflight(db, floor_days=floor_days)
 
 
+@formula_router.get("/sku-rotation/preview")
+def sku_rotation_preview(
+    product_code: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """超大促 SKU 轮换计划预览(只算不改): 按尺寸阶梯出 千牛指令 + ERP新映射。见 价格体系设置.md §九。"""
+    from app.services import sku_rotation_service
+    return sku_rotation_service.plan_rotation(db, product_code)
+
+
 @formula_router.post("/activity-upload/{channel}/stage")
 def activity_upload_stage(
     channel: str,
