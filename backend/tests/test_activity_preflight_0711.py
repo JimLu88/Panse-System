@@ -53,6 +53,21 @@ def test_unmapped_and_conflict(db_session):
     assert conf["planned_shoudao"] == 3000.0 and conf["recent_min_paid"] == 2600.0
 
 
+def test_skip_floor_check_initial_price(db_session):
+    """初始报价: skip_floor_check=True 整体跳过15天冲突(conflict=0 + floor_check_skipped=True); 默认仍报 (2026-07-11 用户)。"""
+    db = db_session
+    _add_sku(db, "PPS3001", "PPS3001011", "冲突床", 5000, "444", "600001", big_buyer=3000)
+    db.add(Order(platform="淘宝", order_no="C1", sku_code="PPS3001011", qty=1,
+                 paid_amount=Decimal("2600"), order_date=date.today() - timedelta(days=3),
+                 is_refill=False, status="paid"))
+    db.commit()
+    rep = svc.activity_preflight(db, floor_days=15)                         # 默认: 报冲突
+    assert rep["conflict_count"] >= 1 and rep["floor_check_skipped"] is False
+    rep2 = svc.activity_preflight(db, floor_days=15, skip_floor_check=True)  # 初始报价: 跳过
+    assert rep2["conflict_count"] == 0 and rep2["conflicts"] == []
+    assert rep2["floor_check_skipped"] is True
+
+
 def test_bad_price_excluded_from_signup(db_session):
     db = db_session
     for i, sc in enumerate(("PFG0002011", "PFG0002012", "PFG0002013")):

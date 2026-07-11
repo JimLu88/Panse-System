@@ -763,11 +763,13 @@ export type ActivityPreflight = {
   unmapped_by_product: Record<string, number>;
   conflict_count: number;
   conflicts: { sku_code: string; name: string; planned_shoudao: number; recent_min_paid: number; gap_pct: number }[];
+  floor_check_skipped?: boolean;
   signup_big: { rows: number; skipped_bad_price: number; skipped_no_price: number };
   signup_618: { rows: number; skipped_bad_price: number; skipped_no_price: number };
 };
-export const fetchActivityPreflight = (floorDays = 15) =>
-  api.get<ActivityPreflight>('/api/pricing/activity-preflight', { params: { floor_days: floorDays } })
+export const fetchActivityPreflight = (floorDays = 15, skipFloorCheck = false) =>
+  api.get<ActivityPreflight>('/api/pricing/activity-preflight',
+    { params: { floor_days: floorDays, skip_floor_check: skipFloorCheck } })
     .then((r) => r.data);
 
 // 千牛上传: stage=挂文件到千牛(不提交)+回比对表; commit=★不可逆★真提交

@@ -1681,13 +1681,16 @@ def super_reduce_signup_upload_xlsx(
 @formula_router.get("/activity-preflight")
 def activity_preflight_endpoint(
     floor_days: int = Query(15, ge=1, le=90, description="15天最低价窗口天数"),
+    skip_floor_check: bool = Query(False, description="本次按初始报价跳过15天最低价校验(未来仍照跑)"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     """活动报名『虚拟推送(预检)』: 不产文件不改数据, 返回生成活动表前的问题清单
-    (坏价产品 / 缺淘宝映射 / 15天最低价冲突 / 各步就绪计数)。用户 2026-07-11。"""
+    (坏价产品 / 缺淘宝映射 / 15天最低价冲突 / 各步就绪计数)。用户 2026-07-11。
+    skip_floor_check=True: 初始报价场景整体跳过15天冲突(首次立基准)。"""
     from app.services import activity_preflight_service
-    return activity_preflight_service.activity_preflight(db, floor_days=floor_days)
+    return activity_preflight_service.activity_preflight(
+        db, floor_days=floor_days, skip_floor_check=skip_floor_check)
 
 
 @formula_router.get("/sku-rotation/preview")

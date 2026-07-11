@@ -83,8 +83,9 @@ def _detect_bad_products(db: Session) -> list[dict]:
     return bad
 
 
-def activity_preflight(db: Session, floor_days: int = 15) -> dict:
-    """活动报名虚拟推送(预检)。只读, 返回问题清单 + 各步就绪计数。"""
+def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool = False) -> dict:
+    """活动报名虚拟推送(预检)。只读, 返回问题清单 + 各步就绪计数。
+    skip_floor_check=True: 本次按【初始报价】跳过 15 天最低价冲突校验(首次立基准), 未来仍应照跑。"""
     from app.models.order import Order
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
@@ -108,39 +109,40 @@ def activity_preflight(db: Session, floor_days: int = 15) -> dict:
             unmapped_total += 1
             unmapped_by_pc[s.product_code or s.sku_code] += 1
 
-    # 3) 15 天最低价冲突: 计划大促到手 = big_buyer_price; 近 floor_days 最低实付
-    since = datetime.date.today() - datetime.timedelta(days=floor_days)
-    rows = db.execute(
-        select(Order.sku_code, func.min(Order.paid_amount))
-        .where(Order.order_date >= since, Order.platform == "淘宝",
-               Order.is_refill.is_(False), Order.qty == 1,
-               Order.paid_amount.isnot(None), Order.paid_amount > 50,
-               Order.sku_code.isnot(None), Order.status.notin_(("cancelled",)))
-        .group_by(Order.sku_code)).all()
-    paidmin = {c: float(m) for c, m in rows if c and m is not None}
-
+    # 3) 15 天最低价冲突: 计划大促到手 = big_buyer_price; 近 floor_days 最低实付(真实淘宝订单)。
+    #    初始报价可整体跳过(skip_floor_check=True): 首次以活动价立基准, 不拿零散成交当涨价线; 未来仍照跑 (2026-07-11 用户)。
     conflicts: list[dict] = []
-    for s in skus:
-        if getattr(s, "is_custom_placeholder", False):
-            continue
-        p = promo_by_sku.get(s.sku_code)
-        if p is None or not p.taobao_sku_id or p.big_buyer_price is None:
-            continue
-        fl = paidmin.get(s.sku_code)
-        if fl is None:
-            continue
-        planned = float(p.big_buyer_price)
-        # 严格: 计划大促到手 只要高过近 15 天真实最低成交 1 分钱以上即报(必须按系统价, 不放水)。
-        gap_pct = (planned - fl) / fl * 100 if fl else 0
-        if planned - fl > _CONFLICT_FLOAT_GUARD:
-            conflicts.append({
-                "sku_code": s.sku_code,
-                "name": s.sku or s.product_name or s.sku_code,
-                "planned_shoudao": round(planned, 2),   # 计划大促到手 = 报名价A × 0.88
-                "recent_min_paid": round(fl, 2),         # 近 floor_days 真实最低成交
-                "gap_pct": round(gap_pct, 2),
-            })
-    conflicts.sort(key=lambda x: -x["gap_pct"])
+    if not skip_floor_check:
+        since = datetime.date.today() - datetime.timedelta(days=floor_days)
+        rows = db.execute(
+            select(Order.sku_code, func.min(Order.paid_amount))
+            .where(Order.order_date >= since, Order.platform == "淘宝",
+                   Order.is_refill.is_(False), Order.qty == 1,
+                   Order.paid_amount.isnot(None), Order.paid_amount > 50,
+                   Order.sku_code.isnot(None), Order.status.notin_(("cancelled",)))
+            .group_by(Order.sku_code)).all()
+        paidmin = {c: float(m) for c, m in rows if c and m is not None}
+        for s in skus:
+            if getattr(s, "is_custom_placeholder", False):
+                continue
+            p = promo_by_sku.get(s.sku_code)
+            if p is None or not p.taobao_sku_id or p.big_buyer_price is None:
+                continue
+            fl = paidmin.get(s.sku_code)
+            if fl is None:
+                continue
+            planned = float(p.big_buyer_price)
+            # 严格: 计划大促到手 只要高过近 15 天真实最低成交 1 分钱以上即报(必须按系统价, 不放水)。
+            gap_pct = (planned - fl) / fl * 100 if fl else 0
+            if planned - fl > _CONFLICT_FLOAT_GUARD:
+                conflicts.append({
+                    "sku_code": s.sku_code,
+                    "name": s.sku or s.product_name or s.sku_code,
+                    "planned_shoudao": round(planned, 2),   # 计划大促到手 = 报名价A × 0.88
+                    "recent_min_paid": round(fl, 2),         # 近 floor_days 真实最低成交
+                    "gap_pct": round(gap_pct, 2),
+                })
+        conflicts.sort(key=lambda x: -x["gap_pct"])
 
     # 4) 各步就绪计数 (排除坏价产品后, 能生成多少行)
     def _emit_count(price_field: str, placeholder_mul: float) -> dict:
@@ -172,6 +174,7 @@ def activity_preflight(db: Session, floor_days: int = 15) -> dict:
         "unmapped_by_product": dict(sorted(unmapped_by_pc.items(), key=lambda x: -x[1])[:20]),
         "conflict_count": len(conflicts),
         "conflicts": conflicts[:100],
+        "floor_check_skipped": skip_floor_check,   # 本次是否按初始报价跳过了15天校验
         "signup_big": _emit_count("report_price", 0.9),       # 88VIP大促12% / 超级立减10% 同报名价
         "signup_618": _emit_count("report_price_618", 0.9),   # 超级大促15% (换SKU)
     }

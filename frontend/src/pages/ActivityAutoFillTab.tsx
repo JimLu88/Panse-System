@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Divider, Image, Input, Modal, Popconfirm, Row, Space, Statistic, Table, Tag,
+  Alert, Button, Card, Checkbox, Col, Divider, Image, Input, Modal, Popconfirm, Row, Space, Statistic, Table, Tag,
   Typography, message,
 } from 'antd';
 import {
@@ -46,6 +46,7 @@ export default function ActivityAutoFillTab() {
   const [busy, setBusy] = useState<string | null>(null);
   const [pre, setPre] = useState<ActivityPreflight | null>(null);
   const [preLoading, setPreLoading] = useState(false);
+  const [skipFloor, setSkipFloor] = useState(false);   // 本次按初始报价跳过15天最低价校验(默认不跳, 未来照跑)
 
   const dl = async (key: string, title: string, filename: string, run: () => Promise<BlobPart>) => {
     setBusy(key);
@@ -62,7 +63,7 @@ export default function ActivityAutoFillTab() {
     setPreLoading(true);
     message.loading({ content: '虚拟推送预检中（不产文件、不改数据）…', key: 'pre', duration: 0 });
     try {
-      setPre(await fetchActivityPreflight(15));
+      setPre(await fetchActivityPreflight(15, skipFloor));
       message.success({ content: '预检完成', key: 'pre', duration: 1.4 });
     } catch {
       message.error({ content: '预检失败', key: 'pre' });
@@ -146,8 +147,13 @@ export default function ActivityAutoFillTab() {
       {/* ── 虚拟推送(预检) ── */}
       <Card size="small" title={<Space><ExperimentOutlined /><b>虚拟推送（预检）</b>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>不产文件 · 不改数据 · 不上传</Typography.Text></Space>}
-        extra={<Button type="primary" icon={<ExperimentOutlined />} loading={preLoading} onClick={runPreflight}>
-          {pre ? '重新预检' : '开始虚拟推送'}</Button>}>
+        extra={<Space>
+          <Checkbox checked={skipFloor} onChange={(e) => setSkipFloor(e.target.checked)}>
+            <Typography.Text style={{ fontSize: 12 }}>本次初始报价 · 跳过15天校验</Typography.Text>
+          </Checkbox>
+          <Button type="primary" icon={<ExperimentOutlined />} loading={preLoading} onClick={runPreflight}>
+            {pre ? '重新预检' : '开始虚拟推送'}</Button>
+        </Space>}>
         {!pre && <Typography.Text type="secondary">点右上角「开始虚拟推送」跑一次生成前体检。</Typography.Text>}
         {pre && (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -156,14 +162,18 @@ export default function ActivityAutoFillTab() {
                 valueStyle={{ color: pre.bad_product_count ? '#cf1322' : '#3f8600' }} suffix={`/${pre.bad_sku_count} SKU`} /></Col>
               <Col span={6}><Statistic title="未上架(不推送)" value={pre.unmapped_total}
                 valueStyle={{ color: '#8c8c8c' }} suffix="SKU" /></Col>
-              <Col span={6}><Statistic title="15天最低价冲突" value={pre.conflict_count}
-                valueStyle={{ color: pre.conflict_count ? '#d46b08' : '#3f8600' }} suffix="SKU" /></Col>
+              <Col span={6}>{pre.floor_check_skipped
+                ? <Statistic title="15天最低价冲突" value="已跳过" valueStyle={{ color: '#8c8c8c', fontSize: 22 }} />
+                : <Statistic title="15天最低价冲突" value={pre.conflict_count}
+                    valueStyle={{ color: pre.conflict_count ? '#d46b08' : '#3f8600' }} suffix="SKU" />}</Col>
               <Col span={6}><Statistic title="报名表可生成" value={pre.signup_big.rows}
                 valueStyle={{ color: '#3f8600' }} suffix="行" /></Col>
             </Row>
 
             {clean && <Alert type="success" showIcon icon={<CheckCircleOutlined />}
-              message="预检全绿：无坏价 / 无缺映射 / 无 15 天冲突，可放心逐步生成上传表。" />}
+              message={pre.floor_check_skipped
+                ? '预检通过：无坏价 / 无缺映射；15 天最低价校验本次按【初始报价】已跳过（未来会照跑）。'
+                : '预检全绿：无坏价 / 无缺映射 / 无 15 天冲突，可放心逐步生成上传表。'} />}
 
             {pre.bad_product_count > 0 && (
               <div>
