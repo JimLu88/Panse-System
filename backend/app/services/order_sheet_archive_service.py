@@ -636,6 +636,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     sent_nos: list[str] = []
     _zip_items: list = []
     _missing_addr: list = []
+    _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
     records = _pending_push_records(db, include_baseline=include_baseline)
     if only_order_nos is not None:
         # 定向重推 (解密补地址后): 只推指定单号, 不误扫其它待推/历史基线
@@ -661,6 +662,12 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True,
                                "skipped_topup": True, "topup_reason": _topup_reason}
             db.commit()
+            continue
+        if not getattr(order, "sku_code", None) and not getattr(order, "sku", None):
+            # 骨架单(付款赶在报表导出之后, SKU还没回填): 图/尺寸都解析不出, 推出去就是"无产品图纸+未对应尺寸"
+            # (用户 2026-07-12: 畔色301单空图空尺寸推给工厂)。→ 先不推、不占号、【留在待推队列】,
+            # 等取数回填(每小时ingest/次日18:00)后, 下一轮 push 自动带图带尺寸补推。自愈, 不会静默丢单。
+            _held_skeleton.append(no)
             continue
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)。
         # 已激活的老远期单(备注开始制作)也顺排新号 —— 它们早下但现在要做, 不该被日期线卡住 (用户 2026-07-08)。
@@ -699,9 +706,19 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     if not quiet:
         _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
         _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
+        if _held_skeleton:
+            # 内部提醒(非工厂群): 骨架单暂缓名单, 回填后自动补推; 若连日重复出现 = 取数没跑, 人来查。
+            try:
+                from app.services import notify_service
+                notify_service.notify(
+                    db, "⏳ %d 单因SKU未回填暂缓推工厂(等取数回填后自动补推):\n%s"
+                    % (len(_held_skeleton), "\n".join(f"  · {n}" for n in _held_skeleton[:10])),
+                    level="warn", title="畔色 ERP [下单图暂缓·等SKU回填]")
+            except Exception:  # noqa: BLE001
+                pass
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
-            "order_nos": sent_nos}
+            "order_nos": sent_nos, "held_no_sku": _held_skeleton}
 
 
 def find_pushed_without_address(db: Session) -> list[ImportedFile]:
@@ -842,6 +859,9 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
     _topup, _reason = _is_parts_topup(db, o)
     if _topup:
         return {"ok": False, "error": f"定制补差/加价单不推工厂（{_reason}）—— 如确需推送, 去工厂制作单页调低推送金额门槛"}
+    if not getattr(o, "sku_code", None) and not getattr(o, "sku", None):
+        return {"ok": False, "error": "该单SKU还没回填(取数报表没赶上), 图/尺寸都出不来 —— "
+                                      "等每小时取数回填后会自动补推; 急的话先重拉订单再推"}
     # 正式单没工厂号 → 顺排一个(否则下单图是"未能匹配工厂订单号")
     if getattr(o, "factory_no", None) is None:
         o.factory_no = _next_factory_no(db)

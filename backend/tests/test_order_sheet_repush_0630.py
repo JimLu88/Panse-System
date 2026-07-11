@@ -35,7 +35,7 @@ def _sheet_rec(db, no: str) -> ImportedFile:
 
 
 def _add_order(db, no: str, *, address: str | None):
-    db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"产品{no}",
+    db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"产品{no}", sku="标准款",
                  order_date=date(2026, 6, 20), status="paid", paid_amount=Decimal("1000"),
                  customer_name=("张三" if address else None),
                  customer_phone=("13800000000" if address else None),

@@ -25,7 +25,7 @@ def _feishu_stub(monkeypatch):
 
 
 def _order(db, no, factory_no=None, memo=None):
-    o = Order(platform="淘宝", order_no=no, qty=1, product_name=f"岩板餐桌{no}",
+    o = Order(platform="淘宝", order_no=no, qty=1, product_name=f"岩板餐桌{no}", sku="标准款",
               order_date=date(2026, 7, 9), status="paid", paid_amount=Decimal("2678"),
               factory_no=factory_no, seller_memo=memo)
     db.add(o)

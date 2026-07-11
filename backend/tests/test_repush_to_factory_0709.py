@@ -9,7 +9,7 @@ from app.services import order_sheet_archive_service as osa
 
 
 def _o(no, **kw):
-    d = dict(platform="淘宝", status="paid", paid_amount=Decimal("100"), is_refill=False)
+    d = dict(platform="淘宝", status="paid", paid_amount=Decimal("100"), is_refill=False, sku="标准款")
     d.update(kw)
     return Order(order_no=no, **d)
 
