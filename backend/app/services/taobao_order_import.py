@@ -234,6 +234,9 @@ class _OrderRow:
     tracking_no: Any = None
     paid_amount: Any = None          # 买家应付货款 (兜底, 老逻辑沿用)
     status_text: Any = None
+    # 状态可信度 (2026-07-11): 内容级判定命中的"已卖出宝贝"式文件, 状态是逐商品行值(非订单级真值)
+    # → False, 不许改已存在订单的状态; 其余(订单报表/真·销售明细)保持 True。
+    status_trusted: bool = True
     # 财务列 (订单报表/销售明细自带, 现金流"待确认收货/未发货/平台费"全靠它们)
     buyer_payable: Any = None        # 买家应付货款
     paid_real: Any = None            # 买家实付金额 (买家真实支付 = 我方应收)
@@ -461,6 +464,26 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
     # 求和, 明细不完整时低估); 单级导出(订单报表/已卖出宝贝)只有「订单编号」。行级源不权威于订单级财务 →
     # 重导时不许覆盖已存在订单的实付/状态/退款(防不完整明细把订单报表的正确值压掉, 根治 202 单横跳)。
     _fin_src = "line" if (_hdr & {"子订单编号", "主订单编号"}) else "order"
+    # 内容级判据 (2026-07-11, 治漏网): 「已卖出的宝贝」OLE加密导出 多商品订单一单多行、表头却没有
+    # 子订单编号列 → 表头判据看不见, 被当"单级权威", 每晚18点档与订单报表互搏(8单实付/状态/退款
+    # 反复横跳: 18:11 订单报表写对、18:16 已卖出宝贝盖错)。同一文件里订单编号重复≥2次 = 一行一商品
+    # 的行级导出, 不论表头长什么样都按行级处理; 单级导出订单号恒不重复, 不受影响。
+    _status_trusted = True
+    if _fin_src == "order" and rows:
+        from collections import Counter as _Counter
+        _no_cnt = _Counter()
+        for _r in rows:
+            _no = str(_r.get("主订单编号") or _r.get("订单编号") or "").strip()
+            if _no and _no != "None":
+                _no_cnt[_no] += 1
+        if _no_cnt and _no_cnt.most_common(1)[0][1] >= 2:
+            _fin_src = "line"
+            # 状态也不可信: 该类文件「订单状态」是逐商品行的(退款件行=交易关闭), 不是订单级真值 ——
+            # 真·销售明细(子订单编号表头)的状态列是订单级值随行重复, 仍可信(7/9 语义不变)。
+            _status_trusted = False
+            rep.warnings.append(
+                f"检测到同文件订单号重复(最多{_no_cnt.most_common(1)[0][1]}行/单)→ 一单多行的行级导出, "
+                "按行级处理: 不覆盖已存在订单的实付/状态/退款")
 
     def gv(row, *names):
         for n in names:
@@ -478,6 +501,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
         if o is None:
             o = _OrderRow(
                 order_no=no, order_no_bad=_is_sci(main), fin_source=_fin_src,
+                status_trusted=_status_trusted,
                 order_date=gv(row, "订单创建时间", "订单付款时间", "下单时间"),
                 customer_name=gv(row, "收货人姓名", "买家昵称"),
                 customer_phone=gv(row, "联系手机", "联系电话", "手机"),
@@ -747,7 +771,8 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             # 明细)其 status 是兜底默认的 signed(见上文无状态列默认段)—— 不许覆盖已有状态, 否则每天把
             # paid 盖成 signed。销售明细本身带订单级「订单状态」列, 属合法更新(与金额不同: 金额按行求和会
             # 因明细不完整而低估, 故金额仍要求权威源; 状态是订单级单值, 明细里也准)。
-            if str(o.status_text or "").strip():
+            # status_trusted=False("已卖出宝贝"式逐商品行状态)不许改已存在订单的状态 (2026-07-11)
+            if str(o.status_text or "").strip() and getattr(o, "status_trusted", True):
                 if _trace("status", "订单状态", existing.status, status):
                     rep.status_changed += 1
                 existing.status = status
