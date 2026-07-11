@@ -9,7 +9,7 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Divider, Input, Modal, Popconfirm, Row, Space, Statistic, Table, Tag,
+  Alert, Button, Card, Col, Divider, Image, Input, Modal, Popconfirm, Row, Space, Statistic, Table, Tag,
   Typography, message,
 } from 'antd';
 import {
@@ -350,31 +350,81 @@ export default function ActivityAutoFillTab() {
               ]
         }
       >
-        {stageRes && (
+        {stageRes && (() => {
+          const okN = stageRes.validation?.ok ?? 0;
+          const failN = stageRes.validation?.failed ?? 0;
+          const failCodes: string[] = stageRes.validation?.failed_sku_codes || [];
+          return (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            <Alert
-              type={stageRes.validation?.failed ? 'warning' : 'success'} showIcon
-              message={`千牛预校验：${stageRes.validation?.ok ?? '?'} 条成功` +
-                (stageRes.validation?.failed ? `，${stageRes.validation.failed} 条失败（下方比对表核对，失败的不会上）` : '，全部通过')}
-              description="文件已挂到千牛、尚未提交。核对下方「系统要的价」无误后，点确认才真提交。"
-            />
+            {/* ① 千牛校验结果 —— 大号醒目 */}
+            <Card size="small" style={{ background: failN ? '#fffbe6' : '#f6ffed',
+                border: `1px solid ${failN ? '#ffe58f' : '#b7eb8f'}` }} styles={{ body: { padding: '12px 16px' } }}>
+              <Row align="middle" gutter={16}>
+                <Col><Statistic title="千牛校验·通过" value={okN} valueStyle={{ color: '#389e0d', fontSize: 30 }} suffix="条" /></Col>
+                <Col><Divider type="vertical" style={{ height: 44 }} /></Col>
+                <Col><Statistic title="千牛校验·失败" value={failN}
+                  valueStyle={{ color: failN ? '#cf1322' : '#8c8c8c', fontSize: 30 }} suffix="条" /></Col>
+                <Col flex="auto" style={{ textAlign: 'right' }}>
+                  <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                    文件已挂千牛「尚未提交」<br/>核对无误后点下方按钮才真上传
+                  </Typography.Text>
+                </Col>
+              </Row>
+              {failN > 0 && (
+                <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #ffe58f' }}>
+                  <Typography.Text strong style={{ color: '#cf1322' }}>⚠️ 失败的 {failN} 条不会上传</Typography.Text>
+                  {failCodes.length > 0
+                    ? <div style={{ marginTop: 4 }}>
+                        {failCodes.map(c => <Tag key={c} color="red" style={{ marginBottom: 4 }}>{c}</Tag>)}
+                        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                          （多为已下架/不在活动范围的 SKU，不影响其余 {okN} 条）
+                        </Typography.Text>
+                      </div>
+                    : <Typography.Text type="secondary" style={{ fontSize: 12, marginLeft: 8 }}>
+                        （具体哪条千牛未回明细，通常是已下架 SKU，不影响其余 {okN} 条）
+                      </Typography.Text>}
+                </div>
+              )}
+            </Card>
+
+            {/* ② 千牛页面截图 —— 带标签、点击放大 */}
             {stageRes.screenshot_base64 && (
-              <img alt="千牛已挂文件截图" style={{ width: '100%', border: '1px solid #eee', borderRadius: 6 }}
-                src={`data:image/png;base64,${stageRes.screenshot_base64}`} />
+              <div>
+                <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                  👇 千牛页面截图（文件已挂的实证，<b>点图可放大看清</b>）
+                </Typography.Text>
+                <div style={{ marginTop: 6, border: '1px solid #eee', borderRadius: 6, overflow: 'hidden' }}>
+                  <Image alt="千牛已挂文件截图" style={{ width: '100%' }}
+                    src={`data:image/png;base64,${stageRes.screenshot_base64}`} />
+                </div>
+              </div>
             )}
-            <Table size="small" rowKey="sku_code" pagination={{ pageSize: 8 }}
-              dataSource={stageRes.compare_rows || []}
-              columns={[
-                { title: 'SKU编码', dataIndex: 'sku_code', width: 150 },
-                { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 130 },
-                { title: '名称', dataIndex: 'name', ellipsis: true },
-                { title: () => stageRes.compare_rows?.[0]?.value_label || '系统值', dataIndex: 'system_value',
-                  width: 100, render: (v: number | null) => v != null ? `¥${v}` : '-' },
-                { title: '目标到手', dataIndex: 'target_shoudao', width: 100,
-                  render: (v: number | null) => v != null ? `¥${v}` : '-' },
-              ]} />
+
+            {/* ③ 系统要推的价 —— 比对表 */}
+            <div>
+              <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                👇 系统要推的每个 SKU 的价（自动按定价生成，眼过金额合理即可）
+              </Typography.Text>
+              <Table size="small" rowKey="sku_code" pagination={{ pageSize: 8 }} style={{ marginTop: 6 }}
+                dataSource={stageRes.compare_rows || []}
+                onRow={(r: { sku_code: string }) => (
+                  failCodes.includes(r.sku_code) ? { style: { background: '#fff1f0' } } : {}
+                )}
+                columns={[
+                  { title: 'SKU编码', dataIndex: 'sku_code', width: 150,
+                    render: (v: string) => failCodes.includes(v)
+                      ? <Typography.Text type="danger">{v} <Tag color="red">失败</Tag></Typography.Text> : v },
+                  { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 130 },
+                  { title: '名称', dataIndex: 'name', ellipsis: true },
+                  { title: () => stageRes.compare_rows?.[0]?.value_label || '系统值', dataIndex: 'system_value',
+                    width: 100, render: (v: number | null) => v != null ? `¥${v}` : '-' },
+                  { title: '目标到手', dataIndex: 'target_shoudao', width: 100,
+                    render: (v: number | null) => v != null ? `¥${v}` : '-' },
+                ]} />
+            </div>
           </Space>
-        )}
+          );
+        })()}
       </Modal>
     </Space>
   );

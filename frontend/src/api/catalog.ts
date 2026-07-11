@@ -774,7 +774,8 @@ export const fetchActivityPreflight = (floorDays = 15) =>
 export type UploadStageResult = {
   ok: boolean; need_scan?: boolean; error?: string; message?: string;
   channel: string; channel_name: string;
-  validation?: { raw: string; ok: number | null; failed: number | null } | null;
+  validation?: { raw: string; ok: number | null; failed: number | null;
+    failed_sku_codes?: string[] } | null;
   screenshot_base64?: string | null;
   compare_rows?: { sku_code: string; taobao_sku_id: string; name: string;
     value_label: string; system_value: number | null; target_shoudao: number | null }[];
