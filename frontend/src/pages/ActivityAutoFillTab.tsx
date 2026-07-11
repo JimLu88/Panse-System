@@ -354,6 +354,10 @@ export default function ActivityAutoFillTab() {
           const okN = stageRes.validation?.ok ?? 0;
           const failN = stageRes.validation?.failed ?? 0;
           const failCodes: string[] = stageRes.validation?.failed_sku_codes || [];
+          const misN = stageRes.mismatch_count ?? 0;
+          const totalN = stageRes.compare_total ?? (stageRes.compare_rows?.length ?? 0);
+          const priceOk = misN === 0;
+          const label0 = stageRes.compare_rows?.[0]?.value_label || '系统值';
           return (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
             {/* ① 千牛校验结果 —— 大号醒目 */}
@@ -400,25 +404,41 @@ export default function ActivityAutoFillTab() {
               </div>
             )}
 
-            {/* ③ 系统要推的价 —— 比对表 */}
+            {/* ③ 上传价 vs 系统价 —— 严格 0 容差核对 (用户: 必须按系统价) */}
+            <Alert showIcon type={priceOk ? 'success' : 'error'}
+              message={priceOk
+                ? `✅ 上传价 = 系统价：全部 ${totalN} 行一分不差（严格核对，无出入）`
+                : `⛔ 有 ${misN} 行「上传值 ≠ 系统价」！下方红字行，未按系统价，别提交、先叫我查`}
+              description={priceOk
+                ? '「上传值」直接读自即将上传千牛的那份表，「系统应填」按定价独立重算，两者逐条对到分。'
+                : '这不该出现——上传表和系统定价理应一致。请把红字行截图发我，我立刻定位。'}
+            />
             <div>
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                👇 系统要推的每个 SKU 的价（自动按定价生成，眼过金额合理即可）
+                👇 逐 SKU 核对：<b>上传值</b>（真正传千牛的数）vs <b>系统应填</b>（按定价重算）；差 &gt;1 分即标红
               </Typography.Text>
-              <Table size="small" rowKey="sku_code" pagination={{ pageSize: 8 }} style={{ marginTop: 6 }}
+              <Table size="small" rowKey="taobao_sku_id" pagination={{ pageSize: 8 }} style={{ marginTop: 6 }}
                 dataSource={stageRes.compare_rows || []}
-                onRow={(r: { sku_code: string }) => (
-                  failCodes.includes(r.sku_code) ? { style: { background: '#fff1f0' } } : {}
+                onRow={(r: any) => (
+                  (r.mismatch || failCodes.includes(r.sku_code)) ? { style: { background: '#fff1f0' } } : {}
                 )}
                 columns={[
                   { title: 'SKU编码', dataIndex: 'sku_code', width: 150,
                     render: (v: string) => failCodes.includes(v)
-                      ? <Typography.Text type="danger">{v} <Tag color="red">失败</Tag></Typography.Text> : v },
-                  { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 130 },
+                      ? <Typography.Text type="danger">{v} <Tag color="red">千牛失败</Tag></Typography.Text> : v },
+                  { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 120 },
                   { title: '名称', dataIndex: 'name', ellipsis: true },
-                  { title: () => stageRes.compare_rows?.[0]?.value_label || '系统值', dataIndex: 'system_value',
-                    width: 100, render: (v: number | null) => v != null ? `¥${v}` : '-' },
-                  { title: '目标到手', dataIndex: 'target_shoudao', width: 100,
+                  { title: `上传值·${label0}`, dataIndex: 'uploaded_value', width: 110,
+                    render: (v: number | null, r: any) => v == null
+                      ? '-' : <Typography.Text type={r.mismatch ? 'danger' : undefined} strong>¥{v}</Typography.Text> },
+                  { title: `系统应填·${label0}`, dataIndex: 'system_value', width: 110,
+                    render: (v: number | null) => v != null ? `¥${v}` : '-' },
+                  { title: '核对', dataIndex: 'mismatch', width: 66, align: 'center' as const,
+                    render: (m: boolean, r: any) => m
+                      ? <Tag color="red">✗ 差¥{r.uploaded_value != null && r.system_value != null
+                          ? Math.abs(r.uploaded_value - r.system_value).toFixed(2) : '?'}</Tag>
+                      : <Tag color="green">✓</Tag> },
+                  { title: '目标到手', dataIndex: 'target_shoudao', width: 96,
                     render: (v: number | null) => v != null ? `¥${v}` : '-' },
                 ]} />
             </div>

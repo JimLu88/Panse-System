@@ -778,7 +778,9 @@ export type UploadStageResult = {
     failed_sku_codes?: string[] } | null;
   screenshot_base64?: string | null;
   compare_rows?: { sku_code: string; taobao_sku_id: string; name: string;
-    value_label: string; system_value: number | null; target_shoudao: number | null }[];
+    value_label: string; system_value: number | null; target_shoudao: number | null;
+    uploaded_value?: number | null; mismatch?: boolean }[];
+  price_match_ok?: boolean; mismatch_count?: number; compare_total?: number;
 };
 export const activityUploadStage = (channel: string, tier = 'big') =>
   api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null,

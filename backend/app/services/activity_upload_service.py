@@ -55,42 +55,109 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
         ph = getattr(s, "is_custom_placeholder", False)
         sys_val = target_shoudao = None
         label = ""
+        # ★系统应填值 —— 逐字镜像 data_export 三个 builder(tier/占位符口径一致), 供 0 容差严格核对。
         if channel == "single_item_discount":
-            label = "立减金额"
+            from app.services.data_export_service import _TB_DISCOUNT_TIERS
+            label, deduct_field = "立减金额", _TB_DISCOUNT_TIERS[tier][1]   # mid/big/big618 各自档位
             if ph:
                 sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
             else:
-                d = pricing_calc_service.single_item_discounts(p, s.daily_price, params)
-                sys_val = d.get("big_deduct")
-            target_shoudao = _f(p.big_buyer_price)
+                sys_val = pricing_calc_service.single_item_discounts(p, s.daily_price, params).get(deduct_field)
+            target_shoudao = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
         elif channel == "promo_signup":
-            label = "报名价A"
-            sys_val = (round(_f(s.daily_price) * 0.9, 2) if ph and s.daily_price
-                       else pricing_calc_service.report_prices(p, params).get("report_price"))
-            target_shoudao = _f(p.big_buyer_price)
+            from app.services.data_export_service import _PROMO_SIGNUP_TIERS
+            label, price_field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]    # mid/big→report_price, big618→618
+            if ph:
+                sys_val = round(_f(s.daily_price) * 0.9, 2) if s.daily_price else None
+            else:
+                sys_val = pricing_calc_service.report_prices(p, params).get(price_field)
+            target_shoudao = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
         elif channel == "super_reduce":
-            label = "补贴金额"
-            A = (round(_f(s.daily_price) * 0.9, 2) if ph and s.daily_price
-                 else pricing_calc_service.report_prices(p, params).get("report_price"))
-            sys_val = round(_f(A) * 0.1, 2) if A is not None else None
-            target_shoudao = _f(p.mid_buyer_price)
+            label = "补贴金额"                                             # =A×0.1(占位符=现价×0.1, 修旧版×0.09)
+            if ph:
+                sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
+            else:
+                A = pricing_calc_service.report_prices(p, params).get("report_price")
+                sys_val = round(_f(A) * 0.1, 2) if A is not None else None
+            target_shoudao = _f(p.mid_buyer_price)                          # 超级立减到手=中促到手
         if sys_val is None:
             continue
-        rows.append({
-            "sku_code": s.sku_code, "taobao_sku_id": str(p.taobao_sku_id),
-            "name": (s.sku or s.product_name or s.sku_code),
-            "value_label": label, "system_value": _f(sys_val),
-            "target_shoudao": target_shoudao,
-        })
+        # 一码多SKU: 与三个 builder 同口径展开 [主SKUID, *alt] 各出一行(值相同), 让比对表覆盖每个【真上传】的
+        #  SKUID。否则 alt SKUID 被真上传千牛却不在人工核对表里(commit 不可逆, 陈旧/串位 alt 会绕过闸门无人可见)。
+        ids: list[str] = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid).strip() not in ids:
+                ids.append(str(_sid).strip())
+        for skuid in ids:
+            rows.append({
+                "sku_code": s.sku_code, "taobao_sku_id": skuid,
+                "name": (s.sku or s.product_name or s.sku_code),
+                "value_label": label, "system_value": _f(sys_val),
+                "target_shoudao": target_shoudao,
+            })
     return rows
 
 
+def _parse_uploaded_values(channel: str, xlsx_bytes: bytes) -> dict[str, float]:
+    """从【真正要上传的那份 xlsx】里读出每个 SKUID 的上传值(立减金额/报名价/补贴金额)。
+    比对表以此为"上传值"列 = 所见即所传, 消除比对表与真实上传文件之间的任何算法漂移。"""
+    import io
+    import openpyxl
+    val_col = {"single_item_discount": 3, "promo_signup": 3, "super_reduce": 14}.get(channel)
+    data_start = 4 if channel == "promo_signup" else 2   # 报名表模板前 3 行是表头, 数据从第 4 行
+    if val_col is None:
+        return {}
+    wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+    ws = (wb["商品SKU导入列表"] if channel == "promo_signup" and "商品SKU导入列表" in wb.sheetnames
+          else wb.worksheets[0])
+    out: dict[str, float] = {}
+    for row in ws.iter_rows(min_row=data_start, values_only=True):
+        if not row or len(row) < val_col:
+            continue
+        skuid, val = row[1], row[val_col - 1]
+        if skuid is None or val is None:
+            continue
+        try:
+            out[str(skuid).strip()] = float(val)
+        except (TypeError, ValueError):
+            continue
+    wb.close()
+    return out
+
+
+# 上传值 vs 系统应填值 判"出入"的浮点保护(1 分钱内视为一致; 超出即严格标红) —— 用户: 必须按系统价
+_PRICE_MATCH_EPS = 0.005
+
+
 def stage(db: Session, channel: str, tier: str = "big") -> dict:
-    """挂文件到千牛(不提交) + 建比对表。返回 {ok, compare_rows, validation, screenshot_base64, ...}。"""
+    """挂文件到千牛(不提交) + 建比对表(上传值 vs 系统应填值, 0 容差核对)。
+    返回 {ok, compare_rows, price_match_ok, mismatch_count, validation, screenshot_base64, ...}。"""
     from app.services import web_agent_service
     if channel not in _CHANNELS:
         return {"ok": False, "error": f"未知渠道 {channel}"}
     xlsx, stats = _gen_xlsx(db, channel, tier)
+    # ★核对: system_value=系统应填(独立重算) vs uploaded_value=真正要上传那份 xlsx 里的数; 差>1分即标出入。
+    rows = _compare_rows(db, channel, tier)
+    uploaded = _parse_uploaded_values(channel, xlsx)
+    mismatch_n = 0
+    for row in rows:
+        up = uploaded.get(row["taobao_sku_id"])
+        sysv = row.get("system_value")
+        bad = (up is None) or (sysv is None) or (abs(up - sysv) > _PRICE_MATCH_EPS)
+        row["uploaded_value"] = up
+        row["mismatch"] = bool(bad)
+        if bad:
+            mismatch_n += 1
+    # 反向兜底: 任何【真上传了却没进比对表】的 SKUID 也当"出入"红行标出(两路未来再分叉也兜得住, commit 不可逆)。
+    covered = {row["taobao_sku_id"] for row in rows}
+    for skuid, up in uploaded.items():
+        if skuid not in covered:
+            rows.append({
+                "sku_code": "?", "taobao_sku_id": skuid, "name": "⚠️ 仅上传·未进比对(请核实此SKUID)",
+                "value_label": "", "system_value": None, "target_shoudao": None,
+                "uploaded_value": up, "mismatch": True,
+            })
+            mismatch_n += 1
     j = web_agent_service.upload_file(db, channel, "stage", xlsx, f"{channel}.xlsx")
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应, 无法上传")}
@@ -104,7 +171,10 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
         "validation": res.get("validation"),
         "screenshot_base64": res.get("screenshot_base64"),
         "stopped_before": res.get("stopped_before"),
-        "compare_rows": _compare_rows(db, channel, tier),
+        "compare_rows": rows,
+        "price_match_ok": mismatch_n == 0,
+        "mismatch_count": mismatch_n,
+        "compare_total": len(rows),
     }
 
 
