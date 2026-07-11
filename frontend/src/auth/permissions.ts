@@ -87,6 +87,7 @@ export const PERM_TREE: PermGroup[] = [
     { key: 'import-archive', label: '资料存档库' },
     { key: 'audit-trail', label: '修改历史' },
     { key: 'feishu', label: '飞书' },
+    { key: 'review-program', label: '评价程序' },
   ] },
 ];
 

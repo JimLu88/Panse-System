@@ -50,8 +50,9 @@ PERM_KEYS: frozenset[str] = frozenset({
     "per-order-reconcile", "recon-center",
     # 顶层
     "ops-checklist",
-    # 工具
+    # 工具 (review-program = 外链评价程序, 无内部路由, 仅菜单可见性用)
     "web-agent", "importer", "data-export", "import-archive", "audit-trail", "feishu",
+    "review-program",
 })
 
 # ---- API 路径前缀 → 页面 permKey (None = 永远放行) ----

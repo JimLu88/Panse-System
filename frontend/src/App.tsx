@@ -275,6 +275,9 @@ export default function App() {
         { key: 'audit-trail', label: <Link to="/audit-trail">修改历史</Link> },
         // 全列数据浏览已裁撤 (各页自带"全部列"视图, 重复) — 路由保留, 直链仍可用
         { key: 'feishu', label: <Link to="/feishu">飞书</Link> },
+        // 评价程序 = 独立程序 (PC 本机 192.168.31.91:7902, 开机自启); 外链新窗口打开, 无内部路由。
+        // Menu 无全局 onClick, 故用 <a> 直链; key 与 permissions.ts / page_permissions.py 三处一致。
+        { key: 'review-program', label: <a href="http://192.168.31.91:7902" target="_blank" rel="noopener noreferrer">评价程序</a> },
         // 「管理」已移到右上角 小人菜单 → 系统设置 (2026-06-22; 账户设置 Tab 于 2026-06-23 去掉, 用户管理在系统设置内); 路由 /admin 保留
       ],
     },
