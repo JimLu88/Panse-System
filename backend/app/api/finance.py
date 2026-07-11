@@ -1513,6 +1513,7 @@ def set_logistics_bill_match(bill_id: int, payload: LogisticsBillMatchIn,
     b = db.get(LogisticsBill, bill_id)
     if not b:
         raise HTTPException(404, "账单行不存在")
+    prev_no = b.order_no                      # 改配单前的旧订单 — 定点回退它的实际物流费
     ono = (payload.order_no or "").strip()
     if ono:
         b.order_no = ono
@@ -1523,12 +1524,16 @@ def set_logistics_bill_match(bill_id: int, payload: LogisticsBillMatchIn,
         b.match_method = "none"
         b.match_note = "人工取消匹配"
     db.commit()
-    try:
-        from app.services import order_fee_actual_service
-        order_fee_actual_service.sync_fee_components(db)
-        db.commit()
-    except Exception:  # noqa: BLE001 — 回填失败不阻断改匹配
-        pass
+    # 定点回填新旧两单 (2026-07-11): 只重算受影响订单, 取消配单时旧单按"对齐"语义正确回退;
+    # 不再全量 sync —— 全量会重刷所有单的 est_*, 且旧全量语义曾会清空手工合并的实际费用。
+    affected = [x for x in {prev_no, b.order_no} if x]
+    if affected:
+        try:
+            from app.services import order_fee_actual_service
+            order_fee_actual_service.sync_fee_components(db, order_nos=affected)
+            db.commit()
+        except Exception:  # noqa: BLE001 — 回填失败不阻断改匹配
+            pass
     return _enrich_logistics_bills(db, [b])[0]
 
 
