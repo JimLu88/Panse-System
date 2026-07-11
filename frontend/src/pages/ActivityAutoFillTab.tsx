@@ -71,7 +71,8 @@ export default function ActivityAutoFillTab() {
   };
 
   // 缺映射(无淘宝SKUID)= 未上架, 按设计本就不推送, 不算问题 → 不纳入"全绿"判定 (用户 2026-07-11)
-  const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0;
+  const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0
+    && (pre.skuid_collision_count ?? 0) === 0;
 
   // ── 千牛上传 (stage → 比对表 → 确认 → commit) ──
   const [upChannel, setUpChannel] = useState<string | null>(null);
@@ -172,8 +173,8 @@ export default function ActivityAutoFillTab() {
 
             {clean && <Alert type="success" showIcon icon={<CheckCircleOutlined />}
               message={pre.floor_check_skipped
-                ? '预检通过：无坏价 / 无缺映射；15 天最低价校验本次按【初始报价】已跳过（未来会照跑）。'
-                : '预检全绿：无坏价 / 无缺映射 / 无 15 天冲突，可放心逐步生成上传表。'} />}
+                ? '预检通过：无坏价 / 无SKUID撞号；15 天最低价校验本次按【初始报价】已跳过（未来会照跑）。'
+                : '预检全绿：无坏价 / 无SKUID撞号 / 无 15 天冲突，可放心逐步生成上传表。'} />}
 
             {pre.bad_product_count > 0 && (
               <div>
@@ -188,6 +189,24 @@ export default function ActivityAutoFillTab() {
                     { title: 'SKU数', dataIndex: 'sku_count', width: 70, align: 'center' as const },
                     { title: '当前报名价', dataIndex: 'report_price', width: 100, render: (v: number | null) => v != null ? `¥${v}` : '-' },
                     { title: '判定原因', dataIndex: 'reason', ellipsis: true },
+                  ]} />
+              </div>
+            )}
+
+            {(pre.skuid_collision_count ?? 0) > 0 && (
+              <div>
+                <Divider orientation="left" style={{ margin: '4px 0' }}>
+                  <Typography.Text strong type="danger">
+                    <WarningOutlined /> 淘宝SKUID撞号（一个SKUID绑了多个商家编码 — 上传表两行打架必串价，先改映射再推）</Typography.Text>
+                </Divider>
+                <Table size="small" pagination={false} rowKey="taobao_sku_id"
+                  dataSource={pre.skuid_collisions || []}
+                  columns={[
+                    { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 170,
+                      render: (v: string) => <Typography.Text type="danger" strong>{v}</Typography.Text> },
+                    { title: '被这些商家编码共用（去 定价·总表 改 SKUID 映射，一个 SKUID 只能归一个编码）',
+                      dataIndex: 'names',
+                      render: (names: string[]) => names.map((n) => <Tag color="red" key={n} style={{ marginBottom: 4 }}>{n}</Tag>) },
                   ]} />
               </div>
             )}

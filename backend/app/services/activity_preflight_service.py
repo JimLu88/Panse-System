@@ -165,6 +165,24 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         return {"rows": rows_n, "skipped_bad_price": skipped_bad,
                 "skipped_no_price": skipped_no_price}
 
+    # 5) 淘宝SKUID撞号: 一个 SKUID 被多个商家编码共用(主或alt) → 上传表两行打架、后行覆盖前行 = 必串价。
+    #    在生成上传表【之前】暴露串号 (用户 2026-07-12; 例: 6042972321593 被 小横隔板/竖隔板 共用,
+    #    比对表事后逮到 64.13≠92.31)。只读检测。
+    sid_owners: dict[str, set] = defaultdict(set)
+    for p in promo_by_sku.values():
+        for _sid in [p.taobao_sku_id, *(getattr(p, "alt_taobao_sku_ids", None) or [])]:
+            _s = str(_sid).strip() if _sid else ""
+            if _s:
+                sid_owners[_s].add(p.sku_code)
+    name_by_code = {s.sku_code: (s.sku or s.product_name or "") for s in skus}
+    skuid_collisions = [
+        {"taobao_sku_id": sid,
+         "sku_codes": sorted(codes),
+         "names": [f"{c}（{name_by_code.get(c, '?')}）" for c in sorted(codes)]}
+        for sid, codes in sid_owners.items() if len(codes) > 1
+    ]
+    skuid_collisions.sort(key=lambda x: x["taobao_sku_id"])
+
     return {
         "floor_days": floor_days,
         "bad_products": bad,
@@ -175,6 +193,8 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         "conflict_count": len(conflicts),
         "conflicts": conflicts[:100],
         "floor_check_skipped": skip_floor_check,   # 本次是否按初始报价跳过了15天校验
+        "skuid_collision_count": len(skuid_collisions),
+        "skuid_collisions": skuid_collisions[:50],
         "signup_big": _emit_count("report_price", 0.9),       # 88VIP大促12% / 超级立减10% 同报名价
         "signup_618": _emit_count("report_price_618", 0.9),   # 超级大促15% (换SKU)
     }

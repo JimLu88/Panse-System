@@ -8,11 +8,12 @@ from app.models.pricing_ext import PricingSkuPromo
 from app.services import activity_preflight_service as svc
 
 
-def _add_sku(db, pc, sc, name, daily, item=None, sid=None, big_buyer=None, ph=False):
+def _add_sku(db, pc, sc, name, daily, item=None, sid=None, big_buyer=None, ph=False, alt=None):
     db.add(PricingSku(product_code=pc, sku_code=sc, sku=name, product_name=name,
                       daily_price=Decimal(str(daily)), is_custom_placeholder=ph))
     if item or sid:
         db.add(PricingSkuPromo(sku_code=sc, taobao_item_id=item, taobao_sku_id=sid,
+                               alt_taobao_sku_ids=alt,
                                big_buyer_price=Decimal(str(big_buyer)) if big_buyer else None))
 
 
@@ -51,6 +52,27 @@ def test_unmapped_and_conflict(db_session):
     assert "PPS3001011" in codes      # 计划到手3000 > 成交2600 → 冲突
     conf = next(c for c in rep["conflicts"] if c["sku_code"] == "PPS3001011")
     assert conf["planned_shoudao"] == 3000.0 and conf["recent_min_paid"] == 2600.0
+
+
+def test_skuid_collision_detected(db_session):
+    """SKUID撞号: 一个淘宝SKUID绑多个商家编码(主主/主alt)→红字列出; 无撞号=0 (用户 2026-07-12)。"""
+    db = db_session
+    # 主-主撞号: 526/527 共用 700001 (复刻真实事故 6042972321593)
+    _add_sku(db, "PPS4001", "PPS4001026", "小横隔板", 360, "555", "700001", big_buyer=224)
+    _add_sku(db, "PPS4001", "PPS4001027", "竖隔板", 270, "555", "700001", big_buyer=173)
+    # 主-alt撞号: 4002011 的 alt 撞上 4002012 的主
+    _add_sku(db, "PPS4002", "PPS4002011", "餐桌-1.4米", 3000, "666", "700002", big_buyer=2300,
+             alt=["700003"])
+    _add_sku(db, "PPS4002", "PPS4002012", "餐桌-1.6米", 3300, "666", "700003", big_buyer=2500)
+    # 正常独占
+    _add_sku(db, "PPS4003", "PPS4003011", "床头柜", 1300, "777", "700004", big_buyer=1000)
+    db.commit()
+    rep = svc.activity_preflight(db)
+    assert rep["skuid_collision_count"] == 2
+    by_sid = {c["taobao_sku_id"]: set(c["sku_codes"]) for c in rep["skuid_collisions"]}
+    assert by_sid["700001"] == {"PPS4001026", "PPS4001027"}     # 主主
+    assert by_sid["700003"] == {"PPS4002011", "PPS4002012"}     # 主alt
+    assert "700004" not in by_sid                                # 独占不报
 
 
 def test_skip_floor_check_initial_price(db_session):

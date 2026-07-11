@@ -764,6 +764,8 @@ export type ActivityPreflight = {
   conflict_count: number;
   conflicts: { sku_code: string; name: string; planned_shoudao: number; recent_min_paid: number; gap_pct: number }[];
   floor_check_skipped?: boolean;
+  skuid_collision_count?: number;
+  skuid_collisions?: { taobao_sku_id: string; sku_codes: string[]; names: string[] }[];
   signup_big: { rows: number; skipped_bad_price: number; skipped_no_price: number };
   signup_618: { rows: number; skipped_bad_price: number; skipped_no_price: number };
 };
