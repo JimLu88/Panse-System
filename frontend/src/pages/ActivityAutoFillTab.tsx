@@ -382,6 +382,9 @@ export default function ActivityAutoFillTab() {
         {stageRes && (() => {
           const okN = stageRes.validation?.ok ?? 0;
           const failN = stageRes.validation?.failed ?? 0;
+          // 大促报名/超级立减的千牛导入是异步的(页面只回"正在处理中"), 抓不到当场成功/失败数 →
+          // 显示"已收单·处理中"而非误导的 0 条 (用户 2026-07-12: "为什么校验通过0条还能下一步")
+          const asyncPending = stageRes.validation?.ok == null && stageRes.validation?.failed == null;
           const failCodes: string[] = stageRes.validation?.failed_sku_codes || [];
           const misN = stageRes.mismatch_count ?? 0;
           const totalN = stageRes.compare_total ?? (stageRes.compare_rows?.length ?? 0);
@@ -389,19 +392,35 @@ export default function ActivityAutoFillTab() {
           const label0 = stageRes.compare_rows?.[0]?.value_label || '系统值';
           return (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
-            {/* ① 千牛校验结果 —— 大号醒目 */}
-            <Card size="small" style={{ background: failN ? '#fffbe6' : '#f6ffed',
-                border: `1px solid ${failN ? '#ffe58f' : '#b7eb8f'}` }} styles={{ body: { padding: '12px 16px' } }}>
+            {/* ① 千牛校验结果 —— 大号醒目; 异步渠道(大促报名/超级立减)千牛只回"处理中", 显示已收单而非误导的0条 */}
+            <Card size="small" style={{ background: asyncPending ? '#e6f4ff' : failN ? '#fffbe6' : '#f6ffed',
+                border: `1px solid ${asyncPending ? '#91caff' : failN ? '#ffe58f' : '#b7eb8f'}` }}
+              styles={{ body: { padding: '12px 16px' } }}>
               <Row align="middle" gutter={16}>
-                <Col><Statistic title="千牛校验·通过" value={okN} valueStyle={{ color: '#389e0d', fontSize: 30 }} suffix="条" /></Col>
-                <Col><Divider type="vertical" style={{ height: 44 }} /></Col>
-                <Col><Statistic title="千牛校验·失败" value={failN}
-                  valueStyle={{ color: failN ? '#cf1322' : '#8c8c8c', fontSize: 30 }} suffix="条" /></Col>
-                <Col flex="auto" style={{ textAlign: 'right' }}>
-                  <Typography.Text type="secondary" style={{ fontSize: 13 }}>
-                    文件已挂千牛「尚未提交」<br/>核对无误后点下方按钮才真上传
-                  </Typography.Text>
-                </Col>
+                {asyncPending ? (
+                  <>
+                    <Col><Statistic title="千牛校验" value="已收单 · 处理中"
+                      valueStyle={{ color: '#1677ff', fontSize: 26 }} /></Col>
+                    <Col flex="auto" style={{ textAlign: 'right' }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                        此渠道千牛是<b>异步导入</b>：成功/失败数稍后出现在<b>千牛活动页（草稿/异常 tab）</b><br/>
+                        发布报名前去那里核对，「异常」里的就是失败的
+                      </Typography.Text>
+                    </Col>
+                  </>
+                ) : (
+                  <>
+                    <Col><Statistic title="千牛校验·通过" value={okN} valueStyle={{ color: '#389e0d', fontSize: 30 }} suffix="条" /></Col>
+                    <Col><Divider type="vertical" style={{ height: 44 }} /></Col>
+                    <Col><Statistic title="千牛校验·失败" value={failN}
+                      valueStyle={{ color: failN ? '#cf1322' : '#8c8c8c', fontSize: 30 }} suffix="条" /></Col>
+                    <Col flex="auto" style={{ textAlign: 'right' }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 13 }}>
+                        文件已挂千牛「尚未提交」<br/>核对无误后点下方按钮才真上传
+                      </Typography.Text>
+                    </Col>
+                  </>
+                )}
               </Row>
               {failN > 0 && (
                 <div style={{ marginTop: 8, paddingTop: 8, borderTop: '1px dashed #ffe58f' }}>
