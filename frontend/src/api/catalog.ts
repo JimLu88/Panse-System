@@ -749,6 +749,10 @@ export const downloadPromoSignup = (tier: 'mid' | 'big' | 'big618') =>
   api.get('/api/pricing/promo-signup.xlsx', { params: { tier }, responseType: 'blob' })
     .then((r) => r.data);
 
+// 淘宝「超级立减活动」批量报名表 (14列, SKU级只填补贴金额=报名价A×10%)
+export const downloadSuperReduceSignup = () =>
+  api.get('/api/pricing/super-reduce-signup.xlsx', { responseType: 'blob' }).then((r) => r.data);
+
 // 活动报名「虚拟推送(预检)」: 生成活动表前的问题清单, 不产文件不改数据
 export type ActivityPreflight = {
   floor_days: number;

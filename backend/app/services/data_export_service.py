@@ -1262,6 +1262,91 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     return out, stats
 
 
+# ── 超级立减【活动】批量报名表 (14列, 2026-07-11 用户拍板口径) ────────────────────────────
+# 与「大促活动报名」不同: 超级立减活动 SKU 级只填【补贴金额】(让利比例锁定/自动)。
+# 口径(用户选1): 活动价 = 报名价A(与大促报名同一个A) → 补贴金额 = A × 10% → 到手 = A×0.9 = 中促到手。
+# 列序对齐淘宝「超级立减长期活动」导入模板 r2 表头; 活动价/让利比例/素材列留空(SKU级自动/非必填);
+# 平台活动ID(营销ID)每次不同, 故不嵌死模板, 生成干净14列表, 上传前粘进当期模板即可。
+_SUPER_REDUCE_HEADERS = [
+    "商品ID", "SKUID", "活动价", "库存", "包邮", "商品短标题",
+    "商品场景图 1:1", "通用商品白底图", "短视频链接 9:16", "短视频链接 4:3",
+    "短视频链接 3:4", "短视频链接 1:1", "让利比例", "补贴金额",
+]
+
+
+def build_super_reduce_signup_upload_xlsx(db: Session):
+    """淘宝『超级立减活动』批量报名表 (14列, SKU级只填补贴金额=报名价A×10%)。
+    到手 = 活动价(=报名价A) × 0.9 = 中促到手。占位符 = 现价×0.1。坏价产品排除。
+    返回 (BytesIO, stats)。列序对齐淘宝超级立减导入模板。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import pricing_calc_service
+    from app.services.activity_preflight_service import bad_price_product_codes
+
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    bad_pc = bad_price_product_codes(db)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "超级立减活动"
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF", size=10)
+    wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    for ci, h in enumerate(_SUPER_REDUCE_HEADERS, start=1):
+        c = ws.cell(1, ci, h)
+        c.fill = head_fill; c.font = head_font; c.alignment = wrap
+
+    stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0}
+    r = 2
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id:
+            continue
+        if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID (未上架跳过)
+            stats["skipped_no_skuid"] += 1
+            continue
+        if (s.product_code or "") in bad_pc:               # 坏价产品排除
+            stats["skipped_bad_price"] += 1
+            continue
+        if getattr(s, "is_custom_placeholder", False):
+            # 定制占位符: 补贴 = 现价 × 10% (到手=现价×0.9)
+            subsidy = round(float(s.daily_price) * 0.1, 2) if s.daily_price else None
+        else:
+            A = pricing_calc_service.report_prices(p, params).get("report_price")
+            subsidy = round(float(A) * 0.1, 2) if A is not None else None
+        if subsidy is None:
+            stats["skipped_no_price"] += 1
+            continue
+        ids = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid) not in ids:
+                ids.append(str(_sid))
+        for skuid in ids:
+            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
+            ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
+            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额 = A×10%
+            # 活动价(C)/让利比例(M)/库存/素材 → 留空 (SKU级自动/非必填)
+            r += 1
+    stats["rows"] = r - 2
+
+    widths = [22, 24, 12, 10, 8, 20, 16, 16, 16, 16, 16, 16, 12, 14]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out, stats
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl

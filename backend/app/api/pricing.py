@@ -1659,6 +1659,25 @@ def promo_signup_upload_xlsx(
     )
 
 
+@formula_router.get("/super-reduce-signup.xlsx")
+def super_reduce_signup_upload_xlsx(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """淘宝『超级立减活动』批量报名表 (14列, SKU级只填补贴金额=报名价A×10%, 到手=中促到手)。
+    坏价产品排除, 仅推送有淘宝SKUID的。用户拍板 2026-07-11。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    bio, _stats = data_export_service.build_super_reduce_signup_upload_xlsx(db)
+    fn = quote("超级立减活动_补贴金额.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
 @formula_router.get("/activity-preflight")
 def activity_preflight_endpoint(
     floor_days: int = Query(15, ge=1, le=90, description="15天最低价窗口天数"),

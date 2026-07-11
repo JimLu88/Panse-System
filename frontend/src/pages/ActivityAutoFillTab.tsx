@@ -15,7 +15,7 @@ import {
   DownloadOutlined, ExperimentOutlined, TableOutlined, WarningOutlined, CheckCircleOutlined,
 } from '@ant-design/icons';
 import {
-  downloadSingleItemDiscount, downloadPromoSignup,
+  downloadSingleItemDiscount, downloadPromoSignup, downloadSuperReduceSignup,
   fetchActivityPreflight, type ActivityPreflight,
 } from '../api/catalog';
 
@@ -195,8 +195,13 @@ export default function ActivityAutoFillTab() {
             <Button icon={<DownloadOutlined />} block loading={busy === 'ps-618'}
               onClick={() => dl('ps-618', '大促报名·超级大促15%', '大促活动报名_超级大促双11 15%.xlsx', () => downloadPromoSignup('big618'))}>
               超级大促 15% 报名表（换SKU）</Button>
-            <Alert type="warning" style={{ fontSize: 12 }} showIcon
-              message="超级立减 14 列模板（SKU级只填补贴金额=活动价×10%）builder 待建，需确认补贴金额是减在标价还是活动价上。" />
+            <Divider style={{ margin: '8px 0' }} plain><Typography.Text type="secondary" style={{ fontSize: 12 }}>超级立减活动（14列·只填补贴金额）</Typography.Text></Divider>
+            <Button icon={<DownloadOutlined />} block loading={busy === 'sr'}
+              onClick={() => dl('sr', '超级立减活动·补贴金额', '超级立减活动_补贴金额.xlsx', downloadSuperReduceSignup)}>
+              超级立减活动 补贴金额表 <Tag color="green" style={{ marginLeft: 4 }}>A×10%</Tag></Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              补贴金额 = 报名价A × 10%（到手 = 中促到手）。活动营销ID每期不同，上传前把此表 3 列贴进当期超级立减模板对应列。
+            </Typography.Text>
           </StepCard>
         </Col>
       </Row>
