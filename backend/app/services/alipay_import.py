@@ -88,7 +88,9 @@ def date_from_flow_no(no: Any) -> Optional[datetime]:
 def import_alipay_csv(db: Session, csv_text: str, *, account: str, commit: bool = True) -> AlipayImportReport:
     # 自动识别格式(同一导入口吃三种): 个人号交易记录明细 / 商家资金账单 / 标准CSV。
     head = csv_text[:2000]
-    if "支付宝交易记录明细查询" in head or ("交易号" in head and "收/支" in head):
+    if ("支付宝交易记录明细查询" in head or ("交易号" in head and "收/支" in head)
+            or "电子客户回单" in head
+            or ("交易订单号" in head and "收/支" in head)):   # 回单变体(注意"交易号"不是"交易订单号"的子串)
         return import_alipay_personal_csv(db, csv_text, account=account, commit=commit)
     if "账务流水号" in head and "账户余额" in head:
         return import_alipay_bill(db, csv_text, account=account, commit=commit)
@@ -192,11 +194,20 @@ def import_alipay_personal_csv(
       (交易号,商家订单号,交易创建时间,付款时间,…,类型,交易对方,商品名称,金额（元）,收/支,交易状态,…,备注,资金状态) +
       数据行 + 页脚(已收入/已支出合计/导出时间)。
     金额（元）**无符号**, 由『收/支』定正负: 支出→负 / 收入→正 / 不计收支→正(中性)。无余额列。
+
+    变体「电子客户回单」(2026-07-11): 主力号 App/网页导出的交易明细, 列头以「交易时间」开头
+      (交易时间,交易分类,交易对方,对方账号,商品说明,收/支,金额,收/付款方式,交易状态,交易订单号,商家订单号,备注),
+      交易号列叫「交易订单号」。历史上这格式曾以无符号金额入库致 140 笔支出记成正数
+      (2026-07-11 按源表整批翻负修复), 本解析器统一由『收/支』定符号, 治本。
     """
     report = AlipayImportReport()
     lines = csv_text.splitlines()
     hdr_idx = next((i for i, ln in enumerate(lines)
                     if ln.lstrip().startswith("交易号") and "收/支" in ln), None)
+    if hdr_idx is None:
+        # 电子客户回单变体: 列头以「交易时间」开头, 且有 收/支 + 交易订单号
+        hdr_idx = next((i for i, ln in enumerate(lines)
+                        if ln.lstrip().startswith("交易时间") and "收/支" in ln and "交易订单号" in ln), None)
     if hdr_idx is None:
         report.errors.append("非支付宝个人交易记录格式 (未找到『交易号…收/支』列头)")
         return report
@@ -207,6 +218,16 @@ def import_alipay_personal_csv(
 
     ci = {k: col(k) for k in ("交易号", "商家订单号", "交易创建时间", "类型",
                               "交易对方", "金额", "收/支", "备注", "商品名称")}
+    # 回单变体列名兜底: 交易号列叫「交易订单号」(注意"交易号"不是它的子串, col 匹配不到)、
+    # 时间列叫「交易时间」、类型列叫「交易分类」、商品列叫「商品说明」
+    if ci.get("交易号") is None:
+        ci["交易号"] = col("交易订单号")
+    if ci.get("交易创建时间") is None:
+        ci["交易创建时间"] = col("交易时间")
+    if ci.get("类型") is None:
+        ci["类型"] = col("交易分类")
+    if ci.get("商品名称") is None:
+        ci["商品名称"] = col("商品说明")
     _SKIP_PREFIXES = ("---", "已收入", "待收入", "已支出", "待支出", "导出时间", "用户:", "合计")
     rows: list[dict[str, Any]] = []
     for ln in lines[hdr_idx + 1:]:
