@@ -769,6 +769,23 @@ export type ActivityPreflight = {
 export const fetchActivityPreflight = (floorDays = 15) =>
   api.get<ActivityPreflight>('/api/pricing/activity-preflight', { params: { floor_days: floorDays } })
     .then((r) => r.data);
+
+// 千牛上传: stage=挂文件到千牛(不提交)+回比对表; commit=★不可逆★真提交
+export type UploadStageResult = {
+  ok: boolean; need_scan?: boolean; error?: string; message?: string;
+  channel: string; channel_name: string;
+  validation?: { raw: string; ok: number | null; failed: number | null } | null;
+  screenshot_base64?: string | null;
+  compare_rows?: { sku_code: string; taobao_sku_id: string; name: string;
+    value_label: string; system_value: number | null; target_shoudao: number | null }[];
+};
+export const activityUploadStage = (channel: string, tier = 'big') =>
+  api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null, { params: { tier } })
+    .then((r) => r.data);
+export const activityUploadCommit = (channel: string, tier = 'big') =>
+  api.post<{ ok: boolean; submitted?: boolean; error?: string; channel_name: string;
+    screenshot_base64?: string | null }>(`/api/pricing/activity-upload/${channel}/commit`, null, { params: { tier } })
+    .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {

@@ -9,14 +9,16 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Divider, Row, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Button, Card, Col, Divider, Modal, Row, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import {
   DownloadOutlined, ExperimentOutlined, TableOutlined, WarningOutlined, CheckCircleOutlined,
+  CloudUploadOutlined,
 } from '@ant-design/icons';
 import {
   downloadSingleItemDiscount, downloadPromoSignup, downloadSuperReduceSignup,
   fetchActivityPreflight, type ActivityPreflight,
+  activityUploadStage, activityUploadCommit, type UploadStageResult,
 } from '../api/catalog';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -67,6 +69,44 @@ export default function ActivityAutoFillTab() {
 
   // 缺映射(无淘宝SKUID)= 未上架, 按设计本就不推送, 不算问题 → 不纳入"全绿"判定 (用户 2026-07-11)
   const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0;
+
+  // ── 千牛上传 (stage → 比对表 → 确认 → commit) ──
+  const [upChannel, setUpChannel] = useState<string | null>(null);
+  const [upTier, setUpTier] = useState('big');
+  const [staging, setStaging] = useState(false);
+  const [committing, setCommitting] = useState(false);
+  const [stageRes, setStageRes] = useState<UploadStageResult | null>(null);
+
+  const doStage = async (channel: string, tier: string) => {
+    setUpChannel(channel); setUpTier(tier); setStageRes(null); setStaging(true);
+    message.loading({ content: '正在挂到千牛并预校验（不提交）…约30秒', key: 'up', duration: 0 });
+    try {
+      const r = await activityUploadStage(channel, tier);
+      message.destroy('up');
+      if (!r.ok) {
+        message.error(r.need_scan ? '淘宝登录态过期，请先扫码' : (r.error || r.message || '挂载失败'));
+        setUpChannel(null); return;
+      }
+      setStageRes(r);
+    } catch {
+      message.destroy('up'); message.error('上传服务未响应（确认 PC 上 Web-Agent 在线）'); setUpChannel(null);
+    } finally { setStaging(false); }
+  };
+
+  const doCommit = async () => {
+    if (!upChannel) return;
+    setCommitting(true);
+    message.loading({ content: '正在提交到千牛…', key: 'commit', duration: 0 });
+    try {
+      const r = await activityUploadCommit(upChannel, upTier);
+      message.destroy('commit');
+      if (r.ok && r.submitted) message.success(`已提交「${r.channel_name}」到千牛`);
+      else message.error(r.error || '提交未成功，请到千牛核对');
+      setUpChannel(null); setStageRes(null);
+    } catch {
+      message.destroy('commit'); message.error('提交失败');
+    } finally { setCommitting(false); }
+  };
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
@@ -180,6 +220,14 @@ export default function ActivityAutoFillTab() {
             <Button icon={<DownloadOutlined />} block loading={busy === 'si-618'}
               onClick={() => dl('si-618', '单品立减·大促15%', '淘宝单品立减_大促15%.xlsx', () => downloadSingleItemDiscount('big618'))}>
               超级大促(618/双11) 15% <Tag color="purple" style={{ marginLeft: 4 }}>减金额</Tag></Button>
+            <Divider style={{ margin: '8px 0' }} plain><Typography.Text type="secondary" style={{ fontSize: 12 }}>自动上传（预演·可比对）</Typography.Text></Divider>
+            <Button type="primary" ghost icon={<CloudUploadOutlined />} block
+              loading={staging && upChannel === 'single_item_discount'}
+              onClick={() => doStage('single_item_discount', 'big')}>
+              上传到千牛（88VIP12%，先比对）</Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              点后自动挂到千牛+预校验，出比对表给你核对，确认了才真提交。
+            </Typography.Text>
           </StepCard>
         </Col>
 
@@ -205,6 +253,45 @@ export default function ActivityAutoFillTab() {
           </StepCard>
         </Col>
       </Row>
+
+      {/* ── 千牛上传·比对表确认 (stage 完成后弹出) ── */}
+      <Modal
+        open={!!stageRes}
+        title={<Space><CloudUploadOutlined /><b>{stageRes?.channel_name} · 上传比对（确认前请核对）</b></Space>}
+        width={820}
+        onCancel={() => { setStageRes(null); setUpChannel(null); }}
+        footer={[
+          <Button key="cancel" onClick={() => { setStageRes(null); setUpChannel(null); }}>取消（不提交）</Button>,
+          <Button key="ok" type="primary" danger loading={committing} icon={<CloudUploadOutlined />}
+            onClick={doCommit}>✅ 确认最后一步上传（不可逆）</Button>,
+        ]}
+      >
+        {stageRes && (
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Alert
+              type={stageRes.validation?.failed ? 'warning' : 'success'} showIcon
+              message={`千牛预校验：${stageRes.validation?.ok ?? '?'} 条成功` +
+                (stageRes.validation?.failed ? `，${stageRes.validation.failed} 条失败（下方比对表核对，失败的不会上）` : '，全部通过')}
+              description="文件已挂到千牛、尚未提交。核对下方「系统要的价」无误后，点确认才真提交。"
+            />
+            {stageRes.screenshot_base64 && (
+              <img alt="千牛已挂文件截图" style={{ width: '100%', border: '1px solid #eee', borderRadius: 6 }}
+                src={`data:image/png;base64,${stageRes.screenshot_base64}`} />
+            )}
+            <Table size="small" rowKey="sku_code" pagination={{ pageSize: 8 }}
+              dataSource={stageRes.compare_rows || []}
+              columns={[
+                { title: 'SKU编码', dataIndex: 'sku_code', width: 150 },
+                { title: '淘宝SKUID', dataIndex: 'taobao_sku_id', width: 130 },
+                { title: '名称', dataIndex: 'name', ellipsis: true },
+                { title: () => stageRes.compare_rows?.[0]?.value_label || '系统值', dataIndex: 'system_value',
+                  width: 100, render: (v: number | null) => v != null ? `¥${v}` : '-' },
+                { title: '目标到手', dataIndex: 'target_shoudao', width: 100,
+                  render: (v: number | null) => v != null ? `¥${v}` : '-' },
+              ]} />
+          </Space>
+        )}
+      </Modal>
     </Space>
   );
 }

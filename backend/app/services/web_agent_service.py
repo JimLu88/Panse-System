@@ -87,6 +87,28 @@ def get_job(db: Session, job_id: str) -> dict:
     return _get(db, f"/api/jobs/{job_id}")
 
 
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
+                filename: str, *, level: str = "SKU级", timeout: int = 30) -> dict:
+    """把 ERP 生成的 xlsx 传给 Web-Agent 千牛上传管线 (multipart)。返回 {job:<id>}。
+    phase='stage' 挂文件停在提交前; phase='commit' ★不可逆★ 真提交 (仅比对表确认后调)。"""
+    try:
+        r = requests.post(
+            f"{BASE_URL}/api/upload/{channel}", headers=_headers(db),
+            data={"phase": phase, "level": level},
+            files={"file": (filename, xlsx_bytes, _XLSX_MIME)}, timeout=timeout)
+        if r.status_code == 401:
+            return {"ok": False, "error": "token 无效或未配置"}
+        r.raise_for_status()
+        out = r.json()
+        out.setdefault("ok", True)
+        return out
+    except Exception as e:  # noqa: BLE001 - 离线是常态, 不抛
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 def alipay_accounts(db: Session) -> list:
     """Web-Agent 已配的支付宝 API 账号 (含 id/name, 不含私钥)。"""
     s = _get(db, "/api/settings")

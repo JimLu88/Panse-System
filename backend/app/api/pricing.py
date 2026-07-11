@@ -1690,6 +1690,30 @@ def activity_preflight_endpoint(
     return activity_preflight_service.activity_preflight(db, floor_days=floor_days)
 
 
+@formula_router.post("/activity-upload/{channel}/stage")
+def activity_upload_stage(
+    channel: str,
+    tier: str = Query("big"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """千牛上传·预演: 生成表→Web-Agent挂到千牛(不提交)→回比对表+校验+截图。用户 2026-07-11。"""
+    from app.services import activity_upload_service
+    return activity_upload_service.stage(db, channel, tier)
+
+
+@formula_router.post("/activity-upload/{channel}/commit")
+def activity_upload_commit(
+    channel: str,
+    tier: str = Query("big"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """★不可逆★ 千牛上传·真提交。前端必须在用户看过比对表、点确认后才调 (admin 限)。"""
+    from app.services import activity_upload_service
+    return activity_upload_service.commit(db, channel, tier)
+
+
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
 def update_formula_rule(
     rule_id: int,
