@@ -250,6 +250,18 @@ export default function ActivityAutoFillTab() {
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
               补贴金额 = 报名价A × 10%（到手 = 中促到手）。活动营销ID每期不同，上传前把此表 3 列贴进当期超级立减模板对应列。
             </Typography.Text>
+            <Divider style={{ margin: '8px 0' }} plain><Typography.Text type="secondary" style={{ fontSize: 12 }}>自动上传（挂到千牛草稿·可比对）</Typography.Text></Divider>
+            <Button type="primary" ghost icon={<CloudUploadOutlined />} block
+              loading={staging && upChannel === 'promo_signup'}
+              onClick={() => doStage('promo_signup', 'big')}>
+              大促报名 上传到千牛（先比对）</Button>
+            <Button type="primary" ghost icon={<CloudUploadOutlined />} block
+              loading={staging && upChannel === 'super_reduce'}
+              onClick={() => doStage('super_reduce', 'big')}>
+              超级立减活动 上传到千牛（先比对）</Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              自动挂进千牛活动「商品批量导入」+出比对表；最终「发布报名」目前在千牛手动点（导入已到草稿）。
+            </Typography.Text>
           </StepCard>
         </Col>
       </Row>
@@ -260,11 +272,20 @@ export default function ActivityAutoFillTab() {
         title={<Space><CloudUploadOutlined /><b>{stageRes?.channel_name} · 上传比对（确认前请核对）</b></Space>}
         width={820}
         onCancel={() => { setStageRes(null); setUpChannel(null); }}
-        footer={[
-          <Button key="cancel" onClick={() => { setStageRes(null); setUpChannel(null); }}>取消（不提交）</Button>,
-          <Button key="ok" type="primary" danger loading={committing} icon={<CloudUploadOutlined />}
-            onClick={doCommit}>✅ 确认最后一步上传（不可逆）</Button>,
-        ]}
+        footer={
+          stageRes?.channel === 'single_item_discount'
+            ? [
+                <Button key="cancel" onClick={() => { setStageRes(null); setUpChannel(null); }}>取消（不提交）</Button>,
+                <Button key="ok" type="primary" danger loading={committing} icon={<CloudUploadOutlined />}
+                  onClick={doCommit}>✅ 确认最后一步上传（不可逆）</Button>,
+              ]
+            : [
+                <Typography.Text key="note" type="secondary" style={{ marginRight: 12, fontSize: 12 }}>
+                  已挂到千牛「草稿」，去千牛商品管理核对后手动发布报名
+                </Typography.Text>,
+                <Button key="close" type="primary" onClick={() => { setStageRes(null); setUpChannel(null); }}>知道了</Button>,
+              ]
+        }
       >
         {stageRes && (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
