@@ -22,6 +22,10 @@ _FLAT_PRICE_WHITELIST = ("样块", "样品", "色卡")
 # 判定坏价所需的最少同产品 SKU 数 (1~2 个 SKU 的产品无法据"雷同"判断)
 _MIN_SKUS_FOR_FLAT_FLAG = 3
 
+# 15天最低价冲突容差(%): 计划大促到手比近期最低成交高出此比例才算冲突。
+# <此值 多是抹零/小额优惠/近期略低成交(实测非消费券), 淘宝有容差不拦 → 不报 (2026-07-11)。
+_CONFLICT_MIN_GAP_PCT = 2.0
+
 
 def _report_price(promo, params) -> float | None:
     from app.services import pricing_calc_service
@@ -126,13 +130,16 @@ def activity_preflight(db: Session, floor_days: int = 15) -> dict:
         if fl is None:
             continue
         planned = float(p.big_buyer_price)
-        if planned > fl + 1:
+        # 容差: 只报差幅 ≥ _CONFLICT_MIN_GAP_PCT 的。<1% 的多是抹零/小额优惠/近期略低成交,
+        #  淘宝15天线有容差、大概率不拦, 不占"冲突"位 (2026-07-11 用户: 噪声级不用记)。
+        gap_pct = (planned - fl) / fl * 100 if fl else 0
+        if gap_pct >= _CONFLICT_MIN_GAP_PCT:
             conflicts.append({
                 "sku_code": s.sku_code,
                 "name": s.sku or s.product_name or s.sku_code,
                 "planned_shoudao": round(planned, 2),   # 计划大促到手 = 报名价A × 0.88
                 "recent_min_paid": round(fl, 2),         # 近 floor_days 真实最低成交
-                "gap_pct": round((planned - fl) / fl * 100, 1),
+                "gap_pct": round(gap_pct, 1),
             })
     conflicts.sort(key=lambda x: -x["gap_pct"])
 
