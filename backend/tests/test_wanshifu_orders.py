@@ -54,10 +54,11 @@ def test_match_phone_and_unmatched_reasons(db_session):
     w100 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P100").one()
     assert w100.matched_order_no == "T-001"
     assert w100.match_method == "phone_full"
-    # P101 是 2025 年单 → none + 人话原因
+    # P101 是交易关闭单 → closed 不参与配对 (用户 2026-07-11 裁定, 优先级高于"2025年单"原因)
     w101 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="P101").one()
-    assert w101.match_method == "none"
-    assert "2025" in (w101.match_note or "")
+    assert w101.match_method == "closed"
+    assert w101.matched_order_no is None
+    assert "关闭" in (w101.match_note or "")
 
 
 def _wb_with_remark():

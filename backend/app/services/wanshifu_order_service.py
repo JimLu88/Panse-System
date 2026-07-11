@@ -31,6 +31,7 @@ METHOD_CN = {
     "phone_full": "手机号全等", "phone_base": "手机号主段", "track": "物流单号",
     "name_city": "姓名+城市", "name_unique": "姓名唯一",
     "multi": "多候选待人工", "none": "未匹配", "manual": "人工指定",
+    "closed": "交易关闭不配对",
 }
 
 # 万师傅「常用备注」列常直接填淘宝订单号 (用户的"合并单号匹配") — 提取这串数字
@@ -201,6 +202,10 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
                 obj.matched_order_no = verified_no
                 obj.match_method = "manual"
                 obj.match_note = v_note
+            elif _is_closed(vals.get("status")):
+                # 交易关闭不配对 (用户 2026-07-11), 备注单号仅留痕
+                obj.match_method = "closed"
+                obj.match_note = "交易关闭, 不参与配对" + (f" (备注淘宝单号 {tb_no})" if tb_no else "")
             elif tb_match:
                 obj.matched_order_no = tb_match
                 obj.match_method = "remark"
@@ -225,8 +230,8 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
                 old.match_method = "manual"
                 old.match_note = v_note
                 changed = True
-            # 否则备注单号权威配对: 覆盖非人工的旧配对结果 (以用户提供的备注为准)
-            elif (not verified_no) and tb_match and old.match_method != "manual" and old.matched_order_no != tb_match:
+            # 否则备注单号权威配对: 覆盖非人工的旧配对结果 (以用户提供的备注为准); 交易关闭不配对
+            elif (not verified_no) and tb_match and not _is_closed(old.status) and old.match_method != "manual" and old.matched_order_no != tb_match:
                 old.matched_order_no = tb_match
                 old.match_method = "remark"
                 old.match_note = None
@@ -244,6 +249,12 @@ def _base_phone(p: Optional[str]) -> str:
         return ""
     m = re.match(r"(1\d{10})", re.sub(r"\D", "", p.split("-")[0]))
     return m.group(1) if m else ""
+
+
+def _is_closed(status: Optional[str]) -> bool:
+    """交易关闭判定 (用户 2026-07-11: 关闭单需排除)。实库状态串带后缀"交易关闭（自动关单）",
+    用包含判避免等值漏网; 现有其余状态(交易成功/服务中…/待确认验收)均不含"关闭"。"""
+    return "关闭" in (status or "")
 
 
 def match_orders(db: Session, *, only_unmatched: bool = True) -> dict:
@@ -265,14 +276,30 @@ def match_orders(db: Session, *, only_unmatched: bool = True) -> dict:
         if o.customer_name:
             by_name.setdefault(o.customer_name.strip(), []).append(o)
 
+    # 交易关闭不占淘宝订单 (用户 2026-07-11): 服务未发生(自动关单/重发单)。自愈: 先配上、
+    # 重导后状态推进成关闭的旧配对, 每轮解绑(人工指定除外 — 人工至上)。
+    counts = {"matched": 0, "multi": 0, "none": 0, "closed": 0, "closed_cleared": 0}
+    for w in db.execute(select(WanshifuOrder).where(
+            WanshifuOrder.matched_order_no.isnot(None))).scalars().all():
+        if _is_closed(w.status) and w.match_method != "manual":
+            w.matched_order_no = None
+            w.match_method = "closed"
+            w.match_note = "交易关闭, 不参与配对"
+            counts["closed_cleared"] += 1
+
     stmt = select(WanshifuOrder)
     if only_unmatched:
         stmt = stmt.where(WanshifuOrder.matched_order_no.is_(None),
                           # 人工指定过的不重算
                           (WanshifuOrder.match_method.is_(None))
                           | (WanshifuOrder.match_method != "manual"))
-    counts = {"matched": 0, "multi": 0, "none": 0}
     for w in db.execute(stmt).scalars().all():
+        if _is_closed(w.status):
+            if w.match_method != "closed":
+                w.match_method = "closed"
+                w.match_note = "交易关闭, 不参与配对"
+            counts["closed"] += 1
+            continue
         method, nos = None, set()
         if w.customer_phone and w.customer_phone in by_phone_full:
             method, nos = "phone_full", by_phone_full[w.customer_phone]
