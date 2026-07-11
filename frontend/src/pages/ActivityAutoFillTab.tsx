@@ -65,14 +65,15 @@ export default function ActivityAutoFillTab() {
     } finally { setPreLoading(false); }
   };
 
-  const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0 && pre.unmapped_total === 0;
+  // 缺映射(无淘宝SKUID)= 未上架, 按设计本就不推送, 不算问题 → 不纳入"全绿"判定 (用户 2026-07-11)
+  const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0;
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert
         type="info" showIcon
         message="活动自动填写 = 三步生成淘宝活动上传表；最终上传淘宝的动作由你们手工做（本页只生成 + 预检，不直接推送）。"
-        description="点下方「虚拟推送(预检)」先体检：坏价产品会被自动排除、缺映射的 SKU 报名会缺席、15 天最低价冲突会被淘宝判涨价。全绿了再逐步生成。"
+        description="生成表只推送有淘宝 SKUID 的 SKU（没上架的自动跳过）。点下方「虚拟推送(预检)」先体检：坏价产品自动排除、15 天最低价冲突会被淘宝判涨价。全绿了再逐步生成。"
       />
 
       {/* ── 虚拟推送(预检) ── */}
@@ -86,8 +87,8 @@ export default function ActivityAutoFillTab() {
             <Row gutter={16}>
               <Col span={6}><Statistic title="坏价产品(排除)" value={pre.bad_product_count}
                 valueStyle={{ color: pre.bad_product_count ? '#cf1322' : '#3f8600' }} suffix={`/${pre.bad_sku_count} SKU`} /></Col>
-              <Col span={6}><Statistic title="缺淘宝映射" value={pre.unmapped_total}
-                valueStyle={{ color: pre.unmapped_total ? '#d46b08' : '#3f8600' }} suffix="SKU" /></Col>
+              <Col span={6}><Statistic title="未上架(不推送)" value={pre.unmapped_total}
+                valueStyle={{ color: '#8c8c8c' }} suffix="SKU" /></Col>
               <Col span={6}><Statistic title="15天最低价冲突" value={pre.conflict_count}
                 valueStyle={{ color: pre.conflict_count ? '#d46b08' : '#3f8600' }} suffix="SKU" /></Col>
               <Col span={6}><Statistic title="报名表可生成" value={pre.signup_big.rows}
@@ -139,11 +140,14 @@ export default function ActivityAutoFillTab() {
             {pre.unmapped_total > 0 && (
               <div>
                 <Divider orientation="left" style={{ margin: '4px 0' }}>
-                  <Typography.Text strong style={{ color: '#d46b08' }}>缺淘宝映射（有日常价但没 SKUID → 报名表里不会出现）</Typography.Text>
+                  <Typography.Text strong type="secondary">未上架 · 不推送（无淘宝 SKUID = 淘宝未上架，按设计不进任何表，正确行为）</Typography.Text>
                 </Divider>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '0 0 8px' }}>
+                  报名/立减表只推送有淘宝 SKUID 的 SKU；这些没上架的自动跳过，不用管。
+                </Typography.Paragraph>
                 <Space wrap size={[8, 8]}>
                   {Object.entries(pre.unmapped_by_product).map(([pc, n]) => (
-                    <Tag key={pc} color="orange">{pc}: {n}</Tag>
+                    <Tag key={pc}>{pc}: {n}</Tag>
                   ))}
                 </Space>
               </div>
