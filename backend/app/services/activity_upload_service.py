@@ -94,7 +94,7 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
     j = web_agent_service.upload_file(db, channel, "stage", xlsx, f"{channel}.xlsx")
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应, 无法上传")}
-    final = web_agent_service.wait_job(db, j["job"], timeout_s=180)
+    final = web_agent_service.wait_job(db, j["job"], timeout_s=200)
     res = final.get("result") or {}
     if res.get("need_scan"):
         return {"ok": False, "need_scan": True, "message": "淘宝登录态过期, 请先扫码后再上传"}
@@ -117,7 +117,7 @@ def commit(db: Session, channel: str, tier: str = "big") -> dict:
     j = web_agent_service.upload_file(db, channel, "commit", xlsx, f"{channel}.xlsx")
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
-    final = web_agent_service.wait_job(db, j["job"], timeout_s=180)
+    final = web_agent_service.wait_job(db, j["job"], timeout_s=200)
     res = final.get("result") or {}
     return {
         "ok": bool(res.get("submitted")), "channel": channel,

@@ -780,7 +780,8 @@ export type UploadStageResult = {
     value_label: string; system_value: number | null; target_shoudao: number | null }[];
 };
 export const activityUploadStage = (channel: string, tier = 'big') =>
-  api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null, { params: { tier } })
+  api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null,
+    { params: { tier }, timeout: 220000 })   // 挂千牛+浏览器自动化 ~40s, 给足 200s
     .then((r) => r.data);
 // 超大促 SKU 轮换: 预览(只算) + 同步(千牛轮换完后写ERP映射)
 export type SkuRotationPlan = {
@@ -798,7 +799,8 @@ export const applySkuRotation = (productCode: string) =>
 
 export const activityUploadCommit = (channel: string, tier = 'big') =>
   api.post<{ ok: boolean; submitted?: boolean; error?: string; channel_name: string;
-    screenshot_base64?: string | null }>(`/api/pricing/activity-upload/${channel}/commit`, null, { params: { tier } })
+    screenshot_base64?: string | null }>(`/api/pricing/activity-upload/${channel}/commit`, null,
+    { params: { tier }, timeout: 220000 })
     .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
