@@ -51,6 +51,14 @@ export const fetchOrderSheetPushStatus = () =>
 export const pushOrderSheets = (limit = 20) =>
   api.post<OrderSheetPushResult>('/api/imports/order-sheets/push', { limit }).then((r) => r.data);
 
+// 工厂下单图推送设置: 补差/加价单不推的金额门槛 + 补差关键词
+export interface PushConfig { min_amount: number; topup_keywords: string[]; }
+export const fetchPushConfig = () =>
+  api.get<PushConfig>('/api/imports/order-sheets/push-config').then((r) => r.data);
+export const savePushConfig = (minAmount: number) =>
+  api.post<{ ok: boolean; min_amount: number }>(
+    '/api/imports/order-sheets/push-config', { min_amount: minAmount }).then((r) => r.data);
+
 // 通过带鉴权的 axios 实例取 blob 再触发下载 (直链会丢 Authorization 头 → 401)
 export async function downloadImportFile(id: number, filename: string) {
   const resp = await api.get(`/api/imports/files/${id}/download`, { responseType: 'blob' });

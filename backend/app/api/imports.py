@@ -150,3 +150,32 @@ def order_sheet_push(
     if res.get("reason") == "no_chat_id":
         raise HTTPException(400, "飞书推送群未配置: 请到 管理 → 飞书 设置 feishu_push_chat_id (推送群会话ID)")
     return res
+
+
+class PushConfigIn(BaseModel):
+    min_amount: float = 400.0   # 实付低于此的单判为补差/加价, 不推工厂 (0=关闭金额规则)
+
+
+@router.get("/order-sheets/push-config")
+def get_order_sheet_push_config(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator", "viewer")),
+):
+    """工厂下单图推送设置: 补差/加价单不推的金额门槛 + 补差关键词(只读展示)。用户 2026-07-12。"""
+    return {
+        "min_amount": order_sheet_archive_service._push_min_amount(db),
+        "topup_keywords": list(order_sheet_archive_service._PARTS_TOPUP_KEYWORDS),
+    }
+
+
+@router.post("/order-sheets/push-config")
+def set_order_sheet_push_config(
+    payload: PushConfigIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """设置补差/加价单不推的实付金额门槛 (工厂制作单页面配置, 0=关闭金额规则)。"""
+    amt = max(0.0, float(payload.min_amount or 0))
+    settings_service.set_value(db, "factory_push_min_amount", str(amt),
+                               description="工厂下单图: 实付低于此值判为补差/加价单不推(0=关闭)")
+    return {"ok": True, "min_amount": amt}

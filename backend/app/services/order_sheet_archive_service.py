@@ -544,6 +544,42 @@ def _is_sample_order(o) -> bool:
     return any(k in text for k in _SAMPLE_KEYWORDS)
 
 
+# 定制补差/加价/尾款单: 不推工厂下单图 (用户 2026-07-12: 补差单套了柜子产品名, 推给工厂被当成整柜重复做,
+# 例: 严小蓝 ¥315「其他定制」补差被推成畔色292单)。两条口径, 命中任一即判补差 → 不推、不占「畔色X单」编号:
+#   ① 订单备注含补差类关键词; ② 订单实付金额 < 阈值 (默认¥400, 工厂制作单页面可配 factory_push_min_amount)。
+_PARTS_TOPUP_KEYWORDS = (
+    "补差", "补价", "补款", "补拍", "补邮费", "补运费", "邮费差", "运费差",
+    "补尾款", "尾款差", "补货款", "定制补", "加价", "改价补", "补配件", "补链接",
+    "拍差价", "差价链接", "补拍链接", "定制加",
+)
+_DEFAULT_PUSH_MIN_AMOUNT = 400.0
+
+
+def _push_min_amount(db: Session) -> float:
+    """工厂下单图推送的最低金额门槛 (低于此值判定为补差/加价单, 不推)。0 = 关闭金额规则。"""
+    from app.services import settings_service
+    raw = settings_service.get(db, "factory_push_min_amount", env_fallback=False)
+    try:
+        v = float(raw)  # type: ignore[arg-type]
+        return v if v >= 0 else _DEFAULT_PUSH_MIN_AMOUNT
+    except (TypeError, ValueError):
+        return _DEFAULT_PUSH_MIN_AMOUNT
+
+
+def _is_parts_topup(db: Session, o) -> "tuple[bool, str]":
+    """是否定制补差/加价单(不推工厂)。返回 (是否, 原因)。命中备注关键词 或 金额<阈值。"""
+    text = " ".join(str(getattr(o, f, "") or "") for f in
+                    ("remark", "seller_memo", "production_note", "buyer_message"))
+    for k in _PARTS_TOPUP_KEYWORDS:
+        if k in text:
+            return True, f"备注含「{k}」"
+    thr = _push_min_amount(db)
+    amt = float(getattr(o, "paid_amount", 0) or 0) or float(getattr(o, "buyer_payable_amount", 0) or 0)
+    if thr > 0 and 0 < amt < thr:
+        return True, f"金额¥{amt:.0f} < 门槛¥{thr:.0f}"
+    return False, ""
+
+
 def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool = False,
                         quiet: bool = False, only_order_nos: "set[str] | None" = None) -> dict:
     """把【还没推过图】的下单图渲染成图片推飞书工厂群, 推成功就在该归档记录标记 pushed=True。
@@ -587,6 +623,13 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         if _is_sample_order(order):
             # 样块/样品单永不推工厂下单图 (用户 2026-07-04); 标记已处理, 清出待推队列 + 不占工厂编号。
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "skipped_sample": True}
+            db.commit()
+            continue
+        _topup, _topup_reason = _is_parts_topup(db, order)
+        if _topup:
+            # 定制补差/加价单永不推工厂 (用户 2026-07-12): 标记已处理清出队列 + 不占工厂编号, 记原因备查。
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True,
+                               "skipped_topup": True, "topup_reason": _topup_reason}
             db.commit()
             continue
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)。
@@ -766,6 +809,9 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
         return {"ok": False, "error": "远期挂起单不推工厂 —— 等客户通知「开始制作」后再推"}
     if _is_sample_order(o):
         return {"ok": False, "error": "样品/样块单不推工厂"}
+    _topup, _reason = _is_parts_topup(db, o)
+    if _topup:
+        return {"ok": False, "error": f"定制补差/加价单不推工厂（{_reason}）—— 如确需推送, 去工厂制作单页调低推送金额门槛"}
     # 正式单没工厂号 → 顺排一个(否则下单图是"未能匹配工厂订单号")
     if getattr(o, "factory_no", None) is None:
         o.factory_no = _next_factory_no(db)

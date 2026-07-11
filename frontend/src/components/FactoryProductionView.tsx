@@ -5,11 +5,11 @@
  * 卡片可直接加备注(红色放大醒目) + 手动改发货截止(覆盖默认30天)。
  * 排序: 剩余发货时间(默认) / 下单日期 / 类目。
  */
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Col, DatePicker, Empty, Input, Modal, Popconfirm, Row, Segmented, Space, Tag, Typography, message,
+  Alert, Button, Card, Col, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm, Popover, Row, Segmented, Space, Tag, Typography, message,
 } from 'antd';
-import { DownloadOutlined, PrinterOutlined, ProfileOutlined } from '@ant-design/icons';
+import { DownloadOutlined, PrinterOutlined, ProfileOutlined, SettingOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 
@@ -25,6 +25,7 @@ const PRINT_CSS = `
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFactoryProduction, updateOrderProduction, type FactoryCard } from '../api/client';
 import { listAccessories, markAllAccessoriesArrived, repushFactory, type AccessoryItem } from '../api/orders';
+import { fetchPushConfig, savePushConfig } from '../api/imports';
 
 // 颜色随剩余天数: 初始绿 → 蓝 → 橙 → 越近越红 → 超期深红
 function dayStyle(d: number | null): { color: string; weight: number } {
@@ -86,6 +87,19 @@ export default function FactoryProductionView() {
       qc.invalidateQueries({ queryKey: ['factory-production'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '重推失败'),
+  });
+
+  // 补差不推设置: 实付低于门槛(默认¥400)的单判为补差/加价, 不推工厂 (用户 2026-07-12)
+  const { data: pushCfg } = useQuery({ queryKey: ['push-config'], queryFn: fetchPushConfig });
+  const [minAmt, setMinAmt] = useState<number>(400);
+  useEffect(() => { if (pushCfg) setMinAmt(pushCfg.min_amount); }, [pushCfg]);
+  const cfgMut = useMutation({
+    mutationFn: (v: number) => savePushConfig(v),
+    onSuccess: (r) => {
+      message.success(r.min_amount > 0 ? `已保存: 实付 < ¥${r.min_amount} 的单不推工厂` : '已关闭金额规则');
+      qc.invalidateQueries({ queryKey: ['push-config'] });
+    },
+    onError: () => message.error('保存失败'),
   });
 
   // 配件配齐弹窗 (#12)
@@ -236,6 +250,37 @@ export default function FactoryProductionView() {
           打印 / 存 PDF (一排三个)
         </Button>
         <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出 Excel</Button>
+        <Popover
+          trigger="click"
+          title="工厂推送设置 · 补差/加价单不推"
+          content={
+            <div style={{ maxWidth: 330 }}>
+              <Typography.Paragraph style={{ fontSize: 13, marginBottom: 8 }}>
+                补差/加价单不推工厂（自动推、批量推、单单重推都生效）。命中任一条即不推、也不占「畔色X单」号：
+              </Typography.Paragraph>
+              <Space align="center" style={{ marginBottom: 4 }} wrap>
+                <span>① 实付金额 &lt;</span>
+                <InputNumber min={0} max={100000} value={minAmt}
+                  onChange={(v) => setMinAmt(Number(v) || 0)} addonAfter="元" style={{ width: 130 }} />
+                <Button type="primary" size="small" loading={cfgMut.isPending}
+                  onClick={() => cfgMut.mutate(minAmt)}>保存</Button>
+              </Space>
+              <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                （设 0 = 关闭金额规则；例：严小蓝 ¥315 补差就是被这条拦下的）
+              </Typography.Text></div>
+              <div style={{ marginTop: 10 }}>
+                <Typography.Text style={{ fontSize: 13 }}>② 备注含以下关键词也不推：</Typography.Text>
+                <div style={{ marginTop: 4 }}>
+                  {(pushCfg?.topup_keywords || []).map((k) => (
+                    <Tag key={k} style={{ marginBottom: 4 }}>{k}</Tag>
+                  ))}
+                </div>
+              </div>
+            </div>
+          }
+        >
+          <Button icon={<SettingOutlined />}>推送设置</Button>
+        </Popover>
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
           打开干净的打印页(无导航、卡片不跨页截断)、一排三张; 对话框里选「另存为 PDF」发同事。打印当前筛选下的 {visible.length} 单。
         </Typography.Text>

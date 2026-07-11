@@ -37,7 +37,7 @@ def test_repush_valid_assigns_number(db_session, monkeypatch):
     # 避开 wkhtmltoimage 渲染 + 飞书推送, 只验守卫通过 + 没号顺排
     monkeypatch.setattr(osa, "generate_for_order", lambda db, o: {"order_no": o.order_no, "duplicate": False})
     monkeypatch.setattr(osa, "push_pending_images", lambda db, **k: {"pushed": 1, "failed": 0})
-    o = _o("RP3", order_date=date(2026, 7, 8))
+    o = _o("RP3", order_date=date(2026, 7, 8), paid_amount=Decimal("1000"))  # 真实整柜价, 避开补差<400规则
     db_session.add(o)
     db_session.flush()
     r = osa.repush_to_factory(db_session, "RP3")
