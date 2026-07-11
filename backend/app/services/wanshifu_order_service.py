@@ -198,14 +198,16 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
         if old is None:
             obj = WanshifuOrder(wsf_order_no=rec["wsf_order_no"],
                                 import_job_id=import_job_id, **vals)
-            if verified_no:
+            if _is_closed(vals.get("status")):
+                # 交易关闭不配对 (用户 2026-07-11, 含人工校对号也不配 — 关闭优先级最高), 单号仅留痕
+                obj.match_method = "closed"
+                obj.match_note = ("交易关闭, 不参与配对"
+                                  + (f" (人工校对号 {verified_no})" if verified_no else "")
+                                  + (f" (备注淘宝单号 {tb_no})" if tb_no else ""))
+            elif verified_no:
                 obj.matched_order_no = verified_no
                 obj.match_method = "manual"
                 obj.match_note = v_note
-            elif _is_closed(vals.get("status")):
-                # 交易关闭不配对 (用户 2026-07-11), 备注单号仅留痕
-                obj.match_method = "closed"
-                obj.match_note = "交易关闭, 不参与配对" + (f" (备注淘宝单号 {tb_no})" if tb_no else "")
             elif tb_match:
                 obj.matched_order_no = tb_match
                 obj.match_method = "remark"
@@ -224,8 +226,11 @@ def import_workbook(db: Session, wb, *, import_job_id: Optional[int] = None) -> 
                 if v is not None and getattr(old, k) != v:
                     setattr(old, k, v)
                     changed = True
-            # 人工校对号最高权威: 以最新校对为准, 覆盖旧的一切匹配 (含旧 manual)
-            if verified_no and old.matched_order_no != verified_no:
+            # 人工校对号最高权威: 以最新校对为准, 覆盖旧的一切匹配 (含旧 manual)。
+            # 例外: 交易关闭单不配对(用户 2026-07-11, 关闭优先级高于人工校对) — 防重导回灌
+            if verified_no and _is_closed(old.status):
+                pass   # 留给 match_orders 自愈标 closed
+            elif verified_no and old.matched_order_no != verified_no:
                 old.matched_order_no = verified_no
                 old.match_method = "manual"
                 old.match_note = v_note
@@ -277,14 +282,16 @@ def match_orders(db: Session, *, only_unmatched: bool = True) -> dict:
             by_name.setdefault(o.customer_name.strip(), []).append(o)
 
     # 交易关闭不占淘宝订单 (用户 2026-07-11): 服务未发生(自动关单/重发单)。自愈: 先配上、
-    # 重导后状态推进成关闭的旧配对, 每轮解绑(人工指定除外 — 人工至上)。
+    # 重导后状态推进成关闭的旧配对, 每轮解绑 —— 含人工指定/人工校对的(用户同日裁定一并解绑,
+    # 关闭优先级最高; 原单号留在批注可追溯)。
     counts = {"matched": 0, "multi": 0, "none": 0, "closed": 0, "closed_cleared": 0}
     for w in db.execute(select(WanshifuOrder).where(
             WanshifuOrder.matched_order_no.isnot(None))).scalars().all():
-        if _is_closed(w.status) and w.match_method != "manual":
+        if _is_closed(w.status):
+            prev = w.matched_order_no
             w.matched_order_no = None
             w.match_method = "closed"
-            w.match_note = "交易关闭, 不参与配对"
+            w.match_note = f"交易关闭, 不参与配对 (原配对 {prev})"
             counts["closed_cleared"] += 1
 
     stmt = select(WanshifuOrder)

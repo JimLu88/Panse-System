@@ -30,7 +30,8 @@ def test_closed_row_not_matched(db_session):
 
 
 def test_selfheal_unbinds_previously_matched_closed(db_session):
-    """先配上、后来关闭的 → 每轮自愈解绑; 人工指定的不动。"""
+    """先配上、后来关闭的 → 每轮自愈解绑; 人工指定的也解绑(用户 2026-07-11:
+    29笔人工校对配上的关闭单一并解绑, 关闭优先级最高), 原单号留批注可追溯。"""
     _tb(db_session, "T2")
     db_session.add(WanshifuOrder(wsf_order_no="W2", status="交易关闭（自动关单）",
                                  matched_order_no="T2", match_method="phone_full"))
@@ -41,8 +42,9 @@ def test_selfheal_unbinds_previously_matched_closed(db_session):
     w2 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="W2").one()
     w3 = db_session.query(WanshifuOrder).filter_by(wsf_order_no="W3").one()
     assert w2.matched_order_no is None and w2.match_method == "closed"
-    assert w3.matched_order_no == "T2" and w3.match_method == "manual"   # 人工至上
-    assert c["closed_cleared"] == 1
+    assert w3.matched_order_no is None and w3.match_method == "closed"
+    assert "T2" in (w3.match_note or "")      # 原配对留痕
+    assert c["closed_cleared"] == 2
 
 
 def test_success_row_still_matches(db_session):
