@@ -182,14 +182,57 @@ _COMMON_LABELS: dict[str, str] = {
 }
 
 
+# 实体专属补充中文名 (用户 2026-07-11: 订单总表表头全中文, 包括系统计算/内部列)。
+# excel_schemas(导入字段)仍优先; 此处只补 schema 没有的列(如 est_/actual_ 费用分量、
+# 配件覆盖、签收确认等系统列), _build_label_map 里 setdefault 不覆盖 schema 定义。
+_ENTITY_EXTRA_LABELS: dict[str, dict[str, str]] = {
+    "orders": {
+        "platform": "平台", "shop": "店铺", "order_no": "订单号",
+        "is_refill": "是否补单", "factory_no": "工厂制单号", "remote_seq": "远期单序号",
+        "order_date": "下单日期", "ship_date": "发货日期",
+        "customer_name": "客户姓名", "customer_phone": "客户电话", "customer_address": "客户地址",
+        "product_code": "产品编码", "product_name": "产品名称", "sku": "SKU描述", "sku_code": "SKU编码",
+        "is_custom": "是否定制", "qty": "数量", "status": "订单状态",
+        "carrier": "承运商", "tracking_no": "物流单号", "install_ticket_no": "安装工单号",
+        "theoretical_cost": "理论成本", "actual_cost": "工厂账单(木作实报)",
+        "wood_cost_est": "木作估算(定价表)", "custom_surcharge": "定制加价",
+        "actual_freight": "实际运费", "upstairs_fee": "上楼费", "install_fee": "安装费",
+        "est_packing": "预估打包费", "est_logistics": "预估物流费",
+        "actual_packing": "实际打包费", "actual_logistics": "实际物流费",
+        "est_install": "预估安装费", "actual_install": "实际安装费",
+        "actual_parts": "实际配件成本", "est_parts": "预估配件成本(定价表)",
+        "parts_override": "配件覆盖(逐单指定)",
+        "compensation_fee": "订单赔付费", "paid_amount": "实付金额", "discount": "优惠金额",
+        "platform_fee": "平台服务费",
+        "buyer_payable_amount": "买家应付金额", "buyer_freight": "买家应付邮费",
+        "shop_received_amount": "店铺实收金额", "tax": "税费", "other_fee": "其它费用",
+        "total_cost": "总成本",
+        "good_review_refund": "好评/差价返现", "second_visit_fee": "二次上门维修费",
+        "return_pack_freight": "返厂打包运费", "factory_compensation": "工厂补偿",
+        "logistics_compensation": "物流补偿", "compensation_total": "补偿总金额",
+        "refund_status": "退款状态", "refund_amount": "退款金额", "refund_date": "退款日期",
+        "alipay_flow_no": "支付宝流水号", "remark": "ERP备注",
+        "buyer_message": "买家留言", "seller_memo": "商家备注",
+        "warehouse": "发货仓库", "order_profit": "订单利润(导入快照)", "lock_status": "锁定状态",
+        "is_historical": "是否历史单", "activate_at": "远期激活时间", "last_outbound_at": "最近出货时间",
+        "tracking_confirmed": "物流签收确认", "manual_confirmed": "人工签收确认",
+        "signoff_questioned": "签收存疑", "kanban_confirmed": "看板人工确认",
+        "ship_deadline": "发货截止", "production_note": "制作单备注", "is_remote_ship": "是否远期单",
+        "import_job_id": "导入批次", "id": "ID", "created_at": "创建时间", "updated_at": "更新时间",
+    },
+}
+
+
 def _build_label_map(entity: str) -> dict[str, str]:
-    """字段英文名 → 中文表头。优先复用 excel_schemas 定义, 再用公共兜底。"""
+    """字段英文名 → 中文表头。优先复用 excel_schemas 定义, 再实体专属补充, 最后公共兜底。"""
     labels: dict[str, str] = {}
     schema = ENTITY_SCHEMAS.get(entity)
     if schema:
         for fn, fdef in schema["fields"].items():
             aliases = fdef.get("aliases") or []
             labels[fn] = aliases[0] if aliases else fdef.get("desc", fn) or fn
+    for k, v in _ENTITY_EXTRA_LABELS.get(entity, {}).items():
+        labels.setdefault(k, v)
     for k, v in _COMMON_LABELS.items():
         labels.setdefault(k, v)
     return labels
