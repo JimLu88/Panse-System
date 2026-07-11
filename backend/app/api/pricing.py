@@ -1659,6 +1659,18 @@ def promo_signup_upload_xlsx(
     )
 
 
+@formula_router.get("/activity-preflight")
+def activity_preflight_endpoint(
+    floor_days: int = Query(15, ge=1, le=90, description="15天最低价窗口天数"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """活动报名『虚拟推送(预检)』: 不产文件不改数据, 返回生成活动表前的问题清单
+    (坏价产品 / 缺淘宝映射 / 15天最低价冲突 / 各步就绪计数)。用户 2026-07-11。"""
+    from app.services import activity_preflight_service
+    return activity_preflight_service.activity_preflight(db, floor_days=floor_days)
+
+
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
 def update_formula_rule(
     rule_id: int,

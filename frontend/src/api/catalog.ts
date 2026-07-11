@@ -748,6 +748,23 @@ export const downloadSingleItemDiscount = (tier: 'mid' | 'big' | 'big618') =>
 export const downloadPromoSignup = (tier: 'mid' | 'big' | 'big618') =>
   api.get('/api/pricing/promo-signup.xlsx', { params: { tier }, responseType: 'blob' })
     .then((r) => r.data);
+
+// 活动报名「虚拟推送(预检)」: 生成活动表前的问题清单, 不产文件不改数据
+export type ActivityPreflight = {
+  floor_days: number;
+  bad_products: { product_code: string; name: string; sku_count: number; report_price: number | null; reason: string }[];
+  bad_product_count: number;
+  bad_sku_count: number;
+  unmapped_total: number;
+  unmapped_by_product: Record<string, number>;
+  conflict_count: number;
+  conflicts: { sku_code: string; name: string; planned_shoudao: number; recent_min_paid: number; gap_pct: number }[];
+  signup_big: { rows: number; skipped_bad_price: number; skipped_no_price: number };
+  signup_618: { rows: number; skipped_bad_price: number; skipped_no_price: number };
+};
+export const fetchActivityPreflight = (floorDays = 15) =>
+  api.get<ActivityPreflight>('/api/pricing/activity-preflight', { params: { floor_days: floorDays } })
+    .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api
     .get(`/api/pricing-skus/templates/${encodeURIComponent(key)}/download`, {

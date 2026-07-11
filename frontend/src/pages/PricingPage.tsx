@@ -29,6 +29,7 @@ import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ProductThumb from '../components/ProductThumb';
 import PricingEditorModal from '../components/PricingEditorModal';
 import PricingDownloadsTab from './PricingDownloadsTab';
+import ActivityAutoFillTab from './ActivityAutoFillTab';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   PricingSku,
@@ -553,7 +554,7 @@ function ProductPricingCard({ group, onEdit }: { group: ProductGroup; onEdit: (s
 export default function PricingPage() {
   const qc = useQueryClient();
   const [q, setQ] = useState('');
-  const [downloadTab, setDownloadTab] = useState<'sheet' | 'downloads'>('sheet');
+  const [downloadTab, setDownloadTab] = useState<'sheet' | 'downloads' | 'activity'>('sheet');
   const [sizeCategory, setSizeCategory] = useState<string | undefined>(undefined);
   const [category, setCategory] = useState<string | undefined>(undefined);
   const [page, setPage] = useState(1);
@@ -957,10 +958,12 @@ export default function PricingPage() {
       </Modal>
       <Tabs
         activeKey={downloadTab}
-        onChange={(k) => setDownloadTab(k as 'sheet' | 'downloads')}
-        items={[{ key: 'sheet', label: '定价总表' }, { key: 'downloads', label: '📥 表格下载' }]}
+        onChange={(k) => setDownloadTab(k as 'sheet' | 'downloads' | 'activity')}
+        items={[{ key: 'sheet', label: '定价总表' }, { key: 'downloads', label: '📥 表格下载' },
+          { key: 'activity', label: '🚀 活动自动填写' }]}
       />
       {downloadTab === 'downloads' && <PricingDownloadsTab />}
+      {downloadTab === 'activity' && <ActivityAutoFillTab />}
       {downloadTab === 'sheet' && (
       <>
       <Space style={{ justifyContent: 'space-between', width: '100%' }}>

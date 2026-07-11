@@ -1124,6 +1124,9 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
     skus = db.execute(
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    # 排除坏价产品(各尺寸报名价雷同=未真实定价), 避免废价上淘宝; 改成真实价后自动纳入 (2026-07-11)
+    from app.services.activity_preflight_service import bad_price_product_codes
+    bad_pc = bad_price_product_codes(db)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1136,7 +1139,7 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
         c.fill = head_fill; c.font = head_font; c.alignment = wrap
     ws.row_dimensions[1].height = 78
 
-    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0}
+    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0, "skipped_bad_price": 0}
     r = 2
     for s in skus:
         p = promo_by_sku.get(s.sku_code)
@@ -1144,6 +1147,9 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
             continue
         if not p.taobao_sku_id:                       # SKU 级别必须有 SKU_ID
             stats["skipped_no_skuid"] += 1
+            continue
+        if (s.product_code or "") in bad_pc:          # 坏价产品排除(未真实定价)
+            stats["skipped_bad_price"] += 1
             continue
         if getattr(s, "is_custom_placeholder", False):
             # 定制占位符: 立减金额 = 现价 × 10% (定制9折: 到手=现价×0.9, 立减=现价−到手=现价×0.1)
@@ -1214,7 +1220,10 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     skus = db.execute(
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0}
+    # 排除坏价产品(各尺寸报名价雷同=未真实定价), 避免废价上淘宝; 改成真实价后自动纳入 (2026-07-11)
+    from app.services.activity_preflight_service import bad_price_product_codes
+    bad_pc = bad_price_product_codes(db)
+    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0}
     r = 4
     for s in skus:
         p = promo_by_sku.get(s.sku_code)
@@ -1222,6 +1231,9 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
             continue
         if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
             stats["skipped_no_skuid"] += 1
+            continue
+        if (s.product_code or "") in bad_pc:               # 坏价产品排除(未真实定价)
+            stats["skipped_bad_price"] += 1
             continue
         if getattr(s, "is_custom_placeholder", False):
             # 定制占位符: 报名活动价 = 现价(daily_price) × 0.9 (定制9折, 不走标准报名价模型)
