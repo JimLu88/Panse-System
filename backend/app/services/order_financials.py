@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import date
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -38,6 +38,12 @@ DEFAULTS = {
     # 不再兜底实付×85%)+方案4(非木作改用定价表配件 est_parts+物流+安装, 不再木作÷占比放大), 且**仅对
     # est_parts>0(定价表配件可信)的有账单定制单生效**; est_parts=0/空(配件不可信)仍走旧口径占比放大+兜底(分桶安全闸)。
     "fin_custom_cost_v2": "0",
+    # 样块固定值口径 (用户拍板 2026-07-11): 样块成本读时现算, 完全不读账单/估算 → 数据污染免疫
+    "fin_sample_wood_unit": "6",      # 样块木作 元/块
+    "fin_sample_packing": "2",        # 样块打包 元/单
+    "fin_sample_freight": "5",        # 样块快递 元/单
+    "fin_sample_paid_divisor": "21",  # 块数 = round(实付÷此值); 实测 单块16.2-25 / 双块37-58.6
+    "fin_sample_max_paid": "200",     # 护栏: 实付>此值不按样块计价 (防未来样块+家具混合单)
 }
 COEF_LABELS = {
     "fin_platform_handling_rate": "平台手续费率",
@@ -50,6 +56,11 @@ COEF_LABELS = {
     "fin_refill_commission_rate": "刷单佣金率(占刷单流水)",
     "fin_wood_cost_ratio": "木作占比(定制单非木作推算; 空=自动取定价表中位)",
     "fin_custom_cost_v2": "定制成本v2(方案A去兜底+方案4定价表配件; 默认关; 仅对配件可信的有账单定制单生效)",
+    "fin_sample_wood_unit": "样块木作(元/块)",
+    "fin_sample_packing": "样块打包(元/单)",
+    "fin_sample_freight": "样块快递(元/单)",
+    "fin_sample_paid_divisor": "样块块数推算除数(块数=round(实付÷此值))",
+    "fin_sample_max_paid": "样块计价实付上限(超过不按样块算, 防混合单)",
 }
 
 # 售后费用字段 (订单总表内冗余列; 缺则用均值)
@@ -133,6 +144,13 @@ def load_coefficients(db: Session) -> dict:
     # 定制成本v2 灰度开关刷新 (默认关; 任何非真值字符串都视为关)
     out["custom_cost_v2"] = str(raw.get("fin_custom_cost_v2") or "0").strip().lower() in ("1", "true", "on", "yes")
     _cost_v2_cache["on"] = out["custom_cost_v2"]
+    # 样块固定值常数刷新 (模块缓存, 供 physical_cost_breakdown/cost_breakdown 无 db 调用点用);
+    # 只接受正数, 空/垃圾保持内置默认 6/2/5/21/200
+    for _ck, _sk in _SAMPLE_CFG_KEYS:
+        _sv = str(raw.get(_sk) or "").strip()
+        _nv = _d(_sv) if _sv else Decimal("0")
+        if _nv > 0:
+            _SAMPLE_CFG[_ck] = _nv
     return out
 
 
@@ -150,6 +168,32 @@ _SAMPLE_KEYWORDS = ("样块", "小样", "样品")
 def is_sample_order(o: Order) -> bool:
     name = str(getattr(o, "product_name", "") or "")
     return any(k in name for k in _SAMPLE_KEYWORDS)
+
+
+# 样块固定值常数 (用户拍板 2026-07-11), load_coefficients 按 fin_sample_* 设置刷新, 后台可调。
+_SAMPLE_CFG = {"wood": Decimal("6"), "packing": Decimal("2"), "freight": Decimal("5"),
+               "divisor": Decimal("21"), "max_paid": Decimal("200")}
+_SAMPLE_CFG_KEYS = (("wood", "fin_sample_wood_unit"), ("packing", "fin_sample_packing"),
+                    ("freight", "fin_sample_freight"), ("divisor", "fin_sample_paid_divisor"),
+                    ("max_paid", "fin_sample_max_paid"))
+
+
+def _sample_fixed_blocks(o: Order):
+    """样块固定值口径命中判定: 命中返回块数(int), 否则 None。
+
+    块数按实付推 round(实付÷21) —— Order.qty 对样块不可靠(买家拍多个木种是多行明细,
+    合到订单行后件数丢失: 实测117单里14个实付37-85的双/三/四块单 qty=1)。实付区间实测
+    单块16.2-25 / 双块32.4-58 / 三块58.6 / 四块84.8, 25↔32.4 之间有安全带。
+    实付=0(取消未付)退回 qty(不进统计, 仅兜底)。实付>护栏(200)不命中: 防未来
+    "样块+家具"混合单被整单按样块计价(家具单不可能≤200)。"""
+    if not is_sample_order(o):
+        return None
+    paid = _d(getattr(o, "paid_amount", None))
+    if paid > _SAMPLE_CFG["max_paid"]:
+        return None
+    if paid > 0:
+        return max(1, int((paid / _SAMPLE_CFG["divisor"]).quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+    return max(1, int(getattr(o, "qty", None) or 1))
 
 
 def aftersales_avg(db: Session) -> Decimal:
@@ -222,17 +266,21 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 "precap_total": Decimal("0"), "cap_mode": "非产品归零",
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
 
-    # 样块单 (2026-07-11 用户裁定): 有工厂账单(¥6/块) → 商品成本 = 木作账单 + 打包(实际优先);
-    # 运费固定 ¥5/单 由 cost_breakdown 单列(物流列), 这里不混入 —— 不再走下方"定价表重构"
-    # (1-4月逐单核对表合并把 actual_logistics 写成0, 会把嵌入 theoretical 的5元运费冲没;
-    # 双块单 est_* 缩放不一致时还会算出 1/0/负数等花数, 全库样块成本曾有 0/1/6/8/13/14 七种)。
-    # 无账单(近月工厂账单未导): 照旧走 theoretical 推演(13/26, 已含运费打包), 不在此加5防双算。
-    if is_sample_order(o) and _d(o.actual_cost) > 0:
-        _fw = _d(o.actual_cost)
-        _tot = _fw + packing
-        return {"factory_wood": _fw, "estimate_part": Decimal("0"), "packing": packing,
-                "precap_total": _tot, "cap_mode": "样块实账",
-                "cap_label": "样块: 木作账单+打包; 运费¥5/单走物流列", "final": _tot}
+    # 样块单固定值 (用户拍板 2026-07-11, 取代同日"实报优先"版): 商品成本 = 木作6/块×块数 + 打包2/单,
+    # 运费5/单由 cost_breakdown 单列(物流列); 常数存财务系数(fin_sample_*)后台可调。
+    # 读时现算、完全不读 actual_/est_/theoretical —— 历史七种花数(0/1/5/6/8/13/14)的病灶
+    # (账单把双块记6 / 核对表合并把物流写0 / est 塞大件脏值300/170 / theo 一会13一会19一会26)
+    # 全部失效, 未来导入/账单/夜间重算再怎么写字段都污染不到。块数推法与混合单护栏见 _sample_fixed_blocks。
+    _blocks = _sample_fixed_blocks(o)
+    if _blocks is not None:
+        _fw = _SAMPLE_CFG["wood"] * _blocks
+        _pk = _SAMPLE_CFG["packing"]
+        _tot = _fw + _pk
+        return {"factory_wood": _fw, "estimate_part": Decimal("0"), "packing": _pk,
+                "precap_total": _tot, "cap_mode": "样块固定",
+                "cap_label": (f"样块固定值: 木作{_SAMPLE_CFG['wood']}/块×{_blocks}块 + "
+                              f"打包{_SAMPLE_CFG['packing']}/单; 运费{_SAMPLE_CFG['freight']}/单走物流列"),
+                "final": _tot}
 
     # 逐单真实配件 (用户 2026-06-26): actual_parts 非空 → 改逐项真实计价(木作+物流+安装+打包+真实配件),
     # 跳过占比估算与实付×85% floor。各分项 actual 优先否则 est; 木作取工厂账单否则定价木作估。
@@ -389,10 +437,10 @@ def cost_breakdown(o: Order, coef: dict, as_avg: Decimal = Decimal("0"),
     # 仅"未补非木作的纯工厂账单单"(actual_cost 非空 且 wood_cost_est 空 且 非定制)才单独加实际运费/安装(向后兼容)。
     _is_custom_o = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
         getattr(o, "sku_code", None), getattr(o, "product_code", None))
-    if is_sample_order(o) and _d(o.actual_cost) > 0:
-        # 样块实账单 (2026-07-11 用户裁定): 运费固定¥5/单(小包快递, 不在大件物流账单里; 实报优先)。
-        # 无账单的样块不加(theoretical 推演已含运费, 防双算)。样块无安装。
-        freight = _d(o.actual_freight) if o.actual_freight is not None else Decimal("5")
+    if _sample_fixed_blocks(o) is not None:
+        # 样块固定值 (用户拍板 2026-07-11): 运费固定5元/单(小包快递, 不在大件物流账单里), 无安装。
+        # 与 physical 的样块固定分支同判定; 不读 actual_freight(固定口径, 免数据污染)。
+        freight = _SAMPLE_CFG["freight"]
         install = Decimal("0")
     elif o.actual_cost is not None and not _d(getattr(o, "wood_cost_est", None)) and not _is_custom_o:
         freight = _d(o.actual_freight)

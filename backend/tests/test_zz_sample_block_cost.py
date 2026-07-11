@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""样块单成本口径 (2026-07-11 用户裁定): 每个样块订单固定¥5运费(小包快递), 商品成本=木作账单+打包。
+"""样块单固定值口径 (2026-07-11 用户拍板): 成本 = 木作6/块×块数 + 打包2/单, 运费固定5/单。
 
-病史: 1-4月逐单核对表合并把 actual_logistics 写成0, 经"定价表重构"分支把嵌入的5元运费冲没;
-双块单 est_* 缩放不一致(eL=300/eP=170 大件脏值)时算出 1/0/负数 —— 全库样块成本曾有 0/1/6/8/13/14 七种。
+读时现算、完全不读 actual_/est_/theoretical → 历史七种花数(0/1/5/6/8/13/14)的病灶
+(账单把双块记6 / 核对表合并把物流写0 / est大件脏值 / theo不一致)全部失效。
+块数按实付推 round(实付÷21): Order.qty 对样块不可靠(多行明细合并丢件数, 实测14个双/三/四块单 qty=1)。
 (zz_ 前缀绕开既有 SQLite 连接污染排序坑。)"""
 from datetime import date
 from decimal import Decimal as D
@@ -17,51 +18,70 @@ _NAME = "畔色木作木块小样樱桃木黑胡桃木白蜡木榉木红白橡�
 
 
 def _sample(**kw):
-    base = dict(order_no="YB1", product_name=_NAME, is_custom=False,
+    base = dict(order_no="YB1", product_name=_NAME, is_custom=False, qty=1,
                 paid_amount=D("22"), tax=D("0"), order_date=date(2026, 3, 1))
     base.update(kw)
     return Order(**base)
 
 
-def test_billed_sample_wood_plus_packing():
-    """有工厂账单: 商品成本 = 木作6 + 打包2 = 8 (merged aL=0 不再把运费冲成负调整)。"""
+def test_single_block_fixed_ignores_dirty_fields():
+    """单块(付22): 固定 6+2=8, 运费列5 —— 账单/合并零值/est脏值全都不读。"""
     o = _sample(actual_cost=D("6"), actual_packing=D("2"), actual_logistics=D("0"),
-                est_logistics=D("5"), est_packing=D("2"), theoretical_cost=D("13"),
-                wood_cost_est=D("6"))
+                est_logistics=D("300"), est_packing=D("170"), theoretical_cost=D("13"),
+                wood_cost_est=D("6"), actual_freight=D("1"))
     pb = ofin.physical_cost_breakdown(o)
-    assert pb["cap_mode"] == "样块实账"
+    assert pb["cap_mode"] == "样块固定"
     assert pb["final"] == D("8")
-
-
-def test_billed_sample_freight_defaults_5():
-    """运费列: 有账单样块固定¥5/单 (actual_freight 空 → 默认5; 显式填了按实报)。"""
-    o = _sample(actual_cost=D("6"), actual_packing=D("2"), wood_cost_est=D("6"))
     b = ofin.cost_breakdown(o, _COEF)
-    assert b["freight"] == D("5")
+    assert b["freight"] == D("5")          # 固定, 不读 actual_freight=1 的脏值
     assert b["install_upstairs"] == D("0")
-    o2 = _sample(actual_cost=D("6"), actual_packing=D("2"), actual_freight=D("5"),
-                 wood_cost_est=D("6"))
-    assert ofin.cost_breakdown(o2, _COEF)["freight"] == D("5")
 
 
-def test_double_block_sample_no_est_junk():
-    """双块单(木作12) + 大件est脏值(eL=300/eP=170): 成本=12+打包2=14, 不再被重构算成 1/0/负。"""
-    o = _sample(paid_amount=D("44"), actual_cost=D("12"), actual_packing=D("2"),
-                actual_logistics=D("0"), est_logistics=D("300"), est_packing=D("170"),
-                theoretical_cost=D("19"), wood_cost_est=D("6"))
+def test_double_block_by_paid_not_qty():
+    """双块(付44)但 qty=1、账单错记6: 块数按实付推=2 → 12+2=14 + 运5 = 19。"""
+    o = _sample(paid_amount=D("44"), qty=1, actual_cost=D("6"),
+                est_logistics=D("300"), est_packing=D("170"), theoretical_cost=D("19"))
     pb = ofin.physical_cost_breakdown(o)
-    assert pb["cap_mode"] == "样块实账"
+    assert pb["cap_mode"] == "样块固定"
     assert pb["final"] == D("14")
     assert ofin.cost_breakdown(o, _COEF)["freight"] == D("5")
 
 
-def test_unbilled_sample_keeps_theoretical():
-    """无工厂账单(近月账单未导): 照旧 theoretical 推演(13已含运费打包), 运费列0 防双算。"""
-    o = _sample(actual_cost=None, theoretical_cost=D("13"), est_packing=D("2"))
+def test_triple_and_quad_blocks():
+    """三块(付58.6)→6×3+2=20; 四块(付84.8)→6×4+2=26。"""
+    assert ofin.physical_cost_breakdown(_sample(paid_amount=D("58.6")))["final"] == D("20")
+    assert ofin.physical_cost_breakdown(_sample(paid_amount=D("84.8")))["final"] == D("26")
+
+
+def test_paid_boundaries():
+    """块数边界: 单块最高25→1块; 双块折后最低32.4→2块。"""
+    assert ofin.physical_cost_breakdown(_sample(paid_amount=D("25")))["final"] == D("8")
+    assert ofin.physical_cost_breakdown(_sample(paid_amount=D("32.4")))["final"] == D("14")
+
+
+def test_unbilled_new_sample_no_theo_dependence():
+    """新样块(账单未导, 全字段空): 不再依赖 theoretical, 直接 8 + 运5。"""
+    o = _sample(actual_cost=None, theoretical_cost=None, est_packing=None)
     pb = ofin.physical_cost_breakdown(o)
-    assert pb["cap_mode"] != "样块实账"
-    assert pb["final"] == D("13")
-    assert ofin.cost_breakdown(o, _COEF)["freight"] == D("0")
+    assert pb["cap_mode"] == "样块固定"
+    assert pb["final"] == D("8")
+    assert ofin.cost_breakdown(o, _COEF)["freight"] == D("5")
+
+
+def test_zero_paid_falls_back_to_qty():
+    """实付=0(取消未付): 块数退回 qty(仅兜底, 不进统计)。"""
+    o = _sample(paid_amount=D("0"), qty=2)
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] == "样块固定"
+    assert pb["final"] == D("14")
+
+
+def test_mixed_order_guard_over_200():
+    """护栏: 名字带样块但实付>200(未来混合单) → 不按样块固定, 走正常口径。"""
+    o = _sample(paid_amount=D("500"), theoretical_cost=D("300"), est_packing=D("0"))
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] != "样块固定"
+    assert pb["final"] == D("300")         # theoretical 正常路径
 
 
 def test_non_sample_untouched():
