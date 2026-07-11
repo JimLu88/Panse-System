@@ -1701,6 +1701,24 @@ def sku_rotation_preview(
     return sku_rotation_service.plan_rotation(db, product_code)
 
 
+@formula_router.post("/sku-rotation/apply")
+def sku_rotation_apply(
+    product_code: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """★一次性★ 千牛轮换完成后同步 ERP: 按当前轮换计划重写 PricingSkuPromo.taobao_sku_id。
+    只在人工在千牛把规格/价格/编码轮换好之后点(否则映射会错位)。admin 限。"""
+    from app.services import sku_rotation_service
+    plan = sku_rotation_service.plan_rotation(db, product_code)
+    if not plan.get("ok"):
+        return plan
+    em = [r for lad in plan["ladders"] for r in lad.get("erp_mapping", [])]
+    res = sku_rotation_service.apply_mapping(db, product_code, em, dry_run=False)
+    db.commit()
+    return res
+
+
 @formula_router.post("/activity-upload/{channel}/stage")
 def activity_upload_stage(
     channel: str,

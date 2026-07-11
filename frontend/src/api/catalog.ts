@@ -782,6 +782,20 @@ export type UploadStageResult = {
 export const activityUploadStage = (channel: string, tier = 'big') =>
   api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null, { params: { tier } })
     .then((r) => r.data);
+// 超大促 SKU 轮换: 预览(只算) + 同步(千牛轮换完后写ERP映射)
+export type SkuRotationPlan = {
+  ok: boolean; product_code?: string; ladder_count?: number; buffer_pool?: string[]; error?: string;
+  ladders?: { ladder: string; sizes: string[]; buffer: string | null; warnings: string[];
+    qn_instructions: { skuId: string; new_sku_code: string; new_size: string; new_price: number | null }[];
+    erp_mapping: { sku_code: string; new_skuId: string }[] }[];
+};
+export const fetchSkuRotation = (productCode: string) =>
+  api.get<SkuRotationPlan>('/api/pricing/sku-rotation/preview', { params: { product_code: productCode } })
+    .then((r) => r.data);
+export const applySkuRotation = (productCode: string) =>
+  api.post<{ ok: boolean; changed: number; changes: { sku_code: string; old_skuId: string | null; new_skuId: string }[] }>(
+    '/api/pricing/sku-rotation/apply', null, { params: { product_code: productCode } }).then((r) => r.data);
+
 export const activityUploadCommit = (channel: string, tier = 'big') =>
   api.post<{ ok: boolean; submitted?: boolean; error?: string; channel_name: string;
     screenshot_base64?: string | null }>(`/api/pricing/activity-upload/${channel}/commit`, null, { params: { tier } })

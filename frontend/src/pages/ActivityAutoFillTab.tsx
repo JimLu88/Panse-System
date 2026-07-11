@@ -9,7 +9,8 @@
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Alert, Button, Card, Col, Divider, Modal, Row, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Button, Card, Col, Divider, Input, Modal, Popconfirm, Row, Space, Statistic, Table, Tag,
+  Typography, message,
 } from 'antd';
 import {
   DownloadOutlined, ExperimentOutlined, TableOutlined, WarningOutlined, CheckCircleOutlined,
@@ -19,6 +20,7 @@ import {
   downloadSingleItemDiscount, downloadPromoSignup, downloadSuperReduceSignup,
   fetchActivityPreflight, type ActivityPreflight,
   activityUploadStage, activityUploadCommit, type UploadStageResult,
+  fetchSkuRotation, applySkuRotation, type SkuRotationPlan,
 } from '../api/catalog';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -91,6 +93,31 @@ export default function ActivityAutoFillTab() {
     } catch {
       message.destroy('up'); message.error('上传服务未响应（确认 PC 上 Web-Agent 在线）'); setUpChannel(null);
     } finally { setStaging(false); }
+  };
+
+  // ── 超大促 SKU 轮换 (预览→人工千牛轮换→同步映射) ──
+  const [rotPc, setRotPc] = useState('');
+  const [rotPlan, setRotPlan] = useState<SkuRotationPlan | null>(null);
+  const [rotLoading, setRotLoading] = useState(false);
+  const [rotApplying, setRotApplying] = useState(false);
+
+  const doRotPreview = async () => {
+    if (!rotPc.trim()) { message.warning('先填产品编码'); return; }
+    setRotLoading(true); setRotPlan(null);
+    try {
+      const r = await fetchSkuRotation(rotPc.trim());
+      if (!r.ok) { message.error(r.error || '预览失败'); return; }
+      setRotPlan(r);
+    } catch { message.error('预览失败'); } finally { setRotLoading(false); }
+  };
+  const doRotApply = async () => {
+    if (!rotPc.trim()) return;
+    setRotApplying(true);
+    try {
+      const r = await applySkuRotation(rotPc.trim());
+      if (r.ok) message.success(`已同步 ERP 映射：改动 ${r.changed} 条`);
+      else message.error('同步失败');
+    } catch { message.error('同步失败（需 admin）'); } finally { setRotApplying(false); }
   };
 
   const doCommit = async () => {
@@ -265,6 +292,42 @@ export default function ActivityAutoFillTab() {
           </StepCard>
         </Col>
       </Row>
+
+      {/* ── 超大促 SKU 轮换 (618/双11 15% 让利) ── */}
+      <Card size="small" title={<Space><TableOutlined /><b>超大促 SKU 轮换（618/双11 15% 让利）</b>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>尺寸标签循环下移，绕过 15 天最低价</Typography.Text></Space>}>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Alert type="info" showIcon style={{ fontSize: 12 }}
+            message="系统按尺寸阶梯算出「每个 skuId 该改成的 商家编码/规格/价格」。规格(尺寸)千牛没有批量口 → 照下表在千牛「编辑商品」逐个改；改完点「同步系统映射」，ERP 自动重刷 skuId 映射（商家编码永远跟尺寸走，不串位）。" />
+          <Space>
+            <Input placeholder="产品编码，如 PPS26330140117" value={rotPc} style={{ width: 260 }}
+              onChange={(e) => setRotPc(e.target.value)} onPressEnter={doRotPreview} />
+            <Button type="primary" loading={rotLoading} onClick={doRotPreview}>预览轮换</Button>
+            {rotPlan?.ok && (
+              <Popconfirm title="确认千牛已把规格/价格/编码都轮换好了？" description="这会把 ERP 的 skuId 映射按新轮换重刷（不可逆）"
+                okText="已轮换完，同步" cancelText="还没" onConfirm={doRotApply}>
+                <Button danger loading={rotApplying}>千牛轮换完 → 同步系统映射</Button>
+              </Popconfirm>
+            )}
+          </Space>
+          {rotPlan?.ok && rotPlan.ladders?.map((lad, i) => (
+            <div key={i}>
+              <Divider orientation="left" style={{ margin: '4px 0' }}>
+                <Typography.Text strong style={{ fontSize: 12 }}>{lad.ladder} · buffer槽 {lad.buffer || '—'}</Typography.Text>
+                {lad.warnings.map((w) => <Tag color="orange" key={w} style={{ marginLeft: 6 }}>{w}</Tag>)}
+              </Divider>
+              <Table size="small" pagination={false} rowKey={(r) => r.skuId}
+                dataSource={lad.qn_instructions}
+                columns={[
+                  { title: '物理 skuId', dataIndex: 'skuId', width: 150 },
+                  { title: '→ 改成商家编码', dataIndex: 'new_sku_code', width: 150 },
+                  { title: '→ 规格(尺寸)', dataIndex: 'new_size', ellipsis: true },
+                  { title: '→ 价格', dataIndex: 'new_price', width: 90, render: (v: number | null) => v != null ? `¥${v}` : '-' },
+                ]} />
+            </div>
+          ))}
+        </Space>
+      </Card>
 
       {/* ── 千牛上传·比对表确认 (stage 完成后弹出) ── */}
       <Modal
