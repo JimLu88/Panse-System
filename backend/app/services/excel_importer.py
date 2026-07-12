@@ -1777,6 +1777,10 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
     # ── pricing_sku (main) ──────────────────────────────────────────────
     existing = db.execute(select(PricingSku).where(PricingSku.sku_code == sku_code)).scalar_one_or_none()
     if existing:
+        # ★方案B(2026-07-12): Excel导入改价/成本也自动版本化(写入前封存旧值→老单老价; 同日去重)
+        from app.services import pricing_version_service
+        pricing_version_service.record_if_price_changed(
+            db, existing, sku_payload, note="Excel导入·自动版本化")
         action = _apply_update(existing, sku_payload, ctx, "pricing_sku", sku_code, db)
     else:
         if _is_custom_code(db, sku_code, sku_payload.get("product_code")):
@@ -1793,6 +1797,17 @@ def _h_pricing_sku(db, data, key_field, ctx=None):
             select(PricingSkuCosts).where(PricingSkuCosts.sku_code == sku_code)
         ).scalar_one_or_none()
         if costs_row:
+            # 配件字段将变 → 经 recompute_costs 汇入 sku.external_parts/physical → 同样先封存 sku 旧值
+            if existing is not None and any(
+                    str(getattr(costs_row, k, None) or "") != str(v or "")
+                    for k, v in costs_payload.items() if k != "sku_code"):
+                from datetime import date as _date
+                from app.services import pricing_version_service
+                try:
+                    pricing_version_service.record_dated_change(
+                        db, existing, _date.today(), note="Excel导入配件成本·自动版本化")
+                except ValueError:
+                    pass
             _apply_update(costs_row, {k: v for k, v in costs_payload.items() if k != "sku_code"},
                           ctx, "pricing_sku_costs", sku_code, db)
         else:

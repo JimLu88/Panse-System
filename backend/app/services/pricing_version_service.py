@@ -67,6 +67,32 @@ def record_dated_change(db: Session, sku: PricingSku, effective_from: date, *,
     return row
 
 
+def record_if_price_changed(db: Session, sku: PricingSku, changes: dict, *,
+                            actor: Optional[str] = None, note: Optional[str] = None) -> bool:
+    """★方案B自动版本化(用户拍板 2026-07-12): 普通编辑/Excel导入【没带生效日】也自动记版本 ——
+    changes 里任一跟踪的价格/成本字段将被改成不同值 → 先以【今天】为界封存旧值(修改日前订单按旧价,
+    修改日后按新价), 同日重复改自动忽略(不重复封存)。须在把新值写进 sku 之前调用。返回是否封存。"""
+    tracked = set(_COL_FIELDS) | set(_JSON_FIELDS)
+
+    def _norm(v):
+        if v is None:
+            return None
+        try:
+            return Decimal(str(v))
+        except Exception:  # noqa: BLE001
+            return str(v)
+
+    if not any(k in tracked and _norm(getattr(sku, k, None)) != _norm(v)
+               for k, v in (changes or {}).items()):
+        return False
+    try:
+        record_dated_change(db, sku, date.today(), actor=actor,
+                            note=note or "普通编辑自动版本化")
+    except ValueError:      # 同日已封存过 → 边界已在, 不重复
+        return False
+    return True
+
+
 def prune(db: Session, sku_code: str, keep: int = MAX_VERSIONS_PER_SKU) -> int:
     """只保留该 SKU 最新的 keep 条调价版本(按生效日/period_end 倒序), 删更旧的。返回删除条数。
     删掉的是很久以前的老价区间; 那之前的订单会回退用 live 价(极老单, 影响可忽略)。"""

@@ -144,14 +144,30 @@ def _resolve_sku_code(db: Session, order: Order) -> Optional[str]:
     return None
 
 
-def _wood_unit_price(db: Session, sku_code: Optional[str]) -> Optional[Decimal]:
-    """木作物料单价: 按 SKU 从定价表 PricingSku.wood_cost 取 (整套木作共用此值)."""
+def _asof_pricing(db: Session, sku_code, product_code, on_date, field: str, live):
+    """★方案B(用户拍板 2026-07-12): 订单时点取定价字段 —— order_date 命中调价历史版本且该字段非空
+    → 版本值(老单老价); 否则 live 现值(无版本/新单 = 改造前行为)。与 _pricing_cost_for 的 physical_at 同口径。"""
+    if on_date is None:
+        return live
+    from app.services import pricing_version_service
+    row = pricing_version_service.values_at(
+        db, sku_code=sku_code, product_code=product_code, on_date=on_date)
+    if row is not None:
+        v = getattr(row, field, None)
+        if v is not None:
+            return Decimal(str(v))
+    return live
+
+
+def _wood_unit_price(db: Session, sku_code: Optional[str], on_date=None) -> Optional[Decimal]:
+    """木作物料单价: 按 SKU 从定价表 PricingSku.wood_cost 取 (整套木作共用此值); 带订单日则老单老价."""
     if not sku_code:
         return None
     wc = db.execute(
         select(PricingSku.wood_cost).where(PricingSku.sku_code == sku_code)
     ).scalar_one_or_none()
-    return Decimal(str(wc)) if wc is not None else None
+    live = Decimal(str(wc)) if wc is not None else None
+    return _asof_pricing(db, sku_code, None, on_date, "wood_cost", live)
 
 
 def _custom_estimate_cost(db: Session, order: Order) -> Optional[Decimal]:
@@ -336,7 +352,7 @@ def compute(db: Session, order: Order) -> CostBreakdown:
     # ---- 定制单 / 定价表无成本: BOM 物料反推 ----
     lines: list[CostLine] = []
     if sku_code:
-        wood_price = _wood_unit_price(db, sku_code)
+        wood_price = _wood_unit_price(db, sku_code, on_date=getattr(order, "order_date", None))
         wood_counted = False  # 整套木作成本只计一次
         rows = db.execute(
             select(BomLine, Material.name.label("mat_name"), Material.price.label("price"))
@@ -652,6 +668,7 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
         if len(lines) < 1:
             return None
     total = Decimal("0")
+    _on = getattr(order, "order_date", None)
     for ln in lines:
         cost = None
         if ln.sku_code:
@@ -668,6 +685,7 @@ def _multi_product_cost(db: Session, order: Order) -> Optional[Decimal]:
             ).scalars().first()
             if ps2 is not None:
                 cost = Decimal(str(ps2.physical_cost))
+        cost = _asof_pricing(db, ln.sku_code, ln.product_code, _on, "physical_cost", cost)  # 老单老价
         if cost is None:
             return None   # 有商品行查不到定价 → 整单成本不完整, 回退兜底路径(勿把缺行的部分和当整单成本, 否则漏算副商品→利润虚高)
         total += cost * int(ln.qty or 1)
@@ -685,14 +703,17 @@ def _pricing_wood_for(db: Session, order: Order) -> Optional[Decimal]:
     """该单匹配 SKU 的定价表 wood_cost (木作成本)。与 _pricing_cost_for 对称: 先 sku_code 再 product_code。
 
     工厂账单只含木作, actual_cost 是木作实报; 这里取定价表里的木作部分, 供 physical_cost 反推非木作
-    (= theoretical − wood_est)。取不到 → None (physical_cost 退回旧行为)。"""
+    (= theoretical − wood_est)。取不到 → None (physical_cost 退回旧行为)。老单老价(方案B)。"""
     sku_code = _resolve_sku_code(db, order)
+    _on = getattr(order, "order_date", None)
     if sku_code:
         wc = db.execute(
             select(PricingSku.wood_cost).where(PricingSku.sku_code == sku_code)
         ).scalar_one_or_none()
-        if wc is not None:
-            return Decimal(str(wc))
+        live = Decimal(str(wc)) if wc is not None else None
+        v = _asof_pricing(db, sku_code, None, _on, "wood_cost", live)
+        if v is not None:
+            return v
     if order.product_code:
         wc = db.execute(
             select(PricingSku.wood_cost)
@@ -700,8 +721,10 @@ def _pricing_wood_for(db: Session, order: Order) -> Optional[Decimal]:
                    PricingSku.wood_cost.isnot(None))
             .limit(1)
         ).scalar_one_or_none()
-        if wc is not None:
-            return Decimal(str(wc))
+        live = Decimal(str(wc)) if wc is not None else None
+        v = _asof_pricing(db, None, order.product_code, _on, "wood_cost", live)
+        if v is not None:
+            return v
     return None
 
 
@@ -718,6 +741,7 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
     if len(lines) < 2:
         return None
     total = Decimal("0")
+    _on = getattr(order, "order_date", None)
     for ln in lines:
         wc = None
         if ln.sku_code:
@@ -731,6 +755,8 @@ def _multi_product_wood(db: Session, order: Order) -> Optional[Decimal]:
                        PricingSku.wood_cost.isnot(None))
                 .limit(1)
             ).scalar_one_or_none()
+        wc = _asof_pricing(db, ln.sku_code, ln.product_code, _on, "wood_cost",
+                           Decimal(str(wc)) if wc is not None else None)  # 老单老价
         if wc is None:
             return None
         total += Decimal(str(wc)) * int(ln.qty or 1)
@@ -748,14 +774,16 @@ def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
     """该单匹配 SKU 的定价表 external_parts_cost (配件/外采标准估值, 单件)。与 _pricing_wood_for 对称。
 
     SKU 命中 → 返回 external_parts_cost(None 视作 0, 表示该产品标准无外采配件);
-    无任何 SKU/产品命中 → None(est_parts 不写, 留空表示"未知/无定价参照")。"""
+    无任何 SKU/产品命中 → None(est_parts 不写, 留空表示"未知/无定价参照")。老单老价(方案B)。"""
     sku_code = _resolve_sku_code(db, order)
+    _on = getattr(order, "order_date", None)
     if sku_code:
         row = db.execute(
             select(PricingSku.external_parts_cost).where(PricingSku.sku_code == sku_code)
         ).first()
         if row is not None:
-            return Decimal(str(row[0] or 0))
+            live = Decimal(str(row[0] or 0))
+            return _asof_pricing(db, sku_code, None, _on, "external_parts_cost", live)
     if order.product_code:
         row = db.execute(
             select(PricingSku.external_parts_cost)
@@ -763,7 +791,8 @@ def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
             .limit(1)
         ).first()
         if row is not None:
-            return Decimal(str(row[0] or 0))
+            live = Decimal(str(row[0] or 0))
+            return _asof_pricing(db, None, order.product_code, _on, "external_parts_cost", live)
     return None
 
 
@@ -779,6 +808,7 @@ def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
     if len(lines) < 2:
         return None
     total = Decimal("0")
+    _on = getattr(order, "order_date", None)
     for ln in lines:
         ep = None
         if ln.sku_code:
@@ -790,6 +820,8 @@ def _multi_product_parts(db: Session, order: Order) -> Optional[Decimal]:
                 select(PricingSku.external_parts_cost)
                 .where(PricingSku.product_code == ln.product_code).limit(1)
             ).scalar_one_or_none()
+        ep = _asof_pricing(db, ln.sku_code, ln.product_code, _on, "external_parts_cost",
+                           Decimal(str(ep)) if ep is not None else None)  # 老单老价
         total += Decimal(str(ep or 0)) * int(ln.qty or 1)
     return total
 

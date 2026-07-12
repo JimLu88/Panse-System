@@ -247,8 +247,13 @@ def update_pricing_by_product(
         raise HTTPException(404, f"产品 {product_code} 没有定价行")
     actor = getattr(_, "username", None)
     updated = 0
+    from datetime import date as _date
+    from app.services import pricing_version_service
     for sku in skus:
         if body.sku:
+            # ★方案B(2026-07-12): 覆盖全产品编辑也自动版本化(写新值前封存旧值, 老单老价)
+            pricing_version_service.record_if_price_changed(
+                db, sku, body.sku, actor=actor, note="编辑器覆盖全产品·自动版本化")
             _record_price_changes(db, sku, body.sku, actor=actor)
             for k, v in body.sku.items():
                 if hasattr(sku, k):
@@ -262,6 +267,14 @@ def update_pricing_by_product(
                 costs = PricingSkuCosts(sku_code=sku.sku_code)
                 db.add(costs)
                 db.flush()
+            # 配件成本改动会经 recompute_costs 汇入 sku.external_parts_cost/physical_cost →
+            # 任一配件字段将变时, 先封存 sku 旧值(同日去重, 与上面重复调用无害)。
+            if any(str(getattr(costs, k, None) or "") != str(v or "") for k, v in body.costs.items()):
+                try:
+                    pricing_version_service.record_dated_change(
+                        db, sku, _date.today(), actor=actor, note="配件成本编辑·自动版本化")
+                except ValueError:
+                    pass
             field_change_service.diff_and_apply(
                 db, costs, body.costs, table="pricing_sku_costs", pk=sku.sku_code,
                 actor=actor, row_label=f"{sku.sku or sku.product_code} (覆盖全产品)")
@@ -504,13 +517,18 @@ def update_pricing_sku(
         raise HTTPException(404, "Not found")
     changes = body.model_dump(exclude_unset=True)
     eff = changes.pop("effective_from", None)   # 控制参数, 非 sku 列
+    from app.services import pricing_version_service
     if eff is not None:
         # 调价"从 eff 起生效": 先把改前(旧)定价值封存为历史区间 → eff 之前的订单仍按老价/老成本(利润不追溯改)
-        from app.services import pricing_version_service
         try:
             pricing_version_service.record_dated_change(db, sku, eff, actor=getattr(_, "username", None))
         except ValueError as e:
             raise HTTPException(400, str(e))
+    else:
+        # ★方案B(2026-07-12): 普通编辑没带生效日也自动版本化 —— 改价/成本字段将变 → 以今天为界封存旧值,
+        #   老单老价新单新价, 不再"随便跳"。同日重复改自动去重。
+        pricing_version_service.record_if_price_changed(
+            db, sku, changes, actor=getattr(_, "username", None), note="定价编辑自动版本化")
     _record_price_changes(db, sku, changes, actor=getattr(_, "username", None))
     for k, v in changes.items():
         setattr(sku, k, v)
