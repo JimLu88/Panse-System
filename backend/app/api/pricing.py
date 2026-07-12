@@ -14,7 +14,7 @@ from sqlalchemy import String, cast, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import get_current_user, get_current_user_optional, require_role
 from app.models.auth import User
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
@@ -146,7 +146,7 @@ def list_pricing_skus(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
-    _: User = Depends(get_current_user),
+    _: User = Depends(get_current_user_optional),  # 定价「读」放开(影子记录不拦): 供 review-program 排单计划生成器拉 taobao_title；写接口仍 get_current_user
 ):
     from app.models.product import Product
     stmt = select(PricingSku)
