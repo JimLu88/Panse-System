@@ -217,7 +217,7 @@ class OpenAICompatibleProvider(AiProvider):
         messages.append({"role": "user", "content": user_content})
         return self._from_response(self._post({
             "model": self.model, "messages": messages, "max_tokens": max_tokens,
-        }, timeout=120.0))
+        }, timeout=240.0))   # 视觉推理(本地7B+图)可超120s(2026-07-12 实测120.2s超时), 放宽到240s
 
 
 # ----------------------------- 工厂 --------------------------------------- #

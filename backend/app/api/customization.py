@@ -370,10 +370,25 @@ async def v2_classify(
     from app.services import custom_quote_v2_service as v2
     from app.services import customization_ai_service, settings_service
 
+    def _shrink(raw: bytes) -> tuple[bytes, str]:
+        """大图压到最长边1024/JPEG85 再喂视觉模型: 1MB原图→~150KB, vision token 大减
+        (2026-07-12: 原图直接喂 7B 模型推理 >120s 必超时 → 图片等于白传)。失败原样返回。"""
+        try:
+            import io as _io
+            from PIL import Image
+            im = Image.open(_io.BytesIO(raw))
+            im = im.convert("RGB")
+            im.thumbnail((1024, 1024))
+            buf = _io.BytesIO()
+            im.save(buf, "JPEG", quality=85)
+            return buf.getvalue(), "image/jpeg"
+        except Exception:  # noqa: BLE001
+            return raw, "image/jpeg"
+
     image_data: list[tuple[bytes, str]] = []
     for img in (images or [])[:5]:
         raw = await img.read()
-        image_data.append((raw, img.content_type or "image/jpeg"))
+        image_data.append(_shrink(raw) if len(raw) > 300_000 else (raw, img.content_type or "image/jpeg"))
 
     result = None
     ai_note = None
