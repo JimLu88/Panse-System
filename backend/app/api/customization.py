@@ -376,18 +376,26 @@ async def v2_classify(
         image_data.append((raw, img.content_type or "image/jpeg"))
 
     result = None
+    ai_note = None
     cfg = settings_service.get_ai_config(db, "custom")  # 定制报价专属槽; 没配回落 ocr
-    if cfg.get("api_key"):
+    if cfg.get("api_key") or cfg.get("base_url"):        # 本地Ollama可无key, 有地址就试
         try:
             prov = customization_ai_service._build_provider(db)
             result = await asyncio.to_thread(
                 v2.classify_ai, db, text=message, images=image_data,
                 provider=prov, model=cfg.get("model") or "",
             )
-        except Exception:  # noqa: BLE001
+            if result is None:
+                ai_note = "AI 已调用但返回无法解析(超时/非JSON), 已回落规则解析 —— 若反复出现请查 PC Ollama"
+        except Exception as e:  # noqa: BLE001
             result = None
+            ai_note = f"AI 调用失败({type(e).__name__}: {str(e)[:80]}), 已回落规则解析"
+    else:
+        ai_note = "AI 未配置(设置里没配定制报价AI), 走规则解析"
     if result is None:
         result = v2.classify(db, text=message, image_count=len(image_data))
+    if ai_note:
+        result["ai_note"] = ai_note    # 不再静默降级(2026-07-12: AI挂了页面空白连原因都不给)
 
     # A6 尺寸合理性校验(防 1.5m 判成床头柜): 不合理→清空选定+降权, 交候选下拉手选纠正
     from app.services import custom_quote_config_service as ccfg

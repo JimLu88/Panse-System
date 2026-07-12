@@ -96,6 +96,58 @@ def parse_height_cm(text: Optional[str]) -> Optional[float]:
     return round(v, 1)   # cm / 厘米
 
 
+def parse_dims_triplet(text: Optional[str]) -> tuple[Optional[float], Optional[float], Optional[float]]:
+    """解析「长*宽(深)*高」三元组(行业最常见写法, 常不带单位): 1.5*0.6*0.95 / 1500×600×950 /
+    150x60x95。单位启发: 三数最大值 ≤5→米 / ≤400→cm / 其余→mm(同一写法内单位一致)。
+    返回 (长m, 宽cm, 高cm); 不匹配 → (None, None, None)。
+    (2026-07-12 用户"1.5*0.6*0.95"完全没出价的根因之一: 旧解析器必须带米/cm单位。)"""
+    if not text:
+        return None, None, None
+    m = re.search(r"(\d+(?:\.\d+)?)\s*[*×xX]\s*(\d+(?:\.\d+)?)\s*[*×xX]\s*(\d+(?:\.\d+)?)", text)
+    if not m:
+        return None, None, None
+    a, b, c = (float(m.group(i)) for i in (1, 2, 3))
+    mx = max(a, b, c)
+    if mx <= 5:          # 米
+        scale_m = 1.0
+    elif mx <= 400:      # cm
+        scale_m = 0.01
+    else:                # mm
+        scale_m = 0.001
+    la, wb, hc = a * scale_m, b * scale_m, c * scale_m
+    return round(la, 3), round(wb * 100, 1), round(hc * 100, 1)
+
+
+_REMOVE_PART_RE = re.compile(
+    r"(?:不要|不带|去掉|去除|不装|不需要|无需)\s*([一-龥]{0,6}?(?:底板|背板|顶板|隔板|挡板|"
+    r"侧板|拉门|柜门|抽屉|玻璃|脚|腿|轮子|轨道|门))")
+
+
+def parse_remove_parts(text: Optional[str]) -> list[dict]:
+    """确定性解析「不要X/去掉X」→ remove_parts (AI 不可用时的兜底; 2026-07-12 '不要底板'曾被丢)。"""
+    if not text:
+        return []
+    return [{"material": m, "qty": 1} for m in dict.fromkeys(_REMOVE_PART_RE.findall(text))]
+
+
+# 特殊定制的品类猜测(未命中产品库时给板单引擎/前端预填一个方向; 顺序敏感, 具体词在前)
+_CATEGORY_GUESS = [
+    ("岛台", ("岛台", "中岛", "吧台")), ("餐边柜", ("餐边柜", "餐柜", "边柜")),
+    ("书柜", ("书柜", "书架")), ("衣柜", ("衣柜",)), ("床头柜", ("床头柜",)),
+    ("电视柜", ("电视柜",)), ("鞋柜", ("鞋柜",)), ("浴室柜", ("浴室柜",)),
+    ("餐桌", ("餐桌", "饭桌")), ("书桌", ("书桌", "办公桌", "写字台")),
+    ("床", ("床",)), ("柜", ("柜",)), ("桌", ("桌",)),
+]
+
+
+def guess_category(text: Optional[str]) -> Optional[str]:
+    t = text or ""
+    for cat, kws in _CATEGORY_GUESS:
+        if any(k in t for k in kws):
+            return cat
+    return None
+
+
 def _auto_top_cabinet(text: Optional[str], add_parts: list) -> list:
     """描述提到「顶柜」或「高出(来的)部分加(到)顶/上柜」→ 确保 add_parts 含一个顶柜部位
     (顶柜高度=总高−标准高 由 quote_light 的 _autofill_box_parts 自动算)。"""
@@ -829,12 +881,13 @@ def classify_ai(db: Session, *, text: str = "", images=None, provider=None, mode
         "customization_type": data["customization_type"],
         "base_product_code": code,
         "base_product_name": pname or mname,
-        "target_length_m": data.get("target_length_m") or parse_length_m(text),
-        "target_width_cm": data.get("target_width_cm"),
-        "target_height_cm": data.get("target_height_cm") or parse_height_cm(text),
-        "target_material": data.get("target_material"),
+        "target_length_m": data.get("target_length_m") or parse_length_m(text) or parse_dims_triplet(text)[0],
+        "target_width_cm": data.get("target_width_cm") or parse_dims_triplet(text)[1],
+        "target_height_cm": data.get("target_height_cm") or parse_height_cm(text) or parse_dims_triplet(text)[2],
+        "target_material": data.get("target_material") or detect_wood(text),
         "add_parts": _auto_top_cabinet(text, data.get("add_parts") or []),
-        "remove_parts": data.get("remove_parts") or [],
+        "remove_parts": data.get("remove_parts") or parse_remove_parts(text),
+        "category_guess": guess_category(text),
         "confidence": round(float(data.get("confidence") or 0.7), 2),
         "reasoning": data.get("reasoning") or "AI 判定",
         "ai_used": True,
@@ -858,12 +911,15 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
             m2 = match(db, core, "")
             if m2.get("confidence", 0) > m.get("confidence", 0):
                 m = m2
+    # 尺寸: 显式单位写法优先, 否则「长*宽*高」三元组兜底(1.5*0.6*0.95 这类最常见, 2026-07-12)
+    _tl, _tw, _th = parse_dims_triplet(text)
     base = {
-        "target_length_m": parse_length_m(text),
-        "target_height_cm": parse_height_cm(text),
+        "target_length_m": parse_length_m(text) or _tl,
+        "target_width_cm": _tw,
+        "target_height_cm": parse_height_cm(text) or _th,
         "target_material": detect_wood(text),
         "add_parts": _auto_top_cabinet(text, []),
-        "remove_parts": [],
+        "remove_parts": parse_remove_parts(text),
         "ai_used": False,
     }
     if m.get("product_code") and m.get("confidence", 0) >= 0.4:
@@ -876,13 +932,22 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
             "reasoning": "命中标准产品库 → 在现有产品上改尺寸/材质/增减部位",
             **base,
         }
+    cat_guess = guess_category(text)
+    _dims_txt = "、".join(x for x in (
+        f"长{base['target_length_m']}米" if base.get("target_length_m") else "",
+        f"深{base['target_width_cm']:g}cm" if base.get("target_width_cm") else "",
+        f"高{base['target_height_cm']:g}cm" if base.get("target_height_cm") else "") if x)
     return {
         "customization_type": "特殊定制",
         "base_product_code": None,
         "base_product_name": None,
         "matched_sku_code": None,
         "confidence": round(max(0.5, 1 - m.get("confidence", 0)), 2),
-        "reasoning": "未命中标准产品库 → 走全定制板单引擎",
+        "category_guess": cat_guess,
+        "reasoning": ("未命中标准产品库 → 走全定制板单引擎"
+                      + (f"; 已解析: {_dims_txt or '无尺寸'}"
+                         + (f", 材质{base['target_material']}" if base.get("target_material") else "")
+                         + (f", 品类猜测「{cat_guess}」" if cat_guess else ", 描述里没有品类词(如 岛台/餐边柜), 请在下方③填品类"))),
         **base,
     }
 

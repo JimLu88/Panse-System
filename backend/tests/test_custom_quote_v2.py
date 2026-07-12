@@ -483,3 +483,23 @@ def test_classify_ai_none_on_garbage():
                           provider=_FakeProvider("不是JSON"), model="") is None
     assert v2.classify_ai(db, text="x", images=None, provider=None, model="") is None
     v2.cache_clear()
+
+
+def test_dims_triplet_remove_parts_category_guess(db_session):
+    """2026-07-12 报价空白复盘: 「1.5*0.6*0.95」无单位三元组/「不要底板」/品类猜测 确定性解析。"""
+    from app.services import custom_quote_v2_service as v2
+    assert v2.parse_dims_triplet("纯定制品，1.5*0.6*0.95") == (1.5, 60.0, 95.0)
+    assert v2.parse_dims_triplet("1500×600×950") == (1.5, 60.0, 95.0)
+    assert v2.parse_dims_triplet("没有尺寸") == (None, None, None)
+    assert v2.parse_remove_parts("不要底板，去掉背板") == [
+        {"material": "底板", "qty": 1}, {"material": "背板", "qty": 1}]
+    assert v2.guess_category("做个吧台中岛") == "岛台"
+    assert v2.guess_category("纯定制品") is None
+    v2.cache_clear()
+    r = v2.classify(db_session, text="纯定制品，1.5*0.6*0.95，不要底板，纯樱桃木，大促价格")
+    assert r["customization_type"] == "特殊定制"
+    assert r["target_length_m"] == 1.5 and r["target_width_cm"] == 60.0 and r["target_height_cm"] == 95.0
+    assert r["target_material"] == "樱桃木"
+    assert {"material": "底板", "qty": 1} in r["remove_parts"]
+    assert "尺寸" in r["reasoning"] or "长1.5米" in r["reasoning"]
+    v2.cache_clear()

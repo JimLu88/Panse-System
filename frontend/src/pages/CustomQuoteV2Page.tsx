@@ -40,6 +40,8 @@ interface ClassifyResult {
   base_product_name: string | null;
   confidence: number;
   reasoning: string;
+  ai_note?: string;
+  category_guess?: string | null;
   target_length_m?: number | null;
   target_width_cm?: number | null;
   target_height_cm?: number | null;
@@ -620,12 +622,26 @@ export default function CustomQuoteV2Page() {
       (r.remove_parts ?? []).forEach((p) =>
         detected.push({ key: partSeq.current++, change: 'remove', material: p.material, qty: p.qty || 1 }));
       setParts(detected);
+      // AI 降级不再静默(2026-07-12: AI挂了页面空白连原因都不给) —— 有 ai_note 必弹出来
+      if (r.ai_note) message.warning(r.ai_note, 7);
+      // 特殊定制: 把解析到的 品类猜测/长/深/高 预填进③, 用户点「按外形自动出板单」即可出价
+      if (r.customization_type === '特殊定制') {
+        if (r.category_guess) setPtype(r.category_guess);
+        if (r.target_length_m) setHlen(r.target_length_m);
+        if (r.target_width_cm) setTDepth(r.target_width_cm);
+        if (r.target_height_cm) setTHeight(r.target_height_cm);
+      }
       // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
       if (autoQuote && !ac.signal.aborted) {
         if (r.customization_type === '普通定制' && r.base_product_code) {
           await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, selectedSku, r.target_height_cm ?? null, r.target_width_cm ?? null);
         } else if (r.customization_type === '特殊定制') {
-          message.info('特殊定制: 已分类, 请在③填品类+外形(自动出板)或板单再算价');
+          message.info(
+            r.category_guess
+              ? `特殊定制: 已按「${r.category_guess}」预填③(尺寸/材质已带入) → 到③点「按外形自动出板单」再算价`
+              : '特殊定制: 描述里没有品类词(如 岛台/餐边柜), 已把尺寸/材质带入③, 请填品类后点「按外形自动出板单」',
+            9,
+          );
         }
       }
     } catch (e) {
@@ -907,9 +923,14 @@ export default function CustomQuoteV2Page() {
                 </Space>
               }
               description={
-                <Text type="secondary" style={{ fontSize: 12 }}>
-                  {cls.reasoning}（已自动填入下方表单, 可手动改）
-                </Text>
+                <Space direction="vertical" size={2}>
+                  <Text type="secondary" style={{ fontSize: 12 }}>
+                    {cls.reasoning}（已自动填入下方表单, 可手动改）
+                  </Text>
+                  {cls.ai_note && (
+                    <Text type="warning" style={{ fontSize: 12 }}>⚠ {cls.ai_note}</Text>
+                  )}
+                </Space>
               }
             />
           )}

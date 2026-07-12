@@ -190,9 +190,11 @@ class OpenAICompatibleProvider(AiProvider):
         if system:
             messages.append({"role": "system", "content": system})
         messages.append({"role": "user", "content": user})
+        # 120s 与 chat_with_images 一致: 本地 Ollama 冷启动加载模型可超 60s,
+        # 旧 60s 让定制报价 AI 解析"冷了必超时→静默回落"(2026-07-12 报价空白根因之一)。
         return self._from_response(self._post({
             "model": self.model, "messages": messages, "max_tokens": max_tokens,
-        }))
+        }, timeout=120.0))
 
     def chat_with_image(self, *, system: str, user: str, image_bytes: bytes,
                         mime: str = "image/jpeg", max_tokens: int = 2048) -> AiResponse:
