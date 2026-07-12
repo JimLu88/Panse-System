@@ -1323,29 +1323,29 @@ _SUPER_REDUCE_HEADERS = [
 
 
 def build_super_reduce_signup_upload_xlsx(db: Session):
-    """淘宝『超级立减活动』批量报名表 (14列, 全新报名: 活动价+让利比例+补贴金额 三列全填)。
-    活动价 = 报名价A(占位=占位报名价), 让利10% → 补贴 = 活动价×0.1, 到手 = 活动价×0.9。
-    坏价产品排除。返回 (BytesIO, stats)。列序对齐淘宝超级立减导入模板。"""
+    """淘宝『超级立减长期活动』批量报名表 —— ★填【平台真实模版】(2026-07-13 用户给的原始模版)。
+    模版 = assets/taobao_templates/super_reduce_import.xlsx: 两个 sheet(模版说明 + 商品SKU导入列表),
+    数据 sheet 前 3 行是表头(组名/列名/填写说明), 数据从第 4 行起追加。平台要求"请勿改动模版结构"
+    → 必须原样保留两个 sheet + 3 行表头, 只往第 4 行起写数据, 否则导入被拒/错列。
+    14 列: 商品ID/SKUID/活动价/库存/包邮/短标题/素材×6/让利比例/补贴金额。
+    填: 商品ID + SKUID + 活动价(=报名价A) + 包邮 + 让利比例10 + 补贴金额(=活动价×0.1); 其余留空。
+    活动价占位=占位报名价; 到手 = 活动价×0.9 = 中促到手。坏价/半套商品同 collect_signup_rows 剔除。
+    返回 (BytesIO, stats)。"""
     import io as _io
+    from pathlib import Path
     import openpyxl
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "超级立减活动"
-    head_fill = PatternFill("solid", fgColor="1F4E79")
-    head_font = Font(bold=True, color="FFFFFF", size=10)
-    wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
-    for ci, h in enumerate(_SUPER_REDUCE_HEADERS, start=1):
-        c = ws.cell(1, ci, h)
-        c.fill = head_fill; c.font = head_font; c.alignment = wrap
+    tpl = (Path(__file__).resolve().parent.parent / "assets" / "taobao_templates"
+           / "super_reduce_import.xlsx")
+    wb = openpyxl.load_workbook(tpl)
+    ws = wb["商品SKU导入列表"] if "商品SKU导入列表" in wb.sheetnames else wb.worksheets[-1]
+    if ws.max_row >= 4:                                    # 清历史示例数据行, 保留前 3 行表头
+        ws.delete_rows(4, ws.max_row - 3)
 
     # 同收集器(整商品完整性剔除+占位封顶); 全新报名三列: 活动价=A(占位=占位报名价),
     # 让利比例=10, 补贴=活动价×0.1 —— 三者自洽, 到手恒=活动价×0.9。
-    # (注意: 占位补贴不再是旧口径 现价×0.1 —— 全新报名活动价必填, 补贴必须跟活动价配套)
     entries, stats = collect_signup_rows(db, "report_price")
-    r = 2
+    r = 4                                                  # ★数据从第 4 行起(前 3 行是平台表头)
     for s, p, A in entries:
         subsidy = round(float(A) * 0.1, 2)
         ids = []
@@ -1355,18 +1355,13 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         for skuid in ids:
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
-            ws.cell(r, 3, float(A)).number_format = "0.00"              # 活动价(全新报名必填)
+            ws.cell(r, 3, float(A)).number_format = "0.00"              # 活动价(必填, =报名价A)
             ws.cell(r, 5, "包邮")                                        # 包邮(不填=不包邮, 现况全包邮)
-            ws.cell(r, 13, 10)                                           # 让利比例 10%
-            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额 = 活动价×10%
-            # 库存留空(默认全部库存)/素材列非必填留空
+            ws.cell(r, 13, 10)                                          # 让利比例 10(=10%)
+            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额(必填)=活动价×10%
+            # 库存(4)留空=全部库存; 短标题/素材(6-12)非必填留空
             r += 1
-    stats["rows"] = r - 2
-
-    widths = [22, 24, 12, 10, 8, 20, 16, 16, 16, 16, 16, 16, 12, 14]
-    for i, w in enumerate(widths, start=1):
-        ws.column_dimensions[get_column_letter(i)].width = w
-    ws.freeze_panes = "A2"
+    stats["rows"] = r - 4
 
     out = _io.BytesIO()
     wb.save(out)

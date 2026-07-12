@@ -373,39 +373,53 @@ export default function ActivityAutoFillTab() {
         </Col>
 
         <Col xs={24} lg={8}>
-          <StepCard n={3} title="批量报名活动价"
-            tip="照千牛「大促活动报名」模板生成，只填 商品ID/SKUID/活动价(报名价A)。超级立减10% 与 88VIP大促12% 同一个报名价。">
+          <StepCard n={3} title="大促活动报名（7列模板）"
+            tip="用于有档期的平台大促（如「7月超级88」）。照千牛「大促活动报名」模板生成，只填 商品ID/SKUID/活动价(报名价A)。与常年的『超级立减长期活动』是两个不同的活动、两套模板。">
             <Button type="primary" icon={<DownloadOutlined />} block loading={busy === 'ps-big'}
               onClick={() => dl('ps-big', '大促报名·88VIP大促12%', '大促活动报名_88VIP大促12%.xlsx', () => downloadPromoSignup('big'))}>
               88VIP大促 12% 报名表</Button>
             <Button icon={<DownloadOutlined />} block loading={busy === 'ps-mid'}
-              onClick={() => dl('ps-mid', '大促报名·超级立减10%', '大促活动报名_超级立减10%.xlsx', () => downloadPromoSignup('mid'))}>
-              超级立减 10% 报名表</Button>
+              onClick={() => dl('ps-mid', '大促报名·中促10%', '大促活动报名_中促10%.xlsx', () => downloadPromoSignup('mid'))}>
+              中促 10% 报名表</Button>
             <Button icon={<DownloadOutlined />} block loading={busy === 'ps-618'}
               onClick={() => dl('ps-618', '大促报名·超级大促15%', '大促活动报名_超级大促双11 15%.xlsx', () => downloadPromoSignup('big618'))}>
               超级大促 15% 报名表（换SKU）</Button>
-            <Divider style={{ margin: '8px 0' }} plain><Typography.Text type="secondary" style={{ fontSize: 12 }}>超级立减活动（14列·只填补贴金额）</Typography.Text></Divider>
-            <Button icon={<DownloadOutlined />} block loading={busy === 'sr'}
-              onClick={() => dl('sr', '超级立减活动·补贴金额', '超级立减活动_补贴金额.xlsx', downloadSuperReduceSignup)}>
-              超级立减活动 补贴金额表 <Tag color="green" style={{ marginLeft: 4 }}>A×10%</Tag></Button>
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              补贴金额 = 报名价A × 10%（到手 = 中促到手）。活动营销ID每期不同，上传前把此表 3 列贴进当期超级立减模板对应列。
-            </Typography.Text>
             <Divider style={{ margin: '8px 0' }} plain><Typography.Text type="secondary" style={{ fontSize: 12 }}>自动上传（挂到千牛草稿·可比对）</Typography.Text></Divider>
             <Button type="primary" ghost icon={<CloudUploadOutlined />} block
               loading={staging && upChannel === 'promo_signup'}
               onClick={() => doStage('promo_signup', 'big')}>
               大促报名 上传到千牛（先比对）</Button>
-            <Button type="primary" ghost icon={<CloudUploadOutlined />} block
-              loading={staging && upChannel === 'super_reduce'}
-              onClick={() => doStage('super_reduce', 'big')}>
-              超级立减活动 上传到千牛（先比对）</Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              超级立减没有批量导入 → 系统<b>逐商品原地改活动价</b>：先预演首商品出比对，确认后逐个提交（首商品作金丝雀，失败即止）。全是降价、免撤销。
+              自动挂进千牛「商品批量导入」+出比对表；最终「发布报名」目前在千牛手动点（导入已到草稿）。
             </Typography.Text>
           </StepCard>
         </Col>
       </Row>
+
+      {/* ── 超级立减长期活动 (独立活动·14列模板) ── */}
+      <Card size="small" title={<Space><CloudUploadOutlined /><b>超级立减长期活动（14列模板 · 独立活动）</b>
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>常年在线的超级立减，与上面的大促报名是两个不同活动、两套模板</Typography.Text></Space>}>
+        <Row gutter={[16, 8]}>
+          <Col xs={24} lg={12}>
+            <Button type="primary" icon={<DownloadOutlined />} block loading={busy === 'sr'}
+              onClick={() => dl('sr', '超级立减长期活动·报名表', '超级立减长期活动_报名表.xlsx', downloadSuperReduceSignup)}>
+              超级立减长期活动 报名表 <Tag color="green" style={{ marginLeft: 4 }}>可直接导入</Tag></Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              已按平台真实模版填好（两个 sheet + 14 列）：活动价=报名价A、让利比例10、补贴金额=活动价×10%（到手=中促到手）。
+              下载后在千牛「商品批量导入 → 第二步 导入表格」直接上传，无需改动。
+            </Typography.Text>
+          </Col>
+          <Col xs={24} lg={12}>
+            <Button type="primary" ghost icon={<CloudUploadOutlined />} block
+              loading={staging && upChannel === 'super_reduce'}
+              onClick={() => doStage('super_reduce', 'big')}>
+              超级立减长期活动 上传到千牛（先比对）</Button>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              自动逐商品原地改活动价：先预演首商品出比对，确认后逐个提交（首商品作金丝雀，失败即止）。全是降价、免撤销。
+            </Typography.Text>
+          </Col>
+        </Row>
+      </Card>
 
       {/* ── 超大促 SKU 轮换 (618/双11 15% 让利) ── */}
       <Card size="small" title={<Space><TableOutlined /><b>超大促 SKU 轮换（618/双11 15% 让利）</b>
