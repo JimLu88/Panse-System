@@ -35,16 +35,54 @@ def _f(x):
     return None if x is None else float(x)
 
 
+def _expand_ids(p) -> list[str]:
+    """一码多SKU: [主SKUID, *alt] 去重去空 —— 比对表覆盖每个【真上传】的 SKUID(与 builder 同口径)。"""
+    ids: list[str] = []
+    for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+        if _sid and str(_sid).strip() not in ids:
+            ids.append(str(_sid).strip())
+    return ids
+
+
 def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
-    """系统侧每个要上传 SKU 的目标值 —— 比对表左半(系统要的价), 右半(千牛校验)由 stage 汇总补。"""
+    """系统侧每个要上传 SKU 的目标值 —— 比对表左半(系统要的价), 右半(千牛校验)由 stage 汇总补。
+    promo_signup/super_reduce 直接走 data_export.collect_signup_rows(与 builder 同源: 占位封顶到
+    已生效价 + 整商品完整性剔除), 行集与真上传 xlsx 恒等; single_item 逐字镜像其 builder。"""
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
     from app.services import pricing_calc_service, activity_preflight_service
 
+    rows: list[dict] = []
+    if channel in ("promo_signup", "super_reduce"):
+        from app.services.data_export_service import collect_signup_rows, _PROMO_SIGNUP_TIERS
+        if channel == "promo_signup":
+            label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
+        else:
+            label, field = "补贴金额", "report_price"
+        entries, _stats = collect_signup_rows(db, field)
+        for s, p, A in entries:
+            if channel == "super_reduce":
+                sys_val = (round(_f(s.daily_price) * 0.1, 2)
+                           if getattr(s, "is_custom_placeholder", False) else round(A * 0.1, 2))
+                target = _f(p.mid_buyer_price)                              # 超级立减到手=中促到手
+            else:
+                sys_val = A
+                target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
+            for skuid in _expand_ids(p):
+                rows.append({
+                    "sku_code": s.sku_code, "taobao_sku_id": skuid,
+                    "name": (s.sku or s.product_name or s.sku_code),
+                    "value_label": label, "system_value": _f(sys_val),
+                    "target_shoudao": target,
+                })
+        return rows
+
+    # ── single_item_discount: 逐字镜像其 builder ──
     params = pricing_calc_service.get_promo_params(db)
     promo = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
     bad = activity_preflight_service.bad_price_product_codes(db)
-    rows: list[dict] = []
+    from app.services.data_export_service import _TB_DISCOUNT_TIERS
+    deduct_field = _TB_DISCOUNT_TIERS[tier][1]                              # mid/big/big618 各自档位
     for s in db.execute(select(PricingSku).order_by(
             PricingSku.product_code, PricingSku.sku_code)).scalars().all():
         p = promo.get(s.sku_code)
@@ -52,48 +90,19 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
             continue
         if (s.product_code or "") in bad:
             continue
-        ph = getattr(s, "is_custom_placeholder", False)
-        sys_val = target_shoudao = None
-        label = ""
-        # ★系统应填值 —— 逐字镜像 data_export 三个 builder(tier/占位符口径一致), 供 0 容差严格核对。
-        if channel == "single_item_discount":
-            from app.services.data_export_service import _TB_DISCOUNT_TIERS
-            label, deduct_field = "立减金额", _TB_DISCOUNT_TIERS[tier][1]   # mid/big/big618 各自档位
-            if ph:
-                sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
-            else:
-                sys_val = pricing_calc_service.single_item_discounts(p, s.daily_price, params).get(deduct_field)
-            target_shoudao = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
-        elif channel == "promo_signup":
-            from app.services.data_export_service import _PROMO_SIGNUP_TIERS
-            label, price_field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]    # mid/big→report_price, big618→618
-            if ph:
-                sys_val = round(_f(s.daily_price) * 0.9, 2) if s.daily_price else None
-            else:
-                sys_val = pricing_calc_service.report_prices(p, params).get(price_field)
-            target_shoudao = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
-        elif channel == "super_reduce":
-            label = "补贴金额"                                             # =A×0.1(占位符=现价×0.1, 修旧版×0.09)
-            if ph:
-                sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
-            else:
-                A = pricing_calc_service.report_prices(p, params).get("report_price")
-                sys_val = round(_f(A) * 0.1, 2) if A is not None else None
-            target_shoudao = _f(p.mid_buyer_price)                          # 超级立减到手=中促到手
+        if getattr(s, "is_custom_placeholder", False):
+            sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
+        else:
+            sys_val = pricing_calc_service.single_item_discounts(p, s.daily_price, params).get(deduct_field)
         if sys_val is None:
             continue
-        # 一码多SKU: 与三个 builder 同口径展开 [主SKUID, *alt] 各出一行(值相同), 让比对表覆盖每个【真上传】的
-        #  SKUID。否则 alt SKUID 被真上传千牛却不在人工核对表里(commit 不可逆, 陈旧/串位 alt 会绕过闸门无人可见)。
-        ids: list[str] = []
-        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            if _sid and str(_sid).strip() not in ids:
-                ids.append(str(_sid).strip())
-        for skuid in ids:
+        target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
+        for skuid in _expand_ids(p):
             rows.append({
                 "sku_code": s.sku_code, "taobao_sku_id": skuid,
                 "name": (s.sku or s.product_name or s.sku_code),
-                "value_label": label, "system_value": _f(sys_val),
-                "target_shoudao": target_shoudao,
+                "value_label": "立减金额", "system_value": _f(sys_val),
+                "target_shoudao": target,
             })
     return rows
 

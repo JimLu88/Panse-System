@@ -423,6 +423,27 @@ def run_promo_price_check(
     return r
 
 
+@router.post("/import-enrolled-floor")
+async def import_enrolled_floor(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """上传千牛「活动商品导出」(已报商品列表) → 导入各 SKUID 的【已生效活动价】(校验底价)。
+
+    用途(2026-07-12 用户: 第二场62件全失败): 淘宝要求活动券后价 ≤ 校验期最低普惠券后价,
+    上一场已生效价就是硬底 → 占位SKU报名价自动封顶到它 + 预检超线红字。重复导入取更低值。"""
+    from app.services import enrolled_floor_import_service
+    raw = await file.read()
+    try:
+        res = enrolled_floor_import_service.import_from_xlsx_bytes(db, raw)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"解析失败: {type(e).__name__}: {e}") from e
+    if not res.get("ok"):
+        raise HTTPException(400, res.get("error", "导入失败"))
+    return res
+
+
 @router.post("/import-taobao-titles")
 async def import_taobao_titles(
     file: UploadFile = File(...),

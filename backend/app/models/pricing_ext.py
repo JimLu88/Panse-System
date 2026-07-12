@@ -52,6 +52,9 @@ class PricingSkuPromo(Base, TimestampMixin):
     # 一码多SKU: 同一商家编码在淘宝挂的其它 SKUID(主=taobao_sku_id)。导出报名/单品立减时, 主+每个alt 各出一行同价。
     alt_taobao_sku_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     taobao_activity_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))  # = daily_price
+    # 校验期已生效活动价(上一场已报价, 从活动导出导入) = 普惠券后价硬底: 新报名价高于它必被淘宝拦;
+    # 占位SKU报名价自动封顶到它 (2026-07-12 第二场62件全失败根因)。
+    enrolled_floor_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     # 店内活动
     shop_promo_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))         # 单品立减系数
     shop_internal_promo: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))     # 单品立减设置

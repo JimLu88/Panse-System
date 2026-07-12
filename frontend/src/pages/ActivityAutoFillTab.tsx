@@ -71,8 +71,10 @@ export default function ActivityAutoFillTab() {
   };
 
   // 缺映射(无淘宝SKUID)= 未上架, 按设计本就不推送, 不算问题 → 不纳入"全绿"判定 (用户 2026-07-11)
+  // 券后价超线/整商品不完整 = 淘宝必拒 → 纳入; 动销0销量只是警示不拦 (2026-07-12)
   const clean = pre && pre.bad_product_count === 0 && pre.conflict_count === 0
-    && (pre.skuid_collision_count ?? 0) === 0;
+    && (pre.skuid_collision_count ?? 0) === 0
+    && (pre.floor_conflict_count ?? 0) === 0;
 
   // ── 千牛上传 (stage → 比对表 → 确认 → commit) ──
   const [upChannel, setUpChannel] = useState<string | null>(null);
@@ -208,6 +210,60 @@ export default function ActivityAutoFillTab() {
                       dataIndex: 'names',
                       render: (names: string[]) => names.map((n) => <Tag color="red" key={n} style={{ marginBottom: 4 }}>{n}</Tag>) },
                   ]} />
+              </div>
+            )}
+
+            {(pre.floor_conflict_count ?? 0) > 0 && (
+              <div>
+                <Divider orientation="left" style={{ margin: '4px 0' }}>
+                  <Typography.Text strong type="danger">
+                    <WarningOutlined /> 券后价超线（报名价 高于 已生效活动价=校验硬底 → 淘宝必拒整个商品）</Typography.Text>
+                </Divider>
+                <Typography.Paragraph type="secondary" style={{ fontSize: 12, margin: '0 0 8px' }}>
+                  处理：去定价页把该 SKU 大促到手调到 ≤ 已生效价，或本场放弃该商品。共 {pre.floor_conflict_count} 个 SKU。
+                </Typography.Paragraph>
+                <Table size="small" pagination={{ pageSize: 10 }} rowKey="sku_code"
+                  dataSource={pre.floor_conflicts || []}
+                  columns={[
+                    { title: 'SKU编码', dataIndex: 'sku_code', width: 150 },
+                    { title: '名称', dataIndex: 'name', ellipsis: true },
+                    { title: '计划报名价', dataIndex: 'planned', width: 100, render: (v: number) => `¥${v}` },
+                    { title: '已生效活动价(硬底)', dataIndex: 'enrolled_floor', width: 140, render: (v: number) => `¥${v}` },
+                    { title: '超出', dataIndex: 'over', width: 90,
+                      render: (v: number) => <Tag color="red">+¥{v}</Tag> },
+                  ]} />
+              </div>
+            )}
+
+            {(pre.incomplete_item_count ?? 0) > 0 && (
+              <div>
+                <Divider orientation="left" style={{ margin: '4px 0' }}>
+                  <Typography.Text strong type="danger">
+                    <WarningOutlined /> 整商品SKU不全（淘宝要求全SKU报名，缺价SKU的商品已整个剔除，补价后自动纳入）</Typography.Text>
+                </Divider>
+                <Table size="small" pagination={{ pageSize: 8 }} rowKey="taobao_item_id"
+                  dataSource={pre.incomplete_items || []}
+                  columns={[
+                    { title: '商品ID', dataIndex: 'taobao_item_id', width: 140 },
+                    { title: '商品', dataIndex: 'product', ellipsis: true, width: 220 },
+                    { title: '已有价SKU', dataIndex: 'ok_skus', width: 90, align: 'center' as const },
+                    { title: '缺价的SKU（去定价页补价）', dataIndex: 'missing_skus',
+                      render: (ms: string[]) => ms.map((m) => <Tag color="red" key={m} style={{ marginBottom: 3 }}>{m}</Tag>) },
+                  ]} />
+              </div>
+            )}
+
+            {(pre.no_sales_count ?? 0) > 0 && (
+              <div>
+                <Divider orientation="left" style={{ margin: '4px 0' }}>
+                  <Typography.Text strong style={{ color: '#d46b08' }}>
+                    <WarningOutlined /> 疑似动销不达标（近60天0销量；上架超60天的会被平台拒，新品不受限 → 仅警示不拦表）</Typography.Text>
+                </Divider>
+                <Space wrap size={4}>
+                  {(pre.no_sales_items || []).map((it) => (
+                    <Tag key={it.taobao_item_id} color="orange">{it.product}（{it.taobao_item_id}）</Tag>
+                  ))}
+                </Space>
               </div>
             )}
 
@@ -361,8 +417,9 @@ export default function ActivityAutoFillTab() {
       {/* ── 千牛上传·比对表确认 (stage 完成后弹出) ── */}
       <Modal
         open={!!stageRes}
-        title={<Space><CloudUploadOutlined /><b>{stageRes?.channel_name} · 上传比对（确认前请核对）</b></Space>}
-        width={820}
+        title={<Space><CloudUploadOutlined /><b style={{ fontSize: 17 }}>{stageRes?.channel_name} · 上传比对（确认前请核对）</b></Space>}
+        width={1400}
+        style={{ maxWidth: '96vw', top: 24 }}
         onCancel={() => { setStageRes(null); setUpChannel(null); }}
         footer={
           stageRes?.channel === 'single_item_discount'
@@ -439,6 +496,22 @@ export default function ActivityAutoFillTab() {
               )}
             </Card>
 
+            {/* ①b 失败原因归类(自动下载千牛操作反馈解析, 人不用去千牛翻) */}
+            {(stageRes.validation?.failed_reasons?.length ?? 0) > 0 && (
+              <Alert type="error" showIcon
+                message={<b style={{ fontSize: 15 }}>失败原因（已自动解析千牛操作反馈）</b>}
+                description={
+                  <Space direction="vertical" size={2} style={{ fontSize: 14 }}>
+                    {stageRes.validation!.failed_reasons!.map((r) => (
+                      <div key={r.reason}>🔴 <b>{r.items} 件</b>：{r.reason}</div>
+                    ))}
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      预检页有对应红字明细（券后价超线 / 整商品SKU不全 / 动销）——按预检修完再导。
+                    </Typography.Text>
+                  </Space>
+                } />
+            )}
+
             {/* ② 千牛页面截图 —— 带标签、点击放大 */}
             {stageRes.screenshot_base64 && (
               <div>
@@ -465,7 +538,7 @@ export default function ActivityAutoFillTab() {
               <Typography.Text type="secondary" style={{ fontSize: 13 }}>
                 👇 逐 SKU 核对：<b>上传值</b>（真正传千牛的数）vs <b>系统应填</b>（按定价重算）；差 &gt;1 分即标红
               </Typography.Text>
-              <Table size="small" rowKey="taobao_sku_id" pagination={{ pageSize: 8 }} style={{ marginTop: 6 }}
+              <Table size="middle" rowKey="taobao_sku_id" pagination={{ pageSize: 12 }} style={{ marginTop: 6 }}
                 dataSource={stageRes.compare_rows || []}
                 onRow={(r: any) => (
                   (r.mismatch || failCodes.includes(r.sku_code)) ? { style: { background: '#fff1f0' } } : {}

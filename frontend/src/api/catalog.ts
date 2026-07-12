@@ -766,6 +766,12 @@ export type ActivityPreflight = {
   floor_check_skipped?: boolean;
   skuid_collision_count?: number;
   skuid_collisions?: { taobao_sku_id: string; sku_codes: string[]; names: string[] }[];
+  floor_conflict_count?: number;
+  floor_conflicts?: { sku_code: string; name: string; planned: number; enrolled_floor: number; over: number }[];
+  incomplete_item_count?: number;
+  incomplete_items?: { taobao_item_id: string; product: string; ok_skus: number; missing_skus: string[] }[];
+  no_sales_count?: number;
+  no_sales_items?: { taobao_item_id: string; product: string }[];
   signup_big: { rows: number; skipped_bad_price: number; skipped_no_price: number };
   signup_618: { rows: number; skipped_bad_price: number; skipped_no_price: number };
 };
@@ -779,7 +785,8 @@ export type UploadStageResult = {
   ok: boolean; need_scan?: boolean; error?: string; message?: string;
   channel: string; channel_name: string;
   validation?: { raw: string; ok: number | null; failed: number | null;
-    failed_sku_codes?: string[] } | null;
+    failed_sku_codes?: string[]; total_items?: number; unit?: string;
+    failed_reasons?: { reason: string; items: number }[] } | null;
   screenshot_base64?: string | null;
   compare_rows?: { sku_code: string; taobao_sku_id: string; name: string;
     value_label: string; system_value: number | null; target_shoudao: number | null;

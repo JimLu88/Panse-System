@@ -1194,18 +1194,87 @@ _PROMO_SIGNUP_TIERS = {
 }
 
 
-def build_promo_signup_upload_xlsx(db: Session, tier: str):
-    """淘宝『大促活动报名』批量导入表 (千牛后台大促活动导入, SKU 维度)。
-    模板 = assets/taobao_templates/promo_signup_sku.xlsx (原样保留 模版说明 sheet + 数据 sheet 前3行表头,
-    数据从第4行追加)。每行只填 商品ID / SKUID / 活动价(=报名价); 库存 / 发货时间 / 官方立减报名折扣 /
-    官方立减金额 全部留空 (用户 2026-07-07 指定)。活动价: 超级立减10% 与 88VIP大促12% 同价(report_price);
-    超级大促15% 用 report_price_618。数值每次下载实时算。返回 (BytesIO, stats)。"""
-    import io as _io
-    from pathlib import Path
-    import openpyxl
+def _placeholder_signup_price(s, p) -> "float | None":
+    """占位/定制 SKU 的报名活动价 = 现价×0.9, 【封顶到已生效活动价】enrolled_floor_price。
+    淘宝: 活动券后价 ≤ 校验期最低普惠券后价 → 高于上一场已生效价必被拦(2026-07-12 62件全失败根因);
+    定制占位价本就是入口价, 跟住老价最安全。没导入底价时维持 ×0.9 老口径。"""
+    if not s.daily_price:
+        return None
+    price = round(float(s.daily_price) * 0.9, 2)
+    floor = getattr(p, "enrolled_floor_price", None)
+    if floor is not None and float(floor) > 0:
+        price = min(price, round(float(floor), 2))
+    return price
+
+
+def collect_signup_rows(db: Session, price_field: str):
+    """大促报名/超级立减 共用行收集器 (builder 与比对表同源, 保零漂移):
+      - 占位SKU报名价 = _placeholder_signup_price (×0.9 封顶到已生效价);
+      - ★整商品完整性: 淘宝要求商品【全部SKU】报名, 任一已映射SKU算不出价 → 整商品剔除
+        (否则被拒"缺失的SKUID=..."), 明细进 stats.incomplete_items 供预检红字。
+    返回 (entries, stats): entries=[(sku, promo, 报名价A)]。"""
+    from collections import defaultdict as _dd
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
     from app.services import pricing_calc_service
+    from app.services.activity_preflight_service import bad_price_product_codes
+
+    params = pricing_calc_service.get_promo_params(db)
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    bad_pc = bad_price_product_codes(db)
+
+    stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0,
+             "skipped_incomplete_items": 0, "incomplete_items": []}
+    by_item: "dict[str, list]" = _dd(list)
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id:
+            continue
+        if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
+            stats["skipped_no_skuid"] += 1
+            continue
+        by_item[str(p.taobao_item_id)].append((s, p))
+
+    entries: list = []
+    for item_id, pairs in sorted(by_item.items()):
+        if all((s.product_code or "") in bad_pc for s, _ in pairs):
+            stats["skipped_bad_price"] += len(pairs)       # 坏价产品(=整商品)排除, 旧口径
+            continue
+        priced, missing = [], []
+        for s, p in pairs:
+            if getattr(s, "is_custom_placeholder", False):
+                price = _placeholder_signup_price(s, p)
+            else:
+                price = pricing_calc_service.report_prices(p, params).get(price_field)
+            if price is None:
+                missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
+                stats["skipped_no_price"] += 1
+            else:
+                priced.append((s, p, float(price)))
+        if missing:
+            stats["skipped_incomplete_items"] += 1         # 任一SKU缺价→整商品剔除(半套必拒)
+            stats["incomplete_items"].append({
+                "taobao_item_id": item_id,
+                "product": (pairs[0][0].product_name or pairs[0][0].product_code or "")[:30],
+                "ok_skus": len(priced), "missing_skus": missing[:10],
+            })
+            continue
+        entries.extend(priced)
+    stats["rows_pre_alt"] = len(entries)
+    return entries, stats
+
+
+def build_promo_signup_upload_xlsx(db: Session, tier: str):
+    """淘宝『大促活动报名』批量导入表 (千牛后台大促活动导入, SKU 维度)。
+    模板 = assets/taobao_templates/promo_signup_sku.xlsx (原样保留 模版说明 sheet + 数据 sheet 前3行表头,
+    数据从第4行追加)。每行只填 商品ID / SKUID / 活动价(=报名价); 其余列留空 (用户 2026-07-07 指定)。
+    活动价: 超级立减10% 与 88VIP大促12% 同价(report_price); 超级大促15% 用 report_price_618;
+    占位SKU=×0.9封顶到已生效价 + 整商品完整性剔除 (collect_signup_rows, 2026-07-12)。返回 (BytesIO, stats)。"""
+    import io as _io
+    from pathlib import Path
+    import openpyxl
 
     if tier not in _PROMO_SIGNUP_TIERS:
         raise ValueError(f"未知档位 {tier}; 可选 {list(_PROMO_SIGNUP_TIERS)}")
@@ -1216,33 +1285,10 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    params = pricing_calc_service.get_promo_params(db)
-    skus = db.execute(
-        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
-    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    # 排除坏价产品(各尺寸报名价雷同=未真实定价), 避免废价上淘宝; 改成真实价后自动纳入 (2026-07-11)
-    from app.services.activity_preflight_service import bad_price_product_codes
-    bad_pc = bad_price_product_codes(db)
-    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0}
+    entries, stats = collect_signup_rows(db, price_field)
+    stats["tier"] = tier
     r = 4
-    for s in skus:
-        p = promo_by_sku.get(s.sku_code)
-        if p is None or not p.taobao_item_id:
-            continue
-        if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
-            stats["skipped_no_skuid"] += 1
-            continue
-        if (s.product_code or "") in bad_pc:               # 坏价产品排除(未真实定价)
-            stats["skipped_bad_price"] += 1
-            continue
-        if getattr(s, "is_custom_placeholder", False):
-            # 定制占位符: 报名活动价 = 现价(daily_price) × 0.9 (定制9折, 不走标准报名价模型)
-            price = round(float(s.daily_price) * 0.9, 2) if s.daily_price else None
-        else:
-            price = pricing_calc_service.report_prices(p, params).get(price_field)
-        if price is None:
-            stats["skipped_no_price"] += 1
-            continue
+    for s, p, price in entries:
         # 一码多SKU: 主 SKUID + 每个 alt 各出一行, 报名价相同(去重去空)
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
@@ -1282,16 +1328,6 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    from app.models.pricing import PricingSku
-    from app.models.pricing_ext import PricingSkuPromo
-    from app.services import pricing_calc_service
-    from app.services.activity_preflight_service import bad_price_product_codes
-
-    params = pricing_calc_service.get_promo_params(db)
-    skus = db.execute(
-        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
-    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    bad_pc = bad_price_product_codes(db)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1303,27 +1339,14 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         c = ws.cell(1, ci, h)
         c.fill = head_fill; c.font = head_font; c.alignment = wrap
 
-    stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0}
+    # 同收集器(整商品完整性剔除+占位封顶); 补贴口径: 占位=现价×0.1(旧口径不变), 正常=A×0.1
+    entries, stats = collect_signup_rows(db, "report_price")
     r = 2
-    for s in skus:
-        p = promo_by_sku.get(s.sku_code)
-        if p is None or not p.taobao_item_id:
-            continue
-        if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID (未上架跳过)
-            stats["skipped_no_skuid"] += 1
-            continue
-        if (s.product_code or "") in bad_pc:               # 坏价产品排除
-            stats["skipped_bad_price"] += 1
-            continue
+    for s, p, A in entries:
         if getattr(s, "is_custom_placeholder", False):
-            # 定制占位符: 补贴 = 现价 × 10% (到手=现价×0.9)
-            subsidy = round(float(s.daily_price) * 0.1, 2) if s.daily_price else None
+            subsidy = round(float(s.daily_price) * 0.1, 2)   # 占位: 现价×10% (到手=现价×0.9)
         else:
-            A = pricing_calc_service.report_prices(p, params).get("report_price")
-            subsidy = round(float(A) * 0.1, 2) if A is not None else None
-        if subsidy is None:
-            stats["skipped_no_price"] += 1
-            continue
+            subsidy = round(float(A) * 0.1, 2)               # 正常: 报名价A×10%
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
             if _sid and str(_sid) not in ids:
@@ -1331,7 +1354,7 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         for skuid in ids:
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
-            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额 = A×10%
+            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额
             # 活动价(C)/让利比例(M)/库存/素材 → 留空 (SKU级自动/非必填)
             r += 1
     stats["rows"] = r - 2

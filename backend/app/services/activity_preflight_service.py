@@ -165,6 +165,37 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         return {"rows": rows_n, "skipped_bad_price": skipped_bad,
                 "skipped_no_price": skipped_no_price}
 
+    # 6) 报名可行性 (2026-07-12 第二场62件全失败复盘) —— 三类淘宝准入规则提前算:
+    #    a. 券后价超线: 计划报名价A > enrolled_floor_price(已生效活动价=校验硬底) → 必被拦(整商品拒);
+    #    b. 整商品不完整: 淘宝要求全SKU报名, 任一已映射SKU算不出价 → collect 已整商品剔除, 这里红字列明;
+    #    c. 动销疑似不达标: 近60天销量=0 的商品(上架>60天要求近60天≥1件; 上架时间未知, 故标"疑似")。
+    from app.services.data_export_service import collect_signup_rows
+    sig_entries, sig_stats = collect_signup_rows(db, "report_price")
+    floor_conflicts: list[dict] = []
+    for s, p, A in sig_entries:
+        fl = getattr(p, "enrolled_floor_price", None)
+        if fl is not None and float(fl) > 0 and A - float(fl) > 0.005:
+            floor_conflicts.append({
+                "sku_code": s.sku_code, "name": s.sku or s.product_name or s.sku_code,
+                "planned": round(A, 2), "enrolled_floor": round(float(fl), 2),
+                "over": round(A - float(fl), 2)})
+    floor_conflicts.sort(key=lambda x: -x["over"])
+    since60 = datetime.date.today() - datetime.timedelta(days=60)
+    sold = {c: float(q or 0) for c, q in db.execute(
+        select(Order.sku_code, func.sum(Order.qty))
+        .where(Order.order_date >= since60, Order.platform == "淘宝",
+               Order.is_refill.is_(False), Order.sku_code.isnot(None),
+               Order.status.notin_(("cancelled",)))
+        .group_by(Order.sku_code)).all()}
+    item_sales: dict[str, float] = defaultdict(float)
+    item_name: dict[str, str] = {}
+    for s, p, _A in sig_entries:
+        iid = str(p.taobao_item_id)
+        item_sales[iid] += sold.get(s.sku_code, 0)
+        item_name.setdefault(iid, (s.product_name or s.product_code or "")[:30])
+    no_sales_items = [{"taobao_item_id": iid, "product": item_name[iid]}
+                      for iid, q in sorted(item_sales.items()) if q <= 0]
+
     # 5) 淘宝SKUID撞号: 一个 SKUID 被多个商家编码共用(主或alt) → 上传表两行打架、后行覆盖前行 = 必串价。
     #    在生成上传表【之前】暴露串号 (用户 2026-07-12; 例: 6042972321593 被 小横隔板/竖隔板 共用,
     #    比对表事后逮到 64.13≠92.31)。只读检测。
@@ -195,6 +226,12 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         "floor_check_skipped": skip_floor_check,   # 本次是否按初始报价跳过了15天校验
         "skuid_collision_count": len(skuid_collisions),
         "skuid_collisions": skuid_collisions[:50],
+        "floor_conflict_count": len(floor_conflicts),          # 券后价超线(> 已生效活动价) → 必被拦
+        "floor_conflicts": floor_conflicts[:100],
+        "incomplete_item_count": sig_stats["skipped_incomplete_items"],   # 整商品不完整(缺价SKU) → 已剔除
+        "incomplete_items": sig_stats["incomplete_items"][:50],
+        "no_sales_count": len(no_sales_items),                 # 近60天0销量(疑似动销不达标, 警示)
+        "no_sales_items": no_sales_items[:50],
         "signup_big": _emit_count("report_price", 0.9),       # 88VIP大促12% / 超级立减10% 同报名价
         "signup_618": _emit_count("report_price_618", 0.9),   # 超级大促15% (换SKU)
     }
