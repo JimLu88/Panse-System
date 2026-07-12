@@ -851,6 +851,15 @@ _CLASSIFY_AI_SYSTEM = """你是家具定制报价分类助手。标准产品库(
 顶柜: 客户说"高出来的部分加到顶柜"/"加顶柜"/"顶上加柜" → add_parts 里加 {{"material": "顶柜", "qty": 1}}(高度差额系统自动算, 你不用算)。"""
 
 
+def _sane_dim(v, lo: float, hi: float) -> Optional[float]:
+    """AI 抽的尺寸出合理区间(如 0.95米被写成 950cm)→ 弃用, 让规则解析值顶上 (2026-07-12 实测坑)。"""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if lo <= f <= hi else None
+
+
 def classify_ai(db: Session, *, text: str = "", images=None, provider=None, model: str = "") -> Optional[dict]:
     """AI 增强分类: 自由文字/图 → 结构化(类型+产品+尺寸+材质+增减)。失败返回 None 让上层回落确定性。"""
     if provider is None:
@@ -881,9 +890,9 @@ def classify_ai(db: Session, *, text: str = "", images=None, provider=None, mode
         "customization_type": data["customization_type"],
         "base_product_code": code,
         "base_product_name": pname or mname,
-        "target_length_m": data.get("target_length_m") or parse_length_m(text) or parse_dims_triplet(text)[0],
-        "target_width_cm": data.get("target_width_cm") or parse_dims_triplet(text)[1],
-        "target_height_cm": data.get("target_height_cm") or parse_height_cm(text) or parse_dims_triplet(text)[2],
+        "target_length_m": _sane_dim(data.get("target_length_m"), 0.2, 6) or parse_length_m(text) or parse_dims_triplet(text)[0],
+        "target_width_cm": _sane_dim(data.get("target_width_cm"), 10, 500) or parse_dims_triplet(text)[1],
+        "target_height_cm": _sane_dim(data.get("target_height_cm"), 10, 350) or parse_height_cm(text) or parse_dims_triplet(text)[2],
         "target_material": data.get("target_material") or detect_wood(text),
         "add_parts": _auto_top_cabinet(text, data.get("add_parts") or []),
         "remove_parts": data.get("remove_parts") or parse_remove_parts(text),
