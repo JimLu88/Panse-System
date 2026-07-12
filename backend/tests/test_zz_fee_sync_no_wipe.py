@@ -75,6 +75,28 @@ def test_install_fill_only_never_overwrites(db_session):
     assert db_session.query(Order).filter_by(order_no="I2").one().actual_install == D("150")
 
 
+def test_install_falls_back_to_wanshifu_first_install(db_session):
+    """万师傅首装兜底 (2026-07-12): 订单自身安装字段全空 → 用已配对+交易成功+非维修的最早
+    万师傅单净额; 维修单不算; 手工值仍优先不覆盖。"""
+    from datetime import datetime
+    from app.models.finance import WanshifuOrder
+    _order(db_session, "W1")                                    # 全空 → 兜底
+    _order(db_session, "W2", actual_install=D("88"))            # 手工值在 → 不动
+    db_session.add(WanshifuOrder(wsf_order_no="WS1", matched_order_no="W1",
+                                 status="交易成功", service_type="家具|安装",
+                                 net_amount=D("116"), created_time=datetime(2026, 4, 12)))
+    db_session.add(WanshifuOrder(wsf_order_no="WS2", matched_order_no="W1",
+                                 status="交易成功", service_type="家具|维修",
+                                 net_amount=D("50"), created_time=datetime(2026, 4, 1)))   # 维修更早也不取
+    db_session.add(WanshifuOrder(wsf_order_no="WS3", matched_order_no="W2",
+                                 status="交易成功", service_type="家具|安装",
+                                 net_amount=D("300"), created_time=datetime(2026, 4, 2)))
+    db_session.flush()
+    svc.sync_fee_components(db_session)
+    assert db_session.query(Order).filter_by(order_no="W1").one().actual_install == D("116")
+    assert db_session.query(Order).filter_by(order_no="W2").one().actual_install == D("88")
+
+
 def test_scoped_sync_skips_est_refresh(db_session):
     """定点模式不重刷 est_*(与配单无关; 子集中位兜底会把无定价单的 est 误清)。"""
     _order(db_session, "E1", est_packing=D("170"), est_logistics=D("300"),

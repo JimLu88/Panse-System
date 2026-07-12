@@ -210,11 +210,28 @@ def sync_fee_components(db: Session, *, order_nos: Optional[list[str]] = None,
         if fee is not None:
             lg_sum[no] = lg_sum.get(no, Decimal("0")) + _d(fee)
 
+    # 万师傅首装 → actual_install 兜底 (2026-07-12 用户: 安装账单也要同步到订单总表):
+    # 订单自身 install_fee/upstairs_fee 都空时, 用万师傅逐单档案(已配对+交易成功+非维修)最早一单的净额
+    # 作实际安装费。只取首装不含返修(与"核对表L=首装, 返修属售后"的 2026-07-11 裁定一致); 恒只填空。
+    from app.models.finance import WanshifuOrder
+    ws_first: dict[str, tuple] = {}    # order_no -> (created_time, net_amount)
+    for w in db.execute(select(WanshifuOrder).where(
+            WanshifuOrder.matched_order_no.isnot(None),
+            WanshifuOrder.status == "交易成功")).scalars().all():
+        if w.net_amount is None or "维修" in (w.service_type or ""):
+            continue
+        prev = ws_first.get(w.matched_order_no)
+        key_t = w.created_time
+        if prev is None or (key_t is not None and (prev[0] is None or key_t < prev[0])):
+            ws_first[w.matched_order_no] = (key_t, Decimal(str(w.net_amount)))
+
     ap_set = al_set = ai_set = kept = 0
     prev_backup: dict = {}
     for o in orders:
         if_, uf = _d(o.install_fee), _d(o.upstairs_fee)
         new_ai = ((if_ or Decimal("0")) + (uf or Decimal("0"))) if (if_ is not None or uf is not None) else None
+        if new_ai is None and o.order_no in ws_first:
+            new_ai = ws_first[o.order_no][1]   # 万师傅首装净额兜底
         # 打包/物流: 账单配到才写; 没账单 → 全量保留现值(只设不清), 定点按对齐语义可清
         for attr, new in (("actual_packing", pk_sum.get(o.order_no)),
                           ("actual_logistics", lg_sum.get(o.order_no))):

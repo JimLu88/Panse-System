@@ -186,7 +186,9 @@ _COMMON_LABELS: dict[str, str] = {
 # excel_schemas(导入字段)仍优先; 此处只补 schema 没有的列(如 est_/actual_ 费用分量、
 # 配件覆盖、签收确认等系统列), _build_label_map 里 setdefault 不覆盖 schema 定义。
 _ENTITY_EXTRA_LABELS: dict[str, dict[str, str]] = {
-    "orders": {
+    # ⚠ 键必须用 ENTITY_MODELS 的实体名 "order"(单数) —— 2026-07-11 首版误挂 "orders" 致订单总表
+    # 页面表头仍英文(该页 FullColumnView 走 /api/table-explorer/order)。
+    "order": {
         "platform": "平台", "shop": "店铺", "order_no": "订单号",
         "is_refill": "是否补单", "factory_no": "工厂制单号", "remote_seq": "远期单序号",
         "order_date": "下单日期", "ship_date": "发货日期",
