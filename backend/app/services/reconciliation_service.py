@@ -1164,14 +1164,19 @@ def _alipay_flow_amount_map(db: Session) -> dict[str, Decimal]:
 
     修 (2026-07-10): 支付宝同一交易号下常有多笔子流水(库唯一键本就允许, 如 -109.98玻璃/-2260备货/
     -0.02尾差 共号), 原实现 `out[no]=abs(amt)` 同号互相覆盖只留最后一行, 且收入行(+2080"岩板费")
-    也被当支出 → 采购对账 2026-06 假差 +2150/+1790。改: 只累加支出行。"""
+    也被当支出 → 采购对账 2026-06 假差 +2150/+1790。改: 只累加支出行。
+    修 (2026-07-12): 排除 internal_transfer 行 — 内部划转腿与真实付款常共号(主力号→爱群号
+    充"岩板费"-2080 与 爱群号付*丽 -290 同交易号), 计入会把实付虚高整条划转额(假差+2080)。
+    07-10 那次它是错符号的收入行侥幸被跳过; 07-11 符号修对后支出行现形, 必须按类型排除。"""
     out: dict[str, Decimal] = {}
-    for no, amt in db.execute(
-        select(AlipayFlow.transaction_no, AlipayFlow.amount).where(
+    for no, amt, rt in db.execute(
+        select(AlipayFlow.transaction_no, AlipayFlow.amount, AlipayFlow.reconciliation_type).where(
             AlipayFlow.transaction_no.isnot(None), AlipayFlow.transaction_no != "",
         )
     ).all():
         if not no or amt is None or amt >= 0:
+            continue
+        if (rt or "") == "internal_transfer":
             continue
         out[no] = out.get(no, Decimal("0")) + (-Decimal(amt))
     return out
@@ -1243,11 +1248,20 @@ def run_operating_expense(
         if flow_no in flow_map:
             actual[month] = actual.get(month, Decimal("0")) + flow_map[flow_no]
         else:
-            # 有流水号但在支付宝表里找不到: 可能号录错 或 流水未导入
-            msg = f"[{source}] {key}: 流水号 {flow_no} 无对应支付宝记录, 请确认号码或补导入流水"
+            # 号在库但不在支出map = 该流水是收入方向/内部划转 → 大概率符号错(主力号符号丢失病灶)
+            # 或类型待核, 与"号不存在"分开报, 一眼定位 (2026-07-12: 日常#476 +75 曾被报成"无对应记录")
+            if db.execute(select(AlipayFlow.id).where(
+                    AlipayFlow.transaction_no == flow_no).limit(1)).first() is not None:
+                msg = (f"[{source}] {key}: 流水号 {flow_no} 在库但无支出方向金额"
+                       f"(收入方向/内部划转) — 符号疑似错误或核销类型待核")
+                related = [f"[{source}]{key} ¥{amt}", f"支付宝流水号 {flow_no} (在库, 方向不符)"]
+            else:
+                # 有流水号但在支付宝表里找不到: 可能号录错 或 流水未导入
+                msg = f"[{source}] {key}: 流水号 {flow_no} 无对应支付宝记录, 请确认号码或补导入流水"
+                related = [f"[{source}]{key} ¥{amt}", f"支付宝流水号 {flow_no} (查无)"]
             diffs.append(ReconciliationDiff(
                 key=key, expected=amt, actual=None, diff=None, severity="warning", message=msg,
-                related_records=[f"[{source}]{key} ¥{amt}", f"支付宝流水号 {flow_no} (查无)"],
+                related_records=related,
             ))
             if record_exceptions:
                 _record_exception(db, rule="operating_expense", key=key, diff_amount=amt, message=msg)
