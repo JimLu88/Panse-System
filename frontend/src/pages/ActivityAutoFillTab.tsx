@@ -415,7 +415,8 @@ export default function ActivityAutoFillTab() {
               onClick={() => doStage('super_reduce', 'big')}>
               超级立减长期活动 上传到千牛（先比对）</Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              自动逐商品原地改活动价：先预演首商品出比对，确认后逐个提交（首商品作金丝雀，失败即止）。全是降价、免撤销。
+              自动走报名页「商品批量导入」→ 落草稿 + 出导入结果 → 确认后一键发布。全是降价、草稿可撤销。
+              失败多为 0 销量/触线/无映射SKU（非自动化问题）。
             </Typography.Text>
           </Col>
         </Row>
@@ -479,7 +480,7 @@ export default function ActivityAutoFillTab() {
                   loading={committing || superProgress?.status === 'running'}
                   disabled={superProgress?.status === 'done'}
                   icon={<CloudUploadOutlined />} onClick={doCommit}>
-                  ✅ 确认逐商品改价并提交（不可逆）</Button>,
+                  ✅ 确认批量导入并一键发布（不可逆）</Button>,
               ]
             : [
                 <Typography.Text key="note" type="secondary" style={{ marginRight: 12, fontSize: 12 }}>
@@ -509,47 +510,38 @@ export default function ActivityAutoFillTab() {
               <Card size="small" style={{ background: '#e6f4ff', border: '1px solid #91caff' }}
                 styles={{ body: { padding: '12px 16px' } }}>
                 <Typography.Text style={{ fontSize: 13 }}>
-                  超级立减活动<b>没有批量导入</b>，系统会<b>逐个商品打开、按报名价A填活动价、逐个提交</b>（约每个 25 秒，
-                  全部 {stageRes.preview?.items_total ?? '?'} 个商品需几分钟）。<br/>
-                  这些价格都是<b>降价</b>方向（同事之前按日常价报的更高），平台放行、无需撤销、无 15 天线风险。
-                  <b>第一个商品作金丝雀</b>：它若失败立即中止全场，不会一路错下去。
+                  超级立减走<b>报名页批量导入</b>：系统把报名表（活动价=报名价A、让利10%）自动传进
+                  千牛「商品批量导入」→ 落<b>草稿</b>（可撤销），出导入结果给你核对；确认后点下方按钮
+                  <b>一键发布</b>才真生效。价格都是<b>降价</b>方向、无需撤销。<br/>
+                  失败通常是：<b>0销量商品</b>（近60天销量&lt;1，平台动销规则拒）、价格触<b>最低标价/红线</b>、
+                  或<b>无系统映射的SKU</b>（整商品不全）——这些非自动化问题，明细见下。
                 </Typography.Text>
-                {stageRes.preview && (
-                  <div style={{ marginTop: 8 }}>
-                    <Tag color="blue">预演首商品 {stageRes.preview.item_id}</Tag>
-                    <Tag color={stageRes.preview.missing?.length ? 'orange' : 'green'}>
-                      填价 {stageRes.preview.filled} 个 SKU
-                      {stageRes.preview.missing?.length ? ` · 找不到 ${stageRes.preview.missing.length} 个` : ''}
-                    </Tag>
-                    <Tag>全量 {stageRes.preview.items_total} 商品 / {stageRes.preview.skus_total} SKU</Tag>
-                  </div>
-                )}
                 {sp && (
                   <div style={{ marginTop: 10 }}>
                     <Divider style={{ margin: '6px 0' }} />
                     {sp.status === 'running' && (
                       <Typography.Text style={{ fontSize: 13 }}>
-                        <ExperimentOutlined spin /> 正在逐商品改价…已处理 {sp.result?.results?.length ?? 0} 个
+                        <ExperimentOutlined spin /> 正在批量导入并发布…
                         {sp.result?.validation ? `（成功 ${sp.result.validation.ok} · 失败 ${sp.result.validation.failed}）` : ''}
                       </Typography.Text>
                     )}
                     {(sp.status === 'done' || sp.status === 'error') && (
                       <>
                         <Space>
-                          <Statistic title="改价成功" value={sp.result?.validation?.ok ?? 0}
+                          <Statistic title="导入成功" value={sp.result?.validation?.ok ?? 0}
                             valueStyle={{ color: '#389e0d', fontSize: 24 }} suffix="商品" />
                           <Divider type="vertical" style={{ height: 40 }} />
                           <Statistic title="失败" value={sp.result?.validation?.failed ?? 0}
                             valueStyle={{ color: (sp.result?.validation?.failed ?? 0) ? '#cf1322' : '#8c8c8c', fontSize: 24 }} suffix="商品" />
                         </Space>
                         {sp.result?.message && <Alert style={{ marginTop: 8 }} type="error" showIcon message={sp.result.message} />}
-                        {!!sp.result?.results?.filter((r) => !r.ok).length && (
-                          <Table size="small" style={{ marginTop: 8 }} pagination={false} rowKey="item_id"
-                            dataSource={sp.result.results.filter((r) => !r.ok)}
+                        {!!sp.result?.validation?.failed_reasons?.length && (
+                          <Table size="small" style={{ marginTop: 8 }} pagination={false} rowKey="reason"
+                            dataSource={sp.result.validation.failed_reasons}
                             columns={[
-                              { title: '商品ID', dataIndex: 'item_id', width: 150 },
-                              { title: '填价SKU', dataIndex: 'filled', width: 80, align: 'center' as const },
-                              { title: '失败原因', dataIndex: 'note', ellipsis: true },
+                              { title: '失败原因', dataIndex: 'reason', ellipsis: true },
+                              { title: '商品', dataIndex: 'codes', width: 90, align: 'center' as const,
+                                render: (c: string[]) => (c?.length ?? 0) },
                             ]} />
                         )}
                       </>

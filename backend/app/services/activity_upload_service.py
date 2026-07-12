@@ -58,13 +58,13 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
         if channel == "promo_signup":
             label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
         else:
-            label, field = "补贴金额", "report_price"
+            label, field = "活动价A", "report_price"
         entries, _stats = collect_signup_rows(db, field)
         for s, p, A in entries:
             if channel == "super_reduce":
-                # 全新报名口径(2026-07-12): 补贴 = 活动价×10%, 占位的活动价=占位报名价(A 已是),
-                # 与 builder 恒等 —— 占位不再用旧口径 现价×0.1。
-                sys_val = round(A * 0.1, 2)
+                # 批量导入口径(2026-07-13): 表里只填【活动价=报名价A】+让利比例10(补贴金额留空,
+                # 平台铁律"让利比例/补贴只能填一个")。比对列 = 活动价 A(与 builder 恒等, 0容差)。
+                sys_val = A
                 target = (round(A * 0.9, 2) if getattr(s, "is_custom_placeholder", False)
                           else _f(p.mid_buyer_price))                       # 超级立减到手=中促到手
             else:
@@ -114,13 +114,14 @@ def _parse_uploaded_values(channel: str, xlsx_bytes: bytes) -> dict[str, float]:
     比对表以此为"上传值"列 = 所见即所传, 消除比对表与真实上传文件之间的任何算法漂移。"""
     import io
     import openpyxl
-    val_col = {"single_item_discount": 3, "promo_signup": 3, "super_reduce": 14}.get(channel)
-    data_start = 4 if channel == "promo_signup" else 2   # 报名表模板前 3 行是表头, 数据从第 4 行
+    # super_reduce 现填平台真实模版(两 sheet + 3 行表头), 比对列 = 活动价(col 3), 数据从第 4 行。
+    val_col = {"single_item_discount": 3, "promo_signup": 3, "super_reduce": 3}.get(channel)
+    data_start = 4 if channel in ("promo_signup", "super_reduce") else 2   # 前 3 行是表头
     if val_col is None:
         return {}
     wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
-    ws = (wb["商品SKU导入列表"] if channel == "promo_signup" and "商品SKU导入列表" in wb.sheetnames
-          else wb.worksheets[0])
+    ws = (wb["商品SKU导入列表"] if channel in ("promo_signup", "super_reduce")
+          and "商品SKU导入列表" in wb.sheetnames else wb.worksheets[0])
     out: dict[str, float] = {}
     for row in ws.iter_rows(min_row=data_start, values_only=True):
         if not row or len(row) < val_col:

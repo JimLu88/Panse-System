@@ -1342,12 +1342,12 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     if ws.max_row >= 4:                                    # 清历史示例数据行, 保留前 3 行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    # 同收集器(整商品完整性剔除+占位封顶); 全新报名三列: 活动价=A(占位=占位报名价),
-    # 让利比例=10, 补贴=活动价×0.1 —— 三者自洽, 到手恒=活动价×0.9。
+    # 同收集器(整商品完整性剔除+占位封顶); 活动价=A(占位=占位报名价), 让利比例=10 → 到手=活动价×0.9。
+    # ★平台铁律(2026-07-13 实测60/60失败反馈): "让利比例, 补贴金额 只能填写一个" —— 只填【让利比例】,
+    #   补贴金额【必须留空】(千牛逐商品编辑页原生也用让利比例; 两列都填→"玩法数据错误"整商品拒)。
     entries, stats = collect_signup_rows(db, "report_price")
     r = 4                                                  # ★数据从第 4 行起(前 3 行是平台表头)
     for s, p, A in entries:
-        subsidy = round(float(A) * 0.1, 2)
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
             if _sid and str(_sid) not in ids:
@@ -1357,8 +1357,8 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
             ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
             ws.cell(r, 3, float(A)).number_format = "0.00"              # 活动价(必填, =报名价A)
             ws.cell(r, 5, "包邮")                                        # 包邮(不填=不包邮, 现况全包邮)
-            ws.cell(r, 13, 10)                                          # 让利比例 10(=10%)
-            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额(必填)=活动价×10%
+            ws.cell(r, 13, 10)                                          # 让利比例 10(=10%) —— 只填这个
+            # ★补贴金额(14)留空: 与让利比例二选一, 平台自动按让利比例算补贴
             # 库存(4)留空=全部库存; 短标题/素材(6-12)非必填留空
             r += 1
     stats["rows"] = r - 4
