@@ -254,16 +254,20 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
             return {"factory_wood": _fw, "estimate_part": _ep, "packing": _pk,
                     "precap_total": _tot, "cap_mode": "专链实账",
                     "cap_label": "专链/差价/补拍但有工厂账单→真生产单, 按实际入账(不带估算脏值)",
+                    "logistics_component": _d(getattr(o, "actual_logistics", None)),
+                    "install_component": _d(getattr(o, "actual_install", None)),
                     "final": _tot}
         from app.services.custom_order_reconcile_service import is_pure_socket_addon, remark_text
         if _is_custom and o.theoretical_cost is not None and is_pure_socket_addon(remark_text(o)):
             tc = _d(o.theoretical_cost)
             return {"factory_wood": Decimal("0"), "estimate_part": tc, "packing": Decimal("0"),
                     "precap_total": tc, "cap_mode": "专链插座追加",
+                    "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                     "cap_label": "专链/补拍+备注插座→只算插座推演(含运费), 不叠加大件物流/打包/安装",
                     "final": tc}
         return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"), "packing": Decimal("0"),
                 "precap_total": Decimal("0"), "cap_mode": "非产品归零",
+                "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
 
     # 样块单固定值 (用户拍板 2026-07-11, 取代同日"实报优先"版): 商品成本 = 木作6/块×块数 + 打包2/单,
@@ -278,6 +282,7 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
         _tot = _fw + _pk
         return {"factory_wood": _fw, "estimate_part": Decimal("0"), "packing": _pk,
                 "precap_total": _tot, "cap_mode": "样块固定",
+                "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                 "cap_label": (f"样块固定值: 木作{_SAMPLE_CFG['wood']}/块×{_blocks}块 + "
                               f"打包{_SAMPLE_CFG['packing']}/单; 运费{_SAMPLE_CFG['freight']}/单走物流列"),
                 "final": _tot}
@@ -293,9 +298,14 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
         return {
             "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
             "precap_total": precap, "cap_mode": "实配件分项",
+            "logistics_component": nz(_al, _el), "install_component": nz(_ai, _ei),
             "cap_label": "逐单真实配件→逐项真实计价(木作+物流+安装+打包+真实配件), 不估不封顶", "final": cost,
         }
 
+    # 物流/安装分量跟踪 (2026-07-12 用户: 逐单核对表拆列显示) —— 记录 final 里"可拆出"的
+    # 物流/安装金额, 供报表 商品成本−分量、物流/安装列+分量 展示, 合计恒等。
+    # 不可拆的分支恒 0: 定制占比放大(物流隐含在比例里)/套常规款/插座推演/封顶兜底(=实付×85%)。
+    _logi_comp = _inst_comp = Decimal("0")
     if o.actual_cost is not None:
         factory_wood = _d(o.actual_cost)   # 工厂账单 = 木作
         if _is_custom:
@@ -305,6 +315,7 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 #   方案4: 非木作 = 定价表配件(est_parts) + 物流 + 安装 (不再木作÷占比放大);
                 #   方案A: 设 cap_mode='v2实配件' → 下方"定制兜底85"因 cap_mode!='none' 自动跳过(不再兜底)。
                 estimate_part = _ep + nz(_al, _el) + nz(_ai, _ei)
+                _logi_comp, _inst_comp = nz(_al, _el), nz(_ai, _ei)
                 precap = factory_wood + estimate_part + packing
                 cost = precap
                 cap_mode, cap_label = "v2实配件", "定制v2: 非木作=定价表配件+物流+安装(不÷占比); 有账单不兜底"
@@ -327,8 +338,12 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                     estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
                 if _ai is not None and _ei is not None:
                     estimate_part += _d(_ai) - _d(_ei)              # 安装换实际(差额)
+                # 分量: 换过实际→实际值; 否则 theo 里嵌的是预估值
+                _logi_comp = _d(_al) if (_al is not None and _el is not None) else (_d(_el) if _el is not None else Decimal("0"))
+                _inst_comp = _d(_ai) if (_ai is not None and _ei is not None) else (_d(_ei) if _ei is not None else Decimal("0"))
             else:
                 estimate_part = nz(_al, _el) + nz(_ai, _ei)         # 无定价参照: 补 物流+安装
+                _logi_comp, _inst_comp = nz(_al, _el), nz(_ai, _ei)
             precap = factory_wood + estimate_part + packing
             cost = precap
     else:
@@ -341,6 +356,7 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
             if _rc is not None:
                 return {"factory_wood": Decimal("0"), "estimate_part": _rc, "packing": Decimal("0"),
                         "precap_total": _rc, "cap_mode": "套常规同尺寸款",
+                        "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                         "cap_label": "定制尺寸→常规款physical(%s)" % _kind, "final": _rc}
         factory_wood = Decimal("0")
         estimate_part = _d(o.theoretical_cost)   # 定价表物理(含物流/安装/打包预估)
@@ -350,6 +366,9 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
             estimate_part += _d(_al) - _d(_el)
         if _ai is not None and _ei is not None:
             estimate_part += _d(_ai) - _d(_ei)
+        if not _is_custom:   # 非定制 theo=定价表物理, 物流/安装分量可拆; 定制 theo 来自定制报价不可拆
+            _logi_comp = _d(_al) if (_al is not None and _el is not None) else (_d(_el) if _el is not None else Decimal("0"))
+            _inst_comp = _d(_ai) if (_ai is not None and _ei is not None) else (_d(_ei) if _ei is not None else Decimal("0"))
         precap = factory_wood + estimate_part + packing
         cost = precap
         # 推演单(无工厂账单): 推演成本 > 实付 → 实付×85%封顶(追加/差价/凑单片段, 用户 2026-06-25 选A)
@@ -372,9 +391,12 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
         cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
         cap_mode, cap_label = "片段85", "片段(实付<成本×50%)→实付×85%封顶"
+    if cap_mode != "none":   # 封顶/兜底/归零单: 商品成本=实付×85%等整体值, 分量不可拆(防拆出负商品成本)
+        _logi_comp = _inst_comp = Decimal("0")
     return {
         "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
         "precap_total": precap, "cap_mode": cap_mode, "cap_label": cap_label, "final": cost,
+        "logistics_component": _logi_comp, "install_component": _inst_comp,
     }
 
 

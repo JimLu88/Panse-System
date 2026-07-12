@@ -24,9 +24,10 @@ def test_export_all_capped_order_formulas(db_session):
     assert ws["P2"].value == "成本合计"
     assert ws["Q2"].value == "净利"
     assert ws["R2"].value == "净利率"
-    # 派生值都是 Excel 公式(可回推), 非数值
+    # 派生值是 Excel 公式(可回推); 例外: 成本合计直写数值 (2026-07-12 用户定版 ——
+    # 物流/安装列改为展示值(含折在商品成本里的分量), 公式 J+K+L+… 会重复计, 故 P 落实值)
     assert str(ws["F3"].value) == "=D3-E3"             # 真实收入=实付−退款
-    assert str(ws["P3"].value) == "=J3+K3+L3+M3+N3+O3"  # 成本合计
+    assert isinstance(ws["P3"].value, float)            # 成本合计=数值(见上)
     assert str(ws["Q3"].value) == "=F3-P3"              # 净利=收入−成本合计
     assert str(ws["R3"].value).startswith("=IF")        # 净利率
     # 兜底单: 商品成本=实付×85% 公式, 来源标注橙

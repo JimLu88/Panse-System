@@ -819,6 +819,12 @@ def per_order_reconcile(
         b = _ofin.cost_breakdown(o, coef, Decimal("0"), db=db)   # 售后逐单口径; db→定制套常规款
         pb = _ofin.physical_cost_breakdown(o, db)               # 物理成本加法拆解; db→定制套常规款
         goods = float(b["physical"]); freight = float(b["freight"]); install = float(b["install_upstairs"])
+        # 展示口径 (2026-07-12 用户定版): 物流/安装仍折在商品成本里(成本合计口径一分不变);
+        # 物流/安装列改为【展示值】= 单列实报(纯账单非定制/样块运费5) + 折在商品成本里的分量
+        # (引擎按分支吐 logistics_component/install_component, 不可拆分支=0)。
+        # 成本合计只计单列实报部分(freight/install 原值), 展示分量不重复计入。
+        _logi_disp = round(freight + float(pb.get("logistics_component", 0) or 0), 2)
+        _inst_disp = round(install + float(pb.get("install_component", 0) or 0), 2)
         platform = float(b["platform"]); tax = float(b["tax"])
         aftersales = float(as_by_order.get(o.order_no, 0))
         cost_total = goods + freight + install + platform + tax + aftersales
@@ -843,7 +849,8 @@ def per_order_reconcile(
             "is_custom": bool(o.is_custom),
             "order_date": o.order_date.isoformat() if o.order_date else None,
             "paid_amount": round(paid, 2), "refund_amount": round(refund, 2), "revenue": round(revenue, 2),
-            "cost_goods": round(goods, 2), "cost_freight": round(freight, 2), "cost_install": round(install, 2),
+            # cost_freight/cost_install = 展示值(含折在商品成本里的分量); cost_total 用单列实报原值, 不重复计
+            "cost_goods": round(goods, 2), "cost_freight": _logi_disp, "cost_install": _inst_disp,
             # 物理成本(商品成本)加法拆解 — 导出逐项公式回推: 商品成本 = 工厂木作 + 定价表估算 + 打包 (或 实付×85%)
             "cost_factory_wood": round(float(pb["factory_wood"]), 2),
             "cost_estimate_part": round(float(pb["estimate_part"]), 2),
@@ -1096,7 +1103,7 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
         any_sheet = True
         ws = wb.create_sheet(title=f"{yy}-{mm:02d}")
         ws.cell(1, 1, "图例: 绿=工厂账单实报 · 蓝=定价表推演 · 橙=实付×85%兜底/封顶 ｜ 蓝字均为公式(改任一基础值自动重算): "
-                      "真实收入=实付−退款 · 商品成本=工厂木作+定价估算+打包(或实付×85%) · 成本合计=商品成本+物流+安装+平台+税+售后 · 净利=收入−成本合计").font = Font(size=9, color=GREY)
+                      "真实收入=实付−退款 · 商品成本=工厂木作+定价估算+打包(或实付×85%) · 物流/安装列=展示值(已折在商品成本, 合计不重复计) · 净利=收入−成本合计").font = Font(size=9, color=GREY)
         ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(HEAD))
         for ci, h in enumerate(HEAD, 1):
             c = ws.cell(2, ci, h)
@@ -1140,9 +1147,14 @@ def _build_reconcile_workbook_all(db: Session, months: list[tuple[int, int]]):
                 f"成本来源: {src}\n"
                 f"商品成本 = 工厂木作账单(G) + 定价表估算·配件物流安装(H) + 打包(I);\n"
                 f"工厂账单未到→工厂木作=0、整件走定价表估算(H); 走兜底/封顶时 商品成本=实付×0.85(G/H/I 仅供参考)。", "系统")
-            _money(C_FREIGHT, ri, r["cost_freight"]); _money(C_INSTALL, ri, r["cost_install"])
+            fr_c = _money(C_FREIGHT, ri, r["cost_freight"]); ins_c = _money(C_INSTALL, ri, r["cost_install"])
+            fr_c.comment = Comment("展示口径(2026-07-12): 含折在商品成本里的物流分量; 成本合计不重复计。", "系统")
+            ins_c.comment = Comment("展示口径(2026-07-12): 含折在商品成本里的安装分量; 成本合计不重复计。", "系统")
             _money(C_PLAT, ri, r["cost_platform"]); _money(C_TAX, ri, r["cost_tax"]); _money(C_AS, ri, r["cost_aftersales"] or None)
-            ws.cell(ri, C_TOTAL, f"=J{ri}+K{ri}+L{ri}+M{ri}+N{ri}+O{ri}").number_format = MONEY   # 成本合计
+            # 成本合计直写数值 (2026-07-12): K/L 是展示值(多含折在商品成本里的分量), 公式 J+K+L+… 会重复计
+            tc = ws.cell(ri, C_TOTAL, float(r["cost_total"])); tc.number_format = MONEY
+            tc.comment = Comment("成本合计 = 商品成本+平台+税+售后+单列实报的物流/安装; "
+                                 "物流/安装列为展示口径(已折在商品成本), 不重复相加。", "系统")
             nc = ws.cell(ri, C_NET, f"=F{ri}-P{ri}"); nc.number_format = MONEY; nc.font = Font(bold=True, size=10)  # 净利=收入−成本合计
             ws.cell(ri, C_MARGIN, f"=IF(F{ri}=0,0,Q{ri}/F{ri})").number_format = PCT   # 净利率
             sc = ws.cell(ri, C_SRC, src); sc.font = Font(color=col, size=9); sc.alignment = ctr
