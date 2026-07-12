@@ -36,6 +36,34 @@ def test_flow_map_excludes_internal_transfer(db_session):
     assert m[NO] == Decimal("290")
 
 
+def test_flow_map_counts_pure_internal_no(db_session):
+    """纯内部号(只有内部划转腿, 如李爱群工资/佳英代购)仍计入 —
+    业务表点名引用它作实付证据, 下游腿不在账内, 一刀切排除会月月假差。"""
+    db_session.add(_flow(account="主力号", transaction_no="SAL03", transaction_type="转账",
+                         amount=Decimal("-5000"), counterparty="Klossy·Lee(**群)", remark="3 月工资",
+                         reconciliation_type="internal_transfer",
+                         transaction_time=datetime(2026, 3, 1, 10, 0)))
+    db_session.commit()
+    m = rec._alipay_flow_amount_map(db_session)
+    assert m["SAL03"] == Decimal("5000")
+
+
+def test_operating_expense_salary_via_internal_flow_flat(db_session):
+    """外包工资(李爱群5000)挂纯内部号流水 → 经营对账当月对平, 不再假差-5000。"""
+    from app.models.marketing import OutsourcingExpense
+    db_session.add(_flow(account="主力号", transaction_no="SAL04", transaction_type="转账",
+                         amount=Decimal("-5000"), counterparty="Klossy·Lee(**群)", remark="4 月工资",
+                         reconciliation_type="internal_transfer",
+                         transaction_time=datetime(2026, 4, 1, 10, 0)))
+    db_session.add(OutsourcingExpense(payee="李爱群", amount=Decimal("5000"),
+                                      payment_date=date(2026, 4, 1), alipay_flow_no="SAL04"))
+    db_session.commit()
+    res = rec.run_operating_expense(db_session, record_exceptions=False)
+    apr = next((d for d in res.diffs if d.key == "2026-04"), None)
+    assert apr is not None
+    assert apr.severity == "ok"
+
+
 def test_purchase_payment_flat_with_internal_leg(db_session):
     """采购¥290 挂共号流水 → 内部划转腿排除后, 实付=290, 月度对平(不再假差+2080)。"""
     db_session.add(_flow(account="爱群号", transaction_no=NO, transaction_type="转账",

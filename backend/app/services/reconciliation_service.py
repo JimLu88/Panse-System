@@ -1165,10 +1165,14 @@ def _alipay_flow_amount_map(db: Session) -> dict[str, Decimal]:
     修 (2026-07-10): 支付宝同一交易号下常有多笔子流水(库唯一键本就允许, 如 -109.98玻璃/-2260备货/
     -0.02尾差 共号), 原实现 `out[no]=abs(amt)` 同号互相覆盖只留最后一行, 且收入行(+2080"岩板费")
     也被当支出 → 采购对账 2026-06 假差 +2150/+1790。改: 只累加支出行。
-    修 (2026-07-12): 排除 internal_transfer 行 — 内部划转腿与真实付款常共号(主力号→爱群号
-    充"岩板费"-2080 与 爱群号付*丽 -290 同交易号), 计入会把实付虚高整条划转额(假差+2080)。
-    07-10 那次它是错符号的收入行侥幸被跳过; 07-11 符号修对后支出行现形, 必须按类型排除。"""
+    修 (2026-07-12): 内部划转(internal_transfer)按【混合号才剔】处理 —
+    - 混合号(内部腿与真实付款共交易号, 如 主力号→爱群号充"岩板费"-2080 与 爱群号付*丽-290
+      共号): 只计真实腿, 内部腿是污染(假差+2080; 07-10 它是错符号收入行侥幸被跳, 符号修对后现形)。
+    - 纯内部号(该号只有内部划转腿): 仍计。业务表(外包工资/员工代购采购/中转实付如方菲送装)
+      点名引用它作实付证据, 且下游腿不在账内(工资归个人/爱群微信现金付装工), 一刀切排除会让
+      李爱群每月工资、佳英每笔代购都假差一次 → 反复人工定夺, 违背治本。"""
     out: dict[str, Decimal] = {}
+    internal_only: dict[str, Decimal] = {}
     for no, amt, rt in db.execute(
         select(AlipayFlow.transaction_no, AlipayFlow.amount, AlipayFlow.reconciliation_type).where(
             AlipayFlow.transaction_no.isnot(None), AlipayFlow.transaction_no != "",
@@ -1177,8 +1181,12 @@ def _alipay_flow_amount_map(db: Session) -> dict[str, Decimal]:
         if not no or amt is None or amt >= 0:
             continue
         if (rt or "") == "internal_transfer":
-            continue
-        out[no] = out.get(no, Decimal("0")) + (-Decimal(amt))
+            internal_only[no] = internal_only.get(no, Decimal("0")) + (-Decimal(amt))
+        else:
+            out[no] = out.get(no, Decimal("0")) + (-Decimal(amt))
+    for no, amt in internal_only.items():
+        if no not in out:   # 纯内部号才计; 混合号只留真实腿
+            out[no] = amt
     return out
 
 
