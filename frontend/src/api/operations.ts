@@ -282,6 +282,12 @@ export interface PerOrderRow {
   est_packaging: number | null;          // 预估打包
   actual_wood: number | null;            // 实际木作(工厂账单)
   wood_diff: number | null;              // 木作差额(实际−预算)
+  // 悬浮窗引擎口径 (2026-07-12): 商品成本拆解直接用引擎数, 不再"定价表配件+残差"
+  cost_factory_wood?: number;            // 引擎木作段(实报或推演)
+  cost_packing?: number;                 // 引擎打包段(实际优先)
+  cost_cap_mode?: string;                // 口径分支(none/…85/样块固定/实配件分项…)
+  cost_logi_component?: number;          // 折在商品成本里的物流分量(与物流列同源)
+  cost_inst_component?: number;          // 折在商品成本里的安装分量
 }
 export interface FixedCostItem {
   name: string;

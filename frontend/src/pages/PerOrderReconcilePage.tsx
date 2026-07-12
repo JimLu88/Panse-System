@@ -82,34 +82,38 @@ export default function PerOrderReconcilePage() {
   // 商品成本悬浮: 计算公式 + 本单实际分项拆解 (推演 / 仅木作入账 / 片段封顶 / 无定价兜底)
   const costCell = () => (v: number, r: PerOrderRow) => {
     const reconciled = r.factory_bill_recorded;                 // 工厂账单已入账=已对账
-    const wood = reconciled ? r.actual_wood : r.predicted_wood; // 已对账用实际木作, 否则定价木作
-    const parts = r.est_parts;
-    const pack = r.est_packaging;
-    const hasPricing = wood != null || parts != null || pack != null;
-    const w = wood ?? 0, p = parts ?? 0, k = pack ?? 0;
-    const freightInstall = Math.round((v - (w + p + k)) * 100) / 100;  // 物流+安装(嵌在物理成本里, 反推)
+    // 引擎口径 (2026-07-12): 直接用引擎的分段, 不再"定价表配件+残差"反推 ——
+    // 残差会把 实配件差/分支差 全部冤枉成"物流安装"(实测…185740 差111被冤)。
+    const cap = r.cost_cap_mode || 'none';
+    const w = r.cost_factory_wood ?? 0;                         // 引擎木作段(实报或推演)
+    const k = r.cost_packing ?? 0;                              // 引擎打包段(实际优先)
+    const li = Math.round(((r.cost_logi_component ?? 0) + (r.cost_inst_component ?? 0)) * 100) / 100;
+    const p = Math.round((v - w - k - li) * 100) / 100;         // 配件及其他 = 剩余段(实配件单=实配件)
+    // 单列物流/安装 = 物流列+安装列 里没折进商品成本的部分(样块运费5/纯账单单的实报运费安装)
+    const liExtra = Math.round(((r.cost_freight ?? 0) + (r.cost_install ?? 0) - li) * 100) / 100;
     let body: JSX.Element;
-    if (!hasPricing) {
-      body = <div>无定价匹配 → 按「实付 × 类目成本率」兜底估算 = <b>{yuan(v)}</b></div>;
-    } else if ((w + p + k) > v + 0.5) {
-      body = <div>差价/定金小单(实付 &lt; 成本×50%)→ 按「实付 × 85%」封顶 = <b>{yuan(v)}</b></div>;
+    if (cap.endsWith('85')) {
+      body = <div>{cap}: 按「实付 × 85%」= <b>{yuan(v)}</b>(下方分段仅供参考)</div>;
     } else {
       body = (
         <div>
-          {reconciled ? '实际木作(工厂账单)' : '木作(定价表)'} {yuan(w)}<br />
-          + 配件 {yuan(p)} + 打包 {yuan(k)} + 物流安装 {yuan(freightInstall)}<br />
+          {reconciled ? '实际木作(工厂账单)' : '木作(定价表/推演)'} {yuan(w)}<br />
+          + 配件及其他 {yuan(p)} + 打包 {yuan(k)} + 物流安装 {yuan(li)}<br />
           = <b>{yuan(v)}</b>
+          {liExtra > 0.005 && (
+            <><br />另有单列物流/安装 <b>{yuan(liExtra)}</b>(计入成本合计, 不在商品成本内, 如样块运费5)</>
+          )}
         </div>
       );
     }
     const tip = (
-      <div style={{ fontSize: 12, lineHeight: 1.7, maxWidth: 300 }}>
+      <div style={{ fontSize: 12, lineHeight: 1.7, maxWidth: 310 }}>
         <div style={{ marginBottom: 4 }}>
-          <b>{reconciled ? '商品成本 = 实际木作 + 非木作估算' : '商品成本 = 定价表物理总成本(推演)'}</b>
+          <b>商品成本 = 木作 + 配件 + 打包 + 物流安装(引擎口径{cap !== 'none' ? ` · ${cap}` : ''})</b>
         </div>
         {body}
         <div style={{ color: '#8c8c8c', marginTop: 6 }}>
-          工厂账单只含木作; 配件/打包/物流/安装恒按定价表估算。实付&lt;成本×50% 按实付×85%封顶。
+          各段有实报用实报, 否则定价表估; 物流安装与下方物流/安装列同源(0=该分支折算在配件段, 如定制占比)。
           {r.cost_estimated ? ' 本单工厂未对账=全推演(蓝色)。' : ' 本单木作已对工厂账单。'}
         </div>
       </div>

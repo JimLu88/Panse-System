@@ -856,6 +856,10 @@ def per_order_reconcile(
             "cost_estimate_part": round(float(pb["estimate_part"]), 2),
             "cost_packing": round(float(pb["packing"]), 2),
             "cost_cap_mode": pb["cap_mode"],
+            # 悬浮窗引擎口径 (2026-07-12): 物流/安装分量单独给前端, 配件=商品成本−木作−打包−分量,
+            # 不再用"定价表配件+残差"念经(残差会把实配件差/分支差全冤成物流安装)
+            "cost_logi_component": round(float(pb.get("logistics_component", 0) or 0), 2),
+            "cost_inst_component": round(float(pb.get("install_component", 0) or 0), 2),
             "cost_platform": round(platform, 2), "cost_tax": round(tax, 2), "cost_aftersales": round(aftersales, 2),
             "cost_total": round(cost_total, 2), "net_profit": round(net, 2),
             "net_margin": round(net / revenue * 100, 1) if revenue else 0.0,
