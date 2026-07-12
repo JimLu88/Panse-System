@@ -20,6 +20,7 @@ import {
   downloadSingleItemDiscount, downloadPromoSignup, downloadSuperReduceSignup,
   fetchActivityPreflight, type ActivityPreflight,
   activityUploadStage, activityUploadCommit, type UploadStageResult,
+  activityUploadCommitStatus, type UploadCommitStatus,
   fetchSkuRotation, applySkuRotation, type SkuRotationPlan,
 } from '../api/catalog';
 
@@ -82,6 +83,7 @@ export default function ActivityAutoFillTab() {
   const [staging, setStaging] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [stageRes, setStageRes] = useState<UploadStageResult | null>(null);
+  const [superProgress, setSuperProgress] = useState<UploadCommitStatus | null>(null);   // 超级立减逐商品改价进度
 
   const doStage = async (channel: string, tier: string) => {
     setUpChannel(channel); setUpTier(tier); setStageRes(null); setStaging(true);
@@ -130,6 +132,13 @@ export default function ActivityAutoFillTab() {
     message.loading({ content: '正在提交到千牛…', key: 'commit', duration: 0 });
     try {
       const r = await activityUploadCommit(upChannel, upTier);
+      // 超级立减: 逐商品原地改价异步(30+商品×~25s), 返回 async_job → 轮询进度
+      if (r.async_job) {
+        message.destroy('commit');
+        setSuperProgress({ status: 'running' });
+        await pollSuperCommit(r.async_job);
+        return;
+      }
       message.destroy('commit');
       if (r.ok && r.submitted) message.success(`已提交「${r.channel_name}」到千牛`);
       else message.error(r.error || '提交未成功，请到千牛核对');
@@ -137,6 +146,26 @@ export default function ActivityAutoFillTab() {
     } catch {
       message.destroy('commit'); message.error('提交失败');
     } finally { setCommitting(false); }
+  };
+
+  // 轮询超级立减逐商品改价, 直到 done/error (最长 ~20 分钟, 30商品×25s+余量)
+  const pollSuperCommit = async (job: string) => {
+    const deadline = Date.now() + 20 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((res) => setTimeout(res, 6000));
+      let s: UploadCommitStatus;
+      try { s = await activityUploadCommitStatus(job); }
+      catch { continue; }
+      setSuperProgress(s);
+      if (s.status === 'done' || s.status === 'error') {
+        const ok = s.result?.ok;
+        const sub = s.result?.submitted ?? 0;
+        if (s.status === 'done' && ok) message.success(`超级立减已提交 ${sub} 个商品`);
+        else message.error(s.result?.message || s.error || '超级立减提交未完成，请看下方明细');
+        return;
+      }
+    }
+    message.warning('轮询超时，请到千牛核对或稍后再看');
   };
 
   return (
@@ -372,7 +401,7 @@ export default function ActivityAutoFillTab() {
               onClick={() => doStage('super_reduce', 'big')}>
               超级立减活动 上传到千牛（先比对）</Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              自动挂进千牛活动「商品批量导入」+出比对表；最终「发布报名」目前在千牛手动点（导入已到草稿）。
+              超级立减没有批量导入 → 系统<b>逐商品原地改活动价</b>：先预演首商品出比对，确认后逐个提交（首商品作金丝雀，失败即止）。全是降价、免撤销。
             </Typography.Text>
           </StepCard>
         </Col>
@@ -420,13 +449,23 @@ export default function ActivityAutoFillTab() {
         title={<Space><CloudUploadOutlined /><b style={{ fontSize: 17 }}>{stageRes?.channel_name} · 上传比对（确认前请核对）</b></Space>}
         width={1400}
         style={{ maxWidth: '96vw', top: 24 }}
-        onCancel={() => { setStageRes(null); setUpChannel(null); }}
+        onCancel={() => { setStageRes(null); setUpChannel(null); setSuperProgress(null); }}
         footer={
           stageRes?.channel === 'single_item_discount'
             ? [
                 <Button key="cancel" onClick={() => { setStageRes(null); setUpChannel(null); }}>取消（不提交）</Button>,
                 <Button key="ok" type="primary" danger loading={committing} icon={<CloudUploadOutlined />}
                   onClick={doCommit}>✅ 确认最后一步上传（不可逆）</Button>,
+              ]
+            : stageRes?.channel === 'super_reduce'
+            ? [
+                <Button key="cancel" disabled={committing || superProgress?.status === 'running'}
+                  onClick={() => { setStageRes(null); setUpChannel(null); setSuperProgress(null); }}>取消（不提交）</Button>,
+                <Button key="ok" type="primary" danger
+                  loading={committing || superProgress?.status === 'running'}
+                  disabled={superProgress?.status === 'done'}
+                  icon={<CloudUploadOutlined />} onClick={doCommit}>
+                  ✅ 确认逐商品改价并提交（不可逆）</Button>,
               ]
             : [
                 <Typography.Text key="note" type="secondary" style={{ marginRight: 12, fontSize: 12 }}>
@@ -441,14 +480,70 @@ export default function ActivityAutoFillTab() {
           const failN = stageRes.validation?.failed ?? 0;
           // 大促报名/超级立减的千牛导入是异步的(页面只回"正在处理中"), 抓不到当场成功/失败数 →
           // 显示"已收单·处理中"而非误导的 0 条 (用户 2026-07-12: "为什么校验通过0条还能下一步")
-          const asyncPending = stageRes.validation?.ok == null && stageRes.validation?.failed == null;
+          const isSuper = stageRes.channel === 'super_reduce';
+          const asyncPending = !isSuper
+            && stageRes.validation?.ok == null && stageRes.validation?.failed == null;
           const failCodes: string[] = stageRes.validation?.failed_sku_codes || [];
           const misN = stageRes.mismatch_count ?? 0;
           const totalN = stageRes.compare_total ?? (stageRes.compare_rows?.length ?? 0);
           const priceOk = misN === 0;
           const label0 = stageRes.compare_rows?.[0]?.value_label || '系统值';
+          const sp = superProgress;
           return (
           <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            {isSuper && (
+              <Card size="small" style={{ background: '#e6f4ff', border: '1px solid #91caff' }}
+                styles={{ body: { padding: '12px 16px' } }}>
+                <Typography.Text style={{ fontSize: 13 }}>
+                  超级立减活动<b>没有批量导入</b>，系统会<b>逐个商品打开、按报名价A填活动价、逐个提交</b>（约每个 25 秒，
+                  全部 {stageRes.preview?.items_total ?? '?'} 个商品需几分钟）。<br/>
+                  这些价格都是<b>降价</b>方向（同事之前按日常价报的更高），平台放行、无需撤销、无 15 天线风险。
+                  <b>第一个商品作金丝雀</b>：它若失败立即中止全场，不会一路错下去。
+                </Typography.Text>
+                {stageRes.preview && (
+                  <div style={{ marginTop: 8 }}>
+                    <Tag color="blue">预演首商品 {stageRes.preview.item_id}</Tag>
+                    <Tag color={stageRes.preview.missing?.length ? 'orange' : 'green'}>
+                      填价 {stageRes.preview.filled} 个 SKU
+                      {stageRes.preview.missing?.length ? ` · 找不到 ${stageRes.preview.missing.length} 个` : ''}
+                    </Tag>
+                    <Tag>全量 {stageRes.preview.items_total} 商品 / {stageRes.preview.skus_total} SKU</Tag>
+                  </div>
+                )}
+                {sp && (
+                  <div style={{ marginTop: 10 }}>
+                    <Divider style={{ margin: '6px 0' }} />
+                    {sp.status === 'running' && (
+                      <Typography.Text style={{ fontSize: 13 }}>
+                        <ExperimentOutlined spin /> 正在逐商品改价…已处理 {sp.result?.results?.length ?? 0} 个
+                        {sp.result?.validation ? `（成功 ${sp.result.validation.ok} · 失败 ${sp.result.validation.failed}）` : ''}
+                      </Typography.Text>
+                    )}
+                    {(sp.status === 'done' || sp.status === 'error') && (
+                      <>
+                        <Space>
+                          <Statistic title="改价成功" value={sp.result?.validation?.ok ?? 0}
+                            valueStyle={{ color: '#389e0d', fontSize: 24 }} suffix="商品" />
+                          <Divider type="vertical" style={{ height: 40 }} />
+                          <Statistic title="失败" value={sp.result?.validation?.failed ?? 0}
+                            valueStyle={{ color: (sp.result?.validation?.failed ?? 0) ? '#cf1322' : '#8c8c8c', fontSize: 24 }} suffix="商品" />
+                        </Space>
+                        {sp.result?.message && <Alert style={{ marginTop: 8 }} type="error" showIcon message={sp.result.message} />}
+                        {!!sp.result?.results?.filter((r) => !r.ok).length && (
+                          <Table size="small" style={{ marginTop: 8 }} pagination={false} rowKey="item_id"
+                            dataSource={sp.result.results.filter((r) => !r.ok)}
+                            columns={[
+                              { title: '商品ID', dataIndex: 'item_id', width: 150 },
+                              { title: '填价SKU', dataIndex: 'filled', width: 80, align: 'center' as const },
+                              { title: '失败原因', dataIndex: 'note', ellipsis: true },
+                            ]} />
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </Card>
+            )}
             {/* ① 千牛校验结果 —— 大号醒目; 异步渠道(大促报名/超级立减)千牛只回"处理中", 显示已收单而非误导的0条 */}
             <Card size="small" style={{ background: asyncPending ? '#e6f4ff' : failN ? '#fffbe6' : '#f6ffed',
                 border: `1px solid ${asyncPending ? '#91caff' : failN ? '#ffe58f' : '#b7eb8f'}` }}

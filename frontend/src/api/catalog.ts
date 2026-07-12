@@ -792,6 +792,9 @@ export type UploadStageResult = {
     value_label: string; system_value: number | null; target_shoudao: number | null;
     uploaded_value?: number | null; mismatch?: boolean }[];
   price_match_ok?: boolean; mismatch_count?: number; compare_total?: number;
+  mode?: string;   // super_reduce: 'inplace_edit'
+  preview?: { item_id: string; filled: number; missing: string[];
+    items_total: number; skus_total: number };   // super_reduce 首商品预演
 };
 export const activityUploadStage = (channel: string, tier = 'big') =>
   api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null,
@@ -811,10 +814,31 @@ export const applySkuRotation = (productCode: string) =>
   api.post<{ ok: boolean; changed: number; changes: { sku_code: string; old_skuId: string | null; new_skuId: string }[] }>(
     '/api/pricing/sku-rotation/apply', null, { params: { product_code: productCode } }).then((r) => r.data);
 
+export type UploadCommitResult = {
+  ok: boolean; submitted?: boolean; error?: string; channel_name: string;
+  screenshot_base64?: string | null;
+  async_job?: string;   // super_reduce: 逐商品改价异步, 用 job 轮询 commit-status
+  note?: string;
+  validation?: UploadStageResult['validation'];
+};
 export const activityUploadCommit = (channel: string, tier = 'big') =>
-  api.post<{ ok: boolean; submitted?: boolean; error?: string; channel_name: string;
-    screenshot_base64?: string | null }>(`/api/pricing/activity-upload/${channel}/commit`, null,
+  api.post<UploadCommitResult>(`/api/pricing/activity-upload/${channel}/commit`, null,
     { params: { tier }, timeout: 220000 })
+    .then((r) => r.data);
+
+export type UploadCommitStatus = {
+  status: 'running' | 'done' | 'error';
+  error?: string;
+  result?: {
+    ok?: boolean; submitted?: number; message?: string;
+    validation?: { ok: number; failed: number; total_items: number; unit?: string;
+      failed_reasons?: { reason: string; codes?: string[] }[] };
+    results?: { item_id: string; ok: boolean; filled: number; missing: string[]; note: string }[];
+    screenshot_base64?: string | null;
+  };
+};
+export const activityUploadCommitStatus = (job: string) =>
+  api.get<UploadCommitStatus>('/api/pricing/activity-upload/commit-status', { params: { job } })
     .then((r) => r.data);
 export const downloadPricingTemplate = (key: string) =>
   api

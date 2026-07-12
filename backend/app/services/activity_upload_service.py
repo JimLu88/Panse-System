@@ -190,7 +190,9 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
 
 
 def commit(db: Session, channel: str, tier: str = "big") -> dict:
-    """★不可逆★ 真提交到千牛。只在用户看过比对表、系统里点确认后调用。"""
+    """★不可逆★ 真提交到千牛。只在用户看过比对表、系统里点确认后调用。
+    super_reduce 是逐商品原地改价(30+商品×~25s, 远超HTTP等待) → 发起后立即返回
+    {async_job}, 前端用 /activity-upload/commit-status 轮询取结果。"""
     from app.services import web_agent_service
     if channel not in _CHANNELS:
         return {"ok": False, "error": f"未知渠道 {channel}"}
@@ -198,6 +200,10 @@ def commit(db: Session, channel: str, tier: str = "big") -> dict:
     j = web_agent_service.upload_file(db, channel, "commit", xlsx, f"{channel}.xlsx")
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    if channel == "super_reduce":
+        return {"ok": True, "channel": channel, "channel_name": _CHANNELS[channel],
+                "async_job": j["job"],
+                "note": "已开始逐商品原地改价(首商品金丝雀失败即中止), 请轮询状态"}
     final = web_agent_service.wait_job(db, j["job"], timeout_s=200)
     res = final.get("result") or {}
     return {
@@ -206,3 +212,23 @@ def commit(db: Session, channel: str, tier: str = "big") -> dict:
         "validation": res.get("validation"),
         "screenshot_base64": res.get("screenshot_base64"),
     }
+
+
+def commit_status(db: Session, job_id: str) -> dict:
+    """轮询超级立减逐商品改价 job: 返回 {status: running|done|error, result?}。"""
+    from app.services import web_agent_service
+    j = web_agent_service.get_job(db, job_id)
+    status = j.get("status") or ("done" if j.get("result") else "running")
+    out = {"status": status}
+    if status == "error":
+        out["error"] = j.get("error")
+    res = j.get("result") or {}
+    if res:
+        out["result"] = {
+            "ok": res.get("ok"), "submitted": res.get("submitted"),
+            "message": res.get("message"),
+            "validation": res.get("validation"),
+            "results": res.get("results"),
+            "screenshot_base64": res.get("screenshot_base64"),
+        }
+    return out

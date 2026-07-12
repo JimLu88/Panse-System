@@ -1780,9 +1780,21 @@ def activity_upload_commit(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ):
-    """★不可逆★ 千牛上传·真提交。前端必须在用户看过比对表、点确认后才调 (admin 限)。"""
+    """★不可逆★ 千牛上传·真提交。前端必须在用户看过比对表、点确认后才调 (admin 限)。
+    super_reduce 返回 {async_job} → 前端轮询 /activity-upload/commit-status。"""
     from app.services import activity_upload_service
     return activity_upload_service.commit(db, channel, tier)
+
+
+@formula_router.get("/activity-upload/commit-status")
+def activity_upload_commit_status(
+    job: str = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin")),
+):
+    """轮询超级立减逐商品改价进度: {status: running|done|error, result?}。"""
+    from app.services import activity_upload_service
+    return activity_upload_service.commit_status(db, job)
 
 
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
