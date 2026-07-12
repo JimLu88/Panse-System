@@ -62,9 +62,11 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
         entries, _stats = collect_signup_rows(db, field)
         for s, p, A in entries:
             if channel == "super_reduce":
-                sys_val = (round(_f(s.daily_price) * 0.1, 2)
-                           if getattr(s, "is_custom_placeholder", False) else round(A * 0.1, 2))
-                target = _f(p.mid_buyer_price)                              # 超级立减到手=中促到手
+                # 全新报名口径(2026-07-12): 补贴 = 活动价×10%, 占位的活动价=占位报名价(A 已是),
+                # 与 builder 恒等 —— 占位不再用旧口径 现价×0.1。
+                sys_val = round(A * 0.1, 2)
+                target = (round(A * 0.9, 2) if getattr(s, "is_custom_placeholder", False)
+                          else _f(p.mid_buyer_price))                       # 超级立减到手=中促到手
             else:
                 sys_val = A
                 target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)

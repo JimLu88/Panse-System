@@ -1308,10 +1308,12 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     return out, stats
 
 
-# ── 超级立减【活动】批量报名表 (14列, 2026-07-11 用户拍板口径) ────────────────────────────
-# 与「大促活动报名」不同: 超级立减活动 SKU 级只填【补贴金额】(让利比例锁定/自动)。
-# 口径(用户选1): 活动价 = 报名价A(与大促报名同一个A) → 补贴金额 = A × 10% → 到手 = A×0.9 = 中促到手。
-# 列序对齐淘宝「超级立减长期活动」导入模板 r2 表头; 活动价/让利比例/素材列留空(SKU级自动/非必填);
+# ── 超级立减【活动】批量报名表 (14列, 2026-07-12 撤销重报口径) ────────────────────────────
+# 口径: 活动价 = 报名价A(与大促报名同一个A) → 让利比例10% → 补贴金额 = 活动价 × 10%
+#       → 到手 = A×0.9 = 中促到手; 占位SKU 活动价 = 占位报名价(现价×0.9 封顶已生效价, 与大促报名同口径)。
+# 撤销全部报名后重新报名是【全新报名】, 活动价/让利比例为必填 → 三列全填(旧版只填补贴金额是
+# "已报名修改"假设, 从未 live 通过)。素材列非必填留空。
+# 列序对齐淘宝「超级立减长期活动」导入模板 r2 表头;
 # 平台活动ID(营销ID)每次不同, 故不嵌死模板, 生成干净14列表, 上传前粘进当期模板即可。
 _SUPER_REDUCE_HEADERS = [
     "商品ID", "SKUID", "活动价", "库存", "包邮", "商品短标题",
@@ -1321,9 +1323,9 @@ _SUPER_REDUCE_HEADERS = [
 
 
 def build_super_reduce_signup_upload_xlsx(db: Session):
-    """淘宝『超级立减活动』批量报名表 (14列, SKU级只填补贴金额=报名价A×10%)。
-    到手 = 活动价(=报名价A) × 0.9 = 中促到手。占位符 = 现价×0.1。坏价产品排除。
-    返回 (BytesIO, stats)。列序对齐淘宝超级立减导入模板。"""
+    """淘宝『超级立减活动』批量报名表 (14列, 全新报名: 活动价+让利比例+补贴金额 三列全填)。
+    活动价 = 报名价A(占位=占位报名价), 让利10% → 补贴 = 活动价×0.1, 到手 = 活动价×0.9。
+    坏价产品排除。返回 (BytesIO, stats)。列序对齐淘宝超级立减导入模板。"""
     import io as _io
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
@@ -1339,14 +1341,13 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         c = ws.cell(1, ci, h)
         c.fill = head_fill; c.font = head_font; c.alignment = wrap
 
-    # 同收集器(整商品完整性剔除+占位封顶); 补贴口径: 占位=现价×0.1(旧口径不变), 正常=A×0.1
+    # 同收集器(整商品完整性剔除+占位封顶); 全新报名三列: 活动价=A(占位=占位报名价),
+    # 让利比例=10, 补贴=活动价×0.1 —— 三者自洽, 到手恒=活动价×0.9。
+    # (注意: 占位补贴不再是旧口径 现价×0.1 —— 全新报名活动价必填, 补贴必须跟活动价配套)
     entries, stats = collect_signup_rows(db, "report_price")
     r = 2
     for s, p, A in entries:
-        if getattr(s, "is_custom_placeholder", False):
-            subsidy = round(float(s.daily_price) * 0.1, 2)   # 占位: 现价×10% (到手=现价×0.9)
-        else:
-            subsidy = round(float(A) * 0.1, 2)               # 正常: 报名价A×10%
+        subsidy = round(float(A) * 0.1, 2)
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
             if _sid and str(_sid) not in ids:
@@ -1354,8 +1355,11 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         for skuid in ids:
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
-            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额
-            # 活动价(C)/让利比例(M)/库存/素材 → 留空 (SKU级自动/非必填)
+            ws.cell(r, 3, float(A)).number_format = "0.00"              # 活动价(全新报名必填)
+            ws.cell(r, 5, "包邮")                                        # 包邮(不填=不包邮, 现况全包邮)
+            ws.cell(r, 13, 10)                                           # 让利比例 10%
+            ws.cell(r, 14, float(subsidy)).number_format = "0.00"       # 补贴金额 = 活动价×10%
+            # 库存留空(默认全部库存)/素材列非必填留空
             r += 1
     stats["rows"] = r - 2
 
