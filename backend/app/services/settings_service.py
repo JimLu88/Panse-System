@@ -28,6 +28,8 @@ from app.models.settings import SystemSetting
 _SECRET_KEYS = {
     "ai_diagnose_api_key",
     "ai_ocr_api_key",
+    "ai_custom_api_key",          # 定制报价AI云端key(火山ark等; 用户2026-07-12要求加密落库)
+    "ai_ocr_fallback_api_key",
     # webhook URL 含 token, 视为机密
     "notify_webhook",
     # 飞书应用凭证
@@ -135,6 +137,8 @@ def set_value(db: Session, key: str, value: str, *, description: Optional[str] =
     if row is None:
         row = SystemSetting(key=key, is_secret=secret, description=description)
         db.add(row)
+    else:
+        row.is_secret = secret   # 键后来进了机密名单 → 旧行标志同步刷新(否则写加密列读却走明文列=读空)
     if not value:
         row.value_plain = None
         row.value_encrypted = None

@@ -395,7 +395,10 @@ async def v2_classify(
     cfg = settings_service.get_ai_config(db, "custom")  # 定制报价专属槽; 没配回落 ocr
     if cfg.get("api_key") or cfg.get("base_url"):        # 本地Ollama可无key, 有地址就试
         try:
-            prov = customization_ai_service._build_provider(db)
+            # 用 custom 槽自己的配置建 provider —— 旧 _build_provider 固定读 ocr 槽(本地Ollama),
+            # 导致配了云端 custom 也照旧打本地 (2026-07-12 用户"不要调用本地"后揪出)。
+            from app.services import ai_provider as _ai_mod
+            prov = _ai_mod.build_provider(cfg)
             result = await asyncio.to_thread(
                 v2.classify_ai, db, text=message, images=image_data,
                 provider=prov, model=cfg.get("model") or "",
