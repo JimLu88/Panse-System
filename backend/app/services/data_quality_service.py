@@ -472,6 +472,11 @@ def scan_refill_unmatched(db: Session) -> int:
         # 2025 及以前的补单不纳入(系统从 2026 起算, 旧单订单本就不在系统, 2026-06-17)
         if r.refill_date is not None and r.refill_date < date(2026, 1, 1):
             continue
+        # 渠道外补单豁免 (用户 2026-07-12: 补单单独建表): 小红书(P开头单号)/孚格批次的平台订单
+        # 本就不进订单总表, 报"找不到"是假警 —— 只对畔色淘宝补单保留本检查(仍能抓录错号)。
+        _rk = str(r.remark or "")
+        if str(r.order_no or "").startswith("P") or "小红书" in _rk or "孚格" in _rk:
+            continue
         if r.order_no not in known_orders:
             _record(
                 db,
