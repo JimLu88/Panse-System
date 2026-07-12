@@ -358,15 +358,21 @@ def route_alipay_settlements(db: Session, *, default_year: Optional[int] = None)
     幂等: 同 (flow_no, month) 已有未撤销销账记录则跳过。返回 {flagged, settled_months, flipped}。
     """
     from app.models.finance import AlipayFlow
+    from app.services import field_change_service as _fcs
     flows = db.execute(select(AlipayFlow).where(AlipayFlow.amount < 0)).scalars().all()
     done = {(p.alipay_flow_no, p.settlement_month) for p in db.execute(
         select(FactorySettlementPayment).where(FactorySettlementPayment.reversed_at.is_(None))
     ).scalars().all() if p.alipay_flow_no}
+    # 人工锁 (2026-07-12): 核销类型被人改过的流水(修改档案有记录), 机器归类一律绕行 ——
+    # 退款护栏只认"退款"特征, 这把锁兜住所有形态(19365 曾被无护栏旧镜像翻回, 对账假差复发)。
+    _locked = _fcs.human_pks(db, table="alipay_flows", field="reconciliation_type")
     flagged = flipped = 0
     settled_months: list[str] = []
     for f in flows:
         sup = match_supplier(db, f.counterparty)
         if not sup:
+            continue
+        if str(f.id) in _locked:
             continue
         # 退款护栏 (2026-07-10): 客户退款流水绝不当工厂货款 —— 即使打码对手方名去星号后恰好【子串】命中
         # 工厂别名(实测: 给客户「山**」的退款去星号=「山」, 命中「玉山」别名 → 被误改 factory_payment,

@@ -197,10 +197,15 @@ def reclassify_refund_mislabels(db: Session) -> dict:
     (实测 23 笔 -¥16536.59 让工厂货款虚高)。本函数把这些(及未分类/other 的退款)归位成 refund。
     幂等: 已是 refund 的不动。返回 {原type: {'count', 'sum'}} 明细供核对。
     """
+    from app.services import field_change_service as _fcs
     rows = db.execute(select(AlipayFlow).where(AlipayFlow.amount < 0)).scalars().all()
+    # 人工锁 (2026-07-12): 人改过核销类型的流水不许机器再翻 (对称于 route 的锁, 见 human_pks)
+    _locked = _fcs.human_pks(db, table="alipay_flows", field="reconciliation_type")
     detail: dict[str, dict] = {}
     for f in rows:
         if (f.reconciliation_type or "") == "refund":
+            continue
+        if str(f.id) in _locked:
             continue
         desc = " ".join(filter(None, [f.counterparty, f.remark, f.transaction_type]))
         if not _matches(desc, REFUND_KEYS):

@@ -48,6 +48,21 @@ def record(
         _logger.warning("field_change 记录失败 %s.%s#%s", table, field, pk, exc_info=True)
 
 
+def human_pks(db: Session, *, table: str, field: str) -> set[str]:
+    """该表该字段被「人」改过的行号集合。档案里只有人的决定(见模块约定), 故有档案=人拍过板。
+
+    用途: 机器批处理(智能归类/自动纠正)改写前查此集合, **人改过的行不许机器再翻**。
+    2026-07-12 复发案: 流水19365(山**退款)人工归 refund_out 后, 双机战期间旧镜像(无退款护栏)
+    的 route 又翻回 factory_payment → 逐月对账假差反复重建。退款护栏只认得"退款"特征, 人工锁
+    兜住所有未来写入方: 只要人拍过板, 机器一律绕行(人自己仍随时可改, 只锁机器)。"""
+    rows = db.execute(
+        select(FieldChange.row_pk).where(
+            FieldChange.table_name == table, FieldChange.field == field,
+        ).distinct()
+    ).scalars().all()
+    return set(rows)
+
+
 def diff_and_apply(
     db: Session, obj: Any, data: dict, *,
     table: str, pk: Any,
