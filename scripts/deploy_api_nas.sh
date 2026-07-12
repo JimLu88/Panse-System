@@ -59,6 +59,21 @@ if [[ "${BUILD:-0}" == "1" ]]; then
   docker builder prune -f --keep-storage=6GB >/dev/null 2>&1 || true
 fi
 
+# 不带 BUILD=1 也要指纹自检 (2026-07-12 二次事故: 忘了 BUILD=1, 把上个会话的旧镜像原样推上生产,
+# 健康检查全绿但代码是旧的 —— 自检原先只在 build 分支里, 无 build 部署完全裸奔)。
+if [[ "${BUILD:-0}" != "1" ]]; then
+  echo "[check] 无 build 部署: 内容指纹自检 (本地 backend/app+alembic vs 待推镜像)…"
+  loc_md5=$( (find backend/app backend/alembic -name '*.py' -type f | LC_ALL=C sort | xargs cat) | md5sum | cut -d' ' -f1)
+  img_md5=$(docker run --rm --entrypoint sh "$IMAGE" -c \
+    "(find /app/app /app/alembic -name '*.py' -type f | LC_ALL=C sort | xargs cat) | md5sum" | cut -d' ' -f1)
+  if [[ "$loc_md5" != "$img_md5" ]]; then
+    echo "FATAL: 本地镜像内容 ≠ 当前工作区 —— 这不是本次代码构建的镜像。用 BUILD=1 重新构建后部署。" >&2
+    echo "  local=$loc_md5 image=$img_md5" >&2
+    exit 1
+  fi
+  echo "[check] 指纹一致 ✓ ($loc_md5)"
+fi
+
 echo "[1/5] 预检 SSH + 当前 panse-system 容器"
 "${SSH[@]}" "$NAS_DOCKER ps --filter name=panse-system --format '{{.Names}}  {{.Status}}'"
 
