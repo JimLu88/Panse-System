@@ -1422,6 +1422,9 @@ class LogisticsBillOut(BaseModel):
     # 匹配到的订单的客户名/收货地址 — 供人工核对"收货人/目的地"是否真的对得上(查匹配错误)
     order_customer_name: Optional[str] = None
     order_customer_address: Optional[str] = None
+    # 订单号在订单库里是否真的存在 — 前端曾拿"客户名为空"当"订单库无此单",
+    # 把「有此单但订单没存客户名」误报成无此单(2026-07-12, 23条全是误报), 必须单独给存在性
+    order_exists: bool = False
 
 
 class PromotionFlowOut(BaseModel):
@@ -1496,6 +1499,7 @@ def _enrich_logistics_bills(db: Session, bills: list) -> list[LogisticsBillOut]:
     for b in bills:
         d = LogisticsBillOut.model_validate(b)
         if b.order_no and b.order_no in omap:
+            d.order_exists = True   # 库里有此单 (客户名可能为空 — 存在性与有没有名字是两回事)
             d.order_customer_name, d.order_customer_address = omap[b.order_no]
         out.append(d)
     return out
@@ -1535,6 +1539,19 @@ def set_logistics_bill_match(bill_id: int, payload: LogisticsBillMatchIn,
         except Exception:  # noqa: BLE001 — 回填失败不阻断改匹配
             pass
     return _enrich_logistics_bills(db, [b])[0]
+
+
+@router.get("/logistics-bills/{bill_id}/match-candidates")
+def logistics_bill_match_candidates(
+    bill_id: int,
+    limit: int = Query(5, le=20),
+    name: Optional[str] = None,   # 传入则按这个(改过的)收货人名算相似度
+    db: Session = Depends(get_db),
+):
+    """按收货人名相似度列候选订单(供下拉自选), 匹配度高→低取前 5;
+    同分时目的地对上/下单日近账单日的排前 (用户 2026-07-12, 与打包费核对同款)。"""
+    from app.services import logistics_bill_match
+    return logistics_bill_match.match_candidates(db, bill_id, limit=limit, name_override=name)
 
 
 @router.post("/logistics-bills/match")

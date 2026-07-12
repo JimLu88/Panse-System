@@ -49,6 +49,57 @@ def _place_tokens(text: Optional[str]) -> list[str]:
     return out
 
 
+def match_candidates(db: Session, bill_id: int, limit: int = 5,
+                     name_override: Optional[str] = None) -> list[dict]:
+    """按收货人名相似度给一条逐单物流账单列候选订单(供人工下拉自选), 匹配度高→低取前 N。
+    同分排序: 目的地省市在订单地址里(addr_hit) > 下单日离账单日近 —— 同名多单时把"对地/对时"的排上来。
+    name_override: 传入则用它(而非账单收货人)算相似度, 让"改了名字还没保存"也能即时刷候选。
+    (用户 2026-07-12: 物流配单改成打包费那种"按客户名找候选5个、人工筛选")"""
+    import difflib
+    b = db.get(LogisticsBill, bill_id)
+    if b is None:
+        return []
+    name = ((name_override if name_override is not None else b.recipient_name) or "").strip()
+    if not name:
+        return []
+    tokens = _place_tokens(b.destination)
+    rows = db.execute(
+        select(Order.order_no, Order.customer_name, Order.customer_address,
+               Order.product_name, Order.paid_amount, Order.order_date)
+        .where(Order.status.in_(SETTLED_SALE_STATUSES))  # 铁律: 只从已发货成交单里挑
+    ).all()
+    scored = []
+    for o in rows:
+        cn = (o.customer_name or "").strip()
+        if not o.order_no or not cn:
+            continue
+        if cn == name:
+            score = 1.0
+        elif name in cn or cn in name:
+            score = 0.9
+        else:
+            score = difflib.SequenceMatcher(None, name, cn).ratio()
+        addr_hit = bool(tokens and o.customer_address
+                        and any(t in o.customer_address for t in tokens))
+        # 下单日离账单日的天数差 (缺日期给大哨兵值排后面)
+        day_gap = abs((o.order_date - b.bill_date).days) if (o.order_date and b.bill_date) else 99999
+        scored.append((score, addr_hit, day_gap, o))
+    scored.sort(key=lambda x: (-x[0], not x[1], x[2], x[3].order_no))
+    return [
+        {
+            "order_no": o.order_no,
+            "customer_name": (o.customer_name or "").strip(),
+            "customer_address": o.customer_address,
+            "product_name": o.product_name,
+            "paid_amount": float(o.paid_amount) if o.paid_amount is not None else None,
+            "order_date": str(o.order_date) if o.order_date else None,
+            "score": round(float(score), 3),
+            "addr_hit": addr_hit,
+        }
+        for score, addr_hit, _gap, o in scored[:limit]
+    ]
+
+
 def match_logistics_bills(db: Session, *, only_unmatched: bool = True, loose: bool = False) -> dict:
     """给逐单物流账单配淘宝订单。返回 {matched, multi, none, skipped} 计数。
 

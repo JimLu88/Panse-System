@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
-import { Alert, Button, Input, Segmented, Space, Table, Tag, Typography, Upload, message } from 'antd';
-import { DownloadOutlined, InboxOutlined } from '@ant-design/icons';
+import { Alert, Button, Input, Modal, Segmented, Select, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { DownloadOutlined, InboxOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
@@ -23,6 +23,20 @@ interface LogisticsBill {
   row_type: string;
   order_customer_name: string | null;
   order_customer_address: string | null;
+  // 订单号在订单库里是否真的存在 — 与"订单有没有存客户名"是两回事(曾把有单没名误报成无此单)
+  order_exists?: boolean;
+}
+
+// 物流配单候选(按收货人名相似度, 与打包费核对同款)
+interface LogiCandidate {
+  order_no: string;
+  customer_name: string;
+  customer_address?: string | null;
+  product_name?: string | null;
+  paid_amount?: number | null;
+  order_date?: string | null;
+  score: number;      // 0~1 匹配度
+  addr_hit?: boolean; // 目的地省市在订单地址里
 }
 
 interface ImportResult {
@@ -45,45 +59,17 @@ function ym(d: string | null): string {
   return d ? d.slice(0, 7) : '未知月';
 }
 
-// 逐行可编辑订单号 — 人工核对/纠正匹配。填=人工指定(manual); 空=取消匹配。
-function OrderNoCell({ row, onSaved }: { row: LogisticsBill; onSaved: () => void }) {
-  const [editing, setEditing] = useState(false);
-  const [val, setVal] = useState(row.order_no ?? '');
-  const [saving, setSaving] = useState(false);
+// 逐行订单号展示 — 「改」打开配单弹窗(按客户名找候选人工筛, 与打包费核对同款, 用户 2026-07-12)
+function OrderNoCell({ row, onEdit }: { row: LogisticsBill; onEdit: (r: LogisticsBill) => void }) {
   const m = row.match_method ? METHOD_LABEL[row.match_method] : null;
   if (row.row_type === 'summary') return <Typography.Text type="secondary">-</Typography.Text>;
-  const save = async () => {
-    setSaving(true);
-    try {
-      await api.patch(`/api/finance/logistics-bills/${row.id}/match`,
-        { order_no: val.trim() || null });
-      message.success(val.trim() ? '已指定订单号' : '已取消匹配');
-      setEditing(false);
-      onSaved();
-    } catch (e: any) {
-      message.error(e?.response?.data?.detail ?? '保存失败');
-    } finally {
-      setSaving(false);
-    }
-  };
-  if (editing) {
-    return (
-      <Space.Compact style={{ width: '100%' }}>
-        <Input size="small" value={val} autoFocus placeholder="订单号(留空=取消匹配)"
-          onChange={e => setVal(e.target.value)} onPressEnter={save} style={{ width: 180 }} />
-        <Button size="small" type="primary" loading={saving} onClick={save}>存</Button>
-        <Button size="small" onClick={() => { setEditing(false); setVal(row.order_no ?? ''); }}>×</Button>
-      </Space.Compact>
-    );
-  }
   return (
     <Space size={4}>
       {row.order_no
         ? <Typography.Text copyable={{ text: row.order_no }} style={{ fontSize: 12 }}>{row.order_no}</Typography.Text>
         : <Typography.Text type="secondary">未匹配</Typography.Text>}
       {m && <Tag color={m.color} title={row.match_note ?? ''} style={{ marginInlineEnd: 0 }}>{m.text}</Tag>}
-      <Button size="small" type="link" style={{ padding: 0 }}
-        onClick={() => { setVal(row.order_no ?? ''); setEditing(true); }}>改</Button>
+      <Button size="small" type="link" style={{ padding: 0 }} onClick={() => onEdit(row)}>改</Button>
     </Space>
   );
 }
@@ -105,11 +91,51 @@ export default function LogisticsBillsPage() {
   const [importing, setImporting] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   const [reviewFilter, setReviewFilter] = useState<'all' | 'todo' | 'done'>('all');
+  // 配单弹窗 (用户 2026-07-12: 照打包费核对, 按客户名找候选5个人工筛选)
+  const [editRow, setEditRow] = useState<LogisticsBill | null>(null);
+  const [eOrder, setEOrder] = useState('');
+  const [eName, setEName] = useState('');     // 找候选用的客户名(默认账单收货人, 只搜不改账单)
+  const [cands, setCands] = useState<LogiCandidate[]>([]);
+  const [candLoading, setCandLoading] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const { data = [], isLoading } = useQuery<LogisticsBill[]>({
     queryKey: ['logistics-bills'],
     queryFn: () => api.get('/api/finance/logistics-bills').then(r => r.data),
   });
+
+  const loadCands = async (id: number, nameOverride?: string) => {
+    setCandLoading(true);
+    try {
+      const r = await api.get<LogiCandidate[]>(
+        `/api/finance/logistics-bills/${id}/match-candidates`,
+        { params: { limit: 5, name: nameOverride } });
+      setCands(r.data);
+    } catch { setCands([]); }
+    finally { setCandLoading(false); }
+  };
+  const openEdit = (r: LogisticsBill) => {
+    setEditRow(r);
+    setEOrder(r.order_no ?? '');
+    setEName(r.recipient_name ?? '');
+    setCands([]);
+    loadCands(r.id);   // 进来就按账单收货人列候选订单(下拉自选)
+  };
+  const saveEdit = async () => {
+    if (!editRow) return;
+    setSavingEdit(true);
+    try {
+      const o = eOrder.trim();
+      await api.patch(`/api/finance/logistics-bills/${editRow.id}/match`, { order_no: o || null });
+      message.success(o ? '已指定订单号' : '已取消匹配');
+      setEditRow(null);
+      qc.invalidateQueries({ queryKey: ['logistics-bills'] });
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '保存失败');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
 
   const handleImport = async (file: File) => {
     setImporting(true);
@@ -211,11 +237,13 @@ export default function LogisticsBillsPage() {
     { title: '目的地', dataIndex: 'destination', width: 130, ellipsis: true, render: (v: string | null) => v || '-' },
     { title: '订单号 / 匹配 (可改)', dataIndex: 'order_no', width: 250,
       render: (_: string | null, row: LogisticsBill) =>
-        <OrderNoCell row={row} onSaved={() => qc.invalidateQueries({ queryKey: ['logistics-bills'] })} /> },
+        <OrderNoCell row={row} onEdit={openEdit} /> },
     { title: '匹配到的订单客户 (核对)', dataIndex: 'order_customer_name', width: 200,
       render: (v: string | null, row: LogisticsBill) => {
         if (row.row_type === 'summary' || !row.order_no) return <Typography.Text type="secondary">-</Typography.Text>;
-        if (!v) return <Tag color="warning">订单库无此单</Tag>;
+        if (row.order_exists === false) return <Tag color="warning">订单库无此单</Tag>;
+        // 订单在库但订单上没存客户名(早期导入缺发货报表) — 不是"无此单", 只是无从核对收货人
+        if (!v) return <Tag color="default" title="订单在库内, 但订单没存客户名, 无从核对收货人">库内有此单 · 无客户名</Tag>;
         return (
           <div style={{ fontSize: 12, lineHeight: 1.3 }}>
             <div>{v}</div>
@@ -327,6 +355,54 @@ export default function LogisticsBillsPage() {
 
       <FeeVariancePanel url="/api/finance/logistics-bills/variance" label="物流费" queryKey="logistics-variance" />
       </>)}
+
+      {/* 配单弹窗: 按客户名找候选5个人工筛选 (与打包费核对同款, 用户 2026-07-12) */}
+      <Modal
+        title={`物流配单 · ${editRow?.bill_date ?? ''} · ${editRow?.recipient_name ?? '-'}`}
+        open={!!editRow}
+        onCancel={() => setEditRow(null)}
+        onOk={saveEdit}
+        confirmLoading={savingEdit}
+        okText="保存"
+        destroyOnClose
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size="middle">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            运单 {editRow?.tracking_no ?? '-'} · 目的地 {editRow?.destination ?? '-'} · 运费 ¥{Number(editRow?.freight_amount ?? 0).toFixed(2)}
+          </Typography.Text>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>客户/收货人（只用来找候选，不改账单）</div>
+            <Input value={eName} placeholder="客户姓名 (可改后重找候选)"
+              onChange={e => setEName(e.target.value)}
+              onPressEnter={() => editRow && loadCands(editRow.id, eName)} />
+          </div>
+          <div>
+            <div style={{ marginBottom: 4, color: '#666' }}>配单订单号</div>
+            <Input value={eOrder} placeholder="手填订单号, 或从下方候选里选 (留空=取消匹配)"
+              onChange={e => setEOrder(e.target.value)} style={{ marginBottom: 8 }} />
+            <div style={{ marginBottom: 4, color: '#666' }}>候选订单（按客户名匹配度高→低）</div>
+            <Space.Compact style={{ width: '100%' }}>
+              <Select
+                style={{ flex: 1 }}
+                loading={candLoading}
+                value={cands.some(c => c.order_no === eOrder) ? eOrder : undefined}
+                placeholder={candLoading ? '加载候选中…' : (cands.length ? '选一个候选订单填入' : '暂无候选（改对客户名后点右侧刷新）')}
+                onChange={(v) => setEOrder(v)}
+                options={cands.map(c => ({
+                  value: c.order_no,
+                  label: `${Math.round(c.score * 100)}%${c.addr_hit ? ' ✓地址' : ''} · ${c.customer_name} · ${c.order_no}${c.product_name ? ' · ' + c.product_name : ''}`,
+                  title: c.customer_address ?? '',
+                }))}
+              />
+              <Button icon={<ReloadOutlined />} loading={candLoading}
+                onClick={() => editRow && loadCands(editRow.id, eName)}>按客户名找候选</Button>
+            </Space.Compact>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              候选按客户名相似度排序取前 5，同分时目的地对上（✓地址）/下单日近账单日的排前；选中即填入上面订单号，保存后人工配到该单。改了客户名点「按客户名找候选」刷新。
+            </Typography.Text>
+          </div>
+        </Space>
+      </Modal>
     </Space>
   );
 }
