@@ -334,22 +334,15 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 precap = factory_wood + estimate_part + packing
                 cost = precap
         else:
-            # 非定制单: 定价表准 → 用定价表补非木作(配件+物流+安装 = 定价表物理 − 木作)
-            wood_est = _d(getattr(o, "wood_cost_est", None))
-            can_reconstruct = (wood_est > 0 and o.theoretical_cost is not None
-                               and (_d(o.theoretical_cost) - wood_est) > 0)
-            if can_reconstruct:
-                estimate_part = _d(o.theoretical_cost) - wood_est - est_pack   # 减嵌入打包(下面统一 +packing 一次)
-                if _al is not None and _el is not None:
-                    estimate_part += _d(_al) - _d(_el)              # 物流换实际(差额)
-                if _ai is not None and _ei is not None:
-                    estimate_part += _d(_ai) - _d(_ei)              # 安装换实际(差额)
-                # 分量: 换过实际→实际值; 否则 theo 里嵌的是预估值
-                _logi_comp = _d(_al) if (_al is not None and _el is not None) else (_d(_el) if _el is not None else Decimal("0"))
-                _inst_comp = _d(_ai) if (_ai is not None and _ei is not None) else (_d(_ei) if _ei is not None else Decimal("0"))
-            else:
-                estimate_part = nz(_al, _el) + nz(_ai, _ei)         # 无定价参照: 补 物流+安装
-                _logi_comp, _inst_comp = nz(_al, _el), nz(_ai, _ei)
+            # 非定制单 (用户 2026-07-14 "按阶梯改余数法"): 配件不再用 理论−木作−打包 的余数 —
+            # 定价与实际脱节时(理论900的SKU工厂账单5000)余数被挤成负配件, 全库实扫 11 单。
+            # 改直读配件阶梯 est_parts(SKU行外配件直用/空则按木作账单挑最近规格行,
+            # order_cost_service._pricing_parts_for 写入, 天然≥0); 无阶梯值(无定价参照)→配件0,
+            # 物流/安装照旧 actual 优先否则 est。结构与定制v2实配件对齐, 分量天然可拆。
+            _ep2 = getattr(o, "est_parts", None)
+            estimate_part = (_d(_ep2) if _ep2 is not None else Decimal("0")) \
+                + nz(_al, _el) + nz(_ai, _ei)
+            _logi_comp, _inst_comp = nz(_al, _el), nz(_ai, _ei)
             precap = factory_wood + estimate_part + packing
             cost = precap
     else:

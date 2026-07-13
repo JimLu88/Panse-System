@@ -137,12 +137,14 @@ def test_breakdown_estimate_reconciles():
 
 
 def test_breakdown_actual_reconstruct_reconciles():
-    """有账单可还原: final = 木作账单 + (定价表物理−木作−嵌入打包) + 打包(一次)。(2026-06-26 打包修复)"""
+    """有账单: final = 木作账单 + 配件阶梯(est_parts) + 打包(一次)。
+    (2026-07-14 按阶梯改余数法: 配件直读 est_parts, 不再 理论−木作−嵌入打包 的余数)"""
     o = Order(order_no="B2", actual_cost=Decimal("1000"), wood_cost_est=Decimal("800"),
-              theoretical_cost=Decimal("2000"), paid_amount=Decimal("5000"), est_packing=Decimal("50"))
+              theoretical_cost=Decimal("2000"), est_parts=Decimal("1150"),
+              paid_amount=Decimal("5000"), est_packing=Decimal("50"))
     b = ofin.physical_cost_breakdown(o)
     assert b["factory_wood"] == Decimal("1000")
-    assert b["estimate_part"] == Decimal("1150")     # 2000 − 800 − 嵌入打包50
+    assert b["estimate_part"] == Decimal("1150")     # = est_parts(配件阶梯), 非余数
     assert b["packing"] == Decimal("50")
     assert b["cap_mode"] == "none"
     assert b["factory_wood"] + b["estimate_part"] + b["packing"] == b["precap_total"]

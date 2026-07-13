@@ -99,15 +99,17 @@ def test_v2_on_nonbill_custom_unchanged():
 
 
 def test_v2_on_noncustom_unchanged():
-    """开关开 对非定制单零影响(v2 只动定制分支)。"""
+    """开关开/关 对非定制单结果一致(v2 只动定制分支; 非定制配件走阶梯与开关无关)。
+    2026-07-14 按阶梯改余数法: 非定制已入账 = 木作170 + 配件阶梯300 = 470, 开关不影响。"""
+    o = Order(order_no="V5", is_custom=False, sku_code="PPS900", paid_amount=Decimal("2000"),
+              actual_cost=Decimal("170"), wood_cost_est=Decimal("0"), theoretical_cost=None,
+              est_parts=Decimal("300"))
     _set_v2(True)
     try:
-        o = Order(order_no="V5", is_custom=False, sku_code="PPS900", paid_amount=Decimal("2000"),
-                  actual_cost=Decimal("170"), wood_cost_est=Decimal("0"), theoretical_cost=None,
-                  est_parts=Decimal("300"))
-        assert ofin.physical_cost(o) == Decimal("170")
+        on_val = ofin.physical_cost(o)
     finally:
         _set_v2(False)
+    assert on_val == ofin.physical_cost(o) == Decimal("470")
 
 
 def test_v2_setting_round_trip(db_session):

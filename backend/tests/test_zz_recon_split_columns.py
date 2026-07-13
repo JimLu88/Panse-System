@@ -10,13 +10,15 @@ from app.services import order_financials as ofin
 
 
 def test_reconstruct_branch_components():
-    """非定制+工厂账单+定价重构: 分量=换入的实际物流/安装; final 不变(1010)。"""
+    """非定制+工厂账单: 配件走阶梯直读 est_parts, 不再余数法(用户 2026-07-14 "按阶梯改余数法");
+    分量=实际物流/安装; final = 700木作 + (170配件+50物流+20安装) + 80打包 = 1020。"""
     o = Order(order_no="S1", is_custom=False, paid_amount=D("5000"),
               actual_cost=D("700"), wood_cost_est=D("700"), theoretical_cost=D("1000"),
+              est_parts=D("170"),
               est_packing=D("100"), actual_logistics=D("50"), est_logistics=D("30"),
               actual_install=D("20"), est_install=D("10"), actual_packing=D("80"))
     pb = ofin.physical_cost_breakdown(o)
-    assert pb["final"] == D("1010")                      # 700 + (1000-700-100+20+10) + 80
+    assert pb["final"] == D("1020")                      # 700 + (170+50+20) + 80
     assert pb["logistics_component"] == D("50")
     assert pb["install_component"] == D("20")
     # 拆列后三块加回 == final
