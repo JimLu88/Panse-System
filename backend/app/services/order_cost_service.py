@@ -778,26 +778,43 @@ def _set_wood_est(order: Order, wood: Optional[Decimal]) -> None:
 def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
     """该单匹配 SKU 的定价表 external_parts_cost (配件/外采标准估值, 单件)。与 _pricing_wood_for 对称。
 
-    SKU 命中 → 返回 external_parts_cost(None 视作 0, 表示该产品标准无外采配件);
-    无任何 SKU/产品命中 → None(est_parts 不写, 留空表示"未知/无定价参照")。老单老价(方案B)。"""
+    配件取值阶梯 (用户拍板 2026-07-13):
+    ① SKU 行外配件**有值(含显式0=标准无外配件)** → 直接用;
+    ② SKU 行是 NULL(未填, 如后补的"定制尺寸/尺寸微定制"咨询行) 或无 SKU 行 → 同产品挑行:
+       有木作账单锚(actual_cost/件) → 按 |行wood_cost − 锚| 最接近的规格行取其外配件
+       (实测: 定制曜黑柜账单8800 → 对上整柜2.1的1598.49, 而非旧 limit(1) 撞到下柜的460);
+       无锚 → 按 id 取首行(旧行为)。
+    ③ 15%×实付兜底: 用户指示暂不做。
+    全部命中不了 → None(est_parts 留空="未知/无定价参照")。老单老价(方案B)。"""
     sku_code = _resolve_sku_code(db, order)
     _on = getattr(order, "order_date", None)
     if sku_code:
         row = db.execute(
             select(PricingSku.external_parts_cost).where(PricingSku.sku_code == sku_code)
         ).first()
-        if row is not None:
-            live = Decimal(str(row[0] or 0))
-            return _asof_pricing(db, sku_code, None, _on, "external_parts_cost", live)
+        if row is not None and row[0] is not None:   # ① 有值(含0)直接用; NULL=未填 → 掉②
+            return _asof_pricing(db, sku_code, None, _on, "external_parts_cost",
+                                 Decimal(str(row[0])))
     if order.product_code:
-        row = db.execute(
-            select(PricingSku.external_parts_cost)
+        rows = db.execute(
+            select(PricingSku.sku_code, PricingSku.external_parts_cost, PricingSku.wood_cost)
             .where(PricingSku.product_code == order.product_code)
-            .limit(1)
-        ).first()
-        if row is not None:
-            live = Decimal(str(row[0] or 0))
-            return _asof_pricing(db, None, order.product_code, _on, "external_parts_cost", live)
+            .order_by(PricingSku.id)
+        ).all()
+        cands = [(sc, ep, wc) for sc, ep, wc in rows if ep is not None]
+        if not cands:
+            return None
+        best = None
+        _ac = getattr(order, "actual_cost", None)
+        if _ac is not None and Decimal(str(_ac)) > 0:
+            anchor = Decimal(str(_ac)) / max(int(order.qty or 1), 1)
+            with_wood = [c for c in cands if c[2] is not None]
+            if with_wood:
+                best = min(with_wood, key=lambda c: abs(Decimal(str(c[2])) - anchor))
+        if best is None:
+            best = cands[0]
+        return _asof_pricing(db, best[0], order.product_code, _on, "external_parts_cost",
+                             Decimal(str(best[1])))
     return None
 
 
