@@ -58,15 +58,14 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
         if channel == "promo_signup":
             label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
         else:
-            label, field = "活动价A", "report_price"
+            label, field = "活动价(日常价)", "report_price"
         entries, _stats = collect_signup_rows(db, field)
         for s, p, A in entries:
             if channel == "super_reduce":
-                # 批量导入口径(2026-07-13): 表里只填【活动价=报名价A】+让利比例10(补贴金额留空,
-                # 平台铁律"让利比例/补贴只能填一个")。比对列 = 活动价 A(与 builder 恒等, 0容差)。
-                sys_val = A
-                target = (round(A * 0.9, 2) if getattr(s, "is_custom_placeholder", False)
-                          else _f(p.mid_buyer_price))                       # 超级立减到手=中促到手
+                # ★活动价 = 日常价 (2026-07-13 血泪根治, 不是报名价A!)。超级立减=单品立减法,
+                # 折扣由并行的单品立减+88VIP提供, 活动价填日常价; 填报名价A会双重打折砸穿。
+                sys_val = _f(s.daily_price)
+                target = _f(p.mid_buyer_price)                             # 超级立减到手(叠加后≈大促到手)
             else:
                 sys_val = A
                 target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)

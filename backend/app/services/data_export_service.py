@@ -1328,9 +1328,12 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     数据 sheet 前 3 行是表头(组名/列名/填写说明), 数据从第 4 行起追加。平台要求"请勿改动模版结构"
     → 必须原样保留两个 sheet + 3 行表头, 只往第 4 行起写数据, 否则导入被拒/错列。
     14 列: 商品ID/SKUID/活动价/库存/包邮/短标题/素材×6/让利比例/补贴金额。
-    填: 商品ID + SKUID + 活动价(=报名价A) + 包邮 + 让利比例10 + 补贴金额(=活动价×0.1); 其余留空。
-    活动价占位=占位报名价; 到手 = 活动价×0.9 = 中促到手。坏价/半套商品同 collect_signup_rows 剔除。
-    返回 (BytesIO, stats)。"""
+    ★★活动价 = 【日常价 daily_price】, 绝不是报名价A! (2026-07-13 血泪根治, 1105单实测):
+      超级立减长期活动 = 单品立减法(文档§四): 活动价填日常价, 折扣由并行的【单品立减+88VIP】叠加提供,
+      真实实付≈大促到手≈报名价A×0.88, 真实毛利~22%。若活动价错填报名价A(本身已≈日常价×0.8),
+      单品立减再叠上 = 双重打折砸穿成本(2026-07-13 造成37商品低价上线的事故根因)。
+    填: 商品ID + SKUID + 活动价(=日常价) + 包邮 + 让利比例10; 补贴金额【必须留空】(平台铁律"让利比例/
+      补贴只能填一个", 两列都填→整商品拒)。坏价/半套商品同 collect_signup_rows 剔除。返回 (BytesIO, stats)。"""
     import io as _io
     from pathlib import Path
     import openpyxl
@@ -1342,12 +1345,15 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     if ws.max_row >= 4:                                    # 清历史示例数据行, 保留前 3 行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    # 同收集器(整商品完整性剔除+占位封顶); 活动价=A(占位=占位报名价), 让利比例=10 → 到手=活动价×0.9。
-    # ★平台铁律(2026-07-13 实测60/60失败反馈): "让利比例, 补贴金额 只能填写一个" —— 只填【让利比例】,
-    #   补贴金额【必须留空】(千牛逐商品编辑页原生也用让利比例; 两列都填→"玩法数据错误"整商品拒)。
+    # 用收集器做【整商品完整性剔除+坏价剔除】, 但活动价【取日常价】不取 A(A 只用来判完整性)。
     entries, stats = collect_signup_rows(db, "report_price")
     r = 4                                                  # ★数据从第 4 行起(前 3 行是平台表头)
+    skipped_no_daily = 0
     for s, p, A in entries:
+        act_price = float(s.daily_price) if s.daily_price else None    # ★活动价 = 日常价
+        if act_price is None or act_price <= 0:
+            skipped_no_daily += 1
+            continue
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
             if _sid and str(_sid) not in ids:
@@ -1355,13 +1361,14 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
         for skuid in ids:
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
-            ws.cell(r, 3, float(A)).number_format = "0.00"              # 活动价(必填, =报名价A)
+            ws.cell(r, 3, act_price).number_format = "0.00"            # ★活动价 = 日常价(不是A!)
             ws.cell(r, 5, "包邮")                                        # 包邮(不填=不包邮, 现况全包邮)
             ws.cell(r, 13, 10)                                          # 让利比例 10(=10%) —— 只填这个
             # ★补贴金额(14)留空: 与让利比例二选一, 平台自动按让利比例算补贴
             # 库存(4)留空=全部库存; 短标题/素材(6-12)非必填留空
             r += 1
     stats["rows"] = r - 4
+    stats["skipped_no_daily"] = skipped_no_daily
 
     out = _io.BytesIO()
     wb.save(out)
