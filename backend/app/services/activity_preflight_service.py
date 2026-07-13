@@ -83,7 +83,75 @@ def _detect_bad_products(db: Session) -> list[dict]:
     return bad
 
 
-def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool = False) -> dict:
+# 档1 商品价格核验: 0.75 = 系统标准单品宝折扣(永不改), 千牛一口价 应 = ERP日常价 ÷ 0.75。
+_STANDARD_PROMO_DISCOUNT = 0.75
+_PRICE_CHECK_REL_TOL = 0.01   # 1% 相对容差(min 1元), 防四舍五入噪声误报
+
+
+def product_price_check(db: Session) -> dict:
+    """档1 商品价格核验 (2026-07-13 用户「ERP价为准」铁律): ERP日常价 vs 千牛标价(快照)。
+
+    千牛价取自最近一次「淘宝商品导出」导入的 TaobaoListing(按 sku_code 关联, 取 sku_price, 缺则 list_price)。
+    铁律: 千牛一口价 应 = ERP日常价 ÷ 0.75。偏低的(千牛价 < 应填价)= 单品宝把标价卡在低值 < ERP日常价 →
+    超级立减/报名会被平台判"标价高于近15天最低" 拒 → 需去千牛把一口价抬到 应填价。
+    快照里没有的 SKU 不判(没导出/没匹配, 避免误报)。返回档1明细 + 快照日期。"""
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.taobao_listing import TaobaoListing
+
+    skus = db.execute(select(PricingSku)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    qn_price: dict[str, float] = {}
+    snapshot: datetime.datetime | None = None
+    for L in db.execute(select(TaobaoListing)).scalars().all():
+        code = (L.sku_code or L.merchant_code or "").strip()
+        px = L.sku_price if L.sku_price is not None else L.list_price
+        if code and px is not None:
+            qn_price[code] = float(px)
+        ts = getattr(L, "updated_at", None) or getattr(L, "created_at", None)
+        if ts and (snapshot is None or ts > snapshot):
+            snapshot = ts
+
+    mismatches: list[dict] = []
+    checked = ok = 0
+    for s in skus:
+        if getattr(s, "is_custom_placeholder", False) or s.daily_price is None:
+            continue
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_sku_id:
+            continue
+        qn = qn_price.get(s.sku_code)
+        if qn is None:
+            continue
+        checked += 1
+        expected = round(float(s.daily_price) / _STANDARD_PROMO_DISCOUNT, 2)
+        if abs(qn - expected) <= max(1.0, expected * _PRICE_CHECK_REL_TOL):
+            ok += 1
+            continue
+        mismatches.append({
+            "sku_code": s.sku_code,
+            "name": s.sku or s.product_name or s.sku_code,
+            "erp_daily": round(float(s.daily_price), 2),
+            "qn_price": round(qn, 2),                 # 现千牛标价(快照)
+            "expected_qn": expected,                  # 应改一口价 = 日常价 ÷ 0.75
+            "diff": round(qn - expected, 2),
+            "too_low": qn < expected,                 # True=千牛偏低(阻塞报名, 急)
+        })
+    mismatches.sort(key=lambda m: (not m["too_low"], m["diff"]))   # 偏低的排前
+    return {
+        "price_checked": checked,
+        "price_ok": ok,
+        "price_mismatch_count": len(mismatches),
+        "price_too_low_count": sum(1 for m in mismatches if m["too_low"]),
+        "price_mismatches": mismatches[:100],
+        "price_snapshot_date": snapshot.date().isoformat() if snapshot else None,
+        "price_has_snapshot": bool(qn_price),
+    }
+
+
+def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool = False,
+                       tier: str = "big") -> dict:
     """活动报名虚拟推送(预检)。只读, 返回问题清单 + 各步就绪计数。
     skip_floor_check=True: 本次按【初始报价】跳过 15 天最低价冲突校验(首次立基准), 未来仍应照跑。"""
     from app.models.order import Order
@@ -215,6 +283,8 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
     skuid_collisions.sort(key=lambda x: x["taobao_sku_id"])
 
     return {
+        "tier": tier,
+        **product_price_check(db),                            # 档1 商品价格核验(ERP日常价 vs 千牛标价快照)
         "floor_days": floor_days,
         "bad_products": bad,
         "bad_product_count": len(bad),

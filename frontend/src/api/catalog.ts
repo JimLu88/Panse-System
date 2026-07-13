@@ -774,11 +774,52 @@ export type ActivityPreflight = {
   no_sales_items?: { taobao_item_id: string; product: string }[];
   signup_big: { rows: number; skipped_bad_price: number; skipped_no_price: number };
   signup_618: { rows: number; skipped_bad_price: number; skipped_no_price: number };
+  // 档1 商品价格核验 (2026-07-13): ERP日常价 vs 千牛标价快照
+  tier?: string;
+  price_checked?: number;
+  price_ok?: number;
+  price_mismatch_count?: number;
+  price_too_low_count?: number;
+  price_mismatches?: { sku_code: string; name: string; erp_daily: number; qn_price: number;
+    expected_qn: number; diff: number; too_low: boolean }[];
+  price_snapshot_date?: string | null;
+  price_has_snapshot?: boolean;
 };
-export const fetchActivityPreflight = (floorDays = 15, skipFloorCheck = false) =>
+export const fetchActivityPreflight = (floorDays = 15, skipFloorCheck = false, tier = 'big') =>
   api.get<ActivityPreflight>('/api/pricing/activity-preflight',
-    { params: { floor_days: floorDays, skip_floor_check: skipFloorCheck } })
+    { params: { floor_days: floorDays, skip_floor_check: skipFloorCheck, tier } })
     .then((r) => r.data);
+
+// Step1 商品价格快速编辑/核对表 (现千牛标价 vs 应改一口价=日常价÷0.75, ERP价为准)
+export const downloadProductPriceQuickEdit = () =>
+  api.get('/api/pricing/product-price-quick-edit.xlsx', { responseType: 'blob' }).then((r) => r.data);
+
+// ── 活动档期日历 (报名/单品立减选档期 + 单品立减自动结束=下一档期前一刻) ──
+export interface ActivityPeriod {
+  name: string;
+  tier: 'mid' | 'big' | 'big618' | 'super_reduce';
+  start: string;         // YYYY-MM-DD
+  end: string | null;
+  tier_label?: string;
+  days_to_start?: number;
+}
+export interface ActivityCalendar {
+  periods: ActivityPeriod[];
+  status: { today: string; active: ActivityPeriod[]; upcoming: ActivityPeriod[] };
+}
+export const fetchActivityCalendar = () =>
+  api.get<ActivityCalendar>('/api/pricing/activity-calendar').then((r) => r.data);
+export const saveActivityCalendar = (periods: ActivityPeriod[]) =>
+  api.put<ActivityCalendar>('/api/pricing/activity-calendar', { periods }).then((r) => r.data);
+export interface AutoEndResult {
+  end: string | null;
+  end_dt: string | null;
+  next: { name: string; tier: string; tier_label: string; start: string } | null;
+  reason?: string;
+}
+export const fetchAutoEnd = (start: string, thisName = '') =>
+  api.get<AutoEndResult>('/api/pricing/activity-calendar/auto-end',
+    { params: { start, this_name: thisName } }).then((r) => r.data);
 
 // 千牛上传: stage=挂文件到千牛(不提交)+回比对表; commit=★不可逆★真提交
 export type UploadStageResult = {

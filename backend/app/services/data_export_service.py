@@ -1376,6 +1376,88 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     return out, stats
 
 
+# ── Step1 商品价格 快速编辑/核对表 (2026-07-13 用户: 自动推标价到千牛, ERP价为准) ──────────
+# 千牛一口价 应 = ERP日常价 ÷ 0.75。此表每个已映射非占位SKU一行, 列出 现千牛标价 / 应改一口价,
+# 供千牛「我的商品→excel商品批量编辑」参考改价。★列格式暂为「核对+改价参考表」; 千牛快速编辑
+# 真实模板列(待录制)接入后再对齐, 那时可直接上传。needs=现价与应填价差>容差(或无快照)。
+_PRICE_QUICK_EDIT_HEADERS = [
+    "商品ID", "SKUID", "商家编码", "商品标题",
+    "现千牛标价", "应改一口价(=日常价÷0.75)", "ERP日常价", "差额", "需改?",
+]
+
+
+def build_product_price_quick_edit_xlsx(db: Session):
+    """Step1 商品价格快速编辑/核对表: 每个已映射非占位SKU一行, 应改一口价 = ERP日常价 ÷ 0.75。
+    千牛价来自 TaobaoListing 快照(sku_price 缺则 list_price)。需改的标红。返回 (BytesIO, stats)。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.taobao_listing import TaobaoListing
+    from app.services.activity_preflight_service import (
+        _PRICE_CHECK_REL_TOL, _STANDARD_PROMO_DISCOUNT)
+
+    skus = db.execute(select(PricingSku).order_by(
+        PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    qn_price: dict[str, float] = {}
+    for L in db.execute(select(TaobaoListing)).scalars().all():
+        code = (L.sku_code or L.merchant_code or "").strip()
+        px = L.sku_price if L.sku_price is not None else L.list_price
+        if code and px is not None:
+            qn_price[code] = float(px)
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "商品价格快速编辑"
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF", size=10)
+    red = Font(color="C00000", bold=True)
+    wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    for ci, h in enumerate(_PRICE_QUICK_EDIT_HEADERS, start=1):
+        c = ws.cell(1, ci, h); c.fill = head_fill; c.font = head_font; c.alignment = wrap
+    ws.row_dimensions[1].height = 40
+
+    stats = {"rows": 0, "need_change": 0, "no_snapshot": 0}
+    r = 2
+    for s in skus:
+        if getattr(s, "is_custom_placeholder", False) or s.daily_price is None:
+            continue
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id or not p.taobao_sku_id:
+            continue
+        expected = round(float(s.daily_price) / _STANDARD_PROMO_DISCOUNT, 2)
+        qn = qn_price.get(s.sku_code)
+        need = qn is None or abs(qn - expected) > max(1.0, expected * _PRICE_CHECK_REL_TOL)
+        if qn is None:
+            stats["no_snapshot"] += 1
+        ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"
+        ws.cell(r, 2, str(p.taobao_sku_id)).number_format = "@"
+        ws.cell(r, 3, s.sku_code)
+        ws.cell(r, 4, (s.sku or s.product_name or ""))
+        if qn is not None:
+            ws.cell(r, 5, qn).number_format = "0.00"
+        ws.cell(r, 6, expected).number_format = "0.00"
+        ws.cell(r, 7, round(float(s.daily_price), 2)).number_format = "0.00"
+        if qn is not None:
+            ws.cell(r, 8, round(qn - expected, 2)).number_format = "0.00"
+        mark = ws.cell(r, 9, "需改" if need else "✓")
+        if need:
+            mark.font = red
+            stats["need_change"] += 1
+        r += 1
+    stats["rows"] = r - 2
+
+    widths = [16, 22, 20, 34, 14, 22, 14, 12, 10]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+    out = _io.BytesIO(); wb.save(out); out.seek(0)
+    return out, stats
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl

@@ -1717,19 +1717,40 @@ def super_reduce_signup_upload_xlsx(
     )
 
 
+@formula_router.get("/product-price-quick-edit.xlsx")
+def product_price_quick_edit_xlsx(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """Step1 商品价格快速编辑/核对表: 每个已映射SKU 现千牛标价 vs 应改一口价(=ERP日常价÷0.75)。
+    供千牛「excel商品批量编辑」参考改价(ERP价为准, 2026-07-13)。需改的标红。"""
+    from urllib.parse import quote
+    from fastapi.responses import StreamingResponse
+    from app.services import data_export_service
+    bio, _stats = data_export_service.build_product_price_quick_edit_xlsx(db)
+    fn = quote("商品价格快速编辑_ERP标准.xlsx")
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{fn}"},
+    )
+
+
 @formula_router.get("/activity-preflight")
 def activity_preflight_endpoint(
     floor_days: int = Query(15, ge=1, le=90, description="15天最低价窗口天数"),
     skip_floor_check: bool = Query(False, description="本次按初始报价跳过15天最低价校验(未来仍照跑)"),
+    tier: str = Query("big", description="场次力度: mid=中促10% / big=88VIP大促12% / big618=618双11 15%"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """活动报名『虚拟推送(预检)』: 不产文件不改数据, 返回生成活动表前的问题清单
-    (坏价产品 / 缺淘宝映射 / 15天最低价冲突 / 各步就绪计数)。用户 2026-07-11。
+    """活动报名『虚拟推送(三档核对)』: 不产文件不改数据, 返回生成活动表前的三档核对 + 问题清单。
+    档1 商品价格核验(ERP日常价 vs 千牛标价快照) / 档2 单品立减 / 档3 报名价; 另含坏价产品 /
+    缺淘宝映射 / 15天最低价冲突 / 券后超线 / 各步就绪计数。用户 2026-07-11、2026-07-13。
     skip_floor_check=True: 初始报价场景整体跳过15天冲突(首次立基准)。"""
     from app.services import activity_preflight_service
     return activity_preflight_service.activity_preflight(
-        db, floor_days=floor_days, skip_floor_check=skip_floor_check)
+        db, floor_days=floor_days, skip_floor_check=skip_floor_check, tier=tier)
 
 
 @formula_router.get("/sku-rotation/preview")
@@ -1795,6 +1816,43 @@ def activity_upload_commit_status(
     """轮询超级立减逐商品改价进度: {status: running|done|error, result?}。"""
     from app.services import activity_upload_service
     return activity_upload_service.commit_status(db, job)
+
+
+# ── 活动档期日历 (2026-07-13 用户: 报名/单品立减选具体档期 + 单品立减自动结束=下一档期前一刻) ──
+@formula_router.get("/activity-calendar")
+def get_activity_calendar(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """活动档期日历(报名/单品立减选档期用) + 当前/即将档期状态。"""
+    from app.services import activity_calendar_service
+    return {"periods": activity_calendar_service.get_calendar(db),
+            "status": activity_calendar_service.status(db)}
+
+
+@formula_router.put("/activity-calendar")
+def put_activity_calendar(
+    payload: dict = Body(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """整表覆盖活动档期日历。payload = {periods: [{name, tier, start, end}]}。"""
+    from app.services import activity_calendar_service
+    periods = payload.get("periods") if isinstance(payload, dict) else payload
+    saved = activity_calendar_service.set_calendar(db, periods or [])
+    return {"periods": saved, "status": activity_calendar_service.status(db)}
+
+
+@formula_router.get("/activity-calendar/auto-end")
+def activity_calendar_auto_end(
+    start: str = Query(..., description="本档单品立减开始日 YYYY-MM-DD"),
+    this_name: str = Query("", description="本档名称(排除自身)"),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """单品立减自动结束 = 下一档期开始前一刻(23:59:59)。无下一档 → end=None(提示无下次活动)。"""
+    from app.services import activity_calendar_service
+    return activity_calendar_service.auto_end_for(db, start, this_name=(this_name or None))
 
 
 @formula_router.put("/formula-rules/{rule_id}", response_model=FormulaRuleOut)
