@@ -200,18 +200,37 @@ def _ocr_image_resp(db: Session, *, system: str, user: str, image_bytes: bytes,
     raise AiUnavailable(f"OCR 主用+兜底均不可用 ({'; '.join(errors)})")
 
 
+def _ocr_json(db: Session, *, system: str, user: str, image_bytes: bytes,
+              mime: str, max_tokens: int) -> dict:
+    """OCR 调用 + JSON 解析, 坏 JSON 自动带错重调一次再抛 (2026-07-13)。
+
+    案发: 打包手写本整页 17+ 行, OCR 槽当时主/兜底都是本机 qwen2.5vl:7b 小模型,
+    长 JSON 中途吐坏(缺冒号) → 'AI 返回无法解析: Expecting : delimiter' 直接打断人工流程。
+    一次格式坏不该终结整次识别: 把语法错误喂回去让模型重出一次, 重试仍坏才抛。"""
+    resp = _ocr_image_resp(db, system=system, user=user,
+                           image_bytes=image_bytes, mime=mime, max_tokens=max_tokens)
+    try:
+        return _extract_json(resp.text)
+    except ValueError as e:
+        _logger.warning("OCR 返回坏 JSON, 自动重调一次: %s", e)
+        retry_user = (f"{user}\n\n注意: 你上次输出的 JSON 有语法错误({e}); "
+                      "请重新输出【完整且合法】的 JSON, 只输出 JSON 本体, 不要任何解释文字。")
+        resp2 = _ocr_image_resp(db, system=system, user=retry_user,
+                                image_bytes=image_bytes, mime=mime, max_tokens=max_tokens)
+        try:
+            return _extract_json(resp2.text)
+        except ValueError as e2:
+            raise AiUnavailable(f"AI 返回无法解析(重试一次后仍坏): {e2}")
+
+
 def parse_qianniu_order(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析千牛订单截图. 返回 {"orders": [...], "ocr_warnings": [...]}."""
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_QIANNIU_SYSTEM, user="请解析这张千牛订单截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     # 规范化
     data.setdefault("orders", [])
     data.setdefault("ocr_warnings", [])
@@ -265,14 +284,10 @@ def parse_balance_screenshot(
     else:
         system = _BALANCE_SYSTEM
         user = f"账户: {account_hint or '未知'}。按上面规则读这张截图里该账户对应板块的余额, 输出 JSON."
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=system, user=user,
         image_bytes=image_bytes, mime=mime, max_tokens=500,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     # 推广余额反向校验 (2026-07-09): 06-29 实测 OCR 把千牛资金页最上方『聚合结算账户』57855.45
     # 误读成 57.85 记成推广余额。推广只认『万相台无界版·账户总余额』; 若读到的板块是聚合结算/保证金/
     # 可提现/冻结 → 强制判低置信, 调用方就不写库(报异常待人工), 免得又把别的账户当推广余额落库。
@@ -290,14 +305,10 @@ def parse_purchase_invoice(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析采购单/进货单截图. 返回 {"purchase": {...}}."""
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_PURCHASE_SYSTEM, user="请解析这张采购/进货单截图.",
         image_bytes=image_bytes, mime=mime, max_tokens=3000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     data.setdefault("purchase", {})
     if isinstance(data["purchase"], dict):
         data["purchase"].setdefault("lines", [])
@@ -309,14 +320,10 @@ def parse_factory_reconciliation(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """解析工厂对账单截图. 返回 {"rows": [...], "ocr_warnings": [...]}."""
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_FACTORY_RECON_SYSTEM, user="请解析这张工厂对账单截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     data.setdefault("rows", [])
     data.setdefault("ocr_warnings", [])
     if not isinstance(data["rows"], list):
@@ -345,14 +352,10 @@ def parse_promo_signup(
     db: Session, image_bytes: bytes, *, mime: str = "image/jpeg",
 ) -> dict:
     """Plan F1: 解析活动报名结果截图. 返回 {"rows": [...], "ocr_warnings": [...]}."""
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_PROMO_SIGNUP_SYSTEM, user="请解析这张活动报名结果截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     data.setdefault("rows", [])
     data.setdefault("ocr_warnings", [])
     if not isinstance(data["rows"], list):
@@ -395,14 +398,10 @@ def parse_packing_bill(
 
     手写中文姓名识别准确率有限 (~60-80%), 故走 parse→预览→人工复核→commit, 不无人值守入库。
     """
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_PACKING_BILL_SYSTEM, user="请逐行识别这张手写打包费账单, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     data.setdefault("rows", [])
     data.setdefault("ocr_warnings", [])
     data.setdefault("declared_total", None)
@@ -420,14 +419,10 @@ def parse_alipay_flow_screenshot(
     (transaction_no/transaction_time/transaction_type/counterparty/amount/
      related_order_no/balance/remark)。
     """
-    resp = _ocr_image_resp(
+    data = _ocr_json(
         db, system=_ALIPAY_SYSTEM, user="请解析这张支付宝流水截图, 输出 JSON.",
         image_bytes=image_bytes, mime=mime, max_tokens=4000,
     )
-    try:
-        data = _extract_json(resp.text)
-    except ValueError as e:
-        raise AiUnavailable(f"AI 返回无法解析: {e}")
     data.setdefault("flows", [])
     data.setdefault("ocr_warnings", [])
     if not isinstance(data["flows"], list):
