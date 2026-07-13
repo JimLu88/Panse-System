@@ -138,7 +138,7 @@ export default function ActivityAutoFillTab() {
     setAutoEnd(null);
     if (!start) return;
     try {
-      const r = await fetchAutoEnd(start.format('YYYY-MM-DD'), campaign.label);
+      const r = await fetchAutoEnd(start.format('YYYY-MM-DD HH:mm:ss'), campaign.label);
       setAutoEnd(r);
       if (r.end) setRange([start, dayjs(r.end)]);   // 自动结束 = 下一档前一天
     } catch { /* 无日历时不阻断 */ }
@@ -289,12 +289,13 @@ export default function ActivityAutoFillTab() {
 
       {/* ── 档期 (日期 + 自动结束) ── */}
       <Card size="small" title={<Space><CalendarOutlined /><b>② 活动档期</b>
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>单品立减自动结束 = 下一档期开始前一刻</Typography.Text></Space>}
+        <Typography.Text type="secondary" style={{ fontSize: 12 }}>单品立减自动结束 = 下一档期开始前一秒（精确到秒，对齐淘宝）</Typography.Text></Space>}
         extra={<Button size="small" icon={<EditOutlined />} onClick={() => setCalOpen(true)}>管理档期</Button>}>
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <Space wrap>
             <DatePicker.RangePicker
-              value={range} allowEmpty={[false, true]}
+              value={range} allowEmpty={[false, true]} showTime={{ format: 'HH:mm:ss' }}
+              format="YYYY-MM-DD HH:mm:ss"
               onChange={(v) => { if (v && v[0]) onStartChange(v[0]); else { setRange([null, null]); setAutoEnd(null); } }}
             />
             {periods.length > 0 && (
@@ -862,7 +863,7 @@ function CalendarModal({ open, periods, onClose, onSaved }: {
 
   const setRow = (i: number, patch: Partial<ActivityPeriod>) =>
     setRows((rs) => rs.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-  const addRow = () => setRows((rs) => [...rs, { name: '', tier: 'big', start: dayjs().format('YYYY-MM-DD'), end: null }]);
+  const addRow = () => setRows((rs) => [...rs, { name: '', tier: 'big', start: dayjs().format('YYYY-MM-DD HH:mm:ss'), end: null }]);
   const delRow = (i: number) => setRows((rs) => rs.filter((_, j) => j !== i));
   const save = async () => {
     setSaving(true);
@@ -883,7 +884,7 @@ function CalendarModal({ open, periods, onClose, onSaved }: {
     <Modal open={open} onCancel={onClose} width={860} title={<Space><CalendarOutlined /><b>管理活动档期</b></Space>}
       okText="保存档期" confirmLoading={saving} onOk={save}>
       <Alert type="info" showIcon style={{ marginBottom: 12 }} banner
-        message="把接下来几波活动的名称/力度/起止都排进来，单品立减就能自动算出结束时间（下一档开始前一刻）。" />
+        message="把接下来几波活动的名称/力度/起止（精确到时分秒，对齐淘宝）都排进来，单品立减就能自动算出结束时间（下一档开始前一秒）。" />
       {rows.length === 0 && <Empty description="还没排档期" />}
       <Space direction="vertical" style={{ width: '100%' }} size={8}>
         {rows.map((r, i) => (
@@ -893,10 +894,11 @@ function CalendarModal({ open, periods, onClose, onSaved }: {
             <Col span={5}><Select style={{ width: '100%' }} value={r.tier} options={TIER_OPTS}
               onChange={(v) => setRow(i, { tier: v as ActivityPeriod['tier'] })} /></Col>
             <Col span={10}><DatePicker.RangePicker style={{ width: '100%' }} allowEmpty={[false, true]}
+              showTime={{ format: 'HH:mm:ss' }} format="YYYY-MM-DD HH:mm:ss"
               value={[r.start ? dayjs(r.start) : null, r.end ? dayjs(r.end) : null]}
               onChange={(v) => setRow(i, {
-                start: v && v[0] ? v[0].format('YYYY-MM-DD') : r.start,
-                end: v && v[1] ? v[1].format('YYYY-MM-DD') : null,
+                start: v && v[0] ? v[0].format('YYYY-MM-DD HH:mm:ss') : r.start,
+                end: v && v[1] ? v[1].format('YYYY-MM-DD HH:mm:ss') : null,
               })} /></Col>
             <Col span={3}><Button danger size="small" onClick={() => delRow(i)}>删</Button></Col>
           </Row>
