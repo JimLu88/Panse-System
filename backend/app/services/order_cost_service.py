@@ -813,8 +813,9 @@ def _pricing_parts_for(db: Session, order: Order) -> Optional[Decimal]:
                 best = min(with_wood, key=lambda c: abs(Decimal(str(c[2])) - anchor))
         if best is None:
             best = cands[0]
-        return _asof_pricing(db, best[0], order.product_code, _on, "external_parts_cost",
-                             Decimal(str(best[1])))
+        # ②不做老价回溯: 参照行是"同产品最接近规格"的估算替身, 不是本 SKU 的历史价 —
+        # 实测 1 月版本里整柜外配件还是 0, _asof 会把阶梯值打回 0 → v2 分支失效掉兜底85。
+        return Decimal(str(best[1]))
     return None
 
 
