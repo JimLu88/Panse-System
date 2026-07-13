@@ -140,6 +140,19 @@ def _parse_uploaded_values(channel: str, xlsx_bytes: bytes) -> dict[str, float]:
 _PRICE_MATCH_EPS = 0.005
 
 
+def _learn_delisted(db: Session, validation) -> None:
+    """从千牛报名回执自动登记下架SKU(自愈, 用户铁律: 在售全报、下架不报 → 下次报名不带它)。"""
+    if not validation:
+        return
+    try:
+        from app.services import delisted_sku_service
+        ids = delisted_sku_service.extract_delisted_from_feedback(validation.get("failed_items"))
+        if ids:
+            delisted_sku_service.add_delisted(db, ids)
+    except Exception:  # noqa: BLE001  自愈是尽力而为, 失败不影响主流程
+        pass
+
+
 def stage(db: Session, channel: str, tier: str = "big") -> dict:
     """挂文件到千牛(不提交) + 建比对表(上传值 vs 系统应填值, 0 容差核对)。
     返回 {ok, compare_rows, price_match_ok, mismatch_count, validation, screenshot_base64, ...}。"""
@@ -176,6 +189,7 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
     res = final.get("result") or {}
     if res.get("need_scan"):
         return {"ok": False, "need_scan": True, "message": "淘宝登录态过期, 请先扫码后再上传"}
+    _learn_delisted(db, res.get("validation"))   # 自愈: 千牛回"已下架SKU=X"→登记, 下次报名不带它
     return {
         "ok": bool(res.get("ok")), "channel": channel,
         "channel_name": _CHANNELS[channel], "gen_stats": stats,

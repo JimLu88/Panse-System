@@ -1126,7 +1126,9 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
     # 排除坏价产品(各尺寸报名价雷同=未真实定价), 避免废价上淘宝; 改成真实价后自动纳入 (2026-07-11)
     from app.services.activity_preflight_service import bad_price_product_codes
+    from app.services import delisted_sku_service
     bad_pc = bad_price_product_codes(db)
+    delisted = delisted_sku_service.get_delisted(db)   # 下架SKU不报(用户铁律)
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1139,7 +1141,7 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
         c.fill = head_fill; c.font = head_font; c.alignment = wrap
     ws.row_dimensions[1].height = 78
 
-    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0, "skipped_bad_price": 0}
+    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0, "skipped_bad_price": 0, "skipped_delisted": 0}
     r = 2
     for s in skus:
         p = promo_by_sku.get(s.sku_code)
@@ -1147,6 +1149,9 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
             continue
         if not p.taobao_sku_id:                       # SKU 级别必须有 SKU_ID
             stats["skipped_no_skuid"] += 1
+            continue
+        if str(p.taobao_sku_id) in delisted:          # 下架SKU不报(用户铁律)
+            stats["skipped_delisted"] += 1
             continue
         if (s.product_code or "") in bad_pc:          # 坏价产品排除(未真实定价)
             stats["skipped_bad_price"] += 1
@@ -1218,15 +1223,17 @@ def collect_signup_rows(db: Session, price_field: str):
     from app.models.pricing_ext import PricingSkuPromo
     from app.services import pricing_calc_service
     from app.services.activity_preflight_service import bad_price_product_codes
+    from app.services import delisted_sku_service
 
     params = pricing_calc_service.get_promo_params(db)
     skus = db.execute(
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
     bad_pc = bad_price_product_codes(db)
+    delisted = delisted_sku_service.get_delisted(db)   # 下架SKU不报(用户铁律: 在售全报、下架不报)
 
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0,
-             "skipped_incomplete_items": 0, "incomplete_items": []}
+             "skipped_incomplete_items": 0, "skipped_delisted": 0, "incomplete_items": []}
     by_item: "dict[str, list]" = _dd(list)
     for s in skus:
         p = promo_by_sku.get(s.sku_code)
@@ -1234,6 +1241,9 @@ def collect_signup_rows(db: Session, price_field: str):
             continue
         if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
             stats["skipped_no_skuid"] += 1
+            continue
+        if str(p.taobao_sku_id) in delisted:               # 下架SKU不报(不进完整性统计 → 在售全报)
+            stats["skipped_delisted"] += 1
             continue
         by_item[str(p.taobao_item_id)].append((s, p))
 
