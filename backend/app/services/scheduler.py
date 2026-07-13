@@ -1445,6 +1445,85 @@ def _register_default_jobs() -> None:
 # ----------------------------- 生命周期 -------------------------- #
 
 
+# ── 关键任务错过触发补跑 (用户 2026-07-13 "现在补上") ──────────────────────
+# 调度器跑在 api 进程里(内存存储), 部署/重启撞上触发点 → 该班直接丢, 不自愈。
+# 实锤两次: 07-11(部署战)/07-13(用户部署) 的 18:00 取数被打断 → 发货报表/推送断供。
+# 启动 60s 后查名单: 最近一班应触发时刻已过、仍在宽限内、且 scheduled_job_runs 无该班记录
+# (含 fail — 失败算跑过, 不补跑防崩溃循环) → 按名单顺序同步补跑(取数在日报前=天然依赖序)。
+# 30 分钟心跳类任务自愈, 无需入名单。
+_CATCHUP_JOBS: dict[str, int] = {          # job_id → 宽限小时(错过太久不追, 免撞下一班)
+    "daily_0630_web_agent": 6,             # 取数编排(18:00) — 日报的前置
+    "daily_1810_order_sheets": 6,          # 下单图日报+发货报表推送(18:30)
+    "daily_0230_orders_maintain": 8,       # 订单自动维护(22:50)
+    "daily_0650_cost_recompute": 8,        # 理论成本兜底反推(06:50)
+}
+
+
+def _last_fire_dt(schedule: dict, now: datetime) -> Optional[datetime]:
+    """cron {hour,minute} 的最近一个 ≤now 应触发时刻(今天没到点则取昨天); 非固定时分返回 None。"""
+    from datetime import timedelta
+    h, m = schedule.get("hour"), schedule.get("minute", 0)
+    if not isinstance(h, int) or not isinstance(m, int):
+        return None
+    fire = now.replace(hour=h, minute=m, second=0, microsecond=0)
+    if fire > now:
+        fire -= timedelta(days=1)
+    return fire
+
+
+def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
+                        overrides: Optional[dict] = None) -> list[str]:
+    """启动补跑决策(纯判定, 供测试): 返回需补跑的 job_id, 保持 _CATCHUP_JOBS 声明顺序。"""
+    from datetime import timedelta
+    from sqlalchemy import func as _f, select as _sel
+    from app.models.scheduled_job import ScheduledJobRun
+    now = now or datetime.now().astimezone()
+    if now.tzinfo is None:
+        now = now.astimezone()
+    ov = overrides if overrides is not None else _load_overrides()
+    out: list[str] = []
+    for jid, grace_h in _CATCHUP_JOBS.items():
+        cfg = _REGISTRY.get(jid)
+        if not cfg or not cfg.get("cron"):
+            continue
+        kind, schedule, enabled = _effective_schedule(cfg, ov.get(jid, {}))
+        if not enabled or kind != "cron":
+            continue
+        fire = _last_fire_dt(schedule, now)
+        if fire is None or (now - fire) > timedelta(hours=grace_h):
+            continue
+        last = db.execute(
+            _sel(_f.max(ScheduledJobRun.started_at)).where(ScheduledJobRun.job_id == jid)
+        ).scalar()
+        if last is not None:
+            # sqlite 返回 naive(库里本就存 UTC), postgres 返回 aware — 统一按 UTC 换算比较
+            last_ts = (last.replace(tzinfo=timezone.utc) if last.tzinfo is None else last).timestamp()
+            if last_ts >= fire.timestamp() - 300:
+                continue   # 该班(或之后)已有运行记录 → 不补
+        out.append(jid)
+    return out
+
+
+def _startup_catchup() -> None:
+    """启动后一次性任务: 依名单顺序同步补跑错过的班次(顺序执行, 天然满足 取数→日报 依赖)。"""
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        missed = missed_catchup_jobs(db)
+    except Exception:  # pragma: no cover - 判定失败不拖垮启动
+        _logger.warning("启动补跑判定失败, 跳过", exc_info=True)
+        return
+    finally:
+        db.close()
+    if not missed:
+        _logger.info("启动补跑: 无错过的关键班次")
+        return
+    _logger.warning("启动补跑: 检测到错过的班次 %s, 依序补跑", missed)
+    for jid in missed:
+        cfg = _REGISTRY[jid]
+        _run_with_logging(jid, cfg["label"] + "(重启补跑)", cfg["fn"])
+
+
 def start(timezone_name: Optional[str] = None) -> None:
     """FastAPI startup 调一次. 重入安全."""
     global _SCHEDULER
@@ -1473,7 +1552,15 @@ def start(timezone_name: Optional[str] = None) -> None:
     for job_id in _REGISTRY:
         _add_to_scheduler(job_id, overrides)
     _SCHEDULER.start()
-    _logger.info("调度器已启动, tz=%s, %d 个任务", tz, len(_REGISTRY))
+    # 启动补跑 (用户 2026-07-13 "现在补上"): 60s 后查一遍错过的关键班次(部署/重启撞触发点该班即丢),
+    # 在名单宽限内且无运行记录 → 依序补跑。60s 让应用先热身, 也避开与 lifespan 其余初始化抢资源。
+    from datetime import timedelta as _td
+    _SCHEDULER.add_job(
+        _startup_catchup, "date",
+        run_date=datetime.now().astimezone() + _td(seconds=60),
+        id="startup_catchup", max_instances=1,
+    )
+    _logger.info("调度器已启动, tz=%s, %d 个任务 (+启动补跑检查@60s)", tz, len(_REGISTRY))
 
 
 def shutdown() -> None:
