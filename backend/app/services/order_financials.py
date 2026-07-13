@@ -292,6 +292,22 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     # 配件项改按预估优先 (用户 2026-07-13: "¥352 这种多出来的费用搞不清楚就按配件预估走" ——
     # 归集来的 actual_parts 来源难核, 定价表 est_parts 更可信; est_parts 没配(≤0)才退回归集值)。
     _aparts = getattr(o, "actual_parts", None)
+    _wce_frag = _d(getattr(o, "wood_cost_est", None))
+    if (_aparts is not None and o.actual_cost is None
+            and _wce_frag > 0 and _d(o.paid_amount) < _wce_frag):
+        # 无工厂账单 + 有实配件 + 实付连整件木作估都不到(=不可能是整件成交, 是差价/补拍片段;
+        # 用户 2026-07-14: 6月10单实付几百被算成整件几千): 本分支原"木作取账单否则木作估"
+        # 让片段挂上整件 wood_cost_est(5100) 和整件配件阶梯(1871), 又提前 return 绕过片段封顶
+        # → 成本虚爆。片段只算实际: 实配件 + 实际打包/物流/安装, 不带任何整件估值。
+        # 实付≥木作估的大额真实单(如 …3049 实付12235>木作估5200, 等账单)不进此门, 仍整件逐项。
+        _ep0 = _d(_aparts) + _d(_al) + _d(_ai)
+        _pk0 = _d(getattr(o, "actual_packing", None))
+        _tot0 = _ep0 + _pk0
+        return {"factory_wood": Decimal("0"), "estimate_part": _ep0, "packing": _pk0,
+                "precap_total": _tot0, "cap_mode": "片段实配件",
+                "logistics_component": _d(_al), "install_component": _d(_ai),
+                "cap_label": "无工厂账单+有实配件→只算实际(实配件+实际打包/物流/安装), 不带整件估值",
+                "final": _tot0}
     if _aparts is not None:
         factory_wood = nz(o.actual_cost, getattr(o, "wood_cost_est", None))
         _pp = _d(getattr(o, "est_parts", None))

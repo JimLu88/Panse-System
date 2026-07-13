@@ -44,6 +44,44 @@ def test_no_actual_parts_unchanged():
     assert ofin.physical_cost_breakdown(o)["cap_mode"] == "定制兜底85"
 
 
+def test_no_bill_fragment_uses_actuals_only():
+    """无工厂账单+有实配件 (用户 2026-07-14): 只算实际, 不带整件估值 —
+    差价单实付200挂着 wood_est 5100/est_parts 1871 曾被算成 ¥8302, 应为实配件75。"""
+    o = Order(order_no="AP6", is_custom=False, paid_amount=Decimal("200"),
+              actual_parts=Decimal("75"), wood_cost_est=Decimal("5100"),
+              est_parts=Decimal("1871.05"), est_packing=Decimal("450"),
+              est_logistics=Decimal("700"), est_install=Decimal("181"))
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] == "片段实配件"
+    assert pb["final"] == Decimal("75")            # 只有实配件, est_* 一概不入
+    assert pb["factory_wood"] == Decimal("0")
+    assert pb["logistics_component"] == Decimal("0")
+
+
+def test_no_bill_fragment_includes_actual_extras():
+    """无账单片段带实际打包/物流 → 一并计入(仍不带估值)。"""
+    o = Order(order_no="AP7", is_custom=False, paid_amount=Decimal("408"),
+              actual_parts=Decimal("346.80"), actual_packing=Decimal("20"),
+              actual_logistics=Decimal("30"), wood_cost_est=Decimal("1610"),
+              est_parts=Decimal("800"))
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] == "片段实配件"
+    assert pb["final"] == Decimal("396.80")        # 346.80 + 30物流 + 20打包
+    assert pb["logistics_component"] == Decimal("30")
+
+
+def test_no_bill_fullprice_stays_itemized():
+    """无账单但实付≥整件木作估(真实单等账单, 如…3049 实付12235>木作估5200) → 不进片段门,
+    仍整件逐项(木作估5200 + 配件预估 + …), 不被低估。"""
+    o = Order(order_no="AP8", is_custom=False, paid_amount=Decimal("12235.71"),
+              actual_parts=Decimal("1024.74"), wood_cost_est=Decimal("5200"),
+              est_parts=Decimal("1871.05"))
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] == "实配件分项"
+    assert pb["factory_wood"] == Decimal("5200")
+    assert pb["final"] == Decimal("5200") + Decimal("1871.05")   # 木作估+配件预估(无物流/打包)
+
+
 def test_actual_parts_prefers_pricing_estimate():
     """配件项预估优先 (用户 2026-07-13): est_parts>0 时归集值(352.03 类)不再计入 —
     木作2300+物流500+安装75+打包190+配件预估240.90 = 3305.90 (而非用 352.03 的 3417.03)。"""
