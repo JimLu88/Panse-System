@@ -180,7 +180,11 @@ export default function ActivityAutoFillTab() {
     setUpChannel(channel); setUpTier(tier); setStageRes(null); setStaging(true);
     message.loading({ content: '正在挂到千牛并预校验（不提交）…约30秒', key: 'up', duration: 0 });
     try {
-      const r = await activityUploadStage(channel, tier);
+      // 单品立减: 把选定档期(精确到秒)一起传 → 千牛『活动时间』自动填成它(不再"到本月底"占位)
+      const FMT = 'YYYY-MM-DD HH:mm:ss';
+      const sd = (channel === 'single_item_discount' && range[0]) ? range[0].format(FMT) : undefined;
+      const ed = (channel === 'single_item_discount' && range[1]) ? range[1].format(FMT) : undefined;
+      const r = await activityUploadStage(channel, tier, sd, ed);
       message.destroy('up');
       if (!r.ok) {
         message.error(r.need_scan ? '淘宝登录态过期，请先扫码' : (r.error || r.message || '挂载失败'));
@@ -205,7 +209,10 @@ export default function ActivityAutoFillTab() {
     setCommitting(true);
     message.loading({ content: '正在提交到千牛…', key: 'commit', duration: 0 });
     try {
-      const r = await activityUploadCommit(upChannel, upTier);
+      const FMT = 'YYYY-MM-DD HH:mm:ss';
+      const sd = (upChannel === 'single_item_discount' && range[0]) ? range[0].format(FMT) : undefined;
+      const ed = (upChannel === 'single_item_discount' && range[1]) ? range[1].format(FMT) : undefined;
+      const r = await activityUploadCommit(upChannel, upTier, sd, ed);
       if (r.async_job) {   // 超级立减: 逐商品原地改价异步 → 轮询
         message.destroy('commit');
         setSuperProgress({ status: 'running' });

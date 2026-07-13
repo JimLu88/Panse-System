@@ -848,9 +848,11 @@ export type UploadStageResult = {
   preview?: { item_id: string; filled: number; missing: string[];
     items_total: number; skus_total: number };   // super_reduce 首商品预演
 };
-export const activityUploadStage = (channel: string, tier = 'big') =>
+export const activityUploadStage = (
+  channel: string, tier = 'big', startDt?: string, endDt?: string,
+) =>
   api.post<UploadStageResult>(`/api/pricing/activity-upload/${channel}/stage`, null,
-    { params: { tier }, timeout: 220000 })   // 挂千牛+浏览器自动化 ~40s, 给足 200s
+    { params: { tier, start_dt: startDt || '', end_dt: endDt || '' }, timeout: 220000 })  // 挂千牛+自动化 ~40s
     .then((r) => r.data);
 // 超大促 SKU 轮换: 预览(只算) + 同步(千牛轮换完后写ERP映射)
 export type SkuRotationPlan = {
@@ -873,9 +875,11 @@ export type UploadCommitResult = {
   note?: string;
   validation?: UploadStageResult['validation'];
 };
-export const activityUploadCommit = (channel: string, tier = 'big') =>
+export const activityUploadCommit = (
+  channel: string, tier = 'big', startDt?: string, endDt?: string,
+) =>
   api.post<UploadCommitResult>(`/api/pricing/activity-upload/${channel}/commit`, null,
-    { params: { tier }, timeout: 220000 })
+    { params: { tier, start_dt: startDt || '', end_dt: endDt || '' }, timeout: 220000 })
     .then((r) => r.data);
 
 export type UploadCommitStatus = {

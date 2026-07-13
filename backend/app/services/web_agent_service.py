@@ -91,13 +91,20 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 
 def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
-                filename: str, *, level: str = "SKU级", timeout: int = 30) -> dict:
+                filename: str, *, level: str = "SKU级", timeout: int = 30,
+                start_dt: str | None = None, end_dt: str | None = None) -> dict:
     """把 ERP 生成的 xlsx 传给 Web-Agent 千牛上传管线 (multipart)。返回 {job:<id>}。
-    phase='stage' 挂文件停在提交前; phase='commit' ★不可逆★ 真提交 (仅比对表确认后调)。"""
+    phase='stage' 挂文件停在提交前; phase='commit' ★不可逆★ 真提交 (仅比对表确认后调)。
+    start_dt/end_dt(单品立减用, 'YYYY-MM-DD HH:MM:SS'): 给了则把千牛活动时间填成该精确档期。"""
+    data = {"phase": phase, "level": level}
+    if start_dt:
+        data["start_dt"] = start_dt
+    if end_dt:
+        data["end_dt"] = end_dt
     try:
         r = requests.post(
             f"{BASE_URL}/api/upload/{channel}", headers=_headers(db),
-            data={"phase": phase, "level": level},
+            data=data,
             files={"file": (filename, xlsx_bytes, _XLSX_MIME)}, timeout=timeout)
         if r.status_code == 401:
             return {"ok": False, "error": "token 无效或未配置"}

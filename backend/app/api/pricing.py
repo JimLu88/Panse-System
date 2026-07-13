@@ -1786,25 +1786,31 @@ def sku_rotation_apply(
 def activity_upload_stage(
     channel: str,
     tier: str = Query("big"),
+    start_dt: str = Query(""),   # 单品立减: 选定档期 'YYYY-MM-DD HH:MM:SS' 填千牛活动时间
+    end_dt: str = Query(""),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
 ):
     """千牛上传·预演: 生成表→Web-Agent挂到千牛(不提交)→回比对表+校验+截图。用户 2026-07-11。"""
     from app.services import activity_upload_service
-    return activity_upload_service.stage(db, channel, tier)
+    return activity_upload_service.stage(db, channel, tier,
+                                         start_dt=start_dt or None, end_dt=end_dt or None)
 
 
 @formula_router.post("/activity-upload/{channel}/commit")
 def activity_upload_commit(
     channel: str,
     tier: str = Query("big"),
+    start_dt: str = Query(""),
+    end_dt: str = Query(""),
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin")),
 ):
     """★不可逆★ 千牛上传·真提交。前端必须在用户看过比对表、点确认后才调 (admin 限)。
     super_reduce 返回 {async_job} → 前端轮询 /activity-upload/commit-status。"""
     from app.services import activity_upload_service
-    return activity_upload_service.commit(db, channel, tier)
+    return activity_upload_service.commit(db, channel, tier,
+                                          start_dt=start_dt or None, end_dt=end_dt or None)
 
 
 @formula_router.get("/activity-upload/commit-status")

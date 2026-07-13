@@ -153,8 +153,10 @@ def _learn_delisted(db: Session, validation) -> None:
         pass
 
 
-def stage(db: Session, channel: str, tier: str = "big") -> dict:
+def stage(db: Session, channel: str, tier: str = "big",
+          start_dt: str | None = None, end_dt: str | None = None) -> dict:
     """挂文件到千牛(不提交) + 建比对表(上传值 vs 系统应填值, 0 容差核对)。
+    start_dt/end_dt(单品立减专用, 'YYYY-MM-DD HH:MM:SS'): 给了则把千牛『活动时间』填成该精确档期。
     返回 {ok, compare_rows, price_match_ok, mismatch_count, validation, screenshot_base64, ...}。"""
     from app.services import web_agent_service
     if channel not in _CHANNELS:
@@ -182,7 +184,8 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
                 "uploaded_value": up, "mismatch": True,
             })
             mismatch_n += 1
-    j = web_agent_service.upload_file(db, channel, "stage", xlsx, f"{channel}.xlsx")
+    j = web_agent_service.upload_file(db, channel, "stage", xlsx, f"{channel}.xlsx",
+                                      start_dt=start_dt, end_dt=end_dt)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应, 无法上传")}
     final = web_agent_service.wait_job(db, j["job"], timeout_s=200)
@@ -203,15 +206,18 @@ def stage(db: Session, channel: str, tier: str = "big") -> dict:
     }
 
 
-def commit(db: Session, channel: str, tier: str = "big") -> dict:
+def commit(db: Session, channel: str, tier: str = "big",
+           start_dt: str | None = None, end_dt: str | None = None) -> dict:
     """★不可逆★ 真提交到千牛。只在用户看过比对表、系统里点确认后调用。
+    start_dt/end_dt(单品立减专用): 给了则真提交时把千牛『活动时间』填成该精确档期。
     super_reduce 是逐商品原地改价(30+商品×~25s, 远超HTTP等待) → 发起后立即返回
     {async_job}, 前端用 /activity-upload/commit-status 轮询取结果。"""
     from app.services import web_agent_service
     if channel not in _CHANNELS:
         return {"ok": False, "error": f"未知渠道 {channel}"}
     xlsx, _stats = _gen_xlsx(db, channel, tier)
-    j = web_agent_service.upload_file(db, channel, "commit", xlsx, f"{channel}.xlsx")
+    j = web_agent_service.upload_file(db, channel, "commit", xlsx, f"{channel}.xlsx",
+                                      start_dt=start_dt, end_dt=end_dt)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
     if channel == "super_reduce":
