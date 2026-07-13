@@ -21,8 +21,8 @@ import {
   activityUploadCommit, activityUploadCommitStatus, activityUploadStage,
   applySkuRotation, downloadProductPriceQuickEdit, downloadPromoSignup, downloadSingleItemDiscount,
   downloadSuperReduceSignup, fetchActivityCalendar, fetchActivityPreflight, fetchAutoEnd,
-  fetchSkuRotation, productPriceAutoPush, saveActivityCalendar,
-  type ActivityPeriod, type ActivityPreflight, type AutoEndResult, type ProductPriceAutoPushResult,
+  fetchSkuRotation, saveActivityCalendar,
+  type ActivityPeriod, type ActivityPreflight, type AutoEndResult,
   type SkuRotationPlan, type UploadCommitStatus, type UploadStageResult,
 } from '../api/catalog';
 
@@ -98,23 +98,27 @@ export default function ActivityAutoFillTab() {
   const [preLoading, setPreLoading] = useState(false);
   const [skipFloor, setSkipFloor] = useState(false);
   const [wizardStep, setWizardStep] = useState(0);       // 0核价 1单品立减 2报名 3完成
-  const [pushing, setPushing] = useState(false);
-  const [autoPush, setAutoPush] = useState<ProductPriceAutoPushResult | null>(null);
 
-  const doAutoPush = async () => {
-    setPushing(true); setAutoPush(null);
-    message.loading({ content: '全自动推标价：千牛导出 → 系统改一口价 → 传回千牛…约2-3分钟', key: 'app', duration: 0 });
-    try {
-      const r = await productPriceAutoPush();
-      message.destroy('app');
-      setAutoPush(r);
-      if (r.need_scan) message.error('淘宝登录态过期，请扫码后重试');
-      else if (r.ok && r.step === 'no_change') message.success('千牛一口价已全对，无需改动');
-      else if (r.ok) message.success(`已改 ${r.modify_stats?.changed ?? 0} 个SKU一口价并挂到千牛，去千牛点提交`);
-      else message.error(r.error || '推价失败');
-    } catch {
-      message.destroy('app'); message.error('推价失败（确认 PC 上 Web-Agent 在线）');
-    } finally { setPushing(false); }
+  // 千牛 excel导出【下载中心】—— 同事按对照表改一口价; 需看千牛现价可来这导出
+  const QN_EXPORT_CENTER = 'https://item.upload.taobao.com/taobao/excel/tool/render.htm?tab=export';
+  const showPriceGuide = () => {
+    Modal.info({
+      title: '标价（一口价）怎么改 · 给我和同事看',
+      width: 580,
+      okText: '知道了',
+      content: (
+        <div style={{ lineHeight: 2 }}>
+          <p style={{ margin: '4px 0' }}><b>① 下载「对照表」= 改成什么价</b><br />
+            点本页 <b>下载对照表</b> 按钮 → 每个在售 SKU 一行「应改一口价 = 日常价 ÷ 0.75」。
+            发给同事，照着在千牛把每个 SKU 的一口价改成这个数。</p>
+          <p style={{ margin: '4px 0' }}><b>② 千牛现价从哪导（可选核对）</b><br />
+            千牛商品页：全选 → 更多批量操作 → excel商品批量导出；约 2 分钟后到{' '}
+            <a href={QN_EXPORT_CENTER} target="_blank" rel="noreferrer">千牛下载中心（点这里）</a>{' '}下载导出表，与对照表比对。<br />
+            <Typography.Text type="secondary">千牛单次导出上限约 20 个、无跨页全选 —— 商品多就分页多导几次。</Typography.Text></p>
+          <p style={{ margin: '4px 0' }}><b>③ 改完</b> → 回来点「下一步」。批量改也可用 <b>改价台</b>。</p>
+        </div>
+      ),
+    });
   };
 
   const runPreflight = async () => {
@@ -513,12 +517,11 @@ export default function ActivityAutoFillTab() {
             {pre && tier1Bad && (
               <Alert type="error" showIcon
                 message={`有 ${pre.price_too_low_count} 个 SKU 千牛一口价偏低，会导致报名被拒。`}
-                description={<span>ERP 价为准：去千牛把这些一口价抬到"应改一口价(=日常价÷0.75)"。可下载对照表照着改；改完点"已改好"。
-                  <br/><Typography.Text type="secondary">（真·自动推标价到千牛需一次录制后一键完成；当前先出对照表。）</Typography.Text></span>} />
+                description={<span>ERP 价为准：去千牛把这些一口价抬到"应改一口价(=日常价÷0.75)"。点「下载指引」看怎么改、下对照表照着改；改完点"已改好"。</span>} />
             )}
             <Space wrap>
-              <Button type="primary" danger icon={<CloudUploadOutlined />} loading={pushing} onClick={doAutoPush}>
-                🚀 全自动推标价到千牛（导出→改一口价→传回，停提交前）</Button>
+              <Button type="primary" icon={<DownloadOutlined />} onClick={showPriceGuide}>
+                📥 标价怎么改 · 下载指引</Button>
               <Button icon={<DownloadOutlined />} loading={busy === 'pq'}
                 onClick={() => dl('pq', '商品价格快速编辑表', '商品价格快速编辑_ERP标准.xlsx', downloadProductPriceQuickEdit)}>
                 下载对照表</Button>
@@ -526,17 +529,6 @@ export default function ActivityAutoFillTab() {
               <Button icon={<CheckCircleOutlined />} onClick={() => setWizardStep(1)}>
                 {tier1Bad ? '已改好，下一步 →' : '✓ 无差异，下一步 →'}</Button>
             </Space>
-            {pushing && <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              全自动：WA 去千牛导出发布模版（异步，约2分钟）→ 系统把一口价改成日常价÷0.75 → 传回千牛 excel批量编辑，停在提交前。请稍候…</Typography.Text>}
-            {autoPush && (
-              <Alert showIcon type={autoPush.ok ? 'success' : 'error'}
-                message={autoPush.step === 'no_change' ? '千牛一口价已全部 = 日常价÷0.75，无需改动'
-                  : autoPush.ok ? `已改 ${autoPush.modify_stats?.changed ?? 0} 个 SKU 的一口价，并挂到千牛草稿——去千牛点「提交」即生效`
-                  : `${autoPush.error || '推价失败'}${autoPush.need_scan ? '（需扫码）' : ''}`}
-                description={autoPush.modify_stats
-                  ? `扫描 ${autoPush.modify_stats.rows} 行 · 改 ${autoPush.modify_stats.changed} · 已一致 ${autoPush.modify_stats.already_ok} · 无日常价或下架跳过 ${autoPush.modify_stats.no_daily}`
-                  : undefined} />
-            )}
           </Space>
         )}
 
