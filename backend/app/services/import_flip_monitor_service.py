@@ -54,6 +54,8 @@ def _flip_fields(db: Session, order_no: str, days: int) -> dict[str, list[str]]:
     seq: dict[str, list[str]] = {}
     for r in rows:
         v = _norm_val(r.new_value)
+        if _norm_val(r.old_value) == v:
+            continue   # 无实义行('0.00'→'0'): 整行跳过, 不许给序列开头/续命(历史噪音行未清)
         vals = seq.setdefault(r.field, [])
         if not vals or vals[-1] != v:   # 连续同值去重
             vals.append(v)

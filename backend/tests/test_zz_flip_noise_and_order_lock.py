@@ -30,9 +30,9 @@ def test_record_skips_numeric_equal(db_session):
 
 
 # ── 2) 检测器: 同值重写不算回跳 ──────────────────────────────────────────
-def _fc(db, no, field, new, days_ago=0.0):
+def _fc(db, no, field, new, days_ago=0.0, old="x"):
     db.add(FieldChange(table_name="orders", row_pk=no, field=field,
-                       old_value="x", new_value=str(new), actor="订单重导", source="import",
+                       old_value=str(old), new_value=str(new), actor="订单重导", source="import",
                        created_at=datetime.now().astimezone() - timedelta(days=days_ago)))
     db.flush()
 
@@ -50,6 +50,16 @@ def test_flip_fields_ignores_same_value_rewrites(db_session):
     _fc(db_session, "F2", "paid_amount", "2829.50", 0.2)   # 真回跳 A→B→A
     db_session.commit()
     assert "paid_amount" in flipmon._flip_fields(db_session, "F2", 3)
+
+
+def test_flip_fields_skips_historic_noop_rows(db_session):
+    """历史无实义行('0.00'→'0')不许给序列开头: 噪音行 + 真实单向 42.40→0 ≠ 回跳
+    (2026-07-13 实测: 07-11 噪音行让 scan 复建 9 条)。"""
+    _fc(db_session, "F3", "refund_amount", "0", 2.5, old="0.00")   # 噪音: 数值等价
+    _fc(db_session, "F3", "refund_amount", "42.40", 1.5, old="0.00")
+    _fc(db_session, "F3", "refund_amount", "0", 1.0, old="42.40")  # 单向回落, 非震荡
+    db_session.commit()
+    assert flipmon._flip_fields(db_session, "F3", 3) == {}
 
 
 # ── 3) 订单人工锁: 重导不覆盖人裁定的财务/状态 ────────────────────────────
