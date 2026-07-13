@@ -132,15 +132,20 @@ class CostBreakdown:
 
 
 def _resolve_sku_code(db: Session, order: Order) -> Optional[str]:
-    """订单上 sku_code 优先 (去掉定制「改」后缀取基础码查 BOM); 否则用 SKU 名反查."""
+    """订单上 sku_code 优先 (去掉定制「改」后缀取基础码查 BOM); 否则用 SKU 名反查.
+
+    反查多义护栏 (2026-07-13): 「尺寸微定制/定制专拍/材质定制咨询」这类通用描述在多产品下
+    各有一行(实测 16 行同名), 按描述反查天然多义 — 挑任意一行 = 错 BOM 错成本; 原
+    scalar_one_or_none 直接 MultipleResultsFound, 把夜间订单维护/成本反推整轮任务炸停。
+    多义 → 诚实返回 None, 该单走既有缺成本兜底(类目成本率)+ 缺成本异常管道。"""
     if order.sku_code:
         return sku_utils.strip_custom_suffix(order.sku_code)
     if order.sku:
-        ps = db.execute(
+        rows = db.execute(
             select(PricingSku).where(PricingSku.sku == order.sku)
-        ).scalar_one_or_none()
-        if ps:
-            return ps.sku_code
+        ).scalars().all()
+        if len(rows) == 1:
+            return rows[0].sku_code
     return None
 
 
