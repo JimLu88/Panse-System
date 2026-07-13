@@ -1468,6 +1468,59 @@ def build_product_price_quick_edit_xlsx(db: Session):
     return out, stats
 
 
+def build_product_price_upload_from_export(db: Session, export_bytes: bytes):
+    """全自动推标价·第2步(2026-07-14): 吃千牛「excel商品批量导出」的发布模版, 把【一口价】列(第5列)改成
+    ERP日常价÷0.75(按 skuId 对上), 其余列原样。返回 (BytesIO, stats)。
+    铁律: 一口价×0.75(单品宝标准折)=日常价 → 一口价=日常价÷0.75。只改能对上 skuId 的;
+    下架/未映射/已登记下架 的 skuId 不动(保原值, 上传时千牛也不认下架的)。
+    发布模版列(openpyxl 1-indexed): 商品Id=1/一口价=5/商家编码=7/销售属性=10/属性对=11/skuId=12, 数据从第4行。"""
+    import io as _io
+    import openpyxl
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import delisted_sku_service
+
+    daily_by_code = {s.sku_code: (float(s.daily_price) if s.daily_price is not None else None)
+                     for s in db.execute(select(PricingSku)).scalars().all()}
+    delisted = delisted_sku_service.get_delisted(db)
+    daily_by_skuid: dict[str, float] = {}
+    for p in db.execute(select(PricingSkuPromo)).scalars().all():
+        d = daily_by_code.get(p.sku_code)
+        if d is None:
+            continue
+        for sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            sid = str(sid).strip() if sid else ""
+            if sid and sid not in delisted:
+                daily_by_skuid[sid] = d
+
+    wb = openpyxl.load_workbook(_io.BytesIO(export_bytes))
+    ws = wb["发布模板"] if "发布模板" in wb.sheetnames else wb.worksheets[0]
+    COL_PRICE, COL_SKUID = 5, 12
+    stats = {"rows": 0, "changed": 0, "no_daily": 0, "already_ok": 0}
+    for r in range(4, ws.max_row + 1):
+        sid = ws.cell(r, COL_SKUID).value
+        if sid is None or str(sid).strip() == "":
+            continue
+        stats["rows"] += 1
+        d = daily_by_skuid.get(str(sid).strip())
+        if d is None:
+            stats["no_daily"] += 1
+            continue
+        target = round(d / 0.75, 2)
+        cur = ws.cell(r, COL_PRICE).value
+        try:
+            cur_f = float(cur) if cur is not None else None
+        except (TypeError, ValueError):
+            cur_f = None
+        if cur_f is not None and abs(cur_f - target) <= 0.005:
+            stats["already_ok"] += 1
+            continue
+        c = ws.cell(r, COL_PRICE); c.value = target; c.number_format = "0.00"
+        stats["changed"] += 1
+    out = _io.BytesIO(); wb.save(out); out.seek(0)
+    return out, stats
+
+
 def build_full_export_workbook(db: Session):
     """全类目工作簿: 产品总表(按SKU展开+公式) 置顶, 定价总表次之, 其余每类目一 Sheet。"""
     import openpyxl

@@ -246,3 +246,30 @@ def commit_status(db: Session, job_id: str) -> dict:
             "screenshot_base64": res.get("screenshot_base64"),
         }
     return out
+
+
+def product_price_auto_push(db: Session) -> dict:
+    """★全自动推标价编排 (2026-07-14 全通): WA触发千牛「excel商品批量导出」→ 从下载中心下载发布模版
+    → 系统把一口价改成 ERP日常价÷0.75(单品宝配套) → WA上传千牛 excel商品批量编辑(import tab)
+    → 停在提交前(最终"提交"用户点)。返回 {ok, step, modify_stats, attached, screenshot_base64, note}。"""
+    from app.services import data_export_service as de
+    from app.services import web_agent_service
+    exp = web_agent_service.export_product_prices(db)
+    if not exp.get("ok"):
+        return {"ok": False, "step": "export", "need_scan": exp.get("need_scan"),
+                "error": exp.get("error") or exp.get("message"),
+                "screenshot_base64": exp.get("screenshot_base64")}
+    bio, stats = de.build_product_price_upload_from_export(db, exp["xlsx_bytes"])
+    if stats.get("changed", 0) == 0:
+        return {"ok": True, "step": "no_change", "modify_stats": stats,
+                "note": "千牛一口价已全部=日常价÷0.75, 无需改动"}
+    up = web_agent_service.upload_file(db, "product_prices", "stage", bio.getvalue(),
+                                       exp.get("filename") or "product_prices.xlsx")
+    if not up.get("ok") or not up.get("job"):
+        return {"ok": False, "step": "upload", "error": up.get("error"), "modify_stats": stats}
+    final = web_agent_service.wait_job(db, up["job"], timeout_s=200)
+    res = final.get("result") or {}
+    return {"ok": bool(res.get("ok") or res.get("attached")), "step": "staged",
+            "modify_stats": stats, "attached": res.get("attached"),
+            "validation": res.get("validation"),
+            "screenshot_base64": res.get("screenshot_base64"), "note": res.get("note")}

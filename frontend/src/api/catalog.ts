@@ -794,6 +794,17 @@ export const fetchActivityPreflight = (floorDays = 15, skipFloorCheck = false, t
 export const downloadProductPriceQuickEdit = () =>
   api.get('/api/pricing/product-price-quick-edit.xlsx', { responseType: 'blob' }).then((r) => r.data);
 
+// ★全自动推标价: WA千牛导出→系统改一口价=日常价÷0.75→WA上传千牛excel批量编辑(停提交前)
+export interface ProductPriceAutoPushResult {
+  ok: boolean; step: string; need_scan?: boolean; error?: string; note?: string;
+  modify_stats?: { rows: number; changed: number; no_daily: number; already_ok: number };
+  attached?: boolean; validation?: { ok: number; failed: number; raw?: string } | null;
+  screenshot_base64?: string | null;
+}
+export const productPriceAutoPush = () =>
+  api.post<ProductPriceAutoPushResult>('/api/pricing/product-price-auto-push', null, { timeout: 260000 })
+    .then((r) => r.data);
+
 // ── 活动档期日历 (报名/单品立减选档期 + 单品立减自动结束=下一档期前一刻) ──
 export interface ActivityPeriod {
   name: string;

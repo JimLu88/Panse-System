@@ -1818,6 +1818,17 @@ def activity_upload_commit_status(
     return activity_upload_service.commit_status(db, job)
 
 
+@formula_router.post("/product-price-auto-push")
+def product_price_auto_push_endpoint(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """★全自动推标价(2026-07-14): WA千牛导出→系统把一口价改成日常价÷0.75→WA上传千牛
+    excel商品批量编辑→停在提交前(最终"提交"你点)。约2-3分钟(含异步导出等待)。"""
+    from app.services import activity_upload_service
+    return activity_upload_service.product_price_auto_push(db)
+
+
 # ── 活动档期日历 (2026-07-13 用户: 报名/单品立减选具体档期 + 单品立减自动结束=下一档期前一刻) ──
 @formula_router.get("/activity-calendar")
 def get_activity_calendar(

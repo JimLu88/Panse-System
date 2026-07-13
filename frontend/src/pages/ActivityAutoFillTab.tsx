@@ -21,9 +21,9 @@ import {
   activityUploadCommit, activityUploadCommitStatus, activityUploadStage,
   applySkuRotation, downloadProductPriceQuickEdit, downloadPromoSignup, downloadSingleItemDiscount,
   downloadSuperReduceSignup, fetchActivityCalendar, fetchActivityPreflight, fetchAutoEnd,
-  fetchSkuRotation, saveActivityCalendar,
-  type ActivityPeriod, type ActivityPreflight, type AutoEndResult, type SkuRotationPlan,
-  type UploadCommitStatus, type UploadStageResult,
+  fetchSkuRotation, productPriceAutoPush, saveActivityCalendar,
+  type ActivityPeriod, type ActivityPreflight, type AutoEndResult, type ProductPriceAutoPushResult,
+  type SkuRotationPlan, type UploadCommitStatus, type UploadStageResult,
 } from '../api/catalog';
 
 const XLSX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -98,6 +98,24 @@ export default function ActivityAutoFillTab() {
   const [preLoading, setPreLoading] = useState(false);
   const [skipFloor, setSkipFloor] = useState(false);
   const [wizardStep, setWizardStep] = useState(0);       // 0核价 1单品立减 2报名 3完成
+  const [pushing, setPushing] = useState(false);
+  const [autoPush, setAutoPush] = useState<ProductPriceAutoPushResult | null>(null);
+
+  const doAutoPush = async () => {
+    setPushing(true); setAutoPush(null);
+    message.loading({ content: '全自动推标价：千牛导出 → 系统改一口价 → 传回千牛…约2-3分钟', key: 'app', duration: 0 });
+    try {
+      const r = await productPriceAutoPush();
+      message.destroy('app');
+      setAutoPush(r);
+      if (r.need_scan) message.error('淘宝登录态过期，请扫码后重试');
+      else if (r.ok && r.step === 'no_change') message.success('千牛一口价已全对，无需改动');
+      else if (r.ok) message.success(`已改 ${r.modify_stats?.changed ?? 0} 个SKU一口价并挂到千牛，去千牛点提交`);
+      else message.error(r.error || '推价失败');
+    } catch {
+      message.destroy('app'); message.error('推价失败（确认 PC 上 Web-Agent 在线）');
+    } finally { setPushing(false); }
+  };
 
   const runPreflight = async () => {
     setPreLoading(true);
@@ -499,13 +517,26 @@ export default function ActivityAutoFillTab() {
                   <br/><Typography.Text type="secondary">（真·自动推标价到千牛需一次录制后一键完成；当前先出对照表。）</Typography.Text></span>} />
             )}
             <Space wrap>
+              <Button type="primary" danger icon={<CloudUploadOutlined />} loading={pushing} onClick={doAutoPush}>
+                🚀 全自动推标价到千牛（导出→改一口价→传回，停提交前）</Button>
               <Button icon={<DownloadOutlined />} loading={busy === 'pq'}
                 onClick={() => dl('pq', '商品价格快速编辑表', '商品价格快速编辑_ERP标准.xlsx', downloadProductPriceQuickEdit)}>
-                下载标价对照表（现价 vs 应改）</Button>
+                下载对照表</Button>
               <Link to="/shop-price-board"><Button icon={<TableOutlined />}>打开改价台</Button></Link>
-              <Button type="primary" icon={<CheckCircleOutlined />} onClick={() => setWizardStep(1)}>
-                {tier1Bad ? '已改好千牛标价，下一步 →' : '✓ 无差异，下一步 →'}</Button>
+              <Button icon={<CheckCircleOutlined />} onClick={() => setWizardStep(1)}>
+                {tier1Bad ? '已改好，下一步 →' : '✓ 无差异，下一步 →'}</Button>
             </Space>
+            {pushing && <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              全自动：WA 去千牛导出发布模版（异步，约2分钟）→ 系统把一口价改成日常价÷0.75 → 传回千牛 excel批量编辑，停在提交前。请稍候…</Typography.Text>}
+            {autoPush && (
+              <Alert showIcon type={autoPush.ok ? 'success' : 'error'}
+                message={autoPush.step === 'no_change' ? '千牛一口价已全部 = 日常价÷0.75，无需改动'
+                  : autoPush.ok ? `已改 ${autoPush.modify_stats?.changed ?? 0} 个 SKU 的一口价，并挂到千牛草稿——去千牛点「提交」即生效`
+                  : `${autoPush.error || '推价失败'}${autoPush.need_scan ? '（需扫码）' : ''}`}
+                description={autoPush.modify_stats
+                  ? `扫描 ${autoPush.modify_stats.rows} 行 · 改 ${autoPush.modify_stats.changed} · 已一致 ${autoPush.modify_stats.already_ok} · 无日常价或下架跳过 ${autoPush.modify_stats.no_daily}`
+                  : undefined} />
+            )}
           </Space>
         )}
 
