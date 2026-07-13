@@ -40,6 +40,27 @@ def test_v2_on_with_parts_uses_pricing_no_floor():
         _set_v2(False)
 
 
+def test_v2_components_split_with_actual_bills():
+    """v2实配件分量可拆 (用户 2026-07-13): 定制单有物流/安装实报 → 分量=实报(不再被尾部清零),
+    逐单核对物流/安装列能显示, 弹窗物流安装段=实值; 成本合计口径不变。"""
+    _set_v2(True)
+    try:
+        o = Order(order_no="V5", is_custom=True, paid_amount=Decimal("15200"),
+                  actual_cost=Decimal("8800"), est_parts=Decimal("460"),
+                  actual_logistics=Decimal("734"), est_logistics=Decimal("700"),
+                  actual_install=Decimal("280"), est_install=Decimal("150"),
+                  actual_packing=Decimal("490"))
+        b = ofin.physical_cost_breakdown(o)
+        assert b["cap_mode"] == "v2实配件"
+        assert b["logistics_component"] == Decimal("734")
+        assert b["install_component"] == Decimal("280")
+        assert b["final"] == Decimal("8800") + Decimal("460") + Decimal("734") + Decimal("280") + Decimal("490")
+        # 弹窗"配件及其他" = estimate_part − 物流 − 安装 = 定价表配件
+        assert b["estimate_part"] - b["logistics_component"] - b["install_component"] == Decimal("460")
+    finally:
+        _set_v2(False)
+
+
 def test_v2_on_zero_parts_still_floored():
     """★分桶护栏: 开关开 但 est_parts=0(配件不可信) → 回退旧口径占比+兜底, 不塌到只剩木作(防利润虚高)。"""
     _set_v2(True)

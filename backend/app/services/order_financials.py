@@ -397,7 +397,11 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     if cost > 0 and paid > 0 and paid < cost * Decimal("0.5"):
         cost = (paid * Decimal("0.85")).quantize(Decimal("0.01"))
         cap_mode, cap_label = "片段85", "片段(实付<成本×50%)→实付×85%封顶"
-    if cap_mode != "none":   # 封顶/兜底/归零单: 商品成本=实付×85%等整体值, 分量不可拆(防拆出负商品成本)
+    # 封顶/兜底/归零单: 商品成本=实付×85%等整体值, 分量不可拆(防拆出负商品成本)。
+    # 豁免 v2实配件 (用户 2026-07-13: 定制单有物流/安装账单也不例外, 要在逐单核对拆列显示+弹窗计入):
+    # 它是纯加法分支(木作+定价配件+物流+安装+打包), 分量天然可拆; 曾被本清零误伤 → 1月定制单
+    # 实报734/280明明在账却列显0、钱埋进"配件及其他"。若后续被片段85改写 cap_mode 则仍清零(不可拆)。
+    if cap_mode not in ("none", "v2实配件"):
         _logi_comp = _inst_comp = Decimal("0")
     return {
         "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
