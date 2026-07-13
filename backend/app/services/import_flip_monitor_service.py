@@ -24,8 +24,23 @@ _ACTOR = "订单重导"          # 导入覆盖时 field_change 的 actor
 _DEFAULT_DAYS = 3
 
 
+def _norm_val(v) -> str:
+    """取值归一: 数值统一成标准形('0.00'→'0', '42.40'→'42.4'), 非数值原样。
+    防 '0.00' 与 '0' 被当成两个值 (2026-07-13: 等价写入曾把报警喂成僵尸)。"""
+    s = str(v)
+    try:
+        from decimal import Decimal as _D
+        d = _D(s)
+        return str(d.normalize())
+    except Exception:  # noqa: BLE001
+        return s
+
+
 def _flip_fields(db: Session, order_no: str, days: int) -> dict[str, list[str]]:
-    """近 days 天内【出现值回跳】的字段 → 其取值序列。空 = 没在翻。"""
+    """近 days 天内【出现值回跳】的字段 → 其取值序列。空 = 没在翻。
+
+    判据细化 (2026-07-13): 先数值归一 + 连续同值去重(同值重写不是震荡),
+    再看剩余序列是否有值重复出现(A→B→A 才算回跳; 单向进展/原地重写都不算)。"""
     since = datetime.now() - timedelta(days=days)
     rows = db.execute(
         select(FieldChange).where(
@@ -38,8 +53,10 @@ def _flip_fields(db: Session, order_no: str, days: int) -> dict[str, list[str]]:
     ).scalars().all()
     seq: dict[str, list[str]] = {}
     for r in rows:
-        seq.setdefault(r.field, []).append(str(r.new_value))
-    # 有值重复出现 = 回跳震荡(单向进展则取值互不相同)
+        v = _norm_val(r.new_value)
+        vals = seq.setdefault(r.field, [])
+        if not vals or vals[-1] != v:   # 连续同值去重
+            vals.append(v)
     return {f: vals for f, vals in seq.items() if len(vals) > len(set(vals))}
 
 

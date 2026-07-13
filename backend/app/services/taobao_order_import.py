@@ -577,6 +577,15 @@ def _persist_order_lines(db: Session, order_no: str, lines: list, resolver) -> N
 def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                    rep: TaobaoImportReport) -> None:
     resolver = taobao_listing_service.build_resolver(db)  # 对应表: skuId/编码 → SKU编码/产品编码/店铺
+    # 人工锁 (用户 2026-07-13 "直接处理"): 人裁定过 财务/状态 的订单(修改档案 source≠import),
+    # 重导永不覆盖这些列 —— flip9 复位后钉住, 两个导出源再互搏也翻不动人拍板的值;
+    # 物流号/收货人/备注等非财务列照常回填。
+    from app.services import field_change_service as _fcs
+    _LOCK_FIELDS = ("paid_amount", "refund_amount", "status",
+                    "buyer_payable_amount", "shop_received_amount")
+    _locked_orders: set[str] = set()
+    for _lf in _LOCK_FIELDS:
+        _locked_orders |= _fcs.human_pks(db, table="orders", field=_lf)
     seen: set[str] = set()
     for no, o in orders.items():
         if not no:
@@ -767,21 +776,25 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 setattr(existing, attr, value)
 
             existing.is_historical = False
-            # 状态: 仅当文件真带「订单状态」列(status_text 非空)才改。缺状态列的稀疏文件(发货报表/部分
-            # 明细)其 status 是兜底默认的 signed(见上文无状态列默认段)—— 不许覆盖已有状态, 否则每天把
-            # paid 盖成 signed。销售明细本身带订单级「订单状态」列, 属合法更新(与金额不同: 金额按行求和会
-            # 因明细不完整而低估, 故金额仍要求权威源; 状态是订单级单值, 明细里也准)。
-            # status_trusted=False("已卖出宝贝"式逐商品行状态)不许改已存在订单的状态 (2026-07-11)
-            if str(o.status_text or "").strip() and getattr(o, "status_trusted", True):
-                if _trace("status", "订单状态", existing.status, status):
-                    rep.status_changed += 1
-                existing.status = status
-            _fin_overwrite("buyer_payable_amount", payable, o.buyer_payable is not None, guard_zero=True)
-            _fin_overwrite("paid_amount", paid, o.paid_real is not None, "paid_amount", "实付金额", count=True, guard_zero=True)
-            _fin_overwrite("shop_received_amount", received, o.shop_received is not None, guard_zero=True)
-            _fin_overwrite("platform_fee", pfee, o.platform_fee is not None)
-            _fin_overwrite("refund_amount", refund, o.refund is not None, "refund_amount", "退款金额", count=True)
-            _fin_overwrite("buyer_freight", freight, o.buyer_freight is not None, "buyer_freight", "买家应付邮费")
+            # 人工锁: 人裁定过该单财务/状态 → 状态与全部财务列跳过(非财务列继续走下面的回填)
+            if no in _locked_orders:
+                pass
+            else:
+                # 状态: 仅当文件真带「订单状态」列(status_text 非空)才改。缺状态列的稀疏文件(发货报表/部分
+                # 明细)其 status 是兜底默认的 signed(见上文无状态列默认段)—— 不许覆盖已有状态, 否则每天把
+                # paid 盖成 signed。销售明细本身带订单级「订单状态」列, 属合法更新(与金额不同: 金额按行求和会
+                # 因明细不完整而低估, 故金额仍要求权威源; 状态是订单级单值, 明细里也准)。
+                # status_trusted=False("已卖出宝贝"式逐商品行状态)不许改已存在订单的状态 (2026-07-11)
+                if str(o.status_text or "").strip() and getattr(o, "status_trusted", True):
+                    if _trace("status", "订单状态", existing.status, status):
+                        rep.status_changed += 1
+                    existing.status = status
+                _fin_overwrite("buyer_payable_amount", payable, o.buyer_payable is not None, guard_zero=True)
+                _fin_overwrite("paid_amount", paid, o.paid_real is not None, "paid_amount", "实付金额", count=True, guard_zero=True)
+                _fin_overwrite("shop_received_amount", received, o.shop_received is not None, guard_zero=True)
+                _fin_overwrite("platform_fee", pfee, o.platform_fee is not None)
+                _fin_overwrite("refund_amount", refund, o.refund is not None, "refund_amount", "退款金额", count=True)
+                _fin_overwrite("buyer_freight", freight, o.buyer_freight is not None, "buyer_freight", "买家应付邮费")
             if ship_dt is not None:
                 _trace("ship_date", "发货日期", existing.ship_date, ship_dt)
                 existing.ship_date = ship_dt

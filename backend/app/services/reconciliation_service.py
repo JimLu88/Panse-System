@@ -1624,6 +1624,14 @@ def run_refund_reconciliation(db: Session, *, period_start=None, period_end=None
         exp = billed.get(key, Decimal("0"))
         act = paid.get(key, Decimal("0"))
         diff = act - exp
+        # 缺退款日期的应退聚在 "(无日期)" 桶 — 没有月份就无法与支付宝按月对账, 硬比必假差。
+        # 诚实降级为提示不记异常 (2026-07-13: flip9 复位把退款额补回、但导出没给退款日期)。
+        if key == "(无日期)":
+            diffs.append(ReconciliationDiff(
+                key=key, expected=exp, actual=act, diff=None, severity="not_available",
+                message=f"(无日期): 订单应退 ¥{exp} 缺退款日期, 无法按月对账 — 补退款日期后自动纳入",
+            ))
+            continue
         sev = _classify(diff, base=exp)
         msg = f"{key}: 订单应退 ¥{exp}, 支付宝实退 ¥{act}, 差 ¥{diff}"
         diffs.append(ReconciliationDiff(key=key, expected=exp, actual=act, diff=diff, severity=sev, message=msg))

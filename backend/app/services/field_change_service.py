@@ -25,6 +25,19 @@ def _to_str(v: Any) -> Optional[str]:
     return str(v)
 
 
+def _num_equal(a: Optional[str], b: Optional[str]) -> bool:
+    """数值等价判定: '0.00' 与 '0'、'42.40' 与 '42.4' 是同一个数, 不算修改。
+    (2026-07-13: 重导把 refund 0.00 写成 0 被记成"变化", 喂给翻烧饼检测器当回跳,
+    异常永远凑不齐3天静默 → 僵尸报警。)"""
+    if a is None or b is None:
+        return False
+    try:
+        from decimal import Decimal as _D
+        return _D(a) == _D(b)
+    except Exception:  # noqa: BLE001 - 非数值走字符串比较
+        return False
+
+
 def record(
     db: Session, *,
     table: str, pk: Any, field: str,
@@ -32,10 +45,10 @@ def record(
     actor: Optional[str] = None, source: str = "web",
     row_label: Optional[str] = None, field_label: Optional[str] = None,
 ) -> None:
-    """记一条字段修改。old==new 时不记。失败只告警, 绝不阻断业务保存。"""
+    """记一条字段修改。old==new(含数值等价) 时不记。失败只告警, 绝不阻断业务保存。"""
     try:
         old_s, new_s = _to_str(old), _to_str(new)
-        if old_s == new_s:
+        if old_s == new_s or _num_equal(old_s, new_s):
             return
         db.add(FieldChange(
             table_name=table, row_pk=str(pk), row_label=row_label,
@@ -48,18 +61,22 @@ def record(
         _logger.warning("field_change 记录失败 %s.%s#%s", table, field, pk, exc_info=True)
 
 
-def human_pks(db: Session, *, table: str, field: str) -> set[str]:
-    """该表该字段被「人」改过的行号集合。档案里只有人的决定(见模块约定), 故有档案=人拍过板。
+def human_pks(db: Session, *, table: str, field: str,
+              exclude_sources: tuple = ("import",)) -> set[str]:
+    """该表该字段被「人」改过的行号集合(默认排除 source='import' 的机器写入档案)。
+    有人工档案 = 人拍过板。
 
-    用途: 机器批处理(智能归类/自动纠正)改写前查此集合, **人改过的行不许机器再翻**。
+    用途: 机器批处理(智能归类/自动纠正/重导覆盖)改写前查此集合, **人改过的行不许机器再翻**。
     2026-07-12 复发案: 流水19365(山**退款)人工归 refund_out 后, 双机战期间旧镜像(无退款护栏)
     的 route 又翻回 factory_payment → 逐月对账假差反复重建。退款护栏只认得"退款"特征, 人工锁
-    兜住所有未来写入方: 只要人拍过板, 机器一律绕行(人自己仍随时可改, 只锁机器)。"""
-    rows = db.execute(
-        select(FieldChange.row_pk).where(
-            FieldChange.table_name == table, FieldChange.field == field,
-        ).distinct()
-    ).scalars().all()
+    兜住所有未来写入方: 只要人拍过板, 机器一律绕行(人自己仍随时可改, 只锁机器)。
+    2026-07-13 扩展: 订单表的重导覆盖(_trace source='import')也记档案 → 判"人"须排除 import。"""
+    stmt = select(FieldChange.row_pk).where(
+        FieldChange.table_name == table, FieldChange.field == field,
+    )
+    if exclude_sources:
+        stmt = stmt.where(FieldChange.source.notin_(exclude_sources))
+    rows = db.execute(stmt.distinct()).scalars().all()
     return set(rows)
 
 
