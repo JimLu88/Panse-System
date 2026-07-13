@@ -48,6 +48,7 @@ export default function ActivityAutoFillTab() {
   const [pre, setPre] = useState<ActivityPreflight | null>(null);
   const [preLoading, setPreLoading] = useState(false);
   const [skipFloor, setSkipFloor] = useState(false);   // 本次按初始报价跳过15天最低价校验(默认不跳, 未来照跑)
+  const [show618, setShow618] = useState(false);       // 618/双11超大促报名(模板待接入)提示弹窗
 
   const dl = async (key: string, title: string, filename: string, run: () => Promise<BlobPart>) => {
     setBusy(key);
@@ -174,6 +175,18 @@ export default function ActivityAutoFillTab() {
         type="info" showIcon
         message="活动自动填写 = 三步生成淘宝活动上传表；最终上传淘宝的动作由你们手工做（本页只生成 + 预检，不直接推送）。"
         description="生成表只推送有淘宝 SKUID 的 SKU（没上架的自动跳过）。点下方「虚拟推送(预检)」先体检：坏价产品自动排除、15 天最低价冲突会被淘宝判涨价。全绿了再逐步生成。"
+      />
+
+      {/* ── ★★★ 第一铁律：以 ERP 价格为准 (2026-07-13 用户拍板) ── */}
+      <Alert
+        type="warning" showIcon banner
+        message={<b>★ 第一铁律：以 ERP 价格为准，不迁就平台</b>}
+        description={<span style={{ fontSize: 13 }}>
+          所有报名价 = <b>ERP 日常价</b>。平台报不进（"活动价/标价不得高于近15天最低标价"）几乎都是<b>千牛一口价填低了</b> →
+          去改<b>千牛一口价</b>到 <b>日常价 ÷ 0.75</b>（0.75=单品宝标准折，永不改），<b>绝不反过来改 ERP</b>。<br/>
+          报名失败按顺序查这 <b>4 个价格点</b>：① 标价(一口价) ② 单品宝(0.75折) ③ 单品立减 ④ 报名价。
+          注意<b>「活动价只能下调不能上调」</b>——要把活动价往上抬（如从低价改回日常价）得<b>先在千牛撤销该活动报名</b>再重报。
+        </span>}
       />
 
       {/* ── 虚拟推送(预检) ── */}
@@ -405,7 +418,7 @@ export default function ActivityAutoFillTab() {
               onClick={() => dl('sr', '超级立减长期活动·报名表', '超级立减长期活动_报名表.xlsx', downloadSuperReduceSignup)}>
               超级立减长期活动 报名表 <Tag color="green" style={{ marginLeft: 4 }}>可直接导入</Tag></Button>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              已按平台真实模版填好（两个 sheet + 14 列）：活动价=报名价A、让利比例10、补贴金额=活动价×10%（到手=中促到手）。
+              已按平台真实模版填好（两个 sheet + 14 列）：<b>活动价 = 日常价（ERP标准，绝非报名价A）</b>、让利比例10、<b>补贴金额留空</b>（到手 = 日常价×0.9 = 中促到手）。
               下载后在千牛「商品批量导入 → 第二步 导入表格」直接上传，无需改动。
             </Typography.Text>
           </Col>
@@ -420,6 +433,19 @@ export default function ActivityAutoFillTab() {
             </Typography.Text>
           </Col>
         </Row>
+      </Card>
+
+      {/* ── 618/双11 超大促报名 (独立活动·模板待接入·空按钮) ── */}
+      <Card size="small" title={<Space><CloudUploadOutlined /><b>618 / 双11 超大促报名（15% 让利 · 独立活动）</b>
+        <Tag color="purple">模板待接入</Tag></Space>}>
+        <Space direction="vertical" style={{ width: '100%' }} size="small">
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            618/双11 是<b>独立的平台大促活动</b>，报名模板与「88VIP大促」「超级立减长期」都不同（15% 让利、还要换 SKU）。
+            该活动的报名模板<b>尚未接入系统</b>——到时先下载平台模板发给研发接入，此按钮才生成对应报名表。
+          </Typography.Text>
+          <Button icon={<DownloadOutlined />} block onClick={() => setShow618(true)}>
+            618/双11 超大促 报名表 <Tag color="purple" style={{ marginLeft: 4 }}>待接入·点我看步骤</Tag></Button>
+        </Space>
       </Card>
 
       {/* ── 超大促 SKU 轮换 (618/双11 15% 让利) ── */}
@@ -667,6 +693,24 @@ export default function ActivityAutoFillTab() {
           </Space>
           );
         })()}
+      </Modal>
+
+      {/* ── 618/双11 模板待接入 提示弹窗 ── */}
+      <Modal open={show618} title="618 / 双11 超大促报名 · 模板待接入"
+        onCancel={() => setShow618(false)}
+        footer={[<Button key="ok" type="primary" onClick={() => setShow618(false)}>知道了</Button>]}>
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert type="info" showIcon message="618/双11 超大促是独立活动，报名模板与 88VIP大促 / 超级立减 不同，且需换 SKU（15% 让利、绕 15 天最低价）。" />
+          <Typography.Paragraph style={{ marginBottom: 0 }}>
+            <b>接入步骤：</b><br/>
+            1. 618/双11 报名开启后，在千牛该活动的「商品批量导入」页 <b>下载平台报名模板</b>；<br/>
+            2. 把模板文件发给研发（对接人），说明活动名 / 报名记录ID；<br/>
+            3. 研发按模板接入系统，此按钮即生成对应报名表——<b>报名价仍 = ERP 日常价口径</b>（见顶部★铁律），平台报不进就改千牛一口价。
+          </Typography.Paragraph>
+          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            在此之前，618/双11 各档的<b>单品立减 / 报名减金额</b>可用上方 Step2 / Step3 的「超级大促 15%」按钮先出（big618 档）；SKU 轮换用下方「超大促 SKU 轮换」卡片。
+          </Typography.Text>
+        </Space>
       </Modal>
     </Space>
   );
