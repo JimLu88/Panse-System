@@ -270,6 +270,22 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                 "logistics_component": Decimal("0"), "install_component": Decimal("0"),
                 "cap_label": "官方服务/专链/邮费/补拍 非产品 → 成本0", "final": Decimal("0")}
 
+    # 定制追加归主单 (用户拍板 2026-07-14): 备注含「追加」定制语义(纯插座追加除外, 那走插座成本)
+    # + 同客户另有更大的主订单 → 本单是定制补拍链接, 成本随主单工厂账单走, 本单归零。
+    # 案例 …35486210「追加上柜定制」¥2480: 主单 …43486210 账单¥7600 已含上柜, 本单曾被配件阶梯
+    # 算出 ¥1871 假成本。需 db(查主单), db=None 的调用点保持旧口径。
+    if db is not None and not bool(getattr(o, "is_refill", False)):
+        from app.services.custom_order_reconcile_service import is_pure_socket_addon as _ipsa
+        from app.services.custom_order_reconcile_service import remark_text as _rt
+        _addon_txt = _rt(o)
+        if "追加" in _addon_txt and not _ipsa(_addon_txt) and _has_bigger_main_order(db, o):
+            return {"factory_wood": Decimal("0"), "estimate_part": Decimal("0"),
+                    "packing": Decimal("0"), "precap_total": Decimal("0"),
+                    "cap_mode": "定制追加归主单",
+                    "logistics_component": Decimal("0"), "install_component": Decimal("0"),
+                    "cap_label": "备注定制追加(非插座)+同客户有主订单 → 成本记在主单工厂账单, 本单归零",
+                    "final": Decimal("0")}
+
     # 样块单固定值 (用户拍板 2026-07-11, 取代同日"实报优先"版): 商品成本 = 木作6/块×块数 + 打包2/单,
     # 运费5/单由 cost_breakdown 单列(物流列); 常数存财务系数(fin_sample_*)后台可调。
     # 读时现算、完全不读 actual_/est_/theoretical —— 历史七种花数(0/1/5/6/8/13/14)的病灶
@@ -417,6 +433,27 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
         "precap_total": precap, "cap_mode": cap_mode, "cap_label": cap_label, "final": cost,
         "logistics_component": _logi_comp, "install_component": _inst_comp,
     }
+
+
+def _has_bigger_main_order(db, o: Order) -> bool:
+    """同客户(电话优先, 否则姓名)是否另有一张实付更大的正式成交单 —— 有 = 本单是追加/补拍片段。
+    (定制追加归主单 判据的一半; 另一半是备注含「追加」, 见 physical_cost_breakdown。)"""
+    from sqlalchemy import select as _sel
+    phone = (getattr(o, "customer_phone", None) or "").strip()
+    name = (getattr(o, "customer_name", None) or "").strip()
+    if not phone and not name:
+        return False
+    cond = (Order.customer_phone == phone) if phone else (Order.customer_name == name)
+    row = db.execute(
+        _sel(Order.id).where(
+            cond,
+            Order.order_no != o.order_no,
+            Order.status.in_(("paid", "shipped", "signed", "aftersales")),
+            Order.is_refill == False,  # noqa: E712
+            Order.paid_amount > (o.paid_amount or Decimal("0")),
+        ).limit(1)
+    ).first()
+    return row is not None
 
 
 def physical_cost(o: Order, db=None) -> Decimal:
