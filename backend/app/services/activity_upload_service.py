@@ -260,6 +260,11 @@ def product_price_auto_push(db: Session) -> dict:
                 "error": exp.get("error") or exp.get("message"),
                 "screenshot_base64": exp.get("screenshot_base64")}
     bio, stats = de.build_product_price_upload_from_export(db, exp["xlsx_bytes"])
+    if stats.get("rows", 0) < 20:   # 疑似抓到旧的小导出(如样块8行) → 提示先手动导出全部商品
+        return {"ok": False, "step": "stale_export", "modify_stats": stats,
+                "error": f"下载到的千牛导出只有 {stats.get('rows')} 行(疑似旧的小导出)。"
+                         "请先在千牛「导出全部商品」等生成好, 再点本按钮; 系统会抓最新那份改价推回。",
+                "export_filename": exp.get("filename")}
     if stats.get("changed", 0) == 0:
         return {"ok": True, "step": "no_change", "modify_stats": stats,
                 "note": "千牛一口价已全部=日常价÷0.75, 无需改动"}
