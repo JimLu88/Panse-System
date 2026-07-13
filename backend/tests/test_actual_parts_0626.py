@@ -42,3 +42,17 @@ def test_no_actual_parts_unchanged():
     o = Order(order_no="AP4", is_custom=True, paid_amount=Decimal("4000"), actual_cost=Decimal("2010"))
     assert ofin.physical_cost(o) == Decimal("3400.00")
     assert ofin.physical_cost_breakdown(o)["cap_mode"] == "定制兜底85"
+
+
+def test_actual_parts_prefers_pricing_estimate():
+    """配件项预估优先 (用户 2026-07-13): est_parts>0 时归集值(352.03 类)不再计入 —
+    木作2300+物流500+安装75+打包190+配件预估240.90 = 3305.90 (而非用 352.03 的 3417.03)。"""
+    o = Order(order_no="AP5", is_custom=False, paid_amount=Decimal("3531"),
+              actual_cost=Decimal("2300"), actual_logistics=Decimal("500"),
+              actual_install=Decimal("75"), actual_packing=Decimal("190"),
+              actual_parts=Decimal("352.03"), est_parts=Decimal("240.90"))
+    pb = ofin.physical_cost_breakdown(o)
+    assert pb["cap_mode"] == "实配件分项"
+    assert pb["final"] == Decimal("3305.90")
+    # 配件分量 = estimate_part − 物流 − 安装 = 预估配件
+    assert pb["estimate_part"] - pb["logistics_component"] - pb["install_component"] == Decimal("240.90")

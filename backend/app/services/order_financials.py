@@ -287,19 +287,25 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
                               f"打包{_SAMPLE_CFG['packing']}/单; 运费{_SAMPLE_CFG['freight']}/单走物流列"),
                 "final": _tot}
 
-    # 逐单真实配件 (用户 2026-06-26): actual_parts 非空 → 改逐项真实计价(木作+物流+安装+打包+真实配件),
-    # 跳过占比估算与实付×85% floor。各分项 actual 优先否则 est; 木作取工厂账单否则定价木作估。
+    # 逐单真实配件 (用户 2026-06-26): actual_parts 非空 → 改逐项计价(木作+物流+安装+打包+配件),
+    # 跳过占比估算与实付×85% floor。物流/安装/打包各分项 actual 优先否则 est; 木作取工厂账单否则定价木作估。
+    # 配件项改按预估优先 (用户 2026-07-13: "¥352 这种多出来的费用搞不清楚就按配件预估走" ——
+    # 归集来的 actual_parts 来源难核, 定价表 est_parts 更可信; est_parts 没配(≤0)才退回归集值)。
     _aparts = getattr(o, "actual_parts", None)
     if _aparts is not None:
         factory_wood = nz(o.actual_cost, getattr(o, "wood_cost_est", None))
-        estimate_part = nz(_al, _el) + nz(_ai, _ei) + _d(_aparts)   # 物流 + 安装 + 真实配件
+        _pp = _d(getattr(o, "est_parts", None))
+        _parts_term = _pp if _pp > 0 else _d(_aparts)
+        estimate_part = nz(_al, _el) + nz(_ai, _ei) + _parts_term   # 物流 + 安装 + 配件(预估优先)
         precap = factory_wood + estimate_part + packing
         cost = precap if precap > 0 else Decimal("0")
         return {
             "factory_wood": factory_wood, "estimate_part": estimate_part, "packing": packing,
             "precap_total": precap, "cap_mode": "实配件分项",
             "logistics_component": nz(_al, _el), "install_component": nz(_ai, _ei),
-            "cap_label": "逐单真实配件→逐项真实计价(木作+物流+安装+打包+真实配件), 不估不封顶", "final": cost,
+            "cap_label": ("逐项计价(木作+物流+安装+打包+配件[定价表预估优先"
+                          + ("" if _pp > 0 else "; 无预估→归集值") + "]), 不占比不封顶"),
+            "final": cost,
         }
 
     # 物流/安装分量跟踪 (2026-07-12 用户: 逐单核对表拆列显示) —— 记录 final 里"可拆出"的
