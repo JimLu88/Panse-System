@@ -167,6 +167,36 @@ def _classify_unpaid_factory_bills(db: Session) -> tuple[Decimal, Decimal, set, 
     return sample, billed, billed_nos, billed_ids
 
 
+def _parts_costs_row(db: Session, o: Order):
+    """订单 → 定价表配件明细行(pricing_sku_costs): SKU 直取; 无行(定制/咨询码) →
+    同产品按木作最接近(锚=wood_cost_est)的规格行(与配件阶梯同法)。返回 (row, sku_code)。"""
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuCosts
+    from app.services import sku_utils
+    sc = sku_utils.strip_custom_suffix(o.sku_code) if o.sku_code else None
+    if sc:
+        r = db.execute(select(PricingSkuCosts).where(PricingSkuCosts.sku_code == sc)).scalar_one_or_none()
+        if r is not None:
+            return r, sc
+    if o.product_code:
+        rows = db.execute(
+            select(PricingSku.sku_code, PricingSku.wood_cost)
+            .where(PricingSku.product_code == o.product_code, PricingSku.wood_cost.isnot(None))
+            .order_by(PricingSku.id)
+        ).all()
+        if rows:
+            anchor = _d(getattr(o, "wood_cost_est", None))
+            best = min(rows, key=lambda x: abs(Decimal(str(x[1])) - anchor)) if anchor > 0 else rows[0]
+            r = db.execute(select(PricingSkuCosts).where(PricingSkuCosts.sku_code == best[0])).scalar_one_or_none()
+            if r is not None:
+                return r, best[0]
+    return None, None
+
+
+# 五金 = 金属件族(用户 2026-07-14 汇总口径): 抽屉轨+铁销+连接件+铝轨+塑轨+小拉手
+_HW_COLS = ("drawer_rail", "iron_pin", "connector", "aluminum_rail", "plastic_rail", "mini_handle")
+
+
 def _factory_estimate_unbilled(db: Session, billed_nos: set, billed_ids: set) -> tuple[Decimal, int]:
     """未开账单工厂结算预估: 活跃单(待发货+待确认收货)预测物理成本合计。
 
@@ -194,6 +224,62 @@ def _factory_estimate_unbilled(db: Session, billed_nos: set, billed_ids: set) ->
             total += c
             counted += 1
     return total.quantize(_Q), counted
+
+
+def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tuple[dict, int]:
+    """未开账单预估按类拆分 (用户 2026-07-14): 木作/岩板/五金/玻璃/电力轨道/其他配件/打包/物流安装
+    + 封顶兜底调整(=最终口径 − 毛分类合计, 片段实付×85%压缩为负、定制兜底抬高为正)。
+    分类值订单缺实际就读定价表配件明细(pricing_sku_costs), 件数按 est_parts/单件外配件 等比折算
+    (防差价单大数量爆表)。九项之和恒等于原单行"未开账单·预测成本" → 剩余流水分毫不变。"""
+    from app.models.pricing import PricingSku
+    from app.services import order_financials as ofin
+    orders = db.execute(
+        select(Order).where(
+            Order.status.in_(("paid", "shipped")),
+            Order.is_refill == False,  # noqa: E712
+            Order.is_historical == False,  # noqa: E712
+        )
+    ).scalars().all()
+    agg = {k: Decimal("0") for k in
+           ("wood", "rock_slab", "hardware", "glass", "electric_rail",
+            "other_parts", "packing", "logi_inst")}
+    total = Decimal("0")
+    counted = 0
+    for o in orders:
+        if o.order_no in billed_nos or o.id in billed_ids:
+            continue
+        pb = ofin.physical_cost_breakdown(o)
+        f = pb["final"]
+        if not f or f <= 0:
+            continue
+        counted += 1
+        total += f
+        agg["wood"] += _d(o.actual_cost) if _d(o.actual_cost) > 0 else _d(getattr(o, "wood_cost_est", None))
+        agg["packing"] += pb["packing"]
+        comp = pb["logistics_component"] + pb["install_component"]
+        agg["logi_inst"] += comp if comp > 0 else _d(o.est_logistics) + _d(o.est_install)
+        ep = _d(getattr(o, "est_parts", None))
+        row, sc = _parts_costs_row(db, o)
+        if row is None or ep <= 0:
+            agg["other_parts"] += ep
+            continue
+        unit = _d(db.execute(
+            select(PricingSku.external_parts_cost).where(PricingSku.sku_code == sc)).scalar())
+        factor = (ep / unit) if unit > 0 else Decimal("1")
+        g = lambda a: _d(getattr(row, a, None))  # noqa: E731
+        rock = g("rock_slab") * factor
+        gl = g("glass") * factor
+        el = g("electric_rail") * factor
+        hw = sum((g(a) for a in _HW_COLS), Decimal("0")) * factor
+        agg["rock_slab"] += rock
+        agg["glass"] += gl
+        agg["electric_rail"] += el
+        agg["hardware"] += hw
+        agg["other_parts"] += max(ep - (rock + gl + el + hw), Decimal("0"))
+    split = {k: v.quantize(_Q) for k, v in agg.items()}
+    split["cap_adjust"] = (total - sum(agg.values())).quantize(_Q)   # 封顶/兜底净调整(可正可负)
+    split["_total"] = total.quantize(_Q)
+    return split, counted
 
 
 def _platform_activity_fee(db: Session) -> Decimal:
@@ -367,7 +453,8 @@ def compute_summary(db: Session) -> dict:
     activity_fee = _platform_activity_fee(db)   # 平台活动抽成 2% (按下单月活动窗口, 5月起)
     # 已开账单按"是否挂真实订单"分流(打样 vs 结算), 并产出去重集供预测成本防双扣 (C9)
     factory_sample, factory_billed, _billed_nos, _billed_ids = _classify_unpaid_factory_bills(db)
-    factory_estimate, fe_counted = _factory_estimate_unbilled(db, _billed_nos, _billed_ids)  # 未开账单预估
+    # 未开账单预估按类拆行 (用户 2026-07-14 "把配件拆解修改进减项落库"): 九项之和=原单行, 剩余流水不变
+    fe_split, fe_counted = _factory_estimate_split(db, _billed_nos, _billed_ids)
     refill_commission = _refill_unpaid_commission(db)
     tax_q = _quarterly_tax(db)   # 待缴税费(季度): 当季必扣 + 上季未标已缴的
 
@@ -387,8 +474,24 @@ def compute_summary(db: Session) -> dict:
          "source": f"成交销售×2% 按季累计; 当季{tax_q['current_quarter'] or '—'}必扣, 上季手选已缴则不计", "detail": tax_q["quarters"]},
         {"key": "factory_sample", "label": "工厂打样费(未付·待账单)", "amount": factory_sample, "manual": False, "source": "工厂订单(未付·无平台单号无订单链接)"},
         {"key": "factory_billed", "label": "工厂结算(已开账单未付)", "amount": factory_billed, "manual": False, "source": "工厂订单(未付·有平台单号或挂真实订单)"},
-        {"key": "factory_estimate", "label": "工厂结算(未开账单·预测成本)", "amount": factory_estimate, "manual": False,
-         "source": f"活跃单预测成本({fe_counted}单·同月度经营口径)"},
+        {"key": "factory_estimate_wood", "label": "未开账单·预估木作", "amount": fe_split["wood"], "manual": False,
+         "source": f"活跃单{fe_counted}单·定价木作估(有账单用账单)"},
+        {"key": "factory_estimate_rock", "label": "未开账单·预估岩板", "amount": fe_split["rock_slab"], "manual": False,
+         "source": "定价表配件明细(rock_slab)"},
+        {"key": "factory_estimate_hw", "label": "未开账单·预估五金", "amount": fe_split["hardware"], "manual": False,
+         "source": "定价表配件明细(抽屉轨+铁销+连接件+铝/塑轨+小拉手)"},
+        {"key": "factory_estimate_glass", "label": "未开账单·预估玻璃", "amount": fe_split["glass"], "manual": False,
+         "source": "定价表配件明细(glass)"},
+        {"key": "factory_estimate_elec", "label": "未开账单·预估电力轨道", "amount": fe_split["electric_rail"], "manual": False,
+         "source": "定价表配件明细(electric_rail)"},
+        {"key": "factory_estimate_other_parts", "label": "未开账单·预估其他配件", "amount": fe_split["other_parts"], "manual": False,
+         "source": "灯带/背板/脚/软包/雕刻等 + 无明细行的单"},
+        {"key": "factory_estimate_packing", "label": "未开账单·预估打包", "amount": fe_split["packing"], "manual": False,
+         "source": "同月度经营口径"},
+        {"key": "factory_estimate_logi", "label": "未开账单·预估物流安装", "amount": fe_split["logi_inst"], "manual": False,
+         "source": "同月度经营口径"},
+        {"key": "factory_estimate_cap", "label": "未开账单·封顶兜底调整", "amount": fe_split["cap_adjust"], "manual": False,
+         "source": "片段实付×85%压缩(负=抵减)/定制兜底抬高(正); 九项合计=原预测总额"},
         {"key": "refill_commission", "label": "代付补单佣金(未结)", "amount": refill_commission, "manual": False, "source": "补单记录"},
     ]
 

@@ -66,7 +66,15 @@ function LineTable({ lines, kind }: { lines: CashFlowLine[]; kind: 'add' | 'sub'
         { title: '来源', dataIndex: 'source', render: (v) => <Text type="secondary" style={{ fontSize: 12 }}>{v}</Text> },
         {
           title: '金额', dataIndex: 'amount', align: 'right' as const,
-          render: (v) => <Text strong style={{ color }}>{sign} {money(v)}</Text>,
+          // 负数行 = 抵减(如"封顶兜底调整"把片段单成本压回实付×85%): 反号+反色, 读作"这项把减项冲回来"
+          render: (v) => {
+            const n = Number(v);
+            if (n < 0) {
+              return <Text strong style={{ color: kind === 'sub' ? '#389e0d' : '#cf1322' }}>
+                {kind === 'sub' ? '+' : '−'} {money(Math.abs(n))}</Text>;
+            }
+            return <Text strong style={{ color }}>{sign} {money(v)}</Text>;
+          },
         },
       ]}
     />

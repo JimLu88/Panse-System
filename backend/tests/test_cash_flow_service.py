@@ -72,7 +72,8 @@ def test_cash_flow_summary_formula(db_session):
     assert sub["platform_fee"] == Decimal("18.00")         # (2000+1000)*0.006
     assert sub["factory_sample"] == Decimal("150")
     assert sub["factory_billed"] == Decimal("600")
-    assert sub["factory_estimate"] == Decimal("700")       # A2(700); A1 已开账单跳过, 防双算
+    fe_sum = sum(v for k, v in sub.items() if k.startswith("factory_estimate"))
+    assert fe_sum == Decimal("700")       # A2(700); A1 已开账单跳过, 防双算; 2026-07-14 起拆九行求和
     assert sub["refill_commission"] == Decimal("80")
     assert "total_investment" not in sub                    # 总投资不再是减项
 

@@ -36,7 +36,8 @@ def test_c9_double_count_fixed_via_source_order_id(db_session):
     sub = _subs(db)
     assert sub["factory_billed"] == Decimal("600")   # 归已开账单未付
     assert sub["factory_sample"] == Decimal("0")      # 不再误归打样
-    assert sub["factory_estimate"] == Decimal("0")    # 已开账单 → 预测成本去重跳过(根治双扣)
+    fe_sum = sum(v for k, v in sub.items() if k.startswith("factory_estimate"))
+    assert fe_sum == Decimal("0")    # 已开账单 → 预测成本去重跳过(根治双扣); 2026-07-14 起拆九行求和
 
 
 def test_genuine_sample_stays_in_sample(db_session):
@@ -58,7 +59,8 @@ def test_c3_custom_missing_cost_now_deducted(db_session):
     expected = ofin.physical_cost(o)
     sub = _subs(db)
     assert expected > 0                            # 定制兜底给出 >0 成本(实付×85%)
-    assert sub["factory_estimate"] == expected      # 计入减项(不再营收进/成本不进)
+    fe_sum = sum(v for k, v in sub.items() if k.startswith("factory_estimate"))
+    assert fe_sum == expected      # 计入减项(不再营收进/成本不进); 2026-07-14 起拆九行求和
 
 
 def test_f2_activity_2pct_only_in_window(db_session):
