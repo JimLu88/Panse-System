@@ -185,17 +185,29 @@ _COST_PAID_SALE_STATUS = ("paid", "shipped", "signed", "completed", "success", "
 _CUSTOM_PARTS_MIN_PAID = 500
 
 
-def _cost_exceeds_paid_qualifies(o) -> bool:
+def _engine_cost(o, db=None):
+    """利润口径成本(单一真源): order_financials.physical_cost(含片段封顶/追加归主单/归零)。"""
+    from decimal import Decimal
+    from app.services import order_financials as ofin
+    try:
+        return Decimal(str(ofin.physical_cost(o, db)))
+    except Exception:  # pragma: no cover - 引擎个别单算不出不拦扫描
+        return Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+
+
+def _cost_exceeds_paid_qualifies(o, db=None) -> bool:
     """订单是否构成「实付远小于成本」错配 (scan 与自动关闭共用同一判据)。
 
-    口径: 正式销售(非补单/非取消) + 成本(actual 或 theoretical) > 实付×1.5 且超额 ≥¥300;
-    非产品单(安装/送货/差价/样品 — 应已归0)除外。
+    口径改引擎同源 (用户选A 2026-07-14): 成本 = physical_cost(与逐单核对/月度经营/现金流一致)。
+    此前读 actual/theoretical 字段 — 全量重算把片段单 theoretical 写成整件物理成本, 20 条
+    "实付几百背成本几千"全是字段层假警(利润口径早已封顶成实付×85%/归零)。
+    判据: 引擎成本 > 实付×1.5 且超额 ≥¥300; 非产品单除外。传 db 时裁定分支(追加归主单等)生效。
     """
     from decimal import Decimal
     if o.status not in _COST_PAID_SALE_STATUS or o.is_refill:
         return False
     paid = Decimal(str(o.paid_amount or 0))
-    cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+    cost = _engine_cost(o, db)
     if paid <= 0 or cost <= 0:
         return False
     if cost <= paid * Decimal("1.5") or (cost - paid) < Decimal("300"):
@@ -226,11 +238,11 @@ def _close_stale_cost_exceeds_paid(db: Session) -> int:
         o = db.query(Order).filter(Order.id == int(pk)).first()
         if o is None:
             continue  # 订单已不存在 → 留人工, 不擅自销账
-        if not _cost_exceeds_paid_qualifies(o):
+        if not _cost_exceeds_paid_qualifies(o, db):
             ex.status = "resolved"
             ex.resolved_by = ex.resolved_by or "auto"
             ex.description = (ex.description or "") + \
-                " | 自动关闭: 订单已不符合错配条件(成本已修正/已取消/实付已补齐)。"
+                " | 自动关闭: 订单已不符合错配条件(成本已修正/已取消/实付已补齐/引擎口径已封顶)。"
             closed += 1
     if closed:
         _log.info("auto-closed stale cost_exceeds_paid: %d", closed)
@@ -259,10 +271,10 @@ def scan_cost_exceeds_paid(db: Session) -> int:
     for o in db.query(Order).filter(
         Order.status.in_(_COST_PAID_SALE_STATUS), Order.is_refill == False,  # noqa: E712
     ).all():
-        if not _cost_exceeds_paid_qualifies(o) or str(o.id) in ignored_pks:
+        if not _cost_exceeds_paid_qualifies(o, db) or str(o.id) in ignored_pks:
             continue
         paid = Decimal(str(o.paid_amount or 0))
-        cost = Decimal(str(o.actual_cost if o.actual_cost is not None else (o.theoretical_cost or 0)))
+        cost = _engine_cost(o, db)   # 报警金额与判据同源(引擎口径)
         _record(
             db, source_table="orders", source_pk=o.id,
             exception_type="cost_exceeds_paid", severity="warning",
