@@ -277,7 +277,8 @@ def _factory_estimate_split(db: Session, billed_nos: set, billed_ids: set) -> tu
         agg["hardware"] += hw
         agg["other_parts"] += max(ep - (rock + gl + el + hw), Decimal("0"))
     split = {k: v.quantize(_Q) for k, v in agg.items()}
-    split["cap_adjust"] = (total - sum(agg.values())).quantize(_Q)   # 封顶/兜底净调整(可正可负)
+    # 调整行 = 总额 − 其余八行【取整后】之和 → 九行之和与原单行分毫不差(取整尾差全归此行)
+    split["cap_adjust"] = (total.quantize(_Q) - sum(split.values())).quantize(_Q)
     split["_total"] = total.quantize(_Q)
     return split, counted
 
