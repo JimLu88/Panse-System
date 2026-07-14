@@ -59,6 +59,11 @@ class PricingSkuOut(BaseModel):
     wood_cost: Optional[Decimal] = None
     packaging_cost: Optional[Decimal] = None
     external_parts_cost: Optional[Decimal] = None
+    # 成本加成基数 (改系数): 前端主表编辑器内联展示/直改, 让 标价/小促/中促/大促 由基数联动派生。
+    base_list: Optional[Decimal] = None
+    base_small: Optional[Decimal] = None
+    base_mid: Optional[Decimal] = None
+    base_big: Optional[Decimal] = None
 
 
 class PricingSkuListOut(BaseModel):

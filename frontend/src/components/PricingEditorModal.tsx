@@ -55,13 +55,24 @@ const TABLE_OF: Record<'sku' | 'costs' | 'promo', string> = {
   sku: 'pricing_skus', costs: 'pricing_sku_costs', promo: 'pricing_sku_promo',
 };
 
-// 公式推导的结果字段 (= 物理成本 ÷ (基数 − 费税), 由促销系数决定):
-// 用户拍板: 默认锁定, 提示改系数; 坚持直改需两次确认解锁。
+// 公式推导的结果字段 (= 进位到10(物理成本÷(1−2.6%)÷基数), 由该档「定价基数(系数)」决定):
+// 用户拍板: 默认锁定价格本身, 改右侧内联「系数」即可联动重算; 坚持直改价需两次确认解锁。
 const FORMULA_LOCKED: Record<string, string> = {
-  small_promo: '小促价由「单品立减系数」推导',
-  mid_promo: '中促价由「中促系数」推导',
-  big_promo: '大促价由「大促系数」推导',
+  small_promo: '小促价由「小促系数」推导 — 改右侧系数即可',
+  mid_promo: '中促价由「中促系数」推导 — 改右侧系数即可',
+  big_promo: '大促价由「大促系数」推导 — 改右侧系数即可',
 };
+
+// 各价格档 → 对应「定价基数(系数)」列 (pricing_skus.base_*): 主表编辑器内联直改系数, 后端 recompute
+// 按 价 = 进位到10(物理成本 ÷ (1−2.6%) ÷ 基数) 联动派生该档价 (2026-07-14 用户: 系数要能在主表这直接改)。
+const PRICE_TO_BASE: Record<string, { key: string; label: string }> = {
+  list_price: { key: 'base_list', label: '标价系数' },
+  small_promo: { key: 'base_small', label: '小促系数' },
+  mid_promo: { key: 'base_mid', label: '中促系数' },
+  big_promo: { key: 'base_big', label: '大促系数' },
+};
+const BASE_FIELDS: FieldDef[] = Object.values(PRICE_TO_BASE).map(
+  (b) => ({ key: b.key, label: b.label, precision: 4 }));
 
 function seed(row: PricingSku, defs: FieldDef[]): Record<string, number | null> {
   const out: Record<string, number | null> = {};
@@ -101,7 +112,7 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
 
   useEffect(() => {
     if (row) {
-      const seeded = { ...seed(row, SKU_FIELDS), ...seed(row, COSTS_FIELDS), ...seed(row, PROMO_FIELDS_E) };
+      const seeded = { ...seed(row, SKU_FIELDS), ...seed(row, BASE_FIELDS), ...seed(row, COSTS_FIELDS), ...seed(row, PROMO_FIELDS_E) };
       setVals(seeded);
       setBase(seeded);
       setTitle(row.taobao_title ?? '');
@@ -116,7 +127,7 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
   const askUnlock = (key: string, label: string) => {
     Modal.confirm({
       title: `${label} 是公式结果`,
-      content: `${FORMULA_LOCKED[key]}。正确做法是去「渠道系数」分组改系数, 系统自动重算。确定要绕过公式直接改这个价格吗？`,
+      content: `${FORMULA_LOCKED[key]}。正确做法是改本行右侧的「系数」框, 系统自动按成本联动重算。确定要绕过公式、直接把这个价格写死吗？`,
       okText: '我要直接改',
       okButtonProps: { danger: true },
       onOk: () => {
@@ -133,9 +144,11 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
 
   if (!row) return null;
 
+  // 主表补丁字段 = 价格/成本档 (SKU_FIELDS) + 定价基数 (BASE_FIELDS, 也在 pricing_skus 表, 走 updatePricingSku)
+  const skuSaveFields = [...SKU_FIELDS, ...BASE_FIELDS];
   const skuDiff = diffOf(
-    Object.fromEntries(SKU_FIELDS.map((d) => [d.key, vals[d.key]])),
-    Object.fromEntries(SKU_FIELDS.map((d) => [d.key, base[d.key]])));
+    Object.fromEntries(skuSaveFields.map((d) => [d.key, vals[d.key]])),
+    Object.fromEntries(skuSaveFields.map((d) => [d.key, base[d.key]])));
   const costsDiff = diffOf(
     Object.fromEntries(COSTS_FIELDS.map((d) => [d.key, vals[d.key]])),
     Object.fromEntries(COSTS_FIELDS.map((d) => [d.key, base[d.key]])));
@@ -219,25 +232,71 @@ export default function PricingEditorModal({ row, onClose, onSaved, onSaveNext }
     document.addEventListener('mouseup', up);
   };
 
+  const numOf = (v: number | null | undefined): number | null =>
+    v === null || v === undefined ? null : Number(v);
+  const roundup10 = (x: number) => Math.ceil(x / 10) * 10;
+  // 预览物理成本 (近似后端 recompute): 工厂成本(有木作/包装/外配件则取三者和, 否则取工厂成本) + 物流 + 安装
+  const physPreview = (): number | null => {
+    const wood = numOf(vals.wood_cost), pack = numOf(vals.packaging_cost), ext = numOf(vals.external_parts_cost);
+    const hasComp = wood !== null || pack !== null || ext !== null;
+    const factory = hasComp ? (wood ?? 0) + (pack ?? 0) + (ext ?? 0) : numOf(vals.factory_cost);
+    if (factory === null) return null;
+    return factory + (numOf(vals.logistics_cost) ?? 0) + (numOf(vals.install_cost) ?? 0);
+  };
+  // 某档 → 预览档价: 价 = 进位到10(物理 ÷ (1−2.6%) ÷ 基数); 日常价 = 标价 × 0.75
+  const pricePreview = (priceKey: string): number | null => {
+    const phys = physPreview();
+    if (phys === null) return null;
+    const fromBase = (bk: string) => {
+      const b = numOf(vals[bk]);
+      return b ? roundup10(phys / (1 - 0.026) / b) : null;
+    };
+    if (priceKey === 'daily_price') {
+      const lp = fromBase('base_list');
+      return lp === null ? null : Math.round(lp * 0.75 * 100) / 100;
+    }
+    const bk = PRICE_TO_BASE[priceKey]?.key;
+    return bk ? fromBase(bk) : null;
+  };
+
   const fieldRow = (group: 'sku' | 'costs' | 'promo', d: FieldDef) => {
     const isLocked = d.key in FORMULA_LOCKED && !unlocked.has(d.key);
+    const baseInfo = group === 'sku' ? PRICE_TO_BASE[d.key] : undefined;
+    const baseChanged = baseInfo ? vals[baseInfo.key] !== base[baseInfo.key] : false;
+    const pv = group === 'sku' && (baseInfo || d.key === 'daily_price') ? pricePreview(d.key) : null;
     return (
-      <div key={d.key} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+      <div key={d.key} style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
         <span style={{ width: 92, flexShrink: 0, fontSize: 13 }}>{d.label}</span>
         <InputNumber
-          size="small" style={{ width: 130 }}
+          size="small" style={{ width: baseInfo ? 88 : 120 }}
           precision={d.precision ?? 2}
           value={vals[d.key]}
           disabled={isLocked}
           onChange={(v) => setVals((p) => ({ ...p, [d.key]: v }))}
         />
+        {baseInfo && (
+          <>
+            <span style={{ fontSize: 11, color: '#8a8a8a', flexShrink: 0 }}>系数</span>
+            <InputNumber
+              size="small" style={{ width: 66 }} precision={4} step={0.01}
+              placeholder="基数" value={vals[baseInfo.key]}
+              title={`${d.label}: 价 = 进位到10(物理成本 ÷ 0.974 ÷ 基数); 改这里 → 保存后档价联动重算`}
+              onChange={(v) => setVals((p) => ({ ...p, [baseInfo.key]: v }))}
+            />
+          </>
+        )}
+        {pv != null && (
+          <span style={{ fontSize: 11, color: '#1a73e8', flexShrink: 0 }}
+            title="按当前系数+成本的预览价, 保存后以后端重算为准">→¥{pv}</span>
+        )}
         {isLocked && (
-          <Typography.Link style={{ fontSize: 11 }} onClick={() => askUnlock(d.key, d.label)}
+          <Typography.Link style={{ fontSize: 11, flexShrink: 0 }} onClick={() => askUnlock(d.key, d.label)}
             title={FORMULA_LOCKED[d.key]}>
-            🔒公式价·改系数
+            🔓直改
           </Typography.Link>
         )}
-        {vals[d.key] !== base[d.key] && <Typography.Text type="warning" style={{ fontSize: 11 }}>改</Typography.Text>}
+        {(vals[d.key] !== base[d.key] || baseChanged) &&
+          <Typography.Text type="warning" style={{ fontSize: 11 }}>改</Typography.Text>}
         <FieldHistoryPopover table={TABLE_OF[group]} pk={row.sku_code} field={d.key} label={d.label} />
       </div>
     );
