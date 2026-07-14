@@ -101,24 +101,19 @@ def test_bad_price_excluded_from_signup(db_session):
     assert stats["rows"] == 0                 # 没有别的可报
 
 
-def test_super_reduce_subsidy_is_A_times_10pct(db_session):
-    # 超级立减活动: 补贴金额 = 报名价A × 10% (用户拍板口径1, 2026-07-11)
+def test_super_reduce_fills_daily_price_and_leverage(db_session):
+    # 超级立减(现行, 2026-07-13 血泪根治, 见 价格体系设置.md §六.②b): 走【真实淘宝14列模版】——
+    # 活动价=日常价(col3), 让利比例=10(col13), 补贴金额【留空】(col14); 数据从第4行起(前3行平台表头)。
     import openpyxl, io
     db = db_session
-    # 各尺寸不同价, 不触发坏价; report_price 由 big_buyer 派生
     for sc, bb in (("PPS7001011", 1000), ("PPS7001012", 1200), ("PPS7001013", 1400)):
         _add_sku(db, "PPS7001", sc, f"床-{sc}", bb * 1.3, "555", "50" + sc[-4:], big_buyer=bb)
     db.commit()
-    from app.services import data_export_service, pricing_calc_service
-    from app.models.pricing_ext import PricingSkuPromo
-    from sqlalchemy import select
-    params = pricing_calc_service.get_promo_params(db)
+    from app.services import data_export_service
     bio, stats = data_export_service.build_super_reduce_signup_upload_xlsx(db)
     assert stats["rows"] == 3
     ws = openpyxl.load_workbook(io.BytesIO(bio.getvalue())).active
-    assert [c.value for c in ws[1]][13] == "补贴金额"           # 第14列
-    p = db.execute(select(PricingSkuPromo).where(PricingSkuPromo.sku_code == "PPS7001011")).scalar_one()
-    A = float(pricing_calc_service.report_prices(p, params)["report_price"])
-    got = {ws.cell(r, 2).value: ws.cell(r, 14).value for r in range(2, ws.max_row + 1)}
-    # 补贴金额 = A × 10%
-    assert abs(got[str(p.taobao_sku_id)] - round(A * 0.1, 2)) < 0.01
+    for r in range(4, ws.max_row + 1):                 # 前 3 行是平台表头, 数据从第 4 行
+        assert ws.cell(r, 3).value and ws.cell(r, 3).value > 0   # 活动价 = 日常价 (非空)
+        assert ws.cell(r, 13).value == 10                        # 让利比例 = 10
+        assert ws.cell(r, 14).value in (None, "")                # 补贴金额【留空】(与让利比例二选一)

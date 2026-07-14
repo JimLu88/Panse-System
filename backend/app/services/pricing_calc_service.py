@@ -20,6 +20,11 @@ from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 # 注: 这是"定价设计口径"; 逐单实际利润仍由 order_financials 按实付×费率另算(第16条 铁律不变)。
 PRICING_GROSSUP_RATE = Decimal("0.026")
 
+# 中促/大促 联动比 = (1−10%)/(1−12%) = 0.90/0.88 ≈ 1.0227 (超级立减10%场 vs 88VIP大促12%场官方力度)。
+# 中促价 ≥ 大促价 × 此比 → 中促到手 ≥ 大促到手, 保证同一日常价先报超级立减(浅折10%)、再报88VIP(深折12%)
+# 只往低报、不涨价、报得进 (用户 2026-07-15; 见 价格体系设置.md 第二铁律)。中促自动托底, 手设更高的保留。
+_MID_OVER_BIG_RATIO = Decimal("0.90") / Decimal("0.88")
+
 
 def _d(v) -> Optional[Decimal]:
     return Decimal(str(v)) if v is not None else None
@@ -80,6 +85,16 @@ def recompute(sku: PricingSku) -> None:
             sku.mid_promo = _roundup10(acct_base / b_mid)
         if b_big:
             sku.big_promo = _roundup10(acct_base / b_big)
+    # 2.7) 中促自动联动大促【托底】(2026-07-15 用户: 保 88VIP 报得进 — 见 价格体系设置.md 第二铁律):
+    #      中促价 ≥ 大促价 × 0.90/0.88 → 中促到手 ≥ 大促到手。报名只能往低报, 中促<大促则 88VIP 判涨价、报不上。
+    #      手设更高的中促保留(不砍利润); 未设/低于下限的自动补到下限。对大促当输入/成本加成两种口径都生效。
+    big = _d(sku.big_promo)
+    if big is not None and big > 0:
+        # 先 quantize 抹掉 0.90/0.88 的 Decimal 残差(否则 880×比值=900.0000…24 会被 ceiling 顶成 910), 再进位到10
+        floor_mid = _roundup10((big * _MID_OVER_BIG_RATIO).quantize(cent, rounding=ROUND_HALF_UP))
+        cur_mid = _d(sku.mid_promo)
+        if cur_mid is None or cur_mid < floor_mid:
+            sku.mid_promo = floor_mid
     # 3) 利润链
     big = _d(sku.big_promo)
     phys = _d(sku.physical_cost)
