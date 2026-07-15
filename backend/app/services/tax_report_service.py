@@ -53,6 +53,8 @@ def ingest(db: Session, quarters: dict, *, source: str = "taobao涉税报送") -
         for extra in ("gross", "refund"):
             if (v or {}).get(extra) is not None:
                 row[extra] = str(v[extra])
+        if (v or {}).get("provisional"):
+            row["provisional"] = True   # 当季预计算(收支账单按月, 三层口径第②层), 报送出数后被覆盖
         cur[str(q)] = row
         accepted += 1
     settings_service.set_value(db, SETTING_KEY, json.dumps(cur, ensure_ascii=False))

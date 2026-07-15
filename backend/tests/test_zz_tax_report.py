@@ -49,6 +49,35 @@ def test_bad_reported_value_falls_back(db_session):
     assert q2["tax"] == Decimal("200.00")   # 回退 10000×2%
 
 
+def test_three_layer_no_double_count(db_session):
+    """三层口径: 当季在途单(paid/shipped)不进当季税估算(由在途2%行计提); 已签收单照计。"""
+    db_session.add(Order(platform="淘宝", order_no="L1", status="signed", is_refill=False,
+                         order_date=date(2026, 7, 2), paid_amount=Decimal("10000")))
+    db_session.add(Order(platform="淘宝", order_no="L2", status="paid", is_refill=False,
+                         order_date=date(2026, 7, 3), paid_amount=Decimal("20000")))
+    db_session.add(Order(platform="淘宝", order_no="L3", status="shipped", is_refill=False,
+                         order_date=date(2026, 7, 4), paid_amount=Decimal("5000")))
+    db_session.commit()
+    r = cfs._quarterly_tax(db_session, today=date(2026, 7, 15))
+    q3 = next(q for q in r["quarters"] if q["quarter"] == "2026-Q3")
+    assert q3["tax"] == Decimal("200.00")        # 只计已签收 10000×2%; 在途 25000 不在此
+    s = cfs.compute_summary(db_session)
+    row = next(x for x in s["subtractions"] if x["key"] == "tax_inflight")
+    assert row["amount"] == Decimal("500.00")    # 在途 25000×2% 单列计提
+
+
+def test_provisional_ingest_labels_precalc(db_session):
+    """当季预计算(provisional) → basis=预计算, 覆盖估算; 报送(无标记) → basis=报送。"""
+    db_session.add(Order(platform="淘宝", order_no="P1", status="signed", is_refill=False,
+                         order_date=date(2026, 7, 2), paid_amount=Decimal("10000")))
+    db_session.commit()
+    trs.ingest(db_session, {"2026-Q3": {"net_income": 45530, "provisional": True}})
+    r = cfs._quarterly_tax(db_session, today=date(2026, 7, 15))
+    q3 = next(q for q in r["quarters"] if q["quarter"] == "2026-Q3")
+    assert q3["basis"] == "预计算"
+    assert q3["tax"] == Decimal("910.60")        # 45530×2%
+
+
 def test_pull_soft_fails_without_agent(db_session, monkeypatch):
     """任务未上线/Agent 离线 → ok False, 不抛。"""
     from app.services import web_agent_service as wa

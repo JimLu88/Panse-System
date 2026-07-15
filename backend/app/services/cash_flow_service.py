@@ -347,17 +347,23 @@ def _quarterly_tax(db: Session, *, today: Optional[date] = None) -> dict:
     from app.services.sales_analytics import settled_sale_clause
     rate = _d(ofin.load_coefficients(db).get("tax_rate")) or _TAX_RATE
     rows = db.execute(
-        select(Order.order_date, Order.paid_amount, Order.refund_amount).where(
+        select(Order.order_date, Order.paid_amount, Order.refund_amount, Order.status).where(
             Order.is_refill == False,  # noqa: E712
             Order.order_date.isnot(None),
             settled_sale_clause(),
         )
     ).all()
+    # 三层口径 (用户拍板 2026-07-15): 当季估算只计【已落袋】(signed/aftersales≈已打款代理),
+    # 在途单(paid/shipped)的 2% 由减项单列"待扣2%补贴税(在途)"计提 —— 两边不双算;
+    # 打款后订单转 signed 自动从"在途"滚进"当季"。过去季度仍全量估(报送一到即覆盖)。
+    _cur_q_pre = _quarter_of(today or date.today())
     by_q: dict[str, Decimal] = {}
-    for od, paid, refund in rows:
+    for od, paid, refund, st in rows:
         if od is None:
             continue
         q = _quarter_of(od)
+        if q == _cur_q_pre and st in ("paid", "shipped"):
+            continue   # 当季在途 → 在途税行计提, 此处不计
         by_q[q] = by_q.get(q, Decimal("0")) + (_d(paid) - _d(refund))
     # 报送口径叠加 (用户拍板 2026-07-14): 税务局按【打款/结算】口径, 唯一真源=千牛涉税报送页
     # (收入净额=收入总额−退款)。已报送季度 → 基数用报送净额(basis=报送); 未报送(当季在途)
@@ -379,8 +385,11 @@ def _quarterly_tax(db: Session, *, today: Optional[date] = None) -> dict:
         paid_flag = (not is_current) and (q in paid_set)   # 当季不可标已缴; 上季手选
         if is_current or not paid_flag:
             counted += tax
+        _basis = "估算"
+        if q in reported:
+            _basis = "预计算" if (reported[q] or {}).get("provisional") else "报送"
         quarters.append({"quarter": q, "tax": tax, "is_current": is_current, "paid": paid_flag,
-                         "basis": "报送" if q in reported else "估算"})
+                         "basis": _basis})
     return {"quarters": quarters, "counted_total": counted.quantize(_Q), "current_quarter": current_q}
 
 
@@ -462,6 +471,9 @@ def compute_summary(db: Session) -> dict:
     # ── 减项 ─────────────────────────────────────────────
     # 平台服务费: 卖家服务费列常为空, 直接按在途订单金额 ×千分之六 估
     platform_fee = (order_active * _PLATFORM_FEE_RATE).quantize(_Q)
+    # 在途 2% 补贴税 (三层口径第③层, 用户拍板 2026-07-15): 在途钱全额在加项, 打款时必被扣 2% —
+    # 不计提可用资金虚高在途×2%。当季税费估算已剔除在途单(见 _quarterly_tax), 两边不双算。
+    tax_inflight = (order_active * _TAX_RATE).quantize(_Q)
     activity_fee = _platform_activity_fee(db)   # 平台活动抽成 2% (按下单月活动窗口, 5月起)
     # 已开账单按"是否挂真实订单"分流(打样 vs 结算), 并产出去重集供预测成本防双扣 (C9)
     factory_sample, factory_billed, _billed_nos, _billed_ids = _classify_unpaid_factory_bills(db)
@@ -481,6 +493,8 @@ def compute_summary(db: Session) -> dict:
     ]
     subtractions = [
         {"key": "platform_fee", "label": "待扣平台服务费(在途×0.6%)", "amount": platform_fee, "manual": False, "source": "在途订单估算"},
+        {"key": "tax_inflight", "label": "待扣2%补贴税(在途)", "amount": tax_inflight, "manual": False,
+         "source": "在途订单(待确认+未发货)×2%; 打款后自动滚入当季税费"},
         {"key": "platform_activity", "label": "平台活动抽成(在途·生效月×2%)", "amount": activity_fee, "manual": False, "source": "在途订单(下单月在活动期)×2%"},
         {"key": "tax_quarterly", "label": "待缴税费(季度·当季必扣)", "amount": tax_q["counted_total"], "manual": True,
          "source": f"成交销售×2% 按季累计; 当季{tax_q['current_quarter'] or '—'}必扣, 上季手选已缴则不计", "detail": tax_q["quarters"]},

@@ -84,7 +84,9 @@ def test_cash_flow_summary_formula(db_session):
 
     expected_add = (Decimal("50000") + Decimal("212051.48") + Decimal("44481.56")
                     + Decimal("3553.44") + Decimal("30000") + Decimal("2000") + Decimal("1000"))
-    expected_sub = Decimal("18.00") + Decimal("150") + Decimal("600") + Decimal("700") + Decimal("80")
+    # 2026-07-15 三层口径: 新增 在途2%补贴税 (在途3000×2%=60), 在途钱全额在加项故税须计提
+    expected_sub = (Decimal("18.00") + Decimal("60.00")
+                    + Decimal("150") + Decimal("600") + Decimal("700") + Decimal("80"))
     assert s["total"] == (expected_add - expected_sub).quantize(Decimal("0.01"))
     assert s["total"] > 0   # 有账面现金时可用资金必为正 (核心修复)
 
