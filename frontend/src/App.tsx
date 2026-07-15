@@ -52,6 +52,7 @@ const CustomReconcilePage = lazy(() => import('./pages/CustomReconcilePage'));
 const PerOrderReconcilePage = lazy(() => import('./pages/PerOrderReconcilePage'));
 const AccountingPeriodsPage = lazy(() => import('./pages/AccountingPeriodsPage'));
 const PricingPage = lazy(() => import('./pages/PricingPage'));
+const PriceReconPage = lazy(() => import('./pages/PriceReconPage'));
 const ShopPriceBoardPage = lazy(() => import('./pages/ShopPriceBoardPage'));
 const PricingFormulaPage = lazy(() => import('./pages/PricingFormulaPage'));
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
@@ -104,7 +105,7 @@ const PATH_TO_GROUP: Record<string, string> = {
   dashboard: 'g-data', forecast: 'g-data', 'ops-checklist': 'g-data', 'sales-ranking': 'g-data',
   products: 'g-product', 'new-product': 'g-product', 'taobao-listings': 'g-product', bom: 'g-product',
   npd: 'g-product',
-  pricing: 'g-price', 'pricing-formulas': 'g-price', quote: 'g-price', customization: 'g-price',
+  pricing: 'g-price', 'price-recon': 'g-price', 'pricing-formulas': 'g-price', quote: 'g-price', customization: 'g-price',
   inventory: 'g-stock', 'product-inventory': 'g-stock', producibility: 'g-stock', samples: 'g-stock',
   orders: 'g-order', customers: 'g-order', aftersales: 'g-order',
   'logistics-bills': 'g-logistics', 'wanshifu-bills': 'g-logistics',
@@ -189,6 +190,7 @@ export default function App() {
       label: '价格',
       children: [
         { key: 'pricing', label: <Link to="/pricing">定价表</Link> },
+        { key: 'price-recon', label: <Link to="/price-recon">价格对账</Link> },
         { key: 'customization', label: <Link to="/customization?tab=competitor">竞品价库</Link> },
       ],
     },
@@ -467,6 +469,7 @@ export default function App() {
             <Route path="/producibility" element={<ProducibilityPage />} />
             <Route path="/quote" element={<QuotePage />} />
             <Route path="/pricing" element={<PricingPage />} />
+            <Route path="/price-recon" element={<PriceReconPage />} />
             <Route path="/shop-price-board" element={<ShopPriceBoardPage />} />
             <Route path="/pricing-formulas" element={<PricingFormulaPage />} />
             <Route path="/alipay" element={<AlipayPage />} />
