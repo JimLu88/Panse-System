@@ -337,6 +337,34 @@ async def import_campaign_signups(
             "unmapped_columns": rep.unmapped_columns, "check": check}
 
 
+@router.post("/recon")
+async def reconcile_qn_prices(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """价格对账: 上传千牛「商品导出/发布模板」xlsx → 千牛现价 vs ERP应有值的漂移清单 (只读不改)。"""
+    from app.services import pricing_recon_service
+    raw = await file.read()
+    return pricing_recon_service.reconcile(db, raw)
+
+
+@router.post("/recon/fix-xlsx")
+async def reconcile_fix_xlsx(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """价格对账·返修表: 上传千牛导出 → 「标价返修表」xlsx (漂移SKU的正确一口价=日常÷0.75)。"""
+    from fastapi.responses import StreamingResponse
+    from app.services import pricing_recon_service
+    raw = await file.read()
+    bio = pricing_recon_service.build_fix_xlsx(db, raw)
+    return StreamingResponse(
+        bio, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=biaojia_fix.xlsx"})
+
+
 @router.post("/campaign-signups/ocr-parse")
 async def ocr_parse_campaign_signup(
     image: UploadFile = File(...),
