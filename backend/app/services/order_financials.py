@@ -221,9 +221,33 @@ def physical_cost_breakdown(o: Order, db=None) -> dict:
     """
     from app.services import sku_utils
     nz = lambda a, e: _d(a) if a is not None else _d(e)   # 实际优先, 否则预估
-    paid = _d(o.paid_amount)
+    # 封顶/兜底基数 = 真实收入(实付−退款) (用户 2026-07-14: 一单两件退一件, 兜底85曾按毛实付
+    # 把退掉那件的成本也背上, 全库实扫8单)。检测类判断(插座100倍数/片段实配件门)仍用毛实付。
+    paid = _d(o.paid_amount) - _d(getattr(o, "refund_amount", None))
+    if paid < 0:
+        paid = Decimal("0")
     _is_custom = bool(getattr(o, "is_custom", False)) or sku_utils.is_custom_sku_code(
         getattr(o, "sku_code", None), getattr(o, "product_code", None))
+
+    # 插座追加固定价 (用户拍板 2026-07-14): 不限产品名, 备注纯插座(混大件自动排除) 且
+    # 毛实付为 100 的倍数(插座零售 100/个) → 成本 = 55×数量 + 运费8, 账单一概不吃
+    # (实测 …92909 ¥100 插座单吃了错配的物流567/打包480 → 成本1122)。
+    # 数量: 备注显式写了用备注; 没写按 毛实付/100 推。非100倍数/混大件 → 走原路径(专链插座等)。
+    if not bool(getattr(o, "is_refill", False)):
+        from app.services.custom_order_reconcile_service import (
+            is_pure_socket_addon as _sock_chk, remark_text as _sock_rt,
+            socket_qty_explicit as _sock_qty)
+        _gp = _d(o.paid_amount)
+        _stxt = _sock_rt(o)
+        if _gp > 0 and _gp % Decimal("100") == 0 and _sock_chk(_stxt):
+            _q = _sock_qty(_stxt) or int(_gp / Decimal("100")) or 1
+            _sock_cost = (Decimal("55") * _q + Decimal("8")).quantize(Decimal("0.01"))
+            return {"factory_wood": Decimal("0"), "estimate_part": _sock_cost,
+                    "packing": Decimal("0"), "precap_total": _sock_cost,
+                    "cap_mode": "插座追加固定",
+                    "logistics_component": Decimal("0"), "install_component": Decimal("0"),
+                    "cap_label": f"备注纯插座+实付100倍数 → 55×{_q}个+运费8, 不吃账单/估值",
+                    "final": _sock_cost}
     _al, _el = getattr(o, "actual_logistics", None), getattr(o, "est_logistics", None)
     _ai, _ei = getattr(o, "actual_install", None), getattr(o, "est_install", None)
     packing = nz(getattr(o, "actual_packing", None), getattr(o, "est_packing", None))

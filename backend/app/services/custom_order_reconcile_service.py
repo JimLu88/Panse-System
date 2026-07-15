@@ -115,14 +115,19 @@ _BIG_ITEM_KW = ("柜", "桌", "床", "灯带", "岩板", "玻璃", "水管", "�
 _SOCKET_FREIGHT = Decimal("8")   # 插座补发单次运费(不随数量翻倍, 用户拍板 2026-07-02)
 
 
-def _socket_qty(txt: str) -> int:
-    """插座数量: 中文数字("两个[型号]插座")优先, 否则阿拉伯数字(数字前不能贴字母/数字, 防型号编号
-    误判), 都没匹配到默认 1。"""
+def socket_qty_explicit(txt: str) -> Optional[int]:
+    """备注【显式】写了插座数量才返回(中文数字优先, 否则阿拉伯数字, 数字前不能贴字母/数字防
+    型号误判); 没写返回 None — 引擎插座固定价分支据此按 实付/100 推数量(用户 2026-07-14)。"""
     cn = _SOCKET_QTY_CN.search(txt)
     if cn:
         return _CN_NUM[cn.group(1)]
     m = _SOCKET_QTY.search(txt)
-    return int(m.group(1) or m.group(2)) if m else 1
+    return int(m.group(1) or m.group(2)) if m else None
+
+
+def _socket_qty(txt: str) -> int:
+    """插座数量: 显式解析(socket_qty_explicit), 都没匹配到默认 1。"""
+    return socket_qty_explicit(txt) or 1
 
 
 def is_pure_socket_addon(txt: str) -> bool:

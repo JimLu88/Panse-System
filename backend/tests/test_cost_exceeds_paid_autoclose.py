@@ -41,7 +41,7 @@ def _opens(db):
 
 def test_mismatch_creates_exception():
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    _order(db, 1, "O1", paid=1000, actual=1700)
     n = dq.scan_cost_exceeds_paid(db); db.commit()
     assert n == 1
     assert len(_opens(db)) == 1
@@ -50,7 +50,7 @@ def test_mismatch_creates_exception():
 def test_fixed_cost_autocloses():
     # 报了之后把成本归零 → 再扫描自动关闭, 且不再新建
     db = _db()
-    o = _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    o = _order(db, 1, "O1", paid=1000, actual=1700)
     dq.scan_cost_exceeds_paid(db); db.commit()
     assert len(_opens(db)) == 1
     o.actual_cost = D("0"); o.theoretical_cost = D("0"); db.commit()
@@ -63,7 +63,7 @@ def test_fixed_cost_autocloses():
 
 def test_cancelled_autocloses():
     db = _db()
-    o = _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    o = _order(db, 1, "O1", paid=1000, actual=1700)
     dq.scan_cost_exceeds_paid(db); db.commit()
     o.status = "cancelled"; db.commit()
     dq.scan_cost_exceeds_paid(db); db.commit()
@@ -73,7 +73,7 @@ def test_cancelled_autocloses():
 def test_paid_caught_up_autocloses():
     # 实付后来涨过成本 → 自动关
     db = _db()
-    o = _order(db, 1, "O1", paid=100, actual=5000)
+    o = _order(db, 1, "O1", paid=1000, actual=1700)   # 引擎口径: 实付≥成本一半才不被片段封顶, 真亏本单
     dq.scan_cost_exceeds_paid(db); db.commit()
     assert len(_opens(db)) == 1
     o.paid_amount = D("7748"); db.commit()
@@ -84,7 +84,7 @@ def test_paid_caught_up_autocloses():
 def test_ignored_not_recreated():
     # 人工标 ignored → 不再重报, ignored 记录保留
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    _order(db, 1, "O1", paid=1000, actual=1700)
     dq.scan_cost_exceeds_paid(db); db.commit()
     ex = db.query(DataException).filter_by(exception_type="cost_exceeds_paid").first()
     ex.status = "ignored"; db.commit()
@@ -97,7 +97,7 @@ def test_ignored_not_recreated():
 def test_still_mismatched_keeps_firing():
     # 没修的真错配 → 仍然报, 不误关 (幂等: 重扫仍只1条 open)
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    _order(db, 1, "O1", paid=1000, actual=1700)
     dq.scan_cost_exceeds_paid(db); db.commit()
     dq.scan_cost_exceeds_paid(db); db.commit()
     assert len(_opens(db)) == 1
@@ -106,7 +106,7 @@ def test_still_mismatched_keeps_firing():
 def test_non_product_excluded():
     # 差价/专链单(关键词命中) → 不报
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83, name="补差价专链")
+    _order(db, 1, "O1", paid=1000, actual=1700, name="补差价专链")
     n = dq.scan_cost_exceeds_paid(db); db.commit()
     assert n == 0
     assert len(_opens(db)) == 0
@@ -126,7 +126,7 @@ def test_recheck_flags_real_mismatch():
     # 真错配 → recheck 返回原因。旧版漏 import Decimal 时会 NameError 被吞成 None → 此断言失败
     from app.services import exception_recheck_service as rk
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83)
+    _order(db, 1, "O1", paid=1000, actual=1700)
     reason = rk.recheck(db, _exc(db, 1))
     assert reason and "错配未解决" in reason
 
@@ -147,5 +147,5 @@ def test_recheck_clears_when_cancelled():
     # 已取消 → 与 scanner 同判据 → recheck 返回 None (口径对齐: 旧版不查状态会误判"仍错配")
     from app.services import exception_recheck_service as rk
     db = _db()
-    _order(db, 1, "O1", paid=100, theoretical=4631.83, status="cancelled")
+    _order(db, 1, "O1", paid=1000, actual=1700, status="cancelled")
     assert rk.recheck(db, _exc(db, 1)) is None
