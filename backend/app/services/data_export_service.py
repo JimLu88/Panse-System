@@ -1469,45 +1469,56 @@ def build_product_price_quick_edit_xlsx(db: Session):
 
 
 def build_product_price_upload_from_export(db: Session, export_bytes: bytes):
-    """全自动推标价·第2步(2026-07-14): 吃千牛「excel商品批量导出」的发布模版, 把【一口价】列(第5列)改成
-    ERP日常价÷0.75(按 skuId 对上), 其余列原样。返回 (BytesIO, stats)。
-    铁律: 一口价×0.75(单品宝标准折)=日常价 → 一口价=日常价÷0.75。只改能对上 skuId 的;
-    下架/未映射/已登记下架 的 skuId 不动(保原值, 上传时千牛也不认下架的)。
-    发布模版列(openpyxl 1-indexed): 商品Id=1/一口价=5/商家编码=7/销售属性=10/属性对=11/skuId=12, 数据从第4行。"""
+    """全自动推标价·第2步(2026-07-14; ★2026-07-15 修正读错列): 吃千牛「商品批量导出/发布模板」, 把
+    SKU 真实标价列【价格(元)】改成 ERP日常价÷0.75(按 SKU级商家编码对上), 其余列原样。返回 (BytesIO, stats)。
+    铁律: SKU标价×0.75(单品宝标准折)=日常价 → =日常价÷0.75。只改能对上商家编码的非定制; 下架 skuId 不动。
+
+    ★读列修正(2026-07-15, 血泪): 多SKU宝贝里【一口价】(col5)是**宝贝级共享占位**(同宝贝所有SKU行相同,
+      如 5000/1000), SKU 真实标价在【价格(元)】(col13); 商家编码取 SKU级(最后一个, col16)。
+      原按 col5/skuId 改 → 误把宝贝级占位价当标价改 → changed 虚高 5 倍(539 vs 真实94), 会改乱线上价。
+      现按表头名定位【价格(元)】+【商家编码】, 与 pricing_recon_service 对账口径完全一致(changed=对账漂移数)。
+    发布模板列(表头名定位, 兜底: 价格(元)=13/skuId=12/商家编码SKU级=16, 表头第3行, 数据第4行起)。"""
     import io as _io
     import openpyxl
     from app.models.pricing import PricingSku
-    from app.models.pricing_ext import PricingSkuPromo
     from app.services import delisted_sku_service
 
     daily_by_code = {s.sku_code: (float(s.daily_price) if s.daily_price is not None else None)
-                     for s in db.execute(select(PricingSku)).scalars().all()}
+                     for s in db.execute(select(PricingSku)).scalars().all()
+                     if not getattr(s, "is_custom_placeholder", False)}
     delisted = delisted_sku_service.get_delisted(db)
-    daily_by_skuid: dict[str, float] = {}
-    for p in db.execute(select(PricingSkuPromo)).scalars().all():
-        d = daily_by_code.get(p.sku_code)
-        if d is None:
-            continue
-        for sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            sid = str(sid).strip() if sid else ""
-            if sid and sid not in delisted:
-                daily_by_skuid[sid] = d
 
     wb = openpyxl.load_workbook(_io.BytesIO(export_bytes))
     ws = wb["发布模板"] if "发布模板" in wb.sheetnames else wb.worksheets[0]
-    COL_PRICE, COL_SKUID = 5, 12
+    # 表头名定位(第3行): 价格(元)=SKU真价列 / skuId(保留供千牛定位行) / 商家编码取最后一个=SKU级
+    hrow = 3
+    c_price = c_skuid = c_code = None
+    for c in range(1, ws.max_column + 1):
+        h = str(ws.cell(hrow, c).value or "").strip()
+        if h in ("价格(元)", "价格（元）"):
+            c_price = c
+        elif h == "skuId":
+            c_skuid = c
+        elif h == "商家编码":
+            c_code = c  # 最后一个 = SKU 级
+    if not c_price or not c_code:
+        c_price, c_skuid, c_code = 13, 12, 16  # 发布模板固定兜底
     stats = {"rows": 0, "changed": 0, "no_daily": 0, "already_ok": 0}
-    for r in range(4, ws.max_row + 1):
-        sid = ws.cell(r, COL_SKUID).value
-        if sid is None or str(sid).strip() == "":
+    for r in range(hrow + 1, ws.max_row + 1):
+        code = ws.cell(r, c_code).value
+        if code is None or str(code).strip() == "":
             continue
         stats["rows"] += 1
-        d = daily_by_skuid.get(str(sid).strip())
+        sid = str(ws.cell(r, c_skuid).value).strip() if c_skuid and ws.cell(r, c_skuid).value else ""
+        if sid and sid in delisted:
+            stats["no_daily"] += 1
+            continue
+        d = daily_by_code.get(str(code).strip())
         if d is None:
             stats["no_daily"] += 1
             continue
         target = round(d / 0.75, 2)
-        cur = ws.cell(r, COL_PRICE).value
+        cur = ws.cell(r, c_price).value
         try:
             cur_f = float(cur) if cur is not None else None
         except (TypeError, ValueError):
@@ -1515,7 +1526,7 @@ def build_product_price_upload_from_export(db: Session, export_bytes: bytes):
         if cur_f is not None and abs(cur_f - target) <= 0.005:
             stats["already_ok"] += 1
             continue
-        c = ws.cell(r, COL_PRICE); c.value = target; c.number_format = "0.00"
+        c = ws.cell(r, c_price); c.value = target; c.number_format = "0.00"
         stats["changed"] += 1
     out = _io.BytesIO(); wb.save(out); out.seek(0)
     return out, stats
