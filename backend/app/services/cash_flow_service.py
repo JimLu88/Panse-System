@@ -359,6 +359,16 @@ def _quarterly_tax(db: Session, *, today: Optional[date] = None) -> dict:
             continue
         q = _quarter_of(od)
         by_q[q] = by_q.get(q, Decimal("0")) + (_d(paid) - _d(refund))
+    # 报送口径叠加 (用户拍板 2026-07-14): 税务局按【打款/结算】口径, 唯一真源=千牛涉税报送页
+    # (收入净额=收入总额−退款)。已报送季度 → 基数用报送净额(basis=报送); 未报送(当季在途)
+    # → 沿用订单估算(basis=估算)。Web-Agent 任务 tax_information 每周自动抓取落库。
+    from app.services import tax_report_service
+    reported = tax_report_service.get_reported(db)
+    for q, v in reported.items():
+        try:
+            by_q[q] = Decimal(str(v.get("net_income")))
+        except Exception:  # noqa: BLE001 - 单季坏数据回退估算
+            continue
     current_q = _quarter_of(today or date.today())   # 当季 = 今天所在自然季 (日历判定)
     paid_set = _tax_paid_quarters(db)
     quarters = []
@@ -369,7 +379,8 @@ def _quarterly_tax(db: Session, *, today: Optional[date] = None) -> dict:
         paid_flag = (not is_current) and (q in paid_set)   # 当季不可标已缴; 上季手选
         if is_current or not paid_flag:
             counted += tax
-        quarters.append({"quarter": q, "tax": tax, "is_current": is_current, "paid": paid_flag})
+        quarters.append({"quarter": q, "tax": tax, "is_current": is_current, "paid": paid_flag,
+                         "basis": "报送" if q in reported else "估算"})
     return {"quarters": quarters, "counted_total": counted.quantize(_Q), "current_quarter": current_q}
 
 

@@ -388,6 +388,13 @@ def _job_accessory_alert_refresh(db: Session) -> dict:
     return {"refreshed": n}
 
 
+def _job_tax_report_pull(db: Session) -> dict:
+    """涉税报送自动抓取 (用户拍板 2026-07-14): 经 Web-Agent 任务 tax_information 抓千牛
+    涉税报送页各季度收入净额 → 税费按打款口径。任务未上线/Agent 离线 → 软失败记 summary。"""
+    from app.services import tax_report_service
+    return tax_report_service.pull_via_agent(db)
+
+
 def _job_cost_recompute(db: Session) -> dict:
     """理论成本每日全自动兜底 (用户拍板 2026-06-17): BOM/定价表反推 + 查不到SKU成本的按
     实付×类目成本率(不足退全店)兜底 + 缺成本订单进异常待补。导入即时反推, 这里收尾并兜底缺编码单。"""
@@ -1428,6 +1435,8 @@ def _register_default_jobs() -> None:
                  _job_accessory_self_arrive, cron={"hour": 7, "minute": 40})
     register_job("daily_0650_cost_recompute", "理论成本兜底反推 (补未反推)",
                  _job_cost_recompute, cron={"hour": 6, "minute": 50})
+    register_job("weekly_tax_report_pull", "涉税报送抓取(税费打款口径, 周日19:00)",
+                 _job_tax_report_pull, cron={"day_of_week": "sun", "hour": 19, "minute": 0})
     register_job("daily_0655_accessory_backfill", "配件清单自动补建/对齐 (进行中订单)",
                  _job_accessory_backfill, cron={"hour": 6, "minute": 55})
     # Plan 阶段一: L3 补单打标兜底 + L2 工厂付款回填常态化
