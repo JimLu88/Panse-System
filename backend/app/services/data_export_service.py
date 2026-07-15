@@ -1206,6 +1206,10 @@ def _placeholder_signup_price(s, p) -> "float | None":
     if not s.daily_price:
         return None
     price = round(float(s.daily_price) * 0.9, 2)
+    # ★2026-07-16 固化: 占位活动价一律 ≤500 (用户拍板"定制占位压到500")。根因: 占位SKU身上挂着
+    # 单品宝【新品促销】(至2028)把管控期标价钉死在低位, 裸报日常价必撞"标价15天线"→整商品被拒
+    # (2026-07-15 60品里34个因此全军覆没)。500 不依赖"已生效价"数据, 撤销报名也不失效。
+    price = min(price, 500.0)
     floor = getattr(p, "enrolled_floor_price", None)
     if floor is not None and float(floor) > 0:
         price = min(price, round(float(floor), 2))
@@ -1258,6 +1262,15 @@ def collect_signup_rows(db: Session, price_field: str):
                 price = _placeholder_signup_price(s, p)
             else:
                 price = pricing_calc_service.report_prices(p, params).get(price_field)
+                # ★2026-07-16 固化: 非占位SKU也尊重 enrolled_floor_price 封顶——但该字段的【数据纪律】
+                # 是只写给"配件/追加/咨询客服"类被平台点名管控的SKU(如洞石背板406.25/追加桌腿1125),
+                # 绝不写产品主SKU → 主SKU floor 恒为空, "报名价=ERP日常价"铁律不受影响。
+                # 封顶必须【透明】: 记 stats["floor_capped_real"], 若真SKU被误写floor能在此看见, 绝不静默。
+                _fl = getattr(p, "enrolled_floor_price", None)
+                if price is not None and _fl is not None and 0 < float(_fl) < float(price):
+                    price = round(float(_fl), 2)
+                    stats.setdefault("floor_capped_real", []).append(
+                        {"sku_code": s.sku_code, "capped_to": price})
             if price is None:
                 missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
                 stats["skipped_no_price"] += 1
@@ -1360,7 +1373,12 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     r = 4                                                  # ★数据从第 4 行起(前 3 行是平台表头)
     skipped_no_daily = 0
     for s, p, A in entries:
-        act_price = float(s.daily_price) if s.daily_price else None    # ★活动价 = 日常价
+        if getattr(s, "is_custom_placeholder", False):
+            # ★2026-07-16 固化: 占位活动价 = 占位报名价A(×0.9→封500顶→封floor), 绝不裸报日常价。
+            # 2026-07-15 事故根因之一: 此处原对占位也填 daily → 撞单品宝【新品促销】管控价 → 34商品整组被拒。
+            act_price = float(A) if A is not None else None
+        else:
+            act_price = float(s.daily_price) if s.daily_price else None    # ★活动价 = 日常价(真SKU)
         if act_price is None or act_price <= 0:
             skipped_no_daily += 1
             continue

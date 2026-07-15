@@ -32,13 +32,13 @@ def test_placeholder_capped_to_enrolled_floor(db_session):
     price = {s.sku_code: A for s, _p, A in entries}
     assert price["PPS9101099"] == 400.0          # 封顶到已生效价
     assert stats["skipped_incomplete_items"] == 0
-    # 无底价时维持 ×0.9 老口径
+    # 无底价时 ×0.9 后仍封500顶(2026-07-16固化: 占位一律≤500, 不依赖已生效价数据)
     _add(db, "PPS9102", "PPS9102011", "餐桌-1.4米", 3000, "222", "800011", big_buyer=2300, mid_buyer=2352)
     _add(db, "PPS9102", "PPS9102099", "尺寸定制B", 1500, "222", "800098", ph=True)
     db.commit()
     entries, _ = de.collect_signup_rows(db, "report_price")
     price = {s.sku_code: A for s, _p, A in entries}
-    assert price["PPS9102099"] == 1350.0
+    assert price["PPS9102099"] == 500.0
 
 
 def test_incomplete_item_dropped_whole(db_session):
@@ -70,9 +70,12 @@ def test_preflight_floor_and_no_sales(db_session):
          big_buyer=2000, mid_buyer=2046, floor=1800)
     db.commit()
     rep = pf.activity_preflight(db)
-    assert rep["floor_conflict_count"] == 1
-    fc = rep["floor_conflicts"][0]
-    assert fc["sku_code"] == "PPS9301011" and fc["enrolled_floor"] == 1800.0 and fc["over"] > 0
+    # 2026-07-16 固化后: 有 floor 的SKU在 collect 阶段即自动封顶到 floor(透明记录, 非静默),
+    # 预检不再作为冲突红字; 被封顶的真SKU必须出现在 stats["floor_capped_real"] 里可见。
+    assert rep["floor_conflict_count"] == 0
+    _entries, _st = de.collect_signup_rows(db, "report_price")
+    assert any(c["sku_code"] == "PPS9301011" and c["capped_to"] == 1800.0
+               for c in _st.get("floor_capped_real", []))
     # 无订单 → 该商品近60天0销量 → 动销警示
     assert any(it["taobao_item_id"] == "555" for it in rep["no_sales_items"])
     # 占位SKU封顶后不超线

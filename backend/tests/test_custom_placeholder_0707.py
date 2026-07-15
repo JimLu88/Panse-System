@@ -36,7 +36,7 @@ def test_signup_export_placeholder_is_9zhe(db_session):
     rows = [(ws.cell(r, 2).value, ws.cell(r, 3).value)
             for r in range(4, ws.max_row + 1) if ws.cell(r, 2).value]
     assert len(rows) == 1 and rows[0][0] == "SK1"
-    assert abs(float(rows[0][1]) - 18000.0) < 0.01              # 20000 × 0.9
+    assert abs(float(rows[0][1]) - 500.0) < 0.01                # 20000×0.9 再封500顶(2026-07-16固化)
 
 
 def test_signup_618_also_9zhe(db_session):
@@ -44,7 +44,7 @@ def test_signup_618_also_9zhe(db_session):
     buf, _ = build_promo_signup_upload_xlsx(db_session, "big618")
     ws = openpyxl.load_workbook(BytesIO(buf.getvalue()))["商品SKU导入列表"]
     vals = [ws.cell(r, 3).value for r in range(4, ws.max_row + 1) if ws.cell(r, 2).value]
-    assert abs(float(vals[0]) - 18000.0) < 0.01                # 占位符所有档都 ×0.9(不走618更深)
+    assert abs(float(vals[0]) - 500.0) < 0.01                  # 占位×0.9后再封500顶(2026-07-16固化: 治新品促销管控价卡整品)
 
 
 def test_single_discount_placeholder_is_10pct(db_session):

@@ -64,7 +64,11 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
             if channel == "super_reduce":
                 # ★活动价 = 日常价 (2026-07-13 血泪根治, 不是报名价A!)。超级立减=单品立减法,
                 # 折扣由并行的单品立减+88VIP提供, 活动价填日常价; 填报名价A会双重打折砸穿。
-                sys_val = _f(s.daily_price)
+                # ★占位例外(2026-07-16 固化, 与 builder 同源): 占位活动价 = A(×0.9→500顶→floor)。
+                if getattr(s, "is_custom_placeholder", False):
+                    sys_val = _f(A)
+                else:
+                    sys_val = _f(s.daily_price)
                 target = _f(p.mid_buyer_price)                             # 超级立减到手(叠加后≈大促到手)
             else:
                 sys_val = A

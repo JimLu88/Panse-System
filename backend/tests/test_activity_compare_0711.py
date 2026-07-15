@@ -78,27 +78,28 @@ def test_super_reduce_zero_drift_and_placeholder_x01(db_session):
     rows, bad = _mismatches(db_session, "super_reduce", "big")
     assert rows, "super_reduce 应有行"
     assert not bad, f"super_reduce 上传值≠系统应填值: {bad}"
-    # 撤销重报口径(2026-07-12): 占位活动价 = 占位报名价 = 现价×0.9 = 2700, 补贴 = 活动价×0.1 = 270。
-    # 注意: 270 与史前 bug "现价×0.09" 数值巧合相同, 但推导完全不同 —— 现在活动价列也填 2700,
-    # 三列(活动价/让利10%/补贴)自洽, 到手 = 2430; 旧 bug 是补贴单飞无活动价。
+    # 2026-07-16 固化口径: 占位活动价 = A = min(现价×0.9, 500顶, floor)=500(本种子无floor)。
+    # builder 与比对表同源(占位都取A); 真SKU活动价仍=日常价。zero-drift 由上面 not bad 锁死。
+    # (2026-07-15 事故: builder 曾对占位裸报 daily → 撞单品宝新品促销管控价 → 34商品整组被拒)
     ph = [r for r in rows if r["sku_code"] == "PPS1001099"]
     assert ph, "占位符应在超级立减比对表里"
-    assert abs(ph[0]["system_value"] - 270.0) < 0.01, \
-        f"占位符补贴应=270(占位报名价2700×0.1), 实得 {ph[0]['system_value']}"
-    assert abs(ph[0]["target_shoudao"] - 2430.0) < 0.01, "占位到手应=活动价×0.9"
+    assert abs(ph[0]["system_value"] - 500.0) < 0.01, \
+        f"占位活动价应=500(×0.9后封500顶), 实得 {ph[0]['system_value']}"
+    assert ph[0]["target_shoudao"] is None          # 占位无 mid_buyer → 无到手目标
 
 
 def test_super_reduce_fresh_signup_fills_three_columns(db_session):
-    """撤销全部报名后重新报名是全新报名: 活动价(C)/让利比例(M)/补贴金额(N) 三列必须全填且自洽,
-    包邮(E)填'包邮'。旧版只填补贴金额会被平台以活动价必填拒收。"""
+    """撤销全部报名后重新报名是全新报名: 活动价(C)/让利比例(M)必填, 包邮(E)填'包邮';
+    ★补贴金额(N)必须留空 —— 平台铁律"让利比例/补贴二选一, 两列都填→整商品拒"
+    (2026-07-15 修正口径, 32商品实报成功实证; 旧'三列全填'断言已过时)。"""
     import io
     import openpyxl
     _seed(db_session)
     xlsx, _ = up._gen_xlsx(db_session, "super_reduce", "big")
     wb = openpyxl.load_workbook(io.BytesIO(xlsx), read_only=True, data_only=True)
-    ws = wb.worksheets[0]
+    ws = wb["商品SKU导入列表"]          # 平台模板两sheet, 数据页是这个(worksheets[0]是模版说明)
     n = 0
-    for row in ws.iter_rows(min_row=2, values_only=True):
+    for row in ws.iter_rows(min_row=4, values_only=True):   # 前3行是平台表头
         if not row or row[1] is None:
             continue
         n += 1
@@ -106,8 +107,8 @@ def test_super_reduce_fresh_signup_fills_three_columns(db_session):
         assert act and float(act) > 0, f"SKUID {row[1]} 活动价未填"
         assert free_ship == "包邮", f"SKUID {row[1]} 包邮未填"
         assert ratio == 10, f"SKUID {row[1]} 让利比例应=10, 实得 {ratio}"
-        assert abs(float(subsidy) - round(float(act) * 0.1, 2)) < 0.01, \
-            f"SKUID {row[1]} 补贴({subsidy})≠活动价({act})×10%"
+        assert subsidy in (None, ""), \
+            f"SKUID {row[1]} 补贴金额应留空(与让利比例二选一, 都填整商品拒), 实得 {subsidy}"
     wb.close()
     assert n >= 5, "应含正常品+alt+占位的全部行"
 
