@@ -365,6 +365,36 @@ async def reconcile_fix_xlsx(
         headers={"Content-Disposition": "attachment; filename=biaojia_fix.xlsx"})
 
 
+@router.post("/recon-coupon")
+async def reconcile_coupon_prices(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """券后价对账: 上传千牛「超级立减已报商品列表」xlsx → 活动普惠券后价 vs ERP中促到手(mid_buyer_price)
+    的漂移清单 (容差0.01, 一分钱不差; 只读不改)。"""
+    from app.services import pricing_recon_service
+    raw = await file.read()
+    return pricing_recon_service.reconcile_coupon(db, raw)
+
+
+@router.post("/recon-coupon/fix-xlsx")
+async def reconcile_coupon_fix_xlsx(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """券后价对账·返修表: 上传千牛超级立减导出 → 「券后价返修表」xlsx
+    (漂移SKU的正确券后价=ERP中促到手 + 应填单品立减金额)。"""
+    from fastapi.responses import StreamingResponse
+    from app.services import pricing_recon_service
+    raw = await file.read()
+    bio = pricing_recon_service.build_coupon_fix_xlsx(db, raw)
+    return StreamingResponse(
+        bio, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": "attachment; filename=quanhoujia_fix.xlsx"})
+
+
 @router.post("/campaign-signups/ocr-parse")
 async def ocr_parse_campaign_signup(
     image: UploadFile = File(...),
