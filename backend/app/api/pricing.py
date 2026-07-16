@@ -215,11 +215,20 @@ def list_pricing_skus(
     gallery_urls = sku_gallery_url_map(
         [(r.product_code, r.sku_code, r.sku) for r in rows])
 
+    # 报名价法真实报名价 (2026-07-17): 老列 taobao_activity_price(=日常价法)已废弃口径,
+    # 前端「淘宝活动报名价」列改读派生的 signup_price_big(=大促到手锚反解, 与实际推送一致)。
+    promo_params = pricing_calc_service.get_promo_params(db)
+
     items = []
     for r in rows:
         base = PricingSkuOut.model_validate(r).model_dump()
         base.update(_ext_dict(costs_map.get(r.sku_code)))
         base.update(_ext_dict(promo_map.get(r.sku_code)))
+        _promo = promo_map.get(r.sku_code)
+        if _promo is not None:
+            _rp = pricing_calc_service.report_prices(_promo, promo_params)
+            base["signup_price_big"] = _rp.get("signup_price_big")
+            base["signup_price_mid"] = _rp.get("signup_price_mid")
         base["gallery_image_url"] = gallery_urls.get(r.sku_code)
         cvs = cv_map.get(r.sku_code, {})
         for fdef in custom_fields:

@@ -102,6 +102,32 @@ def test_set_factory_cost_still_locks_override():
         app.dependency_overrides.clear()
 
 
+# ── ③ 定价总表列表接口输出新口径报名价 (老列 taobao_activity_price=日常价法已废弃) ──
+def test_list_endpoint_returns_signup_price_big():
+    client, token, Sess = _client_and_session()
+    try:
+        s = Sess()
+        s.add(PricingSku(product_code="PSIGN", sku_code="PPSSIGN01", sku="报名价SKU",
+                         daily_price=Decimal("1000")))
+        s.add(PricingSkuPromo(sku_code="PPSSIGN01", taobao_item_id="90002",
+                              taobao_sku_id="70002",
+                              taobao_activity_price=Decimal("1000"),   # 老口径(=日常价)
+                              big_buyer_price=Decimal("880")))
+        s.commit()
+        s.close()
+
+        r = client.get("/api/pricing-skus", params={"product_code": "PSIGN"},
+                       headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        row = r.json()["items"][0]
+        # 新口径: max p 使 p×0.88 ≤ (880−2安全垫) → 997
+        assert float(row["signup_price_big"]) == 997, row.get("signup_price_big")
+        # 老字段原样保留(编辑器/导出仍用), 不被覆盖
+        assert float(row["taobao_activity_price"]) == 1000
+    finally:
+        app.dependency_overrides.clear()
+
+
 # ── ② builder 同 SKUID 去重 ───────────────────────────────────────────────────
 def test_builder_dedupes_duplicate_sid(db_session):
     """两条 ERP 行(僵尸+真身)映射同一 taobao_sku_id → 报名表只出 1 行, 丢弃记 stats。"""
