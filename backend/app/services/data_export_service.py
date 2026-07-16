@@ -1200,9 +1200,13 @@ _PROMO_SIGNUP_TIERS = {
 
 
 # 砸穿护栏容差: 报名价法下 名义券后 == 真实到手, 允许它低于大促锚的最大幅度。
-# 合法偏离只有【报名价取整到元】的残差(实测全店中位 ¥0.41 / 最大 ¥0.87, 占锚 <0.15%);
-# 真事故是数量级的(实抓 18.2% = 锚的五分之一)。1% 足够宽松放行取整、又能拦住任何真事故。
-_ANCHOR_SMASH_TOL = 0.01
+# 合法偏离有两项(都是元级、与锚大小无关): ①报名价取整到元的残差(<1元) ②主动让的安全垫
+# SIGNUP_SAFETY_YUAN(1元, 吃平台线比ERP锚低几毛的漂移) → 合计 <2元。
+# 真事故是【数量级】的(实抓 18.2% = 锚的五分之一)。故容差取 max(2元, 1%×锚):
+#   便宜品(样块锚20.41)靠 2元 绝对值放行(1%只有0.2元, 会把合法让步误判成砸穿);
+#   贵品(锚上万)靠 1% 相对值收紧(2元太松)。两边都不误伤、也都拦得住真事故。
+_ANCHOR_SMASH_TOL = 0.01          # 相对容差(贵品)
+_ANCHOR_SMASH_TOL_ABS = 2.0       # 绝对容差(便宜品) = 安全垫1元 + 取整残差1元
 
 
 def _coupon_floor_cap(p, lev: float) -> "float | None":
@@ -1247,7 +1251,8 @@ def _placeholder_signup_price(s, p, lev: float = 0.12) -> "float | None":
     return price
 
 
-def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = None):
+def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = None,
+                        only_items: "set | list | None" = None):
     """大促报名/超级立减 共用行收集器 (builder 与比对表同源, 保零漂移):
       - 占位SKU报名价 = _placeholder_signup_price (×0.9 封顶到已生效价 + 券后线反解);
       - ★整商品完整性: 淘宝要求商品【全部SKU】报名, 任一已映射SKU算不出价 → 整商品剔除
@@ -1257,6 +1262,11 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
     lev: 该场官方立减比例(0.10超级立减 / 0.12 88VIP / 0.15 618)。给了就按【券后线】coupon_floor_price
          反解封顶报名价(真SKU+占位都吃); 不给=沿用老行为(只吃 enrolled_floor)。被券后线压过的进
          stats["coupon_floor_capped"] —— 必须透明, 绝不静默降价。
+    only_items: ★2026-07-16 用户流程铁律 —— 只导【taobao_item_id 在此集合】的商品(失败重试专用)。
+         根因: 千牛【已报名成功的商品再导一次会直接判失败】("已报名/重复"), 整批重导 = 把上一轮
+         已成功的全打回失败 —— 实证: 第一次导 52件(20成功/32失败), 我整批重导 53件 → 0成功/53失败,
+         其中 24 件就是被自己重导打成"已报名/重复"的。故【每次只导还没成功的那部分】。
+         None = 全量(仅限首次报名/全新场次)。
     返回 (entries, stats): entries=[(sku, promo, 报名价)]。"""
     from collections import defaultdict as _dd
     from app.models.pricing import PricingSku
@@ -1274,11 +1284,18 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
 
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_no_price": 0, "skipped_bad_price": 0,
              "skipped_incomplete_items": 0, "skipped_delisted": 0, "incomplete_items": []}
+    # ★只导指定商品(失败重试): 已报名成功的再导一次会被千牛判"已报名/重复"失败 → 只带该带的。
+    _only = {str(x).strip() for x in only_items} if only_items else None
+    if _only is not None:
+        stats["only_items"] = sorted(_only)
     by_item: "dict[str, list]" = _dd(list)
     for s in skus:
         p = promo_by_sku.get(s.sku_code)
         if p is None or not p.taobao_item_id:
             continue
+        if _only is not None and str(p.taobao_item_id).strip() not in _only:
+            continue                                       # 不在重试名单 → 整个商品不带
+
         if not p.taobao_sku_id:                            # SKU 维度必须有 SKUID
             stats["skipped_no_skuid"] += 1
             continue
@@ -1327,7 +1344,8 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
                     _bb = getattr(p, "big_buyer_price", None)
                     if _bb is not None and float(_bb) > 0:
                         _nominal = float(price) * (1.0 - lev)
-                        if _nominal < float(_bb) * (1.0 - _ANCHOR_SMASH_TOL):
+                        _tol = max(_ANCHOR_SMASH_TOL_ABS, float(_bb) * _ANCHOR_SMASH_TOL)
+                        if _nominal < float(_bb) - _tol:
                             stats.setdefault("anchor_smash_blocked", []).append({
                                 "sku_code": s.sku_code, "signup_price": round(float(price), 2),
                                 "nominal": round(_nominal, 2), "anchor": round(float(_bb), 2),
@@ -1461,7 +1479,8 @@ _SUPER_REDUCE_HEADERS = [
 ]
 
 
-def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12):
+def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12,
+                                     only_items: "set | list | None" = None):
     """★★88VIP大促·【报名价法 / 垫片=0 口径】批量报名表 (2026-07-16 报名价体系重构, 用户四诉求落地)。
 
     取代 build_promo_signup_daily_upload_xlsx(日常价法/B法) —— 后者是 2026-07-16 60品报名 42 失败
@@ -1479,7 +1498,9 @@ def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12):
       撞券后线的SKU: 压报名价到线内(救场手段是【压报名价】, 不是加垫片) → stats["coupon_floor_capped"] 逐条透明。
     D–G(库存/发货时间/官方立减折扣/金额)留空: 平台按活动内置比例自动算。
     ⚠配套铁律: 本表推之前必须先【撤掉该品 big 档单品立减】(旧的按日常价算的大立减留着 = 双折砸穿,
-      2026-07-13 事故重演)。顺序: 先撤立减 → 再改活动价。lev = 该场官方比例(88VIP=0.12)。返回 (BytesIO, stats)。"""
+      2026-07-13 事故重演)。顺序: 先撤立减 → 再改活动价。lev = 该场官方比例(88VIP=0.12)。
+    ★only_items(2026-07-16 用户流程铁律): 失败重试时【只带还没成功的商品】—— 已报名成功的再导一次
+      会被千牛判"已报名/重复"失败(实证: 整批重导 53件 → 24件已成功的全被打回)。返回 (BytesIO, stats)。"""
     import io as _io
     from pathlib import Path
     import openpyxl
@@ -1490,7 +1511,7 @@ def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12):
     if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    entries, stats = collect_signup_rows(db, "signup_price_big", lev=lev)
+    entries, stats = collect_signup_rows(db, "signup_price_big", lev=lev, only_items=only_items)
     stats["tier"] = "big88p"
     stats["lev"] = lev
     r = 4

@@ -65,12 +65,15 @@ def test_k_below_math_floor_is_clamped():
 
 # ── ②③ 报名价法: 名义=真实, 一个数, 无棘轮 ────────────────────────────────────
 def test_one_number_when_k_at_floor():
-    """② K=数学下限时 中促到手 = 大促到手×g_min → 两场报名价【同一个数】(只维护一个数)。"""
+    """② K=数学下限时 中促到手 = 大促到手×g_min → 两场报名价【同一个数】(只维护一个数)。
+    安全垫按各场自己的到手基数扣, 故两场可差 1 元取整残差 —— 仍是"同一个数"的工程含义。"""
     big = Decimal("1000")
     mid = (big * G_MIN).quantize(Decimal("0.01"))
     out = pcs.report_prices(_promo(big_buyer=big, mid_buyer=mid))
-    assert out["signup_price_big"] == out["signup_price_mid"], (
-        f"K=下限时两场报名价应相同, 实际 big={out['signup_price_big']} mid={out['signup_price_mid']}")
+    diff = abs(out["signup_price_big"] - out["signup_price_mid"])
+    assert diff <= 1, (
+        f"K=下限时两场报名价应相同(±1元取整), 实际 big={out['signup_price_big']} "
+        f"mid={out['signup_price_mid']} 差={diff}")
 
 
 @pytest.mark.parametrize("big_buyer", ["1000", "928.57", "9459.18", "2683.67", "20.41"])
@@ -85,9 +88,22 @@ def test_no_ratchet_signup_price_repeatable(big_buyer):
     sp = out["signup_price_big"]
     nominal = (sp * (Decimal("1") - BIG_LEV)).quantize(Decimal("0.01"))
     assert nominal <= big, f"名义券后 {nominal} 超过大促锚 {big} → 下一轮必被拦"
+    # 让步 = 安全垫(1元, 吃平台线漂移) + 取整残差(<1元) ⇒ 恒 <2元
     slip = big - nominal
-    assert Decimal("0") <= slip < Decimal("1"), f"取整让步 {slip} 越界"
+    assert Decimal("0") <= slip < pcs.SIGNUP_SAFETY_YUAN + 1, f"让步 {slip} 越界"
     assert out["anchor_slip_big"] == slip
+
+
+@pytest.mark.parametrize("anchor,line", [("4275.51", "4274.71"), ("3081.63", "3079.83"),
+                                         ("3775.51", "3775.11"), ("20.41", "19.80")])
+def test_safety_margin_absorbs_line_drift(anchor, line):
+    """★安全垫的意义(实证驱动): 平台线比 ERP 锚低几毛(不可预知, 学不全) —— 让1元即可吃掉。
+    实证: 黑胡桃木榻榻米-1.2米 锚4275.51/线4274.71(差0.80) 曾超线0.29被拒; 让1元后过线。"""
+    a, L = Decimal(anchor), Decimal(line)
+    out = pcs.report_prices(_promo(big_buyer=a, mid_buyer=a * G_MIN))
+    sp = out["signup_price_big"]
+    assert _platform_coupon(sp) <= L, (
+        f"锚{a} 线{L}: 让了安全垫仍超线(平台券后={_platform_coupon(sp)})")
 
 
 def test_signup_price_beats_old_daily_method():

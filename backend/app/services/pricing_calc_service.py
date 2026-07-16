@@ -263,6 +263,18 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
 #   中促到手 ÷ 大促到手 ≥ (1−中促力度)/(1−大促力度) = 0.90/0.88 = 1.02273 (记 g_min)。
 REPORT_LEVERAGE_DEFAULTS = {"mid": "0.10", "big": "0.12", "big618": "0.15"}
 
+# ★报名安全垫 (2026-07-16 实战定): 报名价按【到手锚 − 此值】反算, 即主动让 2 元。
+# 根因: 平台"校验期最低普惠券后价"是【上一轮真实到手】的历史快照, 而 ERP 锚会随成本/基数微调而漂移
+# ——两者天然差几毛到几元, 且【无法预知】。实证:
+#   黑胡桃木榻榻米-1.2米  锚4275.51 vs 线4274.71 (差0.80) → 券后4275 超线0.29 被拒
+#   榉木柔光床-1.35米松木 锚3081.63 vs 线3079.83 (差1.80) → 券后3080 超线0.17 被拒
+#   鎏金餐边柜-1.5米      锚13673.00 vs 线13672.87(差0.13)
+# 这类"锚比线高不到2元"的漂移占失败的 34/135。**光靠学线治不了**: 线只能等平台回执才知道, 且回执里的
+# "活动普惠券后价"是按【当次上传的价】算的, 代码一改就对不上号 → 反查匹配失败 → 没学到的照样撞(打地鼠)。
+# 让 2 元一次性覆盖全部小漂移: 少赚 2 元 ≈ 锚的 0.05%(4275元的品) / 0.015%(13673元的品), 可忽略。
+# 已学到确切线的 SKU(占位线350、真低线品)仍另走 coupon_floor 精确封顶, 两者取更严的。
+SIGNUP_SAFETY_YUAN = Decimal("2")
+
 
 def max_signup_price(target, lev) -> Optional[Decimal]:
     """★求【最大整数报名价 P】使 平台算出的活动券后价 ≤ target。
@@ -352,19 +364,20 @@ def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict
            "nominal_big": None, "anchor_slip_big": None}
     if big_buyer and big_buyer > 0 and (Decimal("1") - big_lev) != 0:
         out["report_price"] = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_HALF_UP)
-        # ★max_signup_price: 保证【平台口径】券后价(入整元) ≤ 大促到手 → 绝不超锚(超1分即被拦)
-        sp_big = max_signup_price(big_buyer, big_lev)
+        # ★max_signup_price(锚 − 安全垫): 保证【平台口径】券后价(入整元) ≤ 锚−1元
+        #   → 既不超锚, 又能吃掉"平台线比ERP锚低几毛"的不可预知漂移(见 SIGNUP_SAFETY_YUAN)。
+        sp_big = max_signup_price(big_buyer - SIGNUP_SAFETY_YUAN, big_lev)
         out["signup_price_big"] = sp_big
         out["nominal_big"] = (sp_big * (Decimal("1") - big_lev)).quantize(cent, ROUND_HALF_UP)
         # 相对锚的取整让步(元, ≥0 且 <1): 报名价只能整数元 → 到手比锚低这么点, 中位 ¥0.41
         out["anchor_slip_big"] = (big_buyer - out["nominal_big"]).quantize(cent, ROUND_HALF_UP)
         if (Decimal("1") - lev618) != 0:
             out["report_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_HALF_UP)
-            out["signup_price_618"] = max_signup_price(big_buyer, lev618)
+            out["signup_price_618"] = max_signup_price(big_buyer - SIGNUP_SAFETY_YUAN, lev618)
     if mid_buyer and mid_buyer > 0 and (Decimal("1") - mid_lev) != 0:
         out["report_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_HALF_UP)
         out["gap_floor"] = mid_buyer.quantize(cent, ROUND_HALF_UP)
-        out["signup_price_mid"] = max_signup_price(mid_buyer, mid_lev)
+        out["signup_price_mid"] = max_signup_price(mid_buyer - SIGNUP_SAFETY_YUAN, mid_lev)
     if mid_buyer and big_buyer and big_buyer > 0:
         g = (mid_buyer / big_buyer).quantize(micro, ROUND_HALF_UP)
         g_min = (Decimal("1") - mid_lev) / (Decimal("1") - big_lev)
