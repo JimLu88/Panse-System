@@ -23,7 +23,10 @@ def _gen_xlsx(db: Session, channel: str, tier: str) -> tuple[bytes, dict]:
     if channel == "single_item_discount":
         bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)
     elif channel == "promo_signup":
-        bio, stats = de.build_promo_signup_upload_xlsx(db, tier)
+        if tier == "big88":                        # ★88VIP大促·日常价法(B法, 叠单品立减) 2026-07-16
+            bio, stats = de.build_promo_signup_daily_upload_xlsx(db)
+        else:
+            bio, stats = de.build_promo_signup_upload_xlsx(db, tier)
     elif channel == "super_reduce":
         bio, stats = de.build_super_reduce_signup_upload_xlsx(db)
     else:
@@ -55,24 +58,24 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
     rows: list[dict] = []
     if channel in ("promo_signup", "super_reduce"):
         from app.services.data_export_service import collect_signup_rows, _PROMO_SIGNUP_TIERS
-        if channel == "promo_signup":
+        # ★日常价法(活动价=日常价/占位A): super_reduce 全部 + promo_signup 的 big88(88VIP大促·B法)。
+        daily_law = (channel == "super_reduce") or (channel == "promo_signup" and tier == "big88")
+        if channel == "promo_signup" and tier != "big88":
             label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
         else:
             label, field = "活动价(日常价)", "report_price"
         entries, _stats = collect_signup_rows(db, field)
         for s, p, A in entries:
-            if channel == "super_reduce":
-                # ★活动价 = 日常价 (2026-07-13 血泪根治, 不是报名价A!)。超级立减=单品立减法,
-                # 折扣由并行的单品立减+88VIP提供, 活动价填日常价; 填报名价A会双重打折砸穿。
-                # ★占位例外(2026-07-16 固化, 与 builder 同源): 占位活动价 = A(×0.9→500顶→floor)。
-                if getattr(s, "is_custom_placeholder", False):
-                    sys_val = _f(A)
-                else:
-                    sys_val = _f(s.daily_price)
-                target = _f(p.mid_buyer_price)                             # 超级立减到手(叠加后≈大促到手)
+            if daily_law:
+                # ★活动价 = 日常价 (2026-07-13 血泪根治, 不是报名价A!): 折扣由并行的单品立减+官方让利
+                # 叠加提供, 填报名价A会双重打折砸穿。★占位例外: 占位活动价 = A(×0.9→500顶→floor)。
+                sys_val = _f(A) if getattr(s, "is_custom_placeholder", False) else _f(s.daily_price)
             else:
                 sys_val = A
-                target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
+            if channel == "super_reduce" or tier == "mid":
+                target = _f(p.mid_buyer_price)                             # 中促到手
+            else:                                                          # promo_signup big / big88
+                target = _f(p.big_buyer_price)                             # 大促到手
             for skuid in _expand_ids(p):
                 rows.append({
                     "sku_code": s.sku_code, "taobao_sku_id": skuid,

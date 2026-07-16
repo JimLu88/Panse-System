@@ -1331,6 +1331,57 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     return out, stats
 
 
+def build_promo_signup_daily_upload_xlsx(db: Session):
+    """★88VIP大促·【日常价法 / B法】批量报名表 (2026-07-16 用户拍板: 88VIP 会叠单品立减)。
+    与 build_promo_signup_upload_xlsx 用同一【大促报名】模板 promo_signup_sku.xlsx(商品ID/SKUID/活动价/
+    库存/发货时间/官方立减折扣/官方立减金额), 走同一 promo_signup 页导入; ★唯一区别: 活动价填【日常价】
+    (真SKU) / 报名价A(占位), 【绝不填报名价A给真SKU】。
+    根因: 88VIP大促活动内置 12% 让利, 且我们已挂 big档单品立减(7-17 20:00~7-19)叠加。若真SKU活动价填
+    报名价A(=大促到手÷0.88), 到手 = A×0.88 − big_deduct = 大促到手 − big_deduct = 砸穿(2026-07-13 事故
+    重演)。填日常价: 到手 = 日常价×0.88 − big_deduct = 大促到手 ✓。F/G(官方立减折扣/金额)留空, 平台按
+    活动内置 12% 自动算。占位/半套商品同 collect_signup_rows 剔除。返回 (BytesIO, stats)。"""
+    import io as _io
+    from pathlib import Path
+    import openpyxl
+
+    tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
+    wb = openpyxl.load_workbook(tpl)
+    ws = wb["商品SKU导入列表"]
+    if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
+        ws.delete_rows(4, ws.max_row - 3)
+
+    # 收集器做整商品完整性+坏价剔除; A 只用于【占位价】与【完整性判定】, 真SKU 活动价取【日常价】。
+    entries, stats = collect_signup_rows(db, "report_price")
+    stats["tier"] = "big88"
+    r = 4
+    skipped_no_daily = 0
+    for s, p, A in entries:
+        if getattr(s, "is_custom_placeholder", False):
+            act_price = float(A) if A is not None else None        # 占位 = 报名价A(×0.9→500顶→floor)
+        else:
+            act_price = float(s.daily_price) if s.daily_price else None   # ★真SKU活动价 = 日常价
+        if act_price is None or act_price <= 0:
+            skipped_no_daily += 1
+            continue
+        ids = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid) not in ids:
+                ids.append(str(_sid))
+        for skuid in ids:
+            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
+            ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
+            ws.cell(r, 3, act_price).number_format = "0.00"            # ★活动价 = 日常价(不是A!)
+            # D库存 / E发货时间 / F官方立减折扣 / G官方立减金额 → 全部留空(平台按活动内置12%算)
+            r += 1
+    stats["rows"] = r - 4
+    stats["skipped_no_daily"] = skipped_no_daily
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out, stats
+
+
 # ── 超级立减【活动】批量报名表 (14列, 2026-07-12 撤销重报口径) ────────────────────────────
 # 口径: 活动价 = 报名价A(与大促报名同一个A) → 让利比例10% → 补贴金额 = 活动价 × 10%
 #       → 到手 = A×0.9 = 中促到手; 占位SKU 活动价 = 占位报名价(现价×0.9 封顶已生效价, 与大促报名同口径)。
