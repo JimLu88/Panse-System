@@ -1537,12 +1537,20 @@ def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12,
     stats["tier"] = "big88p"
     stats["lev"] = lev
     r = 4
+    seen_sids: set = set()
     for s, p, price in entries:
         ids = []
         for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
             if _sid and str(_sid) not in ids:
                 ids.append(str(_sid))
         for skuid in ids:
+            if skuid in seen_sids:
+                # 两条 ERP 行映射同一 sid(僵尸行) → 平台"存在重复的SKUID"整品拒
+                # (2026-07-17 书柜 091597/091598 实战): 保首行丢后行, 透明记账
+                stats.setdefault("dup_sid_dropped", []).append(
+                    {"sku_code": getattr(s, "sku_code", None), "taobao_sku_id": skuid})
+                continue
+            seen_sids.add(skuid)
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
             ws.cell(r, 3, float(price)).number_format = "0.00"         # ★活动价 = 统一报名价 P

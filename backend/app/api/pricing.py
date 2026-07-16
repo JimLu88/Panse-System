@@ -596,7 +596,9 @@ def update_pricing_sku(
     for k, v in changes.items():
         setattr(sku, k, v)
     if "factory_cost" in changes:
-        sku.factory_cost_override = True   # 手改工厂成本 → 标覆盖, recompute 不再自动派生(保住手改值)
+        # 填数值 → 上锁(保住手改值, recompute 不覆盖); 清空 → 解锁恢复"木作+包装+外配件"自动加总
+        # (2026-07-17 修: 之前清空也上锁, 自动加总永久失灵, 页面表现为"联动失效")
+        sku.factory_cost_override = changes["factory_cost"] is not None
     # 手动直接改某档价(没同时改该档基数) → 清该档基数, 让 recompute 不覆盖此手动值(手动/联动互斥)
     for tier_field, base_field in _TIER_TO_BASE.items():
         if tier_field in changes and changes.get(tier_field) is not None and base_field not in changes:
