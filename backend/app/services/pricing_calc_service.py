@@ -7,7 +7,7 @@
 """
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_CEILING, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -20,10 +20,30 @@ from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 # 注: 这是"定价设计口径"; 逐单实际利润仍由 order_financials 按实付×费率另算(第16条 铁律不变)。
 PRICING_GROSSUP_RATE = Decimal("0.026")
 
-# 中促/大促 联动比 = (1−10%)/(1−12%) = 0.90/0.88 ≈ 1.0227 (超级立减10%场 vs 88VIP大促12%场官方力度)。
-# 中促价 ≥ 大促价 × 此比 → 中促到手 ≥ 大促到手, 保证同一日常价先报超级立减(浅折10%)、再报88VIP(深折12%)
-# 只往低报、不涨价、报得进 (用户 2026-07-15; 见 价格体系设置.md 第二铁律)。中促自动托底, 手设更高的保留。
-_MID_OVER_BIG_RATIO = Decimal("0.90") / Decimal("0.88")
+# 中促/大促 联动比 K = 中促到手 ÷ 大促到手 的【托底】值。数学下限 = (1−10%)/(1−12%) = 0.90/0.88 ≈ 1.0227
+# (超级立减10%场 vs 88VIP大促12%场官方力度之比): 中促价 ≥ 大促价 × K → 中促到手 ≥ 大促到手, 保证先报
+# 超级立减(浅折10%)、再报88VIP(深折12%)只往低报、不涨价、报得进 (用户 2026-07-15; 价格体系设置.md 第二铁律)。
+# 中促自动托底, 手设更高的保留(不砍利润)。
+# ★2026-07-16 用户拍板: K 提为【可配旋钮】(settings: promo_mid_over_big_ratio) —— 大促到手是唯一不可动的锚,
+#   想让大促更有冲击力/垫片缓冲更足, 就调大 K(中促抬高), 大促一分不动。默认仍 0.90/0.88(=现网口径, 不改行为);
+#   7-20 超级立减 mid 档恢复重挂时切 1.04 (中促涨~1.5%, 涨幅上限1.69%)。
+#   ⚠ K 只能在【新一轮重挂/重报】时抬 —— 活动进行中抬价 = 涨价, 撞平台"券后价≤近15天最低"必被拦。
+_MID_OVER_BIG_RATIO_MIN = Decimal("0.90") / Decimal("0.88")   # 数学下限, K 不得低于此(低于=88VIP报不进)
+_MID_OVER_BIG_RATIO = _MID_OVER_BIG_RATIO_MIN                 # 默认值(向后兼容: 无配置时与改造前完全一致)
+
+
+def _mid_over_big_ratio(params: Optional[dict] = None) -> Decimal:
+    """取中促/大促托底比 K (可配, 见上)。低于数学下限的配置值一律顶回下限 —— 防误配把 88VIP 报名整场废掉。"""
+    if not params:
+        return _MID_OVER_BIG_RATIO
+    raw = params.get("mid_over_big_ratio")
+    if raw in (None, ""):
+        return _MID_OVER_BIG_RATIO
+    try:
+        k = Decimal(str(raw))
+    except Exception:
+        return _MID_OVER_BIG_RATIO
+    return k if k >= _MID_OVER_BIG_RATIO_MIN else _MID_OVER_BIG_RATIO_MIN
 
 
 def _d(v) -> Optional[Decimal]:
@@ -37,8 +57,11 @@ def _roundup10(x: Optional[Decimal]) -> Optional[Decimal]:
     return (Decimal(x) / Decimal("10")).to_integral_value(rounding=ROUND_CEILING) * Decimal("10")
 
 
-def recompute(sku: PricingSku) -> None:
+def recompute(sku: PricingSku, params: Optional[dict] = None) -> None:
     """原地按【定价总表口径】重算整条 成本链 + (成本加成)价格链 + 利润链 (2026-07-01)。
+
+    params: 可选活动参数(get_promo_params), 目前只用其 mid_over_big_ratio(=K 中促托底比)。
+            不传 → K 用默认 0.90/0.88, 行为与改造前逐位一致。**K 只影响中促托底, 大促价永不被它改。**
 
     成本链(自下而上):
       工厂成本 = 木作 + 包装 + 外配件   (除非 factory_cost_override=True 手动覆盖 → 保留手改值)
@@ -91,7 +114,8 @@ def recompute(sku: PricingSku) -> None:
     big = _d(sku.big_promo)
     if big is not None and big > 0:
         # 先 quantize 抹掉 0.90/0.88 的 Decimal 残差(否则 880×比值=900.0000…24 会被 ceiling 顶成 910), 再进位到10
-        floor_mid = _roundup10((big * _MID_OVER_BIG_RATIO).quantize(cent, rounding=ROUND_HALF_UP))
+        # ★大促价 big 在此【只读不写】—— 中促由大促派生, 绝无反向路径(用户铁律: 大促到手是唯一不可动的锚)。
+        floor_mid = _roundup10((big * _mid_over_big_ratio(params)).quantize(cent, rounding=ROUND_HALF_UP))
         cur_mid = _d(sku.mid_promo)
         if cur_mid is None or cur_mid < floor_mid:
             sku.mid_promo = floor_mid
@@ -127,6 +151,9 @@ def recompute_and_save(db: Session, sku_id: int) -> PricingSku:
 PROMO_PARAM_DEFAULTS = {
     "mid_platform_discount": "0.12", "mid_vip_commission": "0.01",
     "big_platform_discount": "0.12", "big_vip_commission": "0.00",
+    # ★中促/大促托底比 K (2026-07-16): 默认=数学下限 0.90/0.88≈1.022727(现网口径, 不改行为);
+    # 调大=中促抬高、大促锚不动、垫片缓冲更足。7-20 重挂时切 "1.04"。低于下限会被 _mid_over_big_ratio 顶回。
+    "mid_over_big_ratio": str(Decimal("0.90") / Decimal("0.88")),
 }
 # 88VIP 消费券阶梯默认 (来自用户活动报名表): 到手价 ≥阈值 → 减额。降序匹配, 取满足的最高一档。
 COUPON_TIERS_DEFAULT = [[1500, 150], [800, 80], [500, 50], [200, 20]]
@@ -253,20 +280,55 @@ def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict
       618报名价  = 大促到手 ÷ (1−618力度15%);
       空档价红线 = 中促到手 (空档期任何单件即享工具做的价不得低于它, 否则塌平台线②);
       g          = 中促到手 ÷ 大促到手; 合规 ⟺ g ≥ g_min(=0.90/0.88)。
-    报名价取整到元(用户实际填淘宝的数); 佣金已内含在到手值里, 与佣金参数无关。"""
+    报名价取整到元(用户实际填淘宝的数); 佣金已内含在到手值里, 与佣金参数无关。
+
+    ★2026-07-16 报名价重构新增 (用户四诉求: 大促到手是唯一锚 / 只维护一个数 / 单品立减降为自动层 /
+      平台低价校验永远自洽)。
+
+    旧「叠加法」病灶: 报名活动价填【日常价】(高), 靠一大刀单品立减压到到手, 而平台算的【名义券后】
+      = 活动价×(1−比例) **不含单品立减** → 名义比真实到手虚高整整一刀立减(全店中位 ¥1387 = 日常价23%)
+      → 名义券后必顶穿"近15天最低券后"历史线 → 报名失败(2026-07-16 88VIP 60品报 42 失败)。
+
+    ★★为什么【垫片不能常驻】(2026-07-16 实证推翻了"常驻垫片"初稿, 记死):
+      单品立减只能【减钱】⇒ 真实到手 = 名义券后 − 垫片 ≤ 名义券后;
+      平台历史线 = **真实到手**(实证: AA柱2.1米 线 9459.18 == 大促锚 9459.18 一分不差);
+      ⇒ 下一轮 名义 必须 ≤ 上轮真实 = 上轮名义 − 垫片。**垫片>0 ⇒ 名义须逐轮下降 ⇒ 到手锚保不住。**
+      实测: 带垫片方案下一轮大促 409/409 全部报不进; 垫片越厚死得越快。
+      ⇒ 稳态【垫片必须 = 0】: 报名价 = floor(到手 ÷ (1−该场比例)), 名义 = 真实 = 到手 →
+        线 = 名义 → 下轮名义 = 同值 ≤ 线 → **永远自洽、可无限重复**(实测 0/409 撞线, 取整让步中位 ¥0.41)。
+      单品立减保留但**只在两处用**: ① 空档期(无活动时压价, 不参与报名校验); ② 一次性救场(见下)。
+
+    输出 (signup_price_* = 各场该填的报名价, 垫片恒 0):
+      signup_price_big = floor(大促到手 ÷ (1−12%))  ← 88VIP/大促场; 到手 = 大促锚 ✔
+      signup_price_mid = floor(中促到手 ÷ (1−10%))  ← 超级立减场; 到手 = 中促
+      signup_price_618 = floor(大促到手 ÷ (1−15%))  ← 618/双11
+      K=0.90/0.88 时 signup_price_big == signup_price_mid(**一个数管两场**); K 调大则两场各用各的
+      (手调旋钮仍只有【大促锚】一个, 两个报名价都是系统派生)。
+    ★救场不是"加垫片"(垫片只会把到手压得更低), 而是**把该 SKU 报名价压到线内**:
+      报名价' = min(本场 signup_price, floor(券后线 ÷ (1−比例)))  —— 见 data_export_service._coupon_floor_cap。"""
     mid_lev, big_lev, lev618 = _report_leverage(params)
-    yuan, micro = Decimal("1"), Decimal("0.000001")
+    yuan, micro, cent = Decimal("1"), Decimal("0.000001"), Decimal("0.01")
     mid_buyer = _d(getattr(promo, "mid_buyer_price", None))
     big_buyer = _d(getattr(promo, "big_buyer_price", None))
     out = {"report_price": None, "report_price_mid": None, "report_price_618": None,
-           "gap_floor": None, "compliance_g": None, "report_compliant": None}
+           "gap_floor": None, "compliance_g": None, "report_compliant": None,
+           "signup_price_big": None, "signup_price_mid": None, "signup_price_618": None,
+           "nominal_big": None, "anchor_slip_big": None}
     if big_buyer and big_buyer > 0 and (Decimal("1") - big_lev) != 0:
         out["report_price"] = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_HALF_UP)
+        # ★向【下】取整到元: 保证 名义券后 = 报名价×(1−比例) ≤ 大促到手 → 绝不超锚/超线(超1分即被拦)
+        sp_big = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_FLOOR)
+        out["signup_price_big"] = sp_big
+        out["nominal_big"] = (sp_big * (Decimal("1") - big_lev)).quantize(cent, ROUND_HALF_UP)
+        # 相对锚的取整让步(元, ≥0 且 <1): 报名价只能整数元 → 到手比锚低这么点, 中位 ¥0.41
+        out["anchor_slip_big"] = (big_buyer - out["nominal_big"]).quantize(cent, ROUND_HALF_UP)
         if (Decimal("1") - lev618) != 0:
             out["report_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_HALF_UP)
+            out["signup_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_FLOOR)
     if mid_buyer and mid_buyer > 0 and (Decimal("1") - mid_lev) != 0:
         out["report_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_HALF_UP)
-        out["gap_floor"] = mid_buyer.quantize(Decimal("0.01"), ROUND_HALF_UP)
+        out["gap_floor"] = mid_buyer.quantize(cent, ROUND_HALF_UP)
+        out["signup_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_FLOOR)
     if mid_buyer and big_buyer and big_buyer > 0:
         g = (mid_buyer / big_buyer).quantize(micro, ROUND_HALF_UP)
         g_min = (Decimal("1") - mid_lev) / (Decimal("1") - big_lev)

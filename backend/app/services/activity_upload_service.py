@@ -23,7 +23,11 @@ def _gen_xlsx(db: Session, channel: str, tier: str) -> tuple[bytes, dict]:
     if channel == "single_item_discount":
         bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)
     elif channel == "promo_signup":
-        if tier == "big88":                        # ★88VIP大促·日常价法(B法, 叠单品立减) 2026-07-16
+        if tier == "big88p":                       # ★★88VIP·报名价法/垫片=0 (2026-07-16 报名价重构, 现行)
+            bio, stats = de.build_promo_signup_p_upload_xlsx(db, lev=0.12)
+        elif tier == "big88":                      # 88VIP大促·日常价法(B法, 叠单品立减) — ⚠已废弃
+            # 2026-07-16 实证淘汰: 活动价填日常价 → 名义券后虚高整整一刀单品立减(中位¥1387/日常价23%)
+            # → 顶穿"近15天最低券后"线 → 60品报名 42 失败(142行券后线)。保留仅为回溯对照, 勿再用于生产。
             bio, stats = de.build_promo_signup_daily_upload_xlsx(db)
         else:
             bio, stats = de.build_promo_signup_upload_xlsx(db, tier)
@@ -58,7 +62,19 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
     rows: list[dict] = []
     if channel in ("promo_signup", "super_reduce"):
         from app.services.data_export_service import collect_signup_rows, _PROMO_SIGNUP_TIERS
-        # ★日常价法(活动价=日常价/占位A): super_reduce 全部 + promo_signup 的 big88(88VIP大促·B法)。
+        # ★★报名价法/垫片=0 (2026-07-16 现行): 活动价 = floor(大促到手/0.88), 名义券后 = 真实到手 = 锚。
+        if channel == "promo_signup" and tier == "big88p":
+            entries, _stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
+            for s, p, sp in entries:
+                for skuid in _expand_ids(p):
+                    rows.append({
+                        "sku_code": s.sku_code, "taobao_sku_id": skuid,
+                        "name": (s.sku or s.product_name or s.sku_code),
+                        "value_label": "报名价(=大促到手÷0.88)", "system_value": _f(sp),
+                        "target_shoudao": _f(p.big_buyer_price),      # 大促到手(锚)
+                    })
+            return rows
+        # ★日常价法(活动价=日常价/占位A): super_reduce 全部 + promo_signup 的 big88(88VIP大促·B法, 已废弃)。
         daily_law = (channel == "super_reduce") or (channel == "promo_signup" and tier == "big88")
         if channel == "promo_signup" and tier != "big88":
             label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
