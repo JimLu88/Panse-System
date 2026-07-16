@@ -1199,6 +1199,12 @@ _PROMO_SIGNUP_TIERS = {
 }
 
 
+# 砸穿护栏容差: 报名价法下 名义券后 == 真实到手, 允许它低于大促锚的最大幅度。
+# 合法偏离只有【报名价取整到元】的残差(实测全店中位 ¥0.41 / 最大 ¥0.87, 占锚 <0.15%);
+# 真事故是数量级的(实抓 18.2% = 锚的五分之一)。1% 足够宽松放行取整、又能拦住任何真事故。
+_ANCHOR_SMASH_TOL = 0.01
+
+
 def _coupon_floor_cap(p, lev: float) -> "float | None":
     """★2026-07-16 报名价重构: 由【券后价历史线】coupon_floor_price 反解出报名价上限。
 
@@ -1308,6 +1314,25 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
                     price = round(float(_fl), 2)
                     stats.setdefault("floor_capped_real", []).append(
                         {"sku_code": s.sku_code, "capped_to": price})
+                # ★★砸穿护栏 (2026-07-16 dry-run 实抓, 报名价法专用):
+                # 报名价法下【名义券后 == 真实到手】, 故它绝不能显著低于大促锚 —— 否则就是真按远低于锚的
+                # 价卖出去(违用户第一铁律"大促到手是底")。实抓: 黑胡桃木岩板餐桌2025 四个SKU, 因【轮换后
+                # skuId 复用老定制槽】带进 enrolled_floor 陈旧底价(730 vs 真锚 3520) → 名义 642 = 锚的
+                # 18.2% → 每个砸穿 2878 元。撞到=**不静默降价**, 剔除该SKU(→整商品完整性剔除)并大声报出,
+                # 交人判(洗线/轮换/清脏数据)。仅在 lev 已知(报名价法)时生效; 老日常价法路径不受影响。
+                if lev is not None and price is not None:
+                    _bb = getattr(p, "big_buyer_price", None)
+                    if _bb is not None and float(_bb) > 0:
+                        _nominal = float(price) * (1.0 - lev)
+                        if _nominal < float(_bb) * (1.0 - _ANCHOR_SMASH_TOL):
+                            stats.setdefault("anchor_smash_blocked", []).append({
+                                "sku_code": s.sku_code, "signup_price": round(float(price), 2),
+                                "nominal": round(_nominal, 2), "anchor": round(float(_bb), 2),
+                                "pct_of_anchor": round(_nominal / float(_bb) * 100, 1),
+                                "enrolled_floor": float(_fl) if _fl is not None else None,
+                                "coupon_floor": (float(p.coupon_floor_price)
+                                                 if getattr(p, "coupon_floor_price", None) is not None else None)})
+                            price = None          # 剔除 → 触发整商品完整性(半套必拒), 绝不砸穿上架
             if price is None:
                 missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
                 stats["skipped_no_price"] += 1

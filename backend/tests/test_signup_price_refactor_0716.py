@@ -116,6 +116,49 @@ def test_coupon_floor_cap_math():
         assert cap * 0.88 <= float(L) + 1e-9, f"L={L} 反解封顶后仍超线"
 
 
+def test_anchor_smash_guard_blocks_stale_floor(db_session):
+    """★★砸穿护栏(2026-07-16 dry-run 实抓的真事故):
+    黑胡桃木岩板餐桌2025 轮换后 skuId 复用老定制槽 → 带进 enrolled_floor 陈旧底价 730(真锚 3520)
+    → 名义券后 642 = 锚的 18.2% → 每个砸穿 2878 元。护栏必须【剔除该SKU并大声报出】, 绝不静默降价。
+    """
+    from app.services.data_export_service import collect_signup_rows
+    db = db_session
+    db.add(PricingSku(product_code="P9", sku_code="PPS2521010041011",
+                      daily_price=Decimal("5475"), is_custom_placeholder=False))
+    db.add(PricingSkuPromo(sku_code="PPS2521010041011", taobao_item_id="9001",
+                           taobao_sku_id="8001",
+                           big_buyer_price=Decimal("3520.41"),      # 真锚
+                           mid_buyer_price=Decimal("3520.41") * G_MIN,
+                           enrolled_floor_price=Decimal("730")))    # ← 轮换遗留的脏底价
+    db.commit()
+
+    entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
+    blocked = stats.get("anchor_smash_blocked") or []
+    assert len(blocked) == 1, f"砸穿护栏没拦住; stats={stats}"
+    b = blocked[0]
+    assert b["sku_code"] == "PPS2521010041011"
+    assert b["anchor"] == 3520.41 and b["enrolled_floor"] == 730.0
+    assert b["pct_of_anchor"] < 20, "应报出'只有锚的18%'这种数量级事故"
+    # 被剔除 → 不出现在上传行里(绝不砸穿上架)
+    assert all(s.sku_code != "PPS2521010041011" for s, _p, _v in entries)
+
+
+def test_anchor_guard_allows_rounding_slip(db_session):
+    """护栏不能误伤: 报名价取整到元的合法残差(<¥1, 占锚<0.15%)必须放行。"""
+    from app.services.data_export_service import collect_signup_rows
+    db = db_session
+    db.add(PricingSku(product_code="P8", sku_code="PPS2525009040119",
+                      daily_price=Decimal("14250"), is_custom_placeholder=False))
+    db.add(PricingSkuPromo(sku_code="PPS2525009040119", taobao_item_id="9002",
+                           taobao_sku_id="8002",
+                           big_buyer_price=Decimal("9459.18"),      # 名义 9459.12, 让步仅 ¥0.06
+                           mid_buyer_price=Decimal("9459.18") * G_MIN))
+    db.commit()
+    entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
+    assert not (stats.get("anchor_smash_blocked") or []), "取整残差被误拦=护栏太紧"
+    assert any(s.sku_code == "PPS2525009040119" for s, _p, _v in entries)
+
+
 def test_placeholder_eats_coupon_floor():
     """★占位吃券后线: 治"3个占位(报500/线350)按'全SKU必须过'把8个真SKU整品拖垮"
     (2026-07-16 榉木岩板餐桌: 8个真SKU刚轮换、线全干净, 却因占位撞线整品被拒)。"""
