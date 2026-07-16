@@ -1323,15 +1323,30 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
                          else _placeholder_signup_price(s, p))
             else:
                 price = pricing_calc_service.report_prices(p, params).get(price_field)
-                # ★券后线反解封顶(2026-07-16): 名义券后 = 报名价×(1−lev) 必须 ≤ 平台最低普惠券后价。
-                # 撞线时压报名价到线内 —— 到手仍由【垫片(单品立减)】补回大促锚, 锚不破(用户第一铁律)。
+                # ★★券后线封顶 —— 但【绝不让步】(2026-07-16 用户拍板铁则, 我违反过一次被当场纠正):
+                #   "不能让步，必须按照erp价格，这个是我们铁则"。
+                # 平台线只在【不会把到手压到锚以下】时才用来封顶(那属于取整/微漂移的合法微调);
+                # 若封顶会跌破锚 → **不封顶**, 就按 ERP 价报, 让平台去拒 —— 宁可这个品不报,
+                # 也绝不降价迁就平台线。(降价报进去 = 拿真金白银补"千牛标价被填低"的错: 实测这批被拦
+                #  SKU 的千牛实际卖价普遍低 28~41%; 正解是 修错价/新建SKU/轮换到干净槽, 让步不在选项里。)
+                # 被这条挡下的会记进 stats["no_concession_kept_erp_price"], 平台拒信里就有真实原因。
                 if lev is not None and price is not None:
                     _cap = _coupon_floor_cap(p, lev)
                     if _cap is not None and float(_cap) < float(price):
-                        stats.setdefault("coupon_floor_capped", []).append({
-                            "sku_code": s.sku_code, "from": round(float(price), 2),
-                            "to": float(_cap), "coupon_floor": float(p.coupon_floor_price)})
-                        price = float(_cap)
+                        _bb0 = getattr(p, "big_buyer_price", None)
+                        _cap_nom = float(_cap) * (1.0 - lev)
+                        _tol0 = (max(_anchor_tol_abs(), float(_bb0) * _ANCHOR_SMASH_TOL)
+                                 if _bb0 and float(_bb0) > 0 else None)
+                        if _tol0 is not None and _cap_nom < float(_bb0) - _tol0:
+                            stats.setdefault("no_concession_kept_erp_price", []).append({
+                                "sku_code": s.sku_code, "erp_price": round(float(price), 2),
+                                "would_cap_to": float(_cap), "anchor": round(float(_bb0), 2),
+                                "coupon_floor": float(p.coupon_floor_price)})
+                        else:
+                            stats.setdefault("coupon_floor_capped", []).append({
+                                "sku_code": s.sku_code, "from": round(float(price), 2),
+                                "to": float(_cap), "coupon_floor": float(p.coupon_floor_price)})
+                            price = float(_cap)
                 # ★2026-07-16 固化: 非占位SKU也尊重 enrolled_floor_price 封顶——但该字段的【数据纪律】
                 # 是只写给"配件/追加/咨询客服"类被平台点名管控的SKU(如洞石背板406.25/追加桌腿1125),
                 # 绝不写产品主SKU → 主SKU floor 恒为空, "报名价=ERP日常价"铁律不受影响。
