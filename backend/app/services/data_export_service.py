@@ -1213,12 +1213,15 @@ def _coupon_floor_cap(p, lev: float) -> "float | None":
     ⚠ 与 enrolled_floor_price 区别: 那个是"上一场活动价"(报名价维度, 直接封顶报名价); 本函数吃的是
       "最低普惠券后价"(到手维度), 必须先 ÷(1−比例) 还原成报名价再封顶 —— 直接拿 L 封报名价会过度保守
       (白白少报一刀官方比例)。2026-07-16 88VIP 142行券后线失败即此线所致。
-    lev = 该场官方立减比例(超级立减0.10 / 88VIP 0.12 / 618 0.15)。无线数据 → None(不封顶)。"""
+    lev = 该场官方立减比例(超级立减0.10 / 88VIP 0.12 / 618 0.15)。无线数据 → None(不封顶)。
+    ★2026-07-16 实证修正: 平台把券后价【四舍五入到整元】再比线, 故 floor(L/(1−lev)) 仍可能超线
+    (报名价15537 → 平台算13673 > 线13672.87), 必须走 max_signup_price 逐元回退。"""
     fl = getattr(p, "coupon_floor_price", None)
     if fl is None or float(fl) <= 0 or lev >= 1:
         return None
-    import math as _m
-    return _m.floor(float(fl) / (1.0 - lev))     # 向下取整到元: 保证 名义券后 = 上限×(1−lev) ≤ L
+    from app.services import pricing_calc_service as _pcs
+    cap = _pcs.max_signup_price(fl, lev)
+    return float(cap) if cap is not None else None
 
 
 def _placeholder_signup_price(s, p, lev: float = 0.12) -> "float | None":

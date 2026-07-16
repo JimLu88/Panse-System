@@ -264,6 +264,42 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
 REPORT_LEVERAGE_DEFAULTS = {"mid": "0.10", "big": "0.12", "big618": "0.15"}
 
 
+def max_signup_price(target, lev) -> Optional[Decimal]:
+    """★求【最大整数报名价 P】使 平台算出的活动券后价 ≤ target。
+    2026-07-16 实证淘汰了简单的 floor(target/(1−lev)):
+
+    平台把活动券后价【四舍五入到整元】再跟线比 —— 回执原文实证:
+      报名价 15537 → 平台算"活动普惠券后价：13673.00元"(15537×0.88=13672.56, 入到 13673),
+      而"最低普惠券后价：13672.87元" → 13673 > 13672.87 → 超线 0.13 元被拒。
+      floor(13672.87/0.88)=15537 仍撞线 → 必须再退到 15536(13671.68→入 13672 ≤ 13672.87 ✓)。
+    target 可以是【大促到手锚】(不超锚)或【券后线】(不超线); 两者都要满足时取 min(锚, 线) 传进来。
+    返回 None 表示 target/lev 非法。"""
+    t = _d(target)
+    if t is None or t <= 0 or lev is None:
+        return None
+    k = Decimal("1") - Decimal(str(lev))
+    if k <= 0:
+        return None
+    # 平台券后价 N = round(P×k) 是【整数元】, 要 N ≤ t ⟺ N ≤ floor(t)  (t 常带分, 如线 13672.87)
+    #   N ≤ floor(t) ⟺ P×k < floor(t) + 0.5 ⟺ P < (floor(t)+0.5)/k
+    # ⇒ P_max = ceil((floor(t)+0.5)/k) − 1。注意【不能】直接用 floor(t/k):
+    #   t=50 时 floor(50/0.88)=56 → 少报(57 也过: 57×0.88=50.16→入50 ≤50); 而 t=13672.87 时
+    #   floor(…)=15537 → 超线(→入13673 >13672.87)。两个方向都会错, 故按上式算再夹逼。
+    n_max = t.quantize(Decimal("1"), ROUND_FLOOR)
+    p = ((n_max + Decimal("0.5")) / k).quantize(Decimal("1"), ROUND_CEILING) - 1
+    for _ in range(4):                       # 夹逼: 抹掉 Decimal 除法残差, 正常 0~1 步收敛
+        if p <= 0:
+            return Decimal("0")
+        if (p * k).quantize(Decimal("1"), ROUND_HALF_UP) <= t:
+            break
+        p -= 1
+    for _ in range(4):                       # 再向上探: 保证拿到的是【最大】的那个(不白少报)
+        if ((p + 1) * k).quantize(Decimal("1"), ROUND_HALF_UP) > t:
+            break
+        p += 1
+    return p if p > 0 else Decimal("0")
+
+
 def _report_leverage(params: Optional[dict]):
     p = params or {}
     return (
@@ -316,19 +352,19 @@ def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict
            "nominal_big": None, "anchor_slip_big": None}
     if big_buyer and big_buyer > 0 and (Decimal("1") - big_lev) != 0:
         out["report_price"] = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_HALF_UP)
-        # ★向【下】取整到元: 保证 名义券后 = 报名价×(1−比例) ≤ 大促到手 → 绝不超锚/超线(超1分即被拦)
-        sp_big = (big_buyer / (Decimal("1") - big_lev)).quantize(yuan, ROUND_FLOOR)
+        # ★max_signup_price: 保证【平台口径】券后价(入整元) ≤ 大促到手 → 绝不超锚(超1分即被拦)
+        sp_big = max_signup_price(big_buyer, big_lev)
         out["signup_price_big"] = sp_big
         out["nominal_big"] = (sp_big * (Decimal("1") - big_lev)).quantize(cent, ROUND_HALF_UP)
         # 相对锚的取整让步(元, ≥0 且 <1): 报名价只能整数元 → 到手比锚低这么点, 中位 ¥0.41
         out["anchor_slip_big"] = (big_buyer - out["nominal_big"]).quantize(cent, ROUND_HALF_UP)
         if (Decimal("1") - lev618) != 0:
             out["report_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_HALF_UP)
-            out["signup_price_618"] = (big_buyer / (Decimal("1") - lev618)).quantize(yuan, ROUND_FLOOR)
+            out["signup_price_618"] = max_signup_price(big_buyer, lev618)
     if mid_buyer and mid_buyer > 0 and (Decimal("1") - mid_lev) != 0:
         out["report_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_HALF_UP)
         out["gap_floor"] = mid_buyer.quantize(cent, ROUND_HALF_UP)
-        out["signup_price_mid"] = (mid_buyer / (Decimal("1") - mid_lev)).quantize(yuan, ROUND_FLOOR)
+        out["signup_price_mid"] = max_signup_price(mid_buyer, mid_lev)
     if mid_buyer and big_buyer and big_buyer > 0:
         g = (mid_buyer / big_buyer).quantize(micro, ROUND_HALF_UP)
         g_min = (Decimal("1") - mid_lev) / (Decimal("1") - big_lev)

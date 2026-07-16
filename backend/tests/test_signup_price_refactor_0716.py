@@ -104,16 +104,41 @@ def test_signup_price_beats_old_daily_method():
     assert old_pad / daily > Decimal("0.15"), "暗刀应占日常价一大截(全店中位23%)"
 
 
-# ── 券后线封顶: 救场 = 压报名价(不是加垫片) ───────────────────────────────────
-def test_coupon_floor_cap_math():
-    """券后线 L → 报名价上限 = floor(L ÷ (1−比例)); 直接拿 L 封报名价是错的(白少报一刀比例)。"""
+# ── 平台四舍五入建模 (2026-07-16 回执实证) ────────────────────────────────────
+def _platform_coupon(P, lev=BIG_LEV):
+    """复刻平台算法: 活动券后价 = 报名价×(1−比例) 【四舍五入到整元】。"""
+    from decimal import ROUND_HALF_UP as _HU
+    return (Decimal(str(P)) * (Decimal("1") - lev)).quantize(Decimal("1"), _HU)
+
+
+def test_platform_rounds_coupon_to_yuan_real_case():
+    """★真实回执复刻: 报名价 15537 → 平台算"活动普惠券后价：13673.00元"(而非 13672.56),
+    线"最低普惠券后价：13672.87元" → 超线 0.13 被拒。故 floor(线/0.88)=15537 不够, 须退到 15536。"""
+    assert _platform_coupon(15537) == Decimal("13673")          # 平台入整元(15537×0.88=13672.56)
+    assert _platform_coupon(15537) > Decimal("13672.87")        # → 超线, 这就是被拒的 0.13 元
+    got = pcs.max_signup_price(Decimal("13672.87"), BIG_LEV)
+    assert got == 15536, f"应退到 15536, 实际 {got}"
+    assert _platform_coupon(got) <= Decimal("13672.87")         # 退一元后真的过线
+
+
+@pytest.mark.parametrize("target", ["13672.87", "4274.71", "350", "325.41", "928.27",
+                                    "9459.18", "3152.66", "50", "250"])
+def test_max_signup_price_never_over_platform_line(target):
+    """不变量: max_signup_price 出的报名价, 按【平台口径】算的券后价必须 ≤ target(一分都不能超)。"""
+    t = Decimal(target)
+    p = pcs.max_signup_price(t, BIG_LEV)
+    assert _platform_coupon(p) <= t, f"target={t} P={p} 平台券后={_platform_coupon(p)} 超了"
+    # 且必须是【最大】的那个: P+1 一定超
+    assert _platform_coupon(p + 1) > t, f"target={t} P={p} 不是最大(P+1 也没超)"
+
+
+def test_coupon_floor_cap_uses_platform_rounding():
+    """券后线封顶走 max_signup_price(平台四舍五入口径), 不是裸 floor(L/0.88)。"""
     from app.services.data_export_service import _coupon_floor_cap
-    assert _coupon_floor_cap(_promo(coupon_floor="350"), 0.12) == 397      # 397×0.88=349.36 ≤ 350 ✔
-    assert _coupon_floor_cap(_promo(coupon_floor="325.41"), 0.12) == 369   # 369×0.88=324.72 ≤ 325.41 ✔
     assert _coupon_floor_cap(_promo(coupon_floor=None), 0.12) is None      # 无线数据=不封顶
-    for L in ("350", "325.41", "928.27", "9459.18"):
+    for L in ("350", "325.41", "928.27", "9459.18", "13672.87"):
         cap = _coupon_floor_cap(_promo(coupon_floor=L), 0.12)
-        assert cap * 0.88 <= float(L) + 1e-9, f"L={L} 反解封顶后仍超线"
+        assert _platform_coupon(cap) <= Decimal(L), f"L={L} 封顶后按平台口径仍超线"
 
 
 def test_anchor_smash_guard_blocks_stale_floor(db_session):
@@ -166,4 +191,7 @@ def test_placeholder_eats_coupon_floor():
     sku = PricingSku(product_code="P1", sku_code="PPSTEST0197",
                      daily_price=Decimal("1000"), is_custom_placeholder=True)
     assert _placeholder_signup_price(sku, _promo(), 0.12) == 500.0
-    assert _placeholder_signup_price(sku, _promo(coupon_floor="350"), 0.12) == 397.0
+    # 线350 → 报名价 398 (398×0.88=350.24 → 平台入整元 350 ≤ 350 ✔; 399 就超: →351)
+    assert _placeholder_signup_price(sku, _promo(coupon_floor="350"), 0.12) == 398.0
+    assert _platform_coupon(398) <= Decimal("350")
+    assert _platform_coupon(399) > Decimal("350")
