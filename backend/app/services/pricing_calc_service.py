@@ -292,21 +292,21 @@ def max_signup_price(target, lev) -> Optional[Decimal]:
     k = Decimal("1") - Decimal(str(lev))
     if k <= 0:
         return None
-    # 平台券后价 N = round(P×k) 是【整数元】, 要 N ≤ t ⟺ N ≤ floor(t)  (t 常带分, 如线 13672.87)
-    #   N ≤ floor(t) ⟺ P×k < floor(t) + 0.5 ⟺ P < (floor(t)+0.5)/k
-    # ⇒ P_max = ceil((floor(t)+0.5)/k) − 1。注意【不能】直接用 floor(t/k):
-    #   t=50 时 floor(50/0.88)=56 → 少报(57 也过: 57×0.88=50.16→入50 ≤50); 而 t=13672.87 时
-    #   floor(…)=15537 → 超线(→入13673 >13672.87)。两个方向都会错, 故按上式算再夹逼。
-    n_max = t.quantize(Decimal("1"), ROUND_FLOOR)
-    p = ((n_max + Decimal("0.5")) / k).quantize(Decimal("1"), ROUND_CEILING) - 1
-    for _ in range(4):                       # 夹逼: 抹掉 Decimal 除法残差, 正常 0~1 步收敛
+    # ★平台用【精确算术】比线(显示才取2位小数) —— 2026-07-16 实证:
+    #   报名价 56.93(占位) → 平台回执"活动普惠券后价：50.10元"(56.93×0.88=50.0984, 只是显示成50.10),
+    #   与线 50.00 比时用的是 50.0984 > 50 → 判超线 0.10。
+    #   ⇒ 曾误以为平台"入整元"(因见过 13673.00 这种整数, 实为价格本身带小数所致), 按那个模型放宽
+    #     半元会正好卡死在边界上。故这里回到最严的口径: 券后价 = P×k 精确值, 必须 ≤ t。
+    # 报名价填整数元(与千牛模板一致) ⇒ P_max = floor(t/k), 再夹逼抹掉 Decimal 除法残差。
+    p = (t / k).quantize(Decimal("1"), ROUND_FLOOR)
+    for _ in range(4):
         if p <= 0:
             return Decimal("0")
-        if (p * k).quantize(Decimal("1"), ROUND_HALF_UP) <= t:
+        if p * k <= t:                       # 精确比较, 不做任何取整
             break
         p -= 1
-    for _ in range(4):                       # 再向上探: 保证拿到的是【最大】的那个(不白少报)
-        if ((p + 1) * k).quantize(Decimal("1"), ROUND_HALF_UP) > t:
+    for _ in range(4):                       # 向上探: 保证是最大的那个(不白少报)
+        if (p + 1) * k > t:
             break
         p += 1
     return p if p > 0 else Decimal("0")
