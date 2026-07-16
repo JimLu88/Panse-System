@@ -29,12 +29,23 @@ def _dec(v: Any) -> Optional[Decimal]:
 def _date(v: Any) -> Optional[date]:
     if not v:
         return None
-    s = str(v).strip()[:10]
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d"):
+    s = str(v).strip()
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%Y.%m.%d", "%Y年%m月%d日"):
         try:
-            return datetime.strptime(s, fmt).date()
+            return datetime.strptime(s[:11], fmt).date()
         except ValueError:
             continue
+    # 发票表头常只写「月.日」(如 3.26 / 3月26日 / 3/26) 无年份 → 补当前年
+    # (用户 2026-07-16: 采购发票日期需在读取时同步入库, 但豆包按原样返回"3.26"→旧解析全失败=None)。
+    import re
+    m = re.match(r"^\s*(\d{1,2})\s*[.\-/月]\s*(\d{1,2})", s)
+    if m:
+        mo, d = int(m.group(1)), int(m.group(2))
+        if 1 <= mo <= 12 and 1 <= d <= 31:
+            try:
+                return date(date.today().year, mo, d)
+            except ValueError:
+                pass
     return None
 
 
@@ -64,7 +75,9 @@ def commit_purchase_parsed(db: Session, parsed: dict) -> dict:
             material_code=line.get("material_code"), material_name=name,
             spec=line.get("spec"), qty=qty, unit_price=unit_price, amount=amount,
             tracking_no=p.get("tracking_no"),
-            freight=_dec(p.get("freight")), total_amount=_dec(p.get("total_amount")),
+            # total_amount 是【本行】金额, 不是发票总额 (用户 2026-07-16: 多行发票每行 total 都被
+            # 错填成发票 total_amount → 采购对账/成本按 total 全部虚高; amount 一直是对的)。
+            freight=_dec(p.get("freight")), total_amount=amount,
         ))
         inserted += 1
     db.flush()
