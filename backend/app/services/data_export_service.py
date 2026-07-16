@@ -1188,6 +1188,92 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
     return out, stats
 
 
+def build_nosales_single_item_discount_xlsx(db: Session):
+    """无动销品『单品立减』批量上传表 (2026-07-17 用户永久规则: 动销不达标报不进大促 →
+    单品立减把到手打到【中促价 − 1 元】, 平替大促力度、无动销门槛)。
+
+    只对 no_sales_service 登记的商品出行; 每真SKU 立减金额 = 日常价 − (中促价 − 1)。
+    护栏: ①到手(中促价−1) < 大促到手锚 → 跳过并记 stats(绝不立低于锚的线)
+          ②缺中促价/日常价 → 跳过 ③占位SKU不出行(单品立减无整品完整性要求, 定制入口不乱动)
+          ④下架SKU排除。表头与 build_single_item_discount_upload_xlsx 完全一致, 可直接上传。"""
+    import io as _io
+    import openpyxl
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import delisted_sku_service, no_sales_service
+
+    targets = no_sales_service.get_no_sales(db)
+    delisted = delisted_sku_service.get_delisted(db)
+
+    skus = db.execute(
+        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
+    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "单品立减"
+    head_fill = PatternFill("solid", fgColor="1F4E79")
+    head_font = Font(bold=True, color="FFFFFF", size=10)
+    wrap = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    for ci, h in enumerate(_TB_DISCOUNT_HEADERS, start=1):
+        c = ws.cell(1, ci, h)
+        c.fill = head_fill; c.font = head_font; c.alignment = wrap
+    ws.row_dimensions[1].height = 78
+
+    stats = {"tier": "nosales", "target_items": sorted(targets), "rows": 0,
+             "skipped_no_skuid": 0, "skipped_no_mid": 0,
+             "skipped_below_anchor": [], "skipped_placeholder": 0, "skipped_delisted": 0}
+    r = 2
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None or not p.taobao_item_id or str(p.taobao_item_id) not in targets:
+            continue
+        if getattr(s, "is_custom_placeholder", False):
+            stats["skipped_placeholder"] += 1
+            continue
+        if not p.taobao_sku_id:
+            stats["skipped_no_skuid"] += 1
+            continue
+        if str(p.taobao_sku_id) in delisted:
+            stats["skipped_delisted"] += 1
+            continue
+        if s.mid_promo is None or s.daily_price is None:
+            stats["skipped_no_mid"] += 1
+            continue
+        target_price = float(s.mid_promo) - 1                     # 到手 = 中促价 − 1(用户口径)
+        anchor = float(p.big_buyer_price) if p.big_buyer_price else None
+        if anchor is not None and target_price < anchor - 0.01:   # 绝不立低于大促锚的线
+            stats["skipped_below_anchor"].append(
+                {"sku_code": s.sku_code, "target": round(target_price, 2), "anchor": anchor})
+            continue
+        d = round(float(s.daily_price) - target_price, 2)         # 立减金额 = 日常价 − 到手
+        if d <= 0:
+            stats["skipped_no_mid"] += 1
+            continue
+        ids = []
+        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            if _sid and str(_sid) not in ids:
+                ids.append(str(_sid))
+        for skuid in ids:
+            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"
+            ws.cell(r, 2, skuid).number_format = "@"
+            ws.cell(r, 3, float(d)).number_format = "0.00"
+            r += 1
+    stats["rows"] = r - 2
+
+    widths = [22, 30, 30, 26, 26]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    out = _io.BytesIO()
+    wb.save(out)
+    out.seek(0)
+    return out, stats
+
+
 # ── 大促活动报名 批量导入表 (千牛后台「大促活动」导入, 2026-07-07 用户) ────────────────────
 # ★核心: 只有【两个】报名价 —— 超级立减10% 与 88VIP大促12% 用【同一个】report_price
 #   (平台力度不同 → 到手不同: 10%给中促到手 / 12%给大促到手), 平时不动;

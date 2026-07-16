@@ -21,7 +21,10 @@ _CHANNELS = {
 def _gen_xlsx(db: Session, channel: str, tier: str) -> tuple[bytes, dict]:
     from app.services import data_export_service as de
     if channel == "single_item_discount":
-        bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)
+        if tier == "nosales":                      # ★无动销品平替档(2026-07-17 永久规则): 到手=中促价−1
+            bio, stats = de.build_nosales_single_item_discount_xlsx(db)
+        else:
+            bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)
     elif channel == "promo_signup":
         if tier == "big88p":                       # ★★88VIP·报名价法/垫片=0 (2026-07-16 报名价重构, 现行)
             bio, stats = de.build_promo_signup_p_upload_xlsx(db, lev=0.12)
