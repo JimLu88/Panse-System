@@ -1200,13 +1200,20 @@ _PROMO_SIGNUP_TIERS = {
 
 
 # 砸穿护栏容差: 报名价法下 名义券后 == 真实到手, 允许它低于大促锚的最大幅度。
-# 合法偏离有两项(都是元级、与锚大小无关): ①报名价取整到元的残差(<1元) ②主动让的安全垫
-# SIGNUP_SAFETY_YUAN(1元, 吃平台线比ERP锚低几毛的漂移) → 合计 <2元。
-# 真事故是【数量级】的(实抓 18.2% = 锚的五分之一)。故容差取 max(2元, 1%×锚):
-#   便宜品(样块锚20.41)靠 2元 绝对值放行(1%只有0.2元, 会把合法让步误判成砸穿);
-#   贵品(锚上万)靠 1% 相对值收紧(2元太松)。两边都不误伤、也都拦得住真事故。
+# 合法偏离恒有两项(都是元级、与锚大小无关): ①主动让的安全垫 SIGNUP_SAFETY_YUAN(吃"平台线比ERP锚
+# 低几毛~几元"的不可预知漂移) ②报名价取整到元的残差(<1元) → 合计 < 安全垫+1。
+# 真事故是【数量级】的(实抓 18.2% = 锚的五分之一)。故容差取 max(安全垫+1元, 1%×锚):
+#   便宜品(锚153的配件: 1%只有1.53元 < 合法让步2.58元)靠绝对值放行 —— 否则【安全垫会触发自己的护栏】
+#   (2026-07-16 实抓: 5 个 coupon_floor=None 即平台压根没给低线的品被误拦, 根因就是这里把绝对容差
+#    写死 2.0、漏算了取整残差);
+#   贵品(锚上万)靠 1% 相对值收紧。两边都不误伤、也都拦得住真事故。
 _ANCHOR_SMASH_TOL = 0.01          # 相对容差(贵品)
-_ANCHOR_SMASH_TOL_ABS = 2.0       # 绝对容差(便宜品) = 安全垫1元 + 取整残差1元
+
+
+def _anchor_tol_abs() -> float:
+    """绝对容差 = 安全垫 + 取整残差1元。跟着 SIGNUP_SAFETY_YUAN 走, 不写死(改安全垫不会漏改这里)。"""
+    from app.services import pricing_calc_service as _pcs
+    return float(_pcs.SIGNUP_SAFETY_YUAN) + 1.0
 
 
 def _coupon_floor_cap(p, lev: float) -> "float | None":
@@ -1344,7 +1351,7 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
                     _bb = getattr(p, "big_buyer_price", None)
                     if _bb is not None and float(_bb) > 0:
                         _nominal = float(price) * (1.0 - lev)
-                        _tol = max(_ANCHOR_SMASH_TOL_ABS, float(_bb) * _ANCHOR_SMASH_TOL)
+                        _tol = max(_anchor_tol_abs(), float(_bb) * _ANCHOR_SMASH_TOL)
                         if _nominal < float(_bb) - _tol:
                             stats.setdefault("anchor_smash_blocked", []).append({
                                 "sku_code": s.sku_code, "signup_price": round(float(price), 2),

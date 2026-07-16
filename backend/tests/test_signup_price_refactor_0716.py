@@ -184,6 +184,25 @@ def test_anchor_smash_guard_blocks_stale_floor(db_session):
     assert all(s.sku_code != "PPS2521010041011" for s, _p, _v in entries)
 
 
+@pytest.mark.parametrize("anchor", ["153.06", "158.16", "183.67", "142.86", "20.41"])
+def test_anchor_guard_not_tripped_by_own_safety_margin(db_session, anchor):
+    """★护栏不能被【自己的安全垫】触发(2026-07-16 实抓 5 个 coupon_floor=None 的品被误拦):
+    便宜品锚才 142~183, 1% 只有 1.4~1.8 元 < 合法让步(安全垫2 + 取整<1 ≈ 2.6) → 绝对容差必须
+    = 安全垫+1, 不能写死 2.0。"""
+    from app.services.data_export_service import collect_signup_rows
+    db = db_session
+    a = Decimal(anchor)
+    db.add(PricingSku(product_code="PZ", sku_code="PPSTOLA01",
+                      daily_price=a * 2, is_custom_placeholder=False))
+    db.add(PricingSkuPromo(sku_code="PPSTOLA01", taobao_item_id="9500", taobao_sku_id="8500",
+                           big_buyer_price=a, mid_buyer_price=a * G_MIN))   # 无 coupon_floor = 平台没给低线
+    db.commit()
+    entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
+    blocked = stats.get("anchor_smash_blocked") or []
+    assert not blocked, f"锚{a}: 合法安全垫被自己的护栏拦了 → {blocked}"
+    assert any(s.sku_code == "PPSTOLA01" for s, _p, _v in entries)
+
+
 def test_anchor_guard_allows_rounding_slip(db_session):
     """护栏不能误伤: 报名价取整到元的合法残差(<¥1, 占锚<0.15%)必须放行。"""
     from app.services.data_export_service import collect_signup_rows
