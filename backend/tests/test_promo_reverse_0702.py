@@ -1,8 +1,10 @@
-"""活动价倒推引擎 (2026-07-02 用户改回 Excel 方式): 输入店铺实收(小/中/大促价) → 反推店铺宝系数。
+"""活动价倒推引擎 (2026-07-02 用户改回 Excel 方式): 输入店铺实收(小/大促价) → 反推店铺宝系数。
 
-口径复刻用户 Excel「活动价」表 Q/U/AB:
+口径 (小促/大促复刻用户 Excel Q/AB; 中促 2026-07-17 任务#22 改统一系数):
   小促: 系数 = 小促价 ÷ 日常
-  中促/大促: 买家到手 = 实收 ÷ (1−佣金); 系数 = 买家到手 ÷ (日常 ×(1−立减)); 店铺到手 = 实收; VIP到手 = 买家 − 消费券
+  大促: 买家到手 = 实收 ÷ (1−佣金); 系数 = 买家到手 ÷ (日常 ×(1−立减)); 店铺到手 = 实收; VIP到手 = 买家 − 消费券
+  中促(任务#22): 买家到手 = 大促到手 × 1.03(K, 全链唯一来源, 不再从 sku.mid_promo 反推);
+        店铺到手 = 买家到手 × (1−中促佣金)
 """
 from decimal import Decimal as D
 
@@ -25,10 +27,11 @@ def test_promo_reverse_from_shop_receipt_price():
     assert promo.shop_internal_final == D("680")
     assert abs(promo.shop_promo_rate - D("0.68")) < D("0.000001")
 
-    # 中促: 佣金1% → 买家到手 = 678 ÷ 0.99; 店铺到手 = 678(实收); 系数 = 买家 ÷ (1000 × 0.88)
-    buyer_mid = (D("678") / D("0.99")).quantize(D("0.01"))
+    # 中促(任务#22): 买家到手 = 大促到手 647 × 1.03 = 666.41 (唯一来源, sku.mid_promo=678 不再参与);
+    # 店铺到手 = 到手 × (1−佣金1%); 系数 = 买家 ÷ (1000 × 0.88)
+    buyer_mid = (D("647") * D("1.03")).quantize(D("0.01"))        # = 666.41
     assert promo.mid_buyer_price == buyer_mid
-    assert promo.mid_shop_receipt == D("678")
+    assert promo.mid_shop_receipt == (buyer_mid * D("0.99")).quantize(D("0.01"))   # 659.75
     assert abs(promo.mid_shop_rate - (buyer_mid / (D("1000") * D("0.88")))) < D("0.00001")
     # VIP到手 = 买家 − 消费券(≥500 减 50)
     assert promo.mid_vip_final == buyer_mid - D("50")
@@ -53,8 +56,20 @@ def test_promo_reverse_skips_missing_tier():
     promo = PricingSkuPromo(sku_code="T3")
     recompute_promo(promo, sku, _params())
     assert promo.shop_promo_rate is None         # 小促无价 → 不反推
-    assert promo.mid_shop_rate is None
+    # ★任务#22: 中促由大促派生(×1.03), 不再依赖 sku.mid_promo → 有大促即有中促
+    assert promo.mid_buyer_price == D("666.41")  # 647 × 1.03
+    assert promo.mid_shop_rate is not None
     assert promo.big_shop_rate is not None        # 大促有价 → 反推
+
+
+def test_mid_not_derived_without_big():
+    """任务#22: mid_buyer 唯一来源 = 大促到手×K; 没有大促价时中促字段不动(绝不回退旧的中促实收反推口径)。"""
+    sku = PricingSku(sku_code="T3B", product_code="P3B", daily_price=D("1000"),
+                     mid_promo=D("678"))         # 只有中促实收, 无大促价
+    promo = PricingSkuPromo(sku_code="T3B")
+    recompute_promo(promo, sku, _params())
+    assert promo.mid_buyer_price is None         # 旧口径会写 678/0.99=684.85; 新口径绝不
+    assert promo.mid_shop_rate is None and promo.mid_shop_receipt is None
 
 
 def test_version_record_snapshots_old_value(db_session):

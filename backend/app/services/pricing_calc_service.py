@@ -20,16 +20,17 @@ from app.models.pricing_ext import PricingSkuCosts, PricingSkuPromo
 # 注: 这是"定价设计口径"; 逐单实际利润仍由 order_financials 按实付×费率另算(第16条 铁律不变)。
 PRICING_GROSSUP_RATE = Decimal("0.026")
 
-# 中促/大促 联动比 K = 中促到手 ÷ 大促到手 的【托底】值。数学下限 = (1−10%)/(1−12%) = 0.90/0.88 ≈ 1.0227
-# (超级立减10%场 vs 88VIP大促12%场官方力度之比): 中促价 ≥ 大促价 × K → 中促到手 ≥ 大促到手, 保证先报
-# 超级立减(浅折10%)、再报88VIP(深折12%)只往低报、不涨价、报得进 (用户 2026-07-15; 价格体系设置.md 第二铁律)。
-# 中促自动托底, 手设更高的保留(不砍利润)。
-# ★2026-07-16 用户拍板: K 提为【可配旋钮】(settings: promo_mid_over_big_ratio) —— 大促到手是唯一不可动的锚,
-#   想让大促更有冲击力/垫片缓冲更足, 就调大 K(中促抬高), 大促一分不动。默认仍 0.90/0.88(=现网口径, 不改行为);
-#   7-20 超级立减 mid 档恢复重挂时切 1.04 (中促涨~1.5%, 涨幅上限1.69%)。
+# 中促/大促 联动比 K = 中促到手 ÷ 大促到手。数学下限 = (1−10%)/(1−12%) = 0.90/0.88 ≈ 1.0227
+# (超级立减10%场 vs 88VIP大促12%场官方力度之比): K ≥ 下限 才能"先报浅折(超级立减)、再报深折(88VIP)"
+# 只往低报、不涨价、报得进 (用户 2026-07-15; 价格体系设置.md 第二铁律)。
+# 2026-07-16: K 提为【可配旋钮】(settings: promo_mid_over_big_ratio), 大促到手是唯一不可动的锚。
+# ★★2026-07-17 用户拍板(任务#22): 全店统一 K = 1.03 —— 中促到手 = 大促到手 × 1.03, 固化进定价链。
+#   promo.mid_buyer_price 由 recompute_promo 按 big_buyer × K 派生, 【全链只此一个来源】。
+#   (旧口径 = 从 sku.mid_promo ÷(1−佣金) 反推, 受 roundup10/cost-plus 基数影响逐 SKU 漂移 1.025~1.038, 已废。)
+#   与 campaign_service.MID_OVER_BIG_RATIO(=1.03, 活动引擎就地计算版) 同口径, 交叉断言见 test_mid_ratio_unify_0717。
 #   ⚠ K 只能在【新一轮重挂/重报】时抬 —— 活动进行中抬价 = 涨价, 撞平台"券后价≤近15天最低"必被拦。
 _MID_OVER_BIG_RATIO_MIN = Decimal("0.90") / Decimal("0.88")   # 数学下限, K 不得低于此(低于=88VIP报不进)
-_MID_OVER_BIG_RATIO = _MID_OVER_BIG_RATIO_MIN                 # 默认值(向后兼容: 无配置时与改造前完全一致)
+_MID_OVER_BIG_RATIO = Decimal("1.03")                         # 默认值(2026-07-17 拍板: 1.03 全店统一)
 
 
 def _mid_over_big_ratio(params: Optional[dict] = None) -> Decimal:
@@ -61,7 +62,7 @@ def recompute(sku: PricingSku, params: Optional[dict] = None) -> None:
     """原地按【定价总表口径】重算整条 成本链 + (成本加成)价格链 + 利润链 (2026-07-01)。
 
     params: 可选活动参数(get_promo_params), 目前只用其 mid_over_big_ratio(=K 中促托底比)。
-            不传 → K 用默认 0.90/0.88, 行为与改造前逐位一致。**K 只影响中促托底, 大促价永不被它改。**
+            不传 → K 用默认 1.03 (2026-07-17 拍板全店统一)。**K 只影响中促托底, 大促价永不被它改。**
 
     成本链(自下而上):
       工厂成本 = 木作 + 包装 + 外配件   (除非 factory_cost_override=True 手动覆盖 → 保留手改值)
@@ -108,12 +109,12 @@ def recompute(sku: PricingSku, params: Optional[dict] = None) -> None:
             sku.mid_promo = _roundup10(acct_base / b_mid)
         if b_big:
             sku.big_promo = _roundup10(acct_base / b_big)
-    # 2.7) 中促自动联动大促【托底】(2026-07-15 用户: 保 88VIP 报得进 — 见 价格体系设置.md 第二铁律):
-    #      中促价 ≥ 大促价 × 0.90/0.88 → 中促到手 ≥ 大促到手。报名只能往低报, 中促<大促则 88VIP 判涨价、报不上。
-    #      手设更高的中促保留(不砍利润); 未设/低于下限的自动补到下限。对大促当输入/成本加成两种口径都生效。
+    # 2.7) 中促自动联动大促【托底】(2026-07-15 引入保 88VIP 报得进; 2026-07-17 任务#22 K 统一 1.03):
+    #      中促价 ≥ 大促价 × K(默认1.03) → 中促实收与"中促到手=大促到手×1.03"新口径对齐。
+    #      手设更高的中促保留(不砍利润); 未设/低于托底的自动补到托底。对大促当输入/成本加成两种口径都生效。
     big = _d(sku.big_promo)
     if big is not None and big > 0:
-        # 先 quantize 抹掉 0.90/0.88 的 Decimal 残差(否则 880×比值=900.0000…24 会被 ceiling 顶成 910), 再进位到10
+        # 先 quantize 抹掉非整除 K 的 Decimal 残差(如 0.90/0.88 时 880×比值=900.0000…24 会被 ceiling 顶成 910), 再进位到10
         # ★大促价 big 在此【只读不写】—— 中促由大促派生, 绝无反向路径(用户铁律: 大促到手是唯一不可动的锚)。
         floor_mid = _roundup10((big * _mid_over_big_ratio(params)).quantize(cent, rounding=ROUND_HALF_UP))
         cur_mid = _d(sku.mid_promo)
@@ -151,9 +152,9 @@ def recompute_and_save(db: Session, sku_id: int) -> PricingSku:
 PROMO_PARAM_DEFAULTS = {
     "mid_platform_discount": "0.12", "mid_vip_commission": "0.01",
     "big_platform_discount": "0.12", "big_vip_commission": "0.00",
-    # ★中促/大促托底比 K (2026-07-16): 默认=数学下限 0.90/0.88≈1.022727(现网口径, 不改行为);
-    # 调大=中促抬高、大促锚不动、垫片缓冲更足。7-20 重挂时切 "1.04"。低于下限会被 _mid_over_big_ratio 顶回。
-    "mid_over_big_ratio": str(Decimal("0.90") / Decimal("0.88")),
+    # ★中促/大促联动比 K (2026-07-17 任务#22 拍板): 全店统一 1.03 —— 中促到手 = 大促到手 × 1.03。
+    # 调大=中促抬高、大促锚不动。低于数学下限(0.90/0.88≈1.0227)会被 _mid_over_big_ratio 顶回。
+    "mid_over_big_ratio": "1.03",
 }
 # 88VIP 消费券阶梯默认 (来自用户活动报名表): 到手价 ≥阈值 → 减额。降序匹配, 取满足的最高一档。
 COUPON_TIERS_DEFAULT = [[1500, 150], [800, 80], [500, 50], [200, 20]]
@@ -202,14 +203,17 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
 
     输入 = 各档【店铺实收价】= 小促价/中促价/大促价 (存在 sku.small_promo/mid_promo/big_promo);
     输出 = 【单品立减系数】(空档期用单品立减把价做到此水平的那个数) + 买家到手/店铺到手/88VIP到手。
-    口径复刻用户 Excel Q/U/AB:
+    口径 (小促/大促复刻用户 Excel Q/AB; 中促 2026-07-17 任务#22 改统一系数):
       日常价 = sku.daily_price
       小促: 无平台立减/佣金 → 买家到手 = 小促价(店铺实收); 单品立减系数 = 小促价 ÷ 日常
-      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 单品立减系数 = 买家到手 ÷ (日常 ×(1−中促立减));
-            店铺到手 = 中促价(实收); 88VIP到手 = 买家到手 − 88VIP消费券(阶梯)
-      大促: 同中促, 换大促价/大促佣金/大促立减
+      大促: 买家到手 = 大促价 ÷ (1−大促佣金); 单品立减系数 = 买家到手 ÷ (日常 ×(1−大促立减));
+            店铺到手 = 大促价(实收); 88VIP到手 = 买家到手 − 88VIP消费券(阶梯)
+      中促(★任务#22, 2026-07-17 拍板): 买家到手 = 大促到手 × K(promo_mid_over_big_ratio, 默认1.03)
+            —— mid_buyer_price【全链只此一个来源】, 不再从 sku.mid_promo 反推(旧口径漂移 1.025~1.038 已废);
+            店铺到手 = 买家到手 × (1−中促佣金); 系数 = 买家到手 ÷ (日常 ×(1−中促立减));
+            88VIP到手 = 买家到手 − 消费券(阶梯)。无大促价 → 中促各字段不动(唯一来源算不出, 绝不回退旧口径)。
     立减/佣金取全局参数(改参数→「活动参数」页一键全表重算); 记录回 promo 供前端展示。
-    ⚠必须在 recompute(sku) 之后调 (要读到最新的 小促/中促/大促价)。"""
+    ⚠必须在 recompute(sku) 之后调 (要读到最新的 小促/大促价)。"""
     from decimal import Decimal as D, ROUND_HALF_UP
     if sku.daily_price is None or D(str(sku.daily_price)) == 0:
         return
@@ -229,30 +233,76 @@ def recompute_promo(promo: PricingSkuPromo, sku: PricingSku, params: Optional[di
         recv = D(str(sku.small_promo))
         promo.shop_internal_final = recv
         promo.shop_promo_rate = (recv / daily).quantize(rate_q, ROUND_HALF_UP)
-    # 中促: 店铺实收 = 中促价
-    if sku.mid_promo is not None and (D("1") - mid_comm) != 0 and (D("1") - mid_disc) != 0:
-        recv = D(str(sku.mid_promo))
-        buyer = (recv / (D("1") - mid_comm)).quantize(cent, ROUND_HALF_UP)      # 买家到手(不含消费券)
+    # 大促: 店铺实收 = 大促价 (先算 —— 任务#22 后中促由大促到手派生)
+    big_buyer = None
+    if sku.big_promo is not None and (D("1") - big_comm) != 0 and (D("1") - big_disc) != 0:
+        recv = D(str(sku.big_promo))
+        big_buyer = (recv / (D("1") - big_comm)).quantize(cent, ROUND_HALF_UP)
+        promo.big_buyer_price = big_buyer
+        promo.big_shop_receipt = recv
+        promo.big_shop_rate = (big_buyer / (daily * (D("1") - big_disc))).quantize(rate_q, ROUND_HALF_UP)
+        promo.big_vip_final = big_buyer - _coupon_deduction(big_buyer, big_tiers)
+        promo.big_platform_discount = big_disc
+        promo.big_vip_commission = big_comm
+    # 中促 (★任务#22, 2026-07-17 拍板): 买家到手 = 大促到手 × K(默认1.03) —— 全链唯一来源。
+    # 只在本次算出了大促到手时才写(绝不回退旧的 sku.mid_promo 反推口径, 也不读陈旧 big_buyer_price 字段)。
+    if big_buyer is not None and big_buyer > 0 and (D("1") - mid_comm) != 0 and (D("1") - mid_disc) != 0:
+        buyer = (big_buyer * _mid_over_big_ratio(params)).quantize(cent, ROUND_HALF_UP)
         promo.mid_buyer_price = buyer
-        promo.mid_shop_receipt = recv                                          # 店铺到手 = 实收 = 中促价
+        promo.mid_shop_receipt = (buyer * (D("1") - mid_comm)).quantize(cent, ROUND_HALF_UP)  # 到手×(1−佣金)
         promo.mid_shop_rate = (buyer / (daily * (D("1") - mid_disc))).quantize(rate_q, ROUND_HALF_UP)
         promo.mid_vip_final = buyer - _coupon_deduction(buyer, mid_tiers)
         promo.mid_platform_discount = mid_disc
         promo.mid_vip_commission = mid_comm
-    # 大促: 店铺实收 = 大促价
-    if sku.big_promo is not None and (D("1") - big_comm) != 0 and (D("1") - big_disc) != 0:
-        recv = D(str(sku.big_promo))
-        buyer = (recv / (D("1") - big_comm)).quantize(cent, ROUND_HALF_UP)
-        promo.big_buyer_price = buyer
-        promo.big_shop_receipt = recv
-        promo.big_shop_rate = (buyer / (daily * (D("1") - big_disc))).quantize(rate_q, ROUND_HALF_UP)
-        promo.big_vip_final = buyer - _coupon_deduction(buyer, big_tiers)
-        promo.big_platform_discount = big_disc
-        promo.big_vip_commission = big_comm
     # 小红书 (不变): 促销价 = 活动价 ×(1−折扣)
     if promo.xhs_activity_price:
         discount = promo.xhs_promo_discount if promo.xhs_promo_discount is not None else D("0.15")
         promo.xhs_promo_price = (D(str(promo.xhs_activity_price)) * (D("1") - discount)).quantize(cent, ROUND_HALF_UP)
+
+
+def backfill_mid_buyer(db: Session, commit: bool = True, sample_limit: int = 20) -> dict:
+    """★任务#22 一次性回填 (2026-07-17 拍板: 中促到手 = 大促到手 × 1.03 全店统一):
+    全店 PricingSkuPromo 逐条重跑 recompute_promo(唯一来源) → mid_buyer_price = round(big_buyer×K, 2),
+    连带 mid_shop_receipt / mid_shop_rate / mid_vip_final / 立减·佣金记录一起刷齐(旧漂移 1.025~1.038 归一)。
+
+    ⚠只动 promo 派生链; 绝不调 recompute(sku) —— sku 四档价(标价/日常/中促/大促)与成本利润链一分不动。
+    无大促价的 promo 跳过(唯一来源算不出, 原值保留); 无对应 sku / 日常价空的跳过。
+    用法: from app.services import pricing_calc_service as pcs; stats = pcs.backfill_mid_buyer(db)
+    返回 {scanned, changed, unchanged, skipped_no_sku, skipped_no_daily, skipped_no_big, ratio, samples}。"""
+    from sqlalchemy import select as _select
+    params = get_promo_params(db)
+    ratio = _mid_over_big_ratio(params)
+    sku_map = {s.sku_code: s for s in db.execute(_select(PricingSku)).scalars().all()}
+    stats: dict = {"scanned": 0, "changed": 0, "unchanged": 0, "skipped_no_sku": 0,
+                   "skipped_no_daily": 0, "skipped_no_big": 0,
+                   "ratio": float(ratio), "samples": []}
+    for promo in db.execute(_select(PricingSkuPromo)).scalars().all():
+        stats["scanned"] += 1
+        sku = sku_map.get(promo.sku_code)
+        if sku is None:
+            stats["skipped_no_sku"] += 1
+            continue
+        if sku.daily_price is None or Decimal(str(sku.daily_price)) == 0:
+            stats["skipped_no_daily"] += 1          # recompute_promo 会直接 return, 提前计数说明原因
+            continue
+        if sku.big_promo is None:
+            stats["skipped_no_big"] += 1            # 无大促价 → 中促唯一来源算不出, 原值保留
+            continue
+        before = _d(promo.mid_buyer_price)
+        recompute_promo(promo, sku, params)
+        after = _d(promo.mid_buyer_price)
+        if before != after:
+            stats["changed"] += 1
+            if len(stats["samples"]) < sample_limit:
+                stats["samples"].append({
+                    "sku_code": promo.sku_code,
+                    "before": float(before) if before is not None else None,
+                    "after": float(after) if after is not None else None})
+        else:
+            stats["unchanged"] += 1
+    if commit:
+        db.commit()
+    return stats
 
 
 # ── 报名价模型 (2026-07-03: 店铺宝失效 → 超级立减「报名价」; 大促价为锚不动, 只动中促) ──────────
@@ -350,8 +400,8 @@ def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict
       signup_price_big = floor(大促到手 ÷ (1−12%))  ← 88VIP/大促场; 到手 = 大促锚 ✔
       signup_price_mid = floor(中促到手 ÷ (1−10%))  ← 超级立减场; 到手 = 中促
       signup_price_618 = floor(大促到手 ÷ (1−15%))  ← 618/双11
-      K=0.90/0.88 时 signup_price_big == signup_price_mid(**一个数管两场**); K 调大则两场各用各的
-      (手调旋钮仍只有【大促锚】一个, 两个报名价都是系统派生)。
+      K=0.90/0.88(数学下限) 时 signup_price_big == signup_price_mid(**一个数管两场**); K 调大则两场各用各的
+      (手调旋钮仍只有【大促锚】一个, 两个报名价都是系统派生)。★任务#22 后默认 K=1.03 > 下限 → 两场各用各的。
     ★救场不是"加垫片"(垫片只会把到手压得更低), 而是**把该 SKU 报名价压到线内**:
       报名价' = min(本场 signup_price, floor(券后线 ÷ (1−比例)))  —— 见 data_export_service._coupon_floor_cap。"""
     mid_lev, big_lev, lev618 = _report_leverage(params)

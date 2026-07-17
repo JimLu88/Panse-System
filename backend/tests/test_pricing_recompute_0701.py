@@ -69,8 +69,8 @@ def test_cost_plus_derives_excel_prices_from_base():
     assert s.list_price == Decimal("1460")          # ⌈580.08/0.4⌉10 = ⌈1450.2⌉10
     assert s.daily_price == Decimal("1095.00")      # 1460×0.75
     assert s.small_promo == Decimal("740")          # ⌈580.08/0.79⌉10 = ⌈734.3⌉10
-    # 中促托底(2026-07-15): base_mid给690=大促, 但88VIP合规要求 中促≥大促×0.90/0.88 → 自动抬到 ⌈690×1.0227⌉10=710
-    assert s.mid_promo == Decimal("710")            # 中促自动联动大促(≥大促×0.90/0.88, 保88VIP报得进)
+    # 中促托底(2026-07-15 引入; ★任务#22 K统一1.03): base_mid给690=大促, 托底 ⌈690×1.03⌉10 = ⌈710.7⌉10 = 720
+    assert s.mid_promo == Decimal("720")            # 中促自动联动大促(≥大促×K, K=1.03 全店统一)
     assert s.big_promo == Decimal("690")            # ⌈580.08/0.85⌉10 (Excel 边柜大促=690)
     assert s.gross_margin_rate > 0                   # 不再亏本 (原冻结价 503.25 时为 −14.9%)
 

@@ -64,7 +64,9 @@ def test_618_is_3pct_shallower_than_big():
 
 def test_mid_uses_10pct_and_mid_target():
     # 中促(日常场)用 10% 力度 + 中促买家价; 折 = 中促买家价/日常 + 0.10
-    sku, promo = _mk(19575, 12890, mid=13183)          # 中促买家价 = 13183/0.98 = 13452.04
+    # ★任务#22: 中促买家价 = 大促买家价 × 1.03 = 13153.06×1.03 = 13547.65 (sku.mid_promo=13183 不再参与)
+    sku, promo = _mk(19575, 12890, mid=13183)
+    assert promo.mid_buyer_price == D("13547.65")
     d = svc.single_item_discounts(promo, sku.daily_price, PARAMS)
     exp = float(promo.mid_buyer_price) / 19575 + 0.10
     assert abs(float(d["mid_discount"]) - exp) < 0.001

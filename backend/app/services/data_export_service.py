@@ -472,16 +472,20 @@ def _coupon_if(cellref: str, tiers) -> str:
 
 
 def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
-                          mid_tiers, big_tiers) -> None:
-    """活动价倒推链改活公式 (2026-07-02 复刻用户 Excel「活动价」表, 锚 = 各档店铺实收 = 小/中/大促价):
-      日常价 = 标价×0.75; 小/中/大促价(=店铺实收) 由售价档位列驱动(成本加成或手填)。
+                          mid_tiers, big_tiers, promo_params=None) -> None:
+    """活动价倒推链改活公式 (2026-07-02 复刻用户 Excel「活动价」表; 中促 2026-07-17 任务#22 改统一系数):
+      日常价 = 标价×0.75; 小/大促价(=店铺实收) 由售价档位列驱动(成本加成或手填)。
       小促: 买家到手 = 小促价; 单品立减系数 = 小促价 ÷ 日常                    (Excel Q = R/P)
-      中促: 买家到手 = 中促价 ÷ (1−中促佣金); 单品立减系数 = 买家到手 ÷ (日常×(1−中促立减)) (Excel U)
-            店铺到手 = 中促价(实收); VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯)
-      大促: 同中促, 换大促价/大促佣金/大促立减                                (Excel AB)
-    → 改 小/中/大促价 (或日常价), 买家到手/系数/店铺到手/VIP 全自动重算; 系数就是要填进淘宝单品立减的数。
+      大促: 买家到手 = 大促价 ÷ (1−大促佣金); 店铺到手 = 大促价(实收);
+            VIP到手 = 买家到手 − 88VIP消费券(嵌套IF阶梯)                       (Excel AB)
+      中促(★任务#22): 买家到手 = 大促到手 × K(promo_mid_over_big_ratio, 默认1.03) —— 与 DB 派生
+            (pricing_calc_service.recompute_promo) 同一唯一来源; 店铺到手 = 买家到手 × (1−中促佣金)。
+            不再从中促实收列反推(旧口径漂移已废)。
+    → 改 大促价 (或日常价), 买家到手/店铺到手/VIP 全自动重算。
     另: 淘宝活动价/小红书标价 = 日常; 小红书促销价 = 活动价×(1−折扣)。"""
     from openpyxl.utils import get_column_letter
+    from app.services.pricing_calc_service import _mid_over_big_ratio
+    k_str = f"{float(_mid_over_big_ratio(promo_params)):g}"    # K 固化进公式(导出时点口径)
     def L(f):
         i = pos.get(f)
         return get_column_letter(i) if i else None
@@ -507,18 +511,17 @@ def _apply_promo_formulas(ws, pos: dict, *, data_start_row: int,
         # 小促: 店内到手 = 小促价 (单品立减「折/降价金额」改用派生列 _PRICING_DISCOUNT_FIELDS, 不再输出乘法系数)
         if has(C["small_promo"], r):
             put("shop_internal_final", r, f'={C["small_promo"]}{r}')
-        # 中促: 买家到手 = 中促价÷(1−佣金); 店铺到手 = 中促价; VIP = 买家 − 消费券
-        if has(C["mid_promo"], r):
-            mp, mbp = f'{C["mid_promo"]}{r}', f'{C["mid_buyer_price"]}{r}'
-            put("mid_buyer_price", r, f'=IFERROR({mp}/(1-{C["mid_vip_commission"]}{r}),"")')
-            put("mid_shop_receipt", r, f'={mp}')
-            put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
-        # 大促: 同理
+        # 大促: 买家到手 = 大促价÷(1−佣金); 店铺到手 = 大促价(实收)
         if has(C["big_promo"], r):
             bp, bbp = f'{C["big_promo"]}{r}', f'{C["big_buyer_price"]}{r}'
             put("big_buyer_price", r, f'=IFERROR({bp}/(1-{C["big_vip_commission"]}{r}),"")')
             put("big_shop_receipt", r, f'={bp}')
             put("big_vip_final", r, f'={bbp}-({_coupon_if(bbp, big_tiers)})')
+            # 中促(★任务#22): 买家到手 = 大促到手×K(默认1.03, 与 DB 派生同源); 店铺到手 = 买家到手×(1−佣金)
+            mbp = f'{C["mid_buyer_price"]}{r}'
+            put("mid_buyer_price", r, f'=IFERROR(ROUND({bbp}*{k_str},2),"")')
+            put("mid_shop_receipt", r, f'=IFERROR(ROUND({mbp}*(1-{C["mid_vip_commission"]}{r}),2),"")')
+            put("mid_vip_final", r, f'={mbp}-({_coupon_if(mbp, mid_tiers)})')
         if has(C["xhs_activity_price"], r):
             put("xhs_promo_price", r, f'={C["xhs_activity_price"]}{r}*(1-{C["xhs_promo_discount"]}{r})')
 
@@ -930,7 +933,8 @@ def build_catalog_xlsx(db: Session):
     # 3) 平台活动价 (淘宝/店内/中促/大促/小红书) 派生列 → 活公式 (含 88VIP 消费券阶梯)
     _apply_promo_formulas(ws, field_pos, data_start_row=3,
                           mid_tiers=promo_params.get("mid_coupon_tiers"),
-                          big_tiers=promo_params.get("big_coupon_tiers"))
+                          big_tiers=promo_params.get("big_coupon_tiers"),
+                          promo_params=promo_params)   # 任务#22: 中促列公式要用 K(默认1.03)
 
     out = _io.BytesIO()
     wb.save(out)
@@ -1189,12 +1193,15 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
 
 
 def build_nosales_single_item_discount_xlsx(db: Session):
-    """无动销品『单品立减』批量上传表 (2026-07-17 用户永久规则: 动销不达标报不进大促 →
-    单品立减把到手打到【中促价 − 1 元】, 平替大促力度、无动销门槛)。
+    """无动销品『单品立减』批量上传表 (2026-07-17 用户永久规则; 任务#22 定稿口径: 动销不达标报不进大促 →
+    单品立减把到手打到【中促到手 + 1 元】, 平替大促力度、无动销门槛; +1 防零头导致未来报名撞线)。
 
-    只对 no_sales_service 登记的商品出行; 每真SKU 立减金额 = 日常价 − (中促价 − 1)。
-    护栏: ①到手(中促价−1) < 大促到手锚 → 跳过并记 stats(绝不立低于锚的线)
-          ②缺中促价/日常价 → 跳过 ③占位SKU不出行(单品立减无整品完整性要求, 定制入口不乱动)
+    只对 no_sales_service 登记的商品出行; 每真SKU 立减金额 = 日常价 − (中促到手 + 1)。
+    中促到手 = promo.mid_buyer_price (任务#22 全链唯一来源 = 大促到手×1.03, 与 campaign_service
+    的 mid_buyer_inplace 同口径, 交叉断言见 test_mid_ratio_unify_0717)。
+    护栏: ①到手(中促+1) < 大促到手锚 → 跳过并记 stats(绝不立低于锚的线; 新口径下 中促+1 恒>锚,
+          只有 backfill_mid_buyer 之前的陈旧漂移值才可能触发)
+          ②缺中促到手/日常价 → 跳过 ③占位SKU不出行(单品立减无整品完整性要求, 定制入口不乱动)
           ④下架SKU排除。表头与 build_single_item_discount_upload_xlsx 完全一致, 可直接上传。"""
     import io as _io
     import openpyxl
@@ -1239,10 +1246,10 @@ def build_nosales_single_item_discount_xlsx(db: Session):
         if str(p.taobao_sku_id) in delisted:
             stats["skipped_delisted"] += 1
             continue
-        if s.mid_promo is None or s.daily_price is None:
+        if p.mid_buyer_price is None or s.daily_price is None:
             stats["skipped_no_mid"] += 1
             continue
-        target_price = float(s.mid_promo) - 1                     # 到手 = 中促价 − 1(用户口径)
+        target_price = float(p.mid_buyer_price) + 1               # 到手 = 中促到手 + 1(任务#22 永久规则)
         anchor = float(p.big_buyer_price) if p.big_buyer_price else None
         if anchor is not None and target_price < anchor - 0.01:   # 绝不立低于大促锚的线
             stats["skipped_below_anchor"].append(

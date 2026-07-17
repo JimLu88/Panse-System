@@ -34,21 +34,23 @@ def test_report_price_A_from_big():
     assert rp["report_price_618"] == D("1035")  # 880/0.85=1035.29 → 1035
 
 
-def test_compliant_when_ratio_is_0227():
-    # 中促900/大促880 = 1.02273 = g_min → 合规, A中 = 900/0.90 = 1000 = A
+def test_compliant_with_unified_ratio_103():
+    # ★任务#22: 中促到手 = 大促到手880 × 1.03 = 906.40 (sku.mid_promo=900 不再参与)
+    # → g = 1.03 ≥ g_min(1.02273) 恒合规; A中 = 906.40/0.90 = 1007 (K>下限 → 两场各用各的报名价)
     _, promo = _mk(2000, 900, 880)
     rp = svc.report_prices(promo, PARAMS)
     assert rp["report_compliant"] is True
-    assert rp["report_price_mid"] == rp["report_price"]           # A中 == A
-    assert rp["gap_floor"] == D("900.00")                          # 空档价红线 = 中促到手
+    assert rp["compliance_g"] == D("1.030000")
+    assert rp["report_price_mid"] == D("1007")                     # 906.40/0.90 = 1007.11 → 1007
+    assert rp["gap_floor"] == D("906.40")                          # 空档价红线 = 中促到手 = 大促×1.03
 
 
-def test_broken_when_mid_too_low():
-    # 中促880 = 大促880 → g=1.0 < 1.02273 → 不合规
+def test_mid_derivation_ignores_low_sku_mid():
+    # 旧口径: sku.mid_promo=880(=大促) → g=1.0 不合规; ★任务#22 后中促由大促派生 → g 恒 1.03 合规
     _, promo = _mk(2000, 880, 880)
     rp = svc.report_prices(promo, PARAMS)
-    assert rp["report_compliant"] is False
-    assert rp["compliance_g"] == D("1.000000")
+    assert rp["report_compliant"] is True
+    assert rp["compliance_g"] == D("1.030000")
 
 
 def test_fix_raises_mid_big_untouched():
@@ -78,9 +80,10 @@ def test_fix_noop_when_compliant():
 
 
 def test_recompute_keeps_fixed_mid():
-    # 微升后 base_mid=None → recompute() 不该把中促覆盖回去
+    # 微升后 base_mid=None → recompute() 不做 cost-plus 覆盖;
+    # ★任务#22 K=1.03 后, 中促实收托底 = ⌈880×1.03⌉10 = 910 > 900 → 托底抬到 910 (大促仍不动)
     sku, _ = _mk(2000, 880, 880)
     svc.fix_mid_to_compliant(sku, PARAMS)
     svc.recompute(sku)
-    assert sku.mid_promo == D("900.00")                            # 保住手改值
+    assert sku.mid_promo == D("910")                               # 托底线随 K=1.03 上移
     assert sku.big_promo == D("880")                              # 大促仍不动
