@@ -41,6 +41,29 @@ def _parse_dt(raw) -> Optional[datetime]:
     return None
 
 
+def _ai_rescue(db: Session, c: dict, title: str,
+               start: Optional[datetime], end: Optional[datetime]):
+    """规则解析失手 (没标题 / 日期解析不出) 且带 raw 原文 → 活动系统 AI (设置页可配
+    DeepSeek/千问) 抽严格 JSON {title,start,end} 兜底; 未配置 / 抽取失败 → 原值原样返回
+    (零行为变化)。规则解析成功时不调 AI (省 token)。"""
+    raw = str(c.get("raw") or "").strip()
+    if not raw or (title and start is not None):
+        return title, start, end
+    try:
+        from app.services import campaign_ai_service
+        got = campaign_ai_service.extract_campaign_fields(db, raw)
+    except Exception:   # noqa: BLE001 — 兜底路径绝不能拖垮发现主流程
+        return title, start, end
+    if not got:
+        return title, start, end
+    title = title or str(got.get("title") or "").strip()   # 规则标题优先, AI 只补空
+    if start is None:
+        start = _parse_dt(got.get("start"))
+    if end is None:
+        end = _parse_dt(got.get("end"))
+    return title, start, end
+
+
 def upsert_calendar(db: Session, campaigns: list[dict]) -> dict:
     """WA 发现结果 → CampaignCalendar, 按 (title, start_at) 去重 upsert。
     已存在的只刷新 end_at/status (活动状态会从「预热」变「报名中」), 不重复建行。"""
@@ -48,11 +71,13 @@ def upsert_calendar(db: Session, campaigns: list[dict]) -> dict:
     inserted = updated = skipped = 0
     for c in campaigns or []:
         title = str(c.get("title") or "").strip()
+        start = _parse_dt(c.get("start"))
+        end = _parse_dt(c.get("end"))
+        # 规则解析不出 → 可选 AI 兜底 (未配置时此行为空操作, 与旧行为逐位一致)
+        title, start, end = _ai_rescue(db, c, title, start, end)
         if not title:
             skipped += 1                       # 没标题的行没法去重/提醒, 丢弃 (raw 已在 WA 侧留档)
             continue
-        start = _parse_dt(c.get("start"))
-        end = _parse_dt(c.get("end"))
         status = str(c.get("status") or "").strip() or None
         row = db.execute(select(CampaignCalendar).where(
             CampaignCalendar.title == title,

@@ -151,6 +151,81 @@ def test_integration(
     return TestOut(ok=True, provider=provider.name, model=resp.model, sample=resp.text[:50])
 
 
+# ------------------- 活动系统 AI (DeepSeek/千问, 2026-07-17) ---------------- #
+# key 加密落库 (settings_service._SECRET_KEYS); 读取绝不回明文 — 只回 set 状态+尾4位。
+
+
+class CampaignAiOut(BaseModel):
+    provider: str            # none | deepseek | qwen
+    model: str
+    api_key_set: bool
+    api_key_tail: str        # 尾 4 位; 未配置为 ""
+    providers: list[dict]    # 下拉可选项 {value,label,default_model}
+
+
+class CampaignAiIn(BaseModel):
+    provider: Optional[str] = Field(default=None, pattern=r"^(none|deepseek|qwen)$")
+    model: Optional[str] = None
+    api_key: Optional[str] = None   # 空 = 不改; "__CLEAR__" = 清除 (与 integrations 同约定)
+
+
+def _campaign_ai_out(db: Session) -> CampaignAiOut:
+    from app.services import campaign_ai_service
+    st = campaign_ai_service.settings_status(db)
+    return CampaignAiOut(**st, providers=list(campaign_ai_service.PROVIDER_OPTIONS))
+
+
+@router.get("/campaign-ai", response_model=CampaignAiOut)
+def get_campaign_ai_settings(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    return _campaign_ai_out(db)
+
+
+@router.put("/campaign-ai", response_model=CampaignAiOut)
+def put_campaign_ai_settings(
+    payload: CampaignAiIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    if payload.provider is not None:
+        settings_service.set_value(db, "campaign_ai_provider", payload.provider.strip().lower())
+    if payload.model is not None:
+        settings_service.set_value(db, "campaign_ai_model", payload.model.strip())
+    if payload.api_key is not None:
+        if payload.api_key == "__CLEAR__":
+            settings_service.set_value(db, "campaign_ai_api_key", "")
+        elif payload.api_key:
+            settings_service.set_value(db, "campaign_ai_api_key", payload.api_key.strip())
+    db.commit()
+    return _campaign_ai_out(db)
+
+
+@router.post("/campaign-ai/test", response_model=TestOut)
+def test_campaign_ai(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import campaign_ai_service
+    provider = campaign_ai_service.get_campaign_ai(db)
+    if provider is None:
+        return TestOut(ok=False, provider="none", model="",
+                       error="活动系统 AI 未配置 (provider=none 或 API Key 为空)")
+    try:
+        resp = provider.chat(
+            system="你是 ERP 配置自检助手。",
+            user="请回复一个汉字「好」用来确认 API 通畅。",
+            max_tokens=16,
+        )
+    except AiUnavailable as e:
+        return TestOut(ok=False, provider=provider.name, model=provider.model, error=str(e))
+    except Exception as e:  # pragma: no cover
+        return TestOut(ok=False, provider=provider.name, model=provider.model,
+                       error=f"{type(e).__name__}: {e}")
+    return TestOut(ok=True, provider=provider.name, model=resp.model, sample=resp.text[:50])
+
+
 # ----------------------------- 系统监控 / 看门狗 (业务需求) ---------- #
 
 

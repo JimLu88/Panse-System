@@ -40,6 +40,8 @@ _SECRET_KEYS = {
     # ChatBI 问数: 云端 LLM key + 只读角色 DSN (含密码) — 加密落库
     "chatbi_cloud_api_key",
     "chatbi_ro_dsn",
+    # 活动系统云端 LLM (DeepSeek/千问) — 加密落库, 读取接口只回状态+尾4位 (2026-07-17)
+    "campaign_ai_api_key",
 }
 
 

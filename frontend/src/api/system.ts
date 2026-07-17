@@ -40,6 +40,29 @@ export const testIntegration = (kind: 'diagnose' | 'ocr' | 'custom') =>
     )
     .then((r) => r.data);
 
+// ----- 活动系统 AI (DeepSeek/千问, 2026-07-17): key 加密落库, 读取只回状态+尾4位 -----
+export interface CampaignAiConfig {
+  provider: string; // none | deepseek | qwen
+  model: string;
+  api_key_set: boolean;
+  api_key_tail: string;
+  providers: { value: string; label: string; default_model: string }[];
+}
+
+export const fetchCampaignAi = () =>
+  api.get<CampaignAiConfig>('/api/admin/campaign-ai').then((r) => r.data);
+
+export const updateCampaignAi = (payload: { provider?: string; model?: string; api_key?: string }) =>
+  api.put<CampaignAiConfig>('/api/admin/campaign-ai', payload).then((r) => r.data);
+
+export const testCampaignAi = () =>
+  api
+    .post<{ ok: boolean; provider: string; model: string; sample?: string; error?: string }>(
+      '/api/admin/campaign-ai/test',
+      {},
+    )
+    .then((r) => r.data);
+
 // ----- 系统监控 / 看门狗 (业务需求) -----
 export interface HealthCheck {
   name: string;

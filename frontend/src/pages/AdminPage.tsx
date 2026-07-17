@@ -92,6 +92,9 @@ import {
   LogisticsConfig,
   fetchLogisticsConfig,
   updateLogisticsConfig,
+  fetchCampaignAi,
+  updateCampaignAi,
+  testCampaignAi,
 } from '../api/client';
 import { syncAllShipments } from '../api/shipments';
 import { useAuth } from '../auth/AuthProvider';
@@ -620,8 +623,164 @@ function IntegrationsTab() {
         providers={data.supported_providers}
         onSaved={() => qc.invalidateQueries({ queryKey: ['integrations'] })}
       />
+      <CampaignAiForm />
       <LogisticsForm />
     </Space>
+  );
+}
+
+// 活动系统 AI (DeepSeek/千问, 2026-07-17): 活动发现日期兜底 + 核对失败原因归类。
+// key 加密落库; 读取只回「已配置 + 尾4位」, 绝不回明文; 提交后清空输入框。
+function CampaignAiForm() {
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery({
+    queryKey: ['campaign-ai'],
+    queryFn: fetchCampaignAi,
+  });
+  const [form] = Form.useForm();
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const saveMut = useMutation({
+    mutationFn: (v: { provider: string; model: string; api_key?: string }) =>
+      updateCampaignAi({
+        provider: v.provider,
+        model: v.model,
+        api_key: v.api_key ? v.api_key : undefined, // 留空 = 不改
+      }),
+    onSuccess: () => {
+      message.success('活动系统 AI 配置已保存');
+      form.setFieldValue('api_key', ''); // 提交后清空密码框, 不留明文
+      qc.invalidateQueries({ queryKey: ['campaign-ai'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  const clearKeyMut = useMutation({
+    mutationFn: () => updateCampaignAi({ api_key: '__CLEAR__' }),
+    onSuccess: () => {
+      message.success('API Key 已清除');
+      qc.invalidateQueries({ queryKey: ['campaign-ai'] });
+    },
+  });
+
+  const testMut = useMutation({
+    mutationFn: testCampaignAi,
+    onSuccess: (r) => {
+      if (r.ok) {
+        setTestResult({ ok: true, text: `${r.provider} / ${r.model}: ${r.sample ?? ''}` });
+        message.success('调用成功');
+      } else {
+        setTestResult({ ok: false, text: r.error ?? '调用失败' });
+      }
+    },
+    onError: (e: any) => {
+      setTestResult({ ok: false, text: e?.response?.data?.detail ?? '调用失败' });
+    },
+  });
+
+  if (isLoading || !data) return null;
+
+  return (
+    <Card
+      size="small"
+      title={
+        <Space>
+          <ExperimentOutlined />
+          活动系统 AI (DeepSeek/千问)
+          <Tag color="purple">campaign</Tag>
+        </Space>
+      }
+      extra={
+        <Button
+          icon={<ExperimentOutlined />}
+          loading={testMut.isPending}
+          disabled={!data.api_key_set || data.provider === 'none'}
+          onClick={() => testMut.mutate()}
+        >
+          测试联通
+        </Button>
+      }
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="活动发现/核对的可选 LLM 兜底"
+        description="千牛活动列表抓回来但规则解析不出档期日期时, 用云端 LLM 从原文抽取; 核对失败原因也可归类。选「关闭」则一切保持原行为。Key 加密存储, 只显示尾 4 位。"
+      />
+      <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="当前 Provider">
+          {data.providers.find((p) => p.value === data.provider)?.label ?? data.provider}
+        </Descriptions.Item>
+        <Descriptions.Item label="当前模型">{data.model || '-'}</Descriptions.Item>
+        <Descriptions.Item label="API Key" span={2}>
+          {data.api_key_set ? (
+            <Space>
+              <Tag color="green" icon={<KeyOutlined />}>
+                已配置 ****{data.api_key_tail || '????'}
+              </Tag>
+              <Button size="small" type="link" danger onClick={() => clearKeyMut.mutate()}>
+                清除
+              </Button>
+            </Space>
+          ) : (
+            <Tag color="default">未配置</Tag>
+          )}
+        </Descriptions.Item>
+      </Descriptions>
+
+      <Form
+        form={form}
+        layout="vertical"
+        initialValues={{ provider: data.provider, model: data.model, api_key: '' }}
+        onFinish={(v) => saveMut.mutate(v)}
+      >
+        <Form.Item name="provider" label="Provider" rules={[{ required: true }]}>
+          <Select
+            options={data.providers.map((p) => ({ value: p.value, label: p.label }))}
+            onChange={(val) => {
+              const def = data.providers.find((p) => p.value === val)?.default_model;
+              if (def) form.setFieldValue('model', def);
+            }}
+          />
+        </Form.Item>
+        <Form.Item
+          name="model"
+          label={
+            <Space>
+              模型名
+              <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                DeepSeek 默认 deepseek-chat / 千问默认 qwen-plus
+              </Typography.Text>
+            </Space>
+          }
+          rules={[{ required: true }]}
+        >
+          <Input placeholder="deepseek-chat / qwen-plus" />
+        </Form.Item>
+        <Form.Item
+          name="api_key"
+          label="API Key (留空 = 不修改)"
+          extra="加密存储; 保存后不再回显, 仅显示尾 4 位"
+        >
+          <Input.Password placeholder={data.api_key_set ? '(已配置, 留空保留原值)' : '请输入'} />
+        </Form.Item>
+        <Form.Item>
+          <Button type="primary" htmlType="submit" loading={saveMut.isPending}>
+            保存
+          </Button>
+        </Form.Item>
+      </Form>
+
+      {testResult && (
+        <Alert
+          style={{ marginTop: 8 }}
+          type={testResult.ok ? 'success' : 'error'}
+          showIcon
+          message={testResult.text}
+        />
+      )}
+    </Card>
   );
 }
 

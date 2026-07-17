@@ -25,7 +25,9 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
-ACTIVITY_PUBLISHED_STATUS = "已发布设定"   # 多营销ID记录并存, 只认此状态 (spec §七.1)
+ACTIVITY_PUBLISHED_STATUS = "已发布设定"   # 兼容旧引用; 判定用下面的元组
+# ✅2026-07-17 20:17 live实证: 活动开场后平台状态从「已发布设定」变「活动中」——两个都是"在活动内"
+ACTIVITY_IN_CAMPAIGN_STATUSES = ("已发布设定", "活动中")
 ALARM_THRESHOLD_YUAN = 2.0                # 到手 vs 目标差异 > 2 元 → 报警 (spec §四.6a)
 LINE_LET_MAX_YUAN = 1.0                   # 贴线让幅 0~1 元记录在案; >1 元报警 (spec §四.6e)
 _EPS = 0.01                               # 一分钱容差
@@ -75,7 +77,7 @@ def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
         sku_id = str(row[4] or "").strip()
         if not item_id or not sku_id:
             continue
-        if status != ACTIVITY_PUBLISHED_STATUS:
+        if status not in ACTIVITY_IN_CAMPAIGN_STATUSES:
             continue
         records.append({
             "item_id": item_id,
@@ -348,3 +350,20 @@ def auto_recon_scan(db: Session) -> dict:
                         "alarm_count": res.get("alarm_count")})
     return {"scanned": scanned, "reconciled": reconciled, "failed": failed,
             "details": details}
+
+
+# ── 失败原因归类钩子 (2026-07-17, 可选 AI 兜底) ────────────────────────────────
+
+def classify_failure_reason(db: Session, text: Optional[str]) -> Optional[str]:
+    """千牛报名/核对失败文本 → 一句话归类 (如「低于最低标价线」)。
+
+    钩子性质: 只有在设置页配了「活动系统 AI (DeepSeek/千问)」才生效;
+    未配置 / 文本为空 / LLM 失败 → 返回 None, 调用方保持现有行为 (零行为变化)。
+    """
+    if not text or not str(text).strip():
+        return None
+    try:
+        from app.services import campaign_ai_service
+        return campaign_ai_service.classify_failure_reason(db, str(text))
+    except Exception:   # noqa: BLE001 — 归类是锦上添花, 绝不拖垮核对主流程
+        return None
