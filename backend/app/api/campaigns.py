@@ -1,0 +1,270 @@
+"""活动生命周期 API (P1, 2026-07-17 spec: docs/活动生命周期系统_执行plan.md §五)。
+
+GET    /api/campaigns                     计划列表
+POST   /api/campaigns                     建计划 (类型点选 + 档期精确到秒)
+GET    /api/campaigns/no-sales-group      动销分组 (含登记表同步结果)
+POST   /api/campaigns/no-sales-group/notify  无动销名单推飞书 (spec §四.2a)
+GET    /api/campaigns/{id}                计划详情
+PUT    /api/campaigns/{id}                改计划
+DELETE /api/campaigns/{id}                删计划 (admin)
+POST   /api/campaigns/{id}/precheck       R1~R12 预检
+GET    /api/campaigns/{id}/rows           行预览 (kind=signup|discount)
+POST   /api/campaigns/{id}/push-discount  推单品立减 (phase=stage|commit, admin)
+POST   /api/campaigns/{id}/push-signup    推报名 (导入即生效 R12, admin)
+POST   /api/campaigns/{id}/recon          核对 (multipart 手动上传三种导出兜底)
+GET    /api/campaigns/{id}/recon-reports  核对报告列表
+
+页面权限: /api/campaigns 挂 permKey "pricing" (活动自动填写 wizard 在定价页, 见 page_permissions)。
+"""
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from pydantic import BaseModel
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.dependencies import get_current_user, require_role
+from app.models.auth import User
+from app.models.campaign import CampaignPlan, CampaignReconReport
+from app.services import campaign_service
+
+router = APIRouter(prefix="/api/campaigns", tags=["campaigns"])
+
+
+class CampaignPlanIn(BaseModel):
+    name: str
+    campaign_type: str
+    start_at: datetime          # 档期精确到秒 (spec §四.4)
+    end_at: datetime
+    qn_campaign_title: Optional[str] = None
+    remark: Optional[str] = None
+
+
+class CampaignPlanUpdate(BaseModel):
+    name: Optional[str] = None
+    campaign_type: Optional[str] = None
+    start_at: Optional[datetime] = None
+    end_at: Optional[datetime] = None
+    qn_campaign_title: Optional[str] = None
+    remark: Optional[str] = None
+
+
+def _plan_out(p: CampaignPlan) -> dict:
+    return {
+        "id": p.id, "name": p.name, "campaign_type": p.campaign_type, "tier": p.tier,
+        "campaign_type_name": campaign_service.CAMPAIGN_TYPES.get(p.campaign_type, ("?",))[0],
+        "start_at": p.start_at.isoformat(sep=" ") if p.start_at else None,
+        "end_at": p.end_at.isoformat(sep=" ") if p.end_at else None,
+        "qn_campaign_title": p.qn_campaign_title, "status": p.status, "remark": p.remark,
+    }
+
+
+def _get_plan(db: Session, plan_id: int) -> CampaignPlan:
+    plan = db.get(CampaignPlan, plan_id)
+    if plan is None:
+        raise HTTPException(404, f"计划 {plan_id} 不存在")
+    return plan
+
+
+def _validate_type_and_window(campaign_type: str, start_at, end_at) -> str:
+    if campaign_type not in campaign_service.CAMPAIGN_TYPES:
+        raise HTTPException(422, f"未知活动类型 {campaign_type!r}; "
+                                 f"可选 {list(campaign_service.CAMPAIGN_TYPES)}")
+    if start_at and end_at and end_at <= start_at:
+        raise HTTPException(422, "档期结束时间必须晚于开始时间")
+    return campaign_service.CAMPAIGN_TYPES[campaign_type][1]
+
+
+@router.get("")
+def list_plans(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    plans = db.execute(select(CampaignPlan).order_by(CampaignPlan.id.desc())).scalars().all()
+    return {"items": [_plan_out(p) for p in plans],
+            "types": {k: v[0] for k, v in campaign_service.CAMPAIGN_TYPES.items()}}
+
+
+@router.post("")
+def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin", "operator"))):
+    tier = _validate_type_and_window(body.campaign_type, body.start_at, body.end_at)
+    plan = CampaignPlan(name=body.name, campaign_type=body.campaign_type, tier=tier,
+                        start_at=body.start_at, end_at=body.end_at,
+                        qn_campaign_title=body.qn_campaign_title, remark=body.remark,
+                        status="draft")
+    db.add(plan)
+    db.commit()
+    return _plan_out(plan)
+
+
+@router.get("/no-sales-group")
+def no_sales_group(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """动销检查与分组 (spec §四.1): 近60天淘宝订单聚合 + no_sales 登记表同步。"""
+    return campaign_service.group_by_sales(db)
+
+
+@router.post("/no-sales-group/notify")
+@router.post("/no-sales-group/push-feishu")     # 前端契约别名 (同一 handler)
+def notify_no_sales_group(db: Session = Depends(get_db),
+                          _: User = Depends(require_role("admin", "operator"))):
+    """无动销名单一键飞书推送给运营促成交 (spec §四.2a)。"""
+    from app.services import notify_service
+    grouping = campaign_service.group_by_sales(db)
+    items = grouping["无动销"]
+    if not items:
+        return {"ok": True, "sent": False, "message": "当前没有无动销商品"}
+    names = grouping.get("item_names", {})
+    lines = [f"📉 无动销商品名单（近{grouping['days']}天零成交, 共 {len(items)} 个）:"]
+    lines += [f"- {iid} {names.get(iid, '')}" for iid in items]
+    lines.append("请运营跟进促成交; 卖出1单后系统会提示转正(撤 nosales 立减→报名大促)。")
+    result = notify_service.broadcast_text(db, "\n".join(lines), title="无动销名单", level="warning")
+    return {"ok": True, "sent": True, "count": len(items), "notify_result": result}
+
+
+@router.get("/no-sales-group/export.xlsx")
+def export_no_sales_group(db: Session = Depends(get_db),
+                          _: User = Depends(get_current_user)):
+    """无动销名单一键导出 xlsx (spec §四.2a): 产品名/产品编码/淘宝商品ID/近60天单量/建议动作。"""
+    import io
+    import openpyxl
+    from fastapi.responses import Response
+    rows = campaign_service.no_sales_export_rows(db)
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "无动销名单"
+    headers = ("产品名", "产品编码", "淘宝商品ID", "近60天单量", "建议动作")
+    for ci, h in enumerate(headers, start=1):
+        ws.cell(1, ci, h)
+    for ri, r in enumerate(rows, start=2):
+        ws.cell(ri, 1, r["product_name"])
+        ws.cell(ri, 2, r["product_codes"])
+        ws.cell(ri, 3, r["taobao_item_id"]).number_format = "@"
+        ws.cell(ri, 4, r["sales_60d"])
+        ws.cell(ri, 5, r["action"])
+    out = io.BytesIO()
+    wb.save(out)
+    return Response(
+        content=out.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="no_sales_group.xlsx"'})
+
+
+@router.get("/{plan_id}")
+def get_plan(plan_id: int, db: Session = Depends(get_db),
+             _: User = Depends(get_current_user)):
+    return _plan_out(_get_plan(db, plan_id))
+
+
+@router.put("/{plan_id}")
+def update_plan(plan_id: int, body: CampaignPlanUpdate, db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin", "operator"))):
+    plan = _get_plan(db, plan_id)
+    data = body.model_dump(exclude_unset=True)
+    if "campaign_type" in data:
+        plan.tier = _validate_type_and_window(
+            data["campaign_type"], data.get("start_at", plan.start_at),
+            data.get("end_at", plan.end_at))
+    for k, v in data.items():
+        setattr(plan, k, v)
+    db.commit()
+    return _plan_out(plan)
+
+
+@router.delete("/{plan_id}")
+def delete_plan(plan_id: int, db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin"))):
+    plan = _get_plan(db, plan_id)
+    db.delete(plan)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{plan_id}/precheck")
+def precheck(plan_id: int, db: Session = Depends(get_db),
+             _: User = Depends(require_role("admin", "operator"))):
+    """R1~R12 预检 (spec §三)。通过后计划进入 precheck 状态。"""
+    plan = _get_plan(db, plan_id)
+    checks = campaign_service.preflight(db, plan)
+    if plan.status == "draft":
+        plan.status = "precheck"
+        db.commit()
+    has_error = any(c["level"] == "error" for c in checks)
+    return {"plan": _plan_out(plan), "checks": checks, "has_error": has_error}
+
+
+@router.get("/{plan_id}/rows")
+def preview_rows(plan_id: int, kind: str = Query("signup"), db: Session = Depends(get_db),
+                 _: User = Depends(get_current_user)):
+    """行预览: kind=signup(报名行) / discount(单品立减行)。"""
+    plan = _get_plan(db, plan_id)
+    if kind == "signup":
+        rows, stats = campaign_service.build_signup_rows(db, plan)
+    elif kind == "discount":
+        rows, stats = campaign_service.build_discount_rows(db, plan)
+    else:
+        raise HTTPException(422, "kind 必须是 signup 或 discount")
+    return {"rows": rows, "stats": stats}
+
+
+@router.post("/{plan_id}/push-discount")
+def push_discount(plan_id: int, phase: str = Query("stage"), db: Session = Depends(get_db),
+                  _: User = Depends(require_role("admin"))):
+    """推单品立减。phase=stage 挂文件停在提交前; commit ★不可逆★ (R12, 用户确认后才调)。"""
+    if phase not in ("stage", "commit"):
+        raise HTTPException(422, "phase 必须是 stage 或 commit")
+    plan = _get_plan(db, plan_id)
+    return campaign_service.push_discount(db, plan, phase=phase)
+
+
+@router.post("/{plan_id}/push-signup")
+def push_signup(plan_id: int, db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin"))):
+    """推大促报名 (R12: 导入即报名成功, 不可逆 — 前端 wizard 必须确认后才调)。"""
+    plan = _get_plan(db, plan_id)
+    return campaign_service.push_signup(db, plan)
+
+
+@router.post("/{plan_id}/recon")
+async def recon(plan_id: int,
+                activity_file: Optional[UploadFile] = File(None),
+                discount_file: Optional[UploadFile] = File(None),
+                product_file: Optional[UploadFile] = File(None),
+                db: Session = Depends(get_db),
+                _: User = Depends(require_role("admin", "operator"))):
+    """核对 (spec §四.6, §五「/recon (自动+手动上传兜底)」):
+    - 带文件 → 手动上传兜底 (三种导出任传);
+    - 不带文件 → 自动: WA campaign_export_items 按活动标题导出「活动商品导出」再比对。"""
+    from app.services import campaign_recon_service
+    plan = _get_plan(db, plan_id)
+    activity_bytes = await activity_file.read() if activity_file else None
+    discount_bytes = await discount_file.read() if discount_file else None
+    product_bytes = await product_file.read() if product_file else None
+    source = "manual"
+    if not any((activity_bytes, discount_bytes, product_bytes)):
+        from app.services import web_agent_service
+        exp = web_agent_service.campaign_export_items(
+            db, plan.qn_campaign_title or plan.name)
+        if not exp.get("ok"):
+            err = exp.get("error") or exp.get("message") or "未知原因"
+            raise HTTPException(422, f"WA 自动导出失败（{err}）; 请自己去千牛导出后走手动上传兜底")
+        activity_bytes, source = exp["xlsx_bytes"], "auto"
+    result = campaign_recon_service.reconcile(
+        db, plan, activity_bytes=activity_bytes, discount_bytes=discount_bytes,
+        product_bytes=product_bytes, source=source)
+    if not result.get("ok"):
+        raise HTTPException(422, result.get("error", "核对失败"))
+    return result
+
+
+@router.get("/{plan_id}/recon-reports")
+def recon_reports(plan_id: int, db: Session = Depends(get_db),
+                  _: User = Depends(get_current_user)):
+    reports = db.execute(
+        select(CampaignReconReport).where(CampaignReconReport.plan_id == plan_id)
+        .order_by(CampaignReconReport.id.desc())).scalars().all()
+    return {"items": [{"id": r.id, "source": r.source, "summary": r.summary,
+                       "alarm_count": r.alarm_count,
+                       "created_at": r.created_at.isoformat() if r.created_at else None}
+                      for r in reports]}

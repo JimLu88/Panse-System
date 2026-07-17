@@ -2,6 +2,11 @@ from app.models.base import Base
 from app.models.material import Material, MaterialPriceHistory  # noqa: F401 - 物料价格历史(版本化)
 from app.models.pricing_formula import PricingFormulaRule  # noqa: F401 - 注册进 metadata, SQLite 测试库才建表 (Plan C2)
 from app.models.campaign_signup import CampaignSignupPrice  # noqa: F401 - 活动报名价 (Plan F1)
+from app.models.campaign import (  # noqa: F401 - 活动生命周期 (2026-07-17 spec P1)
+    CampaignCalendar,
+    CampaignPlan,
+    CampaignReconReport,
+)
 from app.models.field_change import FieldChange  # noqa: F401 - 人工编辑历史档案 (方向2+4)
 from app.models.disassembly_log import DisassemblyLog  # noqa: F401 - 拆BOM历史+回撤
 from app.models.inventory import PartInventory, ProductInventory

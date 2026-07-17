@@ -97,6 +97,7 @@ from app.api import npd as npd_api
 from app.api import factory_settlement as factory_settlement_api
 from app.api import chatbi as chatbi_api
 from app.api import review_assets as review_assets_api
+from app.api import campaigns as campaigns_api
 from app.config import get_settings
 from app.dependencies import enforce_page_permission, require_authenticated
 from app.middleware import AuditMiddleware
@@ -420,6 +421,7 @@ app.include_router(taobao_export_api.router)
 app.include_router(web_agent_api.router)
 app.include_router(npd_api.router)
 app.include_router(factory_settlement_api.router)
+app.include_router(campaigns_api.router)
 
 
 @app.get("/api/health")

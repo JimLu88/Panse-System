@@ -1146,6 +1146,22 @@ def _job_promo_price_check(db: Session) -> dict:
     return promo_price_check_service.check_all(db)
 
 
+def _job_campaign_discovery(db: Session) -> dict:
+    """活动生命周期 P4 (spec §四/§五): 每天 18:40 (抓单编排后) WA 抓千牛营销活动列表
+    → 落 CampaignCalendar → 距开始<3天飞书提醒运营报名 (同活动一天只提醒一次)。
+    WA 失败 → 飞书报错「活动发现抓取失败请手动查看」。"""
+    from app.services import campaign_discovery_service
+    return campaign_discovery_service.run_daily_discovery(db)
+
+
+def _job_campaign_auto_recon(db: Session) -> dict:
+    """活动生命周期 P4 (spec §四.6/§五): 每30分钟扫 status='signup_pushed' 且创建2小时内的
+    活动计划 → WA 导出「活动商品导出」→ 自动核对 (>2元红榜+飞书)。
+    WA 导出失败 → 飞书报错 + 计划保持 signup_pushed 等手动上传兜底。"""
+    from app.services import campaign_recon_service
+    return campaign_recon_service.auto_recon_scan(db)
+
+
 def _job_ingest_health_check(db: Session) -> dict:
     """每天 20:00 取数体检 (用户拍板 2026-06-29): 检查今日订单/余额/导入是否真的更新了。
 
@@ -1449,6 +1465,11 @@ def _register_default_jobs() -> None:
                  _job_weekly_sales_report, cron={"day_of_week": "mon", "hour": 9, "minute": 30})
     register_job("daily_0830_promo_price_check", "活动报名价 vs 定价渠道价 对照",
                  _job_promo_price_check, cron={"hour": 8, "minute": 30})
+    # 活动生命周期 P4 (2026-07-17 spec §五): 发现在抓单编排(18:00)后跑; 自动核对每30分钟心跳
+    register_job("campaign_daily_discovery", "千牛活动发现(落日历+距开始<3天飞书提醒)",
+                 _job_campaign_discovery, cron={"hour": 18, "minute": 40})
+    register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·2小时内)",
+                 _job_campaign_auto_recon, interval_minutes=30)
 
 
 # ----------------------------- 生命周期 -------------------------- #

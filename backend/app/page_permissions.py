@@ -94,6 +94,7 @@ _API_PERM_RULES: dict[str, Optional[str]] = {
     # --- 价格 ---
     "/api/pricing-skus": "pricing",
     "/api/pricing": "pricing",
+    "/api/campaigns": "pricing",   # 活动生命周期 (活动自动填写 wizard 在定价页, 2026-07-17 P1)
     "/api/quotes": "pricing",
     "/api/customization": "customization",
     "/api/competitor": "customization",

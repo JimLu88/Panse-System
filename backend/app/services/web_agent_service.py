@@ -134,6 +134,45 @@ def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
             "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
 
 
+def campaign_export_items(db: Session, campaign_title: str, *, timeout_s: int = 260) -> dict:
+    """活动生命周期 P4: WA「导出已报商品」(POST /api/campaign/export-items → wait_job)。
+    WA 侧按标题从营销列表进活动并做★标题校验★, 不一致中止 (error=campaign_title_mismatch)。
+    返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/step?/error}。异步导出~2min, 给足等待。"""
+    import base64
+    j = _post(db, "/api/campaign/export-items",
+              {"campaign_title": campaign_title}, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True, "message": res.get("message")}
+    if not res.get("ok") or not res.get("xlsx_b64"):
+        return {"ok": False, "step": res.get("step"),
+                "error": res.get("error") or res.get("message") or "活动导出/下载失败",
+                "screenshot_base64": res.get("screenshot_base64")}
+    return {"ok": True, "xlsx_bytes": base64.b64decode(res["xlsx_b64"]),
+            "filename": res.get("filename"),
+            "screenshot_base64": res.get("screenshot_base64")}
+
+
+def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
+    """活动生命周期 P4: WA 抓千牛营销活动列表 (POST /api/campaign/discover → wait_job)。
+    返回 {ok, campaigns: [{title, start, end, status, raw}, ...]} 或 {ok:False, error}。"""
+    j = _post(db, "/api/campaign/discover", {}, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True, "message": res.get("message")}
+    if not res.get("ok"):
+        return {"ok": False,
+                "error": res.get("error") or res.get("message") or "活动发现抓取失败",
+                "screenshot_base64": res.get("screenshot_base64")}
+    return {"ok": True, "campaigns": res.get("campaigns") or []}
+
+
 def alipay_accounts(db: Session) -> list:
     """Web-Agent 已配的支付宝 API 账号 (含 id/name, 不含私钥)。"""
     s = _get(db, "/api/settings")
