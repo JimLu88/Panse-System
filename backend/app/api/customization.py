@@ -339,6 +339,8 @@ class V2QuoteLightIn(BaseModel):
     price_tier: str = "big"
     base_sku_code: Optional[str] = None
     category: Optional[str] = None      # quote-both 用: 纯定制口径出板单的品类(空则从产品取)
+    lower_cabinet_height_cm: Optional[float] = None   # quote-both 用: 下柜高(门/玻璃取尺寸)
+    description: Optional[str] = None                  # quote-both 用: 选组合SKU的BOM
 
 
 class V2BoardIn(BaseModel):
@@ -474,6 +476,7 @@ def v2_quote_both(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dic
         add_parts=payload.add_parts, remove_parts=payload.remove_parts,
         modify_parts=payload.modify_parts, price_tier=payload.price_tier,
         base_sku_code=payload.base_sku_code,
+        lower_h_cm=payload.lower_cabinet_height_cm, description=payload.description or "",
     )
     _log_quote(
         db, source="v2_quote_both",

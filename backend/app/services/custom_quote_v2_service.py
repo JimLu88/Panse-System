@@ -1407,29 +1407,97 @@ def quote_heavy(
 
 # ───────────────────────── 双口径并排报价 (命中产品时) ───────────────────────── #
 
+# 配件按部件角色估初始尺寸(BOM 里实际尺寸是自由文本不可靠 → 按外形给初值, 用户在③核对微调)
+def _accessory_seed_dims(part: str, name: str, cab_w_cm: float, depth_cm: float,
+                         full_h_cm: float, lower_h_cm: float) -> tuple[float, float]:
+    s = (part or "") + (name or "")
+    if "背板" in s:
+        return round(cab_w_cm, 1), round(full_h_cm, 1)          # 背板 = 柜宽 × 全高
+    if "移门" in s or "柜门" in s or ("门" in s and "把手" not in s):
+        return round(cab_w_cm, 1), round(lower_h_cm, 1)         # 门/移门 = 宽 × 下柜高
+    if "台面" in s or "饰面" in s or ("面板" in s and "背" not in s):
+        return round(cab_w_cm, 1), round(depth_cm, 1)           # 台面/饰面 = 宽 × 深
+    return round(cab_w_cm * 0.9, 1), round(depth_cm, 1)         # 隔板/层板/托板等 ≈ 宽 × 深
+
+
+def _pick_bom_sku_lines(db: Session, product_code: str, description: str = ""):
+    """选一个代表SKU的BOM行(优先描述里的组合关键词, 否则SKU名最短的基础款)。"""
+    from app.models.bom import BomLine
+    lines = db.query(BomLine).filter(BomLine.product_code == product_code).all()
+    if not lines:
+        return None, []
+    by_sku: dict = {}
+    for l in lines:
+        by_sku.setdefault(l.sku or l.sku_code or "?", []).append(l)
+    for kw in ("全景", "视界", "多抽", "榉木"):
+        if kw in (description or ""):
+            for sk, ls in by_sku.items():
+                if sk and kw in sk:
+                    return sk, ls
+    sk = sorted(by_sku, key=lambda s: len(s or ""))[0]
+    return sk, by_sku[sk]
+
+
+def boards_from_product_bom(
+    db: Session, *, product_code: str, category: Optional[str] = None,
+    target_length_m: Optional[float] = None, target_width_cm: Optional[float] = None,
+    target_height_cm: Optional[float] = None, lower_h_cm: Optional[float] = None,
+    description: str = "",
+) -> list[dict]:
+    """命中产品→按其真实BOM带出可编辑板单: 木作carcass(几何模板,随外形缩放) + 真实配件(材料/单价/数量全真,
+    尺寸按外形估初值供人核对)。WD木作在BOM里无单价(成本本在SKU售价里), 故木作用几何模板出。"""
+    _sk, lines = _pick_bom_sku_lines(db, product_code, description)
+    if not lines:
+        return []
+    prod = db.query(Product).filter(Product.code == product_code).first()
+    cat = category or (prod.category if prod else None) or "餐边柜"
+    cab_w = float(target_length_m) * 100 if target_length_m else 120.0    # 柜宽 cm
+    depth = float(target_width_cm) if target_width_cm else 40.0
+    full_h = float(target_height_cm) if target_height_cm else 210.0
+    lower_h = float(lower_h_cm) if lower_h_cm else full_h
+    boards: list[dict] = []
+    try:
+        from app.services import custom_board_template as tpl
+        for b in tpl.generate_boards(cat.split("-")[-1], cab_w, depth_cm=depth, height_cm=full_h):
+            if "背板" in (b.get("part") or ""):       # 木背板去掉 → 背板走 BOM 真实岩板
+                continue
+            boards.append(dict(b))
+    except Exception:  # noqa: BLE001
+        pass
+    for l in lines:
+        code = l.material_code or ""
+        if not code.startswith("AC"):                # WD 木作已由几何模板出
+            continue
+        m = db.query(Material).filter(Material.code == code).first()
+        if not m or m.price is None:
+            continue
+        name = m.name or l.material_name or code
+        unit_raw = m.unit or ""
+        st = str(getattr(l, "size_type", "") or "")
+        part = ((l.remark or name).split("；")[0].split(";")[0] or name)[:24]
+        row: dict = {"part": part, "material": name, "qty": float(l.qty_per_product or 1),
+                     "length_cm": 0.0, "width_cm": 0.0, "unit": "个", "is_accessory": True}
+        if "平" in unit_raw or "㎡" in unit_raw or "平面" in st or "体积" in st:
+            lg, wd = _accessory_seed_dims(part, name, cab_w, depth, full_h, lower_h)
+            row.update(unit="平方米", length_cm=lg, width_cm=wd)
+        elif ("米" in unit_raw and "平" not in unit_raw) or "长度" in st:
+            row.update(unit="米", length_cm=round(cab_w, 1))
+        boards.append(row)
+    return boards
+
+
 def quote_both(
-    db: Session,
-    *,
-    base_product_code: str,
-    category: Optional[str] = None,
-    target_length_m: Optional[float] = None,
-    target_width_cm: Optional[float] = None,
-    target_height_cm: Optional[float] = None,
-    target_material: Optional[str] = None,
-    add_parts: Optional[list[dict]] = None,
-    remove_parts: Optional[list[dict]] = None,
-    modify_parts: Optional[list[dict]] = None,
-    price_tier: str = "daily",
-    base_sku_code: Optional[str] = None,
+    db: Session, *, base_product_code: str, category: Optional[str] = None,
+    target_length_m: Optional[float] = None, target_width_cm: Optional[float] = None,
+    target_height_cm: Optional[float] = None, target_material: Optional[str] = None,
+    add_parts: Optional[list[dict]] = None, remove_parts: Optional[list[dict]] = None,
+    modify_parts: Optional[list[dict]] = None, price_tier: str = "daily",
+    base_sku_code: Optional[str] = None, lower_h_cm: Optional[float] = None,
+    description: str = "",
 ) -> dict:
-    """命中标准产品时同时给两种口径, 让用户对两个不同校准的估算自行拍板(尤其尺寸超标准范围时):
-
-      spec   = 按我们的规格 (quote_light 锚在真实 SKU 售价, 市场校准, 近标准最准)
-      custom = 纯定制方向 (板单引擎从外形自动出板单, 逐块物料+人工累加, 物理校准, 出格更稳)
-
-    custom 是"标准结构板单"的基线估算(不含洞石台面/岩板/玻璃等面板材质, 也不含顶柜盒),
-    用户可在③板单里补齐后走 /v2/quote-heavy 出精确 custom 价。返回 {spec, custom, category}。
-    """
+    """命中标准产品→两种口径并排: spec(quote_light锚点,市场校准) + custom(纯定制方向)。
+    custom 优先按【本产品真实BOM】带出部件(材料/单价/数量全真, 尺寸估初值), 无BOM才退通用品类模板。
+    返回 {spec, custom, custom_boards(供③预填编辑), category}。"""
     spec = quote_light(
         db, base_product_code=base_product_code, target_length_m=target_length_m,
         target_width_cm=target_width_cm, target_height_cm=target_height_cm,
@@ -1439,18 +1507,35 @@ def quote_both(
         prod = db.query(Product).filter(Product.code == base_product_code).first()
         category = (prod.category if prod else None) or spec.get("category")
     custom = None
-    if category and target_length_m:
+    custom_boards = None
+    if target_length_m:
+        leaf = (category or "定制").split("-")[-1]
         try:
-            from app.services import custom_board_template as tpl
-            kw: dict = {}
-            if target_width_cm:
-                kw["depth_cm"] = float(target_width_cm)
-            if target_height_cm:
-                kw["height_cm"] = float(target_height_cm)
-            if target_material and detect_wood(target_material):   # 只有实木主材才当板单主料
-                kw["main_material"] = target_material
-            custom = tpl.quote_from_template(db, category, float(target_length_m) * 100, **kw)
-            custom["note"] = "从标准板单自动生成的基线; 洞石台面/岩板/玻璃/顶柜等面板部件请在③板单里补齐再精算"
+            bom_boards = boards_from_product_bom(
+                db, product_code=base_product_code, category=category,
+                target_length_m=target_length_m, target_width_cm=target_width_cm,
+                target_height_cm=target_height_cm, lower_h_cm=lower_h_cm, description=description)
+            if bom_boards:
+                custom = quote_heavy(
+                    db, product_type=leaf, length_m=target_length_m, boards=bom_boards,
+                    overall_width_m=(target_width_cm / 100.0) if target_width_cm else None,
+                    overall_height_m=(target_height_cm / 100.0) if target_height_cm else None,
+                    auto_hardware=True)
+                custom["note"] = ("按本产品真实BOM自动带出的部件(材料/单价/数量全真); "
+                                  "尺寸按外形估的初值, 请在③核对微调后精算")
+                custom["from_bom"] = True
+                custom_boards = bom_boards
+            else:
+                from app.services import custom_board_template as tpl
+                kw: dict = {}
+                if target_width_cm:
+                    kw["depth_cm"] = float(target_width_cm)
+                if target_height_cm:
+                    kw["height_cm"] = float(target_height_cm)
+                if target_material and detect_wood(target_material):
+                    kw["main_material"] = target_material
+                custom = tpl.quote_from_template(db, leaf, float(target_length_m) * 100, **kw)
+                custom["note"] = "该产品无BOM, 用通用品类模板基线; 面板部件请在③补齐再精算"
         except Exception as e:  # noqa: BLE001
-            custom = {"error": f"板单引擎失败: {e}", "final_price": None}
-    return {"spec": spec, "custom": custom, "category": category}
+            custom = {"error": f"纯定制口径失败: {e}", "final_price": None}
+    return {"spec": spec, "custom": custom, "custom_boards": custom_boards, "category": category}

@@ -153,6 +153,8 @@ interface BoardRow {
   length_cm: number;
   width_cm: number;
   qty: number;
+  unit?: string;              // 平方米/米/个 — 配件(电力轨道/铝轨等)按此计价, 缺省平方米
+  is_accessory?: boolean;     // 配件(玻璃/岩板/五金)不计入工厂木作对比
 }
 interface QuoteLog {
   id: number;
@@ -543,7 +545,8 @@ export default function CustomQuoteV2Page() {
   const [tier, setTier] = useState('big');   // 报价档位 (默认大促)
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
-  const [customQ, setCustomQ] = useState<{ final_price: number | null; note?: string; error?: string } | null>(null);   // 纯定制方向(板单引擎)并排价
+  const [customQ, setCustomQ] = useState<{ final_price: number | null; note?: string; error?: string; from_bom?: boolean } | null>(null);   // 纯定制方向(板单引擎)并排价
+  const [customBoards, setCustomBoards] = useState<BoardRow[]>([]);   // ②真实BOM带出的部件, 供带入③编辑
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
   const partSeq = useRef(1);
   const [partOpts, setPartOpts] = useState<{ parts: string[]; materials: string[]; woods: string[] }>({ parts: [], materials: [], woods: [] });
@@ -688,7 +691,8 @@ export default function CustomQuoteV2Page() {
     try {
       const both = await apiPost<{
         spec: LightResult;
-        custom: { final_price: number | null; note?: string; error?: string } | null;
+        custom: { final_price: number | null; note?: string; error?: string; from_bom?: boolean } | null;
+        custom_boards?: { part: string; material: string; length_cm: number; width_cm: number; qty: number; unit?: string; is_accessory?: boolean }[] | null;
       }>('/v2/quote-both', {
         base_product_code: code.trim(),
         target_length_m: lenM ?? undefined,
@@ -706,10 +710,17 @@ export default function CustomQuoteV2Page() {
           .map((p) => ({ material: p.material.trim(), material_real: (p.material_real || '').trim(), qty: p.qty, length_cm: p.length_cm, width_cm: p.width_cm })),
         price_tier: tierVal,
         base_sku_code: skuVal,
+        description: desc.trim() || undefined,
       }, signal);
       const r = both.spec;
       setLight(r);
       setCustomQ(both.custom);
+      setCustomBoards(
+        (both.custom_boards || []).map((b, i) => ({
+          key: i + 1, part: b.part, material: b.material, length_cm: b.length_cm,
+          width_cm: b.width_cm, qty: b.qty, unit: b.unit, is_accessory: b.is_accessory,
+        })),
+      );
       // C: 后端解析的尺寸回填到部位行(空的才填), 让用户看到+可继续手调快速改价
       if (r.parts_detail && r.parts_detail.length) {
         setParts((ps) =>
@@ -808,7 +819,10 @@ export default function CustomQuoteV2Page() {
       const r = await apiPost<HeavyResult>('/v2/quote-heavy', {
         product_type: ptype.trim(),
         length_m: hlen,
-        boards: boards.filter((b) => b.part || b.material),
+        boards: boards.filter((b) => b.part || b.material).map((b) => ({
+          part: b.part, material: b.material, length_cm: b.length_cm, width_cm: b.width_cm,
+          qty: b.qty, unit: b.unit || '平方米', is_accessory: b.is_accessory,
+        })),
       });
       setHeavy(r);
     } catch (e) {
@@ -1130,6 +1144,21 @@ export default function CustomQuoteV2Page() {
                   <div><Text type="secondary" style={{ fontSize: 12 }}>板单逐块累加 · 物理校准, 出格/新奇更稳</Text></div>
                   {customQ.note && (
                     <div style={{ marginTop: 4 }}><Text type="warning" style={{ fontSize: 12 }}>⚠ {customQ.note}</Text></div>
+                  )}
+                  {customBoards.length > 0 && (
+                    <Button
+                      size="small"
+                      type="link"
+                      style={{ padding: 0, marginTop: 6 }}
+                      onClick={() => {
+                        setBoards(customBoards);
+                        if (light?.category) setPtype(light.category.split('-').pop() || light.category);
+                        if (len) setHlen(len);
+                        message.success('已把真实部件板单带入③, 请核对每块尺寸后点「算价」精算');
+                      }}
+                    >
+                      带入③板单核对精算 →（{customBoards.length} 个部件）
+                    </Button>
                   )}
                 </Card>
               </Col>
