@@ -338,6 +338,7 @@ class V2QuoteLightIn(BaseModel):
     modify_parts: list[dict] = Field(default_factory=list)
     price_tier: str = "big"
     base_sku_code: Optional[str] = None
+    category: Optional[str] = None      # quote-both 用: 纯定制口径出板单的品类(空则从产品取)
 
 
 class V2BoardIn(BaseModel):
@@ -457,6 +458,28 @@ def v2_quote_light(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> di
         db, source="v2_quote_light",
         user_message=f"{payload.base_product_code} L={payload.target_length_m} 料={payload.target_material}",
         extra={k: r.get(k) for k in ("final_price", "anchor", "material_delta", "addremove_delta")},
+    )
+    return r
+
+
+@router.post("/v2/quote-both")
+def v2_quote_both(payload: V2QuoteLightIn, db: Session = Depends(get_db)) -> dict:
+    """命中标准产品时并排两种口径: spec=按我们的规格(锚点) + custom=纯定制方向(板单引擎), 用户拍板选用。"""
+    from app.services import custom_quote_v2_service as v2
+    r = v2.quote_both(
+        db, base_product_code=payload.base_product_code, category=payload.category,
+        target_length_m=payload.target_length_m,
+        target_width_cm=payload.target_width_cm, target_height_cm=payload.target_height_cm,
+        target_material=payload.target_material,
+        add_parts=payload.add_parts, remove_parts=payload.remove_parts,
+        modify_parts=payload.modify_parts, price_tier=payload.price_tier,
+        base_sku_code=payload.base_sku_code,
+    )
+    _log_quote(
+        db, source="v2_quote_both",
+        user_message=f"{payload.base_product_code} L={payload.target_length_m} (双口径)",
+        extra={"spec": (r.get("spec") or {}).get("final_price"),
+               "custom": (r.get("custom") or {}).get("final_price")},
     )
     return r
 

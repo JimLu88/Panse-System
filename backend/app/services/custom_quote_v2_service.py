@@ -1403,3 +1403,54 @@ def quote_heavy(
         "wood_lines": r.wood_lines,
         "accessory_lines": r.accessory_lines,
     }
+
+
+# ───────────────────────── 双口径并排报价 (命中产品时) ───────────────────────── #
+
+def quote_both(
+    db: Session,
+    *,
+    base_product_code: str,
+    category: Optional[str] = None,
+    target_length_m: Optional[float] = None,
+    target_width_cm: Optional[float] = None,
+    target_height_cm: Optional[float] = None,
+    target_material: Optional[str] = None,
+    add_parts: Optional[list[dict]] = None,
+    remove_parts: Optional[list[dict]] = None,
+    modify_parts: Optional[list[dict]] = None,
+    price_tier: str = "daily",
+    base_sku_code: Optional[str] = None,
+) -> dict:
+    """命中标准产品时同时给两种口径, 让用户对两个不同校准的估算自行拍板(尤其尺寸超标准范围时):
+
+      spec   = 按我们的规格 (quote_light 锚在真实 SKU 售价, 市场校准, 近标准最准)
+      custom = 纯定制方向 (板单引擎从外形自动出板单, 逐块物料+人工累加, 物理校准, 出格更稳)
+
+    custom 是"标准结构板单"的基线估算(不含洞石台面/岩板/玻璃等面板材质, 也不含顶柜盒),
+    用户可在③板单里补齐后走 /v2/quote-heavy 出精确 custom 价。返回 {spec, custom, category}。
+    """
+    spec = quote_light(
+        db, base_product_code=base_product_code, target_length_m=target_length_m,
+        target_width_cm=target_width_cm, target_height_cm=target_height_cm,
+        target_material=target_material, add_parts=add_parts, remove_parts=remove_parts,
+        modify_parts=modify_parts, price_tier=price_tier, base_sku_code=base_sku_code)
+    if not category:
+        prod = db.query(Product).filter(Product.code == base_product_code).first()
+        category = (prod.category if prod else None) or spec.get("category")
+    custom = None
+    if category and target_length_m:
+        try:
+            from app.services import custom_board_template as tpl
+            kw: dict = {}
+            if target_width_cm:
+                kw["depth_cm"] = float(target_width_cm)
+            if target_height_cm:
+                kw["height_cm"] = float(target_height_cm)
+            if target_material and detect_wood(target_material):   # 只有实木主材才当板单主料
+                kw["main_material"] = target_material
+            custom = tpl.quote_from_template(db, category, float(target_length_m) * 100, **kw)
+            custom["note"] = "从标准板单自动生成的基线; 洞石台面/岩板/玻璃/顶柜等面板部件请在③板单里补齐再精算"
+        except Exception as e:  # noqa: BLE001
+            custom = {"error": f"板单引擎失败: {e}", "final_price": None}
+    return {"spec": spec, "custom": custom, "category": category}

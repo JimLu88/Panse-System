@@ -543,6 +543,7 @@ export default function CustomQuoteV2Page() {
   const [tier, setTier] = useState('big');   // 报价档位 (默认大促)
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
+  const [customQ, setCustomQ] = useState<{ final_price: number | null; note?: string; error?: string } | null>(null);   // 纯定制方向(板单引擎)并排价
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
   const partSeq = useRef(1);
   const [partOpts, setPartOpts] = useState<{ parts: string[]; materials: string[]; woods: string[] }>({ parts: [], materials: [], woods: [] });
@@ -683,8 +684,12 @@ export default function CustomQuoteV2Page() {
     }
     setLightLoading(true);
     setLight(null);
+    setCustomQ(null);
     try {
-      const r = await apiPost<LightResult>('/v2/quote-light', {
+      const both = await apiPost<{
+        spec: LightResult;
+        custom: { final_price: number | null; note?: string; error?: string } | null;
+      }>('/v2/quote-both', {
         base_product_code: code.trim(),
         target_length_m: lenM ?? undefined,
         target_width_cm: widVal ?? undefined,
@@ -702,7 +707,9 @@ export default function CustomQuoteV2Page() {
         price_tier: tierVal,
         base_sku_code: skuVal,
       }, signal);
+      const r = both.spec;
       setLight(r);
+      setCustomQ(both.custom);
       // C: 后端解析的尺寸回填到部位行(空的才填), 让用户看到+可继续手调快速改价
       if (r.parts_detail && r.parts_detail.length) {
         setParts((ps) =>
@@ -1108,6 +1115,26 @@ export default function CustomQuoteV2Page() {
                 : '先算一次价, 这里会显示该长度的标准宽高, 再微调宽高算变体价。'}
             </Text>
           </Card>
+
+          {light && light.final_price != null && customQ && customQ.final_price != null && (
+            <Row gutter={16}>
+              <Col xs={24} md={12}>
+                <Card size="small" type="inner" title="① 按我们的规格(锚点)" styles={{ body: { padding: 12 } }}>
+                  <Text strong style={{ fontSize: 26, color: '#1677ff' }}>¥{light.final_price.toFixed(2)}</Text>
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>锚在真实 SKU 售价 · 市场校准, 近标准款最准</Text></div>
+                </Card>
+              </Col>
+              <Col xs={24} md={12}>
+                <Card size="small" type="inner" title="② 按纯定制方向(板单)" styles={{ body: { padding: 12 } }}>
+                  <Text strong style={{ fontSize: 26, color: '#722ed1' }}>¥{customQ.final_price.toFixed(2)}</Text>
+                  <div><Text type="secondary" style={{ fontSize: 12 }}>板单逐块累加 · 物理校准, 出格/新奇更稳</Text></div>
+                  {customQ.note && (
+                    <div style={{ marginTop: 4 }}><Text type="warning" style={{ fontSize: 12 }}>⚠ {customQ.note}</Text></div>
+                  )}
+                </Card>
+              </Col>
+            </Row>
+          )}
 
           {light && light.final_price != null && (
             <Row gutter={16}>
