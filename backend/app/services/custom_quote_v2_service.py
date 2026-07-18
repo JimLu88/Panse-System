@@ -584,13 +584,24 @@ def quote_light(
             fac_pts.append((ln, float(s.factory_cost)))
         if getattr(s, "accounting_cost", None) is not None:
             acc_pts.append((ln, float(s.accounting_cost)))
+    def _predict(pts):
+        """预测成本: 插值; 远低于最小采样档时按正比(与锚点同口径, 防大柜成本外推到小定制虚高)。"""
+        if not target_length_m:
+            return sum(v for _, v in pts) / len(pts)
+        v = interp(pts, target_length_m)[0]
+        x0, y0 = min(pts)
+        if x0 > 0 and target_length_m < x0:
+            prop = y0 * (target_length_m / x0)
+            if v is None or prop < v:
+                return prop
+        return v
     factory_predicted = break_even_factory = break_even_buffer = None
     if fac_pts:
-        fp = interp(fac_pts, target_length_m)[0] if target_length_m else sum(v for _, v in fac_pts) / len(fac_pts)
+        fp = _predict(fac_pts)
         if fp is not None:
             factory_predicted = round(fp, 2)
             if acc_pts:
-                ac = interp(acc_pts, target_length_m)[0] if target_length_m else sum(v for _, v in acc_pts) / len(acc_pts)
+                ac = _predict(acc_pts)
                 if ac is not None:
                     break_even_factory = round(final - (ac - fp), 2)   # 净不亏: 售价 − 非工厂成本(accounting−factory)
                     break_even_buffer = round(break_even_factory - factory_predicted, 2)
