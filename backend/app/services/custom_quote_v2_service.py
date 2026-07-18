@@ -453,6 +453,9 @@ def quote_light(
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
         return {"error": "锚点价缺失(该产品4档价为空)", "final_price": None, "breakdown": []}
+    # 尺寸落在标准 SKU 范围外 → 锚点是外推估算(该品类价格常固定成本主导、不随尺寸线性变), 提示人工复核
+    if "extrap" in note:
+        note += " ⚠尺寸超出标准SKU范围, 锚点为外推估算(本品类价格多受固定成本主导), 建议人工复核"
     breakdown.append({"label": "底面积定价(长×宽)" if used_area else "标准原价(同尺寸)",
                       "amount": round(anchor, 2), "note": note})
 
@@ -460,10 +463,18 @@ def quote_light(
 
     # ── 材质 delta ── target_material 为物料库全名(带厚度/贴皮, 表驱动下拉)精确取价; 换料/换厚度均算 ──
     material_delta = 0.0
-    if target_material:
-        base_wood = detect_wood(prod.name if prod else "") or detect_wood(
-            (prod.main_material if prod else "") or "")
-        tgt = detect_wood(target_material) or target_material        # 短木名(找现成同款)
+    base_wood = detect_wood(prod.name if prod else "") or detect_wood(
+        (prod.main_material if prod else "") or "")
+    tgt_wood = detect_wood(target_material) if target_material else None
+    # 整柜换料仅限「目标是实木主材且与底材不同」。洞石/岩板/玻璃等面板/配件材质不是整柜换料
+    # (要岩板背板/玻璃门请走增减部位), 同一木种也不换。防 AI 把产品名里的"洞石"当换料算出
+    # 虚假差额 + 污染顶柜木种(2026-07-18: 洞石餐边柜 target_material=洞石 曾误算 −4062 且顶柜按洞石计价)。
+    if target_material and not tgt_wood:
+        breakdown.append({"label": f"材质「{target_material}」", "amount": 0.0,
+                          "note": "面板/配件类材质(非实木主材), 不作整柜换料; 岩板/玻璃等部件请在增减部位加"})
+        target_material = None                                       # 不作整柜材质, 也不拿去当顶柜/箱体木种
+    elif target_material and tgt_wood and (not base_wood or tgt_wood != base_wood):
+        tgt = tgt_wood                                               # 短木名(找现成同款)
         new_u = _wood_unit_price(db, target_material)                # 全名精确取价(带厚度)
         orig_u = _wood_unit_price(db, base_wood) if base_wood else None
         if not new_u:
