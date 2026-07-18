@@ -503,3 +503,42 @@ def test_dims_triplet_remove_parts_category_guess(db_session):
     assert {"material": "底板", "qty": 1} in r["remove_parts"]
     assert "尺寸" in r["reasoning"] or "长1.5米" in r["reasoning"]
     v2.cache_clear()
+
+
+# ───────── 顶柜自动拆分 (2026-07-18: 餐边柜下柜固定, 变动的是顶柜) ─────────
+
+def test_parse_lower_cabinet_height():
+    assert v2.parse_lower_cabinet_height_cm("下柜高度92cm") == 92.0
+    assert v2.parse_lower_cabinet_height_cm("下柜高度0.92米") == 92.0
+    assert v2.parse_lower_cabinet_height_cm("底柜高920mm") == 92.0
+    assert v2.parse_lower_cabinet_height_cm("总高194cm 没有下柜标注") is None
+
+
+def test_detect_top_cabinet():
+    h, hint = v2.detect_top_cabinet("洞石餐边柜 全景柜下柜", 194, lower_h_cm=92, category="餐边柜")
+    assert h == 102.0 and "顶柜 102cm" in hint and "下柜" in hint
+    # 无下柜标注时退回标准柜身高
+    h2, hint2 = v2.detect_top_cabinet("餐边柜", 194, std_h_cm=90, category="餐厅-餐边柜")
+    assert h2 == 104.0 and "标准柜身" in hint2
+    # 非柜类 / 差额太小 → 不拆
+    assert v2.detect_top_cabinet("樱桃木餐桌", 194, lower_h_cm=92, category="餐桌") == (None, "")
+    assert v2.detect_top_cabinet("餐边柜", 95, lower_h_cm=92, category="餐边柜") == (None, "")
+
+
+def test_ensure_top_cabinet_dedup():
+    assert v2._ensure_top_cabinet([], 102) == [{"material": "顶柜", "qty": 1, "height_cm": 102}]
+    p = v2._ensure_top_cabinet([{"material": "顶柜", "qty": 1}], 102)
+    assert len(p) == 1 and p[0]["height_cm"] == 102
+
+
+def test_classify_autosplits_top_cabinet():
+    """用户实测单: 洞石餐边柜 60×27.5×194 下柜92 → 顶柜102 + 三元组优先长0.6(非AI幻觉2.75)。"""
+    db = _db()
+    r = v2.classify(db, text="洞石餐边柜, 定制60×27.5×194cm, 下柜高度92cm, 全景柜下柜")
+    assert r["target_length_m"] == 0.6            # 三元组优先, 不是把 27.5 读成 2.75m
+    assert r["target_height_cm"] == 194.0         # 总高取三元组, 不被"下柜高度92"顶替
+    assert r["top_cabinet_height_cm"] == 102.0
+    top = next((p for p in r["add_parts"] if "顶柜" in (p.get("material") or "")), None)
+    assert top is not None and top.get("height_cm") == 102.0
+    assert r.get("top_cabinet_hint")
+    v2.cache_clear()

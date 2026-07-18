@@ -209,10 +209,18 @@ def get_ai_config(db: Session, kind: str) -> dict:
         other = "ocr" if kind == "diagnose" else "diagnose"
         own = _raw_ai_config(db, kind)
         src = own if own["api_key"] else _raw_ai_config(db, other)
+    prov = src["provider"] or "anthropic"
+    model = src["model"] or settings.ai_model
+    base_url = src["base_url"] or ""
+    # qwen 系模型只跑在 DashScope(阿里云)或本地; provider=openai 又没填接口地址时会误打 OpenAI 官方
+    # (拿千问 key 请求 openai.com 必被拒) → 自动兜上阿里云 DashScope compatible 地址
+    # (2026-07-18: 定制报价槽只填了 model=qwen*+key 漏了 base_url, 一直报错请查 Ollama 的根因)。
+    if prov == "openai" and not base_url and (model or "").lower().startswith("qwen"):
+        base_url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     return {
-        "provider": src["provider"] or "anthropic",
-        "base_url": src["base_url"] or "",
+        "provider": prov,
+        "base_url": base_url,
         "api_key": src["api_key"] or settings.anthropic_api_key,
-        "model": src["model"] or settings.ai_model,
+        "model": model,
         "user_agent": src.get("user_agent") or "",
     }

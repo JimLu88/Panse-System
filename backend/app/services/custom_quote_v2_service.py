@@ -159,6 +159,61 @@ def _auto_top_cabinet(text: Optional[str], add_parts: list) -> list:
     return parts
 
 
+# 全景柜/多段柜自动拆顶柜: 下柜高度一般固定, 变动的是顶柜(用户 2026-07-18)
+_CABINET_CATS = ("餐边柜", "组合柜", "酒柜", "餐厅柜", "书柜", "鞋柜", "玄关柜", "电视柜", "岛台", "柜")
+
+
+def parse_lower_cabinet_height_cm(text: Optional[str]) -> Optional[float]:
+    """抽「下柜/底柜/地柜 高度 Xcm」的分段高度(区别于总高)。无→None。"""
+    if not text:
+        return None
+    m = re.search(r"(?:下柜|底柜|地柜)\s*(?:高度|高)?\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(毫米|厘米|mm|cm|米|m)?", text)
+    if not m:
+        return None
+    v, u = float(m.group(1)), (m.group(2) or "cm")
+    if u in ("米", "m"):
+        return round(v * 100, 1)
+    if u in ("mm", "毫米"):
+        return round(v / 10, 1)
+    return round(v, 1)
+
+
+def detect_top_cabinet(text: Optional[str], total_h_cm, *, lower_h_cm=None,
+                       std_h_cm=None, category=None) -> tuple[Optional[float], str]:
+    """多段柜(餐边柜/全景柜等): 总高 > 下柜(优先客户给的)或标准柜身高 → 顶柜高 = 差额。
+    返回 (顶柜高cm 或 None, 提示串)。下柜一般不改高度, 变动的是顶柜(用户 2026-07-18)。"""
+    t = text or ""
+    is_cab = (category and any(c in category for c in _CABINET_CATS)) or any(c in t for c in _CABINET_CATS)
+    if not is_cab or not total_h_cm:
+        return None, ""
+    base_h = lower_h_cm or std_h_cm
+    if not base_h:
+        return None, ""
+    excess = round(float(total_h_cm) - float(base_h), 1)
+    if excess < 5:                      # 差额太小, 视作单段柜不拆
+        return None, ""
+    src = "下柜" if lower_h_cm else "标准柜身"
+    hint = (f"检测到多段柜: 总高 {total_h_cm:g}cm − {src} {base_h:g}cm = 顶柜 {excess:g}cm; "
+            f"已自动加「顶柜」按加部位算价, 下柜按标准不变(下柜一般不改高度); 不需要可在③删除。")
+    return excess, hint
+
+
+def _ensure_top_cabinet(add_parts: Optional[list], height_cm: Optional[float]) -> list:
+    """确保 add_parts 里有一个顶柜(有则补高度, 无则追加); 不重复添加。"""
+    parts = [dict(p) for p in (add_parts or [])]
+    for p in parts:
+        nm = (p.get("material") or p.get("name") or "")
+        if "顶柜" in nm or "上柜" in nm:
+            if height_cm and not float(p.get("height_cm") or 0):
+                p["height_cm"] = height_cm
+            return parts
+    part = {"material": "顶柜", "qty": 1}
+    if height_cm:
+        part["height_cm"] = height_cm
+    parts.append(part)
+    return parts
+
+
 def interp(points: list[tuple[float, float]], x: float) -> tuple[Optional[float], str]:
     """对 (x, y) 点集在 x 处做分段线性插值/外推。
 
@@ -471,6 +526,12 @@ def quote_light(
     if not _box_wood and prod:
         _box_wood = detect_wood(prod.name or "") or detect_wood(prod.main_material or "")
     _box_wood = _box_wood or "樱桃木"
+    # 直接算价(未过分类器文本)时的顶柜兜底: 柜类 + 总高明显超标准柜身高 + 未显式给顶柜 → 自动加顶柜
+    # (下柜按标准不变, 高出部分归顶柜; 用户 2026-07-18。走了分类器的已在 classify 里加过, has_box→不重复)
+    if (std_h and target_height_cm and float(target_height_cm) > float(std_h) + 5
+            and any(c in str(category) for c in _CABINET_CATS)
+            and not any(_is_box_part((p.get("material") or p.get("name") or "")) for p in (add_parts or []))):
+        add_parts = _ensure_top_cabinet(add_parts, round(float(target_height_cm) - float(std_h), 1))
     add_parts = _autofill_box_parts(
         add_parts, length_m=target_length_m, depth_cm=target_width_cm, std_w=std_w,
         total_h_cm=target_height_cm, std_h=std_h, box_wood=_box_wood)
@@ -886,17 +947,31 @@ def classify_ai(db: Session, *, text: str = "", images=None, provider=None, mode
                     code = c
                     break
     pname = db.query(Product.name).filter(Product.code == code).scalar() if code else None
+    # 尺寸: 明确写「A×B×C」三元组时优先信它(客户显式几何), 防 AI 幻觉长度(实测把 27.5 读成 2.75m)
+    _tl, _tw, _th = parse_dims_triplet(text)
+    length_m = _tl if _tl is not None else (_sane_dim(data.get("target_length_m"), 0.2, 6) or parse_length_m(text))
+    width_cm = _tw if _tw is not None else _sane_dim(data.get("target_width_cm"), 10, 500)
+    height_cm = _th if _th is not None else (_sane_dim(data.get("target_height_cm"), 10, 350) or parse_height_cm(text))
+    add_parts = _auto_top_cabinet(text, data.get("add_parts") or [])
+    cat_guess = guess_category(text)
+    lower_h = parse_lower_cabinet_height_cm(text)
+    top_h, top_hint = detect_top_cabinet(text, height_cm, lower_h_cm=lower_h, category=cat_guess)
+    if top_h:
+        add_parts = _ensure_top_cabinet(add_parts, top_h)
     return {
         "customization_type": data["customization_type"],
         "base_product_code": code,
         "base_product_name": pname or mname,
-        "target_length_m": _sane_dim(data.get("target_length_m"), 0.2, 6) or parse_length_m(text) or parse_dims_triplet(text)[0],
-        "target_width_cm": _sane_dim(data.get("target_width_cm"), 10, 500) or parse_dims_triplet(text)[1],
-        "target_height_cm": _sane_dim(data.get("target_height_cm"), 10, 350) or parse_height_cm(text) or parse_dims_triplet(text)[2],
+        "target_length_m": length_m,
+        "target_width_cm": width_cm,
+        "target_height_cm": height_cm,
         "target_material": data.get("target_material") or detect_wood(text),
-        "add_parts": _auto_top_cabinet(text, data.get("add_parts") or []),
+        "add_parts": add_parts,
         "remove_parts": data.get("remove_parts") or parse_remove_parts(text),
-        "category_guess": guess_category(text),
+        "category_guess": cat_guess,
+        "lower_cabinet_height_cm": lower_h,
+        "top_cabinet_height_cm": top_h,
+        "top_cabinet_hint": top_hint or None,
         "confidence": round(float(data.get("confidence") or 0.7), 2),
         "reasoning": data.get("reasoning") or "AI 判定",
         "ai_used": True,
@@ -922,13 +997,24 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
                 m = m2
     # 尺寸: 显式单位写法优先, 否则「长*宽*高」三元组兜底(1.5*0.6*0.95 这类最常见, 2026-07-12)
     _tl, _tw, _th = parse_dims_triplet(text)
+    # 高度: 有「A×B×C」三元组时用它的总高(防 parse_height_cm 把"下柜高度92"当整体高)
+    _height = _th if _th is not None else parse_height_cm(text)
+    _add = _auto_top_cabinet(text, [])
+    # 多段柜(全景柜等)自动拆顶柜: 总高 − 下柜(客户给的) = 顶柜高(2026-07-18)
+    _low_h = parse_lower_cabinet_height_cm(text)
+    _top_h, _top_hint = detect_top_cabinet(text, _height, lower_h_cm=_low_h, category=guess_category(text))
+    if _top_h:
+        _add = _ensure_top_cabinet(_add, _top_h)
     base = {
-        "target_length_m": parse_length_m(text) or _tl,
+        "target_length_m": _tl if _tl is not None else parse_length_m(text),
         "target_width_cm": _tw,
-        "target_height_cm": parse_height_cm(text) or _th,
+        "target_height_cm": _height,
         "target_material": detect_wood(text),
-        "add_parts": _auto_top_cabinet(text, []),
+        "add_parts": _add,
         "remove_parts": parse_remove_parts(text),
+        "lower_cabinet_height_cm": _low_h,
+        "top_cabinet_height_cm": _top_h,
+        "top_cabinet_hint": _top_hint or None,
         "ai_used": False,
     }
     if m.get("product_code") and m.get("confidence", 0) >= 0.4:

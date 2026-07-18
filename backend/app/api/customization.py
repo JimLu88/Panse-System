@@ -393,6 +393,9 @@ async def v2_classify(
     result = None
     ai_note = None
     cfg = settings_service.get_ai_config(db, "custom")  # 定制报价专属槽; 没配回落 ocr
+    # 报错里直接点名当前实际打的 provider/model/接口地址, 免得再对着"请查 Ollama"猜(2026-07-18)。
+    _tgt = (f"{cfg.get('provider')}·{cfg.get('model') or '未填模型'}·"
+            f"{cfg.get('base_url') or 'OpenAI官方(接口地址没填→千问/阿里云会打错!)'}")
     if cfg.get("api_key") or cfg.get("base_url"):        # 本地Ollama可无key, 有地址就试
         try:
             # 用 custom 槽自己的配置建 provider —— 旧 _build_provider 固定读 ocr 槽(本地Ollama),
@@ -404,16 +407,20 @@ async def v2_classify(
                 provider=prov, model=cfg.get("model") or "",
             )
             if result is None:
-                ai_note = "AI 已调用但返回无法解析(超时/非JSON), 已回落规则解析 —— 若反复出现请查 PC Ollama"
+                ai_note = f"AI已调用但没返回可解析结果(超时/非JSON/或该模型不支持读图) — 当前定制报价AI: {_tgt}; 已回落规则解析"
         except Exception as e:  # noqa: BLE001
             result = None
-            ai_note = f"AI 调用失败({type(e).__name__}: {str(e)[:80]}), 已回落规则解析"
+            ai_note = f"AI调用失败({type(e).__name__}: {str(e)[:80]}) — 当前定制报价AI: {_tgt}; 已回落规则解析"
     else:
         ai_note = "AI 未配置(设置里没配定制报价AI), 走规则解析"
     if result is None:
         result = v2.classify(db, text=message, image_count=len(image_data))
     if ai_note:
         result["ai_note"] = ai_note    # 不再静默降级(2026-07-12: AI挂了页面空白连原因都不给)
+    # 顶柜自动拆分提示合入 reasoning(前端已展示 reasoning, 无需改前端)
+    _tc = result.get("top_cabinet_hint")
+    if _tc and _tc not in (result.get("reasoning") or ""):
+        result["reasoning"] = ((result.get("reasoning") or "") + "; " + _tc).lstrip("; ")
 
     # A6 尺寸合理性校验(防 1.5m 判成床头柜): 不合理→清空选定+降权, 交候选下拉手选纠正
     from app.services import custom_quote_config_service as ccfg
