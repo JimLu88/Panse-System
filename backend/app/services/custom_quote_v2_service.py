@@ -442,10 +442,30 @@ def quote_light(
         anchor, method = interp(area_price_pts, target_area)
         anchor_wood, _ = interp(area_wood_pts, target_area) if area_wood_pts else (None, "no-data")
         note = f"面积定价 {target_length_m}m×{eff_w:.0f}cm≈{target_area:.3f}㎡ ({method}, {len(area_price_pts)}点)"
+        # 面积远小于最小采样SKU时: 平坦价曲线线性外推被大额固定成本截距顶高(实测洞石餐边柜 0.6m×浅进深
+        # →¥14k 而实际~5k) → 改按过最小SKU点的面积正比估(取更低), 贴"小很多的定制约小很多的价"; wood同缩。
+        a0, p0 = area_price_pts[0]                                   # _cummax 已升序, [0]=最小面积
+        if a0 > 0 and target_area < a0:
+            prop = round(p0 * (target_area / a0), 2)
+            if prop < anchor:
+                if anchor_wood is not None and area_wood_pts:
+                    anchor_wood = round(area_wood_pts[0][1] * (target_area / a0), 2)
+                anchor, method = prop, "area-prop"
+                note = (f"面积定价 {target_length_m}m×{eff_w:.0f}cm≈{target_area:.3f}㎡: 远小于最小标准款"
+                        f"({a0:.2f}㎡/¥{p0:.0f}) → 按面积正比估 ¥{prop:.0f} ⚠系统估算, 建议人工核价")
     elif target_length_m and price_pts:
         anchor, method = interp(price_pts, target_length_m)
         anchor_wood, _ = interp(wood_pts, target_length_m) if wood_pts else (None, "no-data")
         note = f"策略C 长度插值@{target_length_m}m ({method}, {len(price_pts)}档; 无宽数据退长度口径)"
+        l0, lp0 = min(price_pts)                                     # 最小长度档
+        if l0 > 0 and target_length_m < l0:
+            prop = round(lp0 * (target_length_m / l0), 2)
+            if prop < anchor:
+                if anchor_wood is not None and wood_pts:
+                    anchor_wood = round(min(wood_pts)[1] * (target_length_m / l0), 2)
+                anchor, method = prop, "len-prop"
+                note = (f"策略C @{target_length_m}m: 远小于最小档({l0}m/¥{lp0:.0f}) → 按长度正比估 "
+                        f"¥{prop:.0f} ⚠系统估算, 建议人工核价")
     else:
         rep = sorted(skus, key=lambda s: _resolve_length_m(s) or 0)[len(skus) // 2]
         anchor = float(getattr(rep, tier_col, None) or rep.daily_price or rep.list_price or 0)
@@ -453,9 +473,9 @@ def quote_light(
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
         return {"error": "锚点价缺失(该产品4档价为空)", "final_price": None, "breakdown": []}
-    # 尺寸落在标准 SKU 范围外 → 锚点是外推估算(该品类价格常固定成本主导、不随尺寸线性变), 提示人工复核
+    # 尺寸超出标准 SKU 范围(偏大)仍走线性外推 → 标注为外推估算, 提示人工复核(偏小已在上面走面积正比)
     if "extrap" in note:
-        note += " ⚠尺寸超出标准SKU范围, 锚点为外推估算(本品类价格多受固定成本主导), 建议人工复核"
+        note += " ⚠尺寸超出标准SKU范围, 锚点为外推估算, 建议人工复核"
     breakdown.append({"label": "底面积定价(长×宽)" if used_area else "标准原价(同尺寸)",
                       "amount": round(anchor, 2), "note": note})
 

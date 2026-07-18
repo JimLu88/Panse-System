@@ -542,3 +542,14 @@ def test_classify_autosplits_top_cabinet():
     assert top is not None and top.get("height_cm") == 102.0
     assert r.get("top_cabinet_hint")
     v2.cache_clear()
+
+
+def test_quote_light_below_range_proportional():
+    """远小于最小档的定制按正比估, 不被平坦价曲线线性外推顶高(治 0.6m 报 14k 实际 ~5k)。"""
+    db = _db()
+    _seed_table(db)   # P1 1.2~1.8m / daily 2800~3100
+    q = v2.quote_light(db, base_product_code="P1", target_length_m=0.6, price_tier="daily")
+    # 最小档 1.2m/¥2800 → 0.6m 正比 = 2800×0.6/1.2 = 1400 (线性外推会给 2500 偏高)
+    assert q["anchor"] == 1400.0
+    assert "正比估" in q["anchor_method"]
+    v2.cache_clear()
