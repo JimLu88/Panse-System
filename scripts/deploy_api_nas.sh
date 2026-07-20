@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 把 panse-system-api 镜像部署到群晖 NAS。
-#   流程: (可选 build) → docker save|gzip|ssh load → up -d --no-build api → 重启 web → 验证健康。
+#   流程: 同源预检 → (可选 build) → 备份旧镜像 → docker save|gzip|ssh load → up api → 重启 web → 版本验证。
 #   红线: 重建 api 后【必须】重启 web, 否则 lan nginx 缓存旧 api 容器 IP → /api 502。
 #
 # 用法 (在 PC 的 Git Bash 里跑, 不要用 PowerShell —— PowerShell 管道会损坏二进制镜像流):
@@ -22,20 +22,26 @@ IMAGE="${IMAGE:-panse-system-api:latest}"
 WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://192.168.31.21:8200/api/health}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -p "$SSH_PORT" "$SSH_HOST")
 
-# 落后 origin 拦截 (2026-07-12 事故: 本地分支 behind 30 未察觉, origin 的迁移0125已上库,
-# 旧代码镜像一部署 alembic 找不到 revision → api 重启循环宕机 7 分钟。FORCE=1 可跳过)。
+# 只允许部署 origin/main 的精确提交。既拦截落后，也拦截“本地已提交但未推送”的版本，
+# 防 NAS 运行一个 GitHub 上无法重建/追溯的镜像。FORCE=1 仅供明确的紧急恢复。
 if [[ "${FORCE:-0}" != "1" ]]; then
-  git fetch origin main --quiet 2>/dev/null || true
-  behind=$(git rev-list --count HEAD..origin/main 2>/dev/null || echo 0)
-  if [[ "${behind:-0}" -gt 0 ]]; then
-    echo "FATAL: 本地分支落后 origin/main $behind 个提交 (可能含新迁移)。先 rebase 再部署; 明知故犯用 FORCE=1。" >&2
+  git fetch origin main --quiet
+  head_full=$(git rev-parse HEAD)
+  origin_full=$(git rev-parse origin/main)
+  if [[ "$head_full" != "$origin_full" ]]; then
+    echo "FATAL: HEAD($head_full) != origin/main($origin_full)。先同步并推送 main; 紧急跳过用 FORCE=1。" >&2
+    exit 1
+  fi
+  if ! git diff --quiet || ! git diff --cached --quiet; then
+    echo "FATAL: 工作区有未提交的已跟踪修改。先提交并推送，再部署。" >&2
     exit 1
   fi
 fi
 
 if [[ "${BUILD:-0}" == "1" ]]; then
-  gc=$(git rev-parse --short HEAD)
-  echo "[build] panse-system-api:latest @ $gc"
+  gc=$(git rev-parse HEAD)
+  gc_short=$(git rev-parse --short HEAD)
+  echo "[build] panse-system-api:latest @ $gc_short"
   docker build ./backend -f backend/Dockerfile -t "$IMAGE" \
     --build-arg GIT_COMMIT="$gc" \
     --build-arg GIT_COMMIT_MSG="$(git log -1 --pretty=%s)" \
@@ -74,27 +80,41 @@ if [[ "${BUILD:-0}" != "1" ]]; then
   echo "[check] 指纹一致 ✓ ($loc_md5)"
 fi
 
-echo "[1/5] 预检 SSH + 当前 panse-system 容器"
+expected_full=$(git rev-parse HEAD)
+expected_short=$(git rev-parse --short HEAD)
+
+echo "[1/7] 预检 SSH + 当前 panse-system 容器"
 "${SSH[@]}" "$NAS_DOCKER ps --filter name=panse-system --format '{{.Names}}  {{.Status}}'"
 
-echo "[2/5] 传镜像 (docker save | gzip | ssh -> gunzip | docker load)"
+rollback="panse-system-api:rollback-$(date +%Y%m%d-%H%M%S)"
+echo "[2/7] 给 NAS 当前 API 镜像打回滚标签: $rollback"
+"${SSH[@]}" "$NAS_DOCKER image inspect '$IMAGE' >/dev/null 2>&1 && $NAS_DOCKER tag '$IMAGE' '$rollback' || true"
+
+echo "[3/7] 传镜像 (docker save | gzip | ssh -> gunzip | docker load)"
 docker save "$IMAGE" | gzip | "${SSH[@]}" "gunzip | $NAS_DOCKER load"
 
-echo "[3/5] 起新 api 容器 (用载入的镜像, 不在 NAS 上 build)"
+echo "[4/7] 起新 api 容器 (用载入的镜像, 不在 NAS 上 build)"
 "${SSH[@]}" "cd $NAS_DIR && $NAS_DOCKER compose -p panse-system up -d --no-build api"
 
-echo "[4/5] 重启 web (nginx 重新解析 api 容器 IP, 防 502) —— 红线步骤"
+echo "[5/7] 重启 web (nginx 重新解析 api 容器 IP, 防 502) —— 红线步骤"
 "${SSH[@]}" "$NAS_DOCKER restart panse-system-web-1"
 
-echo "[5/5] 验证健康 (api 容器内 + web 反代)"
+echo "[6/7] 验证健康 (api 容器内 + web 反代)"
 sleep 5
 api_h=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://localhost:8000/api/health" || true)
 echo "  api 内部 /api/health = ${api_h:-<空>}"
 web_h=$(curl -fsS --max-time 15 "$WEB_HEALTH_URL" || true)
 echo "  web 反代 $WEB_HEALTH_URL = ${web_h:-<空>}"
-if [[ "$api_h" == *'"ok":true'* && "$web_h" == *'"ok":true'* ]]; then
-  echo "DONE: api + web 均健康"
-else
+if [[ "$api_h" != *'"ok":true'* || "$web_h" != *'"ok":true'* ]]; then
   echo "WARN: 健康检查未全绿, 请人工确认 (api 容器是否 running / web 是否需再 restart)" >&2
   exit 1
 fi
+
+echo "[7/7] 验证线上 API 构建提交"
+api_v=$(curl -fsS --max-time 15 "${WEB_HEALTH_URL%/api/health}/api/version" || true)
+echo "  /api/version = ${api_v:-<空>}"
+if [[ "$api_v" != *"$expected_full"* ]]; then
+  echo "FATAL: 线上 API 不是本次提交 $expected_short。可用回滚标签 $rollback 恢复。" >&2
+  exit 1
+fi
+echo "DONE: api @ $expected_short + web 反代均健康；回滚镜像=$rollback"

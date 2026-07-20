@@ -12,8 +12,8 @@
 git clone https://github.com/JimLu88/Panse-System.git
 cd Panse-System
 
-# 2) 切到当前开发分支
-git checkout claude/auto-add-custom-materials-8Wycr
+# 2) 使用唯一正式分支
+git switch main
 
 # 3) 启动 (后台)
 docker compose up -d
@@ -26,7 +26,8 @@ docker compose exec api python scripts/seed_suppliers.py
 #   前端: http://localhost:5173
 #   API : http://localhost:8000/docs   (Swagger 文档)
 #
-# 默认账号: admin / admin (登录后立刻去 管理 → 用户管理 改密码)
+# 首次启动会生成引导账号；首次登录必须立即设置强密码。
+# 生产环境不得继续使用仓库示例密码。
 ```
 
 ### 配置 AI / OCR 模型
@@ -43,10 +44,30 @@ docker compose exec api python scripts/seed_suppliers.py
 ### 升级到最新代码
 
 ```bash
-git pull
+git switch main
+git pull --ff-only
 docker compose up -d --build
 docker compose exec api alembic upgrade head
 ```
+
+### 群晖生产发布
+
+群晖不保存 Git 仓库，运行的是 PC 从 `origin/main` 同一提交构建并传入的 API/Web 镜像。正式发布只使用统一入口，不再分别手工部署：
+
+```bash
+# 必须在 Git Bash 中运行；PowerShell 管道会损坏 Docker 镜像流
+git switch main
+git pull --ff-only
+bash scripts/deploy_release_nas.sh
+```
+
+统一脚本会依次完成：确认 `HEAD == origin/main`、构建 API/Web、给群晖旧镜像打回滚标签、部署、迁移、验证 API/Web 提交一致，以及检查活动生命周期和定制报价关键功能。只读复验可单独运行：
+
+```bash
+bash scripts/verify_release_nas.sh
+```
+
+详细说明见 `docs/群晖统一发布流程.md`。
 
 ### 停止 / 重启 / 看日志
 
@@ -111,7 +132,7 @@ npm install
 npm run dev    # http://localhost:5173, 已配代理到后端
 
 # 测试
-cd backend && python -m pytest tests/ -q     # 全部跑一遍 (276 个)
+cd backend && python -m pytest tests/ -q     # 全部跑一遍
 cd backend && python -m pytest tests/test_supplier_payment_matcher.py -q   # 跑某一组
 ```
 
@@ -124,11 +145,11 @@ backend/
     models/         # SQLAlchemy ORM
     services/       # 业务逻辑
   alembic/          # 数据库迁移
-  tests/            # pytest 测试 (276 个)
+    tests/            # pytest 测试（当前约 287 个测试文件）
 frontend/
   src/
     pages/          # 每个一级菜单一个 page
     api/client.ts   # 所有后端调用
 deploy/             # nginx + HTTPS + systemd 部署模板
-scripts/            # 一次性运维脚本 (种供应商 / 备份 PG)
+scripts/            # 运维脚本（群晖统一发布/验收、种供应商、备份 PG）
 ```

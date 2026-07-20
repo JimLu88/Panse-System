@@ -11,8 +11,8 @@
   - 前端：Vite + React 18 + TypeScript + Ant Design 5 + TanStack Query + react-router。页面全部 `lazy` 加载。
   - 部署：Docker Compose 四服务 `db / api / web / backup`。api 启动 `alembic upgrade head && uvicorn`（**无 `--reload`**，单进程，看门狗 SIGTERM → Docker `unless-stopped` 自动拉起）。backup 每天 03:00 `pg_dump | gzip`，保留 30 天。
   - Windows 托盘部署：`deploy/windows/`（`panse_tray.py` + `*.bat`）。
-- **迁移最新 head = `0059`**（`account_balances.as_of_date` 统计日期；0058 = `order_settlements` 表）。
-- **Git 工作流**：本地直接提交到 `main`，维护者 push 到 `github.com/JimLu88/Panse-System`，用户只拉代码。**提交信息不带 `Co-Authored-By`**。升级 = `git pull && docker compose up -d --build`。
+- **迁移最新 head = `0127`**（活动生命周期；历史迁移只增不改，运行时用 `alembic current` 与 `alembic heads` 动态核对）。
+- **Git / 生产发布**：`origin/main` 是唯一源码事实源；群晖部署目录没有 `.git`，只运行构建镜像。正式发布必须用 `scripts/deploy_release_nas.sh` 从同一 `origin/main` 提交构建 API/Web，并用 `scripts/verify_release_nas.sh` 验收。**提交信息不带 `Co-Authored-By`**。
 - **认证**：JWT HS256；角色 `admin / operator / viewer`；默认 `admin/admin`，启动会把弱密码账号标记 `must_change_password` 强制改密。AI/OCR/物流 key 加密存 `system_settings`（后台可改，无需重启）。
 
 ## 2. 本地开发 & 环境坑（重要）
@@ -26,21 +26,21 @@
   ```
 - **Git-Bash MSYS 路径改写**：`docker compose exec`/`docker run` 里的绝对路径会被改成 Windows 路径 → 前缀 `MSYS_NO_PATHCONV=1`。
 - **PowerShell here-string** 会把代码里中文字面量变 `????` → 含中文的脚本用文件写入 + `docker compose cp` 进容器再 exec，别走 stdin 管道。
-- 后端测试：`docker compose exec api python -m pytest tests/ -q`（约 276 个测试 / 98 个文件）。
+- 后端测试：`docker compose exec api python -m pytest tests/ -q`（当前约 287 个测试文件；数量随功能增长，不在文档写死用例数）。
 - 不提交的未跟踪文件：`backups/`、`storage/`、`docker-compose.override.yml`、`deploy/windows/build|*.spec`。
 
 ## 3. 代码结构
 
 ```
 backend/app/
-  api/        FastAPI 路由（~50 个模块，main.py 里逐个 include_router）
-  models/     SQLAlchemy ORM（~50 张表，models/__init__.py 汇总）
-  services/   业务逻辑（~140 个 service，逻辑都在这层）
+  api/        FastAPI 路由（main.py 里逐个 include_router）
+  models/     SQLAlchemy ORM（当前约 94 个 __tablename__，models/__init__.py 汇总）
+  services/   业务逻辑（当前约 198 个 service 文件，逻辑都在这层）
   schemas/    Pydantic I/O
-  alembic/    迁移（head=0058）
+  alembic/    迁移（当前 head=0127）
   main.py     应用装配：日志(北京时间)/中间件/异常处理/限速/lifespan(看门狗+调度器)/路由
 frontend/src/
-  pages/      每个一级菜单页一个文件（~60 个）
+  pages/      每个一级菜单页一个文件（当前约 80 个）
   api/        后端调用封装（client.ts + 按域拆分 orders.ts/finance.ts/...）
   components/  CommandPalette / AiAssistantWidget / NotificationBell / VersionTag ...
   App.tsx     菜单(11 组) + 路由表 + 角色控制
@@ -63,7 +63,7 @@ frontend/src/
 | **工具** | Excel导入 `/importer`、全列数据浏览 `/data-explorer`、飞书 `/feishu`、管理/运维(admin) |
 | 顶栏按钮 | 截图录单 `/screenshots`、定制报价 `/custom-quote`、全局搜索 Ctrl+K |
 
-## 5. 数据模型总览（约 50 张表，按域分组）
+## 5. 数据模型总览（当前约 94 张 ORM 表，按域分组）
 
 - **产品/物料/BOM**：`products`、`materials`、`bom_lines`、`pricing_sku` + `pricing_sku_costs` + `pricing_sku_promo`、`pricing_formula_rules`、`price_change_logs`、`competitor_prices`、`custom_variants`、`taobao_listings`。
 - **库存**：`part_inventory`、`product_inventory`、`inventory_lock_ledger`（append-only 台账）。
@@ -180,17 +180,14 @@ frontend/src/
 
 ## 10. 当前状态 & 剩余 TODO
 
-- `origin/main` 最新 = `8a6f0fe`（销售排行榜）。开发分支 `claude/jolly-euler-wEyWb`（已含：系统记忆文档 + 剩余流水/可用资金重做一揽子）。
-- **本批分支新增**（剩余流水修复链，从旧到新）：订单导入状态映射+UPSERT(`2677419`) → 现金流公式重写+投资回收(`549537d`) → 账户余额 as_of_date+新鲜度(`11fc0eb`, 迁移0059) → 定制单缺需求异常(`81a68dc`)。
-- **已知遗留 bug**（非本批引入）：`customer_service.aggregate_all` 未过滤 `is_historical`（`test_aggregate_skips_historical` 既有失败）。`FactoryOrder.payment_status` 默认 unpaid 从未回填 → 工厂欠款口径虚高，需对账回填。
-- **剩余未做**（用户已列）：
-  1. ✅ **飞书机器人**（长连接 WebSocket，免公网/免验签）：`feishu_ws_service.py`(lark-oapi WS 客户端，收 `im.message.receive_v1`+`card.action.trigger`) + `feishu_bot_service.py`(收图→`classify_image`分类→卡片选→`process_pick`异步入库+patch更新卡片)；`feishu_client.download_message_resource/reply_card/patch_card`。**opt-in**：`ENABLE_FEISHU_BOT=1` + 配凭证才起（`main.py` lifespan）。卡片回调 3 秒内 ack toast、入库放后台线程后 patch 更新。**上线需用户配飞书自建应用凭证 + 开放平台事件订阅(选长连接)**，见 `docs/feishu-bot.md`。供应商送货单完整入库仍待接 `delivery_storage`。已做(`bf541c3` webhook骨架 → 长连接重做)。
-  2. ✅ **推广 ROI 按月占比**（`roi_service.monthly_breakdown`，`/api/marketing/roi/monthly`，营销页按月表）— 已做(`4a8abd3`)。
-  3. ✅ **对账缺口诊断**（`order_reconciliation_service.coverage_gap`，`/api/settlements/reconciliation/gap`，逐笔对账缺口卡片）— 已做(`7c42f29`)；继续提覆盖率仍需补导早期订单/billDetail/企业号流水(数据侧)。
-- ✅ **现金流准确度两项已做**：① 工厂欠款对账回填 `factory_payment_service.backfill_payment_status`(证据:流水号/付款日 + 推断:关联订单已签收且超结算周期45天→已付，写备注审计)，`POST /api/finance/factory-payment/backfill`，消除欠款虚高；② 反推理论成本复用 `order_cost_service.recompute_all`(`POST /api/orders/recompute-costs`)。两者前端在 财务→剩余流水 顶栏「工厂欠款回填」「反推理论成本」按钮。
+- 2026-07-21 基线：`origin/main` 已包含活动生命周期（迁移 0127）、报名价规则升级、定制报价双口径、真实 BOM 带出部件与板单核对。
+- 群晖生产要求：API `/api/version` 与 Web `/build-version.json` 必须返回同一完整提交；数据库必须为 `(head)`；四容器必须运行。不要再用单个后端版本标签代替整套发布版本。
+- 发布与回滚：只用 `scripts/deploy_release_nas.sh`；每次部署自动保留 `panse-system-api/web:rollback-时间戳` 镜像。验收只用 `scripts/verify_release_nas.sh`。
+- 历史功能完成情况以 Git 提交、迁移和各专题 `docs/*plan.md` 为准；本节不再保存容易过期的临时分支名与“剩余 TODO”快照。
 
 ## 11. 相关文档
 
 - `docs/会话交接-2026-06-07.md` — 本批 9 提交清单 + 数据真相 + 环境坑（会话级）。
 - `docs/feishu-sync-mapping.md` / `docs/backup-restore.md` / `docs/permissions.md`。
+- `docs/群晖统一发布流程.md` — 群晖唯一正式发布、验收与回滚流程。
 - `README.md` — 启动/升级/模块清单。

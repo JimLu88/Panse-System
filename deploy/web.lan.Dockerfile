@@ -13,6 +13,16 @@ COPY frontend/ ./
 RUN npm run build
 
 FROM nginx:alpine
+ARG GIT_COMMIT=unknown
+ARG GIT_COMMIT_DATE=""
+ARG BUILD_TIME=""
+LABEL org.opencontainers.image.revision=$GIT_COMMIT \
+      org.opencontainers.image.created=$BUILD_TIME
 COPY deploy/nginx.lan.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+# 前端是静态文件，不能复用后端 /api/version 判断自身版本。单独写入构建标记，
+# 让发布脚本和运维人员能确认浏览器拿到的 Web 与 API 来自同一 Git 提交。
+RUN printf '{"commit":"%s","commit_date":"%s","built_at":"%s"}\n' \
+      "$GIT_COMMIT" "$GIT_COMMIT_DATE" "$BUILD_TIME" \
+      > /usr/share/nginx/html/build-version.json
 EXPOSE 80
