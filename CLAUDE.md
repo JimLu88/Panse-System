@@ -176,7 +176,7 @@ frontend/src/
 
 - 后端：`docker compose exec api python -m pytest tests/ -q`（按子系统跑单文件，如 `test_alipay_backfill.py`/`test_order_import.py`/`test_reconciliation_service.py`）。
 - 前端：见 §2 的 2GB 临时容器 `tsc --noEmit`（每次改完都验，保持零错误）。
-- 新路由：`/api/openapi.json` 或 Swagger `/docs` 确认已注册。
+- 新路由：本地 API 的 `/openapi.json` 或 Swagger `/docs` 确认已注册；群晖 LAN nginx 只代理 `/api/*`，生产验收由 `verify_release_nas.sh` 在 API 容器内读取 `/openapi.json`。
 
 ## 10. 当前状态 & 剩余 TODO
 

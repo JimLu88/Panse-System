@@ -26,18 +26,21 @@ web_v=$(curl -fsS --max-time 15 "$BASE_URL/build-version.json")
 [[ "$web_v" == *"$EXPECTED_COMMIT"* ]] || fail "Web 版本不等于 expected: $web_v"
 pass "API/Web 同一提交 ${EXPECTED_COMMIT:0:7}"
 
-openapi=$(curl -fsS --max-time 30 "$BASE_URL/api/openapi.json")
+# LAN nginx 只代理 /api/*；FastAPI 的 /openapi.json 不从 8200 暴露，因此在 API 容器内只读获取。
+openapi=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://localhost:8000/openapi.json")
 [[ "$openapi" == *'"/api/campaigns"'* ]] || fail "OpenAPI 缺 /api/campaigns"
 [[ "$openapi" == *'"/api/customization/v2/quote-both"'* ]] || fail "OpenAPI 缺定制报价双口径路由"
 pass "活动生命周期 + 定制报价双口径后端路由"
 
-index=$(curl -fsS --max-time 15 "$BASE_URL/")
-js_path=$(printf '%s' "$index" | grep -oE '/assets/index-[^" ]+\.js' | head -1)
-[[ -n "$js_path" ]] || fail "首页未找到 JS bundle"
-bundle=$(curl -fsS --max-time 30 "$BASE_URL$js_path")
-[[ "$bundle" == *'活动生命周期'* ]] || fail "Web bundle 缺活动生命周期界面"
-[[ "$bundle" == *'按纯定制方向'* ]] || fail "Web bundle 缺纯定制双口径界面"
-[[ "$bundle" == *'真实部件板单'* ]] || fail "Web bundle 缺真实 BOM 带入核对界面"
+# 页面采用 lazy chunk，目标文案不一定在首页主 bundle；直接检查当前在线 web 容器的全部静态 chunk。
+web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
+  grep -R -q "活动生命周期" /usr/share/nginx/html/assets && echo campaign=yes
+  grep -R -q "按纯定制方向" /usr/share/nginx/html/assets && echo custom=yes
+  grep -R -q "真实部件板单" /usr/share/nginx/html/assets && echo bom=yes
+'")
+[[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
+[[ "$web_features" == *'custom=yes'* ]] || fail "Web 静态资源缺纯定制双口径界面"
+[[ "$web_features" == *'bom=yes'* ]] || fail "Web 静态资源缺真实 BOM 带入核对界面"
 pass "三个目标前端功能均在在线 bundle"
 
 migration=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 alembic current" 2>&1)
