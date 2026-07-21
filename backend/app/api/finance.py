@@ -1693,9 +1693,88 @@ def list_packing_bills(
 
 @router.get("/packing-bills/summary")
 def packing_bills_summary(bill_month: Optional[str] = None, db: Session = Depends(get_db)):
-    """当月打包费核算: 应付(已剔除不计入) / 剔除额 / 未配单数 — 与本子合计互核。"""
+    """当月打包费应付：有效明细合计 / 剔除额 / 未配单数。"""
     from app.services import packing_bill_service
     return packing_bill_service.month_summary(db, bill_month)
+
+
+class PackingPaymentAllocationIn(BaseModel):
+    flow_id: int
+    bill_month: str
+    amount: Decimal
+    note: Optional[str] = None
+
+
+@router.get("/packing-bills/payment-reconciliation")
+def packing_payment_reconciliation(
+    bill_month: str = Query(..., pattern=r"^\d{4}-(0[1-9]|1[0-2])$"),
+    db: Session = Depends(get_db),
+):
+    """月度打包应付明细合计 ↔ 已分配的支付宝打包费付款。"""
+    from app.services import packing_payment_service
+    return packing_payment_service.month_summary(db, bill_month)
+
+
+@router.post("/packing-bills/payment-allocations/auto")
+def auto_allocate_packing_payments(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """自动分配明确写有“打包费”且只含一个费用账期的支付流水。"""
+    from app.services import packing_payment_service
+    result = packing_payment_service.auto_allocate(db)
+    db.commit()
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger("packing-payment:auto-allocate")
+    except Exception:  # noqa: BLE001
+        pass
+    return result
+
+
+@router.post("/packing-bills/payment-allocations")
+def allocate_packing_payment(
+    payload: PackingPaymentAllocationIn,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """把一笔打包费付款全部或部分分配到指定费用账期，支持跨月拆分。"""
+    from app.services import packing_payment_service
+    try:
+        row = packing_payment_service.create_allocation(
+            db, flow_id=payload.flow_id, bill_month=payload.bill_month,
+            amount=payload.amount, note=payload.note,
+        )
+    except LookupError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger(f"packing-payment:allocate:{row.id}")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"allocation_id": row.id, "flow_id": row.alipay_flow_id,
+            "bill_month": row.bill_month, "amount": float(row.amount)}
+
+
+@router.delete("/packing-bills/payment-allocations/{allocation_id}")
+def remove_packing_payment_allocation(
+    allocation_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    from app.services import packing_payment_service
+    if not packing_payment_service.delete_allocation(db, allocation_id):
+        raise HTTPException(404, "打包费付款分配不存在")
+    db.commit()
+    try:
+        from app.services import realtime_sync_service
+        realtime_sync_service.trigger(f"packing-payment:unallocate:{allocation_id}")
+    except Exception:  # noqa: BLE001
+        pass
+    return {"deleted": allocation_id}
 
 
 class PackingBillPatch(BaseModel):

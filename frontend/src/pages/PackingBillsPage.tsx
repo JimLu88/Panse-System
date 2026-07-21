@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Checkbox, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tag,
+  Alert, Button, Card, Checkbox, DatePicker, Input, InputNumber, Modal, Popconfirm, Select, Space, Statistic, Table, Tag,
   Typography, Upload, message,
 } from 'antd';
 import { DeleteOutlined, DownloadOutlined, EditOutlined, InboxOutlined, PlusOutlined, ReloadOutlined, SaveOutlined } from '@ant-design/icons';
@@ -8,8 +8,9 @@ import dayjs from 'dayjs';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   commitPackingBill, listPackingBills, packingSummary, parsePackingBill, updatePackingBill,
-  deletePackingBill, packingMatchCandidates,
-  type PackingRowParsed, type PackingBillRow, type PackingCandidate,
+  deletePackingBill, packingMatchCandidates, packingPaymentReconciliation,
+  autoAllocatePackingPayments, allocatePackingPayment, deletePackingPaymentAllocation,
+  type PackingRowParsed, type PackingBillRow, type PackingCandidate, type PackingPaymentCandidate,
 } from '../api/screenshots';
 import { downloadCsv } from './LogisticsBillsPage';
 import FeeVariancePanel from '../components/FeeVariancePanel';
@@ -21,6 +22,15 @@ const MATCH_LABEL: Record<string, { text: string; color: string }> = {
   multi: { text: '多候选待人工', color: 'orange' },
   manual: { text: '人工指定', color: 'blue' },
   none: { text: '未能自动匹配', color: 'red' },
+};
+
+const PAYMENT_STATUS: Record<string, { text: string; color: string }> = {
+  balanced: { text: '已对平', color: 'green' },
+  pending: { text: '待付款', color: 'blue' },
+  unpaid: { text: '逾期未付', color: 'red' },
+  partial: { text: '少付', color: 'orange' },
+  overpaid: { text: '多付', color: 'red' },
+  no_bill: { text: '有付款无账单', color: 'red' },
 };
 
 function thisMonth(): string {
@@ -45,6 +55,11 @@ export default function PackingBillsPage() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [cands, setCands] = useState<PackingCandidate[]>([]);
   const [candLoading, setCandLoading] = useState(false);
+  const [paymentCandidate, setPaymentCandidate] = useState<PackingPaymentCandidate | null>(null);
+  const [allocationAmount, setAllocationAmount] = useState<number | null>(null);
+  const [allocationNote, setAllocationNote] = useState('');
+  const [allocating, setAllocating] = useState(false);
+  const [autoAllocating, setAutoAllocating] = useState(false);
 
   const loadCands = async (id: number, nameOverride?: string) => {
     setCandLoading(true);
@@ -78,6 +93,7 @@ export default function PackingBillsPage() {
       setEditRow(null);
       qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-payment-reconciliation', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-all'] });
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '保存失败');
@@ -93,6 +109,7 @@ export default function PackingBillsPage() {
       message.success('已删除该行');
       qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      qc.invalidateQueries({ queryKey: ['packing-payment-reconciliation', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-all'] });
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '删除失败');
@@ -110,6 +127,65 @@ export default function PackingBillsPage() {
     queryFn: () => packingSummary(billMonth),
     enabled: !!billMonth,
   });
+  const { data: paymentRecon } = useQuery({
+    queryKey: ['packing-payment-reconciliation', billMonth],
+    queryFn: () => packingPaymentReconciliation(billMonth),
+    enabled: !!billMonth,
+  });
+
+  const refreshPaymentRecon = () => {
+    qc.invalidateQueries({ queryKey: ['packing-payment-reconciliation', billMonth] });
+    qc.invalidateQueries({ queryKey: ['reconciliation'] });
+  };
+
+  const handleAutoAllocate = async () => {
+    setAutoAllocating(true);
+    try {
+      const r = await autoAllocatePackingPayments();
+      message.success(`自动分配 ${r.allocated} 笔，修正分类 ${r.reclassified} 笔；${r.needs_review} 笔待人工确认`);
+      refreshPaymentRecon();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '自动识别失败');
+    } finally {
+      setAutoAllocating(false);
+    }
+  };
+
+  const openPaymentAllocation = (candidate: PackingPaymentCandidate) => {
+    setPaymentCandidate(candidate);
+    setAllocationAmount(candidate.remaining_amount);
+    setAllocationNote('');
+  };
+
+  const savePaymentAllocation = async () => {
+    if (!paymentCandidate || !allocationAmount || allocationAmount <= 0) return;
+    setAllocating(true);
+    try {
+      await allocatePackingPayment({
+        flow_id: paymentCandidate.flow_id,
+        bill_month: billMonth,
+        amount: allocationAmount,
+        note: allocationNote || undefined,
+      });
+      message.success(`已把 ¥${allocationAmount.toFixed(2)} 分配到 ${billMonth}`);
+      setPaymentCandidate(null);
+      refreshPaymentRecon();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '分配失败');
+    } finally {
+      setAllocating(false);
+    }
+  };
+
+  const removePaymentAllocation = async (allocationId: number) => {
+    try {
+      await deletePackingPaymentAllocation(allocationId);
+      message.success('已取消这笔账期分配');
+      refreshPaymentRecon();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail ?? '取消分配失败');
+    }
+  };
 
   // 有数据的账期(默认跳到最近有数据的月, 免得停在空白当月)
   const { data: allBills = [], isFetched: allFetched } = useQuery<PackingBillRow[]>({
@@ -198,14 +274,12 @@ export default function PackingBillsPage() {
       message.success(
         `入库 ${r.inserted} 行（去重 ${r.skipped}）· 配单 ${r.matched} · 剔除 ${r.excluded} · ` +
         `当月应付 ¥${r.payable_total.toFixed(2)}`);
-      if (declaredTotal != null && Math.abs(declaredTotal - r.payable_total) > 0.5) {
-        message.warning(`本子合计 ¥${declaredTotal} 与系统应付 ¥${r.payable_total.toFixed(0)} 对不上，已挂异常待核对`);
-      }
       setRows([]);
       setDeclaredTotal(null);
       setOcrWarnings([]);
       qc.invalidateQueries({ queryKey: ['packing-bills', billMonth] });
       qc.invalidateQueries({ queryKey: ['packing-summary', billMonth] });
+      refreshPaymentRecon();
     } catch (e: any) {
       message.error(e?.response?.data?.detail ?? '入库失败');
     } finally {
@@ -334,7 +408,84 @@ export default function PackingBillsPage() {
       <Table rowKey="id" size="small" dataSource={saved} columns={savedColumns}
         pagination={{ defaultPageSize: 50 }} scroll={{ x: 760 }} />
 
+      {paymentRecon && (
+        <Card size="small" title={`月度支付核销 · ${billMonth}`}
+          extra={<Button size="small" icon={<ReloadOutlined />} loading={autoAllocating}
+            onClick={handleAutoAllocate}>自动识别支付流水</Button>}>
+          <Space direction="vertical" style={{ width: '100%' }} size="middle">
+            <Space size="large" wrap>
+              <Statistic title="应付（有效明细）" value={paymentRecon.payable_total} prefix="¥" precision={2} />
+              <Statistic title="实付（已分配流水）" value={paymentRecon.paid_total} prefix="¥" precision={2} />
+              <Statistic title="差额（实付－应付）" value={paymentRecon.diff} prefix="¥" precision={2}
+                valueStyle={{ color: Math.abs(paymentRecon.diff) <= 0.01 ? '#389e0d' : '#cf1322' }} />
+              <Tag color={PAYMENT_STATUS[paymentRecon.status]?.color ?? 'default'}>
+                {PAYMENT_STATUS[paymentRecon.status]?.text ?? paymentRecon.status}
+              </Tag>
+            </Space>
+            <Alert showIcon type={paymentRecon.status === 'balanced' ? 'success' : paymentRecon.status === 'pending' ? 'info' : 'warning'}
+              message={paymentRecon.status === 'pending'
+                ? `付款期限 ${paymentRecon.due_date}，期限前只显示待付款，不产生异常`
+                : '支付按费用账期核销，不按支付宝交易日期直接归月；跨月付款可拆分。'} />
+
+            <Typography.Text strong>已分配支付流水</Typography.Text>
+            <Table size="small" pagination={false} rowKey="allocation_id"
+              dataSource={paymentRecon.payments} locale={{ emptyText: '本月尚未分配支付流水' }}
+              columns={[
+                { title: '支付时间', dataIndex: 'transaction_time', width: 170,
+                  render: (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD HH:mm') : '无日期' },
+                { title: '账户/收款人', width: 180, render: (_: any, r: any) => `${r.account} · ${r.counterparty || r.counterparty_account || '未填写'}` },
+                { title: '分配金额', dataIndex: 'allocated_amount', width: 110, align: 'right' as const,
+                  render: (v: number) => `¥${Number(v).toFixed(2)}` },
+                { title: '来源', dataIndex: 'allocation_source', width: 80,
+                  render: (v: string) => <Tag color={v === 'auto' ? 'blue' : 'gold'}>{v === 'auto' ? '自动' : '人工'}</Tag> },
+                { title: '备注', dataIndex: 'remark', ellipsis: true },
+                { title: '操作', width: 90, render: (_: any, r: any) => (
+                  <Popconfirm title="取消这笔账期分配？" onConfirm={() => removePaymentAllocation(r.allocation_id)}>
+                    <Button size="small" type="link" danger>取消分配</Button>
+                  </Popconfirm>) },
+              ] as any} />
+
+            {paymentRecon.candidates.length > 0 && (
+              <>
+                <Typography.Text strong>待确认的打包相关支出</Typography.Text>
+                <Table size="small" pagination={{ pageSize: 10 }} rowKey="flow_id"
+                  dataSource={paymentRecon.candidates}
+                  columns={[
+                    { title: '支付时间', dataIndex: 'transaction_time', width: 120,
+                      render: (v: string | null) => v ? dayjs(v).format('YYYY-MM-DD') : '无日期' },
+                    { title: '收款人', width: 130, render: (_: any, r: any) => r.counterparty || r.counterparty_account || '未填写' },
+                    { title: '待分配', dataIndex: 'remaining_amount', width: 100, align: 'right' as const,
+                      render: (v: number) => `¥${Number(v).toFixed(2)}` },
+                    { title: '建议账期', dataIndex: 'suggested_months', width: 150,
+                      render: (v: string[]) => v.length ? v.map(m => <Tag key={m}>{m}</Tag>) : <Tag color="orange">无法自动判断</Tag> },
+                    { title: '流水备注', dataIndex: 'remark', ellipsis: true },
+                    { title: '操作', width: 100, render: (_: any, r: PackingPaymentCandidate) => (
+                      <Button size="small" onClick={() => openPaymentAllocation(r)}>分配到本月</Button>) },
+                  ] as any} />
+              </>
+            )}
+          </Space>
+        </Card>
+      )}
+
       <FeeVariancePanel url="/api/finance/packing-bills/variance" label="打包费" queryKey="packing-variance" />
+
+      <Modal title={`分配打包费付款到 ${billMonth}`} open={!!paymentCandidate}
+        onCancel={() => setPaymentCandidate(null)} onOk={savePaymentAllocation}
+        confirmLoading={allocating} okText="确认分配" destroyOnClose>
+        <Space direction="vertical" style={{ width: '100%' }}>
+          <Typography.Text>{paymentCandidate?.remark || paymentCandidate?.transaction_no}</Typography.Text>
+          <Typography.Text type="secondary">
+            流水金额 ¥{Number(paymentCandidate?.flow_amount ?? 0).toFixed(2)}，
+            尚可分配 ¥{Number(paymentCandidate?.remaining_amount ?? 0).toFixed(2)}
+          </Typography.Text>
+          <InputNumber min={0.01} max={paymentCandidate?.remaining_amount} precision={2}
+            value={allocationAmount ?? undefined} prefix="¥" style={{ width: '100%' }}
+            onChange={v => setAllocationAmount((v as number) ?? null)} />
+          <Input.TextArea rows={2} placeholder="可选：跨月拆分或混合付款说明"
+            value={allocationNote} onChange={e => setAllocationNote(e.target.value)} />
+        </Space>
+      </Modal>
 
       <Modal
         title={`编辑打包费 · ${editRow?.row_date ?? ''}`}

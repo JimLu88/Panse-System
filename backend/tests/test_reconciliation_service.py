@@ -482,7 +482,7 @@ def test_run_all_executes_all_rules(db_session):
     assert "install_fee" not in results
     assert set(results.keys()) == {
         "factory_payment", "promotion",
-        "refill_transfer", "inventory_value", "logistics_fee",
+        "refill_transfer", "inventory_value", "logistics_fee", "packing_payment",
         "revenue_alipay", "operating_expense", "purchase_payment",
         # WS4 代付台账三规则 (补单佣金/补单快递/售后 实付↔应摊)
         "refill_commission_payout", "refill_express_payout", "aftersales_payout",

@@ -256,6 +256,63 @@ export const packingSummary = (billMonth?: string) =>
     .get<Omit<PackingCommitResp, 'inserted' | 'skipped' | 'matched' | 'excluded'>>(
       '/api/finance/packing-bills/summary', { params: { bill_month: billMonth } })
     .then((r) => r.data);
+
+export interface PackingPaymentRow {
+  allocation_id: number;
+  flow_id: number;
+  bill_month: string;
+  allocated_amount: number;
+  allocation_source: 'auto' | 'manual';
+  note?: string | null;
+  transaction_no: string;
+  transaction_time?: string | null;
+  account: string;
+  counterparty?: string | null;
+  counterparty_account?: string | null;
+  flow_amount: number;
+  remark?: string | null;
+}
+
+export interface PackingPaymentCandidate {
+  flow_id: number;
+  transaction_no: string;
+  transaction_time?: string | null;
+  account: string;
+  counterparty?: string | null;
+  counterparty_account?: string | null;
+  flow_amount: number;
+  remaining_amount: number;
+  reconciliation_type?: string | null;
+  remark?: string | null;
+  suggested_months: string[];
+  auto_eligible: boolean;
+}
+
+export interface PackingPaymentReconciliation {
+  bill_month: string;
+  payable_total: number;
+  paid_total: number;
+  diff: number;
+  status: 'balanced' | 'pending' | 'unpaid' | 'partial' | 'overpaid' | 'no_bill';
+  due_date: string;
+  payments: PackingPaymentRow[];
+  candidates: PackingPaymentCandidate[];
+}
+
+export const packingPaymentReconciliation = (billMonth: string) =>
+  api.get<PackingPaymentReconciliation>('/api/finance/packing-bills/payment-reconciliation',
+    { params: { bill_month: billMonth } }).then((r) => r.data);
+
+export const autoAllocatePackingPayments = () =>
+  api.post<{ allocated: number; reclassified: number; needs_review: number }>(
+    '/api/finance/packing-bills/payment-allocations/auto').then((r) => r.data);
+
+export const allocatePackingPayment = (payload: {
+  flow_id: number; bill_month: string; amount: number; note?: string;
+}) => api.post('/api/finance/packing-bills/payment-allocations', payload).then((r) => r.data);
+
+export const deletePackingPaymentAllocation = (allocationId: number) =>
+  api.delete(`/api/finance/packing-bills/payment-allocations/${allocationId}`).then((r) => r.data);
 export const rematchPackingBills = (loose = true) =>
   api
     .post<{ matched: number; multi: number; none: number }>(

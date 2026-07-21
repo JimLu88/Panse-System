@@ -539,7 +539,7 @@ class PackingRowIn(BaseModel):
 
 class CommitPackingIn(BaseModel):
     bill_month: Optional[str] = None   # 账期 YYYY-MM
-    declared_total: Optional[float] = None  # 本子「合计」; 与系统应付对不上→挂异常
+    declared_total: Optional[float] = None  # 仅兼容旧前端；不写库、不与整月累计比较
     source_image: Optional[str] = None
     rows: list[PackingRowIn]
 

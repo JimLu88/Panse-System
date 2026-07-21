@@ -1,9 +1,5 @@
 # -*- coding: utf-8 -*-
-"""packing_total_mismatch 自愈复核 (用户 2026-06-29: 改账期/删行后异常成僵尸 → 补 recheck)。
-
-复核口径: 账期当前无打包行 → 销账; |本子合计 − 当前系统应付| ≤ 0.5 → 销账; 否则返回当前真实差。
-全合成数据, 不碰生产。
-"""
+"""旧 packing_total_mismatch 口径停用后应全部自动销账。"""
 from decimal import Decimal
 
 from app.models.exception import DataException
@@ -41,12 +37,11 @@ def test_recheck_clears_when_month_emptied(db_session):
     assert rk.recheck(db_session, ex) is None
 
 
-def test_recheck_keeps_real_mismatch(db_session):
-    """本子合计与当前应付仍差 → 返回原因 (不误关真不平)。"""
+def test_recheck_closes_old_mismatch_even_when_amounts_differ(db_session):
+    """旧异常不再阻塞；真实月结差异改由支付流水核销规则负责。"""
     _row(db_session, "2026-04", "甲", 100)
     ex = _exc(db_session, "2026-04", declared=500, payable=500)
-    reason = rk.recheck(db_session, ex)
-    assert reason and "仍差" in reason
+    assert rk.recheck(db_session, ex) is None
 
 
 def test_recheck_ignores_excluded_in_payable(db_session):

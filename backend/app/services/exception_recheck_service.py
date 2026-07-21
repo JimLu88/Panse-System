@@ -566,28 +566,8 @@ def _check_factory_bill_on_dead_order(db: Session, exc: DataException) -> Option
 
 
 def _check_packing_total_mismatch(db: Session, exc: DataException) -> Optional[str]:
-    """打包费本子合计 vs 系统应付: 复核 = 用账期【当前】应付重算 (修自愈缺口 2026-06-29)。
-    账期已无任何打包行(本子被挪走/删空) → 销账; 当前 |本子合计 − 系统应付| ≤ 0.5 → 销账(已对平);
-    否则返回当前真实差额 (注: 同账期多本账册时按整月汇总比, 仍不平则留人工核对)。
-    背景: 改账期/删行后, 旧的'系统应付'数字会过时 → 此前无复核器致异常成僵尸。"""
-    from decimal import Decimal
-
-    from app.services import packing_bill_service
-    ctx = exc.context or {}
-    bill_month = ctx.get("bill_month") or exc.source_pk
-    if not bill_month:
-        return None
-    summary = packing_bill_service.month_summary(db, bill_month)
-    if summary["rows_total"] == 0:
-        return None   # 账期已无打包行(账册挪走/删除) → 销账
-    declared = ctx.get("declared_total")
-    if declared is None:
-        return None   # 无本子合计可比 → 不拦
-    diff = Decimal(str(declared)) - Decimal(str(summary["payable_total"]))
-    if abs(diff) <= Decimal("0.5"):
-        return None   # 已对平
-    return (f"打包费账单 {bill_month}: 本子合计 ¥{declared} 与系统应付 "
-            f"¥{summary['payable_total']} 仍差 ¥{diff}, 请核对手写本逐行金额。")
+    """旧口径已停用：本子合计只在上传预览人工核对，不再与整月累计比较。"""
+    return None
 
 
 def _check_factory_bill_unpaid(db: Session, exc: DataException) -> Optional[str]:

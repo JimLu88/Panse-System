@@ -253,6 +253,7 @@ def get_dashboard(
         "refill_transfer": "刷单对账",
         "inventory_value": "库存资产",
         "logistics_fee": "物流费",
+        "packing_payment": "打包费核销",
         "revenue_alipay": "收入对账",
         "operating_expense": "经营支出",
         "purchase_payment": "采购付款",

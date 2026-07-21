@@ -52,6 +52,7 @@ const RULE_LABELS: Record<string, { label: string; desc: string }> = {
   refill_compensation: { label: '补单赔实付', desc: '补单总成本 ↔ 主订单实付差额' },
   inventory_value: { label: '库存资产', desc: '配件库存 × 物料单价 = 账面价值' },
   logistics_fee: { label: '物流费销项', desc: '万师傅月结 ↔ 订单.运费汇总' },
+  packing_payment: { label: '打包费核销', desc: '打包明细应付 ↔ 已分配支付流水（按费用账期）' },
   revenue_alipay: { label: '收入对账', desc: '订单营收 ↔ 支付宝订单收入 (按月)' },
   operating_expense: { label: '经营支出', desc: '日常经营/外包/品牌 ↔ 支付宝(按流水号)' },
   purchase_payment: { label: '采购付款', desc: '配件采购单 ↔ 支付宝(按流水号)' },

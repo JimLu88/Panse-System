@@ -332,9 +332,10 @@ def _job_alipay_match_pipeline(db: Session) -> dict:
     """
     from app.services import (
         alipay_amount_match_service, alipay_backfill_service,
-        alipay_flow_router_service, smart_matching_service,
+        alipay_flow_router_service, packing_payment_service, smart_matching_service,
     )
     smart_matching_service.run(db)
+    packing_payment_service.auto_allocate(db)
     route = alipay_flow_router_service.run_all(db)
     db.flush()
     bf = alipay_backfill_service.backfill(db, only_missing=True)

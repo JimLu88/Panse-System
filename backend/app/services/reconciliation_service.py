@@ -23,7 +23,9 @@ from typing import Literal, Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.finance import AlipayFlow, LogisticsBill, RefillRecord, WanshifuBill
+from app.models.finance import (
+    AlipayFlow, LogisticsBill, PackingBill, PackingPaymentAllocation, RefillRecord, WanshifuBill,
+)
 from app.models.inventory import PartInventory
 from app.models.marketing import AfterSales, BrandMarketing, DailyOperation, OutsourcingExpense, PromotionFlow
 from app.models.material import Material
@@ -40,6 +42,7 @@ RuleName = Literal[
     "refill_transfer",
     "inventory_value",
     "logistics_fee",
+    "packing_payment",
     "revenue_alipay",
     "operating_expense",
     "purchase_payment",
@@ -906,6 +909,77 @@ def run_logistics_fee(
     if record_exceptions:
         db.flush()
     return _result("logistics_fee", period_start, period_end, diffs, db)
+
+
+# -------- Rule 6b: 打包费月结 (人工确认明细应付 ↔ 支付流水实付) --------
+
+def run_packing_payment(
+    db: Session,
+    *,
+    period_start: Optional[date] = None,
+    period_end: Optional[date] = None,
+    record_exceptions: bool = True,
+) -> ReconciliationResult:
+    """按费用账期核销打包费；付款日期不直接决定账期，跨月付款由分配表拆分。"""
+    from app.services import packing_payment_service
+
+    months = set(db.execute(
+        select(PackingBill.bill_month).where(PackingBill.bill_month.isnot(None)).distinct()
+    ).scalars().all())
+    months.update(db.execute(
+        select(PackingPaymentAllocation.bill_month).distinct()
+    ).scalars().all())
+
+    def _in_period(ym: str) -> bool:
+        try:
+            year, month = map(int, ym.split("-"))
+            start = date(year, month, 1)
+            end = date(year + (month == 12), 1 if month == 12 else month + 1, 1) - timedelta(days=1)
+            return not ((period_start and end < period_start) or (period_end and start > period_end))
+        except (TypeError, ValueError):
+            return False
+
+    diffs: list[ReconciliationDiff] = []
+    for month in sorted(m for m in months if _in_period(m)):
+        summary = packing_payment_service.month_summary(db, month, include_candidates=False)
+        expected = Decimal(str(summary["payable_total"]))
+        actual = Decimal(str(summary["paid_total"]))
+        diff = actual - expected
+        status = summary["status"]
+        if status == "balanced":
+            severity: DiffSeverity = "ok"
+            message = f"{month}: 打包费应付 ¥{expected}, 实付 ¥{actual}, 已对平"
+        elif status == "pending":
+            severity = "ok"
+            message = (f"{month}: 打包费应付 ¥{expected}, 已付 ¥{actual}, 待付 ¥{-diff}；"
+                       f"付款期限 {summary['due_date']}，当前不报异常")
+        else:
+            severity = "warning" if abs(diff) < Decimal("50") else "error"
+            status_text = {
+                "unpaid": "逾期未付", "partial": "少付", "overpaid": "多付",
+                "no_bill": "有付款但无账单",
+            }.get(status, "未对平")
+            message = f"{month}: 打包费应付 ¥{expected}, 实付 ¥{actual}, 差 ¥{diff} ({status_text})"
+        related = [
+            f"支付宝流水 {p['transaction_no']} 分配 ¥{p['allocated_amount']}"
+            for p in summary["payments"]
+        ]
+        diffs.append(ReconciliationDiff(
+            key=month, expected=expected, actual=actual, diff=diff,
+            severity=severity, message=message, related_records=related,
+        ))
+        if severity not in ("ok", "not_available") and record_exceptions:
+            _record_exception(db, rule="packing_payment", key=month,
+                              diff_amount=diff, message=message)
+
+    if not diffs:
+        diffs.append(ReconciliationDiff(
+            key="all", expected=None, actual=None, diff=None, severity="not_available",
+            message="暂无打包费明细或已分配的打包费支付流水",
+        ))
+    if record_exceptions:
+        db.flush()
+    return _result("packing_payment", period_start, period_end, diffs, db)
 
 
 # -------- Rule 7: 收入对账 (订单营收 ↔ 支付宝收入) --------
@@ -1937,6 +2011,7 @@ RULES: dict[RuleName, callable] = {
     "refill_transfer": run_refill_transfer,
     "inventory_value": run_inventory_value,
     "logistics_fee": run_logistics_fee,
+    "packing_payment": run_packing_payment,
     "revenue_alipay": run_revenue_alipay,
     "operating_expense": run_operating_expense,
     "purchase_payment": run_purchase_payment,

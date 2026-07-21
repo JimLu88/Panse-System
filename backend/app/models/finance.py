@@ -262,6 +262,29 @@ class PackingBill(Base, TimestampMixin):
     )
 
 
+class PackingPaymentAllocation(Base, TimestampMixin):
+    """支付宝打包费付款按费用账期分配。
+
+    一笔付款可能覆盖多个账期，因此不把账期直接写在 AlipayFlow 上，而是用分配表
+    保存每个月实际核销的金额。付款只用于应付核销，不重复进入订单成本。
+    """
+    __tablename__ = "packing_payment_allocations"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    alipay_flow_id: Mapped[int] = mapped_column(
+        Integer, ForeignKey("alipay_flows.id", ondelete="CASCADE"), nullable=False, index=True,
+    )
+    bill_month: Mapped[str] = mapped_column(String(7), nullable=False, index=True)
+    amount: Mapped[Decimal] = mapped_column(Numeric(14, 2), nullable=False)
+    allocation_source: Mapped[str] = mapped_column(String(16), default="manual", nullable=False)
+    note: Mapped[Optional[str]] = mapped_column(Text)
+
+    __table_args__ = (
+        UniqueConstraint("alipay_flow_id", "bill_month", name="uq_packing_payment_flow_month"),
+        Index("ix_packing_payment_month_flow", "bill_month", "alipay_flow_id"),
+    )
+
+
 class FactoryReconciliation(Base, TimestampMixin):
     """工厂对账汇总 (Excel 表 11)。"""
 

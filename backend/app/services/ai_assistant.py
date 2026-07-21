@@ -324,6 +324,7 @@ _RULE_CN = {
     "refill_compensation": "补单赔付对账",
     "inventory_value": "库存资产估值",
     "logistics_fee": "物流费对账",
+    "packing_payment": "打包费支付核销",
 }
 
 # 按规则给确定性的「可能原因 / 修复建议」模板
@@ -351,6 +352,10 @@ _RULE_HINT = {
     "logistics_fee": (
         "万师傅月结物流 CSV 尚未导入",
         "拿到月结 CSV 后导入再对账",
+    ),
+    "packing_payment": (
+        "打包费有效明细应付与已分配的支付流水未对平，或付款尚未分配到正确费用账期",
+        "到打包费账单页核对支付候选，并把跨月或混合付款拆分到正确账期",
     ),
 }
 

@@ -59,7 +59,7 @@ def _do_resync() -> dict:
             custom_order_reconcile_service, data_quality_service,
             exception_recheck_service, expense_flow_match_service, flow_refund_service,
             factory_reconciliation_service, order_cost_service, order_sync_service,
-            reconciliation_service, scanner_service, smart_matching_service,
+            packing_payment_service, reconciliation_service, scanner_service, smart_matching_service,
         )
         # ── 0) 订单缺 product_code 经 sku_code 回填 (导入丢编码补救; 排行/汇总短名都靠它) ──
         _step("backfill_product_code", lambda d: order_sync_service.backfill_product_code(d))
@@ -67,6 +67,8 @@ def _do_resync() -> dict:
         _step("backfill_code_by_title", lambda d: order_sync_service.backfill_code_from_taobao_title(d))
         # ── 1) 支付宝流水归类/核销/配单 (原「重新核销」「归类流水」「自动配流水」按钮) ──
         _step("smart_match", lambda d: smart_matching_service.run(d) and None)
+        # 明确写“打包费”且账期唯一的付款先归到打包月结，避免被工厂付款/采购路由抢走。
+        _step("packing_payment", lambda d: packing_payment_service.auto_allocate(d))
         _step("route_flows", lambda d: alipay_flow_router_service.run_all(d) and None)
         _step("amount_match", lambda d: alipay_amount_match_service.match(d) and None)
         # ── 2) 退款对识别 (原「退款对识别」按钮) ──

@@ -77,20 +77,19 @@ def test_dedup_same_row(db_session):
     assert r2["payable_total"] == 10.0          # 不翻倍
 
 
-def test_total_mismatch_raises_exception(db_session):
-    """本子合计与系统应付对不上 → 挂异常 (用户 2026-06-21)。"""
+def test_declared_total_is_preview_only(db_session):
+    """本子合计只供上传预览人工核对，不与整月累计比较或创建异常。"""
     from app.models.exception import DataException
     r = svc.commit_packing_parsed(db_session, [
         {"customer_name": "甲", "packing_fee": 100},
-    ], bill_month="2026-07", declared_total=150)   # 系统应付100, 本子150 → 差50
-    assert r["total_mismatch"] == 50.0
-    exc = db_session.query(DataException).filter_by(
-        exception_type="packing_total_mismatch").first()
-    assert exc is not None and exc.source_pk == "2026-07"
+    ], bill_month="2026-07", declared_total=150)
+    assert r["total_mismatch"] is None
+    assert db_session.query(DataException).filter_by(
+        exception_type="packing_total_mismatch").count() == 0
 
 
-def test_total_match_no_exception(db_session):
-    """本子合计与系统应付相符 → 不挂异常。"""
+def test_declared_total_match_also_no_exception(db_session):
+    """旧客户端仍可传 declared_total，但服务端始终不据此挂异常。"""
     from app.models.exception import DataException
     r = svc.commit_packing_parsed(db_session, [
         {"customer_name": "乙", "packing_fee": 100},
