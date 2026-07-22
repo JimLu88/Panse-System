@@ -247,16 +247,16 @@ def factory_production(
         )
         _txt = _remote_text(o)
         _rdate = _resume_date(_txt, base)
-        if _is_activated(_txt):                             # 激活: 备注含激活词且非"等/待通知"语境 → 解除远期, 立即排产 (优先级最高)
+        if o.is_customer_delayed:                           # 结构化客户延期优先:「开始制作」只表示不停产, 不能恢复原交期
+            eff = o.customer_delay_deadline
+            days = (eff - today).days if eff else None
+            st = _by_days(days)
+        elif _is_activated(_txt):                           # 激活: 备注含激活词且非"等/待通知"语境 → 解除远期, 立即排产
             eff = _rdate or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
             days = (eff - today).days if eff else None
             st = _by_days(days)
         elif o.is_remote_ship:                              # 手动设为远期: 无期限
             eff, days, st = None, None, "remote"
-        elif o.is_customer_delayed:                         # 客户延期: 按新交期倒计时, 不算原交期超期
-            eff = o.customer_delay_deadline
-            days = (eff - today).days if eff else None
-            st = _by_days(days)
         elif o.ship_deadline:                               # 人工设了截止 → 正常倒计时
             eff = o.ship_deadline
             days = (eff - today).days

@@ -32,6 +32,7 @@ def test_customer_delay_uses_new_deadline_and_keeps_original(db_session):
         is_customer_delayed=True,
         customer_delay_deadline=delayed_to,
         production_note="客户要求延期发货",
+        seller_memo="开始制作，注意打木架",
     )
     db_session.add(order)
     db_session.commit()
