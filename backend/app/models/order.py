@@ -152,6 +152,9 @@ class Order(Base, TimestampMixin):
     production_note: Mapped[Optional[str]] = mapped_column(Text)
     # 远期单: 等客户通知再发货, 工厂制作单里单独归类(不按30天倒扣紧急度)
     is_remote_ship: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    # 客户延期: 与「远期单」分开。仍可继续生产, 只把交期责任顺延到客户确认的新日期。
+    is_customer_delayed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    customer_delay_deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

@@ -92,6 +92,9 @@ export interface FactoryCard {
   order_no: string;
   order_date: string | null;
   ship_deadline: string | null;        // 手动发货截止(覆盖默认)
+  original_deadline: string | null;    // 客户延期前的截止(手动截止或下单+30天)
+  is_customer_delayed: boolean;        // 客户主动要求顺延交期, 不等同远期挂起
+  customer_delay_deadline: string | null; // 客户确认的新截止日期
   effective_deadline: string | null;   // 生效截止(手动优先, 否则下单+30天)
   days_left: number | null;            // 距截止剩余天数(负=超期)
   customer_name: string | null;
@@ -117,7 +120,13 @@ export const fetchFactoryProduction = (product?: string) =>
     { params: product ? { product } : undefined }).then((r) => r.data);
 export const updateOrderProduction = (
   id: number,
-  patch: { ship_deadline?: string | null; production_note?: string | null; is_remote_ship?: boolean },
+  patch: {
+    ship_deadline?: string | null;
+    production_note?: string | null;
+    is_remote_ship?: boolean;
+    is_customer_delayed?: boolean;
+    customer_delay_deadline?: string | null;
+  },
 ) => api.patch(`/api/orders/${id}/production`, patch).then((r) => r.data);
 
 // 工厂生产看板「重推给工厂」: 删旧下单图 → 按最新数据重生成 → 推工厂群

@@ -69,7 +69,12 @@ def is_remote(o) -> bool:
     远期挂起单: 不生成/不推工厂下单图、不占工厂单号 —— 等激活后再以新号推 (用户 2026-07-08)。"""
     if is_activated(o):
         return False
-    return bool(getattr(o, "is_remote_ship", False)) or has_remote_keyword(o)
+    if bool(getattr(o, "is_remote_ship", False)):
+        return True
+    # 客户延期是交期责任顺延, 订单仍可生产；不能因备注里的「延期发」被当成远期挂起。
+    if bool(getattr(o, "is_customer_delayed", False)):
+        return False
+    return has_remote_keyword(o)
 
 
 def factory_label(o) -> str:
@@ -122,6 +127,8 @@ def is_factory_remote(o, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> bool
         return False
     if getattr(o, "is_remote_ship", False):
         return True
+    if getattr(o, "is_customer_delayed", False):
+        return False   # 客户延期不作废工厂号、不暂停生产
     if getattr(o, "ship_deadline", None):
         return False   # 人工设了发货截止 → 倒计时, 不算远期
     today = today or date.today()

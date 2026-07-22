@@ -20,7 +20,6 @@ from app.schemas.order import (
     OrderUpdate,
 )
 from app.services import (
-    data_quality_service,
     exception_service,
     factory_sheet,
     import_storage,
@@ -121,7 +120,8 @@ def factory_production(
 ):
     """工厂制作单视图: 列出"已付款待发货"(在工厂制作中)的订单卡片。
 
-    默认发货截止 = 下单日 + 30天; 手动 ship_deadline 优先。days_left = 截止 − 今天(负数=超期)。
+    默认发货截止 = 下单日 + 30天; 手动 ship_deadline 优先；客户延期单改按客户确认的新日期。
+    days_left = 生效截止 − 今天(负数=超期)。
     product 非空时只返回匹配该产品(名称/编码/SKU/内部名)的订单卡片。
     """
     from datetime import timedelta
@@ -242,6 +242,9 @@ def factory_production(
     out = []
     for o in orders:
         base = o.order_date
+        original_deadline = o.ship_deadline or (
+            (base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None
+        )
         _txt = _remote_text(o)
         _rdate = _resume_date(_txt, base)
         if _is_activated(_txt):                             # 激活: 备注含激活词且非"等/待通知"语境 → 解除远期, 立即排产 (优先级最高)
@@ -250,10 +253,17 @@ def factory_production(
             st = _by_days(days)
         elif o.is_remote_ship:                              # 手动设为远期: 无期限
             eff, days, st = None, None, "remote"
+        elif o.is_customer_delayed:                         # 客户延期: 按新交期倒计时, 不算原交期超期
+            eff = o.customer_delay_deadline
+            days = (eff - today).days if eff else None
+            st = _by_days(days)
         elif o.ship_deadline:                               # 人工设了截止 → 正常倒计时
-            eff = o.ship_deadline; days = (eff - today).days; st = _by_days(days)
+            eff = o.ship_deadline
+            days = (eff - today).days
+            st = _by_days(days)
         elif _rdate is not None:                            # 备注带发货日: 截止=该日; 距今>工期仍远期(太早别做), 否则到期排产
-            eff = _rdate; days = (eff - today).days
+            eff = _rdate
+            days = (eff - today).days
             st = "remote" if days > DEFAULT_SHIP_DAYS else _by_days(days)
         elif any(k in _txt for k in REMOTE_KW):             # 关键词远期(等通知/装修好…): 无期限, 等客户通知
             eff, days, st = None, None, "remote"
@@ -266,6 +276,11 @@ def factory_production(
             "order_no": o.order_no,
             "order_date": base.isoformat() if base else None,
             "ship_deadline": o.ship_deadline.isoformat() if o.ship_deadline else None,
+            "original_deadline": original_deadline.isoformat() if original_deadline else None,
+            "is_customer_delayed": o.is_customer_delayed,
+            "customer_delay_deadline": (
+                o.customer_delay_deadline.isoformat() if o.customer_delay_deadline else None
+            ),
             "effective_deadline": eff.isoformat() if eff else None,
             "days_left": days,
             "remote_resume_date": _rdate.isoformat() if _rdate else None,   # 备注解析出的预定发货日(到期自动排产)
@@ -296,11 +311,13 @@ class ProductionPatch(BaseModel):
     ship_deadline: Optional[_date] = None
     production_note: Optional[str] = None
     is_remote_ship: Optional[bool] = None
+    is_customer_delayed: Optional[bool] = None
+    customer_delay_deadline: Optional[_date] = None
 
 
 @router.patch("/{order_id}/production")
 def update_production(order_id: int, body: ProductionPatch, db: Session = Depends(get_db)):
-    """工厂制作单: 改单卡的发货截止 / 备注。"""
+    """工厂制作单: 改截止/备注，并维护互斥的远期单、客户延期标识。"""
     o = db.get(Order, order_id)
     if not o:
         raise HTTPException(404, "order not found")
@@ -309,8 +326,24 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
         o.ship_deadline = data["ship_deadline"]
     if "production_note" in data:
         o.production_note = data["production_note"]
+    if data.get("is_remote_ship") and data.get("is_customer_delayed"):
+        raise HTTPException(422, "远期单与客户延期不能同时启用")
+    if "customer_delay_deadline" in data:
+        o.customer_delay_deadline = data["customer_delay_deadline"]
+    if "is_customer_delayed" in data:
+        if data["is_customer_delayed"]:
+            if not o.customer_delay_deadline:
+                raise HTTPException(422, "标记客户延期时必须填写延期后的截止日期")
+            o.is_customer_delayed = True
+            o.is_remote_ship = False
+        else:
+            o.is_customer_delayed = False
+            o.customer_delay_deadline = None
     if "is_remote_ship" in data:
         o.is_remote_ship = bool(data["is_remote_ship"])
+        if o.is_remote_ship:
+            o.is_customer_delayed = False
+            o.customer_delay_deadline = None
     db.commit()
     return {"ok": True, "id": o.id}
 

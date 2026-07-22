@@ -220,6 +220,7 @@ _ENTITY_EXTRA_LABELS: dict[str, dict[str, str]] = {
         "tracking_confirmed": "物流签收确认", "manual_confirmed": "人工签收确认",
         "signoff_questioned": "签收存疑", "kanban_confirmed": "看板人工确认",
         "ship_deadline": "发货截止", "production_note": "制作单备注", "is_remote_ship": "是否远期单",
+        "is_customer_delayed": "是否客户延期", "customer_delay_deadline": "客户延期截止",
         "import_job_id": "导入批次", "id": "ID", "created_at": "创建时间", "updated_at": "更新时间",
     },
 }

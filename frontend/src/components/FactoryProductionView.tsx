@@ -7,7 +7,7 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Col, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm, Popover, Row, Segmented, Space, Tag, Typography, message,
+  Alert, Button, Card, Col, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm, Popover, Row, Segmented, Space, Switch, Tag, Typography, message,
 } from 'antd';
 import { DownloadOutlined, PrinterOutlined, ProfileOutlined, SettingOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
@@ -52,6 +52,9 @@ const STATUS_META: Record<string, { label: string; color: string; bg: string }> 
   remote:   { label: '远期单',   color: '#722ed1', bg: '#f9f0ff' },
 };
 const STATUS_ORDER = ['overdue', 'critical', 'urgent', 'normal', 'remote'];
+const CUSTOMER_DELAY_COLOR = '#08979c';
+const CUSTOMER_DELAY_BG = '#e6fffb';
+const CUSTOMER_DELAY_BORDER = '#87e8de';
 
 export default function FactoryProductionView() {
   const qc = useQueryClient();
@@ -60,6 +63,8 @@ export default function FactoryProductionView() {
   const [editing, setEditing] = useState<FactoryCard | null>(null);
   const [editDeadline, setEditDeadline] = useState<dayjs.Dayjs | null>(null);
   const [editNote, setEditNote] = useState('');
+  const [editCustomerDelayed, setEditCustomerDelayed] = useState(false);
+  const [editCustomerDelayDeadline, setEditCustomerDelayDeadline] = useState<dayjs.Dayjs | null>(null);
   const [prodQ, setProdQ] = useState('');   // 按产品搜索 (图1)
 
   const { data = [], isLoading } = useQuery({
@@ -76,7 +81,7 @@ export default function FactoryProductionView() {
       setEditing(null);
       qc.invalidateQueries({ queryKey: ['factory-production'] });
     },
-    onError: () => message.error('保存失败'),
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
   });
 
   // 「重推给工厂」: 工厂没收到 / 改了备注 → 点一下重发那张下单图 (用户 2026-07-09)
@@ -139,15 +144,25 @@ export default function FactoryProductionView() {
     data.forEach((x) => { c[x.status] = (c[x.status] || 0) + 1; });
     return c;
   }, [data]);
+  const customerDelayCount = useMemo(
+    () => data.filter((x) => x.is_customer_delayed).length,
+    [data],
+  );
   const visible = useMemo(
-    () => (filterStatus === 'all' ? sorted : sorted.filter((c) => c.status === filterStatus)),
+    () => (filterStatus === 'all'
+      ? sorted
+      : filterStatus === 'customer_delayed'
+        ? sorted.filter((c) => c.is_customer_delayed)
+        : sorted.filter((c) => c.status === filterStatus)),
     [sorted, filterStatus],
   );
 
   const openEdit = (c: FactoryCard) => {
     setEditing(c);
-    setEditDeadline(c.ship_deadline ? dayjs(c.ship_deadline) : (c.effective_deadline ? dayjs(c.effective_deadline) : null));
+    setEditDeadline(c.ship_deadline ? dayjs(c.ship_deadline) : null);
     setEditNote(c.production_note || '');
+    setEditCustomerDelayed(c.is_customer_delayed);
+    setEditCustomerDelayDeadline(c.customer_delay_deadline ? dayjs(c.customer_delay_deadline) : null);
   };
 
   // #23: 导出当前筛选的工厂制作单为 Excel (复用页面导出端点, 记录进 资料存档库→页面导出)
@@ -156,7 +171,8 @@ export default function FactoryProductionView() {
       { key: 'order_label', title: '工厂下单号' },
       { key: 'order_no', title: '订单号' }, { key: 'order_date', title: '下单日期' },
       { key: 'ship_date', title: '发货截止' }, { key: 'days_left', title: '剩余天数' },
-      { key: 'status_label', title: '紧急度' }, { key: 'customer_name', title: '客户' },
+      { key: 'status_label', title: '紧急度' }, { key: 'customer_delay', title: '客户延期' },
+      { key: 'original_deadline', title: '原截止' }, { key: 'customer_name', title: '客户' },
       { key: 'customer_address', title: '地址' }, { key: 'product_name', title: '产品' },
       { key: 'sku', title: 'SKU' }, { key: 'remark', title: '备注' },
     ];
@@ -165,6 +181,8 @@ export default function FactoryProductionView() {
       ship_date: c.ship_date ?? c.ship_deadline ?? c.ship_eta ?? null,
       days_left: c.days_left ?? c.days ?? null,
       status_label: STATUS_META[c.status]?.label ?? c.status,
+      customer_delay: c.is_customer_delayed ? `客户延期至 ${c.customer_delay_deadline || '未填写'}` : '',
+      original_deadline: c.is_customer_delayed ? c.original_deadline : '',
       customer_name: c.customer_name, customer_address: c.customer_address,
       product_name: c.product_name, sku: c.sku, remark: c.remark ?? c.note ?? null,
     }));
@@ -199,10 +217,12 @@ export default function FactoryProductionView() {
         <div class="hd">
           <span class="no">${esc(c.order_label || c.order_no)}</span>${c.order_label ? ` <span style="color:#888;font-size:11px">${esc(c.order_no)}</span>` : ''}
           <span class="badge" style="color:${sm.color};background:${sm.bg};border-color:${sm.color}">${esc(sm.label)}</span>
+          ${c.is_customer_delayed ? `<span class="badge" style="color:${CUSTOMER_DELAY_COLOR};background:${CUSTOMER_DELAY_BG};border-color:${CUSTOMER_DELAY_BORDER}">客户延期</span>` : ''}
           ${c.is_custom ? '<span class="badge cust">定制</span>' : ''}
         </div>
         <div class="row"><b>下单</b> ${esc(c.order_date || '—')} ·
           <span style="color:${ds.color};font-weight:${ds.weight}">${esc(daysText(c.days_left))}</span></div>
+        ${c.is_customer_delayed ? `<div class="row" style="color:${CUSTOMER_DELAY_COLOR}"><b>客户延期至</b> ${esc(c.customer_delay_deadline || '—')}　<span style="color:#888">原截止 ${esc(c.original_deadline || '—')}</span></div>` : ''}
         <div class="row"><b>客户</b> ${esc(c.customer_name || '—')}　${esc(c.customer_phone || '')}</div>
         <div class="row"><b>地址</b> ${esc(c.customer_address || '—')}</div>
         <div class="row prod"><b>产品</b> ${esc(c.product_name || '—')} <b>×${esc(c.qty ?? 1)}</b></div>
@@ -289,7 +309,7 @@ export default function FactoryProductionView() {
         className="no-print"
         type="info" showIcon
         message="工厂制作单: 已付款待发货(在工厂制作中)的订单。默认发货周期 30 天, 按下单日自动倒扣; 剩余越少字越红。"
-        description="卡片可「编辑」改发货截止(特殊单)或加备注(红色醒目)。可按 剩余发货时间 / 下单日期 / 类目 排序。"
+        description="卡片可「编辑」改发货截止、标记青绿色客户延期或加备注；客户延期按新日期倒计时，不会变成紫色远期挂起。"
       />
       <Space className="no-print" align="center" wrap>
         <span style={{ fontSize: 20, fontWeight: 700 }}>
@@ -313,9 +333,13 @@ export default function FactoryProductionView() {
       {/* 按紧急度分类筛选(点色块切换) */}
       <Space className="no-print" wrap size={6}>
         {[{ s: 'all', label: '全部', color: '#1677ff' },
-          ...STATUS_ORDER.map((s) => ({ s, label: STATUS_META[s].label, color: STATUS_META[s].color }))
+          ...STATUS_ORDER.flatMap((s) => s === 'remote'
+            ? [{ s: 'customer_delayed', label: '客户延期', color: CUSTOMER_DELAY_COLOR },
+              { s, label: STATUS_META[s].label, color: STATUS_META[s].color }]
+            : [{ s, label: STATUS_META[s].label, color: STATUS_META[s].color }])
          ].map(({ s, label, color }) => {
-          const n = s === 'all' ? data.length : (counts[s] || 0);
+          const n = s === 'all' ? data.length
+            : s === 'customer_delayed' ? customerDelayCount : (counts[s] || 0);
           const active = filterStatus === s;
           return (
             <Tag key={s} onClick={() => setFilterStatus(s)}
@@ -356,6 +380,12 @@ export default function FactoryProductionView() {
                       <Tag style={{ marginInlineEnd: 0, color: STATUS_META[c.status]?.color, borderColor: STATUS_META[c.status]?.color, background: STATUS_META[c.status]?.bg }}>
                         {STATUS_META[c.status]?.label ?? c.status}
                       </Tag>
+                      {c.is_customer_delayed && (
+                        <Tag style={{ marginInlineEnd: 0, color: CUSTOMER_DELAY_COLOR,
+                          background: CUSTOMER_DELAY_BG, borderColor: CUSTOMER_DELAY_BORDER }}>
+                          客户延期
+                        </Tag>
+                      )}
                       {c.is_custom && <Tag color="purple" style={{ marginInlineEnd: 0 }}>定制</Tag>}
                     </Space>
                   </Space>
@@ -364,7 +394,17 @@ export default function FactoryProductionView() {
                     <span style={{ marginLeft: 8, color: ds.color, fontWeight: ds.weight }}>
                       {daysText(c.days_left)}
                     </span>
-                    {c.ship_deadline && <Tag color="blue" style={{ marginLeft: 6 }}>已改截止 {c.ship_deadline}</Tag>}
+                    {c.is_customer_delayed ? (
+                      <>
+                        <Tag style={{ marginLeft: 6, color: CUSTOMER_DELAY_COLOR,
+                          background: CUSTOMER_DELAY_BG, borderColor: CUSTOMER_DELAY_BORDER }}>
+                          延期至 {c.customer_delay_deadline || '未填写'}
+                        </Tag>
+                        <span style={{ marginLeft: 6, color: '#999' }}>原截止 {c.original_deadline || '-'}</span>
+                      </>
+                    ) : c.ship_deadline ? (
+                      <Tag color="blue" style={{ marginLeft: 6 }}>已改截止 {c.ship_deadline}</Tag>
+                    ) : null}
                   </div>
                   <div style={{ fontSize: 12, lineHeight: 1.4 }}>
                     <div><b>{c.customer_name || '-'}</b>　{c.customer_phone || ''}</div>
@@ -458,7 +498,20 @@ export default function FactoryProductionView() {
         title={`制作单 — ${editing?.order_no ?? ''}`}
         open={!!editing}
         onCancel={() => setEditing(null)}
-        onOk={() => editing && saveMut.mutate({ id: editing.id, patch: { ship_deadline: editDeadline ? editDeadline.format('YYYY-MM-DD') : null, production_note: editNote.trim() || null } })}
+        onOk={() => {
+          if (!editing) return;
+          if (editCustomerDelayed && !editCustomerDelayDeadline) {
+            message.warning('请填写客户延期后的截止日期');
+            return;
+          }
+          saveMut.mutate({ id: editing.id, patch: {
+            ship_deadline: editDeadline ? editDeadline.format('YYYY-MM-DD') : null,
+            production_note: editNote.trim() || null,
+            is_customer_delayed: editCustomerDelayed,
+            customer_delay_deadline: editCustomerDelayed && editCustomerDelayDeadline
+              ? editCustomerDelayDeadline.format('YYYY-MM-DD') : null,
+          } });
+        }}
         confirmLoading={saveMut.isPending}
         okText="保存"
         destroyOnClose
@@ -467,6 +520,22 @@ export default function FactoryProductionView() {
           <div>
             <Typography.Text type="secondary">发货截止（留空=按下单日+30天自动算；特殊单可改）</Typography.Text>
             <DatePicker value={editDeadline} onChange={setEditDeadline} style={{ width: '100%', marginTop: 4 }} allowClear />
+          </div>
+          <div style={{ padding: '10px 12px', border: `1px solid ${CUSTOMER_DELAY_BORDER}`,
+            borderRadius: 6, background: CUSTOMER_DELAY_BG }}>
+            <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+              <div>
+                <Typography.Text strong style={{ color: CUSTOMER_DELAY_COLOR }}>客户延期</Typography.Text>
+                <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                  客户主动调整交期；不等同紫色远期单，也不会暂停生产
+                </Typography.Text></div>
+              </div>
+              <Switch checked={editCustomerDelayed} onChange={setEditCustomerDelayed} />
+            </Space>
+            {editCustomerDelayed && (
+              <DatePicker value={editCustomerDelayDeadline} onChange={setEditCustomerDelayDeadline}
+                placeholder="选择客户确认的新截止日期" style={{ width: '100%', marginTop: 10 }} allowClear />
+            )}
           </div>
           <div>
             <Typography.Text type="secondary">备注（会在卡片上红色放大显示，提醒紧急/特殊事项）</Typography.Text>
