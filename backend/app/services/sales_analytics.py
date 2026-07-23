@@ -389,12 +389,23 @@ def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
         if not pc:
             continue
         if use_stock:
-            pinv = db.execute(select(ProductInventory).where(
-                ProductInventory.product_code == pc).limit(1)).scalar_one_or_none()
-            in_stock = float(pinv.physical_qty) if pinv else 0.0
-            free = float((in_prod_free or {}).get(_canon(pc), 0.0))    # 备货在产, 会入库 → 抵扣
-            alloc = float((in_prod_alloc or {}).get(_canon(pc), 0.0))  # 客户单在产, 发客户 → 不抵扣
-            need_to_produce = max(f["forecast_30d"] - in_stock - free, 0)
+            if "suggested_restock" in f:
+                # 唯一备货引擎已经完成库存/自由在产抵扣；这里只负责 BOM 倒推，禁止二次计算。
+                in_stock = float(f.get("in_stock") or f.get("on_hand") or 0)
+                free = float(f.get("in_production_free") or f.get("free_in_production") or 0)
+                alloc = float(
+                    f.get("in_production_allocated")
+                    or f.get("allocated_in_production")
+                    or 0
+                )
+                need_to_produce = float(f["suggested_restock"])
+            else:
+                pinv = db.execute(select(ProductInventory).where(
+                    ProductInventory.product_code == pc).limit(1)).scalar_one_or_none()
+                in_stock = float(pinv.physical_qty) if pinv else 0.0
+                free = float((in_prod_free or {}).get(_canon(pc), 0.0))
+                alloc = float((in_prod_alloc or {}).get(_canon(pc), 0.0))
+                need_to_produce = max(f["forecast_30d"] - in_stock - free, 0)
         else:
             in_stock, free, alloc, need_to_produce = 0.0, 0.0, 0.0, f["forecast_30d"]
         products_out.append({
@@ -404,6 +415,10 @@ def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
             "in_production_free": free,         # 备货在产(会入库, 已从需生产扣掉)
             "in_production_allocated": alloc,   # 客户单在产(发给下单客户, 不抵未来缺口)
             "need_to_produce": need_to_produce,
+            "suggested_restock": f.get("suggested_restock", need_to_produce),
+            "target_stock": f.get("target_stock"),
+            "policy": f.get("policy"),
+            "qualified_hot": f.get("qualified_hot"),
         })
         if need_to_produce <= 0:
             continue
@@ -458,10 +473,18 @@ def stock_advice(db: Session) -> dict:
     客户单在产(已卖给下单客户)另列展示、不抵未来缺口; 定制段不减在产, 保守全量倒推通用料。
     """
     from app.services import product_inventory_service as _pis
+    from app.services import inventory_restock_service
     cfg = _pis.get_forecast_config(db)
-    # 未来 30 天已逐日识别 618/双11/双12/春节，这里只保留展示信息，禁止二次放大。
+    today = date.today()
+    unified = inventory_restock_service.build_restock_plan(
+        db,
+        start=today + timedelta(days=1),
+        end=today + timedelta(days=30),
+        as_of=today,
+    )
+    # 未来 30 天已在唯一备货引擎中逐日识别活动/春节，这里只保留展示信息。
     s_raw, s_month, s_mult = _pis._seasonal_effective_daily(cfg, 1.0, 30)
-    fc_reg = forecast_30d(db, custom=False)
+    fc_reg = unified["products"]
     fc_cus = forecast_30d(db, custom=True)
 
     free, alloc = _in_production_split(db)
@@ -481,6 +504,7 @@ def stock_advice(db: Session) -> dict:
         # 重点备货月: 预测/需生产/物料 已按目标月缩放(关=1.0原样); 前端横幅展示
         "seasonal": {"enabled": bool(cfg.get("enable_seasonal")),
                      "target_month": s_month, "multiplier": s_mult},
+        "restock_rules": unified["rules"],
         # R5 半成品(白坯): 默认关闭时 semi_finished 为空、前端不显示; 打开后出池化备货计划
         "semi_finished_enabled": semi_enabled,
         "semi_finished": semi_finished_plan(db) if semi_enabled else [],

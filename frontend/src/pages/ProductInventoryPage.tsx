@@ -28,7 +28,6 @@ import {
   fetchForecastConfig,
   listProductInventory,
   listProducts,
-  recomputeSeasonalFactors,
   refreshProductInventoryStats,
   saveForecastConfig,
   syncProductInventoryParams,
@@ -62,35 +61,20 @@ function FormulaButton() {
         <Tag color="orange">⚡ {promoNotice.join('; ')}</Tag>
       )}
       <Button size="small" onClick={() => { setDraft(cfg ? { ...cfg, promo_periods: [...cfg.promo_periods] } : null); setOpen(true); }}>
-        销量公式 ⚙
+        备货规则 ⚙
       </Button>
       <Modal
-        open={open} title="日均销量公式 / 大促时段"
+        open={open} title="统一备货规则 / 大促时段"
         onCancel={() => setOpen(false)}
         onOk={() => d && saveMut.mutate({
-          mode: d.mode, halflife_days: d.halflife_days,
-          window_days: d.window_days, promo_periods: d.promo_periods,
+          promo_periods: d.promo_periods,
           enable_semi_finished: d.enable_semi_finished,
-          seasonal_factors: d.seasonal_factors, enable_seasonal: d.enable_seasonal,
         })}
         confirmLoading={saveMut.isPending}
       >
         {d && (
           <Space direction="vertical" style={{ width: '100%' }}>
-            <Alert type="info" showIcon message="加权 = 指数加权移动平均: 每天销量 × 0.5^(距今天数/半衰期), 越近的日期权重越高。大促前的备货窗口会在页面顶部提示, 避免只看平均数误判。" />
-            <Space>
-              <span>公式:</span>
-              <Segmented value={d.mode} onChange={(v) => setDraft({ ...d, mode: v as 'weighted' | 'simple' })}
-                options={[{ label: '加权 (近期权重高)', value: 'weighted' }, { label: '简单平均', value: 'simple' }]} />
-            </Space>
-            <Space>
-              <span>半衰期(天):</span>
-              <InputNumber min={1} max={60} value={d.halflife_days}
-                onChange={(v) => setDraft({ ...d, halflife_days: Number(v) || 14 })} />
-              <span>统计窗口(天):</span>
-              <InputNumber min={7} max={365} value={d.window_days}
-                onChange={(v) => setDraft({ ...d, window_days: Number(v) || 60 })} />
-            </Space>
+            <Alert type="info" showIcon message="统一口径：7/15/30/60/90天近端加权；大促去峰；春节单列；最终建议=目标库存−现货−自由在产。" />
             <Typography.Text strong>大促时段 (月-日, 每年重复, 可增减):</Typography.Text>
             {d.promo_periods.map((p, i) => (
               <Space key={i}>
@@ -108,32 +92,6 @@ function FormulaButton() {
               onClick={() => setDraft({ ...d, promo_periods: [...d.promo_periods, { name: '新时段', start: '01-01', end: '01-07' }] })}>
               加一个时段
             </Button>
-            <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginTop: 4 }}>
-              <Space wrap>
-                <Switch checked={d.enable_seasonal !== false}
-                  onChange={(v) => setDraft({ ...d, enable_seasonal: v })} />
-                <span>启用「重点备货月」季节备货 (默认开)</span>
-                <Button size="small" onClick={async () => {
-                  try {
-                    const r = await recomputeSeasonalFactors();
-                    setDraft({ ...d, seasonal_factors: r.factors });
-                    message.info(r.note);
-                  } catch { message.error('从历史重算失败'); }
-                }}>从历史重算(建议)</Button>
-              </Space>
-              <Typography.Paragraph type="secondary" style={{ fontSize: 12, marginTop: 4, marginBottom: 4 }}>
-                每月一个系数(平常月=1,峰月5-8,淡月&lt;1)。备货用「今天+提前期落在的月」的系数 → 自动提前为峰月备货、峰后回落。历史数据攒够后可「从历史重算」自动进化。
-              </Typography.Paragraph>
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 4 }}>
-                {(d.seasonal_factors ?? []).map((f: number, i: number) => (
-                  <span key={i} style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
-                    <span style={{ fontSize: 12, width: 30, textAlign: 'right' }}>{i + 1}月</span>
-                    <InputNumber size="small" min={0} step={0.1} value={f} style={{ width: 62 }}
-                      onChange={(v) => { const a = [...(d.seasonal_factors ?? [])]; a[i] = Number(v) || 0; setDraft({ ...d, seasonal_factors: a }); }} />
-                  </span>
-                ))}
-              </div>
-            </div>
             <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginTop: 4 }}>
               <Space>
                 <Switch checked={!!d.enable_semi_finished}
@@ -238,16 +196,17 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="ABC 分层(按常规订单销量): A=畅销款→自动备货; B/C=按需生产(MTO), 不备成品。定制单不计入。">
-          备货分类
+        <Tooltip title="与销售→备货建议、月底飞书共用同一备货引擎。大件按单生产；小/中件达到90天热销门槛后才备成品。">
+          备货策略
         </Tooltip>
       ),
-      dataIndex: 'abc_class',
-      width: 92,
-      render: (c: string | null) => {
-        if (c === 'A') return <Tag color="green">A·备货</Tag>;
-        if (c === 'B') return <Tag color="blue">B</Tag>;
-        return <Tag color="default">{c === 'C' ? 'C·按需' : '按需'}</Tag>;
+      dataIndex: 'restock_policy',
+      width: 118,
+      render: (policy: string | null, r: ProductInventoryRow) => {
+        if (policy === '小件热销备货') return <Tag color="green">小件热销</Tag>;
+        if (policy === '中件少量备货') return <Tag color="blue">中件少量</Tag>;
+        if (policy === '大件按单生产') return <Tag color="default">大件按单</Tag>;
+        return <Tag color="default">{r.qualified_hot ? '备货' : '按需'}</Tag>;
       },
     },
     {
@@ -300,20 +259,20 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="当可用库存 ≤ 预警线时触发警告，建议补货">预警线</Tooltip>
+        <Tooltip title="唯一备货引擎给出的目标成品库存；小件最多6件、中件最多2件、大件为0。">目标库存</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => (
-        <span>{(r.reorder_point ?? r.reorder_point_computed).toFixed(0)}</span>
+        <span>{Number(r.target_stock ?? r.reorder_point_computed ?? 0).toFixed(0)}</span>
       ),
     },
     {
       title: (
-        <Tooltip title="安全库存 = 防断货的「缓冲垫」。因为销量忽多忽少、工厂交货有快有慢, 光按平均值备会有一半概率不够; 安全库存就是在平均需求之上多压一点, 让约 95%(服务水平)的情况下、在等工厂补货的这段时间里不断货。算法: 1.65(95%对应系数)×日销波动×√提前期。">安全库存</Tooltip>
+        <Tooltip title="统一清洗后的近90天销量达到8件，才进入成品热销备货；未达标和大件继续按单生产。">热销达标</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => (
-        <span>{(r.safety_stock ?? r.safety_stock_computed).toFixed(0)}</span>
+        r.qualified_hot ? <Tag color="green">已达标</Tag> : <Tag>按需</Tag>
       ),
     },
     {
@@ -333,22 +292,20 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="按「这个尺寸自己的日均」算(不再拿整个产品的总销量套到每个尺寸)。只有 A 类畅销款自动备货 = 补到(预警线 + 批量) − 可用 − 备货在产。预警线 = 该尺寸日均×提前期 + 安全库存; 批量 = 覆盖 N 天(设置里可调, 现为15天, 越大越凑批压价但压资金); 只扣「备货在产」(不挂客户、会入库的量), 客户单在产不抵。B/C 类 = 按需生产(0), 定制单不备成品。">推荐备货</Tooltip>
+        <Tooltip title="统一公式：目标库存 − 当前现货 − 自由在产。同产品多SKU按清洗日均分摊，各SKU合计严格等于销售→备货建议里的产品数量。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
       width: 96,
       render: (v: number, r: ProductInventoryRow) => {
-        const mult = r.season_multiplier;
-        const seasonHint = (mult != null && Math.abs(mult - 1) > 0.01) ? (
-          <Tooltip title={`重点备货月: 备货瞄准 ${r.season_target_month} 月, 该月季节倍数 ×${mult}(相对最近这段时间)。${mult > 1 ? '峰月将至→提前放大' : '峰后/淡季→压回常态'}`}>
-            <div style={{ fontSize: 11, color: mult > 1 ? '#cf1322' : '#1677ff' }}>
-              季×{mult}→{r.season_target_month}月
-            </div>
+        const productTotal = Number(r.product_restock_total ?? v ?? 0);
+        const totalHint = productTotal !== Number(v ?? 0) ? (
+          <Tooltip title="订单备货页按产品展示；本页按SKU分摊。">
+            <div style={{ fontSize: 11, color: '#1677ff' }}>产品合计 {productTotal.toFixed(0)}</div>
           </Tooltip>
         ) : null;
         return v > 0
-          ? <Space direction="vertical" size={0}><Tag color="blue">{v.toFixed(0)}</Tag>{seasonHint}</Space>
-          : <Space direction="vertical" size={0}><Typography.Text type="secondary">充足</Typography.Text>{seasonHint}</Space>;
+          ? <Space direction="vertical" size={0}><Tag color="blue">{v.toFixed(0)}</Tag>{totalHint}</Space>
+          : <Space direction="vertical" size={0}><Typography.Text type="secondary">充足</Typography.Text>{totalHint}</Space>;
       },
     },
     {
@@ -456,14 +413,14 @@ export default function ProductInventoryPage() {
       <Alert
         type="info"
         showIcon
-        message="成品备货只按「常规订单」算 · 定制单不备成品"
+        message="库存页、销售备货页、月底飞书已共用唯一备货计划"
         description={
           <>
-            这里的推荐备货<b>只统计常规订单</b>(定制单接单后才生产、无法预先备成品, 已从日均销量与 ABC 里剔除)。
-            按 <b>ABC 分层</b>: 只有 <b>A 类畅销款</b>自动备货(补到「预警线 + 30 天批量」, 便于凑批压配件价);
-            B/C 类 = <b>按需生产</b>, 不备成品。安全库存按「服务水平 95% × 日销波动」定, 不再是一刀切的倍数。
+            唯一公式：<b>目标库存 − 当前现货 − 自由在产</b>。订单先统一清洗，再按7/15/30/60/90天加权预测；
+            618、双11、双12去峰，春节单列。近90天清洗销量达到8件后，小件覆盖7天且最多6件，
+            中件覆盖5天且最多2件；餐边柜等大件和定制单继续按单生产，不压成品库存。
             <br />
-            👉 <b>定制单的备货</b>(有些料通用、可提前囤): 见「销售 → 备货建议」里的<b>定制通用料计划</b>。
+            同产品多SKU在本页按日均分摊，SKU合计与「销售 → 备货建议」产品数量完全一致。
           </>
         }
       />

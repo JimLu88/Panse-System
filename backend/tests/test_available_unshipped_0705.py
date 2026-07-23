@@ -58,15 +58,15 @@ def test_shipped_custom_cancelled_refill_not_counted(db_session):
 
 
 def test_reorder_ignores_unshipped_uses_physical(db_session):
-    """加未发单只压低『展示可用』, 不动『备货推荐』(推荐走物理口径, 防过量下单)。"""
+    """加未发单只压低展示可用；最终备货只服从统一计划，不服从旧手填预警线。"""
     db = db_session
     inv = ProductInventory(warehouse="default", product_code="P1", sku="主款",
                            physical_qty=Decimal("5"),
                            reorder_point=Decimal("10"))   # 手填预警线 → 强制备货口(do_stock)
     db.add(inv); db.flush()
-    base = _stats(db, inv)                 # 无未发单: 展示可用=5, 触发备货(5<10)
+    base = _stats(db, inv)
     assert base["available_qty"] == 5
-    assert base["auto_reorder_qty"] > 0
+    assert base["auto_reorder_qty"] == 0
     # 塞 20 单已付未发; 下单日落在销量窗口外(200天前)以隔离变量: 只压可用, 不抬销量预测。
     old = date.today() - timedelta(days=200)
     for i in range(20):
@@ -74,7 +74,7 @@ def test_reorder_ignores_unshipped_uses_physical(db_session):
     db.flush()
     after = _stats(db, inv)
     assert after["available_qty"] == base["available_qty"] - 20   # 展示可用降 20 (=-15)
-    assert after["auto_reorder_qty"] == base["auto_reorder_qty"]  # 备货推荐不变(走物理5, 没因负可用暴增)
+    assert after["auto_reorder_qty"] == base["auto_reorder_qty"]
 
 
 def test_unshipped_scoped_by_size_token(db_session):

@@ -2,26 +2,18 @@
 from __future__ import annotations
 
 import calendar
-import math
 from datetime import date, timedelta
 from typing import Optional
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.inventory import ProductInventory
-from app.models.order import FactoryOrder
 from app.services import (
     feishu_client,
     inventory_demand_service as demand,
-    product_coder,
+    inventory_restock_service,
     product_inventory_service,
     settings_service,
 )
-
-_SMALL_KW = ("床头柜", "边几", "小桌", "凳", "置物架")
-_MEDIUM_KW = ("餐桌", "书桌", "圆桌", "茶桌")
-_LARGE_MTO_KW = ("餐边柜", "衣柜", "书柜", "电视柜", "斗柜", "床")
 
 
 def _month_bounds(year: int, month: int) -> tuple[date, date]:
@@ -37,132 +29,19 @@ def _target_period(today: date) -> tuple[int, int]:
     return first_next.year, first_next.month
 
 
-def _category_policy(name: str) -> tuple[str, int, int]:
-    if "床头柜" in name:
-        return "小件热销备货", 7, 6
-    if any(k in name for k in _LARGE_MTO_KW):
-        return "大件按单生产", 0, 0
-    if any(k in name for k in _SMALL_KW):
-        return "小件热销备货", 7, 6
-    if any(k in name for k in _MEDIUM_KW):
-        return "中件少量备货", 5, 2
-    return "中件少量备货", 5, 2
-
-
-def _core(value: Optional[str]) -> str:
-    if not value:
-        return ""
-    return product_coder.core_of(value) or value
-
-
 def build_monthly_plan(
     db: Session, *, year: int, month: int, as_of: Optional[date] = None,
 ) -> dict:
-    """生成目标月份计划；定制任务和成品备货分开统计。"""
+    """月报只包装唯一备货引擎，不再另算建议数量。"""
     as_of = as_of or date.today()
-    cfg = product_inventory_service.get_forecast_config(db)
     start, end = _month_bounds(year, month)
-    standard_profiles = demand.profiles_by_sku(
-        db, as_of=as_of, cfg=cfg, kind="standard"
+    plan = inventory_restock_service.build_restock_plan(
+        db, start=start, end=end, as_of=as_of
     )
-    custom_profiles = demand.profiles_by_sku(
-        db, as_of=as_of, cfg=cfg, kind="custom"
-    )
-
-    grouped: dict[str, dict] = {}
-    for profile in standard_profiles:
-        core = profile["product_core"]
-        row = grouped.setdefault(core, {
-            "product_core": core,
-            "product_code": profile["product_code"],
-            "product_name": profile["product_name"] or profile["product_code"],
-            "normal_daily": 0.0,
-            "forecast_month": 0.0,
-            "units_90": 0.0,
-            "sale_days_90": 0,
-            "sku_count": 0,
-        })
-        row["normal_daily"] += float(profile["normal_daily"])
-        row["forecast_month"] += demand.forecast_period(profile, start, end, cfg)
-        row["units_90"] += float(profile["window_units"]["90"])
-        row["sale_days_90"] += int(profile["sale_days"]["90"])
-        row["sku_count"] += 1
-
-    on_hand: dict[str, float] = {}
-    for inv in db.execute(select(ProductInventory)).scalars():
-        on_hand[_core(inv.product_code)] = (
-            on_hand.get(_core(inv.product_code), 0.0)
-            + max(0.0, float(inv.available_qty))
-        )
-    free_in_production: dict[str, float] = {}
-    for factory in db.execute(select(FactoryOrder).where(
-        FactoryOrder.actual_delivery.is_(None),
-        FactoryOrder.voided_at.is_(None),
-        FactoryOrder.source_order_id.is_(None),
-        FactoryOrder.product_code.isnot(None),
-    )).scalars():
-        key = _core(factory.product_code)
-        free_in_production[key] = (
-            free_in_production.get(key, 0.0) + max(0, int(factory.qty or 0))
-        )
-
-    products = []
-    for core, row in grouped.items():
-        policy, buffer_days, cap = _category_policy(row["product_name"])
-        qualified = row["units_90"] >= 8
-        month_daily = row["forecast_month"] / max(1, (end - start).days + 1)
-        target_stock = (
-            min(cap, int(math.ceil(month_daily * buffer_days)))
-            if qualified and cap > 0
-            else 0
-        )
-        stock = on_hand.get(core, 0.0)
-        free = free_in_production.get(core, 0.0)
-        suggested = max(0, int(math.ceil(target_stock - stock - free)))
-        products.append({
-            **row,
-            "policy": policy,
-            "qualified_hot": qualified,
-            "buffer_days": buffer_days,
-            "target_stock": target_stock,
-            "on_hand": round(stock, 2),
-            "free_in_production": round(free, 2),
-            "suggested_restock": suggested,
-            "forecast_month": round(row["forecast_month"], 2),
-            "normal_daily": round(row["normal_daily"], 4),
-        })
-
-    custom_tasks = sum(
-        demand.forecast_period(profile, start, end, cfg)
-        for profile in custom_profiles
-    )
-    anomaly_orders = {
-        item["order_no"]
-        for profile in [*standard_profiles, *custom_profiles]
-        for item in profile.get("anomalies", [])
-    }
-    products.sort(
-        key=lambda x: (
-            -x["suggested_restock"],
-            -x["forecast_month"],
-            x["product_code"],
-        )
-    )
-    return {
-        "period": f"{year:04d}-{month:02d}",
-        "generated_on": as_of.isoformat(),
-        "products": products,
-        "suggested_total": sum(x["suggested_restock"] for x in products),
-        "hot_product_count": sum(1 for x in products if x["qualified_hot"]),
-        "custom_task_forecast": round(custom_tasks, 1),
-        "quantity_anomalies": {"open": len(anomaly_orders)},
-        "rules": {
-            "windows": [7, 15, 30, 60, 90],
-            "promotion_normalization": ["618", "双11", "双12"],
-            "cny": "保留春节场景，不压低普通月份基线",
-            "hot_threshold_90d": 8,
-        },
-    }
+    plan["period"] = f"{year:04d}-{month:02d}"
+    for row in plan["products"]:
+        row["forecast_month"] = row["forecast_period"]
+    return plan
 
 
 def format_monthly_plan(plan: dict) -> str:

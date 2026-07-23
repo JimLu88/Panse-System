@@ -383,6 +383,8 @@ def compute_product_stats(
     abc_map: Optional[dict] = None,
     cfg: Optional[dict] = None,
     in_production_split: Optional[tuple] = None,
+    restock_plan_row: Optional[dict] = None,
+    restock_qty: Optional[float] = None,
 ) -> dict:
     """计算单条成品库存的推算字段(方向4 ABC分层 + 方向2 服务水平安全库存 + 批量备货)。
 
@@ -398,6 +400,20 @@ def compute_product_stats(
         abc_map = compute_abc_map(db, cfg)
     if in_production_split is None:
         in_production_split = compute_in_production_split(db)
+    if restock_plan_row is None:
+        from app.services import inventory_restock_service
+        today = date.today()
+        plan = inventory_restock_service.build_restock_plan(
+            db,
+            start=today + timedelta(days=1),
+            end=today + timedelta(days=30),
+            as_of=today,
+        )
+        restock_plan_row = inventory_restock_service.product_map(plan).get(
+            product_coder.core_of(inv.product_code) or inv.product_code
+        ) or {}
+        if restock_plan_row is not None and restock_qty is None:
+            restock_qty = float(restock_plan_row.get("suggested_restock") or 0)
     free_map, alloc_map = in_production_split
     daily = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
     abc_class = abc_map.get(_canon_code(inv.product_code), "C")
@@ -464,6 +480,30 @@ def compute_product_stats(
         batch = float(cfg.get("batch_cover_days", 30)) * daily_forward   # 季节前瞻日均
         auto_reorder = max(0.0, (reorder_pt + batch) - physical_available - in_prod_free)
 
+    # 最终建议只能来自唯一备货计划引擎。上面的安全库存/提前期继续作为解释性指标，
+    # 但不得再产生第二套 auto_reorder_qty。
+    if restock_plan_row is not None:
+        auto_reorder = float(
+            restock_plan_row.get("suggested_restock") or 0
+            if restock_qty is None
+            else restock_qty
+        )
+        target_stock = float(restock_plan_row.get("target_stock") or 0)
+        reorder_pt = target_stock
+        policy = restock_plan_row.get("policy") or "按需生产"
+        if policy in ("大件按单生产", "按需生产") or not restock_plan_row.get("qualified_hot"):
+            status = (
+                "excess"
+                if days_of_stock is not None and available > 0 and days_of_stock > slow_days
+                else "mto"
+            )
+        elif auto_reorder > 0:
+            status = "critical" if physical_available <= 0 else "danger"
+        elif days_of_stock is not None and days_of_stock > slow_days:
+            status = "excess"
+        else:
+            status = "ok"
+
     return {
         "daily_sales_30d": daily,
         "lead_time_days_computed": lead_time,
@@ -481,6 +521,27 @@ def compute_product_stats(
         "abc_class": abc_class,
         "season_target_month": season_target_month,   # 备货瞄准的月(今天+提前期); 未开季节=None
         "season_multiplier": season_mult,             # 目标月系数 ÷ 最近窗口平均系数
+        "restock_policy": restock_plan_row.get("policy") if restock_plan_row else None,
+        "target_stock": (
+            float(restock_plan_row.get("target_stock") or 0)
+            if restock_plan_row is not None
+            else round(reorder_pt, 2)
+        ),
+        "qualified_hot": (
+            bool(restock_plan_row.get("qualified_hot"))
+            if restock_plan_row is not None
+            else do_stock
+        ),
+        "forecast_30d": (
+            int(restock_plan_row.get("forecast_30d") or 0)
+            if restock_plan_row is not None
+            else None
+        ),
+        "product_restock_total": (
+            float(restock_plan_row.get("suggested_restock") or 0)
+            if restock_plan_row is not None
+            else round(auto_reorder, 0)
+        ),
     }
 
 
@@ -530,6 +591,42 @@ def recompute_seasonal_factors(db: Session, *, min_units: int = 80) -> dict:
                      f"数据攒满一年后建议再重算")}
 
 
+def build_inventory_restock_context(
+    db: Session, rows: Optional[list[ProductInventory]] = None,
+) -> tuple[dict[str, dict], dict[int, int]]:
+    """一次生成库存页所需产品计划和逐库存行分配，避免每行重复跑全引擎。"""
+    from app.services import inventory_restock_service
+
+    today = date.today()
+    plan = inventory_restock_service.build_restock_plan(
+        db,
+        start=today + timedelta(days=1),
+        end=today + timedelta(days=30),
+        as_of=today,
+    )
+    pmap = inventory_restock_service.product_map(plan)
+    all_rows = rows
+    if all_rows is None:
+        all_rows = db.execute(
+            select(ProductInventory).order_by(
+                ProductInventory.product_code, ProductInventory.sku
+            )
+        ).scalars().all()
+    groups: dict[str, list[tuple[ProductInventory, float]]] = {}
+    cfg = get_forecast_config(db)
+    for inv in all_rows:
+        core = product_coder.core_of(inv.product_code) or inv.product_code
+        weight = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
+        groups.setdefault(core, []).append((inv, weight))
+    allocation: dict[int, int] = {}
+    for core, weighted_rows in groups.items():
+        total = int((pmap.get(core) or {}).get("suggested_restock") or 0)
+        allocation.update(
+            inventory_restock_service.allocate_product_restock(total, weighted_rows)
+        )
+    return pmap, allocation
+
+
 def refresh_all_inventory(db: Session) -> int:
     """批量刷新推算字段。幂等。
 
@@ -540,9 +637,19 @@ def refresh_all_inventory(db: Session) -> int:
     abc_map = compute_abc_map(db, cfg)
     in_prod_split = compute_in_production_split(db)
     rows = db.execute(select(ProductInventory)).scalars().all()
+    restock_map, restock_allocation = build_inventory_restock_context(db, rows)
     updated = 0
     for inv in rows:
-        stats = compute_product_stats(db, inv, abc_map=abc_map, cfg=cfg, in_production_split=in_prod_split)
+        core = product_coder.core_of(inv.product_code) or inv.product_code
+        stats = compute_product_stats(
+            db,
+            inv,
+            abc_map=abc_map,
+            cfg=cfg,
+            in_production_split=in_prod_split,
+            restock_plan_row=restock_map.get(core, {}),
+            restock_qty=restock_allocation.get(id(inv), 0),
+        )
         if inv.lead_time_days is None and stats["lead_time_days_computed"] is not None:
             inv.lead_time_days = stats["lead_time_days_computed"]
         updated += 1

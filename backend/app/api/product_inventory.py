@@ -17,7 +17,7 @@ from app.schemas.product_inventory import (
     ProductInventoryOut,
     ProductInventoryWithStats,
 )
-from app.services import exception_service, product_inventory_service
+from app.services import exception_service, product_coder, product_inventory_service
 
 
 class ProductInventoryPatch(BaseModel):
@@ -122,10 +122,19 @@ def list_product_inventory(
     _cfg = product_inventory_service.get_forecast_config(db)
     _abc = product_inventory_service.compute_abc_map(db, _cfg)
     _inprod = product_inventory_service.compute_in_production_split(db)  # R1 在产拆自由/客户单, 一次算复用
+    _restock, _restock_allocation = product_inventory_service.build_inventory_restock_context(db)
     for inv in rows:
         covered.add(inv.product_code)
+        core = product_coder.core_of(inv.product_code) or inv.product_code
         stats = product_inventory_service.compute_product_stats(
-            db, inv, abc_map=_abc, cfg=_cfg, in_production_split=_inprod)
+            db,
+            inv,
+            abc_map=_abc,
+            cfg=_cfg,
+            in_production_split=_inprod,
+            restock_plan_row=_restock.get(core, {}),
+            restock_qty=_restock_allocation.get(id(inv), 0),
+        )
         # 需关注筛选: 正常(ok) 和 按需生产(mto, 定制/长尾) 都不算"需关注"
         if warning_only and stats["warning_status"] in ("ok", "mto"):
             continue

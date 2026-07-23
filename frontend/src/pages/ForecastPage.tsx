@@ -172,11 +172,11 @@ function AdviceTab() {
       message.error('保存半成品库存失败');
     }
   };
-  const exportProducts = () => exportPageXlsx('备货建议-产能缺口', [
+  const exportProducts = () => exportPageXlsx('统一成品备货计划', [
     { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
     { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' },
     { key: 'in_production_free', title: '备货在产(会入库)' }, { key: 'in_production_allocated', title: '客户单在产(发客户)' },
-    { key: 'need_to_produce', title: '需生产' },
+    { key: 'need_to_produce', title: '建议备货' },
   ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, in_production_free: r.in_production_free, in_production_allocated: r.in_production_allocated, need_to_produce: r.need_to_produce })));
   const exportMaterials = () => exportPageXlsx('备货建议-物料下单', [
     { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '需求量' },
@@ -190,17 +190,10 @@ function AdviceTab() {
   ], (data?.custom_materials ?? []).map((r: any) => ({ material_code: r.material_code, material_name: r.material_name, need_qty: r.need_qty, have_qty: r.have_qty, missing: r.missing, lead_time_days: r.lead_time_days, alert_at: r.alert_at, should_order_now: r.should_order_now ? '是' : '否' })));
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      {data?.seasonal?.enabled && data.seasonal.multiplier != null && Math.abs((data.seasonal.multiplier ?? 1) - 1) > 0.01 && (
-        <Alert type={(data.seasonal.multiplier ?? 1) > 1 ? 'warning' : 'info'} showIcon
-               message={`重点备货月: 本页预测/需生产/物料需求 已按目标 ${data.seasonal.target_month} 月季节系数调整 ×${data.seasonal.multiplier}`}
-               description={(data.seasonal.multiplier ?? 1) > 1
-                 ? '峰月将至 → 已提前放大备货需求(现在下单的货正赶上峰月卖)。'
-                 : '峰后/淡季 → 已把近期峰值销量压回目标月常态, 避免照着大促势头囤货。系数可在 成品库存→设置 里调。'} />
-      )}
       <Alert type="info" showIcon
-             message="备货建议 = 按预测30天销量 + BOM倒推物料需求 − 现库存 · 常规单与定制单分开"
-             description={<>常规单: 需生产 = 预测 − 现成品库存 − <b>备货在产</b>。「备货在产」= 不挂客户的备货单在产, 到货会进可售库存, 已扣掉; 「客户单在产」= 已卖给下单客户的量, 到货即发走, <b>不抵未来缺口</b>(单独列出仅供参考)。并按需生产倒推全部物料。<br/>定制单: 成品接单才产、无法预备, 但<b>通用料可提前囤</b> → 只列通用料计划(定制专用料随单采购、不预囤)。补货周期 lead 天的物料应在第 (30−lead) 天前下单, 「立即下单」= 现在就该下单。</>} />
-      <Card size="small" title="常规单 · 未来 30 天产能缺口"
+             message="本页与成品库存、月底飞书共用唯一备货计划"
+             description={<>最终建议统一为：<b>目标库存 − 当前现货 − 自由在产</b>。近90天清洗销量达到8件后，小件覆盖7天且最多6件，中件覆盖5天且最多2件；餐边柜等大件和定制单按单生产，不压成品库存。<br/>「客户单在产」已卖给对应客户，不抵未来成品库存；常规产品只按统一建议数量倒推 BOM 物料。定制单仍只提前准备通用料。</>} />
+      <Card size="small" title="常规单 · 统一成品备货计划"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
           size="small" loading={isLoading}
@@ -223,7 +216,7 @@ function AdviceTab() {
                 <Tooltip title="已卖给下单客户、到货即发走, 不算未来可用库存 → 不抵「需生产」。">
                   <Tag>{v}</Tag></Tooltip> : <span style={{ color: '#bbb' }}>0</span>,
             },
-            { title: '需生产', dataIndex: 'need_to_produce', width: 100,
+            { title: '建议备货', dataIndex: 'need_to_produce', width: 100,
               render: (v: number) => v > 0 ?
                 <Tag color="orange">{v}</Tag> : <Tag color="green">充足</Tag>,
             },

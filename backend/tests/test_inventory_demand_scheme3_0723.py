@@ -6,7 +6,9 @@ from app.models.order import Order
 from app.services import (
     inventory_demand_service as demand,
     inventory_monthly_report_service as monthly,
+    inventory_restock_service as restock,
     product_inventory_service,
+    sales_analytics,
     settings_service,
 )
 
@@ -125,3 +127,69 @@ def test_abc_uses_cleaned_quantity_not_raw_3200(db_session):
     abc = product_inventory_service.compute_abc_map(db, cfg)
     assert "P26010030303" not in abc
     assert abc["P26010040404"] == "A"
+
+
+def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
+    db = db_session
+    for i in range(12):
+        _order(
+            db,
+            f"ONE{i}",
+            product_code="PPS26010050505",
+            sku_code="PPS2601005050511",
+            name="榉木床头柜",
+            day=AS_OF - timedelta(days=i),
+        )
+    inv = ProductInventory(
+        warehouse="default",
+        product_code="PPS26010050505",
+        sku="标准款",
+        physical_qty=Decimal("0"),
+        locked_qty=Decimal("0"),
+    )
+    inv_secondary = ProductInventory(
+        warehouse="secondary",
+        product_code="PPS26010050505",
+        sku="备用款",
+        physical_qty=Decimal("0"),
+        locked_qty=Decimal("0"),
+    )
+    db.add_all([inv, inv_secondary])
+    db.flush()
+
+    plan = restock.build_restock_plan(
+        db,
+        start=AS_OF + timedelta(days=1),
+        end=AS_OF + timedelta(days=30),
+        as_of=AS_OF,
+    )
+    canonical = next(
+        x for x in plan["products"] if x["product_code"] == "PPS26010050505"
+    )
+    advice = sales_analytics.stock_advice(db)
+    order_page = next(
+        x for x in advice["products"] if x["product_code"] == "PPS26010050505"
+    )
+    restock_map, allocation = (
+        product_inventory_service.build_inventory_restock_context(
+            db, [inv, inv_secondary]
+        )
+    )
+    allocated_total = allocation[id(inv)] + allocation[id(inv_secondary)]
+    stats = product_inventory_service.compute_product_stats(
+        db,
+        inv,
+        restock_plan_row=restock_map[canonical["product_core"]],
+        restock_qty=allocation[id(inv)],
+    )
+    month = monthly.build_monthly_plan(
+        db, year=2026, month=8, as_of=AS_OF
+    )
+    month_row = next(
+        x for x in month["products"] if x["product_code"] == "PPS26010050505"
+    )
+    assert canonical["suggested_restock"] > 0
+    assert allocated_total == canonical["suggested_restock"]
+    assert order_page["need_to_produce"] == canonical["suggested_restock"]
+    assert stats["auto_reorder_qty"] == allocation[id(inv)]
+    assert month_row["suggested_restock"] == canonical["suggested_restock"]

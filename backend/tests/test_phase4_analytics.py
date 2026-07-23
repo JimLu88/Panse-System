@@ -122,8 +122,8 @@ def test_forecast_30d_uses_unified_scheme3_profile(db_session):
 # ----------------------------- stock advice --------------------- #
 
 
-def test_stock_advice_recommends_material(db_session):
-    """造一个 BOM + 库存不足时, stock_advice 给出物料缺货建议."""
+def test_stock_advice_material_uses_unified_restock_qty(db_session):
+    """BOM 只按统一成品建议数倒推，不再按整月预测量制造第二套缺口。"""
     # 本测试只验 BOM 物料倒推, 关掉重点备货月缩放(默认开, 会按目标月放大/压缩预测)
     from app.services import product_inventory_service as _pis
     _pis.save_forecast_config(db_session, {"enable_seasonal": False})
@@ -145,8 +145,10 @@ def test_stock_advice_recommends_material(db_session):
     db_session.flush()
     advice = sales_analytics.stock_advice(db_session)
     m = next(x for x in advice["materials"] if x["material_code"] == "M1")
-    assert m["need_qty"] > m["have_qty"]
-    assert m["missing"] > 0
+    p = next(x for x in advice["products"] if x["product_code"] == "P1")
+    assert p["need_to_produce"] == p["suggested_restock"] == 2
+    assert m["need_qty"] == 4
+    assert m["missing"] == -6
     assert m["lead_time_days"] == 10
     assert m["priority"] == "high"
 

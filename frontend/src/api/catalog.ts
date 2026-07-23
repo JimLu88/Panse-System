@@ -491,6 +491,11 @@ export interface ProductInventoryRow {
   in_production_allocated?: number | null;   // R1 客户单在产(发给下单客户, 不抵, 仅展示)
   season_target_month?: number | null;       // 重点备货月: 备货瞄准的月(今天+提前期)
   season_multiplier?: number | null;         // 季节倍数(目标月系数÷最近窗口均值)
+  restock_policy?: string | null;            // 唯一备货引擎策略
+  target_stock?: number | null;              // 唯一备货引擎目标库存
+  qualified_hot?: boolean | null;            // 90天清洗销量达到热销门槛
+  forecast_30d?: number | null;              // 与订单备货页相同的30天预测
+  product_restock_total?: number | null;      // 同产品各SKU建议合计
 }
 
 // 重点备货月「自动进化」: 用历史给出建议系数(只对数据够的月给实测值), 只建议不自动保存

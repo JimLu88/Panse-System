@@ -57,3 +57,8 @@ class ProductInventoryWithStats(ProductInventoryOut):
     in_production_allocated: Optional[float] = None   # R1 客户单在产(发给下单客户, 不抵, 仅展示)
     season_target_month: Optional[int] = None         # 重点备货月: 备货瞄准的月(今天+提前期)
     season_multiplier: Optional[float] = None         # 季节倍数(目标月系数÷最近窗口均值)
+    restock_policy: Optional[str] = None               # 唯一备货引擎策略
+    target_stock: Optional[float] = None               # 唯一备货引擎目标成品库存
+    qualified_hot: Optional[bool] = None               # 90天清洗销量是否达到热销门槛
+    forecast_30d: Optional[int] = None                 # 同订单备货页的未来30天预测
+    product_restock_total: Optional[float] = None       # 同产品各库存行建议之和=订单备货页产品数
