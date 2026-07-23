@@ -1,3 +1,4 @@
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -77,6 +78,24 @@ def recompute_seasonal_api(
     其余保留手填种子)。只返回建议、不自动保存 —— 前端展示后由人工确认再保存。"""
     from app.services import product_inventory_service as svc
     return svc.recompute_seasonal_factors(db)
+
+
+@router.get("/monthly-plan")
+def monthly_inventory_plan_api(
+    year: Optional[int] = None,
+    month: Optional[int] = None,
+    db: Session = Depends(get_db),
+):
+    """预览月度成品备货数；只读，不触发飞书。"""
+    from app.services import inventory_monthly_report_service as svc
+    today = date.today()
+    if year is None or month is None:
+        year, month = svc._target_period(today)
+    if not 1 <= int(month) <= 12:
+        raise HTTPException(400, "month must be 1..12")
+    return svc.build_monthly_plan(
+        db, year=int(year), month=int(month), as_of=today
+    )
 
 
 @router.get("", response_model=list[ProductInventoryWithStats])

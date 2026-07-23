@@ -439,10 +439,13 @@ def _job_accessory_self_arrive(db: Session) -> dict:
 
 
 def _job_forecast_refresh(db: Session) -> dict:
-    """销售预测重算 — 主要是触发 forecast_30d 缓存. 当前是即时计算, 占位返回 0."""
-    from app.services import sales_analytics
+    """销售预测重算，并同步订单数量异常到异常中心。"""
+    from app.services import inventory_demand_service, product_inventory_service, sales_analytics
     forecast = sales_analytics.forecast_30d(db)
-    return {"sku_count": len(forecast)}
+    anomalies = inventory_demand_service.sync_quantity_anomalies(
+        db, cfg=product_inventory_service.get_forecast_config(db)
+    )
+    return {"sku_count": len(forecast), "quantity_anomalies": anomalies}
 
 
 def _job_sales_rollup(db: Session) -> dict:
@@ -892,6 +895,12 @@ def _job_weekly_purchase_remind(db: Session) -> dict:
         lines.append(f"• {m.get('material_code', '')} {name}  缺 {missing:.0f}  建议 {alert_at} 前下单")
     notify_service.notify(db, "\n".join(lines), level="warn", title="畔色ERP | 本周备货清单")
     return {"items_count": len(top), "pushed": True}
+
+
+def _job_monthly_inventory_plan(db: Session) -> dict:
+    """月底推送下月成品备货数；次月 1 日同函数兜底，成功月份自动跳过。"""
+    from app.services import inventory_monthly_report_service
+    return inventory_monthly_report_service.send_monthly_report(db)
 
 
 # 大促 SKU 轮换提醒窗口 (用户 2026-07-03 拍板): 618=5/13~6/18, 双11=10/10~11/11。
@@ -1436,6 +1445,10 @@ def _register_default_jobs() -> None:
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
                  _job_weekly_purchase_remind, cron={"day_of_week": "mon", "hour": 9, "minute": 0})
+    register_job("monthly_last_inventory_plan", "月底下月成品备货计划飞书推送",
+                 _job_monthly_inventory_plan, cron={"day": "last", "hour": 19, "minute": 20})
+    register_job("monthly_01_inventory_plan_retry", "月度成品备货计划次月兜底",
+                 _job_monthly_inventory_plan, cron={"day": 1, "hour": 8, "minute": 10})
     register_job("daily_0905_promo_rotation_remind", "大促SKU轮换提醒(618/双11)",
                  _job_promo_rotation_remind, cron={"hour": 9, "minute": 5})
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",

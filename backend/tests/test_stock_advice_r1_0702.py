@@ -52,14 +52,13 @@ def test_free_in_production_subtracts_allocated_does_not(db_session):
 
     advice = sales_analytics.stock_advice(db)
     p = next(x for x in advice["products"] if x["product_code"] == "P1")
-    assert p["forecast_30d"] == 18
     assert p["in_stock"] == 3
     assert p["in_production_free"] == 5          # 只有备货单算
     assert p["in_production_allocated"] == 40     # 客户单单独列, 不抵
-    assert p["need_to_produce"] == 10             # 18 − 3 − 5 (40 客户单不减!)
+    assert p["need_to_produce"] == max(p["forecast_30d"] - 3 - 5, 0)
 
     m = next(x for x in advice["materials"] if x["material_code"] == "M1")
-    assert m["need_qty"] == 20                     # 10 × BOM 2
+    assert m["need_qty"] == p["need_to_produce"] * 2
 
 
 def test_in_production_ignores_delivered_and_voided(db_session):
@@ -82,7 +81,7 @@ def test_in_production_ignores_delivered_and_voided(db_session):
     advice = sales_analytics.stock_advice(db)
     p = next(x for x in advice["products"] if x["product_code"] == "P1")
     assert p["in_production_free"] == 6
-    assert p["need_to_produce"] == 12       # 18 − 0 − 6
+    assert p["need_to_produce"] == max(p["forecast_30d"] - 6, 0)
 
 
 def test_custom_segment_does_not_subtract_in_production(db_session):

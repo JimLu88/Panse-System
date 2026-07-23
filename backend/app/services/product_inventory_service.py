@@ -59,8 +59,9 @@ _DEFAULT_SEASONAL_FACTORS = [1.0, 0.3, 1.0, 1.0, 6.0, 6.0, 0.7, 1.0, 1.0, 5.0, 7
 
 # ── 销量公式配置 (用户拍板 2026-06-11: 默认加权 — 越近的日期权重越高; 大促时段可配) ──
 _DEFAULT_PROMO_PERIODS = [
-    {"name": "618 大促", "start": "05-13", "end": "06-18"},
-    {"name": "双11 大促", "start": "10-20", "end": "11-13"},
+    {"key": "618", "name": "618", "start": "05-20", "end": "06-20", "multiplier": 3.0},
+    {"key": "double11", "name": "双11", "start": "10-20", "end": "11-13", "multiplier": 4.25},
+    {"key": "double12", "name": "双12", "start": "12-01", "end": "12-12", "multiplier": 2.125},
 ]
 
 
@@ -74,7 +75,7 @@ def get_forecast_config(db: Session) -> dict:
         window = int(settings_service.get(db, "daily_sales_window", env_fallback=False) or 60)
     except ValueError:
         halflife, window = 14, 60
-    raw = settings_service.get(db, "promo_periods", env_fallback=False)
+    raw = settings_service.get(db, "inventory_promo_periods_v2", env_fallback=False)
     try:
         periods = json.loads(raw) if raw else _DEFAULT_PROMO_PERIODS
         if not isinstance(periods, list):
@@ -116,8 +117,19 @@ def get_forecast_config(db: Session) -> dict:
     _sa = settings_service.get(db, "seasonal_auto", env_fallback=False)
     seasonal_auto = (str(_sa).strip().lower() in ("1", "true", "yes", "on")
                      if _sa not in (None, "") else False)    # 自动进化默认关(历史数据够了再开)
-    return {"mode": mode, "halflife_days": halflife, "window_days": window,
-            "promo_periods": periods, "service_level": service_level,
+    raw_bulk = settings_service.get(db, "inventory_confirmed_bulk_order_nos", env_fallback=False)
+    try:
+        confirmed_bulk = json.loads(raw_bulk) if raw_bulk else []
+        if not isinstance(confirmed_bulk, list):
+            confirmed_bulk = []
+    except Exception:
+        confirmed_bulk = []
+    return {"mode": "hybrid_momentum", "legacy_mode": mode,
+            "halflife_days": halflife, "window_days": 90,
+            "promo_periods": periods, "promo_periods_v2": periods,
+            "confirmed_bulk_order_nos": confirmed_bulk,
+            "cny_before_days": 14, "cny_after_days": 15, "cny_fallback_factor": 0.25,
+            "service_level": service_level,
             "batch_cover_days": batch_cover_days, "abc_a_share": abc_a_share,
             "abc_b_share": abc_b_share, "stock_min_daily": stock_min_daily,
             "enable_semi_finished": enable_semi_finished,
@@ -134,8 +146,14 @@ def save_forecast_config(db: Session, cfg: dict) -> dict:
         settings_service.set_value(db, "daily_sales_halflife", str(int(cfg["halflife_days"])))
     if cfg.get("window_days"):
         settings_service.set_value(db, "daily_sales_window", str(int(cfg["window_days"])))
-    if isinstance(cfg.get("promo_periods"), list):
-        settings_service.set_value(db, "promo_periods", json.dumps(cfg["promo_periods"], ensure_ascii=False))
+    periods = cfg.get("promo_periods_v2", cfg.get("promo_periods"))
+    if isinstance(periods, list):
+        settings_service.set_value(
+            db, "inventory_promo_periods_v2", json.dumps(periods, ensure_ascii=False))
+    if isinstance(cfg.get("confirmed_bulk_order_nos"), list):
+        settings_service.set_value(
+            db, "inventory_confirmed_bulk_order_nos",
+            json.dumps([str(x) for x in cfg["confirmed_bulk_order_nos"]], ensure_ascii=False))
     for k in ("service_level", "batch_cover_days", "abc_a_share", "abc_b_share", "stock_min_daily"):
         if cfg.get(k) is not None:
             settings_service.set_value(db, f"stock_{k}" if not k.startswith("stock_") else k, str(cfg[k]))
@@ -202,43 +220,15 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
     """
     if cfg is None:
         cfg = get_forecast_config(db)
-    window = int(cfg.get("window_days") or days or 60)
-    cutoff = date.today() - timedelta(days=window)
-    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
-    base_filters = (
-        Order.product_code.in_(pc_candidates),
-        Order.is_refill == False,  # noqa: E712  补单不算真实销量
-        Order.is_custom == False,  # noqa: E712  定制单不备成品(不能预产), 只算常规订单需求
-        Order.order_date >= cutoff,
-        Order.status.notin_(["cancelled", "pending_payment"]),
-        ~Order.status.like("%关闭%"),
-        ~Order.status.like("%取消%"),
-        ~Order.status.like("%等待买家付款%"),
+    from app.services import inventory_demand_service as demand
+    profile = demand.profile_for_product(
+        db,
+        product_code,
+        cfg=cfg,
+        sku_contains=_size_token(sku),
+        kind="standard",
     )
-    size = _size_token(sku)   # 该库存行有尺寸口令 → 只算这个尺寸自己的销量(否则退回产品级)
-    if size:
-        base_filters = base_filters + (Order.sku.like(f"%{size}%"),)
-    if cfg.get("mode") == "simple":
-        total = float(db.execute(
-            select(func.coalesce(func.sum(Order.qty), 0)).where(*base_filters)
-        ).scalar() or 0)
-        return round(total / window, 3)
-    # weighted: 按天聚合后做指数衰减加权
-    halflife = max(1, int(cfg.get("halflife_days") or 14))
-    rows = db.execute(
-        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0))
-        .where(*base_filters).group_by(Order.order_date)
-    ).all()
-    today = date.today()
-    weighted_sum = 0.0
-    for d, qty in rows:
-        if d is None:
-            continue
-        age = (today - d).days
-        weighted_sum += float(qty) * (0.5 ** (age / halflife))
-    # 归一化分母 = 窗口内每天的权重和 → 结果仍是"每天卖几件"的口径
-    denom = sum(0.5 ** (a / halflife) for a in range(window))
-    return round(weighted_sum / denom, 3) if denom else 0.0
+    return round(float(profile["normal_daily"]), 3)
 
 
 def _unshipped_demand(db: Session, product_code: str, sku: Optional[str] = None) -> float:
@@ -249,25 +239,13 @@ def _unshipped_demand(db: Session, product_code: str, sku: Optional[str] = None)
     - 按 product_code(含品牌变体)聚合; 库存行有尺寸口令则只算该尺寸(与日均销量同口径)。
     - 发货后 ship_date 一填, 该单自动掉出本汇总 → 可用实时回补(负9→负8), 无需额外逻辑。
     """
-    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
-    filters = (
-        Order.product_code.in_(pc_candidates),
-        Order.is_refill == False,   # noqa: E712  补单不占现货
-        Order.is_custom == False,   # noqa: E712  定制单现产不吃现货
-        Order.ship_date.is_(None),  # 未发
-        Order.paid_amount.isnot(None),
-        Order.paid_amount > 0,      # 已付(有实付入账)
-        Order.status.notin_(["cancelled", "pending_payment"]),
-        ~Order.status.like("%关闭%"),
-        ~Order.status.like("%取消%"),
-        ~Order.status.like("%等待买家付款%"),
+    from app.services import inventory_demand_service as demand
+    return demand.current_unshipped_standard_qty(
+        db,
+        product_code,
+        cfg=get_forecast_config(db),
+        sku_contains=_size_token(sku),
     )
-    size = _size_token(sku)   # 该库存行有尺寸口令 → 只算这个尺寸自己的未发单(否则退回产品级)
-    if size:
-        filters = filters + (Order.sku.like(f"%{size}%"),)
-    return float(db.execute(
-        select(func.coalesce(func.sum(Order.qty), 0)).where(*filters)
-    ).scalar() or 0)
 
 
 def _z_for_service_level(p: float) -> float:
@@ -288,28 +266,14 @@ def _daily_series(db: Session, product_code: str, cfg: dict,
                   sku: Optional[str] = None) -> list[float]:
     """窗口内按天发货量序列(缺销当天补0), 用于算日销标准差 σ。
     sku 带尺寸口令时只算该尺寸自己的波动(与 _compute_daily_sales 同口径)。"""
-    window = int(cfg.get("window_days") or 60)
-    cutoff = date.today() - timedelta(days=window)
-    pc_candidates = product_coder.brand_variants(product_code) or {product_code}
-    conds = [
-        Order.product_code.in_(pc_candidates),
-        Order.is_refill == False,  # noqa: E712
-        Order.is_custom == False,  # noqa: E712  定制单不备成品
-        Order.order_date >= cutoff,
-        Order.status.notin_(["cancelled", "pending_payment"]),
-        ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
-        ~Order.status.like("%等待买家付款%"),
-    ]
-    size = _size_token(sku)
-    if size:
-        conds.append(Order.sku.like(f"%{size}%"))
-    rows = db.execute(
-        select(Order.order_date, func.coalesce(func.sum(Order.qty), 0))
-        .where(*conds).group_by(Order.order_date)
-    ).all()
-    by_day = {d: float(q) for d, q in rows if d is not None}
-    today = date.today()
-    return [by_day.get(today - timedelta(days=i), 0.0) for i in range(window)]
+    from app.services import inventory_demand_service as demand
+    return demand.clean_daily_series(
+        db,
+        product_code,
+        days=int(cfg.get("window_days") or 90),
+        cfg=cfg,
+        sku_contains=_size_token(sku),
+    )
 
 
 def _std(series: list[float]) -> float:
@@ -325,30 +289,18 @@ def compute_abc_map(db: Session, cfg: Optional[dict] = None) -> dict:
     只有 A 类进入自动备货。返回 {规范product_code: 'A'|'B'|'C'}。"""
     if cfg is None:
         cfg = get_forecast_config(db)
-    window = int(cfg.get("window_days") or 60)
-    cutoff = date.today() - timedelta(days=window)
-    rows = db.execute(
-        select(Order.product_code, func.coalesce(func.sum(Order.qty), 0)).where(
-            Order.is_refill == False,  # noqa: E712
-            Order.is_custom == False,  # noqa: E712  ABC 只按常规订单排(定制不备成品)
-            Order.order_date >= cutoff,
-            Order.status.notin_(["cancelled", "pending_payment"]),
-            ~Order.status.like("%关闭%"), ~Order.status.like("%取消%"),
-            ~Order.status.like("%等待买家付款%"),
-        ).group_by(Order.product_code)
-    ).all()
-    agg: dict = {}
-    for pc, q in rows:
-        if pc:
-            agg[_canon_code(pc)] = agg.get(_canon_code(pc), 0.0) + float(q)
+    from app.services import inventory_demand_service as demand
+    raw = demand.product_normal_daily_map(db, cfg=cfg)
+    agg = {f"P{core}": qty for core, qty in raw.items() if qty > 0}
     total = sum(agg.values())
     if total <= 0:
         return {}
     a_line, b_line = cfg["abc_a_share"] * total, cfg["abc_b_share"] * total
     out, cum = {}, 0.0
     for pc, q in sorted(agg.items(), key=lambda x: x[1], reverse=True):
+        before = cum
         cum += q
-        out[pc] = "A" if cum <= a_line else ("B" if cum <= b_line else "C")
+        out[pc] = "A" if before < a_line else ("B" if before < b_line else "C")
     return out
 
 
@@ -409,24 +361,20 @@ def _seasonal_effective_daily(cfg: dict, base_daily: float, effective_lead: int,
     """
     if not cfg.get("enable_seasonal"):
         return base_daily, None, 1.0
-    factors = cfg.get("seasonal_factors") or _DEFAULT_SEASONAL_FACTORS
+    from app.services import inventory_demand_service as demand
     today = today or date.today()
-    window = max(1, int(cfg.get("window_days") or 60))
-    # 分母(最近窗口平均系数)与「日均」同权: weighted 模式下日均按 0.5^(age/halflife) 指数加权,
-    # 分母也用同样权重, 否则过渡周(如 7 月初日均已多是 7 月低销)会去化过头/不足。
-    weighted = (cfg.get("mode") or "weighted") != "simple"
-    halflife = max(1, int(cfg.get("halflife_days") or 14))
-    tot = wsum = 0.0
-    for i in range(window):
-        mm = (today - timedelta(days=i)).month
-        w = (0.5 ** (i / halflife)) if weighted else 1.0
-        tot += w * (float(factors[mm - 1]) if 1 <= mm <= 12 else 1.0)
-        wsum += w
-    win_avg = (tot / wsum) if wsum > 0 else 1.0
-    target_month = (today + timedelta(days=int(effective_lead or _DEFAULT_LEAD_TIME_DAYS))).month
-    tf = float(factors[target_month - 1]) if 1 <= target_month <= 12 else 1.0
-    mult = tf / win_avg if win_avg > 0 else 1.0
-    return base_daily * mult, target_month, round(mult, 2)
+    target = today + timedelta(days=int(effective_lead or _DEFAULT_LEAD_TIME_DAYS))
+    effective = demand.forecast_daily(
+        {"normal_daily": base_daily, "cny_daily": 0.0},
+        target,
+        cfg,
+    )
+    mult = (
+        effective / base_daily
+        if base_daily > 0
+        else demand.promo_factor_for_date(target, cfg)
+    )
+    return effective, target.month, round(mult, 3)
 
 
 def compute_product_stats(

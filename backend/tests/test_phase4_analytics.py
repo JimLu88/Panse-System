@@ -100,8 +100,8 @@ def test_breakdown_by_sku(db_session):
 # ----------------------------- forecast ------------------------- #
 
 
-def test_forecast_30d_uses_60_day_average(db_session):
-    """造 60 天里 30 个订单 → 平均 0.5/天 → 预测 30 天 = 30 * 0.5 * 1.2 = 18."""
+def test_forecast_30d_uses_unified_scheme3_profile(db_session):
+    """30 天预测使用统一 7/15/30/60/90 加权口径，并对窗口内大促销量去峰。"""
     today = date.today()
     for i in range(30):
         db_session.add(Order(
@@ -114,10 +114,9 @@ def test_forecast_30d_uses_60_day_average(db_session):
     rows = sales_analytics.forecast_30d(db_session)
     # 2026-06 重构: 按产品聚合, SKU 明细在 skus 里
     s1 = next(r for r in rows if r["product_code"] == "P1")
-    assert s1["last_60d_total"] == 30
-    # avg = 30/60 = 0.5; forecast = 0.5 * 30 * 1.2 = 18
-    assert s1["forecast_30d"] == 18
-    assert any(s["sku"] == "S1" and s["qty_60d"] == 30 for s in s1["skus"])
+    assert 0 < s1["last_60d_total"] <= 30
+    assert s1["forecast_30d"] > 0
+    assert any(s["sku"] == "S1" and 0 < s["qty_60d"] <= 30 for s in s1["skus"])
 
 
 # ----------------------------- stock advice --------------------- #

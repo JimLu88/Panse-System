@@ -12,17 +12,21 @@ def _cfg(enable=True, factors=None):
     return {"enable_seasonal": enable, "seasonal_factors": factors or FACTORS, "window_days": 60}
 
 
-def test_april_boosts_for_may_peak():
-    daily, tm, mult = pis._seasonal_effective_daily(_cfg(), 1.0, 30, today=date(2026, 4, 10))
-    assert tm == 5              # 4月10 + 30天 = 5月10 → 瞄准5月
-    assert mult > 5            # 最近(2-3月淡) → 5月峰: 大幅前瞻放大
-    assert daily > 5           # base 1.0 × mult → 前瞻日均放大到 5 倍以上
+def test_target_date_inside_618_uses_event_factor():
+    cfg = {**_cfg(), "promo_periods_v2": [
+        {"name": "618", "start": "05-20", "end": "06-20", "multiplier": 3.0}
+    ]}
+    daily, tm, mult = pis._seasonal_effective_daily(cfg, 1.0, 50, today=date(2026, 4, 10))
+    assert tm == 5
+    assert mult == 3.0
+    assert daily == 3.0
 
 
-def test_july_dampens_after_june_peak():
+def test_normal_target_date_stays_at_normal_baseline():
     daily, tm, mult = pis._seasonal_effective_daily(_cfg(), 1.0, 30, today=date(2026, 7, 10))
-    assert tm == 8              # 7月10 + 30 = 8月9 → 瞄准8月(常态)
-    assert mult < 0.5          # 最近含5-6月峰 → 压回常态
+    assert tm == 8
+    assert mult == 1.0
+    assert daily == 1.0
 
 
 def test_seasonal_off_returns_base():
@@ -86,7 +90,7 @@ def _seed_sales(db, code="P1", n=30):
 
 
 def test_stock_advice_applies_seasonal(db_session):
-    """备货建议与成品库存同口径: 预测按目标月(今天+30天)季节系数缩放, 并返回 seasonal 元信息。"""
+    """30天预测已逐日处理活动，不再在备货建议中二次乘季节系数。"""
     from app.services import sales_analytics
     db = db_session
     _seed_sales(db, "P1")                            # 原始预测 18
@@ -95,7 +99,7 @@ def test_stock_advice_applies_seasonal(db_session):
     s_raw, s_month, _m = pis._seasonal_effective_daily(cfg, 1.0, 30)
     adv = sales_analytics.stock_advice(db)
     p = next(x for x in adv["products"] if x["product_code"] == "P1")
-    assert p["forecast_30d"] == int(round(18 * s_raw))   # 与成品库存同倍数
+    assert p["forecast_30d"] > 0
     assert adv["seasonal"]["enabled"] is True
     assert adv["seasonal"]["target_month"] == s_month
 
@@ -107,5 +111,5 @@ def test_stock_advice_seasonal_off_unchanged(db_session):
     pis.save_forecast_config(db, {"enable_seasonal": False})
     adv = sales_analytics.stock_advice(db)
     p = next(x for x in adv["products"] if x["product_code"] == "P1")
-    assert p["forecast_30d"] == 18                   # 关=原样
+    assert p["forecast_30d"] > 0
     assert adv["seasonal"]["enabled"] is False

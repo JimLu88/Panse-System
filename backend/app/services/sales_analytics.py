@@ -228,26 +228,26 @@ def _sales_by_day(db: Session, days: int = 90,
     key 永远是 'product_code|sku_id' 形式 (无 product_code 用 '?', 无 sku 用 product_code).
     custom: None=全部 / False=只常规单 / True=只定制单 (Order.is_custom)。
     """
-    cutoff = date.today() - timedelta(days=days)
-    # 只排补单 (刷的不是真实需求)。不排 is_historical: 本库导入路径给几乎所有
-    # 真实订单都打了 historical 标 (529/530), 它不等于"旧数据", 排它=预测全空。
-    conds = [
-        Order.order_date >= cutoff,
-        Order.status.in_(("paid", "shipped", "signed")),
-        Order.is_refill == False,      # noqa: E712
-    ]
-    if custom is not None:
-        conds.append(Order.is_custom == custom)  # noqa: E712
-    orders = db.execute(select(Order).where(*conds)).scalars().all()
+    from app.services import inventory_demand_service as demand
+    from app.services import product_inventory_service as inventory
+    cfg = inventory.get_forecast_config(db)
+    today = date.today()
+    observations = demand.load_observations(
+        db,
+        start=today - timedelta(days=days - 1),
+        end=today,
+        cfg=cfg,
+    )
     out: dict[str, dict[date, int]] = {}
-    for o in orders:
-        if not o.order_date:
+    wanted = None if custom is None else ("custom" if custom else "standard")
+    for o in observations:
+        if o.kind == "skip" or (wanted and o.kind != wanted):
             continue
         pc = o.product_code or "?"
         sk = o.sku_code or o.sku or pc
         key = f"{pc}|{sk}"
         out.setdefault(key, {})
-        out[key][o.order_date] = out[key].get(o.order_date, 0) + (o.qty or 1)
+        out[key][o.order_date] = out[key].get(o.order_date, 0) + o.effective_qty
     return out
 
 
@@ -279,49 +279,61 @@ def forecast_30d(db: Session, custom: Optional[bool] = None) -> list[dict]:
     返回: [{product_code, product_name, image_url, avg_daily, forecast_30d,
             last_60d_total, sku, skus: [{sku, qty_60d}]}]
     """
-    by_sku = _sales_by_day(db, days=60, custom=custom)
-    # 先按产品聚合
+    from app.services import inventory_demand_service as demand
+    from app.services import product_inventory_service as inventory
+    cfg = inventory.get_forecast_config(db)
+    kinds = ["standard", "custom"] if custom is None else [
+        "custom" if custom else "standard"
+    ]
+    today = date.today()
+    start, end = today + timedelta(days=1), today + timedelta(days=30)
     by_product: dict[str, dict] = {}
-    for sku_key, day_map in by_sku.items():
-        total = sum(day_map.values())
-        product_code, _, sku = sku_key.partition("|")
-        if product_code == "?" or not product_code:
-            continue   # 缺产品编码的订单无法备货, 不进预测 (在异常中心另行治理)
-        g = by_product.setdefault(product_code, {"total": 0, "skus": []})
-        g["total"] += total
-        g["skus"].append({"sku": sku or "(未填SKU)", "qty_60d": total})
+    for kind in kinds:
+        for row in demand.profiles_by_sku(db, as_of=today, cfg=cfg, kind=kind):
+            code = row["product_code"]
+            if not code:
+                continue
+            forecast = demand.forecast_period(row, start, end, cfg)
+            g = by_product.setdefault(
+                code,
+                {"forecast": 0.0, "normal_daily": 0.0, "last_60d": 0.0, "skus": []},
+            )
+            g["forecast"] += forecast
+            g["normal_daily"] += float(row["normal_daily"])
+            g["last_60d"] += float(row["window_units"]["60"])
+            g["skus"].append({
+                "sku": row["sku"] or row["sku_code"] or "(未填SKU)",
+                "sku_code": row["sku_code"],
+                "kind": kind,
+                "qty_60d": row["window_units"]["60"],
+                "forecast_30d": round(forecast, 2),
+            })
     info = _product_info_map(db, set(by_product))
-    # 产品表查不到的编码 (订单 product_code 填错/产品未建档) → 用订单淘宝标题兜底,
-    # 别再显示 "—" 让人猜 (2026-06-11 用户反馈)
-    missing_codes = [c for c in by_product if c not in info or not info[c][0]]
-    taobao_fallback: dict[str, str] = {}
-    if missing_codes:
-        for code, tname in db.execute(
-            select(Order.product_code, func.max(Order.product_name))
-            .where(Order.product_code.in_(missing_codes))
-            .group_by(Order.product_code)
-        ).all():
-            if tname:
-                taobao_fallback[code] = f"[产品表无此编码] {tname[:24]}"
     out = []
     for code, g in by_product.items():
         name, img = info.get(code, (None, None))
         if not name:
-            name = taobao_fallback.get(code)
+            name = next(
+                (
+                    r.product_name
+                    for r in db.execute(
+                        select(Order).where(Order.product_code == code).order_by(Order.id.desc()).limit(1)
+                    ).scalars()
+                    if r.product_name
+                ),
+                None,
+            )
         if name and any(kw in name for kw in _FORECAST_EXCLUDE_KW):
-            continue   # 非实物备货项
-        avg_daily = g["total"] / 60
-        forecast = int(avg_daily * 30 * 1.2 + 0.5)   # +20% 安全系数
-        skus = sorted(g["skus"], key=lambda s: s["qty_60d"], reverse=True)
+            continue
         out.append({
             "product_code": code,
             "product_name": name,
             "image_url": img,
-            "avg_daily": round(avg_daily, 3),
-            "forecast_30d": forecast,
-            "last_60d_total": g["total"],
-            "sku": None,           # 兼容旧字段 (现按产品聚合)
-            "skus": skus,
+            "avg_daily": round(g["normal_daily"], 3),
+            "forecast_30d": int(g["forecast"] + 0.5),
+            "last_60d_total": round(g["last_60d"], 2),
+            "sku": None,
+            "skus": sorted(g["skus"], key=lambda s: s["forecast_30d"], reverse=True),
         })
     return sorted(out, key=lambda r: r["forecast_30d"], reverse=True)
 
@@ -447,16 +459,10 @@ def stock_advice(db: Session) -> dict:
     """
     from app.services import product_inventory_service as _pis
     cfg = _pis.get_forecast_config(db)
-    # 重点备货月(与成品库存页同口径): 预测按「目标月(今天+30天生产提前期)」季节系数缩放 ——
-    # 4月自动为5-6月峰前瞻放大、7月自动比6月峰回落; 物料需求随缩放后的需生产联动。
+    # 未来 30 天已逐日识别 618/双11/双12/春节，这里只保留展示信息，禁止二次放大。
     s_raw, s_month, s_mult = _pis._seasonal_effective_daily(cfg, 1.0, 30)
     fc_reg = forecast_30d(db, custom=False)
     fc_cus = forecast_30d(db, custom=True)
-    if s_month is not None and abs(s_raw - 1.0) > 1e-9:
-        for f in fc_reg:
-            f["forecast_30d"] = int(round(f["forecast_30d"] * s_raw))
-        for f in fc_cus:
-            f["forecast_30d"] = int(round(f["forecast_30d"] * s_raw))
 
     free, alloc = _in_production_split(db)
     reg_need, products_out = _bom_material_need(
