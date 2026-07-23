@@ -87,6 +87,11 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
                 result = r
             else:
                 result = {"value": r}
+            if isinstance(result, dict):
+                requested_status = result.get("_run_status")
+                if requested_status in ("fail", "skipped"):
+                    status = requested_status
+                    error = str(result.get("_error") or result.get("skipped") or "business gate")
         finally:
             db.close()
     except Exception as e:  # pragma: no cover — 内层任务自己应处理
@@ -118,6 +123,7 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
 def register_job(
     job_id: str, label: str, fn: Callable[[Session], dict], *,
     cron: Optional[dict] = None, interval_minutes: Optional[int] = None,
+    enabled: bool = True,
 ) -> None:
     """注册一个任务. cron 是 {hour, minute, day_of_week, ...} 给 CronTrigger.
 
@@ -128,6 +134,7 @@ def register_job(
     _REGISTRY[job_id] = {
         "label": label, "fn": fn,
         "cron": cron, "interval_minutes": interval_minutes,
+        "enabled": enabled,
     }
     _logger.info("注册任务 %s (%s)", job_id, label)
     # 如果调度器已起来, 立即加入
@@ -163,7 +170,7 @@ def _load_overrides() -> dict:
 
 def _effective_schedule(cfg: dict, ov: dict) -> tuple[str, dict, bool]:
     """合并默认计划与用户覆盖, 返回 (kind, schedule, enabled)。schedule 为最终生效计划。"""
-    enabled = bool(ov.get("enabled", True))
+    enabled = bool(ov.get("enabled", cfg.get("enabled", True)))
     if cfg["cron"]:
         merged = {**cfg["cron"], **{k: v for k, v in (ov.get("cron") or {}).items() if k in _ALLOWED_CRON_KEYS}}
         return "cron", merged, enabled
@@ -720,25 +727,30 @@ def _job_orders_maintain(db: Session) -> dict:
 
 
 def _job_web_agent_daily(db: Session) -> dict:
-    """每天 06:30: Web-Agent 自动取数编排 (按更新间隔: 订单1天/余额流水3天)。
+    """每天 18:00: Web-Agent 订单专用取数编排。
 
     串行触发到期任务 → 等 job 完成 → 扫共享目录导入 → 飞书日报。
     Agent 离线/待人工的任务快速失败并标记, 不无限重试 (交接方案 §7.6)。
     """
     from app.services import agent_ingest_service, alert_service
+    run_date = date.today()
     if agent_ingest_service.is_running():
         return {"skipped": "已有编排在跑 (手动触发未结束)"}
-    r = agent_ingest_service.orchestrate(db, force=False)
+    # The 18:00 run must refresh orders after 18:00 even when a manual pull
+    # happened earlier that day. Other report types keep their own intervals.
+    r = agent_ingest_service.orchestrate(db, force_orders=True, orders_only=True)
     # #15: agent 离线/任务出错 → 明确告警(不再静默显示"正常"); 成功则消掉旧告警。
     offline = r.get("agent_offline")
     failed = [t.get("task", "") for t in (r.get("tasks") or []) if t.get("status") == "error"]
-    if offline or failed:
+    pending_manual = [t.get("task", "") for t in (r.get("pending_manual") or [])]
+    if offline or failed or pending_manual:
         alert_service.upsert(
             db, kind="web_agent_pull_failed", severity="warn",
             title="订单自动取数异常 (PC Agent 离线/任务出错)",
             body=("PC 取数 Agent 连不上或部分任务报错, 订单/余额可能没更新。"
                   + (f" Agent 离线: {str(offline)[:100]}" if offline else "")
                   + (f" 失败任务: {','.join(failed)}" if failed else "")
+                  + (f" 需人工登录: {','.join(pending_manual)}" if pending_manual else "")
                   + " 请确认 PC 开着且 Panse-Web-Agent 在运行。"),
             dedupe_key="web_agent_pull_failed", related_url="/admin",
         )
@@ -749,6 +761,45 @@ def _job_web_agent_daily(db: Session) -> dict:
             db.flush()
         except Exception:  # pragma: no cover
             pass
+    if offline:
+        r["_run_status"] = "fail"
+        r["_error"] = f"PC Web-Agent 离线: {str(offline)[:300]}"
+    elif failed:
+        r["_run_status"] = "fail"
+        r["_error"] = f"取数任务失败: {','.join(failed)}"
+    elif pending_manual:
+        r["_run_status"] = "fail"
+        r["_error"] = f"取数任务需要重新登录: {','.join(pending_manual)}"
+    elif (r.get("ingest") or {}).get("pending"):
+        pending_files = [f.get("path", "") for f in (r.get("ingest", {}).get("files") or [])
+                         if f.get("status") in ("pending_password", "pending")]
+        r["_run_status"] = "fail"
+        r["_error"] = f"取数文件待处理 {r['ingest']['pending']} 份: {','.join(pending_files)}"
+    elif not agent_ingest_service.order_data_fresh(db, on=run_date, not_before_hour=18):
+        r["_run_status"] = "fail"
+        r["_error"] = "取数流程结束但没有产生18:00后的淘宝订单刷新时间"
+    return r
+
+
+def _job_web_agent_finance(db: Session) -> dict:
+    """每天 20:30: 独立刷新到期的余额/流水任务，不阻断18:30订单推送。"""
+    from app.services import agent_ingest_service
+    if agent_ingest_service.is_running():
+        return {"skipped": "已有编排在跑", "_run_status": "skipped"}
+    r = agent_ingest_service.orchestrate(db, force_orders=False, orders_only=False)
+    offline = r.get("agent_offline")
+    failed = [t.get("task", "") for t in (r.get("tasks") or [])
+              if t.get("status") in ("error", "failed", "timeout")]
+    pending_manual = [t.get("task", "") for t in (r.get("pending_manual") or [])]
+    if offline:
+        r["_run_status"] = "fail"
+        r["_error"] = f"财务取数时PC Web-Agent离线: {str(offline)[:300]}"
+    elif failed:
+        r["_run_status"] = "fail"
+        r["_error"] = f"财务取数任务失败: {','.join(failed)}"
+    elif pending_manual:
+        r["_run_status"] = "fail"
+        r["_error"] = f"财务取数需要重新登录: {','.join(pending_manual)}"
     return r
 
 
@@ -758,7 +809,8 @@ def _job_ingest_scan(db: Session) -> dict:
 
     导入全部成功(无错误 + 无平台需扫码) → 立刻补生成下单图 (用户拍板 2026-06-17);
     有报错/需扫码 → 跳过, 等重新扫码全部成功后再生成。与 orchestrate 路径同一口径。
-    generate_pending 幂等(已生成的不重复, 不推飞书 — 推送仍按 18:00)。"""
+    generate_pending 幂等(已生成的不重复, 正常新单仍按 18:30 推飞书); 若新备注命中远期/激活词,
+    则本次导入立即完成旧工厂号作废/远期编号/飞书通知或激活重排。"""
     from app.services import agent_ingest_service, web_agent_service
     ing = agent_ingest_service.run_ingest(db)
     try:
@@ -773,6 +825,18 @@ def _job_ingest_scan(db: Session) -> dict:
             order_sync_service.backfill_product_code(db)
             order_sync_service.backfill_code_from_taobao_title(db)
             db.commit()
+            remote = order_sheet_archive_service.void_remote_pushed(db)
+            order_sheet_archive_service.repush_activated(db)
+            order_sheet_archive_service.assign_remote_seqs(db)
+            ing["remote_voided"] = remote["voided_remote"]
+            ing["remote_transitions"] = remote["remote_transitions"]
+            ing["remote_feishu_notified"] = remote["feishu_notified"]
+            ing["remote_feishu_failed"] = remote["feishu_failed"]
+            if remote["feishu_failed"]:
+                details = "; ".join(
+                    f"{x.get('order_no')}: {x.get('reason')}" for x in remote["feishu_failed"])
+                ing["_run_status"] = "fail"
+                ing["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
             ing["order_sheets"] = order_sheet_archive_service.generate_pending(db)
         elif need_scan:
             ing["order_sheets"] = {"skipped": "有平台需重新扫码, 等全部成功后再生成下单图"}
@@ -786,9 +850,32 @@ def _job_order_sheets_daily(db: Session) -> dict:
     新鲜度门(2026-07-07): 今日订单未取数成功→暂缓推送, 防隔夜旧数据把已关闭单误推;
     等 pull_catchup 把 PC 取数补上、数据新鲜后再推。"""
     from app.services import agent_ingest_service, order_sheet_archive_service
-    if not agent_ingest_service.order_data_fresh(db):
-        return {"skipped": "stale_order_data", "note": "今日订单未取数, 暂缓推送(防旧数据误推)"}
-    return order_sheet_archive_service.push_daily(db)
+    if not agent_ingest_service.order_data_fresh(db, not_before_hour=18):
+        return {"skipped": "stale_order_data", "note": "18:00后订单未取数, 暂缓推送(防旧数据误推)",
+                "_run_status": "fail", "_error": "18:00后淘宝订单数据未刷新，未执行飞书推送"}
+    result = order_sheet_archive_service.push_daily(db)
+    failed = int(result.get("images_failed") or 0)
+    remaining = int(result.get("images_remaining") or 0)
+    held_no_sku = result.get("held_no_sku") or []
+    remote_notify_failed = result.get("remote_feishu_failed") or []
+    reason = result.get("push_reason")
+    if remote_notify_failed:
+        details = "; ".join(f"{x.get('order_no')}: {x.get('reason')}" for x in remote_notify_failed)
+        result["_run_status"] = "fail"
+        result["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
+    elif reason in ("no_chat_id", "notify_disabled"):
+        result["_run_status"] = "fail"
+        result["_error"] = f"飞书推送不可用: {reason}"
+    elif failed:
+        result["_run_status"] = "fail"
+        result["_error"] = f"飞书下单图发送失败 {failed} 张: {','.join(result.get('failed_order_nos') or [])}"
+    elif held_no_sku:
+        result["_run_status"] = "fail"
+        result["_error"] = f"{len(held_no_sku)} 笔订单因SKU未回填暂缓推送: {','.join(held_no_sku)}"
+    elif remaining:
+        result["_run_status"] = "fail"
+        result["_error"] = f"仍有 {remaining} 张可推下单图未发送"
+    return result
 
 
 def _job_order_sheets_catchup(db: Session) -> dict:
@@ -802,9 +889,21 @@ def _job_order_sheets_catchup(db: Session) -> dict:
     from app.services import agent_ingest_service, order_sheet_archive_service as oss
     if not agent_ingest_service.order_data_fresh(db):
         return {"skipped": "stale_order_data"}
+    remote = oss.void_remote_pushed(db)
+    oss.repush_activated(db)
+    oss.assign_remote_seqs(db)
     gen = oss.generate_pending(db)
     push = oss.push_pending_images(db, limit=20, include_baseline=False, quiet=True)
-    return {"generated": gen, "images_pushed": push["pushed"], "remaining": push["remaining"]}
+    result = {"generated": gen, "images_pushed": push["pushed"], "remaining": push["remaining"],
+              "remote_voided": remote["voided_remote"],
+              "remote_transitions": remote["remote_transitions"],
+              "remote_feishu_notified": remote["feishu_notified"],
+              "remote_feishu_failed": remote["feishu_failed"]}
+    if remote["feishu_failed"]:
+        details = "; ".join(f"{x.get('order_no')}: {x.get('reason')}" for x in remote["feishu_failed"])
+        result["_run_status"] = "fail"
+        result["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
+    return result
 
 
 def _now_hour() -> int:
@@ -814,24 +913,46 @@ def _now_hour() -> int:
 
 
 def _job_pull_catchup(db: Session) -> dict:
-    """每30分钟(仅18:00后至23:00): PC上线后续跑当天没完成的取数+推送 (用户 2026-07-07/08)。
+    """每小时(仅19:00后至23:00): PC上线后续跑当天没完成的取数+推送 (用户 2026-07-07/08、2026-07-23)。
     背景: 订单取数每日仅 18:00 一次; 那会儿 PC 关机/重启(如17:30重启)→ 当天订单整天不刷新。
-    机制(2026-07-08 收窄): **只在每日定时点(18:00)之后**才补, 不抢在定时前跑; 今日订单未刷新时每30分钟
+    机制(2026-07-23 收窄): **只在每日定时点(18:00)失败约1小时后**才补; 今日订单未刷新时每小时
     探测 PC 在线即重跑编排补取数, 取数成功(数据新鲜)后立即补推(含远期老单激活重推)+飞书告知一次;
     **成功即停**(下轮见新鲜→already_fresh 不再动), PC 仍离线则静默等下一轮(只失败才不停重试)。"""
     from app.services import agent_ingest_service as ai, web_agent_service
     if not (18 <= _now_hour() < 23):
         return {"skipped": "off_window"}
-    if ai.order_data_fresh(db):
+    if ai.order_data_fresh(db, not_before_hour=18):
         return {"ok": "already_fresh"}
     if ai.is_running():
-        return {"skipped": "orchestrate_running"}
+        return {"skipped": "orchestrate_running", "_run_status": "skipped"}
+    pending_password = ai.pending_shipping_password_files(db)
+    if pending_password:
+        return {
+            "waiting": "shipping_password",
+            "files": pending_password,
+            "_run_status": "fail",
+            "_error": (
+                f"加密发货报表待飞书口令 {len(pending_password)} 份: "
+                + ",".join(pending_password[:5])
+                + "；请转发“发货密码 xxxx”，收到后自动解密，下个小时继续"
+            ),
+        }
     if not web_agent_service.health(db).get("online"):
-        return {"waiting": "pc_offline"}          # PC 还没上线, 下个30分钟再探
-    res = ai.orchestrate(db, quiet=True)          # PC在线+今日陈旧 → 补取数(quiet防刷屏)
+        return {
+            "waiting": "pc_offline",
+            "_run_status": "fail",
+            "_error": "PC Web-Agent 离线，未执行订单取数；下个小时自动重试",
+        }
+    res = ai.orchestrate(db, quiet=True, force_orders=True, orders_only=True)  # 强制补18:00后的订单快照
     out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
            "pending_manual": len(res.get("pending_manual", []))}
-    if ai.order_data_fresh(db):                   # 取数成功→数据新鲜→立即补生成+补推
+    if res.get("already_running"):
+        return {
+            **out,
+            "skipped": "orchestrate_running",
+            "_run_status": "skipped",
+        }
+    if ai.order_data_fresh(db, not_before_hour=18):  # 取数成功→数据新鲜→立即补生成+补推
         from app.services import order_sheet_archive_service as oss
         oss.void_remote_pushed(db)                 # 已推工厂但现延期的单→自动作废旧号+通知工厂+挂起
         oss.repush_activated(db)                   # 远期老单激活→旧号作废清号(下面以新号重推)
@@ -848,6 +969,40 @@ def _job_pull_catchup(db: Session) -> dict:
             pass
     else:
         out["still_stale"] = True                 # 需扫码/导出失败 → 数据仍陈旧, 下轮再试
+        ingest = res.get("ingest") or {}
+        reasons: list[str] = []
+        if res.get("agent_offline"):
+            reasons.append(f"PC Web-Agent 离线: {str(res['agent_offline'])[:160]}")
+        if res.get("pending_manual"):
+            reasons.append("需人工登录: " + ",".join(
+                str(x.get("task") or "?") for x in res["pending_manual"]))
+        if ingest.get("pending"):
+            pending_files = [
+                f"{x.get('path', '?')}({x.get('status', 'pending')})"
+                for x in (ingest.get("files") or [])
+                if x.get("status") in ("pending", "pending_password")
+            ]
+            reasons.append(
+                f"待处理文件 {ingest['pending']} 份"
+                + (f": {','.join(pending_files[:5])}" if pending_files else ""))
+        persistent_password = ingest.get("pending_password_files") or []
+        if persistent_password:
+            reasons.append(
+                f"加密发货报表待飞书口令 {len(persistent_password)} 份: "
+                + ",".join(str(x) for x in persistent_password[:5]))
+        if ingest.get("errors"):
+            error_files = [
+                str(x.get("path") or "?")
+                for x in (ingest.get("files") or [])
+                if x.get("status") == "error"
+            ]
+            reasons.append(
+                f"订单导入失败 {ingest['errors']} 份"
+                + (f": {','.join(error_files[:5])}" if error_files else ""))
+        if not reasons:
+            reasons.append("订单取数结束，但未生成18:00后的三报表完整标记")
+        out["_run_status"] = "fail"
+        out["_error"] = "; ".join(reasons)
     return out
 
 
@@ -1164,6 +1319,12 @@ def _job_campaign_discovery(db: Session) -> dict:
     return campaign_discovery_service.run_daily_discovery(db)
 
 
+def _job_campaign_auto_execute(db: Session) -> dict:
+    """活动发现后自动推进：预检→单品立减→差集报名；任一安全门失败即停并飞书。"""
+    from app.services import campaign_automation_service
+    return campaign_automation_service.run_auto_execute(db)
+
+
 def _job_campaign_auto_recon(db: Session) -> dict:
     """活动生命周期 P4 (spec §四.6/§五): 每30分钟扫 status='signup_pushed' 且创建2小时内的
     活动计划 → WA 导出「活动商品导出」→ 自动核对 (>2元红榜+飞书)。
@@ -1390,8 +1551,8 @@ def _register_default_jobs() -> None:
                  _job_supplier_score, cron={"day": 1, "hour": 10, "minute": 0})
     register_job("daily_06_sales_rollup", "每日销售汇总 (rollup)",
                  _job_sales_rollup, cron={"hour": 6, "minute": 30})
-    register_job("feishu_sync_30min", "飞书双向同步",
-                 _job_feishu_sync, interval_minutes=30)
+    register_job("feishu_sync_30min", "飞书双向同步 (每6小时)",
+                 _job_feishu_sync, interval_minutes=360)
     register_job("daily_11_ai_logic_check", "AI 数据逻辑核查 (兜底)",
                  _job_post_import_logic_check, cron={"hour": 11, "minute": 0})
     register_job("daily_09_data_freshness", "数据新鲜度提醒",
@@ -1412,8 +1573,10 @@ def _register_default_jobs() -> None:
     # 保留 job_id 不变以免孤立已存的 override / 运行历史。
     register_job("daily_0630_web_agent", "Web-Agent 自动取数编排(18:00)",
                  _job_web_agent_daily, cron={"hour": 18, "minute": 0})
-    register_job("hourly_ingest_scan", "每小时扫共享目录导入(PC自跑报表 #15)",
-                 _job_ingest_scan, interval_minutes=60)
+    register_job("daily_2030_finance_agent", "Web-Agent 财务取数编排(20:30, 与订单解耦)",
+                 _job_web_agent_finance, cron={"hour": 20, "minute": 30})
+    register_job("hourly_ingest_scan", "共享目录导入扫描 (18:15-22:15每小时)",
+                 _job_ingest_scan, cron={"hour": "18-22", "minute": 15})
     register_job("daily_2235_flip_monitor", "导入翻烧饼灰度监控(仍横跳→异常, 稳定→销账)",
                  _job_flip_monitor, cron={"hour": 22, "minute": 35})
     register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/口令过期 → 微信+飞书)",
@@ -1433,14 +1596,15 @@ def _register_default_jobs() -> None:
                  _job_notify_retry, interval_minutes=30)
     register_job("monthly_thumb_cleanup", "图库缩略图缓存月度清理",
                  _job_thumb_cache_cleanup, cron={"day": 1, "hour": 22, "minute": 35})   # 夜间模式: 挪 04:00→22:35
-    register_job("hourly_gallery_thumb_warm", "图库缩略图预热 (增量; 白天每小时; 新图自动补)",
-                 _job_gallery_thumb_warm, cron={"hour": "7-22", "minute": 20})   # 避开夜间盘休眠(23-06:30)
+    register_job("hourly_gallery_thumb_warm", "图库缩略图每日兜底 (上传时已即时生成)",
+                 _job_gallery_thumb_warm, cron={"hour": 4, "minute": 10})
     register_job("daily_2330_recon_snapshot", "对账结果每日快照",
                  _job_recon_snapshot, cron={"hour": 22, "minute": 45})   # 夜间模式: 挪 23:30→22:45
     # 2026-07-08 用户拍板: 去掉"每小时补推"—— 推送只在每日 18:30(取数成功后)一次; 失败才由
-    # pull_catchup 在 18:00 后每30分钟重试, 成功即停。故不再注册 hourly_order_sheets_catchup。
-    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (仅18:00后, 失败每30分钟重试, 成功即停)",
-                 _job_pull_catchup, interval_minutes=30)
+    # pull_catchup 在 18:00 失败约1小时后开始按小时重试, 成功即停。故不再注册 hourly_order_sheets_catchup。
+    # 保留旧 job_id，避免割裂历史日志和用户覆盖。
+    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (19:17-22:17每小时, 成功即停)",
+                 _job_pull_catchup, cron={"hour": "19-22", "minute": 17})
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
@@ -1458,7 +1622,7 @@ def _register_default_jobs() -> None:
     register_job("accessory_tracking_2h", "配件物流实时刷新 (快递100)",
                  _job_accessory_tracking_refresh, interval_minutes=120)
     register_job("shipments_tracking_6h", "全表物流实时刷新 (shipments: 订单/售后/工厂/补单/采购)",
-                 _job_shipments_refresh, interval_minutes=360)
+                 _job_shipments_refresh, interval_minutes=360, enabled=False)
     register_job("daily_0730_accessory_alert", "配件到货预警刷新",
                  _job_accessory_alert_refresh, cron={"hour": 7, "minute": 30})
     register_job("daily_0740_self_arrive", "自送配件3天自动到货",
@@ -1482,6 +1646,8 @@ def _register_default_jobs() -> None:
     # 活动生命周期 P4 (2026-07-17 spec §五): 发现在抓单编排(18:00)后跑; 自动核对每30分钟心跳
     register_job("campaign_daily_discovery", "千牛活动发现(落日历+距开始<3天飞书提醒)",
                  _job_campaign_discovery, cron={"hour": 18, "minute": 40})
+    register_job("campaign_auto_execute", "营销活动自动报名(安全门+差集+失败飞书)",
+                 _job_campaign_auto_execute, cron={"hour": 18, "minute": 50})
     register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·2小时内)",
                  _job_campaign_auto_recon, interval_minutes=30)
 

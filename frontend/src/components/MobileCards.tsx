@@ -9,7 +9,7 @@
  */
 import { useState, type CSSProperties, type ReactNode } from 'react';
 import { Button } from 'antd';
-import { PictureOutlined, EditOutlined } from '@ant-design/icons';
+import { ColumnWidthOutlined, PictureOutlined, EditOutlined } from '@ant-design/icons';
 
 const BLUE = '#1a73e8', INK = '#202124', SUB = '#5f6368', FAINT = '#80868b';
 const LINE = '#e8eaed', BG = '#f1f3f4', GREEN = '#188038', RED = '#d93025';
@@ -120,9 +120,9 @@ export function MetricCard({ title, profit, profitRate, kpis, moreRows, highligh
 }
 
 // ── 目录型: CatalogCard (媒体列表卡) ─────────────────────────────────────────
-export function CatalogCard({ image, category, title, code, brand, meta, onGallery, onEdit, renderExpand, expandLabel = 'SKU' }: {
+export function CatalogCard({ image, category, title, code, brand, meta, onGallery, onDimensions, dimensionActions, onEdit, renderExpand, expandLabel = 'SKU' }: {
   image?: string | null; category?: string | null; title: ReactNode; code?: string;
-  brand?: string | null; meta?: string; onGallery?: () => void; onEdit?: () => void;
+  brand?: string | null; meta?: string; onGallery?: () => void; onDimensions?: () => void; dimensionActions?: ReactNode; onEdit?: () => void;
   renderExpand?: () => ReactNode; expandLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
@@ -140,9 +140,11 @@ export function CatalogCard({ image, category, title, code, brand, meta, onGalle
             {meta && <span style={{ fontSize: 11.5, color: SUB }}>{meta}</span>}
           </div>
         </div>
-        {(onGallery || onEdit) && (
+        {(onGallery || onDimensions || dimensionActions || onEdit) && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {onGallery && <Button size="small" type="primary" ghost icon={<PictureOutlined />} onClick={onGallery}>图库</Button>}
+            {onDimensions && <Button size="small" icon={<ColumnWidthOutlined />} onClick={onDimensions}>尺寸</Button>}
+            {dimensionActions}
             {onEdit && <Button size="small" icon={<EditOutlined />} onClick={onEdit}>编辑</Button>}
           </div>
         )}

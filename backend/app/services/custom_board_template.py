@@ -31,6 +31,9 @@ CATEGORY_PROFILE: dict[str, dict] = {
     "岛台": {"family": "cabinet", "D": 60, "H": 90, "cols": 2, "drawers": 2, "doors": 1, "shelves": 1},
     "餐桌": {"family": "table", "D": 80, "H": 75},
     "书桌": {"family": "table", "D": 60, "H": 75},
+    "升降桌": {"family": "table", "D": 75, "H": 75},
+    "茶几": {"family": "table", "D": 60, "H": 45},
+    "圆桌": {"family": "table", "D": 100, "H": 75},
     "餐凳": {"family": "table", "D": 35, "H": 45},
     "床": {"family": "bed", "D": 200, "H": 40},
 }

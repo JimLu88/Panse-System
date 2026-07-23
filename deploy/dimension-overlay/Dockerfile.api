@@ -1,0 +1,9 @@
+FROM panse-system-api
+
+COPY api/app/api/products.py /app/app/api/products.py
+COPY api/app/models/__init__.py /app/app/models/__init__.py
+COPY api/app/models/product_dimension.py /app/app/models/product_dimension.py
+COPY api/app/schemas/product.py /app/app/schemas/product.py
+COPY api/app/services/product_dimension_service.py /app/app/services/product_dimension_service.py
+COPY api/alembic/versions/0130_product_dimension_assets.py /app/alembic/versions/0130_product_dimension_assets.py
+COPY api/scripts/import_product_dimensions.py /app/scripts/import_product_dimensions.py

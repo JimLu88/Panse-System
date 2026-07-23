@@ -259,14 +259,16 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
     返回 (rows, stats); 行 = {taobao_item_id, taobao_sku_id, sku_code, price, is_placeholder, remark}。"""
-    from app.services import delisted_sku_service
+    from app.services import delisted_sku_service, no_sales_service
     from app.services.activity_preflight_service import bad_price_product_codes
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
     delisted = delisted_sku_service.get_delisted(db)
+    registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": []}
+    stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
         if not p.taobao_sku_id:
@@ -279,6 +281,11 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 
     rows: list[dict] = []
     for item_id, pairs in sorted(by_item.items()):
+        # 无动销登记是单行道：真无动销及“已出单待人工转正”都不能自动报名，
+        # 只走同期单品立减。每日自动任务会先刷新登记表。
+        if item_id in registered_no_sales:
+            stats["excluded_no_sales_items"].append(item_id)
+            continue
         if all((s.product_code or "") in bad_pc for s, _ in pairs):
             stats["skipped_bad_price_items"].append(item_id)      # 坏价整品排除
             continue
@@ -316,7 +323,13 @@ def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: 
         target = line                                     # 贴线 min(目标, 线)
         stats["line_concessions"].append({"sku_code": s.sku_code, "target": float(target0),
                                           "line": float(line), "concession": float(concession)})
-    official = official_deduction(daily, lev, ceil_on)
+    # 2026-07-23 狂暑季实证：普通价位的12%仍按整元向上取整；¥30样块平台
+    # 按精确12%（¥3.60）计算。低价 SKU 若继续按¥4反推会让到手高¥0.40。
+    # 超级立减10%继续严格沿用用户确认的整元向上取整。
+    low_price_exact = lev != TIER_LEVERAGE["mid"] and daily < Decimal("100")
+    official = official_deduction(daily, lev, ceil_on and not low_price_exact)
+    if low_price_exact:
+        stats["official_low_price_exact"] += 1
     deduct = (daily - official - target).quantize(_CENT)
     if deduct <= 0:
         stats["skipped_no_deduct"] += 1                   # 官方立减已够 → 不出行(不给假数)
@@ -325,15 +338,22 @@ def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: 
             "official": float(official), "concession": float(concession)}
 
 
-def _nosales_discount_row(s, p, stats: dict) -> Optional[dict]:
-    """无动销 SKU (spec §二.4 永久规则): 到手 = 中促 + 1; 立减 = 日常 − (中促 + 1)。
-    报不进活动 → 单品立减单独压价, 无官方立减项、无贴线。"""
+def _nosales_discount_row(s, p, stats: dict, tier: str = "mid") -> Optional[dict]:
+    """无动销 SKU：不报名活动，只靠单品立减直达到当前场次目标。
+
+    大促档位直接到 ERP 大促买家价；超级立减档位沿用中促+1 的保护规则。
+    两者都没有官方立减项，也不套券后线。
+    """
     daily = _d(s.daily_price)
-    mid = mid_buyer_inplace(p)
-    if mid is None:
+    if tier in ("big", "big618"):
+        target = _d(getattr(p, "big_buyer_price", None))
+    else:
+        mid = mid_buyer_inplace(p)
+        target = ((mid + NOSALES_MARKUP_YUAN).quantize(_CENT)
+                  if mid is not None else None)
+    if target is None or target <= 0:
         stats["skipped_no_target"] += 1
         return None
-    target = (mid + NOSALES_MARKUP_YUAN).quantize(_CENT)
     deduct = (daily - target).quantize(_CENT)
     if deduct <= 0:
         stats["skipped_no_deduct"] += 1
@@ -360,7 +380,8 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     stats = {"tier": tier, "official_ceil": ceil_on, "rows": 0, "skipped_no_skuid": 0,
              "skipped_delisted": 0, "skipped_bad_price": 0, "skipped_placeholder": 0,
              "skipped_no_daily": 0, "skipped_no_target": 0, "skipped_no_deduct": 0,
-             "line_concessions": [], "rotation_suggested": []}
+             "line_concessions": [], "rotation_suggested": [],
+             "official_low_price_exact": 0}
     rows: list[dict] = []
     for s, p in _mapped_pairs(db):
         if not p.taobao_sku_id:
@@ -381,7 +402,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
             continue
         item_id = str(p.taobao_item_id).strip()
         if item_id in nosales:
-            core = _nosales_discount_row(s, p, stats)
+            core = _nosales_discount_row(s, p, stats, tier)
         else:
             core = _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
         if core is None:
@@ -504,20 +525,71 @@ def _fmt_dt(dt) -> Optional[str]:
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
 
 
+def _plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
+    """从计划备注中读取可选的千牛活动 ID（不新增数据库字段，兼容现有计划表）。"""
+    import re
+    text = str(getattr(plan, "remark", None) or "")
+    cid = re.search(r"(?:campaignId|campaign_id)\s*[:=]\s*(\d+)", text)
+    uid = re.search(r"(?:unitedActivityId|united_activity_id)\s*[:=]\s*(\d+)", text)
+    return (cid.group(1) if cid else None, uid.group(1) if uid else None)
+
+
 def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
-                     start_dt: Optional[str], end_dt: Optional[str]) -> dict:
+                     start_dt: Optional[str], end_dt: Optional[str], *,
+                     plan=None, expected_rows: Optional[int] = None,
+                     expected_items: Optional[int] = None) -> dict:
     """WA 上传编排 (与 activity_upload_service 同模式: upload_file → wait_job)。"""
     from app.services import web_agent_service
-    j = web_agent_service.upload_file(db, channel, phase, xlsx, f"campaign_{channel}.xlsx",
-                                      start_dt=start_dt, end_dt=end_dt)
+    extra = {}
+    if channel == "promo_signup" and plan is not None:
+        title = (getattr(plan, "qn_campaign_title", None)
+                 or getattr(plan, "name", None))
+        phase_name = (getattr(plan, "name", None)
+                      if str(getattr(plan, "name", "")) != str(title or "") else None)
+        cid, uid = _plan_campaign_ids(plan)
+        extra = {
+            "campaign_title": title,
+            "campaign_phase": phase_name,
+            "campaign_start": start_dt,
+            "campaign_end": end_dt,
+            "official_rate": f"{int(TIER_LEVERAGE[plan_tier(plan)] * 100)}%",
+            "campaign_id": cid,
+            "united_activity_id": uid,
+        }
+    j = web_agent_service.upload_file(
+        db, channel, phase, xlsx, f"campaign_{channel}.xlsx",
+        start_dt=start_dt, end_dt=end_dt, expected_rows=expected_rows, **extra)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应, 无法上传")}
     final = web_agent_service.wait_job(db, j["job"], timeout_s=200)
     res = final.get("result") or {}
     if res.get("need_scan"):
         return {"ok": False, "need_scan": True, "message": "淘宝登录态过期, 请先扫码后再上传"}
-    return {"ok": bool(res.get("ok") or res.get("submitted") or res.get("attached")),
-            "job": j["job"], "validation": res.get("validation"),
+    validation = res.get("validation")
+    if channel == "promo_signup":
+        total = validation.get("total_items") if isinstance(validation, dict) else None
+        ok_count = validation.get("ok") if isinstance(validation, dict) else None
+        failed = validation.get("failed") if isinstance(validation, dict) else None
+        terminal = bool(
+            isinstance(total, int) and isinstance(ok_count, int) and isinstance(failed, int)
+            and total > 0 and ok_count + failed == total
+        )
+        success = bool(
+            res.get("ok") and terminal and failed == 0 and ok_count == total
+            and (expected_items is None or total == expected_items)
+        )
+        error = res.get("error") or res.get("message")
+        if not terminal:
+            error = error or "批量操作记录未进入终态（不能把附件已挂上当成报名成功）"
+        elif expected_items is not None and total != expected_items:
+            error = f"批量操作范围不符：平台{total}品，预期{expected_items}品"
+        elif failed:
+            error = f"批量操作终态失败：成功{ok_count}品/失败{failed}品"
+    else:
+        success = bool(res.get("submitted") if phase == "commit" else res.get("ok"))
+        error = res.get("error") or res.get("message")
+    return {"ok": success, "error": error,
+            "job": j["job"], "validation": validation,
             "submitted": res.get("submitted"),
             "screenshot_base64": res.get("screenshot_base64")}
 
@@ -546,7 +618,8 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
     res = _upload_and_wait(db, "single_item_discount", phase, _build_discount_xlsx(rows),
-                           _fmt_dt(plan.start_at), _fmt_dt(plan.end_at))
+                           _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
+                           plan=plan, expected_rows=len(rows))
     res["stats"] = stats
     if res.get("ok") and phase == "commit":
         plan.status = "discount_pushed"
@@ -554,19 +627,151 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
     return res
 
 
+def _signup_failure_signature(plan, result: dict) -> str:
+    import hashlib
+    import json
+    payload = {
+        "plan_id": getattr(plan, "id", None),
+        "step": result.get("step"),
+        "error": result.get("error"),
+        "validation": result.get("validation"),
+        "wrong_published_items": result.get("wrong_published_items"),
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+
+
+def _notify_signup_failure(db: Session, plan, result: dict) -> dict:
+    """同一失败内容只发一次飞书；原因变化后会重新通知。"""
+    import json
+    from app.services import notify_service, settings_service
+
+    key = f"campaign_signup_failure_{getattr(plan, 'id', 'unknown')}"
+    signature = _signup_failure_signature(plan, result)
+    if settings_service.get(db, key, env_fallback=False) == signature:
+        return {"deduped": True}
+    validation = result.get("validation") or {}
+    lines = [
+        f"活动：{getattr(plan, 'name', '')}",
+        f"千牛活动：{getattr(plan, 'qn_campaign_title', None) or getattr(plan, 'name', '')}",
+        f"失败步骤：{result.get('step') or '批量导入/终态核对'}",
+        f"原因：{result.get('error') or '未知错误'}",
+    ]
+    if isinstance(validation, dict):
+        if any(k in validation for k in ("total_items", "ok", "failed")):
+            lines.append(
+                f"平台终态：总{validation.get('total_items')}品，"
+                f"成功{validation.get('ok')}品，失败{validation.get('failed')}品"
+            )
+        reasons = validation.get("failed_reasons") or validation.get("failed_items")
+        if reasons:
+            lines.append("失败明细：" + json.dumps(
+                reasons[:8] if isinstance(reasons, list) else reasons,
+                ensure_ascii=False, default=str)[:1800])
+    wrong = result.get("wrong_published_items")
+    if wrong:
+        lines.append("已发布错价/缺SKU：" + json.dumps(
+            wrong[:8], ensure_ascii=False, default=str)[:1800])
+    lines.append("系统已停止本次自动报名；不会盲目全量重推。")
+    delivered = notify_service.broadcast_text(
+        db, "\n".join(lines), title="活动自动报名失败", level="error")
+    if any(v is True for v in delivered.values()):
+        settings_service.set_value(
+            db, key, signature, description="活动自动报名失败飞书通知去重签名")
+        db.commit()
+    return delivered
+
+
+def _clear_signup_failure_dedupe(db: Session, plan) -> None:
+    from app.services import settings_service
+    settings_service.set_value(
+        db, f"campaign_signup_failure_{getattr(plan, 'id', 'unknown')}", "")
+    db.commit()
+
+
 def push_signup(db: Session, plan) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     回执自愈: 失败明细里的下架SKU/动销不达标商品自动登记。"""
+    from app.services import campaign_recon_service, web_agent_service
+
     rows, stats = build_signup_rows(db, plan)
     if not rows:
         return {"ok": False, "error": "无可推送的报名行", "stats": stats}
-    res = _upload_and_wait(db, "promo_signup", "stage", _build_signup_xlsx(rows),
-                           _fmt_dt(plan.start_at), _fmt_dt(plan.end_at))
+
+    # 先只读导出当前活动：整品全部 SKU 已发布且活动价一致才视为正确；
+    # 正确品不重复导入。若发现“已发布但错价”，批量导入无法安全修正，立即停并报告。
+    title = plan.qn_campaign_title or plan.name
+    exported = web_agent_service.campaign_export_items(db, title)
+    if not exported.get("ok"):
+        res = {"ok": False, "step": "current_state_export",
+               "error": exported.get("error") or exported.get("message")
+                        or "无法可靠取得当前活动生效集合",
+               "stats": stats}
+        res["notification"] = _notify_signup_failure(db, plan, res)
+        return res
+    live_rows = campaign_recon_service.parse_activity_items_export(exported["xlsx_bytes"])
+    live_by_sku = {str(r["sku_id"]): r for r in live_rows}
+    expected_by_item: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        expected_by_item[str(row["taobao_item_id"])].append(row)
+    correct_items: set[str] = set()
+    wrong_published: list[dict] = []
+    for item_id, item_rows in expected_by_item.items():
+        seen = [live_by_sku.get(str(r["taobao_sku_id"])) for r in item_rows]
+        if all(x is not None for x in seen):
+            mismatches = [
+                {"sku_id": row["taobao_sku_id"], "expected": row["price"],
+                 "actual": current.get("activity_price")}
+                for row, current in zip(item_rows, seen)
+                if current.get("activity_price") is None
+                or abs(float(current["activity_price"]) - float(row["price"])) > 0.005
+            ]
+            if mismatches:
+                wrong_published.append({"item_id": item_id, "mismatches": mismatches[:20]})
+            else:
+                correct_items.add(item_id)
+        elif any(x is not None for x in seen):
+            wrong_published.append({
+                "item_id": item_id,
+                "error": "已发布集合缺 SKU",
+                "missing_skus": [
+                    r["taobao_sku_id"] for r, current in zip(item_rows, seen)
+                    if current is None
+                ][:20],
+            })
+    stats["correct_items_excluded"] = sorted(correct_items)
+    stats["wrong_published_items"] = wrong_published
+    if wrong_published:
+        res = {"ok": False, "step": "published_price_guard",
+               "error": f"发现 {len(wrong_published)} 个已发布商品错价/缺SKU，拒绝用新增导入覆盖",
+               "wrong_published_items": wrong_published, "stats": stats}
+        res["notification"] = _notify_signup_failure(db, plan, res)
+        return res
+
+    pending = [r for r in rows if str(r["taobao_item_id"]) not in correct_items]
+    pending_items = {str(r["taobao_item_id"]) for r in pending}
+    stats["pending_items"] = sorted(pending_items)
+    stats["pending_rows"] = len(pending)
+    if not pending:
+        plan.status = "signup_pushed"
+        db.commit()
+        _clear_signup_failure_dedupe(db, plan)
+        return {"ok": True, "no_change": True, "stats": stats,
+                "message": "当前活动中所有目标商品已发布且价格一致，无需重复导入"}
+
+    res = _upload_and_wait(
+        db, "promo_signup", "stage", _build_signup_xlsx(pending),
+        _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
+        expected_rows=len(pending), expected_items=len(pending_items))
     res["stats"] = stats
     _learn_from_validation(db, res.get("validation"))
     if res.get("ok"):
         plan.status = "signup_pushed"
         db.commit()
+        _clear_signup_failure_dedupe(db, plan)
+    else:
+        res["notification"] = _notify_signup_failure(db, plan, res)
     return res
 
 
@@ -594,7 +799,12 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
         else:
             mid = mid_buyer_inplace(p)
             if item_id in nosales:
-                target = float((mid + NOSALES_MARKUP_YUAN).quantize(_CENT)) if mid else None
+                if tier in ("big", "big618"):
+                    no_sales_target = _d(getattr(p, "big_buyer_price", None))
+                else:
+                    no_sales_target = (
+                        (mid + NOSALES_MARKUP_YUAN).quantize(_CENT) if mid else None)
+                target = float(no_sales_target) if no_sales_target else None
                 kind = "nosales"
             elif tier == "mid":
                 target, kind = (float(mid) if mid else None), "campaign"

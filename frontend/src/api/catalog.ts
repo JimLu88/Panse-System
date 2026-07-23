@@ -329,6 +329,8 @@ export interface Product {
   listing_status?: string | null;
   semi_finished_eligible?: boolean | null;   // R5 可做白坯
   semi_group?: string | null;                 // R5 白坯分组码
+  dimension_asset_count?: number;
+  dimension_review_count?: number;
 }
 
 export const listProducts = (q?: string, params?: { category?: string; brand?: string }) =>
@@ -449,6 +451,65 @@ export const updateProduct = (id: number, payload: {
   semi_finished_eligible?: boolean | null;   // R5 可做白坯
   semi_group?: string | null;                 // R5 白坯分组码
 }) => api.patch<Product>(`/api/products/${id}`, payload).then((r) => r.data);
+
+export interface ProductDimensionAssetSummary {
+  id: number;
+  product_code: string;
+  asset_key: string;
+  title: string;
+  source_psd?: string | null;
+  mapping_status: 'confirmed' | 'review_required';
+  match_confidence?: string | null;
+  is_primary: boolean;
+  version: number;
+  dimension_count: number;
+  has_preview: boolean;
+  updated_by?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ProductDimensionDetail extends ProductDimensionAssetSummary {
+  product_name: string;
+  size_detail?: string | null;
+  dimension_data: { labels?: Array<Record<string, unknown>>; [key: string]: unknown };
+  erp_dimensions: Array<{ label?: string; value?: string; source?: string; measurements_mm?: number[] }>;
+  sku_variants: Array<{
+    sku_code?: string; name?: string; dimension_coverage_status?: string;
+    resolved_dimensions?: Array<{ label?: string; value_mm?: number; source?: string }>;
+    measurements?: Array<{ label?: string; value_mm?: number }>;
+  }>;
+  svg_url: string;
+  preview_url?: string | null;
+  backup?: string | null;
+}
+
+export const listProductDimensions = (productCode: string) =>
+  api.get<{ product: { code: string; name: string; size_detail?: string | null }; assets: ProductDimensionAssetSummary[] }>(
+    `/api/products/${encodeURIComponent(productCode)}/dimensions`,
+  ).then((r) => r.data);
+
+export const getProductDimension = (productCode: string, assetId: number) =>
+  api.get<ProductDimensionDetail>(
+    `/api/products/${encodeURIComponent(productCode)}/dimensions/${assetId}`,
+  ).then((r) => r.data);
+
+export const getProductDimensionSvg = (productCode: string, assetId: number, version: number) =>
+  api.get<string>(
+    `/api/products/${encodeURIComponent(productCode)}/dimensions/${assetId}/svg`,
+    { params: { v: version }, responseType: 'text' },
+  ).then((r) => r.data);
+
+export const saveProductDimension = (
+  productCode: string,
+  assetId: number,
+  payload: {
+    svg: string; expected_version: number; size_detail?: string | null;
+    sync_size_detail: boolean; confirm_mapping: boolean;
+  },
+) => api.put<ProductDimensionDetail>(
+  `/api/products/${encodeURIComponent(productCode)}/dimensions/${assetId}`,
+  payload,
+).then((r) => r.data);
 
 export interface DeleteProductResult {
   deleted_product: string;

@@ -149,6 +149,7 @@ export function resolvePagePerm(pathname: string, search: string): string | null
   if (exact !== undefined) return exact;
   // 动态/子路由归到父页面 permKey
   if (p.startsWith('/bom/')) return 'bom-list';
+  if (p.startsWith('/products/')) return 'products';
   if (p.startsWith('/npd/')) return 'npd';
   if (p.startsWith('/orders/')) return 'orders';   // 如 /orders/:id/factory-sheet
   return null;   // 未登记 (如 /ai / 首页重定向) → 放行

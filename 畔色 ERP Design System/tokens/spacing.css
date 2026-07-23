@@ -1,0 +1,53 @@
+/* 畔色 ERP — 间距 / 圆角 / 阴影 / 动效
+   4px 基准网格。卡片圆角 16，控件 10，标签 8 (沿用原系统观感)。
+   阴影走「柔和、低对比」路线，避免厚重投影。 */
+
+:root {
+  /* ----- 间距 (4px 基准) ----- */
+  --space-0: 0;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;   /* 页面/内容内边距 (沿用原系统 Content padding) */
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 表格行高 — 三档密度 */
+  --row-compact:  40px;  /* 高密度 (重度用户/分析) */
+  --row-default:  48px;  /* 平衡默认 */
+  --row-spacious: 56px;  /* 宽松 / 触屏 */
+
+  /* 移动端最小点击区 */
+  --tap-min: 44px;
+
+  /* ----- 圆角 ----- */
+  --radius-xs:   6px;
+  --radius-sm:   8px;    /* 标签 / 小徽标 */
+  --radius-md:   10px;   /* 按钮 / 输入框 */
+  --radius-lg:   12px;   /* 弹窗 / 中卡片 */
+  --radius-xl:   16px;   /* 卡片 / 面板 (主) */
+  --radius-2xl:  20px;
+  --radius-pill: 999px;  /* 胶囊 / 头像 */
+
+  /* ----- 阴影 (柔和) ----- */
+  --shadow-xs: 0 1px 2px rgba(15,23,42,.04);
+  --shadow-sm: 0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  --shadow-md: 0 4px 12px rgba(15,23,42,.08);
+  --shadow-lg: 0 12px 32px rgba(15,23,42,.12);
+  --shadow-xl: 0 24px 56px rgba(15,23,42,.16);
+  /* 聚焦环 — 主色 (teal) */
+  --focus-ring: 0 0 0 3px rgba(13,148,136,.18);
+  /* 顶栏底部细描边 */
+  --shadow-nav: 0 1px 0 rgba(15,23,42,.06);
+
+  /* ----- 动效 ----- */
+  --ease-out:   cubic-bezier(.16,.84,.44,1);   /* @kind other */ /* 进入 */
+  --ease-in-out:cubic-bezier(.45,0,.25,1);     /* @kind other */
+  --dur-fast:   120ms;   /* @kind other */ /* hover / 颜色 */
+  --dur-base:   180ms;   /* @kind other */ /* 默认过渡 */
+  --dur-slow:   280ms;   /* @kind other */ /* 抽屉 / 弹窗 */
+}

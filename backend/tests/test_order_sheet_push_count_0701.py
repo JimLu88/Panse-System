@@ -50,6 +50,12 @@ def test_count_counts_real_pending(db_session):
     assert svc.count_pending_push(db_session) == 1
 
 
+def test_count_excludes_remote_hold(db_session):
+    _sheet(db_session, "REMOTE1")
+    _order(db_session, "REMOTE1", status="paid", is_remote_ship=True)
+    assert svc.count_pending_push(db_session) == 0
+
+
 def test_count_ignores_already_pushed(db_session):
     _sheet(db_session, "P1", pushed=True); _order(db_session, "P1", status="signed")
     assert svc.count_pending_push(db_session) == 0

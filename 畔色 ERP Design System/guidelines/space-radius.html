@@ -1,0 +1,25 @@
+<!-- @dsCard group="Spacing" viewport="700x160" name="圆角" subtitle="标签 8 · 控件 10 · 卡片 16" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--surface-card); font-family: var(--font-sans); }
+  .row { display:flex; gap:18px; align-items:flex-end; }
+  .item { text-align:center; }
+  .box { width:72px; height:60px; background:var(--surface-sunken); border:1.5px solid var(--border-strong); }
+  .lab { font-size:11px; font-family:var(--font-mono); color:var(--text-tertiary); margin-top:8px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="item"><div class="box" style="border-radius:var(--radius-sm)"></div><div class="lab">sm·8</div></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-md)"></div><div class="lab">md·10</div></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-lg)"></div><div class="lab">lg·12</div></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-xl)"></div><div class="lab">xl·16</div></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-2xl)"></div><div class="lab">2xl·20</div></div>
+    <div class="item"><div class="box" style="width:60px;border-radius:var(--radius-pill)"></div><div class="lab">pill</div></div>
+  </div>
+</body>
+</html>

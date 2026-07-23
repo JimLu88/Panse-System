@@ -1,0 +1,35 @@
+<!-- @dsCard group="Colors" viewport="700x200" name="表面 / 文字语义" subtitle="背景层级与文字层级 (浅色)" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--surface-card); font-family: var(--font-sans); }
+  .wrap { display:flex; gap:20px; }
+  .half { flex:1; }
+  h4 { font-size:12px; color:var(--text-tertiary); font-weight:600; margin:0 0 10px; text-transform:uppercase; letter-spacing:.04em; }
+  .surf { display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:var(--radius-md); margin-bottom:8px; font-size:13px; color:var(--text-secondary); }
+  .dot { width:18px; height:18px; border-radius:6px; box-shadow: inset 0 0 0 1px rgba(15,23,42,.08); flex:none; }
+  .txt { margin-bottom:10px; }
+  .lbl { font-size:11px; font-family:var(--font-mono); color:var(--text-tertiary); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="half">
+      <h4>背景层级</h4>
+      <div class="surf" style="background:var(--bg-app)"><span class="dot" style="background:var(--bg-app)"></span>bg-app · 页面底</div>
+      <div class="surf" style="background:var(--surface-sunken)"><span class="dot" style="background:var(--surface-sunken)"></span>surface-sunken · 凹陷/表头</div>
+      <div class="surf" style="background:var(--surface-card);box-shadow:var(--shadow-sm)"><span class="dot" style="background:var(--surface-card)"></span>surface-card · 卡片</div>
+    </div>
+    <div class="half">
+      <h4>文字层级</h4>
+      <div class="txt" style="color:var(--text-primary);font-size:16px;font-weight:600">主要文字 Primary <span class="lbl">--text-primary</span></div>
+      <div class="txt" style="color:var(--text-secondary);font-size:15px">次要文字 Secondary <span class="lbl">--text-secondary</span></div>
+      <div class="txt" style="color:var(--text-tertiary);font-size:14px">三级/占位 Tertiary <span class="lbl">--text-tertiary</span></div>
+      <div class="txt" style="color:var(--text-link);font-size:15px;font-weight:600">链接文字 Link <span class="lbl">--text-link</span></div>
+    </div>
+  </div>
+</body>
+</html>

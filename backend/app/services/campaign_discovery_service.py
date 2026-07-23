@@ -9,13 +9,15 @@
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, time, timedelta
 from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 REMIND_DAYS_BEFORE = 3      # 距开始 <3 天提醒 (spec §四: 距开始<3天的活动推飞书)
+_ACTIONABLE_STATUS_WORDS = ("可报名", "报名中")
+_TERMINAL_STATUS_WORDS = ("已结束", "报名截止", "已关闭", "已取消")
 
 # WA 抓页解析宽容: 日期可能是多种格式或 None, 解析不动的留 None (raw 原文已带回)
 _DT_FORMATS = (
@@ -82,12 +84,24 @@ def upsert_calendar(db: Session, campaigns: list[dict]) -> dict:
         row = db.execute(select(CampaignCalendar).where(
             CampaignCalendar.title == title,
             CampaignCalendar.start_at == start)).scalars().first()
+        if row is None and start is not None:
+            # 日历卡片通常只有日期，活动详情才有秒级时间。若已经人工/详情页确认过
+            # 同一天的精确档期，继续复用该行，避免次日又插入一个 00:00 的重复活动。
+            day_start = datetime.combine(start.date(), time.min)
+            day_end = day_start + timedelta(days=1)
+            row = db.execute(select(CampaignCalendar).where(
+                CampaignCalendar.title == title,
+                CampaignCalendar.start_at >= day_start,
+                CampaignCalendar.start_at < day_end)).scalars().first()
         if row is None:
             db.add(CampaignCalendar(title=title, start_at=start, end_at=end,
                                     status=status, source="discovery"))
             inserted += 1
         else:
-            if end is not None:
+            if (end is not None
+                    and (row.end_at is None
+                         or end.time() != time.min
+                         or row.end_at.time() == time.min)):
                 row.end_at = end
             if status:
                 row.status = status
@@ -97,22 +111,49 @@ def upsert_calendar(db: Session, campaigns: list[dict]) -> dict:
 
 
 def due_reminders(db: Session, today: Optional[date] = None) -> list:
-    """距开始 0~<{REMIND_DAYS_BEFORE} 天、今天还没提醒过的日历项 (已开始的不再提醒)。"""
+    """返回今天应提醒的活动。
+
+    只对有准确档期的阶段按开始前 3 天提醒；首页“可报名/报名中”入口卡片经常
+    没有日期，不能把它们当成 8 场新活动逐条提醒。若本次抓取完全没有解析出
+    任何可报名档期，run_daily_discovery 会另发一条合并诊断。已结束阶段不提醒。
+    """
     from app.models.campaign import CampaignCalendar
     today = today or date.today()
-    rows = db.execute(select(CampaignCalendar).where(
-        CampaignCalendar.start_at.isnot(None))).scalars().all()
+    rows = db.execute(select(CampaignCalendar)).scalars().all()
     out = []
     for r in rows:
+        status = str(r.status or "")
+        if any(word in status for word in _TERMINAL_STATUS_WORDS):
+            continue
+        if r.start_at is None:
+            continue
         days_left = (r.start_at.date() - today).days
-        if 0 <= days_left < REMIND_DAYS_BEFORE and r.last_notified_on != today:
+        if 0 <= days_left <= REMIND_DAYS_BEFORE and r.last_notified_on != today:
             out.append(r)
-    out.sort(key=lambda r: r.start_at)
+    out.sort(key=lambda r: (r.start_at, r.title))
     return out
 
 
 def _fmt(dt: Optional[datetime]) -> str:
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else "未知"
+
+
+def explain_discovery_failure(error: str) -> str:
+    """把 Web-Agent 诊断码翻成可行动的人话；保留原码方便继续排查。"""
+    err = str(error or "未知原因")
+    low = err.lower()
+    if "no_campaigns_found" in low:
+        return ("活动页已打开且登录有效，但程序没有识别到活动卡片；通常是千牛页面的"
+                "状态文案或页面结构改版，并不等于平台真的没有活动")
+    if "need_scan" in low or "login" in low:
+        return "淘宝/千牛登录态已失效，需要重新扫码登录"
+    if "token" in low:
+        return "ERP 与本机 Web-Agent 的访问令牌不一致或未配置"
+    if "timeout" in low:
+        return "本机 Web-Agent 或千牛页面响应超时"
+    if "connection" in low or "offline" in low:
+        return "本机 Web-Agent 未在线或 8500 端口不可达"
+    return "活动发现任务失败，需结合下方诊断码与最新截图检查"
 
 
 def run_daily_discovery(db: Session) -> dict:
@@ -122,13 +163,14 @@ def run_daily_discovery(db: Session) -> dict:
     r = web_agent_service.campaign_discover(db)
     if not r.get("ok"):
         err = r.get("error") or r.get("message") or "未知原因"
+        reason = explain_discovery_failure(err)
         notify_service.broadcast_text(
             db,
-            f"⚠️ 活动发现抓取失败（{err}）。\n"
+            f"⚠️ 活动发现抓取失败。\n原因：{reason}。\n诊断码：{err}。\n"
             f"今天的千牛营销活动列表没抓到, 请手动到千牛「营销中心→活动报名」页查看近期可报活动, "
             f"以免错过报名窗口。",
             title="活动发现抓取失败", level="warn")
-        return {"ok": False, "error": err, "notified_error": True}
+        return {"ok": False, "error": err, "reason": reason, "notified_error": True}
 
     stats = upsert_calendar(db, r.get("campaigns") or [])
     today = date.today()
@@ -148,4 +190,55 @@ def run_daily_discovery(db: Session) -> dict:
             c.last_notified_on = today       # 防重: 同活动一天只提醒一次
         db.commit()
         reminded = len(due)
-    return {"ok": True, **stats, "reminded": reminded}
+
+    # 只有当本次所有“可报名/报名中”卡片都没有解析出档期时，才发一条合并诊断。
+    # 这能在页面改版时明确报错，又不会把首页长期入口逐条当成近期活动。
+    discovered = r.get("campaigns") or []
+    actionable = [c for c in discovered
+                  if any(word in str(c.get("status") or "")
+                         for word in _ACTIONABLE_STATUS_WORDS)]
+    unresolved_warning = 0
+    if actionable and not any(_parse_dt(c.get("start")) is not None for c in actionable):
+        from app.models.campaign import CampaignCalendar
+        unresolved = db.execute(select(CampaignCalendar).where(
+            CampaignCalendar.start_at.is_(None))).scalars().all()
+        pending = [row for row in unresolved
+                   if any(word in str(row.status or "") for word in _ACTIONABLE_STATUS_WORDS)
+                   and row.last_notified_on != today]
+        if pending:
+            titles = "、".join(f"「{row.title}」" for row in pending[:8])
+            notify_service.broadcast_text(
+                db,
+                f"已抓到可报名入口 {len(pending)} 个，但本次没有解析出任何售卖档期：{titles}。\n"
+                "这通常表示千牛大促日历结构有变化，不代表没有活动；请人工看一次活动日历。",
+                title="活动日期识别异常", level="warn")
+            for row in pending:
+                row.last_notified_on = today
+            db.commit()
+            unresolved_warning = 1
+    # 近期可报名阶段进一步只读详情：只有父活动、子阶段、秒级档期、力度和活动 ID
+    # 全部能锁定，才创建自动执行计划。安全门失败会飞书说明，并且不会猜值。
+    from app.models.campaign import CampaignCalendar
+    from app.services import campaign_automation_service
+    discovered_by_key = {}
+    for c in discovered:
+        title = str(c.get("title") or "").strip()
+        start = _parse_dt(c.get("start"))
+        if title:
+            discovered_by_key[(title, start.date() if start else None)] = c
+    calendar_rows = db.execute(select(CampaignCalendar)).scalars().all()
+    candidates = []
+    for row in calendar_rows:
+        c = discovered_by_key.get(
+            (row.title, row.start_at.date() if row.start_at else None))
+        if c is None:
+            continue
+        setattr(row, "_raw", str(c.get("raw") or ""))
+        candidates.append(row)
+    auto_plans = (
+        campaign_automation_service.sync_upcoming_plans(db, candidates)
+        if campaign_automation_service.enabled(db)
+        else {"skipped": "campaign_auto_disabled"}
+    )
+    return {"ok": True, **stats, "reminded": reminded,
+            "unresolved_warning": unresolved_warning, "auto_plans": auto_plans}

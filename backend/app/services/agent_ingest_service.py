@@ -665,22 +665,77 @@ def _due(state: dict, category: str, interval_days: int, force: bool) -> bool:
         return True
 
 
-def order_data_fresh(db: Session, *, on=None) -> bool:
+def pending_shipping_password_files(db: Session, *, on=None) -> list[str]:
+    """返回指定日期仍未被后续成功解密记录覆盖的加密发货报表。"""
+    target = on or date.today()
+    rows = db.execute(
+        select(ImportedFile)
+        .where(ImportedFile.kind == "taobao")
+        .order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    latest_by_hash: dict[str, ImportedFile] = {}
+    for row in rows:
+        created_at = getattr(row, "created_at", None)
+        if not created_at or created_at.date() != target:
+            continue
+        key = row.file_hash or f"id:{row.id}"
+        latest_by_hash[key] = row
+    return [
+        row.original_filename or f"imported_file:{row.id}"
+        for row in latest_by_hash.values()
+        if (row.row_summary or {}).get("agent_status") == "pending_password"
+    ]
+
+
+def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None) -> bool:
     """今日淘宝订单数据是否已刷新 = web_agent_state.taobao_report 日期 >= 今天。
     作自动推送的「新鲜度门」: 订单近3月全量取数成功(或当天有订单报表导入)才算新鲜 —
     防用隔夜旧数据把已关闭/已退款的单误推工厂群 (2026-07-07 关闭单误推根治)。"""
     from datetime import date as _date, datetime as _dt
     state = _load_json(db, KEY_STATE)
-    tr = state.get("taobao_report")
+    # The 18:00 push gate requires proof that the complete 3-report pull
+    # finished, not merely that one Taobao workbook happened to be imported.
+    key = "taobao_orders_complete" if not_before_hour is not None else "taobao_report"
+    tr = state.get(key)
     if not tr:
         return False
     try:
-        return _dt.fromisoformat(tr).date() >= (on or _date.today())
+        refreshed_at = _dt.fromisoformat(tr)
+        target_date = on or _date.today()
+        if refreshed_at.date() < target_date:
+            return False
+        if (not_before_hour is not None and refreshed_at.date() == target_date
+                and refreshed_at.hour < not_before_hour):
+            return False
+        if (not_before_hour is not None
+                and pending_shipping_password_files(db, on=target_date)):
+            return False
+        return True
     except (ValueError, TypeError):
         return False
 
 
-def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dict:
+def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
+                force_orders: bool = False, orders_only: bool = False) -> dict:
+    """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""
+    if not _orch_lock.acquire(blocking=False):
+        return {
+            "started_at": datetime.now().isoformat(timespec="seconds"),
+            "tasks": [],
+            "pending_manual": [],
+            "skipped": ["orchestrate_running"],
+            "already_running": True,
+        }
+    try:
+        return _orchestrate_locked(
+            db, force=force, quiet=quiet,
+            force_orders=force_orders, orders_only=orders_only)
+    finally:
+        _orch_lock.release()
+
+
+def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False,
+                        force_orders: bool = False, orders_only: bool = False) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
                  "tasks": [], "pending_manual": [], "skipped": []}
@@ -698,11 +753,11 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dic
     iv_balance = _get_int(db, KEY_INTERVAL_BALANCE, 3)
 
     plan: list[str] = []
-    if _due(state, "taobao_report", iv_orders, force):
+    if force_orders or _due(state, "taobao_report", iv_orders, force):
         plan += ORDERS_TASKS
-    if (_due(state, "settlement", iv_balance, force)
+    if (not orders_only and (_due(state, "settlement", iv_balance, force)
             or _due(state, "balance", iv_balance, force)
-            or _due(state, "promotion", iv_balance, force)):
+            or _due(state, "promotion", iv_balance, force))):
         plan += BALANCE_FLOW_TASKS
 
     for task_id, reason in SKIPPED_TASKS.items():
@@ -725,6 +780,7 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dic
         out["alipay_daily"] = {"error": f"{type(e).__name__}: {e}"}
 
     today = date.today()
+    orders_pull_complete = False
     for task_id in plan:
         info = tasks_info.get(task_id, {})
         if info and not info.get("has_session"):
@@ -746,6 +802,10 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dic
         # 与 Web-Agent agent_total_timeout_s(1500s) 对齐, 避免单轮假超时 (2026-06-15)。
         final = web_agent_service.wait_job(db, r["job"], timeout_s=1800)
         status = (final.get("status") or "").lower()
+        job_result = final.get("result") or {}
+        if status in ("done", "ok", "success") and job_result.get("ok") is False:
+            status = "error"
+            final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
         item = {"task": task_id, "status": status}
         if status in ("error", "failed", "timeout"):
             err = str(final.get("error") or final.get("note") or "")
@@ -759,13 +819,31 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False) -> dic
                 out["pending_manual"].append(
                     {"task": task_id, "reason": f"任务{status}: {err[:120]}"})
         out["tasks"].append(item)
+        if task_id == "taobao_orders" and status in ("done", "ok", "success"):
+            orders_pull_complete = True
 
     out["ingest"] = run_ingest(db)
+    persistent_pending_password = pending_shipping_password_files(db, on=today)
+    out["ingest"]["pending_password_files"] = persistent_pending_password
+    if (orders_pull_complete and not out["ingest"].get("errors")
+            and not out["ingest"].get("pending")
+            and not persistent_pending_password):
+        latest_state = _load_json(db, KEY_STATE)
+        latest_state["taobao_orders_complete"] = datetime.now().isoformat(timespec="seconds")
+        _save_json(db, KEY_STATE, latest_state)
+        db.commit()
 
     # 取数「全部成功」(无待扫码/无失败任务) → 立刻补生成工厂下单图 (静默, 不推飞书; 推送仍按 18:00)。
     # 有报错/需扫码 → 跳过, 等今天重新扫码全部成功后再生成 (用户拍板 2026-06-17)。
-    all_ok = (not out.get("pending_manual")) and all(
-        (t.get("status") or "").lower() in ("done", "ok", "success") for t in out["tasks"])
+    all_ok = (
+        not out.get("pending_manual")
+        and not out["ingest"].get("pending")
+        and not out["ingest"].get("errors")
+        and not persistent_pending_password
+        and all(
+            (t.get("status") or "").lower() in ("done", "ok", "success")
+            for t in out["tasks"])
+    )
     if all_ok:
         try:
             from app.services import order_sheet_archive_service
@@ -804,7 +882,7 @@ def start_orchestrate_async(*, force: bool = False) -> bool:
         from app.database import SessionLocal
         db = SessionLocal()
         try:
-            orchestrate(db, force=force)
+            _orchestrate_locked(db, force=force)
         except Exception:  # noqa: BLE001
             _log.exception("web-agent 编排线程异常")
             db.rollback()

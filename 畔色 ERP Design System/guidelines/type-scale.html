@@ -1,0 +1,26 @@
+<!-- @dsCard group="Type" viewport="700x300" name="字号阶梯" subtitle="展示数字 → 标题 → 正文 → 角标" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 20px 24px; background: var(--surface-card); font-family: var(--font-sans); color:var(--text-primary); }
+  .line { display:flex; align-items:baseline; gap:14px; padding:5px 0; border-bottom:1px solid var(--border-subtle); }
+  .tok { width:108px; flex:none; font-family:var(--font-mono); font-size:11px; color:var(--text-tertiary); }
+  .px { width:46px; flex:none; font-family:var(--font-mono); font-size:11px; color:var(--text-tertiary); }
+  .spec { letter-spacing:var(--tracking-tight); }
+</style>
+</head>
+<body>
+  <div class="line"><span class="tok">text-5xl</span><span class="px">38</span><span class="spec" style="font-size:var(--text-5xl);font-weight:800">¥128.4万</span></div>
+  <div class="line"><span class="tok">text-4xl</span><span class="px">30</span><span class="spec" style="font-size:var(--text-4xl);font-weight:800">KPI 大数字</span></div>
+  <div class="line"><span class="tok">text-3xl</span><span class="px">24</span><span class="spec" style="font-size:var(--text-3xl);font-weight:700">页面标题</span></div>
+  <div class="line"><span class="tok">text-2xl</span><span class="px">20</span><span class="spec" style="font-size:var(--text-2xl);font-weight:700">卡片标题</span></div>
+  <div class="line"><span class="tok">text-lg</span><span class="px">16</span><span style="font-size:var(--text-lg);font-weight:600">强调正文 / 小标题</span></div>
+  <div class="line"><span class="tok">text-md</span><span class="px">15</span><span style="font-size:var(--text-md)">默认正文 — 系统主字号</span></div>
+  <div class="line"><span class="tok">text-base</span><span class="px">14</span><span style="font-size:var(--text-base)">表格正文 / 密集区</span></div>
+  <div class="line"><span class="tok">text-sm</span><span class="px">13</span><span style="font-size:var(--text-sm);color:var(--text-secondary)">次要文字 / 标签</span></div>
+  <div class="line" style="border:none"><span class="tok">text-xs</span><span class="px">12</span><span style="font-size:var(--text-xs);color:var(--text-tertiary)">角标 / 辅助说明</span></div>
+</body>
+</html>

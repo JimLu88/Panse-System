@@ -1,0 +1,28 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="间距阶梯" subtitle="4px 基准网格" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--surface-card); font-family: var(--font-sans); }
+  .row { display:flex; align-items:flex-end; gap:16px; }
+  .item { text-align:center; }
+  .bar { background:var(--primary-soft); border:1px solid var(--primary-border); border-radius:var(--radius-xs); }
+  .lab { font-size:11px; font-family:var(--font-mono); color:var(--text-tertiary); margin-top:6px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="item"><div class="bar" style="width:4px;height:4px"></div><div class="lab">1·4</div></div>
+    <div class="item"><div class="bar" style="width:8px;height:8px"></div><div class="lab">2·8</div></div>
+    <div class="item"><div class="bar" style="width:12px;height:12px"></div><div class="lab">3·12</div></div>
+    <div class="item"><div class="bar" style="width:16px;height:16px"></div><div class="lab">4·16</div></div>
+    <div class="item"><div class="bar" style="width:20px;height:20px"></div><div class="lab">5·20</div></div>
+    <div class="item"><div class="bar" style="width:24px;height:24px"></div><div class="lab">6·24</div></div>
+    <div class="item"><div class="bar" style="width:32px;height:32px"></div><div class="lab">8·32</div></div>
+    <div class="item"><div class="bar" style="width:40px;height:40px"></div><div class="lab">10·40</div></div>
+    <div class="item"><div class="bar" style="width:48px;height:48px"></div><div class="lab">12·48</div></div>
+  </div>
+</body>
+</html>

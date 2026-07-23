@@ -1,0 +1,35 @@
+/* 畔色 ERP — 排版系统
+   原则 (ERP 可读性优先): 正文 15px (桌面表格密度与舒适度兼顾)，表格 14px，
+   数字用等宽并右对齐。标题字距轻微收紧。 */
+
+:root {
+  /* 字号 */
+  --text-xs:   12px;   /* 角标 / 辅助说明 */
+  --text-sm:   13px;   /* 次要文字 / 标签 */
+  --text-base: 14px;   /* 表格正文 / 密集区 */
+  --text-md:   15px;   /* 默认正文 (沿用原系统) */
+  --text-lg:   16px;   /* 强调正文 / 小标题 */
+  --text-xl:   18px;
+  --text-2xl:  20px;   /* 卡片标题 */
+  --text-3xl:  24px;   /* 页面标题 */
+  --text-4xl:  30px;   /* 大数字 / KPI */
+  --text-5xl:  38px;   /* 展示数字 */
+
+  /* 字重 */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+  --weight-black:    800;   /* KPI 大数字 */
+
+  /* 行高 */
+  --leading-tight:   1.25;  /* 大标题 */
+  --leading-snug:    1.35;  /* 小标题 */
+  --leading-normal:  1.47;  /* 正文 (苹果规范) */
+  --leading-relaxed: 1.6;   /* 长文本 */
+
+  /* 字距 */
+  --tracking-tight:  -0.022em; /* 标题 */
+  --tracking-snug:   -0.01em;  /* 正文/数字 */
+  --tracking-normal: 0;
+}

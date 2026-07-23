@@ -209,9 +209,21 @@ def compare_records(records: list[dict], price_map: dict[str, dict],
             for rec in records]
 
 
-def _coverage(spec_map: dict, seen_sku_ids: set) -> dict:
-    """d维度: 应报 SKU 集 vs 已报集 (缺失/多出都报; 占位不计缺失——它可能被平台单独处理)。"""
-    expected = {sid for sid, e in spec_map.items() if not e.get("is_placeholder")}
+def _coverage(spec_map: dict, seen_sku_ids: set,
+              expected_sku_ids: Optional[set] = None) -> dict:
+    """d维度: 应报 SKU 集 vs 已报集。
+
+    服务层传入报名 builder 的真实输出集合，因此无动销、下架和坏价不会误报缺失，
+    占位 SKU 若 builder 确实报名则同样纳入完整性检查。
+    """
+    expected = (
+        set(expected_sku_ids)
+        if expected_sku_ids is not None
+        else {
+            sid for sid, e in spec_map.items()
+            if not e.get("is_placeholder") and e.get("kind") != "nosales"
+        }
+    )
     missing = sorted(expected - seen_sku_ids)
     extra = sorted(seen_sku_ids - set(spec_map.keys()))
     return {"missing": missing, "extra": extra}
@@ -277,7 +289,10 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     if activity_bytes:
         records = parse_activity_items_export(activity_bytes)
         per_sku = compare_records(records, spec_map)
-        coverage = _coverage(spec_map, {rec["sku_id"] for rec in records})
+        signup_rows, _signup_stats = campaign_service.build_signup_rows(db, plan)
+        expected_signup = {str(row["taobao_sku_id"]) for row in signup_rows}
+        coverage = _coverage(
+            spec_map, {rec["sku_id"] for rec in records}, expected_signup)
     discount_mismatch: list[dict] = []
     if discount_bytes:
         drecords = parse_discount_export(discount_bytes)

@@ -1,0 +1,36 @@
+<!-- @dsCard group="Colors" viewport="700x230" name="深色模式预览" subtitle="[data-theme=dark] 下的表面、文字、主色" -->
+<!DOCTYPE html>
+<html lang="zh" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--bg-app); font-family: var(--font-sans); }
+  .card { background:var(--surface-card); border:1px solid var(--border); border-radius:var(--radius-xl); padding:18px 20px; box-shadow:var(--shadow-md); }
+  .hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .title { color:var(--text-primary); font-weight:700; font-size:16px; }
+  .sub { color:var(--text-secondary); font-size:13px; }
+  .btn { background:var(--primary); color:var(--on-primary); border:none; padding:7px 16px; border-radius:var(--radius-md); font-weight:600; font-size:13px; font-family:inherit; }
+  .stat { color:var(--text-primary); font-weight:800; font-size:30px; font-family:var(--font-mono); }
+  .tags { display:flex; gap:8px; margin-top:12px; }
+  .tag { font-size:12px; font-weight:600; padding:2px 10px; border-radius:var(--radius-sm); }
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="hd">
+      <div>
+        <div class="title">近 30 天收入</div>
+        <div class="sub">实时经营概览 · 深色</div>
+      </div>
+      <button class="btn">查看明细</button>
+    </div>
+    <div class="stat">¥ 1,284,560</div>
+    <div class="tags">
+      <span class="tag" style="background:var(--success-soft);color:var(--teal-300);border:1px solid var(--success-border)">毛利率 18.4%</span>
+      <span class="tag" style="background:var(--warning-soft);color:var(--amber-500);border:1px solid var(--warning-border)">对账未清 3</span>
+      <span class="tag" style="background:var(--danger-soft);color:var(--red-500);border:1px solid var(--danger-border)">超卖 1</span>
+    </div>
+  </div>
+</body>
+</html>

@@ -418,6 +418,9 @@ def _is_pushable(db: Session, rec: ImportedFile) -> bool:
         return False
     if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
         return False
+    from app.services import order_flags
+    if order_flags.is_remote(order):
+        return False
     if getattr(order, "factory_no", None) is None:
         od = getattr(order, "order_date", None)
         if not (od and od >= _AUTO_NUMBER_SINCE):   # 无工厂编号的老单 → 推出去是噪音, 不算待推
@@ -634,9 +637,13 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 "order_nos": [], "reason": "no_chat_id"}
     pushed = failed = 0
     sent_nos: list[str] = []
+    failed_nos: list[str] = []
     _zip_items: list = []
     _missing_addr: list = []
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
+    _held_remote: list[str] = []
+    _skipped_sample: list[str] = []
+    _skipped_topup: list[dict] = []
     records = _pending_push_records(db, include_baseline=include_baseline)
     if only_order_nos is not None:
         # 定向重推 (解密补地址后): 只推指定单号, 不误扫其它待推/历史基线
@@ -650,14 +657,17 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             continue   # 取消/退款/待付款 不推工厂 (待付款大概率会取消, 用户拍板 2026-06-20)
         from app.services import order_flags
         if order_flags.is_remote(order):
+            _held_remote.append(no)
             continue   # 远期挂起单 不推工厂, 等激活后以新号推 (用户 2026-07-08; 挂起单本就没生成图, 此处双保险)
         if _is_sample_order(order):
+            _skipped_sample.append(no)
             # 样块/样品单永不推工厂下单图 (用户 2026-07-04); 标记已处理, 清出待推队列 + 不占工厂编号。
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "skipped_sample": True}
             db.commit()
             continue
         _topup, _topup_reason = _is_parts_topup(db, order)
         if _topup:
+            _skipped_topup.append({"order_no": no, "reason": _topup_reason})
             # 定制补差/加价单永不推工厂 (用户 2026-07-12): 标记已处理清出队列 + 不占工厂编号, 记原因备查。
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True,
                                "skipped_topup": True, "topup_reason": _topup_reason}
@@ -702,6 +712,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             failed += 1
+            failed_nos.append(no)
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
     if not quiet:
         _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
@@ -718,7 +729,9 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 pass
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
-            "order_nos": sent_nos, "held_no_sku": _held_skeleton}
+            "order_nos": sent_nos, "failed_order_nos": failed_nos,
+            "held_no_sku": _held_skeleton, "held_remote": _held_remote,
+            "skipped_sample": _skipped_sample, "skipped_topup": _skipped_topup}
 
 
 def find_pushed_without_address(db: Session) -> list[ImportedFile]:
@@ -880,10 +893,10 @@ def repush_to_factory(db: Session, order_no: str) -> dict:
 def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | None" = None) -> dict:
     """已推工厂、但现在已延期/远期(挂起)的单 → 作废旧工厂号 + 通知工厂勿做 + 清号挂起 (用户 2026-07-08)。
 
-    **显式作废动作**(会给工厂群发"X号作废"): 只在用户确认后调用; order_nos 限定只作废指定单
-    (缺省 None = 全部延期挂号单, 慎用)。命中 = 有推过的下单图 + 现 is_remote(远期且未激活) + 未取消/退款
-    + 有工厂号。动作 = 飞书"X号作废(已延期)" + 删旧下单图 + 清 factory_no → 回到挂起态后续不再推;
-    等激活(开始制作)后再以新号重下。日常只【提醒】不自动作废 → 见 remind_remote_pushed。"""
+    由每日/补推任务自动执行; order_nos 可限定只处理指定单。命中 = 有推过的下单图 + 现 is_remote
+    (远期且未激活) + 未取消/退款 + 有工厂号。动作 = 先分配远期单号, 飞书明确通知
+    "原畔色X单作废 → 已改远期单N", 再删旧下单图并清 factory_no; 等激活后以新号重下。
+    飞书发送成功/失败会逐单返回, 供调度器准确报警。"""
     from app.services import order_flags, feishu_client, settings_service
     seen: dict = {}
     for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
@@ -894,6 +907,9 @@ def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | N
             seen.setdefault(no, []).append(rec)
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     voided: list = []
+    notified: list = []
+    notify_failed: list = []
+    transitions: list = []
     for no, recs in seen.items():
         if len(voided) >= limit:
             break
@@ -907,22 +923,32 @@ def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | N
         old_no = getattr(order, "factory_no", None)
         if old_no is None:
             continue
+        if getattr(order, "remote_seq", None) is None:
+            order.remote_seq = _next_remote_seq(db)
+            db.flush()
+        remote_seq = order.remote_seq
         if chat_id:
             try:
                 feishu_client.send_text(
                     db, chat_id,
-                    f"⚠️ 订单 {no} 原【畔色 {old_no} 单】作废 —— 该单已备注延期/等通知, 请勿生产; "
-                    f"待客户通知开始制作后会以新号重下。")
-            except Exception:  # noqa: BLE001
+                    f"⚠️ 订单 {no} 原【畔色 {old_no} 单】已作废，现已改为【远期单 {remote_seq}】。"
+                    f"备注命中延期/等通知，请暂停生产；客户通知开始制作后，系统会以新的畔色单号重新下单。")
+                notified.append(no)
+            except Exception as exc:  # noqa: BLE001
                 _logger.warning("延期作废提示发送失败 %s", no, exc_info=True)
+                notify_failed.append({"order_no": no, "reason": f"{type(exc).__name__}: {exc}"})
+        else:
+            notify_failed.append({"order_no": no, "reason": "未配置 feishu_push_chat_id"})
         for r in recs:
             import_storage.delete_record(db, r.id)
         order.factory_no = None
         db.flush()
         voided.append(no)
+        transitions.append({"order_no": no, "old_factory_no": old_no, "remote_seq": remote_seq})
     if voided:
         db.commit()
-    return {"voided_remote": voided}
+    return {"voided_remote": voided, "remote_transitions": transitions,
+            "feishu_notified": notified, "feishu_failed": notify_failed}
 
 
 def remind_remote_pushed(db: Session) -> dict:
@@ -991,29 +1017,47 @@ def push_daily(db: Session) -> dict:
 
     历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
     """
-    void_remote_pushed(db)     # 已推工厂但现已延期/远期的单 → 自动作废旧工厂号+通知工厂勿做+挂起 (用户 2026-07-08: 18:30自动作废)
+    remote = void_remote_pushed(db)  # 已推工厂但现已延期/远期的单 → 自动作废旧号+通知工厂+挂起
     repush_activated(db)       # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
     assign_remote_seqs(db)     # 远期挂起单发内部序号"远期单 N"(不占工厂号) (用户 2026-07-09)
     result = generate_pending(db)
+    result["remote_voided"] = remote["voided_remote"]
+    result["remote_transitions"] = remote["remote_transitions"]
+    result["remote_feishu_notified"] = remote["feishu_notified"]
+    result["remote_feishu_failed"] = remote["feishu_failed"]
     n = result["generated"]
     push = push_pending_images(db, limit=20, include_baseline=False)
     result["images_pushed"] = push["pushed"]
+    result["images_failed"] = push["failed"]
     result["images_remaining"] = push["remaining"]
+    result["failed_order_nos"] = push.get("failed_order_nos", [])
+    result["held_no_sku"] = push.get("held_no_sku", [])
+    result["held_remote"] = push.get("held_remote", [])
+    result["skipped_sample"] = push.get("skipped_sample", [])
+    result["skipped_topup"] = push.get("skipped_topup", [])
+    result["push_reason"] = push.get("reason")
     if push["pushed"]:
         head = f"今日推送 {push['pushed']} 张工厂下单图到工厂群"
         if push["remaining"]:
             head += f" (还有 {push['remaining']} 张排队, 明日续推)"
         text = head + "。\n单号: " + "、".join(push["order_nos"][:10]) + ("…" if len(push["order_nos"]) > 10 else "")
+    elif push.get("skipped_topup") or push.get("skipped_sample"):
+        text = (f"今日没有需要推给工厂的正常下单图。已识别并跳过 "
+                f"{len(push.get('skipped_topup') or [])} 笔小额补差/加价单、"
+                f"{len(push.get('skipped_sample') or [])} 笔样品单。")
     elif n:
         text = f"今日新生成 {n} 张工厂下单图, 已存「资料存档库」(类型: 工厂下单图), 可下载/打印发工厂。"
     else:
         text = "今日没有需要生成/推送的下单图。"
     try:
         from app.services import notify_service
-        ok, _ = notify_service.notify(db, text, level="info", title="畔色 ERP [下单图日报]")
-        result["pushed"] = bool(ok)
+        channels = notify_service.broadcast_text(db, text, level="info", title="畔色 ERP [下单图日报]")
+        result["summary_notification_channels"] = channels
+        result["pushed"] = any(v is True for v in channels.values())
+        result["summary_notification_pushed"] = result["pushed"]
     except Exception:  # pragma: no cover
         result["pushed"] = False
+        result["summary_notification_pushed"] = False
     return result
 
 

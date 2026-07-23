@@ -1,0 +1,86 @@
+<!-- @dsCard group="Web 后台" viewport="1280x720" name="Web 后台 ERP" subtitle="登录 → 运营大盘 → 订单 → 库存 → 对账，可点击切换" -->
+<!-- @startingPoint section="Web 后台" subtitle="桌面端 ERP 全套界面：顶栏 + 大盘 + 表格 + 对账" viewport="1280x800" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>畔色孚格 ERP — Web 后台</title>
+<link rel="stylesheet" href="../../styles.css">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=block" rel="stylesheet">
+<style>
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg-app); font-family: var(--font-sans); }
+  .material-symbols-outlined { font-variation-settings: 'opsz' 24, 'wght' 400; }
+  #app { min-height: 100vh; display: flex; flex-direction: column; }
+  .content { padding: 24px; flex: 1; max-width: 1320px; width: 100%; margin: 0 auto; box-sizing: border-box; }
+  @keyframes slideIn { from { transform: translateX(16px); } to { transform: none; } }
+  @keyframes drawerIn { from { transform: translateX(40px); } to { transform: none; } }
+  @media (max-width: 720px) {
+    .k-nav__items { display: none !important; }
+    .content { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/echarts@5.5.0/dist/echarts.min.js"></script>
+<script type="text/babel" src="kit-ui.jsx"></script>
+<script type="text/babel" src="LoginScreen.jsx"></script>
+<script type="text/babel" src="DashboardScreen.jsx"></script>
+<script type="text/babel" src="OrdersScreen.jsx"></script>
+<script type="text/babel" src="InventoryScreen.jsx"></script>
+<script type="text/babel" src="ReconScreen.jsx"></script>
+<script type="text/babel">
+const LS = 'panse-web-kit';
+function App() {
+  const [logged, setLogged] = React.useState(() => localStorage.getItem(LS + ':logged') === '1');
+  const [screen, setScreen] = React.useState(() => localStorage.getItem(LS + ':screen') || 'dashboard');
+  React.useEffect(() => { localStorage.setItem(LS + ':logged', logged ? '1' : '0'); }, [logged]);
+  React.useEffect(() => { localStorage.setItem(LS + ':screen', screen); }, [screen]);
+
+  if (!logged) return <LoginScreen onLogin={() => setLogged(true)} />;
+
+  const items = [
+    { key: 'dashboard', label: '数据大盘' }, { key: 'products', label: '产品' },
+    { key: 'orders', label: '订单' }, { key: 'inventory', label: '库存' },
+    { key: 'recon', label: '财务' }, { key: 'tools', label: '工具' },
+  ];
+  const navKey = screen === 'recon' || screen === 'finance' ? 'recon' : screen;
+  const go = (s) => setScreen(s);
+
+  let body;
+  if (screen === 'dashboard') body = <DashboardScreen go={go} />;
+  else if (screen === 'orders') body = <OrdersScreen />;
+  else if (screen === 'inventory') body = <InventoryScreen />;
+  else if (screen === 'recon' || screen === 'finance') body = <ReconScreen />;
+  else body = <div style={{ padding: 64, textAlign: 'center', color: 'var(--text-tertiary)' }}>「{items.find(i=>i.key===screen)?.label}」模块 — UI Kit 示意，未展开</div>;
+
+  return (
+    <div id="app">
+      <div className="k-nav">
+        <div className="k-nav__brand"><span className="k-nav__logo">畔</span>畔色孚格 ERP</div>
+        <div className="k-nav__items">
+          {items.map((it) => <span key={it.key} className={`k-nav__item${it.key === navKey ? ' on' : ''}`} onClick={() => go(it.key === 'recon' ? 'recon' : it.key)}>{it.label}</span>)}
+        </div>
+        <div className="k-nav__right">
+          <button className="k-icbtn" title="搜索 (Ctrl+K)"><MIcon n="search" /></button>
+          <button className="k-icbtn" title="通知"><MIcon n="notifications" /></button>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: '#fff', marginLeft: 4 }}>
+            <span className="k-avatar">管</span>
+            <span style={{ fontSize: 13 }}>管理员</span>
+            <span style={{ fontSize: 11, background: 'rgba(255,255,255,.16)', padding: '1px 7px', borderRadius: 999 }}>admin</span>
+          </div>
+        </div>
+      </div>
+      <div className="content" key={screen}>{body}</div>
+    </div>
+  );
+}
+ReactDOM.createRoot(document.getElementById('app')).render(<App />);
+</script>
+</body>
+</html>

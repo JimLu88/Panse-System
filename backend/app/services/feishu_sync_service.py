@@ -223,6 +223,17 @@ def _coerce_for_model(model, attr: str, value: Any) -> Any:
     return value
 
 
+def _canonical_feishu_values(model, values: dict[str, Any]) -> dict[str, Any]:
+    """按系统列类型标准化飞书值，供变更 hash 比较使用。
+
+    飞书会把数值、日期和主字段以不同 JSON 标量返回（例如 ``"322"``、
+    ``322.0``、毫秒时间戳），若直接 hash 会把同一个业务值误判为远端变化，
+    导致每轮把整张表重新写回飞书。
+    """
+    return {field: _coerce_for_model(model, field, value)
+            for field, value in values.items()}
+
+
 def _feishu_field_type(model, attr: str) -> int:
     """按系统模型列类型推断飞书字段类型: 2=数字 5=日期 1=文本(默认)。"""
     col = model.__table__.columns.get(attr)
@@ -550,13 +561,14 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
     if fe_rec is not None and sys_row is None:
         if not can_pull:
             return
-        vals = _feishu_values(fe_rec["fields"], fm)
-        payload = {f: _coerce_for_model(ent.model, f, v) for f, v in vals.items()}
+        vals = _canonical_feishu_values(
+            ent.model, _feishu_values(fe_rec["fields"], fm))
+        payload = {f: v for f, v in vals.items()}
         new_row = ent.model(**{k: v for k, v in payload.items() if v is not None})
         db.add(new_row)
         db.flush()
-        fe_hash = _hash(vals)
-        _upsert_map(db, binding, pk, fe_hash, fe_hash, fe_rec["record_id"])
+        row_hash = _hash(_system_values(new_row, fields))
+        _upsert_map(db, binding, pk, row_hash, row_hash, fe_rec["record_id"])
         res.created_system += 1
         return
 
@@ -565,7 +577,8 @@ def _sync_one(db, binding, ent, fm, fields, pk, sys_row, fe_rec, m,
 
     # c) 两侧都有
     sys_vals = _system_values(sys_row, fields)
-    fe_vals = _feishu_values(fe_rec["fields"], fm)
+    fe_vals = _canonical_feishu_values(
+        ent.model, _feishu_values(fe_rec["fields"], fm))
     sys_hash = _hash(sys_vals)
     fe_hash = _hash(fe_vals)
 

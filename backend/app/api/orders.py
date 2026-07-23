@@ -321,6 +321,8 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
     o = db.get(Order, order_id)
     if not o:
         raise HTTPException(404, "order not found")
+    from app.services import order_flags
+    was_remote = order_flags.is_remote(o)
     data = body.model_dump(exclude_unset=True)
     if "ship_deadline" in data:
         o.ship_deadline = data["ship_deadline"]
@@ -345,7 +347,14 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
             o.is_customer_delayed = False
             o.customer_delay_deadline = None
     db.commit()
-    return {"ok": True, "id": o.id}
+    transition = None
+    if not was_remote and order_flags.is_remote(o):
+        from app.services import order_sheet_archive_service as osa
+        transition = osa.void_remote_pushed(db, order_nos={o.order_no})
+        osa.assign_remote_seqs(db)
+        db.refresh(o)
+    return {"ok": True, "id": o.id, "order_label": order_flags.factory_label(o),
+            "remote_transition": transition}
 
 
 @router.post("/{order_id}/repush-factory")

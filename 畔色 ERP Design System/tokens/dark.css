@@ -1,0 +1,48 @@
+/* 畔色 ERP — 深色模式
+   作用于 [data-theme="dark"]。仅覆盖语义别名，base 色板不变。
+   深色底走「深青灰」而非纯黑，保留水岸气质。 */
+
+[data-theme="dark"] {
+  /* 背景层级 */
+  --bg-app:         #0d1320;
+  --surface-card:   #161d2c;
+  --surface-sunken: #111825;
+  --surface-hover:  #1d2738;
+  --surface-overlay: rgba(0,0,0,.6);
+
+  /* 文字 */
+  --text-primary:   #e7ecf3;
+  --text-secondary: #9fabbf;
+  --text-tertiary:  #6b7689;
+  --text-inverse:   #0d1320;
+  --text-link:      var(--blue-300);
+
+  /* 描边 */
+  --border:        #283246;
+  --border-strong: #38445c;
+  --border-subtle: #1e2738;
+
+  /* 主色 (深色下提亮一档，保证对比) */
+  --primary:        var(--blue-300);
+  --primary-hover:  var(--blue-200);
+  --primary-active: var(--blue-400);
+  --primary-soft:   rgba(138,180,248,.16);
+  --primary-border: rgba(138,180,248,.36);
+  --on-primary:     #07203f;
+
+  /* 状态软底 (降透明度) */
+  --success-soft: rgba(16,185,129,.14);  --success-border: rgba(16,185,129,.34);
+  --warning-soft: rgba(245,158,11,.14);  --warning-border: rgba(245,158,11,.34);
+  --danger-soft:  rgba(244,63,94,.14);   --danger-border:  rgba(244,63,94,.34);
+  --info-soft:    rgba(14,165,233,.14);  --info-border:    rgba(14,165,233,.34);
+
+  /* 顶栏 — 深色下更深 */
+  --nav-bg: #0a2a5e;
+
+  /* 阴影 — 深色下加深 */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,.4);
+  --shadow-sm: 0 1px 3px rgba(0,0,0,.5);
+  --shadow-md: 0 4px 12px rgba(0,0,0,.5);
+  --shadow-lg: 0 12px 32px rgba(0,0,0,.6);
+  --focus-ring: 0 0 0 3px rgba(138,180,248,.30);
+}

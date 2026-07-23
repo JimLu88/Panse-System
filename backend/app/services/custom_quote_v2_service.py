@@ -26,6 +26,7 @@ from app.models.material import Material
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services.product_match_service import match
+from app.services import sku_utils
 
 # 木种/板材关键词 (材质识别 / 反推材质delta用); 与 customization_ai_service._WOOD_KEYWORDS 同源
 # 板材(多层板/海洋板)放末尾: detect_wood 取最先命中, 实木主材优先, 板材不抢识别。
@@ -36,6 +37,42 @@ _PRICE_TIERS = {
     "list": "list_price", "daily": "daily_price",
     "small": "small_promo", "mid": "mid_promo", "big": "big_promo",
 }
+
+_QUOTE_BAD_WORDS = (
+    "定制", "微定制", "尺寸定制", "材质定制", "专拍", "咨询", "差价", "补差", "追加", "配件",
+    "样块", "样品", "小样", "安装", "作废", "失效", "链接", "自动生成",
+)
+_PRODUCT_BAD_WORDS = ("样块", "样品", "小样", "安装sku", "作废", "失效", "自动生成", "专拍链接")
+
+
+def _is_quoteable_sku(s: PricingSku, tier_col: str = "daily_price") -> bool:
+    """定制报价可作锚点的真实商品 SKU。
+
+    排除明确占位、定制尾号、配件/样块/安装链接，以及售价明显低于已知会计/物理成本的脏价。
+    宁可返回“需人工核价”, 也不能拿 ¥1/¥750 占位链接当整件家具价格。
+    """
+    if getattr(s, "is_custom_placeholder", False):
+        return False
+    if sku_utils.is_custom_sku_code(getattr(s, "sku_code", None), getattr(s, "product_code", None)):
+        return False
+    text = " ".join(str(x or "") for x in (getattr(s, "sku", None), getattr(s, "sku_code", None)))
+    if any(w in text for w in _QUOTE_BAD_WORDS):
+        return False
+    price = getattr(s, tier_col, None) or getattr(s, "daily_price", None) or getattr(s, "list_price", None)
+    if price is None or float(price) <= 0:
+        return False
+    known_cost = getattr(s, "accounting_cost", None) or getattr(s, "physical_cost", None)
+    if known_cost is not None and float(known_cost) > 0 and float(price) < float(known_cost) * 0.90:
+        return False
+    return True
+
+
+def _is_quoteable_product_name(name: Optional[str]) -> bool:
+    return bool(name) and not any(w in (name or "") for w in _PRODUCT_BAD_WORDS)
+
+
+def _quoteable_product_codes(db: Session) -> set[str]:
+    return {s.product_code for s in db.query(PricingSku).all() if _is_quoteable_sku(s)}
 
 
 # ───────────────────────── 进程内缓存 (提速) ───────────────────────── #
@@ -128,6 +165,40 @@ def parse_remove_parts(text: Optional[str]) -> list[dict]:
     if not text:
         return []
     return [{"material": m, "qty": 1} for m in dict.fromkeys(_REMOVE_PART_RE.findall(text))]
+
+
+_PAINT_ACTIONS = ("油漆", "上色", "改色", "喷漆", "喷涂", "刷漆", "做漆", "换颜色")
+
+
+def _is_paint_part(part: dict) -> bool:
+    text = " ".join(str(part.get(k) or "") for k in ("material", "name", "material_real"))
+    return bool(part.get("is_paint")) or any(k in text for k in _PAINT_ACTIONS)
+
+
+def parse_paint_parts(text: Optional[str]) -> list[dict]:
+    """明确提到油漆/上色动作时生成一个整件喷涂项；仅出现“白色岩板”等颜色名不会误触发。"""
+    t = text or ""
+    if not any(k in t for k in _PAINT_ACTIONS):
+        return []
+    color = None
+    m = re.search(r"([一-龥A-Za-z]{1,8}(?:色|漆))", t)
+    if m:
+        color = m.group(1)
+    return [{"material": f"{color or ''}油漆上色", "qty": 1, "is_paint": True}]
+
+
+def _merge_parts(*groups) -> list[dict]:
+    """合并分类器/规则部位，按类型+名称去重。"""
+    out, seen = [], set()
+    for group in groups:
+        for p in (group or []):
+            key = ("paint" if _is_paint_part(p) else "part",
+                   (p.get("material") or p.get("name") or "").strip())
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(p)
+    return out
 
 
 # 特殊定制的品类猜测(未命中产品库时给板单引擎/前端预填一个方向; 顺序敏感, 具体词在前)
@@ -281,6 +352,51 @@ def _wood_unit_price(db: Session, wood: str) -> Optional[float]:
     return float(rows[0].price)
 
 
+def _wood_material_name(db: Session, requested: Optional[str], fallback: str = "樱桃木-2.2cm") -> str:
+    """把“榉木/黑胡桃”等口语木种解析为物料库中可计价的完整名称。"""
+    wood = detect_wood(requested) or detect_wood(fallback)
+    if not wood:
+        return fallback
+    rows = db.query(Material).filter(
+        Material.name.like(f"%{wood}%"), Material.price.isnot(None),
+        ~Material.name.like("%样块%"), ~Material.name.like("%样品%"),
+    ).all()
+    if not rows:
+        return requested or fallback
+
+    def _rank(m) -> tuple[int, int, str]:
+        name = m.name or ""
+        thick = 0 if "2.2" in name else (1 if ("1.8" in name or "18mm" in name) else 2)
+        return thick, len(name), name
+
+    return sorted(rows, key=_rank)[0].name
+
+
+_STRUCTURAL_BOARD_PARTS = (
+    "顶板", "底板", "侧板", "隔板", "层板", "门板", "实木门", "实木移门",
+    "抽屉面板", "抽屉板", "桌面", "桌腿", "裙板", "床头板", "床围", "龙骨",
+)
+
+
+def _part_name(part: dict) -> str:
+    return str(part.get("name") or part.get("material") or "").strip()
+
+
+def _is_structural_board_part(name: str) -> bool:
+    return bool(name) and any(k in name for k in _STRUCTURAL_BOARD_PARTS)
+
+
+def _normalize_structural_parts(parts: Optional[list[dict]], main_material: str) -> list[dict]:
+    """部位名不是物料名；结构板默认沿用柜体主材，避免“抽屉面板=0元物料”。"""
+    out: list[dict] = []
+    for raw in parts or []:
+        p = dict(raw)
+        if _is_structural_board_part(_part_name(p)) and not str(p.get("material_real") or "").strip():
+            p["material_real"] = main_material
+        out.append(p)
+    return out
+
+
 # ───────────────────────── 普通定制: 锚点价 + 三类 delta ───────────────────────── #
 
 def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
@@ -410,9 +526,13 @@ def quote_light(
     全程纯算术, 0 次 AI。返回 {final_price, anchor, breakdown[], ...}; 查不到产品→error。
     """
     tier_col = _PRICE_TIERS.get(price_tier, "daily_price")
-    skus = db.query(PricingSku).filter(PricingSku.product_code == base_product_code).all()
-    if not skus:
+    all_skus = db.query(PricingSku).filter(PricingSku.product_code == base_product_code).all()
+    if not all_skus:
         return {"error": f"定价表无此产品 {base_product_code}", "final_price": None, "breakdown": []}
+    skus = [s for s in all_skus if _is_quoteable_sku(s, tier_col)]
+    if not skus:
+        return {"error": "该产品没有可用的真实SKU锚点(占位/配件/脏价已排除), 请人工核价",
+                "final_price": None, "breakdown": []}
     # SKU 匹配(#29): 选了具体 SKU → 锁定同变体(去尺寸签名相同的档), 不混洞石/洞洞板, 大尺寸沿本变体外推
     if base_sku_code:
         chosen = next((s for s in skus if base_sku_code in (s.sku_code or "", s.sku or "")), None)
@@ -429,6 +549,7 @@ def quote_light(
     std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
     eff_w = float(target_width_cm) if target_width_cm else std_w   # 没填宽 → 用该长度的标准宽
     breakdown: list[dict] = []
+    missing_materials: list[str] = []
 
     # ── 锚点价 ── 面积一致定价 (2026-07-04 修「越小越贵」非单调 bug) ──
     #   老法 = 按长度插锚点价 + 宽/高偏离"该长度标准宽"的木作溢价; 但标准宽随长度缩, 把绝对宽固定在
@@ -500,6 +621,7 @@ def quote_light(
         if not new_u:
             breakdown.append({"label": f"换料→{target_material}", "amount": 0.0,
                               "note": "该材质不在物料库, 需人工核价"})
+            missing_materials.append(target_material)
         elif orig_u and abs(new_u - orig_u) > 1e-6:                  # 价差非0(换料/换厚度)才算
             # 换料只调"材质成本差额"(同一产品, 不换产品): (新木单价−原木单价)×木作面积×(1+厂利)。
             # 用户拍板 2026-06-20: 樱桃木→榉木应只减两者木材差额, 绝不能减掉整份产品价(原 −8757 是
@@ -557,6 +679,7 @@ def quote_light(
     if not _box_wood and prod:
         _box_wood = detect_wood(prod.name or "") or detect_wood(prod.main_material or "")
     _box_wood = _box_wood or "樱桃木"
+    _box_wood = _wood_material_name(db, _box_wood)
     # 直接算价(未过分类器文本)时的顶柜兜底: 柜类 + 总高明显超标准柜身高 + 未显式给顶柜 → 自动加顶柜
     # (下柜按标准不变, 高出部分归顶柜; 用户 2026-07-18。走了分类器的已在 classify 里加过, has_box→不重复)
     if (std_h and target_height_cm and float(target_height_cm) > float(std_h) + 5
@@ -566,13 +689,34 @@ def quote_light(
     add_parts = _autofill_box_parts(
         add_parts, length_m=target_length_m, depth_cm=target_width_cm, std_w=std_w,
         total_h_cm=target_height_cm, std_h=std_h, box_wood=_box_wood)
+    add_parts = _normalize_structural_parts(add_parts, _box_wood)
+    # “只保留下柜/取消上柜”且目标总高已经下降时，删除已由尺寸板单完整表达；
+    # 不再把“上柜”当作无尺寸物料二次扣款。
+    effective_remove_parts: list[dict] = []
+    for p in remove_parts or []:
+        name = _part_name(p)
+        lower_only = bool(target_height_cm and (
+            (std_h and float(target_height_cm) < float(std_h) - 5)
+            or float(target_height_cm) <= 120
+        ))
+        if ("上柜" in name or "顶部柜" in name) and lower_only:
+            breakdown.append({"label": f"删除: {name}", "amount": 0.0,
+                              "note": "已由目标总高的板单/尺寸变体体现，不重复扣减"})
+            continue
+        effective_remove_parts.append(p)
+    effective_remove_parts = _normalize_structural_parts(effective_remove_parts, _box_wood)
     addrm_delta, addrm_lines, parts_detail = style_delta(
         db, category=category, length_m=target_length_m,
-        add_parts=add_parts, remove_parts=remove_parts, modify_parts=modify_parts, cfg=cfg,
+        add_parts=add_parts, remove_parts=effective_remove_parts, modify_parts=modify_parts, cfg=cfg,
         depth_cm=target_width_cm, height_cm=target_height_cm,   # 部位尺寸随总宽/高联动(用户 2026-06-20: 高出部分加到顶柜)
     )
     breakdown.extend(addrm_lines)
     final += addrm_delta
+    missing_materials.extend(
+        str(p.get("material") or p.get("name") or "未命名物料")
+        for p in parts_detail if not p.get("priced")
+    )
+    missing_materials = sorted(set(missing_materials))
 
     # ── 工厂价预测 + 盈亏平衡 (定价表 factory_cost/accounting_cost 插值; accounting 已含真实扣点/税) ──
     fac_pts, acc_pts = [], []
@@ -629,7 +773,12 @@ def quote_light(
         "std_width_cm": round(std_w, 1) if std_w else None,    # 该长度的标准宽/深(cm), 前端预填
         "std_height_cm": round(std_h, 1) if std_h else None,
         "addremove_delta": round(addrm_delta, 2),
-        "final_price": round(final, 2),
+        "final_price": None if missing_materials else round(final, 2),
+        "draft_price": round(final, 2) if missing_materials else None,
+        "quote_ready": not missing_materials,
+        "missing_materials": missing_materials,
+        "error": (f"缺少物料价格，已停止正式报价: {'、'.join(missing_materials)}"
+                  if missing_materials else None),
         "factory_predicted": factory_predicted,     # 预测工厂价(定价表 factory_cost 插值, 缺则 None)
         "break_even_factory": break_even_factory,    # 盈亏平衡工厂价(净不亏红线: 售价−非工厂成本)
         "break_even_buffer": break_even_buffer,      # 安全垫 = 平衡价 − 预测价 (≈本单利润; 仅内部参考)
@@ -779,7 +928,9 @@ def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
             "panse_purchased": False, "priced": wu > 0,
         }
     price, unit = _material_price_unit(db, material)
-    if price is None and material != name:
+    # 显式换新料缺价时绝不能偷用旧料/部位名价格；否则未知新料会被误判为已定价。
+    if (price is None and material != name
+            and not str(part.get("material_real") or "").strip()):
         price, unit = _material_price_unit(db, name)   # 配件名直查
     price = price or 0.0
     cost, formula, area = _cost_by_unit(price, unit, qty, length_cm, width_cm)
@@ -791,6 +942,47 @@ def _resolve_part(db: Session, part: dict, dims_map: dict) -> dict:
         "panse_purchased": is_panse_purchased(material or name),
         "priced": price > 0,
     }
+
+
+def _paint_surcharge(cfg: dict, *, category: str, length_m: Optional[float],
+                     depth_cm=None, height_cm=None, qty: float = 1.0) -> tuple[float, str, float]:
+    """整件油漆/上色最终追加价。
+
+    校准点来自用户当前人工报价: 标准餐桌 +250、标准餐边柜 +350。为避免大件/小件一刀切，
+    80%视作调色、开机、遮蔽等固定成本，20%按估算喷涂面积温和变化；结果取整到10元。
+    """
+    from app.services import custom_board_template as tpl
+
+    leaf = (category or "").split("-")[-1]
+    profile = tpl.CATEGORY_PROFILE.get(leaf) or tpl.CATEGORY_PROFILE.get("餐边柜") or {}
+    L = float(length_m or 1.5)
+    D = float(depth_cm or profile.get("D") or 40) / 100.0
+    H = float(height_cm or profile.get("H") or 80) / 100.0
+    if "桌" in leaf and "柜" not in leaf:
+        area = max(0.1, 2.0 * L * D)  # 桌面上下为主，桌腿/裙板由固定成本覆盖
+        ref_area = 2.0 * 1.5 * 0.8
+        if "餐桌" in leaf:
+            base = float(cfg.get("paint_table_base", 250))
+        else:
+            base = max(180.0, min(500.0, 120.0 + 54.0 * ref_area))
+    else:
+        area = max(0.1, 2.0 * (L * D + L * H + D * H))
+        ref_area = 2.0 * (1.5 * 0.4 + 1.5 * 0.8 + 0.4 * 0.8)
+        if "餐边柜" in leaf:
+            base = float(cfg.get("paint_sideboard_base", 350))
+        else:
+            ref_L = 1.0 if leaf in ("床头柜", "茶几") else 1.5
+            ref_D = float(profile.get("D") or 40) / 100.0
+            ref_H = float(profile.get("H") or 80) / 100.0
+            ref_area = max(0.1, 2.0 * (ref_L * ref_D + ref_L * ref_H + ref_D * ref_H))
+            base = max(180.0, min(600.0, 120.0 + 54.0 * ref_area))
+    fixed = min(0.95, max(0.5, float(cfg.get("paint_fixed_ratio", 0.80))))
+    factor = fixed + (1.0 - fixed) * (area / ref_area)
+    factor = min(1.60, max(0.75, factor))
+    amount = round((base * factor * float(qty or 1.0)) / 10.0) * 10.0
+    note = (f"最终零售追加: 基准¥{base:.0f}×({fixed:.0%}固定+{1-fixed:.0%}面积修正"
+            f" {area:.2f}/{ref_area:.2f}㎡)×{float(qty or 1):g}, 取整到10元")
+    return round(amount, 2), note, round(area, 3)
 
 
 def style_delta(
@@ -818,6 +1010,18 @@ def style_delta(
     detail: list = []
     casc = f"×{1 + lr:g}人工×{1 + fpr:g}厂利÷{pgr:g}畔色"
     for p in (add_parts or []):
+        if _is_paint_part(p):
+            qty = float(p.get("qty", 1) or 1)
+            amt, note, area = _paint_surcharge(
+                cfg, category=category, length_m=length_m,
+                depth_cm=depth_cm, height_cm=height_cm, qty=qty)
+            total += amt
+            name = (p.get("material") or p.get("name") or "油漆上色").strip()
+            detail.append({"name": name, "material": name, "unit": "整件", "qty": qty,
+                           "area_m2": area, "material_cost": amt, "delta": amt,
+                           "change": "add", "priced": True, "paint_surcharge": True})
+            lines.append({"label": f"追加: {name}", "amount": amt, "note": note})
+            continue
         r = _resolve_part(db, p, dims_map)
         amt = round(retail(r["material_cost"]), 2)
         total += amt
@@ -925,8 +1129,9 @@ def _catalog(db: Session):
     """标准产品库 (名单文本 + 名→code 映射), 缓存。给分类器 AI 注入。"""
     def build():
         names, name2code = [], {}
+        valid_codes = _quoteable_product_codes(db)
         for code, name in db.query(Product.code, Product.name).all():
-            if name:
+            if code in valid_codes and _is_quoteable_product_name(name):
                 names.append(name)
                 name2code[name] = code
         return "、".join(names[:400]), name2code
@@ -994,7 +1199,7 @@ def classify_ai(db: Session, *, text: str = "", images=None, provider=None, mode
     length_m = _tl if _tl is not None else (_sane_dim(data.get("target_length_m"), 0.2, 6) or parse_length_m(text))
     width_cm = _tw if _tw is not None else _sane_dim(data.get("target_width_cm"), 10, 500)
     height_cm = _th if _th is not None else (_sane_dim(data.get("target_height_cm"), 10, 350) or parse_height_cm(text))
-    add_parts = _auto_top_cabinet(text, data.get("add_parts") or [])
+    add_parts = _auto_top_cabinet(text, _merge_parts(data.get("add_parts") or [], parse_paint_parts(text)))
     cat_guess = guess_category(text)
     lower_h = parse_lower_cabinet_height_cm(text)
     top_h, top_hint = detect_top_cabinet(text, height_cm, lower_h_cm=lower_h, category=cat_guess)
@@ -1027,6 +1232,10 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
     (无 AI 或 AI 失败时的回落; 稳且可测、不依赖 AI 在线。)
     """
     m = match(db, text or "", "")
+    _catalog_text, _name2code = _catalog(db)
+    valid_codes = set(_name2code.values())
+    if m.get("product_code") not in valid_codes:
+        m = {"product_code": None, "product_name": None, "confidence": 0.0}
     # 中文描述词(尺寸/材质/动词)会拉低 token 匹配; 不中则用"去噪核心词"再匹配一次
     if not (m.get("product_code") and m.get("confidence", 0) >= 0.4):
         core = re.sub(r"\d+(?:\.\d+)?\s*(?:米|mm|cm|m)", " ", text or "")
@@ -1035,13 +1244,15 @@ def classify(db: Session, *, text: str = "", image_count: int = 0) -> dict:
         core = re.sub(r"[改成为的把要做想换尺寸材质]", " ", core).strip()
         if core and core != (text or "").strip():
             m2 = match(db, core, "")
+            if m2.get("product_code") not in valid_codes:
+                m2 = {"product_code": None, "product_name": None, "confidence": 0.0}
             if m2.get("confidence", 0) > m.get("confidence", 0):
                 m = m2
     # 尺寸: 显式单位写法优先, 否则「长*宽*高」三元组兜底(1.5*0.6*0.95 这类最常见, 2026-07-12)
     _tl, _tw, _th = parse_dims_triplet(text)
     # 高度: 有「A×B×C」三元组时用它的总高(防 parse_height_cm 把"下柜高度92"当整体高)
     _height = _th if _th is not None else parse_height_cm(text)
-    _add = _auto_top_cabinet(text, [])
+    _add = _auto_top_cabinet(text, parse_paint_parts(text))
     # 多段柜(全景柜等)自动拆顶柜: 总高 − 下柜(客户给的) = 顶柜高(2026-07-18)
     _low_h = parse_lower_cabinet_height_cm(text)
     _top_h, _top_hint = detect_top_cabinet(text, _height, lower_h_cm=_low_h, category=guess_category(text))
@@ -1125,7 +1336,8 @@ def _sku_variant_key(name: str) -> str:
 
 def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 10) -> list[dict]:
     """该产品各 SKU 的匹配候选(按与描述字符重叠%排序), 给前端 SKU 下拉锁变体。"""
-    skus = db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
+    skus = [s for s in db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
+            if _is_quoteable_sku(s)]
     core = re.split(r"[，,。;；、]|计算价格|算价|样式", text or "")[0]
     sa = set(core)
     out = []
@@ -1160,8 +1372,11 @@ def product_candidates(
         sa, sb = set(core), set(name or "")
         return len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
 
+    valid_codes = _quoteable_product_codes(db)
     cands = []
     for x in match_ranked(db, core, "", limit=limit * 2):
+        if x.get("product_code") not in valid_codes or not _is_quoteable_product_name(x.get("product_name")):
+            continue
         top_sku = (x.get("skus") or [{}])[0]   # 匹配度最高的代表SKU, 同名产品靠它区分
         # 纳入 SKU 级相关度: 玻璃底座/玻璃门等变体只在 SKU 名里体现, 产品名相似度低,
         # 否则「樱桃木玻璃柜」这类靠变体命中的产品会被产品名分数压下、浮不上来 (2026-07-04)。
@@ -1172,10 +1387,11 @@ def product_candidates(
                       "sku": sku, "confidence": round(conf, 2)})
     mc = round(float(matched_conf or 0.9), 2)
     hit = next((c for c in cands if c["product_code"] == matched_code), None) if matched_code else None
-    if matched_code and hit is None:
-        rep = db.query(PricingSku.sku).filter(PricingSku.product_code == matched_code).first()
+    if matched_code in valid_codes and hit is None and _is_quoteable_product_name(matched_name):
+        rep = next((s for s in db.query(PricingSku).filter(PricingSku.product_code == matched_code).all()
+                    if _is_quoteable_sku(s)), None)
         cands.append({"product_code": matched_code, "product_name": matched_name or matched_code,
-                      "sku": rep[0] if rep else None, "confidence": mc})
+                      "sku": rep.sku if rep else None, "confidence": mc})
     elif hit is not None:
         hit["confidence"] = max(hit["confidence"], mc)   # 命中项用分类器置信(更准)
     # A6: 尺寸对该品类不合理的候选降权(防 1.5m 把床头柜排前)
@@ -1349,6 +1565,33 @@ def quote_heavy(
     尺寸来自设计/客户(本引擎不臆造)。返回引擎 QuoteResult 的 dict + 自动五金清单。
     """
     from app.services.custom_quote_service import BoardSpec, quote_from_spec
+    from app.services import custom_quote_config_service as ccfg
+
+    inferred = infer_hardware(boards) if auto_hardware else []
+    cfg = ccfg.get_config(db)
+    hardware_fallbacks: list[dict] = []
+    generic_hardware_price = float(ccfg.lookup_price(cfg, "五金件", db=db) or 0)
+    for hw in inferred:
+        material = str(hw.get("material") or "")
+        if (float(ccfg.lookup_price(cfg, material, db=db) or 0) <= 0
+                and generic_hardware_price > 0):
+            hardware_fallbacks.append({"requested": material, "priced_as": "五金件"})
+            hw["original_material"] = material
+            hw["material"] = "五金件"
+    missing_materials = sorted({
+        str(row.get("material") or row.get("part") or "未命名物料")
+        for row in [*boards, *inferred]
+        if float(ccfg.lookup_price(
+            cfg, str(row.get("material") or row.get("part") or ""), db=db
+        ) or 0) <= 0
+    })
+    if missing_materials:
+        return {
+            "product_type": product_type, "final_price": None, "quote_ready": False,
+            "missing_materials": missing_materials,
+            "error": f"缺少物料价格，已停止正式报价: {'、'.join(missing_materials)}",
+            "inferred_hardware": inferred,
+        }
 
     specs = [
         BoardSpec(
@@ -1362,7 +1605,6 @@ def quote_heavy(
         )
         for b in boards
     ]
-    inferred = infer_hardware(boards) if auto_hardware else []
     for hw in inferred:
         specs.append(BoardSpec(
             part=hw["material"], material=hw["material"], length_cm=0, width_cm=0,
@@ -1375,8 +1617,6 @@ def quote_heavy(
         overall_width_m=overall_width_m, overall_height_m=overall_height_m,
     )
     # 盈亏平衡工厂价 (净不亏): 售价 − 畔色非工厂成本((配件−抽屉轨道)+打包+运费+安装) − 售价×(平台扣点+税)
-    from app.services import custom_quote_config_service as ccfg
-    cfg = ccfg.get_config(db)
     plat = float(cfg.get("platform_fee_rate", 0.05))
     tax = float(cfg.get("tax_rate", 0.0))
     final = float(r.final_quote)
@@ -1400,6 +1640,7 @@ def quote_heavy(
         "break_even_note": f"净不亏: 售价{final:.0f} − 非工厂成本{non_factory:.0f} − 平台税{final*(plat+tax):.0f}",
         "panse_cost": float(r.panse_cost),
         "inferred_hardware": inferred,
+        "hardware_fallbacks": hardware_fallbacks,
         "wood_lines": r.wood_lines,
         "accessory_lines": r.accessory_lines,
     }
@@ -1420,8 +1661,11 @@ def _accessory_seed_dims(part: str, name: str, cab_w_cm: float, depth_cm: float,
     return round(cab_w_cm * 0.9, 1), round(depth_cm, 1)         # 隔板/层板/托板等 ≈ 宽 × 深
 
 
-def _pick_bom_sku_lines(db: Session, product_code: str, description: str = ""):
-    """选一个代表SKU的BOM行(优先描述里的组合关键词, 否则SKU名最短的基础款)。"""
+def _pick_bom_sku_lines(
+    db: Session, product_code: str, description: str = "",
+    target_length_m: Optional[float] = None, base_sku_code: Optional[str] = None,
+):
+    """选与指定SKU、尺寸和款式关键词最接近的一组BOM，避免拿错变体配件。"""
     from app.models.bom import BomLine
     lines = db.query(BomLine).filter(BomLine.product_code == product_code).all()
     if not lines:
@@ -1429,50 +1673,153 @@ def _pick_bom_sku_lines(db: Session, product_code: str, description: str = ""):
     by_sku: dict = {}
     for l in lines:
         by_sku.setdefault(l.sku or l.sku_code or "?", []).append(l)
-    for kw in ("全景", "视界", "多抽", "榉木"):
-        if kw in (description or ""):
-            for sk, ls in by_sku.items():
-                if sk and kw in sk:
-                    return sk, ls
-    sk = sorted(by_sku, key=lambda s: len(s or ""))[0]
+    if base_sku_code:
+        for sk, ls in by_sku.items():
+            if base_sku_code == sk or any(base_sku_code == (x.sku_code or "") for x in ls):
+                return sk, ls
+
+    desc = description or ""
+    keywords = ("全景", "视界", "多抽", "榉木", "洞洞板", "洞石", "AA柱", "下柜", "整柜")
+    def score(item) -> tuple[float, int, str]:
+        sk, ls = item
+        text = " ".join([sk or "", *[(x.sku_code or "") for x in ls]])
+        value = 0.0
+        for kw in keywords:
+            if kw in desc:
+                value += 20 if kw in text else -4
+            elif kw in text:
+                value -= 1
+        ln = parse_length_m(text)
+        if target_length_m and ln:
+            value += 12 if abs(ln - target_length_m) < 0.01 else -abs(ln - target_length_m) * 8
+        return value, -len(sk or ""), sk or ""
+    sk, _picked = max(by_sku.items(), key=score)
     return sk, by_sku[sk]
+
+
+def _structure_profile(
+    leaf: str, accessory_rows: list[dict], description: str,
+    add_parts: Optional[list[dict]], remove_parts: Optional[list[dict]],
+    modify_parts: Optional[list[dict]],
+) -> dict:
+    """把自然语言已解析的增删改转成模板可用的列/抽屉/门/层板数量。"""
+    from app.services import custom_board_template as tpl
+    prof = tpl.CATEGORY_PROFILE.get(leaf) or tpl.CATEGORY_PROFILE["餐边柜"]
+    cols = int(prof.get("cols", 1))
+    shelves = int(prof.get("shelves", 0))
+    accessories_text = " ".join(
+        str(x.get("part") or "") + str(x.get("material") or "") for x in accessory_rows
+    )
+    doors = 0 if ("玻璃" in accessories_text and "门" in accessories_text) else int(prof.get("doors", 0))
+    drawers = 1 if ("全景" in description and "抽屉" in description) else 0
+
+    add_names = [_part_name(p) for p in add_parts or []]
+    combined = "".join(add_names + [description or ""])
+    if all(k in combined for k in ("全景柜", "多抽柜", "开门柜")):
+        cols = max(cols, 3)
+    for p in add_parts or []:
+        name, qty = _part_name(p), max(1, int(float(p.get("qty", 1) or 1)))
+        if "抽屉面板" in name:
+            drawers += qty
+        elif "多抽柜" in name:
+            drawers = max(drawers, 4)
+        elif "开门柜" in name:
+            doors = max(doors, qty)
+        elif "层板" in name:
+            shelves += qty
+    for p in remove_parts or []:
+        name, qty = _part_name(p), max(1, int(float(p.get("qty", 1) or 1)))
+        if "抽屉" in name:
+            drawers = max(0, drawers - qty)
+        elif "门" in name and "上柜" not in name:
+            doors = max(0, doors - qty)
+        elif "层板" in name:
+            shelves = max(0, shelves - qty)
+    for p in modify_parts or []:
+        old = str(p.get("material") or p.get("name") or "")
+        new = str(p.get("material_real") or "")
+        qty = max(1, int(float(p.get("qty", 1) or 1)))
+        if "玻璃" in old and detect_wood(new):
+            doors = max(doors, qty)
+
+    text = description or ""
+    m = re.search(r"(\d+)\s*(?:个|只|组)?抽", text)
+    if m:
+        drawers = max(drawers, int(m.group(1)))
+    elif "四抽" in text:
+        drawers = max(drawers, 4)
+    elif "三抽" in text:
+        drawers = max(drawers, 3)
+    elif "双抽" in text:
+        drawers = max(drawers, 2)
+    return {"cols": cols, "drawers": drawers, "doors": doors, "shelves": shelves}
+
+
+def _row_matches_change(row: dict, part: dict) -> bool:
+    hay = str(row.get("part") or "") + " " + str(row.get("material") or "")
+    needles = [str(part.get("name") or "").strip(), str(part.get("material") or "").strip()]
+    needles = [x for x in needles if x]
+    return any(x in hay or (len(x) >= 2 and any(k in hay for k in re.findall(r"[\u4e00-\u9fff]{2,}", x)))
+               for x in needles)
+
+
+def _append_requirement_row(
+    db: Session, boards: list[dict], part: dict,
+    cab_w: float, depth: float, full_h: float, lower_h: float,
+) -> None:
+    name = str(part.get("material_real") or part.get("material") or part.get("name") or "").strip()
+    label = str(part.get("name") or part.get("material") or name).strip()
+    qty = float(part.get("qty", 1) or 1)
+    _price, unit = _material_price_unit(db, name)
+    row = {"part": label, "material": name, "qty": qty, "length_cm": 0.0,
+           "width_cm": 0.0, "unit": unit or "个", "is_accessory": True}
+    if "平" in (unit or "") or "㎡" in (unit or ""):
+        lg, wd = _accessory_seed_dims(label, name, cab_w, depth, full_h, lower_h)
+        row.update(unit="平方米", length_cm=lg, width_cm=wd)
+    elif "米" in (unit or ""):
+        row.update(unit="米", length_cm=round(cab_w, 1))
+    boards.append(row)
 
 
 def boards_from_product_bom(
     db: Session, *, product_code: str, category: Optional[str] = None,
     target_length_m: Optional[float] = None, target_width_cm: Optional[float] = None,
     target_height_cm: Optional[float] = None, lower_h_cm: Optional[float] = None,
-    description: str = "",
+    description: str = "", target_material: Optional[str] = None,
+    add_parts: Optional[list[dict]] = None, remove_parts: Optional[list[dict]] = None,
+    modify_parts: Optional[list[dict]] = None, base_sku_code: Optional[str] = None,
 ) -> list[dict]:
     """命中产品→按其真实BOM带出可编辑板单: 木作carcass(几何模板,随外形缩放) + 真实配件(材料/单价/数量全真,
     尺寸按外形估初值供人核对)。WD木作在BOM里无单价(成本本在SKU售价里), 故木作用几何模板出。"""
-    _sk, lines = _pick_bom_sku_lines(db, product_code, description)
+    _sk, lines = _pick_bom_sku_lines(
+        db, product_code, description, target_length_m=target_length_m, base_sku_code=base_sku_code)
     if not lines:
         return []
     prod = db.query(Product).filter(Product.code == product_code).first()
     cat = category or (prod.category if prod else None) or "餐边柜"
-    cab_w = float(target_length_m) * 100 if target_length_m else 120.0    # 柜宽 cm
-    depth = float(target_width_cm) if target_width_cm else 40.0
-    full_h = float(target_height_cm) if target_height_cm else 210.0
+    # 缺手填宽/高时，优先取该产品真实SKU尺寸；再缺才用品类画像。旧代码一律默认高210cm，
+    # 导致床头柜/茶几等小件套成2.1m大柜，纯定制卡常比标准售价高一倍以上。
+    from app.services import custom_board_template as tpl
+    leaf = cat.split("-")[-1]
+    profile = tpl.CATEGORY_PROFILE.get(leaf) or tpl.CATEGORY_PROFILE.get("餐边柜") or {}
+    real_skus = [s for s in db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
+                 if _is_quoteable_sku(s)]
+    real_skus.sort(key=lambda s: _resolve_length_m(s) or 0)
+    rep = real_skus[len(real_skus) // 2] if real_skus else None
+    rep_l, rep_d, rep_h = _parse_size_info(rep.size_info) if rep else (None, None, None)
+    cab_w = float(target_length_m) * 100 if target_length_m else float(rep_l or 120.0)
+    depth = float(target_width_cm) if target_width_cm else float(rep_d or profile.get("D") or 40.0)
+    full_h = float(target_height_cm) if target_height_cm else float(rep_h or profile.get("H") or 80.0)
     lower_h = float(lower_h_cm) if lower_h_cm else full_h
-    boards: list[dict] = []
-    try:
-        from app.services import custom_board_template as tpl
-        for b in tpl.generate_boards(cat.split("-")[-1], cab_w, depth_cm=depth, height_cm=full_h):
-            if "背板" in (b.get("part") or ""):       # 木背板去掉 → 背板走 BOM 真实岩板
-                continue
-            boards.append(dict(b))
-    except Exception:  # noqa: BLE001
-        pass
+    accessory_rows: list[dict] = []
     for l in lines:
         code = l.material_code or ""
         if not code.startswith("AC"):                # WD 木作已由几何模板出
             continue
         m = db.query(Material).filter(Material.code == code).first()
-        if not m or m.price is None:
-            continue
-        name = m.name or l.material_name or code
-        unit_raw = m.unit or ""
+        # 缺价配件也必须进入板单，交给 quote_heavy 的安全门拦截；不能静默跳过。
+        name = (m.name if m else None) or l.material_name or code
+        unit_raw = (m.unit if m else "") or ""
         st = str(getattr(l, "size_type", "") or "")
         part = ((l.remark or name).split("；")[0].split(";")[0] or name)[:24]
         row: dict = {"part": part, "material": name, "qty": float(l.qty_per_product or 1),
@@ -1482,7 +1829,62 @@ def boards_from_product_bom(
             row.update(unit="平方米", length_cm=lg, width_cm=wd)
         elif ("米" in unit_raw and "平" not in unit_raw) or "长度" in st:
             row.update(unit="米", length_cm=round(cab_w, 1))
-        boards.append(row)
+        accessory_rows.append(row)
+
+    base_wood = detect_wood((prod.name if prod else "") or "") or detect_wood(
+        (prod.main_material if prod else "") or "") or "樱桃木"
+    requested_wood = target_material if detect_wood(target_material) else base_wood
+    main_material = _wood_material_name(db, requested_wood, fallback=base_wood)
+    structure = _structure_profile(
+        leaf, accessory_rows, description, add_parts, remove_parts, modify_parts)
+    # 模板默认松木抽屉围板若无价，不能按0元；保守改用已定价的柜体主材。
+    from app.services import custom_quote_config_service as ccfg
+    cfg = ccfg.get_config(db)
+    drawer_material = tpl.DRAWER_MATERIAL
+    if float(ccfg.lookup_price(cfg, drawer_material, db=db) or 0) <= 0:
+        drawer_material = main_material
+    boards: list[dict] = []
+    try:
+        for b in tpl.generate_boards(
+            leaf, cab_w, depth_cm=depth, height_cm=full_h,
+            main_material=main_material, drawer_material=drawer_material, **structure,
+        ):
+            if "背板" in (b.get("part") or "") and any(
+                    "背板" in (x.get("part") or "") for x in accessory_rows):
+                continue
+            boards.append(dict(b))
+    except Exception:  # noqa: BLE001
+        pass
+    boards.extend(accessory_rows)
+
+    # 删除真实配件；结构板的删减已由 structure/目标尺寸表达。
+    for p in remove_parts or []:
+        name = _part_name(p)
+        if _is_structural_board_part(name) or _is_box_part(name):
+            continue
+        boards = [b for b in boards if not (b.get("is_accessory") and _row_matches_change(b, p))]
+
+    # 配件→配件：原位换料；玻璃→实木：删除玻璃，实木门已由 doors 数生成。
+    for p in modify_parts or []:
+        new_material = str(p.get("material_real") or "").strip()
+        matched = [b for b in boards if b.get("is_accessory") and _row_matches_change(b, p)]
+        if detect_wood(new_material):
+            boards = [b for b in boards if b not in matched]
+            continue
+        if matched:
+            for row in matched:
+                row["material"] = new_material
+                row["part"] = str(p.get("name") or row.get("part") or new_material)
+        elif new_material:
+            _append_requirement_row(db, boards, p, cab_w, depth, full_h, lower_h)
+
+    # 非结构新增项直接进入配件板单；无价项保留并触发硬停止。
+    for p in add_parts or []:
+        name = _part_name(p)
+        if (_is_paint_part(p) or _is_structural_board_part(name) or _is_box_part(name)
+                or any(k in name for k in ("全景柜", "多抽柜", "开门柜"))):
+            continue
+        _append_requirement_row(db, boards, p, cab_w, depth, full_h, lower_h)
     return boards
 
 
@@ -1514,7 +1916,11 @@ def quote_both(
             bom_boards = boards_from_product_bom(
                 db, product_code=base_product_code, category=category,
                 target_length_m=target_length_m, target_width_cm=target_width_cm,
-                target_height_cm=target_height_cm, lower_h_cm=lower_h_cm, description=description)
+                target_height_cm=target_height_cm, lower_h_cm=lower_h_cm, description=description,
+                target_material=target_material, add_parts=add_parts,
+                remove_parts=remove_parts, modify_parts=modify_parts,
+                base_sku_code=base_sku_code,
+            )
             if bom_boards:
                 custom = quote_heavy(
                     db, product_type=leaf, length_m=target_length_m, boards=bom_boards,
@@ -1527,15 +1933,79 @@ def quote_both(
                 custom_boards = bom_boards
             else:
                 from app.services import custom_board_template as tpl
-                kw: dict = {}
-                if target_width_cm:
-                    kw["depth_cm"] = float(target_width_cm)
-                if target_height_cm:
-                    kw["height_cm"] = float(target_height_cm)
-                if target_material and detect_wood(target_material):
-                    kw["main_material"] = target_material
-                custom = tpl.quote_from_template(db, leaf, float(target_length_m) * 100, **kw)
-                custom["note"] = "该产品无BOM, 用通用品类模板基线; 面板部件请在③补齐再精算"
+                from app.services import custom_quote_config_service as ccfg
+                fallback_prod = db.query(Product).filter(Product.code == base_product_code).first()
+                base_wood = detect_wood((fallback_prod.name if fallback_prod else "") or "") or detect_wood(
+                    (fallback_prod.main_material if fallback_prod else "") or "") or "樱桃木"
+                requested_wood = target_material if detect_wood(target_material) else base_wood
+                main_material = _wood_material_name(db, requested_wood, fallback=base_wood)
+                structure = _structure_profile(
+                    leaf, [], description, add_parts, remove_parts, modify_parts)
+                cfg = ccfg.get_config(db)
+                drawer_material = tpl.DRAWER_MATERIAL
+                if float(ccfg.lookup_price(cfg, drawer_material, db=db) or 0) <= 0:
+                    drawer_material = main_material
+                depth = float(target_width_cm or (tpl.CATEGORY_PROFILE.get(leaf) or {}).get("D") or 40)
+                full_h = float(target_height_cm or (tpl.CATEGORY_PROFILE.get(leaf) or {}).get("H") or 80)
+                lower_h = float(lower_h_cm or full_h)
+                fallback_boards = tpl.generate_boards(
+                    leaf, float(target_length_m) * 100,
+                    depth_cm=depth, height_cm=full_h, main_material=main_material,
+                    drawer_material=drawer_material, **structure,
+                )
+                for p in modify_parts or []:
+                    new_material = str(p.get("material_real") or "").strip()
+                    if new_material and not detect_wood(new_material):
+                        _append_requirement_row(
+                            db, fallback_boards, p, float(target_length_m) * 100,
+                            depth, full_h, lower_h)
+                for p in add_parts or []:
+                    name = _part_name(p)
+                    if (_is_paint_part(p) or _is_structural_board_part(name) or _is_box_part(name)
+                            or any(k in name for k in ("全景柜", "多抽柜", "开门柜"))):
+                        continue
+                    _append_requirement_row(
+                        db, fallback_boards, p, float(target_length_m) * 100,
+                        depth, full_h, lower_h)
+                custom = quote_heavy(
+                    db, product_type=leaf, length_m=target_length_m, boards=fallback_boards,
+                    overall_width_m=depth / 100.0, overall_height_m=full_h / 100.0,
+                    auto_hardware=True)
+                custom["note"] = ("该产品无BOM，已用通用品类模板并应用结构/换料/配件需求；"
+                                  "请在③核对板单尺寸后精算")
+                custom["from_bom"] = False
+                custom_boards = fallback_boards
         except Exception as e:  # noqa: BLE001
             custom = {"error": f"纯定制口径失败: {e}", "final_price": None}
+    # 两张系统卡必须反映同一份需求。油漆追加是最终零售附加价，不属于板单材料行，
+    # 因此在纯定制卡算完板单后单独加上(普通卡已由 style_delta 加过)。
+    paint_parts = [p for p in (add_parts or []) if _is_paint_part(p)]
+    if custom and custom.get("final_price") is not None and paint_parts:
+        from app.services import custom_quote_config_service as ccfg
+        cfg = ccfg.get_config(db)
+        paint_total = 0.0
+        paint_notes = []
+        for p in paint_parts:
+            amt, note, _area = _paint_surcharge(
+                cfg, category=category or "", length_m=target_length_m,
+                depth_cm=target_width_cm, height_cm=target_height_cm,
+                qty=float(p.get("qty", 1) or 1))
+            paint_total += amt
+            paint_notes.append(note)
+        custom["final_price"] = round(float(custom["final_price"]) + paint_total, 2)
+        custom["paint_surcharge"] = round(paint_total, 2)
+        custom["paint_note"] = "；".join(paint_notes)
+        custom["note"] = (custom.get("note") or "") + f"；油漆上色最终追加¥{paint_total:.0f}"
+    # 两种口径本来就可能不同，但大价差必须当场说清，不能让客服误把较低者当成“系统推荐价”。
+    spec_price = spec.get("final_price") if spec else None
+    custom_price = custom.get("final_price") if custom else None
+    if spec_price and custom_price:
+        high, low = max(float(spec_price), float(custom_price)), min(float(spec_price), float(custom_price))
+        gap_rate = high / low - 1.0
+        if gap_rate > 0.35:
+            warning = (f"两种口径相差¥{abs(float(spec_price) - float(custom_price)):.2f}"
+                       f"（{gap_rate:.1%}）；市场SKU锚点与结构板单差异较大，需人工核对款式复杂度后选用")
+            custom["price_gap_warning"] = warning
+            custom["price_gap_rate"] = round(gap_rate, 4)
+            custom["note"] = ((custom.get("note") or "") + "；⚠ " + warning).lstrip("；")
     return {"spec": spec, "custom": custom, "custom_boards": custom_boards, "category": category}

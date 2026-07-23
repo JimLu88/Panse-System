@@ -1,0 +1,103 @@
+/* 畔色 ERP — 色彩系统
+   品牌主色: Google 经典蓝 (#1A73E8)，干净、产品级、可信赖。
+   中性色: slate 体系，可读性强。
+   语义色: 成功 emerald / 警告 amber / 危险 rose / 信息 sky。 */
+
+:root {
+  /* ----- 品牌主色 · Google 蓝 ----- */
+  --blue-50:  #e8f0fe;
+  --blue-100: #d2e3fc;
+  --blue-200: #aecbfa;
+  --blue-300: #8ab4f8;
+  --blue-400: #669df6;
+  --blue-500: #4285f4;   /* 品牌色 / 强调 */
+  --blue-600: #1a73e8;   /* 主操作 (按钮/链接/选中) */
+  --blue-700: #1967d2;
+  --blue-800: #185abc;
+  --blue-900: #174ea6;   /* 深蓝 — 顶栏底色 */
+
+  /* 兼容别名 (历史命名 --teal-*，现指向 Google 蓝；新代码请用 --blue-*) */
+  --teal-50: var(--blue-50);   --teal-100: var(--blue-100); --teal-200: var(--blue-200);
+  --teal-300: var(--blue-300); --teal-400: var(--blue-400); --teal-500: var(--blue-500);
+  --teal-600: var(--blue-600); --teal-700: var(--blue-700); --teal-800: var(--blue-800);
+  --teal-900: var(--blue-900);
+
+  /* ----- 中性色 · slate ----- */
+  --slate-50:  #f8fafc;
+  --slate-100: #f1f5f9;
+  --slate-200: #e8edf2;
+  --slate-300: #cbd5e1;
+  --slate-400: #94a3b8;
+  --slate-500: #64748b;
+  --slate-600: #475569;
+  --slate-700: #334155;
+  --slate-800: #1e293b;
+  --slate-900: #0f172a;
+  --white: #ffffff;
+
+  /* ----- 语义/状态色 ----- */
+  --green-500:  #10b981;  /* 成功 / 正常 */
+  --green-50:   #ecfdf5;
+  --green-200:  #a7f3d0;
+  --amber-500:  #f59e0b;  /* 警告 / 待处理 */
+  --amber-50:   #fffbeb;
+  --amber-200:  #fde68a;
+  --red-500:    #f43f5e;  /* 错误 / 危险 / 负值 */
+  --red-50:     #fef2f4;
+  --red-200:    #fecdd3;
+  --sky-500:    #0ea5e9;  /* 信息 / 链接强调 */
+  --sky-50:     #eff6ff;
+  --sky-200:    #bae6fd;
+  --violet-500: #8b5cf6;  /* 图表辅助 */
+  --indigo-500: #6366f1;  /* 图表辅助 */
+
+  /* ===== 语义别名 (浅色 · 默认) ===== */
+  /* 背景层级 */
+  --bg-app:        var(--slate-50);    /* 页面底色 */
+  --surface-card:  var(--white);       /* 卡片/面板 */
+  --surface-sunken:var(--slate-100);   /* 凹陷区 / 表头 / 输入底 */
+  --surface-hover: #f3f6f9;            /* 行/项 hover 底色 */
+  --surface-overlay: rgba(15,23,42,.45); /* 遮罩 */
+
+  /* 文字 */
+  --text-primary:   var(--slate-800);
+  --text-secondary: var(--slate-500);
+  --text-tertiary:  var(--slate-400);
+  --text-inverse:   var(--white);
+  --text-link:      var(--blue-600);
+
+  /* 描边 */
+  --border:        var(--slate-200);   /* 默认分隔线/卡片描边 */
+  --border-strong: var(--slate-300);   /* 强描边/输入框 */
+  --border-subtle: #eef2f7;            /* 表格内细线 */
+
+  /* 主色语义 */
+  --primary:        var(--blue-600);
+  --primary-hover:  var(--blue-700);
+  --primary-active: var(--blue-800);
+  --primary-soft:   var(--blue-50);    /* 选中行/软按钮底 */
+  --primary-border: var(--blue-200);
+  --on-primary:     var(--white);
+
+  /* 状态语义 */
+  --success: var(--green-500);  --success-soft: var(--green-50);  --success-border: var(--green-200);
+  --warning: var(--amber-500);  --warning-soft: var(--amber-50);  --warning-border: var(--amber-200);
+  --danger:  var(--red-500);    --danger-soft:  var(--red-50);    --danger-border:  var(--red-200);
+  --info:    var(--sky-500);    --info-soft:    var(--sky-50);    --info-border:    var(--sky-200);
+
+  /* 顶栏 (深蓝) */
+  --nav-bg:     var(--blue-900);
+  --nav-text:   rgba(255,255,255,.78);
+  --nav-text-strong: #ffffff;
+  --nav-active: var(--blue-300);
+  --nav-active-bg: rgba(138,180,248,.18);
+
+  /* 数据可视化分类色序 */
+  --chart-1: var(--blue-500);
+  --chart-2: var(--amber-500);
+  --chart-3: var(--green-500);
+  --chart-4: var(--violet-500);
+  --chart-5: var(--sky-500);
+  --chart-6: var(--indigo-500);
+  --chart-7: var(--red-500);
+}

@@ -10,8 +10,11 @@
 ⑦ preflight R1~R12 逐条输出 {rule, level, items}
 ⑧ 推送编排 (mock WA, 绝不真调 :8500): channel/phase/档期传参 + 状态机推进
 """
+import io
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+
+import openpyxl
 
 from app.models.campaign import CampaignPlan
 from app.models.order import Order
@@ -105,6 +108,19 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
+def test_signup_rows_exclude_registered_no_sales(db_session):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
+        daily=1200, big=800)
+    db_session.commit()
+    ns.add_no_sales(db_session, ["9209"])
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+
+    assert rows == []
+    assert stats["excluded_no_sales_items"] == ["9209"]
+
+
 def test_signup_rows_r3_incomplete_item_dropped(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSSC001", "PPSSC00101", "9203", "72021", daily=None)   # 缺日常价
@@ -163,8 +179,8 @@ def test_discount_mid_ratio_and_ceil_switch(db_session):
     assert rows2[0]["deduct"] == 20.0                         # 995 − 99.5 − 875.5
 
 
-def test_discount_nosales_plus_one_and_placeholder_skip(db_session):
-    """无动销 (2026-07-17 拍板 −1→+1): 到手 = 中促+1 = 2650×1.03+1 = 2730.5; 立减 = 269.5。"""
+def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
+    """无动销大促场不报名，单品立减直接到 ERP 大促价 2650；占位不出行。"""
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDD001", "PPSDD00101", "9304", "73021", daily=3000, big=2650)
     _mk(db_session, "PPSDD001", "PPSDD00190", "9304", "73090", daily=500,
@@ -176,8 +192,8 @@ def test_discount_nosales_plus_one_and_placeholder_skip(db_session):
 
     assert len(rows) == 1
     assert rows[0]["kind"] == "nosales"
-    assert rows[0]["target_price"] == 2730.5
-    assert rows[0]["deduct"] == 269.5                         # 3000 − (2729.5 + 1)
+    assert rows[0]["target_price"] == 2650.0
+    assert rows[0]["deduct"] == 350.0                         # 3000 − 大促价2650
     assert stats["skipped_placeholder"] == 1
 
 
@@ -191,6 +207,20 @@ def test_discount_rotation_when_concession_over_one_yuan(db_session):
     assert rows == []                                         # R2: 让幅10元>1 → 不贴线不出行
     assert stats["rotation_suggested"] == [{"sku_code": "PPSDE00101", "target": 2000.0,
                                             "line": 1990.0, "concession": 10.0}]
+
+
+def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
+    """¥30样块的12%平台实测为¥3.60，不套普通商品的整元向上取整。"""
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSLOW01", "PPSLOW0101", "9306", "73041",
+        daily=30, big=20.41)
+    db_session.commit()
+
+    rows, stats = cs.build_discount_rows(db_session, plan)
+
+    assert rows[0]["official"] == 3.6
+    assert rows[0]["deduct"] == 5.99
+    assert stats["official_low_price_exact"] == 1
 
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
@@ -234,10 +264,24 @@ def _mock_wa(monkeypatch, calls):
 
     def fake_wait(db, job_id, **kw):
         return {"status": "done", "result": {"ok": True, "submitted": True,
-                                             "validation": {"failed_items": []}}}
+                                             "validation": {
+                                                 "total_items": 1, "ok": 1,
+                                                 "failed": 0, "terminal": True,
+                                                 "failed_items": []}}}
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for r in range(1, 4):
+        ws.cell(r, 1, f"表头{r}")
+    bio = io.BytesIO()
+    wb.save(bio)
 
     monkeypatch.setattr(web_agent_service, "upload_file", fake_upload)
     monkeypatch.setattr(web_agent_service, "wait_job", fake_wait)
+    monkeypatch.setattr(web_agent_service, "campaign_export_items",
+                        lambda db, title, **kw: {
+                            "ok": True, "xlsx_bytes": bio.getvalue(),
+                            "filename": "当前活动.xlsx"})
 
 
 def test_push_discount_orchestration(db_session, monkeypatch):
@@ -272,3 +316,41 @@ def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
     assert res["ok"] is True
     assert plan.status == "signup_pushed"                     # R12: stage 即生效
     assert calls[0]["channel"] == "promo_signup" and calls[0]["phase"] == "stage"
+
+
+def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSQZ001", "PPSQZ00101", "9503", "75021",
+        daily=1500, big=1000)
+    db_session.commit()
+
+    calls = []
+    _mock_wa(monkeypatch, calls)
+    from app.services import notify_service, web_agent_service
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda db, job_id, **kw: {
+            "status": "done",
+            "result": {
+                "ok": True, "attached": True,
+                "validation": {
+                    "total_items": 1, "ok": 0, "failed": 0,
+                    "terminal": False,
+                },
+            },
+        })
+    notices = []
+    monkeypatch.setattr(
+        notify_service, "broadcast_text",
+        lambda db, text, **kw: notices.append({"text": text, **kw})
+        or {"feishu": True})
+
+    first = cs.push_signup(db_session, plan)
+    second = cs.push_signup(db_session, plan)
+
+    assert first["ok"] is False
+    assert "未进入终态" in first["error"]
+    assert plan.status == "draft"
+    assert len(notices) == 1
+    assert "总1品，成功0品，失败0品" in notices[0]["text"]
+    assert second["notification"] == {"deduped": True}

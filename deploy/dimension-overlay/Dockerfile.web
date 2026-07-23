@@ -1,0 +1,11 @@
+FROM panse-system-web:lan
+
+COPY web/dimension-editor.html /usr/share/nginx/html/dimension-editor.html
+COPY web/product-dimension-injector.js /usr/share/nginx/html/product-dimension-injector.js
+
+RUN if grep -q 'product-dimension-injector.js' /usr/share/nginx/html/index.html; then \
+      sed -i 's#src="/product-dimension-injector.js[^"]*"#src="/product-dimension-injector.js?v=20260722-final"#' /usr/share/nginx/html/index.html; \
+    else \
+      sed -i 's#</body>#<script src="/product-dimension-injector.js?v=20260722-final"></script></body>#' /usr/share/nginx/html/index.html; \
+    fi && \
+    rm -f /usr/share/nginx/html/dimension-editor.css /usr/share/nginx/html/dimension-editor.js

@@ -29,6 +29,7 @@ import { PricingSku, Product, createProduct, deleteProduct, listProductCategorie
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { CatalogCard } from '../components/MobileCards';
+import ProductDimensionFinalActions from '../components/ProductDimensionFinalActions';
 
 const PRODUCT_FIELDS: PresetField[] = [
   { key: 'code', label: '编码', group: '字段' },
@@ -225,7 +226,7 @@ export default function ProductsPage() {
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
   // 各列宽度 (可拖拽改); 表头拖右边缘即可
   const [colW, setColW] = useState<Record<string, number>>({
-    code: 150, name: 240, brand: 90, category: 140, status: 92, remark: 170, image: 110, actions: 220,
+    code: 150, name: 240, brand: 90, category: 140, status: 92, remark: 170, image: 110, actions: 340,
   });
   const handleResize = (key: string) => (w: number) =>
     setColW((prev) => ({ ...prev, [key]: w }));
@@ -371,10 +372,11 @@ export default function ProductsPage() {
       title: '操作', key: 'actions', width: colW.actions,
       onHeaderCell: mkResize('actions'),
       render: (_: unknown, row: Product) => (
-        <Space>
+        <Space wrap size={4}>
           <Link to={`/bom/${row.code}`}>查看 BOM</Link>
           <Button size="small" onClick={() => setGalleryFor(row.code)}>图库</Button>
           <Button size="small" onClick={() => openManual(row.code)}>说明书</Button>
+          <ProductDimensionFinalActions productCode={row.code} assetCount={row.dimension_asset_count} />
           <Button
             size="small"
             icon={<EditOutlined />}
@@ -593,6 +595,9 @@ export default function ProductsPage() {
             brand={p.brand}
             meta={p.category ?? undefined}
             onGallery={() => setGalleryFor(p.code)}
+            dimensionActions={(
+              <ProductDimensionFinalActions productCode={p.code} assetCount={p.dimension_asset_count} />
+            )}
             onEdit={() => {
               setEditTarget(p);
               editForm.setFieldsValue({

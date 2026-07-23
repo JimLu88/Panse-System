@@ -1,0 +1,30 @@
+<!-- @dsCard group="Brand" viewport="700x200" name="图标体系" subtitle="Material Symbols · Outlined (Google 同款)" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@24,400,0,0&display=block" rel="stylesheet">
+<style>
+  body { margin:0; padding:24px; background:var(--surface-card); font-family:var(--font-sans); }
+  .grid { display:flex; gap:14px; flex-wrap:wrap; }
+  .ic { width:60px; height:60px; border-radius:var(--radius-md); background:var(--surface-sunken); border:1px solid var(--border); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:5px; }
+  .ic .material-symbols-outlined { font-size:24px; color:var(--primary); }
+  .ic .l { font-size:10px; color:var(--text-tertiary); }
+  .note { font-size:12px; color:var(--text-tertiary); margin-top:14px; line-height:1.6; }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="ic"><span class="material-symbols-outlined">shopping_cart</span><span class="l">订单</span></div>
+    <div class="ic"><span class="material-symbols-outlined">inventory_2</span><span class="l">库存</span></div>
+    <div class="ic"><span class="material-symbols-outlined">payments</span><span class="l">财务</span></div>
+    <div class="ic"><span class="material-symbols-outlined">photo_camera</span><span class="l">录单</span></div>
+    <div class="ic"><span class="material-symbols-outlined">balance</span><span class="l">对账</span></div>
+    <div class="ic"><span class="material-symbols-outlined">monitoring</span><span class="l">分析</span></div>
+    <div class="ic"><span class="material-symbols-outlined">search</span><span class="l">搜索</span></div>
+    <div class="ic"><span class="material-symbols-outlined">warning</span><span class="l">异常</span></div>
+  </div>
+  <div class="note">采用 Google <b>Material Symbols · Outlined</b>（线性描边、2px、统一光学尺寸 24）。支持 FILL / 粗细 / 圆角 / 光学尺寸 四轴可变 —— 选中态可切 FILL=1 实心。组件以 ReactNode 形式接收图标（<code>icon</code> / <code>prefix</code>），生产环境引入 <code>material-symbols</code> 字体或 SVG 即可。</div>
+</body>
+</html>

@@ -1,0 +1,290 @@
+# -*- coding: utf-8 -*-
+"""10 sideboard custom-quote cases: two system cards + independent Codex board model.
+
+Read-only. The independent price does NOT reuse quote_both.custom_boards or its final price.
+It starts from an exact real SKU daily price, then adds the delta between a manually modelled
+baseline board list and a manually modelled target board list, using ERP material/config data.
+"""
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+sys.stdout.reconfigure(encoding="utf-8")
+
+from app.database import SessionLocal
+from app.models.pricing import PricingSku
+from app.models.product import Product
+from app.services import custom_board_template as tpl
+from app.services import custom_quote_config_service as ccfg
+from app.services import custom_quote_v2_service as v2
+
+
+CHERRY = "樱桃木-2.2cm"
+BEECH = "榉木-2.2cm"
+WALNUT = "黑胡桃木-2.2cm"
+MARINE = "海洋板1.8cm"
+
+
+def area_part(part, material, length_cm, width_cm, qty=1):
+    return {"part": part, "material": material, "length_cm": length_cm,
+            "width_cm": width_cm, "qty": qty, "unit": "平方米", "is_accessory": True}
+
+
+def each_part(part, material, qty=1):
+    return {"part": part, "material": material, "length_cm": 0, "width_cm": 0,
+            "qty": qty, "unit": "个", "is_accessory": True}
+
+
+CASES = [
+    {
+        "origin": "用户题1", "code": "PPS25250090403", "sku": "PPS2525009040125",
+        "request": "基础餐边柜保持1.5米长、48厘米深；高度改1.7米；玻璃门改实木移门；中间洞洞板改洞石柜",
+        "dims": (1.5, 48, 170), "base_dims": (1.5, 48, 198),
+        "base": dict(cols=3, drawers=0, doors=0, shelves=1, material=CHERRY,
+                     extras=[area_part("顶部玻璃移门", "5mm灰色玻璃", 75, 65, 2),
+                             area_part("中间洞洞板", "亚克力洞洞板-黑色", 50, 70)]),
+        "target": dict(cols=3, drawers=0, doors=2, shelves=1, material=CHERRY,
+                       extras=[area_part("中间洞石柜背板", "洞石纹理饰面板", 50, 70)]),
+        "modify": [{"name": "顶部玻璃门", "material": "5mm灰色玻璃", "material_real": CHERRY, "qty": 2},
+                   {"name": "中间洞洞板", "material": "亚克力洞洞板-黑色", "material_real": "洞石纹理饰面板", "qty": 1}],
+        "assumption": "原长度按1.5米洞洞板款；“洞石柜”按中间一列洞石饰面柜计。",
+    },
+    {
+        "origin": "用户题2", "code": "PPS24250080801", "sku": "PPS2425008080133",
+        "request": "洞石餐边柜做1.8米；下方分成全景柜、多抽柜、开门柜三列；其他不变",
+        "dims": (1.8, 50, 210), "base_dims": (1.8, 50, 210),
+        "base": dict(cols=3, drawers=1, doors=1, shelves=1, material=CHERRY,
+                     extras=[area_part("全景柜玻璃面", "5mm灰色玻璃", 55, 65),
+                             area_part("玻璃移门", "5mm灰色玻璃", 55, 65, 2),
+                             area_part("洞石背板", "洞石纹理饰面板", 180, 70)]),
+        "target": dict(cols=3, drawers=4, doors=1, shelves=1, material=CHERRY,
+                       extras=[area_part("全景柜玻璃面", "5mm灰色玻璃", 55, 65),
+                               area_part("洞石背板", "洞石纹理饰面板", 180, 70)]),
+        "add": [{"material": "全景柜", "qty": 1}, {"material": "多抽柜", "qty": 1},
+                {"material": "开门柜", "qty": 1}],
+        "assumption": "三列等宽；多抽柜按4抽、全景柜1列、开门柜1列。",
+    },
+    {
+        "origin": "用户题3", "code": "PFG25250061201", "sku": "PFG2525006120111",
+        "request": "餐边窄柜顶部玻璃门改实木移门；宽0.6米；高1.6米；木头改榉木",
+        "dims": (0.6, 48, 160), "base_dims": (0.8, 48, 198),
+        "base": dict(cols=2, drawers=0, doors=0, shelves=1, material=MARINE,
+                     extras=[area_part("顶部玻璃门", "5mm灰色玻璃", 38, 65, 2)]),
+        "target": dict(cols=2, drawers=0, doors=2, shelves=1, material=BEECH, extras=[]),
+        "material": "榉木",
+        "modify": [{"name": "顶部玻璃门", "material": "5mm灰色玻璃", "material_real": BEECH, "qty": 2}],
+        "assumption": "深度按原款48厘米；0.6米低于现有最小0.8米档。",
+    },
+    {
+        "origin": "仿写题4", "code": "PPS25250090403", "sku": "PPS2525009040120",
+        "request": "基础餐边柜做1.8米、高2.1米；下柜加3个抽屉；上柜玻璃换长虹玻璃；电力轨道保留",
+        "dims": (1.8, 48, 210), "base_dims": (1.8, 48, 198),
+        "base": dict(cols=3, drawers=0, doors=0, shelves=1, material=CHERRY,
+                     extras=[area_part("上柜玻璃", "5mm灰色玻璃", 58, 65, 2)]),
+        "target": dict(cols=3, drawers=3, doors=0, shelves=1, material=CHERRY,
+                       extras=[area_part("上柜长虹玻璃", "5mm小灯芯玻璃", 58, 70, 2)]),
+        "add": [{"material": "抽屉面板", "qty": 3}],
+        "modify": [{"name": "上柜玻璃", "material": "5mm灰色玻璃", "material_real": "5mm小灯芯玻璃", "qty": 2}],
+        "assumption": "三抽并排；原1.8米AA柱款，电力轨道前后都保留所以不计差额。",
+    },
+    {
+        "origin": "仿写题5", "code": "PPS24250080801", "sku": "PPS2425008080138",
+        "request": "1.5米洞石餐边柜改榉木；视界柜改实木开门；下柜做双抽；其他洞石和轨道保留",
+        "dims": (1.5, 50, 210), "base_dims": (1.5, 50, 210),
+        "base": dict(cols=3, drawers=1, doors=1, shelves=1, material=CHERRY,
+                     extras=[area_part("视界柜玻璃", "5mm灰色玻璃", 48, 65),
+                             area_part("洞石背板", "洞石纹理饰面板", 150, 70)]),
+        "target": dict(cols=3, drawers=2, doors=2, shelves=1, material=BEECH,
+                       extras=[area_part("洞石背板", "洞石纹理饰面板", 150, 70)]),
+        "material": "榉木", "add": [{"material": "抽屉面板", "qty": 1}],
+        "modify": [{"name": "视界柜玻璃", "material": "5mm灰色玻璃", "material_real": BEECH, "qty": 1}],
+        "assumption": "视界模块改一扇实木门；下柜双抽。",
+    },
+    {
+        "origin": "自出题6", "code": "PFG25250061201", "sku": "PFG2525006120111",
+        "request": "0.8米餐边窄柜改樱桃木；取消电力轨道；柜内再加两层板；玻璃门保留",
+        "dims": (0.8, 48, 198), "base_dims": (0.8, 48, 198),
+        "base": dict(cols=2, drawers=0, doors=0, shelves=1, material=MARINE,
+                     extras=[area_part("玻璃门", "5mm灰色玻璃", 38, 65, 2), each_part("电力轨道", "电力轨道")]),
+        "target": dict(cols=2, drawers=0, doors=0, shelves=3, material=CHERRY,
+                       extras=[area_part("玻璃门", "5mm灰色玻璃", 38, 65, 2)]),
+        "material": "樱桃木", "add": [{"material": "层板", "qty": 2}],
+        "remove": [{"material": "电力轨道", "qty": 1}],
+        "assumption": "两层板横跨两列；玻璃门不变。",
+    },
+    {
+        "origin": "自出题7", "code": "PPS25250090403", "sku": "PPS2525009040122",
+        "request": "1.2米基础餐边柜总高2.3米；顶部加32厘米顶柜；AA柱背板换洞洞板；整柜奶油白上色",
+        "dims": (1.2, 48, 230), "base_dims": (1.2, 48, 198),
+        "base": dict(cols=3, drawers=0, doors=2, shelves=1, material=CHERRY, extras=[]),
+        "target": dict(cols=3, drawers=0, doors=3, shelves=2, material=CHERRY,
+                       extras=[area_part("洞洞板背板", "亚克力洞洞板-黑色", 120, 70)]),
+        "add": [{"material": "顶柜", "qty": 1, "height_cm": 32}, {"material": "奶油白油漆上色", "qty": 1, "is_paint": True}],
+        "modify": [{"name": "AA柱背板", "material": "实木多层板1.8cm", "material_real": "亚克力洞洞板-黑色", "qty": 1}],
+        "paint": True,
+        "assumption": "顶柜32厘米并入总高；洞洞板覆盖中间开放区。",
+    },
+    {
+        "origin": "自出题8", "code": "PPS24250080801", "sku": "PPS2425008080132",
+        "request": "2.1米洞石全景餐边柜主材改黑胡桃木；玻璃移门改实木移门；全景抽屉和洞石背板保留",
+        "dims": (2.1, 50, 210), "base_dims": (2.1, 50, 210),
+        "base": dict(cols=3, drawers=1, doors=1, shelves=1, material=CHERRY,
+                     extras=[area_part("玻璃移门", "5mm灰色玻璃", 68, 67, 2),
+                             area_part("洞石背板", "洞石纹理饰面板", 210, 70)]),
+        "target": dict(cols=3, drawers=1, doors=3, shelves=1, material=WALNUT,
+                       extras=[area_part("洞石背板", "洞石纹理饰面板", 210, 70)]),
+        "material": "黑胡桃", "modify": [{"name": "玻璃移门", "material": "5mm灰色玻璃", "material_real": WALNUT, "qty": 2}],
+        "assumption": "两扇实木移门按黑胡桃木门板；全景抽屉不变。",
+    },
+    {
+        "origin": "自出题9", "code": "PPS25250090403", "sku": "PPS2525009040121",
+        "request": "1.5米基础餐边柜只保留90厘米下柜；上柜全部取消；下柜改四抽；黑色岩板台面保留",
+        "dims": (1.5, 48, 90), "base_dims": (1.5, 48, 198),
+        "base": dict(cols=3, drawers=0, doors=2, shelves=1, material=CHERRY, extras=[]),
+        "target": dict(cols=2, drawers=4, doors=0, shelves=0, material=CHERRY,
+                       extras=[area_part("黑色岩板台面", "12mm黑色岩板", 150, 48)]),
+        "add": [{"material": "抽屉面板", "qty": 4}], "remove": [{"material": "上柜", "qty": 1}],
+        "assumption": "下柜按两列四抽；高度90厘米；上柜整体删除。",
+    },
+    {
+        "origin": "自出题10", "code": "PFG25250061201", "sku": "PFG2525006120112",
+        "request": "1.0米餐边窄柜高1.7米；玻璃门换藤编移门；黑色岩板换米白洞石；再加一条感应灯带",
+        "dims": (1.0, 48, 170), "base_dims": (1.0, 48, 198),
+        "base": dict(cols=2, drawers=0, doors=0, shelves=1, material=MARINE,
+                     extras=[area_part("玻璃门", "5mm灰色玻璃", 48, 65, 2),
+                             area_part("黑色岩板", "12mm黑色岩板", 100, 48)]),
+        "target": dict(cols=2, drawers=0, doors=0, shelves=1, material=MARINE,
+                       extras=[area_part("藤编移门", "藤编门板", 48, 65, 2),
+                               area_part("米白洞石", "9mm米白洞石岩板", 100, 48),
+                               each_part("感应灯带", "感应灯带")]),
+        "modify": [{"name": "玻璃门", "material": "5mm灰色玻璃", "material_real": "藤编门板", "qty": 2},
+                   {"name": "岩板", "material": "12mm黑色岩板", "material_real": "9mm米白洞石岩板", "qty": 1}],
+        "add": [{"material": "感应灯带", "qty": 1}],
+        "assumption": "藤编门和感应灯带若物料库无价必须停止，不允许按0元出正式报价。",
+    },
+]
+
+
+def model_boards(dims, spec):
+    length, depth, height = dims
+    # 与生产保护规则一致：默认松木抽屉围板无价时，保守用柜体主材，不按0元。
+    boards = tpl.generate_boards(
+        "餐边柜", length * 100, depth_cm=depth, height_cm=height,
+        cols=spec["cols"], drawers=spec["drawers"], doors=spec["doors"],
+        shelves=spec["shelves"], main_material=spec["material"],
+        drawer_material=spec["material"])
+    boards.extend([dict(x) for x in spec.get("extras", [])])
+    return boards
+
+
+def missing_prices(db, boards):
+    cfg = ccfg.get_config(db)
+    missing = []
+    for b in boards:
+        if float(ccfg.lookup_price(cfg, b.get("material", ""), db=db) or 0) <= 0:
+            missing.append(b.get("material") or b.get("part"))
+    return sorted(set(missing))
+
+
+def heavy(db, dims, boards):
+    length, depth, height = dims
+    return v2.quote_heavy(db, product_type="餐边柜", length_m=length, boards=boards,
+                          overall_width_m=depth / 100, overall_height_m=height / 100)
+
+
+def run_case(db, i, c):
+    product = db.query(Product).filter(Product.code == c["code"]).first()
+    sku = db.query(PricingSku).filter(PricingSku.sku_code == c["sku"]).first()
+    add = c.get("add", [])
+    remove = c.get("remove", [])
+    modify = c.get("modify", [])
+    both = v2.quote_both(
+        db, base_product_code=c["code"], base_sku_code=c["sku"],
+        category=product.category, target_length_m=c["dims"][0],
+        target_width_cm=c["dims"][1], target_height_cm=c["dims"][2],
+        target_material=c.get("material"), add_parts=add, remove_parts=remove,
+        modify_parts=modify, price_tier="daily", description=c["request"])
+
+    # Check whether system card 2 changes when only the structural request is removed.
+    paint_only = [p for p in add if v2._is_paint_part(p)]
+    plain = v2.quote_both(
+        db, base_product_code=c["code"], base_sku_code=c["sku"], category=product.category,
+        target_length_m=c["dims"][0], target_width_cm=c["dims"][1],
+        target_height_cm=c["dims"][2], add_parts=paint_only,
+        price_tier="daily", description="")
+    sys1 = (both.get("spec") or {}).get("final_price")
+    sys2 = (both.get("custom") or {}).get("final_price")
+    plain2 = (plain.get("custom") or {}).get("final_price")
+    structural_add = [p for p in add if not v2._is_paint_part(p)]
+    ignored = bool((structural_add or remove or modify or c.get("material")) and sys2 is not None and plain2 is not None
+                   and abs(float(sys2) - float(plain2)) < 0.01)
+    def board_summary(result):
+        out = {}
+        for b in result.get("custom_boards") or []:
+            key = f"{b.get('part')}|{b.get('material')}"
+            out[key] = out.get(key, 0) + float(b.get("qty", 1) or 1)
+        return out
+
+    base_boards = model_boards(c["base_dims"], c["base"])
+    target_boards = model_boards(c["dims"], c["target"])
+    missing = missing_prices(db, target_boards)
+    base_model = heavy(db, c["base_dims"], base_boards)
+    target_model = heavy(db, c["dims"], target_boards)
+    paint = 0.0
+    if c.get("paint"):
+        cfg = ccfg.get_config(db)
+        paint = v2._paint_surcharge(cfg, category="餐边柜", length_m=c["dims"][0],
+                                    depth_cm=c["dims"][1], height_cm=c["dims"][2])[0]
+    base_model_price = base_model.get("final_price")
+    target_model_price = target_model.get("final_price")
+    structure_delta = None
+    if base_model_price is not None and target_model_price is not None:
+        structure_delta = round(float(target_model_price) - float(base_model_price) + paint, 2)
+    independent = None
+    if sku and sku.daily_price is not None and not missing and structure_delta is not None:
+        independent = round(float(sku.daily_price) + structure_delta, 2)
+
+    unpriced = sorted({p.get("material") or p.get("name") for p in ((both.get("spec") or {}).get("parts_detail") or [])
+                       if not p.get("priced")})
+    failures, warnings = [], []
+    if ignored:
+        failures.append("系统卡2未计入结构/材质变化")
+    if unpriced:
+        note = "系统卡1缺价物料: " + "、".join(unpriced)
+        (failures if sys1 is not None else warnings).append(note)
+    if missing:
+        note = "独立核算缺物料价: " + "、".join(missing)
+        (failures if (sys1 is not None or sys2 is not None) else warnings).append(note)
+    if sys1 and independent and abs(float(sys1) - independent) / independent > 0.15:
+        diff = (float(sys1) - independent) / independent
+        warnings.append(f"系统卡1与独立核算相差{diff:+.1%}")
+    outcome = "失败" if failures else ("安全停止" if sys1 is None and sys2 is None else "通过")
+    return {
+        "序号": i, "来源": c["origin"], "产品": product.name, "基准SKU": sku.sku,
+        "需求": c["request"], "假设": c["assumption"],
+        "系统卡1": sys1, "系统卡2": sys2, "空白卡2": plain2, "独立核算价": independent,
+        "卡2板单": board_summary(both), "空白板单": board_summary(plain),
+        "独立基准板单价": base_model_price, "独立目标板单价": target_model_price,
+        "独立结构差额": structure_delta,
+        "系统卡2忽略需求": ignored, "系统卡1零价物料": unpriced, "独立缺价物料": missing,
+        "警告": warnings,
+        "结论": outcome if not failures else "；".join(failures),
+    }
+
+
+def main():
+    db = SessionLocal()
+    try:
+        rows = [run_case(db, i, c) for i, c in enumerate(CASES, 1)]
+    finally:
+        db.close()
+    Path("/tmp/custom_quote_sideboard_audit_10_20260721.json").write_text(
+        json.dumps(rows, ensure_ascii=False, indent=2), encoding="utf-8")
+    print(json.dumps({"count": len(rows), "passed": sum(r["结论"] == "通过" for r in rows),
+                      "rows": rows}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

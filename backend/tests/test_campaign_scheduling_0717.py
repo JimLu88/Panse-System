@@ -43,6 +43,8 @@ def test_discovery_upsert_window_and_daily_dedupe(db_session, monkeypatch):
         {"title": "88VIP大促第二场", "start": _dt_str(today + timedelta(days=2)),
          "end": _dt_str(today + timedelta(days=4)), "status": "报名中", "raw": "x"},
         {"title": "今天开抢", "start": _dt_str(today), "end": None, "status": None, "raw": "x"},
+        {"title": "三天后活动", "start": _dt_str(today + timedelta(days=3)),
+         "end": None, "status": "报名中", "raw": "x"},
         {"title": "远期活动", "start": _dt_str(today + timedelta(days=5)),
          "end": None, "status": "预热", "raw": "x"},
         {"title": "已开始活动", "start": _dt_str(today - timedelta(days=1)),
@@ -54,19 +56,20 @@ def test_discovery_upsert_window_and_daily_dedupe(db_session, monkeypatch):
 
     r1 = cds.run_daily_discovery(db_session)
     assert r1["ok"] is True
-    assert r1["inserted"] == 4 and r1["skipped"] == 1
-    assert r1["reminded"] == 2                                  # 2天后 + 今天开抢
+    assert r1["inserted"] == 5 and r1["skipped"] == 1
+    assert r1["reminded"] == 3                                  # 3天后 + 2天后 + 今天开抢
     assert len(calls) == 1 and calls[0]["title"] == "活动报名提醒"
     assert "88VIP大促第二场" in calls[0]["text"] and "今天开抢" in calls[0]["text"]
     assert "请去报名" in calls[0]["text"]
+    assert "三天后活动" in calls[0]["text"]
     assert "远期活动" not in calls[0]["text"] and "已开始活动" not in calls[0]["text"]
 
     # 重跑同一天: 不重复建行 (title+start 去重) + 不重复提醒 (last_notified_on 防重)
     r2 = cds.run_daily_discovery(db_session)
-    assert r2["inserted"] == 0 and r2["updated"] == 4
+    assert r2["inserted"] == 0 and r2["updated"] == 5
     assert r2["reminded"] == 0 and len(calls) == 1
     rows = db_session.query(CampaignCalendar).all()
-    assert len(rows) == 4
+    assert len(rows) == 5
     by_title = {r.title: r for r in rows}
     assert by_title["88VIP大促第二场"].last_notified_on == today
     assert by_title["远期活动"].last_notified_on is None
@@ -86,6 +89,31 @@ def test_discovery_same_title_new_period_is_new_row(db_session, monkeypatch):
     assert calls == []                                          # 都在3天窗外, 不提醒
 
 
+def test_discovery_unknown_date_actionable_reminds_once_and_ended_is_ignored(
+        db_session, monkeypatch):
+    """全体日期没解析出来时只发一条合并诊断；已结束阶段不误提醒。"""
+    _mock_discover(monkeypatch, {"ok": True, "campaigns": [
+        {"title": "狂暑季", "start": None, "end": None,
+         "status": "报名中", "raw": "狂暑季 报名中 2026.7.26-7.31"},
+        {"title": "第二场7月超级88", "start": None, "end": None,
+         "status": "已结束", "raw": "第二场7月超级88 已结束"},
+    ]})
+    calls = _mock_notify(monkeypatch)
+
+    first = cds.run_daily_discovery(db_session)
+    assert first["reminded"] == 0
+    assert first["unresolved_warning"] == 1
+    assert len(calls) == 1
+    assert calls[0]["title"] == "活动日期识别异常"
+    assert "狂暑季" in calls[0]["text"]
+    assert "没有解析出任何售卖档期" in calls[0]["text"]
+    assert "第二场7月超级88" not in calls[0]["text"]
+
+    second = cds.run_daily_discovery(db_session)
+    assert second["reminded"] == 0 and second["unresolved_warning"] == 0
+    assert len(calls) == 1
+
+
 # ── ③ WA 发现失败 → 飞书报错 ─────────────────────────────────────────────────
 
 def test_discovery_wa_failure_notifies_manual_fallback(db_session, monkeypatch):
@@ -96,6 +124,15 @@ def test_discovery_wa_failure_notifies_manual_fallback(db_session, monkeypatch):
     assert len(calls) == 1 and calls[0]["title"] == "活动发现抓取失败"
     assert "手动" in calls[0]["text"] and "营销页布局改了" in calls[0]["text"]
     assert db_session.query(CampaignCalendar).count() == 0
+
+
+def test_discovery_no_cards_explains_layout_change_not_no_activity(db_session, monkeypatch):
+    _mock_discover(monkeypatch, {"ok": False, "error": "no_campaigns_found"})
+    calls = _mock_notify(monkeypatch)
+    r = cds.run_daily_discovery(db_session)
+    assert "页面结构改版" in r["reason"]
+    assert "并不等于平台真的没有活动" in calls[0]["text"]
+    assert "诊断码：no_campaigns_found" in calls[0]["text"]
 
 
 # ── ④ auto_recon: 状态筛选 + 2小时窗 + 失败保持状态 + 成功核对 ────────────────

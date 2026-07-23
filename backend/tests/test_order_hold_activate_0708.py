@@ -7,6 +7,7 @@ from decimal import Decimal
 from app.models.import_file import ImportedFile
 from app.models.order import Order
 from app.services import import_storage
+from app.services import feishu_client, settings_service
 from app.services import order_flags
 from app.services import order_sheet_archive_service as oss
 
@@ -34,6 +35,11 @@ def test_remote_true_by_flag():
 
 def test_remote_true_by_keyword():
     assert order_flags.is_remote(_order(order_no="A4", remark="装修好了再发")) is True
+
+
+def test_remote_true_by_common_shipping_phrases():
+    for i, text in enumerate(("等通知", "延迟发货", "客户要求改为远期单", "迟点发货", "待客户确认")):
+        assert order_flags.is_remote(_order(order_no=f"KW{i}", seller_memo=text)) is True
 
 
 def test_remote_false_when_activated_overrides():
@@ -105,6 +111,10 @@ def test_repush_activated_covers_normal_but_idempotent(db_session, monkeypatch):
 def test_void_remote_pushed_voids_delayed(db_session, monkeypatch):
     monkeypatch.setattr(import_storage, "delete_record",
                         lambda db, fid: db.delete(db.get(ImportedFile, fid)))
+    monkeypatch.setattr(settings_service, "get", lambda *a, **k: "factory-chat")
+    sent: list[str] = []
+    monkeypatch.setattr(feishu_client, "send_text",
+                        lambda db, chat_id, text: sent.append(text) or {"message_id": "m1"})
     o = _order(order_no="DLY", remark="延迟等通知", factory_no=282)       # 已推 + 现延期
     db_session.add(o)
     db_session.add(ImportedFile(kind="order_sheet", original_filename=f"{date.today().isoformat()}_DLY.jpg",
@@ -118,6 +128,14 @@ def test_void_remote_pushed_voids_delayed(db_session, monkeypatch):
     assert "OK" not in res["voided_remote"]
     db_session.refresh(o)
     assert o.factory_no is None       # 延期单作废旧号 → 清号挂起
+    assert o.remote_seq is not None   # 通知前已分配远期单号
+    assert res["remote_transitions"] == [
+        {"order_no": "DLY", "old_factory_no": 282, "remote_seq": o.remote_seq}
+    ]
+    assert res["feishu_notified"] == ["DLY"]
+    assert res["feishu_failed"] == []
+    assert f"原【畔色 282 单】已作废" in sent[0]
+    assert f"【远期单 {o.remote_seq}】" in sent[0]
 
 
 def test_remind_remote_pushed_lists_delayed(db_session):

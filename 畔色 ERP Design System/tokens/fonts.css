@@ -1,0 +1,17 @@
+/* 畔色 ERP — Webfonts
+   中文: Noto Sans SC (开源等同思源黑体 / Source Han Sans)
+   数字/等宽: JetBrains Mono (表格内对齐数字)
+   说明: 原系统用苹方+SF 系统字体 (不内嵌)。为保证跨设备一致渲染，
+   设计系统改用 Google 托管的开源 Noto Sans SC。若你有思源/苹方授权字体，
+   可替换此处 @import 与 @font-face。 */
+
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700;900&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+:root {
+  /* 字体栈 — Noto Sans SC 打底，回退系统中文/英文字体 */
+  --font-sans: "Noto Sans SC", -apple-system, BlinkMacSystemFont, "SF Pro Text",
+    "PingFang SC", "Microsoft YaHei", "微软雅黑", system-ui, sans-serif;
+  /* 等宽 — 用于金额、编号、对账数字，确保数字逐位对齐 */
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "Menlo",
+    "Cascadia Code", monospace;
+}

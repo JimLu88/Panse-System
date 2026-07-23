@@ -1,0 +1,28 @@
+<!-- @dsCard group="Type" viewport="700x190" name="表格数字对齐" subtitle="等宽 + 右对齐，金额逐位对齐" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 18px 24px; background: var(--surface-card); font-family: var(--font-sans); color:var(--text-primary); }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { text-align:left; font-size:12px; color:var(--text-tertiary); font-weight:600; padding:6px 12px; border-bottom:1px solid var(--border); }
+  th.num, td.num { text-align:right; }
+  td { padding:8px 12px; border-bottom:1px solid var(--border-subtle); }
+  .num { font-family:var(--font-mono); font-feature-settings:"tnum" 1; }
+  .neg { color:var(--danger); }
+  .pos { color:var(--success); }
+</style>
+</head>
+<body>
+  <table>
+    <thead><tr><th>订单号</th><th class="num">金额</th><th class="num">成本</th><th class="num">毛利</th></tr></thead>
+    <tbody>
+      <tr><td class="num">PS-20260601</td><td class="num">¥12,480.00</td><td class="num">¥9,860.00</td><td class="num pos">+2,620.00</td></tr>
+      <tr><td class="num">PS-20260602</td><td class="num">¥3,200.50</td><td class="num">¥3,450.00</td><td class="num neg">−249.50</td></tr>
+      <tr><td class="num">PS-20260603</td><td class="num">¥128,900.00</td><td class="num">¥104,200.00</td><td class="num pos">+24,700.00</td></tr>
+    </tbody>
+  </table>
+</body>
+</html>

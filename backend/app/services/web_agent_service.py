@@ -92,7 +92,15 @@ _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
                 filename: str, *, level: str = "SKU级", timeout: int = 30,
-                start_dt: str | None = None, end_dt: str | None = None) -> dict:
+                start_dt: str | None = None, end_dt: str | None = None,
+                campaign_title: str | None = None,
+                campaign_phase: str | None = None,
+                campaign_start: str | None = None,
+                campaign_end: str | None = None,
+                official_rate: str | None = None,
+                campaign_id: str | None = None,
+                united_activity_id: str | None = None,
+                expected_rows: int | None = None) -> dict:
     """把 ERP 生成的 xlsx 传给 Web-Agent 千牛上传管线 (multipart)。返回 {job:<id>}。
     phase='stage' 挂文件停在提交前; phase='commit' ★不可逆★ 真提交 (仅比对表确认后调)。
     start_dt/end_dt(单品立减用, 'YYYY-MM-DD HH:MM:SS'): 给了则把千牛活动时间填成该精确档期。"""
@@ -101,6 +109,19 @@ def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
         data["start_dt"] = start_dt
     if end_dt:
         data["end_dt"] = end_dt
+    for key, value in {
+        "campaign_title": campaign_title,
+        "campaign_phase": campaign_phase,
+        "campaign_start": campaign_start,
+        "campaign_end": campaign_end,
+        "official_rate": official_rate,
+        "campaign_id": campaign_id,
+        "united_activity_id": united_activity_id,
+    }.items():
+        if value:
+            data[key] = str(value)
+    if expected_rows is not None:
+        data["expected_rows"] = str(int(expected_rows))
     try:
         r = requests.post(
             f"{BASE_URL}/api/upload/{channel}", headers=_headers(db),
@@ -156,6 +177,27 @@ def campaign_export_items(db: Session, campaign_title: str, *, timeout_s: int = 
             "screenshot_base64": res.get("screenshot_base64")}
 
 
+def campaign_inspect_detail(db: Session, campaign_title: str, *,
+                            timeout_s: int = 200) -> dict:
+    """只读进入指定活动，返回可见详情和 URL，供自动计划锁定档期/力度/活动 ID。"""
+    j = _post(db, "/api/campaign/inspect-detail",
+              {"campaign_title": campaign_title}, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True, "error": "淘宝登录态已失效"}
+    if not res.get("ok"):
+        return {"ok": False, "step": res.get("step"),
+                "error": res.get("error") or res.get("message") or "活动详情读取失败",
+                "screenshot_base64": res.get("screenshot_base64")}
+    return {"ok": True, "campaign_title": res.get("campaign_title"),
+            "url": res.get("url"), "body_text": res.get("body_text") or "",
+            "actual_titles": res.get("actual_titles") or [],
+            "screenshot_base64": res.get("screenshot_base64")}
+
+
 def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
     """活动生命周期 P4: WA 抓千牛营销活动列表 (POST /api/campaign/discover → wait_job)。
     返回 {ok, campaigns: [{title, start, end, status, raw}, ...]} 或 {ok:False, error}。"""
@@ -202,6 +244,16 @@ def wait_job(db: Session, job_id: str, *, timeout_s: int = 900,
         if status in ("done", "ok", "success", "error", "failed"):
             return last
         if not last.get("ok", True) and "error" in last:
+            # Long deterministic browser actions can temporarily block the
+            # Agent HTTP loop. A ReadTimeout/ConnectTimeout is not the job's
+            # terminal state; keep polling instead of launching the next task
+            # concurrently. Authentication/configuration errors remain terminal.
+            err = str(last.get("error") or "")
+            if any(marker in err for marker in (
+                    "ReadTimeout", "ConnectTimeout", "ConnectionError",
+                    "Connection aborted", "timed out")):
+                time.sleep(poll_s)
+                continue
             return last
         time.sleep(poll_s)
     last["status"] = "timeout"

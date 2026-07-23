@@ -1,0 +1,9 @@
+/* 畔色 ERP Design System — 全局样式入口
+   消费方只需链接此文件。仅由 @import 组成，不写具体规则。 */
+
+@import "./tokens/fonts.css";
+@import "./tokens/colors.css";
+@import "./tokens/typography.css";
+@import "./tokens/spacing.css";
+@import "./tokens/dark.css";
+@import "./tokens/base.css";

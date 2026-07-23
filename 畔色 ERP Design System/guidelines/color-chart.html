@@ -1,0 +1,29 @@
+<!-- @dsCard group="Colors" viewport="700x150" name="数据可视化色序" subtitle="ECharts 分类色，主色领衔" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--surface-card); font-family: var(--font-sans); }
+  .bars { display:flex; align-items:flex-end; gap:14px; height:64px; }
+  .bar { flex:1; border-radius:var(--radius-sm) var(--radius-sm) 0 0; }
+  .row { display:flex; gap:14px; margin-top:10px; }
+  .lab { flex:1; text-align:center; font-size:11px; font-family:var(--font-mono); color:var(--text-tertiary); }
+</style>
+</head>
+<body>
+  <div class="bars">
+    <div class="bar" style="background:var(--chart-1);height:100%"></div>
+    <div class="bar" style="background:var(--chart-2);height:78%"></div>
+    <div class="bar" style="background:var(--chart-3);height:62%"></div>
+    <div class="bar" style="background:var(--chart-4);height:88%"></div>
+    <div class="bar" style="background:var(--chart-5);height:54%"></div>
+    <div class="bar" style="background:var(--chart-6);height:70%"></div>
+    <div class="bar" style="background:var(--chart-7);height:46%"></div>
+  </div>
+  <div class="row">
+    <div class="lab">blue</div><div class="lab">amber</div><div class="lab">green</div><div class="lab">violet</div><div class="lab">sky</div><div class="lab">indigo</div><div class="lab">rose</div>
+  </div>
+</body>
+</html>

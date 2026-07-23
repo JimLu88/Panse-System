@@ -7,7 +7,8 @@ from app.services import scheduler as sch
 
 
 def _cfg(cron=None, interval=None):
-    return {"label": "x", "fn": lambda db: {}, "cron": cron, "interval_minutes": interval}
+    return {"label": "x", "fn": lambda db: {}, "cron": cron,
+            "interval_minutes": interval, "enabled": True}
 
 
 def test_effective_interval_default():
@@ -54,11 +55,36 @@ def test_effective_disabled():
     assert enabled is False
 
 
+def test_effective_default_disabled():
+    cfg = _cfg(interval=60)
+    cfg["enabled"] = False
+    _, _, enabled = sch._effective_schedule(cfg, {})
+    assert enabled is False
+
+
+def test_user_override_can_enable_default_disabled_job():
+    cfg = _cfg(interval=60)
+    cfg["enabled"] = False
+    _, _, enabled = sch._effective_schedule(cfg, {"enabled": True})
+    assert enabled is True
+
+
 def test_shipments_default_is_6h():
     sch._REGISTRY.clear()
     sch._register_default_jobs()
     assert "shipments_tracking_6h" in sch._REGISTRY
     assert sch._REGISTRY["shipments_tracking_6h"]["interval_minutes"] == 360
+    assert sch._REGISTRY["shipments_tracking_6h"]["enabled"] is False
+
+
+def test_load_reduction_schedules_are_scoped():
+    sch._REGISTRY.clear()
+    sch._register_default_jobs()
+    assert sch._REGISTRY["feishu_sync_30min"]["interval_minutes"] == 360
+    assert sch._REGISTRY["hourly_gallery_thumb_warm"]["cron"] == {"hour": 4, "minute": 10}
+    assert sch._REGISTRY["hourly_ingest_scan"]["cron"] == {"hour": "18-22", "minute": 15}
+    assert sch._REGISTRY["pull_catchup_30min"]["cron"] == {
+        "hour": "19-22", "minute": 17}
 
 
 def test_set_schedule_unknown_job_raises():

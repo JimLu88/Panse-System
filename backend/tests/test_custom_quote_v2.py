@@ -553,3 +553,227 @@ def test_quote_light_below_range_proportional():
     assert q["anchor"] == 1400.0
     assert "正比估" in q["anchor_method"]
     v2.cache_clear()
+
+
+# ─────────────── 2026-07-21 定制报价压力测试修复 ───────────────
+
+def test_quote_light_filters_placeholder_and_below_cost_skus():
+    """占位 SKU 和明显低于成本的脏价不能成为整件家具报价锚点。"""
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Product(code="Q1", name="测试餐边柜", category="餐厅-餐边柜"))
+    db.add_all([
+        PricingSku(product_code="Q1", sku="正常款1.5米", sku_code="Q101",
+                   size_info="长度：1500mm；深度：400mm；高度：800mm",
+                   daily_price=D("3000"), accounting_cost=D("1800")),
+        PricingSku(product_code="Q1", sku="尺寸定制专拍", sku_code="Q199",
+                   daily_price=D("1"), accounting_cost=D("1"), is_custom_placeholder=True),
+        PricingSku(product_code="Q1", sku="异常低价款", sku_code="Q102",
+                   daily_price=D("750"), accounting_cost=D("1800")),
+    ])
+    db.commit()
+    q = v2.quote_light(db, base_product_code="Q1", target_length_m=1.5)
+    assert q["anchor"] == 3000.0
+    assert q["final_price"] == 3000.0
+
+
+def test_quote_light_stops_when_only_placeholder_skus_exist():
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Product(code="Q2", name="测试专拍产品", category="餐厅-餐桌"))
+    db.add(PricingSku(product_code="Q2", sku="定制差价专拍", sku_code="Q299",
+                      daily_price=D("1"), is_custom_placeholder=True))
+    db.commit()
+    q = v2.quote_light(db, base_product_code="Q2", target_length_m=1.5)
+    assert q["final_price"] is None
+    assert "没有可用的真实SKU锚点" in q["error"]
+
+
+def test_paint_parser_requires_an_action_not_just_a_color():
+    assert len(v2.parse_paint_parts("蜂蜜餐桌改成白色油漆上色")) == 1
+    assert v2.parse_paint_parts("白色岩板餐桌改成1.6米") == []
+
+
+def test_paint_standard_table_adds_250_to_both_cards():
+    db = _db()
+    _seed_table(db)
+    plain = v2.quote_both(
+        db, base_product_code="P1", target_length_m=1.5,
+        target_width_cm=80, target_height_cm=75, category="餐桌")
+    painted = v2.quote_both(
+        db, base_product_code="P1", target_length_m=1.5,
+        target_width_cm=80, target_height_cm=75, category="餐桌",
+        add_parts=[{"material": "白色油漆上色", "qty": 1, "is_paint": True}])
+    assert painted["spec"]["final_price"] - plain["spec"]["final_price"] == 250.0
+    assert round(painted["custom"]["final_price"] - plain["custom"]["final_price"], 2) == 250.0
+    assert painted["custom"]["paint_surcharge"] == 250.0
+
+
+def test_quote_both_template_fallback_returns_editable_boards():
+    db = _db()
+    _seed_table(db)  # 产品有价格、无 BOM，必须走通用品类模板回退
+    both = v2.quote_both(
+        db, base_product_code="P1", target_length_m=1.5,
+        target_width_cm=80, target_height_cm=75, category="餐桌")
+    assert both["custom"]["from_bom"] is False
+    assert both["custom_boards"]
+    audit = v2.quote_heavy(
+        db, product_type="餐桌", length_m=1.5, boards=both["custom_boards"],
+        overall_width_m=0.8, overall_height_m=0.75)
+    assert audit["final_price"] == both["custom"]["final_price"]
+
+
+def test_quote_both_surfaces_large_method_gap():
+    db = _db()
+    _seed_table(db)
+    both = v2.quote_both(
+        db, base_product_code="P1", target_length_m=1.5,
+        target_width_cm=80, target_height_cm=75, category="餐桌")
+    # 测试数据的市场锚点约2950、模板板单约1965，必须把差异直接告诉客服。
+    assert both["custom"]["price_gap_rate"] > 0.35
+    assert "需人工核对款式复杂度后选用" in both["custom"]["price_gap_warning"]
+
+
+def test_paint_standard_sideboard_adds_350():
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Product(code="Q3", name="标准餐边柜", category="餐厅-餐边柜"))
+    db.add(PricingSku(product_code="Q3", sku="1.5米标准款", sku_code="Q301",
+                      size_info="长度：1500mm；深度：400mm；高度：800mm",
+                      daily_price=D("5000"), accounting_cost=D("3000")))
+    db.commit()
+    q = v2.quote_light(
+        db, base_product_code="Q3", target_length_m=1.5,
+        target_width_cm=40, target_height_cm=80,
+        add_parts=[{"material": "胡桃色油漆上色", "qty": 1, "is_paint": True}])
+    assert q["addremove_delta"] == 350.0
+    assert q["final_price"] == 5350.0
+
+
+def test_bom_board_defaults_use_small_product_real_dimensions():
+    """没有手填尺寸时，床头柜不能再套用旧的 210cm 高柜默认值。"""
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Material(code="AC-Q1", name="测试拉手", unit="个", price=D("20")))
+    db.add(Product(code="Q4", name="小床头柜", category="卧室-床头柜"))
+    db.add(PricingSku(product_code="Q4", sku="45厘米款", sku_code="Q401",
+                      size_info="长度：450mm；深度：400mm；高度：450mm",
+                      daily_price=D("1500"), accounting_cost=D("900")))
+    db.add(BomLine(product_code="Q4", sku_code="Q401", material_code="AC-Q1",
+                   material_name="测试拉手", qty_per_product=D("1"), size_type="个数"))
+    db.commit()
+    boards = v2.boards_from_product_bom(db, product_code="Q4", category="床头柜")
+    assert boards
+    assert max(float(b.get("length_cm") or 0) for b in boards) <= 50.0
+
+
+def _seed_custom_sideboard(db):
+    from app.models.bom import BomLine
+    from app.models.material import Material
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db.add_all([
+        Material(code="MW-C1", name="樱桃木-2.2cm", unit="平方米", price=D("300")),
+        Material(code="MW-C2", name="榉木-2.2cm", unit="平方米", price=D("280")),
+        Material(code="AC-C1", name="5mm灰色玻璃", unit="平方米", price=D("250")),
+        Material(code="AC-C2", name="超白玻璃", unit="平方米", price=D("300")),
+    ])
+    db.add(Product(code="C1", name="樱桃木测试餐边柜", category="餐厅-餐边柜", main_material="樱桃木"))
+    for code, sku in [("C101", "1.5米灰玻款"), ("C102", "1.8米超白款")]:
+        length = "1500" if code == "C101" else "1800"
+        db.add(PricingSku(
+            product_code="C1", sku=sku, sku_code=code,
+            size_info=f"长度：{length}mm；深度：480mm；高度：1980mm",
+            daily_price=D("8000"), wood_cost=D("3000"), accounting_cost=D("5000"),
+        ))
+    db.add(BomLine(product_code="C1", sku="1.5米灰玻款", sku_code="C101",
+                   material_code="AC-C1", material_name="5mm灰色玻璃",
+                   qty_per_product=D("2"), size_type="平面", remark="玻璃门"))
+    db.add(BomLine(product_code="C1", sku="1.8米超白款", sku_code="C102",
+                   material_code="AC-C2", material_name="超白玻璃",
+                   qty_per_product=D("2"), size_type="平面", remark="玻璃门"))
+    db.commit()
+
+
+def test_bom_picker_locks_exact_sku_and_structure_enters_card2():
+    db = _db()
+    _seed_custom_sideboard(db)
+    picked = v2.boards_from_product_bom(
+        db, product_code="C1", category="餐边柜", base_sku_code="C102",
+        target_length_m=1.8, target_width_cm=48, target_height_cm=198)
+    assert any(b["material"] == "超白玻璃" for b in picked)
+    assert not any(b["material"] == "5mm灰色玻璃" for b in picked)
+
+    both = v2.quote_both(
+        db, base_product_code="C1", base_sku_code="C101", category="餐边柜",
+        target_length_m=1.5, target_width_cm=48, target_height_cm=198,
+        target_material="榉木", add_parts=[{"material": "抽屉面板", "qty": 3}],
+        modify_parts=[{"name": "玻璃门", "material": "5mm灰色玻璃",
+                       "material_real": "榉木-2.2cm", "qty": 2}],
+        description="1.5米餐边柜改榉木，玻璃门改实木门，下柜三抽",
+    )
+    boards = both["custom_boards"]
+    assert both["custom"]["final_price"] is not None
+    assert any("抽屉" in b["part"] for b in boards)
+    assert any(b["material"] == "榉木-2.2cm" for b in boards)
+    assert not any("玻璃" in b["material"] for b in boards)
+
+
+def test_unknown_requested_material_stops_both_quote_cards():
+    db = _db()
+    _seed_custom_sideboard(db)
+    both = v2.quote_both(
+        db, base_product_code="C1", base_sku_code="C101", category="餐边柜",
+        target_length_m=1.5, target_width_cm=48, target_height_cm=198,
+        add_parts=[{"material": "感应灯带", "qty": 1}],
+        description="增加一条感应灯带",
+    )
+    assert both["spec"]["final_price"] is None
+    assert "感应灯带" in both["spec"]["missing_materials"]
+    assert both["custom"]["final_price"] is None
+    assert "感应灯带" in both["custom"]["missing_materials"]
+
+
+def test_unknown_explicit_replacement_cannot_borrow_old_material_price():
+    db = _db()
+    _seed_custom_sideboard(db)
+    both = v2.quote_both(
+        db, base_product_code="C1", base_sku_code="C101", category="餐边柜",
+        target_length_m=1.5, target_width_cm=48, target_height_cm=198,
+        modify_parts=[{"name": "门板", "material": "樱桃木-2.2cm",
+                       "material_real": "碳纤维蜂窝门板", "qty": 3}],
+        description="门板改碳纤维蜂窝门板",
+    )
+    assert both["spec"]["final_price"] is None
+    assert "碳纤维蜂窝门板" in both["spec"]["missing_materials"]
+    assert both["custom"]["final_price"] is None
+
+
+def test_lower_only_remove_upper_without_standard_height_does_not_fake_missing_material():
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Product(code="LOW1", name="樱桃木无尺寸餐边柜",
+                   category="餐厅-餐边柜", main_material="樱桃木"))
+    db.add(PricingSku(product_code="LOW1", sku="标准款", sku_code="LOW101",
+                      daily_price=D("6000"), accounting_cost=D("4000")))
+    db.commit()
+    quote = v2.quote_light(
+        db, base_product_code="LOW1", target_length_m=1.5,
+        target_width_cm=48, target_height_cm=85,
+        remove_parts=[{"material": "上柜", "qty": 1}],
+    )
+    assert quote["final_price"] is not None
+    assert "上柜" not in quote["missing_materials"]

@@ -59,6 +59,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 普通定制·增减部位逐部位算价 (参考程序 style-customization 逻辑, 系数用我们自己的, 后台可调):
     "style_labor_ratio": 0.30,      # 增减部位人工 = 材料成本 × 此 (≈出厂人工占比23.08%的等价: 0.30/1.30)
     "style_remove_credit": 0.85,    # 删除部位只返还此比例「材料成本」(决策①: 删件只省料, 不退人工/利润; 铁律「只高不低」)
+    # 油漆/上色为【最终零售追加价】, 不再套部位人工/厂利/畔色利润。尺寸只做温和修正:
+    # 80%固定开机/调色成本 + 20%按喷涂面积变化。标准餐桌≈250, 标准餐边柜≈350。
+    "paint_table_base": 250,
+    "paint_sideboard_base": 350,
+    "paint_fixed_ratio": 0.80,
     "competitor_coupon_rate": 0.08,  # 竞品通用平台券率 (券后价对照, 显示减额)
     "projection_type": "front",     # front=正面投影(宽×高) / top=俯视(宽×深)
     "projection_rate": 900,         # 投影面积对照系数 元/㎡

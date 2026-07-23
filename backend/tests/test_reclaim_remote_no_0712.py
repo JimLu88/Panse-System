@@ -67,5 +67,6 @@ def test_push_entry_autoheals(db_session, _feishu_stub):
     o = _order(db, "RC3", factory_no=305, memo="等通知")
     res = osa.push_pending_images(db, include_baseline=True)
     assert "RC3" not in res["order_nos"]                      # 远期不推
+    assert res["remaining"] == 0
     db.refresh(o)
     assert o.factory_no is None and o.remote_seq is not None  # 号已收回

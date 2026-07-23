@@ -16,12 +16,14 @@ from __future__ import annotations
 import hashlib
 import os
 import re
+import shutil
 import threading
 from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -47,6 +49,14 @@ _THUMB_EDGE = 320
 _PREVIEW_EDGE = 1280
 _COMPRESS_CONCURRENCY = max(1, int(os.environ.get("GALLERY_COMPRESS_CONCURRENCY", "3")))
 _compress_sem = threading.Semaphore(_COMPRESS_CONCURRENCY)
+
+
+class MoveImagesRequest(BaseModel):
+    """在同一产品图库内整理图片；目标分组不存在时自动创建。"""
+
+    folder: str
+    paths: list[str]
+    target_group: str
 
 
 def _root() -> Path:
@@ -144,6 +154,115 @@ def folder_tree(folder: str = Query(..., description="根目录下的产品文�
     return {"folder": folder, "groups": groups}
 
 
+def _validated_group_name(group: str) -> str:
+    """校验界面输入的一级分组名，禁止路径字符和隐藏目录。"""
+    grp = group.strip()
+    if not grp:
+        raise HTTPException(400, "目标文件夹名不能为空")
+    if grp != _ROOT_GROUP:
+        if len(grp) > 60:
+            raise HTTPException(400, "目标文件夹名不能超过 60 个字符")
+        if grp in {".", ".."} or grp.startswith(".") or _UNSAFE_NAME_RE.search(grp):
+            raise HTTPException(400, "目标文件夹名包含不允许的字符")
+    return grp
+
+
+@router.post("/move")
+def move_images(payload: MoveImagesRequest):
+    """在当前产品图库内批量移动图片，不覆盖目标文件夹中的同名图片。"""
+    folder_name = payload.folder.strip()
+    if not folder_name:
+        raise HTTPException(400, "产品图库文件夹不能为空")
+    if not payload.paths:
+        raise HTTPException(400, "请至少选择一张图片")
+    if len(payload.paths) > 500:
+        raise HTTPException(400, "单次最多整理 500 张图片")
+
+    base = _safe_resolve(folder_name)
+    if not base.is_dir():
+        raise HTTPException(404, "产品图库文件夹不存在")
+    base_resolved = base.resolve()
+    target_group = _validated_group_name(payload.target_group)
+    target_dir = (base if target_group == _ROOT_GROUP
+                  else _safe_resolve(str(Path(folder_name) / target_group)))
+
+    # 先把全部来源路径做越界校验，再创建目录/移动，避免错误请求只执行一半。
+    sources: list[Path] = []
+    seen: set[Path] = set()
+    for rel in payload.paths:
+        src = _safe_resolve(rel)
+        try:
+            src.relative_to(base_resolved)
+        except ValueError:
+            raise HTTPException(403, "只能整理当前产品图库内的图片")
+        if src not in seen:
+            seen.add(src)
+            sources.append(src)
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+    moved: list[dict[str, str]] = []
+    conflicts: list[str] = []
+    missing: list[str] = []
+    invalid: list[str] = []
+    failed: list[dict[str, str]] = []
+    skipped_same = 0
+    gallery_root = _root().resolve()
+
+    for src in sources:
+        src_rel = str(src.relative_to(gallery_root)).replace("\\", "/")
+        if not src.exists():
+            missing.append(src_rel)
+            continue
+        if not src.is_file() or src.suffix.lower() not in _IMAGE_EXT:
+            invalid.append(src_rel)
+            continue
+        dst = target_dir / src.name
+        if src == dst.resolve():
+            skipped_same += 1
+            continue
+        if dst.exists():
+            conflicts.append(src.name)
+            continue
+
+        # 用独占创建保证同名绝不覆盖；复制成功后才删除来源，任一步失败都保留原图。
+        created_dst = False
+        try:
+            with src.open("rb") as reader, dst.open("xb") as writer:
+                created_dst = True
+                shutil.copyfileobj(reader, writer, length=1024 * 1024)
+            shutil.copystat(src, dst)
+            src.unlink()
+        except FileExistsError:
+            conflicts.append(src.name)
+            continue
+        except OSError as exc:
+            if created_dst:
+                dst.unlink(missing_ok=True)
+            failed.append({"path": src_rel, "reason": str(exc)})
+            continue
+
+        dst_rel = str(dst.relative_to(gallery_root)).replace("\\", "/")
+        moved.append({"from": src_rel, "to": dst_rel})
+
+    return {
+        "ok": not failed,
+        "folder": folder_name,
+        "target_group": target_group,
+        "requested": len(sources),
+        "moved": len(moved),
+        "moved_paths": moved,
+        "conflicts": len(conflicts),
+        "conflict_names": conflicts,
+        "missing": len(missing),
+        "missing_paths": missing,
+        "invalid": len(invalid),
+        "invalid_paths": invalid,
+        "skipped_same": skipped_same,
+        "failed": len(failed),
+        "failures": failed,
+    }
+
+
 def _safe_filename(name: str, default_ext: str = ".jpg") -> str:
     """清洗上传文件名: 去路径分隔符/非法字符, 保留扩展名, 兜底名。"""
     base = Path(name or "").name                  # 去掉任何目录部分 (防 ../)
@@ -204,7 +323,10 @@ async def upload_image(
         target_dir = base
 
     # 3) 校验 + 落盘 (大小上限 + 扩展名)
-    fname = _safe_filename(file.filename or "")
+    raw_name = file.filename or ""
+    if Path(raw_name).suffix.lower() not in _IMAGE_EXT:
+        raise HTTPException(400, "只允许图片文件 (jpg/png/webp/gif/bmp)")
+    fname = _safe_filename(raw_name)
     if Path(fname).suffix.lower() not in _IMAGE_EXT:
         raise HTTPException(400, "只允许图片文件 (jpg/png/webp/gif/bmp)")
     out = _dedupe_path(target_dir, fname)
@@ -285,18 +407,22 @@ async def import_folder_bulk(
         target_dir = base
 
     added = skipped = invalid = 0
+    too_large = unsupported = write_failed = 0
     saved: list[Path] = []
     for f in files:
-        fname = _safe_filename(f.filename or "")
-        if Path(fname).suffix.lower() not in _IMAGE_EXT:
+        raw_name = f.filename or ""
+        if Path(raw_name).suffix.lower() not in _IMAGE_EXT:
             invalid += 1
+            unsupported += 1
             continue
+        fname = _safe_filename(raw_name)
         out = target_dir / fname
         if out.exists():                # 同名跳过: 不覆盖原图、不建压缩副本
             skipped += 1
             continue
         size = 0
         ok = True
+        reject_reason: Optional[str] = None
         try:
             with out.open("wb") as w:
                 while True:
@@ -306,13 +432,19 @@ async def import_folder_bulk(
                     size += len(chunk)
                     if size > _MAX_UPLOAD_BYTES:
                         ok = False
+                        reject_reason = "too_large"
                         break
                     w.write(chunk)
         except OSError:
             ok = False
+            reject_reason = "write_failed"
         if not ok:
             out.unlink(missing_ok=True)
             invalid += 1
+            if reject_reason == "too_large":
+                too_large += 1
+            elif reject_reason == "write_failed":
+                write_failed += 1
             continue
         added += 1
         saved.append(out)
@@ -325,7 +457,9 @@ async def import_folder_bulk(
             except Exception:  # noqa: BLE001
                 pass
     return {"ok": True, "folder": target_name, "group": grp or _ROOT_GROUP,
-            "added": added, "skipped": skipped, "invalid": invalid, "total": len(files)}
+            "added": added, "skipped": skipped, "invalid": invalid,
+            "too_large": too_large, "unsupported": unsupported,
+            "write_failed": write_failed, "total": len(files)}
 
 
 @router.post("/refresh-images")

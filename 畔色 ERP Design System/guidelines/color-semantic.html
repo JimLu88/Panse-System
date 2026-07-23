@@ -1,0 +1,40 @@
+<!-- @dsCard group="Colors" viewport="700x200" name="语义状态色" subtitle="成功 / 警告 / 危险 / 信息 — 实色 + 软底" -->
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { margin: 0; padding: 22px 24px; background: var(--surface-card); font-family: var(--font-sans); }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .col .solid { height: 52px; border-radius: var(--radius-md); display:flex; align-items:center; justify-content:center; color:#fff; font-weight:600; font-size:13px; }
+  .col .soft { height: 34px; border-radius: var(--radius-sm); margin-top:8px; display:flex; align-items:center; padding:0 12px; font-size:12px; font-weight:600; }
+  .name { font-size: 12px; color: var(--text-secondary); margin-top: 8px; }
+  .hex { font-family: var(--font-mono); font-size: 11px; color: var(--text-tertiary); }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="col">
+      <div class="solid" style="background:var(--success)">成功 Success</div>
+      <div class="soft" style="background:var(--success-soft);color:var(--success);border:1px solid var(--success-border)">已对账 · 正常</div>
+      <div class="name">success <span class="hex">#10b981</span></div>
+    </div>
+    <div class="col">
+      <div class="solid" style="background:var(--warning)">警告 Warning</div>
+      <div class="soft" style="background:var(--warning-soft);color:#b45309;border:1px solid var(--warning-border)">待处理 · 缺料</div>
+      <div class="name">warning <span class="hex">#f59e0b</span></div>
+    </div>
+    <div class="col">
+      <div class="solid" style="background:var(--danger)">危险 Danger</div>
+      <div class="soft" style="background:var(--danger-soft);color:var(--danger);border:1px solid var(--danger-border)">超卖 · 负库存</div>
+      <div class="name">danger <span class="hex">#f43f5e</span></div>
+    </div>
+    <div class="col">
+      <div class="solid" style="background:var(--info)">信息 Info</div>
+      <div class="soft" style="background:var(--info-soft);color:#0369a1;border:1px solid var(--info-border)">提示 · 链接</div>
+      <div class="name">info <span class="hex">#0ea5e9</span></div>
+    </div>
+  </div>
+</body>
+</html>
