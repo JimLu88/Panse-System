@@ -80,7 +80,7 @@ def format_monthly_plan(plan: dict) -> str:
     if open_anomalies:
         lines.extend([
             "",
-            f"⚠️ 数量异常待确认 {open_anomalies} 单（4~5 件提示；>5 件按 1 个定制任务隔离）",
+            f"⚠️ 数量异常待确认 {open_anomalies} 单（>3 件按 1 个定制任务隔离）",
         ])
     lines.extend([
         "",

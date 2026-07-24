@@ -184,14 +184,14 @@ def classify_order(
     anomaly = None
     effective_qty = raw_qty
     confirmed = str(o.order_no or "") in _confirmed_bulk(cfg)
-    if raw_qty > 5 and not confirmed:
-        # 超过 5 件从成品热销统计隔离，只保留 1 个生产任务。
-        anomaly = "qty_gt5"
+    if raw_qty > 3 and not confirmed:
+        # 淘宝定制/补差链接常用「拍多件」凑成交金额，拍下数量不等于真实成品数量。
+        # 未经人工确认的数量 > 3 订单统一从成品热销统计隔离，只保留 1 个生产任务；
+        # 已确认的真实批量订单仍按原数量计算。
+        anomaly = "qty_gt3"
         effective_qty = 1
         if kind != "skip":
             kind = "custom"
-    elif 4 <= raw_qty <= 5:
-        anomaly = "qty_4_5"
 
     return DemandObservation(
         order_id=int(o.id or 0),
@@ -405,7 +405,7 @@ def sync_quantity_anomalies(
     db: Session, *, cfg: Optional[dict] = None, as_of: Optional[date] = None,
     lookback_days: int = 90,
 ) -> dict:
-    """把 4~5 件提醒和 >5 件隔离结果写入异常中心，供人工确认真实批量采购。"""
+    """把数量 >3 的自动隔离结果写入异常中心，供人工确认真实批量采购。"""
     from app.models.exception import DataException
 
     as_of = as_of or date.today()
@@ -428,11 +428,7 @@ def sync_quantity_anomalies(
     created = updated = resolved = 0
     for source_pk, obs in current.items():
         row = existing.get(source_pk)
-        description = (
-            f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
-            if obs.anomaly == "qty_gt5"
-            else f"订单 {obs.order_no} 数量 {obs.raw_qty}，按实际数量计算但需确认是否批量采购"
-        )
+        description = f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
         context = {
             "order_no": obs.order_no,
             "product_code": obs.product_code,

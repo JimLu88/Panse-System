@@ -41,6 +41,7 @@ def _order(db, no, *, qty=1, sku_code="PPS2601001010111", sku="标准款",
 def test_quantity_cleaning_and_custom_detection(db_session):
     db = db_session
     _order(db, "NORMAL3", qty=3)
+    _order(db, "COLLAPSE4", qty=4)
     _order(db, "WARN5", qty=5)
     _order(db, "BAD3200", qty=3200)
     _order(db, "SUFFIX99", qty=2, sku_code="PPS2601001010199")
@@ -50,14 +51,36 @@ def test_quantity_cleaning_and_custom_detection(db_session):
             db, start=AS_OF - timedelta(days=1), end=AS_OF
         )
     }
-    assert (rows["NORMAL3"].kind, rows["NORMAL3"].effective_qty) == ("standard", 3)
+    assert (
+        rows["NORMAL3"].kind,
+        rows["NORMAL3"].effective_qty,
+        rows["NORMAL3"].anomaly,
+    ) == ("standard", 3, None)
+    assert (
+        rows["COLLAPSE4"].kind,
+        rows["COLLAPSE4"].effective_qty,
+        rows["COLLAPSE4"].anomaly,
+    ) == ("custom", 1, "qty_gt3")
     assert (rows["WARN5"].kind, rows["WARN5"].effective_qty, rows["WARN5"].anomaly) == (
-        "standard", 5, "qty_4_5"
+        "custom", 1, "qty_gt3"
     )
     assert (rows["BAD3200"].kind, rows["BAD3200"].effective_qty, rows["BAD3200"].anomaly) == (
-        "custom", 1, "qty_gt5"
+        "custom", 1, "qty_gt3"
     )
     assert rows["SUFFIX99"].kind == "custom"
+
+
+def test_confirmed_bulk_order_keeps_original_quantity(db_session):
+    db = db_session
+    _order(db, "REAL-BULK-4", qty=4)
+    rows = demand.load_observations(
+        db,
+        start=AS_OF - timedelta(days=1),
+        end=AS_OF,
+        cfg={"confirmed_bulk_order_nos": ["REAL-BULK-4"]},
+    )
+    row = next(x for x in rows if x.order_no == "REAL-BULK-4")
+    assert (row.kind, row.effective_qty, row.anomaly) == ("standard", 4, None)
 
 
 def test_promo_is_normalized_and_cny_is_retained_separately(db_session):

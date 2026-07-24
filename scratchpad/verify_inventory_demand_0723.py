@@ -22,7 +22,7 @@ try:
         cfg=cfg,
     )
     large = sorted(
-        [r for r in rows if r.raw_qty > 5],
+        [r for r in rows if r.raw_qty > 3],
         key=lambda x: x.raw_qty,
         reverse=True,
     )
