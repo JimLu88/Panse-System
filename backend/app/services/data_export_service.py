@@ -565,6 +565,7 @@ _PRICING_CN: dict[str, str] = {
     "signup_price_mid": "超级立减10%活动报名价",
     "signup_price_big": "88VIP/普通大促12%活动报名价",
     "signup_price_618": "618/双11 15%活动报名价",
+    "campaign_price_status": "活动报名价格状态/备注",
     # 单品立减 (派生, 加法口径: 淘宝该填的 折 + 降价金额, 每档不同)
     "mid_disc_zhe": "中促单品立减(折)", "mid_disc_amt": "中促降价金额(元)",
     "big_disc_zhe": "大促单品立减(折)", "big_disc_amt": "大促降价金额(元)",
@@ -592,6 +593,7 @@ _PRICING_COST_NUM_FIELDS = [
 _PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
 # 活动报名价 (由 campaign_service 唯一口径实时计算)
 _PRICING_REPORT_FIELDS = ["signup_price_mid", "signup_price_big", "signup_price_618"]
+_PRICING_STATUS_FIELDS = ["campaign_price_status"]
 # 单品立减 (派生, 加法口径 single_item_discounts): 只出【降价金额】(淘宝单品立减/单品补贴直接填这个数,
 #   SKU级别不支持打折, 故不再出折), 中促/大促/超大促。替代旧乘法系数。
 _PRICING_DISCOUNT_FIELDS = ["mid_disc_amt", "big_disc_amt", "big618_disc_amt"]
@@ -608,13 +610,14 @@ _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
     ("淘宝大促", "F57F17", ["big_platform_discount", "big_buyer_price", "big_vip_commission", "big_shop_receipt", "big_vip_final"]),
     ("报名价", "1565C0", _PRICING_REPORT_FIELDS),
     ("单品立减(淘宝填)", "0D9488", _PRICING_DISCOUNT_FIELDS),
+    ("活动价格状态", "B45309", _PRICING_STATUS_FIELDS),
     ("小红书", "AD1457", ["xhs_item_id", "xhs_sku_name", "xhs_sku_id", "xhs_list_price", "xhs_activity_price", "xhs_promo_discount", "xhs_promo_price"]),
     ("配件成本明细", "5D4037", _PRICING_COST_FIELDS),   # 工厂成本拆到每个配件 (图册导出)
 ]
 _PRICING_FIELD_COLOR: dict[str, str] = {f: color for _n, color, fs in _PRICING_CATEGORIES for f in fs}
 
 
-def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict]]:
+def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict], dict[str, str]]:
     """下载参考表专用价格快照；数学与自动报名 builder 完全同源。"""
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
@@ -622,6 +625,7 @@ def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict]
 
     signup: dict[str, dict] = {t: {} for t in ("mid", "big", "big618")}
     discount: dict[str, dict] = {t: {} for t in ("mid", "big", "big618")}
+    notes: dict[str, str] = {}
     skus = db.execute(select(PricingSku)).scalars().all()
     promo_by_sku = {
         p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()
@@ -631,13 +635,27 @@ def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict]
         p = promo_by_sku.get(s.sku_code)
         if p is None:
             continue
+        row_notes: list[str] = []
+        if getattr(s, "is_custom_placeholder", False):
+            row_notes.append("定制占位SKU：只用保护报名价，不生成单品立减")
         for tier in ("mid", "big", "big618"):
             price, _ = campaign_service.signup_price_for_sku(s, p, tier)
             core = campaign_service.discount_for_sku(
                 db, s, p, tier, no_sales_items=no_sales_items)
             signup[tier][s.sku_code] = price
             discount[tier][s.sku_code] = core.get("deduct") if core else None
-    return signup, discount
+            if core is None and not getattr(s, "is_custom_placeholder", False):
+                big = float(p.big_buyer_price) if p.big_buyer_price is not None else None
+                target = round(big * 1.03, 2) if tier == "mid" and big is not None else big
+                line = float(p.coupon_floor_price) if p.coupon_floor_price is not None else None
+                if target is None:
+                    row_notes.append(f"{tier}缺ERP目标到手价")
+                elif line is not None and target - line > 1.005:
+                    row_notes.append(
+                        f"{tier}历史券后线{line:.2f}低于ERP目标{target:.2f}超过1元，"
+                        "安全门阻止降价，需轮换/人工处理")
+        notes[s.sku_code] = "；".join(dict.fromkeys(row_notes)) if row_notes else "价格口径完整"
+    return signup, discount, notes
 
 
 def _build_pricing_sheet(db: Session, wb, used: set[str]):
@@ -651,12 +669,13 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
     ws = wb.create_sheet(_safe_sheet_name(label, used))
 
     base_cols = [c.key for c in PricingSku.__table__.columns]   # 模型顺序 → 与 VLOOKUP/公式列位一致
-    all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS + _PRICING_DISCOUNT_FIELDS
+    all_fields = (base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS
+                  + _PRICING_DISCOUNT_FIELDS + _PRICING_STATUS_FIELDS)
     headers = [_PRICING_CN.get(f) or _cn_header("pricing_sku", f) for f in all_fields] + ["异常批注"]
     ws.append(headers)
 
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    signup_map, discount_map = _campaign_export_maps(db)
+    signup_map, discount_map, campaign_notes = _campaign_export_maps(db)
 
     # number_format
     model_cols = {c.key: c for c in PricingSku.__table__.columns}
@@ -693,6 +712,7 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
                "big618_disc_amt": discount_map["big618"].get(s.sku_code)}
         row += [(round(float(_dv[f]) * 10, 2) if f.endswith("_zhe") else float(_dv[f]))
                 if _dv[f] is not None else None for f in _PRICING_DISCOUNT_FIELDS]
+        row += [campaign_notes.get(s.sku_code) for _f in _PRICING_STATUS_FIELDS]
         matched: list[str] = []
         for k in {str(getattr(s, "id", "") or ""), str(s.sku_code or "")}:
             if k and k in notes:
@@ -728,7 +748,7 @@ _CATALOG_DATA_ROW_PT = 20     # 其余 SKU 行行高
 _CATALOG_WIDE = {             # 文本列加宽
     "product_name": 22, "taobao_title": 26, "sku": 18, "size_info": 16,
     "remark": 18, "taobao_url": 22, "xhs_sku_name": 16, "image_url": 22,
-    "other_desc": 18, "parts_remark": 18,
+    "other_desc": 18, "parts_remark": 18, "campaign_price_status": 46,
 }
 
 
@@ -748,7 +768,8 @@ def build_catalog_xlsx(db: Session):
 
     base_cols = [c.key for c in PricingSku.__table__.columns]
     all_fields = (base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS
-                  + _PRICING_DISCOUNT_FIELDS + _PRICING_COST_FIELDS)
+                  + _PRICING_DISCOUNT_FIELDS + _PRICING_STATUS_FIELDS
+                  + _PRICING_COST_FIELDS)
     IMG_COL = 1
     FIRST_DATA_COL = 2
     field_pos = {f: FIRST_DATA_COL + i for i, f in enumerate(all_fields)}
@@ -854,7 +875,7 @@ def build_catalog_xlsx(db: Session):
     # 数据行 + 产品图
     from app.services import pricing_calc_service
     promo_params = pricing_calc_service.get_promo_params(db)   # 仅用于展示平台系数
-    signup_map, discount_map = _campaign_export_maps(db)
+    signup_map, discount_map, campaign_notes = _campaign_export_maps(db)
     gray = Font(color="94A3B8")
     keep_alive: list = []
     override_by_row: dict[int, bool] = {}
@@ -881,6 +902,8 @@ def build_catalog_xlsx(db: Session):
                 elif f in _PRICING_DISCOUNT_FIELDS:        # 单品立减(派生): 折(×10) / 降价金额(元)
                     dv = disc_vals.get(f)
                     v = (round(float(dv) * 10, 2) if f.endswith("_zhe") else float(dv)) if dv is not None else None
+                elif f in _PRICING_STATUS_FIELDS:
+                    v = campaign_notes.get(s.sku_code)
                 elif f in model_cols:
                     v = _translate(f, _cell(getattr(s, f, None)))
                 elif f in promo_cols:
@@ -1001,7 +1024,7 @@ def build_signup_form_xlsx(db: Session):
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     prod_by_code = {p.code: p for p in db.execute(select(Product)).scalars().all()}
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    signup_map, discount_map = _campaign_export_maps(db)
+    signup_map, discount_map, campaign_notes = _campaign_export_maps(db)
 
     # 分组(剔除作废/服务/占位非产品), 供产品图纵向合并
     groups: list[tuple[str, list]] = []
@@ -1024,7 +1047,8 @@ def build_signup_form_xlsx(db: Session):
     headers = ["产品图", "产品名称", "规格", "一口价", "ERP日常价",
                "超级立减10%活动报名价", "超级立减目标到手", "超级立减单品立减(元)",
                "88VIP/普通大促12%活动报名价", "大促目标到手", "大促单品立减(元)",
-               "618/双11 15%活动报名价", "超大促目标到手", "超大促单品立减(元)"]
+               "618/双11 15%活动报名价", "超大促目标到手", "超大促单品立减(元)",
+               "状态/备注"]
     money = "#,##0.00"
     money_cols = set(range(4, 15))
     zhe_cols: set[int] = set()
@@ -1079,6 +1103,7 @@ def build_signup_form_xlsx(db: Session):
                 discount_map["big"].get(s.sku_code),
                 signup_map["big618"].get(s.sku_code), big_target,
                 discount_map["big618"].get(s.sku_code),
+                campaign_notes.get(s.sku_code),
             ]
             for ci, v in enumerate(row_vals, start=1):
                 cell = ws.cell(r, ci, v)
@@ -1111,7 +1136,7 @@ def build_signup_form_xlsx(db: Session):
         for rr in range(r0, r1 + 1):
             ws.cell(rr, 1).border = border
 
-    widths = [15, 24, 16, 11, 13, 17, 15, 18, 20, 15, 18, 19, 16, 19]
+    widths = [15, 24, 16, 11, 13, 17, 15, 18, 20, 15, 18, 19, 16, 19, 46]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "C3"
