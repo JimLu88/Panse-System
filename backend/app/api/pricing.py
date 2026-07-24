@@ -215,9 +215,8 @@ def list_pricing_skus(
     gallery_urls = sku_gallery_url_map(
         [(r.product_code, r.sku_code, r.sku) for r in rows])
 
-    # 报名价法真实报名价 (2026-07-17): 老列 taobao_activity_price(=日常价法)已废弃口径,
-    # 前端「淘宝活动报名价」列改读派生的 signup_price_big(=大促到手锚反解, 与实际推送一致)。
-    promo_params = pricing_calc_service.get_promo_params(db)
+    # 活动报名价只读 campaign_service 唯一口径：真 SKU=ERP 日常价，占位=保护价。
+    from app.services import campaign_service
 
     items = []
     for r in rows:
@@ -226,9 +225,12 @@ def list_pricing_skus(
         base.update(_ext_dict(promo_map.get(r.sku_code)))
         _promo = promo_map.get(r.sku_code)
         if _promo is not None:
-            _rp = pricing_calc_service.report_prices(_promo, promo_params)
-            base["signup_price_big"] = _rp.get("signup_price_big")
-            base["signup_price_mid"] = _rp.get("signup_price_mid")
+            for _tier, _field in (
+                    ("mid", "signup_price_mid"),
+                    ("big", "signup_price_big"),
+                    ("big618", "signup_price_618")):
+                _price, _remark = campaign_service.signup_price_for_sku(r, _promo, _tier)
+                base[_field] = _price
         base["gallery_image_url"] = gallery_urls.get(r.sku_code)
         cvs = cv_map.get(r.sku_code, {})
         for fdef in custom_fields:
@@ -657,18 +659,30 @@ class ShopPriceRow(BaseModel):
     physical_cost: Optional[Decimal] = None      # 物理成本(工厂+物流+安装), 大促利润的成本基
     big_promo_margin: Optional[Decimal] = None   # 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%) (recompute 口径)
     gross_margin_rate: Optional[Decimal] = None  # 大促利润率 = 大促利润 ÷ 大促价
-    # 报名价模型 (2026-07-03: 大促锚不动, 只动中促) —— 派生, 不落库
-    report_price: Optional[Decimal] = None       # 报名价 A = 大促到手 ÷ 0.88 (填淘宝超级立减)
-    report_price_618: Optional[Decimal] = None   # 618/双11 报名价 = 大促到手 ÷ 0.85
+    signup_price_mid: Optional[Decimal] = None
+    signup_price_big: Optional[Decimal] = None
+    signup_price_618: Optional[Decimal] = None
     gap_floor: Optional[Decimal] = None          # 空档价红线 = 中促到手 (空档期单品立减不得低于此)
     compliance_g: Optional[Decimal] = None       # g = 中促到手 ÷ 大促到手
     report_compliant: Optional[bool] = None      # g≥0.90/0.88 → 绿; False → 需微升中促(红)
 
 
-def _shop_price_row(sku: PricingSku, promo, name, image, params=None) -> "ShopPriceRow":
+def _shop_price_row(db: Session, sku: PricingSku, promo, name, image, params=None,
+                    no_sales_items: Optional[set[str]] = None) -> "ShopPriceRow":
+    from app.services import campaign_service
     rp = pricing_calc_service.report_prices(promo, params) if promo is not None else {}
-    sid = (pricing_calc_service.single_item_discounts(promo, sku.daily_price, params)
-           if promo is not None else {})
+    signup = {}
+    discount = {}
+    if promo is not None:
+        for tier in ("mid", "big", "big618"):
+            signup[tier] = campaign_service.signup_price_for_sku(sku, promo, tier)[0]
+            discount[tier] = campaign_service.discount_for_sku(
+                db, sku, promo, tier, no_sales_items=no_sales_items)
+    daily = float(sku.daily_price) if sku.daily_price else None
+    def _disc_ratio(tier: str):
+        core = discount.get(tier)
+        return ((daily - float(core["deduct"])) / daily
+                if core and daily else None)
     return ShopPriceRow(
         id=sku.id, product_code=sku.product_code, product_name=name,
         sku=sku.sku, size_info=sku.size_info, image=image, daily_price=sku.daily_price,
@@ -676,14 +690,18 @@ def _shop_price_row(sku: PricingSku, promo, name, image, params=None) -> "ShopPr
         small_promo=sku.small_promo, mid_promo=sku.mid_promo, big_promo=sku.big_promo,
         mid_buyer_price=getattr(promo, "mid_buyer_price", None),
         big_buyer_price=getattr(promo, "big_buyer_price", None),
-        mid_discount=sid.get("mid_discount"), mid_deduct=sid.get("mid_deduct"),
-        big_discount=sid.get("big_discount"), big_deduct=sid.get("big_deduct"),
-        big618_discount=sid.get("big618_discount"), big618_deduct=sid.get("big618_deduct"),
+        mid_discount=_disc_ratio("mid"),
+        mid_deduct=(discount.get("mid") or {}).get("deduct"),
+        big_discount=_disc_ratio("big"),
+        big_deduct=(discount.get("big") or {}).get("deduct"),
+        big618_discount=_disc_ratio("big618"),
+        big618_deduct=(discount.get("big618") or {}).get("deduct"),
         physical_cost=sku.physical_cost,
         big_promo_margin=sku.big_promo_margin,
         gross_margin_rate=sku.gross_margin_rate,
-        report_price=rp.get("report_price"),
-        report_price_618=rp.get("report_price_618"),
+        signup_price_mid=signup.get("mid"),
+        signup_price_big=signup.get("big"),
+        signup_price_618=signup.get("big618"),
         gap_floor=rp.get("gap_floor"),
         compliance_g=rp.get("compliance_g"),
         report_compliant=rp.get("report_compliant"),
@@ -716,10 +734,13 @@ def shop_price_board(
         select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(codes))).scalars()} if codes else {}
     name_map = dict(db.execute(select(Product.code, Product.name)).all())
     gallery = sku_gallery_url_map([(r.product_code, r.sku_code, r.sku) for r in rows])
+    from app.services import no_sales_service
+    no_sales_items = no_sales_service.get_no_sales(db)
     return [
-        _shop_price_row(r, promo_map.get(r.sku_code),
+        _shop_price_row(db, r, promo_map.get(r.sku_code),
                         name_map.get(r.product_code) or r.product_name,
-                        gallery.get(r.sku_code) or r.image_url)
+                        gallery.get(r.sku_code) or r.image_url,
+                        no_sales_items=no_sales_items)
         for r in rows
     ]
 
@@ -785,7 +806,7 @@ def update_shop_price(
     from app.services.gallery_lookup import sku_gallery_url_map
     name = db.execute(select(Product.name).where(Product.code == sku.product_code)).scalar()
     img = sku_gallery_url_map([(sku.product_code, sku.sku_code, sku.sku)]).get(sku.sku_code) or sku.image_url
-    return _shop_price_row(sku, promo, name or sku.product_name, img)
+    return _shop_price_row(db, sku, promo, name or sku.product_name, img)
 
 
 class BulkShopPricePatch(BaseModel):
@@ -822,6 +843,8 @@ def bulk_update_shop_price(
     from app.services.gallery_lookup import sku_gallery_url_map
     name_map = dict(db.execute(select(Product.code, Product.name)).all())
     gallery = sku_gallery_url_map([(s.product_code, s.sku_code, s.sku) for s in skus])
+    from app.services import no_sales_service
+    no_sales_items = no_sales_service.get_no_sales(db)
     out: list[ShopPriceRow] = []
     for sku in skus:
         db.refresh(sku)
@@ -829,8 +852,9 @@ def bulk_update_shop_price(
         if promo is not None:
             db.refresh(promo)
         out.append(_shop_price_row(
-            sku, promo, name_map.get(sku.product_code) or sku.product_name,
-            gallery.get(sku.sku_code) or sku.image_url))
+            db, sku, promo, name_map.get(sku.product_code) or sku.product_name,
+            gallery.get(sku.sku_code) or sku.image_url,
+            no_sales_items=no_sales_items))
     return out
 
 
@@ -1191,8 +1215,8 @@ COEFFICIENT_CATALOG: list[dict] = [
     {"field": "big_shop_rate", "label": "大促单品立减系数", "scope": "per_sku", "model": "promo",
      "meaning": "空档期用单品立减把价做到此水平；大促买家到手 = 日常价 × (1 − 立减12%) × 大促单品立减系数（每个 SKU 可不同）"},
     # ── 报名价模型 (超级立减报名价; 大促锚不动, 只动中促) ──
-    {"field": "report_price", "label": "报名价 A", "scope": "per_sku", "model": "derived",
-     "meaning": "填进淘宝超级立减报名表的数 = 大促到手 ÷ (1 − 大促力度12%)；中促场买家到手 = A × 0.90, 大促场 = A × 0.88, 618场 = A × 0.85"},
+    {"field": "activity_signup_price", "label": "淘宝活动报名价", "scope": "per_sku", "model": "derived",
+     "meaning": "真 SKU = ERP 日常价；定制占位 SKU = 系统保护报名价。官方立减与单品立减叠加，不再由到手价反推活动价"},
     {"field": "compliance_g", "label": "中促合规比 g", "scope": "per_sku", "model": "derived",
      "meaning": "g = 中促到手 ÷ 大促到手；g ≥ 0.90/0.88(=1.0227) 才能用同一报名价在中促场报得进；不足→「一键微升中促」抬中促(大促不动)"},
     {"field": "xhs_promo_discount", "label": "小红书折扣率", "scope": "per_sku", "model": "promo",

@@ -131,7 +131,7 @@ def test_reconcile_verdicts_alarm_and_report(db_session, monkeypatch):
         _act_row("9601", "81001", 1979.59, act_price=2827.5),   # 一分不差 + 活动价=日常价
         _act_row("9602", "81002", 1599.5),                      # 贴线让0.50
         _act_row("9603", "81003", 690.0),                       # 差 −10 → 超2元报警
-        _act_row("9605", "81009", 360.0),                       # 占位
+        _act_row("9605", "81009", 360.0, act_price=360.0),      # 占位保护价一致
         _act_row("9699", "99999", 100.0),                       # 无映射
     ])
     discount = _xlsx([
@@ -147,23 +147,24 @@ def test_reconcile_verdicts_alarm_and_report(db_session, monkeypatch):
     assert by_sid["81001"]["signup_price_ok"] is True           # b维度: 活动价P列 vs 日常价
     assert by_sid["81002"]["verdict"] == "贴线让0.50"
     assert by_sid["81003"]["verdict"] == "超2元报警" and by_sid["81003"]["diff"] == -10.0
-    assert by_sid["81009"]["verdict"] == "占位"
+    assert by_sid["81009"]["verdict"] == "占位价一致"
     assert by_sid["99999"]["verdict"] == "无映射"
 
     summary = result["summary"]
     assert summary["verdicts"] == {"一分不差": 1, "贴线": 1, "超2元报警": 1,
-                                   "占位": 1, "无映射": 1}
+                                   "占位价一致": 1, "无映射": 1}
     assert summary["coverage_missing"] == ["81004"]             # d维度: 应报未报
     assert summary["coverage_extra"] == ["99999"]               # 多出的也报
-    assert [m["sku_id"] for m in summary["discount_mismatch"]] == ["81002"]   # c维度
+    assert [m["sku_id"] for m in summary["discount_mismatch"]] == [
+        "81002", "81003", "81004"]                              # 错价 + 应有但导出缺失
     assert summary["title_ok"] is True
 
-    assert result["alarm_count"] == 1
+    assert result["alarm_count"] == 7
     assert len(alarms_sent) == 1 and alarms_sent[0]["title"] == "活动核对报警"
     assert "PPSRC00101" in alarms_sent[0]["text"]
 
     report = db_session.query(CampaignReconReport).filter_by(plan_id=plan.id).one()
-    assert report.alarm_count == 1 and report.summary["alarm"] == 1
+    assert report.alarm_count == 7 and report.summary["alarm"] == 7
     assert plan.status == "alarmed"
 
 

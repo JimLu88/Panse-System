@@ -561,8 +561,10 @@ _PRICING_CN: dict[str, str] = {
     # 无国补大促
     "big_platform_discount": "大促平台立减", "big_shop_rate": "大促店铺系数", "big_buyer_price": "大促买家价",
     "big_vip_commission": "大促88VIP佣金", "big_shop_receipt": "大促店铺到手", "big_vip_final": "大促VIP到手价",
-    # 报名价 (派生, 填淘宝超级立减/官方大促报名表)
-    "report_price": "88VIP大促报名价", "report_price_618": "超大促报名价(618/双11)",
+    # 活动报名价 (与自动报名同源；真 SKU 三档均为 ERP 日常价)
+    "signup_price_mid": "超级立减10%活动报名价",
+    "signup_price_big": "88VIP/普通大促12%活动报名价",
+    "signup_price_618": "618/双11 15%活动报名价",
     # 单品立减 (派生, 加法口径: 淘宝该填的 折 + 降价金额, 每档不同)
     "mid_disc_zhe": "中促单品立减(折)", "mid_disc_amt": "中促降价金额(元)",
     "big_disc_zhe": "大促单品立减(折)", "big_disc_amt": "大促降价金额(元)",
@@ -588,8 +590,8 @@ _PRICING_COST_NUM_FIELDS = [
     "leg", "soft_pack", "bed_board", "other_cost",
 ]
 _PRICING_COST_FIELDS = _PRICING_COST_NUM_FIELDS + ["other_desc", "parts_remark"]
-# 报名价 (派生, 由 report_prices 计算, 填淘宝超级立减/官方大促报名表)
-_PRICING_REPORT_FIELDS = ["report_price", "report_price_618"]
+# 活动报名价 (由 campaign_service 唯一口径实时计算)
+_PRICING_REPORT_FIELDS = ["signup_price_mid", "signup_price_big", "signup_price_618"]
 # 单品立减 (派生, 加法口径 single_item_discounts): 只出【降价金额】(淘宝单品立减/单品补贴直接填这个数,
 #   SKU级别不支持打折, 故不再出折), 中促/大促/超大促。替代旧乘法系数。
 _PRICING_DISCOUNT_FIELDS = ["mid_disc_amt", "big_disc_amt", "big618_disc_amt"]
@@ -612,6 +614,32 @@ _PRICING_CATEGORIES: list[tuple[str, str, list[str]]] = [
 _PRICING_FIELD_COLOR: dict[str, str] = {f: color for _n, color, fs in _PRICING_CATEGORIES for f in fs}
 
 
+def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict]]:
+    """下载参考表专用价格快照；数学与自动报名 builder 完全同源。"""
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.services import campaign_service, no_sales_service
+
+    signup: dict[str, dict] = {t: {} for t in ("mid", "big", "big618")}
+    discount: dict[str, dict] = {t: {} for t in ("mid", "big", "big618")}
+    skus = db.execute(select(PricingSku)).scalars().all()
+    promo_by_sku = {
+        p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()
+    }
+    no_sales_items = no_sales_service.get_no_sales(db)
+    for s in skus:
+        p = promo_by_sku.get(s.sku_code)
+        if p is None:
+            continue
+        for tier in ("mid", "big", "big618"):
+            price, _ = campaign_service.signup_price_for_sku(s, p, tier)
+            core = campaign_service.discount_for_sku(
+                db, s, p, tier, no_sales_items=no_sales_items)
+            signup[tier][s.sku_code] = price
+            discount[tier][s.sku_code] = core.get("deduct") if core else None
+    return signup, discount
+
+
 def _build_pricing_sheet(db: Session, wb, used: set[str]):
     """定价总表(全列): PricingSku 全列(模型顺序, 保 VLOOKUP/公式列位不变) + 追加平台活动价
     (淘宝/店内/中促大促/小红书) + 中文表头 + 按分类给表头上色。"""
@@ -622,14 +650,13 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
     label = ENTITY_MODELS.get("pricing_sku", {}).get("label", "定价总表 (全列)")
     ws = wb.create_sheet(_safe_sheet_name(label, used))
 
-    from app.services import pricing_calc_service
-    promo_params = pricing_calc_service.get_promo_params(db)
     base_cols = [c.key for c in PricingSku.__table__.columns]   # 模型顺序 → 与 VLOOKUP/公式列位一致
     all_fields = base_cols + _PRICING_PROMO_FIELDS + _PRICING_REPORT_FIELDS + _PRICING_DISCOUNT_FIELDS
     headers = [_PRICING_CN.get(f) or _cn_header("pricing_sku", f) for f in all_fields] + ["异常批注"]
     ws.append(headers)
 
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    signup_map, discount_map = _campaign_export_maps(db)
 
     # number_format
     model_cols = {c.key: c for c in PricingSku.__table__.columns}
@@ -655,13 +682,15 @@ def _build_pricing_sheet(db: Session, wb, used: set[str]):
         p = promo_by_sku.get(s.sku_code)
         row = [_translate(f, _cell(getattr(s, f, None))) for f in base_cols]
         row += [_cell(getattr(p, f, None)) if p is not None else None for f in _PRICING_PROMO_FIELDS]
-        rp = pricing_calc_service.report_prices(p, promo_params) if p is not None else {}
-        sid = (pricing_calc_service.single_item_discounts(p, s.daily_price, promo_params)
-               if p is not None else {})
-        row += [float(rp.get(f)) if rp.get(f) is not None else None for f in _PRICING_REPORT_FIELDS]
-        _dv = {"mid_disc_zhe": sid.get("mid_discount"), "mid_disc_amt": sid.get("mid_deduct"),
-               "big_disc_zhe": sid.get("big_discount"), "big_disc_amt": sid.get("big_deduct"),
-               "big618_disc_zhe": sid.get("big618_discount"), "big618_disc_amt": sid.get("big618_deduct")}
+        _rv = {
+            "signup_price_mid": signup_map["mid"].get(s.sku_code),
+            "signup_price_big": signup_map["big"].get(s.sku_code),
+            "signup_price_618": signup_map["big618"].get(s.sku_code),
+        }
+        row += [float(_rv[f]) if _rv[f] is not None else None for f in _PRICING_REPORT_FIELDS]
+        _dv = {"mid_disc_amt": discount_map["mid"].get(s.sku_code),
+               "big_disc_amt": discount_map["big"].get(s.sku_code),
+               "big618_disc_amt": discount_map["big618"].get(s.sku_code)}
         row += [(round(float(_dv[f]) * 10, 2) if f.endswith("_zhe") else float(_dv[f]))
                 if _dv[f] is not None else None for f in _PRICING_DISCOUNT_FIELDS]
         matched: list[str] = []
@@ -824,7 +853,8 @@ def build_catalog_xlsx(db: Session):
 
     # 数据行 + 产品图
     from app.services import pricing_calc_service
-    promo_params = pricing_calc_service.get_promo_params(db)   # 平台立减/佣金口径 (回填空系数用)
+    promo_params = pricing_calc_service.get_promo_params(db)   # 仅用于展示平台系数
+    signup_map, discount_map = _campaign_export_maps(db)
     gray = Font(color="94A3B8")
     keep_alive: list = []
     override_by_row: dict[int, bool] = {}
@@ -834,17 +864,19 @@ def build_catalog_xlsx(db: Session):
         for s in gs:
             p = promo_by_sku.get(s.sku_code)
             costs = costs_by_sku.get(s.sku_code)
-            rp = pricing_calc_service.report_prices(p, promo_params) if p is not None else {}
-            sid = (pricing_calc_service.single_item_discounts(p, s.daily_price, promo_params)
-                   if p is not None else {})
-            disc_vals = {"mid_disc_zhe": sid.get("mid_discount"), "mid_disc_amt": sid.get("mid_deduct"),
-                         "big_disc_zhe": sid.get("big_discount"), "big_disc_amt": sid.get("big_deduct"),
-                         "big618_disc_zhe": sid.get("big618_discount"), "big618_disc_amt": sid.get("big618_deduct")}
+            signup_vals = {
+                "signup_price_mid": signup_map["mid"].get(s.sku_code),
+                "signup_price_big": signup_map["big"].get(s.sku_code),
+                "signup_price_618": signup_map["big618"].get(s.sku_code),
+            }
+            disc_vals = {"mid_disc_amt": discount_map["mid"].get(s.sku_code),
+                         "big_disc_amt": discount_map["big"].get(s.sku_code),
+                         "big618_disc_amt": discount_map["big618"].get(s.sku_code)}
             override_by_row[r] = bool(getattr(s, "factory_cost_override", False))
             for f in all_fields:
                 ci = field_pos[f]
-                if f in _PRICING_REPORT_FIELDS:            # 报名价(派生) = 大促到手 ÷ 0.88 / ÷ 0.85
-                    rv = rp.get(f)
+                if f in _PRICING_REPORT_FIELDS:
+                    rv = signup_vals.get(f)
                     v = float(rv) if rv is not None else None
                 elif f in _PRICING_DISCOUNT_FIELDS:        # 单品立减(派生): 折(×10) / 降价金额(元)
                     dv = disc_vals.get(f)
@@ -948,7 +980,7 @@ def build_signup_form_xlsx(db: Session):
       产品图 / 产品名 / 规格 + 一口价 / 日常价(活动价) + 各档目标到手 +
       报名价(88VIP大促 / 超大促618双11) + 单品立减(折 + 立减金额, 三档场次力度 10/12/15%)。
     去掉 ID / 淘宝标题 / SKU编码 / 产品编码 / 大小 / 成品尺寸 / 小促价 / 成本全块 / 小红书 / 配件明细 /
-    旧乘法系数 等无关列 (用户 2026-07-06 指定)。数值口径 = single_item_discounts + report_prices (加法, 对齐淘宝)。"""
+    旧乘法系数 等无关列。报名价与单品立减均调用 campaign_service，与自动报名逐行同源。"""
     import io as _io
     import openpyxl
     from openpyxl.drawing.image import Image as XLImage
@@ -957,7 +989,6 @@ def build_signup_form_xlsx(db: Session):
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
     from app.models.product import Product
-    from app.services import pricing_calc_service
     from app.services.pricing_catalog_service import _is_real_product, product_image_map
 
     def _f(v):
@@ -966,11 +997,11 @@ def build_signup_form_xlsx(db: Session):
     def _zhe(v):                          # 折扣小数 → 折 (0.792 → 7.92)
         return round(float(v) * 10, 2) if v is not None else None
 
-    params = pricing_calc_service.get_promo_params(db)
     skus = db.execute(
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     prod_by_code = {p.code: p for p in db.execute(select(Product)).scalars().all()}
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
+    signup_map, discount_map = _campaign_export_maps(db)
 
     # 分组(剔除作废/服务/占位非产品), 供产品图纵向合并
     groups: list[tuple[str, list]] = []
@@ -990,11 +1021,12 @@ def build_signup_form_xlsx(db: Session):
         for c, gs in groups}
     img_map = product_image_map([c for c, _ in groups], url_by_code)
 
-    headers = ["产品图", "产品名称", "规格", "一口价", "日常价(活动价)",
-               "中促到手", "大促到手", "88VIP大促报名价", "超大促报名价(618/双11)",
-               "中促降价金额(元)", "大促降价金额(元)", "超大促降价金额(元)"]
+    headers = ["产品图", "产品名称", "规格", "一口价", "ERP日常价",
+               "超级立减10%活动报名价", "超级立减目标到手", "超级立减单品立减(元)",
+               "88VIP/普通大促12%活动报名价", "大促目标到手", "大促单品立减(元)",
+               "618/双11 15%活动报名价", "超大促目标到手", "超大促单品立减(元)"]
     money = "#,##0.00"
-    money_cols = {4, 5, 6, 7, 8, 9, 10, 11, 12}     # 价格 + 降价金额列 (单品立减全用减金额, 不再出折)
+    money_cols = set(range(4, 15))
     zhe_cols: set[int] = set()
 
     wb = openpyxl.Workbook()
@@ -1012,11 +1044,10 @@ def build_signup_form_xlsx(db: Session):
     # 行1: 口径说明
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(headers))
     tip = ws.cell(1, 1,
-                  "淘宝加法口径: 到手 = 活动价 − 官方立减 − 单品立减 (官方立减 日常10%/88VIP大促12%/618双11 15%, 平台自动扣)。"
-                  "★两种填法【二选一, 千万别混】: "
-                  "【① 常规·推荐】活动价填『日常价』, 再填『单品立减(各档降价金额, 元)』→ 到手=各档「到手」列。 "
-                  "【② 报名价】活动价直接填『报名价』(这数已把官方立减算进去了), 单品立减就填0/不叠, 主要给618换SKU用。 "
-                  "⚠️绝不能『活动价填报名价』又『叠单品立减』—— 那是打两次折, 价格会砸穿(到手远低于目标)!")
+                  "唯一口径：真 SKU 活动报名价 = ERP 日常价；官方立减与单品立减叠加。"
+                  "到手 = 活动报名价 − 官方立减 − 单品立减。"
+                  "超级立减官方10%对齐中促目标；88VIP/狂暑季等普通大促官方12%对齐大促目标；"
+                  "618/双11按15%对齐大促目标。定制占位 SKU 只走保护报名价，不生成单品立减。")
     tip.font = Font(bold=True, color="B45309")
     tip.alignment = Alignment(horizontal="left", vertical="top", wrap_text=True)
     ws.row_dimensions[1].height = 62
@@ -1035,15 +1066,19 @@ def build_signup_form_xlsx(db: Session):
         pname = (prod.name if prod else None) or (gs[0].product_name if gs else None) or code
         for s in gs:
             promo = promo_by_sku.get(s.sku_code)
-            rp = pricing_calc_service.report_prices(promo, params) if promo is not None else {}
-            sid = (pricing_calc_service.single_item_discounts(promo, s.daily_price, params)
-                   if promo is not None else {})
+            mid_target = None
+            if promo is not None and promo.big_buyer_price is not None:
+                mid_target = round(float(promo.big_buyer_price) * 1.03, 2)
+            big_target = _f(getattr(promo, "big_buyer_price", None))
             row_vals = [
                 None, pname, s.sku,
                 _f(s.list_price), _f(s.daily_price),
-                _f(getattr(promo, "mid_buyer_price", None)), _f(getattr(promo, "big_buyer_price", None)),
-                _f(rp.get("report_price")), _f(rp.get("report_price_618")),
-                _f(sid.get("mid_deduct")), _f(sid.get("big_deduct")), _f(sid.get("big618_deduct")),
+                signup_map["mid"].get(s.sku_code), mid_target,
+                discount_map["mid"].get(s.sku_code),
+                signup_map["big"].get(s.sku_code), big_target,
+                discount_map["big"].get(s.sku_code),
+                signup_map["big618"].get(s.sku_code), big_target,
+                discount_map["big618"].get(s.sku_code),
             ]
             for ci, v in enumerate(row_vals, start=1):
                 cell = ws.cell(r, ci, v)
@@ -1076,7 +1111,7 @@ def build_signup_form_xlsx(db: Session):
         for rr in range(r0, r1 + 1):
             ws.cell(rr, 1).border = border
 
-    widths = [15, 24, 16, 11, 13, 11, 11, 15, 17, 15, 15, 16]
+    widths = [15, 24, 16, 11, 13, 17, 15, 18, 20, 15, 18, 19, 16, 19]
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
     ws.freeze_panes = "C3"
@@ -1112,27 +1147,19 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
     列 = 商品id / SKU_ID / 优惠值(=立减金额, 元) / 取值方式(留空) / 提醒(留空); 表头与淘宝模板逐字一致, 可直接上传。
     tier: mid(超级立减10%) / big(88VIP大促12%) / big618(大促15% 618双11)。
     只出「有淘宝商品id + SKU_ID + 该档立减金额」的行(缺 SKU_ID / 官方立减已够的跳过)。
-    数值 = single_item_discounts 加法口径, **每次下载实时算**(成本/售价一变即变)。返回 (BytesIO, 统计dict)。"""
+    数值 = campaign_service.build_discount_rows, 与自动报名逐行同源。占位 SKU 不出行。
+    **每次下载实时算**(成本/售价一变即变)。返回 (BytesIO, 统计dict)。"""
     import io as _io
     import openpyxl
     from openpyxl.styles import Alignment, Font, PatternFill
     from openpyxl.utils import get_column_letter
-    from app.models.pricing import PricingSku
-    from app.models.pricing_ext import PricingSkuPromo
-    from app.services import pricing_calc_service
+    from types import SimpleNamespace
+    from app.services import campaign_service
 
     if tier not in _TB_DISCOUNT_TIERS:
         raise ValueError(f"未知档位 {tier}; 可选 {list(_TB_DISCOUNT_TIERS)}")
-    _tier_name, deduct_field = _TB_DISCOUNT_TIERS[tier]
-    params = pricing_calc_service.get_promo_params(db)
-    skus = db.execute(
-        select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
-    promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    # 排除坏价产品(各尺寸报名价雷同=未真实定价), 避免废价上淘宝; 改成真实价后自动纳入 (2026-07-11)
-    from app.services.activity_preflight_service import bad_price_product_codes
-    from app.services import delisted_sku_service
-    bad_pc = bad_price_product_codes(db)
-    delisted = delisted_sku_service.get_delisted(db)   # 下架SKU不报(用户铁律)
+    _tier_name, _deduct_field = _TB_DISCOUNT_TIERS[tier]
+    rows, stats = campaign_service.build_discount_rows(db, SimpleNamespace(tier=tier))
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -1145,40 +1172,12 @@ def build_single_item_discount_upload_xlsx(db: Session, tier: str):
         c.fill = head_fill; c.font = head_font; c.alignment = wrap
     ws.row_dimensions[1].height = 78
 
-    stats = {"tier": tier, "rows": 0, "skipped_no_skuid": 0, "skipped_no_deduct": 0, "skipped_bad_price": 0, "skipped_delisted": 0}
     r = 2
-    for s in skus:
-        p = promo_by_sku.get(s.sku_code)
-        if p is None or not p.taobao_item_id:
-            continue
-        if not p.taobao_sku_id:                       # SKU 级别必须有 SKU_ID
-            stats["skipped_no_skuid"] += 1
-            continue
-        if str(p.taobao_sku_id) in delisted:          # 下架SKU不报(用户铁律)
-            stats["skipped_delisted"] += 1
-            continue
-        if (s.product_code or "") in bad_pc:          # 坏价产品排除(未真实定价)
-            stats["skipped_bad_price"] += 1
-            continue
-        if getattr(s, "is_custom_placeholder", False):
-            # 定制占位符: 立减金额 = 现价 × 10% (定制9折: 到手=现价×0.9, 立减=现价−到手=现价×0.1)
-            d = round(float(s.daily_price) * 0.1, 2) if s.daily_price else None
-        else:
-            sid = pricing_calc_service.single_item_discounts(p, s.daily_price, params)
-            d = sid.get(deduct_field)
-        if d is None:                                 # 官方立减已够 / 缺买家价 → 跳过
-            stats["skipped_no_deduct"] += 1
-            continue
-        # 一码多SKU: 主 SKUID + 每个 alt 各出一行, 立减金额相同(去重去空)
-        ids = []
-        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            if _sid and str(_sid) not in ids:
-                ids.append(str(_sid))
-        for skuid in ids:
-            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 长号必须文本, 防科学计数
-            ws.cell(r, 2, skuid).number_format = "@"
-            ws.cell(r, 3, float(d)).number_format = "0.00"             # 立减金额(元)
-            r += 1
+    for row in rows:
+        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        ws.cell(r, 2, str(row["taobao_sku_id"])).number_format = "@"
+        ws.cell(r, 3, float(row["deduct"])).number_format = "0.00"
+        r += 1
     stats["rows"] = r - 2
 
     widths = [22, 30, 30, 26, 26]
@@ -1282,13 +1281,11 @@ def build_nosales_single_item_discount_xlsx(db: Session):
 
 
 # ── 大促活动报名 批量导入表 (千牛后台「大促活动」导入, 2026-07-07 用户) ────────────────────
-# ★核心: 只有【两个】报名价 —— 超级立减10% 与 88VIP大促12% 用【同一个】report_price
-#   (平台力度不同 → 到手不同: 10%给中促到手 / 12%给大促到手), 平时不动;
-#   只有 超级大促(双11)15% 用 report_price_618 (要换SKU改价)。三张表只是分开写、方便运营看清。
+# 档位标签。具体活动价只允许由 campaign_service 计算。
 _PROMO_SIGNUP_TIERS = {
-    "mid":    ("超级立减10%",        "report_price"),      # 到手 = 活动价×0.90 = 中促到手
-    "big":    ("88VIP大促12%",       "report_price"),      # 到手 = 活动价×0.88 = 大促到手 (同一个报名价!)
-    "big618": ("超级大促双11 15%",    "report_price_618"),  # 到手 = 活动价×0.85 = 大促到手 (换SKU)
+    "mid":    ("超级立减10%", "mid"),
+    "big":    ("88VIP大促12%", "big"),
+    "big618": ("618双11大促15%", "big618"),
 }
 
 
@@ -1491,36 +1488,32 @@ def build_promo_signup_upload_xlsx(db: Session, tier: str):
     """淘宝『大促活动报名』批量导入表 (千牛后台大促活动导入, SKU 维度)。
     模板 = assets/taobao_templates/promo_signup_sku.xlsx (原样保留 模版说明 sheet + 数据 sheet 前3行表头,
     数据从第4行追加)。每行只填 商品ID / SKUID / 活动价(=报名价); 其余列留空 (用户 2026-07-07 指定)。
-    活动价: 超级立减10% 与 88VIP大促12% 同价(report_price); 超级大促15% 用 report_price_618;
-    占位SKU=×0.9封顶到已生效价 + 整商品完整性剔除 (collect_signup_rows, 2026-07-12)。返回 (BytesIO, stats)。"""
+    活动价唯一口径: 真 SKU = ERP 日常价；占位 SKU = 系统保护价。
+    直接调用 campaign_service.build_signup_rows，与全自动报名逐行同源。返回 (BytesIO, stats)。"""
     import io as _io
     from pathlib import Path
     import openpyxl
 
     if tier not in _PROMO_SIGNUP_TIERS:
         raise ValueError(f"未知档位 {tier}; 可选 {list(_PROMO_SIGNUP_TIERS)}")
-    _tier_name, price_field = _PROMO_SIGNUP_TIERS[tier]
+    from types import SimpleNamespace
+    from app.services import campaign_service
+
+    _tier_name, _ = _PROMO_SIGNUP_TIERS[tier]
     tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
     wb = openpyxl.load_workbook(tpl)
     ws = wb["商品SKU导入列表"]
     if ws.max_row >= 4:                                    # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    entries, stats = collect_signup_rows(db, price_field)
+    entries, stats = campaign_service.build_signup_rows(db, SimpleNamespace(tier=tier))
     stats["tier"] = tier
     r = 4
-    for s, p, price in entries:
-        # 一码多SKU: 主 SKUID + 每个 alt 各出一行, 报名价相同(去重去空)
-        ids = []
-        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            if _sid and str(_sid) not in ids:
-                ids.append(str(_sid))
-        for skuid in ids:
-            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
-            ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
-            ws.cell(r, 3, float(price)).number_format = "0.00"         # 活动价(=报名价)
-            # D 库存 / E 发货时间 / F 官方立减报名折扣 / G 官方立减金额 → 全部留空
-            r += 1
+    for row in entries:
+        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        ws.cell(r, 2, str(row["taobao_sku_id"])).number_format = "@"
+        ws.cell(r, 3, float(row["price"])).number_format = "0.00"
+        r += 1
     stats["rows"] = r - 4
 
     out = _io.BytesIO()
@@ -1679,35 +1672,19 @@ def build_super_reduce_signup_upload_xlsx(db: Session):
     if ws.max_row >= 4:                                    # 清历史示例数据行, 保留前 3 行表头
         ws.delete_rows(4, ws.max_row - 3)
 
-    # 用收集器做【整商品完整性剔除+坏价剔除】, 但活动价【取日常价】不取 A(A 只用来判完整性)。
-    entries, stats = collect_signup_rows(db, "report_price")
+    from types import SimpleNamespace
+    from app.services import campaign_service
+
+    entries, stats = campaign_service.build_signup_rows(db, SimpleNamespace(tier="mid"))
     r = 4                                                  # ★数据从第 4 行起(前 3 行是平台表头)
-    skipped_no_daily = 0
-    for s, p, A in entries:
-        if getattr(s, "is_custom_placeholder", False):
-            # ★2026-07-16 固化: 占位活动价 = 占位报名价A(×0.9→封500顶→封floor), 绝不裸报日常价。
-            # 2026-07-15 事故根因之一: 此处原对占位也填 daily → 撞单品宝【新品促销】管控价 → 34商品整组被拒。
-            act_price = float(A) if A is not None else None
-        else:
-            act_price = float(s.daily_price) if s.daily_price else None    # ★活动价 = 日常价(真SKU)
-        if act_price is None or act_price <= 0:
-            skipped_no_daily += 1
-            continue
-        ids = []
-        for _sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
-            if _sid and str(_sid) not in ids:
-                ids.append(str(_sid))
-        for skuid in ids:
-            ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"    # 商品ID 文本
-            ws.cell(r, 2, skuid).number_format = "@"                    # SKUID 文本
-            ws.cell(r, 3, act_price).number_format = "0.00"            # ★活动价 = 日常价(不是A!)
-            ws.cell(r, 5, "包邮")                                        # 包邮(不填=不包邮, 现况全包邮)
-            ws.cell(r, 13, 10)                                          # 让利比例 10(=10%) —— 只填这个
-            # ★补贴金额(14)留空: 与让利比例二选一, 平台自动按让利比例算补贴
-            # 库存(4)留空=全部库存; 短标题/素材(6-12)非必填留空
-            r += 1
+    for row in entries:
+        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        ws.cell(r, 2, str(row["taobao_sku_id"])).number_format = "@"
+        ws.cell(r, 3, float(row["price"])).number_format = "0.00"
+        ws.cell(r, 5, "包邮")
+        ws.cell(r, 13, 10)
+        r += 1
     stats["rows"] = r - 4
-    stats["skipped_no_daily"] = skipped_no_daily
 
     out = _io.BytesIO()
     wb.save(out)

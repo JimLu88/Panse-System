@@ -47,11 +47,10 @@ def test_signup_618_also_9zhe(db_session):
     assert abs(float(vals[0]) - 500.0) < 0.01                  # 占位×0.9后再封500顶(2026-07-16固化: 治新品促销管控价卡整品)
 
 
-def test_single_discount_placeholder_is_10pct(db_session):
+def test_single_discount_placeholder_is_skipped(db_session):
     _seed_ph(db_session, 20000)
     buf, _ = build_single_item_discount_upload_xlsx(db_session, "big")
     ws = openpyxl.load_workbook(BytesIO(buf.getvalue()))["单品立减"]
     rows = [(ws.cell(r, 2).value, ws.cell(r, 3).value)
             for r in range(2, ws.max_row + 1) if ws.cell(r, 2).value]
-    assert len(rows) == 1
-    assert abs(float(rows[0][1]) - 2000.0) < 0.01              # 立减 = 20000 × 0.1
+    assert rows == []                                           # 占位只走保护报名价，不叠单品立减

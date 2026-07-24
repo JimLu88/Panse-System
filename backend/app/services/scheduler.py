@@ -1316,13 +1316,23 @@ def _job_campaign_discovery(db: Session) -> dict:
     → 落 CampaignCalendar → 距开始<3天飞书提醒运营报名 (同活动一天只提醒一次)。
     WA 失败 → 飞书报错「活动发现抓取失败请手动查看」。"""
     from app.services import campaign_discovery_service
-    return campaign_discovery_service.run_daily_discovery(db)
+    result = campaign_discovery_service.run_daily_discovery(db)
+    if result.get("ok") is False:
+        result["_run_status"] = "fail"
+        result["_error"] = result.get("reason") or result.get("error")
+    return result
 
 
 def _job_campaign_auto_execute(db: Session) -> dict:
     """活动发现后自动推进：预检→单品立减→差集报名；任一安全门失败即停并飞书。"""
     from app.services import campaign_automation_service
-    return campaign_automation_service.run_auto_execute(db)
+    result = campaign_automation_service.run_auto_execute(db)
+    if result.get("failed"):
+        result["_run_status"] = "fail"
+        result["_error"] = f"{result['failed']} 个活动计划自动执行失败"
+    elif result.get("processed", 0) == 0:
+        result["_run_status"] = "skipped"
+    return result
 
 
 def _job_campaign_auto_recon(db: Session) -> dict:
@@ -1330,7 +1340,13 @@ def _job_campaign_auto_recon(db: Session) -> dict:
     活动计划 → WA 导出「活动商品导出」→ 自动核对 (>2元红榜+飞书)。
     WA 导出失败 → 飞书报错 + 计划保持 signup_pushed 等手动上传兜底。"""
     from app.services import campaign_recon_service
-    return campaign_recon_service.auto_recon_scan(db)
+    result = campaign_recon_service.auto_recon_scan(db)
+    if result.get("failed"):
+        result["_run_status"] = "fail"
+        result["_error"] = f"{result['failed']} 个活动计划核对未完成"
+    elif result.get("scanned", 0) == 0:
+        result["_run_status"] = "skipped"
+    return result
 
 
 def _job_ingest_health_check(db: Session) -> dict:
@@ -1644,11 +1660,11 @@ def _register_default_jobs() -> None:
     register_job("daily_0830_promo_price_check", "活动报名价 vs 定价渠道价 对照",
                  _job_promo_price_check, cron={"hour": 8, "minute": 30})
     # 活动生命周期 P4 (2026-07-17 spec §五): 发现在抓单编排(18:00)后跑; 自动核对每30分钟心跳
-    register_job("campaign_daily_discovery", "千牛活动发现(落日历+距开始<3天飞书提醒)",
-                 _job_campaign_discovery, cron={"hour": 18, "minute": 40})
+    register_job("campaign_daily_discovery", "千牛活动发现(晚间每小时重试+提醒)",
+                 _job_campaign_discovery, cron={"hour": "18-22", "minute": 40})
     register_job("campaign_auto_execute", "营销活动自动报名(安全门+差集+失败飞书)",
-                 _job_campaign_auto_execute, cron={"hour": 18, "minute": 50})
-    register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·2小时内)",
+                 _job_campaign_auto_execute, cron={"hour": "18-22", "minute": 50})
+    register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·6小时内)",
                  _job_campaign_auto_recon, interval_minutes=30)
 
 

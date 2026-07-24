@@ -50,21 +50,21 @@ const GROUPS: DownloadGroup[] = [
   },
   {
     title: '② 大促活动 的导入表格（活动报名）',
-    note: '千牛后台 →「大促活动报名」(SKU级)。照千牛模板生成，每行只填 商品ID / SKUID / 活动价；库存·发货时间·官方立减折扣·官方立减金额 全部留空。★活动价其实只有两个：超级立减(10%) 与 88VIP大促(12%) 用【同一个报名价】(平台力度不同→到手不同)；只有超级大促(15%)不一样(换SKU改价)。',
+    note: '千牛后台 →「大促活动报名」(SKU级)。每行只填 商品ID / SKUID / 活动价，其余列留空。真 SKU 三个档位的活动价都等于 ERP 日常价；只有定制占位 SKU 按不同官方力度套保护上限。',
     cards: [
       {
         key: 'ps-mid', title: '超级立减', tag: '10%', color: 'green',
-        desc: '活动价 = 报名价（与 88VIP大促 同一个价）。平台按 10% → 到手 = 中促到手。',
+        desc: '真 SKU 活动价 = ERP 日常价；平台官方10%再叠加本档单品立减，对齐中促到手。',
         filename: '大促活动报名_超级立减10%.xlsx', run: () => downloadPromoSignup('mid'),
       },
       {
         key: 'ps-big', title: '88VIP大促', tag: '12%', color: 'blue',
-        desc: '活动价 = 报名价（与 超级立减 同一个价）。平台按 12% → 到手 = 大促到手。',
+        desc: '真 SKU 活动价 = ERP 日常价；平台官方12%再叠加本档单品立减，对齐大促到手。',
         filename: '大促活动报名_88VIP大促12%.xlsx', run: () => downloadPromoSignup('big'),
       },
       {
         key: 'ps-618', title: '超级大促(双11)', tag: '15%', color: 'purple',
-        desc: '活动价 = 618 报名价（比上面两张高，换 SKU 时用）。平台按 15% → 到手 = 大促到手。',
+        desc: '真 SKU 活动价 = ERP 日常价；平台官方15%再叠加本档单品立减，对齐大促到手。',
         filename: '大促活动报名_超级大促双11 15%.xlsx', run: () => downloadPromoSignup('big618'),
       },
     ],
@@ -75,7 +75,7 @@ const GROUPS: DownloadGroup[] = [
     cards: [
       {
         key: 'signup', title: '活动报名表(带图)', tag: '汇总', color: 'orange',
-        desc: '各档到手 + 报名价(88VIP大促 / 超大促618) + 单品立减降价金额，一起看一起核。',
+        desc: '三档活动报名价、目标到手和单品立减金额逐列展示，与自动报名同一计算源。',
         filename: '畔色活动报名表.xlsx', run: downloadSignupForm,
       },
       {
@@ -107,7 +107,7 @@ export default function PricingDownloadsTab() {
       <Alert
         type="info" showIcon
         message="每张表点下载时实时生成（成本 / 售价一改就跟着变）。上传类表格表头对齐淘宝 / 千牛模板，可直接导入。"
-        description="① 单品立减 = 减金额；② 大促活动报名 = 活动价(报名价)，两者是「二选一」的玩法，别同一个SKU又报活动价又叠单品立减。"
+        description="唯一口径：真 SKU 活动报名价 = ERP 日常价；官方立减与单品立减必须叠加，到手 = 活动价 − 官方立减 − 单品立减。占位 SKU 只用保护报名价，不生成单品立减。"
       />
       {GROUPS.map((g) => (
         <div key={g.title}>

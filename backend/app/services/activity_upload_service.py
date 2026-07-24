@@ -26,14 +26,8 @@ def _gen_xlsx(db: Session, channel: str, tier: str) -> tuple[bytes, dict]:
         else:
             bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)
     elif channel == "promo_signup":
-        if tier == "big88p":                       # ★★88VIP·报名价法/垫片=0 (2026-07-16 报名价重构, 现行)
-            bio, stats = de.build_promo_signup_p_upload_xlsx(db, lev=0.12)
-        elif tier == "big88":                      # 88VIP大促·日常价法(B法, 叠单品立减) — ⚠已废弃
-            # 2026-07-16 实证淘汰: 活动价填日常价 → 名义券后虚高整整一刀单品立减(中位¥1387/日常价23%)
-            # → 顶穿"近15天最低券后"线 → 60品报名 42 失败(142行券后线)。保留仅为回溯对照, 勿再用于生产。
-            bio, stats = de.build_promo_signup_daily_upload_xlsx(db)
-        else:
-            bio, stats = de.build_promo_signup_upload_xlsx(db, tier)
+        normalized = "big" if tier in ("big88", "big88p") else tier
+        bio, stats = de.build_promo_signup_upload_xlsx(db, normalized)
     elif channel == "super_reduce":
         bio, stats = de.build_super_reduce_signup_upload_xlsx(db)
     else:
@@ -58,78 +52,39 @@ def _compare_rows(db: Session, channel: str, tier: str) -> list[dict]:
     """系统侧每个要上传 SKU 的目标值 —— 比对表左半(系统要的价), 右半(千牛校验)由 stage 汇总补。
     promo_signup/super_reduce 直接走 data_export.collect_signup_rows(与 builder 同源: 占位封顶到
     已生效价 + 整商品完整性剔除), 行集与真上传 xlsx 恒等; single_item 逐字镜像其 builder。"""
-    from app.models.pricing import PricingSku
-    from app.models.pricing_ext import PricingSkuPromo
-    from app.services import pricing_calc_service, activity_preflight_service
+    from types import SimpleNamespace
+    from app.services import campaign_service
 
     rows: list[dict] = []
+    normalized = "big" if tier in ("big88", "big88p") else tier
     if channel in ("promo_signup", "super_reduce"):
-        from app.services.data_export_service import collect_signup_rows, _PROMO_SIGNUP_TIERS
-        # ★★报名价法/垫片=0 (2026-07-16 现行): 活动价 = floor(大促到手/0.88), 名义券后 = 真实到手 = 锚。
-        if channel == "promo_signup" and tier == "big88p":
-            entries, _stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
-            for s, p, sp in entries:
-                for skuid in _expand_ids(p):
-                    rows.append({
-                        "sku_code": s.sku_code, "taobao_sku_id": skuid,
-                        "name": (s.sku or s.product_name or s.sku_code),
-                        "value_label": "报名价(=大促到手÷0.88)", "system_value": _f(sp),
-                        "target_shoudao": _f(p.big_buyer_price),      # 大促到手(锚)
-                    })
-            return rows
-        # ★日常价法(活动价=日常价/占位A): super_reduce 全部 + promo_signup 的 big88(88VIP大促·B法, 已废弃)。
-        daily_law = (channel == "super_reduce") or (channel == "promo_signup" and tier == "big88")
-        if channel == "promo_signup" and tier != "big88":
-            label, field = "报名价A", _PROMO_SIGNUP_TIERS[tier][1]
-        else:
-            label, field = "活动价(日常价)", "report_price"
-        entries, _stats = collect_signup_rows(db, field)
-        for s, p, A in entries:
-            if daily_law:
-                # ★活动价 = 日常价 (2026-07-13 血泪根治, 不是报名价A!): 折扣由并行的单品立减+官方让利
-                # 叠加提供, 填报名价A会双重打折砸穿。★占位例外: 占位活动价 = A(×0.9→500顶→floor)。
-                sys_val = _f(A) if getattr(s, "is_custom_placeholder", False) else _f(s.daily_price)
-            else:
-                sys_val = A
-            if channel == "super_reduce" or tier == "mid":
-                target = _f(p.mid_buyer_price)                             # 中促到手
-            else:                                                          # promo_signup big / big88
-                target = _f(p.big_buyer_price)                             # 大促到手
-            for skuid in _expand_ids(p):
-                rows.append({
-                    "sku_code": s.sku_code, "taobao_sku_id": skuid,
-                    "name": (s.sku or s.product_name or s.sku_code),
-                    "value_label": label, "system_value": _f(sys_val),
-                    "target_shoudao": target,
-                })
+        normalized = "mid" if channel == "super_reduce" else normalized
+        entries, _stats = campaign_service.build_signup_rows(
+            db, SimpleNamespace(tier=normalized))
+        targets = campaign_service.target_prices(db, SimpleNamespace(tier=normalized))
+        for entry in entries:
+            target = targets.get(str(entry["taobao_sku_id"]), {}).get("target")
+            rows.append({
+                "sku_code": entry["sku_code"],
+                "taobao_sku_id": str(entry["taobao_sku_id"]),
+                "name": entry["sku_code"],
+                "value_label": "活动价(日常价/占位保护价)",
+                "system_value": _f(entry["price"]),
+                "target_shoudao": _f(target),
+            })
         return rows
 
-    # ── single_item_discount: 逐字镜像其 builder ──
-    params = pricing_calc_service.get_promo_params(db)
-    promo = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
-    bad = activity_preflight_service.bad_price_product_codes(db)
-    from app.services.data_export_service import _TB_DISCOUNT_TIERS
-    deduct_field = _TB_DISCOUNT_TIERS[tier][1]                              # mid/big/big618 各自档位
-    for s in db.execute(select(PricingSku).order_by(
-            PricingSku.product_code, PricingSku.sku_code)).scalars().all():
-        p = promo.get(s.sku_code)
-        if p is None or not p.taobao_item_id or not p.taobao_sku_id:
-            continue
-        if (s.product_code or "") in bad:
-            continue
-        if getattr(s, "is_custom_placeholder", False):
-            sys_val = round(_f(s.daily_price) * 0.1, 2) if s.daily_price else None
-        else:
-            sys_val = pricing_calc_service.single_item_discounts(p, s.daily_price, params).get(deduct_field)
-        if sys_val is None:
-            continue
-        target = _f(p.mid_buyer_price) if tier == "mid" else _f(p.big_buyer_price)
-        for skuid in _expand_ids(p):
+    if channel == "single_item_discount":
+        entries, _stats = campaign_service.build_discount_rows(
+            db, SimpleNamespace(tier=normalized))
+        for entry in entries:
             rows.append({
-                "sku_code": s.sku_code, "taobao_sku_id": skuid,
-                "name": (s.sku or s.product_name or s.sku_code),
-                "value_label": "立减金额", "system_value": _f(sys_val),
-                "target_shoudao": target,
+                "sku_code": entry["sku_code"],
+                "taobao_sku_id": str(entry["taobao_sku_id"]),
+                "name": entry["sku_code"],
+                "value_label": "立减金额",
+                "system_value": _f(entry["deduct"]),
+                "target_shoudao": _f(entry["target_price"]),
             })
     return rows
 

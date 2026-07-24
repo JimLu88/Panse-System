@@ -233,18 +233,30 @@ def _placeholder_signup_price(s, p, lev: Decimal) -> tuple[Optional[float], Opti
     return float(min(current, cap)), remark
 
 
+def signup_price_for_sku(s, p, tier: str) -> tuple[Optional[float], Optional[str]]:
+    """单个 SKU 的活动报名价唯一口径。
+
+    真 SKU 永远填 ERP 日常价；定制占位 SKU 才走既有保护价。这个函数同时供自动报名、
+    定价页和下载表调用，避免各入口再次自行反推报名价。
+    """
+    if tier not in TIER_LEVERAGE:
+        raise ValueError(f"未知活动档位 {tier!r}; 可选 {list(TIER_LEVERAGE)}")
+    if bool(getattr(s, "is_custom_placeholder", False)):
+        return _placeholder_signup_price(s, p, TIER_LEVERAGE[tier])
+    daily = _d(getattr(s, "daily_price", None))
+    return (float(daily), None) if daily is not None and daily > 0 else (None, None)
+
+
 def _item_signup_rows(item_id: str, pairs: list, lev: Decimal, stats: dict) -> tuple[list, list]:
     """单商品报名行收集: 返回 (rows, missing_sku_codes)。真SKU 报名价 = 日常价 (铁则1)。"""
     rows, missing = [], []
     for s, p in pairs:
         placeholder = bool(getattr(s, "is_custom_placeholder", False))
+        tier = next(k for k, v in TIER_LEVERAGE.items() if v == lev)
+        price, remark = signup_price_for_sku(s, p, tier)
         if placeholder:
-            price, remark = _placeholder_signup_price(s, p, lev)
             if remark:
                 stats["placeholder_no_line"].append({"sku_code": s.sku_code, "remark": remark})
-        else:
-            price = float(s.daily_price) if s.daily_price else None
-            remark = None
         if price is None or price <= 0:
             missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
             continue
@@ -267,6 +279,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
+             "skipped_bad_price": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": []}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
@@ -288,6 +301,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
             continue
         if all((s.product_code or "") in bad_pc for s, _ in pairs):
             stats["skipped_bad_price_items"].append(item_id)      # 坏价整品排除
+            stats["skipped_bad_price"] += len(pairs)
             continue
         item_rows, missing = _item_signup_rows(item_id, pairs, lev, stats)
         if missing:                                    # R3 整品完整性: 缺一个SKU=整品拒 → 整品剔除
@@ -360,6 +374,32 @@ def _nosales_discount_row(s, p, stats: dict, tier: str = "mid") -> Optional[dict
         return None
     return {"deduct": float(deduct), "kind": "nosales", "target_price": float(target),
             "official": 0.0, "concession": 0.0}
+
+
+def discount_for_sku(db: Session, s, p, tier: str,
+                     no_sales_items: Optional[set[str]] = None) -> Optional[dict]:
+    """单个真 SKU 的单品立减计算口径，供下载参考表复用。
+
+    自动上传仍由 build_discount_rows 负责映射、下架、坏价等资格过滤；本函数只负责价格数学。
+    """
+    if tier not in TIER_LEVERAGE:
+        raise ValueError(f"未知活动档位 {tier!r}; 可选 {list(TIER_LEVERAGE)}")
+    if bool(getattr(s, "is_custom_placeholder", False)):
+        return None
+    daily = _d(getattr(s, "daily_price", None))
+    if daily is None or daily <= 0:
+        return None
+    from app.services import no_sales_service
+    stats = {"skipped_no_target": 0, "skipped_no_deduct": 0,
+             "rotation_suggested": [], "line_concessions": [],
+             "official_low_price_exact": 0}
+    item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
+    nosales = no_sales_items if no_sales_items is not None else no_sales_service.get_no_sales(db)
+    if item_id and item_id in nosales:
+        return _nosales_discount_row(s, p, stats, tier)
+    lev = TIER_LEVERAGE[tier]
+    ceil_on = True if tier != "mid" else official_ceil_enabled(db)
+    return _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
 
 
 def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
@@ -450,7 +490,7 @@ def preflight(db: Session, plan) -> list[dict]:
     nosales = sorted(no_sales_service.get_no_sales(db))
     checks = [
         _check_r1(db),
-        {"rule": "R2", "level": "warn" if dstats["rotation_suggested"] else "pass",
+        {"rule": "R2", "level": "error" if dstats["rotation_suggested"] else "pass",
          "title": "券后贴线: 让幅>1元建议轮换而非贴线; 0~1元让幅记录在案",
          "items": dstats["rotation_suggested"], "audit": dstats["line_concessions"]},
         {"rule": "R3", "level": "error" if sstats["incomplete_items"] else "pass",

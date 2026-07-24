@@ -151,7 +151,7 @@ def _plan(db, name, status, created_utc, title="88VIP周期购活动"):
 def test_auto_recon_scans_only_recent_signup_pushed(db_session, monkeypatch):
     now = datetime.utcnow()
     a = _plan(db_session, "在窗计划", "signup_pushed", now - timedelta(minutes=30))
-    _plan(db_session, "过窗计划", "signup_pushed", now - timedelta(hours=3))
+    _plan(db_session, "过窗计划", "signup_pushed", now - timedelta(hours=7))
     _plan(db_session, "没推报名", "precheck", now)
 
     exported = []

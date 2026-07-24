@@ -120,8 +120,8 @@ def test_list_endpoint_returns_signup_price_big():
                        headers={"Authorization": f"Bearer {token}"})
         assert r.status_code == 200, r.text
         row = r.json()["items"][0]
-        # 新口径: max p 使 p×0.88 ≤ (880−2安全垫) → 997
-        assert float(row["signup_price_big"]) == 997, row.get("signup_price_big")
+        # 唯一口径: 真 SKU 活动报名价就是 ERP 日常价
+        assert float(row["signup_price_big"]) == 1000, row.get("signup_price_big")
         # 老字段原样保留(编辑器/导出仍用), 不被覆盖
         assert float(row["taobao_activity_price"]) == 1000
     finally:

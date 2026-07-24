@@ -174,9 +174,10 @@ def test_signup_form_xlsx_additive_and_stripped(db_session, monkeypatch):
     ws = wb["活动报名表"]
     hdr = {ws.cell(2, c).value: c for c in range(1, ws.max_column + 1) if ws.cell(2, c).value}
     # 必要列在
-    for h in ("产品图", "产品名称", "规格", "一口价", "日常价(活动价)", "大促到手",
-              "88VIP大促报名价", "超大促报名价(618/双11)",
-              "中促降价金额(元)", "大促降价金额(元)", "超大促降价金额(元)"):
+    for h in ("产品图", "产品名称", "规格", "一口价", "ERP日常价",
+              "超级立减10%活动报名价", "超级立减目标到手", "超级立减单品立减(元)",
+              "88VIP/普通大促12%活动报名价", "大促目标到手", "大促单品立减(元)",
+              "618/双11 15%活动报名价", "超大促目标到手", "超大促单品立减(元)"):
         assert h in hdr, f"缺列: {h}"
     # 单品立减只出减金额, 不出折; 无关列已去掉
     for junk in ("ID", "淘宝标题", "SKU编码", "产品编码", "小促价", "会计总成本",
@@ -184,9 +185,12 @@ def test_signup_form_xlsx_additive_and_stripped(db_session, monkeypatch):
                  "大促单品立减(折)", "大促立减(元)"):
         assert junk not in hdr, f"应去掉却还在: {junk}"
     # 数值 (附图核准): 大促降价金额 = 4072.94 元; 超大促(15%)官方减更多 → 减金额更少
-    assert abs(float(ws.cell(3, hdr["大促降价金额(元)"]).value) - 4072.94) < 1.5
-    assert (float(ws.cell(3, hdr["超大促降价金额(元)"]).value)
-            < float(ws.cell(3, hdr["大促降价金额(元)"]).value))
+    assert abs(float(ws.cell(3, hdr["大促单品立减(元)"]).value) - 4072.94) < 1.5
+    assert (float(ws.cell(3, hdr["超大促单品立减(元)"]).value)
+            < float(ws.cell(3, hdr["大促单品立减(元)"]).value))
+    assert ws.cell(3, hdr["超级立减10%活动报名价"]).value == 19575
+    assert ws.cell(3, hdr["88VIP/普通大促12%活动报名价"]).value == 19575
+    assert ws.cell(3, hdr["618/双11 15%活动报名价"]).value == 19575
 
 
 def test_single_item_discount_upload_xlsx(db_session):
@@ -228,7 +232,7 @@ def test_single_item_discount_upload_xlsx(db_session):
 
 def test_promo_signup_upload_xlsx(db_session):
     """大促活动报名导入表: 照千牛模板(2 sheet + 3行表头, 数据第4行起); 只填 商品ID/SKUID/活动价(报名价),
-    库存/发货时间/官方立减 留空; ★超级立减(mid) 与 88VIP大促(big) 活动价相同, 超大促(big618) 更高。"""
+    库存/发货时间/官方立减 留空; 真 SKU 三个档位活动价均等于 ERP 日常价。"""
     import io
     import openpyxl
     from decimal import Decimal as D
@@ -256,8 +260,7 @@ def test_promo_signup_upload_xlsx(db_session):
     assert wm.cell(4, 1).value == "917179577721" and wm.cell(4, 1).number_format == "@"   # 商品ID 文本
     assert wm.cell(4, 2).value == "6004770768019"                                         # SKUID
     assert all(wm.cell(4, c).value is None for c in (4, 5, 6, 7))   # 库存/发货时间/官方立减折扣/金额 留空
-    assert wm.cell(4, 3).value == wb_.cell(4, 3).value              # 超级立减 == 88VIP (同一报名价)
-    assert w6.cell(4, 3).value > wb_.cell(4, 3).value              # 超大促报名价更高
+    assert wm.cell(4, 3).value == wb_.cell(4, 3).value == w6.cell(4, 3).value == 19575
 
 
 def test_catalog_and_total_sheet_have_discount_amounts(db_session, monkeypatch):

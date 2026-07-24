@@ -173,14 +173,16 @@ def _judge_row(rec: dict, spec_entry: Optional[dict],
     if spec_entry is None:
         return {**base, "sku_code": None, "target": None, "diff": None, "verdict": "无映射"}
     base["sku_code"] = spec_entry.get("sku_code")
-    if spec_entry.get("is_placeholder") or spec_entry.get("placeholder"):
-        return {**base, "target": None, "diff": None, "verdict": "占位"}
-    target = _entry_target(spec_entry, target_tier)
     # b维度: 活动价 P列 vs 报名价(=日常价) — 一并记录 (spec §四.6b)
     signup = spec_entry.get("signup_price", spec_entry.get("daily"))
     act_price = rec.get("activity_price")
     base["signup_price_ok"] = (None if act_price is None or signup is None
                                else abs(act_price - signup) <= _EPS)
+    base["expected_activity_price"] = signup
+    if spec_entry.get("is_placeholder") or spec_entry.get("placeholder"):
+        verdict = "占位价一致" if base["signup_price_ok"] is True else "占位活动价不一致"
+        return {**base, "target": None, "diff": None, "verdict": verdict}
+    target = _entry_target(spec_entry, target_tier)
     if target is None:
         return {**base, "target": None, "diff": None, "verdict": "无映射"}
     if actual is None:                                # 有映射有目标但 J 列空 → 平台还没算出来
@@ -234,14 +236,17 @@ def _compare_discounts(db: Session, plan, records: list[dict]) -> list[dict]:
     from app.services import campaign_service
     rows, _stats = campaign_service.build_discount_rows(db, plan)
     expected = {r["taobao_sku_id"]: r["deduct"] for r in rows}
+    actual = {rec.get("sku_id"): rec for rec in records if rec.get("sku_id")}
     mismatches = []
-    for rec in records:
-        sid = rec.get("sku_id")
+    for sid in sorted(set(expected) | set(actual)):
+        rec = actual.get(sid) or {}
         exp = expected.get(sid)
         got = rec.get("discount_value")
         if exp is None or got is None or abs(exp - got) > _EPS:
             mismatches.append({"sku_id": sid, "expected": exp, "actual": got,
-                               "item_id": rec.get("item_id")})
+                               "item_id": rec.get("item_id"),
+                               "kind": ("missing" if sid not in actual
+                                        else "extra" if sid not in expected else "price")})
     return mismatches
 
 
@@ -251,8 +256,26 @@ def _summarize(per_sku: list[dict], coverage: dict, discount_mismatch: list,
     for r in per_sku:
         key = "贴线" if str(r["verdict"]).startswith("贴线让") else r["verdict"]
         verdict_count[key] = verdict_count.get(key, 0) + 1
+    signup_mismatch = [
+        {"sku_id": r.get("sku_id"), "sku_code": r.get("sku_code"),
+         "expected": r.get("expected_activity_price"), "actual": r.get("activity_price")}
+        for r in per_sku if r.get("signup_price_ok") is False
+    ]
+    hard_verdicts = {"超2元报警", "偏差", "无映射"}
+    verdict_alarms = sum(n for key, n in verdict_count.items() if key in hard_verdicts)
+    hard_error_count = (
+        verdict_alarms
+        + len(signup_mismatch)
+        + len(coverage.get("missing", []))
+        + len(coverage.get("extra", []))
+        + len(discount_mismatch)
+        + (1 if title_ok is False else 0)
+    )
     return {"total": len(per_sku), "verdicts": verdict_count,
-            "alarm": verdict_count.get("超2元报警", 0),
+            "alarm": hard_error_count,
+            "hard_error_count": hard_error_count,
+            "signup_price_mismatch": signup_mismatch,
+            "pending_coupon_after": verdict_count.get("J未刷新", 0),
             "coverage_missing": coverage.get("missing", []),
             "coverage_extra": coverage.get("extra", []),
             "discount_mismatch": discount_mismatch,
@@ -261,7 +284,7 @@ def _summarize(per_sku: list[dict], coverage: dict, discount_mismatch: list,
 
 def _alarm_text(plan, alarms: list[dict], summary: dict) -> str:
     lines = [f"⚠️ 活动核对报警: {plan.name}（{plan.campaign_type}）",
-             f"到手 vs 目标 差异>2元: {len(alarms)} 个SKU"]
+             f"硬错误共 {summary.get('hard_error_count', len(alarms))} 项；系统已停止自动完工。"]
     for a in alarms[:10]:
         lines.append(f"- {a.get('sku_code') or a.get('sku_id')}: "
                      f"实际 {a.get('actual')} vs 目标 {a.get('target')} (差 {a.get('diff')})")
@@ -269,6 +292,14 @@ def _alarm_text(plan, alarms: list[dict], summary: dict) -> str:
         lines.append(f"…共 {len(alarms)} 条, 详见系统核对报告")
     if summary.get("title_ok") is False:
         lines.append("★活动名称与计划不一致 — 疑推错活动, 已中止判定, 请人工核实!")
+    if summary.get("signup_price_mismatch"):
+        lines.append(f"活动报名价不一致: {len(summary['signup_price_mismatch'])} 个 SKU")
+    if summary.get("coverage_missing") or summary.get("coverage_extra"):
+        lines.append(
+            f"报名集合缺失 {len(summary.get('coverage_missing') or [])} / "
+            f"多出 {len(summary.get('coverage_extra') or [])} 个 SKU")
+    if summary.get("discount_mismatch"):
+        lines.append(f"单品立减不一致: {len(summary['discount_mismatch'])} 个 SKU")
     return "\n".join(lines)
 
 
@@ -301,24 +332,51 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
             title_ok = verify_campaign_title(plan.qn_campaign_title, drecords[0]["activity_name"])
     product_rows = parse_product_batch_export(product_bytes) if product_bytes else []
 
-    alarms = [r for r in per_sku if r["verdict"] == "超2元报警"]
+    alarms = [r for r in per_sku if r["verdict"] in (
+        "超2元报警", "偏差", "无映射", "占位活动价不一致")]
     summary = _summarize(per_sku, coverage, discount_mismatch, title_ok)
     summary["product_rows_parsed"] = len(product_rows)
     report = CampaignReconReport(plan_id=plan.id, source=source, summary=summary,
-                                 rows=per_sku, alarm_count=len(alarms))
+                                 rows=per_sku, alarm_count=summary["hard_error_count"])
     db.add(report)
-    plan.status = "alarmed" if (alarms or title_ok is False) else "reconciled"
+    pending = summary.get("pending_coupon_after", 0) > 0
+    if summary["hard_error_count"]:
+        plan.status = "alarmed"
+    elif pending:
+        plan.status = "signup_pushed"
+    else:
+        plan.status = "reconciled"
     db.commit()
-    if alarms or title_ok is False:
+    if summary["hard_error_count"]:
         notify_service.broadcast_text(db, _alarm_text(plan, alarms, summary),
                                       title="活动核对报警", level="error")
-    return {"ok": True, "report_id": report.id, "summary": summary,
-            "rows": per_sku, "alarm_count": len(alarms)}
+    return {"ok": True,
+            "verified": not pending and not summary["hard_error_count"],
+            "pending": pending, "report_id": report.id, "summary": summary,
+            "rows": per_sku, "alarm_count": summary["hard_error_count"]}
 
 
 # ── 调度: 报名后自动核对 (P4, spec §五 campaign_auto_recon) ────────────────────
 
-AUTO_RECON_WINDOW_HOURS = 2   # 只扫创建 2 小时内的 signup_pushed 计划 (报名后延时触发窗口)
+AUTO_RECON_WINDOW_HOURS = 6
+
+
+def _notify_recon_export_failure_once(db: Session, plan, text: str) -> dict:
+    """同一计划同一导出故障只提醒一次，原因变化后重新提醒。"""
+    import hashlib
+    from app.services import notify_service, settings_service
+
+    signature = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    key = f"campaign_recon_export_failure_{plan.id}"
+    if settings_service.get(db, key, env_fallback=False) == signature:
+        return {"deduped": True}
+    delivered = notify_service.broadcast_text(
+        db, text, title="活动自动核对失败", level="warn")
+    if any(v is True for v in delivered.values()):
+        settings_service.set_value(
+            db, key, signature, description="活动核对导出失败通知去重签名")
+        db.commit()
+    return delivered
 
 
 def auto_recon_scan(db: Session) -> dict:
@@ -328,7 +386,7 @@ def auto_recon_scan(db: Session) -> dict:
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import select
     from app.models.campaign import CampaignPlan
-    from app.services import notify_service, web_agent_service
+    from app.services import web_agent_service
 
     cutoff = datetime.now(timezone.utc) - timedelta(hours=AUTO_RECON_WINDOW_HOURS)
     plans = db.execute(select(CampaignPlan).where(
@@ -350,17 +408,18 @@ def auto_recon_scan(db: Session) -> dict:
         if not exp.get("ok"):
             failed += 1
             err = exp.get("error") or exp.get("message") or "未知原因"
-            notify_service.broadcast_text(
-                db,
+            _notify_recon_export_failure_once(
+                db, plan,
                 f"⚠️ 「{plan.name}」报名后自动核对没跑成: WA 导出已报商品失败（{err}）。\n"
                 f"计划保持「报名已推」状态; 请自己去千牛活动页导出「活动商品导出」表, "
-                f"到系统核对面板手动上传继续核对。",
-                title="活动自动核对失败", level="warn")
+                f"到系统核对面板手动上传继续核对。")
             details.append({"plan_id": plan.id, "ok": False, "error": err})
             continue
         res = reconcile(db, plan, activity_bytes=exp["xlsx_bytes"], source="auto")
-        if res.get("ok"):
+        if res.get("verified"):
             reconciled += 1
+        else:
+            failed += 1
         details.append({"plan_id": plan.id, "ok": res.get("ok"),
                         "alarm_count": res.get("alarm_count")})
     return {"scanned": scanned, "reconciled": reconciled, "failed": failed,

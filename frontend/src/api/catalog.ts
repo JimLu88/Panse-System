@@ -996,9 +996,9 @@ export interface ShopPriceRow {
   physical_cost?: number | null;      // 物理成本(工厂+物流+安装)
   big_promo_margin?: number | null;   // 大促利润 = 大促价 −(物理成本 + 平台费0.6% + 税2%)
   gross_margin_rate?: number | null;  // 大促利润率 = 大促利润 ÷ 大促价
-  // 报名价模型 (2026-07-03: 大促锚不动, 只动中促) —— 派生, 填淘宝超级立减报名表
-  report_price?: number | null;       // 报名价 A = 大促到手 ÷ 0.88
-  report_price_618?: number | null;   // 618/双11 报名价 = 大促到手 ÷ 0.85
+  signup_price_mid?: number | null;
+  signup_price_big?: number | null;
+  signup_price_618?: number | null;
   gap_floor?: number | null;          // 空档价红线 = 中促到手
   compliance_g?: number | null;       // g = 中促到手 ÷ 大促到手
   report_compliant?: boolean | null;  // g≥0.90/0.88 → 绿; 否则需微升中促(红)

@@ -87,7 +87,9 @@ type PromoField = { key: string; label: string; kind: 'num' | 'text'; editable: 
 const PROMO_FIELDS: PromoField[] = [
   { key: 'taobao_item_id', label: '淘宝商品ID', kind: 'text', editable: true },
   { key: 'taobao_sku_id', label: '淘宝SKUID', kind: 'text', editable: true },
-  { key: 'signup_price_big', label: '淘宝活动报名价', kind: 'num', editable: false },
+  { key: 'signup_price_mid', label: '超级立减报名价', kind: 'num', editable: false },
+  { key: 'signup_price_big', label: '普通大促报名价', kind: 'num', editable: false },
+  { key: 'signup_price_618', label: '618/双11报名价', kind: 'num', editable: false },
   { key: 'shop_promo_rate', label: '小促单品立减设置%', kind: 'num', editable: true, pct: true },
   { key: 'shop_internal_final', label: '小促到手价', kind: 'num', editable: false },
   { key: 'mid_platform_discount', label: '中促力度%', kind: 'num', editable: false, pct: true },
@@ -112,7 +114,9 @@ const PROMO_FIELDS: PromoField[] = [
 ];
 // 活动价计算列的公式说明 (鼠标悬停显示: 引用了哪个数字 + 用了什么系数)
 const PROMO_FORMULA: Record<string, string> = {
-  signup_price_big: '88VIP报名价(报名价法) = 大促到手锚−2元 反解÷0.88, 与实际推送一致 (老口径"=日常价"已废弃)',
+  signup_price_mid: '与自动报名同源：真 SKU = ERP 日常价；定制占位 SKU = 系统保护报名价。',
+  signup_price_big: '与自动报名同源：真 SKU = ERP 日常价；定制占位 SKU = 系统保护报名价。',
+  signup_price_618: '与自动报名同源：真 SKU = ERP 日常价；定制占位 SKU = 系统保护报名价。',
   shop_internal_final: '小促到手价 = 日常价 × 小促单品立减设置%',
   mid_buyer_price: '中促到手价 = 日常价 × (1 − 中促力度%) × 中促单品立减设置% ｜ 买家实付(消费券前、88VIP佣金前); 店铺实收见「中促店铺到账」= 到手价×(1−88VIP佣金2%)',
   mid_shop_receipt: '中促店铺到账 = 中促到手价 × (1 − 88VIP佣金2%) ｜ 店铺实收(佣金后), 即定价总表「中促价」',

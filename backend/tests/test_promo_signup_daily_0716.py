@@ -37,10 +37,9 @@ def test_real_sku_uses_daily_not_reportprice(db_session):
     daily = _col3_by_sid(de.build_promo_signup_daily_upload_xlsx(db)[0])
     a_based = _col3_by_sid(de.build_promo_signup_upload_xlsx(db, "big")[0])
 
-    # 真SKU: 日常价法填【日常价】; 报名价法填【A】, 且 A < 日常价 → 证明日常价法防砸穿
+    # 所有生产入口已统一：真 SKU 一律填日常价，旧反推报名价法不再存在
     assert daily["800001"] == 6470.0
-    assert a_based["800001"] < 6470.0
-    assert daily["800001"] != a_based["800001"]
+    assert a_based["800001"] == 6470.0
     # 占位: 两法一致 = A(封顶到 floor 400)
     assert daily["800099"] == 400.0 == a_based["800099"]
 
@@ -67,7 +66,7 @@ def test_compare_rows_zero_mismatch(db_session):
     assert rows and {r["taobao_sku_id"] for r in rows} == set(uploaded)
     for r in rows:
         assert abs(r["system_value"] - uploaded[r["taobao_sku_id"]]) < 0.005       # 0容差
-        assert r["value_label"] == "活动价(日常价)"
+        assert r["value_label"] == "活动价(日常价/占位保护价)"
     tgt = {r["taobao_sku_id"]: r["target_shoudao"] for r in rows}
     assert tgt["800021"] == 2000.0                                                  # 大促到手
     assert uploaded["800021"] == 2600.0 and uploaded["800029"] == 350.0            # 真=日常价, 占位=floor

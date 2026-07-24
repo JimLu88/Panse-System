@@ -121,6 +121,30 @@ def test_signup_rows_exclude_registered_no_sales(db_session):
     assert stats["excluded_no_sales_items"] == ["9209"]
 
 
+def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
+    """蜜蜡色样块是正常商品，不得再按定制占位保护价报 18 元。"""
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPS2398001", "PPS2398001060614", "719436834260",
+        "5024477897619", daily=25, big=20.41, placeholder=False)
+    db_session.commit()
+
+    signup, _ = cs.build_signup_rows(db_session, plan)
+    discount, _ = cs.build_discount_rows(db_session, plan)
+
+    assert signup == [{
+        "taobao_item_id": "719436834260",
+        "taobao_sku_id": "5024477897619",
+        "sku_code": "PPS2398001060614",
+        "price": 25.0,
+        "is_placeholder": False,
+        "remark": None,
+    }]
+    # 低价 SKU 的12%按平台精确值3元；25 - 3 - 1.59 = 20.41。
+    assert discount[0]["official"] == 3.0
+    assert discount[0]["deduct"] == 1.59
+    assert discount[0]["target_price"] == 20.41
+
+
 def test_signup_rows_r3_incomplete_item_dropped(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSSC001", "PPSSC00101", "9203", "72021", daily=None)   # 缺日常价
@@ -243,7 +267,7 @@ def test_preflight_outputs_r1_to_r12(db_session):
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["sku_code"] == "PPSPA00101"
-    assert by_rule["R2"]["level"] == "warn"
+    assert by_rule["R2"]["level"] == "error"
     assert by_rule["R2"]["items"][0]["sku_code"] == "PPSPC00101"
     assert by_rule["R3"]["level"] == "error"
     assert by_rule["R3"]["items"][0]["taobao_item_id"] == "9402"
