@@ -425,7 +425,7 @@ def sync_quantity_anomalies(
             )
         ).scalars()
     }
-    created = updated = resolved = 0
+    created = updated = resolved = open_count = ignored_count = 0
     for source_pk, obs in current.items():
         row = existing.get(source_pk)
         description = f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
@@ -450,6 +450,16 @@ def sync_quantity_anomalies(
                 status="open",
             ))
             created += 1
+            open_count += 1
+        elif row.status == "ignored":
+            # "强制忽略"表示该笔数量异常已经人工核验。后续扫描可以刷新
+            # 描述和上下文，但不能把它重新打开；新出现的订单仍会正常告警。
+            changed = row.description != description or row.context != context
+            row.description = description
+            row.context = context
+            if changed:
+                updated += 1
+            ignored_count += 1
         else:
             changed = (
                 row.description != description
@@ -461,6 +471,7 @@ def sync_quantity_anomalies(
             row.status = "open"
             if changed:
                 updated += 1
+            open_count += 1
     for source_pk, row in existing.items():
         if row.status == "open" and source_pk not in current:
             row.status = "resolved"
@@ -470,7 +481,8 @@ def sync_quantity_anomalies(
     db.flush()
     return {
         "scanned": len(observations),
-        "open": len(current),
+        "open": open_count,
+        "ignored": ignored_count,
         "created": created,
         "updated": updated,
         "resolved": resolved,

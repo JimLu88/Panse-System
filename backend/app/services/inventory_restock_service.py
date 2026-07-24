@@ -11,6 +11,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.exception import DataException
 from app.models.inventory import ProductInventory
 from app.models.order import FactoryOrder
 from app.services import (
@@ -143,11 +144,14 @@ def build_restock_plan(
         demand.forecast_period(profile, start, end, cfg)
         for profile in custom_profiles
     )
-    anomaly_orders = {
-        item["order_no"]
-        for profile in [*standard_profiles, *custom_profiles]
-        for item in profile.get("anomalies", [])
-    }
+    open_quantity_anomalies = len(
+        db.execute(
+            select(DataException.id).where(
+                DataException.exception_type == "inventory_demand_qty_anomaly",
+                DataException.status == "open",
+            )
+        ).scalars().all()
+    )
     products.sort(
         key=lambda x: (
             -x["suggested_restock"],
@@ -163,7 +167,7 @@ def build_restock_plan(
         "suggested_total": sum(x["suggested_restock"] for x in products),
         "hot_product_count": sum(1 for x in products if x["qualified_hot"]),
         "custom_task_forecast": round(custom_tasks, 1),
-        "quantity_anomalies": {"open": len(anomaly_orders)},
+        "quantity_anomalies": {"open": open_quantity_anomalies},
         "rules": {
             "windows": [7, 15, 30, 60, 90],
             "hot_threshold_90d": 8,

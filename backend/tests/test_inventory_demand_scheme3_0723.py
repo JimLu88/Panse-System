@@ -1,6 +1,9 @@
 from datetime import date, timedelta
 from decimal import Decimal
 
+from sqlalchemy import select
+
+from app.models.exception import DataException
 from app.models.inventory import ProductInventory
 from app.models.order import Order
 from app.services import (
@@ -81,6 +84,56 @@ def test_confirmed_bulk_order_keeps_original_quantity(db_session):
     )
     row = next(x for x in rows if x.order_no == "REAL-BULK-4")
     assert (row.kind, row.effective_qty, row.anomaly) == ("standard", 4, None)
+
+
+def test_ignored_quantity_anomaly_stays_closed_and_new_order_still_alerts(
+    db_session,
+):
+    db = db_session
+    _order(db, "REVIEWED-4", qty=4)
+
+    first = demand.sync_quantity_anomalies(db, as_of=AS_OF)
+    reviewed = db.execute(
+        select(DataException).where(
+            DataException.exception_type == "inventory_demand_qty_anomaly",
+            DataException.source_pk.isnot(None),
+        )
+    ).scalar_one()
+    assert first["open"] == 1
+
+    reviewed.status = "ignored"
+    reviewed.resolved_by = "manual-review"
+    reviewed.resolved_at = "2026-07-24T10:00:00+08:00"
+    db.flush()
+
+    second = demand.sync_quantity_anomalies(db, as_of=AS_OF)
+    db.refresh(reviewed)
+    assert second["open"] == 0
+    assert second["ignored"] == 1
+    assert reviewed.status == "ignored"
+    assert reviewed.resolved_by == "manual-review"
+    assert reviewed.resolved_at == "2026-07-24T10:00:00+08:00"
+
+    reviewed_plan = restock.build_restock_plan(
+        db,
+        start=AS_OF + timedelta(days=1),
+        end=AS_OF + timedelta(days=30),
+        as_of=AS_OF,
+    )
+    assert reviewed_plan["quantity_anomalies"]["open"] == 0
+
+    _order(db, "NEW-5", qty=5)
+    third = demand.sync_quantity_anomalies(db, as_of=AS_OF)
+    assert third["open"] == 1
+    assert third["ignored"] == 1
+
+    latest_plan = restock.build_restock_plan(
+        db,
+        start=AS_OF + timedelta(days=1),
+        end=AS_OF + timedelta(days=30),
+        as_of=AS_OF,
+    )
+    assert latest_plan["quantity_anomalies"]["open"] == 1
 
 
 def test_promo_is_normalized_and_cny_is_retained_separately(db_session):
