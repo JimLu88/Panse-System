@@ -129,6 +129,10 @@ def apply_mapping(db: Session, product_code: str, erp_mapping: list[dict], *, dr
             changes.append({"sku_code": sc, "old_skuId": old, "new_skuId": str(new_sid)})
             if not dry_run and p is not None:
                 p.taobao_sku_id = str(new_sid)
+                # 券后线和已生效活动价都属于物理 skuId 的平台历史，不属于商家编码。
+                # 轮换后若继续挂在新 skuId 上，会把旧槽位的低价历史误当成新槽位限制。
+                p.coupon_floor_price = None
+                p.enrolled_floor_price = None
     if not dry_run:
         db.flush()
     return {"ok": True, "dry_run": dry_run, "changed": len(changes), "changes": changes}

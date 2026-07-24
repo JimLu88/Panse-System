@@ -337,10 +337,10 @@ def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: 
         target = line                                     # 贴线 min(目标, 线)
         stats["line_concessions"].append({"sku_code": s.sku_code, "target": float(target0),
                                           "line": float(line), "concession": float(concession)})
-    # 2026-07-23 狂暑季实证：普通价位的12%仍按整元向上取整；¥30样块平台
-    # 按精确12%（¥3.60）计算。低价 SKU 若继续按¥4反推会让到手高¥0.40。
-    # 超级立减10%继续严格沿用用户确认的整元向上取整。
-    low_price_exact = lev != TIER_LEVERAGE["mid"] and daily < Decimal("100")
+    # 2026-07-24 平台实证：低价 SKU 的官方立减按精确比例计算到分。
+    # 狂暑季 ¥30×12%=¥3.60；超级立减 ¥25×10%=¥2.50，均不向上取整到元。
+    # 普通价位仍沿用整元向上取整规则。
+    low_price_exact = daily < Decimal("100")
     official = official_deduction(daily, lev, ceil_on and not low_price_exact)
     if low_price_exact:
         stats["official_low_price_exact"] += 1

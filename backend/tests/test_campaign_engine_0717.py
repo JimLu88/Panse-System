@@ -125,7 +125,7 @@ def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
     """蜜蜡色样块是正常商品，不得再按定制占位保护价报 18 元。"""
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPS2398001", "PPS2398001060614", "719436834260",
-        "5024477897619", daily=25, big=20.41, placeholder=False)
+        "6282622238127", daily=30, big=20.41, placeholder=False)
     db_session.commit()
 
     signup, _ = cs.build_signup_rows(db_session, plan)
@@ -133,16 +133,31 @@ def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
 
     assert signup == [{
         "taobao_item_id": "719436834260",
-        "taobao_sku_id": "5024477897619",
+        "taobao_sku_id": "6282622238127",
         "sku_code": "PPS2398001060614",
-        "price": 25.0,
+        "price": 30.0,
         "is_placeholder": False,
         "remark": None,
     }]
-    # 低价 SKU 的12%按平台精确值3元；25 - 3 - 1.59 = 20.41。
-    assert discount[0]["official"] == 3.0
-    assert discount[0]["deduct"] == 1.59
+    # 低价 SKU 的12%按平台精确值3.60元；30 - 3.60 - 5.99 = 20.41。
+    assert discount[0]["official"] == 3.6
+    assert discount[0]["deduct"] == 5.99
     assert discount[0]["target_price"] == 20.41
+
+
+def test_super_reduce_low_price_uses_platform_exact_percent(db_session):
+    """超级立减低价 SKU 也按精确10%：25×10%=2.50，不向上取整成3元。"""
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSLOW10", "PPSLOW1001", "9300", "73010",
+        daily=25, big=20.41)
+    db_session.commit()
+
+    rows, stats = cs.build_discount_rows(db_session, plan)
+
+    assert rows[0]["official"] == 2.5
+    assert rows[0]["deduct"] == 1.48
+    assert rows[0]["target_price"] == 21.02
+    assert stats["official_low_price_exact"] == 1
 
 
 def test_signup_rows_r3_incomplete_item_dropped(db_session):

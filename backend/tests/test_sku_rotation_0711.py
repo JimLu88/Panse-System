@@ -15,7 +15,10 @@ def _seed(db):
               ("PR000124", "榉木床-1.2米", 5000, "S12")]
     for sc, name, price, skuid in ladder:
         db.add(PricingSku(product_code="PR0001", sku_code=sc, sku=name, daily_price=Decimal(str(price))))
-        db.add(PricingSkuPromo(sku_code=sc, taobao_item_id="900", taobao_sku_id=skuid))
+        db.add(PricingSkuPromo(
+            sku_code=sc, taobao_item_id="900", taobao_sku_id=skuid,
+            coupon_floor_price=Decimal("123.45"),
+            enrolled_floor_price=Decimal("234.56")))
     db.add(PricingSku(product_code="PR0001", sku_code="PR000199", sku="榉木 尺寸定制",
                       daily_price=Decimal("1000"), is_custom_placeholder=True))
     db.add(PricingSkuPromo(sku_code="PR000199", taobao_item_id="900", taobao_sku_id="SBUF"))
@@ -53,3 +56,5 @@ def test_apply_mapping_dry_run_then_real(db_session):
     db.expire_all()
     p = db.execute(select(PricingSkuPromo).where(PricingSkuPromo.sku_code == "PR000121")).scalar_one()
     assert p.taobao_sku_id == "SBUF"   # 落库后 2.1米编码 → buffer槽
+    assert p.coupon_floor_price is None
+    assert p.enrolled_floor_price is None
