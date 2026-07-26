@@ -36,7 +36,7 @@ CAMPAIGN_TYPES = {
 TIER_LEVERAGE = {"mid": Decimal("0.10"), "big": Decimal("0.12"), "big618": Decimal("0.15")}
 MID_OVER_BIG_RATIO = Decimal("1.03")       # 任务#22: 中促 = 大促 × 1.03 (系统统一系数, 就地算)
 NOSALES_MARKUP_YUAN = Decimal("1")         # 无动销: 到手 = 中促 + 1 元 (2026-07-17 永久规则)
-LINE_CONCESSION_MAX_YUAN = Decimal("1")    # 贴线让幅 > 1 元 → 建议轮换而非贴线 (R2)
+LINE_CONCESSION_MAX_YUAN = Decimal("1")    # 贴线让幅 > 1 元 → 暂缓该商品并提醒人工决策 (R2)
 PLACEHOLDER_LINE_FALLBACK_RATIO = Decimal("0.8")   # 占位无券后线 → 日常×0.8 保守线(行备注标注)
 OFFICIAL_CEIL_KEY = "campaign_official_ceil"       # 10% 官方立减是否向上取整(待7-20实证), 默认真
 _CENT = Decimal("0.01")
@@ -113,6 +113,62 @@ def _mapped_pairs(db: Session) -> list[tuple]:
         if p is not None and p.taobao_item_id:
             out.append((s, p))
     return out
+
+
+def price_hold_items(db: Session, plan) -> list[dict]:
+    """已知历史价格线与ERP目标冲突的整品暂缓清单。
+
+    这里只使用ERP已有的静态价格线，不猜平台价保订单。暂缓商品不进入报名表或同期单品立减表，
+    其他商品可以继续；运营提供本场价保说明链接后，再按实际期限和订单暴露决定何时重试。
+    """
+    from app.services import no_sales_service
+
+    tier = plan_tier(plan)
+    no_sales = no_sales_service.get_no_sales(db)
+    by_item: dict[str, dict] = {}
+    for s, p in _mapped_pairs(db):
+        if bool(getattr(s, "is_custom_placeholder", False)):
+            continue
+        item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
+        if not item_id or item_id in no_sales:
+            continue
+        daily = _d(getattr(s, "daily_price", None))
+        if daily is None or daily <= 0:
+            continue
+        reasons = []
+        enrolled = _d(getattr(p, "enrolled_floor_price", None))
+        if enrolled is not None and enrolled > 0 and daily > enrolled:
+            reasons.append({
+                "type": "signup_floor",
+                "erp_signup_price": float(daily),
+                "platform_history_line": float(enrolled),
+                "difference": float((daily - enrolled).quantize(_CENT)),
+            })
+        target = (
+            mid_buyer_inplace(p) if tier == "mid"
+            else _d(getattr(p, "big_buyer_price", None))
+        )
+        coupon_line = _d(getattr(p, "coupon_floor_price", None))
+        if (target is not None and target > 0 and coupon_line is not None
+                and 0 < coupon_line < target):
+            concession = (target - coupon_line).quantize(_CENT)
+            if concession > LINE_CONCESSION_MAX_YUAN:
+                reasons.append({
+                    "type": "coupon_floor",
+                    "erp_target": float(target),
+                    "platform_history_line": float(coupon_line),
+                    "difference": float(concession),
+                })
+        if not reasons:
+            continue
+        entry = by_item.setdefault(item_id, {
+            "taobao_item_id": item_id,
+            "product": s.product_name or s.product_code or "",
+            "skus": [],
+            "action": "暂缓本商品；默认19天冷静期，按活动价保说明可提前/延后；禁止轮换或降价迁就",
+        })
+        entry["skus"].append({"sku_code": s.sku_code, "reasons": reasons})
+    return [by_item[k] for k in sorted(by_item)]
 
 
 # ── 1. 动销检查与分组 (spec §四.1) ─────────────────────────────────────────────
@@ -278,9 +334,12 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
+    holds = price_hold_items(db, plan)
+    held_item_ids = {x["taobao_item_id"] for x in holds}
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
-             "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": []}
+             "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": [],
+             "excluded_price_hold_items": holds}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
@@ -294,6 +353,8 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 
     rows: list[dict] = []
     for item_id, pairs in sorted(by_item.items()):
+        if item_id in held_item_ids:
+            continue
         # 无动销登记是单行道：真无动销及“已出单待人工转正”都不能自动报名，
         # 只走同期单品立减。每日自动任务会先刷新登记表。
         if item_id in registered_no_sales:
@@ -417,8 +478,11 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     nosales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
+    holds = price_hold_items(db, plan)
+    held_item_ids = {x["taobao_item_id"] for x in holds}
     stats = {"tier": tier, "official_ceil": ceil_on, "rows": 0, "skipped_no_skuid": 0,
              "skipped_delisted": 0, "skipped_bad_price": 0, "skipped_placeholder": 0,
+             "skipped_price_hold": 0, "excluded_price_hold_items": holds,
              "skipped_no_daily": 0, "skipped_no_target": 0, "skipped_no_deduct": 0,
              "line_concessions": [], "rotation_suggested": [],
              "official_low_price_exact": 0}
@@ -441,6 +505,9 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
             stats["skipped_no_daily"] += 1
             continue
         item_id = str(p.taobao_item_id).strip()
+        if item_id in held_item_ids:
+            stats["skipped_price_hold"] += 1
+            continue
         if item_id in nosales:
             core = _nosales_discount_row(s, p, stats, tier)
         else:
@@ -466,33 +533,98 @@ _STATIC_REMINDERS = [
 ]
 
 
-def _check_r1(db: Session) -> dict:
+def _check_r1(db: Session, plan) -> dict:
     """R1 静态代理: 报名价(=日常价) > 已生效活动价硬底(enrolled_floor_price) → 必被
     "≤近15天最低标价/已生效价"拦, 提示轮换。(真实15天标价窗口在平台侧, 离线取不到 — 交回执自愈。)"""
     items = []
-    for s, p in _mapped_pairs(db):
-        if getattr(s, "is_custom_placeholder", False):
-            continue
-        fl = _d(getattr(p, "enrolled_floor_price", None))
-        daily = _d(s.daily_price)
-        if fl is not None and fl > 0 and daily is not None and daily > fl:
-            items.append({"sku_code": s.sku_code, "daily_price": float(daily),
-                          "enrolled_floor": float(fl), "advice": "轮换"})
+    for item in price_hold_items(db, plan):
+        skus = [
+            sku for sku in item["skus"]
+            if any(r["type"] == "signup_floor" for r in sku["reasons"])
+        ]
+        if skus:
+            items.append({**item, "skus": skus})
     return {"rule": "R1", "level": "warn" if items else "pass",
-            "title": "报名价≤近15天最低标价 (静态代理: 已生效价硬底)", "items": items}
+            "title": "报名价历史线冲突：相关整品已暂缓，不轮换、不降价迁就", "items": items}
+
+
+def _check_price_math(db: Session, plan, signup_rows: list[dict],
+                      discount_rows: list[dict]) -> dict:
+    """逐SKU验算报名价与到手公式，0.01元偏差也阻断。"""
+    pair_by_sid: dict[str, tuple] = {}
+    for s, p in _mapped_pairs(db):
+        for sid in _expand_sku_ids(p):
+            pair_by_sid[sid] = (s, p)
+    errors = []
+    for row in signup_rows:
+        if row.get("is_placeholder"):
+            continue
+        pair = pair_by_sid.get(str(row.get("taobao_sku_id")))
+        daily = _d(getattr(pair[0], "daily_price", None)) if pair else None
+        price = _d(row.get("price"))
+        if daily is None or price is None or abs(daily - price) > Decimal("0.005"):
+            errors.append({
+                "sku_id": row.get("taobao_sku_id"), "sku_code": row.get("sku_code"),
+                "check": "signup_price_equals_daily",
+                "daily": float(daily) if daily is not None else None,
+                "signup_price": float(price) if price is not None else None,
+            })
+    for row in discount_rows:
+        pair = pair_by_sid.get(str(row.get("taobao_sku_id")))
+        daily = _d(getattr(pair[0], "daily_price", None)) if pair else None
+        official = _d(row.get("official")) or Decimal("0")
+        deduct = _d(row.get("deduct"))
+        target = _d(row.get("target_price"))
+        if pair and bool(getattr(pair[0], "is_custom_placeholder", False)):
+            errors.append({
+                "sku_id": row.get("taobao_sku_id"), "sku_code": row.get("sku_code"),
+                "check": "placeholder_must_not_have_discount",
+            })
+            continue
+        landing = (
+            (daily - official - deduct).quantize(_CENT)
+            if daily is not None and deduct is not None else None
+        )
+        if landing is None or target is None or abs(landing - target) > Decimal("0.005"):
+            errors.append({
+                "sku_id": row.get("taobao_sku_id"), "sku_code": row.get("sku_code"),
+                "check": "daily_minus_official_minus_discount_equals_target",
+                "daily": float(daily) if daily is not None else None,
+                "official": float(official), "deduct": float(deduct) if deduct is not None else None,
+                "target": float(target) if target is not None else None,
+                "calculated_landing": float(landing) if landing is not None else None,
+            })
+    return {
+        "rule": "R13",
+        "level": "error" if errors else "pass",
+        "title": "逐SKU价格验算：报名价=ERP日常价；日常价−官方立减−单品立减=ERP目标价",
+        "items": errors[:100],
+        "checked": {"signup_rows": len(signup_rows), "discount_rows": len(discount_rows)},
+    }
 
 
 def preflight(db: Session, plan) -> list[dict]:
     """R1~R12 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
     from app.services import no_sales_service
+    from app.services import campaign_price_protection_service
+
     _srows, sstats = build_signup_rows(db, plan)
     _drows, dstats = build_discount_rows(db, plan)
     nosales = sorted(no_sales_service.get_no_sales(db))
+    holds = price_hold_items(db, plan)
+    coupon_holds = []
+    for item in holds:
+        skus = [
+            sku for sku in item["skus"]
+            if any(r["type"] == "coupon_floor" for r in sku["reasons"])
+        ]
+        if skus:
+            coupon_holds.append({**item, "skus": skus})
     checks = [
-        _check_r1(db),
-        {"rule": "R2", "level": "error" if dstats["rotation_suggested"] else "pass",
-         "title": "券后贴线: 让幅>1元建议轮换而非贴线; 0~1元让幅记录在案",
-         "items": dstats["rotation_suggested"], "audit": dstats["line_concessions"]},
+        _check_r1(db, plan),
+        {"rule": "R2", "level": "warn" if coupon_holds else "pass",
+         "title": "券后线冲突：让幅>1元的整品已暂缓并等待期限/人工决策；不轮换",
+         "items": coupon_holds, "audit": dstats["line_concessions"]},
         {"rule": "R3", "level": "error" if sstats["incomplete_items"] else "pass",
          "title": "报名整品全SKU完整性 (缺SKU=整品拒)", "items": sstats["incomplete_items"]},
         {"rule": "R4", "level": "info", "title": "下架SKU已过滤不出行 (回执自愈登记)",
@@ -503,6 +635,8 @@ def preflight(db: Session, plan) -> list[dict]:
         {"rule": "R9", "level": "pass",
          "title": "官方立减向上取整到元已内建 (10%场开关 campaign_official_ceil)",
          "items": [{"official_ceil": dstats["official_ceil"]}]},
+        _check_price_math(db, plan, _srows, _drows),
+        campaign_price_protection_service.rule_check(plan),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))

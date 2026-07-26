@@ -70,6 +70,10 @@ export interface CampaignPlan {
   start_at: string | null;               // 'YYYY-MM-DD HH:mm:ss'（档期精确到秒）
   end_at: string | null;
   qn_campaign_title: string | null;      // 千牛活动标题（核对头部校验用，防推错活动）
+  price_protection_days: number;         // 规则未确认时默认19，可逐场手动修改
+  price_protection_rule_url: string | null;
+  price_protection_confirmed_at: string | null;
+  price_protection_until: string | null; // 活动结束 + 当前价保天数
   status: CampaignStatus;
   remark?: string | null;
 }
@@ -79,6 +83,8 @@ export interface CampaignPlanPayload {
   start_at: string;
   end_at: string | null;
   qn_campaign_title?: string | null;
+  price_protection_days?: number;
+  price_protection_rule_url?: string | null;
   remark?: string | null;
 }
 export interface CampaignListResult {
@@ -96,6 +102,9 @@ export const updateCampaign = (id: number, patch: Partial<CampaignPlanPayload>) 
   api.put<CampaignPlan>(`/api/campaigns/${id}`, patch).then((r) => r.data);
 export const deleteCampaign = (id: number) =>
   api.delete<{ ok: boolean }>(`/api/campaigns/${id}`).then((r) => r.data);
+export const remindCampaignPriceProtectionRule = (id: number) =>
+  api.post<{ needed: boolean; sent: boolean; deduped?: boolean }>(
+    `/api/campaigns/${id}/price-protection/remind`).then((r) => r.data);
 
 // ── 动销分组（spec 四.1/四.2；后端 group_by_sales 原样中文键） ──
 

@@ -1,6 +1,6 @@
 /**
  * 活动「高级 · 手动」面板 —— 从 ActivityAutoFillTab 抽出的存量手动工具（生命周期向导的兜底通道）：
- *   各档下载表 / 单步上传千牛(stage 比对 → 确认 commit) / 标价对照表与改价指引 / 超大促 SKU 轮换。
+ *   各档下载表 / 单步上传千牛(stage 比对 → 确认 commit) / 标价对照表与改价指引。
  * 走的是既有 /api/pricing/activity-upload 通道，与新 /api/campaigns 向导互不影响。
  */
 import { useState } from 'react';
@@ -205,7 +205,7 @@ export default function ActivityManualPanel({ range }: { range: [Dayjs | null, D
               <Button icon={<DownloadOutlined />} block loading={busy === 'ps-mid'}
                 onClick={() => dl('ps-mid', '大促报名·中促10%', '大促活动报名_中促10%.xlsx', () => downloadPromoSignup('mid'))}>中促 报名表</Button>
               <Button icon={<DownloadOutlined />} block loading={busy === 'ps-618'}
-                onClick={() => dl('ps-618', '大促报名·超大促15%', '大促活动报名_超级大促15%.xlsx', () => downloadPromoSignup('big618'))}>超大促 15% 报名表(换SKU)</Button>
+                onClick={() => dl('ps-618', '大促报名·超大促15%', '大促活动报名_超级大促15%.xlsx', () => downloadPromoSignup('big618'))}>超大促 15% 报名表</Button>
             </Space>
           </Card>
         </Col>
@@ -223,19 +223,20 @@ export default function ActivityManualPanel({ range }: { range: [Dayjs | null, D
         </Space>
       </Card>
 
-      {/* 超大促 SKU 轮换 */}
-      <Card size="small" title="超大促 SKU 轮换（618/双11 15% 让利，绕15天最低价）">
+      {/* SKU身份轮换按2026-07-26方案3加强版暂停 */}
+      <Card size="small" title="SKU身份轮换（已暂停）">
         <Space direction="vertical" style={{ width: '100%' }} size="small">
-          <Alert type="info" showIcon style={{ fontSize: 12 }}
-            message="系统按尺寸阶梯算出每个 skuId 该改成的 商家编码/规格/价格。规格千牛没批量口→照下表在千牛逐个改；改完点「同步系统映射」，ERP自动重刷。商家编码永远跟尺寸走、不串位。" />
+          <Alert type="error" showIcon style={{ fontSize: 12 }}
+            message="双11前执行方案3加强版：真实SKU与定制SKU身份保持不变，禁止通过轮换绕历史价格线。"
+            description="冲突商品进入价保冷静期；能安全报名的其他商品先报，有潜在退差/亏损的飞书提醒后由运营决定。" />
           <Space>
             <Input placeholder="产品编码，如 PPS26330140117" value={rotPc} style={{ width: 260 }}
-              onChange={(e) => setRotPc(e.target.value)} onPressEnter={doRotPreview} />
-            <Button type="primary" loading={rotLoading} onClick={doRotPreview}>预览轮换</Button>
+              disabled onChange={(e) => setRotPc(e.target.value)} onPressEnter={doRotPreview} />
+            <Button disabled type="primary" loading={rotLoading} onClick={doRotPreview}>预览轮换</Button>
             {rotPlan?.ok && (
               <Popconfirm title="确认千牛已把规格/价格/编码都轮换好了？" description="这会把 ERP 的 skuId 映射按新轮换重刷（不可逆）"
                 okText="已轮换完，同步" cancelText="还没" onConfirm={doRotApply}>
-                <Button danger loading={rotApplying}>千牛轮换完 → 同步系统映射</Button>
+                <Button disabled danger loading={rotApplying}>千牛轮换完 → 同步系统映射</Button>
               </Popconfirm>
             )}
           </Space>

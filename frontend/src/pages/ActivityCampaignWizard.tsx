@@ -243,7 +243,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
           <Alert type="info" showIcon
             message="预检 = 推送前的全量体检，不产文件、不改数据、不碰千牛。"
             description={<span style={{ fontSize: 13 }}>
-              按平台规则库 R1~R12 逐条过：15天最低标价线、券后线贴线、整品 SKU 完整性、下架 SKU、
+              按平台规则库 R1~R14 逐条过：历史标价线、券后线、整品 SKU 完整性、下架 SKU、
               已报名冲突、动销门等（全部为 2026-07-17 实战实锤规则）。有阻塞项就先修再推，别硬推。
             </span>} />
           <Button type="primary" icon={<ExperimentOutlined />} loading={preLoading} onClick={doPrecheck}>
@@ -338,7 +338,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
                 </Button>
                 {pre.has_error && (
                   <Typography.Text type="danger" style={{ fontSize: 12 }}>
-                    阻塞项修完（改千牛对齐 ERP / 轮换 SKU）后点「重新预检」。
+                    阻塞项修完（改千牛对齐 ERP / 等待价格线解除 / 人工批准）后点「重新预检」。
                   </Typography.Text>
                 )}
               </Space>
@@ -355,7 +355,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
             description={<span style={{ fontSize: 13 }}>
               公式：<b>{TIER_FORMULA[plan.tier]}</b>。<br />
               {NO_SALES_FORMULA}。<br />
-              贴线：目标到手低于该 SKU 历史券后线时自动贴到线上（让幅≤1元记录在案，超1元的预检已建议轮换）。
+              贴线：让幅≤1元记录在案；超过1元的整品暂缓，不轮换、不强降，等待价格线解除或人工决定。
             </span>} />
           <Alert type="warning" showIcon
             message="单品立减导入即生效、没有草稿（平台规则 R12）——所以拆成两段："

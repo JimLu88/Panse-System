@@ -6,8 +6,8 @@
 ③ 立减公式 spec §二 手算样例: 日常2827.5 / 大促1979.59 / 线1978.89 → 官方340 → 立减508.61
 ④ 中促 = 大促×1.03 就地计算 + 10% ceil 开关 campaign_official_ceil
 ⑤ 无动销: 立减 = 日常 − (中促+1); 占位不出行
-⑥ R2: 贴线让幅 >1 元 → 剔除并建议轮换
-⑦ preflight R1~R12 逐条输出 {rule, level, items}
+⑥ R2: 贴线让幅 >1 元 → 整品暂缓，不轮换
+⑦ preflight R1~R14 逐条输出 {rule, level, items}
 ⑧ 推送编排 (mock WA, 绝不真调 :8500): channel/phase/档期传参 + 状态机推进
 """
 import io
@@ -236,7 +236,7 @@ def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
     assert stats["skipped_placeholder"] == 1
 
 
-def test_discount_rotation_when_concession_over_one_yuan(db_session):
+def test_discount_price_hold_when_concession_over_one_yuan(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDE001", "PPSDE00101", "9305", "73031", daily=3000, big=2000, line=1990)
     db_session.commit()
@@ -244,8 +244,11 @@ def test_discount_rotation_when_concession_over_one_yuan(db_session):
     rows, stats = cs.build_discount_rows(db_session, plan)
 
     assert rows == []                                         # R2: 让幅10元>1 → 不贴线不出行
-    assert stats["rotation_suggested"] == [{"sku_code": "PPSDE00101", "target": 2000.0,
-                                            "line": 1990.0, "concession": 10.0}]
+    assert stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9305"
+    assert stats["excluded_price_hold_items"][0]["skus"][0]["reasons"][0] == {
+        "type": "coupon_floor", "erp_target": 2000.0,
+        "platform_history_line": 1990.0, "difference": 10.0,
+    }
 
 
 def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
@@ -264,31 +267,33 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r1_to_r12(db_session):
+def test_preflight_outputs_r1_to_r14(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
     _mk(db_session, "PPSPB001", "PPSPB00101", "9402", "74011", daily=None)   # R3: 缺价
     _mk(db_session, "PPSPB001", "PPSPB00102", "9402", "74012", daily=800)
     _mk(db_session, "PPSPC001", "PPSPC00101", "9403", "74021",
-        daily=2000, big=1600, line=1590)                      # R2: 让幅10>1 → 轮换
+        daily=2000, big=1600, line=1590)                      # R2: 让幅10>1 → 暂缓
     db_session.commit()
     ns.add_no_sales(db_session, ["9404"])                     # R6 名单
 
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 13)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 15)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
-    assert by_rule["R1"]["items"][0]["sku_code"] == "PPSPA00101"
-    assert by_rule["R2"]["level"] == "error"
-    assert by_rule["R2"]["items"][0]["sku_code"] == "PPSPC00101"
+    assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
+    assert by_rule["R2"]["level"] == "warn"
+    assert by_rule["R2"]["items"][0]["skus"][0]["sku_code"] == "PPSPC00101"
     assert by_rule["R3"]["level"] == "error"
     assert by_rule["R3"]["items"][0]["taobao_item_id"] == "9402"
     assert by_rule["R6"]["level"] == "warn" and "9404" in by_rule["R6"]["items"]
     assert by_rule["R9"]["items"] == [{"official_ceil": True}]
     assert by_rule["R11"]["level"] == "warn" and by_rule["R12"]["level"] == "warn"
+    assert by_rule["R13"]["level"] == "pass"
+    assert by_rule["R14"]["level"] == "warn"
 
 
 # ── ⑧ 推送编排 (mock WA) ─────────────────────────────────────────────────────

@@ -35,6 +35,10 @@ class CampaignPlan(Base, TimestampMixin):
     end_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     # 千牛侧活动标题 (核对器进活动页头部校验用, 不一致立即中止+报警, spec §四.6)
     qn_campaign_title: Mapped[Optional[str]] = mapped_column(String(255))
+    # 价保采用“方案3加强版”：规则未核实时默认19天；运营提供活动价保说明链接后可逐场修改。
+    price_protection_days: Mapped[int] = mapped_column(Integer, nullable=False, default=19)
+    price_protection_rule_url: Mapped[Optional[str]] = mapped_column(String(1024))
+    price_protection_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False, index=True)
     remark: Mapped[Optional[str]] = mapped_column(Text)
 

@@ -5,6 +5,7 @@ from decimal import Decimal
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import sku_rotation_service as svc
+from app.services import settings_service
 
 
 def _seed(db):
@@ -28,6 +29,8 @@ def _seed(db):
 def test_rotation_shifts_labels_down(db_session):
     db = db_session
     _seed(db)
+    settings_service.set_value(db, "promo_sku_rotation_enabled", "1")
+    db.commit()
     plan = svc.plan_rotation(db, "PR0001")
     assert plan["ok"]
     lad = plan["ladders"][0]
@@ -44,6 +47,8 @@ def test_rotation_shifts_labels_down(db_session):
 def test_apply_mapping_dry_run_then_real(db_session):
     db = db_session
     _seed(db)
+    settings_service.set_value(db, "promo_sku_rotation_enabled", "1")
+    db.commit()
     plan = svc.plan_rotation(db, "PR0001")
     em = plan["ladders"][0]["erp_mapping"]
     dry = svc.apply_mapping(db, "PR0001", em, dry_run=True)
@@ -58,3 +63,11 @@ def test_apply_mapping_dry_run_then_real(db_session):
     assert p.taobao_sku_id == "SBUF"   # 落库后 2.1米编码 → buffer槽
     assert p.coupon_floor_price is None
     assert p.enrolled_floor_price is None
+
+
+def test_rotation_is_blocked_by_default(db_session):
+    _seed(db_session)
+    result = svc.plan_rotation(db_session, "PR0001")
+    assert result["ok"] is False
+    assert result["blocked_by"] == "price_protection_policy"
+    assert "默认关闭" in result["error"]

@@ -1058,9 +1058,8 @@ def _job_monthly_inventory_plan(db: Session) -> dict:
     return inventory_monthly_report_service.send_monthly_report(db)
 
 
-# 大促 SKU 轮换提醒窗口 (用户 2026-07-03 拍板): 618=5/13~6/18, 双11=10/10~11/11。
-# 方案三(按 SKU 校最低价): 大促期给主推大款做 SKU 轮换(删旧规格+加无历史新规格报深折),
-# 以便报官方深折活动还能保住利润。窗口/开关存 system_settings, 可在设置里调。
+# 大促价保规则确认窗口。2026-07-26改为方案3加强版：
+# 双11前不做SKU身份轮换；按活动实际说明确认价保期，未确认暂按19天。
 _DEFAULT_ROTATION_WINDOWS = [
     {"name": "618大促", "start": "05-13", "end": "06-18"},
     {"name": "双11大促", "start": "10-10", "end": "11-11"},
@@ -1100,8 +1099,8 @@ def _active_rotation_window(today: date, windows: list) -> Optional[dict]:
 
 
 def _job_promo_rotation_remind(db: Session) -> dict:
-    """大促 SKU 轮换提醒: 618(5/13~6/18)/双11(10/10~11/11) 窗口内每天早上提醒换新表报深折。"""
-    from app.services import notify_service, settings_service
+    """兼容旧任务ID：大促窗口内提醒核对价保规则，不再建议SKU轮换。"""
+    from app.services import campaign_price_protection_service, notify_service, settings_service
     en = settings_service.get(db, "promo_rotation_remind_enabled", env_fallback=False)
     if en is not None and str(en).strip().lower() in ("0", "false", "off", "no"):
         return {"in_window": False, "pushed": False, "reason": "disabled"}
@@ -1109,15 +1108,15 @@ def _job_promo_rotation_remind(db: Session) -> dict:
     if not w:
         return {"in_window": False, "pushed": False}
     name, end = w.get("name", "大促"), w.get("end", "")
+    default_days = campaign_price_protection_service.DEFAULT_PRICE_PROTECTION_DAYS
     msg = (
-        f"🔁 大促 SKU 轮换提醒（{name}）\n"
-        f"现在是「{name}」报名/备战期，记得给主推大款做 SKU 轮换，才好报官方深折活动、还保住利润：\n"
-        f"　1) 在老宝贝里删掉一个没用的旧规格 → 新增一个规格（新 SKU_ID、价格历史干净）→ 用它报大促深折；\n"
-        f"　2) 热销大尺寸规格本身别动（保住它们的流量权重）；\n"
-        f"　3) 换完把「新规格 ↔ 主 SKU」的对应发我，我更新映射表（成本/备货/统计不乱、不用重导）。\n"
-        f"（本提醒每天一次，持续到 {end}；不需要可在设置里关。）"
+        f"🛡️ 大促价保规则确认（{name}）\n"
+        f"现在是「{name}」报名/备战期。SKU身份轮换已暂停，请不要把定制SKU改成真实规格或降价复用。\n"
+        f"请把千牛本场活动的「价保说明/价保服务」页面链接发给运营负责人或 Codex，"
+        f"再按页面实际期限更新活动计划；未确认前系统暂按{default_days}天冷静期。\n"
+        f"（本提醒每天一次，持续到 {end}；冷静期可在活动计划中手动修改。）"
     )
-    notify_service.notify(db, msg, level="warn", title="畔色ERP | 大促SKU轮换")
+    notify_service.notify(db, msg, level="warn", title="畔色ERP | 大促价保规则确认")
     return {"in_window": True, "window": name, "pushed": True}
 
 
@@ -1331,6 +1330,17 @@ def _job_campaign_auto_execute(db: Session) -> dict:
         result["_run_status"] = "fail"
         result["_error"] = f"{result['failed']} 个活动计划自动执行失败"
     elif result.get("processed", 0) == 0:
+        result["_run_status"] = "skipped"
+    return result
+
+
+def _job_campaign_price_protection_rule_remind(db: Session) -> dict:
+    """未来14天活动缺价保说明链接时，飞书提醒运营提供；送达后按计划去重。"""
+    from app.services import campaign_price_protection_service
+
+    result = campaign_price_protection_service.remind_upcoming_missing_rules(db)
+    if result.get("scanned", 0) == 0 or (
+            result.get("sent", 0) == 0 and result.get("deduped", 0) > 0):
         result["_run_status"] = "skipped"
     return result
 
@@ -1629,7 +1639,7 @@ def _register_default_jobs() -> None:
                  _job_monthly_inventory_plan, cron={"day": "last", "hour": 19, "minute": 20})
     register_job("monthly_01_inventory_plan_retry", "月度成品备货计划次月兜底",
                  _job_monthly_inventory_plan, cron={"day": 1, "hour": 8, "minute": 10})
-    register_job("daily_0905_promo_rotation_remind", "大促SKU轮换提醒(618/双11)",
+    register_job("daily_0905_promo_rotation_remind", "大促价保规则确认提醒(兼容旧任务ID)",
                  _job_promo_rotation_remind, cron={"hour": 9, "minute": 5})
     register_job("monthly_last_reconcile_diagnose", "月底对账差异AI诊断",
                  _job_monthly_reconcile_diagnose, cron={"day": "last", "hour": 20, "minute": 0})
@@ -1662,6 +1672,8 @@ def _register_default_jobs() -> None:
     # 活动生命周期 P4 (2026-07-17 spec §五): 发现在抓单编排(18:00)后跑; 自动核对每30分钟心跳
     register_job("campaign_daily_discovery", "千牛活动发现(晚间每小时重试+提醒)",
                  _job_campaign_discovery, cron={"hour": "18-22", "minute": 40})
+    register_job("campaign_price_protection_rule_remind", "活动价保说明链接提醒",
+                 _job_campaign_price_protection_rule_remind, cron={"hour": 18, "minute": 45})
     register_job("campaign_auto_execute", "营销活动自动报名(安全门+差集+失败飞书)",
                  _job_campaign_auto_execute, cron={"hour": "18-22", "minute": 50})
     register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·6小时内)",

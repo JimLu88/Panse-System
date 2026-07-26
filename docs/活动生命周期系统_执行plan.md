@@ -25,14 +25,14 @@
 - 超级立减场（10%）：`单品立减 = 日常价 − ceil(日常价×10%) − min(中促价, 线)`
   （10% 是否也向上取整待 7-20 实证，默认按向上取整，留配置开关）
 - 无动销：`单品立减 = 日常价 − (中促价 + 1)`，占位不出行。
-- `min(目标, 线)` 即**贴线**：券后线比目标低零头时让到线上（让幅告警阈值 1 元，超过则该 SKU 建议轮换而非贴线）。
+- `min(目标, 线)` 即**贴线**：券后线比目标低零头时让到线上（让幅告警阈值 1 元，超过则整品暂缓，不轮换、不强降）。
 
 ## 三、平台校验规则库（全部为 2026-07-17 实战实锤，编码为 preflight + 文案提示）
 
 | # | 规则 | 后果 | 系统动作 |
 |---|---|---|---|
-| R1 | 报名价 ≤ 近15天最低标价（页面一口价历史；**历史活动价不进该窗口**，7-15 322行实证） | 超上限该品报不进 | preflight 比对已知窗口值；超限 SKU 提示"轮换" |
-| R2 | 活动普惠券后价 ≤ 近15天最低普惠券后价（线跟 skuId 走；"已生效或将生效"的立减计入） | 超线：零头≈风险提示放行；大幅=**整品拒** | 贴线公式内建；超 1 元提示轮换 |
+| R1 | 报名价 ≤ 近15天最低标价（页面一口价历史；**历史活动价不进该窗口**，7-15 322行实证） | 超上限该品报不进 | 已知冲突整品暂缓；其余商品继续，飞书列明等待/人工决策 |
+| R2 | 活动普惠券后价 ≤ 近15天最低普惠券后价（线跟 skuId 走；"已生效或将生效"的立减计入） | 超线：零头≈风险提示放行；大幅=**整品拒** | 贴线公式内建；超 1 元整品暂缓，不轮换 |
 | R3 | 报名导入必须**整品全 SKU 一次带齐**（缺 SKU 整品拒，回执列缺失 SKUID） | 整品拒 | builder 按映射全量出行 + 完整性断言 |
 | R4 | **下架 SKU 不得出现在报名行**（"数据解析失败 SKUID 不属于当前商品或已下架"=整品拒） | 整品拒 | 行集过滤 ERP 下架名单 + 回执自愈登记 |
 | R5 | 已报名非草稿 → 批量导入拒，改价只能商品编辑页手动 | 该品无法批量改 | 推送前必须确认该品已撤销（wizard 卡点） |
@@ -43,6 +43,8 @@
 | R10 | 回执真相以千牛「批量操作记录」为准（"批量操作反馈"可能抓到旧记录；WA published 回执不可信） | 误判成败 | 核对器读操作记录列表最新一条 + 按文件名匹配 |
 | R11 | 同品同时只能一个单品立减生效 | 新批不生效 | 推送前检查在场批冲突，提示先删旧批 |
 | R12 | 单品立减导入即生效无草稿；promo_signup 导入即报名成功（无需点发布） | 不可逆 | wizard 每步确认 + stage 预校验先行 |
+| R13 | 报名价=ERP日常价；日常价−官方立减−单品立减=ERP目标价 | 任何一分偏差都可能错价 | builder 后逐 SKU 反算，偏差阻断 |
+| R14 | 每场价保期限以本场说明/订单展示为准 | 固定猜7/19天会误判 | 默认19天可改；缺说明链接飞书提醒，SKU身份轮换默认关闭 |
 
 ## 四、核心流程（对应用户六点）
 
@@ -74,11 +76,12 @@
 
 ### 每日活动发现（调度）
 - 每天抓单任务结束后（约 18:30，挂 backend scheduler，容错重试）：WA 抓千牛营销活动页 → 活动名称/档期/状态 → 落库 CampaignCalendar → **距开始 < 3 天的活动推飞书**提醒运营报名（去重：同活动只提醒一次/天）。
+- 每天18:45扫描未来14天活动；缺本场价保说明链接时飞书提醒运营提供。确认前按19天，活动计划页面可逐场修改。
 
 ## 五、架构落点
 
-- **模型**（alembic 新迁移）：`CampaignPlan`（name/type/tier/start_at/end_at 精确秒/qn_title/status[draft→precheck→discount_pushed→signup_pushed→reconciled→alarmed]）、`CampaignReconReport`（per run: 汇总+逐SKU JSON）、`CampaignCalendar`（发现的活动）。
-- **服务**：`campaign_service.py`（分组/builder/preflight/推送编排——复用 activity_upload_service.stage/commit 与 web_agent_service）、`campaign_recon_service.py`（三种导出解析+比对+报警）、`campaign_discovery_service.py`（日发现+飞书）。
+- **模型**（alembic 新迁移）：`CampaignPlan`（name/type/tier/start_at/end_at 精确秒/qn_title/price_protection_days/price_protection_rule_url/status[draft→precheck→discount_pushed→signup_pushed→reconciled→alarmed]）、`CampaignReconReport`（per run: 汇总+逐SKU JSON）、`CampaignCalendar`（发现的活动）。
+- **服务**：`campaign_service.py`（分组/builder/preflight/推送编排——复用 activity_upload_service.stage/commit 与 web_agent_service）、`campaign_price_protection_service.py`（默认19天/规则链接提醒/轮换硬禁）、`campaign_recon_service.py`（三种导出解析+比对+报警）、`campaign_discovery_service.py`（日发现+飞书）。
 - **API**：`/api/campaigns` CRUD + `/precheck` `/push-discount` `/push-signup` `/recon`（自动+手动上传兜底）`/no-sales-group`。
 - **前端**：改造 `ActivityAutoFillTab.tsx`（940行）：活动类型点选 → 档期秒级点选 → 动销分组视图（无动销名单+飞书按钮）→ 预检结果 →（提示用户撤销的卡点清单）→ 一键推立减 → 一键报名 → 自动核对面板（差异>2元红榜+飞书）。
 - **WA 新任务**（D:\Panse-Web-Agent uploader）：`export_campaign_items(campaign_title)`（标题校验+导出下载）、`discover_campaigns()`（活动列表抓取）；失败路径全部飞书报错。
@@ -87,7 +90,7 @@
 ## 六、AI 需求点（可选，默认纯规则）
 
 - ai_provider 已支持 anthropic + OpenAI 兼容 base_url → **DeepSeek（api.deepseek.com）/ 千问 DashScope 可直接配**，key 走系统设置加密存储。
-- 用 AI 的两处（都是兜底，不在关键路径）：①活动页结构变化时的解析兜底（把页面文本喂 LLM 抽活动名/档期）；②回执失败原因归类（新文案自动归到 R1~R12 规则）。
+- 用 AI 的两处（都是兜底，不在关键路径）：①活动页结构变化时的解析兜底（把页面文本喂 LLM 抽活动名/档期）；②回执失败原因归类（新文案自动归到 R1~R14 规则）。
 
 ## 七、导出文件格式（核对器解析依据，2026-07-17 实测）
 
@@ -97,7 +100,7 @@
 
 ## 八、阶段与验收
 
-- **P1 后端引擎**：模型+服务+API+pytest（builder 公式逐条断言=本文二节；R1~R12 preflight 单测）。
+- **P1 后端引擎**：模型+服务+API+pytest（builder 公式逐条断言=本文二节；R1~R14 preflight 单测）。
 - **P2 WA 任务**：export_campaign_items / discover_campaigns（代码+选择器，live 验证待窗口）。
 - **P3 前端**：wizard 改造（活动类型/秒级档期/分组/核对面板）。
 - **P4 调度+飞书**：daily discovery + auto recon + 报警文案。

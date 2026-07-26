@@ -34,6 +34,10 @@ def _f(x):
 
 def plan_rotation(db: Session, product_code: str) -> dict:
     """产品的轮换计划(只算不改)。按尺寸阶梯分组, 每条阶梯配一个定制 buffer 槽, 标签整体下移一位。"""
+    from app.services import campaign_price_protection_service
+
+    if not campaign_price_protection_service.rotation_enabled(db):
+        return campaign_price_protection_service.rotation_block_result()
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
 
@@ -118,6 +122,10 @@ def apply_mapping(db: Session, product_code: str, erp_mapping: list[dict], *, dr
     """轮换后同步 ERP: 按 [{sku_code, new_skuId}] 重写 PricingSkuPromo.taobao_sku_id。
     dry_run=True 只报变化不落库。★这是唯一写库的口, 千牛真轮换完才 dry_run=False。"""
     from app.models.pricing_ext import PricingSkuPromo
+    from app.services import campaign_price_protection_service
+
+    if not campaign_price_protection_service.rotation_enabled(db):
+        return campaign_price_protection_service.rotation_block_result()
     changes = []
     for row in erp_mapping:
         sc, new_sid = row.get("sku_code"), row.get("new_skuId")

@@ -195,7 +195,7 @@ def run_auto_execute(db: Session) -> dict:
         CampaignPlan.start_at > now,
         CampaignPlan.start_at <= horizon,
     ).order_by(CampaignPlan.start_at)).scalars().all()
-    processed = succeeded = failed = 0
+    processed = succeeded = failed = held = 0
     details: list[dict] = []
     for plan in plans:
         processed += 1
@@ -214,6 +214,27 @@ def run_auto_execute(db: Session) -> dict:
                 details.append({"plan_id": plan.id, "ok": False,
                                 "step": "precheck", "notification": notice})
                 continue
+            price_holds = campaign_service.price_hold_items(db, plan)
+            if price_holds:
+                hold_text = (
+                    f"活动：{plan.name}\n"
+                    f"本次有 {len(price_holds)} 个商品命中历史价格线，已从报名表和同期单品立减表整品暂缓；"
+                    "其余商品继续自动报名。\n"
+                    f"明细：{json.dumps(price_holds, ensure_ascii=False, default=str)[:2600]}\n"
+                    f"当前暂按 {getattr(plan, 'price_protection_days', None) or 19} 天冷静期。"
+                    "请提供本场价保说明链接；若要承担亏损提前报名，必须人工明确批准。"
+                )
+                _notify_once(
+                    db, f"price_hold_{plan.id}", "活动商品因价保/历史价暂缓",
+                    hold_text, level="warning")
+                signup_rows, _ = campaign_service.build_signup_rows(db, plan)
+                if not signup_rows:
+                    held += 1
+                    details.append({
+                        "plan_id": plan.id, "ok": True, "step": "price_hold",
+                        "held_items": len(price_holds), "waiting_for_manual_decision": True,
+                    })
+                    continue
             plan.status = "precheck"
             db.commit()
 
@@ -246,5 +267,5 @@ def run_auto_execute(db: Session) -> dict:
             "promote_candidates": grouping.get("promote_candidates") or [],
             "error": signup.get("error"),
         })
-    return {"processed": processed, "succeeded": succeeded, "failed": failed,
+    return {"processed": processed, "succeeded": succeeded, "failed": failed, "held": held,
             "details": details}

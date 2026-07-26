@@ -41,6 +41,8 @@ class CampaignPlanIn(BaseModel):
     start_at: datetime          # 档期精确到秒 (spec §四.4)
     end_at: datetime
     qn_campaign_title: Optional[str] = None
+    price_protection_days: int = 19
+    price_protection_rule_url: Optional[str] = None
     remark: Optional[str] = None
 
 
@@ -50,16 +52,27 @@ class CampaignPlanUpdate(BaseModel):
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
     qn_campaign_title: Optional[str] = None
+    price_protection_days: Optional[int] = None
+    price_protection_rule_url: Optional[str] = None
     remark: Optional[str] = None
 
 
 def _plan_out(p: CampaignPlan) -> dict:
+    from app.services import campaign_price_protection_service
+    until = campaign_price_protection_service.protection_until(p)
     return {
         "id": p.id, "name": p.name, "campaign_type": p.campaign_type, "tier": p.tier,
         "campaign_type_name": campaign_service.CAMPAIGN_TYPES.get(p.campaign_type, ("?",))[0],
         "start_at": p.start_at.isoformat(sep=" ") if p.start_at else None,
         "end_at": p.end_at.isoformat(sep=" ") if p.end_at else None,
-        "qn_campaign_title": p.qn_campaign_title, "status": p.status, "remark": p.remark,
+        "qn_campaign_title": p.qn_campaign_title,
+        "price_protection_days": campaign_price_protection_service.protection_days(p),
+        "price_protection_rule_url": p.price_protection_rule_url,
+        "price_protection_confirmed_at": (
+            p.price_protection_confirmed_at.isoformat(sep=" ")
+            if p.price_protection_confirmed_at else None),
+        "price_protection_until": until.isoformat(sep=" ") if until else None,
+        "status": p.status, "remark": p.remark,
     }
 
 
@@ -79,6 +92,13 @@ def _validate_type_and_window(campaign_type: str, start_at, end_at) -> str:
     return campaign_service.CAMPAIGN_TYPES[campaign_type][1]
 
 
+def _validate_price_protection(days: Optional[int], url: Optional[str]) -> None:
+    if days is not None and not 1 <= int(days) <= 365:
+        raise HTTPException(422, "价保冷静期必须是1至365天")
+    if url and not str(url).strip().lower().startswith(("http://", "https://")):
+        raise HTTPException(422, "价保说明链接必须以 http:// 或 https:// 开头")
+
+
 @router.get("")
 def list_plans(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
     plans = db.execute(select(CampaignPlan).order_by(CampaignPlan.id.desc())).scalars().all()
@@ -90,9 +110,15 @@ def list_plans(db: Session = Depends(get_db), _: User = Depends(get_current_user
 def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
                 _: User = Depends(require_role("admin", "operator"))):
     tier = _validate_type_and_window(body.campaign_type, body.start_at, body.end_at)
+    _validate_price_protection(body.price_protection_days, body.price_protection_rule_url)
     plan = CampaignPlan(name=body.name, campaign_type=body.campaign_type, tier=tier,
                         start_at=body.start_at, end_at=body.end_at,
-                        qn_campaign_title=body.qn_campaign_title, remark=body.remark,
+                        qn_campaign_title=body.qn_campaign_title,
+                        price_protection_days=body.price_protection_days,
+                        price_protection_rule_url=body.price_protection_rule_url,
+                        price_protection_confirmed_at=(
+                            datetime.now() if body.price_protection_rule_url else None),
+                        remark=body.remark,
                         status="draft")
     db.add(plan)
     db.commit()
@@ -162,14 +188,36 @@ def update_plan(plan_id: int, body: CampaignPlanUpdate, db: Session = Depends(ge
                 _: User = Depends(require_role("admin", "operator"))):
     plan = _get_plan(db, plan_id)
     data = body.model_dump(exclude_unset=True)
+    if "price_protection_days" in data and data["price_protection_days"] is None:
+        raise HTTPException(422, "价保冷静期不能为空")
+    _validate_price_protection(
+        data.get("price_protection_days"),
+        data.get("price_protection_rule_url"))
     if "campaign_type" in data:
         plan.tier = _validate_type_and_window(
             data["campaign_type"], data.get("start_at", plan.start_at),
             data.get("end_at", plan.end_at))
     for k, v in data.items():
         setattr(plan, k, v)
+    if "price_protection_rule_url" in data:
+        plan.price_protection_rule_url = (
+            str(data["price_protection_rule_url"]).strip()
+            if data["price_protection_rule_url"] else None)
+        plan.price_protection_confirmed_at = (
+            datetime.now() if plan.price_protection_rule_url else None)
     db.commit()
     return _plan_out(plan)
+
+
+@router.post("/{plan_id}/price-protection/remind")
+def remind_price_protection_rule(
+        plan_id: int,
+        db: Session = Depends(get_db),
+        _: User = Depends(require_role("admin", "operator"))):
+    from app.services import campaign_price_protection_service
+
+    plan = _get_plan(db, plan_id)
+    return campaign_price_protection_service.notify_rule_link_needed(db, plan, force=True)
 
 
 @router.delete("/{plan_id}")

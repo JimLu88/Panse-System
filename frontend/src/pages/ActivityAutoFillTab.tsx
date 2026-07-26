@@ -4,13 +4,13 @@
  *   ① 创建活动计划（类型点选 / 活动名称 / 档期秒级点选，复用 Fusion RangePicker）
  *   ② 动销分组（有动销 / 无动销，无动销到手永远 = 中促价 + 1）
  *   ③ 生命周期向导：预检 R1~R12 → 推单品立减 → 推报名 → 自动核对（>2元红榜），每步确认制
- *   底部保留「高级 · 手动」存量工具（下载表 / 单步上传 / SKU 轮换）作兜底。
+ *   底部保留「高级 · 手动」存量工具（下载表 / 单步上传）作兜底；SKU身份轮换已暂停。
  * ★第一铁律: 以 ERP 价格为准, 平台报不进就改千牛一口价到 日常价÷0.75, 绝不反过来改 ERP。
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Col, Collapse, DatePicker, Empty, Input, Modal, Popconfirm, Radio, Row,
-  Select, Space, Statistic, Table, Tag, Typography, message,
+  Alert, Button, Card, Col, Collapse, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm,
+  Radio, Row, Select, Space, Statistic, Table, Tag, Typography, message,
 } from 'antd';
 import {
   CalendarOutlined, DeleteOutlined, DownloadOutlined, EditOutlined, PieChartOutlined,
@@ -24,7 +24,7 @@ import {
 import {
   CAMPAIGN_STATUS_LABEL, CAMPAIGN_TYPES, NO_SALES_FORMULA, SIGNUP_PRICE_RULE, TIER_FORMULA,
   createCampaign, deleteCampaign, downloadNoSalesGroupXlsx, fetchNoSalesGroup, listCampaigns,
-  pushNoSalesGroupFeishu, updateCampaign,
+  pushNoSalesGroupFeishu, remindCampaignPriceProtectionRule, updateCampaign,
   type CampaignPlan, type CampaignType, type NoSalesGroup,
 } from '../api/campaigns';
 import { triggerBlobDownload } from '../utils/download';
@@ -41,6 +41,9 @@ export default function ActivityAutoFillTab() {
   const [range, setRange] = useState<[Dayjs | null, Dayjs | null]>([null, null]);
   const [autoEnd, setAutoEnd] = useState<AutoEndResult | null>(null);
   const [saving, setSaving] = useState(false);
+  const [priceProtectionDays, setPriceProtectionDays] = useState(19);
+  const [priceProtectionRuleUrl, setPriceProtectionRuleUrl] = useState('');
+  const [remindingRule, setRemindingRule] = useState(false);
   const [plan, setPlan] = useState<CampaignPlan | null>(null);        // 当前操作中的计划
   const [plans, setPlans] = useState<CampaignPlan[]>([]);             // 历史计划（可续跑）
 
@@ -86,6 +89,8 @@ export default function ActivityAutoFillTab() {
         name: cname.trim(), campaign_type: ctype,          // 档位 tier 由后端按类型派生
         start_at: range[0].format(FMT), end_at: range[1] ? range[1].format(FMT) : null,
         qn_campaign_title: cname.trim(),
+        price_protection_days: priceProtectionDays,
+        price_protection_rule_url: priceProtectionRuleUrl.trim() || null,
       };
       const p = isDraftLoaded
         ? await updateCampaign(plan!.id, payload)
@@ -110,6 +115,7 @@ export default function ActivityAutoFillTab() {
 
   const resetForm = () => {
     setPlan(null); setCname(''); setRange([null, null]); setAutoEnd(null); setCtype('super_reduce');
+    setPriceProtectionDays(19); setPriceProtectionRuleUrl('');
   };
 
   // 从历史列表载入一个计划继续跑（向导按其状态续步）
@@ -119,7 +125,24 @@ export default function ActivityAutoFillTab() {
     setPlan(p);
     setCtype(p.campaign_type); setCname(p.name);
     setRange([p.start_at ? dayjs(p.start_at) : null, p.end_at ? dayjs(p.end_at) : null]);
+    setPriceProtectionDays(p.price_protection_days || 19);
+    setPriceProtectionRuleUrl(p.price_protection_rule_url || '');
     setAutoEnd(null);
+  };
+
+  const remindPriceProtectionRule = async () => {
+    if (!plan) return;
+    setRemindingRule(true);
+    try {
+      const result = await remindCampaignPriceProtectionRule(plan.id);
+      if (result.sent) message.success('已飞书提醒运营提供本场价保说明链接');
+      else if (result.deduped) message.info('本场提醒已经发送过');
+      else message.warning('飞书未送达，请检查通知配置');
+    } catch {
+      message.error('价保规则提醒发送失败');
+    } finally {
+      setRemindingRule(false);
+    }
   };
 
   return (
@@ -234,6 +257,30 @@ export default function ActivityAutoFillTab() {
             )}
           </div>
 
+          <div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              价保冷静期与说明链接（每场可能不同；未确认暂按19天）
+            </Typography.Text>
+            <div style={{ marginTop: 4 }}>
+              <Space wrap>
+                <InputNumber min={1} max={365} value={priceProtectionDays}
+                  addonAfter="天" style={{ width: 130 }}
+                  onChange={(v) => setPriceProtectionDays(Number(v || 19))} />
+                <Input value={priceProtectionRuleUrl} style={{ width: 520 }}
+                  placeholder="粘贴千牛本场活动的价保说明/价保服务页面链接"
+                  onChange={(e) => setPriceProtectionRuleUrl(e.target.value)} />
+                {plan && !priceProtectionRuleUrl.trim() && (
+                  <Button loading={remindingRule} onClick={remindPriceProtectionRule}>
+                    飞书提醒运营提供链接
+                  </Button>
+                )}
+              </Space>
+            </div>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              没有链接时系统不猜期限；历史价格线冲突商品整品暂缓，其余商品继续。SKU身份轮换默认关闭。
+            </Typography.Text>
+          </div>
+
           <Button type="primary" loading={saving} onClick={doCreateOrSave}>
             {isDraftLoaded ? '保存修改' : '创建活动计划'}</Button>
         </Space>
@@ -261,7 +308,7 @@ export default function ActivityAutoFillTab() {
         key: 'adv',
         label: <Space><TableOutlined /><b>高级 · 手动</b>
           <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-            各档下载表 / 单步上传 / 标价对照 / SKU轮换 —— 向导出问题时的兜底通道</Typography.Text></Space>,
+            各档下载表 / 单步上传 / 标价对照 —— 向导出问题时的兜底通道</Typography.Text></Space>,
         children: <ActivityManualPanel range={range} />,
       }]} />
 
