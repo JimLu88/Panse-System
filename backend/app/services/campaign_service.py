@@ -150,6 +150,28 @@ def placeholder_live_prices_for_plan(plan) -> dict[str, Decimal]:
     return out
 
 
+def placeholder_price_protection_expired(plan) -> bool:
+    """Return whether placeholder price protection was explicitly confirmed expired.
+
+    ``price_protection_days`` is only a reminder horizon; it does not identify when
+    each historical placeholder low price was created.  Lowering a placeholder
+    campaign price therefore requires an explicit per-plan confirmation in remark.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*placeholder_price_protection_expired\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return False
+    return matched.group(1).strip().lower() in (
+        "1", "true", "yes", "on", "已到期", "是",
+    )
+
+
 def official_ceil_enabled(db: Session) -> bool:
     """超级立减10% 官方立减是否向上取整到元 (spec §二: 待 7-20 实证, 默认按取整)。"""
     from app.services import settings_service
@@ -418,6 +440,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
     placeholder_live_prices = placeholder_live_prices_for_plan(plan)
+    placeholder_expired = placeholder_price_protection_expired(plan)
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
@@ -430,7 +453,9 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_live_prices": {
                  sid: float(price) for sid, price in placeholder_live_prices.items()},
              "placeholder_missing_live_price": [],
-             "placeholder_price_preserved": []}
+             "placeholder_price_protection_expired": placeholder_expired,
+             "placeholder_price_blocked_items": [],
+             "placeholder_price_lowered": []}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
@@ -462,6 +487,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
                 "product": (pairs[0][0].product_name or pairs[0][0].product_code or "")[:30],
                 "ok_skus": len(item_rows), "missing_skus": missing[:10]})
             continue
+        blocked_placeholders = []
         for row in item_rows:
             if not row.get("is_placeholder"):
                 continue
@@ -476,14 +502,26 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
                 continue
             generated = _d(row["price"]) or Decimal("0")
             if live_price > generated:
-                row["price"] = float(live_price)
-                row["remark"] = "沿用平台当前占位SKU保护价，不降价"
-                stats["placeholder_price_preserved"].append({
+                detail = {
                     "taobao_item_id": item_id,
                     "taobao_sku_id": sid,
-                    "generated": float(generated),
-                    "preserved": float(live_price),
-                })
+                    "sku_code": row["sku_code"],
+                    "safe_cap": float(generated),
+                    "current_live_price": float(live_price),
+                }
+                if placeholder_expired:
+                    row["remark"] = "价保已确认到期，按最低普惠券后价安全上限报名"
+                    stats["placeholder_price_lowered"].append(detail)
+                else:
+                    blocked_placeholders.append(detail)
+        if blocked_placeholders:
+            stats["placeholder_price_blocked_items"].append({
+                "taobao_item_id": item_id,
+                "product": (pairs[0][0].product_name or pairs[0][0].product_code or "")[:30],
+                "placeholders": blocked_placeholders,
+                "action": "价保到期未确认，整品暂缓；禁止用高保护价覆盖券后安全上限",
+            })
+            continue
         rows.extend(item_rows)
     stats["rows"] = len(rows)
     return rows, stats
@@ -698,10 +736,25 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
         for sid in _expand_sku_ids(p):
             pair_by_sid[sid] = (s, p)
     errors = []
+    tier = plan_tier(plan)
     for row in signup_rows:
-        if row.get("is_placeholder"):
-            continue
         pair = pair_by_sid.get(str(row.get("taobao_sku_id")))
+        if row.get("is_placeholder"):
+            safe_cap = None
+            if pair:
+                safe_cap, _remark = _placeholder_signup_price(
+                    pair[0], pair[1], TIER_LEVERAGE[tier])
+            price = _d(row.get("price"))
+            if (safe_cap is None or price is None
+                    or price > _d(safe_cap) + Decimal("0.005")):
+                errors.append({
+                    "sku_id": row.get("taobao_sku_id"),
+                    "sku_code": row.get("sku_code"),
+                    "check": "placeholder_signup_within_coupon_floor_cap",
+                    "safe_cap": safe_cap,
+                    "signup_price": float(price) if price is not None else None,
+                })
+            continue
         daily = _d(getattr(pair[0], "daily_price", None)) if pair else None
         price = _d(row.get("price"))
         if daily is None or price is None or abs(daily - price) > Decimal("0.005"):
@@ -771,12 +824,20 @@ def _check_official_scope(db: Session, plan) -> dict:
 
 def _check_placeholder_live_prices(signup_stats: dict) -> dict:
     missing = signup_stats.get("placeholder_missing_live_price") or []
+    blocked = signup_stats.get("placeholder_price_blocked_items") or []
     return {
         "rule": "R16",
-        "level": "error" if missing else "pass",
-        "title": "占位SKU保护价：必须取得平台当前价，报名只可持平或提高、不得降低",
+        "level": "error" if missing else ("warn" if blocked else "pass"),
+        "title": (
+            "占位SKU保护价：缺平台当前价即停止；高保护价不得覆盖券后安全上限"
+            if not blocked else
+            f"占位SKU价保到期未确认：已整品暂缓{len(blocked)}品，其余安全行可继续"
+        ),
         "items": missing,
-        "preserved": signup_stats.get("placeholder_price_preserved") or [],
+        "blocked_items": blocked,
+        "lowered": signup_stats.get("placeholder_price_lowered") or [],
+        "price_protection_expired": bool(
+            signup_stats.get("placeholder_price_protection_expired")),
     }
 
 
