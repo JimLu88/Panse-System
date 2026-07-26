@@ -221,6 +221,7 @@ def test_discount_mid_ratio_and_ceil_switch(db_session):
 def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
     """无动销大促场不报名，单品立减直接到 ERP 大促价 2650；占位不出行。"""
     plan = _plan(db_session, "big88")
+    plan.remark = "official_all_store=true; official_exempt_items=9304"
     _mk(db_session, "PPSDD001", "PPSDD00101", "9304", "73021", daily=3000, big=2650)
     _mk(db_session, "PPSDD001", "PPSDD00190", "9304", "73090", daily=500,
         placeholder=True)                                     # 占位不出行
@@ -234,6 +235,46 @@ def test_discount_nosales_big_direct_and_placeholder_skip(db_session):
     assert rows[0]["target_price"] == 2650.0
     assert rows[0]["deduct"] == 350.0                         # 3000 − 大促价2650
     assert stats["skipped_placeholder"] == 1
+
+
+def test_discount_nosales_big_storewide_includes_official_discount(db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = "official_all_store=true; official_exempt_items="
+    _mk(db_session, "PPSDD002", "PPSDD00201", "9307", "73051", daily=3000, big=2000)
+    db_session.commit()
+    ns.add_no_sales(db_session, ["9307"])
+
+    rows, _stats = cs.build_discount_rows(db_session, plan)
+
+    assert rows[0]["official"] == 360.0
+    assert rows[0]["target_price"] == 2000.0
+    assert rows[0]["deduct"] == 640.0
+
+
+def test_discount_nosales_super_reduce_uses_explicit_active_scope(db_session):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = "official_active_items=9308"
+    _mk(db_session, "PPSDD003", "PPSDD00301", "9308", "73061", daily=3000, big=2500)
+    db_session.commit()
+    ns.add_no_sales(db_session, ["9308"])
+
+    rows, _stats = cs.build_discount_rows(db_session, plan)
+
+    assert rows[0]["official"] == 300.0
+    assert rows[0]["target_price"] == 2576.0
+    assert rows[0]["deduct"] == 124.0
+
+
+def test_preflight_blocks_nosales_without_official_scope(db_session):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSDD004", "PPSDD00401", "9309", "73071", daily=3000, big=2500)
+    db_session.commit()
+    ns.add_no_sales(db_session, ["9309"])
+
+    checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
+
+    assert checks["R15"]["level"] == "error"
+    assert "未记录官方立减" in checks["R15"]["items"][0]["errors"][0]
 
 
 def test_discount_price_hold_when_concession_over_one_yuan(db_session):
@@ -267,7 +308,7 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r1_to_r14(db_session):
+def test_preflight_outputs_r1_to_r15(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
@@ -281,7 +322,7 @@ def test_preflight_outputs_r1_to_r14(db_session):
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 15)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 16)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
@@ -294,6 +335,7 @@ def test_preflight_outputs_r1_to_r14(db_session):
     assert by_rule["R11"]["level"] == "warn" and by_rule["R12"]["level"] == "warn"
     assert by_rule["R13"]["level"] == "pass"
     assert by_rule["R14"]["level"] == "warn"
+    assert by_rule["R15"]["level"] == "error"
 
 
 # ── ⑧ 推送编排 (mock WA) ─────────────────────────────────────────────────────

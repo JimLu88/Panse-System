@@ -5,7 +5,7 @@
 - build_signup_rows   报名行 builder: 报名价=日常价 / 占位=min(现行, floor(线/(1−lev))) (spec §二.1, R3/R4)
 - build_discount_rows 单品立减 builder: spec §二 立减公式逐字 (官方立减向上取整到元 R9 /
                       贴线 min(目标,线) R2 / 无动销=日常−(中促+1) / 10% ceil 留开关)
-- preflight           平台规则库 R1~R12 静态可查项逐条输出 (spec §三)
+- preflight           平台规则库 R1~R15 静态可查项逐条输出 (spec §三)
 - push_discount/push_signup  推送编排 (复用 web_agent_service upload_file→wait_job,
                       与 activity_upload_service 同模式)
 - target_prices       核对器用的逐 skuId 目标到手 (campaign_recon_service 消费)
@@ -62,6 +62,72 @@ def plan_tier(plan) -> str:
     if ctype not in CAMPAIGN_TYPES:
         raise ValueError(f"未知活动类型 {ctype!r}; 可选 {list(CAMPAIGN_TYPES)}")
     return CAMPAIGN_TYPES[ctype][1]
+
+
+def official_scope_for_plan(plan) -> dict:
+    """Read the per-item official-discount scope captured from the live activity page.
+
+    Supported remark markers:
+    - official_active_items=1,2,3
+    - official_all_store=true; official_exempt_items=4,5
+
+    The markers are deliberately explicit.  Guessing that an item has no official
+    discount can make the generated single-item discount too large.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+
+    def _ids(key: str) -> tuple[bool, set[str]]:
+        matched = re.search(
+            rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*([^;\n；]*)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        if not matched:
+            return False, set()
+        return True, set(re.findall(r"\d+", matched.group(1)))
+
+    all_store_match = re.search(
+        r"(?:^|[;\n；])\s*official_all_store\s*=\s*"
+        r"(true|false|1|0|yes|no|on|off)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    all_store_present = bool(all_store_match)
+    all_store = bool(
+        all_store_match
+        and all_store_match.group(1).lower() in ("true", "1", "yes", "on")
+    )
+    active_present, active_items = _ids("official_active_items")
+    exempt_present, exempt_items = _ids("official_exempt_items")
+    errors: list[str] = []
+    if all_store and active_present:
+        errors.append("official_all_store=true 与 official_active_items 不能同时配置")
+    if exempt_present and not all_store:
+        errors.append("official_exempt_items 仅可与 official_all_store=true 同时使用")
+    if all_store and not exempt_present:
+        errors.append("全店官方立减必须显式配置 official_exempt_items（允许空名单）")
+    if all_store_present and not all_store and not active_present:
+        errors.append("official_all_store=false 时必须显式配置 official_active_items")
+    if active_items & exempt_items:
+        errors.append("同一商品不能同时处于官方立减生效与豁免名单")
+    configured = (all_store and exempt_present) or active_present
+    return {
+        "configured": configured and not errors,
+        "all_store": all_store,
+        "active_items": active_items,
+        "exempt_items": exempt_items,
+        "errors": errors,
+    }
+
+
+def _official_applies(item_id: str, scope: dict) -> bool:
+    if not scope.get("configured"):
+        return False
+    if scope.get("all_store"):
+        return item_id not in scope.get("exempt_items", set())
+    return item_id in scope.get("active_items", set())
 
 
 def official_ceil_enabled(db: Session) -> bool:
@@ -413,11 +479,12 @@ def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: 
             "official": float(official), "concession": float(concession)}
 
 
-def _nosales_discount_row(s, p, stats: dict, tier: str = "mid") -> Optional[dict]:
+def _nosales_discount_row(s, p, stats: dict, tier: str = "mid",
+                          official: Decimal = Decimal("0")) -> Optional[dict]:
     """无动销 SKU：不报名活动，只靠单品立减直达到当前场次目标。
 
     大促档位直接到 ERP 大促买家价；超级立减档位沿用中促+1 的保护规则。
-    两者都没有官方立减项，也不套券后线。
+    是否叠加官方立减由活动实时范围决定；不套券后线。
     """
     daily = _d(s.daily_price)
     if tier in ("big", "big618"):
@@ -429,16 +496,17 @@ def _nosales_discount_row(s, p, stats: dict, tier: str = "mid") -> Optional[dict
     if target is None or target <= 0:
         stats["skipped_no_target"] += 1
         return None
-    deduct = (daily - target).quantize(_CENT)
+    deduct = (daily - official - target).quantize(_CENT)
     if deduct <= 0:
         stats["skipped_no_deduct"] += 1
         return None
     return {"deduct": float(deduct), "kind": "nosales", "target_price": float(target),
-            "official": 0.0, "concession": 0.0}
+            "official": float(official), "concession": 0.0}
 
 
 def discount_for_sku(db: Session, s, p, tier: str,
-                     no_sales_items: Optional[set[str]] = None) -> Optional[dict]:
+                     no_sales_items: Optional[set[str]] = None, *,
+                     official_applies: Optional[bool] = None) -> Optional[dict]:
     """单个真 SKU 的单品立减计算口径，供下载参考表复用。
 
     自动上传仍由 build_discount_rows 负责映射、下架、坏价等资格过滤；本函数只负责价格数学。
@@ -457,7 +525,18 @@ def discount_for_sku(db: Session, s, p, tier: str,
     item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
     nosales = no_sales_items if no_sales_items is not None else no_sales_service.get_no_sales(db)
     if item_id and item_id in nosales:
-        return _nosales_discount_row(s, p, stats, tier)
+        # Generic pricing pages/downloads do not know the live activity scope.
+        # A blank is safer than publishing a deceptively precise discount amount.
+        if official_applies is None:
+            return None
+        official = Decimal("0")
+        if official_applies:
+            low_price_exact = daily < Decimal("100")
+            lev = TIER_LEVERAGE[tier]
+            ceil_on = True if tier != "mid" else official_ceil_enabled(db)
+            official = official_deduction(
+                daily, lev, ceil_on and not low_price_exact)
+        return _nosales_discount_row(s, p, stats, tier, official=official)
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if tier != "mid" else official_ceil_enabled(db)
     return _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
@@ -475,6 +554,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
+    official_scope = official_scope_for_plan(plan)
     nosales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
@@ -485,7 +565,14 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "skipped_price_hold": 0, "excluded_price_hold_items": holds,
              "skipped_no_daily": 0, "skipped_no_target": 0, "skipped_no_deduct": 0,
              "line_concessions": [], "rotation_suggested": [],
-             "official_low_price_exact": 0}
+             "official_low_price_exact": 0,
+             "official_scope": {
+                 "configured": official_scope["configured"],
+                 "all_store": official_scope["all_store"],
+                 "active_items": sorted(official_scope["active_items"]),
+                 "exempt_items": sorted(official_scope["exempt_items"]),
+                 "errors": official_scope["errors"],
+             }}
     rows: list[dict] = []
     for s, p in _mapped_pairs(db):
         if not p.taobao_sku_id:
@@ -509,7 +596,15 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
             stats["skipped_price_hold"] += 1
             continue
         if item_id in nosales:
-            core = _nosales_discount_row(s, p, stats, tier)
+            official = Decimal("0")
+            if _official_applies(item_id, official_scope):
+                low_price_exact = daily < Decimal("100")
+                official = official_deduction(
+                    daily, lev, ceil_on and not low_price_exact)
+                if low_price_exact:
+                    stats["official_low_price_exact"] += 1
+            core = _nosales_discount_row(
+                s, p, stats, tier, official=official)
         else:
             core = _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
         if core is None:
@@ -603,8 +698,32 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
     }
 
 
+def _check_official_scope(db: Session, plan) -> dict:
+    """R15: no-sales rows require live evidence of official-discount applicability."""
+    from app.services import no_sales_service
+
+    no_sales = sorted(no_sales_service.get_no_sales(db))
+    scope = official_scope_for_plan(plan)
+    errors = list(scope["errors"])
+    if no_sales and not scope["configured"] and not errors:
+        errors.append(
+            "存在无动销商品，但计划未记录官方立减生效/豁免范围；禁止按0元官方立减猜测")
+    return {
+        "rule": "R15",
+        "level": "error" if errors else "pass",
+        "title": "官方立减逐商品范围：必须来自当前活动页，缺失即停止单品立减",
+        "items": [{
+            "errors": errors,
+            "no_sales_items": no_sales,
+            "all_store": scope["all_store"],
+            "active_items": sorted(scope["active_items"]),
+            "exempt_items": sorted(scope["exempt_items"]),
+        }],
+    }
+
+
 def preflight(db: Session, plan) -> list[dict]:
-    """R1~R12 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
+    """R1~R15 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
     from app.services import no_sales_service
     from app.services import campaign_price_protection_service
 
@@ -637,6 +756,7 @@ def preflight(db: Session, plan) -> list[dict]:
          "items": [{"official_ceil": dstats["official_ceil"]}]},
         _check_price_math(db, plan, _srows, _drows),
         campaign_price_protection_service.rule_check(plan),
+        _check_official_scope(db, plan),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -788,6 +908,13 @@ def _learn_from_validation(db: Session, validation) -> None:
 def push_discount(db: Session, plan, phase: str = "stage") -> dict:
     """推单品立减 (channel single_item_discount, 带计划档期精确到秒)。
     phase='stage' 挂文件停在提交前; 'commit' ★不可逆★ 真提交 (仅用户确认后调, R12)。"""
+    scope_check = _check_official_scope(db, plan)
+    if scope_check["level"] == "error":
+        return {
+            "ok": False,
+            "error": "官方立减逐商品范围未通过安全门，已停止上传",
+            "check": scope_check,
+        }
     rows, stats = build_discount_rows(db, plan)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}

@@ -638,6 +638,11 @@ def _campaign_export_maps(db: Session) -> tuple[dict[str, dict], dict[str, dict]
         row_notes: list[str] = []
         if getattr(s, "is_custom_placeholder", False):
             row_notes.append("定制占位SKU：只用保护报名价，不生成单品立减")
+        item_id = str(getattr(p, "taobao_item_id", "") or "").strip()
+        if item_id in no_sales_items:
+            row_notes.append(
+                "无动销商品：单品立减取决于当前活动官方立减逐品范围，"
+                "参考表留空；活动计划预检后生成准确值")
         for tier in ("mid", "big", "big618"):
             price, _ = campaign_service.signup_price_for_sku(s, p, tier)
             core = campaign_service.discount_for_sku(
