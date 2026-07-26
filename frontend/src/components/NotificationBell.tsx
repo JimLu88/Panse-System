@@ -7,7 +7,7 @@
  *  - ② critical / 退款待处理 告警的全局强弹 modal (安全网; 5 分钟冷却, 刷新不重弹)
  */
 import React, { useEffect, useState } from 'react';
-import { Badge, Button, List, Modal, Space, Tag, Typography } from 'antd';
+import { Badge, Button, List, message, Modal, Space, Tag, Typography } from 'antd';
 import {
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -81,6 +81,14 @@ export default function NotificationBell() {
   const [modalOpen, setModalOpen] = useState(false);
   const [modalAlerts, setModalAlerts] = useState<AlertItem[]>([]);
 
+  const removeModalAlert = (id: number) => {
+    setModalAlerts((current) => current.filter((alert) => alert.id !== id));
+  };
+
+  useEffect(() => {
+    if (modalOpen && modalAlerts.length === 0) setModalOpen(false);
+  }, [modalOpen, modalAlerts.length]);
+
   // critical / 退款待处理 出现 → 强弹 modal (cooldown 5 分钟; F3 扩 refund_pending)
   useEffect(() => {
     const crits = alerts.filter((a) => a.severity === 'critical' || a.kind === 'refund_pending');
@@ -98,7 +106,23 @@ export default function NotificationBell() {
 
   const dismissMut = useMutation({
     mutationFn: (id: number) => dismissAlert(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['alerts-active'] }),
+    onSuccess: (_data, id) => {
+      removeModalAlert(id);
+      void qc.invalidateQueries({ queryKey: ['alerts-active'] });
+      message.success('告警已确认');
+    },
+    onError: (error: any, id) => {
+      // 首次请求已成功、用户又快速点击时，防重复中间件会返回 409。
+      // 这类响应等同于成功，弹窗应立即同步到已处理状态。
+      if (error?.response?.status === 409 && error?.response?.data?.idempotent) {
+        removeModalAlert(id);
+        void qc.invalidateQueries({ queryKey: ['alerts-active'] });
+        message.success('告警已确认');
+        return;
+      }
+      const detail = error?.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '确认失败，请稍后重试');
+    },
   });
 
   const itemFor = (a: AlertItem) => (
@@ -112,6 +136,8 @@ export default function NotificationBell() {
                 size="small"
                 type="link"
                 key="dismiss"
+                loading={dismissMut.isPending && dismissMut.variables === a.id}
+                disabled={dismissMut.isPending}
                 onClick={() => dismissMut.mutate(a.id)}
               >
                 已知晓
