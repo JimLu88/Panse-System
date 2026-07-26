@@ -232,7 +232,7 @@ def delete_plan(plan_id: int, db: Session = Depends(get_db),
 @router.post("/{plan_id}/precheck")
 def precheck(plan_id: int, db: Session = Depends(get_db),
              _: User = Depends(require_role("admin", "operator"))):
-    """R1~R15 预检 (spec §三)。通过后计划进入 precheck 状态。"""
+    """R1~R16 预检 (spec §三)。通过后计划进入 precheck 状态。"""
     plan = _get_plan(db, plan_id)
     checks = campaign_service.preflight(db, plan)
     if plan.status == "draft":

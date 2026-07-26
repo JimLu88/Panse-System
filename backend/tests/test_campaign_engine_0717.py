@@ -277,6 +277,38 @@ def test_preflight_blocks_nosales_without_official_scope(db_session):
     assert "未记录官方立减" in checks["R15"]["items"][0]["errors"][0]
 
 
+def test_placeholder_signup_preserves_verified_live_price(db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = (
+        "official_active_items=9300; "
+        "placeholder_live_prices=73081:397"
+    )
+    _mk(db_session, "PPSPH001", "PPSPH00199", "9310", "73081",
+        daily=500, placeholder=True, line=250)
+    db_session.commit()
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+    checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
+
+    assert rows[0]["price"] == 397.0
+    assert rows[0]["remark"] == "沿用平台当前占位SKU保护价，不降价"
+    assert stats["placeholder_price_preserved"][0]["generated"] == 284.0
+    assert checks["R16"]["level"] == "pass"
+
+
+def test_placeholder_signup_without_live_price_is_blocked(db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = "official_active_items=9300"
+    _mk(db_session, "PPSPH002", "PPSPH00299", "9311", "73091",
+        daily=500, placeholder=True, line=250)
+    db_session.commit()
+
+    checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
+
+    assert checks["R16"]["level"] == "error"
+    assert checks["R16"]["items"][0]["taobao_sku_id"] == "73091"
+
+
 def test_discount_price_hold_when_concession_over_one_yuan(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDE001", "PPSDE00101", "9305", "73031", daily=3000, big=2000, line=1990)
@@ -308,7 +340,7 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r1_to_r15(db_session):
+def test_preflight_outputs_r1_to_r16(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
@@ -322,7 +354,7 @@ def test_preflight_outputs_r1_to_r15(db_session):
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 16)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 17)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
@@ -336,6 +368,7 @@ def test_preflight_outputs_r1_to_r15(db_session):
     assert by_rule["R13"]["level"] == "pass"
     assert by_rule["R14"]["level"] == "warn"
     assert by_rule["R15"]["level"] == "error"
+    assert by_rule["R16"]["level"] == "pass"
 
 
 # ── ⑧ 推送编排 (mock WA) ─────────────────────────────────────────────────────

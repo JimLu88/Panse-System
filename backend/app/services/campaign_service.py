@@ -5,7 +5,7 @@
 - build_signup_rows   报名行 builder: 报名价=日常价 / 占位=min(现行, floor(线/(1−lev))) (spec §二.1, R3/R4)
 - build_discount_rows 单品立减 builder: spec §二 立减公式逐字 (官方立减向上取整到元 R9 /
                       贴线 min(目标,线) R2 / 无动销=日常−(中促+1) / 10% ceil 留开关)
-- preflight           平台规则库 R1~R15 静态可查项逐条输出 (spec §三)
+- preflight           平台规则库 R1~R16 静态可查项逐条输出 (spec §三)
 - push_discount/push_signup  推送编排 (复用 web_agent_service upload_file→wait_job,
                       与 activity_upload_service 同模式)
 - target_prices       核对器用的逐 skuId 目标到手 (campaign_recon_service 消费)
@@ -128,6 +128,26 @@ def _official_applies(item_id: str, scope: dict) -> bool:
     if scope.get("all_store"):
         return item_id not in scope.get("exempt_items", set())
     return item_id in scope.get("active_items", set())
+
+
+def placeholder_live_prices_for_plan(plan) -> dict[str, Decimal]:
+    """Read the latest verified platform price for placeholder SKU IDs from remark."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*placeholder_live_prices\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    out: dict[str, Decimal] = {}
+    for sid, price in re.findall(r"(\d+)\s*:\s*(\d+(?:\.\d+)?)", matched.group(1)):
+        value = _d(price)
+        if value is not None and value > 0:
+            out[sid] = value.quantize(_CENT)
+    return out
 
 
 def official_ceil_enabled(db: Session) -> bool:
@@ -397,6 +417,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     from app.services.activity_preflight_service import bad_price_product_codes
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
+    placeholder_live_prices = placeholder_live_prices_for_plan(plan)
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
@@ -405,7 +426,11 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": [],
-             "excluded_price_hold_items": holds}
+             "excluded_price_hold_items": holds,
+             "placeholder_live_prices": {
+                 sid: float(price) for sid, price in placeholder_live_prices.items()},
+             "placeholder_missing_live_price": [],
+             "placeholder_price_preserved": []}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
@@ -437,6 +462,28 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
                 "product": (pairs[0][0].product_name or pairs[0][0].product_code or "")[:30],
                 "ok_skus": len(item_rows), "missing_skus": missing[:10]})
             continue
+        for row in item_rows:
+            if not row.get("is_placeholder"):
+                continue
+            sid = str(row["taobao_sku_id"])
+            live_price = placeholder_live_prices.get(sid)
+            if live_price is None:
+                stats["placeholder_missing_live_price"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": row["sku_code"],
+                })
+                continue
+            generated = _d(row["price"]) or Decimal("0")
+            if live_price > generated:
+                row["price"] = float(live_price)
+                row["remark"] = "沿用平台当前占位SKU保护价，不降价"
+                stats["placeholder_price_preserved"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "generated": float(generated),
+                    "preserved": float(live_price),
+                })
         rows.extend(item_rows)
     stats["rows"] = len(rows)
     return rows, stats
@@ -722,8 +769,19 @@ def _check_official_scope(db: Session, plan) -> dict:
     }
 
 
+def _check_placeholder_live_prices(signup_stats: dict) -> dict:
+    missing = signup_stats.get("placeholder_missing_live_price") or []
+    return {
+        "rule": "R16",
+        "level": "error" if missing else "pass",
+        "title": "占位SKU保护价：必须取得平台当前价，报名只可持平或提高、不得降低",
+        "items": missing,
+        "preserved": signup_stats.get("placeholder_price_preserved") or [],
+    }
+
+
 def preflight(db: Session, plan) -> list[dict]:
-    """R1~R15 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
+    """R1~R16 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
     from app.services import no_sales_service
     from app.services import campaign_price_protection_service
 
@@ -757,6 +815,7 @@ def preflight(db: Session, plan) -> list[dict]:
         _check_price_math(db, plan, _srows, _drows),
         campaign_price_protection_service.rule_check(plan),
         _check_official_scope(db, plan),
+        _check_placeholder_live_prices(sstats),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -997,6 +1056,17 @@ def push_signup(db: Session, plan) -> dict:
     from app.services import campaign_recon_service, web_agent_service
 
     rows, stats = build_signup_rows(db, plan)
+    placeholder_check = _check_placeholder_live_prices(stats)
+    if placeholder_check["level"] == "error":
+        res = {
+            "ok": False,
+            "step": "placeholder_price_guard",
+            "error": "未取得全部占位SKU的平台当前保护价，已停止活动导入",
+            "check": placeholder_check,
+            "stats": stats,
+        }
+        res["notification"] = _notify_signup_failure(db, plan, res)
+        return res
     if not rows:
         return {"ok": False, "error": "无可推送的报名行", "stats": stats}
 
