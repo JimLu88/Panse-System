@@ -354,6 +354,42 @@ def test_placeholder_signup_above_safe_cap_fails_price_math(db_session):
     }]
 
 
+def test_placeholder_price_block_notification_is_precise_and_deduped(
+        db_session, monkeypatch):
+    from app.services import notify_service
+
+    plan = _plan(db_session, "big88")
+    sent = []
+
+    def fake_broadcast(_db, text, *, title, level):
+        sent.append({"text": text, "title": title, "level": level})
+        return {"feishu": True}
+
+    monkeypatch.setattr(notify_service, "broadcast_text", fake_broadcast)
+    blocked = [{
+        "taobao_item_id": "9314",
+        "product": "定制占位测试品",
+        "placeholders": [{
+            "taobao_sku_id": "73084",
+            "sku_code": "PPSPH00599",
+            "safe_cap": 284.0,
+            "current_live_price": 397.0,
+        }],
+    }]
+
+    first = cs._notify_placeholder_price_blocks(db_session, plan, blocked)
+    second = cs._notify_placeholder_price_blocks(db_session, plan, blocked)
+
+    assert first == {"feishu": True}
+    assert second == {"deduped": True}
+    assert len(sent) == 1
+    assert sent[0]["title"] == "活动占位SKU因价保暂缓"
+    assert sent[0]["level"] == "warning"
+    assert all(value in sent[0]["text"] for value in (
+        "9314", "73084", "PPSPH00599", "397.0", "284.0",
+    ))
+
+
 def test_placeholder_signup_without_live_price_is_blocked(db_session):
     plan = _plan(db_session, "big88")
     plan.remark = "official_active_items=9300"

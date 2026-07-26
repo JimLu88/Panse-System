@@ -1111,6 +1111,53 @@ def _clear_signup_failure_dedupe(db: Session, plan) -> None:
     db.commit()
 
 
+def _notify_placeholder_price_blocks(db: Session, plan, blocked: list[dict]) -> dict:
+    """Warn once when placeholders are held because price protection is unconfirmed."""
+    import hashlib
+    import json
+    from app.services import notify_service, settings_service
+
+    details = []
+    for item in blocked:
+        placeholders = item.get("placeholders") or []
+        details.append({
+            "item_id": item.get("taobao_item_id"),
+            "product": item.get("product"),
+            "placeholders": [{
+                "sku_id": row.get("taobao_sku_id"),
+                "sku_code": row.get("sku_code"),
+                "current_live_price": row.get("current_live_price"),
+                "safe_cap": row.get("safe_cap"),
+            } for row in placeholders],
+        })
+    payload = json.dumps(details, ensure_ascii=False, sort_keys=True, default=str)
+    signature = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    key = f"campaign_placeholder_price_hold_{getattr(plan, 'id', 'unknown')}"
+    if settings_service.get(db, key, env_fallback=False) == signature:
+        return {"deduped": True}
+
+    lines = [
+        f"活动：{getattr(plan, 'name', '')}",
+        f"暂缓：{len(blocked)} 个商品（仅定制占位 SKU）",
+        "原因：平台当前占位保护价高于最低普惠券后价反算出的安全报名上限，"
+        "且本场尚未明确确认价保到期。",
+        "处理：整品未导入；未轮换 SKU、未强制降价，其他安全商品可继续。",
+        "明细：" + payload[:2600],
+        "如已确认价保到期，请在活动计划中明确确认后再补报；系统届时只用安全上限。",
+    ]
+    delivered = notify_service.broadcast_text(
+        db, "\n".join(lines), title="活动占位SKU因价保暂缓", level="warning")
+    if any(value is True for value in delivered.values()):
+        settings_service.set_value(
+            db,
+            key,
+            signature,
+            description="活动占位SKU价保暂缓飞书通知去重签名",
+        )
+        db.commit()
+    return delivered
+
+
 def push_signup(db: Session, plan) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     回执自愈: 失败明细里的下架SKU/动销不达标商品自动登记。"""
@@ -1128,6 +1175,9 @@ def push_signup(db: Session, plan) -> dict:
         }
         res["notification"] = _notify_signup_failure(db, plan, res)
         return res
+    if placeholder_check["level"] == "warn":
+        stats["placeholder_hold_notification"] = _notify_placeholder_price_blocks(
+            db, plan, placeholder_check.get("blocked_items") or [])
     if not rows:
         return {"ok": False, "error": "无可推送的报名行", "stats": stats}
 
