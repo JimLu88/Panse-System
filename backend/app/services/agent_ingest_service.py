@@ -715,6 +715,94 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
         return False
 
 
+def finalize_order_pull_after_shipping_password(
+    db: Session, *, on=None, not_before_hour: int = 18
+) -> dict:
+    """口令补齐最后一份发货报表后，把本轮已完成的淘宝取数正式收口。
+
+    ``taobao_orders_complete`` 原本只在 orchestrate 退出前、三份报表当场全部可导入时写入。
+    加密发货报表通常要等用户稍后从飞书补口令，此时 orchestrate 已经结束；即使解密成功，
+    新鲜度门仍会一直判旧，后续下单图补跑全部被拦住。
+
+    只有同时满足以下证据才补写完成标记，避免把隔夜或不完整数据误判为可推：
+    - 今天指定时点后的 orchestrate 确实跑完 ``taobao_orders``；
+    - 今日已有淘宝报表成功导入；
+    - 今日已无待口令文件。
+    """
+    target = on or date.today()
+    if pending_shipping_password_files(db, on=target):
+        return {"completed": False, "reason": "shipping_password_still_pending"}
+
+    # KEY_ORCH_STATE 只保留“最近一次编排”，20:30 财务取数会覆盖 18:00 淘宝取数。
+    # 因此先看内存态，找不到时再从不可覆盖的 ScheduledJobRun 历史取当天证据。
+    evidence = _load_json(db, KEY_ORCH_STATE)
+
+    def _evidence_matches(payload: dict, started_at) -> bool:
+        if not started_at:
+            return False
+        try:
+            dt = (
+                datetime.fromisoformat(str(started_at))
+                if not isinstance(started_at, datetime)
+                else started_at
+            )
+        except (TypeError, ValueError):
+            return False
+        if dt.tzinfo is not None:
+            dt = dt.astimezone()
+        task = next(
+            (t for t in (payload.get("tasks") or []) if t.get("task") == "taobao_orders"),
+            None,
+        )
+        return (
+            dt.date() == target
+            and dt.hour >= not_before_hour
+            and (task or {}).get("status", "").lower() in ("done", "ok", "success")
+        )
+
+    if not _evidence_matches(evidence, evidence.get("started_at")):
+        from app.models.scheduled_job import ScheduledJobRun
+
+        rows = db.execute(
+            select(ScheduledJobRun)
+            .where(ScheduledJobRun.job_id == "daily_0630_web_agent")
+            .order_by(ScheduledJobRun.id.desc())
+            .limit(10)
+        ).scalars().all()
+        matched = next(
+            (
+                row
+                for row in rows
+                if _evidence_matches(row.result_summary or {}, row.started_at)
+            ),
+            None,
+        )
+        if matched is None:
+            return {"completed": False, "reason": "missing_current_order_pull_evidence"}
+        evidence = matched.result_summary or {}
+
+    order_task = next(
+        (t for t in (evidence.get("tasks") or []) if t.get("task") == "taobao_orders"),
+        None,
+    )
+    if (order_task or {}).get("status", "").lower() not in ("done", "ok", "success"):
+        return {"completed": False, "reason": "taobao_orders_task_not_complete"}
+
+    state = _load_json(db, KEY_STATE)
+    try:
+        report_at = datetime.fromisoformat(str(state.get("taobao_report") or ""))
+    except (TypeError, ValueError):
+        return {"completed": False, "reason": "missing_imported_order_report"}
+    if report_at.date() != target or report_at.hour < not_before_hour:
+        return {"completed": False, "reason": "imported_order_report_outside_current_window"}
+
+    completed_at = datetime.now().isoformat(timespec="seconds")
+    state["taobao_orders_complete"] = completed_at
+    _save_json(db, KEY_STATE, state)
+    db.commit()
+    return {"completed": True, "completed_at": completed_at}
+
+
 def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
                 force_orders: bool = False, orders_only: bool = False) -> dict:
     """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""

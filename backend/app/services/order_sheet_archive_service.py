@@ -789,6 +789,60 @@ def repush_after_address_fill(db: Session, *, limit: int = 50, quiet: bool = Tru
             "order_nos": res.get("order_nos", []), "candidates": len(order_nos)}
 
 
+def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = True) -> dict:
+    """幂等收口“订单已入库 → 下单图已送达”的整条链。
+
+    给口令回调和晚间补跑共用：每次都先处理远期状态，再补生成并只推尚未成功送达的增量图。
+    ``row_summary.pushed`` 是送达幂等标记，重复调用不会重复发图。
+    """
+    remote = void_remote_pushed(db)
+    repush_activated(db)
+    assign_remote_seqs(db)
+    generated = generate_pending(db)
+    push = push_pending_images(db, limit=limit, include_baseline=False, quiet=quiet)
+    result = {
+        "generated": generated,
+        "images_pushed": int(push.get("pushed") or 0),
+        "images_failed": int(push.get("failed") or 0),
+        "images_remaining": int(push.get("remaining") or 0),
+        "order_nos": push.get("order_nos") or [],
+        "failed_order_nos": push.get("failed_order_nos") or [],
+        "held_no_sku": push.get("held_no_sku") or [],
+        "held_remote": push.get("held_remote") or [],
+        "push_reason": push.get("reason"),
+        "remote_voided": remote["voided_remote"],
+        "remote_transitions": remote["remote_transitions"],
+        "remote_feishu_notified": remote["feishu_notified"],
+        "remote_feishu_failed": remote["feishu_failed"],
+    }
+    errors: list[str] = []
+    if result["push_reason"] in ("no_chat_id", "notify_disabled"):
+        errors.append(f"飞书通道不可用: {result['push_reason']}")
+    if result["images_failed"]:
+        errors.append(
+            f"图片发送失败 {result['images_failed']} 张"
+            + (f": {','.join(result['failed_order_nos'])}" if result["failed_order_nos"] else "")
+        )
+    if result["held_no_sku"]:
+        errors.append(
+            f"SKU未回填暂缓 {len(result['held_no_sku'])} 张: {','.join(result['held_no_sku'])}"
+        )
+    if result["images_remaining"]:
+        errors.append(f"仍有 {result['images_remaining']} 张未送达")
+    if result["remote_feishu_failed"]:
+        errors.append(
+            "远期改单作废通知失败: "
+            + "; ".join(
+                f"{x.get('order_no')}: {x.get('reason')}"
+                for x in result["remote_feishu_failed"]
+            )
+        )
+    if errors:
+        result["_run_status"] = "fail"
+        result["_error"] = "; ".join(errors)
+    return result
+
+
 def baseline_existing_sheets(db: Session) -> int:
     """一次性: 把"现存且还没推过图"的下单图标记为历史基线 (baseline=True)。
 

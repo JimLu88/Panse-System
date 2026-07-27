@@ -842,13 +842,40 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         except Exception:  # noqa: BLE001 —— 重推失败不阻断解密入库
             logging.getLogger("panse.feishu_bot").warning("解密后重推下单图失败", exc_info=True)
         r["repushed"] = repushed
+        # 发货报表通常等口令后才成为三报表的最后一环。用本轮取数证据补齐完成标记，
+        # 再立即补生成、补推尚未送达的增量图；证据不足则保持安全门关闭。
+        completion = agent_ingest_service.finalize_order_pull_after_shipping_password(db)
+        r["order_pull_completion"] = completion
+        delivery: dict
+        if completion.get("completed"):
+            try:
+                delivery = _osa.reconcile_pending_delivery(db, limit=50, quiet=True)
+            except Exception as exc:  # noqa: BLE001 —— 精确记录“解密成功、送达失败”
+                logging.getLogger("panse.feishu_bot").warning("解密后自动续推下单图失败", exc_info=True)
+                delivery = {
+                    "_run_status": "fail",
+                    "_error": f"delivery_exception: {type(exc).__name__}: {exc}",
+                }
+        else:
+            delivery = {
+                "_run_status": "fail",
+                "_error": f"freshness_gate: {completion.get('reason') or 'unknown'}",
+            }
+        r["delivery"] = delivery
         try:
             chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
             if chat:
                 msg = (f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
                        f"收货地址已入库")
-                msg += (f", 并已自动重推 {repushed} 张此前缺地址的下单图到工厂群。"
-                        if repushed else ",可正常发下单图。")
+                if repushed:
+                    msg += f", 并已自动重推 {repushed} 张此前缺地址的下单图"
+                pushed = int(delivery.get("images_pushed") or 0)
+                if pushed:
+                    msg += f", 自动续推 {pushed} 张新下单图到工厂群"
+                if delivery.get("_run_status") == "fail":
+                    msg += f"。\n⚠️ 下单图续跑未完成: {delivery.get('_error')}"
+                else:
+                    msg += "，订单制单与送达链路已完成。"
                 feishu_client.send_text(db, chat, msg)
         except Exception:  # noqa: BLE001 —— 推送失败不阻断解密
             logging.getLogger("panse.feishu_bot").warning("解密成功飞书推送失败")

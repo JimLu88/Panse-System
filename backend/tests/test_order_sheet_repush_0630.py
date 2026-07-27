@@ -122,8 +122,51 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
         return {"imported": 1, "updated": 1, "tried": 1}
 
     monkeypatch.setattr("app.services.agent_ingest_service.reingest_pending_shipping", _fake_reingest)
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
+        lambda db: {"completed": True},
+    )
+    monkeypatch.setattr(
+        osa,
+        "reconcile_pending_delivery",
+        lambda db, **kwargs: {"images_pushed": 0, "images_failed": 0, "images_remaining": 0},
+    )
     r = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
     assert r.get("imported") == 1
     assert r.get("repushed") == 1
+    assert r["order_pull_completion"]["completed"] is True
     rec = _sheet_rec(db_session, "PWD-1").row_summary
     assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True
+
+
+def test_apply_shipping_password_immediately_reconciles_new_sheets(
+    db_session, _feishu_stub, monkeypatch
+):
+    """口令是最后一环时，不再只说“可正常发”，而是当场续跑未送达图片。"""
+    from app.services import feishu_bot_service
+
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.reingest_pending_shipping",
+        lambda db: {"imported": 1, "updated": 9, "tried": 1},
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
+        lambda db: {"completed": True, "completed_at": "2026-07-27T18:25:00"},
+    )
+    monkeypatch.setattr(osa, "repush_after_address_fill", lambda db, **kwargs: {"repushed": 0})
+    monkeypatch.setattr(
+        osa,
+        "reconcile_pending_delivery",
+        lambda db, **kwargs: {
+            "images_pushed": 8,
+            "images_failed": 0,
+            "images_remaining": 0,
+            "order_nos": ["A", "B"],
+        },
+    )
+
+    result = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
+
+    assert result["delivery"]["images_pushed"] == 8
+    assert result["delivery"].get("_run_status") is None

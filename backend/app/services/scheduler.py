@@ -922,7 +922,12 @@ def _job_pull_catchup(db: Session) -> dict:
     if not (18 <= _now_hour() < 23):
         return {"skipped": "off_window"}
     if ai.order_data_fresh(db, not_before_hour=18):
-        return {"ok": "already_fresh"}
+        # 数据新鲜不等于图片已送达。即使口令回调或 18:30 日报在发送阶段中断，
+        # 每小时补跑仍用 pushed 幂等标记收口，不重复发已成功的图片。
+        from app.services import order_sheet_archive_service as oss
+        delivery = oss.reconcile_pending_delivery(db, limit=50, quiet=True)
+        delivery["ok"] = "fresh_delivery_reconciled"
+        return delivery
     if ai.is_running():
         return {"skipped": "orchestrate_running", "_run_status": "skipped"}
     pending_password = ai.pending_shipping_password_files(db)
@@ -954,16 +959,12 @@ def _job_pull_catchup(db: Session) -> dict:
         }
     if ai.order_data_fresh(db, not_before_hour=18):  # 取数成功→数据新鲜→立即补生成+补推
         from app.services import order_sheet_archive_service as oss
-        oss.void_remote_pushed(db)                 # 已推工厂但现延期的单→自动作废旧号+通知工厂+挂起
-        oss.repush_activated(db)                   # 远期老单激活→旧号作废清号(下面以新号重推)
-        gen = oss.generate_pending(db)
-        push = oss.push_pending_images(db, limit=50, include_baseline=False, quiet=True)
-        out["generated"] = gen
-        out["images_pushed"] = push["pushed"]
+        delivery = oss.reconcile_pending_delivery(db, limit=50, quiet=True)
+        out.update(delivery)
         try:
             from app.services import notify_service
             notify_service.notify(
-                db, f"✅ PC 已上线, 自动补取数完成并补推下单图 {push['pushed']} 张 (漏取数续跑)。",
+                db, f"✅ PC 已上线, 自动补取数完成并补推下单图 {delivery['images_pushed']} 张 (漏取数续跑)。",
                 level="info", title="畔色 ERP [取数续跑]")
         except Exception:  # pragma: no cover
             pass
