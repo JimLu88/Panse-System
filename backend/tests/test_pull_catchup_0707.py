@@ -7,7 +7,7 @@ import threading
 
 from app.services import agent_ingest_service as ai
 from app.services import order_sheet_archive_service as oss
-from app.services import order_sync_service, scheduler, web_agent_service
+from app.services import order_sync_service, scheduler, settings_service, web_agent_service
 from app.models.import_file import ImportedFile
 
 
@@ -79,6 +79,18 @@ def test_fresh_after_cutoff_waits_for_shipping_password(db_session):
     db_session.add(resolved)
     db_session.commit()
     assert ai.order_data_fresh(db_session, not_before_hour=18) is True
+
+
+def test_shipping_password_never_expires_by_age(db_session):
+    settings_service.set_value(db_session, "taobao_shipping_pwd_latest", "example-password")
+    settings_service.set_value(
+        db_session,
+        "taobao_shipping_pwd_at",
+        (datetime.now() - timedelta(days=30)).isoformat(),
+    )
+    db_session.commit()
+
+    assert ai._latest_shipping_password(db_session) == "example-password"
 
 
 def test_shipping_password_finalizes_completed_evening_pull(db_session):

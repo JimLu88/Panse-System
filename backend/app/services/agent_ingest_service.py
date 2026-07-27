@@ -160,21 +160,13 @@ def _hash_exists(db: Session, file_hash: str) -> Optional[ImportedFile]:
     ).scalars().first()
 
 
-def _fresh_shipping_password(db: Session, *, max_age_min: int = 60) -> Optional[str]:
-    """飞书最近收到的发货报表口令 (一次一密)。超过 max_age_min 分钟视为过期不用。"""
-    pwd = settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)
-    if not pwd:
-        return None
-    at = settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False)
-    if at:
-        try:
-            ts = datetime.fromisoformat(at)
-            now = datetime.now(ts.tzinfo) if ts.tzinfo else datetime.now()
-            if now - ts > timedelta(minutes=max_age_min):
-                return None
-        except ValueError:
-            pass
-    return pwd
+def _latest_shipping_password(db: Session) -> Optional[str]:
+    """返回最近收到的发货报表口令。
+
+    用户于 2026-07-27 确认：口令本身没有时间限制。时间戳只用于审计，不得按 60 分钟、
+    24 小时或其他年龄拒绝口令。若口令与某份报表不匹配，解密会自然失败并保留待口令状态。
+    """
+    return settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False) or None
 
 
 def _report_to_dict(rep) -> dict:
@@ -348,15 +340,15 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
         from app.services import taobao_order_import
         password = None
         if raw[:8] == _OOXML_ENCRYPTED_MAGIC:
-            # 加密发货报表: 取最近飞书口令(60 分钟内有效)解密; 没口令则标待口令
-            password = _fresh_shipping_password(db)
+            # 加密发货报表: 取飞书最近口令解密。口令不按收到时间失效；没口令才标待口令。
+            password = _latest_shipping_password(db)
             if not password:
                 return ("taobao", "pending_password",
                         {"note": "加密发货报表 — 待飞书口令(转发『发货密码 xxx』到机器人)后自动解密"})
         rep = taobao_order_import.import_taobao_orders(db, path.name, raw, password=password)
         errs = getattr(rep, "errors", None)
         if errs:
-            # 口令过期/错误 → 仍标待口令 (不算 error, 等用户重发新口令)
+            # 口令不匹配/文件异常 → 仍标待口令 (不算系统错误, 等用户提供对应口令)
             if password and any("解密" in str(e) for e in errs):
                 return ("taobao", "pending_password", {"note": str(errs[0])})
             return ("taobao", "error", _report_to_dict(rep))
@@ -508,9 +500,9 @@ def reingest_pending_shipping(db: Session) -> dict:
     import 是 upsert 幂等 (重复导无副作用); 一报一密, 口令不匹配的那份自然解密失败、保持
     待解密, 不影响其它份。由飞书口令入站处理器调用, 实现"发口令→自动入库"。"""
     out: dict = {"tried": 0, "imported": 0, "failed": 0, "updated": 0, "files": []}
-    pwd = _fresh_shipping_password(db)
+    pwd = _latest_shipping_password(db)
     if not pwd:
-        out["note"] = "无有效口令 (可能已过期, 请重发『发货密码 xxx』)"
+        out["note"] = "尚未收到发货报表口令 (请发送『发货密码 xxx』)"
         return out
     if not OUTPUT_DIR.exists():
         out["note"] = f"共享目录不存在: {OUTPUT_DIR}"
@@ -601,7 +593,7 @@ def run_ingest(db: Session) -> dict:
                           "summary": {"error": f"{type(e).__name__}: {e}"}})
             report["errors"] += 1
         report["files"].append(entry)
-    # 主动提醒 (用户要求 2026-06-15): 取数下载到加密发货报表却无有效口令 → 主动推飞书,
+    # 主动提醒 (用户要求 2026-06-15): 取数下载到加密发货报表却无口令 → 主动推飞书,
     # 让用户转发『发货密码 xxx』; 收到后 _capture_shipping_password→reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
@@ -609,7 +601,7 @@ def run_ingest(db: Session) -> dict:
         if not _os.environ.get("PANSE_DISABLE_NOTIFY"):
             n = len(_pending_pw_files)
             _msg = (f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                    f"『发货密码 xxxx』转发到这里 —— 一报表一密、收到后自动解密入库 (60 分钟内有效)。")
+                    f"『发货密码 xxxx』转发到这里 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。")
             # 优先推飞书: 用户本就在飞书转发口令, 且 notify provider 未必配了 webhook
             # (现网=wechat_work 但 webhook 空 → 走 notify 会静默丢失)。飞书推送失败再兜底 notify。
             _pushed = False

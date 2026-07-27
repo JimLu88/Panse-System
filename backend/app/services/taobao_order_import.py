@@ -914,7 +914,7 @@ def maybe_decrypt(raw: bytes, password: Optional[str]) -> bytes:
         office.load_key(password=password)
         office.decrypt(fout)
     except Exception as e:  # msoffcrypto 口令错误 → InvalidKeyError 等
-        raise ValueError(f"发货报表解密失败 (口令可能已过期或不对): {e}") from e
+        raise ValueError(f"发货报表解密失败 (口令与该报表不匹配或文件异常): {e}") from e
     return fout.getvalue()
 
 

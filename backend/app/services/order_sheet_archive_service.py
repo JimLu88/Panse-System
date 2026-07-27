@@ -504,7 +504,7 @@ def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
            + "\n  ① 淘宝后台【提升每日收货信息解密额度】—— 额度不够时, 超额的单收货地址会被星号脱敏, 系统不收, 故为空;"
            + "\n  ② 在订单页点「更新拉取订单」重新拉取, 然后把淘宝发的『发货密码 xxxx』转发到这里"
            + " —— 我会自动解密发货报表、补上收货地址并重推这些单的下单图。"
-           + "\n(发货报表是淘宝固定加密的, 每天新导出都要重发一次密码; 密码 60 分钟内有效。)")
+           + "\n(口令不按收到时间失效；若与当前报表不匹配，系统会保留待口令状态并明确提醒。)")
     try:
         feishu_client.send_text(db, chat_id, txt)
     except Exception:  # noqa: BLE001

@@ -1373,7 +1373,7 @@ def _job_ingest_health_check(db: Session) -> dict:
     from datetime import date as _date, datetime as _dt
     from sqlalchemy import func, select
     from app.models.order import Order
-    from app.services import settings_service, web_agent_service
+    from app.services import agent_ingest_service, settings_service, web_agent_service
 
     today = _date.today()
     new_orders = db.execute(
@@ -1402,15 +1402,7 @@ def _job_ingest_health_check(db: Session) -> dict:
     except Exception:  # noqa: BLE001 — 探活失败按离线算, 不抛
         online = False
 
-    pwd_at = settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False)
-    pwd_stale_h: Optional[float] = None
-    if pwd_at:
-        try:
-            ts = _dt.fromisoformat(pwd_at)
-            now_ = _dt.now(ts.tzinfo) if ts.tzinfo else _dt.now()
-            pwd_stale_h = (now_ - ts).total_seconds() / 3600
-        except ValueError:
-            pass
+    pending_password_files = agent_ingest_service.pending_shipping_password_files(db, on=today)
 
     problems: list[str] = []
     if new_orders == 0:
@@ -1420,8 +1412,11 @@ def _job_ingest_health_check(db: Session) -> dict:
         problems.append("PC 取数 Agent 离线 (订单/余额无法自动拉取)")
     if bal_stale is not None and bal_stale >= 4:
         problems.append(f"余额已 {bal_stale} 天未更新")
-    if pwd_stale_h is not None and pwd_stale_h > 24:
-        problems.append(f"发货口令已过期 {pwd_stale_h:.0f} 小时 (加密发货报表地址进不来)")
+    if pending_password_files:
+        problems.append(
+            f"加密发货报表待口令 {len(pending_password_files)} 份 "
+            "(口令不按时间失效；收到对应口令后会自动解密并续推)"
+        )
 
     result = {
         "date": today.isoformat(),
@@ -1430,6 +1425,7 @@ def _job_ingest_health_check(db: Session) -> dict:
         "agent_online": online,
         "balance_stale_days": bal_stale,
         "last_ingest_at": state.get("last_ingest_at"),
+        "pending_shipping_password_files": pending_password_files,
         "problems": problems,
         "pushed": [],
     }
@@ -1606,7 +1602,7 @@ def _register_default_jobs() -> None:
                  _job_ingest_scan, cron={"hour": "18-22", "minute": 15})
     register_job("daily_2235_flip_monitor", "导入翻烧饼灰度监控(仍横跳→异常, 稳定→销账)",
                  _job_flip_monitor, cron={"hour": 22, "minute": 35})
-    register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/口令过期 → 微信+飞书)",
+    register_job("daily_2000_ingest_health", "取数体检(今日无新订单/Agent离线/报表待口令 → 微信+飞书)",
                  _job_ingest_health_check, cron={"hour": 20, "minute": 0})
     register_job("daily_0915_npd_stage_remind", "新品开发阶段截止提醒 (飞书催设计师)",
                  _job_npd_stage_remind, cron={"hour": 9, "minute": 15})

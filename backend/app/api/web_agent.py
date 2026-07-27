@@ -75,7 +75,7 @@ def status(db: Session = Depends(get_db)):
         "shipping_password": {
             "configured": bool(settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)),
             "received_at": settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False),
-            "hint": "导加密发货报表前, 把淘宝发到微信的口令以「发货密码 xxx」转发给飞书机器人(60分钟内有效)。",
+            "hint": "把淘宝发来的口令以「发货密码 xxx」转发给飞书机器人；口令不按时间失效，收到后自动解密并续推下单图。",
         },
     }
 
