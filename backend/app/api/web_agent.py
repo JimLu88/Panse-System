@@ -41,6 +41,15 @@ def _freshness(state: dict, category: str, interval_days: int) -> dict:
             "interval_days": interval_days, "status": status}
 
 
+def _friendly_agent_text(text: str) -> str:
+    """把 Web-Agent 内部任务 ID 转成用户能辨认的账号名称。"""
+    return (text or "").replace(
+        "bal_alipay_main", "支付宝主力账号余额"
+    ).replace(
+        "alipay_main", "支付宝主力账号"
+    )
+
+
 @router.get("/status")
 def status(db: Session = Depends(get_db)):
     hb = web_agent_service.health(db)
@@ -64,13 +73,13 @@ def status(db: Session = Depends(get_db)):
             _freshness(state, "promotion", iv_balance),
             _freshness(state, "wanshifu", iv_balance),
             _freshness(state, "balance", iv_balance),
+            _freshness(state, ingest.STATE_MAIN_ALIPAY_FLOW, 1),
         ],
         "last_ingest": ingest._load_json(db, ingest.KEY_LAST_INGEST),
         "orchestration": {**ingest._load_json(db, ingest.KEY_ORCH_STATE),
                           "running": ingest.is_running()},
         "not_ready": [
             {"item": "支付宝企业号 流水/余额", "reason": "官方 API 应用审核中, 上线后自动接入"},
-            {"item": "支付宝主力号 流水", "reason": "每次需本人扫码 (扫码二维码会自动发到飞书)"},
         ],
         "shipping_password": {
             "configured": bool(settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)),
@@ -128,13 +137,14 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
 
     from app.services import feishu_client, notify_service
     result: dict = {"feishu": None, "wechat": None}
+    notice_text = _friendly_agent_text(payload.text)
 
     # 扫码相关纯文本 → 飞书 (扫码这件事整个在飞书对话里完成); scan_ok = 扫码成功回执
     if payload.kind in ("scan_needed", "scan_timeout", "scan_ok"):
         chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if chat_id and payload.text:
+        if chat_id and notice_text:
             try:
-                feishu_client.send_text(db, chat_id, payload.text)
+                feishu_client.send_text(db, chat_id, notice_text)
                 result["feishu"] = "已发飞书"
             except Exception as e:  # noqa: BLE001
                 result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
@@ -153,17 +163,17 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
             else:
                 png = base64.b64decode(payload.image_b64)
                 key = feishu_client.upload_image(db, png)
-                if payload.text:
-                    feishu_client.send_text(db, chat_id, payload.text)
+                if notice_text:
+                    feishu_client.send_text(db, chat_id, notice_text)
                 feishu_client.send_image(db, chat_id, key)
                 result["feishu"] = "已发飞书"
         except Exception as e:  # noqa: BLE001
             result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
 
     # 事件/提醒 → 企业微信 (扫码类也补一条文字叫醒)
-    wx_text = payload.text or "Panse 取数有新事件"
+    wx_text = notice_text or "Panse 取数有新事件"
     if payload.kind in ("qr", "scan_wait"):
-        wx_text = f"⚠️ 需要扫码: {payload.text or '支付宝/淘宝导出需验证身份'} — 二维码已发到飞书, 请去飞书扫。"
+        wx_text = f"⚠️ 需要扫码: {notice_text or '支付宝/淘宝导出需验证身份'} — 二维码已发到飞书, 请去飞书扫。"
     ok, msg = notify_service.notify(db, wx_text, level="urgent" if is_visual else "info",
                                     title="畔色 ERP [自动取数]")
     result["wechat"] = "已发企业微信" if ok else msg
