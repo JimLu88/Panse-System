@@ -192,7 +192,7 @@ function AdviceTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="本页与成品库存、月底飞书共用唯一备货计划"
-             description={<>最终建议统一为：<b>目标库存 − 当前现货 − 自由在产</b>。近90天清洗销量达到8件后，小件覆盖7天且最多6件，中件覆盖5天且最多2件；餐边柜等大件和定制单按单生产，不压成品库存。<br/>「客户单在产」已卖给对应客户，不抵未来成品库存；常规产品只按统一建议数量倒推 BOM 物料。定制单仍只提前准备通用料。</>} />
+             description={<>最终建议统一为：<b>未来完整30天目标库存 − 当前现货 − 自由在产</b>。常规可备产品不再设2/5/6件硬上限；餐边柜等大件和定制单按单生产，不压成品库存。<br/>「客户单在产」已卖给对应客户，不抵未来成品库存；常规产品只按统一建议数量倒推 BOM 物料。定制单仍只提前准备通用料。</>} />
       <Card size="small" title="常规单 · 统一成品备货计划"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table

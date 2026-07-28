@@ -54,7 +54,7 @@ def format_monthly_plan(plan: dict) -> str:
         f"📦 {plan['period']} 成品备货计划",
         (
             f"建议备货 {plan['suggested_total']} 件｜"
-            f"热销达标 {plan['hot_product_count']} 品｜"
+            f"近90天热销 {plan['hot_product_count']} 品｜"
             f"预计定制生产任务 {plan['custom_task_forecast']:.1f} 单"
         ),
         "",
@@ -80,11 +80,17 @@ def format_monthly_plan(plan: dict) -> str:
     if open_anomalies:
         lines.extend([
             "",
-            f"⚠️ 数量异常待确认 {open_anomalies} 单（>3 件按 1 个定制任务隔离）",
+            (
+                f"⚠️ 数量异常待确认 {open_anomalies} 单"
+                "（4~5件暂按实际数量；>5件未确认按1个定制任务隔离）"
+            ),
         ])
     lines.extend([
         "",
-        "口径：7/15/30/60/90 天近端加权；618/双11/双12去峰后预测；春节数据单列保留。",
+        (
+            "口径：常规可备产品覆盖未来完整月份，不设件数硬上限；"
+            "7/15/30/60/90 天近端加权；618/双11/双12去峰；春节数据单列保留。"
+        ),
     ])
     return "\n".join(lines)
 

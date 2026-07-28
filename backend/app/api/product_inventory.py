@@ -103,11 +103,16 @@ def list_product_inventory(
     warehouse: Optional[str] = None,
     product_code: Optional[str] = None,
     warning_only: bool = Query(False, description="只显示需要关注的库存 (warning/danger/critical/excess)"),
-    include_all: bool = Query(False, description="含还没建库存行的产品(虚拟行, has_inventory=False, 前端折叠)"),
+    include_all: bool = Query(False, description="兼容旧前端；现已始终返回全部产品库存行"),
     limit: int = Query(200, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
 ):
+    # 产品与库存必须是一张完整主表：缺行自动补 0 库存基线，之后全部数据在同一行联动。
+    created = product_inventory_service.ensure_all_product_inventory_rows(db)
+    if created:
+        db.commit()
+
     stmt = select(ProductInventory)
     if warehouse:
         stmt = stmt.where(ProductInventory.warehouse == warehouse)
@@ -117,14 +122,12 @@ def list_product_inventory(
     rows = db.execute(stmt).scalars().all()
 
     result = []
-    covered: set[str] = set()
     # 一次性算 ABC 分层 + 配置(方向4), 每行复用; 避免逐行重算全表排名
     _cfg = product_inventory_service.get_forecast_config(db)
     _abc = product_inventory_service.compute_abc_map(db, _cfg)
     _inprod = product_inventory_service.compute_in_production_split(db)  # R1 在产拆自由/客户单, 一次算复用
     _restock, _restock_allocation = product_inventory_service.build_inventory_restock_context(db)
     for inv in rows:
-        covered.add(inv.product_code)
         core = product_coder.core_of(inv.product_code) or inv.product_code
         stats = product_inventory_service.compute_product_stats(
             db,
@@ -158,23 +161,13 @@ def list_product_inventory(
         }
         result.append(ProductInventoryWithStats(**row_dict))
 
-    # 含全部产品: 把还没建库存行的产品也带出来(虚拟行, 前端折叠到"无库存")
-    if include_all and not warning_only and not (warehouse or product_code):
-        from app.models.product import Product
-        pstmt = select(Product)
-        if covered:
-            pstmt = pstmt.where(Product.code.notin_(covered))
-        for p in db.execute(pstmt.order_by(Product.code)).scalars().all():
-            result.append(ProductInventoryWithStats(
-                id=None, warehouse="-", product_code=p.code, sku=None,
-                product_name=getattr(p, "name", None), has_inventory=False,
-                spec=None, unit=None, physical_qty=Decimal("0"), locked_qty=Decimal("0"),
-                safety_stock=None, lead_time_days=None, slow_moving_days=None,
-                reorder_point=None, remark=None,
-                available_qty=0.0, daily_sales_30d=0.0, lead_time_days_computed=None,
-                safety_stock_computed=0.0, reorder_point_computed=0.0, days_of_stock=None,
-                warning_status="ok", auto_reorder_qty=0.0,
-            ))
+    # 默认就是运营顺序：推荐备货从高到低，再看未来30天预测和近30天销量。
+    result.sort(key=lambda row: (
+        -float(row.auto_reorder_qty or 0),
+        -float(row.forecast_30d or 0),
+        -float(row.sales_qty_30d or 0),
+        row.product_code,
+    ))
     return result
 
 
@@ -184,6 +177,7 @@ def refresh_inventory_stats(
     _: User = Depends(get_current_user),
 ):
     """把从订单历史推算的提前期/安全库存/预警线批量回写到库存表（幂等）。"""
+    product_inventory_service.ensure_all_product_inventory_rows(db)
     n = product_inventory_service.refresh_all_inventory(db)
     db.commit()
     return {"updated": n, "message": f"已更新 {n} 条成品库存推算字段"}

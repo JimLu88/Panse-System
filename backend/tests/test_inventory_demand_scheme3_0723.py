@@ -6,6 +6,7 @@ from sqlalchemy import select
 from app.models.exception import DataException
 from app.models.inventory import ProductInventory
 from app.models.order import Order
+from app.models.product import Product
 from app.services import (
     inventory_demand_service as demand,
     inventory_monthly_report_service as monthly,
@@ -63,12 +64,12 @@ def test_quantity_cleaning_and_custom_detection(db_session):
         rows["COLLAPSE4"].kind,
         rows["COLLAPSE4"].effective_qty,
         rows["COLLAPSE4"].anomaly,
-    ) == ("custom", 1, "qty_gt3")
+    ) == ("standard", 4, "qty_4_5_review")
     assert (rows["WARN5"].kind, rows["WARN5"].effective_qty, rows["WARN5"].anomaly) == (
-        "custom", 1, "qty_gt3"
+        "standard", 5, "qty_4_5_review"
     )
     assert (rows["BAD3200"].kind, rows["BAD3200"].effective_qty, rows["BAD3200"].anomaly) == (
-        "custom", 1, "qty_gt3"
+        "custom", 1, "qty_gt5"
     )
     assert rows["SUFFIX99"].kind == "custom"
 
@@ -149,6 +150,53 @@ def test_promo_is_normalized_and_cny_is_retained_separately(db_session):
     assert profile["window_units"]["90"] == 2
     assert profile["cny_units"] == 2
     assert profile["cny_daily"] > 0
+
+
+def test_actual_30d_sales_quantity_amount_and_daily_are_exposed(db_session):
+    db = db_session
+    row = _order(db, "SALES-METRICS", qty=2, day=AS_OF)
+    row.paid_amount = Decimal("300")
+    row.refund_amount = Decimal("50")
+    observations = demand.load_observations(
+        db, start=AS_OF - timedelta(days=29), end=AS_OF
+    )
+    profile = demand.build_profile(observations, as_of=AS_OF)
+    assert profile["actual_window_units"]["30"] == 2
+    assert profile["actual_window_sales"]["30"] == 250
+    assert profile["actual_daily_30d"] == round(2 / 30, 4)
+
+
+def test_every_product_gets_inventory_row_and_zero_plan(db_session):
+    db = db_session
+    db.add_all([
+        Product(code="PPS26010060606", name="无销量产品A"),
+        Product(code="PPS26010070707", name="无销量产品B"),
+        ProductInventory(
+            warehouse="江西仓库",
+            product_code="PPS26010060606",
+            product_name="无销量产品A",
+            physical_qty=Decimal("0"),
+            locked_qty=Decimal("0"),
+        ),
+    ])
+    db.flush()
+    assert product_inventory_service.ensure_all_product_inventory_rows(db) == 1
+    assert product_inventory_service.ensure_all_product_inventory_rows(db) == 0
+    rows = db.execute(select(ProductInventory)).scalars().all()
+    assert {row.product_code for row in rows} == {
+        "PPS26010060606", "PPS26010070707"
+    }
+    created = next(row for row in rows if row.product_code == "PPS26010070707")
+    assert created.warehouse == "江西仓库"
+    today = date.today()
+    plan = restock.build_restock_plan(
+        db,
+        start=today + timedelta(days=1),
+        end=today + timedelta(days=30),
+        as_of=today,
+    )
+    zero = next(x for x in plan["products"] if x["product_code"] == "PPS26010070707")
+    assert zero["forecast_30d"] == zero["target_stock"] == zero["suggested_restock"] == 0
 
 
 def test_monthly_plan_and_feishu_idempotency(db_session, monkeypatch):
@@ -233,11 +281,12 @@ def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
     db.add_all([inv, inv_secondary])
     db.flush()
 
+    today = date.today()
     plan = restock.build_restock_plan(
         db,
-        start=AS_OF + timedelta(days=1),
-        end=AS_OF + timedelta(days=30),
-        as_of=AS_OF,
+        start=today + timedelta(days=1),
+        end=today + timedelta(days=30),
+        as_of=today,
     )
     canonical = next(
         x for x in plan["products"] if x["product_code"] == "PPS26010050505"
@@ -248,7 +297,7 @@ def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
     )
     restock_map, allocation = (
         product_inventory_service.build_inventory_restock_context(
-            db, [inv, inv_secondary]
+            db, [inv, inv_secondary], as_of=today
         )
     )
     allocated_total = allocation[id(inv)] + allocation[id(inv_secondary)]
@@ -265,7 +314,16 @@ def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
         x for x in month["products"] if x["product_code"] == "PPS26010050505"
     )
     assert canonical["suggested_restock"] > 0
+    assert canonical["target_stock"] > 6
+    assert canonical["target_stock"] == canonical["forecast_30d"]
     assert allocated_total == canonical["suggested_restock"]
     assert order_page["need_to_produce"] == canonical["suggested_restock"]
     assert stats["auto_reorder_qty"] == allocation[id(inv)]
-    assert month_row["suggested_restock"] == canonical["suggested_restock"]
+    # 月底飞书按目标自然月(8月31天)，库存/订单页按未来滚动30天；区间可不同，
+    # 但都必须由同一引擎按 目标−现货−自由在产 计算。
+    assert month_row["suggested_restock"] == max(
+        0,
+        month_row["target_stock"]
+        - int(month_row["on_hand"])
+        - int(month_row["free_in_production"]),
+    )

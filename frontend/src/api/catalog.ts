@@ -523,11 +523,11 @@ export const deleteProduct = (id: number, force = false) =>
 
 // ----- Product Inventory (4a) -----
 export interface ProductInventoryRow {
-  id: number | null;            // 无库存产品(虚拟行)无 id
+  id: number | null;
   warehouse: string;
   product_code: string;
   product_name?: string | null;
-  has_inventory?: boolean;      // false = 还没建库存行
+  has_inventory?: boolean;
   sku: string | null;
   spec: string | null;
   unit: string | null;
@@ -540,7 +540,10 @@ export interface ProductInventoryRow {
   remark: string | null;
   // computed stats (from API)
   available_qty: number;
-  daily_sales_30d: number;
+  daily_sales_30d: number;           // 近30天实际销量÷30
+  sales_qty_30d: number;             // 近30天实际清洗销量
+  sales_amount_30d: number;          // 近30天实际净销售额
+  forecast_daily: number;            // 统一加权预测日均
   lead_time_days_computed: number | null;
   safety_stock_computed: number;
   reorder_point_computed: number;

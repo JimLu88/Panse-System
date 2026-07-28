@@ -146,9 +146,10 @@ def test_stock_advice_material_uses_unified_restock_qty(db_session):
     advice = sales_analytics.stock_advice(db_session)
     m = next(x for x in advice["materials"] if x["material_code"] == "M1")
     p = next(x for x in advice["products"] if x["product_code"] == "P1")
-    assert p["need_to_produce"] == p["suggested_restock"] == 2
-    assert m["need_qty"] == 4
-    assert m["missing"] == -6
+    assert p["need_to_produce"] == p["suggested_restock"] == p["target_stock"]
+    assert p["target_stock"] == p["forecast_30d"]
+    assert m["need_qty"] == p["suggested_restock"] * 2
+    assert m["missing"] == m["need_qty"] - 10
     assert m["lead_time_days"] == 10
     assert m["priority"] == "high"
 

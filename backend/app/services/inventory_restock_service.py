@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from app.models.exception import DataException
 from app.models.inventory import ProductInventory
 from app.models.order import FactoryOrder
+from app.models.product import Product
 from app.services import (
     inventory_demand_service as demand,
     product_coder,
@@ -31,17 +32,21 @@ def _core(value: Optional[str]) -> str:
     return product_coder.core_of(value) or value
 
 
-def policy_for_product(name: str) -> tuple[str, int, int]:
-    """返回 (策略, 目标覆盖天数, 单产品成品库存上限)。"""
+def policy_for_product(name: str) -> tuple[str, bool]:
+    """返回 (策略, 是否备成品)。
+
+    用户 2026-07-28 确认：凡是适合备成品的常规产品，都按未来完整周期备货，
+    不再用“小件最多6件 / 中件最多2件”的硬上限。大件仍按单生产，避免压货。
+    """
     if "床头柜" in name:
-        return "小件热销备货", 7, 6
+        return "30天滚动备货", True
     if any(k in name for k in _LARGE_MTO_KW):
-        return "大件按单生产", 0, 0
+        return "大件按单生产", False
     if any(k in name for k in _SMALL_KW):
-        return "小件热销备货", 7, 6
+        return "30天滚动备货", True
     if any(k in name for k in _MEDIUM_KW):
-        return "中件少量备货", 5, 2
-    return "中件少量备货", 5, 2
+        return "30天滚动备货", True
+    return "30天滚动备货", True
 
 
 def build_restock_plan(
@@ -50,11 +55,10 @@ def build_restock_plan(
     """按指定未来区间生成唯一备货计划。
 
     最终建议 = 目标成品库存 − 当前可用现货 − 自由在产。
-    目标成品库存只由统一需求预测和大小件策略产生：
-      90 天清洗销量 >= 8 才进入热销备货；
-      小件覆盖 7 天且单品最多 6 件；
-      中件覆盖 5 天且单品最多 2 件；
-      大件/定制永远不推动成品库存。
+    目标成品库存只由统一需求预测和产品策略产生：
+      常规可备产品覆盖传入的完整未来区间（库存页固定未来 30 天），无件数硬上限；
+      没有销量的产品仍建库存行并显示 0，不凭空建议备货；
+      大件/定制不推动成品库存，继续按单生产。
     """
     if end < start:
         raise ValueError("end must be >= start")
@@ -68,7 +72,24 @@ def build_restock_plan(
     )
     days = (end - start).days + 1
 
+    # 先把产品主表全量铺进计划。没有销售的产品也必须有库存行和一条 0 计划，
+    # 页面不再出现“没建库存行”的第二世界。
     grouped: dict[str, dict] = {}
+    for product in db.execute(select(Product).order_by(Product.code)).scalars():
+        core = _core(product.code)
+        grouped.setdefault(core, {
+            "product_core": core,
+            "product_code": product.code,
+            "product_name": product.name or product.code,
+            "normal_daily": 0.0,
+            "forecast_period": 0.0,
+            "units_90": 0.0,
+            "sale_days_90": 0,
+            "sales_qty_30d": 0.0,
+            "sales_amount_30d": 0.0,
+            "actual_daily_30d": 0.0,
+            "sku_count": 0,
+        })
     for profile in standard_profiles:
         core = profile["product_core"]
         row = grouped.setdefault(core, {
@@ -79,12 +100,18 @@ def build_restock_plan(
             "forecast_period": 0.0,
             "units_90": 0.0,
             "sale_days_90": 0,
+            "sales_qty_30d": 0.0,
+            "sales_amount_30d": 0.0,
+            "actual_daily_30d": 0.0,
             "sku_count": 0,
         })
         row["normal_daily"] += float(profile["normal_daily"])
         row["forecast_period"] += demand.forecast_period(profile, start, end, cfg)
         row["units_90"] += float(profile["window_units"]["90"])
         row["sale_days_90"] += int(profile["sale_days"]["90"])
+        row["sales_qty_30d"] += float(profile["actual_window_units"]["30"])
+        row["sales_amount_30d"] += float(profile["actual_window_sales"]["30"])
+        row["actual_daily_30d"] += float(profile["actual_daily_30d"])
         row["sku_count"] += 1
 
     on_hand: dict[str, float] = {}
@@ -109,12 +136,11 @@ def build_restock_plan(
 
     products = []
     for core, row in grouped.items():
-        policy, buffer_days, cap = policy_for_product(row["product_name"])
+        policy, stock_finished_goods = policy_for_product(row["product_name"])
         qualified = row["units_90"] >= 8
-        period_daily = row["forecast_period"] / max(1, days)
         target_stock = (
-            min(cap, int(math.ceil(period_daily * buffer_days)))
-            if qualified and cap > 0
+            int(math.ceil(row["forecast_period"]))
+            if stock_finished_goods and row["forecast_period"] > 0
             else 0
         )
         stock = on_hand.get(core, 0.0)
@@ -125,7 +151,7 @@ def build_restock_plan(
             **row,
             "policy": policy,
             "qualified_hot": qualified,
-            "buffer_days": buffer_days,
+            "buffer_days": days if stock_finished_goods else 0,
             "target_stock": target_stock,
             "on_hand": round(stock, 2),
             "in_stock": round(stock, 2),
@@ -136,8 +162,11 @@ def build_restock_plan(
             "suggested_restock": suggested,
             "need_to_produce": suggested,
             "forecast_period": round(row["forecast_period"], 2),
-            "forecast_30d": int(round(row["forecast_period"])),
+            "forecast_30d": int(math.ceil(row["forecast_period"])),
             "normal_daily": round(row["normal_daily"], 4),
+            "sales_qty_30d": round(row["sales_qty_30d"], 2),
+            "sales_amount_30d": round(row["sales_amount_30d"], 2),
+            "actual_daily_30d": round(row["actual_daily_30d"], 4),
         })
 
     custom_tasks = sum(
@@ -170,9 +199,8 @@ def build_restock_plan(
         "quantity_anomalies": {"open": open_quantity_anomalies},
         "rules": {
             "windows": [7, 15, 30, 60, 90],
-            "hot_threshold_90d": 8,
-            "small": {"buffer_days": 7, "cap": 6},
-            "medium": {"buffer_days": 5, "cap": 2},
+            "coverage_days": days,
+            "stockable_products": {"mode": "full_period_forecast", "cap": None},
             "large": {"mode": "mto", "target_stock": 0},
             "promotion_normalization": ["618", "双11", "双12"],
             "cny": "保留春节场景，不压低普通月份基线",

@@ -5,12 +5,10 @@ import {
   AutoComplete,
   Badge,
   Button,
-  Collapse,
   Form,
   Input,
   InputNumber,
   Modal,
-  Segmented,
   Space,
   Switch,
   Table,
@@ -33,7 +31,6 @@ import {
   syncProductInventoryParams,
   updateProductInventory,
 } from '../api/client';
-import FullColumnView from '../components/FullColumnView';
 
 // 「销量公式」按钮 + 配置弹窗 + 大促备货提示 (用户拍板: 默认加权公式, 大促时段可增减)
 function FormulaButton() {
@@ -130,12 +127,10 @@ export default function ProductInventoryPage() {
   const [syncAllSkus, setSyncAllSkus] = useState(false);
   const [editForm] = Form.useForm();
   const [warningOnly, setWarningOnly] = useState(false);
-  const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
 
   const { data, isLoading } = useQuery({
     queryKey: ['product-inventory', warningOnly],
-    // 全部视图带出所有产品(含还没建库存行的, 前端折叠); 仅预警视图后端会忽略 include_all
-    queryFn: () => listProductInventory(warningOnly, !warningOnly),
+    queryFn: () => listProductInventory(warningOnly, true),
   });
 
   const { data: products } = useQuery({
@@ -177,10 +172,7 @@ export default function ProductInventoryPage() {
       render: (_: any, r: ProductInventoryRow) => (
         <Space direction="vertical" size={0}>
           <Typography.Text strong style={{ fontSize: 14 }}>{r.sku || r.product_name || r.product_code}</Typography.Text>
-          <Space size={4}>
-            <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.product_code}</Typography.Text>
-            {r.has_inventory === false && <Tag color="default" style={{ fontSize: 10, lineHeight: '16px' }}>无库存行</Tag>}
-          </Space>
+          <Typography.Text type="secondary" style={{ fontSize: 11 }}>{r.product_code}</Typography.Text>
         </Space>
       ),
     },
@@ -196,17 +188,16 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="与销售→备货建议、月底飞书共用同一备货引擎。大件按单生产；小/中件达到90天热销门槛后才备成品。">
+        <Tooltip title="与销售→备货建议、月底飞书共用同一备货引擎。常规可备产品覆盖未来完整30天；大件与定制产品按单生产。">
           备货策略
         </Tooltip>
       ),
       dataIndex: 'restock_policy',
       width: 118,
       render: (policy: string | null, r: ProductInventoryRow) => {
-        if (policy === '小件热销备货') return <Tag color="green">小件热销</Tag>;
-        if (policy === '中件少量备货') return <Tag color="blue">中件少量</Tag>;
+        if (policy === '30天滚动备货') return <Tag color="green">30天滚动</Tag>;
         if (policy === '大件按单生产') return <Tag color="default">大件按单</Tag>;
-        return <Tag color="default">{r.qualified_hot ? '备货' : '按需'}</Tag>;
+        return <Tag color="default">按需</Tag>;
       },
     },
     {
@@ -239,15 +230,47 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="该尺寸自己近期真实订单的日均发货量(不含补单)。按 sku 名里的尺寸口令(如 1.4米/1.6米)匹配对应订单, 每个尺寸各算各的; sku 名里抽不到尺寸时才退回按整个产品算。">日均销量</Tooltip>
+        <Tooltip title="最近30天统一清洗后的实际销量：排除补单、非产品和定制凑价；4~5件暂按实际数量，超过5件未确认时按1个定制任务隔离。">近30天销量</Tooltip>
       ),
-      dataIndex: 'daily_sales_30d',
-      width: 90,
-      render: (v: number) => v > 0 ? v.toFixed(2) : <Typography.Text type="secondary">暂无</Typography.Text>,
+      dataIndex: 'sales_qty_30d',
+      width: 102,
+      render: (v: number) => v > 0 ? `${Number(v).toFixed(0)} 件` : <Typography.Text type="secondary">0</Typography.Text>,
     },
     {
       title: (
-        <Tooltip title="按日均销量折算的库存可用天数">可用天数</Tooltip>
+        <Tooltip title="近30天实际清洗销量 ÷ 30，是对过去一个月的直观日均。">30天日均</Tooltip>
+      ),
+      dataIndex: 'daily_sales_30d',
+      width: 92,
+      render: (v: number) => v > 0 ? Number(v).toFixed(2) : <Typography.Text type="secondary">0.00</Typography.Text>,
+    },
+    {
+      title: (
+        <Tooltip title="最近30天常规产品订单的买家实付减退款；补单、定制和非产品链接不计入。">近30天销售额</Tooltip>
+      ),
+      dataIndex: 'sales_amount_30d',
+      width: 118,
+      render: (v: number) => `¥${Number(v ?? 0).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`,
+    },
+    {
+      title: (
+        <Tooltip title="备货真正使用的预测日均：7/15/30/60/90天近端加权，并对618、双11、双12去峰，春节单列。">预测日均</Tooltip>
+      ),
+      dataIndex: 'forecast_daily',
+      width: 90,
+      render: (v: number) => Number(v ?? 0).toFixed(2),
+    },
+    {
+      title: (
+        <Tooltip title="从明天起未来30天逐日预测之和；遇到大促或春节会按对应场景调整。">未来30天预测</Tooltip>
+      ),
+      dataIndex: 'forecast_30d',
+      width: 112,
+      render: (v: number) => `${Number(v ?? 0).toFixed(0)} 件`,
+    },
+    {
+      title: (
+        <Tooltip title="当前可用库存 ÷ 预测日均，按统一预测口径折算。">可用天数</Tooltip>
       ),
       dataIndex: 'days_of_stock',
       width: 90,
@@ -259,20 +282,11 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="唯一备货引擎给出的目标成品库存；小件最多6件、中件最多2件、大件为0。">目标库存</Tooltip>
+        <Tooltip title="常规可备产品=未来完整30天预测向上取整，不再设2/5/6件硬上限；大件与定制产品继续按单生产，目标为0。">目标库存</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => (
         <span>{Number(r.target_stock ?? r.reorder_point_computed ?? 0).toFixed(0)}</span>
-      ),
-    },
-    {
-      title: (
-        <Tooltip title="统一清洗后的近90天销量达到8件，才进入成品热销备货；未达标和大件继续按单生产。">热销达标</Tooltip>
-      ),
-      width: 90,
-      render: (_: any, r: ProductInventoryRow) => (
-        r.qualified_hot ? <Tag color="green">已达标</Tag> : <Tag>按需</Tag>
       ),
     },
     {
@@ -318,12 +332,7 @@ export default function ProductInventoryPage() {
       title: '操作',
       width: 80,
       render: (_: any, r: ProductInventoryRow) => (
-        r.has_inventory === false || r.id == null ? (
-          <Button size="small" type="link" onClick={() => {
-            form.setFieldsValue({ product_code: r.product_code });
-            setOpen(true);
-          }}>建库存</Button>
-        ) : (
+        r.id == null ? <Typography.Text type="secondary">—</Typography.Text> : (
         <Button size="small" onClick={() => {
           setEditId(r.id);
           setEditProductCode(r.product_code || null);
@@ -347,12 +356,6 @@ export default function ProductInventoryPage() {
   const _calm = (s: string) => s === 'ok' || s === 'mto';
   const warningCount = data?.filter(r => !_calm(r.warning_status)).length ?? 0;
 
-  // 三类: ① 需预警(全显示) ② 已建库存但不预警/按需(折叠) ③ 还没建库存行的产品(折叠)
-  const rows = data ?? [];
-  const alertRows = rows.filter((r) => !_calm(r.warning_status));
-  const normalRows = rows.filter((r) => r.has_inventory !== false && _calm(r.warning_status));
-  const noInvRows = rows.filter((r) => r.has_inventory === false);
-
   const renderInvTable = (list: ProductInventoryRow[], paginate: boolean) => (
     <Table
       rowKey={(r) => (r.id != null ? String(r.id) : 'p:' + r.product_code)}
@@ -360,7 +363,7 @@ export default function ProductInventoryPage() {
       dataSource={list}
       loading={isLoading}
       pagination={paginate ? { pageSize: 50 } : false}
-      scroll={{ x: 1280 }}
+      scroll={{ x: 1850 }}
       rowClassName={(r) =>
         r.warning_status === 'critical' ? 'ant-table-row-danger' :
         r.warning_status === 'danger' ? 'ant-table-row-warning' : ''
@@ -397,7 +400,7 @@ export default function ProductInventoryPage() {
             刷新
           </Button>
           <Button type="primary" icon={<PlusOutlined />} onClick={() => setOpen(true)}>
-            添加库存
+            增加仓库 / SKU
           </Button>
         </Space>
       </Space>
@@ -417,61 +420,20 @@ export default function ProductInventoryPage() {
         description={
           <>
             唯一公式：<b>目标库存 − 当前现货 − 自由在产</b>。订单先统一清洗，再按7/15/30/60/90天加权预测；
-            618、双11、双12去峰，春节单列。近90天清洗销量达到8件后，小件覆盖7天且最多6件，
-            中件覆盖5天且最多2件；餐边柜等大件和定制单继续按单生产，不压成品库存。
+            618、双11、双12去峰，春节单列。常规可备产品的目标库存覆盖<b>未来完整30天</b>，
+            不再设2/5/6件硬上限；餐边柜等大件和定制单继续按单生产，不压成品库存。
             <br />
-            同产品多SKU在本页按日均分摊，SKU合计与「销售 → 备货建议」产品数量完全一致。
+            所有产品自动建立库存行并在一张表显示，默认按推荐备货从高到低；同产品多SKU的建议合计
+            与「销售 → 备货建议」完全一致；月底飞书沿用同一引擎，按目标自然月计算。
           </>
         }
       />
 
-
-      <Segmented
-        value={viewMode}
-        onChange={(v) => setViewMode(v as 'curated' | 'full')}
-        options={[
-          { label: '精选视图（可编辑）', value: 'curated' },
-          { label: '全部列', value: 'full' },
-        ]}
-      />
-
-      {viewMode === 'full' && <FullColumnView entity="product_inventory" defaultShowAll />}
-
-      {viewMode === 'curated' && (warningOnly ? (
-        renderInvTable(data ?? [], true)
-      ) : (
-        <Space direction="vertical" style={{ width: '100%' }} size="small">
-          {/* ① 需预警的产品: 全部显示 */}
-          <Typography.Text strong style={{ color: alertRows.length ? '#cf1322' : undefined }}>
-            ⚠️ 需关注 · 预警（{alertRows.length}）{alertRows.length === 0 ? ' — 暂无' : ''}
-          </Typography.Text>
-          {alertRows.length > 0 && renderInvTable(alertRows, true)}
-
-          {/* ② 已建库存但不预警: 折叠 */}
-          <Collapse
-            items={[{
-              key: 'normal',
-              label: `有货 · 库存正常（${normalRows.length}）— 点击展开`,
-              children: renderInvTable(normalRows, true),
-            }]}
-          />
-
-          {/* ③ 还没建库存行的产品: 折叠 */}
-          {noInvRows.length > 0 && (
-            <Collapse
-              items={[{
-                key: 'noinv',
-                label: `还没建库存行的产品（${noInvRows.length}）— 点击展开 · 可「建库存」`,
-                children: renderInvTable(noInvRows, true),
-              }]}
-            />
-          )}
-        </Space>
-      ))}
+      {renderInvTable(data ?? [], true)}
 
       {/* 添加库存弹窗 */}
       <Modal
-        title="添加成品库存"
+        title="增加仓库 / SKU 库存行"
         open={open}
         onOk={() => form.submit()}
         onCancel={() => { setOpen(false); form.resetFields(); }}

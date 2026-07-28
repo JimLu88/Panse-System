@@ -38,13 +38,16 @@ class ProductInventoryOut(BaseModel):
 
 class ProductInventoryWithStats(ProductInventoryOut):
     """ProductInventoryOut + 实时推算字段（不存库，每次请求计算）。"""
-    id: Optional[int] = None        # 无库存产品(虚拟行)无 id
+    id: Optional[int] = None
     product_name: Optional[str] = None
-    has_inventory: bool = True      # False = 该产品还没建库存行(前端折叠到"无库存")
+    has_inventory: bool = True
     available_qty: float                              # 展示可用=现货−已付未发(可负, 用户口径)
     physical_available: Optional[float] = None        # 物理可用=现货−locked(备货推荐口径)
     unshipped_demand: Optional[float] = None          # 已付未发单占用(可用的扣减项)
-    daily_sales_30d: float
+    daily_sales_30d: float                            # 近30天实际销量÷30
+    sales_qty_30d: float = 0                          # 近30天实际清洗销量
+    sales_amount_30d: float = 0                       # 近30天实际净销售额
+    forecast_daily: float = 0                         # 7/15/30/60/90加权预测日均
     lead_time_days_computed: Optional[int]
     safety_stock_computed: float
     reorder_point_computed: float

@@ -69,6 +69,7 @@ class DemandObservation:
     kind: str                 # standard / custom / skip
     raw_qty: int
     effective_qty: int
+    net_sales_amount: float
     anomaly: Optional[str] = None
 
 
@@ -184,14 +185,22 @@ def classify_order(
     anomaly = None
     effective_qty = raw_qty
     confirmed = str(o.order_no or "") in _confirmed_bulk(cfg)
-    if raw_qty > 3 and not confirmed:
+    if 4 <= raw_qty <= 5 and not confirmed:
+        # 用户确认口径：4~5 件先按真实数量进入预测，同时进入异常提示。
+        # 若 SKU/备注本身命中定制规则，上面的分类仍会把它归入定制，不推动成品备货。
+        anomaly = "qty_4_5_review"
+    elif raw_qty > 5 and not confirmed:
         # 淘宝定制/补差链接常用「拍多件」凑成交金额，拍下数量不等于真实成品数量。
-        # 未经人工确认的数量 > 3 订单统一从成品热销统计隔离，只保留 1 个生产任务；
+        # 未经人工确认的数量 > 5 订单从成品热销统计隔离，只保留 1 个生产任务；
         # 已确认的真实批量订单仍按原数量计算。
-        anomaly = "qty_gt3"
+        anomaly = "qty_gt5"
         effective_qty = 1
         if kind != "skip":
             kind = "custom"
+
+    paid = Decimal(str(o.paid_amount or 0))
+    refund = Decimal(str(o.refund_amount or 0))
+    net_sales_amount = float(max(Decimal("0"), paid - refund))
 
     return DemandObservation(
         order_id=int(o.id or 0),
@@ -204,6 +213,7 @@ def classify_order(
         kind=kind,
         raw_qty=raw_qty,
         effective_qty=effective_qty,
+        net_sales_amount=net_sales_amount,
         anomaly=anomaly,
     )
 
@@ -245,6 +255,8 @@ def build_profile(
     selected = [o for o in observations if o.kind == kind]
     rates: dict[int, float] = {}
     units: dict[int, float] = {}
+    actual_units: dict[int, float] = {}
+    actual_sales: dict[int, float] = {}
     sale_days: dict[int, int] = {}
     for window in WINDOWS:
         start = as_of - timedelta(days=window - 1)
@@ -258,6 +270,13 @@ def build_profile(
         units[window] = round(qty, 4)
         rates[window] = qty / max(1, eligible_days)
         sale_days[window] = len(sold)
+        actual_rows = [o for o in selected if start <= o.order_date <= as_of]
+        actual_units[window] = round(
+            sum(o.effective_qty for o in actual_rows), 2
+        )
+        actual_sales[window] = round(
+            sum(o.net_sales_amount for o in actual_rows), 2
+        )
 
     short_daily = sum(rates[w] * SHORT_WEIGHTS[w] for w in SHORT_WEIGHTS)
     long_daily = sum(rates[w] * LONG_WEIGHTS[w] for w in LONG_WEIGHTS)
@@ -279,6 +298,9 @@ def build_profile(
         "long_daily": round(long_daily, 4),
         "window_daily": {str(k): round(v, 4) for k, v in rates.items()},
         "window_units": {str(k): round(v, 2) for k, v in units.items()},
+        "actual_window_units": {str(k): v for k, v in actual_units.items()},
+        "actual_window_sales": {str(k): v for k, v in actual_sales.items()},
+        "actual_daily_30d": round(actual_units[30] / 30, 4),
         "sale_days": {str(k): v for k, v in sale_days.items()},
         "cny_daily": round(cny_daily, 4),
         "cny_units": cny_units,
@@ -428,7 +450,22 @@ def sync_quantity_anomalies(
     created = updated = resolved = open_count = ignored_count = 0
     for source_pk, obs in current.items():
         row = existing.get(source_pk)
-        description = f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
+        if obs.anomaly == "qty_4_5_review":
+            description = (
+                f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测暂按实际数量计算，"
+                "请确认是否真实批量采购或定制凑价"
+            )
+            suggestion = (
+                "若为真实批量采购，将订单号加入已确认批量清单；"
+                "若为定制凑价，补齐定制/SKU标记后按定制任务处理。"
+            )
+        else:
+            description = (
+                f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
+            )
+            suggestion = (
+                "确认是真实批量采购后，将订单号加入已确认批量订单清单。"
+            )
         context = {
             "order_no": obs.order_no,
             "product_code": obs.product_code,
@@ -445,7 +482,7 @@ def sync_quantity_anomalies(
                 exception_type="inventory_demand_qty_anomaly",
                 severity="warning",
                 description=description,
-                suggestion_action="确认是真实批量采购后，将订单号加入已确认批量订单清单。",
+                suggestion_action=suggestion,
                 context=context,
                 status="open",
             ))

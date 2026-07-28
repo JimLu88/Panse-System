@@ -6,10 +6,10 @@
   get_inventory_with_stats — 返回带计算字段的库存列表 (用于 API 响应)
 
 计算逻辑:
-  日均销量 (daily_sales_30d)  = 近 30 天真实订单出货量 / 30
+  近30天日均 (daily_sales_30d) = 近 30 天统一清洗销量 / 30
+  预测日均 (forecast_daily)    = 7/15/30/60/90 天近端加权并去除大促峰值
   提前期 (lead_time_days)     = 工厂订单 actual_delivery - order_date 中位数 (天)
-  预警线 (reorder_point)      = safety_stock + lead_time_days × daily_sales_30d
-  安全库存 (safety_stock)     = 若未手动设置: lead_time_days × daily_sales_30d × 1.5
+  目标库存 (target_stock)      = 常规可备产品未来完整 30 天预测；大件/定制为 0
   库存预警状态 (warning_status):
     critical — available_qty ≤ 0
     danger   — available_qty < reorder_point
@@ -17,7 +17,7 @@
     excess   — days_of_stock > slow_moving_days (滞销)
     ok       — 正常
   备货量推荐 (auto_reorder_qty):
-    = max(0, reorder_point × 2 - available_qty)  (补到预警线的 2 倍)
+    = max(0, target_stock - 当前现货 - 自由在产)
 """
 from __future__ import annotations
 
@@ -44,6 +44,7 @@ def _size_token(name: Optional[str]) -> Optional[str]:
 
 from app.models.inventory import ProductInventory
 from app.models.order import FactoryOrder, Order
+from app.models.product import Product
 from app.services import product_coder
 
 _D = Decimal
@@ -208,6 +209,23 @@ def promo_status(db: Session, *, prep_days: int = 30) -> dict:
     return {"active": active, "upcoming": upcoming, "prep_days": prep_days}
 
 
+def _compute_sales_profile(
+    db: Session, product_code: str, sku: Optional[str] = None,
+    cfg: Optional[dict] = None,
+) -> dict:
+    """返回该产品/尺寸统一清洗后的销量画像。"""
+    if cfg is None:
+        cfg = get_forecast_config(db)
+    from app.services import inventory_demand_service as demand
+    return demand.profile_for_product(
+        db,
+        product_code,
+        cfg=cfg,
+        sku_contains=_size_token(sku),
+        kind="standard",
+    )
+
+
 def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = None,
                          days: int = 30, cfg: Optional[dict] = None) -> float:
     """该产品的日均发货量 (产品级, 所有尺寸合计)。
@@ -218,16 +236,7 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
       simple           — 旧口径: 窗口期总量 ÷ 窗口天数。
     注: 按 product_code(含 PPS/PFG/P 品牌变体)汇总到产品级。不排除 is_historical。
     """
-    if cfg is None:
-        cfg = get_forecast_config(db)
-    from app.services import inventory_demand_service as demand
-    profile = demand.profile_for_product(
-        db,
-        product_code,
-        cfg=cfg,
-        sku_contains=_size_token(sku),
-        kind="standard",
-    )
+    profile = _compute_sales_profile(db, product_code, sku, cfg)
     return round(float(profile["normal_daily"]), 3)
 
 
@@ -415,7 +424,11 @@ def compute_product_stats(
         if restock_plan_row is not None and restock_qty is None:
             restock_qty = float(restock_plan_row.get("suggested_restock") or 0)
     free_map, alloc_map = in_production_split
-    daily = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
+    sales_profile = _compute_sales_profile(db, inv.product_code, inv.sku, cfg)
+    daily = round(float(sales_profile["normal_daily"]), 3)
+    sales_qty_30d = float(sales_profile["actual_window_units"]["30"])
+    sales_amount_30d = float(sales_profile["actual_window_sales"]["30"])
+    actual_daily_30d = float(sales_profile["actual_daily_30d"])
     abc_class = abc_map.get(_canon_code(inv.product_code), "C")
     in_prod_free = float(free_map.get(_canon_code(inv.product_code), 0.0))   # 备货在产, 抵推荐
     in_prod_alloc = float(alloc_map.get(_canon_code(inv.product_code), 0.0)) # 客户单在产, 仅展示
@@ -505,7 +518,11 @@ def compute_product_stats(
             status = "ok"
 
     return {
-        "daily_sales_30d": daily,
+        # 真实30天销量与预测日均分开显示，避免把加权预测误叫成“30天日均”。
+        "daily_sales_30d": round(actual_daily_30d, 3),
+        "sales_qty_30d": round(sales_qty_30d, 2),
+        "sales_amount_30d": round(sales_amount_30d, 2),
+        "forecast_daily": round(daily, 3),
         "lead_time_days_computed": lead_time,
         "safety_stock_computed": round(safety, 2),
         "reorder_point_computed": round(reorder_pt, 2),
@@ -543,6 +560,49 @@ def compute_product_stats(
             else round(auto_reorder, 0)
         ),
     }
+
+
+def ensure_all_product_inventory_rows(
+    db: Session, *, default_warehouse: Optional[str] = None,
+) -> int:
+    """确保产品主表里的每个产品至少有一条成品库存行。
+
+    现有库存行完全保留；只为缺失产品补一条 0 库存基线。默认仓库沿用当前库存表
+    使用最多的仓库，空库时回退“江西仓库”。该函数幂等。
+    """
+    existing_codes = set(
+        db.execute(select(ProductInventory.product_code).distinct()).scalars().all()
+    )
+    if default_warehouse is None:
+        warehouse_row = db.execute(
+            select(ProductInventory.warehouse, func.count(ProductInventory.id))
+            .group_by(ProductInventory.warehouse)
+            .order_by(func.count(ProductInventory.id).desc(), ProductInventory.warehouse)
+            .limit(1)
+        ).first()
+        default_warehouse = (
+            str(warehouse_row[0]) if warehouse_row and warehouse_row[0] else "江西仓库"
+        )
+    created = 0
+    for product in db.execute(
+        select(Product).where(Product.code.notin_(existing_codes)).order_by(Product.code)
+    ).scalars():
+        db.add(ProductInventory(
+            warehouse=default_warehouse,
+            product_code=product.code,
+            product_name=product.name,
+            sku=product.sku,
+            unit="件",
+            physical_qty=Decimal("0"),
+            locked_qty=Decimal("0"),
+            slow_moving_days=_DEFAULT_SLOW_MOVING_DAYS,
+            remark="系统自动建档（产品主表联动）",
+        ))
+        existing_codes.add(product.code)
+        created += 1
+    if created:
+        db.flush()
+    return created
 
 
 def recompute_seasonal_factors(db: Session, *, min_units: int = 80) -> dict:
@@ -593,11 +653,12 @@ def recompute_seasonal_factors(db: Session, *, min_units: int = 80) -> dict:
 
 def build_inventory_restock_context(
     db: Session, rows: Optional[list[ProductInventory]] = None,
+    *, as_of: Optional[date] = None,
 ) -> tuple[dict[str, dict], dict[int, int]]:
     """一次生成库存页所需产品计划和逐库存行分配，避免每行重复跑全引擎。"""
     from app.services import inventory_restock_service
 
-    today = date.today()
+    today = as_of or date.today()
     plan = inventory_restock_service.build_restock_plan(
         db,
         start=today + timedelta(days=1),

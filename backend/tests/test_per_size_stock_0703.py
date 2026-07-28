@@ -58,7 +58,7 @@ def test_no_size_token_falls_back_to_product_level(db_session):
     split = pis.compute_in_production_split(db)
     st = pis.compute_product_stats(db, inv, abc_map=abc, cfg=cfg, in_production_split=split)
     product_daily = pis._compute_daily_sales(db, "P1", None, cfg=cfg)
-    assert abs(st["daily_sales_30d"] - product_daily) < 1e-6
+    assert abs(st["forecast_daily"] - product_daily) < 1e-6
 
 
 def test_size_token_extraction():
