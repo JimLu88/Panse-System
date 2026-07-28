@@ -570,9 +570,16 @@ def ensure_all_product_inventory_rows(
     现有库存行完全保留；只为缺失产品补一条 0 库存基线。默认仓库沿用当前库存表
     使用最多的仓库，空库时回退“江西仓库”。该函数幂等。
     """
-    existing_codes = set(
-        db.execute(select(ProductInventory.product_code).distinct()).scalars().all()
-    )
+    products = db.execute(select(Product).order_by(Product.code)).scalars().all()
+    products_by_code = {product.code: product for product in products}
+    inventory_rows = db.execute(select(ProductInventory)).scalars().all()
+    existing_codes = {row.product_code for row in inventory_rows}
+    # 旧库存档案可能早于产品名称联动字段。只补空名称，不覆盖人工维护的
+    # SKU/规格名称；这样产品主表信息能显示出来，也不会改变按 SKU 统计口径。
+    for row in inventory_rows:
+        product = products_by_code.get(row.product_code)
+        if product is not None and not row.product_name and product.name:
+            row.product_name = product.name
     if default_warehouse is None:
         warehouse_row = db.execute(
             select(ProductInventory.warehouse, func.count(ProductInventory.id))
@@ -584,9 +591,9 @@ def ensure_all_product_inventory_rows(
             str(warehouse_row[0]) if warehouse_row and warehouse_row[0] else "江西仓库"
         )
     created = 0
-    for product in db.execute(
-        select(Product).where(Product.code.notin_(existing_codes)).order_by(Product.code)
-    ).scalars():
+    for product in products:
+        if product.code in existing_codes:
+            continue
         db.add(ProductInventory(
             warehouse=default_warehouse,
             product_code=product.code,

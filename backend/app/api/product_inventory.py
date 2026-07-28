@@ -110,7 +110,7 @@ def list_product_inventory(
 ):
     # 产品与库存必须是一张完整主表：缺行自动补 0 库存基线，之后全部数据在同一行联动。
     created = product_inventory_service.ensure_all_product_inventory_rows(db)
-    if created:
+    if created or db.dirty:
         db.commit()
 
     stmt = select(ProductInventory)

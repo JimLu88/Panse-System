@@ -169,12 +169,12 @@ def test_actual_30d_sales_quantity_amount_and_daily_are_exposed(db_session):
 def test_every_product_gets_inventory_row_and_zero_plan(db_session):
     db = db_session
     db.add_all([
-        Product(code="PPS26010060606", name="无销量产品A"),
+        Product(code="PPS26010060606", name="No sales A"),
         Product(code="PPS26010070707", name="无销量产品B"),
         ProductInventory(
             warehouse="江西仓库",
             product_code="PPS26010060606",
-            product_name="无销量产品A",
+            product_name=None,
             physical_qty=Decimal("0"),
             locked_qty=Decimal("0"),
         ),
@@ -186,6 +186,8 @@ def test_every_product_gets_inventory_row_and_zero_plan(db_session):
     assert {row.product_code for row in rows} == {
         "PPS26010060606", "PPS26010070707"
     }
+    existing = next(row for row in rows if row.product_code == "PPS26010060606")
+    assert existing.product_name == "No sales A"
     created = next(row for row in rows if row.product_code == "PPS26010070707")
     assert created.warehouse == "江西仓库"
     today = date.today()
