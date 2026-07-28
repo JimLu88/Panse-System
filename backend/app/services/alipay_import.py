@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from io import StringIO
 from typing import Any, Optional
@@ -44,6 +44,8 @@ class AlipayImportReport:
     skipped_duplicate: int = 0
     skipped_invalid: int = 0
     errors: list[str] = field(default_factory=list)
+    reconciliation_ok: Optional[bool] = None
+    daily_reconciliation: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _decimal(v: Any) -> Optional[Decimal]:
@@ -255,7 +257,14 @@ def import_alipay_personal_csv(
             "related_order_no": g("商家订单号"),
             "remark": (" ".join(x for x in (g("商品名称"), g("备注")) if x)[:500]) or None,
         })
-    return import_alipay_rows(db, rows, account=account, report=report, commit=commit)
+    report = import_alipay_rows(db, rows, account=account, report=report, commit=commit)
+    if not commit:
+        db.flush()
+    report.daily_reconciliation = _reconcile_personal_daily(db, rows, account=account)
+    report.reconciliation_ok = bool(report.daily_reconciliation) and all(
+        item["ok"] for item in report.daily_reconciliation
+    )
+    return report
 
 
 # 同一笔分账在不同支付宝导出里可能标 "分账" 或 "交易分账" — 去重时归一为同类,
@@ -266,6 +275,99 @@ _DEDUP_TYPE_ALIASES = {"交易分账": "分账"}
 def _dedup_type(t: Optional[str]) -> str:
     s = (t or "").strip()
     return _DEDUP_TYPE_ALIASES.get(s, s)
+
+
+def _reconcile_personal_daily(
+    db: Session, rows: list[dict[str, Any]], *, account: str,
+) -> list[dict[str, Any]]:
+    """逐日核对个人支付宝源文件与 ERP：笔数、收入、支出必须全部一致。
+
+    这是导入后的内部验收数据，不参与任何飞书推送。源文件每天滚动覆盖最近
+    一个月，因此按源文件实际覆盖的首尾日期，与数据库同账户同日期全集比较。
+    """
+    source: dict = {}
+    seen: set[tuple] = set()
+    for payload in rows:
+        tx_no = (payload.get("transaction_no") or "").strip()
+        amount = _decimal(payload.get("amount"))
+        tx_time = (
+            _datetime(payload.get("transaction_time"))
+            or date_from_flow_no(tx_no)
+        )
+        if not tx_no or amount is None or tx_time is None:
+            continue
+        natural_key = (
+            tx_no,
+            _dedup_type(payload.get("transaction_type")),
+            amount,
+        )
+        if natural_key in seen:
+            continue
+        seen.add(natural_key)
+        day = tx_time.date()
+        stat = source.setdefault(
+            day, {"count": 0, "income": Decimal("0"), "expense": Decimal("0")}
+        )
+        stat["count"] += 1
+        if amount >= 0:
+            stat["income"] += amount
+        else:
+            stat["expense"] += abs(amount)
+
+    if not source:
+        return []
+
+    first_day, last_day = min(source), max(source)
+    db_rows = db.execute(
+        select(AlipayFlow).where(
+            AlipayFlow.account == account,
+            AlipayFlow.transaction_time >= datetime.combine(first_day, datetime.min.time()),
+            AlipayFlow.transaction_time < datetime.combine(
+                last_day + timedelta(days=1), datetime.min.time()
+            ),
+        )
+    ).scalars().all()
+    stored: dict = {}
+    for row in db_rows:
+        if row.transaction_time is None:
+            continue
+        day = row.transaction_time.date()
+        stat = stored.setdefault(
+            day, {"count": 0, "income": Decimal("0"), "expense": Decimal("0")}
+        )
+        amount = row.amount or Decimal("0")
+        stat["count"] += 1
+        if amount >= 0:
+            stat["income"] += amount
+        else:
+            stat["expense"] += abs(amount)
+
+    result = []
+    day = first_day
+    while day <= last_day:
+        src = source.get(
+            day, {"count": 0, "income": Decimal("0"), "expense": Decimal("0")}
+        )
+        dst = stored.get(
+            day, {"count": 0, "income": Decimal("0"), "expense": Decimal("0")}
+        )
+        ok = (
+            src["count"] == dst["count"]
+            and src["income"] == dst["income"]
+            and src["expense"] == dst["expense"]
+        )
+        result.append({
+            "date": day.isoformat(),
+            "source_count": src["count"],
+            "source_income": str(src["income"]),
+            "source_expense": str(src["expense"]),
+            "erp_count": dst["count"],
+            "erp_income": str(dst["income"]),
+            "erp_expense": str(dst["expense"]),
+            "ok": ok,
+        })
+        day += timedelta(days=1)
+    return result
 
 
 def import_alipay_rows(

@@ -4,7 +4,12 @@ from pathlib import Path
 
 from app.api import web_agent
 from app.models.finance import AlipayFlow
-from app.services import agent_ingest_service as ingest, feishu_client, settings_service
+from app.services import (
+    agent_ingest_service as ingest,
+    alipay_import,
+    feishu_client,
+    settings_service,
+)
 from app.services import order_sheet_archive_service, web_agent_service
 
 
@@ -31,6 +36,40 @@ def test_main_alipay_personal_csv_is_imported_to_main_account(db_session):
     assert summary["account"] == "主力号"
     assert row.account == "主力号"
     assert row.amount == Decimal("-79.99")
+    assert summary["reconciliation_ok"] is True
+    assert summary["daily_reconciliation"] == [{
+        "date": "2026-07-28",
+        "source_count": 1,
+        "source_income": "0",
+        "source_expense": "79.99",
+        "erp_count": 1,
+        "erp_income": "0",
+        "erp_expense": "79.99",
+        "ok": True,
+    }]
+    saved = ingest._load_json(db_session, "alipay_main_daily_reconciliation")
+    assert saved["ok"] is True
+    assert saved["days"][0]["date"] == "2026-07-28"
+
+
+def test_main_alipay_daily_reconciliation_detects_mismatch(db_session):
+    db_session.add(AlipayFlow(
+        account="主力号",
+        transaction_no="20260728EXTRA",
+        transaction_time=datetime(2026, 7, 28, 11, 0, 0),
+        transaction_type="测试",
+        amount=Decimal("-1"),
+    ))
+    db_session.commit()
+
+    report = alipay_import.import_alipay_csv(
+        db_session, PERSONAL_ALIPAY_CSV, account="主力号"
+    )
+
+    assert report.reconciliation_ok is False
+    assert report.daily_reconciliation[0]["source_count"] == 1
+    assert report.daily_reconciliation[0]["erp_count"] == 2
+    assert report.daily_reconciliation[0]["ok"] is False
 
 
 def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monkeypatch):

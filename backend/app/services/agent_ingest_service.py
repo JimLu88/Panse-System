@@ -238,6 +238,8 @@ def _report_to_dict(rep) -> dict:
     for k, v in src.items():
         if isinstance(v, (int, float, str, bool)) or v is None:
             out[k] = v
+        elif k == "daily_reconciliation" and isinstance(v, list):
+            out[k] = v[:31]
         elif isinstance(v, list):
             out[k] = [str(x)[:120] for x in v[:5]]
     return out
@@ -445,6 +447,20 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
             return ("alipay", "error", _report_to_dict(rep))
         summary = _report_to_dict(rep)
         summary["account"] = account
+        if account == "主力号":
+            settings_service.set_value(
+                db,
+                "alipay_main_daily_reconciliation",
+                json.dumps(
+                    {
+                        "checked_at": datetime.now().isoformat(timespec="seconds"),
+                        "ok": summary.get("reconciliation_ok"),
+                        "days": summary.get("daily_reconciliation") or [],
+                    },
+                    ensure_ascii=False,
+                ),
+                description="支付宝主力号流水逐日核对（仅 ERP 内部，不外发）",
+            )
         return ("alipay", "imported", summary)
     return ("generic", "unsupported", {"note": "未识别类别, 仅归档"})
 
