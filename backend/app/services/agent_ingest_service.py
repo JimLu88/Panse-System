@@ -96,15 +96,29 @@ def _add_pending_scan(db: Session, task_id: str) -> None:
 DEFAULT_SCAN_TASKS = ["bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main"]
 
 
-def _task_run_variables(task_id: str, *, on: date | None = None,
+def _task_run_variables(task_id: str, db: Session | None = None, *, on: date | None = None,
                         wait_scan: bool = False) -> dict:
     variables = {"wait_scan": True} if wait_scan else {}
     if task_id == MAIN_ALIPAY_FLOW_TASK:
+        from sqlalchemy import func
+
+        from app.models.finance import AlipayFlow
+
         target = on or date.today()
+        start = target - timedelta(days=30)
+        if db is not None:
+            last = db.execute(
+                select(func.max(AlipayFlow.transaction_time)).where(
+                    AlipayFlow.account == "主力号"
+                )
+            ).scalar()
+            if last:
+                # 含最后一天做一日重叠，承接晚入账/状态变化；最终由流水唯一键增量去重。
+                start = max(start, last.date())
         variables.update({
-            "date_from": (target - timedelta(days=35)).isoformat(),
+            "date_from": start.isoformat(),
             "date_to": target.isoformat(),
-            "wait_scan": True,
+            "wait_scan": bool(wait_scan),
             "account_label": "支付宝主力账号",
         })
     return variables
@@ -149,7 +163,7 @@ def start_pending_scans(db: Session) -> dict:
                     if tid == MAIN_ALIPAY_FLOW_TASK else None
                 )
                 r = web_agent_service.run_task(
-                    d, tid, _task_run_variables(tid, wait_scan=True))
+                    d, tid, _task_run_variables(tid, d, wait_scan=True))
                 if r.get("job"):
                     final = web_agent_service.wait_job(d, r["job"], timeout_s=720, poll_s=8)
                     status = (final.get("status") or "").lower()
@@ -911,7 +925,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             continue
         # 不传日期 (用户拍板 2026-06-12): 淘宝导出走"近3个月"全量, 每次刷新所有订单状态,
         # 避免按几天导漏掉中间某天的状态变化。Web-Agent 录制工作流本就无选日期步骤。
-        variables = _task_run_variables(task_id, on=today)
+        variables = _task_run_variables(task_id, db, on=today)
         artifacts_before = (
             _main_alipay_artifacts()
             if task_id == MAIN_ALIPAY_FLOW_TASK else None

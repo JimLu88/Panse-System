@@ -65,7 +65,8 @@ def test_freshness_all_sources_present(db_session):
     items = data_freshness_service.check_all(db_session)
     sources = {i.source for i in items}
     assert sources == {
-        "支付宝流水", "万师傅安装账单", "物流费账单", "推广记录",
+        "支付宝流水·企业号", "支付宝流水·主力号",
+        "万师傅安装账单", "物流费账单", "推广记录",
         "账户余额", "淘宝订单", "补单对账", "售后表",
         "代付台账", "微信账单",
     }
@@ -74,8 +75,9 @@ def test_freshness_all_sources_present(db_session):
 def test_freshness_flags_stale_alipay(db_session):
     """无任何支付宝流水 → 标记过期."""
     items = {i.source: i for i in data_freshness_service.check_all(db_session)}
-    assert items["支付宝流水"].overdue is True
-    assert items["支付宝流水"].days_stale == 9999
+    assert items["支付宝流水·企业号"].overdue is True
+    assert items["支付宝流水·主力号"].overdue is True
+    assert items["支付宝流水·主力号"].days_stale == 9999
 
 
 def test_freshness_fresh_order_not_overdue(db_session):
@@ -96,7 +98,19 @@ def test_freshness_recent_flow_not_overdue(db_session):
     ))
     db_session.flush()
     items = {i.source: i for i in data_freshness_service.check_all(db_session)}
-    assert items["支付宝流水"].overdue is False
+    assert items["支付宝流水·企业号"].overdue is False
+    assert items["支付宝流水·主力号"].overdue is True
+
+
+def test_alipay_freshness_over_one_day_is_internal_overdue(db_session):
+    db_session.add(AlipayFlow(
+        account="主力号", transaction_no="TX-OLD", amount=Decimal("-1"),
+        transaction_time=datetime.now() - timedelta(days=2),
+    ))
+    db_session.flush()
+    items = {i.source: i for i in data_freshness_service.check_all(db_session)}
+    assert items["支付宝流水·主力号"].threshold_days == 1
+    assert items["支付宝流水·主力号"].overdue is True
 
 
 def test_check_and_remind_returns_counts(db_session):

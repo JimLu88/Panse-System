@@ -4,7 +4,7 @@ from pathlib import Path
 
 from app.api import web_agent
 from app.models.finance import AlipayFlow
-from app.services import agent_ingest_service as ingest
+from app.services import agent_ingest_service as ingest, feishu_client, settings_service
 from app.services import order_sheet_archive_service, web_agent_service
 
 
@@ -74,15 +74,34 @@ def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monk
     result = ingest._orchestrate_locked(db_session, quiet=True)
 
     assert [item["task"] for item in result["tasks"]] == [ingest.MAIN_ALIPAY_FLOW_TASK]
-    assert captured["variables"]["wait_scan"] is True
+    assert captured["variables"]["wait_scan"] is False
     assert captured["variables"]["account_label"] == "支付宝主力账号"
     assert captured["variables"]["date_to"] == datetime.now().date().isoformat()
     assert captured["variables"]["date_from"] == (
-        datetime.now().date() - timedelta(days=35)
+        datetime.now().date() - timedelta(days=30)
     ).isoformat()
     state = ingest._load_json(db_session, ingest.KEY_STATE)
     assert datetime.fromisoformat(state[ingest.STATE_MAIN_ALIPAY_FLOW]).date() == datetime.now().date()
     assert ingest._due_today(state, ingest.STATE_MAIN_ALIPAY_FLOW, False) is False
+
+
+def test_main_alipay_date_range_resumes_from_latest_flow(db_session):
+    latest = datetime.now() - timedelta(days=3)
+    db_session.add(AlipayFlow(
+        account="主力号",
+        transaction_no="LATEST",
+        transaction_time=latest,
+        amount=Decimal("-1"),
+    ))
+    db_session.flush()
+
+    variables = ingest._task_run_variables(
+        ingest.MAIN_ALIPAY_FLOW_TASK, db_session, on=datetime.now().date()
+    )
+
+    assert variables["date_from"] == latest.date().isoformat()
+    assert variables["date_to"] == datetime.now().date().isoformat()
+    assert variables["wait_scan"] is False
 
 
 def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatch):
@@ -132,3 +151,41 @@ def test_main_alipay_notification_uses_friendly_account_name():
     assert web_agent._friendly_agent_text(
         "bal_alipay_main 扫码成功"
     ) == "支付宝主力账号余额 扫码成功"
+
+
+def test_feishu_only_sends_first_login_expiry_and_redacts_amount(
+    db_session, monkeypatch
+):
+    settings_service.set_value(
+        db_session, "feishu_push_chat_id", "chat-test", description="test"
+    )
+    db_session.commit()
+    sent = []
+    monkeypatch.setattr(
+        feishu_client, "send_text",
+        lambda db, chat_id, text: sent.append((chat_id, text)),
+    )
+
+    payload = web_agent.AgentNotify(
+        kind="scan_needed",
+        text="alipay_main 登录失效，余额 ￥12,345.67，请扫码",
+    )
+    first = web_agent.agent_notify(payload, db_session)
+    second = web_agent.agent_notify(payload, db_session)
+
+    assert first["feishu"] == "已发飞书"
+    assert "未重复外发" in second["feishu"]
+    assert len(sent) == 1
+    assert "12,345.67" not in sent[0][1]
+    assert "[金额已隐藏]" in sent[0][1]
+
+    web_agent.agent_notify(
+        web_agent.AgentNotify(kind="scan_timeout", text="alipay_main 扫码超时"),
+        db_session,
+    )
+    web_agent.agent_notify(
+        web_agent.AgentNotify(kind="scan_ok", text="alipay_main 已登录"),
+        db_session,
+    )
+    web_agent.agent_notify(payload, db_session)
+    assert len(sent) == 2

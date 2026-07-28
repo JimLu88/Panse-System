@@ -51,17 +51,31 @@ def check_all(db: Session) -> list[FreshnessItem]:
     today = date.today()
     items: list[FreshnessItem] = []
 
-    # 1. 支付宝流水 — 月度; 超 35 天提醒
-    last_flow = db.execute(
-        select(func.max(AlipayFlow.transaction_time))
-    ).scalar()
-    last_flow_date = last_flow.date() if last_flow else None
-    stale = _days_since(last_flow_date)
-    items.append(FreshnessItem(
-        source="支付宝流水", last_date=last_flow_date, days_stale=stale,
-        threshold_days=35, overdue=stale > 35,
-        message=f"支付宝流水最后一条为 {last_flow_date or '无'}，已 {stale} 天未导入。请在各支付宝账户导出上月全量 CSV 后上传至 POST /api/finance/alipay-flows/import-csv",
-    ))
+    # 1. 支付宝流水 — 企业号/主力号必须分开看；超过1天只记 ERP 内部告警。
+    # 飞书只允许在 Web-Agent 确认登录失效时提醒扫码，不能由新鲜度触发。
+    flow_accounts = (
+        ("支付宝流水·企业号", ("企业号", "支付宝-企业账号")),
+        ("支付宝流水·主力号", ("主力号",)),
+    )
+    for source, accounts in flow_accounts:
+        last_flow = db.execute(
+            select(func.max(AlipayFlow.transaction_time)).where(
+                AlipayFlow.account.in_(accounts)
+            )
+        ).scalar()
+        last_flow_date = last_flow.date() if last_flow else None
+        stale = _days_since(last_flow_date)
+        items.append(FreshnessItem(
+            source=source,
+            last_date=last_flow_date,
+            days_stale=stale,
+            threshold_days=1,
+            overdue=stale > 1,
+            message=(
+                f"{source}最后一条为 {last_flow_date or '无'}，已 {stale} 天未更新。"
+                "系统会继续自动取数；若登录失效，只发送不含金额的扫码提醒。"
+            ),
+        ))
 
     # 2. 万师傅安装账单 — 月度; 超 40 天提醒 (留账单寄到时间)
     last_ws = db.execute(select(func.max(WanshifuBill.bill_date))).scalar()
@@ -212,14 +226,15 @@ def check_and_remind(db: Session) -> dict:
         )
         reminded += 1
 
-    # 把过期项汇总推送一条通知 (而不是每条单独推, 避免刷屏)
-    if reminded:
-        summary = "\n".join(f"• {i.source}: {i.days_stale} 天未更新" for i in items)
+    # 支付宝企业号/主力号新鲜度只在 ERP 页面和内部告警显示，绝不触发外部通知。
+    push_items = [i for i in items if not i.source.startswith("支付宝流水·")]
+    if push_items:
+        summary = "\n".join(f"• {i.source}: {i.days_stale} 天未更新" for i in push_items)
         notify_service.notify(
             db,
             f"以下数据源需要更新，请尽快补录：\n{summary}",
             level="warn",
-            title=f"畔色 ERP | {reminded} 项数据待更新",
+            title=f"畔色 ERP | {len(push_items)} 项数据待更新",
         )
 
     db.flush()
@@ -229,16 +244,15 @@ def check_and_remind(db: Session) -> dict:
 def monthly_batch_remind(db: Session) -> dict:
     """月初集中提醒: 每月1号额外调用, 即使未超阈值也强制提醒月度数据源。"""
     from app.services import notify_service
-    monthly_sources = ["支付宝流水", "万师傅安装账单", "物流费账单", "推广记录", "账户余额", "补单对账"]
+    monthly_sources = ["万师傅安装账单", "物流费账单", "推广记录", "账户余额", "补单对账"]
     notify_service.notify(
         db,
         "新月开始，请上传上月数据：\n"
-        "① 各支付宝账户流水 CSV\n"
-        "② 万师傅安装账单 CSV (月结通常 5 号前到)\n"
-        "③ 物流公司月结账单 CSV\n"
-        "④ 直通车/万相台推广记录 CSV\n"
-        "⑤ 补单对账汇总 CSV\n"
-        "⑥ 各账户余额期末数据 CSV",
+        "① 万师傅安装账单 CSV (月结通常 5 号前到)\n"
+        "② 物流公司月结账单 CSV\n"
+        "③ 直通车/万相台推广记录 CSV\n"
+        "④ 补单对账汇总 CSV\n"
+        "⑤ 各账户余额期末数据 CSV",
         level="info",
         title="畔色 ERP | 月度数据更新提醒",
     )

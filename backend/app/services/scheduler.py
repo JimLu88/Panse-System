@@ -783,23 +783,44 @@ def _job_web_agent_daily(db: Session) -> dict:
 
 def _job_web_agent_finance(db: Session) -> dict:
     """每天 20:30: 独立刷新到期的余额/流水任务，不阻断18:30订单推送。"""
-    from app.services import agent_ingest_service
+    from app.services import agent_ingest_service, alert_service
     if agent_ingest_service.is_running():
         return {"skipped": "已有编排在跑", "_run_status": "skipped"}
-    r = agent_ingest_service.orchestrate(db, force_orders=False, orders_only=False)
+    # 财务抓取成功/无新增/普通失败均静默；仅 Web-Agent 确认登录失效时走专用扫码提醒。
+    r = agent_ingest_service.orchestrate(
+        db, force_orders=False, orders_only=False, quiet=True
+    )
     offline = r.get("agent_offline")
     failed = [t.get("task", "") for t in (r.get("tasks") or [])
               if t.get("status") in ("error", "failed", "timeout")]
     pending_manual = [t.get("task", "") for t in (r.get("pending_manual") or [])]
-    if offline:
-        r["_run_status"] = "fail"
-        r["_error"] = f"财务取数时PC Web-Agent离线: {str(offline)[:300]}"
-    elif failed:
-        r["_run_status"] = "fail"
-        r["_error"] = f"财务取数任务失败: {','.join(failed)}"
-    elif pending_manual:
-        r["_run_status"] = "fail"
-        r["_error"] = f"财务取数需要重新登录: {','.join(pending_manual)}"
+    # 财务自动取数异常只进 ERP 内部告警；避免通用“连续失败”再次外发。
+    # 登录失效由 Web-Agent 的专用扫码通知即时、去重且不含金额地发飞书。
+    if offline or failed or pending_manual:
+        detail = (
+            (f"PC Web-Agent离线: {str(offline)[:160]}" if offline else "")
+            + (f"；失败任务: {','.join(failed)}" if failed else "")
+            + (f"；需恢复登录: {','.join(pending_manual)}" if pending_manual else "")
+        ).lstrip("；")
+        alert_service.upsert(
+            db,
+            kind="finance_agent_pull_failed",
+            severity="warn",
+            title="财务自动取数异常",
+            body=detail,
+            dedupe_key="finance_agent_pull_failed",
+            related_url="/finance",
+        )
+        db.flush()
+        r["_finance_status"] = "needs_attention"
+        r["_finance_error"] = detail
+    else:
+        try:
+            alert_service.resolve_by_dedupe(db, "finance_agent_pull_failed")
+            db.flush()
+        except Exception:  # pragma: no cover
+            pass
+        r["_finance_status"] = "ok"
     return r
 
 

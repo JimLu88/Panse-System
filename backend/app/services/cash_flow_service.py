@@ -35,7 +35,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.finance import AccountBalance, RefillRecord
+from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
 from app.models.order import FactoryOrder, Order
 from app.models.shop_deposit import ShopDeposit
 from app.services import factory_payment_service, settings_service
@@ -98,17 +98,25 @@ def _classify_account(name: str) -> str:
 
 
 # ── 新鲜度 ────────────────────────────────────────────────────
-def _freshness(label: str, as_of: Optional[datetime]) -> dict:
+def _freshness(
+    label: str,
+    as_of: Optional[datetime],
+    *,
+    fresh_days: int = FRESH_DAYS,
+    aging_days: int = AGING_DAYS,
+) -> dict:
     """返回 {source, as_of, days_ago, status}. status: fresh / aging / stale / unknown."""
     if as_of is None:
         return {"source": label, "as_of": None, "days_ago": None, "status": "unknown"}
-    now = datetime.now(timezone.utc)
-    if as_of.tzinfo is None:
-        as_of = as_of.replace(tzinfo=timezone.utc)
-    days = (now - as_of).days
-    if days <= FRESH_DAYS:
+    # 财务新鲜度看“业务日”而不是精确小时。数据库里的旧流水多为本地朴素时间，
+    # 直接强贴 UTC 会把上海时间平移 8 小时，导致两天前的数据被误判成只过 1 天。
+    local_date = (
+        as_of.astimezone().date() if as_of.tzinfo is not None else as_of.date()
+    )
+    days = (datetime.now().astimezone().date() - local_date).days
+    if days <= fresh_days:
         status = "fresh"
-    elif days <= AGING_DAYS:
+    elif days <= aging_days:
         status = "aging"
     else:
         status = "stale"
@@ -543,6 +551,16 @@ def compute_summary(db: Session) -> dict:
     # 订单 → 最后下单日; 账户余额 → 统计日期(as_of_date); 都不再用 updated_at(=导入那天=今天)。
     orders_latest = db.execute(select(func.max(Order.order_date))).scalar()
     factory_latest = db.execute(select(func.max(FactoryOrder.order_date))).scalar()
+    enterprise_flow_latest = db.execute(
+        select(func.max(AlipayFlow.transaction_time)).where(
+            AlipayFlow.account.in_(("企业号", "支付宝-企业账号"))
+        )
+    ).scalar()
+    main_flow_latest = db.execute(
+        select(func.max(AlipayFlow.transaction_time)).where(
+            AlipayFlow.account == "主力号"
+        )
+    ).scalar()
     deposit_row_at = _setting_updated_at(db, SETTING_SHOP_DEPOSIT)
     investment_at = _setting_updated_at(db, SETTING_TOTAL_INVESTMENT)
 
@@ -556,6 +574,18 @@ def compute_summary(db: Session) -> dict:
         _freshness("订单数据(最后下单日)", _as_datetime(orders_latest)),
         _freshness(bal_label, _as_datetime(bal_as_of)),
         _freshness("工厂订单(最后下单日)", _as_datetime(factory_latest)),
+        _freshness(
+            "支付宝流水·企业号(最后流水日)",
+            _as_datetime(enterprise_flow_latest),
+            fresh_days=1,
+            aging_days=1,
+        ),
+        _freshness(
+            "支付宝流水·主力号(最后流水日)",
+            _as_datetime(main_flow_latest),
+            fresh_days=1,
+            aging_days=1,
+        ),
         _freshness("总投资费用", investment_at),
     ]
     if deposit_row_at is not None:

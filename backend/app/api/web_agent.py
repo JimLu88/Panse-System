@@ -50,6 +50,58 @@ def _friendly_agent_text(text: str) -> str:
     )
 
 
+_AUTH_NOTICE_KEY = "web_agent_auth_notice_open"
+
+
+def _sanitize_auth_notice(text: str) -> str:
+    """飞书扫码通知的最后一道脱敏闸：任何货币金额都不允许外发。"""
+    import re
+
+    cleaned = _friendly_agent_text(text)
+    cleaned = re.sub(
+        r"(?:¥|￥)\s*[+-]?\s*\d[\d,]*(?:\.\d+)?", "[金额已隐藏]", cleaned
+    )
+    cleaned = re.sub(
+        r"((?:金额|余额|收入|支出)\s*[:：]?\s*)[+-]?\d[\d,]*(?:\.\d+)?",
+        r"\1[已隐藏]",
+        cleaned,
+    )
+    return cleaned
+
+
+def _auth_notice_id(text: str) -> str:
+    raw = text or ""
+    if "bal_alipay_main" in raw:
+        return "alipay_main"
+    if "alipay_main" in raw or "支付宝主力账号" in raw:
+        return "alipay_main"
+    return _friendly_agent_text(raw).split(" ", 1)[0][:80] or "unknown"
+
+
+def _auth_notice_open(db: Session) -> set[str]:
+    import json
+
+    try:
+        value = json.loads(
+            settings_service.get(db, _AUTH_NOTICE_KEY, env_fallback=False) or "[]"
+        )
+        return set(value) if isinstance(value, list) else set()
+    except (TypeError, ValueError):
+        return set()
+
+
+def _save_auth_notice_open(db: Session, values: set[str]) -> None:
+    import json
+
+    settings_service.set_value(
+        db,
+        _AUTH_NOTICE_KEY,
+        json.dumps(sorted(values), ensure_ascii=False),
+        description="自动取数: 已发送且尚未恢复的登录失效提醒",
+    )
+    db.commit()
+
+
 @router.get("/status")
 def status(db: Session = Depends(get_db)):
     hb = web_agent_service.health(db)
@@ -128,23 +180,44 @@ class AgentNotify(BaseModel):
 
 @router.post("/notify")
 def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
-    """Web-Agent 卡点回调 (用户拍板 2026-06-12 渠道分流):
-    - 二维码/文件 (kind=qr/scan_wait/file) → 飞书 (图片发会话, 供手机扫码);
-    - 扫码提示/超时 (kind=scan_needed/scan_timeout) → **飞书文本** (用户在飞书回复『扫码』启动);
-    - 其它事件 (kind=event) → 企业微信。
+    """Web-Agent 卡点回调。
+
+    飞书硬边界（用户 2026-07-28）：
+    - 仅确认登录/下载授权失效时发一次文本，及用户主动回复“扫码”后的二维码；
+    - 扫码成功、超时、正常完成、文件预览均不发飞书；
+    - 所有允许外发的文本先经过金额脱敏。
     """
     import base64
 
     from app.services import feishu_client, notify_service
     result: dict = {"feishu": None, "wechat": None}
-    notice_text = _friendly_agent_text(payload.text)
+    notice_text = _sanitize_auth_notice(payload.text)
 
-    # 扫码相关纯文本 → 飞书 (扫码这件事整个在飞书对话里完成); scan_ok = 扫码成功回执
-    if payload.kind in ("scan_needed", "scan_timeout", "scan_ok"):
+    # 成功事件只清除“已提醒”标记，不外发；下次真的再次失效时才允许重新提醒。
+    if payload.kind == "scan_ok":
+        opened = _auth_notice_open(db)
+        opened.discard(_auth_notice_id(payload.text))
+        _save_auth_notice_open(db, opened)
+        result["feishu"] = "登录已恢复，未外发"
+        return result
+
+    # 超时不是新的登录失效事件，不重复打扰。
+    if payload.kind == "scan_timeout":
+        result["feishu"] = "扫码超时，未外发"
+        return result
+
+    if payload.kind == "scan_needed":
+        notice_id = _auth_notice_id(payload.text)
+        opened = _auth_notice_open(db)
+        if notice_id in opened:
+            result["feishu"] = "同一登录失效已提醒，未重复外发"
+            return result
         chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
         if chat_id and notice_text:
             try:
                 feishu_client.send_text(db, chat_id, notice_text)
+                opened.add(notice_id)
+                _save_auth_notice_open(db, opened)
                 result["feishu"] = "已发飞书"
             except Exception as e:  # noqa: BLE001
                 result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
@@ -152,7 +225,12 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
             result["feishu"] = "无外发会话或无文本"
         return result
 
-    is_visual = payload.kind in ("qr", "scan_wait", "file")
+    # 文件预览/普通图片不再进入飞书；只有扫码二维码允许。
+    if payload.kind == "file":
+        result["feishu"] = "文件事件未外发"
+        return result
+
+    is_visual = payload.kind in ("qr", "scan_wait")
 
     if is_visual and payload.image_b64:
         try:

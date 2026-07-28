@@ -1,6 +1,6 @@
 from decimal import Decimal
 
-from app.models.finance import AccountBalance, RefillRecord
+from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
 from app.models.order import FactoryOrder, Order
 from app.services import cash_flow_service
 
@@ -135,3 +135,26 @@ def test_cash_flow_defaults_empty_db(db_session):
     assert s["total"] == Decimal("0.00")
     assert s["investment"]["total_investment"] == Decimal("669871")
     assert len(s["freshness"]) >= 1
+
+
+def test_cash_flow_shows_per_account_alipay_freshness(db_session):
+    from datetime import datetime, timedelta
+
+    db_session.add_all([
+        AlipayFlow(
+            account="企业号", transaction_no="E1", amount=Decimal("1"),
+            transaction_time=datetime.now(),
+        ),
+        AlipayFlow(
+            account="主力号", transaction_no="M1", amount=Decimal("-1"),
+            transaction_time=datetime.now() - timedelta(days=2),
+        ),
+    ])
+    db_session.flush()
+
+    rows = {
+        f["source"]: f
+        for f in cash_flow_service.compute_summary(db_session)["freshness"]
+    }
+    assert rows["支付宝流水·企业号(最后流水日)"]["status"] == "fresh"
+    assert rows["支付宝流水·主力号(最后流水日)"]["status"] == "stale"
