@@ -110,6 +110,22 @@ def _task_run_variables(task_id: str, *, on: date | None = None,
     return variables
 
 
+def _main_alipay_artifacts() -> dict[str, tuple[int, int]]:
+    """主力号流水下载产物快照；用于拦截 Web-Agent 的“空成功”。"""
+    if not OUTPUT_DIR.exists():
+        return {}
+    out: dict[str, tuple[int, int]] = {}
+    for path in OUTPUT_DIR.rglob("*"):
+        if not path.is_file():
+            continue
+        parts = path.relative_to(OUTPUT_DIR).parts
+        if (any("alipay" in part.lower() for part in parts)
+                and any("主力" in part for part in parts)):
+            stat = path.stat()
+            out[str(path)] = (stat.st_mtime_ns, stat.st_size)
+    return out
+
+
 def start_pending_scans(db: Session) -> dict:
     """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
     发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
@@ -128,12 +144,23 @@ def start_pending_scans(db: Session) -> dict:
         try:
             done = []
             for tid in list(tasks):
+                artifacts_before = (
+                    _main_alipay_artifacts()
+                    if tid == MAIN_ALIPAY_FLOW_TASK else None
+                )
                 r = web_agent_service.run_task(
                     d, tid, _task_run_variables(tid, wait_scan=True))
                 if r.get("job"):
                     final = web_agent_service.wait_job(d, r["job"], timeout_s=720, poll_s=8)
-                    if (final.get("status") or "").lower() in ("done", "ok", "success"):
+                    status = (final.get("status") or "").lower()
+                    has_artifact = (
+                        tid != MAIN_ALIPAY_FLOW_TASK
+                        or _main_alipay_artifacts() != artifacts_before
+                    )
+                    if status in ("done", "ok", "success") and has_artifact:
                         done.append(tid)
+                    elif status in ("done", "ok", "success"):
+                        _log.warning("支付宝主力账号扫码任务空成功：未生成流水文件")
             remain = [t for t in get_pending_scans(d) if t not in done]
             settings_service.set_value(d, KEY_PENDING_SCAN, json.dumps(remain))
             d.commit()
@@ -885,6 +912,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         # 不传日期 (用户拍板 2026-06-12): 淘宝导出走"近3个月"全量, 每次刷新所有订单状态,
         # 避免按几天导漏掉中间某天的状态变化。Web-Agent 录制工作流本就无选日期步骤。
         variables = _task_run_variables(task_id, on=today)
+        artifacts_before = (
+            _main_alipay_artifacts()
+            if task_id == MAIN_ALIPAY_FLOW_TASK else None
+        )
         _save_json(db, KEY_ORCH_STATE, {"running": True, "current": task_id,
                                         "started_at": out["started_at"]})
         db.commit()
@@ -901,6 +932,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         if status in ("done", "ok", "success") and job_result.get("ok") is False:
             status = "error"
             final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
+        if (task_id == MAIN_ALIPAY_FLOW_TASK
+                and status in ("done", "ok", "success")
+                and _main_alipay_artifacts() == artifacts_before):
+            status = "error"
+            final = {**final, "error": "任务完成但未生成支付宝主力账号流水文件"}
         item = {"task": task_id, "status": status}
         if status in ("error", "failed", "timeout"):
             err = str(final.get("error") or final.get("note") or "")

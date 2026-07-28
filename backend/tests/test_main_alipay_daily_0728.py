@@ -62,6 +62,12 @@ def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monk
     monkeypatch.setattr(ingest, "run_ingest", lambda db: {
         "scanned": 0, "imported": 0, "pending": 0, "errors": 0, "files": [],
     })
+    artifact_snapshots = iter([
+        {},
+        {"/app/agent_output/2026-07-28/alipay/主力/main.csv": (1, 100)},
+    ])
+    monkeypatch.setattr(
+        ingest, "_main_alipay_artifacts", lambda: next(artifact_snapshots))
     monkeypatch.setattr(ingest, "pending_shipping_password_files", lambda db, on=None: [])
     monkeypatch.setattr(order_sheet_archive_service, "generate_pending", lambda db: {"created": 0})
 
@@ -77,6 +83,46 @@ def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monk
     state = ingest._load_json(db_session, ingest.KEY_STATE)
     assert datetime.fromisoformat(state[ingest.STATE_MAIN_ALIPAY_FLOW]).date() == datetime.now().date()
     assert ingest._due_today(state, ingest.STATE_MAIN_ALIPAY_FLOW, False) is False
+
+
+def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatch):
+    now = datetime.now().isoformat(timespec="seconds")
+    ingest._save_json(db_session, ingest.KEY_STATE, {
+        "taobao_report": now,
+        "settlement": now,
+        "balance": now,
+        "promotion": now,
+    })
+    db_session.commit()
+    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(web_agent_service, "list_tasks", lambda db: {
+        "tasks": [{"id": ingest.MAIN_ALIPAY_FLOW_TASK, "has_session": True}]
+    })
+    monkeypatch.setattr(
+        web_agent_service, "run_task",
+        lambda db, task_id, variables: {"ok": True, "job": "job-empty"},
+    )
+    monkeypatch.setattr(web_agent_service, "wait_job", lambda *args, **kwargs: {
+        "status": "done", "result": {"ok": True},
+    })
+    monkeypatch.setattr(ingest, "_main_alipay_artifacts", lambda: {})
+    monkeypatch.setattr(ingest, "refresh_alipay_balances", lambda db: [])
+    monkeypatch.setattr(ingest, "refresh_alipay_daily", lambda db: {"ok": True})
+    monkeypatch.setattr(ingest, "run_ingest", lambda db: {
+        "scanned": 0, "imported": 0, "pending": 0, "errors": 0, "files": [],
+    })
+    monkeypatch.setattr(ingest, "pending_shipping_password_files", lambda db, on=None: [])
+
+    result = ingest._orchestrate_locked(db_session, quiet=True)
+
+    assert result["tasks"] == [{
+        "task": ingest.MAIN_ALIPAY_FLOW_TASK,
+        "status": "error",
+        "error": "任务完成但未生成支付宝主力账号流水文件",
+    }]
+    assert result["pending_manual"][0]["task"] == ingest.MAIN_ALIPAY_FLOW_TASK
+    state = ingest._load_json(db_session, ingest.KEY_STATE)
+    assert ingest.STATE_MAIN_ALIPAY_FLOW not in state
 
 
 def test_main_alipay_notification_uses_friendly_account_name():
