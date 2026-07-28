@@ -40,6 +40,8 @@ KEY_INTERVAL_BALANCE = "web_agent_interval_balance"    # 天, 默认 3 (余额+�
 KEY_STATE = "web_agent_state"                          # 各类别最近成功时间 JSON
 KEY_LAST_INGEST = "web_agent_last_ingest"              # 最近一次扫描报告 JSON
 KEY_ORCH_STATE = "web_agent_orch_state"                # 编排进行中状态 JSON
+STATE_MAIN_ALIPAY_FLOW = "alipay_main_flow"
+MAIN_ALIPAY_FLOW_TASK = "alipay_main"
 
 _OOXML_ENCRYPTED_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
@@ -54,10 +56,9 @@ BALANCE_FLOW_TASKS = [
     "bal_alipay_main",
     # 企业号(9a) 余额走官方 API, 每次编排已用 refresh_alipay_balances 精确刷, 永不浏览器扫码。
 ]
-# 暂不编排: 支付宝流水 (企业号待官方 API 上线; 主力号需每次扫码, 待飞书推码方案)
+# 暂不编排的外部账单；主力号支付宝流水已走每日任务。
 SKIPPED_TASKS = {
     "alipay_9a": "支付宝企业号流水: 等官方 API 审核上线后走 API, 不走浏览器",
-    "alipay_main": "支付宝主力号流水: 每次需本人扫码, 待飞书推二维码方案",
     "logistics_bill": "物流账单: 待提供承运商入口",
 }
 
@@ -91,8 +92,22 @@ def _add_pending_scan(db: Session, task_id: str) -> None:
 # 企业号余额走 API 不扫码; 主力号(8812 个人号)余额 bal_alipay_main 加入扫码流(用户拍板 2026-06-20):
 # 该任务一直在 Web-Agent definitions.py(整页截图+OCR), 但 2026-06-12 改动把它移出触发清单后成了孤儿、
 # 永不执行 → 主力号余额停在5月。回"扫码"后依次扫, 主力号QR在淘宝之后单独推(不混); 登录态有效则免扫直接截图。
-# (仍不进 BALANCE_FLOW_TASKS 自动编排, 避免无人时自动弹支付宝码——只在用户回"扫码"时跑。)
+# 余额仍只在用户回复“扫码”后执行；主力号流水则另按自然日自动编排。
 DEFAULT_SCAN_TASKS = ["bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main"]
+
+
+def _task_run_variables(task_id: str, *, on: date | None = None,
+                        wait_scan: bool = False) -> dict:
+    variables = {"wait_scan": True} if wait_scan else {}
+    if task_id == MAIN_ALIPAY_FLOW_TASK:
+        target = on or date.today()
+        variables.update({
+            "date_from": (target - timedelta(days=35)).isoformat(),
+            "date_to": target.isoformat(),
+            "wait_scan": True,
+            "account_label": "支付宝主力账号",
+        })
+    return variables
 
 
 def start_pending_scans(db: Session) -> dict:
@@ -113,7 +128,8 @@ def start_pending_scans(db: Session) -> dict:
         try:
             done = []
             for tid in list(tasks):
-                r = web_agent_service.run_task(d, tid, {"wait_scan": True})
+                r = web_agent_service.run_task(
+                    d, tid, _task_run_variables(tid, wait_scan=True))
                 if r.get("job"):
                     final = web_agent_service.wait_job(d, r["job"], timeout_s=720, poll_s=8)
                     if (final.get("status") or "").lower() in ("done", "ok", "success"):
@@ -122,6 +138,11 @@ def start_pending_scans(db: Session) -> dict:
             settings_service.set_value(d, KEY_PENDING_SCAN, json.dumps(remain))
             d.commit()
             run_ingest(d)   # 扫到的余额截图一并导入
+            if MAIN_ALIPAY_FLOW_TASK in done:
+                state = _load_json(d, KEY_STATE)
+                state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
+                _save_json(d, KEY_STATE, state)
+                d.commit()
         except Exception:  # noqa: BLE001
             _log.exception("扫码流程线程异常")
             d.rollback()
@@ -199,6 +220,11 @@ def _classify(rel: Path) -> str:
     if any("alipay" in p for p in parts):
         return "alipay"
     return "other"
+
+
+def _is_main_alipay_path(path: Path) -> bool:
+    """Web-Agent 的主力号产物固定放在 alipay/主力 下。"""
+    return any("主力" in part for part in path.parts)
 
 
 def _import_wanxiangtai_csv(db: Session, raw: bytes) -> dict:
@@ -369,46 +395,16 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
     if category == "balance":
         return _ocr_balance_to_db(db, path, raw)
     if category == "alipay":
-        # 支付宝 signcustomer 资金账单 (企业号官方API 按天/按月下载的 zip, 或明文 CSV)。
-        # 2026-06-15: 原 pending_read 占位, 现接 alipay_import 自动解析 (格式已确认)。日账单 zip
-        # 内含『账务流水号…账户余额』CSV(GBK); 非该格式(如主力号个人版)仍 pending_read 待人工。
-        from app.services import alipay_import
-        import zipfile
-        text = None
-        if raw[:2] == b"PK":
-            try:
-                zf = zipfile.ZipFile(io.BytesIO(raw))
-                for nm in zf.namelist():
-                    if nm.lower().endswith(".csv"):
-                        data = zf.read(nm)
-                        for enc in ("gbk", "gb18030", "utf-8-sig", "utf-8"):
-                            try:
-                                t = data.decode(enc)
-                            except Exception:
-                                continue
-                            if "账务流水号" in t:
-                                text = t
-                                break
-                    if text:
-                        break
-            except Exception:
-                text = None
-        else:
-            for enc in ("gbk", "gb18030", "utf-8-sig", "utf-8"):
-                try:
-                    t = raw.decode(enc)
-                except Exception:
-                    continue
-                if "账务流水号" in t:
-                    text = t
-                    break
-        if not text:
-            return ("alipay", "pending_read",
-                    {"note": "支付宝账单: 非企业号 signcustomer 资金账单格式(无账务流水号), 待人工/其它解析"})
-        rep = alipay_import.import_alipay_bill(db, text, account="企业号")
+        # 企业号资金账单与个人版交易明细共用自动识别器；目录决定 ERP 账户归属。
+        from app.services import alipay_import, tabular
+        text = tabular.to_csv_text(raw, path.name)
+        account = "主力号" if _is_main_alipay_path(path) else "企业号"
+        rep = alipay_import.import_alipay_csv(db, text, account=account)
         if getattr(rep, "errors", None):
             return ("alipay", "error", _report_to_dict(rep))
-        return ("alipay", "imported", _report_to_dict(rep))
+        summary = _report_to_dict(rep)
+        summary["account"] = account
+        return ("alipay", "imported", summary)
     return ("generic", "unsupported", {"note": "未识别类别, 仅归档"})
 
 
@@ -582,6 +578,8 @@ def run_ingest(db: Session) -> dict:
             if status == "imported":
                 report["imported"] += 1
                 state[category] = datetime.now().isoformat(timespec="seconds")
+                if category == "alipay" and _is_main_alipay_path(rel):
+                    state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
             else:
                 report["pending"] += 1
                 if status == "pending_password":
@@ -654,6 +652,19 @@ def _due(state: dict, category: str, interval_days: int, force: bool) -> bool:
     try:
         return datetime.fromisoformat(last) <= datetime.now() - timedelta(days=interval_days)
     except ValueError:
+        return True
+
+
+def _due_today(state: dict, category: str, force: bool) -> bool:
+    """按自然日调度，每天最多成功运行一次，不受上次运行时刻漂移影响。"""
+    if force:
+        return True
+    last = state.get(category)
+    if not last:
+        return True
+    try:
+        return datetime.fromisoformat(last).date() < date.today()
+    except (TypeError, ValueError):
         return True
 
 
@@ -839,6 +850,8 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             or _due(state, "balance", iv_balance, force)
             or _due(state, "promotion", iv_balance, force))):
         plan += BALANCE_FLOW_TASKS
+    if not orders_only and _due_today(state, STATE_MAIN_ALIPAY_FLOW, force):
+        plan.append(MAIN_ALIPAY_FLOW_TASK)
 
     for task_id, reason in SKIPPED_TASKS.items():
         out["skipped"].append({"task": task_id, "reason": reason})
@@ -861,15 +874,17 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
 
     today = date.today()
     orders_pull_complete = False
+    main_alipay_task_succeeded = False
     for task_id in plan:
         info = tasks_info.get(task_id, {})
-        if info and not info.get("has_session"):
+        if (task_id != MAIN_ALIPAY_FLOW_TASK
+                and info and not info.get("has_session")):
             out["pending_manual"].append(
                 {"task": task_id, "reason": "登录态缺失 — 请到取数控制台重新扫码"})
             continue
         # 不传日期 (用户拍板 2026-06-12): 淘宝导出走"近3个月"全量, 每次刷新所有订单状态,
         # 避免按几天导漏掉中间某天的状态变化。Web-Agent 录制工作流本就无选日期步骤。
-        variables: dict = {}
+        variables = _task_run_variables(task_id, on=today)
         _save_json(db, KEY_ORCH_STATE, {"running": True, "current": task_id,
                                         "started_at": out["started_at"]})
         db.commit()
@@ -901,8 +916,22 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         out["tasks"].append(item)
         if task_id == "taobao_orders" and status in ("done", "ok", "success"):
             orders_pull_complete = True
+        if task_id == MAIN_ALIPAY_FLOW_TASK and status in ("done", "ok", "success"):
+            main_alipay_task_succeeded = True
 
     out["ingest"] = run_ingest(db)
+    main_alipay_ingest_failed = any(
+        item.get("status") == "error"
+        and "主力" in str(item.get("path") or "")
+        and item.get("category") == "alipay"
+        for item in out["ingest"].get("files", [])
+    )
+    if main_alipay_task_succeeded and not main_alipay_ingest_failed:
+        # 即使导出内容与昨日完全相同（文件 hash 已见过），成功取数也算今日完成。
+        latest_state = _load_json(db, KEY_STATE)
+        latest_state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
+        _save_json(db, KEY_STATE, latest_state)
+        db.commit()
     persistent_pending_password = pending_shipping_password_files(db, on=today)
     out["ingest"]["pending_password_files"] = persistent_pending_password
     if (orders_pull_complete and not out["ingest"].get("errors")
