@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import ProducibilityPage from './ProducibilityPage';
 import {
   Alert,
@@ -9,6 +9,7 @@ import {
   Input,
   InputNumber,
   Modal,
+  Select,
   Space,
   Switch,
   Table,
@@ -31,6 +32,97 @@ import {
   syncProductInventoryParams,
   updateProductInventory,
 } from '../api/client';
+
+const INVENTORY_SORT_OPTIONS = [
+  { value: 'product_sales', label: '产品总销量（组内按名称）' },
+  { value: 'sku_sales', label: '单 SKU 销量' },
+  { value: 'recommended_restock', label: '单 SKU 推荐备货' },
+  { value: 'product_name', label: '产品 / SKU 名称' },
+] as const;
+
+type InventorySortMode = (typeof INVENTORY_SORT_OPTIONS)[number]['value'];
+
+const INVENTORY_SORT_STORAGE_KEY = 'panse.product-inventory.sort-mode';
+const DEFAULT_INVENTORY_SORT: InventorySortMode = 'product_sales';
+const zhNameCollator = new Intl.Collator('zh-CN', {
+  numeric: true,
+  sensitivity: 'base',
+});
+
+const inventoryGroupKey = (row: ProductInventoryRow) =>
+  String(row.product_code || row.product_name || row.sku || row.id || '').trim();
+
+const inventoryRowName = (row: ProductInventoryRow) =>
+  String(row.sku || row.product_name || row.product_code || '').trim();
+
+/**
+ * 产品总销量按同一产品下各 SKU 的近30天销量相加。
+ * 同一个 SKU 若存在多个仓库行，只计一次，避免仓库拆行把销量重复放大。
+ */
+export function sortProductInventoryRows(
+  rows: ProductInventoryRow[],
+  mode: InventorySortMode,
+): ProductInventoryRow[] {
+  const salesByProductAndSku = new Map<string, Map<string, number>>();
+  const productNames = new Map<string, string>();
+
+  rows.forEach((row) => {
+    const productKey = inventoryGroupKey(row);
+    const skuKey = String(row.sku || row.spec || '__product__').trim();
+    const sales = Number(row.sales_qty_30d || 0);
+    const skuSales = salesByProductAndSku.get(productKey) ?? new Map<string, number>();
+    skuSales.set(skuKey, Math.max(skuSales.get(skuKey) ?? 0, sales));
+    salesByProductAndSku.set(productKey, skuSales);
+
+    const name = String(row.product_name || row.product_code || '').trim();
+    if (!productNames.has(productKey) || zhNameCollator.compare(name, productNames.get(productKey) || '') < 0) {
+      productNames.set(productKey, name);
+    }
+  });
+
+  const productSales = new Map(
+    [...salesByProductAndSku].map(([productKey, skuSales]) => [
+      productKey,
+      [...skuSales.values()].reduce((sum, qty) => sum + qty, 0),
+    ]),
+  );
+
+  const compareNames = (a: ProductInventoryRow, b: ProductInventoryRow) =>
+    zhNameCollator.compare(inventoryRowName(a), inventoryRowName(b))
+    || zhNameCollator.compare(String(a.warehouse || ''), String(b.warehouse || ''))
+    || Number(a.id || 0) - Number(b.id || 0);
+
+  return [...rows].sort((a, b) => {
+    const aGroup = inventoryGroupKey(a);
+    const bGroup = inventoryGroupKey(b);
+
+    if (mode === 'product_sales') {
+      const byGroupSales = (productSales.get(bGroup) ?? 0) - (productSales.get(aGroup) ?? 0);
+      if (byGroupSales) return byGroupSales;
+
+      const byGroupName = zhNameCollator.compare(
+        productNames.get(aGroup) || aGroup,
+        productNames.get(bGroup) || bGroup,
+      );
+      if (byGroupName) return byGroupName;
+      if (aGroup !== bGroup) return zhNameCollator.compare(aGroup, bGroup);
+      return compareNames(a, b);
+    }
+
+    if (mode === 'sku_sales') {
+      return Number(b.sales_qty_30d || 0) - Number(a.sales_qty_30d || 0)
+        || compareNames(a, b);
+    }
+
+    if (mode === 'recommended_restock') {
+      return Number(b.auto_reorder_qty || 0) - Number(a.auto_reorder_qty || 0)
+        || Number(b.forecast_30d || 0) - Number(a.forecast_30d || 0)
+        || compareNames(a, b);
+    }
+
+    return compareNames(a, b);
+  });
+}
 
 // 「销量公式」按钮 + 配置弹窗 + 大促备货提示 (用户拍板: 默认加权公式, 大促时段可增减)
 function FormulaButton() {
@@ -127,10 +219,16 @@ export default function ProductInventoryPage() {
   const [syncAllSkus, setSyncAllSkus] = useState(false);
   const [editForm] = Form.useForm();
   const [warningOnly, setWarningOnly] = useState(false);
+  const [sortMode, setSortMode] = useState<InventorySortMode>(() => {
+    const saved = window.localStorage.getItem(INVENTORY_SORT_STORAGE_KEY);
+    return INVENTORY_SORT_OPTIONS.some((option) => option.value === saved)
+      ? saved as InventorySortMode
+      : DEFAULT_INVENTORY_SORT;
+  });
 
   const { data, isLoading } = useQuery({
-    queryKey: ['product-inventory', warningOnly],
-    queryFn: () => listProductInventory(warningOnly, true),
+    queryKey: ['product-inventory'],
+    queryFn: () => listProductInventory(false, true),
   });
 
   const { data: products } = useQuery({
@@ -355,6 +453,14 @@ export default function ProductInventoryPage() {
   // 「需关注」不含 正常(ok) 和 按需生产(mto: 定制/长尾, 缺货是常态, 不报警)
   const _calm = (s: string) => s === 'ok' || s === 'mto';
   const warningCount = data?.filter(r => !_calm(r.warning_status)).length ?? 0;
+  const sortedRows = useMemo(
+    () => sortProductInventoryRows(data ?? [], sortMode),
+    [data, sortMode],
+  );
+  const visibleRows = useMemo(
+    () => warningOnly ? sortedRows.filter((row) => !_calm(row.warning_status)) : sortedRows,
+    [sortedRows, warningOnly],
+  );
 
   const renderInvTable = (list: ProductInventoryRow[], paginate: boolean) => (
     <Table
@@ -383,6 +489,18 @@ export default function ProductInventoryPage() {
           <FormulaButton />
         </Space>
         <Space>
+          <Tooltip title="默认按产品近30天总销量排整组，同一产品内按 SKU 名称自然排序；选择会保留在本机。">
+            <Select<InventorySortMode>
+              aria-label="库存排序方式"
+              style={{ width: 220 }}
+              value={sortMode}
+              options={[...INVENTORY_SORT_OPTIONS]}
+              onChange={(value) => {
+                setSortMode(value);
+                window.localStorage.setItem(INVENTORY_SORT_STORAGE_KEY, value);
+              }}
+            />
+          </Tooltip>
           <Switch
             checked={warningOnly}
             onChange={setWarningOnly}
@@ -429,7 +547,7 @@ export default function ProductInventoryPage() {
         }
       />
 
-      {renderInvTable(data ?? [], true)}
+      {renderInvTable(visibleRows, true)}
 
       {/* 添加库存弹窗 */}
       <Modal
