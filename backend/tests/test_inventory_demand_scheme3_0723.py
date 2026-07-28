@@ -329,3 +329,78 @@ def test_inventory_orders_and_monthly_share_final_restock_number(db_session):
         - int(month_row["on_hand"])
         - int(month_row["free_in_production"]),
     )
+
+
+def test_sku_stock_surplus_cannot_offset_another_sku_shortage(db_session):
+    db = db_session
+    product_code = "PPS26010080808"
+    for i in range(12):
+        _order(
+            db,
+            f"SIZE14-{i}",
+            product_code=product_code,
+            sku_code="PPS2601008080814",
+            sku="1.4m",
+            name="SKU restock product",
+            day=AS_OF - timedelta(days=i),
+        )
+    for i in range(6):
+        _order(
+            db,
+            f"SIZE16-{i}",
+            product_code=product_code,
+            sku_code="PPS2601008080816",
+            sku="1.6m",
+            name="SKU restock product",
+            day=AS_OF - timedelta(days=i),
+        )
+    size_14 = ProductInventory(
+        warehouse="default",
+        product_code=product_code,
+        sku="1.4m",
+        physical_qty=Decimal("0"),
+        locked_qty=Decimal("0"),
+    )
+    size_16 = ProductInventory(
+        warehouse="default",
+        product_code=product_code,
+        sku="1.6m",
+        physical_qty=Decimal("100"),
+        locked_qty=Decimal("0"),
+    )
+    db.add_all([size_14, size_16])
+    db.flush()
+
+    plan = restock.build_restock_plan(
+        db,
+        start=AS_OF + timedelta(days=1),
+        end=AS_OF + timedelta(days=30),
+        as_of=AS_OF,
+    )
+    product = next(
+        row for row in plan["products"] if row["product_code"] == product_code
+    )
+    by_sku = {row["sku"]: row for row in product["skus"]}
+
+    assert sum(row["target_stock"] for row in by_sku.values()) == product["target_stock"]
+    assert by_sku["1.4m"]["target_stock"] > 0
+    assert by_sku["1.4m"]["suggested_restock"] == by_sku["1.4m"]["target_stock"]
+    assert by_sku["1.6m"]["suggested_restock"] == 0
+    assert product["suggested_restock"] == sum(
+        row["suggested_restock"] for row in by_sku.values()
+    )
+    assert product["suggested_restock"] > max(
+        0, product["target_stock"] - int(product["on_hand"])
+    )
+
+    restock_map, allocation = (
+        product_inventory_service.build_inventory_restock_context(
+            db, [size_14, size_16], as_of=AS_OF
+        )
+    )
+    assert allocation[id(size_14)] == by_sku["1.4m"]["suggested_restock"]
+    assert allocation[id(size_16)] == 0
+    assert (
+        restock_map[product["product_core"]]["suggested_restock"]
+        == product["suggested_restock"]
+    )

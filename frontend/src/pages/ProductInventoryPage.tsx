@@ -262,7 +262,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="从明天起未来30天逐日预测之和；遇到大促或春节会按对应场景调整。">未来30天预测</Tooltip>
+        <Tooltip title="本 SKU 从明天起未来30天的预测；产品总预测按各 SKU 清洗日均拆分，遇到大促或春节会按对应场景调整。">未来30天预测</Tooltip>
       ),
       dataIndex: 'forecast_30d',
       width: 112,
@@ -282,7 +282,7 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="常规可备产品=未来完整30天预测向上取整，不再设2/5/6件硬上限；大件与定制产品继续按单生产，目标为0。">目标库存</Tooltip>
+        <Tooltip title="本 SKU 的目标库存。产品总目标按各 SKU 清洗日均拆分，SKU 目标之和等于产品总目标；不同尺寸不能互相抵库存。">目标库存</Tooltip>
       ),
       width: 90,
       render: (_: any, r: ProductInventoryRow) => (
@@ -306,14 +306,14 @@ export default function ProductInventoryPage() {
     },
     {
       title: (
-        <Tooltip title="统一公式：目标库存 − 当前现货 − 自由在产。同产品多SKU按清洗日均分摊，各SKU合计严格等于销售→备货建议里的产品数量。">推荐备货</Tooltip>
+        <Tooltip title="本 SKU 目标库存 − 本 SKU 当前现货 − 本 SKU 自由在产。每个规格独立计算，其他尺寸的富余库存不能抵扣本规格缺口。">推荐备货</Tooltip>
       ),
       dataIndex: 'auto_reorder_qty',
       width: 96,
       render: (v: number, r: ProductInventoryRow) => {
         const productTotal = Number(r.product_restock_total ?? v ?? 0);
         const totalHint = productTotal !== Number(v ?? 0) ? (
-          <Tooltip title="订单备货页按产品展示；本页按SKU分摊。">
+          <Tooltip title="同一产品下所有 SKU 独立缺口的合计；销售备货页和月底飞书使用这个合计。">
             <div style={{ fontSize: 11, color: '#1677ff' }}>产品合计 {productTotal.toFixed(0)}</div>
           </Tooltip>
         ) : null;
@@ -419,12 +419,12 @@ export default function ProductInventoryPage() {
         message="库存页、销售备货页、月底飞书已共用唯一备货计划"
         description={
           <>
-            唯一公式：<b>目标库存 − 当前现货 − 自由在产</b>。订单先统一清洗，再按7/15/30/60/90天加权预测；
+            唯一公式：<b>本 SKU 目标库存 − 本 SKU 当前现货 − 本 SKU 自由在产</b>。订单先统一清洗，再按7/15/30/60/90天加权预测；
             618、双11、双12去峰，春节单列。常规可备产品的目标库存覆盖<b>未来完整30天</b>，
             不再设2/5/6件硬上限；餐边柜等大件和定制单继续按单生产，不压成品库存。
             <br />
-            所有产品自动建立库存行并在一张表显示，默认按推荐备货从高到低；同产品多SKU的建议合计
-            与「销售 → 备货建议」完全一致；月底飞书沿用同一引擎，按目标自然月计算。
+            每个 SKU 独立抵扣库存和在产，尺寸之间不互相借库存；同产品各 SKU 建议之和
+            与「销售 → 备货建议」及月底飞书完全一致。
           </>
         }
       />

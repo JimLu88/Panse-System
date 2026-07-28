@@ -129,13 +129,22 @@ def list_product_inventory(
     _restock, _restock_allocation = product_inventory_service.build_inventory_restock_context(db)
     for inv in rows:
         core = product_coder.core_of(inv.product_code) or inv.product_code
+        product_plan = _restock.get(core, {})
+        sku_plan = (product_plan.get("sku_rows") or {}).get(str(inv.id), {})
+        restock_plan = {
+            **product_plan,
+            **sku_plan,
+            "product_suggested_restock": product_plan.get(
+                "suggested_restock", sku_plan.get("suggested_restock", 0)
+            ),
+        }
         stats = product_inventory_service.compute_product_stats(
             db,
             inv,
             abc_map=_abc,
             cfg=_cfg,
             in_production_split=_inprod,
-            restock_plan_row=_restock.get(core, {}),
+            restock_plan_row=restock_plan,
             restock_qty=_restock_allocation.get(id(inv), 0),
         )
         # 需关注筛选: 正常(ok) 和 按需生产(mto, 定制/长尾) 都不算"需关注"

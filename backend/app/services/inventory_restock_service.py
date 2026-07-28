@@ -169,6 +169,8 @@ def build_restock_plan(
             "actual_daily_30d": round(row["actual_daily_30d"], 4),
         })
 
+    _attach_sku_plans(db, products, cfg=cfg, as_of=as_of)
+
     custom_tasks = sum(
         demand.forecast_period(profile, start, end, cfg)
         for profile in custom_profiles
@@ -239,3 +241,129 @@ def allocate_product_restock(
         id(row): allocated[index]
         for index, (row, _) in enumerate(weighted_rows)
     }
+
+
+def _allocate_open_factory_by_sku(
+    factories: list[FactoryOrder],
+    inventory_rows: list[ProductInventory],
+) -> tuple[dict[int, float], float]:
+    """把未到货工厂单按尺寸口令放回对应 SKU；无法确认规格的量不跨 SKU 抵扣。"""
+    allocated = {id(row): 0.0 for row in inventory_rows}
+    unmatched = 0.0
+    tokens = {
+        id(row): product_inventory_service._size_token(row.sku)  # noqa: SLF001
+        for row in inventory_rows
+    }
+    for factory in factories:
+        qty = max(0.0, float(factory.qty or 0))
+        token = product_inventory_service._size_token(factory.sku)  # noqa: SLF001
+        candidates = [
+            row for row in inventory_rows
+            if token and tokens.get(id(row)) == token
+        ]
+        if len(candidates) == 1:
+            allocated[id(candidates[0])] += qty
+        elif len(inventory_rows) == 1:
+            allocated[id(inventory_rows[0])] += qty
+        else:
+            unmatched += qty
+    return allocated, unmatched
+
+
+def _attach_sku_plans(
+    db: Session, products: list[dict], *, cfg: dict, as_of: date,
+) -> None:
+    """把产品目标拆成不可互换的 SKU 目标，并逐 SKU 抵扣库存和自由在产。
+
+    产品总目标仍由唯一需求引擎产生；SKU 目标按各自清洗日均用最大余数法拆分，
+    保证 SKU 目标之和严格等于产品目标。推荐备货则逐 SKU 计算后再汇总，禁止
+    用 1.8 米的富余库存去抵 1.4/1.6 米的缺口。
+    """
+    inventory_by_core: dict[str, list[ProductInventory]] = {}
+    for inv in db.execute(
+        select(ProductInventory).order_by(
+            ProductInventory.product_code, ProductInventory.sku, ProductInventory.id
+        )
+    ).scalars():
+        inventory_by_core.setdefault(_core(inv.product_code), []).append(inv)
+
+    free_by_core: dict[str, list[FactoryOrder]] = {}
+    allocated_by_core: dict[str, list[FactoryOrder]] = {}
+    for factory in db.execute(select(FactoryOrder).where(
+        FactoryOrder.actual_delivery.is_(None),
+        FactoryOrder.voided_at.is_(None),
+        FactoryOrder.product_code.isnot(None),
+    )).scalars():
+        target = (
+            free_by_core if factory.source_order_id is None else allocated_by_core
+        )
+        target.setdefault(_core(factory.product_code), []).append(factory)
+
+    for product in products:
+        core = product["product_core"]
+        inventory_rows = inventory_by_core.get(core) or []
+        if not inventory_rows:
+            product["skus"] = []
+            product["sku_rows"] = {}
+            continue
+
+        weighted_rows = [
+            (
+                inv,
+                product_inventory_service._compute_daily_sales(  # noqa: SLF001
+                    db, inv.product_code, inv.sku, cfg=cfg, as_of=as_of
+                ),
+            )
+            for inv in inventory_rows
+        ]
+        sku_targets = allocate_product_restock(
+            int(product.get("target_stock") or 0), weighted_rows
+        )
+        free, free_unmatched = _allocate_open_factory_by_sku(
+            free_by_core.get(core, []), inventory_rows
+        )
+        allocated, allocated_unmatched = _allocate_open_factory_by_sku(
+            allocated_by_core.get(core, []), inventory_rows
+        )
+
+        skus = []
+        sku_rows = {}
+        for inv, daily in weighted_rows:
+            target = int(sku_targets.get(id(inv), 0))
+            stock = max(0.0, float(inv.available_qty))
+            free_qty = float(free.get(id(inv), 0.0))
+            suggested = max(0, int(math.ceil(target - stock - free_qty)))
+            sku_row = {
+                "inventory_id": inv.id,
+                "product_code": inv.product_code,
+                "sku": inv.sku,
+                "warehouse": inv.warehouse,
+                "forecast_daily": round(float(daily), 4),
+                "forecast_30d": target,
+                "target_stock": target,
+                "on_hand": round(stock, 2),
+                "in_stock": round(stock, 2),
+                "free_in_production": round(free_qty, 2),
+                "in_production_free": round(free_qty, 2),
+                "allocated_in_production": round(
+                    float(allocated.get(id(inv), 0.0)), 2
+                ),
+                "in_production_allocated": round(
+                    float(allocated.get(id(inv), 0.0)), 2
+                ),
+                "suggested_restock": suggested,
+                "need_to_produce": suggested,
+            }
+            skus.append(sku_row)
+            sku_rows[str(inv.id)] = sku_row
+
+        product["skus"] = skus
+        product["sku_rows"] = sku_rows
+        product["suggested_restock"] = sum(
+            row["suggested_restock"] for row in skus
+        )
+        product["need_to_produce"] = product["suggested_restock"]
+        product["free_in_production_unmatched"] = round(free_unmatched, 2)
+        product["allocated_in_production_unmatched"] = round(
+            allocated_unmatched, 2
+        )

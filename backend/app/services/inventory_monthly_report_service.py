@@ -64,9 +64,16 @@ def format_monthly_plan(plan: dict) -> str:
         for row in restock[:20]:
             lines.append(
                 f"• {row['product_code']} {row['product_name'][:18]}："
-                f"备 {row['suggested_restock']}，目标 {row['target_stock']}，"
-                f"现货 {row['on_hand']:g}，自由在产 {row['free_in_production']:g}"
+                f"SKU合计备 {row['suggested_restock']}，目标 {row['target_stock']}"
             )
+            for sku in row.get("skus") or []:
+                if sku["suggested_restock"] <= 0:
+                    continue
+                lines.append(
+                    f"  - {sku.get('sku') or '默认SKU'}：备 {sku['suggested_restock']}，"
+                    f"目标 {sku['target_stock']}，现货 {sku['on_hand']:g}，"
+                    f"自由在产 {sku['free_in_production']:g}"
+                )
     else:
         lines.append("【本月建议备货】当前库存与自由在产已覆盖，无需新增成品备货。")
     if mto:
@@ -89,6 +96,7 @@ def format_monthly_plan(plan: dict) -> str:
         "",
         (
             "口径：常规可备产品覆盖未来完整月份，不设件数硬上限；"
+            "每个 SKU 分别用目标库存减本 SKU 现货和自由在产，尺寸之间不互相抵扣；"
             "7/15/30/60/90 天近端加权；618/双11/双12去峰；春节数据单列保留。"
         ),
     ])

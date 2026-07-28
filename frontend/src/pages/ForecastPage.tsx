@@ -174,10 +174,17 @@ function AdviceTab() {
   };
   const exportProducts = () => exportPageXlsx('统一成品备货计划', [
     { key: 'product_name', title: '产品' }, { key: 'product_code', title: '产品编码' },
+    { key: 'sku', title: 'SKU/规格' }, { key: 'target_stock', title: '目标库存' },
     { key: 'forecast_30d', title: '预测30天' }, { key: 'in_stock', title: '现成品库存' },
     { key: 'in_production_free', title: '备货在产(会入库)' }, { key: 'in_production_allocated', title: '客户单在产(发客户)' },
     { key: 'need_to_produce', title: '建议备货' },
-  ], (data?.products ?? []).map((r: any) => ({ product_name: r.product_name, product_code: r.product_code, forecast_30d: r.forecast_30d, in_stock: r.in_stock, in_production_free: r.in_production_free, in_production_allocated: r.in_production_allocated, need_to_produce: r.need_to_produce })));
+  ], (data?.products ?? []).flatMap((r: any) => (r.skus?.length ? r.skus : [r]).map((s: any) => ({
+    product_name: r.product_name, product_code: r.product_code, sku: s.sku ?? '产品合计',
+    target_stock: s.target_stock ?? r.target_stock, forecast_30d: s.forecast_30d ?? r.forecast_30d,
+    in_stock: s.in_stock ?? r.in_stock, in_production_free: s.in_production_free ?? r.in_production_free,
+    in_production_allocated: s.in_production_allocated ?? r.in_production_allocated,
+    need_to_produce: s.need_to_produce ?? r.need_to_produce,
+  }))));
   const exportMaterials = () => exportPageXlsx('备货建议-物料下单', [
     { key: 'material_code', title: '物料' }, { key: 'material_name', title: '名称' }, { key: 'need_qty', title: '需求量' },
     { key: 'have_qty', title: '现库存' }, { key: 'missing', title: '缺口' }, { key: 'lead_time_days', title: '补货周期(天)' },
@@ -192,7 +199,7 @@ function AdviceTab() {
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
       <Alert type="info" showIcon
              message="本页与成品库存、月底飞书共用唯一备货计划"
-             description={<>最终建议统一为：<b>未来完整30天目标库存 − 当前现货 − 自由在产</b>。常规可备产品不再设2/5/6件硬上限；餐边柜等大件和定制单按单生产，不压成品库存。<br/>「客户单在产」已卖给对应客户，不抵未来成品库存；常规产品只按统一建议数量倒推 BOM 物料。定制单仍只提前准备通用料。</>} />
+             description={<>最终建议按 SKU 独立计算：<b>本 SKU 目标库存 − 本 SKU 现货 − 本 SKU 自由在产</b>，不同尺寸不能互相抵库存。产品行只汇总各 SKU 缺口；餐边柜等大件和定制单仍按单生产，不压成品库存。<br/>展开产品行可核对每个 SKU；「客户单在产」已卖给对应客户，不抵未来成品库存。</>} />
       <Card size="small" title="常规单 · 统一成品备货计划"
         extra={<Button icon={<DownloadOutlined />} onClick={exportProducts} disabled={!data?.products?.length}>导出 Excel</Button>}>
         <Table
@@ -200,6 +207,26 @@ function AdviceTab() {
           rowKey={(r: any) => `${r.product_code}`}
           dataSource={data?.products ?? []}
           pagination={{ defaultPageSize: 100, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
+          expandable={{
+            rowExpandable: (r: any) => Boolean(r.skus?.length),
+            expandedRowRender: (r: any) => (
+              <Table
+                size="small"
+                pagination={false}
+                rowKey={(s: any) => String(s.inventory_id ?? s.sku)}
+                dataSource={r.skus ?? []}
+                columns={[
+                  { title: 'SKU / 规格', dataIndex: 'sku' },
+                  { title: '目标库存', dataIndex: 'target_stock', width: 100 },
+                  { title: '现货', dataIndex: 'in_stock', width: 90 },
+                  { title: '备货在产', dataIndex: 'in_production_free', width: 100 },
+                  { title: '客户单在产', dataIndex: 'in_production_allocated', width: 110 },
+                  { title: '建议备货', dataIndex: 'need_to_produce', width: 100,
+                    render: (v: number) => v > 0 ? <Tag color="orange">{v}</Tag> : <Tag color="green">充足</Tag> },
+                ]}
+              />
+            ),
+          }}
           columns={[
             { title: '产品', width: 240, render: (_: any, r: any) => productCell(r),
               sorter: (a: any, b: any) => String(a.product_name ?? a.product_code).localeCompare(String(b.product_name ?? b.product_code)) },

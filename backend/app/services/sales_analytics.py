@@ -419,6 +419,7 @@ def _bom_material_need(db: Session, forecast: list[dict], *, use_stock: bool,
             "target_stock": f.get("target_stock"),
             "policy": f.get("policy"),
             "qualified_hot": f.get("qualified_hot"),
+            "skus": f.get("skus") or [],
         })
         if need_to_produce <= 0:
             continue

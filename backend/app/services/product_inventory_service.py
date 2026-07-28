@@ -212,6 +212,7 @@ def promo_status(db: Session, *, prep_days: int = 30) -> dict:
 def _compute_sales_profile(
     db: Session, product_code: str, sku: Optional[str] = None,
     cfg: Optional[dict] = None,
+    as_of: Optional[date] = None,
 ) -> dict:
     """返回该产品/尺寸统一清洗后的销量画像。"""
     if cfg is None:
@@ -220,6 +221,7 @@ def _compute_sales_profile(
     return demand.profile_for_product(
         db,
         product_code,
+        as_of=as_of,
         cfg=cfg,
         sku_contains=_size_token(sku),
         kind="standard",
@@ -227,7 +229,8 @@ def _compute_sales_profile(
 
 
 def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = None,
-                         days: int = 30, cfg: Optional[dict] = None) -> float:
+                         days: int = 30, cfg: Optional[dict] = None,
+                         as_of: Optional[date] = None) -> float:
     """该产品的日均发货量 (产品级, 所有尺寸合计)。
 
     公式 (成品库存页可改, 存 system_settings):
@@ -236,7 +239,9 @@ def _compute_daily_sales(db: Session, product_code: str, sku: Optional[str] = No
       simple           — 旧口径: 窗口期总量 ÷ 窗口天数。
     注: 按 product_code(含 PPS/PFG/P 品牌变体)汇总到产品级。不排除 is_historical。
     """
-    profile = _compute_sales_profile(db, product_code, sku, cfg)
+    profile = _compute_sales_profile(
+        db, product_code, sku, cfg, as_of=as_of
+    )
     return round(float(profile["normal_daily"]), 3)
 
 
@@ -496,6 +501,12 @@ def compute_product_stats(
     # 最终建议只能来自唯一备货计划引擎。上面的安全库存/提前期继续作为解释性指标，
     # 但不得再产生第二套 auto_reorder_qty。
     if restock_plan_row is not None:
+        in_prod_free = float(
+            restock_plan_row.get("in_production_free", in_prod_free) or 0
+        )
+        in_prod_alloc = float(
+            restock_plan_row.get("in_production_allocated", in_prod_alloc) or 0
+        )
         auto_reorder = float(
             restock_plan_row.get("suggested_restock") or 0
             if restock_qty is None
@@ -555,7 +566,12 @@ def compute_product_stats(
             else None
         ),
         "product_restock_total": (
-            float(restock_plan_row.get("suggested_restock") or 0)
+            float(
+                restock_plan_row.get(
+                    "product_suggested_restock",
+                    restock_plan_row.get("suggested_restock") or 0,
+                )
+            )
             if restock_plan_row is not None
             else round(auto_reorder, 0)
         ),
@@ -680,18 +696,12 @@ def build_inventory_restock_context(
                 ProductInventory.product_code, ProductInventory.sku
             )
         ).scalars().all()
-    groups: dict[str, list[tuple[ProductInventory, float]]] = {}
-    cfg = get_forecast_config(db)
+    allocation: dict[int, int] = {}
     for inv in all_rows:
         core = product_coder.core_of(inv.product_code) or inv.product_code
-        weight = _compute_daily_sales(db, inv.product_code, inv.sku, cfg=cfg)
-        groups.setdefault(core, []).append((inv, weight))
-    allocation: dict[int, int] = {}
-    for core, weighted_rows in groups.items():
-        total = int((pmap.get(core) or {}).get("suggested_restock") or 0)
-        allocation.update(
-            inventory_restock_service.allocate_product_restock(total, weighted_rows)
-        )
+        product_plan = pmap.get(core) or {}
+        sku_plan = (product_plan.get("sku_rows") or {}).get(str(inv.id)) or {}
+        allocation[id(inv)] = int(sku_plan.get("suggested_restock") or 0)
     return pmap, allocation
 
 
