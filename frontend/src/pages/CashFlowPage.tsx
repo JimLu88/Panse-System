@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Empty, InputNumber, Modal, Row, Space, Spin, Statistic,
+  Alert, Button, Card, Checkbox, Col, Empty, Input, InputNumber, Modal, Row, Space, Spin, Statistic,
   Table, Tag, Tooltip, Typography, message,
 } from 'antd';
 import {
@@ -86,6 +86,9 @@ export default function CashFlowPage() {
   const [editOpen, setEditOpen] = useState(false);
   const [investment, setInvestment] = useState<number | null>(null);
   const [settlementDays, setSettlementDays] = useState<number | null>(null);
+  const [advanceBalance, setAdvanceBalance] = useState<number | null>(null);
+  const [advanceMonth, setAdvanceMonth] = useState('');
+  const [advanceNote, setAdvanceNote] = useState('');
   const [taxPaid, setTaxPaid] = useState<string[]>([]);   // 已缴税季度(手选)
 
   const { data, isLoading } = useQuery<CashFlowSummary>({
@@ -98,6 +101,9 @@ export default function CashFlowPage() {
     mutationFn: () => updateCashFlowSettings({
       total_investment: investment == null ? undefined : String(investment),
       factory_settlement_days: settlementDays == null ? undefined : settlementDays,
+      factory_advance_balance: advanceBalance == null ? undefined : String(advanceBalance),
+      factory_advance_target_month: advanceMonth.trim(),
+      factory_advance_note: advanceNote.trim(),
       tax_paid_quarters: taxPaid,
     }),
     onSuccess: (fresh) => {
@@ -119,6 +125,9 @@ export default function CashFlowPage() {
     // 平台保证金改在「资产 & 流水 → 平台保证金」标签页维护, 此处不再手填
     setInvestment(data.investment ? Number(data.investment.total_investment) : 0);
     setSettlementDays(data.manual?.factory_settlement_days ?? 45);
+    setAdvanceBalance(Number(data.manual?.factory_advance_balance ?? 0));
+    setAdvanceMonth(data.manual?.factory_advance_target_month ?? '');
+    setAdvanceNote(data.manual?.factory_advance_note ?? '');
     setTaxPaid(data.manual?.tax_paid_quarters ?? []);
     setEditOpen(true);
   };
@@ -264,6 +273,29 @@ export default function CashFlowPage() {
             <Text type="secondary" style={{ fontSize: 12 }}>
               「工厂欠款回填」用：关联订单已签收且工厂下单超过此天数 → 判定已结。按你家工厂月结习惯填（默认 45）。
             </Text>
+          </div>
+          <div>
+            <Text strong>工厂预付款待抵扣余额</Text>
+            <InputNumber
+              style={{ width: '100%' }} value={advanceBalance} onChange={setAdvanceBalance}
+              min={0} precision={2} addonBefore="¥"
+              formatter={(v) => `${v}`.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}
+              parser={(v) => Number(`${v}`.replace(/,/g, '')) as any}
+            />
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              已经抵完时可直接填 0。这里只改待抵扣余额，不会删除或改动支付宝原始转账。
+            </Text>
+            <Input
+              style={{ marginTop: 8 }} value={advanceMonth}
+              onChange={(e) => setAdvanceMonth(e.target.value)}
+              placeholder="预计抵扣月份，例如 2026-07"
+            />
+            <Input.TextArea
+              style={{ marginTop: 8 }} value={advanceNote}
+              onChange={(e) => setAdvanceNote(e.target.value)}
+              maxLength={500} autoSize={{ minRows: 2, maxRows: 4 }}
+              placeholder="备注，例如：7月15日多转3万元，从7月账单抵扣"
+            />
           </div>
           {data.manual?.tax_quarters && data.manual.tax_quarters.length > 0 && (
             <div>

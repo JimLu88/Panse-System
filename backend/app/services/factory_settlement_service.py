@@ -27,6 +27,7 @@ from app.models.factory_settlement import (
     FactorySupplierAlias,
 )
 from app.models.order import FactoryOrder
+from app.services import factory_advance_service
 
 _Q = Decimal("0.01")
 # 默认木作供应商别名(博冠货款走个人账户; 匹配时去星号+双向包含, 故全名即可覆盖打码流水)
@@ -193,9 +194,23 @@ def settle_month(db: Session, *, supplier: str = DEFAULT_WOOD_SUPPLIER, month: s
         fo.settlement_payment_id = rec.id
         billed_total += _d(fo.factory_bill_amount)
     rec.flipped_count = len(targets)
+    advance = factory_advance_service.apply_for_settlement(
+        db,
+        payment_id=rec.id,
+        month=month,
+        billed_total=billed_total,
+        by=by,
+    )
+    advance_used = advance["used"]
+    if advance_used > 0:
+        suffix = f"预付款自动抵扣 ¥{advance_used}"
+        rec.note = f"{rec.note}；{suffix}" if rec.note else suffix
     db.flush()
     return {"month": month, "flipped": len(targets), "payment_id": rec.id,
-            "billed_total": billed_total.quantize(_Q)}
+            "billed_total": billed_total.quantize(_Q),
+            "advance_used": advance_used,
+            "advance_remaining": advance["remaining"],
+            "net_cash_payable": max(Decimal("0"), billed_total - advance_used).quantize(_Q)}
 
 
 def reverse_settlement(db: Session, payment_id: int, *, by: Optional[str] = None) -> dict:
@@ -221,8 +236,16 @@ def reverse_settlement(db: Session, payment_id: int, *, by: Optional[str] = None
         n += 1
     rec.reversed_at = datetime.now(timezone.utc)
     rec.reversed_by = by
+    advance = factory_advance_service.reverse_for_settlement(
+        db, payment_id=payment_id, by=by,
+    )
     db.flush()
-    return {"reverted": n, "payment_id": payment_id}
+    return {
+        "reverted": n,
+        "payment_id": payment_id,
+        "advance_restored": advance["restored"],
+        "advance_remaining": advance["remaining"],
+    }
 
 
 def list_payments(db: Session, supplier: Optional[str] = None) -> list[dict]:
@@ -230,6 +253,7 @@ def list_payments(db: Session, supplier: Optional[str] = None) -> list[dict]:
     stmt = select(FactorySettlementPayment).order_by(FactorySettlementPayment.id.desc())
     if supplier:
         stmt = stmt.where(FactorySettlementPayment.supplier == supplier)
+    advance_by_payment = factory_advance_service.applied_by_payment(db)
     out = []
     for r in db.execute(stmt).scalars().all():
         out.append({
@@ -237,6 +261,7 @@ def list_payments(db: Session, supplier: Optional[str] = None) -> list[dict]:
             "trigger": r.trigger, "alipay_flow_no": r.alipay_flow_no,
             "paid_amount": str(r.paid_amount) if r.paid_amount is not None else None,
             "flipped_count": r.flipped_count, "created_by": r.created_by, "note": r.note,
+            "advance_used": str(advance_by_payment.get(r.id, Decimal("0.00"))),
             "reversed_at": r.reversed_at.isoformat() if r.reversed_at else None,
             "created_at": r.created_at.isoformat() if r.created_at else None,
         })

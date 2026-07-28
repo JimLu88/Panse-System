@@ -801,6 +801,10 @@ export interface CashFlowSummary {
   freshness: CashFlowFreshness[];
   manual?: {
     shop_deposit: string; total_investment: string; factory_settlement_days: number;
+    factory_advance_balance?: string;
+    factory_advance_target_month?: string | null;
+    factory_advance_note?: string;
+    factory_advance_updated_at?: string | null;
     tax_current_quarter?: string | null; tax_quarters?: TaxQuarter[]; tax_paid_quarters?: string[];
   };
   generated_at: string;
@@ -813,6 +817,9 @@ export const updateCashFlowSettings = (payload: {
   shop_deposit?: string;
   total_investment?: string;
   factory_settlement_days?: number;
+  factory_advance_balance?: string;
+  factory_advance_target_month?: string;
+  factory_advance_note?: string;
   tax_paid_quarters?: string[];   // 已缴税季度(手选), 如 ["2026-Q1"]
 }) =>
   api.put<CashFlowSummary>('/api/finance/cash-flow/settings', payload).then((r) => r.data);

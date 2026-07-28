@@ -2218,19 +2218,28 @@ class CashFlowSettingsIn(BaseModel):
     shop_deposit: Optional[Decimal] = None
     total_investment: Optional[Decimal] = None
     factory_settlement_days: Optional[int] = None   # 工厂结算周期(天), 工厂欠款回填规则B用
+    factory_advance_balance: Optional[Decimal] = None
+    factory_advance_target_month: Optional[str] = None
+    factory_advance_note: Optional[str] = None
     tax_paid_quarters: Optional[list[str]] = None   # 已缴税季度(手选), 如 ["2026-Q1"]; 不计入减项
 
 
 @router.put("/cash-flow/settings", response_model=CashFlowSummaryOut)
 def update_cash_flow_settings(payload: CashFlowSettingsIn, db: Session = Depends(get_db)):
     """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期 / 已缴税季度），返回重新测算后的结果。"""
-    cash_flow_service.update_manual(
-        db,
-        shop_deposit=payload.shop_deposit,
-        total_investment=payload.total_investment,
-        factory_settlement_days=payload.factory_settlement_days,
-        tax_paid_quarters=payload.tax_paid_quarters,
-    )
+    try:
+        cash_flow_service.update_manual(
+            db,
+            shop_deposit=payload.shop_deposit,
+            total_investment=payload.total_investment,
+            factory_settlement_days=payload.factory_settlement_days,
+            factory_advance_balance=payload.factory_advance_balance,
+            factory_advance_target_month=payload.factory_advance_target_month,
+            factory_advance_note=payload.factory_advance_note,
+            tax_paid_quarters=payload.tax_paid_quarters,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     db.commit()
     return cash_flow_service.compute_summary(db)
 

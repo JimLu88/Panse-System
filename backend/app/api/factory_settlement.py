@@ -13,13 +13,14 @@ from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import require_role
 from app.models.auth import User
 from app.models.factory_settlement import DEFAULT_WOOD_SUPPLIER
+from app.services import factory_advance_service as fas
 from app.services import factory_settlement_service as fss
 
 router = APIRouter(prefix="/api/factory-settlement", tags=["factory-settlement"])
@@ -39,6 +40,12 @@ class AliasIn(BaseModel):
     note: Optional[str] = None
 
 
+class AdvanceIn(BaseModel):
+    balance: Decimal = Field(ge=0)
+    target_month: Optional[str] = None
+    note: Optional[str] = None
+
+
 @router.get("/overview")
 def overview(supplier: Optional[str] = None, q: Optional[str] = None,
              db: Session = Depends(get_db),
@@ -49,9 +56,31 @@ def overview(supplier: Optional[str] = None, q: Optional[str] = None,
         "breakdown": fss.month_breakdown(db, sup, q=q),
         "payments": fss.list_payments(db, sup),
         "aliases": fss.list_aliases(db),
+        "advance": fas.get_state(db),
     }
     if q and q.strip():
         out["detail"] = fss.settlement_detail_rows(db, sup, q=q)
+    return out
+
+
+@router.put("/advance")
+def update_advance(
+    payload: AdvanceIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    """人工维护工厂预付款待抵扣余额；余额可直接设为 0，历史仍保留。"""
+    try:
+        out = fas.set_manual(
+            db,
+            balance=payload.balance,
+            target_month=payload.target_month,
+            note=payload.note,
+            by=getattr(user, "username", None),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    db.commit()
     return out
 
 

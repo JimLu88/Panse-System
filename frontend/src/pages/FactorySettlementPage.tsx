@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert, Button, Card, Input, message, Popconfirm, Space, Table, Tag, Typography,
+  Alert, Button, Card, Input, InputNumber, message, Modal, Popconfirm, Space, Table, Tag, Typography,
 } from 'antd';
+import { EditOutlined } from '@ant-design/icons';
 import {
   type FsAlias, type FsDetailRow, type FsMissing, type FsMissingOrder, type FsMonth, type FsOverview, type FsPayment,
-  downloadFsMissing, downloadFsDetail, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, getFsMissing, getFsOverview,
+  downloadFsMissing, downloadFsDetail, fsAddAlias, fsDeleteAlias, fsReverse, fsScanAlipay, fsSettle, fsUpdateAdvance,
+  getFsMissing, getFsOverview,
 } from '../api/factorySettlement';
 
 const { Title, Text, Paragraph } = Typography;
@@ -24,6 +26,11 @@ export default function FactorySettlementPage() {
   const [missing, setMissing] = useState<FsMissing | null>(null);
   const [missLoading, setMissLoading] = useState(false);
   const [upToMonth, setUpToMonth] = useState('');
+  const [advanceOpen, setAdvanceOpen] = useState(false);
+  const [advanceSaving, setAdvanceSaving] = useState(false);
+  const [advanceBalance, setAdvanceBalance] = useState<number | null>(null);
+  const [advanceMonth, setAdvanceMonth] = useState('');
+  const [advanceNote, setAdvanceNote] = useState('');
 
   const load = async (q: string = searchQ) => {
     setLoading(true);
@@ -41,7 +48,13 @@ export default function FactorySettlementPage() {
   const onSettle = async (month: string) => {
     try {
       const r = await fsSettle({ month });
-      if (r.flipped) message.success(`${month} 已付清: 翻 ${r.flipped} 单, 共 ¥${r.billed_total}`);
+      if (r.flipped) {
+        const used = Number(r.advance_used || 0);
+        message.success(
+          `${month} 已付清: 翻 ${r.flipped} 单, 账单 ¥${r.billed_total}`
+          + (used > 0 ? `；预付款抵扣 ¥${r.advance_used}，预计实转 ¥${r.net_cash_payable}` : ''),
+        );
+      }
       else message.info(r.message || `${month} 已无未付的已开账单`);
       load();
     } catch (e: any) {
@@ -52,7 +65,10 @@ export default function FactorySettlementPage() {
   const onReverse = async (pid: number) => {
     try {
       const r = await fsReverse(pid);
-      message.success(`已撤销, 恢复 ${r.reverted} 单为未付`);
+      message.success(
+        `已撤销, 恢复 ${r.reverted} 单为未付`
+        + (Number(r.advance_restored || 0) > 0 ? `；预付款恢复 ¥${r.advance_restored}` : ''),
+      );
       load();
     } catch (e: any) {
       message.error(e?.response?.data?.detail || '撤销失败');
@@ -106,7 +122,37 @@ export default function FactorySettlementPage() {
     catch (e: any) { message.error(e?.response?.data?.detail || '导出失败'); }
   };
 
+  const openAdvanceEditor = () => {
+    setAdvanceBalance(Number(data?.advance?.balance ?? 0));
+    setAdvanceMonth(data?.advance?.target_month ?? '');
+    setAdvanceNote(data?.advance?.note ?? '');
+    setAdvanceOpen(true);
+  };
+
+  const saveAdvance = async () => {
+    if (advanceBalance == null || advanceBalance < 0) {
+      message.error('待抵扣余额不能小于 0');
+      return;
+    }
+    setAdvanceSaving(true);
+    try {
+      await fsUpdateAdvance({
+        balance: advanceBalance,
+        target_month: advanceMonth.trim(),
+        note: advanceNote.trim(),
+      });
+      setAdvanceOpen(false);
+      message.success(advanceBalance === 0 ? '已标记为抵扣完，余额为 0' : '预付款余额已更新');
+      load();
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '预付款余额更新失败');
+    } finally {
+      setAdvanceSaving(false);
+    }
+  };
+
   const bd = data?.breakdown;
+  const advance = data?.advance;
 
   const monthCols = [
     { title: '结算月', dataIndex: 'month', key: 'month', width: 110 },
@@ -122,6 +168,22 @@ export default function FactorySettlementPage() {
       title: '未付', dataIndex: 'unpaid', key: 'unpaid', align: 'right' as const,
       render: (v: string) => <Text type={Number(v) > 0 ? 'danger' : undefined} strong>¥{v}</Text>,
     },
+    {
+      title: '预付款抵扣', key: 'advance', align: 'right' as const,
+      render: (_: unknown, row: FsMonth) => {
+        const amount = advance?.target_month === row.month
+          ? Math.min(Number(row.unpaid), Number(advance.balance || 0)) : 0;
+        return amount > 0 ? <Text style={{ color: '#389e0d' }}>− ¥{amount.toFixed(2)}</Text> : '—';
+      },
+    },
+    {
+      title: '预计实转', key: 'net', align: 'right' as const,
+      render: (_: unknown, row: FsMonth) => {
+        const amount = advance?.target_month === row.month
+          ? Math.min(Number(row.unpaid), Number(advance.balance || 0)) : 0;
+        return <Text strong>¥{Math.max(0, Number(row.unpaid) - amount).toFixed(2)}</Text>;
+      },
+    },
     { title: '单数', dataIndex: 'order_count', key: 'order_count', align: 'right' as const, width: 70 },
     {
       title: '状态', dataIndex: 'status', key: 'status', width: 100,
@@ -136,7 +198,7 @@ export default function FactorySettlementPage() {
         Number(row.unpaid) > 0 ? (
           <Popconfirm
             title={`确认「${row.month}」已付清?`}
-            description={`将把该月 ${row.order_count} 单中未付的全部标为已付 (¥${row.unpaid})。可在下方撤销。`}
+            description={`将把该月未付账单标为已付；若命中预付款月份会先自动抵扣。可在下方撤销。`}
             okText="确认已付清" cancelText="取消"
             onConfirm={() => onSettle(row.month)}
           >
@@ -154,6 +216,10 @@ export default function FactorySettlementPage() {
       render: (v: string) => <Tag>{v === 'keyword' ? '关键词' : '手动'}</Tag>,
     },
     { title: '翻单数', dataIndex: 'flipped_count', key: 'f', align: 'right' as const, width: 80 },
+    {
+      title: '预付款抵扣', dataIndex: 'advance_used', key: 'au', align: 'right' as const,
+      render: (v: string) => (Number(v) > 0 ? <Text style={{ color: '#389e0d' }}>¥{v}</Text> : '—'),
+    },
     {
       title: '实付(参考)', dataIndex: 'paid_amount', key: 'p', align: 'right' as const,
       render: (v: string | null) => (v ? `¥${v}` : '—'),
@@ -212,6 +278,27 @@ export default function FactorySettlementPage() {
         message="付了工厂月结货款后, 在这里把对应月份「已付清」, 现金流的「工厂结算(已开账单未付)」会随之下降。"
         description="销账按声明驱动(不卡金额, 工厂常有减免/加费)。结算月默认按下单月; 工厂账单另说月份时以账单为准。每笔销账可撤销。"
       />
+
+      <Card size="small" loading={loading} style={{ marginBottom: 16 }}>
+        <Space style={{ width: '100%', justifyContent: 'space-between' }} align="center">
+          <Space size="large" wrap>
+            <div>
+              <Text type="secondary">工厂预付款待抵扣余额</Text>
+              <div>
+                <Text strong style={{ fontSize: 24, color: Number(advance?.balance || 0) > 0 ? '#389e0d' : undefined }}>
+                  ¥{Number(advance?.balance || 0).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}
+                </Text>
+                <Tag color={advance?.status === 'pending' ? 'green' : 'default'} style={{ marginLeft: 8 }}>
+                  {advance?.status === 'pending' ? '待抵扣' : '已抵完'}
+                </Tag>
+              </div>
+            </div>
+            <Text>预计抵扣月：<Text strong>{advance?.target_month || '未指定'}</Text></Text>
+            <Text type="secondary">{advance?.note || '暂无备注'}</Text>
+          </Space>
+          <Button icon={<EditOutlined />} onClick={openAdvanceEditor}>手动修改</Button>
+        </Space>
+      </Card>
 
       <Card size="small" style={{ marginBottom: 16 }}>
         <Space wrap>
@@ -328,6 +415,45 @@ export default function FactorySettlementPage() {
           columns={aliasCols} dataSource={data?.aliases || []}
         />
       </Card>
+
+      <Modal
+        title="修改工厂预付款待抵扣余额"
+        open={advanceOpen}
+        onCancel={() => setAdvanceOpen(false)}
+        onOk={saveAdvance}
+        confirmLoading={advanceSaving}
+        okText="保存"
+      >
+        <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+          <Alert
+            type="info" showIcon
+            message="中途已经全部抵完时，余额直接填 0"
+            description="系统会保留修改时间和前后金额；支付宝原始转账不会被改动或删除。"
+          />
+          <div>
+            <Text>待抵扣余额</Text>
+            <InputNumber
+              style={{ width: '100%' }} min={0} precision={2} addonBefore="¥"
+              value={advanceBalance} onChange={setAdvanceBalance}
+            />
+          </div>
+          <div>
+            <Text>预计抵扣月份</Text>
+            <Input
+              value={advanceMonth} onChange={(e) => setAdvanceMonth(e.target.value)}
+              placeholder="YYYY-MM，例如 2026-07"
+            />
+          </div>
+          <div>
+            <Text>备注</Text>
+            <Input.TextArea
+              value={advanceNote} onChange={(e) => setAdvanceNote(e.target.value)}
+              maxLength={500} autoSize={{ minRows: 2, maxRows: 4 }}
+              placeholder="例如：7月15日多转3万元，从7月账单抵扣"
+            />
+          </div>
+        </Space>
+      </Modal>
     </div>
   );
 }

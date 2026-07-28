@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 from app.models.finance import AccountBalance, AlipayFlow, RefillRecord
 from app.models.order import FactoryOrder, Order
 from app.models.shop_deposit import ShopDeposit
-from app.services import factory_payment_service, settings_service
+from app.services import factory_advance_service, factory_payment_service, settings_service
 
 # ── 手动常量配置键 ────────────────────────────────────────────
 SETTING_SHOP_DEPOSIT = "cashflow_shop_deposit"
@@ -475,6 +475,12 @@ def compute_summary(db: Session) -> dict:
     awaiting_receipt = _sum_paid(db, "shipped")   # 待确认收货 (已发货未签收)
     not_shipped = _sum_paid(db, "paid")           # 未发货 (已付款未发货)
     order_active = awaiting_receipt + not_shipped
+    factory_advance = factory_advance_service.get_state(db)
+    factory_advance_balance = _d(factory_advance["balance"])
+    advance_source = "已抵扣完"
+    if factory_advance_balance > 0:
+        target = factory_advance.get("target_month") or "下次月结"
+        advance_source = f"工厂预付款台账 · 预计抵扣 {target}"
 
     # ── 减项 ─────────────────────────────────────────────
     # 平台服务费: 卖家服务费列常为空, 直接按在途订单金额 ×千分之六 估
@@ -498,6 +504,8 @@ def compute_summary(db: Session) -> dict:
         {"key": "other_balance", "label": "其他账户余额(银行卡等)", "amount": bal_other, "manual": False, "source": "账户余额汇总"},
         {"key": "awaiting_receipt", "label": "订单待确认收货金额", "amount": awaiting_receipt, "manual": False, "source": "订单(已发货)"},
         {"key": "not_shipped", "label": "订单未发货金额", "amount": not_shipped, "manual": False, "source": "订单(已付款)"},
+        {"key": "factory_advance", "label": "工厂预付款(待抵扣)", "amount": factory_advance_balance,
+         "manual": True, "source": advance_source},
     ]
     subtractions = [
         {"key": "platform_fee", "label": "待扣平台服务费(在途×0.6%)", "amount": platform_fee, "manual": False, "source": "在途订单估算"},
@@ -604,6 +612,10 @@ def compute_summary(db: Session) -> dict:
             "shop_deposit": shop_deposit,
             "total_investment": total_investment,
             "factory_settlement_days": factory_payment_service.get_settlement_days(db),
+            "factory_advance_balance": factory_advance["balance"],
+            "factory_advance_target_month": factory_advance.get("target_month"),
+            "factory_advance_note": factory_advance.get("note") or "",
+            "factory_advance_updated_at": factory_advance.get("updated_at"),
             "tax_current_quarter": tax_q["current_quarter"],
             "tax_quarters": tax_q["quarters"],          # [{quarter, tax, is_current, paid}] 供前端手选已缴
             "tax_paid_quarters": sorted(_tax_paid_quarters(db)),
@@ -632,6 +644,9 @@ def update_manual(
     shop_deposit: Optional[Decimal] = None,
     total_investment: Optional[Decimal] = None,
     factory_settlement_days: Optional[int] = None,
+    factory_advance_balance: Optional[Decimal] = None,
+    factory_advance_target_month: Optional[str] = None,
+    factory_advance_note: Optional[str] = None,
     tax_paid_quarters: Optional[list] = None,
 ) -> None:
     """更新手动常量（店铺保证金 / 总投资费用 / 工厂结算周期 / 已缴税季度）。"""
@@ -645,6 +660,14 @@ def update_manual(
         )
     if factory_settlement_days is not None:
         factory_payment_service.set_settlement_days(db, factory_settlement_days)
+    if factory_advance_balance is not None:
+        factory_advance_service.set_manual(
+            db,
+            balance=factory_advance_balance,
+            target_month=factory_advance_target_month,
+            note=factory_advance_note,
+            by="cash-flow-settings",
+        )
     if tax_paid_quarters is not None:
         import json
         clean = sorted({str(q) for q in tax_paid_quarters if str(q).strip()})

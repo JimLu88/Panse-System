@@ -30,8 +30,32 @@ export interface FsPayment {
   flipped_count: number;
   created_by: string | null;
   note: string | null;
+  advance_used: string;
   reversed_at: string | null;
   created_at: string | null;
+}
+
+export interface FsAdvanceHistory {
+  kind: 'manual' | 'apply' | 'reverse';
+  before: string;
+  after: string;
+  amount: string;
+  target_month?: string | null;
+  settlement_month?: string | null;
+  payment_id?: number;
+  note?: string | null;
+  at: string;
+  by?: string | null;
+}
+
+export interface FsAdvance {
+  balance: string;
+  target_month: string | null;
+  note: string;
+  status: 'pending' | 'settled';
+  updated_at: string | null;
+  updated_by: string | null;
+  history: FsAdvanceHistory[];
 }
 
 export interface FsAlias {
@@ -62,6 +86,7 @@ export interface FsOverview {
   breakdown: FsBreakdown;
   payments: FsPayment[];
   aliases: FsAlias[];
+  advance: FsAdvance;
   detail?: FsDetailRow[]; // 搜索 q 时返回匹配的逐单明细 (2026-07-03)
 }
 
@@ -76,6 +101,10 @@ export const fsSettle = (payload: {
 
 export const fsReverse = (paymentId: number) =>
   api.post(`/api/factory-settlement/reverse/${paymentId}`).then((r) => r.data);
+
+export const fsUpdateAdvance = (payload: {
+  balance: number | string; target_month?: string; note?: string;
+}) => api.put<FsAdvance>('/api/factory-settlement/advance', payload).then((r) => r.data);
 
 export const fsAddAlias = (payload: { alias: string; supplier?: string; note?: string }) =>
   api.post<FsAlias>('/api/factory-settlement/aliases', payload).then((r) => r.data);
