@@ -38,6 +38,14 @@ _REGISTRY: dict[str, dict] = {}
 
 
 _FAILURE_ALERT_THRESHOLD = 3
+_CRITICAL_PIPELINE_JOB_IDS = {
+    "daily_0630_web_agent",
+    "daily_1810_order_sheets",
+    "pull_catchup_30min",
+    "daily_2030_finance_agent",
+    "finance_pull_retry_30min",
+    "finance_pull_retry_2200",
+}
 
 
 def _maybe_alert_repeated_failure(db: Session, job_id: str, label: str) -> None:
@@ -109,7 +117,7 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
                 started_at=started, completed_at=datetime.now(timezone.utc),
             ))
             log_db.commit()
-            if status == "fail":
+            if status == "fail" and job_id not in _CRITICAL_PIPELINE_JOB_IDS:
                 _maybe_alert_repeated_failure(log_db, job_id, label)
         except Exception as e:  # pragma: no cover
             _logger.warning("写 ScheduledJobRun 失败: %s", e)
@@ -619,8 +627,12 @@ def _job_factory_daily_summary(db: Session) -> dict:
 
 def _job_notify_retry(db: Session) -> dict:
     """每 30 分钟: 重发失败的飞书/webhook 通知 (指数退避, 最多 5 次)。"""
-    from app.services import notify_service
-    return notify_service.retry_pending(db)
+    from app.services import automation_pipeline_service, notify_service
+
+    return {
+        "default": notify_service.retry_pending(db),
+        "critical_feishu": automation_pipeline_service.retry_pending_notifications(db),
+    }
 
 
 def _job_thumb_cache_cleanup(db: Session) -> dict:
@@ -781,27 +793,204 @@ def _job_web_agent_daily(db: Session) -> dict:
     return r
 
 
-def _job_web_agent_finance(db: Session) -> dict:
-    """每天 20:30: 独立刷新到期的余额/流水任务，不阻断18:30订单推送。"""
-    from app.services import agent_ingest_service, alert_service
-    if agent_ingest_service.is_running():
-        return {"skipped": "已有编排在跑", "_run_status": "skipped"}
-    # 财务抓取成功/无新增/普通失败均静默；仅 Web-Agent 确认登录失效时走专用扫码提醒。
-    r = agent_ingest_service.orchestrate(
-        db, force_orders=False, orders_only=False, quiet=True
+def _today_retry_slots(times: tuple[tuple[int, int], ...]) -> list[datetime]:
+    """把当天固定时分转换为本地时区时间，供失败通知展示和收口判断。"""
+    now = datetime.now().astimezone()
+    return [
+        now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        for hour, minute in times
+    ]
+
+
+_ORDER_RETRY_TIMES = ((19, 17), (20, 17), (21, 17))
+_FINANCE_RETRY_TIMES = ((21, 0), (21, 30), (22, 0))
+
+
+def _record_pipeline_result(
+    db: Session,
+    pipeline: str,
+    result: dict,
+    *,
+    retry_times: tuple[tuple[int, int], ...],
+) -> dict:
+    """按业务结果记录成功/失败；失败通知由持久队列保证后续可补发。"""
+    from app.services import automation_pipeline_service
+
+    if result.get("_run_status") == "fail":
+        event = automation_pipeline_service.record_failure(
+            db,
+            pipeline,
+            str(result.get("_error") or "任务未返回明确原因"),
+            retry_slots=_today_retry_slots(retry_times),
+            max_failures=1 + len(retry_times),
+        )
+    else:
+        event = automation_pipeline_service.record_success(db, pipeline)
+    result["automation_pipeline"] = event
+    return result
+
+
+def _finance_outcomes(db: Session, result: dict) -> dict[str, tuple[bool, str]]:
+    """把一次财务编排拆成余额、流水两条可独立重试和告警的结果。"""
+    import json
+
+    from sqlalchemy import select
+
+    from app.models.finance import AccountBalance
+    from app.services import agent_ingest_service, settings_service
+
+    ok_status = {"done", "ok", "success"}
+    task_status = {
+        str(item.get("task") or ""): str(item.get("status") or "").lower()
+        for item in (result.get("tasks") or [])
+    }
+    pending = {
+        str(item.get("task") or ""): str(item.get("reason") or "")
+        for item in (result.get("pending_manual") or [])
+    }
+    offline = result.get("agent_offline")
+    ingest = result.get("ingest") or {}
+
+    balance_reasons: list[str] = []
+    flow_reasons: list[str] = []
+    if offline:
+        balance_reasons.append("PC Web-Agent离线")
+        flow_reasons.append("PC Web-Agent离线")
+
+    api_balance = result.get("alipay_balance")
+    if not isinstance(api_balance, list) or not api_balance:
+        balance_reasons.append("企业号余额接口未返回有效结果")
+    elif any(item.get("error") for item in api_balance if isinstance(item, dict)):
+        balance_reasons.append("企业号余额接口失败")
+
+    balance_tasks = {
+        "bal_taobao_aggregate",
+        "bal_ads",
+        "bal_wanshifu",
+        "bal_alipay_main",
+    }
+    missing_balance = sorted(
+        task for task in balance_tasks
+        if task_status.get(task) not in ok_status
     )
-    offline = r.get("agent_offline")
-    failed = [t.get("task", "") for t in (r.get("tasks") or [])
-              if t.get("status") in ("error", "failed", "timeout")]
-    pending_manual = [t.get("task", "") for t in (r.get("pending_manual") or [])]
-    # 财务自动取数异常只进 ERP 内部告警；避免通用“连续失败”再次外发。
-    # 登录失效由 Web-Agent 的专用扫码通知即时、去重且不含金额地发飞书。
-    if offline or failed or pending_manual:
-        detail = (
-            (f"PC Web-Agent离线: {str(offline)[:160]}" if offline else "")
-            + (f"；失败任务: {','.join(failed)}" if failed else "")
-            + (f"；需恢复登录: {','.join(pending_manual)}" if pending_manual else "")
-        ).lstrip("；")
+    if missing_balance:
+        detail = [
+            f"{task}({pending.get(task) or task_status.get(task) or '未执行'})"
+            for task in missing_balance
+        ]
+        balance_reasons.append("余额任务未完成: " + ",".join(detail))
+
+    today = date.today()
+    expected_accounts = {
+        "支付宝-企业账号",
+        "淘宝聚合账户",
+        "淘宝推广账户",
+        "万师傅",
+        "主力号",
+    }
+    fresh_accounts = set(
+        db.execute(
+            select(AccountBalance.account_name).where(
+                AccountBalance.as_of_date == today,
+                AccountBalance.account_name.in_(expected_accounts),
+            )
+        ).scalars().all()
+    )
+    stale_accounts = sorted(expected_accounts - fresh_accounts)
+    if stale_accounts:
+        balance_reasons.append("余额日期未更新: " + ",".join(stale_accounts))
+
+    daily_flow = result.get("alipay_daily")
+    if not isinstance(daily_flow, dict) or daily_flow.get("error"):
+        flow_reasons.append("企业号流水接口失败")
+    elif daily_flow.get("skip"):
+        flow_reasons.append("企业号流水账户未配置")
+    elif int(daily_flow.get("fail") or 0) > 0:
+        flow_reasons.append("企业号流水存在拉取失败日期")
+
+    main_status = task_status.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
+    if main_status not in ok_status:
+        flow_reasons.append(
+            "主力号流水未完成: "
+            + (pending.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
+               or main_status or "未执行")
+        )
+    try:
+        state = json.loads(
+            settings_service.get(
+                db, agent_ingest_service.KEY_STATE, env_fallback=False
+            ) or "{}"
+        )
+        main_at = datetime.fromisoformat(
+            str(state.get(agent_ingest_service.STATE_MAIN_ALIPAY_FLOW) or "")
+        )
+        main_fresh = main_at.date() == today
+    except (TypeError, ValueError, json.JSONDecodeError):
+        main_fresh = False
+    if not main_fresh:
+        flow_reasons.append("主力号流水没有今日成功标记")
+
+    for item in (ingest.get("files") or []):
+        if item.get("status") != "error":
+            continue
+        if item.get("category") == "balance":
+            balance_reasons.append("余额文件入库失败")
+        elif item.get("category") == "alipay":
+            flow_reasons.append("支付宝流水文件入库失败")
+
+    return {
+        "balance_pull": (
+            not balance_reasons,
+            "；".join(dict.fromkeys(balance_reasons)) or "余额数据已按今日口径更新",
+        ),
+        "flow_pull": (
+            not flow_reasons,
+            "；".join(dict.fromkeys(flow_reasons)) or "企业号与主力号流水均已完成",
+        ),
+    }
+
+
+def _run_finance_pipeline(db: Session) -> dict:
+    """强制跑当天余额和流水，并将两条链路分别收口。"""
+    from app.services import agent_ingest_service, alert_service
+
+    if agent_ingest_service.is_running():
+        result = {
+            "skipped": "已有编排在跑",
+            "_run_status": "fail",
+            "_error": "已有其他取数编排占用，财务任务未执行",
+        }
+        result["balance_pipeline"] = _record_pipeline_result(
+            db, "balance_pull", dict(result), retry_times=_FINANCE_RETRY_TIMES
+        )["automation_pipeline"]
+        result["flow_pipeline"] = _record_pipeline_result(
+            db, "flow_pull", dict(result), retry_times=_FINANCE_RETRY_TIMES
+        )["automation_pipeline"]
+        return result
+
+    r = agent_ingest_service.orchestrate(
+        db,
+        force_orders=False,
+        force_finance=True,
+        orders_only=False,
+        quiet=True,
+    )
+    outcomes = _finance_outcomes(db, r)
+    failures: list[str] = []
+    for pipeline, (ok, detail) in outcomes.items():
+        pipeline_result = (
+            {"_run_status": "ok"}
+            if ok
+            else {"_run_status": "fail", "_error": detail}
+        )
+        r[f"{pipeline}_pipeline"] = _record_pipeline_result(
+            db, pipeline, pipeline_result, retry_times=_FINANCE_RETRY_TIMES
+        )["automation_pipeline"]
+        if not ok:
+            failures.append(f"{pipeline}: {detail}")
+
+    if failures:
+        detail = "；".join(failures)
         alert_service.upsert(
             db,
             kind="finance_agent_pull_failed",
@@ -814,6 +1003,8 @@ def _job_web_agent_finance(db: Session) -> dict:
         db.flush()
         r["_finance_status"] = "needs_attention"
         r["_finance_error"] = detail
+        r["_run_status"] = "fail"
+        r["_error"] = detail
     else:
         try:
             alert_service.resolve_by_dedupe(db, "finance_agent_pull_failed")
@@ -822,6 +1013,34 @@ def _job_web_agent_finance(db: Session) -> dict:
             pass
         r["_finance_status"] = "ok"
     return r
+
+
+def _job_web_agent_finance(db: Session) -> dict:
+    """每天 20:30: 强制刷新余额和流水；两条链路分别失败告警和有限重试。"""
+    return _run_finance_pipeline(db)
+
+
+def _job_web_agent_finance_retry(db: Session) -> dict:
+    """21:00/21:30/22:00: 只要余额或流水尚未成功，就整轮幂等补跑。"""
+    from app.services import automation_pipeline_service
+
+    pending = [
+        pipeline
+        for pipeline in ("balance_pull", "flow_pull")
+        if automation_pipeline_service.needs_retry(db, pipeline)
+    ]
+    if not pending:
+        return {"skipped": "finance_pipeline_closed", "_run_status": "skipped"}
+    result = _run_finance_pipeline(db)
+    result["retry_for"] = pending
+    return result
+
+
+def _job_critical_automation_final(db: Session) -> dict:
+    """22:20: 防重启/错过班次兜底，给仍未闭环的链路发送“今日失败”。"""
+    from app.services import automation_pipeline_service
+
+    return automation_pipeline_service.finalize_open_failures(db)
 
 
 def _job_ingest_scan(db: Session) -> dict:
@@ -872,8 +1091,17 @@ def _job_order_sheets_daily(db: Session) -> dict:
     等 pull_catchup 把 PC 取数补上、数据新鲜后再推。"""
     from app.services import agent_ingest_service, order_sheet_archive_service
     if not agent_ingest_service.order_data_fresh(db, not_before_hour=18):
-        return {"skipped": "stale_order_data", "note": "18:00后订单未取数, 暂缓推送(防旧数据误推)",
-                "_run_status": "fail", "_error": "18:00后淘宝订单数据未刷新，未执行飞书推送"}
+        return _record_pipeline_result(
+            db,
+            "order_delivery",
+            {
+                "skipped": "stale_order_data",
+                "note": "18:00后订单未取数, 暂缓推送(防旧数据误推)",
+                "_run_status": "fail",
+                "_error": "18:00后淘宝订单数据未刷新，未执行飞书推送",
+            },
+            retry_times=_ORDER_RETRY_TIMES,
+        )
     result = order_sheet_archive_service.push_daily(db)
     failed = int(result.get("images_failed") or 0)
     remaining = int(result.get("images_remaining") or 0)
@@ -896,7 +1124,12 @@ def _job_order_sheets_daily(db: Session) -> dict:
     elif remaining:
         result["_run_status"] = "fail"
         result["_error"] = f"仍有 {remaining} 张可推下单图未发送"
-    return result
+    return _record_pipeline_result(
+        db,
+        "order_delivery",
+        result,
+        retry_times=_ORDER_RETRY_TIMES,
+    )
 
 
 def _job_order_sheets_catchup(db: Session) -> dict:
@@ -939,21 +1172,41 @@ def _job_pull_catchup(db: Session) -> dict:
     机制(2026-07-23 收窄): **只在每日定时点(18:00)失败约1小时后**才补; 今日订单未刷新时每小时
     探测 PC 在线即重跑编排补取数, 取数成功(数据新鲜)后立即补推(含远期老单激活重推)+飞书告知一次;
     **成功即停**(下轮见新鲜→already_fresh 不再动), PC 仍离线则静默等下一轮(只失败才不停重试)。"""
-    from app.services import agent_ingest_service as ai, web_agent_service
+    from app.services import (
+        agent_ingest_service as ai,
+        automation_pipeline_service,
+        web_agent_service,
+    )
     if not (18 <= _now_hour() < 23):
         return {"skipped": "off_window"}
+    pipeline = automation_pipeline_service.get_pipeline(db, "order_delivery")
+    if pipeline.get("success") or pipeline.get("final"):
+        return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
+
+    def _finish(result: dict) -> dict:
+        return _record_pipeline_result(
+            db,
+            "order_delivery",
+            result,
+            retry_times=_ORDER_RETRY_TIMES,
+        )
+
     if ai.order_data_fresh(db, not_before_hour=18):
         # 数据新鲜不等于图片已送达。即使口令回调或 18:30 日报在发送阶段中断，
         # 每小时补跑仍用 pushed 幂等标记收口，不重复发已成功的图片。
         from app.services import order_sheet_archive_service as oss
         delivery = oss.reconcile_pending_delivery(db, limit=50, quiet=True)
         delivery["ok"] = "fresh_delivery_reconciled"
-        return delivery
+        return _finish(delivery)
     if ai.is_running():
-        return {"skipped": "orchestrate_running", "_run_status": "skipped"}
+        return _finish({
+            "skipped": "orchestrate_running",
+            "_run_status": "fail",
+            "_error": "已有其他取数编排占用，订单补跑未执行",
+        })
     pending_password = ai.pending_shipping_password_files(db)
     if pending_password:
-        return {
+        return _finish({
             "waiting": "shipping_password",
             "files": pending_password,
             "_run_status": "fail",
@@ -962,22 +1215,23 @@ def _job_pull_catchup(db: Session) -> dict:
                 + ",".join(pending_password[:5])
                 + "；请转发“发货密码 xxxx”，收到后自动解密，下个小时继续"
             ),
-        }
+        })
     if not web_agent_service.health(db).get("online"):
-        return {
+        return _finish({
             "waiting": "pc_offline",
             "_run_status": "fail",
             "_error": "PC Web-Agent 离线，未执行订单取数；下个小时自动重试",
-        }
+        })
     res = ai.orchestrate(db, quiet=True, force_orders=True, orders_only=True)  # 强制补18:00后的订单快照
     out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
            "pending_manual": len(res.get("pending_manual", []))}
     if res.get("already_running"):
-        return {
+        return _finish({
             **out,
             "skipped": "orchestrate_running",
-            "_run_status": "skipped",
-        }
+            "_run_status": "fail",
+            "_error": "订单取数编排被其他任务占用，未完成补跑",
+        })
     if ai.order_data_fresh(db, not_before_hour=18):  # 取数成功→数据新鲜→立即补生成+补推
         from app.services import order_sheet_archive_service as oss
         delivery = oss.reconcile_pending_delivery(db, limit=50, quiet=True)
@@ -1025,7 +1279,7 @@ def _job_pull_catchup(db: Session) -> dict:
             reasons.append("订单取数结束，但未生成18:00后的三报表完整标记")
         out["_run_status"] = "fail"
         out["_error"] = "; ".join(reasons)
-    return out
+    return _finish(out)
 
 
 def _job_void_sheets(db: Session) -> dict:
@@ -1619,6 +1873,10 @@ def _register_default_jobs() -> None:
                  _job_web_agent_daily, cron={"hour": 18, "minute": 0})
     register_job("daily_2030_finance_agent", "Web-Agent 财务取数编排(20:30, 与订单解耦)",
                  _job_web_agent_finance, cron={"hour": 20, "minute": 30})
+    register_job("finance_pull_retry_30min", "余额/流水失败补跑(21:00/21:30, 成功即停)",
+                 _job_web_agent_finance_retry, cron={"hour": 21, "minute": "0,30"})
+    register_job("finance_pull_retry_2200", "余额/流水当日最后补跑(22:00)",
+                 _job_web_agent_finance_retry, cron={"hour": 22, "minute": 0})
     register_job("hourly_ingest_scan", "共享目录导入扫描 (18:15-22:15每小时)",
                  _job_ingest_scan, cron={"hour": "18-22", "minute": 15})
     register_job("daily_2235_flip_monitor", "导入翻烧饼灰度监控(仍横跳→异常, 稳定→销账)",
@@ -1638,6 +1896,8 @@ def _register_default_jobs() -> None:
                  _job_orders_maintain, cron={"hour": 22, "minute": 50})   # 夜间模式: 挪 02:30→22:50
     register_job("notify_retry_30min", "失败通知重发(指数退避)",
                  _job_notify_retry, interval_minutes=30)
+    register_job("daily_2220_critical_automation_final", "订单/余额/流水当日失败收口",
+                 _job_critical_automation_final, cron={"hour": 22, "minute": 20})
     register_job("monthly_thumb_cleanup", "图库缩略图缓存月度清理",
                  _job_thumb_cache_cleanup, cron={"day": 1, "hour": 22, "minute": 35})   # 夜间模式: 挪 04:00→22:35
     register_job("hourly_gallery_thumb_warm", "图库缩略图每日兜底 (上传时已即时生成)",
@@ -1647,8 +1907,8 @@ def _register_default_jobs() -> None:
     # 2026-07-08 用户拍板: 去掉"每小时补推"—— 推送只在每日 18:30(取数成功后)一次; 失败才由
     # pull_catchup 在 18:00 失败约1小时后开始按小时重试, 成功即停。故不再注册 hourly_order_sheets_catchup。
     # 保留旧 job_id，避免割裂历史日志和用户覆盖。
-    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (19:17-22:17每小时, 成功即停)",
-                 _job_pull_catchup, cron={"hour": "19-22", "minute": 17})
+    register_job("pull_catchup_30min", "PC上线续跑取数+补推送 (19:17-21:17每小时, 成功即停)",
+                 _job_pull_catchup, cron={"hour": "19-21", "minute": 17})
     register_job("daily_14_aftersales_followup", "售后超时智能追踪",
                  _job_aftersales_followup, cron={"hour": 14, "minute": 0})
     register_job("weekly_mon_purchase_remind", "每周备货清单提醒",
@@ -1710,6 +1970,7 @@ def _register_default_jobs() -> None:
 _CATCHUP_JOBS: dict[str, int] = {          # job_id → 宽限小时(错过太久不追, 免撞下一班)
     "daily_0630_web_agent": 6,             # 取数编排(18:00) — 日报的前置
     "daily_1810_order_sheets": 6,          # 下单图日报+发货报表推送(18:30)
+    "daily_2030_finance_agent": 3,          # 余额/流水取数(20:30)
     "daily_0230_orders_maintain": 8,       # 订单自动维护(22:50)
     "daily_0650_cost_recompute": 8,        # 理论成本兜底反推(06:50)
 }

@@ -84,7 +84,13 @@ def test_load_reduction_schedules_are_scoped():
     assert sch._REGISTRY["hourly_gallery_thumb_warm"]["cron"] == {"hour": 4, "minute": 10}
     assert sch._REGISTRY["hourly_ingest_scan"]["cron"] == {"hour": "18-22", "minute": 15}
     assert sch._REGISTRY["pull_catchup_30min"]["cron"] == {
-        "hour": "19-22", "minute": 17}
+        "hour": "19-21", "minute": 17}
+    assert sch._REGISTRY["finance_pull_retry_30min"]["cron"] == {
+        "hour": 21, "minute": "0,30"}
+    assert sch._REGISTRY["finance_pull_retry_2200"]["cron"] == {
+        "hour": 22, "minute": 0}
+    assert sch._REGISTRY["daily_2220_critical_automation_final"]["cron"] == {
+        "hour": 22, "minute": 20}
 
 
 def test_set_schedule_unknown_job_raises():

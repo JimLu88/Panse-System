@@ -8,7 +8,8 @@
 - orchestrate: 按更新间隔触发 Web-Agent 任务(串行, 等 job 完成) → 收尾 run_ingest
   → 飞书汇总。登录态缺失/超时的任务标「待人工」, 绝不无限重试 (交接方案 §7.6)。
 
-更新间隔 (用户拍板): 订单默认 1 天, 余额/流水默认 3 天, settings 可改。
+更新间隔 (用户拍板): 订单默认 1 天；手动编排的余额/流水默认 3 天、settings 可改。
+每日 20:30 财务班次使用 force_finance=True，仍会强制刷新当天余额和流水。
 """
 from __future__ import annotations
 
@@ -864,7 +865,8 @@ def finalize_order_pull_after_shipping_password(
 
 
 def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
-                force_orders: bool = False, orders_only: bool = False) -> dict:
+                force_orders: bool = False, force_finance: bool = False,
+                orders_only: bool = False) -> dict:
     """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""
     if not _orch_lock.acquire(blocking=False):
         return {
@@ -877,13 +879,15 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
     try:
         return _orchestrate_locked(
             db, force=force, quiet=quiet,
-            force_orders=force_orders, orders_only=orders_only)
+            force_orders=force_orders, force_finance=force_finance,
+            orders_only=orders_only)
     finally:
         _orch_lock.release()
 
 
 def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False,
-                        force_orders: bool = False, orders_only: bool = False) -> dict:
+                        force_orders: bool = False, force_finance: bool = False,
+                        orders_only: bool = False) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
                  "tasks": [], "pending_manual": [], "skipped": []}
@@ -901,13 +905,14 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     iv_balance = _get_int(db, KEY_INTERVAL_BALANCE, 3)
 
     plan: list[str] = []
-    if force_orders or _due(state, "taobao_report", iv_orders, force):
+    if force_orders or (not force_finance and _due(state, "taobao_report", iv_orders, force)):
         plan += ORDERS_TASKS
-    if (not orders_only and (_due(state, "settlement", iv_balance, force)
-            or _due(state, "balance", iv_balance, force)
-            or _due(state, "promotion", iv_balance, force))):
+    finance_force = force or force_finance
+    if (not orders_only and (_due(state, "settlement", iv_balance, finance_force)
+            or _due(state, "balance", iv_balance, finance_force)
+            or _due(state, "promotion", iv_balance, finance_force))):
         plan += BALANCE_FLOW_TASKS
-    if not orders_only and _due_today(state, STATE_MAIN_ALIPAY_FLOW, force):
+    if not orders_only and _due_today(state, STATE_MAIN_ALIPAY_FLOW, finance_force):
         plan.append(MAIN_ALIPAY_FLOW_TASK)
 
     for task_id, reason in SKIPPED_TASKS.items():
