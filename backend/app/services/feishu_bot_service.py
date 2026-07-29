@@ -25,7 +25,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order
-from app.services import feishu_client, settings_service, vision_ocr_service
+from app.services import feishu_client, order_flags, settings_service, vision_ocr_service
 from app.services.ai_provider import AiUnavailable
 
 _log = logging.getLogger("panse.feishu_bot")
@@ -196,6 +196,9 @@ _HELP_CONTENT = (
     "**不同类型请分批发**。隔太久或想另起一批，**重新 @我** 即可。\n\n"
     "发来后我会弹卡片让你**确认**；认不准会让你**点选类型**。所有原文件都会按类型归档，"
     "在系统「数据工具 → 导入档案」可随时回看下载。\n\n"
+    "**🔎 工厂验货图**\n"
+    "把图片和文字放在同一条消息里，例如：`验货 畔色321单` 或 `验货 订单号3314…`。"
+    "系统会直接归到对应订单的检查图库，不再走单据识别。\n\n"
     "> 群里记得 **@我** 再带上图片/文件；私聊我的话直接发就行。"
 )
 
@@ -655,6 +658,114 @@ def _post_image_keys(content_meta: dict) -> list[str]:
             if isinstance(seg, dict) and seg.get("tag") == "img" and seg.get("image_key"):
                 keys.append(seg["image_key"])
     return keys
+
+
+def _post_text(content_meta: dict) -> str:
+    """提取富文本消息中的标题和纯文字，忽略 @ 与图片节点。"""
+    parts: list[str] = []
+    title = str(content_meta.get("title") or "").strip()
+    if title:
+        parts.append(title)
+    for line in content_meta.get("content") or []:
+        if not isinstance(line, list):
+            continue
+        for seg in line:
+            if not isinstance(seg, dict):
+                continue
+            if seg.get("tag") in ("text", "a"):
+                text = str(seg.get("text") or "").strip()
+                if text:
+                    parts.append(text)
+    return " ".join(parts).strip()
+
+
+_INSPECTION_MARKERS = ("验货", "复检", "检查图", "出厂图", "出厂照片")
+_ORDER_NO_RE = re.compile(r"(?<!\d)(\d{16,24})(?!\d)")
+_FACTORY_NO_RE = re.compile(r"(?:畔色\s*)?(\d{1,6})\s*单")
+
+
+def _inspection_ref(text: str) -> Optional[dict[str, Any]]:
+    """解析「验货 畔色321单」或「验货 订单号…」；无验货语义时不接管普通图片。"""
+    cleaned = re.sub(r"@_user_\d+|@_all|@\S+", "", text or "").strip()
+    if not any(marker in cleaned for marker in _INSPECTION_MARKERS):
+        return None
+    order_match = _ORDER_NO_RE.search(cleaned)
+    if order_match:
+        return {"order_no": order_match.group(1)}
+    factory_match = _FACTORY_NO_RE.search(cleaned)
+    if factory_match:
+        return {"factory_no": int(factory_match.group(1))}
+    # 已明确写了验货时，也允许最简写法「验货 321」。
+    short = re.search(r"(?<!\d)(\d{1,6})(?!\d)", cleaned)
+    return {"factory_no": int(short.group(1))} if short else {}
+
+
+def _process_inspection_post(
+    db: Session,
+    message_id: str,
+    image_keys: list[str],
+    text: str,
+    *,
+    uploaded_by: Optional[str],
+) -> dict:
+    """飞书附图 + 验货编号直接归档到工厂检查图库，不触发 OCR/单据分类。"""
+    from app.services import inspection_gallery_service
+
+    ref = _inspection_ref(text) or {}
+    order = inspection_gallery_service.find_order(db, **ref) if ref else None
+    if order is None:
+        _safe_reply(
+            db,
+            message_id,
+            _result_card(
+                "验货图片未归档",
+                "没有找到对应订单。请把图片和 `验货 畔色321单` 或完整平台订单号放在同一条消息里重发。",
+                "orange",
+            ),
+        )
+        return {"message_id": message_id, "kind": "factory_inspection", "error": "order_not_found"}
+
+    archived = 0
+    errors: list[str] = []
+    try:
+        for idx, image_key in enumerate(image_keys, start=1):
+            try:
+                content = feishu_client.download_message_resource(db, message_id, image_key)
+                ext = ".png" if content.startswith(b"\x89PNG\r\n\x1a\n") else ".jpg"
+                inspection_gallery_service.archive_image(
+                    db,
+                    order=order,
+                    content=content,
+                    original_name=f"{order.order_no}_验货_{idx}{ext}",
+                    source="feishu",
+                    uploaded_by=uploaded_by,
+                )
+                archived += 1
+            except Exception as e:  # 单张失败不丢掉同消息中的其它图
+                errors.append(f"第{idx}张: {type(e).__name__}")
+        if archived:
+            db.commit()
+        else:
+            db.rollback()
+    except Exception:
+        db.rollback()
+        raise
+
+    label = order_flags.factory_label(order) or order.order_no
+    if errors:
+        body = f"{label} 已归档 {archived}/{len(image_keys)} 张；失败：{'、'.join(errors)}。"
+        template = "orange"
+    else:
+        body = f"{label} 已归档 {archived} 张，可在 ERP「检查图库」按日期、产品或订单筛选。"
+        template = "green"
+    _safe_reply(db, message_id, _result_card("工厂验货图已归档", body, template))
+    return {
+        "message_id": message_id,
+        "kind": "factory_inspection",
+        "order_no": order.order_no,
+        "archived": archived,
+        "errors": errors,
+    }
 
 
 # ── 多图归批: 同一会话同一人 3 分钟内连发的图算一批, 只问一次类型 ──
@@ -1120,6 +1231,11 @@ def on_message_event(db: Session, event: dict) -> Optional[dict]:
         # 群里 @机器人 并带图 → 富文本(post), 图片内嵌。单图走单图流程; 多图整批按同一类型处理(不丢图)。
         keys = _post_image_keys(content)
         if message_id and keys:
+            post_text = _post_text(content)
+            if _inspection_ref(post_text) is not None:
+                return _process_inspection_post(
+                    db, message_id, keys, post_text, uploaded_by=uploader
+                )
             if len(keys) == 1:
                 return _process_image(db, message_id, keys[0], batch_key=bkey, uploaded_by=uploader)
             return _process_batch(db, message_id, keys, batch_key=bkey, uploaded_by=uploader)

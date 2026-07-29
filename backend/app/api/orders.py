@@ -1,11 +1,12 @@
 import csv
 import io
+import mimetypes
 from datetime import date as _date
 from decimal import Decimal as _Decimal
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
@@ -23,6 +24,7 @@ from app.services import (
     exception_service,
     factory_sheet,
     import_storage,
+    inspection_gallery_service,
     order_cost_service,
     order_import,
     order_message_service,
@@ -305,6 +307,79 @@ def factory_production(
             "accessory": acc_sum.get(o.id),   # {total,done,pending} 配齐进度; None=未生成配件
         })
     return out
+
+
+@router.get("/inspection-gallery")
+def inspection_gallery(
+    date_from: Optional[_date] = Query(None),
+    date_to: Optional[_date] = Query(None),
+    product: Optional[str] = Query(None, description="产品名称/编码/SKU"),
+    order_no: Optional[str] = Query(None),
+    factory_no: Optional[int] = Query(None),
+    limit: int = Query(500, ge=1, le=2000),
+    db: Session = Depends(get_db),
+):
+    """工厂出厂复检图库：按日期、产品、订单或工厂下单号筛选。"""
+    return inspection_gallery_service.list_images(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        product=product,
+        order_no=order_no,
+        factory_no=factory_no,
+        limit=limit,
+    )
+
+
+@router.get("/inspection-gallery/{file_id}/file")
+def inspection_gallery_file(file_id: int, db: Session = Depends(get_db)):
+    from app.models.import_file import ImportedFile
+    rec = db.get(ImportedFile, file_id)
+    if rec is None or rec.kind != "factory_inspection":
+        raise HTTPException(404, "验货图片不存在")
+    try:
+        content = import_storage.read(rec.stored_path)
+    except (FileNotFoundError, PermissionError):
+        raise HTTPException(404, "验货图片文件不存在")
+    media_type = mimetypes.guess_type(rec.original_filename or "")[0] or "application/octet-stream"
+    return Response(content=content, media_type=media_type)
+
+
+@router.post("/inspection-gallery/upload/{order_id}")
+async def upload_inspection_images(
+    order_id: int,
+    files: list[UploadFile] = File(...),
+    captured_on: Optional[_date] = Form(None),
+    db: Session = Depends(get_db),
+):
+    """网页直接上传一单的多张出厂复检原图。"""
+    order = db.get(Order, order_id)
+    if order is None:
+        raise HTTPException(404, "订单不存在")
+    if not files:
+        raise HTTPException(422, "请选择图片")
+    records: list[dict] = []
+    try:
+        for upload in files:
+            content = await upload.read()
+            rec = inspection_gallery_service.archive_image(
+                db,
+                order=order,
+                content=content,
+                original_name=upload.filename or "inspection.jpg",
+                source="web",
+                uploaded_by="ERP网页",
+                captured_on=captured_on,
+            )
+            records.append({"id": rec.id, "filename": rec.original_filename})
+        db.commit()
+    except ValueError as e:
+        db.rollback()
+        raise HTTPException(422, str(e))
+    except Exception:
+        db.rollback()
+        raise
+    return {"ok": True, "uploaded": len(records), "records": records}
 
 
 class ProductionPatch(BaseModel):

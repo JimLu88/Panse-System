@@ -154,6 +154,44 @@ def upload_image(db: Session, png_bytes: bytes) -> str:
     return (data.get("data") or {}).get("image_key", "")
 
 
+def upload_bitable_image(
+    db: Session,
+    app_token: str,
+    image_bytes: bytes,
+    file_name: str = "product.jpg",
+) -> str:
+    """上传图片素材到指定多维表格，返回附件字段可写入的 file_token。"""
+    url = f"{_BASE}/drive/v1/medias/upload_all"
+    suffix = (file_name.rsplit(".", 1)[-1] if "." in file_name else "jpg").lower()
+    mime = {
+        "png": "image/png",
+        "webp": "image/webp",
+        "gif": "image/gif",
+    }.get(suffix, "image/jpeg")
+    try:
+        r = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {get_tenant_access_token(db)}"},
+            files={"file": (file_name[:250], image_bytes, mime)},
+            data={
+                "file_name": file_name[:250],
+                "parent_type": "bitable_image",
+                "parent_node": app_token,
+                "size": str(len(image_bytes)),
+            },
+            timeout=max(_TIMEOUT, 30),
+        )
+    except httpx.HTTPError as e:
+        raise FeishuError(f"飞书多维表格图片上传网络失败: {e}") from e
+    data = _json(r)
+    if data.get("code") != 0:
+        raise FeishuError(
+            f"飞书多维表格图片上传失败: {data.get('msg')} (code={data.get('code')})",
+            code=data.get("code"),
+        )
+    return (data.get("data") or {}).get("file_token", "")
+
+
 def send_text(db: Session, receive_id: str, text: str,
               *, id_type: str = "chat_id") -> dict:
     """主动给指定会话/用户发纯文本 (im/v1/messages)。"""
@@ -379,6 +417,38 @@ def create_field(db: Session, app_token: str, table_id: str,
     url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields"
     data = _req(db, "POST", url, json={"field_name": field_name, "type": field_type})
     return (data.get("field") or {}).get("field_id", "")
+
+
+def update_field(
+    db: Session,
+    app_token: str,
+    table_id: str,
+    field_id: str,
+    *,
+    field_name: str,
+    field_type: int,
+    property_: Optional[dict] = None,
+    ui_type: Optional[str] = None,
+) -> dict:
+    """全量更新一个多维表格字段的名称、类型和可选属性。"""
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/fields/{field_id}"
+    body: dict[str, Any] = {
+        "field_name": field_name,
+        "type": field_type,
+    }
+    if property_ is not None:
+        body["property"] = property_
+    if ui_type:
+        body["ui_type"] = ui_type
+    data = _req(db, "PUT", url, json=body)
+    return data.get("field") or {}
+
+
+def list_views(db: Session, app_token: str, table_id: str) -> list[dict]:
+    """列出多维表格视图（表格、看板、甘特等）。"""
+    url = f"{_BASE}/bitable/v1/apps/{app_token}/tables/{table_id}/views"
+    data = _req(db, "GET", url, params={"page_size": 100})
+    return data.get("items") or []
 
 
 def delete_field(db: Session, app_token: str, table_id: str, field_id: str) -> None:

@@ -134,6 +134,49 @@ export const repushFactory = (id: number) =>
   api.post<{ ok: boolean; pushed: number; failed: number; factory_no: number | null; order_label: string }>(
     `/api/orders/${id}/repush-factory`).then((r) => r.data);
 
+export interface InspectionImage {
+  id: number;
+  order_id: number | null;
+  order_no: string | null;
+  factory_no: number | null;
+  factory_label: string | null;
+  product_code: string | null;
+  product_name: string | null;
+  sku_code: string | null;
+  sku: string | null;
+  captured_on: string | null;
+  uploaded_by: string | null;
+  source: string | null;
+  original_filename: string | null;
+  created_at: string | null;
+}
+
+export const fetchInspectionGallery = (params: {
+  date_from?: string;
+  date_to?: string;
+  product?: string;
+  order_no?: string;
+  factory_no?: number;
+} = {}) => api.get<InspectionImage[]>('/api/orders/inspection-gallery', { params }).then((r) => r.data);
+
+export const inspectionImageUrl = (fileId: number) =>
+  `/api/orders/inspection-gallery/${fileId}/file`;
+
+export const uploadInspectionImages = (
+  orderId: number,
+  files: File[],
+  capturedOn?: string,
+) => {
+  const body = new FormData();
+  files.forEach((file) => body.append('files', file));
+  if (capturedOn) body.append('captured_on', capturedOn);
+  return api.post<{ ok: boolean; uploaded: number }>(
+    `/api/orders/inspection-gallery/upload/${orderId}`,
+    body,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120000 },
+  ).then((r) => r.data);
+};
+
 export interface CsvImportReport {
   inserted: number;
   skipped_duplicate: number;

@@ -3,13 +3,13 @@
  *
  * 每卡: 下单日 + 剩余天数(颜色随临近发货越来越红) / 客户+完整地址 / 客户备注 / 产品+SKU。
  * 卡片可直接加备注(红色放大醒目) + 手动改发货截止(覆盖默认30天)。
- * 排序: 剩余发货时间(默认) / 下单日期 / 类目。
+ * 排序: 剩余发货时间(默认) / 工厂下单号 / 下单日期 / 类目。
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
   Alert, Button, Card, Col, DatePicker, Empty, Input, InputNumber, Modal, Popconfirm, Popover, Row, Segmented, Space, Switch, Tag, Typography, message,
 } from 'antd';
-import { DownloadOutlined, PrinterOutlined, ProfileOutlined, SettingOutlined } from '@ant-design/icons';
+import { CameraOutlined, DownloadOutlined, PrinterOutlined, ProfileOutlined, SettingOutlined } from '@ant-design/icons';
 import { Link } from 'react-router-dom';
 import dayjs from 'dayjs';
 
@@ -26,6 +26,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchFactoryProduction, updateOrderProduction, type FactoryCard } from '../api/client';
 import { listAccessories, markAllAccessoriesArrived, repushFactory, type AccessoryItem } from '../api/orders';
 import { fetchPushConfig, savePushConfig } from '../api/imports';
+import InspectionGalleryModal from './InspectionGalleryModal';
 
 // 颜色随剩余天数: 初始绿 → 蓝 → 橙 → 越近越红 → 超期深红
 function dayStyle(d: number | null): { color: string; weight: number } {
@@ -58,7 +59,7 @@ const CUSTOMER_DELAY_BORDER = '#87e8de';
 
 export default function FactoryProductionView() {
   const qc = useQueryClient();
-  const [sortBy, setSortBy] = useState<'days' | 'order_date' | 'category'>('days');
+  const [sortBy, setSortBy] = useState<'days' | 'factory_no' | 'order_date' | 'category'>('days');
   const [filterStatus, setFilterStatus] = useState<string>('all');
   const [editing, setEditing] = useState<FactoryCard | null>(null);
   const [editDeadline, setEditDeadline] = useState<dayjs.Dayjs | null>(null);
@@ -66,6 +67,7 @@ export default function FactoryProductionView() {
   const [editCustomerDelayed, setEditCustomerDelayed] = useState(false);
   const [editCustomerDelayDeadline, setEditCustomerDelayDeadline] = useState<dayjs.Dayjs | null>(null);
   const [prodQ, setProdQ] = useState('');   // 按产品搜索 (图1)
+  const [galleryOpen, setGalleryOpen] = useState(false);
 
   const { data = [], isLoading } = useQuery({
     queryKey: ['factory-production', prodQ],
@@ -130,6 +132,17 @@ export default function FactoryProductionView() {
       arr.sort((a, b) => {
         const ax = a.days_left ?? 99999; const bx = b.days_left ?? 99999;
         return ax - bx;   // 最紧急(剩余最少/超期)在前
+      });
+    } else if (sortBy === 'factory_no') {
+      arr.sort((a, b) => {
+        // 正式工厂单按畔色号升序；远期单不占工厂号，排在正式单之后并按远期序号升序。
+        const aFactory = a.factory_no ?? Number.MAX_SAFE_INTEGER;
+        const bFactory = b.factory_no ?? Number.MAX_SAFE_INTEGER;
+        if (aFactory !== bFactory) return aFactory - bFactory;
+        const aRemote = a.remote_seq ?? Number.MAX_SAFE_INTEGER;
+        const bRemote = b.remote_seq ?? Number.MAX_SAFE_INTEGER;
+        if (aRemote !== bRemote) return aRemote - bRemote;
+        return String(a.order_no || '').localeCompare(String(b.order_no || ''));
       });
     } else if (sortBy === 'order_date') {
       arr.sort((a, b) => String(b.order_date || '').localeCompare(String(a.order_date || '')));  // 最新下单在前
@@ -270,6 +283,7 @@ export default function FactoryProductionView() {
           打印 / 存 PDF (一排三个)
         </Button>
         <Button icon={<DownloadOutlined />} onClick={exportExcel}>导出 Excel</Button>
+        <Button icon={<CameraOutlined />} onClick={() => setGalleryOpen(true)}>检查图库</Button>
         <Popover
           trigger="click"
           title="工厂推送设置 · 补差/加价单不推"
@@ -319,9 +333,10 @@ export default function FactoryProductionView() {
         <Typography.Text type="secondary">排序:</Typography.Text>
         <Segmented
           value={sortBy}
-          onChange={(v) => setSortBy(v as 'days' | 'order_date' | 'category')}
+          onChange={(v) => setSortBy(v as 'days' | 'factory_no' | 'order_date' | 'category')}
           options={[
             { label: '剩余发货时间', value: 'days' },
+            { label: '工厂下单号', value: 'factory_no' },
             { label: '下单日期', value: 'order_date' },
             { label: '类目', value: 'category' },
           ]}
@@ -543,6 +558,11 @@ export default function FactoryProductionView() {
           </div>
         </Space>
       </Modal>
+      <InspectionGalleryModal
+        open={galleryOpen}
+        onClose={() => setGalleryOpen(false)}
+        orders={data}
+      />
     </Space>
   );
 }

@@ -491,17 +491,23 @@ def _job_supplier_score(db: Session) -> dict:
 
 def _job_feishu_sync(db: Session) -> dict:
     """飞书双向同步 (仅 enabled 的绑定). 未配凭证则空跑."""
-    from app.services import feishu_client, feishu_sync_service
+    from app.services import (
+        factory_dispatch_feishu_service,
+        feishu_client,
+        feishu_sync_service,
+    )
     try:
         feishu_client.get_credentials(db)
     except feishu_client.FeishuError:
         return {"skipped": "飞书未配置"}
+    factory_dispatch = factory_dispatch_feishu_service.sync(db)
     results = feishu_sync_service.sync_all(db)
     return {
         "bindings": len(results),
         "pushed": sum(r.pushed for r in results),
         "pulled": sum(r.pulled for r in results),
         "conflicts": sum(r.conflicts for r in results),
+        "factory_dispatch": factory_dispatch,
     }
 
 
@@ -1085,6 +1091,26 @@ def _job_ingest_scan(db: Session) -> dict:
     return ing
 
 
+def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
+    """订单数据和下单图收口后，立即刷新飞书系统下单表。
+
+    首次失败直接并入 order_delivery 自动化失败原因，因此会按既有
+    19:17 / 20:17 / 21:17 续跑并在飞书告知具体失败阶段。
+    """
+    from app.services import factory_dispatch_feishu_service
+
+    synced = factory_dispatch_feishu_service.sync(db)
+    result["factory_dispatch"] = synced
+    if not synced.get("ok"):
+        detail = "; ".join(str(x) for x in (synced.get("errors") or [])[:5])
+        previous = str(result.get("_error") or "").strip()
+        result["_run_status"] = "fail"
+        result["_error"] = (
+            f"{previous}；" if previous else ""
+        ) + f"飞书系统下单表同步失败: {detail or '未知原因'}"
+    return result
+
+
 def _job_order_sheets_daily(db: Session) -> dict:
     """每天 18:00: 给已付款新订单补生成下单图 → 存导入档案 → 推飞书群 (用户拍板)。
     新鲜度门(2026-07-07): 今日订单未取数成功→暂缓推送, 防隔夜旧数据把已关闭单误推;
@@ -1124,6 +1150,7 @@ def _job_order_sheets_daily(db: Session) -> dict:
     elif remaining:
         result["_run_status"] = "fail"
         result["_error"] = f"仍有 {remaining} 张可推下单图未发送"
+    _sync_factory_dispatch_after_orders(db, result)
     return _record_pipeline_result(
         db,
         "order_delivery",
@@ -1184,6 +1211,8 @@ def _job_pull_catchup(db: Session) -> dict:
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
 
     def _finish(result: dict) -> dict:
+        if result.get("_run_status") != "fail":
+            _sync_factory_dispatch_after_orders(db, result)
         return _record_pipeline_result(
             db,
             "order_delivery",
