@@ -62,6 +62,39 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert "订单金额" not in row
 
 
+def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
+    db_session, monkeypatch
+):
+    contact = "0571-12345678 / 微信联系"
+    db_session.add(_order(customer_phone=contact))
+    db_session.commit()
+    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
+
+    rows = dispatch.build_rows(db_session)
+    assert rows[0]["客户联系方式"] == contact
+    assert dict(dispatch.FIELD_SPECS)["客户联系方式"] == 1
+    assert dispatch.LEGACY_RENAMES["销售负责人"] == ("客户联系方式", 1)
+
+
+def test_dispatch_compare_ignores_timestamp_and_normalizes_number_strings():
+    expected = {
+        "订单号": "331400000000000001",
+        "订购数量": 2,
+        "木作成本价": 600.0,
+        "系统更新时间": 2000,
+    }
+    remote = {
+        "订单号": "331400000000000001",
+        "订购数量": "2",
+        "木作成本价": "600",
+        "系统更新时间": 1000,
+    }
+    assert dispatch._same(remote, expected) is True
+    remote["木作成本价"] = "601"
+    assert dispatch._same(remote, expected) is False
+
+
 def test_inspection_gallery_archives_and_filters(db_session, monkeypatch, tmp_path):
     order = _order()
     db_session.add(order)

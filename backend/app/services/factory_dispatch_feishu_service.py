@@ -50,7 +50,9 @@ TABLE_ID_KEY = "factory_dispatch_feishu_table_id"
 IMAGE_CACHE_KEY = "factory_dispatch_feishu_image_tokens"
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
-# 字段 type 见飞书 Bitable：1文本、2数字、3单选、5日期、7复选框、13电话、17附件。
+# 字段 type 见飞书 Bitable：1文本、2数字、3单选、5日期、7复选框、17附件。
+# 客户联系方式必须用文本：真实订单可能是固话、多个号码或带文字说明，
+# 不能让飞书 Phone 字段的格式校验阻断整单同步。
 FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("订单号", 1),
     ("工厂下单号", 1),
@@ -71,7 +73,7 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("验货图片数", 2),
     ("订单备注", 1),
     ("客户名称", 1),
-    ("客户联系方式", 13),
+    ("客户联系方式", 1),
     ("客户地址", 1),
     ("物流单号", 1),
     ("系统更新时间", 5),
@@ -80,7 +82,7 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
 # 用户给的是飞书订单模板。沿用原字段 ID 改名，可保留三个视图的列位置和显示配置。
 LEGACY_RENAMES: dict[str, tuple[str, int]] = {
     "订单金额": ("木作成本价", 2),
-    "销售负责人": ("客户联系方式", 13),
+    "销售负责人": ("客户联系方式", 1),
     "库存情况": ("产品编码", 1),
     "负责人销售记录": ("工厂下单号", 1),
 }
@@ -402,8 +404,24 @@ def _norm(value: Any) -> Any:
     return str(value)
 
 
+def _equivalent(remote: Any, expected: Any) -> bool:
+    # 飞书数字列的读取结果可能是字符串（例如 "1"、"3000"），而写入值是
+    # int/float。按数值比较，避免每天把全部订单误判为有变化。
+    if isinstance(expected, (int, float, Decimal)) and not isinstance(expected, bool):
+        try:
+            return Decimal(str(remote)) == Decimal(str(expected))
+        except (ArithmeticError, ValueError):
+            return False
+    return _norm(remote) == _norm(expected)
+
+
 def _same(remote: dict, expected: dict) -> bool:
-    return all(_norm(remote.get(k)) == _norm(v) for k, v in expected.items())
+    # 系统更新时间只在订单有真实字段变化时随更新载荷写入，不能反过来成为
+    # “每次同步都更新全表”的变化来源。
+    return all(
+        k == "系统更新时间" or _equivalent(remote.get(k), v)
+        for k, v in expected.items()
+    )
 
 
 def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
