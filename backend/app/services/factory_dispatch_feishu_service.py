@@ -23,7 +23,6 @@ from PIL import Image
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.models.import_file import ImportedFile
 from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.product import Product
@@ -44,6 +43,7 @@ EXPECTED_VIEWS = {
     "vewaQAjTUH": ("订单管理表", "grid"),
     "vewsN92OdL": ("订单状态看板", "kanban"),
     "vewrj6iAGf": ("订单下单&发货时间", "gantt"),
+    "vew4sUBEFl": ("产品图片总览", "gallery"),
 }
 APP_TOKEN_KEY = "factory_dispatch_feishu_app_token"
 TABLE_ID_KEY = "factory_dispatch_feishu_table_id"
@@ -56,6 +56,8 @@ _CN_TZ = ZoneInfo("Asia/Shanghai")
 FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("订单号", 1),
     ("工厂下单号", 1),
+    ("下单分组", 3),
+    ("下单序号", 2),
     ("商品名称", 1),
     ("产品编码", 1),
     ("SKU编码", 1),
@@ -70,7 +72,7 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("发货安排", 3),
     ("客户延期单", 7),
     ("客户通知拍照", 7),
-    ("验货图片数", 2),
+    ("订单提醒", 1),
     ("订单备注", 1),
     ("客户名称", 1),
     ("客户联系方式", 1),
@@ -188,18 +190,6 @@ def _wood_unit_price(order: Order, pricing: Optional[PricingSku]) -> Optional[De
     return None
 
 
-def _inspection_counts(db: Session) -> dict[str, int]:
-    counts: dict[str, int] = {}
-    rows = db.execute(
-        select(ImportedFile).where(ImportedFile.kind == "factory_inspection")
-    ).scalars().all()
-    for row in rows:
-        order_no = str((row.row_summary or {}).get("order_no") or "").strip()
-        if order_no:
-            counts[order_no] = counts.get(order_no, 0) + 1
-    return counts
-
-
 def build_rows(db: Session) -> list[dict[str, Any]]:
     """按工厂下单图同口径构造飞书行，不改变订单或价格数据。"""
     auto_since = order_sheet_archive_service.AUTO_SINCE
@@ -228,8 +218,6 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             select(PricingSku).where(PricingSku.sku_code.in_(sku_codes))
         ).scalars().all()
     } if sku_codes else {}
-    inspection_counts = _inspection_counts(db)
-
     now_ms = _now_ms()
     out: list[dict[str, Any]] = []
     for order in orders:
@@ -261,9 +249,26 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         factory_label = order_flags.factory_label(order)
         if not factory_label and current:
             factory_label = "待编号"
+        if order.factory_no:
+            order_group = "工厂正式单"
+            order_sequence = int(order.factory_no)
+        elif remote:
+            order_group = "远期单"
+            order_sequence = int(order.remote_seq) if order.remote_seq is not None else None
+        else:
+            order_group = "待编号"
+            order_sequence = None
+        photo_requested = _photo_requested(order)
+        alerts = []
+        if order.is_customer_delayed:
+            alerts.append("⏳ 客户延期")
+        if photo_requested:
+            alerts.append("📷 通知拍照")
         out.append({
             "订单号": order.order_no,
             "工厂下单号": factory_label,
+            "下单分组": order_group,
+            "下单序号": order_sequence,
             "商品名称": product_names.get(order.product_code or "") or order.product_name or "",
             "产品编码": order.product_code or "",
             "SKU编码": order.sku_code or "",
@@ -276,8 +281,8 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "订单状态": _status(order, remote=remote, refunded=refunded),
             "发货安排": _ship_plan(order, remote=remote),
             "客户延期单": bool(order.is_customer_delayed),
-            "客户通知拍照": _photo_requested(order),
-            "验货图片数": inspection_counts.get(order.order_no, 0),
+            "客户通知拍照": photo_requested,
+            "订单提醒": " · ".join(alerts),
             "订单备注": _order_notes(order),
             "客户名称": order.customer_name or "",
             "客户联系方式": order.customer_phone or "",
@@ -332,6 +337,17 @@ def _ensure_schema(db: Session, app_token: str, table_id: str) -> dict[str, dict
     legacy_total = by_name.get("订单金额")
     if legacy_total and by_name.get("木作成本价") and not legacy_total.get("is_primary"):
         feishu_client.delete_field(db, app_token, table_id, legacy_total["field_id"])
+        fields = feishu_client.list_table_fields(db, app_token, table_id)
+        by_name = {f.get("field_name"): f for f in fields}
+
+    obsolete_inspection_count = by_name.get("验货图片数")
+    if obsolete_inspection_count and not obsolete_inspection_count.get("is_primary"):
+        feishu_client.delete_field(
+            db,
+            app_token,
+            table_id,
+            obsolete_inspection_count["field_id"],
+        )
         fields = feishu_client.list_table_fields(db, app_token, table_id)
         by_name = {f.get("field_name"): f for f in fields}
 

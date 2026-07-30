@@ -55,9 +55,13 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert len(rows) == 1
     row = rows[0]
     assert row["工厂下单号"] == "畔色321单"
+    assert row["下单分组"] == "工厂正式单"
+    assert row["下单序号"] == 321
     assert row["木作成本价"] == 600.0
     assert row["客户延期单"] is True
     assert row["客户通知拍照"] is True
+    assert row["订单提醒"] == "⏳ 客户延期 · 📷 通知拍照"
+    assert "验货图片数" not in row
     assert row["预计发货日期"] == dispatch._date_ms(date(2026, 8, 20))
     assert "订单金额" not in row
 
