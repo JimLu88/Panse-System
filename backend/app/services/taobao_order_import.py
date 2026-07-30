@@ -196,6 +196,17 @@ def _to_decimal(v: Any) -> Optional[Decimal]:
         return None
 
 
+def _same_import_value(old_v: Any, new_v: Any) -> bool:
+    """Treat numerically equivalent export values as unchanged."""
+    old_s, new_s = str(old_v), str(new_v)
+    if old_s == new_s:
+        return True
+    try:
+        return Decimal(old_s) == Decimal(new_s)
+    except (InvalidOperation, ValueError):
+        return False
+
+
 def _clean(v: Any) -> Optional[str]:
     if v is None:
         return None
@@ -745,11 +756,10 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             # is_historical 置 False: 淘宝真实订单应进统计(预测/月度报表/现金流), 旧通用导入误标历史在此纠正。
             # 用户拍板 (2026-06-11): 被覆盖的关键字段记修改档案 (source=import), 旧值可回溯。
             def _trace(fname: str, flabel: str, old_v, new_v) -> bool:
-                if str(old_v) == str(new_v):
+                if _same_import_value(old_v, new_v):
                     return False
                 try:
-                    from app.services import field_change_service
-                    field_change_service.record(
+                    _fcs.record(
                         db, table="orders", pk=no, field=fname, old=old_v, new=new_v,
                         actor="订单重导", source="import",
                         row_label=(existing.product_name or "")[:40], field_label=flabel,

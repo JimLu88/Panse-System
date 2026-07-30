@@ -118,6 +118,12 @@ def test_import_dedup(db_session):
     assert db_session.query(Order).filter_by(order_no="B200").count() == 1   # 仍只一行
 
 
+def test_numeric_formatting_is_not_counted_as_an_order_change():
+    assert tio._same_import_value(Decimal("100.00"), Decimal("100"))
+    assert tio._same_import_value(Decimal("0.00"), 0)
+    assert not tio._same_import_value(Decimal("100.01"), Decimal("100"))
+
+
 def test_reimport_updates_status_and_amount(db_session):
     """病根修复验证: 已存在订单(如旧导入卡在 pending_payment)再导时, 状态/金额被淘宝导出刷新。"""
     o = Order(platform="淘宝", order_no="B200", status="pending_payment")
