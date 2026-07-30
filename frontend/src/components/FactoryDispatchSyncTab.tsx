@@ -77,7 +77,7 @@ export default function FactoryDispatchSyncTab() {
     onSuccess: (blob) => {
       const today = new Date().toISOString().slice(0, 10);
       triggerBlobDownload(blob, `工厂系统下单表_${today}.xlsx`);
-      message.success('表格已导出（含产品图）');
+      message.success('表格已导出（含工厂下单图）');
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '导出失败'),
   });
@@ -112,7 +112,7 @@ export default function FactoryDispatchSyncTab() {
                   </Typography.Text>
                 </Space>
               </Descriptions.Item>
-              <Descriptions.Item label="同步产品图">
+              <Descriptions.Item label="同步工厂下单图">
                 <Space>
                   <Switch
                     checked={settings?.include_images ?? true}
@@ -120,7 +120,7 @@ export default function FactoryDispatchSyncTab() {
                     onChange={(checked) => updateMut.mutate({ include_images: checked })}
                   />
                   <Typography.Text type="secondary">
-                    关闭后只同步文字和状态，速度更快
+                    与每天推送给工厂群的下单图一致；关闭后只同步文字和状态
                   </Typography.Text>
                 </Space>
               </Descriptions.Item>

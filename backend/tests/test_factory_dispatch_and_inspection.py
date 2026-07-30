@@ -3,6 +3,7 @@ from datetime import date, timedelta
 from decimal import Decimal
 
 from openpyxl import load_workbook
+from PIL import Image
 
 from app.models.feishu_sync import FeishuTableBinding
 from app.models.order import Order
@@ -54,8 +55,6 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     )
     db_session.add_all([order, topup])
     db_session.commit()
-    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
-    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
 
     rows = dispatch.build_rows(db_session)
     assert len(rows) == 1
@@ -75,6 +74,8 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert "订单金额" not in row
     assert dispatch.FIELD_SPECS[0] == ("工厂下单号", 1)
     assert dict(dispatch.FIELD_SPECS)["交期紧急度"] == 3
+    assert dict(dispatch.FIELD_SPECS)["工厂下单图"] == 17
+    assert dispatch.LEGACY_RENAMES["产品图"] == ("工厂下单图", 17)
     assert dispatch.MAIN_VIEW_LAYOUT["group_by"] == "下单分组"
     assert dispatch.MAIN_VIEW_LAYOUT["sort_by"] == "系统排序键"
 
@@ -85,8 +86,6 @@ def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
     contact = "0571-12345678 / 微信联系"
     db_session.add(_order(customer_phone=contact))
     db_session.commit()
-    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
-    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
 
     rows = dispatch.build_rows(db_session)
     assert rows[0]["客户联系方式"] == contact
@@ -156,8 +155,6 @@ def test_dispatch_custom_order_uses_projected_cost_and_effective_production_qty(
     )
     db_session.add(order)
     db_session.commit()
-    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
-    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
 
     row = dispatch.build_rows(db_session)[0]
     assert row["定制标识"] == "定制单"
@@ -178,8 +175,6 @@ def test_dispatch_custom_fallback_keeps_base_wood_cost(db_session, monkeypatch):
     )
     db_session.add(order)
     db_session.commit()
-    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
-    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
 
     row = dispatch.build_rows(db_session)[0]
     assert row["订购数量"] == 1
@@ -350,8 +345,6 @@ def test_dispatch_urgency_style_preserves_existing_options(monkeypatch):
 def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch):
     db_session.add(_order(ship_deadline=date.today() - timedelta(days=1)))
     db_session.commit()
-    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
-    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
 
     content = dispatch.export_workbook(db_session, include_images=False)
     workbook = load_workbook(io.BytesIO(content), read_only=True)
@@ -361,6 +354,34 @@ def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch
     assert values["交期紧急度"] == "已超期"
     assert values["发货安排"] == "需拍照后通知爱群"
     assert headers[0] == "工厂下单号"
+    assert "工厂下单图" in headers
+    assert "产品图" not in headers
+
+
+def test_dispatch_uses_archived_factory_sheet_not_gallery_product_image(
+    db_session, monkeypatch, tmp_path
+):
+    order = _order()
+    db_session.add(order)
+    db_session.commit()
+    monkeypatch.setattr(import_storage, "get_root", lambda: tmp_path)
+
+    image_buf = io.BytesIO()
+    Image.new("RGB", (320, 200), color="white").save(image_buf, format="JPEG")
+    archived = import_storage.archive(
+        db_session,
+        content=image_buf.getvalue(),
+        original_name=f"{order.order_date.isoformat()}_{order.order_no}.jpg",
+        kind="order_sheet",
+        source="auto",
+        on_date=order.order_date,
+    )
+    db_session.commit()
+
+    row = dispatch.build_rows(db_session)[0]
+    assert row["_sheet_path"] == archived.file.stored_path
+    assert row["_sheet_signature"].startswith("factory-sheet:")
+    assert row["_sheet_name"].endswith(f"_{order.order_no}.jpg")
 
 
 def test_generic_feishu_sync_cannot_pull_factory_dispatch_table(db_session):

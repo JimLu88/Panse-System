@@ -25,6 +25,7 @@ from PIL import Image
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
+from app.models.import_file import ImportedFile
 from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.product import Product
@@ -32,7 +33,7 @@ from app.services import (
     custom_order_reconcile_service,
     data_quality_service,
     feishu_client,
-    gallery_lookup,
+    import_storage,
     order_flags,
     order_service,
     order_sheet_archive_service,
@@ -81,7 +82,7 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("订单号", 1),
     ("SKU编码", 1),
     ("SKU规格", 1),
-    ("产品图", 17),
+    ("工厂下单图", 17),
     ("尺寸", 1),
     ("发货安排", 3),
     ("客户延期单", 7),
@@ -131,7 +132,7 @@ EXPORT_FIELDS: tuple[str, ...] = (
     "客户地址",
     "订单备注",
     "物流单号",
-    "产品图",
+    "工厂下单图",
 )
 
 # 用户给的是飞书订单模板。沿用原字段 ID 改名，可保留三个视图的列位置和显示配置。
@@ -141,6 +142,9 @@ LEGACY_RENAMES: dict[str, tuple[str, int]] = {
     "库存情况": ("产品编码", 1),
     "负责人销售记录": ("工厂下单号", 1),
     "下单序号": ("系统排序键", 1),
+    # 原来这里放的是图库产品图。保留字段 ID 和各视图位置，只改成每天推给
+    # 工厂群的同一张下单图，避免飞书视图重新排版。
+    "产品图": ("工厂下单图", 17),
 }
 
 _PHOTO_KW = (
@@ -205,7 +209,7 @@ def save_sync_settings(
             db,
             INCLUDE_IMAGES_KEY,
             "1" if include_images else "0",
-            description="工厂系统下单表：同步产品图到飞书",
+            description="工厂系统下单表：同步每天推给工厂的下单图到飞书",
         )
     db.commit()
     return get_sync_settings(db)
@@ -439,6 +443,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             select(PricingSku).where(PricingSku.sku_code.in_(sku_codes))
         ).scalars().all()
     } if sku_codes else {}
+    sheet_images = _factory_sheet_images(db)
     now_ms = _now_ms()
     out: list[dict[str, Any]] = []
     for order in orders:
@@ -474,12 +479,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         else:
             unit_wood = _wood_unit_price(order, ps)
             cost_method = ""
-        image_rel = None
-        if order.product_code:
-            image_rel = (
-                gallery_lookup.sku_image_rel(order.product_code, order.sku_code, order.sku)
-                or gallery_lookup.main_image_rel(order.product_code)
-            )
+        sheet_image = sheet_images.get(order.order_no)
         factory_label = order_flags.factory_label(order)
         if not factory_label and current:
             factory_label = "待编号"
@@ -542,7 +542,9 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "物流单号": order.tracking_no or "",
             "系统更新时间": now_ms,
             "_order_id": order.id,
-            "_image_rel": image_rel,
+            "_sheet_path": sheet_image["path"] if sheet_image else None,
+            "_sheet_signature": sheet_image["signature"] if sheet_image else None,
+            "_sheet_name": sheet_image["name"] if sheet_image else None,
         })
     out.sort(key=lambda row: str(row.get("系统排序键") or "9"))
     return out
@@ -586,10 +588,10 @@ def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
 
     image_buffers: list[io.BytesIO] = []
     date_fields = {"下单日期", "预计发货日期"}
-    image_col = EXPORT_FIELDS.index("产品图") + 1
+    image_col = EXPORT_FIELDS.index("工厂下单图") + 1
     for row_no, row in enumerate(rows, start=2):
         for col, field in enumerate(EXPORT_FIELDS, start=1):
-            if field == "产品图":
+            if field == "工厂下单图":
                 continue
             value = row.get(field)
             if field in date_fields and isinstance(value, (int, float)):
@@ -598,18 +600,21 @@ def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
             cell.alignment = Alignment(vertical="top", wrap_text=True)
             if field in date_fields and value:
                 cell.number_format = "yyyy-mm-dd"
-        if include_images and row.get("_image_rel"):
+        if include_images and row.get("_sheet_path"):
             try:
-                content, _name = _image_bytes(str(row["_image_rel"]))
+                content, _name = _sheet_image_bytes(
+                    str(row["_sheet_path"]),
+                    str(row.get("_sheet_name") or "工厂下单图.jpg"),
+                )
                 buffer = io.BytesIO(content)
                 image_buffers.append(buffer)
                 image = ExcelImage(buffer)
-                image.width = 88
-                image.height = 88
+                image.width = 176
+                image.height = 105
                 sheet.add_image(image, f"{get_column_letter(image_col)}{row_no}")
-                sheet.row_dimensions[row_no].height = 68
+                sheet.row_dimensions[row_no].height = 80
             except (FileNotFoundError, OSError, ValueError):
-                sheet.cell(row=row_no, column=image_col, value="图片不可用")
+                sheet.cell(row=row_no, column=image_col, value="下单图不可用")
 
     widths = {
         "工厂下单号": 15, "下单分组": 13, "交期紧急度": 13, "商品名称": 28,
@@ -617,7 +622,7 @@ def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
         "订购数量": 10, "木作成本价": 13, "定制标识": 11, "木作成本说明": 32,
         "订单状态": 12, "发货安排": 20, "订单提醒": 22, "下单日期": 13,
         "预计发货日期": 15, "订单号": 22, "客户名称": 12, "客户联系方式": 20,
-        "客户地址": 38, "订单备注": 45, "物流单号": 22, "产品图": 15,
+        "客户地址": 38, "订单备注": 45, "物流单号": 22, "工厂下单图": 28,
     }
     for col, field in enumerate(EXPORT_FIELDS, start=1):
         sheet.column_dimensions[get_column_letter(col)].width = widths.get(field, 16)
@@ -763,45 +768,70 @@ def _load_image_cache(db: Session) -> dict[str, str]:
         return {}
 
 
-def _image_bytes(rel: str) -> tuple[bytes, str]:
-    root = gallery_lookup._root().resolve()
-    path = (root / rel).resolve()
-    path.relative_to(root)
-    if not path.is_file():
-        raise FileNotFoundError(rel)
-    with Image.open(path) as image:
+def _factory_sheet_images(db: Session) -> dict[str, dict[str, str]]:
+    """订单号 → 最新工厂下单图。
+
+    来源只认下单图归档：它和每日发到飞书工厂群的图片共用同一生成链路。
+    退款单原图会被删除并生成红叉作废图，因此这里同时纳入作废图，且以最新记录为准。
+    """
+    records = db.execute(
+        select(ImportedFile).where(
+            ImportedFile.kind.in_(("order_sheet", "order_sheet_void"))
+        ).order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    result: dict[str, dict[str, str]] = {}
+    for record in records:
+        if record.kind == "order_sheet":
+            order_no = order_sheet_archive_service._order_no_from_name(record.original_filename)
+        else:
+            order_no = order_sheet_archive_service._void_order_no_from_name(
+                record.original_filename
+            )
+        if not order_no:
+            continue
+        signature = record.file_hash or f"imported-file:{record.id}:{record.size_bytes or 0}"
+        result[order_no] = {
+            "path": record.stored_path,
+            "signature": f"factory-sheet:{signature}",
+            "name": record.original_filename or f"工厂下单图_{order_no}.jpg",
+        }
+    return result
+
+
+def _sheet_image_bytes(stored_path: str, original_name: str) -> tuple[bytes, str]:
+    content = import_storage.read(stored_path)
+    with Image.open(io.BytesIO(content)) as image:
         image = image.convert("RGB")
-        image.thumbnail((1200, 1200))
+        image.thumbnail((1800, 1800))
         buf = io.BytesIO()
         image.save(buf, format="JPEG", quality=86, optimize=True)
-    return buf.getvalue(), path.name.rsplit(".", 1)[0][:220] + ".jpg"
-
-
-def _image_signature(rel: str) -> str:
-    root = gallery_lookup._root().resolve()
-    path = (root / rel).resolve()
-    path.relative_to(root)
-    st = path.stat()
-    return f"{rel}|{st.st_size}|{st.st_mtime_ns}"
+    safe_name = Path(original_name).stem[:210] or "工厂下单图"
+    return buf.getvalue(), safe_name + ".jpg"
 
 
 def _attachment_value(
     db: Session,
     app_token: str,
-    rel: Optional[str],
+    stored_path: Optional[str],
+    signature: Optional[str],
+    original_name: Optional[str],
     cache: dict[str, str],
 ) -> list[dict]:
-    if not rel:
+    if not stored_path or not signature:
         return []
-    sig = _image_signature(rel)
-    token = cache.get(sig)
+    token = cache.get(signature)
     if not token:
-        content, name = _image_bytes(rel)
+        content, name = _sheet_image_bytes(
+            stored_path,
+            original_name or "工厂下单图.jpg",
+        )
         token = feishu_client.upload_bitable_image(db, app_token, content, name)
         if not token:
-            raise feishu_client.FeishuError(f"产品图上传未返回 file_token: {rel}")
-        cache[sig] = token
-        # 飞书素材接口 5 QPS；顺序上传时留一点间隔，首轮约 60 张，之后只传新增图。
+            raise feishu_client.FeishuError(
+                f"工厂下单图上传未返回 file_token: {original_name or stored_path}"
+            )
+        cache[signature] = token
+        # 飞书素材接口 5 QPS；顺序上传时留一点间隔，首轮上传后只传新增下单图。
         time.sleep(0.22)
     return [{"file_token": token}]
 
@@ -869,7 +899,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         "deleted_demo": 0,
         "urgency_style_updated": False,
         "missing_wood_cost": [],
-        "missing_product_image": [],
+        "missing_factory_sheet_image": [],
         "errors": [],
         "views": {},
         "view_layout": MAIN_VIEW_LAYOUT,
@@ -930,15 +960,30 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         for row in rows:
             order_no = str(row["订单号"])
             payload = {k: v for k, v in row.items() if not k.startswith("_")}
-            image_rel = row.get("_image_rel")
-            if not image_rel:
-                result["missing_product_image"].append(order_no)
-            if include_images and image_rel:
-                try:
-                    payload["产品图"] = _attachment_value(db, app_token, image_rel, cache)
-                except Exception as e:  # noqa: BLE001 - 单张图失败不阻断其它订单
-                    result["errors"].append(f"{order_no} 产品图失败: {type(e).__name__}: {e}")
-                    payload["产品图"] = []
+            sheet_path = row.get("_sheet_path")
+            sheet_signature = row.get("_sheet_signature")
+            if not sheet_path:
+                result["missing_factory_sheet_image"].append(order_no)
+            if include_images:
+                if not sheet_path:
+                    # 字段由「产品图」原位改名而来。没有真正下单图的远期/待编号单
+                    # 必须清空旧产品图，不能让工厂误以为那张缩略图就是生产下单图。
+                    payload["工厂下单图"] = []
+                else:
+                    try:
+                        payload["工厂下单图"] = _attachment_value(
+                            db,
+                            app_token,
+                            str(sheet_path),
+                            str(sheet_signature or ""),
+                            str(row.get("_sheet_name") or "工厂下单图.jpg"),
+                            cache,
+                        )
+                    except Exception as e:  # noqa: BLE001 - 单张图失败不阻断其它订单
+                        result["errors"].append(
+                            f"{order_no} 工厂下单图失败: {type(e).__name__}: {e}"
+                        )
+                        payload["工厂下单图"] = []
 
             remote = remote_by_no.get(order_no)
             if remote is None:
@@ -984,17 +1029,13 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             if len(cache) > 500:
                 used: set[str] = set()
                 for row in rows:
-                    rel = row.get("_image_rel")
-                    if not rel:
-                        continue
-                    try:
-                        used.add(_image_signature(str(rel)))
-                    except (FileNotFoundError, OSError, ValueError):
-                        continue
+                    signature = row.get("_sheet_signature")
+                    if signature:
+                        used.add(str(signature))
                 cache = {k: v for k, v in cache.items() if k in used}
             settings_service.set_value(
                 db, IMAGE_CACHE_KEY, json.dumps(cache, ensure_ascii=False),
-                description="工厂系统下单表产品图飞书素材 token 缓存",
+                description="工厂系统下单表下单图飞书素材 token 缓存",
             )
         settings_service.set_value(
             db, APP_TOKEN_KEY, app_token, description="工厂系统下单表飞书 app_token"
