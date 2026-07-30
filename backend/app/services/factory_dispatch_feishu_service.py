@@ -837,7 +837,9 @@ def _attachment_value(
 
 
 def _norm(value: Any) -> Any:
-    if value in (None, ""):
+    # 飞书附件字段清空后读回可能是 None，也可能是 []。两者都代表无附件，
+    # 必须归一化为同一个值，避免远期/待编号订单每天被重复更新。
+    if value in (None, "") or value == []:
         return None
     if isinstance(value, list):
         if all(isinstance(x, dict) and x.get("file_token") for x in value):

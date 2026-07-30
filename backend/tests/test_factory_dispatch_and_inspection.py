@@ -200,6 +200,18 @@ def test_dispatch_compare_ignores_timestamp_and_normalizes_number_strings():
     assert dispatch._same(remote, expected) is False
 
 
+def test_dispatch_compare_treats_empty_attachment_as_missing():
+    expected = {
+        "订单号": "331400000000000001",
+        "工厂下单图": [],
+    }
+    remote = {
+        "订单号": "331400000000000001",
+        "工厂下单图": None,
+    }
+    assert dispatch._same(remote, expected) is True
+
+
 def test_inspection_gallery_archives_and_filters(db_session, monkeypatch, tmp_path):
     order = _order()
     db_session.add(order)
