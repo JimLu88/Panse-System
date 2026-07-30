@@ -1,10 +1,15 @@
-from datetime import date
+import io
+from datetime import date, timedelta
 from decimal import Decimal
 
+from openpyxl import load_workbook
+
+from app.models.feishu_sync import FeishuTableBinding
 from app.models.order import Order
 from app.services import (
     factory_dispatch_feishu_service as dispatch,
     feishu_bot_service as bot,
+    feishu_sync_service,
     import_storage,
     inspection_gallery_service as gallery,
     scheduler,
@@ -35,9 +40,10 @@ def _order(**overrides) -> Order:
 
 
 def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
+    deadline = date.today() + timedelta(days=4)
     order = _order(
         is_customer_delayed=True,
-        customer_delay_deadline=date(2026, 8, 20),
+        customer_delay_deadline=deadline,
     )
     topup = _order(
         order_no="331400000000000002",
@@ -62,10 +68,13 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert row["客户延期单"] is True
     assert row["客户通知拍照"] is True
     assert row["订单提醒"] == "⏳ 客户延期 · 📷 通知拍照"
+    assert row["交期紧急度"] == "非常紧急"
+    assert row["发货安排"] == "需拍照后通知爱群"
     assert "验货图片数" not in row
-    assert row["预计发货日期"] == dispatch._date_ms(date(2026, 8, 20))
+    assert row["预计发货日期"] == dispatch._date_ms(deadline)
     assert "订单金额" not in row
     assert dispatch.FIELD_SPECS[0] == ("工厂下单号", 1)
+    assert dict(dispatch.FIELD_SPECS)["交期紧急度"] == 3
     assert dispatch.MAIN_VIEW_LAYOUT["group_by"] == "下单分组"
     assert dispatch.MAIN_VIEW_LAYOUT["sort_by"] == "系统排序键"
 
@@ -201,7 +210,7 @@ def test_feishu_inspection_caption_parser():
 def test_order_delivery_chains_dispatch_sync(db_session, monkeypatch):
     monkeypatch.setattr(
         dispatch,
-        "sync",
+        "sync_if_enabled",
         lambda db: {"ok": True, "rows": 12, "created": 1, "updated": 11},
     )
     result = scheduler._sync_factory_dispatch_after_orders(db_session, {"images_pushed": 3})
@@ -212,10 +221,57 @@ def test_order_delivery_chains_dispatch_sync(db_session, monkeypatch):
 def test_dispatch_failure_enters_order_retry_pipeline(db_session, monkeypatch):
     monkeypatch.setattr(
         dispatch,
-        "sync",
+        "sync_if_enabled",
         lambda db: {"ok": False, "errors": ["字段写入失败"]},
     )
     result = scheduler._sync_factory_dispatch_after_orders(db_session, {})
     assert result["_run_status"] == "fail"
     assert "飞书系统下单表同步失败" in result["_error"]
     assert "字段写入失败" in result["_error"]
+
+
+def test_dispatch_auto_setting_can_skip_without_touching_feishu(db_session, monkeypatch):
+    dispatch.save_sync_settings(db_session, auto_enabled=False, include_images=False)
+    monkeypatch.setattr(
+        dispatch,
+        "sync",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应访问飞书")),
+    )
+
+    result = dispatch.sync_if_enabled(db_session)
+    assert result["ok"] is True
+    assert result["skipped"] == "auto_disabled"
+    assert dispatch.get_sync_settings(db_session)["direction"] == "out"
+
+
+def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch):
+    db_session.add(_order(ship_deadline=date.today() - timedelta(days=1)))
+    db_session.commit()
+    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
+
+    content = dispatch.export_workbook(db_session, include_images=False)
+    workbook = load_workbook(io.BytesIO(content), read_only=True)
+    sheet = workbook["系统下单表"]
+    headers = [cell.value for cell in sheet[1]]
+    values = dict(zip(headers, [cell.value for cell in sheet[2]]))
+    assert values["交期紧急度"] == "已超期"
+    assert values["发货安排"] == "需拍照后通知爱群"
+    assert headers[0] == "工厂下单号"
+
+
+def test_generic_feishu_sync_cannot_pull_factory_dispatch_table(db_session):
+    binding = FeishuTableBinding(
+        system_table="orders",
+        feishu_app_token=dispatch.DEFAULT_APP_TOKEN,
+        feishu_table_id=dispatch.DEFAULT_TABLE_ID,
+        direction="bidirectional",
+        enabled=True,
+    )
+    db_session.add(binding)
+    db_session.commit()
+
+    result = feishu_sync_service.sync_binding(db_session, binding)
+    assert result.pulled == 0
+    assert result.pushed == 0
+    assert "仅允许 ERP → 飞书" in result.errors[0]

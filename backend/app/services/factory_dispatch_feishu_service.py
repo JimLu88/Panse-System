@@ -14,7 +14,8 @@ import json
 import logging
 import re
 import time
-from datetime import date, datetime, time as dt_time, timedelta
+from collections import Counter
+from datetime import date, datetime, time as dt_time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Optional
@@ -33,6 +34,7 @@ from app.services import (
     feishu_client,
     gallery_lookup,
     order_flags,
+    order_service,
     order_sheet_archive_service,
     settings_service,
 )
@@ -51,6 +53,8 @@ EXPECTED_VIEWS = {
 APP_TOKEN_KEY = "factory_dispatch_feishu_app_token"
 TABLE_ID_KEY = "factory_dispatch_feishu_table_id"
 IMAGE_CACHE_KEY = "factory_dispatch_feishu_image_tokens"
+AUTO_ENABLED_KEY = "factory_dispatch_feishu_auto_enabled"
+INCLUDE_IMAGES_KEY = "factory_dispatch_feishu_include_images"
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
 # 字段 type 见飞书 Bitable：1文本、2数字、3单选、5日期、7复选框、17附件。
@@ -86,6 +90,8 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("订单提醒", 1),
     ("定制标识", 3),
     ("木作成本说明", 1),
+    # 生产表已上线后新增的字段必须放尾部，飞书字段 API 不能可靠重排既有列。
+    ("交期紧急度", 3),
 )
 
 EXPECTED_FIELD_ORDER: tuple[str, ...] = tuple(name for name, _type in FIELD_SPECS)
@@ -95,6 +101,33 @@ MAIN_VIEW_LAYOUT = {
     "sort_by": "系统排序键",
     "hidden_fields": ["系统排序键", "客户延期单", "客户通知拍照", "系统更新时间"],
 }
+
+EXPORT_FIELDS: tuple[str, ...] = (
+    "工厂下单号",
+    "下单分组",
+    "交期紧急度",
+    "商品名称",
+    "产品编码",
+    "SKU编码",
+    "SKU规格",
+    "尺寸",
+    "订购数量",
+    "木作成本价",
+    "定制标识",
+    "木作成本说明",
+    "订单状态",
+    "发货安排",
+    "订单提醒",
+    "下单日期",
+    "预计发货日期",
+    "订单号",
+    "客户名称",
+    "客户联系方式",
+    "客户地址",
+    "订单备注",
+    "物流单号",
+    "产品图",
+)
 
 # 用户给的是飞书订单模板。沿用原字段 ID 改名，可保留三个视图的列位置和显示配置。
 LEGACY_RENAMES: dict[str, tuple[str, int]] = {
@@ -127,6 +160,50 @@ def _target(db: Session) -> tuple[str, str]:
         settings_service.get(db, APP_TOKEN_KEY, env_fallback=False) or DEFAULT_APP_TOKEN,
         settings_service.get(db, TABLE_ID_KEY, env_fallback=False) or DEFAULT_TABLE_ID,
     )
+
+
+def _setting_bool(db: Session, key: str, default: bool) -> bool:
+    raw = settings_service.get(db, key, env_fallback=False)
+    if raw is None or str(raw).strip() == "":
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def get_sync_settings(db: Session) -> dict[str, Any]:
+    """订单页使用的工厂下单表同步设置；方向固定为 ERP → 飞书。"""
+    app_token, table_id = _target(db)
+    return {
+        "auto_enabled": _setting_bool(db, AUTO_ENABLED_KEY, True),
+        "include_images": _setting_bool(db, INCLUDE_IMAGES_KEY, True),
+        "direction": "out",
+        "direction_label": "仅 ERP → 飞书",
+        "app_token": app_token,
+        "table_id": table_id,
+    }
+
+
+def save_sync_settings(
+    db: Session,
+    *,
+    auto_enabled: Optional[bool] = None,
+    include_images: Optional[bool] = None,
+) -> dict[str, Any]:
+    if auto_enabled is not None:
+        settings_service.set_value(
+            db,
+            AUTO_ENABLED_KEY,
+            "1" if auto_enabled else "0",
+            description="工厂系统下单表：订单更新后自动单向同步到飞书",
+        )
+    if include_images is not None:
+        settings_service.set_value(
+            db,
+            INCLUDE_IMAGES_KEY,
+            "1" if include_images else "0",
+            description="工厂系统下单表：同步产品图到飞书",
+        )
+    db.commit()
+    return get_sync_settings(db)
 
 
 def _date_ms(value: Optional[date]) -> Optional[int]:
@@ -184,24 +261,14 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
     return "待制单"
 
 
-def _ship_plan(order: Order, *, remote: bool) -> str:
+def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> str:
+    if photo_requested:
+        return "需拍照后通知爱群"
     if remote:
         return "之后发货（等通知）"
     if order.is_customer_delayed:
         return "客户延期（继续生产）"
     return "做好直接发货"
-
-
-def _expected_ship_date(order: Order, *, remote: bool) -> Optional[date]:
-    if order.ship_date:
-        return order.ship_date
-    if order.is_customer_delayed:
-        return order.customer_delay_deadline
-    if remote:
-        return None
-    if order.ship_deadline:
-        return order.ship_deadline
-    return order.order_date + timedelta(days=30) if order.order_date else None
 
 
 def _wood_unit_price(order: Order, pricing: Optional[PricingSku]) -> Optional[Decimal]:
@@ -372,6 +439,12 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
 
         ps = pricing.get(order.sku_code or "")
         remote = order_flags.is_remote(order)
+        schedule = order_flags.factory_schedule(order)
+        urgency = (
+            schedule["urgency_label"]
+            if order_service.is_in_factory_production(order)
+            else ""
+        )
         is_custom, custom_reason = _custom_order_info(order, ps)
         production_qty = _production_qty(order, is_custom=is_custom)
         if is_custom:
@@ -434,9 +507,14 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 if is_custom else ""
             ),
             "下单日期": _date_ms(order.order_date),
-            "预计发货日期": _date_ms(_expected_ship_date(order, remote=remote)),
+            "预计发货日期": _date_ms(schedule["effective_deadline"]),
             "订单状态": _status(order, remote=remote, refunded=refunded),
-            "发货安排": _ship_plan(order, remote=remote),
+            "交期紧急度": urgency,
+            "发货安排": _ship_plan(
+                order,
+                remote=remote,
+                photo_requested=photo_requested,
+            ),
             "客户延期单": bool(order.is_customer_delayed),
             "客户通知拍照": photo_requested,
             "订单提醒": " · ".join(alerts),
@@ -451,6 +529,85 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         })
     out.sort(key=lambda row: str(row.get("系统排序键") or "9"))
     return out
+
+
+def preview_summary(db: Session) -> dict[str, Any]:
+    rows = build_rows(db)
+    return {
+        "rows": len(rows),
+        "urgency_counts": dict(Counter(
+            str(row.get("交期紧急度") or "已完成/已作废")
+            for row in rows
+        )),
+        "group_counts": dict(Counter(str(row.get("下单分组") or "未分组") for row in rows)),
+        "custom_count": sum(row.get("定制标识") == "定制单" for row in rows),
+        "photo_notice_count": sum(
+            row.get("发货安排") == "需拍照后通知爱群" for row in rows
+        ),
+    }
+
+
+def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
+    """把当前系统下单表导出为 Excel；只读 ERP，不访问或读取飞书记录。"""
+    from openpyxl import Workbook
+    from openpyxl.drawing.image import Image as ExcelImage
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    rows = build_rows(db)
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "系统下单表"
+    sheet.freeze_panes = "A2"
+    sheet.auto_filter.ref = f"A1:{get_column_letter(len(EXPORT_FIELDS))}{max(len(rows) + 1, 2)}"
+
+    for col, field in enumerate(EXPORT_FIELDS, start=1):
+        cell = sheet.cell(row=1, column=col, value=field)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = PatternFill("solid", fgColor="1F4E78")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    image_buffers: list[io.BytesIO] = []
+    date_fields = {"下单日期", "预计发货日期"}
+    image_col = EXPORT_FIELDS.index("产品图") + 1
+    for row_no, row in enumerate(rows, start=2):
+        for col, field in enumerate(EXPORT_FIELDS, start=1):
+            if field == "产品图":
+                continue
+            value = row.get(field)
+            if field in date_fields and isinstance(value, (int, float)):
+                value = datetime.fromtimestamp(value / 1000, tz=_CN_TZ).date()
+            cell = sheet.cell(row=row_no, column=col, value=value)
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if field in date_fields and value:
+                cell.number_format = "yyyy-mm-dd"
+        if include_images and row.get("_image_rel"):
+            try:
+                content, _name = _image_bytes(str(row["_image_rel"]))
+                buffer = io.BytesIO(content)
+                image_buffers.append(buffer)
+                image = ExcelImage(buffer)
+                image.width = 88
+                image.height = 88
+                sheet.add_image(image, f"{get_column_letter(image_col)}{row_no}")
+                sheet.row_dimensions[row_no].height = 68
+            except (FileNotFoundError, OSError, ValueError):
+                sheet.cell(row=row_no, column=image_col, value="图片不可用")
+
+    widths = {
+        "工厂下单号": 15, "下单分组": 13, "交期紧急度": 13, "商品名称": 28,
+        "产品编码": 18, "SKU编码": 20, "SKU规格": 28, "尺寸": 24,
+        "订购数量": 10, "木作成本价": 13, "定制标识": 11, "木作成本说明": 32,
+        "订单状态": 12, "发货安排": 20, "订单提醒": 22, "下单日期": 13,
+        "预计发货日期": 15, "订单号": 22, "客户名称": 12, "客户联系方式": 20,
+        "客户地址": 38, "订单备注": 45, "物流单号": 22, "产品图": 15,
+    }
+    for col, field in enumerate(EXPORT_FIELDS, start=1):
+        sheet.column_dimensions[get_column_letter(col)].width = widths.get(field, 16)
+
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def _ensure_schema(db: Session, app_token: str, table_id: str) -> dict[str, dict]:
@@ -627,11 +784,18 @@ def _is_template_demo(record: dict, expected_order_nos: set[str]) -> bool:
     return isinstance(raw_date, (int, float)) and raw_date < 1704067200000  # 2024-01-01
 
 
-def sync(db: Session, *, include_images: bool = True) -> dict:
-    """增量同步系统下单表。成功不发消息；错误由调用方纳入订单自动化告警与重试。"""
+def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
+    """单向增量同步系统下单表（只写飞书，绝不把飞书内容回写 ERP）。
+
+    成功不发消息；错误由调用方纳入订单自动化告警与重试。
+    """
+    if include_images is None:
+        include_images = _setting_bool(db, INCLUDE_IMAGES_KEY, True)
     app_token, table_id = _target(db)
     result: dict[str, Any] = {
         "table_id": table_id,
+        "direction": "out",
+        "include_images": include_images,
         "rows": 0,
         "created": 0,
         "updated": 0,
@@ -767,3 +931,18 @@ def sync(db: Session, *, include_images: bool = True) -> dict:
         _logger.exception("工厂系统下单表同步失败")
     result["ok"] = not result["errors"]
     return result
+
+
+def sync_if_enabled(db: Session) -> dict:
+    """自动化入口：关闭自动同步时静默跳过；手动同步仍可直接调用 sync。"""
+    if not _setting_bool(db, AUTO_ENABLED_KEY, True):
+        return {
+            "ok": True,
+            "skipped": "auto_disabled",
+            "direction": "out",
+            "rows": 0,
+            "created": 0,
+            "updated": 0,
+            "errors": [],
+        }
+    return sync(db)

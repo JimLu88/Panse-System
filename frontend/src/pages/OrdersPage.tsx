@@ -10,6 +10,7 @@ import {
   Space,
   Table,
   Tag,
+  Tabs,
   Tooltip,
   Typography,
   Upload,
@@ -40,6 +41,7 @@ import FieldPresetBar, { fieldsFromColumns, applyPreset } from '../components/Fi
 import { Drawer, Spin, Table as AntTable } from 'antd';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { StatusCard, type StatusTone } from '../components/MobileCards';
+import FactoryDispatchSyncTab from '../components/FactoryDispatchSyncTab';
 
 function fmtMoney(v: string | null | undefined): string {
   if (v === null || v === undefined || v === '') return '—';
@@ -81,6 +83,11 @@ type StatusKey = keyof typeof STATUS_META | 'all';
 
 export default function OrdersPage() {
   const qc = useQueryClient();
+  const [pageTab, setPageTab] = useState<'orders' | 'factory-dispatch'>(() =>
+    new URLSearchParams(window.location.search).get('tab') === 'factory-dispatch'
+      ? 'factory-dispatch'
+      : 'orders',
+  );
   const [statusFilter, setStatusFilter] = useState<StatusKey>('all');
   // 支持 /orders?q=订单号 直达 (支付宝流水「关联订单」点击跳转用)
   const [q, setQ] = useState(() => new URLSearchParams(window.location.search).get('q') ?? '');
@@ -365,8 +372,39 @@ export default function OrdersPage() {
     },
   ];
 
+  const switchPageTab = (key: string) => {
+    const next = key === 'factory-dispatch' ? 'factory-dispatch' : 'orders';
+    setPageTab(next);
+    const params = new URLSearchParams(window.location.search);
+    if (next === 'factory-dispatch') params.set('tab', next);
+    else params.delete('tab');
+    const search = params.toString();
+    window.history.replaceState(null, '', `${window.location.pathname}${search ? `?${search}` : ''}`);
+  };
+
+  const pageTabs = (
+    <Tabs
+      activeKey={pageTab}
+      onChange={switchPageTab}
+      items={[
+        { key: 'orders', label: '订单总表' },
+        { key: 'factory-dispatch', label: '工厂下单同步' },
+      ]}
+    />
+  );
+
+  if (pageTab === 'factory-dispatch') {
+    return (
+      <Space direction="vertical" style={{ width: '100%' }} size="middle">
+        {pageTabs}
+        <FactoryDispatchSyncTab />
+      </Space>
+    );
+  }
+
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      {pageTabs}
       <FirstVisitTip
         storageKey="orders"
         title="订单状态机"

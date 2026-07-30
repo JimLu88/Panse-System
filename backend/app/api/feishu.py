@@ -14,6 +14,7 @@ from app.models.exception import DataException
 from app.models.feishu_sync import FeishuTableBinding
 from app.services import (
     feishu_client,
+    factory_dispatch_feishu_service,
     feishu_preset,
     feishu_sync_service,
     feishu_webhook_service,
@@ -22,6 +23,12 @@ from app.services import (
 
 router = APIRouter(prefix="/api/feishu", tags=["feishu"])
 _logger = logging.getLogger("panse.feishu_sync")
+
+
+def _is_factory_dispatch_table(db: Session, table_id: Optional[str]) -> bool:
+    if not table_id:
+        return False
+    return table_id == factory_dispatch_feishu_service._target(db)[1]
 
 
 class BindingIn(BaseModel):
@@ -68,6 +75,11 @@ def list_bindings(db: Session = Depends(get_db)):
 @router.post("/bindings", response_model=BindingOut, status_code=201)
 def create_binding(payload: BindingIn, db: Session = Depends(get_db),
                    _: User = Depends(require_role("admin"))):
+    if _is_factory_dispatch_table(db, payload.feishu_table_id):
+        raise HTTPException(
+            400,
+            "工厂系统下单表由订单页专用同步维护，仅允许 ERP → 飞书，不能创建通用绑定",
+        )
     existing = db.execute(
         select(FeishuTableBinding).where(
             FeishuTableBinding.system_table == payload.system_table,
@@ -92,6 +104,13 @@ def update_binding(binding_id: int, payload: BindingUpdateIn, db: Session = Depe
     b = db.get(FeishuTableBinding, binding_id)
     if b is None:
         raise HTTPException(404, "binding 不存在")
+    target_table_id = payload.feishu_table_id or b.feishu_table_id
+    target_enabled = payload.enabled if payload.enabled is not None else b.enabled
+    if _is_factory_dispatch_table(db, target_table_id) and target_enabled:
+        raise HTTPException(
+            400,
+            "工厂系统下单表仅允许订单页专用单向同步；请停用这条通用绑定",
+        )
     for f, v in payload.model_dump(exclude_unset=True).items():
         setattr(b, f, v)
     db.commit()

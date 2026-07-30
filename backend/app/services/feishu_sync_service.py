@@ -356,6 +356,23 @@ class SyncResult:
 def sync_binding(db: Session, binding: FeishuTableBinding,
                  *, progress_cb=None) -> SyncResult:
     res = SyncResult(system_table=binding.system_table)
+    # 「工厂系统下单表」由专用服务维护，业务方向永久锁定为 ERP → 飞书。
+    # 即便数据库里误建了通用绑定，轮询与 webhook 也不得把飞书改动拉回订单表。
+    from app.services import settings_service
+    managed_dispatch_table = (
+        settings_service.get(
+            db, "factory_dispatch_feishu_table_id", env_fallback=False
+        )
+        or "tblqn9PDPO0S69wZ"
+    )
+    if binding.feishu_table_id == managed_dispatch_table:
+        res.errors.append("工厂系统下单表仅允许 ERP → 飞书，已阻止通用同步绑定")
+        _logger.warning(
+            "阻止工厂系统下单表进入通用飞书同步: binding=%s table=%s",
+            binding.id,
+            binding.feishu_table_id,
+        )
+        return res
     ents = _entities()
     ent = ents.get(binding.system_table)
     if ent is None:

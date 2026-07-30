@@ -11,6 +11,14 @@ from typing import Optional
 
 DEFAULT_SHIP_DAYS = 30   # 工厂默认工期(天); 备注预定发货日距今 > 此 = 太早别做 = 远期
 
+URGENCY_LABELS = {
+    "overdue": "已超期",
+    "critical": "非常紧急",
+    "urgent": "紧急",
+    "normal": "正常安排",
+    "remote": "远期单",
+}
+
 # 远期关键字 (备注/生产备注/买家留言/商家备注 任一含即远期)
 REMOTE_KW = (
     "远期", "远期单", "走远期", "改远期", "转远期", "改为远期", "设为远期",
@@ -137,3 +145,68 @@ def is_factory_remote(o, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> bool
     if rdate is not None:
         return (rdate - today).days > ship_days   # 发货日太远 = 太早别做 = 远期
     return has_remote_keyword(o)
+
+
+def urgency_by_days(days: Optional[int]) -> str:
+    """剩余交期天数 → 工厂制作单紧急度。"""
+    if days is None:
+        return "normal"
+    if days < 0:
+        return "overdue"
+    if days <= 5:
+        return "critical"
+    if days <= 11:
+        return "urgent"
+    return "normal"
+
+
+def factory_schedule(o, *, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> dict:
+    """计算工厂制作单的唯一交期口径，供 ERP 看板、飞书和导出共同调用。
+
+    返回 original_deadline / effective_deadline / days_left / urgency /
+    urgency_label / remote_resume_date。该函数只读，不修改订单。
+    """
+    today = today or date.today()
+    base = getattr(o, "order_date", None)
+    manual_deadline = getattr(o, "ship_deadline", None)
+    original_deadline = manual_deadline or (
+        base + timedelta(days=ship_days) if base else None
+    )
+    text = order_text(o)
+    resume_date = parse_resume_date(text, base, today)
+
+    if bool(getattr(o, "is_customer_delayed", False)):
+        effective = getattr(o, "customer_delay_deadline", None)
+        days_left = (effective - today).days if effective else None
+        urgency = urgency_by_days(days_left)
+    elif is_activated_text(text):
+        effective = resume_date or (
+            base + timedelta(days=ship_days) if base else None
+        )
+        days_left = (effective - today).days if effective else None
+        urgency = urgency_by_days(days_left)
+    elif bool(getattr(o, "is_remote_ship", False)):
+        effective, days_left, urgency = None, None, "remote"
+    elif manual_deadline:
+        effective = manual_deadline
+        days_left = (effective - today).days
+        urgency = urgency_by_days(days_left)
+    elif resume_date is not None:
+        effective = resume_date
+        days_left = (effective - today).days
+        urgency = "remote" if days_left > ship_days else urgency_by_days(days_left)
+    elif has_remote_keyword(o):
+        effective, days_left, urgency = None, None, "remote"
+    else:
+        effective = base + timedelta(days=ship_days) if base else None
+        days_left = (effective - today).days if effective else None
+        urgency = urgency_by_days(days_left)
+
+    return {
+        "original_deadline": original_deadline,
+        "effective_deadline": effective,
+        "days_left": days_left,
+        "urgency": urgency,
+        "urgency_label": URGENCY_LABELS[urgency],
+        "remote_resume_date": resume_date,
+    }

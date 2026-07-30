@@ -118,6 +118,60 @@ export interface FactoryCard {
 export const fetchFactoryProduction = (product?: string) =>
   api.get<FactoryCard[]>('/api/orders/factory-production',
     { params: product ? { product } : undefined }).then((r) => r.data);
+
+export interface FactoryDispatchSettings {
+  auto_enabled: boolean;
+  include_images: boolean;
+  direction: 'out';
+  direction_label: string;
+  app_token: string;
+  table_id: string;
+}
+
+export interface FactoryDispatchSummary {
+  rows: number;
+  urgency_counts: Record<string, number>;
+  group_counts: Record<string, number>;
+  custom_count: number;
+  photo_notice_count: number;
+  settings: FactoryDispatchSettings;
+}
+
+export interface FactoryDispatchSyncResult {
+  ok: boolean;
+  rows: number;
+  created: number;
+  updated: number;
+  direction: 'out';
+  include_images: boolean;
+  errors: string[];
+}
+
+export const getFactoryDispatchSettings = () =>
+  api.get<FactoryDispatchSettings>('/api/orders/factory-dispatch/settings').then((r) => r.data);
+
+export const updateFactoryDispatchSettings = (payload: {
+  auto_enabled?: boolean;
+  include_images?: boolean;
+}) =>
+  api.put<FactoryDispatchSettings>('/api/orders/factory-dispatch/settings', payload).then((r) => r.data);
+
+export const getFactoryDispatchSummary = () =>
+  api.get<FactoryDispatchSummary>('/api/orders/factory-dispatch/summary').then((r) => r.data);
+
+export const syncFactoryDispatch = () =>
+  api.post<FactoryDispatchSyncResult>(
+    '/api/orders/factory-dispatch/sync',
+    null,
+    { timeout: 180000 },
+  ).then((r) => r.data);
+
+export const downloadFactoryDispatchWorkbook = (includeImages = true) =>
+  api.get<Blob>(
+    '/api/orders/factory-dispatch/export.xlsx',
+    { params: { include_images: includeImages }, responseType: 'blob', timeout: 180000 },
+  ).then((r) => r.data);
+
 export const updateOrderProduction = (
   id: number,
   patch: {

@@ -22,6 +22,7 @@ from app.schemas.order import (
 )
 from app.services import (
     exception_service,
+    factory_dispatch_feishu_service,
     factory_sheet,
     import_storage,
     inspection_gallery_service,
@@ -115,6 +116,65 @@ def list_orders(
 DEFAULT_SHIP_DAYS = 30   # 工厂制作单默认发货周期(天)
 
 
+class FactoryDispatchSettingsIn(BaseModel):
+    auto_enabled: Optional[bool] = None
+    include_images: Optional[bool] = None
+
+
+@router.get("/factory-dispatch/settings")
+def get_factory_dispatch_settings(db: Session = Depends(get_db)):
+    """工厂系统下单表设置。同步方向固定为 ERP → 飞书，不提供回写开关。"""
+    return factory_dispatch_feishu_service.get_sync_settings(db)
+
+
+@router.put("/factory-dispatch/settings")
+def put_factory_dispatch_settings(
+    payload: FactoryDispatchSettingsIn,
+    db: Session = Depends(get_db),
+):
+    return factory_dispatch_feishu_service.save_sync_settings(
+        db,
+        auto_enabled=payload.auto_enabled,
+        include_images=payload.include_images,
+    )
+
+
+@router.get("/factory-dispatch/summary")
+def factory_dispatch_summary(db: Session = Depends(get_db)):
+    settings = factory_dispatch_feishu_service.get_sync_settings(db)
+    return {
+        **factory_dispatch_feishu_service.preview_summary(db),
+        "settings": settings,
+    }
+
+
+@router.post("/factory-dispatch/sync")
+def sync_factory_dispatch(db: Session = Depends(get_db)):
+    """手动单向增量同步；即使自动开关关闭也允许人工执行一次。"""
+    return factory_dispatch_feishu_service.sync(db)
+
+
+@router.get("/factory-dispatch/export.xlsx")
+def export_factory_dispatch(
+    include_images: bool = Query(True, description="是否在 Excel 中嵌入产品图"),
+    db: Session = Depends(get_db),
+):
+    content = factory_dispatch_feishu_service.export_workbook(
+        db,
+        include_images=include_images,
+    )
+    today = _date.today().isoformat()
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": (
+                f'attachment; filename="factory_dispatch_{today}.xlsx"'
+            ),
+        },
+    )
+
+
 @router.get("/factory-production")
 def factory_production(
     product: Optional[str] = Query(None, description="产品名称/编码/SKU 模糊搜索 (含内部产品名)"),
@@ -126,7 +186,6 @@ def factory_production(
     days_left = 生效截止 − 今天(负数=超期)。
     product 非空时只返回匹配该产品(名称/编码/SKU/内部名)的订单卡片。
     """
-    from datetime import timedelta
     from app.models.product import Product
     # DB 里状态可能是中文/遗留写法(等待卖家发货/买家已付款…), 用规范化函数判"已付款待发货"。
     # 工厂制作单 = 现在"已付款但还没发货"的单(就是在工厂做的)。2026 年以前的已统一清成已发货,
@@ -157,122 +216,18 @@ def factory_production(
     if codes:
         for code, c in db.execute(select(Product.code, Product.category).where(Product.code.in_(codes))).all():
             cat[code] = c
-    today = _date.today()
-    import re as _re
-    # 远期单关键字 (2026-06-21 扩充 + 全字段命中: 备注/生产备注/买家留言/商家备注 任一含即远期)
-    REMOTE_KW = (
-        "远期", "走远期",
-        "等通知", "等客户通知", "通知后", "通知再发", "通知再做", "客户通知", "待通知", "等客户",
-        "收到通知", "随时通知", "等确认", "确认后再", "确认再发",
-        "暂不发", "暂不生产", "暂不制作", "先不发", "先不做", "先别发", "先别做", "先放", "先压着",
-        "押后", "暂缓", "缓发", "缓一缓", "延后发", "延期发", "延迟发", "推迟发", "晚点发", "迟点发",
-        "装修好", "装修完", "房子好", "房子装好", "新房", "入住前", "还没装修", "房子还没",
-        "别提前", "不要提前", "别太早", "不要太早",
-    )
-    # 激活关键字 (用户 2026-07-03): 备注(全字段)含这些 = 客户已通知/该做了 → 优先级高于远期词,
-    # 即使还写着"等通知", 只要出现"现在制作/通知发货"就自动解除远期、转排产。
-    # 只留无歧义激活词: 制作/生产/做 + 明确"现在/可以发货" + "已通知"。
-    # 刻意不含"通知发货/安排发货/客户通知"—— 它们和远期语("等客户通知发货""延迟…安排发货")高度重叠, 易误判。
-    ACTIVATE_KW = (
-        "开始制作", "现在制作", "立即制作", "马上制作", "可以制作", "安排制作",
-        "开始生产", "可以生产", "安排生产", "投产", "上生产", "排产",
-        "现在做", "可以做了", "开始做",
-        "现在发货", "可以发货", "已通知",
-    )
-    # 激活词前若紧跟 等/待/延/迟/缓/不/别 等前缀 → 远期/否定/延后语境, 不算激活
-    # (防"等…发货""延迟…安排""不可发货"误判 —— 2026-07-03 验证踩坑)。
-    _NOT_ACT_PRE = ("等", "待", "收到", "随时", "暂", "先", "不", "别", "勿", "没", "未", "无",
-                    "延", "迟", "缓", "晚", "推", "停", "慢")
-
-    def _is_activated(text: str) -> bool:
-        for k in ACTIVATE_KW:
-            i = text.find(k)
-            while i != -1:
-                if not any(w in text[max(0, i - 2):i] for w in _NOT_ACT_PRE):
-                    return True
-                i = text.find(k, i + 1)
-        return False
-
-    def _remote_text(o: Order) -> str:
-        return " ".join(t for t in (
-            o.remark, getattr(o, "production_note", None),
-            getattr(o, "buyer_message", None), getattr(o, "seller_memo", None),
-        ) if t)
-
-    def _resume_date(text: str, od: Optional[_date]) -> Optional[_date]:
-        """备注解析「X号/X月X日 (以后/再)发(货)」预定发货日 → 到期自动排产; 取不到 None。"""
-        if not text:
-            return None
-        by, bm = (od.year, od.month) if od else (today.year, today.month)
-        m = _re.search(r"(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?\s*(?:以?后|再|左右)?\s*发", text)
-        if m:
-            try:
-                return _date(by, int(m.group(1)), int(m.group(2)))
-            except ValueError:
-                return None
-        m = _re.search(r"(\d{1,2})\s*[日号]\s*(?:以?后|之?后|左右|再)?\s*发", text)
-        if m:
-            try:
-                d = _date(by, bm, int(m.group(1)))
-                if od and d < od:   # 该日早于下单 → 顺延下月
-                    d = _date(by + (1 if bm == 12 else 0), 1 if bm == 12 else bm + 1, int(m.group(1)))
-                return d
-            except ValueError:
-                return None
-        # 相对日期: 「N天后发货 / N天后发」→ 下单日 + N 天 (用户 2026-07-03)
-        m = _re.search(r"(\d{1,3})\s*天\s*[后之]?\s*(?:再)?\s*发", text)
-        if m and od:
-            try:
-                return od + timedelta(days=int(m.group(1)))
-            except (ValueError, OverflowError):
-                return None
-        return None
-
-    def _by_days(days: Optional[int]) -> str:
-        if days is None:
-            return "normal"
-        if days < 0:
-            return "overdue"       # 已超期
-        if days <= 5:
-            return "critical"      # 非常紧急
-        if days <= 11:
-            return "urgent"        # 紧急
-        return "normal"            # 正常安排
-
     from app.services import accessory_checklist_service as _acc
+    from app.services import order_flags
     acc_sum = _acc.summary_by_order(db)   # {order_id: {total, done, pending}} 配齐进度
     out = []
     for o in orders:
         base = o.order_date
-        original_deadline = o.ship_deadline or (
-            (base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None
-        )
-        _txt = _remote_text(o)
-        _rdate = _resume_date(_txt, base)
-        if o.is_customer_delayed:                           # 结构化客户延期优先:「开始制作」只表示不停产, 不能恢复原交期
-            eff = o.customer_delay_deadline
-            days = (eff - today).days if eff else None
-            st = _by_days(days)
-        elif _is_activated(_txt):                           # 激活: 备注含激活词且非"等/待通知"语境 → 解除远期, 立即排产
-            eff = _rdate or ((base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None)
-            days = (eff - today).days if eff else None
-            st = _by_days(days)
-        elif o.is_remote_ship:                              # 手动设为远期: 无期限
-            eff, days, st = None, None, "remote"
-        elif o.ship_deadline:                               # 人工设了截止 → 正常倒计时
-            eff = o.ship_deadline
-            days = (eff - today).days
-            st = _by_days(days)
-        elif _rdate is not None:                            # 备注带发货日: 截止=该日; 距今>工期仍远期(太早别做), 否则到期排产
-            eff = _rdate
-            days = (eff - today).days
-            st = "remote" if days > DEFAULT_SHIP_DAYS else _by_days(days)
-        elif any(k in _txt for k in REMOTE_KW):             # 关键词远期(等通知/装修好…): 无期限, 等客户通知
-            eff, days, st = None, None, "remote"
-        else:                                               # 普通: 下单 + 工期
-            eff = (base + timedelta(days=DEFAULT_SHIP_DAYS)) if base else None
-            days = (eff - today).days if eff else None
-            st = _by_days(days)
+        schedule = order_flags.factory_schedule(o, ship_days=DEFAULT_SHIP_DAYS)
+        original_deadline = schedule["original_deadline"]
+        eff = schedule["effective_deadline"]
+        days = schedule["days_left"]
+        st = schedule["urgency"]
+        _rdate = schedule["remote_resume_date"]
         out.append({
             "id": o.id,
             "order_no": o.order_no,

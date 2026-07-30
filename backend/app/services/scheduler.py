@@ -500,7 +500,7 @@ def _job_feishu_sync(db: Session) -> dict:
         feishu_client.get_credentials(db)
     except feishu_client.FeishuError:
         return {"skipped": "飞书未配置"}
-    factory_dispatch = factory_dispatch_feishu_service.sync(db)
+    factory_dispatch = factory_dispatch_feishu_service.sync_if_enabled(db)
     results = feishu_sync_service.sync_all(db)
     return {
         "bindings": len(results),
@@ -1099,7 +1099,7 @@ def _sync_factory_dispatch_after_orders(db: Session, result: dict) -> dict:
     """
     from app.services import factory_dispatch_feishu_service
 
-    synced = factory_dispatch_feishu_service.sync(db)
+    synced = factory_dispatch_feishu_service.sync_if_enabled(db)
     result["factory_dispatch"] = synced
     if not synced.get("ok"):
         detail = "; ".join(str(x) for x in (synced.get("errors") or [])[:5])
