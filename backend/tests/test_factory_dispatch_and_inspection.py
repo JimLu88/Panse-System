@@ -103,6 +103,11 @@ def test_dispatch_urgency_uses_schedule_for_active_and_reason_for_terminal():
         schedule=schedule,
     ) == "正常安排"
     assert dispatch._urgency_label(
+        _order(status="paid", refund_amount=Decimal("42.40")),
+        refunded=False,
+        schedule=schedule,
+    ) == "正常安排"
+    assert dispatch._urgency_label(
         _order(status="shipped"),
         refunded=False,
         schedule=schedule,

@@ -268,9 +268,6 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
 
 def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) -> str:
     """交期列始终给出原因：在制单显示排程，终态显示低干扰的结果标签。"""
-    if order_service.is_in_factory_production(order):
-        return str(schedule["urgency_label"])
-
     normalized = order_service.normalize_status(order.status)
     if refunded or normalized == "cancelled":
         return "取消"
@@ -278,6 +275,10 @@ def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) ->
         return "完成"
     if normalized == "aftersales":
         return "售后处理"
+    # 工厂在制总口径会把任意退款金额都排除，但下单表只把全额/接近全额退款视为作废。
+    # 部分退款（差价、运费等）仍是正常生产单，交期必须继续按排程显示。
+    if normalized == "paid":
+        return str(schedule["urgency_label"])
     return "待核实"
 
 
