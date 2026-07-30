@@ -80,6 +80,43 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert dispatch.MAIN_VIEW_LAYOUT["sort_by"] == "系统排序键"
 
 
+def test_dispatch_photo_keywords_cover_common_customer_phrasing():
+    positive_notes = (
+        "发货前必须拍照给我确认",
+        "做好以后拍几张照片发过来",
+        "完工图发我看一下",
+        "请录个视频确认细节",
+        "客户要求视频验货",
+        "需要远程验货后再发货",
+    )
+    for note in positive_notes:
+        assert dispatch._photo_requested(
+            _order(buyer_message=note, seller_memo=None, remark=None, production_note=None)
+        ), note
+
+
+def test_dispatch_photo_keywords_ignore_explicit_negative_phrasing():
+    negative_notes = (
+        "客户说不用拍照，做好直接发货",
+        "无需发图，正常安排即可",
+        "不需要提供照片",
+        "不要录视频",
+        "取消拍照要求",
+    )
+    for note in negative_notes:
+        assert not dispatch._photo_requested(
+            _order(buyer_message=note, seller_memo=None, remark=None, production_note=None)
+        ), note
+    assert dispatch._photo_requested(
+        _order(
+            buyer_message="不用拍照，但需要录视频确认",
+            seller_memo=None,
+            remark=None,
+            production_note=None,
+        )
+    )
+
+
 def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
     db_session, monkeypatch
 ):
