@@ -311,6 +311,36 @@ def test_pull_catchup_still_stale_when_pull_fails(db_session, monkeypatch):
     assert "需人工登录" in res["_error"]
 
 
+def test_pull_catchup_reports_task_failure_without_calling_it_login(db_session, monkeypatch):
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
+    monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)
+    monkeypatch.setattr(ai, "is_running", lambda: False)
+    monkeypatch.setattr(ai, "pending_shipping_password_files", lambda db: [])
+    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(
+        ai,
+        "orchestrate",
+        lambda db, **kwargs: {
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "error",
+                "error": "订单报表:未收到文件",
+            }],
+            "pending_manual": [],
+            "task_errors": [{
+                "task": "taobao_orders",
+                "reason": "任务error: 订单报表:未收到文件",
+            }],
+        },
+    )
+
+    res = scheduler._job_pull_catchup(db_session)
+
+    assert "取数任务失败" in res["_error"]
+    assert "订单报表:未收到文件" in res["_error"]
+    assert "需人工登录" not in res["_error"]
+
+
 def test_pull_catchup_reports_pending_password(db_session, monkeypatch):
     monkeypatch.setattr(scheduler, "_now_hour", lambda: 19)
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)

@@ -784,7 +784,12 @@ def _job_web_agent_daily(db: Session) -> dict:
         r["_error"] = f"PC Web-Agent 离线: {str(offline)[:300]}"
     elif failed:
         r["_run_status"] = "fail"
-        r["_error"] = f"取数任务失败: {','.join(failed)}"
+        details = [
+            f"{item.get('task')}: {str(item.get('error') or '未返回原因')[:180]}"
+            for item in (r.get("tasks") or [])
+            if item.get("status") == "error"
+        ]
+        r["_error"] = "取数任务失败: " + "; ".join(details)
     elif pending_manual:
         r["_run_status"] = "fail"
         r["_error"] = f"取数任务需要重新登录: {','.join(pending_manual)}"
@@ -1296,6 +1301,15 @@ def _job_pull_catchup(db: Session) -> dict:
         if res.get("pending_manual"):
             reasons.append("需人工登录: " + ",".join(
                 str(x.get("task") or "?") for x in res["pending_manual"]))
+        failed_tasks = [
+            item for item in (res.get("tasks") or [])
+            if str(item.get("status") or "").lower() in ("error", "failed", "timeout")
+        ]
+        if failed_tasks:
+            reasons.append("取数任务失败: " + "; ".join(
+                f"{item.get('task')}: {str(item.get('error') or '未返回原因')[:180]}"
+                for item in failed_tasks
+            ))
         if ingest.get("pending"):
             pending_files = [
                 f"{x.get('path', '?')}({x.get('status', 'pending')})"

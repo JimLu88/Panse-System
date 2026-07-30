@@ -975,7 +975,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                         orders_only: bool = False) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
-                 "tasks": [], "pending_manual": [], "skipped": []}
+                 "tasks": [], "pending_manual": [], "task_errors": [], "skipped": []}
     hb = web_agent_service.health(db)
     if not hb.get("online"):
         out["agent_offline"] = hb.get("error", "无法连接")
@@ -1067,7 +1067,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                 out["pending_manual"].append(
                     {"task": task_id, "reason": "需扫码 — 方便时在飞书回复『扫码』启动"})
             else:
-                out["pending_manual"].append(
+                out["task_errors"].append(
                     {"task": task_id, "reason": f"任务{status}: {err[:120]}"})
         out["tasks"].append(item)
         if task_id == "taobao_orders" and status in ("done", "ok", "success"):
