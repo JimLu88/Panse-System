@@ -57,34 +57,44 @@ _CN_TZ = ZoneInfo("Asia/Shanghai")
 # 客户联系方式必须用文本：真实订单可能是固话、多个号码或带文字说明，
 # 不能让飞书 Phone 字段的格式校验阻断整单同步。
 FIELD_SPECS: tuple[tuple[str, int], ...] = (
-    ("订单号", 1),
+    # 字段顺序就是清空重建后的飞书底表顺序。主字段必须是工厂下单号，
+    # 工厂在表格、看板和画册中看到的第一项才不会再是平台订单号。
     ("工厂下单号", 1),
-    ("下单分组", 3),
-    ("下单序号", 2),
     ("商品名称", 1),
+    ("订单状态", 3),
+    ("客户名称", 1),
+    ("客户联系方式", 1),
+    ("订购数量", 2),
+    ("木作成本价", 2),
+    ("下单日期", 5),
+    ("预计发货日期", 5),
     ("产品编码", 1),
+    ("订单号", 1),
     ("SKU编码", 1),
     ("SKU规格", 1),
     ("产品图", 17),
     ("尺寸", 1),
-    ("订购数量", 2),
-    ("木作成本价", 2),
-    ("定制标识", 3),
-    ("木作成本说明", 1),
-    ("下单日期", 5),
-    ("预计发货日期", 5),
-    ("订单状态", 3),
     ("发货安排", 3),
     ("客户延期单", 7),
     ("客户通知拍照", 7),
-    ("订单提醒", 1),
     ("订单备注", 1),
-    ("客户名称", 1),
-    ("客户联系方式", 1),
     ("客户地址", 1),
     ("物流单号", 1),
     ("系统更新时间", 5),
+    ("下单分组", 3),
+    ("系统排序键", 1),
+    ("订单提醒", 1),
+    ("定制标识", 3),
+    ("木作成本说明", 1),
 )
+
+EXPECTED_FIELD_ORDER: tuple[str, ...] = tuple(name for name, _type in FIELD_SPECS)
+MAIN_VIEW_LAYOUT = {
+    "primary_field": "工厂下单号",
+    "group_by": "下单分组",
+    "sort_by": "系统排序键",
+    "hidden_fields": ["系统排序键", "客户延期单", "客户通知拍照", "系统更新时间"],
+}
 
 # 用户给的是飞书订单模板。沿用原字段 ID 改名，可保留三个视图的列位置和显示配置。
 LEGACY_RENAMES: dict[str, tuple[str, int]] = {
@@ -92,6 +102,7 @@ LEGACY_RENAMES: dict[str, tuple[str, int]] = {
     "销售负责人": ("客户联系方式", 1),
     "库存情况": ("产品编码", 1),
     "负责人销售记录": ("工厂下单号", 1),
+    "下单序号": ("系统排序键", 1),
 }
 
 _PHOTO_KW = (
@@ -385,12 +396,20 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         if order.factory_no:
             order_group = "工厂正式单"
             order_sequence = int(order.factory_no)
+            system_sort_key = f"1-{order_sequence:06d}"
         elif remote:
             order_group = "远期单"
             order_sequence = int(order.remote_seq) if order.remote_seq is not None else None
+            system_sort_key = (
+                f"2-{order_sequence:06d}"
+                if order_sequence is not None
+                else f"2-999999-{order.id:010d}"
+            )
         else:
             order_group = "待编号"
             order_sequence = None
+            order_day = order.order_date.isoformat() if order.order_date else "9999-12-31"
+            system_sort_key = f"3-{order_day}-{order.id:010d}"
         photo_requested = _photo_requested(order)
         alerts = []
         if order.is_customer_delayed:
@@ -401,7 +420,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "订单号": order.order_no,
             "工厂下单号": factory_label,
             "下单分组": order_group,
-            "下单序号": order_sequence,
+            "系统排序键": system_sort_key,
             "商品名称": product_names.get(order.product_code or "") or order.product_name or "",
             "产品编码": order.product_code or "",
             "SKU编码": order.sku_code or "",
@@ -430,6 +449,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "_order_id": order.id,
             "_image_rel": image_rel,
         })
+    out.sort(key=lambda row: str(row.get("系统排序键") or "9"))
     return out
 
 
@@ -490,6 +510,24 @@ def _ensure_schema(db: Session, app_token: str, table_id: str) -> dict[str, dict
         by_name = {f.get("field_name"): f for f in fields}
 
     return by_name
+
+
+def _schema_layout_errors(fields: list[dict]) -> list[str]:
+    """校验底表结构；视图分组/隐藏列仍需飞书页面配置。"""
+    errors: list[str] = []
+    names = [str(field.get("field_name") or "") for field in fields]
+    primary = next((field for field in fields if field.get("is_primary")), None)
+    if not primary or primary.get("field_name") != "工厂下单号":
+        errors.append("第一列必须是主字段「工厂下单号」")
+    if "下单序号" in names:
+        errors.append("旧字段「下单序号」仍存在")
+    if names[: len(EXPECTED_FIELD_ORDER)] != list(EXPECTED_FIELD_ORDER):
+        errors.append("字段顺序与系统下单表结构不一致")
+    by_name = {field.get("field_name"): field for field in fields}
+    sort_field = by_name.get("系统排序键")
+    if not sort_field or sort_field.get("type") != 1:
+        errors.append("「系统排序键」必须为文本字段")
+    return errors
 
 
 def _load_image_cache(db: Session) -> dict[str, str]:
@@ -602,21 +640,32 @@ def sync(db: Session, *, include_images: bool = True) -> dict:
         "missing_product_image": [],
         "errors": [],
         "views": {},
+        "view_layout": MAIN_VIEW_LAYOUT,
     }
     try:
         _ensure_schema(db, app_token, table_id)
+        fields = feishu_client.list_table_fields(db, app_token, table_id)
+        layout_errors = _schema_layout_errors(fields)
+        if layout_errors:
+            result["errors"].extend(layout_errors)
+            result["ok"] = False
+            return result
         views = feishu_client.list_views(db, app_token, table_id)
         view_map = {v.get("view_id"): v for v in views}
         for view_id, (name, kind) in EXPECTED_VIEWS.items():
             got = view_map.get(view_id)
-            ok = bool(got and got.get("view_name") == name and got.get("view_type") == kind)
+            # 视图名称允许运营在飞书里调整；ID 和类型才决定链接及展示能力。
+            ok = bool(got and got.get("view_type") == kind)
             result["views"][view_id] = {
                 "ok": ok,
                 "name": got.get("view_name") if got else None,
                 "type": got.get("view_type") if got else None,
             }
             if not ok:
-                result["errors"].append(f"飞书视图不匹配: {view_id} 预期{name}/{kind}")
+                result["errors"].append(
+                    f"飞书视图不匹配: {view_id} 预期类型{kind}"
+                    f"（建议名称{name}）"
+                )
         if result["errors"]:
             result["ok"] = False
             return result

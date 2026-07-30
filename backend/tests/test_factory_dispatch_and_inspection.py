@@ -56,7 +56,8 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     row = rows[0]
     assert row["工厂下单号"] == "畔色321单"
     assert row["下单分组"] == "工厂正式单"
-    assert row["下单序号"] == 321
+    assert row["系统排序键"] == "1-000321"
+    assert "下单序号" not in row
     assert row["木作成本价"] == 600.0
     assert row["客户延期单"] is True
     assert row["客户通知拍照"] is True
@@ -64,6 +65,9 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert "验货图片数" not in row
     assert row["预计发货日期"] == dispatch._date_ms(date(2026, 8, 20))
     assert "订单金额" not in row
+    assert dispatch.FIELD_SPECS[0] == ("工厂下单号", 1)
+    assert dispatch.MAIN_VIEW_LAYOUT["group_by"] == "下单分组"
+    assert dispatch.MAIN_VIEW_LAYOUT["sort_by"] == "系统排序键"
 
 
 def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
