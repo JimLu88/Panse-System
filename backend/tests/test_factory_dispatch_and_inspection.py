@@ -81,6 +81,54 @@ def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
     assert dispatch.LEGACY_RENAMES["销售负责人"] == ("客户联系方式", 1)
 
 
+def test_dispatch_custom_order_uses_projected_cost_and_effective_production_qty(
+    db_session, monkeypatch
+):
+    order = _order(
+        is_custom=False,
+        qty=4,
+        paid_amount=Decimal("2400"),
+        theoretical_cost=Decimal("1800"),
+        wood_cost_est=Decimal("1200"),
+        est_parts=Decimal("100"),
+        est_packing=Decimal("100"),
+        est_logistics=Decimal("100"),
+        est_install=Decimal("100"),
+        buyer_message="定制 1.5 米餐桌",
+    )
+    db_session.add(order)
+    db_session.commit()
+    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
+
+    row = dispatch.build_rows(db_session)[0]
+    assert row["定制标识"] == "定制单"
+    assert row["订购数量"] == 1
+    assert row["木作成本价"] == 1400.0
+    assert "已扣除非木作成本" in row["木作成本说明"]
+    assert row["木作成本说明"].startswith("定制成本需人工核验｜")
+
+
+def test_dispatch_custom_fallback_keeps_base_wood_cost(db_session, monkeypatch):
+    order = _order(
+        is_custom=True,
+        qty=11,
+        paid_amount=Decimal("500"),
+        theoretical_cost=Decimal("425"),
+        wood_cost_est=Decimal("1200"),
+        buyer_message="35cm 定制床头柜",
+    )
+    db_session.add(order)
+    db_session.commit()
+    monkeypatch.setattr(dispatch.gallery_lookup, "sku_image_rel", lambda *a, **k: None)
+    monkeypatch.setattr(dispatch.gallery_lookup, "main_image_rel", lambda *a, **k: None)
+
+    row = dispatch.build_rows(db_session)[0]
+    assert row["订购数量"] == 1
+    assert row["木作成本价"] == 1200.0
+    assert "基础木作成本兜底" in row["木作成本说明"]
+
+
 def test_dispatch_compare_ignores_timestamp_and_normalizes_number_strings():
     expected = {
         "订单号": "331400000000000001",

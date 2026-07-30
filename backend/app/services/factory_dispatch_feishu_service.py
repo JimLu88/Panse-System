@@ -2,7 +2,8 @@
 
 这张表是给内部运营与木作工厂共看的只读业务投影：
 - 一行对应一个平台订单，主键为订单号；
-- 价格只同步 SKU 木作成本单价，不同步总出厂价、订单金额或其它成本；
+- 常规单同步 SKU 木作成本单价；定制单复用系统定制核价结果，并明确标记待人工核验；
+- 不同步总出厂价、订单金额或其它成本；
 - 每次系统订单更新、下单图推送完成后立即增量覆盖；
 - 保留飞书模板原有的表格 / 状态看板 / 甘特视图所依赖字段。
 """
@@ -27,6 +28,8 @@ from app.models.order import Order
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import (
+    custom_order_reconcile_service,
+    data_quality_service,
     feishu_client,
     gallery_lookup,
     order_flags,
@@ -66,6 +69,8 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("尺寸", 1),
     ("订购数量", 2),
     ("木作成本价", 2),
+    ("定制标识", 3),
+    ("木作成本说明", 1),
     ("下单日期", 5),
     ("预计发货日期", 5),
     ("订单状态", 3),
@@ -96,6 +101,13 @@ _PHOTO_KW = (
 _NON_FACTORY_NAME_KW = (
     "补差", "差价", "补拍", "补邮费", "邮费补拍", "补运费", "补款",
     "尾款", "专拍", "专链", "加价链接",
+)
+_CUSTOM_SEMANTIC_KW = (
+    "定制", "微定制", "补差", "专拍",
+    "改尺寸", "尺寸修改", "变更尺寸",
+    "改长度", "改宽度", "改高度", "改深度",
+    "改材质", "换材质", "改颜色", "换颜色",
+    "加长", "加高", "缩短",
 )
 
 
@@ -190,6 +202,116 @@ def _wood_unit_price(order: Order, pricing: Optional[PricingSku]) -> Optional[De
     return None
 
 
+def _custom_order_info(
+    order: Order,
+    pricing: Optional[PricingSku],
+) -> tuple[bool, str]:
+    """飞书工厂表的定制判定：结构化标识、定制 SKU、占位 SKU、备注语义共用。"""
+    if bool(order.is_custom):
+        return True, "订单定制标识"
+    if data_quality_service.is_custom_order(order):
+        return True, "定制SKU"
+    if pricing is not None and bool(pricing.is_custom_placeholder):
+        return True, "定制占位SKU"
+    text = " ".join(str(v or "") for v in (
+        order.product_name,
+        order.sku,
+        order.sku_code,
+        order_flags.order_text(order),
+    ))
+    hit = next((keyword for keyword in _CUSTOM_SEMANTIC_KW if keyword in text), None)
+    return (True, f"备注关键词：{hit}") if hit else (False, "")
+
+
+def _production_qty(order: Order, *, is_custom: bool) -> int:
+    """定制凑价 SKU 的平台件数不是生产件数；4 件以上按一个生产任务展示。"""
+    raw = max(int(order.qty or 1), 1)
+    if is_custom and raw >= 4:
+        return 1
+    return raw
+
+
+def _custom_wood_unit_price(
+    db: Session,
+    order: Order,
+    pricing: Optional[PricingSku],
+    *,
+    production_qty: int,
+) -> tuple[Optional[Decimal], str]:
+    """复用定制核价结果估算木作成本，并对明显不适合木作的兜底回退基础木作价。"""
+    qty = Decimal(str(max(production_qty, 1)))
+    if order.actual_cost is not None:
+        total = Decimal(str(order.actual_cost))
+        return (total / qty).quantize(Decimal("0.01")), "工厂实际木作成本"
+
+    base_total: Optional[Decimal] = None
+    if order.wood_cost_est is not None:
+        base_total = Decimal(str(order.wood_cost_est))
+    elif pricing is not None and pricing.wood_cost is not None:
+        base_total = Decimal(str(pricing.wood_cost)) * qty
+
+    remark = custom_order_reconcile_service.remark_text(order)
+    explicit = custom_order_reconcile_service._r_cost_keyword(db, order, remark)
+    if explicit and explicit.get("cost") is not None:
+        total = Decimal(str(explicit["cost"]))
+        return (total / qty).quantize(Decimal("0.01")), "备注写明成本"
+
+    if order.custom_surcharge is not None and base_total is not None:
+        total = base_total + Decimal(str(order.custom_surcharge))
+        return (total / qty).quantize(Decimal("0.01")), "基础木作成本+定制加价"
+
+    resolved = custom_order_reconcile_service._display_resolve(db, order, remark)
+    resolved_cost = resolved.get("cost")
+    method = str(resolved.get("method") or "系统定制估算")
+    source = str(resolved.get("source") or "")
+
+    # 85% 与纯插座分支依赖平台实付；定制凑价链接会严重失真，木作表优先保留基础木作成本。
+    if base_total is not None and (source in {"fallback", "socket"} or method.startswith("85%")):
+        return (base_total / qty).quantize(Decimal("0.01")), "基础木作成本兜底"
+
+    if resolved_cost is not None:
+        projected_total = Decimal(str(resolved_cost))
+        nonwood_values = (
+            order.est_parts,
+            order.est_packing,
+            order.est_logistics,
+            order.est_install,
+        )
+        known_nonwood = [Decimal(str(value)) for value in nonwood_values if value is not None]
+        if known_nonwood:
+            total = projected_total - sum(known_nonwood, Decimal("0"))
+            method = f"{method}，已扣除非木作成本"
+        elif (
+            pricing is not None
+            and pricing.physical_cost is not None
+            and pricing.wood_cost is not None
+        ):
+            nonwood = max(
+                Decimal(str(pricing.physical_cost)) - Decimal(str(pricing.wood_cost)),
+                Decimal("0"),
+            )
+            total = projected_total - nonwood * qty
+            method = f"{method}，已扣除非木作成本"
+        elif base_total is not None:
+            # 没有配件/包装/物流/安装拆分时，不能把物理总成本冒充木作成本。
+            return (base_total / qty).quantize(Decimal("0.01")), "基础木作成本兜底"
+        else:
+            total = projected_total
+
+        # 低于基础木作成本 60% 的结果通常来自凑价/补差金额，不作为木作报价。
+        if total <= 0:
+            if base_total is None:
+                return None, "缺少可用成本依据"
+            return (base_total / qty).quantize(Decimal("0.01")), "基础木作成本兜底"
+        if base_total is not None and total < base_total * Decimal("0.60"):
+            return (base_total / qty).quantize(Decimal("0.01")), "基础木作成本兜底"
+        return (total / qty).quantize(Decimal("0.01")), method
+
+    if base_total is not None:
+        return (base_total / qty).quantize(Decimal("0.01")), "基础木作成本兜底"
+    return None, "缺少可用成本依据"
+
+
 def build_rows(db: Session) -> list[dict[str, Any]]:
     """按工厂下单图同口径构造飞书行，不改变订单或价格数据。"""
     auto_since = order_sheet_archive_service.AUTO_SINCE
@@ -239,7 +361,18 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
 
         ps = pricing.get(order.sku_code or "")
         remote = order_flags.is_remote(order)
-        unit_wood = _wood_unit_price(order, ps)
+        is_custom, custom_reason = _custom_order_info(order, ps)
+        production_qty = _production_qty(order, is_custom=is_custom)
+        if is_custom:
+            unit_wood, cost_method = _custom_wood_unit_price(
+                db,
+                order,
+                ps,
+                production_qty=production_qty,
+            )
+        else:
+            unit_wood = _wood_unit_price(order, ps)
+            cost_method = ""
         image_rel = None
         if order.product_code:
             image_rel = (
@@ -274,8 +407,13 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             "SKU编码": order.sku_code or "",
             "SKU规格": order.sku or "",
             "尺寸": (ps.size_info if ps else None) or "",
-            "订购数量": int(order.qty or 1),
+            "订购数量": production_qty,
             "木作成本价": float(unit_wood) if unit_wood is not None else None,
+            "定制标识": "定制单" if is_custom else "常规单",
+            "木作成本说明": (
+                f"定制成本需人工核验｜{cost_method}｜{custom_reason}"
+                if is_custom else ""
+            ),
             "下单日期": _date_ms(order.order_date),
             "预计发货日期": _date_ms(_expected_ship_date(order, remote=remote)),
             "订单状态": _status(order, remote=remote, refunded=refunded),
