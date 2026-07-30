@@ -57,6 +57,11 @@ AUTO_ENABLED_KEY = "factory_dispatch_feishu_auto_enabled"
 INCLUDE_IMAGES_KEY = "factory_dispatch_feishu_include_images"
 _CN_TZ = ZoneInfo("Asia/Shanghai")
 
+# 飞书单选字段内置 55 套颜色。10 是低干扰的灰白底/浅色字方案，
+# 用于已经退出生产排程的终态，和仍需工厂关注的彩色交期标签明确区分。
+TERMINAL_URGENCY_COLOR = 10
+TERMINAL_URGENCY_LABELS = frozenset({"完成", "取消", "售后处理", "待核实"})
+
 # 字段 type 见飞书 Bitable：1文本、2数字、3单选、5日期、7复选框、17附件。
 # 客户联系方式必须用文本：真实订单可能是固话、多个号码或带文字说明，
 # 不能让飞书 Phone 字段的格式校验阻断整单同步。
@@ -243,22 +248,37 @@ def _is_non_factory_order(order: Order) -> bool:
 
 
 def _status(order: Order, *, remote: bool, refunded: bool) -> str:
-    raw = order.status or ""
-    if raw == "cancelled" or refunded:
+    normalized = order_service.normalize_status(order.status)
+    if normalized == "cancelled" or refunded:
         return "已作废"
-    if raw == "signed":
+    if normalized == "signed":
         return "已签收"
-    if raw == "shipped":
+    if normalized == "shipped":
         return "已发货"
     if order.is_customer_delayed:
         return "客户延期"
     if remote:
         return "等客户通知"
-    if raw in ("aftersales",):
+    if normalized == "aftersales":
         return "售后中"
     if order.factory_no:
         return "生产中"
     return "待制单"
+
+
+def _urgency_label(order: Order, *, refunded: bool, schedule: dict[str, Any]) -> str:
+    """交期列始终给出原因：在制单显示排程，终态显示低干扰的结果标签。"""
+    if order_service.is_in_factory_production(order):
+        return str(schedule["urgency_label"])
+
+    normalized = order_service.normalize_status(order.status)
+    if refunded or normalized == "cancelled":
+        return "取消"
+    if normalized in {"shipped", "signed"}:
+        return "完成"
+    if normalized == "aftersales":
+        return "售后处理"
+    return "待核实"
 
 
 def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> str:
@@ -440,11 +460,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         ps = pricing.get(order.sku_code or "")
         remote = order_flags.is_remote(order)
         schedule = order_flags.factory_schedule(order)
-        urgency = (
-            schedule["urgency_label"]
-            if order_service.is_in_factory_production(order)
-            else ""
-        )
+        urgency = _urgency_label(order, refunded=refunded, schedule=schedule)
         is_custom, custom_reason = _custom_order_info(order, ps)
         production_qty = _production_qty(order, is_custom=is_custom)
         if is_custom:
@@ -536,7 +552,7 @@ def preview_summary(db: Session) -> dict[str, Any]:
     return {
         "rows": len(rows),
         "urgency_counts": dict(Counter(
-            str(row.get("交期紧急度") or "已完成/已作废")
+            str(row.get("交期紧急度") or "待核实")
             for row in rows
         )),
         "group_counts": dict(Counter(str(row.get("下单分组") or "未分组") for row in rows)),
@@ -667,6 +683,50 @@ def _ensure_schema(db: Session, app_token: str, table_id: str) -> dict[str, dict
         by_name = {f.get("field_name"): f for f in fields}
 
     return by_name
+
+
+def _ensure_urgency_option_styles(
+    db: Session,
+    app_token: str,
+    table_id: str,
+    *,
+    fields: Optional[list[dict]] = None,
+) -> bool:
+    """把交期终态统一成灰白浅色；完整保留其它选项、ID 和字段属性。"""
+    if fields is None:
+        fields = feishu_client.list_table_fields(db, app_token, table_id)
+    field = next(
+        (item for item in fields if item.get("field_name") == "交期紧急度"),
+        None,
+    )
+    if not field:
+        return False
+
+    property_ = dict(field.get("property") or {})
+    options = [dict(option) for option in property_.get("options") or []]
+    changed = False
+    for option in options:
+        if (
+            str(option.get("name") or "") in TERMINAL_URGENCY_LABELS
+            and int(option.get("color", -1)) != TERMINAL_URGENCY_COLOR
+        ):
+            option["color"] = TERMINAL_URGENCY_COLOR
+            changed = True
+    if not changed:
+        return False
+
+    property_["options"] = options
+    feishu_client.update_field(
+        db,
+        app_token,
+        table_id,
+        str(field["field_id"]),
+        field_name="交期紧急度",
+        field_type=3,
+        property_=property_,
+        ui_type=str(field.get("ui_type") or "SingleSelect"),
+    )
+    return True
 
 
 def _schema_layout_errors(fields: list[dict]) -> list[str]:
@@ -806,6 +866,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         "created": 0,
         "updated": 0,
         "deleted_demo": 0,
+        "urgency_style_updated": False,
         "missing_wood_cost": [],
         "missing_product_image": [],
         "errors": [],
@@ -896,6 +957,16 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             result["updated"] = len(updates) - len(failed)
             if failed:
                 result["errors"].append(f"飞书下单表更新失败 {len(failed)}/{len(updates)} 条")
+
+        # 首次写入新的终态文本时，飞书会自动生成单选项。记录写完后再统一修成
+        # 灰白浅色；之后每次同步也会校正，避免运营误改或模板重建后颜色漂移。
+        style_fields = feishu_client.list_table_fields(db, app_token, table_id)
+        result["urgency_style_updated"] = _ensure_urgency_option_styles(
+            db,
+            app_token,
+            table_id,
+            fields=style_fields,
+        )
 
         # 只清飞书模板自带的 2022 年示例行；不删除任何无法确认来源的人工行。
         demo_ids = [

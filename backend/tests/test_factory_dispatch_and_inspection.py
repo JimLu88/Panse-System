@@ -94,6 +94,46 @@ def test_dispatch_contact_is_plain_text_and_preserves_nonstandard_value(
     assert dispatch.LEGACY_RENAMES["销售负责人"] == ("客户联系方式", 1)
 
 
+def test_dispatch_urgency_uses_schedule_for_active_and_reason_for_terminal():
+    schedule = {"urgency_label": "正常安排"}
+
+    assert dispatch._urgency_label(
+        _order(status="paid"),
+        refunded=False,
+        schedule=schedule,
+    ) == "正常安排"
+    assert dispatch._urgency_label(
+        _order(status="shipped"),
+        refunded=False,
+        schedule=schedule,
+    ) == "完成"
+    assert dispatch._urgency_label(
+        _order(status="交易成功"),
+        refunded=False,
+        schedule=schedule,
+    ) == "完成"
+    assert dispatch._urgency_label(
+        _order(status="cancelled"),
+        refunded=False,
+        schedule=schedule,
+    ) == "取消"
+    assert dispatch._urgency_label(
+        _order(status="signed"),
+        refunded=True,
+        schedule=schedule,
+    ) == "取消"
+    assert dispatch._urgency_label(
+        _order(status="aftersales"),
+        refunded=False,
+        schedule=schedule,
+    ) == "售后处理"
+    assert dispatch._urgency_label(
+        _order(status="unknown_status"),
+        refunded=False,
+        schedule=schedule,
+    ) == "待核实"
+
+
 def test_dispatch_custom_order_uses_projected_cost_and_effective_production_qty(
     db_session, monkeypatch
 ):
@@ -256,6 +296,50 @@ def test_dispatch_schema_allows_operator_column_reordering():
     # 工厂下单号保持第一列；其余列允许运营在飞书页面自由拖动。
     fields[1], fields[5] = fields[5], fields[1]
     assert dispatch._schema_layout_errors(fields) == []
+
+
+def test_dispatch_urgency_style_preserves_existing_options(monkeypatch):
+    fields = [{
+        "field_id": "fld_urgency",
+        "field_name": "交期紧急度",
+        "type": 3,
+        "ui_type": "SingleSelect",
+        "property": {
+            "options": [
+                {"id": "opt_active", "name": "正常安排", "color": 1},
+                {"id": "opt_done", "name": "完成", "color": 5},
+                {"id": "opt_cancel", "name": "取消", "color": 6},
+                {"id": "opt_after", "name": "售后处理", "color": 7},
+            ],
+            "multiple": False,
+        },
+    }]
+    captured = {}
+
+    def fake_update_field(*args, **kwargs):
+        captured.update(kwargs)
+        return {}
+
+    monkeypatch.setattr(dispatch.feishu_client, "update_field", fake_update_field)
+
+    changed = dispatch._ensure_urgency_option_styles(
+        None,
+        "app",
+        "table",
+        fields=fields,
+    )
+
+    assert changed is True
+    options = captured["property_"]["options"]
+    assert options[0] == {"id": "opt_active", "name": "正常安排", "color": 1}
+    assert {option["name"]: option["color"] for option in options} == {
+        "正常安排": 1,
+        "完成": dispatch.TERMINAL_URGENCY_COLOR,
+        "取消": dispatch.TERMINAL_URGENCY_COLOR,
+        "售后处理": dispatch.TERMINAL_URGENCY_COLOR,
+    }
+    assert captured["property_"]["multiple"] is False
+    assert captured["ui_type"] == "SingleSelect"
 
 
 def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch):
