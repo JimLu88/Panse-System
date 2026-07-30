@@ -5,6 +5,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.models.finance import AccountBalance
+from app.models.import_file import ImportedFile
 from app.services import (
     agent_ingest_service,
     alert_service,
@@ -101,6 +102,109 @@ def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, mo
     assert pipeline.needs_retry(db_session, "order_delivery", now=_at(19, 50)) is False
     assert len(sent) == 2
     assert "自动重试成功" in sent[-1]
+
+
+def test_order_recovery_notification_distinguishes_no_new_orders(db_session, monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(
+        pipeline,
+        "_send_feishu",
+        lambda db, text: (sent.append(text) is None or True, "sent"),
+    )
+    pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "订单报表导出失败",
+        retry_slots=[_at(20)],
+        now=_at(19),
+        max_failures=2,
+    )
+
+    pipeline.record_success(
+        db_session,
+        "order_delivery",
+        now=_at(19, 30),
+        success_detail="没有新增订单",
+    )
+
+    assert "自动重试成功" in sent[-1]
+    assert "结果：没有新增订单" in sent[-1]
+
+
+def test_order_change_summary_ignores_unchanged_upserts():
+    ingest = {
+        "files": [
+            {
+                "category": "taobao_report",
+                "status": "imported",
+                "summary": {
+                    "inserted": 0,
+                    "updated": 848,
+                    "status_changed": 0,
+                    "amount_changed": 0,
+                },
+            },
+            {
+                "category": "taobao_report",
+                "status": "imported",
+                "summary": {
+                    "inserted": 2,
+                    "updated": 10,
+                    "status_changed": 3,
+                    "amount_changed": 1,
+                },
+            },
+        ],
+    }
+
+    changes = agent_ingest_service.summarize_order_changes(ingest)
+
+    assert changes == {
+        "inserted": 2,
+        "status_changed": 3,
+        "amount_changed": 1,
+    }
+    assert agent_ingest_service.format_order_change_message(changes) == (
+        "新增订单 2 单；已有订单状态变化 3 单；已有订单金额变化 1 单"
+    )
+    assert agent_ingest_service.format_order_change_message({}) == "没有新增订单"
+
+
+def test_order_change_summary_keeps_changes_from_partial_attempt(db_session):
+    settings_service.set_value(
+        db_session,
+        agent_ingest_service.KEY_STATE,
+        json.dumps({
+            "taobao_orders_complete": (
+                datetime.now() - timedelta(days=1)
+            ).isoformat(timespec="seconds"),
+        }),
+    )
+    db_session.add(
+        ImportedFile(
+            kind="taobao",
+            original_filename="partial.xlsx",
+            stored_path="D:/test/partial.xlsx",
+            file_hash="partial-order-change",
+            size_bytes=1,
+            source="api",
+            row_summary={
+                "agent_status": "imported",
+                "inserted": 7,
+                "status_changed": 21,
+                "amount_changed": 0,
+            },
+        )
+    )
+    db_session.flush()
+
+    changes = agent_ingest_service.summarize_order_changes_since_last_complete(
+        db_session,
+        {"files": []},
+    )
+
+    assert changes["inserted"] == 7
+    assert changes["status_changed"] == 21
 
 
 def test_failed_feishu_send_is_persisted_and_retried(db_session, monkeypatch):

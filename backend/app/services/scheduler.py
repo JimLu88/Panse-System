@@ -831,7 +831,11 @@ def _record_pipeline_result(
             max_failures=1 + len(retry_times),
         )
     else:
-        event = automation_pipeline_service.record_success(db, pipeline)
+        event = automation_pipeline_service.record_success(
+            db,
+            pipeline,
+            success_detail=result.get("_success_message"),
+        )
     result["automation_pipeline"] = event
     return result
 
@@ -1129,6 +1133,9 @@ def _job_order_sheets_daily(db: Session) -> dict:
             retry_times=_ORDER_RETRY_TIMES,
         )
     result = order_sheet_archive_service.push_daily(db)
+    result["_success_message"] = agent_ingest_service.format_order_change_message(
+        agent_ingest_service.latest_order_pull_result(db).get("changes")
+    )
     failed = int(result.get("images_failed") or 0)
     remaining = int(result.get("images_remaining") or 0)
     held_no_sku = result.get("held_no_sku") or []
@@ -1211,6 +1218,11 @@ def _job_pull_catchup(db: Session) -> dict:
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
 
     def _finish(result: dict) -> dict:
+        if result.get("_run_status") != "fail" and not result.get("_success_message"):
+            last_pull = ai.latest_order_pull_result(db)
+            result["_success_message"] = (
+                last_pull.get("message") or "没有新增订单"
+            )
         if result.get("_run_status") != "fail":
             _sync_factory_dispatch_after_orders(db, result)
         return _record_pipeline_result(
@@ -1254,6 +1266,9 @@ def _job_pull_catchup(db: Session) -> dict:
     res = ai.orchestrate(db, quiet=True, force_orders=True, orders_only=True)  # 强制补18:00后的订单快照
     out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
            "pending_manual": len(res.get("pending_manual", []))}
+    if res.get("order_changes") is not None:
+        out["order_changes"] = res["order_changes"]
+        out["_success_message"] = res.get("order_message")
     if res.get("already_running"):
         return _finish({
             **out,

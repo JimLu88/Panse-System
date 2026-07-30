@@ -269,6 +269,7 @@ def record_success(
     pipeline: str,
     *,
     now: Optional[datetime] = None,
+    success_detail: str | None = None,
 ) -> dict:
     """标记今日成功；只有此前失败过才发一条恢复通知。"""
     if pipeline not in PIPELINE_LABELS:
@@ -289,6 +290,8 @@ def record_success(
             f"✅ {day}【{label}】自动重试成功\n"
             f"此前失败 {failures} 次，本次已恢复，今天不再重试。"
         )
+        if success_detail:
+            text += f"\n结果：{_safe_error(success_detail)}"
         delivery = _deliver_or_queue(
             db,
             state,

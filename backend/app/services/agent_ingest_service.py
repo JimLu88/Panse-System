@@ -246,6 +246,91 @@ def _report_to_dict(rep) -> dict:
     return out
 
 
+def summarize_order_changes(ingest: dict | None) -> dict:
+    """Summarize actual order mutations from the reports imported in this run.
+
+    ``updated`` is deliberately excluded: the Taobao import is an upsert and
+    counts unchanged rows as updated.  Only inserted rows and real field
+    changes determine whether this pull found new work.
+    """
+    result = {"inserted": 0, "status_changed": 0, "amount_changed": 0}
+    for item in (ingest or {}).get("files") or []:
+        if item.get("category") != "taobao_report" or item.get("status") != "imported":
+            continue
+        summary = item.get("summary") or {}
+        for key in result:
+            result[key] += int(summary.get(key) or 0)
+    return result
+
+
+def summarize_order_changes_since_last_complete(db: Session, ingest: dict | None = None) -> dict:
+    """Include changes imported by an earlier partial attempt of today's pull.
+
+    A three-report pull can import one valid report and then fail on a later
+    report.  The retry will skip the already archived file by hash, so looking
+    only at the retry's ``run_ingest`` result would incorrectly say there were
+    no changes.  Archive summaries since the last completed pull are the
+    durable source of truth.
+    """
+    from app.models.import_file import ImportedFile
+
+    state = _load_json(db, KEY_STATE)
+    marker = state.get("taobao_orders_complete")
+    try:
+        since = datetime.fromisoformat(str(marker)) if marker else datetime.combine(date.today(), datetime.min.time())
+    except (TypeError, ValueError):
+        since = datetime.combine(date.today(), datetime.min.time())
+    rows = db.execute(
+        select(ImportedFile.row_summary).where(
+            ImportedFile.kind == "taobao",
+            ImportedFile.created_at > since,
+        )
+    ).scalars().all()
+    if not rows:
+        return summarize_order_changes(ingest)
+    result = {"inserted": 0, "status_changed": 0, "amount_changed": 0}
+    for summary in rows:
+        if not isinstance(summary, dict) or summary.get("agent_status") != "imported":
+            continue
+        for key in result:
+            result[key] += int(summary.get(key) or 0)
+    return result
+
+
+def format_order_change_message(changes: dict | None) -> str:
+    changes = changes or {}
+    inserted = int(changes.get("inserted") or 0)
+    status_changed = int(changes.get("status_changed") or 0)
+    amount_changed = int(changes.get("amount_changed") or 0)
+    if inserted == 0 and status_changed == 0 and amount_changed == 0:
+        return "没有新增订单"
+    parts = [
+        f"新增订单 {inserted} 单" if inserted else "没有新增订单",
+    ]
+    if status_changed:
+        parts.append(f"已有订单状态变化 {status_changed} 单")
+    if amount_changed:
+        parts.append(f"已有订单金额变化 {amount_changed} 单")
+    return "；".join(parts)
+
+
+def latest_order_pull_result(db: Session, *, on: date | None = None) -> dict:
+    """Return today's last verified order-pull result, never a stale prior day."""
+    target = (on or date.today()).isoformat()
+    saved = _load_json(db, KEY_STATE).get("taobao_orders_last_result")
+    if not isinstance(saved, dict) or saved.get("date") != target:
+        return {}
+    changes = {
+        key: int(saved.get(key) or 0)
+        for key in ("inserted", "status_changed", "amount_changed")
+    }
+    return {
+        "date": target,
+        "changes": changes,
+        "message": saved.get("message") or format_order_change_message(changes),
+    }
+
+
 # ----------------------------- 分类导入 ----------------------------- #
 
 def _classify(rel: Path) -> str:
@@ -991,6 +1076,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             main_alipay_task_succeeded = True
 
     out["ingest"] = run_ingest(db)
+    if "taobao_orders" in plan:
+        out["order_changes"] = summarize_order_changes_since_last_complete(db, out["ingest"])
+        out["order_message"] = format_order_change_message(out["order_changes"])
     main_alipay_ingest_failed = any(
         item.get("status") == "error"
         and "主力" in str(item.get("path") or "")
@@ -1010,6 +1098,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             and not persistent_pending_password):
         latest_state = _load_json(db, KEY_STATE)
         latest_state["taobao_orders_complete"] = datetime.now().isoformat(timespec="seconds")
+        latest_state["taobao_orders_last_result"] = {
+            "date": today.isoformat(),
+            "message": out.get("order_message") or "没有新增订单",
+            **(out.get("order_changes") or {}),
+        }
         _save_json(db, KEY_STATE, latest_state)
         db.commit()
 
