@@ -140,7 +140,8 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
     made, ship, odate = sheet.made_date, sheet.ship_date, sheet.order_date
     # 头部右: 畔色 N 单 + 制单日期 + 订单编号
     if sheet.factory_no:
-        no_html = f"<div class='no'>畔色 {sheet.factory_no} 单</div>"
+        # 与 ERP / 飞书下单表第一列逐字一致，统一为「畔色329单」。
+        no_html = f"<div class='no'>畔色{sheet.factory_no}单</div>"
     else:
         no_html = "<div class='no' style='color:#dc2626'>未能匹配工厂订单号</div>"
     made_html = f"<div class='mk'>制单日期：{e(_cn_date(made))}</div>"
@@ -360,6 +361,43 @@ def _html_to_png(html: str, *, width: int = 820) -> bytes:
 def render_png(sheet) -> bytes:
     """下单图 → PNG 字节 (发飞书图片用)。A4 横版工单宽 1684px (方案C·藏青蓝)。"""
     return _html_to_png(render_html(sheet), width=1684)
+
+
+def render_void_png(sheet) -> bytes:
+    """标准横版作废下单图；尺寸与正常工厂下单图完全一致。"""
+    html = render_html(sheet).replace("</body>", _VOID_OVERLAY + "</body>")
+    return _html_to_png(html, width=1684)
+
+
+def archive_sent_snapshot(
+    db: Session,
+    order: Order,
+    content: bytes,
+    *,
+    source: str = "factory_push",
+    backfilled: bool = False,
+) -> ImportedFile:
+    """归档实际发给工厂的最终图片，作为工厂下单表唯一可信图片来源。"""
+    factory_no = getattr(order, "factory_no", None)
+    if factory_no is None:
+        raise ValueError(f"订单 {order.order_no} 没有正式工厂单号")
+    result = import_storage.archive(
+        db,
+        content=content,
+        original_name=f"{date.today().isoformat()}_{order.order_no}_畔色{factory_no}单.jpg",
+        kind="order_sheet_sent",
+        source=source,
+        on_date=date.today(),
+        row_summary={
+            "order_no": order.order_no,
+            "factory_no_at_render": int(factory_no),
+            "factory_label_at_render": f"畔色{factory_no}单",
+            "render_width": 1684,
+            "pushed": True,
+            "backfilled": bool(backfilled),
+        },
+    )
+    return result.file
 
 
 def _order_no_from_name(name: Optional[str]) -> Optional[str]:
@@ -685,15 +723,17 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 and (order.order_date >= _AUTO_NUMBER_SINCE or order_flags.is_activated(order))):
             order.factory_no = _next_factory_no(db)
             db.flush()
-        # 自动推送(catchup/18:00, include_baseline=False)【绝不】推没有工厂编号的老单(<6/19 且未 ZIP 回填):
-        # 它们渲染出来是红字"未能匹配工厂订单号", 推给工厂只是噪音 (用户 2026-06-26: 飞书一直跳这些)。
-        # 新单上面已自动顺排到号; 没号的只剩历史老单, 留给「资料存档库」手动按钮(include_baseline=True)人工补号后再推。
-        if getattr(order, "factory_no", None) is None and not include_baseline:
+        # 没有正式工厂编号的图片禁止发送。手动补推也必须先补齐编号，不能再生成
+        # “未能匹配工厂订单号”的生产图，确保图片、表格第一列和工厂群标题完全一致。
+        if getattr(order, "factory_no", None) is None:
             continue
         try:
             png = render_png(factory_sheet.build(db, order.id))
+            # 先在同一事务中登记“最终发送版”；只有后面的飞书发送成功并 commit，
+            # 这张图片才会成为下单表的可信来源。发送失败 rollback 后不会误展示。
+            archive_sent_snapshot(db, order, png)
             key = feishu_client.upload_image(db, png)
-            _fno = (f"畔色 {order.factory_no} 单" if getattr(order, "factory_no", None)
+            _fno = (f"畔色{order.factory_no}单" if getattr(order, "factory_no", None)
                     else "未能匹配工厂订单号")
             cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
             feishu_client.send_text(db, chat_id, cap)
@@ -1168,14 +1208,21 @@ def generate_void_sheets(db: Session, *, limit: int = 100) -> dict:
             continue
         try:
             sheet = factory_sheet.build(db, o.id)
-            html = render_html(sheet).replace("</body>", _VOID_OVERLAY + "</body>")
             d = o.refund_date or date.today()
             import_storage.archive(
-                db, content=_html_to_png(html),   # 作废图也存成 JPEG (红叉随 HTML 一起渲染进图)
+                db, content=render_void_png(sheet),
                 original_name=f"{d.isoformat()}_{o.order_no}_已作废.jpg",
                 kind="order_sheet_void", source="auto",
                 on_date=o.refund_date or date.today(),
-                row_summary={"note": f"退款作废 ¥{o.refund_amount or 0}"},
+                row_summary={
+                    "note": f"退款作废 ¥{o.refund_amount or 0}",
+                    "order_no": o.order_no,
+                    "factory_no_at_render": getattr(o, "factory_no", None),
+                    "factory_label_at_render": (
+                        f"畔色{o.factory_no}单" if getattr(o, "factory_no", None) else None
+                    ),
+                    "render_width": 1684,
+                },
             )
             # 删掉原下单图 (用户拍板) — 工厂只该看到作废版; 按订单号匹配 (兼容新旧命名)
             for fid, fname in db.execute(

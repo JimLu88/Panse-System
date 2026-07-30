@@ -52,7 +52,7 @@ def test_quiet_skips_zip_and_notice(db_session, _feishu_stub, monkeypatch):
 
 def test_auto_push_skips_unnumbered_old_order(db_session, _feishu_stub):
     """自动推送(catchup/18:00, include_baseline=False)跳过【无工厂编号】的老单(<6/19),
-    不再往工厂群刷"未能匹配工厂订单号"; 手动按钮(include_baseline=True)仍可在补号后推。
+    不再往工厂群刷"未能匹配工厂订单号"; 手动按钮也必须在补号后才能推。
 
     根因(用户 2026-06-26 "飞书不停跳"): 每小时 catchup 把从未推过、也没编号的 6/06-6/18 积压老单
     20 张/小时往工厂群灌, 全是红字"未能匹配工厂订单号"。
@@ -65,9 +65,16 @@ def test_auto_push_skips_unnumbered_old_order(db_session, _feishu_stub):
     res = osa.push_pending_images(db_session, include_baseline=False, quiet=True)
     assert res["pushed"] == 0
 
-    # 手动按钮: 用户明确要推, 无编号也照推 (补号/确认后)
+    # 手动按钮也不能发送无编号图片。
     res2 = osa.push_pending_images(db_session, include_baseline=True)
-    assert res2["pushed"] == 1
+    assert res2["pushed"] == 0
+
+    # 补齐编号后才允许发送，图片标题、表格第一列和工厂群标题保持一致。
+    order = db_session.query(Order).filter_by(order_no="OLD-1").one()
+    order.factory_no = 500
+    db_session.commit()
+    res3 = osa.push_pending_images(db_session, include_baseline=True)
+    assert res3["pushed"] == 1
 
 
 def test_auto_push_sends_numbered_new_order(db_session, _feishu_stub):

@@ -67,6 +67,13 @@ def test_push_decoupled_from_generation(db_session, _feishu_stub):
     assert set(res["order_nos"]) == {"PUSH-A", "PUSH-B"}
     assert _feishu_stub == ["oc_factory_group", "oc_factory_group"]
     assert _sheet_rec(db_session, "PUSH-A").row_summary.get("pushed") is True
+    sent = db_session.query(ImportedFile).filter_by(kind="order_sheet_sent").all()
+    assert len(sent) == 2
+    assert {r.row_summary["factory_label_at_render"] for r in sent} == {
+        f"畔色{db_session.query(Order).filter_by(order_no=no).one().factory_no}单"
+        for no in ("PUSH-A", "PUSH-B")
+    }
+    assert all(r.row_summary["render_width"] == 1684 for r in sent)
 
     # 幂等: 再推不重复
     res2 = osa.push_pending_images(db_session, include_baseline=False)

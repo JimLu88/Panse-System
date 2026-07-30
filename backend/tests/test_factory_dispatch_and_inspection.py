@@ -370,7 +370,7 @@ def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch
     assert "产品图" not in headers
 
 
-def test_dispatch_uses_archived_factory_sheet_not_gallery_product_image(
+def test_dispatch_uses_sent_factory_sheet_not_draft_or_gallery_product_image(
     db_session, monkeypatch, tmp_path
 ):
     order = _order()
@@ -380,7 +380,8 @@ def test_dispatch_uses_archived_factory_sheet_not_gallery_product_image(
 
     image_buf = io.BytesIO()
     Image.new("RGB", (320, 200), color="white").save(image_buf, format="JPEG")
-    archived = import_storage.archive(
+    # 草稿图即使存在也不能进入飞书，因为它可能生成于分配工厂编号之前。
+    import_storage.archive(
         db_session,
         content=image_buf.getvalue(),
         original_name=f"{order.order_date.isoformat()}_{order.order_no}.jpg",
@@ -388,12 +389,49 @@ def test_dispatch_uses_archived_factory_sheet_not_gallery_product_image(
         source="auto",
         on_date=order.order_date,
     )
+    sent = dispatch.order_sheet_archive_service.archive_sent_snapshot(
+        db_session,
+        order,
+        image_buf.getvalue(),
+        backfilled=True,
+    )
     db_session.commit()
 
     row = dispatch.build_rows(db_session)[0]
-    assert row["_sheet_path"] == archived.file.stored_path
+    assert row["_sheet_path"] == sent.stored_path
     assert row["_sheet_signature"].startswith("factory-sheet:")
-    assert row["_sheet_name"].endswith(f"_{order.order_no}.jpg")
+    assert row["_sheet_name"].endswith(f"_{order.order_no}_畔色321单.jpg")
+
+
+def test_dispatch_rejects_sent_sheet_with_different_factory_number(
+    db_session, monkeypatch, tmp_path
+):
+    order = _order(factory_no=321)
+    db_session.add(order)
+    db_session.commit()
+    monkeypatch.setattr(import_storage, "get_root", lambda: tmp_path)
+
+    image_buf = io.BytesIO()
+    Image.new("RGB", (1684, 1190), color="white").save(image_buf, format="JPEG")
+    import_storage.archive(
+        db_session,
+        content=image_buf.getvalue(),
+        original_name=f"{date.today().isoformat()}_{order.order_no}_畔色320单.jpg",
+        kind="order_sheet_sent",
+        source="test",
+        row_summary={
+            "order_no": order.order_no,
+            "factory_no_at_render": 320,
+            "factory_label_at_render": "畔色320单",
+            "render_width": 1684,
+            "pushed": True,
+        },
+    )
+    db_session.commit()
+
+    row = dispatch.build_rows(db_session)[0]
+    assert row["工厂下单号"] == "畔色321单"
+    assert row["_sheet_path"] is None
 
 
 def test_generic_feishu_sync_cannot_pull_factory_dispatch_table(db_session):

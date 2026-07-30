@@ -32,6 +32,7 @@ from app.models.product import Product
 from app.services import (
     custom_order_reconcile_service,
     data_quality_service,
+    factory_sheet,
     feishu_client,
     import_storage,
     order_flags,
@@ -479,10 +480,22 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         else:
             unit_wood = _wood_unit_price(order, ps)
             cost_method = ""
-        sheet_image = sheet_images.get(order.order_no)
         factory_label = order_flags.factory_label(order)
         if not factory_label and current:
             factory_label = "待编号"
+        image_slots = sheet_images.get(order.order_no) or {}
+        image_slot = "void" if refunded else "sent"
+        sheet_image = image_slots.get(image_slot)
+        # 图片里的编号、表格第一列和工厂群发送标题必须逐字对应。没有正式号、
+        # 编号不同或还是旧版窄图时一律不挂图，避免工厂按错单生产。
+        if (
+            order.factory_no is None
+            or sheet_image is None
+            or int(sheet_image.get("factory_no_at_render") or 0) != int(order.factory_no)
+            or str(sheet_image.get("factory_label_at_render") or "") != factory_label
+            or int(sheet_image.get("render_width") or 0) != 1684
+        ):
+            sheet_image = None
         if order.factory_no:
             order_group = "工厂正式单"
             order_sequence = int(order.factory_no)
@@ -768,33 +781,117 @@ def _load_image_cache(db: Session) -> dict[str, str]:
         return {}
 
 
-def _factory_sheet_images(db: Session) -> dict[str, dict[str, str]]:
-    """订单号 → 最新工厂下单图。
+def _factory_sheet_images(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
+    """订单号 → 已发送最终图 / 作废图。
 
-    来源只认下单图归档：它和每日发到飞书工厂群的图片共用同一生成链路。
-    退款单原图会被删除并生成红叉作废图，因此这里同时纳入作废图，且以最新记录为准。
+    草稿归档 ``order_sheet`` 生成时可能还没有分配工厂编号，不能用于工厂下单表。
+    这里只认实际发送版 ``order_sheet_sent`` 和作废版，并携带生成时编号做逐行校验。
     """
     records = db.execute(
         select(ImportedFile).where(
-            ImportedFile.kind.in_(("order_sheet", "order_sheet_void"))
+            ImportedFile.kind.in_(("order_sheet_sent", "order_sheet_void"))
         ).order_by(ImportedFile.id.asc())
     ).scalars().all()
-    result: dict[str, dict[str, str]] = {}
+    result: dict[str, dict[str, dict[str, Any]]] = {}
     for record in records:
-        if record.kind == "order_sheet":
-            order_no = order_sheet_archive_service._order_no_from_name(record.original_filename)
+        summary = record.row_summary or {}
+        if record.kind == "order_sheet_sent":
+            if summary.get("pushed") is not True:
+                continue
+            order_no = str(summary.get("order_no") or "").strip() or None
+            slot = "sent"
         else:
             order_no = order_sheet_archive_service._void_order_no_from_name(
                 record.original_filename
             )
+            slot = "void"
         if not order_no:
             continue
         signature = record.file_hash or f"imported-file:{record.id}:{record.size_bytes or 0}"
-        result[order_no] = {
+        result.setdefault(order_no, {})[slot] = {
             "path": record.stored_path,
             "signature": f"factory-sheet:{signature}",
             "name": record.original_filename or f"工厂下单图_{order_no}.jpg",
+            "factory_no_at_render": summary.get("factory_no_at_render"),
+            "factory_label_at_render": summary.get("factory_label_at_render"),
+            "render_width": summary.get("render_width"),
         }
+    return result
+
+
+def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[str, Any]:
+    """把历史正式工厂单重制为当前标准横版，并写入可信最终图档案。
+
+    这是幂等的生产迁移工具：已有相同工厂编号、1684px 标准图的订单会跳过。
+    不发送飞书消息，只为下单表补齐与历史工厂群编号一致的最终图片。
+    """
+    rows = build_rows(db)
+    snapshots = _factory_sheet_images(db)
+    result: dict[str, Any] = {
+        "eligible": 0,
+        "generated": 0,
+        "void_generated": 0,
+        "skipped": 0,
+        "errors": [],
+        "order_nos": [],
+    }
+    for row in rows:
+        if result["generated"] + result["void_generated"] >= limit:
+            break
+        order = db.get(Order, int(row["_order_id"]))
+        if order is None or order.factory_no is None:
+            continue
+        result["eligible"] += 1
+        refunded = order_sheet_archive_service._is_refunded(order)
+        slot = "void" if refunded else "sent"
+        current = (snapshots.get(order.order_no) or {}).get(slot)
+        if (
+            current
+            and int(current.get("factory_no_at_render") or 0) == int(order.factory_no)
+            and int(current.get("render_width") or 0) == 1684
+        ):
+            result["skipped"] += 1
+            continue
+        try:
+            sheet = factory_sheet.build(db, order.id)
+            if refunded:
+                content = order_sheet_archive_service.render_void_png(sheet)
+                d = order.refund_date or date.today()
+                import_storage.archive(
+                    db,
+                    content=content,
+                    original_name=f"{d.isoformat()}_{order.order_no}_已作废.jpg",
+                    kind="order_sheet_void",
+                    source="factory_dispatch_backfill",
+                    on_date=d,
+                    row_summary={
+                        "note": f"退款作废 ¥{order.refund_amount or 0}",
+                        "order_no": order.order_no,
+                        "factory_no_at_render": int(order.factory_no),
+                        "factory_label_at_render": f"畔色{order.factory_no}单",
+                        "render_width": 1684,
+                        "backfilled": True,
+                    },
+                )
+                result["void_generated"] += 1
+            else:
+                content = order_sheet_archive_service.render_png(sheet)
+                order_sheet_archive_service.archive_sent_snapshot(
+                    db,
+                    order,
+                    content,
+                    source="factory_dispatch_backfill",
+                    backfilled=True,
+                )
+                result["generated"] += 1
+            db.commit()
+            result["order_nos"].append(order.order_no)
+        except Exception as exc:  # noqa: BLE001 - 单张失败不阻断其它订单
+            db.rollback()
+            result["errors"].append(
+                f"{order.order_no}: {type(exc).__name__}: {exc}"
+            )
+    result["ok"] = not result["errors"]
     return result
 
 
