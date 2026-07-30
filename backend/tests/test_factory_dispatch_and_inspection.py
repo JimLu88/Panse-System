@@ -244,6 +244,20 @@ def test_dispatch_auto_setting_can_skip_without_touching_feishu(db_session, monk
     assert dispatch.get_sync_settings(db_session)["direction"] == "out"
 
 
+def test_dispatch_schema_allows_operator_column_reordering():
+    fields = [
+        {
+            "field_name": name,
+            "type": field_type,
+            "is_primary": name == "工厂下单号",
+        }
+        for name, field_type in dispatch.FIELD_SPECS
+    ]
+    # 工厂下单号保持第一列；其余列允许运营在飞书页面自由拖动。
+    fields[1], fields[5] = fields[5], fields[1]
+    assert dispatch._schema_layout_errors(fields) == []
+
+
 def test_dispatch_export_contains_urgency_and_photo_plan(db_session, monkeypatch):
     db_session.add(_order(ship_deadline=date.today() - timedelta(days=1)))
     db_session.commit()

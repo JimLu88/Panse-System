@@ -670,17 +670,23 @@ def _ensure_schema(db: Session, app_token: str, table_id: str) -> dict[str, dict
 
 
 def _schema_layout_errors(fields: list[dict]) -> list[str]:
-    """校验底表结构；视图分组/隐藏列仍需飞书页面配置。"""
+    """校验底表结构；除主字段外允许运营在飞书里自由拖动列顺序。"""
     errors: list[str] = []
     names = [str(field.get("field_name") or "") for field in fields]
     primary = next((field for field in fields if field.get("is_primary")), None)
     if not primary or primary.get("field_name") != "工厂下单号":
         errors.append("第一列必须是主字段「工厂下单号」")
+    elif not names or names[0] != "工厂下单号":
+        errors.append("第一列必须是「工厂下单号」")
     if "下单序号" in names:
         errors.append("旧字段「下单序号」仍存在")
-    if names[: len(EXPECTED_FIELD_ORDER)] != list(EXPECTED_FIELD_ORDER):
-        errors.append("字段顺序与系统下单表结构不一致")
     by_name = {field.get("field_name"): field for field in fields}
+    for field_name, expected_type in FIELD_SPECS:
+        field = by_name.get(field_name)
+        if field is None:
+            errors.append(f"缺少字段「{field_name}」")
+        elif field.get("type") != expected_type:
+            errors.append(f"字段「{field_name}」类型不正确")
     sort_field = by_name.get("系统排序键")
     if not sort_field or sort_field.get("type") != 1:
         errors.append("「系统排序键」必须为文本字段")
