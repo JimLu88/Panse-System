@@ -829,15 +829,16 @@ def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[s
     snapshots = _factory_sheet_images(db)
     result: dict[str, Any] = {
         "eligible": 0,
+        "pending": 0,
+        "attempted": 0,
         "generated": 0,
         "void_generated": 0,
         "skipped": 0,
         "errors": [],
         "order_nos": [],
     }
+    candidates: list[tuple[Order, bool]] = []
     for row in rows:
-        if result["generated"] + result["void_generated"] >= limit:
-            break
         order = db.get(Order, int(row["_order_id"]))
         if order is None or order.factory_no is None:
             continue
@@ -852,6 +853,11 @@ def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[s
         ):
             result["skipped"] += 1
             continue
+        candidates.append((order, refunded))
+
+    result["pending"] = len(candidates)
+    for order, refunded in candidates[: max(0, int(limit))]:
+        result["attempted"] += 1
         try:
             sheet = factory_sheet.build(db, order.id)
             if refunded:
@@ -862,7 +868,7 @@ def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[s
                     content=content,
                     original_name=f"{d.isoformat()}_{order.order_no}_已作废.jpg",
                     kind="order_sheet_void",
-                    source="factory_dispatch_backfill",
+                    source="factory_backfill",
                     on_date=d,
                     row_summary={
                         "note": f"退款作废 ¥{order.refund_amount or 0}",
@@ -880,7 +886,7 @@ def backfill_factory_sheet_snapshots(db: Session, *, limit: int = 500) -> dict[s
                     db,
                     order,
                     content,
-                    source="factory_dispatch_backfill",
+                    source="factory_backfill",
                     backfilled=True,
                 )
                 result["generated"] += 1

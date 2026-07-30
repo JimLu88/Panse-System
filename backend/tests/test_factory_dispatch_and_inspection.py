@@ -434,6 +434,39 @@ def test_dispatch_rejects_sent_sheet_with_different_factory_number(
     assert row["_sheet_path"] is None
 
 
+def test_factory_sheet_backfill_respects_attempt_limit_on_errors(
+    db_session, monkeypatch
+):
+    db_session.add_all(
+        [
+            _order(),
+            _order(
+                order_no="331400000000000002",
+                factory_no=322,
+                sku_code="SKU002",
+            ),
+        ]
+    )
+    db_session.commit()
+    monkeypatch.setattr(dispatch, "_factory_sheet_images", lambda db: {})
+
+    def fail_build(db, order_id):
+        raise RuntimeError("render failed")
+
+    monkeypatch.setattr(dispatch.factory_sheet, "build", fail_build)
+
+    result = dispatch.backfill_factory_sheet_snapshots(db_session, limit=1)
+
+    assert result["eligible"] == 2
+    assert result["pending"] == 2
+    assert result["attempted"] == 1
+    assert len(result["errors"]) == 1
+
+
+def test_factory_sheet_backfill_source_fits_database_column():
+    assert len("factory_backfill") <= 16
+
+
 def test_generic_feishu_sync_cannot_pull_factory_dispatch_table(db_session):
     binding = FeishuTableBinding(
         system_table="orders",
