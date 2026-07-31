@@ -214,6 +214,30 @@ def _clean(v: Any) -> Optional[str]:
     return s or None
 
 
+def _is_protected_private_value(value: Any, *, phone: bool = False) -> bool:
+    """Return True when Taobao supplied a masked or unusable private field."""
+    text = _clean(value)
+    if not text:
+        return False
+    from app.services import validation
+    if phone:
+        return validation.is_phone_encrypted(text)
+    return validation.is_address_encrypted(text).is_encrypted
+
+
+def _prefer_clear_private_value(
+    current: Any, incoming: Any, *, phone: bool = False
+) -> Optional[str]:
+    """Keep clear PII, but replace an old masked value when a clear one arrives."""
+    old = _clean(current)
+    new = _clean(incoming)
+    if not new or _is_protected_private_value(new, phone=phone):
+        return old
+    if not old or _is_protected_private_value(old, phone=phone):
+        return new
+    return old
+
+
 # ── 报告 ──────────────────────────────────────────────────────────────────────
 @dataclass
 class TaobaoImportReport:
@@ -837,12 +861,15 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 existing.product_code = _product_code
             if _sku_code and not existing.sku_code:
                 existing.sku_code = _sku_code
-            if o.customer_name and not existing.customer_name:
-                existing.customer_name = _clean(o.customer_name)
-            if o.customer_phone and not existing.customer_phone:
-                existing.customer_phone = _clean(o.customer_phone)
-            if o.customer_address and not existing.customer_address:
-                existing.customer_address = _clean(o.customer_address)
+            existing.customer_name = _prefer_clear_private_value(
+                existing.customer_name, o.customer_name
+            )
+            existing.customer_phone = _prefer_clear_private_value(
+                existing.customer_phone, o.customer_phone, phone=True
+            )
+            existing.customer_address = _prefer_clear_private_value(
+                existing.customer_address, o.customer_address
+            )
             rep.updated += 1
             continue
 
@@ -851,9 +878,9 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             order_no=no,
             order_date=_to_date(o.order_date),
             ship_date=ship_dt,
-            customer_name=_clean(o.customer_name),
-            customer_phone=_clean(o.customer_phone),
-            customer_address=_clean(o.customer_address),
+            customer_name=_prefer_clear_private_value(None, o.customer_name),
+            customer_phone=_prefer_clear_private_value(None, o.customer_phone, phone=True),
+            customer_address=_prefer_clear_private_value(None, o.customer_address),
             product_code=_product_code,
             product_name=_pname,
             sku=_sku,
@@ -987,13 +1014,16 @@ def import_taobao_orders(db: Session, filename: str, raw: bytes,
             _o = db.execute(select(_OrderM).where(_OrderM.order_no == _sno)).scalar_one_or_none()
             if _o is None:
                 continue
-            if _nm and not (_o.customer_name or "").strip():
-                _o.customer_name = _nm
+            _new_name = _prefer_clear_private_value(_o.customer_name, _nm)
+            if _new_name != _o.customer_name:
+                _o.customer_name = _new_name
                 nm_filled += 1
-            if _ph and not (_o.customer_phone or "").strip():
-                _o.customer_phone = _ph
-            if _ad and not (_o.customer_address or "").strip():
-                _o.customer_address = _ad
+            _o.customer_phone = _prefer_clear_private_value(
+                _o.customer_phone, _ph, phone=True
+            )
+            _o.customer_address = _prefer_clear_private_value(
+                _o.customer_address, _ad
+            )
         if nm_filled:
             db.commit()
             rep.warnings.append(f"发货报表回填客户姓名 {nm_filled} 单")

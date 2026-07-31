@@ -536,13 +536,12 @@ def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
         return
     from app.services import feishu_client
     lines = [f"  · {('畔色 '+str(fno)+' 单') if fno else '未编号'}　订单号 {no}" for no, fno in missing]
-    txt = (f"⚠️ 下列 {len(missing)} 单【没有抓取到收货地址】(已做制单图+编号一并推送, 但收货栏为空):\n"
+    txt = (f"⚠️ 下列 {len(missing)} 单【没有抓取到完整收货地址】，已暂缓发送工厂下单图:\n"
            + "\n".join(lines)
-           + "\n👉 补齐两步(缺一不可):"
+           + "\n👉 处理方式:"
            + "\n  ① 淘宝后台【提升每日收货信息解密额度】—— 额度不够时, 超额的单收货地址会被星号脱敏, 系统不收, 故为空;"
-           + "\n  ② 在订单页点「更新拉取订单」重新拉取, 然后把淘宝发的『发货密码 xxxx』转发到这里"
-           + " —— 我会自动解密发货报表、补上收货地址并重推这些单的下单图。"
-           + "\n(口令不按收到时间失效；若与当前报表不匹配，系统会保留待口令状态并明确提醒。)")
+           + "\n  ② 在订单页点「更新拉取订单」重新拉取；地址完整后系统会自动生成并只补推这些单。"
+           + "\n地址仍脱敏时会继续暂缓并明确报警，不再发送缺地址图片。")
     try:
         feishu_client.send_text(db, chat_id, txt)
     except Exception:  # noqa: BLE001
@@ -679,6 +678,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     _zip_items: list = []
     _missing_addr: list = []
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
+    _held_address: list[str] = []
     _held_remote: list[str] = []
     _skipped_sample: list[str] = []
     _skipped_topup: list[dict] = []
@@ -717,6 +717,13 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             # 等取数回填(每小时ingest/次日18:00)后, 下一轮 push 自动带图带尺寸补推。自愈, 不会静默丢单。
             _held_skeleton.append(no)
             continue
+        # Masked/partial customer addresses are production blockers. Never
+        # send them to the factory; keep the archive row pending so the normal
+        # reconcile path sends it once after a clear address is imported.
+        if not _addr_ok_for_factory(order):
+            _held_address.append(no)
+            _missing_addr.append((no, order.factory_no))
+            continue
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)。
         # 已激活的老远期单(备注开始制作)也顺排新号 —— 它们早下但现在要做, 不该被日期线卡住 (用户 2026-07-08)。
         if (getattr(order, "factory_no", None) is None and order.order_date
@@ -738,17 +745,12 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
             feishu_client.send_text(db, chat_id, cap)
             feishu_client.send_image(db, chat_id, key)
-            addr_ok = _addr_ok_for_factory(order)
-            # pushed_addr_ok 记录"这张图推送时收货地址是否完整": False=缺地址被推,
-            # 待飞书口令解密补上地址后由 repush_after_address_fill 自动重推 (用户 2026-06-30)。
-            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": addr_ok,
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": True,
                                "activated": order_flags.is_activated(order)}   # 激活态推的图不再被 repush_activated 重推
             db.commit()
             pushed += 1
             sent_nos.append(no)
             _zip_items.append((order, png))
-            if not addr_ok:
-                _missing_addr.append((no, order.factory_no))
         except Exception:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             failed += 1
@@ -770,7 +772,8 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     return {"pushed": pushed, "failed": failed,
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos, "failed_order_nos": failed_nos,
-            "held_no_sku": _held_skeleton, "held_remote": _held_remote,
+            "held_no_sku": _held_skeleton, "held_no_address": _held_address,
+            "held_remote": _held_remote,
             "skipped_sample": _skipped_sample, "skipped_topup": _skipped_topup}
 
 
@@ -848,6 +851,7 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "order_nos": push.get("order_nos") or [],
         "failed_order_nos": push.get("failed_order_nos") or [],
         "held_no_sku": push.get("held_no_sku") or [],
+        "held_no_address": push.get("held_no_address") or [],
         "held_remote": push.get("held_remote") or [],
         "push_reason": push.get("reason"),
         "remote_voided": remote["voided_remote"],
@@ -866,6 +870,11 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     if result["held_no_sku"]:
         errors.append(
             f"SKU未回填暂缓 {len(result['held_no_sku'])} 张: {','.join(result['held_no_sku'])}"
+        )
+    if result["held_no_address"]:
+        errors.append(
+            f"收货地址未解密暂缓 {len(result['held_no_address'])} 张: "
+            + ",".join(result["held_no_address"])
         )
     if result["images_remaining"]:
         errors.append(f"仍有 {result['images_remaining']} 张未送达")

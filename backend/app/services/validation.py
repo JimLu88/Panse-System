@@ -45,6 +45,12 @@ def is_address_encrypted(address: str | None) -> AddressCheck:
             reasons.append(f"包含关键字「{kw}」")
             break
 
+    # Taobao exports can concatenate a missing street component as the literal
+    # string ``null``/``none``/``nan``. It is not a usable factory address even
+    # when the province/city part is present.
+    if re.search(r"(?i)(?:^|[\s,，;；])(?:null|none|nan)(?:$|[\s,，;；])", address):
+        reasons.append("包含空地址占位符")
+
     masked_chars = sum(1 for c in address if c in MASK_CHARS)
     if masked_chars and masked_chars / len(address) > 0.15:
         reasons.append(f"打码字符占比 {masked_chars * 100 // len(address)}%")

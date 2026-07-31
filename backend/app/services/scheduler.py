@@ -1148,6 +1148,7 @@ def _job_order_sheets_daily(db: Session) -> dict:
     failed = int(result.get("images_failed") or 0)
     remaining = int(result.get("images_remaining") or 0)
     held_no_sku = result.get("held_no_sku") or []
+    held_no_address = result.get("held_no_address") or []
     remote_notify_failed = result.get("remote_feishu_failed") or []
     reason = result.get("push_reason")
     if remote_notify_failed:
@@ -1163,6 +1164,12 @@ def _job_order_sheets_daily(db: Session) -> dict:
     elif held_no_sku:
         result["_run_status"] = "fail"
         result["_error"] = f"{len(held_no_sku)} 笔订单因SKU未回填暂缓推送: {','.join(held_no_sku)}"
+    elif held_no_address:
+        result["_run_status"] = "fail"
+        result["_error"] = (
+            f"{len(held_no_address)} 笔订单因收货地址仍被淘宝脱敏暂缓推送: "
+            + ",".join(held_no_address)
+        )
     elif remaining:
         result["_run_status"] = "fail"
         result["_error"] = f"仍有 {remaining} 张可推下单图未发送"

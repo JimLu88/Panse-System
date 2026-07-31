@@ -30,6 +30,12 @@ def test_empty_address_not_encrypted():
     assert validation.is_address_encrypted(None).is_encrypted is False
 
 
+def test_literal_null_address_component_is_not_usable():
+    r = validation.is_address_encrypted("广东省 东莞市 null 大岭山镇")
+    assert r.is_encrypted is True
+    assert "包含空地址占位符" in r.reasons
+
+
 def test_chinese_quasi_mask_chars_detected():
     r = validation.is_address_encrypted("江苏省南京市鼓楼区·····路")
     assert r.is_encrypted is True

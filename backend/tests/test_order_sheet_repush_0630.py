@@ -49,10 +49,11 @@ def test_repush_only_for_orders_that_gained_address(db_session, _feishu_stub):
     _add_order(db_session, "HASADDR-1", address="广东省深圳市南山区科技园路1号")  # 有地址
     osa.generate_pending(db_session)
 
-    # 首推: 两张都推; 地址完整与否记录在 pushed_addr_ok
+    # 首推: 缺地址的必须暂缓，只有完整地址可以发给工厂。
     res = osa.push_pending_images(db_session, include_baseline=False)
-    assert res["pushed"] == 2
-    assert _sheet_rec(db_session, "NOADDR-1").row_summary.get("pushed_addr_ok") is False
+    assert res["pushed"] == 1
+    assert res["held_no_address"] == ["NOADDR-1"]
+    assert not (_sheet_rec(db_session, "NOADDR-1").row_summary or {}).get("pushed")
     assert _sheet_rec(db_session, "HASADDR-1").row_summary.get("pushed_addr_ok") is True
 
     # 地址还没补 → 没有可重推的
@@ -64,9 +65,9 @@ def test_repush_only_for_orders_that_gained_address(db_session, _feishu_stub):
     o.customer_address = "浙江省杭州市西湖区文一路100号"
     db_session.flush()
 
-    # 重推: 只重推刚补上地址的那张, 有地址那张不受影响
-    r = osa.repush_after_address_fill(db_session)
-    assert r["repushed"] == 1
+    # 普通待推队列会在地址回填后发送一次；无需先错误推送再重推。
+    r = osa.push_pending_images(db_session, include_baseline=False)
+    assert r["pushed"] == 1
     assert r["order_nos"] == ["NOADDR-1"]
     rec = _sheet_rec(db_session, "NOADDR-1").row_summary
     assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True
@@ -91,17 +92,19 @@ def test_legacy_pushed_without_flag_never_repushed(db_session, _feishu_stub):
 
 
 def test_masked_address_counts_as_missing(db_session, _feishu_stub):
-    """星号脱敏地址 = 缺地址: pushed_addr_ok=False, 解密成真实地址后可重推。"""
+    """星号脱敏地址绝不发送；解密成真实地址后才首次推送。"""
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
     _add_order(db_session, "MASK-1", address="广东省***************")
     osa.generate_pending(db_session)
-    osa.push_pending_images(db_session, include_baseline=False)
-    assert _sheet_rec(db_session, "MASK-1").row_summary.get("pushed_addr_ok") is False
+    first = osa.push_pending_images(db_session, include_baseline=False)
+    assert first["pushed"] == 0
+    assert first["held_no_address"] == ["MASK-1"]
+    assert not (_sheet_rec(db_session, "MASK-1").row_summary or {}).get("pushed")
 
     o = db_session.query(Order).filter_by(order_no="MASK-1").one()
     o.customer_address = "广东省广州市天河区天河路385号"
     db_session.flush()
-    assert osa.repush_after_address_fill(db_session)["repushed"] == 1
+    assert osa.push_pending_images(db_session, include_baseline=False)["pushed"] == 1
 
 
 def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monkeypatch):
@@ -111,7 +114,7 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
     _add_order(db_session, "PWD-1", address=None)
     osa.generate_pending(db_session)
     osa.push_pending_images(db_session, include_baseline=False)
-    assert _sheet_rec(db_session, "PWD-1").row_summary.get("pushed_addr_ok") is False
+    assert not (_sheet_rec(db_session, "PWD-1").row_summary or {}).get("pushed")
 
     # 模拟"口令解密入库"补上地址 + 返回 imported=1
     def _fake_reingest(db):
@@ -126,14 +129,10 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
         lambda db: {"completed": True},
     )
-    monkeypatch.setattr(
-        osa,
-        "reconcile_pending_delivery",
-        lambda db, **kwargs: {"images_pushed": 0, "images_failed": 0, "images_remaining": 0},
-    )
     r = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
     assert r.get("imported") == 1
-    assert r.get("repushed") == 1
+    assert r.get("repushed") == 0
+    assert r["delivery"]["images_pushed"] == 1
     assert r["order_pull_completion"]["completed"] is True
     rec = _sheet_rec(db_session, "PWD-1").row_summary
     assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True
