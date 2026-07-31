@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 import threading
 
+from app import database
 from app.services import agent_ingest_service as ai
 from app.services import order_sheet_archive_service as oss
 from app.services import order_sync_service, scheduler, settings_service, web_agent_service
@@ -25,6 +26,25 @@ def _set_taobao_report(db, dt):
 
 def _boom(*a, **k):
     raise AssertionError("陈旧数据下不应生成/推送")
+
+
+class _ImmediateThread:
+    def __init__(self, *, target, **_kwargs):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+class _DummyDb:
+    def commit(self):
+        return None
+
+    def rollback(self):
+        return None
+
+    def close(self):
+        return None
 
 
 # ---------- order_data_fresh ----------
@@ -362,3 +382,72 @@ def test_pull_catchup_registered():
     ids = {j["job_id"] for j in scheduler.list_jobs()}
     assert "pull_catchup_30min" in ids
     assert "daily_2030_finance_agent" in ids
+
+
+def test_scan_done_with_business_failure_stays_pending(monkeypatch):
+    dummy = _DummyDb()
+    saved: list[str] = []
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(ai, "get_pending_scans", lambda _db: ["taobao_orders"])
+    monkeypatch.setattr(
+        settings_service, "set_value",
+        lambda _db, _key, value, **_kwargs: saved.append(value),
+    )
+    monkeypatch.setattr(
+        web_agent_service, "run_task",
+        lambda *_args, **_kwargs: {"job": "job-1"},
+    )
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_args, **_kwargs: {
+            "status": "done",
+            "result": {"ok": False, "reason": "session_expired"},
+        },
+    )
+    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
+    monkeypatch.setattr(oss, "reconcile_pending_delivery", _boom)
+
+    result = ai.start_pending_scans(dummy)
+
+    assert result["started"] is True
+    assert saved[-1] == '["taobao_orders"]'
+
+
+def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
+    dummy = _DummyDb()
+    saved_state: dict = {}
+    reconciled: list[dict] = []
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(ai, "get_pending_scans", lambda _db: ["taobao_orders"])
+    monkeypatch.setattr(settings_service, "set_value", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        web_agent_service, "run_task",
+        lambda *_args, **_kwargs: {"job": "job-2"},
+    )
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_args, **_kwargs: {
+            "status": "done",
+            "result": {"ok": True, "downloads": ["orders.xlsx"]},
+        },
+    )
+    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
+    monkeypatch.setattr(
+        ai, "pending_shipping_password_files", lambda _db, **_kwargs: [])
+    monkeypatch.setattr(ai, "_load_json", lambda _db, _key: {})
+    monkeypatch.setattr(
+        ai, "_save_json",
+        lambda _db, _key, value: saved_state.update(value),
+    )
+    monkeypatch.setattr(
+        oss, "reconcile_pending_delivery",
+        lambda _db, **kwargs: reconciled.append(kwargs) or {"images_pushed": 0},
+    )
+
+    result = ai.start_pending_scans(dummy)
+
+    assert result["started"] is True
+    assert datetime.fromisoformat(saved_state["taobao_orders_complete"])
+    assert reconciled == [{"limit": 50, "quiet": True}]

@@ -168,18 +168,44 @@ def start_pending_scans(db: Session) -> dict:
                 if r.get("job"):
                     final = web_agent_service.wait_job(d, r["job"], timeout_s=720, poll_s=8)
                     status = (final.get("status") or "").lower()
+                    job_result = final.get("result") or {}
+                    result_ok = job_result.get("ok") is not False
                     has_artifact = (
                         tid != MAIN_ALIPAY_FLOW_TASK
                         or _main_alipay_artifacts() != artifacts_before
                     )
-                    if status in ("done", "ok", "success") and has_artifact:
+                    if (status in ("done", "ok", "success")
+                            and result_ok and has_artifact):
                         done.append(tid)
+                    elif status in ("done", "ok", "success") and not result_ok:
+                        _log.warning(
+                            "扫码续跑任务业务失败 %s: %s",
+                            tid,
+                            job_result.get("errors") or job_result.get("reason"),
+                        )
                     elif status in ("done", "ok", "success"):
-                        _log.warning("支付宝主力账号扫码任务空成功：未生成流水文件")
+                        _log.warning("扫码续跑任务空成功 %s：未生成预期文件", tid)
             remain = [t for t in get_pending_scans(d) if t not in done]
             settings_service.set_value(d, KEY_PENDING_SCAN, json.dumps(remain))
             d.commit()
-            run_ingest(d)   # 扫到的余额截图一并导入
+            ingest_result = run_ingest(d)   # 扫到的余额截图/淘宝报表一并导入
+            if ("taobao_orders" in done
+                    and not ingest_result.get("errors")
+                    and not ingest_result.get("pending")
+                    and not pending_shipping_password_files(d, on=date.today())):
+                # A user-triggered scan is the continuation of the failed daily
+                # pull.  Mark the complete three-report refresh only after the
+                # Web-Agent returned ok=True and ingest has no unresolved file.
+                state = _load_json(d, KEY_STATE)
+                state["taobao_orders_complete"] = datetime.now().isoformat(
+                    timespec="seconds")
+                _save_json(d, KEY_STATE, state)
+                d.commit()
+                # Finish the original business outcome immediately.  Pushed
+                # markers make this idempotent when the scheduled retry runs.
+                from app.services import order_sheet_archive_service
+                order_sheet_archive_service.reconcile_pending_delivery(
+                    d, limit=50, quiet=True)
             if MAIN_ALIPAY_FLOW_TASK in done:
                 state = _load_json(d, KEY_STATE)
                 state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")

@@ -782,6 +782,13 @@ def _job_web_agent_daily(db: Session) -> dict:
     if offline:
         r["_run_status"] = "fail"
         r["_error"] = f"PC Web-Agent 离线: {str(offline)[:300]}"
+    elif pending_manual:
+        r["_run_status"] = "fail"
+        reasons = "; ".join(
+            f"{item.get('task', '')}:{item.get('reason', '')}"
+            for item in (r.get("pending_manual") or [])
+        )
+        r["_error"] = f"取数任务需要重新登录或人工处理: {reasons[:500]}"
     elif failed:
         r["_run_status"] = "fail"
         details = [
@@ -790,9 +797,6 @@ def _job_web_agent_daily(db: Session) -> dict:
             if item.get("status") == "error"
         ]
         r["_error"] = "取数任务失败: " + "; ".join(details)
-    elif pending_manual:
-        r["_run_status"] = "fail"
-        r["_error"] = f"取数任务需要重新登录: {','.join(pending_manual)}"
     elif (r.get("ingest") or {}).get("pending"):
         pending_files = [f.get("path", "") for f in (r.get("ingest", {}).get("files") or [])
                          if f.get("status") in ("pending_password", "pending")]
