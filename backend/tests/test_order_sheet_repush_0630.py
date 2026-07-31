@@ -65,9 +65,9 @@ def test_repush_only_for_orders_that_gained_address(db_session, _feishu_stub):
     o.customer_address = "浙江省杭州市西湖区文一路100号"
     db_session.flush()
 
-    # 普通待推队列会在地址回填后发送一次；无需先错误推送再重推。
-    r = osa.push_pending_images(db_session, include_baseline=False)
-    assert r["pushed"] == 1
+    # 口令回调应直接释放被地址安全门暂缓的记录，不依赖整轮取数完成标记。
+    r = osa.repush_after_address_fill(db_session)
+    assert r["repushed"] == 1
     assert r["order_nos"] == ["NOADDR-1"]
     rec = _sheet_rec(db_session, "NOADDR-1").row_summary
     assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True
@@ -131,8 +131,8 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
     )
     r = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
     assert r.get("imported") == 1
-    assert r.get("repushed") == 0
-    assert r["delivery"]["images_pushed"] == 1
+    assert r.get("repushed") == 1
+    assert r["delivery"]["images_pushed"] == 0
     assert r["order_pull_completion"]["completed"] is True
     rec = _sheet_rec(db_session, "PWD-1").row_summary
     assert rec.get("pushed") is True and rec.get("pushed_addr_ok") is True

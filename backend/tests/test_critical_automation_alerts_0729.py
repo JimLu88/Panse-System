@@ -356,3 +356,59 @@ def test_finance_scheduler_forces_daily_finance_only(db_session, monkeypatch):
     assert captured["force_finance"] is True
     assert captured["force_orders"] is False
     assert captured["orders_only"] is False
+
+
+def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):
+    """扫码后的文件已入库时，有限补跑不得再次启动相同浏览器任务。"""
+    for account in ("支付宝-企业账号", "淘宝聚合账户", "淘宝推广账户", "万师傅", "主力号"):
+        db_session.add(
+            AccountBalance(
+                account_name=account,
+                period_year=date.today().year,
+                period_month=date.today().month,
+                as_of_date=date.today(),
+                opening_balance=Decimal("0"),
+                closing_balance=Decimal("0"),
+            )
+        )
+    settings_service.set_value(
+        db_session,
+        agent_ingest_service.KEY_STATE,
+        json.dumps({
+            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW:
+                datetime.now().isoformat(timespec="seconds")
+        }),
+    )
+    db_session.flush()
+
+    captured: dict = {}
+    monkeypatch.setattr(agent_ingest_service, "is_running", lambda: False)
+
+    def _orchestrate(db, **kwargs):
+        captured.update(kwargs)
+        return {
+            "tasks": [],
+            "pending_manual": [],
+            "alipay_balance": [{"account": "支付宝-企业账号", "balance": "hidden"}],
+            "alipay_daily": {"pulled": 1, "fail": 0},
+            "ingest": {"files": []},
+        }
+
+    monkeypatch.setattr(agent_ingest_service, "orchestrate", _orchestrate)
+    monkeypatch.setattr(
+        scheduler,
+        "_record_pipeline_result",
+        lambda db, name, result, **kwargs: {
+            **result,
+            "automation_pipeline": {"pipeline": name},
+        },
+    )
+    monkeypatch.setattr(alert_service, "resolve_by_dedupe", lambda *args, **kwargs: None)
+
+    result = scheduler._run_finance_pipeline(db_session, retry=True)
+
+    assert result["_finance_status"] == "ok"
+    assert captured["skip_tasks"] == {
+        "bal_taobao_aggregate", "bal_ads", "bal_wanshifu",
+        "bal_alipay_main", agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
+    }

@@ -969,7 +969,48 @@ def _finance_outcomes(db: Session, result: dict) -> dict[str, tuple[bool, str]]:
     }
 
 
-def _run_finance_pipeline(db: Session) -> dict:
+def _fresh_finance_browser_tasks(db: Session) -> set[str]:
+    """Return browser tasks whose current-day artifacts are already in ERP."""
+    import json
+
+    from sqlalchemy import select
+
+    from app.models.finance import AccountBalance
+    from app.services import agent_ingest_service, settings_service
+
+    today = date.today()
+    account_to_task = {
+        "淘宝聚合账户": "bal_taobao_aggregate",
+        "淘宝推广账户": "bal_ads",
+        "万师傅": "bal_wanshifu",
+        "主力号": "bal_alipay_main",
+    }
+    fresh_accounts = set(
+        db.execute(
+            select(AccountBalance.account_name).where(
+                AccountBalance.as_of_date == today,
+                AccountBalance.account_name.in_(account_to_task),
+            )
+        ).scalars().all()
+    )
+    tasks = {account_to_task[name] for name in fresh_accounts}
+    try:
+        state = json.loads(
+            settings_service.get(
+                db, agent_ingest_service.KEY_STATE, env_fallback=False
+            ) or "{}"
+        )
+        main_at = datetime.fromisoformat(
+            str(state.get(agent_ingest_service.STATE_MAIN_ALIPAY_FLOW) or "")
+        )
+        if main_at.date() == today:
+            tasks.add(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return tasks
+
+
+def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
     """强制跑当天余额和流水，并将两条链路分别收口。"""
     from app.services import agent_ingest_service, alert_service
 
@@ -987,13 +1028,20 @@ def _run_finance_pipeline(db: Session) -> dict:
         )["automation_pipeline"]
         return result
 
+    fresh_tasks = _fresh_finance_browser_tasks(db) if retry else set()
     r = agent_ingest_service.orchestrate(
         db,
         force_orders=False,
         force_finance=True,
         orders_only=False,
         quiet=True,
+        skip_tasks=fresh_tasks,
     )
+    if fresh_tasks:
+        r.setdefault("tasks", []).extend(
+            {"task": task_id, "status": "success", "fresh_reused": True}
+            for task_id in sorted(fresh_tasks)
+        )
     outcomes = _finance_outcomes(db, r)
     failures: list[str] = []
     for pipeline, (ok, detail) in outcomes.items():
@@ -1050,7 +1098,7 @@ def _job_web_agent_finance_retry(db: Session) -> dict:
     ]
     if not pending:
         return {"skipped": "finance_pipeline_closed", "_run_status": "skipped"}
-    result = _run_finance_pipeline(db)
+    result = _run_finance_pipeline(db, retry=True)
     result["retry_for"] = pending
     return result
 

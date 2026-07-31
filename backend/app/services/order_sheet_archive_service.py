@@ -723,6 +723,13 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         if not _addr_ok_for_factory(order):
             _held_address.append(no)
             _missing_addr.append((no, order.factory_no))
+            rec.row_summary = {
+                **(rec.row_summary or {}),
+                "pushed": False,
+                "pushed_addr_ok": False,
+                "held_no_address": True,
+            }
+            db.commit()
             continue
         # 6/19 起新单按订单顺序自动顺排工厂编号 (历史靠 ZIP 回填, 不在此动)。
         # 已激活的老远期单(备注开始制作)也顺排新号 —— 它们早下但现在要做, 不该被日期线卡住 (用户 2026-07-08)。
@@ -746,6 +753,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             feishu_client.send_text(db, chat_id, cap)
             feishu_client.send_image(db, chat_id, key)
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": True,
+                               "held_no_address": False,
                                "activated": order_flags.is_activated(order)}   # 激活态推的图不再被 repush_activated 重推
             db.commit()
             pushed += 1
@@ -778,7 +786,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
 
 
 def find_pushed_without_address(db: Session) -> list[ImportedFile]:
-    """此前【缺地址被推】、而对应订单现在已有可用收货地址的下单图归档记录。
+    """此前因缺地址被推错或被暂缓、现在已有可用地址的下单图记录。
 
     判据: row_summary.pushed=True 且 pushed_addr_ok=False (上次推时没地址/被脱敏),
     且订单当前 _addr_ok_for_factory()=True (口令解密后地址已补上)。这些就是值得重推的单。
@@ -789,12 +797,12 @@ def find_pushed_without_address(db: Session) -> list[ImportedFile]:
     out: list[ImportedFile] = []
     for r in recs:
         st = r.row_summary or {}
-        if not st.get("pushed"):
-            continue   # 没推过 → 不在重推范围
-        # 只重推【明确记录为缺地址被推】的 (pushed_addr_ok is False)。
-        # True=上次已带地址; None=本次部署前推的历史单(无此标记)——都不自动重推,
-        # 避免一次口令把整批历史已正确发送的单刷给工厂群 (安全默认: 靠新标记 opt-in)。
-        if st.get("pushed_addr_ok") is not False:
+        # 只释放两种明确的地址异常状态：
+        # 1) 旧逻辑曾把缺地址图片发出；2) 新安全门已拦截并暂缓。
+        # 历史记录若只有 pushed=True、没有新标记，仍不自动重发。
+        legacy_bad_push = bool(st.get("pushed")) and st.get("pushed_addr_ok") is False
+        safely_held = not bool(st.get("pushed")) and st.get("held_no_address") is True
+        if not (legacy_bad_push or safely_held):
             continue
         no = _order_no_from_name(r.original_filename)
         if not no:
@@ -807,7 +815,7 @@ def find_pushed_without_address(db: Session) -> list[ImportedFile]:
 
 
 def repush_after_address_fill(db: Session, *, limit: int = 50, quiet: bool = True) -> dict:
-    """飞书口令解密补上收货地址后, 自动重推此前【缺地址被推】的下单图 (用户 2026-06-30)。
+    """飞书口令补上地址后，重推错图或释放此前被安全门暂缓的图。
 
     根治: 缺地址的下单图被推一次后即标 pushed=True, 任何自动推送都会永久跳过它 ——
     地址解密回来也不会再发。这里把这些单的 pushed 标记清掉再定向重推一次。

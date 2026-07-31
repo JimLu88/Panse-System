@@ -977,7 +977,8 @@ def finalize_order_pull_after_shipping_password(
 
 def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
                 force_orders: bool = False, force_finance: bool = False,
-                orders_only: bool = False) -> dict:
+                orders_only: bool = False,
+                skip_tasks: set[str] | None = None) -> dict:
     """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""
     if not _orch_lock.acquire(blocking=False):
         return {
@@ -991,14 +992,15 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
         return _orchestrate_locked(
             db, force=force, quiet=quiet,
             force_orders=force_orders, force_finance=force_finance,
-            orders_only=orders_only)
+            orders_only=orders_only, skip_tasks=skip_tasks)
     finally:
         _orch_lock.release()
 
 
 def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False,
                         force_orders: bool = False, force_finance: bool = False,
-                        orders_only: bool = False) -> dict:
+                        orders_only: bool = False,
+                        skip_tasks: set[str] | None = None) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
                  "tasks": [], "pending_manual": [], "task_errors": [], "skipped": []}
@@ -1025,6 +1027,15 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         plan += BALANCE_FLOW_TASKS
     if not orders_only and _due_today(state, STATE_MAIN_ALIPAY_FLOW, finance_force):
         plan.append(MAIN_ALIPAY_FLOW_TASK)
+
+    # 有限补跑只重试仍缺失的数据源。扫码后文件可能已经异步入库，若仍强制
+    # 重跑整套财务任务，会把刚成功的支付宝会话再次拉到登录页并重复提醒扫码。
+    if skip_tasks:
+        plan = [task_id for task_id in plan if task_id not in skip_tasks]
+        out["skipped"].extend(
+            {"task": task_id, "reason": "today_data_already_fresh"}
+            for task_id in sorted(skip_tasks)
+        )
 
     for task_id, reason in SKIPPED_TASKS.items():
         out["skipped"].append({"task": task_id, "reason": reason})
