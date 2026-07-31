@@ -1036,6 +1036,20 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             {"task": task_id, "reason": "today_data_already_fresh"}
             for task_id in sorted(skip_tasks)
         )
+        # A failed attempt may have queued a Feishu "scan" action before the
+        # asynchronously downloaded artifact was ingested.  Once today's data
+        # is present, keeping that stale queue would make a later user reply
+        # launch the login flow again even though no scan is needed.
+        pending_scans = get_pending_scans(db)
+        remaining_scans = [task_id for task_id in pending_scans if task_id not in skip_tasks]
+        if remaining_scans != pending_scans:
+            settings_service.set_value(
+                db,
+                KEY_PENDING_SCAN,
+                json.dumps(remaining_scans),
+                description="自动取数: 待用户扫码的任务",
+            )
+            db.commit()
 
     for task_id, reason in SKIPPED_TASKS.items():
         out["skipped"].append({"task": task_id, "reason": reason})
