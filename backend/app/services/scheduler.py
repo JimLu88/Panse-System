@@ -1213,10 +1213,10 @@ def _job_order_sheets_daily(db: Session) -> dict:
         result["_run_status"] = "fail"
         result["_error"] = f"{len(held_no_sku)} 笔订单因SKU未回填暂缓推送: {','.join(held_no_sku)}"
     elif held_no_address:
-        result["_run_status"] = "fail"
-        result["_error"] = (
-            f"{len(held_no_address)} 笔订单因收货地址仍被淘宝脱敏暂缓推送: "
-            + ",".join(held_no_address)
+        result["deferred_status"] = "address_masked"
+        result["_success_message"] = (
+            f"订单推送流程执行正常；{len(held_no_address)} 笔订单因淘宝地址脱敏暂缓，"
+            f"地址完整后自动补推：" + ",".join(held_no_address)
         )
     elif remaining:
         result["_run_status"] = "fail"
@@ -1282,6 +1282,13 @@ def _job_pull_catchup(db: Session) -> dict:
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
 
     def _finish(result: dict) -> dict:
+        held_no_address = result.get("held_no_address") or []
+        if result.get("_run_status") != "fail" and held_no_address:
+            result["deferred_status"] = "address_masked"
+            result["_success_message"] = (
+                f"订单推送流程执行正常；{len(held_no_address)} 笔订单因淘宝地址脱敏暂缓，"
+                f"地址完整后自动补推：" + ",".join(held_no_address)
+            )
         if result.get("_run_status") != "fail" and not result.get("_success_message"):
             last_pull = ai.latest_order_pull_result(db)
             result["_success_message"] = (

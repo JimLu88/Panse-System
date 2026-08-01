@@ -107,6 +107,35 @@ def test_masked_address_counts_as_missing(db_session, _feishu_stub):
     assert osa.push_pending_images(db_session, include_baseline=False)["pushed"] == 1
 
 
+def test_old_signed_row_is_not_reported_as_address_blocker(db_session, _feishu_stub):
+    """Historical rows outside the factory queue must not inflate address alerts."""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "OLD-SIGNED-1", address="Guangdong **************")
+    order = db_session.query(Order).filter_by(order_no="OLD-SIGNED-1").one()
+    order.order_date = date(2026, 6, 7)
+    osa.generate_pending(db_session)
+    order.status = "signed"
+    db_session.flush()
+
+    result = osa.push_pending_images(db_session, include_baseline=False)
+
+    assert result["pushed"] == 0
+    assert result["held_no_address"] == []
+    assert osa.count_pending_push(db_session, include_baseline=False) == 0
+
+
+def test_address_defer_is_not_a_delivery_failure(db_session, _feishu_stub):
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "DEFER-ADDR-1", address="Zhejiang **************")
+
+    result = osa.reconcile_pending_delivery(db_session)
+
+    assert result["images_remaining"] == 1
+    assert result["images_deferred_no_address"] == 1
+    assert result["held_no_address"] == ["DEFER-ADDR-1"]
+    assert result.get("_run_status") is None
+
+
 def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monkeypatch):
     """端到端: 收到飞书口令解密入库成功 → apply_shipping_password 自动重推缺地址单。"""
     from app.services import feishu_bot_service

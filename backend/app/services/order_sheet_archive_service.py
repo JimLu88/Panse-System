@@ -717,6 +717,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             # 等取数回填(每小时ingest/次日18:00)后, 下一轮 push 自动带图带尺寸补推。自愈, 不会静默丢单。
             _held_skeleton.append(no)
             continue
+        # Historical/non-production rows are not factory-delivery candidates.
+        # Filter them before the address gate so a stale signed row cannot
+        # create a false "address masked" failure.
+        if not _is_pushable(db, rec):
+            continue
         # Masked/partial customer addresses are production blockers. Never
         # send them to the factory; keep the archive row pending so the normal
         # reconcile path sends it once after a clear address is imported.
@@ -879,13 +884,13 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         errors.append(
             f"SKU未回填暂缓 {len(result['held_no_sku'])} 张: {','.join(result['held_no_sku'])}"
         )
-    if result["held_no_address"]:
-        errors.append(
-            f"收货地址未解密暂缓 {len(result['held_no_address'])} 张: "
-            + ",".join(result["held_no_address"])
-        )
-    if result["images_remaining"]:
-        errors.append(f"仍有 {result['images_remaining']} 张未送达")
+    # Address masking is an expected platform-data wait state, not a delivery
+    # failure. Only unexplained pending rows beyond that known defer are errors.
+    deferred_addresses = len(set(result["held_no_address"]))
+    result["images_deferred_no_address"] = deferred_addresses
+    unexplained_remaining = max(0, result["images_remaining"] - deferred_addresses)
+    if unexplained_remaining:
+        errors.append(f"仍有 {unexplained_remaining} 张未说明原因的下单图未送达")
     if result["remote_feishu_failed"]:
         errors.append(
             "远期改单作废通知失败: "
