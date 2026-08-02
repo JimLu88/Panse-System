@@ -405,6 +405,7 @@ def backfill_order_flow_no(
 
 class BillImportResult(BaseModel):
     inserted: int
+    updated_existing: int = 0
     skipped_invalid: int
     errors: list[str]
     skipped_duplicate: int = 0
@@ -424,7 +425,8 @@ async def import_wanshifu(file: UploadFile = File(...), db: Session = Depends(ge
     text = await _read_csv(file)
     r = bill_import_service.import_wanshifu_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+    return BillImportResult(inserted=r.inserted, updated_existing=r.updated_existing,
+                            skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
@@ -650,7 +652,8 @@ async def import_logistics(file: UploadFile = File(...), db: Session = Depends(g
     text = await _read_csv(file)
     r = bill_import_service.import_logistics_csv(db, text)
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+    return BillImportResult(inserted=r.inserted, updated_existing=r.updated_existing,
+                            skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 
@@ -680,7 +683,8 @@ async def import_logistics_xlsx_ep(file: UploadFile = File(...), db: Session = D
         pass  # 归档失败不阻断导入
     r = bill_import_service.import_logistics_xlsx(db, wb, source_name=file.filename or "")
     db.commit()
-    return BillImportResult(inserted=r.inserted, skipped_invalid=r.skipped_invalid, errors=r.errors,
+    return BillImportResult(inserted=r.inserted, updated_existing=r.updated_existing,
+                            skipped_invalid=r.skipped_invalid, errors=r.errors,
                             skipped_duplicate=r.skipped_duplicate, unmapped_columns=r.unmapped_columns)
 
 

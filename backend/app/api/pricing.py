@@ -41,6 +41,15 @@ class PricingSkuOut(BaseModel):
     sku_code: str
     taobao_title: Optional[str] = None
     size_category: Optional[str]
+    product_weight_kg: Optional[Decimal] = None
+    packaged_weight_kg: Optional[Decimal] = None
+    product_volume_m3: Optional[Decimal] = None
+    packaged_volume_m3: Optional[Decimal] = None
+    packaged_weight_source: Optional[str] = None
+    packaged_volume_source: Optional[str] = None
+    shipping_measure_source_tracking_no: Optional[str] = None
+    shipping_measure_source_date: Optional[date] = None
+    shipping_measure_sample_count: Optional[int] = None
     list_price: Optional[Decimal]
     daily_price: Optional[Decimal]
     small_promo: Optional[Decimal]

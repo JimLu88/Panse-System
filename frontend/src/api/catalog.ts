@@ -8,6 +8,15 @@ export interface PricingSku {
   sku_code: string;
   taobao_title?: string | null;   // 淘宝宝贝标题 (订单无编码时按它匹配回编码)
   size_category: string | null;
+  product_weight_kg?: number | null;
+  packaged_weight_kg?: number | null;
+  product_volume_m3?: number | null;
+  packaged_volume_m3?: number | null;
+  packaged_weight_source?: 'bill' | 'manual' | null;
+  packaged_volume_source?: 'bill' | 'manual' | null;
+  shipping_measure_source_tracking_no?: string | null;
+  shipping_measure_source_date?: string | null;
+  shipping_measure_sample_count?: number | null;
   list_price: number | null;
   daily_price: number | null;
   small_promo: number | null;
@@ -748,6 +757,21 @@ export const matchProductRanked = (product_name: string, sku?: string, limit = 1
 // -- 产品 SKU 列表 (展开行用)
 export const listProductSkus = (product_code: string) =>
   api.get<PricingSku[]>(`/api/products/${product_code}/skus`).then(r => r.data);
+
+export interface SkuShippingMeasurementPatch {
+  product_weight_kg?: number | null;
+  packaged_weight_kg?: number | null;
+  product_volume_m3?: number | null;
+  packaged_volume_m3?: number | null;
+}
+export const updateSkuShippingMeasurements = (
+  productCode: string,
+  skuId: number,
+  payload: SkuShippingMeasurementPatch,
+) => api.patch<PricingSku>(
+  `/api/products/${encodeURIComponent(productCode)}/skus/${skuId}/shipping-measurements`,
+  payload,
+).then(r => r.data);
 
 // -- 定价录入/编辑
 export interface PricingSkuCreate {
