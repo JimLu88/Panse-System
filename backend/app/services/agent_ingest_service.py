@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
 from app.models.marketing import PromotionFlow
-from app.services import import_storage, settings_service, web_agent_service
+from app.services import import_storage, settings_service, web_agent_service, yulibao_service
 
 _log = logging.getLogger("panse.agent_ingest")
 
@@ -578,8 +578,13 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
 
 
 def refresh_alipay_balances(db: Session) -> list[dict]:
-    """用支付宝 API 刷新企业号等账户余额 → 写 AccountBalance(本月, 统计日期=今天)。
-    走官方 API (精确, 零截图/零 OCR); 个人号无 API 的不在此列。"""
+    """刷新支付宝普通余额，并把余利宝净转入作为独立资产余额计入。
+
+    普通余额走官方 ``alipay.data.bill.balance.query`` 精确取数。该接口不含
+    余利宝；当前应用未开通独立余利宝查询权限时，余利宝按已导入企业号
+    资金账单中的申购、赎回和收益净额估算。两项分行保存，避免内部划转
+    被重复算作经营收支。
+    """
     from app.models.finance import AccountBalance
     out: list[dict] = []
     accts = web_agent_service.alipay_accounts(db)
@@ -593,28 +598,47 @@ def refresh_alipay_balances(db: Session) -> list[dict]:
         total = raw.get("total_amount") or r.get("balance")
         if not r.get("ok") or total is None:
             out.append({"account": erp_name, "error": r.get("msg") or r.get("error") or "无余额"})
-            continue
-        prev = db.execute(
-            select(AccountBalance).where(AccountBalance.account_name == erp_name)
-            .order_by(AccountBalance.period_year.desc(), AccountBalance.period_month.desc())
-        ).scalars().first()
-        row = db.execute(select(AccountBalance).where(
-            AccountBalance.account_name == erp_name,
-            AccountBalance.period_year == today.year,
-            AccountBalance.period_month == today.month)).scalar_one_or_none()
-        if row is None:
-            row = AccountBalance(
-                account_name=erp_name, period_year=today.year, period_month=today.month,
-                account_no=(prev.account_no if prev else None),
-                opening_balance=(prev.closing_balance if prev else Decimal("0")))
-            db.add(row)
-        row.closing_balance = Decimal(str(total))
-        row.as_of_date = today
-        avail = raw.get("available_amount")
-        frz = raw.get("freeze_amount")
-        row.remark = (f"支付宝API精确取数: 可用{avail}+冻结{frz}=总{total} ({today})"
-                      if avail is not None else f"支付宝API精确取数: {total} ({today})")
-        out.append({"account": erp_name, "balance": str(total)})
+        else:
+            prev = db.execute(
+                select(AccountBalance).where(AccountBalance.account_name == erp_name)
+                .order_by(AccountBalance.period_year.desc(), AccountBalance.period_month.desc())
+            ).scalars().first()
+            row = db.execute(select(AccountBalance).where(
+                AccountBalance.account_name == erp_name,
+                AccountBalance.period_year == today.year,
+                AccountBalance.period_month == today.month)).scalar_one_or_none()
+            if row is None:
+                row = AccountBalance(
+                    account_name=erp_name, period_year=today.year, period_month=today.month,
+                    account_no=(prev.account_no if prev else None),
+                    opening_balance=(prev.closing_balance if prev else Decimal("0")))
+                db.add(row)
+            row.closing_balance = Decimal(str(total))
+            row.as_of_date = today
+            avail = raw.get("available_amount")
+            frz = raw.get("freeze_amount")
+            row.remark = (f"支付宝API精确取数: 可用{avail}+冻结{frz}=总{total} ({today})"
+                          if avail is not None else f"支付宝API精确取数: {total} ({today})")
+            out.append({"account": erp_name, "balance": str(total), "source": "api_exact"})
+
+        # 余利宝不在普通余额 API 中。按资金账单重建独立资产余额；即使本轮
+        # Web-Agent 离线，已入库的余利宝流水仍可安全刷新，不影响普通余额行。
+        estimate = yulibao_service.refresh_estimated_balance(
+            db, source_account=acc.get("name") or "企业号")
+        if estimate.get("ok"):
+            out.append({
+                "account": estimate.get("account"),
+                "balance": str(estimate.get("balance")),
+                "as_of_date": str(estimate.get("as_of_date")),
+                "source": "flow_estimate",
+                "source_count": estimate.get("count"),
+            })
+        elif estimate.get("reason") == "negative_estimate":
+            out.append({
+                "account": yulibao_service.YULIBAO_ACCOUNT_NAME,
+                "error": "余利宝净转入估算为负，保留原余额并等待人工核对",
+                "estimate": estimate.get("balance"),
+            })
     db.commit()
     return out
 
@@ -1008,6 +1032,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     if not hb.get("online"):
         out["agent_offline"] = hb.get("error", "无法连接")
         out["ingest"] = run_ingest(db)   # Agent 掉线也把已有文件扫了
+        out["yulibao_after_ingest"] = yulibao_service.refresh_estimated_balance(db)
         _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
         db.commit()
         return out
@@ -1127,6 +1152,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             main_alipay_task_succeeded = True
 
     out["ingest"] = run_ingest(db)
+    # 余额 API 先于资金账单下载执行。导入完成后再重算一次余利宝，避免
+    # 新增申购/赎回要多等一个自动化周期才进入可用资金。
+    out["yulibao_after_ingest"] = yulibao_service.refresh_estimated_balance(db)
+    db.commit()
     if "taobao_orders" in plan:
         out["order_changes"] = summarize_order_changes_since_last_complete(db, out["ingest"])
         out["order_message"] = format_order_change_message(out["order_changes"])
