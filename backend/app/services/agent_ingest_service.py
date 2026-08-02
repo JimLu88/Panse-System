@@ -1004,7 +1004,7 @@ def _due_today(state: dict, category: str, force: bool) -> bool:
 
 
 def pending_shipping_password_files(
-    db: Session, *, on=None, all_dates: bool = False,
+    db: Session, *, on=None, all_dates: bool = False, latest_only: bool = False,
 ) -> list[str]:
     """返回仍未被后续成功解密记录覆盖的加密发货报表。
 
@@ -1031,10 +1031,22 @@ def pending_shipping_password_files(
             continue
         key = row.file_hash or f"id:{row.id}"
         latest_by_hash[key] = row
+    unresolved = [
+        row for row in latest_by_hash.values()
+        if (row.row_summary or {}).get("agent_status") == "pending_password"
+    ]
+    if all_dates and latest_only and unresolved:
+        def _local_date(row: ImportedFile):
+            value = row.created_at
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            return value.astimezone().date()
+
+        newest = max(_local_date(row) for row in unresolved)
+        unresolved = [row for row in unresolved if _local_date(row) == newest]
     return [
         row.original_filename or f"imported_file:{row.id}"
-        for row in latest_by_hash.values()
-        if (row.row_summary or {}).get("agent_status") == "pending_password"
+        for row in unresolved
     ]
 
 

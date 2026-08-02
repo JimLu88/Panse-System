@@ -926,10 +926,13 @@ def _extract_shipping_password(text: str) -> Optional[str]:
 def _shipping_failure_summary(result: dict, pending_files: list[str] | None = None) -> str:
     """把口令失败压缩成可外发的明确原因；绝不包含口令本身。"""
     details: list[str] = []
+    pending_set = set(pending_files or [])
     for item in result.get("files") or []:
         if item.get("status") not in ("pending", "error"):
             continue
         name = str(item.get("file") or "未知文件")
+        if pending_set and name not in pending_set:
+            continue
         note = str(item.get("note") or "口令与该报表不匹配")
         details.append(f"{name}: {note}")
     if not details:
@@ -956,11 +959,18 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         r = agent_ingest_service.reingest_pending_shipping(db)
     except Exception:  # noqa: BLE001
         return {"imported": 0, "tried": 0}
-    # A password may arrive after midnight for yesterday's report.  Resolve
-    # against every still-unresolved encrypted file, while the daily freshness
-    # gate below intentionally remains scoped to today's pull.
-    pending_files = agent_ingest_service.pending_shipping_password_files(
-        db, all_dates=True,
+    # A password may arrive after midnight for yesterday's report.  Prefer the
+    # current batch; only when today's batch is absent do we continue the most
+    # recent unresolved batch.  Historical one-password-per-report leftovers
+    # must not make a newly matched report look like a failure.
+    current_pending = agent_ingest_service.pending_shipping_password_files(db)
+    latest_pending = agent_ingest_service.pending_shipping_password_files(
+        db, all_dates=True, latest_only=True,
+    )
+    pending_files = (
+        current_pending
+        if r.get("imported")
+        else (current_pending or latest_pending)
     )
     r["pending_files"] = pending_files
     if pending_files:

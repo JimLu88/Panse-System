@@ -123,6 +123,27 @@ def test_unresolved_shipping_password_can_be_found_after_midnight(db_session):
     ]
 
 
+def test_latest_unresolved_shipping_batch_excludes_older_passwords(db_session):
+    older = datetime.now() - timedelta(days=2)
+    latest = datetime.now() - timedelta(days=1)
+    for name, created_at in (("older.xlsx", older), ("latest.xlsx", latest)):
+        db_session.add(ImportedFile(
+            kind="taobao",
+            original_filename=name,
+            stored_path=f"/tmp/{name}",
+            file_hash=f"hash-{name}",
+            source="api",
+            row_summary={"agent_status": "pending_password"},
+            created_at=created_at,
+            updated_at=created_at,
+        ))
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(
+        db_session, all_dates=True, latest_only=True,
+    ) == ["latest.xlsx"]
+
+
 def test_shipping_password_never_expires_by_age(db_session):
     settings_service.set_value(db_session, "taobao_shipping_pwd_latest", "example-password")
     settings_service.set_value(
