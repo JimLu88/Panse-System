@@ -923,6 +923,23 @@ def _extract_shipping_password(text: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _shipping_failure_summary(result: dict, pending_files: list[str] | None = None) -> str:
+    """把口令失败压缩成可外发的明确原因；绝不包含口令本身。"""
+    details: list[str] = []
+    for item in result.get("files") or []:
+        if item.get("status") not in ("pending", "error"):
+            continue
+        name = str(item.get("file") or "未知文件")
+        note = str(item.get("note") or "口令与该报表不匹配")
+        details.append(f"{name}: {note}")
+    if not details:
+        details.extend(
+            f"{name}: 口令与该报表不匹配或文件异常"
+            for name in (pending_files or [])
+        )
+    return "；".join(details)[:500] or "口令未能解密当前待处理报表"
+
+
 def apply_shipping_password(db: Session, pwd: str) -> dict:
     """存最新发货报表口令 + 时间戳, 立刻用它重试解密待解的加密发货报表; 返回 reingest 结果。
 
@@ -939,6 +956,53 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         r = agent_ingest_service.reingest_pending_shipping(db)
     except Exception:  # noqa: BLE001
         return {"imported": 0, "tried": 0}
+    # A password may arrive after midnight for yesterday's report.  Resolve
+    # against every still-unresolved encrypted file, while the daily freshness
+    # gate below intentionally remains scoped to today's pull.
+    pending_files = agent_ingest_service.pending_shipping_password_files(
+        db, all_dates=True,
+    )
+    r["pending_files"] = pending_files
+    if pending_files:
+        failure_reason = _shipping_failure_summary(r, pending_files)
+        r["failure_reason"] = failure_reason
+        settings_service.set_value(
+            db,
+            agent_ingest_service.KEY_SHIPPING_PASSWORD_RESULT,
+            json.dumps({
+                "status": "password_mismatch",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "pending_files": pending_files,
+                "reason": failure_reason,
+            }, ensure_ascii=False),
+            description="最近发货报表口令匹配结果（不含口令）",
+        )
+        # 同一个错误口令重复跑不会改变结果。暂停定时重试，等用户给新的匹配
+        # 口令后由本函数立即续跑；飞书回执会直接告诉用户具体文件和原因。
+        try:
+            from app.services import automation_pipeline_service
+
+            r["automation_pipeline"] = automation_pipeline_service.pause_for_input(
+                db, "order_delivery", failure_reason,
+            )
+        except Exception:  # noqa: BLE001
+            logging.getLogger("panse.feishu_bot").warning(
+                "口令不匹配后暂停订单重试链失败", exc_info=True,
+            )
+        db.commit()
+    else:
+        settings_service.set_value(
+            db,
+            agent_ingest_service.KEY_SHIPPING_PASSWORD_RESULT,
+            json.dumps({
+                "status": "success" if r.get("imported") else "no_pending_file",
+                "at": datetime.now(timezone.utc).isoformat(),
+                "pending_files": [],
+                "reason": None,
+            }, ensure_ascii=False),
+            description="最近发货报表口令匹配结果（不含口令）",
+        )
+        db.commit()
     # 飞书成功推送 (用户 2026-06-28): 解密成功 → 推到飞书群, 清晰可见(不只回卡)。
     # 在本核心做 → 无论本地飞书入站还是跨机转发(NAS reingest), 实际解密成功的那台都会推。
     imp = r.get("imported") or 0
@@ -973,6 +1037,25 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                 "_error": f"freshness_gate: {completion.get('reason') or 'unknown'}",
             }
         r["delivery"] = delivery
+        if (completion.get("completed")
+                and delivery.get("_run_status") != "fail"):
+            try:
+                from app.services import automation_pipeline_service
+
+                r["automation_pipeline"] = automation_pipeline_service.record_success(
+                    db,
+                    "order_delivery",
+                    success_detail=(
+                        f"发货报表已解密入库，增量下单图成功推送 "
+                        f"{int(delivery.get('images_pushed') or 0)} 张"
+                    ),
+                )
+                db.commit()
+            except Exception:  # noqa: BLE001
+                db.rollback()
+                logging.getLogger("panse.feishu_bot").warning(
+                    "口令成功后关闭订单重试链失败", exc_info=True,
+                )
         try:
             chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
             if chat:
@@ -1019,8 +1102,12 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
     """收到飞书发货口令: 本地落地(存+解密) + 转发生产机(若配置) + 回执卡片。"""
     r = apply_shipping_password(db, pwd)
     imported = r.get("imported") or 0
+    failure_reasons: list[str] = []
     if imported:
         body = (f"已用口令自动解密并导入 {imported} 份发货报表 (更新订单 {r.get('updated') or 0} 单)。")
+    elif r.get("failure_reason"):
+        failure_reasons.append(str(r["failure_reason"]))
+        body = f"本机未解密成功：{r['failure_reason']}"
     elif r.get("tried"):
         body = "口令已存, 但本机待解密的发货报表用它仍打不开 (一报一密)。"
     else:
@@ -1032,11 +1119,25 @@ def _capture_shipping_password(db: Session, message_id: str, pwd: str) -> dict:
         if ri:
             body += f" 已同步生产机并解密 {ri} 份(更新 {relay.get('updated') or 0} 单)。"
             imported = imported or ri
+            # 生产机持有正式报表和生产库；它成功即为最终结果，本机没有对应
+            # 文件不应把整张回执误标成失败。
+            failure_reasons = []
+        elif relay.get("failure_reason"):
+            failure_reasons.append(str(relay["failure_reason"]))
+            body += f" 生产机未解密成功：{relay['failure_reason']}"
+        elif relay.get("tried"):
+            body += " 已同步生产机，但口令未能解密待处理报表。"
         else:
             body += " 已同步生产机(暂无可解报表)。"
-    _safe_reply(db, message_id, _result_card("已收到发货报表口令", body, "green"))
+    if failure_reasons:
+        body += " 请转发上述报表对应的正确口令；无新口令前系统已暂停无效重试。"
+        title, color = "口令未匹配发货报表", "orange"
+    else:
+        title, color = "已收到发货报表口令", "green"
+    _safe_reply(db, message_id, _result_card(title, body, color))
     return {"message_id": message_id, "kind": "shipping_password",
-            "captured": True, "imported": imported}
+            "captured": True, "imported": imported,
+            "failure_reason": "；".join(dict.fromkeys(failure_reasons)) or None}
 
 
 # ── 飞书「售后」关键词多步录入 (2026-06-12) ──

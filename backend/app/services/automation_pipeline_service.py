@@ -180,6 +180,63 @@ def needs_retry(db: Session, pipeline: str, *, now: Optional[datetime] = None) -
     return bool(entry.get("failures")) and not entry.get("success") and not entry.get("final")
 
 
+def pause_for_input(
+    db: Session,
+    pipeline: str,
+    reason: str,
+    *,
+    now: Optional[datetime] = None,
+) -> dict:
+    """暂停没有新输入就不可能成功的重试。
+
+    典型场景是用户已经给了发货报表口令，但该口令与当前加密文件不匹配。
+    此时继续按小时重试同一个口令只会制造重复告警；保留明确原因，等新口令到达后
+    由业务回调立即重试，成功时 ``record_success`` 会重新打开并正式销账。
+    """
+    if pipeline not in PIPELINE_LABELS:
+        raise ValueError(f"未知关键自动化: {pipeline}")
+    current = _now(now)
+    state = _load(db)
+    day = current.date().isoformat()
+    entry = _entry_for_day(state, pipeline, day)
+    entry.update({
+        "success": False,
+        "final": True,
+        "waiting_input": True,
+        "last_error": _safe_error(reason),
+        "last_attempt_at": current.isoformat(),
+        "next_retry_at": None,
+    })
+    superseded = _supersede_pending_failure_notifications(
+        state, pipeline, day, current,
+    )
+    _save(db, state)
+    return {
+        "pipeline": pipeline,
+        "paused": True,
+        "reason": entry["last_error"],
+        "superseded_notifications": superseded,
+    }
+
+
+def _supersede_pending_failure_notifications(
+    state: dict, pipeline: str, day: str, current: datetime,
+) -> int:
+    """成功后取消尚未送达的旧失败通知，避免恢复后再冒出过期重试提醒。"""
+    prefix = f"{pipeline}:{day}:"
+    superseded = 0
+    for item in state.setdefault("notification_queue", []):
+        if not str(item.get("dedupe_key") or "").startswith(prefix):
+            continue
+        if item.get("sent_at") or item.get("exhausted"):
+            continue
+        item["exhausted"] = True
+        item["superseded_at"] = current.isoformat()
+        item["last_error"] = "pipeline_recovered_before_delivery"
+        superseded += 1
+    return superseded
+
+
 def record_failure(
     db: Session,
     pipeline: str,
@@ -244,6 +301,7 @@ def record_failure(
         "failures": failures,
         "success": False,
         "final": final,
+        "waiting_input": False,
         "last_error": safe_error,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": next_retry.isoformat() if next_retry else None,
@@ -279,9 +337,22 @@ def record_success(
     day = current.date().isoformat()
     entry = _entry_for_day(state, pipeline, day)
     if entry.get("success"):
-        return {"pipeline": pipeline, "already_success": True, "recovered": False}
+        superseded = _supersede_pending_failure_notifications(
+            state, pipeline, day, current,
+        )
+        if superseded:
+            _save(db, state)
+        return {
+            "pipeline": pipeline,
+            "already_success": True,
+            "recovered": False,
+            "superseded_notifications": superseded,
+        }
 
     failures = int(entry.get("failures") or 0)
+    superseded = _supersede_pending_failure_notifications(
+        state, pipeline, day, current,
+    )
     delivery = {"sent": False, "queued": False, "detail": "normal_success"}
     recovered = failures > 0
     if recovered:
@@ -303,6 +374,7 @@ def record_success(
     entry.update({
         "success": True,
         "final": False,
+        "waiting_input": False,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": None,
     })
@@ -318,6 +390,7 @@ def record_success(
         "pipeline": pipeline,
         "recovered": recovered,
         "failures": failures,
+        "superseded_notifications": superseded,
         "notification": delivery,
     }
 

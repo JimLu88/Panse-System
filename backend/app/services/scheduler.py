@@ -929,10 +929,24 @@ def _finance_outcomes(db: Session, result: dict) -> dict[str, tuple[bool, str]]:
 
     main_status = task_status.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
     if main_status not in ok_status:
+        main_reason = (
+            pending.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
+            or main_status
+            or "未执行"
+        )
+        scan_result = agent_ingest_service.get_scan_results(db).get(
+            agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
+        ) or {}
+        try:
+            scan_at = datetime.fromisoformat(str(scan_result.get("at") or ""))
+            if (scan_result.get("status") == "failed"
+                    and scan_at.date() == today
+                    and scan_result.get("reason")):
+                main_reason = f"扫码续跑失败: {scan_result['reason']}"
+        except (TypeError, ValueError):
+            pass
         flow_reasons.append(
-            "主力号流水未完成: "
-            + (pending.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
-               or main_status or "未执行")
+            "主力号流水未完成: " + main_reason
         )
     try:
         state = json.loads(
@@ -1008,6 +1022,56 @@ def _fresh_finance_browser_tasks(db: Session) -> set[str]:
     except (TypeError, ValueError, json.JSONDecodeError):
         pass
     return tasks
+
+
+def _reconcile_finance_success_from_persisted_evidence(db: Session) -> dict:
+    """在启动下一次浏览器重试前，用已落库证据关闭旧失败状态。
+
+    这覆盖“扫码线程已经产出并入库，但进程在写 pipeline success 前重启”的窄窗；
+    没有逐任务成功证据时绝不猜测成功。
+    """
+    from sqlalchemy import select
+
+    from app.models.finance import AccountBalance
+    from app.services import agent_ingest_service, automation_pipeline_service
+
+    today = date.today()
+    closed: list[str] = []
+    fresh_tasks = _fresh_finance_browser_tasks(db)
+    balance_tasks = {
+        "bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main",
+    }
+    enterprise_fresh = db.execute(
+        select(AccountBalance.id).where(
+            AccountBalance.account_name == "支付宝-企业账号",
+            AccountBalance.as_of_date == today,
+        ).limit(1)
+    ).scalar_one_or_none() is not None
+    if enterprise_fresh and balance_tasks.issubset(fresh_tasks):
+        automation_pipeline_service.record_success(
+            db, "balance_pull", success_detail="今日全部账户余额已落库",
+        )
+        closed.append("balance_pull")
+
+    scan_result = agent_ingest_service.get_scan_results(db).get(
+        agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
+    ) or {}
+    try:
+        scan_at = datetime.fromisoformat(str(scan_result.get("at") or ""))
+        scan_success = (
+            scan_result.get("status") == "success" and scan_at.date() == today
+        )
+    except (TypeError, ValueError):
+        scan_success = False
+    if (scan_success
+            and agent_ingest_service.MAIN_ALIPAY_FLOW_TASK in fresh_tasks):
+        automation_pipeline_service.record_success(
+            db, "flow_pull", success_detail="扫码后的主力号流水成功证据已落库",
+        )
+        closed.append("flow_pull")
+    if closed:
+        db.commit()
+    return {"closed": closed}
 
 
 def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
@@ -1091,15 +1155,21 @@ def _job_web_agent_finance_retry(db: Session) -> dict:
     """21:00/21:30/22:00: 只要余额或流水尚未成功，就整轮幂等补跑。"""
     from app.services import automation_pipeline_service
 
+    reconciled = _reconcile_finance_success_from_persisted_evidence(db)
     pending = [
         pipeline
         for pipeline in ("balance_pull", "flow_pull")
         if automation_pipeline_service.needs_retry(db, pipeline)
     ]
     if not pending:
-        return {"skipped": "finance_pipeline_closed", "_run_status": "skipped"}
+        return {
+            "skipped": "finance_pipeline_closed",
+            "_run_status": "skipped",
+            "reconciled": reconciled["closed"],
+        }
     result = _run_finance_pipeline(db, retry=True)
     result["retry_for"] = pending
+    result["reconciled_before_retry"] = reconciled["closed"]
     return result
 
 
@@ -1278,7 +1348,7 @@ def _job_pull_catchup(db: Session) -> dict:
     if not (18 <= _now_hour() < 23):
         return {"skipped": "off_window"}
     pipeline = automation_pipeline_service.get_pipeline(db, "order_delivery")
-    if pipeline.get("success") or pipeline.get("final"):
+    if pipeline.get("success"):
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
 
     def _finish(result: dict) -> dict:
@@ -1310,6 +1380,10 @@ def _job_pull_catchup(db: Session) -> dict:
         delivery = oss.reconcile_pending_delivery(db, limit=50, quiet=True)
         delivery["ok"] = "fresh_delivery_reconciled"
         return _finish(delivery)
+    # ``final`` 只表示旧一轮重试已用尽，不得盖过后来由扫码/口令形成的
+    # 成功证据。上面的新鲜度收口优先；确认仍旧失败后才停止无效重试。
+    if pipeline.get("final"):
+        return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
     if ai.is_running():
         return _finish({
             "skipped": "orchestrate_running",
@@ -1318,15 +1392,34 @@ def _job_pull_catchup(db: Session) -> dict:
         })
     pending_password = ai.pending_shipping_password_files(db)
     if pending_password:
+        password_result = ai.get_shipping_password_result(db)
+        mismatch_reason = ""
+        try:
+            password_at = datetime.fromisoformat(
+                str(password_result.get("at") or "")
+            )
+            if (password_result.get("status") == "password_mismatch"
+                    and password_at.astimezone().date() == date.today()):
+                mismatch_reason = str(password_result.get("reason") or "")
+        except (TypeError, ValueError):
+            pass
+        if mismatch_reason:
+            error = (
+                "已收到口令，但未能解密待处理发货报表："
+                + mismatch_reason
+                + "；无新口令前已暂停自动重试"
+            )
+        else:
+            error = (
+                f"加密发货报表待飞书口令 {len(pending_password)} 份: "
+                + ",".join(pending_password[:5])
+                + "；请转发“发货密码 xxxx”，收到后自动解密，下个小时继续"
+            )
         return _finish({
             "waiting": "shipping_password",
             "files": pending_password,
             "_run_status": "fail",
-            "_error": (
-                f"加密发货报表待飞书口令 {len(pending_password)} 份: "
-                + ",".join(pending_password[:5])
-                + "；请转发“发货密码 xxxx”，收到后自动解密，下个小时继续"
-            ),
+            "_error": error,
         })
     if not web_agent_service.health(db).get("online"):
         return _finish({

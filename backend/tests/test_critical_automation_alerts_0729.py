@@ -234,7 +234,7 @@ def test_failed_feishu_send_is_persisted_and_retried(db_session, monkeypatch):
     assert queue[0]["sent_at"].startswith("2026-07-29T21:31")
 
 
-def test_recovery_waits_behind_queued_failure_notification(db_session, monkeypatch):
+def test_recovery_supersedes_queued_failure_notification(db_session, monkeypatch):
     delivered: list[str] = []
     available = {"value": False}
 
@@ -257,15 +257,83 @@ def test_recovery_waits_behind_queued_failure_notification(db_session, monkeypat
     recovered = pipeline.record_success(
         db_session, "flow_pull", now=_at(21, 5)
     )
-    assert recovered["notification"]["detail"] == "ordered_after_pending"
-    assert delivered == []
+    assert recovered["superseded_notifications"] == 1
+    assert recovered["notification"]["detail"] == "sent"
+    assert len(delivered) == 1
+    assert "自动重试成功" in delivered[0]
 
     retried = pipeline.retry_pending_notifications(
         db_session, now=_at(21, 31)
     )
-    assert retried == {"retried": 2, "sent": 2, "exhausted": 0}
-    assert "执行失败" in delivered[0]
-    assert "自动重试成功" in delivered[1]
+    assert retried == {"retried": 0, "sent": 0, "exhausted": 0}
+    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
+    queue = json.loads(raw)["notification_queue"]
+    assert queue[0]["exhausted"] is True
+    assert queue[0]["last_error"] == "pipeline_recovered_before_delivery"
+
+
+def test_repeated_success_still_cancels_an_old_unsent_failure(db_session, monkeypatch):
+    monkeypatch.setattr(pipeline, "_send_feishu", lambda db, text: (True, "sent"))
+    pipeline.record_success(db_session, "flow_pull", now=_at(21))
+
+    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
+    state = json.loads(raw)
+    state["notification_queue"].append({
+        "dedupe_key": "flow_pull:2026-07-29:legacy-failure",
+        "attempts": 1,
+        "sent_at": None,
+        "exhausted": False,
+    })
+    settings_service.set_value(
+        db_session, pipeline.SETTING_KEY, json.dumps(state),
+    )
+
+    repeated = pipeline.record_success(db_session, "flow_pull", now=_at(21, 5))
+
+    assert repeated["already_success"] is True
+    assert repeated["superseded_notifications"] == 1
+    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
+    queue = json.loads(raw)["notification_queue"]
+    assert queue[0]["exhausted"] is True
+
+
+def test_pause_for_input_stops_retry_until_later_success(db_session, monkeypatch):
+    sent: list[str] = []
+    monkeypatch.setattr(
+        pipeline,
+        "_send_feishu",
+        lambda db, text: (sent.append(text) is None or True, "sent"),
+    )
+    pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "发货报表待口令",
+        retry_slots=[_at(20), _at(21)],
+        now=_at(19),
+        max_failures=3,
+    )
+
+    paused = pipeline.pause_for_input(
+        db_session,
+        "order_delivery",
+        "ExportOrderList.xlsx: 口令不匹配",
+        now=_at(19, 5),
+    )
+
+    assert paused["paused"] is True
+    assert pipeline.needs_retry(
+        db_session, "order_delivery", now=_at(19, 10)
+    ) is False
+    recovered = pipeline.record_success(
+        db_session, "order_delivery", now=_at(19, 15),
+    )
+    assert recovered["recovered"] is True
+    state = pipeline.get_pipeline(
+        db_session, "order_delivery", now=_at(19, 16)
+    )
+    assert state["success"] is True
+    assert state["final"] is False
+    assert state["waiting_input"] is False
 
 
 def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session):
@@ -412,3 +480,39 @@ def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):
         "bal_taobao_aggregate", "bal_ads", "bal_wanshifu",
         "bal_alipay_main", agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
     }
+
+
+def test_finance_retry_closes_from_persisted_scan_success(db_session, monkeypatch):
+    pipeline.record_failure(
+        db_session,
+        "flow_pull",
+        "主力号流水需扫码",
+        retry_slots=[datetime.now() + timedelta(hours=1)],
+    )
+    now = datetime.now().isoformat(timespec="seconds")
+    settings_service.set_value(
+        db_session,
+        agent_ingest_service.KEY_STATE,
+        json.dumps({
+            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW: now,
+        }),
+    )
+    settings_service.set_value(
+        db_session,
+        agent_ingest_service.KEY_SCAN_RESULTS,
+        json.dumps({
+            agent_ingest_service.MAIN_ALIPAY_FLOW_TASK: {
+                "status": "success",
+                "at": now,
+                "reason": None,
+            },
+        }),
+    )
+    db_session.flush()
+
+    reconciled = scheduler._reconcile_finance_success_from_persisted_evidence(
+        db_session,
+    )
+
+    assert reconciled["closed"] == ["flow_pull"]
+    assert pipeline.needs_retry(db_session, "flow_pull") is False

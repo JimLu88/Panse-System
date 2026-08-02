@@ -19,7 +19,7 @@ import json
 import logging
 import os
 import threading
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
@@ -41,6 +41,8 @@ KEY_INTERVAL_BALANCE = "web_agent_interval_balance"    # 天, 默认 3 (余额+�
 KEY_STATE = "web_agent_state"                          # 各类别最近成功时间 JSON
 KEY_LAST_INGEST = "web_agent_last_ingest"              # 最近一次扫描报告 JSON
 KEY_ORCH_STATE = "web_agent_orch_state"                # 编排进行中状态 JSON
+KEY_SCAN_RESULTS = "web_agent_scan_last_results"        # 扫码续跑逐任务结果 JSON（不含凭证）
+KEY_SHIPPING_PASSWORD_RESULT = "taobao_shipping_pwd_last_result"  # 最近口令匹配结果（不含口令）
 STATE_MAIN_ALIPAY_FLOW = "alipay_main_flow"
 MAIN_ALIPAY_FLOW_TASK = "alipay_main"
 
@@ -87,6 +89,29 @@ def _add_pending_scan(db: Session, task_id: str) -> None:
         settings_service.set_value(db, KEY_PENDING_SCAN, json.dumps(lst),
                                    description="自动取数: 待用户扫码的任务")
         db.commit()
+
+
+def get_scan_results(db: Session) -> dict:
+    try:
+        value = json.loads(
+            settings_service.get(db, KEY_SCAN_RESULTS, env_fallback=False) or "{}"
+        )
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_shipping_password_result(db: Session) -> dict:
+    """返回最近口令匹配结果；只含状态、文件名和错误原因，不含口令。"""
+    try:
+        value = json.loads(
+            settings_service.get(
+                db, KEY_SHIPPING_PASSWORD_RESULT, env_fallback=False,
+            ) or "{}"
+        )
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
 
 
 # 默认可扫码刷新的余额任务 (淘宝聚合一扫覆盖淘宝SSO的推广/万师傅)。
@@ -158,6 +183,8 @@ def start_pending_scans(db: Session) -> dict:
         d = SessionLocal()
         try:
             done = []
+            failures: list[dict] = []
+            scan_results = get_scan_results(d)
             for tid in list(tasks):
                 artifacts_before = (
                     _main_alipay_artifacts()
@@ -165,7 +192,12 @@ def start_pending_scans(db: Session) -> dict:
                 )
                 r = web_agent_service.run_task(
                     d, tid, _task_run_variables(tid, d, wait_scan=True))
-                if r.get("job"):
+                failure_reason = ""
+                if not r.get("job"):
+                    failure_reason = str(
+                        r.get("error") or r.get("reason") or "Web-Agent 未返回任务编号"
+                    )
+                else:
                     final = web_agent_service.wait_job(d, r["job"], timeout_s=720, poll_s=8)
                     status = (final.get("status") or "").lower()
                     job_result = final.get("result") or {}
@@ -177,18 +209,70 @@ def start_pending_scans(db: Session) -> dict:
                     if (status in ("done", "ok", "success")
                             and result_ok and has_artifact):
                         done.append(tid)
+                        scan_results[tid] = {
+                            "status": "success",
+                            "at": datetime.now().isoformat(timespec="seconds"),
+                            "reason": None,
+                        }
                     elif status in ("done", "ok", "success") and not result_ok:
+                        failure_reason = str(
+                            job_result.get("errors")
+                            or job_result.get("reason")
+                            or "Web-Agent 返回业务失败"
+                        )
                         _log.warning(
                             "扫码续跑任务业务失败 %s: %s",
                             tid,
-                            job_result.get("errors") or job_result.get("reason"),
+                            failure_reason,
                         )
                     elif status in ("done", "ok", "success"):
-                        _log.warning("扫码续跑任务空成功 %s：未生成预期文件", tid)
-            remain = [t for t in get_pending_scans(d) if t not in done]
-            settings_service.set_value(d, KEY_PENDING_SCAN, json.dumps(remain))
-            d.commit()
+                        failure_reason = "扫码/登录步骤结束，但没有生成新的主力号流水文件"
+                        _log.warning("扫码续跑任务空成功 %s：%s", tid, failure_reason)
+                    else:
+                        failure_reason = str(
+                            final.get("error")
+                            or final.get("note")
+                            or job_result.get("errors")
+                            or job_result.get("reason")
+                            or f"Web-Agent 任务状态 {status or 'unknown'}"
+                        )
+                if failure_reason:
+                    failure = {"task": tid, "reason": failure_reason[:300]}
+                    failures.append(failure)
+                    scan_results[tid] = {
+                        "status": "failed",
+                        "at": datetime.now().isoformat(timespec="seconds"),
+                        "reason": failure["reason"],
+                    }
             ingest_result = run_ingest(d)   # 扫到的余额截图/淘宝报表一并导入
+            if (MAIN_ALIPAY_FLOW_TASK in done
+                    and (ingest_result.get("errors") or ingest_result.get("pending"))):
+                # A browser download is not business success until the new
+                # artifact can be parsed and stored.  Keep the exact import
+                # failure instead of closing the retry chain on a false green.
+                reason = (
+                    "主力号流水文件已下载，但未完成入库："
+                    f"失败 {int(ingest_result.get('errors') or 0)} 份，"
+                    f"待处理 {int(ingest_result.get('pending') or 0)} 份"
+                )
+                done.remove(MAIN_ALIPAY_FLOW_TASK)
+                failures.append({"task": MAIN_ALIPAY_FLOW_TASK, "reason": reason})
+                scan_results[MAIN_ALIPAY_FLOW_TASK] = {
+                    "status": "failed",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "reason": reason,
+                }
+            pending_before = get_pending_scans(d)
+            pending_base = pending_before or list(tasks)
+            remain = [t for t in pending_base if t not in done]
+            settings_service.set_value(d, KEY_PENDING_SCAN, json.dumps(remain))
+            settings_service.set_value(
+                d,
+                KEY_SCAN_RESULTS,
+                json.dumps(scan_results, ensure_ascii=False),
+                description="自动取数: 最近一次扫码续跑逐任务结果（不含凭证）",
+            )
+            d.commit()
             if ("taobao_orders" in done
                     and not ingest_result.get("errors")
                     and not ingest_result.get("pending")
@@ -203,14 +287,72 @@ def start_pending_scans(db: Session) -> dict:
                 d.commit()
                 # Finish the original business outcome immediately.  Pushed
                 # markers make this idempotent when the scheduled retry runs.
-                from app.services import order_sheet_archive_service
-                order_sheet_archive_service.reconcile_pending_delivery(
+                from app.services import (
+                    automation_pipeline_service,
+                    order_sheet_archive_service,
+                )
+                delivery = order_sheet_archive_service.reconcile_pending_delivery(
                     d, limit=50, quiet=True)
+                if delivery.get("_run_status") != "fail":
+                    automation_pipeline_service.record_success(
+                        d,
+                        "order_delivery",
+                        success_detail=(
+                            f"扫码后订单报表已入库，增量下单图成功推送 "
+                            f"{int(delivery.get('images_pushed') or 0)} 张"
+                        ),
+                    )
+                    d.commit()
             if MAIN_ALIPAY_FLOW_TASK in done:
                 state = _load_json(d, KEY_STATE)
                 state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
                 _save_json(d, KEY_STATE, state)
                 d.commit()
+                # 扫码是原财务失败链的人工续跑。成功证据落地后当场销账，
+                # 后续定时器便不会继续拿旧 failures 弹重试通知。
+                try:
+                    from app.services import automation_pipeline_service
+
+                    automation_pipeline_service.record_success(
+                        d,
+                        "flow_pull",
+                        success_detail="扫码后主力号流水已下载并完成入库",
+                    )
+                    d.commit()
+                except Exception:  # noqa: BLE001
+                    d.rollback()
+                    _log.exception("扫码成功后关闭主力号流水重试链失败")
+            if failures:
+                # 用户主动扫码后必须收到本次真实结果，不能只让旧定时器继续报
+                # “需扫码”。失败任务仍留在待扫清单，方便处理后准确续跑。
+                try:
+                    from app.services import feishu_client
+
+                    chat_id = settings_service.get(
+                        d, "feishu_push_chat_id", env_fallback=False,
+                    )
+                    if chat_id:
+                        labels = {
+                            MAIN_ALIPAY_FLOW_TASK: "支付宝主力号流水",
+                            "bal_alipay_main": "支付宝主力号余额",
+                            "bal_taobao_aggregate": "淘宝聚合账户余额",
+                            "bal_ads": "推广账户余额",
+                            "bal_wanshifu": "万师傅余额",
+                            "taobao_orders": "淘宝订单报表",
+                        }
+                        detail = "\n".join(
+                            f"- {labels.get(item['task'], item['task'])}：{item['reason']}"
+                            for item in failures
+                        )
+                        feishu_client.send_text(
+                            d,
+                            chat_id,
+                            "⚠️ 扫码续跑未完成\n"
+                            + detail
+                            + "\n失败任务已保留；请按上述原因处理后再回复『扫码』。",
+                        )
+                except Exception:  # noqa: BLE001
+                    _log.exception("发送扫码续跑失败原因到飞书失败")
         except Exception:  # noqa: BLE001
             _log.exception("扫码流程线程异常")
             d.rollback()
@@ -861,8 +1003,13 @@ def _due_today(state: dict, category: str, force: bool) -> bool:
         return True
 
 
-def pending_shipping_password_files(db: Session, *, on=None) -> list[str]:
-    """返回指定日期仍未被后续成功解密记录覆盖的加密发货报表。"""
+def pending_shipping_password_files(
+    db: Session, *, on=None, all_dates: bool = False,
+) -> list[str]:
+    """返回仍未被后续成功解密记录覆盖的加密发货报表。
+
+    默认只检查指定日期；``all_dates`` 用于口令回调跨午夜继续处理旧报表。
+    """
     target = on or date.today()
     rows = db.execute(
         select(ImportedFile)
@@ -872,7 +1019,15 @@ def pending_shipping_password_files(db: Session, *, on=None) -> list[str]:
     latest_by_hash: dict[str, ImportedFile] = {}
     for row in rows:
         created_at = getattr(row, "created_at", None)
-        if not created_at or created_at.date() != target:
+        if not created_at:
+            continue
+        # Database server defaults are UTC.  PostgreSQL returns an aware
+        # timestamp while SQLite (including tests) returns the same value as a
+        # naive datetime.  Compare by the ERP's local calendar date so files
+        # received between 00:00 and 08:00 are not mistaken for yesterday.
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=timezone.utc)
+        if not all_dates and created_at.astimezone().date() != target:
             continue
         key = row.file_hash or f"id:{row.id}"
         latest_by_hash[key] = row
@@ -912,7 +1067,8 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
 
 
 def finalize_order_pull_after_shipping_password(
-    db: Session, *, on=None, not_before_hour: int = 18
+    db: Session, *, on=None, not_before_hour: int = 18,
+    now: datetime | None = None,
 ) -> dict:
     """口令补齐最后一份发货报表后，把本轮已完成的淘宝取数正式收口。
 
@@ -925,7 +1081,8 @@ def finalize_order_pull_after_shipping_password(
     - 今日已有淘宝报表成功导入；
     - 今日已无待口令文件。
     """
-    target = on or date.today()
+    current = now or datetime.now()
+    target = on or current.date()
     if pending_shipping_password_files(db, on=target):
         return {"completed": False, "reason": "shipping_password_still_pending"}
 
@@ -992,7 +1149,7 @@ def finalize_order_pull_after_shipping_password(
     if report_at.date() != target or report_at.hour < not_before_hour:
         return {"completed": False, "reason": "imported_order_report_outside_current_window"}
 
-    completed_at = datetime.now().isoformat(timespec="seconds")
+    completed_at = current.isoformat(timespec="seconds")
     state["taobao_orders_complete"] = completed_at
     _save_json(db, KEY_STATE, state)
     db.commit()

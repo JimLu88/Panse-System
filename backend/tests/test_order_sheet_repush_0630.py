@@ -198,3 +198,88 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
 
     assert result["delivery"]["images_pushed"] == 8
     assert result["delivery"].get("_run_status") is None
+
+
+def test_password_mismatch_pauses_retry_and_keeps_exact_reason(
+    db_session, _feishu_stub, monkeypatch
+):
+    from app.services import automation_pipeline_service as pipeline
+    from app.services import feishu_bot_service
+
+    pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "发货报表待口令",
+        retry_slots=[],
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.reingest_pending_shipping",
+        lambda db: {
+            "imported": 0,
+            "updated": 0,
+            "tried": 1,
+            "failed": 1,
+            "files": [{
+                "file": "ExportOrderList26853427410.xlsx",
+                "status": "pending",
+                "note": "The file could not be decrypted with this password",
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.pending_shipping_password_files",
+        lambda db, **_kwargs: ["ExportOrderList26853427410.xlsx"],
+    )
+
+    result = feishu_bot_service.apply_shipping_password(db_session, "not-the-password")
+
+    assert result["imported"] == 0
+    assert "ExportOrderList26853427410.xlsx" in result["failure_reason"]
+    state = pipeline.get_pipeline(db_session, "order_delivery")
+    assert state["waiting_input"] is True
+    assert state["final"] is True
+    assert pipeline.needs_retry(db_session, "order_delivery") is False
+
+
+def test_relay_password_mismatch_is_reported_in_reply(db_session, monkeypatch):
+    from app.services import feishu_bot_service
+
+    monkeypatch.setattr(
+        feishu_bot_service,
+        "apply_shipping_password",
+        lambda db, pwd: {"imported": 0, "tried": 0},
+    )
+    monkeypatch.setattr(
+        feishu_bot_service,
+        "_relay_shipping_password",
+        lambda db, pwd: {
+            "imported": 0,
+            "tried": 1,
+            "failed": 1,
+            "failure_reason": (
+                "ExportOrderList26853427410.xlsx: 口令与该报表不匹配"
+            ),
+        },
+    )
+    cards: list[dict] = []
+    monkeypatch.setattr(
+        feishu_bot_service,
+        "_result_card",
+        lambda title, body, color: {
+            "title": title, "body": body, "color": color,
+        },
+    )
+    monkeypatch.setattr(
+        feishu_bot_service,
+        "_safe_reply",
+        lambda db, message_id, card: cards.append(card),
+    )
+
+    result = feishu_bot_service._capture_shipping_password(
+        db_session, "message-1", "not-the-password",
+    )
+
+    assert "ExportOrderList26853427410.xlsx" in result["failure_reason"]
+    assert cards[0]["title"] == "口令未匹配发货报表"
+    assert cards[0]["color"] == "orange"
+    assert "暂停无效重试" in cards[0]["body"]

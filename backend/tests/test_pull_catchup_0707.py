@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 import threading
 
 from app import database
@@ -101,6 +102,27 @@ def test_fresh_after_cutoff_waits_for_shipping_password(db_session):
     assert ai.order_data_fresh(db_session, not_before_hour=18) is True
 
 
+def test_unresolved_shipping_password_can_be_found_after_midnight(db_session):
+    yesterday = datetime.now() - timedelta(days=1)
+    pending = ImportedFile(
+        kind="taobao",
+        original_filename="yesterday-shipping.xlsx",
+        stored_path="/tmp/yesterday-shipping.xlsx",
+        file_hash="yesterday-shipping-hash",
+        source="api",
+        row_summary={"agent_status": "pending_password"},
+        created_at=yesterday,
+        updated_at=yesterday,
+    )
+    db_session.add(pending)
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(db_session) == []
+    assert ai.pending_shipping_password_files(db_session, all_dates=True) == [
+        "yesterday-shipping.xlsx",
+    ]
+
+
 def test_shipping_password_never_expires_by_age(db_session):
     settings_service.set_value(db_session, "taobao_shipping_pwd_latest", "example-password")
     settings_service.set_value(
@@ -129,7 +151,7 @@ def test_shipping_password_finalizes_completed_evening_pull(db_session):
     )
     db_session.commit()
 
-    result = ai.finalize_order_pull_after_shipping_password(db_session)
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
 
     assert result["completed"] is True
     assert ai.order_data_fresh(db_session, not_before_hour=18) is True
@@ -174,7 +196,7 @@ def test_shipping_password_uses_durable_daily_job_evidence_when_state_was_overwr
     )
     db_session.commit()
 
-    result = ai.finalize_order_pull_after_shipping_password(db_session)
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
 
     assert result["completed"] is True
     assert ai.order_data_fresh(db_session, not_before_hour=18) is True
@@ -273,6 +295,42 @@ def test_pull_catchup_already_fresh(db_session, monkeypatch):
     result = scheduler._job_pull_catchup(db_session)
     assert result["ok"] == "fresh_delivery_reconciled"
     assert result["images_pushed"] == 2
+
+
+def test_pull_catchup_recovers_final_pipeline_when_fresh_evidence_arrives(
+    db_session, monkeypatch
+):
+    from app.services import automation_pipeline_service as pipeline
+
+    pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "发货报表待口令",
+        retry_slots=[],
+    )
+    monkeypatch.setattr(scheduler, "_now_hour", lambda: 22)
+    monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: True)
+    monkeypatch.setattr(
+        oss,
+        "reconcile_pending_delivery",
+        lambda db, **kwargs: {
+            "images_pushed": 1,
+            "images_failed": 0,
+            "images_remaining": 0,
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_sync_factory_dispatch_after_orders",
+        lambda db, result: result,
+    )
+
+    result = scheduler._job_pull_catchup(db_session)
+
+    assert result["images_pushed"] == 1
+    state = pipeline.get_pipeline(db_session, "order_delivery")
+    assert state["success"] is True
+    assert state["final"] is False
 
 
 def test_pull_catchup_waits_when_pc_offline(db_session, monkeypatch):
@@ -390,6 +448,7 @@ def test_scan_done_with_business_failure_stays_pending(monkeypatch):
     monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
     monkeypatch.setattr(ai, "get_pending_scans", lambda _db: ["taobao_orders"])
+    monkeypatch.setattr(ai, "get_scan_results", lambda _db: {})
     monkeypatch.setattr(
         settings_service, "set_value",
         lambda _db, _key, value, **_kwargs: saved.append(value),
@@ -411,7 +470,7 @@ def test_scan_done_with_business_failure_stays_pending(monkeypatch):
     result = ai.start_pending_scans(dummy)
 
     assert result["started"] is True
-    assert saved[-1] == '["taobao_orders"]'
+    assert '["taobao_orders"]' in saved
 
 
 def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
@@ -421,6 +480,7 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
     monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
     monkeypatch.setattr(ai, "get_pending_scans", lambda _db: ["taobao_orders"])
+    monkeypatch.setattr(ai, "get_scan_results", lambda _db: {})
     monkeypatch.setattr(settings_service, "set_value", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(
         web_agent_service, "run_task",
@@ -445,9 +505,125 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
         oss, "reconcile_pending_delivery",
         lambda _db, **kwargs: reconciled.append(kwargs) or {"images_pushed": 0},
     )
+    monkeypatch.setattr(
+        "app.services.automation_pipeline_service.record_success",
+        lambda *args, **kwargs: {"recovered": True},
+    )
 
     result = ai.start_pending_scans(dummy)
 
     assert result["started"] is True
     assert datetime.fromisoformat(saved_state["taobao_orders_complete"])
     assert reconciled == [{"limit": 50, "quiet": True}]
+
+
+def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):
+    dummy = _DummyDb()
+    saved_values: dict[str, str] = {}
+    recovered: list[tuple[str, str]] = []
+    artifacts = iter([
+        {},
+        {"main-flow.xlsx": (123, 456)},
+    ])
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(ai, "get_pending_scans", lambda _db: [ai.MAIN_ALIPAY_FLOW_TASK])
+    monkeypatch.setattr(
+        settings_service,
+        "set_value",
+        lambda _db, key, value, **_kwargs: saved_values.update({key: value}),
+    )
+    monkeypatch.setattr(ai, "get_scan_results", lambda _db: {})
+    monkeypatch.setattr(
+        ai,
+        "_task_run_variables",
+        lambda *_args, **_kwargs: {"wait_scan": True},
+    )
+    monkeypatch.setattr(ai, "_main_alipay_artifacts", lambda: next(artifacts))
+    monkeypatch.setattr(
+        web_agent_service,
+        "run_task",
+        lambda *_args, **_kwargs: {"job": "job-main"},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "wait_job",
+        lambda *_args, **_kwargs: {
+            "status": "done",
+            "result": {"ok": True},
+        },
+    )
+    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": 0, "pending": 0})
+    state: dict = {}
+    monkeypatch.setattr(ai, "_load_json", lambda _db, _key: dict(state))
+    monkeypatch.setattr(
+        ai, "_save_json", lambda _db, _key, value: state.update(value),
+    )
+    monkeypatch.setattr(
+        "app.services.automation_pipeline_service.record_success",
+        lambda _db, name, **kwargs: (
+            recovered.append((name, kwargs.get("success_detail")))
+            or {"recovered": True}
+        ),
+    )
+
+    result = ai.start_pending_scans(dummy)
+
+    assert result["started"] is True
+    assert json.loads(saved_values[ai.KEY_PENDING_SCAN]) == []
+    scan_result = json.loads(saved_values[ai.KEY_SCAN_RESULTS])
+    assert scan_result[ai.MAIN_ALIPAY_FLOW_TASK]["status"] == "success"
+    assert datetime.fromisoformat(state[ai.STATE_MAIN_ALIPAY_FLOW])
+    assert recovered == [
+        ("flow_pull", "扫码后主力号流水已下载并完成入库"),
+    ]
+
+
+def test_main_flow_download_does_not_close_retry_when_ingest_fails(monkeypatch):
+    dummy = _DummyDb()
+    saved_values: dict[str, str] = {}
+    recovered: list[str] = []
+    artifacts = iter([{}, {"main-flow.xlsx": (123, 456)}])
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(ai, "get_pending_scans", lambda _db: [ai.MAIN_ALIPAY_FLOW_TASK])
+    monkeypatch.setattr(ai, "get_scan_results", lambda _db: {})
+    monkeypatch.setattr(
+        ai,
+        "_task_run_variables",
+        lambda *_args, **_kwargs: {"wait_scan": True},
+    )
+    monkeypatch.setattr(ai, "_main_alipay_artifacts", lambda: next(artifacts))
+    monkeypatch.setattr(
+        settings_service,
+        "set_value",
+        lambda _db, key, value, **_kwargs: saved_values.update({key: value}),
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "run_task",
+        lambda *_args, **_kwargs: {"job": "job-main"},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "wait_job",
+        lambda *_args, **_kwargs: {"status": "done", "result": {"ok": True}},
+    )
+    monkeypatch.setattr(
+        ai,
+        "run_ingest",
+        lambda _db: {"errors": 1, "pending": 0},
+    )
+    monkeypatch.setattr(
+        "app.services.automation_pipeline_service.record_success",
+        lambda _db, name, **_kwargs: recovered.append(name),
+    )
+
+    result = ai.start_pending_scans(dummy)
+
+    assert result["started"] is True
+    assert json.loads(saved_values[ai.KEY_PENDING_SCAN]) == [ai.MAIN_ALIPAY_FLOW_TASK]
+    scan = json.loads(saved_values[ai.KEY_SCAN_RESULTS])[ai.MAIN_ALIPAY_FLOW_TASK]
+    assert scan["status"] == "failed"
+    assert "失败 1 份，待处理 0 份" in scan["reason"]
+    assert recovered == []
