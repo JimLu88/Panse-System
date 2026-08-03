@@ -214,6 +214,32 @@ def _clean(v: Any) -> Optional[str]:
     return s or None
 
 
+_ADDRESS_NULL_TOKEN = re.compile(
+    r"(?i)(?:^|[\s,，;；])(?:null|none|nan)(?=$|[\s,，;；])"
+)
+_ADDRESS_DETAIL_MARKER = re.compile(
+    r"(?:路|街|道|巷|弄|村|小区|花园|公寓|广场|大厦|号|栋|幢|室|单元|楼|门)"
+)
+
+
+def _clean_address(v: Any) -> Optional[str]:
+    """Remove Taobao's missing-district token only from an otherwise full address.
+
+    Some decrypted exports contain a literal ``null`` between city and town,
+    followed by a usable street and door number.  Treating every such row as
+    encrypted loses the real address.  Sparse rows remain protected.
+    """
+    original = _clean(v)
+    if not original or not _ADDRESS_NULL_TOKEN.search(original):
+        return original
+    cleaned = _ADDRESS_NULL_TOKEN.sub(" ", original)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,，;；")
+    compact = re.sub(r"\s+", "", cleaned)
+    if len(compact) >= 16 and _ADDRESS_DETAIL_MARKER.search(cleaned):
+        return cleaned
+    return original
+
+
 def _is_protected_private_value(value: Any, *, phone: bool = False) -> bool:
     """Return True when Taobao supplied a masked or unusable private field."""
     text = _clean(value)
@@ -229,8 +255,8 @@ def _prefer_clear_private_value(
     current: Any, incoming: Any, *, phone: bool = False
 ) -> Optional[str]:
     """Keep clear PII, but replace an old masked value when a clear one arrives."""
-    old = _clean(current)
-    new = _clean(incoming)
+    old = _clean(current) if phone else _clean_address(current)
+    new = _clean(incoming) if phone else _clean_address(incoming)
     if not new or _is_protected_private_value(new, phone=phone):
         return old
     if not old or _is_protected_private_value(old, phone=phone):
