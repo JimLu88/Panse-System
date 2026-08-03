@@ -14,7 +14,7 @@ from app.services import order_sheet_archive_service as oss
 
 def _order(**kw):
     base = dict(platform="淘宝", qty=1, order_date=date.today(),
-                status="signed", paid_amount=Decimal("100"))
+                status="paid", paid_amount=Decimal("100"))
     base.update(kw)
     return Order(**base)
 
@@ -136,6 +136,66 @@ def test_void_remote_pushed_voids_delayed(db_session, monkeypatch):
     assert res["feishu_failed"] == []
     assert f"原【畔色 282 单】已作废" in sent[0]
     assert f"【远期单 {o.remote_seq}】" in sent[0]
+
+
+def test_void_remote_pushed_accepts_sent_snapshot_and_preserves_it(db_session, monkeypatch):
+    """The final sent snapshot remains trusted proof after queue markers drift."""
+    monkeypatch.setattr(settings_service, "get", lambda *a, **k: "factory-chat")
+    sent: list[str] = []
+    monkeypatch.setattr(
+        feishu_client,
+        "send_text",
+        lambda db, chat_id, text: sent.append(text) or {"message_id": "m2"},
+    )
+    order = _order(
+        order_no="SENT_ONLY_DELAY",
+        status="paid",
+        is_customer_delayed=True,
+        factory_no=294,
+    )
+    snapshot = ImportedFile(
+        kind="order_sheet_sent",
+        original_filename="2026-08-03_SENT_ONLY_DELAY_畔色294单.jpg",
+        stored_path="/x/SENT_ONLY_DELAY.jpg",
+        row_summary={"pushed": True, "order_no": "SENT_ONLY_DELAY"},
+    )
+    db_session.add_all([order, snapshot])
+    db_session.commit()
+
+    result = oss.void_remote_pushed(db_session)
+
+    assert result["voided_remote"] == ["SENT_ONLY_DELAY"]
+    assert result["feishu_notified"] == ["SENT_ONLY_DELAY"]
+    db_session.refresh(order)
+    assert order.factory_no is None
+    assert order.remote_seq is not None
+    assert db_session.get(ImportedFile, snapshot.id) is not None
+    assert sent
+
+
+def test_void_remote_pushed_does_not_reopen_completed_history(db_session, monkeypatch):
+    monkeypatch.setattr(settings_service, "get", lambda *a, **k: "factory-chat")
+    monkeypatch.setattr(feishu_client, "send_text", lambda *a, **k: {"message_id": "m3"})
+    order = _order(
+        order_no="SIGNED_DELAY_HISTORY",
+        status="signed",
+        is_customer_delayed=True,
+        factory_no=219,
+    )
+    db_session.add(order)
+    db_session.add(ImportedFile(
+        kind="order_sheet_sent",
+        original_filename="2026-08-03_SIGNED_DELAY_HISTORY_畔色219单.jpg",
+        stored_path="/x/SIGNED_DELAY_HISTORY.jpg",
+        row_summary={"pushed": True, "order_no": "SIGNED_DELAY_HISTORY"},
+    ))
+    db_session.commit()
+
+    result = oss.void_remote_pushed(db_session)
+
+    assert result["voided_remote"] == []
+    db_session.refresh(order)
+    assert order.factory_no == 219
 
 
 def test_remind_remote_pushed_lists_delayed(db_session):

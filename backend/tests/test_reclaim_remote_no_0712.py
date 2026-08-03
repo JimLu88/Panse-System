@@ -60,6 +60,22 @@ def test_pushed_remote_not_reclaimed(db_session, _feishu_stub):
     assert o.factory_no is not None
 
 
+def test_sent_snapshot_only_remote_not_reclaimed(db_session):
+    db = db_session
+    order = _order(db, "SENT-EVIDENCE", factory_no=302, memo="等通知")
+    db.add(ImportedFile(
+        kind="order_sheet_sent",
+        original_filename="2026-08-03_SENT-EVIDENCE_畔色302单.jpg",
+        stored_path="/x/SENT-EVIDENCE.jpg",
+        row_summary={"pushed": True, "order_no": "SENT-EVIDENCE"},
+    ))
+    db.commit()
+
+    assert osa._reclaim_remote_numbers(db) == []
+    db.refresh(order)
+    assert order.factory_no == 302
+
+
 def test_push_entry_autoheals(db_session, _feishu_stub):
     """push_pending_images 入口自动跑收回: 远期占号单被清号且不被推。"""
     db = db_session

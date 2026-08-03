@@ -34,6 +34,14 @@ def _is_paid(o: Order) -> bool:
     return (o.paid_amount or 0) > 0 or (o.status or "") in _PAID_STATUSES
 
 
+def _is_active_factory_order(o: Order) -> bool:
+    """Only unfinished paid/production orders may change factory assignment."""
+    from app.services import order_service
+
+    normalized = order_service.normalize_status(o.status)
+    return normalized == "paid" or (o.status or "").strip().lower() == "production"
+
+
 def _is_refunded(o: Order) -> bool:
     """是否退款作废: 状态关闭/退货, 或退款状态含退款/退货, 或【全额(≥90%)退款】。
     小额差价/运费退款(如 ¥5)不算作废 (用户拍板 2026-06-12: 避免误把差价单作废/拦推送)。"""
@@ -378,6 +386,8 @@ def archive_sent_snapshot(
     backfilled: bool = False,
 ) -> ImportedFile:
     """归档实际发给工厂的最终图片，作为工厂下单表唯一可信图片来源。"""
+    from app.services import order_flags
+
     factory_no = getattr(order, "factory_no", None)
     if factory_no is None:
         raise ValueError(f"订单 {order.order_no} 没有正式工厂单号")
@@ -394,6 +404,7 @@ def archive_sent_snapshot(
             "factory_label_at_render": f"畔色{factory_no}单",
             "render_width": 1684,
             "pushed": True,
+            "activated": order_flags.is_activated(order),
             "backfilled": bool(backfilled),
         },
     )
@@ -436,6 +447,41 @@ def _pending_push_records(db: Session, *, include_baseline: bool) -> list[Import
         if not _order_no_from_name(r.original_filename):
             continue
         out.append(r)
+    return out
+
+
+def _pushed_sheet_evidence(db: Session) -> dict[str, dict[str, list[ImportedFile]]]:
+    """Return trusted factory-delivery evidence keyed by order number.
+
+    ``order_sheet`` is the mutable render queue, while ``order_sheet_sent`` is
+    the immutable snapshot that proves what was actually delivered.  Older
+    transition code only inspected the mutable queue.  Once queue rows were
+    regenerated or lost their ``pushed`` marker, a delivered order could be
+    mistaken for an unseen order and keep its stale factory number.
+
+    Sent snapshots are evidence only and must be preserved.  Callers may delete
+    ``deletable`` queue rows when regenerating/voiding a sheet, but never delete
+    the historical ``evidence`` records.
+    """
+    rows = db.execute(
+        select(ImportedFile).where(
+            ImportedFile.kind.in_(("order_sheet", "order_sheet_sent"))
+        )
+    ).scalars().all()
+    out: dict[str, dict[str, list[ImportedFile]]] = {}
+    for rec in rows:
+        summary = rec.row_summary or {}
+        if summary.get("pushed") is not True:
+            continue
+        order_no = str(summary.get("order_no") or "").strip()
+        if not order_no:
+            order_no = _order_no_from_name(rec.original_filename) or ""
+        if not order_no:
+            continue
+        item = out.setdefault(order_no, {"evidence": [], "deletable": []})
+        item["evidence"].append(rec)
+        if rec.kind == "order_sheet":
+            item["deletable"].append(rec)
     return out
 
 
@@ -632,12 +678,7 @@ def _reclaim_remote_numbers(db: Session) -> list[dict]:
     时序漏洞根因: 编号时还不是远期(推送又失败), 之后客户备注延期才变远期 → 号卡在远期单手里。
     已推过的远期单不在此动 —— 工厂见过号, 走 void_remote_pushed 显式作废(会通知工厂), 不悄悄收。"""
     from app.services import order_flags
-    pushed_nos: set[str] = set()
-    for r in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
-        if (r.row_summary or {}).get("pushed"):
-            no = _order_no_from_name(r.original_filename)
-            if no:
-                pushed_nos.add(no)
+    pushed_nos = set(_pushed_sheet_evidence(db))
     reclaimed: list[dict] = []
     for o in db.execute(select(Order).where(Order.factory_no.isnot(None))).scalars().all():
         if o.order_no in pushed_nos or not order_flags.is_remote(o):
@@ -937,22 +978,20 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
         → 随后 generate_pending/push_pending_images 生成新图、顺排【新工厂号】重推(记 activated=True)。
     """
     from app.services import order_flags, feishu_client, settings_service
-    seen: dict = {}
-    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
-        if not (rec.row_summary or {}).get("pushed"):
-            continue
-        no = _order_no_from_name(rec.original_filename)
-        if no:
-            seen.setdefault(no, []).append(rec)
+    seen = _pushed_sheet_evidence(db)
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     changed: list = []
-    for no, recs in seen.items():
+    for no, sheet_info in seen.items():
+        evidence = sheet_info["evidence"]
+        recs = sheet_info["deletable"]
         if len(changed) >= limit:
             break
-        if any((r.row_summary or {}).get("activated") is True for r in recs):
+        if any((r.row_summary or {}).get("activated") is True for r in evidence):
             continue   # 已有"激活态"推的图 → 不再重推
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not _is_active_factory_order(order):
             continue
         if not order_flags.is_activated(order):
             continue   # 现在没激活(还是远期挂起) → 不动
@@ -1019,25 +1058,22 @@ def void_remote_pushed(db: Session, *, limit: int = 50, order_nos: "set[str] | N
     "原畔色X单作废 → 已改远期单N", 再删旧下单图并清 factory_no; 等激活后以新号重下。
     飞书发送成功/失败会逐单返回, 供调度器准确报警。"""
     from app.services import order_flags, feishu_client, settings_service
-    seen: dict = {}
-    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
-        if not (rec.row_summary or {}).get("pushed"):
-            continue
-        no = _order_no_from_name(rec.original_filename)
-        if no:
-            seen.setdefault(no, []).append(rec)
+    seen = _pushed_sheet_evidence(db)
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     voided: list = []
     notified: list = []
     notify_failed: list = []
     transitions: list = []
-    for no, recs in seen.items():
+    for no, sheet_info in seen.items():
+        recs = sheet_info["deletable"]
         if len(voided) >= limit:
             break
         if order_nos is not None and no not in order_nos:
             continue
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not _is_active_factory_order(order):
             continue
         if not order_flags.is_remote(order):
             continue   # 现在不是远期挂起(已激活/普通) → 不作废
@@ -1076,17 +1112,13 @@ def remind_remote_pushed(db: Session) -> dict:
     """已推工厂、但现在已延期/远期的单 → 只【提醒用户】(不自动作废, 防误废工厂已在做的单) (用户 2026-07-08)。
     列出这些单发到用户通知渠道; 用户确认后再用 void_remote_pushed(order_nos=...) 作废其工厂号。"""
     from app.services import order_flags
-    seen: set = set()
-    for rec in db.execute(select(ImportedFile).where(ImportedFile.kind == "order_sheet")).scalars().all():
-        if not (rec.row_summary or {}).get("pushed"):
-            continue
-        no = _order_no_from_name(rec.original_filename)
-        if no:
-            seen.add(no)
+    seen = set(_pushed_sheet_evidence(db))
     items: list = []
     for no in seen:
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not _is_active_factory_order(order):
             continue
         if getattr(order, "factory_no", None) is None:
             continue
