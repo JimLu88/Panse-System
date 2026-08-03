@@ -323,7 +323,7 @@ export default function FactoryProductionView() {
         className="no-print"
         type="info" showIcon
         message="工厂制作单: 已付款待发货(在工厂制作中)的订单。默认发货周期 30 天, 按下单日自动倒扣; 剩余越少字越红。"
-        description="卡片可「编辑」改发货截止、标记青绿色客户延期或加备注；客户延期按新日期倒计时，不会变成紫色远期挂起。"
+        description="卡片可「编辑」改发货截止、标记客户延期或加备注；客户延期默认按远期挂起并等通知，只有备注明确写“开始制作”后才按新日期倒计时。"
       />
       <Space className="no-print" align="center" wrap>
         <span style={{ fontSize: 20, fontWeight: 700 }}>
@@ -542,7 +542,7 @@ export default function FactoryProductionView() {
               <div>
                 <Typography.Text strong style={{ color: CUSTOMER_DELAY_COLOR }}>客户延期</Typography.Text>
                 <div><Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                  客户主动调整交期；不等同紫色远期单，也不会暂停生产
+                  客户主动调整交期；默认转远期并暂停排程，备注明确写“开始制作”后才恢复倒计时
                 </Typography.Text></div>
               </div>
               <Switch checked={editCustomerDelayed} onChange={setEditCustomerDelayed} />

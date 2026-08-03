@@ -30,7 +30,8 @@ REMOTE_KW = (
     "装修好", "装修完", "房子好", "房子装好", "新房", "入住前", "还没装修", "房子还没",
     "别提前", "不要提前", "别太早", "不要太早",
 )
-# 激活关键字 (客户已通知/该做了 → 解除远期): 只留无歧义激活词
+# 普通远期单的激活关键字 (客户已通知/该做了 → 解除远期)。
+# 客户延期单使用更严格的“开始制作”铁证，见 is_customer_delay_activated()。
 ACTIVATE_KW = (
     "开始制作", "现在制作", "立即制作", "马上制作", "可以制作", "安排制作",
     "开始生产", "可以生产", "安排生产", "投产", "上生产", "排产",
@@ -65,7 +66,24 @@ def is_activated_text(text: Optional[str]) -> bool:
 
 def is_activated(o) -> bool:
     """订单是否已激活 (备注含开始制作等且非否定语境) → 该推工厂。"""
+    if bool(getattr(o, "is_customer_delayed", False)):
+        return is_customer_delay_activated(o)
     return is_activated_text(order_text(o))
+
+
+def is_customer_delay_activated(o) -> bool:
+    """客户延期单只有备注明确写“开始制作”才解除挂起。
+
+    “可以制作”“预计发货日”“制作好后通风”等都不能替代客户已通知开工的
+    明确信号，避免尚未要求发货的订单因日期临近被算成非常紧急。
+    """
+    text = order_text(o)
+    i = text.find("开始制作")
+    while i != -1:
+        if not any(w in text[max(0, i - 2):i] for w in _NOT_ACT_PRE):
+            return True
+        i = text.find("开始制作", i + 1)
+    return False
 
 
 def has_remote_keyword(o) -> bool:
@@ -80,15 +98,20 @@ def is_remote(o) -> bool:
         return False
     if bool(getattr(o, "is_remote_ship", False)):
         return True
-    # 客户延期是交期责任顺延, 订单仍可生产；不能因备注里的「延期发」被当成远期挂起。
+    # 客户延期默认挂起；只有明确“开始制作”才会被上面的 is_activated 解除。
     if bool(getattr(o, "is_customer_delayed", False)):
-        return False
+        return True
     return has_remote_keyword(o)
 
 
 def factory_label(o) -> str:
     """"工厂下单号"列的统一显示 (用户 2026-07-09): 正式单=`畔色N单`; 远期单=`远期单N`(内部序号);
-    两者都没有=空。远期单不占工厂号, 只发 remote_seq; 正式号(factory_no)优先显示。"""
+    两者都没有=空。远期单不占工厂号, 只发 remote_seq；当前远期身份优先于待清退的旧 factory_no。"""
+    # 状态纠偏与旧工厂号清退之间可能有短暂窗口；远期身份优先，避免飞书继续
+    # 把尚未开工的客户延期单显示成正式工厂单。
+    if is_remote(o):
+        rseq = getattr(o, "remote_seq", None)
+        return f"远期单{rseq}" if rseq else "远期单"
     fno = getattr(o, "factory_no", None)
     if fno:
         return f"畔色{fno}单"
@@ -137,7 +160,7 @@ def is_factory_remote(o, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> bool
     if getattr(o, "is_remote_ship", False):
         return True
     if getattr(o, "is_customer_delayed", False):
-        return False   # 客户延期不作废工厂号、不暂停生产
+        return True    # 未写“开始制作”的客户延期单默认挂起
     if getattr(o, "ship_deadline", None):
         return False   # 人工设了发货截止 → 倒计时, 不算远期
     today = today or date.today()
@@ -175,7 +198,9 @@ def factory_schedule(o, *, today=None, ship_days: int = DEFAULT_SHIP_DAYS) -> di
     text = order_text(o)
     resume_date = parse_resume_date(text, base, today)
 
-    if bool(getattr(o, "is_customer_delayed", False)):
+    if bool(getattr(o, "is_customer_delayed", False)) and not is_customer_delay_activated(o):
+        effective, days_left, urgency = None, None, "remote"
+    elif bool(getattr(o, "is_customer_delayed", False)):
         effective = getattr(o, "customer_delay_deadline", None)
         days_left = (effective - today).days if effective else None
         urgency = urgency_by_days(days_left)

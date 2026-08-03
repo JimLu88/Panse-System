@@ -279,10 +279,10 @@ def _status(order: Order, *, remote: bool, refunded: bool) -> str:
         return "已签收"
     if normalized == "shipped":
         return "已发货"
-    if order.is_customer_delayed:
-        return "客户延期"
     if remote:
         return "等客户通知"
+    if order.is_customer_delayed:
+        return "客户延期"
     if normalized == "aftersales":
         return "售后中"
     if order.factory_no:
@@ -515,11 +515,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             or int(sheet_image.get("render_width") or 0) != 1684
         ):
             sheet_image = None
-        if order.factory_no:
-            order_group = "工厂正式单"
-            order_sequence = int(order.factory_no)
-            system_sort_key = f"1-{order_sequence:06d}"
-        elif remote:
+        if remote:
             order_group = "远期单"
             order_sequence = int(order.remote_seq) if order.remote_seq is not None else None
             system_sort_key = (
@@ -527,6 +523,10 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 if order_sequence is not None
                 else f"2-999999-{order.id:010d}"
             )
+        elif order.factory_no:
+            order_group = "工厂正式单"
+            order_sequence = int(order.factory_no)
+            system_sort_key = f"1-{order_sequence:06d}"
         else:
             order_group = "待编号"
             order_sequence = None
@@ -535,7 +535,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
         photo_requested = _photo_requested(order)
         alerts = []
         if order.is_customer_delayed:
-            alerts.append("⏳ 客户延期")
+            alerts.append("⏳ 远期等通知" if remote else "⏳ 客户延期（已开始制作）")
         if photo_requested:
             alerts.append("📷 通知拍照")
         out.append({

@@ -45,6 +45,7 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     order = _order(
         is_customer_delayed=True,
         customer_delay_deadline=deadline,
+        production_note="客户已通知开始制作",
     )
     topup = _order(
         order_no="331400000000000002",
@@ -66,7 +67,7 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert row["木作成本价"] == 600.0
     assert row["客户延期单"] is True
     assert row["客户通知拍照"] is True
-    assert row["订单提醒"] == "⏳ 客户延期 · 📷 通知拍照"
+    assert row["订单提醒"] == "⏳ 客户延期（已开始制作） · 📷 通知拍照"
     assert row["交期紧急度"] == "非常紧急"
     assert row["发货安排"] == "需拍照后通知爱群"
     assert "验货图片数" not in row
@@ -78,6 +79,31 @@ def test_dispatch_rows_use_unit_wood_and_flags(db_session, monkeypatch):
     assert dispatch.LEGACY_RENAMES["产品图"] == ("工厂下单图", 17)
     assert dispatch.MAIN_VIEW_LAYOUT["group_by"] == "下单分组"
     assert dispatch.MAIN_VIEW_LAYOUT["sort_by"] == "系统排序键"
+
+
+def test_dispatch_customer_delay_without_start_is_remote_wait_notice(db_session):
+    order = _order(
+        order_no="331400000000000009",
+        factory_no=146,
+        remote_seq=88,
+        is_customer_delayed=True,
+        customer_delay_deadline=date.today() + timedelta(days=2),
+        buyer_message="客户要求延期发货，等通知",
+        seller_memo=None,
+        remark=None,
+        production_note=None,
+    )
+    db_session.add(order)
+    db_session.commit()
+
+    row = dispatch.build_rows(db_session)[0]
+    assert row["工厂下单号"] == "远期单88"
+    assert row["下单分组"] == "远期单"
+    assert row["订单状态"] == "等客户通知"
+    assert row["交期紧急度"] == "远期单"
+    assert row["发货安排"] == "之后发货（等通知）"
+    assert row["预计发货日期"] is None
+    assert row["订单提醒"] == "⏳ 远期等通知"
 
 
 def test_dispatch_photo_keywords_cover_common_customer_phrasing():
