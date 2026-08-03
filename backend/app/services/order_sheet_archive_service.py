@@ -499,8 +499,13 @@ def assign_remote_seqs(db: Session) -> dict:
     from app.services import order_flags
     today = date.today()
     cols = (Order.remark, Order.production_note, Order.buyer_message, Order.seller_memo)
-    # 候选 = 手动远期 或 有任一备注(可能含远期词/日期式发货); 精确判定交给 is_factory_remote
-    cond = or_(Order.is_remote_ship.is_(True), *[c.is_not(None) for c in cols])
+    # 候选 = 手动远期 / 客户延期 / 有任一备注(可能含远期词/日期式发货)；
+    # 客户延期可能没有文字备注，仍必须拿到远期序号。精确判定交给 is_factory_remote。
+    cond = or_(
+        Order.is_remote_ship.is_(True),
+        Order.is_customer_delayed.is_(True),
+        *[c.is_not(None) for c in cols],
+    )
     cands = db.execute(select(Order).where(cond, Order.remote_seq.is_(None))).scalars().all()
     nxt = _next_remote_seq(db)
     assigned: list = []

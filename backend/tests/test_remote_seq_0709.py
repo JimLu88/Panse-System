@@ -50,12 +50,18 @@ def test_factory_label():
 def test_assign_remote_seqs_idempotent(db_session):
     db_session.add(Order(order_no="A1", platform="淘宝", seller_memo="等通知", is_refill=False))
     db_session.add(Order(order_no="A2", platform="淘宝", seller_memo="定制樱桃木台面加75", is_refill=False))
+    db_session.add(Order(
+        order_no="A3", platform="淘宝", is_customer_delayed=True,
+        customer_delay_deadline=date(2026, 10, 1), is_refill=False,
+    ))
     db_session.flush()
     osa.assign_remote_seqs(db_session)
     a1 = db_session.execute(select(Order).where(Order.order_no == "A1")).scalar_one()
     a2 = db_session.execute(select(Order).where(Order.order_no == "A2")).scalar_one()
+    a3 = db_session.execute(select(Order).where(Order.order_no == "A3")).scalar_one()
     assert a1.remote_seq is not None      # 远期 → 有序号
     assert a2.remote_seq is None          # 非远期 → 无序号
+    assert a3.remote_seq is not None      # 无文字备注的客户延期单也必须有远期序号
     seq = a1.remote_seq
     osa.assign_remote_seqs(db_session)    # 再跑一次
     db_session.refresh(a1)
