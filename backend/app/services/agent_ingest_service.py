@@ -1102,6 +1102,9 @@ def finalize_order_pull_after_shipping_password(
     # 因此先看内存态，找不到时再从不可覆盖的 ScheduledJobRun 历史取当天证据。
     evidence = _load_json(db, KEY_ORCH_STATE)
 
+    def _is_manual_recovery(payload: dict) -> bool:
+        return bool(payload.get("manual_recovery") or payload.get("manual_pull"))
+
     def _evidence_matches(payload: dict, started_at) -> bool:
         if not started_at:
             return False
@@ -1121,7 +1124,9 @@ def finalize_order_pull_after_shipping_password(
         )
         return (
             dt.date() == target
-            and dt.hour >= not_before_hour
+            # Scheduled pulls remain restricted to the approved evening
+            # window. A durable user-triggered recovery may run earlier.
+            and (_is_manual_recovery(payload) or dt.hour >= not_before_hour)
             and (task or {}).get("status", "").lower() in ("done", "ok", "success")
         )
 
@@ -1158,7 +1163,8 @@ def finalize_order_pull_after_shipping_password(
         report_at = datetime.fromisoformat(str(state.get("taobao_report") or ""))
     except (TypeError, ValueError):
         return {"completed": False, "reason": "missing_imported_order_report"}
-    if report_at.date() != target or report_at.hour < not_before_hour:
+    evidence_hour = 0 if _is_manual_recovery(evidence) else not_before_hour
+    if report_at.date() != target or report_at.hour < evidence_hour:
         return {"completed": False, "reason": "imported_order_report_outside_current_window"}
 
     completed_at = current.isoformat(timespec="seconds")
@@ -1432,16 +1438,38 @@ def pull_orders_async(db: Session) -> dict:
     def _run() -> None:
         from app.database import SessionLocal
         d = SessionLocal()
+        started_at = datetime.now()
         try:
             _save_json(d, KEY_ORCH_STATE, {"running": True, "current": "taobao_orders(手动拉单)",
-                                           "started_at": datetime.now().isoformat(timespec="seconds")})
+                                           "manual_recovery": True,
+                                           "started_at": started_at.isoformat(timespec="seconds")})
             d.commit()
             r = web_agent_service.run_task(d, "taobao_orders", {})
+            waited: dict = {}
             if r.get("job"):
-                web_agent_service.wait_job(d, r["job"], timeout_s=1800, poll_s=10)
+                waited = web_agent_service.wait_job(
+                    d, r["job"], timeout_s=1800, poll_s=10) or {}
             rep = run_ingest(d)
-            _save_json(d, KEY_ORCH_STATE, {"running": False, "manual_pull": rep,
-                                           "finished_at": datetime.now().isoformat(timespec="seconds")})
+            job_result = waited.get("result") or {}
+            job_ok = (
+                (waited.get("status") or "").lower() == "done"
+                and job_result.get("ok") is not False
+            )
+            task = {"task": "taobao_orders", "status": "done" if job_ok else "error"}
+            if not job_ok:
+                task["error"] = (
+                    job_result.get("reason") or waited.get("error")
+                    or "manual_pull_not_completed"
+                )
+            _save_json(d, KEY_ORCH_STATE, {
+                "running": False,
+                "manual_recovery": True,
+                "started_at": started_at.isoformat(timespec="seconds"),
+                "tasks": [task],
+                "reports": job_result.get("reports") or job_result.get("downloads") or [],
+                "manual_pull": rep,
+                "finished_at": datetime.now().isoformat(timespec="seconds"),
+            })
             d.commit()
         except Exception:  # noqa: BLE001
             _log.exception("手动拉单线程异常")

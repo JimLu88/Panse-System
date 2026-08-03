@@ -178,6 +178,76 @@ def test_shipping_password_finalizes_completed_evening_pull(db_session):
     assert ai.order_data_fresh(db_session, not_before_hour=18) is True
 
 
+def test_shipping_password_finalizes_successful_daytime_manual_recovery(db_session):
+    now = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    ai._save_json(
+        db_session,
+        ai.KEY_ORCH_STATE,
+        {
+            "manual_recovery": True,
+            "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
+            "tasks": [{"task": "taobao_orders", "status": "done"}],
+            "pending_manual": [],
+        },
+    )
+    db_session.commit()
+
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
+
+    assert result["completed"] is True
+
+
+def test_shipping_password_rejects_daytime_scheduled_evidence(db_session):
+    now = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    ai._save_json(
+        db_session,
+        ai.KEY_ORCH_STATE,
+        {
+            "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
+            "tasks": [{"task": "taobao_orders", "status": "done"}],
+        },
+    )
+    db_session.commit()
+
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
+
+    assert result["completed"] is False
+    assert result["reason"] == "missing_current_order_pull_evidence"
+
+
+def test_manual_pull_persists_durable_success_evidence(monkeypatch):
+    dummy = _DummyDb()
+    saved: dict = {}
+    monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
+    monkeypatch.setattr(
+        web_agent_service, "run_task", lambda *_args, **_kwargs: {"job": "job-1"})
+    monkeypatch.setattr(
+        web_agent_service,
+        "wait_job",
+        lambda *_args, **_kwargs: {
+            "status": "done",
+            "result": {"ok": True, "downloads": ["a.xlsx", "b.xlsx", "c.xlsx"]},
+        },
+    )
+    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": 0, "pending": 1})
+    monkeypatch.setattr(
+        ai, "_save_json", lambda _db, _key, value: saved.clear() or saved.update(value))
+
+    result = ai.pull_orders_async(dummy)
+
+    assert result["started"] is True
+    assert saved["manual_recovery"] is True
+    assert saved["tasks"] == [{"task": "taobao_orders", "status": "done"}]
+    assert saved["reports"] == ["a.xlsx", "b.xlsx", "c.xlsx"]
+
+
 def test_shipping_password_never_finalizes_without_current_pull_evidence(db_session):
     result = ai.finalize_order_pull_after_shipping_password(db_session)
 
