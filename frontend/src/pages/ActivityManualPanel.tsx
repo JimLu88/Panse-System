@@ -216,10 +216,8 @@ export default function ActivityManualPanel({ range }: { range: [Dayjs | null, D
         <Space wrap>
           <Button icon={<CloudUploadOutlined />} loading={staging && upChannel === 'single_item_discount'}
             onClick={() => doStage('single_item_discount', 'big')}>单品立减(88VIP12%)</Button>
-          <Button icon={<CloudUploadOutlined />} loading={staging && upChannel === 'promo_signup'}
-            onClick={() => doStage('promo_signup', 'big')}>大促报名(挂草稿)</Button>
-          <Button icon={<CloudUploadOutlined />} loading={staging && upChannel === 'super_reduce'}
-            onClick={() => doStage('super_reduce', 'big')}>超级立减长期(草稿→一键发布)</Button>
+          <Button disabled icon={<CloudUploadOutlined />}>大促报名（仅自动程序）</Button>
+          <Button disabled icon={<CloudUploadOutlined />}>超级立减（仅自动程序）</Button>
         </Space>
       </Card>
 

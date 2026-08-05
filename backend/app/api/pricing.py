@@ -525,10 +525,10 @@ async def import_enrolled_floor(
     db: Session = Depends(get_db),
     _: User = Depends(require_role("admin", "operator")),
 ):
-    """上传千牛「活动商品导出」(已报商品列表) → 导入各 SKUID 的【已生效活动价】(校验底价)。
+    """上传千牛“导出已报商品”原表，采集逐 SKUID 最低标价与最低普惠券后价。
 
-    用途(2026-07-12 用户: 第二场62件全失败): 淘宝要求活动券后价 ≤ 校验期最低普惠券后价,
-    上一场已生效价就是硬底 → 占位SKU报名价自动封顶到它 + 预检超线红字。重复导入取更低值。"""
+    这些数据只用于报名资格预检，不会修改活动报名价、ERP价格或单品立减。
+    """
     from app.services import enrolled_floor_import_service
     raw = await file.read()
     try:

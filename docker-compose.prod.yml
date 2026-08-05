@@ -70,6 +70,7 @@ services:
       AGENT_OUTPUT_DIR: /app/agent_output
       # 群晖: 设成 Windows 机局域网 IP, 如 http://192.168.x.x:8500 (空=不连 Web-Agent)
       WEB_AGENT_URL: ${WEB_AGENT_URL:-}
+      PROCUREMENT_AGENT_TOKEN: ${PROCUREMENT_AGENT_TOKEN:-}
       # 绘图子程序 (独立部署, 见 docs/绘图子程序_交接方案.md); 空=不出图纸, 不报错
       DRAWING_SERVICE_URL: ${DRAWING_SERVICE_URL:-}
     extra_hosts:
@@ -84,6 +85,7 @@ services:
       retries: 3
       start_period: 40s
     volumes:
+      - ./TAOBAO_CAMPAIGN_SIGNUP_POLICY.json:/app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json:ro
       - ${STORAGE_DIR:-./storage}:/app/storage
       # 图库改可写 (2026-06-14): 支持图库弹窗"上传新图"; 写入仅经 /api/gallery/upload, 路径受 _safe_resolve 限制在根内
       - ${GALLERY_DIR:-./gallery}:/app/gallery

@@ -1,0 +1,84 @@
+{
+  "policy_id": "taobao_campaign_signup_policy",
+  "version": "2026-08-05.1",
+  "updated_at": "2026-08-05T00:00:00+08:00",
+  "title": "淘宝活动自动报名唯一规则",
+  "authority": "ERP pricing data and this policy file are the only program authorities",
+  "execution": {
+    "signup_executor": "campaign_automation_program_only",
+    "ai_may_submit": false,
+    "ai_may_adjust_price": false,
+    "ai_may_retry_after_failure": false,
+    "on_failure": "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision",
+    "manual_signup_api_enabled": false
+  },
+  "pricing": {
+    "real_sku_signup_price": "erp_daily_price",
+    "real_sku_signup_price_may_be_lowered_to_pass_platform": false,
+    "placeholder_sku_signup_price": "existing_system_protection_price",
+    "super_reduce": {
+      "official_rate": 0.10,
+      "final_target": "erp_mid_promo_price"
+    },
+    "big_88_and_normal_big_campaign": {
+      "official_rate": 0.12,
+      "final_target": "erp_big_promo_price"
+    },
+    "big_618_double_11": {
+      "official_rate": 0.15,
+      "final_target": "erp_big_promo_price"
+    }
+  },
+  "qualification_gates": {
+    "minimum_list_price": "signup_price_must_be_lte_platform_minimum_list_price",
+    "minimum_universal_coupon_after_price": "signup_price_minus_official_discount_must_be_lte_platform_minimum_universal_coupon_after_price",
+    "single_item_discount_participates_in_qualification": false,
+    "whole_item_all_skus_required": true,
+    "any_sku_conflict_action": "exclude_whole_item_and_report",
+    "missing_or_stale_floor_evidence_action": "block_before_upload_and_report",
+    "floor_evidence_max_age_hours": 24
+  },
+  "final_price_gate": {
+    "formula": "signup_price_minus_official_discount_minus_single_item_discount_equals_erp_target",
+    "per_sku_tolerance_yuan": 0.00,
+    "official_discount_rounding": "use_verified_platform_rule_for_campaign_and_low_price_skus_keep_cent_precision"
+  },
+  "scope_and_idempotency": {
+    "exclude_no_sales_items_from_campaign_signup": true,
+    "exclude_delisted_skus": true,
+    "already_correct_items_are_not_reimported": true,
+    "published_wrong_price_or_missing_sku_action": "stop_and_report",
+    "target_scope_must_be_complete_and_mapped": true
+  },
+  "post_submit": {
+    "success_source_of_truth": "latest_qianniu_batch_operation_record_and_fresh_export",
+    "fresh_export_required": true,
+    "verify_signup_price_per_sku": true,
+    "verify_final_price_per_sku": true,
+    "unexplained_failure_action": "mark_alarmed_notify_and_wait"
+  },
+  "ai_boundary": {
+    "allowed": [
+      "read_program_diagnostics",
+      "explain_each_failure_to_user",
+      "inspect_code_and_data_read_only",
+      "implement_a_user_approved_program_fix"
+    ],
+    "forbidden_without_current_user_decision": [
+      "submit_campaign",
+      "change_signup_price",
+      "change_single_item_discount",
+      "rotate_sku",
+      "retry_failed_signup",
+      "expand_signup_scope"
+    ]
+  },
+  "explanation_lines": [
+    "活动报名只由 ERP 自动报名程序执行；AI 和页面均不得直接提交、自动改价或自动重试。",
+    "真实 SKU 报名价永远等于 ERP 日常价；平台历史线冲突时整品排除并报告，禁止降价迁就。",
+    "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减不得高于最低普惠券后价。单品立减不参与资格校验。",
+    "资格通过后逐 SKU 验算：报名价减官方立减再减单品立减，必须等于 ERP 本场目标到手价。",
+    "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、飞书报告并等待用户决定。",
+    "成功必须以千牛最新批量操作记录和新导出的已报商品表为准；已正确报名商品不重复导入。"
+  ]
+}

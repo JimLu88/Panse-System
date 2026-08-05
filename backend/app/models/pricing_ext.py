@@ -52,13 +52,11 @@ class PricingSkuPromo(Base, TimestampMixin):
     # 一码多SKU: 同一商家编码在淘宝挂的其它 SKUID(主=taobao_sku_id)。导出报名/单品立减时, 主+每个alt 各出一行同价。
     alt_taobao_sku_ids: Mapped[Optional[list]] = mapped_column(JSON, default=list)
     taobao_activity_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))  # = daily_price
-    # 校验期已生效活动价(上一场已报价, 从活动导出导入) = 报名价维度硬底: 新报名价高于它必被淘宝拦;
-    # 占位SKU报名价自动封顶到它 (2026-07-12 第二场62件全失败根因)。
+    # 旧版占位SKU保护价缓存；真实SKU自动报名不得读取它改写活动价。
+    # 新版平台最低标价证据按 SKUID+时间戳存于 campaign_price_floor_evidence_v1。
     enrolled_floor_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
-    # 校验期最低【普惠券后价】历史线 (到手维度, 从平台报名回执学来的真线) —— ★与上面那个别混用:
-    #   enrolled_floor_price 封顶【报名价】; coupon_floor_price 封顶【名义券后】→ 报名价 P ≤ 此值÷(1−官方比例)。
-    # 根因(2026-07-16 报名价重构): 旧叠加法真实到手 = 活动价×(1−比例) − 单品立减, 比"老活动价"低整整一刀,
-    # 只封顶老活动价挡不住真线 → 88VIP 60品报名 42 失败(142行券后线)。线只会更低, 回填时只降不抬。
+    # 旧版占位SKU普惠券后保护价缓存。它不等于 ERP 最终到手目标；真实SKU的单品立减
+    # 绝不能向它“贴线”。新版资格判断读取 campaign_price_floor_evidence_v1。
     coupon_floor_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12,2))
     # 店内活动
     shop_promo_rate: Mapped[Optional[Decimal]] = mapped_column(Numeric(10,6))         # 单品立减系数

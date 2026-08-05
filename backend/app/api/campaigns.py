@@ -7,10 +7,10 @@ POST   /api/campaigns/no-sales-group/notify  无动销名单推飞书 (spec §�
 GET    /api/campaigns/{id}                计划详情
 PUT    /api/campaigns/{id}                改计划
 DELETE /api/campaigns/{id}                删计划 (admin)
-POST   /api/campaigns/{id}/precheck       R1~R12 预检
+POST   /api/campaigns/{id}/precheck       R0~R17 预检
 GET    /api/campaigns/{id}/rows           行预览 (kind=signup|discount)
 POST   /api/campaigns/{id}/push-discount  推单品立减 (phase=stage|commit, admin)
-POST   /api/campaigns/{id}/push-signup    推报名 (导入即生效 R12, admin)
+POST   /api/campaigns/{id}/push-signup    已禁用 (仅自动报名程序内部可执行)
 POST   /api/campaigns/{id}/recon          核对 (multipart 手动上传三种导出兜底)
 GET    /api/campaigns/{id}/recon-reports  核对报告列表
 
@@ -97,6 +97,16 @@ def _validate_price_protection(days: Optional[int], url: Optional[str]) -> None:
         raise HTTPException(422, "价保冷静期必须是1至365天")
     if url and not str(url).strip().lower().startswith(("http://", "https://")):
         raise HTTPException(422, "价保说明链接必须以 http:// 或 https:// 开头")
+
+
+@router.get("/policy")
+def get_campaign_policy(_: User = Depends(get_current_user)):
+    """Root policy used by every signup generator and shown in the wizard."""
+    from app.services import campaign_policy_service
+    try:
+        return campaign_policy_service.public_policy()
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
 
 
 @router.get("")
@@ -232,14 +242,21 @@ def delete_plan(plan_id: int, db: Session = Depends(get_db),
 @router.post("/{plan_id}/precheck")
 def precheck(plan_id: int, db: Session = Depends(get_db),
              _: User = Depends(require_role("admin", "operator"))):
-    """R1~R16 预检 (spec §三)。通过后计划进入 precheck 状态。"""
+    """R0~R17 预检 (spec §三)。只有全无 error 才进入 precheck 状态。"""
     plan = _get_plan(db, plan_id)
     checks = campaign_service.preflight(db, plan)
-    if plan.status == "draft":
+    has_error = any(c["level"] == "error" for c in checks)
+    if plan.status == "draft" and not has_error:
         plan.status = "precheck"
         db.commit()
-    has_error = any(c["level"] == "error" for c in checks)
-    return {"plan": _plan_out(plan), "checks": checks, "has_error": has_error}
+    from app.services import campaign_policy_service
+    return {
+        "plan": _plan_out(plan),
+        "checks": checks,
+        "has_error": has_error,
+        "policy": campaign_policy_service.public_policy() if checks[0]["rule"] == "R0"
+                  and checks[0]["level"] == "pass" else None,
+    }
 
 
 @router.get("/{plan_id}/rows")
@@ -269,9 +286,12 @@ def push_discount(plan_id: int, phase: str = Query("stage"), db: Session = Depen
 @router.post("/{plan_id}/push-signup")
 def push_signup(plan_id: int, db: Session = Depends(get_db),
                 _: User = Depends(require_role("admin"))):
-    """推大促报名 (R12: 导入即报名成功, 不可逆 — 前端 wizard 必须确认后才调)。"""
-    plan = _get_plan(db, plan_id)
-    return campaign_service.push_signup(db, plan)
+    """Direct signup is disabled; only the scheduled campaign program may submit."""
+    _get_plan(db, plan_id)
+    raise HTTPException(
+        409,
+        "活动报名只由 ERP 自动报名程序执行；页面或 AI 直推已禁用。错误先报告并等待用户决定。",
+    )
 
 
 @router.post("/{plan_id}/recon")

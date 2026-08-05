@@ -202,14 +202,32 @@ def run_auto_execute(db: Session) -> dict:
         # 每次执行前刷新 60 天动销登记；已登记但后来出单的仍待人工转正，不自动报名。
         grouping = campaign_service.group_by_sales(db)
         if plan.status == "draft":
+            floor_refresh = campaign_service.refresh_floor_evidence_from_current_activity(db, plan)
+            if not floor_refresh.get("ok"):
+                failed += 1
+                plan.status = "alarmed"
+                db.commit()
+                text = (
+                    f"活动：{plan.name}\n失败步骤：价格线证据刷新\n"
+                    f"原因：{floor_refresh.get('error') or '无法导出当前活动'}\n"
+                    "系统已停止并等待用户决定；不会生成报名表、自动改价或自动重试。")
+                notice = _notify_once(
+                    db, f"floor_refresh_{plan.id}", "活动自动执行失败", text)
+                details.append({
+                    "plan_id": plan.id, "ok": False,
+                    "step": "floor_evidence_refresh", "notification": notice,
+                })
+                continue
             checks = campaign_service.preflight(db, plan)
             critical = [c for c in checks if c.get("level") == "error"]
             if critical:
                 failed += 1
+                plan.status = "alarmed"
+                db.commit()
                 text = (
                     f"活动：{plan.name}\n失败步骤：ERP 预检\n"
                     f"原因：{json.dumps(critical, ensure_ascii=False, default=str)[:2200]}\n"
-                    "系统已停止，不会继续生成或上传。")
+                    "系统已停止并标记为待人工决定；不会继续生成、上传、自动改价或自动重试。")
                 notice = _notify_once(db, f"precheck_{plan.id}", "活动自动执行失败", text)
                 details.append({"plan_id": plan.id, "ok": False,
                                 "step": "precheck", "notification": notice})
@@ -230,8 +248,10 @@ def run_auto_execute(db: Session) -> dict:
                 signup_rows, _ = campaign_service.build_signup_rows(db, plan)
                 if not signup_rows:
                     held += 1
+                    plan.status = "alarmed"
+                    db.commit()
                     details.append({
-                        "plan_id": plan.id, "ok": True, "step": "price_hold",
+                        "plan_id": plan.id, "ok": False, "step": "price_hold",
                         "held_items": len(price_holds), "waiting_for_manual_decision": True,
                     })
                     continue
@@ -242,16 +262,19 @@ def run_auto_execute(db: Session) -> dict:
             discount = campaign_service.push_discount(db, plan, phase="commit")
             if not discount.get("ok"):
                 failed += 1
+                plan.status = "alarmed"
+                db.commit()
                 text = (
                     f"活动：{plan.name}\n失败步骤：单品立减\n"
                     f"原因：{discount.get('error') or discount.get('validation') or '未知'}\n"
-                    "系统已停止，未继续活动报名。")
+                    "系统已停止，未继续活动报名；不会自动改价或自动重试，等待用户决定。")
                 notice = _notify_once(db, f"discount_{plan.id}", "活动自动执行失败", text)
                 details.append({"plan_id": plan.id, "ok": False, "step": "discount",
                                 "notification": notice})
                 continue
 
-        signup = campaign_service.push_signup(db, plan)
+        signup = campaign_service.push_signup(
+            db, plan, execution_source="campaign_automation")
         if signup.get("ok"):
             succeeded += 1
         else:

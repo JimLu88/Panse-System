@@ -51,6 +51,7 @@ services:
       # Panse-Web-Agent 自动取数 (2026-06-12 并入): Agent 跑在 Windows 宿主机 :8500
       # 群晖部署时改成 Windows 机的局域网 IP, 如 http://192.168.x.x:8500
       WEB_AGENT_URL: ${WEB_AGENT_URL:-http://host.docker.internal:8500}
+      PROCUREMENT_AGENT_TOKEN: ${PROCUREMENT_AGENT_TOKEN:-}
       AGENT_OUTPUT_DIR: /app/agent_output
     extra_hosts:
       - "host.docker.internal:host-gateway"   # Linux Docker(群晖)也能解析宿主机
@@ -58,6 +59,7 @@ services:
       - "8000:8000"
     volumes:
       - ./backend:/app
+      - ./TAOBAO_CAMPAIGN_SIGNUP_POLICY.json:/app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json:ro
       - ./storage:/app/storage   # 送货单原图归档 + 上传文件 + 图库缩略图缓存
       - ./backups:/backups:ro    # 只读: 供"系统体检"报告最新备份新鲜度 (优化 #4)
       - "D:/畔色 产品图库:/app/gallery:ro"   # 产品图库 (只读; 群晖部署改这一行主机路径)

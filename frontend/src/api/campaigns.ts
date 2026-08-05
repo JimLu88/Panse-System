@@ -92,6 +92,20 @@ export interface CampaignListResult {
   types: Record<string, string>;         // campaign_type → 人话名
 }
 
+export interface CampaignSignupPolicy {
+  policy_id: string;
+  version?: string;
+  title?: string;
+  explanation_lines: string[];
+  execution: Record<string, unknown>;
+  pricing: Record<string, unknown>;
+  qualification_gates: Record<string, unknown>;
+  sha256: string;
+}
+
+export const getCampaignSignupPolicy = () =>
+  api.get<CampaignSignupPolicy>('/api/campaigns/policy').then((r) => r.data);
+
 export const listCampaigns = () =>
   api.get<CampaignListResult>('/api/campaigns').then((r) => r.data);
 export const createCampaign = (payload: CampaignPlanPayload) =>
@@ -144,6 +158,7 @@ export interface CampaignPrecheckResult {
   plan: CampaignPlan;                    // 预检后计划（status → precheck）
   checks: PrecheckCheck[];
   has_error: boolean;                    // true = 有阻塞项（level=error），先修再推
+  policy?: CampaignSignupPolicy | null;
 }
 export const runCampaignPrecheck = (id: number) =>
   api.post<CampaignPrecheckResult>(`/api/campaigns/${id}/precheck`, null, { timeout: 60000 })
@@ -189,11 +204,6 @@ export const pushCampaignDiscount = (id: number, phase: PushPhase) =>
   api.post<CampaignPushResult>(`/api/campaigns/${id}/push-discount`, null,
     { params: { phase }, timeout: 260000 })
     .then((r) => r.data);
-/** 推报名：一次 stage 即生效（promo_signup 导入即报名成功，无第二步提交，R12） */
-export const pushCampaignSignup = (id: number) =>
-  api.post<CampaignPushResult>(`/api/campaigns/${id}/push-signup`, null, { timeout: 260000 })
-    .then((r) => r.data);
-
 // ── 核对（spec 四.6：不带文件=自动 WA 导出；带文件=手动上传兜底） ──
 
 /** 后端判定串：一分不差 / 贴线让X.XX / 超2元报警 / 偏差 / J未刷新 / 占位 / 无映射 */

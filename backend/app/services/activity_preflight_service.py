@@ -3,7 +3,7 @@
 不产文件、不改数据、不上传淘宝。把"如果现在生成三步活动表并上传会出什么问题"提前算出来:
   1. 坏价产品   : 各尺寸报名价雷同(占位价/复制价未真实定价), 会把废价带上淘宝 → 排除并提示先改价;
   2. 缺淘宝映射 : 有日常价但没 taobao_sku_id 的 SKU, 报名表里不会出现 → 淘宝报名会报"缺SKU";
-  3. 15天最低价冲突: 计划大促到手(报名价A×0.88) 高于 近15天真实最低成交价 → 大促报名会被判"涨价"拦;
+  3. 平台资格冲突: 报名价高于最低标价，或报名价−官方立减高于最低普惠券后价 → 整品暂缓;
   4. 各步就绪计数: 每步能生成多少行, 排除了多少。
 
 坏价判定 = 同一 product_code 下 ≥3 个(非占位)已映射 SKU 的报名价完全相同 (各尺寸一个价 = 没按尺寸真实定价)。
@@ -225,7 +225,7 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
             if getattr(s, "is_custom_placeholder", False):
                 price = float(s.daily_price) * placeholder_mul if s.daily_price else None
             else:
-                price = pricing_calc_service.report_prices(p, params).get(price_field)
+                price = float(s.daily_price) if s.daily_price is not None else None
             if price is None:
                 skipped_no_price += 1
                 continue
@@ -233,21 +233,64 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         return {"rows": rows_n, "skipped_bad_price": skipped_bad,
                 "skipped_no_price": skipped_no_price}
 
-    # 6) 报名可行性 (2026-07-12 第二场62件全失败复盘) —— 三类淘宝准入规则提前算:
-    #    a. 券后价超线: 计划报名价A > enrolled_floor_price(已生效活动价=校验硬底) → 必被拦(整商品拒);
+    # 6) 报名可行性：最低标价与最低普惠券后价是两个独立资格门。
+    #    历史线只决定整品是否暂缓，绝不能用于改写真实 SKU 报名价或单品立减。
     #    b. 整商品不完整: 淘宝要求全SKU报名, 任一已映射SKU算不出价 → collect 已整商品剔除, 这里红字列明;
     #    c. 动销疑似不达标: 近60天销量=0 的商品(上架>60天要求近60天≥1件; 上架时间未知, 故标"疑似")。
     from app.services.data_export_service import collect_signup_rows
     sig_entries, sig_stats = collect_signup_rows(db, "report_price")
+    from decimal import Decimal
+    from app.services import campaign_price_floor_service, campaign_service
+
+    evidence = campaign_price_floor_service.evidence_map(db)
+    lev = campaign_service.TIER_LEVERAGE.get(tier, campaign_service.TIER_LEVERAGE["big"])
+    ceil_on = campaign_service.official_ceil_enabled(db) if tier == "mid" else True
     floor_conflicts: list[dict] = []
+    floor_evidence_missing: list[dict] = []
     for s, p, A in sig_entries:
-        fl = getattr(p, "enrolled_floor_price", None)
-        if fl is not None and float(fl) > 0 and A - float(fl) > 0.005:
-            floor_conflicts.append({
-                "sku_code": s.sku_code, "name": s.sku or s.product_name or s.sku_code,
-                "planned": round(A, 2), "enrolled_floor": round(float(fl), 2),
-                "over": round(A - float(fl), 2)})
-    floor_conflicts.sort(key=lambda x: -x["over"])
+        low_price_exact = Decimal(str(A)) < Decimal("100")
+        official = campaign_service.official_deduction(
+            Decimal(str(A)), lev, ceil_on and not low_price_exact)
+        coupon_after = Decimal(str(A)) - official
+        for sid in [p.taobao_sku_id, *(p.alt_taobao_sku_ids or [])]:
+            sid = str(sid or "").strip()
+            if not sid:
+                continue
+            entry = evidence.get(sid) if isinstance(evidence.get(sid), dict) else {}
+            missing = [key for key in ("min_list_price", "min_coupon_line")
+                       if entry.get(key) is None]
+            if missing:
+                floor_evidence_missing.append({
+                    "sku_code": s.sku_code,
+                    "taobao_sku_id": sid,
+                    "missing": missing,
+                    "observed_at": entry.get("observed_at"),
+                })
+                continue
+            min_list = Decimal(str(entry["min_list_price"]))
+            min_coupon = Decimal(str(entry["min_coupon_line"]))
+            reasons = []
+            if Decimal(str(A)) > min_list + Decimal("0.005"):
+                reasons.append({"type": "minimum_list_price", "line": float(min_list)})
+            if coupon_after > min_coupon + Decimal("0.005"):
+                reasons.append({
+                    "type": "minimum_coupon_after_price",
+                    "line": float(min_coupon),
+                    "qualification_coupon_after": float(coupon_after),
+                    "single_item_discount_counts": False,
+                })
+            if reasons:
+                floor_conflicts.append({
+                    "sku_code": s.sku_code,
+                    "taobao_sku_id": sid,
+                    "name": s.sku or s.product_name or s.sku_code,
+                    "signup_price": round(A, 2),
+                    "official_deduction": float(official),
+                    "reasons": reasons,
+                    "source": entry.get("source"),
+                    "observed_at": entry.get("observed_at"),
+                })
+    floor_conflicts.sort(key=lambda x: (x["sku_code"], x["taobao_sku_id"]))
     since60 = datetime.date.today() - datetime.timedelta(days=60)
     sold = {c: float(q or 0) for c, q in db.execute(
         select(Order.sku_code, func.sum(Order.qty))
@@ -296,8 +339,10 @@ def activity_preflight(db: Session, floor_days: int = 15, skip_floor_check: bool
         "floor_check_skipped": skip_floor_check,   # 本次是否按初始报价跳过了15天校验
         "skuid_collision_count": len(skuid_collisions),
         "skuid_collisions": skuid_collisions[:50],
-        "floor_conflict_count": len(floor_conflicts),          # 券后价超线(> 已生效活动价) → 必被拦
+        "floor_conflict_count": len(floor_conflicts),
         "floor_conflicts": floor_conflicts[:100],
+        "floor_evidence_missing_count": len(floor_evidence_missing),
+        "floor_evidence_missing": floor_evidence_missing[:100],
         "incomplete_item_count": sig_stats["skipped_incomplete_items"],   # 整商品不完整(缺价SKU) → 已剔除
         "incomplete_items": sig_stats["incomplete_items"][:50],
         "no_sales_count": len(no_sales_items),                 # 近60天0销量(疑似动销不达标, 警示)

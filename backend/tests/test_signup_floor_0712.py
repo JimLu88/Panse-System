@@ -45,7 +45,7 @@ def test_incomplete_item_dropped_whole(db_session):
     db = db_session
     # 商品333: 一个有价 + 一个无价(无big_buyer非占位) → 整商品剔除
     _add(db, "PPS9201", "PPS9201011", "床-1.5米", 2600, "333", "800021", big_buyer=2000, mid_buyer=2046)
-    _add(db, "PPS9201", "PPS9201097", "追加背板", 2000, "333", "800022")          # 无促销价→缺价
+    _add(db, "PPS9201", "PPS9201097", "追加背板", None, "333", "800022")          # 无日常价→缺价
     # 商品444: 全有价 → 保留
     _add(db, "PPS9202", "PPS9202011", "柜-0.6米", 3600, "444", "800031", big_buyer=2204, mid_buyer=2254)
     db.commit()
@@ -65,17 +65,23 @@ def test_incomplete_item_dropped_whole(db_session):
 
 def test_preflight_floor_and_no_sales(db_session):
     db = db_session
-    # 正常SKU 报名价(2000/0.88≈2273) > 已生效价1800 → 券后价超线红字
+    # 真实SKU报名价=日常价2600；平台最低标价1800只做资格阻塞，不得压价。
     _add(db, "PPS9301", "PPS9301011", "岩板餐桌-1.4米", 2600, "555", "800041",
          big_buyer=2000, mid_buyer=2046, floor=1800)
     db.commit()
+    from app.services import campaign_price_floor_service
+    campaign_price_floor_service.record_activity_export(
+        db,
+        [{"item_id": "555", "sku_id": "800041", "sku_name": "岩板餐桌-1.4米",
+          "min_list_price": 1800, "min_coupon_line": 3000}],
+        source="pytest_current_activity_export",
+    )
+    db.commit()
     rep = pf.activity_preflight(db)
-    # 2026-07-16 固化后: 有 floor 的SKU在 collect 阶段即自动封顶到 floor(透明记录, 非静默),
-    # 预检不再作为冲突红字; 被封顶的真SKU必须出现在 stats["floor_capped_real"] 里可见。
-    assert rep["floor_conflict_count"] == 0
+    assert rep["floor_conflict_count"] == 1
+    assert rep["floor_conflicts"][0]["reasons"][0]["type"] == "minimum_list_price"
     _entries, _st = de.collect_signup_rows(db, "report_price")
-    assert any(c["sku_code"] == "PPS9301011" and c["capped_to"] == 1800.0
-               for c in _st.get("floor_capped_real", []))
+    assert {s.sku_code: price for s, _p, price in _entries}["PPS9301011"] == 2600.0
     # 无订单 → 该商品近60天0销量 → 动销警示
     assert any(it["taobao_item_id"] == "555" for it in rep["no_sales_items"])
     # 占位SKU封顶后不超线

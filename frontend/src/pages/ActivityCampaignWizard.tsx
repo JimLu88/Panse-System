@@ -1,9 +1,9 @@
 /**
  * 活动生命周期向导（P3，spec = docs/活动生命周期系统_执行plan.md 四/五节）。
- * 四步每步确认制：①预检(R1~R12) → ②推单品立减(两段式 stage→commit) → ③推报名 → ④自动核对。
+ * 生命周期：①预检(R0~R17) → ②单品立减 → ③程序自动报名 → ④自动核对。
  * 铁则：ERP 价格唯一标准；报名价恒=日常价；每场只变单品立减；
  *   单品立减/报名导入即生效无草稿(R12) → 立减先 stage 挂文件看千牛校验、人工确认后才 commit；
- *   报名没有 stage/commit 两段（promo_signup 导入即报名成功），文案写明、推前勾选确认。
+ *   报名没有 stage/commit 两段（promo_signup 导入即报名成功），仅允许后端自动计划执行。
  * ★契约对齐：所有字段名/枚举以后端 /api/campaigns 实际返回为准（campaigns.ts 已同步）。
  */
 import { useEffect, useMemo, useState } from 'react';
@@ -18,13 +18,13 @@ import {
 } from '@ant-design/icons';
 import {
   CAMPAIGN_STATUS_LABEL, CAMPAIGN_TYPES, NO_SALES_FORMULA, SIGNUP_PRICE_RULE, TIER_FORMULA,
-  fetchCampaignRows, pushCampaignDiscount, pushCampaignSignup, reconVerdictKey, reconVerdictMeta,
+  fetchCampaignRows, getCampaignSignupPolicy, pushCampaignDiscount, reconVerdictKey, reconVerdictMeta,
   runCampaignPrecheck, runCampaignRecon, runCampaignReconManual,
   type CampaignPlan, type CampaignPrecheckResult, type CampaignPushResult,
-  type CampaignReconResult, type CampaignStatus, type PrecheckCheck,
+  type CampaignReconResult, type CampaignSignupPolicy, type CampaignStatus, type PrecheckCheck,
 } from '../api/campaigns';
 
-const STEP_TITLES = ['预检 R1~R12', '推单品立减', '推报名', '自动核对', '完成'];
+const STEP_TITLES = ['预检 R0~R17', '单品立减', '程序自动报名', '自动核对', '完成'];
 
 function stepFromStatus(s: CampaignStatus): number {
   switch (s) {
@@ -77,14 +77,13 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
   const [preLoading, setPreLoading] = useState(false);
   const [revokeConfirmed, setRevokeConfirmed] = useState(false);   // ★前端本地卡点，不传后端
   const [rowCounts, setRowCounts] = useState<{ signup?: number; discount?: number }>({});
+  const [policy, setPolicy] = useState<CampaignSignupPolicy | null>(null);
   // 步骤②推立减（两段式 stage→commit）
   const [stageRes, setStageRes] = useState<CampaignPushResult | null>(null);
   const [commitRes, setCommitRes] = useState<CampaignPushResult | null>(null);
   const [stageChecked, setStageChecked] = useState(false);         // stage 回执核对确认
-  // 步骤③推报名
-  const [signupRes, setSignupRes] = useState<CampaignPushResult | null>(null);
-  const [signupConfirmed, setSignupConfirmed] = useState(false);   // 报名导入即生效 → 推前确认
-  const [pushing, setPushing] = useState<'stage' | 'commit' | 'signup' | null>(null);
+  // 步骤③报名由后端自动计划执行，页面没有直推能力。
+  const [pushing, setPushing] = useState<'stage' | 'commit' | null>(null);
   // 步骤④核对
   const [recon, setRecon] = useState<CampaignReconResult | null>(null);
   const [reconLoading, setReconLoading] = useState<'auto' | 'manual' | null>(null);
@@ -97,10 +96,14 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
     setStep(stepFromStatus(plan.status));
     setPre(null); setRevokeConfirmed(false); setRowCounts({});
     setStageRes(null); setCommitRes(null); setStageChecked(false);
-    setSignupRes(null); setSignupConfirmed(false); setRecon(null);
+    setRecon(null);
     setItemsFiles([]); setDiscountFiles([]); setProductFiles([]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan.id]);
+
+  useEffect(() => {
+    getCampaignSignupPolicy().then(setPolicy).catch(() => setPolicy(null));
+  }, []);
 
   const typeDef = CAMPAIGN_TYPES.find((t) => t.value === plan.campaign_type);
   const statusMeta = CAMPAIGN_STATUS_LABEL[plan.status];
@@ -136,7 +139,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
   const precheckPassable = !!pre && !pre.has_error
     && (revokeChecks.length === 0 || revokeConfirmed);
 
-  // ── ② 推立减（两段式）/ ③ 推报名 ──
+  // ── ② 推立减（两段式） ──
   const doPushDiscount = async (phase: 'stage' | 'commit') => {
     setPushing(phase);
     const label = phase === 'stage' ? '单品立减·预校验(stage)' : '单品立减·正式提交(commit)';
@@ -155,25 +158,6 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
         }
       } else {
         message.error(r.need_scan ? '淘宝登录态过期，请先扫码再重试' : (r.error || r.message || `${label}失败`));
-      }
-    } catch {
-      message.destroy('push');
-      message.error('推送服务未响应（确认 PC 上 Web-Agent 在线）');
-    } finally { setPushing(null); }
-  };
-
-  const doPushSignup = async () => {
-    setPushing('signup');
-    message.loading({ content: '正在推送活动报名到千牛（导入即报名成功，Web-Agent 自动化）…', key: 'push', duration: 0 });
-    try {
-      const r = await pushCampaignSignup(plan.id);
-      message.destroy('push');
-      setSignupRes(r);
-      if (r.ok) {
-        onPlanChange({ ...plan, status: 'signup_pushed' });
-        message.success('报名已推送并生效，先核对下方千牛回执，确认无误再走核对步');
-      } else {
-        message.error(r.need_scan ? '淘宝登录态过期，请先扫码再重试' : (r.error || r.message || '报名推送失败'));
       }
     } catch {
       message.destroy('push');
@@ -237,13 +221,21 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
       <Steps size="small" current={step} style={{ marginBottom: 16 }}
         items={STEP_TITLES.map((t, i) => ({ title: t, status: stepStatus(i) }))} />
 
+      <Alert type={policy ? 'info' : 'error'} showIcon style={{ marginBottom: 16 }}
+        message={policy ? `${policy.title} · ${policy.version}` : '根目录活动报名规则未加载，报名程序将硬停止'}
+        description={policy && (
+          <ol style={{ margin: '6px 0 0 20px', padding: 0 }}>
+            {policy.explanation_lines.map((line) => <li key={line}>{line}</li>)}
+          </ol>
+        )} />
+
       {/* ── 步骤① 预检 ── */}
       {step === 0 && (
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Alert type="info" showIcon
             message="预检 = 推送前的全量体检，不产文件、不改数据、不碰千牛。"
             description={<span style={{ fontSize: 13 }}>
-              按平台规则库 R1~R14 逐条过：历史标价线、券后线、整品 SKU 完整性、下架 SKU、
+              按根目录唯一规则和平台规则库 R0~R17 逐条过：历史标价线、券后线、证据新鲜度、整品 SKU 完整性、下架 SKU、
               已报名冲突、动销门等（全部为 2026-07-17 实战实锤规则）。有阻塞项就先修再推，别硬推。
             </span>} />
           <Button type="primary" icon={<ExperimentOutlined />} loading={preLoading} onClick={doPrecheck}>
@@ -389,32 +381,23 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
         </Space>
       )}
 
-      {/* ── 步骤③ 推报名（一次 stage 即生效，推前确认） ── */}
+      {/* ── 步骤③ 报名只由后端自动计划执行 ── */}
       {step === 2 && (
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Alert type="info" showIcon
-            message="推报名：报名价填的永远是 ERP 日常价。"
+            message="程序自动报名：真实 SKU 报名价永远是 ERP 日常价。"
             description={<span style={{ fontSize: 13 }}>
-              {SIGNUP_PRICE_RULE}。<br />
-              整品必须全 SKU 一次带齐，缺一个整品被拒（R3，系统已按映射全量出行并断言完整）；
+               {SIGNUP_PRICE_RULE}。<br />
+              报名资格先验：平台同时校验最低标价，以及“活动价−官方立减 ≤ 最低普惠券后价”；
+              单品立减不参与、不能救报名，任一 SKU 冲突则整品暂缓并告警。<br />
+               整品必须全 SKU 一次带齐，缺一个整品被拒（R3，系统已按映射全量出行并断言完整）；
               下架 SKU 已自动剔除（R4）。
             </span>} />
           <Alert type="warning" showIcon
-            message={<b>报名没有两段式：promo_signup 导入即报名成功、无需再点发布（R12）——点一次就是真报名。</b>} />
-          <Checkbox checked={signupConfirmed} onChange={(e) => setSignupConfirmed(e.target.checked)}>
-            <Typography.Text strong>我明白报名导入即生效，确认现在推送</Typography.Text>
-          </Checkbox>
-          {signupRes && <PushResultView res={signupRes} title="报名回执" />}
+            message={<b>页面和 AI 直推已禁用。自动程序遇错会停止、标记“待人工决定”并飞书报告，不自动改价、不自动轮换、不自动重试。</b>} />
           <Space wrap>
             <Button onClick={() => setStep(1)}>返回上一步</Button>
-            <Button type="primary" danger icon={<CloudUploadOutlined />}
-              disabled={!signupConfirmed}
-              loading={pushing === 'signup'} onClick={doPushSignup}>
-              {signupRes?.ok ? '重推报名（只会补报，成功品会被判重复）' : '推送活动报名（导入即报名）'}</Button>
-            {signupRes?.ok && (
-              <Button type="primary" icon={<RightOutlined />} onClick={() => setStep(3)}>
-                回执无误，去自动核对</Button>
-            )}
+            <Button type="primary" onClick={() => window.location.reload()}>刷新程序状态</Button>
           </Space>
         </Space>
       )}

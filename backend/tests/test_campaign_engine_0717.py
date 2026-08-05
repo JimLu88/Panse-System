@@ -38,6 +38,24 @@ def _mk(db, pc, code, item, sid, daily=None, big=None, *, placeholder=False,
         enrolled_floor_price=Decimal(str(enrolled)) if enrolled is not None else None))
 
 
+def _seed_platform_floors(db, rows):
+    """Seed fresh SKUID evidence exactly as a current activity export would."""
+    from app.services import campaign_price_floor_service
+
+    campaign_price_floor_service.record_activity_export(
+        db,
+        [{
+            "item_id": str(item_id),
+            "sku_id": str(sku_id),
+            "sku_name": str(sku_id),
+            "min_list_price": min_list,
+            "min_coupon_line": min_coupon,
+        } for item_id, sku_id, min_list, min_coupon in rows],
+        source="pytest_current_activity_export",
+    )
+    db.commit()
+
+
 def _plan(db, ctype="big88"):
     plan = CampaignPlan(name=f"测试{ctype}", campaign_type=ctype,
                         tier=cs.CAMPAIGN_TYPES[ctype][1],
@@ -180,8 +198,7 @@ def test_signup_rows_r3_incomplete_item_dropped(db_session):
 # ── ③④⑤⑥ 立减公式 ──────────────────────────────────────────────────────────
 
 def test_discount_formula_big_spec_sample(db_session):
-    """spec §二 手算样例: 日常2827.5 × 12% = 339.30 → ceil 340;
-    贴线 min(1979.59, 1978.89) = 1978.89; 立减 = 2827.5 − 340 − 1978.89 = 508.61。"""
+    """历史最低券后线不参与立减；最终到手只能等于 ERP 大促价。"""
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDA001", "PPSDA00101", "9301", "73001",
         daily=2827.5, big=1979.59, line=1978.89)
@@ -191,11 +208,10 @@ def test_discount_formula_big_spec_sample(db_session):
     rows, stats = cs.build_discount_rows(db_session, plan)
     by_sid = {r["taobao_sku_id"]: r for r in rows}
 
-    assert by_sid["73001"]["deduct"] == 508.61
+    assert by_sid["73001"]["deduct"] == 507.91
     assert by_sid["73001"]["official"] == 340.0               # R9 向上取整到元
-    assert by_sid["73001"]["target_price"] == 1978.89         # 贴线
-    assert stats["line_concessions"] == [{"sku_code": "PPSDA00101", "target": 1979.59,
-                                          "line": 1978.89, "concession": 0.7}]
+    assert by_sid["73001"]["target_price"] == 1979.59
+    assert stats["line_concessions"] == []
     assert by_sid["73002"]["deduct"] == 260.0                 # 2000 − ceil(240)=240 − 1500
 
 
@@ -403,19 +419,26 @@ def test_placeholder_signup_without_live_price_is_blocked(db_session):
     assert checks["R16"]["items"][0]["taobao_sku_id"] == "73091"
 
 
-def test_discount_price_hold_when_concession_over_one_yuan(db_session):
+def test_discount_price_hold_when_platform_coupon_after_exceeds_history_line(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDE001", "PPSDE00101", "9305", "73031", daily=3000, big=2000, line=1990)
     db_session.commit()
+    _seed_platform_floors(db_session, [("9305", "73031", 4000, 1990)])
 
     rows, stats = cs.build_discount_rows(db_session, plan)
 
-    assert rows == []                                         # R2: 让幅10元>1 → 不贴线不出行
+    assert rows == []                                         # R2: 报名资格线冲突 → 整品不出行
     assert stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9305"
-    assert stats["excluded_price_hold_items"][0]["skus"][0]["reasons"][0] == {
-        "type": "coupon_floor", "erp_target": 2000.0,
-        "platform_history_line": 1990.0, "difference": 10.0,
-    }
+    reason = stats["excluded_price_hold_items"][0]["skus"][0]["reasons"][0]
+    assert reason["type"] == "coupon_floor"
+    assert reason["taobao_sku_id"] == "73031"
+    assert reason["erp_signup_price"] == 3000.0
+    assert reason["official_rate"] == 0.12
+    assert reason["official_deduction"] == 360.0
+    assert reason["platform_coupon_after"] == 2640.0
+    assert reason["platform_history_line"] == 1990.0
+    assert reason["difference"] == 650.0
+    assert reason["single_item_discount_ignored_by_platform"] is True
 
 
 def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
@@ -434,7 +457,7 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r1_to_r16(db_session):
+def test_preflight_outputs_r0_to_r17(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
@@ -443,12 +466,16 @@ def test_preflight_outputs_r1_to_r16(db_session):
     _mk(db_session, "PPSPC001", "PPSPC00101", "9403", "74021",
         daily=2000, big=1600, line=1590)                      # R2: 让幅10>1 → 暂缓
     db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("9401", "74001", 1100, 2000),
+        ("9403", "74021", 2500, 1590),
+    ])
     ns.add_no_sales(db_session, ["9404"])                     # R6 名单
 
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(1, 17)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(0, 18)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
@@ -463,6 +490,7 @@ def test_preflight_outputs_r1_to_r16(db_session):
     assert by_rule["R14"]["level"] == "warn"
     assert by_rule["R15"]["level"] == "error"
     assert by_rule["R16"]["level"] == "pass"
+    assert by_rule["R17"]["level"] == "pass"
 
 
 # ── ⑧ 推送编排 (mock WA) ─────────────────────────────────────────────────────
@@ -516,16 +544,19 @@ def test_push_discount_orchestration(db_session, monkeypatch):
 
 
 def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
-    plan = _plan(db_session, "big88")
+    empty_plan = _plan(db_session, "big88")
     calls = []
     _mock_wa(monkeypatch, calls)
 
-    empty = cs.push_signup(db_session, plan)                  # 没行: 显式报错不打 WA
+    empty = cs.push_signup(
+        db_session, empty_plan, execution_source="campaign_automation")
     assert empty["ok"] is False and calls == []
 
+    plan = _plan(db_session, "big88")
     _mk(db_session, "PPSQB001", "PPSQB00101", "9502", "75011", daily=1500)
     db_session.commit()
-    res = cs.push_signup(db_session, plan)
+    _seed_platform_floors(db_session, [("9502", "75011", 2000, 1400)])
+    res = cs.push_signup(db_session, plan, execution_source="campaign_automation")
     assert res["ok"] is True
     assert plan.status == "signup_pushed"                     # R12: stage 即生效
     assert calls[0]["channel"] == "promo_signup" and calls[0]["phase"] == "stage"
@@ -536,6 +567,7 @@ def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeyp
     _mk(db_session, "PPSQZ001", "PPSQZ00101", "9503", "75021",
         daily=1500, big=1000)
     db_session.commit()
+    _seed_platform_floors(db_session, [("9503", "75021", 2000, 1400)])
 
     calls = []
     _mock_wa(monkeypatch, calls)
@@ -558,12 +590,13 @@ def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeyp
         lambda db, text, **kw: notices.append({"text": text, **kw})
         or {"feishu": True})
 
-    first = cs.push_signup(db_session, plan)
-    second = cs.push_signup(db_session, plan)
+    first = cs.push_signup(db_session, plan, execution_source="campaign_automation")
+    second = cs.push_signup(db_session, plan, execution_source="campaign_automation")
 
     assert first["ok"] is False
     assert "未进入终态" in first["error"]
-    assert plan.status == "draft"
+    assert plan.status == "alarmed"
     assert len(notices) == 1
     assert "总1品，成功0品，失败0品" in notices[0]["text"]
-    assert second["notification"] == {"deduped": True}
+    assert second["step"] == "waiting_user_decision"
+    assert second["automatic_retry"] is False

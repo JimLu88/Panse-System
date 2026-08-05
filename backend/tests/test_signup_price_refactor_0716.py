@@ -157,11 +157,8 @@ def test_coupon_floor_cap_uses_platform_rounding():
         assert _platform_coupon(cap) <= Decimal(L), f"L={L} 封顶后按平台口径仍超线"
 
 
-def test_anchor_smash_guard_blocks_stale_floor(db_session):
-    """★★砸穿护栏(2026-07-16 dry-run 实抓的真事故):
-    黑胡桃木岩板餐桌2025 轮换后 skuId 复用老定制槽 → 带进 enrolled_floor 陈旧底价 730(真锚 3520)
-    → 名义券后 642 = 锚的 18.2% → 每个砸穿 2878 元。护栏必须【剔除该SKU并大声报出】, 绝不静默降价。
-    """
+def test_stale_legacy_floor_cannot_lower_real_signup(db_session):
+    """旧缓存即使是730，也不得改写真实SKU报名价；新资格证据另走预检。"""
     from app.services.data_export_service import collect_signup_rows
     db = db_session
     db.add(PricingSku(product_code="P9", sku_code="PPS2521010041011",
@@ -174,14 +171,9 @@ def test_anchor_smash_guard_blocks_stale_floor(db_session):
     db.commit()
 
     entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
-    blocked = stats.get("anchor_smash_blocked") or []
-    assert len(blocked) == 1, f"砸穿护栏没拦住; stats={stats}"
-    b = blocked[0]
-    assert b["sku_code"] == "PPS2521010041011"
-    assert b["anchor"] == 3520.41 and b["enrolled_floor"] == 730.0
-    assert b["pct_of_anchor"] < 20, "应报出'只有锚的18%'这种数量级事故"
-    # 被剔除 → 不出现在上传行里(绝不砸穿上架)
-    assert all(s.sku_code != "PPS2521010041011" for s, _p, _v in entries)
+    assert not (stats.get("anchor_smash_blocked") or [])
+    got = {s.sku_code: value for s, _p, value in entries}
+    assert got["PPS2521010041011"] == 5475.0
 
 
 @pytest.mark.parametrize("anchor", ["153.06", "158.16", "183.67", "142.86", "20.41"])
@@ -220,9 +212,7 @@ def test_anchor_guard_allows_rounding_slip(db_session):
 
 
 def test_never_concede_below_anchor(db_session):
-    """★★铁则(用户 2026-07-16 拍板): 绝不让步 —— 平台线低到会跌破大促锚时, **不封顶**,
-    就按 ERP 价报, 让平台拒。宁可不报, 也不降价迁就平台线。
-    实例: 畔色样块 锚20.41 / 平台线16.38 → 封顶到线要让 4.57 元 → 不干, 按 ERP 价报。"""
+    """真实SKU始终生成ERP日常价；资格冲突由预检整品暂缓，不能留给平台拒。"""
     from app.services.data_export_service import collect_signup_rows
     db = db_session
     db.add(PricingSku(product_code="PY", sku_code="PPSNOCON01",
@@ -233,18 +223,13 @@ def test_never_concede_below_anchor(db_session):
                            coupon_floor_price=Decimal("16.38")))   # 线远低于锚
     db.commit()
     entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
-    kept = stats.get("no_concession_kept_erp_price") or []
-    assert len(kept) == 1, f"应记录'拒绝让步、保持ERP价'; stats={stats}"
-    assert kept[0]["sku_code"] == "PPSNOCON01"
-    assert kept[0]["anchor"] == 20.41 and kept[0]["coupon_floor"] == 16.38
+    assert not (stats.get("no_concession_kept_erp_price") or [])
     got = {s.sku_code: v for s, _p, v in entries}
-    assert "PPSNOCON01" in got, "不让步≠不报: 仍按ERP价报, 由平台裁决"
-    assert float(got["PPSNOCON01"]) > float(kept[0]["would_cap_to"]), "报的必须是ERP价, 不能是让步价"
-    assert _platform_coupon(got["PPSNOCON01"]) > Decimal("16.38"), "按ERP价报必然超线→平台会拒, 这是预期"
+    assert got["PPSNOCON01"] == 30.0
 
 
-def test_coupon_floor_cap_still_applies_for_tiny_drift(db_session):
-    """反面: 线只比锚低一点点(取整/微漂移内)时, 仍该封顶到线 —— 那不是让步, 是合法微调。"""
+def test_coupon_floor_tiny_drift_still_cannot_change_real_signup(db_session):
+    """哪怕只差0.01元，真实SKU报名价也不得被历史线微调。"""
     from app.services.data_export_service import collect_signup_rows
     db = db_session
     db.add(PricingSku(product_code="PX", sku_code="PPSTINY01",
@@ -255,9 +240,8 @@ def test_coupon_floor_cap_still_applies_for_tiny_drift(db_session):
                            coupon_floor_price=Decimal("4274.71")))  # 只低 0.80
     db.commit()
     entries, stats = collect_signup_rows(db, "signup_price_big", lev=0.12)
-    assert not (stats.get("no_concession_kept_erp_price") or []), "微漂移不该走'拒绝让步'分支"
     got = {s.sku_code: v for s, _p, v in entries}
-    assert _platform_coupon(got["PPSTINY01"]) <= Decimal("4274.71"), "微漂移应封顶到线内, 报得进"
+    assert got["PPSTINY01"] == 6000.0
 
 
 def test_placeholder_eats_coupon_floor():

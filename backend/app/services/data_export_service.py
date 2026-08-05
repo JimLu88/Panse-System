@@ -1319,34 +1319,12 @@ _PROMO_SIGNUP_TIERS = {
 }
 
 
-# 砸穿护栏容差: 报名价法下 名义券后 == 真实到手, 允许它低于大促锚的最大幅度。
-# 合法偏离恒有两项(都是元级、与锚大小无关): ①主动让的安全垫 SIGNUP_SAFETY_YUAN(吃"平台线比ERP锚
-# 低几毛~几元"的不可预知漂移) ②报名价取整到元的残差(<1元) → 合计 < 安全垫+1。
-# 真事故是【数量级】的(实抓 18.2% = 锚的五分之一)。故容差取 max(安全垫+1元, 1%×锚):
-#   便宜品(锚153的配件: 1%只有1.53元 < 合法让步2.58元)靠绝对值放行 —— 否则【安全垫会触发自己的护栏】
-#   (2026-07-16 实抓: 5 个 coupon_floor=None 即平台压根没给低线的品被误拦, 根因就是这里把绝对容差
-#    写死 2.0、漏算了取整残差);
-#   贵品(锚上万)靠 1% 相对值收紧。两边都不误伤、也都拦得住真事故。
-_ANCHOR_SMASH_TOL = 0.01          # 相对容差(贵品)
-
-
-def _anchor_tol_abs() -> float:
-    """绝对容差 = 安全垫 + 取整残差1元。跟着 SIGNUP_SAFETY_YUAN 走, 不写死(改安全垫不会漏改这里)。"""
-    from app.services import pricing_calc_service as _pcs
-    return float(_pcs.SIGNUP_SAFETY_YUAN) + 1.0
-
-
 def _coupon_floor_cap(p, lev: float) -> "float | None":
-    """★2026-07-16 报名价重构: 由【券后价历史线】coupon_floor_price 反解出报名价上限。
+    """占位SKU保护价：由旧券后线缓存反解安全上限。
 
-    平台规则 = 活动【券后价】≤ 校验期最低普惠券后价(记 L)。报名时平台按 名义券后 = 报名价×(1−官方比例)
-    校验(**不含单品立减**), 故 报名价 ≤ L ÷ (1−比例)。
-    ⚠ 与 enrolled_floor_price 区别: 那个是"上一场活动价"(报名价维度, 直接封顶报名价); 本函数吃的是
-      "最低普惠券后价"(到手维度), 必须先 ÷(1−比例) 还原成报名价再封顶 —— 直接拿 L 封报名价会过度保守
-      (白白少报一刀官方比例)。2026-07-16 88VIP 142行券后线失败即此线所致。
-    lev = 该场官方立减比例(超级立减0.10 / 88VIP 0.12 / 618 0.15)。无线数据 → None(不封顶)。
-    ★2026-07-16 实证修正: 平台把券后价【四舍五入到整元】再比线, 故 floor(L/(1−lev)) 仍可能超线
-    (报名价15537 → 平台算13673 > 线13672.87), 必须走 max_signup_price 逐元回退。"""
+    只允许 ``_placeholder_signup_price`` 调用。真实SKU报名价永远等于ERP日常价，
+    不得使用本函数封顶或微调。
+    """
     fl = getattr(p, "coupon_floor_price", None)
     if fl is None or float(fl) <= 0 or lev >= 1:
         return None
@@ -1381,14 +1359,12 @@ def _placeholder_signup_price(s, p, lev: float = 0.12) -> "float | None":
 def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = None,
                         only_items: "set | list | None" = None):
     """大促报名/超级立减 共用行收集器 (builder 与比对表同源, 保零漂移):
+      - 真实SKU报名价 = ERP 日常价，历史线只做阻塞依据，绝不改写价格；
       - 占位SKU报名价 = _placeholder_signup_price (×0.9 封顶到已生效价 + 券后线反解);
       - ★整商品完整性: 淘宝要求商品【全部SKU】报名, 任一已映射SKU算不出价 → 整商品剔除
         (否则被拒"缺失的SKUID=..."), 明细进 stats.incomplete_items 供预检红字。
-    price_field: report_price(旧big口径A) / report_price_mid / report_price_618 /
-                 ★report_price_p(2026-07-16 新【统一报名价P】, 10%/12%两场共用, 详见 pricing_calc_service.report_prices)。
-    lev: 该场官方立减比例(0.10超级立减 / 0.12 88VIP / 0.15 618)。给了就按【券后线】coupon_floor_price
-         反解封顶报名价(真SKU+占位都吃); 不给=沿用老行为(只吃 enrolled_floor)。被券后线压过的进
-         stats["coupon_floor_capped"] —— 必须透明, 绝不静默降价。
+    price_field: 仅保留兼容旧调用；真实 SKU 不再读取它，统一取 daily_price。
+    lev: 该场官方立减比例，仅用于占位 SKU 的保护价反算。
     only_items: ★2026-07-16 用户流程铁律 —— 只导【taobao_item_id 在此集合】的商品(失败重试专用)。
          根因: 千牛【已报名成功的商品再导一次会直接判失败】("已报名/重复"), 整批重导 = 把上一轮
          已成功的全打回失败 —— 实证: 第一次导 52件(20成功/32失败), 我整批重导 53件 → 0成功/53失败,
@@ -1398,11 +1374,11 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
     from collections import defaultdict as _dd
     from app.models.pricing import PricingSku
     from app.models.pricing_ext import PricingSkuPromo
-    from app.services import pricing_calc_service
+    from app.services import campaign_policy_service
     from app.services.activity_preflight_service import bad_price_product_codes
     from app.services import delisted_sku_service
 
-    params = pricing_calc_service.get_promo_params(db)
+    campaign_policy_service.require_policy()
     skus = db.execute(
         select(PricingSku).order_by(PricingSku.product_code, PricingSku.sku_code)).scalars().all()
     promo_by_sku = {p.sku_code: p for p in db.execute(select(PricingSkuPromo)).scalars().all()}
@@ -1442,60 +1418,11 @@ def collect_signup_rows(db: Session, price_field: str, lev: "float | None" = Non
                 price = (_placeholder_signup_price(s, p, lev) if lev is not None
                          else _placeholder_signup_price(s, p))
             else:
-                price = pricing_calc_service.report_prices(p, params).get(price_field)
-                # ★★券后线封顶 —— 但【绝不让步】(2026-07-16 用户拍板铁则, 我违反过一次被当场纠正):
-                #   "不能让步，必须按照erp价格，这个是我们铁则"。
-                # 平台线只在【不会把到手压到锚以下】时才用来封顶(那属于取整/微漂移的合法微调);
-                # 若封顶会跌破锚 → **不封顶**, 就按 ERP 价报, 让平台去拒 —— 宁可这个品不报,
-                # 也绝不降价迁就平台线。(降价报进去 = 拿真金白银补"千牛标价被填低"的错: 实测这批被拦
-                #  SKU 的千牛实际卖价普遍低 28~41%; 正解是 修错价/新建SKU/轮换到干净槽, 让步不在选项里。)
-                # 被这条挡下的会记进 stats["no_concession_kept_erp_price"], 平台拒信里就有真实原因。
-                if lev is not None and price is not None:
-                    _cap = _coupon_floor_cap(p, lev)
-                    if _cap is not None and float(_cap) < float(price):
-                        _bb0 = getattr(p, "big_buyer_price", None)
-                        _cap_nom = float(_cap) * (1.0 - lev)
-                        _tol0 = (max(_anchor_tol_abs(), float(_bb0) * _ANCHOR_SMASH_TOL)
-                                 if _bb0 and float(_bb0) > 0 else None)
-                        if _tol0 is not None and _cap_nom < float(_bb0) - _tol0:
-                            stats.setdefault("no_concession_kept_erp_price", []).append({
-                                "sku_code": s.sku_code, "erp_price": round(float(price), 2),
-                                "would_cap_to": float(_cap), "anchor": round(float(_bb0), 2),
-                                "coupon_floor": float(p.coupon_floor_price)})
-                        else:
-                            stats.setdefault("coupon_floor_capped", []).append({
-                                "sku_code": s.sku_code, "from": round(float(price), 2),
-                                "to": float(_cap), "coupon_floor": float(p.coupon_floor_price)})
-                            price = float(_cap)
-                # ★2026-07-16 固化: 非占位SKU也尊重 enrolled_floor_price 封顶——但该字段的【数据纪律】
-                # 是只写给"配件/追加/咨询客服"类被平台点名管控的SKU(如洞石背板406.25/追加桌腿1125),
-                # 绝不写产品主SKU → 主SKU floor 恒为空, "报名价=ERP日常价"铁律不受影响。
-                # 封顶必须【透明】: 记 stats["floor_capped_real"], 若真SKU被误写floor能在此看见, 绝不静默。
-                _fl = getattr(p, "enrolled_floor_price", None)
-                if price is not None and _fl is not None and 0 < float(_fl) < float(price):
-                    price = round(float(_fl), 2)
-                    stats.setdefault("floor_capped_real", []).append(
-                        {"sku_code": s.sku_code, "capped_to": price})
-                # ★★砸穿护栏 (2026-07-16 dry-run 实抓, 报名价法专用):
-                # 报名价法下【名义券后 == 真实到手】, 故它绝不能显著低于大促锚 —— 否则就是真按远低于锚的
-                # 价卖出去(违用户第一铁律"大促到手是底")。实抓: 黑胡桃木岩板餐桌2025 四个SKU, 因【轮换后
-                # skuId 复用老定制槽】带进 enrolled_floor 陈旧底价(730 vs 真锚 3520) → 名义 642 = 锚的
-                # 18.2% → 每个砸穿 2878 元。撞到=**不静默降价**, 剔除该SKU(→整商品完整性剔除)并大声报出,
-                # 交人判(洗线/轮换/清脏数据)。仅在 lev 已知(报名价法)时生效; 老日常价法路径不受影响。
-                if lev is not None and price is not None:
-                    _bb = getattr(p, "big_buyer_price", None)
-                    if _bb is not None and float(_bb) > 0:
-                        _nominal = float(price) * (1.0 - lev)
-                        _tol = max(_anchor_tol_abs(), float(_bb) * _ANCHOR_SMASH_TOL)
-                        if _nominal < float(_bb) - _tol:
-                            stats.setdefault("anchor_smash_blocked", []).append({
-                                "sku_code": s.sku_code, "signup_price": round(float(price), 2),
-                                "nominal": round(_nominal, 2), "anchor": round(float(_bb), 2),
-                                "pct_of_anchor": round(_nominal / float(_bb) * 100, 1),
-                                "enrolled_floor": float(_fl) if _fl is not None else None,
-                                "coupon_floor": (float(p.coupon_floor_price)
-                                                 if getattr(p, "coupon_floor_price", None) is not None else None)})
-                            price = None          # 剔除 → 触发整商品完整性(半套必拒), 绝不砸穿上架
+                # 2026-08-05 permanent rule: every real-SKU signup generator uses
+                # the ERP daily price.  Historical platform lines are eligibility
+                # gates only; they may exclude the whole item but must never cap or
+                # otherwise rewrite a real SKU's signup price.
+                price = float(s.daily_price) if s.daily_price else None
             if price is None:
                 missing.append(f"{s.sku_code}（{s.sku or s.product_name or '?'}）")
                 stats["skipped_no_price"] += 1
@@ -1619,26 +1546,12 @@ _SUPER_REDUCE_HEADERS = [
 
 def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12,
                                      only_items: "set | list | None" = None):
-    """★★88VIP大促·【报名价法 / 垫片=0 口径】批量报名表 (2026-07-16 报名价体系重构, 用户四诉求落地)。
+    """兼容旧调用名的官方 SKU 报名表生成器。
 
-    取代 build_promo_signup_daily_upload_xlsx(日常价法/B法) —— 后者是 2026-07-16 60品报名 42 失败
-    (142行券后线)的机制根因: 活动价填日常价(高) → 平台名义券后 = 日常价×0.88 **不含单品立减** →
-    比真实到手虚高整整一刀立减(中位 ¥1387 = 日常价23%) → 必顶穿"近15天最低券后"历史线。
-
-    本 builder 口径 (详见 pricing_calc_service.report_prices):
-      真SKU 活动价 = signup_price_big = floor(大促到手 ÷ 0.88)
-      → 名义券后 = 活动价×0.88 = **真实到手** = 大促锚(取整让步 <¥1, 中位 ¥0.41) ✔
-      → **垫片(单品立减) = 0** ★ 这是稳态硬约束, 不是选择:
-         单品立减只能减钱 ⇒ 真实到手 ≤ 名义券后; 平台历史线 = 真实到手;
-         ⇒ 下轮名义 ≤ 上轮真实 = 上轮名义 − 垫片 ⇒ 垫片>0 则名义须逐轮下降、锚保不住
-         (实测带垫片方案下一轮大促 409/409 报不进)。垫片=0 时 名义=真实=线 → 永远自洽可无限重复。
-      占位SKU 活动价 = ×0.9 → 500顶 → enrolled_floor → ★券后线反解顶(coupon_floor÷0.88)
-      撞券后线的SKU: 压报名价到线内(救场手段是【压报名价】, 不是加垫片) → stats["coupon_floor_capped"] 逐条透明。
-    D–G(库存/发货时间/官方立减折扣/金额)留空: 平台按活动内置比例自动算。
-    ⚠配套铁律: 本表推之前必须先【撤掉该品 big 档单品立减】(旧的按日常价算的大立减留着 = 双折砸穿,
-      2026-07-13 事故重演)。顺序: 先撤立减 → 再改活动价。lev = 该场官方比例(88VIP=0.12)。
-    ★only_items(2026-07-16 用户流程铁律): 失败重试时【只带还没成功的商品】—— 已报名成功的再导一次
-      会被千牛判"已报名/重复"失败(实证: 整批重导 53件 → 24件已成功的全被打回)。返回 (BytesIO, stats)。"""
+    永久规则：真实 SKU 活动报名价恒等于 ERP 日常价；最低标价和最低普惠券后价
+    仅用于整品资格拦截，绝不压低报名价。占位 SKU 沿用现有保护价。失败重试只带
+    尚未成功的商品，已正确报名商品不得重复导入。
+    """
     import io as _io
     from pathlib import Path
     import openpyxl
@@ -1669,7 +1582,7 @@ def build_promo_signup_p_upload_xlsx(db: Session, lev: float = 0.12,
             seen_sids.add(skuid)
             ws.cell(r, 1, str(p.taobao_item_id)).number_format = "@"   # 商品ID 文本
             ws.cell(r, 2, skuid).number_format = "@"                   # SKUID 文本
-            ws.cell(r, 3, float(price)).number_format = "0.00"         # ★活动价 = 统一报名价 P
+            ws.cell(r, 3, float(price)).number_format = "0.00"         # 真实SKU活动价 = ERP日常价
             r += 1
     stats["rows"] = r - 4
 

@@ -13,6 +13,9 @@
 铁则 (spec §二, 用户 2026-07-17 拍板):
   报名价 = ERP 日常价, 永不再变; 中促 = 大促 × 1.03 (就地计算, 不写 mid_buyer 字段——那是任务#22);
   无动销到手 = 中促 + 1 (防零头撞线); ERP 价是唯一标准。
+  报名资格与最终到手是两道独立安全门：平台先校验
+  「报名价−官方立减 ≤ 近15天最低普惠券后价」，单品立减不参与、不能救报名；
+  通过资格门后才验算「报名价−官方立减−单品立减 = ERP目标到手」。
 只读 PricingSku / PricingSkuPromo, 绝不改其字段。
 """
 from __future__ import annotations
@@ -226,12 +229,15 @@ def _mapped_pairs(db: Session) -> list[tuple]:
 def price_hold_items(db: Session, plan) -> list[dict]:
     """已知历史价格线与ERP目标冲突的整品暂缓清单。
 
-    这里只使用ERP已有的静态价格线，不猜平台价保订单。暂缓商品不进入报名表或同期单品立减表，
-    其他商品可以继续；运营提供本场价保说明链接后，再按实际期限和订单暴露决定何时重试。
+    这里只使用按 SKUID 采集且带时间戳的平台证据，不猜平台价保订单。暂缓商品不进入报名表
+    或同期单品立减表；历史价格线只做资格判断，绝不参与最终到手价或单品立减计算。
     """
-    from app.services import no_sales_service
+    from app.services import campaign_price_floor_service, no_sales_service
 
     tier = plan_tier(plan)
+    lev = TIER_LEVERAGE[tier]
+    ceil_on = official_ceil_enabled(db) if tier == "mid" else True
+    evidence = campaign_price_floor_service.evidence_map(db)
     no_sales = no_sales_service.get_no_sales(db)
     by_item: dict[str, dict] = {}
     for s, p in _mapped_pairs(db):
@@ -244,28 +250,36 @@ def price_hold_items(db: Session, plan) -> list[dict]:
         if daily is None or daily <= 0:
             continue
         reasons = []
-        enrolled = _d(getattr(p, "enrolled_floor_price", None))
-        if enrolled is not None and enrolled > 0 and daily > enrolled:
-            reasons.append({
-                "type": "signup_floor",
-                "erp_signup_price": float(daily),
-                "platform_history_line": float(enrolled),
-                "difference": float((daily - enrolled).quantize(_CENT)),
-            })
-        target = (
-            mid_buyer_inplace(p) if tier == "mid"
-            else _d(getattr(p, "big_buyer_price", None))
-        )
-        coupon_line = _d(getattr(p, "coupon_floor_price", None))
-        if (target is not None and target > 0 and coupon_line is not None
-                and 0 < coupon_line < target):
-            concession = (target - coupon_line).quantize(_CENT)
-            if concession > LINE_CONCESSION_MAX_YUAN:
+        low_price_exact = daily < Decimal("100")
+        official = official_deduction(daily, lev, ceil_on and not low_price_exact)
+        platform_coupon_after = (daily - official).quantize(_CENT)
+        for sid in _expand_sku_ids(p):
+            entry = evidence.get(str(sid)) if isinstance(evidence.get(str(sid)), dict) else {}
+            min_list = _d(entry.get("min_list_price"))
+            min_coupon = _d(entry.get("min_coupon_line"))
+            if min_list is not None and daily > min_list + Decimal("0.005"):
+                reasons.append({
+                    "type": "signup_floor",
+                    "taobao_sku_id": str(sid),
+                    "erp_signup_price": float(daily),
+                    "platform_history_line": float(min_list),
+                    "difference": float((daily - min_list).quantize(_CENT)),
+                    "evidence_source": entry.get("source"),
+                    "evidence_observed_at": entry.get("observed_at"),
+                })
+            if min_coupon is not None and platform_coupon_after > min_coupon + Decimal("0.005"):
                 reasons.append({
                     "type": "coupon_floor",
-                    "erp_target": float(target),
-                    "platform_history_line": float(coupon_line),
-                    "difference": float(concession),
+                    "taobao_sku_id": str(sid),
+                    "erp_signup_price": float(daily),
+                    "official_rate": float(lev),
+                    "official_deduction": float(official),
+                    "platform_coupon_after": float(platform_coupon_after),
+                    "platform_history_line": float(min_coupon),
+                    "difference": float((platform_coupon_after - min_coupon).quantize(_CENT)),
+                    "single_item_discount_ignored_by_platform": True,
+                    "evidence_source": entry.get("source"),
+                    "evidence_observed_at": entry.get("observed_at"),
                 })
         if not reasons:
             continue
@@ -273,7 +287,9 @@ def price_hold_items(db: Session, plan) -> list[dict]:
             "taobao_item_id": item_id,
             "product": s.product_name or s.product_code or "",
             "skus": [],
-            "action": "暂缓本商品；默认19天冷静期，按活动价保说明可提前/延后；禁止轮换或降价迁就",
+            "action": (
+                "整品暂缓；平台资格门只校验活动价−官方立减，单品立减不能救报名；"
+                "等待近15天价格线解除或人工决定，禁止强降或自动轮换"),
         })
         entry["skus"].append({"sku_code": s.sku_code, "reasons": reasons})
     return [by_item[k] for k in sorted(by_item)]
@@ -435,8 +451,12 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
     返回 (rows, stats); 行 = {taobao_item_id, taobao_sku_id, sku_code, price, is_placeholder, remark}。"""
-    from app.services import delisted_sku_service, no_sales_service
+    from app.services import campaign_policy_service, delisted_sku_service, no_sales_service
     from app.services.activity_preflight_service import bad_price_product_codes
+
+    # The repository-root contract is a runtime dependency, not documentation.
+    # Missing/malformed policy must stop every generator that can create a signup file.
+    campaign_policy_service.require_policy()
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
     placeholder_live_prices = placeholder_live_prices_for_plan(plan)
@@ -530,25 +550,17 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 # ── 3. 单品立减 builder (spec §二 立减公式逐字) ────────────────────────────────
 
 def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: dict) -> Optional[dict]:
-    """有动销 SKU 立减: 立减 = 日常 − 官方立减(ceil到元) − min(目标到手, 线)。
-    贴线让幅 0~1 元记录在案 (audit); >1 元 → 不贴线, 剔除并建议轮换 (R2)。"""
+    """有动销 SKU 立减只对齐 ERP 场次目标价。
+
+    最低普惠券后价只用于报名资格校验，单品立减不参与该资格校验；这里绝不能
+    用历史价格线压低最终到手价。
+    """
     daily = _d(s.daily_price)
     target0 = mid_buyer_inplace(p) if tier == "mid" else _d(getattr(p, "big_buyer_price", None))
     if target0 is None or target0 <= 0:
         stats["skipped_no_target"] += 1
         return None
-    line = _d(getattr(p, "coupon_floor_price", None))
     target, concession = target0, Decimal("0")
-    if line is not None and 0 < line < target0:
-        concession = (target0 - line).quantize(_CENT)
-        if concession > LINE_CONCESSION_MAX_YUAN:
-            stats["rotation_suggested"].append({          # R2: 让幅>1元 → 轮换而非贴线
-                "sku_code": s.sku_code, "target": float(target0),
-                "line": float(line), "concession": float(concession)})
-            return None
-        target = line                                     # 贴线 min(目标, 线)
-        stats["line_concessions"].append({"sku_code": s.sku_code, "target": float(target0),
-                                          "line": float(line), "concession": float(concession)})
     # 2026-07-24 平台实证：低价 SKU 的官方立减按精确比例计算到分。
     # 狂暑季 ¥30×12%=¥3.60；超级立减 ¥25×10%=¥2.50，均不向上取整到元。
     # 普通价位仍沿用整元向上取整规则。
@@ -792,7 +804,8 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
     return {
         "rule": "R13",
         "level": "error" if errors else "pass",
-        "title": "逐SKU价格验算：报名价=ERP日常价；日常价−官方立减−单品立减=ERP目标价",
+        "title": ("逐SKU最终价格验算（不代替R2报名资格门）：报名价=ERP日常价；"
+                  "日常价−官方立减−单品立减=ERP目标价"),
         "items": errors[:100],
         "checked": {"signup_rows": len(signup_rows), "discount_rows": len(discount_rows)},
     }
@@ -841,11 +854,81 @@ def _check_placeholder_live_prices(signup_stats: dict) -> dict:
     }
 
 
+def _check_campaign_policy() -> dict:
+    from app.services import campaign_policy_service
+    try:
+        policy = campaign_policy_service.public_policy()
+    except Exception as exc:  # noqa: BLE001 - surfaced as a structured hard gate
+        return {
+            "rule": "R0",
+            "level": "error",
+            "title": "根目录活动报名规则缺失或无效，程序已停止",
+            "items": [{"error": str(exc)}],
+        }
+    return {
+        "rule": "R0",
+        "level": "pass",
+        "title": "已加载根目录活动报名唯一规则（程序自动执行；AI禁止提交/改价/重试）",
+        "items": [{
+            "policy_id": policy["policy_id"],
+            "version": policy.get("version"),
+            "sha256": policy.get("sha256"),
+        }],
+    }
+
+
+def _check_price_floor_evidence(db: Session, signup_rows: list[dict]) -> dict:
+    """Require fresh, per-SKUID evidence for both platform qualification lines."""
+    from app.services import campaign_policy_service, campaign_price_floor_service
+
+    max_age = campaign_policy_service.floor_evidence_max_age_hours()
+    evidence = campaign_price_floor_service.evidence_map(db)
+    problems: list[dict] = []
+    seen: set[str] = set()
+    for row in signup_rows:
+        if row.get("is_placeholder"):
+            continue
+        sid = str(row.get("taobao_sku_id") or "").strip()
+        if not sid or sid in seen:
+            continue
+        seen.add(sid)
+        entry = evidence.get(sid) if isinstance(evidence.get(sid), dict) else {}
+        missing = [key for key in ("min_list_price", "min_coupon_line")
+                   if entry.get(key) is None]
+        age = campaign_price_floor_service.evidence_age_hours(entry)
+        stale = age is None or age > max_age
+        if missing or stale:
+            problems.append({
+                "taobao_item_id": row.get("taobao_item_id"),
+                "taobao_sku_id": sid,
+                "sku_code": row.get("sku_code"),
+                "missing": missing,
+                "observed_at": entry.get("observed_at"),
+                "age_hours": round(age, 2) if age is not None else None,
+                "max_age_hours": max_age,
+                "source": entry.get("source"),
+            })
+    return {
+        "rule": "R17",
+        "level": "error" if problems else "pass",
+        "title": (
+            "逐SKUID平台价格线证据：最低标价和最低普惠券后价必须齐全且新鲜；"
+            "缺失/过期即在上传前停止"
+        ),
+        "items": problems[:500],
+        "checked": len(seen),
+        "max_age_hours": max_age,
+    }
+
+
 def preflight(db: Session, plan) -> list[dict]:
-    """R1~R16 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
+    """R0~R17 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
     from app.services import no_sales_service
     from app.services import campaign_price_protection_service
 
+    policy_check = _check_campaign_policy()
+    if policy_check["level"] == "error":
+        return [policy_check]
     _srows, sstats = build_signup_rows(db, plan)
     _drows, dstats = build_discount_rows(db, plan)
     nosales = sorted(no_sales_service.get_no_sales(db))
@@ -859,9 +942,11 @@ def preflight(db: Session, plan) -> list[dict]:
         if skus:
             coupon_holds.append({**item, "skus": skus})
     checks = [
+        policy_check,
         _check_r1(db, plan),
         {"rule": "R2", "level": "warn" if coupon_holds else "pass",
-         "title": "券后线冲突：让幅>1元的整品已暂缓并等待期限/人工决策；不轮换",
+         "title": ("报名资格硬门：活动价−官方立减必须≤近15天最低普惠券后价；"
+                   "单品立减不参与，任一SKU冲突则整品暂缓"),
          "items": coupon_holds, "audit": dstats["line_concessions"]},
         {"rule": "R3", "level": "error" if sstats["incomplete_items"] else "pass",
          "title": "报名整品全SKU完整性 (缺SKU=整品拒)", "items": sstats["incomplete_items"]},
@@ -877,6 +962,7 @@ def preflight(db: Session, plan) -> list[dict]:
         campaign_price_protection_service.rule_check(plan),
         _check_official_scope(db, plan),
         _check_placeholder_live_prices(sstats),
+        _check_price_floor_evidence(db, _srows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -1008,12 +1094,21 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             "screenshot_base64": res.get("screenshot_base64")}
 
 
-def _learn_from_validation(db: Session, validation) -> None:
-    """回执自愈 (尽力而为, 失败不阻断): R4 下架SKU登记 + R6 动销不达标商品登记。"""
+def _learn_from_validation(db: Session, validation) -> dict:
+    """Record platform facts for diagnosis; never adjust price, scope or retry.
+
+    Delisted/no-sales facts keep their existing registries.  Exact platform
+    floor numbers are stored as evidence for a later *user-approved* program
+    run.  The current failed plan is still stopped and marked ``alarmed``.
+    """
     if not validation:
-        return
+        return {"recorded": False}
     try:
-        from app.services import delisted_sku_service, no_sales_service
+        from app.services import (
+            campaign_price_floor_service,
+            delisted_sku_service,
+            no_sales_service,
+        )
         failed = validation.get("failed_items") if isinstance(validation, dict) else None
         ids = delisted_sku_service.extract_delisted_from_feedback(failed)
         if ids:
@@ -1021,8 +1116,16 @@ def _learn_from_validation(db: Session, validation) -> None:
         items = no_sales_service.extract_no_sales_from_feedback(failed)
         if items:
             no_sales_service.add_no_sales(db, items)
+        floors = campaign_price_floor_service.record_failed_feedback(
+            db, failed, source="campaign_signup_failed_feedback")
+        return {
+            "recorded": True,
+            "delisted_sku_ids": sorted(ids),
+            "no_sales_item_ids": sorted(items),
+            "price_floor_evidence": floors,
+        }
     except Exception:  # noqa: BLE001 — 自愈失败不影响主流程
-        pass
+        return {"recorded": False, "error": "failed_feedback_fact_recording_failed"}
 
 
 def push_discount(db: Session, plan, phase: str = "stage") -> dict:
@@ -1095,6 +1198,7 @@ def _notify_signup_failure(db: Session, plan, result: dict) -> dict:
         lines.append("已发布错价/缺SKU：" + json.dumps(
             wrong[:8], ensure_ascii=False, default=str)[:1800])
     lines.append("系统已停止本次自动报名；不会盲目全量重推。")
+    lines.append("AI 仅可读取并解释错误，不得改价、改范围、轮换 SKU 或重试；等待用户决定。")
     delivered = notify_service.broadcast_text(
         db, "\n".join(lines), title="活动自动报名失败", level="error")
     if any(v is True for v in delivered.values()):
@@ -1158,12 +1262,154 @@ def _notify_placeholder_price_blocks(db: Session, plan, blocked: list[dict]) -> 
     return delivered
 
 
-def push_signup(db: Session, plan) -> dict:
+def _notify_coupon_floor_blocks(db: Session, plan, blocked: list[dict]) -> dict:
+    """报名资格线命中时飞书告警；相同活动、相同明细只发送一次。"""
+    import hashlib
+    import json
+    from app.services import notify_service, settings_service
+
+    coupon_blocked = []
+    for item in blocked:
+        skus = []
+        for sku in item.get("skus") or []:
+            reasons = [r for r in sku.get("reasons") or []
+                       if r.get("type") == "coupon_floor"]
+            if reasons:
+                skus.append({"sku_code": sku.get("sku_code"), "reasons": reasons})
+        if skus:
+            coupon_blocked.append({
+                "item_id": item.get("taobao_item_id"),
+                "product": item.get("product"),
+                "skus": skus,
+            })
+    if not coupon_blocked:
+        return {"skipped": True}
+
+    payload = json.dumps(
+        coupon_blocked, ensure_ascii=False, sort_keys=True, default=str)
+    signature = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    key = f"campaign_coupon_floor_hold_{getattr(plan, 'id', 'unknown')}"
+    if settings_service.get(db, key, env_fallback=False) == signature:
+        return {"deduped": True}
+
+    lines = [
+        f"活动：{getattr(plan, 'name', '')}",
+        f"暂缓：{len(coupon_blocked)} 个商品（任一SKU冲突则整品排除）",
+        "报名资格硬门：活动报名价−官方立减必须≤近15天最低普惠券后价。",
+        "单品立减不参与平台这一步校验，不能通过把单品立减做低来补救。",
+        "处理：未强降、未自动轮换；其他安全商品可继续报名。",
+        "明细：" + payload[:2600],
+        "请等待平台价格线解除后刷新校验，或由人工决定是否建立独立新商品。",
+    ]
+    delivered = notify_service.broadcast_text(
+        db, "\n".join(lines), title="活动报名资格价格线暂缓", level="warning")
+    if any(value is True for value in delivered.values()):
+        settings_service.set_value(
+            db, key, signature, description="活动报名资格价格线暂缓飞书通知去重签名")
+        db.commit()
+    return delivered
+
+
+def _stop_signup(db: Session, plan, result: dict) -> dict:
+    """Put a failed plan in a non-retrying state and notify with explicit boundaries."""
+    result.setdefault("ok", False)
+    result["requires_user_decision"] = True
+    result["automatic_retry"] = False
+    result["ai_may_adjust_or_resubmit"] = False
+    plan.status = "alarmed"
+    db.commit()
+    result["notification"] = _notify_signup_failure(db, plan, result)
+    return result
+
+
+def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
+    """Read-only export of the target activity and persist its H/I floor columns."""
+    from app.services import (
+        campaign_price_floor_service,
+        campaign_recon_service,
+        web_agent_service,
+    )
+
+    title = plan.qn_campaign_title or plan.name
+    exported = web_agent_service.campaign_export_items(db, title)
+    if not exported.get("ok"):
+        return {
+            "ok": False,
+            "error": exported.get("error") or exported.get("message")
+                     or "无法可靠取得当前活动生效集合",
+        }
+    live_rows = campaign_recon_service.parse_activity_items_export(exported["xlsx_bytes"])
+    refresh = campaign_price_floor_service.record_activity_export(
+        db,
+        live_rows,
+        source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
+    )
+    return {"ok": True, "rows": live_rows, "floor_refresh": refresh}
+
+
+def push_signup(db: Session, plan, *, execution_source: str | None = None) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
-    回执自愈: 失败明细里的下架SKU/动销不达标商品自动登记。"""
-    from app.services import campaign_recon_service, web_agent_service
+    只允许活动自动化程序调用；失败记录事实并停在 alarmed，绝不自动改价或重试。"""
+    from app.services import (
+        campaign_policy_service,
+    )
+
+    try:
+        policy = campaign_policy_service.require_policy()
+    except Exception as exc:  # noqa: BLE001 - policy is a hard runtime dependency
+        return _stop_signup(db, plan, {
+            "step": "policy_guard",
+            "error": str(exc),
+        })
+    if execution_source != "campaign_automation":
+        return {
+            "ok": False,
+            "step": "execution_policy_guard",
+            "error": "活动报名只允许 ERP 自动报名程序执行；页面或 AI 直推已禁用",
+            "requires_user_decision": False,
+            "automatic_retry": False,
+            "ai_may_adjust_or_resubmit": False,
+            "policy_version": policy.get("version"),
+        }
+    if getattr(plan, "status", None) == "alarmed":
+        return {
+            "ok": False,
+            "step": "waiting_user_decision",
+            "error": "本计划已因报名错误停止，等待用户决定；程序、页面和 AI 均不得自动重试",
+            "requires_user_decision": True,
+            "automatic_retry": False,
+            "ai_may_adjust_or_resubmit": False,
+        }
+
+    # Read-only current-state export is performed before the final preflight.  Its
+    # H/I columns refresh floor evidence; it never changes platform state.
+    current = refresh_floor_evidence_from_current_activity(db, plan)
+    if not current.get("ok"):
+        return _stop_signup(db, plan, {
+            "step": "current_state_export",
+            "error": current.get("error") or "无法可靠取得当前活动生效集合",
+        })
+    live_rows = current["rows"]
+    floor_refresh = current["floor_refresh"]
+
+    checks = preflight(db, plan)
+    critical = [check for check in checks if check.get("level") == "error"]
+    if critical:
+        return _stop_signup(db, plan, {
+            "step": "mandatory_preflight",
+            "error": f"程序最终预检发现 {len(critical)} 条阻塞规则，未生成或上传报名表",
+            "checks": critical,
+            "price_floor_refresh": floor_refresh,
+        })
 
     rows, stats = build_signup_rows(db, plan)
+    stats["policy_version"] = policy.get("version")
+    stats["policy_sha256"] = policy.get("_sha256")
+    stats["price_floor_refresh"] = floor_refresh
+    price_holds = stats.get("excluded_price_hold_items") or []
+    if price_holds:
+        stats["coupon_floor_hold_notification"] = _notify_coupon_floor_blocks(
+            db, plan, price_holds)
     placeholder_check = _check_placeholder_live_prices(stats)
     if placeholder_check["level"] == "error":
         res = {
@@ -1173,26 +1419,21 @@ def push_signup(db: Session, plan) -> dict:
             "check": placeholder_check,
             "stats": stats,
         }
-        res["notification"] = _notify_signup_failure(db, plan, res)
-        return res
+        return _stop_signup(db, plan, res)
     if placeholder_check["level"] == "warn":
         stats["placeholder_hold_notification"] = _notify_placeholder_price_blocks(
             db, plan, placeholder_check.get("blocked_items") or [])
     if not rows:
-        return {"ok": False, "error": "无可推送的报名行", "stats": stats}
+        res = {
+            "ok": False,
+            "step": "price_eligibility_guard",
+            "error": "全部目标商品均被报名资格/历史价格线安全门暂缓，无可推送报名行",
+            "stats": stats,
+        }
+        return _stop_signup(db, plan, res)
 
-    # 先只读导出当前活动：整品全部 SKU 已发布且活动价一致才视为正确；
+    # 已完成只读导出：整品全部 SKU 已发布且活动价一致才视为正确；
     # 正确品不重复导入。若发现“已发布但错价”，批量导入无法安全修正，立即停并报告。
-    title = plan.qn_campaign_title or plan.name
-    exported = web_agent_service.campaign_export_items(db, title)
-    if not exported.get("ok"):
-        res = {"ok": False, "step": "current_state_export",
-               "error": exported.get("error") or exported.get("message")
-                        or "无法可靠取得当前活动生效集合",
-               "stats": stats}
-        res["notification"] = _notify_signup_failure(db, plan, res)
-        return res
-    live_rows = campaign_recon_service.parse_activity_items_export(exported["xlsx_bytes"])
     live_by_sku = {str(r["sku_id"]): r for r in live_rows}
     expected_by_item: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
@@ -1228,8 +1469,7 @@ def push_signup(db: Session, plan) -> dict:
         res = {"ok": False, "step": "published_price_guard",
                "error": f"发现 {len(wrong_published)} 个已发布商品错价/缺SKU，拒绝用新增导入覆盖",
                "wrong_published_items": wrong_published, "stats": stats}
-        res["notification"] = _notify_signup_failure(db, plan, res)
-        return res
+        return _stop_signup(db, plan, res)
 
     pending = [r for r in rows if str(r["taobao_item_id"]) not in correct_items]
     pending_items = {str(r["taobao_item_id"]) for r in pending}
@@ -1247,13 +1487,13 @@ def push_signup(db: Session, plan) -> dict:
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
         expected_rows=len(pending), expected_items=len(pending_items))
     res["stats"] = stats
-    _learn_from_validation(db, res.get("validation"))
+    res["recorded_platform_facts"] = _learn_from_validation(db, res.get("validation"))
     if res.get("ok"):
         plan.status = "signup_pushed"
         db.commit()
         _clear_signup_failure_dedupe(db, plan)
     else:
-        res["notification"] = _notify_signup_failure(db, plan, res)
+        return _stop_signup(db, plan, res)
     return res
 
 

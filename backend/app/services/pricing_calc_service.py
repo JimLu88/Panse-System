@@ -305,7 +305,9 @@ def backfill_mid_buyer(db: Session, commit: bool = True, sample_limit: int = 20)
     return stats
 
 
-# ── 报名价模型 (2026-07-03: 店铺宝失效 → 超级立减「报名价」; 大促价为锚不动, 只动中促) ──────────
+# ── 旧分析卡片模型（不得用于真实活动报名文件） ───────────────────────────────
+# 2026-08-05 永久边界：真实 SKU 活动报名价只取 PricingSku.daily_price。
+# 下列 signup_price_* 仅供历史页面/分析兼容，任何报名生成器、AI 或自动任务都不得调用它改价。
 # 超级立减是「报名表直接手填一个数(报名价 A)」, 买家到手 = A × (1 − 场次力度)。三档场次力度:
 #   中促(超值立减/88VIP场)10% · 大促(大促场)12% · 618/双11 15%。
 #   —— 独立于旧 mid/big_platform_discount(那是店铺宝反推系数用的口径, 勿混)。
@@ -372,7 +374,7 @@ def _report_leverage(params: Optional[dict]):
 
 
 def report_prices(promo: PricingSkuPromo, params: Optional[dict] = None) -> dict:
-    """由 promo 的中/大促【买家到手】派生报名价模型输出 (纯读, 不改库):
+    """旧分析卡片：由中/大促到手价派生理论值（纯读，不得用于真实活动报名）:
       报名价 A   = 大促到手 ÷ (1−大促力度12%)  —— 锚在大促, 大促价一分不动;
       A中        = 中促到手 ÷ (1−中促力度10%)  (合规时应 = A);
       618报名价  = 大促到手 ÷ (1−618力度15%);

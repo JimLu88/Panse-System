@@ -309,7 +309,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     """三种导出与 ERP 比对 → 逐SKU判定 → 落 CampaignReconReport; >2元差异飞书报警。
     任一文件可缺 (手动上传兜底, spec §四.6); 全缺 → 显式报错。"""
     from app.models.campaign import CampaignReconReport
-    from app.services import campaign_service, notify_service
+    from app.services import campaign_price_floor_service, campaign_service, notify_service
     if not any((activity_bytes, discount_bytes, product_bytes)):
         return {"ok": False, "error": "未提供任何导出文件 (活动商品/单品立减/商品批量 至少一份)"}
 
@@ -317,8 +317,14 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     per_sku: list[dict] = []
     coverage: dict = {"missing": [], "extra": []}
     title_ok: Optional[bool] = None
+    floor_evidence = None
     if activity_bytes:
         records = parse_activity_items_export(activity_bytes)
+        floor_evidence = campaign_price_floor_service.record_activity_export(
+            db,
+            records,
+            source=f"campaign_recon:{source}:plan={getattr(plan, 'id', '')}",
+        )
         per_sku = compare_records(records, spec_map)
         signup_rows, _signup_stats = campaign_service.build_signup_rows(db, plan)
         expected_signup = {str(row["taobao_sku_id"]) for row in signup_rows}
@@ -336,6 +342,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
         "超2元报警", "偏差", "无映射", "占位活动价不一致")]
     summary = _summarize(per_sku, coverage, discount_mismatch, title_ok)
     summary["product_rows_parsed"] = len(product_rows)
+    summary["price_floor_evidence"] = floor_evidence
     report = CampaignReconReport(plan_id=plan.id, source=source, summary=summary,
                                  rows=per_sku, alarm_count=summary["hard_error_count"])
     db.add(report)

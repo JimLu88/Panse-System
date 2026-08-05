@@ -142,6 +142,13 @@ def stage(db: Session, channel: str, tier: str = "big",
     from app.services import web_agent_service
     if channel not in _CHANNELS:
         return {"ok": False, "error": f"未知渠道 {channel}"}
+    if channel in ("promo_signup", "super_reduce"):
+        return {
+            "ok": False,
+            "step": "execution_policy_guard",
+            "error": "活动报名手工上传入口已禁用；只允许活动计划自动程序执行",
+            "ai_may_adjust_or_resubmit": False,
+        }
     xlsx, stats = _gen_xlsx(db, channel, tier)
     # ★核对: system_value=系统应填(独立重算) vs uploaded_value=真正要上传那份 xlsx 里的数; 差>1分即标出入。
     rows = _compare_rows(db, channel, tier)
