@@ -1,6 +1,7 @@
 """Permanent regression gates for the 2026-08-05 campaign execution contract."""
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 from app.models.campaign import CampaignPlan
 from app.models.pricing import PricingSku
@@ -49,6 +50,16 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["ai_may_adjust_price"] is False
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is False
+
+
+def test_production_image_bundles_the_root_policy():
+    root = Path(__file__).resolve().parents[2]
+    dockerfile = (root / "backend" / "Dockerfile").read_text(encoding="utf-8")
+    deploy_script = (root / "scripts" / "deploy_api_nas.sh").read_text(encoding="utf-8")
+    assert "COPY TAOBAO_CAMPAIGN_SIGNUP_POLICY.json /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json" in dockerfile
+    assert 'docker build . -f backend/Dockerfile' in deploy_script
+    assert 'img_policy_sha=' in deploy_script
+    assert deploy_script.count('TAOBAO_CAMPAIGN_SIGNUP_POLICY.json') >= 4
 
 
 def test_legacy_floor_fields_cannot_lower_real_signup_or_final_price(db_session):

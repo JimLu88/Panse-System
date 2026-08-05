@@ -17,10 +17,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml ./
+COPY backend/pyproject.toml ./
 RUN pip install --no-cache-dir -e ".[dev]"
 
-COPY . .
+COPY backend/ ./
+# 根目录活动报名规则既保留为仓库内唯一可编辑源，也随 API 镜像固化。
+# 生产 NAS 即使尚未增加 compose bind mount，程序仍读取同一提交里的规则；
+# 若 compose 已挂载该文件，则挂载版本覆盖镜像内副本。
+COPY TAOBAO_CAMPAIGN_SIGNUP_POLICY.json /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json
 
 # 版本注入: ARG 放在 COPY 之后、ENV 之前。
 # COPY 层走缓存没关系 —— 只要 GIT_COMMIT 值变了，Docker 就会重新执行

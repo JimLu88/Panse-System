@@ -5,7 +5,7 @@
 #
 # 用法 (在 PC 的 Git Bash 里跑, 不要用 PowerShell —— PowerShell 管道会损坏二进制镜像流):
 #   先确保已 build 好镜像:
-#     docker build ./backend -f backend/Dockerfile -t panse-system-api:latest \
+#     docker build . -f backend/Dockerfile -t panse-system-api:latest \
 #       --build-arg GIT_COMMIT=$(git rev-parse --short HEAD)
 #   再部署:
 #     bash scripts/deploy_api_nas.sh
@@ -42,7 +42,7 @@ if [[ "${BUILD:-0}" == "1" ]]; then
   gc=$(git rev-parse HEAD)
   gc_short=$(git rev-parse --short HEAD)
   echo "[build] panse-system-api:latest @ $gc_short"
-  docker build ./backend -f backend/Dockerfile -t "$IMAGE" \
+  docker build . -f backend/Dockerfile -t "$IMAGE" \
     --build-arg GIT_COMMIT="$gc" \
     --build-arg GIT_COMMIT_MSG="$(git log -1 --pretty=%s)" \
     --build-arg GIT_COMMIT_DATE="$(git log -1 --date=short --pretty=%cd)"
@@ -58,6 +58,15 @@ if [[ "${BUILD:-0}" == "1" ]]; then
     exit 1
   fi
   echo "[build] 指纹一致 ✓ ($loc_md5)"
+  loc_policy_sha=$(sha256sum TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
+  img_policy_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE" \
+    /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
+  if [[ "$loc_policy_sha" != "$img_policy_sha" ]]; then
+    echo "FATAL: 镜像活动报名规则 ≠ 仓库根目录规则，拒绝部署。" >&2
+    echo "  local=$loc_policy_sha image=$img_policy_sha" >&2
+    exit 1
+  fi
+  echo "[build] 活动报名规则指纹一致 ✓ ($loc_policy_sha)"
   # 构建后自动回收 (2026-07-04): 悬空镜像 + 构建缓存压到 ≤6GB → 防 Docker vhdx 疯长吃满 C 盘。
   # 保留 6GB 缓存让下次 build 仍走增量 (只重传改动层), 不至于全量重建。
   echo "[build] 回收悬空镜像 + 压缩构建缓存(保留6GB)…"
@@ -78,6 +87,15 @@ if [[ "${BUILD:-0}" != "1" ]]; then
     exit 1
   fi
   echo "[check] 指纹一致 ✓ ($loc_md5)"
+  loc_policy_sha=$(sha256sum TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
+  img_policy_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE" \
+    /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
+  if [[ "$loc_policy_sha" != "$img_policy_sha" ]]; then
+    echo "FATAL: 待推镜像活动报名规则 ≠ 仓库根目录规则，拒绝部署。" >&2
+    echo "  local=$loc_policy_sha image=$img_policy_sha" >&2
+    exit 1
+  fi
+  echo "[check] 活动报名规则指纹一致 ✓ ($loc_policy_sha)"
 fi
 
 expected_full=$(git rev-parse HEAD)

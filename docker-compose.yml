@@ -27,7 +27,8 @@ services:
 
   api:
     build:
-      context: ./backend
+      context: .
+      dockerfile: backend/Dockerfile
       args:
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         GIT_COMMIT_MSG: ${GIT_COMMIT_MSG:-}
