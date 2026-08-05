@@ -59,7 +59,7 @@ if [[ "${BUILD:-0}" == "1" ]]; then
   fi
   echo "[build] 指纹一致 ✓ ($loc_md5)"
   loc_policy_sha=$(sha256sum TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
-  img_policy_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE" \
+  img_policy_sha=$(MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sha256sum "$IMAGE" \
     /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
   if [[ "$loc_policy_sha" != "$img_policy_sha" ]]; then
     echo "FATAL: 镜像活动报名规则 ≠ 仓库根目录规则，拒绝部署。" >&2
@@ -88,7 +88,7 @@ if [[ "${BUILD:-0}" != "1" ]]; then
   fi
   echo "[check] 指纹一致 ✓ ($loc_md5)"
   loc_policy_sha=$(sha256sum TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
-  img_policy_sha=$(docker run --rm --entrypoint sha256sum "$IMAGE" \
+  img_policy_sha=$(MSYS_NO_PATHCONV=1 docker run --rm --entrypoint sha256sum "$IMAGE" \
     /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json | cut -d' ' -f1)
   if [[ "$loc_policy_sha" != "$img_policy_sha" ]]; then
     echo "FATAL: 待推镜像活动报名规则 ≠ 仓库根目录规则，拒绝部署。" >&2

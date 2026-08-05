@@ -59,6 +59,7 @@ def test_production_image_bundles_the_root_policy():
     assert "COPY TAOBAO_CAMPAIGN_SIGNUP_POLICY.json /app/TAOBAO_CAMPAIGN_SIGNUP_POLICY.json" in dockerfile
     assert 'docker build . -f backend/Dockerfile' in deploy_script
     assert 'img_policy_sha=' in deploy_script
+    assert deploy_script.count('MSYS_NO_PATHCONV=1 docker run') >= 2
     assert deploy_script.count('TAOBAO_CAMPAIGN_SIGNUP_POLICY.json') >= 4
 
 
