@@ -224,10 +224,11 @@ def start_pending_scans(db: Session) -> dict:
                     job_result = final.get("result") or {}
                     result_ok = job_result.get("ok") is not False
                     downloads = _job_downloads(job_result)
+                    no_data = bool(job_result.get("no_data"))
                     if tid == MAIN_ALIPAY_FLOW_TASK:
                         has_artifact = _main_alipay_artifacts() != artifacts_before
                     elif tid == "taobao_orders" or tid in FINANCE_EXPORT_TASKS:
-                        has_artifact = bool(downloads)
+                        has_artifact = bool(downloads) or no_data
                     else:
                         has_artifact = True
                     if (status in ("done", "ok", "success")
@@ -1492,6 +1493,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             status = "error"
             final = {**final, "error": "任务完成但未生成支付宝主力账号流水文件"}
         item = {"task": task_id, "status": status}
+        if job_result.get("no_data"):
+            item["no_data"] = True
+            item["message"] = str(job_result.get("message") or "本期无新增数据")[:200]
         if task_artifacts:
             item["artifacts"] = task_artifacts
         if status in ("error", "failed", "timeout"):
@@ -1579,7 +1583,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         if str(task.get("status") or "").lower() not in ("done", "ok", "success"):
             continue
         artifacts = [str(path) for path in (task.get("artifacts") or []) if path]
-        if task_id in FINANCE_EXPORT_TASKS and not artifacts:
+        if (task_id in FINANCE_EXPORT_TASKS
+                and not artifacts
+                and not task.get("no_data")):
             continue
         if task_id == MAIN_ALIPAY_FLOW_TASK and main_alipay_ingest_failed:
             continue
