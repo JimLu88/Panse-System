@@ -426,6 +426,39 @@ def test_finance_scheduler_forces_daily_finance_only(db_session, monkeypatch):
     assert captured["orders_only"] is False
 
 
+def test_finance_login_expiry_pauses_retries_until_scan(db_session, monkeypatch):
+    monkeypatch.setattr(agent_ingest_service, "is_running", lambda: False)
+    monkeypatch.setattr(
+        agent_ingest_service,
+        "orchestrate",
+        lambda db, **kwargs: {
+            "tasks": [],
+            "pending_manual": [
+                {"task": "bal_alipay_main", "reason": "需扫码"},
+                {"task": agent_ingest_service.MAIN_ALIPAY_FLOW_TASK, "reason": "需扫码"},
+            ],
+            "ingest": {"files": []},
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_finance_outcomes",
+        lambda db, result: {
+            "balance_pull": (False, "主力号余额需扫码"),
+            "flow_pull": (False, "主力号流水需扫码"),
+        },
+    )
+
+    result = scheduler._run_finance_pipeline(db_session)
+
+    assert result["balance_pull_pipeline"]["paused"] is True
+    assert result["flow_pull_pipeline"]["paused"] is True
+    assert pipeline.get_pipeline(db_session, "balance_pull")["waiting_input"] is True
+    assert pipeline.get_pipeline(db_session, "flow_pull")["waiting_input"] is True
+    assert pipeline.needs_retry(db_session, "balance_pull") is False
+    assert pipeline.needs_retry(db_session, "flow_pull") is False
+
+
 def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):
     """扫码后的文件已入库时，有限补跑不得再次启动相同浏览器任务。"""
     for account in ("支付宝-企业账号", "淘宝聚合账户", "淘宝推广账户", "万师傅", "主力号"):

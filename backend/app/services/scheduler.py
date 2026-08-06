@@ -1176,7 +1176,11 @@ def _reconcile_finance_success_from_persisted_evidence(db: Session) -> dict:
 
 def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
     """强制跑当天余额和流水，并将两条链路分别收口。"""
-    from app.services import agent_ingest_service, alert_service
+    from app.services import (
+        agent_ingest_service,
+        alert_service,
+        automation_pipeline_service,
+    )
 
     if agent_ingest_service.is_running():
         result = {
@@ -1207,16 +1211,37 @@ def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
             for task_id in sorted(fresh_tasks)
         )
     outcomes = _finance_outcomes(db, r)
+    pending_tasks = {
+        str(item.get("task") or "")
+        for item in (r.get("pending_manual") or [])
+    }
+    waiting_input = {
+        "balance_pull": bool(pending_tasks & {
+            "bal_taobao_aggregate",
+            "bal_ads",
+            "bal_wanshifu",
+            "bal_alipay_main",
+        }),
+        "flow_pull": agent_ingest_service.MAIN_ALIPAY_FLOW_TASK in pending_tasks,
+    }
     failures: list[str] = []
     for pipeline, (ok, detail) in outcomes.items():
-        pipeline_result = (
-            {"_run_status": "ok"}
-            if ok
-            else {"_run_status": "fail", "_error": detail}
-        )
-        r[f"{pipeline}_pipeline"] = _record_pipeline_result(
-            db, pipeline, pipeline_result, retry_times=_FINANCE_RETRY_TIMES
-        )["automation_pipeline"]
+        if not ok and waiting_input.get(pipeline):
+            # 登录失效没有新扫码就不可能自愈。Web-Agent 已发二维码提示；此处
+            # 只把定时重试链暂停，避免 21:00/21:30/22:00 重复弹码和空耗 PC。
+            r[f"{pipeline}_pipeline"] = automation_pipeline_service.pause_for_input(
+                db, pipeline, detail,
+            )
+            db.commit()
+        else:
+            pipeline_result = (
+                {"_run_status": "ok"}
+                if ok
+                else {"_run_status": "fail", "_error": detail}
+            )
+            r[f"{pipeline}_pipeline"] = _record_pipeline_result(
+                db, pipeline, pipeline_result, retry_times=_FINANCE_RETRY_TIMES
+            )["automation_pipeline"]
         if not ok:
             failures.append(f"{pipeline}: {detail}")
 

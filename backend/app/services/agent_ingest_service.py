@@ -323,6 +323,17 @@ def start_pending_scans(db: Session) -> dict:
                 except Exception:  # noqa: BLE001
                     d.rollback()
                     _log.exception("扫码成功后关闭主力号流水重试链失败")
+            if done:
+                # 余额扫码也要用已落库的逐账户日期关闭 waiting_input；否则虽然
+                # 截图已成功，定时器仍会保留旧的“等待扫码”状态。这里只采信
+                # AccountBalance/流水成功标记，不凭浏览器“done”猜测业务成功。
+                try:
+                    from app.services import scheduler
+
+                    scheduler._reconcile_finance_success_from_persisted_evidence(d)
+                except Exception:  # noqa: BLE001
+                    d.rollback()
+                    _log.exception("扫码成功后按落库证据关闭财务重试链失败")
             if failures:
                 # 用户主动扫码后必须收到本次真实结果，不能只让旧定时器继续报
                 # “需扫码”。失败任务仍留在待扫清单，方便处理后准确续跑。
@@ -358,13 +369,15 @@ def start_pending_scans(db: Session) -> dict:
             _log.exception("扫码流程线程异常")
             d.rollback()
         finally:
-            if not remain:
-                try:
-                    web_agent_service.request_stop(
-                        d, reason="scan_continuation_complete"
-                    )
-                except Exception:  # noqa: BLE001
-                    _log.warning("扫码续跑结束后请求关闭Web-Agent失败", exc_info=True)
+            # 扫码续跑线程返回时已经没有仍在等待浏览器的 job。即使本轮失败，
+            # 也只保留“待扫码”业务状态，不保留重型 Agent；用户再次回复“扫码”时
+            # run_task 会通过轻量唤醒桥重新按需拉起。
+            try:
+                web_agent_service.request_stop(
+                    d, reason="scan_continuation_finished"
+                )
+            except Exception:  # noqa: BLE001
+                _log.warning("扫码续跑结束后请求关闭Web-Agent失败", exc_info=True)
             d.close()
             _scan_lock.release()
 
@@ -1273,6 +1286,14 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
             db, force=force, quiet=quiet,
             force_orders=force_orders, force_finance=force_finance,
             orders_only=orders_only, skip_tasks=skip_tasks)
+    except Exception:
+        try:
+            web_agent_service.request_stop(
+                db, reason="orchestration_failed"
+            )
+        except Exception:  # noqa: BLE001
+            _log.warning("编排异常后请求关闭Web-Agent失败", exc_info=True)
+        raise
     finally:
         _orch_lock.release()
 
@@ -1508,12 +1529,12 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
     db.commit()
 
-    # 登录/扫码等待期间保留完整 Agent；其余任务完成即通知轻量桥关闭。
-    if not out.get("pending_manual"):
-        try:
-            web_agent_service.request_stop(db, reason="orchestration_complete")
-        except Exception:  # noqa: BLE001
-            _log.warning("编排完成后请求关闭Web-Agent失败", exc_info=True)
+    # 编排线程返回时已没有仍在运行的浏览器 job。待登录/待扫码只保留为 ERP
+    # 状态；不让完整 Agent 空等。用户回复“扫码”时由轻量桥重新按需启动。
+    try:
+        web_agent_service.request_stop(db, reason="orchestration_finished")
+    except Exception:  # noqa: BLE001
+        _log.warning("编排完成后请求关闭Web-Agent失败", exc_info=True)
 
     # 飞书汇总 (复用机器人通道; 测试环境 PANSE_DISABLE_NOTIFY 静默; quiet=续跑补取数不刷屏)
     if not quiet:
@@ -1539,12 +1560,21 @@ def start_orchestrate_async(*, force: bool = False) -> bool:
     def _run() -> None:
         from app.database import SessionLocal
         db = SessionLocal()
+        failed = False
         try:
             _orchestrate_locked(db, force=force)
         except Exception:  # noqa: BLE001
+            failed = True
             _log.exception("web-agent 编排线程异常")
             db.rollback()
         finally:
+            if failed:
+                try:
+                    web_agent_service.request_stop(
+                        db, reason="orchestration_thread_failed"
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.warning("编排线程异常后请求关闭Web-Agent失败", exc_info=True)
             db.close()
             _orch_lock.release()
 
@@ -1605,6 +1635,12 @@ def pull_orders_async(db: Session) -> dict:
             _log.exception("手动拉单线程异常")
             d.rollback()
         finally:
+            try:
+                web_agent_service.request_stop(
+                    d, reason="manual_order_pull_finished"
+                )
+            except Exception:  # noqa: BLE001
+                _log.warning("手动拉单结束后请求关闭Web-Agent失败", exc_info=True)
             d.close()
             _orch_lock.release()
 

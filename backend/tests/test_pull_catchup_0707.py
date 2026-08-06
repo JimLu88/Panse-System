@@ -620,6 +620,7 @@ def test_pull_catchup_registered():
 def test_scan_done_with_business_failure_stays_pending(monkeypatch):
     dummy = _DummyDb()
     saved: list[str] = []
+    stop_requests: list[dict] = []
     monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
     monkeypatch.setattr(ai, "get_pending_scans", lambda _db: ["taobao_orders"])
@@ -641,11 +642,17 @@ def test_scan_done_with_business_failure_stays_pending(monkeypatch):
     )
     monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
     monkeypatch.setattr(oss, "reconcile_pending_delivery", _boom)
+    monkeypatch.setattr(
+        web_agent_service,
+        "request_stop",
+        lambda _db, **kwargs: stop_requests.append(kwargs) or {"ok": True},
+    )
 
     result = ai.start_pending_scans(dummy)
 
     assert result["started"] is True
     assert '["taobao_orders"]' in saved
+    assert stop_requests == [{"reason": "scan_continuation_finished"}]
 
 
 def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):

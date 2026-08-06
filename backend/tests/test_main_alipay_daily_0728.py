@@ -83,7 +83,9 @@ def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monk
     db_session.commit()
     captured = {}
 
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(
+        web_agent_service, "ensure_online", lambda db, **kwargs: {"online": True}
+    )
     monkeypatch.setattr(web_agent_service, "list_tasks", lambda db: {
         "tasks": [{"id": ingest.MAIN_ALIPAY_FLOW_TASK, "has_session": False}]
     })
@@ -98,7 +100,7 @@ def test_main_alipay_runs_daily_and_allows_scan_without_session(db_session, monk
     })
     monkeypatch.setattr(ingest, "refresh_alipay_balances", lambda db: [])
     monkeypatch.setattr(ingest, "refresh_alipay_daily", lambda db: {"ok": True})
-    monkeypatch.setattr(ingest, "run_ingest", lambda db: {
+    monkeypatch.setattr(ingest, "run_ingest", lambda db, **kwargs: {
         "scanned": 0, "imported": 0, "pending": 0, "errors": 0, "files": [],
     })
     artifact_snapshots = iter([
@@ -152,7 +154,9 @@ def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatc
         "promotion": now,
     })
     db_session.commit()
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(
+        web_agent_service, "ensure_online", lambda db, **kwargs: {"online": True}
+    )
     monkeypatch.setattr(web_agent_service, "list_tasks", lambda db: {
         "tasks": [{"id": ingest.MAIN_ALIPAY_FLOW_TASK, "has_session": True}]
     })
@@ -166,10 +170,16 @@ def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatc
     monkeypatch.setattr(ingest, "_main_alipay_artifacts", lambda: {})
     monkeypatch.setattr(ingest, "refresh_alipay_balances", lambda db: [])
     monkeypatch.setattr(ingest, "refresh_alipay_daily", lambda db: {"ok": True})
-    monkeypatch.setattr(ingest, "run_ingest", lambda db: {
+    monkeypatch.setattr(ingest, "run_ingest", lambda db, **kwargs: {
         "scanned": 0, "imported": 0, "pending": 0, "errors": 0, "files": [],
     })
     monkeypatch.setattr(ingest, "pending_shipping_password_files", lambda db, on=None: [])
+    stop_requests = []
+    monkeypatch.setattr(
+        web_agent_service,
+        "request_stop",
+        lambda db, **kwargs: stop_requests.append(kwargs) or {"ok": True},
+    )
 
     result = ingest._orchestrate_locked(db_session, quiet=True)
 
@@ -178,7 +188,9 @@ def test_main_alipay_empty_success_is_not_marked_complete(db_session, monkeypatc
         "status": "error",
         "error": "任务完成但未生成支付宝主力账号流水文件",
     }]
-    assert result["pending_manual"][0]["task"] == ingest.MAIN_ALIPAY_FLOW_TASK
+    assert result["pending_manual"] == []
+    assert result["task_errors"][0]["task"] == ingest.MAIN_ALIPAY_FLOW_TASK
+    assert stop_requests == [{"reason": "orchestration_finished"}]
     state = ingest._load_json(db_session, ingest.KEY_STATE)
     assert ingest.STATE_MAIN_ALIPAY_FLOW not in state
 
