@@ -2,6 +2,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from app.models.finance import AccountBalance, AlipayFlow
+from app.api.finance import BalanceUpsertIn, upsert_balance
 from app.services import agent_ingest_service, yulibao_service
 
 
@@ -107,3 +108,88 @@ def test_negative_estimate_does_not_overwrite_existing_balance(monkeypatch, db_s
 
     assert stored.closing_balance == Decimal("50")
     assert any("估算为负" in row.get("error", "") for row in result)
+
+
+def test_manual_checkpoint_only_adds_later_flows(db_session):
+    _flow(
+        db_session,
+        amount="-999",
+        no="BEFORE",
+        remark="余利宝-基金申购，支付宝转入",
+        ts=datetime(2026, 8, 1, 9, 0),
+    )
+    _flow(
+        db_session,
+        amount="-20",
+        no="AFTER-IN",
+        remark="余利宝-基金申购，支付宝转入",
+        ts=datetime(2026, 8, 2, 9, 0),
+    )
+    _flow(
+        db_session,
+        amount="5",
+        no="AFTER-OUT",
+        remark="余利宝赎回，转出到支付宝",
+        ts=datetime(2026, 8, 2, 10, 0),
+    )
+    yulibao_service.set_manual_checkpoint(
+        db_session,
+        balance=Decimal("100"),
+        as_of_date=datetime(2026, 8, 1).date(),
+        note="人工核对",
+    )
+
+    result = yulibao_service.estimate_from_flows(db_session)
+
+    assert result["ok"] is True
+    assert result["balance"] == Decimal("115.00")
+    assert result["count"] == 2
+    assert result["checkpoint"]["balance"] == Decimal("100.00")
+    assert result["as_of_date"].isoformat() == "2026-08-02"
+
+
+def test_manual_checkpoint_accepts_zero_and_survives_refresh(db_session):
+    _flow(
+        db_session,
+        amount="-999",
+        no="OLD",
+        remark="余利宝-基金申购，支付宝转入",
+        ts=datetime(2026, 8, 1, 9, 0),
+    )
+    yulibao_service.set_manual_checkpoint(
+        db_session,
+        balance=Decimal("0"),
+        as_of_date=datetime(2026, 8, 2).date(),
+    )
+
+    result = yulibao_service.refresh_estimated_balance(db_session)
+    stored = db_session.query(AccountBalance).filter_by(
+        account_name=yulibao_service.YULIBAO_ACCOUNT_NAME,
+    ).one()
+
+    assert result["ok"] is True
+    assert result["balance"] == Decimal("0.00")
+    assert result["source"] == "manual_checkpoint_plus_flows"
+    assert stored.closing_balance == Decimal("0.00")
+    assert "人工确认" in (stored.remark or "")
+
+
+def test_manual_account_edit_creates_yulibao_checkpoint(db_session):
+    row = upsert_balance(
+        BalanceUpsertIn(
+            account_name=yulibao_service.YULIBAO_ACCOUNT_NAME,
+            period_year=2026,
+            period_month=8,
+            as_of_date=datetime(2026, 8, 3).date(),
+            closing_balance=Decimal("321.45"),
+            remark="运营核对",
+        ),
+        db_session,
+    )
+
+    checkpoint = yulibao_service.get_manual_checkpoint(db_session)
+    assert checkpoint is not None
+    assert checkpoint["balance"] == Decimal("321.45")
+    assert checkpoint["as_of_date"].isoformat() == "2026-08-03"
+    assert checkpoint["note"] == "运营核对"
+    assert row.closing_balance == Decimal("321.45")

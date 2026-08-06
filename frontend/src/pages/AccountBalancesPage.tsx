@@ -39,7 +39,7 @@ import PresetTable from '../components/PresetTable';
 
 // 常见账户名 (支付宝企业号自动取数写「支付宝-企业账号」, 以它为准); 可自由输入新名字
 const ACCOUNT_SUGGESTIONS = [
-  '支付宝-企业账号', '主力号', '佳宝号', '个体户私账',
+  '支付宝-企业账号', '支付宝-企业账号-余利宝', '主力号', '佳宝号', '个体户私账',
   '聚合余额', '推广余额', '平台保证金', '银行卡',
 ];
 
@@ -410,6 +410,9 @@ export default function AccountBalancesPage() {
             name="closing_balance"
             label="期末余额"
             rules={[{ required: true, message: '请填期末余额' }]}
+            extra={editing?.account_name === '支付宝-企业账号-余利宝'
+              ? '保存后作为该统计日的人工确认基准（可填 0）；自动任务只叠加此后新流水，不会覆盖本次核对值。'
+              : undefined}
           >
             <InputNumber style={{ width: '100%' }} addonBefore="¥" step={100} placeholder="账户当前余额数字" />
           </Form.Item>

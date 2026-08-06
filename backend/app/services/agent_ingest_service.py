@@ -45,6 +45,15 @@ KEY_SCAN_RESULTS = "web_agent_scan_last_results"        # 扫码续跑逐任务�
 KEY_SHIPPING_PASSWORD_RESULT = "taobao_shipping_pwd_last_result"  # 最近口令匹配结果（不含口令）
 STATE_MAIN_ALIPAY_FLOW = "alipay_main_flow"
 MAIN_ALIPAY_FLOW_TASK = "alipay_main"
+STATE_FINANCE_TASK_SUCCESS = "finance_task_success"
+STATE_ENTERPRISE_ALIPAY_FLOW = "alipay_enterprise_flow"
+FINANCE_BROWSER_FLOW_TASKS = (
+    "wechat_bill",
+    "wanxiangtai",
+    "wanshifu",
+    MAIN_ALIPAY_FLOW_TASK,
+)
+FINANCE_EXPORT_TASKS = {"wechat_bill", "wanxiangtai", "wanshifu"}
 
 _OOXML_ENCRYPTED_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
@@ -166,6 +175,16 @@ def _main_alipay_artifacts() -> dict[str, tuple[int, int]]:
     return out
 
 
+def _job_downloads(job_result: dict) -> list[str]:
+    """Normalize Web-Agent artifacts across direct and tiered task results."""
+    candidates: list = list(job_result.get("downloads") or [])
+    nested = job_result.get("result")
+    if isinstance(nested, dict):
+        candidates.extend(nested.get("downloads") or [])
+        candidates.extend(nested.get("_downloads") or [])
+    return list(dict.fromkeys(str(item) for item in candidates if item))
+
+
 def start_pending_scans(db: Session) -> dict:
     """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
     发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
@@ -184,6 +203,7 @@ def start_pending_scans(db: Session) -> dict:
         remain = list(tasks)
         try:
             done = []
+            done_artifacts: dict[str, list[str]] = {}
             failures: list[dict] = []
             scan_results = get_scan_results(d)
             for tid in list(tasks):
@@ -203,13 +223,17 @@ def start_pending_scans(db: Session) -> dict:
                     status = (final.get("status") or "").lower()
                     job_result = final.get("result") or {}
                     result_ok = job_result.get("ok") is not False
-                    has_artifact = (
-                        tid != MAIN_ALIPAY_FLOW_TASK
-                        or _main_alipay_artifacts() != artifacts_before
-                    )
+                    downloads = _job_downloads(job_result)
+                    if tid == MAIN_ALIPAY_FLOW_TASK:
+                        has_artifact = _main_alipay_artifacts() != artifacts_before
+                    elif tid == "taobao_orders" or tid in FINANCE_EXPORT_TASKS:
+                        has_artifact = bool(downloads)
+                    else:
+                        has_artifact = True
                     if (status in ("done", "ok", "success")
                             and result_ok and has_artifact):
                         done.append(tid)
+                        done_artifacts[tid] = downloads
                         scan_results[tid] = {
                             "status": "success",
                             "at": datetime.now().isoformat(timespec="seconds"),
@@ -274,6 +298,31 @@ def start_pending_scans(db: Session) -> dict:
                 description="自动取数: 最近一次扫码续跑逐任务结果（不含凭证）",
             )
             d.commit()
+            if done:
+                # 扫码/重新登录续跑也必须补齐逐来源成功凭证；否则下一轮财务
+                # 重试看不到本次成功，会再次拉起刚恢复的登录流程。
+                state = _load_json(d, KEY_STATE)
+                finance_markers = state.get(STATE_FINANCE_TASK_SUCCESS)
+                if not isinstance(finance_markers, dict):
+                    finance_markers = {}
+                error_artifacts = {
+                    Path(str(file_info.get("path") or "")).name
+                    for file_info in (ingest_result.get("files") or [])
+                    if file_info.get("status") == "error"
+                }
+                marked_at = datetime.now().isoformat(timespec="seconds")
+                for task_id in done:
+                    if task_id not in FINANCE_BROWSER_FLOW_TASKS:
+                        continue
+                    artifacts = done_artifacts.get(task_id) or []
+                    if task_id in FINANCE_EXPORT_TASKS and not artifacts:
+                        continue
+                    if any(Path(path).name in error_artifacts for path in artifacts):
+                        continue
+                    finance_markers[task_id] = marked_at
+                state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
+                _save_json(d, KEY_STATE, state)
+                d.commit()
             if ("taobao_orders" in done
                     and not ingest_result.get("errors")
                     and not ingest_result.get("pending")
@@ -282,8 +331,9 @@ def start_pending_scans(db: Session) -> dict:
                 # pull.  Mark the complete three-report refresh only after the
                 # Web-Agent returned ok=True and ingest has no unresolved file.
                 state = _load_json(d, KEY_STATE)
-                state["taobao_orders_complete"] = datetime.now().isoformat(
-                    timespec="seconds")
+                completed_at = datetime.now().isoformat(timespec="seconds")
+                state["taobao_report"] = completed_at
+                state["taobao_orders_complete"] = completed_at
                 _save_json(d, KEY_STATE, state)
                 d.commit()
                 # Finish the original business outcome immediately.  Pushed
@@ -306,7 +356,13 @@ def start_pending_scans(db: Session) -> dict:
                     d.commit()
             if MAIN_ALIPAY_FLOW_TASK in done:
                 state = _load_json(d, KEY_STATE)
-                state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
+                completed_at = datetime.now().isoformat(timespec="seconds")
+                state[STATE_MAIN_ALIPAY_FLOW] = completed_at
+                finance_markers = state.get(STATE_FINANCE_TASK_SUCCESS)
+                if not isinstance(finance_markers, dict):
+                    finance_markers = {}
+                finance_markers[MAIN_ALIPAY_FLOW_TASK] = completed_at
+                state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
                 _save_json(d, KEY_STATE, state)
                 d.commit()
                 # 扫码是原财务失败链的人工续跑。成功证据落地后当场销账，
@@ -1425,9 +1481,8 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         final = web_agent_service.wait_job(db, r["job"], timeout_s=1800)
         status = (final.get("status") or "").lower()
         job_result = final.get("result") or {}
-        run_artifacts.extend(
-            str(item) for item in (job_result.get("downloads") or []) if item
-        )
+        task_artifacts = _job_downloads(job_result)
+        run_artifacts.extend(task_artifacts)
         if status in ("done", "ok", "success") and job_result.get("ok") is False:
             status = "error"
             final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
@@ -1437,19 +1492,33 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             status = "error"
             final = {**final, "error": "任务完成但未生成支付宝主力账号流水文件"}
         item = {"task": task_id, "status": status}
+        if task_artifacts:
+            item["artifacts"] = task_artifacts
         if status in ("error", "failed", "timeout"):
             err = str(final.get("error") or final.get("note") or "")
             item["error"] = err[:300]
-            if "需扫码" in err or "扫码" in err:
-                # 需扫码: 记入待扫清单 (Web-Agent 已飞书提示"回复扫码启动"), 不在编排里干等
+            if any(marker in err for marker in (
+                "需扫码", "扫码", "登录状态已失效", "需重新登录", "session_expired",
+            )):
+                # 登录/扫码需要用户输入：记入待处理清单，不在无人值守编排里
+                # 继续盲跑。万师傅不是支付宝二维码，提示应准确要求重新登录。
                 _add_pending_scan(db, task_id)
+                reason = (
+                    "登录状态已失效 — 请到取数控制台重新登录，成功后自动续跑"
+                    if any(marker in err for marker in (
+                        "登录状态已失效", "需重新登录", "session_expired",
+                    ))
+                    else "需扫码 — 方便时在飞书回复『扫码』启动"
+                )
                 out["pending_manual"].append(
-                    {"task": task_id, "reason": "需扫码 — 方便时在飞书回复『扫码』启动"})
+                    {"task": task_id, "reason": reason})
             else:
                 out["task_errors"].append(
                     {"task": task_id, "reason": f"任务{status}: {err[:120]}"})
         out["tasks"].append(item)
-        if task_id == "taobao_orders" and status in ("done", "ok", "success"):
+        if (task_id == "taobao_orders"
+                and status in ("done", "ok", "success")
+                and item.get("artifacts")):
             orders_pull_complete = True
         if task_id == MAIN_ALIPAY_FLOW_TASK and status in ("done", "ok", "success"):
             main_alipay_task_succeeded = True
@@ -1490,13 +1559,59 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         latest_state[STATE_MAIN_ALIPAY_FLOW] = datetime.now().isoformat(timespec="seconds")
         _save_json(db, KEY_STATE, latest_state)
         db.commit()
+    # 财务重试必须按来源复用今日已经完成的数据，而不是把一次总任务的
+    # “执行过”当作全部成功。每个浏览器流水来源都有独立、可持久化的完成标记；
+    # 导出类任务还必须真的返回文件，且该文件没有入库错误。
+    latest_state = _load_json(db, KEY_STATE)
+    finance_markers = latest_state.get(STATE_FINANCE_TASK_SUCCESS)
+    if not isinstance(finance_markers, dict):
+        finance_markers = {}
+    error_artifacts = {
+        Path(str(file_info.get("path") or "")).name
+        for file_info in (out["ingest"].get("files") or [])
+        if file_info.get("status") == "error"
+    }
+    marked_at = datetime.now().isoformat(timespec="seconds")
+    for task in out.get("tasks") or []:
+        task_id = str(task.get("task") or "")
+        if task_id not in FINANCE_BROWSER_FLOW_TASKS:
+            continue
+        if str(task.get("status") or "").lower() not in ("done", "ok", "success"):
+            continue
+        artifacts = [str(path) for path in (task.get("artifacts") or []) if path]
+        if task_id in FINANCE_EXPORT_TASKS and not artifacts:
+            continue
+        if task_id == MAIN_ALIPAY_FLOW_TASK and main_alipay_ingest_failed:
+            continue
+        if any(Path(path).name in error_artifacts for path in artifacts):
+            continue
+        finance_markers[task_id] = marked_at
+    latest_state[STATE_FINANCE_TASK_SUCCESS] = finance_markers
+
+    daily_flow = out.get("alipay_daily")
+    enterprise_ingest_failed = any(
+        item.get("status") == "error"
+        and item.get("category") == "alipay"
+        and "主力" not in str(item.get("path") or "")
+        for item in (out["ingest"].get("files") or [])
+    )
+    if (isinstance(daily_flow, dict)
+            and not daily_flow.get("error")
+            and not daily_flow.get("skip")
+            and int(daily_flow.get("fail") or 0) == 0
+            and not enterprise_ingest_failed):
+        latest_state[STATE_ENTERPRISE_ALIPAY_FLOW] = marked_at
+    _save_json(db, KEY_STATE, latest_state)
+    db.commit()
     persistent_pending_password = pending_shipping_password_files(db, on=today)
     out["ingest"]["pending_password_files"] = persistent_pending_password
     if (orders_pull_complete and not out["ingest"].get("errors")
             and not out["ingest"].get("pending")
             and not persistent_pending_password):
         latest_state = _load_json(db, KEY_STATE)
-        latest_state["taobao_orders_complete"] = datetime.now().isoformat(timespec="seconds")
+        completed_at = datetime.now().isoformat(timespec="seconds")
+        latest_state["taobao_report"] = completed_at
+        latest_state["taobao_orders_complete"] = completed_at
         latest_state["taobao_orders_last_result"] = {
             "date": today.isoformat(),
             "message": out.get("order_message") or "没有新增订单",

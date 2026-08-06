@@ -31,6 +31,7 @@ from app.services import (
     import_storage,
     reconciliation_service,
     smart_matching_service,
+    yulibao_service,
 )
 
 router = APIRouter(prefix="/api/finance", tags=["finance"])
@@ -802,6 +803,32 @@ def upsert_balance(payload: BalanceUpsertIn, db: Session = Depends(get_db)):
     row.closing_balance = payload.closing_balance
     if payload.remark is not None:
         row.remark = payload.remark
+    if payload.account_name == yulibao_service.YULIBAO_ACCOUNT_NAME:
+        # 手工修改余利宝（包括改成 0）代表运营已确认该日实际余额。
+        # 保存为耐久基准，自动刷新只叠加该日之后的资金账单，避免下一轮
+        # 又从历史全部流水重算并覆盖人工值。
+        checkpoint_date = payload.as_of_date or row.as_of_date or date.today()
+        row.as_of_date = checkpoint_date
+        yulibao_service.set_manual_checkpoint(
+            db,
+            balance=payload.closing_balance,
+            as_of_date=checkpoint_date,
+            note=payload.remark,
+        )
+        estimate = yulibao_service.refresh_estimated_balance(db)
+        if not estimate.get("ok"):
+            raise HTTPException(
+                400,
+                f"余利宝人工基准保存后重算失败: {estimate.get('reason')}",
+            )
+        row = db.execute(
+            select(AccountBalance)
+            .where(AccountBalance.account_name == payload.account_name)
+            .order_by(
+                AccountBalance.period_year.desc(),
+                AccountBalance.period_month.desc(),
+            )
+        ).scalars().first() or row
     db.commit()
     db.refresh(row)
     return row

@@ -337,6 +337,7 @@ def test_pause_for_input_stops_retry_until_later_success(db_session, monkeypatch
 
 
 def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session):
+    now = datetime.now().isoformat(timespec="seconds")
     for account in (
         "支付宝-企业账号",
         "淘宝聚合账户",
@@ -358,8 +359,12 @@ def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session)
         db_session,
         agent_ingest_service.KEY_STATE,
         json.dumps({
-            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW:
-                datetime.now().isoformat(timespec="seconds")
+            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS: {
+                task_id: now
+                for task_id in agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS
+            },
         }),
     )
     db_session.flush()
@@ -371,7 +376,7 @@ def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session)
                 "bal_ads",
                 "bal_wanshifu",
                 "bal_alipay_main",
-                agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
+                *agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS,
             )
         ],
         "pending_manual": [],
@@ -390,6 +395,13 @@ def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session)
     outcomes = scheduler._finance_outcomes(db_session, result)
     assert outcomes["balance_pull"][0] is False
     assert "bal_ads" in outcomes["balance_pull"][1]
+
+    result["tasks"] = [
+        item for item in result["tasks"] if item["task"] != "wanshifu"
+    ]
+    outcomes = scheduler._finance_outcomes(db_session, result)
+    assert outcomes["flow_pull"][0] is False
+    assert "wanshifu流水未完成" in outcomes["flow_pull"][1]
 
 
 def test_finance_scheduler_forces_daily_finance_only(db_session, monkeypatch):
@@ -472,12 +484,17 @@ def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):
                 closing_balance=Decimal("0"),
             )
         )
+    now = datetime.now().isoformat(timespec="seconds")
     settings_service.set_value(
         db_session,
         agent_ingest_service.KEY_STATE,
         json.dumps({
-            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW:
-                datetime.now().isoformat(timespec="seconds")
+            agent_ingest_service.STATE_MAIN_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS: {
+                task_id: now
+                for task_id in agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS
+            },
         }),
     )
     db_session.flush()
@@ -511,7 +528,7 @@ def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):
     assert result["_finance_status"] == "ok"
     assert captured["skip_tasks"] == {
         "bal_taobao_aggregate", "bal_ads", "bal_wanshifu",
-        "bal_alipay_main", agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
+        "bal_alipay_main", *agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS,
     }
 
 
@@ -528,6 +545,11 @@ def test_finance_retry_closes_from_persisted_scan_success(db_session, monkeypatc
         agent_ingest_service.KEY_STATE,
         json.dumps({
             agent_ingest_service.STATE_MAIN_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS: {
+                task_id: now
+                for task_id in agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS
+            },
         }),
     )
     settings_service.set_value(

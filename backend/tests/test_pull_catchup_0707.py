@@ -27,6 +27,13 @@ def _set_taobao_report(db, dt):
     db.commit()
 
 
+def test_job_downloads_accepts_direct_and_tiered_results():
+    assert ai._job_downloads({"downloads": ["direct.xlsx"]}) == ["direct.xlsx"]
+    assert ai._job_downloads({
+        "result": {"_downloads": ["tiered.xlsx"]},
+    }) == ["tiered.xlsx"]
+
+
 def _boom(*a, **k):
     raise AssertionError("陈旧数据下不应生成/推送")
 

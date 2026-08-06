@@ -7,22 +7,105 @@
 """
 from __future__ import annotations
 
+import json
 from datetime import date
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.finance import AccountBalance, AlipayFlow
+from app.services import settings_service
 
 
 YULIBAO_ACCOUNT_NAME = "支付宝-企业账号-余利宝"
+KEY_MANUAL_CHECKPOINT = "yulibao_manual_checkpoint_v1"
 _Q = Decimal("0.01")
 
 _REDEEM_WORDS = ("赎回", "转出", "提现")
 _PURCHASE_WORDS = ("申购", "自动转入", "转入余利宝", "支付宝转入")
 _REFUND_WORDS = ("撤销", "退款", "退回")
 _PROFIT_WORDS = ("收益", "分红")
+
+
+def get_manual_checkpoint(db: Session) -> dict | None:
+    """Return the operator-confirmed YuLiBao end-of-day balance, if any."""
+    raw = settings_service.get(db, KEY_MANUAL_CHECKPOINT, env_fallback=False)
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+        balance = Decimal(str(value["balance"])).quantize(_Q)
+        as_of = date.fromisoformat(str(value["as_of_date"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if balance < 0:
+        return None
+    return {
+        **value,
+        "balance": balance,
+        "as_of_date": as_of,
+    }
+
+
+def set_manual_checkpoint(
+    db: Session,
+    *,
+    balance: Decimal,
+    as_of_date: date,
+    note: str | None = None,
+) -> dict:
+    """Persist a confirmed balance without letting later refreshes overwrite it.
+
+    The checkpoint is an end-of-day balance.  Automatic estimates add only
+    YuLiBao flows dated after ``as_of_date``.  A short history is retained in
+    the same setting so a mistaken manual edit remains auditable.
+    """
+    confirmed = Decimal(str(balance)).quantize(_Q)
+    if confirmed < 0:
+        raise ValueError("余利宝人工基准不能为负数")
+
+    previous_raw = settings_service.get(
+        db, KEY_MANUAL_CHECKPOINT, env_fallback=False,
+    )
+    history: list[dict] = []
+    previous: dict | None = None
+    if previous_raw:
+        try:
+            previous = json.loads(previous_raw)
+            history = list(previous.get("history") or [])
+        except (TypeError, json.JSONDecodeError):
+            previous = None
+    if previous and (
+        str(previous.get("balance")) != str(confirmed)
+        or str(previous.get("as_of_date")) != as_of_date.isoformat()
+    ):
+        history.append({
+            "balance": previous.get("balance"),
+            "as_of_date": previous.get("as_of_date"),
+            "note": previous.get("note"),
+            "replaced_at": datetime.now().isoformat(timespec="seconds"),
+        })
+
+    value = {
+        "balance": str(confirmed),
+        "as_of_date": as_of_date.isoformat(),
+        "note": (note or "").strip() or None,
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+        "history": history[-20:],
+    }
+    settings_service.set_value(
+        db,
+        KEY_MANUAL_CHECKPOINT,
+        json.dumps(value, ensure_ascii=False),
+        description="余利宝人工确认余额基准；自动估算仅叠加基准日之后流水",
+    )
+    return {
+        **value,
+        "balance": confirmed,
+        "as_of_date": as_of_date,
+    }
 
 
 def _text(flow: AlipayFlow) -> str:
@@ -64,7 +147,8 @@ def _contribution(flow: AlipayFlow) -> tuple[Decimal, str]:
 
 
 def estimate_from_flows(db: Session, *, source_account: str = "企业号") -> dict:
-    """Rebuild the current YuLiBao balance from all imported source flows."""
+    """Estimate from the manual checkpoint plus later imported source flows."""
+    checkpoint = get_manual_checkpoint(db)
     marker_filter = or_(
         AlipayFlow.transaction_type.contains("余利宝"),
         AlipayFlow.counterparty.contains("余利宝"),
@@ -77,7 +161,14 @@ def estimate_from_flows(db: Session, *, source_account: str = "企业号") -> di
         .order_by(AlipayFlow.transaction_time.asc(), AlipayFlow.id.asc())
     ).scalars().all()
 
-    if not rows:
+    if checkpoint:
+        rows = [
+            flow for flow in rows
+            if flow.transaction_time is not None
+            and flow.transaction_time.date() > checkpoint["as_of_date"]
+        ]
+
+    if not rows and not checkpoint:
         return {
             "ok": False,
             "source_account": source_account,
@@ -87,9 +178,9 @@ def estimate_from_flows(db: Session, *, source_account: str = "企业号") -> di
             "as_of_date": None,
         }
 
-    total = Decimal("0")
+    total = Decimal(str(checkpoint["balance"])) if checkpoint else Decimal("0")
     categories: dict[str, int] = {}
-    latest_date: date | None = None
+    latest_date: date | None = checkpoint["as_of_date"] if checkpoint else None
     for flow in rows:
         delta, category = _contribution(flow)
         total += delta
@@ -118,6 +209,7 @@ def estimate_from_flows(db: Session, *, source_account: str = "企业号") -> di
         "count": len(rows),
         "categories": categories,
         "as_of_date": latest_date,
+        "checkpoint": checkpoint,
     }
 
 
@@ -161,8 +253,15 @@ def upsert_estimated_balance(
     row.closing_balance = Decimal(str(estimate["balance"])).quantize(_Q)
     row.as_of_date = as_of
     row.remark = (
-        "余利宝估算余额：按企业号资金账单中余利宝申购/赎回/收益净额累计；"
-        f"共{estimate['count']}笔，最近流水{as_of}；"
+        "余利宝估算余额："
+        + (
+            f"以人工确认的{estimate['checkpoint']['as_of_date']}余额"
+            f"{estimate['checkpoint']['balance']}元为基准，"
+            if estimate.get("checkpoint") else
+            "按企业号资金账单从零累计，"
+        )
+        + "叠加之后的余利宝申购/赎回/收益净额；"
+        f"本段共{estimate['count']}笔，统计至{as_of}；"
         "不含尚未进入资金账单的当日转入及未入账收益。"
     )
     return row
@@ -180,5 +279,5 @@ def refresh_estimated_balance(db: Session, *, source_account: str = "企业号")
         "account": row.account_name,
         "balance": row.closing_balance,
         "as_of_date": row.as_of_date,
-        "source": "flow_estimate",
+        "source": "manual_checkpoint_plus_flows" if estimate.get("checkpoint") else "flow_estimate",
     }

@@ -959,6 +959,10 @@ def _finance_outcomes(db: Session, result: dict) -> dict[str, tuple[bool, str]]:
     from app.services import agent_ingest_service, settings_service
 
     ok_status = {"done", "ok", "success"}
+    task_rows = {
+        str(item.get("task") or ""): item
+        for item in (result.get("tasks") or [])
+    }
     task_status = {
         str(item.get("task") or ""): str(item.get("status") or "").lower()
         for item in (result.get("tasks") or [])
@@ -1027,41 +1031,62 @@ def _finance_outcomes(db: Session, result: dict) -> dict[str, tuple[bool, str]]:
     elif int(daily_flow.get("fail") or 0) > 0:
         flow_reasons.append("企业号流水存在拉取失败日期")
 
-    main_status = task_status.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
-    if main_status not in ok_status:
-        main_reason = (
-            pending.get(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
-            or main_status
+    for task_id in agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS:
+        if task_status.get(task_id) in ok_status:
+            continue
+        row = task_rows.get(task_id) or {}
+        reason = (
+            pending.get(task_id)
+            or row.get("error")
+            or task_status.get(task_id)
             or "未执行"
         )
-        scan_result = agent_ingest_service.get_scan_results(db).get(
-            agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
-        ) or {}
-        try:
-            scan_at = datetime.fromisoformat(str(scan_result.get("at") or ""))
-            if (scan_result.get("status") == "failed"
-                    and scan_at.date() == today
-                    and scan_result.get("reason")):
-                main_reason = f"扫码续跑失败: {scan_result['reason']}"
-        except (TypeError, ValueError):
-            pass
-        flow_reasons.append(
-            "主力号流水未完成: " + main_reason
-        )
+        if task_id == agent_ingest_service.MAIN_ALIPAY_FLOW_TASK:
+            scan_result = agent_ingest_service.get_scan_results(db).get(task_id) or {}
+            try:
+                scan_at = datetime.fromisoformat(str(scan_result.get("at") or ""))
+                if (scan_result.get("status") == "failed"
+                        and scan_at.date() == today
+                        and scan_result.get("reason")):
+                    reason = f"扫码续跑失败: {scan_result['reason']}"
+            except (TypeError, ValueError):
+                pass
+        flow_reasons.append(f"{task_id}流水未完成: {reason}")
+
     try:
         state = json.loads(
             settings_service.get(
                 db, agent_ingest_service.KEY_STATE, env_fallback=False
             ) or "{}"
         )
-        main_at = datetime.fromisoformat(
-            str(state.get(agent_ingest_service.STATE_MAIN_ALIPAY_FLOW) or "")
+        finance_markers = state.get(
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS,
         )
-        main_fresh = main_at.date() == today
-    except (TypeError, ValueError, json.JSONDecodeError):
-        main_fresh = False
-    if not main_fresh:
-        flow_reasons.append("主力号流水没有今日成功标记")
+        if not isinstance(finance_markers, dict):
+            finance_markers = {}
+        fresh_flow_markers = set()
+        for task_id, raw_at in finance_markers.items():
+            try:
+                if datetime.fromisoformat(str(raw_at)).date() == today:
+                    fresh_flow_markers.add(task_id)
+            except (TypeError, ValueError):
+                continue
+        try:
+            enterprise_fresh = datetime.fromisoformat(str(
+                state.get(agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW) or ""
+            )).date() == today
+        except (TypeError, ValueError):
+            enterprise_fresh = False
+    except (TypeError, json.JSONDecodeError):
+        fresh_flow_markers = set()
+        enterprise_fresh = False
+    missing_markers = sorted(
+        set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS) - fresh_flow_markers
+    )
+    if missing_markers:
+        flow_reasons.append("流水来源没有今日成功标记: " + ",".join(missing_markers))
+    if not enterprise_fresh:
+        flow_reasons.append("企业号流水没有今日成功标记")
 
     for item in (ingest.get("files") or []):
         if item.get("status") != "error":
@@ -1114,12 +1139,18 @@ def _fresh_finance_browser_tasks(db: Session) -> set[str]:
                 db, agent_ingest_service.KEY_STATE, env_fallback=False
             ) or "{}"
         )
-        main_at = datetime.fromisoformat(
-            str(state.get(agent_ingest_service.STATE_MAIN_ALIPAY_FLOW) or "")
+        finance_markers = state.get(
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS,
         )
-        if main_at.date() == today:
-            tasks.add(agent_ingest_service.MAIN_ALIPAY_FLOW_TASK)
-    except (TypeError, ValueError, json.JSONDecodeError):
+        if isinstance(finance_markers, dict):
+            for task_id, raw_at in finance_markers.items():
+                try:
+                    if (task_id in agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS
+                            and datetime.fromisoformat(str(raw_at)).date() == today):
+                        tasks.add(task_id)
+                except (TypeError, ValueError):
+                    continue
+    except (TypeError, json.JSONDecodeError):
         pass
     return tasks
 
@@ -1153,20 +1184,27 @@ def _reconcile_finance_success_from_persisted_evidence(db: Session) -> dict:
         )
         closed.append("balance_pull")
 
-    scan_result = agent_ingest_service.get_scan_results(db).get(
-        agent_ingest_service.MAIN_ALIPAY_FLOW_TASK,
-    ) or {}
     try:
-        scan_at = datetime.fromisoformat(str(scan_result.get("at") or ""))
-        scan_success = (
-            scan_result.get("status") == "success" and scan_at.date() == today
+        import json
+
+        from app.services import settings_service
+
+        state = json.loads(
+            settings_service.get(
+                db, agent_ingest_service.KEY_STATE, env_fallback=False,
+            ) or "{}"
         )
-    except (TypeError, ValueError):
-        scan_success = False
-    if (scan_success
-            and agent_ingest_service.MAIN_ALIPAY_FLOW_TASK in fresh_tasks):
+        enterprise_flow_fresh = datetime.fromisoformat(str(
+            state.get(agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW) or ""
+        )).date() == today
+    except (TypeError, ValueError, json.JSONDecodeError):
+        enterprise_flow_fresh = False
+    if (enterprise_flow_fresh
+            and set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS).issubset(
+                fresh_tasks
+            )):
         automation_pipeline_service.record_success(
-            db, "flow_pull", success_detail="扫码后的主力号流水成功证据已落库",
+            db, "flow_pull", success_detail="今日全部流水来源均已下载并完成入库",
         )
         closed.append("flow_pull")
     if closed:
@@ -1222,7 +1260,9 @@ def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
             "bal_wanshifu",
             "bal_alipay_main",
         }),
-        "flow_pull": agent_ingest_service.MAIN_ALIPAY_FLOW_TASK in pending_tasks,
+        "flow_pull": bool(
+            pending_tasks & set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS)
+        ),
     }
     failures: list[str] = []
     for pipeline, (ok, detail) in outcomes.items():
