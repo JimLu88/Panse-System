@@ -791,6 +791,11 @@ def _job_orders_maintain(db: Session) -> dict:
     }
 
 
+def _order_pull_freshness_hour(now: Optional[datetime] = None) -> int:
+    """Safety cutoff for scheduled evening pulls and explicit earlier runs."""
+    return min(18, (now or datetime.now()).hour)
+
+
 def _job_web_agent_daily(db: Session) -> dict:
     """每天 18:00: Web-Agent 订单专用取数编排。
 
@@ -804,6 +809,11 @@ def _job_web_agent_daily(db: Session) -> dict:
         order_sheet_archive_service,
     )
     run_date = date.today()
+    # The same job is also exposed as an admin "run now" action.  Before the
+    # normal 18:00 slot, require evidence from the current hour instead of
+    # rejecting a genuinely fresh manual run solely because it is daytime.
+    # At and after 18:00 the production safety gate remains exactly 18:00.
+    order_freshness_hour = _order_pull_freshness_hour()
     automation_pipeline_service.record_stage(
         db, "order_delivery", "started", detail="18:00订单取数与送达链路开始"
     )
@@ -867,15 +877,19 @@ def _job_web_agent_daily(db: Session) -> dict:
                          if f.get("status") in ("pending_password", "pending")]
         r["_run_status"] = "fail"
         r["_error"] = f"取数文件待处理 {r['ingest']['pending']} 份: {','.join(pending_files)}"
-    elif not agent_ingest_service.order_data_fresh(db, on=run_date, not_before_hour=18):
+    elif not agent_ingest_service.order_data_fresh(
+            db, on=run_date, not_before_hour=order_freshness_hour):
         r["_run_status"] = "fail"
-        r["_error"] = "取数流程结束但没有产生18:00后的淘宝订单刷新时间"
+        r["_error"] = (
+            "取数流程结束但没有产生本次执行时段内的淘宝订单刷新时间"
+            f"（校验起点 {order_freshness_hour:02d}:00）"
+        )
     automation_pipeline_service.record_stage(
         db,
         "order_delivery",
         "order_ingest",
         status="fail" if r.get("_run_status") == "fail" else "ok",
-        detail=str(r.get("_error") or "18:00后订单已刷新并入库"),
+        detail=str(r.get("_error") or f"{order_freshness_hour:02d}:00后订单已刷新并入库"),
         artifacts=r.get("artifacts") or [],
     )
     db.commit()
