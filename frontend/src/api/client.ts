@@ -13,3 +13,4 @@ export * from './taobaoExport';
 export * from './factoryOrders';
 export * from './npd';
 export * from './reviewAssets';
+export * from './procurement';

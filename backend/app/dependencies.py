@@ -145,13 +145,27 @@ def _has_valid_bearer(authorization: Optional[str]) -> bool:
         return False
 
 
-def _has_valid_machine_key(x_api_key: Optional[str], db: Session) -> bool:
-    """机器对机器令牌: 命中 ingest_api_token 或 cs_api_key 之一即算已认证 (constant-time 比较)。"""
+def _has_valid_machine_key(
+    x_api_key: Optional[str],
+    db: Session,
+    *,
+    path: str,
+) -> bool:
+    """机器对机器令牌: 命中已批准的专用 token 之一即算已认证。"""
     if not x_api_key:
         return False
     candidate = x_api_key.strip()
+    # Preserve the existing agents' behavior; this procurement change must not
+    # change their routes or credentials.
     for key_name in ("ingest_api_token", "cs_api_key"):
         expected = settings_service.get(db, key_name, env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return True
+    # The Windows procurement sidecar can only call its own narrow API surface.
+    if path == "/api/procurement/agent" or path.startswith("/api/procurement/agent/"):
+        expected = settings_service.get(
+            db, "procurement_agent_token", env_fallback=True
+        )
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return True
     return False
@@ -169,7 +183,7 @@ def require_authenticated(
         return
     if _has_valid_bearer(authorization):
         return
-    if _has_valid_machine_key(x_api_key, db):
+    if _has_valid_machine_key(x_api_key, db, path=path):
         return
     if _authgate_enforce():
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "未登录或凭证无效")

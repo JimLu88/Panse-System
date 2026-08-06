@@ -110,3 +110,29 @@ def test_enforce_rejects_wrong_machine_key(monkeypatch, db_session):
         deps.require_authenticated(_req("/api/web-agent/ingest", method="POST"),
                                    authorization=None, x_api_key="WRONG-KEY", db=db_session)
     assert ei.value.status_code == 401
+
+
+def test_procurement_machine_key_is_scoped_to_agent_routes(
+    monkeypatch, db_session
+):
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    settings_service.set_value(
+        db_session, "procurement_agent_token", "PROCUREMENT-ONLY-KEY"
+    )
+    db_session.commit()
+
+    assert deps.require_authenticated(
+        _req("/api/procurement/agent/heartbeat", method="POST"),
+        authorization=None,
+        x_api_key="PROCUREMENT-ONLY-KEY",
+        db=db_session,
+    ) is None
+
+    with pytest.raises(HTTPException) as exc_info:
+        deps.require_authenticated(
+            _req("/api/orders"),
+            authorization=None,
+            x_api_key="PROCUREMENT-ONLY-KEY",
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 401

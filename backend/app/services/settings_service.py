@@ -42,6 +42,8 @@ _SECRET_KEYS = {
     "chatbi_ro_dsn",
     # 活动系统云端 LLM (DeepSeek/千问) — 加密落库, 读取接口只回状态+尾4位 (2026-07-17)
     "campaign_ai_api_key",
+    # 采购 Windows sidecar 机器令牌
+    "procurement_agent_token",
 }
 
 

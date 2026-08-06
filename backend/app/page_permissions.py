@@ -122,6 +122,7 @@ _API_PERM_RULES: dict[str, Optional[str]] = {
     "/api/delivery-notes": "suppliers",
     "/api/delivery-files": "suppliers",
     "/api/purchases": "purchases",
+    "/api/procurement": "purchases",
     "/api/monthly-settlement": "monthly-settlement",
     "/api/factory-orders": "factory-orders",
     "/api/factory-statement": "factory-statement",

@@ -1,0 +1,29 @@
+{
+  "erp_base_url": "http://127.0.0.1:8000",
+  "agent_id": "purchase-pc-01",
+  "display_name": "采购电脑",
+  "host_label": "Windows 采购机",
+  "mode": "dry_run",
+  "poll_seconds": 30,
+  "max_actions": 1,
+  "lease_seconds": 180,
+  "drivers": {
+    "taobao_desktop": {
+      "command": ["C:\\path\\to\\taobao-desktop-driver.exe", "--json-stdio"],
+      "timeout_seconds": 120
+    },
+    "taobao_chrome": {
+      "command": ["C:\\path\\to\\taobao-chrome-driver.exe", "--json-stdio"],
+      "timeout_seconds": 120
+    },
+    "1688_chrome": {
+      "command": ["C:\\path\\to\\1688-chrome-driver.exe", "--json-stdio"],
+      "timeout_seconds": 120
+    },
+    "xiaohongshu_chrome": {
+      "command": ["C:\\path\\to\\xiaohongshu-chrome-driver.exe", "--json-stdio"],
+      "timeout_seconds": 120
+    }
+  }
+}
+
