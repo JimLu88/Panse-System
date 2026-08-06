@@ -2391,6 +2391,15 @@ _CATCHUP_JOBS: dict[str, int] = {          # job_id → 宽限小时(错过太�
     "daily_0650_cost_recompute": 8,        # 理论成本兜底反推(06:50)
 }
 
+# These user-facing pulls/reports have explicit same-evening retry windows.
+# Replaying yesterday's run after midnight uses a new day's pipeline state and
+# can emit a false stale-data failure or push an obsolete report.
+_SAME_DAY_CATCHUP_JOBS = {
+    "daily_0630_web_agent",
+    "daily_1810_order_sheets",
+    "daily_2030_finance_agent",
+}
+
 
 def _last_fire_dt(schedule: dict, now: datetime) -> Optional[datetime]:
     """cron {hour,minute} 的最近一个 ≤now 应触发时刻(今天没到点则取昨天); 非固定时分返回 None。"""
@@ -2424,6 +2433,8 @@ def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
             continue
         fire = _last_fire_dt(schedule, now)
         if fire is None or (now - fire) > timedelta(hours=grace_h):
+            continue
+        if jid in _SAME_DAY_CATCHUP_JOBS and fire.date() != now.date():
             continue
         last = db.execute(
             _sel(ScheduledJobRun)

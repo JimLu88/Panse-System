@@ -114,6 +114,16 @@ def test_beyond_grace_not_chased(db_session):
     assert "daily_1810_order_sheets" not in missed
 
 
+def test_user_facing_pull_jobs_are_not_replayed_after_midnight(db_session):
+    """Order/finance pulls have same-evening retry windows and never cross midnight."""
+    now = _now_at(0, 20)
+    missed = sched.missed_catchup_jobs(db_session, now=now, overrides={})
+
+    assert "daily_0630_web_agent" not in missed
+    assert "daily_1810_order_sheets" not in missed
+    assert "daily_2030_finance_agent" not in missed
+
+
 def test_disabled_job_not_chased(db_session):
     """用户停用的任务不补跑。"""
     missed = sched.missed_catchup_jobs(
