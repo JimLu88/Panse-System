@@ -2376,6 +2376,24 @@ def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
             ).timestamp()
             if last_ts >= fire.timestamp() - 300 and last.status in {"ok", "skipped"}:
                 continue   # 该班(或之后)已成功/明确跳过；失败记录仍允许启动补跑
+            if last_ts >= fire.timestamp() - 300 and last.status == "fail":
+                pipeline_cfg = _CRITICAL_JOB_PIPELINES.get(jid) or ()
+                if pipeline_cfg:
+                    from app.services import automation_pipeline_service
+
+                    pipeline_states = [
+                        automation_pipeline_service.get_pipeline(db, pipeline, now=now)
+                        for pipeline, _retry_times in pipeline_cfg
+                    ]
+                    if pipeline_states and all(
+                        state.get("success")
+                        or state.get("final")
+                        or state.get("waiting_input")
+                        for state in pipeline_states
+                    ):
+                        # 已成功，或明确等新口令/扫码，或当日重试已经收口：重启不能
+                        # 再把它当“漏跑”拉起。只有仍可自动恢复的失败才补跑。
+                        continue
         out.append(jid)
     return out
 

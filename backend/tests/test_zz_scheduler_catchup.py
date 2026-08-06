@@ -49,6 +49,63 @@ def test_failed_run_is_eligible_for_one_startup_catchup(db_session):
     assert "daily_0230_orders_maintain" in missed
 
 
+def test_failed_order_run_waiting_for_input_is_not_replayed_on_restart(db_session):
+    """新口令/扫码到来前，API 重启不得重复拉起耗时订单导出。"""
+    from app.services import automation_pipeline_service
+
+    fire = _now_at(18, 0)
+    db_session.add(ScheduledJobRun(
+        job_id="daily_0630_web_agent",
+        job_label="orders",
+        status="fail",
+        started_at=fire.astimezone(timezone.utc),
+    ))
+    automation_pipeline_service.pause_for_input(
+        db_session,
+        "order_delivery",
+        "现有口令与新发货报表不匹配",
+        now=fire + timedelta(minutes=30),
+    )
+    db_session.commit()
+
+    missed = sched.missed_catchup_jobs(
+        db_session,
+        now=fire + timedelta(hours=1),
+        overrides={},
+    )
+
+    assert "daily_0630_web_agent" not in missed
+
+
+def test_failed_order_run_with_retry_remaining_is_replayed_on_restart(db_session):
+    """可自愈的临时失败仍允许一次启动补跑。"""
+    from app.services import automation_pipeline_service
+
+    fire = _now_at(18, 0)
+    db_session.add(ScheduledJobRun(
+        job_id="daily_0630_web_agent",
+        job_label="orders",
+        status="fail",
+        started_at=fire.astimezone(timezone.utc),
+    ))
+    automation_pipeline_service.record_failure(
+        db_session,
+        "order_delivery",
+        "PC临时离线",
+        retry_slots=[fire + timedelta(hours=2)],
+        now=fire + timedelta(minutes=30),
+    )
+    db_session.commit()
+
+    missed = sched.missed_catchup_jobs(
+        db_session,
+        now=fire + timedelta(hours=1),
+        overrides={},
+    )
+
+    assert "daily_0630_web_agent" in missed
+
+
 def test_beyond_grace_not_chased(db_session):
     """超宽限不追: 第二天中午(18:00 班 18 小时前) → 取数不补(等当天正常班)。"""
     missed = sched.missed_catchup_jobs(
