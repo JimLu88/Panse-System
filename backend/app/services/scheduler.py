@@ -1521,11 +1521,18 @@ def _job_pull_catchup(db: Session) -> dict:
             "_run_status": "fail",
             "_error": error,
         })
-    if not web_agent_service.health(db).get("online"):
+    awakened = web_agent_service.ensure_online(
+        db, reason="order_delivery_retry", wait_s=75
+    )
+    if not awakened.get("online"):
         return _finish({
             "waiting": "pc_offline",
             "_run_status": "fail",
-            "_error": "PC Web-Agent 离线，未执行订单取数；下个小时自动重试",
+            "_error": (
+                "NAS已发送按需启动命令，但PC唤醒桥未能启动Web-Agent："
+                + str(awakened.get("error") or "未返回原因")[:240]
+                + "；下个时段自动重试"
+            ),
         })
     res = ai.orchestrate(db, quiet=True, force_orders=True, orders_only=True)  # 强制补18:00后的订单快照
     out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
@@ -1958,7 +1965,8 @@ def _job_ingest_health_check(db: Session) -> dict:
     背景: 18:00 编排可能"跑成功了"但没拉到新数据 (订单报表无新单 / 加密发货报表缺口令 /
     PC Agent 离线)。这类"静默没更新"光看任务状态(ok)发现不了。本任务专门核对结果是否真的前进,
     有问题就主动推 飞书 + 企业微信 (区别于只写站内 alert, 确保人能收到)。
-    一天一条, 无异常则完全静默不打扰。'今日无新订单'必推 (用户明确要求)。
+    一天一条, 无异常则完全静默不打扰。没有新增订单本身是正常结果；只有18:00后的
+    当日订单快照未刷新才报警。
     """
     import json as _json
     import os as _os
@@ -1990,18 +1998,29 @@ def _job_ingest_health_check(db: Session) -> dict:
     bal_stale = _stale_days("balance")
 
     try:
-        online = bool(web_agent_service.health(db).get("online"))
-    except Exception:  # noqa: BLE001 — 探活失败按离线算, 不抛
-        online = False
+        from app.services import web_agent_wake_service
+
+        bridge = (web_agent_wake_service.status(db).get("bridge") or {})
+        bridge_seen = _dt.fromisoformat(str(bridge.get("last_seen_at") or ""))
+        if bridge_seen.tzinfo is None:
+            bridge_seen = bridge_seen.astimezone()
+        bridge_online = (_dt.now().astimezone() - bridge_seen).total_seconds() <= 180
+    except Exception:  # noqa: BLE001 — 心跳缺失按桥离线算, 不抛
+        bridge_online = False
+
+    try:
+        agent_online = bool(web_agent_service.health(db).get("online"))
+    except Exception:  # noqa: BLE001 — 仅用于诊断展示，不影响按需离线的正常状态
+        agent_online = False
 
     pending_password_files = agent_ingest_service.pending_shipping_password_files(db, on=today)
 
     problems: list[str] = []
-    if new_orders == 0:
+    if not agent_ingest_service.order_data_fresh(db, on=today, not_before_hour=18):
         lo = last_order_at.strftime("%m-%d %H:%M") if last_order_at else "无记录"
-        problems.append(f"今日无新订单 (最近订单 {lo})")
-    if not online:
-        problems.append("PC 取数 Agent 离线 (订单/余额无法自动拉取)")
+        problems.append(f"18:00后订单数据未刷新 (最近订单 {lo})")
+    if not bridge_online:
+        problems.append("PC 按需唤醒桥离线 (群晖无法启动 Web-Agent)")
     if bal_stale is not None and bal_stale >= 4:
         problems.append(f"余额已 {bal_stale} 天未更新")
     if pending_password_files:
@@ -2014,7 +2033,8 @@ def _job_ingest_health_check(db: Session) -> dict:
         "date": today.isoformat(),
         "new_orders_today": int(new_orders),
         "last_order_at": last_order_at.isoformat() if last_order_at else None,
-        "agent_online": online,
+        "agent_online": agent_online,
+        "wake_bridge_online": bridge_online,
         "balance_stale_days": bal_stale,
         "last_ingest_at": state.get("last_ingest_at"),
         "pending_shipping_password_files": pending_password_files,

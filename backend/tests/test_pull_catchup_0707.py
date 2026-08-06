@@ -429,11 +429,16 @@ def test_pull_catchup_waits_when_pc_offline(db_session, monkeypatch):
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(ai, "pending_shipping_password_files", lambda db: [])
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": False})
+    monkeypatch.setattr(
+        web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: {"online": False, "error": "唤醒桥未响应"},
+    )
     res = scheduler._job_pull_catchup(db_session)
     assert res["waiting"] == "pc_offline"
     assert res["_run_status"] == "fail"
     assert "Web-Agent" in res["_error"]
+    assert "唤醒桥未响应" in res["_error"]
 
 
 def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
@@ -442,7 +447,12 @@ def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: fresh["v"])
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(ai, "pending_shipping_password_files", lambda db: [])
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    wake_calls = []
+    monkeypatch.setattr(
+        web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: wake_calls.append(kwargs) or {"online": True},
+    )
 
     def _orch(db, **k):
         assert k["force_orders"] is True
@@ -464,6 +474,7 @@ def test_pull_catchup_runs_and_pushes_when_online(db_session, monkeypatch):
     res = scheduler._job_pull_catchup(db_session)
     assert res["ran_orchestrate"] is True
     assert res["images_pushed"] == 2
+    assert wake_calls == [{"reason": "order_delivery_retry", "wait_s": 75}]
 
 
 def test_pull_catchup_still_stale_when_pull_fails(db_session, monkeypatch):
@@ -471,7 +482,7 @@ def test_pull_catchup_still_stale_when_pull_fails(db_session, monkeypatch):
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)   # 始终陈旧(取数失败)
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(ai, "pending_shipping_password_files", lambda db: [])
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(web_agent_service, "ensure_online", lambda db, **kwargs: {"online": True})
     monkeypatch.setattr(ai, "orchestrate",
                         lambda db, **k: {"tasks": [], "pending_manual": [{"task": "taobao_orders"}]})
     res = scheduler._job_pull_catchup(db_session)
@@ -485,7 +496,7 @@ def test_pull_catchup_reports_task_failure_without_calling_it_login(db_session, 
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)
     monkeypatch.setattr(ai, "is_running", lambda: False)
     monkeypatch.setattr(ai, "pending_shipping_password_files", lambda db: [])
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
+    monkeypatch.setattr(web_agent_service, "ensure_online", lambda db, **kwargs: {"online": True})
     monkeypatch.setattr(
         ai,
         "orchestrate",
