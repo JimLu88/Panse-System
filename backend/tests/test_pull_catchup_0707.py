@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from hashlib import sha256
 import json
 import threading
+from types import SimpleNamespace
 
 from app import database
 from app.services import agent_ingest_service as ai
@@ -154,6 +156,55 @@ def test_shipping_password_never_expires_by_age(db_session):
     db_session.commit()
 
     assert ai._latest_shipping_password(db_session) == "example-password"
+
+
+def test_new_shipping_report_records_existing_password_mismatch(
+    db_session, monkeypatch, tmp_path,
+):
+    from app.services import automation_pipeline_service, import_storage
+
+    settings_service.set_value(
+        db_session, "taobao_shipping_pwd_latest", "existing-password"
+    )
+    report_file = tmp_path / "ExportOrderList-new.xlsx"
+    report_file.write_bytes(b"encrypted-placeholder")
+    monkeypatch.setattr(ai, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(ai, "_classify", lambda rel: "taobao_report")
+    monkeypatch.setattr(
+        ai,
+        "_import_one",
+        lambda db, category, path, raw: (
+            "taobao",
+            "pending_password",
+            {"note": "发货报表解密失败: password mismatch"},
+        ),
+    )
+
+    def _archive(db, *, content, original_name, kind, source, row_summary):
+        row = ImportedFile(
+            kind=kind,
+            original_filename=original_name,
+            stored_path=f"/tmp/{original_name}",
+            file_hash=sha256(content).hexdigest(),
+            source=source,
+            row_summary=row_summary,
+        )
+        db.add(row)
+        db.flush()
+        return SimpleNamespace(file=row)
+
+    monkeypatch.setattr(import_storage, "archive", _archive)
+
+    result = ai.run_ingest(db_session, only_paths=[str(report_file)])
+
+    assert result["pending"] == 1
+    password_result = ai.get_shipping_password_result(db_session)
+    assert password_result["status"] == "password_mismatch"
+    assert password_result["pending_files"] == [report_file.name]
+    assert "未过期" in password_result["reason"]
+    pipeline = automation_pipeline_service.get_pipeline(db_session, "order_delivery")
+    assert pipeline["waiting_input"] is True
+    assert pipeline["final"] is True
 
 
 def test_shipping_password_finalizes_completed_evening_pull(db_session):
@@ -333,6 +384,28 @@ def test_daily_push_skipped_when_stale(db_session, monkeypatch):
     monkeypatch.setattr(oss, "push_daily", _boom)
     res = scheduler._job_order_sheets_daily(db_session)
     assert res["skipped"] == "stale_order_data"
+
+
+def test_daily_push_preserves_upstream_failure_when_stale(db_session, monkeypatch):
+    from app.services import automation_pipeline_service
+
+    automation_pipeline_service.record_failure(
+        db_session,
+        "order_delivery",
+        "现有口令与新发货报表不匹配",
+        retry_slots=[datetime.now().astimezone() + timedelta(hours=1)],
+    )
+    before = automation_pipeline_service.get_pipeline(db_session, "order_delivery")
+    monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)
+    monkeypatch.setattr(oss, "push_daily", _boom)
+
+    result = scheduler._job_order_sheets_daily(db_session)
+
+    after = automation_pipeline_service.get_pipeline(db_session, "order_delivery")
+    assert result["_run_status"] == "skipped"
+    assert result["upstream_error"] == "现有口令与新发货报表不匹配"
+    assert after["failures"] == before["failures"]
+    assert after["last_error"] == before["last_error"]
 
 
 def test_catchup_push_runs_when_fresh(db_session, monkeypatch):

@@ -972,11 +972,50 @@ def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
     # 让用户转发『发货密码 xxx』; 收到后 _capture_shipping_password→reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
+        current_password = _latest_shipping_password(db)
+        if current_password:
+            # 现有口令曾成功不代表它能解密后来新导出的文件。把本次新文件的
+            # 不匹配结果写成最新证据，并暂停无新输入就不可能成功的定时重试。
+            # 口令本身不写日志、不写结果，也绝不以“超时/过期”描述。
+            pending_files = pending_shipping_password_files(db)
+            mismatch_reason = (
+                "现有发货口令无法解密新报表（口令未过期，但与这些文件不匹配）："
+                + ",".join(pending_files[:5] or _pending_pw_files[:5])
+            )
+            settings_service.set_value(
+                db,
+                KEY_SHIPPING_PASSWORD_RESULT,
+                json.dumps({
+                    "status": "password_mismatch",
+                    "at": datetime.now(timezone.utc).isoformat(),
+                    "pending_files": pending_files,
+                    "reason": mismatch_reason,
+                }, ensure_ascii=False),
+                description="最近发货报表口令匹配结果（不含口令）",
+            )
+            try:
+                from app.services import automation_pipeline_service
+
+                automation_pipeline_service.pause_for_input(
+                    db, "order_delivery", mismatch_reason,
+                )
+            except Exception:
+                _log.warning("发货报表口令不匹配后暂停订单重试失败", exc_info=True)
+            db.commit()
         import os as _os
         if not _os.environ.get("PANSE_DISABLE_NOTIFY"):
             n = len(_pending_pw_files)
-            _msg = (f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                    f"『发货密码 xxxx』转发到这里 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。")
+            if current_password:
+                _msg = (
+                    f"📦 新下载的 {n} 份加密发货报表与系统现有口令不匹配。"
+                    "口令没有超时，但新报表需要其对应口令；请把淘宝本次发来的口令以"
+                    "『发货密码 xxxx』转发到这里，收到后自动解密、入库并续推下单图。"
+                )
+            else:
+                _msg = (
+                    f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
+                    "『发货密码 xxxx』转发到这里 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。"
+                )
             # 优先推飞书: 用户本就在飞书转发口令, 且 notify provider 未必配了 webhook
             # (现网=wechat_work 但 webhook 空 → 走 notify 会静默丢失)。飞书推送失败再兜底 notify。
             _pushed = False

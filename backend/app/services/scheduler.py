@@ -1346,8 +1346,22 @@ def _job_order_sheets_daily(db: Session) -> dict:
     """每天 18:00: 给已付款新订单补生成下单图 → 存导入档案 → 推飞书群 (用户拍板)。
     新鲜度门(2026-07-07): 今日订单未取数成功→暂缓推送, 防隔夜旧数据把已关闭单误推;
     等 pull_catchup 把 PC 取数补上、数据新鲜后再推。"""
-    from app.services import agent_ingest_service, order_sheet_archive_service
+    from app.services import (
+        agent_ingest_service,
+        automation_pipeline_service,
+        order_sheet_archive_service,
+    )
     if not agent_ingest_service.order_data_fresh(db, not_before_hour=18):
+        upstream = automation_pipeline_service.get_pipeline(db, "order_delivery")
+        if upstream.get("failures") or upstream.get("waiting_input"):
+            # 18:00 取数已经留下精确原因（如口令不匹配、登录失效、导入失败）时，
+            # 18:10 推送门只应等待，不能再用通用“数据未刷新”覆盖原因或重复发一条失败。
+            return {
+                "skipped": "stale_order_data",
+                "note": "18:00后订单未取数, 暂缓推送(防旧数据误推)",
+                "upstream_error": upstream.get("last_error"),
+                "_run_status": "skipped",
+            }
         return _record_pipeline_result(
             db,
             "order_delivery",
