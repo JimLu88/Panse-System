@@ -6,7 +6,8 @@ POST /api/scheduler/jobs/{id}/trigger      立即执行一次 (admin)
 """
 from __future__ import annotations
 
-from typing import Optional
+from datetime import date
+from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -18,6 +19,7 @@ from app.dependencies import require_role
 from app.models.auth import User
 from app.models.scheduled_job import ScheduledJobRun
 from app.services import scheduler as scheduler_service
+from app.services import automation_failure_recorder_service
 
 router = APIRouter(prefix="/api/scheduler", tags=["scheduler"])
 
@@ -74,6 +76,52 @@ def list_runs(
         )
         for r in rows
     ]
+
+
+class FailureEventOut(BaseModel):
+    id: int
+    date: str
+    category: str
+    category_label: str
+    job_id: str
+    job_label: str
+    attempt_no: int
+    reason: str
+    state: str
+    final: bool
+    waiting_input: bool
+    next_retry_at: Optional[str]
+    recovered_at: Optional[str]
+    started_at: Optional[str]
+    completed_at: Optional[str]
+    duration_ms: Optional[int]
+    source_failures: list[dict[str, str]]
+    result_summary: dict[str, Any]
+
+
+class FailureRecorderOut(BaseModel):
+    date: str
+    total: int
+    open_count: int
+    by_category: dict[str, int]
+    items: list[FailureEventOut]
+
+
+@router.get("/failures", response_model=FailureRecorderOut)
+def list_failures(
+    on: Optional[date] = None,
+    category: Optional[str] = None,
+    limit: int = 500,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """Daily append-only failure recorder for critical automations."""
+    try:
+        return automation_failure_recorder_service.list_failure_events(
+            db, on=on, category=category, limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/jobs/{job_id}/trigger")

@@ -1,0 +1,172 @@
+"""Normalize critical automation failures from the append-only scheduler log."""
+from __future__ import annotations
+
+from datetime import date, datetime, time, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.models.scheduled_job import ScheduledJobRun
+
+
+LOCAL_TZ = ZoneInfo("Asia/Shanghai")
+CATEGORY_LABELS = {
+    "order": "订单拉取与推送",
+    "finance": "余额和收支拉取",
+    "campaign": "自动报活动",
+}
+JOB_CATEGORIES = {
+    "daily_0630_web_agent": "order",
+    "daily_1810_order_sheets": "order",
+    "pull_catchup_30min": "order",
+    "email_poll_alipay_6h": "finance",
+    "daily_2030_finance_agent": "finance",
+    "finance_pull_retry_30min": "finance",
+    "finance_pull_retry_2200": "finance",
+    "campaign_daily_discovery": "campaign",
+    "campaign_auto_execute": "campaign",
+    "campaign_auto_recon": "campaign",
+    "campaign_price_protection_rule_remind": "campaign",
+    "daily_0830_promo_price_check": "campaign",
+}
+
+
+def _recovery_key(job_id: str) -> str:
+    """Order/finance retries use different job IDs but belong to one daily chain."""
+    category = JOB_CATEGORIES[job_id]
+    return category if category in {"order", "finance"} else job_id
+
+
+def _iso(value: Optional[datetime]) -> Optional[str]:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(LOCAL_TZ).isoformat()
+
+
+def _pipeline_blocks(summary: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        value for key, value in summary.items()
+        if key.endswith("_pipeline") and isinstance(value, dict)
+    ]
+
+
+def _next_retry_at(summary: dict[str, Any]) -> Optional[str]:
+    candidates = [str(summary["next_retry_at"])] if summary.get("next_retry_at") else []
+    candidates.extend(
+        str(block["next_retry_at"])
+        for block in _pipeline_blocks(summary)
+        if block.get("next_retry_at")
+    )
+    return min(candidates) if candidates else None
+
+
+def _source_failures(summary: dict[str, Any]) -> list[dict[str, str]]:
+    failures: list[dict[str, str]] = []
+    for item in summary.get("tasks") or []:
+        if not isinstance(item, dict):
+            continue
+        status = str(item.get("status") or "").lower()
+        if status not in {"error", "failed", "fail", "pending_manual"}:
+            continue
+        failures.append({
+            "task": str(item.get("task") or item.get("id") or "unknown"),
+            "status": status,
+            "reason": str(item.get("error") or item.get("reason") or "未返回原因"),
+        })
+    for item in summary.get("pending_manual") or []:
+        if isinstance(item, dict):
+            failures.append({
+                "task": str(item.get("task") or item.get("id") or "unknown"),
+                "status": "pending_manual",
+                "reason": str(item.get("reason") or "需要人工处理"),
+            })
+    return failures
+
+
+def list_failure_events(
+    db: Session,
+    *,
+    on: Optional[date] = None,
+    category: Optional[str] = None,
+    limit: int = 500,
+) -> dict[str, Any]:
+    """Return every failed run for one Beijing calendar day without deduping."""
+    if category is not None and category not in CATEGORY_LABELS:
+        raise ValueError(f"unknown category: {category}")
+    on = on or datetime.now(LOCAL_TZ).date()
+    start = datetime.combine(on, time.min, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    end = datetime.combine(on, time.max, tzinfo=LOCAL_TZ).astimezone(timezone.utc)
+    job_ids = [
+        job_id for job_id, item_category in JOB_CATEGORIES.items()
+        if category is None or item_category == category
+    ]
+    rows = db.execute(
+        select(ScheduledJobRun)
+        .where(
+            ScheduledJobRun.job_id.in_(job_ids),
+            ScheduledJobRun.started_at >= start,
+            ScheduledJobRun.started_at <= end,
+        )
+        .order_by(ScheduledJobRun.started_at.asc(), ScheduledJobRun.id.asc())
+    ).scalars().all()
+
+    attempts: dict[str, int] = {}
+    events: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if row.status != "fail":
+            continue
+        recovery_key = _recovery_key(row.job_id)
+        attempts[recovery_key] = attempts.get(recovery_key, 0) + 1
+        later_success = next((
+            later for later in rows[index + 1:]
+            if _recovery_key(later.job_id) == recovery_key and later.status == "ok"
+        ), None)
+        summary = row.result_summary if isinstance(row.result_summary, dict) else {}
+        blocks = _pipeline_blocks(summary)
+        final = bool(summary.get("final")) or any(bool(x.get("final")) for x in blocks)
+        waiting_input = bool(summary.get("waiting") or summary.get("pending_manual")) or any(
+            bool(x.get("waiting_input")) for x in blocks
+        )
+        state = (
+            "recovered" if later_success else
+            "final" if final else
+            "waiting_input" if waiting_input else
+            "open"
+        )
+        item_category = JOB_CATEGORIES[row.job_id]
+        events.append({
+            "id": row.id,
+            "date": on.isoformat(),
+            "category": item_category,
+            "category_label": CATEGORY_LABELS[item_category],
+            "job_id": row.job_id,
+            "job_label": row.job_label,
+            "attempt_no": attempts[recovery_key],
+            "reason": row.error or str(summary.get("_error") or "任务失败但未返回原因"),
+            "state": state,
+            "final": final,
+            "waiting_input": waiting_input,
+            "next_retry_at": _next_retry_at(summary),
+            "recovered_at": _iso(later_success.completed_at) if later_success else None,
+            "started_at": _iso(row.started_at),
+            "completed_at": _iso(row.completed_at),
+            "duration_ms": row.duration_ms,
+            "source_failures": _source_failures(summary),
+            "result_summary": summary,
+        })
+
+    events = list(reversed(events))[: max(1, min(limit, 2000))]
+    by_category = {key: 0 for key in CATEGORY_LABELS}
+    for event in events:
+        by_category[event["category"]] += 1
+    return {
+        "date": on.isoformat(),
+        "total": len(events),
+        "open_count": sum(item["state"] != "recovered" for item in events),
+        "by_category": by_category,
+        "items": events,
+    }

@@ -57,6 +57,8 @@ import {
   RuntimeLog,
   SchedulerJob,
   SchedulerRun,
+  AutomationFailureCategory,
+  AutomationFailureEvent,
   SystemEvent,
   SystemStatus,
   adminResetPassword,
@@ -68,6 +70,7 @@ import {
   fetchRoles,
   fetchSchedulerJobs,
   fetchSchedulerRuns,
+  fetchAutomationFailures,
   fetchSystemEvents,
   fetchSystemStatus,
   listAuditLogs,
@@ -122,11 +125,94 @@ export default function AdminPage() {
           { key: 'users', label: '用户管理', children: <UsersTab /> },
           { key: 'integrations', label: 'AI 集成 / OCR 配置', children: <IntegrationsTab /> },
           { key: 'monitor', label: <Space><DashboardOutlined />系统监控 / 看门狗</Space>, children: <MonitorTab /> },
+          { key: 'failure-recorder', label: <Space><WarningOutlined />失败事件记录器</Space>, children: <FailureRecorderTab /> },
           { key: 'scheduler', label: '全自动任务清单 (业务需求 18)', children: <SchedulerTab /> },
           { key: 'audit', label: '操作审计', children: <AuditTab /> },
           { key: 'runtime-logs', label: <Space><WarningOutlined />运行日志 / 错误排查</Space>, children: <RuntimeLogsTab /> },
           { key: 'data-reset', label: <Space><DeleteOutlined />数据管理</Space>, children: <DataResetTab /> },
           { key: 'ops-tools', label: '运维工具', children: <OpsToolsPage /> },
+        ]}
+      />
+    </Space>
+  );
+}
+
+function localDateString(): string {
+  const now = new Date();
+  const offset = now.getTimezoneOffset() * 60_000;
+  return new Date(now.getTime() - offset).toISOString().slice(0, 10);
+}
+
+function FailureRecorderTab() {
+  const [on, setOn] = useState(localDateString());
+  const [category, setCategory] = useState<AutomationFailureCategory | undefined>();
+  const query = useQuery({
+    queryKey: ['automation-failures', on, category],
+    queryFn: () => fetchAutomationFailures({ on, category, limit: 1000 }),
+    refetchInterval: 15000,
+  });
+  const data = query.data;
+  const stateTag = (state: AutomationFailureEvent['state']) => {
+    const labels = { open: '待处理', waiting_input: '等待人工', recovered: '已恢复', final: '当日最终失败' };
+    const colors = { open: 'red', waiting_input: 'orange', recovered: 'green', final: 'volcano' };
+    return <Tag color={colors[state]}>{labels[state]}</Tag>;
+  };
+  return (
+    <Space direction="vertical" style={{ width: '100%' }} size="middle">
+      <Alert
+        type="info"
+        showIcon
+        message="订单、财务、活动自动化失败事件"
+        description="每次失败单独留档，不去重、不覆盖；后续成功只会把原事件标为已恢复。日期按北京时间统计。"
+      />
+      <Space wrap>
+        <Input type="date" value={on} onChange={(e) => setOn(e.target.value)} style={{ width: 160 }} />
+        <Select
+          allowClear
+          placeholder="全部系统"
+          value={category}
+          onChange={(value) => setCategory(value)}
+          style={{ width: 190 }}
+          options={[
+            { value: 'order', label: '订单拉取与推送' },
+            { value: 'finance', label: '余额和收支拉取' },
+            { value: 'campaign', label: '自动报活动' },
+          ]}
+        />
+        <Button icon={<ReloadOutlined />} loading={query.isFetching} onClick={() => query.refetch()}>刷新</Button>
+      </Space>
+      <Row gutter={12}>
+        <Col span={4}><Card size="small"><Statistic title="失败次数" value={data?.total ?? 0} /></Card></Col>
+        <Col span={4}><Card size="small"><Statistic title="尚未恢复" value={data?.open_count ?? 0} valueStyle={{ color: (data?.open_count ?? 0) ? '#cf1322' : '#3f8600' }} /></Card></Col>
+        <Col span={5}><Card size="small"><Statistic title="订单" value={data?.by_category?.order ?? 0} /></Card></Col>
+        <Col span={5}><Card size="small"><Statistic title="财务" value={data?.by_category?.finance ?? 0} /></Card></Col>
+        <Col span={5}><Card size="small"><Statistic title="活动" value={data?.by_category?.campaign ?? 0} /></Card></Col>
+      </Row>
+      <Table<AutomationFailureEvent>
+        size="small"
+        rowKey="id"
+        loading={query.isLoading}
+        dataSource={data?.items ?? []}
+        pagination={{ defaultPageSize: 50, showSizeChanger: true, pageSizeOptions: [20, 50, 100, 200] }}
+        expandable={{
+          expandedRowRender: (row) => (
+            <Space direction="vertical" style={{ width: '100%' }}>
+              {row.source_failures.length > 0 && <Typography.Text>失败来源：{row.source_failures.map((x) => `${x.task}：${x.reason}`).join('；')}</Typography.Text>}
+              <Typography.Text type="secondary" copyable style={{ fontSize: 11 }}>
+                {JSON.stringify(row.result_summary, null, 2)}
+              </Typography.Text>
+            </Space>
+          ),
+        }}
+        columns={[
+          { title: '失败时间', dataIndex: 'started_at', width: 175, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+          { title: '系统', dataIndex: 'category_label', width: 150 },
+          { title: '任务', dataIndex: 'job_label', width: 210 },
+          { title: '第几次失败', dataIndex: 'attempt_no', width: 105, render: (v: number) => `第 ${v} 次` },
+          { title: '原因', dataIndex: 'reason', ellipsis: true },
+          { title: '下次重试', dataIndex: 'next_retry_at', width: 175, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
+          { title: '当前结果', dataIndex: 'state', width: 115, render: stateTag },
+          { title: '恢复时间', dataIndex: 'recovered_at', width: 175, render: (v: string | null) => v ? new Date(v).toLocaleString('zh-CN') : '-' },
         ]}
       />
     </Space>

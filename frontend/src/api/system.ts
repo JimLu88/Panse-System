@@ -302,12 +302,50 @@ export interface SchedulerRun {
   created_at: string;
 }
 
+export type AutomationFailureCategory = 'order' | 'finance' | 'campaign';
+
+export interface AutomationFailureEvent {
+  id: number;
+  date: string;
+  category: AutomationFailureCategory;
+  category_label: string;
+  job_id: string;
+  job_label: string;
+  attempt_no: number;
+  reason: string;
+  state: 'open' | 'waiting_input' | 'recovered' | 'final';
+  final: boolean;
+  waiting_input: boolean;
+  next_retry_at: string | null;
+  recovered_at: string | null;
+  started_at: string | null;
+  completed_at: string | null;
+  duration_ms: number | null;
+  source_failures: Array<{ task: string; status: string; reason: string }>;
+  result_summary: Record<string, any>;
+}
+
+export interface AutomationFailureRecorder {
+  date: string;
+  total: number;
+  open_count: number;
+  by_category: Record<AutomationFailureCategory, number>;
+  items: AutomationFailureEvent[];
+}
+
 export const fetchSchedulerJobs = () =>
   api.get<SchedulerJob[]>('/api/scheduler/jobs').then((r) => r.data);
 
 export const fetchSchedulerRuns = (limit = 100, job_id?: string) =>
   api.get<SchedulerRun[]>('/api/scheduler/runs', { params: { limit, job_id } })
     .then((r) => r.data);
+
+export const fetchAutomationFailures = (params: {
+  on?: string;
+  category?: AutomationFailureCategory;
+  limit?: number;
+}) => api.get<AutomationFailureRecorder>('/api/scheduler/failures', { params })
+  .then((r) => r.data);
 
 export const triggerSchedulerJob = (job_id: string) =>
   api.post(`/api/scheduler/jobs/${job_id}/trigger`).then((r) => r.data);
