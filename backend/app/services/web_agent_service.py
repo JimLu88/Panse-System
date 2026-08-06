@@ -30,7 +30,7 @@ def _headers(db: Session) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
 
 
-def _get(db: Session, path: str, timeout: int = _TIMEOUT) -> dict:
+def _get_raw(db: Session, path: str, timeout: int = _TIMEOUT) -> dict:
     try:
         r = requests.get(f"{BASE_URL}{path}", headers=_headers(db), timeout=timeout)
         if r.status_code == 401:
@@ -43,8 +43,8 @@ def _get(db: Session, path: str, timeout: int = _TIMEOUT) -> dict:
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
-def _post(db: Session, path: str, payload: Optional[dict] = None,
-          timeout: int = _TIMEOUT) -> dict:
+def _post_raw(db: Session, path: str, payload: Optional[dict] = None,
+              timeout: int = _TIMEOUT) -> dict:
     try:
         r = requests.post(f"{BASE_URL}{path}", headers=_headers(db),
                           json=payload or {}, timeout=timeout)
@@ -58,12 +58,71 @@ def _post(db: Session, path: str, payload: Optional[dict] = None,
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+def request_start(db: Session, *, reason: str) -> dict:
+    from app.services import web_agent_wake_service
+
+    return web_agent_wake_service.request(db, "start", reason=reason)
+
+
+def request_stop(db: Session, *, reason: str) -> dict:
+    from app.services import web_agent_wake_service
+
+    return web_agent_wake_service.request(db, "stop", reason=reason)
+
+
+def ensure_online(db: Session, *, reason: str, wait_s: int = 75) -> dict:
+    """Ask the Windows bridge to start the full Agent, then wait for health."""
+    current = _get_raw(db, "/api/tasks", timeout=5)
+    if current.get("ok"):
+        current["online"] = True
+        return current
+    command = request_start(db, reason=reason)
+    deadline = time.monotonic() + max(5, wait_s)
+    last = current
+    while time.monotonic() < deadline:
+        time.sleep(3)
+        last = _get_raw(db, "/api/tasks", timeout=5)
+        if last.get("ok"):
+            last.update({"online": True, "wake_command_id": command.get("id")})
+            return last
+    return {
+        "ok": False,
+        "online": False,
+        "wake_requested": True,
+        "wake_command_id": command.get("id"),
+        "error": last.get("error") or "Windows唤醒桥未在时限内启动Web-Agent",
+    }
+
+
+def _get(db: Session, path: str, timeout: int = _TIMEOUT) -> dict:
+    return _get_raw(db, path, timeout=timeout)
+
+
+def _post(db: Session, path: str, payload: Optional[dict] = None,
+          timeout: int = _TIMEOUT, *, auto_wake: bool = True) -> dict:
+    out = _post_raw(db, path, payload, timeout=timeout)
+    error = str(out.get("error") or "")
+    if (
+        auto_wake
+        and not out.get("ok")
+        and any(marker in error for marker in (
+            "ConnectionError", "ConnectTimeout", "Connection refused",
+            "Failed to establish", "WinError 10061",
+        ))
+    ):
+        awakened = ensure_online(db, reason=f"POST {path}")
+        if awakened.get("online"):
+            return _post_raw(db, path, payload, timeout=timeout)
+        out["wake"] = awakened
+    return out
+
+
 def health(db: Session) -> dict:
     """探活: Agent 是否在线 (token 不对也算"在线但未授权")。
 
     用 /api/tasks 而非 /api/health 探 — 后者会预检 LLM 通道, 可能 >5s 超时误判离线。
     """
-    out = _get(db, "/api/tasks", timeout=8)
+    out = _get_raw(db, "/api/tasks", timeout=8)
     out["online"] = out.get("ok", False) or "token" in str(out.get("error", ""))
     return out
 
@@ -123,6 +182,9 @@ def upload_file(db: Session, channel: str, phase: str, xlsx_bytes: bytes,
     if expected_rows is not None:
         data["expected_rows"] = str(int(expected_rows))
     try:
+        online = ensure_online(db, reason=f"upload:{channel}:{phase}")
+        if not online.get("online"):
+            return {"ok": False, "error": online.get("error", "取数服务未能按需启动")}
         r = requests.post(
             f"{BASE_URL}/api/upload/{channel}", headers=_headers(db),
             data=data,

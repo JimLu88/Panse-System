@@ -47,6 +47,30 @@ _CRITICAL_PIPELINE_JOB_IDS = {
     "finance_pull_retry_2200",
 }
 
+_CRITICAL_JOB_PIPELINES = {
+    "daily_0630_web_agent": (
+        ("order_delivery", ((18, 30), (19, 17), (20, 17), (21, 17))),
+    ),
+    "daily_1810_order_sheets": (
+        ("order_delivery", ((19, 17), (20, 17), (21, 17))),
+    ),
+    "pull_catchup_30min": (
+        ("order_delivery", ((19, 17), (20, 17), (21, 17))),
+    ),
+    "daily_2030_finance_agent": (
+        ("balance_pull", ((21, 0), (21, 30), (22, 0))),
+        ("flow_pull", ((21, 0), (21, 30), (22, 0))),
+    ),
+    "finance_pull_retry_30min": (
+        ("balance_pull", ((21, 30), (22, 0))),
+        ("flow_pull", ((21, 30), (22, 0))),
+    ),
+    "finance_pull_retry_2200": (
+        ("balance_pull", ()),
+        ("flow_pull", ()),
+    ),
+}
+
 
 def _maybe_alert_repeated_failure(db: Session, job_id: str, label: str) -> None:
     """定时任务连续失败到阈值时告警一次 (优化 #6)。只在"刚跨过阈值"时发, 避免每次刷屏。"""
@@ -95,6 +119,8 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
                 result = r
             else:
                 result = {"value": r}
+            from app.json_utils import to_jsonable
+            result = to_jsonable(result)
             if isinstance(result, dict):
                 requested_status = result.get("_run_status")
                 if requested_status in ("fail", "skipped"):
@@ -106,6 +132,27 @@ def _run_with_logging(job_id: str, label: str, fn: Callable[[Session], dict]) ->
         _logger.exception("定时任务 %s 失败", job_id)
         status = "fail"
         error = f"{type(e).__name__}: {e}"
+        pipeline_cfg = _CRITICAL_JOB_PIPELINES.get(job_id)
+        if pipeline_cfg:
+            try:
+                from app.services import automation_pipeline_service
+                fail_db = SessionLocal()
+                try:
+                    for pipeline, retry_times in pipeline_cfg:
+                        automation_pipeline_service.record_failure(
+                            fail_db,
+                            pipeline,
+                            error,
+                            retry_slots=_today_retry_slots(retry_times),
+                            max_failures=1 + len(_FINANCE_RETRY_TIMES)
+                            if pipeline in {"balance_pull", "flow_pull"}
+                            else 1 + len(_ORDER_RETRY_TIMES),
+                        )
+                    fail_db.commit()
+                finally:
+                    fail_db.close()
+            except Exception:  # pragma: no cover
+                _logger.warning("关键自动化顶层失败通知写入失败", exc_info=True)
     finally:
         duration = int((time_mod.time() - t0) * 1000)
         # 写日志 (独立 session)
@@ -206,7 +253,7 @@ def _add_to_scheduler(job_id: str, overrides: Optional[dict] = None) -> None:
         _run_with_logging, trigger=trigger,
         args=(job_id, cfg["label"], cfg["fn"]),
         id=job_id, replace_existing=True,
-        misfire_grace_time=300, max_instances=1, coalesce=True,
+        misfire_grace_time=3600, max_instances=1, coalesce=True,
     )
 
 
@@ -750,10 +797,28 @@ def _job_web_agent_daily(db: Session) -> dict:
     串行触发到期任务 → 等 job 完成 → 扫共享目录导入 → 飞书日报。
     Agent 离线/待人工的任务快速失败并标记, 不无限重试 (交接方案 §7.6)。
     """
-    from app.services import agent_ingest_service, alert_service
+    from app.services import (
+        agent_ingest_service,
+        alert_service,
+        automation_pipeline_service,
+        order_sheet_archive_service,
+    )
     run_date = date.today()
+    automation_pipeline_service.record_stage(
+        db, "order_delivery", "started", detail="18:00订单取数与送达链路开始"
+    )
+    db.commit()
     if agent_ingest_service.is_running():
-        return {"skipped": "已有编排在跑 (手动触发未结束)"}
+        return _record_pipeline_result(
+            db,
+            "order_delivery",
+            {
+                "skipped": "已有编排在跑 (手动触发未结束)",
+                "_run_status": "fail",
+                "_error": "18:00订单取数开始时已有编排未结束，18:30自动续跑",
+            },
+            retry_times=_ORDER_RETRY_TIMES,
+        )
     # The 18:00 run must refresh orders after 18:00 even when a manual pull
     # happened earlier that day. Other report types keep their own intervals.
     r = agent_ingest_service.orchestrate(db, force_orders=True, orders_only=True)
@@ -805,7 +870,42 @@ def _job_web_agent_daily(db: Session) -> dict:
     elif not agent_ingest_service.order_data_fresh(db, on=run_date, not_before_hour=18):
         r["_run_status"] = "fail"
         r["_error"] = "取数流程结束但没有产生18:00后的淘宝订单刷新时间"
-    return r
+    automation_pipeline_service.record_stage(
+        db,
+        "order_delivery",
+        "order_ingest",
+        status="fail" if r.get("_run_status") == "fail" else "ok",
+        detail=str(r.get("_error") or "18:00后订单已刷新并入库"),
+        artifacts=r.get("artifacts") or [],
+    )
+    db.commit()
+    if r.get("_run_status") != "fail":
+        delivery = order_sheet_archive_service.reconcile_pending_delivery(
+            db, limit=50, quiet=True
+        )
+        r["delivery"] = delivery
+        if delivery.get("_run_status") == "fail":
+            r["_run_status"] = "fail"
+            r["_error"] = str(delivery.get("_error") or "下单图送达未完成")
+        else:
+            r["_success_message"] = agent_ingest_service.format_order_change_message(
+                agent_ingest_service.latest_order_pull_result(db).get("changes")
+            )
+            _sync_factory_dispatch_after_orders(db, r)
+        automation_pipeline_service.record_stage(
+            db,
+            "order_delivery",
+            "delivery",
+            status="fail" if r.get("_run_status") == "fail" else "ok",
+            detail=str(
+                r.get("_error")
+                or f"下单图送达{int(delivery.get('images_pushed') or 0)}张，待处理{int(delivery.get('images_remaining') or 0)}张"
+            ),
+        )
+        db.commit()
+    return _record_pipeline_result(
+        db, "order_delivery", r, retry_times=_ORDER_RETRY_TIMES
+    )
 
 
 def _today_retry_slots(times: tuple[tuple[int, int], ...]) -> list[datetime]:
@@ -817,7 +917,7 @@ def _today_retry_slots(times: tuple[tuple[int, int], ...]) -> list[datetime]:
     ]
 
 
-_ORDER_RETRY_TIMES = ((19, 17), (20, 17), (21, 17))
+_ORDER_RETRY_TIMES = ((18, 30), (19, 17), (20, 17), (21, 17))
 _FINANCE_RETRY_TIMES = ((21, 0), (21, 30), (22, 0))
 
 
@@ -2209,7 +2309,7 @@ def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
                         overrides: Optional[dict] = None) -> list[str]:
     """启动补跑决策(纯判定, 供测试): 返回需补跑的 job_id, 保持 _CATCHUP_JOBS 声明顺序。"""
     from datetime import timedelta
-    from sqlalchemy import func as _f, select as _sel
+    from sqlalchemy import select as _sel
     from app.models.scheduled_job import ScheduledJobRun
     now = now or datetime.now().astimezone()
     if now.tzinfo is None:
@@ -2227,13 +2327,21 @@ def missed_catchup_jobs(db: Session, now: Optional[datetime] = None,
         if fire is None or (now - fire) > timedelta(hours=grace_h):
             continue
         last = db.execute(
-            _sel(_f.max(ScheduledJobRun.started_at)).where(ScheduledJobRun.job_id == jid)
-        ).scalar()
+            _sel(ScheduledJobRun)
+            .where(ScheduledJobRun.job_id == jid)
+            .order_by(ScheduledJobRun.started_at.desc())
+            .limit(1)
+        ).scalars().first()
         if last is not None:
             # sqlite 返回 naive(库里本就存 UTC), postgres 返回 aware — 统一按 UTC 换算比较
-            last_ts = (last.replace(tzinfo=timezone.utc) if last.tzinfo is None else last).timestamp()
-            if last_ts >= fire.timestamp() - 300:
-                continue   # 该班(或之后)已有运行记录 → 不补
+            started_at = last.started_at
+            last_ts = (
+                started_at.replace(tzinfo=timezone.utc)
+                if started_at.tzinfo is None
+                else started_at
+            ).timestamp()
+            if last_ts >= fire.timestamp() - 300 and last.status in {"ok", "skipped"}:
+                continue   # 该班(或之后)已成功/明确跳过；失败记录仍允许启动补跑
         out.append(jid)
     return out
 

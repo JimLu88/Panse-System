@@ -181,6 +181,7 @@ def start_pending_scans(db: Session) -> dict:
     def _run() -> None:
         from app.database import SessionLocal
         d = SessionLocal()
+        remain = list(tasks)
         try:
             done = []
             failures: list[dict] = []
@@ -357,6 +358,13 @@ def start_pending_scans(db: Session) -> dict:
             _log.exception("扫码流程线程异常")
             d.rollback()
         finally:
+            if not remain:
+                try:
+                    web_agent_service.request_stop(
+                        d, reason="scan_continuation_complete"
+                    )
+                except Exception:  # noqa: BLE001
+                    _log.warning("扫码续跑结束后请求关闭Web-Agent失败", exc_info=True)
             d.close()
             _scan_lock.release()
 
@@ -381,7 +389,11 @@ def _load_json(db: Session, key: str) -> dict:
 
 
 def _save_json(db: Session, key: str, data: dict) -> None:
-    settings_service.set_value(db, key, json.dumps(data, ensure_ascii=False))
+    from app.json_utils import to_jsonable
+
+    settings_service.set_value(
+        db, key, json.dumps(to_jsonable(data), ensure_ascii=False)
+    )
 
 
 def _hash_exists(db: Session, file_hash: str) -> Optional[ImportedFile]:
@@ -877,8 +889,38 @@ def reingest_pending_shipping(db: Session) -> dict:
     return out
 
 
-def run_ingest(db: Session) -> dict:
-    """扫 output 目录全部文件, 新文件(hash 未见过)导入+归档。幂等, 可随时跑。"""
+def _ingest_candidates(only_paths: Optional[list[str]] = None) -> list[Path]:
+    """Resolve current-run Agent artifacts inside OUTPUT_DIR.
+
+    Agent responses may contain a Windows/UNC absolute path while ERP mounts
+    the same share at another path.  In that case the basename is resolved
+    against the mounted output directory.  The fallback full scan remains for
+    legacy/manual ingestion calls that have no run manifest.
+    """
+    if not only_paths:
+        return sorted(OUTPUT_DIR.rglob("*"))
+    found: dict[str, Path] = {}
+    for raw_path in only_paths:
+        raw_text = str(raw_path)
+        raw = Path(raw_text)
+        basename = raw_text.replace("\\", "/").rsplit("/", 1)[-1]
+        candidates: list[Path] = []
+        if raw.is_absolute():
+            candidates.append(raw)
+        else:
+            candidates.append(OUTPUT_DIR / raw)
+        if basename:
+            candidates.append(OUTPUT_DIR / basename)
+            candidates.extend(OUTPUT_DIR.rglob(basename))
+        existing = [item for item in candidates if item.is_file()]
+        if existing:
+            chosen = max(existing, key=lambda item: item.stat().st_mtime)
+            found[str(chosen.resolve())] = chosen
+    return sorted(found.values(), key=lambda item: str(item))
+
+
+def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
+    """Import current-run artifacts, or all unseen output files as fallback."""
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
     _pending_pw_files: list[str] = []   # 本轮新下载、待飞书口令解密的加密发货报表
@@ -886,7 +928,7 @@ def run_ingest(db: Session) -> dict:
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
         return report
     state = _load_json(db, KEY_STATE)
-    for path in sorted(OUTPUT_DIR.rglob("*")):
+    for path in _ingest_candidates(only_paths):
         if not path.is_file() or path.name.startswith("_"):
             continue
         if path.suffix.lower() not in (".xlsx", ".xls", ".csv", ".zip", ".png"):
@@ -1203,14 +1245,34 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
     out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
                  "tasks": [], "pending_manual": [], "task_errors": [], "skipped": []}
-    hb = web_agent_service.health(db)
+    from app.services import automation_pipeline_service
+
+    pipeline = "order_delivery" if orders_only else (
+        "balance_pull" if force_finance else "order_delivery"
+    )
+    automation_pipeline_service.record_stage(
+        db, pipeline, "wake_requested", detail="NAS请求Windows按需启动Web-Agent"
+    )
+    db.commit()
+    hb = web_agent_service.ensure_online(
+        db,
+        reason="scheduled_order_pull" if orders_only else "scheduled_finance_pull",
+    )
     if not hb.get("online"):
+        automation_pipeline_service.record_stage(
+            db, pipeline, "agent_online", status="fail", detail=hb.get("error")
+        )
         out["agent_offline"] = hb.get("error", "无法连接")
         out["ingest"] = run_ingest(db)   # Agent 掉线也把已有文件扫了
         out["yulibao_after_ingest"] = yulibao_service.refresh_estimated_balance(db)
         _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
         db.commit()
         return out
+
+    automation_pipeline_service.record_stage(
+        db, pipeline, "agent_online", detail="Web-Agent已按需启动并通过认证探活"
+    )
+    db.commit()
 
     tasks_info = {t["id"]: t for t in (web_agent_service.list_tasks(db).get("tasks") or [])}
     state = _load_json(db, KEY_STATE)
@@ -1256,23 +1318,26 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
 
     # 支付宝企业号余额: 走官方 API 精确刷 — 每次编排都刷 (API 便宜, 无浏览器/无扫码,
     # 用户拍板 2026-06-12 企业号余额"每天刷"; 不受余额/流水的 3 天截图周期限制)。
-    try:
-        out["alipay_balance"] = refresh_alipay_balances(db)
-        state["alipay_balance"] = datetime.now().isoformat(timespec="seconds")
-        _save_json(db, KEY_STATE, state)
-        db.commit()
-    except Exception as e:  # noqa: BLE001
-        out["alipay_balance"] = [{"error": f"{type(e).__name__}: {e}"}]
+    if not orders_only:
+        try:
+            out["alipay_balance"] = refresh_alipay_balances(db)
+            state["alipay_balance"] = datetime.now().isoformat(timespec="seconds")
+            _save_json(db, KEY_STATE, state)
+            db.commit()
+        except Exception as e:  # noqa: BLE001
+            out["alipay_balance"] = [{"error": f"{type(e).__name__}: {e}"}]
     # 企业号流水: 按天官方API补到昨天(T+1), 落NAS共享; 下方 run_ingest 经 _import_one 自动入库。
     # 每轮都补(官方API便宜、无浏览器/无扫码); 解决"当月整月API取不了→流水停更"(2026-06-15)。
-    try:
-        out["alipay_daily"] = refresh_alipay_daily(db)
-    except Exception as e:  # noqa: BLE001
-        out["alipay_daily"] = {"error": f"{type(e).__name__}: {e}"}
+    if not orders_only:
+        try:
+            out["alipay_daily"] = refresh_alipay_daily(db)
+        except Exception as e:  # noqa: BLE001
+            out["alipay_daily"] = {"error": f"{type(e).__name__}: {e}"}
 
     today = date.today()
     orders_pull_complete = False
     main_alipay_task_succeeded = False
+    run_artifacts: list[str] = []
     for task_id in plan:
         info = tasks_info.get(task_id, {})
         if (task_id != MAIN_ALIPAY_FLOW_TASK
@@ -1300,6 +1365,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         final = web_agent_service.wait_job(db, r["job"], timeout_s=1800)
         status = (final.get("status") or "").lower()
         job_result = final.get("result") or {}
+        run_artifacts.extend(
+            str(item) for item in (job_result.get("downloads") or []) if item
+        )
         if status in ("done", "ok", "success") and job_result.get("ok") is False:
             status = "error"
             final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
@@ -1326,7 +1394,23 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         if task_id == MAIN_ALIPAY_FLOW_TASK and status in ("done", "ok", "success"):
             main_alipay_task_succeeded = True
 
-    out["ingest"] = run_ingest(db)
+    out["ingest"] = run_ingest(
+        db,
+        only_paths=run_artifacts if orders_only and run_artifacts else None,
+    )
+    out["artifacts"] = run_artifacts
+    automation_pipeline_service.record_stage(
+        db,
+        pipeline,
+        "artifact_ingest",
+        status="fail" if out["ingest"].get("errors") else "ok",
+        detail=(
+            f"导入{int(out['ingest'].get('imported') or 0)}份，"
+            f"失败{int(out['ingest'].get('errors') or 0)}份，"
+            f"待处理{int(out['ingest'].get('pending') or 0)}份"
+        ),
+        artifacts=run_artifacts,
+    )
     # 余额 API 先于资金账单下载执行。导入完成后再重算一次余利宝，避免
     # 新增申购/赎回要多等一个自动化周期才进入可用资金。
     out["yulibao_after_ingest"] = yulibao_service.refresh_estimated_balance(db)
@@ -1384,6 +1468,13 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     out["finished_at"] = datetime.now().isoformat(timespec="seconds")
     _save_json(db, KEY_ORCH_STATE, {**out, "running": False})
     db.commit()
+
+    # 登录/扫码等待期间保留完整 Agent；其余任务完成即通知轻量桥关闭。
+    if not out.get("pending_manual"):
+        try:
+            web_agent_service.request_stop(db, reason="orchestration_complete")
+        except Exception:  # noqa: BLE001
+            _log.warning("编排完成后请求关闭Web-Agent失败", exc_info=True)
 
     # 飞书汇总 (复用机器人通道; 测试环境 PANSE_DISABLE_NOTIFY 静默; quiet=续跑补取数不刷屏)
     if not quiet:

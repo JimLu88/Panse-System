@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from html import escape
 from typing import Optional
@@ -726,6 +726,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
     _held_address: list[str] = []
     _held_remote: list[str] = []
+    _delivery_uncertain: list[str] = []
     _skipped_sample: list[str] = []
     _skipped_topup: list[dict] = []
     records = _pending_push_records(db, include_baseline=include_baseline)
@@ -734,6 +735,10 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         records = [r for r in records if _order_no_from_name(r.original_filename) in only_order_nos]
     for rec in records[:limit]:
         no = _order_no_from_name(rec.original_filename)
+        delivery_state = str((rec.row_summary or {}).get("delivery_state") or "")
+        if delivery_state in {"sending", "sending_caption", "sending_image", "uncertain"}:
+            _delivery_uncertain.append(no)
+            continue
         order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if not order:
             continue
@@ -792,26 +797,62 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         # “未能匹配工厂订单号”的生产图，确保图片、表格第一列和工厂群标题完全一致。
         if getattr(order, "factory_no", None) is None:
             continue
+        delivery_key = f"factory-sheet:{no}:{order.factory_no}"
+        rec.row_summary = {
+            **(rec.row_summary or {}),
+            "delivery_key": delivery_key,
+            "delivery_state": "sending",
+            "delivery_started_at": datetime.now().astimezone().isoformat(),
+            "delivery_error": None,
+        }
+        db.commit()
+        send_stage = "render"
         try:
             png = render_png(factory_sheet.build(db, order.id))
-            # 先在同一事务中登记“最终发送版”；只有后面的飞书发送成功并 commit，
-            # 这张图片才会成为下单表的可信来源。发送失败 rollback 后不会误展示。
-            archive_sent_snapshot(db, order, png)
+            send_stage = "upload"
             key = feishu_client.upload_image(db, png)
             _fno = (f"畔色{order.factory_no}单" if getattr(order, "factory_no", None)
                     else "未能匹配工厂订单号")
             cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
-            feishu_client.send_text(db, chat_id, cap)
-            feishu_client.send_image(db, chat_id, key)
+            rec.row_summary = {
+                **(rec.row_summary or {}),
+                "delivery_state": "sending_caption",
+                "delivery_image_key": key,
+            }
+            db.commit()
+            send_stage = "sending_caption"
+            text_result = feishu_client.send_text(db, chat_id, cap) or {}
+            rec.row_summary = {
+                **(rec.row_summary or {}),
+                "delivery_state": "sending_image",
+                "delivery_caption_message_id": (text_result.get("data") or {}).get("message_id"),
+            }
+            db.commit()
+            send_stage = "sending_image"
+            image_result = feishu_client.send_image(db, chat_id, key) or {}
+            # Only a confirmed image response becomes the trusted factory-sheet
+            # source used by the ERP/Feishu dispatch table.
+            archive_sent_snapshot(db, order, png)
             rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": True,
                                "held_no_address": False,
+                               "delivery_state": "sent",
+                               "delivery_sent_at": datetime.now().astimezone().isoformat(),
+                               "delivery_message_id": (image_result.get("data") or {}).get("message_id"),
                                "activated": order_flags.is_activated(order)}   # 激活态推的图不再被 repush_activated 重推
             db.commit()
             pushed += 1
             sent_nos.append(no)
             _zip_items.append((order, png))
-        except Exception:  # noqa: BLE001 - 单张失败不阻断整批
+        except Exception as exc:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
+            uncertain = send_stage in {"sending_caption", "sending_image"}
+            rec.row_summary = {
+                **(rec.row_summary or {}),
+                "pushed": False,
+                "delivery_state": "uncertain" if uncertain else "failed",
+                "delivery_error": f"{type(exc).__name__}: {exc}"[:500],
+            }
+            db.commit()
             failed += 1
             failed_nos.append(no)
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
@@ -833,6 +874,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             "order_nos": sent_nos, "failed_order_nos": failed_nos,
             "held_no_sku": _held_skeleton, "held_no_address": _held_address,
             "held_remote": _held_remote,
+            "delivery_uncertain": _delivery_uncertain,
             "skipped_sample": _skipped_sample, "skipped_topup": _skipped_topup}
 
 
@@ -912,6 +954,7 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "held_no_sku": push.get("held_no_sku") or [],
         "held_no_address": push.get("held_no_address") or [],
         "held_remote": push.get("held_remote") or [],
+        "delivery_uncertain": push.get("delivery_uncertain") or [],
         "push_reason": push.get("reason"),
         "remote_voided": remote["voided_remote"],
         "remote_transitions": remote["remote_transitions"],
@@ -944,6 +987,11 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
                 f"{x.get('order_no')}: {x.get('reason')}"
                 for x in result["remote_feishu_failed"]
             )
+        )
+    if result["delivery_uncertain"]:
+        errors.append(
+            "飞书是否送达无法确定，已停止盲目重发，需人工核对: "
+            + ",".join(result["delivery_uncertain"])
         )
     if errors:
         result["_run_status"] = "fail"

@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.services import agent_ingest_service as ingest
-from app.services import settings_service, web_agent_service
+from app.services import settings_service, web_agent_service, web_agent_wake_service
 
 router = APIRouter(prefix="/api/web-agent", tags=["web-agent"])
 
@@ -138,13 +138,38 @@ def status(db: Session = Depends(get_db)):
             "received_at": settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False),
             "hint": "把淘宝发来的口令以「发货密码 xxx」转发给飞书机器人；口令不按时间失效，收到后自动解密并续推下单图。",
         },
+        "on_demand": web_agent_wake_service.status(db),
     }
+
+
+class WakeAck(BaseModel):
+    command_id: str
+    agent_id: str = "windows-default"
+    status: str
+    detail: str = ""
+
+
+@router.get("/wake/next")
+def wake_next(agent_id: str = "windows-default", db: Session = Depends(get_db)):
+    """Tiny Windows bridge heartbeat and pending start/stop command fetch."""
+    return web_agent_wake_service.next_command(db, agent_id=agent_id)
+
+
+@router.post("/wake/ack")
+def wake_ack(payload: WakeAck, db: Session = Depends(get_db)):
+    return web_agent_wake_service.acknowledge(
+        db,
+        command_id=payload.command_id,
+        agent_id=payload.agent_id,
+        status=payload.status,
+        detail=payload.detail,
+    )
 
 
 @router.post("/run")
 def run_now(db: Session = Depends(get_db)):
     """立即取数: 全部类别强制触发 (忽略间隔)。后台执行, 进度看 status。"""
-    hb = web_agent_service.health(db)
+    hb = web_agent_service.ensure_online(db, reason="manual_full_pull")
     if not hb.get("online"):
         raise HTTPException(409, f"取数服务(:8500)不在线: {hb.get('error', '')}。"
                                  f"请在 Windows 上启动 Panse-Web-Agent 后重试。")
@@ -163,7 +188,7 @@ def ingest_now(db: Session = Depends(get_db)):
 def pull_orders(db: Session = Depends(get_db)):
     """订单页「手动更新拉取订单」: 实时触发淘宝订单近3月全量下载+导入 (后台)。
     发工厂制单图前可点一下, 拉到最新订单/状态。"""
-    hb = web_agent_service.health(db)
+    hb = web_agent_service.ensure_online(db, reason="manual_order_pull")
     if not hb.get("online"):
         raise HTTPException(409, f"取数服务(:8500)不在线: {hb.get('error', '')}。请先在 Windows 启动 Panse-Web-Agent。")
     res = ingest.pull_orders_async(db)

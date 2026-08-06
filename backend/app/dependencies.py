@@ -168,6 +168,13 @@ def _has_valid_machine_key(
         )
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return True
+    # The lightweight Windows wake bridge gets access only to its command and
+    # acknowledgement endpoints.  Reuse the existing DPAPI-protected Agent
+    # token without granting it access to the rest of the ERP API.
+    if path == "/api/web-agent/wake" or path.startswith("/api/web-agent/wake/"):
+        expected = settings_service.get(db, "web_agent_token", env_fallback=True)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return True
     return False
 
 

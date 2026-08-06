@@ -39,14 +39,14 @@ def test_run_row_suppresses_catchup(db_session):
     assert missed == ["daily_1810_order_sheets"]
 
 
-def test_failed_run_also_counts(db_session):
-    """fail 也算跑过(不补跑防崩溃循环): 22:50 订单维护昨晚 fail → 23:30 不再追。"""
+def test_failed_run_is_eligible_for_one_startup_catchup(db_session):
+    """A failed critical run is not mistaken for completion after restart."""
     fire = _now_at(22, 50)
     db_session.add(ScheduledJobRun(job_id="daily_0230_orders_maintain", job_label="x",
                                    status="fail", started_at=fire.astimezone(timezone.utc)))
     db_session.commit()
     missed = sched.missed_catchup_jobs(db_session, now=fire + timedelta(minutes=40), overrides={})
-    assert "daily_0230_orders_maintain" not in missed
+    assert "daily_0230_orders_maintain" in missed
 
 
 def test_beyond_grace_not_chased(db_session):

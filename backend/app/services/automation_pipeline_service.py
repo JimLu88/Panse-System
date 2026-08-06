@@ -164,9 +164,41 @@ def _entry_for_day(state: dict, pipeline: str, day: str) -> dict:
             "last_attempt_at": None,
             "next_retry_at": None,
             "notifications": [],
+            "stages": [],
         }
         pipelines[pipeline] = entry
     return entry
+
+
+def record_stage(
+    db: Session,
+    pipeline: str,
+    stage: str,
+    *,
+    status: str = "ok",
+    detail: str | None = None,
+    artifacts: Iterable[str] | None = None,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Persist one evidence checkpoint without sending a notification."""
+    if pipeline not in PIPELINE_LABELS:
+        raise ValueError(f"未知关键自动化: {pipeline}")
+    current = _now(now)
+    state = _load(db)
+    entry = _entry_for_day(state, pipeline, current.date().isoformat())
+    event = {
+        "stage": str(stage)[:80],
+        "status": str(status)[:40],
+        "at": current.isoformat(),
+        "detail": _safe_error(detail or "") if detail else None,
+        "artifacts": [str(item)[:300] for item in (artifacts or [])][:20],
+    }
+    stages = entry.setdefault("stages", [])
+    stages.append(event)
+    entry["stages"] = stages[-60:]
+    entry["last_stage"] = event
+    _save(db, state)
+    return event
 
 
 def get_pipeline(db: Session, pipeline: str, *, now: Optional[datetime] = None) -> dict:
