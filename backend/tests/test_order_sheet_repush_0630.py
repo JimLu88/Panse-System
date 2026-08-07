@@ -10,6 +10,9 @@ import pytest
 
 from app.models.import_file import ImportedFile
 from app.models.order import Order
+from app.services import automation_failure_recorder_service as failure_recorder
+from app.services import automation_pipeline_service as pipeline
+from app.services import order_delivery_completion_service as order_closeout
 from app.services import order_sheet_archive_service as osa
 from app.services import settings_service
 
@@ -156,7 +159,16 @@ def test_apply_shipping_password_triggers_repush(db_session, _feishu_stub, monke
     monkeypatch.setattr("app.services.agent_ingest_service.reingest_pending_shipping", _fake_reingest)
     monkeypatch.setattr(
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
-        lambda db: {"completed": True},
+        lambda db: {
+            "completed": True,
+            "artifacts": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.factory_dispatch_feishu_service.sync_if_enabled",
+        lambda db: {
+            "ok": True, "rows": 1, "created": 0, "updated": 1, "errors": [],
+        },
     )
     r = feishu_bot_service.apply_shipping_password(db_session, "9oMdwP6L")
     assert r.get("imported") == 1
@@ -180,7 +192,17 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
     )
     monkeypatch.setattr(
         "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
-        lambda db: {"completed": True, "completed_at": "2026-07-27T18:25:00"},
+        lambda db: {
+            "completed": True,
+            "completed_at": "2026-07-27T18:25:00",
+            "artifacts": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.factory_dispatch_feishu_service.sync_if_enabled",
+        lambda db: {
+            "ok": True, "rows": 8, "created": 0, "updated": 8, "errors": [],
+        },
     )
     monkeypatch.setattr(osa, "repush_after_address_fill", lambda db, **kwargs: {"repushed": 0})
     monkeypatch.setattr(
@@ -198,6 +220,74 @@ def test_apply_shipping_password_immediately_reconciles_new_sheets(
 
     assert result["delivery"]["images_pushed"] == 8
     assert result["delivery"].get("_run_status") is None
+
+
+def test_recovery_closeout_syncs_factory_and_closes_failure(
+    db_session, monkeypatch,
+):
+    monkeypatch.setenv("PANSE_DISABLE_NOTIFY", "1")
+    delivery_calls: list[dict] = []
+    factory_calls: list[bool] = []
+    pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "shipping password pending",
+        retry_slots=[],
+    )
+    monkeypatch.setattr(
+        osa,
+        "reconcile_pending_delivery",
+        lambda db, **kwargs: delivery_calls.append(kwargs) or {
+            "images_pushed": 12,
+            "images_deferred_no_address": 1,
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.factory_dispatch_feishu_service.sync_if_enabled",
+        lambda db: factory_calls.append(True) or {
+            "ok": True, "rows": 88, "created": 2, "updated": 5, "errors": [],
+        },
+    )
+
+    result = order_closeout.complete_recovered_order_delivery(
+        db_session,
+        source="test_password",
+        manifest=["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+    )
+
+    assert result.get("_run_status") is None
+    assert delivery_calls == [{"limit": 500, "quiet": True}]
+    assert factory_calls == [True]
+    assert pipeline.get_pipeline(db_session, "order_delivery")["success"] is True
+    recorded = failure_recorder.list_failure_events(db_session, on=date.today())
+    assert recorded["open_count"] == 0
+
+
+def test_recovery_closeout_keeps_factory_sync_failure_open(
+    db_session, monkeypatch,
+):
+    monkeypatch.setenv("PANSE_DISABLE_NOTIFY", "1")
+    monkeypatch.setattr(
+        osa,
+        "reconcile_pending_delivery",
+        lambda db, **kwargs: {"images_pushed": 0},
+    )
+    monkeypatch.setattr(
+        "app.services.factory_dispatch_feishu_service.sync_if_enabled",
+        lambda db: {"ok": False, "errors": ["schema mismatch"]},
+    )
+
+    result = order_closeout.complete_recovered_order_delivery(
+        db_session,
+        source="test_password_fail",
+        manifest=["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+    )
+
+    assert result["_run_status"] == "fail"
+    assert "schema mismatch" in result["_error"]
+    assert pipeline.get_pipeline(db_session, "order_delivery")["success"] is False
+    recorded = failure_recorder.list_failure_events(db_session, on=date.today())
+    assert recorded["open_count"] == 1
 
 
 def test_password_mismatch_pauses_retry_and_keeps_exact_reason(

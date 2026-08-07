@@ -80,3 +80,28 @@ def test_uses_beijing_calendar_day(db_session):
 
     assert result["total"] == 1
     assert result["items"][0]["started_at"].startswith("2026-08-07T00:01")
+
+
+def test_callback_success_closes_scheduler_failures(db_session):
+    started = datetime(2026, 8, 7, 10, 0, tzinfo=timezone.utc)
+    db_session.add(_run(
+        "daily_1810_order_sheets",
+        "fail",
+        started,
+        error="shipping password pending",
+    ))
+    recorder.record_callback_run(
+        db_session,
+        category="order",
+        status="ok",
+        detail="password callback completed delivery",
+        recovery_key="manifest-1",
+        now=started + timedelta(minutes=5),
+    )
+    db_session.commit()
+
+    result = recorder.list_failure_events(db_session, on=date(2026, 8, 7))
+
+    assert result["total"] == 1
+    assert result["open_count"] == 0
+    assert result["items"][0]["state"] == "recovered"

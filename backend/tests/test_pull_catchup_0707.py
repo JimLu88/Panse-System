@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 from app import database
 from app.services import agent_ingest_service as ai
+from app.services import order_delivery_completion_service as order_closeout
 from app.services import order_sheet_archive_service as oss
 from app.services import order_sync_service, scheduler, settings_service, web_agent_service
 from app.models.import_file import ImportedFile
@@ -24,8 +25,37 @@ def _set_taobao_report(db, dt):
     else:
         state["taobao_report"] = dt.isoformat(timespec="seconds")
         state["taobao_orders_complete"] = dt.isoformat(timespec="seconds")
+        artifacts = ["orders.xlsx", "items.xlsx", "shipping.xlsx"]
+        state["taobao_orders_complete_artifacts"] = artifacts
+        for index, name in enumerate(artifacts):
+            db.add(ImportedFile(
+                kind="taobao",
+                original_filename=name,
+                stored_path=f"/tmp/{name}",
+                file_hash=f"fresh-{dt.isoformat()}-{index}",
+                source="api",
+                row_summary={"agent_status": "imported"},
+                created_at=dt,
+                updated_at=dt,
+            ))
     ai._save_json(db, ai.KEY_STATE, state)
     db.commit()
+
+
+def _add_imported_batch(db, now, prefix):
+    artifacts = ["orders.xlsx", "items.xlsx", "shipping.xlsx"]
+    for index, name in enumerate(artifacts):
+        db.add(ImportedFile(
+            kind="taobao",
+            original_filename=name,
+            stored_path=f"/tmp/{name}",
+            file_hash=f"{prefix}-{index}",
+            source="api",
+            row_summary={"agent_status": "imported"},
+            created_at=now,
+            updated_at=now,
+        ))
+    return artifacts
 
 
 def test_job_downloads_accepts_direct_and_tiered_results():
@@ -88,7 +118,9 @@ def test_fresh_after_cutoff_waits_for_shipping_password(db_session):
     now = datetime.now().replace(hour=18, minute=5, second=0, microsecond=0)
     _set_taobao_report(db_session, now)
     state = ai._load_json(db_session, ai.KEY_STATE)
-    state["taobao_orders_complete_artifacts"] = ["shipping.xlsx"]
+    state["taobao_orders_complete_artifacts"] = [
+        "orders.xlsx", "items.xlsx", "shipping.xlsx",
+    ]
     ai._save_json(db_session, ai.KEY_STATE, state)
     db_session.commit()
     pending = ImportedFile(
@@ -293,6 +325,7 @@ def test_new_shipping_report_records_existing_password_mismatch(
 
 def test_shipping_password_finalizes_completed_evening_pull(db_session):
     now = datetime.now().replace(hour=18, minute=25, second=0, microsecond=0)
+    artifacts = _add_imported_batch(db_session, now, "evening")
     state = ai._load_json(db_session, ai.KEY_STATE)
     state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
     ai._save_json(db_session, ai.KEY_STATE, state)
@@ -301,7 +334,11 @@ def test_shipping_password_finalizes_completed_evening_pull(db_session):
         ai.KEY_ORCH_STATE,
         {
             "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
-            "tasks": [{"task": "taobao_orders", "status": "done"}],
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": artifacts,
+            }],
             "pending_manual": [],
         },
     )
@@ -315,6 +352,7 @@ def test_shipping_password_finalizes_completed_evening_pull(db_session):
 
 def test_shipping_password_finalizes_successful_daytime_manual_recovery(db_session):
     now = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
+    artifacts = _add_imported_batch(db_session, now, "manual")
     state = ai._load_json(db_session, ai.KEY_STATE)
     state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
     ai._save_json(db_session, ai.KEY_STATE, state)
@@ -324,7 +362,11 @@ def test_shipping_password_finalizes_successful_daytime_manual_recovery(db_sessi
         {
             "manual_recovery": True,
             "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
-            "tasks": [{"task": "taobao_orders", "status": "done"}],
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": artifacts,
+            }],
             "pending_manual": [],
         },
     )
@@ -471,6 +513,36 @@ def test_shipping_password_does_not_finalize_when_manifest_file_is_missing(
     assert result["artifact_states"]["shipping.xlsx"] == "missing"
 
 
+def test_shipping_password_rejects_incomplete_manifest(db_session):
+    now = datetime.now().replace(hour=18, minute=25, second=0, microsecond=0)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    ai._save_json(
+        db_session,
+        ai.KEY_ORCH_STATE,
+        {
+            "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": ["orders.xlsx", "shipping.xlsx"],
+            }],
+        },
+    )
+    db_session.commit()
+
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
+
+    assert result == {
+        "completed": False,
+        "reason": "order_pull_manifest_incomplete",
+        "expected": 3,
+        "actual": 2,
+        "artifacts": ["orders.xlsx", "shipping.xlsx"],
+    }
+
+
 def test_shipping_password_rejects_daytime_scheduled_evidence(db_session):
     now = datetime.now().replace(hour=14, minute=30, second=0, microsecond=0)
     state = ai._load_json(db_session, ai.KEY_STATE)
@@ -532,6 +604,7 @@ def test_shipping_password_uses_durable_daily_job_evidence_when_state_was_overwr
     from app.models.scheduled_job import ScheduledJobRun
 
     now = datetime.now().replace(hour=20, minute=30, second=0, microsecond=0)
+    artifacts = _add_imported_batch(db_session, now, "durable")
     state = ai._load_json(db_session, ai.KEY_STATE)
     state["taobao_report"] = now.replace(hour=18, minute=15).isoformat(timespec="seconds")
     ai._save_json(db_session, ai.KEY_STATE, state)
@@ -549,7 +622,11 @@ def test_shipping_password_uses_durable_daily_job_evidence_when_state_was_overwr
             job_label="Web-Agent 自动取数编排(18:00)",
             status="fail",
             result_summary={
-                "tasks": [{"task": "taobao_orders", "status": "done"}],
+                "tasks": [{
+                    "task": "taobao_orders",
+                    "status": "done",
+                    "artifacts": artifacts,
+                }],
                 "pending_manual": [],
             },
             started_at=now.replace(hour=18, minute=0),
@@ -892,10 +969,18 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
         web_agent_service, "wait_job",
         lambda *_args, **_kwargs: {
             "status": "done",
-            "result": {"ok": True, "downloads": ["orders.xlsx"]},
+            "result": {
+                "ok": True,
+                "downloads": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+            },
         },
     )
     monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
+    monkeypatch.setattr(
+        ai,
+        "taobao_artifact_states",
+        lambda _db, names: {name: "imported" for name in names},
+    )
     monkeypatch.setattr(
         ai, "pending_shipping_password_files", lambda _db, **_kwargs: [])
     monkeypatch.setattr(ai, "_load_json", lambda _db, _key: {})
@@ -904,19 +989,19 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
         lambda _db, _key, value: saved_state.update(value),
     )
     monkeypatch.setattr(
-        oss, "reconcile_pending_delivery",
-        lambda _db, **kwargs: reconciled.append(kwargs) or {"images_pushed": 0},
-    )
-    monkeypatch.setattr(
-        "app.services.automation_pipeline_service.record_success",
-        lambda *args, **kwargs: {"recovered": True},
+        order_closeout,
+        "complete_recovered_order_delivery",
+        lambda _db, **kwargs: reconciled.append(kwargs) or {"delivery": {}},
     )
 
     result = ai.start_pending_scans(dummy)
 
     assert result["started"] is True
     assert datetime.fromisoformat(saved_state["taobao_orders_complete"])
-    assert reconciled == [{"limit": 50, "quiet": True}]
+    assert reconciled == [{
+        "source": "manual_scan",
+        "manifest": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+    }]
 
 
 def test_successful_main_flow_scan_closes_retry_immediately(monkeypatch):

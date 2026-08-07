@@ -54,6 +54,7 @@ FINANCE_BROWSER_FLOW_TASKS = (
     MAIN_ALIPAY_FLOW_TASK,
 )
 FINANCE_EXPORT_TASKS = {"wechat_bill", "wanxiangtai", "wanshifu"}
+ORDER_PULL_EXPECTED_ARTIFACT_COUNT = 3
 
 _OOXML_ENCRYPTED_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
@@ -288,6 +289,44 @@ def start_pending_scans(db: Session) -> dict:
                     "at": datetime.now().isoformat(timespec="seconds"),
                     "reason": reason,
                 }
+            batch_artifacts = [
+                Path(str(path).replace("\\", "/")).name
+                for path in (done_artifacts.get("taobao_orders") or [])
+            ]
+            batch_artifacts = list(dict.fromkeys(
+                name for name in batch_artifacts if name
+            ))
+            batch_artifact_states = taobao_artifact_states(d, batch_artifacts)
+            if ("taobao_orders" in done
+                    and len(batch_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT):
+                reason = (
+                    "订单拉取产物不完整："
+                    f"预期 {ORDER_PULL_EXPECTED_ARTIFACT_COUNT} 份，"
+                    f"实际 {len(batch_artifacts)} 份"
+                )
+                done.remove("taobao_orders")
+                failures.append({"task": "taobao_orders", "reason": reason})
+                scan_results["taobao_orders"] = {
+                    "status": "failed",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "reason": reason,
+                }
+            elif "taobao_orders" in done:
+                broken = {
+                    name: status for name, status in batch_artifact_states.items()
+                    if status not in {"imported", "pending_password"}
+                }
+                if broken:
+                    reason = "订单拉取产物未完成入库：" + ", ".join(
+                        f"{name}={status}" for name, status in broken.items()
+                    )
+                    done.remove("taobao_orders")
+                    failures.append({"task": "taobao_orders", "reason": reason})
+                    scan_results["taobao_orders"] = {
+                        "status": "failed",
+                        "at": datetime.now().isoformat(timespec="seconds"),
+                        "reason": reason,
+                    }
             pending_before = get_pending_scans(d)
             pending_base = pending_before or list(tasks)
             remain = [t for t in pending_base if t not in done]
@@ -325,12 +364,15 @@ def start_pending_scans(db: Session) -> dict:
                 _save_json(d, KEY_STATE, state)
                 d.commit()
             if ("taobao_orders" in done
-                    and not ingest_result.get("errors")
-                    and not ingest_result.get("pending")
+                    and len(batch_artifacts) == ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+                    and all(
+                        status == "imported"
+                        for status in batch_artifact_states.values()
+                    )
                     and not pending_shipping_password_files(
                         d,
                         on=date.today(),
-                        artifact_names=done_artifacts.get("taobao_orders") or None,
+                        artifact_names=batch_artifacts,
                     )):
                 # A user-triggered scan is the continuation of the failed daily
                 # pull.  Mark the complete three-report refresh only after the
@@ -339,32 +381,18 @@ def start_pending_scans(db: Session) -> dict:
                 completed_at = datetime.now().isoformat(timespec="seconds")
                 state["taobao_report"] = completed_at
                 state["taobao_orders_complete"] = completed_at
-                batch_artifacts = [
-                    Path(str(path).replace("\\", "/")).name
-                    for path in (done_artifacts.get("taobao_orders") or [])
-                ]
-                if batch_artifacts:
-                    state["taobao_orders_complete_artifacts"] = batch_artifacts
+                state["taobao_orders_complete_artifacts"] = batch_artifacts
                 _save_json(d, KEY_STATE, state)
                 d.commit()
                 # Finish the original business outcome immediately.  Pushed
                 # markers make this idempotent when the scheduled retry runs.
-                from app.services import (
-                    automation_pipeline_service,
-                    order_sheet_archive_service,
+                from app.services import order_delivery_completion_service
+
+                order_delivery_completion_service.complete_recovered_order_delivery(
+                    d,
+                    source="manual_scan",
+                    manifest=batch_artifacts,
                 )
-                delivery = order_sheet_archive_service.reconcile_pending_delivery(
-                    d, limit=50, quiet=True)
-                if delivery.get("_run_status") != "fail":
-                    automation_pipeline_service.record_success(
-                        d,
-                        "order_delivery",
-                        success_detail=(
-                            f"扫码后订单报表已入库，增量下单图成功推送 "
-                            f"{int(delivery.get('images_pushed') or 0)} 张"
-                        ),
-                    )
-                    d.commit()
             if MAIN_ALIPAY_FLOW_TASK in done:
                 state = _load_json(d, KEY_STATE)
                 completed_at = datetime.now().isoformat(timespec="seconds")
@@ -1365,12 +1393,21 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
         if (not_before_hour is not None and refreshed_at.date() == target_date
                 and refreshed_at.hour < not_before_hour):
             return False
-        complete_artifacts = state.get("taobao_orders_complete_artifacts")
-        if (not_before_hour is not None and complete_artifacts
-                and pending_shipping_password_files(
-                    db, on=target_date, artifact_names=complete_artifacts,
-                )):
-            return False
+        complete_artifacts = list(dict.fromkeys(
+            Path(str(value).replace("\\", "/")).name
+            for value in (state.get("taobao_orders_complete_artifacts") or [])
+            if str(value or "").strip()
+        ))
+        if not_before_hour is not None:
+            if len(complete_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
+                return False
+            artifact_states = taobao_artifact_states(db, complete_artifacts)
+            if any(status != "imported" for status in artifact_states.values()):
+                return False
+            if pending_shipping_password_files(
+                db, on=target_date, artifact_names=complete_artifacts,
+            ):
+                return False
         return True
     except (ValueError, TypeError):
         return False
@@ -1454,14 +1491,22 @@ def finalize_order_pull_after_shipping_password(
     if (order_task or {}).get("status", "").lower() not in ("done", "ok", "success"):
         return {"completed": False, "reason": "taobao_orders_task_not_complete"}
     batch_artifacts = order_pull_artifact_names(evidence)
+    if len(batch_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
+        return {
+            "completed": False,
+            "reason": "order_pull_manifest_incomplete",
+            "expected": ORDER_PULL_EXPECTED_ARTIFACT_COUNT,
+            "actual": len(batch_artifacts),
+            "artifacts": batch_artifacts,
+        }
     if pending_shipping_password_files(
         db,
         on=target,
-        artifact_names=batch_artifacts or None,
+        artifact_names=batch_artifacts,
     ):
         return {"completed": False, "reason": "shipping_password_still_pending"}
     batch_states = taobao_artifact_states(db, batch_artifacts)
-    if batch_artifacts and any(
+    if any(
         status != "imported" for status in batch_states.values()
     ):
         return {
@@ -1485,7 +1530,11 @@ def finalize_order_pull_after_shipping_password(
         state["taobao_orders_complete_artifacts"] = batch_artifacts
     _save_json(db, KEY_STATE, state)
     db.commit()
-    return {"completed": True, "completed_at": completed_at}
+    return {
+        "completed": True,
+        "completed_at": completed_at,
+        "artifacts": batch_artifacts,
+    }
 
 
 def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
@@ -1781,8 +1830,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     out["ingest"]["pending_password_files"] = persistent_pending_password
     order_artifact_states = taobao_artifact_states(db, order_batch_artifacts)
     out["ingest"]["order_artifact_states"] = order_artifact_states
-    order_batch_ready = bool(order_batch_artifacts) and all(
+    order_batch_ready = (
+        len(order_batch_artifacts) == ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+        and all(
         status == "imported" for status in order_artifact_states.values()
+        )
     )
     if (orders_pull_complete and order_batch_ready
             and not persistent_pending_password):

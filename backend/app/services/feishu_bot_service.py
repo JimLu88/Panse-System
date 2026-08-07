@@ -1038,7 +1038,22 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         delivery: dict
         if completion.get("completed"):
             try:
-                delivery = _osa.reconcile_pending_delivery(db, limit=50, quiet=True)
+                from app.services import order_delivery_completion_service
+
+                closeout = order_delivery_completion_service.complete_recovered_order_delivery(
+                    db,
+                    source="shipping_password",
+                    manifest=(completion.get("artifacts") or current_artifacts),
+                )
+                delivery = closeout.get("delivery") or {}
+                r["factory_dispatch"] = closeout.get("factory_dispatch")
+                r["automation_pipeline"] = closeout.get("automation_pipeline")
+                if closeout.get("_run_status") == "fail":
+                    delivery = {
+                        **delivery,
+                        "_run_status": "fail",
+                        "_error": closeout.get("_error") or "recovery_closeout_failed",
+                    }
             except Exception as exc:  # noqa: BLE001 —— 精确记录“解密成功、送达失败”
                 logging.getLogger("panse.feishu_bot").warning("解密后自动续推下单图失败", exc_info=True)
                 delivery = {
@@ -1051,25 +1066,6 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                 "_error": f"freshness_gate: {completion.get('reason') or 'unknown'}",
             }
         r["delivery"] = delivery
-        if (completion.get("completed")
-                and delivery.get("_run_status") != "fail"):
-            try:
-                from app.services import automation_pipeline_service
-
-                r["automation_pipeline"] = automation_pipeline_service.record_success(
-                    db,
-                    "order_delivery",
-                    success_detail=(
-                        f"发货报表已解密入库，增量下单图成功推送 "
-                        f"{int(delivery.get('images_pushed') or 0)} 张"
-                    ),
-                )
-                db.commit()
-            except Exception:  # noqa: BLE001
-                db.rollback()
-                logging.getLogger("panse.feishu_bot").warning(
-                    "口令成功后关闭订单重试链失败", exc_info=True,
-                )
         try:
             chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
             if chat:

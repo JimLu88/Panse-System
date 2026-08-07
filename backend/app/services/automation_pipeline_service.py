@@ -212,6 +212,28 @@ def needs_retry(db: Session, pipeline: str, *, now: Optional[datetime] = None) -
     return bool(entry.get("failures")) and not entry.get("success") and not entry.get("final")
 
 
+def resume_for_retry(
+    db: Session,
+    pipeline: str,
+    *,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Reopen a chain after new human input made another attempt meaningful."""
+    if pipeline not in PIPELINE_LABELS:
+        raise ValueError(f"未知关键自动化: {pipeline}")
+    current = _now(now)
+    state = _load(db)
+    entry = _entry_for_day(state, pipeline, current.date().isoformat())
+    entry.update({
+        "success": False,
+        "final": False,
+        "waiting_input": False,
+        "next_retry_at": None,
+    })
+    _save(db, state)
+    return dict(entry)
+
+
 def pause_for_input(
     db: Session,
     pipeline: str,

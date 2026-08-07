@@ -18,6 +18,7 @@ CATEGORY_LABELS = {
     "campaign": "自动报活动",
 }
 JOB_CATEGORIES = {
+    "order_delivery_recovery": "order",
     "daily_0630_web_agent": "order",
     "daily_1810_order_sheets": "order",
     "pull_catchup_30min": "order",
@@ -31,6 +32,64 @@ JOB_CATEGORIES = {
     "campaign_price_protection_rule_remind": "campaign",
     "daily_0830_promo_price_check": "campaign",
 }
+
+
+def record_callback_run(
+    db: Session,
+    *,
+    category: str,
+    status: str,
+    detail: str,
+    recovery_key: str,
+    result_summary: Optional[dict[str, Any]] = None,
+    now: Optional[datetime] = None,
+) -> dict[str, Any]:
+    """Persist non-scheduler recovery work in the same append-only run log.
+
+    Password and scan callbacks can finish an order chain outside APScheduler.
+    Without an explicit successful run, the failure recorder keeps earlier
+    scheduler failures open even though delivery already recovered.
+    """
+    if category not in CATEGORY_LABELS:
+        raise ValueError(f"unknown category: {category}")
+    if status not in {"ok", "fail"}:
+        raise ValueError(f"invalid callback status: {status}")
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    current = current.astimezone(timezone.utc)
+    job_id = f"{category}_delivery_recovery" if category == "order" else f"{category}_recovery"
+
+    recent = db.execute(
+        select(ScheduledJobRun)
+        .where(ScheduledJobRun.job_id == job_id)
+        .order_by(ScheduledJobRun.id.desc())
+        .limit(20)
+    ).scalars().all()
+    for row in recent:
+        summary = row.result_summary if isinstance(row.result_summary, dict) else {}
+        if summary.get("recovery_key") == recovery_key and row.status == status:
+            return {"created": False, "run_id": row.id, "status": row.status}
+
+    summary = {
+        "callback": True,
+        "recovery_key": recovery_key,
+        **(result_summary or {}),
+    }
+    row = ScheduledJobRun(
+        job_id=job_id,
+        job_label=f"{CATEGORY_LABELS[category]}恢复回调",
+        status=status,
+        duration_ms=0,
+        detail=detail,
+        error=detail if status == "fail" else None,
+        result_summary=summary,
+        started_at=current,
+        completed_at=current,
+    )
+    db.add(row)
+    db.flush()
+    return {"created": True, "run_id": row.id, "status": row.status}
 
 
 def _recovery_key(job_id: str) -> str:

@@ -49,7 +49,7 @@ _CRITICAL_PIPELINE_JOB_IDS = {
 
 _CRITICAL_JOB_PIPELINES = {
     "daily_0630_web_agent": (
-        ("order_delivery", ((18, 30), (19, 17), (20, 17), (21, 17))),
+        ("order_delivery", ((19, 17), (20, 17), (21, 17))),
     ),
     "daily_1810_order_sheets": (
         ("order_delivery", ((19, 17), (20, 17), (21, 17))),
@@ -931,7 +931,7 @@ def _today_retry_slots(times: tuple[tuple[int, int], ...]) -> list[datetime]:
     ]
 
 
-_ORDER_RETRY_TIMES = ((18, 30), (19, 17), (20, 17), (21, 17))
+_ORDER_RETRY_TIMES = ((19, 17), (20, 17), (21, 17))
 _FINANCE_RETRY_TIMES = ((21, 0), (21, 30), (22, 0))
 
 
