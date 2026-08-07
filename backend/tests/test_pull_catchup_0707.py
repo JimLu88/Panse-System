@@ -272,6 +272,28 @@ def test_order_pull_artifact_names_prefers_successful_task_manifest():
     }) == ["orders.xlsx", "items.xlsx", "shipping.xlsx"]
 
 
+def test_order_pull_artifact_names_tolerates_legacy_task_counter():
+    """Old failed catch-up rows used tasks=1; they must not break recovery."""
+    payload = {
+        "tasks": 1,
+        "artifacts": [
+            r"\\nas\output\orders.xlsx",
+            r"\\nas\output\items.xlsx",
+            r"\\nas\output\shipping.xlsx",
+        ],
+    }
+
+    assert ai.order_pull_artifact_names(payload) == [
+        "orders.xlsx", "items.xlsx", "shipping.xlsx",
+    ]
+    assert ai.order_pull_artifact_roles(payload) == {
+        "orders.xlsx": "orders",
+        "items.xlsx": "sales_detail",
+        "shipping.xlsx": "shipping",
+    }
+    assert ai.order_pull_batch_id(payload) is None
+
+
 def test_shipping_password_never_expires_by_age(db_session):
     settings_service.set_value(db_session, "taobao_shipping_pwd_latest", "example-password")
     settings_service.set_value(

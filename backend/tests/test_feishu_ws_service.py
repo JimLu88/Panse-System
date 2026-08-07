@@ -6,6 +6,7 @@ import time
 import pytest
 
 from app.models.order import Order
+from app.services import automation_failure_recorder_service as failure_recorder
 from app.services import feishu_bot_service as B
 from app.services import feishu_client, feishu_ws_service as W, vision_ocr_service
 
@@ -29,6 +30,30 @@ def test_parse_card_event_variants():
 def test_to_dict_passthrough():
     assert W._to_dict({"event": {"x": 1}}) == {"x": 1}
     assert W._to_dict({"message": {"y": 2}}) == {"message": {"y": 2}}
+
+
+def test_password_worker_failure_is_recorded_and_replied(db_session, monkeypatch):
+    replies = []
+    monkeypatch.setattr(
+        B,
+        "_safe_reply",
+        lambda db, message_id, card: replies.append((message_id, card)),
+    )
+    event = {
+        "message": {
+            "message_id": "password-msg-1",
+            "message_type": "text",
+            "content": '{"text":"@_user_1 密码REDACTED"}',
+        },
+    }
+
+    result = W._handle_worker_failure(db_session, event, TypeError("legacy tasks"))
+
+    assert result["recorded"]["created"] is True
+    assert replies[0][0] == "password-msg-1"
+    assert "REDACTED" not in str(replies[0][1])
+    events = failure_recorder.list_failure_events(db_session)
+    assert any(item["reason"].endswith("TypeError") for item in events["items"])
 
 
 @_skip_no_lark

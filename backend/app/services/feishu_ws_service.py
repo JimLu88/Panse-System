@@ -106,13 +106,67 @@ def _msg_worker() -> None:
                 db.commit()
             except Exception as e:  # pragma: no cover
                 db.rollback()
-                _log.error("WS 收图处理失败: %s", e)
+                _log.exception("WS 消息处理失败: %s", e)
+                _handle_worker_failure(db, event, e)
             finally:
                 db.close()
         except Exception as e:  # pragma: no cover
             _log.error("WS 消息 worker 异常: %s", e)
         finally:
             _msg_queue.task_done()
+
+
+def _handle_worker_failure(db, event: dict, exc: Exception) -> dict:
+    """Persist password-callback failures and always return a safe Feishu receipt.
+
+    Never echo inbound text: it may contain the one-time shipping password.
+    """
+    from app.services import (
+        automation_failure_recorder_service,
+        feishu_bot_service,
+    )
+
+    msg = event.get("message") or {}
+    message_id = str(msg.get("message_id") or "").strip()
+    is_password = False
+    if msg.get("message_type") == "text":
+        try:
+            content = json.loads(msg.get("content") or "{}")
+            is_password = "密码" in str(content.get("text") or "")
+        except (TypeError, ValueError, json.JSONDecodeError):
+            is_password = False
+
+    recorded = None
+    try:
+        if is_password and message_id:
+            recorded = automation_failure_recorder_service.record_callback_run(
+                db,
+                category="order",
+                status="fail",
+                detail=f"飞书发货密码回调中断: {type(exc).__name__}",
+                recovery_key=f"feishu-message:{message_id}",
+                result_summary={
+                    "source": "shipping_password",
+                    "message_id": message_id,
+                    "error_type": type(exc).__name__,
+                },
+            )
+        if message_id:
+            feishu_bot_service._safe_reply(
+                db,
+                message_id,
+                feishu_bot_service._result_card(
+                    "指令处理未完成",
+                    f"机器人已收到消息，但后台处理异常（{type(exc).__name__}）。"
+                    "本次后续操作未完成，失败原因已记录；无需反复发送同一条消息。",
+                    "red",
+                ),
+            )
+        db.commit()
+    except Exception:  # pragma: no cover - final safety net must never kill worker
+        db.rollback()
+        _log.exception("WS 消息失败回执或失败事件记录未完成")
+    return {"message_id": message_id or None, "recorded": recorded}
 
 
 # ── 事件解析 (纯函数, 便于测试) ────────────────────────────────

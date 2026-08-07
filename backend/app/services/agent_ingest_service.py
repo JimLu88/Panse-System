@@ -1427,12 +1427,28 @@ def _due_today(state: dict, category: str, force: bool) -> bool:
         return True
 
 
+def _order_pull_tasks(payload: dict | None) -> list[dict]:
+    """Return structured task rows while tolerating legacy summary counters.
+
+    Older catch-up runs stored ``tasks`` as an integer count.  Recovery code
+    scans those durable rows together with the current manifest, so one legacy
+    counter must not abort a new password callback after the report was already
+    decrypted.
+    """
+    if not isinstance(payload, dict):
+        return []
+    raw = payload.get("tasks")
+    if not isinstance(raw, (list, tuple)):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
 def order_pull_artifact_names(payload: dict | None) -> list[str]:
     """Extract the exact three-report manifest from one order-pull result."""
     payload = payload or {}
     task = next(
         (
-            item for item in (payload.get("tasks") or [])
+            item for item in _order_pull_tasks(payload)
             if item.get("task") == "taobao_orders"
             and str(item.get("status") or "").lower() in ("done", "ok", "success")
         ),
@@ -1446,6 +1462,10 @@ def order_pull_artifact_names(payload: dict | None) -> list[str]:
     )
     if not values:
         values = _job_downloads(payload)
+    elif isinstance(values, (str, Path)):
+        values = [values]
+    elif not isinstance(values, (list, tuple, set)):
+        values = []
     names: list[str] = []
     for value in values:
         name = Path(str(value).replace("\\", "/")).name
@@ -1459,7 +1479,7 @@ def order_pull_artifact_roles(payload: dict | None) -> dict[str, str]:
     payload = payload or {}
     task = next(
         (
-            item for item in (payload.get("tasks") or [])
+            item for item in _order_pull_tasks(payload)
             if item.get("task") == "taobao_orders"
             and str(item.get("status") or "").lower() in ("done", "ok", "success")
         ),
@@ -1581,7 +1601,7 @@ def order_pull_batch_id(payload: dict | None) -> str | None:
         return direct
     task = next(
         (
-            item for item in (payload.get("tasks") or [])
+            item for item in _order_pull_tasks(payload)
             if item.get("task") == "taobao_orders"
         ),
         None,
@@ -1886,7 +1906,7 @@ def finalize_order_pull_after_shipping_password(
         if dt.tzinfo is not None:
             dt = dt.astimezone()
         task = next(
-            (t for t in (payload.get("tasks") or []) if t.get("task") == "taobao_orders"),
+            (t for t in _order_pull_tasks(payload) if t.get("task") == "taobao_orders"),
             None,
         )
         business_day = _business_date(payload, started_at)
@@ -1932,7 +1952,7 @@ def finalize_order_pull_after_shipping_password(
     target = evidence_target
 
     order_task = next(
-        (t for t in (evidence.get("tasks") or []) if t.get("task") == "taobao_orders"),
+        (t for t in _order_pull_tasks(evidence) if t.get("task") == "taobao_orders"),
         None,
     )
     if (order_task or {}).get("status", "").lower() not in ("done", "ok", "success"):
