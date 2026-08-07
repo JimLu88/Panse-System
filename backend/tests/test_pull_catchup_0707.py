@@ -153,6 +153,157 @@ def test_latest_unresolved_shipping_batch_excludes_older_passwords(db_session):
     ) == ["latest.xlsx"]
 
 
+def test_newer_successful_shipping_snapshot_supersedes_older_pending_same_day(
+    db_session,
+):
+    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
+    old_pending = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-old.xlsx",
+        stored_path="/tmp/old.xlsx",
+        file_hash="old-shipping-hash",
+        source="api",
+        row_summary={
+            "agent_status": "pending_password",
+            "agent_report_role": "shipping",
+        },
+        created_at=today,
+        updated_at=today,
+    )
+    new_pending = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-new.xlsx",
+        stored_path="/tmp/new.xlsx",
+        file_hash="new-shipping-hash",
+        source="api",
+        row_summary={
+            "agent_status": "pending_password",
+            "agent_report_role": "shipping",
+        },
+        created_at=today.replace(hour=3, minute=59),
+        updated_at=today.replace(hour=3, minute=59),
+    )
+    db_session.add_all([old_pending, new_pending])
+    db_session.commit()
+    resolved = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-new.xlsx",
+        stored_path="/tmp/new.xlsx",
+        file_hash="new-shipping-hash",
+        source="api",
+        row_summary={
+            "agent_status": "imported",
+            "agent_report_role": "shipping",
+            "updated": 88,
+        },
+        created_at=today.replace(hour=9, minute=8),
+        updated_at=today.replace(hour=9, minute=8),
+    )
+    db_session.add(resolved)
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(db_session, on=today.date()) == []
+
+
+def test_legacy_encrypted_success_without_role_supersedes_old_pending(
+    db_session, tmp_path,
+):
+    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
+    old_pending = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-old.xlsx",
+        stored_path="/tmp/old.xlsx",
+        file_hash="old-shipping-hash",
+        source="api",
+        row_summary={"agent_status": "pending_password"},
+        created_at=today,
+        updated_at=today,
+    )
+    encrypted_archive = tmp_path / "new-shipping.xlsx"
+    encrypted_archive.write_bytes(ai._OOXML_ENCRYPTED_MAGIC + b"legacy-archive")
+    new_success = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-new.xlsx",
+        stored_path=str(encrypted_archive),
+        file_hash="new-shipping-hash",
+        source="api",
+        # Production rows created before this fix have no report-role marker.
+        row_summary={"agent_status": "imported", "updated": 88},
+        created_at=today.replace(hour=3, minute=59),
+        updated_at=today.replace(hour=3, minute=59),
+    )
+    db_session.add_all([old_pending, new_success])
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(db_session, on=today.date()) == []
+
+
+def test_newer_pending_shipping_snapshot_is_not_hidden_by_older_success(db_session):
+    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
+    old_success = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-old.xlsx",
+        stored_path="/tmp/old.xlsx",
+        file_hash="old-shipping-hash",
+        source="api",
+        row_summary={
+            "agent_status": "imported",
+            "agent_report_role": "shipping",
+        },
+        created_at=today,
+        updated_at=today,
+    )
+    new_pending = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-new.xlsx",
+        stored_path="/tmp/new.xlsx",
+        file_hash="new-shipping-hash",
+        source="api",
+        row_summary={
+            "agent_status": "pending_password",
+            "agent_report_role": "shipping",
+        },
+        created_at=today.replace(hour=3, minute=59),
+        updated_at=today.replace(hour=3, minute=59),
+    )
+    db_session.add_all([old_success, new_pending])
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(db_session, on=today.date()) == [
+        "ExportOrderList-new.xlsx",
+    ]
+
+
+def test_unrelated_taobao_import_does_not_supersede_shipping_password(db_session):
+    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
+    pending = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-shipping.xlsx",
+        stored_path="/tmp/shipping.xlsx",
+        file_hash="shipping-hash",
+        source="api",
+        row_summary={"agent_status": "pending_password"},
+        created_at=today,
+        updated_at=today,
+    )
+    unrelated = ImportedFile(
+        kind="taobao",
+        original_filename="ItemList.xlsx",
+        stored_path="/tmp/items.xlsx",
+        file_hash="items-hash",
+        source="api",
+        row_summary={"agent_status": "imported", "detected_format": "sales_detail"},
+        created_at=today.replace(hour=4),
+        updated_at=today.replace(hour=4),
+    )
+    db_session.add_all([pending, unrelated])
+    db_session.commit()
+
+    assert ai.pending_shipping_password_files(db_session, on=today.date()) == [
+        "ExportOrderList-shipping.xlsx",
+    ]
+
+
 def test_shipping_password_never_expires_by_age(db_session):
     settings_service.set_value(db_session, "taobao_shipping_pwd_latest", "example-password")
     settings_service.set_value(
@@ -174,7 +325,7 @@ def test_new_shipping_report_records_existing_password_mismatch(
         db_session, "taobao_shipping_pwd_latest", "existing-password"
     )
     report_file = tmp_path / "ExportOrderList-new.xlsx"
-    report_file.write_bytes(b"encrypted-placeholder")
+    report_file.write_bytes(ai._OOXML_ENCRYPTED_MAGIC + b"encrypted-placeholder")
     monkeypatch.setattr(ai, "OUTPUT_DIR", tmp_path)
     monkeypatch.setattr(ai, "_classify", lambda rel: "taobao_report")
     monkeypatch.setattr(
@@ -205,6 +356,7 @@ def test_new_shipping_report_records_existing_password_mismatch(
     result = ai.run_ingest(db_session, only_paths=[str(report_file)])
 
     assert result["pending"] == 1
+    assert result["files"][0]["summary"]["agent_report_role"] == "shipping"
     password_result = ai.get_shipping_password_result(db_session)
     assert password_result["status"] == "password_mismatch"
     assert password_result["pending_files"] == [report_file.name]

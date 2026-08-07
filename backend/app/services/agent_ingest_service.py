@@ -943,6 +943,7 @@ def reingest_pending_shipping(db: Session) -> dict:
                 continue
             d = _report_to_dict(rep)
             d["agent_status"] = "imported"
+            d["agent_report_role"] = "shipping"
             import_storage.archive(db, content=raw, original_name=path.name,
                                    kind="taobao", source="api", row_summary=d)
             db.commit()
@@ -1017,6 +1018,12 @@ def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
         try:
             kind, status, summary = _import_one(db, category, path, raw)
             summary["agent_status"] = status
+            if category == "taobao_report" and raw[:8] == _OOXML_ENCRYPTED_MAGIC:
+                # Encrypted Taobao exports are shipping reports.  Persist the
+                # role so later password callbacks can distinguish a newer
+                # successful shipping snapshot from unrelated order/sales
+                # workbooks without reopening the archived file.
+                summary["agent_report_role"] = "shipping"
             res = import_storage.archive(
                 db, content=raw, original_name=path.name, kind=kind,
                 source="api", row_summary=summary)
@@ -1157,7 +1164,12 @@ def _due_today(state: dict, category: str, force: bool) -> bool:
 def pending_shipping_password_files(
     db: Session, *, on=None, all_dates: bool = False, latest_only: bool = False,
 ) -> list[str]:
-    """返回仍未被后续成功解密记录覆盖的加密发货报表。
+    """返回仍会阻塞当前批次的加密发货报表。
+
+    每份新导出的发货报表使用独立口令和独立哈希。平台短时间内重拉时，旧文件可能
+    永久停在 ``pending_password``，而稍后生成的完整快照已经成功解密。旧记录必须
+    保留用于审计，但同一天中只要有一个**更晚首次出现**的发货快照已成功导入，之前
+    的待口令文件便已被该快照覆盖，不再阻塞新鲜度门。
 
     默认只检查指定日期；``all_dates`` 用于口令回调跨午夜继续处理旧报表。
     """
@@ -1167,37 +1179,99 @@ def pending_shipping_password_files(
         .where(ImportedFile.kind == "taobao")
         .order_by(ImportedFile.id.asc())
     ).scalars().all()
-    latest_by_hash: dict[str, ImportedFile] = {}
+
+    def _aware(value: datetime) -> datetime:
+        return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+
+    # Group every retry/archive record of the same physical report.  The
+    # first record is the artifact's arrival order; the last record is its
+    # current resolution state.  This is intentionally not based on the
+    # filename/export id, which is not chronological.
+    artifacts: dict[str, dict] = {}
     for row in rows:
         created_at = getattr(row, "created_at", None)
         if not created_at:
             continue
-        # Database server defaults are UTC.  PostgreSQL returns an aware
-        # timestamp while SQLite (including tests) returns the same value as a
-        # naive datetime.  Compare by the ERP's local calendar date so files
-        # received between 00:00 and 08:00 are not mistaken for yesterday.
-        if created_at.tzinfo is None:
-            created_at = created_at.replace(tzinfo=timezone.utc)
-        if not all_dates and created_at.astimezone().date() != target:
-            continue
         key = row.file_hash or f"id:{row.id}"
-        latest_by_hash[key] = row
-    unresolved = [
-        row for row in latest_by_hash.values()
-        if (row.row_summary or {}).get("agent_status") == "pending_password"
-    ]
-    if all_dates and latest_only and unresolved:
-        def _local_date(row: ImportedFile):
-            value = row.created_at
-            if value.tzinfo is None:
-                value = value.replace(tzinfo=timezone.utc)
-            return value.astimezone().date()
+        summary = row.row_summary or {}
+        artifact = artifacts.get(key)
+        if artifact is None:
+            artifacts[key] = {
+                "first": row,
+                "latest": row,
+                "shipping": (
+                    summary.get("agent_status") == "pending_password"
+                    or summary.get("agent_report_role") == "shipping"
+                ),
+            }
+        else:
+            artifact["latest"] = row
+            artifact["shipping"] = bool(
+                artifact["shipping"]
+                or summary.get("agent_status") == "pending_password"
+                or summary.get("agent_report_role") == "shipping"
+            )
 
-        newest = max(_local_date(row) for row in unresolved)
-        unresolved = [row for row in unresolved if _local_date(row) == newest]
+    # Backward compatibility for reports archived before
+    # ``agent_report_role`` was introduced.  Successful password ingestion
+    # stores the original encrypted OLE/CFBF bytes, so the archive header is
+    # durable evidence that this is a shipping report.  A missing archive is
+    # not guessed and therefore cannot weaken the gate.
+    for artifact in artifacts.values():
+        if artifact["shipping"]:
+            continue
+        latest = artifact["latest"]
+        if (latest.row_summary or {}).get("agent_status") != "imported":
+            continue
+        try:
+            with Path(latest.stored_path).open("rb") as archived:
+                artifact["shipping"] = archived.read(8) == _OOXML_ENCRYPTED_MAGIC
+        except (OSError, TypeError):
+            pass
+
+    shipping = [item for item in artifacts.values() if item["shipping"]]
+
+    def _batch_date(item: dict):
+        # Database server defaults are UTC.  Compare by ERP local calendar
+        # date so files received between 00:00 and 08:00 remain in today's
+        # operational batch.
+        return _aware(item["first"].created_at).astimezone().date()
+
+    def _arrival_key(item: dict):
+        first = item["first"]
+        return (_aware(first.created_at), int(first.id or 0))
+
+    latest_success_by_date: dict[date, tuple] = {}
+    for item in shipping:
+        latest_summary = item["latest"].row_summary or {}
+        if latest_summary.get("agent_status") != "imported":
+            continue
+        day = _batch_date(item)
+        key = _arrival_key(item)
+        if key > latest_success_by_date.get(day, (datetime.min.replace(tzinfo=timezone.utc), 0)):
+            latest_success_by_date[day] = key
+
+    unresolved = []
+    for item in shipping:
+        latest_summary = item["latest"].row_summary or {}
+        if latest_summary.get("agent_status") != "pending_password":
+            continue
+        day = _batch_date(item)
+        if not all_dates and day != target:
+            continue
+        # Preserve the old failure record in ImportedFile, but do not let it
+        # block a later complete shipping snapshot from the same day.
+        if latest_success_by_date.get(day, (datetime.min.replace(tzinfo=timezone.utc), 0)) > _arrival_key(item):
+            continue
+        unresolved.append(item)
+
+    if all_dates and latest_only and unresolved:
+        newest = max(_batch_date(item) for item in unresolved)
+        unresolved = [item for item in unresolved if _batch_date(item) == newest]
+    unresolved.sort(key=_arrival_key)
     return [
-        row.original_filename or f"imported_file:{row.id}"
-        for row in unresolved
+        item["latest"].original_filename or f"imported_file:{item['latest'].id}"
+        for item in unresolved
     ]
 
 
