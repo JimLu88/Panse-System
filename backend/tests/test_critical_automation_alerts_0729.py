@@ -100,6 +100,9 @@ def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, mo
     assert recovered["recovered"] is True
     assert repeated["already_success"] is True
     assert pipeline.needs_retry(db_session, "order_delivery", now=_at(19, 50)) is False
+    assert pipeline.get_pipeline(
+        db_session, "order_delivery", now=_at(19, 50),
+    )["last_error"] is None
     assert len(sent) == 2
     assert "自动重试成功" in sent[-1]
 

@@ -394,8 +394,16 @@ def record_success(
         superseded = _supersede_pending_failure_notifications(
             state, pipeline, day, current,
         )
-        if superseded:
-            _save(db, state)
+        # A previous failure reason must not remain visible after durable
+        # success evidence exists.  This also repairs older rows where the
+        # success flag was set but last_error still described a stale failure.
+        entry.update({
+            "last_error": None,
+            "final": False,
+            "waiting_input": False,
+            "next_retry_at": None,
+        })
+        _save(db, state)
         return {
             "pipeline": pipeline,
             "already_success": True,
@@ -429,6 +437,7 @@ def record_success(
         "success": True,
         "final": False,
         "waiting_input": False,
+        "last_error": None,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": None,
     })
