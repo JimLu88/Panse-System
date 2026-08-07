@@ -386,6 +386,65 @@ def _xlsx_first_header(raw: bytes) -> list[str]:
     return []
 
 
+def detect_report_role(filename: str, raw: bytes) -> str | None:
+    """识别订单自动拉取三份报表的业务角色。
+
+    返回 ``orders`` / ``sales_detail`` / ``shipping``；无法从内容可靠
+    判断时返回 ``None``。这个指纹只用于批次完整性安全门，不替代下方
+    更宽松的格式解析器。
+    """
+    if is_encrypted_ooxml(raw):
+        # 当前淘宝只有发货报表以 Office 加密格式下载。口令前即可可靠识别。
+        return "shipping"
+
+    name = (filename or "").lower()
+    is_xlsx = name.endswith((".xlsx", ".xlsm", ".xls")) or raw[:2] == b"PK"
+    sheets: set[str] = set()
+    if is_xlsx:
+        try:
+            wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)
+            sheets = {str(item).strip() for item in wb.sheetnames}
+            wb.close()
+        except Exception:
+            sheets = set()
+        header = set(_xlsx_first_header(raw))
+    else:
+        header = set(_csv_header(raw))
+
+    explicit = {
+        role for role, sheet_name in (
+            ("orders", "订单报表"),
+            ("sales_detail", "销售明细"),
+            ("shipping", "发货报表"),
+        ) if sheet_name in sheets
+    }
+    if len(explicit) == 1:
+        return next(iter(explicit))
+    if len(explicit) > 1:
+        # 老式三表合一文件不等价于自动拉取要求的三份独立产物。
+        return None
+
+    shipping_keys = {"收货人姓名", "收货地址", "物流公司", "运单号", "手机", "联系电话"}
+    sales_keys = {
+        "子订单编号", "主订单编号", "商品属性", "商品标题", "宝贝标题",
+        "SKU名称", "SKU ID", "商家编码", "外部系统编号",
+    }
+    order_keys = {
+        "订单创建时间", "订单状态", "买家应付金额", "买家应付货款",
+        "买家实付金额", "打款商家金额", "买家应付邮费",
+    }
+    has_order_no = bool({"订单编号", "订单号", "主订单编号"} & header)
+    if has_order_no and len(shipping_keys & header) >= 2 and not (sales_keys & header):
+        return "shipping"
+    if {"子订单编号", "主订单编号"}.issubset(header):
+        return "sales_detail"
+    if has_order_no and len(order_keys & header) >= 2:
+        return "orders"
+    if "子订单编号" in header and len(sales_keys & header) >= 3:
+        return "sales_detail"
+    return None
+
+
 # ── 解析: 千牛多表 Excel ──────────────────────────────────────────────────────
 def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _OrderRow]:
     wb = load_workbook(io.BytesIO(raw), read_only=True, data_only=True)

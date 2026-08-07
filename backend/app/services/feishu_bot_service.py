@@ -1044,6 +1044,8 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                     db,
                     source="shipping_password",
                     manifest=(completion.get("artifacts") or current_artifacts),
+                    order_batch_id=completion.get("order_batch_id"),
+                    order_business_date=completion.get("order_business_date"),
                 )
                 delivery = closeout.get("delivery") or {}
                 r["factory_dispatch"] = closeout.get("factory_dispatch")

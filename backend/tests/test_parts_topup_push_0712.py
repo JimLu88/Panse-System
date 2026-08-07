@@ -28,7 +28,9 @@ def _feishu_stub(monkeypatch):
 def _order(db, no, amount, day=20, remark=None, seller_memo=None):
     db.add(Order(platform="淘宝", order_no=no, qty=1, product_name=f"樱桃木窄柜{no}", sku="标准款",
                  order_date=date(2026, 6, day), status="paid",
-                 paid_amount=Decimal(str(amount)), remark=remark, seller_memo=seller_memo))
+                 paid_amount=Decimal(str(amount)), remark=remark, seller_memo=seller_memo,
+                 customer_name="测试客户", customer_phone="13800000000",
+                 customer_address="浙江省杭州市西湖区测试路1号"))
     db.flush()
 
 

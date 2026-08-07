@@ -281,7 +281,11 @@ def _archived_order_nos(db: Session) -> set[str]:
 
 
 def generate_for_order(db: Session, order: Order, *, source: str = "auto") -> Optional[dict]:
-    """生成一张下单图 JPEG 并归档 (命名 {下单日期}_{订单号}.jpg)。返回 {order_no, file_id, duplicate} 或 None。
+    """生成一张下单图 JPEG 并归档。
+
+    返回结构化结果，单张失败也必须带回订单号和原因。批量调用方据此阻止
+    “少生成一张但整批仍显示成功”的假成功。待付款订单保留 ``None`` 兼容
+    既有直接调用；批量入口本身会在调用前过滤。
 
     用户拍板 2026-06-19: 存档直接存成图片 (非 HTML), 日期+订单号命名, 打开即看、可直接转发工厂。
     """
@@ -290,20 +294,32 @@ def generate_for_order(db: Session, order: Order, *, source: str = "auto") -> Op
     if (order.status or "") == "pending_payment":
         return None
     try:
-        sheet = factory_sheet.build(db, order.id)
-        jpg = render_png(sheet)   # render_png 现已输出 JPEG 字节
-        d = order.order_date or date.today()
-        res = import_storage.archive(
-            db, content=jpg,
-            original_name=f"{d.isoformat()}_{order.order_no}.jpg",
-            kind="order_sheet", source=source,
-            on_date=order.order_date,
-        )
-        return {"order_no": order.order_no, "file_id": res.file.id,
-                "duplicate": res.is_duplicate}
-    except Exception:  # pragma: no cover - 单张失败不阻断批量
+        # 归档阶段如果触发数据库异常，只回滚这一张，不污染同批此前已成功行。
+        with db.begin_nested():
+            sheet = factory_sheet.build(db, order.id)
+            jpg = render_png(sheet)   # render_png 现已输出 JPEG 字节
+            d = order.order_date or date.today()
+            res = import_storage.archive(
+                db, content=jpg,
+                original_name=f"{d.isoformat()}_{order.order_no}.jpg",
+                kind="order_sheet", source=source,
+                on_date=order.order_date,
+            )
+        return {
+            "status": "generated",
+            "order_no": order.order_no,
+            "file_id": res.file.id,
+            "duplicate": res.is_duplicate,
+        }
+    except Exception as exc:  # noqa: BLE001 - 结构化返回，批量继续并在收口处失败
         _logger.warning("下单图生成失败 %s", order.order_no, exc_info=True)
-        return None
+        return {
+            "status": "failed",
+            "order_no": order.order_no,
+            "duplicate": False,
+            "error_type": type(exc).__name__,
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        }
 
 
 def _activated_memo_filter():
@@ -326,9 +342,11 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
             Order.is_refill == False,            # noqa: E712 - 补单不发工厂
         ).order_by(Order.id.desc()).limit(500)
     ).scalars().all()
-    generated = []
+    generated: list[str] = []
+    failures: list[dict] = []
+    attempted = 0
     for o in orders:
-        if o.order_no in done or len(generated) >= limit:
+        if o.order_no in done or attempted >= limit:
             continue
         if (o.status or "") in ("cancelled", "pending_payment"):
             continue   # 取消 + 未付款(含付定金的待付款)永不生成 (用户拍板 2026-06-20 铁律)
@@ -339,11 +357,25 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
         from app.services import order_flags
         if order_flags.is_remote(o):
             continue   # 远期挂起单: 不生成下单图, 等激活(备注开始制作)后再以新号推 (用户 2026-07-08)
+        attempted += 1
         r = generate_for_order(db, o)
-        if r and not r["duplicate"]:
+        if r and r.get("status") == "failed":
+            failures.append({
+                "order_no": r.get("order_no") or o.order_no,
+                "error_type": r.get("error_type"),
+                "error": r.get("error") or "下单图生成失败但未返回原因",
+            })
+        elif r and not r["duplicate"]:
             generated.append(r["order_no"])
     db.commit()
-    return {"generated": len(generated), "order_nos": generated[:50]}
+    return {
+        "generated": len(generated),
+        "attempted": attempted,
+        "order_nos": generated[:50],
+        "generation_failed": len(failures),
+        "generation_failed_order_nos": [x["order_no"] for x in failures],
+        "generation_failures": failures,
+    }
 
 
 def _html_to_png(html: str, *, width: int = 820) -> bytes:
@@ -946,6 +978,9 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     push = push_pending_images(db, limit=limit, include_baseline=False, quiet=quiet)
     result = {
         "generated": generated,
+        "generation_failed": int(generated.get("generation_failed") or 0),
+        "generation_failed_order_nos": generated.get("generation_failed_order_nos") or [],
+        "generation_failures": generated.get("generation_failures") or [],
         "images_pushed": int(push.get("pushed") or 0),
         "images_failed": int(push.get("failed") or 0),
         "images_remaining": int(push.get("remaining") or 0),
@@ -955,6 +990,8 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "held_no_address": push.get("held_no_address") or [],
         "held_remote": push.get("held_remote") or [],
         "delivery_uncertain": push.get("delivery_uncertain") or [],
+        "skipped_sample": push.get("skipped_sample") or [],
+        "skipped_topup": push.get("skipped_topup") or [],
         "push_reason": push.get("reason"),
         "remote_voided": remote["voided_remote"],
         "remote_transitions": remote["remote_transitions"],
@@ -962,6 +999,15 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "remote_feishu_failed": remote["feishu_failed"],
     }
     errors: list[str] = []
+    if result["generation_failed"]:
+        details = "; ".join(
+            f"{item.get('order_no')}: {item.get('error')}"
+            for item in result["generation_failures"][:10]
+        )
+        errors.append(
+            f"下单图生成失败 {result['generation_failed']} 张"
+            + (f": {details}" if details else "")
+        )
     if result["push_reason"] in ("no_chat_id", "notify_disabled"):
         errors.append(f"飞书通道不可用: {result['push_reason']}")
     if result["images_failed"]:
@@ -1218,41 +1264,34 @@ def push_daily(db: Session) -> dict:
 
     历史基线 (部署前堆积) 不在此自动推, 避免刷屏; 需要时在「资料存档库」手动补推。
     """
-    remote = void_remote_pushed(db)  # 已推工厂但现已延期/远期的单 → 自动作废旧号+通知工厂+挂起
-    repush_activated(db)       # 远期老单激活→旧号作废、清号, 下面 generate+push 会以新号重推
-    assign_remote_seqs(db)     # 远期挂起单发内部序号"远期单 N"(不占工厂号) (用户 2026-07-09)
-    result = generate_pending(db)
-    result["remote_voided"] = remote["voided_remote"]
-    result["remote_transitions"] = remote["remote_transitions"]
-    result["remote_feishu_notified"] = remote["feishu_notified"]
-    result["remote_feishu_failed"] = remote["feishu_failed"]
-    n = result["generated"]
-    push = push_pending_images(db, limit=20, include_baseline=False)
-    result["images_pushed"] = push["pushed"]
-    result["images_failed"] = push["failed"]
-    result["images_remaining"] = push["remaining"]
-    result["failed_order_nos"] = push.get("failed_order_nos", [])
-    result["held_no_sku"] = push.get("held_no_sku", [])
-    result["held_remote"] = push.get("held_remote", [])
-    result["skipped_sample"] = push.get("skipped_sample", [])
-    result["skipped_topup"] = push.get("skipped_topup", [])
-    result["push_reason"] = push.get("reason")
-    if push["pushed"]:
-        head = f"今日推送 {push['pushed']} 张工厂下单图到工厂群"
-        if push["remaining"]:
-            head += f" (还有 {push['remaining']} 张排队, 明日续推)"
-        text = head + "。\n单号: " + "、".join(push["order_nos"][:10]) + ("…" if len(push["order_nos"]) > 10 else "")
-    elif push.get("skipped_topup") or push.get("skipped_sample"):
+    # 日报、口令回调、人工恢复和晚间补跑必须共用同一收口逻辑；否则同一批
+    # 数据会出现不同的成功口径。quiet=False 仅控制日报附加通知，不改变状态机。
+    result = reconcile_pending_delivery(db, limit=20, quiet=False)
+    generated = result.get("generated") or {}
+    n = int(generated.get("generated") or 0)
+    if result.get("_run_status") == "fail":
+        text = "下单图自动推送未完成：" + str(result.get("_error") or "未返回原因")
+    elif result["images_pushed"]:
+        head = f"今日推送 {result['images_pushed']} 张工厂下单图到工厂群"
+        if result["images_remaining"]:
+            head += f" (仍有 {result['images_remaining']} 张待明确处理)"
+        text = head + "。\n单号: " + "、".join(result["order_nos"][:10]) + ("…" if len(result["order_nos"]) > 10 else "")
+    elif result.get("skipped_topup") or result.get("skipped_sample"):
         text = (f"今日没有需要推给工厂的正常下单图。已识别并跳过 "
-                f"{len(push.get('skipped_topup') or [])} 笔小额补差/加价单、"
-                f"{len(push.get('skipped_sample') or [])} 笔样品单。")
+                f"{len(result.get('skipped_topup') or [])} 笔小额补差/加价单、"
+                f"{len(result.get('skipped_sample') or [])} 笔样品单。")
     elif n:
         text = f"今日新生成 {n} 张工厂下单图, 已存「资料存档库」(类型: 工厂下单图), 可下载/打印发工厂。"
     else:
         text = "今日没有需要生成/推送的下单图。"
     try:
         from app.services import notify_service
-        channels = notify_service.broadcast_text(db, text, level="info", title="畔色 ERP [下单图日报]")
+        channels = notify_service.broadcast_text(
+            db,
+            text,
+            level="warn" if result.get("_run_status") == "fail" else "info",
+            title="畔色 ERP [下单图日报]",
+        )
         result["summary_notification_channels"] = channels
         result["pushed"] = any(v is True for v in channels.values())
         result["summary_notification_pushed"] = result["pushed"]

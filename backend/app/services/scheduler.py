@@ -1367,37 +1367,39 @@ def _job_ingest_scan(db: Session) -> dict:
     有报错/需扫码 → 跳过, 等重新扫码全部成功后再生成。与 orchestrate 路径同一口径。
     generate_pending 幂等(已生成的不重复, 正常新单仍按 18:30 推飞书); 若新备注命中远期/激活词,
     则本次导入立即完成旧工厂号作废/远期编号/飞书通知或激活重排。"""
-    from app.services import agent_ingest_service, web_agent_service
+    from app.services import agent_ingest_service
     ing = agent_ingest_service.run_ingest(db)
     try:
-        hb = web_agent_service.health(db)
-        tasks = (web_agent_service.list_tasks(db).get("tasks") or []) if hb.get("online") else []
-        need_scan = [t for t in tasks
-                     if not t.get("has_session") and not agent_ingest_service.SKIPPED_TASKS.get(t.get("id"))]
-        if ing.get("errors", 0) == 0 and not need_scan and ing.get("imported", 0) > 0:
+        if ing.get("errors"):
+            details = "; ".join(
+                f"{item.get('path')}: {(item.get('summary') or {}).get('error', '未知错误')}"
+                for item in (ing.get("files") or [])
+                if item.get("status") == "error"
+            )
+            ing["_run_status"] = "fail"
+            ing["_error"] = f"共享目录导入失败 {ing.get('errors')} 份: {details[:500]}"
+        elif ing.get("imported", 0) > 0 and agent_ingest_service.order_data_fresh(
+                db, not_before_hour=0):
             from app.services import order_sheet_archive_service, order_sync_service
             # 生成下单图前先把编码回填: sku_code→product_code (孚格PFG单导入时无编码) + 标题→编码。
             # 否则下单图按 product_code 查图库/产品总表/配图全落空 → 无产品图 (用户实测 2026-06-18)。
             order_sync_service.backfill_product_code(db)
             order_sync_service.backfill_code_from_taobao_title(db)
             db.commit()
-            remote = order_sheet_archive_service.void_remote_pushed(db)
-            order_sheet_archive_service.repush_activated(db)
-            order_sheet_archive_service.assign_remote_seqs(db)
-            ing["remote_voided"] = remote["voided_remote"]
-            ing["remote_transitions"] = remote["remote_transitions"]
-            ing["remote_feishu_notified"] = remote["feishu_notified"]
-            ing["remote_feishu_failed"] = remote["feishu_failed"]
-            if remote["feishu_failed"]:
-                details = "; ".join(
-                    f"{x.get('order_no')}: {x.get('reason')}" for x in remote["feishu_failed"])
+            delivery = order_sheet_archive_service.reconcile_pending_delivery(
+                db, limit=50, quiet=True,
+            )
+            ing["order_sheets"] = delivery
+            if delivery.get("_run_status") == "fail":
                 ing["_run_status"] = "fail"
-                ing["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
-            ing["order_sheets"] = order_sheet_archive_service.generate_pending(db)
-        elif need_scan:
-            ing["order_sheets"] = {"skipped": "有平台需重新扫码, 等全部成功后再生成下单图"}
-    except Exception:  # noqa: BLE001
-        pass
+                ing["_error"] = delivery.get("_error") or "订单送达收口失败"
+        elif ing.get("imported", 0) > 0:
+            ing["order_sheets"] = {
+                "skipped": "当前没有同批次完整三报表证据，不生成、不推送下单图",
+            }
+    except Exception as exc:  # noqa: BLE001
+        ing["_run_status"] = "fail"
+        ing["_error"] = f"共享目录导入后的订单收口异常: {type(exc).__name__}: {exc}"
     return ing
 
 
@@ -1452,38 +1454,22 @@ def _job_order_sheets_daily(db: Session) -> dict:
             },
             retry_times=_ORDER_RETRY_TIMES,
         )
+    # push_daily 内部直接复用 reconcile_pending_delivery。18:30、口令回调、
+    # 人工恢复和补跑因此共享同一组生成/发送/暂缓/不确定状态与失败判定。
     result = order_sheet_archive_service.push_daily(db)
-    result["_success_message"] = agent_ingest_service.format_order_change_message(
-        agent_ingest_service.latest_order_pull_result(db).get("changes")
-    )
-    failed = int(result.get("images_failed") or 0)
-    remaining = int(result.get("images_remaining") or 0)
-    held_no_sku = result.get("held_no_sku") or []
+    result["order_batch_id"] = agent_ingest_service.latest_order_pull_batch_id(db)
+    result["order_business_date"] = date.today().isoformat()
     held_no_address = result.get("held_no_address") or []
-    remote_notify_failed = result.get("remote_feishu_failed") or []
-    reason = result.get("push_reason")
-    if remote_notify_failed:
-        details = "; ".join(f"{x.get('order_no')}: {x.get('reason')}" for x in remote_notify_failed)
-        result["_run_status"] = "fail"
-        result["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
-    elif reason in ("no_chat_id", "notify_disabled"):
-        result["_run_status"] = "fail"
-        result["_error"] = f"飞书推送不可用: {reason}"
-    elif failed:
-        result["_run_status"] = "fail"
-        result["_error"] = f"飞书下单图发送失败 {failed} 张: {','.join(result.get('failed_order_nos') or [])}"
-    elif held_no_sku:
-        result["_run_status"] = "fail"
-        result["_error"] = f"{len(held_no_sku)} 笔订单因SKU未回填暂缓推送: {','.join(held_no_sku)}"
-    elif held_no_address:
+    if result.get("_run_status") != "fail" and held_no_address:
         result["deferred_status"] = "address_masked"
         result["_success_message"] = (
             f"订单推送流程执行正常；{len(held_no_address)} 笔订单因淘宝地址脱敏暂缓，"
             f"地址完整后自动补推：" + ",".join(held_no_address)
         )
-    elif remaining:
-        result["_run_status"] = "fail"
-        result["_error"] = f"仍有 {remaining} 张可推下单图未发送"
+    elif result.get("_run_status") != "fail":
+        result["_success_message"] = agent_ingest_service.format_order_change_message(
+            agent_ingest_service.latest_order_pull_result(db).get("changes")
+        )
     _sync_factory_dispatch_after_orders(db, result)
     return _record_pipeline_result(
         db,
@@ -1502,22 +1488,11 @@ def _job_order_sheets_catchup(db: Session) -> dict:
     新鲜度门(2026-07-07): 今日订单未取数成功→不生成/不推(防旧数据把已关闭单误推), 等续跑补取数。
     """
     from app.services import agent_ingest_service, order_sheet_archive_service as oss
-    if not agent_ingest_service.order_data_fresh(db):
+    if not agent_ingest_service.order_data_fresh(db, not_before_hour=0):
         return {"skipped": "stale_order_data"}
-    remote = oss.void_remote_pushed(db)
-    oss.repush_activated(db)
-    oss.assign_remote_seqs(db)
-    gen = oss.generate_pending(db)
-    push = oss.push_pending_images(db, limit=20, include_baseline=False, quiet=True)
-    result = {"generated": gen, "images_pushed": push["pushed"], "remaining": push["remaining"],
-              "remote_voided": remote["voided_remote"],
-              "remote_transitions": remote["remote_transitions"],
-              "remote_feishu_notified": remote["feishu_notified"],
-              "remote_feishu_failed": remote["feishu_failed"]}
-    if remote["feishu_failed"]:
-        details = "; ".join(f"{x.get('order_no')}: {x.get('reason')}" for x in remote["feishu_failed"])
-        result["_run_status"] = "fail"
-        result["_error"] = f"远期改单已处理，但飞书作废通知失败: {details}"
+    result = oss.reconcile_pending_delivery(db, limit=20, quiet=True)
+    result["order_batch_id"] = agent_ingest_service.latest_order_pull_batch_id(db)
+    result["order_business_date"] = date.today().isoformat()
     return result
 
 
@@ -1545,6 +1520,8 @@ def _job_pull_catchup(db: Session) -> dict:
         return {"skipped": "order_pipeline_closed", "_run_status": "skipped"}
 
     def _finish(result: dict) -> dict:
+        result.setdefault("order_batch_id", ai.latest_order_pull_batch_id(db))
+        result.setdefault("order_business_date", date.today().isoformat())
         held_no_address = result.get("held_no_address") or []
         if result.get("_run_status") != "fail" and held_no_address:
             result["deferred_status"] = "address_masked"
@@ -1634,9 +1611,24 @@ def _job_pull_catchup(db: Session) -> dict:
                 + "；下个时段自动重试"
             ),
         })
-    res = ai.orchestrate(db, quiet=True, force_orders=True, orders_only=True)  # 强制补18:00后的订单快照
-    out = {"ran_orchestrate": True, "tasks": len(res.get("tasks", [])),
-           "pending_manual": len(res.get("pending_manual", []))}
+    active_batch_id = ai.latest_order_pull_batch_id(db)
+    res = ai.orchestrate(
+        db,
+        quiet=True,
+        force_orders=True,
+        orders_only=True,
+        order_batch_id=active_batch_id,
+        order_business_date=date.today(),
+    )  # 强制补18:00后的订单快照，并复用同一业务批次号
+    out = {
+        "ran_orchestrate": True,
+        "tasks": len(res.get("tasks", [])),
+        "pending_manual": len(res.get("pending_manual", [])),
+        "order_batch_id": res.get("order_batch_id") or active_batch_id,
+        "order_business_date": res.get("order_business_date") or date.today().isoformat(),
+        "artifacts": res.get("artifacts") or [],
+        "artifact_roles": res.get("artifact_roles") or {},
+    }
     if res.get("order_changes") is not None:
         out["order_changes"] = res["order_changes"]
         out["_success_message"] = res.get("order_message")

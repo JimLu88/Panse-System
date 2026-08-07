@@ -23,6 +23,7 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Optional
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -55,6 +56,7 @@ FINANCE_BROWSER_FLOW_TASKS = (
 )
 FINANCE_EXPORT_TASKS = {"wechat_bill", "wanxiangtai", "wanshifu"}
 ORDER_PULL_EXPECTED_ARTIFACT_COUNT = 3
+ORDER_PULL_REQUIRED_ROLES = frozenset({"orders", "sales_detail", "shipping"})
 
 _OOXML_ENCRYPTED_MAGIC = bytes.fromhex("d0cf11e0a1b11ae1")
 
@@ -186,6 +188,62 @@ def _job_downloads(job_result: dict) -> list[str]:
     return list(dict.fromkeys(str(item) for item in candidates if item))
 
 
+def new_order_batch_id(*, on: date | None = None) -> str:
+    """Create one immutable business batch id for an order pull/recovery chain."""
+    target = on or date.today()
+    return f"orders-{target:%Y%m%d}-{uuid4().hex}"
+
+
+def _normalize_order_report_role(value: object) -> str | None:
+    text = str(value or "").strip().lower()
+    aliases = {
+        "orders": "orders",
+        "order": "orders",
+        "订单报表": "orders",
+        "item_sales": "sales_detail",
+        "items": "sales_detail",
+        "sales_detail": "sales_detail",
+        "宝贝销售明细报表": "sales_detail",
+        "销售明细": "sales_detail",
+        "shipping": "shipping",
+        "发货报表": "shipping",
+    }
+    return aliases.get(text)
+
+
+def _role_from_artifact_name(filename: str) -> str | None:
+    """Compatibility fallback for old durable evidence and test fixtures."""
+    name = Path(str(filename).replace("\\", "/")).name.lower()
+    if "shipping" in name or name.startswith("exportorderlist"):
+        return "shipping"
+    if any(token in name for token in ("item_sales", "items", "sales_detail")):
+        return "sales_detail"
+    if "orders" in name or "order_master" in name:
+        return "orders"
+    return None
+
+
+def _job_artifact_roles(job_result: dict) -> dict[str, str]:
+    """Map Web-Agent report results to immutable artifact basenames."""
+    payloads = [job_result]
+    nested = job_result.get("result")
+    if isinstance(nested, dict):
+        payloads.append(nested)
+    roles: dict[str, str] = {}
+    for payload in payloads:
+        for report in payload.get("reports") or []:
+            if not isinstance(report, dict):
+                continue
+            role = _normalize_order_report_role(report.get("report"))
+            if not role:
+                continue
+            for raw_path in report.get("downloads") or []:
+                name = Path(str(raw_path).replace("\\", "/")).name
+                if name:
+                    roles[name] = role
+    return roles
+
+
 def start_pending_scans(db: Session) -> dict:
     """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
     发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
@@ -205,8 +263,15 @@ def start_pending_scans(db: Session) -> dict:
         try:
             done = []
             done_artifacts: dict[str, list[str]] = {}
+            done_artifact_roles: dict[str, dict[str, str]] = {}
             failures: list[dict] = []
             scan_results = get_scan_results(d)
+            order_batch = None
+            if "taobao_orders" in tasks:
+                order_batch = (
+                    latest_order_pull_batch_id(d)
+                    if hasattr(d, "execute") else None
+                ) or new_order_batch_id(on=date.today())
             for tid in list(tasks):
                 artifacts_before = (
                     _main_alipay_artifacts()
@@ -236,6 +301,7 @@ def start_pending_scans(db: Session) -> dict:
                             and result_ok and has_artifact):
                         done.append(tid)
                         done_artifacts[tid] = downloads
+                        done_artifact_roles[tid] = _job_artifact_roles(job_result)
                         scan_results[tid] = {
                             "status": "success",
                             "at": datetime.now().isoformat(timespec="seconds"),
@@ -272,6 +338,14 @@ def start_pending_scans(db: Session) -> dict:
                         "reason": failure["reason"],
                     }
             ingest_result = run_ingest(d)   # 扫到的余额截图/淘宝报表一并导入
+            order_ingest_result = None
+            if "taobao_orders" in done:
+                order_ingest_result = run_ingest(
+                    d,
+                    only_paths=done_artifacts.get("taobao_orders") or [],
+                    artifact_roles=done_artifact_roles.get("taobao_orders") or {},
+                    order_batch_id=order_batch,
+                )
             if (MAIN_ALIPAY_FLOW_TASK in done
                     and (ingest_result.get("errors") or ingest_result.get("pending"))):
                 # A browser download is not business success until the new
@@ -296,13 +370,58 @@ def start_pending_scans(db: Session) -> dict:
             batch_artifacts = list(dict.fromkeys(
                 name for name in batch_artifacts if name
             ))
-            batch_artifact_states = taobao_artifact_states(d, batch_artifacts)
+            batch_roles = done_artifact_roles.get("taobao_orders") or {}
+            batch_artifact_states: dict[str, str] = {}
+            batch_role_check = {
+                "ok": False,
+                "roles": {},
+                "missing_roles": sorted(ORDER_PULL_REQUIRED_ROLES),
+                "duplicate_roles": {},
+                "unknown_artifacts": [],
+            }
+            if "taobao_orders" in done:
+                batch_artifact_states = taobao_artifact_states(
+                    d, batch_artifacts, order_batch_id=order_batch,
+                )
+                batch_role_check = validate_order_pull_artifact_roles(
+                    d,
+                    batch_artifacts,
+                    declared_roles=batch_roles,
+                    order_batch_id=order_batch,
+                )
             if ("taobao_orders" in done
                     and len(batch_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT):
                 reason = (
                     "订单拉取产物不完整："
                     f"预期 {ORDER_PULL_EXPECTED_ARTIFACT_COUNT} 份，"
                     f"实际 {len(batch_artifacts)} 份"
+                )
+                done.remove("taobao_orders")
+                failures.append({"task": "taobao_orders", "reason": reason})
+                scan_results["taobao_orders"] = {
+                    "status": "failed",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "reason": reason,
+                }
+            elif "taobao_orders" in done and (order_ingest_result or {}).get("errors"):
+                reason = (
+                    "订单拉取产物角色或内容校验失败："
+                    + "; ".join(
+                        str((item.get("summary") or {}).get("error") or item.get("path") or "未知")
+                        for item in (order_ingest_result.get("files") or [])
+                        if item.get("status") == "error"
+                    )
+                )
+                done.remove("taobao_orders")
+                failures.append({"task": "taobao_orders", "reason": reason})
+                scan_results["taobao_orders"] = {
+                    "status": "failed",
+                    "at": datetime.now().isoformat(timespec="seconds"),
+                    "reason": reason,
+                }
+            elif "taobao_orders" in done and not batch_role_check["ok"]:
+                reason = "订单三报表角色不完整或重复：" + json.dumps(
+                    batch_role_check, ensure_ascii=False,
                 )
                 done.remove("taobao_orders")
                 failures.append({"task": "taobao_orders", "reason": reason})
@@ -365,6 +484,7 @@ def start_pending_scans(db: Session) -> dict:
                 d.commit()
             if ("taobao_orders" in done
                     and len(batch_artifacts) == ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+                    and batch_role_check["ok"]
                     and all(
                         status == "imported"
                         for status in batch_artifact_states.values()
@@ -382,6 +502,10 @@ def start_pending_scans(db: Session) -> dict:
                 state["taobao_report"] = completed_at
                 state["taobao_orders_complete"] = completed_at
                 state["taobao_orders_complete_artifacts"] = batch_artifacts
+                state["taobao_orders_complete_artifact_roles"] = batch_role_check["roles"]
+                state["taobao_orders_complete_batch_id"] = order_batch
+                state["taobao_orders_complete_business_date"] = date.today().isoformat()
+                state["taobao_orders_complete_legacy_evidence"] = False
                 _save_json(d, KEY_STATE, state)
                 d.commit()
                 # Finish the original business outcome immediately.  Pushed
@@ -392,6 +516,8 @@ def start_pending_scans(db: Session) -> dict:
                     d,
                     source="manual_scan",
                     manifest=batch_artifacts,
+                    order_batch_id=order_batch,
+                    order_business_date=date.today().isoformat(),
                 )
             if MAIN_ALIPAY_FLOW_TASK in done:
                 state = _load_json(d, KEY_STATE)
@@ -982,6 +1108,20 @@ def reingest_pending_shipping(db: Session) -> dict:
             d = _report_to_dict(rep)
             d["agent_status"] = "imported"
             d["agent_report_role"] = "shipping"
+            prior = _hash_exists(db, hashlib.sha256(raw).hexdigest())
+            prior_summary = (
+                prior.row_summary
+                if prior is not None and isinstance(prior.row_summary, dict)
+                else {}
+            )
+            for key in (
+                "automation_batch_id",
+                "agent_report_role_expected",
+                "agent_report_role_detected",
+                "agent_report_role_source",
+            ):
+                if prior_summary.get(key) is not None:
+                    d[key] = prior_summary[key]
             import_storage.archive(db, content=raw, original_name=path.name,
                                    kind="taobao", source="api", row_summary=d)
             db.commit()
@@ -1028,8 +1168,19 @@ def _ingest_candidates(only_paths: Optional[list[str]] = None) -> list[Path]:
     return sorted(found.values(), key=lambda item: str(item))
 
 
-def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
-    """Import current-run artifacts, or all unseen output files as fallback."""
+def run_ingest(
+    db: Session,
+    *,
+    only_paths: Optional[list[str]] = None,
+    artifact_roles: Optional[dict[str, str]] = None,
+    order_batch_id: str | None = None,
+) -> dict:
+    """Import current-run artifacts, or all unseen output files as fallback.
+
+    For a scoped order pull, persist the immutable batch id and the report role
+    on every artifact evidence row.  The role is checked against the workbook
+    content before import; a disagreement is a hard batch error.
+    """
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
     _pending_pw_files: list[str] = []   # 本轮新下载、待飞书口令解密的加密发货报表
@@ -1037,6 +1188,11 @@ def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
         return report
     state = _load_json(db, KEY_STATE)
+    scoped_names = {
+        Path(str(value).replace("\\", "/")).name
+        for value in (only_paths or [])
+        if str(value or "").strip()
+    }
     for path in _ingest_candidates(only_paths):
         if not path.is_file() or path.name.startswith("_"):
             continue
@@ -1049,19 +1205,89 @@ def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
         report["scanned"] += 1
         raw = path.read_bytes()
         file_hash = hashlib.sha256(raw).hexdigest()
-        if _hash_exists(db, file_hash) is not None:
-            report["skipped_known"] += 1
-            continue
+        expected_role = _normalize_order_report_role(
+            (artifact_roles or {}).get(path.name)
+        )
+        detected_role = None
+        if category == "taobao_report":
+            from app.services import taobao_order_import
+
+            detected_role = taobao_order_import.detect_report_role(path.name, raw)
         entry = {"path": str(rel), "category": category}
+        if expected_role and detected_role and expected_role != detected_role:
+            reason = (
+                f"报表角色与内容不一致: 清单={expected_role}, 内容={detected_role}"
+            )
+            entry.update({
+                "status": "error",
+                "summary": {
+                    "error": reason,
+                    "agent_report_role_expected": expected_role,
+                    "agent_report_role_detected": detected_role,
+                    "automation_batch_id": order_batch_id,
+                },
+            })
+            report["errors"] += 1
+            report["files"].append(entry)
+            continue
+        effective_role = detected_role or expected_role
+        # The batch id may only label artifacts returned by this Web-Agent
+        # run. A broad fallback scan also sees historical Taobao files and must
+        # never attach those files to the current business batch.
+        batch_for_file = (
+            order_batch_id
+            if category == "taobao_report"
+            and (
+                expected_role is not None
+                or (bool(scoped_names) and path.name in scoped_names and detected_role is not None)
+            )
+            else None
+        )
+
+        prior = _hash_exists(db, file_hash)
+        if prior is not None:
+            report["skipped_known"] += 1
+            prior_summary = prior.row_summary if isinstance(prior.row_summary, dict) else {}
+            status = str(prior_summary.get("agent_status") or "unknown")
+            summary = {
+                **prior_summary,
+                "agent_status": status,
+                "agent_report_role": effective_role or prior_summary.get("agent_report_role"),
+                "agent_report_role_expected": expected_role,
+                "agent_report_role_detected": detected_role,
+                "agent_report_role_source": (
+                    "content" if detected_role else "agent_manifest" if expected_role else None
+                ),
+                "automation_batch_id": batch_for_file,
+                "duplicate_for_batch": bool(batch_for_file),
+            }
+            # Same bytes may legitimately recur on a no-change day.  Preserve
+            # a new audit row for this batch without importing the orders twice.
+            if batch_for_file:
+                res = import_storage.archive(
+                    db,
+                    content=raw,
+                    original_name=path.name,
+                    kind="taobao",
+                    source="api",
+                    row_summary=summary,
+                )
+                db.commit()
+                entry["file_id"] = res.file.id
+            entry.update({"status": status, "summary": summary})
+            report["files"].append(entry)
+            continue
         try:
             kind, status, summary = _import_one(db, category, path, raw)
             summary["agent_status"] = status
-            if category == "taobao_report" and raw[:8] == _OOXML_ENCRYPTED_MAGIC:
-                # Encrypted Taobao exports are shipping reports.  Persist the
-                # role so later password callbacks can distinguish a newer
-                # successful shipping snapshot from unrelated order/sales
-                # workbooks without reopening the archived file.
-                summary["agent_report_role"] = "shipping"
+            if category == "taobao_report":
+                summary["agent_report_role"] = effective_role
+                summary["agent_report_role_expected"] = expected_role
+                summary["agent_report_role_detected"] = detected_role
+                summary["agent_report_role_source"] = (
+                    "content" if detected_role else "agent_manifest" if expected_role else None
+                )
+                summary["automation_batch_id"] = batch_for_file
             res = import_storage.archive(
                 db, content=raw, original_name=path.name, kind=kind,
                 source="api", row_summary=summary)
@@ -1215,9 +1441,11 @@ def order_pull_artifact_names(payload: dict | None) -> list[str]:
     values = (
         (task or {}).get("artifacts")
         or payload.get("artifacts")
-        or payload.get("reports")
+        or payload.get("manifest")
         or []
     )
+    if not values:
+        values = _job_downloads(payload)
     names: list[str] = []
     for value in values:
         name = Path(str(value).replace("\\", "/")).name
@@ -1226,14 +1454,152 @@ def order_pull_artifact_names(payload: dict | None) -> list[str]:
     return names
 
 
-def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
-    """Return the latest successful order pull's durable artifact manifest."""
+def order_pull_artifact_roles(payload: dict | None) -> dict[str, str]:
+    """Return the durable filename -> role mapping for one pull result."""
+    payload = payload or {}
+    task = next(
+        (
+            item for item in (payload.get("tasks") or [])
+            if item.get("task") == "taobao_orders"
+            and str(item.get("status") or "").lower() in ("done", "ok", "success")
+        ),
+        None,
+    )
+    raw_roles = (
+        (task or {}).get("artifact_roles")
+        or payload.get("artifact_roles")
+        or {}
+    )
+    roles: dict[str, str] = {}
+    if isinstance(raw_roles, dict):
+        for raw_name, raw_role in raw_roles.items():
+            name = Path(str(raw_name).replace("\\", "/")).name
+            role = _normalize_order_report_role(raw_role)
+            if name and role:
+                roles[name] = role
+    # Compatibility is intentionally narrow: only explicit semantic fixture /
+    # legacy names are inferred. New production pulls persist trusted roles.
+    for name in order_pull_artifact_names(payload):
+        inferred = _role_from_artifact_name(name)
+        if inferred:
+            roles.setdefault(name, inferred)
+    return roles
+
+
+def taobao_artifact_roles(
+    db: Session,
+    artifact_names: list[str],
+    *,
+    declared_roles: Optional[dict[str, str]] = None,
+    order_batch_id: str | None = None,
+) -> dict[str, str | None]:
+    """Return each manifest artifact's latest trustworthy role evidence."""
+    names = [
+        Path(str(value).replace("\\", "/")).name
+        for value in artifact_names
+        if str(value or "").strip()
+    ]
+    declared = {
+        Path(str(name).replace("\\", "/")).name: _normalize_order_report_role(role)
+        for name, role in (declared_roles or {}).items()
+    }
+    rows = db.execute(
+        select(ImportedFile)
+        .where(
+            ImportedFile.kind == "taobao",
+            ImportedFile.original_filename.in_(set(names)),
+        )
+        .order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    latest: dict[str, ImportedFile] = {}
+    for row in rows:
+        summary = row.row_summary if isinstance(row.row_summary, dict) else {}
+        row_batch = str(summary.get("automation_batch_id") or "")
+        name = str(row.original_filename)
+        if order_batch_id:
+            if row_batch == order_batch_id:
+                latest[name] = row
+            continue
+        latest[name] = row
+
+    out: dict[str, str | None] = {}
+    for name in names:
+        summary = (
+            latest[name].row_summary
+            if name in latest and isinstance(latest[name].row_summary, dict)
+            else {}
+        )
+        persisted = _normalize_order_report_role(summary.get("agent_report_role"))
+        out[name] = persisted or declared.get(name) or _role_from_artifact_name(name)
+    return out
+
+
+def validate_order_pull_artifact_roles(
+    db: Session,
+    artifact_names: list[str],
+    *,
+    declared_roles: Optional[dict[str, str]] = None,
+    order_batch_id: str | None = None,
+) -> dict:
+    """Require exactly one orders, sales-detail and shipping artifact."""
+    roles = taobao_artifact_roles(
+        db,
+        artifact_names,
+        declared_roles=declared_roles,
+        order_batch_id=order_batch_id,
+    )
+    by_role: dict[str, list[str]] = {role: [] for role in ORDER_PULL_REQUIRED_ROLES}
+    unknown: list[str] = []
+    for name, role in roles.items():
+        if role in by_role:
+            by_role[role].append(name)
+        else:
+            unknown.append(name)
+    missing = sorted(role for role, values in by_role.items() if not values)
+    duplicates = {
+        role: values for role, values in by_role.items() if len(values) > 1
+    }
+    return {
+        "ok": (
+            len(artifact_names) == ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+            and not missing
+            and not duplicates
+            and not unknown
+        ),
+        "roles": roles,
+        "missing_roles": missing,
+        "duplicate_roles": duplicates,
+        "unknown_artifacts": unknown,
+    }
+
+
+def order_pull_batch_id(payload: dict | None) -> str | None:
+    """Read the immutable batch id from a pull result or its order task."""
+    payload = payload or {}
+    direct = str(payload.get("order_batch_id") or "").strip()
+    if direct:
+        return direct
+    task = next(
+        (
+            item for item in (payload.get("tasks") or [])
+            if item.get("task") == "taobao_orders"
+        ),
+        None,
+    )
+    value = str((task or {}).get("order_batch_id") or "").strip()
+    return value or None
+
+
+def latest_order_pull_evidence(db: Session, *, on=None) -> dict:
+    """Return the newest durable order-pull evidence for one business day."""
     target = on or date.today()
     candidates: list[tuple[datetime, dict]] = []
     current = _load_json(db, KEY_ORCH_STATE)
 
     def _append(payload: dict, started_at) -> None:
-        if not started_at or not order_pull_artifact_names(payload):
+        if not started_at or not (
+            order_pull_artifact_names(payload) or order_pull_batch_id(payload)
+        ):
             return
         try:
             value = (
@@ -1245,7 +1611,12 @@ def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
             return
         if value.tzinfo is not None:
             value = value.astimezone().replace(tzinfo=None)
-        if value.date() == target:
+        raw_business_date = str(payload.get("order_business_date") or "").strip()
+        try:
+            evidence_date = date.fromisoformat(raw_business_date) if raw_business_date else value.date()
+        except ValueError:
+            return
+        if evidence_date == target:
             candidates.append((value, payload))
 
     _append(current, current.get("started_at"))
@@ -1253,18 +1624,37 @@ def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
 
     rows = db.execute(
         select(ScheduledJobRun)
-        .where(ScheduledJobRun.job_id == "daily_0630_web_agent")
+        .where(ScheduledJobRun.job_id.in_((
+            "daily_0630_web_agent",
+            "pull_catchup_30min",
+            "order_delivery_recovery",
+        )))
         .order_by(ScheduledJobRun.id.desc())
-        .limit(20)
+        .limit(50)
     ).scalars().all()
     for row in rows:
         _append(row.result_summary or {}, row.started_at)
     if not candidates:
-        return []
-    return order_pull_artifact_names(max(candidates, key=lambda item: item[0])[1])
+        return {}
+    return max(candidates, key=lambda item: item[0])[1]
 
 
-def taobao_artifact_states(db: Session, artifact_names: list[str]) -> dict[str, str]:
+def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
+    """Return the latest order pull's durable artifact manifest."""
+    return order_pull_artifact_names(latest_order_pull_evidence(db, on=on))
+
+
+def latest_order_pull_batch_id(db: Session, *, on=None) -> str | None:
+    """Return today's active order recovery-chain batch id, if present."""
+    return order_pull_batch_id(latest_order_pull_evidence(db, on=on))
+
+
+def taobao_artifact_states(
+    db: Session,
+    artifact_names: list[str],
+    *,
+    order_batch_id: str | None = None,
+) -> dict[str, str]:
     """Return each manifest file's latest durable ingest state."""
     names = {
         Path(str(value).replace("\\", "/")).name
@@ -1281,10 +1671,16 @@ def taobao_artifact_states(db: Session, artifact_names: list[str]) -> dict[str, 
         )
         .order_by(ImportedFile.id.asc())
     ).scalars().all()
-    latest = {
-        row.original_filename: str((row.row_summary or {}).get("agent_status") or "unknown")
-        for row in rows
-    }
+    latest: dict[str, str] = {}
+    for row in rows:
+        summary = row.row_summary if isinstance(row.row_summary, dict) else {}
+        row_batch = str(summary.get("automation_batch_id") or "")
+        status = str(summary.get("agent_status") or "unknown")
+        if order_batch_id:
+            if row_batch == order_batch_id:
+                latest[row.original_filename] = status
+            continue
+        latest[row.original_filename] = status
     return {name: latest.get(name, "missing") for name in sorted(names)}
 
 
@@ -1388,6 +1784,9 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
     try:
         refreshed_at = _dt.fromisoformat(tr)
         target_date = on or _date.today()
+        business_date = str(state.get("taobao_orders_complete_business_date") or "")
+        if not_before_hour is not None and business_date != target_date.isoformat():
+            return False
         if refreshed_at.date() < target_date:
             return False
         if (not_before_hour is not None and refreshed_at.date() == target_date
@@ -1398,11 +1797,28 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
             for value in (state.get("taobao_orders_complete_artifacts") or [])
             if str(value or "").strip()
         ))
+        batch_id = str(state.get("taobao_orders_complete_batch_id") or "").strip()
+        legacy_evidence = bool(state.get("taobao_orders_complete_legacy_evidence"))
+        declared_roles = state.get("taobao_orders_complete_artifact_roles") or {}
+        if not_before_hour is not None and not batch_id and not legacy_evidence:
+            return False
         if not_before_hour is not None:
             if len(complete_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
                 return False
-            artifact_states = taobao_artifact_states(db, complete_artifacts)
+            artifact_states = taobao_artifact_states(
+                db,
+                complete_artifacts,
+                order_batch_id=None if legacy_evidence else batch_id,
+            )
             if any(status != "imported" for status in artifact_states.values()):
+                return False
+            role_check = validate_order_pull_artifact_roles(
+                db,
+                complete_artifacts,
+                declared_roles=declared_roles,
+                order_batch_id=None if legacy_evidence else batch_id,
+            )
+            if not role_check["ok"]:
                 return False
             if pending_shipping_password_files(
                 db, on=target_date, artifact_names=complete_artifacts,
@@ -1434,9 +1850,27 @@ def finalize_order_pull_after_shipping_password(
     # KEY_ORCH_STATE 只保留“最近一次编排”，20:30 财务取数会覆盖 18:00 淘宝取数。
     # 因此先看内存态，找不到时再从不可覆盖的 ScheduledJobRun 历史取当天证据。
     evidence = _load_json(db, KEY_ORCH_STATE)
+    evidence_started_at = evidence.get("started_at")
 
     def _is_manual_recovery(payload: dict) -> bool:
         return bool(payload.get("manual_recovery") or payload.get("manual_pull"))
+
+    def _business_date(payload: dict, started_at) -> date | None:
+        raw = str(payload.get("order_business_date") or "").strip()
+        if raw:
+            try:
+                return date.fromisoformat(raw)
+            except ValueError:
+                return None
+        try:
+            value = (
+                datetime.fromisoformat(str(started_at))
+                if not isinstance(started_at, datetime)
+                else started_at
+            )
+            return value.astimezone().date() if value.tzinfo else value.date()
+        except (TypeError, ValueError):
+            return None
 
     def _evidence_matches(payload: dict, started_at) -> bool:
         if not started_at:
@@ -1455,22 +1889,29 @@ def finalize_order_pull_after_shipping_password(
             (t for t in (payload.get("tasks") or []) if t.get("task") == "taobao_orders"),
             None,
         )
+        business_day = _business_date(payload, started_at)
+        allowed_days = {target} if on is not None else {
+            current.date(), current.date() - timedelta(days=1),
+        }
         return (
-            dt.date() == target
+            business_day in allowed_days
             # Scheduled pulls remain restricted to the approved evening
             # window. A durable user-triggered recovery may run earlier.
             and (_is_manual_recovery(payload) or dt.hour >= not_before_hour)
             and (task or {}).get("status", "").lower() in ("done", "ok", "success")
         )
 
-    if not _evidence_matches(evidence, evidence.get("started_at")):
+    if not _evidence_matches(evidence, evidence_started_at):
         from app.models.scheduled_job import ScheduledJobRun
 
         rows = db.execute(
             select(ScheduledJobRun)
-            .where(ScheduledJobRun.job_id == "daily_0630_web_agent")
+            .where(ScheduledJobRun.job_id.in_((
+                "daily_0630_web_agent",
+                "pull_catchup_30min",
+            )))
             .order_by(ScheduledJobRun.id.desc())
-            .limit(10)
+            .limit(30)
         ).scalars().all()
         matched = next(
             (
@@ -1483,6 +1924,12 @@ def finalize_order_pull_after_shipping_password(
         if matched is None:
             return {"completed": False, "reason": "missing_current_order_pull_evidence"}
         evidence = matched.result_summary or {}
+        evidence_started_at = matched.started_at
+
+    evidence_target = _business_date(evidence, evidence_started_at)
+    if evidence_target is None:
+        return {"completed": False, "reason": "order_business_date_missing"}
+    target = evidence_target
 
     order_task = next(
         (t for t in (evidence.get("tasks") or []) if t.get("task") == "taobao_orders"),
@@ -1491,6 +1938,7 @@ def finalize_order_pull_after_shipping_password(
     if (order_task or {}).get("status", "").lower() not in ("done", "ok", "success"):
         return {"completed": False, "reason": "taobao_orders_task_not_complete"}
     batch_artifacts = order_pull_artifact_names(evidence)
+    declared_roles = order_pull_artifact_roles(evidence)
     if len(batch_artifacts) != ORDER_PULL_EXPECTED_ARTIFACT_COUNT:
         return {
             "completed": False,
@@ -1499,13 +1947,22 @@ def finalize_order_pull_after_shipping_password(
             "actual": len(batch_artifacts),
             "artifacts": batch_artifacts,
         }
+    batch_id = order_pull_batch_id(evidence)
+    legacy_evidence = not bool(batch_id)
+    if not batch_id:
+        material = target.isoformat() + "\n" + "\n".join(sorted(batch_artifacts))
+        batch_id = "legacy-" + hashlib.sha256(material.encode("utf-8")).hexdigest()[:24]
     if pending_shipping_password_files(
         db,
         on=target,
         artifact_names=batch_artifacts,
     ):
         return {"completed": False, "reason": "shipping_password_still_pending"}
-    batch_states = taobao_artifact_states(db, batch_artifacts)
+    batch_states = taobao_artifact_states(
+        db,
+        batch_artifacts,
+        order_batch_id=None if legacy_evidence else batch_id,
+    )
     if any(
         status != "imported" for status in batch_states.values()
     ):
@@ -1513,6 +1970,18 @@ def finalize_order_pull_after_shipping_password(
             "completed": False,
             "reason": "order_pull_artifacts_not_imported",
             "artifact_states": batch_states,
+        }
+    role_check = validate_order_pull_artifact_roles(
+        db,
+        batch_artifacts,
+        declared_roles=declared_roles,
+        order_batch_id=None if legacy_evidence else batch_id,
+    )
+    if not role_check["ok"]:
+        return {
+            "completed": False,
+            "reason": "order_pull_artifact_roles_invalid",
+            "role_check": role_check,
         }
 
     state = _load_json(db, KEY_STATE)
@@ -1528,19 +1997,28 @@ def finalize_order_pull_after_shipping_password(
     state["taobao_orders_complete"] = completed_at
     if batch_artifacts:
         state["taobao_orders_complete_artifacts"] = batch_artifacts
+    state["taobao_orders_complete_artifact_roles"] = role_check["roles"]
+    state["taobao_orders_complete_batch_id"] = batch_id
+    state["taobao_orders_complete_business_date"] = target.isoformat()
+    state["taobao_orders_complete_legacy_evidence"] = legacy_evidence
     _save_json(db, KEY_STATE, state)
     db.commit()
     return {
         "completed": True,
         "completed_at": completed_at,
         "artifacts": batch_artifacts,
+        "artifact_roles": role_check["roles"],
+        "order_batch_id": batch_id,
+        "order_business_date": target.isoformat(),
     }
 
 
 def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
                 force_orders: bool = False, force_finance: bool = False,
                 orders_only: bool = False,
-                skip_tasks: set[str] | None = None) -> dict:
+                skip_tasks: set[str] | None = None,
+                order_batch_id: str | None = None,
+                order_business_date: date | None = None) -> dict:
     """串行执行一次取数编排；调度、手动取数和补跑共用同一把锁。"""
     if not _orch_lock.acquire(blocking=False):
         return {
@@ -1554,7 +2032,9 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
         return _orchestrate_locked(
             db, force=force, quiet=quiet,
             force_orders=force_orders, force_finance=force_finance,
-            orders_only=orders_only, skip_tasks=skip_tasks)
+            orders_only=orders_only, skip_tasks=skip_tasks,
+            order_batch_id=order_batch_id,
+            order_business_date=order_business_date)
     except Exception:
         try:
             web_agent_service.request_stop(
@@ -1570,10 +2050,20 @@ def orchestrate(db: Session, *, force: bool = False, quiet: bool = False,
 def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False,
                         force_orders: bool = False, force_finance: bool = False,
                         orders_only: bool = False,
-                        skip_tasks: set[str] | None = None) -> dict:
+                        skip_tasks: set[str] | None = None,
+                        order_batch_id: str | None = None,
+                        order_business_date: date | None = None) -> dict:
     """每日编排: 探活 → 按更新间隔触发到期任务(串行) → 扫描导入 → 汇总。"""
-    out: dict = {"started_at": datetime.now().isoformat(timespec="seconds"),
-                 "tasks": [], "pending_manual": [], "task_errors": [], "skipped": []}
+    business_date = order_business_date or date.today()
+    if (orders_only or force_orders) and not order_batch_id:
+        order_batch_id = new_order_batch_id(on=business_date)
+    out: dict = {
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+        "tasks": [], "pending_manual": [], "task_errors": [], "skipped": [],
+    }
+    if order_batch_id:
+        out["order_batch_id"] = order_batch_id
+        out["order_business_date"] = business_date.isoformat()
     from app.services import automation_pipeline_service
 
     pipeline = "order_delivery" if orders_only else (
@@ -1611,6 +2101,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     plan: list[str] = []
     if force_orders or (not force_finance and _due(state, "taobao_report", iv_orders, force)):
         plan += ORDERS_TASKS
+    if "taobao_orders" in plan and not order_batch_id:
+        order_batch_id = new_order_batch_id(on=business_date)
+        out["order_batch_id"] = order_batch_id
+        out["order_business_date"] = business_date.isoformat()
     finance_force = force or force_finance
     if (not orders_only and (_due(state, "settlement", iv_balance, finance_force)
             or _due(state, "balance", iv_balance, finance_force)
@@ -1667,6 +2161,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     orders_pull_complete = False
     main_alipay_task_succeeded = False
     run_artifacts: list[str] = []
+    run_artifact_roles: dict[str, str] = {}
     for task_id in plan:
         info = tasks_info.get(task_id, {})
         if (task_id != MAIN_ALIPAY_FLOW_TASK
@@ -1681,8 +2176,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             _main_alipay_artifacts()
             if task_id == MAIN_ALIPAY_FLOW_TASK else None
         )
-        _save_json(db, KEY_ORCH_STATE, {"running": True, "current": task_id,
-                                        "started_at": out["started_at"]})
+        _save_json(db, KEY_ORCH_STATE, {
+            **out,
+            "running": True,
+            "current": task_id,
+        })
         db.commit()
         r = web_agent_service.run_task(db, task_id, variables)
         if not r.get("ok", True) or not r.get("job"):
@@ -1695,7 +2193,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         status = (final.get("status") or "").lower()
         job_result = final.get("result") or {}
         task_artifacts = _job_downloads(job_result)
+        task_artifact_roles = _job_artifact_roles(job_result)
         run_artifacts.extend(task_artifacts)
+        run_artifact_roles.update(task_artifact_roles)
         if status in ("done", "ok", "success") and job_result.get("ok") is False:
             status = "error"
             final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
@@ -1710,6 +2210,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             item["message"] = str(job_result.get("message") or "本期无新增数据")[:200]
         if task_artifacts:
             item["artifacts"] = task_artifacts
+        if task_artifact_roles:
+            item["artifact_roles"] = task_artifact_roles
+        if task_id == "taobao_orders" and order_batch_id:
+            item["order_batch_id"] = order_batch_id
+            item["order_business_date"] = business_date.isoformat()
         if status in ("error", "failed", "timeout"):
             err = str(final.get("error") or final.get("note") or "")
             item["error"] = err[:300]
@@ -1742,8 +2247,11 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     out["ingest"] = run_ingest(
         db,
         only_paths=run_artifacts if orders_only and run_artifacts else None,
+        artifact_roles=run_artifact_roles or None,
+        order_batch_id=order_batch_id,
     )
     out["artifacts"] = run_artifacts
+    out["artifact_roles"] = run_artifact_roles
     automation_pipeline_service.record_stage(
         db,
         pipeline,
@@ -1822,16 +2330,28 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     _save_json(db, KEY_STATE, latest_state)
     db.commit()
     order_batch_artifacts = order_pull_artifact_names(out)
+    declared_order_roles = order_pull_artifact_roles(out)
     persistent_pending_password = pending_shipping_password_files(
         db,
         on=today,
         artifact_names=order_batch_artifacts or None,
     )
     out["ingest"]["pending_password_files"] = persistent_pending_password
-    order_artifact_states = taobao_artifact_states(db, order_batch_artifacts)
+    order_artifact_states = taobao_artifact_states(
+        db, order_batch_artifacts, order_batch_id=order_batch_id,
+    )
     out["ingest"]["order_artifact_states"] = order_artifact_states
+    role_check = validate_order_pull_artifact_roles(
+        db,
+        order_batch_artifacts,
+        declared_roles=declared_order_roles,
+        order_batch_id=order_batch_id,
+    )
+    out["ingest"]["order_artifact_role_check"] = role_check
     order_batch_ready = (
         len(order_batch_artifacts) == ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+        and not out["ingest"].get("errors")
+        and role_check["ok"]
         and all(
         status == "imported" for status in order_artifact_states.values()
         )
@@ -1843,6 +2363,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         latest_state["taobao_report"] = completed_at
         latest_state["taobao_orders_complete"] = completed_at
         latest_state["taobao_orders_complete_artifacts"] = order_batch_artifacts
+        latest_state["taobao_orders_complete_artifact_roles"] = role_check["roles"]
+        latest_state["taobao_orders_complete_batch_id"] = order_batch_id
+        latest_state["taobao_orders_complete_business_date"] = business_date.isoformat()
+        latest_state["taobao_orders_complete_legacy_evidence"] = False
         latest_state["taobao_orders_last_result"] = {
             "date": today.isoformat(),
             "message": out.get("order_message") or "没有新增订单",
@@ -1859,14 +2383,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         # three-report order batch into a false order-delivery failure.
         all_ok = order_batch_ready and not persistent_pending_password
     else:
-        all_ok = (
-            not out.get("pending_manual")
-            and not out["ingest"].get("pending")
-            and not out["ingest"].get("errors")
-            and all(
-                (t.get("status") or "").lower() in ("done", "ok", "success")
-                for t in out["tasks"])
-        )
+        # Finance-only and generic scans are not order-delivery evidence.
+        # They may import data, but must never generate factory images.
+        all_ok = False
     if all_ok:
         try:
             from app.services import order_sheet_archive_service
@@ -1950,41 +2469,38 @@ def pull_orders_async(db: Session) -> dict:
         from app.database import SessionLocal
         d = SessionLocal()
         started_at = datetime.now()
+        batch_id = new_order_batch_id(on=started_at.date())
         try:
-            _save_json(d, KEY_ORCH_STATE, {"running": True, "current": "taobao_orders(手动拉单)",
-                                           "manual_recovery": True,
-                                           "started_at": started_at.isoformat(timespec="seconds")})
-            d.commit()
-            r = web_agent_service.run_task(d, "taobao_orders", {})
-            waited: dict = {}
-            if r.get("job"):
-                waited = web_agent_service.wait_job(
-                    d, r["job"], timeout_s=1800, poll_s=10) or {}
-            rep = run_ingest(d)
-            job_result = waited.get("result") or {}
-            job_ok = (
-                (waited.get("status") or "").lower() == "done"
-                and job_result.get("ok") is not False
+            result = _orchestrate_locked(
+                d,
+                force=True,
+                quiet=True,
+                force_orders=True,
+                orders_only=True,
+                order_batch_id=batch_id,
+                order_business_date=started_at.date(),
             )
-            task = {"task": "taobao_orders", "status": "done" if job_ok else "error"}
-            if not job_ok:
-                task["error"] = (
-                    job_result.get("reason") or waited.get("error")
-                    or "manual_pull_not_completed"
-                )
+            result["manual_recovery"] = True
+            result["manual_pull"] = result.get("ingest") or {}
+            _save_json(d, KEY_ORCH_STATE, {**result, "running": False})
+            d.commit()
+        except Exception as exc:  # noqa: BLE001
+            _log.exception("手动拉单线程异常")
+            d.rollback()
             _save_json(d, KEY_ORCH_STATE, {
                 "running": False,
                 "manual_recovery": True,
+                "order_batch_id": batch_id,
+                "order_business_date": started_at.date().isoformat(),
                 "started_at": started_at.isoformat(timespec="seconds"),
-                "tasks": [task],
-                "reports": job_result.get("reports") or job_result.get("downloads") or [],
-                "manual_pull": rep,
                 "finished_at": datetime.now().isoformat(timespec="seconds"),
+                "tasks": [{
+                    "task": "taobao_orders",
+                    "status": "error",
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                }],
             })
             d.commit()
-        except Exception:  # noqa: BLE001
-            _log.exception("手动拉单线程异常")
-            d.rollback()
         finally:
             try:
                 web_agent_service.request_stop(

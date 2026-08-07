@@ -22,11 +22,22 @@ def _set_taobao_report(db, dt):
         state.pop("taobao_report", None)
         state.pop("taobao_orders_complete", None)
         state.pop("taobao_orders_complete_artifacts", None)
+        state.pop("taobao_orders_complete_business_date", None)
+        state.pop("taobao_orders_complete_batch_id", None)
+        state.pop("taobao_orders_complete_legacy_evidence", None)
     else:
         state["taobao_report"] = dt.isoformat(timespec="seconds")
         state["taobao_orders_complete"] = dt.isoformat(timespec="seconds")
         artifacts = ["orders.xlsx", "items.xlsx", "shipping.xlsx"]
         state["taobao_orders_complete_artifacts"] = artifacts
+        state["taobao_orders_complete_business_date"] = dt.date().isoformat()
+        state["taobao_orders_complete_batch_id"] = f"legacy-test-{dt.date().isoformat()}"
+        state["taobao_orders_complete_legacy_evidence"] = True
+        state["taobao_orders_complete_artifact_roles"] = {
+            "orders.xlsx": "orders",
+            "items.xlsx": "sales_detail",
+            "shipping.xlsx": "shipping",
+        }
         for index, name in enumerate(artifacts):
             db.add(ImportedFile(
                 kind="taobao",
@@ -570,16 +581,15 @@ def test_manual_pull_persists_durable_success_evidence(monkeypatch):
     monkeypatch.setattr(ai.threading, "Thread", _ImmediateThread)
     monkeypatch.setattr(database, "SessionLocal", lambda: dummy)
     monkeypatch.setattr(
-        web_agent_service, "run_task", lambda *_args, **_kwargs: {"job": "job-1"})
-    monkeypatch.setattr(
-        web_agent_service,
-        "wait_job",
-        lambda *_args, **_kwargs: {
-            "status": "done",
-            "result": {"ok": True, "downloads": ["a.xlsx", "b.xlsx", "c.xlsx"]},
+        ai,
+        "_orchestrate_locked",
+        lambda *_args, **kwargs: {
+            "tasks": [{"task": "taobao_orders", "status": "done"}],
+            "ingest": {"errors": 0, "pending": 1},
+            "order_batch_id": kwargs["order_batch_id"],
+            "order_business_date": kwargs["order_business_date"].isoformat(),
         },
     )
-    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": 0, "pending": 1})
     monkeypatch.setattr(
         ai, "_save_json", lambda _db, _key, value: saved.clear() or saved.update(value))
 
@@ -588,7 +598,8 @@ def test_manual_pull_persists_durable_success_evidence(monkeypatch):
     assert result["started"] is True
     assert saved["manual_recovery"] is True
     assert saved["tasks"] == [{"task": "taobao_orders", "status": "done"}]
-    assert saved["reports"] == ["a.xlsx", "b.xlsx", "c.xlsx"]
+    assert saved["manual_pull"]["pending"] == 1
+    assert saved["order_batch_id"].startswith("orders-")
 
 
 def test_shipping_password_never_finalizes_without_current_pull_evidence(db_session):
@@ -715,21 +726,17 @@ def test_catchup_push_runs_when_fresh(db_session, monkeypatch):
 
 def test_hourly_ingest_applies_remote_transition_after_new_report(db_session, monkeypatch):
     monkeypatch.setattr(ai, "run_ingest", lambda db: {"imported": 1, "errors": 0})
-    monkeypatch.setattr(web_agent_service, "health", lambda db: {"online": True})
-    monkeypatch.setattr(web_agent_service, "list_tasks", lambda db: {"tasks": []})
+    monkeypatch.setattr(ai, "order_data_fresh", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(order_sync_service, "backfill_product_code", lambda db: None)
     monkeypatch.setattr(order_sync_service, "backfill_code_from_taobao_title", lambda db: None)
-    monkeypatch.setattr(oss, "void_remote_pushed", lambda db: {
-        "voided_remote": ["O1"],
+    monkeypatch.setattr(oss, "reconcile_pending_delivery", lambda db, **_kwargs: {
+        "remote_voided": ["O1"],
         "remote_transitions": [{"order_no": "O1", "old_factory_no": 322, "remote_seq": 39}],
-        "feishu_notified": ["O1"], "feishu_failed": [],
+        "remote_feishu_notified": ["O1"], "remote_feishu_failed": [],
     })
-    monkeypatch.setattr(oss, "repush_activated", lambda db: {})
-    monkeypatch.setattr(oss, "assign_remote_seqs", lambda db: {})
-    monkeypatch.setattr(oss, "generate_pending", lambda db: {"generated": 0})
     res = scheduler._job_ingest_scan(db_session)
-    assert res["remote_voided"] == ["O1"]
-    assert res["remote_feishu_notified"] == ["O1"]
+    assert res["order_sheets"]["remote_voided"] == ["O1"]
+    assert res["order_sheets"]["remote_feishu_notified"] == ["O1"]
 
 
 # ---------- pull_catchup 分支 ----------
@@ -937,7 +944,7 @@ def test_scan_done_with_business_failure_stays_pending(monkeypatch):
             "result": {"ok": False, "reason": "session_expired"},
         },
     )
-    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
+    monkeypatch.setattr(ai, "run_ingest", lambda _db, **_kwargs: {"errors": 0, "pending": 0})
     monkeypatch.setattr(oss, "reconcile_pending_delivery", _boom)
     monkeypatch.setattr(
         web_agent_service,
@@ -975,11 +982,24 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
             },
         },
     )
-    monkeypatch.setattr(ai, "run_ingest", lambda _db: {"errors": [], "pending": 0})
+    monkeypatch.setattr(ai, "run_ingest", lambda _db, **_kwargs: {"errors": 0, "pending": 0})
     monkeypatch.setattr(
         ai,
         "taobao_artifact_states",
-        lambda _db, names: {name: "imported" for name in names},
+        lambda _db, names, **_kwargs: {name: "imported" for name in names},
+    )
+    monkeypatch.setattr(
+        ai,
+        "validate_order_pull_artifact_roles",
+        lambda _db, names, **_kwargs: {
+            "ok": True,
+            "roles": {
+                "orders.xlsx": "orders",
+                "items.xlsx": "sales_detail",
+                "shipping.xlsx": "shipping",
+            },
+            "missing_roles": [], "duplicate_roles": {}, "unknown_artifacts": [],
+        },
     )
     monkeypatch.setattr(
         ai, "pending_shipping_password_files", lambda _db, **_kwargs: [])
@@ -1001,6 +1021,8 @@ def test_successful_order_scan_marks_fresh_and_reconciles_delivery(monkeypatch):
     assert reconciled == [{
         "source": "manual_scan",
         "manifest": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+        "order_batch_id": saved_state["taobao_orders_complete_batch_id"],
+        "order_business_date": datetime.now().date().isoformat(),
     }]
 
 

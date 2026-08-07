@@ -30,7 +30,9 @@ def _stub(monkeypatch):
 def _skeleton(db, no):
     o = Order(platform="淘宝", order_no=no, qty=1,
               product_name="畔色全实木榉木床头柜", sku=None, sku_code=None, product_code=None,
-              order_date=date(2026, 7, 11), status="paid", paid_amount=Decimal("1080.88"))
+              order_date=date(2026, 7, 11), status="paid", paid_amount=Decimal("1080.88"),
+              customer_name="测试客户", customer_phone="13800000000",
+              customer_address="浙江省杭州市西湖区测试路1号")
     db.add(o)
     db.flush()
     return o

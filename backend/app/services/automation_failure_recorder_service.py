@@ -42,6 +42,8 @@ def record_callback_run(
     detail: str,
     recovery_key: str,
     result_summary: Optional[dict[str, Any]] = None,
+    batch_id: Optional[str] = None,
+    business_date: Optional[str] = None,
     now: Optional[datetime] = None,
 ) -> dict[str, Any]:
     """Persist non-scheduler recovery work in the same append-only run log.
@@ -76,6 +78,10 @@ def record_callback_run(
         "recovery_key": recovery_key,
         **(result_summary or {}),
     }
+    if batch_id:
+        summary["order_batch_id"] = batch_id
+    if business_date:
+        summary["order_business_date"] = business_date
     row = ScheduledJobRun(
         job_id=job_id,
         job_label=f"{CATEGORY_LABELS[category]}恢复回调",
@@ -146,6 +152,21 @@ def _source_failures(summary: dict[str, Any]) -> list[dict[str, str]]:
     return failures
 
 
+def _batch_id(summary: dict[str, Any]) -> Optional[str]:
+    """Read a business batch id from scheduler/callback result summaries."""
+    for key in ("order_batch_id", "batch_id"):
+        value = str(summary.get(key) or "").strip()
+        if value:
+            return value
+    delivery = summary.get("delivery")
+    if isinstance(delivery, dict):
+        for key in ("order_batch_id", "batch_id"):
+            value = str(delivery.get(key) or "").strip()
+            if value:
+                return value
+    return None
+
+
 def list_failure_events(
     db: Session,
     *,
@@ -163,12 +184,17 @@ def list_failure_events(
         job_id for job_id, item_category in JOB_CATEGORIES.items()
         if category is None or item_category == category
     ]
+    # Failures are selected from the requested Beijing day. Later rows are
+    # included only as recovery evidence, so a password callback shortly after
+    # midnight can close the same immutable batch without hiding a new day's
+    # unrelated failure.
+    recovery_end = max(end, datetime.now(timezone.utc))
     rows = db.execute(
         select(ScheduledJobRun)
         .where(
             ScheduledJobRun.job_id.in_(job_ids),
             ScheduledJobRun.started_at >= start,
-            ScheduledJobRun.started_at <= end,
+            ScheduledJobRun.started_at <= recovery_end,
         )
         .order_by(ScheduledJobRun.started_at.asc(), ScheduledJobRun.id.asc())
     ).scalars().all()
@@ -176,15 +202,35 @@ def list_failure_events(
     attempts: dict[str, int] = {}
     events: list[dict[str, Any]] = []
     for index, row in enumerate(rows):
-        if row.status != "fail":
+        row_started = row.started_at
+        if row_started is not None and row_started.tzinfo is None:
+            row_started = row_started.replace(tzinfo=timezone.utc)
+        if row.status != "fail" or row_started is None or row_started > end:
             continue
         recovery_key = _recovery_key(row.job_id)
-        attempts[recovery_key] = attempts.get(recovery_key, 0) + 1
+        summary = row.result_summary if isinstance(row.result_summary, dict) else {}
+        batch_id = _batch_id(summary)
+        attempt_key = f"{recovery_key}:{batch_id or on.isoformat()}"
+        attempts[attempt_key] = attempts.get(attempt_key, 0) + 1
         later_success = next((
             later for later in rows[index + 1:]
-            if _recovery_key(later.job_id) == recovery_key and later.status == "ok"
+            if _recovery_key(later.job_id) == recovery_key
+            and later.status == "ok"
+            and (
+                _batch_id(
+                    later.result_summary
+                    if isinstance(later.result_summary, dict) else {}
+                ) == batch_id
+                if batch_id
+                else (
+                    later.started_at is not None
+                    and (
+                        later.started_at.replace(tzinfo=timezone.utc)
+                        if later.started_at.tzinfo is None else later.started_at
+                    ) <= end
+                )
+            )
         ), None)
-        summary = row.result_summary if isinstance(row.result_summary, dict) else {}
         blocks = _pipeline_blocks(summary)
         final = bool(summary.get("final")) or any(bool(x.get("final")) for x in blocks)
         waiting_input = bool(summary.get("waiting") or summary.get("pending_manual")) or any(
@@ -204,7 +250,9 @@ def list_failure_events(
             "category_label": CATEGORY_LABELS[item_category],
             "job_id": row.job_id,
             "job_label": row.job_label,
-            "attempt_no": attempts[recovery_key],
+            "attempt_no": attempts[attempt_key],
+            "batch_id": batch_id,
+            "business_date": summary.get("order_business_date"),
             "reason": row.error or str(summary.get("_error") or "任务失败但未返回原因"),
             "state": state,
             "final": final,

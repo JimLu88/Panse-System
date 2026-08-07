@@ -30,6 +30,8 @@ def complete_recovered_order_delivery(
     *,
     source: str,
     manifest: list[str],
+    order_batch_id: str | None = None,
+    order_business_date: str | None = None,
 ) -> dict:
     """Deliver every pending image, sync the factory table and close evidence.
 
@@ -45,7 +47,11 @@ def complete_recovered_order_delivery(
         order_sheet_archive_service,
     )
 
-    key = _recovery_key(source, manifest)
+    key = order_batch_id or _recovery_key(source, manifest)
+    is_current_business_day = (
+        not order_business_date
+        or order_business_date == datetime.now().astimezone().date().isoformat()
+    )
     try:
         delivery = order_sheet_archive_service.reconcile_pending_delivery(
             db, limit=ORDER_RECOVERY_PUSH_LIMIT, quiet=True,
@@ -59,6 +65,8 @@ def complete_recovered_order_delivery(
     result = {
         "source": source,
         "manifest": list(manifest),
+        "order_batch_id": order_batch_id,
+        "order_business_date": order_business_date,
         "delivery": delivery,
     }
     error = str(delivery.get("_error") or "") if delivery.get("_run_status") == "fail" else ""
@@ -81,29 +89,42 @@ def complete_recovered_order_delivery(
     if error:
         result["_run_status"] = "fail"
         result["_error"] = error
-        automation_pipeline_service.record_stage(
-            db,
-            "order_delivery",
-            "recovery_closeout",
-            status="fail",
-            detail=error,
-            artifacts=manifest,
-        )
-        automation_pipeline_service.resume_for_retry(db, "order_delivery")
-        result["automation_pipeline"] = automation_pipeline_service.record_failure(
-            db,
-            "order_delivery",
-            error,
-            retry_slots=_retry_slots(),
-            max_failures=1 + len(ORDER_RETRY_TIMES),
-        )
+        if is_current_business_day:
+            automation_pipeline_service.record_stage(
+                db,
+                "order_delivery",
+                "recovery_closeout",
+                status="fail",
+                detail=error,
+                artifacts=manifest,
+            )
+            automation_pipeline_service.resume_for_retry(db, "order_delivery")
+            result["automation_pipeline"] = automation_pipeline_service.record_failure(
+                db,
+                "order_delivery",
+                error,
+                retry_slots=_retry_slots(),
+                max_failures=1 + len(ORDER_RETRY_TIMES),
+            )
+        else:
+            result["automation_pipeline"] = {
+                "skipped": "historical_batch_does_not_mutate_current_day_pipeline",
+                "business_date": order_business_date,
+            }
         result["failure_event"] = automation_failure_recorder_service.record_callback_run(
             db,
             category="order",
             status="fail",
             detail=error,
             recovery_key=key,
-            result_summary={"source": source, "manifest": list(manifest)},
+            result_summary={
+                "source": source,
+                "manifest": list(manifest),
+                "order_batch_id": order_batch_id,
+                "order_business_date": order_business_date,
+            },
+            batch_id=order_batch_id,
+            business_date=order_business_date,
         )
         db.commit()
         return result
@@ -114,19 +135,25 @@ def complete_recovered_order_delivery(
         f"恢复来源={source}；下单图送达{pushed}张；"
         f"地址脱敏暂缓{deferred}张；工厂下单表已同步"
     )
-    automation_pipeline_service.record_stage(
-        db,
-        "order_delivery",
-        "recovery_closeout",
-        status="ok",
-        detail=detail,
-        artifacts=manifest,
-    )
-    result["automation_pipeline"] = automation_pipeline_service.record_success(
-        db,
-        "order_delivery",
-        success_detail=detail,
-    )
+    if is_current_business_day:
+        automation_pipeline_service.record_stage(
+            db,
+            "order_delivery",
+            "recovery_closeout",
+            status="ok",
+            detail=detail,
+            artifacts=manifest,
+        )
+        result["automation_pipeline"] = automation_pipeline_service.record_success(
+            db,
+            "order_delivery",
+            success_detail=detail,
+        )
+    else:
+        result["automation_pipeline"] = {
+            "skipped": "historical_batch_does_not_mutate_current_day_pipeline",
+            "business_date": order_business_date,
+        }
     result["recovery_event"] = automation_failure_recorder_service.record_callback_run(
         db,
         category="order",
@@ -136,6 +163,8 @@ def complete_recovered_order_delivery(
         result_summary={
             "source": source,
             "manifest": list(manifest),
+            "order_batch_id": order_batch_id,
+            "order_business_date": order_business_date,
             "images_pushed": pushed,
             "images_deferred_no_address": deferred,
             "factory_dispatch": {
@@ -145,6 +174,8 @@ def complete_recovered_order_delivery(
                 "updated": int((factory_dispatch or {}).get("updated") or 0),
             },
         },
+        batch_id=order_batch_id,
+        business_date=order_business_date,
     )
     db.commit()
     return result
