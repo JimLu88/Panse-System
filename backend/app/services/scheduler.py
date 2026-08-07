@@ -1583,7 +1583,14 @@ def _job_pull_catchup(db: Session) -> dict:
             "_run_status": "fail",
             "_error": "已有其他取数编排占用，订单补跑未执行",
         })
-    pending_password = ai.pending_shipping_password_files(db)
+    current_order_artifacts = ai.latest_order_pull_artifact_names(db)
+    pending_password = (
+        ai.pending_shipping_password_files(
+            db, artifact_names=current_order_artifacts,
+        )
+        if current_order_artifacts
+        else ai.pending_shipping_password_files(db)
+    )
     if pending_password:
         password_result = ai.get_shipping_password_result(db)
         mismatch_reason = ""
@@ -2106,7 +2113,14 @@ def _job_ingest_health_check(db: Session) -> dict:
     except Exception:  # noqa: BLE001 — 仅用于诊断展示，不影响按需离线的正常状态
         agent_online = False
 
-    pending_password_files = agent_ingest_service.pending_shipping_password_files(db, on=today)
+    current_order_artifacts = agent_ingest_service.latest_order_pull_artifact_names(
+        db, on=today,
+    )
+    pending_password_files = agent_ingest_service.pending_shipping_password_files(
+        db,
+        on=today,
+        artifact_names=current_order_artifacts or None,
+    )
 
     problems: list[str] = []
     if not agent_ingest_service.order_data_fresh(db, on=today, not_before_hour=18):

@@ -327,7 +327,11 @@ def start_pending_scans(db: Session) -> dict:
             if ("taobao_orders" in done
                     and not ingest_result.get("errors")
                     and not ingest_result.get("pending")
-                    and not pending_shipping_password_files(d, on=date.today())):
+                    and not pending_shipping_password_files(
+                        d,
+                        on=date.today(),
+                        artifact_names=done_artifacts.get("taobao_orders") or None,
+                    )):
                 # A user-triggered scan is the continuation of the failed daily
                 # pull.  Mark the complete three-report refresh only after the
                 # Web-Agent returned ok=True and ingest has no unresolved file.
@@ -335,6 +339,12 @@ def start_pending_scans(db: Session) -> dict:
                 completed_at = datetime.now().isoformat(timespec="seconds")
                 state["taobao_report"] = completed_at
                 state["taobao_orders_complete"] = completed_at
+                batch_artifacts = [
+                    Path(str(path).replace("\\", "/")).name
+                    for path in (done_artifacts.get("taobao_orders") or [])
+                ]
+                if batch_artifacts:
+                    state["taobao_orders_complete_artifacts"] = batch_artifacts
                 _save_json(d, KEY_STATE, state)
                 d.commit()
                 # Finish the original business outcome immediately.  Pushed
@@ -1054,7 +1064,9 @@ def run_ingest(db: Session, *, only_paths: Optional[list[str]] = None) -> dict:
             # 现有口令曾成功不代表它能解密后来新导出的文件。把本次新文件的
             # 不匹配结果写成最新证据，并暂停无新输入就不可能成功的定时重试。
             # 口令本身不写日志、不写结果，也绝不以“超时/过期”描述。
-            pending_files = pending_shipping_password_files(db)
+            pending_files = pending_shipping_password_files(
+                db, artifact_names=_pending_pw_files,
+            )
             mismatch_reason = (
                 "现有发货口令无法解密新报表（口令未过期，但与这些文件不匹配）："
                 + ",".join(pending_files[:5] or _pending_pw_files[:5])
@@ -1161,19 +1173,113 @@ def _due_today(state: dict, category: str, force: bool) -> bool:
         return True
 
 
+def order_pull_artifact_names(payload: dict | None) -> list[str]:
+    """Extract the exact three-report manifest from one order-pull result."""
+    payload = payload or {}
+    task = next(
+        (
+            item for item in (payload.get("tasks") or [])
+            if item.get("task") == "taobao_orders"
+            and str(item.get("status") or "").lower() in ("done", "ok", "success")
+        ),
+        None,
+    )
+    values = (
+        (task or {}).get("artifacts")
+        or payload.get("artifacts")
+        or payload.get("reports")
+        or []
+    )
+    names: list[str] = []
+    for value in values:
+        name = Path(str(value).replace("\\", "/")).name
+        if name and name not in names:
+            names.append(name)
+    return names
+
+
+def latest_order_pull_artifact_names(db: Session, *, on=None) -> list[str]:
+    """Return the latest successful order pull's durable artifact manifest."""
+    target = on or date.today()
+    candidates: list[tuple[datetime, dict]] = []
+    current = _load_json(db, KEY_ORCH_STATE)
+
+    def _append(payload: dict, started_at) -> None:
+        if not started_at or not order_pull_artifact_names(payload):
+            return
+        try:
+            value = (
+                started_at
+                if isinstance(started_at, datetime)
+                else datetime.fromisoformat(str(started_at))
+            )
+        except (TypeError, ValueError):
+            return
+        if value.tzinfo is not None:
+            value = value.astimezone().replace(tzinfo=None)
+        if value.date() == target:
+            candidates.append((value, payload))
+
+    _append(current, current.get("started_at"))
+    from app.models.scheduled_job import ScheduledJobRun
+
+    rows = db.execute(
+        select(ScheduledJobRun)
+        .where(ScheduledJobRun.job_id == "daily_0630_web_agent")
+        .order_by(ScheduledJobRun.id.desc())
+        .limit(20)
+    ).scalars().all()
+    for row in rows:
+        _append(row.result_summary or {}, row.started_at)
+    if not candidates:
+        return []
+    return order_pull_artifact_names(max(candidates, key=lambda item: item[0])[1])
+
+
+def taobao_artifact_states(db: Session, artifact_names: list[str]) -> dict[str, str]:
+    """Return each manifest file's latest durable ingest state."""
+    names = {
+        Path(str(value).replace("\\", "/")).name
+        for value in artifact_names
+        if str(value or "").strip()
+    }
+    if not names:
+        return {}
+    rows = db.execute(
+        select(ImportedFile)
+        .where(
+            ImportedFile.kind == "taobao",
+            ImportedFile.original_filename.in_(names),
+        )
+        .order_by(ImportedFile.id.asc())
+    ).scalars().all()
+    latest = {
+        row.original_filename: str((row.row_summary or {}).get("agent_status") or "unknown")
+        for row in rows
+    }
+    return {name: latest.get(name, "missing") for name in sorted(names)}
+
+
 def pending_shipping_password_files(
     db: Session, *, on=None, all_dates: bool = False, latest_only: bool = False,
+    artifact_names: list[str] | set[str] | tuple[str, ...] | None = None,
 ) -> list[str]:
-    """返回仍会阻塞当前批次的加密发货报表。
+    """返回仍会阻塞指定订单拉取批次的加密发货报表。
 
-    每份新导出的发货报表使用独立口令和独立哈希。平台短时间内重拉时，旧文件可能
-    永久停在 ``pending_password``，而稍后生成的完整快照已经成功解密。旧记录必须
-    保留用于审计，但同一天中只要有一个**更晚首次出现**的发货快照已成功导入，之前
-    的待口令文件便已被该快照覆盖，不再阻塞新鲜度门。
+    每次订单拉取都会保存本次三份下载物的精确清单。``artifact_names`` 非空时只
+    检查该清单；其他批次留下的待口令文件继续保留审计，但不得污染本批次的新鲜度门。
+    同一物理文件仍按哈希取最后状态，因此跨午夜补口令也能覆盖此前的待处理记录。
 
     默认只检查指定日期；``all_dates`` 用于口令回调跨午夜继续处理旧报表。
     """
     target = on or date.today()
+    allowed_names = None
+    if artifact_names is not None:
+        allowed_names = {
+            Path(str(name).replace("\\", "/")).name
+            for name in artifact_names
+            if str(name or "").strip()
+        }
     rows = db.execute(
         select(ImportedFile)
         .where(ImportedFile.kind == "taobao")
@@ -1183,10 +1289,9 @@ def pending_shipping_password_files(
     def _aware(value: datetime) -> datetime:
         return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
 
-    # Group every retry/archive record of the same physical report.  The
-    # first record is the artifact's arrival order; the last record is its
-    # current resolution state.  This is intentionally not based on the
-    # filename/export id, which is not chronological.
+    # Group every retry/archive record of the same physical report.  The first
+    # record owns the operational batch date; the last record is its current
+    # resolution state.
     artifacts: dict[str, dict] = {}
     for row in rows:
         created_at = getattr(row, "created_at", None)
@@ -1199,35 +1304,16 @@ def pending_shipping_password_files(
             artifacts[key] = {
                 "first": row,
                 "latest": row,
-                "shipping": (
-                    summary.get("agent_status") == "pending_password"
-                    or summary.get("agent_report_role") == "shipping"
-                ),
+                "shipping": summary.get("agent_status") == "pending_password",
+                "names": {row.original_filename or ""},
             }
         else:
             artifact["latest"] = row
             artifact["shipping"] = bool(
                 artifact["shipping"]
                 or summary.get("agent_status") == "pending_password"
-                or summary.get("agent_report_role") == "shipping"
             )
-
-    # Backward compatibility for reports archived before
-    # ``agent_report_role`` was introduced.  Successful password ingestion
-    # stores the original encrypted OLE/CFBF bytes, so the archive header is
-    # durable evidence that this is a shipping report.  A missing archive is
-    # not guessed and therefore cannot weaken the gate.
-    for artifact in artifacts.values():
-        if artifact["shipping"]:
-            continue
-        latest = artifact["latest"]
-        if (latest.row_summary or {}).get("agent_status") != "imported":
-            continue
-        try:
-            with Path(latest.stored_path).open("rb") as archived:
-                artifact["shipping"] = archived.read(8) == _OOXML_ENCRYPTED_MAGIC
-        except (OSError, TypeError):
-            pass
+            artifact["names"].add(row.original_filename or "")
 
     shipping = [item for item in artifacts.values() if item["shipping"]]
 
@@ -1237,20 +1323,6 @@ def pending_shipping_password_files(
         # operational batch.
         return _aware(item["first"].created_at).astimezone().date()
 
-    def _arrival_key(item: dict):
-        first = item["first"]
-        return (_aware(first.created_at), int(first.id or 0))
-
-    latest_success_by_date: dict[date, tuple] = {}
-    for item in shipping:
-        latest_summary = item["latest"].row_summary or {}
-        if latest_summary.get("agent_status") != "imported":
-            continue
-        day = _batch_date(item)
-        key = _arrival_key(item)
-        if key > latest_success_by_date.get(day, (datetime.min.replace(tzinfo=timezone.utc), 0)):
-            latest_success_by_date[day] = key
-
     unresolved = []
     for item in shipping:
         latest_summary = item["latest"].row_summary or {}
@@ -1259,16 +1331,14 @@ def pending_shipping_password_files(
         day = _batch_date(item)
         if not all_dates and day != target:
             continue
-        # Preserve the old failure record in ImportedFile, but do not let it
-        # block a later complete shipping snapshot from the same day.
-        if latest_success_by_date.get(day, (datetime.min.replace(tzinfo=timezone.utc), 0)) > _arrival_key(item):
+        if allowed_names is not None and not (item["names"] & allowed_names):
             continue
         unresolved.append(item)
 
     if all_dates and latest_only and unresolved:
         newest = max(_batch_date(item) for item in unresolved)
         unresolved = [item for item in unresolved if _batch_date(item) == newest]
-    unresolved.sort(key=_arrival_key)
+    unresolved.sort(key=lambda item: (item["first"].created_at, item["first"].id))
     return [
         item["latest"].original_filename or f"imported_file:{item['latest'].id}"
         for item in unresolved
@@ -1295,8 +1365,11 @@ def order_data_fresh(db: Session, *, on=None, not_before_hour: int | None = None
         if (not_before_hour is not None and refreshed_at.date() == target_date
                 and refreshed_at.hour < not_before_hour):
             return False
-        if (not_before_hour is not None
-                and pending_shipping_password_files(db, on=target_date)):
+        complete_artifacts = state.get("taobao_orders_complete_artifacts")
+        if (not_before_hour is not None and complete_artifacts
+                and pending_shipping_password_files(
+                    db, on=target_date, artifact_names=complete_artifacts,
+                )):
             return False
         return True
     except (ValueError, TypeError):
@@ -1320,8 +1393,6 @@ def finalize_order_pull_after_shipping_password(
     """
     current = now or datetime.now()
     target = on or current.date()
-    if pending_shipping_password_files(db, on=target):
-        return {"completed": False, "reason": "shipping_password_still_pending"}
 
     # KEY_ORCH_STATE 只保留“最近一次编排”，20:30 财务取数会覆盖 18:00 淘宝取数。
     # 因此先看内存态，找不到时再从不可覆盖的 ScheduledJobRun 历史取当天证据。
@@ -1382,6 +1453,22 @@ def finalize_order_pull_after_shipping_password(
     )
     if (order_task or {}).get("status", "").lower() not in ("done", "ok", "success"):
         return {"completed": False, "reason": "taobao_orders_task_not_complete"}
+    batch_artifacts = order_pull_artifact_names(evidence)
+    if pending_shipping_password_files(
+        db,
+        on=target,
+        artifact_names=batch_artifacts or None,
+    ):
+        return {"completed": False, "reason": "shipping_password_still_pending"}
+    batch_states = taobao_artifact_states(db, batch_artifacts)
+    if batch_artifacts and any(
+        status != "imported" for status in batch_states.values()
+    ):
+        return {
+            "completed": False,
+            "reason": "order_pull_artifacts_not_imported",
+            "artifact_states": batch_states,
+        }
 
     state = _load_json(db, KEY_STATE)
     try:
@@ -1394,6 +1481,8 @@ def finalize_order_pull_after_shipping_password(
 
     completed_at = current.isoformat(timespec="seconds")
     state["taobao_orders_complete"] = completed_at
+    if batch_artifacts:
+        state["taobao_orders_complete_artifacts"] = batch_artifacts
     _save_json(db, KEY_STATE, state)
     db.commit()
     return {"completed": True, "completed_at": completed_at}
@@ -1683,15 +1772,25 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         latest_state[STATE_ENTERPRISE_ALIPAY_FLOW] = marked_at
     _save_json(db, KEY_STATE, latest_state)
     db.commit()
-    persistent_pending_password = pending_shipping_password_files(db, on=today)
+    order_batch_artifacts = order_pull_artifact_names(out)
+    persistent_pending_password = pending_shipping_password_files(
+        db,
+        on=today,
+        artifact_names=order_batch_artifacts or None,
+    )
     out["ingest"]["pending_password_files"] = persistent_pending_password
-    if (orders_pull_complete and not out["ingest"].get("errors")
-            and not out["ingest"].get("pending")
+    order_artifact_states = taobao_artifact_states(db, order_batch_artifacts)
+    out["ingest"]["order_artifact_states"] = order_artifact_states
+    order_batch_ready = bool(order_batch_artifacts) and all(
+        status == "imported" for status in order_artifact_states.values()
+    )
+    if (orders_pull_complete and order_batch_ready
             and not persistent_pending_password):
         latest_state = _load_json(db, KEY_STATE)
         completed_at = datetime.now().isoformat(timespec="seconds")
         latest_state["taobao_report"] = completed_at
         latest_state["taobao_orders_complete"] = completed_at
+        latest_state["taobao_orders_complete_artifacts"] = order_batch_artifacts
         latest_state["taobao_orders_last_result"] = {
             "date": today.isoformat(),
             "message": out.get("order_message") or "没有新增订单",
@@ -1702,15 +1801,20 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
 
     # 取数「全部成功」(无待扫码/无失败任务) → 立刻补生成工厂下单图 (静默, 不推飞书; 推送仍按 18:00)。
     # 有报错/需扫码 → 跳过, 等今天重新扫码全部成功后再生成 (用户拍板 2026-06-17)。
-    all_ok = (
-        not out.get("pending_manual")
-        and not out["ingest"].get("pending")
-        and not out["ingest"].get("errors")
-        and not persistent_pending_password
-        and all(
-            (t.get("status") or "").lower() in ("done", "ok", "success")
-            for t in out["tasks"])
-    )
+    if orders_pull_complete:
+        # Finance/login work may run in the same orchestration.  Its failure
+        # must be recorded in its own pipeline, but cannot turn a verified
+        # three-report order batch into a false order-delivery failure.
+        all_ok = order_batch_ready and not persistent_pending_password
+    else:
+        all_ok = (
+            not out.get("pending_manual")
+            and not out["ingest"].get("pending")
+            and not out["ingest"].get("errors")
+            and all(
+                (t.get("status") or "").lower() in ("done", "ok", "success")
+                for t in out["tasks"])
+        )
     if all_ok:
         try:
             from app.services import order_sheet_archive_service

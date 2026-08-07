@@ -963,7 +963,11 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
     # current batch; only when today's batch is absent do we continue the most
     # recent unresolved batch.  Historical one-password-per-report leftovers
     # must not make a newly matched report look like a failure.
-    current_pending = agent_ingest_service.pending_shipping_password_files(db)
+    current_artifacts = agent_ingest_service.latest_order_pull_artifact_names(db)
+    current_pending = agent_ingest_service.pending_shipping_password_files(
+        db,
+        artifact_names=current_artifacts or None,
+    )
     latest_pending = agent_ingest_service.pending_shipping_password_files(
         db, all_dates=True, latest_only=True,
     )

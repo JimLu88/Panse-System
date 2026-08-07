@@ -20,6 +20,7 @@ def _set_taobao_report(db, dt):
     if dt is None:
         state.pop("taobao_report", None)
         state.pop("taobao_orders_complete", None)
+        state.pop("taobao_orders_complete_artifacts", None)
     else:
         state["taobao_report"] = dt.isoformat(timespec="seconds")
         state["taobao_orders_complete"] = dt.isoformat(timespec="seconds")
@@ -86,6 +87,10 @@ def test_fresh_after_daily_cutoff(db_session):
 def test_fresh_after_cutoff_waits_for_shipping_password(db_session):
     now = datetime.now().replace(hour=18, minute=5, second=0, microsecond=0)
     _set_taobao_report(db_session, now)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_orders_complete_artifacts"] = ["shipping.xlsx"]
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    db_session.commit()
     pending = ImportedFile(
         kind="taobao",
         original_filename="shipping.xlsx",
@@ -153,63 +158,9 @@ def test_latest_unresolved_shipping_batch_excludes_older_passwords(db_session):
     ) == ["latest.xlsx"]
 
 
-def test_newer_successful_shipping_snapshot_supersedes_older_pending_same_day(
-    db_session,
-):
+def test_pending_shipping_password_is_scoped_to_current_pull_manifest(db_session):
     today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
-    old_pending = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-old.xlsx",
-        stored_path="/tmp/old.xlsx",
-        file_hash="old-shipping-hash",
-        source="api",
-        row_summary={
-            "agent_status": "pending_password",
-            "agent_report_role": "shipping",
-        },
-        created_at=today,
-        updated_at=today,
-    )
-    new_pending = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-new.xlsx",
-        stored_path="/tmp/new.xlsx",
-        file_hash="new-shipping-hash",
-        source="api",
-        row_summary={
-            "agent_status": "pending_password",
-            "agent_report_role": "shipping",
-        },
-        created_at=today.replace(hour=3, minute=59),
-        updated_at=today.replace(hour=3, minute=59),
-    )
-    db_session.add_all([old_pending, new_pending])
-    db_session.commit()
-    resolved = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-new.xlsx",
-        stored_path="/tmp/new.xlsx",
-        file_hash="new-shipping-hash",
-        source="api",
-        row_summary={
-            "agent_status": "imported",
-            "agent_report_role": "shipping",
-            "updated": 88,
-        },
-        created_at=today.replace(hour=9, minute=8),
-        updated_at=today.replace(hour=9, minute=8),
-    )
-    db_session.add(resolved)
-    db_session.commit()
-
-    assert ai.pending_shipping_password_files(db_session, on=today.date()) == []
-
-
-def test_legacy_encrypted_success_without_role_supersedes_old_pending(
-    db_session, tmp_path,
-):
-    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
-    old_pending = ImportedFile(
+    unrelated_pending = ImportedFile(
         kind="taobao",
         original_filename="ExportOrderList-old.xlsx",
         stored_path="/tmp/old.xlsx",
@@ -219,89 +170,63 @@ def test_legacy_encrypted_success_without_role_supersedes_old_pending(
         created_at=today,
         updated_at=today,
     )
-    encrypted_archive = tmp_path / "new-shipping.xlsx"
-    encrypted_archive.write_bytes(ai._OOXML_ENCRYPTED_MAGIC + b"legacy-archive")
-    new_success = ImportedFile(
+    current_pending = ImportedFile(
         kind="taobao",
-        original_filename="ExportOrderList-new.xlsx",
-        stored_path=str(encrypted_archive),
-        file_hash="new-shipping-hash",
+        original_filename="ExportOrderList-current.xlsx",
+        stored_path="/tmp/current.xlsx",
+        file_hash="current-shipping-hash",
         source="api",
-        # Production rows created before this fix have no report-role marker.
+        row_summary={"agent_status": "pending_password"},
+        created_at=today.replace(minute=30),
+        updated_at=today.replace(minute=30),
+    )
+    db_session.add_all([unrelated_pending, current_pending])
+    db_session.commit()
+    current_resolved = ImportedFile(
+        kind="taobao",
+        original_filename="ExportOrderList-current.xlsx",
+        stored_path="/tmp/current.xlsx",
+        file_hash="current-shipping-hash",
+        source="api",
         row_summary={"agent_status": "imported", "updated": 88},
-        created_at=today.replace(hour=3, minute=59),
-        updated_at=today.replace(hour=3, minute=59),
+        created_at=today.replace(hour=9),
+        updated_at=today.replace(hour=9),
     )
-    db_session.add_all([old_pending, new_success])
-    db_session.commit()
-
-    assert ai.pending_shipping_password_files(db_session, on=today.date()) == []
-
-
-def test_newer_pending_shipping_snapshot_is_not_hidden_by_older_success(db_session):
-    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
-    old_success = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-old.xlsx",
-        stored_path="/tmp/old.xlsx",
-        file_hash="old-shipping-hash",
-        source="api",
-        row_summary={
-            "agent_status": "imported",
-            "agent_report_role": "shipping",
-        },
-        created_at=today,
-        updated_at=today,
-    )
-    new_pending = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-new.xlsx",
-        stored_path="/tmp/new.xlsx",
-        file_hash="new-shipping-hash",
-        source="api",
-        row_summary={
-            "agent_status": "pending_password",
-            "agent_report_role": "shipping",
-        },
-        created_at=today.replace(hour=3, minute=59),
-        updated_at=today.replace(hour=3, minute=59),
-    )
-    db_session.add_all([old_success, new_pending])
+    db_session.add(current_resolved)
     db_session.commit()
 
     assert ai.pending_shipping_password_files(db_session, on=today.date()) == [
-        "ExportOrderList-new.xlsx",
+        "ExportOrderList-old.xlsx",
     ]
+    assert ai.pending_shipping_password_files(
+        db_session,
+        on=today.date(),
+        artifact_names=[
+            r"\\nas\agent_output\ExportOrderList-current.xlsx",
+            "orders.xlsx",
+            "items.xlsx",
+        ],
+    ) == []
+    assert ai.pending_shipping_password_files(
+        db_session,
+        on=today.date(),
+        artifact_names=["ExportOrderList-old.xlsx"],
+    ) == ["ExportOrderList-old.xlsx"]
 
 
-def test_unrelated_taobao_import_does_not_supersede_shipping_password(db_session):
-    today = datetime.now().replace(hour=3, minute=22, second=0, microsecond=0)
-    pending = ImportedFile(
-        kind="taobao",
-        original_filename="ExportOrderList-shipping.xlsx",
-        stored_path="/tmp/shipping.xlsx",
-        file_hash="shipping-hash",
-        source="api",
-        row_summary={"agent_status": "pending_password"},
-        created_at=today,
-        updated_at=today,
-    )
-    unrelated = ImportedFile(
-        kind="taobao",
-        original_filename="ItemList.xlsx",
-        stored_path="/tmp/items.xlsx",
-        file_hash="items-hash",
-        source="api",
-        row_summary={"agent_status": "imported", "detected_format": "sales_detail"},
-        created_at=today.replace(hour=4),
-        updated_at=today.replace(hour=4),
-    )
-    db_session.add_all([pending, unrelated])
-    db_session.commit()
-
-    assert ai.pending_shipping_password_files(db_session, on=today.date()) == [
-        "ExportOrderList-shipping.xlsx",
-    ]
+def test_order_pull_artifact_names_prefers_successful_task_manifest():
+    assert ai.order_pull_artifact_names({
+        "tasks": [{
+            "task": "taobao_orders",
+            "status": "done",
+            "artifacts": [
+                r"\\nas\output\orders.xlsx",
+                r"\\nas\output\items.xlsx",
+                r"\\nas\output\shipping.xlsx",
+            ],
+        }],
+        "artifacts": ["unrelated-finance.xlsx"],
+    }) == ["orders.xlsx", "items.xlsx", "shipping.xlsx"]
 
 
 def test_shipping_password_never_expires_by_age(db_session):
@@ -408,6 +333,142 @@ def test_shipping_password_finalizes_successful_daytime_manual_recovery(db_sessi
     result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
 
     assert result["completed"] is True
+
+
+def test_shipping_password_finalizes_only_current_manifest_not_other_pending(
+    db_session,
+):
+    now = datetime.now().replace(hour=18, minute=25, second=0, microsecond=0)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    ai._save_json(
+        db_session,
+        ai.KEY_ORCH_STATE,
+        {
+            "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": [
+                    "orders.xlsx",
+                    "items.xlsx",
+                    "current-shipping.xlsx",
+                ],
+            }],
+        },
+    )
+    unrelated_pending = ImportedFile(
+        kind="taobao",
+        original_filename="unrelated-shipping.xlsx",
+        stored_path="/tmp/unrelated-shipping.xlsx",
+        file_hash="unrelated-shipping-hash",
+        source="api",
+        row_summary={"agent_status": "pending_password"},
+        created_at=now.replace(hour=8),
+        updated_at=now.replace(hour=8),
+    )
+    current_pending = ImportedFile(
+        kind="taobao",
+        original_filename="current-shipping.xlsx",
+        stored_path="/tmp/current-shipping.xlsx",
+        file_hash="current-shipping-hash",
+        source="api",
+        row_summary={"agent_status": "pending_password"},
+        created_at=now.replace(hour=9, minute=5),
+        updated_at=now.replace(hour=9, minute=5),
+    )
+    orders_imported = ImportedFile(
+        kind="taobao",
+        original_filename="orders.xlsx",
+        stored_path="/tmp/orders.xlsx",
+        file_hash="orders-hash",
+        source="api",
+        row_summary={"agent_status": "imported"},
+        created_at=now.replace(hour=9),
+        updated_at=now.replace(hour=9),
+    )
+    items_imported = ImportedFile(
+        kind="taobao",
+        original_filename="items.xlsx",
+        stored_path="/tmp/items.xlsx",
+        file_hash="items-hash",
+        source="api",
+        row_summary={"agent_status": "imported"},
+        created_at=now.replace(hour=9),
+        updated_at=now.replace(hour=9),
+    )
+    db_session.add_all([
+        unrelated_pending,
+        current_pending,
+        orders_imported,
+        items_imported,
+    ])
+    db_session.commit()
+    current_resolved = ImportedFile(
+        kind="taobao",
+        original_filename="current-shipping.xlsx",
+        stored_path="/tmp/current-shipping.xlsx",
+        file_hash="current-shipping-hash",
+        source="api",
+        row_summary={"agent_status": "imported", "updated": 88},
+        created_at=now.replace(hour=10, minute=20),
+        updated_at=now.replace(hour=10, minute=20),
+    )
+    db_session.add(current_resolved)
+    db_session.commit()
+
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
+
+    assert result["completed"] is True
+    completed = ai._load_json(db_session, ai.KEY_STATE)
+    assert completed["taobao_orders_complete_artifacts"] == [
+        "orders.xlsx",
+        "items.xlsx",
+        "current-shipping.xlsx",
+    ]
+    assert ai.pending_shipping_password_files(db_session, on=now.date()) == [
+        "unrelated-shipping.xlsx",
+    ]
+
+
+def test_shipping_password_does_not_finalize_when_manifest_file_is_missing(
+    db_session,
+):
+    now = datetime.now().replace(hour=18, minute=25, second=0, microsecond=0)
+    state = ai._load_json(db_session, ai.KEY_STATE)
+    state["taobao_report"] = now.replace(minute=15).isoformat(timespec="seconds")
+    ai._save_json(db_session, ai.KEY_STATE, state)
+    ai._save_json(
+        db_session,
+        ai.KEY_ORCH_STATE,
+        {
+            "started_at": now.replace(minute=0).isoformat(timespec="seconds"),
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": ["orders.xlsx", "items.xlsx", "shipping.xlsx"],
+            }],
+        },
+    )
+    for name in ("orders.xlsx", "items.xlsx"):
+        db_session.add(ImportedFile(
+            kind="taobao",
+            original_filename=name,
+            stored_path=f"/tmp/{name}",
+            file_hash=f"hash-{name}",
+            source="api",
+            row_summary={"agent_status": "imported"},
+            created_at=now.replace(hour=9),
+            updated_at=now.replace(hour=9),
+        ))
+    db_session.commit()
+
+    result = ai.finalize_order_pull_after_shipping_password(db_session, now=now)
+
+    assert result["completed"] is False
+    assert result["reason"] == "order_pull_artifacts_not_imported"
+    assert result["artifact_states"]["shipping.xlsx"] == "missing"
 
 
 def test_shipping_password_rejects_daytime_scheduled_evidence(db_session):
