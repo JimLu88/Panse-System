@@ -303,12 +303,31 @@ def build_from_fields(
 
     # 通过 SKU 名找 sku_code (Order.sku 存的是 SKU 名字, 不是 code)
     if sku and not sku_code:
-        ps = db.execute(
+        candidates = db.execute(
             select(PricingSku).where(PricingSku.sku == sku)
-        ).scalar_one_or_none()
+            .order_by(PricingSku.id.asc())
+        ).scalars().all()
+        if product_code:
+            exact_codes = {product_code}
+            if product is not None:
+                exact_codes.add(product.code)
+            scoped = [row for row in candidates if row.product_code in exact_codes]
+            if scoped:
+                candidates = scoped
+        ps = candidates[0] if len(candidates) == 1 else None
         if ps:
             sku_code = ps.sku_code
             pricing_sku = ps
+        elif len(candidates) > 1:
+            # Generic placeholders such as “材质定制咨询” legitimately appear
+            # under several products.  Choosing one arbitrarily would put the
+            # wrong product/BOM on the factory sheet; keep the order title and
+            # render a warning instead of crashing the whole delivery batch.
+            warnings.append(FactorySheetWarning(
+                code="ambiguous_sku_name",
+                severity="warning",
+                message=f"SKU名称“{sku}”对应多个产品，未自动套用产品编码/BOM。",
+            ))
     elif sku_code:
         pricing_sku = db.execute(
             select(PricingSku).where(PricingSku.sku_code == sku_code)

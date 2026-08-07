@@ -143,6 +143,29 @@ def test_missing_order_raises(db_session):
         factory_sheet.build(db_session, 9999)
 
 
+def test_ambiguous_placeholder_sku_does_not_abort_sheet(db_session):
+    db_session.add_all([
+        PricingSku(product_code="P-A", sku_code="P-A-99", sku="材质定制咨询"),
+        PricingSku(product_code="P-B", sku_code="P-B-99", sku="材质定制咨询"),
+    ])
+    order = Order(
+        platform="淘宝",
+        order_no="AMB-1",
+        order_date=date(2026, 8, 7),
+        product_name="客户实际购买的双人床",
+        sku="材质定制咨询",
+        qty=1,
+    )
+    db_session.add(order)
+    db_session.flush()
+
+    sheet = factory_sheet.build(db_session, order.id)
+
+    assert sheet.product_name == "客户实际购买的双人床"
+    assert sheet.product_code is None
+    assert any(w.code == "ambiguous_sku_name" for w in sheet.warnings)
+
+
 def test_sheet_title_format(db_session):
     _setup(db_session)
     o = Order(
