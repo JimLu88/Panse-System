@@ -12,8 +12,8 @@ const HOMES = {
   xiaohongshu: 'https://www.xiaohongshu.com/',
 };
 const channel = process.argv[2] || 'taobao';
-const target = HOMES[channel];
-if (!target) throw new Error(`未知渠道 ${channel}`);
+const channels = channel === 'all' ? ['taobao', '1688', 'pinduoduo'] : [channel];
+if (channels.some((item) => !HOMES[item])) throw new Error(`未知渠道 ${channel}`);
 const profile = process.env.PROCUREMENT_CHROME_PROFILE
   || path.join(os.homedir(), 'Desktop', 'AI', 'procurement-agent', 'chrome-profile');
 const context = await chromium.launchPersistentContext(profile, {
@@ -23,7 +23,10 @@ const context = await chromium.launchPersistentContext(profile, {
   locale: 'zh-CN',
   args: ['--start-maximized'],
 });
-const page = context.pages()[0] || await context.newPage();
-await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 60_000 });
-console.log(`已打开独立采购 Chrome：${channel}。请人工登录，完成后直接关闭整个浏览器窗口。`);
+const firstPage = context.pages()[0] || await context.newPage();
+for (const [index, item] of channels.entries()) {
+  const page = index === 0 ? firstPage : await context.newPage();
+  await page.goto(HOMES[item], { waitUntil: 'domcontentloaded', timeout: 60_000 });
+}
+console.log(`已打开独立采购 Chrome：${channels.join('、')}。请人工登录，完成后直接关闭整个浏览器窗口。`);
 await new Promise((resolve) => context.on('close', resolve));
