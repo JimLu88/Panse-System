@@ -42,6 +42,7 @@ KEY_INTERVAL_BALANCE = "web_agent_interval_balance"    # 天, 默认 3 (余额+�
 KEY_STATE = "web_agent_state"                          # 各类别最近成功时间 JSON
 KEY_LAST_INGEST = "web_agent_last_ingest"              # 最近一次扫描报告 JSON
 KEY_ORCH_STATE = "web_agent_orch_state"                # 编排进行中状态 JSON
+KEY_ORDER_QUOTA_RESULT = "taobao_order_quota_last_result"  # 最近订单导出前提额核验（不含敏感内容）
 KEY_SCAN_RESULTS = "web_agent_scan_last_results"        # 扫码续跑逐任务结果 JSON（不含凭证）
 KEY_SHIPPING_PASSWORD_RESULT = "taobao_shipping_pwd_last_result"  # 最近口令匹配结果（不含口令）
 STATE_MAIN_ALIPAY_FLOW = "alipay_main_flow"
@@ -119,6 +120,19 @@ def get_shipping_password_result(db: Session) -> dict:
         value = json.loads(
             settings_service.get(
                 db, KEY_SHIPPING_PASSWORD_RESULT, env_fallback=False,
+            ) or "{}"
+        )
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_order_quota_result(db: Session) -> dict:
+    """最近一次淘宝订单导出前的额度核验结果（仅状态/时间，不含页面或凭证）。"""
+    try:
+        value = json.loads(
+            settings_service.get(
+                db, KEY_ORDER_QUOTA_RESULT, env_fallback=False,
             ) or "{}"
         )
         return value if isinstance(value, dict) else {}
@@ -2216,6 +2230,29 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         task_artifact_roles = _job_artifact_roles(job_result)
         run_artifacts.extend(task_artifacts)
         run_artifact_roles.update(task_artifact_roles)
+        quota_evidence: dict = {}
+        if task_id == "taobao_orders":
+            quota = job_result.get("quota_bump") or {}
+            quota_verified = bool(quota.get("ok")) and bool(
+                quota.get("already_unlimited") or quota.get("verified_unlimited")
+            )
+            quota_state = (
+                "already_unlimited" if quota.get("already_unlimited")
+                else "verified_unlimited" if quota.get("verified_unlimited")
+                else "not_verified"
+            )
+            quota_evidence = {
+                "verified": quota_verified,
+                "state": quota_state,
+                "checked_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+                "order_batch_id": order_batch_id,
+                "order_business_date": business_date.isoformat(),
+            }
+            settings_service.set_value(
+                db, KEY_ORDER_QUOTA_RESULT,
+                json.dumps(quota_evidence, ensure_ascii=False),
+                description="淘宝订单导出前最近一次解密额度核验（不含敏感内容）",
+            )
         if status in ("done", "ok", "success") and job_result.get("ok") is False:
             status = "error"
             final = {**final, "error": job_result.get("errors") or "任务结果不完整"}
@@ -2235,6 +2272,8 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         if task_id == "taobao_orders" and order_batch_id:
             item["order_batch_id"] = order_batch_id
             item["order_business_date"] = business_date.isoformat()
+            item["quota_verified"] = quota_evidence.get("verified", False)
+            item["quota_state"] = quota_evidence.get("state", "not_verified")
         if status in ("error", "failed", "timeout"):
             err = str(final.get("error") or final.get("note") or "")
             item["error"] = err[:300]

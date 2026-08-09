@@ -1462,8 +1462,14 @@ def _job_order_sheets_daily(db: Session) -> dict:
     held_no_address = result.get("held_no_address") or []
     if result.get("_run_status") != "fail" and held_no_address:
         result["deferred_status"] = "address_masked"
+        quota = agent_ingest_service.get_order_quota_result(db)
+        cause = (
+            "本轮已先核验为当日不限额度，但平台报表仍未回填完整地址"
+            if quota.get("verified")
+            else "本轮未取得当日不限额度核验证据"
+        )
         result["_success_message"] = (
-            f"订单推送流程执行正常；{len(held_no_address)} 笔订单因淘宝地址脱敏暂缓，"
+            f"订单推送流程执行正常；{len(held_no_address)} 笔订单暂缓（{cause}），"
             f"地址完整后自动补推：" + ",".join(held_no_address)
         )
     elif result.get("_run_status") != "fail":

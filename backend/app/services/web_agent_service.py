@@ -273,8 +273,14 @@ def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
     if not res.get("ok"):
         return {"ok": False,
                 "error": res.get("error") or res.get("message") or "活动发现抓取失败",
+                "tabs": res.get("tabs"),
+                "calendar_opened": res.get("calendar_opened"),
+                "calendar_error": res.get("calendar_error"),
                 "screenshot_base64": res.get("screenshot_base64")}
-    return {"ok": True, "campaigns": res.get("campaigns") or []}
+    return {"ok": True, "campaigns": res.get("campaigns") or [],
+            "count": res.get("count"), "tabs": res.get("tabs"),
+            "calendar_opened": res.get("calendar_opened"),
+            "calendar_error": res.get("calendar_error")}
 
 
 def alipay_accounts(db: Session) -> list:

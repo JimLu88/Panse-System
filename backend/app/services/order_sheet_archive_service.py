@@ -611,20 +611,27 @@ def _addr_ok_for_factory(order: Order) -> bool:
 
 
 def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
-    """无收货地址的单 → 飞书提示哪些单缺地址 + 提醒去淘宝后台提升解密额度 (用户拍板 2026-06-20)。
+    """无收货地址的单 → 飞书提示准确原因；不得把平台未回填误报成系统漏提额。
 
     missing: [(order_no, factory_no), ...]; 这些单已做制单图(带编号)推送, 但收货为空。
     """
     if not missing:
         return
-    from app.services import feishu_client
+    from app.services import agent_ingest_service, feishu_client
     lines = [f"  · {('畔色 '+str(fno)+' 单') if fno else '未编号'}　订单号 {no}" for no, fno in missing]
+    quota = agent_ingest_service.get_order_quota_result(db)
+    if quota.get("verified"):
+        diagnosis = (
+            "本轮导出前已核验为【当日不限额度】；这些订单仍未返回完整地址，"
+            "属于平台报表/历史订单地址未回填，并非系统漏做提额。"
+        )
+    else:
+        diagnosis = "本轮没有取得【当日不限额度】核验证据，系统已按安全门停止发送缺地址图片。"
     txt = (f"⚠️ 下列 {len(missing)} 单【没有抓取到完整收货地址】，已暂缓发送工厂下单图:\n"
            + "\n".join(lines)
-           + "\n👉 处理方式:"
-           + "\n  ① 淘宝后台【提升每日收货信息解密额度】—— 额度不够时, 超额的单收货地址会被星号脱敏, 系统不收, 故为空;"
-           + "\n  ② 在订单页点「更新拉取订单」重新拉取；地址完整后系统会自动生成并只补推这些单。"
-           + "\n地址仍脱敏时会继续暂缓并明确报警，不再发送缺地址图片。")
+           + "\n" + diagnosis
+           + "\n系统已单独挂起；下一次正常拉单若补齐地址，只释放对应下单图，不发送额外日报。"
+           + "\n地址仍不可用时继续暂缓，绝不发送缺地址图片。")
     try:
         feishu_client.send_text(db, chat_id, txt)
     except Exception:  # noqa: BLE001
@@ -757,6 +764,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     _missing_addr: list = []
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
     _held_address: list[str] = []
+    _released_address_hold: list[str] = []
     _held_remote: list[str] = []
     _delivery_uncertain: list[str] = []
     _skipped_sample: list[str] = []
@@ -767,6 +775,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         records = [r for r in records if _order_no_from_name(r.original_filename) in only_order_nos]
     for rec in records[:limit]:
         no = _order_no_from_name(rec.original_filename)
+        was_address_hold = bool((rec.row_summary or {}).get("held_no_address"))
         delivery_state = str((rec.row_summary or {}).get("delivery_state") or "")
         if delivery_state in {"sending", "sending_caption", "sending_image", "uncertain"}:
             _delivery_uncertain.append(no)
@@ -852,8 +861,10 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 "delivery_image_key": key,
             }
             db.commit()
-            send_stage = "sending_caption"
-            text_result = feishu_client.send_text(db, chat_id, cap) or {}
+            text_result = {}
+            if not was_address_hold:
+                send_stage = "sending_caption"
+                text_result = feishu_client.send_text(db, chat_id, cap) or {}
             rec.row_summary = {
                 **(rec.row_summary or {}),
                 "delivery_state": "sending_image",
@@ -874,7 +885,10 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             db.commit()
             pushed += 1
             sent_nos.append(no)
-            _zip_items.append((order, png))
+            if was_address_hold:
+                _released_address_hold.append(no)
+            else:
+                _zip_items.append((order, png))
         except Exception as exc:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             uncertain = send_stage in {"sending_caption", "sending_image"}
@@ -889,7 +903,8 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             failed_nos.append(no)
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
     if not quiet:
-        _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
+        if _zip_items:
+            _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
         _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
         if _held_skeleton:
             # 内部提醒(非工厂群): 骨架单暂缓名单, 回填后自动补推; 若连日重复出现 = 取数没跑, 人来查。
@@ -905,6 +920,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos, "failed_order_nos": failed_nos,
             "held_no_sku": _held_skeleton, "held_no_address": _held_address,
+            "released_after_address_fill": _released_address_hold,
             "held_remote": _held_remote,
             "delivery_uncertain": _delivery_uncertain,
             "skipped_sample": _skipped_sample, "skipped_topup": _skipped_topup}
@@ -990,6 +1006,7 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "failed_order_nos": push.get("failed_order_nos") or [],
         "held_no_sku": push.get("held_no_sku") or [],
         "held_no_address": push.get("held_no_address") or [],
+        "released_after_address_fill": push.get("released_after_address_fill") or [],
         "held_remote": push.get("held_remote") or [],
         "delivery_uncertain": push.get("delivery_uncertain") or [],
         "skipped_sample": push.get("skipped_sample") or [],
@@ -1282,6 +1299,15 @@ def push_daily(db: Session) -> dict:
     result = reconcile_pending_delivery(db, limit=20, quiet=False)
     generated = result.get("generated") or {}
     n = int(generated.get("generated") or 0)
+    released = set(result.get("released_after_address_fill") or [])
+    sent = set(result.get("order_nos") or [])
+    release_only = bool(sent) and sent == released and n == 0
+    if release_only and result.get("_run_status") != "fail":
+        # 地址补齐后的安全门释放只发对应图片；不追加日报或成功说明。
+        result["pushed"] = True
+        result["summary_notification_pushed"] = False
+        result["summary_suppressed"] = "address_release_only"
+        return result
     if result.get("_run_status") == "fail":
         text = "下单图自动推送未完成：" + str(result.get("_error") or "未返回原因")
     elif result["images_pushed"]:

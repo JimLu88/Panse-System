@@ -5,6 +5,7 @@ repush_after_address_fill 把它们清标记并定向重推一次, 幂等 (重�
 """
 from datetime import date
 from decimal import Decimal
+import json
 
 import pytest
 
@@ -108,6 +109,67 @@ def test_masked_address_counts_as_missing(db_session, _feishu_stub):
     o.customer_address = "广东省广州市天河区天河路385号"
     db_session.flush()
     assert osa.push_pending_images(db_session, include_baseline=False)["pushed"] == 1
+
+
+def test_address_release_sends_only_the_single_image(
+        db_session, _feishu_stub, monkeypatch):
+    """地址次日补齐时只释放图片：不发标题文字、不发 ZIP、不发日报。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "RELEASE-ONLY-1", address=None)
+    osa.generate_pending(db_session)
+    first = osa.push_pending_images(db_session, include_baseline=False, quiet=True)
+    assert first["held_no_address"] == ["RELEASE-ONLY-1"]
+
+    order = db_session.query(Order).filter_by(order_no="RELEASE-ONLY-1").one()
+    order.customer_address = "浙江省杭州市西湖区文一路100号"
+    db_session.flush()
+
+    sent_text: list[str] = []
+    sent_images: list[str] = []
+    zip_items: list[list] = []
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_text",
+        lambda db, cid, text: sent_text.append(text) or {"sent": True},
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_image",
+        lambda db, cid, key: sent_images.append(key) or {"sent": True},
+    )
+    monkeypatch.setattr(osa, "_send_sheets_zip", lambda db, cid, items: zip_items.append(items))
+    monkeypatch.setattr(
+        "app.services.notify_service.broadcast_text",
+        lambda *args, **kwargs: pytest.fail("address-only release must not send a daily summary"),
+    )
+
+    result = osa.push_daily(db_session)
+
+    assert result["order_nos"] == ["RELEASE-ONLY-1"]
+    assert result["released_after_address_fill"] == ["RELEASE-ONLY-1"]
+    assert result["summary_suppressed"] == "address_release_only"
+    assert sent_images == ["img_key"]
+    assert sent_text == []
+    assert zip_items == []
+
+
+def test_missing_address_notice_uses_verified_quota_evidence(db_session, monkeypatch):
+    """提额已核验时不得再把平台未回填地址误报成额度不足。"""
+    settings_service.set_value(
+        db_session,
+        "taobao_order_quota_last_result",
+        json.dumps({"verified": True, "state": "already_unlimited"}),
+    )
+    notices: list[str] = []
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_text",
+        lambda db, cid, text: notices.append(text) or {"sent": True},
+    )
+
+    osa._send_no_addr_notice(db_session, "oc_factory_group", [("ORDER-1", None)])
+
+    assert len(notices) == 1
+    assert "已核验为【当日不限额度】" in notices[0]
+    assert "系统漏做提额" in notices[0]
+    assert "提升每日收货信息解密额度" not in notices[0]
 
 
 def test_old_signed_row_is_not_reported_as_address_blocker(db_session, _feishu_stub):

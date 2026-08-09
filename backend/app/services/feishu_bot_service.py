@@ -1070,7 +1070,15 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
         r["delivery"] = delivery
         try:
             chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if chat:
+            # 只有“此前缺地址的图片已补齐并释放”时，按用户要求只发图片本身；
+            # 不再追加解密成功、续跑状态等文字，避免同一件事刷多条消息。
+            delivery_error = str(delivery.get("_error") or "")
+            silent_address_release = (
+                bool(repushed)
+                and not int(delivery.get("images_pushed") or 0)
+                and (not delivery_error or delivery_error.startswith("freshness_gate:"))
+            )
+            if chat and not silent_address_release:
                 msg = (f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
                        f"收货地址已入库")
                 if repushed:

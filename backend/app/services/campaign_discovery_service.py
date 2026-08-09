@@ -23,7 +23,7 @@ _TERMINAL_STATUS_WORDS = ("已结束", "报名截止", "已关闭", "已取消")
 _DT_FORMATS = (
     "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
     "%Y/%m/%d %H:%M:%S", "%Y/%m/%d %H:%M", "%Y/%m/%d",
-    "%Y.%m.%d %H:%M:%S", "%Y.%m.%d",
+    "%Y.%m.%d %H:%M:%S", "%Y.%m.%d %H:%M", "%Y.%m.%d",
 )
 
 
@@ -207,10 +207,17 @@ def run_daily_discovery(db: Session) -> dict:
                    and row.last_notified_on != today]
         if pending:
             titles = "、".join(f"「{row.title}」" for row in pending[:8])
+            if r.get("calendar_opened") is False:
+                diagnosis = (
+                    "活动入口可以读取，但大促日历页签未能打开"
+                    f"（{r.get('calendar_error') or '未找到可用日历入口'}）"
+                )
+            else:
+                diagnosis = "大促日历已打开，但当前页面日期格式没有被解析"
             notify_service.broadcast_text(
                 db,
                 f"已抓到可报名入口 {len(pending)} 个，但本次没有解析出任何售卖档期：{titles}。\n"
-                "这通常表示千牛大促日历结构有变化，不代表没有活动；请人工看一次活动日历。",
+                f"诊断：{diagnosis}。这不代表没有活动；请人工看一次活动日历。",
                 title="活动日期识别异常", level="warn")
             for row in pending:
                 row.last_notified_on = today
@@ -241,4 +248,9 @@ def run_daily_discovery(db: Session) -> dict:
         else {"skipped": "campaign_auto_disabled"}
     )
     return {"ok": True, **stats, "reminded": reminded,
-            "unresolved_warning": unresolved_warning, "auto_plans": auto_plans}
+            "unresolved_warning": unresolved_warning, "auto_plans": auto_plans,
+            "discovery_diagnostics": {
+                "tabs": r.get("tabs"),
+                "calendar_opened": r.get("calendar_opened"),
+                "calendar_error": r.get("calendar_error"),
+            }}
