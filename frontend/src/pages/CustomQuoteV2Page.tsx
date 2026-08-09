@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   Row,
+  Segmented,
   Select,
   Modal,
   Space,
@@ -30,8 +31,9 @@ import {
 } from '@ant-design/icons';
 import { CompetitorImportButton } from '../components/CompetitorImportButton';
 import { QuoteSettingsTab } from './CustomizationPage';
+import './CustomQuoteV2Page.css';
 
-const { Text, Title, Paragraph } = Typography;
+const { Text, Title } = Typography;
 const { TextArea } = Input;
 
 // ── 与后端 /api/customization/v2/* 对应的类型 ──
@@ -478,6 +480,7 @@ export default function CustomQuoteV2Page() {
   const skuRequestSeq = useRef(0);
   const [autoQuote, setAutoQuote] = useState(true);   // 说一句话→自动往下算价
   const [running, setRunning] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<'light' | 'heavy' | 'logs'>('light');
   const abortRef = useRef<AbortController | null>(null);
 
   // ── 普通定制 ──
@@ -489,6 +492,8 @@ export default function CustomQuoteV2Page() {
   const [tier, setTier] = useState('big_buyer');   // 报价档位 (默认大促到手价)
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [analysisOpen, setAnalysisOpen] = useState(false);
   const [customQ, setCustomQ] = useState<{ final_price: number | null; note?: string; error?: string; from_bom?: boolean } | null>(null);   // 纯定制方向(板单引擎)并排价
   const [customBoards, setCustomBoards] = useState<BoardRow[]>([]);   // ②真实BOM带出的部件, 供带入③编辑
   const [parts, setParts] = useState<EditPart[]>([]);   // 增减部位(分类器自动填, 可手调)
@@ -575,6 +580,7 @@ export default function CustomQuoteV2Page() {
       if (!resp.ok) throw new Error('分类失败');
       const r = (await resp.json()) as ClassifyResult;
       setCls(r);
+      setWorkspaceMode(r.customization_type === '特殊定制' ? 'heavy' : 'light');
       setCandidates(r.candidates ?? []);
       setSkuCandidates(r.sku_candidates ?? []);
       setSelectedSku(undefined);
@@ -678,6 +684,10 @@ export default function CustomQuoteV2Page() {
       }, signal);
       const r = both.spec;
       setLight(r);
+      if (r.final_price != null) {
+        setAdvancedOpen(false);
+        setAnalysisOpen(false);
+      }
       setCustomQ(both.custom);
       setCustomBoards(
         (both.custom_boards || []).map((b, i) => ({
@@ -827,40 +837,40 @@ export default function CustomQuoteV2Page() {
   const [paramOpen, setParamOpen] = useState(false);  // 报价参数设置弹窗 (从尺寸微定制移来)
 
   return (
-    <Space direction="vertical" style={{ width: '100%', maxWidth: 1180 }} size="middle">
-      <Space align="center" style={{ width: '100%', justifyContent: 'space-between' }}>
-        <Space align="center">
-          <Title level={4} style={{ margin: 0 }}>
-            定制报价 · 智能算价
-          </Title>
-          <Tag color="green" icon={<ThunderboltOutlined />}>v2</Tag>
+    <div className="tq-quote-page">
+      <header className="tq-quote-header">
+        <div>
+          <Text className="tq-quote-eyebrow">价格中心 / QUOTE STUDIO</Text>
+          <Title level={2} className="tq-quote-title">定制报价</Title>
+          <Text type="secondary">说清需求，确认产品和规格，系统给出可解释的报价。</Text>
+        </div>
+        <Space wrap className="tq-quote-actions">
+          <CompetitorImportButton label="导入竞品价" />
+          <Button icon={<SettingOutlined />} onClick={() => setParamOpen(true)}>报价参数</Button>
         </Space>
-        <Button icon={<SettingOutlined />} onClick={() => setParamOpen(true)}>报价参数设置</Button>
-      </Space>
+      </header>
       <Modal title="报价参数设置" open={paramOpen} onCancel={() => setParamOpen(false)}
         width={1000} footer={null} destroyOnClose>
         <QuoteSettingsTab onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
       </Modal>
-      <Alert
-        type="info"
-        showIcon
-        message="普通定制 = 真实SKU档价插值 + 材质/增减增量(纯算术, 秒级)；特殊定制 = 板单引擎 + 自动推五金。描述/截图由 AI 解析自动填表单(AI 不可用则确定性匹配)。"
-      />
-      <Space align="center" wrap>
-        <Text type="secondary" style={{ fontSize: 12 }}>竞品价库(对比用):</Text>
-        <CompetitorImportButton label="导入竞品价 xlsx" />
-      </Space>
-
-      {/* ── 1. 分类器 ── */}
-      <Card size="small" title="① 智能分类(文字/图 → 类型 + 产品 + 尺寸 + 材质)">
-        <Space direction="vertical" style={{ width: '100%' }} size={8}>
+      <Card className="tq-quote-composer" bordered={false}>
+        <div className="tq-section-heading">
+          <span className="tq-step">1</span>
+          <div>
+            <Text strong>输入客户需求</Text>
+            <Text type="secondary">可以只写一句话，图片和细节之后再补。</Text>
+          </div>
+        </div>
+        <Space direction="vertical" style={{ width: '100%' }} size={10}>
           <TextArea
             value={desc}
             onChange={(e) => setDesc(e.target.value)}
-            placeholder="例如: 蜂蜜餐桌 改 1.5 米 黑胡桃 / 客户要全新异形旋转吧台..."
-            autoSize={{ minRows: 2, maxRows: 5 }}
+            placeholder="例如：榉木餐桌改2米，宽90cm，台面改白色岩板"
+            autoSize={{ minRows: 3, maxRows: 6 }}
+            className="tq-requirement-input"
           />
-          <Space wrap>
+          <div className="tq-composer-toolbar">
+            <Space wrap>
             <Upload
               multiple
               accept="image/*"
@@ -870,27 +880,29 @@ export default function CustomQuoteV2Page() {
                 return false;
               }}
             >
-              <Button icon={<PictureOutlined />}>加图片</Button>
+              <Button type="text" icon={<PictureOutlined />}>添加图片</Button>
             </Upload>
             {clsImages.length > 0 && (
               <Tag closable onClose={() => setClsImages([])} color="blue">
                 {clsImages.length} 张图
               </Tag>
             )}
-            <Button type="primary" icon={<RobotOutlined />} loading={running} onClick={runPipeline}>
-              判定并算价
-            </Button>
+            <Checkbox checked={autoQuote} onChange={(e) => setAutoQuote(e.target.checked)}>识别后自动算价</Checkbox>
+            </Space>
+            <Space>
             {running && (
               <Button danger onClick={stop}>
                 停止
               </Button>
             )}
-            <Checkbox checked={autoQuote} onChange={(e) => setAutoQuote(e.target.checked)}>
-              判定后自动算价
-            </Checkbox>
-          </Space>
+            <Button type="primary" size="large" icon={<ThunderboltOutlined />} loading={running} onClick={runPipeline}>
+              生成报价
+            </Button>
+            </Space>
+          </div>
           {cls && (
             <Alert
+              className="tq-match-alert"
               type={cls.size_warning ? 'warning' : cls.customization_type === '普通定制' ? 'success' : 'warning'}
               message={
                 <Space wrap>
@@ -923,8 +935,37 @@ export default function CustomQuoteV2Page() {
         </Space>
       </Card>
 
+      <div className="tq-workspace-switch">
+        <div className="tq-section-heading compact">
+          <span className="tq-step">2</span>
+          <div>
+            <Text strong>选择报价方式</Text>
+            <Text type="secondary">识别后会自动切换，也可手动更改。</Text>
+          </div>
+        </div>
+        <Segmented
+          block
+          value={workspaceMode}
+          onChange={(v) => {
+            const mode = v as 'light' | 'heavy' | 'logs';
+            setWorkspaceMode(mode);
+            if (mode === 'logs' && logs == null) loadLogs();
+          }}
+          options={[
+            { value: 'light', label: '改现有产品' },
+            { value: 'heavy', label: '全新定制' },
+            { value: 'logs', label: '报价记录' },
+          ]}
+        />
+      </div>
+
       {/* ── 2. 普通定制 ── */}
-      <Card size="small" title="② 普通定制算价(改现有产品)">
+      {workspaceMode === 'light' && <Card className="tq-workspace-card" title={
+        <div className="tq-section-heading compact">
+          <span className="tq-step">3</span>
+          <div><Text strong>确认产品与规格</Text><Text type="secondary">先看主结果，细项需要时再展开。</Text></div>
+        </div>
+      }>
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           {candidates.length > 0 && (
             <Space wrap align="center">
@@ -1007,7 +1048,35 @@ export default function CustomQuoteV2Page() {
             </Button>
           </Space>
 
+          {light && light.final_price != null && (
+            <div className="tq-price-hero">
+              <div>
+                <Text className="tq-price-kicker">
+                  {light.specification?.price_tier_label || '当前报价'}
+                </Text>
+                <div className="tq-price-value"><span>¥</span>{light.final_price.toFixed(2)}</div>
+                <Space wrap size={[6, 6]}>
+                  <Tag bordered={false}>{light.base_product_name || '未命名产品'}</Tag>
+                  <Tag bordered={false}>{light.selected_sku_name || '按同产品档位插值'}</Tag>
+                  {light.specification?.target_material && <Tag bordered={false}>{light.specification.target_material}</Tag>}
+                </Space>
+              </div>
+              <div className="tq-price-side">
+                <Text type="secondary">板单方向核对价</Text>
+                <Text strong>{customQ?.final_price != null ? `¥${customQ.final_price.toFixed(2)}` : '待计算'}</Text>
+                <Text type="secondary">主报价以左侧结果为准</Text>
+              </div>
+            </div>
+          )}
+
           {/* 增减部位: 分类器自动填, 可手动增/删/改 → 后端逐部位算价(铁律: 删除偏保守, 只高不低) */}
+          <details className="tq-disclosure" open={advancedOpen}
+            onToggle={(e) => setAdvancedOpen(e.currentTarget.open)}>
+            <summary>
+              <span><Text strong>精细调整</Text><Text type="secondary">部位、宽高和材质变体</Text></span>
+              <Tag bordered={false}>{parts.length ? `${parts.length} 项部位变更` : '按需展开'}</Tag>
+            </summary>
+            <div className="tq-disclosure-body">
           <Card
             size="small"
             type="inner"
@@ -1099,6 +1168,17 @@ export default function CustomQuoteV2Page() {
             </Text>
           </Card>
 
+            </div>
+          </details>
+
+          {light && light.final_price != null && (
+            <details className="tq-disclosure" open={analysisOpen}
+              onToggle={(e) => setAnalysisOpen(e.currentTarget.open)}>
+              <summary>
+                <span><Text strong>查看计算依据</Text><Text type="secondary">双引擎核对、保本价、加减项与竞品</Text></span>
+                <Tag bordered={false}>{light.breakdown.length} 笔明细</Tag>
+              </summary>
+              <div className="tq-disclosure-body">
           {light && light.final_price != null && customQ && customQ.final_price != null && (
             <Row gutter={16}>
               <Col xs={24} md={12}>
@@ -1231,14 +1311,22 @@ export default function CustomQuoteV2Page() {
               </Col>
             </Row>
           )}
+              </div>
+            </details>
+          )}
           {light && light.final_price == null && (
             <Alert type="error" showIcon message={light.error ?? '算价失败'} />
           )}
         </Space>
-      </Card>
+      </Card>}
 
       {/* ── 3. 特殊定制 ── */}
-      <Card size="small" title="③ 特殊定制算价(全新 · 板单引擎 + 自动推五金)">
+      {workspaceMode === 'heavy' && <Card className="tq-workspace-card" title={
+        <div className="tq-section-heading compact">
+          <span className="tq-step">3</span>
+          <div><Text strong>建立全新产品板单</Text><Text type="secondary">先用外形生成满配上限，再精简到实际结构。</Text></div>
+        </div>
+      }>
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <Space wrap>
             <Input
@@ -1384,10 +1472,10 @@ export default function CustomQuoteV2Page() {
             </>
           )}
         </Space>
-      </Card>
+      </Card>}
 
       {/* ── 4. 留痕对账 ── */}
-      <Card size="small" title="④ 报价留痕(灰度对账 · 新旧口径复盘)">
+      {workspaceMode === 'logs' && <Card className="tq-workspace-card" title="报价记录">
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
           <Button onClick={loadLogs} loading={logsLoading}>
             加载最近报价留痕
@@ -1402,11 +1490,11 @@ export default function CustomQuoteV2Page() {
             />
           )}
         </Space>
-      </Card>
+      </Card>}
 
-      <Paragraph type="secondary" style={{ fontSize: 12 }}>
-        说明: 普通定制以「标准原价(同尺寸真实档价)」为基础做插值 + 增量;材质增量用 wood_cost 反推面积;删除部位只扣材料成本(决策①)。保本价 = 报价 ×(1 − 本款大促毛利率),毛利率实时取自该款 SKU(大促价÷会计成本)、可手动改。增减部位的利润系数在上方「报价系数」面板可改。本页只读计算, 不落订单。
-      </Paragraph>
-    </Space>
+      <Text type="secondary" className="tq-quote-footnote">
+        本页只进行报价测算，不会创建订单或改写商品价格。
+      </Text>
+    </div>
   );
 }
