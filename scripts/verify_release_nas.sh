@@ -40,7 +40,8 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
   grep -R -q "按纯定制方向" /usr/share/nginx/html/assets && echo custom=yes
   grep -R -q "真实部件板单" /usr/share/nginx/html/assets && echo bom=yes
   grep -R -q "智能询价" /usr/share/nginx/html/assets && echo procurement=yes
-  grep -R -q "保存修改并确认" /usr/share/nginx/html/assets && echo procurement_review=yes
+  grep -R -q "你的确认稿" /usr/share/nginx/html/assets && echo procurement_review=yes
+  true
 '")
 [[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
 [[ "$web_features" == *'custom=yes'* ]] || fail "Web 静态资源缺纯定制双口径界面"
