@@ -342,7 +342,10 @@ class ProcurementAgent:
             try:
                 self.run_once()
             except AgentApiError as exc:
-                print(str(exc), file=sys.stderr)
+                # pythonw.exe has no stderr. A transient ERP/network outage must not
+                # terminate the unattended Windows agent while it is retrying.
+                if sys.stderr is not None:
+                    print(str(exc), file=sys.stderr)
             time.sleep(poll_seconds)
 
 

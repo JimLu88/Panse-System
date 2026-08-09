@@ -1,10 +1,14 @@
 import sys
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools.procurement_agent.drivers import MockDriver, ObservedReply
+from tools.procurement_agent.client import AgentApiError
+from tools.procurement_agent import runtime as runtime_module
 from tools.procurement_agent.runtime import ProcurementAgent
 
 
@@ -218,3 +222,28 @@ def test_run_once_checks_replies_before_discovery_and_send():
         "claim-send",
         "heartbeat",
     ]
+
+
+def test_headless_agent_retries_when_stderr_is_unavailable(monkeypatch):
+    client = FakeClient()
+    agent = ProcurementAgent(
+        client=client,
+        agent_id="agent-1",
+        display_name="测试采购机",
+        mode="dry_run",
+        drivers={},
+        declared_capabilities=["taobao_desktop"],
+    )
+
+    def unavailable():
+        raise AgentApiError("ERP temporarily unavailable")
+
+    def stop_after_retry(_seconds):
+        raise StopIteration
+
+    monkeypatch.setattr(agent, "run_once", unavailable)
+    monkeypatch.setattr(runtime_module.sys, "stderr", None)
+    monkeypatch.setattr(runtime_module.time, "sleep", stop_after_retry)
+
+    with pytest.raises(StopIteration):
+        agent.run_forever(poll_seconds=10)
