@@ -1,7 +1,7 @@
 import { api } from './base';
 
 export type ProcurementCategory = 'daily' | 'photo' | 'production';
-export type ProcurementChannel = 'taobao' | '1688' | 'xiaohongshu';
+export type ProcurementChannel = 'taobao' | '1688' | 'pinduoduo' | 'xiaohongshu';
 export type ProcurementExecutionMode = 'assisted' | 'agent';
 
 export interface ProcurementTask {
@@ -15,6 +15,7 @@ export interface ProcurementTask {
   unit: string;
   target_unit_price: number | string | null;
   requirements: string | null;
+  search_queries: string[];
   execution_mode: ProcurementExecutionMode;
   taobao_client_mode: 'desktop' | 'chrome';
   channels: ProcurementChannel[];
@@ -39,6 +40,8 @@ export interface ProcurementTask {
   updated_at: string;
   counts: {
     total: number;
+    discovery_pending: number;
+    candidates: number;
     sent: number;
     replied: number;
     needs_manual: number;
@@ -55,6 +58,7 @@ export interface ProcurementTaskInput {
   unit: string;
   target_unit_price?: number;
   requirements?: string;
+  search_queries?: string[];
   execution_mode: ProcurementExecutionMode;
   taobao_client_mode: 'desktop' | 'chrome';
   channels: ProcurementChannel[];
@@ -75,6 +79,15 @@ export interface ProcurementInquiry {
   merchant_name: string | null;
   merchant_url: string | null;
   product_url: string | null;
+  merchant_external_id: string | null;
+  discovery_query: string | null;
+  discovered_at: string | null;
+  candidate_score: number | string | null;
+  candidate_reason: string | null;
+  candidate_snapshot: Record<string, unknown>;
+  source_rank: number | null;
+  discovery_attempts: number;
+  last_discovery_error: string | null;
   message_variant: 'A' | 'B' | 'winner_pending' | 'manual';
   status: string;
   followup_round: number;
@@ -92,6 +105,12 @@ export interface ProcurementInquiry {
   normalized_unit_price: number | string | null;
   quote_payload: Record<string, unknown>;
   response_quality: number | null;
+  decision_status: 'pending' | 'shortlisted' | 'selected' | 'rejected';
+  decision_note: string | null;
+  decided_at: string | null;
+  decided_by: string | null;
+  supplier_id: number | null;
+  part_purchase_id: number | null;
   leased_by: string | null;
   lease_until: string | null;
   execution_attempts: number;
@@ -254,4 +273,61 @@ export interface ProcurementAgentRuntime {
 
 export const getProcurementAgentStatus = () =>
   api.get<ProcurementAgentRuntime>('/api/procurement/agent-status')
+    .then((r) => r.data);
+
+export interface ProcurementQuoteComparison {
+  inquiry_id: number;
+  channel: ProcurementChannel;
+  merchant_name: string | null;
+  merchant_url: string | null;
+  product_url: string | null;
+  status: string;
+  decision_status: ProcurementInquiry['decision_status'];
+  candidate_score: number | string | null;
+  quote_complete: boolean;
+  quote_amount: number | string | null;
+  normalized_unit_price: number | string | null;
+  freight: unknown;
+  lead_time: unknown;
+  minimum_order_quantity: unknown;
+  material: unknown;
+  specification: unknown;
+  tax_included: unknown;
+  missing_fields: string[];
+  reply_original: string | null;
+  manual_reason: string | null;
+  part_purchase_id: number | null;
+}
+
+export const listProcurementQuotes = (taskId: number) =>
+  api.get<ProcurementQuoteComparison[]>(`/api/procurement/tasks/${taskId}/quotes`)
+    .then((r) => r.data);
+
+export const decideProcurementInquiry = (
+  inquiryId: number,
+  body: {
+    status: ProcurementInquiry['decision_status'];
+    note?: string;
+    supplier_id?: number;
+    part_purchase_id?: number;
+  },
+) => api.post<ProcurementInquiry>(
+  `/api/procurement/inquiries/${inquiryId}/decision`,
+  body,
+).then((r) => r.data);
+
+export interface ProcurementDailySummary {
+  date: string;
+  discovered: number;
+  review_pending: number;
+  sent: number;
+  replied: number;
+  manual: number;
+  selected: number;
+  purchased: number;
+  pending_total: number;
+}
+
+export const getProcurementDailySummary = () =>
+  api.get<ProcurementDailySummary>('/api/procurement/summary/daily')
     .then((r) => r.data);

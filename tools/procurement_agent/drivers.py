@@ -25,6 +25,23 @@ class SendResult:
 
 
 @dataclass
+class DiscoveryResult:
+    outcome: str
+    # found / manual / failed
+    merchant_name: Optional[str] = None
+    merchant_url: Optional[str] = None
+    product_url: Optional[str] = None
+    merchant_external_id: Optional[str] = None
+    discovery_query: Optional[str] = None
+    candidate_score: Optional[float] = None
+    candidate_reason: Optional[str] = None
+    candidate_snapshot: dict[str, Any] = field(default_factory=dict)
+    source_rank: Optional[int] = None
+    reason: Optional[str] = None
+    retryable: bool = False
+
+
+@dataclass
 class ObservedReply:
     inquiry_id: int
     external_message_id: str
@@ -40,6 +57,9 @@ class ObservedReply:
 
 class PlatformDriver(Protocol):
     capability: str
+
+    def discover(self, action: dict[str, Any], *, mode: str) -> DiscoveryResult:
+        ...
 
     def send(self, action: dict[str, Any], *, mode: str) -> SendResult:
         ...
@@ -123,6 +143,30 @@ class ExternalCommandDriver:
             meta=data.get("meta") or {},
         )
 
+    def discover(self, action: dict[str, Any], *, mode: str) -> DiscoveryResult:
+        data = self._invoke(
+            {
+                "operation": "discover",
+                "mode": mode,
+                "capability": self.capability,
+                "action": action,
+            }
+        )
+        return DiscoveryResult(
+            outcome=str(data.get("outcome") or "failed"),
+            merchant_name=data.get("merchant_name"),
+            merchant_url=data.get("merchant_url"),
+            product_url=data.get("product_url"),
+            merchant_external_id=data.get("merchant_external_id"),
+            discovery_query=data.get("discovery_query") or action.get("search_query"),
+            candidate_score=data.get("candidate_score"),
+            candidate_reason=data.get("candidate_reason"),
+            candidate_snapshot=data.get("candidate_snapshot") or {},
+            source_rank=data.get("source_rank"),
+            reason=data.get("reason"),
+            retryable=bool(data.get("retryable", False)),
+        )
+
     def poll_replies(
         self, conversations: list[dict[str, Any]]
     ) -> list[ObservedReply]:
@@ -160,6 +204,21 @@ class MockDriver:
     def __init__(self, capability: str = "taobao_desktop") -> None:
         self.capability = capability
         self.sent: list[dict[str, Any]] = []
+
+    def discover(self, action: dict[str, Any], *, mode: str) -> DiscoveryResult:
+        slot = int(action["slot_no"])
+        return DiscoveryResult(
+            outcome="found",
+            merchant_name=f"模拟商家{slot}",
+            merchant_url=f"https://example.invalid/shop/{slot}",
+            product_url=f"https://example.invalid/item/{slot}",
+            merchant_external_id=f"mock-shop-{slot}",
+            discovery_query=action.get("search_query"),
+            candidate_score=80,
+            candidate_reason="仅供自动测试的模拟候选",
+            candidate_snapshot={"title": action.get("item_name")},
+            source_rank=slot,
+        )
 
     def send(self, action: dict[str, Any], *, mode: str) -> SendResult:
         self.sent.append(action)

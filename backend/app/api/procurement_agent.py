@@ -56,6 +56,20 @@ class ClaimIn(BaseModel):
     lease_seconds: int = Field(default=180, ge=60, le=900)
 
 
+class CandidateIn(BaseModel):
+    agent_id: str = Field(min_length=1, max_length=64)
+    lease_token: str = Field(min_length=1, max_length=64)
+    merchant_name: Optional[str] = Field(default=None, max_length=128)
+    merchant_url: Optional[str] = Field(default=None, max_length=1024)
+    product_url: Optional[str] = Field(default=None, max_length=1024)
+    merchant_external_id: Optional[str] = Field(default=None, max_length=255)
+    discovery_query: Optional[str] = Field(default=None, max_length=255)
+    candidate_score: Optional[Decimal] = Field(default=None, ge=0, le=100)
+    candidate_reason: Optional[str] = Field(default=None, max_length=2000)
+    candidate_snapshot: dict[str, Any] = {}
+    source_rank: Optional[int] = Field(default=None, ge=1)
+
+
 class SentIn(BaseModel):
     agent_id: str = Field(min_length=1, max_length=64)
     lease_token: str = Field(min_length=1, max_length=64)
@@ -143,6 +157,84 @@ def claim(
             "actions": actions,
             "claimed": 0 if payload.mode == "dry_run" else len(actions),
             "previewed": len(actions) if payload.mode == "dry_run" else 0,
+        }
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/discovery/claim", response_model=dict)
+def claim_discovery(
+    payload: ClaimIn,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_agent_token),
+):
+    try:
+        procurement_service.heartbeat_agent(
+            db,
+            agent_id=payload.agent_id,
+            mode=payload.mode,
+            capabilities=payload.capabilities,
+            status="online",
+        )
+        actions = procurement_service.claim_discovery_actions(
+            db, **payload.model_dump()
+        )
+        db.commit()
+        return {
+            "ok": True,
+            "mode": payload.mode,
+            "actions": actions,
+            "claimed": 0 if payload.mode == "dry_run" else len(actions),
+            "previewed": len(actions) if payload.mode == "dry_run" else 0,
+        }
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/inquiries/{inquiry_id}/candidate", response_model=dict)
+def candidate(
+    inquiry_id: int,
+    payload: CandidateIn,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_agent_token),
+):
+    inquiry = _inquiry_or_404(db, inquiry_id)
+    try:
+        row, duplicate = procurement_service.record_discovery_candidate(
+            db, inquiry=inquiry, **payload.model_dump()
+        )
+        db.commit()
+        return {
+            "ok": True,
+            "duplicate": duplicate,
+            "inquiry_id": row.id,
+            "status": inquiry.status,
+        }
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/inquiries/{inquiry_id}/discovery-failure", response_model=dict)
+def discovery_failure(
+    inquiry_id: int,
+    payload: FailureIn,
+    db: Session = Depends(get_db),
+    _: str = Depends(require_agent_token),
+):
+    inquiry = _inquiry_or_404(db, inquiry_id)
+    try:
+        row = procurement_service.discovery_failure(
+            db, inquiry=inquiry, **payload.model_dump()
+        )
+        db.commit()
+        return {
+            "ok": True,
+            "status": row.status,
+            "attempts": row.discovery_attempts,
+            "manual_reason": row.manual_reason,
         }
     except ValueError as exc:
         db.rollback()

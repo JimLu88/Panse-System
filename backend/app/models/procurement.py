@@ -5,7 +5,7 @@
 - ProcurementInquiry：计划内的一家商家/一个待询价槽位
 - ProcurementMessage：往来消息审计记录
 
-这里仅记录“待发送/已发送/待追问”等执行状态；真正的淘宝、1688、小红书
+这里仅记录“待发送/已发送/待追问”等执行状态；真正的淘宝、1688、拼多多、小红书
 桌面代理是独立执行器，避免 ERP 保存任务时意外对外发消息或下单。
 """
 from __future__ import annotations
@@ -49,6 +49,7 @@ class ProcurementTask(Base, TimestampMixin):
     unit: Mapped[str] = mapped_column(String(16), nullable=False, default="件")
     target_unit_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(14, 4))
     requirements: Mapped[Optional[str]] = mapped_column(Text)
+    search_queries: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
     execution_mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="assisted"
@@ -115,6 +116,19 @@ class ProcurementInquiry(Base, TimestampMixin):
     merchant_name: Mapped[Optional[str]] = mapped_column(String(128))
     merchant_url: Mapped[Optional[str]] = mapped_column(String(1024))
     product_url: Mapped[Optional[str]] = mapped_column(String(1024))
+    merchant_external_id: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # 搜索发现信息。空槽位由 Windows 执行器搜索后直接补成候选商家，
+    # 不另建第二套候选表。
+    discovery_query: Mapped[Optional[str]] = mapped_column(String(255))
+    discovered_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    candidate_score: Mapped[Optional[Decimal]] = mapped_column(Numeric(5, 2))
+    candidate_reason: Mapped[Optional[str]] = mapped_column(Text)
+    candidate_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    candidate_dedupe_key: Mapped[Optional[str]] = mapped_column(String(64))
+    source_rank: Mapped[Optional[int]] = mapped_column(Integer)
+    discovery_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_discovery_error: Mapped[Optional[str]] = mapped_column(Text)
 
     message_variant: Mapped[str] = mapped_column(
         String(16), nullable=False, default="winner_pending", index=True
@@ -145,6 +159,20 @@ class ProcurementInquiry(Base, TimestampMixin):
     quote_payload: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
     response_quality: Mapped[Optional[int]] = mapped_column(Integer)
 
+    # 只记录人工采购决策及与既有采购单的关联；不会触发下单或付款。
+    decision_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="pending", index=True
+    )
+    decision_note: Mapped[Optional[str]] = mapped_column(Text)
+    decided_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decided_by: Mapped[Optional[str]] = mapped_column(String(64))
+    supplier_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("suppliers.id", ondelete="SET NULL"), index=True
+    )
+    part_purchase_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("part_purchases.id", ondelete="SET NULL"), index=True
+    )
+
     # 外部执行器领取租约：一次只允许一个 agent 操作同一商家，超时可自动回收。
     lease_token: Mapped[Optional[str]] = mapped_column(String(64), unique=True)
     leased_by: Mapped[Optional[str]] = mapped_column(String(64), index=True)
@@ -172,6 +200,12 @@ class ProcurementInquiry(Base, TimestampMixin):
             "ix_procurement_inquiries_due",
             "status",
             "next_followup_at",
+        ),
+        Index(
+            "uq_procurement_inquiries_task_candidate",
+            "task_id",
+            "candidate_dedupe_key",
+            unique=True,
         ),
     )
 

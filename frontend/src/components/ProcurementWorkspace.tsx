@@ -37,14 +37,18 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   applyProcurementWinner,
   createProcurementTask,
+  decideProcurementInquiry,
   generateProcurementScripts,
   getProcurementAgentStatus,
+  getProcurementDailySummary,
   getProcurementExperiment,
   listProcurementInquiries,
   listProcurementTasks,
   listProcurementDueActions,
+  listProcurementQuotes,
   markProcurementSent,
   patchProcurementInquiry,
+  patchProcurementTask,
   prepareProcurementQueue,
   recordProcurementReply,
   reviewProcurementMessage,
@@ -67,11 +71,13 @@ const categoryLabel: Record<string, string> = {
 const channelLabel: Record<string, string> = {
   taobao: '淘宝',
   '1688': '1688',
+  pinduoduo: '拼多多',
   xiaohongshu: '小红书',
 };
 const statusMeta: Record<string, { label: string; color: string }> = {
   draft: { label: '草稿', color: 'default' },
   ready: { label: '待执行', color: 'blue' },
+  discovery_ready: { label: '待搜索候选', color: 'gold' },
   running: { label: '询价中', color: 'processing' },
   needs_review: { label: '需人工处理', color: 'orange' },
   completed: { label: '已完成', color: 'green' },
@@ -112,8 +118,8 @@ const initialTaskValues: ProcurementTaskInput & {
   max_followup_rounds: 3,
   ab_test_enabled: true,
   ab_test_sample_size: 6,
-  channel_daily_limits: { taobao: 10, '1688': 5, xiaohongshu: 3 },
-  followup_intervals_hours: { taobao: 12, '1688': 12, xiaohongshu: 24 },
+  channel_daily_limits: { taobao: 10, '1688': 5, pinduoduo: 5, xiaohongshu: 3 },
+  followup_intervals_hours: { taobao: 12, '1688': 12, pinduoduo: 12, xiaohongshu: 24 },
   generate_scripts: true,
 };
 
@@ -128,6 +134,7 @@ export default function ProcurementWorkspace() {
   const [messageReviewConfirmed, setMessageReviewConfirmed] = useState(false);
   const [scriptA, setScriptA] = useState('');
   const [scriptB, setScriptB] = useState('');
+  const [searchQueriesText, setSearchQueriesText] = useState('');
   const [createForm] = Form.useForm();
   const [merchantForm] = Form.useForm();
   const [replyForm] = Form.useForm();
@@ -144,6 +151,11 @@ export default function ProcurementWorkspace() {
     queryKey: ['procurement-agent-status'],
     queryFn: getProcurementAgentStatus,
     refetchInterval: 30_000,
+  });
+  const { data: dailySummary } = useQuery({
+    queryKey: ['procurement-daily-summary'],
+    queryFn: getProcurementDailySummary,
+    refetchInterval: 60_000,
   });
   const taskId = selectedTask?.id;
   const { data: inquiries = [], isLoading: inquiriesLoading } = useQuery({
@@ -162,11 +174,22 @@ export default function ProcurementWorkspace() {
     enabled: Boolean(taskId),
     refetchInterval: 60_000,
   });
+  const { data: quoteComparison = [] } = useQuery({
+    queryKey: ['procurement-quotes', taskId],
+    queryFn: () => listProcurementQuotes(taskId!),
+    enabled: Boolean(taskId),
+  });
 
   useEffect(() => {
     setScriptA(selectedTask?.script_a || '');
     setScriptB(selectedTask?.script_b || '');
-  }, [selectedTask?.id, selectedTask?.script_a, selectedTask?.script_b]);
+    setSearchQueriesText((selectedTask?.search_queries || []).join('\n'));
+  }, [
+    selectedTask?.id,
+    selectedTask?.script_a,
+    selectedTask?.script_b,
+    selectedTask?.search_queries,
+  ]);
 
   const refreshTask = async (task: ProcurementTask) => {
     await qc.invalidateQueries({ queryKey: ['procurement-tasks'] });
@@ -196,10 +219,23 @@ export default function ProcurementWorkspace() {
   const saveScriptsMut = useMutation({
     mutationFn: () => reviewProcurementScripts(taskId!, { script_a: scriptA, script_b: scriptB }),
     onSuccess: async (task) => {
-      message.success('人工改稿已保存并确认，可以生成询价队列');
+      message.success('话术已由人工明确确认，可以生成询价队列');
       await refreshTask(task);
     },
     onError: (error: any) => message.error(`保存失败：${errorText(error)}`),
+  });
+  const searchQueriesMut = useMutation({
+    mutationFn: () => patchProcurementTask(taskId!, {
+      search_queries: searchQueriesText
+        .split('\n')
+        .map((value) => value.trim())
+        .filter(Boolean),
+    }),
+    onSuccess: async (task) => {
+      message.success('搜索词已保存，执行器会按顺序轮换尝试');
+      await refreshTask(task);
+    },
+    onError: (error: any) => message.error(`保存搜索词失败：${errorText(error)}`),
   });
   const queueMut = useMutation({
     mutationFn: () => prepareProcurementQueue(taskId!),
@@ -282,9 +318,26 @@ export default function ProcurementWorkspace() {
         qc.invalidateQueries({ queryKey: ['procurement-inquiries', taskId] }),
         qc.invalidateQueries({ queryKey: ['procurement-tasks'] }),
         qc.invalidateQueries({ queryKey: ['procurement-experiment', taskId] }),
+        qc.invalidateQueries({ queryKey: ['procurement-quotes', taskId] }),
+        qc.invalidateQueries({ queryKey: ['procurement-daily-summary'] }),
       ]);
     },
     onError: (error: any) => message.error(`归档失败：${errorText(error)}`),
+  });
+  const decisionMut = useMutation({
+    mutationFn: ({ row, status }: {
+      row: ProcurementInquiry;
+      status: ProcurementInquiry['decision_status'];
+    }) => decideProcurementInquiry(row.id, { status }),
+    onSuccess: async () => {
+      message.success('采购选择已记录；不会自动下单或付款');
+      await Promise.all([
+        qc.invalidateQueries({ queryKey: ['procurement-inquiries', taskId] }),
+        qc.invalidateQueries({ queryKey: ['procurement-quotes', taskId] }),
+        qc.invalidateQueries({ queryKey: ['procurement-daily-summary'] }),
+      ]);
+    },
+    onError: (error: any) => message.error(`记录选择失败：${errorText(error)}`),
   });
 
   const currentTask = useMemo(
@@ -311,23 +364,10 @@ export default function ProcurementWorkspace() {
     currentTask
     && normalizeMessage(scriptA)
     && (!currentTask.ab_test_enabled || normalizeMessage(scriptB))
-    && (
-      !currentTask.script_a_ai_draft
-      || normalizeMessage(scriptA) !== normalizeMessage(currentTask.script_a_ai_draft)
-    )
-    && (
-      !currentTask.ab_test_enabled
-      || !currentTask.script_b_ai_draft
-      || normalizeMessage(scriptB) !== normalizeMessage(currentTask.script_b_ai_draft)
-    ),
   );
   const messageReviewAction = messageReviewInquiry
     ? dueActions.find((action) => action.inquiry_id === messageReviewInquiry.id)
     : undefined;
-  const messageDraftChanged = Boolean(
-    messageReviewAction
-    && normalizeMessage(messageDraft) !== normalizeMessage(messageReviewAction.suggested_message),
-  );
   const markReviewedMessageSent = (row: ProcurementInquiry) => {
     const due = dueActions.find((action) => action.inquiry_id === row.id);
     if (!due?.approved_message || due.review_required) {
@@ -430,7 +470,10 @@ export default function ProcurementWorkspace() {
       width: 155,
       render: (_: unknown, row: ProcurementInquiry) => (
         <Space direction="vertical" size={0}>
-          <Text>{row.merchant_name || '待填写'}</Text>
+          <Text>{row.merchant_name || (row.status === 'discovery_ready' ? '等待自动搜索' : '待填写')}</Text>
+          {row.candidate_score != null && (
+            <Text type="secondary">候选评分 {Number(row.candidate_score).toFixed(0)}</Text>
+          )}
           {row.merchant_url && (
             <a href={row.merchant_url} target="_blank" rel="noreferrer">打开店铺</a>
           )}
@@ -480,6 +523,13 @@ export default function ProcurementWorkspace() {
               </Text>
             </Tooltip>
           )}
+          {row.last_discovery_error && (
+            <Tooltip title={row.last_discovery_error}>
+              <Text type="warning" ellipsis style={{ maxWidth: 230 }}>
+                搜索异常（第 {row.discovery_attempts} 次）
+              </Text>
+            </Tooltip>
+          )}
         </Space>
       ),
     },
@@ -494,9 +544,14 @@ export default function ProcurementWorkspace() {
     {
       title: '操作',
       key: 'action',
-      width: 280,
-      render: (_: unknown, row: ProcurementInquiry) => (
-        <Space size={4} wrap>
+      width: 340,
+      render: (_: unknown, row: ProcurementInquiry) => {
+        const due = dueActions.find((action) => action.inquiry_id === row.id);
+        const canReviewMessage = Boolean(
+          due && ['ready', 'followup_ready', 'waiting_reply'].includes(row.status),
+        );
+        return (
+          <Space size={4} wrap>
           <Button size="small" onClick={() => {
             setEditingInquiry(row);
             merchantForm.setFieldsValue({
@@ -508,13 +563,13 @@ export default function ProcurementWorkspace() {
           }}>
             填商家
           </Button>
-          {row.status === 'ready' && (
+          {canReviewMessage && (
             <>
               <Button size="small" icon={<CopyOutlined />} onClick={() => openMessageEditor(row)}>
-                修改并复制
+                {due?.action === 'initial_message' ? '检查并确认首轮' : '检查并确认追问'}
               </Button>
               <Popconfirm
-                title="只记录发送结果"
+                title={due?.action === 'initial_message' ? '只记录首轮发送结果' : '只记录追问发送结果'}
                 description="请确认平台实际发送内容与 ERP 最后确认稿完全一致；此按钮本身不会给商家发消息。"
                 onConfirm={() => markReviewedMessageSent(row)}
                 okText="确认已发送"
@@ -535,24 +590,27 @@ export default function ProcurementWorkspace() {
               录入回复
             </Button>
           )}
-          {row.status === 'followup_ready' && (
-            <>
-              <Button size="small" icon={<CopyOutlined />} onClick={() => openMessageEditor(row)}>
-                修改并确认追问
-              </Button>
-              <Popconfirm
-                title="确认追问已在平台发送成功？"
-                description="只有人工修改并确认过的本轮追问才能登记；此按钮不会替你点击平台发送。"
-                onConfirm={() => markReviewedMessageSent(row)}
-                okText="已发送"
-                cancelText="取消"
-              >
-                <Button size="small">标记追问已发</Button>
-              </Popconfirm>
-            </>
+          {row.decision_status !== 'selected' && row.merchant_name && (
+            <Button
+              size="small"
+              onClick={() => decisionMut.mutate({ row, status: 'shortlisted' })}
+            >
+              入围
+            </Button>
           )}
+          {row.decision_status !== 'selected' && row.merchant_name && (
+            <Popconfirm
+              title="设为首选供应商？"
+              description="这里只记录人工选择，不会下单或付款。"
+              onConfirm={() => decisionMut.mutate({ row, status: 'selected' })}
+            >
+              <Button size="small" type="dashed">选定</Button>
+            </Popconfirm>
+          )}
+          {row.decision_status === 'selected' && <Tag color="green">已选定</Tag>}
         </Space>
-      ),
+        );
+      },
     },
   ];
 
@@ -564,7 +622,7 @@ export default function ProcurementWorkspace() {
         message="两种工作模式"
         description={
           <span>
-            <b>人工辅助：</b>ERP 生成并复制话术，你在淘宝/1688/小红书发送后回填结果；
+            <b>人工辅助：</b>ERP 生成并复制话术，你在淘宝/1688/拼多多/小红书发送后回填结果；
             <b style={{ marginLeft: 12 }}>代理队列：</b>ERP 输出限速、待发送和待追问队列，供独立桌面执行器领取。
             执行器默认只预览，只有采购电脑本机明确开启后才可发送。
           </span>
@@ -605,6 +663,22 @@ export default function ProcurementWorkspace() {
           <Col>
             <Statistic title="正在执行" value={agentRuntime?.active_leases || 0} suffix="项" />
           </Col>
+        </Row>
+      </Card>
+      <Card size="small" title={`采购日报 · ${dailySummary?.date || '今日'}`} style={{ marginBottom: 16 }}>
+        <Row gutter={16}>
+          <Col span={3}><Statistic title="新候选" value={dailySummary?.discovered || 0} /></Col>
+          <Col span={3}><Statistic title="待审核" value={dailySummary?.review_pending || 0} /></Col>
+          <Col span={3}><Statistic title="已询价" value={dailySummary?.sent || 0} /></Col>
+          <Col span={3}><Statistic title="有回复" value={dailySummary?.replied || 0} /></Col>
+          <Col span={3}><Statistic title="转人工" value={dailySummary?.manual || 0} /></Col>
+          <Col span={3}><Statistic title="已选定" value={dailySummary?.selected || 0} /></Col>
+          <Col span={3}>
+            <Tooltip title="只有关联到 ERP 既有采购记录后才计入，不以询价或选定代替采购">
+              <Statistic title="已采购" value={dailySummary?.purchased || 0} />
+            </Tooltip>
+          </Col>
+          <Col span={3}><Statistic title="全部待办" value={dailySummary?.pending_total || 0} /></Col>
         </Row>
       </Card>
       <Card
@@ -695,6 +769,7 @@ export default function ProcurementWorkspace() {
                 <Checkbox.Group options={[
                   { label: '淘宝', value: 'taobao' },
                   { label: '1688', value: '1688' },
+                  { label: '拼多多', value: 'pinduoduo' },
                   { label: '小红书', value: 'xiaohongshu' },
                 ]} />
               </Form.Item>
@@ -802,6 +877,32 @@ export default function ProcurementWorkspace() {
 
             <Card
               size="small"
+              title="候选供应商搜索词"
+              extra={(
+                <Button
+                  loading={searchQueriesMut.isPending}
+                  onClick={() => searchQueriesMut.mutate()}
+                >
+                  保存搜索词
+                </Button>
+              )}
+            >
+              <Alert
+                type="info"
+                showIcon
+                message="每行一个搜索词，Windows 采购机会按顺序轮换；搜索候选不会向商家发送消息。"
+                style={{ marginBottom: 10 }}
+              />
+              <TextArea
+                rows={5}
+                value={searchQueriesText}
+                onChange={(event) => setSearchQueriesText(event.target.value)}
+                placeholder="例如：岩板 1600×3200 12mm 厂家批发"
+              />
+            </Card>
+
+            <Card
+              size="small"
               title={<Space><ExperimentOutlined />话术建议与 A/B 测试</Space>}
               extra={
                 <Space>
@@ -814,7 +915,7 @@ export default function ProcurementWorkspace() {
                     loading={saveScriptsMut.isPending}
                     onClick={() => saveScriptsMut.mutate()}
                   >
-                    保存修改并确认
+                    明确确认话术
                   </Button>
                 </Space>
               }
@@ -824,8 +925,8 @@ export default function ProcurementWorkspace() {
                 showIcon
                 message={
                   currentTask.scripts_reviewed_at
-                    ? `已由 ${currentTask.scripts_reviewed_by || '采购人员'} 人工改稿确认`
-                    : 'AI 内容只是原稿：A/B 两组都要人工修改后，才能生成队列或交给代理'
+                    ? `已由 ${currentTask.scripts_reviewed_by || '采购人员'} 人工确认`
+                    : 'AI 内容只是建议：A/B 两组都要人工逐条检查并明确确认，原文准确时可以不改字'
                 }
                 style={{ marginBottom: 12 }}
               />
@@ -900,7 +1001,7 @@ export default function ProcurementWorkspace() {
               extra={
                 inquiries.length === 0
                   ? (
-                    <Tooltip title={currentTask.scripts_reviewed_at ? '' : '先修改并确认上方 A/B 话术'}>
+                    <Tooltip title={currentTask.scripts_reviewed_at ? '' : '先检查并确认上方 A/B 话术'}>
                       <Button
                         type="primary"
                         disabled={!currentTask.scripts_reviewed_at}
@@ -931,25 +1032,68 @@ export default function ProcurementWorkspace() {
                 pagination={{ defaultPageSize: 20 }}
               />
             </Card>
+
+            <Card size="small" title="供应商报价比较">
+              <Alert
+                type="info"
+                showIcon
+                message="按完整报价、标准单价和候选评分排序；选定只记录采购决策，不会自动下单或付款。"
+                style={{ marginBottom: 12 }}
+              />
+              <Table
+                rowKey="inquiry_id"
+                size="small"
+                dataSource={quoteComparison}
+                pagination={false}
+                scroll={{ x: 1000 }}
+                columns={[
+                  {
+                    title: '商家',
+                    dataIndex: 'merchant_name',
+                    render: (value: string | null, row: any) => row.product_url
+                      ? <a href={row.product_url} target="_blank" rel="noreferrer">{value || '查看商品'}</a>
+                      : value || '-',
+                  },
+                  { title: '渠道', dataIndex: 'channel', render: (value: string) => channelLabel[value] || value },
+                  {
+                    title: '标准单价',
+                    dataIndex: 'normalized_unit_price',
+                    render: (value: number | string | null) => value == null ? '-' : `¥${Number(value).toLocaleString()}`,
+                  },
+                  { title: '运费', dataIndex: 'freight', render: (value: unknown) => value == null ? '-' : String(value) },
+                  { title: '交期', dataIndex: 'lead_time', render: (value: unknown) => value == null ? '-' : String(value) },
+                  { title: '规格', dataIndex: 'specification', render: (value: unknown) => value == null ? '-' : String(value) },
+                  {
+                    title: '完整度',
+                    dataIndex: 'quote_complete',
+                    render: (value: boolean) => <Tag color={value ? 'green' : 'orange'}>{value ? '完整' : '待追问'}</Tag>,
+                  },
+                  {
+                    title: '采购选择',
+                    dataIndex: 'decision_status',
+                    render: (value: string) => value === 'selected'
+                      ? <Tag color="green">已选定</Tag>
+                      : value === 'shortlisted'
+                        ? <Tag color="blue">已入围</Tag>
+                        : value === 'rejected'
+                          ? <Tag>已淘汰</Tag>
+                          : <Tag>待评估</Tag>,
+                  },
+                ]}
+              />
+            </Card>
           </Space>
         )}
       </Drawer>
 
       <Modal
-        title={`发送前人工改稿 · ${messageReviewInquiry?.merchant_name || `#${messageReviewInquiry?.slot_no || ''}`}`}
+        title={`发送前人工审核 · ${messageReviewInquiry?.merchant_name || `#${messageReviewInquiry?.slot_no || ''}`}`}
         open={Boolean(messageReviewInquiry)}
         okText={currentTask?.execution_mode === 'agent' ? '保存并批准代理使用' : '保存确认稿并复制'}
         cancelText="先不处理"
         confirmLoading={reviewMessageMut.isPending}
         okButtonProps={{
-          disabled: (
-            !messageReviewConfirmed
-            || !normalizeMessage(messageDraft)
-            || (
-              messageReviewAction?.action !== 'initial_message'
-              && !messageDraftChanged
-            )
-          ),
+          disabled: !messageReviewConfirmed || !normalizeMessage(messageDraft),
         }}
         onCancel={() => {
           setMessageReviewInquiry(null);
@@ -974,7 +1118,7 @@ export default function ProcurementWorkspace() {
             description={
               messageReviewAction?.action === 'initial_message'
                 ? '这份首轮话术已经过任务级人工改稿；你仍可按商家情况继续调整，确认后才复制或释放给代理。'
-                : '追问必须在这里人工修改，未修改、未勾选确认时，后端和桌面代理都会拒绝发送。'
+                : '追问必须在这里人工逐句检查并勾选确认；原稿准确时可以不改字。未确认时，后端和桌面代理都会拒绝发送。'
             }
           />
           {messageReviewAction && (

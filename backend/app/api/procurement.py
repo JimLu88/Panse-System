@@ -1,11 +1,11 @@
 """智能采购询价工作台 API。
 
-所有写接口只改变 ERP 内的任务/执行状态，不直接连接淘宝、1688 或小红书。
+所有写接口只改变 ERP 内的任务/执行状态，不直接连接淘宝、1688、拼多多或小红书。
 外部执行器确认平台动作成功后，才调用 mark-sent / reply 回写。
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal, Optional
 
@@ -38,13 +38,14 @@ class TaskCreate(BaseModel):
     requirements: Optional[str] = None
     execution_mode: Literal["assisted", "agent"] = "assisted"
     taobao_client_mode: Literal["desktop", "chrome"] = "desktop"
-    channels: list[Literal["taobao", "1688", "xiaohongshu"]] = ["taobao"]
+    channels: list[Literal["taobao", "1688", "pinduoduo", "xiaohongshu"]] = ["taobao"]
     channel_daily_limits: dict[str, int] = {
-        "taobao": 10, "1688": 5, "xiaohongshu": 3,
+        "taobao": 10, "1688": 5, "pinduoduo": 5, "xiaohongshu": 3,
     }
     followup_intervals_hours: dict[str, int] = {
-        "taobao": 12, "1688": 12, "xiaohongshu": 24,
+        "taobao": 12, "1688": 12, "pinduoduo": 12, "xiaohongshu": 24,
     }
+    search_queries: list[str] = []
     planned_merchant_count: int = Field(default=10, ge=1, le=50)
     max_followup_rounds: int = Field(default=3, ge=0, le=5)
     ab_test_enabled: bool = True
@@ -75,9 +76,10 @@ class TaskPatch(BaseModel):
     requirements: Optional[str] = None
     execution_mode: Optional[Literal["assisted", "agent"]] = None
     taobao_client_mode: Optional[Literal["desktop", "chrome"]] = None
-    channels: Optional[list[Literal["taobao", "1688", "xiaohongshu"]]] = None
+    channels: Optional[list[Literal["taobao", "1688", "pinduoduo", "xiaohongshu"]]] = None
     channel_daily_limits: Optional[dict[str, int]] = None
     followup_intervals_hours: Optional[dict[str, int]] = None
+    search_queries: Optional[list[str]] = None
     planned_merchant_count: Optional[int] = Field(default=None, ge=1, le=50)
     max_followup_rounds: Optional[int] = Field(default=None, ge=0, le=5)
     ab_test_enabled: Optional[bool] = None
@@ -102,6 +104,7 @@ class TaskOut(BaseModel):
     unit: str
     target_unit_price: Optional[Decimal]
     requirements: Optional[str]
+    search_queries: list[str]
     execution_mode: str
     taobao_client_mode: str
     channels: list[str]
@@ -128,10 +131,11 @@ class TaskOut(BaseModel):
 
 
 class MerchantSeed(BaseModel):
-    channel: Optional[Literal["taobao", "1688", "xiaohongshu"]] = None
+    channel: Optional[Literal["taobao", "1688", "pinduoduo", "xiaohongshu"]] = None
     merchant_name: Optional[str] = None
     merchant_url: Optional[str] = None
     product_url: Optional[str] = None
+    merchant_external_id: Optional[str] = None
 
 
 class PrepareQueueIn(BaseModel):
@@ -144,12 +148,12 @@ class ReviewScriptsIn(BaseModel):
 
 
 class InquiryPatch(BaseModel):
-    channel: Optional[Literal["taobao", "1688", "xiaohongshu"]] = None
+    channel: Optional[Literal["taobao", "1688", "pinduoduo", "xiaohongshu"]] = None
     merchant_name: Optional[str] = Field(default=None, max_length=128)
     merchant_url: Optional[str] = Field(default=None, max_length=1024)
     product_url: Optional[str] = Field(default=None, max_length=1024)
     status: Optional[Literal[
-        "ready", "waiting_winner", "waiting_reply", "followup_ready",
+        "discovery_ready", "ready", "waiting_winner", "waiting_reply", "followup_ready",
         "replied", "needs_manual", "completed", "no_reply", "failed",
     ]] = None
     manual_reason: Optional[str] = Field(default=None, max_length=255)
@@ -165,6 +169,15 @@ class InquiryOut(BaseModel):
     merchant_name: Optional[str]
     merchant_url: Optional[str]
     product_url: Optional[str]
+    merchant_external_id: Optional[str]
+    discovery_query: Optional[str]
+    discovered_at: Optional[datetime]
+    candidate_score: Optional[Decimal]
+    candidate_reason: Optional[str]
+    candidate_snapshot: dict[str, Any]
+    source_rank: Optional[int]
+    discovery_attempts: int
+    last_discovery_error: Optional[str]
     message_variant: str
     status: str
     followup_round: int
@@ -182,6 +195,12 @@ class InquiryOut(BaseModel):
     normalized_unit_price: Optional[Decimal]
     quote_payload: dict[str, Any]
     response_quality: Optional[int]
+    decision_status: str
+    decision_note: Optional[str]
+    decided_at: Optional[datetime]
+    decided_by: Optional[str]
+    supplier_id: Optional[int]
+    part_purchase_id: Optional[int]
     leased_by: Optional[str]
     lease_until: Optional[datetime]
     execution_attempts: int
@@ -218,6 +237,13 @@ class ReplyIn(BaseModel):
 
 class WinnerIn(BaseModel):
     variant: Optional[Literal["A", "B"]] = None
+
+
+class DecisionIn(BaseModel):
+    status: Literal["pending", "shortlisted", "selected", "rejected"]
+    note: Optional[str] = None
+    supplier_id: Optional[int] = None
+    part_purchase_id: Optional[int] = None
 
 
 class MessageOut(BaseModel):
@@ -284,6 +310,15 @@ def get_agent_status(
     return status
 
 
+@router.get("/summary/daily", response_model=dict)
+def get_daily_summary(
+    summary_date: Optional[date] = None,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    return procurement_service.daily_summary(db, summary_date=summary_date)
+
+
 @router.post("/tasks", response_model=TaskOut)
 def create_task(
     payload: TaskCreate,
@@ -334,6 +369,13 @@ def patch_task(
     for key, value in changes.items():
         if key in {"script_a", "script_b", "requirements", "specification"}:
             value = (value or "").strip() or None
+        if key == "search_queries":
+            value = procurement_service.clean_search_queries(
+                value or [],
+                fallback=procurement_service.build_search_queries(
+                    task.item_name, task.specification, task.requirements
+                ),
+            )
         setattr(task, key, value)
     if {"script_a", "script_b"}.intersection(changes):
         task.scripts_reviewed_at = None
@@ -415,6 +457,16 @@ def list_inquiries(
     ).scalars().all()
 
 
+@router.get("/tasks/{task_id}/quotes", response_model=list[dict])
+def list_quote_comparison(
+    task_id: int,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    _task_or_404(db, task_id)
+    return procurement_service.quote_comparison(db, task_id)
+
+
 @router.patch("/inquiries/{inquiry_id}", response_model=InquiryOut)
 def patch_inquiry(
     inquiry_id: int,
@@ -434,6 +486,32 @@ def patch_inquiry(
     db.commit()
     db.refresh(inquiry)
     return inquiry
+
+
+@router.post("/inquiries/{inquiry_id}/decision", response_model=InquiryOut)
+def decide_inquiry(
+    inquiry_id: int,
+    payload: DecisionIn,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_role("admin", "operator")),
+):
+    inquiry = _inquiry_or_404(db, inquiry_id)
+    try:
+        procurement_service.set_inquiry_decision(
+            db,
+            inquiry,
+            status=payload.status,
+            decided_by=user.username,
+            note=payload.note,
+            supplier_id=payload.supplier_id,
+            part_purchase_id=payload.part_purchase_id,
+        )
+        db.commit()
+        db.refresh(inquiry)
+        return inquiry
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(409, str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}/experiment", response_model=dict)

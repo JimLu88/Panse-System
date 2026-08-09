@@ -16,7 +16,7 @@ from typing import Any, Optional
 
 from . import __version__
 from .client import AgentApiError, ProcurementApiClient
-from .drivers import ExternalCommandDriver, PlatformDriver, SendResult
+from .drivers import DiscoveryResult, ExternalCommandDriver, PlatformDriver, SendResult
 
 LIVE_ACK = "I_UNDERSTAND_MESSAGES_WILL_BE_SENT"
 
@@ -51,6 +51,7 @@ class ProcurementAgent:
         display_name: str,
         mode: str,
         drivers: dict[str, PlatformDriver],
+        declared_capabilities: Optional[list[str]] = None,
         host_label: Optional[str] = None,
         max_actions: int = 1,
         lease_seconds: int = 180,
@@ -62,14 +63,30 @@ class ProcurementAgent:
         self.display_name = display_name
         self.mode = mode
         self.drivers = drivers
+        self.declared_capabilities = set(declared_capabilities or [])
         self.host_label = host_label or socket.gethostname()
         self.max_actions = max(1, min(max_actions, 10))
         self.lease_seconds = max(60, min(lease_seconds, 900))
-        self.counters = {"sent": 0, "manual": 0, "failed": 0, "replies": 0}
+        self.counters = {
+            "discovered": 0,
+            "sent": 0,
+            "manual": 0,
+            "failed": 0,
+            "replies": 0,
+        }
 
     @property
     def capabilities(self) -> list[str]:
-        return sorted(self.drivers)
+        return sorted(set(self.drivers) | self.declared_capabilities)
+
+    def _claim_payload(self) -> dict[str, Any]:
+        return {
+            "agent_id": self.agent_id,
+            "mode": self.mode,
+            "capabilities": self.capabilities,
+            "max_actions": self.max_actions,
+            "lease_seconds": self.lease_seconds,
+        }
 
     def heartbeat(
         self,
@@ -132,15 +149,7 @@ class ProcurementAgent:
             self.counters["failed"] += 1
 
     def process_actions_once(self) -> list[dict[str, Any]]:
-        response = self.client.claim(
-            {
-                "agent_id": self.agent_id,
-                "mode": self.mode,
-                "capabilities": self.capabilities,
-                "max_actions": self.max_actions,
-                "lease_seconds": self.lease_seconds,
-            }
-        )
+        response = self.client.claim(self._claim_payload())
         actions = response.get("actions") or []
         if self.mode == "dry_run":
             for action in actions:
@@ -187,6 +196,103 @@ class ProcurementAgent:
                 self.counters["failed"] += 1
         return actions
 
+    def _handle_discovery_result(
+        self, action: dict[str, Any], result: DiscoveryResult
+    ) -> None:
+        inquiry_id = int(action["inquiry_id"])
+        base = {
+            "agent_id": self.agent_id,
+            "lease_token": action["lease_token"],
+        }
+        if result.outcome == "found":
+            response = self.client.report_candidate(
+                inquiry_id,
+                {
+                    **base,
+                    "merchant_name": result.merchant_name,
+                    "merchant_url": result.merchant_url,
+                    "product_url": result.product_url,
+                    "merchant_external_id": result.merchant_external_id,
+                    "discovery_query": result.discovery_query,
+                    "candidate_score": result.candidate_score,
+                    "candidate_reason": result.candidate_reason,
+                    "candidate_snapshot": result.candidate_snapshot,
+                    "source_rank": result.source_rank,
+                },
+            )
+            if not response.get("duplicate"):
+                self.counters["discovered"] += 1
+        elif result.outcome == "manual":
+            self.client.report_discovery_failure(
+                inquiry_id,
+                {
+                    **base,
+                    "error": result.reason or "平台搜索需要人工接管",
+                    "retryable": False,
+                },
+            )
+            self.counters["manual"] += 1
+        else:
+            self.client.report_discovery_failure(
+                inquiry_id,
+                {
+                    **base,
+                    "error": result.reason or "平台候选搜索失败",
+                    "retryable": result.retryable,
+                },
+            )
+            self.counters["failed"] += 1
+
+    def process_discoveries_once(self) -> list[dict[str, Any]]:
+        response = self.client.claim_discovery(self._claim_payload())
+        actions = response.get("actions") or []
+        if self.mode == "dry_run":
+            for action in actions:
+                print(
+                    json.dumps(
+                        {
+                            "preview": True,
+                            "operation": "discover",
+                            "inquiry_id": action.get("inquiry_id"),
+                            "channel": action.get("channel"),
+                            "search_query": action.get("search_query"),
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+            return actions
+        for action in actions:
+            capability = action["required_capability"]
+            driver = self.drivers.get(capability)
+            if driver is None:
+                self.client.report_discovery_failure(
+                    int(action["inquiry_id"]),
+                    {
+                        "agent_id": self.agent_id,
+                        "lease_token": action["lease_token"],
+                        "error": f"本机缺少搜索驱动 {capability}",
+                        "retryable": False,
+                    },
+                )
+                continue
+            self.heartbeat(status="busy", current_inquiry_id=int(action["inquiry_id"]))
+            try:
+                self._handle_discovery_result(
+                    action, driver.discover(action, mode=self.mode)
+                )
+            except Exception as exc:
+                self.client.report_discovery_failure(
+                    int(action["inquiry_id"]),
+                    {
+                        "agent_id": self.agent_id,
+                        "lease_token": action["lease_token"],
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "retryable": True,
+                    },
+                )
+                self.counters["failed"] += 1
+        return actions
+
     def poll_replies_once(self) -> int:
         response = self.client.watch(self.capabilities)
         conversations = response.get("conversations") or []
@@ -222,14 +328,19 @@ class ProcurementAgent:
         self.counters["replies"] += count
         return count
 
+    def run_once(self) -> None:
+        """单轮顺序固定为先收回复，再搜索候选，最后才领取待发消息。"""
+        self.heartbeat()
+        self.poll_replies_once()
+        self.process_discoveries_once()
+        self.process_actions_once()
+        self.heartbeat()
+
     def run_forever(self, *, poll_seconds: int = 30) -> None:
         poll_seconds = max(10, min(poll_seconds, 300))
         while True:
             try:
-                self.heartbeat()
-                self.process_actions_once()
-                self.poll_replies_once()
-                self.heartbeat()
+                self.run_once()
             except AgentApiError as exc:
                 print(str(exc), file=sys.stderr)
             time.sleep(poll_seconds)
@@ -266,15 +377,13 @@ def main(argv: Optional[list[str]] = None) -> int:
         display_name=str(config.get("display_name") or "采购执行器"),
         mode=mode,
         drivers=drivers,
+        declared_capabilities=config.get("capabilities") or [],
         host_label=config.get("host_label"),
         max_actions=int(config.get("max_actions") or 1),
         lease_seconds=int(config.get("lease_seconds") or 180),
     )
     if args.once:
-        agent.heartbeat()
-        agent.process_actions_once()
-        agent.poll_replies_once()
-        agent.heartbeat()
+        agent.run_once()
         return 0
     agent.run_forever(poll_seconds=int(config.get("poll_seconds") or 30))
     return 0

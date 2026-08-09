@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -24,10 +26,11 @@ from app.models.procurement import (
 from app.services import ai_provider, settings_service
 
 
-CHANNELS = ("taobao", "1688", "xiaohongshu")
+CHANNELS = ("taobao", "1688", "pinduoduo", "xiaohongshu")
 CATEGORIES = ("daily", "photo", "production")
 MANUAL_REPLY_PATTERNS = {
     "商家要求加微信": re.compile(r"(加.{0,4}微信|微信.{0,5}(?:号|联系)|微\s*信号|(?:vx|v信)\s*[:：]?)", re.I),
+    "商家要求电话沟通": re.compile(r"(电话.{0,6}联系|打(?:个)?电话|手机号.{0,6}联系|加.{0,4}手机号)"),
     "商家要求人工验证": re.compile(r"(验证码|滑块验证|人机验证|账号异常|安全验证)"),
 }
 
@@ -71,6 +74,44 @@ def _clean_channels(channels: Iterable[str]) -> list[str]:
     return cleaned
 
 
+def build_search_queries(
+    item_name: str,
+    specification: Optional[str] = None,
+    requirements: Optional[str] = None,
+) -> list[str]:
+    """生成可编辑的多轮搜索词；不在这里访问任何外部平台。"""
+    name = re.sub(r"\s+", " ", (item_name or "").strip())
+    spec = re.sub(r"\s+", " ", (specification or "").strip())
+    requirement = re.sub(r"\s+", " ", (requirements or "").strip())
+    candidates = [
+        name,
+        f"{name} {spec}" if spec else "",
+        f"{name} 厂家 批发",
+        f"{name} 定制 交期",
+        f"{name} 源头工厂",
+        f"{name} {spec} 含运" if spec else f"{name} 含运",
+    ]
+    if requirement:
+        candidates.append(f"{name} {requirement[:80]}")
+    result: list[str] = []
+    for value in candidates:
+        clean = re.sub(r"\s+", " ", value).strip()[:255]
+        if clean and clean not in result:
+            result.append(clean)
+    return result
+
+
+def clean_search_queries(values: Iterable[str], *, fallback: list[str]) -> list[str]:
+    result: list[str] = []
+    for value in values:
+        clean = re.sub(r"\s+", " ", str(value or "")).strip()[:255]
+        if clean and clean not in result:
+            result.append(clean)
+        if len(result) >= 20:
+            break
+    return result or fallback
+
+
 def create_task(db: Session, payload: dict[str, Any], *, created_by: str) -> ProcurementTask:
     channels = _clean_channels(payload.get("channels") or ["taobao"])
     planned = int(payload.get("planned_merchant_count") or 10)
@@ -85,14 +126,21 @@ def create_task(db: Session, payload: dict[str, Any], *, created_by: str) -> Pro
     else:
         sample = 0
 
-    default_limits = {"taobao": 10, "1688": 5, "xiaohongshu": 3}
-    default_intervals = {"taobao": 12, "1688": 12, "xiaohongshu": 24}
+    default_limits = {"taobao": 10, "1688": 5, "pinduoduo": 5, "xiaohongshu": 3}
+    default_intervals = {
+        "taobao": 12, "1688": 12, "pinduoduo": 12, "xiaohongshu": 24,
+    }
     limits = {**default_limits, **(payload.get("channel_daily_limits") or {})}
     intervals = {**default_intervals, **(payload.get("followup_intervals_hours") or {})}
     for channel in CHANNELS:
         limits[channel] = max(1, min(int(limits[channel]), 30))
         intervals[channel] = max(1, min(int(intervals[channel]), 168))
 
+    default_queries = build_search_queries(
+        str(payload["item_name"]),
+        payload.get("specification"),
+        payload.get("requirements"),
+    )
     task = ProcurementTask(
         task_no=next_task_no(db),
         title=str(payload["title"]).strip(),
@@ -107,6 +155,9 @@ def create_task(db: Session, payload: dict[str, Any], *, created_by: str) -> Pro
             else None
         ),
         requirements=(payload.get("requirements") or "").strip() or None,
+        search_queries=clean_search_queries(
+            payload.get("search_queries") or [], fallback=default_queries
+        ),
         execution_mode=payload.get("execution_mode") or "assisted",
         taobao_client_mode=payload.get("taobao_client_mode") or "desktop",
         channels=channels,
@@ -261,22 +312,17 @@ def review_scripts(
     script_b: Optional[str],
     reviewed_by: str,
 ) -> ProcurementTask:
-    """保存采购人员改过的首轮话术，并解锁商家队列。"""
+    """保存采购人员明确确认的首轮话术，并解锁商家队列。
+
+    人工确认不等于必须改字。若 AI 原稿已经准确，采购人员可以原样确认；
+    真正发送前仍需在商家询价记录上进行逐条最终确认。
+    """
     actual_a = (script_a or "").strip()
     actual_b = (script_b or "").strip()
     if not actual_a:
         raise ValueError("A 组话术不能为空")
     if task.ab_test_enabled and not actual_b:
         raise ValueError("启用 A/B 测试时，B 组话术不能为空")
-    if task.script_a_ai_draft and (
-        _normalize_message(actual_a) == _normalize_message(task.script_a_ai_draft)
-    ):
-        raise ValueError("A 组仍是 AI 原稿，请先人工修改后再确认")
-    if task.ab_test_enabled and task.script_b_ai_draft and (
-        _normalize_message(actual_b) == _normalize_message(task.script_b_ai_draft)
-    ):
-        raise ValueError("B 组仍是 AI 原稿，请先人工修改后再确认")
-
     task.script_a = actual_a
     task.script_b = actual_b or None
     task.scripts_reviewed_at = utcnow()
@@ -311,13 +357,14 @@ def prepare_inquiries(
     if existing:
         return list(existing)
     if task.scripts_reviewed_at is None:
-        raise ValueError("请先人工修改并确认 A/B 话术，再生成商家询价队列")
+        raise ValueError("请先人工确认 A/B 话术，再生成商家询价队列")
     if not task.script_a or (task.ab_test_enabled and not task.script_b):
         raise ValueError("已确认话术不完整，请重新检查 A/B 文案")
 
     seeds = merchant_seeds or []
     channels = _clean_channels(task.channels or ["taobao"])
     rows: list[ProcurementInquiry] = []
+    seen_candidate_keys: set[str] = set()
     for index in range(task.planned_merchant_count):
         seed = seeds[index] if index < len(seeds) else {}
         channel = seed.get("channel") or channels[index % len(channels)]
@@ -332,6 +379,29 @@ def prepare_inquiries(
         else:
             variant = "A"
             status = "ready"
+        has_candidate = any(
+            (
+                seed.get("merchant_name"),
+                seed.get("merchant_url"),
+                seed.get("product_url"),
+                seed.get("merchant_external_id"),
+            )
+        )
+        dedupe_key = (
+            candidate_dedupe_key(
+                channel=channel,
+                merchant_external_id=seed.get("merchant_external_id"),
+                merchant_name=seed.get("merchant_name"),
+                merchant_url=seed.get("merchant_url"),
+                product_url=seed.get("product_url"),
+            )
+            if has_candidate
+            else None
+        )
+        if dedupe_key and dedupe_key in seen_candidate_keys:
+            raise ValueError(f"商家 {index + 1} 与本任务前面的候选重复")
+        if dedupe_key:
+            seen_candidate_keys.add(dedupe_key)
         row = ProcurementInquiry(
             task_id=task.id,
             slot_no=index + 1,
@@ -339,9 +409,20 @@ def prepare_inquiries(
             merchant_name=(seed.get("merchant_name") or "").strip() or None,
             merchant_url=(seed.get("merchant_url") or "").strip() or None,
             product_url=(seed.get("product_url") or "").strip() or None,
+            merchant_external_id=(
+                (seed.get("merchant_external_id") or "").strip() or None
+            ),
             message_variant=variant,
-            status=status,
+            status=(
+                "discovery_ready"
+                if task.execution_mode == "agent"
+                and not has_candidate
+                else status
+            ),
             quote_payload={},
+            candidate_snapshot={},
+            candidate_dedupe_key=dedupe_key,
+            discovered_at=utcnow() if has_candidate else None,
         )
         db.add(row)
         rows.append(row)
@@ -410,10 +491,22 @@ def apply_winner(db: Session, task: ProcurementTask, variant: Optional[str] = No
 
 def initial_message(task: ProcurementTask, inquiry: ProcurementInquiry) -> str:
     if inquiry.message_variant == "A":
-        return task.script_a or fallback_scripts(task)["script_a"]
+        base = task.script_a or fallback_scripts(task)["script_a"]
+        return _merchant_specific_message(base, inquiry)
     if inquiry.message_variant == "B":
-        return task.script_b or fallback_scripts(task)["script_b"]
+        base = task.script_b or fallback_scripts(task)["script_b"]
+        return _merchant_specific_message(base, inquiry)
     raise ValueError("该商家仍在等待 A/B 优胜话术，暂不可发送")
+
+
+def _merchant_specific_message(base: str, inquiry: ProcurementInquiry) -> str:
+    """加入可核对的商家称呼，不做规避平台识别的随机扰动。"""
+    merchant = re.sub(r"\s+", " ", (inquiry.merchant_name or "").strip())
+    if not merchant:
+        return base.strip()
+    if base.strip().startswith("您好"):
+        return f"{merchant}您好，{base.strip()[2:].lstrip('，, ')}"
+    return f"{merchant}您好，{base.strip()}"
 
 
 def followup_message(task: ProcurementTask, inquiry: ProcurementInquiry) -> str:
@@ -445,8 +538,6 @@ def _reviewed_action_content(
 ) -> tuple[str, bool]:
     """返回当前轮次唯一允许发送的内容，以及是否已通过人工门禁。"""
     key = _action_key(inquiry)
-    if inquiry.first_sent_at is None and task.scripts_reviewed_at is None:
-        return (suggested or initial_message(task, inquiry)).strip(), False
     if (
         inquiry.approved_action_key == key
         and inquiry.message_reviewed_at is not None
@@ -454,7 +545,7 @@ def _reviewed_action_content(
     ):
         return (inquiry.approved_message or "").strip(), True
     if inquiry.first_sent_at is None:
-        return (suggested or initial_message(task, inquiry)).strip(), True
+        return (suggested or initial_message(task, inquiry)).strip(), False
     return (suggested or followup_message(task, inquiry)).strip(), False
 
 
@@ -467,7 +558,13 @@ def review_inquiry_message(
     reviewed_by: str,
 ) -> dict[str, Any]:
     """为某个商家的当前轮次保存一份可审计的人工确认稿。"""
-    if inquiry.status not in {"ready", "followup_ready"}:
+    overdue_waiting_reply = False
+    if inquiry.status == "waiting_reply" and inquiry.next_followup_at is not None:
+        due_at = inquiry.next_followup_at
+        if due_at.tzinfo is None:
+            due_at = due_at.replace(tzinfo=timezone.utc)
+        overdue_waiting_reply = due_at <= utcnow()
+    if inquiry.status not in {"ready", "followup_ready"} and not overdue_waiting_reply:
         raise ValueError(f"当前状态 {inquiry.status} 没有可审核的待发消息")
     if inquiry.first_sent_at is None and task.scripts_reviewed_at is None:
         raise ValueError("请先在任务顶部修改并确认 A/B 首轮话术")
@@ -479,16 +576,13 @@ def review_inquiry_message(
     actual = (content or "").strip()
     if not actual:
         raise ValueError("确认文案不能为空")
-    if inquiry.first_sent_at is not None and (
-        _normalize_message(actual) == _normalize_message(base)
-    ):
-        raise ValueError("追问仍是系统原稿，请先人工修改后再确认")
-
     inquiry.approved_message = actual
     inquiry.approved_message_base = base
     inquiry.approved_action_key = _action_key(inquiry)
     inquiry.message_reviewed_at = utcnow()
     inquiry.message_reviewed_by = reviewed_by
+    if overdue_waiting_reply:
+        inquiry.status = "followup_ready"
     db.flush()
     return {
         "inquiry_id": inquiry.id,
@@ -527,7 +621,7 @@ def mark_message_sent(
         task, inquiry, suggested=suggested
     )
     if not reviewed:
-        raise ValueError("本轮追问尚未经过人工修改确认，不能标记发送或交给代理")
+        raise ValueError("本轮消息尚未经过人工确认，不能标记发送或交给代理")
     if content is not None and (
         _normalize_message(content) != _normalize_message(approved)
     ):
@@ -633,6 +727,15 @@ def record_reply(
             break
     if inquiry.wechat_contact:
         manual_reason = "商家要求加微信"
+    if (
+        manual_reason is None
+        and not quote_complete
+        and (
+            (response_quality is not None and response_quality < 30)
+            or bool((quote_payload or {}).get("parse_error"))
+        )
+    ):
+        manual_reason = "商家回复无法可靠理解"
     inquiry.requires_wechat = manual_reason == "商家要求加微信"
     inquiry.manual_reason = manual_reason
     if manual_reason:
@@ -709,6 +812,7 @@ def due_actions(
     if agent_only:
         q = q.where(ProcurementTask.execution_mode == "agent")
     q = q.where(
+        ProcurementTask.status.in_(("ready", "running")),
         (
             ProcurementInquiry.status.in_(("ready", "followup_ready"))
             | (
@@ -760,8 +864,6 @@ def due_actions(
                 "message_reviewed_at": (
                     inquiry.message_reviewed_at.isoformat()
                     if inquiry.message_reviewed_at
-                    else task.scripts_reviewed_at.isoformat()
-                    if task.scripts_reviewed_at and inquiry.first_sent_at is None
                     else None
                 ),
                 "followup_round": inquiry.followup_round,
@@ -786,6 +888,298 @@ def _clear_lease(inquiry: ProcurementInquiry) -> None:
     inquiry.lease_token = None
     inquiry.leased_by = None
     inquiry.lease_until = None
+
+
+def _canonical_candidate_value(value: Optional[str]) -> str:
+    clean = (value or "").strip()
+    if not clean:
+        return ""
+    try:
+        parts = urlsplit(clean)
+        if parts.scheme and parts.netloc:
+            identity_keys = {
+                "id", "item_id", "itemid", "goods_id", "goodsid", "mall_id",
+                "mallid", "offerid", "shop_id", "shopid", "seller_id", "sellerid",
+            }
+            identity_query = [
+                (key.casefold(), item)
+                for key, item in parse_qsl(parts.query, keep_blank_values=False)
+                if key.casefold() in identity_keys
+            ]
+            return urlunsplit(
+                (
+                    parts.scheme.lower(),
+                    parts.netloc.lower(),
+                    parts.path.rstrip("/"),
+                    urlencode(sorted(identity_query)),
+                    "",
+                )
+            )
+    except ValueError:
+        pass
+    return re.sub(r"\s+", " ", clean).casefold()
+
+
+def candidate_dedupe_key(
+    *,
+    channel: str,
+    merchant_external_id: Optional[str] = None,
+    merchant_name: Optional[str] = None,
+    merchant_url: Optional[str] = None,
+    product_url: Optional[str] = None,
+) -> str:
+    """同一任务内优先按店铺身份去重，防止重复联系同一商家。"""
+    identity = (
+        _canonical_candidate_value(merchant_external_id)
+        or _canonical_candidate_value(merchant_url)
+        or _canonical_candidate_value(merchant_name)
+        or _canonical_candidate_value(product_url)
+    )
+    if not identity:
+        raise ValueError("候选商家至少需要商家名称、店铺链接、商品链接或平台商家 ID")
+    return hashlib.sha256(f"{channel}:{identity}".encode("utf-8")).hexdigest()
+
+
+def _safe_candidate_snapshot(value: Optional[dict[str, Any]]) -> dict[str, Any]:
+    """只接收展示字段，避免 Cookie、令牌或页面存储被误传进 ERP。"""
+    allowed = {
+        "title",
+        "price_text",
+        "sales_text",
+        "location",
+        "shop_score",
+        "seller_level",
+        "product_image_url",
+        "captured_at",
+    }
+    source = value or {}
+    result: dict[str, Any] = {}
+    for key in allowed:
+        item = source.get(key)
+        if item is None:
+            continue
+        if isinstance(item, (int, float, bool)):
+            result[key] = item
+        else:
+            result[key] = str(item)[:2048]
+    return result
+
+
+def claim_discovery_actions(
+    db: Session,
+    *,
+    agent_id: str,
+    mode: str,
+    capabilities: list[str],
+    max_actions: int = 1,
+    lease_seconds: int = 180,
+) -> list[dict[str, Any]]:
+    """领取候选商家搜索槽位；dry_run 仅展示搜索词，不创建租约。"""
+    if mode not in {"dry_run", "review", "live"}:
+        raise ValueError("执行器模式无效")
+    max_actions = max(1, min(int(max_actions), 10))
+    lease_seconds = max(60, min(int(lease_seconds), 900))
+    now = utcnow()
+    rows = db.execute(
+        select(ProcurementInquiry, ProcurementTask)
+        .join(ProcurementTask, ProcurementTask.id == ProcurementInquiry.task_id)
+        .where(
+            ProcurementTask.execution_mode == "agent",
+            ProcurementTask.status.in_(("ready", "running")),
+            ProcurementInquiry.status == "discovery_ready",
+            (
+                ProcurementInquiry.lease_until.is_(None)
+                | (ProcurementInquiry.lease_until < now)
+            ),
+        )
+        .order_by(ProcurementInquiry.id)
+        .limit(max_actions * 10)
+    ).all()
+    actions: list[dict[str, Any]] = []
+    for inquiry, task in rows:
+        capability = _required_capability(task, inquiry)
+        if capability not in capabilities:
+            continue
+        queries = task.search_queries or build_search_queries(
+            task.item_name, task.specification, task.requirements
+        )
+        query_index = (inquiry.slot_no - 1 + inquiry.discovery_attempts) % len(queries)
+        excluded = db.execute(
+            select(
+                ProcurementInquiry.merchant_name,
+                ProcurementInquiry.merchant_url,
+                ProcurementInquiry.product_url,
+            ).where(
+                ProcurementInquiry.task_id == task.id,
+                ProcurementInquiry.candidate_dedupe_key.is_not(None),
+            )
+        ).all()
+        payload = {
+            "task_id": task.id,
+            "task_no": task.task_no,
+            "inquiry_id": inquiry.id,
+            "slot_no": inquiry.slot_no,
+            "channel": inquiry.channel,
+            "search_query": queries[query_index],
+            "search_queries": queries,
+            "item_name": task.item_name,
+            "specification": task.specification,
+            "quantity": str(task.quantity),
+            "unit": task.unit,
+            "requirements": task.requirements,
+            "required_capability": capability,
+            "excluded_candidates": [
+                {
+                    "merchant_name": name,
+                    "merchant_url": merchant_url,
+                    "product_url": product_url,
+                }
+                for name, merchant_url, product_url in excluded
+            ],
+        }
+        if mode == "dry_run":
+            payload.update({"preview": True, "lease_token": None, "lease_until": None})
+        else:
+            inquiry = db.execute(
+                select(ProcurementInquiry)
+                .where(ProcurementInquiry.id == inquiry.id)
+                .with_for_update()
+            ).scalar_one()
+            if inquiry.status != "discovery_ready":
+                continue
+            if inquiry.lease_until is not None:
+                current_lease_until = inquiry.lease_until
+                if current_lease_until.tzinfo is None:
+                    current_lease_until = current_lease_until.replace(tzinfo=timezone.utc)
+                if current_lease_until >= now:
+                    continue
+            token = secrets.token_urlsafe(24)
+            inquiry.lease_token = token
+            inquiry.leased_by = agent_id
+            inquiry.lease_until = now + timedelta(seconds=lease_seconds)
+            inquiry.discovery_attempts += 1
+            inquiry.last_executor_mode = mode
+            payload.update(
+                {
+                    "preview": False,
+                    "lease_token": token,
+                    "lease_until": inquiry.lease_until.isoformat(),
+                }
+            )
+        actions.append(payload)
+        if len(actions) >= max_actions:
+            break
+    db.flush()
+    return actions
+
+
+def record_discovery_candidate(
+    db: Session,
+    *,
+    inquiry: ProcurementInquiry,
+    agent_id: str,
+    lease_token: str,
+    merchant_name: Optional[str] = None,
+    merchant_url: Optional[str] = None,
+    product_url: Optional[str] = None,
+    merchant_external_id: Optional[str] = None,
+    discovery_query: Optional[str] = None,
+    candidate_score: Optional[Decimal] = None,
+    candidate_reason: Optional[str] = None,
+    candidate_snapshot: Optional[dict[str, Any]] = None,
+    source_rank: Optional[int] = None,
+) -> tuple[ProcurementInquiry, bool]:
+    """幂等登记搜索结果；重复店铺释放槽位后改搜下一候选。"""
+    _validate_lease(inquiry, agent_id=agent_id, lease_token=lease_token)
+    if inquiry.status != "discovery_ready":
+        raise ValueError(f"当前状态 {inquiry.status} 不接受候选商家")
+    key = candidate_dedupe_key(
+        channel=inquiry.channel,
+        merchant_external_id=merchant_external_id,
+        merchant_name=merchant_name,
+        merchant_url=merchant_url,
+        product_url=product_url,
+    )
+    duplicate = db.execute(
+        select(ProcurementInquiry).where(
+            ProcurementInquiry.task_id == inquiry.task_id,
+            ProcurementInquiry.candidate_dedupe_key == key,
+            ProcurementInquiry.id != inquiry.id,
+        )
+    ).scalar_one_or_none()
+    if duplicate is not None:
+        inquiry.last_discovery_error = f"候选重复，已存在于槽位 {duplicate.slot_no}"
+        _clear_lease(inquiry)
+        if inquiry.discovery_attempts >= 3:
+            inquiry.status = "needs_manual"
+            inquiry.manual_reason = "连续搜索到重复候选，请人工补充搜索词"
+        db.flush()
+        return duplicate, True
+
+    score = Decimal(str(candidate_score)) if candidate_score is not None else None
+    if score is not None and not Decimal("0") <= score <= Decimal("100"):
+        raise ValueError("候选评分必须在 0 到 100 之间")
+    inquiry.merchant_name = (merchant_name or "").strip()[:128] or None
+    inquiry.merchant_url = (merchant_url or "").strip()[:1024] or None
+    inquiry.product_url = (product_url or "").strip()[:1024] or None
+    inquiry.merchant_external_id = (
+        (merchant_external_id or "").strip()[:255] or None
+    )
+    inquiry.discovery_query = (discovery_query or "").strip()[:255] or None
+    inquiry.discovered_at = utcnow()
+    inquiry.candidate_score = score
+    inquiry.candidate_reason = (candidate_reason or "").strip()[:2000] or None
+    inquiry.candidate_snapshot = _safe_candidate_snapshot(candidate_snapshot)
+    inquiry.candidate_dedupe_key = key
+    inquiry.source_rank = max(1, int(source_rank)) if source_rank is not None else None
+    inquiry.last_discovery_error = None
+    inquiry.status = (
+        "waiting_winner" if inquiry.message_variant == "winner_pending" else "ready"
+    )
+    _clear_lease(inquiry)
+    db.flush()
+    return inquiry, False
+
+
+def discovery_failure(
+    db: Session,
+    *,
+    inquiry: ProcurementInquiry,
+    agent_id: str,
+    lease_token: str,
+    error: str,
+    retryable: bool,
+) -> ProcurementInquiry:
+    _validate_lease(inquiry, agent_id=agent_id, lease_token=lease_token)
+    detail = (error or "").strip()[:1000] or "执行器未提供搜索失败原因"
+    inquiry.last_discovery_error = detail
+    _clear_lease(inquiry)
+    if retryable and inquiry.discovery_attempts < 3:
+        inquiry.status = "discovery_ready"
+    else:
+        inquiry.status = "needs_manual"
+        inquiry.manual_reason = f"候选搜索失败：{detail[:200]}"
+        task = db.get(ProcurementTask, inquiry.task_id)
+        if task is not None:
+            task.status = "needs_review"
+    db.add(
+        ProcurementMessage(
+            inquiry_id=inquiry.id,
+            direction="system",
+            round_no=0,
+            content=f"候选搜索失败：{detail}",
+            requires_manual_review=inquiry.status == "needs_manual",
+            event_at=utcnow(),
+            message_meta={
+                "agent_id": agent_id,
+                "operation": "discover",
+                "retryable": retryable,
+                "attempt": inquiry.discovery_attempts,
+            },
+        )
+    )
+    db.flush()
+    return inquiry
 
 
 def heartbeat_agent(
@@ -1033,6 +1427,18 @@ def record_agent_reply(
     task = db.get(ProcurementTask, inquiry.task_id)
     if task is None:
         raise ValueError("采购任务不存在")
+    if task.execution_mode != "agent":
+        raise ValueError("该询价不属于采购执行器任务")
+    if inquiry.first_sent_at is None:
+        raise ValueError("该商家尚无已确认发送记录，不能回写平台回复")
+    state = db.execute(
+        select(ProcurementAgentState).where(
+            ProcurementAgentState.agent_id == agent_id
+        )
+    ).scalar_one_or_none()
+    required = _required_capability(task, inquiry)
+    if state is None or required not in (state.capabilities or []):
+        raise ValueError(f"执行器未登记所需能力 {required}")
     row = record_reply(
         db,
         task,
@@ -1215,23 +1621,189 @@ def agent_runtime_status(db: Session) -> dict[str, Any]:
     return {"agents": out, "active_leases": int(active_leases or 0)}
 
 
-def task_counts(db: Session, task_id: int) -> dict[str, int]:
+def set_inquiry_decision(
+    db: Session,
+    inquiry: ProcurementInquiry,
+    *,
+    status: str,
+    decided_by: str,
+    note: Optional[str] = None,
+    supplier_id: Optional[int] = None,
+    part_purchase_id: Optional[int] = None,
+) -> ProcurementInquiry:
+    """记录人工选择结果；关联采购单不等于自动下单或付款。"""
+    from app.models.order import PartPurchase
+    from app.models.supplier import Supplier
+
+    if status not in {"pending", "shortlisted", "selected", "rejected"}:
+        raise ValueError("不支持的供应商决策状态")
+    if supplier_id is not None and db.get(Supplier, supplier_id) is None:
+        raise ValueError("关联供应商不存在")
+    if part_purchase_id is not None and db.get(PartPurchase, part_purchase_id) is None:
+        raise ValueError("关联采购记录不存在")
+    if part_purchase_id is not None and status != "selected":
+        raise ValueError("只有已选择的候选才能关联实际采购记录")
+    inquiry.decision_status = status
+    inquiry.decision_note = (note or "").strip()[:2000] or None
+    inquiry.decided_by = decided_by
+    inquiry.decided_at = utcnow()
+    inquiry.supplier_id = supplier_id
+    inquiry.part_purchase_id = part_purchase_id
+    db.flush()
+    return inquiry
+
+
+def quote_comparison(db: Session, task_id: int) -> list[dict[str, Any]]:
+    """返回可直接用于 ERP 比价表的统一字段，原始回复始终保留。"""
     rows = db.execute(
+        select(ProcurementInquiry)
+        .where(
+            ProcurementInquiry.task_id == task_id,
+            ProcurementInquiry.discovered_at.is_not(None),
+        )
+        .order_by(
+            ProcurementInquiry.quote_complete.desc(),
+            ProcurementInquiry.normalized_unit_price.asc().nulls_last(),
+            ProcurementInquiry.candidate_score.desc().nulls_last(),
+            ProcurementInquiry.id,
+        )
+    ).scalars().all()
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        quote = row.quote_payload or {}
+        result.append(
+            {
+                "inquiry_id": row.id,
+                "channel": row.channel,
+                "merchant_name": row.merchant_name,
+                "merchant_url": row.merchant_url,
+                "product_url": row.product_url,
+                "status": row.status,
+                "decision_status": row.decision_status,
+                "candidate_score": row.candidate_score,
+                "quote_complete": row.quote_complete,
+                "quote_amount": row.quote_amount,
+                "normalized_unit_price": row.normalized_unit_price,
+                "freight": quote.get("freight"),
+                "lead_time": quote.get("lead_time"),
+                "minimum_order_quantity": quote.get("minimum_order_quantity"),
+                "material": quote.get("material"),
+                "specification": quote.get("specification"),
+                "tax_included": quote.get("tax_included"),
+                "missing_fields": quote.get("missing_fields") or [],
+                "reply_original": row.last_inbound_message,
+                "manual_reason": row.manual_reason,
+                "part_purchase_id": row.part_purchase_id,
+            }
+        )
+    return result
+
+
+def daily_summary(
+    db: Session,
+    *,
+    summary_date: Optional[date] = None,
+) -> dict[str, Any]:
+    """采购日报；“已采购”只统计已关联既有 PartPurchase 的记录。"""
+    target = summary_date or date.today()
+    business_timezone = timezone(timedelta(hours=8))
+    start = datetime.combine(target, datetime.min.time(), tzinfo=business_timezone)
+    end = start + timedelta(days=1)
+    discovered = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.discovered_at >= start,
+            ProcurementInquiry.discovered_at < end,
+        )
+    ).scalar_one()
+    review_pending = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.status.in_(("ready", "followup_ready")),
+            ProcurementInquiry.approved_action_key.is_(None),
+        )
+    ).scalar_one()
+    sent = db.execute(
+        select(func.count(ProcurementMessage.id)).where(
+            ProcurementMessage.direction == "outbound",
+            ProcurementMessage.event_at >= start,
+            ProcurementMessage.event_at < end,
+        )
+    ).scalar_one()
+    replied = db.execute(
+        select(func.count(ProcurementMessage.id)).where(
+            ProcurementMessage.direction == "inbound",
+            ProcurementMessage.event_at >= start,
+            ProcurementMessage.event_at < end,
+        )
+    ).scalar_one()
+    manual = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.status == "needs_manual",
+            ProcurementInquiry.updated_at >= start,
+            ProcurementInquiry.updated_at < end,
+        )
+    ).scalar_one()
+    selected = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.decision_status == "selected",
+            ProcurementInquiry.decided_at >= start,
+            ProcurementInquiry.decided_at < end,
+        )
+    ).scalar_one()
+    purchased = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.part_purchase_id.is_not(None),
+            ProcurementInquiry.decided_at >= start,
+            ProcurementInquiry.decided_at < end,
+        )
+    ).scalar_one()
+    pending = db.execute(
+        select(func.count(ProcurementInquiry.id)).where(
+            ProcurementInquiry.status.in_(
+                (
+                    "discovery_ready",
+                    "ready",
+                    "waiting_winner",
+                    "waiting_reply",
+                    "followup_ready",
+                    "needs_manual",
+                )
+            )
+        )
+    ).scalar_one()
+    return {
+        "date": target.isoformat(),
+        "discovered": int(discovered or 0),
+        "review_pending": int(review_pending or 0),
+        "sent": int(sent or 0),
+        "replied": int(replied or 0),
+        "manual": int(manual or 0),
+        "selected": int(selected or 0),
+        "purchased": int(purchased or 0),
+        "pending_total": int(pending or 0),
+    }
+
+
+def task_counts(db: Session, task_id: int) -> dict[str, int]:
+    total, sent, replied, candidates = db.execute(
+        select(
+            func.count(ProcurementInquiry.id),
+            func.count(ProcurementInquiry.first_sent_at),
+            func.count(ProcurementInquiry.first_response_at),
+            func.count(ProcurementInquiry.discovered_at),
+        ).where(ProcurementInquiry.task_id == task_id)
+    ).one()
+    status_rows = db.execute(
         select(ProcurementInquiry.status, func.count(ProcurementInquiry.id))
         .where(ProcurementInquiry.task_id == task_id)
         .group_by(ProcurementInquiry.status)
     ).all()
-    counts = {status: int(count) for status, count in rows}
+    counts = {status: int(count) for status, count in status_rows}
     return {
-        "total": sum(counts.values()),
-        "sent": sum(
-            count for status, count in counts.items()
-            if status not in {"ready", "waiting_winner"}
-        ),
-        "replied": sum(
-            count for status, count in counts.items()
-            if status in {"followup_ready", "replied", "needs_manual", "completed"}
-        ),
+        "total": int(total or 0),
+        "discovery_pending": counts.get("discovery_ready", 0),
+        "candidates": int(candidates or 0),
+        "sent": int(sent or 0),
+        "replied": int(replied or 0),
         "needs_manual": counts.get("needs_manual", 0),
         "completed": counts.get("completed", 0),
     }

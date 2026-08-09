@@ -7,6 +7,12 @@
   "poll_seconds": 30,
   "max_actions": 1,
   "lease_seconds": 180,
+  "capabilities": [
+    "taobao_chrome",
+    "1688_chrome",
+    "pinduoduo_chrome",
+    "xiaohongshu_chrome"
+  ],
   "drivers": {
     "taobao_desktop": {
       "command": ["C:\\path\\to\\taobao-desktop-driver.exe", "--json-stdio"],
@@ -18,6 +24,10 @@
     },
     "1688_chrome": {
       "command": ["C:\\path\\to\\1688-chrome-driver.exe", "--json-stdio"],
+      "timeout_seconds": 120
+    },
+    "pinduoduo_chrome": {
+      "command": ["C:\\path\\to\\pinduoduo-chrome-driver.exe", "--json-stdio"],
       "timeout_seconds": 120
     },
     "xiaohongshu_chrome": {

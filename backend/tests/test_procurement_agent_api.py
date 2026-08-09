@@ -7,6 +7,7 @@ from sqlalchemy.pool import StaticPool
 from app.database import get_db
 from app.main import app
 from app.models import Base
+from app.models.procurement import ProcurementInquiry
 from app.services import procurement_service
 
 
@@ -36,13 +37,51 @@ def _seed_agent_task(db_session):
         script_b="您好，我们在筛选五金长期供应商，请列出材质、交期和阶梯价。",
         reviewed_by="test",
     )
-    procurement_service.prepare_inquiries(
+    inquiries = procurement_service.prepare_inquiries(
         db_session,
         task,
         [{"merchant_name": "五金商家一"}, {"merchant_name": "五金商家二"}],
     )
+    procurement_service.review_inquiry_message(
+        db_session,
+        task,
+        inquiries[0],
+        content=procurement_service.initial_message(task, inquiries[0]),
+        reviewed_by="test",
+    )
     db_session.commit()
     return task
+
+
+def _seed_discovery_task(db_session):
+    task = procurement_service.create_task(
+        db_session,
+        {
+            "title": "拼多多候选发现联调",
+            "category": "production",
+            "item_name": "电力轨道",
+            "specification": "黑色 1 米",
+            "quantity": 20,
+            "unit": "条",
+            "execution_mode": "agent",
+            "channels": ["pinduoduo"],
+            "planned_merchant_count": 1,
+            "max_followup_rounds": 2,
+            "ab_test_enabled": False,
+            "ab_test_sample_size": 0,
+        },
+        created_by="test",
+    )
+    procurement_service.review_scripts(
+        db_session,
+        task,
+        script_a="您好，请报电力轨道含税含运价格和交期。",
+        script_b=None,
+        reviewed_by="test",
+    )
+    inquiry = procurement_service.prepare_inquiries(db_session, task)[0]
+    db_session.commit()
+    return task, inquiry
 
 
 @pytest.fixture()
@@ -162,5 +201,70 @@ def test_machine_api_rejects_wrong_token(api_db, monkeypatch):
             },
         )
         assert response.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+
+def test_machine_api_discovery_requires_candidate_then_message_review(api_db, monkeypatch):
+    monkeypatch.setenv("PROCUREMENT_AGENT_TOKEN", "agent-test-token")
+    task, inquiry = _seed_discovery_task(api_db)
+
+    def override_db():
+        yield api_db
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    headers = {"X-API-Key": "agent-test-token"}
+    claim_body = {
+        "agent_id": "purchase-pc-test",
+        "mode": "review",
+        "capabilities": ["pinduoduo_chrome"],
+        "max_actions": 1,
+    }
+    try:
+        discovery = client.post(
+            "/api/procurement/agent/discovery/claim",
+            headers=headers,
+            json=claim_body,
+        )
+        assert discovery.status_code == 200
+        action = discovery.json()["actions"][0]
+        candidate = client.post(
+            f"/api/procurement/agent/inquiries/{inquiry.id}/candidate",
+            headers=headers,
+            json={
+                "agent_id": "purchase-pc-test",
+                "lease_token": action["lease_token"],
+                "merchant_name": "轨道源头店",
+                "merchant_external_id": "pdd-mall-1",
+                "product_url": "https://mobile.yangkeduo.com/goods.html?goods_id=1",
+                "discovery_query": action["search_query"],
+                "candidate_score": 90,
+                "candidate_snapshot": {"title": "电力轨道", "cookie": "blocked"},
+            },
+        )
+        assert candidate.status_code == 200
+        api_db.expire_all()
+        stored = api_db.get(ProcurementInquiry, inquiry.id)
+        assert stored.status == "ready"
+        assert stored.candidate_snapshot == {"title": "电力轨道"}
+
+        blocked = client.post(
+            "/api/procurement/agent/claim", headers=headers, json=claim_body
+        )
+        assert blocked.json()["actions"] == []
+
+        procurement_service.review_inquiry_message(
+            api_db,
+            task,
+            stored,
+            content=procurement_service.initial_message(task, stored),
+            reviewed_by="test",
+        )
+        api_db.commit()
+        allowed = client.post(
+            "/api/procurement/agent/claim", headers=headers, json=claim_body
+        )
+        assert allowed.json()["actions"][0]["inquiry_id"] == inquiry.id
     finally:
         app.dependency_overrides.pop(get_db, None)

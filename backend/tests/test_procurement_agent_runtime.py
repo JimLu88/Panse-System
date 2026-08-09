@@ -10,20 +10,38 @@ from tools.procurement_agent.runtime import ProcurementAgent
 
 class FakeClient:
     def __init__(self):
+        self.events = []
         self.heartbeats = []
         self.sent = []
         self.failures = []
         self.manual = []
         self.replies = []
         self.actions = []
+        self.discovery_actions = []
+        self.candidates = []
+        self.discovery_failures = []
         self.conversations = []
 
     def heartbeat(self, payload):
+        self.events.append("heartbeat")
         self.heartbeats.append(payload)
         return {"ok": True}
 
     def claim(self, payload):
+        self.events.append("claim-send")
         return {"ok": True, "actions": list(self.actions)}
+
+    def claim_discovery(self, payload):
+        self.events.append("claim-discovery")
+        return {"ok": True, "actions": list(self.discovery_actions)}
+
+    def report_candidate(self, inquiry_id, payload):
+        self.candidates.append((inquiry_id, payload))
+        return {"ok": True, "duplicate": False}
+
+    def report_discovery_failure(self, inquiry_id, payload):
+        self.discovery_failures.append((inquiry_id, payload))
+        return {"ok": True}
 
     def confirm_sent(self, inquiry_id, payload):
         self.sent.append((inquiry_id, payload))
@@ -38,6 +56,7 @@ class FakeClient:
         return {"ok": True}
 
     def watch(self, capabilities, limit=100):
+        self.events.append("watch-replies")
         return {"ok": True, "conversations": list(self.conversations)}
 
     def report_reply(self, inquiry_id, payload):
@@ -51,6 +70,17 @@ def _action():
         "lease_token": "lease-11",
         "required_capability": "taobao_desktop",
         "suggested_message": "您好，请报价",
+    }
+
+
+def _discovery_action():
+    return {
+        "inquiry_id": 12,
+        "slot_no": 2,
+        "lease_token": "lease-12",
+        "required_capability": "taobao_desktop",
+        "search_query": "岩板 厂家 批发",
+        "item_name": "岩板",
     }
 
 
@@ -92,6 +122,25 @@ def test_review_mode_routes_confirmed_send_callback():
     assert client.sent[0][0] == 11
     assert client.sent[0][1]["external_message_id"] == "mock-out-11"
     assert agent.counters["sent"] == 1
+
+
+def test_review_mode_routes_discovered_candidate_callback():
+    client = FakeClient()
+    client.discovery_actions = [_discovery_action()]
+    driver = MockDriver()
+    agent = ProcurementAgent(
+        client=client,
+        agent_id="agent-1",
+        display_name="测试采购机",
+        mode="review",
+        drivers={"taobao_desktop": driver},
+    )
+
+    agent.process_discoveries_once()
+
+    assert client.candidates[0][0] == 12
+    assert client.candidates[0][1]["merchant_external_id"] == "mock-shop-2"
+    assert agent.counters["discovered"] == 1
 
 
 def test_driver_exception_reports_retryable_failure():
@@ -147,3 +196,25 @@ def test_poll_replies_routes_by_capability():
     assert count == 1
     assert client.replies[0][1]["normalized_unit_price"] == 470
     assert agent.counters["replies"] == 1
+
+
+def test_run_once_checks_replies_before_discovery_and_send():
+    client = FakeClient()
+    agent = ProcurementAgent(
+        client=client,
+        agent_id="agent-1",
+        display_name="测试采购机",
+        mode="dry_run",
+        drivers={},
+        declared_capabilities=["taobao_desktop"],
+    )
+
+    agent.run_once()
+
+    assert client.events == [
+        "heartbeat",
+        "watch-replies",
+        "claim-discovery",
+        "claim-send",
+        "heartbeat",
+    ]

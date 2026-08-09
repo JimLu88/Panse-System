@@ -54,6 +54,29 @@ class ProcurementApiClient:
     def claim(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self._request("POST", "/api/procurement/agent/claim", payload)
 
+    def claim_discovery(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request(
+            "POST", "/api/procurement/agent/discovery/claim", payload
+        )
+
+    def report_candidate(
+        self, inquiry_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/procurement/agent/inquiries/{inquiry_id}/candidate",
+            payload,
+        )
+
+    def report_discovery_failure(
+        self, inquiry_id: int, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"/api/procurement/agent/inquiries/{inquiry_id}/discovery-failure",
+            payload,
+        )
+
     def confirm_sent(
         self, inquiry_id: int, payload: dict[str, Any]
     ) -> dict[str, Any]:
