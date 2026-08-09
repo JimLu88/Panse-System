@@ -116,6 +116,25 @@ def test_discovery_unknown_date_actionable_reminds_once_and_ended_is_ignored(
 
 # ── ③ WA 发现失败 → 飞书报错 ─────────────────────────────────────────────────
 
+def test_discovery_actionable_entry_without_date_uses_dated_calendar_evidence(
+        db_session, monkeypatch):
+    """首页报名入口可以没有档期；只要大促日历解析出档期，就不误报日期异常。"""
+    future = date.today() + timedelta(days=10)
+    _mock_discover(monkeypatch, {"ok": True, "calendar_opened": True, "campaigns": [
+        {"title": "26年8月淘宝超级88年中盛典&七夕大促", "start": None,
+         "end": None, "status": "报名中", "raw": "首页入口"},
+        {"title": "26年8月淘宝超级88年中盛典&七夕大促", "start": _dt_str(future, 0),
+         "end": _dt_str(future + timedelta(days=15), 23), "status": "售卖中", "raw": "大促日历"},
+    ]})
+    calls = _mock_notify(monkeypatch)
+
+    result = cds.run_daily_discovery(db_session)
+
+    assert result["ok"] is True
+    assert result["unresolved_warning"] == 0
+    assert calls == []
+
+
 def test_discovery_wa_failure_notifies_manual_fallback(db_session, monkeypatch):
     _mock_discover(monkeypatch, {"ok": False, "error": "营销页布局改了"})
     calls = _mock_notify(monkeypatch)

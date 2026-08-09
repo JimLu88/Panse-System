@@ -191,14 +191,16 @@ def run_daily_discovery(db: Session) -> dict:
         db.commit()
         reminded = len(due)
 
-    # 只有当本次所有“可报名/报名中”卡片都没有解析出档期时，才发一条合并诊断。
-    # 这能在页面改版时明确报错，又不会把首页长期入口逐条当成近期活动。
+    # 首页“可报名/报名中”是入口卡片，本来就可能不带档期；
+    # 真正日期在大促日历子卡片中，其状态可能是“售卖中”。
+    # 只有存在可报名入口，且本次整批结果都无可解析日期，才报异常。
     discovered = r.get("campaigns") or []
     actionable = [c for c in discovered
                   if any(word in str(c.get("status") or "")
                          for word in _ACTIONABLE_STATUS_WORDS)]
+    dated = [c for c in discovered if _parse_dt(c.get("start")) is not None]
     unresolved_warning = 0
-    if actionable and not any(_parse_dt(c.get("start")) is not None for c in actionable):
+    if actionable and not dated:
         from app.models.campaign import CampaignCalendar
         unresolved = db.execute(select(CampaignCalendar).where(
             CampaignCalendar.start_at.is_(None))).scalars().all()
