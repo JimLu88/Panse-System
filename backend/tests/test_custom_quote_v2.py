@@ -127,6 +127,73 @@ def test_quote_light_area_pricing_monotone():
     assert prices == sorted(prices)                          # 更长必不更便宜
 
 
+def test_quote_light_buyer_price_tiers_use_promo_table():
+    """到手价档必须读取 PricingSkuPromo，不能误用 PricingSku 的活动档价。"""
+    from app.models.pricing_ext import PricingSkuPromo
+
+    db = _db()
+    _seed_slab_table(db)
+    for ln, big_buyer, mid_buyer in [
+        ("1.4", "2300", "2369"),
+        ("1.6", "2400", "2472"),
+        ("1.8", "2500", "2575"),
+        ("2.0", "2700", "2781"),
+    ]:
+        db.add(PricingSkuPromo(
+            sku_code=f"S1-{ln}",
+            big_buyer_price=D(big_buyer),
+            mid_buyer_price=D(mid_buyer),
+        ))
+    db.commit()
+
+    big = v2.quote_light(
+        db, base_product_code="S1", target_length_m=1.8,
+        target_width_cm=85, price_tier="big_buyer",
+    )
+    mid = v2.quote_light(
+        db, base_product_code="S1", target_length_m=1.8,
+        target_width_cm=85, price_tier="mid_buyer",
+    )
+
+    assert big["anchor"] == 2500.0
+    assert mid["anchor"] == 2575.0
+    assert big["specification"]["price_tier_label"] == "大促到手价"
+    assert mid["specification"]["price_tier_label"] == "中促到手价"
+
+
+def test_quote_light_buyer_price_missing_does_not_fallback():
+    """促销到手价全缺时要阻断报价，严禁静默回退日常价。"""
+    db = _db()
+    _seed_table(db)
+    result = v2.quote_light(
+        db, base_product_code="P1", target_length_m=1.5, price_tier="big_buyer",
+    )
+    assert result["final_price"] is None
+    assert "大促到手价" in result["error"]
+
+
+def test_quote_light_selected_sku_missing_buyer_price_stops():
+    """同产品其他 SKU 有价时，所选 SKU 缺价也不能被替换或插值掩盖。"""
+    from app.models.pricing_ext import PricingSkuPromo
+
+    db = _db()
+    _seed_table(db)
+    db.add(PricingSkuPromo(
+        sku_code="P1-1.2", big_buyer_price=D("2400"), mid_buyer_price=D("2472"),
+    ))
+    db.commit()
+    result = v2.quote_light(
+        db,
+        base_product_code="P1",
+        target_length_m=1.4,
+        price_tier="big_buyer",
+        base_sku_code="P1-1.4",
+    )
+    assert result["final_price"] is None
+    assert "所选SKU" in result["error"]
+    assert "大促到手价" in result["error"]
+
+
 # ───────── 普通定制: 材质 delta ─────────
 
 def _seed_bed(db, with_walnut_sibling=False):

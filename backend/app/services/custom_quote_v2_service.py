@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from app.models.material import Material
 from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuPromo
 from app.models.product import Product
 from app.services.product_match_service import match
 from app.services import sku_utils
@@ -38,6 +39,20 @@ _PRICE_TIERS = {
     "small": "small_promo", "mid": "mid_promo", "big": "big_promo",
 }
 
+_BUYER_PRICE_TIERS = {
+    "mid_buyer": "mid_buyer_price",
+    "big_buyer": "big_buyer_price",
+}
+
+_PRICE_TIER_LABELS = {
+    "mid": "报价档·中促",
+    "big": "报价档·大促",
+    "mid_buyer": "中促到手价",
+    "big_buyer": "大促到手价",
+}
+
+_UNSET_PRICE = object()
+
 _QUOTE_BAD_WORDS = (
     "定制", "微定制", "尺寸定制", "材质定制", "专拍", "咨询", "差价", "补差", "追加", "配件",
     "样块", "样品", "小样", "安装", "作废", "失效", "链接", "自动生成",
@@ -45,7 +60,11 @@ _QUOTE_BAD_WORDS = (
 _PRODUCT_BAD_WORDS = ("样块", "样品", "小样", "安装sku", "作废", "失效", "自动生成", "专拍链接")
 
 
-def _is_quoteable_sku(s: PricingSku, tier_col: str = "daily_price") -> bool:
+def _is_quoteable_sku(
+    s: PricingSku,
+    tier_col: str = "daily_price",
+    resolved_price=_UNSET_PRICE,
+) -> bool:
     """定制报价可作锚点的真实商品 SKU。
 
     排除明确占位、定制尾号、配件/样块/安装链接，以及售价明显低于已知会计/物理成本的脏价。
@@ -58,13 +77,45 @@ def _is_quoteable_sku(s: PricingSku, tier_col: str = "daily_price") -> bool:
     text = " ".join(str(x or "") for x in (getattr(s, "sku", None), getattr(s, "sku_code", None)))
     if any(w in text for w in _QUOTE_BAD_WORDS):
         return False
-    price = getattr(s, tier_col, None) or getattr(s, "daily_price", None) or getattr(s, "list_price", None)
+    # resolved_price 用于 PricingSkuPromo 中的「中促/大促到手价」。这两档必须
+    # 严格读取对应 SKU 的真实到手价，缺值时不能悄悄回退日常价或活动档价。
+    price = (
+        getattr(s, tier_col, None) or getattr(s, "daily_price", None) or getattr(s, "list_price", None)
+        if resolved_price is _UNSET_PRICE
+        else resolved_price
+    )
     if price is None or float(price) <= 0:
         return False
     known_cost = getattr(s, "accounting_cost", None) or getattr(s, "physical_cost", None)
     if known_cost is not None and float(known_cost) > 0 and float(price) < float(known_cost) * 0.90:
         return False
     return True
+
+
+def _tier_price_map(db: Session, skus: list[PricingSku], price_tier: str) -> dict[str, float]:
+    """返回 SKU 编码 → 所选报价档价格。
+
+    普通报价档来自 PricingSku；买家到手档严格来自 PricingSkuPromo，不做跨口径回退。
+    """
+    buyer_field = _BUYER_PRICE_TIERS.get(price_tier)
+    if buyer_field:
+        codes = [s.sku_code for s in skus if s.sku_code]
+        if not codes:
+            return {}
+        rows = db.query(PricingSkuPromo).filter(PricingSkuPromo.sku_code.in_(codes)).all()
+        return {
+            row.sku_code: float(value)
+            for row in rows
+            if (value := getattr(row, buyer_field, None)) is not None and float(value) > 0
+        }
+
+    tier_col = _PRICE_TIERS.get(price_tier, "big_promo")
+    result: dict[str, float] = {}
+    for sku in skus:
+        value = getattr(sku, tier_col, None) or sku.daily_price or sku.list_price
+        if value is not None and float(value) > 0:
+            result[sku.sku_code] = float(value)
+    return result
 
 
 def _is_quoteable_product_name(name: Optional[str]) -> bool:
@@ -399,14 +450,14 @@ def _normalize_structural_parts(parts: Optional[list[dict]], main_material: str)
 
 # ───────────────────────── 普通定制: 锚点价 + 三类 delta ───────────────────────── #
 
-def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
+def _sku_points(skus: list[PricingSku], prices: dict[str, float]) -> tuple[list, list]:
     """从同款多档 SKU 构造 (长度, 价) 与 (长度, wood_cost) 点集。"""
     price_pts, wood_pts = [], []
     for s in skus:
         ln = _resolve_length_m(s)
         if ln is None:
             continue
-        price = getattr(s, tier_col, None)
+        price = prices.get(s.sku_code)
         if price is not None:
             price_pts.append((ln, float(price)))
         if s.wood_cost is not None:
@@ -414,7 +465,7 @@ def _sku_points(skus: list[PricingSku], tier_col: str) -> tuple[list, list]:
     return price_pts, wood_pts
 
 
-def _area_points(skus: list[PricingSku], tier_col: str, depth_pts: list) -> tuple[list, list]:
+def _area_points(skus: list[PricingSku], prices: dict[str, float], depth_pts: list) -> tuple[list, list]:
     """面积一致定价点云: (底面积㎡, 价) 与 (底面积㎡, wood_cost)。
 
     宽取 size_info 的 深/宽; 缺则按 depth_pts 插值该长度的标准宽; 长或宽都拿不到 → 跳过该 SKU。
@@ -432,7 +483,7 @@ def _area_points(skus: list[PricingSku], tier_col: str, depth_pts: list) -> tupl
         if not w or w <= 0:
             continue
         area = round(ln * (float(w) / 100.0), 4)
-        price = getattr(s, tier_col, None)
+        price = prices.get(s.sku_code)
         if price is not None:
             p_by_area[area] = float(price)          # 同面积(黑/白岩板)同价, 覆盖即可
         if s.wood_cost is not None:
@@ -535,13 +586,30 @@ def quote_light(
         if factory_profit_rate is None else factory_profit_rate
     )
     safety_rate = float(cfg.get("safety_rate", 1.0) or 1.0)
-    tier_col = _PRICE_TIERS.get(price_tier, "daily_price")
     all_skus = db.query(PricingSku).filter(PricingSku.product_code == base_product_code).all()
     if not all_skus:
         return {"error": f"定价表无此产品 {base_product_code}", "final_price": None, "breakdown": []}
-    skus = [s for s in all_skus if _is_quoteable_sku(s, tier_col)]
+    tier_prices = _tier_price_map(db, all_skus, price_tier)
+    if base_sku_code and price_tier in _BUYER_PRICE_TIERS:
+        requested = next(
+            (s for s in all_skus if base_sku_code in (s.sku_code or "", s.sku or "")),
+            None,
+        )
+        if requested and requested.sku_code not in tier_prices:
+            tier_label = _PRICE_TIER_LABELS[price_tier]
+            return {
+                "error": f"所选SKU「{requested.sku or requested.sku_code}」缺少{tier_label}，已停止报价",
+                "final_price": None,
+                "breakdown": [],
+            }
+    skus = [s for s in all_skus if _is_quoteable_sku(s, resolved_price=tier_prices.get(s.sku_code))]
     if not skus:
-        return {"error": "该产品没有可用的真实SKU锚点(占位/配件/脏价已排除), 请人工核价",
+        if price_tier in _BUYER_PRICE_TIERS:
+            tier_label = _PRICE_TIER_LABELS[price_tier]
+            error = f"该产品没有可用的{tier_label}真实SKU锚点(缺价/占位/配件/脏价已排除), 请人工核价"
+        else:
+            error = "该产品没有可用的真实SKU锚点(缺价/占位/配件/脏价已排除), 请人工核价"
+        return {"error": error,
                 "final_price": None, "breakdown": []}
     # SKU 匹配(#29): 选了具体 SKU → 锁定同变体(去尺寸签名相同的档), 不混洞石/洞洞板, 大尺寸沿本变体外推
     selected_anchor_sku = None
@@ -555,7 +623,7 @@ def quote_light(
                 skus = same
 
     prod = db.query(Product).filter(Product.code == base_product_code).first()
-    price_pts, wood_pts = _sku_points(skus, tier_col)
+    price_pts, wood_pts = _sku_points(skus, tier_prices)
     depth_pts, height_pts = _dim_points(skus)
     std_w = interp(depth_pts, target_length_m)[0] if (target_length_m and depth_pts) else None
     std_h = interp(height_pts, target_length_m)[0] if (target_length_m and height_pts) else None
@@ -568,7 +636,7 @@ def quote_light(
     #   高于标准再缩长度 → 宽溢价暴涨盖过锚点跌 → 越短越贵 (岩板/玻璃桌尤甚, 锚点对长度不敏感)。
     #   新法 = 按【实际底面积 长×宽】插真实 SKU 价, 长、宽同一 ¥/㎡ → 更大必更贵 (单调)。
     #   宽=标准时与老口径吻合 (实测 2669≈2670); 该款无宽数据 → 自动退回按长度插值 (行为不变)。
-    area_price_pts, area_wood_pts = _area_points(skus, tier_col, depth_pts)
+    area_price_pts, area_wood_pts = _area_points(skus, tier_prices, depth_pts)
     target_area = (target_length_m * eff_w / 100.0) if (target_length_m and eff_w) else None
     used_area = bool(target_area and area_price_pts)
     if used_area:
@@ -601,7 +669,7 @@ def quote_light(
                         f"¥{prop:.0f} ⚠系统估算, 建议人工核价")
     else:
         rep = sorted(skus, key=lambda s: _resolve_length_m(s) or 0)[len(skus) // 2]
-        anchor = float(getattr(rep, tier_col, None) or rep.daily_price or rep.list_price or 0)
+        anchor = float(tier_prices.get(rep.sku_code) or 0)
         anchor_wood = float(rep.wood_cost) if rep.wood_cost is not None else None
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
@@ -643,11 +711,16 @@ def quote_light(
             if sib:
                 sib_skus = db.query(PricingSku).filter(
                     PricingSku.product_code == sib.code).all()
-                sp, _sw = _sku_points(sib_skus, tier_col)
+                sibling_prices = _tier_price_map(db, sib_skus, price_tier)
+                sib_skus = [
+                    s for s in sib_skus
+                    if _is_quoteable_sku(s, resolved_price=sibling_prices.get(s.sku_code))
+                ]
+                sp, _sw = _sku_points(sib_skus, sibling_prices)
                 if target_length_m and sp:
                     sib_price, _m = interp(sp, target_length_m)
                 else:
-                    sib_price = float(getattr(sib_skus[0], tier_col, None) or 0) if sib_skus else 0
+                    sib_price = float(sibling_prices.get(sib_skus[0].sku_code) or 0) if sib_skus else 0
                 if sib_price:
                     sib_note = f"; 参考现成同款 {sib.code} {sib.name} ¥{round(sib_price,2)}(客户认可可直接切该款)"
             if anchor_wood:
@@ -819,6 +892,7 @@ def quote_light(
             "target_height_cm": target_height_cm,
             "target_material": target_material,
             "price_tier": price_tier,
+            "price_tier_label": _PRICE_TIER_LABELS.get(price_tier, price_tier),
             "standard_width_cm": round(std_w, 1) if std_w else None,
             "standard_height_cm": round(std_h, 1) if std_h else None,
         },

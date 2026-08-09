@@ -120,6 +120,7 @@ interface LightResult {
     target_height_cm?: number | null;
     target_material?: string | null;
     price_tier?: string;
+    price_tier_label?: string;
     standard_width_cm?: number | null;
     standard_height_cm?: number | null;
   };
@@ -997,8 +998,8 @@ export default function CustomQuoteV2Page() {
               options={[
                 { value: 'big', label: '报价档·大促' },
                 { value: 'mid', label: '报价档·中促' },
-                { value: 'small', label: '报价档·小促' },
-                { value: 'daily', label: '报价档·日常' },
+                { value: 'big_buyer', label: '大促到手价' },
+                { value: 'mid_buyer', label: '中促到手价' },
               ]}
             />
             <Button type="primary" loading={lightLoading} onClick={doLight}>
@@ -1154,7 +1155,12 @@ export default function CustomQuoteV2Page() {
                         {light.specification?.target_material || '沿用原产品材质'}
                       </Descriptions.Item>
                       <Descriptions.Item label="报价档位">
-                        {({ big: '大促价', mid: '中促价', small: '小促价', daily: '日常价' } as Record<string, string>)[light.specification?.price_tier || ''] || light.specification?.price_tier || '—'}
+                        {light.specification?.price_tier_label || ({
+                          big: '报价档·大促',
+                          mid: '报价档·中促',
+                          big_buyer: '大促到手价',
+                          mid_buyer: '中促到手价',
+                        } as Record<string, string>)[light.specification?.price_tier || ''] || light.specification?.price_tier || '—'}
                       </Descriptions.Item>
                       <Descriptions.Item label="本次参数">
                         厂利 {((light.pricing_parameters?.factory_profit_rate ?? 0) * 100).toFixed(1)}% ·

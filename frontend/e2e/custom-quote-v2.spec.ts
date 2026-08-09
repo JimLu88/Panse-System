@@ -137,3 +137,13 @@ test('quote parameters have one entry in the top-right dialog', async ({ page })
   await expect(page.getByText('利润、安全与增减项规则')).toBeVisible();
   await expect(page.getByText('打包 / 运费 / 安装（小、中、大）')).toBeVisible();
 });
+
+test('price tier menu keeps promo tiers and adds buyer-price tiers', async ({ page }) => {
+  await openQuotePage(page);
+  await page.getByText('报价档·大促', { exact: true }).click();
+  await expect(page.getByText('报价档·中促', { exact: true })).toBeVisible();
+  await expect(page.getByText('大促到手价', { exact: true })).toBeVisible();
+  await expect(page.getByText('中促到手价', { exact: true })).toBeVisible();
+  await expect(page.getByText('报价档·小促', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('报价档·日常', { exact: true })).toHaveCount(0);
+});
