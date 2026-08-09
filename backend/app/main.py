@@ -228,11 +228,24 @@ async def _lifespan(app: FastAPI):
     # 飞书机器人长连接 (opt-in): 配了 app_id/secret + 环境变量 ENABLE_FEISHU_BOT=1 才起,
     # 默认不动现有部署 (飞书表同步用户不会被动开机器人)。
     if os.environ.get("ENABLE_FEISHU_BOT") == "1":
-        try:
-            from app.services import feishu_ws_service
-            feishu_ws_service.start()
-        except Exception:  # pragma: no cover
-            logging.getLogger("panse.startup").warning("飞书机器人长连接启动失败", exc_info=True)
+        import threading as _feishu_threading
+
+        def _start_feishu_bot() -> None:
+            try:
+                from app.services import feishu_ws_service
+                feishu_ws_service.start()
+            except Exception:  # pragma: no cover
+                logging.getLogger("panse.startup").warning(
+                    "飞书机器人长连接启动失败", exc_info=True
+                )
+
+        # 飞书 SDK 及其模型较大；NAS 磁盘繁忙时同步导入会阻塞整个 API 启动。
+        # 长连接本来就是附属能力，改为后台加载，ERP 健康检查不再受其影响。
+        _feishu_threading.Thread(
+            target=_start_feishu_bot,
+            name="feishu-bot-startup",
+            daemon=True,
+        ).start()
 
     yield   # 应用运行期
 
