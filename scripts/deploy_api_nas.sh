@@ -22,6 +22,12 @@ IMAGE="${IMAGE:-panse-system-api:latest}"
 WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://192.168.31.21:8200/api/health}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -p "$SSH_PORT" "$SSH_HOST")
 
+source scripts/lib/nas_deploy_guard.sh
+if [[ "${PANSE_NAS_DEPLOY_LOCK_HELD:-0}" != "1" ]]; then
+  panse_acquire_nas_deploy_lock
+  trap panse_release_nas_deploy_lock EXIT
+fi
+
 # 只允许部署 origin/main 的精确提交。既拦截落后，也拦截“本地已提交但未推送”的版本，
 # 防 NAS 运行一个 GitHub 上无法重建/追溯的镜像。FORCE=1 仅供明确的紧急恢复。
 if [[ "${FORCE:-0}" != "1" ]]; then
@@ -37,6 +43,11 @@ if [[ "${FORCE:-0}" != "1" ]]; then
     exit 1
   fi
 fi
+
+# Never deploy code that is older than the schema already present in
+# production. This is checked while holding the NAS-wide deployment lock, so
+# another workstation cannot advance the DB between this gate and the switch.
+panse_require_candidate_supports_database_revision
 
 if [[ "${BUILD:-0}" == "1" ]]; then
   gc=$(git rev-parse HEAD)

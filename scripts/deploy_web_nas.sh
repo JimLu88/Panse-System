@@ -18,6 +18,12 @@ WEB_HEALTH_URL="${WEB_HEALTH_URL:-http://192.168.31.21:8200/api/health}"
 WEB_BASE_URL="${WEB_BASE_URL:-http://192.168.31.21:8200}"
 SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o ConnectTimeout=20 -p "$SSH_PORT" "$SSH_HOST")
 
+source scripts/lib/nas_deploy_guard.sh
+if [[ "${PANSE_NAS_DEPLOY_LOCK_HELD:-0}" != "1" ]]; then
+  panse_acquire_nas_deploy_lock
+  trap panse_release_nas_deploy_lock EXIT
+fi
+
 if [[ "${FORCE:-0}" != "1" ]]; then
   git fetch origin main --quiet
   head_full=$(git rev-parse HEAD)
