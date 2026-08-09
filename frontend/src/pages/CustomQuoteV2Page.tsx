@@ -5,6 +5,7 @@ import {
   Card,
   Checkbox,
   Col,
+  Descriptions,
   Divider,
   Input,
   InputNumber,
@@ -57,6 +58,7 @@ interface BreakdownItem {
   label: string;
   amount: number;
   note: string;
+  paint_surcharge?: boolean;
 }
 interface PartDetail {
   name: string;
@@ -101,7 +103,26 @@ interface LightResult {
   std_height_cm?: number | null;
   addremove_delta: number;
   base_product_name?: string | null;
+  selected_sku_code?: string | null;
+  selected_sku_name?: string | null;
   category?: string;
+  subtotal_before_safety?: number;
+  safety_delta?: number;
+  paint_surcharge?: number;
+  pricing_parameters?: {
+    factory_profit_rate: number;
+    panse_profit_rate: number;
+    safety_rate: number;
+  };
+  specification?: {
+    target_length_m?: number | null;
+    target_width_cm?: number | null;
+    target_height_cm?: number | null;
+    target_material?: string | null;
+    price_tier?: string;
+    standard_width_cm?: number | null;
+    standard_height_cm?: number | null;
+  };
   factory_predicted?: number | null;
   break_even_factory?: number | null;
   break_even_buffer?: number | null;
@@ -189,19 +210,6 @@ async function apiPost<T>(path: string, body: unknown, signal?: AbortSignal): Pr
 async function apiGet<T>(path: string): Promise<T> {
   const resp = await fetch('/api/customization' + path, { headers: authHeaders(false) });
   if (!resp.ok) throw new Error('请求失败');
-  return (await resp.json()) as T;
-}
-
-async function apiPut<T>(path: string, body: unknown): Promise<T> {
-  const resp = await fetch('/api/customization' + path, {
-    method: 'PUT',
-    headers: authHeaders(true),
-    body: JSON.stringify(body),
-  });
-  if (!resp.ok) {
-    const e = (await resp.json().catch(() => ({ detail: '保存失败' }))) as { detail?: string };
-    throw new Error(e.detail ?? '保存失败');
-  }
   return (await resp.json()) as T;
 }
 
@@ -382,73 +390,6 @@ function PartSelect({
   );
 }
 
-// B2: 报价系数面板(工厂/畔色/安全 可调, 改完保存→重算生效)
-function QuoteCoefPanel({ onSaved }: { onSaved?: () => void }) {
-  const [cfg, setCfg] = useState<{ factory: number; panse: number; safety: number } | null>(null);
-  const [saving, setSaving] = useState(false);
-  useEffect(() => {
-    apiGet<{ factory_profit_rate: number; panse_profit_rate: number; safety_rate: number }>('/quote-config')
-      .then((c) => setCfg({ factory: c.factory_profit_rate, panse: c.panse_profit_rate, safety: c.safety_rate }))
-      .catch(() => undefined);
-  }, []);
-  if (!cfg) return null;
-  const save = async () => {
-    setSaving(true);
-    try {
-      await apiPut('/quote-config', {
-        factory_profit_rate: cfg.factory,
-        panse_profit_rate: cfg.panse,
-        safety_rate: cfg.safety,
-      });
-      message.success('系数已保存,重新算价生效');
-      onSaved?.();
-    } catch (e) {
-      message.error((e as Error).message);
-    } finally {
-      setSaving(false);
-    }
-  };
-  return (
-    <Card size="small" type="inner" title="报价系数(可调 · 改完保存→重算生效)" styles={{ body: { padding: 8 } }}>
-      <Space wrap size={8} align="center">
-        <InputNumber
-          addonBefore="工厂利润"
-          addonAfter="%"
-          value={Math.round(cfg.factory * 1000) / 10}
-          onChange={(v) => setCfg({ ...cfg, factory: (v ?? 0) / 100 })}
-          min={0}
-          max={95}
-          style={{ width: 170 }}
-        />
-        <InputNumber
-          addonBefore="畔色利润"
-          addonAfter="%"
-          value={Math.round(cfg.panse * 1000) / 10}
-          onChange={(v) => setCfg({ ...cfg, panse: (v ?? 0) / 100 })}
-          min={0}
-          max={95}
-          style={{ width: 170 }}
-        />
-        <InputNumber
-          addonBefore="安全系数"
-          value={cfg.safety}
-          onChange={(v) => setCfg({ ...cfg, safety: v ?? 1.05 })}
-          min={1}
-          max={3}
-          step={0.01}
-          style={{ width: 150 }}
-        />
-        <Button type="primary" ghost loading={saving} onClick={save}>
-          保存系数
-        </Button>
-        <Text type="secondary" style={{ fontSize: 12 }}>
-          利润系数只作用于增减部位加价;调低→报价更低更好卖
-        </Text>
-      </Space>
-    </Card>
-  );
-}
-
 // 保本价 = 报价 × (1 − 本款大促毛利率); 毛利率实时取自该款 SKU, 可手动改
 function MarginFloor({
   finalPrice,
@@ -532,6 +473,8 @@ export default function CustomQuoteV2Page() {
   const [candidates, setCandidates] = useState<NonNullable<ClassifyResult['candidates']>>([]);
   const [skuCandidates, setSkuCandidates] = useState<NonNullable<ClassifyResult['sku_candidates']>>([]);
   const [selectedSku, setSelectedSku] = useState<string | undefined>(undefined);
+  const [skuLoading, setSkuLoading] = useState(false);
+  const skuRequestSeq = useRef(0);
   const [autoQuote, setAutoQuote] = useState(true);   // 说一句话→自动往下算价
   const [running, setRunning] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -587,6 +530,26 @@ export default function CustomQuoteV2Page() {
     [partOpts],
   );
 
+  const loadSkuCandidates = async (code: string) => {
+    const requestId = ++skuRequestSeq.current;
+    setSelectedSku(undefined);
+    setSkuCandidates([]);
+    if (!code.trim()) return;
+    setSkuLoading(true);
+    try {
+      const r = await apiGet<{ product_code: string; items: NonNullable<ClassifyResult['sku_candidates']> }>(
+        `/v2/sku-candidates?product_code=${encodeURIComponent(code.trim())}&text=${encodeURIComponent(desc.trim())}`,
+      );
+      if (requestId === skuRequestSeq.current && r.product_code === code.trim()) {
+        setSkuCandidates(r.items);
+      }
+    } catch {
+      if (requestId === skuRequestSeq.current) message.error('该产品的 SKU 列表加载失败');
+    } finally {
+      if (requestId === skuRequestSeq.current) setSkuLoading(false);
+    }
+  };
+
   // 说一句话 → 自动分类 + (普通定制)自动算价; 判错可点「停止」中断
   const runPipeline = async () => {
     if (!desc.trim() && clsImages.length === 0) {
@@ -638,7 +601,7 @@ export default function CustomQuoteV2Page() {
       // 自动往下算价(仅普通定制; 特殊定制需在③填板单/外形)
       if (autoQuote && !ac.signal.aborted) {
         if (r.customization_type === '普通定制' && r.base_product_code) {
-          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, selectedSku, r.target_height_cm ?? null, r.target_width_cm ?? null);
+          await runLight(r.base_product_code, r.target_length_m ?? null, r.target_material ?? '', detected, ac.signal, tier, undefined, r.target_height_cm ?? null, r.target_width_cm ?? null);
         } else if (r.customization_type === '特殊定制') {
           message.info(
             r.category_guess
@@ -742,9 +705,10 @@ export default function CustomQuoteV2Page() {
 
   const doLight = () => runLight(pcode, len, mat, parts);
   // 用户从「匹配产品」下拉手选纠正 → 立即换产品并重算
-  const onPickProduct = (code: string) => {
+  const onPickProduct = async (code: string) => {
     setPcode(code);
-    runLight(code, len, mat, parts);
+    await loadSkuCandidates(code);
+    await runLight(code, len, mat, parts, undefined, tier, undefined);
   };
 
   const doTemplate = async () => {
@@ -874,7 +838,7 @@ export default function CustomQuoteV2Page() {
       </Space>
       <Modal title="报价参数设置" open={paramOpen} onCancel={() => setParamOpen(false)}
         width={1000} footer={null} destroyOnClose>
-        <QuoteSettingsTab />
+        <QuoteSettingsTab onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
       </Modal>
       <Alert
         type="info"
@@ -961,7 +925,6 @@ export default function CustomQuoteV2Page() {
       {/* ── 2. 普通定制 ── */}
       <Card size="small" title="② 普通定制算价(改现有产品)">
         <Space direction="vertical" style={{ width: '100%' }} size={8}>
-          <QuoteCoefPanel onSaved={() => pcode && runLight(pcode, len, mat, parts)} />
           {candidates.length > 0 && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
@@ -979,17 +942,21 @@ export default function CustomQuoteV2Page() {
               />
             </Space>
           )}
-          {skuCandidates.length > 0 && (
+          {pcode && (
             <Space wrap align="center">
               <Text type="secondary" style={{ fontSize: 12 }}>
-                匹配SKU(锁变体不混·按%排序):
+                当前产品 SKU（切换产品后实时更新）:
               </Text>
               <Select
                 style={{ width: 440 }}
                 value={selectedSku}
                 onChange={(v) => { setSelectedSku(v); runLight(pcode, len, mat, parts, undefined, tier, v); }}
                 allowClear
-                placeholder="选具体SKU(如 1.2米洞石背板)→ 按该变体算, 大尺寸沿本变体外推"
+                loading={skuLoading}
+                disabled={skuLoading || skuCandidates.length === 0}
+                placeholder={skuLoading ? '正在加载当前产品 SKU…' : skuCandidates.length === 0
+                  ? '当前产品没有可报价的真实 SKU'
+                  : '选具体 SKU → 锁定该变体计算'}
                 options={skuCandidates.map((s) => ({
                   value: s.sku_code,
                   label: `${Math.round(s.confidence * 100)}%　${s.sku_name}${s.price != null ? `　¥${s.price}` : ''}`,
@@ -1002,6 +969,7 @@ export default function CustomQuoteV2Page() {
               addonBefore="基础产品编码"
               value={pcode}
               onChange={(e) => setPcode(e.target.value)}
+              onBlur={() => loadSkuCandidates(pcode)}
               style={{ width: 320 }}
               placeholder="如 PFG25210021222(分类自动填)"
             />
@@ -1169,13 +1137,42 @@ export default function CustomQuoteV2Page() {
             <Row gutter={16}>
               <Col xs={24} lg={14}>
                 <Space direction="vertical" style={{ width: '100%' }} size={8}>
-                  <Space align="baseline" wrap>
-                    <Text>最终报价:</Text>
-                    <Text strong style={{ fontSize: 26, color: '#1677ff' }}>
-                      ¥{light.final_price.toFixed(2)}
-                    </Text>
-                    {light.base_product_name && <Text type="secondary">{light.base_product_name}</Text>}
-                  </Space>
+                  <Card size="small" type="inner" title="计算规格明细" styles={{ body: { padding: 10 } }}>
+                    <Descriptions size="small" column={{ xs: 1, sm: 2 }} colon={false}>
+                      <Descriptions.Item label="匹配产品">
+                        {light.base_product_name || '—'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="锁定 SKU">
+                        {light.selected_sku_name || '未锁定（按同产品多档插值）'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="目标尺寸">
+                        {light.specification?.target_length_m ? `${light.specification.target_length_m}m` : '标准长度'}
+                        {' × '}{light.specification?.target_width_cm ?? light.specification?.standard_width_cm ?? '标准'}cm
+                        {' × '}{light.specification?.target_height_cm ?? light.specification?.standard_height_cm ?? '标准'}cm
+                      </Descriptions.Item>
+                      <Descriptions.Item label="目标材质">
+                        {light.specification?.target_material || '沿用原产品材质'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="报价档位">
+                        {({ big: '大促价', mid: '中促价', small: '小促价', daily: '日常价' } as Record<string, string>)[light.specification?.price_tier || ''] || light.specification?.price_tier || '—'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="本次参数">
+                        厂利 {((light.pricing_parameters?.factory_profit_rate ?? 0) * 100).toFixed(1)}% ·
+                        畔色 {((light.pricing_parameters?.panse_profit_rate ?? 0) * 100).toFixed(1)}% ·
+                        安全 ×{light.pricing_parameters?.safety_rate ?? 1}
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </Card>
+                  <Card size="small" type="inner" title="报价汇总" styles={{ body: { padding: 10 } }}>
+                    <Descriptions size="small" column={{ xs: 2, sm: 4 }} colon={false}>
+                      <Descriptions.Item label="非油漆小计">¥{(light.subtotal_before_safety ?? 0).toFixed(2)}</Descriptions.Item>
+                      <Descriptions.Item label="安全系数调整">¥{(light.safety_delta ?? 0).toFixed(2)}</Descriptions.Item>
+                      <Descriptions.Item label="油漆固定追加">¥{(light.paint_surcharge ?? 0).toFixed(2)}</Descriptions.Item>
+                      <Descriptions.Item label="最终报价">
+                        <Text strong style={{ fontSize: 20, color: '#1677ff' }}>¥{light.final_price.toFixed(2)}</Text>
+                      </Descriptions.Item>
+                    </Descriptions>
+                  </Card>
                   <MarginFloor
                     finalPrice={light.final_price}
                     productMargin={light.product_margin}
@@ -1185,6 +1182,7 @@ export default function CustomQuoteV2Page() {
                     size="small"
                     rowKey={(_, i) => String(i)}
                     pagination={false}
+                    title={() => <Text strong>具体加减项（逐笔公式与金额）</Text>}
                     columns={breakdownCols}
                     dataSource={light.breakdown}
                   />

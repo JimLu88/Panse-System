@@ -220,7 +220,7 @@ function ManualQuoteTab() {
   );
 }
 
-export function QuoteSettingsTab() {
+export function QuoteSettingsTab({ onSaved }: { onSaved?: () => void } = {}) {
   const qc = useQueryClient();
   const { data: cfg, isLoading } = useQuery({ queryKey: ['quote-config'], queryFn: getQuoteConfig });
   const [draft, setDraft] = useState<QuoteConfig | null>(null);
@@ -232,6 +232,7 @@ export function QuoteSettingsTab() {
       message.success('参数已保存');
       qc.setQueryData(['quote-config'], res);
       setDraft(null);
+      onSaved?.();
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
   });
@@ -263,12 +264,25 @@ export function QuoteSettingsTab() {
 
   return (
     <Space direction="vertical" style={{ width: '100%' }} size="middle">
-      <Alert type="info" showIcon message="这里改的是全定制报价用的参数, 保存后立即生效。人工费按「品类 × 小/中/大」, 大小由长度阈值判定。" />
-      <Card size="small" title="利润系数 / 投影对照">
+      <Alert type="info" showIcon message="这里是普通定制与全定制共用的唯一参数入口。保存后重新算价立即生效；安全系数作用于非油漆报价小计，油漆/上色按最终固定追加价计算。" />
+      <Card size="small" title="利润、安全与增减项规则">
         <Space wrap size="large">
           <span>工厂利润系数 {numCell(c.factory_profit_rate, (v) => upd({ factory_profit_rate: v }))}</span>
           <span>畔色利润系数 {numCell(c.panse_profit_rate, (v) => upd({ panse_profit_rate: v }))}</span>
-          <span>保守系数(宁高不低) {numCell(c.safety_rate, (v) => upd({ safety_rate: v }))}</span>
+          <span>安全系数 {numCell(c.safety_rate, (v) => upd({ safety_rate: v }))}</span>
+          <span>平台扣点率 {numCell(c.platform_fee_rate, (v) => upd({ platform_fee_rate: v }))}</span>
+          <span>税率 {numCell(c.tax_rate, (v) => upd({ tax_rate: v }))}</span>
+          <span>增减项人工比例 {numCell(c.style_labor_ratio, (v) => upd({ style_labor_ratio: v }))}</span>
+          <span>删除材料返还比例 {numCell(c.style_remove_credit, (v) => upd({ style_remove_credit: v }))}</span>
+          <span>尺寸合理性系数 {numCell(c.size_sanity_factor, (v) => upd({ size_sanity_factor: v }))}</span>
+        </Space>
+      </Card>
+
+      <Card size="small" title="油漆、竞品与投影参数">
+        <Space wrap size="large">
+          <span>餐桌上色追加(元) {numCell(c.paint_table_base, (v) => upd({ paint_table_base: v }))}</span>
+          <span>餐边柜上色追加(元) {numCell(c.paint_sideboard_base, (v) => upd({ paint_sideboard_base: v }))}</span>
+          <span>上色固定成本比例 {numCell(c.paint_fixed_ratio, (v) => upd({ paint_fixed_ratio: v }))}</span>
           <span>竞品通用券率 {numCell(c.competitor_coupon_rate, (v) => upd({ competitor_coupon_rate: v }))}</span>
           <span>投影口径
             <Select size="small" style={{ width: 110, marginLeft: 6 }} value={c.projection_type}
@@ -277,11 +291,20 @@ export function QuoteSettingsTab() {
           </span>
           <span>投影系数(元/㎡) {numCell(c.projection_rate, (v) => upd({ projection_rate: v }))}</span>
         </Space>
-        <div style={{ marginTop: 12 }}>
-          打包费 小 {numCell(c.packing[0], (v) => upd({ packing: [v, c.packing[1], c.packing[2]] }))}
-          {' '}中 {numCell(c.packing[1], (v) => upd({ packing: [c.packing[0], v, c.packing[2]] }))}
-          {' '}大 {numCell(c.packing[2], (v) => upd({ packing: [c.packing[0], c.packing[1], v] }))}
-        </div>
+      </Card>
+
+      <Card size="small" title="打包 / 运费 / 安装（小、中、大）">
+        <Space direction="vertical" size={8}>
+          <span>打包费　小 {numCell(c.packing[0], (v) => upd({ packing: [v, c.packing[1], c.packing[2]] }))}
+            {' '}中 {numCell(c.packing[1], (v) => upd({ packing: [c.packing[0], v, c.packing[2]] }))}
+            {' '}大 {numCell(c.packing[2], (v) => upd({ packing: [c.packing[0], c.packing[1], v] }))}</span>
+          <span>运费　　小 {numCell(c.freight[0], (v) => upd({ freight: [v, c.freight[1], c.freight[2]] }))}
+            {' '}中 {numCell(c.freight[1], (v) => upd({ freight: [c.freight[0], v, c.freight[2]] }))}
+            {' '}大 {numCell(c.freight[2], (v) => upd({ freight: [c.freight[0], c.freight[1], v] }))}</span>
+          <span>安装费　小 {numCell(c.install[0], (v) => upd({ install: [v, c.install[1], c.install[2]] }))}
+            {' '}中 {numCell(c.install[1], (v) => upd({ install: [c.install[0], v, c.install[2]] }))}
+            {' '}大 {numCell(c.install[2], (v) => upd({ install: [c.install[0], c.install[1], v] }))}</span>
+        </Space>
       </Card>
 
       <Card size="small" title="人工费表 + 大小判定 (按品类)">

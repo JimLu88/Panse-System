@@ -751,12 +751,22 @@ export interface QuoteConfig {
   factory_profit_rate: number;
   panse_profit_rate: number;
   safety_rate: number;
+  platform_fee_rate: number;
+  tax_rate: number;
+  style_labor_ratio: number;
+  style_remove_credit: number;
+  paint_table_base: number;
+  paint_sideboard_base: number;
+  paint_fixed_ratio: number;
   competitor_coupon_rate: number;
   projection_type: string;          // front=正面 / top=俯视
   projection_rate: number;
   packing: number[];                // [小,中,大]
+  freight: number[];                // [小,中,大]
+  install: number[];                // [小,中,大]
   labor: Record<string, number[]>;  // 品类 → [小,中,大]
   size_rules: Record<string, number[]>;  // 品类 → [大阈值,中阈值]
+  size_sanity_factor: number;
   prices: Record<string, number>;   // 材料 → 单价
 }
 export const getQuoteConfig = () =>

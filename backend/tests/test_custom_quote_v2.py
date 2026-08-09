@@ -14,7 +14,13 @@ def _db():
     from app.models import Base
     eng = create_engine("sqlite:///:memory:", future=True, connect_args={"check_same_thread": False})
     Base.metadata.create_all(eng)
-    return sessionmaker(bind=eng, autoflush=False, future=True)()
+    db = sessionmaker(bind=eng, autoflush=False, future=True)()
+    # 既有金标准断言聚焦锚点/尺寸/材质公式，固定 safety=1 避免把独立规则混入。
+    # 安全系数是否作用于普通报价由下面专门的回归测试锁定。
+    from app.services import custom_quote_config_service as ccfg
+    ccfg.save_config(db, {"safety_rate": 1.0})
+    db.commit()
+    return db
 
 
 def _seed_table(db):
@@ -58,6 +64,22 @@ def test_quote_light_size_interpolation():
     assert r["anchor"] == 2950.0
     assert r["final_price"] == 2950.0          # 无材质/增减 → 等于锚点
     assert "策略C" in r["anchor_method"]
+
+
+def test_quote_light_safety_rate_changes_total_and_is_explained():
+    """安全系数必须作用于普通报价整体，并逐笔写入报价明细。"""
+    from app.services import custom_quote_config_service as ccfg
+
+    db = _db()
+    _seed_table(db)
+    ccfg.save_config(db, {"safety_rate": 1.10})
+    db.commit()
+    r = v2.quote_light(db, base_product_code="P1", target_length_m=1.5)
+    assert r["subtotal_before_safety"] == 2950.0
+    assert r["safety_delta"] == 295.0
+    assert r["final_price"] == 3245.0
+    assert r["pricing_parameters"]["safety_rate"] == 1.10
+    assert any(x["label"] == "安全系数 ×1.1" and x["amount"] == 295.0 for x in r["breakdown"])
 
 
 def test_quote_light_unknown_product():
@@ -148,7 +170,7 @@ def test_material_delta_sibling_is_reference_only():
     r = v2.quote_light(db, base_product_code="B1", target_length_m=1.5, target_material="黑胡桃")
     assert r["material_delta"] == 968.75          # 只减材质差额(同 via_woodcost), 不是切现成款的800
     assert r["final_price"] == 2000.0 + 968.75
-    assert "参考现成同款" in (r["breakdown"][-1]["note"] or "")
+    assert any("参考现成同款" in (line["note"] or "") for line in r["breakdown"])
 
 
 def test_box_part_pricing_and_autoheight():
@@ -599,8 +621,12 @@ def test_paint_parser_requires_an_action_not_just_a_color():
 
 
 def test_paint_standard_table_adds_250_to_both_cards():
+    from app.services import custom_quote_config_service as ccfg
+
     db = _db()
     _seed_table(db)
+    ccfg.save_config(db, {"safety_rate": 1.10})
+    db.commit()
     plain = v2.quote_both(
         db, base_product_code="P1", target_length_m=1.5,
         target_width_cm=80, target_height_cm=75, category="餐桌")
@@ -609,6 +635,7 @@ def test_paint_standard_table_adds_250_to_both_cards():
         target_width_cm=80, target_height_cm=75, category="餐桌",
         add_parts=[{"material": "白色油漆上色", "qty": 1, "is_paint": True}])
     assert painted["spec"]["final_price"] - plain["spec"]["final_price"] == 250.0
+    assert painted["spec"]["paint_surcharge"] == 250.0
     assert round(painted["custom"]["final_price"] - plain["custom"]["final_price"], 2) == 250.0
     assert painted["custom"]["paint_surcharge"] == 250.0
 

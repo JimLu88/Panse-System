@@ -519,12 +519,22 @@ def quote_light(
     modify_parts: Optional[list[dict]] = None,
     price_tier: str = "daily",
     base_sku_code: Optional[str] = None,
-    factory_profit_rate: float = 0.25,
+    factory_profit_rate: Optional[float] = None,
 ) -> dict:
     """普通定制报价 (改现有产品): 真实SKU锚点价 + 尺寸delta(策略C) + 材质delta(wood_cost反推) + 增减部位delta。
 
     全程纯算术, 0 次 AI。返回 {final_price, anchor, breakdown[], ...}; 查不到产品→error。
     """
+    from app.services import custom_quote_config_service as ccfg
+
+    cfg = ccfg.get_config(db)
+    # 普通定制与全定制统一使用「报价参数设置」里的系数。旧实现只在增减部位
+    # 读取配置，换料/尺寸仍使用函数默认值，且安全系数完全没有进入普通报价。
+    factory_profit_rate = float(
+        cfg.get("factory_profit_rate", 0.25)
+        if factory_profit_rate is None else factory_profit_rate
+    )
+    safety_rate = float(cfg.get("safety_rate", 1.0) or 1.0)
     tier_col = _PRICE_TIERS.get(price_tier, "daily_price")
     all_skus = db.query(PricingSku).filter(PricingSku.product_code == base_product_code).all()
     if not all_skus:
@@ -534,9 +544,11 @@ def quote_light(
         return {"error": "该产品没有可用的真实SKU锚点(占位/配件/脏价已排除), 请人工核价",
                 "final_price": None, "breakdown": []}
     # SKU 匹配(#29): 选了具体 SKU → 锁定同变体(去尺寸签名相同的档), 不混洞石/洞洞板, 大尺寸沿本变体外推
+    selected_anchor_sku = None
     if base_sku_code:
         chosen = next((s for s in skus if base_sku_code in (s.sku_code or "", s.sku or "")), None)
         if chosen:
+            selected_anchor_sku = chosen
             vk = _sku_variant_key(chosen.sku or chosen.sku_code or "")
             same = [s for s in skus if _sku_variant_key(s.sku or s.sku_code or "") == vk]
             if same:
@@ -671,8 +683,6 @@ def quote_light(
     final += size_delta
 
     # ── 增减部位 delta (逐部位 cascade: 木作用模板几何×木单价 / 配件×计价单位 → ×人工×厂利÷畔色) ──
-    from app.services import custom_quote_config_service as ccfg
-    cfg = ccfg.get_config(db)
     category = (prod.category if prod else None) or base_product_code
     # 顶柜等木作盒子: 总高>标准高 → 自动算 顶柜高=总高−标准高、长=柜宽、宽=柜深、木种=柜体木 (用户拍板 2026-06-20)
     _box_wood = target_material
@@ -710,8 +720,27 @@ def quote_light(
         add_parts=add_parts, remove_parts=effective_remove_parts, modify_parts=modify_parts, cfg=cfg,
         depth_cm=target_width_cm, height_cm=target_height_cm,   # 部位尺寸随总宽/高联动(用户 2026-06-20: 高出部分加到顶柜)
     )
-    breakdown.extend(addrm_lines)
-    final += addrm_delta
+    # 油漆/上色是最终零售固定追加价，不能再套安全系数；其余项目统一乘安全系数。
+    paint_lines = [line for line in addrm_lines if line.get("paint_surcharge")]
+    regular_lines = [line for line in addrm_lines if not line.get("paint_surcharge")]
+    breakdown.extend(regular_lines)
+    paint_surcharge = round(sum(
+        float(p.get("delta") or 0) for p in parts_detail if p.get("paint_surcharge")
+    ), 2)
+    subtotal_before_safety = round(
+        anchor + material_delta + size_delta + addrm_delta - paint_surcharge, 2
+    )
+    safety_delta = round(subtotal_before_safety * (safety_rate - 1.0), 2)
+    breakdown.append({
+        "label": f"安全系数 ×{safety_rate:g}",
+        "amount": safety_delta,
+        "note": (
+            f"非油漆小计¥{subtotal_before_safety:.2f}×({safety_rate:g}−1)"
+            "；油漆/上色为最终固定追加，不重复放大"
+        ),
+    })
+    breakdown.extend(paint_lines)
+    final = round(subtotal_before_safety + safety_delta + paint_surcharge, 2)
     missing_materials.extend(
         str(p.get("material") or p.get("name") or "未命名物料")
         for p in parts_detail if not p.get("priced")
@@ -766,6 +795,9 @@ def quote_light(
         "base_product_code": base_product_code,
         "base_product_name": prod.name if prod else None,
         "category": category,
+        "selected_sku_code": selected_anchor_sku.sku_code if selected_anchor_sku else None,
+        "selected_sku_name": (selected_anchor_sku.sku or selected_anchor_sku.sku_code)
+        if selected_anchor_sku else None,
         "anchor": round(anchor, 2),
         "anchor_method": note,
         "material_delta": material_delta,
@@ -773,6 +805,23 @@ def quote_light(
         "std_width_cm": round(std_w, 1) if std_w else None,    # 该长度的标准宽/深(cm), 前端预填
         "std_height_cm": round(std_h, 1) if std_h else None,
         "addremove_delta": round(addrm_delta, 2),
+        "subtotal_before_safety": subtotal_before_safety,
+        "safety_delta": safety_delta,
+        "paint_surcharge": paint_surcharge,
+        "pricing_parameters": {
+            "factory_profit_rate": factory_profit_rate,
+            "panse_profit_rate": float(cfg.get("panse_profit_rate", 0.15)),
+            "safety_rate": safety_rate,
+        },
+        "specification": {
+            "target_length_m": target_length_m,
+            "target_width_cm": target_width_cm,
+            "target_height_cm": target_height_cm,
+            "target_material": target_material,
+            "price_tier": price_tier,
+            "standard_width_cm": round(std_w, 1) if std_w else None,
+            "standard_height_cm": round(std_h, 1) if std_h else None,
+        },
         "final_price": None if missing_materials else round(final, 2),
         "draft_price": round(final, 2) if missing_materials else None,
         "quote_ready": not missing_materials,
@@ -1020,7 +1069,8 @@ def style_delta(
             detail.append({"name": name, "material": name, "unit": "整件", "qty": qty,
                            "area_m2": area, "material_cost": amt, "delta": amt,
                            "change": "add", "priced": True, "paint_surcharge": True})
-            lines.append({"label": f"追加: {name}", "amount": amt, "note": note})
+            lines.append({"label": f"追加: {name}", "amount": amt, "note": note,
+                          "paint_surcharge": True})
             continue
         r = _resolve_part(db, p, dims_map)
         amt = round(retail(r["material_cost"]), 2)
@@ -1334,7 +1384,7 @@ def _sku_variant_key(name: str) -> str:
     return re.sub(r"[-\s]*\d+(?:\.\d+)?\s*米", "", name or "").strip()
 
 
-def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 10) -> list[dict]:
+def sku_candidates(db: Session, text: str, product_code: str, *, limit: int = 100) -> list[dict]:
     """该产品各 SKU 的匹配候选(按与描述字符重叠%排序), 给前端 SKU 下拉锁变体。"""
     skus = [s for s in db.query(PricingSku).filter(PricingSku.product_code == product_code).all()
             if _is_quoteable_sku(s)]

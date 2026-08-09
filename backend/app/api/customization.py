@@ -182,6 +182,13 @@ class QuoteConfigPatch(BaseModel):
     factory_profit_rate: Optional[float] = None
     panse_profit_rate: Optional[float] = None
     safety_rate: Optional[float] = None
+    platform_fee_rate: Optional[float] = None
+    tax_rate: Optional[float] = None
+    style_labor_ratio: Optional[float] = None
+    style_remove_credit: Optional[float] = None
+    paint_table_base: Optional[float] = None
+    paint_sideboard_base: Optional[float] = None
+    paint_fixed_ratio: Optional[float] = None
     competitor_coupon_rate: Optional[float] = None
     projection_type: Optional[str] = None
     projection_rate: Optional[float] = None
@@ -190,6 +197,7 @@ class QuoteConfigPatch(BaseModel):
     install: Optional[list[float]] = None
     labor: Optional[dict[str, list[float]]] = None
     size_rules: Optional[dict[str, list[float]]] = None
+    size_sanity_factor: Optional[float] = None
     prices: Optional[dict[str, float]] = None
 
 
@@ -201,9 +209,19 @@ def _validate_quote_config(patch: dict) -> None:
     _rate("factory_profit_rate", 0, 0.95)
     _rate("panse_profit_rate", 0, 0.95)
     _rate("competitor_coupon_rate", 0, 0.95)
+    _rate("platform_fee_rate", 0, 0.95)
+    _rate("tax_rate", 0, 0.95)
+    _rate("style_labor_ratio", 0, 5.0)
+    _rate("style_remove_credit", 0, 1.0)
+    _rate("paint_fixed_ratio", 0.5, 0.95)
     _rate("safety_rate", 1.0, 3.0)
     if patch.get("projection_rate") is not None and float(patch["projection_rate"]) <= 0:
         raise HTTPException(400, "projection_rate 必须 > 0")
+    if patch.get("size_sanity_factor") is not None and float(patch["size_sanity_factor"]) <= 0:
+        raise HTTPException(400, "size_sanity_factor 必须 > 0")
+    for k in ("paint_table_base", "paint_sideboard_base"):
+        if patch.get(k) is not None and float(patch[k]) < 0:
+            raise HTTPException(400, f"{k} 不能为负")
     for k in ("packing", "freight", "install"):
         arr = patch.get(k)
         if arr is not None and not (isinstance(arr, list) and len(arr) == 3 and all(float(x) >= 0 for x in arr)):
@@ -441,6 +459,19 @@ async def v2_classify(
                ai_response=result.get("reasoning", ""),
                extra={k: result.get(k) for k in ("customization_type", "base_product_code", "confidence", "ai_used")})
     return result
+
+
+@router.get("/v2/sku-candidates")
+def v2_sku_candidates(
+    product_code: str,
+    text: str = "",
+    db: Session = Depends(get_db),
+) -> dict:
+    """切换匹配产品时实时返回该产品的真实 SKU，避免沿用上一个产品的候选。"""
+    from app.services import custom_quote_v2_service as v2
+
+    items = v2.sku_candidates(db, text, product_code, limit=100)
+    return {"product_code": product_code, "items": items}
 
 
 @router.post("/v2/quote-light")
