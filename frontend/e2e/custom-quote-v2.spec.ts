@@ -140,9 +140,12 @@ test('quote parameters have one entry in the top-right dialog', async ({ page })
 
 test('price tier menu keeps promo tiers and adds buyer-price tiers', async ({ page }) => {
   await openQuotePage(page);
-  await page.getByText('报价档·大促', { exact: true }).click();
+  const tierSelect = page.locator('.ant-select').filter({ hasText: '大促到手价' });
+  await expect(tierSelect).toBeVisible();
+  await tierSelect.click();
+  await expect(page.getByText('报价档·大促', { exact: true })).toBeVisible();
   await expect(page.getByText('报价档·中促', { exact: true })).toBeVisible();
-  await expect(page.getByText('大促到手价', { exact: true })).toBeVisible();
+  await expect(page.locator('.ant-select-item-option-content').getByText('大促到手价', { exact: true })).toBeVisible();
   await expect(page.getByText('中促到手价', { exact: true })).toBeVisible();
   await expect(page.getByText('报价档·小促', { exact: true })).toHaveCount(0);
   await expect(page.getByText('报价档·日常', { exact: true })).toHaveCount(0);

@@ -486,7 +486,7 @@ export default function CustomQuoteV2Page() {
   const [wid, setWid] = useState<number | null>(null);   // 宽/深(cm), 空=该长度的标准宽
   const [hgt, setHgt] = useState<number | null>(null);   // 高(cm), 空=标准高
   const [mat, setMat] = useState('');
-  const [tier, setTier] = useState('big');   // 报价档位 (默认大促)
+  const [tier, setTier] = useState('big_buyer');   // 报价档位 (默认大促到手价)
   const [lightLoading, setLightLoading] = useState(false);
   const [light, setLight] = useState<LightResult | null>(null);
   const [customQ, setCustomQ] = useState<{ final_price: number | null; note?: string; error?: string; from_bom?: boolean } | null>(null);   // 纯定制方向(板单引擎)并排价
