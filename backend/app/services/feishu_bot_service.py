@@ -1375,6 +1375,13 @@ def on_card_action(db: Session, event: dict) -> Optional[dict]:
             value = {}
     op = value.get("op")
     orig_id = value.get("message_id")
+    if op == "confirm_remote_report" and value.get("order_no"):
+        from app.services import remote_report_service
+        result = remote_report_service.confirm(db, str(value["order_no"]))
+        card_msg_id = (event.get("context") or {}).get("open_message_id")
+        if card_msg_id:
+            _patch_card_safe(db, card_msg_id, result["card"])
+        return {"op": op, "order_no": str(value["order_no"]), **result}
     if not op or not orig_id:
         return None
 

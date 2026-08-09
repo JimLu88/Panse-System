@@ -221,6 +221,11 @@ _ENTITY_EXTRA_LABELS: dict[str, dict[str, str]] = {
         "signoff_questioned": "签收存疑", "kanban_confirmed": "看板人工确认",
         "ship_deadline": "发货截止", "production_note": "制作单备注", "is_remote_ship": "是否远期单",
         "is_customer_delayed": "是否客户延期", "customer_delay_deadline": "客户延期截止",
+        "taobao_remote_report_required": "淘宝远期报备待确认",
+        "taobao_remote_report_confirmed_at": "淘宝远期报备确认时间",
+        "taobao_remote_report_last_prompt_at": "淘宝远期报备最近提醒时间",
+        "taobao_remote_report_keyword": "淘宝远期报备触发词",
+        "taobao_remote_report_card_message_id": "淘宝远期报备卡片消息ID",
         "import_job_id": "导入批次", "id": "ID", "created_at": "创建时间", "updated_at": "更新时间",
     },
 }

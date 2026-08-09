@@ -254,6 +254,12 @@ def factory_production(
             "production_note": o.production_note,
             "is_custom": o.is_custom,
             "is_remote_ship": o.is_remote_ship,
+            "taobao_remote_report_required": o.taobao_remote_report_required,
+            "taobao_remote_report_confirmed_at": (
+                o.taobao_remote_report_confirmed_at.isoformat()
+                if o.taobao_remote_report_confirmed_at else None
+            ),
+            "taobao_remote_report_keyword": o.taobao_remote_report_keyword,
             "status": st,   # remote/overdue/critical/urgent/normal
             "factory_no": o.factory_no,
             "remote_seq": o.remote_seq,
@@ -352,7 +358,7 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
     o = db.get(Order, order_id)
     if not o:
         raise HTTPException(404, "order not found")
-    from app.services import order_flags
+    from app.services import order_flags, remote_report_service
     was_remote = order_flags.is_remote(o)
     data = body.model_dump(exclude_unset=True)
     if "ship_deadline" in data:
@@ -377,6 +383,7 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
         if o.is_remote_ship:
             o.is_customer_delayed = False
             o.customer_delay_deadline = None
+    keyword_transition = remote_report_service.capture_transition(o, was_remote=was_remote)
     db.commit()
     transition = None
     if not was_remote and order_flags.is_remote(o):
@@ -384,8 +391,12 @@ def update_production(order_id: int, body: ProductionPatch, db: Session = Depend
         transition = osa.void_remote_pushed(db, order_nos={o.order_no})
         osa.assign_remote_seqs(db)
         db.refresh(o)
+    remote_report = (
+        remote_report_service.send_pending_reminders(db)
+        if keyword_transition else None
+    )
     return {"ok": True, "id": o.id, "order_label": order_flags.factory_label(o),
-            "remote_transition": transition}
+            "remote_transition": transition, "remote_report": remote_report}
 
 
 @router.post("/{order_id}/repush-factory")

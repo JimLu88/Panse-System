@@ -34,7 +34,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.order import Order, OrderDetail
-from app.services import order_cost_service, taobao_listing_service
+from app.services import order_cost_service, order_flags, remote_report_service, taobao_listing_service
 
 # ── 格式指纹 ──────────────────────────────────────────────────────────────────
 # 千牛多表: Sheet 名命中其一即视为该格式
@@ -861,6 +861,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
 
         existing = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
         if existing is not None:
+            was_remote = order_flags.is_remote(existing)
             # 再次导入: 状态/金额以淘宝导出为准(覆盖); 描述/客户仅在缺失时回填; 不动 is_refill/remark。
             # is_historical 置 False: 淘宝真实订单应进统计(预测/月度报表/现金流), 旧通用导入误标历史在此纠正。
             # 用户拍板 (2026-06-11): 被覆盖的关键字段记修改档案 (source=import), 旧值可回溯。
@@ -955,6 +956,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             existing.customer_address = _prefer_clear_private_value(
                 existing.customer_address, o.customer_address
             )
+            remote_report_service.capture_transition(existing, was_remote=was_remote)
             rep.updated += 1
             continue
 
@@ -988,6 +990,7 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
             seller_memo=_clean(o.seller_memo),
             warehouse=order_cost_service.default_warehouse_for(_pname, _sku, False),
         )
+        remote_report_service.capture_transition(order, was_remote=False)
         db.add(order)
         rep.inserted += 1
     db.commit()

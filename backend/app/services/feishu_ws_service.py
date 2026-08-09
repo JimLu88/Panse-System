@@ -227,6 +227,23 @@ def _on_card(data: Any):
     op, value, card_msg_id = _parse_card_event(raw.get("event") or raw)
     orig_id = value.get("message_id")
 
+    if op == "confirm_remote_report" and value.get("order_no"):
+        db = _new_session()
+        try:
+            from app.services import remote_report_service
+            result = remote_report_service.confirm(db, str(value["order_no"]))
+            _patch(card_msg_id, result["card"])
+            toast = "淘宝后台报备已确认" if result.get("ok") else "订单不存在，未确认"
+            kind = "success" if result.get("ok") else "warning"
+        except Exception as exc:  # pragma: no cover - callback must still ack in 3 seconds
+            db.rollback()
+            _log.exception("远期单淘宝报备确认失败: %s", exc)
+            toast = f"报备确认失败：{type(exc).__name__}"
+            kind = "error"
+        finally:
+            db.close()
+        return P2CardActionTriggerResponse({"toast": {"type": kind, "content": toast}})
+
     if op == "pick" and orig_id:
         kind = value.get("kind")
         # 送货单需先追问"哪家供应商"才能正确归属, 不直接入库

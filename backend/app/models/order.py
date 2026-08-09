@@ -155,6 +155,23 @@ class Order(Base, TimestampMixin):
     # 客户延期: 与「远期单」分开。仍可继续生产, 只把交期责任顺延到客户确认的新日期。
     is_customer_delayed: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     customer_delay_deadline: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    # 淘宝远期单报备确认：仅在订单由备注关键词从普通单转为远期挂起时置为待确认。
+    # 飞书卡片确认后永久销账；未确认则每日订单拉取完成后最多提醒一次。
+    taobao_remote_report_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    taobao_remote_report_confirmed_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    taobao_remote_report_last_prompt_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    taobao_remote_report_keyword: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
+    taobao_remote_report_card_message_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
 
     # 导入批次追踪 (C2)
     import_job_id: Mapped[Optional[int]] = mapped_column(Integer, ForeignKey("import_jobs.id", ondelete="SET NULL"), nullable=True, index=True)

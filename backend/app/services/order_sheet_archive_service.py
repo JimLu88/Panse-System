@@ -974,6 +974,8 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     remote = void_remote_pushed(db)
     repush_activated(db)
     assign_remote_seqs(db)
+    from app.services import remote_report_service
+    remote_report = remote_report_service.send_pending_reminders(db)
     generated = generate_pending(db)
     push = push_pending_images(db, limit=limit, include_baseline=False, quiet=quiet)
     result = {
@@ -997,6 +999,9 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "remote_transitions": remote["remote_transitions"],
         "remote_feishu_notified": remote["feishu_notified"],
         "remote_feishu_failed": remote["feishu_failed"],
+        "remote_report_due": remote_report["due"],
+        "remote_report_sent": remote_report["sent"],
+        "remote_report_failed": remote_report["failed"],
     }
     errors: list[str] = []
     if result["generation_failed"]:
@@ -1032,6 +1037,14 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
             + "; ".join(
                 f"{x.get('order_no')}: {x.get('reason')}"
                 for x in result["remote_feishu_failed"]
+            )
+        )
+    if result["remote_report_failed"]:
+        errors.append(
+            "远期单淘宝报备卡片发送失败: "
+            + "; ".join(
+                f"{x.get('order_no')}: {x.get('reason')}"
+                for x in result["remote_report_failed"]
             )
         )
     if result["delivery_uncertain"]:

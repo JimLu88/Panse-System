@@ -201,6 +201,18 @@ def send_text(db: Session, receive_id: str, text: str,
     return _req(db, "POST", url, json=body)
 
 
+def send_card(db: Session, receive_id: str, card: dict,
+              *, id_type: str = "chat_id") -> dict:
+    """主动给指定会话/用户发送交互卡片。"""
+    url = f"{_BASE}/im/v1/messages?receive_id_type={id_type}"
+    body = {
+        "receive_id": receive_id,
+        "msg_type": "interactive",
+        "content": json.dumps(card, ensure_ascii=False),
+    }
+    return _req(db, "POST", url, json=body)
+
+
 def send_image(db: Session, receive_id: str, image_key: str,
                *, id_type: str = "chat_id") -> dict:
     """主动给指定会话/用户发图片 (im/v1/messages, msg_type=image)。"""
