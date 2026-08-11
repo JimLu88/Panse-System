@@ -185,7 +185,16 @@ def _detect_urgent(texts: list[Optional[str]], order_date: Optional[date]) -> bo
     return False
 
 
-def build(db: Session, order_id: int) -> FactorySheet:
+_ADDRESS_PENDING_SHIP_TO = "【地址待补】仅安排生产，禁止发货；完整地址补齐后另行通知"
+_ADDRESS_PENDING_PRODUCTION_NOTE = "【系统提示】地址待补：本单仅安排生产，禁止发货；完整地址补齐后另行通知。"
+
+
+def build(
+    db: Session,
+    order_id: int,
+    *,
+    address_pending_for_production: bool = False,
+) -> FactorySheet:
     from app.models.order import OrderAccessoryItem
 
     order = db.get(Order, order_id)
@@ -202,6 +211,12 @@ def build(db: Session, order_id: int) -> FactorySheet:
             )
         ).scalars().all()
     ]
+    production_note = (getattr(order, "production_note", None)
+                       or getattr(order, "seller_memo", None))
+    if address_pending_for_production and _ADDRESS_PENDING_PRODUCTION_NOTE not in (production_note or ""):
+        production_note = "\n".join(
+            value for value in (production_note, _ADDRESS_PENDING_PRODUCTION_NOTE) if value
+        )
     return build_from_fields(
         db,
         order_no=order.order_no,
@@ -210,17 +225,17 @@ def build(db: Session, order_id: int) -> FactorySheet:
         sku=order.sku,
         sku_code=order.sku_code,
         qty=order.qty,
-        customer_name=order.customer_name,
-        customer_phone=order.customer_phone,
-        customer_address=order.customer_address,
+        customer_name=("地址待补" if address_pending_for_production else order.customer_name),
+        customer_phone=("待补" if address_pending_for_production else order.customer_phone),
+        customer_address=(_ADDRESS_PENDING_SHIP_TO
+                          if address_pending_for_production else order.customer_address),
         order_date=order.order_date,
         ship_date=order.ship_date,
         # 客户备注 = 买家留言(平台, 随重导更新) 优先, 回退 ERP 人工备注
         remark=getattr(order, "buyer_message", None) or order.remark,
         extra_accessories=extra,
         # 店铺/生产备注 = 人工生产备注 优先, 回退 商家备注(平台)
-        production_note=(getattr(order, "production_note", None)
-                         or getattr(order, "seller_memo", None)),
+        production_note=production_note,
         factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
         order_is_custom=bool(getattr(order, "is_custom", False)),   # 订单级定制标记 → 定制敲章
     )

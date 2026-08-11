@@ -610,6 +610,33 @@ def _addr_ok_for_factory(order: Order) -> bool:
     return not validation.is_address_encrypted(addr).is_encrypted
 
 
+def _feishu_message_id(result: object) -> Optional[str]:
+    """兼容飞书客户端真实返回值与旧测试桩的嵌套返回值。"""
+    if not isinstance(result, dict):
+        return None
+    direct = result.get("message_id")
+    if direct:
+        return str(direct)
+    nested = result.get("data")
+    if isinstance(nested, dict) and nested.get("message_id"):
+        return str(nested["message_id"])
+    return None
+
+
+def _can_push_production_only_without_address(order: Order) -> bool:
+    """平台已发货且已有运单号、但历史报表不再返回地址时，允许只下生产图。
+
+    这类订单已经离开淘宝待发货地址报表，继续重拉不会补出地址。系统不得伪造或
+    回填客户地址，但可以把工厂图明确标为“地址待补，仅生产，禁止发货”，避免
+    生产任务永久卡住。普通待发货订单仍执行完整地址硬门，不受此例外影响。
+    """
+    return (
+        not _addr_ok_for_factory(order)
+        and (order.status or "") == "shipped"
+        and bool((getattr(order, "tracking_no", None) or "").strip())
+    )
+
+
 def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
     """无收货地址的单 → 飞书提示准确原因；不得把平台未回填误报成系统漏提额。
 
@@ -764,6 +791,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     _missing_addr: list = []
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
     _held_address: list[str] = []
+    _pushed_address_pending: list[str] = []
     _released_address_hold: list[str] = []
     _held_remote: list[str] = []
     _delivery_uncertain: list[str] = []
@@ -814,10 +842,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         # create a false "address masked" failure.
         if not _is_pushable(db, rec):
             continue
-        # Masked/partial customer addresses are production blockers. Never
-        # send them to the factory; keep the archive row pending so the normal
-        # reconcile path sends it once after a clear address is imported.
-        if not _addr_ok_for_factory(order):
+        # 普通待发货订单仍执行完整地址硬门。平台已经标记发货且已有运单号的历史单
+        # 已经离开待发货地址报表，继续重拉不会补出地址；这类单只发送“仅生产、禁
+        # 止发货”的醒目标记图，后续若地址回填，再由地址释放流程补发完整图。
+        address_pending_for_production = _can_push_production_only_without_address(order)
+        if not _addr_ok_for_factory(order) and not address_pending_for_production:
             _held_address.append(no)
             _missing_addr.append((no, order.factory_no))
             rec.row_summary = {
@@ -849,12 +878,18 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
         db.commit()
         send_stage = "render"
         try:
-            png = render_png(factory_sheet.build(db, order.id))
+            png = render_png(factory_sheet.build(
+                db,
+                order.id,
+                address_pending_for_production=address_pending_for_production,
+            ))
             send_stage = "upload"
             key = feishu_client.upload_image(db, png)
             _fno = (f"畔色{order.factory_no}单" if getattr(order, "factory_no", None)
                     else "未能匹配工厂订单号")
             cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
+            if address_pending_for_production:
+                cap += " · 【地址待补，仅生产，禁止发货】"
             rec.row_summary = {
                 **(rec.row_summary or {}),
                 "delivery_state": "sending_caption",
@@ -862,30 +897,43 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             }
             db.commit()
             text_result = {}
-            if not was_address_hold:
+            if not was_address_hold or address_pending_for_production:
                 send_stage = "sending_caption"
                 text_result = feishu_client.send_text(db, chat_id, cap) or {}
             rec.row_summary = {
                 **(rec.row_summary or {}),
                 "delivery_state": "sending_image",
-                "delivery_caption_message_id": (text_result.get("data") or {}).get("message_id"),
+                "delivery_caption_message_id": _feishu_message_id(text_result),
             }
             db.commit()
             send_stage = "sending_image"
             image_result = feishu_client.send_image(db, chat_id, key) or {}
             # Only a confirmed image response becomes the trusted factory-sheet
             # source used by the ERP/Feishu dispatch table.
-            archive_sent_snapshot(db, order, png)
-            rec.row_summary = {**(rec.row_summary or {}), "pushed": True, "pushed_addr_ok": True,
+            archive_sent_snapshot(
+                db,
+                order,
+                png,
+                source=("addr_pending" if address_pending_for_production else "factory_push"),
+            )
+            rec.row_summary = {**(rec.row_summary or {}), "pushed": True,
+                               "pushed_addr_ok": not address_pending_for_production,
                                "held_no_address": False,
                                "delivery_state": "sent",
                                "delivery_sent_at": datetime.now().astimezone().isoformat(),
-                               "delivery_message_id": (image_result.get("data") or {}).get("message_id"),
+                               "delivery_message_id": _feishu_message_id(image_result),
+                               "address_pending_pushed": address_pending_for_production,
+                               "address_pending_reason": (
+                                   "shipped_before_full_address_backfill"
+                                   if address_pending_for_production else None
+                               ),
                                "activated": order_flags.is_activated(order)}   # 激活态推的图不再被 repush_activated 重推
             db.commit()
             pushed += 1
             sent_nos.append(no)
-            if was_address_hold:
+            if address_pending_for_production:
+                _pushed_address_pending.append(no)
+            elif was_address_hold:
                 _released_address_hold.append(no)
             else:
                 _zip_items.append((order, png))
@@ -920,6 +968,7 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             "remaining": count_pending_push(db, include_baseline=include_baseline),
             "order_nos": sent_nos, "failed_order_nos": failed_nos,
             "held_no_sku": _held_skeleton, "held_no_address": _held_address,
+            "pushed_address_pending": _pushed_address_pending,
             "released_after_address_fill": _released_address_hold,
             "held_remote": _held_remote,
             "delivery_uncertain": _delivery_uncertain,

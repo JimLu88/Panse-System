@@ -111,6 +111,60 @@ def test_masked_address_counts_as_missing(db_session, _feishu_stub):
     assert osa.push_pending_images(db_session, include_baseline=False)["pushed"] == 1
 
 
+def test_shipped_order_without_address_sends_production_only_sheet(
+        db_session, _feishu_stub, monkeypatch):
+    """已发货历史单不再等待已离开的地址报表；只下生产图，明确禁止发货。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    _add_order(db_session, "SHIPPED-NOADDR-1", address=None)
+    order = db_session.query(Order).filter_by(order_no="SHIPPED-NOADDR-1").one()
+    order.status = "shipped"
+    order.tracking_no = "LP0000000001"
+    db_session.flush()
+    osa.generate_pending(db_session)
+
+    rendered = []
+    captions: list[str] = []
+    monkeypatch.setattr(
+        osa,
+        "render_png",
+        lambda sheet: rendered.append(sheet) or f"PNG-{sheet.order_no}".encode(),
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_text",
+        lambda db, cid, text: captions.append(text) or {"message_id": "om_caption"},
+    )
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_image",
+        lambda db, cid, key: {"message_id": "om_image"},
+    )
+
+    result = osa.push_pending_images(db_session, include_baseline=False)
+
+    assert result["pushed"] == 1
+    assert result["held_no_address"] == []
+    assert result["pushed_address_pending"] == ["SHIPPED-NOADDR-1"]
+    assert "地址待补，仅生产，禁止发货" in captions[0]
+    assert "仅安排生产，禁止发货" in rendered[0].customer_address
+    assert "地址待补" in rendered[0].production_note
+    rec = _sheet_rec(db_session, "SHIPPED-NOADDR-1").row_summary
+    assert rec["pushed"] is True
+    assert rec["pushed_addr_ok"] is False
+    assert rec["address_pending_pushed"] is True
+    assert rec["delivery_caption_message_id"] == "om_caption"
+    assert rec["delivery_message_id"] == "om_image"
+    sent = db_session.query(ImportedFile).filter_by(kind="order_sheet_sent").one()
+    assert sent.source == "addr_pending"
+
+    order.customer_name = "张三"
+    order.customer_phone = "13800000000"
+    order.customer_address = "上海市松江区九里亭街道涞坊路100号"
+    db_session.flush()
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 1
+    rec = _sheet_rec(db_session, "SHIPPED-NOADDR-1").row_summary
+    assert rec["pushed_addr_ok"] is True
+    assert osa.repush_after_address_fill(db_session)["repushed"] == 0
+
+
 def test_address_release_sends_only_the_single_image(
         db_session, _feishu_stub, monkeypatch):
     """地址次日补齐时只释放图片：不发标题文字、不发 ZIP、不发日报。"""
