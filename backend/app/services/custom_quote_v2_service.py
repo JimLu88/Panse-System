@@ -1642,15 +1642,10 @@ def product_candidates(
     去噪: 剥尺寸/增减从句(不要…)/动词, 只留"樱桃木窄柜"这类产品标识词再匹配,
     否则整句噪声会把 match_ranked 全打成 0%。
     """
-    from app.services.product_match_service import match_ranked
+    from app.services.product_match_service import match_ranked, _product_similarity
     core = re.sub(r"\d+(?:\.\d+)?\s*(?:米|mm|cm|m|公分|MM|CM|M)", " ", text or "")
     core = re.split(r"[，,。;；、]|不要|去掉|去除|改成|改为|加上|计算价格|算价|样式|定制", core)[0]
     core = re.sub(r"[的把要做想换]", " ", core).strip() or (text or "")
-
-    def _overlap(name: str) -> float:
-        # 字符重叠度兜底: token 相似度对家具长名常打 0, 用共享字符比例给备选一个可读的%
-        sa, sb = set(core), set(name or "")
-        return len(sa & sb) / len(sa | sb) if (sa | sb) else 0.0
 
     valid_codes = _quoteable_product_codes(db)
     cands = []
@@ -1660,8 +1655,11 @@ def product_candidates(
         top_sku = (x.get("skus") or [{}])[0]   # 匹配度最高的代表SKU, 同名产品靠它区分
         # 纳入 SKU 级相关度: 玻璃底座/玻璃门等变体只在 SKU 名里体现, 产品名相似度低,
         # 否则「樱桃木玻璃柜」这类靠变体命中的产品会被产品名分数压下、浮不上来 (2026-07-04)。
-        conf = max(float(x["product_confidence"]), float(top_sku.get("confidence") or 0),
-                   _overlap(x["product_name"]))
+        conf = max(
+            float(x["product_confidence"]),
+            float(top_sku.get("confidence") or 0) * 0.82,
+            _product_similarity(core, x["product_name"]),
+        )
         sku = top_sku.get("sku")
         cands.append({"product_code": x["product_code"], "product_name": x["product_name"],
                       "sku": sku, "confidence": round(conf, 2)})
@@ -1690,6 +1688,40 @@ def product_candidates(
                 c["size_flag"] = True
     cands.sort(key=lambda c: c["confidence"], reverse=True)
     return cands[:limit]
+
+
+def apply_explicit_product_preference(
+    text: str, result: dict, candidates: list[dict],
+) -> dict:
+    """Let an explicit material+category phrase correct a generic AI pick.
+
+    This is intentionally narrow.  A text such as ``榉木餐桌`` has a
+    deterministic product identity, while image-only or category-only input
+    still keeps the AI decision.
+    """
+    from app.services.product_match_service import has_explicit_product_identity
+
+    if not candidates or not has_explicit_product_identity(text):
+        return result
+    top = candidates[0]
+    if (
+        float(top.get("confidence") or 0) < 0.95
+        or top.get("product_code") == result.get("base_product_code")
+    ):
+        return result
+    previous_name = result.get("base_product_name")
+    return {
+        **result,
+        "customization_type": "普通定制",
+        "base_product_code": top["product_code"],
+        "base_product_name": top["product_name"],
+        "matched_sku_code": None,
+        "confidence": float(top["confidence"]),
+        "reasoning": (
+            f"文本明确写出材质+品类，精确命中「{top['product_name']}」"
+            + (f"；已纠正AI原候选「{previous_name}」" if previous_name else "")
+        ),
+    }
 
 
 # ───────────────────────── 特殊定制: 部位模板 + 自动推五金 ───────────────────────── #

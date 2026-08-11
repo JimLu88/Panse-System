@@ -1094,7 +1094,18 @@ export default function CustomQuoteV2Page() {
                 <div className="tq-price-value"><span>¥</span>{light.final_price.toFixed(2)}</div>
                 <Space wrap size={[6, 6]}>
                   <Tag bordered={false}>{light.base_product_name || '未命名产品'}</Tag>
-                  <Tag bordered={false}>{light.selected_sku_name || '按同产品档位插值'}</Tag>
+                  <Tag bordered={false} color="blue">
+                    实算 {light.specification?.target_length_m ?? len ?? '标准'}m
+                    {light.specification?.target_width_cm != null
+                      ? ` × ${light.specification.target_width_cm}cm`
+                      : light.specification?.standard_width_cm != null
+                        ? ` × 标准${light.specification.standard_width_cm}cm`
+                        : ''}
+                  </Tag>
+                  <Tag bordered={false}>尺寸锚点 ¥{light.anchor.toFixed(2)}</Tag>
+                  {(light.safety_delta ?? 0) !== 0 && (
+                    <Tag bordered={false}>安全系数 {light.safety_delta! >= 0 ? '+' : ''}¥{light.safety_delta!.toFixed(2)}</Tag>
+                  )}
                   {light.specification?.target_material && <Tag bordered={false}>{light.specification.target_material}</Tag>}
                 </Space>
               </div>

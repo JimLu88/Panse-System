@@ -452,6 +452,13 @@ async def v2_classify(
         db, message, matched_code=result.get("base_product_code"),
         matched_name=result.get("base_product_name"), matched_conf=result.get("confidence"),
         length_m=result.get("target_length_m"))
+    # AI may pick a generic catalog product even when the customer explicitly
+    # names material+category.  In that narrow, deterministic case the product
+    # identity matcher is authoritative; images and generic descriptions still
+    # keep the AI result.
+    result = v2.apply_explicit_product_preference(
+        message, result, result["candidates"],
+    )
     if result.get("base_product_code"):
         result["sku_candidates"] = v2.sku_candidates(db, message, result["base_product_code"])
 

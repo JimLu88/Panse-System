@@ -17,6 +17,88 @@ from app.models.pricing import PricingSku
 from app.models.product import Product
 
 
+_MATERIAL_TERMS = (
+    "黑胡桃", "樱桃木", "白蜡木", "红橡木", "白橡木", "榉木", "胡桃木",
+    "橡木", "松木", "实木",
+)
+_EXPLICIT_MATERIAL_TERMS = tuple(
+    term for term in _MATERIAL_TERMS if term != "实木"
+)
+_CATEGORY_TERMS = (
+    "餐边柜", "床头柜", "电视柜", "玄关柜", "浴室柜", "餐桌", "圆桌",
+    "书桌", "茶几", "双人床", "单人床", "沙发", "岛台", "床", "柜", "桌",
+)
+_FEATURE_TERMS = (
+    "岩板", "洞石", "玻璃", "静音", "软包", "悬浮", "伸缩", "升降", "旋转",
+)
+
+
+def _core_text(text: str) -> str:
+    """Remove size/action noise while retaining product identity words."""
+    value = (text or "").lower()
+    value = re.sub(
+        r"\d+(?:\.\d+)?\s*(?:毫米|厘米|公分|mm|cm|米|m)?",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+    value = re.sub(
+        r"(?:改成|改为|改到|修改|调整|做成|做到|宽度|长度|高度|尺寸|多少|什么价格|价格|报价|算价)",
+        " ",
+        value,
+    )
+    return re.sub(r"[\s\-_/,，、.。;；:：()（）*×xX]+", "", value)
+
+
+def _concept_terms(text: str) -> tuple[str, ...]:
+    core = _core_text(text)
+    return tuple(
+        term
+        for term in (*_MATERIAL_TERMS, *_CATEGORY_TERMS, *_FEATURE_TERMS)
+        if term in core
+    )
+
+
+def has_explicit_product_identity(text: str) -> bool:
+    """True when text names both a material and a furniture category."""
+    core = _core_text(text)
+    return (
+        any(term in core for term in _EXPLICIT_MATERIAL_TERMS)
+        and any(term in core for term in _CATEGORY_TERMS)
+    )
+
+
+def _product_similarity(query: str, name: str, category: str = "") -> float:
+    """Score a product itself; SKU combo words may not replace product identity.
+
+    Character Jaccard penalises a precise short query such as ``榉木餐桌`` when
+    the catalog name contains an extra finish word (``榉木岩板餐桌``).  For an
+    explicit material+category query, directional concept coverage is the
+    stronger signal: all requested concepts present means an exact product
+    identity match even when the target has harmless extra descriptors.
+    """
+    core = _core_text(query)
+    target = _core_text(f"{name or ''}{category or ''}")
+    if not core or not target:
+        return 0.0
+    base = _similarity(core, target)
+    query_chars, target_chars = set(core), set(target)
+    directional = (
+        len(query_chars & target_chars) / len(query_chars)
+        if query_chars else 0.0
+    )
+    concepts = _concept_terms(core)
+    coverage = (
+        sum(1 for term in concepts if term in target) / len(concepts)
+        if concepts else 0.0
+    )
+    if has_explicit_product_identity(core) and coverage == 1.0:
+        return 1.0
+    if core in target:
+        return 1.0
+    return min(1.0, max(base, directional * 0.90, coverage * 0.95))
+
+
 def _tokens(text: str) -> set[str]:
     return set(re.split(r"[\s\-_/,，、]+", text.strip().lower())) - {""}
 
@@ -39,7 +121,30 @@ def match(
         if row:
             return _hit(row, db, 1.0)
 
-    # 2. PricingSku.sku 匹配 (中文友好: 字符 Jaccard, 见 _similarity)。
+    # 2. Product identity first.  A combo SKU under another product may contain
+    #    the requested words (for example a rotating cabinet SKU includes an
+    #    attached "榉木餐桌"); it must not outrank the product whose own name and
+    #    category explicitly match the request.
+    best_prod: Optional[Product] = None
+    best_prod_score = 0.0
+    for prod in db.query(Product).all():
+        if not prod.name:
+            continue
+        score = _product_similarity(combined, prod.name, prod.category or "")
+        if score > best_prod_score:
+            best_prod_score = score
+            best_prod = prod
+
+    if best_prod and best_prod_score >= 0.75:
+        return {
+            "product_code": best_prod.code,
+            "product_name": best_prod.name,
+            "sku_code": None,
+            "sku": None,
+            "confidence": round(min(best_prod_score, 1.0), 2),
+        }
+
+    # 3. PricingSku.sku 匹配 (中文友好: 字符 Jaccard, 见 _similarity)。
     #    旧纯 token 法对整词中文如「樱桃木玻璃柜」恒得 0 → 匹配不到玻璃底座/玻璃门等 SKU 变体,
     #    只能回落 AI 就近选一个普通柜。改用 _similarity 后玻璃变体能正确浮出 (2026-07-04)。
     best_sku: Optional[PricingSku] = None
@@ -55,17 +160,7 @@ def match(
     if best_sku and best_score >= 0.4:
         return _hit(best_sku, db, round(min(best_score, 0.99), 2))
 
-    # 3. Product.name 匹配 (同上, 字符友好)。
-    best_prod: Optional[Product] = None
-    best_prod_score = 0.0
-    for prod in db.query(Product).all():
-        if not prod.name:
-            continue
-        score = _similarity(combined, prod.name)
-        if score > best_prod_score:
-            best_prod_score = score
-            best_prod = prod
-
+    # 4. Lower-confidence product fallback.
     if best_prod and best_prod_score >= 0.3:
         return {
             "product_code": best_prod.code,
@@ -148,7 +243,9 @@ def match_ranked(
 
     results: list[dict] = []
     for prod in db.query(Product).all():
-        name_score = _similarity(combined, prod.name or "")
+        name_score = _product_similarity(
+            combined, prod.name or "", prod.category or "",
+        )
 
         sku_items: list[dict] = []
         best_sku_score = 0.0
@@ -166,8 +263,10 @@ def match_ranked(
                 "confidence": round(min(sku_score, 1.0), 2),
             })
 
-        # 综合相关度: 产品名 or 旗下任一 SKU 命中即可上榜
-        relevance = max(name_score, best_sku_score)
+        # Product identity is authoritative.  SKU text remains useful for
+        # finishes/variants but is discounted so a combo SKU cannot make an
+        # unrelated parent product outrank an explicit product-name match.
+        relevance = max(name_score, best_sku_score * 0.82)
         if relevance <= 0:
             continue
         sku_items.sort(key=lambda x: x["confidence"], reverse=True)

@@ -194,6 +194,37 @@ def test_quote_light_explains_exact_basis_and_keeps_12m_below_16m():
     assert basis["points"][0]["dimension_inferred"] is True
 
 
+def test_explicit_product_preference_corrects_generic_ai_candidate():
+    ai_result = {
+        "customization_type": "普通定制",
+        "base_product_code": "GENERIC",
+        "base_product_name": "畔色实木餐桌 3cm桌面",
+        "confidence": 0.95,
+        "reasoning": "AI判定",
+    }
+    candidates = [
+        {
+            "product_code": "BEECH",
+            "product_name": "榉木岩板餐桌",
+            "confidence": 1.0,
+        },
+        {
+            "product_code": "GENERIC",
+            "product_name": "畔色实木餐桌 3cm桌面",
+            "confidence": 0.33,
+        },
+    ]
+
+    result = v2.apply_explicit_product_preference(
+        "榉木餐桌改成1.2米，宽度0.7米", ai_result, candidates,
+    )
+
+    assert result["base_product_code"] == "BEECH"
+    assert result["base_product_name"] == "榉木岩板餐桌"
+    assert result["confidence"] == 1.0
+    assert "纠正AI原候选" in result["reasoning"]
+
+
 def test_quote_light_buyer_price_tiers_use_promo_table():
     """到手价档必须读取 PricingSkuPromo，不能误用 PricingSku 的活动档价。"""
     from app.models.pricing_ext import PricingSkuPromo

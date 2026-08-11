@@ -67,6 +67,9 @@ def _make_client():
 # ── product_match_service ─────────────────────────────────────────────────────
 
 class TestProductMatchService:
+    def test_generic_solid_wood_category_is_not_forced_as_exact_identity(self):
+        assert product_match_service.has_explicit_product_identity("实木餐桌改尺寸") is False
+
     @pytest.fixture
     def db(self):
         engine = create_engine("sqlite:///:memory:", future=True,
@@ -102,6 +105,45 @@ class TestProductMatchService:
         r = product_match_service.match(db, "榉木餐桌")
         assert r["product_code"] == "PS-TEST-001"
         assert r["confidence"] >= 0.3
+
+    def test_explicit_material_category_beats_combo_sku_under_wrong_product(self, db):
+        db.add_all([
+            Product(
+                code="TABLE",
+                name="榉木岩板餐桌",
+                brand="畔色",
+                category="餐厅-餐桌",
+            ),
+            Product(
+                code="CABINET",
+                name="樱桃木旋转柜2025版",
+                brand="畔色",
+                category="餐厅-餐边柜",
+            ),
+        ])
+        db.add_all([
+            PricingSku(
+                product_code="TABLE",
+                sku_code="TABLE-12",
+                sku="榉木餐桌-1.2米-白色岩板",
+                daily_price=Decimal("2800"),
+            ),
+            PricingSku(
+                product_code="CABINET",
+                sku_code="CABINET-COMBO",
+                sku="旋转柜-榉木整柜1.5米+1.1米餐桌",
+                daily_price=Decimal("5000"),
+            ),
+        ])
+        db.commit()
+
+        result = product_match_service.match(
+            db, "榉木餐桌改成1.2米，宽度0.7米",
+        )
+
+        assert result["product_code"] == "TABLE"
+        assert result["product_name"] == "榉木岩板餐桌"
+        assert result["confidence"] == 1.0
 
     def test_sku_description_overlap(self, db):
         # "榉木餐桌" splits into tokens ["榉木餐桌"] via the regex splitter.
@@ -921,3 +963,25 @@ class TestMatchRanked:
     def test_empty_query(self, db):
         self._seed(db)
         assert product_match_service.match_ranked(db, "") == []
+
+    def test_ranked_product_identity_is_not_overtaken_by_combo_sku(self, db):
+        db.add_all([
+            Product(code="TABLE", name="榉木岩板餐桌", category="餐厅-餐桌"),
+            Product(code="CABINET", name="樱桃木旋转柜", category="餐厅-餐边柜"),
+            PricingSku(
+                product_code="TABLE", sku_code="T-12",
+                sku="榉木餐桌-1.2米-白色岩板",
+            ),
+            PricingSku(
+                product_code="CABINET", sku_code="C-COMBO",
+                sku="旋转柜-榉木整柜1.5米+1.1米餐桌",
+            ),
+        ])
+        db.commit()
+
+        result = product_match_service.match_ranked(
+            db, "榉木餐桌改成1.2米，宽度0.7米",
+        )
+
+        assert result[0]["product_code"] == "TABLE"
+        assert result[0]["product_confidence"] == 1.0
