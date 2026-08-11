@@ -1,7 +1,7 @@
 import json
 
 
-path = r"D:\Panse-System\backend\tests\fixtures\pricing_dump_20260717.txt"
+path = r"D:\AI\Panse-System\backend\tests\fixtures\pricing_dump_20260717.txt"
 for line in open(path, encoding="utf-8", errors="replace"):
     if '"rows"' not in line:
         continue
