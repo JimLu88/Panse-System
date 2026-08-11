@@ -185,17 +185,13 @@ def classify_order(
     anomaly = None
     effective_qty = raw_qty
     confirmed = str(o.order_no or "") in _confirmed_bulk(cfg)
-    if 4 <= raw_qty <= 5 and not confirmed:
-        # 用户确认口径：4~5 件先按真实数量进入预测，同时进入异常提示。
-        # 若 SKU/备注本身命中定制规则，上面的分类仍会把它归入定制，不推动成品备货。
-        anomaly = "qty_4_5_review"
-    elif raw_qty > 5 and not confirmed:
+    if raw_qty > 3 and not confirmed:
         # 淘宝定制/补差链接常用「拍多件」凑成交金额，拍下数量不等于真实成品数量。
-        # 未经人工确认的数量 > 5 订单从成品热销统计隔离，只保留 1 个生产任务；
-        # 已确认的真实批量订单仍按原数量计算。
-        anomaly = "qty_gt5"
+        # 用户确认口径：数量 > 3 默认按 1 个生产任务计算；明确的定制单无需重复告警。
+        # 只有仍表现为普通成品的订单才提示人工确认是否为真实批量采购。
         effective_qty = 1
-        if kind != "skip":
+        if kind == "standard":
+            anomaly = "qty_gt3_review"
             kind = "custom"
 
     paid = Decimal(str(o.paid_amount or 0))
@@ -427,7 +423,7 @@ def sync_quantity_anomalies(
     db: Session, *, cfg: Optional[dict] = None, as_of: Optional[date] = None,
     lookback_days: int = 90,
 ) -> dict:
-    """把数量 >3 的自动隔离结果写入异常中心，供人工确认真实批量采购。"""
+    """只为数量 >3 且没有定制依据的订单创建异常，供人工确认真实批量采购。"""
     from app.models.exception import DataException
 
     as_of = as_of or date.today()
@@ -450,22 +446,14 @@ def sync_quantity_anomalies(
     created = updated = resolved = open_count = ignored_count = 0
     for source_pk, obs in current.items():
         row = existing.get(source_pk)
-        if obs.anomaly == "qty_4_5_review":
-            description = (
-                f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测暂按实际数量计算，"
-                "请确认是否真实批量采购或定制凑价"
-            )
-            suggestion = (
-                "若为真实批量采购，将订单号加入已确认批量清单；"
-                "若为定制凑价，补齐定制/SKU标记后按定制任务处理。"
-            )
-        else:
-            description = (
-                f"订单 {obs.order_no} 数量 {obs.raw_qty}，预测按 1 个定制生产任务隔离"
-            )
-            suggestion = (
-                "确认是真实批量采购后，将订单号加入已确认批量订单清单。"
-            )
+        description = (
+            f"订单 {obs.order_no} 数量 {obs.raw_qty}，当前按 1 个生产任务计算；"
+            "订单缺少明确的定制依据，请确认是否为真实批量采购"
+        )
+        suggestion = (
+            "若为真实批量采购，将订单号加入已确认批量订单清单；"
+            "若为定制凑价，补齐定制 SKU 或备注后系统会自动关闭异常。"
+        )
         context = {
             "order_no": obs.order_no,
             "product_code": obs.product_code,

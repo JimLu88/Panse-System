@@ -48,6 +48,7 @@ def test_quantity_cleaning_and_custom_detection(db_session):
     _order(db, "COLLAPSE4", qty=4)
     _order(db, "WARN5", qty=5)
     _order(db, "BAD3200", qty=3200)
+    _order(db, "CLEAR-CUSTOM-23", qty=23, sku_code="PPS2601001010199")
     _order(db, "SUFFIX99", qty=2, sku_code="PPS2601001010199")
     rows = {
         row.order_no: row
@@ -64,13 +65,18 @@ def test_quantity_cleaning_and_custom_detection(db_session):
         rows["COLLAPSE4"].kind,
         rows["COLLAPSE4"].effective_qty,
         rows["COLLAPSE4"].anomaly,
-    ) == ("standard", 4, "qty_4_5_review")
+    ) == ("custom", 1, "qty_gt3_review")
     assert (rows["WARN5"].kind, rows["WARN5"].effective_qty, rows["WARN5"].anomaly) == (
-        "standard", 5, "qty_4_5_review"
+        "custom", 1, "qty_gt3_review"
     )
     assert (rows["BAD3200"].kind, rows["BAD3200"].effective_qty, rows["BAD3200"].anomaly) == (
-        "custom", 1, "qty_gt5"
+        "custom", 1, "qty_gt3_review"
     )
+    assert (
+        rows["CLEAR-CUSTOM-23"].kind,
+        rows["CLEAR-CUSTOM-23"].effective_qty,
+        rows["CLEAR-CUSTOM-23"].anomaly,
+    ) == ("custom", 1, None)
     assert rows["SUFFIX99"].kind == "custom"
 
 
@@ -135,6 +141,39 @@ def test_ignored_quantity_anomaly_stays_closed_and_new_order_still_alerts(
         as_of=AS_OF,
     )
     assert latest_plan["quantity_anomalies"]["open"] == 1
+
+
+def test_existing_quantity_anomaly_resolves_after_custom_evidence(db_session):
+    db = db_session
+    order = _order(
+        db,
+        "CUSTOM-23",
+        qty=23,
+        sku_code="PPS2601001010199",
+        sku="custom size",
+    )
+    db.add(DataException(
+        source_table="orders",
+        source_pk=str(order.id),
+        exception_type="inventory_demand_qty_anomaly",
+        severity="warning",
+        description="legacy quantity warning",
+        status="open",
+    ))
+    db.flush()
+
+    result = demand.sync_quantity_anomalies(db, as_of=AS_OF)
+    row = db.execute(
+        select(DataException).where(
+            DataException.source_pk == str(order.id),
+            DataException.exception_type == "inventory_demand_qty_anomaly",
+        )
+    ).scalar_one()
+
+    assert result["resolved"] == 1
+    assert result["open"] == 0
+    assert row.status == "resolved"
+    assert row.resolved_by == "inventory_demand_engine"
 
 
 def test_promo_is_normalized_and_cny_is_retained_separately(db_session):
