@@ -39,7 +39,35 @@ def _seed_table(db):
 def test_parse_length_m():
     assert v2.parse_length_m("蜂蜜餐桌-1.4米") == 1.4
     assert v2.parse_length_m("榉木无边床-1.35米-榉木铺板") == 1.35
+    assert v2.parse_length_m("实木餐桌-120cm") == 1.2
+    assert v2.parse_length_m("实木餐桌-1600mm") == 1.6
+    assert v2.parse_length_m("实木餐桌-180*80cm") == 1.8
     assert v2.parse_length_m("无尺寸") is None
+
+
+def test_quote_light_cm_sku_names_are_distinct_price_points():
+    """生产实木餐桌的 size_info 为空、档位写在 SKU 名(120cm/160cm)里，不能再落到同一代表档。"""
+    from app.models.pricing import PricingSku
+    from app.models.product import Product
+
+    db = _db()
+    db.add(Product(code="CM1", name="实木餐桌", category="餐厅-餐桌", main_material="榉木"))
+    for cm, price in [(120, 2520), (140, 2640), (160, 2760), (180, 2880)]:
+        db.add(PricingSku(
+            product_code="CM1",
+            sku=f"实木餐桌-{cm}cm" if cm != 180 else "实木餐桌-180*80cm",
+            sku_code=f"CM1-{cm}",
+            daily_price=D(str(price)),
+        ))
+    db.commit()
+
+    short = v2.quote_light(db, base_product_code="CM1", target_length_m=1.2)
+    long = v2.quote_light(db, base_product_code="CM1", target_length_m=1.6)
+
+    assert short["anchor"] == 2520.0
+    assert long["anchor"] == 2760.0
+    assert short["final_price"] < long["final_price"]
+    assert "代表档" not in short["anchor_method"]
 
 
 def test_interp_exact_interp_extrap():

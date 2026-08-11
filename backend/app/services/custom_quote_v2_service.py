@@ -159,14 +159,41 @@ def _parse_json(text) -> dict:
 # ───────────────────────── 工具: 尺寸解析 + 插值 ───────────────────────── #
 
 def parse_length_m(text: Optional[str]) -> Optional[float]:
-    """从 SKU 名/文本里抽长度(米)。优先「长/长度X米」(防描述里"高度2.3米"被当长度);
-    无显式"长"则回退首个米数(SKU 名通常只有长度)。无→None。"""
+    """从 SKU 名/文本里抽主长度(米)。
+
+    兼容真实定价表常见写法: ``1.2米``、``120cm``、``1200mm``、
+    ``180*80cm``。二维写法里的单位通常只写在末尾，因此必须取乘号前的
+    第一个数作为长度，不能把 ``180*80cm`` 误判为 0.8 米。
+    """
     if not text:
         return None
-    m = re.search(r"(?:长度|长)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(?:米|m\b|M\b)", text)
-    if not m:
-        m = re.search(r"(\d+(?:\.\d+)?)\s*(?:米|m\b|M\b)", text)
-    return float(m.group(1)) if m else None
+    value = str(text)
+
+    # 「180*80cm / 1800×800mm」的单位作用于整组尺寸，长度是第一项。
+    pair = re.search(
+        r"(\d+(?:\.\d+)?)\s*[*×xX]\s*\d+(?:\.\d+)?\s*(毫米|mm|厘米|cm|公分)",
+        value,
+        re.IGNORECASE,
+    )
+    if pair:
+        number, unit = float(pair.group(1)), pair.group(2).lower()
+        return round(number / (1000.0 if unit in ("毫米", "mm") else 100.0), 3)
+
+    patterns = (
+        (r"(?:长度|长)\s*[:：]?\s*(\d+(?:\.\d+)?)\s*(米|m\b|毫米|mm\b|厘米|cm\b|公分)", True),
+        (r"(\d+(?:\.\d+)?)\s*(米|m\b|毫米|mm\b|厘米|cm\b|公分)", False),
+    )
+    for pattern, _explicit_length in patterns:
+        match = re.search(pattern, value, re.IGNORECASE)
+        if not match:
+            continue
+        number, unit = float(match.group(1)), match.group(2).lower()
+        if unit in ("毫米", "mm"):
+            return round(number / 1000.0, 3)
+        if unit in ("厘米", "cm", "公分"):
+            return round(number / 100.0, 3)
+        return number
+    return None
 
 
 def parse_height_cm(text: Optional[str]) -> Optional[float]:
@@ -514,7 +541,7 @@ def _parse_size_info(size_info: Optional[str]) -> tuple[Optional[float], Optiona
 
 
 def _resolve_length_m(s) -> Optional[float]:
-    """SKU 的主变体长度(米): 优先 SKU 名/编码的「X米」, 否则退回 size_info 长度(cm÷100)。
+    """SKU 的主变体长度(米): 优先 SKU 名/编码的显式单位尺寸, 否则退回 size_info 长度(cm÷100)。
     修床头柜等按 size_info 尺寸分档(SKU 名只叫「标准/窄款」无「X米」)的产品 —— 否则解析不到长度
     → price_pts 空 → 退回代表档固定价(改长度/宽高价都不动)。"""
     ln = parse_length_m(s.sku) or parse_length_m(s.sku_code)

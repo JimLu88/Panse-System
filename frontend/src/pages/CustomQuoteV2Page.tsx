@@ -979,7 +979,9 @@ export default function CustomQuoteV2Page() {
                 placeholder="按匹配度排序的 Top-10 候选"
                 options={candidates.map((c) => ({
                   value: c.product_code,
-                  label: `${Math.round(c.confidence * 100)}%　${c.product_name}${c.sku ? `　· ${c.sku}` : ''}`,
+                  // 这里选择的是产品，不是具体 SKU。候选接口携带的 sku 只是代表档，
+                  // 展示它会让 1.2m 需求看起来像被锁成 1.6m；具体档位只在下方 SKU 框选择。
+                  label: `${Math.round(c.confidence * 100)}%　${c.product_name}`,
                 }))}
               />
             </Space>
