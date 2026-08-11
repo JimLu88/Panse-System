@@ -112,6 +112,28 @@ def test_enforce_rejects_wrong_machine_key(monkeypatch, db_session):
     assert ei.value.status_code == 401
 
 
+def test_web_agent_token_is_scoped_to_wake_routes(monkeypatch, db_session):
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    settings_service.set_value(db_session, "web_agent_token", "WA-WAKE-KEY")
+    db_session.commit()
+
+    assert deps.require_authenticated(
+        _req("/api/web-agent/wake/start", method="POST"),
+        authorization=None,
+        x_api_key="WA-WAKE-KEY",
+        db=db_session,
+    ) is None
+
+    with pytest.raises(HTTPException) as exc_info:
+        deps.require_authenticated(
+            _req("/api/orders", method="GET"),
+            authorization=None,
+            x_api_key="WA-WAKE-KEY",
+            db=db_session,
+        )
+    assert exc_info.value.status_code == 401
+
+
 def test_procurement_machine_key_is_scoped_to_agent_routes(
     monkeypatch, db_session
 ):

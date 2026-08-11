@@ -166,6 +166,22 @@ def wake_ack(payload: WakeAck, db: Session = Depends(get_db)):
     )
 
 
+@router.post("/wake/start")
+def wake_start(db: Session = Depends(get_db)):
+    """只唤醒 Windows Web-Agent，不启动订单/账单等业务任务。
+
+    评价程序等轻量消费者在调用 Web-Agent 前使用这个端点。这样既能复用
+    Windows 唤醒桥，又不会为了查评价而误触发一整轮 ERP 自动取数。
+    """
+    hb = web_agent_service.ensure_online(db, reason="review_status_sync")
+    if not hb.get("online"):
+        raise HTTPException(
+            409,
+            f"取数服务(:8500)唤醒失败: {hb.get('error', '')}。请检查 Windows 唤醒桥。",
+        )
+    return {"online": True, "agent": "web-agent"}
+
+
 @router.post("/run")
 def run_now(db: Session = Depends(get_db)):
     """立即取数: 全部类别强制触发 (忽略间隔)。后台执行, 进度看 status。"""

@@ -2,6 +2,10 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+from fastapi import HTTPException
+
+from app.api import web_agent as web_agent_api
 from app.json_utils import to_jsonable
 from app.services import web_agent_wake_service
 
@@ -48,3 +52,31 @@ def test_wake_command_is_persistent_and_acknowledged(db_session):
         agent_id="pc-test",
         now=datetime(2026, 8, 6, 18, 0, 6).astimezone(),
     ) == {"action": "noop"}
+
+
+def test_wake_start_only_ensures_agent_online(db_session, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        web_agent_api.web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: calls.append(kwargs) or {"online": True},
+    )
+
+    assert web_agent_api.wake_start(db_session) == {
+        "online": True,
+        "agent": "web-agent",
+    }
+    assert calls == [{"reason": "review_status_sync"}]
+
+
+def test_wake_start_reports_bridge_failure(db_session, monkeypatch):
+    monkeypatch.setattr(
+        web_agent_api.web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: {"online": False, "error": "bridge offline"},
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        web_agent_api.wake_start(db_session)
+    assert exc.value.status_code == 409
+    assert "bridge offline" in str(exc.value.detail)
