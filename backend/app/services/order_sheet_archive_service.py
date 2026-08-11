@@ -988,7 +988,7 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     ``row_summary.pushed`` 是送达幂等标记，重复调用不会重复发图。
     """
     remote = void_remote_pushed(db)
-    repush_activated(db)
+    activated = repush_activated(db)
     assign_remote_seqs(db)
     from app.services import remote_report_service
     remote_report = remote_report_service.send_pending_reminders(db)
@@ -1019,6 +1019,8 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "remote_report_due": remote_report["due"],
         "remote_report_sent": remote_report["sent"],
         "remote_report_failed": remote_report["failed"],
+        "activated_repush_reset": activated.get("reset_for_new_no") or [],
+        "activated_baseline_released": activated.get("released_activated_baseline") or [],
     }
     errors: list[str] = []
     if result["generation_failed"]:
@@ -1136,7 +1138,46 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
         changed.append(no)
     if changed:
         db.commit()
-    return {"reset_for_new_no": changed}
+
+    # 历史基线并不代表“已送达”。早期远期单可能在部署基线阶段已经留下一张
+    # baseline=True、pushed!=True 的占位图；之后备注改为“开始制作”时，
+    # generate_pending 会因为“已有归档”而跳过，push_pending_images 又会因为
+    # baseline 而跳过，最终永远不会进入工厂。这里只释放【从未送达】且现在
+    # 已明确激活的基线队列记录；已送达证据仍由上面的 seen 分支处理并保留。
+    released_baseline: list[str] = []
+    baseline_rows = db.execute(
+        select(ImportedFile).where(ImportedFile.kind == "order_sheet")
+    ).scalars().all()
+    grouped: dict[str, list[ImportedFile]] = {}
+    for rec in baseline_rows:
+        summary = rec.row_summary or {}
+        if summary.get("baseline") is not True or summary.get("pushed") is True:
+            continue
+        no = _order_no_from_name(rec.original_filename)
+        if no and no not in seen:
+            grouped.setdefault(no, []).append(rec)
+
+    for no, recs in grouped.items():
+        if len(changed) + len(released_baseline) >= limit:
+            break
+        order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
+        if not order or (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
+            continue
+        if not _is_active_factory_order(order) or not order_flags.is_activated(order):
+            continue
+        for rec in recs:
+            import_storage.delete_record(db, rec.id)
+        # 这张基线从未送达工厂，不发送“旧号作废”通知，也不强制换号；
+        # 下一步 generate_pending 会按最新备注重建，push_pending_images 会在
+        # 缺号时为激活老单正常分配工厂号。
+        released_baseline.append(no)
+
+    if released_baseline:
+        db.commit()
+    return {
+        "reset_for_new_no": changed,
+        "released_activated_baseline": released_baseline,
+    }
 
 
 def repush_to_factory(db: Session, order_no: str) -> dict:

@@ -106,6 +106,72 @@ def test_repush_activated_covers_normal_but_idempotent(db_session, monkeypatch):
     assert "AL2" not in res["reset_for_new_no"]      # 已激活态推过, 幂等不重复
 
 
+def test_unpushed_baseline_is_released_after_old_remote_activation(db_session, monkeypatch):
+    """历史基线不是送达凭证；老远期单写入“开始制作”后必须重新进入生成队列。"""
+    monkeypatch.setattr(import_storage, "delete_record",
+                        lambda db, fid: db.delete(db.get(ImportedFile, fid)))
+    order = _order(
+        order_no="BASELINE-ACT",
+        order_date=date(2026, 6, 15),
+        is_remote_ship=False,
+        remote_seq=42,
+        production_note="开始制作",
+        seller_memo="开始制作",
+        factory_no=None,
+    )
+    db_session.add(order)
+    db_session.add(ImportedFile(
+        kind="order_sheet",
+        original_filename="2026-06-15_BASELINE-ACT.jpg",
+        stored_path="/x/BASELINE-ACT.jpg",
+        row_summary={"baseline": True},
+    ))
+    db_session.commit()
+
+    result = oss.repush_activated(db_session)
+    assert result["released_activated_baseline"] == ["BASELINE-ACT"]
+    assert db_session.query(ImportedFile).filter(
+        ImportedFile.original_filename.like("%BASELINE-ACT%")
+    ).count() == 0
+
+    generated: list[str] = []
+    monkeypatch.setattr(
+        oss,
+        "generate_for_order",
+        lambda db, o, **kwargs: (
+            generated.append(o.order_no),
+            {"order_no": o.order_no, "duplicate": False},
+        )[1],
+    )
+    oss.generate_pending(db_session)
+    assert "BASELINE-ACT" in generated
+
+
+def test_unpushed_baseline_without_activation_stays_historical(db_session, monkeypatch):
+    """普通历史基线仍保持静默，不能因本次修复被批量推送。"""
+    monkeypatch.setattr(import_storage, "delete_record",
+                        lambda db, fid: db.delete(db.get(ImportedFile, fid)))
+    db_session.add(_order(
+        order_no="BASELINE-PLAIN",
+        order_date=date(2026, 6, 15),
+        seller_memo="继续等通知",
+        factory_no=None,
+    ))
+    db_session.add(ImportedFile(
+        kind="order_sheet",
+        original_filename="2026-06-15_BASELINE-PLAIN.jpg",
+        stored_path="/x/BASELINE-PLAIN.jpg",
+        row_summary={"baseline": True},
+    ))
+    db_session.commit()
+
+    result = oss.repush_activated(db_session)
+    assert result["released_activated_baseline"] == []
+    assert db_session.query(ImportedFile).filter(
+        ImportedFile.original_filename.like("%BASELINE-PLAIN%")
+    ).count() == 1
+
+
 # ---- void_remote_pushed: 已推工厂但现延期的单 → 作废旧号+挂起 ----
 
 def test_void_remote_pushed_voids_delayed(db_session, monkeypatch):
