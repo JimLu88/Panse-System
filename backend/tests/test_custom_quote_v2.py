@@ -155,6 +155,45 @@ def test_quote_light_area_pricing_monotone():
     assert prices == sorted(prices)                          # 更长必不更便宜
 
 
+def test_quote_light_explains_exact_basis_and_keeps_12m_below_16m():
+    """生产形态回归: 1.2m 档缺 size_info 时也要明确显示基准尺寸，且不能等同 1.6m 报价。"""
+    from app.models.pricing import PricingSku
+    from app.services import custom_quote_config_service as ccfg
+
+    db = _db()
+    _seed_slab_table(db)
+    db.add(PricingSku(
+        product_code="S1",
+        sku="岩板餐桌-1.2米",
+        sku_code="S1-1.2",
+        size_category="中型",
+        daily_price=D("2632.65"),
+    ))
+    ccfg.save_config(db, {"safety_rate": 1.05})
+    db.commit()
+
+    short = v2.quote_light(
+        db, base_product_code="S1", target_length_m=1.2,
+        target_width_cm=70, price_tier="daily",
+    )
+    long = v2.quote_light(
+        db, base_product_code="S1", target_length_m=1.6,
+        target_width_cm=70, price_tier="daily",
+    )
+
+    assert short["anchor"] == 2632.65
+    assert short["final_price"] == 2764.28
+    assert short["final_price"] < long["final_price"]
+    basis = short["calculation_basis"]
+    assert basis["relation"] == "exact"
+    assert basis["anchor_price"] == 2632.65
+    assert len(basis["points"]) == 1
+    assert basis["points"][0]["length_m"] == 1.2
+    assert basis["points"][0]["width_cm"] == 70.0
+    assert basis["points"][0]["height_cm"] == 75.0
+    assert basis["points"][0]["dimension_inferred"] is True
+
+
 def test_quote_light_buyer_price_tiers_use_promo_table():
     """到手价档必须读取 PricingSkuPromo，不能误用 PricingSku 的活动档价。"""
     from app.models.pricing_ext import PricingSkuPromo

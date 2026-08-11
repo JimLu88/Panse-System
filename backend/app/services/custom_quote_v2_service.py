@@ -566,6 +566,121 @@ def _dim_points(skus: list[PricingSku]) -> tuple[list, list]:
     return depth_pts, height_pts
 
 
+def _calculation_basis(
+    skus: list[PricingSku],
+    prices: dict[str, float],
+    *,
+    target_length_m: Optional[float],
+    target_width_cm: Optional[float],
+    target_height_cm: Optional[float],
+    std_width_cm: Optional[float],
+    std_height_cm: Optional[float],
+    depth_pts: list,
+    height_pts: list,
+    used_area: bool,
+    anchor_price: float,
+) -> dict:
+    """说明本次插值/命中实际用了哪些 SKU 尺寸档。
+
+    报价页过去只显示“未锁定（按同产品多档插值）”，用户无法判断 1.2m
+    到底按 1.2m、1.6m，还是两档之间计算。这里把与价格计算同口径的
+    基准尺寸和原始锚点价一并返回；只读解释，不改变既有报价公式。
+    """
+    records: list[dict] = []
+    for sku in skus:
+        length_m = _resolve_length_m(sku)
+        price = prices.get(sku.sku_code)
+        if length_m is None or price is None:
+            continue
+        _l, width_cm, height_cm = _parse_size_info(sku.size_info)
+        inferred_width = False
+        inferred_height = False
+        if (width_cm is None or width_cm <= 0) and depth_pts:
+            width_cm = interp(depth_pts, length_m)[0]
+            inferred_width = width_cm is not None
+        if (height_cm is None or height_cm <= 0) and height_pts:
+            height_cm = interp(height_pts, length_m)[0]
+            inferred_height = height_cm is not None
+        coordinate = (
+            round(length_m * float(width_cm) / 100.0, 4)
+            if used_area and width_cm
+            else float(length_m)
+        )
+        records.append({
+            "sku_code": sku.sku_code,
+            "sku_name": sku.sku or sku.sku_code,
+            "length_m": round(float(length_m), 3),
+            "width_cm": round(float(width_cm), 1) if width_cm else None,
+            "height_cm": round(float(height_cm), 1) if height_cm else None,
+            "price": round(float(price), 2),
+            "coordinate": coordinate,
+            "dimension_inferred": inferred_width or inferred_height,
+        })
+
+    # 同尺寸的颜色/饰面 SKU 价格相同；基准说明保留一个代表档即可。
+    unique: dict[tuple, dict] = {}
+    for record in records:
+        key = (
+            record["coordinate"], record["length_m"], record["width_cm"],
+            record["height_cm"], record["price"],
+        )
+        current = unique.get(key)
+        # 尺寸资料完整的 SKU 优先，避免“推算尺寸”覆盖真实 size_info。
+        if current is None or (current["dimension_inferred"] and not record["dimension_inferred"]):
+            unique[key] = record
+    ordered = sorted(unique.values(), key=lambda row: (row["coordinate"], row["price"]))
+
+    target_coordinate = None
+    if target_length_m:
+        effective_width = target_width_cm or std_width_cm
+        target_coordinate = (
+            round(float(target_length_m) * float(effective_width) / 100.0, 4)
+            if used_area and effective_width
+            else float(target_length_m)
+        )
+
+    relation = "representative"
+    points: list[dict] = []
+    if ordered and target_coordinate is not None:
+        exact = [row for row in ordered if abs(row["coordinate"] - target_coordinate) < 1e-6]
+        if exact:
+            relation = "exact"
+            points = [exact[0]]
+        elif target_coordinate < ordered[0]["coordinate"]:
+            relation = "below_range"
+            points = [ordered[0]]
+        elif target_coordinate > ordered[-1]["coordinate"]:
+            relation = "above_range"
+            points = [ordered[-1]]
+        else:
+            lower = max(
+                (row for row in ordered if row["coordinate"] < target_coordinate),
+                key=lambda row: row["coordinate"],
+            )
+            upper = min(
+                (row for row in ordered if row["coordinate"] > target_coordinate),
+                key=lambda row: row["coordinate"],
+            )
+            relation = "interpolate"
+            points = [lower, upper]
+    elif ordered:
+        points = [ordered[len(ordered) // 2]]
+
+    return {
+        "mode": "area" if used_area else "length",
+        "relation": relation,
+        "points": points,
+        "anchor_price": round(float(anchor_price), 2),
+        "target": {
+            "length_m": round(float(target_length_m), 3) if target_length_m else None,
+            "width_cm": round(float(target_width_cm or std_width_cm), 1)
+            if (target_width_cm or std_width_cm) else None,
+            "height_cm": round(float(target_height_cm or std_height_cm), 1)
+            if (target_height_cm or std_height_cm) else None,
+        },
+    }
+
+
 def product_margin(skus: list[PricingSku]) -> Optional[float]:
     """本款「大促毛利率」(实时算, 不写死): 平均 (1 − 会计成本 / 大促价)。
 
@@ -701,6 +816,19 @@ def quote_light(
         note = f"代表档 {rep.sku or rep.sku_code}"
     if not anchor:
         return {"error": "锚点价缺失(该产品4档价为空)", "final_price": None, "breakdown": []}
+    calculation_basis = _calculation_basis(
+        skus,
+        tier_prices,
+        target_length_m=target_length_m,
+        target_width_cm=target_width_cm,
+        target_height_cm=target_height_cm,
+        std_width_cm=std_w,
+        std_height_cm=std_h,
+        depth_pts=depth_pts,
+        height_pts=height_pts,
+        used_area=used_area,
+        anchor_price=anchor,
+    )
     # 尺寸超出标准 SKU 范围(偏大)仍走线性外推 → 标注为外推估算, 提示人工复核(偏小已在上面走面积正比)
     if "extrap" in note:
         note += " ⚠尺寸超出标准SKU范围, 锚点为外推估算, 建议人工复核"
@@ -898,6 +1026,7 @@ def quote_light(
         "selected_sku_code": selected_anchor_sku.sku_code if selected_anchor_sku else None,
         "selected_sku_name": (selected_anchor_sku.sku or selected_anchor_sku.sku_code)
         if selected_anchor_sku else None,
+        "calculation_basis": calculation_basis,
         "anchor": round(anchor, 2),
         "anchor_method": note,
         "material_delta": material_delta,

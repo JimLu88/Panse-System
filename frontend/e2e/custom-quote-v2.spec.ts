@@ -85,6 +85,16 @@ async function openQuotePage(page: Page) {
           anchor: isSlab ? 3300 : 2950,
           anchor_method: '面积定价', material_delta: 0, size_delta: 0, addremove_delta: 0,
           base_product_name: isSlab ? '榉木岩板餐桌' : '实木餐桌', category: '餐厅-餐桌',
+          calculation_basis: {
+            mode: 'area', relation: 'exact', anchor_price: isSlab ? 3300 : 2950,
+            target: { length_m: 2, width_cm: 90, height_cm: 75 },
+            points: [{
+              sku_code: isSlab ? 'SLAB-200-B' : 'OLD-200',
+              sku_name: isSlab ? '榉木餐桌-2.0米-黑色岩板' : '实木餐桌-200cm',
+              length_m: 2, width_cm: 90, height_cm: 75,
+              price: isSlab ? 3300 : 2950, dimension_inferred: false,
+            }],
+          },
           subtotal_before_safety: isSlab ? 3478.28 : 3120.45,
           safety_delta: isSlab ? 173.91 : 156.02,
           paint_surcharge: 0,
@@ -106,13 +116,13 @@ async function openQuotePage(page: Page) {
   });
 
   await page.goto('/custom-quote-v2');
-  await expect(page.getByRole('heading', { name: '定制报价 · 智能算价' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '定制报价', exact: true })).toBeVisible();
 }
 
 test('switching product refreshes SKU candidates and shows the full calculation', async ({ page }) => {
   await openQuotePage(page);
-  await page.getByPlaceholder('例如: 蜂蜜餐桌 改 1.5 米 黑胡桃 / 客户要全新异形旋转吧台...').fill('榉木岩板餐桌2米，宽度90');
-  await page.getByRole('button', { name: '判定并算价' }).click();
+  await page.getByPlaceholder('例如：榉木餐桌改2米，宽90cm，台面改白色岩板').fill('榉木岩板餐桌2米，宽度90');
+  await page.getByRole('button', { name: '生成报价' }).click();
   const skuRow = page.getByText('当前产品 SKU（切换产品后实时更新）:').locator('..').locator('..');
   await skuRow.locator('.ant-select').click();
   await expect(page.getByText('实木餐桌-200cm')).toBeVisible();
@@ -125,7 +135,10 @@ test('switching product refreshes SKU candidates and shows the full calculation'
   await skuRow.locator('.ant-select').click();
   await expect(page.getByText('榉木餐桌-1.8米-白色岩板')).toBeVisible();
   await expect(page.getByText('实木餐桌-200cm')).toHaveCount(0);
+  await page.getByText('查看计算依据', { exact: true }).click();
   await expect(page.getByText('计算规格明细')).toBeVisible();
+  await expect(page.getByText('2m × 90cm × 75cm · ¥3300.00')).toBeVisible();
+  await expect(page.getByText('命中现有尺寸档')).toBeVisible();
   await expect(page.getByText('具体加减项（逐笔公式与金额）')).toBeVisible();
   await expect(page.getByText('安全系数 ×1.05')).toBeVisible();
 });
@@ -133,7 +146,7 @@ test('switching product refreshes SKU candidates and shows the full calculation'
 test('quote parameters have one entry in the top-right dialog', async ({ page }) => {
   await openQuotePage(page);
   await expect(page.getByText('报价系数(可调 · 改完保存→重算生效)')).toHaveCount(0);
-  await page.getByRole('button', { name: '报价参数设置' }).click();
+  await page.getByRole('button', { name: '报价参数' }).click();
   await expect(page.getByText('利润、安全与增减项规则')).toBeVisible();
   await expect(page.getByText('打包 / 运费 / 安装（小、中、大）')).toBeVisible();
 });

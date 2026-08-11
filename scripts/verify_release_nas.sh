@@ -41,6 +41,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
   grep -R -q "真实部件板单" /usr/share/nginx/html/assets && echo bom=yes
   grep -R -q "智能询价" /usr/share/nginx/html/assets && echo procurement=yes
   grep -R -q "你的确认稿" /usr/share/nginx/html/assets && echo procurement_review=yes
+  grep -R -q "计算基准尺寸" /usr/share/nginx/html/assets && echo quote_basis_dimensions=yes
   true
 '")
 [[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
@@ -48,7 +49,8 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
 [[ "$web_features" == *'bom=yes'* ]] || fail "Web 静态资源缺真实 BOM 带入核对界面"
 [[ "$web_features" == *'procurement=yes'* ]] || fail "Web 静态资源缺智能询价界面"
 [[ "$web_features" == *'procurement_review=yes'* ]] || fail "Web 静态资源缺采购人工改稿门槛"
-pass "既有目标功能 + 采购人工改稿界面均在在线 bundle"
+[[ "$web_features" == *'quote_basis_dimensions=yes'* ]] || fail "Web 静态资源缺报价计算基准尺寸"
+pass "既有目标功能 + 采购人工改稿 + 报价计算基准尺寸均在在线 bundle"
 
 migration=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 alembic current" 2>&1)
 [[ "$migration" == *'(head)'* ]] || fail "数据库迁移未到 head: $migration"

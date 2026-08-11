@@ -107,6 +107,25 @@ interface LightResult {
   base_product_name?: string | null;
   selected_sku_code?: string | null;
   selected_sku_name?: string | null;
+  calculation_basis?: {
+    mode: 'area' | 'length';
+    relation: 'exact' | 'interpolate' | 'below_range' | 'above_range' | 'representative';
+    anchor_price: number;
+    target?: {
+      length_m?: number | null;
+      width_cm?: number | null;
+      height_cm?: number | null;
+    };
+    points: Array<{
+      sku_code: string;
+      sku_name: string;
+      length_m: number;
+      width_cm?: number | null;
+      height_cm?: number | null;
+      price: number;
+      dimension_inferred?: boolean;
+    }>;
+  };
   category?: string;
   subtotal_before_safety?: number;
   safety_delta?: number;
@@ -136,6 +155,22 @@ interface LightResult {
   comparison?: Comparison;
   error?: string;
 }
+
+const conciseNumber = (value: number) => Number(value.toFixed(2)).toString();
+
+const basisDimension = (point: NonNullable<LightResult['calculation_basis']>['points'][number]) => (
+  `${conciseNumber(point.length_m)}m`
+  + (point.width_cm != null ? ` × ${conciseNumber(point.width_cm)}cm` : '')
+  + (point.height_cm != null ? ` × ${conciseNumber(point.height_cm)}cm` : '')
+);
+
+const basisRelationLabel: Record<NonNullable<LightResult['calculation_basis']>['relation'], string> = {
+  exact: '命中现有尺寸档',
+  interpolate: '两档之间插值',
+  below_range: '小于最小档，按最小档外推',
+  above_range: '大于最大档，按最大档外推',
+  representative: '代表尺寸档',
+};
 // 增减部位(可编辑: 分类器自动填 + 用户手调)
 interface EditPart {
   key: number;
@@ -1226,7 +1261,22 @@ export default function CustomQuoteV2Page() {
                         {light.base_product_name || '—'}
                       </Descriptions.Item>
                       <Descriptions.Item label="锁定 SKU">
-                        {light.selected_sku_name || '未锁定（按同产品多档插值）'}
+                        {light.selected_sku_name || '未手动锁定（按下方基准尺寸计算）'}
+                      </Descriptions.Item>
+                      <Descriptions.Item label="计算基准尺寸" span={2}>
+                        {light.calculation_basis?.points?.length ? (
+                          <Space wrap size={[6, 4]}>
+                            {light.calculation_basis.points.map((point) => (
+                              <Tag key={`${point.sku_code}-${point.length_m}`} color="blue">
+                                {basisDimension(point)} · ¥{point.price.toFixed(2)}
+                                {point.dimension_inferred ? '（宽高按同款档位推算）' : ''}
+                              </Tag>
+                            ))}
+                            <Text type="secondary">
+                              {basisRelationLabel[light.calculation_basis.relation]}
+                            </Text>
+                          </Space>
+                        ) : '暂无可用基准尺寸'}
                       </Descriptions.Item>
                       <Descriptions.Item label="目标尺寸">
                         {light.specification?.target_length_m ? `${light.specification.target_length_m}m` : '标准长度'}
@@ -1253,6 +1303,7 @@ export default function CustomQuoteV2Page() {
                   </Card>
                   <Card size="small" type="inner" title="报价汇总" styles={{ body: { padding: 10 } }}>
                     <Descriptions size="small" column={{ xs: 2, sm: 4 }} colon={false}>
+                      <Descriptions.Item label="尺寸锚点价">¥{light.anchor.toFixed(2)}</Descriptions.Item>
                       <Descriptions.Item label="非油漆小计">¥{(light.subtotal_before_safety ?? 0).toFixed(2)}</Descriptions.Item>
                       <Descriptions.Item label="安全系数调整">¥{(light.safety_delta ?? 0).toFixed(2)}</Descriptions.Item>
                       <Descriptions.Item label="油漆固定追加">¥{(light.paint_surcharge ?? 0).toFixed(2)}</Descriptions.Item>
