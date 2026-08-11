@@ -146,6 +146,8 @@ def test_shipped_order_without_address_sends_production_only_sheet(
     assert "地址待补，仅生产，禁止发货" in captions[0]
     assert "仅安排生产，禁止发货" in rendered[0].customer_address
     assert "地址待补" in rendered[0].production_note
+    assert rendered[0].ship_date is None
+    assert rendered[0].ship_date_pending is True
     rec = _sheet_rec(db_session, "SHIPPED-NOADDR-1").row_summary
     assert rec["pushed"] is True
     assert rec["pushed_addr_ok"] is False

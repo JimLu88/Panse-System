@@ -146,6 +146,9 @@ def render_html(sheet: "factory_sheet.FactorySheet", *, header_style: str = "bar
     e = escape
     A = "#1a1a1a"  # 主线条色 (黑, 打印友好; 原藏青蓝填充已去)
     made, ship, odate = sheet.made_date, sheet.ship_date, sheet.order_date
+    ship_text = ("待补地址后通知"
+                 if getattr(sheet, "ship_date_pending", False)
+                 else _cn_date(ship))
     # 头部右: 畔色 N 单 + 制单日期 + 订单编号
     if sheet.factory_no:
         # 与 ERP / 飞书下单表第一列逐字一致，统一为「畔色329单」。
@@ -265,7 +268,7 @@ table{{border-collapse:collapse;}}
   <td><div class="l">收货信息 SHIP TO</div>{ship_to}</td>
   <td style="text-align:right;width:400px;border-left:2px solid #ccc">
     <div class="l">下单日期</div><div class="odt">{e(_cn_date(odate))}</div>
-    <div class="l" style="margin-top:14px">发货日期</div><div class="shipdt">{e(_cn_date(ship))}</div>
+    <div class="l" style="margin-top:14px">发货日期</div><div class="shipdt">{e(ship_text)}</div>
   </td>
 </tr></table>
 {stamps}

@@ -82,6 +82,7 @@ class FactorySheet:
 
     # 下单图规范化 (用户 6 点要求, 2026-06)
     ship_eta_auto: bool = False              # ship_date 是否为"下单+25天"自动推算
+    ship_date_pending: bool = False          # 缺地址生产图不显示平台历史发货日，改为待通知
     size_info: Optional[str] = None          # SKU 完整尺寸 (产品表 size_value/size_detail)
     production_note: Optional[str] = None    # 店铺/生产备注 (与客户备注一并完整显示)
 
@@ -217,7 +218,7 @@ def build(
         production_note = "\n".join(
             value for value in (production_note, _ADDRESS_PENDING_PRODUCTION_NOTE) if value
         )
-    return build_from_fields(
+    sheet = build_from_fields(
         db,
         order_no=order.order_no,
         product_code=order.product_code,
@@ -239,6 +240,11 @@ def build(
         factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
         order_is_custom=bool(getattr(order, "is_custom", False)),   # 订单级定制标记 → 定制敲章
     )
+    if address_pending_for_production:
+        sheet.ship_date = None
+        sheet.ship_eta_auto = False
+        sheet.ship_date_pending = True
+    return sheet
 
 
 def build_from_fields(
