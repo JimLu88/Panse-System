@@ -18,6 +18,7 @@ import io
 import json
 import logging
 import os
+import re
 import threading
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -1051,28 +1052,53 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
 
     官方 alipay.data.dataservice.bill.downloadurl.query 只给已结算的过去日/月, **不给当月整月**
     (传 bill_date=当月 → 40004 TYPE_NOT_SUPPORTED), 故逐日拉。下载落 NAS 共享 alipay_api/,
-    随后 run_ingest 经 _import_one('alipay') 自动解析入库 (2026-06-15 接通)。幂等: 重拉同日
-    产同名文件 → run_ingest 按 hash 跳过; 流水按 (tx_no,type,amount) 去重, 重复无副作用。"""
+    随后 run_ingest 经 _import_one('alipay') 自动解析入库 (2026-06-15 接通)。按最近 max_days
+    的逐日导入状态补缺口，而不是从“数据库最新流水日”向后续跑：后者会在某天失败、后续日成功后
+    永久跳过失败日。成功日不重拉，缺失/失败日自动重试；流水导入本身仍幂等。"""
     from datetime import date, timedelta
 
-    from sqlalchemy import func as _func
-    from app.models.finance import AlipayFlow
     acc = next((a for a in web_agent_service.alipay_accounts(db)
                 if (a.get("name") or "") == account_name), None)
     if not acc:
         return {"skip": f"无 {account_name} 账户配置"}
     aid = acc.get("id")
-    last = db.query(_func.max(AlipayFlow.transaction_time)).filter(
-        AlipayFlow.account == account_name).scalar()
     today = date.today()
-    start = last.date() if last else today - timedelta(days=max_days)
-    if start < today - timedelta(days=max_days):
-        start = today - timedelta(days=max_days)
+    start = today - timedelta(days=max_days)
     end = today - timedelta(days=1)   # T+1: 只到昨天 (当天还没结算)
+
+    # 每个账单日看最新一条归档结果。文件名由 Web-Agent 固定为
+    # 账单_signcustomer_YYYY-MM-DD.zip；旧的 error 记录不能被后来的日期掩盖。
+    covered: set[date] = set()
+    rows = db.execute(
+        select(ImportedFile).where(
+            ImportedFile.kind == "alipay",
+            ImportedFile.original_filename.ilike("%signcustomer%"),
+        ).order_by(ImportedFile.id.desc())
+    ).scalars().all()
+    seen_dates: set[date] = set()
+    for row in rows:
+        m = re.search(r"signcustomer[_-](\d{4}-\d{2}-\d{2})", row.original_filename or "")
+        if not m:
+            continue
+        try:
+            bill_day = date.fromisoformat(m.group(1))
+        except ValueError:
+            continue
+        if bill_day in seen_dates:
+            continue
+        seen_dates.add(bill_day)
+        summary = row.row_summary if isinstance(row.row_summary, dict) else {}
+        if str(summary.get("agent_status") or "").lower() == "imported":
+            covered.add(bill_day)
+
     out: dict = {"account": account_name, "from": str(start), "to": str(end),
-                 "pulled": 0, "fail": 0}
+                 "pulled": 0, "fail": 0, "skipped_covered": 0}
     d = start
     while d <= end:
+        if d in covered:
+            out["skipped_covered"] += 1
+            d += timedelta(days=1)
+            continue
         try:
             r = web_agent_service.alipay_bill(db, aid, "signcustomer", d.isoformat())
             out["pulled" if r.get("ok") else "fail"] += 1
@@ -1259,9 +1285,17 @@ def run_ingest(
         )
 
         prior = _hash_exists(db, file_hash)
-        if prior is not None:
+        prior_summary = (
+            prior.row_summary if prior is not None and isinstance(prior.row_summary, dict) else {}
+        )
+        prior_status = str(prior_summary.get("agent_status") or "unknown").lower()
+        # 支付宝解析失败必须允许在程序修复后自动重试。同一 hash 的成功文件仍照常跳过；
+        # 其它类别保持原去重语义，避免加密报表等无新输入时反复尝试。
+        retry_failed_alipay = (
+            prior is not None and category == "alipay" and prior_status == "error"
+        )
+        if prior is not None and not retry_failed_alipay:
             report["skipped_known"] += 1
-            prior_summary = prior.row_summary if isinstance(prior.row_summary, dict) else {}
             status = str(prior_summary.get("agent_status") or "unknown")
             summary = {
                 **prior_summary,
@@ -1291,6 +1325,8 @@ def run_ingest(
             entry.update({"status": status, "summary": summary})
             report["files"].append(entry)
             continue
+        if retry_failed_alipay:
+            report["retried_errors"] = report.get("retried_errors", 0) + 1
         try:
             kind, status, summary = _import_one(db, category, path, raw)
             summary["agent_status"] = status

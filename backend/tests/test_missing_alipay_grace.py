@@ -69,3 +69,31 @@ def test_checker_closes_recently_signed(db_session):
                         description="订单 G-NEW2 已成交却无任何收款凭据", status="open")
     db_session.add(exc); db_session.commit()
     assert er.recheck(db_session, exc) is None
+
+
+def test_zero_paid_full_refund_not_flagged_and_rechecker_closes(db_session):
+    """新版淘宝全退表达：实付=0、退款≈应付，也不应要求收款凭据。"""
+    order = _order(
+        db_session,
+        "G-FULL-REFUND",
+        paid_amount=D("0"),
+        buyer_payable_amount=D("1928.57"),
+        refund_amount=D("1928.57"),
+        ship_date=date.today() - timedelta(days=40),
+    )
+    db_session.commit()
+    dq.scan_order_missing_alipay(db_session)
+    db_session.commit()
+    assert not _excs(db_session, "G-FULL-REFUND")
+
+    exc = DataException(
+        source_table="orders",
+        source_pk=str(order.id),
+        exception_type="order_missing_alipay",
+        severity="warning",
+        description="订单 G-FULL-REFUND 已成交却无任何收款凭据",
+        status="open",
+    )
+    db_session.add(exc)
+    db_session.commit()
+    assert er.recheck(db_session, exc) is None

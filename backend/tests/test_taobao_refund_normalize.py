@@ -34,3 +34,19 @@ def test_zero_or_none_refund_unchanged():
     assert _normalize_refund(D("2711"), D("2211"), D("0")) == D("0")
     assert _normalize_refund(D("2711"), D("2211"), None) is None
     assert _normalize_refund(None, D("2211"), D("500")) == D("500")
+
+
+def test_completed_full_refund_with_zero_current_paid_is_preserved():
+    """新版淘宝导出：签收后全退会写 实付=0、退款=应付，不能再当优惠归零。"""
+    assert _normalize_refund(
+        D("1928.57"), D("0"), D("1928.57"),
+        status="signed", confirmed=True, single_line=True,
+    ) == D("1928.57")
+
+
+def test_zero_paid_without_completion_evidence_keeps_discount_rule():
+    """没有签收完成证据时仍走旧护栏，避免把取消子项/优惠误当真退款。"""
+    assert _normalize_refund(
+        D("1928.57"), D("0"), D("1928.57"),
+        status="paid", confirmed=False, single_line=True,
+    ) == D("0")

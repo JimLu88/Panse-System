@@ -108,6 +108,59 @@ def test_import_sales_detail_csv(db_session):
     assert o.status == "signed"
 
 
+def _completed_full_refund_xlsx() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "export"
+    ws.append([
+        "订单编号", "订单状态", "买家应付货款", "买家实付金额", "退款金额",
+        "确认收货时间", "商品标题", "商品属性", "订单创建时间",
+    ])
+    ws.append([
+        "5125078549855005432", "交易成功", "1928.57", 0, "1928.57",
+        "2026-08-04 21:53:08", "畔色实木柜", "颜色分类:榉木", "2026-07-18 10:00:00",
+    ])
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def test_import_completed_full_refund_preserves_refund(db_session):
+    """真实形态：交易成功+确认收货，但当前实付归零、退款等于应付，应落全额退款。"""
+    rep = tio.import_taobao_orders(
+        db_session, "ExportOrderList.xlsx", _completed_full_refund_xlsx(),
+    )
+
+    assert rep.inserted == 1
+    order = db_session.query(Order).filter_by(order_no="5125078549855005432").one()
+    assert order.status == "signed"
+    assert order.paid_amount == Decimal("0")
+    assert order.buyer_payable_amount == Decimal("1928.57")
+    assert order.refund_amount == Decimal("1928.57")
+
+
+def test_reimport_completed_full_refund_updates_existing_order(db_session):
+    """生产真实路径：旧库保留历史正实付，重导后退款必须补回且实付不能被当前 0 擦除。"""
+    db_session.add(Order(
+        platform="淘宝",
+        order_no="5125078549855005432",
+        status="signed",
+        paid_amount=Decimal("1928.57"),
+        buyer_payable_amount=Decimal("1928.57"),
+        refund_amount=Decimal("0"),
+    ))
+    db_session.commit()
+
+    rep = tio.import_taobao_orders(
+        db_session, "ExportOrderList.xlsx", _completed_full_refund_xlsx(),
+    )
+
+    assert rep.updated == 1
+    order = db_session.query(Order).filter_by(order_no="5125078549855005432").one()
+    assert order.paid_amount == Decimal("1928.57")
+    assert order.refund_amount == Decimal("1928.57")
+
+
 def test_import_dedup(db_session):
     """再次导入同文件: 不重复插入, 改走 UPSERT 更新 (现金流要靠再导更新历史单的状态)。"""
     raw = _sales_detail_csv_bytes()

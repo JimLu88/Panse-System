@@ -149,8 +149,9 @@ def _check_order_missing_alipay(db: Session, exc: DataException) -> Optional[str
         return None
     if o.is_historical or (o.status or "") not in ("signed", "completed", "success", "finished"):
         return None  # 补单也有正常收款流水, 不排除 (用户 2026-06-22 纠正)
-    # 已退款单(退款≥实付)货款已退, 不该要求收款凭据 (2026-06-22)
-    if o.refund_amount and o.paid_amount and o.refund_amount >= o.paid_amount:
+    # 与 scanner 同口径：兼容“实付归零、退款≈应付”的新版淘宝全退表达。
+    from app.services.data_quality_service import _order_fully_refunded
+    if _order_fully_refunded(o):
         return None
     # 归一: 支付宝 related_order_no 常带 T200P 前缀 → 用 LIKE 匹配核心订单号 (2026-06-22)
     n = db.execute(select(func.count()).select_from(AlipayFlow)

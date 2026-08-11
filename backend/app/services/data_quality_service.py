@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, timedelta
+from decimal import Decimal
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,6 +22,18 @@ _NON_PRODUCT_KW = ("安装", "送货", "入户", "补差价", "差价", "样品"
                    "专链", "补拍", "邮费", "官方服务", "上门服务")
 
 _log = logging.getLogger("panse.data_quality")
+
+
+def _order_fully_refunded(order: Order) -> bool:
+    """兼容淘宝两种全退表达：退款≥历史实付；或实付归零且退款≈应付。"""
+    paid = Decimal(order.paid_amount or 0)
+    payable = Decimal(order.buyer_payable_amount or 0)
+    refund = Decimal(order.refund_amount or 0)
+    if refund <= 0:
+        return False
+    if paid > 0 and refund >= paid:
+        return True
+    return paid <= 0 and payable > 0 and refund >= payable * Decimal("0.99")
 
 
 def _record(db: Session, **kwargs: Any) -> None:
@@ -141,8 +154,9 @@ def scan_order_missing_alipay(db: Session) -> int:
         # 故补单也要核收款, 不能排除 (用户 2026-06-22 纠正)。
         if _okey(o.order_no) in linked:
             continue
-        # 已退款单(退款≥实付)是退款交易, 货款已退, 不该要求收款凭据 (2026-06-22)
-        if o.refund_amount and o.paid_amount and o.refund_amount >= o.paid_amount:
+        # 已退款单是退款交易, 货款已退, 不该要求收款凭据。新版淘宝报表对全退单可能给
+        # 实付=0、退款=应付，故不能再要求 paid_amount 必须非零。
+        if _order_fully_refunded(o):
             continue
         # 淘宝企业单走批量结算, 逐单支付宝流水拿不到; 但淘宝订单报表已逐单给出『打款商家金额』
         # (淘宝实际打给卖家的货款)。有该金额 = 淘宝已逐单确认放款 → 视为已收款, 不逐单误报;

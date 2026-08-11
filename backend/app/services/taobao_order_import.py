@@ -134,7 +134,15 @@ def product_code_from_merchant(mc: Any) -> str:
     return ""
 
 
-def _normalize_refund(payable: Any, paid: Any, refund: Any) -> Any:
+def _normalize_refund(
+    payable: Any,
+    paid: Any,
+    refund: Any,
+    *,
+    status: str | None = None,
+    confirmed: bool = False,
+    single_line: bool = True,
+) -> Any:
     """根治"优惠/取消产品被当退款双扣" (2026-06-22 用户拍板)。
 
     淘宝「退款金额」里混着买家优惠差额 / 多产品订单中取消的子产品金额, 而「买家实付」已是净额
@@ -143,6 +151,21 @@ def _normalize_refund(payable: Any, paid: Any, refund: Any) -> Any:
     否则收入口径(实付 − 退款, asset/cash_flow/dashboard/sales/smart_pricing 6+ 处)会把同一笔再扣一遍 → 假亏。
     """
     if payable is not None and paid is not None and refund and refund > Decimal("0"):
+        # 新版「已卖出宝贝」权威订单报表会把【签收后全额退款】导成：交易成功、
+        # 确认收货时间有值、买家实付=0、退款金额=买家应付。旧规则仅看
+        # 应付−实付=退款，会把这种真全退归零（实测 512507…/330644…）。
+        # 限定为单商品、已完成且确认收货、退款接近整单应付，避免把多商品取消子项
+        # 或普通优惠重新当成退款。
+        is_completed_full_refund = (
+            single_line
+            and confirmed
+            and (status or "") in ("signed", "completed", "success", "finished")
+            and paid == Decimal("0")
+            and payable > Decimal("0")
+            and refund >= payable * Decimal("0.99")
+        )
+        if is_completed_full_refund:
+            return refund
         if abs((payable - paid) - refund) < Decimal("0.01"):
             return Decimal("0")
     return refund
@@ -807,7 +830,14 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
                 _m_freight = max(_f_vals)
                 if freight is None or _m_freight > freight:
                     freight = _m_freight
-        refund = _normalize_refund(payable, paid, _refund_raw)
+        refund = _normalize_refund(
+            payable,
+            paid,
+            _refund_raw,
+            status=status,
+            confirmed=_to_date(o.confirm_time) is not None,
+            single_line=len(lines) == 1,
+        )
         ship_dt = _to_date(o.ship_time)
         # 防错标"待付款" 兜底 (用户拍板 2026-06-18): 状态文本应优先按 _STATUS_MAP 翻译(已补"已收货"等)。
         # 若仍落"待付款"但有【真实收款】凭据(店铺实收>0 或 买家实付>0)→ 纠正为已付款(视为已识别)。

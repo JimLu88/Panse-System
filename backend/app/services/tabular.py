@@ -29,9 +29,36 @@ def _maybe_unzip_to_csv(content: bytes, filename: Optional[str]) -> tuple[bytes,
             names = [n for n in zf.namelist() if not n.endswith("/")]
             if any(n == "[Content_Types].xml" or n.startswith("xl/") for n in names):
                 return content, filename    # 是 xlsx → 交给 xlsx 分支
-            member = next((n for n in names if n.lower().endswith((".csv", ".txt"))), None)
-            if member:
-                return zf.read(member), member.rsplit("/", 1)[-1]
+            members = [n for n in names if n.lower().endswith((".csv", ".txt"))]
+            if members:
+                # 支付宝 signcustomer 日账单 ZIP 同时带「交易明细(汇总).csv」和
+                # 「交易明细.csv」。不能按 ZIP 内顺序取第一份：汇总表没有交易明细列，
+                # 会被通用 CSV 导入器报成“缺少交易流水号”。按内容识别真正的明细表。
+                def _decode(raw: bytes) -> str:
+                    try:
+                        return raw.decode("utf-8-sig")
+                    except UnicodeDecodeError:
+                        return raw.decode("gbk", errors="replace")
+
+                def _score(name: str, raw: bytes) -> tuple[int, int]:
+                    text = _decode(raw)[:8000]
+                    score = 0
+                    if "账务流水号" in text and "账户余额" in text:
+                        score += 100
+                    if "业务流水号" in text and "商户订单号" in text:
+                        score += 40
+                    if "收入金额" in text and "支出金额" in text:
+                        score += 20
+                    if "交易号" in text and "收/支" in text:
+                        score += 80
+                    if "交易流水号" in text and "收支金额" in text:
+                        score += 80
+                    # 文件名只作同分兜底，核心判据始终是表头内容。
+                    return score, 0 if "汇总" in name else 1
+
+                candidates = [(n, zf.read(n)) for n in members]
+                member, raw = max(candidates, key=lambda item: _score(item[0], item[1]))
+                return raw, member.rsplit("/", 1)[-1]
     except zipfile.BadZipFile:
         pass
     return content, filename
