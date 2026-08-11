@@ -84,7 +84,7 @@
 - **服务**：`campaign_service.py`（分组/builder/preflight/推送编排——复用 activity_upload_service.stage/commit 与 web_agent_service）、`campaign_price_protection_service.py`（默认19天/规则链接提醒/轮换硬禁）、`campaign_recon_service.py`（三种导出解析+比对+报警）、`campaign_discovery_service.py`（日发现+飞书）。
 - **API**：`/api/campaigns` CRUD + `/precheck` `/push-discount` `/push-signup` `/recon`（自动+手动上传兜底）`/no-sales-group`。
 - **前端**：改造 `ActivityAutoFillTab.tsx`（940行）：活动类型点选 → 档期秒级点选 → 动销分组视图（无动销名单+飞书按钮）→ 预检结果 →（提示用户撤销的卡点清单）→ 一键推立减 → 一键报名 → 自动核对面板（差异>2元红榜+飞书）。
-- **WA 新任务**（D:\Panse-Web-Agent uploader）：`export_campaign_items(campaign_title)`（标题校验+导出下载）、`discover_campaigns()`（活动列表抓取）；失败路径全部飞书报错。
+- **WA 新任务**（D:\AI\Panse-Web-Agent uploader）：`export_campaign_items(campaign_title)`（标题校验+导出下载）、`discover_campaigns()`（活动列表抓取）；失败路径全部飞书报错。
 - **调度**：backend `scheduler.py` 挂 `campaign_daily_discovery`（抓单后）与 `campaign_auto_recon`（报名后延时触发）。
 
 ## 六、AI 需求点（可选，默认纯规则）

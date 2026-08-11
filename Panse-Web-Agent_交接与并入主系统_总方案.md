@@ -8,7 +8,7 @@
 
 ## 0. 这是什么 / 在哪
 
-- **Panse-Web-Agent**(`D:\Panse-Web-Agent`):独立的**浏览器自动化取数系统**,FastAPI 跑在 **:8500**。
+- **Panse-Web-Agent**(`D:\AI\Panse-Web-Agent`):独立的**浏览器自动化取数系统**,FastAPI 跑在 **:8500**。
 - 职责:登录淘宝/支付宝/万师傅等平台 → 把数据**导出成文件或截图** → 喂给 ERP(Panse-System)对账/入库。
 - **隔离**:独立进程/端口/浏览器档案,**不碰** AI 蜂群(`D:\AI`)、不碰 ERP 进程。
 - 启动:`pythonw -m uvicorn app.main:app --host 127.0.0.1 --port 8500`(用 `pythonw` 无控制台窗口)。
@@ -97,7 +97,7 @@
 - 未来若要合并:把 `app/engine`、`app/browser`、`app/tasks` 作为 Panse 的一个模块挂载,共享 Panse 的 secret/scheduler/通知通道。
 
 ### 7.2 数据交付(关键)
-- 所有导出文件落 `D:\Panse-Web-Agent\data\output\<日期>\<子目录>\`。
+- 所有导出文件落 `D:\AI\Panse-Web-Agent\data\output\<日期>\<子目录>\`。
 - **约定一个共享目录**(或让 Panse 导入服务直接读 Web-Agent 的 output),ERP 现有 `taobao_order_import.py` 等导入器**已能解析**淘宝多表/聚合账单等;新增的需补解析(如万相台 CSV、支付宝 API 账单)。
 - 余额:截图 PNG / API 数字 → 写入 ERP 的账户余额表(账户名、金额、统计日期=录入当天)。
 
