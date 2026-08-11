@@ -120,6 +120,12 @@ class TestProductMatchService:
                 brand="畔色",
                 category="餐厅-餐边柜",
             ),
+            Product(
+                code="ROUND",
+                name="孚格榉木岩板圆桌",
+                brand="孚格",
+                category="餐厅-餐桌",
+            ),
         ])
         db.add_all([
             PricingSku(
@@ -144,6 +150,13 @@ class TestProductMatchService:
         assert result["product_code"] == "TABLE"
         assert result["product_name"] == "榉木岩板餐桌"
         assert result["confidence"] == 1.0
+
+        ranked = product_match_service.match_ranked(
+            db, "榉木餐桌改成1.2米，宽度0.7米",
+        )
+        assert ranked[0]["product_code"] == "TABLE"
+        round_hit = next(item for item in ranked if item["product_code"] == "ROUND")
+        assert round_hit["product_confidence"] < 1.0
 
     def test_sku_description_overlap(self, db):
         # "榉木餐桌" splits into tokens ["榉木餐桌"] via the regex splitter.

@@ -78,25 +78,30 @@ def _product_similarity(query: str, name: str, category: str = "") -> float:
     identity match even when the target has harmless extra descriptors.
     """
     core = _core_text(query)
-    target = _core_text(f"{name or ''}{category or ''}")
-    if not core or not target:
+    name_target = _core_text(name or "")
+    category_target = _core_text(category or "")
+    if not core or not name_target:
         return 0.0
-    base = _similarity(core, target)
-    query_chars, target_chars = set(core), set(target)
+    base = _similarity(core, name_target)
+    query_chars, target_chars = set(core), set(name_target)
     directional = (
         len(query_chars & target_chars) / len(query_chars)
         if query_chars else 0.0
     )
     concepts = _concept_terms(core)
     coverage = (
-        sum(1 for term in concepts if term in target) / len(concepts)
+        sum(1 for term in concepts if term in name_target) / len(concepts)
         if concepts else 0.0
     )
     if has_explicit_product_identity(core) and coverage == 1.0:
         return 1.0
-    if core in target:
+    if core in name_target:
         return 1.0
-    return min(1.0, max(base, directional * 0.90, coverage * 0.95))
+    # Category is metadata only.  It may help a weak fuzzy fallback but cannot
+    # make a contradictory product name exact: many round tables are stored in
+    # the broad backend category "餐桌".
+    category_hint = _similarity(core, category_target) * 0.35 if category_target else 0.0
+    return min(1.0, max(base, directional * 0.90, coverage * 0.95, category_hint))
 
 
 def _tokens(text: str) -> set[str]:
