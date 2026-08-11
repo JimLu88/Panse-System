@@ -175,18 +175,17 @@ def test_revenue_alipay_refund_diff_netted(db_session):
 
 
 def test_revenue_alipay_platform_coupon_netted(db_session):
-    """平台券: 买家应付>实付(实付=扣券净额), 支付宝该单收入=应付 → 用应付对账自动对平, 不报
-    (2026-06-23: 平台券是平台出资; 旧版只比实付→恒报正差, 且被同号"收入+分账"误判成重复入库)。"""
+    """买家应付高于实际支付时，以订单实付为准，不能把优惠前应付额当成收入。"""
     no = "5083434002324457345"
     db_session.add(Order(platform="淘宝", order_no=no, qty=1,
                          paid_amount=Decimal("2723.77"), buyer_payable_amount=Decimal("2928.78"),
                          order_date=date(2026, 5, 17), status="signed"))
     # 担保交易正常的 收入 + 分账(同交易号、不同金额, 不是重复入库)
     db_session.add(AlipayFlow(account="企业号", transaction_no="TXC", transaction_time=datetime(2026, 5, 17),
-                              amount=Decimal("2928.78"), related_order_no=no,
+                              amount=Decimal("2723.77"), related_order_no=no,
                               transaction_type="收入", reconciliation_type="customer_payment"))
     db_session.add(AlipayFlow(account="企业号", transaction_no="TXC", transaction_time=datetime(2026, 6, 1),
-                              amount=Decimal("2911.21"), related_order_no=no,
+                              amount=Decimal("2706.20"), related_order_no=no,
                               transaction_type="交易分账", reconciliation_type="customer_payment"))
     db_session.flush()
     r = recon.run_revenue_alipay(db_session, record_exceptions=True)
@@ -241,13 +240,11 @@ def test_revenue_alipay_payable_undercaptured_uses_paid(db_session):
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
 
 
-def test_revenue_alipay_buyer_freight_added_to_base(db_session):
-    """买家应付邮费=代收运费, 支付宝该单收入含它 → 加进对账基准, 不再误报正差。
-    5111173 形态: 货款75/实付75/运费60, 支付宝135; 正差60 > 实付×20%=15 不在淘金币豁免内,
-    必须靠邮费对平 (否则会误报为'退款没回填'类正差)。"""
+def test_revenue_alipay_paid_amount_already_contains_buyer_freight(db_session):
+    """当前订单报表的买家实付已含邮费；对账不得把 buyer_freight 再加一次。"""
     no = "5111173982824026244"
     db_session.add(Order(platform="淘宝", order_no=no, qty=1,
-                         paid_amount=Decimal("75.00"), buyer_payable_amount=Decimal("75.00"),
+                         paid_amount=Decimal("135.00"), buyer_payable_amount=Decimal("75.00"),
                          buyer_freight=Decimal("60.00"),
                          order_date=date(2026, 4, 23), status="signed"))
     db_session.add(AlipayFlow(account="企业号", transaction_no="TXF", transaction_time=datetime(2026, 4, 23),
@@ -258,6 +255,21 @@ def test_revenue_alipay_buyer_freight_added_to_base(db_session):
     assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
     assert db_session.query(DataException).filter(
         DataException.source_pk == f"revenue_alipay:{no}").count() == 0
+
+
+def test_revenue_alipay_missing_paid_uses_legacy_payable_plus_freight(db_session):
+    """旧订单缺实付字段时才允许用应付货款+邮费兜底，避免历史空值全部误报。"""
+    no = "5111173982824026245"
+    db_session.add(Order(platform="淘宝", order_no=no, qty=1,
+                         paid_amount=None, buyer_payable_amount=Decimal("75.00"),
+                         buyer_freight=Decimal("60.00"),
+                         order_date=date(2026, 4, 23), status="signed"))
+    db_session.add(AlipayFlow(account="企业号", transaction_no="TXF2", transaction_time=datetime(2026, 4, 23),
+                              amount=Decimal("135.00"), related_order_no=no,
+                              reconciliation_type="customer_payment"))
+    db_session.flush()
+    r = recon.run_revenue_alipay(db_session, record_exceptions=True)
+    assert not any(d.key == no and d.severity != "ok" for d in r.diffs)
 
 
 def test_revenue_alipay_settlement_window_excludes_recent_unsettled(db_session):

@@ -404,7 +404,8 @@ def route_alipay_settlements(db: Session, *, default_year: Optional[int] = None)
         # 每天覆盖手工修复、逐笔退款对账反复报差)。判据: 类型/备注含退款/退货, 或已归 refund 家族。
         _rt = (f.reconciliation_type or "").lower()
         _txt = f"{f.transaction_type or ''}{f.remark or ''}"
-        if _rt in ("refund", "refund_out", "refund_in", "aftersales") or "退款" in _txt or "退货" in _txt:
+        if (_rt in ("refund", "refund_out", "refund_in", "aftersales")
+                or any(k in _txt for k in ("退款", "退货", "售后支付", "售后赔付", "售后补偿"))):
             continue
         if f.reconciliation_type != "factory_payment":
             f.reconciliation_type = "factory_payment"   # 纠正: 这是付工厂货款, 非客户回款

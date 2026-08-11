@@ -130,6 +130,22 @@ def test_refund_precedence_over_factory_match(db_session):
     assert f.reconciliation_type == "refund"
 
 
+def test_aftersales_payment_precedes_factory_order_match(db_session):
+    """「售后支付」挂客户订单时归售后，不能因该订单已有工厂单而误判为工厂货款。"""
+    from app.models.order import FactoryOrder
+    order_no = "5111173982824026244"
+    db_session.add(FactoryOrder(factory_order_no="FO10", platform_order_no=order_no,
+                                factory_name="博冠"))
+    db_session.flush()
+    f = _flow(db_session, "AS1", -60, remark=f"售后支付-T200P{order_no}",
+              related_order_no=f"T200P{order_no}")
+    db_session.flush()
+    r = smart_matching_service.run(db_session)
+    assert r.tagged == {"aftersales": 1}
+    db_session.refresh(f)
+    assert f.reconciliation_type == "aftersales"
+
+
 def test_reclassify_refund_mislabels(db_session):
     """存量纠正: 被误标 factory_payment 的交易退款(amt<0) → 改判 refund; 真货款 + 已 refund 的不动。"""
     a = _flow(db_session, "MR1", -50, remark="售后退款 T200P x")
@@ -145,6 +161,16 @@ def test_reclassify_refund_mislabels(db_session):
     assert b.reconciliation_type == "factory_payment"
     assert c.reconciliation_type == "refund"
     assert detail.get("factory_payment", {}).get("count") == 1
+
+
+def test_run_repairs_existing_aftersales_factory_payment_mislabel(db_session):
+    f = _flow(db_session, "AS2", -30.38, remark="售后支付-测试订单")
+    f.reconciliation_type = "factory_payment"
+    db_session.flush()
+    r = smart_matching_service.run(db_session)
+    db_session.refresh(f)
+    assert r.total_scanned == 0
+    assert f.reconciliation_type == "aftersales"
 
 
 def test_order_key_normalization():

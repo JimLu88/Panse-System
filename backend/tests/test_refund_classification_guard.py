@@ -40,6 +40,18 @@ def test_route_still_classifies_real_factory_payment(db_session):
     assert f.reconciliation_type == "factory_payment"
 
 
+def test_route_skips_aftersales_payment_even_if_supplier_alias_matches(db_session):
+    db_session.add(FactorySupplierAlias(supplier="玉山县博冠家具", alias="玉山", note="t"))
+    db_session.add(_flow(account="个体户私账", transaction_no="AS-PAY", transaction_type="其它",
+                         amount=Decimal("-30.38"), counterparty="玉山", remark="售后支付-餐边柜",
+                         reconciliation_type="aftersales", related_order_no="5111173982824026244",
+                         transaction_time=datetime(2026, 7, 1, 10, 0)))
+    db_session.commit()
+    fss.route_alipay_settlements(db_session)
+    f = db_session.query(AlipayFlow).filter_by(transaction_no="AS-PAY").one()
+    assert f.reconciliation_type == "aftersales"
+
+
 def test_refund_recon_counts_refund_out(db_session):
     """退款对账: 归 refund_out 的退款流出计入"支付宝实退", 与订单应退相抵 → 平(19365 归 refund_out 后即此形态)。"""
     db_session.add(Order(platform="淘宝", order_no="RR1", refund_amount=Decimal("156.55"),

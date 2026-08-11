@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -20,11 +21,15 @@ from app.services import order_cost_service
 
 router = APIRouter(prefix="/api/refill-sync", tags=["refill-sync"])
 
+REVIEW_SYNC_REMARK = "评价系统补单跟踪自动同步"
+REVIEW_REFILL_COMMISSION = Decimal("15.00")
+
 
 class ReviewOrderTrackIn(BaseModel):
     order_no: str = Field(min_length=1, max_length=64)
     product_name: Optional[str] = Field(default=None, max_length=255)
     placed_date: Optional[date] = None
+    commission: Decimal = Field(default=REVIEW_REFILL_COMMISSION, gt=0, le=Decimal("9999.99"))
 
 
 class ReviewOrderTrackBatchIn(BaseModel):
@@ -52,7 +57,7 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
         if row.order_no
     }
 
-    created = filled = flagged = already_marked = 0
+    created = filled = commission_filled = flagged = already_marked = 0
     missing_orders: list[str] = []
     for no, item in normalized.items():
         order = orders.get(no)
@@ -67,7 +72,8 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
                 sku=order.sku if order else None,
                 order_amount=order.paid_amount if order else None,
                 qty=(order.qty or 1) if order else 1,
-                remark="评价系统补单跟踪自动同步",
+                commission=item.commission,
+                remark=REVIEW_SYNC_REMARK,
                 sync_key=f"review-order-track:{no}",
             )
             db.add(record)
@@ -75,7 +81,8 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
             created += 1
         else:
             # 已有人工财务记录不覆盖，只补空白的基础识别字段。
-            before = (record.refill_date, record.product_name, record.product_code, record.sku)
+            before = (record.refill_date, record.product_name, record.product_code, record.sku,
+                      record.commission)
             if record.refill_date is None:
                 record.refill_date = item.placed_date or (order.order_date if order else None)
             if not record.product_name:
@@ -84,7 +91,12 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
                 record.product_code = order.product_code
             if not record.sku and order:
                 record.sku = order.sku
-            after = (record.refill_date, record.product_name, record.product_code, record.sku)
+            # 只修复评价程序自动同步且漏佣金的历史记录；人工财务记录即使佣金为 0 也不覆盖。
+            if (record.remark or "").strip() == REVIEW_SYNC_REMARK and not record.commission:
+                record.commission = item.commission
+                commission_filled += 1
+            after = (record.refill_date, record.product_name, record.product_code, record.sku,
+                     record.commission)
             if after != before:
                 filled += 1
 
@@ -104,6 +116,7 @@ def sync_review_order_tracks(db: Session, items: list[ReviewOrderTrackIn]) -> di
         "unique": len(normalized),
         "created": created,
         "filled": filled,
+        "commission_filled": commission_filled,
         "flagged": flagged,
         "already_marked": already_marked,
         "missing_orders": missing_orders,

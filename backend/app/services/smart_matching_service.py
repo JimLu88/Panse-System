@@ -68,6 +68,9 @@ PLATFORM_DEPOSIT_KEYS = ("消费者保证金", "保证金充值")
 # (实测 23 笔 -¥16536.59 工厂货款虚高)。故退款判定提到段0、早于段1。仅 amt<0 (退款支出);
 # amt>0 的"退款"(退款撤销回款)留段1当客户回款。
 REFUND_KEYS = ("交易退款", "售后退款", "退款", "退货")
+# 售后补偿支出与退款不是同一财务口径，但都必须优先于「关联订单命中工厂单」。
+# 实际支付宝备注为「售后支付-...」；旧规则漏掉它后会落入 factory_payment。
+AFTERSALES_KEYS = ("售后支付", "售后赔付", "售后补偿")
 
 
 def _matches(text: Optional[str], keys: tuple[str, ...]) -> bool:
@@ -159,9 +162,13 @@ def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> O
         return "platform_deposit"
     if _matches(desc, PLATFORM_FEE_KEYS):
         return "platform_fee"
-    # 退款优先 (早于段1): 退给买家的钱(amt<0)挂客户订单, 该单常有工厂单 → 段1会误判 factory_payment。
-    if amt < 0 and _matches(desc, REFUND_KEYS):
-        return "refund"
+    # 客户售后/退款优先(早于段1): 支出挂客户订单, 而该单通常也有工厂单，若先按订单号匹配
+    # 就会把「售后支付」误判成 factory_payment。
+    if amt < 0:
+        if _matches(desc, AFTERSALES_KEYS):
+            return "aftersales"
+        if _matches(desc, REFUND_KEYS):
+            return "refund"
 
     # 段 1: 关联订单号直挂 (归一化后比对真实订单/工厂下单)
     if ron:
@@ -190,37 +197,49 @@ def _classify(flow: AlipayFlow, lk: _Lookups, db: Optional[Session] = None) -> O
     return None
 
 
-def reclassify_refund_mislabels(db: Session) -> dict:
-    """一次性纠正存量: amt<0 且描述含"退款" 但 reconciliation_type != 'refund' → 改判 refund。
+def reclassify_refund_mislabels(db: Session, *, account: Optional[str] = None) -> dict:
+    """纠正存量客户退款/售后支出误分类，并保留旧函数名兼容已有调用。
 
-    根因同 _classify 的退款优先修复: 此前段1按订单号命中工厂单, 把退给买家的钱误判成 factory_payment
-    (实测 23 笔 -¥16536.59 让工厂货款虚高)。本函数把这些(及未分类/other 的退款)归位成 refund。
-    幂等: 已是 refund 的不动。返回 {原type: {'count', 'sum'}} 明细供核对。
+    根因同 _classify 的客户支出优先修复: 此前段1按订单号命中工厂单，把退款或「售后支付」
+    误判成 factory_payment。本函数把已有错误标签纠正为 refund / aftersales；空分类仍交给正常流程。
+    幂等: 已是目标分类的不动。返回 {原type: {'count', 'sum'}} 明细供核对。
     """
     from app.services import field_change_service as _fcs
-    rows = db.execute(select(AlipayFlow).where(AlipayFlow.amount < 0)).scalars().all()
+    # 空分类留给下方正常分类流程处理；这里仅修复已经被机器写错的历史标签。
+    stmt = select(AlipayFlow).where(
+        AlipayFlow.amount < 0,
+        AlipayFlow.reconciliation_type.isnot(None),
+    )
+    if account:
+        stmt = stmt.where(AlipayFlow.account == account)
+    rows = db.execute(stmt).scalars().all()
     # 人工锁 (2026-07-12): 人改过核销类型的流水不许机器再翻 (对称于 route 的锁, 见 human_pks)
     _locked = _fcs.human_pks(db, table="alipay_flows", field="reconciliation_type")
     detail: dict[str, dict] = {}
     for f in rows:
-        if (f.reconciliation_type or "") == "refund":
-            continue
         if str(f.id) in _locked:
             continue
         desc = " ".join(filter(None, [f.counterparty, f.remark, f.transaction_type]))
-        if not _matches(desc, REFUND_KEYS):
+        target = None
+        if _matches(desc, AFTERSALES_KEYS):
+            target = "aftersales"
+        elif _matches(desc, REFUND_KEYS):
+            target = "refund"
+        if target is None or (f.reconciliation_type or "") == target:
             continue
         old = f.reconciliation_type or "(未分类)"
         d = detail.setdefault(old, {"count": 0, "sum": 0.0})
         d["count"] += 1
         d["sum"] += float(f.amount or 0)
-        f.reconciliation_type = "refund"
+        f.reconciliation_type = target
     db.flush()
     return detail
 
 
 def run(db: Session, *, account: Optional[str] = None) -> MatchResult:
     """扫所有 reconciliation_type 为空的流水, 自动打标."""
+    # 每次自动分类前先修复历史误分类，避免旧的 factory_payment 标签永久绕过空值扫描。
+    reclassify_refund_mislabels(db, account=account)
     lk = _build_lookups(db)
     stmt = select(AlipayFlow).where(AlipayFlow.reconciliation_type.is_(None))
     if account:
