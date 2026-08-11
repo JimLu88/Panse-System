@@ -14,6 +14,7 @@ from decimal import Decimal
 import openpyxl
 
 from app.models.campaign import CampaignCalendar, CampaignPlan
+from app.models.scheduled_job import ScheduledJobRun
 from app.services import campaign_discovery_service as cds
 from app.services import campaign_recon_service as crs
 
@@ -143,6 +144,27 @@ def test_discovery_wa_failure_notifies_manual_fallback(db_session, monkeypatch):
     assert len(calls) == 1 and calls[0]["title"] == "活动发现抓取失败"
     assert "手动" in calls[0]["text"] and "营销页布局改了" in calls[0]["text"]
     assert db_session.query(CampaignCalendar).count() == 0
+
+
+def test_discovery_single_refresh_failure_after_today_success_is_silent(
+        db_session, monkeypatch):
+    db_session.add(ScheduledJobRun(
+        job_id="campaign_daily_discovery",
+        job_label="千牛活动发现",
+        status="ok",
+        started_at=datetime.now().astimezone(),
+        completed_at=datetime.now().astimezone(),
+    ))
+    db_session.commit()
+    _mock_discover(monkeypatch, {"ok": False, "error": "ConnectTimeout"})
+    calls = _mock_notify(monkeypatch)
+
+    result = cds.run_daily_discovery(db_session)
+
+    assert result["ok"] is False
+    assert result["notified_error"] is False
+    assert result["retrying_next_hour"] is True
+    assert calls == []
 
 
 def test_discovery_no_cards_explains_layout_change_not_no_activity(db_session, monkeypatch):

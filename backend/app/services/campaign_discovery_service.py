@@ -156,6 +156,27 @@ def explain_discovery_failure(error: str) -> str:
     return "活动发现任务失败，需结合下方诊断码与最新截图检查"
 
 
+def _latest_discovery_run_status_today(db: Session) -> Optional[str]:
+    """Return the previous hourly discovery status for the local business day.
+
+    The scheduler writes the current run only after this service returns, so
+    the newest row is always the immediately preceding attempt.
+    """
+    from app.models.scheduled_job import ScheduledJobRun
+
+    row = db.execute(
+        select(ScheduledJobRun)
+        .where(ScheduledJobRun.job_id == "campaign_daily_discovery")
+        .order_by(ScheduledJobRun.id.desc())
+        .limit(1)
+    ).scalars().first()
+    if row is None or row.started_at is None:
+        return None
+    started = row.started_at
+    started_on = started.astimezone().date() if started.tzinfo else started.date()
+    return row.status if started_on == date.today() else None
+
+
 def run_daily_discovery(db: Session) -> dict:
     """调度入口: WA 活动发现 → 落日历 → <3天飞书提醒 (去重: 同活动一天一次)。"""
     from app.services import notify_service, web_agent_service
@@ -164,6 +185,20 @@ def run_daily_discovery(db: Session) -> dict:
     if not r.get("ok"):
         err = r.get("error") or r.get("message") or "未知原因"
         reason = explain_discovery_failure(err)
+        # Hourly discovery is a refresh.  If the immediately preceding attempt
+        # already succeeded today, retain that valid calendar and record this
+        # transient failure without telling the operator that nothing was
+        # captured.  A second consecutive failure (or the day's first failure)
+        # still alerts normally.
+        if _latest_discovery_run_status_today(db) == "ok":
+            return {
+                "ok": False,
+                "error": err,
+                "reason": reason,
+                "notified_error": False,
+                "notification_suppressed": "same_day_success_single_refresh_failure",
+                "retrying_next_hour": True,
+            }
         notify_service.broadcast_text(
             db,
             f"⚠️ 活动发现抓取失败。\n原因：{reason}。\n诊断码：{err}。\n"

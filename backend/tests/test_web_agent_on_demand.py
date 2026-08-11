@@ -7,7 +7,7 @@ from fastapi import HTTPException
 
 from app.api import web_agent as web_agent_api
 from app.json_utils import to_jsonable
-from app.services import web_agent_wake_service
+from app.services import web_agent_service, web_agent_wake_service
 
 
 def test_json_normalizer_keeps_decimal_exact():
@@ -80,3 +80,45 @@ def test_wake_start_reports_bridge_failure(db_session, monkeypatch):
         web_agent_api.wake_start(db_session)
     assert exc.value.status_code == 409
     assert "bridge offline" in str(exc.value.detail)
+
+
+def test_campaign_discovery_wakes_before_posting(db_session, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: calls.append(("wake", kwargs)) or {"online": True},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "_post",
+        lambda db, path, payload, **kwargs: calls.append(
+            ("post", path, kwargs)
+        ) or {"ok": False, "error": "stop-before-wait"},
+    )
+
+    result = web_agent_service.campaign_discover(db_session)
+
+    assert result == {"ok": False, "error": "stop-before-wait"}
+    assert calls == [
+        ("wake", {"reason": "campaign_discovery", "wait_s": 120}),
+        ("post", "/api/campaign/discover", {"timeout": 30, "auto_wake": False}),
+    ]
+
+
+def test_campaign_discovery_stops_before_post_when_wake_fails(db_session, monkeypatch):
+    monkeypatch.setattr(
+        web_agent_service,
+        "ensure_online",
+        lambda db, **kwargs: {"online": False, "error": "bridge did not answer"},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "_post",
+        lambda *args, **kwargs: pytest.fail("offline discovery must not be posted"),
+    )
+
+    result = web_agent_service.campaign_discover(db_session)
+
+    assert result["ok"] is False
+    assert result["error"] == "bridge did not answer"

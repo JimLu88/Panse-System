@@ -263,7 +263,19 @@ def campaign_inspect_detail(db: Session, campaign_title: str, *,
 def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
     """活动生命周期 P4: WA 抓千牛营销活动列表 (POST /api/campaign/discover → wait_job)。
     返回 {ok, campaigns: [{title, start, end, status, raw}, ...]} 或 {ok:False, error}。"""
-    j = _post(db, "/api/campaign/discover", {}, timeout=30)
+    # The full Windows Agent is intentionally off while idle.  Wake it before
+    # opening the discovery endpoint instead of first spending 30 seconds on a
+    # guaranteed connection timeout.  Browser imports plus the 20-second wake
+    # bridge poll can take about a minute on this workstation, so keep a real
+    # startup margin here.
+    online = ensure_online(db, reason="campaign_discovery", wait_s=120)
+    if not online.get("online"):
+        return {
+            "ok": False,
+            "error": online.get("error") or "活动发现前未能按需启动 Web-Agent",
+            "wake": online,
+        }
+    j = _post(db, "/api/campaign/discover", {}, timeout=30, auto_wake=False)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
     final = wait_job(db, j["job"], timeout_s=timeout_s)
