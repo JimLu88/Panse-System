@@ -449,6 +449,63 @@ def test_password_mismatch_pauses_retry_and_keeps_exact_reason(
     assert pipeline.needs_retry(db_session, "order_delivery") is False
 
 
+def test_matching_password_reopens_standalone_pause_without_false_success(
+    db_session, _feishu_stub, monkeypatch,
+):
+    from app.services import automation_pipeline_service as pipeline
+    from app.services import feishu_bot_service
+
+    pipeline.pause_for_input(
+        db_session,
+        "order_delivery",
+        "ExportOrderList-standalone.xlsx: 口令不匹配",
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.reingest_pending_shipping",
+        lambda db: {
+            "imported": 1,
+            "updated": 2,
+            "tried": 1,
+            "failed": 0,
+            "files": [{
+                "file": "ExportOrderList-standalone.xlsx",
+                "status": "imported",
+            }],
+        },
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.pending_shipping_password_files",
+        lambda db, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.finalize_order_pull_after_shipping_password",
+        lambda db: {
+            "completed": False,
+            "reason": "missing_current_order_pull_evidence",
+        },
+    )
+    monkeypatch.setattr(
+        osa, "repush_after_address_fill", lambda db, **kwargs: {"repushed": 0},
+    )
+
+    result = feishu_bot_service.apply_shipping_password(
+        db_session, "matching-password",
+    )
+
+    state = pipeline.get_pipeline(db_session, "order_delivery")
+    assert result["imported"] == 1
+    assert result["order_pull_completion"]["completed"] is False
+    assert result["delivery"]["_run_status"] == "fail"
+    assert state["success"] is False
+    assert state["final"] is False
+    assert state["waiting_input"] is False
+    assert state["last_error"] is None
+    assert any(
+        item["stage"] == "shipping_password_resolved"
+        for item in state["stages"]
+    )
+
+
 def test_relay_password_mismatch_is_reported_in_reply(db_session, monkeypatch):
     from app.services import feishu_bot_service
 

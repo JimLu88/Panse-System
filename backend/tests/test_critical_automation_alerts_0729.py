@@ -339,6 +339,56 @@ def test_pause_for_input_stops_retry_until_later_success(db_session, monkeypatch
     assert state["waiting_input"] is False
 
 
+def test_new_scheduled_run_reopens_stale_pause_without_erasing_audit(
+    db_session, monkeypatch,
+):
+    monkeypatch.setenv("PANSE_DISABLE_NOTIFY", "1")
+    pipeline.record_stage(
+        db_session,
+        "order_delivery",
+        "shipping_password_mismatch",
+        status="fail",
+        detail="ExportOrderList-old.xlsx",
+        now=_at(15, 34),
+    )
+    pipeline.pause_for_input(
+        db_session,
+        "order_delivery",
+        "ExportOrderList-old.xlsx: 口令不匹配",
+        now=_at(15, 34),
+    )
+
+    opened = pipeline.begin_run(
+        db_session,
+        "order_delivery",
+        run_key="scheduled-order-pull:2026-07-29:18:00",
+        now=_at(18),
+    )
+
+    assert opened["opened"] is True
+    assert opened["final"] is False
+    assert opened["waiting_input"] is False
+    assert opened["last_error"] is None
+    assert opened["stages"][0]["stage"] == "shipping_password_mismatch"
+
+    # Re-entering the same business run must not silently reopen it again.
+    pipeline.pause_for_input(
+        db_session,
+        "order_delivery",
+        "本轮新发货报表仍待口令",
+        now=_at(18, 5),
+    )
+    repeated = pipeline.begin_run(
+        db_session,
+        "order_delivery",
+        run_key="scheduled-order-pull:2026-07-29:18:00",
+        now=_at(18, 10),
+    )
+    assert repeated["opened"] is False
+    assert repeated["waiting_input"] is True
+    assert repeated["final"] is True
+
+
 def test_finance_outcomes_require_all_accounts_and_both_flow_sources(db_session):
     now = datetime.now().isoformat(timespec="seconds")
     for account in (

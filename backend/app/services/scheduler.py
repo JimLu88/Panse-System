@@ -814,6 +814,11 @@ def _job_web_agent_daily(db: Session) -> dict:
     # rejecting a genuinely fresh manual run solely because it is daytime.
     # At and after 18:00 the production safety gate remains exactly 18:00.
     order_freshness_hour = _order_pull_freshness_hour()
+    automation_pipeline_service.begin_run(
+        db,
+        "order_delivery",
+        run_key=f"scheduled-order-pull:{run_date.isoformat()}:18:00",
+    )
     automation_pipeline_service.record_stage(
         db, "order_delivery", "started", detail="18:00订单取数与送达链路开始"
     )
@@ -877,6 +882,27 @@ def _job_web_agent_daily(db: Session) -> dict:
                          if f.get("status") in ("pending_password", "pending")]
         r["_run_status"] = "fail"
         r["_error"] = f"取数文件待处理 {r['ingest']['pending']} 份: {','.join(pending_files)}"
+    elif (
+        len(agent_ingest_service.order_pull_artifact_names(r))
+        != agent_ingest_service.ORDER_PULL_EXPECTED_ARTIFACT_COUNT
+    ):
+        artifacts = agent_ingest_service.order_pull_artifact_names(r)
+        role_check = (r.get("ingest") or {}).get("order_artifact_role_check") or {}
+        missing_roles = list(role_check.get("missing_roles") or [])
+        if "shipping" in missing_roles or len(artifacts) == 2:
+            r["_run_status"] = "fail"
+            r["_error"] = (
+                "订单取数未完成：发货报表没有下载并进入ERP；"
+                "当前没有对应的加密文件，所以飞书不会要求转发发货密码。"
+                f"本轮只收到 {len(artifacts)}/3 份报表，系统将在下一重试时段重新拉取完整三报表"
+            )
+        else:
+            r["_run_status"] = "fail"
+            r["_error"] = (
+                "订单取数未完成：三报表清单不完整；"
+                f"本轮收到 {len(artifacts)}/3 份，缺少角色 "
+                + ",".join(missing_roles or ["未识别"])
+            )
     elif not agent_ingest_service.order_data_fresh(
             db, on=run_date, not_before_hour=order_freshness_hour):
         r["_run_status"] = "fail"

@@ -207,6 +207,46 @@ def get_pipeline(db: Session, pipeline: str, *, now: Optional[datetime] = None) 
     return dict(_entry_for_day(state, pipeline, current.date().isoformat()))
 
 
+def begin_run(
+    db: Session,
+    pipeline: str,
+    *,
+    run_key: str,
+    now: Optional[datetime] = None,
+) -> dict:
+    """Open one scheduled business run without erasing its audit history.
+
+    A manual report/password recovery can pause or even close ``order_delivery``
+    before the regular 18:00 pull starts.  The daily pull is a new business run
+    and must not inherit that stale terminal flag.  ``run_key`` makes this
+    transition idempotent: retries of the same run keep their failure counter,
+    while a genuinely new run clears only the current terminal/error fields.
+    Stages, notifications and failure counts remain available for audit.
+    """
+    if pipeline not in PIPELINE_LABELS:
+        raise ValueError(f"未知关键自动化: {pipeline}")
+    normalized_key = str(run_key or "").strip()
+    if not normalized_key:
+        raise ValueError("run_key 不能为空")
+    current = _now(now)
+    state = _load(db)
+    entry = _entry_for_day(state, pipeline, current.date().isoformat())
+    if entry.get("active_run_key") != normalized_key:
+        entry.update({
+            "active_run_key": normalized_key,
+            "run_started_at": current.isoformat(),
+            "success": False,
+            "final": False,
+            "waiting_input": False,
+            "last_error": None,
+            "last_attempt_at": None,
+            "next_retry_at": None,
+        })
+        _save(db, state)
+        return {**dict(entry), "opened": True}
+    return {**dict(entry), "opened": False}
+
+
 def needs_retry(db: Session, pipeline: str, *, now: Optional[datetime] = None) -> bool:
     entry = get_pipeline(db, pipeline, now=now)
     return bool(entry.get("failures")) and not entry.get("success") and not entry.get("final")
@@ -228,6 +268,7 @@ def resume_for_retry(
         "success": False,
         "final": False,
         "waiting_input": False,
+        "last_error": None,
         "next_retry_at": None,
     })
     _save(db, state)

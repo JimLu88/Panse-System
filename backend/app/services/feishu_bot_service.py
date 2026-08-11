@@ -1016,6 +1016,38 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
             }, ensure_ascii=False),
             description="最近发货报表口令匹配结果（不含口令）",
         )
+        # A matching password resolves the previous human-input gate even if
+        # this was a standalone/manual shipping report and no complete
+        # three-report manifest exists yet.  Reopen the chain for the next
+        # scheduled pull, but do not claim delivery success without a manifest.
+        if r.get("imported"):
+            try:
+                from app.services import automation_pipeline_service
+
+                pipeline_state = automation_pipeline_service.get_pipeline(
+                    db, "order_delivery",
+                )
+                if pipeline_state.get("waiting_input"):
+                    automation_pipeline_service.record_stage(
+                        db,
+                        "order_delivery",
+                        "shipping_password_resolved",
+                        detail="匹配口令已成功解密发货报表；等待完整三报表收口",
+                        artifacts=[
+                            str(item.get("file") or "")
+                            for item in (r.get("files") or [])
+                            if item.get("status") == "imported"
+                        ],
+                    )
+                    r["automation_pipeline"] = (
+                        automation_pipeline_service.resume_for_retry(
+                            db, "order_delivery",
+                        )
+                    )
+            except Exception:  # noqa: BLE001 - import success remains durable
+                logging.getLogger("panse.feishu_bot").warning(
+                    "口令成功后解除订单等待状态失败", exc_info=True,
+                )
         db.commit()
     # 飞书成功推送 (用户 2026-06-28): 解密成功 → 推到飞书群, 清晰可见(不只回卡)。
     # 在本核心做 → 无论本地飞书入站还是跨机转发(NAS reingest), 实际解密成功的那台都会推。

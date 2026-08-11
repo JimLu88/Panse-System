@@ -738,6 +738,46 @@ def test_daily_push_preserves_upstream_failure_when_stale(db_session, monkeypatc
     assert after["last_error"] == before["last_error"]
 
 
+def test_daily_pull_reports_missing_shipping_artifact_instead_of_password(
+    db_session, monkeypatch,
+):
+    from app.services import alert_service
+
+    monkeypatch.setenv("PANSE_DISABLE_NOTIFY", "1")
+    monkeypatch.setattr(ai, "is_running", lambda: False)
+    monkeypatch.setattr(
+        ai,
+        "orchestrate",
+        lambda db, **kwargs: {
+            "tasks": [{
+                "task": "taobao_orders",
+                "status": "done",
+                "artifacts": ["orders.xlsx", "sales-detail.xlsx"],
+            }],
+            "pending_manual": [],
+            "artifacts": ["orders.xlsx", "sales-detail.xlsx"],
+            "ingest": {
+                "pending": 0,
+                "errors": 0,
+                "files": [],
+                "order_artifact_role_check": {
+                    "ok": False,
+                    "missing_roles": ["shipping"],
+                },
+            },
+        },
+    )
+    monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: False)
+    monkeypatch.setattr(alert_service, "resolve_by_dedupe", lambda *args, **kwargs: None)
+
+    result = scheduler._job_web_agent_daily(db_session)
+
+    assert result["_run_status"] == "fail"
+    assert "发货报表没有下载并进入ERP" in result["_error"]
+    assert "飞书不会要求转发发货密码" in result["_error"]
+    assert "2/3" in result["_error"]
+
+
 def test_catchup_push_runs_when_fresh(db_session, monkeypatch):
     monkeypatch.setattr(ai, "order_data_fresh", lambda db, **kwargs: True)
     monkeypatch.setattr(oss, "generate_pending", lambda db: {"generated": 0})
