@@ -143,6 +143,35 @@ def _rev_order(db, no, paid):
                  order_date=date(2026, 5, 17), status="signed"))
 
 
+def test_record_exception_refreshes_open_but_preserves_ignored(db_session):
+    recon._record_exception(
+        db_session, rule="revenue_alipay", key="2026-07 兜底",
+        diff_amount=Decimal("100"), message="旧金额",
+    )
+    db_session.flush()
+    row = db_session.query(DataException).filter_by(
+        source_pk="revenue_alipay:2026-07 兜底",
+    ).one()
+
+    recon._record_exception(
+        db_session, rule="revenue_alipay", key="2026-07 兜底",
+        diff_amount=Decimal("20"), message="新金额",
+    )
+    assert row.description == "新金额"
+    assert row.severity == "warning"
+    assert row.context["diff"] == "20"
+    assert db_session.query(DataException).filter_by(
+        source_pk="revenue_alipay:2026-07 兜底",
+    ).count() == 1
+
+    row.status = "ignored"
+    recon._record_exception(
+        db_session, rule="revenue_alipay", key="2026-07 兜底",
+        diff_amount=Decimal("999"), message="不应覆盖人工做平",
+    )
+    assert row.description == "新金额"
+
+
 def test_revenue_alipay_taojinbi_small_positive_exempt(db_session):
     """支付宝该单收入 > 实付 的小额正差(淘金币补贴, 单条付款)→ 不报异常。"""
     _rev_order(db_session, "5115819387933109739", 3576.91)

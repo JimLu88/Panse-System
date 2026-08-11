@@ -157,7 +157,7 @@ def _finance_start(db: Session) -> date:
 
 
 def _record_exception(db, *, rule: RuleName, key: str, diff_amount: Decimal, message: str):
-    """幂等写: 同 rule:key 已有 open 异常则跳过, 避免每日 cron 重复堆积。
+    """幂等写: 同 rule:key 只保留一条 open 异常，并刷新为本次扫描的真实金额。
 
     已被人工「做平」(status=ignored) 的也跳过 — 做平是永久豁免, cron 不会再翻出来。
     """
@@ -169,6 +169,13 @@ def _record_exception(db, *, rule: RuleName, key: str, diff_amount: Decimal, mes
         _DE.status.in_(("open", "ignored")),
     ).first()
     if existing:
+        if existing.status == "open":
+            # 规则/数据修正后 key 往往不变；若继续保留旧 description/context，页面会每天显示
+            # 修复前的金额，造成“问题仍在复发”的假象。只刷新机器维护的 open 记录，人工做平不动。
+            existing.severity = "warning" if abs(diff_amount) < Decimal("50") else "error"
+            existing.description = message
+            existing.suggestion_action = "ai_smoothing_or_manual_review"
+            existing.context = {"rule": rule, "key": key, "diff": str(diff_amount)}
         return
     exception_service.record(
         db,
