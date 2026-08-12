@@ -306,6 +306,9 @@ class OrderDetail(Base, TimestampMixin):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     sync_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, nullable=True)
+    # 淘宝行级权威标识。一个主订单可以包含多个子订单；工厂制单、退款作废和
+    # 送达凭证必须绑定到子订单，不能再用主订单号代表整单所有商品。
+    sub_order_no: Mapped[Optional[str]] = mapped_column(String(64), unique=True, nullable=True, index=True)
     order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     factory_order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     product_code: Mapped[Optional[str]] = mapped_column(String(64), index=True)
@@ -319,6 +322,23 @@ class OrderDetail(Base, TimestampMixin):
     qty: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
     source: Mapped[Optional[str]] = mapped_column(String(16), nullable=True, index=True)
+    line_status: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    refund_status: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    refund_amount: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2), nullable=True)
+    # 子订单自己的工厂编号；同一主订单里的不同商品互不影响。
+    factory_no: Mapped[Optional[int]] = mapped_column(Integer, unique=True, nullable=True, index=True)
+    factory_delivery_required: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False, index=True
+    )
+    factory_delivery_state: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True, index=True
+    )
+    factory_delivery_key: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    factory_delivery_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    factory_delivery_sent_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    factory_delivery_message_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
 
 
 # 配件状态枚举

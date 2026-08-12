@@ -19,7 +19,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.services import factory_sheet, import_storage
 
 _logger = logging.getLogger("panse.order_sheet")
@@ -349,6 +349,16 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
     failures: list[dict] = []
     attempted = 0
     for o in orders:
+        # 已切到子订单工厂链的主订单不得再生成“代表整单”的旧图，否则一单
+        # 多商品会同时走主单图和子单图，造成重复生产。
+        if db.execute(
+            select(OrderDetail.id).where(
+                OrderDetail.order_no == o.order_no,
+                OrderDetail.source == "import",
+                OrderDetail.factory_delivery_required.is_(True),
+            ).limit(1)
+        ).scalar_one_or_none() is not None:
+            continue
         if o.order_no in done or attempted >= limit:
             continue
         if (o.status or "") in ("cancelled", "pending_payment"):
@@ -446,6 +456,232 @@ def archive_sent_snapshot(
     return result.file
 
 
+def archive_sent_line_snapshot(
+    db: Session,
+    order: Order,
+    line: OrderDetail,
+    content: bytes,
+    *,
+    source: str = "factory_push",
+) -> ImportedFile:
+    """归档已发送的子订单商品图；这是新链路的唯一送达凭证。"""
+    if not line.sub_order_no or line.order_no != order.order_no:
+        raise ValueError("工厂商品行缺少有效子订单编号")
+    if line.factory_no is None:
+        raise ValueError(f"子订单 {line.sub_order_no} 没有正式工厂单号")
+    result = import_storage.archive(
+        db,
+        content=content,
+        original_name=(
+            f"{date.today().isoformat()}_{order.order_no}_{line.sub_order_no}_"
+            f"畔色{line.factory_no}单.jpg"
+        ),
+        kind="order_sheet_sent",
+        source=source,
+        on_date=date.today(),
+        row_summary={
+            "order_no": order.order_no,
+            "sub_order_no": line.sub_order_no,
+            "line_id": line.id,
+            "factory_no_at_render": int(line.factory_no),
+            "factory_label_at_render": f"畔色{line.factory_no}单",
+            "render_width": 1684,
+            "pushed": True,
+            "line_delivery": True,
+        },
+    )
+    return result.file
+
+
+def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
+    """按淘宝子订单逐件生成并推送尚未送达的实体商品。
+
+    仅处理 ``factory_delivery_required`` 的新/已迁移行；历史未绑定记录不会被全量重推。
+    退款且从未发送的行直接排除；退款且已有发送凭证留给子订单作废链处理。
+    """
+    import os
+    from app.services import (
+        feishu_client,
+        order_line_delivery_service as line_delivery,
+        settings_service,
+    )
+
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "notify_disabled"}
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    if not chat_id:
+        return {"pushed": 0, "failed": 0, "order_nos": [], "reason": "no_chat_id"}
+    sent = line_delivery.sent_line_evidence(db)
+    pushed: list[str] = []
+    failed: list[dict] = []
+    for line in line_delivery.active_lines(db):
+        sub_order_no = str(line.sub_order_no or "")
+        if sub_order_no in sent or len(pushed) + len(failed) >= limit:
+            continue
+        if line.factory_delivery_state in {"sending_caption", "sending_image", "uncertain"}:
+            failed.append({
+                "order_no": line.order_no,
+                "sub_order_no": sub_order_no,
+                "reason": "此前发送结果不确定，已停止自动重发，需核对飞书回执",
+            })
+            continue
+        order = db.execute(
+            select(Order).where(Order.order_no == line.order_no)
+        ).scalar_one_or_none()
+        if order is None or (order.status or "") in ("cancelled", "pending_payment"):
+            continue
+        from app.services import order_flags
+        if order_flags.is_remote(order):
+            continue
+        address_pending_for_production = _can_push_production_only_without_address(order)
+        if not _addr_ok_for_factory(order) and not address_pending_for_production:
+            failed.append({
+                "order_no": order.order_no,
+                "sub_order_no": sub_order_no,
+                "reason": "收货地址不完整，已暂缓发送",
+                "deferred": "address_masked",
+            })
+            continue
+        if line.factory_no is None:
+            line.factory_no = line_delivery.next_factory_no(db)
+            db.flush()
+        delivery_key = f"factory-line:{sub_order_no}:{line.factory_no}"
+        line.factory_delivery_key = delivery_key
+        line.factory_delivery_state = "rendering"
+        line.factory_delivery_error = None
+        db.commit()
+        send_stage = "rendering"
+        try:
+            sheet = factory_sheet.build_for_order_line(
+                db,
+                order.id,
+                line.id,
+                address_pending_for_production=address_pending_for_production,
+            )
+            png = render_png(sheet)
+            image_key = feishu_client.upload_image(db, png)
+            caption = (
+                f"畔色{line.factory_no}单 · 主订单 {order.order_no} · "
+                f"子订单 {sub_order_no} · {(line.product_name or '')[:20]}"
+            )
+            line.factory_delivery_state = "sending_caption"
+            db.commit()
+            send_stage = "sending_caption"
+            feishu_client.send_text(db, chat_id, caption)
+            line.factory_delivery_state = "sending_image"
+            db.commit()
+            send_stage = "sending_image"
+            image_result = feishu_client.send_image(db, chat_id, image_key) or {}
+            archive_sent_line_snapshot(db, order, line, png)
+            line.factory_delivery_state = "sent"
+            line.factory_delivery_sent_at = datetime.now().astimezone()
+            line.factory_delivery_message_id = _feishu_message_id(image_result)
+            db.commit()
+            pushed.append(sub_order_no)
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            line = db.get(OrderDetail, line.id)
+            if line is not None:
+                line.factory_delivery_state = (
+                    "uncertain" if send_stage in {"sending_caption", "sending_image"} else "failed"
+                )
+                line.factory_delivery_error = f"{type(exc).__name__}: {exc}"[:500]
+                db.commit()
+            failed.append({
+                "order_no": order.order_no,
+                "sub_order_no": sub_order_no,
+                "reason": f"{type(exc).__name__}: {exc}"[:500],
+            })
+            _logger.warning("子订单下单图发送失败 %s", sub_order_no, exc_info=True)
+    return {
+        "pushed": len(pushed),
+        "failed": len(failed),
+        "sub_order_nos": pushed,
+        "failures": failed,
+    }
+
+
+def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
+    """仅作废“该子订单曾经实际发给工厂”的退款商品。
+
+    退款但从未发送的商品不补推、不作废；同主订单其它商品完全不受影响。
+    """
+    import os
+    from app.services import (
+        feishu_client,
+        order_line_delivery_service as line_delivery,
+        settings_service,
+    )
+    sent = line_delivery.sent_line_evidence(db)
+    already_void = line_delivery.void_line_evidence(db)
+    targets = [
+        line for line in line_delivery.physical_lines(db)
+        if line.sub_order_no
+        and line_delivery.line_is_refunded(line)
+        and str(line.sub_order_no) in sent
+        and str(line.sub_order_no) not in already_void
+    ]
+    if not targets:
+        return {"voided": 0, "failed": 0, "sub_order_nos": [], "failures": []}
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "notify_disabled"}
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    if not chat_id:
+        return {"voided": 0, "failed": 0, "sub_order_nos": [], "reason": "no_chat_id"}
+    voided: list[str] = []
+    failed: list[dict] = []
+    for line in targets[:limit]:
+        order = db.execute(select(Order).where(Order.order_no == line.order_no)).scalar_one_or_none()
+        if order is None:
+            continue
+        try:
+            sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
+            content = render_void_png(sheet)
+            image_key = feishu_client.upload_image(db, content)
+            text = (
+                f"⚠️ 子订单 {line.sub_order_no} 原【畔色{line.factory_no}单】已退款作废；"
+                f"主订单 {order.order_no} 的其它商品不受影响。"
+            )
+            feishu_client.send_text(db, chat_id, text)
+            feishu_client.send_image(db, chat_id, image_key)
+            import_storage.archive(
+                db,
+                content=content,
+                original_name=(
+                    f"{date.today().isoformat()}_{order.order_no}_{line.sub_order_no}_已作废.jpg"
+                ),
+                kind="order_sheet_void",
+                source="line_refund",
+                on_date=date.today(),
+                row_summary={
+                    "order_no": order.order_no,
+                    "sub_order_no": line.sub_order_no,
+                    "line_id": line.id,
+                    "factory_no_at_render": line.factory_no,
+                    "factory_label_at_render": (
+                        f"畔色{line.factory_no}单" if line.factory_no is not None else None
+                    ),
+                    "render_width": 1684,
+                    "line_void": True,
+                    "pushed": True,
+                },
+            )
+            db.commit()
+            voided.append(str(line.sub_order_no))
+        except Exception as exc:  # noqa: BLE001
+            db.rollback()
+            failed.append({
+                "sub_order_no": line.sub_order_no,
+                "reason": f"{type(exc).__name__}: {exc}"[:500],
+            })
+    return {
+        "voided": len(voided),
+        "failed": len(failed),
+        "sub_order_nos": voided,
+        "failures": failed,
+    }
+
+
 def _order_no_from_name(name: Optional[str]) -> Optional[str]:
     """从下单图归档文件名反解订单号 — 兼容新旧两种命名。
 
@@ -534,6 +770,14 @@ def _is_pushable(db: Session, rec: ImportedFile) -> bool:
         return False
     order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
     if order is None:
+        return False
+    if db.execute(
+        select(OrderDetail.id).where(
+            OrderDetail.order_no == no,
+            OrderDetail.source == "import",
+            OrderDetail.factory_delivery_required.is_(True),
+        ).limit(1)
+    ).scalar_one_or_none() is not None:
         return False
     if (order.status or "") in ("cancelled", "pending_payment") or _is_refunded(order):
         return False
@@ -1050,6 +1294,11 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
     remote_report = remote_report_service.send_pending_reminders(db)
     generated = generate_pending(db)
     push = push_pending_images(db, limit=limit, include_baseline=False, quiet=quiet)
+    from app.services import order_line_delivery_service as line_delivery
+    legacy_binding = line_delivery.bind_unambiguous_legacy_evidence(db)
+    line_void = reconcile_refunded_order_lines(db, limit=limit)
+    line_push = reconcile_order_line_delivery(db, limit=limit)
+    line_gate = line_delivery.delivery_count_gate(db)
     result = {
         "generated": generated,
         "generation_failed": int(generated.get("generation_failed") or 0),
@@ -1077,6 +1326,14 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         "remote_report_failed": remote_report["failed"],
         "activated_repush_reset": activated.get("reset_for_new_no") or [],
         "activated_baseline_released": activated.get("released_activated_baseline") or [],
+        "line_images_pushed": int(line_push.get("pushed") or 0),
+        "line_images_failed": int(line_push.get("failed") or 0),
+        "line_failures": line_push.get("failures") or [],
+        "line_delivery_gate": line_gate,
+        "legacy_line_binding": legacy_binding,
+        "line_voided": int(line_void.get("voided") or 0),
+        "line_void_failed": int(line_void.get("failed") or 0),
+        "line_void_failures": line_void.get("failures") or [],
     }
     errors: list[str] = []
     if result["generation_failed"]:
@@ -1126,6 +1383,49 @@ def reconcile_pending_delivery(db: Session, *, limit: int = 50, quiet: bool = Tr
         errors.append(
             "飞书是否送达无法确定，已停止盲目重发，需人工核对: "
             + ",".join(result["delivery_uncertain"])
+        )
+    if result["line_images_failed"]:
+        actionable_line_failures = [
+            item for item in result["line_failures"]
+            if item.get("deferred") != "address_masked"
+        ]
+        result["line_deferred_no_address"] = [
+            item.get("sub_order_no") for item in result["line_failures"]
+            if item.get("deferred") == "address_masked"
+        ]
+    else:
+        actionable_line_failures = []
+        result["line_deferred_no_address"] = []
+    if actionable_line_failures:
+        errors.append(
+            "子订单下单图发送失败: "
+            + "; ".join(
+                f"{item.get('sub_order_no')}: {item.get('reason')}"
+                for item in actionable_line_failures[:10]
+            )
+        )
+    if result["line_void_failed"]:
+        errors.append(
+            "子订单退款作废发送失败: "
+            + "; ".join(
+                f"{item.get('sub_order_no')}: {item.get('reason')}"
+                for item in result["line_void_failures"][:10]
+            )
+        )
+    gate_missing = set(line_gate.get("missing_sub_order_nos") or [])
+    address_deferred = set(result.get("line_deferred_no_address") or [])
+    unexplained_line_missing = sorted(gate_missing - address_deferred)
+    result["line_delivery_gate"]["deferred_no_address"] = sorted(address_deferred)
+    result["line_delivery_gate"]["unexplained_missing_sub_order_nos"] = unexplained_line_missing
+    if unexplained_line_missing or line_gate.get("unvoided_refunded_sub_order_nos"):
+        errors.append(
+            "子订单送达数量不一致: 有效商品 "
+            f"{line_gate.get('active_product_count')} 件，已发送工厂图 "
+            f"{line_gate.get('sent_factory_sheet_count')} 张；缺少 "
+            + ",".join(unexplained_line_missing)
+            + ("；退款未作废 " + ",".join(
+                line_gate.get("unvoided_refunded_sub_order_nos") or []
+            ) if line_gate.get("unvoided_refunded_sub_order_nos") else "")
         )
     if errors:
         result["_run_status"] = "fail"

@@ -26,7 +26,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.models.import_file import ImportedFile
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import (
@@ -81,6 +81,7 @@ FIELD_SPECS: tuple[tuple[str, int], ...] = (
     ("预计发货日期", 5),
     ("产品编码", 1),
     ("订单号", 1),
+    ("子订单号", 1),
     ("SKU编码", 1),
     ("SKU规格", 1),
     ("工厂下单图", 17),
@@ -128,6 +129,7 @@ EXPORT_FIELDS: tuple[str, ...] = (
     "下单日期",
     "预计发货日期",
     "订单号",
+    "子订单号",
     "客户名称",
     "客户联系方式",
     "客户地址",
@@ -479,6 +481,93 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             continue
         if not (order.sku_code or order.sku):
             continue
+        line_rows = db.execute(
+            select(OrderDetail).where(
+                OrderDetail.order_no == order.order_no,
+                OrderDetail.source == "import",
+                OrderDetail.factory_delivery_required.is_(True),
+                OrderDetail.sub_order_no.isnot(None),
+            ).order_by(OrderDetail.id.asc())
+        ).scalars().all()
+        # 子订单链路一行一件；退款但未曾送达的子商品不进入工厂表。
+        if line_rows:
+            from app.services import order_line_delivery_service
+            line_sent = order_line_delivery_service.sent_line_evidence(db)
+            for line in line_rows:
+                sub_order_no = str(line.sub_order_no or "")
+                line_refunded = order_line_delivery_service.line_is_refunded(line)
+                if line_refunded and sub_order_no not in line_sent:
+                    continue
+                ps_line = db.execute(
+                    select(PricingSku).where(PricingSku.sku_code == line.sku_code)
+                ).scalar_one_or_none()
+                current_line = not line_refunded
+                factory_no = line.factory_no
+                factory_label = f"畔色{factory_no}单" if factory_no else "待编号"
+                image_slots = sheet_images.get(sub_order_no) or {}
+                image_slot = "void" if line_refunded else "sent"
+                sheet_image = image_slots.get(image_slot)
+                if (
+                    factory_no is None
+                    or sheet_image is None
+                    or int(sheet_image.get("factory_no_at_render") or 0) != int(factory_no)
+                    or str(sheet_image.get("factory_label_at_render") or "") != factory_label
+                    or int(sheet_image.get("render_width") or 0) != 1684
+                ):
+                    sheet_image = None
+                schedule = order_flags.factory_schedule(order)
+                is_custom, custom_reason = _custom_order_info(order, ps_line)
+                production_qty = max(int(line.qty or 1), 1)
+                unit_wood = (
+                    Decimal(str(ps_line.wood_cost)).quantize(Decimal("0.01"))
+                    if ps_line is not None and ps_line.wood_cost is not None else None
+                )
+                if unit_wood is None and len(line_rows) == 1:
+                    unit_wood = _wood_unit_price(order, None)
+                photo_requested = _photo_requested(order)
+                alerts = ["📷 通知拍照"] if photo_requested else []
+                out.append({
+                    "订单号": order.order_no,
+                    "子订单号": sub_order_no,
+                    "工厂下单号": factory_label,
+                    "下单分组": "工厂正式单" if factory_no else "待编号",
+                    "系统排序键": (
+                        f"1-{factory_no:06d}" if factory_no else f"3-{order.id:010d}-{line.id:010d}"
+                    ),
+                    "商品名称": line.product_name or product_names.get(line.product_code or "") or "",
+                    "产品编码": line.product_code or "",
+                    "SKU编码": line.sku_code or "",
+                    "SKU规格": line.sku_name or "",
+                    "尺寸": (ps_line.size_info if ps_line else None) or "",
+                    "订购数量": production_qty,
+                    "木作成本价": float(unit_wood) if unit_wood is not None else None,
+                    "定制标识": "定制单" if is_custom else "常规单",
+                    "木作成本说明": (
+                        f"定制成本需人工核验｜{custom_reason}" if is_custom else ""
+                    ),
+                    "下单日期": _date_ms(order.order_date),
+                    "预计发货日期": _date_ms(schedule["effective_deadline"]),
+                    "订单状态": "已作废" if line_refunded else ("生产中" if factory_no else "待制单"),
+                    "交期紧急度": (
+                        "取消" if line_refunded else _urgency_label(order, refunded=False, schedule=schedule)
+                    ),
+                    "发货安排": _ship_plan(order, remote=False, photo_requested=photo_requested),
+                    "客户延期单": bool(order.is_customer_delayed),
+                    "客户通知拍照": photo_requested,
+                    "订单提醒": " · ".join(alerts),
+                    "订单备注": _order_notes(order),
+                    "客户名称": order.customer_name or "",
+                    "客户联系方式": order.customer_phone or "",
+                    "客户地址": order.customer_address or "",
+                    "物流单号": order.tracking_no or "",
+                    "系统更新时间": now_ms,
+                    "_order_id": order.id,
+                    "_line_id": line.id,
+                    "_sheet_path": sheet_image["path"] if sheet_image else None,
+                    "_sheet_signature": sheet_image["signature"] if sheet_image else None,
+                    "_sheet_name": sheet_image["name"] if sheet_image else None,
+                })
+            continue
         # 取消/退款但曾经拿过正式或远期编号的单保留，状态明确显示作废；从未进入工厂链路的不展示。
         if not (order.factory_no or order.remote_seq or current):
             continue
@@ -540,6 +629,7 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             alerts.append("📷 通知拍照")
         out.append({
             "订单号": order.order_no,
+            "子订单号": "",
             "工厂下单号": factory_label,
             "下单分组": order_group,
             "系统排序键": system_sort_key,
@@ -653,7 +743,8 @@ def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
         "产品编码": 18, "SKU编码": 20, "SKU规格": 28, "尺寸": 24,
         "订购数量": 10, "木作成本价": 13, "定制标识": 11, "木作成本说明": 32,
         "订单状态": 12, "发货安排": 20, "订单提醒": 22, "下单日期": 13,
-        "预计发货日期": 15, "订单号": 22, "客户名称": 12, "客户联系方式": 20,
+        "预计发货日期": 15, "订单号": 22, "子订单号": 22,
+        "客户名称": 12, "客户联系方式": 20,
         "客户地址": 38, "订单备注": 45, "物流单号": 22, "工厂下单图": 28,
     }
     for col, field in enumerate(EXPORT_FIELDS, start=1):
@@ -801,7 +892,7 @@ def _load_image_cache(db: Session) -> dict[str, str]:
 
 
 def _factory_sheet_images(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
-    """订单号 → 已发送最终图 / 作废图。
+    """子订单号（旧记录回退主订单号）→ 已发送最终图 / 作废图。
 
     草稿归档 ``order_sheet`` 生成时可能还没有分配工厂编号，不能用于工厂下单表。
     这里只认实际发送版 ``order_sheet_sent`` 和作废版，并携带生成时编号做逐行校验。
@@ -826,8 +917,9 @@ def _factory_sheet_images(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
             slot = "void"
         if not order_no:
             continue
+        entity_no = str(summary.get("sub_order_no") or "").strip() or order_no
         signature = record.file_hash or f"imported-file:{record.id}:{record.size_bytes or 0}"
-        result.setdefault(order_no, {})[slot] = {
+        result.setdefault(entity_no, {})[slot] = {
             "path": record.stored_path,
             "signature": f"factory-sheet:{signature}",
             "name": record.original_filename or f"工厂下单图_{order_no}.jpg",
@@ -1073,16 +1165,24 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         cache_before = dict(cache)
         remote_rows = feishu_client.list_records(db, app_token, table_id)
         remote_by_no: dict[str, dict] = {}
+        legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
-            order_no = str((rec.get("fields") or {}).get("订单号") or "").strip()
-            if order_no and order_no not in remote_by_no:
-                remote_by_no[order_no] = rec
+            fields = rec.get("fields") or {}
+            order_no = str(fields.get("订单号") or "").strip()
+            sub_order_no = str(fields.get("子订单号") or "").strip()
+            entity_key = sub_order_no or order_no
+            if entity_key and entity_key not in remote_by_no:
+                remote_by_no[entity_key] = rec
+            if order_no and not sub_order_no:
+                legacy_remote_by_order.setdefault(order_no, []).append(rec)
 
         creates: list[dict] = []
         updates: list[dict] = []
+        claimed_remote_ids: set[str] = set()
         expected_order_nos = {str(row["订单号"]) for row in rows}
         for row in rows:
             order_no = str(row["订单号"])
+            entity_key = str(row.get("子订单号") or order_no)
             payload = {k: v for k, v in row.items() if not k.startswith("_")}
             sheet_path = row.get("_sheet_path")
             sheet_signature = row.get("_sheet_signature")
@@ -1109,10 +1209,22 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                         )
                         payload["工厂下单图"] = []
 
-            remote = remote_by_no.get(order_no)
+            remote = remote_by_no.get(entity_key)
+            if remote is None and row.get("子订单号"):
+                # 0139 上线前飞书一行=主订单，没有子订单号。用“主订单+原工厂号”
+                # 唯一匹配并原地升级，避免切换后重复新建一行。
+                matches = [
+                    item for item in legacy_remote_by_order.get(order_no, [])
+                    if str(item.get("record_id") or "") not in claimed_remote_ids
+                    and str((item.get("fields") or {}).get("工厂下单号") or "").strip()
+                    == str(row.get("工厂下单号") or "").strip()
+                ]
+                if len(matches) == 1:
+                    remote = matches[0]
             if remote is None:
                 creates.append(payload)
             elif not _same(remote.get("fields") or {}, payload):
+                claimed_remote_ids.add(str(remote.get("record_id") or ""))
                 updates.append({"record_id": remote["record_id"], "fields": payload})
 
         if creates:

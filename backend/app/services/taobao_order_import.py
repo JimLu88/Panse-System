@@ -572,6 +572,7 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 orders[no] = o
             merchant = g3(row, "商家编码", "外部系统编号")
             o.lines.append({
+                "sub_order_no": _clean(g3(row, "子订单编号")) or no,
                 "product_name": g3(row, "商品标题", "标题"),
                 "sku": extract_sku(g3(row, "商品属性")),
                 "sku_code": _clean(merchant),
@@ -579,6 +580,9 @@ def _parse_qianniu_multi(raw: bytes, rep: TaobaoImportReport) -> dict[str, _Orde
                 "sku_id": _clean(g3(row, "skuId", "sku id", "SKU ID", "sku_id")),
                 "qty": g3(row, "购买数量", "数量"),
                 "amount": _to_decimal(g3(row, "买家应付货款", "商品价格")),
+                "status_text": g3(row, "订单状态"),
+                "refund_status": _clean(g3(row, "退款状态")),
+                "refund": _to_decimal(g3(row, "退款金额")),
             })
     wb.close()
     return orders, ship
@@ -668,6 +672,7 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             orders[no] = o
         merchant = gv(row, "商家编码", "外部系统编号")
         o.lines.append({
+            "sub_order_no": _clean(gv(row, "子订单编号")) or no,
             "product_name": gv(row, "商品标题", "标题", "商品名称"),
             "sku": extract_sku(gv(row, "商品属性")),
             "sku_code": _clean(merchant),
@@ -675,6 +680,8 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
             "sku_id": _clean(gv(row, "skuId", "sku id", "SKU ID", "sku_id")),
             "qty": gv(row, "购买数量", "数量"),
             "amount": _to_decimal(gv(row, "买家应付货款", "价格", "商品价格")),
+            "status_text": gv(row, "订单状态"),
+            "refund_status": _clean(gv(row, "退款状态")),
             # 乙(用户拍板 2026-06-23): 每个子订单行的财务列都留下, 供 _commit_orders 按主订单求和
             # (此前订单级金额只取第一行 → 多产品单漏抓其余产品的实付/实收/应付)。
             "paid_real": _to_decimal(gv(row, "买家实付金额", "买家实际支付金额")),
@@ -687,7 +694,14 @@ def _parse_sales_detail(filename: str, raw: bytes, rep: TaobaoImportReport) -> d
     return orders
 
 
-def _persist_order_lines(db: Session, order_no: str, lines: list, resolver) -> None:
+def _persist_order_lines(
+    db: Session,
+    order_no: str,
+    lines: list,
+    resolver,
+    *,
+    enable_factory_delivery: bool = False,
+) -> None:
     """一单多宝贝 → 把每个商品行 upsert 到 order_details(source='import'), 供成本按行汇总(杜绝塌单漏算)。
 
     sku_code 经对应表 resolve 成 PPS 编码(否则匹配不到定价/成本); 服务行(送货/安装)不写; 幂等(按 sync_key)。
@@ -702,18 +716,46 @@ def _persist_order_lines(db: Session, order_no: str, lines: list, resolver) -> N
         if hit:
             scode = hit.get("sku_code") or scode
             pcode = hit.get("product_code") or pcode
-        sync_key = f"line:{order_no}:{idx}"
-        row = db.execute(select(OrderDetail).where(OrderDetail.sync_key == sync_key)).scalar_one_or_none()
+        sub_order_no = _clean(ln.get("sub_order_no")) or None
+        sync_key = f"line:{sub_order_no}" if sub_order_no else f"line:{order_no}:{idx}"
+        row = None
+        if sub_order_no:
+            row = db.execute(
+                select(OrderDetail).where(OrderDetail.sub_order_no == sub_order_no)
+            ).scalar_one_or_none()
+        if row is None:
+            row = db.execute(
+                select(OrderDetail).where(OrderDetail.sync_key == sync_key)
+            ).scalar_one_or_none()
+        if row is None and sub_order_no:
+            # 0139 前的行键是主订单+序号；原地升级并补上子订单号，不能复制一行。
+            row = db.execute(
+                select(OrderDetail).where(
+                    OrderDetail.sync_key == f"line:{order_no}:{idx}"
+                )
+            ).scalar_one_or_none()
+        line_status, recognized = _resolve_status(ln.get("status_text"))
         vals = dict(
+            sync_key=sync_key, sub_order_no=sub_order_no,
             order_no=order_no, product_code=pcode, sku_code=scode,
             product_name=_clean(ln.get("product_name")),
+            sku_name=_clean(ln.get("sku")),
             qty=_to_int(ln.get("qty"), default=1),
-            amount=_to_decimal(ln.get("amount")), source="import")
+            amount=_to_decimal(ln.get("amount")), source="import",
+            line_status=(line_status if recognized else None),
+            refund_status=_clean(ln.get("refund_status")),
+            refund_amount=_to_decimal(ln.get("refund")),
+        )
         if row:
             for k, v in vals.items():
                 setattr(row, k, v)
+            if enable_factory_delivery:
+                row.factory_delivery_required = True
         else:
-            db.add(OrderDetail(sync_key=sync_key, **vals))
+            db.add(OrderDetail(
+                factory_delivery_required=enable_factory_delivery,
+                **vals,
+            ))
 
 
 # ── 聚合订单行 → Order 入库 ───────────────────────────────────────────────────
@@ -751,7 +793,18 @@ def _commit_orders(db: Session, orders: dict[str, _OrderRow], platform: str,
         lines = o.lines or [{}]
         if len(lines) > 1:
             rep.multi_line_orders += 1
-            _persist_order_lines(db, no, lines, resolver)   # 写各商品行 → 成本按行汇总(防塌单漏算)
+        # 2026-08-12: 单商品也必须保存淘宝子订单号。工厂制单/退款/送达从此以
+        # 子订单为最小单元；只在多商品时落明细会让单商品和重拍新单再次退化为主订单口径。
+        _persist_order_lines(
+            db,
+            no,
+            lines,
+            resolver,
+            # Forward cut-over: only orders created on/after rollout are
+            # automatically line-delivered. Older sent orders are migrated by
+            # unambiguous evidence binding below, never blindly resent.
+            enable_factory_delivery=bool(_od and _od >= date(2026, 8, 12)),
+        )
         _non_service = [l for l in lines if not _is_service_line_name(l.get("product_name"))]
         primary = max(_non_service or lines, key=lambda x: (x.get("amount") or Decimal(0)))
 

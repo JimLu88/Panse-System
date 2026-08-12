@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.models.bom import BomLine
 from app.models.custom_variant import CustomVariant
 from app.models.material import Material
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import validation
@@ -240,6 +240,57 @@ def build(
         factory_no=getattr(order, "factory_no", None),   # 工厂制单编号
         order_is_custom=bool(getattr(order, "is_custom", False)),   # 订单级定制标记 → 定制敲章
     )
+    if address_pending_for_production:
+        sheet.ship_date = None
+        sheet.ship_eta_auto = False
+        sheet.ship_date_pending = True
+    return sheet
+
+
+def build_for_order_line(
+    db: Session,
+    order_id: int,
+    detail_id: int,
+    *,
+    address_pending_for_production: bool = False,
+) -> FactorySheet:
+    """按淘宝子订单商品行生成工厂单；地址、备注仍继承主订单。
+
+    每个实体商品独立渲染，禁止把主订单的“代表商品”复制给同单其它商品。
+    """
+    order = db.get(Order, order_id)
+    detail = db.get(OrderDetail, detail_id)
+    if order is None or detail is None or detail.order_no != order.order_no:
+        raise ValueError(f"order line {detail_id} does not belong to order {order_id}")
+    production_note = getattr(order, "production_note", None) or getattr(order, "seller_memo", None)
+    if address_pending_for_production and _ADDRESS_PENDING_PRODUCTION_NOTE not in (production_note or ""):
+        production_note = "\n".join(
+            value for value in (production_note, _ADDRESS_PENDING_PRODUCTION_NOTE) if value
+        )
+    sheet = build_from_fields(
+        db,
+        order_no=order.order_no,
+        product_code=detail.product_code,
+        product_name=detail.product_name,
+        sku=detail.sku_name or detail.sku_code,
+        sku_code=detail.sku_code,
+        qty=detail.qty or 1,
+        customer_name=("地址待补" if address_pending_for_production else order.customer_name),
+        customer_phone=("待补" if address_pending_for_production else order.customer_phone),
+        customer_address=(
+            _ADDRESS_PENDING_SHIP_TO
+            if address_pending_for_production else order.customer_address
+        ),
+        order_date=order.order_date,
+        ship_date=order.ship_date,
+        remark=getattr(order, "buyer_message", None) or order.remark,
+        production_note=production_note,
+        factory_no=detail.factory_no,
+        order_is_custom=bool(getattr(order, "is_custom", False)),
+    )
+    # 图片上同时保留主订单和子订单，便于回查，不改变淘宝主订单的客服口径。
+    if detail.sub_order_no:
+        sheet.order_no = f"{order.order_no} / 子单 {detail.sub_order_no}"
     if address_pending_for_production:
         sheet.ship_date = None
         sheet.ship_eta_auto = False
