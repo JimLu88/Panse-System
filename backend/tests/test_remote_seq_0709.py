@@ -45,6 +45,10 @@ def test_factory_label():
     assert of.factory_label(Order(order_no="L3", platform="淘宝")) == ""
     # 正式号优先于远期序号
     assert of.factory_label(Order(order_no="L4", platform="淘宝", factory_no=290, remote_seq=3)) == "畔色290单"
+    # 已激活但尚未顺排正式号的短暂窗口，不能继续冒充远期单。
+    assert of.factory_label(Order(
+        order_no="L5", platform="淘宝", remote_seq=4, seller_memo="开始制作",
+    )) == ""
 
 
 def test_assign_remote_seqs_idempotent(db_session):

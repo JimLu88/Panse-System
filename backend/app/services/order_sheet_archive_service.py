@@ -542,7 +542,11 @@ def _is_pushable(db: Session, rec: ImportedFile) -> bool:
         return False
     if getattr(order, "factory_no", None) is None:
         od = getattr(order, "order_date", None)
-        if not (od and od >= _AUTO_NUMBER_SINCE):   # 无工厂编号的老单 → 推出去是噪音, 不算待推
+        # 老远期单下单时可能早于自动编号启用日，但客户后来明确
+        # “开始制作”后就是当前生产任务。生成候选和后续编号逻辑本来都
+        # 接纳这种激活单；这里也必须使用同一口径，不能把已生成的图
+        # 永久卡在待推队列。
+        if not ((od and od >= _AUTO_NUMBER_SINCE) or order_flags.is_activated(order)):
             return False
     return True
 

@@ -81,6 +81,40 @@ def test_push_decoupled_from_generation(db_session, _feishu_stub):
     assert res2["pushed"] == 0
 
 
+def test_old_activated_remote_order_is_numbered_and_pushed(db_session, _feishu_stub):
+    """6/19 前下的远期单，后来备注开始制作，也必须自动转正式工厂单。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")
+    order = Order(
+        platform="淘宝",
+        order_no="OLD-ACTIVATED-PUSH",
+        qty=1,
+        product_name="榉木岩板餐桌",
+        sku="砂白色1.8米岩板餐桌",
+        sku_code="PPS-OLD-ACT",
+        order_date=date(2026, 5, 24),
+        status="paid",
+        paid_amount=Decimal("2800"),
+        customer_address="上海市松江区测试路1号",
+        seller_memo="开始制作",
+        remote_seq=61,
+    )
+    db_session.add(order)
+    db_session.flush()
+
+    generated = osa.generate_pending(db_session)
+    assert generated["order_nos"] == ["OLD-ACTIVATED-PUSH"]
+    assert osa.count_pending_push(db_session, include_baseline=True) == 1
+
+    pushed = osa.push_pending_images(db_session, include_baseline=True)
+
+    db_session.refresh(order)
+    assert pushed["pushed"] == 1
+    assert pushed["order_nos"] == ["OLD-ACTIVATED-PUSH"]
+    assert order.factory_no is not None
+    assert osa.count_pending_push(db_session, include_baseline=True) == 0
+    assert _sheet_rec(db_session, order.order_no).row_summary["delivery_state"] == "sent"
+
+
 def test_baseline_excluded_from_auto_but_manual_can_push(db_session, _feishu_stub):
     """历史基线: 18:00 自动(include_baseline=False)跳过, 手动(True)可补推。"""
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory_group")

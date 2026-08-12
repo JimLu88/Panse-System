@@ -115,8 +115,10 @@ def factory_label(o) -> str:
     fno = getattr(o, "factory_no", None)
     if fno:
         return f"畔色{fno}单"
+    # remote_seq 是挂起阶段的历史内部编号。订单已被“开始制作”激活后，
+    # 在正式工厂号尚未分配的短暂窗口内不得继续显示成远期单。
     rseq = getattr(o, "remote_seq", None)
-    if rseq:
+    if rseq and not is_activated(o):
         return f"远期单{rseq}"
     return ""
 
