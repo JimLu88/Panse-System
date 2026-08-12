@@ -70,8 +70,10 @@ def request_stop(db: Session, *, reason: str) -> dict:
     return web_agent_wake_service.request(db, "stop", reason=reason)
 
 
-def ensure_online(db: Session, *, reason: str, wait_s: int = 75) -> dict:
+def ensure_online(db: Session, *, reason: str, wait_s: int = 180) -> dict:
     """Ask the Windows bridge to start the full Agent, then wait for health."""
+    from app.services import web_agent_wake_service
+
     current = _get_raw(db, "/api/tasks", timeout=5)
     if current.get("ok"):
         current["online"] = True
@@ -85,6 +87,21 @@ def ensure_online(db: Session, *, reason: str, wait_s: int = 75) -> dict:
         if last.get("ok"):
             last.update({"online": True, "wake_command_id": command.get("id")})
             return last
+        # Surface a bridge-confirmed startup failure immediately.  Connection
+        # timeouts alone only say that :8500 is offline; the wake command keeps
+        # the actual reason (cold-start timeout, missing runtime, early exit).
+        wake_status = web_agent_wake_service.status(db).get("command") or {}
+        if (
+            wake_status.get("id") == command.get("id")
+            and wake_status.get("status") == "failed"
+        ):
+            return {
+                "ok": False,
+                "online": False,
+                "wake_requested": True,
+                "wake_command_id": command.get("id"),
+                "error": wake_status.get("detail") or "Windows唤醒桥启动Web-Agent失败",
+            }
     return {
         "ok": False,
         "online": False,

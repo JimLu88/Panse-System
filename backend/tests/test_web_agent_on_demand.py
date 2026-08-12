@@ -82,6 +82,54 @@ def test_wake_start_reports_bridge_failure(db_session, monkeypatch):
     assert "bridge offline" in str(exc.value.detail)
 
 
+def test_ensure_online_uses_long_cold_start_window(db_session, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        web_agent_service,
+        "_get_raw",
+        lambda db, path, timeout=5: calls.append(path) or {"ok": True, "tasks": []},
+    )
+
+    result = web_agent_service.ensure_online(db_session, reason="scheduled_order_pull")
+
+    assert result["online"] is True
+    assert calls == ["/api/tasks"]
+
+
+def test_ensure_online_returns_bridge_failure_reason(db_session, monkeypatch):
+    command = {"id": "wake-1"}
+    monkeypatch.setattr(
+        web_agent_service,
+        "_get_raw",
+        lambda db, path, timeout=5: {"ok": False, "error": "ConnectTimeout"},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "request_start",
+        lambda db, **kwargs: command,
+    )
+    monkeypatch.setattr(
+        web_agent_wake_service,
+        "status",
+        lambda db: {
+            "command": {
+                "id": "wake-1",
+                "status": "failed",
+                "detail": "Web-Agent exited during startup (code=1)",
+            }
+        },
+    )
+    monkeypatch.setattr(web_agent_service.time, "sleep", lambda _seconds: None)
+
+    result = web_agent_service.ensure_online(
+        db_session, reason="scheduled_order_pull", wait_s=5
+    )
+
+    assert result["online"] is False
+    assert result["wake_command_id"] == "wake-1"
+    assert result["error"] == "Web-Agent exited during startup (code=1)"
+
+
 def test_campaign_discovery_wakes_before_posting(db_session, monkeypatch):
     calls = []
     monkeypatch.setattr(
