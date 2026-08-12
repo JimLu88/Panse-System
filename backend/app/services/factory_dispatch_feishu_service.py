@@ -55,6 +55,7 @@ EXPECTED_VIEWS = {
 APP_TOKEN_KEY = "factory_dispatch_feishu_app_token"
 TABLE_ID_KEY = "factory_dispatch_feishu_table_id"
 IMAGE_CACHE_KEY = "factory_dispatch_feishu_image_tokens"
+IMAGE_BINDINGS_KEY = "factory_dispatch_feishu_image_bindings"
 AUTO_ENABLED_KEY = "factory_dispatch_feishu_auto_enabled"
 INCLUDE_IMAGES_KEY = "factory_dispatch_feishu_include_images"
 _CN_TZ = ZoneInfo("Asia/Shanghai")
@@ -891,6 +892,16 @@ def _load_image_cache(db: Session) -> dict[str, str]:
         return {}
 
 
+def _load_image_bindings(db: Session) -> dict[str, str]:
+    """实体子订单号 → 飞书当前附件对应的工厂图签名。"""
+    raw = settings_service.get(db, IMAGE_BINDINGS_KEY, env_fallback=False)
+    try:
+        value = json.loads(raw or "{}")
+        return value if isinstance(value, dict) else {}
+    except json.JSONDecodeError:
+        return {}
+
+
 def _factory_sheet_images(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
     """子订单号（旧记录回退主订单号）→ 已发送最终图 / 作废图。
 
@@ -1050,6 +1061,41 @@ def _attachment_value(
     return [{"file_token": token}]
 
 
+def _remote_attachment_value(fields: dict[str, Any]) -> list[dict[str, str]]:
+    """把飞书附件读回值收敛成可再次写入的最小结构。"""
+    raw = fields.get("工厂下单图")
+    if not isinstance(raw, list):
+        return []
+    return [
+        {"file_token": str(item["file_token"])}
+        for item in raw
+        if isinstance(item, dict) and item.get("file_token")
+    ]
+
+
+def _remote_attachment_matches(
+    fields: dict[str, Any],
+    *,
+    signature: str,
+    expected_name: str,
+    bound_signature: str = "",
+) -> bool:
+    """确认远端附件就是当前工厂图，允许旧数据按精确文件名安全自举。"""
+    attachment = _remote_attachment_value(fields)
+    if not attachment:
+        return False
+    if bound_signature:
+        return bound_signature == signature
+    # 旧记录还没有本地签名绑定；实体键已精确匹配后，再以正式发送图文件名
+    # 一致作为一次性迁移证据。同步成功后写入系统设置，之后只按签名判断。
+    names = {
+        str(item.get("name") or "").strip()
+        for item in (fields.get("工厂下单图") or [])
+        if isinstance(item, dict)
+    }
+    return bool(expected_name and expected_name in names)
+
+
 def _norm(value: Any) -> Any:
     # 飞书附件字段清空后读回可能是 None，也可能是 []。两者都代表无附件，
     # 必须归一化为同一个值，避免远期/待编号订单每天被重复更新。
@@ -1116,6 +1162,7 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         "urgency_style_updated": False,
         "missing_wood_cost": [],
         "missing_factory_sheet_image": [],
+        "deferred_image_uploads": [],
         "errors": [],
         "views": {},
         "view_layout": MAIN_VIEW_LAYOUT,
@@ -1163,6 +1210,8 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             return result
         cache = _load_image_cache(db)
         cache_before = dict(cache)
+        image_bindings = _load_image_bindings(db)
+        image_bindings_before = dict(image_bindings)
         remote_rows = feishu_client.list_records(db, app_token, table_id)
         remote_by_no: dict[str, dict] = {}
         legacy_remote_by_order: dict[str, list[dict]] = {}
@@ -1177,7 +1226,9 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                 legacy_remote_by_order.setdefault(order_no, []).append(rec)
 
         creates: list[dict] = []
+        create_image_bindings: list[tuple[str, str]] = []
         updates: list[dict] = []
+        update_image_bindings: dict[str, tuple[str, str]] = {}
         claimed_remote_ids: set[str] = set()
         expected_order_nos = {str(row["订单号"]) for row in rows}
         for row in rows:
@@ -1186,28 +1237,10 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             payload = {k: v for k, v in row.items() if not k.startswith("_")}
             sheet_path = row.get("_sheet_path")
             sheet_signature = row.get("_sheet_signature")
+            sheet_name = str(row.get("_sheet_name") or "工厂下单图.jpg")
+            attachment_confirmed = False
             if not sheet_path:
                 result["missing_factory_sheet_image"].append(order_no)
-            if include_images:
-                if not sheet_path:
-                    # 字段由「产品图」原位改名而来。没有真正下单图的远期/待编号单
-                    # 必须清空旧产品图，不能让工厂误以为那张缩略图就是生产下单图。
-                    payload["工厂下单图"] = []
-                else:
-                    try:
-                        payload["工厂下单图"] = _attachment_value(
-                            db,
-                            app_token,
-                            str(sheet_path),
-                            str(sheet_signature or ""),
-                            str(row.get("_sheet_name") or "工厂下单图.jpg"),
-                            cache,
-                        )
-                    except Exception as e:  # noqa: BLE001 - 单张图失败不阻断其它订单
-                        result["errors"].append(
-                            f"{order_no} 工厂下单图失败: {type(e).__name__}: {e}"
-                        )
-                        payload["工厂下单图"] = []
 
             remote = remote_by_no.get(entity_key)
             if remote is None and row.get("子订单号"):
@@ -1221,15 +1254,69 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                 ]
                 if len(matches) == 1:
                     remote = matches[0]
+            remote_fields = (remote or {}).get("fields") or {}
+            if include_images:
+                if not sheet_path:
+                    # 字段由「产品图」原位改名而来。没有真正下单图的远期/待编号单
+                    # 必须清空旧产品图，不能让工厂误以为那张缩略图就是生产下单图。
+                    payload["工厂下单图"] = []
+                elif remote is not None and _remote_attachment_matches(
+                    remote_fields,
+                    signature=str(sheet_signature or ""),
+                    expected_name=sheet_name,
+                    bound_signature=str(image_bindings.get(entity_key) or ""),
+                ):
+                    payload["工厂下单图"] = _remote_attachment_value(remote_fields)
+                    image_bindings[entity_key] = str(sheet_signature or "")
+                    attachment_confirmed = True
+                else:
+                    try:
+                        payload["工厂下单图"] = _attachment_value(
+                            db,
+                            app_token,
+                            str(sheet_path),
+                            str(sheet_signature or ""),
+                            sheet_name,
+                            cache,
+                        )
+                        attachment_confirmed = True
+                    except Exception as e:  # noqa: BLE001 - 附件局部待重试，不否定订单送达
+                        # 已有旧附件时原样保留；没有附件时只跳过附件字段，绝不能写 []
+                        # 清掉工厂仍在使用的图片。其余业务字段继续增量同步。
+                        existing = _remote_attachment_value(remote_fields)
+                        if existing:
+                            payload["工厂下单图"] = existing
+                        else:
+                            payload.pop("工厂下单图", None)
+                        result["deferred_image_uploads"].append({
+                            "order_no": order_no,
+                            "sub_order_no": str(row.get("子订单号") or ""),
+                            "reason": f"{type(e).__name__}: {e}",
+                        })
+            else:
+                # 关闭图片同步时只更新业务字段，不改变附件签名绑定。
+                pass
             if remote is None:
                 creates.append(payload)
+                create_image_bindings.append(
+                    (entity_key, str(sheet_signature or ""))
+                    if attachment_confirmed and sheet_signature else ("", "")
+                )
             elif not _same(remote.get("fields") or {}, payload):
-                claimed_remote_ids.add(str(remote.get("record_id") or ""))
+                record_id = str(remote.get("record_id") or "")
+                claimed_remote_ids.add(record_id)
                 updates.append({"record_id": remote["record_id"], "fields": payload})
+                if attachment_confirmed and sheet_signature:
+                    update_image_bindings[record_id] = (
+                        entity_key, str(sheet_signature)
+                    )
 
         if creates:
             ids = feishu_client.batch_create_records(db, app_token, table_id, creates)
             result["created"] = sum(bool(x) for x in ids)
+            for record_id, binding in zip(ids, create_image_bindings):
+                if record_id and binding[0]:
+                    image_bindings[binding[0]] = binding[1]
             if result["created"] != len(creates):
                 result["errors"].append(
                     f"飞书下单表新建失败 {len(creates) - result['created']}/{len(creates)} 条"
@@ -1237,6 +1324,10 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         if updates:
             failed = feishu_client.batch_update_records(db, app_token, table_id, updates)
             result["updated"] = len(updates) - len(failed)
+            failed_ids = set(failed)
+            for record_id, binding in update_image_bindings.items():
+                if record_id not in failed_ids:
+                    image_bindings[binding[0]] = binding[1]
             if failed:
                 result["errors"].append(f"飞书下单表更新失败 {len(failed)}/{len(updates)} 条")
 
@@ -1272,6 +1363,22 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             settings_service.set_value(
                 db, IMAGE_CACHE_KEY, json.dumps(cache, ensure_ascii=False),
                 description="工厂系统下单表下单图飞书素材 token 缓存",
+            )
+        if image_bindings != image_bindings_before:
+            # 只保留当前系统投影仍存在的实体，防历史记录无限增长。
+            current_entities = {
+                str(row.get("子订单号") or row.get("订单号") or "")
+                for row in rows
+            }
+            image_bindings = {
+                key: value for key, value in image_bindings.items()
+                if key in current_entities
+            }
+            settings_service.set_value(
+                db,
+                IMAGE_BINDINGS_KEY,
+                json.dumps(image_bindings, ensure_ascii=False),
+                description="工厂系统下单表实体与当前附件签名绑定",
             )
         settings_service.set_value(
             db, APP_TOKEN_KEY, app_token, description="工厂系统下单表飞书 app_token"

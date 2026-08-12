@@ -275,6 +275,43 @@ def test_dispatch_compare_treats_empty_attachment_as_missing():
     assert dispatch._same(remote, expected) is True
 
 
+def test_dispatch_reuses_remote_attachment_when_signature_matches():
+    fields = {
+        "下单图签名": "factory-sheet:abc",
+        "工厂下单图": [{
+            "file_token": "token-existing",
+            "name": "2026-08-12_3301_畔色385单.jpg",
+        }],
+    }
+    assert dispatch._remote_attachment_matches(
+        fields,
+        signature="factory-sheet:abc",
+        expected_name="2026-08-12_3301_畔色385单.jpg",
+    ) is True
+    assert dispatch._remote_attachment_value(fields) == [
+        {"file_token": "token-existing"},
+    ]
+
+
+def test_dispatch_legacy_attachment_bootstraps_by_exact_sent_filename():
+    fields = {
+        "工厂下单图": [{
+            "file_token": "token-existing",
+            "name": "2026-08-12_3301_畔色385单.jpg",
+        }],
+    }
+    assert dispatch._remote_attachment_matches(
+        fields,
+        signature="factory-sheet:new-signature",
+        expected_name="2026-08-12_3301_畔色385单.jpg",
+    ) is True
+    assert dispatch._remote_attachment_matches(
+        fields,
+        signature="factory-sheet:new-signature",
+        expected_name="另一张图.jpg",
+    ) is False
+
+
 def test_inspection_gallery_archives_and_filters(db_session, monkeypatch, tmp_path):
     order = _order()
     db_session.add(order)
@@ -343,6 +380,112 @@ def test_dispatch_failure_enters_order_retry_pipeline(db_session, monkeypatch):
     assert result["_run_status"] == "fail"
     assert "飞书系统下单表同步失败" in result["_error"]
     assert "字段写入失败" in result["_error"]
+
+
+def test_deferred_dispatch_image_upload_does_not_fail_order_pipeline(db_session, monkeypatch):
+    monkeypatch.setattr(
+        dispatch,
+        "sync_if_enabled",
+        lambda db: {
+            "ok": True,
+            "rows": 12,
+            "created": 0,
+            "updated": 3,
+            "errors": [],
+            "deferred_image_uploads": [{
+                "order_no": "3308543835478010890",
+                "reason": "FeishuError: timed out",
+            }],
+        },
+    )
+    result = scheduler._sync_factory_dispatch_after_orders(
+        db_session,
+        {"images_pushed": 1},
+    )
+    assert result["factory_dispatch"]["deferred_image_uploads"]
+    assert "_run_status" not in result
+
+
+def test_dispatch_attachment_timeout_keeps_old_image_and_returns_ok(
+    db_session, monkeypatch, tmp_path,
+):
+    order = _order()
+    db_session.add(order)
+    db_session.commit()
+    monkeypatch.setattr(import_storage, "get_root", lambda: tmp_path)
+
+    image_buf = io.BytesIO()
+    Image.new("RGB", (320, 200), color="white").save(image_buf, format="JPEG")
+    sent = dispatch.order_sheet_archive_service.archive_sent_snapshot(
+        db_session,
+        order,
+        image_buf.getvalue(),
+        backfilled=True,
+    )
+    db_session.commit()
+    remote_fields = {
+        "订单号": order.order_no,
+        "工厂下单号": "畔色321单",
+        "工厂下单图": [{
+            "file_token": "old-token",
+            "name": "old-sheet.jpg",
+        }],
+    }
+    monkeypatch.setattr(dispatch, "_ensure_schema", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_table_fields",
+        lambda *a, **k: [
+            {"field_name": name, "type": field_type, "is_primary": name == "工厂下单号"}
+            for name, field_type in dispatch.FIELD_SPECS
+        ],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_views",
+        lambda *a, **k: [
+            {"view_id": view_id, "view_name": name, "view_type": kind}
+            for view_id, (name, kind) in dispatch.EXPECTED_VIEWS.items()
+        ],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_records",
+        lambda *a, **k: [{"record_id": "rec1", "fields": remote_fields}],
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "_attachment_value",
+        lambda *a, **k: (_ for _ in ()).throw(
+            dispatch.feishu_client.FeishuError("The write operation timed out")
+        ),
+    )
+    updates = []
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "batch_update_records",
+        lambda db, app, table, rows: updates.extend(rows) or [],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "batch_create_records",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("不应新建")),
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "_ensure_urgency_option_styles",
+        lambda *a, **k: False,
+    )
+
+    result = dispatch.sync(db_session, include_images=True)
+
+    assert result["ok"] is True
+    assert result["errors"] == []
+    assert result["deferred_image_uploads"][0]["order_no"] == order.order_no
+    assert updates
+    assert updates[0]["fields"]["工厂下单图"] == [{"file_token": "old-token"}]
+    # 上传未成功时不能写入签名绑定；下轮仍会继续尝试。
+    assert dispatch._load_image_bindings(db_session).get(order.order_no) is None
 
 
 def test_dispatch_auto_setting_can_skip_without_touching_feishu(db_session, monkeypatch):
