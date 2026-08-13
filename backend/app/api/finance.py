@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.dependencies import require_role
 from app.models.auth import User
@@ -1453,6 +1453,22 @@ class LogisticsBillOut(BaseModel):
     # 匹配到的订单的客户名/收货地址 — 供人工核对"收货人/目的地"是否真的对得上(查匹配错误)
     order_customer_name: Optional[str] = None
     order_customer_address: Optional[str] = None
+    # 订单产品关联。多品订单使用 product_display 合并展示，但不进入单品运费均价。
+    product_name: Optional[str] = None
+    product_code: Optional[str] = None
+    sku_name: Optional[str] = None
+    sku_code: Optional[str] = None
+    product_names: list[str] = Field(default_factory=list)
+    product_display: Optional[str] = None
+    product_count: int = 0
+    product_qty: int = 0
+    is_multi_product: bool = False
+    is_multi_quantity: bool = False
+    product_analytics_eligible: bool = False
+    product_analytics_reason: Optional[str] = None
+    actual_weight_kg: Optional[Decimal] = None
+    volume_m3: Optional[Decimal] = None
+    package_count: Optional[int] = None
     # 订单号在订单库里是否真的存在 — 前端曾拿"客户名为空"当"订单库无此单",
     # 把「有此单但订单没存客户名」误报成无此单(2026-07-12, 23条全是误报), 必须单独给存在性
     order_exists: bool = False
@@ -1517,23 +1533,42 @@ def list_logistics_bills(
 
 def _enrich_logistics_bills(db: Session, bills: list) -> list[LogisticsBillOut]:
     """给每条逐单行补上"匹配到的订单"的客户名/收货地址, 供前端核对收货人/目的地是否真对得上。"""
-    from app.models.order import Order
+    from app.services.logistics_analytics_service import product_context_by_order
     onos = {b.order_no for b in bills if b.order_no}
-    omap: dict[str, tuple] = {}
-    if onos:
-        for ono, nm, addr in db.execute(
-            select(Order.order_no, Order.customer_name, Order.customer_address)
-            .where(Order.order_no.in_(onos))
-        ).all():
-            omap[ono] = (nm, addr)
+    context = product_context_by_order(db, onos)
     out: list[LogisticsBillOut] = []
     for b in bills:
         d = LogisticsBillOut.model_validate(b)
-        if b.order_no and b.order_no in omap:
-            d.order_exists = True   # 库里有此单 (客户名可能为空 — 存在性与有没有名字是两回事)
-            d.order_customer_name, d.order_customer_address = omap[b.order_no]
+        ctx = context.get(b.order_no or "")
+        if ctx:
+            for key, value in ctx.items():
+                if hasattr(d, key):
+                    setattr(d, key, value)
         out.append(d)
     return out
+
+
+@router.get("/logistics-bills/analytics")
+def logistics_bills_analytics(
+    product: Optional[str] = None,
+    province: Optional[str] = None,
+    carrier: Optional[str] = None,
+    date_start: Optional[date] = None,
+    date_end: Optional[date] = None,
+    db: Session = Depends(get_db),
+):
+    """省市、重量/体积、产品、月份、承运商和异常运费的只读分析。"""
+    if date_start and date_end and date_start > date_end:
+        raise HTTPException(400, "开始日期不能晚于结束日期")
+    from app.services import logistics_analytics_service
+    return logistics_analytics_service.build_analytics(
+        db,
+        product=product,
+        province=province,
+        carrier=carrier,
+        date_start=date_start,
+        date_end=date_end,
+    )
 
 
 class LogisticsBillMatchIn(BaseModel):

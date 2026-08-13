@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Alert, Button, Input, Modal, Segmented, Select, Space, Table, Tag, Typography, Upload, message } from 'antd';
+import { Alert, Button, Input, Modal, Segmented, Select, Space, Table, Tabs, Tag, Typography, Upload, message } from 'antd';
 import { DownloadOutlined, InboxOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from '../api/client';
 import FullColumnView from '../components/FullColumnView';
 import PresetTable from '../components/PresetTable';
 import FeeVariancePanel from '../components/FeeVariancePanel';
+import LogisticsAnalyticsPanel from '../components/LogisticsAnalyticsPanel';
 
 interface LogisticsBill {
   id: number;
@@ -14,6 +15,9 @@ interface LogisticsBill {
   tracking_no: string | null;
   order_no: string | null;
   weight_kg: number | null;
+  actual_weight_kg: number | null;
+  volume_m3: number | null;
+  package_count: number | null;
   freight_amount: number;
   remark: string | null;
   recipient_name: string | null;
@@ -23,6 +27,16 @@ interface LogisticsBill {
   row_type: string;
   order_customer_name: string | null;
   order_customer_address: string | null;
+  product_name: string | null;
+  product_code: string | null;
+  sku_name: string | null;
+  sku_code: string | null;
+  product_display: string | null;
+  product_count: number;
+  product_qty: number;
+  is_multi_product: boolean;
+  is_multi_quantity: boolean;
+  product_analytics_eligible: boolean;
   // 订单号在订单库里是否真的存在 — 与"订单有没有存客户名"是两回事(曾把有单没名误报成无此单)
   order_exists?: boolean;
 }
@@ -90,6 +104,7 @@ export default function LogisticsBillsPage() {
   const qc = useQueryClient();
   const [importing, setImporting] = useState(false);
   const [viewMode, setViewMode] = useState<'curated' | 'full'>('curated');
+  const [pageTab, setPageTab] = useState<'bills' | 'analytics'>('bills');
   const [reviewFilter, setReviewFilter] = useState<'all' | 'todo' | 'done'>('all');
   // 配单弹窗 (用户 2026-07-12: 照打包费核对, 按客户名找候选5个人工筛选)
   const [editRow, setEditRow] = useState<LogisticsBill | null>(null);
@@ -253,8 +268,26 @@ export default function LogisticsBillsPage() {
           </div>
         );
       } },
+    { title: '产品名称 / SKU', dataIndex: 'product_display', width: 260,
+      render: (v: string | null, row: LogisticsBill) => {
+        if (!v) return <Typography.Text type="secondary">未关联产品</Typography.Text>;
+        return <div style={{ fontSize: 12, lineHeight: 1.35 }}>
+          <div>{v}</div>
+          <Space size={4} wrap>
+            {(row.sku_code || row.product_code) && <Typography.Text type="secondary" style={{ fontSize: 11 }}>{row.sku_code || row.product_code}</Typography.Text>}
+            {row.is_multi_product && <Tag color="orange" style={{ marginInlineEnd: 0 }}>多品合箱·不进单品均价</Tag>}
+            {row.is_multi_quantity && <Tag color="orange" style={{ marginInlineEnd: 0 }}>同款{row.product_qty}件·不进单件均价</Tag>}
+          </Space>
+        </div>;
+      } },
     { title: '重量(kg)', dataIndex: 'weight_kg', width: 80, align: 'right' as const,
       render: (v: number | string | null) => v != null ? Number(v).toFixed(3) : '-' },
+    { title: '实重(kg)', dataIndex: 'actual_weight_kg', width: 85, align: 'right' as const,
+      render: (v: number | string | null) => v != null ? Number(v).toFixed(3) : '-' },
+    { title: '体积(m³)', dataIndex: 'volume_m3', width: 85, align: 'right' as const,
+      render: (v: number | string | null) => v != null ? Number(v).toFixed(4) : '-' },
+    { title: '件数', dataIndex: 'package_count', width: 65, align: 'right' as const,
+      render: (v: number | null) => v ?? '-' },
     { title: '运费', dataIndex: 'freight_amount', width: 90, align: 'right' as const,
       render: (v: number) => <span style={{ color: '#cf1322' }}>¥{Number(v).toFixed(2)}</span> },
     { title: '备注', dataIndex: 'remark', ellipsis: true },
@@ -269,6 +302,14 @@ export default function LogisticsBillsPage() {
         <Typography.Title level={4} style={{ margin: 0 }}>物流费账单</Typography.Title>
         <Tag color="cyan">物流</Tag>
       </Space>
+
+      <Tabs activeKey={pageTab} onChange={(key) => setPageTab(key as 'bills' | 'analytics')} items={[
+        { key: 'bills', label: '账单明细' },
+        { key: 'analytics', label: '物流统计分析' },
+      ]} />
+
+      {pageTab === 'analytics' && <LogisticsAnalyticsPanel />}
+      {pageTab === 'bills' && <>
 
       <Alert type="info" showIcon
         message="德邦 / 壹米滴答逐单账单导入后自动按『运单号 / 收货人+省市』配淘宝订单。点订单号旁「改」可人工指定/纠正匹配（填=人工指定，空=取消）；右侧「匹配到的订单客户」用来核对收货人/目的地是否真对得上。配单表带『匹配订单号』列的，导入时直接采用。月结汇总行挪到表底核对总额。" />
@@ -355,6 +396,8 @@ export default function LogisticsBillsPage() {
 
       <FeeVariancePanel url="/api/finance/logistics-bills/variance" label="物流费" queryKey="logistics-variance" />
       </>)}
+
+      </>}
 
       {/* 配单弹窗: 按客户名找候选5个人工筛选 (与打包费核对同款, 用户 2026-07-12) */}
       <Modal
