@@ -15,11 +15,22 @@ def _order(db, no: str, product: str, *, sku: str = "标准", code: str = "P1"):
     db.flush()
 
 
-def _detail(db, no: str, sub: str, product: str, *, sku: str = "标准", code: str = "P1", qty: int = 1):
+def _detail(
+    db,
+    no: str,
+    sub: str,
+    product: str,
+    *,
+    sku: str = "标准",
+    code: str = "P1",
+    qty: int = 1,
+    amount: str | None = None,
+):
     db.add(OrderDetail(
         sync_key=f"line:{sub}", sub_order_no=sub, order_no=no, source="import",
         product_name=product, product_code=code, sku_name=sku, sku_code=f"{code}-01",
-        qty=qty, factory_delivery_required=True,
+        qty=qty, amount=Decimal(amount) if amount is not None else None,
+        factory_delivery_required=True,
     ))
     db.flush()
 
@@ -129,7 +140,10 @@ def test_same_product_multiple_quantity_is_not_mixed_into_single_item_average(db
 
 def test_refunded_import_detail_does_not_fall_back_to_order_product(db_session):
     _order(db_session, "O1", "主订单旧商品", sku="标准", code="OLD")
-    _detail(db_session, "O1", "S1", "已退款榉木餐桌", sku="1.8米", code="TABLE")
+    _detail(
+        db_session, "O1", "S1", "已退款榉木餐桌",
+        sku="1.8米", code="TABLE", amount="100",
+    )
     line = db_session.query(OrderDetail).filter(OrderDetail.sub_order_no == "S1").one()
     line.refund_amount = Decimal("100")
     line.refund_status = "退款成功"
@@ -139,3 +153,77 @@ def test_refunded_import_detail_does_not_fall_back_to_order_product(db_session):
     assert context["product_display"] is None
     assert context["product_analytics_eligible"] is False
     assert context["product_analytics_reason"] == "product_unresolved"
+
+
+def test_partially_refunded_signed_detail_keeps_physical_product(db_session):
+    _order(db_session, "O1", "主订单旧商品", sku="标准", code="OLD")
+    _detail(
+        db_session, "O1", "S1", "榉木餐桌",
+        sku="1.8米", code="TABLE", amount="2716.05",
+    )
+    line = db_session.query(OrderDetail).filter(OrderDetail.sub_order_no == "S1").one()
+    line.line_status = "signed"
+    line.refund_amount = Decimal("8.16")
+    line.refund_status = "退款成功"
+    db_session.flush()
+
+    context = analytics.product_context_by_order(db_session, ["O1"])["O1"]
+    assert context["product_name"] == "榉木餐桌"
+    assert context["product_analytics_eligible"] is True
+
+
+def test_refund_status_without_comparable_amount_stays_excluded(db_session):
+    _order(db_session, "O1", "主订单旧商品", sku="标准", code="OLD")
+    _detail(db_session, "O1", "S1", "榉木餐桌", sku="1.8米", code="TABLE")
+    line = db_session.query(OrderDetail).filter(OrderDetail.sub_order_no == "S1").one()
+    line.refund_status = "退款成功"
+    db_session.flush()
+
+    context = analytics.product_context_by_order(db_session, ["O1"])["O1"]
+    assert context["product_display"] is None
+    assert context["product_analytics_reason"] == "product_unresolved"
+
+
+def test_partial_refund_amount_without_refund_status_stays_excluded(db_session):
+    _order(db_session, "O1", "主订单旧商品", sku="标准", code="OLD")
+    _detail(
+        db_session, "O1", "S1", "榉木餐桌",
+        sku="1.8米", code="TABLE", amount="2716.05",
+    )
+    line = db_session.query(OrderDetail).filter(OrderDetail.sub_order_no == "S1").one()
+    line.line_status = "signed"
+    line.refund_amount = Decimal("500")
+    line.refund_status = None
+    db_session.flush()
+
+    context = analytics.product_context_by_order(db_session, ["O1"])["O1"]
+    assert context["product_display"] is None
+    assert context["product_analytics_reason"] == "product_unresolved"
+
+
+def test_returned_detail_stays_excluded_even_when_refund_is_partial(db_session):
+    _order(db_session, "O1", "主订单旧商品", sku="标准", code="OLD")
+    _detail(
+        db_session, "O1", "S1", "榉木餐桌",
+        sku="1.8米", code="TABLE", amount="2716.05",
+    )
+    line = db_session.query(OrderDetail).filter(OrderDetail.sub_order_no == "S1").one()
+    line.line_status = "signed"
+    line.refund_amount = Decimal("500")
+    line.refund_status = "退货退款成功"
+    db_session.flush()
+
+    context = analytics.product_context_by_order(db_session, ["O1"])["O1"]
+    assert context["product_display"] is None
+    assert context["product_analytics_reason"] == "product_unresolved"
+
+
+def test_order_fallback_filters_service_link_but_keeps_custom_product(db_session):
+    _order(db_session, "O1", "差价邮费补拍专链", sku="补差", code="TOPUP")
+    _order(db_session, "O2", "榉木餐桌定制尺寸专拍链接", sku="1.9米", code="TABLE")
+
+    context = analytics.product_context_by_order(db_session, ["O1", "O2"])
+    assert context["O1"]["product_display"] is None
+    assert context["O1"]["product_analytics_reason"] == "product_unresolved"
+    assert context["O2"]["product_name"] == "榉木餐桌定制尺寸专拍链接"
+    assert context["O2"]["product_analytics_eligible"] is True

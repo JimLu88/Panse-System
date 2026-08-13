@@ -46,21 +46,40 @@ def _round(value: Any, digits: int = 2) -> Optional[float]:
     return round(number, digits) if number is not None else None
 
 
+def _is_non_physical_name(product_name: Any, sku_name: Any = None) -> bool:
+    name = f"{_text(product_name)} {_text(sku_name)}"
+    return not name.strip() or any(word in name for word in _SERVICE_KEYWORDS)
+
+
 def _is_physical_line(line: OrderDetail) -> bool:
-    name = f"{_text(line.product_name)} {_text(line.sku_name)}"
-    if not name.strip() or any(word in name for word in _SERVICE_KEYWORDS):
+    if _is_non_physical_name(line.product_name, line.sku_name):
         return False
     status = _text(line.line_status).lower()
     refund_status = _text(line.refund_status)
-    refunded = (
-        status in {"cancelled", "aftersales"}
-        or Decimal(str(line.refund_amount or 0)) > 0
-        or (
-            any(word in refund_status for word in ("退款", "退货"))
-            and not any(word in refund_status for word in _REFUND_NEGATIONS)
-        )
+    if status in {"cancelled", "aftersales"}:
+        return False
+
+    has_refund_status = (
+        any(word in refund_status for word in ("退款", "退货"))
+        and not any(word in refund_status for word in _REFUND_NEGATIONS)
     )
-    return not refunded
+    if "退货" in refund_status and not any(word in refund_status for word in _REFUND_NEGATIONS):
+        return False
+    refund_amount = Decimal(str(line.refund_amount or 0))
+    line_amount = Decimal(str(line.amount)) if line.amount is not None else None
+    # 已知行金额时，只有达到行金额的退款才视为商品已全退；较小退款可能是价保、
+    # 部分赔付或差额退款，实体商品仍已发运。必须同时有明确退款状态和可比较金额；
+    # 只有退款金额、没有退款状态的聚合/重复行继续保守排除。
+    if refund_amount > 0:
+        return bool(
+            has_refund_status
+            and line_amount is not None
+            and line_amount > 0
+            and refund_amount < line_amount
+        )
+    if has_refund_status:
+        return False
+    return True
 
 
 def _product_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
@@ -114,7 +133,12 @@ def product_context_by_order(db: Session, order_nos: Iterable[str]) -> dict[str,
         items = list(unique.values())
         # 一旦存在导入明细，就以明细为准。明细全部退款/过滤时不能再回退主订单，
         # 否则会把已退款商品重新算进物流产品分析。
-        if not items and order_no not in imported_detail_orders and order and _text(order.product_name):
+        if (
+            not items
+            and order_no not in imported_detail_orders
+            and order
+            and not _is_non_physical_name(order.product_name, order.sku)
+        ):
             items = [{
                 "product_name": _text(order.product_name),
                 "product_code": _text(order.product_code),
