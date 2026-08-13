@@ -267,13 +267,34 @@ def build_for_order_line(
         production_note = "\n".join(
             value for value in (production_note, _ADDRESS_PENDING_PRODUCTION_NOTE) if value
         )
+
+    product_code = detail.product_code
+    product_name = detail.product_name
+    sku = detail.sku_name or detail.sku_code
+    sku_code = detail.sku_code
+    # 有些千牛文件只给主订单商品编码，唯一子订单行仅留下淘宝完整标题。
+    # 此时主订单与子订单是一对一，可安全沿用主订单的产品/SKU字段；多商品订单
+    # 绝不兜底，避免把主订单代表商品复制到其它子订单。
+    if detail.source == "import" and not product_code and not sku_code and not sku:
+        imported_detail_ids = db.execute(
+            select(OrderDetail.id).where(
+                OrderDetail.order_no == order.order_no,
+                OrderDetail.source == "import",
+            ).limit(2)
+        ).scalars().all()
+        if imported_detail_ids == [detail.id]:
+            product_code = order.product_code
+            product_name = order.product_name or detail.product_name
+            sku = order.sku or order.sku_code
+            sku_code = order.sku_code
+
     sheet = build_from_fields(
         db,
         order_no=order.order_no,
-        product_code=detail.product_code,
-        product_name=detail.product_name,
-        sku=detail.sku_name or detail.sku_code,
-        sku_code=detail.sku_code,
+        product_code=product_code,
+        product_name=product_name,
+        sku=sku,
+        sku_code=sku_code,
         qty=detail.qty or 1,
         customer_name=("地址待补" if address_pending_for_production else order.customer_name),
         customer_phone=("待补" if address_pending_for_production else order.customer_phone),

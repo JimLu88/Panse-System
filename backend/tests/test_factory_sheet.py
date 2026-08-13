@@ -6,7 +6,7 @@ import pytest
 from app.models.bom import BomLine
 from app.models.custom_variant import CustomVariant
 from app.models.material import Material
-from app.models.order import Order
+from app.models.order import Order, OrderDetail
 from app.models.pricing import PricingSku
 from app.models.product import Product
 from app.services import factory_sheet
@@ -56,6 +56,65 @@ def test_basic_factory_sheet(db_session):
     legs = next(m for m in sheet.materials if m.material_code == "AC-009")
     assert legs.total_qty == Decimal("4")
     assert sheet.warnings == []  # 干净
+
+
+def test_single_import_line_with_blank_product_fields_uses_main_order_fallback(db_session):
+    _setup(db_session)
+    order = Order(
+        platform="淘宝", order_no="MAIN-SKELETON", status="paid",
+        order_date=date(2026, 8, 13), product_code="PPS001",
+        product_name="榉木无边床", sku="榉木无边床-1.8米",
+        sku_code="PPS00100118", qty=1,
+    )
+    db_session.add(order)
+    db_session.flush()
+    detail = OrderDetail(
+        sync_key="line:SUB-SKELETON", sub_order_no="SUB-SKELETON",
+        order_no=order.order_no, source="import", product_name="淘宝完整商品标题",
+        qty=1, line_status="paid",
+    )
+    db_session.add(detail)
+    db_session.flush()
+
+    sheet = factory_sheet.build_for_order_line(db_session, order.id, detail.id)
+
+    assert sheet.product_code == "PPS001"
+    assert sheet.sku_code == "PPS00100118"
+    assert sheet.sku == "榉木无边床-1.8米"
+    assert sheet.image_url == "https://x/p.png"
+    assert len(sheet.materials) == 2
+
+
+def test_multi_import_line_never_uses_main_order_product_fallback(db_session):
+    _setup(db_session)
+    order = Order(
+        platform="淘宝", order_no="MAIN-MULTI", status="paid",
+        order_date=date(2026, 8, 13), product_code="PPS001",
+        product_name="主订单代表商品", sku="榉木无边床-1.8米",
+        sku_code="PPS00100118", qty=1,
+    )
+    db_session.add(order)
+    db_session.flush()
+    blank = OrderDetail(
+        sync_key="line:SUB-BLANK", sub_order_no="SUB-BLANK",
+        order_no=order.order_no, source="import", product_name="未知子商品",
+        qty=1, line_status="paid",
+    )
+    other = OrderDetail(
+        sync_key="line:SUB-OTHER", sub_order_no="SUB-OTHER",
+        order_no=order.order_no, source="import", product_name="另一个商品",
+        product_code="PPS-OTHER", sku_name="另一规格", sku_code="SKU-OTHER",
+        qty=1, line_status="paid",
+    )
+    db_session.add_all([blank, other])
+    db_session.flush()
+
+    sheet = factory_sheet.build_for_order_line(db_session, order.id, blank.id)
+
+    assert sheet.product_code is None
+    assert sheet.sku_code is None
+    assert sheet.sku is None
+    assert sheet.image_url is None
 
 
 def test_factory_sheet_qty_multiplies_total(db_session):
