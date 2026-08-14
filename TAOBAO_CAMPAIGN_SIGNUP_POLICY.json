@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-14.2",
-  "updated_at": "2026-08-14T21:00:00+08:00",
+  "version": "2026-08-15.1",
+  "updated_at": "2026-08-15T01:20:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -40,8 +40,10 @@
     "new_item_without_activity_history": "allow_only_for_explicit_plan_item_ids_confirmed_by_user_as_new_links"
   },
   "final_price_gate": {
-    "formula": "signup_price_minus_official_discount_minus_single_item_discount_equals_erp_target",
+    "formula": "signup_price_minus_official_discount_minus_single_item_discount_equals_erp_target_minus_explicit_sub_yuan_concession",
     "per_sku_tolerance_yuan": 0.00,
+    "explicit_sub_yuan_concession": "allow_only_for_plan_remark_named_sku_ids_after_current_user_authorization",
+    "explicit_sub_yuan_concession_max_yuan_exclusive": 1.00,
     "official_discount_rounding": "use_verified_platform_rule_for_campaign_and_low_price_skus_keep_cent_precision"
   },
   "scope_and_idempotency": {
@@ -78,6 +80,7 @@
   "explanation_lines": [
     "活动报名只由 ERP 自动报名程序执行；AI 和页面均不得直接提交、自动改价或自动重试。",
     "真实 SKU 报名价永远等于 ERP 日常价；平台历史线冲突时整品排除并报告，禁止降价迁就。",
+    "用户逐SKU明确授权时，程序可通过计划标记把不足1元的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减不得高于最低普惠券后价。单品立减不参与资格校验。",
     "资格通过后逐 SKU 验算：报名价减官方立减再减单品立减，必须等于 ERP 本场目标到手价。",
     "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、飞书报告并等待用户决定。",

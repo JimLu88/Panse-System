@@ -208,6 +208,38 @@ def new_item_no_history_authorized_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def authorized_line_concessions(plan) -> dict[str, Decimal]:
+    """Return explicit per-SKU sub-yuan final-price concessions for one plan.
+
+    Marker format::
+
+        line_concession_authorized=6287431318352:0.27,6287431318353:0.06
+
+    The marker is deliberately narrow: every entry names a platform SKU, the
+    amount must be positive and strictly below one yuan, and invalid entries
+    are ignored.  Signup prices remain unchanged; the concession is added only
+    to that SKU's single-item reduction and is exposed in audit stats.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*line_concession_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    out: dict[str, Decimal] = {}
+    for sku_id, raw_amount in re.findall(
+        r"(\d{8,})\s*:\s*([0-9]+(?:\.[0-9]+)?)", matched.group(1)
+    ):
+        amount = _d(raw_amount)
+        if amount is not None and Decimal("0") < amount < Decimal("1"):
+            out[sku_id] = amount.quantize(_CENT)
+    return out
+
+
 def official_ceil_enabled(db: Session) -> bool:
     """超级立减10% 官方立减是否向上取整到元 (spec §二: 待 7-20 实证, 默认按取整)。"""
     from app.services import settings_service
@@ -695,6 +727,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
+    authorized_concessions = authorized_line_concessions(plan)
     nosales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
@@ -750,8 +783,26 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
         if core is None:
             continue
         for sid in _expand_sku_ids(p):
-            rows.append({"taobao_item_id": item_id, "taobao_sku_id": sid,
-                         "sku_code": s.sku_code, **core})
+            row = {"taobao_item_id": item_id, "taobao_sku_id": sid,
+                   "sku_code": s.sku_code, **core}
+            concession = authorized_concessions.get(str(sid))
+            if concession is not None:
+                deduct = (_d(row["deduct"]) + concession).quantize(_CENT)
+                target = (_d(row["target_price"]) - concession).quantize(_CENT)
+                row.update({
+                    "deduct": float(deduct),
+                    "target_price": float(target),
+                    "concession": float(concession),
+                })
+                stats["line_concessions"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": str(sid),
+                    "sku_code": s.sku_code,
+                    "amount": float(concession),
+                    "erp_target": float(_d(core["target_price"])),
+                    "authorized_target": float(target),
+                })
+            rows.append(row)
     stats["rows"] = len(rows)
     return rows, stats
 

@@ -53,6 +53,7 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["ai_may_adjust_price"] is False
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is False
+    assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_exclusive"] == 1.00
 
 
 def test_production_image_bundles_the_root_policy():
@@ -76,6 +77,41 @@ def test_legacy_floor_fields_cannot_lower_real_signup_or_final_price(db_session)
     assert signup[0]["price"] == 3000.0
     assert discounts[0]["target_price"] == 2000.0
     assert discounts[0]["deduct"] == 640.0
+    assert stats["line_concessions"] == []
+
+
+def test_current_user_can_authorize_named_sub_yuan_discount_concession(db_session):
+    plan = _plan(db_session)
+    plan.remark = "line_concession_authorized=881880805:0.27"
+    _sku(db_session)
+
+    signup, _ = campaign_service.build_signup_rows(db_session, plan)
+    discounts, stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert signup[0]["price"] == 3000.0
+    assert discounts[0]["official"] == 360.0
+    assert discounts[0]["deduct"] == 640.27
+    assert discounts[0]["target_price"] == 1999.73
+    assert discounts[0]["concession"] == 0.27
+    assert stats["line_concessions"] == [{
+        "taobao_item_id": "991880805",
+        "taobao_sku_id": "881880805",
+        "sku_code": "PPS_POLICY_1",
+        "amount": 0.27,
+        "erp_target": 2000.0,
+        "authorized_target": 1999.73,
+    }]
+
+
+def test_line_concession_rejects_one_yuan_or_more(db_session):
+    plan = _plan(db_session)
+    plan.remark = "line_concession_authorized=881880805:1.00"
+    _sku(db_session)
+
+    discounts, stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert discounts[0]["deduct"] == 640.0
+    assert discounts[0]["target_price"] == 2000.0
     assert stats["line_concessions"] == []
 
 
