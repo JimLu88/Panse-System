@@ -106,6 +106,27 @@ def test_blank_coupon_gate_in_fresh_export_is_observed_not_missing(db_session):
     assert checks["R17"]["level"] == "pass"
 
 
+def test_duplicate_export_rows_keep_strictest_numeric_floor(db_session):
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [
+            {"item_id": "991880805", "sku_id": "881880805",
+             "min_list_price": 3200, "min_coupon_line": None},
+            {"item_id": "991880805", "sku_id": "881880805",
+             "min_list_price": 3000, "min_coupon_line": 2100},
+            {"item_id": "991880805", "sku_id": "881880805",
+             "min_list_price": 3400, "min_coupon_line": None},
+        ],
+        source="pytest_duplicate_marketing_records",
+    )
+    db_session.commit()
+
+    entry = campaign_price_floor_service.evidence_map(db_session)["881880805"]
+    assert entry["min_list_price"] == 3000.0
+    assert entry["min_coupon_line"] == 2100.0
+    assert entry["min_coupon_line_observed"] is True
+
+
 def test_explicit_new_item_without_history_is_narrowly_allowed(db_session):
     plan = _plan(db_session)
     plan.remark = "new_item_no_history_authorized=991880805"

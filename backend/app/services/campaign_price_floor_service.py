@@ -81,6 +81,7 @@ def record_activity_export(
     seen_at = now.astimezone(timezone.utc).isoformat()
     payload = _load(db)
     observed = 0
+    grouped: dict[str, dict] = {}
     for record in records:
         sid = str(record.get("sku_id") or "").strip()
         if not sid:
@@ -88,17 +89,43 @@ def record_activity_export(
         observed += 1
         min_list = _decimal(record.get("min_list_price"))
         min_coupon = _decimal(record.get("min_coupon_line"))
+        current = grouped.setdefault(sid, {
+            "sku_id": sid,
+            "item_id": "",
+            "sku_name": "",
+            "min_list_values": [],
+            "min_coupon_values": [],
+            "min_list_price_observed": False,
+            "min_coupon_line_observed": False,
+        })
+        current["item_id"] = str(record.get("item_id") or current["item_id"] or "").strip()
+        current["sku_name"] = str(record.get("sku_name") or current["sku_name"] or "").strip()
+        if min_list is not None:
+            current["min_list_values"].append(min_list)
+        if min_coupon is not None:
+            current["min_coupon_values"].append(min_coupon)
+        current["min_list_price_observed"] = bool(
+            current["min_list_price_observed"] or "min_list_price" in record)
+        current["min_coupon_line_observed"] = bool(
+            current["min_coupon_line_observed"] or "min_coupon_line" in record)
+
+    for sid, current in grouped.items():
+        # One activity export can contain the same SKU under several marketing
+        # records.  Qualification uses the strictest active/historical line;
+        # last-row-wins can silently erase it with a later blank row.
+        min_list = min(current["min_list_values"], default=None)
+        min_coupon = min(current["min_coupon_values"], default=None)
         payload[sid] = {
             "sku_id": sid,
-            "item_id": str(record.get("item_id") or "").strip(),
-            "sku_name": str(record.get("sku_name") or "").strip(),
+            "item_id": current["item_id"],
+            "sku_name": current["sku_name"],
             "min_list_price": float(min_list) if min_list is not None else None,
             "min_coupon_line": float(min_coupon) if min_coupon is not None else None,
             # Blank H/I cells in an authoritative current activity export mean
             # that the platform exposed the gate but has no numeric requirement.
             # Preserve that distinction from a SKU that was absent from the export.
-            "min_list_price_observed": "min_list_price" in record,
-            "min_coupon_line_observed": "min_coupon_line" in record,
+            "min_list_price_observed": current["min_list_price_observed"],
+            "min_coupon_line_observed": current["min_coupon_line_observed"],
             "observed_at": seen_at,
             "source": source,
         }

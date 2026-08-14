@@ -1099,6 +1099,35 @@ def _build_signup_xlsx(rows: list[dict]) -> bytes:
     return out.getvalue()
 
 
+def _build_super_signup_xlsx(rows: list[dict]) -> bytes:
+    """超级立减官方14列表：真实报名价仍为日常价，只填10%让利比例。"""
+    import io
+    from pathlib import Path
+    import openpyxl
+
+    tpl = (Path(__file__).resolve().parent.parent / "assets" / "taobao_templates"
+           / "super_reduce_import.xlsx")
+    wb = openpyxl.load_workbook(tpl)
+    ws = wb["商品SKU导入列表"] if "商品SKU导入列表" in wb.sheetnames else wb.worksheets[-1]
+    if ws.max_row >= 4:
+        ws.delete_rows(4, ws.max_row - 3)
+    r, seen = 4, set()
+    for row in rows:
+        sid = str(row["taobao_sku_id"])
+        if sid in seen:
+            continue
+        seen.add(sid)
+        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        ws.cell(r, 2, sid).number_format = "@"
+        ws.cell(r, 3, float(row["price"])).number_format = "0.00"
+        ws.cell(r, 5, "包邮")
+        ws.cell(r, 13, 10)
+        r += 1
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
 def _fmt_dt(dt) -> Optional[str]:
     return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
 
@@ -1144,7 +1173,7 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
     if res.get("need_scan"):
         return {"ok": False, "need_scan": True, "message": "淘宝登录态过期, 请先扫码后再上传"}
     validation = res.get("validation")
-    if channel == "promo_signup":
+    if channel in ("promo_signup", "super_reduce"):
         total = validation.get("total_items") if isinstance(validation, dict) else None
         ok_count = validation.get("ok") if isinstance(validation, dict) else None
         failed = validation.get("failed") if isinstance(validation, dict) else None
@@ -1152,8 +1181,9 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             isinstance(total, int) and isinstance(ok_count, int) and isinstance(failed, int)
             and total > 0 and ok_count + failed == total
         )
+        submitted = channel != "super_reduce" or bool(res.get("submitted"))
         success = bool(
-            res.get("ok") and terminal and failed == 0 and ok_count == total
+            res.get("ok") and submitted and terminal and failed == 0 and ok_count == total
             and (expected_items is None or total == expected_items)
         )
         error = res.get("error") or res.get("message")
@@ -1163,6 +1193,8 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             error = f"批量操作范围不符：平台{total}品，预期{expected_items}品"
         elif failed:
             error = f"批量操作终态失败：成功{ok_count}品/失败{failed}品"
+        elif channel == "super_reduce" and not res.get("submitted"):
+            error = "超级立减批量导入成功，但一键发布未确认，不能视为报名完成"
     else:
         success = bool(res.get("submitted") if phase == "commit" else res.get("ok"))
         error = res.get("error") or res.get("message")
@@ -1562,8 +1594,13 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         return {"ok": True, "no_change": True, "stats": stats,
                 "message": "当前活动中所有目标商品已发布且价格一致，无需重复导入"}
 
+    super_reduce = str(getattr(plan, "campaign_type", "")) == "super_reduce"
+    channel = "super_reduce" if super_reduce else "promo_signup"
+    phase = "commit" if super_reduce else "stage"
+    upload_xlsx = (_build_super_signup_xlsx(pending) if super_reduce
+                   else _build_signup_xlsx(pending))
     res = _upload_and_wait(
-        db, "promo_signup", "stage", _build_signup_xlsx(pending),
+        db, channel, phase, upload_xlsx,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
         expected_rows=len(pending), expected_items=len(pending_items))
     res["stats"] = stats

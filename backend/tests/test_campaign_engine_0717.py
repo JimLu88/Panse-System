@@ -581,6 +581,23 @@ def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
     assert calls[0]["channel"] == "promo_signup" and calls[0]["phase"] == "stage"
 
 
+def test_super_reduce_signup_uses_dedicated_commit_channel(db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQS001", "PPSQS00101", "9504", "75031", daily=1500)
+    db_session.commit()
+    _seed_platform_floors(db_session, [("9504", "75031", 2000, 1400)])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is True
+    assert plan.status == "signup_pushed"
+    assert calls[0]["channel"] == "super_reduce"
+    assert calls[0]["phase"] == "commit"
+
+
 def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeypatch):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSQZ001", "PPSQZ00101", "9503", "75021",
