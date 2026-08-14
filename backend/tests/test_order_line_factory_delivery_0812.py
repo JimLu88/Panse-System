@@ -87,6 +87,79 @@ def test_legacy_multi_product_binds_sent_bed_only(db_session):
     assert lines.delivery_count_gate(db_session)["ok"] is True
 
 
+def test_legacy_refunded_representative_is_not_misbound_to_active_sibling(db_session):
+    """旧主单图若实际代表退款柜子，不能因为只剩床有效就冒充床的送达凭证。"""
+    order = _order(db_session, "MAIN-REFUNDED-REP", factory_no=720, name="退款餐边柜")
+    order.sku_code = "PFG2525001122511"
+    bed = _line(db_session, order.order_no, "SUB-ACTIVE-BED", "樱桃木床", "PPS2633011022614")
+    _line(db_session, order.order_no, "SUB-REFUNDED-CABINET", "退款餐边柜", "PFG2525001122511", refunded=True)
+    _sent(db_session, order, factory_no=720)
+    db_session.commit()
+
+    result = lines.bind_unambiguous_legacy_evidence(db_session)
+
+    assert result["bound"] == []
+    assert result["ambiguous_order_nos"] == [order.order_no]
+    assert bed.factory_delivery_required is False
+    assert bed.factory_delivery_state is None
+
+
+def test_legacy_binding_factory_number_conflict_does_not_abort_batch(db_session):
+    """旧主单号已被新的子订单占用时应报告冲突，不能让整个定时任务回滚。"""
+    occupied_order = _order(db_session, "OCCUPIED")
+    occupied = _line(db_session, occupied_order.order_no, "SUB-OCCUPIED", "床头柜", "PPS2638004022511")
+    occupied.factory_no = 721
+    occupied.factory_delivery_required = True
+
+    order = _order(db_session, "MAIN-CONFLICT", factory_no=721, name="樱桃木床")
+    line = _line(db_session, order.order_no, "SUB-CONFLICT", "樱桃木床", order.sku_code)
+    _sent(db_session, order, factory_no=721)
+    db_session.commit()
+
+    result = lines.bind_unambiguous_legacy_evidence(db_session)
+
+    assert result["bound"] == []
+    assert result["factory_no_conflicts"] == [{
+        "order_no": order.order_no,
+        "factory_no": 721,
+        "occupied_sub_order_no": occupied.sub_order_no,
+    }]
+    assert line.factory_no is None
+
+
+def test_partial_refund_legacy_order_switches_to_child_delivery_before_render(db_session, _feishu):
+    settings_service.set_value(db_session, "feishu_push_chat_id", "factory-chat")
+    order = _order(db_session, "MAIN-PARTIAL-REFUND", name="退款餐边柜")
+    order.order_date = date(2026, 6, 10)
+    order.seller_memo = "开始制作"
+    order.sku_code = "PFG2525001122511"
+    bed = _line(db_session, order.order_no, "SUB-BED-ONLY", "樱桃木床", "PPS2633011022614")
+    cabinet = _line(db_session, order.order_no, "SUB-CABINET-REFUND", "退款餐边柜", "PFG2525001122511", refunded=True)
+    order.refund_amount = cabinet.refund_amount
+    db_session.commit()
+
+    generated = sheets.generate_pending(db_session)
+    assert generated["generated"] == 0
+    assert bed.factory_delivery_required is True
+    assert cabinet.factory_delivery_required is True
+    assert db_session.query(ImportedFile).filter_by(kind="order_sheet").count() == 0
+
+    result = sheets.reconcile_order_line_delivery(db_session)
+    assert result["sub_order_nos"] == [bed.sub_order_no]
+    assert cabinet.factory_delivery_state is None
+    assert _feishu == ["img-key"]
+
+
+def test_legacy_factory_number_sequence_includes_child_numbers(db_session):
+    order = _order(db_session, "MAIN-NUMBER")
+    order.factory_no = 730
+    line = _line(db_session, order.order_no, "SUB-NUMBER", "樱桃木床", order.sku_code)
+    line.factory_no = 735
+    db_session.flush()
+
+    assert sheets._next_factory_no(db_session) == 736
+
+
 @pytest.fixture
 def _feishu(monkeypatch):
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)

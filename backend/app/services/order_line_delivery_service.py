@@ -159,6 +159,7 @@ def bind_unambiguous_legacy_evidence(db: Session) -> dict:
     ).scalars().all()
     bound: list[str] = []
     ambiguous: list[str] = []
+    factory_no_conflicts: list[dict] = []
     for evidence in rows:
         summary = evidence.row_summary or {}
         if summary.get("pushed") is not True or summary.get("sub_order_no"):
@@ -166,19 +167,21 @@ def bind_unambiguous_legacy_evidence(db: Session) -> dict:
         order_no = str(summary.get("order_no") or "").strip()
         if not order_no:
             continue
-        all_candidates = [
-            line for line in db.execute(
-                select(OrderDetail).where(
-                    OrderDetail.order_no == order_no,
-                    OrderDetail.source == "import",
-                    OrderDetail.sub_order_no.isnot(None),
-                )
-            ).scalars().all()
-            if not line_is_refunded(line)
-        ]
+        parsed_lines = db.execute(
+            select(OrderDetail).where(
+                OrderDetail.order_no == order_no,
+                OrderDetail.source == "import",
+                OrderDetail.sub_order_no.isnot(None),
+                OrderDetail.sku_code.isnot(None),
+            ).order_by(OrderDetail.id.asc())
+        ).scalars().all()
+        all_candidates = [line for line in parsed_lines if not line_is_refunded(line)]
         order = db.execute(select(Order).where(Order.order_no == order_no)).scalar_one_or_none()
         candidates = all_candidates
-        if len(candidates) > 1 and order is not None:
+        # 多商品或含退款兄弟行时，不能仅因“只剩一个有效商品”就把旧图绑定
+        # 给它。旧图实际渲染的是 Order 代表商品，必须与有效行 SKU/产品精确匹配。
+        requires_exact = len(parsed_lines) > 1 or any(line_is_refunded(x) for x in parsed_lines)
+        if requires_exact and order is not None:
             # 旧主单图实际使用的是 Order 上的代表商品。只有产品/SKU精确唯一
             # 命中时才绑定；否则保持歧义并报警，绝不猜测。
             exact = [
@@ -191,14 +194,28 @@ def bind_unambiguous_legacy_evidence(db: Session) -> dict:
                     and line.product_code == order.product_code
                 )
             ]
-            if len(exact) == 1:
-                candidates = exact
+            candidates = exact
         if len(candidates) != 1:
-            if len(candidates) > 1:
+            if parsed_lines:
                 ambiguous.append(order_no)
             continue
         line = candidates[0]
         factory_no = summary.get("factory_no_at_render")
+        if factory_no is not None:
+            occupied = db.execute(
+                select(OrderDetail).where(
+                    OrderDetail.factory_no == int(factory_no),
+                    OrderDetail.id != line.id,
+                ).limit(1)
+            ).scalar_one_or_none()
+            if occupied is not None:
+                factory_no_conflicts.append({
+                    "order_no": order_no,
+                    "factory_no": int(factory_no),
+                    "occupied_sub_order_no": occupied.sub_order_no,
+                })
+                ambiguous.append(order_no)
+                continue
         evidence.row_summary = {
             **summary,
             "sub_order_no": line.sub_order_no,
@@ -213,7 +230,11 @@ def bind_unambiguous_legacy_evidence(db: Session) -> dict:
         bound.append(str(line.sub_order_no))
     if bound:
         db.commit()
-    return {"bound": bound, "ambiguous_order_nos": sorted(set(ambiguous))}
+    return {
+        "bound": bound,
+        "ambiguous_order_nos": sorted(set(ambiguous)),
+        "factory_no_conflicts": factory_no_conflicts,
+    }
 
 
 def migrate_legacy_sent_binding(

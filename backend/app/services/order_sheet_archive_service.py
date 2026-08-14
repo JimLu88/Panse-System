@@ -58,6 +58,47 @@ def _is_refunded(o: Order) -> bool:
     return ra > 0 and pa > 0 and ra >= pa * Decimal("0.9")
 
 
+def _partial_refund_child_lines(db: Session, order: Order) -> list[OrderDetail]:
+    """Return resolved child rows when one child remains active and another is refunded.
+
+    A legacy ``Order`` stores only one representative product.  For a mixed
+    main order that representative can be the refunded child, so the main-order
+    sheet is never safe once authoritative child rows are available.
+    """
+    from app.services import order_line_delivery_service as line_delivery
+
+    lines = db.execute(
+        select(OrderDetail).where(
+            OrderDetail.order_no == order.order_no,
+            OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None),
+            OrderDetail.sku_code.isnot(None),
+        ).order_by(OrderDetail.id.asc())
+    ).scalars().all()
+    if not lines:
+        return []
+    refunded = [line for line in lines if line_delivery.line_is_refunded(line)]
+    active = [line for line in lines if not line_delivery.line_is_refunded(line)]
+    return lines if refunded and active else []
+
+
+def _promote_partial_refund_child_delivery(db: Session, order: Order) -> bool:
+    """Move an unsent mixed-refund legacy order onto child-order delivery.
+
+    Existing sent main-order evidence is deliberately not rewritten or
+    replayed here; it requires explicit correction because Feishu may already
+    have acted on it.  Unsent/pending rows are safely switched before rendering.
+    """
+    lines = _partial_refund_child_lines(db, order)
+    if not lines:
+        return False
+    if order.order_no in _pushed_sheet_evidence(db):
+        return False
+    for line in lines:
+        line.factory_delivery_required = True
+    return True
+
+
 def _int_qty(v) -> str:
     """2.0000 → 2; 2.5 保留小数。用户要求数量别带一串零。"""
     d = Decimal(str(v or 0))
@@ -349,6 +390,10 @@ def generate_pending(db: Session, *, limit: int = 200) -> dict:
     failures: list[dict] = []
     attempted = 0
     for o in orders:
+        # 部分退款的多子订单绝不能再走“主订单代表商品”旧图。若尚未发送，
+        # 在渲染之前切到逐子订单链；退款行会被行级资格判断排除。
+        if _promote_partial_refund_child_delivery(db, o):
+            continue
         # 已切到子订单工厂链的主订单不得再生成“代表整单”的旧图，否则一单
         # 多商品会同时走主单图和子单图，造成重复生产。
         if db.execute(
@@ -771,6 +816,10 @@ def _is_pushable(db: Session, rec: ImportedFile) -> bool:
     order = db.execute(select(Order).where(Order.order_no == no)).scalar_one_or_none()
     if order is None:
         return False
+    # 双保险：即便旧主单图早于本修复已进入待推队列，只要权威子订单显示
+    # “一件有效、一件已退款”，也禁止发送代表商品图。
+    if _partial_refund_child_lines(db, order):
+        return False
     if db.execute(
         select(OrderDetail.id).where(
             OrderDetail.order_no == no,
@@ -812,8 +861,9 @@ _AUTO_NUMBER_SINCE = date(2026, 6, 19)
 
 def _next_factory_no(db: Session) -> int:
     """下一个工厂制单编号 = 现有最大 + 1 (新单按订单顺序往后排)。"""
-    mx = db.execute(select(func.max(Order.factory_no))).scalar()
-    return (mx or 241) + 1
+    order_max = db.execute(select(func.max(Order.factory_no))).scalar() or 241
+    line_max = db.execute(select(func.max(OrderDetail.factory_no))).scalar() or 241
+    return max(int(order_max), int(line_max)) + 1
 
 
 def _next_remote_seq(db: Session) -> int:
