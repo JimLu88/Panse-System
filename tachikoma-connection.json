@@ -1,0 +1,77 @@
+{
+  "schema_version": "tachikoma-connection/v1",
+  "software_id": "panse-system",
+  "service": "panse-system",
+  "version": "1.0.0",
+  "contract_version": "v1",
+  "interface": "http",
+  "default_port": 8000,
+  "health_path": "/api/health",
+  "read_upstream": {
+    "base_url_env": "PANSE_ERP_READ_BASE_URL",
+    "configured_base_url": "http://192.168.31.21:8200",
+    "method": "GET",
+    "path": "/api/pricing-skus",
+    "credentials_required": false,
+    "maximum_response_bytes": 2097152
+  },
+  "business_actions": [
+    {
+      "chain_id": "product-content-chain",
+      "step": "product-facts",
+      "method": "GET",
+      "path": "/api/tachikoma/product-candidates",
+      "risk": "read_only",
+      "approval": "none",
+      "idempotency": "safe_read_repeatable",
+      "status": "read_only_adapter_ready",
+      "execution_enabled": true,
+      "credentials_required": false,
+      "request_schema": {"type": "object", "properties": {"product_code": {"type": "string"}, "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "additionalProperties": false},
+      "response_schema": {"type": "object", "required": ["service", "read_only", "mutations", "returned", "candidates"]}
+    },
+    {
+      "chain_id": "commerce-intelligence-chain",
+      "step": "erp",
+      "method": "GET",
+      "path": "/api/web-agent/status",
+      "risk": "read_only",
+      "approval": "none",
+      "idempotency": "safe_read_repeatable",
+      "status": "read_only_discovered",
+      "execution_enabled": true,
+      "credentials_required": true,
+      "request_schema": {"type": "object", "additionalProperties": false},
+      "response_schema": {"type": "object", "required": ["agent", "freshness"]}
+    },
+    {
+      "chain_id": "customer-conversation-chain",
+      "step": "rules",
+      "method": "GET",
+      "path": "/api/version",
+      "risk": "read_only",
+      "approval": "project_adapter_required",
+      "idempotency": "safe_read_repeatable",
+      "status": "business_query_contract_missing",
+      "execution_enabled": false,
+      "credentials_required": false,
+      "request_schema": null,
+      "response_schema": null
+    }
+  ],
+  "test_evidence": {
+    "passed": true,
+    "command": "cd backend && python -m pytest -q tests/test_tachikoma_connection.py",
+    "summary": "12 passed; py_compile passed; live sanitized ERP read returned five real SKU candidates with mutations=0",
+    "verified_at": "2026-08-14T11:40:00+08:00"
+  },
+  "acceptance_evidence": {
+    "sandbox_business_flow_verified": false,
+    "live_business_result_verified": false,
+    "rollback_drill_verified": false,
+    "evidence_refs": []
+  },
+  "rollback": "Revert backend/app/main.py; remove backend/app/tachikoma_connection.py, backend/app/tachikoma_run.py, backend/tests/test_tachikoma_connection.py and tachikoma-connection.json. No database or business-data rollback is required.",
+  "production_execution_enabled": false,
+  "upgrade_execution_enabled": false
+}
