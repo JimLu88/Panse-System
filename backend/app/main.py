@@ -115,6 +115,13 @@ async def _lifespan(app: FastAPI):
     启动: 抢 PID 文件 → 写 process_started → 起看门狗 + 调度器
     关停: 停调度器 → 停看门狗 → 释放 PID + executor
     """
+    # Tachikoma 连接模式只暴露稳定身份和少量只读合同，不执行任何 ERP
+    # 启动恢复、数据种入、后台调度、看门狗、机器人或业务任务。
+    from app.tachikoma_connection import connection_only
+    if connection_only():
+        yield
+        return
+
     # 启动即打印当前运行版本, 方便对照「拉的代码是否最新」
     try:
         from app.version import get_version
@@ -308,6 +315,21 @@ app.add_middleware(IdempotencyMiddleware)
 
 
 @app.middleware("http")
+async def _tachikoma_connection_guard(request: Request, call_next):
+    from app.tachikoma_connection import connection_only, connection_path_allowed
+    if connection_only() and not connection_path_allowed(request.method, request.url.path):
+        return JSONResponse(
+            status_code=403,
+            content={
+                "code": "PRODUCTION_EXECUTION_DISABLED",
+                "detail": "Panse ERP is running in Tachikoma connection-only mode",
+                "service": "panse-system",
+            },
+        )
+    return await call_next(request)
+
+
+@app.middleware("http")
 async def _log_requests(request: Request, call_next):
     """每个请求记一行带时间戳的日志: rid 方法 路径 状态 耗时. 方便排查「卡在哪/谁报错」."""
     rid = request.headers.get("x-request-id") or uuid.uuid4().hex[:12]
@@ -441,11 +463,14 @@ app.include_router(npd_api.router)
 app.include_router(factory_settlement_api.router)
 app.include_router(campaigns_api.router)
 app.include_router(refill_sync_api.router)
+from app import tachikoma_connection as tachikoma_connection_api  # noqa: E402
+app.include_router(tachikoma_connection_api.router)
 
 
 @app.get("/api/health")
 def health():
-    return {"ok": True}
+    from app.tachikoma_connection import identity_payload
+    return identity_payload()
 
 
 @app.get("/api/ready")
