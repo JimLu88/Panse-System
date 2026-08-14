@@ -3,6 +3,8 @@
 纯函数层 (无 DB, 验收/回归直接注入):
 - parse_activity_items_export  活动商品导出 (跳3行表头, A..T 列; 多营销ID记录只认"已发布设定";
                                真实导出是合并单元格续行格式 — 商品ID/状态只在首SKU行, 需前向填充)
+- parse_activity_floor_evidence_export  同一导出的价格线证据口径；保留暂停/异常/草稿等
+                               非在场状态，但绝不用于报名集合核对
 - parse_discount_export        单品立减导出 (1行表头, 12列)
 - parse_product_batch_export   商品批量导出 (发布模板 sheet, 跳3行, 需 reset_dimensions)
 - verify_campaign_title        活动名称头部校验 (不一致 → 中止+报警, 防推错活动)
@@ -57,12 +59,8 @@ def _load_ws(xlsx_bytes: bytes, sheet_hint: Optional[str] = None):
     return wb, ws
 
 
-def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
-    """活动商品导出 (spec §七.1, 跳3行表头): A商品ID/B商品名称/C营销ID/D商品状态/E SKUID/F SKU名称/
-    G一口价/H最低标价/I最低普惠券后价要求/J活动普惠券后价/K建议价/…/P活动价/…
-    多营销ID记录并存 → 逐记录分组, **只认状态"已发布设定"**。
-    ★真实导出(2026-07-17 实测)是合并单元格续行格式: 商品ID/名称/营销ID/状态只写在
-    每商品首SKU行, 续行 A~D 为空 → 前向填充, 否则每品只读到第一个 SKU。"""
+def _parse_activity_export(xlsx_bytes: bytes, *, active_only: bool) -> list[dict]:
+    """活动商品导出公共解析器；``active_only`` 控制是否只保留当前在场状态。"""
     wb, ws = _load_ws(xlsx_bytes)
     records: list[dict] = []
     item_id = item_name = marketing_id = status = ""
@@ -70,14 +68,14 @@ def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
         if not row or len(row) < 10:
             continue
         if row[0] is not None and str(row[0]).strip():
-            item_id = str(row[0]).strip()                   # 新商品记录组 → 刷新头部字段
+            item_id = str(row[0]).strip()
             item_name = str(row[1] or "").strip()
             marketing_id = str(row[2] or "").strip()
             status = str(row[3] or "").strip()
         sku_id = str(row[4] or "").strip()
         if not item_id or not sku_id:
             continue
-        if status not in ACTIVITY_IN_CAMPAIGN_STATUSES:
+        if active_only and status not in ACTIVITY_IN_CAMPAIGN_STATUSES:
             continue
         records.append({
             "item_id": item_id,
@@ -86,14 +84,33 @@ def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
             "status": status,
             "sku_id": sku_id,
             "sku_name": str(row[5] or "").strip(),
-            "list_price": _f(row[6]),                       # G 一口价
-            "min_list_price": _f(row[7]),                   # H 最低标价
-            "min_coupon_line": _f(row[8]),                  # I 最低普惠券后价要求
-            "coupon_after": _f(row[9]),                     # J 活动普惠券后价 ★核对主维度
-            "activity_price": _f(row[15]) if len(row) > 15 else None,   # P 活动价
+            "list_price": _f(row[6]),
+            "min_list_price": _f(row[7]),
+            "min_coupon_line": _f(row[8]),
+            "coupon_after": _f(row[9]),
+            "activity_price": _f(row[15]) if len(row) > 15 else None,
         })
     wb.close()
     return records
+
+
+def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
+    """活动商品导出 (spec §七.1, 跳3行表头): A商品ID/B商品名称/C营销ID/D商品状态/E SKUID/F SKU名称/
+    G一口价/H最低标价/I最低普惠券后价要求/J活动普惠券后价/K建议价/…/P活动价/…
+    多营销ID记录并存 → 逐记录分组, **只认状态"已发布设定"**。
+    ★真实导出(2026-07-17 实测)是合并单元格续行格式: 商品ID/名称/营销ID/状态只写在
+    每商品首SKU行, 续行 A~D 为空 → 前向填充, 否则每品只读到第一个 SKU。"""
+    return _parse_activity_export(xlsx_bytes, active_only=True)
+
+
+def parse_activity_floor_evidence_export(xlsx_bytes: bytes) -> list[dict]:
+    """读取当前平台导出内全部逐 SKU H/I 价格线，不把状态当作在场证明。
+
+    超级立减“导出全部商品”会包含活动中、暂停、异常、草稿和撤销报名记录。
+    这些行的 H/I 仍是平台当前资格线，可以用于 R17；报名集合核对继续使用
+    :func:`parse_activity_items_export`，两种语义不得混用。
+    """
+    return _parse_activity_export(xlsx_bytes, active_only=False)
 
 
 def parse_discount_export(xlsx_bytes: bytes) -> list[dict]:
@@ -324,9 +341,10 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     floor_evidence = None
     if activity_bytes:
         records = parse_activity_items_export(activity_bytes)
+        floor_records = parse_activity_floor_evidence_export(activity_bytes)
         floor_evidence = campaign_price_floor_service.record_activity_export(
             db,
-            records,
+            floor_records,
             source=f"campaign_recon:{source}:plan={getattr(plan, 'id', '')}",
         )
         per_sku = compare_records(records, spec_map)

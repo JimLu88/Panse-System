@@ -1339,9 +1339,11 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
                      or "无法可靠取得当前活动生效集合",
         }
     live_rows = campaign_recon_service.parse_activity_items_export(exported["xlsx_bytes"])
+    floor_rows = campaign_recon_service.parse_activity_floor_evidence_export(
+        exported["xlsx_bytes"])
     refresh = campaign_price_floor_service.record_activity_export(
         db,
-        live_rows,
+        floor_rows,
         source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
     )
     return {"ok": True, "rows": live_rows, "floor_refresh": refresh}

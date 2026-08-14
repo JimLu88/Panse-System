@@ -84,6 +84,11 @@ def test_parse_activity_export_only_published(db_session):
     assert records[0]["activity_price"] == 2827.5             # P列
     assert records[0]["marketing_id"] == "M1"
 
+    floor_records = crs.parse_activity_floor_evidence_export(data)
+    assert len(floor_records) == 3
+    assert floor_records[1]["status"] == "已结束"
+    assert floor_records[1]["min_list_price"] is None
+
 
 def test_parse_discount_and_product_exports(db_session):
     disc = _xlsx([_disc_row("9601", "81001", 507.91)], header_rows=1)
