@@ -419,6 +419,25 @@ def test_placeholder_signup_without_live_price_is_blocked(db_session):
     assert checks["R16"]["items"][0]["taobao_sku_id"] == "73091"
 
 
+def test_placeholder_missing_live_price_uses_safe_cap_after_user_authorization(db_session):
+    plan = _plan(db_session, "big88")
+    plan.remark = (
+        "official_active_items=9300; "
+        "placeholder_price_lowering_authorized=true"
+    )
+    _mk(db_session, "PPSPH006", "PPSPH00699", "9315", "73092",
+        daily=500, placeholder=True, line=250)
+    db_session.commit()
+
+    rows, stats = cs.build_signup_rows(db_session, plan)
+    checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
+
+    assert rows[0]["price"] == 284.0
+    assert rows[0]["remark"] == "用户已授权定制咨询规格使用保护报名价"
+    assert stats["placeholder_price_lowered"][0]["authorization"] == "current_plan_user_decision"
+    assert checks["R16"]["level"] == "pass"
+
+
 def test_discount_price_hold_when_platform_coupon_after_exceeds_history_line(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDE001", "PPSDE00101", "9305", "73031", daily=3000, big=2000, line=1990)

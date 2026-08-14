@@ -25,12 +25,14 @@ def _plan(db, campaign_type="big88", tier="big"):
     return plan
 
 
-def _sku(db, *, daily=3000, big=2000, legacy_list=100, legacy_coupon=100):
+def _sku(db, *, daily=3000, list_price=4000, big=2000,
+         legacy_list=100, legacy_coupon=100):
     db.add(PricingSku(
         product_code="PPS_POLICY",
         sku_code="PPS_POLICY_1",
         sku="1.8米",
         product_name="报名规则测试商品",
+        list_price=Decimal(str(list_price)),
         daily_price=Decimal(str(daily)),
     ))
     db.add(PricingSkuPromo(
@@ -85,6 +87,47 @@ def test_missing_platform_floor_evidence_blocks_before_upload(db_session):
     assert checks["R17"]["level"] == "error"
     assert checks["R17"]["items"][0]["missing"] == [
         "min_list_price", "min_coupon_line"]
+
+
+def test_blank_coupon_gate_in_fresh_export_is_observed_not_missing(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805", "sku_id": "881880805", "sku_name": "1.8米",
+            "min_list_price": 3200, "min_coupon_line": None,
+        }],
+        source="pytest_blank_coupon_gate",
+    )
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+    assert checks["R17"]["level"] == "pass"
+
+
+def test_explicit_new_item_without_history_is_narrowly_allowed(db_session):
+    plan = _plan(db_session)
+    plan.remark = "new_item_no_history_authorized=991880805"
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "pass"
+    assert checks["R17"]["authorized_new_item_rows"][0]["taobao_item_id"] == "991880805"
+
+
+def test_explicit_new_item_without_history_still_requires_current_list_ceiling(db_session):
+    plan = _plan(db_session)
+    plan.remark = "new_item_no_history_authorized=991880805"
+    _sku(db_session, daily=3000, list_price=2999,
+         legacy_list=4000, legacy_coupon=3000)
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "error"
+    assert checks["R17"]["items"][0]["missing"] == [
+        "current_erp_list_price_ceiling"]
 
 
 def test_fresh_platform_lines_are_qualification_only_and_hold_whole_item(db_session):

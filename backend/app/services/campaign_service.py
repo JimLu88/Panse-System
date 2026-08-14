@@ -175,6 +175,39 @@ def placeholder_price_protection_expired(plan) -> bool:
     )
 
 
+def placeholder_price_lowering_authorized(plan) -> bool:
+    """Current-plan user decision allowing custom placeholders to use safe caps.
+
+    This does not lower any real SKU and does not make single-item discount a
+    qualification input.  It only removes the stale-price hold for placeholder
+    consultation entries whose commercial price is explicitly non-binding.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*placeholder_price_lowering_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return bool(matched and matched.group(1).strip().lower() in (
+        "1", "true", "yes", "on", "是", "已授权",
+    ))
+
+
+def new_item_no_history_authorized_items(plan) -> set[str]:
+    """Item IDs explicitly confirmed as new links with no platform history yet."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*new_item_no_history_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
 def official_ceil_enabled(db: Session) -> bool:
     """超级立减10% 官方立减是否向上取整到元 (spec §二: 待 7-20 实证, 默认按取整)。"""
     from app.services import settings_service
@@ -461,6 +494,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     lev = TIER_LEVERAGE[plan_tier(plan)]
     placeholder_live_prices = placeholder_live_prices_for_plan(plan)
     placeholder_expired = placeholder_price_protection_expired(plan)
+    placeholder_lowering = placeholder_price_lowering_authorized(plan)
     delisted = delisted_sku_service.get_delisted(db)
     registered_no_sales = no_sales_service.get_no_sales(db)
     bad_pc = bad_price_product_codes(db)
@@ -474,6 +508,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
                  sid: float(price) for sid, price in placeholder_live_prices.items()},
              "placeholder_missing_live_price": [],
              "placeholder_price_protection_expired": placeholder_expired,
+             "placeholder_price_lowering_authorized": placeholder_lowering,
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": []}
     stats["excluded_no_sales_items"] = []
@@ -514,11 +549,19 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
             sid = str(row["taobao_sku_id"])
             live_price = placeholder_live_prices.get(sid)
             if live_price is None:
-                stats["placeholder_missing_live_price"].append({
+                detail = {
                     "taobao_item_id": item_id,
                     "taobao_sku_id": sid,
                     "sku_code": row["sku_code"],
-                })
+                    "safe_cap": row["price"],
+                    "current_live_price": None,
+                }
+                if placeholder_lowering:
+                    row["remark"] = "用户已授权定制咨询规格使用保护报名价"
+                    stats["placeholder_price_lowered"].append({
+                        **detail, "authorization": "current_plan_user_decision"})
+                else:
+                    stats["placeholder_missing_live_price"].append(detail)
                 continue
             generated = _d(row["price"]) or Decimal("0")
             if live_price > generated:
@@ -877,13 +920,20 @@ def _check_campaign_policy() -> dict:
     }
 
 
-def _check_price_floor_evidence(db: Session, signup_rows: list[dict]) -> dict:
+def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> dict:
     """Require fresh, per-SKUID evidence for both platform qualification lines."""
     from app.services import campaign_policy_service, campaign_price_floor_service
 
     max_age = campaign_policy_service.floor_evidence_max_age_hours()
     evidence = campaign_price_floor_service.evidence_map(db)
     problems: list[dict] = []
+    authorized_new_items = new_item_no_history_authorized_items(plan)
+    authorized_new_rows: list[dict] = []
+    sku_by_id = {
+        mapped_sid: sku
+        for sku, promo in _mapped_pairs(db)
+        for mapped_sid in _expand_sku_ids(promo)
+    }
     seen: set[str] = set()
     for row in signup_rows:
         if row.get("is_placeholder"):
@@ -893,8 +943,35 @@ def _check_price_floor_evidence(db: Session, signup_rows: list[dict]) -> dict:
             continue
         seen.add(sid)
         entry = evidence.get(sid) if isinstance(evidence.get(sid), dict) else {}
+        item_id = str(row.get("taobao_item_id") or "")
+        if not entry and item_id in authorized_new_items:
+            sku = sku_by_id.get(sid)
+            erp_list_price = _d(getattr(sku, "list_price", None))
+            signup_price = _d(row.get("price"))
+            if (erp_list_price is None or signup_price is None
+                    or signup_price > erp_list_price):
+                problems.append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "sku_code": row.get("sku_code"),
+                    "missing": ["current_erp_list_price_ceiling"],
+                    "signup_price": float(signup_price) if signup_price is not None else None,
+                    "erp_current_list_price": (
+                        float(erp_list_price) if erp_list_price is not None else None),
+                    "source": "explicit_new_item_without_platform_history",
+                })
+                continue
+            authorized_new_rows.append({
+                "taobao_item_id": item_id,
+                "taobao_sku_id": sid,
+                "sku_code": row.get("sku_code"),
+                "signup_price": float(signup_price),
+                "erp_current_list_price": float(erp_list_price),
+                "reason": "user_confirmed_new_link_without_platform_history",
+            })
+            continue
         missing = [key for key in ("min_list_price", "min_coupon_line")
-                   if entry.get(key) is None]
+                   if entry.get(key) is None and not entry.get(f"{key}_observed")]
         age = campaign_price_floor_service.evidence_age_hours(entry)
         stale = age is None or age > max_age
         if missing or stale:
@@ -918,6 +995,7 @@ def _check_price_floor_evidence(db: Session, signup_rows: list[dict]) -> dict:
         "items": problems[:500],
         "checked": len(seen),
         "max_age_hours": max_age,
+        "authorized_new_item_rows": authorized_new_rows,
     }
 
 
@@ -962,7 +1040,7 @@ def preflight(db: Session, plan) -> list[dict]:
         campaign_price_protection_service.rule_check(plan),
         _check_official_scope(db, plan),
         _check_placeholder_live_prices(sstats),
-        _check_price_floor_evidence(db, _srows),
+        _check_price_floor_evidence(db, plan, _srows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))

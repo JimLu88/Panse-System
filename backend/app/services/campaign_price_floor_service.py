@@ -94,6 +94,11 @@ def record_activity_export(
             "sku_name": str(record.get("sku_name") or "").strip(),
             "min_list_price": float(min_list) if min_list is not None else None,
             "min_coupon_line": float(min_coupon) if min_coupon is not None else None,
+            # Blank H/I cells in an authoritative current activity export mean
+            # that the platform exposed the gate but has no numeric requirement.
+            # Preserve that distinction from a SKU that was absent from the export.
+            "min_list_price_observed": "min_list_price" in record,
+            "min_coupon_line_observed": "min_coupon_line" in record,
             "observed_at": seen_at,
             "source": source,
         }
@@ -137,6 +142,10 @@ def record_partial_evidence(
                 float(min_list) if min_list is not None else previous.get("min_list_price")),
             "min_coupon_line": (
                 float(min_coupon) if min_coupon is not None else previous.get("min_coupon_line")),
+            "min_list_price_observed": bool(
+                min_list is not None or previous.get("min_list_price_observed")),
+            "min_coupon_line_observed": bool(
+                min_coupon is not None or previous.get("min_coupon_line_observed")),
             "observed_at": seen_at,
             "source": source,
         }
@@ -186,6 +195,10 @@ def record_failed_feedback(
                 float(min_list) if min_list is not None else previous.get("min_list_price")),
             "min_coupon_line": (
                 float(min_coupon) if min_coupon is not None else previous.get("min_coupon_line")),
+            "min_list_price_observed": bool(
+                min_list is not None or previous.get("min_list_price_observed")),
+            "min_coupon_line_observed": bool(
+                min_coupon is not None or previous.get("min_coupon_line_observed")),
             "observed_at": seen_at,
             "source": source,
         }

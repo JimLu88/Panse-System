@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-05.1",
-  "updated_at": "2026-08-05T00:00:00+08:00",
+  "version": "2026-08-14.2",
+  "updated_at": "2026-08-14T21:00:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -36,7 +36,8 @@
     "whole_item_all_skus_required": true,
     "any_sku_conflict_action": "exclude_whole_item_and_report",
     "missing_or_stale_floor_evidence_action": "block_before_upload_and_report",
-    "floor_evidence_max_age_hours": 24
+    "floor_evidence_max_age_hours": 24,
+    "new_item_without_activity_history": "allow_only_for_explicit_plan_item_ids_confirmed_by_user_as_new_links"
   },
   "final_price_gate": {
     "formula": "signup_price_minus_official_discount_minus_single_item_discount_equals_erp_target",
@@ -48,7 +49,8 @@
     "exclude_delisted_skus": true,
     "already_correct_items_are_not_reimported": true,
     "published_wrong_price_or_missing_sku_action": "stop_and_report",
-    "target_scope_must_be_complete_and_mapped": true
+    "target_scope_must_be_complete_and_mapped": true,
+    "custom_placeholder_safe_cap_without_live_price": "allow_only_after_explicit_current_plan_user_authorization"
   },
   "post_submit": {
     "success_source_of_truth": "latest_qianniu_batch_operation_record_and_fresh_export",
