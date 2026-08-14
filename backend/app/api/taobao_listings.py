@@ -4,7 +4,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Optional
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
@@ -78,6 +78,48 @@ def backfill_orders(
 ):
     """一键回填: 用当前对应表给已导入订单补 店铺/产品编码/SKU编码 (只填空字段)。"""
     return taobao_listing_service.backfill_orders(db, only_missing_shop=only_missing_shop)
+
+
+@router.post("/link-migrations/preview")
+async def preview_link_migration(
+    file: UploadFile = File(...),
+    product_code: str = Form(...),
+    mode: str = Form("add"),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """预检商品链接追加/切主，不写库；返回逐 SKU 映射与影响范围。"""
+    from app.services import taobao_link_migration_service
+
+    raw = await file.read()
+    try:
+        return taobao_link_migration_service.preview(
+            db, raw, product_code=product_code, mode=mode
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/link-migrations/apply")
+async def apply_link_migration(
+    file: UploadFile = File(...),
+    product_code: str = Form(...),
+    mode: str = Form("add"),
+    shop: Optional[str] = Form(None),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_role("admin", "operator")),
+):
+    """执行已验证的商品链接追加/切主；旧商品与历史订单关联不会删除。"""
+    from app.services import taobao_link_migration_service
+
+    raw = await file.read()
+    try:
+        return taobao_link_migration_service.apply(
+            db, raw, product_code=product_code, mode=mode, shop=shop
+        )
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.get("", response_model=TaobaoListingListOut)
