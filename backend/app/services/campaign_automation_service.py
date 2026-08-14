@@ -19,6 +19,7 @@ from app.models.campaign import CampaignCalendar, CampaignPlan
 _ACTIONABLE = ("可报名", "报名中")
 _TERMINAL = ("已结束", "报名截止", "已关闭", "已取消")
 _EXACT_DT_RE = re.compile(r"20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\s+\d{1,2}:\d{2}:\d{2}")
+AUTO_EXECUTION_HORIZON_DAYS = 14
 
 
 def enabled(db: Session) -> bool:
@@ -183,13 +184,13 @@ def sync_upcoming_plans(db: Session, calendars: list[CampaignCalendar]) -> dict:
 
 
 def run_auto_execute(db: Session) -> dict:
-    """执行未来 7 天内的自动计划；每个阶段只在上一步有终态成功后继续。"""
+    """执行未来 14 天内的自动计划；与计划发现窗口保持一致。"""
     from app.services import campaign_service
 
     if not enabled(db):
         return {"skipped": "campaign_auto_disabled"}
     now = datetime.now()
-    horizon = now + timedelta(days=7)
+    horizon = now + timedelta(days=AUTO_EXECUTION_HORIZON_DAYS)
     plans = db.execute(select(CampaignPlan).where(
         CampaignPlan.status.in_(("draft", "precheck", "discount_pushed")),
         CampaignPlan.start_at > now,

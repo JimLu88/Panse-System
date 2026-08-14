@@ -90,6 +90,50 @@ def test_discovery_same_title_new_period_is_new_row(db_session, monkeypatch):
     assert calls == []                                          # 都在3天窗外, 不提醒
 
 
+def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkeypatch):
+    from app.services import campaign_automation_service as automation
+    from app.services import campaign_service, settings_service
+
+    now = datetime.now()
+    included = CampaignPlan(
+        name="十天后开学季", campaign_type="big_other", tier="big",
+        start_at=now + timedelta(days=10), end_at=now + timedelta(days=17),
+        status="precheck",
+    )
+    excluded = CampaignPlan(
+        name="十五天后活动", campaign_type="big_other", tier="big",
+        start_at=now + timedelta(days=15), end_at=now + timedelta(days=20),
+        status="precheck",
+    )
+    db_session.add_all([included, excluded])
+    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
+    db_session.commit()
+
+    pushed = []
+    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
+
+    def push_discount(db, plan, *, phase):
+        pushed.append(("discount", plan.name, phase))
+        plan.status = "discount_pushed"
+        db.flush()
+        return {"ok": True}
+
+    def push_signup(db, plan, *, execution_source):
+        pushed.append(("signup", plan.name, execution_source))
+        return {"ok": True}
+
+    monkeypatch.setattr(campaign_service, "push_discount", push_discount)
+    monkeypatch.setattr(campaign_service, "push_signup", push_signup)
+
+    result = automation.run_auto_execute(db_session)
+
+    assert result["processed"] == 1
+    assert pushed == [
+        ("discount", "十天后开学季", "commit"),
+        ("signup", "十天后开学季", "campaign_automation"),
+    ]
+
+
 def test_discovery_unknown_date_actionable_reminds_once_and_ended_is_ignored(
         db_session, monkeypatch):
     """全体日期没解析出来时只发一条合并诊断；已结束阶段不误提醒。"""
