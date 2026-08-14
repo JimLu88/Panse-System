@@ -6,6 +6,7 @@ from pathlib import Path
 from app.models.campaign import CampaignPlan
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
+from app.services import campaign_notification_service
 from app.services import campaign_policy_service, campaign_price_floor_service
 from app.services import campaign_service
 
@@ -131,3 +132,25 @@ def test_ai_or_page_direct_signup_is_rejected_without_platform_call(db_session, 
     assert result["step"] == "execution_policy_guard"
     assert result["ai_may_adjust_or_resubmit"] is False
     assert called == []
+
+
+def test_campaign_notifications_can_be_disabled_without_affecting_other_alerts(
+        db_session, monkeypatch):
+    from app.services import notify_service, settings_service
+
+    delivered = []
+    monkeypatch.setattr(
+        notify_service,
+        "broadcast_text",
+        lambda *args, **kwargs: delivered.append((args, kwargs)) or {"feishu": True},
+    )
+    settings_service.set_value(
+        db_session, campaign_notification_service.SETTING_KEY, "false")
+    db_session.commit()
+
+    result = campaign_notification_service.broadcast_text(
+        db_session, "只在当前对话汇报", title="活动自动执行失败", level="error")
+
+    assert result["skipped"] == "campaign_notifications_disabled"
+    assert result["feishu"] is False
+    assert delivered == []

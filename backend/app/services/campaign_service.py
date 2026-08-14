@@ -1169,7 +1169,7 @@ def _signup_failure_signature(plan, result: dict) -> str:
 def _notify_signup_failure(db: Session, plan, result: dict) -> dict:
     """同一失败内容只发一次飞书；原因变化后会重新通知。"""
     import json
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
 
     key = f"campaign_signup_failure_{getattr(plan, 'id', 'unknown')}"
     signature = _signup_failure_signature(plan, result)
@@ -1219,7 +1219,7 @@ def _notify_placeholder_price_blocks(db: Session, plan, blocked: list[dict]) -> 
     """Warn once when placeholders are held because price protection is unconfirmed."""
     import hashlib
     import json
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
 
     details = []
     for item in blocked:
@@ -1266,7 +1266,7 @@ def _notify_coupon_floor_blocks(db: Session, plan, blocked: list[dict]) -> dict:
     """报名资格线命中时飞书告警；相同活动、相同明细只发送一次。"""
     import hashlib
     import json
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
 
     coupon_blocked = []
     for item in blocked:

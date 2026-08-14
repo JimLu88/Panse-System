@@ -234,7 +234,7 @@ def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
             "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
 
 
-def campaign_export_items(db: Session, campaign_title: str, *, timeout_s: int = 260) -> dict:
+def campaign_export_items(db: Session, campaign_title: str, *, timeout_s: int = 720) -> dict:
     """活动生命周期 P4: WA「导出已报商品」(POST /api/campaign/export-items → wait_job)。
     WA 侧按标题从营销列表进活动并做★标题校验★, 不一致中止 (error=campaign_title_mismatch)。
     返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/step?/error}。异步导出~2min, 给足等待。"""

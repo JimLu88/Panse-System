@@ -179,7 +179,7 @@ def _latest_discovery_run_status_today(db: Session) -> Optional[str]:
 
 def run_daily_discovery(db: Session) -> dict:
     """调度入口: WA 活动发现 → 落日历 → <3天飞书提醒 (去重: 同活动一天一次)。"""
-    from app.services import notify_service, web_agent_service
+    from app.services import campaign_notification_service as notify_service, web_agent_service
 
     r = web_agent_service.campaign_discover(db)
     if not r.get("ok"):

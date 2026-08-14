@@ -309,7 +309,11 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     """三种导出与 ERP 比对 → 逐SKU判定 → 落 CampaignReconReport; >2元差异飞书报警。
     任一文件可缺 (手动上传兜底, spec §四.6); 全缺 → 显式报错。"""
     from app.models.campaign import CampaignReconReport
-    from app.services import campaign_price_floor_service, campaign_service, notify_service
+    from app.services import (
+        campaign_notification_service as notify_service,
+        campaign_price_floor_service,
+        campaign_service,
+    )
     if not any((activity_bytes, discount_bytes, product_bytes)):
         return {"ok": False, "error": "未提供任何导出文件 (活动商品/单品立减/商品批量 至少一份)"}
 
@@ -371,7 +375,7 @@ AUTO_RECON_WINDOW_HOURS = 6
 def _notify_recon_export_failure_once(db: Session, plan, text: str) -> dict:
     """同一计划同一导出故障只提醒一次，原因变化后重新提醒。"""
     import hashlib
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
 
     signature = hashlib.sha256(text.encode("utf-8")).hexdigest()
     key = f"campaign_recon_export_failure_{plan.id}"

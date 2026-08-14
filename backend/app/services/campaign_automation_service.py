@@ -61,7 +61,7 @@ def _campaign_type(parent: str, phase: str) -> str:
 
 def _notify_once(db: Session, key_suffix: str, title: str, text: str,
                  *, level: str = "error") -> dict:
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
     signature = hashlib.sha256(text.encode("utf-8")).hexdigest()
     key = f"campaign_auto_notice_{key_suffix}"[:120]
     if settings_service.get(db, key, env_fallback=False) == signature:

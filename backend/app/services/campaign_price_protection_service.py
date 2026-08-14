@@ -81,7 +81,7 @@ def _notice_key(plan_id: int) -> str:
 
 def notify_rule_link_needed(db: Session, plan, *, force: bool = False) -> dict:
     """缺链接时给运营发一次飞书；未送达不记去重，后续调度会重试。"""
-    from app.services import notify_service, settings_service
+    from app.services import campaign_notification_service as notify_service, settings_service
 
     if str(getattr(plan, "price_protection_rule_url", None) or "").strip():
         return {"needed": False, "sent": False, "reason": "rule_url_present"}

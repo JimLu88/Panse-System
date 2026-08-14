@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+import inspect
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,12 @@ from fastapi import HTTPException
 from app.api import web_agent as web_agent_api
 from app.json_utils import to_jsonable
 from app.services import web_agent_service, web_agent_wake_service
+
+
+def test_campaign_export_allows_large_platform_jobs_to_finish():
+    parameter = inspect.signature(
+        web_agent_service.campaign_export_items).parameters["timeout_s"]
+    assert parameter.default == 720
 
 
 def test_json_normalizer_keeps_decimal_exact():
