@@ -91,8 +91,8 @@ def test_missing_rule_link_notice_is_deduped_after_delivery(db_session, monkeypa
 def test_history_line_conflict_holds_whole_item_but_not_other_item(db_session):
     plan = _plan(db_session)
     for code, item, sid, daily, big, line in (
-        ("PPSHOLD01", "9901", "88001", 3000, 2000, 2549),
-        ("PPSSAFE01", "9902", "88002", 3000, 2000, 2550),
+        ("PPSHOLD01", "9901", "88001", 3000, 2000, 1999.99),
+        ("PPSSAFE01", "9902", "88002", 3000, 2000, 2000),
     ):
         db_session.add(PricingSku(
             product_code=code[:-2], sku_code=code, sku="1.6米",
@@ -103,8 +103,8 @@ def test_history_line_conflict_holds_whole_item_but_not_other_item(db_session):
             coupon_floor_price=Decimal(str(line))))
     db_session.commit()
     _seed_platform_floors(db_session, [
-        ("9901", "88001", 4000, 2549),
-        ("9902", "88002", 4000, 2550),
+        ("9901", "88001", 4000, 1999.99),
+        ("9902", "88002", 4000, 2000),
     ])
 
     holds = campaign_service.price_hold_items(db_session, plan)
@@ -118,8 +118,8 @@ def test_history_line_conflict_holds_whole_item_but_not_other_item(db_session):
     assert discount_stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9901"
 
 
-def test_coupon_floor_gate_ignores_single_item_discount_and_holds_whole_item(db_session):
-    """30−官方10%=27 才是报名资格值；最终21元不能用于通过24.01元历史线。"""
+def test_coupon_floor_gate_counts_concurrent_single_item_discount(db_session):
+    """平台导出说明：最低券后价会计入店铺其它优惠，最终21元可通过24.01元线。"""
     plan = _super_reduce_plan(db_session)
     sample_item = "719436834260"
     for index, (sid, floor) in enumerate((
@@ -156,23 +156,13 @@ def test_coupon_floor_gate_ignores_single_item_discount_and_holds_whole_item(db_
     discounts, discount_stats = campaign_service.build_discount_rows(db_session, plan)
     checks = {x["rule"]: x for x in campaign_service.preflight(db_session, plan)}
 
-    assert [x["taobao_item_id"] for x in holds] == [sample_item]
-    reasons = [
-        reason
-        for sku in holds[0]["skus"]
-        for reason in sku["reasons"]
-        if reason["type"] == "coupon_floor"
-    ]
-    assert len(reasons) == 3
-    assert all(reason["platform_coupon_after"] == 27.0 for reason in reasons)
-    assert all(reason["single_item_discount_ignored_by_platform"] is True
-               for reason in reasons)
-    assert {row["taobao_item_id"] for row in signup} == {"719436834261"}
-    assert {row["taobao_item_id"] for row in discounts} == {"719436834261"}
-    assert signup_stats["excluded_price_hold_items"][0]["taobao_item_id"] == sample_item
-    assert discount_stats["excluded_price_hold_items"][0]["taobao_item_id"] == sample_item
-    assert checks["R2"]["level"] == "warn"
-    assert "单品立减不参与" in checks["R2"]["title"]
+    assert holds == []
+    assert {row["taobao_item_id"] for row in signup} == {sample_item, "719436834261"}
+    assert {row["taobao_item_id"] for row in discounts} == {sample_item, "719436834261"}
+    assert signup_stats["excluded_price_hold_items"] == []
+    assert discount_stats["excluded_price_hold_items"] == []
+    assert checks["R2"]["level"] == "pass"
+    assert "同期单品立减" in checks["R2"]["title"]
 
 
 def test_price_math_gate_detects_no_difference(db_session):

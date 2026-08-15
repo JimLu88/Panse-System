@@ -64,8 +64,8 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定真实 SKU 报名价=ERP 日常价，已停止")
     if pricing.get("real_sku_signup_price_may_be_lowered_to_pass_platform") is not False:
         raise RuntimeError("活动报名规则未明确禁止降低真实 SKU 报名价，已停止")
-    if gates.get("single_item_discount_participates_in_qualification") is not False:
-        raise RuntimeError("活动报名资格规则错误：单品立减不得参与资格校验")
+    if gates.get("single_item_discount_participates_in_qualification") is not True:
+        raise RuntimeError("活动报名资格规则错误：同期单品立减必须计入资格校验")
     if gates.get("any_sku_conflict_action") != "exclude_whole_item_and_report":
         raise RuntimeError("活动报名规则未锁定任一 SKU 冲突即整品排除并报告，已停止")
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":

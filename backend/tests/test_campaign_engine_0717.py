@@ -454,10 +454,11 @@ def test_discount_price_hold_when_platform_coupon_after_exceeds_history_line(db_
     assert reason["erp_signup_price"] == 3000.0
     assert reason["official_rate"] == 0.12
     assert reason["official_deduction"] == 360.0
-    assert reason["platform_coupon_after"] == 2640.0
+    assert reason["platform_coupon_after"] == 2000.0
     assert reason["platform_history_line"] == 1990.0
-    assert reason["difference"] == 650.0
-    assert reason["single_item_discount_ignored_by_platform"] is True
+    assert reason["difference"] == 10.0
+    assert reason["planned_single_item_discount"] == 640.0
+    assert reason["single_item_discount_included_by_platform"] is True
 
 
 def test_big_campaign_low_price_uses_platform_exact_percent(db_session):

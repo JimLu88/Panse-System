@@ -52,7 +52,7 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["ai_may_submit"] is False
     assert policy["execution"]["ai_may_adjust_price"] is False
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
-    assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is False
+    assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
     assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_exclusive"] == 1.00
 
 
@@ -187,7 +187,7 @@ def test_explicit_new_item_without_history_still_requires_current_list_ceiling(d
         "current_erp_list_price_ceiling"]
 
 
-def test_fresh_platform_lines_are_qualification_only_and_hold_whole_item(db_session):
+def test_fresh_platform_lines_include_single_item_discount_and_hold_whole_item(db_session):
     plan = _plan(db_session)
     _sku(db_session, legacy_list=9999, legacy_coupon=9999)
     campaign_price_floor_service.record_activity_export(
@@ -197,7 +197,7 @@ def test_fresh_platform_lines_are_qualification_only_and_hold_whole_item(db_sess
             "sku_id": "881880805",
             "sku_name": "1.8米",
             "min_list_price": 3000,
-            "min_coupon_line": 2500,
+            "min_coupon_line": 1999.73,
         }],
         source="pytest_fresh_export",
     )
@@ -210,10 +210,40 @@ def test_fresh_platform_lines_are_qualification_only_and_hold_whole_item(db_sess
     assert [row["taobao_item_id"] for row in holds] == ["991880805"]
     reason = holds[0]["skus"][0]["reasons"][0]
     assert reason["type"] == "coupon_floor"
-    assert reason["platform_coupon_after"] == 2640.0
-    assert reason["single_item_discount_ignored_by_platform"] is True
+    assert reason["platform_coupon_after"] == 2000.0
+    assert reason["difference"] == 0.27
+    assert reason["single_item_discount_included_by_platform"] is True
     assert signup == []
     assert discounts == []
+
+
+def test_named_sub_yuan_concession_clears_matching_coupon_floor_hold(db_session):
+    plan = _plan(db_session)
+    plan.remark = "line_concession_authorized=881880805:0.27"
+    _sku(db_session, legacy_list=9999, legacy_coupon=9999)
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805",
+            "sku_id": "881880805",
+            "sku_name": "1.8米",
+            "min_list_price": 3000,
+            "min_coupon_line": 1999.73,
+        }],
+        source="pytest_authorized_sub_yuan_floor",
+    )
+    db_session.commit()
+
+    holds = campaign_service.price_hold_items(db_session, plan)
+    signup, signup_stats = campaign_service.build_signup_rows(db_session, plan)
+    discounts, discount_stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert holds == []
+    assert signup[0]["price"] == 3000.0
+    assert signup_stats["excluded_price_hold_items"] == []
+    assert discounts[0]["deduct"] == 640.27
+    assert discounts[0]["target_price"] == 1999.73
+    assert discount_stats["excluded_price_hold_items"] == []
 
 
 def test_ai_or_page_direct_signup_is_rejected_without_platform_call(db_session, monkeypatch):

@@ -4,7 +4,7 @@
 - group_by_sales      动销检查与分组 (spec §四.1) + no_sales 登记表同步
 - build_signup_rows   报名行 builder: 报名价=日常价 / 占位=min(现行, floor(线/(1−lev))) (spec §二.1, R3/R4)
 - build_discount_rows 单品立减 builder: spec §二 立减公式逐字 (官方立减向上取整到元 R9 /
-                      贴线 min(目标,线) R2 / 无动销=日常−(中促+1) / 10% ceil 留开关)
+                      ERP目标+已授权微调 / 无动销=日常−(中促+1) / 10% ceil 留开关)
 - preflight           平台规则库 R1~R16 静态可查项逐条输出 (spec §三)
 - push_discount/push_signup  推送编排 (复用 web_agent_service upload_file→wait_job,
                       与 activity_upload_service 同模式)
@@ -13,9 +13,9 @@
 铁则 (spec §二, 用户 2026-07-17 拍板):
   报名价 = ERP 日常价, 永不再变; 中促 = 大促 × 1.03 (就地计算, 不写 mid_buyer 字段——那是任务#22);
   无动销到手 = 中促 + 1 (防零头撞线); ERP 价是唯一标准。
-  报名资格与最终到手是两道独立安全门：平台先校验
-  「报名价−官方立减 ≤ 近15天最低普惠券后价」，单品立减不参与、不能救报名；
-  通过资格门后才验算「报名价−官方立减−单品立减 = ERP目标到手」。
+  平台最低普惠券后价会计入已生效的店铺其他优惠，因此资格门校验
+  「报名价−官方立减−同期单品立减 ≤ 近15天最低普惠券后价」；
+  最终到手仍必须等于 ERP 目标，只有用户逐 SKU 授权的 1 元内微调可继续向下贴线。
 只读 PricingSku / PricingSkuPromo, 绝不改其字段。
 """
 from __future__ import annotations
@@ -302,6 +302,7 @@ def price_hold_items(db: Session, plan) -> list[dict]:
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
+    authorized_concessions = authorized_line_concessions(plan)
     evidence = campaign_price_floor_service.evidence_map(db)
     no_sales = no_sales_service.get_no_sales(db)
     by_item: dict[str, dict] = {}
@@ -317,7 +318,11 @@ def price_hold_items(db: Session, plan) -> list[dict]:
         reasons = []
         low_price_exact = daily < Decimal("100")
         official = official_deduction(daily, lev, ceil_on and not low_price_exact)
-        platform_coupon_after = (daily - official).quantize(_CENT)
+        erp_target = (
+            mid_buyer_inplace(p)
+            if tier == "mid"
+            else _d(getattr(p, "big_buyer_price", None))
+        )
         for sid in _expand_sku_ids(p):
             entry = evidence.get(str(sid)) if isinstance(evidence.get(str(sid)), dict) else {}
             min_list = _d(entry.get("min_list_price"))
@@ -332,7 +337,19 @@ def price_hold_items(db: Session, plan) -> list[dict]:
                     "evidence_source": entry.get("source"),
                     "evidence_observed_at": entry.get("observed_at"),
                 })
-            if min_coupon is not None and platform_coupon_after > min_coupon + Decimal("0.005"):
+            concession = authorized_concessions.get(str(sid), Decimal("0"))
+            platform_coupon_after = (
+                (erp_target - concession).quantize(_CENT)
+                if erp_target is not None else None
+            )
+            if (
+                min_coupon is not None
+                and platform_coupon_after is not None
+                and platform_coupon_after > min_coupon + Decimal("0.005")
+            ):
+                planned_discount = (
+                    daily - official - platform_coupon_after
+                ).quantize(_CENT)
                 reasons.append({
                     "type": "coupon_floor",
                     "taobao_sku_id": str(sid),
@@ -342,7 +359,9 @@ def price_hold_items(db: Session, plan) -> list[dict]:
                     "platform_coupon_after": float(platform_coupon_after),
                     "platform_history_line": float(min_coupon),
                     "difference": float((platform_coupon_after - min_coupon).quantize(_CENT)),
-                    "single_item_discount_ignored_by_platform": True,
+                    "planned_single_item_discount": float(planned_discount),
+                    "authorized_concession": float(concession),
+                    "single_item_discount_included_by_platform": True,
                     "evidence_source": entry.get("source"),
                     "evidence_observed_at": entry.get("observed_at"),
                 })
@@ -353,8 +372,8 @@ def price_hold_items(db: Session, plan) -> list[dict]:
             "product": s.product_name or s.product_code or "",
             "skus": [],
             "action": (
-                "整品暂缓；平台资格门只校验活动价−官方立减，单品立减不能救报名；"
-                "等待近15天价格线解除或人工决定，禁止强降或自动轮换"),
+                "整品暂缓；同期单品立减计入后仍高于历史券后线；"
+                "仅允许逐SKU授权的1元内微调，较大差额需等待价格线或人工决定轮换"),
         })
         entry["skus"].append({"sku_code": s.sku_code, "reasons": reasons})
     return [by_item[k] for k in sorted(by_item)]
@@ -627,8 +646,8 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: dict) -> Optional[dict]:
     """有动销 SKU 立减只对齐 ERP 场次目标价。
 
-    最低普惠券后价只用于报名资格校验，单品立减不参与该资格校验；这里绝不能
-    用历史价格线压低最终到手价。
+    最低普惠券后价只用于资格校验；单品立减默认只对齐 ERP 目标，绝不能
+    未经授权用历史价格线压低。逐 SKU 的 1 元内授权由 build_discount_rows 追加。
     """
     daily = _d(s.daily_price)
     target0 = mid_buyer_inplace(p) if tier == "mid" else _d(getattr(p, "big_buyer_price", None))
@@ -716,8 +735,8 @@ def discount_for_sku(db: Session, s, p, tier: str,
 
 def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     """单品立减 builder (spec §二):
-      大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − min(大促到手, 线)
-      超级立减10%:            立减 = 日常 − ceil(日常×10%) − min(中促到手, 线)  (ceil 开关默认真)
+      大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
+      超级立减10%:            立减 = 日常 − ceil(日常×10%) − 中促到手 − 已授权微调
       无动销(登记表):         立减 = 日常 − (中促 + 1), 占位不出行
     返回 (rows, stats); 行含 taobao_item_id/taobao_sku_id/sku_code/deduct/target_price/kind。"""
     from app.services import delisted_sku_service, no_sales_service
@@ -1074,8 +1093,8 @@ def preflight(db: Session, plan) -> list[dict]:
         policy_check,
         _check_r1(db, plan),
         {"rule": "R2", "level": "warn" if coupon_holds else "pass",
-         "title": ("报名资格硬门：活动价−官方立减必须≤近15天最低普惠券后价；"
-                   "单品立减不参与，任一SKU冲突则整品暂缓"),
+         "title": ("报名资格硬门：活动价−官方立减−同期单品立减必须≤近15天最低普惠券后价；"
+                   "任一SKU仍冲突则整品暂缓"),
          "items": coupon_holds, "audit": dstats["line_concessions"]},
         {"rule": "R3", "level": "error" if sstats["incomplete_items"] else "pass",
          "title": "报名整品全SKU完整性 (缺SKU=整品拒)", "items": sstats["incomplete_items"]},
@@ -1456,8 +1475,8 @@ def _notify_coupon_floor_blocks(db: Session, plan, blocked: list[dict]) -> dict:
     lines = [
         f"活动：{getattr(plan, 'name', '')}",
         f"暂缓：{len(coupon_blocked)} 个商品（任一SKU冲突则整品排除）",
-        "报名资格硬门：活动报名价−官方立减必须≤近15天最低普惠券后价。",
-        "单品立减不参与平台这一步校验，不能通过把单品立减做低来补救。",
+        "报名资格硬门：活动报名价−官方立减−同期单品立减必须≤近15天最低普惠券后价。",
+        "仅允许用户逐SKU授权的1元内微调；大额差异不会自动压低。",
         "处理：未强降、未自动轮换；其他安全商品可继续报名。",
         "明细：" + payload[:2600],
         "请等待平台价格线解除后刷新校验，或由人工决定是否建立独立新商品。",
