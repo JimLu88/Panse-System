@@ -94,13 +94,19 @@ def _parse_activity_export(xlsx_bytes: bytes, *, active_only: bool) -> list[dict
     return records
 
 
-def parse_activity_items_export(xlsx_bytes: bytes) -> list[dict]:
+def parse_activity_items_export(xlsx_bytes: bytes, *,
+                                include_paused: bool = False) -> list[dict]:
     """活动商品导出 (spec §七.1, 跳3行表头): A商品ID/B商品名称/C营销ID/D商品状态/E SKUID/F SKU名称/
     G一口价/H最低标价/I最低普惠券后价要求/J活动普惠券后价/K建议价/…/P活动价/…
     多营销ID记录并存 → 逐记录分组, **只认状态"已发布设定"**。
     ★真实导出(2026-07-17 实测)是合并单元格续行格式: 商品ID/名称/营销ID/状态只写在
     每商品首SKU行, 续行 A~D 为空 → 前向填充, 否则每品只读到第一个 SKU。"""
-    return _parse_activity_export(xlsx_bytes, active_only=True)
+    if not include_paused:
+        return _parse_activity_export(xlsx_bytes, active_only=True)
+    return [
+        row for row in _parse_activity_export(xlsx_bytes, active_only=False)
+        if row.get("status") in (*ACTIVITY_IN_CAMPAIGN_STATUSES, "暂停")
+    ]
 
 
 def parse_activity_floor_evidence_export(xlsx_bytes: bytes) -> list[dict]:
@@ -357,7 +363,10 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     ignored_out_of_scope_records = 0
     ignored_out_of_scope_items: list[str] = []
     if activity_bytes:
-        records = parse_activity_items_export(activity_bytes)
+        records = parse_activity_items_export(
+            activity_bytes,
+            include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
+        )
         floor_records = parse_activity_floor_evidence_export(activity_bytes)
         floor_evidence = campaign_price_floor_service.record_activity_export(
             db,

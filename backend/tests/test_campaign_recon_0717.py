@@ -91,6 +91,18 @@ def test_parse_activity_export_only_published(db_session):
     assert floor_records[1]["min_list_price"] is None
 
 
+def test_super_reduce_future_export_can_include_paused_enrollment():
+    data = _xlsx([
+        _act_row("1000009601", "81011", None, act_price=1200.0, status="暂停"),
+        _act_row("1000009602", "81012", None, act_price=1300.0, status="撤销报名"),
+    ], header_rows=3)
+
+    assert crs.parse_activity_items_export(data) == []
+    records = crs.parse_activity_items_export(data, include_paused=True)
+    assert [(row["item_id"], row["sku_id"], row["status"]) for row in records] == [
+        ("1000009601", "81011", "暂停")]
+
+
 def test_parse_discount_and_product_exports(db_session):
     disc = _xlsx([_disc_row("9601", "81001", 507.91)], header_rows=1)
     drecords = crs.parse_discount_export(disc)
@@ -220,6 +232,36 @@ def test_reconcile_ignores_historical_items_outside_platform_scope(
     assert [row["sku_id"] for row in result["rows"]] == ["82012"]
     assert result["summary"]["ignored_out_of_scope_records"] == 1
     assert result["summary"]["ignored_out_of_scope_items"] == ["1000009698"]
+    assert called == []
+
+
+def test_super_reconcile_treats_future_paused_rows_as_pending_not_missing(
+        db_session, monkeypatch):
+    plan = _plan(db_session, title="超级立减长期活动")
+    plan.campaign_type = "super_reduce"
+    plan.tier = "mid"
+    _mk(db_session, "PPSSRF01", "PPSSRF0101", "1000009622", "82022",
+        daily=1200, big=800)
+    db_session.commit()
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009622"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009622"})
+    db_session.commit()
+    called = []
+    from app.services import notify_service
+    monkeypatch.setattr(notify_service, "broadcast_text",
+                        lambda db, text, **kw: called.append(text) or {})
+
+    activity = _xlsx([
+        _act_row("1000009622", "82022", None, act_price=1200.0, status="暂停"),
+    ])
+    result = crs.reconcile(db_session, plan, activity_bytes=activity)
+
+    assert result["ok"] is True
+    assert result["pending"] is True
+    assert result["alarm_count"] == 0
+    assert result["summary"]["coverage_missing"] == []
+    assert result["summary"]["pending_coupon_after"] == 1
+    assert plan.status == "signup_pushed"
     assert called == []
 
 
