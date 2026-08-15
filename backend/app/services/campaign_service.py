@@ -243,6 +243,19 @@ def platform_qualified_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def platform_no_sales_items(plan) -> set[str]:
+    """Items rejected only for no-sales by the latest platform probe."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*platform_no_sales_items\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
 def _set_plan_item_marker(plan, key: str, item_ids: set[str]) -> None:
     """Idempotently replace one semicolon-delimited plan marker."""
     import re
@@ -1456,14 +1469,12 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 already_correct.add(item_id)
         elif any(current_row is not None for current_row in seen):
             wrong_existing.append({"item_id": item_id, "error": "partial_existing_item"})
-    if wrong_existing:
-        return {"ok": False, "step": "qualification_existing_state",
-                "error": "existing_item_wrong_price_or_partial_skus",
-                "wrong_existing_items": wrong_existing, "stats": stats}
+    wrong_existing_ids = {str(row["item_id"]) for row in wrong_existing}
 
     probe_rows = [
         row for row in rows
         if str(row["taobao_item_id"]) not in already_correct
+        and str(row["taobao_item_id"]) not in wrong_existing_ids
     ]
     candidate_items = {str(row["taobao_item_id"]) for row in probe_rows}
     if not rows:
@@ -1475,6 +1486,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         no_sales_service.remove_no_sales(db, qualified)
         _set_plan_item_marker(plan, "platform_qualified_items", qualified)
         _set_plan_item_marker(plan, "platform_no_sales_items", set())
+        _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
         _remove_plan_marker(plan, "official_all_store")
         _remove_plan_marker(plan, "official_exempt_items")
         _set_plan_item_marker(plan, "official_active_items", qualified)
@@ -1482,7 +1494,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         db.commit()
         return {"ok": True, "no_change": True,
                 "qualified_item_ids": sorted(qualified),
-                "no_sales_item_ids": [], "stats": stats}
+                "no_sales_item_ids": [],
+                "wrong_existing_items": wrong_existing, "stats": stats}
 
     channel = "super_reduce" if str(plan.campaign_type) == "super_reduce" else "promo_signup"
     upload = (_build_super_signup_xlsx(probe_rows) if channel == "super_reduce"
@@ -1527,6 +1540,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     no_sales_service.remove_no_sales(db, qualified)
     _set_plan_item_marker(plan, "platform_qualified_items", qualified)
     _set_plan_item_marker(plan, "platform_no_sales_items", failed_ids)
+    _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
     _remove_plan_marker(plan, "official_all_store")
     _remove_plan_marker(plan, "official_exempt_items")
     _set_plan_item_marker(plan, "official_active_items", qualified)
@@ -1535,7 +1549,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     db.commit()
     return {"ok": True, "qualified_item_ids": sorted(qualified),
             "no_sales_item_ids": sorted(failed_ids), "validation": validation,
-            "already_correct_item_ids": sorted(already_correct), "stats": stats}
+            "already_correct_item_ids": sorted(already_correct),
+            "wrong_existing_items": wrong_existing, "stats": stats}
 
 
 def push_discount(db: Session, plan, phase: str = "stage") -> dict:
@@ -1558,6 +1573,16 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
             "missing_items": missing_scope,
             "stats": stats,
         }
+    qualified_scope = platform_qualified_items(plan)
+    no_sales_scope = platform_no_sales_items(plan)
+    if qualified_scope or no_sales_scope:
+        allowed = qualified_scope | no_sales_scope
+        rows = [
+            row for row in rows
+            if str(row.get("taobao_item_id") or "") in allowed
+        ]
+        stats["platform_discount_scope_items"] = sorted(allowed)
+        stats["platform_discount_scope_rows"] = len(rows)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
     res = _upload_and_wait(db, "single_item_discount", phase, _build_discount_xlsx(rows),

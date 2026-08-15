@@ -241,6 +241,39 @@ def test_platform_qualification_preserves_existing_placeholder_protection_price(
     assert result["qualified_item_ids"] == ["1000009212"]
 
 
+def test_platform_qualification_isolates_existing_wrong_item_and_continues(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSWRONG1", "PPSWRONG101", "1000009213", "72906",
+        daily=1200, big=800)
+    _mk(db_session, "PPSFRESH1", "PPSFRESH101", "1000009214", "72907",
+        daily=1300, big=900)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True,
+        "rows": [{"item_id": "1000009213", "sku_id": "72906", "activity_price": 1199.0}],
+        "floor_refresh": {},
+    })
+    calls = []
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: (
+        calls.append(kwargs) or {
+            "ok": True,
+            "validation": {"total_items": 1, "ok": 1, "failed": 0},
+        }
+    ))
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009214"]
+    assert result["wrong_existing_items"][0]["item_id"] == "1000009213"
+    assert calls[0]["expected_items"] == 1
+
+    discount = cs.push_discount(db_session, plan, phase="commit")
+    assert discount["ok"] is True
+    assert discount["stats"]["platform_discount_scope_items"] == ["1000009214"]
+
+
 def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
     """蜜蜡色样块是正常商品，不得再按定制占位保护价报 18 元。"""
     plan = _plan(db_session, "big88")
