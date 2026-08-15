@@ -14,7 +14,7 @@
 服务层 (薄包装):
 - reconcile                    组装 DB 价格映射 → compare_records → 落 CampaignReconReport;
                                >2元差异 notify_service.broadcast_text 报警
-- auto_recon_scan              调度用: signup_pushed(2小时内) 计划 → WA 导出 → 自动核对
+- auto_recon_scan              调度用: signup_pushed 计划在报名后/开场后窗口内 → WA 导出 → 自动核对
 
 复刻 2026-07-17 人工核对口径 (135一分不差 + 126贴线 + 0报警 为回归锚,
 见 tests/test_campaign_recon_acceptance_0717.py)。
@@ -459,26 +459,42 @@ def _notify_recon_export_failure_once(db: Session, plan, text: str) -> dict:
 
 
 def auto_recon_scan(db: Session) -> dict:
-    """每30分钟: status='signup_pushed' 且创建 {AUTO_RECON_WINDOW_HOURS} 小时内的计划 →
+    """每30分钟: status='signup_pushed' 且处于自动核对窗口的计划 →
     web_agent_service.campaign_export_items 拿「活动商品导出」→ reconcile(source='auto')。
     WA 导出失败 → 飞书报错 + 计划保持 signup_pushed (等手动上传兜底), 下轮窗口内会再试。"""
     from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
     from sqlalchemy import select
     from app.models.campaign import CampaignPlan
     from app.services import web_agent_service
 
-    cutoff = datetime.now(timezone.utc) - timedelta(hours=AUTO_RECON_WINDOW_HOURS)
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(hours=AUTO_RECON_WINDOW_HOURS)
     plans = db.execute(select(CampaignPlan).where(
         CampaignPlan.status == "signup_pushed")).scalars().all()
     scanned = reconciled = failed = 0
     details: list[dict] = []
     for plan in plans:
-        # 窗口锚 updated_at: 计划创建很久后才推报名也能被自动核对(推报名会更新计划状态)
+        # 未来活动报名后，平台往往要到正式开场才生成最终券后价。
+        # 开场前不反复导出；开场后以 start_at 重新开启 6 小时核对窗口。
+        start_at = plan.start_at
+        if start_at is not None:
+            if start_at.tzinfo is None:            # 活动档期按业务约定保存为北京时间
+                start_at = start_at.replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+            start_at = start_at.astimezone(timezone.utc)
+            if start_at > now:
+                continue
+
+        # 窗口同时锚定 updated_at 和 start_at：
+        # - 刚推报名的已开始活动立即核对；
+        # - 提前数天报名的活动在开场后仍会自动核对最终券后价。
         anchor = plan.updated_at or plan.created_at
         if anchor is None:
             continue
         if anchor.tzinfo is None:                  # sqlite 存 naive UTC, postgres 带 tz
             anchor = anchor.replace(tzinfo=timezone.utc)
+        if start_at is not None and start_at > anchor:
+            anchor = start_at
         if anchor < cutoff:
             continue                               # 超过窗口 → 留给手动上传, 不再自动追
         scanned += 1

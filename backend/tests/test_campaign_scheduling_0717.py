@@ -10,6 +10,7 @@
 import io
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 import openpyxl
 
@@ -228,9 +229,9 @@ def test_discovery_no_cards_explains_layout_change_not_no_activity(db_session, m
 
 # ── ④ auto_recon: 状态筛选 + 2小时窗 + 失败保持状态 + 成功核对 ────────────────
 
-def _plan(db, name, status, created_utc, title="88VIP周期购活动"):
+def _plan(db, name, status, created_utc, title="88VIP周期购活动", start_at=None):
     plan = CampaignPlan(name=name, campaign_type="big88", tier="big",
-                        start_at=datetime(2026, 7, 17, 20, 0, 0),
+                        start_at=start_at or datetime(2026, 7, 17, 20, 0, 0),
                         end_at=datetime(2026, 7, 19, 23, 59, 59),
                         qn_campaign_title=title, status=status,
                         created_at=created_utc, updated_at=created_utc)
@@ -258,6 +259,42 @@ def test_auto_recon_scans_only_recent_signup_pushed(db_session, monkeypatch):
     assert a.status == "signup_pushed"                          # 失败 → 保持状态等手动上传
     assert len(calls) == 1 and calls[0]["title"] == "活动自动核对失败"
     assert "手动上传" in calls[0]["text"] and "下载中心超时" in calls[0]["text"]
+
+
+def test_auto_recon_skips_future_campaign_until_it_starts(db_session, monkeypatch):
+    now = datetime.utcnow()
+    local_now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    _plan(db_session, "未来活动", "signup_pushed", now,
+          start_at=local_now + timedelta(days=3))
+
+    exported = []
+    from app.services import web_agent_service
+    monkeypatch.setattr(web_agent_service, "campaign_export_items",
+                        lambda db, title, **kw: exported.append(title)
+                        or {"ok": False, "error": "不应导出"})
+
+    r = crs.auto_recon_scan(db_session)
+    assert r == {"scanned": 0, "reconciled": 0, "failed": 0, "details": []}
+    assert exported == []
+
+
+def test_auto_recon_reopens_window_when_advance_signup_campaign_starts(
+        db_session, monkeypatch):
+    now = datetime.utcnow()
+    local_now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    _plan(db_session, "刚开场活动", "signup_pushed", now - timedelta(days=4),
+          start_at=local_now - timedelta(minutes=30))
+
+    exported = []
+    from app.services import web_agent_service
+    monkeypatch.setattr(web_agent_service, "campaign_export_items",
+                        lambda db, title, **kw: exported.append(title)
+                        or {"ok": False, "error": "测试导出失败"})
+    _mock_notify(monkeypatch)
+
+    r = crs.auto_recon_scan(db_session)
+    assert r["scanned"] == 1 and r["failed"] == 1
+    assert exported == ["88VIP周期购活动"]
 
 
 def test_auto_recon_success_reconciles_plan(db_session, monkeypatch):

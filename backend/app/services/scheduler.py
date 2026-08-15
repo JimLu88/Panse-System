@@ -2422,7 +2422,7 @@ def _register_default_jobs() -> None:
                  _job_campaign_price_protection_rule_remind, cron={"hour": 18, "minute": 45})
     register_job("campaign_auto_execute", "营销活动自动报名(安全门+差集+失败飞书)",
                  _job_campaign_auto_execute, cron={"hour": "18-22", "minute": 50})
-    register_job("campaign_auto_recon", "活动报名后自动核对(signup_pushed·6小时内)",
+    register_job("campaign_auto_recon", "活动报名及开场后自动核对(signup_pushed·6小时窗)",
                  _job_campaign_auto_recon, interval_minutes=30)
 
 
