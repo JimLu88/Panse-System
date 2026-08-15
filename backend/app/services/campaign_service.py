@@ -1415,7 +1415,7 @@ def _learn_from_validation(db: Session, validation) -> dict:
         ids = delisted_sku_service.extract_delisted_from_feedback(failed)
         if ids:
             delisted_sku_service.add_delisted(db, ids)
-        items = no_sales_service.extract_no_sales_from_feedback(failed)
+        items = no_sales_service.extract_no_sales_only_from_feedback(failed)
         if items:
             no_sales_service.add_no_sales(db, items)
         floors = campaign_price_floor_service.record_failed_feedback(
@@ -1484,6 +1484,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         no_sales_service.remove_no_sales(db, qualified)
         _set_plan_item_marker(plan, "platform_qualified_items", qualified)
         _set_plan_item_marker(plan, "platform_no_sales_items", set())
+        _set_plan_item_marker(plan, "platform_hard_failed_items", set())
         _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
         _remove_plan_marker(plan, "official_all_store")
         _remove_plan_marker(plan, "official_exempt_items")
@@ -1521,23 +1522,36 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 "validation": validation, "stats": stats}
 
     failed_rows = validation.get("failed_items") or []
+    feedback_refresh = None
+    if failed_count and not failed_rows and channel == "super_reduce":
+        # 超级立减导入页偶发拿不到瞬时反馈下载；单独从最近一次批量
+        # 操作记录只读补取。没有逐商品原因时绝不根据数量猜测分类。
+        from app.services import web_agent_service
+        feedback_refresh = web_agent_service.super_reduce_feedback(db)
+        if feedback_refresh.get("ok"):
+            feedback = feedback_refresh.get("feedback") or {}
+            failed_rows = feedback.get("failed") or []
+            validation["failed_items"] = failed_rows
+            validation["failed_reasons"] = feedback.get("by_reason") or []
     failed_ids = {
         str((row or {}).get("item_id") or "").strip() for row in failed_rows
     } - {""}
-    no_sales_ids = no_sales_service.extract_no_sales_from_feedback(failed_rows)
-    if failed_count and (len(failed_ids) != failed_count or failed_ids != no_sales_ids):
-        _learn_from_validation(db, validation)
+    no_sales_ids = no_sales_service.extract_no_sales_only_from_feedback(failed_rows)
+    if failed_count and len(failed_ids) != failed_count:
         return {"ok": False, "step": "platform_qualification_non_sales_failure",
-                "error": "qualification_contains_non_no_sales_failure",
+                "error": "qualification_failed_item_details_incomplete",
                 "failed_item_ids": sorted(failed_ids),
                 "no_sales_item_ids": sorted(no_sales_ids),
-                "validation": validation, "stats": stats}
+                "validation": validation, "feedback_refresh": feedback_refresh,
+                "stats": stats}
 
+    hard_failed_ids = failed_ids - no_sales_ids
     qualified = already_correct | (candidate_items - failed_ids)
-    no_sales_service.add_no_sales(db, failed_ids)
+    no_sales_service.add_no_sales(db, no_sales_ids)
     no_sales_service.remove_no_sales(db, qualified)
     _set_plan_item_marker(plan, "platform_qualified_items", qualified)
-    _set_plan_item_marker(plan, "platform_no_sales_items", failed_ids)
+    _set_plan_item_marker(plan, "platform_no_sales_items", no_sales_ids)
+    _set_plan_item_marker(plan, "platform_hard_failed_items", hard_failed_ids)
     _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
     _remove_plan_marker(plan, "official_all_store")
     _remove_plan_marker(plan, "official_exempt_items")
@@ -1546,7 +1560,11 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     _remove_plan_marker(plan, "supplement_items_authorized")
     db.commit()
     return {"ok": True, "qualified_item_ids": sorted(qualified),
-            "no_sales_item_ids": sorted(failed_ids), "validation": validation,
+            "no_sales_item_ids": sorted(no_sales_ids),
+            "hard_failed_item_ids": sorted(hard_failed_ids),
+            "hard_failed_items": [row for row in failed_rows
+                                  if str((row or {}).get("item_id") or "") in hard_failed_ids],
+            "validation": validation, "feedback_refresh": feedback_refresh,
             "already_correct_item_ids": sorted(already_correct),
             "wrong_existing_items": wrong_existing, "stats": stats}
 

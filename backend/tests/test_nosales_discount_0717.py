@@ -38,6 +38,13 @@ def test_registry_add_remove_and_feedback_extract(db_session):
     ])
     assert got == {"8001"}
 
+    strict = ns.extract_no_sales_only_from_feedback([
+        {"item_id": "8001", "raw": "参加活动要求近60天销售件数≥1件"},
+        {"item_id": "8002", "raw": "动销不达标；最低普惠券后价超线"},
+        {"item_id": "8003", "raw": "动销不达标；缺失的SKUID=123"},
+    ])
+    assert strict == {"8001"}
+
 
 def test_builder_rows_and_guards(db_session):
     # 登记品A: 正常 → 出行。中促到手 = 2561.22×1.03 = 2638.06 (backfill 后口径),

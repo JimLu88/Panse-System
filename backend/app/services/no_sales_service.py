@@ -18,6 +18,10 @@ from sqlalchemy.orm import Session
 
 _KEY = "no_sales_item_ids"
 _NO_SALES_MARKERS = ("动销", "销售件数≥1", "销售件数&ge;1")
+_NON_NO_SALES_FAILURE_MARKERS = (
+    "最低标价", "普惠券后价", "红线价", "缺失的SKUID", "要求全部SKU",
+    "可编辑", "不可上调", "下架", "失效", "重复", "不在活动范围",
+)
 
 
 def get_no_sales(db: Session) -> set[str]:
@@ -67,4 +71,23 @@ def extract_no_sales_from_feedback(failed_items) -> set[str]:
             iid = str((it or {}).get("item_id") or "").strip()
             if iid:
                 out.add(iid)
+    return out
+
+
+def extract_no_sales_only_from_feedback(failed_items) -> set[str]:
+    """只返回失败原因纯粹为无动销的商品；混合价格/SKU失败不得兜底。"""
+    by_item: dict[str, list[str]] = {}
+    for row in failed_items or []:
+        item_id = str((row or {}).get("item_id") or "").strip()
+        if not item_id:
+            continue
+        text = (str((row or {}).get("raw") or "") + " "
+                + str((row or {}).get("reason") or ""))
+        by_item.setdefault(item_id, []).append(text)
+    out: set[str] = set()
+    for item_id, texts in by_item.items():
+        joined = " ".join(texts)
+        if (any(marker in joined for marker in _NO_SALES_MARKERS)
+                and not any(marker in joined for marker in _NON_NO_SALES_FAILURE_MARKERS)):
+            out.add(item_id)
     return out

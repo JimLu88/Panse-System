@@ -192,9 +192,10 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
     assert cs.official_scope_for_plan(plan)["errors"] == []
 
 
-def test_platform_qualification_non_sales_failure_hard_stops(db_session, monkeypatch):
+def test_platform_qualification_isolates_non_sales_failure_and_continues(db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     _mk(db_session, "PPSQUAL3", "PPSQUAL301", "1000009211", "72903", daily=1400, big=950)
+    _mk(db_session, "PPSQUAL4", "PPSQUAL401", "1000009215", "72908", daily=1500, big=1000)
     db_session.commit()
     monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
         "ok": True, "rows": [], "floor_refresh": {},
@@ -202,16 +203,50 @@ def test_platform_qualification_non_sales_failure_hard_stops(db_session, monkeyp
     monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
         "ok": False,
         "validation": {
-            "total_items": 1, "ok": 0, "failed": 1,
+            "total_items": 2, "ok": 1, "failed": 1,
             "failed_items": [{"item_id": "1000009211", "reason": "SKU已失效", "raw": "SKU已失效"}],
         },
     })
 
     result = cs.qualify_signup_scope(db_session, plan)
 
-    assert result["ok"] is False
-    assert result["step"] == "platform_qualification_non_sales_failure"
-    assert cs.platform_qualified_items(plan) == set()
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009215"]
+    assert result["hard_failed_item_ids"] == ["1000009211"]
+    assert result["no_sales_item_ids"] == []
+    assert cs.platform_qualified_items(plan) == {"1000009215"}
+
+
+def test_super_qualification_fetches_missing_feedback_and_keeps_mixed_failure_hard(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQUAL5", "PPSQUAL501", "1000009221", "72921", daily=1400, big=950)
+    _mk(db_session, "PPSQUAL6", "PPSQUAL601", "1000009222", "72922", daily=1500, big=1000)
+    _mk(db_session, "PPSQUAL7", "PPSQUAL701", "1000009223", "72923", daily=1600, big=1100)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False,
+        "validation": {"total_items": 3, "ok": 1, "failed": 2, "failed_items": []},
+    })
+    from app.services import web_agent_service
+    monkeypatch.setattr(web_agent_service, "super_reduce_feedback", lambda *args, **kwargs: {
+        "ok": True,
+        "feedback": {"by_reason": [], "failed": [
+            {"item_id": "1000009221", "reason": "动销不达标", "raw": "近60天销售件数≥1件"},
+            {"item_id": "1000009222", "reason": "券后价超线", "raw": "动销不达标；最低普惠券后价"},
+        ]},
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009223"]
+    assert result["no_sales_item_ids"] == ["1000009221"]
+    assert result["hard_failed_item_ids"] == ["1000009222"]
+    assert ns.get_no_sales(db_session) == {"1000009221"}
 
 
 def test_platform_qualification_preserves_existing_placeholder_protection_price(
