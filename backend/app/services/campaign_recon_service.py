@@ -252,8 +252,23 @@ def _compare_discounts(db: Session, plan, records: list[dict]) -> list[dict]:
     """c维度: 单品立减导出「优惠值」 vs builder 应填值 (差>1分即出入)。"""
     from app.services import campaign_service
     rows, _stats = campaign_service.build_discount_rows(db, plan)
+    if campaign_service.platform_scope_present(plan):
+        allowed_items = (
+            campaign_service.platform_qualified_items(plan)
+            | campaign_service.platform_no_sales_items(plan)
+        )
+        rows = [
+            row for row in rows
+            if str(row.get("taobao_item_id") or "") in allowed_items
+        ]
     expected = {r["taobao_sku_id"]: r["deduct"] for r in rows}
-    actual = {rec.get("sku_id"): rec for rec in records if rec.get("sku_id")}
+    expected_items = {str(r["taobao_item_id"]) for r in rows}
+    scoped_records = (
+        [rec for rec in records if str(rec.get("item_id") or "") in expected_items]
+        if campaign_service.platform_scope_present(plan)
+        else records
+    )
+    actual = {rec.get("sku_id"): rec for rec in scoped_records if rec.get("sku_id")}
     mismatches = []
     for sid in sorted(set(expected) | set(actual)):
         rec = actual.get(sid) or {}
@@ -339,6 +354,8 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     coverage: dict = {"missing": [], "extra": []}
     title_ok: Optional[bool] = None
     floor_evidence = None
+    ignored_out_of_scope_records = 0
+    ignored_out_of_scope_items: list[str] = []
     if activity_bytes:
         records = parse_activity_items_export(activity_bytes)
         floor_records = parse_activity_floor_evidence_export(activity_bytes)
@@ -347,11 +364,33 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
             floor_records,
             source=f"campaign_recon:{source}:plan={getattr(plan, 'id', '')}",
         )
-        per_sku = compare_records(records, spec_map)
         signup_rows, _signup_stats = campaign_service.build_signup_rows(db, plan)
+        if campaign_service.platform_scope_present(plan):
+            qualified_items = campaign_service.platform_qualified_items(plan)
+            signup_rows = [
+                row for row in signup_rows
+                if str(row.get("taobao_item_id") or "") in qualified_items
+            ]
         expected_signup = {str(row["taobao_sku_id"]) for row in signup_rows}
+        expected_items = {str(row["taobao_item_id"]) for row in signup_rows}
+        scoped_records = records
+        if campaign_service.platform_scope_present(plan):
+            scoped_records = [
+                rec for rec in records
+                if str(rec.get("item_id") or "") in expected_items
+            ]
+            ignored = [
+                rec for rec in records
+                if str(rec.get("item_id") or "") not in expected_items
+            ]
+            ignored_out_of_scope_records = len(ignored)
+            ignored_out_of_scope_items = sorted({
+                str(rec.get("item_id") or "") for rec in ignored
+                if str(rec.get("item_id") or "")
+            })
+        per_sku = compare_records(scoped_records, spec_map)
         coverage = _coverage(
-            spec_map, {rec["sku_id"] for rec in records}, expected_signup)
+            spec_map, {rec["sku_id"] for rec in scoped_records}, expected_signup)
     discount_mismatch: list[dict] = []
     if discount_bytes:
         drecords = parse_discount_export(discount_bytes)
@@ -363,6 +402,8 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     alarms = [r for r in per_sku if r["verdict"] in (
         "超2元报警", "偏差", "无映射", "占位活动价不一致")]
     summary = _summarize(per_sku, coverage, discount_mismatch, title_ok)
+    summary["ignored_out_of_scope_records"] = ignored_out_of_scope_records
+    summary["ignored_out_of_scope_items"] = ignored_out_of_scope_items
     summary["product_rows_parsed"] = len(product_rows)
     summary["price_floor_evidence"] = floor_evidence
     report = CampaignReconReport(plan_id=plan.id, source=source, summary=summary,

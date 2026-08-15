@@ -18,6 +18,7 @@ from app.models.campaign import CampaignPlan, CampaignReconReport
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_recon_service as crs
+from app.services import campaign_service as cs
 
 
 def _mk(db, pc, code, item, sid, daily=None, big=None, *, placeholder=False, line=None):
@@ -188,6 +189,38 @@ def test_reconcile_clean_run_marks_reconciled(db_session, monkeypatch):
     assert result["alarm_count"] == 0 and called == []          # 干净 → 不报警
     assert plan.status == "reconciled"
     assert result["summary"]["coverage_missing"] == []
+
+
+def test_reconcile_ignores_historical_items_outside_platform_scope(
+        db_session, monkeypatch):
+    plan = _plan(db_session, title="88VIP周期购活动")
+    _mk(db_session, "PPSRSC01", "PPSRSC0101", "1000009612", "82012",
+        daily=2827.5, big=1979.59)
+    _mk(db_session, "PPSRSH01", "PPSRSH0101", "1000009698", "82998",
+        daily=3000, big=2100)
+    db_session.commit()
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009612"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009612"})
+    db_session.commit()
+    assert cs.platform_scope_present(plan), plan.remark
+    called = []
+    from app.services import notify_service
+    monkeypatch.setattr(notify_service, "broadcast_text",
+                        lambda db, text, **kw: called.append(text) or {})
+
+    activity = _xlsx([
+        _act_row("1000009612", "82012", 1979.59, act_price=2827.5),
+        _act_row("1000009698", "82998", 1.0, act_price=1.0),
+    ])
+
+    result = crs.reconcile(db_session, plan, activity_bytes=activity)
+
+    assert result["verified"] is True, result["summary"]
+    assert result["alarm_count"] == 0
+    assert [row["sku_id"] for row in result["rows"]] == ["82012"]
+    assert result["summary"]["ignored_out_of_scope_records"] == 1
+    assert result["summary"]["ignored_out_of_scope_items"] == ["1000009698"]
+    assert called == []
 
 
 def test_reconcile_requires_at_least_one_file(db_session):

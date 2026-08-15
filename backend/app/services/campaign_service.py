@@ -1586,12 +1586,26 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 "validation": validation, "stats": stats}
 
     failed_rows = validation.get("failed_items") or []
+    nested_feedback = validation.get("failed_reasons")
+    if not failed_rows and isinstance(nested_feedback, dict):
+        failed_rows = nested_feedback.get("failed") or []
+        validation["failed_items"] = failed_rows
+        validation["failed_reasons"] = nested_feedback.get("by_reason") or []
     feedback_refresh = None
-    if failed_count and not failed_rows and channel == "super_reduce":
-        # 超级立减导入页偶发拿不到瞬时反馈下载；单独从最近一次批量
-        # 操作记录只读补取。没有逐商品原因时绝不根据数量猜测分类。
+    if failed_count and not failed_rows:
+        # 平台导入页偶发拿不到瞬时反馈下载；按不可变活动 ID 从最近一次
+        # 批量操作记录只读补取。没有逐商品原因时绝不根据数量猜测分类。
         from app.services import web_agent_service
-        feedback_refresh = web_agent_service.super_reduce_feedback(db)
+        if channel == "super_reduce":
+            feedback_refresh = web_agent_service.super_reduce_feedback(db)
+        else:
+            campaign_id, united_activity_id = _plan_campaign_ids(plan)
+            feedback_refresh = web_agent_service.campaign_feedback(
+                db,
+                str(getattr(plan, "qn_campaign_title", None) or plan.name or ""),
+                campaign_id=campaign_id or "",
+                united_activity_id=united_activity_id or "",
+            )
         if feedback_refresh.get("ok"):
             feedback = feedback_refresh.get("feedback") or {}
             failed_rows = feedback.get("failed") or []

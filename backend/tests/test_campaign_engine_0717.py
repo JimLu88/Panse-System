@@ -249,6 +249,75 @@ def test_super_qualification_fetches_missing_feedback_and_keeps_mixed_failure_ha
     assert ns.get_no_sales(db_session) == {"1000009221"}
 
 
+def test_promo_qualification_flattens_item_feedback_from_agent(db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSQUALP1", "PPSQUALP101", "1000009241", "72941",
+        daily=1400, big=950)
+    _mk(db_session, "PPSQUALP2", "PPSQUALP201", "1000009242", "72942",
+        daily=1500, big=1000)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": True,
+        "validation": {
+            "total_items": 2, "ok": 1, "failed": 1,
+            "failed_reasons": {
+                "by_reason": [{"reason": "动销不达标", "items": 1}],
+                "failed": [{"item_id": "1000009241", "reason": "动销不达标",
+                            "raw": "近60天销量<1"}],
+            },
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009242"]
+    assert result["no_sales_item_ids"] == ["1000009241"]
+
+
+def test_promo_qualification_retries_feedback_by_exact_campaign_ids(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    plan.qn_campaign_title = "2026年淘宝8月开学季"
+    plan.remark = "campaignId=49271; unitedActivityId=49283"
+    _mk(db_session, "PPSQUALP3", "PPSQUALP301", "1000009251", "72951",
+        daily=1400, big=950)
+    _mk(db_session, "PPSQUALP4", "PPSQUALP401", "1000009252", "72952",
+        daily=1500, big=1000)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": True,
+        "validation": {"total_items": 2, "ok": 1, "failed": 1},
+    })
+    from app.services import web_agent_service
+    captured = {}
+
+    def feedback(_db, title, **kwargs):
+        captured.update({"title": title, **kwargs})
+        return {"ok": True, "feedback": {
+            "by_reason": [{"reason": "SKU缺失", "items": 1}],
+            "failed": [{"item_id": "1000009251", "reason": "SKU缺失",
+                        "raw": "缺失的SKUID=72999"}],
+        }}
+
+    monkeypatch.setattr(web_agent_service, "campaign_feedback", feedback)
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009252"]
+    assert result["hard_failed_item_ids"] == ["1000009251"]
+    assert captured["title"] == "2026年淘宝8月开学季"
+    assert captured["campaign_id"] == "49271"
+    assert captured["united_activity_id"] == "49283"
+
+
 def test_preflight_uses_qualified_scope_and_does_not_require_campaign_floor_for_fallback(
         db_session):
     plan = _plan(db_session, "super_reduce")

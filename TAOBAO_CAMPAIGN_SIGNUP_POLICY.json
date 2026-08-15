@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-15.6",
-  "updated_at": "2026-08-15T21:45:00+08:00",
+  "version": "2026-08-16.1",
+  "updated_at": "2026-08-16T00:15:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -56,6 +56,8 @@
     "accepted_item_action": "single_item_discount_first_then_final_campaign_signup",
     "existing_single_discount_edit_mode": "one_item_per_job_with_sku_readback",
     "existing_single_discount_activity_binding": "per_item_id_to_activity_id",
+    "missing_item_failure_details_action": "read_latest_feedback_by_exact_campaign_ids_then_classify_or_stop",
+    "failure_count_without_item_details_must_not_be_guessed": true,
     "qualification_hard_failure_action": "isolate_whole_item_report_and_continue_safe_items",
     "exclude_delisted_skus": true,
     "already_correct_items_are_not_reimported": true,
@@ -68,6 +70,8 @@
     "fresh_export_required": true,
     "verify_signup_price_per_sku": true,
     "verify_final_price_per_sku": true,
+    "reconciliation_scope": "platform_qualified_items_expected_for_current_plan",
+    "historical_activity_records_outside_current_scope": "informational_only_not_current_plan_failure",
     "unexplained_failure_action": "mark_alarmed_notify_and_wait"
   },
   "ai_boundary": {
@@ -91,6 +95,8 @@
     "每场活动都把 ERP 当前全部在售商品交给平台重新检查；历史无动销只作提示，不能预先排除。",
     "平台通过的商品先逐商品完成单品立减并逐 SKU 回读，再正式报名；仅无动销失败的商品只做单品立减兜底。",
     "资格检查中的价格、SKU、上下架等硬失败按整品隔离并报告，不阻断其余安全商品继续。",
+    "平台只返回失败数量而没有逐商品原因时，程序必须按活动ID只读补取最新反馈；仍不完整则停止，禁止把失败数量猜成无动销。",
+    "报名后核对只判断本场平台通过且本计划应报名的商品；长期活动中的历史旧记录单独展示，不得误判成本场失败。",
     "真实 SKU 报名价永远等于 ERP 日常价；平台历史线冲突时整品排除并报告，禁止降价迁就。",
     "用户逐SKU明确授权时，程序可通过计划标记把不足1元的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",

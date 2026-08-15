@@ -273,6 +273,40 @@ def super_reduce_feedback(db: Session, *, timeout_s: int = 200) -> dict:
             "screenshot_base64": res.get("screenshot_base64")}
 
 
+def campaign_feedback(db: Session, campaign_title: str, *, campaign_id: str,
+                      united_activity_id: str, timeout_s: int = 240) -> dict:
+    """Read the latest failed-item feedback for one immutable campaign identity."""
+    payload = {
+        "campaign_title": str(campaign_title or "").strip(),
+        "campaign_id": str(campaign_id or "").strip(),
+        "united_activity_id": str(united_activity_id or "").strip(),
+    }
+    if (not payload["campaign_title"] or not payload["campaign_id"].isdigit()
+            or not payload["united_activity_id"].isdigit()):
+        return {"ok": False, "error": "campaign_identity_required"}
+    j = _post(db, "/api/campaign/feedback", payload, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True, "error": "淘宝登录态已失效"}
+    feedback = res.get("feedback")
+    if not res.get("ok") or not isinstance(feedback, dict):
+        return {
+            "ok": False,
+            "step": res.get("step"),
+            "error": res.get("error") or res.get("message") or "活动失败反馈下载失败",
+        }
+    return {
+        "ok": True,
+        "feedback": feedback,
+        "campaign_id": res.get("campaign_id"),
+        "united_activity_id": res.get("united_activity_id"),
+        "screenshot_base64": res.get("screenshot_base64"),
+    }
+
+
 def campaign_inspect_detail(db: Session, campaign_title: str, *,
                             timeout_s: int = 200) -> dict:
     """只读进入指定活动，返回可见详情和 URL，供自动计划锁定档期/力度/活动 ID。"""
