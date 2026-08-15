@@ -101,6 +101,8 @@ def sent_line_evidence(db: Session) -> dict[str, ImportedFile]:
     out: dict[str, ImportedFile] = {}
     for row in rows:
         summary = row.row_summary or {}
+        if summary.get("delivery_superseded") is True:
+            continue
         sub_order_no = str(summary.get("sub_order_no") or "").strip()
         if sub_order_no and summary.get("pushed") is True:
             out[sub_order_no] = row
@@ -162,7 +164,11 @@ def bind_unambiguous_legacy_evidence(db: Session) -> dict:
     factory_no_conflicts: list[dict] = []
     for evidence in rows:
         summary = evidence.row_summary or {}
-        if summary.get("pushed") is not True or summary.get("sub_order_no"):
+        if (
+            summary.get("pushed") is not True
+            or summary.get("delivery_superseded") is True
+            or summary.get("sub_order_no")
+        ):
             continue
         order_no = str(summary.get("order_no") or "").strip()
         if not order_no:

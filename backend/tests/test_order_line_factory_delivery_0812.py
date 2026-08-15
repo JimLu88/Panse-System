@@ -187,6 +187,72 @@ def test_new_table_is_sent_once_as_own_child_order(db_session, _feishu):
     assert _feishu == ["img-key"]
 
 
+def test_activated_backfill_evidence_is_superseded_and_line_really_repushes(
+    db_session, _feishu,
+):
+    """仅重建存档的 backfill 不能让激活单形成“已送达”假成功。"""
+    settings_service.set_value(db_session, "feishu_push_chat_id", "factory-chat")
+    order = _order(db_session, "3307063044854158575", factory_no=None, name="榉木床头柜")
+    order.order_date = date(2026, 6, 7)
+    order.is_customer_delayed = True
+    order.production_note = "延期发货"
+    order.seller_memo = "开始制作，15日安排发货"
+    line = _line(
+        db_session,
+        order.order_no,
+        order.order_no,
+        "榉木床头柜",
+        "PPS2638004022511",
+    )
+    line.factory_delivery_required = True
+    line.factory_no = 105
+    line.factory_delivery_state = "sent"
+    backfill = ImportedFile(
+        kind="order_sheet_sent",
+        original_filename=f"{order.order_no}_畔色105单.jpg",
+        stored_path=f"/tmp/{order.order_no}.jpg",
+        source="factory_backfill",
+        row_summary={
+            "order_no": order.order_no,
+            "sub_order_no": line.sub_order_no,
+            "line_id": line.id,
+            "factory_no_at_render": 105,
+            "factory_label_at_render": "畔色105单",
+            "render_width": 1684,
+            "pushed": True,
+            "backfilled": True,
+            "legacy_line_binding": True,
+        },
+    )
+    db_session.add(backfill)
+    db_session.commit()
+
+    reset = sheets.repush_activated(db_session)
+
+    assert reset["reset_for_new_no"] == [order.order_no]
+    assert reset["superseded_sub_order_nos"] == [line.sub_order_no]
+    db_session.refresh(backfill)
+    db_session.refresh(line)
+    assert backfill.row_summary["delivery_superseded"] is True
+    assert line.factory_no is None and line.factory_delivery_state is None
+    assert line.sub_order_no not in lines.sent_line_evidence(db_session)
+    assert lines.delivery_count_gate(db_session)["missing_sub_order_nos"] == [line.sub_order_no]
+
+    pushed = sheets.reconcile_order_line_delivery(db_session)
+
+    assert pushed["sub_order_nos"] == [line.sub_order_no]
+    assert line.factory_no is not None and line.factory_no != 105
+    assert line.factory_delivery_state == "sent"
+    current = lines.sent_line_evidence(db_session)[line.sub_order_no]
+    assert current.id != backfill.id
+    assert current.row_summary["activated"] is True
+    assert lines.delivery_count_gate(db_session)["ok"] is True
+    # 第三轮调用仍必须幂等，不能因为激活标记缺失而再次重推。
+    assert sheets.repush_activated(db_session)["reset_for_new_no"] == []
+    assert sheets.reconcile_order_line_delivery(db_session)["pushed"] == 0
+    assert _feishu == ["img-key"]
+
+
 def test_quantity_gate_blocks_false_success(db_session):
     order = _order(db_session, "MAIN-GATE")
     line = _line(db_session, order.order_no, "SUB-MISSING", "餐桌", "PPS2421007090113")

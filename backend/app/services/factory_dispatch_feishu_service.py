@@ -917,7 +917,10 @@ def _factory_sheet_images(db: Session) -> dict[str, dict[str, dict[str, Any]]]:
     for record in records:
         summary = record.row_summary or {}
         if record.kind == "order_sheet_sent":
-            if summary.get("pushed") is not True:
+            if (
+                summary.get("pushed") is not True
+                or summary.get("delivery_superseded") is True
+            ):
                 continue
             order_no = str(summary.get("order_no") or "").strip() or None
             slot = "sent"

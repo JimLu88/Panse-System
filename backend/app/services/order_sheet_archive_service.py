@@ -510,6 +510,8 @@ def archive_sent_line_snapshot(
     source: str = "factory_push",
 ) -> ImportedFile:
     """归档已发送的子订单商品图；这是新链路的唯一送达凭证。"""
+    from app.services import order_flags
+
     if not line.sub_order_no or line.order_no != order.order_no:
         raise ValueError("工厂商品行缺少有效子订单编号")
     if line.factory_no is None:
@@ -533,6 +535,9 @@ def archive_sent_line_snapshot(
             "render_width": 1684,
             "pushed": True,
             "line_delivery": True,
+            # 激活态是送达幂等的一部分。缺少它会让下一轮
+            # repush_activated 把刚发成功的子订单再次判成旧图并重推。
+            "activated": order_flags.is_activated(order),
         },
     )
     return result.file
@@ -788,6 +793,10 @@ def _pushed_sheet_evidence(db: Session) -> dict[str, dict[str, list[ImportedFile
     for rec in rows:
         summary = rec.row_summary or {}
         if summary.get("pushed") is not True:
+            continue
+        # 历史凭证保留审计，但激活重推已经明确取代它，不能继续充当
+        # 当前送达证据，否则会出现“任务说成功、工厂群却没有新图”。
+        if summary.get("delivery_superseded") is True:
             continue
         order_no = str(summary.get("order_no") or "").strip()
         if not order_no:
@@ -1513,6 +1522,7 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
     seen = _pushed_sheet_evidence(db)
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     changed: list = []
+    superseded_sub_orders: list[str] = []
     for no, sheet_info in seen.items():
         evidence = sheet_info["evidence"]
         recs = sheet_info["deletable"]
@@ -1537,6 +1547,35 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
                     f"⚠️ 订单 {no} 原【畔色 {old_no} 单】作废 —— 客户已通知开始制作, 稍后以新号重推, 请以新号为准。")
             except Exception:  # noqa: BLE001 - 通知失败不阻断
                 _logger.warning("重开作废提示发送失败 %s", no, exc_info=True)
+        # order_sheet_sent 是不可删除的历史审计快照，但激活后它只代表旧一轮，
+        # 必须显式标成已取代。尤其 factory_backfill 只重建了存档、没有发送群消息，
+        # 不能继续让子订单数量门把它当成当前已送达。
+        for evidence_rec in evidence:
+            summary = evidence_rec.row_summary or {}
+            evidence_rec.row_summary = {
+                **summary,
+                "delivery_superseded": True,
+                "delivery_superseded_reason": "activated_repush",
+                "delivery_superseded_at": datetime.now().astimezone().isoformat(),
+            }
+            line = None
+            if summary.get("line_id") is not None:
+                line = db.get(OrderDetail, int(summary["line_id"]))
+            if line is None and summary.get("sub_order_no"):
+                line = db.execute(
+                    select(OrderDetail).where(
+                        OrderDetail.sub_order_no == str(summary["sub_order_no"])
+                    )
+                ).scalar_one_or_none()
+            if line is not None and line.order_no == no:
+                if line.sub_order_no:
+                    superseded_sub_orders.append(str(line.sub_order_no))
+                line.factory_no = None
+                line.factory_delivery_state = None
+                line.factory_delivery_key = None
+                line.factory_delivery_error = None
+                line.factory_delivery_sent_at = None
+                line.factory_delivery_message_id = None
         for r in recs:
             import_storage.delete_record(db, r.id)   # 删旧号下单图归档
         order.factory_no = None                       # 清工厂号 → 重推时顺排新号
@@ -1583,6 +1622,7 @@ def repush_activated(db: Session, *, limit: int = 50) -> dict:
     return {
         "reset_for_new_no": changed,
         "released_activated_baseline": released_baseline,
+        "superseded_sub_order_nos": sorted(set(superseded_sub_orders)),
     }
 
 
