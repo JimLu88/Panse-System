@@ -254,6 +254,15 @@ def _set_plan_item_marker(plan, key: str, item_ids: set[str]) -> None:
     plan.remark = f"{text}; {key}={value}" if text else f"{key}={value}"
 
 
+def _remove_plan_marker(plan, key: str) -> None:
+    """Remove one plan marker completely, including its delimiter."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*[^;\n；]*"
+    plan.remark = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+
+
 def _apply_authorized_supplement_scope(plan, rows: list[dict], stats: dict) -> tuple[
         list[dict], list[str]]:
     """Narrow a retry upload to the explicitly authorized item IDs."""
@@ -1464,8 +1473,10 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         no_sales_service.remove_no_sales(db, qualified)
         _set_plan_item_marker(plan, "platform_qualified_items", qualified)
         _set_plan_item_marker(plan, "platform_no_sales_items", set())
+        _remove_plan_marker(plan, "official_all_store")
+        _remove_plan_marker(plan, "official_exempt_items")
         _set_plan_item_marker(plan, "official_active_items", qualified)
-        _set_plan_item_marker(plan, "supplement_items_authorized", set())
+        _remove_plan_marker(plan, "supplement_items_authorized")
         db.commit()
         return {"ok": True, "no_change": True,
                 "qualified_item_ids": sorted(qualified),
@@ -1514,9 +1525,11 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     no_sales_service.remove_no_sales(db, qualified)
     _set_plan_item_marker(plan, "platform_qualified_items", qualified)
     _set_plan_item_marker(plan, "platform_no_sales_items", failed_ids)
+    _remove_plan_marker(plan, "official_all_store")
+    _remove_plan_marker(plan, "official_exempt_items")
     _set_plan_item_marker(plan, "official_active_items", qualified)
     # A one-off corrective retry marker must not survive a new full-scope probe.
-    _set_plan_item_marker(plan, "supplement_items_authorized", set())
+    _remove_plan_marker(plan, "supplement_items_authorized")
     db.commit()
     return {"ok": True, "qualified_item_ids": sorted(qualified),
             "no_sales_item_ids": sorted(failed_ids), "validation": validation,

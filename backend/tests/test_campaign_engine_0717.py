@@ -164,6 +164,7 @@ def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
 def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
+    plan.remark = "official_all_store=true; official_exempt_items=1000009999"
     _mk(db_session, "PPSQUAL1", "PPSQUAL101", "1000009209", "72901", daily=1200, big=800)
     _mk(db_session, "PPSQUAL2", "PPSQUAL201", "1000009210", "72902", daily=1300, big=900)
     db_session.commit()
@@ -187,6 +188,8 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
     assert ns.get_no_sales(db_session) == {"1000009209"}
     assert cs.platform_qualified_items(plan) == {"1000009210"}
     assert cs.official_scope_for_plan(plan)["active_items"] == {"1000009210"}
+    assert cs.official_scope_for_plan(plan)["all_store"] is False
+    assert cs.official_scope_for_plan(plan)["errors"] == []
 
 
 def test_platform_qualification_non_sales_failure_hard_stops(db_session, monkeypatch):
