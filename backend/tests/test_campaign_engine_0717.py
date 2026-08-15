@@ -214,6 +214,33 @@ def test_platform_qualification_non_sales_failure_hard_stops(db_session, monkeyp
     assert cs.platform_qualified_items(plan) == set()
 
 
+def test_platform_qualification_preserves_existing_placeholder_protection_price(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSPLACE1", "PPSPLACE101", "1000009212", "72904",
+        daily=1200, big=800)
+    _mk(db_session, "PPSPLACE1", "PPSPLACE199", "1000009212", "72905",
+        daily=1000, big=800, placeholder=True, line=300)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True,
+        "rows": [
+            {"item_id": "1000009212", "sku_id": "72904", "activity_price": 1200.0},
+            {"item_id": "1000009212", "sku_id": "72905", "activity_price": 500.0},
+        ],
+        "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False, "error": "must_not_probe_already_correct_item",
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["no_change"] is True
+    assert result["qualified_item_ids"] == ["1000009212"]
+
+
 def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
     """蜜蜡色样块是正常商品，不得再按定制占位保护价报 18 元。"""
     plan = _plan(db_session, "big88")

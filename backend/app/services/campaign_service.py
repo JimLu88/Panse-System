@@ -1445,8 +1445,10 @@ def qualify_signup_scope(db: Session, plan) -> dict:
             mismatches = [
                 str(row["taobao_sku_id"])
                 for row, current_row in zip(item_rows, seen)
-                if current_row.get("activity_price") is None
+                if not row.get("is_placeholder")
+                and (current_row.get("activity_price") is None
                 or abs(float(current_row["activity_price"]) - float(row["price"])) > 0.005
+                )
             ]
             if mismatches:
                 wrong_existing.append({"item_id": item_id, "mismatched_skus": mismatches})
@@ -1882,8 +1884,10 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
                 {"sku_id": row["taobao_sku_id"], "expected": row["price"],
                  "actual": current.get("activity_price")}
                 for row, current in zip(item_rows, seen)
-                if current.get("activity_price") is None
+                if not row.get("is_placeholder")
+                and (current.get("activity_price") is None
                 or abs(float(current["activity_price"]) - float(row["price"])) > 0.005
+                )
             ]
             if mismatches:
                 wrong_published.append({"item_id": item_id, "mismatches": mismatches[:20]})
