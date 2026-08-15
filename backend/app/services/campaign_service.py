@@ -230,6 +230,30 @@ def authorized_supplement_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def platform_qualified_items(plan) -> set[str]:
+    """Items accepted by this campaign's latest pre-publish platform probe."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*platform_qualified_items\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def _set_plan_item_marker(plan, key: str, item_ids: set[str]) -> None:
+    """Idempotently replace one semicolon-delimited plan marker."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*[^;\n；]*"
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    value = ",".join(sorted(item_ids))
+    plan.remark = f"{text}; {key}={value}" if text else f"{key}={value}"
+
+
 def _apply_authorized_supplement_scope(plan, rows: list[dict], stats: dict) -> tuple[
         list[dict], list[str]]:
     """Narrow a retry upload to the explicitly authorized item IDs."""
@@ -598,7 +622,8 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_price_protection_expired": placeholder_expired,
              "placeholder_price_lowering_authorized": placeholder_lowering,
              "placeholder_price_blocked_items": [],
-             "placeholder_price_lowered": []}
+             "placeholder_price_lowered": [],
+             "registered_no_sales_items_included": []}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
@@ -616,9 +641,10 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
             continue
         # 无动销登记是单行道：真无动销及“已出单待人工转正”都不能自动报名，
         # 只走同期单品立减。每日自动任务会先刷新登记表。
+        # Historical no-sales evidence is advisory only. Eligibility can change
+        # between campaigns, so the platform must re-check every listed item.
         if item_id in registered_no_sales:
-            stats["excluded_no_sales_items"].append(item_id)
-            continue
+            stats["registered_no_sales_items_included"].append(item_id)
         if all((s.product_code or "") in bad_pc for s, _ in pairs):
             stats["skipped_bad_price_items"].append(item_id)      # 坏价整品排除
             stats["skipped_bad_price"] += len(pairs)
@@ -1362,6 +1388,119 @@ def _learn_from_validation(db: Session, validation) -> dict:
         return {"recorded": False, "error": "failed_feedback_fact_recording_failed"}
 
 
+def qualify_signup_scope(db: Session, plan) -> dict:
+    """Ask the platform to re-check every safe listed item without publishing.
+
+    Historical no-sales registrations do not narrow the probe. Only failures
+    explicitly classified by platform feedback as no-sales are a normal
+    fallback. Price, SKU, listing-state, and unknown failures remain hard stops.
+    """
+    from app.services import no_sales_service
+
+    current = refresh_floor_evidence_from_current_activity(db, plan)
+    if not current.get("ok"):
+        return {"ok": False, "step": "qualification_current_export",
+                "error": current.get("error")}
+    rows, stats = build_signup_rows(db, plan)
+    live_by_sku = {str(row["sku_id"]): row for row in current["rows"]}
+    by_item: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_item[str(row["taobao_item_id"])].append(row)
+    already_correct: set[str] = set()
+    wrong_existing: list[dict] = []
+    for item_id, item_rows in by_item.items():
+        seen = [live_by_sku.get(str(row["taobao_sku_id"])) for row in item_rows]
+        if all(current_row is not None for current_row in seen):
+            mismatches = [
+                str(row["taobao_sku_id"])
+                for row, current_row in zip(item_rows, seen)
+                if current_row.get("activity_price") is None
+                or abs(float(current_row["activity_price"]) - float(row["price"])) > 0.005
+            ]
+            if mismatches:
+                wrong_existing.append({"item_id": item_id, "mismatched_skus": mismatches})
+            else:
+                already_correct.add(item_id)
+        elif any(current_row is not None for current_row in seen):
+            wrong_existing.append({"item_id": item_id, "error": "partial_existing_item"})
+    if wrong_existing:
+        return {"ok": False, "step": "qualification_existing_state",
+                "error": "existing_item_wrong_price_or_partial_skus",
+                "wrong_existing_items": wrong_existing, "stats": stats}
+
+    probe_rows = [
+        row for row in rows
+        if str(row["taobao_item_id"]) not in already_correct
+    ]
+    candidate_items = {str(row["taobao_item_id"]) for row in probe_rows}
+    if not rows:
+        return {"ok": False, "step": "qualification_empty", "stats": stats,
+                "error": "no_safe_listed_items_for_platform_qualification"}
+
+    if not probe_rows:
+        qualified = set(already_correct)
+        no_sales_service.remove_no_sales(db, qualified)
+        _set_plan_item_marker(plan, "platform_qualified_items", qualified)
+        _set_plan_item_marker(plan, "platform_no_sales_items", set())
+        _set_plan_item_marker(plan, "official_active_items", qualified)
+        _set_plan_item_marker(plan, "supplement_items_authorized", set())
+        db.commit()
+        return {"ok": True, "no_change": True,
+                "qualified_item_ids": sorted(qualified),
+                "no_sales_item_ids": [], "stats": stats}
+
+    channel = "super_reduce" if str(plan.campaign_type) == "super_reduce" else "promo_signup"
+    upload = (_build_super_signup_xlsx(probe_rows) if channel == "super_reduce"
+              else _build_signup_xlsx(probe_rows))
+    probe = _upload_and_wait(
+        db, channel, "stage", upload,
+        _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
+        expected_rows=len(probe_rows), expected_items=len(candidate_items),
+    )
+    validation = probe.get("validation") if isinstance(probe, dict) else None
+    if not isinstance(validation, dict):
+        return {"ok": False, "step": "platform_qualification",
+                "error": probe.get("error") if isinstance(probe, dict) else None,
+                "validation": validation, "stats": stats}
+    total, ok_count, failed_count = (
+        validation.get("total_items"), validation.get("ok"), validation.get("failed"))
+    terminal = (
+        all(isinstance(value, int) for value in (total, ok_count, failed_count))
+        and total > 0 and ok_count + failed_count == total
+        and total == len(candidate_items)
+    )
+    if not terminal:
+        return {"ok": False, "step": "platform_qualification_terminal",
+                "error": "platform_qualification_not_terminal_or_scope_mismatch",
+                "validation": validation, "stats": stats}
+
+    failed_rows = validation.get("failed_items") or []
+    failed_ids = {
+        str((row or {}).get("item_id") or "").strip() for row in failed_rows
+    } - {""}
+    no_sales_ids = no_sales_service.extract_no_sales_from_feedback(failed_rows)
+    if failed_count and (len(failed_ids) != failed_count or failed_ids != no_sales_ids):
+        _learn_from_validation(db, validation)
+        return {"ok": False, "step": "platform_qualification_non_sales_failure",
+                "error": "qualification_contains_non_no_sales_failure",
+                "failed_item_ids": sorted(failed_ids),
+                "no_sales_item_ids": sorted(no_sales_ids),
+                "validation": validation, "stats": stats}
+
+    qualified = already_correct | (candidate_items - failed_ids)
+    no_sales_service.add_no_sales(db, failed_ids)
+    no_sales_service.remove_no_sales(db, qualified)
+    _set_plan_item_marker(plan, "platform_qualified_items", qualified)
+    _set_plan_item_marker(plan, "platform_no_sales_items", failed_ids)
+    _set_plan_item_marker(plan, "official_active_items", qualified)
+    # A one-off corrective retry marker must not survive a new full-scope probe.
+    _set_plan_item_marker(plan, "supplement_items_authorized", set())
+    db.commit()
+    return {"ok": True, "qualified_item_ids": sorted(qualified),
+            "no_sales_item_ids": sorted(failed_ids), "validation": validation,
+            "already_correct_item_ids": sorted(already_correct), "stats": stats}
+
+
 def push_discount(db: Session, plan, phase: str = "stage") -> dict:
     """推单品立减 (channel single_item_discount, 带计划档期精确到秒)。
     phase='stage' 挂文件停在提交前; 'commit' ★不可逆★ 真提交 (仅用户确认后调, R12)。"""
@@ -1656,6 +1795,14 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "missing_items": missing_scope,
             "stats": stats,
         })
+    qualified_scope = platform_qualified_items(plan)
+    if qualified_scope:
+        rows = [
+            row for row in rows
+            if str(row.get("taobao_item_id") or "") in qualified_scope
+        ]
+        stats["platform_qualified_items"] = sorted(qualified_scope)
+        stats["platform_qualified_rows"] = len(rows)
     stats["policy_version"] = policy.get("version")
     stats["policy_sha256"] = policy.get("_sha256")
     stats["price_floor_refresh"] = floor_refresh

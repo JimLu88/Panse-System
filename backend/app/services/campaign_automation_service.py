@@ -219,6 +219,18 @@ def run_auto_execute(db: Session) -> dict:
                     "step": "floor_evidence_refresh", "notification": notice,
                 })
                 continue
+            qualification = campaign_service.qualify_signup_scope(db, plan)
+            if not qualification.get("ok"):
+                failed += 1
+                plan.status = "alarmed"
+                db.commit()
+                details.append({
+                    "plan_id": plan.id, "ok": False,
+                    "step": "platform_qualification",
+                    "error": qualification.get("error"),
+                    "validation": qualification.get("validation"),
+                })
+                continue
             checks = campaign_service.preflight(db, plan)
             critical = [c for c in checks if c.get("level") == "error"]
             if critical:
@@ -260,6 +272,19 @@ def run_auto_execute(db: Session) -> dict:
             db.commit()
 
         if plan.status == "precheck":
+            if not campaign_service.platform_qualified_items(plan):
+                qualification = campaign_service.qualify_signup_scope(db, plan)
+                if not qualification.get("ok"):
+                    failed += 1
+                    plan.status = "alarmed"
+                    db.commit()
+                    details.append({
+                        "plan_id": plan.id, "ok": False,
+                        "step": "platform_qualification",
+                        "error": qualification.get("error"),
+                        "validation": qualification.get("validation"),
+                    })
+                    continue
             discount = campaign_service.push_discount(db, plan, phase="commit")
             if not discount.get("ok"):
                 failed += 1

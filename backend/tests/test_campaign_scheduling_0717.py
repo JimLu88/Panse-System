@@ -112,6 +112,10 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     pushed = []
     monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
 
+    def qualify_signup_scope(db, plan):
+        pushed.append(("qualify", plan.name, "stage"))
+        return {"ok": True}
+
     def push_discount(db, plan, *, phase):
         pushed.append(("discount", plan.name, phase))
         plan.status = "discount_pushed"
@@ -124,11 +128,13 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
 
     monkeypatch.setattr(campaign_service, "push_discount", push_discount)
     monkeypatch.setattr(campaign_service, "push_signup", push_signup)
+    monkeypatch.setattr(campaign_service, "qualify_signup_scope", qualify_signup_scope)
 
     result = automation.run_auto_execute(db_session)
 
     assert result["processed"] == 1
     assert pushed == [
+        ("qualify", included.name, "stage"),
         ("discount", "十天后开学季", "commit"),
         ("signup", "十天后开学季", "campaign_automation"),
     ]

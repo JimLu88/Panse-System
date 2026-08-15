@@ -126,7 +126,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
-def test_signup_rows_exclude_registered_no_sales(db_session):
+def test_signup_rows_include_registered_no_sales_for_platform_recheck(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
         daily=1200, big=800)
@@ -135,8 +135,59 @@ def test_signup_rows_exclude_registered_no_sales(db_session):
 
     rows, stats = cs.build_signup_rows(db_session, plan)
 
-    assert rows == []
-    assert stats["excluded_no_sales_items"] == ["9209"]
+    assert {row["taobao_item_id"] for row in rows} == {"9209"}
+    assert stats["excluded_no_sales_items"] == []
+    assert stats["registered_no_sales_items_included"] == ["9209"]
+
+
+def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQUAL1", "PPSQUAL101", "1000009209", "72901", daily=1200, big=800)
+    _mk(db_session, "PPSQUAL2", "PPSQUAL201", "1000009210", "72902", daily=1300, big=900)
+    db_session.commit()
+    ns.add_no_sales(db_session, ["1000009209", "1000009210"])
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False,
+        "validation": {
+            "total_items": 2, "ok": 1, "failed": 1,
+            "failed_items": [{"item_id": "1000009209", "reason": "动销不达标", "raw": "动销"}],
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009210"]
+    assert result["no_sales_item_ids"] == ["1000009209"]
+    assert ns.get_no_sales(db_session) == {"1000009209"}
+    assert cs.platform_qualified_items(plan) == {"1000009210"}
+    assert cs.official_scope_for_plan(plan)["active_items"] == {"1000009210"}
+
+
+def test_platform_qualification_non_sales_failure_hard_stops(db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQUAL3", "PPSQUAL301", "1000009211", "72903", daily=1400, big=950)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False,
+        "validation": {
+            "total_items": 1, "ok": 0, "failed": 1,
+            "failed_items": [{"item_id": "1000009211", "reason": "SKU已失效", "raw": "SKU已失效"}],
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is False
+    assert result["step"] == "platform_qualification_non_sales_failure"
+    assert cs.platform_qualified_items(plan) == set()
 
 
 def test_honey_sample_is_real_sku_and_stacks_discount(db_session):
