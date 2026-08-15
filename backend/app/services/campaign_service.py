@@ -24,7 +24,7 @@ from collections import defaultdict
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 # 活动类型 → (人话名, 档位)。档位: mid=超级立减10%→中促到手 / big=12%→大促到手 / big618=15%→大促到手
@@ -592,6 +592,18 @@ def _item_signup_rows(item_id: str, pairs: list, lev: Decimal, stats: dict) -> t
     return rows, missing
 
 
+def _erp_listed_product_codes(db: Session) -> set[str] | None:
+    """Return the ERP in-sale scope, or None for legacy/test databases with no products."""
+    from app.models.product import Product
+
+    total = db.execute(select(func.count()).select_from(Product)).scalar_one()
+    if total == 0:
+        return None
+    return set(db.execute(
+        select(Product.code).where(Product.listing_status == "在售")
+    ).scalars().all())
+
+
 def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     """报名行 builder: 报名价=日常价; 过滤下架(R4)+坏价; 整品全SKU完整性断言(R3):
     任一在售已映射SKU算不出价 → 整品剔除并记 incomplete_items (半套必拒, 绝不静默)。
@@ -612,6 +624,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     bad_pc = bad_price_product_codes(db)
     holds = price_hold_items(db, plan)
     held_item_ids = {x["taobao_item_id"] for x in holds}
+    listed_codes = _erp_listed_product_codes(db)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": [],
@@ -623,10 +636,14 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_price_lowering_authorized": placeholder_lowering,
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
-             "registered_no_sales_items_included": []}
+             "registered_no_sales_items_included": [],
+             "skipped_not_erp_listed": 0}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
     for s, p in _mapped_pairs(db):
+        if listed_codes is not None and (s.product_code or "") not in listed_codes:
+            stats["skipped_not_erp_listed"] += 1
+            continue
         if not p.taobao_sku_id:
             stats["skipped_no_skuid"] += 1
             continue
@@ -815,12 +832,14 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     bad_pc = bad_price_product_codes(db)
     holds = price_hold_items(db, plan)
     held_item_ids = {x["taobao_item_id"] for x in holds}
+    listed_codes = _erp_listed_product_codes(db)
     stats = {"tier": tier, "official_ceil": ceil_on, "rows": 0, "skipped_no_skuid": 0,
              "skipped_delisted": 0, "skipped_bad_price": 0, "skipped_placeholder": 0,
              "skipped_price_hold": 0, "excluded_price_hold_items": holds,
              "skipped_no_daily": 0, "skipped_no_target": 0, "skipped_no_deduct": 0,
              "line_concessions": [], "rotation_suggested": [],
              "official_low_price_exact": 0,
+             "skipped_not_erp_listed": 0,
              "official_scope": {
                  "configured": official_scope["configured"],
                  "all_store": official_scope["all_store"],
@@ -830,6 +849,9 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
              }}
     rows: list[dict] = []
     for s, p in _mapped_pairs(db):
+        if listed_codes is not None and (s.product_code or "") not in listed_codes:
+            stats["skipped_not_erp_listed"] += 1
+            continue
         if not p.taobao_sku_id:
             stats["skipped_no_skuid"] += 1
             continue

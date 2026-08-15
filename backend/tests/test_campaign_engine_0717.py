@@ -18,6 +18,7 @@ import openpyxl
 
 from app.models.campaign import CampaignPlan
 from app.models.order import Order
+from app.models.product import Product
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_service as cs
@@ -138,6 +139,26 @@ def test_signup_rows_include_registered_no_sales_for_platform_recheck(db_session
     assert {row["taobao_item_id"] for row in rows} == {"9209"}
     assert stats["excluded_no_sales_items"] == []
     assert stats["registered_no_sales_items_included"] == ["9209"]
+
+
+def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
+    plan = _plan(db_session, "big88")
+    db_session.add_all([
+        Product(code="PPSLISTED1", name="listed", listing_status="在售"),
+        Product(code="PPSOFF1", name="not listed", listing_status="下架"),
+    ])
+    _mk(db_session, "PPSLISTED1", "PPSLISTED101", "1000010001", "710001", daily=1200, big=800)
+    _mk(db_session, "PPSOFF1", "PPSOFF101", "1000010002", "710002", daily=1300, big=900)
+    _mk(db_session, "PPSUTILITY1", "PPSUTILITY101", "1000010003", "710003", daily=10, big=8)
+    db_session.commit()
+
+    signup, signup_stats = cs.build_signup_rows(db_session, plan)
+    discount, discount_stats = cs.build_discount_rows(db_session, plan)
+
+    assert {row["taobao_item_id"] for row in signup} == {"1000010001"}
+    assert {row["taobao_item_id"] for row in discount} == {"1000010001"}
+    assert signup_stats["skipped_not_erp_listed"] == 2
+    assert discount_stats["skipped_not_erp_listed"] == 2
 
 
 def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
