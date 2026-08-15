@@ -1248,6 +1248,19 @@ def _plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
     return (cid.group(1) if cid else None, uid.group(1) if uid else None)
 
 
+def _plan_single_discount_activity_id(plan) -> Optional[str]:
+    """Read the verified existing single-item-discount activity for a repair."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*single_discount_activity_id\s*=\s*(\d+)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return matched.group(1) if matched else None
+
+
 def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
                      start_dt: Optional[str], end_dt: Optional[str], *,
                      plan=None, expected_rows: Optional[int] = None,
@@ -1270,6 +1283,10 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             "campaign_id": cid,
             "united_activity_id": uid,
         }
+    elif channel == "single_item_discount" and plan is not None:
+        existing_id = _plan_single_discount_activity_id(plan)
+        if existing_id:
+            extra = {"campaign_id": existing_id}
     j = web_agent_service.upload_file(
         db, channel, phase, xlsx, f"campaign_{channel}.xlsx",
         start_dt=start_dt, end_dt=end_dt, expected_rows=expected_rows, **extra)

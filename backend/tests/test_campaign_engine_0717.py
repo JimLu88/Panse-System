@@ -596,6 +596,27 @@ def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
     assert calls[1]["expected_rows"] == 1
 
 
+def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        f"{plan.remark or ''}; supplement_items_authorized=100000009501; "
+        "single_discount_activity_id=142591608100"
+    )
+    _mk(db_session, "PPSQEDIT1", "PPSQEDIT101", "100000009501", "75301",
+        daily=1500, big=1000)
+    db_session.commit()
+    _seed_platform_floors(db_session, [("100000009501", "75301", 2000, 1030)])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert calls[0]["channel"] == "single_item_discount"
+    assert calls[0]["campaign_id"] == "142591608100"
+    assert calls[0]["expected_rows"] == 1
+
+
 def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
     empty_plan = _plan(db_session, "big88")
     calls = []
