@@ -82,6 +82,8 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定先单品立减、后正式活动报名，已停止")
     if scope.get("existing_single_discount_edit_mode") != "one_item_per_job_with_sku_readback":
         raise RuntimeError("活动报名规则未锁定既有单品立减逐商品修改并逐 SKU 回读，已停止")
+    if scope.get("existing_single_discount_activity_binding") != "per_item_id_to_activity_id":
+        raise RuntimeError("活动报名规则未锁定单品立减活动ID按商品绑定，已停止")
     if scope.get("qualification_hard_failure_action") != "isolate_whole_item_report_and_continue_safe_items":
         raise RuntimeError("活动报名规则未锁定资格硬失败整品隔离并继续安全商品，已停止")
     lines = policy.get("explanation_lines")

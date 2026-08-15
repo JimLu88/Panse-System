@@ -819,13 +819,16 @@ def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session
     assert calls[0]["channel"] == "single_item_discount"
     assert calls[0]["campaign_id"] == "142591608100"
     assert calls[0]["expected_rows"] == 1
-    assert result["stats"]["single_discount_execution_mode"] == "existing_activity_one_item_per_job"
+    assert result["stats"]["single_discount_execution_mode"] == "per_item_existing_then_new_batch"
 
 
 def test_existing_single_discount_activity_is_modified_one_item_per_job(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
-    plan.remark = f"{plan.remark or ''}; single_discount_activity_id=142591608100"
+    plan.remark = (
+        f"{plan.remark or ''}; "
+        "single_discount_activity_ids=100000009511:142591608100"
+    )
     _mk(db_session, "PPSQEDIT2", "PPSQEDIT201", "100000009511", "75311",
         daily=1500, big=1000)
     _mk(db_session, "PPSQEDIT3", "PPSQEDIT301", "100000009512", "75312",
@@ -844,17 +847,23 @@ def test_existing_single_discount_activity_is_modified_one_item_per_job(
     assert result["processed_items"] == 2
     assert len(calls) == 2
     assert [call["expected_rows"] for call in calls] == [1, 1]
-    assert {call["campaign_id"] for call in calls} == {"142591608100"}
+    assert calls[0]["campaign_id"] == "142591608100"
+    assert calls[1].get("campaign_id") is None
     assert [call["item_ids"] for call in calls] == [
         ["100000009511"], ["100000009512"]]
     assert result["stats"]["single_discount_expected_items"] == 2
     assert result["stats"]["single_discount_processed_items"] == 2
+    assert result["stats"]["single_discount_existing_items"] == ["100000009511"]
+    assert result["stats"]["single_discount_new_items"] == ["100000009512"]
 
 
 def test_existing_single_discount_stops_before_signup_when_one_item_fails(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
-    plan.remark = f"{plan.remark or ''}; single_discount_activity_id=142591608100"
+    plan.remark = (
+        f"{plan.remark or ''}; single_discount_activity_ids="
+        "100000009521:142591608100,100000009522:142591608101"
+    )
     _mk(db_session, "PPSQEDIT4", "PPSQEDIT401", "100000009521", "75321",
         daily=1500, big=1000)
     _mk(db_session, "PPSQEDIT5", "PPSQEDIT501", "100000009522", "75322",
@@ -881,6 +890,29 @@ def test_existing_single_discount_stops_before_signup_when_one_item_fails(
     assert result["failed_item_id"] == "100000009522"
     assert result["completed_item_ids"] == ["100000009521"]
     assert plan.status == "draft"
+
+
+def test_legacy_single_discount_activity_id_rejects_multi_item_scope(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = f"{plan.remark or ''}; single_discount_activity_id=142591608100"
+    _mk(db_session, "PPSQEDIT6", "PPSQEDIT601", "100000009531", "75331",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQEDIT7", "PPSQEDIT701", "100000009532", "75332",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("100000009531", "75331", 2000, 1030),
+        ("100000009532", "75332", 2000, 1133),
+    ])
+    calls = []
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: calls.append(1))
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is False
+    assert result["step"] == "single_discount_activity_binding_guard"
+    assert calls == []
 
 
 def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):

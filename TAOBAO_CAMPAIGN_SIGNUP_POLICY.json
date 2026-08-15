@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-15.5",
-  "updated_at": "2026-08-15T20:05:00+08:00",
+  "version": "2026-08-15.6",
+  "updated_at": "2026-08-15T21:45:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -55,6 +55,7 @@
     "no_sales_only_failure_action": "keep_out_of_campaign_and_use_single_item_discount",
     "accepted_item_action": "single_item_discount_first_then_final_campaign_signup",
     "existing_single_discount_edit_mode": "one_item_per_job_with_sku_readback",
+    "existing_single_discount_activity_binding": "per_item_id_to_activity_id",
     "qualification_hard_failure_action": "isolate_whole_item_report_and_continue_safe_items",
     "exclude_delisted_skus": true,
     "already_correct_items_are_not_reimported": true,

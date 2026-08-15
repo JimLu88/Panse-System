@@ -1365,10 +1365,36 @@ def _plan_single_discount_activity_id(plan) -> Optional[str]:
     return matched.group(1) if matched else None
 
 
+def _plan_single_discount_activity_ids(plan) -> dict[str, str]:
+    """Read verified per-item existing single-discount activity bindings.
+
+    Marker format:: ``single_discount_activity_ids=item_id:activity_id,...``.
+    A QianNiu activity ID belongs to one item row in the SKU-level editor and
+    must never be applied as a store-wide ID.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*single_discount_activity_ids\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    return {
+        item_id: activity_id
+        for item_id, activity_id in re.findall(
+            r"(\d{8,})\s*:\s*(\d+)", matched.group(1))
+    }
+
+
 def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
                      start_dt: Optional[str], end_dt: Optional[str], *,
                      plan=None, expected_rows: Optional[int] = None,
-                     expected_items: Optional[int] = None) -> dict:
+                     expected_items: Optional[int] = None,
+                     discount_activity_id: Optional[str] = None,
+                     ignore_plan_discount_activity: bool = False) -> dict:
     """WA 上传编排 (与 activity_upload_service 同模式: upload_file → wait_job)。"""
     from app.services import web_agent_service
     extra = {}
@@ -1388,7 +1414,9 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             "united_activity_id": uid,
         }
     elif channel == "single_item_discount" and plan is not None:
-        existing_id = _plan_single_discount_activity_id(plan)
+        existing_id = discount_activity_id
+        if existing_id is None and not ignore_plan_discount_activity:
+            existing_id = _plan_single_discount_activity_id(plan)
         if existing_id:
             extra = {"campaign_id": existing_id}
     j = web_agent_service.upload_file(
@@ -1637,21 +1665,35 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
         stats["platform_discount_scope_rows"] = len(rows)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
-    existing_id = _plan_single_discount_activity_id(plan)
-    if existing_id:
+    activity_ids = _plan_single_discount_activity_ids(plan)
+    legacy_id = _plan_single_discount_activity_id(plan)
+    by_item: dict[str, list[dict]] = defaultdict(list)
+    for row in rows:
+        by_item[str(row["taobao_item_id"])].append(row)
+    if not activity_ids and legacy_id:
+        if len(by_item) != 1:
+            return {
+                "ok": False,
+                "step": "single_discount_activity_binding_guard",
+                "error": "既有单品立减活动ID缺少商品绑定，拒绝把一个活动ID应用到多个商品",
+                "legacy_activity_id": legacy_id,
+                "target_item_ids": sorted(by_item),
+                "stats": stats,
+            }
+        activity_ids = {next(iter(by_item)): legacy_id}
+    if activity_ids:
         # 千牛“修改优惠”是逐商品抽屉：同一活动可包含多商品，但每次只能
         # 打开一个商品并逐 SKU 回读。绝不能把全店行一次交给该入口，否则
         # Web-Agent 只能修改/证明一个商品。逐商品执行也让中断后的重跑保持幂等。
-        by_item: dict[str, list[dict]] = defaultdict(list)
-        for row in rows:
-            by_item[str(row["taobao_item_id"])].append(row)
         item_results: list[dict] = []
-        for item_id in sorted(by_item):
+        existing_items = sorted(set(by_item) & set(activity_ids))
+        for item_id in existing_items:
             item_rows = by_item[item_id]
             item_result = _upload_and_wait(
                 db, "single_item_discount", phase, _build_discount_xlsx(item_rows),
                 _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
                 plan=plan, expected_rows=len(item_rows),
+                discount_activity_id=activity_ids[item_id],
             )
             item_results.append({"item_id": item_id, **item_result})
             if not item_result.get("ok"):
@@ -1667,16 +1709,37 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
                 }
                 break
         else:
-            res = {
-                "ok": True,
-                "submitted": phase == "commit",
-                "activity_id": existing_id,
-                "processed_items": len(item_results),
-                "item_results": item_results,
-            }
-        stats["single_discount_execution_mode"] = "existing_activity_one_item_per_job"
+            new_item_ids = sorted(set(by_item) - set(activity_ids))
+            new_rows = [row for item_id in new_item_ids for row in by_item[item_id]]
+            if new_rows:
+                new_result = _upload_and_wait(
+                    db, "single_item_discount", phase, _build_discount_xlsx(new_rows),
+                    _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
+                    plan=plan, expected_rows=len(new_rows),
+                    ignore_plan_discount_activity=True,
+                )
+                item_results.append({"item_ids": new_item_ids, "mode": "new_batch", **new_result})
+                if not new_result.get("ok"):
+                    res = {
+                        "ok": False,
+                        "step": "single_item_discount_new_batch",
+                        "error": new_result.get("error") or "新建单品立减批次失败",
+                        "completed_item_ids": existing_items,
+                        "failed_item_ids": new_item_ids,
+                        "item_results": item_results,
+                    }
+                else:
+                    res = {"ok": True, "submitted": phase == "commit",
+                           "processed_items": len(by_item), "item_results": item_results}
+            else:
+                res = {"ok": True, "submitted": phase == "commit",
+                       "processed_items": len(by_item), "item_results": item_results}
+        stats["single_discount_execution_mode"] = "per_item_existing_then_new_batch"
         stats["single_discount_expected_items"] = len(by_item)
-        stats["single_discount_processed_items"] = len(item_results)
+        stats["single_discount_existing_items"] = existing_items
+        stats["single_discount_new_items"] = sorted(set(by_item) - set(activity_ids))
+        stats["single_discount_processed_items"] = (
+            len(by_item) if res.get("ok") else len(existing_items))
     else:
         res = _upload_and_wait(
             db, "single_item_discount", phase, _build_discount_xlsx(rows),

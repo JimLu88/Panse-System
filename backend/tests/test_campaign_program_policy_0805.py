@@ -61,6 +61,7 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert scope["qualification_before_discount_and_final_signup"] is True
     assert scope["accepted_item_action"] == "single_item_discount_first_then_final_campaign_signup"
     assert scope["existing_single_discount_edit_mode"] == "one_item_per_job_with_sku_readback"
+    assert scope["existing_single_discount_activity_binding"] == "per_item_id_to_activity_id"
     assert scope["qualification_hard_failure_action"] == "isolate_whole_item_report_and_continue_safe_items"
 
 
