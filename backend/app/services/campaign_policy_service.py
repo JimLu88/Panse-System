@@ -51,6 +51,7 @@ def require_policy() -> dict[str, Any]:
     execution = policy.get("execution") or {}
     pricing = policy.get("pricing") or {}
     gates = policy.get("qualification_gates") or {}
+    scope = policy.get("scope_and_idempotency") or {}
     if execution.get("signup_executor") != "campaign_automation_program_only":
         raise RuntimeError("活动报名规则未锁定为程序自动执行，已停止")
     if (execution.get("ai_may_submit") is not False
@@ -70,6 +71,17 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定任一 SKU 冲突即整品排除并报告，已停止")
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":
         raise RuntimeError("活动报名规则未锁定价格线证据缺失/过期即上传前阻塞，已停止")
+    if (scope.get("exclude_no_sales_items_from_campaign_signup") is not False
+            or scope.get("registered_no_sales_is_advisory_only") is not True
+            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not True
+            or scope.get("qualification_before_discount_and_final_signup") is not True):
+        raise RuntimeError("活动报名规则未锁定每场对全部 ERP 在售商品重新执行平台资格检查，已停止")
+    if scope.get("no_sales_only_failure_action") != "keep_out_of_campaign_and_use_single_item_discount":
+        raise RuntimeError("活动报名规则未锁定无动销仅失败的单品立减兜底，已停止")
+    if scope.get("accepted_item_action") != "single_item_discount_first_then_final_campaign_signup":
+        raise RuntimeError("活动报名规则未锁定先单品立减、后正式活动报名，已停止")
+    if scope.get("existing_single_discount_edit_mode") != "one_item_per_job_with_sku_readback":
+        raise RuntimeError("活动报名规则未锁定既有单品立减逐商品修改并逐 SKU 回读，已停止")
     lines = policy.get("explanation_lines")
     if not isinstance(lines, list) or len(lines) < 5 or not all(isinstance(x, str) and x for x in lines):
         raise RuntimeError("活动报名规则 explanation_lines 不完整，已停止")

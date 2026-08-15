@@ -654,8 +654,19 @@ def _mock_wa(monkeypatch, calls):
     from app.services import web_agent_service
 
     def fake_upload(db, channel, phase, xlsx_bytes, filename, **kw):
-        calls.append({"channel": channel, "phase": phase, "filename": filename,
-                      "xlsx_len": len(xlsx_bytes), **kw})
+        call = {"channel": channel, "phase": phase, "filename": filename,
+                "xlsx_len": len(xlsx_bytes), **kw}
+        if channel == "single_item_discount":
+            wb = openpyxl.load_workbook(io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+            try:
+                call["item_ids"] = sorted({
+                    str(row[0]).strip()
+                    for row in wb.worksheets[0].iter_rows(min_row=2, values_only=True)
+                    if row and row[0] not in (None, "")
+                })
+            finally:
+                wb.close()
+        calls.append(call)
         return {"ok": True, "job": "job-1"}
 
     def fake_wait(db, job_id, **kw):
@@ -750,6 +761,68 @@ def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session
     assert calls[0]["channel"] == "single_item_discount"
     assert calls[0]["campaign_id"] == "142591608100"
     assert calls[0]["expected_rows"] == 1
+    assert result["stats"]["single_discount_execution_mode"] == "existing_activity_one_item_per_job"
+
+
+def test_existing_single_discount_activity_is_modified_one_item_per_job(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = f"{plan.remark or ''}; single_discount_activity_id=142591608100"
+    _mk(db_session, "PPSQEDIT2", "PPSQEDIT201", "100000009511", "75311",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQEDIT3", "PPSQEDIT301", "100000009512", "75312",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("100000009511", "75311", 2000, 1030),
+        ("100000009512", "75312", 2000, 1133),
+    ])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert result["processed_items"] == 2
+    assert len(calls) == 2
+    assert [call["expected_rows"] for call in calls] == [1, 1]
+    assert {call["campaign_id"] for call in calls} == {"142591608100"}
+    assert [call["item_ids"] for call in calls] == [
+        ["100000009511"], ["100000009512"]]
+    assert result["stats"]["single_discount_expected_items"] == 2
+    assert result["stats"]["single_discount_processed_items"] == 2
+
+
+def test_existing_single_discount_stops_before_signup_when_one_item_fails(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = f"{plan.remark or ''}; single_discount_activity_id=142591608100"
+    _mk(db_session, "PPSQEDIT4", "PPSQEDIT401", "100000009521", "75321",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQEDIT5", "PPSQEDIT501", "100000009522", "75322",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("100000009521", "75321", 2000, 1030),
+        ("100000009522", "75322", 2000, 1133),
+    ])
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append(kwargs.get("expected_rows"))
+        if len(calls) == 2:
+            return {"ok": False, "error": "平台逐 SKU 回读不一致"}
+        return {"ok": True, "submitted": True}
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is False
+    assert result["step"] == "single_item_discount_per_item"
+    assert result["failed_item_id"] == "100000009522"
+    assert result["completed_item_ids"] == ["100000009521"]
+    assert plan.status == "draft"
 
 
 def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):

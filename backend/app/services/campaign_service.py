@@ -678,8 +678,6 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     for item_id, pairs in sorted(by_item.items()):
         if item_id in held_item_ids:
             continue
-        # 无动销登记是单行道：真无动销及“已出单待人工转正”都不能自动报名，
-        # 只走同期单品立减。每日自动任务会先刷新登记表。
         # Historical no-sales evidence is advisory only. Eligibility can change
         # between campaigns, so the platform must re-check every listed item.
         if item_id in registered_no_sales:
@@ -1209,7 +1207,7 @@ def preflight(db: Session, plan) -> list[dict]:
          "items": [{"skipped_delisted_signup": sstats["skipped_delisted"],
                     "skipped_delisted_discount": dstats["skipped_delisted"]}]},
         {"rule": "R6", "level": "warn" if nosales else "pass",
-         "title": "零动销禁撤名单 (动销门单行道: 撤了回不来, 强制迁移需二次确认)", "items": nosales},
+         "title": "历史无动销提示（不预排除；本场由平台对全部在售商品重检）", "items": nosales},
         {"rule": "R9", "level": "pass",
          "title": "官方立减向上取整到元已内建 (10%场开关 campaign_official_ceil)",
          "items": [{"official_ceil": dstats["official_ceil"]}]},
@@ -1585,9 +1583,53 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
         stats["platform_discount_scope_rows"] = len(rows)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
-    res = _upload_and_wait(db, "single_item_discount", phase, _build_discount_xlsx(rows),
-                           _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
-                           plan=plan, expected_rows=len(rows))
+    existing_id = _plan_single_discount_activity_id(plan)
+    if existing_id:
+        # 千牛“修改优惠”是逐商品抽屉：同一活动可包含多商品，但每次只能
+        # 打开一个商品并逐 SKU 回读。绝不能把全店行一次交给该入口，否则
+        # Web-Agent 只能修改/证明一个商品。逐商品执行也让中断后的重跑保持幂等。
+        by_item: dict[str, list[dict]] = defaultdict(list)
+        for row in rows:
+            by_item[str(row["taobao_item_id"])].append(row)
+        item_results: list[dict] = []
+        for item_id in sorted(by_item):
+            item_rows = by_item[item_id]
+            item_result = _upload_and_wait(
+                db, "single_item_discount", phase, _build_discount_xlsx(item_rows),
+                _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
+                plan=plan, expected_rows=len(item_rows),
+            )
+            item_results.append({"item_id": item_id, **item_result})
+            if not item_result.get("ok"):
+                res = {
+                    "ok": False,
+                    "step": "single_item_discount_per_item",
+                    "error": item_result.get("error") or "逐商品单品立减失败",
+                    "failed_item_id": item_id,
+                    "completed_item_ids": [
+                        row["item_id"] for row in item_results[:-1] if row.get("ok")
+                    ],
+                    "item_results": item_results,
+                }
+                break
+        else:
+            res = {
+                "ok": True,
+                "submitted": phase == "commit",
+                "activity_id": existing_id,
+                "processed_items": len(item_results),
+                "item_results": item_results,
+            }
+        stats["single_discount_execution_mode"] = "existing_activity_one_item_per_job"
+        stats["single_discount_expected_items"] = len(by_item)
+        stats["single_discount_processed_items"] = len(item_results)
+    else:
+        res = _upload_and_wait(
+            db, "single_item_discount", phase, _build_discount_xlsx(rows),
+            _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
+            plan=plan, expected_rows=len(rows),
+        )
+        stats["single_discount_execution_mode"] = "new_activity_batch"
     res["stats"] = stats
     if res.get("ok") and phase == "commit":
         plan.status = "discount_pushed"

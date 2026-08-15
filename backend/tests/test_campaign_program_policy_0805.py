@@ -54,6 +54,13 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
     assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_exclusive"] == 1.00
+    scope = policy["scope_and_idempotency"]
+    assert scope["exclude_no_sales_items_from_campaign_signup"] is False
+    assert scope["registered_no_sales_is_advisory_only"] is True
+    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is True
+    assert scope["qualification_before_discount_and_final_signup"] is True
+    assert scope["accepted_item_action"] == "single_item_discount_first_then_final_campaign_signup"
+    assert scope["existing_single_discount_edit_mode"] == "one_item_per_job_with_sku_readback"
 
 
 def test_production_image_bundles_the_root_policy():

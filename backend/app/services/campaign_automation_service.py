@@ -200,7 +200,8 @@ def run_auto_execute(db: Session) -> dict:
     details: list[dict] = []
     for plan in plans:
         processed += 1
-        # 每次执行前刷新 60 天动销登记；已登记但后来出单的仍待人工转正，不自动报名。
+        # 每次执行前刷新 60 天动销登记；登记只作历史提示，随后仍由平台
+        # 对本场全部 ERP 在售商品重新判定，不能据此预先排除报名候选。
         grouping = campaign_service.group_by_sales(db)
         if plan.status == "draft":
             floor_refresh = campaign_service.refresh_floor_evidence_from_current_activity(db, plan)
