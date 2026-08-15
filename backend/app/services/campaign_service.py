@@ -178,8 +178,8 @@ def placeholder_price_protection_expired(plan) -> bool:
 def placeholder_price_lowering_authorized(plan) -> bool:
     """Current-plan user decision allowing custom placeholders to use safe caps.
 
-    This does not lower any real SKU and does not make single-item discount a
-    qualification input.  It only removes the stale-price hold for placeholder
+    This does not lower any real SKU or authorize extra real-SKU concessions.
+    It only removes the stale-price hold for placeholder
     consultation entries whose commercial price is explicitly non-binding.
     """
     import re
@@ -206,6 +206,43 @@ def new_item_no_history_authorized_items(plan) -> set[str]:
         flags=re.IGNORECASE,
     )
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def authorized_supplement_items(plan) -> set[str]:
+    """Return the exact item scope approved for one corrective program run.
+
+    Marker format::
+
+        supplement_items_authorized=1007407909979
+
+    The marker narrows the generated upload; it never expands the normal
+    official-discount scope or bypasses price, completeness, and live-state
+    checks.  A named item missing from the safe generated rows hard-stops.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*supplement_items_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def _apply_authorized_supplement_scope(plan, rows: list[dict], stats: dict) -> tuple[
+        list[dict], list[str]]:
+    """Narrow a retry upload to the explicitly authorized item IDs."""
+    scope = authorized_supplement_items(plan)
+    if not scope:
+        return rows, []
+    present = {str(row.get("taobao_item_id") or "") for row in rows}
+    missing = sorted(scope - present)
+    scoped = [row for row in rows if str(row.get("taobao_item_id") or "") in scope]
+    stats["authorized_supplement_items"] = sorted(scope)
+    stats["supplement_scope_rows"] = len(scoped)
+    stats["supplement_scope_missing_items"] = missing
+    return scoped, missing
 
 
 def authorized_line_concessions(plan) -> dict[str, Decimal]:
@@ -1319,6 +1356,15 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
             "check": scope_check,
         }
     rows, stats = build_discount_rows(db, plan)
+    rows, missing_scope = _apply_authorized_supplement_scope(plan, rows, stats)
+    if missing_scope:
+        return {
+            "ok": False,
+            "step": "supplement_scope_guard",
+            "error": "补报授权商品未全部出现在安全立减行中，已停止上传",
+            "missing_items": missing_scope,
+            "stats": stats,
+        }
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
     res = _upload_and_wait(db, "single_item_discount", phase, _build_discount_xlsx(rows),
@@ -1585,6 +1631,14 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         })
 
     rows, stats = build_signup_rows(db, plan)
+    rows, missing_scope = _apply_authorized_supplement_scope(plan, rows, stats)
+    if missing_scope:
+        return _stop_signup(db, plan, {
+            "step": "supplement_scope_guard",
+            "error": "补报授权商品未全部出现在安全报名行中，已停止上传",
+            "missing_items": missing_scope,
+            "stats": stats,
+        })
     stats["policy_version"] = policy.get("version")
     stats["policy_sha256"] = policy.get("_sha256")
     stats["price_floor_refresh"] = floor_refresh

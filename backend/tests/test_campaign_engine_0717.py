@@ -563,6 +563,39 @@ def test_push_discount_orchestration(db_session, monkeypatch):
     assert calls[1]["phase"] == "commit"
 
 
+def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        f"{plan.remark or ''}; supplement_items_authorized=100000009501"
+    )
+    _mk(db_session, "PPSQSCOPE1", "PPSQSCOPE101", "100000009501", "75101",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQSCOPE2", "PPSQSCOPE201", "100000009502", "75201",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("100000009501", "75101", 2000, 1030),
+        ("100000009502", "75201", 2000, 1133),
+    ])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+
+    discount = cs.push_discount(db_session, plan, phase="commit")
+    signup = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert discount["ok"] is True
+    assert discount["stats"]["authorized_supplement_items"] == ["100000009501"]
+    assert calls[0]["channel"] == "single_item_discount"
+    assert calls[0]["expected_rows"] == 1
+    assert signup["ok"] is True
+    assert signup["stats"]["authorized_supplement_items"] == ["100000009501"]
+    assert signup["stats"]["pending_items"] == ["100000009501"]
+    assert calls[1]["channel"] == "super_reduce"
+    assert calls[1]["expected_rows"] == 1
+
+
 def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
     empty_plan = _plan(db_session, "big88")
     calls = []
