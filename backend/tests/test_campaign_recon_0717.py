@@ -265,6 +265,62 @@ def test_super_reconcile_treats_future_paused_rows_as_pending_not_missing(
     assert called == []
 
 
+def test_reconcile_preserves_platform_accepted_active_placeholder_price(
+        db_session, monkeypatch):
+    plan = _plan(db_session, title="超级立减长期活动")
+    plan.campaign_type = "super_reduce"
+    plan.tier = "mid"
+    _mk(db_session, "PPSPLACE2", "PPSPLACE299", "1000009623", "82023",
+        daily=1000, big=800, placeholder=True, line=300)
+    db_session.commit()
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009623"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009623"})
+    db_session.commit()
+    called = []
+    from app.services import notify_service
+    monkeypatch.setattr(notify_service, "broadcast_text",
+                        lambda db, text, **kw: called.append(text) or {})
+
+    activity = _xlsx([
+        _act_row("1000009623", "82023", None, act_price=397.0, status="活动中"),
+    ])
+    result = crs.reconcile(db_session, plan, activity_bytes=activity)
+
+    assert result["alarm_count"] == 0
+    assert result["pending"] is False
+    assert result["rows"][0]["verdict"] == "占位在场价沿用"
+    assert result["rows"][0]["grandfathered_activity_price"] is True
+    assert result["rows"][0]["signup_price_ok"] is None
+    assert plan.status == "reconciled"
+    assert called == []
+
+
+def test_reconcile_does_not_grandfather_future_paused_placeholder_mismatch(
+        db_session, monkeypatch):
+    plan = _plan(db_session, title="超级立减长期活动")
+    plan.campaign_type = "super_reduce"
+    plan.tier = "mid"
+    _mk(db_session, "PPSPLACE3", "PPSPLACE399", "1000009624", "82024",
+        daily=1000, big=800, placeholder=True, line=300)
+    db_session.commit()
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009624"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009624"})
+    db_session.commit()
+    monkeypatch.setattr(
+        __import__("app.services.notify_service", fromlist=["broadcast_text"]),
+        "broadcast_text", lambda *args, **kwargs: {})
+
+    activity = _xlsx([
+        _act_row("1000009624", "82024", None, act_price=397.0, status="暂停"),
+    ])
+    result = crs.reconcile(db_session, plan, activity_bytes=activity)
+
+    assert result["alarm_count"] == 1
+    assert result["rows"][0]["verdict"] == "占位活动价不一致"
+    assert result["rows"][0]["signup_price_ok"] is False
+    assert plan.status == "alarmed"
+
+
 def test_reconcile_requires_at_least_one_file(db_session):
     plan = _plan(db_session)
     result = crs.reconcile(db_session, plan)

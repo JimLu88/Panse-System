@@ -187,7 +187,8 @@ def _entry_target(spec_entry: dict, target_tier: Optional[str]) -> Optional[floa
 def _judge_row(rec: dict, spec_entry: Optional[dict],
                target_tier: Optional[str] = None) -> dict:
     """单条活动导出记录 vs 目标 → {sku_id, sku_code, actual, target, diff, verdict, ...}。
-    verdict ∈ 一分不差 / 贴线让X / 超2元报警 / 偏差 / J未刷新 / 占位 / 无映射。
+    verdict ∈ 一分不差 / 贴线让X / 超2元报警 / 偏差 / J未刷新 /
+    占位价一致 / 占位在场价沿用 / 占位活动价不一致 / 无映射。
     贴线判定: 让幅 0<lag≤1 且 (无线值 or 实际≥线) — 无线值时推定贴线, 因为推送侧 builder
     已按 min(目标,线) 让价, 导出端小于目标≤1元只有贴线一种解释 (2026-07-17 人工核对口径)。"""
     actual = rec.get("coupon_after")
@@ -203,6 +204,16 @@ def _judge_row(rec: dict, spec_entry: Optional[dict],
                                else abs(act_price - signup) <= _EPS)
     base["expected_activity_price"] = signup
     if spec_entry.get("is_placeholder") or spec_entry.get("placeholder"):
+        # 已经「活动中」的定制占位 SKU 是平台此前接受并正在生效的保护价。
+        # 新刷到的历史价格线只能约束新报名，不能追溯改写已在场价格；否则
+        # 每次导出都会让动态 safe_cap 变化并制造假错价。暂停/待生效的新报名
+        # 不享受此例外，仍须逐 SKU 与本次报名价精确一致。
+        if (rec.get("status") == "活动中"
+                and base["signup_price_ok"] is False):
+            base["signup_price_ok"] = None
+            base["grandfathered_activity_price"] = True
+            return {**base, "target": None, "diff": None,
+                    "verdict": "占位在场价沿用"}
         verdict = "占位价一致" if base["signup_price_ok"] is True else "占位活动价不一致"
         return {**base, "target": None, "diff": None, "verdict": verdict}
     target = _entry_target(spec_entry, target_tier)
