@@ -256,6 +256,31 @@ def platform_no_sales_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def platform_hard_failed_items(plan) -> set[str]:
+    """Items isolated for price/SKU/listing or other non-no-sales failures."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*platform_hard_failed_items\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def platform_scope_present(plan) -> bool:
+    """Whether this plan already has a terminal platform qualification scope."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    return bool(re.search(
+        r"(?:^|[;\n；])\s*platform_(?:qualified|no_sales|hard_failed)_items\s*=",
+        text,
+        flags=re.IGNORECASE,
+    ))
+
+
 def _set_plan_item_marker(plan, key: str, item_ids: set[str]) -> None:
     """Idempotently replace one semicolon-delimited plan marker."""
     import re
@@ -1184,6 +1209,17 @@ def preflight(db: Session, plan) -> list[dict]:
         return [policy_check]
     _srows, sstats = build_signup_rows(db, plan)
     _drows, dstats = build_discount_rows(db, plan)
+    if platform_scope_present(plan):
+        qualified = platform_qualified_items(plan)
+        no_sales = platform_no_sales_items(plan)
+        _srows = [row for row in _srows
+                  if str(row.get("taobao_item_id") or "") in qualified]
+        _drows = [row for row in _drows
+                  if str(row.get("taobao_item_id") or "") in qualified | no_sales]
+        sstats["platform_preflight_scope_items"] = sorted(qualified)
+        sstats["platform_preflight_scope_rows"] = len(_srows)
+        dstats["platform_preflight_scope_items"] = sorted(qualified | no_sales)
+        dstats["platform_preflight_scope_rows"] = len(_drows)
     nosales = sorted(no_sales_service.get_no_sales(db))
     holds = price_hold_items(db, plan)
     coupon_holds = []
@@ -1591,7 +1627,7 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
         }
     qualified_scope = platform_qualified_items(plan)
     no_sales_scope = platform_no_sales_items(plan)
-    if qualified_scope or no_sales_scope:
+    if platform_scope_present(plan):
         allowed = qualified_scope | no_sales_scope
         rows = [
             row for row in rows
@@ -1918,7 +1954,7 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "stats": stats,
         })
     qualified_scope = platform_qualified_items(plan)
-    if qualified_scope:
+    if platform_scope_present(plan):
         rows = [
             row for row in rows
             if str(row.get("taobao_item_id") or "") in qualified_scope

@@ -249,6 +249,29 @@ def test_super_qualification_fetches_missing_feedback_and_keeps_mixed_failure_ha
     assert ns.get_no_sales(db_session) == {"1000009221"}
 
 
+def test_preflight_uses_qualified_scope_and_does_not_require_campaign_floor_for_fallback(
+        db_session):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQUAL8", "PPSQUAL801", "1000009231", "72931", daily=1400, big=950)
+    _mk(db_session, "PPSQUAL9", "PPSQUAL901", "1000009232", "72932", daily=1500, big=1000)
+    _mk(db_session, "PPSQUALA", "PPSQUALA01", "1000009233", "72933", daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [("1000009231", "72931", 2000, 980)])
+    ns.add_no_sales(db_session, ["1000009232"])
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009231"})
+    cs._set_plan_item_marker(plan, "platform_no_sales_items", {"1000009232"})
+    cs._set_plan_item_marker(plan, "platform_hard_failed_items", {"1000009233"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009231"})
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in cs.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "pass"
+    assert checks["R17"]["checked"] == 1
+    assert cs.platform_scope_present(plan) is True
+    assert cs.platform_hard_failed_items(plan) == {"1000009233"}
+
+
 def test_platform_qualification_preserves_existing_placeholder_protection_price(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
