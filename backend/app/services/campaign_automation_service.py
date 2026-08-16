@@ -11,7 +11,7 @@ import re
 from datetime import datetime, timedelta
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.campaign import CampaignCalendar, CampaignPlan
@@ -193,8 +193,15 @@ def run_auto_execute(db: Session) -> dict:
     horizon = now + timedelta(days=AUTO_EXECUTION_HORIZON_DAYS)
     plans = db.execute(select(CampaignPlan).where(
         CampaignPlan.status.in_(("draft", "precheck", "discount_pushed")),
-        CampaignPlan.start_at > now,
-        CampaignPlan.start_at <= horizon,
+        or_(
+            and_(CampaignPlan.start_at > now, CampaignPlan.start_at <= horizon),
+            and_(
+                CampaignPlan.campaign_type == "super_reduce",
+                CampaignPlan.status == "discount_pushed",
+                CampaignPlan.start_at <= now,
+                CampaignPlan.end_at >= now,
+            ),
+        ),
     ).order_by(CampaignPlan.start_at)).scalars().all()
     processed = succeeded = failed = held = 0
     details: list[dict] = []
@@ -299,6 +306,23 @@ def run_auto_execute(db: Session) -> dict:
                 details.append({"plan_id": plan.id, "ok": False, "step": "discount",
                                 "notification": notice})
                 continue
+
+        # The Super Reduce page is one long-running activity and its upload has
+        # no effective-time field.  Keep the already-verified single-item
+        # discount scheduled, but do not publish the official 10% before the
+        # plan starts.  The query above deliberately picks it again once the
+        # start time arrives.
+        if (str(getattr(plan, "campaign_type", "")) == "super_reduce"
+                and plan.start_at and now < plan.start_at):
+            held += 1
+            details.append({
+                "plan_id": plan.id,
+                "ok": True,
+                "step": "waiting_super_reduce_start_at",
+                "start_at": plan.start_at.isoformat(sep=" "),
+                "status": plan.status,
+            })
+            continue
 
         signup = campaign_service.push_signup(
             db, plan, execution_source="campaign_automation")

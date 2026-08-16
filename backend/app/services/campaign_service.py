@@ -5,7 +5,7 @@
 - build_signup_rows   报名行 builder: 报名价=日常价 / 占位=min(现行, floor(线/(1−lev))) (spec §二.1, R3/R4)
 - build_discount_rows 单品立减 builder: spec §二 立减公式逐字 (官方立减向上取整到元 R9 /
                       ERP目标+已授权微调 / 无动销=日常−(中促+1) / 10% ceil 留开关)
-- preflight           平台规则库 R1~R16 静态可查项逐条输出 (spec §三)
+- preflight           平台规则库 R0~R19 静态可查项逐条输出 (spec §三)
 - push_discount/push_signup  推送编排 (复用 web_agent_service upload_file→wait_job,
                       与 activity_upload_service 同模式)
 - target_prices       核对器用的逐 skuId 目标到手 (campaign_recon_service 消费)
@@ -21,6 +21,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from datetime import datetime
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Optional
 
@@ -1078,6 +1079,102 @@ def _check_official_scope(db: Session, plan) -> dict:
     }
 
 
+def _check_super_reduce_publish_window(
+        plan, *, now: Optional[datetime] = None, enforce: bool = False) -> dict:
+    """R18: the long-running Super Reduce page publishes immediately."""
+    if str(getattr(plan, "campaign_type", "")) != "super_reduce":
+        return {
+            "rule": "R18", "level": "pass",
+            "title": "长期超级立减只允许在计划开始时间后正式发布",
+            "items": [],
+        }
+    start_at = getattr(plan, "start_at", None)
+    current = now or datetime.now(tz=getattr(start_at, "tzinfo", None))
+    errors = []
+    if start_at is None:
+        errors.append({"check": "missing_plan_start_at"})
+    elif current < start_at:
+        errors.append({
+            "check": "super_reduce_publish_is_immediate",
+            "now": current.isoformat(sep=" ", timespec="seconds"),
+            "start_at": start_at.isoformat(sep=" ", timespec="seconds"),
+        })
+    return {
+        "rule": "R18", "level": ("error" if enforce else "warn") if errors else "pass",
+        "title": "长期超级立减无预约发布能力：官方立减不得早于配套单品立减生效",
+        "items": errors,
+    }
+
+
+def _check_super_reduce_discount_coverage(
+        db: Session, plan, signup_rows: list[dict], discount_rows: list[dict]) -> dict:
+    """R19: every official-Super-Reduce real SKU must land on the ERP target."""
+    if str(getattr(plan, "campaign_type", "")) != "super_reduce":
+        return {
+            "rule": "R19", "level": "pass",
+            "title": "超级立减官方范围与单品立减逐SKU完整配对",
+            "items": [],
+        }
+    qualified = platform_qualified_items(plan)
+    signup_by_sid = {
+        str(row.get("taobao_sku_id") or ""): row
+        for row in signup_rows
+        if not row.get("is_placeholder")
+        and (not qualified or str(row.get("taobao_item_id") or "") in qualified)
+    }
+    discount_sids = {
+        str(row.get("taobao_sku_id") or "") for row in discount_rows
+    }
+    pair_by_sid: dict[str, tuple] = {}
+    for sku, promo in _mapped_pairs(db):
+        for sku_id in _expand_sku_ids(promo):
+            pair_by_sid[str(sku_id)] = (sku, promo)
+    problems: list[dict] = []
+    lev = TIER_LEVERAGE["mid"]
+    ceil_on = official_ceil_enabled(db)
+    for sku_id, row in sorted(signup_by_sid.items()):
+        pair = pair_by_sid.get(sku_id)
+        signup_price = _d(row.get("price"))
+        target = mid_buyer_inplace(pair[1]) if pair else None
+        if signup_price is None or target is None:
+            problems.append({
+                "taobao_item_id": row.get("taobao_item_id"),
+                "taobao_sku_id": sku_id,
+                "sku_code": row.get("sku_code"),
+                "check": "missing_signup_price_or_target",
+            })
+            continue
+        low_price_exact = signup_price < Decimal("100")
+        official = official_deduction(
+            signup_price, lev, ceil_on and not low_price_exact)
+        after_official = (signup_price - official).quantize(_CENT)
+        if target > after_official + Decimal("0.005"):
+            problems.append({
+                "taobao_item_id": row.get("taobao_item_id"),
+                "taobao_sku_id": sku_id,
+                "sku_code": row.get("sku_code"),
+                "check": "official_discount_already_below_erp_target",
+                "after_official": float(after_official),
+                "erp_target": float(target),
+            })
+        elif target < after_official - Decimal("0.005") and sku_id not in discount_sids:
+            problems.append({
+                "taobao_item_id": row.get("taobao_item_id"),
+                "taobao_sku_id": sku_id,
+                "sku_code": row.get("sku_code"),
+                "check": "missing_paired_single_item_discount",
+                "required_deduct": float((after_official - target).quantize(_CENT)),
+                "after_official": float(after_official),
+                "erp_target": float(target),
+            })
+    return {
+        "rule": "R19", "level": "error" if problems else "pass",
+        "title": "超级立减逐SKU配对：官方10%与同期单品立减必须共同精确落到ERP目标",
+        "items": problems[:500],
+        "checked": len(signup_by_sid),
+    }
+
+
 def _check_placeholder_live_prices(signup_stats: dict) -> dict:
     missing = signup_stats.get("placeholder_missing_live_price") or []
     blocked = signup_stats.get("placeholder_price_blocked_items") or []
@@ -1200,7 +1297,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
 
 
 def preflight(db: Session, plan) -> list[dict]:
-    """R0~R17 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
+    """R0~R19 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
     from app.services import no_sales_service
     from app.services import campaign_price_protection_service
 
@@ -1252,6 +1349,8 @@ def preflight(db: Session, plan) -> list[dict]:
         _check_official_scope(db, plan),
         _check_placeholder_live_prices(sstats),
         _check_price_floor_evidence(db, plan, _srows),
+        _check_super_reduce_publish_window(plan),
+        _check_super_reduce_discount_coverage(db, plan, _srows, _drows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -1969,6 +2068,142 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
     return {"ok": True, "rows": live_rows, "floor_refresh": refresh}
 
 
+def repair_super_reduce_early_activation(
+        db: Session, plan, item_ids: list[str], *, phase: str = "stage",
+        execution_source: str | None = None) -> dict:
+    """Withdraw exact prematurely-active items with three independent proofs.
+
+    Proof 1 is a fresh activity export, proof 2 is Web-Agent exact-row stage/
+    post-click readback, and proof 3 is another fresh export.  The function is
+    deliberately separate from normal signup so it cannot broaden its target
+    from the current activity contents.
+    """
+    from app.services import campaign_recon_service, web_agent_service
+
+    if execution_source != "campaign_automation_repair":
+        return {
+            "ok": False,
+            "step": "execution_policy_guard",
+            "error": "超级立减纠正只允许 ERP 活动程序执行",
+        }
+    if str(getattr(plan, "campaign_type", "")) != "super_reduce":
+        return {"ok": False, "step": "plan_guard", "error": "仅支持超级立减计划"}
+    if phase not in ("stage", "commit"):
+        return {"ok": False, "step": "args", "error": "phase must be stage or commit"}
+    targets = sorted({str(value or "").strip() for value in (item_ids or [])})
+    if not targets or len(targets) > 100 or any(not value.isdigit() for value in targets):
+        return {"ok": False, "step": "args", "error": "必须提供1至100个精确数字商品ID"}
+
+    before = refresh_floor_evidence_from_current_activity(db, plan)
+    if not before.get("ok"):
+        return {"ok": False, "step": "before_export", "error": before.get("error")}
+    rows = before["rows"]
+    visible_items = {str(row.get("item_id") or "") for row in rows}
+    missing = sorted(set(targets) - visible_items)
+    if missing:
+        return {
+            "ok": False,
+            "step": "before_scope_guard",
+            "error": "纠正清单中有商品未出现在最新超级立减导出",
+            "missing_items": missing,
+        }
+    active_statuses = set(campaign_recon_service.ACTIVITY_IN_CAMPAIGN_STATUSES)
+    active_targets = sorted({
+        str(row.get("item_id") or "") for row in rows
+        if str(row.get("item_id") or "") in targets
+        and row.get("status") in active_statuses
+    })
+    before_states = {
+        item_id: sorted({
+            str(row.get("status") or "") for row in rows
+            if str(row.get("item_id") or "") == item_id
+        })
+        for item_id in targets
+    }
+    if not active_targets:
+        return {
+            "ok": True, "no_change": True, "phase": phase,
+            "proof_1_before_export": before_states,
+            "message": "指定商品均已不在活动中",
+        }
+
+    staged = web_agent_service.withdraw_super_reduce_items(
+        db, active_targets, phase="stage")
+    if not staged.get("ok"):
+        return {
+            "ok": False, "step": "exact_row_stage",
+            "error": staged.get("error") or "精确商品行预演失败",
+            "proof_1_before_export": before_states,
+            "stage": staged,
+        }
+    staged_ids = sorted({
+        str(row.get("item_id") or "")
+        for row in staged.get("item_results") or []
+        if row.get("result") == "ready"
+    })
+    if staged_ids != active_targets:
+        return {
+            "ok": False, "step": "exact_row_stage_guard",
+            "error": "Web-Agent预演清单或在场状态与最新导出不一致",
+            "expected_active_items": active_targets,
+            "staged_ready_items": staged_ids,
+            "stage": staged,
+        }
+    if phase == "stage":
+        return {
+            "ok": True, "phase": "stage", "ready": True,
+            "target_item_ids": targets,
+            "active_target_item_ids": active_targets,
+            "proof_1_before_export": before_states,
+            "proof_2_exact_row_stage": staged.get("item_results") or [],
+        }
+
+    committed = web_agent_service.withdraw_super_reduce_items(
+        db, active_targets, phase="commit")
+    if not committed.get("ok"):
+        return {
+            "ok": False, "step": "exact_row_commit",
+            "error": committed.get("error") or "精确商品撤出失败",
+            "proof_1_before_export": before_states,
+            "proof_2_exact_row_stage": staged.get("item_results") or [],
+            "commit": committed,
+        }
+    after = refresh_floor_evidence_from_current_activity(db, plan)
+    if not after.get("ok"):
+        return {
+            "ok": False, "step": "after_export",
+            "error": after.get("error") or "撤出后无法取得新导出",
+            "commit": committed,
+        }
+    remaining_active = sorted({
+        str(row.get("item_id") or "") for row in after["rows"]
+        if str(row.get("item_id") or "") in active_targets
+        and row.get("status") in active_statuses
+    })
+    if remaining_active:
+        return {
+            "ok": False, "step": "after_export_guard",
+            "error": "撤出后最新导出仍有目标商品处于活动中",
+            "remaining_active_items": remaining_active,
+            "commit": committed,
+        }
+
+    plan.status = "discount_pushed"
+    marker = "super_reduce_early_activation_withdrawn=" + ",".join(active_targets)
+    if marker not in str(getattr(plan, "remark", "") or ""):
+        plan.remark = f"{getattr(plan, 'remark', '') or ''}; {marker}".strip("; ")
+    db.commit()
+    return {
+        "ok": True, "phase": "commit", "submitted": True,
+        "target_item_ids": targets,
+        "withdrawn_item_ids": active_targets,
+        "proof_1_before_export": before_states,
+        "proof_2_exact_row_commit": committed.get("item_results") or [],
+        "proof_3_remaining_active_items": remaining_active,
+        "plan_status": plan.status,
+    }
+
+
 def push_signup(db: Session, plan, *, execution_source: str | None = None) -> dict:
     """推大促报名 (channel promo_signup)。R12: 报名导入即报名成功 (stage 即生效, 无 commit 步)。
     只允许活动自动化程序调用；失败记录事实并停在 alarmed，绝不自动改价或重试。"""
@@ -2002,6 +2237,14 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "automatic_retry": False,
             "ai_may_adjust_or_resubmit": False,
         }
+
+    publish_window = _check_super_reduce_publish_window(plan, enforce=True)
+    if publish_window["level"] == "error":
+        return _stop_signup(db, plan, {
+            "step": "super_reduce_publish_window_guard",
+            "error": "长期超级立减发布后立即生效，当前早于计划开始时间；已拒绝提前发布",
+            "check": publish_window,
+        })
 
     # Read-only current-state export is performed before the final preflight.  Its
     # H/I columns refresh floor evidence; it never changes platform state.
@@ -2041,6 +2284,26 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         ]
         stats["platform_qualified_items"] = sorted(qualified_scope)
         stats["platform_qualified_rows"] = len(rows)
+
+    super_reduce = str(getattr(plan, "campaign_type", "")) == "super_reduce"
+    if super_reduce:
+        from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
+
+        expected_items = {str(row.get("taobao_item_id") or "") for row in rows}
+        unexpected_active_items = sorted({
+            str(row.get("item_id") or "") for row in live_rows
+            if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
+            and str(row.get("item_id") or "") not in expected_items
+        } - {""})
+        if unexpected_active_items:
+            return _stop_signup(db, plan, {
+                "step": "super_reduce_unexpected_active_scope_guard",
+                "error": (
+                    "长期超级立减仍有本计划范围外商品处于生效状态；"
+                    "必须先精确撤出或纳入完整价格校验"
+                ),
+                "unexpected_active_items": unexpected_active_items,
+            })
     stats["policy_version"] = policy.get("version")
     stats["policy_sha256"] = policy.get("_sha256")
     stats["price_floor_refresh"] = floor_refresh
@@ -2122,7 +2385,6 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         return {"ok": True, "no_change": True, "stats": stats,
                 "message": "当前活动中所有目标商品已发布且价格一致，无需重复导入"}
 
-    super_reduce = str(getattr(plan, "campaign_type", "")) == "super_reduce"
     channel = "super_reduce" if super_reduce else "promo_signup"
     phase = "commit" if super_reduce else "stage"
     upload_xlsx = (_build_super_signup_xlsx(pending) if super_reduce

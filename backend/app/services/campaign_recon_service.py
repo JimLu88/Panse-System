@@ -373,6 +373,8 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     floor_evidence = None
     ignored_out_of_scope_records = 0
     ignored_out_of_scope_items: list[str] = []
+    unexpected_active_records = 0
+    unexpected_active_items: list[str] = []
     if activity_bytes:
         records = parse_activity_items_export(
             activity_bytes,
@@ -403,9 +405,22 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
                 rec for rec in records
                 if str(rec.get("item_id") or "") not in expected_items
             ]
-            ignored_out_of_scope_records = len(ignored)
+            unexpected_active = [
+                rec for rec in ignored
+                if rec.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
+            ]
+            safe_historical = [
+                rec for rec in ignored
+                if rec.get("status") not in ACTIVITY_IN_CAMPAIGN_STATUSES
+            ]
+            unexpected_active_records = len(unexpected_active)
+            unexpected_active_items = sorted({
+                str(rec.get("item_id") or "") for rec in unexpected_active
+                if str(rec.get("item_id") or "")
+            })
+            ignored_out_of_scope_records = len(safe_historical)
             ignored_out_of_scope_items = sorted({
-                str(rec.get("item_id") or "") for rec in ignored
+                str(rec.get("item_id") or "") for rec in safe_historical
                 if str(rec.get("item_id") or "")
             })
         per_sku = compare_records(scoped_records, spec_map)
@@ -424,6 +439,18 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     summary = _summarize(per_sku, coverage, discount_mismatch, title_ok)
     summary["ignored_out_of_scope_records"] = ignored_out_of_scope_records
     summary["ignored_out_of_scope_items"] = ignored_out_of_scope_items
+    summary["unexpected_active_records"] = unexpected_active_records
+    summary["unexpected_active_items"] = unexpected_active_items
+    if unexpected_active_items:
+        summary["hard_error_count"] += len(unexpected_active_items)
+        summary["alarm"] = summary["hard_error_count"]
+        alarms.extend({
+            "item_id": item_id,
+            "sku_id": f"范围外生效商品 {item_id}",
+            "actual": "活动中",
+            "target": "应撤出或纳入本计划完整校验",
+            "diff": None,
+        } for item_id in unexpected_active_items)
     summary["product_rows_parsed"] = len(product_rows)
     summary["price_floor_evidence"] = floor_evidence
     report = CampaignReconReport(plan_id=plan.id, source=source, summary=summary,

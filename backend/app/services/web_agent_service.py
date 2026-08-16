@@ -273,6 +273,35 @@ def super_reduce_feedback(db: Session, *, timeout_s: int = 200) -> dict:
             "screenshot_base64": res.get("screenshot_base64")}
 
 
+def withdraw_super_reduce_items(db: Session, item_ids: list[str], *,
+                                phase: str = "stage", timeout_s: int = 900) -> dict:
+    """Exact row-scoped withdrawal from the long-running Super Reduce activity."""
+    if phase not in ("stage", "commit"):
+        return {"ok": False, "error": "phase must be stage or commit"}
+    targets = sorted({str(value or "").strip() for value in (item_ids or [])})
+    if not targets or any(not value.isdigit() for value in targets):
+        return {"ok": False, "error": "numeric item_ids required"}
+    job = _post(
+        db,
+        "/api/super-reduce/withdraw-items",
+        {"phase": phase, "item_ids": targets},
+        timeout=30,
+    )
+    if not job.get("ok") or not job.get("job"):
+        return {"ok": False, "error": job.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, job["job"], timeout_s=timeout_s)
+    result = final.get("result") or {}
+    if not result.get("ok"):
+        return {
+            "ok": False,
+            "step": result.get("step"),
+            "error": result.get("error") or result.get("message") or "超级立减撤出失败",
+            "item_results": result.get("item_results") or [],
+            "screenshot_base64": result.get("screenshot_base64"),
+        }
+    return result
+
+
 def campaign_feedback(db: Session, campaign_title: str, *, campaign_id: str,
                       united_activity_id: str, timeout_s: int = 240) -> dict:
     """Read the latest failed-item feedback for one immutable campaign identity."""

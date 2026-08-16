@@ -141,6 +141,63 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     ]
 
 
+def test_auto_execute_defers_long_running_super_reduce_until_exact_start(
+        db_session, monkeypatch):
+    from app.services import campaign_automation_service as automation
+    from app.services import campaign_service, settings_service
+
+    now = datetime.now()
+    plan = CampaignPlan(
+        name="未来超级立减", campaign_type="super_reduce", tier="mid",
+        start_at=now + timedelta(days=3), end_at=now + timedelta(days=7),
+        status="discount_pushed",
+    )
+    db_session.add(plan)
+    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
+    db_session.commit()
+    calls = []
+    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
+    monkeypatch.setattr(
+        campaign_service, "push_signup",
+        lambda *args, **kwargs: calls.append("signup") or {"ok": True})
+
+    result = automation.run_auto_execute(db_session)
+
+    assert result["processed"] == 1
+    assert result["held"] == 1
+    assert result["details"][0]["step"] == "waiting_super_reduce_start_at"
+    assert calls == []
+    assert plan.status == "discount_pushed"
+
+
+def test_auto_execute_picks_deferred_super_reduce_once_start_arrives(
+        db_session, monkeypatch):
+    from app.services import campaign_automation_service as automation
+    from app.services import campaign_service, settings_service
+
+    now = datetime.now()
+    plan = CampaignPlan(
+        name="已到点超级立减", campaign_type="super_reduce", tier="mid",
+        start_at=now - timedelta(minutes=1), end_at=now + timedelta(days=4),
+        status="discount_pushed",
+    )
+    db_session.add(plan)
+    settings_service.set_value(db_session, "campaign_auto_enabled", "true")
+    db_session.commit()
+    calls = []
+    monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
+    monkeypatch.setattr(
+        campaign_service, "push_signup",
+        lambda db, plan, *, execution_source: calls.append(execution_source)
+        or {"ok": True})
+
+    result = automation.run_auto_execute(db_session)
+
+    assert result["processed"] == 1
+    assert result["succeeded"] == 1
+    assert calls == ["campaign_automation"]
+
+
 def test_discovery_unknown_date_actionable_reminds_once_and_ended_is_ignored(
         db_session, monkeypatch):
     """全体日期没解析出来时只发一条合并诊断；已结束阶段不误提醒。"""

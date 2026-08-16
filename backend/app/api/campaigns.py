@@ -7,7 +7,7 @@ POST   /api/campaigns/no-sales-group/notify  无动销名单推飞书 (spec §�
 GET    /api/campaigns/{id}                计划详情
 PUT    /api/campaigns/{id}                改计划
 DELETE /api/campaigns/{id}                删计划 (admin)
-POST   /api/campaigns/{id}/precheck       R0~R17 预检
+POST   /api/campaigns/{id}/precheck       R0~R19 预检
 GET    /api/campaigns/{id}/rows           行预览 (kind=signup|discount)
 POST   /api/campaigns/{id}/push-discount  推单品立减 (phase=stage|commit, admin)
 POST   /api/campaigns/{id}/push-signup    已禁用 (仅自动报名程序内部可执行)
@@ -55,6 +55,11 @@ class CampaignPlanUpdate(BaseModel):
     price_protection_days: Optional[int] = None
     price_protection_rule_url: Optional[str] = None
     remark: Optional[str] = None
+
+
+class SuperReduceRepairIn(BaseModel):
+    item_ids: list[str]
+    phase: str = "stage"
 
 
 def _plan_out(p: CampaignPlan) -> dict:
@@ -292,6 +297,24 @@ def push_signup(plan_id: int, db: Session = Depends(get_db),
         409,
         "活动报名只由 ERP 自动报名程序执行；页面或 AI 直推已禁用。错误先报告并等待用户决定。",
     )
+
+
+@router.post("/{plan_id}/repair-super-reduce-activation")
+def repair_super_reduce_activation(
+        plan_id: int, payload: SuperReduceRepairIn,
+        db: Session = Depends(get_db), _: User = Depends(require_role("admin"))):
+    """User-authorized correction through the ERP campaign program."""
+    plan = _get_plan(db, plan_id)
+    result = campaign_service.repair_super_reduce_early_activation(
+        db,
+        plan,
+        payload.item_ids,
+        phase=payload.phase,
+        execution_source="campaign_automation_repair",
+    )
+    if not result.get("ok"):
+        raise HTTPException(422, detail=result)
+    return result
 
 
 @router.post("/{plan_id}/recon")

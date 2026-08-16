@@ -739,7 +739,7 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r0_to_r17(db_session):
+def test_preflight_outputs_r0_to_r19(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
@@ -757,7 +757,7 @@ def test_preflight_outputs_r0_to_r17(db_session):
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(0, 18)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(0, 20)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
@@ -1005,7 +1005,7 @@ def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
 
 def test_super_reduce_signup_uses_dedicated_commit_channel(db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
-    _mk(db_session, "PPSQS001", "PPSQS00101", "9504", "75031", daily=1500)
+    _mk(db_session, "PPSQS001", "PPSQS00101", "9504", "75031", daily=1500, big=1000)
     db_session.commit()
     _seed_platform_floors(db_session, [("9504", "75031", 2000, 1400)])
     calls = []
@@ -1018,6 +1018,133 @@ def test_super_reduce_signup_uses_dedicated_commit_channel(db_session, monkeypat
     assert plan.status == "signup_pushed"
     assert calls[0]["channel"] == "super_reduce"
     assert calls[0]["phase"] == "commit"
+
+
+def test_super_reduce_publish_window_blocks_early_immediate_activation(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.start_at = datetime.now() + timedelta(days=3)
+    plan.end_at = plan.start_at + timedelta(days=4)
+    _mk(db_session, "PPSQTIME1", "PPSQTIME101", "9505", "75041",
+        daily=1500, big=1000)
+    db_session.commit()
+    calls = []
+    _mock_wa(monkeypatch, calls)
+    monkeypatch.setattr(
+        __import__("app.services.campaign_notification_service", fromlist=["broadcast_text"]),
+        "broadcast_text", lambda *args, **kwargs: {})
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is False
+    assert result["step"] == "super_reduce_publish_window_guard"
+
+
+def test_super_reduce_publish_window_is_warning_during_general_preflight(db_session):
+    plan = _plan(db_session, "super_reduce")
+    plan.start_at = datetime.now() + timedelta(days=1)
+
+    check = cs._check_super_reduce_publish_window(plan)
+
+    assert check["rule"] == "R18"
+    assert check["level"] == "warn"
+
+
+def test_super_reduce_pairing_uses_actual_signup_price_for_official_discount(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQACTUAL", "PPSQACTUAL01", "1001", "2001",
+        daily=40, big="29.12621359")
+    db_session.commit()
+    monkeypatch.setattr(cs, "platform_qualified_items", lambda _plan: {"1001"})
+    monkeypatch.setattr(cs, "official_ceil_enabled", lambda _db: False)
+
+    check = cs._check_super_reduce_discount_coverage(
+        db_session, plan,
+        [{
+            "taobao_item_id": "1001",
+            "taobao_sku_id": "2001",
+            "sku_code": "SAMPLE",
+            "price": 30,
+            "is_placeholder": False,
+        }],
+        [],
+    )
+
+    assert check["level"] == "error"
+    assert check["items"][0]["check"] == "official_discount_already_below_erp_target"
+    assert check["items"][0]["after_official"] == 27.0
+
+
+def test_super_reduce_pairing_gate_blocks_missing_and_incompatible_skus(db_session):
+    plan = _plan(db_session, "super_reduce")
+    _mk(db_session, "PPSQPAIR1", "PPSQPAIR101", "9510", "75101",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQPAIR2", "PPSQPAIR201", "9511", "75102",
+        daily=30, big=30)
+    db_session.commit()
+
+    signup_rows, _ = cs.build_signup_rows(db_session, plan)
+    discount_rows, _ = cs.build_discount_rows(db_session, plan)
+    discount_rows = [row for row in discount_rows if row["taobao_sku_id"] != "75101"]
+    check = cs._check_super_reduce_discount_coverage(
+        db_session, plan, signup_rows, discount_rows)
+
+    assert check["level"] == "error"
+    assert {row["check"] for row in check["items"]} == {
+        "missing_paired_single_item_discount",
+        "official_discount_already_below_erp_target",
+    }
+
+
+def test_super_reduce_early_activation_repair_requires_three_proofs(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    target = "840659847455"
+    exports = iter([
+        {"ok": True, "rows": [{"item_id": target, "status": "活动中"}]},
+        {"ok": True, "rows": [{"item_id": target, "status": "暂停"}]},
+    ])
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity",
+                        lambda *args, **kwargs: next(exports))
+    from app.services import web_agent_service
+    calls = []
+
+    def withdraw(db, item_ids, *, phase):
+        calls.append((phase, item_ids))
+        return {
+            "ok": True,
+            "item_results": [{
+                "item_id": target,
+                "result": "ready" if phase == "stage" else "withdrawn",
+            }],
+        }
+
+    monkeypatch.setattr(web_agent_service, "withdraw_super_reduce_items", withdraw)
+
+    result = cs.repair_super_reduce_early_activation(
+        db_session,
+        plan,
+        [target],
+        phase="commit",
+        execution_source="campaign_automation_repair",
+    )
+
+    assert result["ok"] is True
+    assert result["proof_3_remaining_active_items"] == []
+    assert calls == [("stage", [target]), ("commit", [target])]
+    assert plan.status == "discount_pushed"
+
+
+def test_super_reduce_early_activation_repair_rejects_non_program_call(db_session):
+    plan = _plan(db_session, "super_reduce")
+
+    result = cs.repair_super_reduce_early_activation(
+        db_session, plan, ["840659847455"], phase="commit")
+
+    assert result["ok"] is False
+    assert result["step"] == "execution_policy_guard"
 
 
 def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeypatch):

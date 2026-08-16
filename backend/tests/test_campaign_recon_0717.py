@@ -203,7 +203,7 @@ def test_reconcile_clean_run_marks_reconciled(db_session, monkeypatch):
     assert result["summary"]["coverage_missing"] == []
 
 
-def test_reconcile_ignores_historical_items_outside_platform_scope(
+def test_reconcile_alarms_active_items_outside_platform_scope(
         db_session, monkeypatch):
     plan = _plan(db_session, title="88VIP周期购活动")
     _mk(db_session, "PPSRSC01", "PPSRSC0101", "1000009612", "82012",
@@ -227,12 +227,42 @@ def test_reconcile_ignores_historical_items_outside_platform_scope(
 
     result = crs.reconcile(db_session, plan, activity_bytes=activity)
 
-    assert result["verified"] is True, result["summary"]
-    assert result["alarm_count"] == 0
+    assert result["verified"] is False, result["summary"]
+    assert result["alarm_count"] == 1
     assert [row["sku_id"] for row in result["rows"]] == ["82012"]
-    assert result["summary"]["ignored_out_of_scope_records"] == 1
-    assert result["summary"]["ignored_out_of_scope_items"] == ["1000009698"]
-    assert called == []
+    assert result["summary"]["ignored_out_of_scope_records"] == 0
+    assert result["summary"]["unexpected_active_records"] == 1
+    assert result["summary"]["unexpected_active_items"] == ["1000009698"]
+    assert plan.status == "alarmed"
+    assert len(called) == 1
+
+
+def test_super_reconcile_keeps_only_paused_out_of_scope_history_informational(
+        db_session, monkeypatch):
+    plan = _plan(db_session, title="超级立减长期活动")
+    plan.campaign_type = "super_reduce"
+    plan.tier = "mid"
+    _mk(db_session, "PPSRSP01", "PPSRSP0101", "1000009613", "82013",
+        daily=1200, big=800)
+    _mk(db_session, "PPSRSP02", "PPSRSP0201", "1000009699", "82999",
+        daily=1300, big=900)
+    db_session.commit()
+    cs._set_plan_item_marker(plan, "platform_qualified_items", {"1000009613"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009613"})
+    db_session.commit()
+    monkeypatch.setattr(
+        __import__("app.services.notify_service", fromlist=["broadcast_text"]),
+        "broadcast_text", lambda *args, **kwargs: {})
+
+    activity = _xlsx([
+        _act_row("1000009613", "82013", 824.0, act_price=1200.0),
+        _act_row("1000009699", "82999", None, act_price=1300.0, status="暂停"),
+    ])
+    result = crs.reconcile(db_session, plan, activity_bytes=activity)
+
+    assert result["alarm_count"] == 0
+    assert result["summary"]["unexpected_active_items"] == []
+    assert result["summary"]["ignored_out_of_scope_items"] == ["1000009699"]
 
 
 def test_super_reconcile_treats_future_paused_rows_as_pending_not_missing(
