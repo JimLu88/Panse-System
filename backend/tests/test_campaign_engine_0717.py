@@ -1147,6 +1147,35 @@ def test_super_reduce_early_activation_repair_rejects_non_program_call(db_sessio
     assert result["step"] == "execution_policy_guard"
 
 
+def test_super_reduce_repair_commit_normalizes_plan_when_platform_is_already_clear(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.status = "signup_pushed"
+    target = "840659847455"
+    monkeypatch.setattr(
+        cs,
+        "refresh_floor_evidence_from_current_activity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "rows": [{"item_id": target, "status": "暂停"}],
+        },
+    )
+
+    result = cs.repair_super_reduce_early_activation(
+        db_session,
+        plan,
+        [target],
+        phase="commit",
+        execution_source="campaign_automation_repair",
+    )
+
+    assert result["ok"] is True
+    assert result["no_change"] is True
+    assert result["plan_status"] == "discount_pushed"
+    assert plan.status == "discount_pushed"
+    assert "super_reduce_early_activation_already_clear=840659847455" in plan.remark
+
+
 def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeypatch):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSQZ001", "PPSQZ00101", "9503", "75021",

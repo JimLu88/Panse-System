@@ -2121,10 +2121,19 @@ def repair_super_reduce_early_activation(
         for item_id in targets
     }
     if not active_targets:
+        if phase == "commit":
+            plan.status = "discount_pushed"
+            marker = "super_reduce_early_activation_already_clear=" + ",".join(targets)
+            if marker not in str(getattr(plan, "remark", "") or ""):
+                plan.remark = (
+                    f"{getattr(plan, 'remark', '') or ''}; {marker}"
+                ).strip("; ")
+            db.commit()
         return {
             "ok": True, "no_change": True, "phase": phase,
             "proof_1_before_export": before_states,
             "message": "指定商品均已不在活动中",
+            "plan_status": getattr(plan, "status", None),
         }
 
     staged = web_agent_service.withdraw_super_reduce_items(
