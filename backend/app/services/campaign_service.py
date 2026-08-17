@@ -1514,6 +1514,75 @@ def _plan_single_discount_activity_ids(plan) -> dict[str, str]:
     }
 
 
+def _set_plan_single_discount_activity_ids(plan, mapping: dict[str, str]) -> None:
+    """Idempotently persist exact item-to-discount-activity bindings."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = r"(?:^|[;\n；])\s*single_discount_activity_ids\s*=\s*[^;\n；]*"
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    value = ",".join(
+        f"{item_id}:{mapping[item_id]}" for item_id in sorted(mapping)
+    )
+    plan.remark = (
+        f"{text}; single_discount_activity_ids={value}"
+        if text else f"single_discount_activity_ids={value}"
+    )
+
+
+def _single_discount_existing_activity_conflicts(
+        result: dict, by_item: dict[str, list[dict]],
+        known_activity_ids: set[str]) -> dict[str, str]:
+    """Return complete item bindings proven by the platform failure workbook.
+
+    A binding is accepted only when every expected SKU of that item failed with
+    the same "already joined" activity ID and that activity ID is already known
+    to belong to this exact-period plan.  Partial/mixed/unknown evidence stops.
+    """
+    import re
+
+    if result.get("submitted"):
+        return {}
+    final_import = result.get("final_import")
+    if not isinstance(final_import, dict):
+        return {}
+    failed_rows = final_import.get("failed_rows")
+    if not isinstance(failed_rows, list) or not failed_rows:
+        return {}
+    if final_import.get("failed") != len(failed_rows):
+        return {}
+
+    grouped: dict[str, list[dict]] = defaultdict(list)
+    bindings: dict[str, str] = {}
+    pattern = re.compile(r"已经参加了单品立减活动\s*[，,]?\s*id\s*[：:]\s*(\d+)")
+    for row in failed_rows:
+        item_id = str((row or {}).get("item_id") or "").strip()
+        sku_id = str((row or {}).get("sku_id") or "").strip()
+        matched = pattern.search(str((row or {}).get("reason") or ""))
+        if item_id not in by_item or not sku_id or not matched:
+            return {}
+        activity_id = matched.group(1)
+        if activity_id not in known_activity_ids:
+            return {}
+        if item_id in bindings and bindings[item_id] != activity_id:
+            return {}
+        bindings[item_id] = activity_id
+        grouped[item_id].append(row)
+
+    for item_id, rows in grouped.items():
+        expected_skus = {
+            str(row.get("taobao_sku_id") or "").strip()
+            for row in by_item[item_id]
+        }
+        failed_skus = {
+            str((row or {}).get("sku_id") or "").strip()
+            for row in rows
+        }
+        if not expected_skus or failed_skus != expected_skus:
+            return {}
+    return bindings
+
+
 def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
                      start_dt: Optional[str], end_dt: Optional[str], *,
                      plan=None, expected_rows: Optional[int] = None,
@@ -1582,6 +1651,8 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
     return {"ok": success, "error": error,
             "job": j["job"], "validation": validation,
             "submitted": res.get("submitted"),
+            "final_import": res.get("final_import"),
+            "final_step_error": res.get("final_step_error"),
             "screenshot_base64": res.get("screenshot_base64")}
 
 
@@ -1834,7 +1905,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
             "wrong_existing_items": wrong_existing, "stats": stats}
 
 
-def push_discount(db: Session, plan, phase: str = "stage") -> dict:
+def push_discount(db: Session, plan, phase: str = "stage", *,
+                  _existing_conflict_retry: bool = False) -> dict:
     """推单品立减 (channel single_item_discount, 带计划档期精确到秒)。
     phase='stage' 挂文件停在提交前; 'commit' ★不可逆★ 真提交 (仅用户确认后调, R12)。"""
     scope_check = _check_official_scope(db, plan)
@@ -1932,6 +2004,22 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
                 )
                 item_results.append({"item_ids": new_item_ids, "mode": "new_batch", **new_result})
                 if not new_result.get("ok"):
+                    discovered = (
+                        _single_discount_existing_activity_conflicts(
+                            new_result, by_item, set(activity_ids.values()))
+                        if phase == "commit" and not _existing_conflict_retry
+                        else {}
+                    )
+                    if discovered:
+                        merged_activity_ids = {**activity_ids, **discovered}
+                        _set_plan_single_discount_activity_ids(
+                            plan, merged_activity_ids)
+                        db.commit()
+                        retry_result = push_discount(
+                            db, plan, phase=phase,
+                            _existing_conflict_retry=True)
+                        retry_result["reconciled_single_discount_activity_ids"] = discovered
+                        return retry_result
                     res = {
                         "ok": False,
                         "step": "single_item_discount_new_batch",

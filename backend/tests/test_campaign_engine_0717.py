@@ -1170,6 +1170,86 @@ def test_rotated_skus_bypass_old_discount_drawer_and_use_new_batch(
     assert result["stats"]["single_discount_rotated_new_batch_items"] == [item_id]
 
 
+def test_new_batch_reconciles_complete_existing_activity_conflicts_once(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    rotated_item = "100000009515"
+    existing_item = "100000009516"
+    plan.remark = (
+        "single_discount_activity_ids=100000009599:142591608100; "
+        f"sku_refresh_items_authorized={rotated_item}; "
+        f"supplement_items_authorized={rotated_item},{existing_item}"
+    )
+    _mk(db_session, "PPSQROT5", "PPSQROT501", rotated_item, "75951",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQEDIT6", "PPSQEDIT601", existing_item, "75961",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        (rotated_item, "75951", 2000, 1030),
+        (existing_item, "75961", 2000, 1133),
+    ])
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append({
+            "campaign_id": kwargs.get("discount_activity_id"),
+            "expected_rows": kwargs.get("expected_rows"),
+        })
+        if len(calls) == 1:
+            return {
+                "ok": False,
+                "submitted": False,
+                "final_import": {
+                    "ok": 1,
+                    "failed": 1,
+                    "failed_rows": [{
+                        "item_id": existing_item,
+                        "sku_id": "75961",
+                        "reason": "已经参加了单品立减活动，id：142591608100",
+                    }],
+                },
+            }
+        return {"ok": True, "submitted": True}
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert result["reconciled_single_discount_activity_ids"] == {
+        existing_item: "142591608100",
+    }
+    assert len(calls) == 3
+    assert calls[1]["campaign_id"] == "142591608100"
+    assert calls[2]["campaign_id"] is None
+    assert cs._plan_single_discount_activity_ids(plan)[existing_item] == "142591608100"
+
+
+def test_existing_activity_conflict_rejects_partial_sku_evidence():
+    item_id = "100000009517"
+    rows = {
+        item_id: [
+            {"taobao_sku_id": "75971"},
+            {"taobao_sku_id": "75972"},
+        ]
+    }
+    result = {
+        "submitted": False,
+        "final_import": {
+            "failed": 1,
+            "failed_rows": [{
+                "item_id": item_id,
+                "sku_id": "75971",
+                "reason": "已经参加了单品立减活动，id：142591608100",
+            }],
+        },
+    }
+
+    assert cs._single_discount_existing_activity_conflicts(
+        result, rows, {"142591608100"}) == {}
+
+
 def test_existing_single_discount_activity_is_modified_one_item_per_job(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
