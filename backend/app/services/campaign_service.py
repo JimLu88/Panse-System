@@ -1660,8 +1660,15 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 or abs(float(current_row["activity_price"]) - float(row["price"])) > 0.005
                 )
             ]
-            if mismatches:
+            if mismatches and item_id not in sku_refresh_scope:
                 wrong_existing.append({"item_id": item_id, "mismatched_skus": mismatches})
+            elif mismatches:
+                # The user-confirmed physical SKU rotation can leave those new
+                # skuIds attached to stale activity prices before the complete
+                # item is re-imported.  Keep the item in the platform probe;
+                # push_signup still performs the exact full-item refresh and
+                # all normal ERP price/pairing gates remain in force.
+                pass
             else:
                 already_correct.add(item_id)
         elif (any(current_row is not None for current_row in seen)

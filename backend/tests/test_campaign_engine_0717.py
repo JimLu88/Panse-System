@@ -274,11 +274,17 @@ def test_platform_qualification_allows_exact_authorized_sku_refresh(
 
     monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *a, **k: {
         "ok": True,
-        "rows": [{
-            "item_id": item_id, "sku_id": "KEEP-SID", "status": "活动中",
-            "activity_price": 397,
-        }],
-        "floor_refresh": {"observed": 1},
+        "rows": [
+            {
+                "item_id": item_id, "sku_id": "NEW-SID", "status": "活动中",
+                "activity_price": 1100,
+            },
+            {
+                "item_id": item_id, "sku_id": "KEEP-SID", "status": "活动中",
+                "activity_price": 397,
+            },
+        ],
+        "floor_refresh": {"observed": 2},
     })
     monkeypatch.setattr(cs, "_upload_and_wait", lambda *a, **k: {
         "ok": True,
