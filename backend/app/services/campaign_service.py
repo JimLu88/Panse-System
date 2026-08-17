@@ -2359,7 +2359,11 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
 
     # 已完成只读导出：整品全部 SKU 已发布且活动价一致才视为正确；
     # 正确品不重复导入。若发现“已发布但错价”，批量导入无法安全修正，立即停并报告。
-    live_by_sku = {str(r["sku_id"]): r for r in live_rows}
+    live_by_sku = {
+        str(r["sku_id"]): r for r in live_rows
+        if not super_reduce
+        or r.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
+    }
     expected_by_item: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         expected_by_item[str(row["taobao_item_id"])].append(row)

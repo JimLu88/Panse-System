@@ -893,12 +893,20 @@ def test_super_reduce_supplement_preserves_known_active_items(
         "refresh_floor_evidence_from_current_activity",
         lambda *args, **kwargs: {
             "ok": True,
-            "rows": [{
-                "item_id": "100000009502",
-                "sku_id": "75402",
-                "status": "活动中",
-                "activity_price": 1600,
-            }],
+            "rows": [
+                {
+                    "item_id": "100000009501",
+                    "sku_id": "75401",
+                    "status": "暂停",
+                    "activity_price": 1500,
+                },
+                {
+                    "item_id": "100000009502",
+                    "sku_id": "75402",
+                    "status": "活动中",
+                    "activity_price": 1600,
+                },
+            ],
             "floor_refresh": {"observed": 2},
         },
     )
