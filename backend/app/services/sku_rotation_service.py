@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
+from typing import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -144,3 +145,212 @@ def apply_mapping(db: Session, product_code: str, erp_mapping: list[dict], *, dr
     if not dry_run:
         db.flush()
     return {"ok": True, "dry_run": dry_run, "changed": len(changes), "changes": changes}
+
+
+def preview_export_mapping_refresh(
+        db: Session,
+        workbooks: Iterable[bytes],
+        *,
+        item_ids: Iterable[str],
+) -> dict:
+    """Read exact ``商家编码 -> skuId`` pairs from Taobao product exports.
+
+    This is the safe counterpart to :func:`plan_rotation` when operators have
+    already created new physical SKU rows in Taobao.  Only rows carrying an
+    exact SKU-level merchant code are considered; old rows whose merchant code
+    was removed and name/spec similarities can never influence the mapping.
+    """
+    from app.models.pricing import PricingSku
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.taobao_listing import TaobaoListing
+    from app.services import taobao_listing_service
+
+    requested = {str(value or "").strip() for value in item_ids}
+    if not requested or any(not value.isdigit() for value in requested):
+        return {"ok": False, "error": "item_ids 必须是非空的数字商品ID集合"}
+
+    records: list[dict] = []
+    warnings: list[str] = []
+    for file_bytes in workbooks:
+        parsed, file_warnings = taobao_listing_service.parse_rows(file_bytes)
+        records.extend(parsed)
+        warnings.extend(file_warnings)
+
+    explicit = [
+        row for row in records
+        if str(row.get("taobao_item_id") or "").strip() in requested
+        and str(row.get("sku_code_raw") or "").strip()
+    ]
+    found_items = {str(row.get("taobao_item_id") or "").strip() for row in explicit}
+    missing_items = sorted(requested - found_items)
+    if missing_items:
+        return {
+            "ok": False,
+            "error": "导出表缺少带SKU商家编码的新行",
+            "missing_item_ids": missing_items,
+            "warnings": warnings,
+        }
+
+    sku_codes = {str(row.get("sku_code_raw") or "").strip() for row in explicit}
+    skus = {
+        row.sku_code: row
+        for row in db.execute(
+            select(PricingSku).where(PricingSku.sku_code.in_(sku_codes))
+        ).scalars()
+    }
+    promos = {
+        row.sku_code: row
+        for row in db.execute(
+            select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(sku_codes))
+        ).scalars()
+    }
+    all_promos_by_sid: dict[str, str] = {}
+    for promo in db.execute(select(PricingSkuPromo)).scalars():
+        sid = str(promo.taobao_sku_id or "").strip()
+        if sid:
+            all_promos_by_sid.setdefault(sid, promo.sku_code)
+
+    errors: list[str] = []
+    mappings: list[dict] = []
+    seen_codes: set[str] = set()
+    seen_sids: set[str] = set()
+    for row in explicit:
+        item_id = str(row.get("taobao_item_id") or "").strip()
+        sku_id = str(row.get("taobao_sku_id") or "").strip()
+        sku_code = str(row.get("sku_code_raw") or "").strip()
+        product_code = str(row.get("merchant_code") or "").strip()
+        if not sku_id:
+            errors.append(f"{item_id}/{sku_code} 缺少 skuId")
+            continue
+        if sku_code in seen_codes:
+            errors.append(f"导出表中SKU商家编码重复: {sku_code}")
+            continue
+        if sku_id in seen_sids:
+            errors.append(f"导出表中新 skuId 重复: {sku_id}")
+            continue
+        seen_codes.add(sku_code)
+        seen_sids.add(sku_id)
+
+        sku = skus.get(sku_code)
+        promo = promos.get(sku_code)
+        if sku is None:
+            errors.append(f"ERP不存在SKU商家编码: {sku_code}")
+            continue
+        if promo is None:
+            errors.append(f"ERP活动映射不存在SKU商家编码: {sku_code}")
+            continue
+        if product_code and product_code != str(sku.product_code or ""):
+            errors.append(
+                f"{sku_code} 的产品商家编码不符: 导出={product_code}, ERP={sku.product_code}"
+            )
+            continue
+        if str(promo.taobao_item_id or "").strip() != item_id:
+            errors.append(
+                f"{sku_code} 商品ID不符: 导出={item_id}, ERP={promo.taobao_item_id}"
+            )
+            continue
+        owner = all_promos_by_sid.get(sku_id)
+        if owner and owner != sku_code:
+            errors.append(f"新 skuId {sku_id} 已绑定其它ERP SKU: {owner}")
+            continue
+        listing_conflicts = db.execute(
+            select(TaobaoListing).where(TaobaoListing.taobao_sku_id == sku_id)
+        ).scalars().all()
+        for listing in listing_conflicts:
+            if (
+                str(listing.taobao_item_id or "") != item_id
+                or (listing.sku_code and listing.sku_code != sku_code)
+            ):
+                errors.append(
+                    f"新 skuId {sku_id} 已存在冲突商品映射: "
+                    f"{listing.taobao_item_id}/{listing.sku_code}"
+                )
+                break
+        mappings.append({
+            "taobao_item_id": item_id,
+            "taobao_sku_id": sku_id,
+            "sku_code": sku_code,
+            "product_code": sku.product_code,
+            "old_sku_id": str(promo.taobao_sku_id or "").strip() or None,
+            "changed": str(promo.taobao_sku_id or "").strip() != sku_id,
+            "title": row.get("title"),
+            "merchant_code": row.get("merchant_code"),
+            "sku_spec": row.get("sku_spec"),
+            "category_name": row.get("category_name"),
+            "list_price": row.get("list_price"),
+            "sku_price": row.get("sku_price"),
+            "stock": row.get("stock"),
+        })
+
+    if errors:
+        return {"ok": False, "error": "；".join(errors), "errors": errors,
+                "warnings": warnings}
+    mappings.sort(key=lambda row: (row["taobao_item_id"], row["sku_code"]))
+    return {
+        "ok": True,
+        "requested_item_ids": sorted(requested),
+        "explicit_mapping_rows": len(mappings),
+        "changed_rows": sum(1 for row in mappings if row["changed"]),
+        "warnings": warnings,
+        "mappings": mappings,
+    }
+
+
+def apply_export_mapping_refresh(
+        db: Session,
+        workbooks: Iterable[bytes],
+        *,
+        item_ids: Iterable[str],
+        dry_run: bool = True,
+) -> dict:
+    """Apply a verified Taobao-export mapping refresh in one transaction."""
+    from app.models.pricing_ext import PricingSkuPromo
+    from app.models.taobao_listing import TaobaoListing
+
+    report = preview_export_mapping_refresh(db, workbooks, item_ids=item_ids)
+    if not report.get("ok") or dry_run:
+        return {**report, "dry_run": dry_run}
+
+    changed: list[dict] = []
+    for mapping in report["mappings"]:
+        promo = db.execute(
+            select(PricingSkuPromo).where(
+                PricingSkuPromo.sku_code == mapping["sku_code"]
+            )
+        ).scalar_one()
+        listing = db.execute(
+            select(TaobaoListing).where(
+                TaobaoListing.taobao_item_id == mapping["taobao_item_id"],
+                TaobaoListing.taobao_sku_id == mapping["taobao_sku_id"],
+            )
+        ).scalar_one_or_none()
+        listing_payload = {
+            key: mapping.get(key) for key in (
+                "taobao_item_id", "taobao_sku_id", "sku_code", "product_code",
+                "title", "merchant_code", "sku_spec", "category_name",
+                "list_price", "sku_price", "stock",
+            )
+        }
+        listing_payload["matched"] = True
+        if listing is None:
+            db.add(TaobaoListing(**listing_payload))
+        else:
+            for key, value in listing_payload.items():
+                setattr(listing, key, value)
+
+        if mapping["changed"]:
+            promo.taobao_sku_id = mapping["taobao_sku_id"]
+            # Old physical SKU IDs must remain only in taobao_listings for order
+            # history.  Keeping them as alternatives would re-import the very
+            # history line the operator rotated away from.
+            promo.alt_taobao_sku_ids = []
+            promo.coupon_floor_price = None
+            promo.enrolled_floor_price = None
+            changed.append({
+                "taobao_item_id": mapping["taobao_item_id"],
+                "sku_code": mapping["sku_code"],
+                "old_sku_id": mapping["old_sku_id"],
+                "new_sku_id": mapping["taobao_sku_id"],
+            })
+    db.commit()
+    return {**report, "dry_run": False, "changed": changed}
