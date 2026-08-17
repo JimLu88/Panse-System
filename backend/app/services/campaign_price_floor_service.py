@@ -19,6 +19,7 @@ from app.services import settings_service
 
 
 EVIDENCE_KEY = "campaign_price_floor_evidence_v1"
+PLAN_EVIDENCE_KEY_PREFIX = "campaign_price_floor_evidence_v2_plan_"
 _NUMBER = r"([0-9][0-9,]*(?:\.[0-9]+)?)"
 _MIN_LIST_PATTERNS = (
     re.compile(rf"管控期标价为\s*{_NUMBER}\s*元"),
@@ -40,8 +41,18 @@ def _decimal(value) -> Optional[Decimal]:
     return number.quantize(Decimal("0.01")) if number > 0 else None
 
 
-def _load(db: Session) -> dict[str, dict]:
-    raw = settings_service.get(db, EVIDENCE_KEY, env_fallback=False)
+def _plan_id(plan) -> Optional[str]:
+    value = getattr(plan, "id", plan)
+    text = str(value or "").strip()
+    return text if text.isdigit() else None
+
+
+def _storage_key(plan=None) -> str:
+    plan_id = _plan_id(plan)
+    return f"{PLAN_EVIDENCE_KEY_PREFIX}{plan_id}" if plan_id else EVIDENCE_KEY
+
+
+def _decode(raw) -> dict[str, dict]:
     if not raw:
         return {}
     try:
@@ -51,16 +62,31 @@ def _load(db: Session) -> dict[str, dict]:
     return payload if isinstance(payload, dict) else {}
 
 
-def evidence_map(db: Session) -> dict[str, dict]:
-    return _load(db)
+def _load(db: Session, *, plan=None, fallback_legacy: bool = True) -> dict[str, dict]:
+    key = _storage_key(plan)
+    payload = _decode(settings_service.get(db, key, env_fallback=False))
+    if payload or key == EVIDENCE_KEY or not fallback_legacy:
+        return payload
+    # Compatibility bridge for plans that have not had their first scoped
+    # refresh yet. Once a plan-specific setting exists, no other campaign can
+    # overwrite or influence it.
+    return _decode(settings_service.get(db, EVIDENCE_KEY, env_fallback=False))
 
 
-def _write(db: Session, payload: dict[str, dict]) -> None:
+def evidence_map(db: Session, *, plan=None) -> dict[str, dict]:
+    return _load(db, plan=plan)
+
+
+def _write(db: Session, payload: dict[str, dict], *, plan=None) -> None:
     settings_service.set_value(
         db,
-        EVIDENCE_KEY,
+        _storage_key(plan),
         json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
-        description="淘宝活动逐SKUID最低标价/最低普惠券后价证据及采集时间",
+        description=(
+            f"淘宝活动计划{_plan_id(plan)}逐SKUID最低标价/最低普惠券后价证据"
+            if _plan_id(plan)
+            else "淘宝活动逐SKUID最低标价/最低普惠券后价证据及采集时间"
+        ),
     )
 
 
@@ -70,6 +96,7 @@ def record_activity_export(
     *,
     source: str,
     observed_at: Optional[datetime] = None,
+    plan=None,
 ) -> dict:
     """Persist fresh H/I columns from a platform activity export.
 
@@ -79,7 +106,7 @@ def record_activity_export(
     """
     now = observed_at or datetime.now(timezone.utc)
     seen_at = now.astimezone(timezone.utc).isoformat()
-    payload = _load(db)
+    payload = _load(db, plan=plan, fallback_legacy=False)
     observed = 0
     grouped: dict[str, dict] = {}
     for record in records:
@@ -129,9 +156,9 @@ def record_activity_export(
             "observed_at": seen_at,
             "source": source,
         }
-    _write(db, payload)
+    _write(db, payload, plan=plan)
     db.flush()
-    return {"observed": observed, "source": source}
+    return {"observed": observed, "source": source, "scope": _storage_key(plan)}
 
 
 def record_partial_evidence(
@@ -140,6 +167,7 @@ def record_partial_evidence(
     *,
     source: str,
     observed_at: Optional[datetime] = None,
+    plan=None,
 ) -> dict:
     """Merge explicitly supplied floor columns without clearing the other gate.
 
@@ -149,7 +177,7 @@ def record_partial_evidence(
     """
     now = observed_at or datetime.now(timezone.utc)
     seen_at = now.astimezone(timezone.utc).isoformat()
-    payload = _load(db)
+    payload = _load(db, plan=plan, fallback_legacy=False)
     observed = 0
     for record in records:
         sid = str(record.get("sku_id") or "").strip()
@@ -177,9 +205,9 @@ def record_partial_evidence(
             "source": source,
         }
     if observed:
-        _write(db, payload)
+        _write(db, payload, plan=plan)
         db.flush()
-    return {"observed": observed, "source": source}
+    return {"observed": observed, "source": source, "scope": _storage_key(plan)}
 
 
 def _extract(patterns, text: str) -> Optional[Decimal]:
@@ -198,11 +226,12 @@ def record_failed_feedback(
     *,
     source: str,
     observed_at: Optional[datetime] = None,
+    plan=None,
 ) -> dict:
     """Record exact lines from failed feedback without adjusting or retrying."""
     now = observed_at or datetime.now(timezone.utc)
     seen_at = now.astimezone(timezone.utc).isoformat()
-    payload = _load(db)
+    payload = _load(db, plan=plan, fallback_legacy=False)
     learned: list[dict] = []
     for item in failed_items or []:
         sid = str(item.get("sku_id") or "").strip()
@@ -232,9 +261,14 @@ def record_failed_feedback(
         payload[sid] = entry
         learned.append(entry)
     if learned:
-        _write(db, payload)
+        _write(db, payload, plan=plan)
         db.flush()
-    return {"learned": learned, "count": len(learned), "source": source}
+    return {
+        "learned": learned,
+        "count": len(learned),
+        "source": source,
+        "scope": _storage_key(plan),
+    }
 
 
 def evidence_age_hours(entry: dict, *, now: Optional[datetime] = None) -> Optional[float]:

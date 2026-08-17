@@ -176,6 +176,70 @@ def test_duplicate_export_rows_keep_strictest_numeric_floor(db_session):
     assert entry["min_coupon_line_observed"] is True
 
 
+def test_campaign_floor_evidence_isolated_by_plan(db_session):
+    super_plan = _plan(db_session, campaign_type="super_reduce", tier="mid")
+    school_plan = _plan(db_session, campaign_type="big88", tier="big")
+
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805", "sku_id": "881880805",
+            "min_list_price": 3000, "min_coupon_line": 1999.73,
+        }],
+        source="pytest_super_export",
+        plan=super_plan,
+    )
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805", "sku_id": "881880805",
+            "min_list_price": 3000, "min_coupon_line": 1888.88,
+        }],
+        source="pytest_school_export",
+        plan=school_plan,
+    )
+    db_session.commit()
+
+    super_entry = campaign_price_floor_service.evidence_map(
+        db_session, plan=super_plan)["881880805"]
+    school_entry = campaign_price_floor_service.evidence_map(
+        db_session, plan=school_plan)["881880805"]
+
+    assert super_entry["min_coupon_line"] == 1999.73
+    assert super_entry["source"] == "pytest_super_export"
+    assert school_entry["min_coupon_line"] == 1888.88
+    assert school_entry["source"] == "pytest_school_export"
+
+
+def test_plan_scoped_floor_refresh_drives_only_that_plan_preflight(db_session):
+    blocked_plan = _plan(db_session)
+    ready_plan = _plan(db_session)
+    _sku(db_session, legacy_list=9999, legacy_coupon=9999)
+
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805", "sku_id": "881880805",
+            "min_list_price": 3000, "min_coupon_line": 1999.73,
+        }],
+        source="pytest_blocked_plan",
+        plan=blocked_plan,
+    )
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805", "sku_id": "881880805",
+            "min_list_price": 3000, "min_coupon_line": 2000,
+        }],
+        source="pytest_ready_plan",
+        plan=ready_plan,
+    )
+    db_session.commit()
+
+    assert len(campaign_service.price_hold_items(db_session, blocked_plan)) == 1
+    assert campaign_service.price_hold_items(db_session, ready_plan) == []
+
+
 def test_explicit_new_item_without_history_is_narrowly_allowed(db_session):
     plan = _plan(db_session)
     plan.remark = "new_item_no_history_authorized=991880805"

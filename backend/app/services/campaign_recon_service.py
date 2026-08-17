@@ -385,6 +385,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
             db,
             floor_records,
             source=f"campaign_recon:{source}:plan={getattr(plan, 'id', '')}",
+            plan=plan,
         )
         signup_rows, _signup_stats = campaign_service.build_signup_rows(db, plan)
         if campaign_service.platform_scope_present(plan):

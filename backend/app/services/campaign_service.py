@@ -413,7 +413,7 @@ def price_hold_items(db: Session, plan) -> list[dict]:
     lev = TIER_LEVERAGE[tier]
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
     authorized_concessions = authorized_line_concessions(plan)
-    evidence = campaign_price_floor_service.evidence_map(db)
+    evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     no_sales = no_sales_service.get_no_sales(db)
     by_item: dict[str, dict] = {}
     for s, p in _mapped_pairs(db):
@@ -1218,7 +1218,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     from app.services import campaign_policy_service, campaign_price_floor_service
 
     max_age = campaign_policy_service.floor_evidence_max_age_hours()
-    evidence = campaign_price_floor_service.evidence_map(db)
+    evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     problems: list[dict] = []
     authorized_new_items = new_item_no_history_authorized_items(plan)
     authorized_new_rows: list[dict] = []
@@ -1555,7 +1555,7 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             "screenshot_base64": res.get("screenshot_base64")}
 
 
-def _learn_from_validation(db: Session, validation) -> dict:
+def _learn_from_validation(db: Session, plan, validation) -> dict:
     """Record platform facts for diagnosis; never adjust price, scope or retry.
 
     Delisted/no-sales facts keep their existing registries.  Exact platform
@@ -1578,7 +1578,7 @@ def _learn_from_validation(db: Session, validation) -> dict:
         if items:
             no_sales_service.add_no_sales(db, items)
         floors = campaign_price_floor_service.record_failed_feedback(
-            db, failed, source="campaign_signup_failed_feedback")
+            db, failed, source="campaign_signup_failed_feedback", plan=plan)
         return {
             "recorded": True,
             "delisted_sku_ids": sorted(ids),
@@ -2060,6 +2060,7 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         db,
         floor_rows,
         source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
+        plan=plan,
     )
     return {"ok": True, "rows": live_rows, "floor_refresh": refresh}
 
@@ -2400,7 +2401,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
         expected_rows=len(pending), expected_items=len(pending_items))
     res["stats"] = stats
-    res["recorded_platform_facts"] = _learn_from_validation(db, res.get("validation"))
+    res["recorded_platform_facts"] = _learn_from_validation(
+        db, plan, res.get("validation"))
     if res.get("ok"):
         plan.status = "signup_pushed"
         db.commit()
