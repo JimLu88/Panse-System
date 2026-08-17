@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-17.2",
-  "updated_at": "2026-08-17T08:40:00+08:00",
+  "version": "2026-08-17.3",
+  "updated_at": "2026-08-17T17:15:31+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -36,6 +36,7 @@
     "minimum_list_price": "signup_price_must_be_lte_platform_minimum_list_price",
     "minimum_universal_coupon_after_price": "signup_price_minus_official_discount_minus_concurrent_single_item_discount_must_be_lte_platform_minimum_universal_coupon_after_price",
     "single_item_discount_participates_in_qualification": true,
+    "staged_coupon_floor_failure": "provisionally_accept_only_when_failure_is_coupon_floor_only_and_fresh_erp_planned_discount_math_has_no_remaining_floor_hold",
     "whole_item_all_skus_required": true,
     "any_sku_conflict_action": "exclude_whole_item_and_report",
     "missing_or_stale_floor_evidence_action": "block_before_upload_and_report",
@@ -104,6 +105,7 @@
     "平台通过的商品先逐商品完成单品立减并逐 SKU 回读，再正式报名；仅无动销失败的商品只做单品立减兜底。",
     "资格检查中的价格、SKU、上下架等硬失败按整品隔离并报告，不阻断其余安全商品继续。",
     "平台只返回失败数量而没有逐商品原因时，程序必须按活动ID只读补取最新反馈；仍不完整则停止，禁止把失败数量猜成无动销。",
+    "平台资格预检尚未生效同期单品立减时，若只报券后线失败，程序必须用最新价线和本计划单品立减逐SKU复算；复算无剩余价线冲突才可进入后续立减，动销、缺SKU、一口价、混合失败或仍有价差的商品继续硬阻断。",
     "提前报名的未来活动在开场前不反复导出；开场后重新开启6小时自动核对窗口，复核平台最终券后价。",
     "已经活动中的定制占位SKU沿用平台此前接受的在场保护价，不用后来刷新的历史线追溯改价；新报名或暂停待生效的占位SKU仍须精确核对本次报名价。",
     "长期超级立减的计划日期只用于配套价格与核对窗口，不得据此推断需要撤销、暂停或延迟用户已授权的报名。",

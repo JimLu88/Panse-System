@@ -217,6 +217,69 @@ def test_platform_qualification_isolates_non_sales_failure_and_continues(db_sess
     assert cs.platform_qualified_items(plan) == {"1000009215"}
 
 
+def test_platform_qualification_accepts_coupon_only_failure_when_planned_discount_clears_floor(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSQUALC1", "PPSQUALC101", "1000009216", "72916",
+        daily=1500, big=1000)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    monkeypatch.setattr(cs, "price_hold_items", lambda *args: [])
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False,
+        "validation": {
+            "total_items": 1, "ok": 0, "failed": 1,
+            "failed_items": [{
+                "item_id": "1000009216",
+                "reason": "券后价超线(报名价高于已生效最低价)",
+                "raw": "活动普惠券后价不可高于最低普惠券后价",
+            }],
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == ["1000009216"]
+    assert result["planned_discount_qualification_item_ids"] == ["1000009216"]
+    assert result["hard_failed_item_ids"] == []
+
+
+def test_platform_qualification_keeps_coupon_failure_hard_when_internal_floor_hold_remains(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    _mk(db_session, "PPSQUALC2", "PPSQUALC201", "1000009217", "72917",
+        daily=1500, big=1000)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    hold_calls = iter(([], [{
+        "taobao_item_id": "1000009217", "skus": [],
+    }]))
+    monkeypatch.setattr(cs, "price_hold_items", lambda *args: next(hold_calls))
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *args, **kwargs: {
+        "ok": False,
+        "validation": {
+            "total_items": 1, "ok": 0, "failed": 1,
+            "failed_items": [{
+                "item_id": "1000009217",
+                "reason": "券后价超线(报名价高于已生效最低价)",
+                "raw": "活动普惠券后价不可高于最低普惠券后价",
+            }],
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == []
+    assert result["planned_discount_qualification_item_ids"] == []
+    assert result["hard_failed_item_ids"] == ["1000009217"]
+
+
 def test_super_qualification_fetches_missing_feedback_and_keeps_mixed_failure_hard(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")

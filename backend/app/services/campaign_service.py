@@ -1718,8 +1718,50 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 "validation": validation, "feedback_refresh": feedback_refresh,
                 "stats": stats}
 
-    hard_failed_ids = failed_ids - no_sales_ids
-    qualified = already_correct | (candidate_items - failed_ids)
+    # The platform's staged qualification evaluates the campaign signup price
+    # before this plan's single-item discount has been committed.  Therefore a
+    # coupon-floor-only rejection is not a real hard failure when our fresh
+    # per-SKU evidence proves that the planned discount (including an explicitly
+    # authorized sub-yuan concession) lands on or below the same history line.
+    # Do not relax no-sales, missing-SKU, list-price, mixed, or still-held items.
+    held_ids = {
+        str(item.get("taobao_item_id") or "")
+        for item in price_hold_items(db, plan)
+    } - {""}
+    failed_by_item: dict[str, list[dict]] = defaultdict(list)
+    for failed_row in failed_rows:
+        item_id = str((failed_row or {}).get("item_id") or "").strip()
+        if item_id:
+            failed_by_item[item_id].append(failed_row or {})
+
+    def _coupon_floor_only(rows: list[dict]) -> bool:
+        if not rows:
+            return False
+        forbidden = (
+            "动销", "销量", "sku已失效", "sku缺失", "缺skuid", "sku不全",
+            "一口价", "最低标价", "活动价格需小于等于", "下架", "不存在",
+        )
+        for row in rows:
+            reason = str(row.get("reason") or "").strip().lower()
+            raw = str(row.get("raw") or "").strip().lower()
+            if not ("券后价超线" in reason or "最低普惠券后价" in reason):
+                return False
+            if any(token in reason or token in raw for token in forbidden):
+                return False
+        return True
+
+    planned_discount_qualified_ids = {
+        item_id for item_id, rows_for_item in failed_by_item.items()
+        if item_id not in held_ids
+        and item_id not in no_sales_ids
+        and _coupon_floor_only(rows_for_item)
+    }
+    hard_failed_ids = failed_ids - no_sales_ids - planned_discount_qualified_ids
+    qualified = (
+        already_correct
+        | (candidate_items - failed_ids)
+        | planned_discount_qualified_ids
+    )
     no_sales_service.add_no_sales(db, no_sales_ids)
     no_sales_service.remove_no_sales(db, qualified)
     _set_plan_item_marker(plan, "platform_qualified_items", qualified)
@@ -1735,6 +1777,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     return {"ok": True, "qualified_item_ids": sorted(qualified),
             "no_sales_item_ids": sorted(no_sales_ids),
             "hard_failed_item_ids": sorted(hard_failed_ids),
+            "planned_discount_qualification_item_ids": sorted(
+                planned_discount_qualified_ids),
             "hard_failed_items": [row for row in failed_rows
                                   if str((row or {}).get("item_id") or "") in hard_failed_ids],
             "validation": validation, "feedback_refresh": feedback_refresh,
