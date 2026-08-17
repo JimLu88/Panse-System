@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+import re
 from typing import Optional
 
 from sqlalchemy import func, select
@@ -1081,29 +1082,24 @@ def _check_official_scope(db: Session, plan) -> dict:
 
 def _check_super_reduce_publish_window(
         plan, *, now: Optional[datetime] = None, enforce: bool = False) -> dict:
-    """R18: the long-running Super Reduce page publishes immediately."""
-    if str(getattr(plan, "campaign_type", "")) != "super_reduce":
-        return {
-            "rule": "R18", "level": "pass",
-            "title": "长期超级立减只允许在计划开始时间后正式发布",
-            "items": [],
-        }
-    start_at = getattr(plan, "start_at", None)
-    current = now or datetime.now(tz=getattr(start_at, "tzinfo", None))
-    errors = []
-    if start_at is None:
-        errors.append({"check": "missing_plan_start_at"})
-    elif current < start_at:
-        errors.append({
-            "check": "super_reduce_publish_is_immediate",
-            "now": current.isoformat(sep=" ", timespec="seconds"),
-            "start_at": start_at.isoformat(sep=" ", timespec="seconds"),
-        })
+    """R18: plan dates never imply delaying or withdrawing an authorized signup."""
     return {
-        "rule": "R18", "level": ("error" if enforce else "warn") if errors else "pass",
-        "title": "长期超级立减无预约发布能力：官方立减不得早于配套单品立减生效",
-        "items": errors,
+        "rule": "R18", "level": "pass",
+        "title": "长期超级立减按报名授权执行；计划日期不得推导撤销或延迟",
+        "items": [],
     }
+
+
+def _authorized_withdrawal_items(plan) -> set[str]:
+    """Exact current-user authorization marker for a destructive withdrawal."""
+    remark = str(getattr(plan, "remark", "") or "")
+    match = re.search(
+        r"(?:^|[;\n；])\s*user_authorized_campaign_withdrawal\s*=\s*([^;\n；]*)",
+        remark,
+    )
+    if not match:
+        return set()
+    return {value.strip() for value in match.group(1).split(",") if value.strip()}
 
 
 def _check_super_reduce_discount_coverage(
@@ -2093,6 +2089,15 @@ def repair_super_reduce_early_activation(
     targets = sorted({str(value or "").strip() for value in (item_ids or [])})
     if not targets or len(targets) > 100 or any(not value.isdigit() for value in targets):
         return {"ok": False, "step": "args", "error": "必须提供1至100个精确数字商品ID"}
+    authorized = _authorized_withdrawal_items(plan)
+    if set(targets) != authorized:
+        return {
+            "ok": False,
+            "step": "explicit_withdrawal_authorization_guard",
+            "error": "未经用户对本次精确商品清单的当前明确授权，禁止撤销、暂停或移除活动报名",
+            "requested_item_ids": targets,
+            "authorized_item_ids": sorted(authorized),
+        }
 
     before = refresh_floor_evidence_from_current_activity(db, plan)
     if not before.get("ok"):
@@ -2247,14 +2252,6 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "ai_may_adjust_or_resubmit": False,
         }
 
-    publish_window = _check_super_reduce_publish_window(plan, enforce=True)
-    if publish_window["level"] == "error":
-        return _stop_signup(db, plan, {
-            "step": "super_reduce_publish_window_guard",
-            "error": "长期超级立减发布后立即生效，当前早于计划开始时间；已拒绝提前发布",
-            "check": publish_window,
-        })
-
     # Read-only current-state export is performed before the final preflight.  Its
     # H/I columns refresh floor evidence; it never changes platform state.
     current = refresh_floor_evidence_from_current_activity(db, plan)
@@ -2309,7 +2306,7 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
                 "step": "super_reduce_unexpected_active_scope_guard",
                 "error": (
                     "长期超级立减仍有本计划范围外商品处于生效状态；"
-                    "必须先精确撤出或纳入完整价格校验"
+                    "必须保留现场并纳入完整价格校验；未经精确清单授权不得撤出"
                 ),
                 "unexpected_active_items": unexpected_active_items,
             })

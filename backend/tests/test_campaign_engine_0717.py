@@ -1020,35 +1020,15 @@ def test_super_reduce_signup_uses_dedicated_commit_channel(db_session, monkeypat
     assert calls[0]["phase"] == "commit"
 
 
-def test_super_reduce_publish_window_blocks_early_immediate_activation(
-        db_session, monkeypatch):
+def test_super_reduce_publish_window_does_not_infer_delay_from_plan_dates(db_session):
     plan = _plan(db_session, "super_reduce")
     plan.start_at = datetime.now() + timedelta(days=3)
     plan.end_at = plan.start_at + timedelta(days=4)
-    _mk(db_session, "PPSQTIME1", "PPSQTIME101", "9505", "75041",
-        daily=1500, big=1000)
-    db_session.commit()
-    calls = []
-    _mock_wa(monkeypatch, calls)
-    monkeypatch.setattr(
-        __import__("app.services.campaign_notification_service", fromlist=["broadcast_text"]),
-        "broadcast_text", lambda *args, **kwargs: {})
-
-    result = cs.push_signup(
-        db_session, plan, execution_source="campaign_automation")
-
-    assert result["ok"] is False
-    assert result["step"] == "super_reduce_publish_window_guard"
-
-
-def test_super_reduce_publish_window_is_warning_during_general_preflight(db_session):
-    plan = _plan(db_session, "super_reduce")
-    plan.start_at = datetime.now() + timedelta(days=1)
-
     check = cs._check_super_reduce_publish_window(plan)
 
     assert check["rule"] == "R18"
-    assert check["level"] == "warn"
+    assert check["level"] == "pass"
+    assert check["items"] == []
 
 
 def test_super_reduce_pairing_uses_actual_signup_price_for_official_discount(
@@ -1102,6 +1082,7 @@ def test_super_reduce_early_activation_repair_requires_three_proofs(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     target = "840659847455"
+    plan.remark = f"user_authorized_campaign_withdrawal={target}"
     exports = iter([
         {"ok": True, "rows": [{"item_id": target, "status": "活动中"}]},
         {"ok": True, "rows": [{"item_id": target, "status": "暂停"}]},
@@ -1152,6 +1133,7 @@ def test_super_reduce_repair_commit_normalizes_plan_when_platform_is_already_cle
     plan = _plan(db_session, "super_reduce")
     plan.status = "signup_pushed"
     target = "840659847455"
+    plan.remark = f"user_authorized_campaign_withdrawal={target}"
     monkeypatch.setattr(
         cs,
         "refresh_floor_evidence_from_current_activity",
@@ -1174,6 +1156,35 @@ def test_super_reduce_repair_commit_normalizes_plan_when_platform_is_already_cle
     assert result["plan_status"] == "discount_pushed"
     assert plan.status == "discount_pushed"
     assert "super_reduce_early_activation_already_clear=840659847455" in plan.remark
+
+
+def test_super_reduce_repair_rejects_missing_exact_user_withdrawal_authorization(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    from app.services import web_agent_service
+    calls = []
+    monkeypatch.setattr(
+        cs,
+        "refresh_floor_evidence_from_current_activity",
+        lambda *args, **kwargs: calls.append("export") or {"ok": True, "rows": []},
+    )
+    monkeypatch.setattr(
+        web_agent_service,
+        "withdraw_super_reduce_items",
+        lambda *args, **kwargs: calls.append("withdraw") or {"ok": True},
+    )
+
+    result = cs.repair_super_reduce_early_activation(
+        db_session,
+        plan,
+        ["840659847455"],
+        phase="commit",
+        execution_source="campaign_automation_repair",
+    )
+
+    assert result["ok"] is False
+    assert result["step"] == "explicit_withdrawal_authorization_guard"
+    assert calls == []
 
 
 def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeypatch):

@@ -61,6 +61,9 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未明确禁止 AI/页面提交、改价或重试，已停止")
     if execution.get("on_failure") != "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision":
         raise RuntimeError("活动报名失败处理未锁定为停止、告警并等待用户决定，已停止")
+    if (execution.get("automatic_campaign_withdrawal_enabled") is not False
+            or execution.get("withdrawal_requires_current_explicit_item_list_authorization") is not True):
+        raise RuntimeError("活动报名规则未禁止自动撤销或未要求精确清单授权，已停止")
     if pricing.get("real_sku_signup_price") != "erp_daily_price":
         raise RuntimeError("活动报名规则未锁定真实 SKU 报名价=ERP 日常价，已停止")
     if pricing.get("real_sku_signup_price_may_be_lowered_to_pass_platform") is not False:
@@ -84,6 +87,10 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定既有单品立减逐商品修改并逐 SKU 回读，已停止")
     if scope.get("existing_single_discount_activity_binding") != "per_item_id_to_activity_id":
         raise RuntimeError("活动报名规则未锁定单品立减活动ID按商品绑定，已停止")
+    if "withdrawal_requires_current_explicit_item_list_authorization" not in str(
+            (policy.get("post_submit") or {}).get(
+                "active_activity_records_outside_current_scope", "")):
+        raise RuntimeError("活动报名规则未锁定保留现场且撤销须当前精确授权，已停止")
     if scope.get("qualification_hard_failure_action") != "isolate_whole_item_report_and_continue_safe_items":
         raise RuntimeError("活动报名规则未锁定资格硬失败整品隔离并继续安全商品，已停止")
     lines = policy.get("explanation_lines")

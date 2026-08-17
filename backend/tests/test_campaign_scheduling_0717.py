@@ -141,7 +141,7 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     ]
 
 
-def test_auto_execute_defers_long_running_super_reduce_until_exact_start(
+def test_auto_execute_does_not_infer_super_reduce_delay_from_plan_start(
         db_session, monkeypatch):
     from app.services import campaign_automation_service as automation
     from app.services import campaign_service, settings_service
@@ -164,9 +164,9 @@ def test_auto_execute_defers_long_running_super_reduce_until_exact_start(
     result = automation.run_auto_execute(db_session)
 
     assert result["processed"] == 1
-    assert result["held"] == 1
-    assert result["details"][0]["step"] == "waiting_super_reduce_start_at"
-    assert calls == []
+    assert result["succeeded"] == 1
+    assert result["details"][0]["step"] == "signup"
+    assert calls == ["signup"]
     assert plan.status == "discount_pushed"
 
 

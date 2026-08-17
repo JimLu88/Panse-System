@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-17.1",
-  "updated_at": "2026-08-17T03:20:00+08:00",
+  "version": "2026-08-17.2",
+  "updated_at": "2026-08-17T08:40:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -11,7 +11,9 @@
     "ai_may_retry_after_failure": false,
     "program_may_retry_after_no_sales_only_failure": true,
     "on_failure": "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision",
-    "manual_signup_api_enabled": false
+    "manual_signup_api_enabled": false,
+    "automatic_campaign_withdrawal_enabled": false,
+    "withdrawal_requires_current_explicit_item_list_authorization": true
   },
   "pricing": {
     "real_sku_signup_price": "erp_daily_price",
@@ -56,7 +58,7 @@
     "accepted_item_action": "single_item_discount_first_then_final_campaign_signup",
     "existing_single_discount_edit_mode": "one_item_per_job_with_sku_readback",
     "existing_single_discount_activity_binding": "per_item_id_to_activity_id",
-    "super_reduce_publish_timing": "long_running_activity_publishes_immediately_so_commit_must_not_run_before_plan_start_at",
+    "super_reduce_publish_timing": "publish_when_user_or_campaign_program_authorizes_signup; do_not_infer_a_withdrawal_or_delay_from_plan_dates",
     "super_reduce_pairing_gate": "every_official_active_real_sku_requires_exact_same-window_single-item-discount_coverage_unless_official_discount_alone_exactly_hits_erp_target",
     "super_reduce_incompatible_target_action": "if_official_discount_alone_is_below_erp_target_exclude_or_withdraw_whole_item",
     "missing_item_failure_details_action": "read_latest_feedback_by_exact_campaign_ids_then_classify_or_stop",
@@ -75,7 +77,7 @@
     "verify_final_price_per_sku": true,
     "reconciliation_scope": "platform_qualified_items_expected_for_current_plan",
     "historical_activity_records_outside_current_scope": "informational_only_only_when_not_in_active_status",
-    "active_activity_records_outside_current_scope": "hard_failure_withdraw_or_fully_validate_before_publish_or_completion",
+    "active_activity_records_outside_current_scope": "preserve_and_report; fully_validate_in_place; withdrawal_requires_current_explicit_item_list_authorization",
     "future_super_reduce_paused_status": "enrolled_pending_effective_date_and_coupon_after_refresh",
     "unexplained_failure_action": "mark_alarmed_notify_and_wait"
   },
@@ -92,7 +94,8 @@
       "change_single_item_discount",
       "rotate_sku",
       "retry_failed_signup",
-      "expand_signup_scope"
+      "expand_signup_scope",
+      "withdraw_pause_cancel_or_remove_campaign_items"
     ]
   },
   "explanation_lines": [
@@ -103,15 +106,15 @@
     "平台只返回失败数量而没有逐商品原因时，程序必须按活动ID只读补取最新反馈；仍不完整则停止，禁止把失败数量猜成无动销。",
     "提前报名的未来活动在开场前不反复导出；开场后重新开启6小时自动核对窗口，复核平台最终券后价。",
     "已经活动中的定制占位SKU沿用平台此前接受的在场保护价，不用后来刷新的历史线追溯改价；新报名或暂停待生效的占位SKU仍须精确核对本次报名价。",
-    "长期超级立减没有预约发布能力，正式发布必须等到计划开始时间；不得让官方10%早于同期单品立减生效。",
-    "报名后核对只把暂停等非生效历史记录作为提示；长期活动中任何范围外但仍在活动中的商品都属于硬错误，必须撤出或纳入完整逐SKU校验。",
+    "长期超级立减的计划日期只用于配套价格与核对窗口，不得据此推断需要撤销、暂停或延迟用户已授权的报名。",
+    "报名后核对只把暂停等非生效历史记录作为提示；长期活动中范围外但仍在活动中的商品必须保留现场并完整逐SKU核验，未经用户对精确商品清单的当前明确授权不得撤出。",
     "超级立减正式发布前，官方生效范围内每个真实SKU必须有同期单品立减完整配对；若官方10%本身已低于ERP目标，该整品必须排除或撤出。",
     "未来超级立减场次导出状态为暂停时视为已报名待生效；活动价仍须逐SKU一致，券后价未刷新则保持待核对而非报警或完成。",
     "真实 SKU 报名价永远等于 ERP 日常价；平台历史线冲突时整品排除并报告，禁止降价迁就。",
     "用户逐SKU明确授权时，程序可通过计划标记把不足1元的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",
     "资格通过后逐 SKU 验算：报名价减官方立减再减单品立减，必须等于 ERP 本场目标到手价。",
-    "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、飞书报告并等待用户决定。",
+    "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、保留当前报名并报告；禁止以撤销后重报作为自动恢复手段。",
     "成功必须以千牛最新批量操作记录和新导出的已报商品表为准；已正确报名商品不重复导入。"
   ]
 }

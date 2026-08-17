@@ -51,6 +51,8 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["signup_executor"] == "campaign_automation_program_only"
     assert policy["execution"]["ai_may_submit"] is False
     assert policy["execution"]["ai_may_adjust_price"] is False
+    assert policy["execution"]["automatic_campaign_withdrawal_enabled"] is False
+    assert policy["execution"]["withdrawal_requires_current_explicit_item_list_authorization"] is True
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
     assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_exclusive"] == 1.00
@@ -63,6 +65,8 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert scope["existing_single_discount_edit_mode"] == "one_item_per_job_with_sku_readback"
     assert scope["existing_single_discount_activity_binding"] == "per_item_id_to_activity_id"
     assert scope["qualification_hard_failure_action"] == "isolate_whole_item_report_and_continue_safe_items"
+    assert "withdrawal_requires_current_explicit_item_list_authorization" in policy[
+        "post_submit"]["active_activity_records_outside_current_scope"]
 
 
 def test_production_image_bundles_the_root_policy():
