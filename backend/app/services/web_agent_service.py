@@ -269,8 +269,60 @@ def super_reduce_feedback(db: Session, *, timeout_s: int = 200) -> dict:
     if not res.get("ok") or not isinstance(feedback, dict):
         return {"ok": False,
                 "error": res.get("error") or res.get("message") or "超级立减反馈下载失败"}
-    return {"ok": True, "feedback": feedback,
-            "screenshot_base64": res.get("screenshot_base64")}
+    out = {"ok": True, "feedback": feedback,
+           "screenshot_base64": res.get("screenshot_base64")}
+    if res.get("xlsx_b64"):
+        import base64
+        try:
+            out.update({
+                "xlsx_bytes": base64.b64decode(res["xlsx_b64"], validate=True),
+                "filename": res.get("filename") or "超级立减_最新操作反馈.xlsx",
+            })
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "超级立减反馈文件编码无效"}
+    return out
+
+
+def single_discount_error_file(db: Session, activity_id: str, *,
+                               timeout_s: int = 240) -> dict:
+    """Read-only download of the newest error workbook for an exact activity."""
+    import base64
+
+    activity_id = str(activity_id or "").strip()
+    if not activity_id.isdigit():
+        return {"ok": False, "error": "单品立减活动ID必须为数字"}
+    j = _post(
+        db, "/api/single-item-discount/error-file",
+        {"activity_id": activity_id}, timeout=30)
+    if not j.get("ok") or not j.get("job"):
+        return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
+    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    res = final.get("result") or {}
+    if res.get("need_scan"):
+        return {"ok": False, "need_scan": True, "error": "淘宝登录态已失效"}
+    if not res.get("ok") or not res.get("xlsx_b64"):
+        return {
+            "ok": False,
+            "step": res.get("step"),
+            "error": res.get("error") or res.get("message") or "单品立减错误文件下载失败",
+        }
+    try:
+        workbook = base64.b64decode(res["xlsx_b64"], validate=True)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "单品立减错误文件编码无效"}
+    return {
+        "ok": True,
+        "xlsx_bytes": workbook,
+        "filename": res.get("filename") or f"单品立减_{activity_id}_错误文件.xlsx",
+        "activity_id": activity_id,
+        "operation_time": res.get("operation_time"),
+        "success_count": res.get("success_count"),
+        "failed_count": res.get("failed_count"),
+        "detail_rows": res.get("detail_rows"),
+        "empty_detail": bool(res.get("empty_detail")),
+        "headers": res.get("headers") or [],
+        "screenshot_base64": res.get("screenshot_base64"),
+    }
 
 
 def withdraw_super_reduce_items(db: Session, item_ids: list[str], *,
@@ -327,13 +379,23 @@ def campaign_feedback(db: Session, campaign_title: str, *, campaign_id: str,
             "step": res.get("step"),
             "error": res.get("error") or res.get("message") or "活动失败反馈下载失败",
         }
-    return {
+    out = {
         "ok": True,
         "feedback": feedback,
         "campaign_id": res.get("campaign_id"),
         "united_activity_id": res.get("united_activity_id"),
         "screenshot_base64": res.get("screenshot_base64"),
     }
+    if res.get("xlsx_b64"):
+        import base64
+        try:
+            out.update({
+                "xlsx_bytes": base64.b64decode(res["xlsx_b64"], validate=True),
+                "filename": res.get("filename") or "活动报名_最新操作反馈.xlsx",
+            })
+        except (ValueError, TypeError):
+            return {"ok": False, "error": "活动报名反馈文件编码无效"}
+    return out
 
 
 def campaign_inspect_detail(db: Session, campaign_title: str, *,

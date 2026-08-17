@@ -204,6 +204,18 @@ export const pushCampaignDiscount = (id: number, phase: PushPhase) =>
   api.post<CampaignPushResult>(`/api/campaigns/${id}/push-discount`, null,
     { params: { phase }, timeout: 260000 })
     .then((r) => r.data);
+
+/** 只读下载：指定单品立减活动最近一次导入错误原表。 */
+export const downloadSingleDiscountErrorFile = (planId: number, activityId: string) =>
+  api.get<Blob>(`/api/campaigns/${planId}/single-discount-error-file.xlsx`, {
+    params: { activity_id: activityId }, responseType: 'blob', timeout: 300000,
+  });
+
+/** 只读下载：当前活动最近一次批量操作反馈原表。 */
+export const downloadCampaignOperationFeedback = (planId: number) =>
+  api.get<Blob>(`/api/campaigns/${planId}/operation-feedback.xlsx`, {
+    responseType: 'blob', timeout: 300000,
+  });
 // ── 核对（spec 四.6：不带文件=自动 WA 导出；带文件=手动上传兜底） ──
 
 /** 后端判定串：一分不差 / 贴线让X.XX / 超2元报警 / 偏差 / J未刷新 / 占位 / 无映射 */

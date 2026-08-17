@@ -1447,6 +1447,11 @@ def _plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
     return (cid.group(1) if cid else None, uid.group(1) if uid else None)
 
 
+def plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
+    """Public read-only accessor used by feedback/export API routes."""
+    return _plan_campaign_ids(plan)
+
+
 def _plan_single_discount_activity_id(plan) -> Optional[str]:
     """Read the verified existing single-item-discount activity for a repair."""
     import re

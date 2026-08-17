@@ -20,8 +20,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -86,6 +88,25 @@ def _get_plan(db: Session, plan_id: int) -> CampaignPlan:
     if plan is None:
         raise HTTPException(404, f"计划 {plan_id} 不存在")
     return plan
+
+
+def _xlsx_download_response(content: bytes, filename: str, *,
+                            metadata: Optional[dict] = None) -> Response:
+    safe_name = str(filename or "campaign_feedback.xlsx").replace("\r", "").replace("\n", "")
+    headers = {
+        "Content-Disposition": (
+            "attachment; filename=campaign_feedback.xlsx; "
+            f"filename*=UTF-8''{quote(safe_name)}"
+        )
+    }
+    for key, value in (metadata or {}).items():
+        if value is not None:
+            headers[f"X-Panse-{key}"] = str(value).lower() if isinstance(value, bool) else str(value)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
+    )
 
 
 def _validate_type_and_window(campaign_type: str, start_at, end_at) -> str:
@@ -296,6 +317,67 @@ def push_signup(plan_id: int, db: Session = Depends(get_db),
     raise HTTPException(
         409,
         "活动报名只由 ERP 自动报名程序执行；页面或 AI 直推已禁用。错误先报告并等待用户决定。",
+    )
+
+
+@router.get("/{plan_id}/single-discount-error-file.xlsx")
+def download_single_discount_error_file(
+        plan_id: int, activity_id: str = Query(..., min_length=1),
+        db: Session = Depends(get_db), _: User = Depends(get_current_user)):
+    """Read-only proxy for the original QianNiu single-discount error file."""
+    from app.services import web_agent_service
+
+    _get_plan(db, plan_id)
+    result = web_agent_service.single_discount_error_file(db, activity_id)
+    if not result.get("ok"):
+        raise HTTPException(422, detail=result)
+    return _xlsx_download_response(
+        result["xlsx_bytes"], result.get("filename") or "单品立减错误文件.xlsx",
+        metadata={
+            "Activity-Id": result.get("activity_id"),
+            "Operation-Time": result.get("operation_time"),
+            "Success-Count": result.get("success_count"),
+            "Failed-Count": result.get("failed_count"),
+            "Detail-Rows": result.get("detail_rows"),
+            "Empty-Detail": result.get("empty_detail"),
+        },
+    )
+
+
+@router.get("/{plan_id}/operation-feedback.xlsx")
+def download_campaign_operation_feedback(
+        plan_id: int, db: Session = Depends(get_db),
+        _: User = Depends(get_current_user)):
+    """Download the original latest operation-feedback workbook, read-only."""
+    from app.services import web_agent_service
+
+    plan = _get_plan(db, plan_id)
+    campaign_id, united_activity_id = campaign_service.plan_campaign_ids(plan)
+    if campaign_id and united_activity_id:
+        result = web_agent_service.campaign_feedback(
+            db,
+            plan.qn_campaign_title or plan.name,
+            campaign_id=campaign_id,
+            united_activity_id=united_activity_id,
+        )
+    elif plan.campaign_type == "super_reduce":
+        # The long-running Super Reduce page is itself an exact activity entry;
+        # this read-only fallback is needed for older plans created before the
+        # immutable IDs were persisted in their remark.
+        result = web_agent_service.super_reduce_feedback(db)
+    else:
+        raise HTTPException(422, "计划缺少千牛 campaignId / unitedActivityId，无法安全下载")
+    if not result.get("ok"):
+        raise HTTPException(422, detail=result)
+    if not result.get("xlsx_bytes"):
+        raise HTTPException(422, "Web-Agent 已解析反馈，但未返回平台原始文件；请更新本机 Web-Agent")
+    feedback = result.get("feedback") or {}
+    return _xlsx_download_response(
+        result["xlsx_bytes"], result.get("filename") or "活动报名操作反馈.xlsx",
+        metadata={
+            "Failed-Rows": len(feedback.get("failed") or []),
+            "Failure-Groups": len(feedback.get("by_reason") or []),
+        },
     )
 
 

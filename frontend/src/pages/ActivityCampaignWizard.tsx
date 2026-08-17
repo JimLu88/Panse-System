@@ -8,21 +8,23 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Alert, Button, Card, Checkbox, Col, Collapse, Divider, Image, Row, Space, Statistic, Steps,
+  Alert, Button, Card, Checkbox, Col, Collapse, Divider, Image, Input, Row, Space, Statistic, Steps,
   Table, Tag, Typography, Upload, message,
 } from 'antd';
 import type { UploadFile } from 'antd';
 import {
-  AuditOutlined, CheckCircleOutlined, CloudUploadOutlined, ExperimentOutlined,
+  AuditOutlined, CheckCircleOutlined, CloudUploadOutlined, DownloadOutlined, ExperimentOutlined,
   PaperClipOutlined, RightOutlined, WarningOutlined,
 } from '@ant-design/icons';
 import {
   CAMPAIGN_STATUS_LABEL, CAMPAIGN_TYPES, NO_SALES_FORMULA, SIGNUP_PRICE_RULE, TIER_FORMULA,
+  downloadCampaignOperationFeedback, downloadSingleDiscountErrorFile,
   fetchCampaignRows, getCampaignSignupPolicy, pushCampaignDiscount, reconVerdictKey, reconVerdictMeta,
   runCampaignPrecheck, runCampaignRecon, runCampaignReconManual,
   type CampaignPlan, type CampaignPrecheckResult, type CampaignPushResult,
   type CampaignReconResult, type CampaignSignupPolicy, type CampaignStatus, type PrecheckCheck,
 } from '../api/campaigns';
+import { triggerBlobDownload } from '../utils/download';
 
 const STEP_TITLES = ['预检 R0~R17', '单品立减', '程序自动报名', '自动核对', '完成'];
 
@@ -90,6 +92,9 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
   const [itemsFiles, setItemsFiles] = useState<UploadFile[]>([]);
   const [discountFiles, setDiscountFiles] = useState<UploadFile[]>([]);
   const [productFiles, setProductFiles] = useState<UploadFile[]>([]);
+  // 证据下载只读，不触发重报、改价或撤销。
+  const [discountActivityId, setDiscountActivityId] = useState('');
+  const [evidenceDownloading, setEvidenceDownloading] = useState<'discount' | 'campaign' | null>(null);
 
   // 换了计划 → 向导全量重置（步骤按该计划状态续跑）
   useEffect(() => {
@@ -98,6 +103,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
     setStageRes(null); setCommitRes(null); setStageChecked(false);
     setRecon(null);
     setItemsFiles([]); setDiscountFiles([]); setProductFiles([]);
+    setDiscountActivityId(''); setEvidenceDownloading(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan.id]);
 
@@ -207,6 +213,48 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
     } finally { setReconLoading(null); }
   };
 
+  const downloadDiscountError = async () => {
+    const activityId = discountActivityId.trim();
+    if (!/^\d+$/.test(activityId)) {
+      message.warning('请先填写数字格式的单品立减活动 ID');
+      return;
+    }
+    setEvidenceDownloading('discount');
+    message.loading({ content: '正在千牛读取该活动最新导入记录并下载错误原表…', key: 'evidence', duration: 0 });
+    try {
+      const response = await downloadSingleDiscountErrorFile(plan.id, activityId);
+      triggerBlobDownload(response.data, `单品立减_${activityId}_错误文件.xlsx`);
+      const headers = response.headers;
+      const failed = headers['x-panse-failed-count'];
+      const empty = headers['x-panse-empty-detail'] === 'true';
+      message.destroy('evidence');
+      if (empty) {
+        message.warning(`错误原表已下载${failed ? `（平台记录失败 ${failed} 条）` : ''}，但表内只有表头；系统不会凭空猜逐行原因`);
+      } else {
+        message.success(`错误原表已下载${failed ? `，平台记录失败 ${failed} 条` : ''}`);
+      }
+    } catch {
+      message.destroy('evidence');
+      message.error('错误文件下载失败：请核对活动 ID、淘宝登录态和 Web-Agent 状态');
+    } finally { setEvidenceDownloading(null); }
+  };
+
+  const downloadOperationFeedback = async () => {
+    setEvidenceDownloading('campaign');
+    message.loading({ content: '正在千牛读取本活动最近一次批量操作反馈…', key: 'evidence', duration: 0 });
+    try {
+      const response = await downloadCampaignOperationFeedback(plan.id);
+      triggerBlobDownload(response.data, `活动报名_${plan.name}_最新操作反馈.xlsx`);
+      const failed = Number(response.headers['x-panse-failed-rows'] || 0);
+      message.destroy('evidence');
+      if (failed > 0) message.warning(`操作反馈已下载，解析到 ${failed} 条明确失败行`);
+      else message.success('操作反馈已下载；当前原表未解析到明确失败行（风险提示不等于失败）');
+    } catch {
+      message.destroy('evidence');
+      message.error('操作反馈下载失败：请核对活动身份、淘宝登录态和 Web-Agent 状态');
+    } finally { setEvidenceDownloading(null); }
+  };
+
   const stepStatus = (idx: number): 'finish' | 'process' | 'wait' =>
     step > idx ? 'finish' : step === idx ? 'process' : 'wait';
 
@@ -228,6 +276,27 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
             {policy.explanation_lines.map((line) => <li key={line}>{line}</li>)}
           </ol>
         )} />
+
+      <Collapse style={{ marginBottom: 16 }} items={[{
+        key: 'evidence-downloads',
+        label: <Typography.Text strong>报错文件自查（只读，不会重报、改价或撤销）</Typography.Text>,
+        children: (
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Space wrap>
+              <Input value={discountActivityId} onChange={(e) => setDiscountActivityId(e.target.value)}
+                placeholder="单品立减活动 ID，例如 142761375321" style={{ width: 310 }} />
+              <Button icon={<DownloadOutlined />} loading={evidenceDownloading === 'discount'}
+                onClick={downloadDiscountError}>下载单品立减错误文件</Button>
+              <Button icon={<DownloadOutlined />} loading={evidenceDownloading === 'campaign'}
+                onClick={downloadOperationFeedback}>下载活动报名操作反馈</Button>
+            </Space>
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              第一份来自“营销工具 → 单品立减 → 导入历史 → 下载错误文件”；第二份来自活动页“批量操作记录 → 下载操作反馈”。
+              两者保留平台原始 Excel，成功行上的风险提示不会被误判为报名失败。
+            </Typography.Text>
+          </Space>
+        ),
+      }]} />
 
       {/* ── 步骤① 预检 ── */}
       {step === 0 && (
