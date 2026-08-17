@@ -956,7 +956,10 @@ def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     plan.remark = (
-        f"{plan.remark or ''}; supplement_items_authorized=100000009501"
+        f"{plan.remark or ''}; supplement_items_authorized=100000009501; "
+        "platform_qualified_items=100000009502; "
+        "platform_hard_failed_items=100000009501; "
+        "official_active_items=100000009502"
     )
     _mk(db_session, "PPSQSCOPE1", "PPSQSCOPE101", "100000009501", "75101",
         daily=1500, big=1000)
@@ -976,10 +979,12 @@ def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
 
     assert discount["ok"] is True
     assert discount["stats"]["authorized_supplement_items"] == ["100000009501"]
+    assert discount["stats"]["platform_discount_scope_rows"] == 1
     assert calls[0]["channel"] == "single_item_discount"
     assert calls[0]["expected_rows"] == 1
     assert signup["ok"] is True
     assert signup["stats"]["authorized_supplement_items"] == ["100000009501"]
+    assert signup["stats"]["platform_qualified_rows"] == 1
     assert signup["stats"]["pending_items"] == ["100000009501"]
     assert calls[1]["channel"] == "super_reduce"
     assert calls[1]["expected_rows"] == 1

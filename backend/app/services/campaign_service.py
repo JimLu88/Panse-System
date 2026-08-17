@@ -1327,18 +1327,20 @@ def preflight(db: Session, plan) -> list[dict]:
         return [policy_check]
     _srows, sstats = build_signup_rows(db, plan)
     _drows, dstats = build_discount_rows(db, plan)
+    supplement_scope = authorized_supplement_items(plan)
     if platform_scope_present(plan):
         qualified = platform_qualified_items(plan)
         no_sales = platform_no_sales_items(plan)
+        signup_allowed = qualified | supplement_scope
+        discount_allowed = qualified | no_sales | supplement_scope
         _srows = [row for row in _srows
-                  if str(row.get("taobao_item_id") or "") in qualified]
+                  if str(row.get("taobao_item_id") or "") in signup_allowed]
         _drows = [row for row in _drows
-                  if str(row.get("taobao_item_id") or "") in qualified | no_sales]
-        sstats["platform_preflight_scope_items"] = sorted(qualified)
+                  if str(row.get("taobao_item_id") or "") in discount_allowed]
+        sstats["platform_preflight_scope_items"] = sorted(signup_allowed)
         sstats["platform_preflight_scope_rows"] = len(_srows)
-        dstats["platform_preflight_scope_items"] = sorted(qualified | no_sales)
+        dstats["platform_preflight_scope_items"] = sorted(discount_allowed)
         dstats["platform_preflight_scope_rows"] = len(_drows)
-    supplement_scope = authorized_supplement_items(plan)
     if supplement_scope:
         # Corrective runs must preflight the exact same item set that will be
         # uploaded.  An unrelated qualified item with stale/missing evidence
@@ -1986,8 +1988,14 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         }
     qualified_scope = platform_qualified_items(plan)
     no_sales_scope = platform_no_sales_items(plan)
+    supplement_scope = authorized_supplement_items(plan)
     if platform_scope_present(plan):
-        allowed = qualified_scope | no_sales_scope
+        # A prior platform probe is historical evidence.  An exact supplement
+        # marker is current-turn authorization to retry those items through all
+        # normal price, SKU-completeness, and final-feedback gates.  Do not
+        # silently erase their already-safe rows merely because the previous
+        # probe classified them as hard failures.
+        allowed = qualified_scope | no_sales_scope | supplement_scope
         rows = [
             row for row in rows
             if str(row.get("taobao_item_id") or "") in allowed
@@ -2597,12 +2605,14 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             "stats": stats,
         })
     qualified_scope = platform_qualified_items(plan)
+    supplement_scope = authorized_supplement_items(plan)
     if platform_scope_present(plan):
+        allowed = qualified_scope | supplement_scope
         rows = [
             row for row in rows
-            if str(row.get("taobao_item_id") or "") in qualified_scope
+            if str(row.get("taobao_item_id") or "") in allowed
         ]
-        stats["platform_qualified_items"] = sorted(qualified_scope)
+        stats["platform_qualified_items"] = sorted(allowed)
         stats["platform_qualified_rows"] = len(rows)
 
     super_reduce = str(getattr(plan, "campaign_type", "")) == "super_reduce"
@@ -2615,7 +2625,6 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
             and str(row.get("item_id") or "") not in expected_items
         } - {""}
-        supplement_scope = authorized_supplement_items(plan)
         # A corrective supplement deliberately uploads only the exact authorized
         # item.  Existing active rows in the already-qualified plan scope must be
         # preserved and audited, not treated as an instruction to withdraw them
