@@ -1338,6 +1338,23 @@ def preflight(db: Session, plan) -> list[dict]:
         sstats["platform_preflight_scope_rows"] = len(_srows)
         dstats["platform_preflight_scope_items"] = sorted(qualified | no_sales)
         dstats["platform_preflight_scope_rows"] = len(_drows)
+    supplement_scope = authorized_supplement_items(plan)
+    if supplement_scope:
+        # Corrective runs must preflight the exact same item set that will be
+        # uploaded.  An unrelated qualified item with stale/missing evidence
+        # may be held, but must not block a fully evidenced scoped retry.
+        _srows = [
+            row for row in _srows
+            if str(row.get("taobao_item_id") or "") in supplement_scope
+        ]
+        _drows = [
+            row for row in _drows
+            if str(row.get("taobao_item_id") or "") in supplement_scope
+        ]
+        sstats["supplement_preflight_scope_items"] = sorted(supplement_scope)
+        sstats["supplement_preflight_scope_rows"] = len(_srows)
+        dstats["supplement_preflight_scope_items"] = sorted(supplement_scope)
+        dstats["supplement_preflight_scope_rows"] = len(_drows)
     nosales = sorted(no_sales_service.get_no_sales(db))
     holds = price_hold_items(db, plan)
     coupon_holds = []

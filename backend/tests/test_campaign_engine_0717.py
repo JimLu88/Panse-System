@@ -1342,6 +1342,26 @@ def test_partial_final_import_is_not_retried_blindly(db_session, monkeypatch):
     assert cs._plan_single_discount_activity_ids(plan) == {}
 
 
+def test_corrective_preflight_checks_only_authorized_upload_scope(db_session):
+    plan = _plan(db_session, "super_reduce")
+    target_item = "100000009523"
+    unrelated_item = "100000009524"
+    plan.remark = f"supplement_items_authorized={target_item}"
+    _mk(db_session, "PPSQSCOPE3", "PPSQSCOPE301", target_item, "76031",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQSCOPE4", "PPSQSCOPE401", unrelated_item, "76041",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [(target_item, "76031", 2000, 1030)])
+
+    checks = cs.preflight(db_session, plan)
+    r17 = next(check for check in checks if check["rule"] == "R17")
+
+    assert r17["level"] == "pass"
+    assert r17["checked"] == 1
+    assert r17["items"] == []
+
+
 def test_existing_single_discount_activity_is_modified_one_item_per_job(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
