@@ -869,6 +869,86 @@ def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
     assert calls[1]["expected_rows"] == 1
 
 
+def test_super_reduce_supplement_preserves_known_active_items(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "supplement_items_authorized=100000009501; "
+        "platform_qualified_items=100000009501,100000009502; "
+        "official_active_items=100000009501,100000009502"
+    )
+    _mk(db_session, "PPSQSCOPE3", "PPSQSCOPE301", "100000009501", "75401",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQSCOPE4", "PPSQSCOPE401", "100000009502", "75402",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        ("100000009501", "75401", 2000, 1030),
+        ("100000009502", "75402", 2000, 1133),
+    ])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+    monkeypatch.setattr(
+        cs,
+        "refresh_floor_evidence_from_current_activity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "rows": [{
+                "item_id": "100000009502",
+                "sku_id": "75402",
+                "status": "活动中",
+                "activity_price": 1600,
+            }],
+            "floor_refresh": {"observed": 2},
+        },
+    )
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is True
+    assert result["stats"]["pending_items"] == ["100000009501"]
+    assert result["stats"]["preserved_active_items_outside_supplement"] == [
+        "100000009502"
+    ]
+    assert calls[0]["channel"] == "super_reduce"
+    assert calls[0]["expected_rows"] == 1
+
+
+def test_super_reduce_supplement_still_blocks_unknown_active_items(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "supplement_items_authorized=100000009501; "
+        "platform_qualified_items=100000009501; "
+        "official_active_items=100000009501"
+    )
+    _mk(db_session, "PPSQSCOPE5", "PPSQSCOPE501", "100000009501", "75501",
+        daily=1500, big=1000)
+    db_session.commit()
+    _seed_platform_floors(
+        db_session, [("100000009501", "75501", 2000, 1030)])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+    monkeypatch.setattr(
+        cs,
+        "refresh_floor_evidence_from_current_activity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "rows": [{"item_id": "100000009599", "status": "活动中"}],
+            "floor_refresh": {"observed": 1},
+        },
+    )
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is False
+    assert result["step"] == "super_reduce_unexpected_active_scope_guard"
+    assert result["unexpected_active_items"] == ["100000009599"]
+    assert calls == []
+
+
 def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     plan.remark = (

@@ -2297,11 +2297,28 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
 
         expected_items = {str(row.get("taobao_item_id") or "") for row in rows}
-        unexpected_active_items = sorted({
+        active_outside_upload = {
             str(row.get("item_id") or "") for row in live_rows
             if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
             and str(row.get("item_id") or "") not in expected_items
-        } - {""})
+        } - {""}
+        supplement_scope = authorized_supplement_items(plan)
+        # A corrective supplement deliberately uploads only the exact authorized
+        # item.  Existing active rows in the already-qualified plan scope must be
+        # preserved and audited, not treated as an instruction to withdraw them
+        # or as a reason to block the supplement.  Unknown active rows remain a
+        # hard stop because they have not passed this plan's platform probe.
+        preserved_active_items: list[str] = []
+        if supplement_scope:
+            preserved_active_items = sorted(active_outside_upload & qualified_scope)
+            unexpected_active_items = sorted(
+                active_outside_upload - qualified_scope
+            )
+            stats["preserved_active_items_outside_supplement"] = (
+                preserved_active_items
+            )
+        else:
+            unexpected_active_items = sorted(active_outside_upload)
         if unexpected_active_items:
             return _stop_signup(db, plan, {
                 "step": "super_reduce_unexpected_active_scope_guard",
