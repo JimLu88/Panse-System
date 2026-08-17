@@ -232,6 +232,24 @@ def authorized_supplement_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def authorized_sku_refresh_items(plan) -> set[str]:
+    """Exact items whose physical Taobao SKU IDs were user-confirmed as rotated.
+
+    This authorization only permits an in-place full-SKU re-import.  It does
+    not authorize price changes, item withdrawal, or skipping the platform
+    qualification probe.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*sku_refresh_items_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
 def platform_qualified_items(plan) -> set[str]:
     """Items accepted by this campaign's latest pre-publish platform probe."""
     import re
@@ -1220,7 +1238,10 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     max_age = campaign_policy_service.floor_evidence_max_age_hours()
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     problems: list[dict] = []
-    authorized_new_items = new_item_no_history_authorized_items(plan)
+    authorized_new_items = (
+        new_item_no_history_authorized_items(plan)
+        | authorized_sku_refresh_items(plan)
+    )
     authorized_new_rows: list[dict] = []
     sku_by_id = {
         mapped_sid: sku
@@ -1260,7 +1281,11 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
                 "sku_code": row.get("sku_code"),
                 "signup_price": float(signup_price),
                 "erp_current_list_price": float(erp_list_price),
-                "reason": "user_confirmed_new_link_without_platform_history",
+                "reason": (
+                    "user_confirmed_rotated_sku_without_platform_history"
+                    if item_id in authorized_sku_refresh_items(plan)
+                    else "user_confirmed_new_link_without_platform_history"
+                ),
             })
             continue
         missing = [key for key in ("min_list_price", "min_coupon_line")
@@ -1608,7 +1633,17 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         return {"ok": False, "step": "qualification_current_export",
                 "error": current.get("error")}
     rows, stats = build_signup_rows(db, plan)
-    live_by_sku = {str(row["sku_id"]): row for row in current["rows"]}
+    qualification_rows = current["rows"]
+    if str(getattr(plan, "campaign_type", "")) == "super_reduce":
+        from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
+        # Paused rows are eligible for a fresh probe/re-import.  Treating them
+        # as already published made qualification disagree with push_signup.
+        qualification_rows = [
+            row for row in qualification_rows
+            if row.get("status") in (None, "", *ACTIVITY_IN_CAMPAIGN_STATUSES)
+        ]
+    live_by_sku = {str(row["sku_id"]): row for row in qualification_rows}
+    sku_refresh_scope = authorized_sku_refresh_items(plan)
     by_item: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         by_item[str(row["taobao_item_id"])].append(row)
@@ -1629,7 +1664,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
                 wrong_existing.append({"item_id": item_id, "mismatched_skus": mismatches})
             else:
                 already_correct.add(item_id)
-        elif any(current_row is not None for current_row in seen):
+        elif (any(current_row is not None for current_row in seen)
+              and item_id not in sku_refresh_scope):
             wrong_existing.append({"item_id": item_id, "error": "partial_existing_item"})
     wrong_existing_ids = {str(row["item_id"]) for row in wrong_existing}
 
@@ -2418,6 +2454,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         expected_by_item[str(row["taobao_item_id"])].append(row)
     correct_items: set[str] = set()
     wrong_published: list[dict] = []
+    authorized_refresh_existing: list[dict] = []
+    sku_refresh_scope = authorized_sku_refresh_items(plan)
     for item_id, item_rows in expected_by_item.items():
         seen = [live_by_sku.get(str(r["taobao_sku_id"])) for r in item_rows]
         if all(x is not None for x in seen):
@@ -2430,11 +2468,15 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
                 or abs(float(current["activity_price"]) - float(row["price"])) > 0.005
                 )
             ]
-            if mismatches:
+            if mismatches and item_id not in sku_refresh_scope:
                 wrong_published.append({"item_id": item_id, "mismatches": mismatches[:20]})
+            elif mismatches:
+                authorized_refresh_existing.append({
+                    "item_id": item_id, "mismatches": mismatches[:20],
+                })
             else:
                 correct_items.add(item_id)
-        elif any(x is not None for x in seen):
+        elif any(x is not None for x in seen) and item_id not in sku_refresh_scope:
             wrong_published.append({
                 "item_id": item_id,
                 "error": "已发布集合缺 SKU",
@@ -2443,8 +2485,18 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
                     if current is None
                 ][:20],
             })
+        elif any(x is not None for x in seen):
+            authorized_refresh_existing.append({
+                "item_id": item_id,
+                "error": "用户确认SKU轮换，允许完整SKU集合原位重导",
+                "missing_skus": [
+                    r["taobao_sku_id"] for r, current in zip(item_rows, seen)
+                    if current is None
+                ][:20],
+            })
     stats["correct_items_excluded"] = sorted(correct_items)
     stats["wrong_published_items"] = wrong_published
+    stats["authorized_sku_refresh_existing_items"] = authorized_refresh_existing
     if wrong_published:
         res = {"ok": False, "step": "published_price_guard",
                "error": f"发现 {len(wrong_published)} 个已发布商品错价/缺SKU，拒绝用新增导入覆盖",

@@ -76,18 +76,25 @@ def extract_no_sales_from_feedback(failed_items) -> set[str]:
 
 def extract_no_sales_only_from_feedback(failed_items) -> set[str]:
     """只返回失败原因纯粹为无动销的商品；混合价格/SKU失败不得兜底。"""
-    by_item: dict[str, list[str]] = {}
+    by_item: dict[str, list[tuple[str, str]]] = {}
     for row in failed_items or []:
         item_id = str((row or {}).get("item_id") or "").strip()
         if not item_id:
             continue
-        text = (str((row or {}).get("raw") or "") + " "
-                + str((row or {}).get("reason") or ""))
-        by_item.setdefault(item_id, []).append(text)
+        reason = str((row or {}).get("reason") or "").strip()
+        raw = str((row or {}).get("raw") or "").strip()
+        by_item.setdefault(item_id, []).append((reason, raw))
     out: set[str] = set()
-    for item_id, texts in by_item.items():
-        joined = " ".join(texts)
-        if (any(marker in joined for marker in _NO_SALES_MARKERS)
-                and not any(marker in joined for marker in _NON_NO_SALES_FAILURE_MARKERS)):
+    for item_id, rows in by_item.items():
+        # The platform's raw detail appends generic policy copy such as
+        # “最低标价” even when the parsed terminal reason is only no-sales.
+        # Prefer every explicit parsed reason; use raw text only when the
+        # parser could not produce a reason at all.
+        classified = [reason if reason else raw for reason, raw in rows]
+        if (classified
+                and all(any(marker in text for marker in _NO_SALES_MARKERS)
+                        for text in classified)
+                and not any(any(marker in text for marker in _NON_NO_SALES_FAILURE_MARKERS)
+                            for text in classified)):
             out.add(item_id)
     return out

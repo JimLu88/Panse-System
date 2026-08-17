@@ -247,6 +247,53 @@ def test_platform_qualification_accepts_coupon_only_failure_when_planned_discoun
     assert result["hard_failed_item_ids"] == []
 
 
+def test_no_sales_classifier_prefers_terminal_reason_over_policy_boilerplate():
+    feedback = [{
+        "item_id": "1000009218",
+        "sku_id": "72918",
+        "reason": "动销不达标(近60天销量<1)",
+        "raw": (
+            "参加活动须满足动销校验。活动期间的标价不得高于近15天最低标价；"
+            "此段为平台通用政策说明，不是本行的第二个失败原因。"
+        ),
+    }]
+
+    assert ns.extract_no_sales_only_from_feedback(feedback) == {"1000009218"}
+
+
+def test_platform_qualification_allows_exact_authorized_sku_refresh(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    item_id = "1000009219"
+    plan.remark = f"sku_refresh_items_authorized={item_id}"
+    _mk(db_session, "PPSROT01", "PPSROT0101", item_id, "NEW-SID",
+        daily=1200, big=800)
+    _mk(db_session, "PPSROT01", "PPSROT0199", item_id, "KEEP-SID",
+        daily=500, big=400, placeholder=True, line=350)
+    db_session.commit()
+
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *a, **k: {
+        "ok": True,
+        "rows": [{
+            "item_id": item_id, "sku_id": "KEEP-SID", "status": "活动中",
+            "activity_price": 397,
+        }],
+        "floor_refresh": {"observed": 1},
+    })
+    monkeypatch.setattr(cs, "_upload_and_wait", lambda *a, **k: {
+        "ok": True,
+        "validation": {
+            "total_items": 1, "ok": 1, "failed": 0, "failed_items": [],
+        },
+    })
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert result["qualified_item_ids"] == [item_id]
+    assert result["wrong_existing_items"] == []
+
+
 def test_platform_qualification_keeps_coupon_failure_hard_when_internal_floor_hold_remains(
         db_session, monkeypatch):
     plan = _plan(db_session, "big88")
@@ -984,6 +1031,54 @@ def test_super_reduce_supplement_preserves_known_active_items(
     ]
     assert calls[0]["channel"] == "super_reduce"
     assert calls[0]["expected_rows"] == 1
+
+
+def test_super_reduce_exact_authorized_sku_refresh_reimports_complete_item(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    item_id = "100000009503"
+    plan.remark = (
+        f"supplement_items_authorized={item_id}; "
+        f"platform_qualified_items={item_id}; "
+        f"sku_refresh_items_authorized={item_id}"
+    )
+    _mk(db_session, "PPSQROT1", "PPSQROT101", item_id, "75601",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQROT1", "PPSQROT102", item_id, "75602",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(
+        db_session, [(item_id, "75601", 2000, 1030)])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+    monkeypatch.setattr(
+        cs,
+        "refresh_floor_evidence_from_current_activity",
+        lambda *args, **kwargs: {
+            "ok": True,
+            "rows": [{
+                "item_id": item_id,
+                "sku_id": "75601",
+                "status": "活动中",
+                "activity_price": 1500,
+            }],
+            "floor_refresh": {"observed": 1},
+        },
+    )
+    monkeypatch.setattr(cs, "preflight", lambda *args, **kwargs: [])
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is True
+    assert result["stats"]["pending_items"] == [item_id]
+    assert result["stats"]["authorized_sku_refresh_existing_items"] == [{
+        "item_id": item_id,
+        "error": "用户确认SKU轮换，允许完整SKU集合原位重导",
+        "missing_skus": ["75602"],
+    }]
+    assert calls[0]["channel"] == "super_reduce"
+    assert calls[0]["expected_rows"] == 2
 
 
 def test_super_reduce_supplement_still_blocks_unknown_active_items(
