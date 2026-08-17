@@ -1530,19 +1530,59 @@ def _set_plan_single_discount_activity_ids(plan, mapping: dict[str, str]) -> Non
     )
 
 
+def _plan_single_discount_refreshed_activity_ids(plan) -> dict[str, str]:
+    """Read bindings proven after an authorized physical-SKU rotation."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*single_discount_refreshed_activity_ids\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    return {
+        item_id: activity_id
+        for item_id, activity_id in re.findall(
+            r"(\d{8,})\s*:\s*(\d+)", matched.group(1))
+    }
+
+
+def _set_plan_single_discount_refreshed_activity_ids(
+        plan, mapping: dict[str, str]) -> None:
+    """Persist exact post-rotation item/activity evidence idempotently."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = (
+        r"(?:^|[;\n；])\s*single_discount_refreshed_activity_ids\s*=\s*[^;\n；]*"
+    )
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    value = ",".join(
+        f"{item_id}:{mapping[item_id]}" for item_id in sorted(mapping)
+    )
+    plan.remark = (
+        f"{text}; single_discount_refreshed_activity_ids={value}"
+        if text else f"single_discount_refreshed_activity_ids={value}"
+    )
+
+
 def _single_discount_existing_activity_conflicts(
         result: dict, by_item: dict[str, list[dict]],
-        known_activity_ids: set[str]) -> dict[str, str]:
+        known_activity_ids: set[str], *,
+        allow_unrecognized_activity_ids: bool = False) -> dict[str, str]:
     """Return complete item bindings proven by the platform failure workbook.
 
     A binding is accepted only when every expected SKU of that item failed with
-    the same "already joined" activity ID and that activity ID is already known
-    to belong to this exact-period plan.  Partial/mixed/unknown evidence stops.
+    the same "already joined" activity ID.  Normally that ID must already be
+    known to this plan.  A newly created post-rotation ID may be accepted as a
+    candidate only when explicitly enabled; the existing-activity editor then
+    verifies exact item and exact period before any write.  Partial/mixed
+    evidence always stops.
     """
     import re
 
-    if result.get("submitted"):
-        return {}
     final_import = result.get("final_import")
     if not isinstance(final_import, dict):
         return {}
@@ -1562,7 +1602,8 @@ def _single_discount_existing_activity_conflicts(
         if item_id not in by_item or not sku_id or not matched:
             return {}
         activity_id = matched.group(1)
-        if activity_id not in known_activity_ids:
+        if (activity_id not in known_activity_ids
+                and not allow_unrecognized_activity_ids):
             return {}
         if item_id in bindings and bindings[item_id] != activity_id:
             return {}
@@ -1964,7 +2005,12 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         # exact user-authorized refresh scope, keep the old activity untouched
         # and submit the complete new physical-SKU set as a new batch.  Platform
         # rejection remains terminal; this never withdraws or rewrites old rows.
-        rotated_new_batch_items = set(by_item) & authorized_sku_refresh_items(plan)
+        refreshed_activity_ids = _plan_single_discount_refreshed_activity_ids(plan)
+        rotated_new_batch_items = {
+            item_id
+            for item_id in set(by_item) & authorized_sku_refresh_items(plan)
+            if refreshed_activity_ids.get(item_id) != activity_ids.get(item_id)
+        }
         editable_activity_ids = {
             item_id: activity_id
             for item_id, activity_id in activity_ids.items()
@@ -2006,18 +2052,47 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                 if not new_result.get("ok"):
                     discovered = (
                         _single_discount_existing_activity_conflicts(
-                            new_result, by_item, set(activity_ids.values()))
+                            new_result, by_item, set(activity_ids.values()),
+                            allow_unrecognized_activity_ids=True)
                         if phase == "commit" and not _existing_conflict_retry
                         else {}
                     )
                     if discovered:
+                        final_import = new_result.get("final_import") or {}
+                        if int(final_import.get("ok") or 0) > 0:
+                            # Successful rows in a partial import are already
+                            # live, but their activity ID is absent from the
+                            # failure workbook.  Never resend them blindly.
+                            res = {
+                                "ok": False,
+                                "step": "single_item_discount_partial_import",
+                                "error": "单品立减部分成功已生效，必须先回读活动后再继续",
+                                "committed_rows": int(final_import.get("ok") or 0),
+                                "failed_rows": int(final_import.get("failed") or 0),
+                                "discovered_existing_activity_ids": discovered,
+                                "completed_item_ids": existing_items,
+                                "failed_item_ids": new_item_ids,
+                                "item_results": item_results,
+                                "stats": stats,
+                            }
+                            return res
                         merged_activity_ids = {**activity_ids, **discovered}
+                        refreshed_ids = {
+                            **_plan_single_discount_refreshed_activity_ids(plan),
+                            **discovered,
+                        }
                         _set_plan_single_discount_activity_ids(
                             plan, merged_activity_ids)
-                        db.commit()
+                        _set_plan_single_discount_refreshed_activity_ids(
+                            plan, refreshed_ids)
                         retry_result = push_discount(
                             db, plan, phase=phase,
                             _existing_conflict_retry=True)
+                        if not retry_result.get("ok"):
+                            # Candidate bindings become durable only after the
+                            # editor proves exact item, exact period and all SKUs.
+                            db.rollback()
+                            retry_result["candidate_single_discount_activity_ids"] = discovered
                         retry_result["reconciled_single_discount_activity_ids"] = discovered
                         return retry_result
                     res = {
@@ -2050,6 +2125,33 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
             plan=plan, expected_rows=len(rows),
         )
         stats["single_discount_execution_mode"] = "new_activity_batch"
+        if (not res.get("ok") and phase == "commit"
+                and not _existing_conflict_retry):
+            discovered = _single_discount_existing_activity_conflicts(
+                res, by_item, set(), allow_unrecognized_activity_ids=True)
+            if discovered:
+                final_import = res.get("final_import") or {}
+                if int(final_import.get("ok") or 0) > 0:
+                    res = {
+                        "ok": False,
+                        "step": "single_item_discount_partial_import",
+                        "error": "单品立减部分成功已生效，必须先回读活动后再继续",
+                        "committed_rows": int(final_import.get("ok") or 0),
+                        "failed_rows": int(final_import.get("failed") or 0),
+                        "discovered_existing_activity_ids": discovered,
+                    }
+                else:
+                    _set_plan_single_discount_activity_ids(plan, discovered)
+                    _set_plan_single_discount_refreshed_activity_ids(
+                        plan, discovered)
+                    retry_result = push_discount(
+                        db, plan, phase=phase,
+                        _existing_conflict_retry=True)
+                    if not retry_result.get("ok"):
+                        db.rollback()
+                        retry_result["candidate_single_discount_activity_ids"] = discovered
+                    retry_result["reconciled_single_discount_activity_ids"] = discovered
+                    return retry_result
     res["stats"] = stats
     if res.get("ok") and phase == "commit":
         plan.status = "discount_pushed"

@@ -1170,7 +1170,7 @@ def test_rotated_skus_bypass_old_discount_drawer_and_use_new_batch(
     assert result["stats"]["single_discount_rotated_new_batch_items"] == [item_id]
 
 
-def test_new_batch_reconciles_complete_existing_activity_conflicts_once(
+def test_partial_new_batch_stops_without_resending_successes(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     rotated_item = "100000009515"
@@ -1216,14 +1216,15 @@ def test_new_batch_reconciles_complete_existing_activity_conflicts_once(
 
     result = cs.push_discount(db_session, plan, phase="commit")
 
-    assert result["ok"] is True
-    assert result["reconciled_single_discount_activity_ids"] == {
+    assert result["ok"] is False
+    assert result["step"] == "single_item_discount_partial_import"
+    assert result["discovered_existing_activity_ids"] == {
         existing_item: "142591608100",
     }
-    assert len(calls) == 3
-    assert calls[1]["campaign_id"] == "142591608100"
-    assert calls[2]["campaign_id"] is None
-    assert cs._plan_single_discount_activity_ids(plan)[existing_item] == "142591608100"
+    assert len(calls) == 1
+    assert cs._plan_single_discount_activity_ids(plan) == {
+        "100000009599": "142591608100",
+    }
 
 
 def test_existing_activity_conflict_rejects_partial_sku_evidence():
@@ -1248,6 +1249,97 @@ def test_existing_activity_conflict_rejects_partial_sku_evidence():
 
     assert cs._single_discount_existing_activity_conflicts(
         result, rows, {"142591608100"}) == {}
+
+
+def test_rotated_conflict_recovers_new_activity_and_uses_exact_editor(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    item_id = "100000009518"
+    plan.remark = (
+        f"sku_refresh_items_authorized={item_id}; "
+        f"supplement_items_authorized={item_id}"
+    )
+    _mk(db_session, "PPSQROT8", "PPSQROT801", item_id, "75981",
+        daily=1500, big=1000)
+    db_session.commit()
+    _seed_platform_floors(db_session, [(item_id, "75981", 2000, 1030)])
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append({"campaign_id": kwargs.get("discount_activity_id")})
+        if len(calls) == 1:
+            return {
+                "ok": False,
+                "submitted": False,
+                "final_import": {
+                    "ok": 0,
+                    "failed": 1,
+                    "failed_rows": [{
+                        "item_id": item_id,
+                        "sku_id": "75981",
+                        "reason": "已经参加了单品立减活动，id：142797717830",
+                    }],
+                },
+            }
+        return {"ok": True, "submitted": True}
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert calls == [
+        {"campaign_id": None},
+        {"campaign_id": "142797717830"},
+    ]
+    assert cs._plan_single_discount_activity_ids(plan)[item_id] == "142797717830"
+    assert cs._plan_single_discount_refreshed_activity_ids(plan)[item_id] == "142797717830"
+
+
+def test_partial_final_import_is_not_retried_blindly(db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    created_item = "100000009519"
+    existing_item = "100000009520"
+    plan.remark = (
+        f"sku_refresh_items_authorized={created_item}; "
+        f"supplement_items_authorized={created_item},{existing_item}"
+    )
+    _mk(db_session, "PPSQPART9", "PPSQPART901", created_item, "75991",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQPART0", "PPSQPART001", existing_item, "76001",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        (created_item, "75991", 2000, 1030),
+        (existing_item, "76001", 2000, 1133),
+    ])
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append(kwargs.get("discount_activity_id"))
+        return {
+            "ok": False,
+            "submitted": True,
+            "final_import": {
+                "ok": 1,
+                "failed": 1,
+                "failed_rows": [{
+                    "item_id": existing_item,
+                    "sku_id": "76001",
+                    "reason": "已经参加了单品立减活动，id：142591608100",
+                }],
+            },
+        }
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is False
+    assert result["step"] == "single_item_discount_partial_import"
+    assert result["committed_rows"] == 1
+    assert calls == [None]
+    assert cs._plan_single_discount_activity_ids(plan) == {}
 
 
 def test_existing_single_discount_activity_is_modified_one_item_per_job(
