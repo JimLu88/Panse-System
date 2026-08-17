@@ -1887,14 +1887,25 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
         # 打开一个商品并逐 SKU 回读。绝不能把全店行一次交给该入口，否则
         # Web-Agent 只能修改/证明一个商品。逐商品执行也让中断后的重跑保持幂等。
         item_results: list[dict] = []
-        existing_items = sorted(set(by_item) & set(activity_ids))
+        # A rotated physical skuId cannot be found in the old activity's edit
+        # drawer even though the item itself has an activity binding.  For the
+        # exact user-authorized refresh scope, keep the old activity untouched
+        # and submit the complete new physical-SKU set as a new batch.  Platform
+        # rejection remains terminal; this never withdraws or rewrites old rows.
+        rotated_new_batch_items = set(by_item) & authorized_sku_refresh_items(plan)
+        editable_activity_ids = {
+            item_id: activity_id
+            for item_id, activity_id in activity_ids.items()
+            if item_id not in rotated_new_batch_items
+        }
+        existing_items = sorted(set(by_item) & set(editable_activity_ids))
         for item_id in existing_items:
             item_rows = by_item[item_id]
             item_result = _upload_and_wait(
                 db, "single_item_discount", phase, _build_discount_xlsx(item_rows),
                 _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
                 plan=plan, expected_rows=len(item_rows),
-                discount_activity_id=activity_ids[item_id],
+                discount_activity_id=editable_activity_ids[item_id],
             )
             item_results.append({"item_id": item_id, **item_result})
             if not item_result.get("ok"):
@@ -1910,7 +1921,7 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
                 }
                 break
         else:
-            new_item_ids = sorted(set(by_item) - set(activity_ids))
+            new_item_ids = sorted(set(by_item) - set(editable_activity_ids))
             new_rows = [row for item_id in new_item_ids for row in by_item[item_id]]
             if new_rows:
                 new_result = _upload_and_wait(
@@ -1938,7 +1949,10 @@ def push_discount(db: Session, plan, phase: str = "stage") -> dict:
         stats["single_discount_execution_mode"] = "per_item_existing_then_new_batch"
         stats["single_discount_expected_items"] = len(by_item)
         stats["single_discount_existing_items"] = existing_items
-        stats["single_discount_new_items"] = sorted(set(by_item) - set(activity_ids))
+        stats["single_discount_new_items"] = sorted(
+            set(by_item) - set(editable_activity_ids))
+        stats["single_discount_rotated_new_batch_items"] = sorted(
+            rotated_new_batch_items)
         stats["single_discount_processed_items"] = (
             len(by_item) if res.get("ok") else len(existing_items))
     else:

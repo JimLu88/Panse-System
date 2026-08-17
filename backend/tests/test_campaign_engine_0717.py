@@ -1143,6 +1143,33 @@ def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session
     assert result["stats"]["single_discount_execution_mode"] == "per_item_existing_then_new_batch"
 
 
+def test_rotated_skus_bypass_old_discount_drawer_and_use_new_batch(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    item_id = "100000009510"
+    plan.remark = (
+        f"single_discount_activity_ids={item_id}:142591608100; "
+        f"sku_refresh_items_authorized={item_id}"
+    )
+    _mk(db_session, "PPSQROT2", "PPSQROT201", item_id, "75901",
+        daily=1500, big=1000)
+    db_session.commit()
+    _seed_platform_floors(db_session, [(item_id, "75901", 2000, 1030)])
+    calls = []
+    _mock_wa(monkeypatch, calls)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert len(calls) == 1
+    assert calls[0]["channel"] == "single_item_discount"
+    assert calls[0].get("campaign_id") is None
+    assert calls[0]["item_ids"] == [item_id]
+    assert result["stats"]["single_discount_existing_items"] == []
+    assert result["stats"]["single_discount_new_items"] == [item_id]
+    assert result["stats"]["single_discount_rotated_new_batch_items"] == [item_id]
+
+
 def test_existing_single_discount_activity_is_modified_one_item_per_job(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
