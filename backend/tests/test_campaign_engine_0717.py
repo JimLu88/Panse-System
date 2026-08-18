@@ -192,6 +192,41 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
     assert cs.official_scope_for_plan(plan)["errors"] == []
 
 
+def test_platform_qualification_limits_supplement_and_preserves_prior_scope(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "supplement_items_authorized=1000009221; "
+        "platform_qualified_items=1000009222; "
+        "platform_hard_failed_items=1000009221"
+    )
+    _mk(db_session, "PPSQUALS1", "PPSQUALS101", "1000009221", "72921",
+        daily=1200, big=800)
+    _mk(db_session, "PPSQUALS2", "PPSQUALS201", "1000009222", "72922",
+        daily=1300, big=900)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append(kwargs)
+        return {
+            "ok": True,
+            "validation": {"total_items": 1, "ok": 1, "failed": 0},
+        }
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is True
+    assert calls[0]["expected_items"] == 1
+    assert cs.platform_qualified_items(plan) == {"1000009221", "1000009222"}
+    assert cs.platform_hard_failed_items(plan) == set()
+    assert cs.authorized_supplement_items(plan) == {"1000009221"}
+
+
 def test_platform_qualification_isolates_non_sales_failure_and_continues(db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     _mk(db_session, "PPSQUAL3", "PPSQUAL301", "1000009211", "72903", daily=1400, big=950)
@@ -988,6 +1023,7 @@ def test_authorized_supplement_scope_limits_discount_and_signup_uploads(
     assert signup["stats"]["pending_items"] == ["100000009501"]
     assert calls[1]["channel"] == "super_reduce"
     assert calls[1]["expected_rows"] == 1
+    assert cs.authorized_supplement_items(plan) == set()
 
 
 def test_super_reduce_supplement_preserves_known_active_items(

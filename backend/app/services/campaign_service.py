@@ -1814,6 +1814,19 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         return {"ok": False, "step": "qualification_current_export",
                 "error": current.get("error")}
     rows, stats = build_signup_rows(db, plan)
+    supplement_scope = authorized_supplement_items(plan)
+    rows, missing_scope = _apply_authorized_supplement_scope(plan, rows, stats)
+    if missing_scope:
+        return {
+            "ok": False,
+            "step": "qualification_supplement_scope_guard",
+            "error": "补报授权商品未全部出现在安全报名行中，已停止平台资格检查",
+            "missing_items": missing_scope,
+            "stats": stats,
+        }
+    prior_qualified = platform_qualified_items(plan)
+    prior_no_sales = platform_no_sales_items(plan)
+    prior_hard_failed = platform_hard_failed_items(plan)
     qualification_rows = current["rows"]
     if str(getattr(plan, "campaign_type", "")) == "super_reduce":
         from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
@@ -1869,15 +1882,22 @@ def qualify_signup_scope(db: Session, plan) -> dict:
 
     if not probe_rows:
         qualified = set(already_correct)
+        if supplement_scope:
+            qualified |= prior_qualified
         no_sales_service.remove_no_sales(db, qualified)
         _set_plan_item_marker(plan, "platform_qualified_items", qualified)
-        _set_plan_item_marker(plan, "platform_no_sales_items", set())
-        _set_plan_item_marker(plan, "platform_hard_failed_items", set())
+        _set_plan_item_marker(
+            plan, "platform_no_sales_items",
+            (prior_no_sales - supplement_scope) if supplement_scope else set())
+        _set_plan_item_marker(
+            plan, "platform_hard_failed_items",
+            (prior_hard_failed - supplement_scope) if supplement_scope else set())
         _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
         _remove_plan_marker(plan, "official_all_store")
         _remove_plan_marker(plan, "official_exempt_items")
         _set_plan_item_marker(plan, "official_active_items", qualified)
-        _remove_plan_marker(plan, "supplement_items_authorized")
+        if not supplement_scope:
+            _remove_plan_marker(plan, "supplement_items_authorized")
         db.commit()
         return {"ok": True, "no_change": True,
                 "qualified_item_ids": sorted(qualified),
@@ -1991,17 +2011,27 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         | (candidate_items - failed_ids)
         | planned_discount_qualified_ids
     )
+    marker_qualified = qualified | prior_qualified if supplement_scope else qualified
+    marker_no_sales = (
+        (prior_no_sales - supplement_scope) | no_sales_ids
+        if supplement_scope else no_sales_ids
+    )
+    marker_hard_failed = (
+        (prior_hard_failed - supplement_scope) | hard_failed_ids
+        if supplement_scope else hard_failed_ids
+    )
     no_sales_service.add_no_sales(db, no_sales_ids)
     no_sales_service.remove_no_sales(db, qualified)
-    _set_plan_item_marker(plan, "platform_qualified_items", qualified)
-    _set_plan_item_marker(plan, "platform_no_sales_items", no_sales_ids)
-    _set_plan_item_marker(plan, "platform_hard_failed_items", hard_failed_ids)
+    _set_plan_item_marker(plan, "platform_qualified_items", marker_qualified)
+    _set_plan_item_marker(plan, "platform_no_sales_items", marker_no_sales)
+    _set_plan_item_marker(plan, "platform_hard_failed_items", marker_hard_failed)
     _set_plan_item_marker(plan, "platform_existing_wrong_items", wrong_existing_ids)
     _remove_plan_marker(plan, "official_all_store")
     _remove_plan_marker(plan, "official_exempt_items")
-    _set_plan_item_marker(plan, "official_active_items", qualified)
+    _set_plan_item_marker(plan, "official_active_items", marker_qualified)
     # A one-off corrective retry marker must not survive a new full-scope probe.
-    _remove_plan_marker(plan, "supplement_items_authorized")
+    if not supplement_scope:
+        _remove_plan_marker(plan, "supplement_items_authorized")
     db.commit()
     return {"ok": True, "qualified_item_ids": sorted(qualified),
             "no_sales_item_ids": sorted(no_sales_ids),
@@ -2796,6 +2826,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     stats["pending_rows"] = len(pending)
     if not pending:
         plan.status = "signup_pushed"
+        _remove_plan_marker(plan, "supplement_items_authorized")
+        _remove_plan_marker(plan, "sku_refresh_items_authorized")
         db.commit()
         _clear_signup_failure_dedupe(db, plan)
         return {"ok": True, "no_change": True, "stats": stats,
@@ -2814,6 +2846,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         db, plan, res.get("validation"))
     if res.get("ok"):
         plan.status = "signup_pushed"
+        _remove_plan_marker(plan, "supplement_items_authorized")
+        _remove_plan_marker(plan, "sku_refresh_items_authorized")
         db.commit()
         _clear_signup_failure_dedupe(db, plan)
     else:
