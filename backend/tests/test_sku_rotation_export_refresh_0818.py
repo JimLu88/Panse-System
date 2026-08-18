@@ -6,7 +6,7 @@ from sqlalchemy import select
 
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
-from app.services import sku_rotation_service as svc
+from app.services import delisted_sku_service, sku_rotation_service as svc
 
 
 def _workbook(rows):
@@ -89,3 +89,55 @@ def test_export_refresh_rejects_item_or_product_mismatch(db_session):
         db_session, [bad_product], item_ids=["1047741358718"], dry_run=True)
     assert mismatch["ok"] is False
     assert "产品商家编码不符" in mismatch["error"]
+
+
+def test_export_refresh_retires_short_numeric_marker_rows(db_session):
+    _seed(db_session)
+    db_session.add(PricingSku(
+        product_code="PFG25250031226", sku_code="PFG2525003122698",
+        sku="配件", daily_price=Decimal("100"),
+    ))
+    db_session.add(PricingSkuPromo(
+        sku_code="PFG2525003122698", taobao_item_id="1047741358718",
+        taobao_sku_id="OLD-ACCESSORY", alt_taobao_sku_ids=[],
+    ))
+    db_session.commit()
+    file_bytes = _workbook([
+        ["1047741358718", "NEW-SID", "MCM", "PFG25250031226",
+         "PFG2525003122611", "1.2米"],
+        ["1047741358718", "OLD-SID", "MCM", "PFG25250031226", "97", "旧1.2米"],
+        ["1047741358718", "OLD-ACCESSORY", "MCM", "PFG25250031226", "73", "旧配件"],
+    ])
+
+    preview = svc.apply_export_mapping_refresh(
+        db_session, [file_bytes], item_ids=["1047741358718"], dry_run=True)
+    assert preview["ok"] is True
+    assert preview["explicit_mapping_rows"] == 1
+    assert preview["retired_mapping_rows"] == 2
+
+    result = svc.apply_export_mapping_refresh(
+        db_session, [file_bytes], item_ids=["1047741358718"], dry_run=False)
+    assert result["retired_sku_ids"] == ["OLD-ACCESSORY", "OLD-SID"]
+    assert delisted_sku_service.get_delisted(db_session) >= {
+        "OLD-ACCESSORY", "OLD-SID",
+    }
+    main = db_session.execute(select(PricingSkuPromo).where(
+        PricingSkuPromo.sku_code == "PFG2525003122611")).scalar_one()
+    accessory = db_session.execute(select(PricingSkuPromo).where(
+        PricingSkuPromo.sku_code == "PFG2525003122698")).scalar_one()
+    assert main.taobao_sku_id == "NEW-SID"
+    assert accessory.taobao_sku_id == "OLD-ACCESSORY"
+
+
+def test_export_refresh_still_rejects_unknown_real_merchant_code(db_session):
+    _seed(db_session)
+    file_bytes = _workbook([
+        ["1047741358718", "NEW-SID", "MCM", "PFG25250031226",
+         "PFG2525003122611", "1.2米"],
+        ["1047741358718", "BAD-SID", "MCM", "PFG25250031226",
+         "PFG25250031226TYPO", "错误编码"],
+    ])
+    result = svc.apply_export_mapping_refresh(
+        db_session, [file_bytes], item_ids=["1047741358718"], dry_run=True)
+    assert result["ok"] is False
+    assert "ERP不存在SKU商家编码" in result["error"]

@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 _SIZE_RE = re.compile(r"(\d+\.?\d*)\s*米")
+_RETIRED_MERCHANT_CODE_RE = re.compile(r"\d{1,4}")
 
 
 def _size_of(name: str) -> float | None:
@@ -176,11 +177,17 @@ def preview_export_mapping_refresh(
         records.extend(parsed)
         warnings.extend(file_warnings)
 
-    explicit = [
+    scoped = [
         row for row in records
         if str(row.get("taobao_item_id") or "").strip() in requested
         and str(row.get("sku_code_raw") or "").strip()
     ]
+    retired_marker_rows = [
+        row for row in scoped
+        if _RETIRED_MERCHANT_CODE_RE.fullmatch(
+            str(row.get("sku_code_raw") or "").strip())
+    ]
+    explicit = [row for row in scoped if row not in retired_marker_rows]
     found_items = {str(row.get("taobao_item_id") or "").strip() for row in explicit}
     missing_items = sorted(requested - found_items)
     if missing_items:
@@ -204,13 +211,46 @@ def preview_export_mapping_refresh(
             select(PricingSkuPromo).where(PricingSkuPromo.sku_code.in_(sku_codes))
         ).scalars()
     }
+    all_promos = db.execute(select(PricingSkuPromo)).scalars().all()
     all_promos_by_sid: dict[str, str] = {}
-    for promo in db.execute(select(PricingSkuPromo)).scalars():
+    all_promos_by_code = {promo.sku_code: promo for promo in all_promos}
+    for promo in all_promos:
         sid = str(promo.taobao_sku_id or "").strip()
         if sid:
             all_promos_by_sid.setdefault(sid, promo.sku_code)
 
+    # Operators clear retired Taobao rows by replacing the SKU merchant code
+    # with a short numeric marker (for example 73/97/98).  Those rows are not
+    # ERP mappings.  If their physical skuId is still owned by this same item,
+    # preserve the historical mapping but register the skuId as retired so the
+    # campaign builders cannot accidentally submit it again.
     errors: list[str] = []
+    retired_rows: list[dict] = []
+    for row in retired_marker_rows:
+        item_id = str(row.get("taobao_item_id") or "").strip()
+        sku_id = str(row.get("taobao_sku_id") or "").strip()
+        marker = str(row.get("sku_code_raw") or "").strip()
+        owner = all_promos_by_sid.get(sku_id)
+        promo = all_promos_by_code.get(owner) if owner else None
+        if not sku_id:
+            warnings.append(f"{item_id}/退役标记{marker}缺少skuId，已忽略")
+            continue
+        if promo is None:
+            warnings.append(f"{item_id}/{sku_id}退役标记{marker}无现存ERP映射，已忽略")
+            continue
+        if str(promo.taobao_item_id or "").strip() != item_id:
+            errors.append(
+                f"退役 skuId {sku_id} 当前属于其它商品: {promo.taobao_item_id}/{owner}"
+            )
+            continue
+        retired_rows.append({
+            "taobao_item_id": item_id,
+            "taobao_sku_id": sku_id,
+            "sku_code": owner,
+            "retired_marker": marker,
+            "sku_spec": row.get("sku_spec"),
+        })
+
     mappings: list[dict] = []
     seen_codes: set[str] = set()
     seen_sids: set[str] = set()
@@ -291,6 +331,11 @@ def preview_export_mapping_refresh(
         "requested_item_ids": sorted(requested),
         "explicit_mapping_rows": len(mappings),
         "changed_rows": sum(1 for row in mappings if row["changed"]),
+        "retired_mapping_rows": len(retired_rows),
+        "retired_rows": sorted(
+            retired_rows,
+            key=lambda row: (row["taobao_item_id"], row["taobao_sku_id"]),
+        ),
         "warnings": warnings,
         "mappings": mappings,
     }
@@ -304,8 +349,11 @@ def apply_export_mapping_refresh(
         dry_run: bool = True,
 ) -> dict:
     """Apply a verified Taobao-export mapping refresh in one transaction."""
+    import json
+
     from app.models.pricing_ext import PricingSkuPromo
     from app.models.taobao_listing import TaobaoListing
+    from app.services import delisted_sku_service, settings_service
 
     report = preview_export_mapping_refresh(db, workbooks, item_ids=item_ids)
     if not report.get("ok") or dry_run:
@@ -352,5 +400,22 @@ def apply_export_mapping_refresh(
                 "old_sku_id": mapping["old_sku_id"],
                 "new_sku_id": mapping["taobao_sku_id"],
             })
+    retired_ids = {
+        str(row.get("taobao_sku_id") or "").strip()
+        for row in report.get("retired_rows") or []
+    } - {""}
+    if retired_ids:
+        current = delisted_sku_service.get_delisted(db)
+        settings_service.set_value(
+            db,
+            "delisted_skuids",
+            json.dumps(sorted(current | retired_ids), ensure_ascii=False),
+            description="下架SKU登记(报名自动排除: 在售全报、下架不报)",
+        )
     db.commit()
-    return {**report, "dry_run": False, "changed": changed}
+    return {
+        **report,
+        "dry_run": False,
+        "changed": changed,
+        "retired_sku_ids": sorted(retired_ids),
+    }
