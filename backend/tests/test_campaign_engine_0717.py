@@ -1347,6 +1347,70 @@ def test_rotated_conflict_recovers_new_activity_and_uses_exact_editor(
     assert cs._plan_single_discount_refreshed_activity_ids(plan)[item_id] == "142797717830"
 
 
+def test_split_sku_activities_are_reconciled_and_edited_separately(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "super_reduce")
+    item_id = "100000009548"
+    plan.remark = (
+        f"sku_refresh_items_authorized={item_id}; "
+        f"supplement_items_authorized={item_id}"
+    )
+    _mk(db_session, "PPSQSPLIT1", "PPSQSPLIT101", item_id, "75481001",
+        daily=1500, big=1000)
+    _mk(db_session, "PPSQSPLIT1", "PPSQSPLIT102", item_id, "75481002",
+        daily=1600, big=1100)
+    db_session.commit()
+    _seed_platform_floors(db_session, [
+        (item_id, "75481001", 2000, 1030),
+        (item_id, "75481002", 2000, 1133),
+    ])
+    calls = []
+
+    def fake_upload(*args, **kwargs):
+        calls.append({
+            "campaign_id": kwargs.get("discount_activity_id"),
+            "expected_rows": kwargs.get("expected_rows"),
+        })
+        if len(calls) == 1:
+            return {
+                "ok": False,
+                "submitted": False,
+                "final_import": {
+                    "ok": 0,
+                    "failed": 2,
+                    "failed_rows": [
+                        {
+                            "item_id": item_id,
+                            "sku_id": "75481001",
+                            "reason": "已经参加了单品立减活动，id：142591608100",
+                        },
+                        {
+                            "item_id": item_id,
+                            "sku_id": "75481002",
+                            "reason": "已经参加了单品立减活动，id：142834680634",
+                        },
+                    ],
+                },
+            }
+        return {"ok": True, "submitted": True}
+
+    monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
+
+    result = cs.push_discount(db_session, plan, phase="commit")
+
+    assert result["ok"] is True
+    assert calls == [
+        {"campaign_id": None, "expected_rows": 2},
+        {"campaign_id": "142591608100", "expected_rows": 1},
+        {"campaign_id": "142834680634", "expected_rows": 1},
+    ]
+    assert cs._plan_single_discount_sku_activity_ids(plan) == {
+        "75481001": "142591608100",
+        "75481002": "142834680634",
+    }
+    assert item_id not in cs._plan_single_discount_activity_ids(plan)
+
+
 def test_partial_final_import_is_not_retried_blindly(db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     created_item = "100000009519"

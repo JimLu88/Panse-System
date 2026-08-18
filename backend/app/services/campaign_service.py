@@ -1609,6 +1609,50 @@ def _set_plan_single_discount_activity_ids(plan, mapping: dict[str, str]) -> Non
     )
 
 
+def _plan_single_discount_sku_activity_ids(plan) -> dict[str, str]:
+    """Read verified per-SKU single-discount activity bindings.
+
+    One Taobao item may have physical SKUs spread across multiple historical
+    single-item-discount activities.  The older item-level marker cannot
+    represent that state, so exact SKU bindings take precedence when present.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*single_discount_sku_activity_ids\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    return {
+        sku_id: activity_id
+        for sku_id, activity_id in re.findall(
+            r"(\d{8,})\s*:\s*(\d+)", matched.group(1)
+        )
+    }
+
+
+def _set_plan_single_discount_sku_activity_ids(
+        plan, mapping: dict[str, str]) -> None:
+    """Idempotently persist exact SKU-to-discount-activity bindings."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = (
+        r"(?:^|[;\n；])\s*single_discount_sku_activity_ids\s*=\s*[^;\n；]*"
+    )
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    value = ",".join(
+        f"{sku_id}:{mapping[sku_id]}" for sku_id in sorted(mapping)
+    )
+    plan.remark = (
+        f"{text}; single_discount_sku_activity_ids={value}"
+        if text else f"single_discount_sku_activity_ids={value}"
+    )
+
+
 def _plan_single_discount_refreshed_activity_ids(plan) -> dict[str, str]:
     """Read bindings proven after an authorized physical-SKU rotation."""
     import re
@@ -1647,18 +1691,65 @@ def _set_plan_single_discount_refreshed_activity_ids(
     )
 
 
+def _single_discount_existing_activity_sku_conflicts(
+        result: dict, by_item: dict[str, list[dict]],
+        known_activity_ids: set[str], *,
+        allow_unrecognized_activity_ids: bool = False) -> dict[str, str]:
+    """Return complete SKU bindings proven by the platform failure workbook.
+
+    Every expected SKU must be present exactly once with an "already joined"
+    activity ID.  Different SKUs of one item may legitimately point at
+    different historical activities.  A newly observed ID is only a candidate:
+    the exact existing-activity editor must still prove item, period and SKU
+    rows before the binding becomes durable.
+    """
+    import re
+
+    final_import = result.get("final_import")
+    if not isinstance(final_import, dict):
+        return {}
+    failed_rows = final_import.get("failed_rows")
+    if not isinstance(failed_rows, list) or not failed_rows:
+        return {}
+    if final_import.get("failed") != len(failed_rows):
+        return {}
+
+    expected = {
+        (str(item_id), str(row.get("taobao_sku_id") or "").strip())
+        for item_id, rows in by_item.items()
+        for row in rows
+    }
+    if not expected or any(not sku_id for _, sku_id in expected):
+        return {}
+    observed: set[tuple[str, str]] = set()
+    bindings: dict[str, str] = {}
+    pattern = re.compile(r"已经参加了单品立减活动\s*[，,]?\s*id\s*[：:]\s*(\d+)")
+    for row in failed_rows:
+        item_id = str((row or {}).get("item_id") or "").strip()
+        sku_id = str((row or {}).get("sku_id") or "").strip()
+        matched = pattern.search(str((row or {}).get("reason") or ""))
+        key = (item_id, sku_id)
+        if key not in expected or key in observed or not matched:
+            return {}
+        activity_id = matched.group(1)
+        if (activity_id not in known_activity_ids
+                and not allow_unrecognized_activity_ids):
+            return {}
+        observed.add(key)
+        bindings[sku_id] = activity_id
+    if observed != expected:
+        return {}
+    return bindings
+
+
 def _single_discount_existing_activity_conflicts(
         result: dict, by_item: dict[str, list[dict]],
         known_activity_ids: set[str], *,
         allow_unrecognized_activity_ids: bool = False) -> dict[str, str]:
-    """Return complete item bindings proven by the platform failure workbook.
+    """Return complete uniform item bindings from platform failure rows.
 
-    A binding is accepted only when every expected SKU of that item failed with
-    the same "already joined" activity ID.  Normally that ID must already be
-    known to this plan.  A newly created post-rotation ID may be accepted as a
-    candidate only when explicitly enabled; the existing-activity editor then
-    verifies exact item and exact period before any write.  Partial/mixed
-    evidence always stops.
+    This compatibility view can also identify one fully failed item inside a
+    partial import.  Split-activity items are handled by the SKU-level helper.
     """
     import re
 
@@ -1689,14 +1780,14 @@ def _single_discount_existing_activity_conflicts(
         bindings[item_id] = activity_id
         grouped[item_id].append(row)
 
-    for item_id, rows in grouped.items():
+    for item_id, failed_item_rows in grouped.items():
         expected_skus = {
             str(row.get("taobao_sku_id") or "").strip()
             for row in by_item[item_id]
         }
         failed_skus = {
             str((row or {}).get("sku_id") or "").strip()
-            for row in rows
+            for row in failed_item_rows
         }
         if not expected_skus or failed_skus != expected_skus:
             return {}
@@ -2094,11 +2185,86 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         stats["platform_discount_scope_rows"] = len(rows)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
-    activity_ids = _plan_single_discount_activity_ids(plan)
-    legacy_id = _plan_single_discount_activity_id(plan)
     by_item: dict[str, list[dict]] = defaultdict(list)
     for row in rows:
         by_item[str(row["taobao_item_id"])].append(row)
+    expected_item_ids = set(by_item)
+    sku_activity_ids = _plan_single_discount_sku_activity_ids(plan)
+    sku_bound_items: set[str] = set()
+    item_results: list[dict] = []
+    # Exact SKU bindings override the older item-level marker.  This is needed
+    # when one item was historically split across two single-discount
+    # activities.  Only a complete per-item SKU binding is used; partial
+    # evidence falls through to the normal guarded discovery path.
+    for item_id in sorted(by_item):
+        item_rows = by_item[item_id]
+        if not item_rows or not all(
+            str(row.get("taobao_sku_id") or "").strip() in sku_activity_ids
+            for row in item_rows
+        ):
+            continue
+        rows_by_activity: dict[str, list[dict]] = defaultdict(list)
+        for row in item_rows:
+            sku_id = str(row.get("taobao_sku_id") or "").strip()
+            rows_by_activity[sku_activity_ids[sku_id]].append(row)
+        for activity_id in sorted(rows_by_activity):
+            activity_rows = rows_by_activity[activity_id]
+            item_result = _upload_and_wait(
+                db, "single_item_discount", phase,
+                _build_discount_xlsx(activity_rows),
+                _fmt_dt(plan.start_at), _fmt_dt(plan.end_at),
+                plan=plan, expected_rows=len(activity_rows),
+                discount_activity_id=activity_id,
+            )
+            item_results.append({
+                "item_id": item_id,
+                "activity_id": activity_id,
+                "mode": "sku_activity_binding",
+                **item_result,
+            })
+            if not item_result.get("ok"):
+                stats["single_discount_execution_mode"] = "per_sku_activity"
+                stats["single_discount_expected_items"] = len(expected_item_ids)
+                stats["single_discount_sku_bound_items"] = sorted(sku_bound_items)
+                stats["single_discount_processed_items"] = len(sku_bound_items)
+                return {
+                    "ok": False,
+                    "step": "single_item_discount_per_sku_activity",
+                    "error": item_result.get("error") or "逐SKU活动修改失败",
+                    "failed_item_id": item_id,
+                    "failed_activity_id": activity_id,
+                    "completed_item_ids": sorted(sku_bound_items),
+                    "item_results": item_results,
+                    "stats": stats,
+                }
+        sku_bound_items.add(item_id)
+    if sku_bound_items:
+        by_item = defaultdict(list, {
+            item_id: item_rows
+            for item_id, item_rows in by_item.items()
+            if item_id not in sku_bound_items
+        })
+        rows = [row for item_rows in by_item.values() for row in item_rows]
+    if not by_item:
+        res = {
+            "ok": True,
+            "submitted": phase == "commit",
+            "processed_items": len(expected_item_ids),
+            "item_results": item_results,
+        }
+        stats["single_discount_execution_mode"] = "per_sku_activity"
+        stats["single_discount_expected_items"] = len(expected_item_ids)
+        stats["single_discount_sku_bound_items"] = sorted(sku_bound_items)
+        stats["single_discount_existing_items"] = sorted(sku_bound_items)
+        stats["single_discount_new_items"] = []
+        stats["single_discount_processed_items"] = len(expected_item_ids)
+        res["stats"] = stats
+        if phase == "commit":
+            plan.status = "discount_pushed"
+            db.commit()
+        return res
+    activity_ids = _plan_single_discount_activity_ids(plan)
+    legacy_id = _plan_single_discount_activity_id(plan)
     if not activity_ids and legacy_id:
         if len(by_item) != 1:
             return {
@@ -2114,7 +2280,6 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         # 千牛“修改优惠”是逐商品抽屉：同一活动可包含多商品，但每次只能
         # 打开一个商品并逐 SKU 回读。绝不能把全店行一次交给该入口，否则
         # Web-Agent 只能修改/证明一个商品。逐商品执行也让中断后的重跑保持幂等。
-        item_results: list[dict] = []
         # A rotated physical skuId cannot be found in the old activity's edit
         # drawer even though the item itself has an activity binding.  For the
         # exact user-authorized refresh scope, keep the old activity untouched
@@ -2165,6 +2330,13 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                 )
                 item_results.append({"item_ids": new_item_ids, "mode": "new_batch", **new_result})
                 if not new_result.get("ok"):
+                    discovered_skus = (
+                        _single_discount_existing_activity_sku_conflicts(
+                            new_result, by_item, set(activity_ids.values()),
+                            allow_unrecognized_activity_ids=True)
+                        if phase == "commit" and not _existing_conflict_retry
+                        else {}
+                    )
                     discovered = (
                         _single_discount_existing_activity_conflicts(
                             new_result, by_item, set(activity_ids.values()),
@@ -2172,7 +2344,7 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                         if phase == "commit" and not _existing_conflict_retry
                         else {}
                     )
-                    if discovered:
+                    if discovered_skus or discovered:
                         final_import = new_result.get("final_import") or {}
                         if int(final_import.get("ok") or 0) > 0:
                             # Successful rows in a partial import are already
@@ -2185,21 +2357,39 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                                 "committed_rows": int(final_import.get("ok") or 0),
                                 "failed_rows": int(final_import.get("failed") or 0),
                                 "discovered_existing_activity_ids": discovered,
+                                "discovered_existing_sku_activity_ids": discovered_skus,
                                 "completed_item_ids": existing_items,
                                 "failed_item_ids": new_item_ids,
                                 "item_results": item_results,
                                 "stats": stats,
                             }
                             return res
-                        merged_activity_ids = {**activity_ids, **discovered}
+                        uniform_items: dict[str, str] = {}
+                        for item_id, item_rows in by_item.items():
+                            item_activity_ids = {
+                                discovered_skus.get(str(
+                                    row.get("taobao_sku_id") or "").strip())
+                                for row in item_rows
+                            }
+                            if None not in item_activity_ids and len(item_activity_ids) == 1:
+                                uniform_items[item_id] = next(iter(item_activity_ids))
+                        merged_activity_ids = {
+                            **activity_ids, **discovered, **uniform_items,
+                        }
                         refreshed_ids = {
                             **_plan_single_discount_refreshed_activity_ids(plan),
-                            **discovered,
+                            **discovered, **uniform_items,
+                        }
+                        merged_sku_activity_ids = {
+                            **_plan_single_discount_sku_activity_ids(plan),
+                            **discovered_skus,
                         }
                         _set_plan_single_discount_activity_ids(
                             plan, merged_activity_ids)
                         _set_plan_single_discount_refreshed_activity_ids(
                             plan, refreshed_ids)
+                        _set_plan_single_discount_sku_activity_ids(
+                            plan, merged_sku_activity_ids)
                         retry_result = push_discount(
                             db, plan, phase=phase,
                             _existing_conflict_retry=True)
@@ -2208,7 +2398,9 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                             # editor proves exact item, exact period and all SKUs.
                             db.rollback()
                             retry_result["candidate_single_discount_activity_ids"] = discovered
+                            retry_result["candidate_single_discount_sku_activity_ids"] = discovered_skus
                         retry_result["reconciled_single_discount_activity_ids"] = discovered
+                        retry_result["reconciled_single_discount_sku_activity_ids"] = discovered_skus
                         return retry_result
                     res = {
                         "ok": False,
@@ -2242,9 +2434,11 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         stats["single_discount_execution_mode"] = "new_activity_batch"
         if (not res.get("ok") and phase == "commit"
                 and not _existing_conflict_retry):
+            discovered_skus = _single_discount_existing_activity_sku_conflicts(
+                res, by_item, set(), allow_unrecognized_activity_ids=True)
             discovered = _single_discount_existing_activity_conflicts(
                 res, by_item, set(), allow_unrecognized_activity_ids=True)
-            if discovered:
+            if discovered_skus or discovered:
                 final_import = res.get("final_import") or {}
                 if int(final_import.get("ok") or 0) > 0:
                     res = {
@@ -2254,18 +2448,36 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                         "committed_rows": int(final_import.get("ok") or 0),
                         "failed_rows": int(final_import.get("failed") or 0),
                         "discovered_existing_activity_ids": discovered,
+                        "discovered_existing_sku_activity_ids": discovered_skus,
                     }
                 else:
+                    uniform_items: dict[str, str] = {}
+                    for item_id, item_rows in by_item.items():
+                        item_activity_ids = {
+                            discovered_skus.get(str(
+                                row.get("taobao_sku_id") or "").strip())
+                            for row in item_rows
+                        }
+                        if None not in item_activity_ids and len(item_activity_ids) == 1:
+                            uniform_items[item_id] = next(iter(item_activity_ids))
+                    discovered = {**discovered, **uniform_items}
                     _set_plan_single_discount_activity_ids(plan, discovered)
                     _set_plan_single_discount_refreshed_activity_ids(
                         plan, discovered)
+                    _set_plan_single_discount_sku_activity_ids(
+                        plan, {
+                            **_plan_single_discount_sku_activity_ids(plan),
+                            **discovered_skus,
+                        })
                     retry_result = push_discount(
                         db, plan, phase=phase,
                         _existing_conflict_retry=True)
                     if not retry_result.get("ok"):
                         db.rollback()
                         retry_result["candidate_single_discount_activity_ids"] = discovered
+                        retry_result["candidate_single_discount_sku_activity_ids"] = discovered_skus
                     retry_result["reconciled_single_discount_activity_ids"] = discovered
+                    retry_result["reconciled_single_discount_sku_activity_ids"] = discovered_skus
                     return retry_result
     res["stats"] = stats
     if res.get("ok") and phase == "commit":
