@@ -474,12 +474,17 @@ def price_hold_items(db: Session, plan) -> list[dict]:
     这里只使用按 SKUID 采集且带时间戳的平台证据，不猜平台价保订单。暂缓商品不进入报名表
     或同期单品立减表；历史价格线只做资格判断，绝不参与最终到手价或单品立减计算。
     """
-    from app.services import campaign_price_floor_service, no_sales_service
+    from app.services import (
+        campaign_price_floor_service,
+        delisted_sku_service,
+        no_sales_service,
+    )
 
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
+    delisted = delisted_sku_service.get_delisted(db)
     no_sales = no_sales_service.get_no_sales(db)
     by_item: dict[str, dict] = {}
     for s, p in _mapped_pairs(db):
@@ -500,6 +505,11 @@ def price_hold_items(db: Session, plan) -> list[dict]:
             else _d(getattr(p, "big_buyer_price", None))
         )
         for sid in _expand_sku_ids(p):
+            # A rotated/de-bound physical SKU is no longer part of the current
+            # listing. Its historical floor evidence must not hold the whole
+            # replacement item after the new SKU mapping has been confirmed.
+            if str(sid) in delisted:
+                continue
             entry = evidence.get(str(sid)) if isinstance(evidence.get(str(sid)), dict) else {}
             min_list = _d(entry.get("min_list_price"))
             min_coupon = _d(entry.get("min_coupon_line"))

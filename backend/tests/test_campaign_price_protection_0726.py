@@ -7,6 +7,7 @@ from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_price_protection_service as pps
 from app.services import campaign_service
+from app.services import delisted_sku_service
 
 
 def _seed_platform_floors(db, rows):
@@ -116,6 +117,39 @@ def test_history_line_conflict_holds_whole_item_but_not_other_item(db_session):
     assert {x["taobao_item_id"] for x in discounts} == {"9902"}
     assert signup_stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9901"
     assert discount_stats["excluded_price_hold_items"][0]["taobao_item_id"] == "9901"
+
+
+def test_delisted_rotated_sku_floor_does_not_hold_replacement_item(db_session):
+    plan = _plan(db_session)
+    db_session.add_all([
+        PricingSku(
+            product_code="PPSROTATE", sku_code="PPSROTATE_OLD", sku="旧配件",
+            product_name="轮换商品", daily_price=Decimal("400")),
+        PricingSkuPromo(
+            sku_code="PPSROTATE_OLD", taobao_item_id="9903",
+            taobao_sku_id="88003", big_buyer_price=Decimal("250"),
+            coupon_floor_price=Decimal("240")),
+        PricingSku(
+            product_code="PPSROTATE", sku_code="PPSROTATE_NEW", sku="新主体",
+            product_name="轮换商品", daily_price=Decimal("3000")),
+        PricingSkuPromo(
+            sku_code="PPSROTATE_NEW", taobao_item_id="9903",
+            taobao_sku_id="88004", big_buyer_price=Decimal("2000"),
+            coupon_floor_price=Decimal("2000")),
+    ])
+    db_session.commit()
+    delisted_sku_service.add_delisted(db_session, ["88003"])
+    _seed_platform_floors(db_session, [
+        ("9903", "88003", 400, 200),
+        ("9903", "88004", 3000, 2000),
+    ])
+
+    holds = campaign_service.price_hold_items(db_session, plan)
+    signup, stats = campaign_service.build_signup_rows(db_session, plan)
+
+    assert holds == []
+    assert [row["taobao_sku_id"] for row in signup] == ["88004"]
+    assert stats["excluded_price_hold_items"] == []
 
 
 def test_coupon_floor_gate_counts_concurrent_single_item_discount(db_session):
