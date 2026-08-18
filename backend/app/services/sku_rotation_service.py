@@ -153,6 +153,7 @@ def preview_export_mapping_refresh(
         workbooks: Iterable[bytes],
         *,
         item_ids: Iterable[str],
+        sku_codes: Iterable[str] | None = None,
 ) -> dict:
     """Read exact ``商家编码 -> skuId`` pairs from Taobao product exports.
 
@@ -167,6 +168,10 @@ def preview_export_mapping_refresh(
     from app.services import taobao_listing_service
 
     requested = {str(value or "").strip() for value in item_ids}
+    requested_sku_codes = {
+        str(value or "").strip() for value in (sku_codes or [])
+        if str(value or "").strip()
+    }
     if not requested or any(not value.isdigit() for value in requested):
         return {"ok": False, "error": "item_ids 必须是非空的数字商品ID集合"}
 
@@ -187,7 +192,14 @@ def preview_export_mapping_refresh(
         if _RETIRED_MERCHANT_CODE_RE.fullmatch(
             str(row.get("sku_code_raw") or "").strip())
     ]
-    explicit = [row for row in scoped if row not in retired_marker_rows]
+    explicit = [
+        row for row in scoped
+        if row not in retired_marker_rows
+        and (
+            not requested_sku_codes
+            or str(row.get("sku_code_raw") or "").strip() in requested_sku_codes
+        )
+    ]
     found_items = {str(row.get("taobao_item_id") or "").strip() for row in explicit}
     missing_items = sorted(requested - found_items)
     if missing_items:
@@ -195,6 +207,17 @@ def preview_export_mapping_refresh(
             "ok": False,
             "error": "导出表缺少带SKU商家编码的新行",
             "missing_item_ids": missing_items,
+            "warnings": warnings,
+        }
+    found_codes = {
+        str(row.get("sku_code_raw") or "").strip() for row in explicit
+    }
+    missing_codes = sorted(requested_sku_codes - found_codes)
+    if missing_codes:
+        return {
+            "ok": False,
+            "error": "导出表缺少指定SKU商家编码",
+            "missing_sku_codes": missing_codes,
             "warnings": warnings,
         }
 
@@ -329,6 +352,7 @@ def preview_export_mapping_refresh(
     return {
         "ok": True,
         "requested_item_ids": sorted(requested),
+        "requested_sku_codes": sorted(requested_sku_codes),
         "explicit_mapping_rows": len(mappings),
         "changed_rows": sum(1 for row in mappings if row["changed"]),
         "retired_mapping_rows": len(retired_rows),
@@ -346,6 +370,7 @@ def apply_export_mapping_refresh(
         workbooks: Iterable[bytes],
         *,
         item_ids: Iterable[str],
+        sku_codes: Iterable[str] | None = None,
         dry_run: bool = True,
 ) -> dict:
     """Apply a verified Taobao-export mapping refresh in one transaction."""
@@ -355,7 +380,8 @@ def apply_export_mapping_refresh(
     from app.models.taobao_listing import TaobaoListing
     from app.services import delisted_sku_service, settings_service
 
-    report = preview_export_mapping_refresh(db, workbooks, item_ids=item_ids)
+    report = preview_export_mapping_refresh(
+        db, workbooks, item_ids=item_ids, sku_codes=sku_codes)
     if not report.get("ok") or dry_run:
         return {**report, "dry_run": dry_run}
 

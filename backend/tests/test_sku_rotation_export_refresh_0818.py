@@ -141,3 +141,19 @@ def test_export_refresh_still_rejects_unknown_real_merchant_code(db_session):
         db_session, [file_bytes], item_ids=["1047741358718"], dry_run=True)
     assert result["ok"] is False
     assert "ERP不存在SKU商家编码" in result["error"]
+
+
+def test_export_refresh_can_limit_to_user_confirmed_sku_codes(db_session):
+    _seed(db_session)
+    file_bytes = _workbook([
+        ["1047741358718", "NEW-SID", "MCM", "PFG25250031226",
+         "PFG2525003122611", "1.2米"],
+        ["1047741358718", "UNRELATED", "MCM", "PFG25250031226",
+         "OTHER-PRODUCT-CODE", "非本次轮换"],
+    ])
+    result = svc.apply_export_mapping_refresh(
+        db_session, [file_bytes], item_ids=["1047741358718"],
+        sku_codes=["PFG2525003122611"], dry_run=True)
+    assert result["ok"] is True
+    assert result["requested_sku_codes"] == ["PFG2525003122611"]
+    assert result["explicit_mapping_rows"] == 1

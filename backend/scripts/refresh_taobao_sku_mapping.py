@@ -13,6 +13,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--file", action="append", required=True)
     parser.add_argument("--item-id", action="append", required=True)
+    parser.add_argument("--sku-code", action="append")
     parser.add_argument("--apply", action="store_true")
     args = parser.parse_args()
     workbooks = [Path(path).read_bytes() for path in args.file]
@@ -22,6 +23,7 @@ def main() -> int:
             db,
             workbooks,
             item_ids=args.item_id,
+            sku_codes=args.sku_code,
             dry_run=not args.apply,
         )
         print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
