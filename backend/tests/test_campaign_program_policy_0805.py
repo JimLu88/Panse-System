@@ -26,12 +26,13 @@ def _plan(db, campaign_type="big88", tier="big"):
 
 
 def _sku(db, *, daily=3000, list_price=4000, big=2000,
-         legacy_list=100, legacy_coupon=100):
+         legacy_list=100, legacy_coupon=100, sku_name="1.8米",
+         product_name="报名规则测试商品"):
     db.add(PricingSku(
         product_code="PPS_POLICY",
         sku_code="PPS_POLICY_1",
-        sku="1.8米",
-        product_name="报名规则测试商品",
+        sku=sku_name,
+        product_name=product_name,
         list_price=Decimal(str(list_price)),
         daily_price=Decimal(str(daily)),
     ))
@@ -113,6 +114,7 @@ def test_current_user_can_authorize_named_sub_yuan_discount_concession(db_sessio
         "amount": 0.27,
         "erp_target": 2000.0,
         "authorized_target": 1999.73,
+        "authorization": "named_sub_yuan",
     }]
 
 
@@ -126,6 +128,66 @@ def test_line_concession_rejects_one_yuan_or_more(db_session):
     assert discounts[0]["deduct"] == 640.0
     assert discounts[0]["target_price"] == 2000.0
     assert stats["line_concessions"] == []
+
+
+def test_named_custom_sku_concession_can_exceed_one_yuan(db_session):
+    plan = _plan(db_session)
+    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    _sku(db_session, sku_name="樱桃木定制（咨询客服）")
+
+    signup, _ = campaign_service.build_signup_rows(db_session, plan)
+    discounts, stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert signup[0]["price"] == 3000.0
+    assert discounts[0]["deduct"] == 673.0
+    assert discounts[0]["target_price"] == 1967.0
+    assert discounts[0]["concession"] == 33.0
+    assert stats["line_concessions"] == [{
+        "taobao_item_id": "991880805",
+        "taobao_sku_id": "881880805",
+        "sku_code": "PPS_POLICY_1",
+        "amount": 33.0,
+        "erp_target": 2000.0,
+        "authorized_target": 1967.0,
+        "authorization": "named_custom_price_sku",
+    }]
+
+
+def test_custom_sku_concession_marker_is_ignored_for_normal_sku(db_session):
+    plan = _plan(db_session)
+    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    _sku(db_session)
+
+    discounts, stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert discounts[0]["deduct"] == 640.0
+    assert discounts[0]["target_price"] == 2000.0
+    assert stats["line_concessions"] == []
+
+
+def test_named_custom_sku_concession_clears_matching_coupon_floor_hold(db_session):
+    plan = _plan(db_session)
+    plan.remark = "custom_line_concession_authorized=881880805:33.00"
+    _sku(db_session, sku_name="定制")
+    campaign_price_floor_service.record_activity_export(
+        db_session,
+        [{
+            "item_id": "991880805",
+            "sku_id": "881880805",
+            "sku_name": "定制",
+            "min_list_price": 3000,
+            "min_coupon_line": 1967.0,
+        }],
+        source="pytest_authorized_custom_floor",
+    )
+    db_session.commit()
+
+    holds = campaign_service.price_hold_items(db_session, plan)
+    discounts, _ = campaign_service.build_discount_rows(db_session, plan)
+
+    assert holds == []
+    assert discounts[0]["deduct"] == 673.0
+    assert discounts[0]["target_price"] == 1967.0
 
 
 def test_missing_platform_floor_evidence_blocks_before_upload(db_session):

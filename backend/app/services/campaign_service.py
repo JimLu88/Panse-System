@@ -368,6 +368,55 @@ def authorized_line_concessions(plan) -> dict[str, Decimal]:
     return out
 
 
+def authorized_custom_line_concessions(plan) -> dict[str, Decimal]:
+    """Return exact per-SKU concessions for explicitly custom-priced SKUs.
+
+    This is deliberately separate from the generic sub-yuan allowance.  The
+    marker only names the requested platform SKU and amount; callers must also
+    verify that the ERP SKU itself is a custom/consultation SKU before applying
+    it.  Signup price is never changed.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*custom_line_concession_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    out: dict[str, Decimal] = {}
+    for sku_id, raw_amount in re.findall(
+        r"(\d{8,})\s*:\s*([0-9]+(?:\.[0-9]+)?)", matched.group(1)
+    ):
+        amount = _d(raw_amount)
+        if amount is not None and amount > 0:
+            out[sku_id] = amount.quantize(_CENT)
+    return out
+
+
+def _is_explicit_custom_price_sku(s) -> bool:
+    """Narrow data guard for above-one-yuan user-authorized concessions."""
+    if bool(getattr(s, "is_custom_placeholder", False)):
+        return True
+    text = " ".join((
+        str(getattr(s, "sku", None) or ""),
+        str(getattr(s, "product_name", None) or ""),
+    ))
+    return any(token in text for token in ("定制", "咨询"))
+
+
+def _authorized_concession_for_sku(plan, s, sku_id: str) -> tuple[Decimal, str | None]:
+    generic = authorized_line_concessions(plan).get(str(sku_id))
+    if generic is not None:
+        return generic, "named_sub_yuan"
+    custom = authorized_custom_line_concessions(plan).get(str(sku_id))
+    if custom is not None and _is_explicit_custom_price_sku(s):
+        return custom, "named_custom_price_sku"
+    return Decimal("0"), None
+
+
 def official_ceil_enabled(db: Session) -> bool:
     """超级立减10% 官方立减是否向上取整到元 (spec §二: 待 7-20 实证, 默认按取整)。"""
     from app.services import settings_service
@@ -430,7 +479,6 @@ def price_hold_items(db: Session, plan) -> list[dict]:
     tier = plan_tier(plan)
     lev = TIER_LEVERAGE[tier]
     ceil_on = official_ceil_enabled(db) if tier == "mid" else True
-    authorized_concessions = authorized_line_concessions(plan)
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
     no_sales = no_sales_service.get_no_sales(db)
     by_item: dict[str, dict] = {}
@@ -465,7 +513,8 @@ def price_hold_items(db: Session, plan) -> list[dict]:
                     "evidence_source": entry.get("source"),
                     "evidence_observed_at": entry.get("observed_at"),
                 })
-            concession = authorized_concessions.get(str(sid), Decimal("0"))
+            concession, _authorization = _authorized_concession_for_sku(
+                plan, s, str(sid))
             platform_coupon_after = (
                 (erp_target - concession).quantize(_CENT)
                 if erp_target is not None else None
@@ -891,7 +940,6 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
-    authorized_concessions = authorized_line_concessions(plan)
     nosales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
@@ -954,8 +1002,9 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
         for sid in _expand_sku_ids(p):
             row = {"taobao_item_id": item_id, "taobao_sku_id": sid,
                    "sku_code": s.sku_code, **core}
-            concession = authorized_concessions.get(str(sid))
-            if concession is not None:
+            concession, authorization = _authorized_concession_for_sku(
+                plan, s, str(sid))
+            if concession > 0 and concession < _d(row["target_price"]):
                 deduct = (_d(row["deduct"]) + concession).quantize(_CENT)
                 target = (_d(row["target_price"]) - concession).quantize(_CENT)
                 row.update({
@@ -970,6 +1019,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
                     "amount": float(concession),
                     "erp_target": float(_d(core["target_price"])),
                     "authorized_target": float(target),
+                    "authorization": authorization,
                 })
             rows.append(row)
     stats["rows"] = len(rows)
