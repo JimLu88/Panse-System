@@ -106,7 +106,7 @@ def test_export_refresh_retires_short_numeric_marker_rows(db_session):
         ["1047741358718", "NEW-SID", "MCM", "PFG25250031226",
          "PFG2525003122611", "1.2米"],
         ["1047741358718", "OLD-SID", "MCM", "PFG25250031226", "97", "旧1.2米"],
-        ["1047741358718", "OLD-ACCESSORY", "MCM", "PFG25250031226", "73", "旧配件"],
+        ["1047741358718", "OLD-ACCESSORY", "MCM", "PFG25250031226", "", "旧配件"],
     ])
 
     preview = svc.apply_export_mapping_refresh(

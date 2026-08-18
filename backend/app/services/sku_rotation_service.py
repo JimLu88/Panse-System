@@ -185,11 +185,11 @@ def preview_export_mapping_refresh(
     scoped = [
         row for row in records
         if str(row.get("taobao_item_id") or "").strip() in requested
-        and str(row.get("sku_code_raw") or "").strip()
     ]
     retired_marker_rows = [
         row for row in scoped
-        if _RETIRED_MERCHANT_CODE_RE.fullmatch(
+        if not str(row.get("sku_code_raw") or "").strip()
+        or _RETIRED_MERCHANT_CODE_RE.fullmatch(
             str(row.get("sku_code_raw") or "").strip())
     ]
     explicit = [
@@ -242,17 +242,18 @@ def preview_export_mapping_refresh(
         if sid:
             all_promos_by_sid.setdefault(sid, promo.sku_code)
 
-    # Operators clear retired Taobao rows by replacing the SKU merchant code
-    # with a short numeric marker (for example 73/97/98).  Those rows are not
-    # ERP mappings.  If their physical skuId is still owned by this same item,
-    # preserve the historical mapping but register the skuId as retired so the
-    # campaign builders cannot accidentally submit it again.
+    # Operators clear retired Taobao rows by removing the SKU merchant code or
+    # replacing it with a short numeric marker (for example 73/97/98).  Taobao's
+    # export reader returns those cleared numeric cells as blank in some files.
+    # These rows are not ERP mappings.  If their physical skuId is still owned
+    # by this same item, preserve the historical mapping but register the skuId
+    # as retired so campaign builders cannot accidentally submit it again.
     errors: list[str] = []
     retired_rows: list[dict] = []
     for row in retired_marker_rows:
         item_id = str(row.get("taobao_item_id") or "").strip()
         sku_id = str(row.get("taobao_sku_id") or "").strip()
-        marker = str(row.get("sku_code_raw") or "").strip()
+        marker = str(row.get("sku_code_raw") or "").strip() or "<blank>"
         owner = all_promos_by_sid.get(sku_id)
         promo = all_promos_by_code.get(owner) if owner else None
         if not sku_id:
