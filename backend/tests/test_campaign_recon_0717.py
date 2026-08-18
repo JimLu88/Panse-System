@@ -91,6 +91,32 @@ def test_parse_activity_export_only_published(db_session):
     assert floor_records[1]["min_list_price"] is None
 
 
+def test_parse_activity_export_follows_live_header_when_coupon_moves_to_k():
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.append(["基础信息"])
+    ws.append([
+        "商品ID", "商品名称", "营销ID", "商品状态", "SKUID", "SKU名称",
+        "一口价", "最低标价", "最低普惠券后价要求", "超级立减建议金额",
+        "活动普惠券后价", "推荐类型", "线上库存", "可生效其他权益",
+        "已生效其他权益", "活动价", "库存", "包邮", "让利比例", "补贴金额",
+    ])
+    ws.append(["说明"])
+    ws.append([
+        "9602", "品9602", "M2", "活动中", "81003", "SKU81003",
+        4000, 3000, 2150, None, 2165, None, 100, None, None, 3000,
+        "全部库存", "包邮", 10, None,
+    ])
+    bio = io.BytesIO()
+    wb.save(bio)
+
+    records = crs.parse_activity_items_export(bio.getvalue())
+
+    assert len(records) == 1
+    assert records[0]["coupon_after"] == 2165
+    assert records[0]["activity_price"] == 3000
+
+
 def test_super_reduce_future_export_can_include_paused_enrollment():
     data = _xlsx([
         _act_row("1000009601", "81011", None, act_price=1200.0, status="暂停"),

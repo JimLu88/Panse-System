@@ -967,6 +967,16 @@ def _mock_wa(monkeypatch, calls):
                         lambda db, title, **kw: {
                             "ok": True, "xlsx_bytes": bio.getvalue(),
                             "filename": "当前活动.xlsx"})
+    # Generic orchestration tests mock an empty platform export.  The exact
+    # post-submit SKU verifier has focused tests below; keep these tests scoped
+    # to channel/state orchestration rather than fabricating a second workbook.
+    monkeypatch.setattr(
+        cs, "_verify_super_signup_rows",
+        lambda expected, live: {
+            "ok": True, "checked_real_skus": len(expected),
+            "failed_real_skus": 0, "failures": [],
+        },
+    )
 
 
 def test_push_discount_orchestration(db_session, monkeypatch):
@@ -1737,3 +1747,48 @@ def test_push_signup_zero_zero_is_failure_and_feishu_deduped(db_session, monkeyp
     assert "总1品，成功0品，失败0品" in notices[0]["text"]
     assert second["step"] == "waiting_user_decision"
     assert second["automatic_retry"] is False
+
+
+def test_super_signup_row_verification_rejects_item_level_active_with_blank_new_skus():
+    expected = [
+        {"taobao_item_id": "1047741358718", "taobao_sku_id": "6291475451145",
+         "price": 6472.5, "is_placeholder": False},
+        {"taobao_item_id": "1047741358718", "taobao_sku_id": "6241061986676",
+         "price": 388.0, "is_placeholder": True},
+    ]
+    live = [
+        {"item_id": "1047741358718", "sku_id": "6291475451145",
+         "status": "活动中", "activity_price": None},
+        {"item_id": "1047741358718", "sku_id": "6241061986676",
+         "status": "活动中", "activity_price": 397.0},
+    ]
+
+    result = cs._verify_super_signup_rows(expected, live)
+
+    assert result["ok"] is False
+    assert result["checked_real_skus"] == 1
+    assert result["failures"] == [{
+        "item_id": "1047741358718",
+        "sku_id": "6291475451145",
+        "expected_activity_price": 6472.5,
+        "actual_activity_prices": [None],
+        "error": "活动价为空或不一致",
+    }]
+
+
+def test_super_signup_row_verification_accepts_any_exact_active_marketing_record():
+    expected = [{
+        "taobao_item_id": "840643621692", "taobao_sku_id": "6291731711010",
+        "price": 4852.5, "is_placeholder": False,
+    }]
+    live = [
+        {"item_id": "840643621692", "sku_id": "6291731711010",
+         "status": "活动中", "activity_price": None},
+        {"item_id": "840643621692", "sku_id": "6291731711010",
+         "status": "活动中", "activity_price": 4852.5},
+    ]
+
+    result = cs._verify_super_signup_rows(expected, live)
+
+    assert result["ok"] is True
+    assert result["failed_real_skus"] == 0

@@ -59,20 +59,68 @@ def _load_ws(xlsx_bytes: bytes, sheet_hint: Optional[str] = None):
     return wb, ws
 
 
+def _activity_export_layout(ws) -> tuple[int, dict[str, int]]:
+    """Locate the live Taobao export columns by header text.
+
+    Taobao inserted ``超级立减建议金额`` before ``活动普惠券后价`` in August
+    2026, moving the latter from J to K while keeping ``活动价`` in P.  Fixed
+    offsets therefore turned a populated K column into a false ``J未刷新``.
+    Older exports and compact test fixtures do not expose real headers, so they
+    deliberately retain the legacy offsets.
+    """
+    aliases = {
+        "item_id": ("商品ID", "商品id"),
+        "item_name": ("商品名称",),
+        "marketing_id": ("营销ID", "营销id"),
+        "status": ("商品状态",),
+        "sku_id": ("SKUID", "SKU_ID", "skuId"),
+        "sku_name": ("SKU名称", "SKU规格名称"),
+        "list_price": ("一口价",),
+        "min_list_price": ("最低标价",),
+        "min_coupon_line": ("最低普惠券后价要求",),
+        "coupon_after": ("活动普惠券后价",),
+        "activity_price": ("活动价",),
+    }
+    for row_number, row in enumerate(
+            ws.iter_rows(min_row=1, max_row=6, values_only=True), start=1):
+        texts = [str(value or "").strip() for value in row]
+        if not any(value in aliases["item_id"] for value in texts):
+            continue
+        indexes: dict[str, int] = {}
+        for key, names in aliases.items():
+            for index, value in enumerate(texts):
+                if value in names:
+                    indexes[key] = index
+                    break
+        if {"item_id", "sku_id", "coupon_after", "activity_price"} <= set(indexes):
+            return max(4, row_number + 1), indexes
+    return 4, {
+        "item_id": 0, "item_name": 1, "marketing_id": 2, "status": 3,
+        "sku_id": 4, "sku_name": 5, "list_price": 6,
+        "min_list_price": 7, "min_coupon_line": 8, "coupon_after": 9,
+        "activity_price": 15,
+    }
+
+
 def _parse_activity_export(xlsx_bytes: bytes, *, active_only: bool) -> list[dict]:
     """活动商品导出公共解析器；``active_only`` 控制是否只保留当前在场状态。"""
     wb, ws = _load_ws(xlsx_bytes)
+    start_row, columns = _activity_export_layout(ws)
     records: list[dict] = []
     item_id = item_name = marketing_id = status = ""
-    for row in ws.iter_rows(min_row=4, values_only=True):
-        if not row or len(row) < 10:
+    for row in ws.iter_rows(min_row=start_row, values_only=True):
+        if not row:
             continue
-        if row[0] is not None and str(row[0]).strip():
-            item_id = str(row[0]).strip()
-            item_name = str(row[1] or "").strip()
-            marketing_id = str(row[2] or "").strip()
-            status = str(row[3] or "").strip()
-        sku_id = str(row[4] or "").strip()
+        def value(key: str):
+            index = columns[key]
+            return row[index] if index < len(row) else None
+
+        if value("item_id") is not None and str(value("item_id")).strip():
+            item_id = str(value("item_id")).strip()
+            item_name = str(value("item_name") or "").strip()
+            marketing_id = str(value("marketing_id") or "").strip()
+            status = str(value("status") or "").strip()
+        sku_id = str(value("sku_id") or "").strip()
         if not item_id or not sku_id:
             continue
         if active_only and status not in ACTIVITY_IN_CAMPAIGN_STATUSES:
@@ -83,12 +131,12 @@ def _parse_activity_export(xlsx_bytes: bytes, *, active_only: bool) -> list[dict
             "marketing_id": marketing_id,
             "status": status,
             "sku_id": sku_id,
-            "sku_name": str(row[5] or "").strip(),
-            "list_price": _f(row[6]),
-            "min_list_price": _f(row[7]),
-            "min_coupon_line": _f(row[8]),
-            "coupon_after": _f(row[9]),
-            "activity_price": _f(row[15]) if len(row) > 15 else None,
+            "sku_name": str(value("sku_name") or "").strip(),
+            "list_price": _f(value("list_price")),
+            "min_list_price": _f(value("min_list_price")),
+            "min_coupon_line": _f(value("min_coupon_line")),
+            "coupon_after": _f(value("coupon_after")),
+            "activity_price": _f(value("activity_price")),
         })
     wb.close()
     return records

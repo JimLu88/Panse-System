@@ -2476,6 +2476,57 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
     return {"ok": True, "rows": live_rows, "floor_refresh": refresh}
 
 
+def _verify_super_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dict:
+    """Require every real SKU from the submitted scope to have the exact P price.
+
+    Platform operation feedback is only an import receipt.  A product can still
+    be labelled ``活动中`` because one legacy/custom SKU survived while newly
+    rotated physical SKUs have blank activity prices.  Accept any matching live
+    marketing record for an exact item/SKU pair, but never accept item-level
+    status as proof for the whole SKU set.
+    """
+    from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
+
+    live_by_pair: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    for row in live_rows:
+        if row.get("status") not in ACTIVITY_IN_CAMPAIGN_STATUSES:
+            continue
+        pair = (str(row.get("item_id") or ""), str(row.get("sku_id") or ""))
+        live_by_pair[pair].append(row)
+
+    failures: list[dict] = []
+    checked = 0
+    for expected in expected_rows:
+        if expected.get("is_placeholder"):
+            continue
+        checked += 1
+        item_id = str(expected.get("taobao_item_id") or "")
+        sku_id = str(expected.get("taobao_sku_id") or "")
+        price = float(expected["price"])
+        candidates = live_by_pair.get((item_id, sku_id), [])
+        if any(
+            row.get("activity_price") is not None
+            and abs(float(row["activity_price"]) - price) <= 0.005
+            for row in candidates
+        ):
+            continue
+        failures.append({
+            "item_id": item_id,
+            "sku_id": sku_id,
+            "expected_activity_price": price,
+            "actual_activity_prices": [
+                row.get("activity_price") for row in candidates
+            ],
+            "error": "活动中记录缺失" if not candidates else "活动价为空或不一致",
+        })
+    return {
+        "ok": not failures,
+        "checked_real_skus": checked,
+        "failed_real_skus": len(failures),
+        "failures": failures,
+    }
+
+
 def repair_super_reduce_early_activation(
         db: Session, plan, item_ids: list[str], *, phase: str = "stage",
         execution_source: str | None = None) -> dict:
@@ -2855,6 +2906,29 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     res["recorded_platform_facts"] = _learn_from_validation(
         db, plan, res.get("validation"))
     if res.get("ok"):
+        if super_reduce:
+            post_submit = refresh_floor_evidence_from_current_activity(db, plan)
+            if not post_submit.get("ok"):
+                res.update({
+                    "ok": False,
+                    "step": "post_submit_export",
+                    "error": post_submit.get("error")
+                             or "平台已返回导入成功，但无法回读已报商品验证逐SKU生效",
+                })
+                return _stop_signup(db, plan, res)
+            verification = _verify_super_signup_rows(
+                pending, post_submit.get("rows") or [])
+            res["post_submit_verification"] = verification
+            if not verification.get("ok"):
+                res.update({
+                    "ok": False,
+                    "step": "post_submit_sku_verification",
+                    "error": (
+                        "平台导入回执成功，但逐SKU回读发现活动价为空/不一致；"
+                        "不得视为报名完成"
+                    ),
+                })
+                return _stop_signup(db, plan, res)
         plan.status = "signup_pushed"
         _remove_plan_marker(plan, "supplement_items_authorized")
         _remove_plan_marker(plan, "sku_refresh_items_authorized")
