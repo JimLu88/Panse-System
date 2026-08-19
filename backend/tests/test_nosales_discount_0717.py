@@ -48,7 +48,7 @@ def test_registry_add_remove_and_feedback_extract(db_session):
 
 def test_builder_rows_and_guards(db_session):
     # 登记品A: 正常 → 出行。中促到手 = 2561.22×1.03 = 2638.06 (backfill 后口径),
-    # 立减 = 3000 − (2638.06+1) = 360.94
+    # 立减 = 3000 − 2638.06 = 361.94
     _mk(db_session, "PPSNS001", "9101", "71001", daily=3000, mid_buyer=2638.06, big_buyer=2561.22)
     # 登记品A的占位SKU → 不出行
     _mk(db_session, "PPSNS099", "9101", "71099", daily=500, mid_buyer=None, big_buyer=None, placeholder=True)
@@ -67,7 +67,7 @@ def test_builder_rows_and_guards(db_session):
     rows = [(str(ws.cell(r, 1).value), str(ws.cell(r, 2).value), float(ws.cell(r, 3).value))
             for r in range(2, ws.max_row + 1) if ws.cell(r, 1).value]
 
-    assert rows == [("9101", "71001", 360.94)], rows
+    assert rows == [("9101", "71001", 361.94)], rows
     assert stats["rows"] == 1
     assert stats["skipped_placeholder"] == 1
     assert len(stats["skipped_below_anchor"]) == 1

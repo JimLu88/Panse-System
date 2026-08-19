@@ -5,7 +5,7 @@
 ② 报名行: 报名价=日常价 / 占位=min(现行, floor(线/0.88)) / 无线保守值备注 / R4下架过滤 / R3整品完整性
 ③ 立减公式 spec §二 手算样例: 日常2827.5 / 大促1979.59 / 线1978.89 → 官方340 → 立减508.61
 ④ 中促 = 大促×1.03 就地计算 + 10% ceil 开关 campaign_official_ceil
-⑤ 无动销: 立减 = 日常 − (中促+1); 占位不出行
+⑤ 无动销: 立减 = 日常 − ERP中促价; 占位不出行
 ⑥ R2: 贴线让幅 >1 元 → 整品暂缓，不轮换
 ⑦ preflight R1~R14 逐条输出 {rule, level, items}
 ⑧ 推送编排 (mock WA, 绝不真调 :8500): channel/phase/档期传参 + 状态机推进
@@ -690,8 +690,8 @@ def test_discount_nosales_super_reduce_uses_explicit_active_scope(db_session):
     rows, _stats = cs.build_discount_rows(db_session, plan)
 
     assert rows[0]["official"] == 300.0
-    assert rows[0]["target_price"] == 2576.0
-    assert rows[0]["deduct"] == 124.0
+    assert rows[0]["target_price"] == 2575.0
+    assert rows[0]["deduct"] == 125.0
 
 
 def test_preflight_blocks_nosales_without_official_scope(db_session):

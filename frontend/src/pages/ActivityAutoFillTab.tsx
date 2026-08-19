@@ -2,7 +2,7 @@
  * 定价页「活动自动填写」Tab —— 2026-07-17 改造为【活动生命周期向导】(P3)。
  * 权威 spec = docs/活动生命周期系统_执行plan.md：
  *   ① 创建活动计划（类型点选 / 活动名称 / 档期秒级点选，复用 Fusion RangePicker）
- *   ② 动销分组（有动销 / 无动销，无动销到手永远 = 中促价 + 1）
+ *   ② 动销分组（有动销 / 无动销，无动销到手精确等于 ERP 中促价）
  *   ③ 生命周期向导：预检 R1~R12 → 推单品立减 → 推报名 → 自动核对（>2元红榜），每步确认制
  *   底部保留「高级 · 手动」存量工具（下载表 / 单步上传）作兜底；SKU身份轮换已暂停。
  * ★第一铁律: 以 ERP 价格为准, 平台报不进就改千牛一口价到 日常价÷0.75, 绝不反过来改 ERP。
@@ -377,9 +377,9 @@ function NoSalesGroupCard() {
       {grp && (
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <Alert type="info" showIcon
-            message={<span><b>无动销组顾客到手永远 = 中促价 + 1 元</b>（+1 防零头导致未来报名撞线）。</span>}
+            message={<span><b>无动销组顾客到手精确等于 ERP 中促价</b>，不得额外加价。</span>}
             description={<span style={{ fontSize: 13 }}>
-              公式：单品立减 = 日常价 − (中促价 + 1)，占位不出报名行。
+              公式：单品立减 = 日常价 − ERP 中促价，占位不出报名行。
               这些品一旦撤销在场报名就触发平台「动销门」报不回来（禁撤，预检会红字拦）。
               卖出 1 单系统自动检测，提示转正（撤无动销立减 → 报大促）。
             </span>} />
@@ -406,7 +406,7 @@ function NoSalesGroupCard() {
             </Col>
             <Col xs={24} lg={12}>
               <Card size="small" style={{ borderColor: '#ffd591' }}
-                title={<Statistic title="无动销（到手=中促+1）" value={grp['无动销'].length} suffix="品"
+                title={<Statistic title="无动销（到手=ERP中促价）" value={grp['无动销'].length} suffix="品"
                   valueStyle={{ color: '#d46b08', fontSize: 22 }} />}
                 extra={<Space>
                   <Button size="small" icon={<DownloadOutlined />} loading={exporting} onClick={doExport}>

@@ -1,12 +1,12 @@
 """任务#22 (2026-07-17 用户拍板: "现在先把标准定调为 1.03，后续系统里也同步改掉"):
-中促价统一 = 大促价 × 1.03 固化进 ERP 定价链 + 无动销口径 到手=中促+1。
+中促价统一 = 大促价 × 1.03 固化进 ERP 定价链 + 无动销到手精确等于 ERP 中促价。
 
 锁五件事:
 ① recompute_promo: mid_buyer_price = round(big_buyer × K, 2), K 默认 1.03 —— 全链唯一来源
 ② K 可配(promo_mid_over_big_ratio) + 低于数学下限(0.90/0.88≈1.0227)顶回
 ③ 与 campaign_service.mid_buyer_inplace(活动引擎就地×1.03) 交叉一致 —— 两套系统同口径
 ④ backfill_mid_buyer: 全店旧漂移值(1.025~1.038)一次性归一到 big×1.03; sku 四档价一分不动
-⑤ 无动销 builder(日常−(中促+1)) 与 campaign_service._nosales_discount_row 数值一致
+⑤ 无动销 builder(日常−中促) 与 campaign_service._nosales_discount_row 数值一致
 """
 from decimal import Decimal as D
 
@@ -103,7 +103,7 @@ def test_backfill_mid_buyer_normalizes_drift(db_session):
     assert skus["PPSBF002"].big_promo == D("2561.22")
 
 
-# ── ⑤ 无动销: builder 与 campaign 引擎数值一致 (到手 = 中促+1) ─────────────────
+# ── ⑤ 无动销: builder 与 campaign 引擎数值一致 (到手 = ERP 中促价) ─────────────
 def test_nosales_builder_matches_campaign_row(db_session):
     db_session.add(PricingSku(product_code="PPSNU01", sku_code="PPSNU011", sku="s",
                               daily_price=D("3000")))
@@ -114,7 +114,7 @@ def test_nosales_builder_matches_campaign_row(db_session):
     db_session.commit()
     ns.add_no_sales(db_session, ["9901"])
 
-    # data_export builder (任务#22 口径: 立减 = 日常 − (中促到手+1) = 3000 − 2639.06 = 360.94)
+    # data_export builder: 立减 = 日常 − ERP中促到手 = 3000 − 2638.06 = 361.94
     import io
     import openpyxl
     bio, stats = de.build_nosales_single_item_discount_xlsx(db_session)
@@ -128,5 +128,5 @@ def test_nosales_builder_matches_campaign_row(db_session):
     row = campaign_service._nosales_discount_row(
         s, p, {"skipped_no_target": 0, "skipped_no_deduct": 0})
     assert row is not None
-    assert builder_deduct == row["deduct"] == 360.94
-    assert row["target_price"] == 2639.06                    # 到手 = 中促+1
+    assert builder_deduct == row["deduct"] == 361.94
+    assert row["target_price"] == 2638.06                    # 到手 = ERP中促价

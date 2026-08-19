@@ -21,7 +21,7 @@ _CHANNELS = {
 def _gen_xlsx(db: Session, channel: str, tier: str) -> tuple[bytes, dict]:
     from app.services import data_export_service as de
     if channel == "single_item_discount":
-        if tier == "nosales":                      # ★无动销品平替档(2026-07-17 永久规则): 到手=中促价−1
+        if tier == "nosales":                      # 无动销平替档: 到手精确等于 ERP 中促价
             bio, stats = de.build_nosales_single_item_discount_xlsx(db)
         else:
             bio, stats = de.build_single_item_discount_upload_xlsx(db, tier)

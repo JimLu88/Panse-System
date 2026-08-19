@@ -1225,10 +1225,10 @@ def build_nosales_single_item_discount_xlsx(db: Session):
     """无动销品『单品立减』批量上传表 (2026-07-17 用户永久规则; 任务#22 定稿口径: 动销不达标报不进大促 →
     单品立减把到手打到【中促到手 + 1 元】, 平替大促力度、无动销门槛; +1 防零头导致未来报名撞线)。
 
-    只对 no_sales_service 登记的商品出行; 每真SKU 立减金额 = 日常价 − (中促到手 + 1)。
+    只对 no_sales_service 登记的商品出行; 每真SKU 立减金额 = 日常价 − ERP中促到手。
     中促到手 = promo.mid_buyer_price (任务#22 全链唯一来源 = 大促到手×1.03, 与 campaign_service
     的 mid_buyer_inplace 同口径, 交叉断言见 test_mid_ratio_unify_0717)。
-    护栏: ①到手(中促+1) < 大促到手锚 → 跳过并记 stats(绝不立低于锚的线; 新口径下 中促+1 恒>锚,
+    护栏: ①到手(ERP中促价) < 大促到手锚 → 跳过并记 stats(绝不立低于锚的线; 新口径下中促恒>锚,
           只有 backfill_mid_buyer 之前的陈旧漂移值才可能触发)
           ②缺中促到手/日常价 → 跳过 ③占位SKU不出行(单品立减无整品完整性要求, 定制入口不乱动)
           ④下架SKU排除。表头与 build_single_item_discount_upload_xlsx 完全一致, 可直接上传。"""
@@ -1278,7 +1278,7 @@ def build_nosales_single_item_discount_xlsx(db: Session):
         if p.mid_buyer_price is None or s.daily_price is None:
             stats["skipped_no_mid"] += 1
             continue
-        target_price = float(p.mid_buyer_price) + 1               # 到手 = 中促到手 + 1(任务#22 永久规则)
+        target_price = round(float(p.mid_buyer_price), 2)         # 到手精确等于 ERP 中促价（2026-08-19 用户确认）
         anchor = float(p.big_buyer_price) if p.big_buyer_price else None
         if anchor is not None and target_price < anchor - 0.01:   # 绝不立低于大促锚的线
             stats["skipped_below_anchor"].append(

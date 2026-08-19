@@ -351,7 +351,7 @@ export default function ActivityCampaignWizard({ plan, onPlanChange, onRestart }
                   description={<div>
                     <Typography.Text style={{ fontSize: 13 }}>
                       近60天零动销的品撤销后会触发平台「动销门」（销量≥1 才能报名），撤了就报不回来，单行道（R6）。
-                      系统推送时按「到手=中促+1」单独压价，你什么都不用做。
+                      系统推送时按「到手=ERP 中促价」单独压价，你什么都不用做。
                     </Typography.Text>
                     <div style={{ marginTop: 6 }}>
                       {(r6Check.items as string[]).map((iid) => (
@@ -693,7 +693,7 @@ function ReconPanel({ report, expectedTitle }: { report: CampaignReconResult; ex
       <div>
         <Typography.Text type="secondary" style={{ fontSize: 13 }}>
           逐 SKU 核对（共 {s.total} 行）：到手 = 千牛活动普惠券后价（J列）；
-          目标 = 大促价/中促价（无动销 = 中促+1）；差额超 2 元的排最前、标红。
+          目标 = 大促价/ERP 中促价（无动销精确使用中促价）；差额超 2 元的排最前、标红。
         </Typography.Text>
         <Table size="small" rowKey={(r) => `${r.sku_id || ''}-${r.sku_code || ''}`}
           pagination={{ pageSize: 12 }} style={{ marginTop: 6 }}

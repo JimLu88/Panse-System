@@ -8,7 +8,7 @@
  *   推立减两段式 phase=stage|commit（query 参数，R12 每步确认制）；推报名一次 stage 即生效；
  *   核对 verdict 是后端中文判定串（一分不差/贴线让X/超2元报警/偏差/J未刷新/占位/无映射）。
  * 定价铁则（spec 二节）：报名价恒 = ERP 日常价；每场活动只变单品立减；
- *   官方立减向上取整到元；无动销品到手永远 = 中促价 + 1 元。
+ *   官方立减向上取整到元；无动销品到手精确等于 ERP 中促价。
  */
 import { api } from './base';
 
@@ -46,7 +46,7 @@ export const TIER_FORMULA: Record<CampaignTier, string> = {
   big618: '单品立减 = 日常价 − 官方立减（日常价×15%，向上取整到元）− 大促价',
 };
 export const NO_SALES_FORMULA =
-  '无动销品：单品立减 = 日常价 − (中促价 + 1)，顾客到手永远 = 中促价 + 1 元（+1 防零头导致未来报名撞线）';
+  '无动销品：单品立减 = 日常价 − ERP 中促价，顾客到手精确等于 ERP 中促价；不得额外加价。';
 export const SIGNUP_PRICE_RULE = '报名价（活动价）= ERP 日常价（= 标价 × 0.75），全店所有场次统一，永不再变';
 
 /** 状态展示映射（Tag 用） */
@@ -237,7 +237,7 @@ export interface CampaignReconRow {
   item_id: string | null;
   sku_code: string | null;
   actual: number | null;                 // 千牛「活动商品导出」J列 活动普惠券后价（实际到手）
-  target: number | null;                 // 目标到手（大促价/中促价/中促+1）
+  target: number | null;                 // 目标到手（大促价/ERP中促价）
   diff: number | null;                   // 实际 − 目标
   activity_price: number | null;         // P列 活动价
   verdict: string;

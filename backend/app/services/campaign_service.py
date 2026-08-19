@@ -4,7 +4,7 @@
 - group_by_sales      动销检查与分组 (spec §四.1) + no_sales 登记表同步
 - build_signup_rows   报名行 builder: 报名价=日常价 / 占位=min(现行, floor(线/(1−lev))) (spec §二.1, R3/R4)
 - build_discount_rows 单品立减 builder: spec §二 立减公式逐字 (官方立减向上取整到元 R9 /
-                      ERP目标+已授权微调 / 无动销=日常−(中促+1) / 10% ceil 留开关)
+                      ERP目标+已授权微调 / 无动销=日常−中促 / 10% ceil 留开关)
 - preflight           平台规则库 R0~R19 静态可查项逐条输出 (spec §三)
 - push_discount/push_signup  推送编排 (复用 web_agent_service upload_file→wait_job,
                       与 activity_upload_service 同模式)
@@ -12,7 +12,7 @@
 
 铁则 (spec §二, 用户 2026-07-17 拍板):
   报名价 = ERP 日常价, 永不再变; 中促 = 大促 × 1.03 (就地计算, 不写 mid_buyer 字段——那是任务#22);
-  无动销到手 = 中促 + 1 (防零头撞线); ERP 价是唯一标准。
+  无动销到手 = ERP 中促价（精确相等，不再额外加 1 元）; ERP 价是唯一标准。
   平台最低普惠券后价会计入已生效的店铺其他优惠，因此资格门校验
   「报名价−官方立减−同期单品立减 ≤ 近15天最低普惠券后价」；
   最终到手仍必须等于 ERP 目标，只有用户逐 SKU 授权的 1 元内微调可继续向下贴线。
@@ -40,7 +40,6 @@ CAMPAIGN_TYPES = {
 }
 TIER_LEVERAGE = {"mid": Decimal("0.10"), "big": Decimal("0.12"), "big618": Decimal("0.15")}
 MID_OVER_BIG_RATIO = Decimal("1.03")       # 任务#22: 中促 = 大促 × 1.03 (系统统一系数, 就地算)
-NOSALES_MARKUP_YUAN = Decimal("1")         # 无动销: 到手 = 中促 + 1 元 (2026-07-17 永久规则)
 LINE_CONCESSION_MAX_YUAN = Decimal("1")    # 贴线让幅 > 1 元 → 暂缓该商品并提醒人工决策 (R2)
 PLACEHOLDER_LINE_FALLBACK_RATIO = Decimal("0.8")   # 占位无券后线 → 日常×0.8 保守线(行备注标注)
 OFFICIAL_CEIL_KEY = "campaign_official_ceil"       # 10% 官方立减是否向上取整(待7-20实证), 默认真
@@ -649,7 +648,7 @@ def no_sales_export_rows(db: Session, days: int = 60) -> list[dict]:
             "product_codes": "、".join(sorted(c for c in item_codes.get(iid, set()) if c)),
             "taobao_item_id": iid,
             "sales_60d": _sales_of(iid),
-            "action": "促成交; 到手=中促+1; 勿撤在场报名(动销门单行道 R6)",
+            "action": "促成交; 到手=ERP中促价; 勿撤在场报名(动销门单行道 R6)",
         })
     for iid in grouping["promote_candidates"]:
         rows.append({
@@ -878,7 +877,7 @@ def _nosales_discount_row(s, p, stats: dict, tier: str = "mid",
                           official: Decimal = Decimal("0")) -> Optional[dict]:
     """无动销 SKU：不报名活动，只靠单品立减直达到当前场次目标。
 
-    大促档位直接到 ERP 大促买家价；超级立减档位沿用中促+1 的保护规则。
+    大促档位直接到 ERP 大促买家价；超级立减档位精确使用 ERP 中促价。
     是否叠加官方立减由活动实时范围决定；不套券后线。
     """
     daily = _d(s.daily_price)
@@ -886,8 +885,7 @@ def _nosales_discount_row(s, p, stats: dict, tier: str = "mid",
         target = _d(getattr(p, "big_buyer_price", None))
     else:
         mid = mid_buyer_inplace(p)
-        target = ((mid + NOSALES_MARKUP_YUAN).quantize(_CENT)
-                  if mid is not None else None)
+        target = mid.quantize(_CENT) if mid is not None else None
     if target is None or target <= 0:
         stats["skipped_no_target"] += 1
         return None
@@ -941,7 +939,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     """单品立减 builder (spec §二):
       大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
       超级立减10%:            立减 = 日常 − ceil(日常×10%) − 中促到手 − 已授权微调
-      无动销(登记表):         立减 = 日常 − (中促 + 1), 占位不出行
+      无动销(登记表):         立减 = 日常 − ERP中促到手, 占位不出行
     返回 (rows, stats); 行含 taobao_item_id/taobao_sku_id/sku_code/deduct/target_price/kind。"""
     from app.services import delisted_sku_service, no_sales_service
     from app.services.activity_preflight_service import bad_price_product_codes
@@ -3155,7 +3153,7 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
 
 def target_prices(db: Session, plan) -> dict[str, dict]:
     """逐 skuId 的 {sku_code, target(目标到手, 不贴线), line, daily, signup_price,
-    is_placeholder, kind}。目标 = 大促到手 / 中促到手(×1.03就地) / 无动销=中促+1;
+    is_placeholder, kind}。目标 = 大促到手 / 中促到手(×1.03就地) / 无动销=ERP中促价;
     贴线判定交核对器 (它要区分"一分不差"与"贴线让X")。"""
     from app.services import no_sales_service
     tier = plan_tier(plan)
@@ -3178,8 +3176,7 @@ def target_prices(db: Session, plan) -> dict[str, dict]:
                 if tier in ("big", "big618"):
                     no_sales_target = _d(getattr(p, "big_buyer_price", None))
                 else:
-                    no_sales_target = (
-                        (mid + NOSALES_MARKUP_YUAN).quantize(_CENT) if mid else None)
+                    no_sales_target = mid.quantize(_CENT) if mid else None
                 target = float(no_sales_target) if no_sales_target else None
                 kind = "nosales"
             elif tier == "mid":
