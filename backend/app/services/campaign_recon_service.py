@@ -414,6 +414,20 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     if not any((activity_bytes, discount_bytes, product_bytes)):
         return {"ok": False, "error": "未提供任何导出文件 (活动商品/单品立减/商品批量 至少一份)"}
 
+    records: list[dict] = []
+    live_activity_evidence = None
+    if activity_bytes:
+        records = parse_activity_items_export(
+            activity_bytes,
+            include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
+        )
+        active_records = [
+            row for row in records
+            if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
+        ]
+        live_activity_evidence = campaign_service.sync_live_activity_evidence(
+            db, plan, active_records)
+
     spec_map = campaign_service.target_prices(db, plan)
     per_sku: list[dict] = []
     coverage: dict = {"missing": [], "extra": []}
@@ -424,10 +438,6 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     unexpected_active_records = 0
     unexpected_active_items: list[str] = []
     if activity_bytes:
-        records = parse_activity_items_export(
-            activity_bytes,
-            include_paused=str(getattr(plan, "campaign_type", "")) == "super_reduce",
-        )
         floor_records = parse_activity_floor_evidence_export(activity_bytes)
         floor_evidence = campaign_price_floor_service.record_activity_export(
             db,
@@ -490,6 +500,7 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
     summary["ignored_out_of_scope_items"] = ignored_out_of_scope_items
     summary["unexpected_active_records"] = unexpected_active_records
     summary["unexpected_active_items"] = unexpected_active_items
+    summary["live_activity_evidence"] = live_activity_evidence
     if unexpected_active_items:
         summary["hard_error_count"] += len(unexpected_active_items)
         summary["alarm"] = summary["hard_error_count"]

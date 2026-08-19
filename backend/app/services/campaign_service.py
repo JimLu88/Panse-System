@@ -134,6 +134,103 @@ def _official_applies(item_id: str, scope: dict) -> bool:
     return item_id in scope.get("active_items", set())
 
 
+def current_activity_prices_for_plan(plan) -> dict[str, Decimal]:
+    """Read SKU-level activity prices captured from this plan's live export."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*current_activity_prices\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    out: dict[str, Decimal] = {}
+    for sku_id, raw_price in re.findall(
+            r"(\d+)\s*:\s*(\d+(?:\.\d+)?)", matched.group(1)):
+        price = _d(raw_price)
+        if price is not None and price > 0:
+            out[sku_id] = price.quantize(_CENT)
+    return out
+
+
+def _set_plan_decimal_map_marker(plan, key: str,
+                                 values: dict[str, Decimal]) -> None:
+    """Idempotently replace a compact ``id:decimal`` plan marker."""
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*[^;\n；]*"
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    value = ",".join(
+        f"{sku_id}:{price.quantize(_CENT)}"
+        for sku_id, price in sorted(values.items())
+    )
+    plan.remark = f"{text}; {key}={value}" if text else f"{key}={value}"
+
+
+def sync_live_activity_evidence(db: Session, plan,
+                                active_records: list[dict]) -> dict:
+    """Refresh known-item official scope and prices from a live full export.
+
+    Items already known from qualification/no-sales/failure evidence may be
+    promoted when the platform now proves them active.  Entirely unknown active
+    items remain outside scope so reconciliation still alarms on them.
+    """
+    from app.services import no_sales_service
+
+    prior_qualified = platform_qualified_items(plan)
+    prior_no_sales = platform_no_sales_items(plan)
+    prior_hard_failed = platform_hard_failed_items(plan)
+    registered_no_sales = no_sales_service.get_no_sales(db)
+    known_items = (
+        prior_qualified | prior_no_sales | prior_hard_failed
+        | registered_no_sales
+    )
+    active_items = {
+        str(row.get("item_id") or "").strip()
+        for row in active_records
+        if str(row.get("item_id") or "").strip()
+    }
+    if not known_items:
+        return {
+            "active_items": sorted(active_items),
+            "accepted_items": [],
+            "promoted_items": [],
+            "unknown_active_items": sorted(active_items),
+            "live_price_skus": [],
+        }
+    accepted_items = active_items & known_items
+    promoted_items = accepted_items - prior_qualified
+    live_prices: dict[str, Decimal] = {}
+    for row in active_records:
+        item_id = str(row.get("item_id") or "").strip()
+        sku_id = str(row.get("sku_id") or "").strip()
+        price = _d(row.get("activity_price"))
+        if item_id in accepted_items and sku_id and price is not None and price > 0:
+            live_prices[sku_id] = price.quantize(_CENT)
+
+    _remove_plan_marker(plan, "official_all_store")
+    _remove_plan_marker(plan, "official_exempt_items")
+    _set_plan_item_marker(plan, "official_active_items", accepted_items)
+    _set_plan_item_marker(
+        plan, "platform_qualified_items", prior_qualified | accepted_items)
+    _set_plan_item_marker(
+        plan, "platform_no_sales_items", prior_no_sales - accepted_items)
+    _set_plan_item_marker(
+        plan, "platform_hard_failed_items", prior_hard_failed - accepted_items)
+    _set_plan_decimal_map_marker(plan, "current_activity_prices", live_prices)
+    no_sales_service.remove_no_sales(db, accepted_items)
+    return {
+        "active_items": sorted(active_items),
+        "accepted_items": sorted(accepted_items),
+        "promoted_items": sorted(promoted_items),
+        "unknown_active_items": sorted(active_items - known_items),
+        "live_price_skus": sorted(live_prices),
+    }
+
+
 def placeholder_live_prices_for_plan(plan) -> dict[str, Decimal]:
     """Read the latest verified platform price for placeholder SKU IDs from remark."""
     import re
@@ -846,13 +943,16 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 
 # ── 3. 单品立减 builder (spec §二 立减公式逐字) ────────────────────────────────
 
-def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: dict) -> Optional[dict]:
+def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool,
+                           stats: dict, *,
+                           base_price: Optional[Decimal] = None) -> Optional[dict]:
     """有动销 SKU 立减只对齐 ERP 场次目标价。
 
     最低普惠券后价只用于资格校验；单品立减默认只对齐 ERP 目标，绝不能
     未经授权用历史价格线压低。逐 SKU 的 1 元内授权由 build_discount_rows 追加。
     """
     daily = _d(s.daily_price)
+    base = base_price if base_price is not None else daily
     target0 = mid_buyer_inplace(p) if tier == "mid" else _d(getattr(p, "big_buyer_price", None))
     if target0 is None or target0 <= 0:
         stats["skipped_no_target"] += 1
@@ -861,26 +961,29 @@ def _campaign_discount_row(s, p, tier: str, lev: Decimal, ceil_on: bool, stats: 
     # 2026-07-24 平台实证：低价 SKU 的官方立减按精确比例计算到分。
     # 狂暑季 ¥30×12%=¥3.60；超级立减 ¥25×10%=¥2.50，均不向上取整到元。
     # 普通价位仍沿用整元向上取整规则。
-    low_price_exact = daily < Decimal("100")
-    official = official_deduction(daily, lev, ceil_on and not low_price_exact)
+    low_price_exact = base < Decimal("100")
+    official = official_deduction(base, lev, ceil_on and not low_price_exact)
     if low_price_exact:
         stats["official_low_price_exact"] += 1
-    deduct = (daily - official - target).quantize(_CENT)
+    deduct = (base - official - target).quantize(_CENT)
     if deduct <= 0:
         stats["skipped_no_deduct"] += 1                   # 官方立减已够 → 不出行(不给假数)
         return None
     return {"deduct": float(deduct), "kind": "campaign", "target_price": float(target),
-            "official": float(official), "concession": float(concession)}
+            "official": float(official), "concession": float(concession),
+            "calculation_base": float(base)}
 
 
 def _nosales_discount_row(s, p, stats: dict, tier: str = "mid",
-                          official: Decimal = Decimal("0")) -> Optional[dict]:
+                          official: Decimal = Decimal("0"), *,
+                          base_price: Optional[Decimal] = None) -> Optional[dict]:
     """无动销 SKU：不报名活动，只靠单品立减直达到当前场次目标。
 
     大促档位直接到 ERP 大促买家价；超级立减档位精确使用 ERP 中促价。
     是否叠加官方立减由活动实时范围决定；不套券后线。
     """
     daily = _d(s.daily_price)
+    base = base_price if base_price is not None else daily
     if tier in ("big", "big618"):
         target = _d(getattr(p, "big_buyer_price", None))
     else:
@@ -889,12 +992,13 @@ def _nosales_discount_row(s, p, stats: dict, tier: str = "mid",
     if target is None or target <= 0:
         stats["skipped_no_target"] += 1
         return None
-    deduct = (daily - official - target).quantize(_CENT)
+    deduct = (base - official - target).quantize(_CENT)
     if deduct <= 0:
         stats["skipped_no_deduct"] += 1
         return None
     return {"deduct": float(deduct), "kind": "nosales", "target_price": float(target),
-            "official": float(official), "concession": 0.0}
+            "official": float(official), "concession": 0.0,
+            "calculation_base": float(base)}
 
 
 def discount_for_sku(db: Session, s, p, tier: str,
@@ -948,6 +1052,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     lev = TIER_LEVERAGE[tier]
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
+    live_activity_prices = current_activity_prices_for_plan(plan)
     nosales = no_sales_service.get_no_sales(db)
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
@@ -960,6 +1065,7 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "skipped_no_daily": 0, "skipped_no_target": 0, "skipped_no_deduct": 0,
              "line_concessions": [], "rotation_suggested": [],
              "official_low_price_exact": 0,
+             "live_activity_price_overrides": [],
              "skipped_not_erp_listed": 0,
              "official_scope": {
                  "configured": official_scope["configured"],
@@ -993,21 +1099,31 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
         if item_id in held_item_ids:
             stats["skipped_price_hold"] += 1
             continue
-        if item_id in nosales:
-            official = Decimal("0")
-            if _official_applies(item_id, official_scope):
-                low_price_exact = daily < Decimal("100")
-                official = official_deduction(
-                    daily, lev, ceil_on and not low_price_exact)
-                if low_price_exact:
-                    stats["official_low_price_exact"] += 1
-            core = _nosales_discount_row(
-                s, p, stats, tier, official=official)
-        else:
-            core = _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
-        if core is None:
-            continue
         for sid in _expand_sku_ids(p):
+            sid = str(sid)
+            base = live_activity_prices.get(sid, daily)
+            if base != daily:
+                stats["live_activity_price_overrides"].append({
+                    "taobao_item_id": item_id,
+                    "taobao_sku_id": sid,
+                    "daily_price": float(daily),
+                    "activity_price": float(base),
+                })
+            if item_id in nosales:
+                official = Decimal("0")
+                if _official_applies(item_id, official_scope):
+                    low_price_exact = base < Decimal("100")
+                    official = official_deduction(
+                        base, lev, ceil_on and not low_price_exact)
+                    if low_price_exact:
+                        stats["official_low_price_exact"] += 1
+                core = _nosales_discount_row(
+                    s, p, stats, tier, official=official, base_price=base)
+            else:
+                core = _campaign_discount_row(
+                    s, p, tier, lev, ceil_on, stats, base_price=base)
+            if core is None:
+                continue
             row = {"taobao_item_id": item_id, "taobao_sku_id": sid,
                    "sku_code": s.sku_code, **core}
             concession, authorization = _authorized_concession_for_sku(
@@ -1100,6 +1216,7 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
     for row in discount_rows:
         pair = pair_by_sid.get(str(row.get("taobao_sku_id")))
         daily = _d(getattr(pair[0], "daily_price", None)) if pair else None
+        base = _d(row.get("calculation_base")) or daily
         official = _d(row.get("official")) or Decimal("0")
         deduct = _d(row.get("deduct"))
         target = _d(row.get("target_price"))
@@ -1110,14 +1227,15 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
             })
             continue
         landing = (
-            (daily - official - deduct).quantize(_CENT)
-            if daily is not None and deduct is not None else None
+            (base - official - deduct).quantize(_CENT)
+            if base is not None and deduct is not None else None
         )
         if landing is None or target is None or abs(landing - target) > Decimal("0.005"):
             errors.append({
                 "sku_id": row.get("taobao_sku_id"), "sku_code": row.get("sku_code"),
-                "check": "daily_minus_official_minus_discount_equals_target",
+                "check": "activity_base_minus_official_minus_discount_equals_target",
                 "daily": float(daily) if daily is not None else None,
+                "calculation_base": float(base) if base is not None else None,
                 "official": float(official), "deduct": float(deduct) if deduct is not None else None,
                 "target": float(target) if target is not None else None,
                 "calculated_landing": float(landing) if landing is not None else None,
@@ -1126,7 +1244,7 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
         "rule": "R13",
         "level": "error" if errors else "pass",
         "title": ("逐SKU最终价格验算（不代替R2报名资格门）：报名价=ERP日常价；"
-                  "日常价−官方立减−单品立减=ERP目标价"),
+                  "本期实际活动价（未回读时为日常价）−官方立减−单品立减=ERP目标价"),
         "items": errors[:100],
         "checked": {"signup_rows": len(signup_rows), "discount_rows": len(discount_rows)},
     }
@@ -2935,6 +3053,16 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
         })
     live_rows = current["rows"]
     floor_refresh = current["floor_refresh"]
+    from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
+    active_live_rows = [
+        row for row in live_rows
+        if row.get("status") in ACTIVITY_IN_CAMPAIGN_STATUSES
+    ]
+    live_activity_evidence = None
+    if active_live_rows:
+        live_activity_evidence = sync_live_activity_evidence(
+            db, plan, active_live_rows)
+        db.commit()
 
     checks = preflight(db, plan)
     critical = [check for check in checks if check.get("level") == "error"]
@@ -2968,8 +3096,6 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
 
     super_reduce = str(getattr(plan, "campaign_type", "")) == "super_reduce"
     if super_reduce:
-        from app.services.campaign_recon_service import ACTIVITY_IN_CAMPAIGN_STATUSES
-
         expected_items = {str(row.get("taobao_item_id") or "") for row in rows}
         active_outside_upload = {
             str(row.get("item_id") or "") for row in live_rows
@@ -3004,6 +3130,7 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     stats["policy_version"] = policy.get("version")
     stats["policy_sha256"] = policy.get("_sha256")
     stats["price_floor_refresh"] = floor_refresh
+    stats["live_activity_evidence"] = live_activity_evidence
     price_holds = stats.get("excluded_price_hold_items") or []
     if price_holds:
         stats["coupon_floor_hold_notification"] = _notify_coupon_floor_blocks(

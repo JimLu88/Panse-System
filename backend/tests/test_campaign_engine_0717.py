@@ -694,6 +694,69 @@ def test_discount_nosales_super_reduce_uses_explicit_active_scope(db_session):
     assert rows[0]["deduct"] == 125.0
 
 
+def test_discount_uses_live_activity_price_after_platform_acceptance(db_session):
+    """Current-window correction must use the platform activity base, not stale ERP daily."""
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "official_active_items=1047741902625; "
+        "current_activity_prices=6279984722445:2827.50"
+    )
+    _mk(
+        db_session, "PPSLIVE01", "PPSLIVE0101", "1047741902625",
+        "6279984722445", daily=3390, big=2367.35,
+    )
+    db_session.commit()
+
+    rows, stats = cs.build_discount_rows(db_session, plan)
+
+    assert rows[0]["calculation_base"] == 2827.5
+    assert rows[0]["official"] == 283.0
+    assert rows[0]["target_price"] == 2438.37
+    assert rows[0]["deduct"] == 106.13
+    assert stats["live_activity_price_overrides"] == [{
+        "taobao_item_id": "1047741902625",
+        "taobao_sku_id": "6279984722445",
+        "daily_price": 3390.0,
+        "activity_price": 2827.5,
+    }]
+
+
+def test_live_activity_evidence_promotes_known_failures_without_adopting_unknown(
+        db_session):
+    plan = _plan(db_session, "super_reduce")
+    cs._set_plan_item_marker(
+        plan, "platform_qualified_items", {"1000009301"})
+    cs._set_plan_item_marker(
+        plan, "platform_no_sales_items", {"1000009302"})
+    cs._set_plan_item_marker(
+        plan, "platform_hard_failed_items", {"1000009303"})
+    cs._set_plan_item_marker(plan, "official_active_items", {"1000009301"})
+    ns.add_no_sales(db_session, ["1000009302"])
+    db_session.commit()
+
+    evidence = cs.sync_live_activity_evidence(db_session, plan, [
+        {"item_id": "1000009302", "sku_id": "73092", "activity_price": 2910},
+        {"item_id": "1000009303", "sku_id": "73093", "activity_price": 3000},
+        {"item_id": "1000009399", "sku_id": "73999", "activity_price": 1},
+    ])
+
+    assert evidence["promoted_items"] == ["1000009302", "1000009303"]
+    assert evidence["unknown_active_items"] == ["1000009399"]
+    assert cs.platform_qualified_items(plan) == {
+        "1000009301", "1000009302", "1000009303",
+    }
+    assert cs.platform_no_sales_items(plan) == set()
+    assert cs.platform_hard_failed_items(plan) == set()
+    assert cs.official_scope_for_plan(plan)["active_items"] == {
+        "1000009302", "1000009303",
+    }
+    assert cs.current_activity_prices_for_plan(plan) == {
+        "73092": Decimal("2910.00"),
+        "73093": Decimal("3000.00"),
+    }
+    assert ns.get_no_sales(db_session) == set()
+
+
 def test_preflight_blocks_nosales_without_official_scope(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDD004", "PPSDD00401", "9309", "73071", daily=3000, big=2500)
