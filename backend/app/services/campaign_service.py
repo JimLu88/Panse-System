@@ -21,8 +21,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
+import hashlib
+import json
 import re
 from typing import Optional
 
@@ -357,6 +359,103 @@ def platform_qualified_items(plan) -> set[str]:
         flags=re.IGNORECASE,
     )
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def platform_terminal_accepted_items(plan) -> set[str]:
+    """Items the platform accepted in the latest terminal qualification run.
+
+    This is deliberately narrower than ``platform_qualified_items``: an item
+    provisionally allowed because the planned single-item discount can clear a
+    coupon floor is *not* a terminal platform acceptance yet.
+    """
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*platform_terminal_accepted_items\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
+
+
+def _plan_marker_value(plan, key: str) -> str:
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return str(matched.group(1) or "").strip() if matched else ""
+
+
+def _set_plan_value_marker(plan, key: str, value: str) -> None:
+    """Idempotently replace one scalar semicolon-delimited plan marker."""
+    text = str(getattr(plan, "remark", None) or "")
+    pattern = rf"(?:^|[;\n；])\s*{re.escape(key)}\s*=\s*[^;\n；]*"
+    text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip(" ;\n；")
+    plan.remark = f"{text}; {key}={value}" if text else f"{key}={value}"
+
+
+def _signup_rows_digest(rows: list[dict], item_ids: set[str]) -> str:
+    """Fingerprint exact item/SKU/signup-price tuples accepted by platform."""
+    payload = sorted(
+        (
+            str(row.get("taobao_item_id") or "").strip(),
+            str(row.get("taobao_sku_id") or "").strip(),
+            str(_d(row.get("price")) or ""),
+            bool(row.get("is_placeholder")),
+        )
+        for row in rows
+        if str(row.get("taobao_item_id") or "").strip() in item_ids
+    )
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _record_terminal_platform_acceptance(
+        plan, rows: list[dict], item_ids: set[str]) -> None:
+    """Persist fresh exact-price platform acceptance evidence for R17."""
+    accepted = set(item_ids)
+    _set_plan_item_marker(plan, "platform_terminal_accepted_items", accepted)
+    _set_plan_value_marker(
+        plan, "platform_terminal_accepted_digest",
+        _signup_rows_digest(rows, accepted),
+    )
+    _set_plan_value_marker(
+        plan, "platform_terminal_accepted_observed_at",
+        datetime.now(timezone.utc).isoformat(),
+    )
+
+
+def _fresh_terminal_platform_acceptance(
+        plan, signup_rows: list[dict], max_age_hours: float) -> dict:
+    """Return accepted items only when time and row fingerprint still match."""
+    item_ids = platform_terminal_accepted_items(plan)
+    observed_raw = _plan_marker_value(
+        plan, "platform_terminal_accepted_observed_at")
+    expected_digest = _plan_marker_value(
+        plan, "platform_terminal_accepted_digest")
+    age_hours = None
+    if observed_raw:
+        try:
+            observed = datetime.fromisoformat(observed_raw.replace("Z", "+00:00"))
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            age_hours = max(0.0, (
+                datetime.now(timezone.utc) - observed.astimezone(timezone.utc)
+            ).total_seconds() / 3600)
+        except ValueError:
+            age_hours = None
+    actual_digest = _signup_rows_digest(signup_rows, item_ids) if item_ids else ""
+    valid = bool(
+        item_ids and expected_digest and actual_digest == expected_digest
+        and age_hours is not None and age_hours <= max_age_hours
+    )
+    return {
+        "item_ids": item_ids if valid else set(),
+        "observed_at": observed_raw or None,
+        "age_hours": age_hours,
+        "digest_matches": bool(expected_digest and actual_digest == expected_digest),
+    }
 
 
 def platform_no_sales_items(plan) -> set[str]:
@@ -1413,12 +1512,16 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
 
     max_age = campaign_policy_service.floor_evidence_max_age_hours()
     evidence = campaign_price_floor_service.evidence_map(db, plan=plan)
+    terminal_acceptance = _fresh_terminal_platform_acceptance(
+        plan, signup_rows, max_age)
+    terminal_items = terminal_acceptance["item_ids"]
     problems: list[dict] = []
     authorized_new_items = (
         new_item_no_history_authorized_items(plan)
         | authorized_sku_refresh_items(plan)
     )
     authorized_new_rows: list[dict] = []
+    terminal_accepted_rows: list[dict] = []
     sku_by_id = {
         mapped_sid: sku
         for sku, promo in _mapped_pairs(db)
@@ -1434,6 +1537,15 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
         seen.add(sid)
         entry = evidence.get(sid) if isinstance(evidence.get(sid), dict) else {}
         item_id = str(row.get("taobao_item_id") or "")
+        if item_id in terminal_items:
+            terminal_accepted_rows.append({
+                "taobao_item_id": item_id,
+                "taobao_sku_id": sid,
+                "sku_code": row.get("sku_code"),
+                "signup_price": row.get("price"),
+                "source": "fresh_terminal_platform_qualification",
+            })
+            continue
         if not entry and item_id in authorized_new_items:
             sku = sku_by_id.get(sid)
             erp_list_price = _d(getattr(sku, "list_price", None))
@@ -1490,6 +1602,16 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
         "checked": len(seen),
         "max_age_hours": max_age,
         "authorized_new_item_rows": authorized_new_rows,
+        "platform_terminal_accepted_rows": terminal_accepted_rows,
+        "platform_terminal_acceptance": {
+            "observed_at": terminal_acceptance["observed_at"],
+            "age_hours": (
+                round(terminal_acceptance["age_hours"], 2)
+                if terminal_acceptance["age_hours"] is not None else None
+            ),
+            "digest_matches": terminal_acceptance["digest_matches"],
+            "accepted_item_count": len(terminal_items),
+        },
     }
 
 
@@ -2113,6 +2235,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         _remove_plan_marker(plan, "official_all_store")
         _remove_plan_marker(plan, "official_exempt_items")
         _set_plan_item_marker(plan, "official_active_items", qualified)
+        _record_terminal_platform_acceptance(plan, rows, already_correct)
         if not supplement_scope:
             _remove_plan_marker(plan, "supplement_items_authorized")
         db.commit()
@@ -2223,6 +2346,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         and _coupon_floor_only(rows_for_item)
     }
     hard_failed_ids = failed_ids - no_sales_ids - planned_discount_qualified_ids
+    terminal_accepted_ids = already_correct | (candidate_items - failed_ids)
     qualified = (
         already_correct
         | (candidate_items - failed_ids)
@@ -2246,6 +2370,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     _remove_plan_marker(plan, "official_all_store")
     _remove_plan_marker(plan, "official_exempt_items")
     _set_plan_item_marker(plan, "official_active_items", marker_qualified)
+    # Coupon-floor-only items are provisional until final signup succeeds.
+    _record_terminal_platform_acceptance(plan, rows, terminal_accepted_ids)
     # A one-off corrective retry marker must not survive a new full-scope probe.
     if not supplement_scope:
         _remove_plan_marker(plan, "supplement_items_authorized")
@@ -2255,6 +2381,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
             "hard_failed_item_ids": sorted(hard_failed_ids),
             "planned_discount_qualification_item_ids": sorted(
                 planned_discount_qualified_ids),
+            "terminal_accepted_item_ids": sorted(terminal_accepted_ids),
             "hard_failed_items": [row for row in failed_rows
                                   if str((row or {}).get("item_id") or "") in hard_failed_ids],
             "validation": validation, "feedback_refresh": feedback_refresh,

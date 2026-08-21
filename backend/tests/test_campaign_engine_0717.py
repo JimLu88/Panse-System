@@ -279,7 +279,9 @@ def test_platform_qualification_accepts_coupon_only_failure_when_planned_discoun
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009216"]
     assert result["planned_discount_qualification_item_ids"] == ["1000009216"]
+    assert result["terminal_accepted_item_ids"] == []
     assert result["hard_failed_item_ids"] == []
+    assert cs.platform_terminal_accepted_items(plan) == set()
 
 
 def test_no_sales_classifier_prefers_terminal_reason_over_policy_boilerplate():

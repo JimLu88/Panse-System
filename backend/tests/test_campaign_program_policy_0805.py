@@ -1,5 +1,5 @@
 """Permanent regression gates for the 2026-08-05 campaign execution contract."""
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -198,6 +198,54 @@ def test_missing_platform_floor_evidence_blocks_before_upload(db_session):
     assert checks["R17"]["level"] == "error"
     assert checks["R17"]["items"][0]["missing"] == [
         "min_list_price", "min_coupon_line"]
+
+
+def test_fresh_terminal_platform_acceptance_is_exact_r17_evidence(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+    signup_rows, _ = campaign_service.build_signup_rows(db_session, plan)
+    campaign_service._record_terminal_platform_acceptance(
+        plan, signup_rows, {"991880805"})
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "pass"
+    assert checks["R17"]["platform_terminal_acceptance"]["accepted_item_count"] == 1
+    assert checks["R17"]["platform_terminal_accepted_rows"][0][
+        "taobao_sku_id"] == "881880805"
+
+
+def test_stale_terminal_platform_acceptance_does_not_bypass_r17(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+    signup_rows, _ = campaign_service.build_signup_rows(db_session, plan)
+    campaign_service._record_terminal_platform_acceptance(
+        plan, signup_rows, {"991880805"})
+    campaign_service._set_plan_value_marker(
+        plan,
+        "platform_terminal_accepted_observed_at",
+        (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+    )
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "error"
+    assert checks["R17"]["platform_terminal_acceptance"]["accepted_item_count"] == 0
+
+
+def test_provisional_qualified_marker_alone_does_not_bypass_r17(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+    campaign_service._set_plan_item_marker(
+        plan, "platform_qualified_items", {"991880805"})
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "error"
+    assert checks["R17"]["platform_terminal_acceptance"]["accepted_item_count"] == 0
 
 
 def test_blank_coupon_gate_in_fresh_export_is_observed_not_missing(db_session):
