@@ -248,6 +248,23 @@ def test_provisional_qualified_marker_alone_does_not_bypass_r17(db_session):
     assert checks["R17"]["platform_terminal_acceptance"]["accepted_item_count"] == 0
 
 
+def test_fresh_coupon_floor_only_terminal_result_allows_discount_first(db_session):
+    plan = _plan(db_session)
+    _sku(db_session, legacy_list=4000, legacy_coupon=3000)
+    signup_rows, _ = campaign_service.build_signup_rows(db_session, plan)
+    campaign_service._record_terminal_coupon_floor_qualification(
+        plan, signup_rows, {"991880805"})
+    db_session.commit()
+
+    checks = {row["rule"]: row for row in campaign_service.preflight(db_session, plan)}
+
+    assert checks["R17"]["level"] == "pass"
+    assert checks["R17"][
+        "platform_terminal_coupon_floor_qualification"]["item_count"] == 1
+    assert checks["R17"]["platform_terminal_coupon_floor_rows"][0][
+        "taobao_sku_id"] == "881880805"
+
+
 def test_blank_coupon_gate_in_fresh_export_is_observed_not_missing(db_session):
     plan = _plan(db_session)
     _sku(db_session, legacy_list=4000, legacy_coupon=3000)

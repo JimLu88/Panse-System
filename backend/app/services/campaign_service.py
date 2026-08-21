@@ -414,26 +414,52 @@ def _signup_rows_digest(rows: list[dict], item_ids: set[str]) -> str:
 def _record_terminal_platform_acceptance(
         plan, rows: list[dict], item_ids: set[str]) -> None:
     """Persist fresh exact-price platform acceptance evidence for R17."""
+    _record_terminal_item_evidence(
+        plan, rows, "platform_terminal_accepted", item_ids)
+
+
+def _record_terminal_item_evidence(
+        plan, rows: list[dict], prefix: str, item_ids: set[str]) -> None:
+    """Persist one fresh, exact-row terminal platform evidence category."""
     accepted = set(item_ids)
-    _set_plan_item_marker(plan, "platform_terminal_accepted_items", accepted)
+    _set_plan_item_marker(plan, f"{prefix}_items", accepted)
     _set_plan_value_marker(
-        plan, "platform_terminal_accepted_digest",
+        plan, f"{prefix}_digest",
         _signup_rows_digest(rows, accepted),
     )
     _set_plan_value_marker(
-        plan, "platform_terminal_accepted_observed_at",
+        plan, f"{prefix}_observed_at",
         datetime.now(timezone.utc).isoformat(),
     )
+
+
+def _record_terminal_coupon_floor_qualification(
+        plan, rows: list[dict], item_ids: set[str]) -> None:
+    """Record items rejected solely on coupon floor before planned discount."""
+    _record_terminal_item_evidence(
+        plan, rows, "platform_terminal_coupon_floor", item_ids)
 
 
 def _fresh_terminal_platform_acceptance(
         plan, signup_rows: list[dict], max_age_hours: float) -> dict:
     """Return accepted items only when time and row fingerprint still match."""
-    item_ids = platform_terminal_accepted_items(plan)
-    observed_raw = _plan_marker_value(
-        plan, "platform_terminal_accepted_observed_at")
-    expected_digest = _plan_marker_value(
-        plan, "platform_terminal_accepted_digest")
+    return _fresh_terminal_item_evidence(
+        plan, signup_rows, max_age_hours, "platform_terminal_accepted")
+
+
+def _fresh_terminal_coupon_floor_qualification(
+        plan, signup_rows: list[dict], max_age_hours: float) -> dict:
+    """Return fresh exact coupon-floor-only terminal qualification items."""
+    return _fresh_terminal_item_evidence(
+        plan, signup_rows, max_age_hours, "platform_terminal_coupon_floor")
+
+
+def _fresh_terminal_item_evidence(
+        plan, signup_rows: list[dict], max_age_hours: float, prefix: str) -> dict:
+    item_ids = set(re.findall(
+        r"\d{8,}", _plan_marker_value(plan, f"{prefix}_items")))
+    observed_raw = _plan_marker_value(plan, f"{prefix}_observed_at")
+    expected_digest = _plan_marker_value(plan, f"{prefix}_digest")
     age_hours = None
     if observed_raw:
         try:
@@ -1515,6 +1541,9 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     terminal_acceptance = _fresh_terminal_platform_acceptance(
         plan, signup_rows, max_age)
     terminal_items = terminal_acceptance["item_ids"]
+    coupon_floor_qualification = _fresh_terminal_coupon_floor_qualification(
+        plan, signup_rows, max_age)
+    coupon_floor_items = coupon_floor_qualification["item_ids"]
     problems: list[dict] = []
     authorized_new_items = (
         new_item_no_history_authorized_items(plan)
@@ -1522,6 +1551,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     )
     authorized_new_rows: list[dict] = []
     terminal_accepted_rows: list[dict] = []
+    terminal_coupon_floor_rows: list[dict] = []
     sku_by_id = {
         mapped_sid: sku
         for sku, promo in _mapped_pairs(db)
@@ -1544,6 +1574,15 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
                 "sku_code": row.get("sku_code"),
                 "signup_price": row.get("price"),
                 "source": "fresh_terminal_platform_qualification",
+            })
+            continue
+        if item_id in coupon_floor_items:
+            terminal_coupon_floor_rows.append({
+                "taobao_item_id": item_id,
+                "taobao_sku_id": sid,
+                "sku_code": row.get("sku_code"),
+                "signup_price": row.get("price"),
+                "source": "fresh_terminal_coupon_floor_only_qualification",
             })
             continue
         if not entry and item_id in authorized_new_items:
@@ -1603,6 +1642,7 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
         "max_age_hours": max_age,
         "authorized_new_item_rows": authorized_new_rows,
         "platform_terminal_accepted_rows": terminal_accepted_rows,
+        "platform_terminal_coupon_floor_rows": terminal_coupon_floor_rows,
         "platform_terminal_acceptance": {
             "observed_at": terminal_acceptance["observed_at"],
             "age_hours": (
@@ -1611,6 +1651,15 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
             ),
             "digest_matches": terminal_acceptance["digest_matches"],
             "accepted_item_count": len(terminal_items),
+        },
+        "platform_terminal_coupon_floor_qualification": {
+            "observed_at": coupon_floor_qualification["observed_at"],
+            "age_hours": (
+                round(coupon_floor_qualification["age_hours"], 2)
+                if coupon_floor_qualification["age_hours"] is not None else None
+            ),
+            "digest_matches": coupon_floor_qualification["digest_matches"],
+            "item_count": len(coupon_floor_items),
         },
     }
 
@@ -2236,6 +2285,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
         _remove_plan_marker(plan, "official_exempt_items")
         _set_plan_item_marker(plan, "official_active_items", qualified)
         _record_terminal_platform_acceptance(plan, rows, already_correct)
+        _record_terminal_coupon_floor_qualification(plan, rows, set())
         if not supplement_scope:
             _remove_plan_marker(plan, "supplement_items_authorized")
         db.commit()
@@ -2372,6 +2422,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     _set_plan_item_marker(plan, "official_active_items", marker_qualified)
     # Coupon-floor-only items are provisional until final signup succeeds.
     _record_terminal_platform_acceptance(plan, rows, terminal_accepted_ids)
+    _record_terminal_coupon_floor_qualification(
+        plan, rows, planned_discount_qualified_ids)
     # A one-off corrective retry marker must not survive a new full-scope probe.
     if not supplement_scope:
         _remove_plan_marker(plan, "supplement_items_authorized")

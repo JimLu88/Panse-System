@@ -282,6 +282,9 @@ def test_platform_qualification_accepts_coupon_only_failure_when_planned_discoun
     assert result["terminal_accepted_item_ids"] == []
     assert result["hard_failed_item_ids"] == []
     assert cs.platform_terminal_accepted_items(plan) == set()
+    assert cs._fresh_terminal_coupon_floor_qualification(
+        plan, cs.build_signup_rows(db_session, plan)[0], 24
+    )["item_ids"] == {"1000009216"}
 
 
 def test_no_sales_classifier_prefers_terminal_reason_over_policy_boilerplate():
