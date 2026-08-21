@@ -584,7 +584,7 @@ def authorized_line_concessions(plan) -> dict[str, Decimal]:
         r"(\d{8,})\s*:\s*([0-9]+(?:\.[0-9]+)?)", matched.group(1)
     ):
         amount = _d(raw_amount)
-        if amount is not None and Decimal("0") < amount < Decimal("1"):
+        if amount is not None and Decimal("0") < amount <= Decimal("1"):
             out[sku_id] = amount.quantize(_CENT)
     return out
 

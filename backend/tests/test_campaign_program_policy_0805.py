@@ -56,7 +56,7 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["execution"]["withdrawal_requires_current_explicit_item_list_authorization"] is True
     assert policy["pricing"]["real_sku_signup_price"] == "erp_daily_price"
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
-    assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_exclusive"] == 1.00
+    assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_inclusive"] == 1.00
     scope = policy["scope_and_idempotency"]
     assert scope["exclude_no_sales_items_from_campaign_signup"] is False
     assert scope["registered_no_sales_is_advisory_only"] is True
@@ -118,9 +118,21 @@ def test_current_user_can_authorize_named_sub_yuan_discount_concession(db_sessio
     }]
 
 
-def test_line_concession_rejects_one_yuan_or_more(db_session):
+def test_line_concession_accepts_exactly_one_yuan(db_session):
     plan = _plan(db_session)
     plan.remark = "line_concession_authorized=881880805:1.00"
+    _sku(db_session)
+
+    discounts, stats = campaign_service.build_discount_rows(db_session, plan)
+
+    assert discounts[0]["deduct"] == 641.0
+    assert discounts[0]["target_price"] == 1999.0
+    assert stats["line_concessions"][0]["amount"] == 1.0
+
+
+def test_line_concession_rejects_more_than_one_yuan(db_session):
+    plan = _plan(db_session)
+    plan.remark = "line_concession_authorized=881880805:1.01"
     _sku(db_session)
 
     discounts, stats = campaign_service.build_discount_rows(db_session, plan)
