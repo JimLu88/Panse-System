@@ -30,6 +30,23 @@ REMOTE_KW = (
     "装修好", "装修完", "房子好", "房子装好", "新房", "入住前", "还没装修", "房子还没",
     "别提前", "不要提前", "别太早", "不要太早",
 )
+
+# 已经开工不等于已经获准发货。像“延迟发货，发货前通知 / 开始制作”表示
+# 工厂可以继续制作，但成品必须等客户通知后再发。这个信号必须独立于
+# is_activated()，否则“开始制作”会把整单从远期挂起解除后错误落入“直接发货”。
+WAIT_SHIPPING_NOTICE_KW = (
+    "发货前通知", "发货前联系", "发货前告知", "发货前沟通",
+    "发货先通知", "发货先联系",
+    "通知后发货", "通知后再发", "等通知发货", "待通知发货",
+    "收到通知再发", "收到通知发货", "确认后发货", "确认后再发",
+    "暂不发货", "先不发货", "先别发货", "不要先发货",
+    "延后发货", "延期发货", "延迟发货", "推迟发货",
+    "晚点发货", "迟点发货", "稍后发货", "晚些发货",
+)
+WAIT_SHIPPING_NOTICE_NEGATIVE_KW = (
+    "无需通知直接发货", "不用通知直接发货", "不需通知直接发货",
+    "不需要通知直接发货", "无需联系直接发货", "不用联系直接发货",
+)
 # 普通远期单的激活关键字 (客户已通知/该做了 → 解除远期)。
 # 客户延期单使用更严格的“开始制作”铁证，见 is_customer_delay_activated()。
 ACTIVATE_KW = (
@@ -89,6 +106,18 @@ def is_customer_delay_activated(o) -> bool:
 def has_remote_keyword(o) -> bool:
     """订单备注是否含远期关键字 (装修好/等通知/暂不发…)。"""
     return any(k in order_text(o) for k in REMOTE_KW)
+
+
+def waits_for_shipping_notice(o) -> bool:
+    """是否允许制作、但发货前仍必须等客户通知。
+
+    该判断只控制发货安排，不参与是否开工/是否分配工厂号。显式的“无需通知
+    直接发货”可以解除旧备注，普通“开始制作”只解除生产挂起，不能解除发货门。
+    """
+    text = "".join(order_text(o).split())
+    if any(k in text for k in WAIT_SHIPPING_NOTICE_NEGATIVE_KW):
+        return False
+    return any(k in text for k in WAIT_SHIPPING_NOTICE_KW)
 
 
 def is_remote(o) -> bool:

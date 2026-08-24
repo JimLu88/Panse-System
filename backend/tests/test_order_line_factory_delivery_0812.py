@@ -305,6 +305,50 @@ def test_factory_dispatch_has_one_row_per_child_order(db_session):
     assert {row["工厂下单号"] for row in child_rows} == {"畔色700单", "畔色701单"}
 
 
+def test_factory_dispatch_excludes_refunded_child_even_if_previously_sent(db_session):
+    order = _order(db_session, "MAIN-DISPATCH-REFUND", factory_no=702)
+    active = _line(
+        db_session,
+        order.order_no,
+        "SUB-D-ACTIVE",
+        "榉木床",
+        "PPS2633007032018",
+    )
+    refunded = _line(
+        db_session,
+        order.order_no,
+        "SUB-D-REFUNDED",
+        "岩板餐桌",
+        "PPS2421007090113",
+        refunded=True,
+    )
+    active.factory_delivery_required = refunded.factory_delivery_required = True
+    active.factory_no, refunded.factory_no = 702, 703
+    active.factory_delivery_state = refunded.factory_delivery_state = "sent"
+    for line in (active, refunded):
+        db_session.add(ImportedFile(
+            kind="order_sheet_sent",
+            original_filename=f"{line.sub_order_no}.jpg",
+            stored_path=f"/tmp/{line.sub_order_no}.jpg",
+            source="test",
+            file_hash=f"hash-{line.sub_order_no}",
+            row_summary={
+                "order_no": order.order_no,
+                "sub_order_no": line.sub_order_no,
+                "factory_no_at_render": line.factory_no,
+                "factory_label_at_render": f"畔色{line.factory_no}单",
+                "render_width": 1684,
+                "pushed": True,
+            },
+        ))
+    db_session.commit()
+
+    rows = dispatch.build_rows(db_session)
+
+    assert [row["子订单号"] for row in rows] == [active.sub_order_no]
+    assert refunded.sub_order_no in dispatch._ineligible_factory_entity_keys(db_session)
+
+
 def test_dispatch_sync_upgrades_legacy_main_order_row(monkeypatch, db_session):
     order = _order(db_session, "MAIN-UPGRADE", factory_no=710)
     line = _line(db_session, order.order_no, "SUB-UPGRADE", "榉木床", "PPS2633007032018")

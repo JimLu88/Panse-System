@@ -106,6 +106,44 @@ def test_dispatch_customer_delay_without_start_is_remote_wait_notice(db_session)
     assert row["订单提醒"] == "⏳ 远期等通知"
 
 
+def test_dispatch_started_order_still_waits_for_shipping_notice(db_session):
+    """开始制作只解除生产挂起，不能覆盖买家的发货前通知门。"""
+    order = _order(
+        order_no="3312219648672006758",
+        factory_no=368,
+        buyer_message="延迟发货 发货前通知",
+        seller_memo="开始制作",
+        production_note=None,
+    )
+    db_session.add(order)
+    db_session.commit()
+
+    row = dispatch.build_rows(db_session)[0]
+
+    assert row["订单状态"] == "生产中"
+    assert row["发货安排"] == "做好后等通知发货"
+    assert row["订单备注"] == "买家：延迟发货 发货前通知\n卖家：开始制作"
+
+
+def test_dispatch_explicit_direct_ship_can_release_old_notice():
+    order = _order(
+        buyer_message="延迟发货，发货前通知",
+        seller_memo="客户改口：无需通知直接发货",
+        production_note=None,
+    )
+    assert dispatch.order_flags.waits_for_shipping_notice(order) is False
+
+
+def test_dispatch_excludes_refunded_parent_order(db_session):
+    db_session.add(_order(
+        refund_status="退款成功",
+        refund_amount=Decimal("3000"),
+    ))
+    db_session.commit()
+
+    assert dispatch.build_rows(db_session) == []
+
+
 def test_dispatch_photo_keywords_cover_common_customer_phrasing():
     positive_notes = (
         "发货前必须拍照给我确认",
@@ -500,6 +538,110 @@ def test_dispatch_auto_setting_can_skip_without_touching_feishu(db_session, monk
     assert result["ok"] is True
     assert result["skipped"] == "auto_disabled"
     assert dispatch.get_sync_settings(db_session)["direction"] == "out"
+
+
+def test_dispatch_sync_removes_refunds_and_does_not_block_on_missing_cost(
+    db_session, monkeypatch
+):
+    active = _order(
+        order_no="ACTIVE-MISSING-COST",
+        factory_no=322,
+        sku_code="SKU-MISSING-COST",
+        wood_cost_est=None,
+        buyer_message=None,
+    )
+    refunded = _order(
+        order_no="REFUNDED-FACTORY-ORDER",
+        factory_no=323,
+        refund_status="退款成功",
+        refund_amount=Decimal("3000"),
+    )
+    db_session.add_all([active, refunded])
+    db_session.commit()
+
+    monkeypatch.setattr(dispatch, "_ensure_schema", lambda *a, **k: None)
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_table_fields",
+        lambda *a, **k: [
+            {
+                "field_name": name,
+                "type": field_type,
+                "field_id": name,
+                "is_primary": name == "工厂下单号",
+            }
+            for name, field_type in dispatch.FIELD_SPECS
+        ],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_views",
+        lambda *a, **k: [
+            {"view_id": view_id, "view_name": name, "view_type": kind}
+            for view_id, (name, kind) in dispatch.EXPECTED_VIEWS.items()
+        ],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "list_records",
+        lambda *a, **k: [{
+            "record_id": "refund-record",
+            "fields": {
+                "工厂下单号": "畔色323单",
+                "订单号": refunded.order_no,
+                "订单状态": "生产中",
+            },
+        }],
+    )
+    created = []
+    deleted = []
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "batch_create_records",
+        lambda db, app, table, rows: created.extend(rows) or ["active-record"],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "batch_update_records",
+        lambda *a, **k: [],
+    )
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "batch_delete_records",
+        lambda db, app, table, ids: deleted.extend(ids) or len(ids),
+    )
+    monkeypatch.setattr(dispatch, "_ensure_urgency_option_styles", lambda *a, **k: False)
+
+    result = dispatch.sync(db_session, include_images=False)
+
+    assert result["ok"] is True
+    assert result["missing_wood_cost"] == [active.order_no]
+    assert result["warnings"] and result["errors"] == []
+    assert result["created"] == 1
+    assert created[0]["订单号"] == active.order_no
+    assert deleted == ["refund-record"]
+    assert result["deleted_ineligible"] == 1
+
+
+def test_periodic_feishu_sync_propagates_factory_dispatch_failure(
+    db_session, monkeypatch
+):
+    monkeypatch.setattr(
+        dispatch.feishu_client,
+        "get_credentials",
+        lambda db: ("app", "secret"),
+    )
+    monkeypatch.setattr(
+        dispatch,
+        "sync_if_enabled",
+        lambda db: {"ok": False, "errors": ["工厂表写入失败"]},
+    )
+    monkeypatch.setattr(feishu_sync_service, "sync_all", lambda db: [])
+
+    result = scheduler._job_feishu_sync(db_session)
+
+    assert result["_run_status"] == "fail"
+    assert "工厂表写入失败" in result["_error"]
 
 
 def test_dispatch_schema_allows_operator_column_reordering():

@@ -549,13 +549,20 @@ def _job_feishu_sync(db: Session) -> dict:
         return {"skipped": "飞书未配置"}
     factory_dispatch = factory_dispatch_feishu_service.sync_if_enabled(db)
     results = feishu_sync_service.sync_all(db)
-    return {
+    result = {
         "bindings": len(results),
         "pushed": sum(r.pushed for r in results),
         "pulled": sum(r.pulled for r in results),
         "conflicts": sum(r.conflicts for r in results),
         "factory_dispatch": factory_dispatch,
     }
+    if not factory_dispatch.get("ok"):
+        detail = "; ".join(
+            str(item) for item in (factory_dispatch.get("errors") or [])[:5]
+        )
+        result["_run_status"] = "fail"
+        result["_error"] = f"飞书系统下单表同步失败: {detail or '未知原因'}"
+    return result
 
 
 def _job_data_quality(db: Session) -> dict:

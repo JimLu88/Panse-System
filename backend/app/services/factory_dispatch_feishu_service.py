@@ -314,6 +314,8 @@ def _ship_plan(order: Order, *, remote: bool, photo_requested: bool = False) -> 
         return "需拍照后通知爱群"
     if remote:
         return "之后发货（等通知）"
+    if order_flags.waits_for_shipping_notice(order):
+        return "做好后等通知发货"
     if order.is_customer_delayed:
         return "客户延期（继续生产）"
     return "做好直接发货"
@@ -472,8 +474,14 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
     for order in orders:
         paid = order_sheet_archive_service._is_paid(order)
         refunded = order_sheet_archive_service._is_refunded(order)
-        current = (order.status or "") != "cancelled" and not refunded
-        if not paid or (order.status or "") == "pending_payment":
+        normalized = order_service.normalize_status(order.status)
+        # 工厂订单表只承载仍有效的生产/交付记录。取消或退款订单即使历史上
+        # 已经拿过工厂号，也必须退出当前工厂表，不能继续作为可执行订单展示。
+        if (
+            not paid
+            or normalized in {"cancelled", "pending_payment"}
+            or refunded
+        ):
             continue
         if order_sheet_archive_service._is_sample_order(order):
             continue
@@ -490,24 +498,21 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                 OrderDetail.sub_order_no.isnot(None),
             ).order_by(OrderDetail.id.asc())
         ).scalars().all()
-        # 子订单链路一行一件；退款但未曾送达的子商品不进入工厂表。
+        # 子订单链路一行一件；退款子商品无论历史上是否送达，都退出当前工厂表。
         if line_rows:
             from app.services import order_line_delivery_service
-            line_sent = order_line_delivery_service.sent_line_evidence(db)
             for line in line_rows:
                 sub_order_no = str(line.sub_order_no or "")
                 line_refunded = order_line_delivery_service.line_is_refunded(line)
-                if line_refunded and sub_order_no not in line_sent:
+                if line_refunded:
                     continue
                 ps_line = db.execute(
                     select(PricingSku).where(PricingSku.sku_code == line.sku_code)
                 ).scalar_one_or_none()
-                current_line = not line_refunded
                 factory_no = line.factory_no
                 factory_label = f"畔色{factory_no}单" if factory_no else "待编号"
                 image_slots = sheet_images.get(sub_order_no) or {}
-                image_slot = "void" if line_refunded else "sent"
-                sheet_image = image_slots.get(image_slot)
+                sheet_image = image_slots.get("sent")
                 if (
                     factory_no is None
                     or sheet_image is None
@@ -548,10 +553,8 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     ),
                     "下单日期": _date_ms(order.order_date),
                     "预计发货日期": _date_ms(schedule["effective_deadline"]),
-                    "订单状态": "已作废" if line_refunded else ("生产中" if factory_no else "待制单"),
-                    "交期紧急度": (
-                        "取消" if line_refunded else _urgency_label(order, refunded=False, schedule=schedule)
-                    ),
+                    "订单状态": "生产中" if factory_no else "待制单",
+                    "交期紧急度": _urgency_label(order, refunded=False, schedule=schedule),
                     "发货安排": _ship_plan(order, remote=False, photo_requested=photo_requested),
                     "客户延期单": bool(order.is_customer_delayed),
                     "客户通知拍照": photo_requested,
@@ -569,10 +572,6 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
                     "_sheet_name": sheet_image["name"] if sheet_image else None,
                 })
             continue
-        # 取消/退款但曾经拿过正式或远期编号的单保留，状态明确显示作废；从未进入工厂链路的不展示。
-        if not (order.factory_no or order.remote_seq or current):
-            continue
-
         ps = pricing.get(order.sku_code or "")
         remote = order_flags.is_remote(order)
         schedule = order_flags.factory_schedule(order)
@@ -590,11 +589,10 @@ def build_rows(db: Session) -> list[dict[str, Any]]:
             unit_wood = _wood_unit_price(order, ps)
             cost_method = ""
         factory_label = order_flags.factory_label(order)
-        if not factory_label and current:
+        if not factory_label:
             factory_label = "待编号"
         image_slots = sheet_images.get(order.order_no) or {}
-        image_slot = "void" if refunded else "sent"
-        sheet_image = image_slots.get(image_slot)
+        sheet_image = image_slots.get("sent")
         # 图片里的编号、表格第一列和工厂群发送标题必须逐字对应。没有正式号、
         # 编号不同或还是旧版窄图时一律不挂图，避免工厂按错单生产。
         if (
@@ -687,6 +685,41 @@ def preview_summary(db: Session) -> dict[str, Any]:
             row.get("发货安排") == "需拍照后通知爱群" for row in rows
         ),
     }
+
+
+def _ineligible_factory_entity_keys(db: Session) -> set[str]:
+    """返回已退款/取消、必须从当前工厂投影移除的精确实体键。
+
+    只返回 ERP 中真实存在的订单号或淘宝子订单号。同步据此删除飞书中的
+    系统订单记录，不会把“飞书有、ERP 暂时没有”的人工行当成垃圾清理。
+    """
+    from app.services import order_line_delivery_service
+
+    orders = db.execute(select(Order)).scalars().all()
+    order_by_no = {str(order.order_no): order for order in orders if order.order_no}
+    invalid_order_nos = {
+        order_no
+        for order_no, order in order_by_no.items()
+        if order_service.normalize_status(order.status) == "cancelled"
+        or order_sheet_archive_service._is_refunded(order)
+    }
+    keys = set(invalid_order_nos)
+    lines = db.execute(
+        select(OrderDetail).where(
+            OrderDetail.source == "import",
+            OrderDetail.sub_order_no.isnot(None),
+        )
+    ).scalars().all()
+    for line in lines:
+        sub_order_no = str(line.sub_order_no or "").strip()
+        if not sub_order_no:
+            continue
+        if (
+            str(line.order_no or "") in invalid_order_nos
+            or order_line_delivery_service.line_is_refunded(line)
+        ):
+            keys.add(sub_order_no)
+    return keys
 
 
 def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
@@ -1162,10 +1195,12 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         "created": 0,
         "updated": 0,
         "deleted_demo": 0,
+        "deleted_ineligible": 0,
         "urgency_style_updated": False,
         "missing_wood_cost": [],
         "missing_factory_sheet_image": [],
         "deferred_image_uploads": [],
+        "warnings": [],
         "errors": [],
         "views": {},
         "view_layout": MAIN_VIEW_LAYOUT,
@@ -1204,18 +1239,19 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
             str(row["订单号"]) for row in rows if row.get("木作成本价") is None
         ]
         if result["missing_wood_cost"]:
-            result["errors"].append(
+            # 成本缺失需要后续补齐，但不能阻断订单状态、退款清退和发货门更新。
+            # 木作成本字段允许空值，保留为空并把问题降级为可见警告。
+            result["warnings"].append(
                 "木作成本价缺失 "
                 f"{len(result['missing_wood_cost'])} 单: "
                 + ",".join(result["missing_wood_cost"][:10])
             )
-            result["ok"] = False
-            return result
         cache = _load_image_cache(db)
         cache_before = dict(cache)
         image_bindings = _load_image_bindings(db)
         image_bindings_before = dict(image_bindings)
         remote_rows = feishu_client.list_records(db, app_token, table_id)
+        ineligible_entity_keys = _ineligible_factory_entity_keys(db)
         remote_by_no: dict[str, dict] = {}
         legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
@@ -1333,6 +1369,33 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
                     image_bindings[binding[0]] = binding[1]
             if failed:
                 result["errors"].append(f"飞书下单表更新失败 {len(failed)}/{len(updates)} 条")
+
+        # 退款/取消记录不属于当前工厂执行表。只删除 ERP 已精确确认失效的实体，
+        # 不清理其它来源不明的飞书行；任何创建/更新失败时也不做删除。
+        ineligible_remote = []
+        if not result["errors"]:
+            for rec in remote_rows:
+                remote_fields = rec.get("fields") or {}
+                entity_key = str(
+                    remote_fields.get("子订单号")
+                    or remote_fields.get("订单号")
+                    or ""
+                ).strip()
+                record_id = str(rec.get("record_id") or "").strip()
+                if record_id and entity_key in ineligible_entity_keys:
+                    ineligible_remote.append((record_id, entity_key))
+        if ineligible_remote:
+            deleted = feishu_client.batch_delete_records(
+                db,
+                app_token,
+                table_id,
+                [record_id for record_id, _entity_key in ineligible_remote],
+            )
+            result["deleted_ineligible"] = int(deleted or 0)
+            # batch_delete 对并发已删除的记录按幂等成功处理，但返回值只统计本轮
+            # 实际删除数；无异常即代表目标状态已达成。
+            for _record_id, entity_key in ineligible_remote:
+                image_bindings.pop(entity_key, None)
 
         # 首次写入新的终态文本时，飞书会自动生成单选项。记录写完后再统一修成
         # 灰白浅色；之后每次同步也会校正，避免运营误改或模板重建后颜色漂移。
