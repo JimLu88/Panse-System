@@ -164,7 +164,7 @@ def test_signup_workbook_writes_shipping_days_only_for_authorized_item():
 
     assert sheet.cell(4, 1).value == "793084818113"
     assert sheet.cell(4, 3).value == 1200
-    assert sheet.cell(4, 5).value == 30
+    assert sheet.cell(4, 5).value == "30天"
     assert sheet.cell(5, 1).value == "100000000004"
     assert sheet.cell(5, 3).value == 397
     assert sheet.cell(5, 5).value is None
@@ -254,7 +254,7 @@ def test_promo_qualification_uploads_authorized_shipping_days(
     assert captured["expected_rows"] == 1
     assert captured["expected_items"] == 1
     assert [cell.value for cell in row[:5]] == [
-        "793084818113", "6292847403160", 1200, None, 30]
+        "793084818113", "6292847403160", 1200, None, "30天"]
 
 
 def test_platform_qualification_limits_supplement_and_preserves_prior_scope(

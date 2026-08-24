@@ -1824,7 +1824,9 @@ def _build_signup_xlsx(
         ws.cell(r, 3, float(row["price"])).number_format = "0.00"
         shipping_days = shipping_days_by_item.get(item_id)
         if shipping_days is not None:
-            ws.cell(r, 5, shipping_days).number_format = "0"
+            # The official template accepts relative-time text (for example
+            # "2天"), not a bare numeric day count.
+            ws.cell(r, 5, f"{shipping_days}天").number_format = "@"
         r += 1
     out = io.BytesIO()
     wb.save(out)
