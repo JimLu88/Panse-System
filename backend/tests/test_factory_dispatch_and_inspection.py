@@ -644,6 +644,34 @@ def test_periodic_feishu_sync_propagates_factory_dispatch_failure(
     assert "工厂表写入失败" in result["_error"]
 
 
+def test_feishu_batch_delete_retries_data_not_ready(monkeypatch):
+    attempts = []
+    sleeps = []
+
+    def fake_request(*args, **kwargs):
+        attempts.append(kwargs.get("json"))
+        if len(attempts) < 3:
+            raise dispatch.feishu_client.FeishuError(
+                "Data not ready",
+                code=dispatch.feishu_client.ERR_DATA_NOT_READY,
+            )
+        return {}
+
+    monkeypatch.setattr(dispatch.feishu_client, "_req", fake_request)
+    monkeypatch.setattr(dispatch.feishu_client.time, "sleep", sleeps.append)
+
+    deleted = dispatch.feishu_client.batch_delete_records(
+        None,
+        "app",
+        "table",
+        ["rec1", "rec2"],
+    )
+
+    assert deleted == 2
+    assert len(attempts) == 3
+    assert sleeps == [2, 4]
+
+
 def test_dispatch_schema_allows_operator_column_reordering():
     fields = [
         {

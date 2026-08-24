@@ -356,6 +356,8 @@ def batch_update_records(db: Session, app_token: str, table_id: str,
 # 飞书业务错误码
 ERR_RECORD_NOT_FOUND = 1254043   # RecordIdNotFound: 要删的记录已不存在
 ERR_TABLE_NOT_FOUND = 1254041    # TableIdNotFound: 表已不存在 (绑定失效)
+ERR_DATA_NOT_READY = 1254607     # 大批量写入后索引尚未就绪，稍后重试
+_DATA_NOT_READY_RETRY_DELAYS = (2, 4, 8, 12)
 
 
 def batch_delete_records(db: Session, app_token: str, table_id: str,
@@ -375,21 +377,39 @@ def batch_delete_records(db: Session, app_token: str, table_id: str,
     deleted = 0
     for i in range(0, len(ids), 500):
         chunk = ids[i:i + 500]
-        try:
-            _req(db, "POST", url, json={"records": chunk})
-            deleted += len(chunk)
-        except FeishuError as e:
-            if e.code != ERR_RECORD_NOT_FOUND:
-                raise
-            # 整批含已不存在记录: 降级逐条删除, 忽略 NotFound
-            for rid in chunk:
-                try:
-                    delete_record(db, app_token, table_id, rid)
-                    deleted += 1
-                except FeishuError as e2:
-                    if e2.code == ERR_RECORD_NOT_FOUND:
-                        continue
+        attempt = 0
+        while True:
+            try:
+                _req(db, "POST", url, json={"records": chunk})
+                deleted += len(chunk)
+                break
+            except FeishuError as e:
+                if (
+                    e.code == ERR_DATA_NOT_READY
+                    and attempt < len(_DATA_NOT_READY_RETRY_DELAYS)
+                ):
+                    delay = _DATA_NOT_READY_RETRY_DELAYS[attempt]
+                    attempt += 1
+                    _logger.warning(
+                        "飞书批量删除前数据尚未就绪，%s 秒后重试 (%s/%s)",
+                        delay,
+                        attempt,
+                        len(_DATA_NOT_READY_RETRY_DELAYS),
+                    )
+                    time.sleep(delay)
+                    continue
+                if e.code != ERR_RECORD_NOT_FOUND:
                     raise
+                # 整批含已不存在记录: 降级逐条删除, 忽略 NotFound
+                for rid in chunk:
+                    try:
+                        delete_record(db, app_token, table_id, rid)
+                        deleted += 1
+                    except FeishuError as e2:
+                        if e2.code == ERR_RECORD_NOT_FOUND:
+                            continue
+                        raise
+                break
     return deleted
 
 
