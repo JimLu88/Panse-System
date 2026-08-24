@@ -349,6 +349,34 @@ def test_factory_dispatch_excludes_refunded_child_even_if_previously_sent(db_ses
     assert refunded.sub_order_no in dispatch._ineligible_factory_entity_keys(db_session)
 
 
+def test_factory_dispatch_projected_main_wins_over_refunded_nonfactory_child(db_session):
+    order = _order(db_session, "MAIN-DISPATCH-OVERLAP", factory_no=704)
+    # 淘宝单商品明细的子订单号可能与主订单号相同。历史明细退款标记不能清掉
+    # 仍由当前有效主订单投影出来的工厂行。
+    refunded_detail = _line(
+        db_session,
+        order.order_no,
+        order.order_no,
+        "补差非生产明细",
+        "PPS2633007032018",
+        refunded=True,
+    )
+    refunded_detail.factory_delivery_required = False
+    db_session.commit()
+
+    rows = dispatch.build_rows(db_session)
+    projected = {
+        str(row.get("子订单号") or row.get("订单号") or "")
+        for row in rows
+    }
+
+    assert order.order_no in projected
+    assert order.order_no not in dispatch._ineligible_factory_entity_keys(
+        db_session,
+        projected_entity_keys=projected,
+    )
+
+
 def test_dispatch_sync_upgrades_legacy_main_order_row(monkeypatch, db_session):
     order = _order(db_session, "MAIN-UPGRADE", factory_no=710)
     line = _line(db_session, order.order_no, "SUB-UPGRADE", "榉木床", "PPS2633007032018")

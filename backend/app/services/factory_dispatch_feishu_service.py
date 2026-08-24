@@ -687,7 +687,11 @@ def preview_summary(db: Session) -> dict[str, Any]:
     }
 
 
-def _ineligible_factory_entity_keys(db: Session) -> set[str]:
+def _ineligible_factory_entity_keys(
+    db: Session,
+    *,
+    projected_entity_keys: Optional[set[str]] = None,
+) -> set[str]:
     """返回已退款/取消、必须从当前工厂投影移除的精确实体键。
 
     只返回 ERP 中真实存在的订单号或淘宝子订单号。同步据此删除飞书中的
@@ -719,7 +723,15 @@ def _ineligible_factory_entity_keys(db: Session) -> set[str]:
             or order_line_delivery_service.line_is_refunded(line)
         ):
             keys.add(sub_order_no)
-    return keys
+    # 淘宝单商品明细的子订单号可能与主订单号相同：非生产明细已退款，但主订单
+    # 当前仍有效。当前投影是最终裁决，任何仍在投影中的实体都不能进入清退集合，
+    # 否则会形成“本轮删除、下轮重建”的循环。sync 已构造 rows 时传键避免重复查询。
+    if projected_entity_keys is None:
+        projected_entity_keys = {
+            str(row.get("子订单号") or row.get("订单号") or "").strip()
+            for row in build_rows(db)
+        }
+    return keys - {key for key in projected_entity_keys if key}
 
 
 def export_workbook(db: Session, *, include_images: bool = True) -> bytes:
@@ -1251,7 +1263,14 @@ def sync(db: Session, *, include_images: Optional[bool] = None) -> dict:
         image_bindings = _load_image_bindings(db)
         image_bindings_before = dict(image_bindings)
         remote_rows = feishu_client.list_records(db, app_token, table_id)
-        ineligible_entity_keys = _ineligible_factory_entity_keys(db)
+        projected_entity_keys = {
+            str(row.get("子订单号") or row.get("订单号") or "").strip()
+            for row in rows
+        }
+        ineligible_entity_keys = _ineligible_factory_entity_keys(
+            db,
+            projected_entity_keys=projected_entity_keys,
+        )
         remote_by_no: dict[str, dict] = {}
         legacy_remote_by_order: dict[str, list[dict]] = {}
         for rec in remote_rows:
