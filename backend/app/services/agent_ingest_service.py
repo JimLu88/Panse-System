@@ -259,6 +259,36 @@ def _job_artifact_roles(job_result: dict) -> dict[str, str]:
     return roles
 
 
+def _job_report_failures(job_result: dict) -> list[dict[str, object]]:
+    """Keep bounded per-report failure stages from the Web-Agent result."""
+    failures: list[dict[str, object]] = []
+    payloads = [job_result]
+    nested = job_result.get("result")
+    if isinstance(nested, dict):
+        payloads.append(nested)
+    for payload in payloads:
+        for report in payload.get("reports") or []:
+            if not isinstance(report, dict) or report.get("ok"):
+                continue
+            raw_error = report.get("error")
+            stage = None
+            details: list[str] = []
+            if isinstance(raw_error, dict):
+                stage = str(raw_error.get("stage") or "unknown")[:40]
+                raw_details = raw_error.get("details") or []
+                if not isinstance(raw_details, (list, tuple)):
+                    raw_details = [raw_details]
+                details = [str(value)[:240] for value in raw_details[:3]]
+            elif raw_error:
+                details = [str(raw_error)[:240]]
+            failures.append({
+                "report": str(report.get("report") or "unknown")[:40],
+                "stage": stage,
+                "details": details,
+            })
+    return failures[:3]
+
+
 def start_pending_scans(db: Session) -> dict:
     """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
     发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
@@ -1182,7 +1212,12 @@ def _ingest_candidates(only_paths: Optional[list[str]] = None) -> list[Path]:
     against the mounted output directory.  The fallback full scan remains for
     legacy/manual ingestion calls that have no run manifest.
     """
-    if not only_paths:
+    # ``None`` means the legacy/manual full scan.  An explicit empty manifest
+    # means the current Web-Agent run produced no files and must therefore scan
+    # nothing.  Treating both values alike made a failed order export rescan the
+    # entire historical archive and attach unrelated pending-password files to
+    # the current batch.
+    if only_paths is None:
         return sorted(OUTPUT_DIR.rglob("*"))
     found: dict[str, Path] = {}
     for raw_path in only_paths:
@@ -2289,6 +2324,12 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             status = "error"
             final = {**final, "error": "任务完成但未生成支付宝主力账号流水文件"}
         item = {"task": task_id, "status": status}
+        report_failures = (
+            _job_report_failures(job_result)
+            if task_id == "taobao_orders" else []
+        )
+        if report_failures:
+            item["report_failures"] = report_failures
         if job_result.get("no_data"):
             item["no_data"] = True
             item["message"] = str(job_result.get("message") or "本期无新增数据")[:200]
@@ -2302,7 +2343,14 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             item["quota_verified"] = quota_evidence.get("verified", False)
             item["quota_state"] = quota_evidence.get("state", "not_verified")
         if status in ("error", "failed", "timeout"):
-            err = str(final.get("error") or final.get("note") or "")
+            if report_failures:
+                err = "; ".join(
+                    f"{failure['report']}[{failure.get('stage') or 'unknown'}]:"
+                    f"{','.join(failure.get('details') or [])}"
+                    for failure in report_failures
+                )
+            else:
+                err = str(final.get("error") or final.get("note") or "")
             item["error"] = err[:300]
             if any(marker in err for marker in (
                 "需扫码", "扫码", "登录状态已失效", "需重新登录", "session_expired",
@@ -2332,7 +2380,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
 
     out["ingest"] = run_ingest(
         db,
-        only_paths=run_artifacts if orders_only and run_artifacts else None,
+        only_paths=run_artifacts if orders_only else None,
         artifact_roles=run_artifact_roles or None,
         order_batch_id=order_batch_id,
     )
@@ -2420,7 +2468,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
     persistent_pending_password = pending_shipping_password_files(
         db,
         on=today,
-        artifact_names=order_batch_artifacts or None,
+        # Keep the password gate scoped to this immutable task manifest.  An
+        # empty manifest must stay empty; falling back to ``None`` queries all
+        # historical files and pollutes a zero-artifact failure with old rows.
+        artifact_names=order_batch_artifacts,
     )
     out["ingest"]["pending_password_files"] = persistent_pending_password
     order_artifact_states = taobao_artifact_states(
