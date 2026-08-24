@@ -2,6 +2,21 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 factory dispatch integrity repair
+
+- Incident cause: the automatic ERP -> Feishu factory projection had not completed successfully since 2026-08-15. Two missing wood-cost values blocked the whole table, while the six-hour scheduler wrapper incorrectly recorded the inner factory failure as `ok`.
+- Shipment-note cause: the old rule treated seller memo `开始制作` as both production release and shipment approval. A buyer instruction such as `延迟发货 发货前通知` therefore fell through to `做好直接发货`.
+- Repair commits on GitHub `main`: `ceaa3a7cfc52adadbba81190556a90506303ca85` (projection/filter/note/scheduler repair), `abc1feb214bff290380fe1e649d1c30487ef10b6` (bounded Feishu delete retry), and `5b05e4dc6e6e2c509ead6d92ab7bf202a2f88514` (prevent delete/recreate loops when a Taobao child ID overlaps an active main-order ID).
+- Production API and Web are both deployed from `5b05e4d`; `/api/health`, `/api/ready`, the reverse proxy, migration `0139 (head)`, and API/Web/DB/backup containers passed the official NAS release verification. Rollback images: `panse-system-api:rollback-20260825-014342` and `panse-system-web:rollback-20260825-014705`.
+- A pre-correction Feishu backup is stored on NAS at `/volume1/docker/panse/storage/_ops_backups/factory_dispatch_before_integrity_sync_20260825T012526+0800.json`, mode `0600`, 260 records, SHA-256 `2918a7f0288df501b743c83938f8babd142e7a1c71a2a273b2dc46f820180842`.
+- Live correction removed 58 ERP-confirmed refunded/cancelled records. Final reconciliation: 221 projected rows, zero missing projected entities, zero duplicate entity keys, zero invalid remote rows. Three non-projected/manual-or-blank rows were preserved because their origin was not safe to infer.
+- Factory order 368 now has exactly one live row and `发货安排=做好后等通知发货`. Two consecutive post-release syncs both returned `ok=true`, `created=0`, `updated=0`, `deleted_ineligible=0`.
+- Missing wood cost remains a visible warning for 2 orders but no longer blocks status, refund cleanup, or shipment-gate updates. The values were not guessed or written.
+- Final changed-scope regression: factory/order-note tests 51 passed; Feishu tests 43 passed and 2 skipped; Python compile and diff checks passed. The full backend suite still contains 27 pre-existing unrelated failures; representative failures were reproduced on the clean pre-repair baseline.
+- Scheduler runtime: `feishu_sync_30min` is enabled with no override at 360 minutes. The deployed API registered 62 jobs and completed its startup catch-up check with no missed critical shift.
+- Windows on-demand bridge verification passed end to end on the primary PC `192.168.31.91`: NAS requested a start, Web-Agent became HTTP 200 from both NAS and Windows, then an explicit stop restored the intended idle state. `Panse-Web-Agent-Wake-Bridge` remains running; the legacy always-on Watchdog remains disabled.
+- Upstream freshness is a separate remaining business gate: the last successful Taobao report timestamp is 2026-08-23 18:27. Web-Agent GitHub `main` and the runtime order orchestrator both contain `97fb6c76f9dc792b376e884c208c62625b79b9ac`, but a fresh Taobao order pull was not triggered from maintenance task 02. That pull/login interaction belongs to task 01 before claiming newly changed marketplace refunds are current.
+
 ## 2026-08-24 order-export repair and live runtime audit
 
 - ERP repair branch: `fix/order-export-current-batch`; code commit `ab3edba0e400c1fd0d873573298050ee2fd5f3d5` is present on the same remote branch.
