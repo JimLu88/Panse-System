@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""工厂下单图 自动生成 + 归档 + 飞书日推 (用户方案 D+E)。
+"""工厂下单图自动生成、归档与飞书图片推送。
 
 D: 规范化版式 (尺寸/整数数量/木作命名/单件×N/发货=下单+25天/备注完整) — 数据在
    factory_sheet.build, 这里负责渲染成独立可打印 HTML。
-E: 订单 (order_date >= 2026-06-06) 自动生成下单图 HTML → 存导入档案 (kind=order_sheet),
-   每天定时把当日生成情况推飞书群。
+E: 订单 (order_date >= 2026-06-06) 自动生成下单图 → 存导入档案 (kind=order_sheet),
+   飞书订单群只发图片；运行状态改走微信 Push。
 """
 from __future__ import annotations
 
@@ -25,6 +25,37 @@ from app.services import factory_sheet, import_storage
 _logger = logging.getLogger("panse.order_sheet")
 
 AUTO_SINCE = date(2026, 6, 6)   # 用户指定: 从这天的订单开始自动生成
+_NO_UPDATE_NOTICE_KEY = "order_group_no_update_notice_date"
+
+
+def send_no_order_update_notice(db: Session, *, on_date: date | None = None) -> dict:
+    """当天没有订单更新时，飞书订单群只发一条固定文案，且按日幂等。"""
+    import os
+    from app.services import feishu_client, settings_service
+
+    day = on_date or date.today()
+    day_key = day.isoformat()
+    if settings_service.get(db, _NO_UPDATE_NOTICE_KEY, env_fallback=False) == day_key:
+        return {"sent": False, "already_sent": True, "date": day_key}
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"sent": False, "disabled": True, "date": day_key}
+    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    if not chat_id:
+        return {"sent": False, "reason": "no_chat_id", "date": day_key}
+    text = f"{day.year}年{day.month}月{day.day}日暂未进行订单更新"
+    try:
+        feishu_client.send_text(db, chat_id, text)
+    except Exception as exc:  # noqa: BLE001 - 发送失败不能写幂等标记，留给后续补偿
+        _logger.warning("订单暂无更新提醒发送失败", exc_info=True)
+        return {"sent": False, "reason": f"{type(exc).__name__}: {exc}"[:300], "date": day_key}
+    settings_service.set_value(
+        db,
+        _NO_UPDATE_NOTICE_KEY,
+        day_key,
+        description="飞书订单群最近一次暂无订单更新提醒日期",
+    )
+    db.commit()
+    return {"sent": True, "text": text, "date": day_key}
 
 # 用户拍板 (2026-06-11): 下单图生成条件必须是已付款订单
 _PAID_STATUSES = {"paid", "production", "shipped", "signed", "aftersales"}
@@ -610,14 +641,6 @@ def reconcile_order_line_delivery(db: Session, *, limit: int = 50) -> dict:
             )
             png = render_png(sheet)
             image_key = feishu_client.upload_image(db, png)
-            caption = (
-                f"畔色{line.factory_no}单 · 主订单 {order.order_no} · "
-                f"子订单 {sub_order_no} · {(line.product_name or '')[:20]}"
-            )
-            line.factory_delivery_state = "sending_caption"
-            db.commit()
-            send_stage = "sending_caption"
-            feishu_client.send_text(db, chat_id, caption)
             line.factory_delivery_state = "sending_image"
             db.commit()
             send_stage = "sending_image"
@@ -688,11 +711,6 @@ def reconcile_refunded_order_lines(db: Session, *, limit: int = 50) -> dict:
             sheet = factory_sheet.build_for_order_line(db, order.id, line.id)
             content = render_void_png(sheet)
             image_key = feishu_client.upload_image(db, content)
-            text = (
-                f"⚠️ 子订单 {line.sub_order_no} 原【畔色{line.factory_no}单】已退款作废；"
-                f"主订单 {order.order_no} 的其它商品不受影响。"
-            )
-            feishu_client.send_text(db, chat_id, text)
             feishu_client.send_image(db, chat_id, image_key)
             import_storage.archive(
                 db,
@@ -948,13 +966,13 @@ def _can_push_production_only_without_address(order: Order) -> bool:
 
 
 def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
-    """无收货地址的单 → 飞书提示准确原因；不得把平台未回填误报成系统漏提额。
+    """兼容旧入口：缺地址诊断只发微信 Push，不进入飞书订单群。
 
     missing: [(order_no, factory_no), ...]; 这些单已做制单图(带编号)推送, 但收货为空。
     """
     if not missing:
         return
-    from app.services import agent_ingest_service, feishu_client
+    from app.services import agent_ingest_service, notify_service
     lines = [f"  · {('畔色 '+str(fno)+' 单') if fno else '未编号'}　订单号 {no}" for no, fno in missing]
     quota = agent_ingest_service.get_order_quota_result(db)
     if quota.get("verified"):
@@ -970,35 +988,20 @@ def _send_no_addr_notice(db: Session, chat_id: str, missing: list) -> None:
            + "\n系统已单独挂起；下一次正常拉单若补齐地址，只释放对应下单图，不发送额外日报。"
            + "\n地址仍不可用时继续暂缓，绝不发送缺地址图片。")
     try:
-        feishu_client.send_text(db, chat_id, txt)
+        notify_service.notify(
+            db,
+            txt,
+            level="warn",
+            title="畔色 ERP | 下单图暂缓",
+            wechat_allowed=True,
+        )
     except Exception:  # noqa: BLE001
-        _logger.warning("无收货地址提示发送失败", exc_info=True)
+        _logger.warning("无收货地址微信Push提示发送失败", exc_info=True)
 
 
 def _send_sheets_zip(db: Session, chat_id: str, items: list) -> None:
-    """把本批下单图打成 ZIP 发飞书 (用户拍板 2026-06-19: 每次推送末尾附 ZIP, 含所有订单图)。
-
-    items: [(order, jpg_bytes), ...]; 文件名 畔色{编号}单_{订单号}.jpg / 未匹配_{订单号}.jpg。
-    """
-    if not items:
-        return
-    import io
-    import zipfile
-    from datetime import date as _date
-
-    from app.services import feishu_client
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for order, png in items:
-            fno = getattr(order, "factory_no", None)
-            prefix = f"畔色{fno}单_" if fno else "未匹配_"
-            zf.writestr(f"{prefix}{order.order_no}.jpg", png)
-    try:
-        fk = feishu_client.upload_file(db, buf.getvalue(), f"工厂下单图_{_date.today().isoformat()}.zip")
-        feishu_client.send_text(db, chat_id, f"以上 {len(items)} 张工厂下单图打包(ZIP)如下:")
-        feishu_client.send_file(db, chat_id, fk)
-    except Exception:  # noqa: BLE001 - ZIP 发送失败不阻断主推送
-        _logger.warning("工厂下单图 ZIP 发送失败", exc_info=True)
+    """兼容旧调用；飞书订单群治噪后不再追加批次 ZIP。"""
+    return None
 
 
 # 样块/样品/小样单: 永不推工厂下单图 (用户 2026-07-04: 样块只在系统里记成本, 绝不发飞书工厂群,
@@ -1097,7 +1100,6 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
     pushed = failed = 0
     sent_nos: list[str] = []
     failed_nos: list[str] = []
-    _zip_items: list = []
     _missing_addr: list = []
     _held_skeleton: list[str] = []   # SKU未回填暂缓的单(留队列, 回填后自动补推)
     _held_address: list[str] = []
@@ -1195,25 +1197,11 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             ))
             send_stage = "upload"
             key = feishu_client.upload_image(db, png)
-            _fno = (f"畔色{order.factory_no}单" if getattr(order, "factory_no", None)
-                    else "未能匹配工厂订单号")
-            cap = f"{_fno} · {no}" + (f" · {order.product_name[:20]}" if order.product_name else "")
-            if address_pending_for_production:
-                cap += " · 【地址待补，仅生产，禁止发货】"
-            rec.row_summary = {
-                **(rec.row_summary or {}),
-                "delivery_state": "sending_caption",
-                "delivery_image_key": key,
-            }
-            db.commit()
-            text_result = {}
-            if not was_address_hold or address_pending_for_production:
-                send_stage = "sending_caption"
-                text_result = feishu_client.send_text(db, chat_id, cap) or {}
             rec.row_summary = {
                 **(rec.row_summary or {}),
                 "delivery_state": "sending_image",
-                "delivery_caption_message_id": _feishu_message_id(text_result),
+                "delivery_image_key": key,
+                "delivery_caption_message_id": None,
             }
             db.commit()
             send_stage = "sending_image"
@@ -1245,8 +1233,6 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 _pushed_address_pending.append(no)
             elif was_address_hold:
                 _released_address_hold.append(no)
-            else:
-                _zip_items.append((order, png))
         except Exception as exc:  # noqa: BLE001 - 单张失败不阻断整批
             db.rollback()
             uncertain = send_stage in {"sending_caption", "sending_image"}
@@ -1261,9 +1247,20 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
             failed_nos.append(no)
             _logger.warning("下单图推飞书失败 %s", no, exc_info=True)
     if not quiet:
-        if _zip_items:
-            _send_sheets_zip(db, chat_id, _zip_items)   # 末尾附 ZIP (用户拍板 2026-06-19)
-        _send_no_addr_notice(db, chat_id, _missing_addr)   # 无收货地址提示+提醒提额度 (用户拍板 2026-06-20)
+        # 飞书订单群只留单张下单图；ZIP、缺地址诊断和运行状态均不再写入该群。
+        if _missing_addr:
+            try:
+                from app.services import notify_service
+                notify_service.notify(
+                    db,
+                    "下列订单因收货地址不完整已暂缓发送下单图：\n"
+                    + "\n".join(f"  · {no}" for no, _ in _missing_addr[:20]),
+                    level="warn",
+                    title="畔色 ERP | 下单图暂缓",
+                    wechat_allowed=True,
+                )
+            except Exception:  # noqa: BLE001
+                _logger.warning("缺地址订单微信Push提醒失败", exc_info=True)
         if _held_skeleton:
             # 内部提醒(非工厂群): 骨架单暂缓名单, 回填后自动补推; 若连日重复出现 = 取数没跑, 人来查。
             try:
@@ -1271,7 +1268,8 @@ def push_pending_images(db: Session, *, limit: int = 20, include_baseline: bool 
                 notify_service.notify(
                     db, "⏳ %d 单因SKU未回填暂缓推工厂(等取数回填后自动补推):\n%s"
                     % (len(_held_skeleton), "\n".join(f"  · {n}" for n in _held_skeleton[:10])),
-                    level="warn", title="畔色 ERP [下单图暂缓·等SKU回填]")
+                    level="warn", title="畔色 ERP [下单图暂缓·等SKU回填]",
+                    wechat_allowed=True)
             except Exception:  # noqa: BLE001
                 pass
     return {"pushed": pushed, "failed": failed,
@@ -1741,7 +1739,10 @@ def remind_remote_pushed(db: Session) -> dict:
                f"👉 若确认要暂缓, 请作废其工厂号(客户通知开始制作后再以新号重下); 若工厂已在做则忽略。")
         try:
             from app.services import notify_service
-            notify_service.notify(db, txt, level="warn", title="畔色 ERP [延期单仍挂工厂号]")
+            notify_service.notify(
+                db, txt, level="warn", title="畔色 ERP [延期单仍挂工厂号]",
+                wechat_allowed=True,
+            )
         except Exception:  # noqa: BLE001
             _logger.warning("延期单提醒发送失败", exc_info=True)
     return {"remind_remote": [no for no, _ in items]}
@@ -1812,14 +1813,16 @@ def push_daily(db: Session) -> dict:
         text = "今日没有需要生成/推送的下单图。"
     try:
         from app.services import notify_service
-        channels = notify_service.broadcast_text(
+        ok, detail = notify_service.notify(
             db,
             text,
             level="warn" if result.get("_run_status") == "fail" else "info",
             title="畔色 ERP [下单图日报]",
+            wechat_allowed=True,
         )
-        result["summary_notification_channels"] = channels
-        result["pushed"] = any(v is True for v in channels.values())
+        result["summary_notification_channels"] = {"wechat_push": bool(ok)}
+        result["summary_notification_detail"] = detail
+        result["pushed"] = bool(ok)
         result["summary_notification_pushed"] = result["pushed"]
     except Exception:  # pragma: no cover
         result["pushed"] = False
@@ -1921,20 +1924,13 @@ def push_void_daily(db: Session) -> dict:
         title = "畔色 ERP [下单图作废提醒]"
         try:
             from app.services import notify_service
-            ok, _ = notify_service.notify(db, text, level="warning", title=title)
+            ok, _ = notify_service.notify(
+                db, text, level="warn", title=title, wechat_allowed=True,
+            )
             result["pushed"] = bool(ok)
         except Exception:  # pragma: no cover
             result["pushed"] = False
-        # 同步推飞书工厂群 (用户 2026-06-26: 微信的作废提醒内容也要进飞书)
-        try:
-            from app.services import feishu_client, settings_service
-            chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if chat_id:
-                feishu_client.send_text(db, chat_id, f"【{title}】\n{text}")
-                result["feishu_pushed"] = True
-        except Exception:  # pragma: no cover
-            result["feishu_pushed"] = False
-            _logger.warning("作废提醒推飞书失败", exc_info=True)
+        result["feishu_pushed"] = False
     else:
         result["pushed"] = False
     return result

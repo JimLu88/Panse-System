@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """下单图推送可靠性修复 (用户 2026-06-26 "三天两头坏"):
-   ① 每小时自愈补推 quiet 模式 — 只推单图, 不发 ZIP/无地址提醒(留 18:00 日报)。
+   ① 每小时自愈补推与 18:00 日报都只推单图，不再往订单群发 ZIP/诊断文字。
    ② 退款作废提醒 — 微信之外也推飞书。
 """
 from datetime import date
@@ -30,8 +30,8 @@ def _add_paid_order(db, no: str, day: int = 20):
     db.flush()
 
 
-def test_quiet_skips_zip_and_notice(db_session, _feishu_stub, monkeypatch):
-    """quiet=True(每小时自愈补推): 单图照推, 但不发 ZIP / 无收货地址提醒。"""
+def test_order_group_always_skips_zip_and_notice(db_session, _feishu_stub, monkeypatch):
+    """无论 quiet 与否，飞书订单群都只收单图，不再发 ZIP / 诊断文字。"""
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory")
     zip_calls, notice_calls = [], []
     monkeypatch.setattr(osa, "_send_sheets_zip", lambda db, cid, items: zip_calls.append(len(items)))
@@ -43,12 +43,12 @@ def test_quiet_skips_zip_and_notice(db_session, _feishu_stub, monkeypatch):
     assert res["pushed"] == 1
     assert zip_calls == [] and notice_calls == []   # 静默: 不刷屏
 
-    # 非 quiet 对照(18:00 日报): 仍发 ZIP + 无地址提醒
+    # 非 quiet 的 18:00 日报也不再给飞书订单群追加 ZIP 或文字。
     _add_paid_order(db_session, "Q-2")
     osa.generate_pending(db_session)
     res2 = osa.push_pending_images(db_session, quiet=False)
     assert res2["pushed"] == 1
-    assert zip_calls == [1] and notice_calls == [1]
+    assert zip_calls == [] and notice_calls == []
 
 
 def test_auto_push_skips_unnumbered_old_order(db_session, _feishu_stub):
@@ -89,23 +89,26 @@ def test_auto_push_sends_numbered_new_order(db_session, _feishu_stub):
     assert o.factory_no is not None   # 已自动编号
 
 
-def test_void_reminder_also_pushes_feishu(db_session, monkeypatch):
-    """退款作废提醒: 微信(notify_service)之外, 也推飞书工厂群 (用户 2026-06-26)。"""
+def test_void_reminder_only_uses_wechat_push(db_session, monkeypatch):
+    """退款作废文字改走微信 Push，不再写入飞书订单群。"""
     settings_service.set_value(db_session, "feishu_push_chat_id", "oc_factory")
     monkeypatch.setattr(osa, "generate_void_sheets",
                         lambda db, **k: {"voided": 2, "order_nos": ["VO-1", "VO-2"]})
-    monkeypatch.setattr("app.services.notify_service.notify", lambda db, text, **k: (True, None))
+    wechat = []
+    monkeypatch.setattr(
+        "app.services.notify_service.notify",
+        lambda db, text, **k: wechat.append((text, k)) or (True, None),
+    )
     sent = []
     monkeypatch.setattr("app.services.feishu_client.send_text",
                         lambda db, cid, text: sent.append((cid, text)))
 
     res = osa.push_void_daily(db_session)
     assert res["voided"] == 2
-    assert res.get("feishu_pushed") is True
-    assert len(sent) == 1
-    cid, text = sent[0]
-    assert cid == "oc_factory"
-    assert "作废" in text and "VO-1" in text     # 飞书内容 = 微信同款作废提醒
+    assert res.get("feishu_pushed") is False
+    assert sent == []
+    assert "作废" in wechat[0][0] and "VO-1" in wechat[0][0]
+    assert wechat[0][1]["wechat_allowed"] is True
 
 
 def test_void_no_feishu_when_nothing_voided(db_session, monkeypatch):

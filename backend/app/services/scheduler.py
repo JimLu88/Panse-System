@@ -1499,9 +1499,16 @@ def _job_order_sheets_daily(db: Session) -> dict:
             f"地址完整后自动补推：" + ",".join(held_no_address)
         )
     elif result.get("_run_status") != "fail":
-        result["_success_message"] = agent_ingest_service.format_order_change_message(
-            agent_ingest_service.latest_order_pull_result(db).get("changes")
+        latest_changes = agent_ingest_service.latest_order_pull_result(db).get("changes") or {}
+        result["_success_message"] = agent_ingest_service.format_order_change_message(latest_changes)
+        business_change_count = sum(
+            int(latest_changes.get(key) or 0)
+            for key in ("inserted", "status_changed", "amount_changed")
         )
+        if business_change_count == 0 and int(result.get("images_pushed") or 0) == 0:
+            result["no_update_notice"] = order_sheet_archive_service.send_no_order_update_notice(
+                db, on_date=date.today()
+            )
     _sync_factory_dispatch_after_orders(db, result)
     return _record_pipeline_result(
         db,
@@ -1845,112 +1852,47 @@ def _job_promo_rotation_remind(db: Session) -> dict:
 
 
 def _job_daily_10_comprehensive_report(db: Session) -> dict:
-    """每天 10:00: 综合日报 — 把所有常规检查结果合并成一条推送.
-
-    包含: AI 简报摘要 / 对账状态 / 数据新鲜度 / 库存预警 / 未解决异常数。
-    仅此一条推送, 不再单独推对账差异、数据新鲜度等子报告。
-    """
-    from datetime import date as _date
-    from sqlalchemy import func as _func
-    from app.models.exception import DataException as _DE
-    from app.models.inventory import PartInventory, ProductInventory
-    from app.models.daily_briefing import DailyBriefing
-    from app.services import data_freshness_service, notify_service, reconciliation_service
+    """每天 10:00 微信日报：只发日期、昨日/7日/30日销售额和销售 TOP 榜。"""
+    from datetime import date as _date, timedelta as _timedelta
+    from app.services import notify_service, sales_analytics
 
     today = _date.today()
-
-    # ── 1. 对账状态 ──────────────────────────────────────────────
-    recon_results = reconciliation_service.run_all(db, record_exceptions=True)
-    db.flush()
-    rule_labels = {
-        "factory_payment": "货款对账", "install_fee": "安装费", "promotion": "推广支出",
-        "refill_compensation": "补单赔付", "inventory_value": "库存资产", "logistics_fee": "物流费",
-        "revenue_alipay": "收入对账", "operating_expense": "经营支出", "purchase_payment": "采购付款",
-    }
-    recon_errors = [(rule_labels.get(n, n), r.error_count, r.warning_count)
-                    for n, r in recon_results.items() if r.error_count > 0]
-    recon_warnings = [(rule_labels.get(n, n), r.warning_count)
-                      for n, r in recon_results.items()
-                      if r.error_count == 0 and r.warning_count > 0]
-
-    # ── 2. 未解决异常总数 ────────────────────────────────────────
-    open_exc = db.query(_func.count(_DE.id)).filter(_DE.status == "open").scalar() or 0
-
-    # ── 3. 库存预警 ──────────────────────────────────────────────
-    prod_low = (db.query(_func.count(ProductInventory.id))
-                .filter(ProductInventory.physical_qty <= 5).scalar() or 0)
-    part_neg = (db.query(_func.count(PartInventory.id))
-                .filter(PartInventory.physical_qty < 0).scalar() or 0)
-
-    # ── 4. 数据新鲜度 ────────────────────────────────────────────
-    stale_items = data_freshness_service.overdue_only(db)
-
-    # ── 5. AI 简报摘要 (今日已生成则取摘要; 未生成则留空) ────────
-    briefing_summary = ""
-    try:
-        b = db.query(DailyBriefing).filter(DailyBriefing.for_date == today).first()
-        if b and b.content:
-            # 截取前 200 字作为摘要
-            briefing_summary = b.content[:200].strip()
-            if len(b.content) > 200:
-                briefing_summary += "…"
-    except Exception as e:
-        _logger.warning("日报摘要读取失败 (不影响其余日报): %s", e)
-
-    # ── 6. 近 7/30 天销售 + TOP3 (用户 2026-07-06: 微信日报只要这几块) ──
-    from app.services import sales_analytics
+    yesterday = sales_analytics.date_summary(db, on_date=today - _timedelta(days=1))
     w7 = sales_analytics.window_summary(db, days=7)
     w30 = sales_analytics.window_summary(db, days=30, top_n=3)
 
-    # ── 组装消息 (用户 2026-07-06 精简: 只留 ①对账差异+未解决异常 ②近7天 ③近30天 ④销售榜TOP3) ──
     def _yuan(v):
         return f"¥{v:,.0f}"
 
-    lines = [f"📊 畔色 ERP | {today.month}月{today.day}日 经营日报", ""]
-
-    # ① 对账差异 + 未解决异常
-    if recon_errors:
-        lines.append("🚨 对账差异 (需处理)")
-        for label, err, warn in recon_errors:
-            w = f", 提示 {warn} 条" if warn else ""
-            lines.append(f"  • {label}: 严重 {err} 条{w}")
-    elif recon_warnings:
-        lines.append("⚠️ 对账提示")
-        for label, warn in recon_warnings:
-            lines.append(f"  • {label}: 提示 {warn} 条")
-    else:
-        lines.append("✅ 对账: 全部规则正常")
-    lines.append(f"📋 未解决异常: {open_exc} 条")
-    lines.append("")
-
-    # ②③ 近 7 天 / 近 30 天 销售(按下单日期, 排补单/退款)
-    lines.append(f"📈 近7天: 销售额 {_yuan(w7['revenue'])} · {w7['order_count']} 单")
-    lines.append(f"📈 近30天: 销售额 {_yuan(w30['revenue'])} · {w30['order_count']} 单")
-    lines.append("")
-
-    # ④ 销售排行榜 TOP3 (近30天, 按销售额)
+    lines = [
+        f"今天日期：{today.year}年{today.month}月{today.day}日",
+        f"昨日销售额：{_yuan(yesterday['revenue'])}",
+        f"近7天销售额：{_yuan(w7['revenue'])}",
+        f"近30天销售额：{_yuan(w30['revenue'])}",
+    ]
     if w30["top"]:
-        lines.append("🏆 销售榜 TOP3 (近30天)")
-        medals = ["🥇", "🥈", "🥉"]
+        lines.append("销售 TOP 榜（近30天）")
         for i, t in enumerate(w30["top"]):
-            tag = medals[i] if i < len(medals) else f"{i + 1}."
-            lines.append(f"  {tag} {t['name']} {_yuan(t['revenue'])}")
-        lines.append("")
-    lines.append("详情登录系统 → 首页大盘")
+            lines.append(f"{i + 1}. {t['name']} {_yuan(t['revenue'])}")
+    else:
+        lines.append("销售 TOP 榜（近30天）：暂无销售")
 
-    level = "error" if recon_errors else ("warn" if recon_warnings else "info")
-    notify_service.notify(db, "\n".join(lines), level=level,
-                          title=f"畔色 ERP | {today.month}月{today.day}日 日报",
-                          wechat_allowed=True)   # 经营日报=唯一放行到企微的推送(其余静默)
+    ok, detail = notify_service.notify(
+        db,
+        "\n".join(lines),
+        level="plain",
+        title=None,
+        wechat_allowed=True,
+    )
 
     return {
-        "recon_errors": len(recon_errors),
-        "recon_warnings": len(recon_warnings),
-        "open_exceptions": open_exc,
-        "product_low_stock": prod_low,
-        "part_negative": part_neg,
-        "stale_sources": len(stale_items),
-        "briefing_included": bool(briefing_summary),
+        "date": today.isoformat(),
+        "yesterday_revenue": yesterday["revenue"],
+        "sales_7d": w7["revenue"],
+        "sales_30d": w30["revenue"],
+        "top_count": len(w30["top"]),
+        "pushed": bool(ok),
+        "detail": detail,
     }
 
 
@@ -2088,7 +2030,7 @@ def _job_ingest_health_check(db: Session) -> dict:
 
     背景: 18:00 编排可能"跑成功了"但没拉到新数据 (订单报表无新单 / 加密发货报表缺口令 /
     PC Agent 离线)。这类"静默没更新"光看任务状态(ok)发现不了。本任务专门核对结果是否真的前进,
-    有问题就主动推 飞书 + 企业微信 (区别于只写站内 alert, 确保人能收到)。
+    有问题就主动推微信 Push；飞书订单群只保留下单图和每日一条“暂无更新”。
     一天一条, 无异常则完全静默不打扰。没有新增订单本身是正常结果；只有18:00后的
     当日订单快照未刷新才报警。
     """
@@ -2175,6 +2117,12 @@ def _job_ingest_health_check(db: Session) -> dict:
     if not problems:
         return result
 
+    if not agent_ingest_service.order_data_fresh(db, on=today, not_before_hour=18):
+        from app.services import order_sheet_archive_service
+        result["no_update_notice"] = order_sheet_archive_service.send_no_order_update_notice(
+            db, on_date=today
+        )
+
     lines = [f"⚠️ {today.month}月{today.day}日 自动取数体检发现问题:", ""]
     lines += [f"• {p}" for p in problems]
     lines += ["", "请确认: 千牛是否有新单 / PC 是否开机且 Web-Agent 在跑 / 发货口令是否已转发飞书。"]
@@ -2185,8 +2133,15 @@ def _job_ingest_health_check(db: Session) -> dict:
         return result
 
     from app.services import notify_service
-    r = notify_service.broadcast_text(db, msg, level="warn", title="畔色 ERP | 取数体检异常")
-    result["pushed"] = [k for k, v in r.items() if v is True]
+    ok, detail = notify_service.notify(
+        db,
+        msg,
+        level="warn",
+        title="畔色 ERP | 取数体检异常",
+        wechat_allowed=True,
+    )
+    result["pushed"] = ["wechat_push"] if ok else []
+    result["push_detail"] = detail
     return result
 
 

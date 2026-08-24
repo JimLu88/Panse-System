@@ -55,6 +55,9 @@ def test_window_summary_recent_sales_and_top(db_session):
     db_session.add(Order(platform="淘宝", order_no="W5", product_code="PPS30000000001",  # 补单排除
                          product_name="爆款餐桌", qty=1, order_date=today - timedelta(days=2),
                          status="paid", paid_amount=Decimal("9999"), is_refill=True))
+    db_session.add(Order(platform="淘宝", order_no="W6", product_code="PPS30000000002",  # 恰好7天前，不属于含今天的近7天
+                         product_name="次款椅子", qty=1, order_date=today - timedelta(days=7),
+                         status="paid", paid_amount=Decimal("700")))
     db_session.flush()
 
     s7 = sa.window_summary(db_session, days=7)
@@ -63,8 +66,30 @@ def test_window_summary_recent_sales_and_top(db_session):
     assert s7["top"][0]["name"] == "爆款餐桌" and abs(s7["top"][0]["revenue"] - 5000) < 0.01
 
     s30 = sa.window_summary(db_session, days=30, top_n=3)
-    assert s30["order_count"] == 4                       # +W4
-    assert abs(s30["revenue"] - 10000) < 0.01            # 6000 + 4000
+    assert s30["order_count"] == 5                       # +W4 + W6
+    assert abs(s30["revenue"] - 10700) < 0.01            # 6000 + 4000 + 700
+
+
+def test_date_summary_only_counts_requested_day(db_session):
+    """昨日销售额不能混入今天或前天，且继续排除补单。"""
+    from datetime import timedelta
+    today = date.today()
+    yesterday = today - timedelta(days=1)
+    db_session.add_all([
+        Order(platform="淘宝", order_no="D-Y", product_name="樱桃木床", qty=1,
+              order_date=yesterday, status="paid", paid_amount=Decimal("3200")),
+        Order(platform="淘宝", order_no="D-T", product_name="岩板餐桌", qty=1,
+              order_date=today, status="paid", paid_amount=Decimal("5000")),
+        Order(platform="淘宝", order_no="D-R", product_name="补单", qty=1,
+              order_date=yesterday, status="paid", paid_amount=Decimal("9999"), is_refill=True),
+    ])
+    db_session.flush()
+
+    result = sa.date_summary(db_session, on_date=yesterday)
+
+    assert result["date"] == yesterday.isoformat()
+    assert result["order_count"] == 1
+    assert result["revenue"] == 3200.0
 
 
 def test_ranking_falls_back_to_taobao_when_no_internal(db_session):

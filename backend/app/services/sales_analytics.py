@@ -664,22 +664,7 @@ def _internal_names(db: Session, codes: set[str]) -> tuple[dict[str, str], dict[
     return name_map, canon_map
 
 
-def window_summary(db: Session, *, days: int, top_n: int = 3) -> dict:
-    """近 N 天(按下单日期)正式销售速览: 销售额 / 订单数 / 前 N 名产品(按销售额)。
-
-    口径与销售排行榜一致: settled_sale_clause(已付款成交·非取消/待付款/全退) + 排补单(is_refill)
-    + 排非产品单(差价/邮费/补拍) + 内部短名合并 P↔PPS。销售额=Σ max(实付−退款, 0)。
-    给每天 10 点经营日报用(用户 2026-07-06)。返回 {days, revenue, order_count, top:[{name,revenue}]}。
-    """
-    cutoff = date.today() - timedelta(days=days)
-    orders = db.execute(
-        select(Order).where(
-            Order.is_refill == False,  # noqa: E712
-            Order.order_date >= cutoff,
-            Order.order_date.isnot(None),
-            settled_sale_clause(),
-        )
-    ).scalars().all()
+def _sales_summary(db: Session, orders: list[Order], *, top_n: int) -> dict:
     name_map, canon_map = _internal_names(db, {o.product_code for o in orders if o.product_code})
     revenue = Decimal("0")
     count = 0
@@ -703,11 +688,41 @@ def window_summary(db: Session, *, days: int, top_n: int = 3) -> dict:
     top = sorted(prod.values(), key=lambda x: x["revenue"], reverse=True)[:top_n]
     cents = Decimal("0.01")
     return {
-        "days": days,
         "revenue": float(revenue.quantize(cents)),
         "order_count": count,
         "top": [{"name": t["name"], "revenue": float(t["revenue"].quantize(cents))} for t in top],
     }
+
+
+def window_summary(db: Session, *, days: int, top_n: int = 3) -> dict:
+    """近 N 天(按下单日期)正式销售速览: 销售额 / 订单数 / 前 N 名产品(按销售额)。
+
+    口径与销售排行榜一致: settled_sale_clause(已付款成交·非取消/待付款/全退) + 排补单(is_refill)
+    + 排非产品单(差价/邮费/补拍) + 内部短名合并 P↔PPS。销售额=Σ max(实付−退款, 0)。
+    """
+    # “近 N 天”包含今天，因此起点是今天往前 N-1 天，避免实际多算一天。
+    cutoff = date.today() - timedelta(days=max(days - 1, 0))
+    orders = db.execute(
+        select(Order).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.order_date >= cutoff,
+            Order.order_date.isnot(None),
+            settled_sale_clause(),
+        )
+    ).scalars().all()
+    return {"days": days, **_sales_summary(db, orders, top_n=top_n)}
+
+
+def date_summary(db: Session, *, on_date: date, top_n: int = 3) -> dict:
+    """指定自然日的正式销售额，口径与近 7/30 天及排行榜完全一致。"""
+    orders = db.execute(
+        select(Order).where(
+            Order.is_refill == False,  # noqa: E712
+            Order.order_date == on_date,
+            settled_sale_clause(),
+        )
+    ).scalars().all()
+    return {"date": on_date.isoformat(), **_sales_summary(db, orders, top_n=top_n)}
 
 
 def product_ranking(

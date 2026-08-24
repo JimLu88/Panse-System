@@ -1,4 +1,4 @@
-"""关键自动化的逐次失败告警、有限重试状态和飞书必达队列。
+"""关键自动化的逐次失败告警、有限重试状态和微信 Push 必达队列。
 
 只覆盖用户明确指定的三条链路：
 
@@ -24,7 +24,7 @@ from sqlalchemy.orm import Session
 from app.services import settings_service
 
 SETTING_KEY = "critical_automation_pipeline_state_v1"
-_DESCRIPTION = "关键自动化失败/重试/最终失败状态及飞书待发送队列"
+_DESCRIPTION = "关键自动化失败/重试/最终失败状态及微信Push待发送队列"
 _MAX_NOTIFY_ATTEMPTS = 8
 
 PIPELINE_LABELS = {
@@ -82,16 +82,20 @@ def _safe_error(error: str) -> str:
 
 
 def _send_feishu(db: Session, text: str) -> tuple[bool, str]:
+    """兼容旧测试/队列入口：关键自动化文字统一发微信 Push，不进飞书订单群。"""
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return False, "disabled"
     try:
-        from app.services import feishu_client
+        from app.services import notify_service
 
-        chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if not chat_id:
-            return False, "未配置飞书接收会话"
-        feishu_client.send_text(db, chat_id, text)
-        return True, "sent"
+        return notify_service.notify(
+            db,
+            text,
+            level="warn",
+            title="畔色 ERP | 自动化状态",
+            wechat_allowed=True,
+            enqueue_on_failure=False,
+        )
     except Exception as exc:  # noqa: BLE001 - 失败进入持久队列
         return False, f"{type(exc).__name__}: {exc}"[:300]
 

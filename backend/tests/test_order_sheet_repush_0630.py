@@ -143,7 +143,7 @@ def test_shipped_order_without_address_sends_production_only_sheet(
     assert result["pushed"] == 1
     assert result["held_no_address"] == []
     assert result["pushed_address_pending"] == ["SHIPPED-NOADDR-1"]
-    assert "地址待补，仅生产，禁止发货" in captions[0]
+    assert captions == []
     assert "仅安排生产，禁止发货" in rendered[0].customer_address
     assert "地址待补" in rendered[0].production_note
     assert rendered[0].ship_date is None
@@ -152,7 +152,7 @@ def test_shipped_order_without_address_sends_production_only_sheet(
     assert rec["pushed"] is True
     assert rec["pushed_addr_ok"] is False
     assert rec["address_pending_pushed"] is True
-    assert rec["delivery_caption_message_id"] == "om_caption"
+    assert rec["delivery_caption_message_id"] is None
     assert rec["delivery_message_id"] == "om_image"
     sent = db_session.query(ImportedFile).filter_by(kind="order_sheet_sent").one()
     assert sent.source == "addr_pending"
@@ -216,16 +216,17 @@ def test_missing_address_notice_uses_verified_quota_evidence(db_session, monkeyp
     )
     notices: list[str] = []
     monkeypatch.setattr(
-        "app.services.feishu_client.send_text",
-        lambda db, cid, text: notices.append(text) or {"sent": True},
+        "app.services.notify_service.notify",
+        lambda db, text, **kwargs: notices.append((text, kwargs)) or (True, "sent"),
     )
 
     osa._send_no_addr_notice(db_session, "oc_factory_group", [("ORDER-1", None)])
 
     assert len(notices) == 1
-    assert "已核验为【当日不限额度】" in notices[0]
-    assert "系统漏做提额" in notices[0]
-    assert "提升每日收货信息解密额度" not in notices[0]
+    assert "已核验为【当日不限额度】" in notices[0][0]
+    assert "系统漏做提额" in notices[0][0]
+    assert "提升每日收货信息解密额度" not in notices[0][0]
+    assert notices[0][1]["wechat_allowed"] is True
 
 
 def test_old_signed_row_is_not_reported_as_address_blocker(db_session, _feishu_stub):

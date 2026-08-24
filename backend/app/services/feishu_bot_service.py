@@ -1101,7 +1101,6 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
             }
         r["delivery"] = delivery
         try:
-            chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
             # 只有“此前缺地址的图片已补齐并释放”时，按用户要求只发图片本身；
             # 不再追加解密成功、续跑状态等文字，避免同一件事刷多条消息。
             delivery_error = str(delivery.get("_error") or "")
@@ -1110,7 +1109,7 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                 and not int(delivery.get("images_pushed") or 0)
                 and (not delivery_error or delivery_error.startswith("freshness_gate:"))
             )
-            if chat and not silent_address_release:
+            if not silent_address_release:
                 msg = (f"✅ 发货报表已自动解密 {imp} 份(更新订单 {r.get('updated') or 0} 单),"
                        f"收货地址已入库")
                 if repushed:
@@ -1122,9 +1121,16 @@ def apply_shipping_password(db: Session, pwd: str) -> dict:
                     msg += f"。\n⚠️ 下单图续跑未完成: {delivery.get('_error')}"
                 else:
                     msg += "，订单制单与送达链路已完成。"
-                feishu_client.send_text(db, chat, msg)
+                from app.services import notify_service
+                notify_service.notify(
+                    db,
+                    msg,
+                    level="info" if delivery.get("_run_status") != "fail" else "warn",
+                    title="畔色 ERP | 发货报表处理结果",
+                    wechat_allowed=True,
+                )
         except Exception:  # noqa: BLE001 —— 推送失败不阻断解密
-            logging.getLogger("panse.feishu_bot").warning("解密成功飞书推送失败")
+            logging.getLogger("panse.feishu_bot").warning("解密结果微信Push失败")
     return r
 
 

@@ -57,7 +57,10 @@ def _build_payload(provider: str, text: str, *, level: str, title: Optional[str]
     """每个平台需要不同 JSON 结构."""
     prefix_map = {"info": "ℹ️", "warn": "⚠️", "error": "🚨"}
     prefix = prefix_map.get(level, "")
-    full_text = f"{prefix} {title}\n{text}" if title else f"{prefix} {text}"
+    if title:
+        full_text = f"{prefix} {title}\n{text}" if prefix else f"{title}\n{text}"
+    else:
+        full_text = f"{prefix} {text}" if prefix else text
 
     if provider == "slack":
         return {"text": full_text}
@@ -101,6 +104,7 @@ WECHAT_SCOPE_KEY = "wechat_push_scope"
 def notify(
     db: Session, text: str, *,
     level: str = "info", title: Optional[str] = None, wechat_allowed: bool = False,
+    enqueue_on_failure: bool = True,
 ) -> tuple[bool, str]:
     """发送通知到 notify webhook(当前=企业微信). provider=none 或 webhook 未配 时静默返回.
 
@@ -129,7 +133,8 @@ def notify(
     ok, resp = _post_json(webhook, payload)
     if not ok:
         _logger.warning("通知发送失败 (%s): %s", provider, resp)
-        _enqueue_retry(db, text, title=title, level=level)
+        if enqueue_on_failure:
+            _enqueue_retry(db, text, title=title, level=level)
     return ok, resp
 
 
@@ -198,6 +203,7 @@ def test_notify(db: Session) -> tuple[bool, str]:
 
 TEXT_CHANNELS_KEY = "notify_text_channels"
 DEFAULT_TEXT_CHANNELS = "feishu,webhook"  # 双推: 飞书应用机器人 + notify webhook(企微); 可在设置改单边
+FEISHU_TEXT_SCOPE_KEY = "feishu_text_scope"
 
 
 def broadcast_text(
@@ -217,6 +223,17 @@ def broadcast_text(
         return {"disabled": True}
     raw = settings_service.get(db, TEXT_CHANNELS_KEY, env_fallback=False)
     channels = [c.strip() for c in (raw or DEFAULT_TEXT_CHANNELS).split(",") if c.strip()]
+    # 飞书推送会话现在专用于工厂订单图片。即便历史配置仍写着 feishu,webhook，
+    # 纯文本也强制改走微信 Push，避免旧配置在部署后继续污染订单群。
+    images_only = (
+        settings_service.get(db, FEISHU_TEXT_SCOPE_KEY, env_fallback=False)
+        or "order_images_only"
+    ) == "order_images_only"
+    if images_only:
+        channels = [channel for channel in channels if channel != "feishu"]
+        if "webhook" not in channels:
+            channels.append("webhook")
+        wechat_allowed = True
     results: dict = {}
     full = f"{title}\n{text}" if title else text
     if "feishu" in channels:

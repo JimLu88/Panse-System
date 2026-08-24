@@ -7,6 +7,8 @@ from decimal import Decimal
 from app.models.order import Order
 from app.services import (
     agent_ingest_service,
+    notify_service,
+    order_sheet_archive_service,
     scheduler,
     settings_service,
     web_agent_service,
@@ -61,6 +63,35 @@ def test_health_flags_missing_evening_snapshot(db_session, monkeypatch):
     res = scheduler._job_ingest_health_check(db_session)
     assert any("18:00后订单数据未刷新" in p for p in res["problems"])
     assert res["pushed"] == ["disabled"]
+
+
+def test_health_problem_text_uses_wechat_and_feishu_only_gets_no_update(db_session, monkeypatch):
+    _healthy_runtime(monkeypatch, fresh=False)
+    monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
+    pushed = []
+    no_update = []
+    monkeypatch.setattr(
+        notify_service,
+        "notify",
+        lambda db, text, **kwargs: pushed.append((text, kwargs)) or (True, "sent"),
+    )
+    monkeypatch.setattr(
+        notify_service,
+        "broadcast_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("不得广播到飞书订单群")),
+    )
+    monkeypatch.setattr(
+        order_sheet_archive_service,
+        "send_no_order_update_notice",
+        lambda db, **kwargs: no_update.append(kwargs) or {"sent": True},
+    )
+
+    res = scheduler._job_ingest_health_check(db_session)
+
+    assert res["pushed"] == ["wechat_push"]
+    assert pushed[0][1]["wechat_allowed"] is True
+    assert pushed[0][1]["title"] == "畔色 ERP | 取数体检异常"
+    assert no_update == [{"on_date": date.today()}]
 
 
 def test_health_never_reports_password_expired_by_age(db_session, monkeypatch):

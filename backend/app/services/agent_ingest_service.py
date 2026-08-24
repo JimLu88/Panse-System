@@ -574,33 +574,29 @@ def start_pending_scans(db: Session) -> dict:
                 # 用户主动扫码后必须收到本次真实结果，不能只让旧定时器继续报
                 # “需扫码”。失败任务仍留在待扫清单，方便处理后准确续跑。
                 try:
-                    from app.services import feishu_client
+                    from app.services import notify_service
 
-                    chat_id = settings_service.get(
-                        d, "feishu_push_chat_id", env_fallback=False,
+                    labels = {
+                        MAIN_ALIPAY_FLOW_TASK: "支付宝主力号流水",
+                        "bal_alipay_main": "支付宝主力号余额",
+                        "bal_taobao_aggregate": "淘宝聚合账户余额",
+                        "bal_ads": "推广账户余额",
+                        "bal_wanshifu": "万师傅余额",
+                        "taobao_orders": "淘宝订单报表",
+                    }
+                    detail = "\n".join(
+                        f"- {labels.get(item['task'], item['task'])}：{item['reason']}"
+                        for item in failures
                     )
-                    if chat_id:
-                        labels = {
-                            MAIN_ALIPAY_FLOW_TASK: "支付宝主力号流水",
-                            "bal_alipay_main": "支付宝主力号余额",
-                            "bal_taobao_aggregate": "淘宝聚合账户余额",
-                            "bal_ads": "推广账户余额",
-                            "bal_wanshifu": "万师傅余额",
-                            "taobao_orders": "淘宝订单报表",
-                        }
-                        detail = "\n".join(
-                            f"- {labels.get(item['task'], item['task'])}：{item['reason']}"
-                            for item in failures
-                        )
-                        feishu_client.send_text(
-                            d,
-                            chat_id,
-                            "⚠️ 扫码续跑未完成\n"
-                            + detail
-                            + "\n失败任务已保留；请按上述原因处理后再回复『扫码』。",
-                        )
+                    notify_service.notify(
+                        d,
+                        detail + "\n失败任务已保留；处理后请在飞书机器人回复『扫码』。",
+                        level="warn",
+                        title="畔色 ERP | 扫码续跑未完成",
+                        wechat_allowed=True,
+                    )
                 except Exception:  # noqa: BLE001
-                    _log.exception("发送扫码续跑失败原因到飞书失败")
+                    _log.exception("发送扫码续跑失败原因到微信Push失败")
         except Exception:  # noqa: BLE001
             _log.exception("扫码流程线程异常")
             d.rollback()
@@ -1359,8 +1355,8 @@ def run_ingest(
                           "summary": {"error": f"{type(e).__name__}: {e}"}})
             report["errors"] += 1
         report["files"].append(entry)
-    # 主动提醒 (用户要求 2026-06-15): 取数下载到加密发货报表却无口令 → 主动推飞书,
-    # 让用户转发『发货密码 xxx』; 收到后 _capture_shipping_password→reingest_pending_shipping
+    # 主动提醒: 取数下载到加密发货报表却无口令 → 微信 Push 提醒；
+    # 用户仍在飞书机器人发送『发货密码 xxx』，收到后 _capture_shipping_password→reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
         current_password = _latest_shipping_password(db)
@@ -1402,30 +1398,25 @@ def run_ingest(
                 _msg = (
                     f"📦 新下载的 {n} 份加密发货报表与系统现有口令不匹配。"
                     "口令没有超时，但新报表需要其对应口令；请把淘宝本次发来的口令以"
-                    "『发货密码 xxxx』转发到这里，收到后自动解密、入库并续推下单图。"
+                    "『发货密码 xxxx』发送给飞书机器人，收到后自动解密、入库并续推下单图。"
                 )
             else:
                 _msg = (
                     f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                    "『发货密码 xxxx』转发到这里 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。"
+                    "『发货密码 xxxx』发送给飞书机器人 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。"
                 )
-            # 优先推飞书: 用户本就在飞书转发口令, 且 notify provider 未必配了 webhook
-            # (现网=wechat_work 但 webhook 空 → 走 notify 会静默丢失)。飞书推送失败再兜底 notify。
-            _pushed = False
+            # 飞书订单群只保留下单图；运行状态和待口令提醒统一发微信 Push。
             try:
-                from app.services import feishu_client
-                _chat = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-                if _chat:
-                    feishu_client.send_text(db, _chat, _msg)
-                    _pushed = True
+                from app.services import notify_service
+                notify_service.notify(
+                    db,
+                    _msg,
+                    level="warn",
+                    title="畔色 ERP | 发货报表待口令",
+                    wechat_allowed=True,
+                )
             except Exception:
-                _log.warning("发货报表待口令飞书提醒失败", exc_info=True)
-            if not _pushed:
-                try:
-                    from app.services import notify_service
-                    notify_service.notify(db, _msg, level="warn", title="发货报表待口令")
-                except Exception:
-                    _log.warning("发货报表待口令兜底通知失败", exc_info=True)
+                _log.warning("发货报表待口令微信Push提醒失败", exc_info=True)
     # 联动消异常 (用户要求 2026-06-15): 本轮真有导入 → 立即跑流水匹配(回填 alipay_flow_no /
     # 翻工厂已付 / 建售后等, create_purchases=False 不兜底建采购避免噪音) + 全量复核销账,
     # 让"导入了对应记录就把异常消掉"即时生效, 不必等夜间调度。
