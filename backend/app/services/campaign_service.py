@@ -348,6 +348,35 @@ def authorized_sku_refresh_items(plan) -> set[str]:
     return set(re.findall(r"\d{8,}", matched.group(1))) if matched else set()
 
 
+def authorized_signup_shipping_days(plan) -> dict[str, int]:
+    """Exact item-level shipping days approved for campaign signup uploads.
+
+    Marker format::
+
+        signup_shipping_days_authorized=793084818113:30
+
+    Shipping days are never inferred or applied store-wide. Only exact item
+    IDs named in the marker are written to the official signup workbook.
+    """
+    import re
+
+    text = str(getattr(plan, "remark", None) or "")
+    matched = re.search(
+        r"(?:^|[;\n；])\s*signup_shipping_days_authorized\s*=\s*([^;\n；]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not matched:
+        return {}
+    shipping_days: dict[str, int] = {}
+    for item_id, raw_days in re.findall(
+            r"(\d{8,})\s*:\s*(\d{1,3})", matched.group(1)):
+        days = int(raw_days)
+        if 1 <= days <= 365:
+            shipping_days[item_id] = days
+    return shipping_days
+
+
 def platform_qualified_items(plan) -> set[str]:
     """Items accepted by this campaign's latest pre-publish platform probe."""
     import re
@@ -1771,7 +1800,8 @@ def _build_discount_xlsx(rows: list[dict]) -> bytes:
     return out.getvalue()
 
 
-def _build_signup_xlsx(rows: list[dict]) -> bytes:
+def _build_signup_xlsx(
+        rows: list[dict], shipping_days_by_item: dict[str, int] | None = None) -> bytes:
     """大促报名上传表: 官方模板 promo_signup_sku.xlsx (保留说明sheet+前3行表头, 数据从第4行)。"""
     import io
     from pathlib import Path
@@ -1779,6 +1809,7 @@ def _build_signup_xlsx(rows: list[dict]) -> bytes:
     tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
     wb = openpyxl.load_workbook(tpl)
     ws = wb["商品SKU导入列表"]
+    shipping_days_by_item = shipping_days_by_item or {}
     if ws.max_row >= 4:                                # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
     r, seen = 4, set()
@@ -1787,9 +1818,13 @@ def _build_signup_xlsx(rows: list[dict]) -> bytes:
         if sid in seen:
             continue
         seen.add(sid)
-        ws.cell(r, 1, str(row["taobao_item_id"])).number_format = "@"
+        item_id = str(row["taobao_item_id"])
+        ws.cell(r, 1, item_id).number_format = "@"
         ws.cell(r, 2, sid).number_format = "@"
         ws.cell(r, 3, float(row["price"])).number_format = "0.00"
+        shipping_days = shipping_days_by_item.get(item_id)
+        if shipping_days is not None:
+            ws.cell(r, 5, shipping_days).number_format = "0"
         r += 1
     out = io.BytesIO()
     wb.save(out)
@@ -2296,7 +2331,8 @@ def qualify_signup_scope(db: Session, plan) -> dict:
 
     channel = "super_reduce" if str(plan.campaign_type) == "super_reduce" else "promo_signup"
     upload = (_build_super_signup_xlsx(probe_rows) if channel == "super_reduce"
-              else _build_signup_xlsx(probe_rows))
+              else _build_signup_xlsx(
+                  probe_rows, authorized_signup_shipping_days(plan)))
     probe = _upload_and_wait(
         db, channel, "stage", upload,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
@@ -3413,7 +3449,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     channel = "super_reduce" if super_reduce else "promo_signup"
     phase = "commit" if super_reduce else "stage"
     upload_xlsx = (_build_super_signup_xlsx(pending) if super_reduce
-                   else _build_signup_xlsx(pending))
+                   else _build_signup_xlsx(
+                       pending, authorized_signup_shipping_days(plan)))
     res = _upload_and_wait(
         db, channel, phase, upload_xlsx,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,

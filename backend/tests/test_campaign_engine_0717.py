@@ -141,6 +141,35 @@ def test_signup_rows_include_registered_no_sales_for_platform_recheck(db_session
     assert stats["registered_no_sales_items_included"] == ["9209"]
 
 
+def test_signup_shipping_days_authorization_is_exact():
+    plan = CampaignPlan(remark=(
+        "signup_shipping_days_authorized="
+        "793084818113:30,100000000002:0,100000000003:366,bad"
+    ))
+
+    assert cs.authorized_signup_shipping_days(plan) == {"793084818113": 30}
+
+
+def test_signup_workbook_writes_shipping_days_only_for_authorized_item():
+    rows = [
+        {"taobao_item_id": "793084818113", "taobao_sku_id": "6292847403160",
+         "price": 1200.0},
+        {"taobao_item_id": "100000000004", "taobao_sku_id": "6292847403161",
+         "price": 397.0},
+    ]
+
+    workbook = openpyxl.load_workbook(io.BytesIO(
+        cs._build_signup_xlsx(rows, {"793084818113": 30})))
+    sheet = workbook["商品SKU导入列表"]
+
+    assert sheet.cell(4, 1).value == "793084818113"
+    assert sheet.cell(4, 3).value == 1200
+    assert sheet.cell(4, 5).value == 30
+    assert sheet.cell(5, 1).value == "100000000004"
+    assert sheet.cell(5, 3).value == 397
+    assert sheet.cell(5, 5).value is None
+
+
 def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
     plan = _plan(db_session, "big88")
     db_session.add_all([
@@ -190,6 +219,42 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
     assert cs.official_scope_for_plan(plan)["active_items"] == {"1000009210"}
     assert cs.official_scope_for_plan(plan)["all_store"] is False
     assert cs.official_scope_for_plan(plan)["errors"] == []
+
+
+def test_promo_qualification_uploads_authorized_shipping_days(
+        db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    plan.remark = (
+        "supplement_items_authorized=793084818113; "
+        "signup_shipping_days_authorized=793084818113:30"
+    )
+    _mk(db_session, "PPSSHIP1", "PPSSHIP101", "793084818113",
+        "6292847403160", daily=1200, big=800)
+    db_session.commit()
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", lambda *args: {
+        "ok": True, "rows": [], "floor_refresh": {},
+    })
+    captured = {}
+
+    def upload(*args, **kwargs):
+        captured["workbook"] = args[3]
+        captured.update(kwargs)
+        return {
+            "ok": True,
+            "validation": {"total_items": 1, "ok": 1, "failed": 0},
+        }
+
+    monkeypatch.setattr(cs, "_upload_and_wait", upload)
+
+    result = cs.qualify_signup_scope(db_session, plan)
+    workbook = openpyxl.load_workbook(io.BytesIO(captured["workbook"]))
+    row = workbook["商品SKU导入列表"][4]
+
+    assert result["ok"] is True
+    assert captured["expected_rows"] == 1
+    assert captured["expected_items"] == 1
+    assert [cell.value for cell in row[:5]] == [
+        "793084818113", "6292847403160", 1200, None, 30]
 
 
 def test_platform_qualification_limits_supplement_and_preserves_prior_scope(
