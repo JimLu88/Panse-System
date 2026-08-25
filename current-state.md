@@ -2,6 +2,16 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 Enterprise WeChat inbound shipping password
+
+- GitHub `main` code commit and deployed production: `003f4a8ca76911681347b9c7c73b5bcc322cb881`.
+- ERP now exposes a WeCom self-built-app callback at `/api/wechat/callback`. It verifies the protocol signature and timestamp, decrypts AES messages, verifies CorpID, enforces an explicit member UserID allowlist, accepts only an explicit `发货密码` command, and persists message IDs for retry deduplication before invoking the existing password -> decrypt -> ingest -> exact manifest closeout -> factory-image delivery recovery chain.
+- Callback Token, EncodingAESKey, and all future `taobao_shipping_pwd_latest` values are encrypted at rest and never returned by the admin API. The admin console contains a separate “企业微信接收发货密码” configuration card; the outbound group-robot webhook remains independent.
+- Verification: callback/config/security and order-recovery scope `89 passed`; Python compile, frontend production build, shell syntax, and diff checks passed. The unrelated legacy full-suite failures were reproduced individually and were not changed in this repair.
+- Unified NAS release passed: health, ready, API/Web commit parity, migration `0139 (head)`, callback route, deployed admin UI, and API/Web/DB/backup containers all verified. Rollback images: `panse-system-api:rollback-20260825-131645` and `panse-system-web:rollback-20260825-132017`.
+- Scheduler restarted normally with 62 registered jobs and no missed critical shift.
+- Activation remains intentionally closed: production has no `wechat_inbound_*` configuration, and the ERP is currently LAN-only. The code is deployed but direct WeCom message input is not active until the user supplies/configures CorpID, callback Token, EncodingAESKey and allowed member UserID, and explicitly approves a public HTTPS callback route. No NAS exposure, account operation, password submission, business replay, or external test notification was performed.
+
 ## 2026-08-25 operational notifications moved to Enterprise WeChat
 
 - Screenshot contract is now explicit in code: Web-Agent automatically requests the current shipping-report password through Taobao's `data-secretquery` endpoint, records only bounded delivery evidence, and never stores a password from the response. `too_frequent` remains `sent=false`; it proves only that a recent request was triggered, not that the user received a password.
