@@ -10,6 +10,7 @@ Last updated: 2026-08-25 (Asia/Shanghai)
 - Historical no-sales registration is advisory before submission. After the one terminal signup result, only exact items whose sole failure is no-sales receive the no-official-discount single-item fallback. Hard failures and incomplete/stale feedback are isolated and stop without a second campaign submission.
 - Completion requires terminal item counts, exact failed-item scope, fresh exact-ID export, and per-SKU signup-price verification. A bounded, non-secret structured receipt records the job ID, terminal counts, feedback artifact, export SHA-256, per-SKU verification, and fallback result.
 - Invalid no-sales registry values such as `5`, `待定`, and `暂无` are ignored. The public write-probe entry and Web-Agent `promo_signup` stage route both fail closed.
+- The primary Windows host demonstrated a cold-start time beyond the former 150-second bridge limit. The Web-Agent bridge now waits 360 seconds and ERP callers wait 420 seconds, so a slow healthy launch is not falsely marked failed; the Agent remains on-demand and the legacy Watchdog stays disabled.
 - Verification for this change: campaign-related ERP suites passed; Web-Agent full suite passed 93 tests with the required async test plugin loaded temporarily. The broader ERP suite still has unrelated pre-existing failures outside campaign files; no live campaign submission, account action, price change, withdrawal, or business retry was used for testing.
 
 ## 2026-08-25 Enterprise WeChat group-chat shipping password

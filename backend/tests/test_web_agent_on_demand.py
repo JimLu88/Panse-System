@@ -90,6 +90,9 @@ def test_wake_start_reports_bridge_failure(db_session, monkeypatch):
 
 
 def test_ensure_online_uses_long_cold_start_window(db_session, monkeypatch):
+    import inspect
+
+    assert inspect.signature(web_agent_service.ensure_online).parameters["wait_s"].default == 420
     calls = []
     monkeypatch.setattr(
         web_agent_service,
@@ -156,7 +159,7 @@ def test_campaign_discovery_wakes_before_posting(db_session, monkeypatch):
 
     assert result == {"ok": False, "error": "stop-before-wait"}
     assert calls == [
-        ("wake", {"reason": "campaign_discovery", "wait_s": 120}),
+        ("wake", {"reason": "campaign_discovery", "wait_s": 420}),
         ("post", "/api/campaign/discover", {"timeout": 30, "auto_wake": False}),
     ]
 

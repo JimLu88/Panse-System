@@ -70,7 +70,7 @@ def request_stop(db: Session, *, reason: str) -> dict:
     return web_agent_wake_service.request(db, "stop", reason=reason)
 
 
-def ensure_online(db: Session, *, reason: str, wait_s: int = 180) -> dict:
+def ensure_online(db: Session, *, reason: str, wait_s: int = 420) -> dict:
     """Ask the Windows bridge to start the full Agent, then wait for health."""
     from app.services import web_agent_wake_service
 
@@ -446,7 +446,7 @@ def campaign_discover(db: Session, *, timeout_s: int = 200) -> dict:
     # guaranteed connection timeout.  Browser imports plus the 20-second wake
     # bridge poll can take about a minute on this workstation, so keep a real
     # startup margin here.
-    online = ensure_online(db, reason="campaign_discovery", wait_s=120)
+    online = ensure_online(db, reason="campaign_discovery", wait_s=420)
     if not online.get("online"):
         return {
             "ok": False,
