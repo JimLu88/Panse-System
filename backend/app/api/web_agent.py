@@ -136,7 +136,7 @@ def status(db: Session = Depends(get_db)):
         "shipping_password": {
             "configured": bool(settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)),
             "received_at": settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False),
-            "hint": "系统会自动点击淘宝“发送密码”并记录平台回执；淘宝决定密码发到绑定手机或主账号。收到后把「发货密码 xxx」发给飞书 ERP 机器人即可续跑；运行提醒统一发企业微信，飞书订单群只保留下单图片。",
+            "hint": "系统会自动点击淘宝“发送密码”并记录平台回执；淘宝决定密码发到绑定手机或主账号。收到后把「发货密码：xxx」发给企业微信 ERP 应用即可续跑；运行提醒统一发企业微信，飞书订单群只保留下单图片。",
         },
         "on_demand": web_agent_wake_service.status(db),
     }

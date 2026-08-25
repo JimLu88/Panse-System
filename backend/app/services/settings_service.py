@@ -44,6 +44,10 @@ _SECRET_KEYS = {
     "campaign_ai_api_key",
     # 采购 Windows sidecar 机器令牌
     "procurement_agent_token",
+    # 淘宝发货报表密码 + 企业微信自建应用回调凭据
+    "taobao_shipping_pwd_latest",
+    "wechat_inbound_token",
+    "wechat_inbound_aes_key",
 }
 
 

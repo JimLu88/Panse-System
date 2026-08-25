@@ -444,6 +444,28 @@ export const testNotifyConfig = () =>
     .post<{ ok: boolean; detail: string }>('/api/admin/notify-config/test')
     .then((r) => r.data);
 
+// ----- 企业微信自建应用入站：接收发货密码 -----
+export interface WechatInboundConfig {
+  enabled: boolean;
+  corp_id: string;
+  token_set: boolean;
+  aes_key_set: boolean;
+  allowed_users: string[];
+  ready: boolean;
+  callback_path: string;
+}
+
+export const fetchWechatInboundConfig = () =>
+  api.get<WechatInboundConfig>('/api/admin/wechat-inbound-config').then((r) => r.data);
+
+export const updateWechatInboundConfig = (payload: {
+  enabled?: boolean;
+  corp_id?: string;
+  token?: string;
+  aes_key?: string;
+  allowed_users?: string[];
+}) => api.put<WechatInboundConfig>('/api/admin/wechat-inbound-config', payload).then((r) => r.data);
+
 // ----- 物流追踪配置 (快递100 / 快递鸟) -----
 export interface LogisticsConfig {
   provider: string;

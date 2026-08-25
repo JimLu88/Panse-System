@@ -519,6 +519,107 @@ def test_notify_config(
     return NotifyTestOut(ok=ok, detail=detail)
 
 
+# ----------------------------- 企业微信入站密码 ------------------- #
+
+
+class WechatInboundConfigOut(BaseModel):
+    enabled: bool
+    corp_id: str
+    token_set: bool
+    aes_key_set: bool
+    allowed_users: list[str]
+    ready: bool
+    callback_path: str
+
+
+class WechatInboundConfigIn(BaseModel):
+    enabled: Optional[bool] = None
+    corp_id: Optional[str] = Field(default=None, description='企业 ID; "__CLEAR__" 清空')
+    token: Optional[str] = Field(default=None, description='回调 Token; "__CLEAR__" 清空')
+    aes_key: Optional[str] = Field(default=None, description='EncodingAESKey; "__CLEAR__" 清空')
+    allowed_users: Optional[list[str]] = Field(
+        default=None,
+        description="允许提交发货密码的企业微信成员 UserID 白名单",
+    )
+
+
+def _read_wechat_inbound(db: Session) -> WechatInboundConfigOut:
+    from app.services import wechat_inbound_service
+
+    cfg = wechat_inbound_service.get_config(db)
+    return WechatInboundConfigOut(
+        enabled=cfg["enabled"],
+        corp_id=cfg["corp_id"],
+        token_set=bool(cfg["token"]),
+        aes_key_set=bool(cfg["aes_key"]),
+        allowed_users=cfg["allowed_users"],
+        ready=cfg["ready"],
+        callback_path=wechat_inbound_service.CALLBACK_PATH,
+    )
+
+
+@router.get("/wechat-inbound-config", response_model=WechatInboundConfigOut)
+def get_wechat_inbound_config(
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    return _read_wechat_inbound(db)
+
+
+@router.put("/wechat-inbound-config", response_model=WechatInboundConfigOut)
+def put_wechat_inbound_config(
+    payload: WechatInboundConfigIn,
+    db: Session = Depends(get_db),
+    _: object = Depends(require_role("admin")),
+):
+    from app.services import wechat_inbound_service
+
+    current = wechat_inbound_service.get_config(db)
+
+    def proposed(value: Optional[str], old: str) -> str:
+        if value is None or value == "":
+            return old
+        if value == "__CLEAR__":
+            return ""
+        return value.strip()
+
+    next_cfg = {
+        "enabled": current["enabled"] if payload.enabled is None else payload.enabled,
+        "corp_id": proposed(payload.corp_id, current["corp_id"]),
+        "token": proposed(payload.token, current["token"]),
+        "aes_key": proposed(payload.aes_key, current["aes_key"]),
+        "allowed_users": current["allowed_users"],
+    }
+    if payload.allowed_users is not None:
+        next_cfg["allowed_users"] = sorted({
+            item.strip() for item in payload.allowed_users if item.strip()
+        })
+    if len(next_cfg["corp_id"]) > 128 or len(next_cfg["token"]) > 256:
+        raise HTTPException(status_code=400, detail="企业 ID 或 Token 长度无效")
+    if any("," in item or len(item) > 128 for item in next_cfg["allowed_users"]):
+        raise HTTPException(status_code=400, detail="成员 UserID 格式无效")
+    try:
+        if next_cfg["aes_key"]:
+            wechat_inbound_service.validate_aes_key(next_cfg["aes_key"])
+        if next_cfg["enabled"]:
+            wechat_inbound_service.validate_config(next_cfg)
+    except wechat_inbound_service.WechatInboundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    settings_service.set_value(db, wechat_inbound_service.KEY_ENABLED,
+                               "true" if next_cfg["enabled"] else "false")
+    settings_service.set_value(db, wechat_inbound_service.KEY_CORP_ID, next_cfg["corp_id"])
+    settings_service.set_value(db, wechat_inbound_service.KEY_TOKEN, next_cfg["token"])
+    settings_service.set_value(db, wechat_inbound_service.KEY_AES_KEY, next_cfg["aes_key"])
+    settings_service.set_value(
+        db,
+        wechat_inbound_service.KEY_ALLOWED_USERS,
+        ",".join(next_cfg["allowed_users"]),
+    )
+    db.commit()
+    return _read_wechat_inbound(db)
+
+
 # ----------------------------- 物流追踪配置 (快递100) --------------- #
 
 

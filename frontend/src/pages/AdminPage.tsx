@@ -53,6 +53,7 @@ import {
   Integrations,
   MeUser,
   NotifyConfig,
+  WechatInboundConfig,
   ResetDataResult,
   RuntimeLog,
   SchedulerJob,
@@ -67,6 +68,7 @@ import {
   fetchRecentLogs,
   fetchIntegrations,
   fetchNotifyConfig,
+  fetchWechatInboundConfig,
   fetchRoles,
   fetchSchedulerJobs,
   fetchSchedulerRuns,
@@ -91,6 +93,7 @@ import {
   updateSchedulerJob,
   updateIntegrations,
   updateNotifyConfig,
+  updateWechatInboundConfig,
   updateUser,
   LogisticsConfig,
   fetchLogisticsConfig,
@@ -1468,6 +1471,8 @@ function MonitorTab() {
 
       <NotifyConfigCard />
 
+      <WechatInboundConfigCard />
+
       <SystemEventsCard />
 
       <Card
@@ -2134,6 +2139,105 @@ function NotifyConfigCard() {
           onClose={() => setTestResult(null)}
         />
       )}
+    </Card>
+  );
+}
+
+function WechatInboundConfigCard() {
+  const qc = useQueryClient();
+  const [form] = Form.useForm();
+  const { data: cfg, isLoading } = useQuery<WechatInboundConfig>({
+    queryKey: ['wechat-inbound-config'],
+    queryFn: fetchWechatInboundConfig,
+  });
+
+  React.useEffect(() => {
+    if (cfg) {
+      form.setFieldsValue({
+        enabled: cfg.enabled,
+        corp_id: cfg.corp_id,
+        token: '',
+        aes_key: '',
+        allowed_users: cfg.allowed_users.join(', '),
+      });
+    }
+  }, [cfg, form]);
+
+  const saveMut = useMutation({
+    mutationFn: (values: any) => updateWechatInboundConfig({
+      enabled: Boolean(values.enabled),
+      corp_id: String(values.corp_id || '').trim(),
+      token: String(values.token || '').trim() || undefined,
+      aes_key: String(values.aes_key || '').trim() || undefined,
+      allowed_users: String(values.allowed_users || '')
+        .split(/[,，\n]/)
+        .map((item) => item.trim())
+        .filter(Boolean),
+    }),
+    onSuccess: () => {
+      message.success('企业微信密码接收配置已保存');
+      form.setFieldsValue({ token: '', aes_key: '' });
+      qc.invalidateQueries({ queryKey: ['wechat-inbound-config'] });
+    },
+    onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
+  });
+
+  if (isLoading || !cfg) {
+    return <Card size="small" title="企业微信接收发货密码" loading />;
+  }
+
+  return (
+    <Card
+      size="small"
+      title={<Space>企业微信接收发货密码 <Tag color={cfg.enabled && cfg.ready ? 'green' : 'orange'}>{cfg.enabled && cfg.ready ? '已启用' : '待配置'}</Tag></Space>}
+    >
+      <Alert
+        type="info"
+        showIcon
+        style={{ marginBottom: 12 }}
+        message="这是企业微信自建应用的入站回调，与上面的群机器人通知 Webhook 是两套配置。"
+        description={<>在企业微信应用中发送 <code>发货密码：实际密码</code>，校验通过后会自动解密报表并续推订单。回调路径：<code>{cfg.callback_path}</code>；企业微信后台填写的完整地址必须是公网可访问的 HTTPS 地址。</>}
+      />
+      <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+        <Descriptions.Item label="回调凭据">
+          <Space>
+            <Tag color={cfg.token_set ? 'green' : 'default'}>Token {cfg.token_set ? '已设置' : '未设置'}</Tag>
+            <Tag color={cfg.aes_key_set ? 'green' : 'default'}>AESKey {cfg.aes_key_set ? '已设置' : '未设置'}</Tag>
+          </Space>
+        </Descriptions.Item>
+        <Descriptions.Item label="允许成员">{cfg.allowed_users.length ? cfg.allowed_users.join(', ') : '未设置'}</Descriptions.Item>
+      </Descriptions>
+      <Form form={form} layout="vertical" onFinish={(values) => saveMut.mutate(values)}>
+        <Form.Item name="enabled" label="启用微信密码接收" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item name="corp_id" label="企业 ID (CorpID)" rules={[{ required: true, message: '请输入企业 ID' }]}>
+          <Input placeholder="ww..." autoComplete="off" />
+        </Form.Item>
+        <Row gutter={12}>
+          <Col xs={24} md={12}>
+            <Form.Item name="token" label="回调 Token（留空保留）" extra="加密存储，不回显">
+              <Input.Password placeholder={cfg.token_set ? '(已设置，留空保留)' : '企业微信后台生成或填写'} autoComplete="new-password" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item name="aes_key" label="EncodingAESKey（留空保留）" extra="43 位，加密存储，不回显">
+              <Input.Password placeholder={cfg.aes_key_set ? '(已设置，留空保留)' : '企业微信后台生成'} autoComplete="new-password" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Form.Item
+          name="allowed_users"
+          label="允许发送密码的成员 UserID"
+          extra="必须填写企业微信成员 UserID；多个用逗号或换行分隔。默认拒绝所有未列入成员。"
+          rules={[{ required: true, message: '至少填写一个允许成员 UserID' }]}
+        >
+          <Input.TextArea rows={2} placeholder="例如：ZhangSan" />
+        </Form.Item>
+        <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={saveMut.isPending}>
+          保存配置
+        </Button>
+      </Form>
     </Card>
   );
 }

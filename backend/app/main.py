@@ -55,6 +55,7 @@ from app.api import audit as audit_api
 from app.api import auth as auth_api
 from app.api import briefings as briefings_api
 from app.api import web_agent as web_agent_api
+from app.api import wechat_callback as wechat_callback_api
 from app.api import customers as customers_api
 from app.api import pricing_diagnosis as pricing_api
 from app.api import pricing as pricing_list_api
@@ -437,6 +438,7 @@ app.include_router(taobao_listings_api.router)
 app.include_router(product_composer_api.router)
 app.include_router(taobao_export_api.router)
 app.include_router(web_agent_api.router)
+app.include_router(wechat_callback_api.router)
 app.include_router(npd_api.router)
 app.include_router(factory_settlement_api.router)
 app.include_router(campaigns_api.router)

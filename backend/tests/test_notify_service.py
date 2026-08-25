@@ -268,3 +268,37 @@ def test_notify_config_endpoint_get_put_test():
     finally:
         from app.main import app
         app.dependency_overrides.clear()
+
+
+def test_wechat_inbound_admin_config_never_returns_secrets():
+    import base64
+
+    client, token = _api_client_with_admin()
+    h = {"Authorization": f"Bearer {token}"}
+    aes_key = base64.b64encode(bytes(range(32))).decode("ascii").rstrip("=")
+    try:
+        incomplete = client.put("/api/admin/wechat-inbound-config", headers=h, json={
+            "enabled": True,
+            "corp_id": "ww-test-corp",
+        })
+        assert incomplete.status_code == 400
+
+        response = client.put("/api/admin/wechat-inbound-config", headers=h, json={
+            "enabled": True,
+            "corp_id": "ww-test-corp",
+            "token": "callback-secret-token",
+            "aes_key": aes_key,
+            "allowed_users": ["OwnerUserId"],
+        })
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["enabled"] is True
+        assert body["ready"] is True
+        assert body["token_set"] is True
+        assert body["aes_key_set"] is True
+        assert body["allowed_users"] == ["OwnerUserId"]
+        assert "callback-secret-token" not in response.text
+        assert aes_key not in response.text
+    finally:
+        from app.main import app
+        app.dependency_overrides.clear()

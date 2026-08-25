@@ -32,7 +32,8 @@ openapi=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://loca
 [[ "$openapi" == *'"/api/customization/v2/quote-both"'* ]] || fail "OpenAPI 缺定制报价双口径路由"
 [[ "$openapi" == *'"/api/procurement/tasks"'* ]] || fail "OpenAPI 缺采购任务路由"
 [[ "$openapi" == *'"/api/procurement/agent/heartbeat"'* ]] || fail "OpenAPI 缺采购执行器心跳路由"
-pass "既有关键路由 + 采购模块路由"
+[[ "$openapi" == *'"/api/wechat/callback"'* ]] || fail "OpenAPI 缺企业微信入站回调路由"
+pass "既有关键路由 + 采购模块 + 企业微信入站回调路由"
 
 # 页面采用 lazy chunk，目标文案不一定在首页主 bundle；直接检查当前在线 web 容器的全部静态 chunk。
 web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
@@ -42,6 +43,7 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
   grep -R -q "智能询价" /usr/share/nginx/html/assets && echo procurement=yes
   grep -R -q "你的确认稿" /usr/share/nginx/html/assets && echo procurement_review=yes
   grep -R -q "计算基准尺寸" /usr/share/nginx/html/assets && echo quote_basis_dimensions=yes
+  grep -R -q "企业微信接收发货密码" /usr/share/nginx/html/assets && echo wechat_password_inbound=yes
   true
 '")
 [[ "$web_features" == *'campaign=yes'* ]] || fail "Web 静态资源缺活动生命周期界面"
@@ -50,7 +52,8 @@ web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
 [[ "$web_features" == *'procurement=yes'* ]] || fail "Web 静态资源缺智能询价界面"
 [[ "$web_features" == *'procurement_review=yes'* ]] || fail "Web 静态资源缺采购人工改稿门槛"
 [[ "$web_features" == *'quote_basis_dimensions=yes'* ]] || fail "Web 静态资源缺报价计算基准尺寸"
-pass "既有目标功能 + 采购人工改稿 + 报价计算基准尺寸均在在线 bundle"
+[[ "$web_features" == *'wechat_password_inbound=yes'* ]] || fail "Web 静态资源缺企业微信密码接收配置"
+pass "既有目标功能 + 企业微信密码接收配置均在在线 bundle"
 
 migration=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 alembic current" 2>&1)
 [[ "$migration" == *'(head)'* ]] || fail "数据库迁移未到 head: $migration"

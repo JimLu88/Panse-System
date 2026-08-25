@@ -900,7 +900,7 @@ def _job_web_agent_daily(db: Session) -> dict:
             r["_run_status"] = "fail"
             r["_error"] = (
                 "订单取数未完成：发货报表没有下载并进入ERP；"
-                "当前没有对应的加密文件，所以飞书不会要求转发发货密码。"
+                "当前没有对应的加密文件，所以企业微信不会要求提交发货密码。"
                 f"本轮只收到 {len(artifacts)}/3 份报表，系统将在下一重试时段重新拉取完整三报表"
             )
         else:
@@ -1636,7 +1636,7 @@ def _job_pull_catchup(db: Session) -> dict:
             error = (
                 f"加密发货报表待飞书口令 {len(pending_password)} 份: "
                 + ",".join(pending_password[:5])
-                + "；请转发“发货密码 xxxx”，收到后自动解密，下个小时继续"
+                + "；请在企业微信 ERP 应用发送“发货密码：xxxx”，收到后自动解密，下个小时继续"
             )
         return _finish({
             "waiting": "shipping_password",
