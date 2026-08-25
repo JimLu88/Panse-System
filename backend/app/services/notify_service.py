@@ -1,6 +1,7 @@
 """推送通知 (业务需求扩展: watchdog_triggered 时通知运维).
 
-支持 4 个 webhook 兼容平台 (统一用 stdlib urllib, 不依赖 httpx):
+支持 4 个 webhook 兼容平台 (统一用 stdlib urllib, 不依赖 httpx)，并支持
+“飞书订单群 + 飞书提醒群”分流模式:
 
 - slack         (Slack incoming webhook)
 - wechat_work   (企业微信群机器人)
@@ -11,6 +12,9 @@
 配置项 (settings 表):
     notify_provider   slack | wechat_work | dingtalk | feishu | none
     notify_webhook    完整 URL (slack/wechat/钉钉/飞书的 webhook)
+    notify_route_mode legacy | feishu_split
+    feishu_push_chat_id   订单群
+    feishu_alert_chat_id  提醒群
 
 公开 API:
     notify(db, text, *, level='info', title=None)
@@ -44,25 +48,59 @@ SUPPORTED_PROVIDERS = (
     {"value": "feishu",      "label": "飞书群机器人"},
 )
 
+ROUTE_MODE_KEY = "notify_route_mode"
+ROUTE_MODE_LEGACY = "legacy"
+ROUTE_MODE_FEISHU_SPLIT = "feishu_split"
+ALERT_CHAT_KEY = "feishu_alert_chat_id"
+
 
 def get_config(db: Session) -> dict:
-    """返回 {provider, webhook, webhook_set}; webhook 永远不外露明文 (除非调试)."""
+    """返回通知配置；webhook 永远不外露明文 (除非调试)."""
     provider = settings_service.get(db, "notify_provider") or "none"
     webhook = settings_service.get(db, "notify_webhook") or ""
-    return {"provider": provider, "webhook": webhook, "webhook_set": bool(webhook)}
+    route_mode = (
+        settings_service.get(db, ROUTE_MODE_KEY, env_fallback=False)
+        or ROUTE_MODE_LEGACY
+    )
+    alert_chat_id = settings_service.get(db, ALERT_CHAT_KEY, env_fallback=False) or ""
+    return {
+        "provider": provider,
+        "webhook": webhook,
+        "webhook_set": bool(webhook),
+        "route_mode": route_mode,
+        "alert_chat_id": alert_chat_id,
+        "alert_chat_set": bool(alert_chat_id),
+    }
+
+
+def get_alert_chat_id(db: Session) -> str:
+    """返回提醒群；legacy 模式兼容历史只有一个飞书群的配置。"""
+    configured = settings_service.get(db, ALERT_CHAT_KEY, env_fallback=False) or ""
+    if configured:
+        return configured
+    route_mode = (
+        settings_service.get(db, ROUTE_MODE_KEY, env_fallback=False)
+        or ROUTE_MODE_LEGACY
+    )
+    if route_mode == ROUTE_MODE_FEISHU_SPLIT:
+        return ""
+    return settings_service.get(db, "feishu_push_chat_id", env_fallback=False) or ""
 
 
 # ----------------------------- payload 构造 ----------------------- #
 
 
-def _build_payload(provider: str, text: str, *, level: str, title: Optional[str]) -> dict:
-    """每个平台需要不同 JSON 结构."""
+def _format_text(text: str, *, level: str, title: Optional[str]) -> str:
     prefix_map = {"info": "ℹ️", "warn": "⚠️", "error": "🚨"}
     prefix = prefix_map.get(level, "")
     if title:
-        full_text = f"{prefix} {title}\n{text}" if prefix else f"{title}\n{text}"
-    else:
-        full_text = f"{prefix} {text}" if prefix else text
+        return f"{prefix} {title}\n{text}" if prefix else f"{title}\n{text}"
+    return f"{prefix} {text}" if prefix else text
+
+
+def _build_payload(provider: str, text: str, *, level: str, title: Optional[str]) -> dict:
+    """每个平台需要不同 JSON 结构."""
+    full_text = _format_text(text, level=level, title=title)
 
     if provider == "slack":
         return {"text": full_text}
@@ -121,15 +159,32 @@ def notify(
         return False, "通知已被 PANSE_DISABLE_NOTIFY 关闭 (测试环境)"
 
     cfg = get_config(db)
+    if cfg["route_mode"] == ROUTE_MODE_FEISHU_SPLIT and cfg["alert_chat_id"]:
+        try:
+            from app.services import feishu_client
+            feishu_client.send_text(
+                db,
+                cfg["alert_chat_id"],
+                _format_text(text, level=level, title=title),
+            )
+            return True, "已发送到飞书提醒群"
+        except Exception as exc:  # noqa: BLE001 - 通知失败不阻断业务
+            detail = f"{type(exc).__name__}: {exc}"
+            _logger.warning("飞书提醒群发送失败: %s", detail)
+            if enqueue_on_failure:
+                _enqueue_retry(db, text, title=title, level=level)
+            return False, detail
+
     provider = cfg["provider"]
     webhook = cfg["webhook"]
     if provider == "none" or not webhook:
         return False, "未配置通知 provider 或 webhook"
 
     # 企微推送治理: 默认只放行经营日报; 其余静默(设 wechat_push_scope=all 恢复)
-    scope = settings_service.get(db, WECHAT_SCOPE_KEY, env_fallback=False) or "briefing_only"
-    if scope != "all" and not wechat_allowed:
-        return False, "企微推送已限为仅经营日报 (wechat_push_scope=briefing_only)"
+    if provider == "wechat_work":
+        scope = settings_service.get(db, WECHAT_SCOPE_KEY, env_fallback=False) or "briefing_only"
+        if scope != "all" and not wechat_allowed:
+            return False, "企微推送已限为仅经营日报 (wechat_push_scope=briefing_only)"
 
     payload = _build_payload(provider, text, level=level, title=title)
     ok, resp = _post_json(webhook, payload)
@@ -160,6 +215,28 @@ def notify_image(
         return {"text": False, "image": False, "detail": "通知已被测试环境关闭"}
 
     cfg = get_config(db)
+    if cfg["route_mode"] == ROUTE_MODE_FEISHU_SPLIT and cfg["alert_chat_id"]:
+        if not image_bytes:
+            return {"text": False, "image": False, "detail": "图片为空"}
+        text_ok = True
+        text_detail = "未附文字"
+        try:
+            from app.services import feishu_client
+            if text:
+                feishu_client.send_text(
+                    db,
+                    cfg["alert_chat_id"],
+                    _format_text(text, level=level, title=title),
+                )
+                text_detail = "说明文字已发送"
+            image_key = feishu_client.upload_image(db, image_bytes)
+            feishu_client.send_image(db, cfg["alert_chat_id"], image_key)
+            return {"text": text_ok, "image": True, "detail": text_detail}
+        except Exception as exc:  # noqa: BLE001 - 通知失败不阻断业务
+            detail = f"{type(exc).__name__}: {exc}"
+            _logger.warning("飞书提醒群图片发送失败: %s", detail)
+            return {"text": False if text else text_ok, "image": False, "detail": detail}
+
     if cfg["provider"] != "wechat_work" or not cfg["webhook"]:
         return {"text": False, "image": False, "detail": "企业微信机器人未配置"}
     scope = settings_service.get(db, WECHAT_SCOPE_KEY, env_fallback=False) or "briefing_only"
@@ -216,7 +293,7 @@ def _enqueue_retry(db: Session, text: str, *, title: Optional[str], level: str) 
 
 
 def retry_pending(db: Session) -> dict:
-    """调度任务: 重发到期的失败通知。成功标 sent_at; 超过 _MAX_RETRY 次放弃。"""
+    """调度任务: 按当前路由重发到期通知。成功标 sent_at; 超过 _MAX_RETRY 次放弃。"""
     from datetime import datetime, timedelta, timezone
     from sqlalchemy import text as _sql
     now = datetime.now(timezone.utc)
@@ -230,11 +307,14 @@ def retry_pending(db: Session) -> dict:
         return {"retried": 0, "sent": 0}
     sent = 0
     for rid, text_, title, level, attempts in rows:
-        cfg = get_config(db)
-        ok = False
-        if cfg["provider"] != "none" and cfg["webhook"]:
-            payload = _build_payload(cfg["provider"], text_, level=level, title=title)
-            ok, _ = _post_json(cfg["webhook"], payload)
+        ok, _ = notify(
+            db,
+            text_,
+            level=level,
+            title=title,
+            wechat_allowed=True,
+            enqueue_on_failure=False,
+        )
         if ok:
             db.execute(_sql("UPDATE notify_retries SET sent_at=:now, attempts=attempts+1 WHERE id=:id"),
                        {"now": now, "id": rid})
@@ -278,6 +358,16 @@ def broadcast_text(
     import os
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return {"disabled": True}
+    cfg = get_config(db)
+    if cfg["route_mode"] == ROUTE_MODE_FEISHU_SPLIT and cfg["alert_chat_id"]:
+        ok, _ = notify(
+            db,
+            text,
+            level=level,
+            title=title,
+            wechat_allowed=wechat_allowed,
+        )
+        return {"feishu_alert": ok}
     raw = settings_service.get(db, TEXT_CHANNELS_KEY, env_fallback=False)
     channels = [c.strip() for c in (raw or DEFAULT_TEXT_CHANNELS).split(",") if c.strip()]
     # 飞书推送会话现在专用于工厂订单图片。即便历史配置仍写着 feishu,webhook，

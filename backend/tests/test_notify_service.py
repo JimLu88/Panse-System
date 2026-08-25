@@ -110,6 +110,60 @@ def test_notify_wechat_image_payload(db_session):
     }
 
 
+def test_feishu_split_routes_text_to_alert_chat_only(db_session):
+    settings_service.set_value(db_session, "notify_route_mode", "feishu_split")
+    settings_service.set_value(db_session, "feishu_alert_chat_id", "alert-chat")
+    settings_service.set_value(db_session, "notify_provider", "wechat_work")
+    settings_service.set_value(db_session, "notify_webhook", "https://qyapi/x")
+    db_session.commit()
+
+    with patch("app.services.feishu_client.send_text", return_value={"message_id": "m1"}) as send, \
+         patch("app.services.notify_service._post_json") as webhook:
+        ok, detail = notify_service.notify(
+            db_session, "取数失败", level="error", title="自动化状态"
+        )
+
+    assert ok is True
+    assert detail == "已发送到飞书提醒群"
+    send.assert_called_once_with(
+        db_session, "alert-chat", "🚨 自动化状态\n取数失败"
+    )
+    webhook.assert_not_called()
+
+
+def test_feishu_split_image_uses_alert_chat(db_session):
+    settings_service.set_value(db_session, "notify_route_mode", "feishu_split")
+    settings_service.set_value(db_session, "feishu_alert_chat_id", "alert-chat")
+    db_session.commit()
+
+    with patch("app.services.feishu_client.send_text", return_value={}) as text_send, \
+         patch("app.services.feishu_client.upload_image", return_value="image-key") as upload, \
+         patch("app.services.feishu_client.send_image", return_value={}) as image_send:
+        result = notify_service.notify_image(
+            db_session, b"login-qr", text="请扫码", title="取数登录"
+        )
+
+    assert result == {"text": True, "image": True, "detail": "说明文字已发送"}
+    text_send.assert_called_once_with(db_session, "alert-chat", "ℹ️ 取数登录\n请扫码")
+    upload.assert_called_once_with(db_session, b"login-qr")
+    image_send.assert_called_once_with(db_session, "alert-chat", "image-key")
+
+
+def test_feishu_split_without_alert_chat_keeps_legacy_fallback(db_session):
+    settings_service.set_value(db_session, "notify_route_mode", "feishu_split")
+    settings_service.set_value(db_session, "notify_provider", "wechat_work")
+    settings_service.set_value(db_session, "notify_webhook", "https://qyapi/x")
+    db_session.commit()
+
+    with patch("app.services.notify_service._post_json", return_value=(True, "ok")) as webhook, \
+         patch("app.services.feishu_client.send_text") as feishu:
+        ok, _ = notify_service.notify(db_session, "过渡期提醒", wechat_allowed=True)
+
+    assert ok is True
+    webhook.assert_called_once()
+    feishu.assert_not_called()
+
+
 def test_notify_dingtalk_payload(db_session):
     settings_service.set_value(db_session, "notify_provider", "dingtalk")
     settings_service.set_value(db_session, "notify_webhook", "https://oapi.dingtalk.com/x")
@@ -241,7 +295,23 @@ def test_notify_config_endpoint_get_put_test():
         body = r.json()
         assert body["provider"] == "none"
         assert body["webhook_set"] is False
+        assert body["route_mode"] == "legacy"
+        assert body["feishu_order_chat_set"] is False
+        assert body["feishu_alert_chat_set"] is False
         assert any(p["value"] == "slack" for p in body["supported_providers"])
+
+        # 提醒群可先安全保存，但没有订单群时禁止启用双群分流。
+        r = client.put("/api/admin/notify-config", headers=h, json={
+            "feishu_alert_chat_id": "oc-alert-secret",
+        })
+        assert r.status_code == 200
+        assert r.json()["feishu_alert_chat_set"] is True
+        assert "oc-alert-secret" not in r.text
+        r = client.put("/api/admin/notify-config", headers=h, json={
+            "route_mode": "feishu_split",
+        })
+        assert r.status_code == 400
+        assert "订单群" in r.json()["detail"]
 
         # PUT 设置
         r = client.put("/api/admin/notify-config", headers=h, json={

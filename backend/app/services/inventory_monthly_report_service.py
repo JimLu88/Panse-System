@@ -11,6 +11,7 @@ from app.services import (
     feishu_client,
     inventory_demand_service as demand,
     inventory_restock_service,
+    notify_service,
     product_inventory_service,
     settings_service,
 )
@@ -115,9 +116,9 @@ def send_monthly_report(
     )
     if last_period == period and not force:
         return {"period": period, "pushed": False, "skipped": "already_sent"}
-    chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
+    chat_id = notify_service.get_alert_chat_id(db)
     if not chat_id:
-        raise RuntimeError("未配置 feishu_push_chat_id，月度备货计划未发送")
+        raise RuntimeError("未配置飞书提醒群，月度备货计划未发送")
     demand.sync_quantity_anomalies(
         db, cfg=product_inventory_service.get_forecast_config(db), as_of=today
     )

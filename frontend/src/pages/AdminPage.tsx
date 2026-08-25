@@ -2017,7 +2017,13 @@ function NotifyConfigCard() {
   });
 
   const saveMut = useMutation({
-    mutationFn: (payload: { provider?: string; webhook?: string; text_channels?: string }) => updateNotifyConfig(payload),
+    mutationFn: (payload: {
+      provider?: string;
+      webhook?: string;
+      text_channels?: string;
+      route_mode?: 'legacy' | 'feishu_split';
+      feishu_alert_chat_id?: string;
+    }) => updateNotifyConfig(payload),
     onSuccess: () => {
       message.success('通知配置已保存');
       form.setFieldValue('webhook', '');
@@ -2057,7 +2063,7 @@ function NotifyConfigCard() {
           icon={<ExperimentOutlined />}
           size="small"
           loading={testMut.isPending}
-          disabled={cfg.provider === 'none' || !cfg.webhook_set}
+          disabled={cfg.route_mode !== 'feishu_split' && (cfg.provider === 'none' || !cfg.webhook_set)}
           onClick={() => testMut.mutate()}
         >
           测试通知
@@ -2082,14 +2088,44 @@ function NotifyConfigCard() {
             <Tag color="default">未设置</Tag>
           )}
         </Descriptions.Item>
+        <Descriptions.Item label="飞书订单群">
+          {cfg.feishu_order_chat_set ? <Tag color="blue">{cfg.feishu_order_chat_id_masked}</Tag> : <Tag>未设置</Tag>}
+        </Descriptions.Item>
+        <Descriptions.Item label="飞书提醒群">
+          {cfg.feishu_alert_chat_set ? <Tag color="green">{cfg.feishu_alert_chat_id_masked}</Tag> : <Tag>未设置</Tag>}
+        </Descriptions.Item>
       </Descriptions>
 
       <Form
         form={form}
         layout="vertical"
-        initialValues={{ provider: cfg.provider, webhook: '', text_channels: (cfg.text_channels || 'feishu,webhook').split(',') }}
+        initialValues={{
+          provider: cfg.provider,
+          webhook: '',
+          text_channels: (cfg.text_channels || 'feishu,webhook').split(','),
+          route_mode: cfg.route_mode,
+          feishu_alert_chat_id: '',
+        }}
         onFinish={(v) => saveMut.mutate({ ...v, text_channels: Array.isArray(v.text_channels) ? v.text_channels.join(',') : v.text_channels })}
       >
+        <Form.Item
+          name="route_mode"
+          label="通知路由"
+          extra="双群分流：订单图和订单结果留在订单群；运行异常、密码、登录及各类提醒进入提醒群。"
+          rules={[{ required: true }]}
+        >
+          <Select options={[
+            { value: 'legacy', label: '原通知通道（过渡/回退）' },
+            { value: 'feishu_split', label: '飞书订单群 + 飞书提醒群' },
+          ]} />
+        </Form.Item>
+        <Form.Item
+          name="feishu_alert_chat_id"
+          label="飞书提醒群 Chat ID（留空 = 不修改）"
+          extra="启用双群分流前必须配置；现有 feishu_push_chat_id 始终保留为订单群。"
+        >
+          <Input.Password placeholder={cfg.feishu_alert_chat_set ? '(已设置，留空保留)' : 'oc_xxx'} />
+        </Form.Item>
         <Form.Item name="provider" label="通知平台" rules={[{ required: true }]}>
           <Select
             options={cfg.supported_providers.map((p) => ({ value: p.value, label: p.label }))}

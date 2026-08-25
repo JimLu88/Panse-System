@@ -428,6 +428,11 @@ export interface NotifyConfig {
   webhook_set: boolean;
   supported_providers: NotifyProvider[];
   text_channels: string;  // 纯文本通知渠道, 逗号分隔 (feishu,webhook)
+  route_mode: 'legacy' | 'feishu_split';
+  feishu_order_chat_id_masked: string;
+  feishu_order_chat_set: boolean;
+  feishu_alert_chat_id_masked: string;
+  feishu_alert_chat_set: boolean;
 }
 
 export const fetchNotifyConfig = () =>
@@ -437,6 +442,8 @@ export const updateNotifyConfig = (payload: {
   provider?: string;
   webhook?: string;
   text_channels?: string;
+  route_mode?: 'legacy' | 'feishu_split';
+  feishu_alert_chat_id?: string;
 }) => api.put<NotifyConfig>('/api/admin/notify-config', payload).then((r) => r.data);
 
 export const testNotifyConfig = () =>

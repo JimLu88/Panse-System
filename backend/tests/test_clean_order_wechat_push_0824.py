@@ -62,6 +62,25 @@ def test_broadcast_text_ignores_legacy_feishu_channel_in_images_only_mode(
     assert webhook[0][1]["text"]["content"] == "ℹ️ Web-Agent\n运行异常"
 
 
+def test_broadcast_text_feishu_split_uses_alert_group_not_order_group(
+    db_session, monkeypatch,
+):
+    monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
+    settings_service.set_value(db_session, "notify_route_mode", "feishu_split")
+    settings_service.set_value(db_session, "feishu_push_chat_id", "factory-chat")
+    settings_service.set_value(db_session, "feishu_alert_chat_id", "alert-chat")
+    sent = []
+    monkeypatch.setattr(
+        "app.services.feishu_client.send_text",
+        lambda db, chat, text: sent.append((chat, text)) or {"message_id": "alert"},
+    )
+
+    result = notify_service.broadcast_text(db_session, "运行异常", title="Web-Agent")
+
+    assert result == {"feishu_alert": True}
+    assert sent == [("alert-chat", "ℹ️ Web-Agent\n运行异常")]
+
+
 def test_no_update_notice_is_exact_and_once_per_day(db_session, monkeypatch):
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
     settings_service.set_value(db_session, "feishu_push_chat_id", "factory-chat")

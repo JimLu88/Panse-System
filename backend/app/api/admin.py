@@ -455,6 +455,11 @@ class NotifyConfigOut(BaseModel):
     webhook_set: bool
     supported_providers: list[dict]
     text_channels: str  # 纯文本通知渠道, 逗号分隔 (feishu=飞书应用机器人 / webhook=notify provider,如企微)
+    route_mode: str
+    feishu_order_chat_id_masked: str
+    feishu_order_chat_set: bool
+    feishu_alert_chat_id_masked: str
+    feishu_alert_chat_set: bool
 
 
 class NotifyConfigIn(BaseModel):
@@ -462,6 +467,8 @@ class NotifyConfigIn(BaseModel):
                                     description="slack/wechat_work/dingtalk/feishu/none")
     webhook: Optional[str] = Field(default=None, description='完整 URL; "__CLEAR__" 清空')
     text_channels: Optional[str] = Field(default=None, description="纯文本通知渠道 feishu,webhook 逗号分隔")
+    route_mode: Optional[str] = Field(default=None, description="legacy/feishu_split")
+    feishu_alert_chat_id: Optional[str] = Field(default=None, description='飞书提醒群 chat_id; "__CLEAR__" 清空')
 
 
 class NotifyTestOut(BaseModel):
@@ -472,6 +479,7 @@ class NotifyTestOut(BaseModel):
 def _read_notify(db: Session) -> NotifyConfigOut:
     from app.services import notify_service
     cfg = notify_service.get_config(db)
+    order_chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False) or ""
     return NotifyConfigOut(
         provider=cfg["provider"],
         webhook_masked=settings_service.mask_secret(cfg["webhook"]),
@@ -479,6 +487,11 @@ def _read_notify(db: Session) -> NotifyConfigOut:
         supported_providers=list(notify_service.SUPPORTED_PROVIDERS),
         text_channels=settings_service.get(db, "notify_text_channels", env_fallback=False)
         or notify_service.DEFAULT_TEXT_CHANNELS,
+        route_mode=cfg["route_mode"],
+        feishu_order_chat_id_masked=settings_service.mask_secret(order_chat_id),
+        feishu_order_chat_set=bool(order_chat_id),
+        feishu_alert_chat_id_masked=settings_service.mask_secret(cfg["alert_chat_id"]),
+        feishu_alert_chat_set=cfg["alert_chat_set"],
     )
 
 
@@ -496,6 +509,28 @@ def put_notify_config(
     db: Session = Depends(get_db),
     _: object = Depends(require_role("admin")),
 ):
+    from app.services import notify_service
+
+    current = notify_service.get_config(db)
+    route_mode = (payload.route_mode or current["route_mode"]).strip()
+    if route_mode not in {
+        notify_service.ROUTE_MODE_LEGACY,
+        notify_service.ROUTE_MODE_FEISHU_SPLIT,
+    }:
+        raise HTTPException(status_code=422, detail="route_mode 仅支持 legacy/feishu_split")
+    alert_chat_id = current["alert_chat_id"]
+    if payload.feishu_alert_chat_id is not None:
+        if payload.feishu_alert_chat_id == "__CLEAR__":
+            alert_chat_id = ""
+        elif payload.feishu_alert_chat_id.strip():
+            alert_chat_id = payload.feishu_alert_chat_id.strip()
+    order_chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False) or ""
+    if route_mode == notify_service.ROUTE_MODE_FEISHU_SPLIT:
+        if not order_chat_id:
+            raise HTTPException(status_code=400, detail="启用双群分流前必须先配置飞书订单群")
+        if not alert_chat_id:
+            raise HTTPException(status_code=400, detail="启用双群分流前必须先配置飞书提醒群")
+
     if payload.provider is not None:
         settings_service.set_value(db, "notify_provider", payload.provider.strip())
     if payload.webhook is not None:
@@ -505,6 +540,13 @@ def put_notify_config(
             settings_service.set_value(db, "notify_webhook", payload.webhook.strip())
     if payload.text_channels is not None:
         settings_service.set_value(db, "notify_text_channels", payload.text_channels.strip())
+    if payload.feishu_alert_chat_id == "__CLEAR__" or (
+        payload.feishu_alert_chat_id is not None
+        and payload.feishu_alert_chat_id.strip()
+    ):
+        settings_service.set_value(db, notify_service.ALERT_CHAT_KEY, alert_chat_id)
+    if payload.route_mode is not None:
+        settings_service.set_value(db, notify_service.ROUTE_MODE_KEY, route_mode)
     db.commit()
     return _read_notify(db)
 
