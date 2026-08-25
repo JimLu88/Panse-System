@@ -2,6 +2,16 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 Feishu order/alert group split
+
+- GitHub `main` code commit and deployed production commit: `444613c8d28512037d2fad1ff316b131b404fa18`.
+- Added an explicit notification route mode. `feishu_push_chat_id` remains the order group for order images, order delivery results and order-update notices; `feishu_alert_chat_id` is the separate target for automation errors, reports, password/login prompts, QR images, monthly inventory plans and remote-order reminder cards.
+- Enabling `feishu_split` is fail-closed unless both order and alert groups are configured. Until then, `legacy` mode keeps the existing Enterprise WeChat webhook active so alerts are not silently lost. The webhook and inbound WeCom callback configuration are preserved as rollback paths.
+- Production activation is intentionally pending: the existing order group is configured, but the Feishu app can currently see only that one group and `feishu_alert_chat_id` is unset. The user must create the reminder group and add the existing ERP Feishu bot before maintenance can bind its `chat_id` and switch the route. No group/account operation or external test message was performed.
+- Notification/order/reminder scope passed 30 focused tests; Python compilation and the frontend production build passed. The broader backend run still shows the previously documented unrelated cost, pricing, supplier-matching and legacy order-import failures; no new failure appeared in the changed scope.
+- Unified NAS release passed at `444613c`: health, ready, API/Web commit parity, migration `0139 (head)`, required routes/features and API/Web/DB/backup containers. Rollback images: `panse-system-api:rollback-20260825-215223` and `panse-system-web:rollback-20260825-215651`.
+- The production scheduler restarted with 62 registered jobs and its delayed startup catch-up check reported no missed critical shift. No order replay, password submission, business write or notification send was used for this change.
+
 ## 2026-08-25 Taobao quota timeout self-healing and failure routing
 
 - Incident evidence separates the layers. The 18:09 order run stopped on a single Taobao decryption-quota page `TimeoutError`; a later attempt on the same host reached the Agent and completed all three report downloads, with two reports imported and one new shipping report waiting for its matching password. This proves a transient execution failure plus a program defect that escalated the first timeout too early.
