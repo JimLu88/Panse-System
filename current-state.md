@@ -1,6 +1,19 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-25 (Asia/Shanghai)
+Last updated: 2026-08-26 (Asia/Shanghai)
+
+## 2026-08-26 order notice and finance retry recovery
+
+- Incident review: the 2026-08-25 order chain eventually completed at 20:37 after the matching shipping-report password arrived. The 20:00 health check had sent the ambiguous text “暂未进行订单更新” to the order group while the batch was still pending, so the message did not represent the final order result.
+- The order group now receives a daily idempotent completion receipt only after a fresh successful order closure with zero new order images: “订单已完成更新，暂无新增需推送下单图”. Stale, failed, offline and password-pending states stay in the alert group and never masquerade as a completed order update.
+- The 2026-08-25 20:30 finance run successfully refreshed Wanshifu, Wanshifu balance, Taobao aggregate balance, Wanxiangtai flow, enterprise Alipay balance and three enterprise Alipay bill days. Separate failures were promotion-balance OCR layout drift, a WeChat bill download timeout, one missing enterprise Alipay bill day, and expired personal-Alipay login.
+- A personal-Alipay login gate no longer closes the whole finance pipeline. Promotion OCR, WeChat bill, enterprise Alipay gaps and other automatic failures retain their bounded 21:00/21:30/22:00 retries; the pipeline pauses only when every remaining failure truly needs user input.
+- Enterprise Alipay daily recovery now retains the exact failed bill date and a bounded non-secret reason. Successful/non-login task runs clear stale scan-queue entries so an old login alert cannot pause a later automatic retry.
+- The promotion balance reader supports both the old “万相台无界版·账户总余额” layout and the new “推广业务账户 → 万相台(元)” layout. It still rejects aggregate, deposit, withdrawable, frozen, direct-train and super-recommendation values. A read-only production OCR check on the 2026-08-25 screenshot returned high confidence, an explicit Wanxiangtai label and a numeric value; it did not write or expose the balance.
+- ERP code commit/GitHub `main`/production API+Web commit: `c7389c9c2dffe85ce810ee24cb0da2858ae5b396`. Unified NAS verification passed health, ready, API/Web commit parity, migration `0139 (head)`, required routes/features and API/Web/DB/backup containers. Rollback images: `panse-system-api:rollback-20260826-002820` and `panse-system-web:rollback-20260826-003556`.
+- Scheduler restarted with 62 jobs; order pull, finance pull, both finance retry shifts and ingest health are enabled. Startup catch-up reported no missed same-day critical shift. The primary-PC Wake Bridge is enabled/running, the legacy Watchdog is disabled, and repeated post-release bridge polls returned HTTP 200 through the NAS.
+- Focused ERP regression: 41 passed; Python compilation and diff checks passed. The full backend suite still has 28 previously existing failures in unrelated cost, inventory, pricing, supplier matching and legacy order-import areas. No business replay, bill pull, login, password submission or external test notification was performed by task 02.
+- Remaining interaction gate: personal Alipay balance/flow still requires the user to re-login in the ERP automatic-data page. Its last persisted dates remain 2026-08-02 (balance) and 2026-08-01 (flow). The next normal finance shift at 20:30 will provide the first fresh production proof for the repaired automatic sources.
 
 ## 2026-08-25 Feishu order/alert group split
 
