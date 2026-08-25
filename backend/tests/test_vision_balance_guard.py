@@ -34,6 +34,25 @@ def test_promo_balance_accepts_wanxiangtai(monkeypatch, db_session):
     assert data["available"] == 5234.79
 
 
+def test_promo_balance_accepts_new_promotion_business_account_layout(
+    monkeypatch, db_session,
+):
+    monkeypatch.setattr(v, "_ocr_image_resp", lambda *a, **k: _Resp(
+        '{"available": 0.00, "label_found": "推广业务账户 万相台(元)", '
+        '"confidence": "high", "note": "新版资金页"}'))
+    data = v.parse_balance_screenshot(db_session, b"x", account_hint="淘宝推广账户")
+    assert data["confidence"] == "high"
+    assert data["available"] == 0.0
+
+
+def test_promo_balance_rejects_other_new_layout_child_account(monkeypatch, db_session):
+    monkeypatch.setattr(v, "_ocr_image_resp", lambda *a, **k: _Resp(
+        '{"available": 800.00, "label_found": "推广业务账户 直通车(元)", '
+        '"confidence": "high", "note": ""}'))
+    data = v.parse_balance_screenshot(db_session, b"x", account_hint="淘宝推广账户")
+    assert data["confidence"] == "low"
+
+
 def test_nonpromo_account_unaffected(monkeypatch, db_session):
     """非推广账户(如聚合)不受此校验影响, 读聚合结算是对的。"""
     monkeypatch.setattr(v, "_ocr_image_resp", lambda *a, **k: _Resp(

@@ -1202,6 +1202,86 @@ def _fresh_finance_browser_tasks(db: Session) -> set[str]:
     return tasks
 
 
+def _finance_retryable_sources(
+    db: Session,
+    result: dict,
+    outcomes: dict[str, tuple[bool, str]],
+) -> dict[str, list[str]]:
+    """Return automatic failures that must keep a pipeline open despite login gates.
+
+    A pending QR/login for one account must not suppress bounded retries for an
+    unrelated source (for example WeChat bill timeout, promotion OCR drift, or
+    a missing enterprise Alipay bill day).
+    """
+    import json
+
+    from sqlalchemy import select
+
+    from app.models.finance import AccountBalance
+    from app.services import agent_ingest_service, settings_service
+
+    today = date.today()
+    pending = {
+        str(item.get("task") or "")
+        for item in (result.get("pending_manual") or [])
+    }
+    fresh = _fresh_finance_browser_tasks(db)
+    sources: dict[str, list[str]] = {"balance_pull": [], "flow_pull": []}
+
+    if not outcomes["balance_pull"][0]:
+        balance_tasks = {
+            "bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main",
+        }
+        for task_id in sorted(balance_tasks - fresh - pending):
+            sources["balance_pull"].append(task_id)
+        api_balance = result.get("alipay_balance")
+        if (not isinstance(api_balance, list) or not api_balance
+                or any(item.get("error") for item in api_balance if isinstance(item, dict))):
+            sources["balance_pull"].append("enterprise_alipay_balance_api")
+        enterprise_fresh = db.execute(
+            select(AccountBalance.id).where(
+                AccountBalance.account_name == "支付宝-企业账号",
+                AccountBalance.as_of_date == today,
+            ).limit(1)
+        ).scalar_one_or_none() is not None
+        if not enterprise_fresh:
+            sources["balance_pull"].append("enterprise_alipay_balance_not_fresh")
+
+    if not outcomes["flow_pull"][0]:
+        flow_tasks = set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS)
+        for task_id in sorted(flow_tasks - fresh - pending):
+            sources["flow_pull"].append(task_id)
+        daily = result.get("alipay_daily")
+        if (not isinstance(daily, dict) or daily.get("error") or daily.get("skip")
+                or int(daily.get("fail") or 0) > 0):
+            sources["flow_pull"].append("enterprise_alipay_daily")
+        try:
+            state = json.loads(
+                settings_service.get(
+                    db, agent_ingest_service.KEY_STATE, env_fallback=False,
+                ) or "{}"
+            )
+            enterprise_flow_fresh = datetime.fromisoformat(str(
+                state.get(agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW) or ""
+            )).date() == today
+        except (TypeError, ValueError, json.JSONDecodeError):
+            enterprise_flow_fresh = False
+        if not enterprise_flow_fresh:
+            sources["flow_pull"].append("enterprise_alipay_flow_not_fresh")
+
+    ingest_files = (result.get("ingest") or {}).get("files") or []
+    if any(item.get("status") == "error" and item.get("category") == "balance"
+           for item in ingest_files):
+        sources["balance_pull"].append("balance_ingest")
+    if any(item.get("status") == "error" and item.get("category") == "alipay"
+           for item in ingest_files):
+        sources["flow_pull"].append("alipay_ingest")
+    if result.get("agent_offline"):
+        sources["balance_pull"].append("web_agent_offline")
+        sources["flow_pull"].append("web_agent_offline")
+    return {key: list(dict.fromkeys(value)) for key, value in sources.items()}
+
+
 def _reconcile_finance_success_from_persisted_evidence(db: Session) -> dict:
     """在启动下一次浏览器重试前，用已落库证据关闭旧失败状态。
 
@@ -1300,17 +1380,21 @@ def _run_finance_pipeline(db: Session, *, retry: bool = False) -> dict:
         str(item.get("task") or "")
         for item in (r.get("pending_manual") or [])
     }
+    retryable_sources = _finance_retryable_sources(db, r, outcomes)
+    fresh_tasks_after_run = _fresh_finance_browser_tasks(db)
+    unresolved_balance = {
+        "bal_taobao_aggregate", "bal_ads", "bal_wanshifu", "bal_alipay_main",
+    } - fresh_tasks_after_run
+    unresolved_flow = (
+        set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS) - fresh_tasks_after_run
+    )
     waiting_input = {
-        "balance_pull": bool(pending_tasks & {
-            "bal_taobao_aggregate",
-            "bal_ads",
-            "bal_wanshifu",
-            "bal_alipay_main",
-        }),
-        "flow_pull": bool(
-            pending_tasks & set(agent_ingest_service.FINANCE_BROWSER_FLOW_TASKS)
-        ),
+        "balance_pull": bool(pending_tasks & unresolved_balance)
+        and not retryable_sources["balance_pull"],
+        "flow_pull": bool(pending_tasks & unresolved_flow)
+        and not retryable_sources["flow_pull"],
     }
+    r["retryable_sources"] = retryable_sources
     failures: list[str] = []
     for pipeline, (ok, detail) in outcomes.items():
         if not ok and waiting_input.get(pipeline):
@@ -1513,7 +1597,7 @@ def _job_order_sheets_daily(db: Session) -> dict:
             for key in ("inserted", "status_changed", "amount_changed")
         )
         if business_change_count == 0 and int(result.get("images_pushed") or 0) == 0:
-            result["no_update_notice"] = order_sheet_archive_service.send_no_order_update_notice(
+            result["update_complete_notice"] = order_sheet_archive_service.send_order_update_complete_notice(
                 db, on_date=date.today()
             )
     _sync_factory_dispatch_after_orders(db, result)
@@ -2037,7 +2121,7 @@ def _job_ingest_health_check(db: Session) -> dict:
 
     背景: 18:00 编排可能"跑成功了"但没拉到新数据 (订单报表无新单 / 加密发货报表缺口令 /
     PC Agent 离线)。这类"静默没更新"光看任务状态(ok)发现不了。本任务专门核对结果是否真的前进,
-    有问题就主动推微信 Push；飞书订单群只保留下单图和每日一条“暂无更新”。
+    有问题只推运行提醒群；飞书订单群只保留下单图，以及刷新成功但无新增下单图时的完成回执。
     一天一条, 无异常则完全静默不打扰。没有新增订单本身是正常结果；只有18:00后的
     当日订单快照未刷新才报警。
     """
@@ -2123,12 +2207,6 @@ def _job_ingest_health_check(db: Session) -> dict:
     }
     if not problems:
         return result
-
-    if not agent_ingest_service.order_data_fresh(db, on=today, not_before_hour=18):
-        from app.services import order_sheet_archive_service
-        result["no_update_notice"] = order_sheet_archive_service.send_no_order_update_notice(
-            db, on_date=today
-        )
 
     lines = [f"⚠️ {today.month}月{today.day}日 自动取数体检发现问题:", ""]
     lines += [f"• {p}" for p in problems]

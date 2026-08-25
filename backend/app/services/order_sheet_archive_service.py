@@ -25,37 +25,42 @@ from app.services import factory_sheet, import_storage
 _logger = logging.getLogger("panse.order_sheet")
 
 AUTO_SINCE = date(2026, 6, 6)   # 用户指定: 从这天的订单开始自动生成
-_NO_UPDATE_NOTICE_KEY = "order_group_no_update_notice_date"
+_UPDATE_COMPLETE_NOTICE_KEY = "order_group_update_complete_notice_date"
 
 
-def send_no_order_update_notice(db: Session, *, on_date: date | None = None) -> dict:
-    """当天没有订单更新时，飞书订单群只发一条固定文案，且按日幂等。"""
+def send_order_update_complete_notice(db: Session, *, on_date: date | None = None) -> dict:
+    """订单刷新成功但无新增下单图时，向订单群发一条按日幂等的完成回执。"""
     import os
     from app.services import feishu_client, settings_service
 
     day = on_date or date.today()
     day_key = day.isoformat()
-    if settings_service.get(db, _NO_UPDATE_NOTICE_KEY, env_fallback=False) == day_key:
+    if settings_service.get(db, _UPDATE_COMPLETE_NOTICE_KEY, env_fallback=False) == day_key:
         return {"sent": False, "already_sent": True, "date": day_key}
     if os.environ.get("PANSE_DISABLE_NOTIFY"):
         return {"sent": False, "disabled": True, "date": day_key}
     chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
     if not chat_id:
         return {"sent": False, "reason": "no_chat_id", "date": day_key}
-    text = f"{day.year}年{day.month}月{day.day}日暂未进行订单更新"
+    text = f"{day.year}年{day.month}月{day.day}日订单已完成更新，暂无新增需推送下单图"
     try:
         feishu_client.send_text(db, chat_id, text)
     except Exception as exc:  # noqa: BLE001 - 发送失败不能写幂等标记，留给后续补偿
-        _logger.warning("订单暂无更新提醒发送失败", exc_info=True)
+        _logger.warning("订单更新完成回执发送失败", exc_info=True)
         return {"sent": False, "reason": f"{type(exc).__name__}: {exc}"[:300], "date": day_key}
     settings_service.set_value(
         db,
-        _NO_UPDATE_NOTICE_KEY,
+        _UPDATE_COMPLETE_NOTICE_KEY,
         day_key,
-        description="飞书订单群最近一次暂无订单更新提醒日期",
+        description="飞书订单群最近一次订单更新完成且无新增下单图回执日期",
     )
     db.commit()
     return {"sent": True, "text": text, "date": day_key}
+
+
+def send_no_order_update_notice(db: Session, *, on_date: date | None = None) -> dict:
+    """兼容旧调用；语义已改为“刷新完成且无新增下单图”，不得用于失败/处理中状态。"""
+    return send_order_update_complete_notice(db, on_date=on_date)
 
 # 用户拍板 (2026-06-11): 下单图生成条件必须是已付款订单
 _PAID_STATUSES = {"paid", "production", "shipped", "signed", "aftersales"}

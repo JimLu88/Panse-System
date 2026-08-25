@@ -105,6 +105,20 @@ def _add_pending_scan(db: Session, task_id: str) -> None:
         db.commit()
 
 
+def _remove_pending_scan(db: Session, task_id: str) -> None:
+    """登录已验证或任务已不再需要人工输入时，清除历史扫码残留。"""
+    lst = get_pending_scans(db)
+    remain = [item for item in lst if item != task_id]
+    if remain != lst:
+        settings_service.set_value(
+            db,
+            KEY_PENDING_SCAN,
+            json.dumps(remain),
+            description="自动取数: 待用户扫码的任务",
+        )
+        db.commit()
+
+
 def get_scan_results(db: Session) -> dict:
     try:
         value = json.loads(
@@ -1148,7 +1162,8 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
             covered.add(bill_day)
 
     out: dict = {"account": account_name, "from": str(start), "to": str(end),
-                 "pulled": 0, "fail": 0, "skipped_covered": 0}
+                 "pulled": 0, "fail": 0, "skipped_covered": 0,
+                 "failures": []}
     d = start
     while d <= end:
         if d in covered:
@@ -1157,9 +1172,20 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
             continue
         try:
             r = web_agent_service.alipay_bill(db, aid, "signcustomer", d.isoformat())
-            out["pulled" if r.get("ok") else "fail"] += 1
-        except Exception:  # noqa: BLE001 - 单日失败不阻断
+            if r.get("ok"):
+                out["pulled"] += 1
+            else:
+                out["fail"] += 1
+                reason = str(
+                    r.get("error") or r.get("msg") or r.get("code") or "账单接口未返回原因"
+                )[:240]
+                out["failures"].append({"date": d.isoformat(), "reason": reason})
+        except Exception as exc:  # noqa: BLE001 - 单日失败不阻断
             out["fail"] += 1
+            out["failures"].append({
+                "date": d.isoformat(),
+                "reason": f"{type(exc).__name__}: {exc}"[:240],
+            })
         d += timedelta(days=1)
     return out
 
@@ -2292,6 +2318,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
         info = tasks_info.get(task_id, {})
         if (task_id != MAIN_ALIPAY_FLOW_TASK
                 and info and not info.get("has_session")):
+            _add_pending_scan(db, task_id)
             out["pending_manual"].append(
                 {"task": task_id, "reason": "登录态缺失 — 请到取数控制台重新扫码"})
             continue
@@ -2375,6 +2402,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             password_delivery = _job_shipping_password_delivery(job_result)
             item["shipping_password_delivery"] = password_delivery
             out["shipping_password_delivery"] = password_delivery
+        requires_input = False
         if status in ("error", "failed", "timeout"):
             if report_failures:
                 err = "; ".join(
@@ -2388,6 +2416,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             if any(marker in err for marker in (
                 "需扫码", "扫码", "登录状态已失效", "需重新登录", "session_expired",
             )):
+                requires_input = True
                 # 登录/扫码需要用户输入：记入待处理清单，不在无人值守编排里
                 # 继续盲跑。万师傅不是支付宝二维码，提示应准确要求重新登录。
                 _add_pending_scan(db, task_id)
@@ -2403,6 +2432,10 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             else:
                 out["task_errors"].append(
                     {"task": task_id, "reason": f"任务{status}: {err[:120]}"})
+        if not requires_input:
+            # 任务已通过会话闸门并到达业务页面；即使后续下载/OCR失败，也不应
+            # 继续把它伪装成“待扫码”，否则下一轮会错误暂停整条财务链。
+            _remove_pending_scan(db, task_id)
         out["tasks"].append(item)
         if (task_id == "taobao_orders"
                 and status in ("done", "ok", "success")

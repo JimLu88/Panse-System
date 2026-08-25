@@ -594,6 +594,11 @@ def test_finance_login_expiry_pauses_retries_until_scan(db_session, monkeypatch)
             "flow_pull": (False, "主力号流水需扫码"),
         },
     )
+    monkeypatch.setattr(
+        scheduler,
+        "_finance_retryable_sources",
+        lambda db, result, outcomes: {"balance_pull": [], "flow_pull": []},
+    )
 
     result = scheduler._run_finance_pipeline(db_session)
 
@@ -603,6 +608,101 @@ def test_finance_login_expiry_pauses_retries_until_scan(db_session, monkeypatch)
     assert pipeline.get_pipeline(db_session, "flow_pull")["waiting_input"] is True
     assert pipeline.needs_retry(db_session, "balance_pull") is False
     assert pipeline.needs_retry(db_session, "flow_pull") is False
+
+
+def test_finance_login_gate_does_not_close_unrelated_retryable_sources(
+    db_session, monkeypatch,
+):
+    monkeypatch.setattr(agent_ingest_service, "is_running", lambda: False)
+    monkeypatch.setattr(
+        agent_ingest_service,
+        "orchestrate",
+        lambda db, **kwargs: {
+            "tasks": [],
+            "pending_manual": [
+                {"task": "bal_alipay_main", "reason": "需扫码"},
+                {"task": agent_ingest_service.MAIN_ALIPAY_FLOW_TASK, "reason": "需扫码"},
+            ],
+            "ingest": {"files": []},
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_finance_outcomes",
+        lambda db, result: {
+            "balance_pull": (False, "推广余额OCR未完成；主力号余额需扫码"),
+            "flow_pull": (False, "微信账单超时；主力号流水需扫码"),
+        },
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_finance_retryable_sources",
+        lambda db, result, outcomes: {
+            "balance_pull": ["bal_ads"],
+            "flow_pull": ["wechat_bill"],
+        },
+    )
+
+    result = scheduler._run_finance_pipeline(db_session)
+
+    assert result["retryable_sources"] == {
+        "balance_pull": ["bal_ads"],
+        "flow_pull": ["wechat_bill"],
+    }
+    assert pipeline.get_pipeline(db_session, "balance_pull")["waiting_input"] is False
+    assert pipeline.get_pipeline(db_session, "flow_pull")["waiting_input"] is False
+    assert result["balance_pull_pipeline"].get("paused") is not True
+    assert result["flow_pull_pipeline"].get("paused") is not True
+
+
+def test_finance_retryable_source_classifier_separates_login_from_auto_failures(
+    db_session,
+):
+    for account in ("支付宝-企业账号", "淘宝聚合账户", "万师傅"):
+        db_session.add(AccountBalance(
+            account_name=account,
+            period_year=date.today().year,
+            period_month=date.today().month,
+            as_of_date=date.today(),
+            opening_balance=Decimal("0"),
+            closing_balance=Decimal("0"),
+        ))
+    now = datetime.now().isoformat(timespec="seconds")
+    settings_service.set_value(
+        db_session,
+        agent_ingest_service.KEY_STATE,
+        json.dumps({
+            agent_ingest_service.STATE_ENTERPRISE_ALIPAY_FLOW: now,
+            agent_ingest_service.STATE_FINANCE_TASK_SUCCESS: {
+                "wanxiangtai": now,
+                "wanshifu": now,
+            },
+        }),
+    )
+    db_session.commit()
+
+    retryable = scheduler._finance_retryable_sources(
+        db_session,
+        {
+            "pending_manual": [
+                {"task": "bal_alipay_main", "reason": "需扫码"},
+                {"task": agent_ingest_service.MAIN_ALIPAY_FLOW_TASK, "reason": "需扫码"},
+            ],
+            "alipay_balance": [{"account": "支付宝-企业账号", "balance": "hidden"}],
+            "alipay_daily": {"pulled": 3, "fail": 1},
+            "ingest": {"files": []},
+        },
+        {
+            "balance_pull": (False, "推广余额未完成；主力号需扫码"),
+            "flow_pull": (False, "微信账单未完成；企业号漏日；主力号需扫码"),
+        },
+    )
+
+    assert "bal_ads" in retryable["balance_pull"]
+    assert "bal_alipay_main" not in retryable["balance_pull"]
+    assert "wechat_bill" in retryable["flow_pull"]
+    assert "enterprise_alipay_daily" in retryable["flow_pull"]
+    assert agent_ingest_service.MAIN_ALIPAY_FLOW_TASK not in retryable["flow_pull"]
 
 
 def test_finance_retry_reuses_fresh_browser_artifacts(db_session, monkeypatch):

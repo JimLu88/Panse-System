@@ -81,7 +81,7 @@ def test_broadcast_text_feishu_split_uses_alert_group_not_order_group(
     assert sent == [("alert-chat", "ℹ️ Web-Agent\n运行异常")]
 
 
-def test_no_update_notice_is_exact_and_once_per_day(db_session, monkeypatch):
+def test_update_complete_notice_is_exact_and_once_per_day(db_session, monkeypatch):
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
     settings_service.set_value(db_session, "feishu_push_chat_id", "factory-chat")
     sent = []
@@ -90,12 +90,12 @@ def test_no_update_notice_is_exact_and_once_per_day(db_session, monkeypatch):
         lambda db, chat, text: sent.append((chat, text)) or {"message_id": "m1"},
     )
 
-    first = sheets.send_no_order_update_notice(db_session, on_date=date(2026, 8, 24))
-    second = sheets.send_no_order_update_notice(db_session, on_date=date(2026, 8, 24))
+    first = sheets.send_order_update_complete_notice(db_session, on_date=date(2026, 8, 24))
+    second = sheets.send_order_update_complete_notice(db_session, on_date=date(2026, 8, 24))
 
     assert first["sent"] is True
     assert second["already_sent"] is True
-    assert sent == [("factory-chat", "2026年8月24日暂未进行订单更新")]
+    assert sent == [("factory-chat", "2026年8月24日订单已完成更新，暂无新增需推送下单图")]
 
 
 def test_regular_order_delivery_sends_image_without_caption(db_session, monkeypatch):

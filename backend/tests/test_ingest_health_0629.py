@@ -65,11 +65,10 @@ def test_health_flags_missing_evening_snapshot(db_session, monkeypatch):
     assert res["pushed"] == ["disabled"]
 
 
-def test_health_problem_text_uses_wechat_and_feishu_only_gets_no_update(db_session, monkeypatch):
+def test_health_problem_only_uses_alert_route_and_never_posts_order_group(db_session, monkeypatch):
     _healthy_runtime(monkeypatch, fresh=False)
     monkeypatch.delenv("PANSE_DISABLE_NOTIFY", raising=False)
     pushed = []
-    no_update = []
     monkeypatch.setattr(
         notify_service,
         "notify",
@@ -82,8 +81,10 @@ def test_health_problem_text_uses_wechat_and_feishu_only_gets_no_update(db_sessi
     )
     monkeypatch.setattr(
         order_sheet_archive_service,
-        "send_no_order_update_notice",
-        lambda db, **kwargs: no_update.append(kwargs) or {"sent": True},
+        "send_order_update_complete_notice",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("取数失败/处理中不得向订单群发送完成回执")
+        ),
     )
 
     res = scheduler._job_ingest_health_check(db_session)
@@ -91,7 +92,7 @@ def test_health_problem_text_uses_wechat_and_feishu_only_gets_no_update(db_sessi
     assert res["pushed"] == ["wechat_push"]
     assert pushed[0][1]["wechat_allowed"] is True
     assert pushed[0][1]["title"] == "畔色 ERP | 取数体检异常"
-    assert no_update == [{"on_date": date.today()}]
+    assert "update_complete_notice" not in res
 
 
 def test_health_never_reports_password_expired_by_age(db_session, monkeypatch):

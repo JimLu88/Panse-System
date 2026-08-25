@@ -119,3 +119,29 @@ def test_refresh_alipay_daily_pulls_only_failed_or_missing_days(
     assert pulled == [failed_day.isoformat()]
     assert result["pulled"] == 1
     assert result["skipped_covered"] == 2
+
+
+def test_refresh_alipay_daily_keeps_failed_date_and_reason(db_session, monkeypatch):
+    failed_day = date.today() - timedelta(days=1)
+    monkeypatch.setattr(
+        ingest.web_agent_service,
+        "alipay_accounts",
+        lambda db: [{"id": "enterprise", "name": "企业号"}],
+    )
+    monkeypatch.setattr(
+        ingest.web_agent_service,
+        "alipay_bill",
+        lambda db, aid, bill_type, bill_date: {
+            "ok": False,
+            "code": "40004",
+            "msg": "账单暂不可下载",
+        },
+    )
+
+    result = ingest.refresh_alipay_daily(db_session, max_days=1)
+
+    assert result["fail"] == 1
+    assert result["failures"] == [{
+        "date": failed_day.isoformat(),
+        "reason": "账单暂不可下载",
+    }]
