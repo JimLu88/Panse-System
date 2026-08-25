@@ -8,6 +8,7 @@ from app.services import (
     agent_ingest_service as ingest,
     alipay_import,
     feishu_client,
+    notify_service,
     settings_service,
 )
 from app.services import order_sheet_archive_service, web_agent_service
@@ -204,17 +205,21 @@ def test_main_alipay_notification_uses_friendly_account_name():
     ) == "支付宝主力账号余额 扫码成功"
 
 
-def test_feishu_only_sends_first_login_expiry_and_redacts_amount(
+def test_wechat_only_sends_first_login_expiry_and_redacts_amount(
     db_session, monkeypatch
 ):
-    settings_service.set_value(
-        db_session, "feishu_push_chat_id", "chat-test", description="test"
-    )
-    db_session.commit()
     sent = []
     monkeypatch.setattr(
-        feishu_client, "send_text",
-        lambda db, chat_id, text: sent.append((chat_id, text)),
+        notify_service,
+        "notify",
+        lambda db, text, **kwargs: sent.append((text, kwargs)) or (True, "sent"),
+    )
+    monkeypatch.setattr(
+        feishu_client,
+        "send_text",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("登录卡点不得写入飞书")
+        ),
     )
 
     payload = web_agent.AgentNotify(
@@ -224,11 +229,12 @@ def test_feishu_only_sends_first_login_expiry_and_redacts_amount(
     first = web_agent.agent_notify(payload, db_session)
     second = web_agent.agent_notify(payload, db_session)
 
-    assert first["feishu"] == "已发飞书"
-    assert "未重复外发" in second["feishu"]
+    assert first["wechat"] == "已发企业微信"
+    assert "未重复外发" in second["wechat"]
     assert len(sent) == 1
-    assert "12,345.67" not in sent[0][1]
-    assert "[金额已隐藏]" in sent[0][1]
+    assert "12,345.67" not in sent[0][0]
+    assert "[金额已隐藏]" in sent[0][0]
+    assert sent[0][1]["wechat_allowed"] is True
 
     web_agent.agent_notify(
         web_agent.AgentNotify(kind="scan_timeout", text="alipay_main 扫码超时"),
@@ -240,3 +246,34 @@ def test_feishu_only_sends_first_login_expiry_and_redacts_amount(
     )
     web_agent.agent_notify(payload, db_session)
     assert len(sent) == 2
+
+
+def test_qr_image_routes_to_wechat_and_never_feishu(db_session, monkeypatch):
+    sent = []
+    monkeypatch.setattr(
+        notify_service,
+        "notify_image",
+        lambda db, image, **kwargs: sent.append((image, kwargs))
+        or {"text": True, "image": True, "detail": "sent"},
+    )
+    monkeypatch.setattr(
+        feishu_client,
+        "upload_image",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("登录二维码不得上传飞书")
+        ),
+    )
+
+    result = web_agent.agent_notify(
+        web_agent.AgentNotify(
+            kind="qr",
+            text="支付宝主力号需扫码",
+            image_b64="cXItcG5n",
+        ),
+        db_session,
+    )
+
+    assert result["wechat"] == "文字和二维码已发企业微信"
+    assert result["feishu"] is None
+    assert sent[0][0] == b"qr-png"
+    assert sent[0][1]["wechat_allowed"] is True

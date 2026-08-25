@@ -1,6 +1,8 @@
 """通知服务: webhook payload 构造 + 静默关闭 + 集成测试."""
 from __future__ import annotations
 
+import base64
+import hashlib
 from unittest.mock import patch
 
 import pytest
@@ -79,6 +81,33 @@ def test_notify_wechat_payload(db_session):
         notify_service.notify(db_session, "test", level="info")
     assert captured["body"]["msgtype"] == "text"
     assert "content" in captured["body"]["text"]
+
+
+def test_notify_wechat_image_payload(db_session):
+    settings_service.set_value(db_session, "notify_provider", "wechat_work")
+    settings_service.set_value(db_session, "notify_webhook", "https://qyapi/x")
+    db_session.commit()
+    captured = []
+
+    with patch(
+        "app.services.notify_service._post_json",
+        side_effect=lambda url, body, **kwargs: captured.append(body) or (True, "ok"),
+    ):
+        result = notify_service.notify_image(
+            db_session,
+            b"qr-png",
+            text="请扫码",
+            title="取数登录",
+            wechat_allowed=True,
+        )
+
+    assert result["text"] is True
+    assert result["image"] is True
+    assert [item["msgtype"] for item in captured] == ["text", "image"]
+    assert captured[1]["image"] == {
+        "base64": base64.b64encode(b"qr-png").decode("ascii"),
+        "md5": hashlib.md5(b"qr-png").hexdigest(),  # noqa: S324 - protocol assertion
+    }
 
 
 def test_notify_dingtalk_payload(db_session):

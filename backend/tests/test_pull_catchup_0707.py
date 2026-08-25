@@ -16,6 +16,26 @@ from app.services import order_sync_service, scheduler, settings_service, web_ag
 from app.models.import_file import ImportedFile
 
 
+def test_shipping_password_delivery_keeps_frequency_limit_as_not_sent():
+    result = ai._job_shipping_password_delivery({
+        "reports": [{
+            "report": "发货报表",
+            "password_delivery": {
+                "attempted": True,
+                "sent": False,
+                "reason": "too_frequent",
+                "unexpected_secret": "must-not-leak",
+            },
+        }],
+    })
+
+    assert result == {
+        "attempted": True,
+        "sent": False,
+        "reason": "too_frequent",
+    }
+
+
 def _set_taobao_report(db, dt):
     state = ai._load_json(db, ai.KEY_STATE)
     if dt is None:

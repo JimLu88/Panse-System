@@ -54,7 +54,7 @@ _AUTH_NOTICE_KEY = "web_agent_auth_notice_open"
 
 
 def _sanitize_auth_notice(text: str) -> str:
-    """飞书扫码通知的最后一道脱敏闸：任何货币金额都不允许外发。"""
+    """企业微信扫码通知的最后一道脱敏闸：任何货币金额都不允许外发。"""
     import re
 
     cleaned = _friendly_agent_text(text)
@@ -136,7 +136,7 @@ def status(db: Session = Depends(get_db)):
         "shipping_password": {
             "configured": bool(settings_service.get(db, "taobao_shipping_pwd_latest", env_fallback=False)),
             "received_at": settings_service.get(db, "taobao_shipping_pwd_at", env_fallback=False),
-            "hint": "把淘宝发来的口令以「发货密码 xxx」转发给飞书机器人；口令不按时间失效，收到后自动解密并续推下单图。",
+            "hint": "系统会自动点击淘宝“发送密码”并记录平台回执；淘宝决定密码发到绑定手机或主账号。收到后把「发货密码 xxx」发给飞书 ERP 机器人即可续跑；运行提醒统一发企业微信，飞书订单群只保留下单图片。",
         },
         "on_demand": web_agent_wake_service.status(db),
     }
@@ -223,14 +223,15 @@ class AgentNotify(BaseModel):
 def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
     """Web-Agent 卡点回调。
 
-    飞书硬边界（用户 2026-07-28）：
-    - 仅确认登录/下载授权失效时发一次文本，及用户主动回复“扫码”后的二维码；
-    - 扫码成功、超时、正常完成、文件预览均不发飞书；
+    企业微信硬边界（用户 2026-08-25）：
+    - 登录/下载授权失效只提醒一次，扫码二维码也直接发企业微信；
+    - 飞书订单群只保留工厂下单图片，卡点文字和二维码均不得写入飞书；
+    - 扫码成功、超时、正常完成、文件预览不重复外发；
     - 所有允许外发的文本先经过金额脱敏。
     """
     import base64
 
-    from app.services import feishu_client, notify_service
+    from app.services import notify_service
     result: dict = {"feishu": None, "wechat": None}
     notice_text = _sanitize_auth_notice(payload.text)
 
@@ -239,62 +240,71 @@ def agent_notify(payload: AgentNotify, db: Session = Depends(get_db)):
         opened = _auth_notice_open(db)
         opened.discard(_auth_notice_id(payload.text))
         _save_auth_notice_open(db, opened)
-        result["feishu"] = "登录已恢复，未外发"
+        result["wechat"] = "登录已恢复，未外发"
         return result
 
     # 超时不是新的登录失效事件，不重复打扰。
     if payload.kind == "scan_timeout":
-        result["feishu"] = "扫码超时，未外发"
+        result["wechat"] = "扫码超时，未外发"
         return result
 
     if payload.kind == "scan_needed":
         notice_id = _auth_notice_id(payload.text)
         opened = _auth_notice_open(db)
         if notice_id in opened:
-            result["feishu"] = "同一登录失效已提醒，未重复外发"
+            result["wechat"] = "同一登录失效已提醒，未重复外发"
             return result
-        chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-        if chat_id and notice_text:
-            try:
-                feishu_client.send_text(db, chat_id, notice_text)
-                opened.add(notice_id)
-                _save_auth_notice_open(db, opened)
-                result["feishu"] = "已发飞书"
-            except Exception as e:  # noqa: BLE001
-                result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
+        ok, msg = notify_service.notify(
+            db,
+            notice_text or "取数登录已失效，请到 ERP 重新登录",
+            level="warn",
+            title="畔色 ERP | 自动取数需登录",
+            wechat_allowed=True,
+        )
+        if ok:
+            opened.add(notice_id)
+            _save_auth_notice_open(db, opened)
+            result["wechat"] = "已发企业微信"
         else:
-            result["feishu"] = "无外发会话或无文本"
+            result["wechat"] = msg
         return result
 
-    # 文件预览/普通图片不再进入飞书；只有扫码二维码允许。
+    # 文件预览不外发；扫码二维码只允许进入企业微信。
     if payload.kind == "file":
-        result["feishu"] = "文件事件未外发"
+        result["wechat"] = "文件事件未外发"
         return result
 
     is_visual = payload.kind in ("qr", "scan_wait")
 
     if is_visual and payload.image_b64:
         try:
-            from app.services import feishu_client
-            chat_id = settings_service.get(db, "feishu_push_chat_id", env_fallback=False)
-            if not chat_id:
-                result["feishu"] = "未知外发会话 — 请先在飞书给机器人发一条消息(它会记住会话)"
-            else:
-                png = base64.b64decode(payload.image_b64)
-                key = feishu_client.upload_image(db, png)
-                if notice_text:
-                    feishu_client.send_text(db, chat_id, notice_text)
-                feishu_client.send_image(db, chat_id, key)
-                result["feishu"] = "已发飞书"
+            png = base64.b64decode(payload.image_b64, validate=True)
+            sent = notify_service.notify_image(
+                db,
+                png,
+                text=notice_text or "支付宝/淘宝导出需验证身份，请扫码后等待系统自动续跑。",
+                level="warn",
+                title="畔色 ERP | 自动取数需扫码",
+                wechat_allowed=True,
+            )
+            result["wechat"] = (
+                "文字和二维码已发企业微信"
+                if sent.get("text") and sent.get("image")
+                else f"企业微信发送未完成: {sent.get('detail') or 'unknown'}"
+            )
         except Exception as e:  # noqa: BLE001
-            result["feishu"] = f"飞书发送失败: {type(e).__name__}: {e}"
+            result["wechat"] = f"企业微信发送失败: {type(e).__name__}: {e}"
+        return result
 
-    # 事件/提醒 → 企业微信 (扫码类也补一条文字叫醒)
+    # 普通事件提醒也统一进企业微信，并显式越过“仅经营日报”的治噪默认门。
     wx_text = notice_text or "Panse 取数有新事件"
-    if payload.kind in ("qr", "scan_wait"):
-        wx_text = f"⚠️ 需要扫码: {notice_text or '支付宝/淘宝导出需验证身份'} — 二维码已发到飞书, 请去飞书扫。"
-    ok, msg = notify_service.notify(db, wx_text, level="urgent" if is_visual else "info",
-                                    title="畔色 ERP [自动取数]")
+    ok, msg = notify_service.notify(
+        db,
+        wx_text,
+        level="info",
+        title="畔色 ERP | 自动取数",
+        wechat_allowed=True,
+    )
     result["wechat"] = "已发企业微信" if ok else msg
     return result
 

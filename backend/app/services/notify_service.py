@@ -22,6 +22,8 @@
 """
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 import urllib.error
@@ -136,6 +138,61 @@ def notify(
         if enqueue_on_failure:
             _enqueue_retry(db, text, title=title, level=level)
     return ok, resp
+
+
+def notify_image(
+    db: Session,
+    image_bytes: bytes,
+    *,
+    text: Optional[str] = None,
+    level: str = "info",
+    title: Optional[str] = None,
+    wechat_allowed: bool = False,
+) -> dict:
+    """把图片直接发到企业微信群机器人，可选先发一条说明文字。
+
+    企业微信群机器人图片消息要求 ``base64`` 和原图 ``md5``。这个入口专供
+    登录二维码等临时操作图；不把图片回退到飞书，也不把图片内容写入重试表。
+    """
+    import os
+
+    if os.environ.get("PANSE_DISABLE_NOTIFY"):
+        return {"text": False, "image": False, "detail": "通知已被测试环境关闭"}
+
+    cfg = get_config(db)
+    if cfg["provider"] != "wechat_work" or not cfg["webhook"]:
+        return {"text": False, "image": False, "detail": "企业微信机器人未配置"}
+    scope = settings_service.get(db, WECHAT_SCOPE_KEY, env_fallback=False) or "briefing_only"
+    if scope != "all" and not wechat_allowed:
+        return {"text": False, "image": False, "detail": "企微推送已限为仅经营日报"}
+    if not image_bytes:
+        return {"text": False, "image": False, "detail": "图片为空"}
+
+    text_ok = True
+    text_detail = "未附文字"
+    if text:
+        text_ok, text_detail = notify(
+            db,
+            text,
+            level=level,
+            title=title,
+            wechat_allowed=True,
+        )
+    payload = {
+        "msgtype": "image",
+        "image": {
+            "base64": base64.b64encode(image_bytes).decode("ascii"),
+            "md5": hashlib.md5(image_bytes).hexdigest(),  # noqa: S324 - 企微协议字段
+        },
+    }
+    image_ok, image_detail = _post_json(cfg["webhook"], payload)
+    if not image_ok:
+        _logger.warning("企业微信图片发送失败: %s", image_detail)
+    return {
+        "text": text_ok,
+        "image": image_ok,
+        "detail": image_detail if not image_ok else text_detail,
+    }
 
 
 # ── 失败重试队列 (用户审核项 17): 失败入库, 调度每 30 分钟重发, 最多 5 次 ──

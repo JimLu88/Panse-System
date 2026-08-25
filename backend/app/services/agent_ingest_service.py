@@ -289,9 +289,39 @@ def _job_report_failures(job_result: dict) -> list[dict[str, object]]:
     return failures[:3]
 
 
+def _job_shipping_password_delivery(job_result: dict) -> dict[str, object]:
+    """提取淘宝“发送密码”的有限回执，不接收或记录密码本身。
+
+    ``too_frequent`` 只能证明近期请求触发过，不能当作密码已送达；只有平台明确
+    返回 ``sent=true`` 才记为已发送。该证据随订单任务状态持久化，便于区分
+    “点击过”“平台接受”和“用户实际收到”。
+    """
+    payloads = [job_result]
+    nested = job_result.get("result")
+    if isinstance(nested, dict):
+        payloads.append(nested)
+    for payload in payloads:
+        for report in payload.get("reports") or []:
+            if not isinstance(report, dict):
+                continue
+            if str(report.get("report") or "") not in ("发货报表", "shipping"):
+                continue
+            raw = report.get("password_delivery")
+            if not isinstance(raw, dict):
+                continue
+            reason = str(raw.get("reason") or "not_attempted")[:80]
+            sent = bool(raw.get("sent")) and reason == "sent"
+            return {
+                "attempted": bool(raw.get("attempted")),
+                "sent": sent,
+                "reason": reason,
+            }
+    return {"attempted": False, "sent": False, "reason": "not_reported"}
+
+
 def start_pending_scans(db: Session) -> dict:
-    """用户在飞书回复『扫码』后调用: 后台依次跑待扫任务 (wait_scan=True) —
-    发大二维码到飞书、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
+    """用户在 ERP 点击“开始扫码/重新登录”后调用: 后台依次跑待扫任务 (wait_scan=True) —
+    发大二维码到企业微信、保持浏览器开等扫 ≤10分钟; 扫成功的从待扫清单移除并扫描导入。
     没有记录的待扫任务时, 默认跑全部余额截图任务 (主动刷新登录态)。"""
     tasks = get_pending_scans(db) or list(DEFAULT_SCAN_TASKS)
     # 企业号支付宝永远只走官方 API, 滤掉任何残留的企业号扫码任务, 杜绝误发二维码 (2026-06-12)。
@@ -620,7 +650,7 @@ def start_pending_scans(db: Session) -> dict:
                     )
                     notify_service.notify(
                         d,
-                        detail + "\n失败任务已保留；处理后请在飞书机器人回复『扫码』。",
+                        detail + "\n失败任务已保留；处理后请在 ERP 自动取数页点击“开始扫码 / 重新登录”。",
                         level="warn",
                         title="畔色 ERP | 扫码续跑未完成",
                         wechat_allowed=True,
@@ -950,11 +980,11 @@ def _import_one(db: Session, category: str, path: Path, raw: bytes) -> tuple[str
         from app.services import taobao_order_import
         password = None
         if raw[:8] == _OOXML_ENCRYPTED_MAGIC:
-            # 加密发货报表: 取飞书最近口令解密。口令不按收到时间失效；没口令才标待口令。
+            # 加密发货报表: 取最近口令解密。口令不按收到时间失效；没口令才标待口令。
             password = _latest_shipping_password(db)
             if not password:
                 return ("taobao", "pending_password",
-                        {"note": "加密发货报表 — 待飞书口令(转发『发货密码 xxx』到机器人)后自动解密"})
+                        {"note": "加密发货报表 — 待淘宝发回与当前报表匹配的新口令，收到后自动解密"})
         rep = taobao_order_import.import_taobao_orders(db, path.name, raw, password=password)
         errs = getattr(rep, "errors", None)
         if errs:
@@ -1135,7 +1165,7 @@ def refresh_alipay_daily(db: Session, *, account_name: str = "企业号",
 
 
 def reingest_pending_shipping(db: Session) -> dict:
-    """飞书收到『发货密码』后调用: 用最新口令重试 OUTPUT_DIR 里所有加密发货报表。
+    """收到新发货口令后调用: 用最新口令重试 OUTPUT_DIR 里所有加密发货报表。
 
     修复 (2026-06-15) —— 以前的死结: 加密报表无口令时标 pending_password 但**照样归档**
     (file_hash 记录), 等口令到了, 下次 run_ingest 又按"已知文件"跳过 → 永远不会解密
@@ -1254,7 +1284,7 @@ def run_ingest(
     """
     report: dict = {"scanned": 0, "imported": 0, "skipped_known": 0,
                     "pending": 0, "errors": 0, "files": []}
-    _pending_pw_files: list[str] = []   # 本轮新下载、待飞书口令解密的加密发货报表
+    _pending_pw_files: list[str] = []   # 本轮新下载、待新口令解密的加密发货报表
     if not OUTPUT_DIR.exists():
         report["error"] = f"共享目录不存在: {OUTPUT_DIR} (检查 compose 卷挂载)"
         return report
@@ -1391,7 +1421,7 @@ def run_ingest(
             report["errors"] += 1
         report["files"].append(entry)
     # 主动提醒: 取数下载到加密发货报表却无口令 → 微信 Push 提醒；
-    # 用户仍在飞书机器人发送『发货密码 xxx』，收到后 _capture_shipping_password→reingest_pending_shipping
+    # 用户取得与当前报表匹配的新口令后，现有口令回调会调用 reingest_pending_shipping
     # 自动解密入库。每份加密文件归档后即 hash-known, 下轮不再 pending → 一份只提醒一次, 不刷屏。
     if _pending_pw_files:
         current_password = _latest_shipping_password(db)
@@ -1432,13 +1462,13 @@ def run_ingest(
             if current_password:
                 _msg = (
                     f"📦 新下载的 {n} 份加密发货报表与系统现有口令不匹配。"
-                    "口令没有超时，但新报表需要其对应口令；请把淘宝本次发来的口令以"
-                    "『发货密码 xxxx』发送给飞书机器人，收到后自动解密、入库并续推下单图。"
+                    "口令没有超时，但新报表需要其对应口令；系统已经请求淘宝向绑定手机或主账号发送密码。"
+                    "收到后把『发货密码 xxxx』发给飞书 ERP 机器人，即会自动解密、入库并续推下单图。"
                 )
             else:
                 _msg = (
-                    f"📦 取数下载到 {n} 份加密发货报表待解密。请把淘宝发来的口令以"
-                    "『发货密码 xxxx』发送给飞书机器人 —— 口令不按时间失效，收到后自动解密、入库并续推下单图。"
+                    f"📦 取数下载到 {n} 份加密发货报表待解密。系统已经请求淘宝向绑定手机或主账号发送密码。"
+                    "口令不按时间失效；收到后把『发货密码 xxxx』发给飞书 ERP 机器人，即会自动解密、入库并续推下单图。"
                 )
             # 飞书订单群只保留下单图；运行状态和待口令提醒统一发微信 Push。
             try:
@@ -2342,6 +2372,9 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
             item["order_business_date"] = business_date.isoformat()
             item["quota_verified"] = quota_evidence.get("verified", False)
             item["quota_state"] = quota_evidence.get("state", "not_verified")
+            password_delivery = _job_shipping_password_delivery(job_result)
+            item["shipping_password_delivery"] = password_delivery
+            out["shipping_password_delivery"] = password_delivery
         if status in ("error", "failed", "timeout"):
             if report_failures:
                 err = "; ".join(
@@ -2363,7 +2396,7 @@ def _orchestrate_locked(db: Session, *, force: bool = False, quiet: bool = False
                     if any(marker in err for marker in (
                         "登录状态已失效", "需重新登录", "session_expired",
                     ))
-                    else "需扫码 — 方便时在飞书回复『扫码』启动"
+                    else "需扫码 — 请到 ERP 自动取数页点击“开始扫码 / 重新登录”"
                 )
                 out["pending_manual"].append(
                     {"task": task_id, "reason": reason})

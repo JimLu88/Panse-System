@@ -1113,7 +1113,7 @@ def maybe_decrypt(raw: bytes, password: Optional[str]) -> bytes:
     if not is_encrypted_ooxml(raw):
         return raw
     if not password:
-        raise ValueError("发货报表已加密, 但未取到飞书口令 (请转发『发货密码 xxx』到飞书机器人)")
+        raise ValueError("发货报表已加密，但尚未收到与当前报表匹配的淘宝口令")
     import msoffcrypto
     fin = io.BytesIO(raw)
     fout = io.BytesIO()

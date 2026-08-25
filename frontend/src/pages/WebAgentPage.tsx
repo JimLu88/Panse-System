@@ -158,7 +158,7 @@ export default function WebAgentPage() {
         />
       )}
 
-      {/* 发货报表口令 (飞书转发「发货密码 xxx」→ 自动解密) */}
+      {/* 发货报表口令 (淘宝平台发送；ERP 收到后自动解密) */}
       {data?.shipping_password && (
         <Alert
           type={data.shipping_password.configured ? 'success' : 'info'}
@@ -166,7 +166,7 @@ export default function WebAgentPage() {
           message={
             data.shipping_password.configured
               ? `发货报表口令已就绪 (收到于 ${(data.shipping_password.received_at ?? '').replace('T', ' ').slice(0, 19)})`
-              : '发货报表加密 — 需飞书口令'
+              : '发货报表加密 — 需淘宝新口令'
           }
           description={data.shipping_password.hint}
         />
