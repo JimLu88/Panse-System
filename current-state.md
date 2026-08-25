@@ -2,6 +2,18 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 Taobao quota timeout self-healing and failure routing
+
+- Incident evidence separates the layers. The 18:09 order run stopped on a single Taobao decryption-quota page `TimeoutError`; a later attempt on the same host reached the Agent and completed all three report downloads, with two reports imported and one new shipping report waiting for its matching password. This proves a transient execution failure plus a program defect that escalated the first timeout too early.
+- Web-Agent GitHub `main` commit `65ea203ca65a1b97aeced37ce5a117fa19ecc2e4` adds three bounded quota-page reads and three bounded pre-submit browser-session attempts. DOM content is accepted even when `networkidle` times out. Export remains fail-closed when quota evidence is unavailable.
+- A post-submit verification failure never retries the quota write: it records `submitted=true` / `verification_failed=true`, stops report export, and waits for review. This prevents a recovery loop from requesting quota twice.
+- ERP GitHub `main` code commit and deployed production commit: `956d944bf271b11d5c1357945726f071f978c2eb`. Timeout, network, offline, rate-limit, login and password gates route to `execution` and retain the existing bounded schedule. Deterministic code/selector/schema errors route to `program_maintenance`, stop blind business retries, and enter a deduplicated, capped, structured maintenance queue that resolves on later success.
+- Notification text now shows `处理归属`; the maintenance queue is available through the read-only `list_program_maintenance` service. No Tachikoma control-plane receipt is used because the user did not request one.
+- ERP related regression passed 82 tests after excluding the already documented unrelated cross-midnight password-file test; the focused routing suite passed all 19 tests. Web-Agent focused quota/export tests passed 23 tests and its full suite passed 96 tests. Python compilation and diff checks passed in both programs.
+- Unified NAS release passed: API/Web commit parity at `956d944`, health, ready, required routes/features, migration `0139 (head)`, and API/Web/DB/backup containers. Rollback images: `panse-system-api:rollback-20260825-195623` and `panse-system-web:rollback-20260825-200201`.
+- The deployed API registered 62 scheduler jobs and its startup catch-up check reported no missed critical shift. On the primary Windows PC, `Panse-Web-Agent-Wake-Bridge` is enabled/running, the legacy always-on Watchdog remains disabled, and the Agent remains intentionally on-demand.
+- Current business gate is separate from this repair: `ExportOrderList27021942261.xlsx` is waiting for a new matching shipping password. The old password was not retried blindly. No manual order replay, account action, quota write, password submission, or external test message was performed by maintenance task 02.
+
 ## 2026-08-25 campaign signup one-shot hardening
 
 - The former `qualify_signup_scope` upload probe is disabled. QianNiu creates a real batch operation when the signup workbook is attached, so the automation now performs local/read-only evidence checks and exactly one final campaign signup submission.
