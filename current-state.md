@@ -2,6 +2,16 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 operational notifications moved to Enterprise WeChat
+
+- Screenshot contract is now explicit in code: Web-Agent automatically requests the current shipping-report password through Taobao's `data-secretquery` endpoint, records only bounded delivery evidence, and never stores a password from the response. `too_frequent` remains `sent=false`; it proves only that a recent request was triggered, not that the user received a password.
+- Taobao, not ERP, selects whether the password goes to the seller's bound phone or main account. After the matching password is provided to the existing Feishu ERP bot input, ERP immediately retries decryption, imports the current shipping report, closes the exact order-pull manifest, and resumes pending factory-image delivery. Passwords are not rejected by age; mismatches stay pending without blind retries.
+- Operational text, login-expiry notices, and login QR images now go only to the configured Enterprise WeChat webhook. The Feishu factory-order chat remains image-only. Scan recovery instructions point to the ERP automatic-data page instead of asking the user to reply `扫码` in Feishu.
+- ERP GitHub `main` code commit: `2d448172adee4e7511ed24d5c398c5fe9efa20b6`. Web-Agent GitHub `main` companion commit: `598993aef82badc04d761f1f6a196149f55860a7`.
+- Verification: ERP notification/password/order-recovery suite `85 passed`; Web-Agent full suite `91 passed`; Python compile and frontend production build passed. No real notification, password request, account action, or order pull was used for testing.
+- Production configuration was checked without exposing the webhook: `notify_provider=wechat_work` and the webhook is set. ERP API and Web were released together from `2d44817`; health, ready, commit parity, migration `0139 (head)`, required routes/features, and API/Web/DB/backup containers all passed the official NAS release verification. Rollback images: `panse-system-api:rollback-20260825-123500` and `panse-system-web:rollback-20260825-123947`.
+- Production scheduler restarted normally with 62 registered jobs and reported no missed critical shift. The Windows on-demand Wake Bridge remains enabled/running, the legacy always-on Watchdog remains disabled, and the bridge continues polling the NAS successfully. No business replay was triggered.
+
 ## 2026-08-25 factory dispatch integrity repair
 
 - Incident cause: the automatic ERP -> Feishu factory projection had not completed successfully since 2026-08-15. Two missing wood-cost values blocked the whole table, while the six-hour scheduler wrapper incorrectly recorded the inner factory failure as `ok`.
