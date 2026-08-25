@@ -349,14 +349,14 @@ def authorized_sku_refresh_items(plan) -> set[str]:
 
 
 def authorized_signup_shipping_days(plan) -> dict[str, int]:
-    """Exact item-level shipping days approved for campaign signup uploads.
+    """Exact item-level overrides for the policy default shipping days.
 
     Marker format::
 
         signup_shipping_days_authorized=793084818113:30
 
-    Shipping days are never inferred or applied store-wide. Only exact item
-    IDs named in the marker are written to the official signup workbook.
+    Every row receives the policy default (currently 30 days). This marker may
+    override only exact item IDs without changing the other rows.
     """
     import re
 
@@ -375,6 +375,19 @@ def authorized_signup_shipping_days(plan) -> dict[str, int]:
         if 1 <= days <= 365:
             shipping_days[item_id] = days
     return shipping_days
+
+
+def signup_shipping_days(plan, rows: list[dict]) -> dict[str, int]:
+    """Resolve a non-empty relative shipping day value for every target item."""
+    from app.services import campaign_policy_service
+
+    default_days = campaign_policy_service.default_shipping_days()
+    overrides = authorized_signup_shipping_days(plan)
+    item_ids = {
+        str(row.get("taobao_item_id") or "").strip() for row in rows
+        if str(row.get("taobao_item_id") or "").strip()
+    }
+    return {item_id: overrides.get(item_id, default_days) for item_id in item_ids}
 
 
 def platform_qualified_items(plan) -> set[str]:
@@ -1193,7 +1206,9 @@ def discount_for_sku(db: Session, s, p, tier: str,
     return _campaign_discount_row(s, p, tier, lev, ceil_on, stats)
 
 
-def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
+def build_discount_rows(
+        db: Session, plan, *, no_sales_items: Optional[set[str]] = None
+) -> tuple[list[dict], dict]:
     """单品立减 builder (spec §二):
       大促12% / 618双11 15%: 立减 = 日常 − ceil(日常×lev) − 大促到手 − 已授权微调
       超级立减10%:            立减 = 日常 − ceil(日常×10%) − 中促到手 − 已授权微调
@@ -1207,7 +1222,10 @@ def build_discount_rows(db: Session, plan) -> tuple[list[dict], dict]:
     ceil_on = True if lev != TIER_LEVERAGE["mid"] else official_ceil_enabled(db)
     official_scope = official_scope_for_plan(plan)
     live_activity_prices = current_activity_prices_for_plan(plan)
-    nosales = no_sales_service.get_no_sales(db)
+    nosales = (
+        no_sales_service.get_no_sales(db)
+        if no_sales_items is None else set(no_sales_items)
+    )
     delisted = delisted_sku_service.get_delisted(db)
     bad_pc = bad_price_product_codes(db)
     holds = price_hold_items(db, plan)
@@ -1404,11 +1422,15 @@ def _check_price_math(db: Session, plan, signup_rows: list[dict],
     }
 
 
-def _check_official_scope(db: Session, plan) -> dict:
+def _check_official_scope(
+        db: Session, plan, *, no_sales_items: Optional[set[str]] = None) -> dict:
     """R15: no-sales rows require live evidence of official-discount applicability."""
     from app.services import no_sales_service
 
-    no_sales = sorted(no_sales_service.get_no_sales(db))
+    no_sales = sorted(
+        no_sales_service.get_no_sales(db)
+        if no_sales_items is None else set(no_sales_items)
+    )
     scope = official_scope_for_plan(plan)
     errors = list(scope["errors"])
     if no_sales and not scope["configured"] and not errors:
@@ -1693,8 +1715,10 @@ def _check_price_floor_evidence(db: Session, plan, signup_rows: list[dict]) -> d
     }
 
 
-def preflight(db: Session, plan) -> list[dict]:
-    """R0~R19 静态可查项逐条输出。每条 {rule, level(pass|info|warn|error), title, items[]}。"""
+def preflight(
+        db: Session, plan, *, no_sales_items: Optional[set[str]] = None
+) -> list[dict]:
+    """R0~R21 read-only pre-submit checks; never uploads to QianNiu."""
     from app.services import no_sales_service
     from app.services import campaign_price_protection_service
 
@@ -1702,7 +1726,8 @@ def preflight(db: Session, plan) -> list[dict]:
     if policy_check["level"] == "error":
         return [policy_check]
     _srows, sstats = build_signup_rows(db, plan)
-    _drows, dstats = build_discount_rows(db, plan)
+    _drows, dstats = build_discount_rows(
+        db, plan, no_sales_items=no_sales_items)
     supplement_scope = authorized_supplement_items(plan)
     if platform_scope_present(plan):
         qualified = platform_qualified_items(plan)
@@ -1762,11 +1787,13 @@ def preflight(db: Session, plan) -> list[dict]:
          "items": [{"official_ceil": dstats["official_ceil"]}]},
         _check_price_math(db, plan, _srows, _drows),
         campaign_price_protection_service.rule_check(plan),
-        _check_official_scope(db, plan),
+        _check_official_scope(db, plan, no_sales_items=no_sales_items),
         _check_placeholder_live_prices(sstats),
         _check_price_floor_evidence(db, plan, _srows),
         _check_super_reduce_publish_window(plan),
         _check_super_reduce_discount_coverage(db, plan, _srows, _drows),
+        _check_campaign_identity(plan),
+        _check_signup_shipping(plan, _srows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
     checks.sort(key=lambda c: int(c["rule"][1:]))
@@ -1809,6 +1836,9 @@ def _build_signup_xlsx(
     tpl = Path(__file__).resolve().parent.parent / "assets" / "taobao_templates" / "promo_signup_sku.xlsx"
     wb = openpyxl.load_workbook(tpl)
     ws = wb["商品SKU导入列表"]
+    from app.services import campaign_policy_service
+
+    default_shipping_days = campaign_policy_service.default_shipping_days()
     shipping_days_by_item = shipping_days_by_item or {}
     if ws.max_row >= 4:                                # 清模板示例数据行, 保留前3行表头
         ws.delete_rows(4, ws.max_row - 3)
@@ -1822,11 +1852,12 @@ def _build_signup_xlsx(
         ws.cell(r, 1, item_id).number_format = "@"
         ws.cell(r, 2, sid).number_format = "@"
         ws.cell(r, 3, float(row["price"])).number_format = "0.00"
-        shipping_days = shipping_days_by_item.get(item_id)
-        if shipping_days is not None:
-            # The official template accepts relative-time text (for example
-            # "2天"), not a bare numeric day count.
-            ws.cell(r, 5, f"{shipping_days}天").number_format = "@"
+        shipping_days = shipping_days_by_item.get(item_id, default_shipping_days)
+        if not isinstance(shipping_days, int) or not 1 <= shipping_days <= 365:
+            raise ValueError(f"商品 {item_id} 的发货天数非法")
+        # The official template accepts relative-time text (for example
+        # "30天"), not a bare numeric day count. Every row is required.
+        ws.cell(r, 5, f"{shipping_days}天").number_format = "@"
         r += 1
     out = io.BytesIO()
     wb.save(out)
@@ -1875,9 +1906,87 @@ def _plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
     return (cid.group(1) if cid else None, uid.group(1) if uid else None)
 
 
+def _campaign_identity(plan) -> dict:
+    """Return the immutable identity required before any campaign I/O."""
+    title = str(
+        getattr(plan, "qn_campaign_title", None)
+        or getattr(plan, "name", None)
+        or ""
+    ).strip()
+    campaign_id, united_activity_id = _plan_campaign_ids(plan)
+    start = getattr(plan, "start_at", None)
+    end = getattr(plan, "end_at", None)
+    missing = []
+    if not title:
+        missing.append("campaign_title")
+    if not campaign_id or not campaign_id.isdigit():
+        missing.append("campaign_id")
+    if not united_activity_id or not united_activity_id.isdigit():
+        missing.append("united_activity_id")
+    if start is None:
+        missing.append("campaign_start")
+    if end is None:
+        missing.append("campaign_end")
+    if start is not None and end is not None and end <= start:
+        missing.append("campaign_window_order")
+    return {
+        "ok": not missing,
+        "missing": missing,
+        "campaign_title": title,
+        "campaign_id": campaign_id,
+        "united_activity_id": united_activity_id,
+        "campaign_start": _fmt_dt(start),
+        "campaign_end": _fmt_dt(end),
+        "campaign_phase": (
+            str(getattr(plan, "name", None) or "").strip()
+            if str(getattr(plan, "name", None) or "").strip() != title else ""
+        ),
+        "official_rate": f"{int(TIER_LEVERAGE[plan_tier(plan)] * 100)}%",
+    }
+
+
+def _check_campaign_identity(plan) -> dict:
+    identity = _campaign_identity(plan)
+    return {
+        "rule": "R20",
+        "level": "pass" if identity["ok"] else "error",
+        "title": "活动唯一身份：标题、双ID、秒级起止时间必须全部锁定",
+        "items": [] if identity["ok"] else [{"missing": identity["missing"]}],
+        "identity": identity,
+    }
+
+
+def _check_signup_shipping(plan, signup_rows: list[dict]) -> dict:
+    resolved = signup_shipping_days(plan, signup_rows)
+    item_ids = {
+        str(row.get("taobao_item_id") or "").strip()
+        for row in signup_rows
+        if str(row.get("taobao_item_id") or "").strip()
+    }
+    missing = sorted(item_ids - set(resolved))
+    invalid = sorted(
+        item_id for item_id, days in resolved.items()
+        if not isinstance(days, int) or not 1 <= days <= 365
+    )
+    return {
+        "rule": "R21",
+        "level": "error" if missing or invalid else "pass",
+        "title": "报名表逐行相对发货时效：每行必须为有效的N天文本",
+        "items": ([{"missing_items": missing, "invalid_items": invalid}]
+                  if missing or invalid else []),
+        "item_count": len(item_ids),
+        "resolved": resolved,
+    }
+
+
 def plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
     """Public read-only accessor used by feedback/export API routes."""
     return _plan_campaign_ids(plan)
+
+
+def campaign_identity(plan) -> dict:
+    """Public immutable campaign identity for read-only exports and receipts."""
+    return _campaign_identity(plan)
 
 
 def _plan_single_discount_activity_id(plan) -> Optional[str]:
@@ -2128,19 +2237,22 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
     from app.services import web_agent_service
     extra = {}
     if channel == "promo_signup" and plan is not None:
-        title = (getattr(plan, "qn_campaign_title", None)
-                 or getattr(plan, "name", None))
-        phase_name = (getattr(plan, "name", None)
-                      if str(getattr(plan, "name", "")) != str(title or "") else None)
-        cid, uid = _plan_campaign_ids(plan)
+        identity = _campaign_identity(plan)
+        if not identity["ok"]:
+            return {
+                "ok": False,
+                "step": "campaign_identity_guard",
+                "error": "campaign_identity_incomplete",
+                "missing": identity["missing"],
+            }
         extra = {
-            "campaign_title": title,
-            "campaign_phase": phase_name,
-            "campaign_start": start_dt,
-            "campaign_end": end_dt,
-            "official_rate": f"{int(TIER_LEVERAGE[plan_tier(plan)] * 100)}%",
-            "campaign_id": cid,
-            "united_activity_id": uid,
+            "campaign_title": identity["campaign_title"],
+            "campaign_phase": identity["campaign_phase"],
+            "campaign_start": identity["campaign_start"],
+            "campaign_end": identity["campaign_end"],
+            "official_rate": identity["official_rate"],
+            "campaign_id": identity["campaign_id"],
+            "united_activity_id": identity["united_activity_id"],
         }
     elif channel == "single_item_discount" and plan is not None:
         existing_id = discount_activity_id
@@ -2166,7 +2278,7 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             isinstance(total, int) and isinstance(ok_count, int) and isinstance(failed, int)
             and total > 0 and ok_count + failed == total
         )
-        submitted = channel != "super_reduce" or bool(res.get("submitted"))
+        submitted = bool(res.get("submitted"))
         success = bool(
             res.get("ok") and submitted and terminal and failed == 0 and ok_count == total
             and (expected_items is None or total == expected_items)
@@ -2178,8 +2290,8 @@ def _upload_and_wait(db: Session, channel: str, phase: str, xlsx: bytes,
             error = f"批量操作范围不符：平台{total}品，预期{expected_items}品"
         elif failed:
             error = f"批量操作终态失败：成功{ok_count}品/失败{failed}品"
-        elif channel == "super_reduce" and not res.get("submitted"):
-            error = "超级立减批量导入成功，但一键发布未确认，不能视为报名完成"
+        elif not res.get("submitted"):
+            error = "平台未返回已提交写入回执，不能视为报名完成"
     else:
         success = bool(res.get("submitted") if phase == "commit" else res.get("ok"))
         error = res.get("error") or res.get("message")
@@ -2226,7 +2338,22 @@ def _learn_from_validation(db: Session, plan, validation) -> dict:
 
 
 def qualify_signup_scope(db: Session, plan) -> dict:
-    """Ask the platform to re-check every safe listed item without publishing.
+    """Blocked public compatibility entry.
+
+    QianNiu creates a real batch signup operation as soon as the workbook is
+    attached. There is no read-only upload qualification phase.
+    """
+    return {
+        "ok": False,
+        "step": "unsafe_write_probe_disabled",
+        "error": "上传报名表本身就是平台写入；资格检查已并入唯一一次正式报名",
+        "platform_write_performed": False,
+        "automatic_retry": False,
+    }
+
+
+def _legacy_write_probe_qualify_signup_scope(db: Session, plan) -> dict:
+    """Historical write-probe implementation retained only for regression tests.
 
     Historical no-sales registrations do not narrow the probe. Only failures
     explicitly classified by platform feedback as no-sales are a normal
@@ -2334,7 +2461,7 @@ def qualify_signup_scope(db: Session, plan) -> dict:
     channel = "super_reduce" if str(plan.campaign_type) == "super_reduce" else "promo_signup"
     upload = (_build_super_signup_xlsx(probe_rows) if channel == "super_reduce"
               else _build_signup_xlsx(
-                  probe_rows, authorized_signup_shipping_days(plan)))
+                  probe_rows, signup_shipping_days(plan, probe_rows)))
     probe = _upload_and_wait(
         db, channel, "stage", upload,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
@@ -2479,18 +2606,26 @@ def qualify_signup_scope(db: Session, plan) -> dict:
             "wrong_existing_items": wrong_existing, "stats": stats}
 
 
-def push_discount(db: Session, plan, phase: str = "stage", *,
-                  _existing_conflict_retry: bool = False) -> dict:
+def push_discount(
+        db: Session, plan, phase: str = "stage", *,
+        item_scope: Optional[set[str]] = None,
+        no_sales_items: Optional[set[str]] = None,
+        terminal_no_sales_fallback: bool = False,
+        update_plan_status: bool = True,
+        _existing_conflict_retry: bool = False,
+) -> dict:
     """推单品立减 (channel single_item_discount, 带计划档期精确到秒)。
     phase='stage' 挂文件停在提交前; 'commit' ★不可逆★ 真提交 (仅用户确认后调, R12)。"""
-    scope_check = _check_official_scope(db, plan)
-    if scope_check["level"] == "error":
+    scope_check = _check_official_scope(
+        db, plan, no_sales_items=no_sales_items)
+    if scope_check["level"] == "error" and not terminal_no_sales_fallback:
         return {
             "ok": False,
             "error": "官方立减逐商品范围未通过安全门，已停止上传",
             "check": scope_check,
         }
-    rows, stats = build_discount_rows(db, plan)
+    rows, stats = build_discount_rows(
+        db, plan, no_sales_items=no_sales_items)
     rows, missing_scope = _apply_authorized_supplement_scope(plan, rows, stats)
     if missing_scope:
         return {
@@ -2516,6 +2651,15 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         ]
         stats["platform_discount_scope_items"] = sorted(allowed)
         stats["platform_discount_scope_rows"] = len(rows)
+    if item_scope is not None:
+        exact_scope = {str(value or "").strip() for value in item_scope}
+        rows = [
+            row for row in rows
+            if str(row.get("taobao_item_id") or "") in exact_scope
+        ]
+        stats["exact_item_scope"] = sorted(exact_scope)
+        stats["exact_item_scope_rows"] = len(rows)
+    stats["terminal_no_sales_fallback"] = bool(terminal_no_sales_fallback)
     if not rows:
         return {"ok": False, "error": "无可推送的立减行", "stats": stats}
     by_item: dict[str, list[dict]] = defaultdict(list)
@@ -2593,7 +2737,8 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
         stats["single_discount_processed_items"] = len(expected_item_ids)
         res["stats"] = stats
         if phase == "commit":
-            plan.status = "discount_pushed"
+            if update_plan_status:
+                plan.status = "discount_pushed"
             db.commit()
         return res
     activity_ids = _plan_single_discount_activity_ids(plan)
@@ -2725,6 +2870,10 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                             plan, merged_sku_activity_ids)
                         retry_result = push_discount(
                             db, plan, phase=phase,
+                            item_scope=item_scope,
+                            no_sales_items=no_sales_items,
+                            terminal_no_sales_fallback=terminal_no_sales_fallback,
+                            update_plan_status=update_plan_status,
                             _existing_conflict_retry=True)
                         if not retry_result.get("ok"):
                             # Candidate bindings become durable only after the
@@ -2804,6 +2953,10 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                         })
                     retry_result = push_discount(
                         db, plan, phase=phase,
+                        item_scope=item_scope,
+                        no_sales_items=no_sales_items,
+                        terminal_no_sales_fallback=terminal_no_sales_fallback,
+                        update_plan_status=update_plan_status,
                         _existing_conflict_retry=True)
                     if not retry_result.get("ok"):
                         db.rollback()
@@ -2814,7 +2967,8 @@ def push_discount(db: Session, plan, phase: str = "stage", *,
                     return retry_result
     res["stats"] = stats
     if res.get("ok") and phase == "commit":
-        plan.status = "discount_pushed"
+        if update_plan_status:
+            plan.status = "discount_pushed"
         db.commit()
     return res
 
@@ -2835,7 +2989,7 @@ def _signup_failure_signature(plan, result: dict) -> str:
 
 
 def _notify_signup_failure(db: Session, plan, result: dict) -> dict:
-    """同一失败内容只发一次飞书；原因变化后会重新通知。"""
+    """同一失败内容只发一次运营通知；原因变化后会重新通知。"""
     import json
     from app.services import campaign_notification_service as notify_service, settings_service
 
@@ -2871,7 +3025,7 @@ def _notify_signup_failure(db: Session, plan, result: dict) -> dict:
         db, "\n".join(lines), title="活动自动报名失败", level="error")
     if any(v is True for v in delivered.values()):
         settings_service.set_value(
-            db, key, signature, description="活动自动报名失败飞书通知去重签名")
+            db, key, signature, description="活动自动报名失败运营通知去重签名")
         db.commit()
     return delivered
 
@@ -2978,6 +3132,66 @@ def _notify_coupon_floor_blocks(db: Session, plan, blocked: list[dict]) -> dict:
     return delivered
 
 
+def _record_signup_execution_receipt(db: Session, plan, result: dict) -> dict:
+    """Persist a bounded, non-secret receipt for each final signup outcome."""
+    from app.services import settings_service
+
+    identity = _campaign_identity(plan)
+    validation = result.get("validation")
+    terminal_counts = result.get("terminal_counts")
+    if terminal_counts is None and isinstance(validation, dict):
+        terminal_counts = {
+            "total": validation.get("total_items"),
+            "ok": validation.get("ok"),
+            "failed": validation.get("failed"),
+        }
+    classification = result.get("terminal_classification") or {}
+    post_export = result.get("post_submit_export_evidence") or {}
+    verification = result.get("post_submit_verification")
+    receipt = {
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "plan_id": getattr(plan, "id", None),
+        "status": "success" if result.get("ok") else "failed",
+        "step": result.get("step") or "signup_complete",
+        "campaign_title": identity.get("campaign_title"),
+        "campaign_id": identity.get("campaign_id"),
+        "united_activity_id": identity.get("united_activity_id"),
+        "campaign_start": identity.get("campaign_start"),
+        "campaign_end": identity.get("campaign_end"),
+        "job_id": result.get("job"),
+        "submitted": bool(result.get("submitted")),
+        "terminal_counts": terminal_counts,
+        "accepted_item_ids": classification.get("accepted_item_ids") or [],
+        "no_sales_item_ids": classification.get("no_sales_item_ids") or [],
+        "hard_failed_item_ids": classification.get("hard_failed_item_ids") or [],
+        "feedback_artifact": (
+            classification.get("feedback_artifact")
+            or (validation.get("feedback_artifact") if isinstance(validation, dict) else None)
+        ),
+        "fresh_export_sha256": post_export.get("sha256"),
+        "per_sku_verification": verification,
+        "no_sales_fallback_ok": (
+            (result.get("no_sales_fallback") or {}).get("ok")
+            if isinstance(result.get("no_sales_fallback"), dict) else None
+        ),
+        "error": result.get("error"),
+    }
+    key = f"campaign_execution_receipts_{getattr(plan, 'id', 'unknown')}"
+    try:
+        existing_raw = settings_service.get(db, key, env_fallback=False)
+        existing = json.loads(existing_raw) if existing_raw else []
+        if not isinstance(existing, list):
+            existing = []
+    except (TypeError, ValueError, json.JSONDecodeError):
+        existing = []
+    history = (existing + [receipt])[-20:]
+    settings_service.set_value(
+        db, key, json.dumps(history, ensure_ascii=False, default=str),
+        description="活动报名终态结构化回执（最多20条，不含凭据）")
+    db.commit()
+    return receipt
+
+
 def _stop_signup(db: Session, plan, result: dict) -> dict:
     """Put a failed plan in a non-retrying state and notify with explicit boundaries."""
     result.setdefault("ok", False)
@@ -2986,6 +3200,8 @@ def _stop_signup(db: Session, plan, result: dict) -> dict:
     result["ai_may_adjust_or_resubmit"] = False
     plan.status = "alarmed"
     db.commit()
+    result["execution_receipt"] = _record_signup_execution_receipt(
+        db, plan, result)
     result["notification"] = _notify_signup_failure(db, plan, result)
     return result
 
@@ -2998,8 +3214,23 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         web_agent_service,
     )
 
-    title = plan.qn_campaign_title or plan.name
-    exported = web_agent_service.campaign_export_items(db, title)
+    identity = _campaign_identity(plan)
+    if not identity["ok"]:
+        return {
+            "ok": False,
+            "error": "campaign_identity_incomplete",
+            "missing": identity["missing"],
+        }
+    exported = web_agent_service.campaign_export_items(
+        db,
+        identity["campaign_title"],
+        campaign_id=identity["campaign_id"],
+        united_activity_id=identity["united_activity_id"],
+        campaign_phase=identity["campaign_phase"],
+        campaign_start=identity["campaign_start"],
+        campaign_end=identity["campaign_end"],
+        official_rate=identity["official_rate"],
+    )
     if not exported.get("ok"):
         return {
             "ok": False,
@@ -3018,10 +3249,20 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
         plan=plan,
     )
-    return {"ok": True, "rows": live_rows, "floor_refresh": refresh}
+    return {
+        "ok": True,
+        "rows": live_rows,
+        "floor_refresh": refresh,
+        "export_evidence": {
+            "filename": exported.get("filename"),
+            "size": len(exported["xlsx_bytes"]),
+            "sha256": hashlib.sha256(exported["xlsx_bytes"]).hexdigest(),
+            "identity": identity,
+        },
+    }
 
 
-def _verify_super_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dict:
+def _verify_signup_rows(expected_rows: list[dict], live_rows: list[dict]) -> dict:
     """Require every real SKU from the submitted scope to have the exact P price.
 
     Platform operation feedback is only an import receipt.  A product can still
@@ -3069,6 +3310,113 @@ def _verify_super_signup_rows(expected_rows: list[dict], live_rows: list[dict]) 
         "checked_real_skus": checked,
         "failed_real_skus": len(failures),
         "failures": failures,
+    }
+
+
+def _classify_final_signup(
+        db: Session, plan, result: dict, pending_rows: list[dict],
+        correct_items: set[str]) -> dict:
+    """Classify the one real signup's terminal result without retrying it."""
+    from app.services import no_sales_service, web_agent_service
+
+    if not result.get("submitted"):
+        return {"ok": False, "error": "signup_platform_write_receipt_missing"}
+    validation = result.get("validation")
+    if not isinstance(validation, dict):
+        return {"ok": False, "error": "signup_terminal_validation_missing"}
+    total = validation.get("total_items")
+    ok_count = validation.get("ok")
+    failed_count = validation.get("failed")
+    expected_items = {
+        str(row.get("taobao_item_id") or "").strip()
+        for row in pending_rows
+        if str(row.get("taobao_item_id") or "").strip()
+    }
+    if (not all(isinstance(value, int) for value in (total, ok_count, failed_count))
+            or total <= 0 or ok_count + failed_count != total
+            or total != len(expected_items)):
+        return {
+            "ok": False,
+            "error": "signup_terminal_counts_invalid_or_scope_mismatch",
+            "expected_items": sorted(expected_items),
+            "terminal_counts": {
+                "total": total, "ok": ok_count, "failed": failed_count,
+            },
+        }
+
+    failed_rows = validation.get("failed_items") or []
+    nested = validation.get("failed_reasons")
+    if not failed_rows and isinstance(nested, dict):
+        failed_rows = nested.get("failed") or []
+        validation["failed_items"] = failed_rows
+        validation["failed_reasons"] = nested.get("by_reason") or []
+    feedback_refresh = None
+    if failed_count and not failed_rows:
+        campaign_id, united_activity_id = _plan_campaign_ids(plan)
+        feedback_refresh = web_agent_service.campaign_feedback(
+            db,
+            str(getattr(plan, "qn_campaign_title", None) or plan.name or ""),
+            campaign_id=campaign_id or "",
+            united_activity_id=united_activity_id or "",
+        )
+        if feedback_refresh.get("ok"):
+            feedback = feedback_refresh.get("feedback") or {}
+            failed_rows = feedback.get("failed") or []
+            validation["failed_items"] = failed_rows
+            validation["failed_reasons"] = feedback.get("by_reason") or []
+            if feedback_refresh.get("filename"):
+                validation["feedback_artifact"] = {
+                    "filename": feedback_refresh.get("filename"),
+                    "size": len(feedback_refresh.get("xlsx_bytes") or b""),
+                    "sha256": hashlib.sha256(
+                        feedback_refresh.get("xlsx_bytes") or b"").hexdigest(),
+                }
+
+    failed_ids = {
+        str((row or {}).get("item_id") or "").strip() for row in failed_rows
+        if str((row or {}).get("item_id") or "").strip()
+    }
+    unexpected_failed_ids = failed_ids - expected_items
+    if (failed_count != len(failed_ids) or unexpected_failed_ids
+            or len(expected_items - failed_ids) != ok_count):
+        return {
+            "ok": False,
+            "error": "signup_failed_item_details_incomplete_or_scope_mismatch",
+            "failed_item_ids": sorted(failed_ids),
+            "unexpected_failed_item_ids": sorted(unexpected_failed_ids),
+            "terminal_counts": {
+                "total": total, "ok": ok_count, "failed": failed_count,
+            },
+            "feedback_refresh": feedback_refresh,
+        }
+    no_sales_ids = no_sales_service.extract_no_sales_only_from_feedback(failed_rows)
+    hard_failed_ids = failed_ids - no_sales_ids
+    accepted_items = expected_items - failed_ids
+    qualified_items = set(correct_items) | accepted_items
+
+    no_sales_service.remove_no_sales(db, qualified_items)
+    no_sales_service.add_no_sales(db, no_sales_ids)
+    _set_plan_item_marker(plan, "platform_qualified_items", qualified_items)
+    _set_plan_item_marker(plan, "platform_no_sales_items", no_sales_ids)
+    _set_plan_item_marker(plan, "platform_hard_failed_items", hard_failed_ids)
+    _remove_plan_marker(plan, "official_all_store")
+    _remove_plan_marker(plan, "official_exempt_items")
+    _set_plan_item_marker(plan, "official_active_items", qualified_items)
+    _record_terminal_platform_acceptance(
+        plan, pending_rows, accepted_items)
+    db.commit()
+    return {
+        "ok": True,
+        "terminal_counts": {
+            "total": total, "ok": ok_count, "failed": failed_count,
+        },
+        "accepted_item_ids": sorted(accepted_items),
+        "qualified_item_ids": sorted(qualified_items),
+        "no_sales_item_ids": sorted(no_sales_ids),
+        "hard_failed_item_ids": sorted(hard_failed_ids),
+        "failed_items": failed_rows,
+        "feedback_artifact": validation.get("feedback_artifact"),
+        "feedback_refresh": feedback_refresh,
     }
 
 
@@ -3281,7 +3629,9 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             db, plan, active_live_rows)
         db.commit()
 
-    checks = preflight(db, plan)
+    # Historical no-sales is advisory only. Every listed item reaches the one
+    # final platform signup and is classified from that run's terminal result.
+    checks = preflight(db, plan, no_sales_items=set())
     critical = [check for check in checks if check.get("level") == "error"]
     if critical:
         return _stop_signup(db, plan, {
@@ -3440,19 +3790,37 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     stats["pending_items"] = sorted(pending_items)
     stats["pending_rows"] = len(pending)
     if not pending:
+        verification = _verify_signup_rows(rows, live_rows)
+        if not verification.get("ok"):
+            return _stop_signup(db, plan, {
+                "step": "already_registered_sku_verification",
+                "error": "当前活动导出中的逐SKU活动价不一致",
+                "post_submit_verification": verification,
+                "post_submit_export_evidence": current.get("export_evidence"),
+                "stats": stats,
+            })
         plan.status = "signup_pushed"
         _remove_plan_marker(plan, "supplement_items_authorized")
         _remove_plan_marker(plan, "sku_refresh_items_authorized")
         db.commit()
         _clear_signup_failure_dedupe(db, plan)
-        return {"ok": True, "no_change": True, "stats": stats,
-                "message": "当前活动中所有目标商品已发布且价格一致，无需重复导入"}
+        result = {
+            "ok": True, "no_change": True, "stats": stats,
+            "message": "当前活动中所有目标商品已发布且价格一致，无需重复导入",
+            "post_submit_verification": verification,
+            "post_submit_export_evidence": current.get("export_evidence"),
+        }
+        result["execution_receipt"] = _record_signup_execution_receipt(
+            db, plan, result)
+        return result
 
     channel = "super_reduce" if super_reduce else "promo_signup"
-    phase = "commit" if super_reduce else "stage"
+    # Uploading the promo workbook itself is a real platform write. There is no
+    # safe stage phase; both campaign channels therefore use one commit only.
+    phase = "commit"
     upload_xlsx = (_build_super_signup_xlsx(pending) if super_reduce
                    else _build_signup_xlsx(
-                       pending, authorized_signup_shipping_days(plan)))
+                       pending, signup_shipping_days(plan, pending)))
     res = _upload_and_wait(
         db, channel, phase, upload_xlsx,
         _fmt_dt(plan.start_at), _fmt_dt(plan.end_at), plan=plan,
@@ -3460,37 +3828,86 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
     res["stats"] = stats
     res["recorded_platform_facts"] = _learn_from_validation(
         db, plan, res.get("validation"))
-    if res.get("ok"):
-        if super_reduce:
-            post_submit = refresh_floor_evidence_from_current_activity(db, plan)
-            if not post_submit.get("ok"):
-                res.update({
-                    "ok": False,
-                    "step": "post_submit_export",
-                    "error": post_submit.get("error")
-                             or "平台已返回导入成功，但无法回读已报商品验证逐SKU生效",
-                })
-                return _stop_signup(db, plan, res)
-            verification = _verify_super_signup_rows(
-                pending, post_submit.get("rows") or [])
-            res["post_submit_verification"] = verification
-            if not verification.get("ok"):
-                res.update({
-                    "ok": False,
-                    "step": "post_submit_sku_verification",
-                    "error": (
-                        "平台导入回执成功，但逐SKU回读发现活动价为空/不一致；"
-                        "不得视为报名完成"
-                    ),
-                })
-                return _stop_signup(db, plan, res)
-        plan.status = "signup_pushed"
-        _remove_plan_marker(plan, "supplement_items_authorized")
-        _remove_plan_marker(plan, "sku_refresh_items_authorized")
-        db.commit()
-        _clear_signup_failure_dedupe(db, plan)
-    else:
+    classification = _classify_final_signup(
+        db, plan, res, pending, correct_items)
+    res["terminal_classification"] = classification
+    if not classification.get("ok"):
+        res.update({
+            "ok": False,
+            "step": "signup_terminal_classification",
+            "error": res.get("error") or classification.get("error")
+                     or "正式报名终态无法可靠分类",
+        })
         return _stop_signup(db, plan, res)
+
+    no_sales_ids = set(classification.get("no_sales_item_ids") or [])
+    if no_sales_ids:
+        fallback = push_discount(
+            db, plan, phase="commit",
+            item_scope=no_sales_ids,
+            no_sales_items=no_sales_ids,
+            terminal_no_sales_fallback=True,
+            update_plan_status=False,
+        )
+        res["no_sales_fallback"] = fallback
+        if not fallback.get("ok"):
+            res.update({
+                "ok": False,
+                "step": "terminal_no_sales_fallback",
+                "error": fallback.get("error")
+                         or "平台判定无销量的商品自动转单品立减失败",
+            })
+            return _stop_signup(db, plan, res)
+
+    # The operation record proves submission; only a fresh, exact-ID export can
+    # prove which SKU prices are actually present in this campaign.
+    post_submit = refresh_floor_evidence_from_current_activity(db, plan)
+    if not post_submit.get("ok"):
+        res.update({
+            "ok": False,
+            "step": "post_submit_export",
+            "error": post_submit.get("error")
+                     or "平台已返回终态，但无法取得精确活动的新导出",
+        })
+        return _stop_signup(db, plan, res)
+    res["post_submit_export_evidence"] = post_submit.get("export_evidence")
+    accepted_ids = set(classification.get("accepted_item_ids") or [])
+    accepted_rows = [
+        row for row in pending
+        if str(row.get("taobao_item_id") or "") in accepted_ids
+    ]
+    verification = _verify_signup_rows(
+        accepted_rows, post_submit.get("rows") or [])
+    res["post_submit_verification"] = verification
+    if not verification.get("ok"):
+        res.update({
+            "ok": False,
+            "step": "post_submit_sku_verification",
+            "error": (
+                "平台终态已返回，但逐SKU新导出发现活动价为空/不一致；"
+                "不得视为报名完成"
+            ),
+        })
+        return _stop_signup(db, plan, res)
+
+    hard_failed = classification.get("hard_failed_item_ids") or []
+    if hard_failed:
+        res.update({
+            "ok": False,
+            "step": "signup_hard_failures_isolated",
+            "error": "安全商品已报名并核验，但仍有平台硬失败商品等待人工决定",
+            "hard_failed_item_ids": hard_failed,
+        })
+        return _stop_signup(db, plan, res)
+
+    res["ok"] = True
+    res.pop("error", None)
+    plan.status = "signup_pushed"
+    _remove_plan_marker(plan, "supplement_items_authorized")
+    _remove_plan_marker(plan, "sku_refresh_items_authorized")
+    db.commit()
+    _clear_signup_failure_dedupe(db, plan)
+    res["execution_receipt"] = _record_signup_execution_receipt(db, plan, res)
     return res
 
 

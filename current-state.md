@@ -2,6 +2,16 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 campaign signup one-shot hardening
+
+- The former `qualify_signup_scope` upload probe is disabled. QianNiu creates a real batch operation when the signup workbook is attached, so the automation now performs local/read-only evidence checks and exactly one final campaign signup submission.
+- Every signup row has a required relative shipping time. The policy default is `30天`; exact item overrides remain possible, but blank rows and bare numbers are rejected.
+- Campaign I/O now requires the immutable title, `campaignId`, `unitedActivityId`, exact start/end timestamps, and official discount rate. Feedback and post-submit exports are read from that exact identity, not a title-only activity list search.
+- Historical no-sales registration is advisory before submission. After the one terminal signup result, only exact items whose sole failure is no-sales receive the no-official-discount single-item fallback. Hard failures and incomplete/stale feedback are isolated and stop without a second campaign submission.
+- Completion requires terminal item counts, exact failed-item scope, fresh exact-ID export, and per-SKU signup-price verification. A bounded, non-secret structured receipt records the job ID, terminal counts, feedback artifact, export SHA-256, per-SKU verification, and fallback result.
+- Invalid no-sales registry values such as `5`, `待定`, and `暂无` are ignored. The public write-probe entry and Web-Agent `promo_signup` stage route both fail closed.
+- Verification for this change: campaign-related ERP suites passed; Web-Agent full suite passed 93 tests with the required async test plugin loaded temporarily. The broader ERP suite still has unrelated pre-existing failures outside campaign files; no live campaign submission, account action, price change, withdrawal, or business retry was used for testing.
+
 ## 2026-08-25 Enterprise WeChat group-chat shipping password
 
 - GitHub `main` code commit and deployed production: `89f00c60c5b9cafe672878e88ee5a26f7bb3c4a1`.

@@ -234,13 +234,28 @@ def export_product_prices(db: Session, *, timeout_s: int = 260) -> dict:
             "filename": res.get("filename"), "screenshot_base64": res.get("screenshot_base64")}
 
 
-def campaign_export_items(db: Session, campaign_title: str, *, timeout_s: int = 720) -> dict:
+def campaign_export_items(
+        db: Session, campaign_title: str, *, campaign_id: str,
+        united_activity_id: str, campaign_phase: str = "",
+        campaign_start: str = "", campaign_end: str = "",
+        official_rate: str = "", timeout_s: int = 720) -> dict:
     """活动生命周期 P4: WA「导出已报商品」(POST /api/campaign/export-items → wait_job)。
     WA 侧按标题从营销列表进活动并做★标题校验★, 不一致中止 (error=campaign_title_mismatch)。
     返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/step?/error}。异步导出~2min, 给足等待。"""
     import base64
-    j = _post(db, "/api/campaign/export-items",
-              {"campaign_title": campaign_title}, timeout=30)
+    payload = {
+        "campaign_title": str(campaign_title or "").strip(),
+        "campaign_id": str(campaign_id or "").strip(),
+        "united_activity_id": str(united_activity_id or "").strip(),
+        "campaign_phase": str(campaign_phase or "").strip(),
+        "campaign_start": str(campaign_start or "").strip(),
+        "campaign_end": str(campaign_end or "").strip(),
+        "official_rate": str(official_rate or "").strip(),
+    }
+    if (not payload["campaign_title"] or not payload["campaign_id"].isdigit()
+            or not payload["united_activity_id"].isdigit()):
+        return {"ok": False, "error": "campaign_identity_required"}
+    j = _post(db, "/api/campaign/export-items", payload, timeout=30)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
     final = wait_job(db, j["job"], timeout_s=timeout_s)
@@ -379,6 +394,10 @@ def campaign_feedback(db: Session, campaign_title: str, *, campaign_id: str,
             "step": res.get("step"),
             "error": res.get("error") or res.get("message") or "活动失败反馈下载失败",
         }
+    if (str(res.get("campaign_id") or "") != payload["campaign_id"]
+            or str(res.get("united_activity_id") or "")
+            != payload["united_activity_id"]):
+        return {"ok": False, "error": "campaign_feedback_identity_mismatch"}
     out = {
         "ok": True,
         "feedback": feedback,

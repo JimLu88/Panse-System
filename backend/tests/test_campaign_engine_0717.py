@@ -11,6 +11,7 @@
 ⑧ 推送编排 (mock WA, 绝不真调 :8500): channel/phase/档期传参 + 状态机推进
 """
 import io
+import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -61,7 +62,9 @@ def _plan(db, ctype="big88"):
     plan = CampaignPlan(name=f"测试{ctype}", campaign_type=ctype,
                         tier=cs.CAMPAIGN_TYPES[ctype][1],
                         start_at=datetime(2026, 7, 17, 20, 0, 0),
-                        end_at=datetime(2026, 7, 19, 23, 59, 59), status="draft")
+                        end_at=datetime(2026, 7, 19, 23, 59, 59), status="draft",
+                        qn_campaign_title=f"测试{ctype}",
+                        remark="campaignId=49271; unitedActivityId=49283")
     db.add(plan)
     db.commit()
     return plan
@@ -150,7 +153,7 @@ def test_signup_shipping_days_authorization_is_exact():
     assert cs.authorized_signup_shipping_days(plan) == {"793084818113": 30}
 
 
-def test_signup_workbook_writes_shipping_days_only_for_authorized_item():
+def test_signup_workbook_writes_default_shipping_days_on_every_item():
     rows = [
         {"taobao_item_id": "793084818113", "taobao_sku_id": "6292847403160",
          "price": 1200.0},
@@ -167,7 +170,117 @@ def test_signup_workbook_writes_shipping_days_only_for_authorized_item():
     assert sheet.cell(4, 5).value == "30天"
     assert sheet.cell(5, 1).value == "100000000004"
     assert sheet.cell(5, 3).value == 397
-    assert sheet.cell(5, 5).value is None
+    assert sheet.cell(5, 5).value == "30天"
+
+
+def test_public_qualification_probe_is_hard_blocked_without_upload(db_session, monkeypatch):
+    plan = _plan(db_session, "big88")
+    uploads = []
+    monkeypatch.setattr(
+        cs, "_upload_and_wait", lambda *args, **kwargs: uploads.append(1))
+
+    result = cs.qualify_signup_scope(db_session, plan)
+
+    assert result["ok"] is False
+    assert result["step"] == "unsafe_write_probe_disabled"
+    assert uploads == []
+
+
+def test_no_sales_registry_rejects_placeholder_and_junk_values(db_session):
+    ns.add_no_sales(db_session, ["5", "待定", "暂无", "12345678"])
+
+    assert ns.get_no_sales(db_session) == {"12345678"}
+
+
+def test_final_signup_is_one_write_then_exact_no_sales_fallback_and_receipt(
+        db_session, monkeypatch):
+    from app.services import settings_service
+
+    plan = _plan(db_session, "big88")
+    plan.qn_campaign_title = "2026年淘宝8月开学季"
+    plan.remark = "campaignId=49271; unitedActivityId=49283"
+    accepted_id = "100000092101"
+    no_sales_id = "100000092102"
+    _mk(db_session, "PPSONE1", "PPSONE101", accepted_id, "72901001",
+        daily=1200, big=800)
+    _mk(db_session, "PPSONE2", "PPSONE201", no_sales_id, "72902001",
+        daily=1300, big=900)
+    db_session.commit()
+    monkeypatch.setattr(cs, "preflight", lambda *args, **kwargs: [])
+
+    export_calls = []
+
+    def refresh(*_args, **_kwargs):
+        export_calls.append(1)
+        return {
+            "ok": True,
+            "rows": ([] if len(export_calls) == 1 else [{
+                "item_id": accepted_id,
+                "sku_id": "72901001",
+                "status": "活动中",
+                "activity_price": 1200,
+            }]),
+            "floor_refresh": {"observed": 2},
+            "export_evidence": {
+                "filename": f"exact-{len(export_calls)}.xlsx",
+                "size": 123,
+                "sha256": f"sha-{len(export_calls)}",
+            },
+        }
+
+    monkeypatch.setattr(cs, "refresh_floor_evidence_from_current_activity", refresh)
+    writes = []
+
+    def upload(_db, channel, phase, *_args, **_kwargs):
+        writes.append((channel, phase))
+        return {
+            "ok": False,
+            "submitted": True,
+            "job": "signup-job-1",
+            "validation": {
+                "total_items": 2,
+                "ok": 1,
+                "failed": 1,
+                "failed_items": [{
+                    "item_id": no_sales_id,
+                    "reason": "动销不达标",
+                    "raw": "近60天销量不达标",
+                }],
+            },
+        }
+
+    monkeypatch.setattr(cs, "_upload_and_wait", upload)
+    fallback_calls = []
+
+    def fallback(_db, _plan, **kwargs):
+        fallback_calls.append(kwargs)
+        return {"ok": True, "submitted": True}
+
+    monkeypatch.setattr(cs, "push_discount", fallback)
+
+    result = cs.push_signup(
+        db_session, plan, execution_source="campaign_automation")
+
+    assert result["ok"] is True
+    assert writes == [("promo_signup", "commit")]
+    assert len(export_calls) == 2
+    assert fallback_calls == [{
+        "phase": "commit",
+        "item_scope": {no_sales_id},
+        "no_sales_items": {no_sales_id},
+        "terminal_no_sales_fallback": True,
+        "update_plan_status": False,
+    }]
+    assert result["terminal_classification"]["accepted_item_ids"] == [accepted_id]
+    assert result["terminal_classification"]["no_sales_item_ids"] == [no_sales_id]
+    assert result["post_submit_export_evidence"]["sha256"] == "sha-2"
+    assert result["post_submit_verification"]["ok"] is True
+    assert result["execution_receipt"]["job_id"] == "signup-job-1"
+    assert result["execution_receipt"]["fresh_export_sha256"] == "sha-2"
+    history = json.loads(settings_service.get(
+        db_session, f"campaign_execution_receipts_{plan.id}", env_fallback=False))
+    assert history[-1]["status"] == "success"
+    assert plan.status == "signup_pushed"
 
 
 def test_campaign_rows_are_limited_to_erp_listed_products(db_session):
@@ -209,7 +322,7 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009210"]
@@ -246,7 +359,7 @@ def test_promo_qualification_uploads_authorized_shipping_days(
 
     monkeypatch.setattr(cs, "_upload_and_wait", upload)
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
     workbook = openpyxl.load_workbook(io.BytesIO(captured["workbook"]))
     row = workbook["商品SKU导入列表"][4]
 
@@ -283,7 +396,7 @@ def test_platform_qualification_limits_supplement_and_preserves_prior_scope(
         }
 
     monkeypatch.setattr(cs, "_upload_and_wait", fake_upload)
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert calls[0]["expected_items"] == 1
@@ -308,7 +421,7 @@ def test_platform_qualification_isolates_non_sales_failure_and_continues(db_sess
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009215"]
@@ -339,7 +452,7 @@ def test_platform_qualification_accepts_coupon_only_failure_when_planned_discoun
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009216"]
@@ -398,7 +511,7 @@ def test_platform_qualification_allows_exact_authorized_sku_refresh(
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == [item_id]
@@ -430,7 +543,7 @@ def test_platform_qualification_keeps_coupon_failure_hard_when_internal_floor_ho
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == []
@@ -461,7 +574,7 @@ def test_super_qualification_fetches_missing_feedback_and_keeps_mixed_failure_ha
         ]},
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009223"]
@@ -492,7 +605,7 @@ def test_promo_qualification_flattens_item_feedback_from_agent(db_session, monke
         },
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009242"]
@@ -529,7 +642,7 @@ def test_promo_qualification_retries_feedback_by_exact_campaign_ids(
 
     monkeypatch.setattr(web_agent_service, "campaign_feedback", feedback)
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009252"]
@@ -582,7 +695,7 @@ def test_platform_qualification_preserves_existing_placeholder_protection_price(
         "ok": False, "error": "must_not_probe_already_correct_item",
     })
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["no_change"] is True
@@ -610,7 +723,7 @@ def test_platform_qualification_isolates_existing_wrong_item_and_continues(
         }
     ))
 
-    result = cs.qualify_signup_scope(db_session, plan)
+    result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
     assert result["qualified_item_ids"] == ["1000009214"]
@@ -1023,7 +1136,7 @@ def test_big_campaign_low_price_uses_platform_exact_percent(db_session):
 
 # ── ⑦ preflight ─────────────────────────────────────────────────────────────
 
-def test_preflight_outputs_r0_to_r19(db_session):
+def test_preflight_outputs_r0_to_r21(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSPA001", "PPSPA00101", "9401", "74001",
         daily=1200, big=1000, enrolled=1100)                  # R1: 日常价 > 已生效价硬底
@@ -1041,7 +1154,7 @@ def test_preflight_outputs_r0_to_r19(db_session):
     checks = cs.preflight(db_session, plan)
     by_rule = {c["rule"]: c for c in checks}
 
-    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(0, 20)]
+    assert [c["rule"] for c in checks] == [f"R{i}" for i in range(0, 22)]
     assert all({"rule", "level", "title", "items"} <= set(c) for c in checks)
     assert by_rule["R1"]["level"] == "warn"
     assert by_rule["R1"]["items"][0]["skus"][0]["sku_code"] == "PPSPA00101"
@@ -1053,6 +1166,8 @@ def test_preflight_outputs_r0_to_r19(db_session):
     assert by_rule["R9"]["items"] == [{"official_ceil": True}]
     assert by_rule["R11"]["level"] == "warn" and by_rule["R12"]["level"] == "warn"
     assert by_rule["R13"]["level"] == "pass"
+    assert by_rule["R20"]["level"] == "pass"
+    assert by_rule["R21"]["level"] == "pass"
     assert by_rule["R14"]["level"] == "warn"
     assert by_rule["R15"]["level"] == "error"
     assert by_rule["R16"]["level"] == "pass"
@@ -1104,7 +1219,7 @@ def _mock_wa(monkeypatch, calls):
     # post-submit SKU verifier has focused tests below; keep these tests scoped
     # to channel/state orchestration rather than fabricating a second workbook.
     monkeypatch.setattr(
-        cs, "_verify_super_signup_rows",
+        cs, "_verify_signup_rows",
         lambda expected, live: {
             "ok": True, "checked_real_skus": len(expected),
             "failed_real_skus": 0, "failures": [],
@@ -1175,7 +1290,8 @@ def test_super_reduce_supplement_preserves_known_active_items(
     plan.remark = (
         "supplement_items_authorized=100000009501; "
         "platform_qualified_items=100000009501,100000009502; "
-        "official_active_items=100000009501,100000009502"
+        "official_active_items=100000009501,100000009502; "
+        "campaignId=49271; unitedActivityId=49283"
     )
     _mk(db_session, "PPSQSCOPE3", "PPSQSCOPE301", "100000009501", "75401",
         daily=1500, big=1000)
@@ -1277,7 +1393,8 @@ def test_super_reduce_supplement_still_blocks_unknown_active_items(
     plan.remark = (
         "supplement_items_authorized=100000009501; "
         "platform_qualified_items=100000009501; "
-        "official_active_items=100000009501"
+        "official_active_items=100000009501; "
+        "campaignId=49271; unitedActivityId=49283"
     )
     _mk(db_session, "PPSQSCOPE5", "PPSQSCOPE501", "100000009501", "75501",
         daily=1500, big=1000)
@@ -1719,7 +1836,7 @@ def test_push_signup_orchestration_and_empty_guard(db_session, monkeypatch):
     res = cs.push_signup(db_session, plan, execution_source="campaign_automation")
     assert res["ok"] is True
     assert plan.status == "signup_pushed"                     # R12: stage 即生效
-    assert calls[0]["channel"] == "promo_signup" and calls[0]["phase"] == "stage"
+    assert calls[0]["channel"] == "promo_signup" and calls[0]["phase"] == "commit"
 
 
 def test_super_reduce_signup_uses_dedicated_commit_channel(db_session, monkeypatch):
@@ -1960,7 +2077,7 @@ def test_super_signup_row_verification_rejects_item_level_active_with_blank_new_
          "status": "活动中", "activity_price": 397.0},
     ]
 
-    result = cs._verify_super_signup_rows(expected, live)
+    result = cs._verify_signup_rows(expected, live)
 
     assert result["ok"] is False
     assert result["checked_real_skus"] == 1
@@ -1985,7 +2102,7 @@ def test_super_signup_row_verification_accepts_any_exact_active_marketing_record
          "status": "活动中", "activity_price": 4852.5},
     ]
 
-    result = cs._verify_super_signup_rows(expected, live)
+    result = cs._verify_signup_rows(expected, live)
 
     assert result["ok"] is True
     assert result["failed_real_skus"] == 0

@@ -113,11 +113,8 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     pushed = []
     monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
 
-    def qualify_signup_scope(db, plan):
-        pushed.append(("qualify", plan.name, "stage"))
-        return {"ok": True}
-
-    def push_discount(db, plan, *, phase):
+    def push_discount(db, plan, *, phase, no_sales_items=None):
+        assert no_sales_items == set()
         pushed.append(("discount", plan.name, phase))
         plan.status = "discount_pushed"
         db.flush()
@@ -129,13 +126,11 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
 
     monkeypatch.setattr(campaign_service, "push_discount", push_discount)
     monkeypatch.setattr(campaign_service, "push_signup", push_signup)
-    monkeypatch.setattr(campaign_service, "qualify_signup_scope", qualify_signup_scope)
 
     result = automation.run_auto_execute(db_session)
 
     assert result["processed"] == 1
     assert pushed == [
-        ("qualify", included.name, "stage"),
         ("discount", "十天后开学季", "commit"),
         ("signup", "十天后开学季", "campaign_automation"),
     ]
@@ -287,10 +282,12 @@ def test_discovery_no_cards_explains_layout_change_not_no_activity(db_session, m
 # ── ④ auto_recon: 状态筛选 + 2小时窗 + 失败保持状态 + 成功核对 ────────────────
 
 def _plan(db, name, status, created_utc, title="88VIP周期购活动", start_at=None):
+    actual_start = start_at or datetime(2026, 7, 17, 20, 0, 0)
     plan = CampaignPlan(name=name, campaign_type="big88", tier="big",
-                        start_at=start_at or datetime(2026, 7, 17, 20, 0, 0),
-                        end_at=datetime(2026, 7, 19, 23, 59, 59),
+                        start_at=actual_start,
+                        end_at=actual_start + timedelta(days=2),
                         qn_campaign_title=title, status=status,
+                        remark="campaignId=49271; unitedActivityId=49283",
                         created_at=created_utc, updated_at=created_utc)
     db.add(plan)
     db.commit()

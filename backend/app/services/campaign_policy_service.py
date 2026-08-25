@@ -52,6 +52,8 @@ def require_policy() -> dict[str, Any]:
     pricing = policy.get("pricing") or {}
     gates = policy.get("qualification_gates") or {}
     scope = policy.get("scope_and_idempotency") or {}
+    submission_fields = policy.get("submission_fields") or {}
+    post_submit = policy.get("post_submit") or {}
     if execution.get("signup_executor") != "campaign_automation_program_only":
         raise RuntimeError("活动报名规则未锁定为程序自动执行，已停止")
     if (execution.get("ai_may_submit") is not False
@@ -59,6 +61,9 @@ def require_policy() -> dict[str, Any]:
             or execution.get("ai_may_retry_after_failure") is not False
             or execution.get("manual_signup_api_enabled") is not False):
         raise RuntimeError("活动报名规则未明确禁止 AI/页面提交、改价或重试，已停止")
+    if (execution.get("platform_write_probe_enabled") is not False
+            or execution.get("maximum_platform_signup_submissions_per_run") != 1):
+        raise RuntimeError("活动报名规则未锁定为只允许一次平台报名写入，已停止")
     if execution.get("on_failure") != "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision":
         raise RuntimeError("活动报名失败处理未锁定为停止、告警并等待用户决定，已停止")
     if (execution.get("automatic_campaign_withdrawal_enabled") is not False
@@ -74,11 +79,14 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定任一 SKU 冲突即整品排除并报告，已停止")
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":
         raise RuntimeError("活动报名规则未锁定价格线证据缺失/过期即上传前阻塞，已停止")
-    if (scope.get("exclude_no_sales_items_from_campaign_signup") is not False
+    if (gates.get("pre_submit_mode") != "local_read_only_evidence_preflight"
+            or scope.get("exclude_no_sales_items_from_campaign_signup") is not False
             or scope.get("registered_no_sales_is_advisory_only") is not True
             or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not True
-            or scope.get("qualification_before_discount_and_final_signup") is not True):
-        raise RuntimeError("活动报名规则未锁定每场对全部 ERP 在售商品重新执行平台资格检查，已停止")
+            or scope.get("qualification_before_discount_and_final_signup") is not False
+            or scope.get("platform_qualification_source")
+            != "the_single_final_signup_terminal_record"):
+        raise RuntimeError("活动报名规则未锁定只读预检和单次正式平台资格结果，已停止")
     if scope.get("no_sales_only_failure_action") != "keep_out_of_campaign_and_use_single_item_discount":
         raise RuntimeError("活动报名规则未锁定无动销仅失败的单品立减兜底，已停止")
     if scope.get("accepted_item_action") != "single_item_discount_first_then_final_campaign_signup":
@@ -93,6 +101,21 @@ def require_policy() -> dict[str, Any]:
         raise RuntimeError("活动报名规则未锁定保留现场且撤销须当前精确授权，已停止")
     if scope.get("qualification_hard_failure_action") != "isolate_whole_item_report_and_continue_safe_items":
         raise RuntimeError("活动报名规则未锁定资格硬失败整品隔离并继续安全商品，已停止")
+    if (submission_fields.get("shipping_time_mode") != "relative_days_text"
+            or submission_fields.get("shipping_time_required_on_every_signup_row") is not True):
+        raise RuntimeError("活动报名规则未锁定逐行相对发货时效，已停止")
+    try:
+        shipping_days = int(submission_fields.get("default_shipping_days"))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("活动报名规则默认发货天数非法，已停止") from exc
+    if not 1 <= shipping_days <= 365:
+        raise RuntimeError("活动报名规则默认发货天数必须在1到365天，已停止")
+    receipt_fields = post_submit.get("receipt_fields") or []
+    if (post_submit.get("receipt_required") is not True
+            or not isinstance(receipt_fields, list)
+            or not set({"job_id", "terminal_counts", "fresh_export_sha256",
+                        "per_sku_verification"}).issubset(set(receipt_fields))):
+        raise RuntimeError("活动报名规则未锁定终态与新导出结构化回执，已停止")
     lines = policy.get("explanation_lines")
     if not isinstance(lines, list) or len(lines) < 5 or not all(isinstance(x, str) and x for x in lines):
         raise RuntimeError("活动报名规则 explanation_lines 不完整，已停止")
@@ -126,3 +149,9 @@ def floor_evidence_max_age_hours() -> int:
     if hours <= 0:
         raise RuntimeError("活动报名规则 floor_evidence_max_age_hours 必须大于 0，已停止")
     return hours
+
+
+def default_shipping_days() -> int:
+    """Return the policy-locked relative shipping time for every signup row."""
+    policy = require_policy()
+    return int((policy.get("submission_fields") or {})["default_shipping_days"])

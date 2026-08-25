@@ -61,7 +61,10 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert scope["exclude_no_sales_items_from_campaign_signup"] is False
     assert scope["registered_no_sales_is_advisory_only"] is True
     assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is True
-    assert scope["qualification_before_discount_and_final_signup"] is True
+    assert scope["qualification_before_discount_and_final_signup"] is False
+    assert policy["execution"]["platform_write_probe_enabled"] is False
+    assert policy["execution"]["maximum_platform_signup_submissions_per_run"] == 1
+    assert policy["submission_fields"]["default_shipping_days"] == 30
     assert scope["accepted_item_action"] == "single_item_discount_first_then_final_campaign_signup"
     assert scope["existing_single_discount_edit_mode"] == "one_item_per_job_with_sku_readback"
     assert scope["existing_single_discount_activity_binding"] == "per_item_id_to_activity_id"

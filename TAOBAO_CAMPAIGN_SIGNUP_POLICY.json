@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-21.1",
-  "updated_at": "2026-08-21T10:05:00+08:00",
+  "version": "2026-08-25.1",
+  "updated_at": "2026-08-25T16:20:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -9,9 +9,11 @@
     "ai_may_submit": false,
     "ai_may_adjust_price": false,
     "ai_may_retry_after_failure": false,
-    "program_may_retry_after_no_sales_only_failure": true,
+    "program_may_retry_after_no_sales_only_failure": false,
     "on_failure": "stop_mark_alarmed_notify_user_and_wait_for_explicit_decision",
     "manual_signup_api_enabled": false,
+    "platform_write_probe_enabled": false,
+    "maximum_platform_signup_submissions_per_run": 1,
     "automatic_campaign_withdrawal_enabled": false,
     "withdrawal_requires_current_explicit_item_list_authorization": true
   },
@@ -33,6 +35,7 @@
     }
   },
   "qualification_gates": {
+    "pre_submit_mode": "local_read_only_evidence_preflight",
     "minimum_list_price": "signup_price_must_be_lte_platform_minimum_list_price",
     "minimum_universal_coupon_after_price": "signup_price_minus_official_discount_minus_concurrent_single_item_discount_must_be_lte_platform_minimum_universal_coupon_after_price",
     "single_item_discount_participates_in_qualification": true,
@@ -56,7 +59,8 @@
     "exclude_no_sales_items_from_campaign_signup": false,
     "registered_no_sales_is_advisory_only": true,
     "every_listed_item_is_requalified_by_platform_for_each_campaign": true,
-    "qualification_before_discount_and_final_signup": true,
+    "qualification_before_discount_and_final_signup": false,
+    "platform_qualification_source": "the_single_final_signup_terminal_record",
     "no_sales_only_failure_action": "keep_out_of_campaign_and_use_single_item_discount",
     "accepted_item_action": "single_item_discount_first_then_final_campaign_signup",
     "existing_single_discount_edit_mode": "one_item_per_job_with_sku_readback",
@@ -71,7 +75,14 @@
     "already_correct_items_are_not_reimported": true,
     "published_wrong_price_or_missing_sku_action": "isolate_item_report_and_continue_safe_items",
     "target_scope_must_be_complete_and_mapped": true,
-    "custom_placeholder_safe_cap_without_live_price": "allow_only_after_explicit_current_plan_user_authorization"
+    "custom_placeholder_safe_cap_without_live_price": "allow_only_after_explicit_current_plan_user_authorization",
+    "historical_no_sales_pre_submit_treatment": "advisory_only_use_campaign_candidate_discount_math",
+    "terminal_no_sales_fallback": "after_final_signup_apply_exact_failed_item_scope_without_official_discount"
+  },
+  "submission_fields": {
+    "shipping_time_mode": "relative_days_text",
+    "default_shipping_days": 30,
+    "shipping_time_required_on_every_signup_row": true
   },
   "post_submit": {
     "success_source_of_truth": "latest_qianniu_batch_operation_record_and_fresh_export",
@@ -82,7 +93,20 @@
     "historical_activity_records_outside_current_scope": "informational_only_only_when_not_in_active_status",
     "active_activity_records_outside_current_scope": "preserve_and_report; fully_validate_in_place; withdrawal_requires_current_explicit_item_list_authorization",
     "future_super_reduce_paused_status": "enrolled_pending_effective_date_and_coupon_after_refresh",
-    "unexplained_failure_action": "mark_alarmed_notify_and_wait"
+    "unexplained_failure_action": "mark_alarmed_notify_and_wait",
+    "receipt_required": true,
+    "receipt_fields": [
+      "campaign_title",
+      "campaign_id",
+      "united_activity_id",
+      "campaign_start",
+      "campaign_end",
+      "job_id",
+      "terminal_counts",
+      "feedback_artifact",
+      "fresh_export_sha256",
+      "per_sku_verification"
+    ]
   },
   "ai_boundary": {
     "allowed": [
@@ -104,7 +128,8 @@
   "explanation_lines": [
     "活动报名只由 ERP 自动报名程序执行；AI 和页面均不得直接提交、自动改价或自动重试。",
     "每场活动都把 ERP 当前全部在售商品交给平台重新检查；历史无动销只作提示，不能预先排除。",
-    "平台通过的商品先逐商品完成单品立减并逐 SKU 回读，再正式报名；仅无动销失败的商品只做单品立减兜底。",
+    "上传报名表本身就是平台写入，不得伪装成资格预检；每次运行只允许一次正式报名提交。",
+    "程序先按本地新鲜证据完成只读预检并设置候选商品单品立减，再正式报名一次；终态仅无动销失败的商品随后自动改为不含官方立减的单品立减兜底。",
     "资格检查中的价格、SKU、上下架等硬失败按整品隔离并报告，不阻断其余安全商品继续。",
     "平台只返回失败数量而没有逐商品原因时，程序必须按活动ID只读补取最新反馈；仍不完整则停止，禁止把失败数量猜成无动销。",
     "平台资格预检尚未生效同期单品立减时，若只报券后线失败，程序必须用最新价线和本计划单品立减逐SKU复算；复算无剩余价线冲突才可进入后续立减，动销、缺SKU、一口价、混合失败或仍有价差的商品继续硬阻断。",
@@ -120,6 +145,7 @@
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",
     "资格通过后逐 SKU 验算：报名价减官方立减再减单品立减，必须等于 ERP 本场目标到手价。",
     "任一 SKU 缺失、历史线证据缺失或过期、错活动、错价、回执不明，程序立即停止、保留当前报名并报告；禁止以撤销后重报作为自动恢复手段。",
-    "成功必须以千牛最新批量操作记录和新导出的已报商品表为准；已正确报名商品不重复导入。"
+    "每一条活动报名行都必须填写相对发货时效，默认固定为30天文本，禁止留空或只写裸数字。",
+    "成功必须以千牛最新批量操作记录和按活动标题、campaignId、unitedActivityId、秒级档期锁定的新导出已报商品表为准；已正确报名商品不重复导入。"
   ]
 }

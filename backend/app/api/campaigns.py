@@ -417,8 +417,22 @@ async def recon(plan_id: int,
     source = "manual"
     if not any((activity_bytes, discount_bytes, product_bytes)):
         from app.services import web_agent_service
+        identity = campaign_service.campaign_identity(plan)
+        if not identity["ok"]:
+            raise HTTPException(422, detail={
+                "error": "campaign_identity_incomplete",
+                "missing": identity["missing"],
+            })
         exp = web_agent_service.campaign_export_items(
-            db, plan.qn_campaign_title or plan.name)
+            db,
+            identity["campaign_title"],
+            campaign_id=identity["campaign_id"],
+            united_activity_id=identity["united_activity_id"],
+            campaign_phase=identity["campaign_phase"],
+            campaign_start=identity["campaign_start"],
+            campaign_end=identity["campaign_end"],
+            official_rate=identity["official_rate"],
+        )
         if not exp.get("ok"):
             err = exp.get("error") or exp.get("message") or "未知原因"
             raise HTTPException(422, f"WA 自动导出失败（{err}）; 请自己去千牛导出后走手动上传兜底")

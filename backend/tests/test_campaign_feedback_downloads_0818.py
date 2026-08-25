@@ -118,3 +118,22 @@ def test_operation_feedback_prefers_immutable_campaign_identity(monkeypatch):
         "united_activity_id": "456",
     }
     assert response.headers["x-panse-failed-rows"] == "1"
+
+
+def test_campaign_feedback_rejects_stale_response_from_other_activity(monkeypatch):
+    monkeypatch.setattr(
+        web_agent_service, "_post",
+        lambda *args, **kwargs: {"ok": True, "job": "feedback-job"})
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *args, **kwargs: {"result": {
+            "ok": True,
+            "campaign_id": "999",
+            "united_activity_id": "456",
+            "feedback": {"failed": [], "by_reason": []},
+        }})
+
+    result = web_agent_service.campaign_feedback(
+        object(), "开学季-现货", campaign_id="123", united_activity_id="456")
+
+    assert result == {"ok": False, "error": "campaign_feedback_identity_mismatch"}

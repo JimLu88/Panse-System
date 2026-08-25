@@ -1,7 +1,7 @@
 """营销活动全自动执行。
 
-发现阶段只读锁定父活动、子阶段、秒级档期、官方力度和活动 ID；缺一项就停并飞书说明。
-执行阶段按 计划预检 → 单品立减 → 当前活动导出差集 → 活动报名 → 自动核对 推进。
+发现阶段只读锁定父活动、子阶段、秒级档期、官方力度和活动 ID；缺一项就停并通知。
+执行阶段按 只读证据预检 → 候选单品立减 → 唯一一次活动报名 → 终态分流 → 自动核对 推进。
 """
 from __future__ import annotations
 
@@ -227,19 +227,11 @@ def run_auto_execute(db: Session) -> dict:
                     "step": "floor_evidence_refresh", "notification": notice,
                 })
                 continue
-            qualification = campaign_service.qualify_signup_scope(db, plan)
-            if not qualification.get("ok"):
-                failed += 1
-                plan.status = "alarmed"
-                db.commit()
-                details.append({
-                    "plan_id": plan.id, "ok": False,
-                    "step": "platform_qualification",
-                    "error": qualification.get("error"),
-                    "validation": qualification.get("validation"),
-                })
-                continue
-            checks = campaign_service.preflight(db, plan)
+            # QianNiu has no read-only upload qualification: attaching the
+            # workbook creates a real signup operation. All pre-submit checks
+            # here are local/read-only; the platform is written exactly once
+            # later by push_signup.
+            checks = campaign_service.preflight(db, plan, no_sales_items=set())
             critical = [c for c in checks if c.get("level") == "error"]
             if critical:
                 failed += 1
@@ -280,20 +272,11 @@ def run_auto_execute(db: Session) -> dict:
             db.commit()
 
         if plan.status == "precheck":
-            if not campaign_service.platform_qualified_items(plan):
-                qualification = campaign_service.qualify_signup_scope(db, plan)
-                if not qualification.get("ok"):
-                    failed += 1
-                    plan.status = "alarmed"
-                    db.commit()
-                    details.append({
-                        "plan_id": plan.id, "ok": False,
-                        "step": "platform_qualification",
-                        "error": qualification.get("error"),
-                        "validation": qualification.get("validation"),
-                    })
-                    continue
-            discount = campaign_service.push_discount(db, plan, phase="commit")
+            # Historical no-sales is advisory. Use candidate math before the
+            # final platform result; terminal no-sales failures are converted
+            # to standalone-discount fallback after that single signup.
+            discount = campaign_service.push_discount(
+                db, plan, phase="commit", no_sales_items=set())
             if not discount.get("ok"):
                 failed += 1
                 plan.status = "alarmed"

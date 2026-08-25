@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Iterable
 
 from sqlalchemy.orm import Session
@@ -22,6 +23,18 @@ _NON_NO_SALES_FAILURE_MARKERS = (
     "最低标价", "普惠券后价", "红线价", "缺失的SKUID", "要求全部SKU",
     "可编辑", "不可上调", "下架", "失效", "重复", "不在活动范围",
 )
+# Production Taobao IDs are normally much longer; four digits keeps historical
+# fixtures/imports usable while still rejecting the junk values ("5", "待定",
+# "暂无") that polluted the durable registry in the incident report.
+_ITEM_ID_RE = re.compile(r"\d{4,20}")
+
+
+def _normalize_item_ids(item_ids: Iterable[object]) -> set[str]:
+    """Keep only real-looking Taobao item IDs; reject notes such as 待定/暂无/5."""
+    return {
+        text for value in (item_ids or [])
+        if (text := str(value or "").strip()) and _ITEM_ID_RE.fullmatch(text)
+    }
 
 
 def get_no_sales(db: Session) -> set[str]:
@@ -32,7 +45,7 @@ def get_no_sales(db: Session) -> set[str]:
         items = json.loads(raw) if raw else []
     except (ValueError, TypeError):
         items = []
-    return {str(x).strip() for x in items if str(x).strip()}
+    return _normalize_item_ids(items)
 
 
 def _save(db: Session, ids: set[str]) -> None:
@@ -46,7 +59,7 @@ def _save(db: Session, ids: set[str]) -> None:
 def add_no_sales(db: Session, item_ids: Iterable[str]) -> set[str]:
     """登记无动销商品(并集)。返回登记后的全集。无变化不写库。"""
     cur = get_no_sales(db)
-    new = cur | {str(x).strip() for x in (item_ids or []) if str(x).strip()}
+    new = cur | _normalize_item_ids(item_ids)
     if new != cur:
         _save(db, new)
     return new
@@ -55,7 +68,7 @@ def add_no_sales(db: Session, item_ids: Iterable[str]) -> set[str]:
 def remove_no_sales(db: Session, item_ids: Iterable[str]) -> set[str]:
     """移除登记(本场平台资格重检通过后)。返回剩余全集。"""
     cur = get_no_sales(db)
-    new = cur - {str(x).strip() for x in (item_ids or [])}
+    new = cur - _normalize_item_ids(item_ids)
     if new != cur:
         _save(db, new)
     return new

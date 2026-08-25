@@ -564,7 +564,7 @@ def auto_recon_scan(db: Session) -> dict:
     from zoneinfo import ZoneInfo
     from sqlalchemy import select
     from app.models.campaign import CampaignPlan
-    from app.services import web_agent_service
+    from app.services import campaign_service, web_agent_service
 
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(hours=AUTO_RECON_WINDOW_HOURS)
@@ -596,8 +596,30 @@ def auto_recon_scan(db: Session) -> dict:
         if anchor < cutoff:
             continue                               # 超过窗口 → 留给手动上传, 不再自动追
         scanned += 1
-        title = plan.qn_campaign_title or plan.name
-        exp = web_agent_service.campaign_export_items(db, title)
+        identity = campaign_service.campaign_identity(plan)
+        if not identity["ok"]:
+            failed += 1
+            _notify_recon_export_failure_once(
+                db, plan,
+                f"⚠️ 「{plan.name}」报名后自动核对已停止：活动标题、双ID或秒级档期不完整。\n"
+                f"缺少：{', '.join(identity['missing'])}。系统没有猜测活动，也没有导出或重报。")
+            details.append({
+                "plan_id": plan.id,
+                "ok": False,
+                "error": "campaign_identity_incomplete",
+                "missing": identity["missing"],
+            })
+            continue
+        exp = web_agent_service.campaign_export_items(
+            db,
+            identity["campaign_title"],
+            campaign_id=identity["campaign_id"],
+            united_activity_id=identity["united_activity_id"],
+            campaign_phase=identity["campaign_phase"],
+            campaign_start=identity["campaign_start"],
+            campaign_end=identity["campaign_end"],
+            official_rate=identity["official_rate"],
+        )
         if not exp.get("ok"):
             failed += 1
             err = exp.get("error") or exp.get("message") or "未知原因"
