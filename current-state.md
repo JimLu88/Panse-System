@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-25 (Asia/Shanghai)
 
+## 2026-08-25 Enterprise WeChat group-chat shipping password
+
+- GitHub `main` code commit and deployed production: `89f00c60c5b9cafe672878e88ee5a26f7bb3c4a1`.
+- Added the Enterprise WeChat intelligent-bot JSON/AES callback at `/api/wechat/aibot/callback`; the previous self-built-app single-chat callback remains at `/api/wechat/callback`, with separate credentials.
+- Group messages are accepted only after protocol signature/AES validation and member UserID allowlisting. Supported forms include `发货密码xxx`, whitespace/colon/equal variants, `密码xxx`, and `口令xxx`. A bare ASCII password is accepted only after the exact configured bot `@name` is removed from an authenticated intelligent-bot callback. Passwords are never echoed or logged; message IDs are deduplicated.
+- The callback uses the authenticated one-time WeCom `response_url` to acknowledge receipt in the originating chat, while the existing password -> decrypt -> ingest -> manifest closeout -> pending factory-image delivery chain continues asynchronously.
+- Verification: relevant callback/config/notification/order-isolation scope `32 passed`; Python compilation, frontend production build, shell syntax, and diff checks passed. Public HTTPS reached the new callback with the expected HTTP 422 when protocol signature parameters were intentionally omitted.
+- Unified NAS release passed: health, ready, API/Web commit parity, migration `0139 (head)`, both callback routes, deployed group-bot admin UI, and all API/Web/DB/backup containers verified. Rollback images: `panse-system-api:rollback-20260825-141943` and `panse-system-web:rollback-20260825-142233`.
+- Scheduler restarted with 62 registered jobs; the delayed startup catch-up check reported no missed critical shift.
+- Activation is waiting only on the WeCom account gate: production `wechat_aibot_enabled=false`, and bot Token/AESKey/name are unset; the existing allowed-member list remains set. The user must create an internal intelligent bot under WeCom “安全与管理 → 管理工具 → 智能机器人”, configure the public HTTPS callback plus `/api/wechat/aibot/callback`, save the same credentials/name in ERP admin, pass URL verification, and add the bot to the target group. No account action, real password submission, business replay, or external test message was performed.
+
 ## 2026-08-25 Enterprise WeChat inbound shipping password
 
 - GitHub `main` code commit and deployed production: `003f4a8ca76911681347b9c7c73b5bcc322cb881`.
