@@ -24,8 +24,49 @@ from sqlalchemy.orm import Session
 from app.services import settings_service
 
 SETTING_KEY = "critical_automation_pipeline_state_v1"
-_DESCRIPTION = "关键自动化失败/重试/最终失败状态及微信Push待发送队列"
+_DESCRIPTION = "关键自动化失败/重试/最终失败状态、程序维护分流及微信Push待发送队列"
 _MAX_NOTIFY_ATTEMPTS = 8
+
+_PROGRAM_FAILURE_PATTERNS = (
+    "attributeerror",
+    "keyerror",
+    "typeerror",
+    "nameerror",
+    "importerror",
+    "modulenotfounderror",
+    "syntaxerror",
+    "selector not found",
+    "locator not found",
+    "字段缺失",
+    "字段不存在",
+    "选择器失效",
+    "程序异常",
+    "代码异常",
+    "数据契约",
+    "schema mismatch",
+    "contract mismatch",
+)
+
+_EXECUTION_FAILURE_PATTERNS = (
+    "timeouterror",
+    "timeout",
+    "超时",
+    "connectionerror",
+    "连接失败",
+    "连接中断",
+    "网络异常",
+    "pc离线",
+    "web-agent离线",
+    "503",
+    "502",
+    "429",
+    "rate limit",
+    "限流",
+    "验证码",
+    "登录失效",
+    "待口令",
+    "密码",
+)
 
 PIPELINE_LABELS = {
     "order_delivery": "订单自动推送",
@@ -40,7 +81,11 @@ def _now(value: Optional[datetime] = None) -> datetime:
 
 
 def _default() -> dict:
-    return {"pipelines": {}, "notification_queue": []}
+    return {
+        "pipelines": {},
+        "notification_queue": [],
+        "program_maintenance_queue": [],
+    }
 
 
 def _load(db: Session) -> dict:
@@ -55,16 +100,22 @@ def _load(db: Session) -> dict:
         return _default()
     state.setdefault("pipelines", {})
     state.setdefault("notification_queue", [])
+    state.setdefault("program_maintenance_queue", [])
     if not isinstance(state["pipelines"], dict):
         state["pipelines"] = {}
     if not isinstance(state["notification_queue"], list):
         state["notification_queue"] = []
+    if not isinstance(state["program_maintenance_queue"], list):
+        state["program_maintenance_queue"] = []
     return state
 
 
 def _save(db: Session, state: dict) -> None:
     # 只保留最近 100 条待发/已耗尽记录，防配置无限膨胀。
     state["notification_queue"] = state.get("notification_queue", [])[-100:]
+    state["program_maintenance_queue"] = state.get(
+        "program_maintenance_queue", []
+    )[-100:]
     settings_service.set_value(
         db,
         SETTING_KEY,
@@ -79,6 +130,88 @@ def _safe_error(error: str) -> str:
     text = re.sub(r"[¥￥]\s*[\d,.]+", "金额已隐藏", text)
     text = re.sub(r"\b\d+(?:\.\d{1,2})?\s*元\b", "金额已隐藏", text)
     return text[:500]
+
+
+def classify_failure(error: str) -> dict[str, str]:
+    """把自动化故障分给执行端或程序维护端。
+
+    只有具有确定代码/契约特征的错误才停止业务重试并进入程序维护队列；
+    平台、网络、超时和交互门继续由执行端按既定时刻有限重试。未知错误
+    保守地留在执行端重试，同时标记为需要复核，避免分类器本身阻断业务。
+    """
+    normalized = str(error or "").lower()
+    if any(pattern in normalized for pattern in _PROGRAM_FAILURE_PATTERNS):
+        return {
+            "owner": "program_maintenance",
+            "label": "程序修复",
+            "reason": "deterministic_program_error",
+            "retry_policy": "stop_and_review",
+        }
+    if any(pattern in normalized for pattern in _EXECUTION_FAILURE_PATTERNS):
+        return {
+            "owner": "execution",
+            "label": "执行端",
+            "reason": "transient_or_interaction_error",
+            "retry_policy": "scheduled_retry",
+        }
+    return {
+        "owner": "execution",
+        "label": "执行端（待复核）",
+        "reason": "unclassified_error",
+        "retry_policy": "scheduled_retry",
+    }
+
+
+def _queue_program_maintenance(
+    state: dict,
+    *,
+    pipeline: str,
+    day: str,
+    error: str,
+    routing: dict[str, str],
+    current: datetime,
+) -> dict:
+    """登记去重、可审计的程序维护项，不触发外部业务动作。"""
+    queue = state.setdefault("program_maintenance_queue", [])
+    dedupe_key = f"{pipeline}:{day}:{routing['reason']}"
+    for item in reversed(queue):
+        if item.get("dedupe_key") == dedupe_key and item.get("status") == "open":
+            item["last_seen_at"] = current.isoformat()
+            item["occurrences"] = int(item.get("occurrences") or 1) + 1
+            item["last_error"] = error
+            return item
+    item = {
+        "id": uuid4().hex,
+        "dedupe_key": dedupe_key,
+        "pipeline": pipeline,
+        "date": day,
+        "owner": routing["owner"],
+        "reason": routing["reason"],
+        "retry_policy": routing["retry_policy"],
+        "status": "open",
+        "created_at": current.isoformat(),
+        "last_seen_at": current.isoformat(),
+        "occurrences": 1,
+        "last_error": error,
+    }
+    queue.append(item)
+    return item
+
+
+def _resolve_program_maintenance(
+    state: dict, pipeline: str, day: str, current: datetime,
+) -> int:
+    resolved = 0
+    for item in state.setdefault("program_maintenance_queue", []):
+        if (
+            item.get("pipeline") == pipeline
+            and item.get("date") == day
+            and item.get("status") == "open"
+        ):
+            item["status"] = "resolved"
+            item["resolved_at"] = current.isoformat()
+            resolved += 1
+    return resolved
 
 
 def _send_feishu(db: Session, text: str) -> tuple[bool, str]:
@@ -211,6 +344,18 @@ def get_pipeline(db: Session, pipeline: str, *, now: Optional[datetime] = None) 
     return dict(_entry_for_day(state, pipeline, current.date().isoformat()))
 
 
+def list_program_maintenance(
+    db: Session, *, status: str | None = "open", limit: int = 100,
+) -> list[dict]:
+    """供程序维护任务只读领取结构化故障；不触发任务、通知或业务重跑。"""
+    state = _load(db)
+    items = state.get("program_maintenance_queue", [])
+    if status is not None:
+        items = [item for item in items if item.get("status") == status]
+    bounded_limit = max(1, min(int(limit), 100))
+    return [dict(item) for item in items[-bounded_limit:]][::-1]
+
+
 def begin_run(
     db: Session,
     pipeline: str,
@@ -245,6 +390,10 @@ def begin_run(
             "last_error": None,
             "last_attempt_at": None,
             "next_retry_at": None,
+            "failure_owner": None,
+            "failure_reason": None,
+            "retry_policy": None,
+            "maintenance_item_id": None,
         })
         _save(db, state)
         return {**dict(entry), "opened": True}
@@ -274,6 +423,10 @@ def resume_for_retry(
         "waiting_input": False,
         "last_error": None,
         "next_retry_at": None,
+        "failure_owner": None,
+        "failure_reason": None,
+        "retry_policy": None,
+        "maintenance_item_id": None,
     })
     _save(db, state)
     return dict(entry)
@@ -305,6 +458,10 @@ def pause_for_input(
         "last_error": _safe_error(reason),
         "last_attempt_at": current.isoformat(),
         "next_retry_at": None,
+        "failure_owner": "execution",
+        "failure_reason": "waiting_for_user_input",
+        "retry_policy": "wait_for_input",
+        "maintenance_item_id": None,
     })
     superseded = _supersede_pending_failure_notifications(
         state, pipeline, day, current,
@@ -345,7 +502,11 @@ def record_failure(
     now: Optional[datetime] = None,
     max_failures: int = 4,
 ) -> dict:
-    """记录一次失败并立即发飞书；最后一次明确写“今日失败”。"""
+    """记录一次失败、确定处理归属并立即发微信 Push。
+
+    执行类故障保留既定有限重试；确定性程序故障停止业务盲重试，登记到
+    ``program_maintenance_queue``，等待程序修复后再由正常调度/明确补跑恢复。
+    """
     if pipeline not in PIPELINE_LABELS:
         raise ValueError(f"未知关键自动化: {pipeline}")
     current = _now(now)
@@ -361,18 +522,43 @@ def record_failure(
         }
 
     failures = int(entry.get("failures") or 0) + 1
-    future_slots = sorted(_now(x) for x in retry_slots if _now(x) > current)
-    next_retry = future_slots[0] if future_slots and failures < max_failures else None
-    final = failures >= max_failures or next_retry is None
     safe_error = _safe_error(error)
+    routing = classify_failure(safe_error)
+    future_slots = sorted(_now(x) for x in retry_slots if _now(x) > current)
+    program_failure = routing["owner"] == "program_maintenance"
+    next_retry = (
+        future_slots[0]
+        if not program_failure and future_slots and failures < max_failures
+        else None
+    )
+    final = program_failure or failures >= max_failures or next_retry is None
     label = PIPELINE_LABELS[pipeline]
 
-    if final:
+    maintenance_item = None
+    if program_failure:
+        maintenance_item = _queue_program_maintenance(
+            state,
+            pipeline=pipeline,
+            day=day,
+            error=safe_error,
+            routing=routing,
+            current=current,
+        )
+
+    if program_failure:
+        text = (
+            f"❌ {day}【{label}】检测到程序问题\n"
+            f"原因：{safe_error}\n"
+            "处理归属：程序修复（已登记维护队列，停止业务盲重试）。\n"
+            "修复完成后再由正常计划或明确批准的补跑恢复。"
+        )
+        event = "program-maintenance"
+    elif final:
         text = (
             f"❌ {day}【{label}】今日失败\n"
             f"已连续执行失败 {failures} 次，今天不再自动重试。\n"
             f"最后原因：{safe_error}\n"
-            "请人工检查；明天仍会按正常时间重新开始。"
+            "处理归属：执行端（请检查平台、网络或交互门）；明天仍会按正常时间重新开始。"
         )
         event = "final"
     else:
@@ -385,6 +571,7 @@ def record_failure(
         text = (
             f"⚠️ {day}【{label}】第{failures}次执行失败\n"
             f"原因：{safe_error}\n"
+            f"处理归属：{routing['label']}。\n"
             f"系统将在 {next_retry.strftime('%H:%M')}（约{delay}后）自动进行第{failures + 1}次尝试。"
         )
         event = f"failure-{failures}"
@@ -404,6 +591,12 @@ def record_failure(
         "last_error": safe_error,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": next_retry.isoformat() if next_retry else None,
+        "failure_owner": routing["owner"],
+        "failure_reason": routing["reason"],
+        "retry_policy": routing["retry_policy"],
+        "maintenance_item_id": (
+            maintenance_item.get("id") if maintenance_item else None
+        ),
     })
     entry.setdefault("notifications", []).append({
         "event": event,
@@ -417,6 +610,8 @@ def record_failure(
         "failures": failures,
         "final": final,
         "next_retry_at": entry["next_retry_at"],
+        "routing": routing,
+        "maintenance_item_id": entry["maintenance_item_id"],
         "notification": delivery,
     }
 
@@ -436,6 +631,9 @@ def record_success(
     day = current.date().isoformat()
     entry = _entry_for_day(state, pipeline, day)
     if entry.get("success"):
+        resolved_maintenance = _resolve_program_maintenance(
+            state, pipeline, day, current,
+        )
         superseded = _supersede_pending_failure_notifications(
             state, pipeline, day, current,
         )
@@ -454,10 +652,14 @@ def record_success(
             "already_success": True,
             "recovered": False,
             "superseded_notifications": superseded,
+            "resolved_maintenance": resolved_maintenance,
         }
 
     failures = int(entry.get("failures") or 0)
     superseded = _supersede_pending_failure_notifications(
+        state, pipeline, day, current,
+    )
+    resolved_maintenance = _resolve_program_maintenance(
         state, pipeline, day, current,
     )
     delivery = {"sent": False, "queued": False, "detail": "normal_success"}
@@ -485,6 +687,10 @@ def record_success(
         "last_error": None,
         "last_attempt_at": current.isoformat(),
         "next_retry_at": None,
+        "failure_owner": None,
+        "failure_reason": None,
+        "retry_policy": None,
+        "maintenance_item_id": None,
     })
     if recovered:
         entry.setdefault("notifications", []).append({
@@ -499,6 +705,7 @@ def record_success(
         "recovered": recovered,
         "failures": failures,
         "superseded_notifications": superseded,
+        "resolved_maintenance": resolved_maintenance,
         "notification": delivery,
     }
 
@@ -521,7 +728,7 @@ def finalize_open_failures(
             f"❌ {day}【{label}】今日失败\n"
             f"今天已失败 {failures} 次，晚间重试窗口已经结束。\n"
             f"最后原因：{safe_error}\n"
-            "请人工检查；明天仍会按正常时间重新开始。"
+            "处理归属：执行端（请检查平台、网络或交互门）；明天仍会按正常时间重新开始。"
         )
         delivery = _deliver_or_queue(
             db,
@@ -534,6 +741,9 @@ def finalize_open_failures(
             "final": True,
             "next_retry_at": None,
             "last_attempt_at": current.isoformat(),
+            "failure_owner": entry.get("failure_owner") or "execution",
+            "failure_reason": entry.get("failure_reason") or "retry_window_ended",
+            "retry_policy": "next_scheduled_day",
         })
         entry.setdefault("notifications", []).append({
             "event": "finalizer",

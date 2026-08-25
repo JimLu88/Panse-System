@@ -75,6 +75,87 @@ def test_each_failure_notifies_next_retry_and_final_failure(db_session, monkeypa
     assert "今日失败" in sent[-1]
 
 
+def test_transient_timeout_routes_to_execution_and_keeps_bounded_retry(
+    db_session, monkeypatch,
+):
+    sent: list[str] = []
+    monkeypatch.setattr(
+        pipeline,
+        "_send_feishu",
+        lambda db, text: (sent.append(text) is None or True, "sent"),
+    )
+
+    result = pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "淘宝收货信息解密额度检查异常，已停止导出: TimeoutError",
+        retry_slots=[_at(20), _at(21)],
+        now=_at(19),
+        max_failures=3,
+    )
+
+    assert result["final"] is False
+    assert result["routing"] == {
+        "owner": "execution",
+        "label": "执行端",
+        "reason": "transient_or_interaction_error",
+        "retry_policy": "scheduled_retry",
+    }
+    assert result["next_retry_at"].startswith("2026-07-29T20:00")
+    assert "处理归属：执行端" in sent[0]
+    assert pipeline.needs_retry(
+        db_session, "order_delivery", now=_at(19, 1)
+    ) is True
+
+
+def test_deterministic_program_error_stops_blind_retry_and_enters_maintenance_queue(
+    db_session, monkeypatch,
+):
+    sent: list[str] = []
+    monkeypatch.setattr(
+        pipeline,
+        "_send_feishu",
+        lambda db, text: (sent.append(text) is None or True, "sent"),
+    )
+
+    result = pipeline.record_failure(
+        db_session,
+        "order_delivery",
+        "KeyError: order_status 字段缺失",
+        retry_slots=[_at(20), _at(21)],
+        now=_at(19),
+        max_failures=3,
+    )
+
+    assert result["final"] is True
+    assert result["next_retry_at"] is None
+    assert result["routing"]["owner"] == "program_maintenance"
+    assert result["routing"]["retry_policy"] == "stop_and_review"
+    assert result["maintenance_item_id"]
+    assert pipeline.needs_retry(
+        db_session, "order_delivery", now=_at(19, 1)
+    ) is False
+    assert "处理归属：程序修复" in sent[0]
+    assert "停止业务盲重试" in sent[0]
+
+    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
+    queue = json.loads(raw)["program_maintenance_queue"]
+    assert len(queue) == 1
+    assert queue[0]["id"] == result["maintenance_item_id"]
+    assert queue[0]["status"] == "open"
+    assert queue[0]["last_error"] == "KeyError: order_status 字段缺失"
+    assert pipeline.list_program_maintenance(db_session) == [queue[0]]
+
+    recovered = pipeline.record_success(
+        db_session, "order_delivery", now=_at(19, 30)
+    )
+    assert recovered["resolved_maintenance"] == 1
+    raw = settings_service.get(db_session, pipeline.SETTING_KEY, env_fallback=False)
+    queue = json.loads(raw)["program_maintenance_queue"]
+    assert queue[0]["status"] == "resolved"
+    assert pipeline.list_program_maintenance(db_session) == []
+
+
 def test_success_after_failure_sends_one_recovery_and_stops_retry(db_session, monkeypatch):
     sent: list[str] = []
     monkeypatch.setattr(
