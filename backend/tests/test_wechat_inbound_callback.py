@@ -1,4 +1,5 @@
 import base64
+import json
 import time
 
 from fastapi.testclient import TestClient
@@ -17,6 +18,8 @@ AES_KEY = base64.b64encode(bytes(range(32))).decode("ascii").rstrip("=")
 CORP_ID = "ww-test-corp"
 TOKEN = "callback-test-token"
 ALLOWED_USER = "OwnerUserId"
+AIBOT_TOKEN = "aibot-callback-test-token"
+AIBOT_NAME = "畔色 ERP 密码助手"
 
 
 def _client_and_session():
@@ -50,6 +53,15 @@ def _configure(db, *, allowed_user=ALLOWED_USER):
     db.commit()
 
 
+def _configure_aibot(db, *, allowed_user=ALLOWED_USER):
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_ENABLED, "true")
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_TOKEN, AIBOT_TOKEN)
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_AES_KEY, AES_KEY)
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_NAME, AIBOT_NAME)
+    settings_service.set_value(db, wechat_inbound_service.KEY_ALLOWED_USERS, allowed_user)
+    db.commit()
+
+
 def _callback_payload(content: str, *, sender=ALLOWED_USER, message_id="90001"):
     inner = (
         "<xml>"
@@ -68,6 +80,32 @@ def _callback_payload(content: str, *, sender=ALLOWED_USER, message_id="90001"):
     sig = wechat_inbound_service.signature(TOKEN, timestamp, nonce, encrypted)
     outer = f"<xml><Encrypt><![CDATA[{encrypted}]]></Encrypt></xml>".encode()
     return outer, {"msg_signature": sig, "timestamp": timestamp, "nonce": nonce}
+
+
+def _aibot_callback_payload(content: str, *, sender=ALLOWED_USER, message_id="aibot-1"):
+    payload = {
+        "msgid": message_id,
+        "aibotid": "test-aibot",
+        "chatid": "test-group",
+        "chattype": "group",
+        "from": {"userid": sender},
+        "response_url": (
+            "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=test-code"
+        ),
+        "msgtype": "text",
+        "text": {"content": content},
+    }
+    encrypted = wechat_inbound_service.encrypt_message(
+        json.dumps(payload, ensure_ascii=False), AES_KEY, "",
+    )
+    timestamp = str(int(time.time()))
+    nonce = "aibot-nonce"
+    sig = wechat_inbound_service.signature(AIBOT_TOKEN, timestamp, nonce, encrypted)
+    return json.dumps({"encrypt": encrypted}).encode(), {
+        "msg_signature": sig,
+        "timestamp": timestamp,
+        "nonce": nonce,
+    }
 
 
 def test_url_verification_decrypts_echo_string():
@@ -140,20 +178,136 @@ def test_callback_rejects_bad_signature_and_unauthorized_sender(monkeypatch):
         db.close()
 
 
-def test_only_explicit_shipping_password_command_is_accepted(monkeypatch):
+def test_multiple_labelled_shipping_password_formats_are_accepted(monkeypatch):
     client, db = _client_and_session()
     captured = []
     monkeypatch.setattr(wechat_inbound_service, "dispatch", captured.append)
     try:
         _configure(db)
-        for index, content in enumerate(("密码：Secret-123", "Secret-123", "发货密码Secret-123")):
+        formats = (
+            "发货密码Secret-123",
+            "发货密码 Secret-123",
+            "发货密码：Secret-123",
+            "密码Secret-123",
+            "密码：Secret-123",
+            "发货口令=Secret-123",
+            "口令 Secret-123",
+        )
+        for index, content in enumerate(formats):
             body, params = _callback_payload(content, message_id=f"91{index}")
             response = client.post("/api/wechat/callback", params=params, content=body)
             assert response.status_code == 200
+        assert len(captured) == len(formats)
+        assert {command.password for command in captured} == {"Secret-123"}
+
+        body, params = _callback_payload("Secret-123", message_id="9199")
+        response = client.post("/api/wechat/callback", params=params, content=body)
+        assert response.status_code == 200
+        assert len(captured) == len(formats)
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_aibot_url_verification_uses_empty_receive_id():
+    client, db = _client_and_session()
+    try:
+        _configure_aibot(db)
+        echo = wechat_inbound_service.encrypt_message("aibot-verified", AES_KEY, "")
+        timestamp = str(int(time.time()))
+        nonce = "aibot-verify-nonce"
+        sig = wechat_inbound_service.signature(AIBOT_TOKEN, timestamp, nonce, echo)
+        response = client.get("/api/wechat/aibot/callback", params={
+            "msg_signature": sig,
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "echostr": echo,
+        })
+        assert response.status_code == 200
+        assert response.text == "aibot-verified"
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_aibot_group_accepts_bare_password_after_exact_mention(monkeypatch):
+    client, db = _client_and_session()
+    captured = []
+    monkeypatch.setattr(wechat_inbound_service, "dispatch", captured.append)
+    try:
+        _configure_aibot(db)
+        body, params = _aibot_callback_payload(
+            f"@{AIBOT_NAME} Secret-123",
+            message_id="aibot-bare-1",
+        )
+        response = client.post("/api/wechat/aibot/callback", params=params, content=body)
+        assert response.status_code == 200
+        assert response.text == ""
+        assert len(captured) == 1
+        assert captured[0].password == "Secret-123"
+        assert captured[0].response_url.startswith("https://qyapi.weixin.qq.com/")
+        assert "Secret-123" not in response.text
+    finally:
+        app.dependency_overrides.clear()
+        db.close()
+
+
+def test_aibot_rejects_unlisted_sender_and_ignores_free_text(monkeypatch):
+    client, db = _client_and_session()
+    captured = []
+    monkeypatch.setattr(wechat_inbound_service, "dispatch", captured.append)
+    try:
+        _configure_aibot(db)
+        body, params = _aibot_callback_payload(
+            f"@{AIBOT_NAME} 帮我看看订单",
+            message_id="aibot-free-text",
+        )
+        response = client.post("/api/wechat/aibot/callback", params=params, content=body)
+        assert response.status_code == 200
+        assert not captured
+
+        body, params = _aibot_callback_payload(
+            f"@{AIBOT_NAME} Secret-123",
+            sender="NotAllowed",
+            message_id="aibot-forbidden",
+        )
+        response = client.post("/api/wechat/aibot/callback", params=params, content=body)
+        assert response.status_code == 403
         assert not captured
     finally:
         app.dependency_overrides.clear()
         db.close()
+
+
+def test_aibot_acknowledgement_never_echoes_password(monkeypatch):
+    import requests
+
+    captured = {}
+
+    class FakeResponse:
+        content = b'{"errcode": 0}'
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"errcode": 0}
+
+    def fake_post(url, *, json, timeout):
+        captured.update(url=url, json=json, timeout=timeout)
+        return FakeResponse()
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    response_url = (
+        "https://qyapi.weixin.qq.com/cgi-bin/aibot/response?response_code=test-code"
+    )
+    wechat_inbound_service._acknowledge_aibot(response_url)
+    assert captured["url"] == response_url
+    assert captured["timeout"] == 10
+    assert captured["json"]["msgtype"] == "markdown"
+    assert "密码不回显" in captured["json"]["markdown"]["content"]
 
 
 def test_future_shipping_password_is_encrypted_at_rest(db_session):

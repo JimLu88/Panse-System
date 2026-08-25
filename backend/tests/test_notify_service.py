@@ -289,6 +289,10 @@ def test_wechat_inbound_admin_config_never_returns_secrets():
             "token": "callback-secret-token",
             "aes_key": aes_key,
             "allowed_users": ["OwnerUserId"],
+            "aibot_enabled": True,
+            "aibot_token": "aibot-secret-token",
+            "aibot_aes_key": aes_key,
+            "aibot_name": "畔色 ERP 密码助手",
         })
         assert response.status_code == 200, response.text
         body = response.json()
@@ -297,7 +301,13 @@ def test_wechat_inbound_admin_config_never_returns_secrets():
         assert body["token_set"] is True
         assert body["aes_key_set"] is True
         assert body["allowed_users"] == ["OwnerUserId"]
+        assert body["aibot_enabled"] is True
+        assert body["aibot_ready"] is True
+        assert body["aibot_token_set"] is True
+        assert body["aibot_aes_key_set"] is True
+        assert body["aibot_callback_path"] == "/api/wechat/aibot/callback"
         assert "callback-secret-token" not in response.text
+        assert "aibot-secret-token" not in response.text
         assert aes_key not in response.text
     finally:
         from app.main import app

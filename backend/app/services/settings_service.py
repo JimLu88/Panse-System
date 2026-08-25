@@ -48,6 +48,8 @@ _SECRET_KEYS = {
     "taobao_shipping_pwd_latest",
     "wechat_inbound_token",
     "wechat_inbound_aes_key",
+    "wechat_aibot_token",
+    "wechat_aibot_aes_key",
 }
 
 

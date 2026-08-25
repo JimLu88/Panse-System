@@ -2159,6 +2159,10 @@ function WechatInboundConfigCard() {
         token: '',
         aes_key: '',
         allowed_users: cfg.allowed_users.join(', '),
+        aibot_enabled: cfg.aibot_enabled,
+        aibot_token: '',
+        aibot_aes_key: '',
+        aibot_name: cfg.aibot_name,
       });
     }
   }, [cfg, form]);
@@ -2173,10 +2177,14 @@ function WechatInboundConfigCard() {
         .split(/[,，\n]/)
         .map((item) => item.trim())
         .filter(Boolean),
+      aibot_enabled: Boolean(values.aibot_enabled),
+      aibot_token: String(values.aibot_token || '').trim() || undefined,
+      aibot_aes_key: String(values.aibot_aes_key || '').trim() || undefined,
+      aibot_name: String(values.aibot_name || '').trim(),
     }),
     onSuccess: () => {
       message.success('企业微信密码接收配置已保存');
-      form.setFieldsValue({ token: '', aes_key: '' });
+      form.setFieldsValue({ token: '', aes_key: '', aibot_token: '', aibot_aes_key: '' });
       qc.invalidateQueries({ queryKey: ['wechat-inbound-config'] });
     },
     onError: (e: any) => message.error(e?.response?.data?.detail ?? '保存失败'),
@@ -2195,8 +2203,8 @@ function WechatInboundConfigCard() {
         type="info"
         showIcon
         style={{ marginBottom: 12 }}
-        message="这是企业微信自建应用的入站回调，与上面的群机器人通知 Webhook 是两套配置。"
-        description={<>在企业微信应用中发送 <code>发货密码：实际密码</code>，校验通过后会自动解密报表并续推订单。回调路径：<code>{cfg.callback_path}</code>；企业微信后台填写的完整地址必须是公网可访问的 HTTPS 地址。</>}
+        message="群聊请创建“智能机器人”，它不在应用搜索结果里；上面的消息推送机器人只是单向通知。"
+        description={<>企业微信管理后台进入“安全与管理 → 管理工具 → 智能机器人”，选择 API 回调模式。群里必须先 <code>@智能机器人</code>；可发送 <code>发货密码xxx</code>、<code>密码 xxx</code>、<code>口令：xxx</code>，或只发送一段裸密码。裸密码只在智能机器人鉴权回调内启用。</>}
       />
       <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
         <Descriptions.Item label="回调凭据">
@@ -2206,8 +2214,46 @@ function WechatInboundConfigCard() {
           </Space>
         </Descriptions.Item>
         <Descriptions.Item label="允许成员">{cfg.allowed_users.length ? cfg.allowed_users.join(', ') : '未设置'}</Descriptions.Item>
+        <Descriptions.Item label="群聊智能机器人">
+          <Space>
+            <Tag color={cfg.aibot_enabled && cfg.aibot_ready ? 'green' : 'orange'}>
+              {cfg.aibot_enabled && cfg.aibot_ready ? '已启用' : '待配置'}
+            </Tag>
+            <Tag color={cfg.aibot_token_set ? 'green' : 'default'}>Token {cfg.aibot_token_set ? '已设置' : '未设置'}</Tag>
+            <Tag color={cfg.aibot_aes_key_set ? 'green' : 'default'}>AESKey {cfg.aibot_aes_key_set ? '已设置' : '未设置'}</Tag>
+          </Space>
+        </Descriptions.Item>
+        <Descriptions.Item label="群聊回调路径"><code>{cfg.aibot_callback_path}</code></Descriptions.Item>
       </Descriptions>
       <Form form={form} layout="vertical" onFinish={(values) => saveMut.mutate(values)}>
+        <Divider orientation="left" plain>群聊智能机器人（推荐）</Divider>
+        <Form.Item name="aibot_enabled" label="启用群聊智能机器人" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          name="aibot_name"
+          label="智能机器人名称"
+          extra="必须与企业微信后台创建时的名称完全一致，用于安全移除群消息里的 @机器人 前缀。"
+        >
+          <Input placeholder="例如：畔色 ERP 密码助手" autoComplete="off" />
+        </Form.Item>
+        <Row gutter={12}>
+          <Col xs={24} md={12}>
+            <Form.Item name="aibot_token" label="智能机器人 Token（留空保留）" extra="加密存储，不回显">
+              <Input.Password placeholder={cfg.aibot_token_set ? '(已设置，留空保留)' : '智能机器人 API 回调页面生成或填写'} autoComplete="new-password" />
+            </Form.Item>
+          </Col>
+          <Col xs={24} md={12}>
+            <Form.Item name="aibot_aes_key" label="智能机器人 EncodingAESKey（留空保留）" extra="43 位，加密存储，不回显">
+              <Input.Password placeholder={cfg.aibot_aes_key_set ? '(已设置，留空保留)' : '智能机器人 API 回调页面生成'} autoComplete="new-password" />
+            </Form.Item>
+          </Col>
+        </Row>
+        <Typography.Paragraph type="secondary">
+          智能机器人后台填写完整回调地址：公网 HTTPS 域名 + <code>{cfg.aibot_callback_path}</code>
+        </Typography.Paragraph>
+
+        <Divider orientation="left" plain>自建应用单聊（兼容保留）</Divider>
         <Form.Item name="enabled" label="启用微信密码接收" valuePropName="checked">
           <Switch />
         </Form.Item>

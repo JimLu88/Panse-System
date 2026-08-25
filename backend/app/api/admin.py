@@ -530,6 +530,12 @@ class WechatInboundConfigOut(BaseModel):
     allowed_users: list[str]
     ready: bool
     callback_path: str
+    aibot_enabled: bool
+    aibot_token_set: bool
+    aibot_aes_key_set: bool
+    aibot_name: str
+    aibot_ready: bool
+    aibot_callback_path: str
 
 
 class WechatInboundConfigIn(BaseModel):
@@ -541,12 +547,23 @@ class WechatInboundConfigIn(BaseModel):
         default=None,
         description="允许提交发货密码的企业微信成员 UserID 白名单",
     )
+    aibot_enabled: Optional[bool] = None
+    aibot_token: Optional[str] = Field(
+        default=None, description='智能机器人回调 Token; "__CLEAR__" 清空',
+    )
+    aibot_aes_key: Optional[str] = Field(
+        default=None, description='智能机器人 EncodingAESKey; "__CLEAR__" 清空',
+    )
+    aibot_name: Optional[str] = Field(
+        default=None, description="智能机器人名称，用于安全移除群聊 @ 前缀",
+    )
 
 
 def _read_wechat_inbound(db: Session) -> WechatInboundConfigOut:
     from app.services import wechat_inbound_service
 
     cfg = wechat_inbound_service.get_config(db)
+    aibot_cfg = wechat_inbound_service.get_aibot_config(db)
     return WechatInboundConfigOut(
         enabled=cfg["enabled"],
         corp_id=cfg["corp_id"],
@@ -555,6 +572,12 @@ def _read_wechat_inbound(db: Session) -> WechatInboundConfigOut:
         allowed_users=cfg["allowed_users"],
         ready=cfg["ready"],
         callback_path=wechat_inbound_service.CALLBACK_PATH,
+        aibot_enabled=aibot_cfg["enabled"],
+        aibot_token_set=bool(aibot_cfg["token"]),
+        aibot_aes_key_set=bool(aibot_cfg["aes_key"]),
+        aibot_name=aibot_cfg["bot_name"],
+        aibot_ready=aibot_cfg["ready"],
+        aibot_callback_path=wechat_inbound_service.AIBOT_CALLBACK_PATH,
     )
 
 
@@ -575,6 +598,7 @@ def put_wechat_inbound_config(
     from app.services import wechat_inbound_service
 
     current = wechat_inbound_service.get_config(db)
+    current_aibot = wechat_inbound_service.get_aibot_config(db)
 
     def proposed(value: Optional[str], old: str) -> str:
         if value is None or value == "":
@@ -606,6 +630,27 @@ def put_wechat_inbound_config(
     except wechat_inbound_service.WechatInboundError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    next_aibot = {
+        "enabled": (
+            current_aibot["enabled"]
+            if payload.aibot_enabled is None
+            else payload.aibot_enabled
+        ),
+        "token": proposed(payload.aibot_token, current_aibot["token"]),
+        "aes_key": proposed(payload.aibot_aes_key, current_aibot["aes_key"]),
+        "bot_name": proposed(payload.aibot_name, current_aibot["bot_name"]),
+        "allowed_users": next_cfg["allowed_users"],
+    }
+    if len(next_aibot["token"]) > 256 or len(next_aibot["bot_name"]) > 128:
+        raise HTTPException(status_code=400, detail="智能机器人 Token 或名称长度无效")
+    try:
+        if next_aibot["aes_key"]:
+            wechat_inbound_service.validate_aes_key(next_aibot["aes_key"])
+        if next_aibot["enabled"]:
+            wechat_inbound_service.validate_aibot_config(next_aibot)
+    except wechat_inbound_service.WechatInboundError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     settings_service.set_value(db, wechat_inbound_service.KEY_ENABLED,
                                "true" if next_cfg["enabled"] else "false")
     settings_service.set_value(db, wechat_inbound_service.KEY_CORP_ID, next_cfg["corp_id"])
@@ -616,6 +661,17 @@ def put_wechat_inbound_config(
         wechat_inbound_service.KEY_ALLOWED_USERS,
         ",".join(next_cfg["allowed_users"]),
     )
+    settings_service.set_value(
+        db,
+        wechat_inbound_service.KEY_AIBOT_ENABLED,
+        "true" if next_aibot["enabled"] else "false",
+    )
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_TOKEN,
+                               next_aibot["token"])
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_AES_KEY,
+                               next_aibot["aes_key"])
+    settings_service.set_value(db, wechat_inbound_service.KEY_AIBOT_NAME,
+                               next_aibot["bot_name"])
     db.commit()
     return _read_wechat_inbound(db)
 

@@ -453,6 +453,12 @@ export interface WechatInboundConfig {
   allowed_users: string[];
   ready: boolean;
   callback_path: string;
+  aibot_enabled: boolean;
+  aibot_token_set: boolean;
+  aibot_aes_key_set: boolean;
+  aibot_name: string;
+  aibot_ready: boolean;
+  aibot_callback_path: string;
 }
 
 export const fetchWechatInboundConfig = () =>
@@ -464,6 +470,10 @@ export const updateWechatInboundConfig = (payload: {
   token?: string;
   aes_key?: string;
   allowed_users?: string[];
+  aibot_enabled?: boolean;
+  aibot_token?: string;
+  aibot_aes_key?: string;
+  aibot_name?: string;
 }) => api.put<WechatInboundConfig>('/api/admin/wechat-inbound-config', payload).then((r) => r.data);
 
 // ----- 物流追踪配置 (快递100 / 快递鸟) -----
