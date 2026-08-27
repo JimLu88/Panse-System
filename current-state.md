@@ -2,6 +2,15 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 audited prepare-only service identity for task 01
+
+- GitHub `main`, production API and production Web are aligned at `0d7de3bff2a63570f89eeea13f0703ebd322ab34` (`feat: add audited campaign prepare service identity`). The official unified NAS release passed health, ready, API/Web commit parity, required routes/features, database migration `0141 (head)` and API/Web/DB/backup container checks. Rollback images: `panse-system-api:rollback-20260828-021640` and `panse-system-web:rollback-20260828-022900`.
+- Task 01 can invoke the formal preparation endpoint without a browser token, password or exported secret through `scripts/campaign_prepare_nas.ps1`. The wrapper accepts one local JSON file, sends it on stdin to the controlled production-container CLI, and the CLI calls the real `POST /api/campaigns/prepare` HTTP route. The exact command and request contract are in `docs/ERP活动正式后端入口_20260828.md`.
+- Migration `0141` creates a dedicated encrypted `campaign_prepare_service_token`. It is not printed, returned or stored in the wrapper. Its machine identity is accepted only on the exact prepare path; it cannot list plans, change exclusions, upload, submit, retry, withdraw or call any other ERP API. Admin/operator Bearer access remains supported, while viewer and invalid credentials remain rejected.
+- The controlled CLI uses the same global auth gate, endpoint dependency, Pydantic validation, durable `workflow_key` idempotency, campaign service and audit middleware as normal HTTP callers. It does not import a route handler, fabricate a `User`, write through ORM directly, read browser storage, or contact Taobao.
+- A production-safe end-to-end probe submitted only `{\"workflow_key\":\"campaign:auth-probe\"}`. It reached the real endpoint and returned the expected HTTP 422 before handler/business writes because required campaign fields were absent. Audit row `32541` recorded `service:campaign-prepare`, `POST /api/campaigns/prepare`, status `422` and `authenticated path-scoped machine request`; the same identity received HTTP 401 on `/api/campaigns`. No plan, activity signup, upload, price change, account action, platform submission or external notification was created.
+- New service-identity tests passed 4/4, the focused campaign/auth scope passed, and all campaign-named suites passed with 2 intentional skips. Python compilation, PowerShell/Bash syntax, Docker migration upgrade from `0140` to `0141`, encrypted-setting checks and release verification all passed.
+
 ## 2026-08-28 campaign internal preparation API and hard eligibility gates
 
 - GitHub `main` contains code commit `2a67f6ad59e54a592ff7213336fa8e84f22f982d` (`fix: harden campaign internal preparation`); production API and production Web are deployed from that code commit. The unified NAS release passed health, ready, API/Web commit parity, migration `0140 (head)`, required routes/features and API/Web/DB/backup container checks. Rollback images: `panse-system-api:rollback-20260828-014516` and `panse-system-web:rollback-20260828-014921`.
