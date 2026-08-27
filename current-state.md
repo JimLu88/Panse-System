@@ -1,6 +1,24 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-26 (Asia/Shanghai)
+Last updated: 2026-08-28 (Asia/Shanghai)
+
+## 2026-08-28 NAS-first local synchronization
+
+- Fresh production readback confirms Synology API and Web are both healthy on
+  `c7389c9c2dffe85ce810ee24cb0da2858ae5b396`; the database is at
+  `0139 (head)`, and API/Web/DB/backup containers are running.
+- GitHub `origin/main` is newer at `2a67f6ad59e5e90a6101fcc1cd43942162149d96`.
+  It contains the deployed `c7389c9` ancestor plus a documentation receipt and
+  the not-yet-deployed campaign-internal code/migration. Therefore production
+  data/runtime truth comes from NAS, while newer source state comes from
+  GitHub; neither is silently described as the other.
+- Branch `codex/nas-first-local-sync-20260828` starts from that current GitHub
+  baseline and replays the local Tachikoma read-only adapter plus the reviewed
+  AEO public-snapshot exporter. The pre-sync local state remains preserved on
+  `codex/local-authoritative-20260828`.
+- Compatibility verification passed 22 focused tests, Python compilation and
+  scoped diff checks. No deployment, database migration, business replay,
+  account operation or external notification was performed.
 
 ## 2026-08-26 order notice and finance retry recovery
 
