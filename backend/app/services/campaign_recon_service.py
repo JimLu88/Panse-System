@@ -456,6 +456,19 @@ def reconcile(db: Session, plan, *, activity_bytes: Optional[bytes] = None,
         expected_items = {str(row["taobao_item_id"]) for row in signup_rows}
         scoped_records = records
         if campaign_service.platform_scope_present(plan):
+            # Excluded dedicated links are not enrolled again.  Already-active
+            # qualified rows are still preserved and reconciled in place until
+            # an exact current withdrawal is authorized.
+            preserved_excluded_items = (
+                set(campaign_service.campaign_item_exclusions(db))
+                & qualified_items
+            )
+            expected_items |= preserved_excluded_items
+            expected_signup |= {
+                str(rec.get("sku_id") or "") for rec in records
+                if str(rec.get("item_id") or "") in preserved_excluded_items
+                and str(rec.get("sku_id") or "")
+            }
             scoped_records = [
                 rec for rec in records
                 if str(rec.get("item_id") or "") in expected_items

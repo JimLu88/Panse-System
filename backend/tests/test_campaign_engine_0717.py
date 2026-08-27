@@ -130,7 +130,7 @@ def test_signup_rows_price_placeholder_and_filters(db_session):
     assert stats["rows"] == len(rows) == 5
 
 
-def test_signup_rows_include_registered_no_sales_for_platform_recheck(db_session):
+def test_signup_rows_exclude_registered_no_sales_before_platform(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSNS001", "PPSNS00101", "9209", "72901",
         daily=1200, big=800)
@@ -139,9 +139,9 @@ def test_signup_rows_include_registered_no_sales_for_platform_recheck(db_session
 
     rows, stats = cs.build_signup_rows(db_session, plan)
 
-    assert {row["taobao_item_id"] for row in rows} == {"9209"}
-    assert stats["excluded_no_sales_items"] == []
-    assert stats["registered_no_sales_items_included"] == ["9209"]
+    assert rows == []
+    assert stats["excluded_no_sales_items"] == ["9209"]
+    assert stats["registered_no_sales_items_included"] == []
 
 
 def test_signup_shipping_days_authorization_is_exact():
@@ -324,14 +324,10 @@ def test_platform_qualification_only_no_sales_failure_is_normal_fallback(
 
     result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
-    assert result["ok"] is True
-    assert result["qualified_item_ids"] == ["1000009210"]
-    assert result["no_sales_item_ids"] == ["1000009209"]
-    assert ns.get_no_sales(db_session) == {"1000009209"}
-    assert cs.platform_qualified_items(plan) == {"1000009210"}
-    assert cs.official_scope_for_plan(plan)["active_items"] == {"1000009210"}
-    assert cs.official_scope_for_plan(plan)["all_store"] is False
-    assert cs.official_scope_for_plan(plan)["errors"] == []
+    assert result["ok"] is False
+    assert result["step"] == "qualification_empty"
+    assert result["stats"]["excluded_no_sales_items"] == [
+        "1000009209", "1000009210"]
 
 
 def test_promo_qualification_uploads_authorized_shipping_days(
@@ -479,7 +475,7 @@ def test_no_sales_classifier_prefers_terminal_reason_over_policy_boilerplate():
     assert ns.extract_no_sales_only_from_feedback(feedback) == {"1000009218"}
 
 
-def test_platform_qualification_allows_exact_authorized_sku_refresh(
+def test_platform_qualification_does_not_authorize_sku_refresh_marker(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     item_id = "1000009219"
@@ -514,8 +510,8 @@ def test_platform_qualification_allows_exact_authorized_sku_refresh(
     result = cs._legacy_write_probe_qualify_signup_scope(db_session, plan)
 
     assert result["ok"] is True
-    assert result["qualified_item_ids"] == [item_id]
-    assert result["wrong_existing_items"] == []
+    assert result["qualified_item_ids"] == []
+    assert cs.requested_sku_refresh_items(plan) == {item_id}
 
 
 def test_platform_qualification_keeps_coupon_failure_hard_when_internal_floor_hold_remains(
@@ -960,6 +956,8 @@ def test_placeholder_signup_blocks_high_live_price_without_expiry_confirmation(d
     )
     _mk(db_session, "PPSPH001", "PPSPH00199", "9310", "73081",
         daily=500, placeholder=True, line=250)
+    _mk(db_session, "PPSPH001", "PPSPH00101", "9310", "73080",
+        daily=1200, big=800)
     db_session.commit()
 
     rows, stats = cs.build_signup_rows(db_session, plan)
@@ -986,13 +984,16 @@ def test_placeholder_signup_uses_safe_cap_after_expiry_confirmation(db_session):
     )
     _mk(db_session, "PPSPH003", "PPSPH00399", "9312", "73082",
         daily=500, placeholder=True, line=250)
+    _mk(db_session, "PPSPH003", "PPSPH00301", "9312", "73083",
+        daily=1200, big=800)
     db_session.commit()
 
     rows, stats = cs.build_signup_rows(db_session, plan)
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
 
-    assert rows[0]["price"] == 284.0
-    assert rows[0]["remark"] == "价保已确认到期，按最低普惠券后价安全上限报名"
+    placeholder = next(row for row in rows if row["taobao_sku_id"] == "73082")
+    assert placeholder["price"] == 284.0
+    assert placeholder["remark"] == "价保已确认到期，按最低普惠券后价安全上限报名"
     assert stats["placeholder_price_lowered"][0]["safe_cap"] == 284.0
     assert stats["placeholder_price_lowered"][0]["current_live_price"] == 397.0
     assert checks["R13"]["level"] == "pass"
@@ -1070,6 +1071,8 @@ def test_placeholder_signup_without_live_price_is_blocked(db_session):
     plan.remark = "official_active_items=9300"
     _mk(db_session, "PPSPH002", "PPSPH00299", "9311", "73091",
         daily=500, placeholder=True, line=250)
+    _mk(db_session, "PPSPH002", "PPSPH00201", "9311", "73090",
+        daily=1200, big=800)
     db_session.commit()
 
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
@@ -1086,13 +1089,16 @@ def test_placeholder_missing_live_price_uses_safe_cap_after_user_authorization(d
     )
     _mk(db_session, "PPSPH006", "PPSPH00699", "9315", "73092",
         daily=500, placeholder=True, line=250)
+    _mk(db_session, "PPSPH006", "PPSPH00601", "9315", "73093",
+        daily=1200, big=800)
     db_session.commit()
 
     rows, stats = cs.build_signup_rows(db_session, plan)
     checks = {x["rule"]: x for x in cs.preflight(db_session, plan)}
 
-    assert rows[0]["price"] == 284.0
-    assert rows[0]["remark"] == "用户已授权定制咨询规格使用保护报名价"
+    placeholder = next(row for row in rows if row["taobao_sku_id"] == "73092")
+    assert placeholder["price"] == 284.0
+    assert placeholder["remark"] == "用户已授权定制咨询规格使用保护报名价"
     assert stats["placeholder_price_lowered"][0]["authorization"] == "current_plan_user_decision"
     assert checks["R16"]["level"] == "pass"
 
@@ -1339,7 +1345,7 @@ def test_super_reduce_supplement_preserves_known_active_items(
     assert calls[0]["expected_rows"] == 1
 
 
-def test_super_reduce_exact_authorized_sku_refresh_reimports_complete_item(
+def test_super_reduce_sku_refresh_marker_cannot_reimport_complete_item(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     item_id = "100000009503"
@@ -1376,15 +1382,9 @@ def test_super_reduce_exact_authorized_sku_refresh_reimports_complete_item(
     result = cs.push_signup(
         db_session, plan, execution_source="campaign_automation")
 
-    assert result["ok"] is True
-    assert result["stats"]["pending_items"] == [item_id]
-    assert result["stats"]["authorized_sku_refresh_existing_items"] == [{
-        "item_id": item_id,
-        "error": "用户确认SKU轮换，允许完整SKU集合原位重导",
-        "missing_skus": ["75602"],
-    }]
-    assert calls[0]["channel"] == "super_reduce"
-    assert calls[0]["expected_rows"] == 2
+    assert result["ok"] is False
+    assert cs.requested_sku_refresh_items(plan) == {item_id}
+    assert calls == []
 
 
 def test_super_reduce_supplement_still_blocks_unknown_active_items(
@@ -1444,7 +1444,7 @@ def test_existing_single_discount_activity_id_is_forwarded_for_modify(db_session
     assert result["stats"]["single_discount_execution_mode"] == "per_item_existing_then_new_batch"
 
 
-def test_rotated_skus_bypass_old_discount_drawer_and_use_new_batch(
+def test_rotated_skus_do_not_bypass_existing_discount_binding(
         db_session, monkeypatch):
     plan = _plan(db_session, "super_reduce")
     item_id = "100000009510"
@@ -1464,11 +1464,11 @@ def test_rotated_skus_bypass_old_discount_drawer_and_use_new_batch(
     assert result["ok"] is True
     assert len(calls) == 1
     assert calls[0]["channel"] == "single_item_discount"
-    assert calls[0].get("campaign_id") is None
+    assert calls[0].get("campaign_id") == "142591608100"
     assert calls[0]["item_ids"] == [item_id]
-    assert result["stats"]["single_discount_existing_items"] == []
-    assert result["stats"]["single_discount_new_items"] == [item_id]
-    assert result["stats"]["single_discount_rotated_new_batch_items"] == [item_id]
+    assert result["stats"]["single_discount_existing_items"] == [item_id]
+    assert result["stats"]["single_discount_new_items"] == []
+    assert result["stats"]["single_discount_rotated_new_batch_items"] == []
 
 
 def test_partial_new_batch_stops_without_resending_successes(

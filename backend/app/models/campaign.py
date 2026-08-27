@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import JSON, Date, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, JSON, Date, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -41,6 +41,26 @@ class CampaignPlan(Base, TimestampMixin):
     price_protection_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime)
     status: Mapped[str] = mapped_column(String(32), default="draft", nullable=False, index=True)
     remark: Mapped[Optional[str]] = mapped_column(Text)
+    # Formal internal-workflow identity.  Browser pages are never the ERP data source.
+    workflow_key: Mapped[Optional[str]] = mapped_column(String(128), unique=True, index=True)
+    # fixed_window = exact platform selling window; long_running_update = ERP update window.
+    platform_activity_mode: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="fixed_window")
+    platform_campaign_id: Mapped[Optional[str]] = mapped_column(String(64))
+    platform_united_activity_id: Mapped[Optional[str]] = mapped_column(String(64))
+    platform_active_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
+
+
+class CampaignItemExclusion(Base, TimestampMixin):
+    """Explicit, auditable whole-item exclusion for dedicated non-product links."""
+
+    __tablename__ = "campaign_item_exclusions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    taobao_item_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    reason: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="operator_confirmed")
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
 
 
 class CampaignReconReport(Base, TimestampMixin):

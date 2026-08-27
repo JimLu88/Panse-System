@@ -231,7 +231,7 @@ def run_auto_execute(db: Session) -> dict:
             # workbook creates a real signup operation. All pre-submit checks
             # here are local/read-only; the platform is written exactly once
             # later by push_signup.
-            checks = campaign_service.preflight(db, plan, no_sales_items=set())
+            checks = campaign_service.preflight(db, plan)
             critical = [c for c in checks if c.get("level") == "error"]
             if critical:
                 failed += 1
@@ -272,11 +272,10 @@ def run_auto_execute(db: Session) -> dict:
             db.commit()
 
         if plan.status == "precheck":
-            # Historical no-sales is advisory. Use candidate math before the
-            # final platform result; terminal no-sales failures are converted
-            # to standalone-discount fallback after that single signup.
+            # Registered no-sales items are already excluded from campaign
+            # signup and use the same-window standalone-discount fallback.
             discount = campaign_service.push_discount(
-                db, plan, phase="commit", no_sales_items=set())
+                db, plan, phase="commit")
             if not discount.get("ok"):
                 failed += 1
                 plan.status = "alarmed"

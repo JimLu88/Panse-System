@@ -19,12 +19,14 @@ GET    /api/campaigns/{id}/recon-reports  核对报告列表
 from __future__ import annotations
 
 from datetime import datetime
+import re
 from typing import Optional
 from urllib.parse import quote
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -46,6 +48,18 @@ class CampaignPlanIn(BaseModel):
     price_protection_days: int = 19
     price_protection_rule_url: Optional[str] = None
     remark: Optional[str] = None
+    workflow_key: Optional[str] = None
+    platform_activity_mode: str = "fixed_window"
+    platform_campaign_id: Optional[str] = None
+    platform_united_activity_id: Optional[str] = None
+    platform_active_until: Optional[datetime] = None
+
+
+class CampaignPrepareIn(CampaignPlanIn):
+    workflow_key: str
+    official_all_store: Optional[bool] = None
+    official_active_item_ids: list[str] = Field(default_factory=list)
+    official_exempt_item_ids: list[str] = Field(default_factory=list)
 
 
 class CampaignPlanUpdate(BaseModel):
@@ -57,6 +71,15 @@ class CampaignPlanUpdate(BaseModel):
     price_protection_days: Optional[int] = None
     price_protection_rule_url: Optional[str] = None
     remark: Optional[str] = None
+    platform_activity_mode: Optional[str] = None
+    platform_campaign_id: Optional[str] = None
+    platform_united_activity_id: Optional[str] = None
+    platform_active_until: Optional[datetime] = None
+
+
+class CampaignItemExclusionIn(BaseModel):
+    taobao_item_id: str
+    reason: str
 
 
 class SuperReduceRepairIn(BaseModel):
@@ -80,6 +103,13 @@ def _plan_out(p: CampaignPlan) -> dict:
             if p.price_protection_confirmed_at else None),
         "price_protection_until": until.isoformat(sep=" ") if until else None,
         "status": p.status, "remark": p.remark,
+        "workflow_key": p.workflow_key,
+        "platform_activity_mode": p.platform_activity_mode,
+        "platform_campaign_id": p.platform_campaign_id,
+        "platform_united_activity_id": p.platform_united_activity_id,
+        "platform_active_until": (
+            p.platform_active_until.isoformat(sep=" ")
+            if p.platform_active_until else None),
     }
 
 
@@ -125,6 +155,70 @@ def _validate_price_protection(days: Optional[int], url: Optional[str]) -> None:
         raise HTTPException(422, "价保说明链接必须以 http:// 或 https:// 开头")
 
 
+def _validate_workflow_key(value: str) -> str:
+    key = str(value or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{7,127}", key):
+        raise HTTPException(422, "workflow_key 必须为8至128位稳定字母数字/._:-标识")
+    return key
+
+
+def _validate_formal_platform_identity(body: CampaignPrepareIn) -> None:
+    mode = body.platform_activity_mode
+    if mode not in ("fixed_window", "long_running_update"):
+        raise HTTPException(422, "platform_activity_mode 必须是 fixed_window 或 long_running_update")
+    if body.campaign_type == "super_reduce":
+        if mode != "long_running_update":
+            raise HTTPException(422, "超级立减是长期活动，必须使用 long_running_update 更新窗口")
+        if body.platform_active_until is None or body.platform_active_until < body.end_at:
+            raise HTTPException(422, "长期超级立减必须提供晚于更新窗口的官方有效期")
+    elif mode != "fixed_window":
+        raise HTTPException(422, "大促必须使用 fixed_window 精确档期")
+    if mode == "fixed_window":
+        for field, value in (
+            ("platform_campaign_id", body.platform_campaign_id),
+            ("platform_united_activity_id", body.platform_united_activity_id),
+        ):
+            if not str(value or "").isdigit():
+                raise HTTPException(422, f"固定档期活动必须提供数字 {field}")
+    if not str(body.qn_campaign_title or "").strip():
+        raise HTTPException(422, "正式准备入口必须提供千牛官方活动标题")
+
+
+def _local_naive(value: Optional[datetime]) -> Optional[datetime]:
+    """Normalize API timestamps to the existing Asia/Shanghai naive DB contract."""
+    if value is None or value.tzinfo is None:
+        return value
+    return value.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+
+
+def _structured_prepare_remark(body: CampaignPrepareIn) -> Optional[str]:
+    """Persist typed external-platform scope without asking callers to craft markers."""
+    from app.services import no_sales_service
+
+    active = no_sales_service.normalize_item_ids(body.official_active_item_ids)
+    exempt = no_sales_service.normalize_item_ids(body.official_exempt_item_ids)
+    if len(active) != len(set(body.official_active_item_ids)):
+        raise HTTPException(422, "official_active_item_ids 含无效淘宝商品号")
+    if len(exempt) != len(set(body.official_exempt_item_ids)):
+        raise HTTPException(422, "official_exempt_item_ids 含无效淘宝商品号")
+    if body.official_all_store is True and active:
+        raise HTTPException(422, "official_all_store=true 时不得同时填写 active_item_ids")
+    text = str(body.remark or "")
+    for key in ("official_all_store", "official_active_items", "official_exempt_items"):
+        text = re.sub(
+            rf"(?:^|[;\n；])\s*{key}\s*=\s*[^;\n；]*", "", text,
+            flags=re.IGNORECASE).strip(" ;\n；")
+    markers = []
+    if body.official_all_store is not None:
+        markers.append(
+            f"official_all_store={'true' if body.official_all_store else 'false'}")
+    if active:
+        markers.append(f"official_active_items={','.join(sorted(active))}")
+    if exempt:
+        markers.append(f"official_exempt_items={','.join(sorted(exempt))}")
+    return "; ".join([value for value in (text, *markers) if value]) or None
+
+
 @router.get("/policy")
 def get_campaign_policy(_: User = Depends(get_current_user)):
     """Root policy used by every signup generator and shown in the wizard."""
@@ -154,11 +248,85 @@ def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
                         price_protection_rule_url=body.price_protection_rule_url,
                         price_protection_confirmed_at=(
                             datetime.now() if body.price_protection_rule_url else None),
+                        workflow_key=body.workflow_key,
+                        platform_activity_mode=body.platform_activity_mode,
+                        platform_campaign_id=body.platform_campaign_id,
+                        platform_united_activity_id=body.platform_united_activity_id,
+                        platform_active_until=body.platform_active_until,
                         remark=body.remark,
                         status="draft")
     db.add(plan)
     db.commit()
     return _plan_out(plan)
+
+
+@router.post("/prepare")
+def prepare_campaign(
+        body: CampaignPrepareIn, db: Session = Depends(get_db),
+        _: User = Depends(require_role("admin", "operator"))):
+    """Formal ERP-only campaign package; never reads ERP through a browser."""
+    from app.services import campaign_workflow_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    _validate_type_and_window(body.campaign_type, body.start_at, body.end_at)
+    _validate_price_protection(body.price_protection_days, body.price_protection_rule_url)
+    _validate_formal_platform_identity(body)
+    values = body.model_dump(exclude={
+        "workflow_key", "official_all_store", "official_active_item_ids",
+        "official_exempt_item_ids",
+    })
+    values["remark"] = _structured_prepare_remark(body)
+    for field in ("start_at", "end_at", "platform_active_until"):
+        values[field] = _local_naive(values.get(field))
+    values["tier"] = campaign_service.CAMPAIGN_TYPES[body.campaign_type][1]
+    values["price_protection_confirmed_at"] = (
+        datetime.now() if body.price_protection_rule_url else None)
+    result = campaign_workflow_service.prepare(
+        db, workflow_key=workflow_key, values=values)
+    if result.get("conflict"):
+        raise HTTPException(409, detail={
+            "error": "workflow_key_payload_conflict",
+            "workflow_key": workflow_key,
+            "plan_id": result["plan"].id,
+            "different_fields": result["different_fields"],
+        })
+    result["plan"] = _plan_out(result["plan"])
+    return result
+
+
+@router.get("/item-exclusions")
+def list_item_exclusions(db: Session = Depends(get_db),
+                         _: User = Depends(get_current_user)):
+    """List explicit and authoritative all-placeholder whole-item exclusions."""
+    return {"items": list(campaign_service.campaign_item_exclusions(db).values())}
+
+
+@router.post("/item-exclusions")
+def set_item_exclusion(
+        body: CampaignItemExclusionIn, db: Session = Depends(get_db),
+        _: User = Depends(require_role("admin", "operator"))):
+    from app.services import campaign_item_exclusion_service
+
+    try:
+        row = campaign_item_exclusion_service.upsert(
+            db, item_id=body.taobao_item_id, reason=body.reason)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"ok": True, "item": {
+        "taobao_item_id": row.taobao_item_id,
+        "reason": row.reason,
+        "source": row.source,
+        "active": row.active,
+    }}
+
+
+@router.delete("/item-exclusions/{item_id}")
+def remove_item_exclusion(
+        item_id: str, db: Session = Depends(get_db),
+        _: User = Depends(require_role("admin"))):
+    from app.services import campaign_item_exclusion_service
+
+    return {"ok": campaign_item_exclusion_service.deactivate(db, item_id)}
 
 
 @router.get("/no-sales-group")

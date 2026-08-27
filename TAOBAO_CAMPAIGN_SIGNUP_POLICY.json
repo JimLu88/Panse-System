@@ -1,7 +1,7 @@
 {
   "policy_id": "taobao_campaign_signup_policy",
-  "version": "2026-08-25.1",
-  "updated_at": "2026-08-25T16:20:00+08:00",
+  "version": "2026-08-28.1",
+  "updated_at": "2026-08-28T00:00:00+08:00",
   "title": "淘宝活动自动报名唯一规则",
   "authority": "ERP pricing data and this policy file are the only program authorities",
   "execution": {
@@ -56,9 +56,9 @@
     "official_discount_rounding": "use_verified_platform_rule_for_campaign_and_low_price_skus_keep_cent_precision"
   },
   "scope_and_idempotency": {
-    "exclude_no_sales_items_from_campaign_signup": false,
-    "registered_no_sales_is_advisory_only": true,
-    "every_listed_item_is_requalified_by_platform_for_each_campaign": true,
+    "exclude_no_sales_items_from_campaign_signup": true,
+    "registered_no_sales_is_advisory_only": false,
+    "every_listed_item_is_requalified_by_platform_for_each_campaign": false,
     "qualification_before_discount_and_final_signup": false,
     "platform_qualification_source": "the_single_final_signup_terminal_record",
     "no_sales_only_failure_action": "keep_out_of_campaign_and_use_single_item_discount",
@@ -76,7 +76,9 @@
     "published_wrong_price_or_missing_sku_action": "isolate_item_report_and_continue_safe_items",
     "target_scope_must_be_complete_and_mapped": true,
     "custom_placeholder_safe_cap_without_live_price": "allow_only_after_explicit_current_plan_user_authorization",
-    "historical_no_sales_pre_submit_treatment": "advisory_only_use_campaign_candidate_discount_math",
+    "historical_no_sales_pre_submit_treatment": "hard_exclude_from_campaign_signup_and_use_same_window_single_item_discount",
+    "whole_item_link_exclusion": "explicit_item_marker_or_all_mapped_skus_authoritatively_marked_custom_placeholder_only; never_keyword_inference",
+    "sku_rotation_enabled": false,
     "terminal_no_sales_fallback": "after_final_signup_apply_exact_failed_item_scope_without_official_discount"
   },
   "submission_fields": {
@@ -127,7 +129,7 @@
   },
   "explanation_lines": [
     "活动报名只由 ERP 自动报名程序执行；AI 和页面均不得直接提交、自动改价或自动重试。",
-    "每场活动都把 ERP 当前全部在售商品交给平台重新检查；历史无动销只作提示，不能预先排除。",
+    "ERP 无动销登记是报名硬排除依据：登记商品不得进入官方活动报名表，只走同期单品立减兜底；恢复动销后必须显式转正。",
     "上传报名表本身就是平台写入，不得伪装成资格预检；每次运行只允许一次正式报名提交。",
     "程序先按本地新鲜证据完成只读预检并设置候选商品单品立减，再正式报名一次；终态仅无动销失败的商品随后自动改为不含官方立减的单品立减兜底。",
     "资格检查中的价格、SKU、上下架等硬失败按整品隔离并报告，不阻断其余安全商品继续。",
@@ -140,6 +142,8 @@
     "超级立减正式发布前，官方生效范围内每个真实SKU必须有同期单品立减完整配对；若官方10%本身已低于ERP目标，该整品必须排除或撤出。",
     "未来超级立减场次导出状态为暂停时视为已报名待生效；活动价仍须逐SKU一致，券后价未刷新则保持待核对而非报警或完成。",
     "真实 SKU 报名价永远等于 ERP 日常价；平台历史线冲突时整品排除并报告，禁止降价迁就。",
+    "整条定制、补差价或服务专用链接只允许通过显式商品级标记或全映射SKU均为占位的权威字段排除；禁止按名称关键词误杀含正常SKU的家具链接。",
+    "活动报名禁止 SKU 轮换；发现旧轮换标记、已发布集合缺SKU或SKUID变化时必须停止并修正正式映射。",
     "用户逐SKU明确授权时，程序可通过计划标记把1元以内（含1元）的资格差额加入单品立减；报名价保持日常价，授权不得扩展到其它SKU。",
     "名称明确为定制或咨询的SKU，经用户逐SKU明确授权后，可按指定金额增加单品立减；报名价仍保持ERP日常价，普通SKU继续受1元内上限约束。",
     "平台报名资格先验两条线：报名价不得高于最低标价；报名价减官方立减再减同期单品立减不得高于最低普惠券后价。",

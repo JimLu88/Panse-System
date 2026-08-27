@@ -331,12 +331,12 @@ def authorized_supplement_items(plan) -> set[str]:
 
 
 def authorized_sku_refresh_items(plan) -> set[str]:
-    """Exact items whose physical Taobao SKU IDs were user-confirmed as rotated.
+    """SKU rotation is disabled for campaign enrollment."""
+    return set()
 
-    This authorization only permits an in-place full-SKU re-import.  It does
-    not authorize price changes, item withdrawal, or skipping the platform
-    qualification probe.
-    """
+
+def requested_sku_refresh_items(plan) -> set[str]:
+    """Return legacy/requested rotation markers so preflight can block them."""
     import re
 
     text = str(getattr(plan, "remark", None) or "")
@@ -731,6 +731,14 @@ def _mapped_pairs(db: Session) -> list[tuple]:
     return out
 
 
+def campaign_item_exclusions(db: Session, pairs: Optional[list[tuple]] = None) -> dict[str, dict]:
+    """Effective whole-item exclusions without name/keyword inference."""
+    from app.services import campaign_item_exclusion_service
+
+    return campaign_item_exclusion_service.effective_items(
+        db, pairs if pairs is not None else _mapped_pairs(db))
+
+
 def price_hold_items(db: Session, plan) -> list[dict]:
     """已知历史价格线与ERP目标冲突的整品暂缓清单。
 
@@ -851,10 +859,19 @@ def group_by_sales(db: Session, days: int = 60) -> dict:
     for pc in sold_rows:
         sold_codes |= brand_variants(pc)
 
+    registry_cleanup = no_sales_service.sanitize_registry(db)
+    mapped_pairs = _mapped_pairs(db)
+    whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
     item_codes: dict[str, set] = defaultdict(set)
     item_names: dict[str, str] = {}
-    for s, p in _mapped_pairs(db):
+    invalid_item_ids: set[str] = set()
+    for s, p in mapped_pairs:
         iid = str(p.taobao_item_id).strip()
+        if not no_sales_service.is_valid_item_id(iid):
+            invalid_item_ids.add(iid)
+            continue
+        if iid in whole_item_exclusions:
+            continue
         item_codes[iid].add(s.product_code or "")
         item_names.setdefault(iid, s.product_name or s.product_code or "")
     active, inactive = [], []
@@ -870,6 +887,9 @@ def group_by_sales(db: Session, days: int = 60) -> dict:
     return {"有动销": active, "无动销": inactive, "days": days,
             "newly_registered": newly, "promote_candidates": promote,
             "registered": sorted(no_sales_service.get_no_sales(db)),
+            "invalid_item_ids_ignored": sorted(invalid_item_ids),
+            "registry_cleanup": registry_cleanup,
+            "excluded_whole_items": list(whole_item_exclusions.values()),
             "item_names": item_names}
 
 
@@ -1014,6 +1034,8 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     holds = price_hold_items(db, plan)
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)
+    mapped_pairs = _mapped_pairs(db)
+    whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": [],
@@ -1026,10 +1048,11 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
              "registered_no_sales_items_included": [],
+             "excluded_whole_items": list(whole_item_exclusions.values()),
              "skipped_not_erp_listed": 0}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
-    for s, p in _mapped_pairs(db):
+    for s, p in mapped_pairs:
         if listed_codes is not None and (s.product_code or "") not in listed_codes:
             stats["skipped_not_erp_listed"] += 1
             continue
@@ -1043,12 +1066,14 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
 
     rows: list[dict] = []
     for item_id, pairs in sorted(by_item.items()):
+        if item_id in whole_item_exclusions:
+            continue
         if item_id in held_item_ids:
             continue
-        # Historical no-sales evidence is advisory only. Eligibility can change
-        # between campaigns, so the platform must re-check every listed item.
+        # Registered no-sales items never enter a campaign signup workbook.
         if item_id in registered_no_sales:
-            stats["registered_no_sales_items_included"].append(item_id)
+            stats["excluded_no_sales_items"].append(item_id)
+            continue
         if all((s.product_code or "") in bad_pc for s, _ in pairs):
             stats["skipped_bad_price_items"].append(item_id)      # 坏价整品排除
             stats["skipped_bad_price"] += len(pairs)
@@ -1231,6 +1256,8 @@ def build_discount_rows(
     holds = price_hold_items(db, plan)
     held_item_ids = {x["taobao_item_id"] for x in holds}
     listed_codes = _erp_listed_product_codes(db)
+    mapped_pairs = _mapped_pairs(db)
+    whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
     stats = {"tier": tier, "official_ceil": ceil_on, "rows": 0, "skipped_no_skuid": 0,
              "skipped_delisted": 0, "skipped_bad_price": 0, "skipped_placeholder": 0,
              "skipped_price_hold": 0, "excluded_price_hold_items": holds,
@@ -1238,6 +1265,7 @@ def build_discount_rows(
              "line_concessions": [], "rotation_suggested": [],
              "official_low_price_exact": 0,
              "live_activity_price_overrides": [],
+             "excluded_whole_items": list(whole_item_exclusions.values()),
              "skipped_not_erp_listed": 0,
              "official_scope": {
                  "configured": official_scope["configured"],
@@ -1247,7 +1275,7 @@ def build_discount_rows(
                  "errors": official_scope["errors"],
              }}
     rows: list[dict] = []
-    for s, p in _mapped_pairs(db):
+    for s, p in mapped_pairs:
         if listed_codes is not None and (s.product_code or "") not in listed_codes:
             stats["skipped_not_erp_listed"] += 1
             continue
@@ -1268,6 +1296,8 @@ def build_discount_rows(
             stats["skipped_no_daily"] += 1
             continue
         item_id = str(p.taobao_item_id).strip()
+        if item_id in whole_item_exclusions:
+            continue
         if item_id in held_item_ids:
             stats["skipped_price_hold"] += 1
             continue
@@ -1326,7 +1356,7 @@ def build_discount_rows(
 
 _STATIC_REMINDERS = [
     ("R5", "warn", "已报名非草稿的品批量导入必被拒 — 推送前 wizard 卡点确认该品已在千牛撤销"),
-    ("R7", "info", "轮换核对按 skuId 判定, 不认名字 (同名新建SKU会复活老skuId历史线)"),
+    ("R7", "pass", "活动报名禁止 SKU 轮换；SKUID 变化必须先修正正式映射并重新取证"),
     ("R8", "info", "刷新 SKU 映射必须同事务清线 (coupon_floor/enrolled_floor 挂编码、线跟 sid)"),
     ("R10", "info", "回执真相以千牛「批量操作记录」最新一条为准, WA published 回执不可信"),
     ("R11", "warn", "同品同时只能一个单品立减生效 — 推送前先在千牛删除在场旧批, 否则新批不生效"),
@@ -1781,7 +1811,9 @@ def preflight(
          "items": [{"skipped_delisted_signup": sstats["skipped_delisted"],
                     "skipped_delisted_discount": dstats["skipped_delisted"]}]},
         {"rule": "R6", "level": "warn" if nosales else "pass",
-         "title": "历史无动销提示（不预排除；本场由平台对全部在售商品重检）", "items": nosales},
+         "title": "无动销报名硬排除（不进入活动报名；同期单品立减兜底）",
+         "items": nosales,
+         "excluded_signup_items": sstats.get("excluded_no_sales_items") or []},
         {"rule": "R9", "level": "pass",
          "title": "官方立减向上取整到元已内建 (10%场开关 campaign_official_ceil)",
          "items": [{"official_ceil": dstats["official_ceil"]}]},
@@ -1796,6 +1828,14 @@ def preflight(
         _check_signup_shipping(plan, _srows),
     ]
     checks += [{"rule": r, "level": lv, "title": t, "items": []} for r, lv, t in _STATIC_REMINDERS]
+    requested_rotation = requested_sku_refresh_items(plan)
+    if requested_rotation:
+        r7 = next(check for check in checks if check["rule"] == "R7")
+        r7.update({
+            "level": "error",
+            "title": "禁止 SKU 轮换；发现旧轮换标记即停止并要求修正正式映射",
+            "items": sorted(requested_rotation),
+        })
     checks.sort(key=lambda c: int(c["rule"][1:]))
     return checks
 
@@ -1898,7 +1938,11 @@ def _fmt_dt(dt) -> Optional[str]:
 
 
 def _plan_campaign_ids(plan) -> tuple[Optional[str], Optional[str]]:
-    """从计划备注中读取可选的千牛活动 ID（不新增数据库字段，兼容现有计划表）。"""
+    """Read typed immutable IDs first; fall back to legacy remark markers."""
+    typed_cid = str(getattr(plan, "platform_campaign_id", None) or "").strip()
+    typed_uid = str(getattr(plan, "platform_united_activity_id", None) or "").strip()
+    if typed_cid or typed_uid:
+        return typed_cid or None, typed_uid or None
     import re
     text = str(getattr(plan, "remark", None) or "")
     cid = re.search(r"(?:campaignId|campaign_id)\s*[:=]\s*(\d+)", text)
@@ -1916,19 +1960,31 @@ def _campaign_identity(plan) -> dict:
     campaign_id, united_activity_id = _plan_campaign_ids(plan)
     start = getattr(plan, "start_at", None)
     end = getattr(plan, "end_at", None)
+    activity_mode = str(
+        getattr(plan, "platform_activity_mode", None) or "fixed_window")
+    active_until = getattr(plan, "platform_active_until", None)
+    long_running = (
+        activity_mode == "long_running_update"
+        and str(getattr(plan, "campaign_type", "")) == "super_reduce"
+    )
     missing = []
     if not title:
         missing.append("campaign_title")
-    if not campaign_id or not campaign_id.isdigit():
-        missing.append("campaign_id")
-    if not united_activity_id or not united_activity_id.isdigit():
-        missing.append("united_activity_id")
+    if not long_running:
+        if not campaign_id or not campaign_id.isdigit():
+            missing.append("campaign_id")
+        if not united_activity_id or not united_activity_id.isdigit():
+            missing.append("united_activity_id")
+    elif active_until is None:
+        missing.append("platform_active_until")
     if start is None:
         missing.append("campaign_start")
     if end is None:
         missing.append("campaign_end")
     if start is not None and end is not None and end <= start:
         missing.append("campaign_window_order")
+    if long_running and end is not None and active_until is not None and active_until < end:
+        missing.append("platform_active_until_before_update_window")
     return {
         "ok": not missing,
         "missing": missing,
@@ -1937,6 +1993,8 @@ def _campaign_identity(plan) -> dict:
         "united_activity_id": united_activity_id,
         "campaign_start": _fmt_dt(start),
         "campaign_end": _fmt_dt(end),
+        "platform_activity_mode": activity_mode,
+        "platform_active_until": _fmt_dt(active_until),
         "campaign_phase": (
             str(getattr(plan, "name", None) or "").strip()
             if str(getattr(plan, "name", None) or "").strip() != title else ""
@@ -1950,7 +2008,10 @@ def _check_campaign_identity(plan) -> dict:
     return {
         "rule": "R20",
         "level": "pass" if identity["ok"] else "error",
-        "title": "活动唯一身份：标题、双ID、秒级起止时间必须全部锁定",
+        "title": (
+            "活动唯一身份：长期超级立减锁定标题、更新窗口和官方有效期；"
+            "固定大促锁定标题、双ID和秒级档期"
+        ),
         "items": [] if identity["ok"] else [{"missing": identity["missing"]}],
         "identity": identity,
     }
@@ -3629,9 +3690,8 @@ def push_signup(db: Session, plan, *, execution_source: str | None = None) -> di
             db, plan, active_live_rows)
         db.commit()
 
-    # Historical no-sales is advisory only. Every listed item reaches the one
-    # final platform signup and is classified from that run's terminal result.
-    checks = preflight(db, plan, no_sales_items=set())
+    # Registered no-sales items are excluded before any platform upload.
+    checks = preflight(db, plan)
     critical = [check for check in checks if check.get("level") == "error"]
     if critical:
         return _stop_signup(db, plan, {

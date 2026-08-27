@@ -114,7 +114,7 @@ def test_auto_execute_horizon_matches_14_day_discovery_window(db_session, monkey
     monkeypatch.setattr(campaign_service, "group_by_sales", lambda db: {})
 
     def push_discount(db, plan, *, phase, no_sales_items=None):
-        assert no_sales_items == set()
+        assert no_sales_items is None
         pushed.append(("discount", plan.name, phase))
         plan.status = "discount_pushed"
         db.flush()

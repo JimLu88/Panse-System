@@ -58,9 +58,10 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert policy["qualification_gates"]["single_item_discount_participates_in_qualification"] is True
     assert policy["final_price_gate"]["explicit_sub_yuan_concession_max_yuan_inclusive"] == 1.00
     scope = policy["scope_and_idempotency"]
-    assert scope["exclude_no_sales_items_from_campaign_signup"] is False
-    assert scope["registered_no_sales_is_advisory_only"] is True
-    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is True
+    assert scope["exclude_no_sales_items_from_campaign_signup"] is True
+    assert scope["registered_no_sales_is_advisory_only"] is False
+    assert scope["every_listed_item_is_requalified_by_platform_for_each_campaign"] is False
+    assert scope["sku_rotation_enabled"] is False
     assert scope["qualification_before_discount_and_final_signup"] is False
     assert policy["execution"]["platform_write_probe_enabled"] is False
     assert policy["execution"]["maximum_platform_signup_submissions_per_run"] == 1
@@ -71,6 +72,7 @@ def test_root_policy_locks_program_and_real_sku_daily_price():
     assert scope["qualification_hard_failure_action"] == "isolate_whole_item_report_and_continue_safe_items"
     assert "withdrawal_requires_current_explicit_item_list_authorization" in policy[
         "post_submit"]["active_activity_records_outside_current_scope"]
+    assert campaign_policy_service.public_policy()["scope_and_idempotency"] == scope
 
 
 def test_production_image_bundles_the_root_policy():

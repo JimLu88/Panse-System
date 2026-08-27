@@ -1,0 +1,191 @@
+"""Regression gates for the ERP-only campaign preparation workflow."""
+from datetime import datetime
+from decimal import Decimal
+
+from app.api.campaigns import (
+    CampaignPrepareIn,
+    _structured_prepare_remark,
+    _validate_formal_platform_identity,
+)
+from app.models.campaign import CampaignPlan
+from app.models.pricing import PricingSku
+from app.models.pricing_ext import PricingSkuPromo
+from app.services import campaign_item_exclusion_service
+from app.services import campaign_service as campaign
+from app.services import campaign_workflow_service
+from app.services import no_sales_service
+from app.services import settings_service
+
+
+def _pair(db, *, item_id: str, sku_code: str, sku_id: str,
+          placeholder: bool = False):
+    db.add(PricingSku(
+        product_code=f"P{sku_code}", product_name=f"品{sku_code}",
+        sku_code=sku_code, sku=f"规格{sku_code}",
+        daily_price=Decimal("1200"), is_custom_placeholder=placeholder,
+    ))
+    db.add(PricingSkuPromo(
+        sku_code=sku_code, taobao_item_id=item_id, taobao_sku_id=sku_id,
+        big_buyer_price=Decimal("800"),
+    ))
+
+
+def _plan(**overrides):
+    values = dict(
+        name="9月准备", campaign_type="big88", tier="big",
+        start_at=datetime(2026, 9, 6, 20, 0, 0),
+        end_at=datetime(2026, 9, 13, 23, 59, 59),
+        qn_campaign_title="26年淘宝9月超级88",
+        platform_activity_mode="fixed_window",
+        platform_campaign_id="49462",
+        platform_united_activity_id="49469",
+        status="draft",
+    )
+    values.update(overrides)
+    return CampaignPlan(**values)
+
+
+def test_invalid_item_ids_never_enter_grouping_or_registry(db_session):
+    for index, item_id in enumerate(("5", "待定", "暂无", "1234"), start=1):
+        _pair(db_session, item_id=item_id, sku_code=f"S{index}", sku_id=f"K{index}")
+    settings_service.set_value(
+        db_session, "no_sales_item_ids", '["5", "待定", "暂无", "1234"]')
+    db_session.commit()
+
+    result = campaign.group_by_sales(db_session)
+
+    assert result["invalid_item_ids_ignored"] == ["5", "待定", "暂无"]
+    assert result["newly_registered"] == []
+    assert result["registered"] == ["1234"]
+    assert result["registry_cleanup"]["removed_invalid_values"] == ["5", "待定", "暂无"]
+
+
+def test_no_sales_is_hard_excluded_from_signup(db_session):
+    plan = _plan()
+    db_session.add(plan)
+    _pair(db_session, item_id="1000009209", sku_code="NS1", sku_id="SID1")
+    db_session.commit()
+    no_sales_service.add_no_sales(db_session, ["1000009209"])
+
+    rows, stats = campaign.build_signup_rows(db_session, plan)
+
+    assert rows == []
+    assert stats["excluded_no_sales_items"] == ["1000009209"]
+
+
+def test_whole_item_exclusion_never_keyword_guesses_mixed_link(db_session):
+    plan = _plan(remark="placeholder_price_lowering_authorized=true")
+    db_session.add(plan)
+    _pair(db_session, item_id="792992319206", sku_code="REAL1", sku_id="R1")
+    _pair(db_session, item_id="792992319206", sku_code="定制差价占位", sku_id="P1",
+          placeholder=True)
+    _pair(db_session, item_id="1001358847694", sku_code="ONLYP", sku_id="P2",
+          placeholder=True)
+    db_session.commit()
+
+    exclusions = campaign.campaign_item_exclusions(db_session)
+    rows, stats = campaign.build_signup_rows(db_session, plan)
+
+    assert "792992319206" not in exclusions
+    assert "1001358847694" in exclusions
+    assert {row["taobao_item_id"] for row in rows} == {"792992319206"}
+    assert {item["taobao_item_id"] for item in stats["excluded_whole_items"]} == {
+        "1001358847694"}
+
+
+def test_explicit_whole_item_exclusion_is_auditable(db_session):
+    _pair(db_session, item_id="846844153512", sku_code="INSTALL1", sku_id="I1")
+    db_session.commit()
+    campaign_item_exclusion_service.upsert(
+        db_session, item_id="846844153512",
+        reason="运营确认该商品为安装专用链接")
+
+    item = campaign.campaign_item_exclusions(db_session)["846844153512"]
+
+    assert item["mode"] == "explicit_item_marker"
+    assert item["reason"] == "运营确认该商品为安装专用链接"
+
+
+def test_long_running_super_reduce_has_typed_identity_without_fake_short_activity():
+    body = CampaignPrepareIn(
+        workflow_key="campaign:super-reduce:2026-09-01",
+        name="2026-09-01超级立减更新窗口",
+        campaign_type="super_reduce",
+        start_at=datetime(2026, 9, 1, 0, 0, 0),
+        end_at=datetime(2026, 9, 1, 23, 59, 59),
+        qn_campaign_title="超级立减",
+        platform_activity_mode="long_running_update",
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+    )
+
+    _validate_formal_platform_identity(body)
+    plan = _plan(
+        name=body.name, campaign_type="super_reduce", tier="mid",
+        start_at=body.start_at, end_at=body.end_at,
+        qn_campaign_title=body.qn_campaign_title,
+        platform_activity_mode=body.platform_activity_mode,
+        platform_campaign_id=None, platform_united_activity_id=None,
+        platform_active_until=body.platform_active_until,
+    )
+    identity = campaign.campaign_identity(plan)
+
+    assert identity["ok"] is True
+    assert identity["platform_activity_mode"] == "long_running_update"
+    assert identity["platform_active_until"] == "2028-07-31 23:59:59"
+
+
+def test_prepare_accepts_structured_official_scope_without_free_text_markers():
+    body = CampaignPrepareIn(
+        workflow_key="campaign:super-reduce:2026-09-01",
+        name="2026-09-01超级立减更新窗口",
+        campaign_type="super_reduce",
+        start_at=datetime(2026, 9, 1, 0, 0, 0),
+        end_at=datetime(2026, 9, 1, 23, 59, 59),
+        qn_campaign_title="超级立减",
+        platform_activity_mode="long_running_update",
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        official_all_store=True,
+        official_exempt_item_ids=["1000009209"],
+    )
+
+    assert _structured_prepare_remark(body) == (
+        "official_all_store=true; official_exempt_items=1000009209")
+
+
+def test_prepare_workflow_key_is_durable_and_payload_conflicts(db_session):
+    values = dict(
+        name="26年淘宝9月超级88", campaign_type="big88", tier="big",
+        start_at=datetime(2026, 9, 6, 20, 0, 0),
+        end_at=datetime(2026, 9, 13, 23, 59, 59),
+        qn_campaign_title="26年淘宝9月超级88", price_protection_days=19,
+        price_protection_rule_url=None, price_protection_confirmed_at=None,
+        remark=None, platform_activity_mode="fixed_window",
+        platform_campaign_id="49462", platform_united_activity_id="49469",
+        platform_active_until=None,
+    )
+
+    first = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469", values=values)
+    second = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469", values=values)
+    conflict = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469",
+        values={**values, "platform_campaign_id": "99999"})
+
+    assert first["created"] is True
+    assert second["reused"] is True
+    assert second["plan"].id == first["plan"].id
+    assert conflict["conflict"] is True
+    assert conflict["different_fields"] == ["platform_campaign_id"]
+    assert first["execution_boundary"]["platform_write"] is False
+
+
+def test_rotation_marker_is_r7_hard_error(db_session):
+    plan = _plan(remark="sku_refresh_items_authorized=1000009219")
+    db_session.add(plan)
+    db_session.commit()
+
+    checks = {check["rule"]: check for check in campaign.preflight(db_session, plan)}
+
+    assert checks["R7"]["level"] == "error"
+    assert checks["R7"]["items"] == ["1000009219"]

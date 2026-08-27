@@ -80,13 +80,17 @@ def require_policy() -> dict[str, Any]:
     if gates.get("missing_or_stale_floor_evidence_action") != "block_before_upload_and_report":
         raise RuntimeError("活动报名规则未锁定价格线证据缺失/过期即上传前阻塞，已停止")
     if (gates.get("pre_submit_mode") != "local_read_only_evidence_preflight"
-            or scope.get("exclude_no_sales_items_from_campaign_signup") is not False
-            or scope.get("registered_no_sales_is_advisory_only") is not True
-            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not True
+            or scope.get("exclude_no_sales_items_from_campaign_signup") is not True
+            or scope.get("registered_no_sales_is_advisory_only") is not False
+            or scope.get("every_listed_item_is_requalified_by_platform_for_each_campaign") is not False
             or scope.get("qualification_before_discount_and_final_signup") is not False
             or scope.get("platform_qualification_source")
             != "the_single_final_signup_terminal_record"):
         raise RuntimeError("活动报名规则未锁定只读预检和单次正式平台资格结果，已停止")
+    if (scope.get("whole_item_link_exclusion")
+            != "explicit_item_marker_or_all_mapped_skus_authoritatively_marked_custom_placeholder_only; never_keyword_inference"
+            or scope.get("sku_rotation_enabled") is not False):
+        raise RuntimeError("活动报名规则未锁定显式整链排除或禁止 SKU 轮换，已停止")
     if scope.get("no_sales_only_failure_action") != "keep_out_of_campaign_and_use_single_item_discount":
         raise RuntimeError("活动报名规则未锁定无动销仅失败的单品立减兜底，已停止")
     if scope.get("accepted_item_action") != "single_item_discount_first_then_final_campaign_signup":
@@ -134,6 +138,7 @@ def public_policy() -> dict[str, Any]:
         "execution": policy.get("execution"),
         "pricing": policy.get("pricing"),
         "qualification_gates": policy.get("qualification_gates"),
+        "scope_and_idempotency": policy.get("scope_and_idempotency"),
         "sha256": policy["_sha256"],
     }
 
