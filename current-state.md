@@ -18,13 +18,15 @@ Last updated: 2026-08-28 (Asia/Shanghai)
 ## 2026-08-28 NAS-first local synchronization
 
 - Fresh production readback confirms Synology API and Web are both healthy on
-  `c7389c9c2dffe85ce810ee24cb0da2858ae5b396`; the database is at
-  `0139 (head)`, and API/Web/DB/backup containers are running.
-- GitHub `origin/main` is newer at `2a67f6ad59e5e90a6101fcc1cd43942162149d96`.
-  It contains the deployed `c7389c9` ancestor plus a documentation receipt and
-  the not-yet-deployed campaign-internal code/migration. Therefore production
-  data/runtime truth comes from NAS, while newer source state comes from
-  GitHub; neither is silently described as the other.
+  `2a67f6ad59e54a592ff7213336fa8e84f22f982d`; the database is at
+  `0140 (head)`, all required routes and static features passed, and
+  API/Web/DB/backup containers are running.
+- GitHub `origin/main` is at documentation-only commit
+  `8ea34490795c19a97ecbce101fb4013431712fbc`, whose deployed code parent is the
+  same `2a67f6a` production commit. Production data and live runtime state still
+  come from NAS; Git supplies the reproducible source and documentation. The
+  local synchronization branch adds only the reviewed adapters described below
+  and must not be described as deployed until a separate release is approved.
 - Branch `codex/nas-first-local-sync-20260828` starts from that current GitHub
   baseline and replays the local Tachikoma read-only adapter plus the reviewed
   AEO public-snapshot exporter. The pre-sync local state remains preserved on
