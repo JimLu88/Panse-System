@@ -1,6 +1,33 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-13 (Asia/Shanghai)
+Last updated: 2026-08-26 (Asia/Shanghai)
+
+## 2026-08-26 order notice and finance retry recovery
+
+- The 2026-08-25 order chain ultimately completed at 20:37. The earlier “暂未进行订单更新” was an in-progress health message incorrectly routed to the order group, not the final order outcome.
+- The order group now receives a completion receipt only after a fresh successful order closure with zero new images. Failed, stale, offline and password-pending states stay in the alert group.
+- Wanshifu, Taobao aggregate balance, Wanxiangtai flow, enterprise Alipay balance and three enterprise Alipay bill days completed on 2026-08-25. Promotion OCR layout drift, WeChat bill empty/download handling, one enterprise Alipay bill-day gap and personal-Alipay login were separate failures.
+- Personal-Alipay login no longer closes retries for other sources. Promotion OCR, WeChat bill, enterprise Alipay gaps and other automatic failures retain bounded 21:00/21:30/22:00 retries.
+- The promotion reader supports both the old Wanxiangtai layout and the new “推广业务账户 → 万相台(元)” layout with strict anti-misread guards. A read-only production OCR check returned high confidence, an explicit Wanxiangtai label and a numeric value without writing or exposing the balance.
+- ERP code/deployed commit: `c7389c9c2dffe85ce810ee24cb0da2858ae5b396`; GitHub documentation receipt: `683c720`. Web-Agent companion code commit: `eab594d7ddd679b7446076ff8aafb565b768ed64`; documentation receipt: `a9648f3`.
+- Unified NAS verification passed health, ready, API/Web parity, migration `0139 (head)` and all four production containers. Rollbacks: `panse-system-api:rollback-20260826-002820`, `panse-system-web:rollback-20260826-003556`.
+- Scheduler restarted with 62 jobs and no missed same-day critical shift. Primary-PC Wake Bridge is enabled/running, Watchdog is disabled, and post-release bridge polls returned HTTP 200 through the NAS.
+- Remaining interaction gate: personal Alipay balance/flow requires re-login in the ERP automatic-data page. No business replay, live bill pull, login, password submission or external test notification was performed by maintenance task 02.
+
+## 2026-08-25 Enterprise WeChat inbound shipping password
+
+- GitHub `main` and deployed production code: `003f4a8ca76911681347b9c7c73b5bcc322cb881`.
+- ERP now has a secure WeCom self-built-app callback at `/api/wechat/callback` plus an admin configuration card. It verifies signature/timestamp, AES ciphertext, CorpID, an explicit member UserID allowlist and message deduplication before entering the existing password -> decrypt -> ingest -> factory-image delivery recovery chain. Future shipping passwords, callback Token and EncodingAESKey are encrypted at rest and never returned by the admin API.
+- Verification: changed scope `89 passed`, frontend build and unified NAS release passed. API/Web are healthy on the same commit, migration is `0139 (head)`, the callback route and deployed UI are present, and 62 scheduler jobs registered with no missed critical shift. Rollback images: `panse-system-api:rollback-20260825-131645`, `panse-system-web:rollback-20260825-132017`.
+- The inbound feature is deployed but intentionally inactive: production has no `wechat_inbound_*` configuration and remains LAN-only. Activation still requires CorpID, Token, EncodingAESKey, allowed member UserID, and explicit approval for a public HTTPS callback route. No NAS exposure, account operation, password submission, order replay or external test notification was performed.
+
+## 2026-08-25 operational notifications moved to Enterprise WeChat
+
+- Screenshot contract is explicit in code: Web-Agent automatically requests the current shipping-report password, records bounded delivery evidence, never stores a password from that response, and keeps `too_frequent` as `sent=false` rather than claiming delivery.
+- Taobao decides whether the password goes to the bound phone or main account. The existing Feishu ERP bot remains only the password input callback; ERP operational text and login QR images now go to Enterprise WeChat, while the Feishu factory chat remains image-only.
+- ERP GitHub code commit/deployed production: `2d448172adee4e7511ed24d5c398c5fe9efa20b6`; documentation receipt: `367a05ca1a7a71b868956748585235e877fcefe7`. Web-Agent GitHub companion commit: `598993aef82badc04d761f1f6a196149f55860a7`.
+- Verification: ERP related suite `85 passed`, Web-Agent full suite `91 passed`, Python compile and frontend production build passed. No real notification, password request, account action, or order pull was used for testing.
+- Production API/Web are healthy on `2d44817`, migration is `0139 (head)`, 62 scheduler jobs registered with no missed critical shift, the Windows Wake Bridge is enabled/running, and the legacy always-on Watchdog remains disabled.
 
 ## Summary
 

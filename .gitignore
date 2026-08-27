@@ -6,6 +6,7 @@ __pycache__/
 venv/
 .pytest_cache/
 .pytest_tmp*/
+.tmp/
 .mypy_cache/
 .ruff_cache/
 *.sqlite3
@@ -43,6 +44,7 @@ audit_xlsx.py
 # 运行时数据 / 备份 / 上传 / 打包产物 — 绝不入库 (含财务数据与隐私截图)
 backups/
 storage/
+logs/
 deploy/windows/build/
 # dist/ 已在上方 Node 段覆盖 (含 deploy/windows/dist/)
 # 本地 compose 覆盖 (文件自注「请勿提交」, 仅本机端口/飞书开关)
@@ -50,3 +52,4 @@ docker-compose.override.yml
 
 # 本地存档(SKU/工厂源图, 不入库)
 _archive/
+scratchpad/*.png
