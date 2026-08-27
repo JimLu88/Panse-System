@@ -1,0 +1,192 @@
+"""Prepare-only machine identity, path scope, encryption and audit gates."""
+from __future__ import annotations
+
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, select
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app import dependencies, middleware
+from app.cli import campaign_prepare as prepare_cli
+from app.database import get_db
+from app.main import app
+from app.models import Base
+from app.models.auth import AuditLog
+from app.models.settings import SystemSetting
+from app.services import settings_service
+
+
+TOKEN = "campaign-prepare-only-test-token"
+
+
+def _request(path: str):
+    from starlette.requests import Request
+
+    return Request({
+        "type": "http", "method": "POST", "path": path,
+        "headers": [], "client": ("10.0.0.8", 0), "query_string": b"",
+    })
+
+
+def _payload() -> dict:
+    return {
+        "workflow_key": "campaign:super-reduce:2026-09-01",
+        "name": "2026-09-01超级立减更新窗口",
+        "campaign_type": "super_reduce",
+        "start_at": "2026-09-01T00:00:00+08:00",
+        "end_at": "2026-09-01T23:59:59+08:00",
+        "qn_campaign_title": "超级立减",
+        "platform_activity_mode": "long_running_update",
+        "platform_active_until": "2028-07-31T23:59:59+08:00",
+        "official_all_store": True,
+        "official_exempt_item_ids": [],
+    }
+
+
+def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatch):
+    settings_service.set_value(
+        db_session, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+    db_session.commit()
+
+    row = db_session.execute(select(SystemSetting).where(
+        SystemSetting.key == dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING
+    )).scalar_one()
+    assert row.is_secret is True
+    assert row.value_plain is None
+    assert TOKEN not in (row.value_encrypted or "")
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session, path="/api/campaigns/prepare"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session, path="/api/campaigns/item-exclusions"
+    ) is None
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session, path="/api/campaigns/1/push-signup"
+    ) is None
+
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    assert dependencies.require_authenticated(
+        _request("/api/campaigns/prepare"), authorization=None,
+        x_api_key=TOKEN, db=db_session) is None
+
+
+def test_container_cli_has_fixed_direct_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["token"] = req.get_header("X-api-key")
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(prepare_cli.request, "build_opener", lambda *_: Opener())
+    status, body = prepare_cli.call_prepare(b'{"workflow_key":"campaign:test"}', token=TOKEN)
+
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured == {
+        "url": "http://127.0.0.1:8000/api/campaigns/prepare",
+        "token": TOKEN,
+        "timeout": 300,
+    }
+
+
+def test_prepare_service_identity_uses_route_validation_and_is_audited(monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/campaigns/prepare",
+            headers={"X-API-Key": TOKEN},
+            json=_payload(),
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["workflow_key"] == _payload()["workflow_key"]
+        assert body["execution_boundary"]["platform_write"] is False
+        assert body["execution_boundary"]["account_action"] is False
+
+        # A malformed payload still runs through the same Pydantic route gate.
+        invalid = client.post(
+            "/api/campaigns/prepare",
+            headers={"X-API-Key": TOKEN},
+            json={"workflow_key": "campaign:bad"},
+        )
+        assert invalid.status_code == 422
+
+        with Session() as db:
+            audits = db.execute(select(AuditLog).where(
+                AuditLog.path == "/api/campaigns/prepare"
+            ).order_by(AuditLog.id)).scalars().all()
+            assert [row.status_code for row in audits[-2:]] == [200, 422]
+            assert all(
+                row.username == "service:campaign-prepare"
+                for row in audits[-2:])
+            assert all(
+                row.note == "authenticated path-scoped machine request"
+                for row in audits[-2:])
+            assert all(TOKEN not in str(row.request_body) for row in audits[-2:])
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
+def test_wrong_prepare_key_cannot_reach_endpoint(monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(bind=engine, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/prepare",
+            headers={"X-API-Key": "wrong"},
+            json=_payload(),
+        )
+        assert response.status_code == 401
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()

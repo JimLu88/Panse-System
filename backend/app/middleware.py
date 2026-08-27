@@ -72,6 +72,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         user_id = None
         username = None
+        note = None
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             try:
@@ -84,6 +85,14 @@ class AuditMiddleware(BaseHTTPMiddleware):
         # 失败的写也要记
         try:
             db = SessionLocal()
+            if username is None:
+                from app.dependencies import machine_identity_for_key
+
+                identity = machine_identity_for_key(
+                    request.headers.get("x-api-key"), db, path=path)
+                if identity:
+                    username = identity
+                    note = "authenticated path-scoped machine request"
             db.add(AuditLog(
                 user_id=user_id,
                 username=username,
@@ -92,6 +101,7 @@ class AuditMiddleware(BaseHTTPMiddleware):
                 status_code=response.status_code,
                 ip=request.client.host if request.client else None,
                 request_body=body_snippet,
+                note=note,
             ))
             db.commit()
             db.close()

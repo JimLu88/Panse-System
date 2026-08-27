@@ -31,7 +31,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.dependencies import get_current_user, require_role
+from app.dependencies import (
+    ServicePrincipal,
+    get_current_user,
+    require_campaign_prepare_principal,
+    require_role,
+)
 from app.models.auth import User
 from app.models.campaign import CampaignPlan, CampaignReconReport
 from app.services import campaign_service
@@ -263,7 +268,7 @@ def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
 @router.post("/prepare")
 def prepare_campaign(
         body: CampaignPrepareIn, db: Session = Depends(get_db),
-        _: User = Depends(require_role("admin", "operator"))):
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
     """Formal ERP-only campaign package; never reads ERP through a browser."""
     from app.services import campaign_workflow_service
 

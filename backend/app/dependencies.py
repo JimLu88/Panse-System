@@ -4,6 +4,7 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+from dataclasses import dataclass
 from typing import Optional
 
 from fastapi import Depends, Header, HTTPException, Request, status
@@ -13,6 +14,19 @@ from app import page_permissions
 from app.database import get_db
 from app.models.auth import User
 from app.services import auth_service, settings_service
+
+
+CAMPAIGN_PREPARE_SERVICE_SETTING = "campaign_prepare_service_token"
+CAMPAIGN_PREPARE_PATH = "/api/campaigns/prepare"
+
+
+@dataclass(frozen=True)
+class ServicePrincipal:
+    """Narrow machine identity returned without manufacturing a database User."""
+
+    username: str
+    role: str
+    scope: str
 
 
 def get_current_user_optional(
@@ -152,30 +166,74 @@ def _has_valid_machine_key(
     path: str,
 ) -> bool:
     """机器对机器令牌: 命中已批准的专用 token 之一即算已认证。"""
+    return machine_identity_for_key(x_api_key, db, path=path) is not None
+
+
+def machine_identity_for_key(
+    x_api_key: Optional[str],
+    db: Session,
+    *,
+    path: str,
+) -> Optional[str]:
+    """Return the audited identity for a valid path-scoped machine key."""
     if not x_api_key:
-        return False
+        return None
     candidate = x_api_key.strip()
     # Preserve the existing agents' behavior; this procurement change must not
     # change their routes or credentials.
     for key_name in ("ingest_api_token", "cs_api_key"):
         expected = settings_service.get(db, key_name, env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
-            return True
+            return f"machine:{key_name}"
     # The Windows procurement sidecar can only call its own narrow API surface.
     if path == "/api/procurement/agent" or path.startswith("/api/procurement/agent/"):
         expected = settings_service.get(
             db, "procurement_agent_token", env_fallback=True
         )
         if expected and hmac.compare_digest(candidate, expected.strip()):
-            return True
+            return "machine:procurement-agent"
     # The lightweight Windows wake bridge gets access only to its command and
     # acknowledgement endpoints.  Reuse the existing DPAPI-protected Agent
     # token without granting it access to the rest of the ERP API.
     if path == "/api/web-agent/wake" or path.startswith("/api/web-agent/wake/"):
         expected = settings_service.get(db, "web_agent_token", env_fallback=True)
         if expected and hmac.compare_digest(candidate, expected.strip()):
-            return True
-    return False
+            return "machine:web-agent-wake"
+    # The 01 executor gets one non-exported credential that can authenticate
+    # only the ERP-internal preparation route.  It cannot list plans, change
+    # exclusions, upload, submit, retry, withdraw, or call any other API.
+    if path == CAMPAIGN_PREPARE_PATH:
+        expected = settings_service.get(
+            db, CAMPAIGN_PREPARE_SERVICE_SETTING, env_fallback=False)
+        if expected and hmac.compare_digest(candidate, expected.strip()):
+            return "service:campaign-prepare"
+    return None
+
+
+def require_campaign_prepare_principal(
+    user: Optional[User] = Depends(get_current_user_optional),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: Session = Depends(get_db),
+) -> User | ServicePrincipal:
+    """Allow an admin/operator or the dedicated prepare-only service identity."""
+    if user is not None:
+        if not user.is_active:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已停用")
+        if user.role not in ("admin", "operator"):
+            raise HTTPException(
+                status.HTTP_403_FORBIDDEN,
+                f"需要角色 ['admin', 'operator']，你的角色是 {user.role!r}",
+            )
+        return user
+    identity = machine_identity_for_key(
+        x_api_key, db, path=CAMPAIGN_PREPARE_PATH)
+    if identity == "service:campaign-prepare":
+        return ServicePrincipal(
+            username=identity,
+            role="campaign_prepare_service",
+            scope="campaign.prepare",
+        )
+    raise HTTPException(status.HTTP_401_UNAUTHORIZED, "需要登录或活动准备服务身份")
 
 
 def require_authenticated(

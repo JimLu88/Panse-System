@@ -50,6 +50,9 @@ _SECRET_KEYS = {
     "wechat_inbound_aes_key",
     "wechat_aibot_token",
     "wechat_aibot_aes_key",
+    # 01 activity executor: encrypted, never returned, accepted only by
+    # POST /api/campaigns/prepare and consumed through the container CLI.
+    "campaign_prepare_service_token",
 }
 
 
