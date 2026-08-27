@@ -2,6 +2,14 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 fixed non-dismissible quick-signup navigation
+
+- Task 01's single retry after `e654c6d` proved that the exposed `next-overlay-backdrop` point was selected and received a real pointer click, but QianNiu's `快速报名` layer is configured as non-dismissible. The only DOM close candidate was the backdrop; there was no visible or labelled close control, and a fresh direct item URL has no useful campaign history state to return to. The existing obstruction gate again stopped before export.
+- Web-Agent GitHub `main` is now `785752af235cc2f4d861ef24c24be7346e43078c`. When the layer cannot close, fixed-window evidence export opens the campaign list in a separate page and permits only exact read-only actions inside the exact normalized campaign-title card: product management, already-enrolled products/records, or view details. Any candidate containing `报名`, `提交`, `开通`, `确定` or `确认` is rejected. No force click, DOM removal, keyboard bypass or covered export click is used.
+- The natural-navigation target must resolve to the exact guarded `campaign/item.htm` with the original `campaignId` and `unitedActivityId`, must no longer contain the quick-signup layer, and must pass the title, phase, sale-window, official-rate and date guards again. Otherwise it hard-stops with bounded `readonly_navigation` diagnostics.
+- The authoritative JimPC runtime target files match GitHub exactly while unrelated dirty work remains untouched. Clean suite `118 passed`; authoritative runtime campaign scope `38 passed`; Python compilation and scoped diff checks passed. A real Chromium probe selected `商品管理` from a card that also contained `立即报名` and a submit action, left both dangerous counters at zero, and rejected a page containing only dangerous actions.
+- The full Agent remains intentionally offline until an approved queued job wakes it; Wake Bridge stays enabled/running and the legacy Watchdog disabled. ERP production remains `6abc5bb45182d8bab44b9aa1d6d058927a35cc0f` at migration `0141 (head)`. Maintenance did not retry plan 8 or trigger an export, signup, upload, price change, submission, notification, account action or automatic retry. Task 01 may run one explicit plan-8 evidence refresh with the formal script.
+
 ## 2026-08-28 fixed campaign quick-signup backdrop pointer cleanup
 
 - Task 01's single plan-8 retry reached the exact guarded activity page and found one enabled `导出已报商品` button, but the visible `快速报名` panel covered it. The only close candidate was a full-page backdrop. The prior Playwright locator click targeted that element's center, which was physically under the right-side panel, so the layer remained and the existing `quick_signup_obstructing_export` hard gate stopped safely.
