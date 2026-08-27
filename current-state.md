@@ -2,6 +2,17 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 campaign evidence persistence and fixed-window export repair
+
+- ERP GitHub `main` code commit and deployed production commit: `6abc5bb45182d8bab44b9aa1d6d058927a35cc0f`. Web-Agent GitHub `main` companion commit: `896dfb394c86b1923ab1bce653eafaea68476c0d`; the JimPC authoritative runtime implementation matches that commit while retaining unrelated dirty work.
+- Plan 7 root cause was a transaction boundary defect: the current activity workbook parsed successfully, but evidence was only flushed; a still-blocking R16/R17 package did not commit, so request teardown rolled it back. Successful read-only refreshes now commit plan-scoped H/I evidence and exact candidate-placeholder current list prices before rebuilding preflight. Missing placeholder prices remain R16 hard blocks; no price is fabricated or carried from another plan.
+- An explicitly present empty plan evidence object is now authoritative. It never falls back to legacy/plan-5 evidence; legacy fallback remains only for a plan that has never had a scoped value.
+- Plan 8 audit row `32556` (`service:campaign-prepare`, HTTP 422) mapped to Web-Agent job failure `step=export_click`, `error=export_button_not_found`. The exact failure screenshot showed the fixed-window `快速报名` drawer covering the enrolled-item page. No platform export was started and no XLSX was created. The read-only exporter now closes only that drawer, supports `导出已报商品` / `导出全部商品` / `导出商品`, and returns bounded page/action diagnostics plus `job_id` on failure. It never clicks `确定开通` or any signup control.
+- `scripts/campaign_refresh_evidence_nas.ps1` now preserves the complete non-2xx response JSON and surfaces `error`, `step`, and `job_id`; its authoritative blob equals GitHub `origin/main` blob `4687627725ca5923e78ff35c3eb161cc7c1bac43`. A safe missing-workflow probe confirmed `response_json` and `error=workflow_not_found` survive the wrapper.
+- Verification: every campaign-named ERP suite passed with 2 existing skips; Web-Agent full suite passed `102` tests; Python compilation, PowerShell parsing and scoped diff checks passed. No activity signup, upload, price change, submission, notification, account action or automatic retry was used.
+- Unified NAS release passed health, ready, API/Web commit parity, required routes/features, service CLI checks, migration `0141 (head)` and API/Web/DB/backup container checks. Rollback images: `panse-system-api:rollback-20260828-044359` and `panse-system-web:rollback-20260828-045211`.
+- Formal task-01 retry entry remains `scripts/campaign_refresh_evidence_nas.ps1`; plan 7 and plan 8 must be run sequentially and explicitly by task 01. The maintenance task did not replay either production plan.
+
 ## 2026-08-28 audited prepare-only service identity for task 01
 
 - GitHub `main` contains code commit `0d7de3bff2a63570f89eeea13f0703ebd322ab34` (`feat: add audited campaign prepare service identity`); production API and production Web are deployed from that code commit. The official unified NAS release passed health, ready, API/Web commit parity, required routes/features, database migration `0141 (head)` and API/Web/DB/backup container checks. Rollback images: `panse-system-api:rollback-20260828-021640` and `panse-system-web:rollback-20260828-022900`.
