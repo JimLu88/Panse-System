@@ -6,6 +6,8 @@ state.  ``workflow_key`` is the durable idempotency boundary across restarts.
 """
 from __future__ import annotations
 
+import re
+
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,11 +30,49 @@ def _different_fields(plan: CampaignPlan, values: dict) -> list[str]:
     ]
 
 
+def _remark_segments(value: str | None) -> list[str]:
+    return [
+        segment.strip()
+        for segment in re.split(r"[;\n；]", str(value or ""))
+        if segment.strip()
+    ]
+
+
+def _is_empty_exempt_marker_enrichment(
+        plan: CampaignPlan, values: dict, different: list[str]) -> bool:
+    """Allow one safe repair for plans created before explicit [] persisted.
+
+    The durable workflow identity remains immutable.  We only enrich a draft
+    or precheck plan when every other identity field is identical and the new
+    remark is byte-for-byte the old segments plus exactly one empty
+    ``official_exempt_items=`` marker.  Any non-empty exemption, free-text
+    change, or other identity change still conflicts.
+    """
+    if different != ["remark"] or plan.status not in ("draft", "precheck"):
+        return False
+    old_segments = _remark_segments(plan.remark)
+    new_segments = _remark_segments(values.get("remark"))
+    if not any(re.fullmatch(
+            r"official_all_store\s*=\s*(?:true|1|yes|on)",
+            segment, flags=re.IGNORECASE) for segment in old_segments):
+        return False
+    empty_markers = [
+        segment for segment in new_segments
+        if re.fullmatch(
+            r"official_exempt_items\s*=\s*", segment, flags=re.IGNORECASE)
+    ]
+    if len(empty_markers) != 1:
+        return False
+    remaining = [segment for segment in new_segments if segment not in empty_markers]
+    return remaining == old_segments
+
+
 def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
     """Create/reuse one plan and return a fresh structured read-only package."""
     existing = db.execute(select(CampaignPlan).where(
         CampaignPlan.workflow_key == workflow_key)).scalar_one_or_none()
     created = existing is None
+    repaired_fields: list[str] = []
     if created:
         plan = CampaignPlan(workflow_key=workflow_key, status="draft", **values)
         db.add(plan)
@@ -41,7 +81,12 @@ def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
     else:
         plan = existing
         different = _different_fields(plan, values)
-        if different:
+        if _is_empty_exempt_marker_enrichment(plan, values, different):
+            plan.remark = values["remark"]
+            db.commit()
+            db.refresh(plan)
+            repaired_fields = ["remark"]
+        elif different:
             return {
                 "ok": False,
                 "conflict": True,
@@ -62,6 +107,7 @@ def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
         "ok": True,
         "created": created,
         "reused": not created,
+        "repaired_fields": repaired_fields,
         "workflow_key": workflow_key,
         "plan": plan,
         "grouping": grouping,

@@ -152,6 +152,97 @@ def test_prepare_accepts_structured_official_scope_without_free_text_markers():
         "official_all_store=true; official_exempt_items=1000009209")
 
 
+def test_prepare_preserves_explicit_empty_exempt_scope_but_not_omission():
+    common = dict(
+        workflow_key="campaign:super-reduce:2026-09-01",
+        name="2026-09-01超级立减更新窗口",
+        campaign_type="super_reduce",
+        start_at=datetime(2026, 9, 1, 0, 0, 0),
+        end_at=datetime(2026, 9, 1, 23, 59, 59),
+        qn_campaign_title="超级立减",
+        platform_activity_mode="long_running_update",
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        official_all_store=True,
+    )
+
+    omitted = CampaignPrepareIn(**common)
+    explicit_empty = CampaignPrepareIn(
+        **common, official_exempt_item_ids=[])
+
+    assert _structured_prepare_remark(omitted) == "official_all_store=true"
+    assert _structured_prepare_remark(explicit_empty) == (
+        "official_all_store=true; official_exempt_items=")
+
+
+def test_empty_exempt_enrichment_reuses_long_and_fixed_workflows(db_session):
+    cases = [
+        dict(
+            workflow_key="campaign:super-reduce:2026-09-01",
+            name="2026-09-01超级立减更新窗口",
+            campaign_type="super_reduce", tier="mid",
+            start_at=datetime(2026, 9, 1, 0, 0, 0),
+            end_at=datetime(2026, 9, 1, 23, 59, 59),
+            qn_campaign_title="超级立减",
+            platform_activity_mode="long_running_update",
+            platform_campaign_id=None, platform_united_activity_id=None,
+            platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        ),
+        dict(
+            workflow_key="campaign:super88:49462:49469",
+            name="超级88现货", campaign_type="big88", tier="big",
+            start_at=datetime(2026, 9, 6, 20, 0, 0),
+            end_at=datetime(2026, 9, 13, 23, 59, 59),
+            qn_campaign_title="26年淘宝9月超级88",
+            platform_activity_mode="fixed_window",
+            platform_campaign_id="49462", platform_united_activity_id="49469",
+            platform_active_until=None,
+        ),
+    ]
+    for case in cases:
+        workflow_key = case.pop("workflow_key")
+        plan = _plan(
+            **case, workflow_key=workflow_key,
+            remark="official_all_store=true")
+        db_session.add(plan)
+        db_session.commit()
+        original_id = plan.id
+        values = {
+            **case,
+            "price_protection_days": 19,
+            "price_protection_rule_url": None,
+            "price_protection_confirmed_at": None,
+            "remark": "official_all_store=true; official_exempt_items=",
+        }
+
+        repaired = campaign_workflow_service.prepare(
+            db_session, workflow_key=workflow_key, values=values)
+        repeated = campaign_workflow_service.prepare(
+            db_session, workflow_key=workflow_key, values=values)
+        changed_scope = campaign_workflow_service.prepare(
+            db_session, workflow_key=workflow_key,
+            values={
+                **values,
+                "remark": (
+                    "official_all_store=true; "
+                    "official_exempt_items=1000009209"),
+            })
+        r15 = next(
+            check for check in repaired["preflight"]["checks"]
+            if check["rule"] == "R15")
+
+        assert repaired.get("conflict") is not True
+        assert repaired["created"] is False
+        assert repaired["reused"] is True
+        assert repaired["repaired_fields"] == ["remark"]
+        assert repaired["plan"].id == original_id
+        assert repaired["plan"].remark.endswith("official_exempt_items=")
+        assert r15["level"] != "error"
+        assert repeated["repaired_fields"] == []
+        assert repeated["plan"].id == original_id
+        assert changed_scope["conflict"] is True
+        assert changed_scope["different_fields"] == ["remark"]
+
+
 def test_prepare_workflow_key_is_durable_and_payload_conflicts(db_session):
     values = dict(
         name="26年淘宝9月超级88", campaign_type="big88", tier="big",

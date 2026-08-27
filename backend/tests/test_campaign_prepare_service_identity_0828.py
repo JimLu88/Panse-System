@@ -134,6 +134,12 @@ def test_prepare_service_identity_uses_route_validation_and_is_audited(monkeypat
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["workflow_key"] == _payload()["workflow_key"]
+        assert body["plan"]["remark"] == (
+            "official_all_store=true; official_exempt_items=")
+        r15 = next(
+            check for check in body["preflight"]["checks"]
+            if check["rule"] == "R15")
+        assert r15["level"] != "error"
         assert body["execution_boundary"]["platform_write"] is False
         assert body["execution_boundary"]["account_action"] is False
 

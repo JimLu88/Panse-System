@@ -219,7 +219,12 @@ def _structured_prepare_remark(body: CampaignPrepareIn) -> Optional[str]:
             f"official_all_store={'true' if body.official_all_store else 'false'}")
     if active:
         markers.append(f"official_active_items={','.join(sorted(active))}")
-    if exempt:
+    # Pydantic keeps track of whether the caller actually supplied the field.
+    # An explicit [] is materially different from omission here: for an
+    # all-store official discount it proves that the operator checked the live
+    # activity and found no exempt items.  Persist the empty marker so R15 can
+    # distinguish that evidence from an unconfigured scope.
+    if "official_exempt_item_ids" in body.model_fields_set:
         markers.append(f"official_exempt_items={','.join(sorted(exempt))}")
     return "; ".join([value for value in (text, *markers) if value]) or None
 
