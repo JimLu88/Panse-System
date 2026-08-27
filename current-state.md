@@ -232,3 +232,12 @@ At this update, the primary working tree also contains unrelated Tachikoma conne
 ## Where to continue
 
 Start with `docs/logistics-bill-product-analytics.md`. For the next engineering task, the safest first target is the 78 unmatched rows plus the service-link leakage test, because both directly affect analysis credibility.
+
+## 2026-08-28 campaign evidence refresh release
+
+- Production API and Web are both `fef84c67e3a1fae3166de865f5ba23faf1ef038e`; `/api/health` and `/api/ready` passed and the database is `0141 (head)`.
+- The formal evidence-only entry is `POST /api/campaigns/refresh-evidence`. The path-scoped `service:campaign-prepare` identity is accepted only by this route and `/api/campaigns/prepare`; it cannot list plans or call signup, upload, price-change, submission, withdrawal, notification, or retry routes.
+- The authoritative operator command is `scripts/campaign_refresh_evidence_nas.ps1`. It reads the encrypted service token only inside the API container and accepts only `workflow_key` plus an optional positive `plan_id` cross-check.
+- A missing-workflow production probe returned audited HTTP 404 as `service:campaign-prepare`, proving the fixed command and route without contacting QianNiu. No plan 7/8 export or other activity business action was run by maintenance.
+- Web-Agent export support is GitHub commit `b8a0cbe55914f0dd5547e845057d330cc3f9b5a6`. The JimPC Wake Bridge started the on-demand Agent from `D:\AI\畔色ERP系统\Web-Agent程序`; port 8500 health passed and the four campaign export source fingerprints matched that release while unrelated runtime dirty work remained preserved.
+- Verification: ERP campaign test set passed with two existing skips; Web-Agent clean suite `100 passed`; authoritative runtime campaign suite `20 passed`; unified NAS release verification passed. Plans 7/8 still require 01 to invoke the formal command so R16/R17 can be refreshed from a real current-activity export.
