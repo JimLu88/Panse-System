@@ -29,12 +29,20 @@ pass "API/Web 同一提交 ${EXPECTED_COMMIT:0:7}"
 # LAN nginx 只代理 /api/*；FastAPI 的 /openapi.json 不从 8200 暴露，因此在 API 容器内只读获取。
 openapi=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://localhost:8000/openapi.json")
 [[ "$openapi" == *'"/api/campaigns"'* ]] || fail "OpenAPI 缺 /api/campaigns"
+[[ "$openapi" == *'"/api/campaigns/prepare"'* ]] || fail "OpenAPI 缺活动正式准备入口"
+[[ "$openapi" == *'"/api/campaigns/item-exclusions"'* ]] || fail "OpenAPI 缺活动整品排除入口"
 [[ "$openapi" == *'"/api/customization/v2/quote-both"'* ]] || fail "OpenAPI 缺定制报价双口径路由"
 [[ "$openapi" == *'"/api/procurement/tasks"'* ]] || fail "OpenAPI 缺采购任务路由"
 [[ "$openapi" == *'"/api/procurement/agent/heartbeat"'* ]] || fail "OpenAPI 缺采购执行器心跳路由"
 [[ "$openapi" == *'"/api/wechat/callback"'* ]] || fail "OpenAPI 缺企业微信入站回调路由"
 [[ "$openapi" == *'"/api/wechat/aibot/callback"'* ]] || fail "OpenAPI 缺企业微信群聊智能机器人回调路由"
 pass "既有关键路由 + 采购模块 + 企业微信入站回调路由"
+
+prepare_identity=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"import os; from app.database import SessionLocal; from app.models.settings import SystemSetting; s=SessionLocal(); r=s.query(SystemSetting).filter_by(key='campaign_prepare_service_token').one_or_none(); print('ok' if bool(os.environ.get('SETTINGS_ENCRYPTION_KEY')) and r is not None and r.is_secret and bool(r.value_encrypted) and not r.value_plain else 'bad'); s.close()\"")
+[[ "$prepare_identity" == "ok" ]] || fail "活动 prepare-only 服务身份未加密配置"
+prepare_cli=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"import app.cli.campaign_prepare; print('ok')\"")
+[[ "$prepare_cli" == "ok" ]] || fail "活动容器内受控 CLI 缺失"
+pass "活动 prepare-only 服务身份已加密配置 + 容器 CLI 可用"
 
 # 页面采用 lazy chunk，目标文案不一定在首页主 bundle；直接检查当前在线 web 容器的全部静态 chunk。
 web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '
