@@ -2,6 +2,14 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 fixed campaign browser-page binding repair
+
+- Task 01's single retry after `e3a456a` stopped safely at `title_check`: the expected campaign was `26年淘宝9月超级88`, but the selected page rendered QianNiu Product Center headings. The campaign title guard remained correct and no overlay/export step was reached.
+- Root cause was earlier than `ctx.pages[-1]`: `_open_page` reused `ctx.pages[0]` from a persistent Chrome cold start and silently tolerated a failed/redirected navigation. That restored page was the Product Center. Web-Agent GitHub `main` is now `a47560f285b9b3f6ecaaa40bfee6c3dbc2246146`.
+- Campaign evidence export now opens a dedicated new page, never navigates an arbitrary restored tab, and selects a context page only when its URL contains the exact guarded `campaignId` and `unitedActivityId` (or the exact long-running activity path). Page order is ignored. If no exact page exists, one bounded read-only navigation to the same immutable URL is allowed; failure stops at `entry_navigation` with bounded page inventory. Title and campaign-detail guards remain unchanged and cannot be bypassed.
+- The authoritative JimPC runtime uploader and focused test blobs match GitHub exactly while unrelated dirty work remains preserved. Clean suite `112 passed`; authoritative runtime focused suite `21 passed`; Python compilation, diff checks and a real Chromium three-tab probe passed. The probe proved that an exact middle campaign page is selected while both first and last pages are Product Center tabs.
+- The full Agent is intentionally offline after the prior task, Wake Bridge remains enabled/running, and the legacy Watchdog remains disabled. No plan was replayed and no platform export, signup, upload, price change, submission, notification, account action or automatic plan retry occurred. Task 01 may perform one explicit plan-8 evidence refresh with the existing formal script.
+
 ## 2026-08-28 fixed-window campaign export action visibility repair
 
 - Task 01's single plan-8 evidence refresh reached the exact guarded item page but returned `export_button_not_found`: diagnostics could enumerate `导出已报商品` while the visible `快速报名` layer still covered the page. The prior cleanup only recognized containers whose CSS class contained `drawer` or `dialog`; this page exposed the heading without either class, so cleanup never started.
