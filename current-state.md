@@ -2,6 +2,14 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 campaign programmatic read-only path unavailable gate
+
+- Task 01's strict retry after `785752a` exhausted the bounded safe navigation views. Current and `大促日历` exposed no allowlisted action. `全部活动` produced only an unroled `DIV` labelled `查看详情`, while the same page began with an unrelated Apple-launch advertisement; clicking it still ended at the exact-ID page with the non-dismissible `快速报名` layer. There was no XLSX, export job or platform write.
+- This is sufficient live evidence that QianNiu currently exposes no proven programmatic read-only path from this session to plan 8's uncovered enrolled-product export. Web-Agent GitHub `main` is now `f3eeb0f2c9932948de816ac1d8a9fc282fa45b7a`. The unsafe generic `查看详情` route and plain `DIV` fallback are removed. A campaign title must be an exact normalized leaf in a bounded semantic card, and the action must resolve to a real `a`, `button` or `[role=button]` with a strictly read-only label.
+- Page resolution now considers only tabs created by the safe action or pages whose URL actually changed during that action. An older exact-ID tab containing the quick-signup layer can never be reselected. If no exact, unobstructed, guard-matching page results, the job returns terminal `PROGRAMMATIC_READONLY_PATH_UNAVAILABLE`, `retryable=false`, bounded diagnostics and an explicit manual read-only handoff instead of another guessed retry.
+- Minimal handoff: the user may manually locate the exact `26年淘宝9月超级88` activity in QianNiu and only enter a visibly labelled `商品管理`, `已报商品` or `已报记录` page. They must not click signup, submit, open or confirm controls. Only if the exact title/IDs/date scope is visible and `导出已报商品` is uncovered should they provide a screenshot for selector calibration; if no such visible entry exists, the platform offers no safe read-only route for this activity.
+- Verification: clean Web-Agent suite `119 passed`; authoritative runtime campaign scope `39 passed`; Python compilation and scoped diff checks passed. A real Chromium probe rejected an adjacent advertisement, a plain `DIV 查看详情`, a plain `DIV 商品管理`, signup/submit controls and old unchanged exact-ID tabs, while still accepting a real same-card `商品管理` button. Runtime target-file blobs match GitHub; maintenance did not rerun plan 8 or perform any external/business action.
+
 ## 2026-08-28 fixed non-dismissible quick-signup navigation
 
 - Task 01's single retry after `e654c6d` proved that the exposed `next-overlay-backdrop` point was selected and received a real pointer click, but QianNiu's `快速报名` layer is configured as non-dismissible. The only DOM close candidate was the backdrop; there was no visible or labelled close control, and a fresh direct item URL has no useful campaign history state to return to. The existing obstruction gate again stopped before export.
