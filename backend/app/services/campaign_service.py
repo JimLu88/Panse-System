@@ -45,6 +45,7 @@ MID_OVER_BIG_RATIO = Decimal("1.03")       # 任务#22: 中促 = 大促 × 1.03 
 LINE_CONCESSION_MAX_YUAN = Decimal("1")    # 贴线让幅 > 1 元 → 暂缓该商品并提醒人工决策 (R2)
 PLACEHOLDER_LINE_FALLBACK_RATIO = Decimal("0.8")   # 占位无券后线 → 日常×0.8 保守线(行备注标注)
 OFFICIAL_CEIL_KEY = "campaign_official_ceil"       # 10% 官方立减是否向上取整(待7-20实证), 默认真
+PLACEHOLDER_LIVE_PRICE_KEY_PREFIX = "campaign_placeholder_live_prices_v1_plan_"
 _CENT = Decimal("0.01")
 # spec §四.1 说剔 closed; 本库订单状态机把交易关闭存成 cancelled → 两个都剔 (口径决定, 见交付说明)
 _CLOSED_STATUSES = ("closed", "cancelled")
@@ -233,9 +234,33 @@ def sync_live_activity_evidence(db: Session, plan,
     }
 
 
-def placeholder_live_prices_for_plan(plan) -> dict[str, Decimal]:
-    """Read the latest verified platform price for placeholder SKU IDs from remark."""
+def placeholder_live_prices_for_plan(db: Session, plan) -> dict[str, Decimal]:
+    """Read exact, plan-scoped platform prices for placeholder SKU IDs.
+
+    New read-only exports persist these observations outside the immutable plan
+    remark. The remark parser remains a compatibility bridge for older plans.
+    """
     import re
+
+    from app.services import settings_service
+
+    plan_id = str(getattr(plan, "id", "") or "").strip()
+    if plan_id.isdigit():
+        raw = settings_service.get(
+            db, f"{PLACEHOLDER_LIVE_PRICE_KEY_PREFIX}{plan_id}",
+            env_fallback=False)
+        if raw is not None:
+            try:
+                payload = json.loads(raw)
+            except (TypeError, ValueError):
+                payload = {}
+            out: dict[str, Decimal] = {}
+            if isinstance(payload, dict):
+                for sid, raw_price in payload.items():
+                    value = _d(raw_price)
+                    if str(sid).isdigit() and value is not None and value > 0:
+                        out[str(sid)] = value
+            return out
 
     text = str(getattr(plan, "remark", None) or "")
     matched = re.search(
@@ -251,6 +276,46 @@ def placeholder_live_prices_for_plan(plan) -> dict[str, Decimal]:
         if value is not None and value > 0:
             out[sid] = value.quantize(_CENT)
     return out
+
+
+def record_placeholder_live_prices(
+        db: Session, plan, floor_rows: list[dict],
+        candidate_sku_ids: list[str]) -> dict:
+    """Replace placeholder prices from one exact current platform export.
+
+    Only candidate placeholder SKU IDs are accepted. Missing candidates are
+    deliberately omitted so R16 hard-stops them; stale observations are never
+    carried forward and real SKU prices never enter this setting.
+    """
+    from app.services import settings_service
+
+    plan_id = str(getattr(plan, "id", "") or "").strip()
+    candidates = {str(sid) for sid in candidate_sku_ids if str(sid).isdigit()}
+    if not plan_id.isdigit():
+        return {"observed": 0, "candidate_count": len(candidates),
+                "missing_sku_ids": sorted(candidates), "scope": None}
+    observed: dict[str, float] = {}
+    for row in floor_rows:
+        sid = str(row.get("sku_id") or "").strip()
+        if sid not in candidates:
+            continue
+        value = _d(row.get("list_price"))
+        if value is not None and value > 0:
+            observed[sid] = float(value)
+    key = f"{PLACEHOLDER_LIVE_PRICE_KEY_PREFIX}{plan_id}"
+    settings_service.set_value(
+        db, key,
+        json.dumps(observed, ensure_ascii=False, sort_keys=True,
+                   separators=(",", ":")),
+        description=f"淘宝活动计划{plan_id}占位SKU平台当前一口价证据",
+    )
+    db.flush()
+    return {
+        "observed": len(observed),
+        "candidate_count": len(candidates),
+        "missing_sku_ids": sorted(candidates - set(observed)),
+        "scope": key,
+    }
 
 
 def placeholder_price_protection_expired(plan) -> bool:
@@ -1025,7 +1090,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     campaign_policy_service.require_policy()
 
     lev = TIER_LEVERAGE[plan_tier(plan)]
-    placeholder_live_prices = placeholder_live_prices_for_plan(plan)
+    placeholder_live_prices = placeholder_live_prices_for_plan(db, plan)
     placeholder_expired = placeholder_price_protection_expired(plan)
     placeholder_lowering = placeholder_price_lowering_authorized(plan)
     delisted = delisted_sku_service.get_delisted(db)
@@ -1045,6 +1110,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_missing_live_price": [],
              "placeholder_price_protection_expired": placeholder_expired,
              "placeholder_price_lowering_authorized": placeholder_lowering,
+             "placeholder_candidate_sku_ids": [],
              "placeholder_price_blocked_items": [],
              "placeholder_price_lowered": [],
              "registered_no_sales_items_included": [],
@@ -1085,6 +1151,9 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
                 "product": (pairs[0][0].product_name or pairs[0][0].product_code or "")[:30],
                 "ok_skus": len(item_rows), "missing_skus": missing[:10]})
             continue
+        stats["placeholder_candidate_sku_ids"].extend(
+            str(row["taobao_sku_id"])
+            for row in item_rows if row.get("is_placeholder"))
         blocked_placeholders = []
         for row in item_rows:
             if not row.get("is_placeholder"):
@@ -1130,6 +1199,8 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
             continue
         rows.extend(item_rows)
     stats["rows"] = len(rows)
+    stats["placeholder_candidate_sku_ids"] = sorted(set(
+        stats["placeholder_candidate_sku_ids"]))
     return rows, stats
 
 
@@ -3303,8 +3374,11 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
     if not exported.get("ok"):
         return {
             "ok": False,
+            "step": exported.get("step") or "current_activity_export",
             "error": exported.get("error") or exported.get("message")
                      or "无法可靠取得当前活动生效集合",
+            "job_id": exported.get("job_id"),
+            "detail": exported.get("detail"),
         }
     live_rows = campaign_recon_service.parse_activity_items_export(
         exported["xlsx_bytes"],
@@ -3318,14 +3392,23 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         source=f"campaign_pre_submit_export:plan={getattr(plan, 'id', '')}",
         plan=plan,
     )
+    # Identify placeholder candidates against the freshly parsed H/I evidence,
+    # then replace their plan-scoped current-price observations from column G.
+    # This is ERP-only processing of the same read-only workbook.
+    _, signup_stats = build_signup_rows(db, plan)
+    placeholder_refresh = record_placeholder_live_prices(
+        db, plan, floor_rows,
+        signup_stats.get("placeholder_candidate_sku_ids") or [])
     return {
         "ok": True,
         "rows": live_rows,
         "floor_refresh": refresh,
+        "placeholder_price_refresh": placeholder_refresh,
         "export_evidence": {
             "filename": exported.get("filename"),
             "size": len(exported["xlsx_bytes"]),
             "sha256": hashlib.sha256(exported["xlsx_bytes"]).hexdigest(),
+            "job_id": exported.get("job_id"),
             "identity": identity,
         },
     }

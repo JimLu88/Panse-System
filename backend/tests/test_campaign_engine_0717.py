@@ -1221,6 +1221,18 @@ def _mock_wa(monkeypatch, calls):
                         lambda db, title, **kw: {
                             "ok": True, "xlsx_bytes": bio.getvalue(),
                             "filename": "当前活动.xlsx"})
+    # Generic orchestration tests use a deliberately empty workbook and seed
+    # their floor lines directly. Do not let that synthetic empty export create
+    # an authoritative plan-scoped empty evidence set; focused refresh tests
+    # exercise the real persistence path.
+    monkeypatch.setattr(
+        cs, "refresh_floor_evidence_from_current_activity",
+        lambda db, plan: {
+            "ok": True, "rows": [],
+            "floor_refresh": {"observed": 0, "source": "pytest-orchestration"},
+            "export_evidence": {"filename": "当前活动.xlsx"},
+        },
+    )
     # Generic orchestration tests mock an empty platform export.  The exact
     # post-submit SKU verifier has focused tests below; keep these tests scoped
     # to channel/state orchestration rather than fabricating a second workbook.

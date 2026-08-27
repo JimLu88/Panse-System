@@ -64,8 +64,12 @@ def _decode(raw) -> dict[str, dict]:
 
 def _load(db: Session, *, plan=None, fallback_legacy: bool = True) -> dict[str, dict]:
     key = _storage_key(plan)
-    payload = _decode(settings_service.get(db, key, env_fallback=False))
-    if payload or key == EVIDENCE_KEY or not fallback_legacy:
+    raw = settings_service.get(db, key, env_fallback=False)
+    payload = _decode(raw)
+    # A present plan-scoped value is authoritative even when it is the explicit
+    # empty object written before/after a refresh. Falling back merely because
+    # ``payload`` is falsy can leak another campaign's old evidence into R17.
+    if raw is not None or key == EVIDENCE_KEY or not fallback_legacy:
         return payload
     # Compatibility bridge for plans that have not had their first scoped
     # refresh yet. Once a plan-specific setting exists, no other campaign can

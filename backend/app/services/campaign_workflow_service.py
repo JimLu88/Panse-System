@@ -158,12 +158,15 @@ def refresh_evidence_and_prepare(
     refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
         db, plan)
     if not refreshed.get("ok"):
+        db.rollback()
         return {
             "ok": False,
             "error": refreshed.get("error") or "evidence_refresh_failed",
             "step": refreshed.get("step") or "current_activity_export",
             "plan_id": plan.id,
             "workflow_key": workflow_key,
+            "job_id": refreshed.get("job_id"),
+            "detail": refreshed.get("detail"),
             "execution_boundary": {
                 "platform_read": "current_activity_export_only",
                 "platform_write": False,
@@ -172,6 +175,9 @@ def refresh_evidence_and_prepare(
                 "automatic_retry": False,
             },
         }
+    # The export is independently valuable read-only evidence and must remain
+    # durable even when R16/R17 intentionally keep the package blocked.
+    db.commit()
     package = _package_existing(db, plan, created=False)
     by_rule = {
         check["rule"]: check for check in package["preflight"]["checks"]
@@ -179,6 +185,7 @@ def refresh_evidence_and_prepare(
     package.update({
         "plan_id": plan.id,
         "floor_refresh": refreshed.get("floor_refresh"),
+        "placeholder_price_refresh": refreshed.get("placeholder_price_refresh"),
         "export_evidence": refreshed.get("export_evidence"),
         "gate_results": {
             "R16": by_rule.get("R16"),

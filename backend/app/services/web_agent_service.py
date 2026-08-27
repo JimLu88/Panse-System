@@ -274,16 +274,22 @@ def campaign_export_items(
     j = _post(db, "/api/campaign/export-items", payload, timeout=30)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}
-    final = wait_job(db, j["job"], timeout_s=timeout_s)
+    job_id = j["job"]
+    final = wait_job(db, job_id, timeout_s=timeout_s)
     res = final.get("result") or {}
     if res.get("need_scan"):
-        return {"ok": False, "need_scan": True, "message": res.get("message")}
+        return {"ok": False, "need_scan": True, "message": res.get("message"),
+                "job_id": job_id}
     if not res.get("ok") or not res.get("xlsx_b64"):
         return {"ok": False, "step": res.get("step"),
                 "error": res.get("error") or res.get("message") or "活动导出/下载失败",
+                "job_id": job_id,
+                "detail": {key: value for key, value in res.items()
+                           if key not in ("xlsx_b64", "screenshot_base64")},
                 "screenshot_base64": res.get("screenshot_base64")}
     return {"ok": True, "xlsx_bytes": base64.b64decode(res["xlsx_b64"]),
             "filename": res.get("filename"),
+            "job_id": job_id,
             "screenshot_base64": res.get("screenshot_base64")}
 
 
