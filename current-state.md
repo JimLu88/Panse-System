@@ -2,6 +2,14 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 fixed-window campaign export action visibility repair
+
+- Task 01's single plan-8 evidence refresh reached the exact guarded item page but returned `export_button_not_found`: diagnostics could enumerate `导出已报商品` while the visible `快速报名` layer still covered the page. The prior cleanup only recognized containers whose CSS class contained `drawer` or `dialog`; this page exposed the heading without either class, so cleanup never started.
+- Web-Agent GitHub `main` is `e3a456a03fce3bc22843795bff2921fcc0e2ec10`. The authoritative JimPC runtime copies of `app/engine/uploader.py` and `tests/test_campaign_popup_download.py` match that commit exactly while every unrelated dirty file remains preserved.
+- The exporter now detects the obstruction from the exact visible heading, closes it only with Escape, a close-labelled control inside the inferred layer, or its backdrop, and hard-stops with `quick_signup_obstructing_export` if it remains. It never force-clicks through the layer. The fallback action locator accepts only one exact enabled `导出已报商品` / `导出全部商品` / `导出商品` button or link; partial signup/submission text is never eligible. Failure diagnostics now report bounded export-node coverage and overlay state.
+- Verification: clean Web-Agent suite `107 passed`; authoritative runtime focused suite `16 passed`; Python compilation, scoped diff checks and a real Chromium static-DOM probe passed. The authoritative runtime started from the deployed directory, returned `/healthz` HTTP 200, then shut down cleanly and returned to the intended on-demand idle state. Wake Bridge remains enabled/running and the legacy Watchdog remains disabled.
+- ERP production was not rebuilt because this repair changes no ERP code or migration. Its production commit remains `6abc5bb45182d8bab44b9aa1d6d058927a35cc0f` with migration `0141 (head)`; health/ready must remain separate release gates. Maintenance did not rerun plan 8 and did not trigger an export, signup, upload, price change, submission, notification, account action or automatic retry. Task 01 may perform one explicit plan-8 evidence refresh using the existing formal script.
+
 ## 2026-08-28 campaign evidence persistence and fixed-window export repair
 
 - ERP GitHub `main` code commit and deployed production commit: `6abc5bb45182d8bab44b9aa1d6d058927a35cc0f`. Web-Agent GitHub `main` companion commit: `896dfb394c86b1923ab1bce653eafaea68476c0d`; the JimPC authoritative runtime implementation matches that commit while retaining unrelated dirty work.
