@@ -67,6 +67,11 @@ class CampaignPrepareIn(CampaignPlanIn):
     official_exempt_item_ids: list[str] = Field(default_factory=list)
 
 
+class CampaignEvidenceRefreshIn(BaseModel):
+    workflow_key: str
+    plan_id: Optional[int] = Field(default=None, ge=1)
+
+
 class CampaignPlanUpdate(BaseModel):
     name: Optional[str] = None
     campaign_type: Optional[str] = None
@@ -300,6 +305,31 @@ def prepare_campaign(
             "plan_id": result["plan"].id,
             "different_fields": result["different_fields"],
         })
+    result["plan"] = _plan_out(result["plan"])
+    return result
+
+
+@router.post("/refresh-evidence")
+def refresh_campaign_evidence(
+        body: CampaignEvidenceRefreshIn, db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Read-only QianNiu export for one workflow, then formal ERP preflight.
+
+    The route cannot select any platform-write operation and has no notification
+    or retry branch.  The dedicated machine identity is valid only on this exact
+    path and ``/prepare``.
+    """
+    from app.services import campaign_workflow_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    result = campaign_workflow_service.refresh_evidence_and_prepare(
+        db, workflow_key=workflow_key, expected_plan_id=body.plan_id)
+    if not result.get("ok"):
+        code = 404 if result.get("error") == "workflow_not_found" else 409
+        if result.get("error") not in (
+                "workflow_not_found", "workflow_plan_mismatch"):
+            code = 422
+        raise HTTPException(code, detail=result)
     result["plan"] = _plan_out(result["plan"])
     return result
 
@@ -610,6 +640,8 @@ async def recon(plan_id: int,
             campaign_start=identity["campaign_start"],
             campaign_end=identity["campaign_end"],
             official_rate=identity["official_rate"],
+            platform_activity_mode=identity["platform_activity_mode"],
+            platform_active_until=identity["platform_active_until"],
         )
         if not exp.get("ok"):
             err = exp.get("error") or exp.get("message") or "未知原因"

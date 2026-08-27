@@ -632,6 +632,8 @@ def auto_recon_scan(db: Session) -> dict:
             campaign_start=identity["campaign_start"],
             campaign_end=identity["campaign_end"],
             official_rate=identity["official_rate"],
+            platform_activity_mode=identity["platform_activity_mode"],
+            platform_active_until=identity["platform_active_until"],
         )
         if not exp.get("ok"):
             failed += 1

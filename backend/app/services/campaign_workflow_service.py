@@ -67,6 +67,43 @@ def _is_empty_exempt_marker_enrichment(
     return remaining == old_segments
 
 
+def _package_existing(
+        db: Session, plan: CampaignPlan, *, created: bool,
+        repaired_fields: list[str] | None = None) -> dict:
+    """Build the formal ERP package without performing any platform write."""
+    grouping = campaign_service.group_by_sales(db)
+    signup_rows, signup_stats = campaign_service.build_signup_rows(db, plan)
+    discount_rows, discount_stats = campaign_service.build_discount_rows(db, plan)
+    checks = campaign_service.preflight(db, plan)
+    blocking = [check for check in checks if check.get("level") == "error"]
+    if plan.status == "draft" and not blocking:
+        plan.status = "precheck"
+        db.commit()
+    return {
+        "ok": True,
+        "created": created,
+        "reused": not created,
+        "repaired_fields": repaired_fields or [],
+        "workflow_key": plan.workflow_key,
+        "plan": plan,
+        "grouping": grouping,
+        "signup": {"rows": signup_rows, "stats": signup_stats},
+        "discount": {"rows": discount_rows, "stats": discount_stats},
+        "preflight": {"checks": checks, "has_error": bool(blocking)},
+        "execution_boundary": {
+            "erp_source": "formal_backend_services",
+            "browser_reads_erp_pages": False,
+            "platform_write": False,
+            "account_action": False,
+            "notification": False,
+            "automatic_retry": False,
+            "allowed_next_browser_scope": (
+                "external_platform_login_discovery_upload_submit_and_official_receipt_only"
+            ),
+        },
+    }
+
+
 def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
     """Create/reuse one plan and return a fresh structured read-only package."""
     existing = db.execute(select(CampaignPlan).where(
@@ -95,32 +132,64 @@ def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
                 "different_fields": different,
             }
 
-    grouping = campaign_service.group_by_sales(db)
-    signup_rows, signup_stats = campaign_service.build_signup_rows(db, plan)
-    discount_rows, discount_stats = campaign_service.build_discount_rows(db, plan)
-    checks = campaign_service.preflight(db, plan)
-    blocking = [check for check in checks if check.get("level") == "error"]
-    if plan.status == "draft" and not blocking:
-        plan.status = "precheck"
-        db.commit()
-    return {
-        "ok": True,
-        "created": created,
-        "reused": not created,
-        "repaired_fields": repaired_fields,
-        "workflow_key": workflow_key,
-        "plan": plan,
-        "grouping": grouping,
-        "signup": {"rows": signup_rows, "stats": signup_stats},
-        "discount": {"rows": discount_rows, "stats": discount_stats},
-        "preflight": {"checks": checks, "has_error": bool(blocking)},
-        "execution_boundary": {
-            "erp_source": "formal_backend_services",
-            "browser_reads_erp_pages": False,
-            "platform_write": False,
-            "account_action": False,
-            "allowed_next_browser_scope": (
-                "external_platform_login_discovery_upload_submit_and_official_receipt_only"
-            ),
-        },
+    return _package_existing(
+        db, plan, created=created, repaired_fields=repaired_fields)
+
+
+def refresh_evidence_and_prepare(
+        db: Session, *, workflow_key: str,
+        expected_plan_id: int | None = None) -> dict:
+    """Refresh one existing plan's read-only QianNiu export, then preflight.
+
+    This deliberately has no retry, notification, signup, upload, price-change,
+    withdrawal or submission branch.  The caller gets the export fingerprint
+    and the full formal ERP package for the same durable workflow identity.
+    """
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.workflow_key == workflow_key)).scalar_one_or_none()
+    if plan is None:
+        return {"ok": False, "error": "workflow_not_found"}
+    if expected_plan_id is not None and plan.id != expected_plan_id:
+        return {
+            "ok": False,
+            "error": "workflow_plan_mismatch",
+            "plan_id": plan.id,
+        }
+    refreshed = campaign_service.refresh_floor_evidence_from_current_activity(
+        db, plan)
+    if not refreshed.get("ok"):
+        return {
+            "ok": False,
+            "error": refreshed.get("error") or "evidence_refresh_failed",
+            "step": refreshed.get("step") or "current_activity_export",
+            "plan_id": plan.id,
+            "workflow_key": workflow_key,
+            "execution_boundary": {
+                "platform_read": "current_activity_export_only",
+                "platform_write": False,
+                "account_action": False,
+                "notification": False,
+                "automatic_retry": False,
+            },
+        }
+    package = _package_existing(db, plan, created=False)
+    by_rule = {
+        check["rule"]: check for check in package["preflight"]["checks"]
     }
+    package.update({
+        "plan_id": plan.id,
+        "floor_refresh": refreshed.get("floor_refresh"),
+        "export_evidence": refreshed.get("export_evidence"),
+        "gate_results": {
+            "R16": by_rule.get("R16"),
+            "R17": by_rule.get("R17"),
+        },
+    })
+    package["execution_boundary"].update({
+        "platform_read": "current_activity_export_only",
+        "platform_write": False,
+        "account_action": False,
+        "notification": False,
+        "automatic_retry": False,
+    })
+    return package

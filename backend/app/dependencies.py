@@ -18,6 +18,11 @@ from app.services import auth_service, settings_service
 
 CAMPAIGN_PREPARE_SERVICE_SETTING = "campaign_prepare_service_token"
 CAMPAIGN_PREPARE_PATH = "/api/campaigns/prepare"
+CAMPAIGN_EVIDENCE_REFRESH_PATH = "/api/campaigns/refresh-evidence"
+CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
+    CAMPAIGN_PREPARE_PATH,
+    CAMPAIGN_EVIDENCE_REFRESH_PATH,
+})
 
 
 @dataclass(frozen=True)
@@ -200,9 +205,10 @@ def machine_identity_for_key(
         if expected and hmac.compare_digest(candidate, expected.strip()):
             return "machine:web-agent-wake"
     # The 01 executor gets one non-exported credential that can authenticate
-    # only the ERP-internal preparation route.  It cannot list plans, change
-    # exclusions, upload, submit, retry, withdraw, or call any other API.
-    if path == CAMPAIGN_PREPARE_PATH:
+    # only the two ERP-internal preparation paths.  It cannot list plans,
+    # change exclusions, upload, submit, retry, withdraw, notify, or call any
+    # other API.
+    if path in CAMPAIGN_PREPARE_SERVICE_PATHS:
         expected = settings_service.get(
             db, CAMPAIGN_PREPARE_SERVICE_SETTING, env_fallback=False)
         if expected and hmac.compare_digest(candidate, expected.strip()):
@@ -211,6 +217,7 @@ def machine_identity_for_key(
 
 
 def require_campaign_prepare_principal(
+    request: Request,
     user: Optional[User] = Depends(get_current_user_optional),
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     db: Session = Depends(get_db),
@@ -225,13 +232,17 @@ def require_campaign_prepare_principal(
                 f"需要角色 ['admin', 'operator']，你的角色是 {user.role!r}",
             )
         return user
-    identity = machine_identity_for_key(
-        x_api_key, db, path=CAMPAIGN_PREPARE_PATH)
+    path = request.url.path
+    identity = machine_identity_for_key(x_api_key, db, path=path)
     if identity == "service:campaign-prepare":
         return ServicePrincipal(
             username=identity,
             role="campaign_prepare_service",
-            scope="campaign.prepare",
+            scope=(
+                "campaign.evidence.refresh"
+                if path == CAMPAIGN_EVIDENCE_REFRESH_PATH
+                else "campaign.prepare"
+            ),
         )
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "需要登录或活动准备服务身份")
 

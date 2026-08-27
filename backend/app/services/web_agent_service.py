@@ -238,7 +238,8 @@ def campaign_export_items(
         db: Session, campaign_title: str, *, campaign_id: str,
         united_activity_id: str, campaign_phase: str = "",
         campaign_start: str = "", campaign_end: str = "",
-        official_rate: str = "", timeout_s: int = 720) -> dict:
+        official_rate: str = "", platform_activity_mode: str = "fixed_window",
+        platform_active_until: str = "", timeout_s: int = 720) -> dict:
     """活动生命周期 P4: WA「导出已报商品」(POST /api/campaign/export-items → wait_job)。
     WA 侧按标题从营销列表进活动并做★标题校验★, 不一致中止 (error=campaign_title_mismatch)。
     返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/step?/error}。异步导出~2min, 给足等待。"""
@@ -251,9 +252,24 @@ def campaign_export_items(
         "campaign_start": str(campaign_start or "").strip(),
         "campaign_end": str(campaign_end or "").strip(),
         "official_rate": str(official_rate or "").strip(),
+        "platform_activity_mode": str(platform_activity_mode or "").strip(),
+        "platform_active_until": str(platform_active_until or "").strip(),
     }
-    if (not payload["campaign_title"] or not payload["campaign_id"].isdigit()
-            or not payload["united_activity_id"].isdigit()):
+    long_running = payload["platform_activity_mode"] == "long_running_update"
+    if long_running:
+        # The ERP start/end are a local update window, not the lifetime of the
+        # official Super Reduce campaign.  Never present them to Web-Agent as
+        # platform identity guards.
+        payload["campaign_phase"] = ""
+        payload["campaign_start"] = ""
+        payload["campaign_end"] = ""
+    if (not payload["campaign_title"]
+            or payload["platform_activity_mode"] not in (
+                "fixed_window", "long_running_update")
+            or (long_running and not payload["platform_active_until"])
+            or (not long_running and (
+                not payload["campaign_id"].isdigit()
+                or not payload["united_activity_id"].isdigit()))):
         return {"ok": False, "error": "campaign_identity_required"}
     j = _post(db, "/api/campaign/export-items", payload, timeout=30)
     if not j.get("ok") or not j.get("job"):

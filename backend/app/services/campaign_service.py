@@ -3287,10 +3287,18 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
         identity["campaign_title"],
         campaign_id=identity["campaign_id"],
         united_activity_id=identity["united_activity_id"],
-        campaign_phase=identity["campaign_phase"],
-        campaign_start=identity["campaign_start"],
-        campaign_end=identity["campaign_end"],
+        campaign_phase=(
+            "" if identity["platform_activity_mode"] == "long_running_update"
+            else identity["campaign_phase"]),
+        campaign_start=(
+            "" if identity["platform_activity_mode"] == "long_running_update"
+            else identity["campaign_start"]),
+        campaign_end=(
+            "" if identity["platform_activity_mode"] == "long_running_update"
+            else identity["campaign_end"]),
         official_rate=identity["official_rate"],
+        platform_activity_mode=identity["platform_activity_mode"],
+        platform_active_until=identity["platform_active_until"],
     )
     if not exported.get("ok"):
         return {
