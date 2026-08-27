@@ -65,7 +65,7 @@ services:
       - ./backups:/backups:ro    # 只读: 供"系统体检"报告最新备份新鲜度 (优化 #4)
       - "D:/畔色 产品图库:/app/gallery:ro"   # 产品图库 (只读; 群晖部署改这一行主机路径)
       # Web-Agent 下载产物 (只读; 群晖部署改为共享目录挂载)
-      - "D:/AI/Panse-Web-Agent/data/output:/app/agent_output:ro"
+      - "D:/AI/畔色ERP系统/Web-Agent程序/data/output:/app/agent_output:ro"
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request; urllib.request.urlopen(\"http://localhost:8000/api/health\", timeout=3)' || exit 1"]
       interval: 30s

@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/imports", tags=["imports"])
 def _host_root() -> str:
     """归档根目录在主机(PC)上的路径。后端跑在 Docker(Linux) 里, 容器内是 /app/storage,
     主机上是仓库下的 ./storage。用 HOST_STORAGE_ROOT 覆盖, 默认按本机仓库位置。"""
-    return os.environ.get("HOST_STORAGE_ROOT") or r"D:\AI\Panse-System\storage"
+    return os.environ.get("HOST_STORAGE_ROOT") or r"D:\AI\畔色ERP系统\ERP程序\storage"
 
 
 def _host_path(container_path: str | None) -> str | None:

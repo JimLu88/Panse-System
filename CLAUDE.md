@@ -21,7 +21,7 @@
 - **前端类型检查**：web 容器仅 512MB，`tsc` 会 OOM。用 2GB 临时容器复用镜像 node_modules：
   ```bash
   MSYS_NO_PATHCONV=1 docker run --rm -m 2g -w /app \
-    -v D:/AI/Panse-System/frontend:/app -v /app/node_modules \
+    -v D:/AI/畔色ERP系统/ERP程序/frontend:/app -v /app/node_modules \
     panse-system-web npx tsc --noEmit
   ```
 - **Git-Bash MSYS 路径改写**：`docker compose exec`/`docker run` 里的绝对路径会被改成 Windows 路径 → 前缀 `MSYS_NO_PATHCONV=1`。

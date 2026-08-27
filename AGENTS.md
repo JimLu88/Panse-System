@@ -46,10 +46,10 @@ Treat production state, database contents, current Git status, and live API/Web 
 For changes to this feature, run at minimum:
 
 ```powershell
-cd D:\AI\Panse-System\backend
+cd D:\AI\畔色ERP系统\ERP程序\backend
 python -m pytest -q tests/test_logistics_analytics.py tests/test_logistics_bill_match.py tests/test_automation_features.py
 
-cd D:\AI\Panse-System\frontend
+cd D:\AI\畔色ERP系统\ERP程序\frontend
 npm run build
 ```
 
