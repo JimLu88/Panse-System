@@ -2,6 +2,13 @@
 
 Last updated: 2026-08-28 (Asia/Shanghai)
 
+## 2026-08-28 fixed campaign quick-signup backdrop pointer cleanup
+
+- Task 01's single plan-8 retry reached the exact guarded activity page and found one enabled `导出已报商品` button, but the visible `快速报名` panel covered it. The only close candidate was a full-page backdrop. The prior Playwright locator click targeted that element's center, which was physically under the right-side panel, so the layer remained and the existing `quick_signup_obstructing_export` hard gate stopped safely.
+- Web-Agent GitHub `main` is now `e654c6d8d519ca2a64cebb9c7681f3cc6c915669`. A close-labelled icon is promoted to its real clickable parent. When no close control exists, the exporter samples only exposed backdrop points, proves the current top element with `elementFromPoint`, revalidates the exact `快速报名` heading and panel boundary immediately before a real pointer click, and rejects buttons, links and form controls. It never force-clicks the covered export action; an unprovable or stale point still hard-stops.
+- The authoritative JimPC runtime copies of `app/engine/uploader.py` and `tests/test_campaign_popup_download.py` match the GitHub commit exactly while all unrelated dirty files remain preserved. Clean Web-Agent suite `115 passed`; authoritative runtime campaign scope `35 passed`; Python compilation and scoped diff checks passed. Real Chromium probes covered both a no-X backdrop and an icon-inside-button close control; both removed only the quick-signup layer and left export/signup counters at zero.
+- The full Agent remains intentionally offline until an approved queued job wakes it. Wake Bridge is enabled/running and the legacy Watchdog is disabled. ERP production remains `6abc5bb45182d8bab44b9aa1d6d058927a35cc0f` with migration `0141 (head)`; this Web-Agent-only repair did not require an ERP release. Maintenance did not replay plan 8 or trigger an export, signup, upload, price change, submission, notification, account action or automatic retry. Task 01 may perform one explicit plan-8 evidence refresh with the existing formal script.
+
 ## 2026-08-28 fixed campaign browser-page binding repair
 
 - Task 01's single retry after `e3a456a` stopped safely at `title_check`: the expected campaign was `26年淘宝9月超级88`, but the selected page rendered QianNiu Product Center headings. The campaign title guard remained correct and no overlay/export step was reached.
