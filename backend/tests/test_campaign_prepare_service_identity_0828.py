@@ -10,6 +10,7 @@ from sqlalchemy.pool import StaticPool
 from app import dependencies, middleware
 from app.cli import campaign_prepare as prepare_cli
 from app.cli import campaign_refresh_evidence as refresh_cli
+from app.cli import campaign_correct_official_exemptions as correction_cli
 from app.database import get_db
 from app.main import app
 from app.models import Base
@@ -62,6 +63,10 @@ def test_prepare_token_is_encrypted_and_exact_path_scoped(db_session, monkeypatc
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/refresh-evidence"
+    ) == "service:campaign-prepare"
+    assert dependencies.machine_identity_for_key(
+        TOKEN, db_session,
+        path="/api/campaigns/correct-official-exemptions"
     ) == "service:campaign-prepare"
     assert dependencies.machine_identity_for_key(
         TOKEN, db_session, path="/api/campaigns/item-exclusions"
@@ -145,6 +150,120 @@ def test_evidence_cli_has_fixed_direct_endpoint(monkeypatch):
         "token": TOKEN,
         "timeout": 1200,
     }
+
+
+def test_official_exemption_correction_cli_has_fixed_direct_endpoint(monkeypatch):
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        @staticmethod
+        def read():
+            return b'{"ok":true}'
+
+    class Opener:
+        @staticmethod
+        def open(req, timeout):
+            captured["url"] = req.full_url
+            captured["token"] = req.get_header("X-api-key")
+            captured["timeout"] = timeout
+            return Response()
+
+    monkeypatch.setattr(
+        correction_cli.request, "build_opener", lambda *_: Opener())
+    status, body = correction_cli.call_correction(
+        b'{"workflow_key":"campaign:test","plan_id":7,'
+        b'"expected_official_exempt_item_ids":[],'
+        b'"official_exempt_item_ids":["805268708396"]}',
+        token=TOKEN,
+    )
+
+    assert status == 200 and body == b'{"ok":true}'
+    assert captured == {
+        "url": (
+            "http://127.0.0.1:8000/api/campaigns/"
+            "correct-official-exemptions"
+        ),
+        "token": TOKEN,
+        "timeout": 300,
+    }
+
+
+def test_official_exemption_correction_endpoint_is_scoped_and_audited(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.add(CampaignPlan(
+            id=7,
+            workflow_key="campaign:super-reduce:2026-09-01",
+            name="2026-09-01超级立减更新窗口",
+            campaign_type="super_reduce", tier="mid",
+            start_at=datetime(2026, 9, 1, 0, 0, 0),
+            end_at=datetime(2026, 9, 1, 23, 59, 59),
+            qn_campaign_title="超级立减", status="draft",
+            remark="official_all_store=true; official_exempt_items=",
+            platform_activity_mode="long_running_update",
+            platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        ))
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        client = TestClient(app)
+        payload = {
+            "workflow_key": "campaign:super-reduce:2026-09-01",
+            "plan_id": 7,
+            "expected_official_exempt_item_ids": [],
+            "official_exempt_item_ids": ["805268708396"],
+        }
+        response = client.post(
+            "/api/campaigns/correct-official-exemptions",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        replay = client.post(
+            "/api/campaigns/correct-official-exemptions",
+            headers={"X-API-Key": TOKEN}, json=payload)
+        forbidden_shape = client.post(
+            "/api/campaigns/correct-official-exemptions",
+            headers={"X-API-Key": TOKEN},
+            json={**payload, "platform_campaign_id": "99999"})
+
+        assert response.status_code == 200, response.text
+        assert response.json()["changed"] is True
+        assert response.json()["plan"]["remark"].endswith("805268708396")
+        assert replay.status_code == 200
+        assert replay.json()["idempotent_replay"] is True
+        assert forbidden_shape.status_code == 422
+        with Session() as db:
+            audits = db.execute(select(AuditLog).where(
+                AuditLog.path == "/api/campaigns/correct-official-exemptions"
+            ).order_by(AuditLog.id)).scalars().all()
+            assert [row.status_code for row in audits[-3:]] == [200, 200, 422]
+            assert all(
+                row.username == "service:campaign-prepare"
+                for row in audits[-3:])
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
 
 
 def test_evidence_refresh_endpoint_is_scoped_audited_and_covers_both_modes(

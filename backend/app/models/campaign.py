@@ -48,6 +48,8 @@ class CampaignPlan(Base, TimestampMixin):
         String(32), nullable=False, default="fixed_window")
     platform_campaign_id: Mapped[Optional[str]] = mapped_column(String(64))
     platform_united_activity_id: Mapped[Optional[str]] = mapped_column(String(64))
+    # Exact enrolled-record identity used only for read-only campaign exports.
+    platform_sign_record_id: Mapped[Optional[str]] = mapped_column(String(64))
     platform_active_until: Mapped[Optional[datetime]] = mapped_column(DateTime)
 
 

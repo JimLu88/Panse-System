@@ -26,7 +26,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -57,6 +57,7 @@ class CampaignPlanIn(BaseModel):
     platform_activity_mode: str = "fixed_window"
     platform_campaign_id: Optional[str] = None
     platform_united_activity_id: Optional[str] = None
+    platform_sign_record_id: Optional[str] = None
     platform_active_until: Optional[datetime] = None
 
 
@@ -70,6 +71,17 @@ class CampaignPrepareIn(CampaignPlanIn):
 class CampaignEvidenceRefreshIn(BaseModel):
     workflow_key: str
     plan_id: Optional[int] = Field(default=None, ge=1)
+
+
+class CampaignOfficialExemptionsCorrectionIn(BaseModel):
+    """CAS-style correction of one plan-scoped official exemption list."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workflow_key: str
+    plan_id: int = Field(ge=1)
+    expected_official_exempt_item_ids: list[str] = Field(default_factory=list)
+    official_exempt_item_ids: list[str] = Field(default_factory=list)
 
 
 class CampaignPlanUpdate(BaseModel):
@@ -117,6 +129,7 @@ def _plan_out(p: CampaignPlan) -> dict:
         "platform_activity_mode": p.platform_activity_mode,
         "platform_campaign_id": p.platform_campaign_id,
         "platform_united_activity_id": p.platform_united_activity_id,
+        "platform_sign_record_id": p.platform_sign_record_id,
         "platform_active_until": (
             p.platform_active_until.isoformat(sep=" ")
             if p.platform_active_until else None),
@@ -172,6 +185,16 @@ def _validate_workflow_key(value: str) -> str:
     return key
 
 
+def _validate_sign_record_identity(mode: str, value: Optional[str]) -> None:
+    if value is None:
+        return
+    if mode != "fixed_window" or not str(value).isdigit():
+        raise HTTPException(
+            422,
+            "platform_sign_record_id 仅可用于 fixed_window 且必须是数字",
+        )
+
+
 def _validate_formal_platform_identity(body: CampaignPrepareIn) -> None:
     mode = body.platform_activity_mode
     if mode not in ("fixed_window", "long_running_update"):
@@ -190,6 +213,7 @@ def _validate_formal_platform_identity(body: CampaignPrepareIn) -> None:
         ):
             if not str(value or "").isdigit():
                 raise HTTPException(422, f"固定档期活动必须提供数字 {field}")
+    _validate_sign_record_identity(mode, body.platform_sign_record_id)
     if not str(body.qn_campaign_title or "").strip():
         raise HTTPException(422, "正式准备入口必须提供千牛官方活动标题")
 
@@ -256,6 +280,8 @@ def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
                 _: User = Depends(require_role("admin", "operator"))):
     tier = _validate_type_and_window(body.campaign_type, body.start_at, body.end_at)
     _validate_price_protection(body.price_protection_days, body.price_protection_rule_url)
+    _validate_sign_record_identity(
+        body.platform_activity_mode, body.platform_sign_record_id)
     plan = CampaignPlan(name=body.name, campaign_type=body.campaign_type, tier=tier,
                         start_at=body.start_at, end_at=body.end_at,
                         qn_campaign_title=body.qn_campaign_title,
@@ -267,6 +293,7 @@ def create_plan(body: CampaignPlanIn, db: Session = Depends(get_db),
                         platform_activity_mode=body.platform_activity_mode,
                         platform_campaign_id=body.platform_campaign_id,
                         platform_united_activity_id=body.platform_united_activity_id,
+                        platform_sign_record_id=body.platform_sign_record_id,
                         platform_active_until=body.platform_active_until,
                         remark=body.remark,
                         status="draft")
@@ -305,6 +332,37 @@ def prepare_campaign(
             "plan_id": result["plan"].id,
             "different_fields": result["different_fields"],
         })
+    result["plan"] = _plan_out(result["plan"])
+    return result
+
+
+@router.post("/correct-official-exemptions")
+def correct_campaign_official_exemptions(
+        body: CampaignOfficialExemptionsCorrectionIn,
+        db: Session = Depends(get_db),
+        _: User | ServicePrincipal = Depends(require_campaign_prepare_principal)):
+    """Correct only one unsubmitted plan's official exemption scope.
+
+    This endpoint cannot alter campaign identity, prices or permanent item
+    exclusions.  Replays of the desired state are idempotent; changing from a
+    different current list requires the caller's exact expected-old list.
+    """
+    from app.services import campaign_workflow_service
+
+    workflow_key = _validate_workflow_key(body.workflow_key)
+    result = campaign_workflow_service.correct_official_exemptions(
+        db,
+        workflow_key=workflow_key,
+        expected_plan_id=body.plan_id,
+        expected_item_ids=body.expected_official_exempt_item_ids,
+        desired_item_ids=body.official_exempt_item_ids,
+    )
+    if not result.get("ok"):
+        error = result.get("error")
+        code = 404 if error == "workflow_not_found" else 409
+        if error in ("invalid_item_ids", "official_scope_not_correctable"):
+            code = 422
+        raise HTTPException(code, detail=result)
     result["plan"] = _plan_out(result["plan"])
     return result
 
@@ -636,6 +694,7 @@ async def recon(plan_id: int,
             identity["campaign_title"],
             campaign_id=identity["campaign_id"],
             united_activity_id=identity["united_activity_id"],
+            sign_record_id=identity["sign_record_id"],
             campaign_phase=identity["campaign_phase"],
             campaign_start=identity["campaign_start"],
             campaign_end=identity["campaign_end"],

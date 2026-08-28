@@ -31,6 +31,7 @@ openapi=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 wget -qO- http://loca
 [[ "$openapi" == *'"/api/campaigns"'* ]] || fail "OpenAPI 缺 /api/campaigns"
 [[ "$openapi" == *'"/api/campaigns/prepare"'* ]] || fail "OpenAPI 缺活动正式准备入口"
 [[ "$openapi" == *'"/api/campaigns/refresh-evidence"'* ]] || fail "OpenAPI 缺活动只读证据刷新入口"
+[[ "$openapi" == *'"/api/campaigns/correct-official-exemptions"'* ]] || fail "OpenAPI 缺计划级官方豁免修正入口"
 [[ "$openapi" == *'"/api/campaigns/item-exclusions"'* ]] || fail "OpenAPI 缺活动整品排除入口"
 [[ "$openapi" == *'"/api/customization/v2/quote-both"'* ]] || fail "OpenAPI 缺定制报价双口径路由"
 [[ "$openapi" == *'"/api/procurement/tasks"'* ]] || fail "OpenAPI 缺采购任务路由"
@@ -45,7 +46,9 @@ prepare_cli=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"impor
 [[ "$prepare_cli" == "ok" ]] || fail "活动容器内受控 CLI 缺失"
 evidence_cli=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"import app.cli.campaign_refresh_evidence; print('ok')\"")
 [[ "$evidence_cli" == "ok" ]] || fail "活动只读证据刷新 CLI 缺失"
-pass "活动 prepare-only 服务身份已加密配置 + 准备/证据刷新 CLI 可用"
+correction_cli=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-api-1 python -c \"import app.cli.campaign_correct_official_exemptions; print('ok')\"")
+[[ "$correction_cli" == "ok" ]] || fail "计划级官方豁免修正 CLI 缺失"
+pass "活动 prepare-only 服务身份已加密配置 + 准备/证据刷新/计划级豁免修正 CLI 可用"
 
 # 页面采用 lazy chunk，目标文案不一定在首页主 bundle；直接检查当前在线 web 容器的全部静态 chunk。
 web_features=$("${SSH[@]}" "$NAS_DOCKER exec panse-system-web-1 sh -c '

@@ -19,9 +19,13 @@ from app.services import auth_service, settings_service
 CAMPAIGN_PREPARE_SERVICE_SETTING = "campaign_prepare_service_token"
 CAMPAIGN_PREPARE_PATH = "/api/campaigns/prepare"
 CAMPAIGN_EVIDENCE_REFRESH_PATH = "/api/campaigns/refresh-evidence"
+CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH = (
+    "/api/campaigns/correct-official-exemptions"
+)
 CAMPAIGN_PREPARE_SERVICE_PATHS = frozenset({
     CAMPAIGN_PREPARE_PATH,
     CAMPAIGN_EVIDENCE_REFRESH_PATH,
+    CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH,
 })
 
 
@@ -241,7 +245,11 @@ def require_campaign_prepare_principal(
             scope=(
                 "campaign.evidence.refresh"
                 if path == CAMPAIGN_EVIDENCE_REFRESH_PATH
-                else "campaign.prepare"
+                else (
+                    "campaign.official_exemptions.correct"
+                    if path == CAMPAIGN_OFFICIAL_EXEMPTIONS_CORRECTION_PATH
+                    else "campaign.prepare"
+                )
             ),
         )
     raise HTTPException(status.HTTP_401_UNAUTHORIZED, "需要登录或活动准备服务身份")

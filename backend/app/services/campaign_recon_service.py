@@ -628,6 +628,7 @@ def auto_recon_scan(db: Session) -> dict:
             identity["campaign_title"],
             campaign_id=identity["campaign_id"],
             united_activity_id=identity["united_activity_id"],
+            sign_record_id=identity["sign_record_id"],
             campaign_phase=identity["campaign_phase"],
             campaign_start=identity["campaign_start"],
             campaign_end=identity["campaign_end"],

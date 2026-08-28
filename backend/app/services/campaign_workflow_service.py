@@ -19,7 +19,8 @@ _IDENTITY_FIELDS = (
     "name", "campaign_type", "tier", "start_at", "end_at",
     "qn_campaign_title", "price_protection_days", "price_protection_rule_url",
     "remark", "platform_activity_mode", "platform_campaign_id",
-    "platform_united_activity_id", "platform_active_until",
+    "platform_united_activity_id", "platform_sign_record_id",
+    "platform_active_until",
 )
 
 
@@ -65,6 +66,102 @@ def _is_empty_exempt_marker_enrichment(
         return False
     remaining = [segment for segment in new_segments if segment not in empty_markers]
     return remaining == old_segments
+
+
+def _is_sign_record_enrichment(
+        plan: CampaignPlan, values: dict, different: list[str]) -> bool:
+    """Allow one-way addition of an exact read-only enrolled-record identity."""
+    return bool(
+        different == ["platform_sign_record_id"]
+        and plan.status in ("draft", "precheck")
+        and not str(getattr(plan, "platform_sign_record_id", None) or "").strip()
+        and str(values.get("platform_sign_record_id") or "").isdigit()
+        and str(getattr(plan, "platform_activity_mode", "")) == "fixed_window"
+    )
+
+
+def _normalized_item_ids(values) -> tuple[list[str], list[str]]:
+    from app.services import no_sales_service
+
+    raw = [str(value or "").strip() for value in (values or [])]
+    normalized = no_sales_service.normalize_item_ids(raw)
+    invalid = sorted(set(raw) - set(normalized))
+    return sorted(set(normalized)), invalid
+
+
+def correct_official_exemptions(
+        db: Session, *, workflow_key: str, expected_plan_id: int,
+        expected_item_ids, desired_item_ids) -> dict:
+    """CAS-update only the plan-scoped all-store official exemption marker."""
+    plan = db.execute(select(CampaignPlan).where(
+        CampaignPlan.workflow_key == workflow_key)).scalar_one_or_none()
+    if plan is None:
+        return {"ok": False, "error": "workflow_not_found"}
+    if plan.id != expected_plan_id:
+        return {
+            "ok": False, "error": "workflow_plan_mismatch",
+            "plan_id": plan.id,
+        }
+    if plan.status not in ("draft", "precheck"):
+        return {
+            "ok": False, "error": "unsubmitted_plan_required",
+            "plan_id": plan.id, "status": plan.status,
+        }
+    expected, invalid_expected = _normalized_item_ids(expected_item_ids)
+    desired, invalid_desired = _normalized_item_ids(desired_item_ids)
+    if invalid_expected or invalid_desired:
+        return {
+            "ok": False, "error": "invalid_item_ids",
+            "invalid_item_ids": sorted(set(invalid_expected + invalid_desired)),
+        }
+    scope = campaign_service.official_scope_for_plan(plan)
+    marker_matches = list(re.finditer(
+        r"(?:^|[;\n；])\s*official_exempt_items\s*=\s*[^;\n；]*",
+        str(plan.remark or ""), flags=re.IGNORECASE))
+    if (not scope.get("configured") or not scope.get("all_store")
+            or scope.get("errors") or len(marker_matches) != 1):
+        return {
+            "ok": False, "error": "official_scope_not_correctable",
+            "scope_errors": scope.get("errors") or [],
+        }
+    current = sorted(scope.get("exempt_items") or set())
+    if current == desired:
+        return {
+            "ok": True, "changed": False, "idempotent_replay": True,
+            "workflow_key": workflow_key, "plan": plan,
+            "previous_official_exempt_item_ids": current,
+            "official_exempt_item_ids": desired,
+            "execution_boundary": {
+                "plan_scoped_only": True, "permanent_exclusion_write": False,
+                "platform_write": False, "account_action": False,
+                "notification": False, "automatic_retry": False,
+            },
+        }
+    if current != expected:
+        return {
+            "ok": False, "error": "official_exemptions_compare_failed",
+            "plan_id": plan.id,
+            "expected_official_exempt_item_ids": expected,
+            "current_official_exempt_item_ids": current,
+        }
+    desired_text = ",".join(desired)
+    plan.remark = re.sub(
+        r"((?:^|[;\n；])\s*official_exempt_items\s*=\s*)[^;\n；]*",
+        lambda match: f"{match.group(1)}{desired_text}",
+        str(plan.remark or ""), count=1, flags=re.IGNORECASE)
+    db.commit()
+    db.refresh(plan)
+    return {
+        "ok": True, "changed": True, "idempotent_replay": False,
+        "workflow_key": workflow_key, "plan": plan,
+        "previous_official_exempt_item_ids": current,
+        "official_exempt_item_ids": desired,
+        "execution_boundary": {
+            "plan_scoped_only": True, "permanent_exclusion_write": False,
+            "platform_write": False, "account_action": False,
+            "notification": False, "automatic_retry": False,
+        },
+    }
 
 
 def _package_existing(
@@ -123,6 +220,11 @@ def prepare(db: Session, *, workflow_key: str, values: dict) -> dict:
             db.commit()
             db.refresh(plan)
             repaired_fields = ["remark"]
+        elif _is_sign_record_enrichment(plan, values, different):
+            plan.platform_sign_record_id = values["platform_sign_record_id"]
+            db.commit()
+            db.refresh(plan)
+            repaired_fields = ["platform_sign_record_id"]
         elif different:
             return {
                 "ok": False,

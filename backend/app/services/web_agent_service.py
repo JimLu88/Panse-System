@@ -239,7 +239,8 @@ def campaign_export_items(
         united_activity_id: str, campaign_phase: str = "",
         campaign_start: str = "", campaign_end: str = "",
         official_rate: str = "", platform_activity_mode: str = "fixed_window",
-        platform_active_until: str = "", timeout_s: int = 720) -> dict:
+        platform_active_until: str = "", sign_record_id: str | None = None,
+        timeout_s: int = 720) -> dict:
     """活动生命周期 P4: WA「导出已报商品」(POST /api/campaign/export-items → wait_job)。
     WA 侧按标题从营销列表进活动并做★标题校验★, 不一致中止 (error=campaign_title_mismatch)。
     返回 {ok, xlsx_bytes, filename} 或 {ok:False, need_scan?/step?/error}。异步导出~2min, 给足等待。"""
@@ -254,6 +255,7 @@ def campaign_export_items(
         "official_rate": str(official_rate or "").strip(),
         "platform_activity_mode": str(platform_activity_mode or "").strip(),
         "platform_active_until": str(platform_active_until or "").strip(),
+        "sign_record_id": str(sign_record_id or "").strip(),
     }
     long_running = payload["platform_activity_mode"] == "long_running_update"
     if long_running:
@@ -269,8 +271,15 @@ def campaign_export_items(
             or (long_running and not payload["platform_active_until"])
             or (not long_running and (
                 not payload["campaign_id"].isdigit()
-                or not payload["united_activity_id"].isdigit()))):
+                or not payload["united_activity_id"].isdigit()))
+            or (payload["sign_record_id"]
+                and not payload["sign_record_id"].isdigit())):
         return {"ok": False, "error": "campaign_identity_required"}
+    if payload["sign_record_id"] and (
+            long_running or not all(payload[key] for key in (
+                "campaign_phase", "campaign_start", "campaign_end",
+                "official_rate"))):
+        return {"ok": False, "error": "sign_record_guard_identity_required"}
     j = _post(db, "/api/campaign/export-items", payload, timeout=30)
     if not j.get("ok") or not j.get("job"):
         return {"ok": False, "error": j.get("error", "取数服务(:8500)未响应")}

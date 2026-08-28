@@ -106,6 +106,103 @@ def test_explicit_whole_item_exclusion_is_auditable(db_session):
     assert item["reason"] == "运营确认该商品为安装专用链接"
 
 
+def test_plan_scoped_official_exemption_generates_no_signup_or_discount_rows(
+        db_session):
+    plan = _plan(
+        campaign_type="super_reduce", tier="mid",
+        platform_activity_mode="long_running_update",
+        platform_campaign_id=None,
+        platform_united_activity_id=None,
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        remark=(
+            "official_all_store=true; "
+            "official_exempt_items=805268708396"
+        ))
+    db_session.add(plan)
+    _pair(
+        db_session, item_id="805268708396",
+        sku_code="CUSTOMBOOKCASE", sku_id="80526870839601")
+    _pair(
+        db_session, item_id="805268708397",
+        sku_code="NORMAL", sku_id="80526870839701")
+    db_session.commit()
+
+    signup_rows, signup_stats = campaign.build_signup_rows(db_session, plan)
+    discount_rows, discount_stats = campaign.build_discount_rows(db_session, plan)
+
+    assert {row["taobao_item_id"] for row in signup_rows} == {"805268708397"}
+    assert {row["taobao_item_id"] for row in discount_rows} == {"805268708397"}
+    assert signup_stats["excluded_official_exempt_items"] == ["805268708396"]
+    assert discount_stats["excluded_official_exempt_items"] == ["805268708396"]
+
+
+def test_plan_scoped_official_exemption_correction_is_cas_and_idempotent(
+        db_session):
+    plan = _plan(
+        workflow_key="campaign:super-reduce:2026-09-01",
+        name="2026-09-01超级立减更新窗口",
+        campaign_type="super_reduce", tier="mid",
+        start_at=datetime(2026, 9, 1, 0, 0, 0),
+        end_at=datetime(2026, 9, 1, 23, 59, 59),
+        qn_campaign_title="超级立减",
+        platform_activity_mode="long_running_update",
+        platform_campaign_id=None,
+        platform_united_activity_id=None,
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        remark="official_all_store=true; official_exempt_items=",
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    changed = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+    replay = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+    compare_failed = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708397"],
+    )
+
+    assert changed["changed"] is True
+    assert changed["plan"].remark == (
+        "official_all_store=true; official_exempt_items=805268708396")
+    assert replay["changed"] is False
+    assert replay["idempotent_replay"] is True
+    assert compare_failed["error"] == "official_exemptions_compare_failed"
+    assert changed["execution_boundary"] == {
+        "plan_scoped_only": True,
+        "permanent_exclusion_write": False,
+        "platform_write": False,
+        "account_action": False,
+        "notification": False,
+        "automatic_retry": False,
+    }
+
+    plan.status = "signup_pushed"
+    db_session.commit()
+    submitted = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=["805268708396"],
+        desired_item_ids=[],
+    )
+    assert submitted["error"] == "unsubmitted_plan_required"
+
+
 def test_long_running_super_reduce_has_typed_identity_without_fake_short_activity():
     body = CampaignPrepareIn(
         workflow_key="campaign:super-reduce:2026-09-01",
@@ -269,6 +366,34 @@ def test_prepare_workflow_key_is_durable_and_payload_conflicts(db_session):
     assert conflict["conflict"] is True
     assert conflict["different_fields"] == ["platform_campaign_id"]
     assert first["execution_boundary"]["platform_write"] is False
+
+
+def test_prepare_one_way_enriches_numeric_sign_record_identity(db_session):
+    values = dict(
+        name="超级88现货", campaign_type="big88", tier="big",
+        start_at=datetime(2026, 9, 6, 20, 0, 0),
+        end_at=datetime(2026, 9, 13, 23, 59, 59),
+        qn_campaign_title="26年淘宝9月超级88", price_protection_days=19,
+        price_protection_rule_url=None, price_protection_confirmed_at=None,
+        remark="official_all_store=true; official_exempt_items=",
+        platform_activity_mode="fixed_window",
+        platform_campaign_id="49462", platform_united_activity_id="49469",
+        platform_sign_record_id=None, platform_active_until=None,
+    )
+    first = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469", values=values)
+    enriched = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469",
+        values={**values, "platform_sign_record_id": "3527841611"})
+    changed_again = campaign_workflow_service.prepare(
+        db_session, workflow_key="campaign:super88:49462:49469",
+        values={**values, "platform_sign_record_id": "3527841612"})
+
+    assert first["created"] is True
+    assert enriched["repaired_fields"] == ["platform_sign_record_id"]
+    assert enriched["plan"].platform_sign_record_id == "3527841611"
+    assert changed_again["conflict"] is True
+    assert changed_again["different_fields"] == ["platform_sign_record_id"]
 
 
 def test_rotation_marker_is_r7_hard_error(db_session):

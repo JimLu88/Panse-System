@@ -154,3 +154,43 @@ def test_web_agent_failure_preserves_job_and_read_only_step(
     assert result["step"] == "export_click"
     assert result["error"] == "export_button_not_found"
     assert result["detail"]["page"]["title"] == "超级88现货"
+
+
+def test_web_agent_sign_record_payload_keeps_exact_guard_identity(
+        db_session, monkeypatch):
+    captured = {}
+
+    def fake_post(_db, path, payload, timeout):
+        captured.update(path=path, payload=payload, timeout=timeout)
+        return {"ok": True, "job": "job-sign-record"}
+
+    monkeypatch.setattr(web_agent_service, "_post", fake_post)
+    monkeypatch.setattr(
+        web_agent_service, "wait_job",
+        lambda *_args, **_kwargs: {
+            "status": "done",
+            "result": {
+                "ok": True,
+                "xlsx_b64": "UEs=",
+                "filename": "registered.xlsx",
+            },
+        })
+
+    result = web_agent_service.campaign_export_items(
+        db_session,
+        "26年淘宝9月超级88",
+        campaign_id="49462",
+        united_activity_id="49469",
+        sign_record_id="3527841611",
+        campaign_phase="超级88现货",
+        campaign_start="2026-09-06 20:00:00",
+        campaign_end="2026-09-13 23:59:59",
+        official_rate="12%",
+    )
+
+    assert result["ok"] is True
+    assert captured["path"] == "/api/campaign/export-items"
+    assert captured["payload"]["sign_record_id"] == "3527841611"
+    assert captured["payload"]["campaign_id"] == "49462"
+    assert captured["payload"]["united_activity_id"] == "49469"
+    assert captured["payload"]["campaign_start"] == "2026-09-06 20:00:00"

@@ -137,6 +137,21 @@ def _official_applies(item_id: str, scope: dict) -> bool:
     return item_id in scope.get("active_items", set())
 
 
+def _super_reduce_plan_exempt_item(plan, item_id: str, scope: dict) -> bool:
+    """A long-running Super Reduce exemption means no rows in this update plan.
+
+    Other campaign types retain the existing no-sales single-item-discount
+    fallback semantics for official exemptions.
+    """
+    return bool(
+        str(getattr(plan, "campaign_type", "")) == "super_reduce"
+        and str(getattr(plan, "platform_activity_mode", ""))
+        == "long_running_update"
+        and scope.get("all_store")
+        and item_id in scope.get("exempt_items", set())
+    )
+
+
 def current_activity_prices_for_plan(plan) -> dict[str, Decimal]:
     """Read SKU-level activity prices captured from this plan's live export."""
     import re
@@ -1101,6 +1116,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     listed_codes = _erp_listed_product_codes(db)
     mapped_pairs = _mapped_pairs(db)
     whole_item_exclusions = campaign_item_exclusions(db, mapped_pairs)
+    official_scope = official_scope_for_plan(plan)
     stats = {"rows": 0, "skipped_no_skuid": 0, "skipped_delisted": 0,
              "skipped_bad_price": 0,
              "skipped_bad_price_items": [], "incomplete_items": [], "placeholder_no_line": [],
@@ -1115,6 +1131,7 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
              "placeholder_price_lowered": [],
              "registered_no_sales_items_included": [],
              "excluded_whole_items": list(whole_item_exclusions.values()),
+             "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0}
     stats["excluded_no_sales_items"] = []
     by_item: dict[str, list] = defaultdict(list)
@@ -1133,6 +1150,10 @@ def build_signup_rows(db: Session, plan) -> tuple[list[dict], dict]:
     rows: list[dict] = []
     for item_id, pairs in sorted(by_item.items()):
         if item_id in whole_item_exclusions:
+            continue
+        if _super_reduce_plan_exempt_item(plan, item_id, official_scope):
+            if item_id not in stats["excluded_official_exempt_items"]:
+                stats["excluded_official_exempt_items"].append(item_id)
             continue
         if item_id in held_item_ids:
             continue
@@ -1337,6 +1358,7 @@ def build_discount_rows(
              "official_low_price_exact": 0,
              "live_activity_price_overrides": [],
              "excluded_whole_items": list(whole_item_exclusions.values()),
+             "excluded_official_exempt_items": [],
              "skipped_not_erp_listed": 0,
              "official_scope": {
                  "configured": official_scope["configured"],
@@ -1368,6 +1390,10 @@ def build_discount_rows(
             continue
         item_id = str(p.taobao_item_id).strip()
         if item_id in whole_item_exclusions:
+            continue
+        if _super_reduce_plan_exempt_item(plan, item_id, official_scope):
+            if item_id not in stats["excluded_official_exempt_items"]:
+                stats["excluded_official_exempt_items"].append(item_id)
             continue
         if item_id in held_item_ids:
             stats["skipped_price_hold"] += 1
@@ -2033,6 +2059,8 @@ def _campaign_identity(plan) -> dict:
     end = getattr(plan, "end_at", None)
     activity_mode = str(
         getattr(plan, "platform_activity_mode", None) or "fixed_window")
+    sign_record_id = str(
+        getattr(plan, "platform_sign_record_id", None) or "").strip()
     active_until = getattr(plan, "platform_active_until", None)
     long_running = (
         activity_mode == "long_running_update"
@@ -2046,6 +2074,10 @@ def _campaign_identity(plan) -> dict:
             missing.append("campaign_id")
         if not united_activity_id or not united_activity_id.isdigit():
             missing.append("united_activity_id")
+        if sign_record_id and not sign_record_id.isdigit():
+            missing.append("sign_record_id")
+    elif sign_record_id:
+        missing.append("sign_record_id_not_allowed_for_long_running")
     elif active_until is None:
         missing.append("platform_active_until")
     if start is None:
@@ -2062,6 +2094,7 @@ def _campaign_identity(plan) -> dict:
         "campaign_title": title,
         "campaign_id": campaign_id,
         "united_activity_id": united_activity_id,
+        "sign_record_id": sign_record_id or None,
         "campaign_start": _fmt_dt(start),
         "campaign_end": _fmt_dt(end),
         "platform_activity_mode": activity_mode,
@@ -3368,6 +3401,7 @@ def refresh_floor_evidence_from_current_activity(db: Session, plan) -> dict:
             "" if identity["platform_activity_mode"] == "long_running_update"
             else identity["campaign_end"]),
         official_rate=identity["official_rate"],
+        sign_record_id=identity["sign_record_id"],
         platform_activity_mode=identity["platform_activity_mode"],
         platform_active_until=identity["platform_active_until"],
     )
