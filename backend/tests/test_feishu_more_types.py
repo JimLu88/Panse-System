@@ -86,7 +86,37 @@ def test_text_message_replies_help_guide(db_session, monkeypatch):
     assert replies and replies[0][0] == "t1"
     assert "使用指南" in replies[0][1]["header"]["title"]["content"]
     body = replies[0][1]["elements"][0]["text"]["content"]
+    assert "发二维码" in body
     assert "图片" in body and "表格" in body   # 指南列了发图/发表格两类
+
+
+def test_feishu_scan_command_starts_pending_scan_and_replies_in_group(
+        db_session, monkeypatch):
+    replies = []
+    monkeypatch.setattr(
+        feishu_client, "reply_card",
+        lambda db, mid, card: replies.append((mid, card)),
+    )
+    monkeypatch.setattr(
+        "app.services.agent_ingest_service.start_pending_scans",
+        lambda db: {"started": True, "tasks": ["alipay_main"]},
+    )
+    event = {
+        "message": {
+            "message_type": "text",
+            "message_id": "scan-1",
+            "chat_id": "alert-chat",
+            "content": json.dumps({"text": "@_user_1 发二维码"}),
+        }
+    }
+
+    out = fb.on_message_event(db_session, event)
+
+    assert out == {"message_id": "scan-1", "kind": "scan_trigger", "card_sent": True}
+    assert replies[0][0] == "scan-1"
+    body = replies[0][1]["elements"][0]["text"]["content"]
+    assert "二维码马上发到本群" in body
+    assert "10 分钟" in body
 
 
 # ---- 群里 @机器人 + 带图 → 富文本(post)消息, 图片内嵌, 应当图片处理(而非回指南) ----
