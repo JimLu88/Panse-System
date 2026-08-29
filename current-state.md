@@ -1,6 +1,14 @@
 # Current state — logistics bill product analytics
 
-Last updated: 2026-08-28 (Asia/Shanghai)
+Last updated: 2026-08-29 (Asia/Shanghai)
+
+## 2026-08-29 unsubmitted campaign plan resume/correction repair
+
+- Code commit `6c09059d903b50290e7c2a0a638a2464d18fd3bf` repairs two bounded resume defects without weakening R16/R17 price-evidence gates or the one-shot submission boundary.
+- A read-only activity-evidence refresh no longer replaces an operator-owned `official_all_store=true; official_exempt_items=...` scope with derived `official_active_items`. Formal `prepare` compares only request-owned scope/free text and ignores runtime evidence markers while preserving them on the plan; a real official-scope change still conflicts.
+- The audited plan-scoped exemption correction accepts `alarmed` only when the plan has no submitted receipt, reconciliation report, or platform-write marker. Malformed receipt state fails closed. It can repair the exact legacy empty-active-scope drift with compare-and-swap semantics, including when the intended exemption list remains empty.
+- This repair restores the safe correction path for workflows `campaign:super-reduce:2026-09-01` (plan 7) and `campaign:super88:49462:49469` (plan 8). It does not itself run correction, prepare, evidence refresh, signup, upload, price change, submission, account action, notification, or automatic retry.
+- All campaign-named backend suites passed: 185 tests, 0 failures/errors, 2 intentional skips. Python compilation and diff checks also passed. No database migration is required; the schema head remains `0142`.
 
 ## 2026-08-28 audited prepare-only service identity for task 01
 
