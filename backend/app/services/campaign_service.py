@@ -229,9 +229,15 @@ def sync_live_activity_evidence(db: Session, plan,
         if item_id in accepted_items and sku_id and price is not None and price > 0:
             live_prices[sku_id] = price.quantize(_CENT)
 
-    _remove_plan_marker(plan, "official_all_store")
-    _remove_plan_marker(plan, "official_exempt_items")
-    _set_plan_item_marker(plan, "official_active_items", accepted_items)
+    # A read-only export may refine which products are already active, but it
+    # must never rewrite an operator-owned all-store scope or erase its explicit
+    # exemption list.  Explicit active-item plans retain the historical
+    # refresh behaviour; all-store plans keep their request-owned R15 scope.
+    official_scope = official_scope_for_plan(plan)
+    if not (official_scope.get("configured") and official_scope.get("all_store")):
+        _remove_plan_marker(plan, "official_all_store")
+        _remove_plan_marker(plan, "official_exempt_items")
+        _set_plan_item_marker(plan, "official_active_items", accepted_items)
     _set_plan_item_marker(
         plan, "platform_qualified_items", prior_qualified | accepted_items)
     _set_plan_item_marker(

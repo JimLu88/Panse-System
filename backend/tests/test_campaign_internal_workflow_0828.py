@@ -1,4 +1,5 @@
 """Regression gates for the ERP-only campaign preparation workflow."""
+import json
 from datetime import datetime
 from decimal import Decimal
 
@@ -7,7 +8,7 @@ from app.api.campaigns import (
     _structured_prepare_remark,
     _validate_formal_platform_identity,
 )
-from app.models.campaign import CampaignPlan
+from app.models.campaign import CampaignPlan, CampaignReconReport
 from app.models.pricing import PricingSku
 from app.models.pricing_ext import PricingSkuPromo
 from app.services import campaign_item_exclusion_service
@@ -203,6 +204,203 @@ def test_plan_scoped_official_exemption_correction_is_cas_and_idempotent(
     assert submitted["error"] == "unsubmitted_plan_required"
 
 
+def test_alarmed_unsubmitted_plan_can_correct_scope_but_submission_proof_blocks(
+        db_session):
+    plan = _plan(
+        workflow_key="campaign:super88:49462:49469",
+        status="alarmed",
+        remark="official_all_store=true; official_exempt_items=",
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    corrected = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+
+    assert corrected["ok"] is True
+    assert corrected["changed"] is True
+    assert corrected["submission_guard"] == {
+        "ok": True,
+        "status": "alarmed",
+        "alarmed": True,
+        "submitted_receipt_count": 0,
+        "recon_report_count": 0,
+        "platform_write_markers": [],
+    }
+
+    settings_service.set_value(
+        db_session,
+        f"campaign_execution_receipts_{plan.id}",
+        json.dumps([{"submitted": True, "step": "signup_terminal_classification"}]),
+    )
+    blocked = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=["805268708396"],
+        desired_item_ids=[],
+    )
+
+    assert blocked["error"] == "unsubmitted_plan_required"
+    assert blocked["submission_guard"]["reason"] == (
+        "signup_submission_receipt_present")
+
+
+def test_alarmed_scope_correction_rejects_recon_and_platform_write_markers(
+        db_session):
+    plan = _plan(
+        workflow_key="campaign:super88:49462:49469",
+        status="alarmed",
+        remark="official_all_store=true; official_exempt_items=",
+    )
+    db_session.add(plan)
+    db_session.commit()
+    db_session.add(CampaignReconReport(
+        plan_id=plan.id, source="manual", alarm_count=1))
+    db_session.commit()
+
+    blocked_recon = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+    assert blocked_recon["submission_guard"]["reason"] == (
+        "reconciliation_evidence_present")
+
+    db_session.query(CampaignReconReport).filter_by(plan_id=plan.id).delete()
+    plan.remark += "; single_discount_activity_ids=805268708396:12345"
+    db_session.commit()
+    blocked_marker = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+    assert blocked_marker["submission_guard"]["reason"] == (
+        "platform_write_marker_present")
+
+
+def test_derived_empty_active_scope_can_be_cas_corrected_to_all_store(
+        db_session):
+    plan = _plan(
+        workflow_key="campaign:super-reduce:2026-09-01",
+        name="2026-09-01超级立减更新窗口",
+        campaign_type="super_reduce",
+        tier="mid",
+        start_at=datetime(2026, 9, 1, 0, 0, 0),
+        end_at=datetime(2026, 9, 1, 23, 59, 59),
+        qn_campaign_title="超级立减",
+        platform_activity_mode="long_running_update",
+        platform_campaign_id=None,
+        platform_united_activity_id=None,
+        platform_active_until=datetime(2028, 7, 31, 23, 59, 59),
+        status="alarmed",
+        remark=(
+            "official_active_items=; platform_qualified_items=; "
+            "platform_no_sales_items=; platform_hard_failed_items=; "
+            "current_activity_prices="
+        ),
+    )
+    db_session.add(plan)
+    _pair(
+        db_session,
+        item_id="805268708396",
+        sku_code="CUSTOMBOOKCASE",
+        sku_id="80526870839601",
+    )
+    db_session.commit()
+    settings_service.set_value(
+        db_session,
+        f"campaign_execution_receipts_{plan.id}",
+        json.dumps([{"submitted": False, "step": "mandatory_preflight"}]),
+    )
+
+    corrected = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=["805268708396"],
+    )
+    prepared = campaign_workflow_service.prepare(
+        db_session,
+        workflow_key=plan.workflow_key,
+        values={
+            "name": plan.name,
+            "campaign_type": plan.campaign_type,
+            "tier": plan.tier,
+            "start_at": plan.start_at,
+            "end_at": plan.end_at,
+            "qn_campaign_title": plan.qn_campaign_title,
+            "price_protection_days": plan.price_protection_days,
+            "price_protection_rule_url": plan.price_protection_rule_url,
+            "price_protection_confirmed_at": plan.price_protection_confirmed_at,
+            "remark": (
+                "official_all_store=true; "
+                "official_exempt_items=805268708396"),
+            "platform_activity_mode": plan.platform_activity_mode,
+            "platform_campaign_id": plan.platform_campaign_id,
+            "platform_united_activity_id": plan.platform_united_activity_id,
+            "platform_sign_record_id": plan.platform_sign_record_id,
+            "platform_active_until": plan.platform_active_until,
+        },
+    )
+    signup_rows, signup_stats = campaign.build_signup_rows(db_session, plan)
+    discount_rows, discount_stats = campaign.build_discount_rows(db_session, plan)
+
+    assert corrected["ok"] is True
+    assert corrected["repaired_derived_scope"] is True
+    assert prepared.get("conflict") is not True
+    assert prepared["reused"] is True
+    assert "official_active_items=" not in plan.remark
+    assert "platform_qualified_items=" in plan.remark
+    assert "official_all_store=true" in plan.remark
+    assert "official_exempt_items=805268708396" in plan.remark
+    assert signup_rows == []
+    assert discount_rows == []
+    assert signup_stats["excluded_official_exempt_items"] == ["805268708396"]
+    assert discount_stats["excluded_official_exempt_items"] == ["805268708396"]
+
+
+def test_derived_empty_active_scope_is_repaired_even_when_exemptions_stay_empty(
+        db_session):
+    plan = _plan(
+        workflow_key="campaign:super88:49462:49469",
+        status="alarmed",
+        remark=(
+            "official_active_items=; platform_qualified_items=; "
+            "platform_no_sales_items=; platform_hard_failed_items=; "
+            "current_activity_prices="
+        ),
+    )
+    db_session.add(plan)
+    db_session.commit()
+
+    corrected = campaign_workflow_service.correct_official_exemptions(
+        db_session,
+        workflow_key=plan.workflow_key,
+        expected_plan_id=plan.id,
+        expected_item_ids=[],
+        desired_item_ids=[],
+    )
+
+    assert corrected["ok"] is True
+    assert corrected["changed"] is True
+    assert corrected["repaired_derived_scope"] is True
+    assert "official_active_items=" not in plan.remark
+    assert "official_all_store=true" in plan.remark
+    assert "official_exempt_items=" in plan.remark
+    assert "platform_qualified_items=" in plan.remark
+
+
 def test_long_running_super_reduce_has_typed_identity_without_fake_short_activity():
     body = CampaignPrepareIn(
         workflow_key="campaign:super-reduce:2026-09-01",
@@ -366,6 +564,56 @@ def test_prepare_workflow_key_is_durable_and_payload_conflicts(db_session):
     assert conflict["conflict"] is True
     assert conflict["different_fields"] == ["platform_campaign_id"]
     assert first["execution_boundary"]["platform_write"] is False
+
+
+def test_prepare_ignores_runtime_remark_evidence_but_not_official_scope_change(
+        db_session):
+    desired_remark = (
+        "official_all_store=true; official_exempt_items=805268708396")
+    plan = _plan(
+        workflow_key="campaign:super88:49462:49469",
+        remark=(
+            f"{desired_remark}; platform_qualified_items=805268708397; "
+            "platform_no_sales_items=; platform_hard_failed_items=; "
+            "current_activity_prices=80526870839701:1200.00"
+        ),
+    )
+    db_session.add(plan)
+    db_session.commit()
+    values = dict(
+        name=plan.name,
+        campaign_type=plan.campaign_type,
+        tier=plan.tier,
+        start_at=plan.start_at,
+        end_at=plan.end_at,
+        qn_campaign_title=plan.qn_campaign_title,
+        price_protection_days=plan.price_protection_days,
+        price_protection_rule_url=plan.price_protection_rule_url,
+        price_protection_confirmed_at=plan.price_protection_confirmed_at,
+        remark=desired_remark,
+        platform_activity_mode=plan.platform_activity_mode,
+        platform_campaign_id=plan.platform_campaign_id,
+        platform_united_activity_id=plan.platform_united_activity_id,
+        platform_sign_record_id=plan.platform_sign_record_id,
+        platform_active_until=plan.platform_active_until,
+    )
+
+    reused = campaign_workflow_service.prepare(
+        db_session, workflow_key=plan.workflow_key, values=values)
+    changed_scope = campaign_workflow_service.prepare(
+        db_session,
+        workflow_key=plan.workflow_key,
+        values={
+            **values,
+            "remark": "official_all_store=true; official_exempt_items=805268708398",
+        },
+    )
+
+    assert reused.get("conflict") is not True
+    assert reused["reused"] is True
+    assert "platform_qualified_items=805268708397" in reused["plan"].remark
+    assert changed_scope["conflict"] is True
+    assert changed_scope["different_fields"] == ["remark"]
 
 
 def test_prepare_one_way_enriches_numeric_sign_record_identity(db_session):

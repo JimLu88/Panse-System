@@ -936,6 +936,32 @@ def test_live_activity_evidence_promotes_known_failures_without_adopting_unknown
     assert ns.get_no_sales(db_session) == set()
 
 
+def test_live_activity_evidence_preserves_all_store_exemption_scope(db_session):
+    plan = _plan(db_session, "super_reduce")
+    plan.remark = (
+        "official_all_store=true; "
+        "official_exempt_items=805268708396; "
+        "platform_qualified_items=805268708397"
+    )
+    db_session.commit()
+
+    evidence = cs.sync_live_activity_evidence(db_session, plan, [{
+        "item_id": "805268708397",
+        "sku_id": "80526870839701",
+        "activity_price": 1200,
+    }])
+    scope = cs.official_scope_for_plan(plan)
+
+    assert evidence["accepted_items"] == ["805268708397"]
+    assert scope["configured"] is True
+    assert scope["all_store"] is True
+    assert scope["exempt_items"] == {"805268708396"}
+    assert "official_active_items=" not in plan.remark
+    assert cs.platform_qualified_items(plan) == {"805268708397"}
+    assert cs.current_activity_prices_for_plan(plan) == {
+        "80526870839701": Decimal("1200.00")}
+
+
 def test_preflight_blocks_nosales_without_official_scope(db_session):
     plan = _plan(db_session, "big88")
     _mk(db_session, "PPSDD004", "PPSDD00401", "9309", "73071", daily=3000, big=2500)

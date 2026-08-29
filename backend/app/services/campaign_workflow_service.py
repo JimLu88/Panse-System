@@ -6,12 +6,13 @@ state.  ``workflow_key`` is the durable idempotency boundary across restarts.
 """
 from __future__ import annotations
 
+import json
 import re
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.models.campaign import CampaignPlan
+from app.models.campaign import CampaignPlan, CampaignReconReport
 from app.services import campaign_service
 
 
@@ -24,11 +25,81 @@ _IDENTITY_FIELDS = (
 )
 
 
+# ``CampaignPlan.remark`` predates the formal preparation API and still carries
+# both request-owned scope and runtime evidence.  These keys are written by the
+# campaign engine after preparation and therefore must not make an unchanged
+# workflow payload conflict.  They are never removed by ``prepare``; only the
+# comparison projection ignores them.
+_RUNTIME_REMARK_KEYS = {
+    "campaignid",
+    "unitedactivityid",
+    "current_activity_prices",
+    "line_concession_authorized",
+    "placeholder_live_prices",
+    "placeholder_price_lowering_authorized",
+    "placeholder_price_protection_expired",
+    "platform_existing_wrong_items",
+    "platform_hard_failed_items",
+    "platform_no_sales_items",
+    "platform_qualified_items",
+    "signup_shipping_days_authorized",
+    "single_discount_activity_id",
+    "single_discount_activity_ids",
+    "single_discount_refreshed_activity_ids",
+    "single_discount_sku_activity_ids",
+    "sku_refresh_items_authorized",
+    "supplement_items_authorized",
+    "super_reduce_early_activation_already_clear",
+    "super_reduce_early_activation_withdrawn",
+}
+_RUNTIME_REMARK_PREFIXES = (
+    "platform_terminal_accepted_",
+    "platform_terminal_coupon_floor_",
+)
+_PLATFORM_WRITE_REMARK_KEYS = {
+    "single_discount_activity_id",
+    "single_discount_activity_ids",
+    "single_discount_refreshed_activity_ids",
+    "single_discount_sku_activity_ids",
+    "super_reduce_early_activation_already_clear",
+    "super_reduce_early_activation_withdrawn",
+}
+
+
+def _remark_key(segment: str) -> str | None:
+    matched = re.match(r"\s*([A-Za-z][A-Za-z0-9_]*)\s*=", segment)
+    return matched.group(1).lower() if matched else None
+
+
+def _runtime_remark_key(key: str | None) -> bool:
+    return bool(
+        key
+        and (
+            key in _RUNTIME_REMARK_KEYS
+            or any(key.startswith(prefix) for prefix in _RUNTIME_REMARK_PREFIXES)
+        )
+    )
+
+
+def _prepare_owned_remark(value: str | None) -> str:
+    """Project the mixed legacy remark onto formal request-owned content."""
+    return "; ".join(
+        segment for segment in _remark_segments(value)
+        if not _runtime_remark_key(_remark_key(segment))
+    )
+
+
 def _different_fields(plan: CampaignPlan, values: dict) -> list[str]:
-    return [
-        field for field in _IDENTITY_FIELDS
-        if getattr(plan, field, None) != values.get(field)
-    ]
+    different = []
+    for field in _IDENTITY_FIELDS:
+        current = getattr(plan, field, None)
+        desired = values.get(field)
+        if field == "remark":
+            current = _prepare_owned_remark(current)
+            desired = _prepare_owned_remark(desired)
+        if current != desired:
+            different.append(field)
+    return different
 
 
 def _remark_segments(value: str | None) -> list[str]:
@@ -89,6 +160,114 @@ def _normalized_item_ids(values) -> tuple[list[str], list[str]]:
     return sorted(set(normalized)), invalid
 
 
+def _execution_receipts(db: Session, plan: CampaignPlan) -> tuple[list[dict], bool]:
+    """Return bounded signup receipts and whether their storage was malformed."""
+    from app.services import settings_service
+
+    raw = settings_service.get(
+        db, f"campaign_execution_receipts_{plan.id}", env_fallback=False)
+    if not raw:
+        return [], False
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return [], True
+    if not isinstance(payload, list) or any(
+            not isinstance(row, dict) for row in payload):
+        return [], True
+    return payload, False
+
+
+def _unsubmitted_correction_guard(db: Session, plan: CampaignPlan) -> dict:
+    """Fail closed unless this formal plan has no platform-write evidence."""
+    if plan.status in ("draft", "precheck"):
+        return {"ok": True, "status": plan.status, "alarmed": False}
+    if plan.status != "alarmed":
+        return {
+            "ok": False, "status": plan.status,
+            "reason": "status_not_unsubmitted",
+        }
+
+    receipts, malformed = _execution_receipts(db, plan)
+    if malformed:
+        return {
+            "ok": False, "status": plan.status,
+            "reason": "execution_receipts_malformed",
+        }
+    submitted_receipts = [
+        row for row in receipts if bool(row.get("submitted"))
+    ]
+    if submitted_receipts:
+        return {
+            "ok": False, "status": plan.status,
+            "reason": "signup_submission_receipt_present",
+            "submitted_receipt_count": len(submitted_receipts),
+        }
+    recon_count = len(db.execute(select(CampaignReconReport).where(
+        CampaignReconReport.plan_id == plan.id)).scalars().all())
+    if recon_count:
+        return {
+            "ok": False, "status": plan.status,
+            "reason": "reconciliation_evidence_present",
+            "recon_report_count": recon_count,
+        }
+    write_markers = sorted({
+        key for segment in _remark_segments(plan.remark)
+        for key in [_remark_key(segment)]
+        if key in _PLATFORM_WRITE_REMARK_KEYS
+    })
+    if write_markers:
+        return {
+            "ok": False, "status": plan.status,
+            "reason": "platform_write_marker_present",
+            "markers": write_markers,
+        }
+    return {
+        "ok": True,
+        "status": plan.status,
+        "alarmed": True,
+        "submitted_receipt_count": 0,
+        "recon_report_count": 0,
+        "platform_write_markers": [],
+    }
+
+
+def _derived_empty_active_scope(plan: CampaignPlan) -> bool:
+    """Recognize the exact read-only-refresh drift seen on legacy plan 7."""
+    segments = _remark_segments(plan.remark)
+    active = [
+        segment for segment in segments
+        if (_remark_key(segment) or "").lower() == "official_active_items"
+    ]
+    if len(active) != 1 or not re.fullmatch(
+            r"official_active_items\s*=\s*", active[0], flags=re.IGNORECASE):
+        return False
+    keys = {_remark_key(segment) for segment in segments}
+    if "official_all_store" in keys or "official_exempt_items" in keys:
+        return False
+    return bool(keys & {
+        "platform_qualified_items",
+        "platform_no_sales_items",
+        "platform_hard_failed_items",
+        "current_activity_prices",
+    })
+
+
+def _set_all_store_exempt_scope(plan: CampaignPlan, desired: list[str]) -> None:
+    """Replace only formal official-scope markers; preserve runtime evidence."""
+    segments = [
+        segment for segment in _remark_segments(plan.remark)
+        if (_remark_key(segment) or "").lower() not in {
+            "official_active_items", "official_all_store", "official_exempt_items",
+        }
+    ]
+    segments.extend([
+        "official_all_store=true",
+        f"official_exempt_items={','.join(desired)}",
+    ])
+    plan.remark = "; ".join(segments)
+
+
 def correct_official_exemptions(
         db: Session, *, workflow_key: str, expected_plan_id: int,
         expected_item_ids, desired_item_ids) -> dict:
@@ -102,10 +281,12 @@ def correct_official_exemptions(
             "ok": False, "error": "workflow_plan_mismatch",
             "plan_id": plan.id,
         }
-    if plan.status not in ("draft", "precheck"):
+    correction_guard = _unsubmitted_correction_guard(db, plan)
+    if not correction_guard.get("ok"):
         return {
             "ok": False, "error": "unsubmitted_plan_required",
             "plan_id": plan.id, "status": plan.status,
+            "submission_guard": correction_guard,
         }
     expected, invalid_expected = _normalized_item_ids(expected_item_ids)
     desired, invalid_desired = _normalized_item_ids(desired_item_ids)
@@ -118,19 +299,26 @@ def correct_official_exemptions(
     marker_matches = list(re.finditer(
         r"(?:^|[;\n；])\s*official_exempt_items\s*=\s*[^;\n；]*",
         str(plan.remark or ""), flags=re.IGNORECASE))
-    if (not scope.get("configured") or not scope.get("all_store")
-            or scope.get("errors") or len(marker_matches) != 1):
+    drifted_empty_scope = _derived_empty_active_scope(plan)
+    normal_all_store_scope = bool(
+        scope.get("configured") and scope.get("all_store")
+        and not scope.get("errors") and len(marker_matches) == 1
+    )
+    if not normal_all_store_scope and not drifted_empty_scope:
         return {
             "ok": False, "error": "official_scope_not_correctable",
             "scope_errors": scope.get("errors") or [],
         }
-    current = sorted(scope.get("exempt_items") or set())
-    if current == desired:
+    current = [] if drifted_empty_scope else sorted(
+        scope.get("exempt_items") or set())
+    if current == desired and not drifted_empty_scope:
         return {
             "ok": True, "changed": False, "idempotent_replay": True,
             "workflow_key": workflow_key, "plan": plan,
             "previous_official_exempt_item_ids": current,
             "official_exempt_item_ids": desired,
+            "repaired_derived_scope": False,
+            "submission_guard": correction_guard,
             "execution_boundary": {
                 "plan_scoped_only": True, "permanent_exclusion_write": False,
                 "platform_write": False, "account_action": False,
@@ -144,11 +332,7 @@ def correct_official_exemptions(
             "expected_official_exempt_item_ids": expected,
             "current_official_exempt_item_ids": current,
         }
-    desired_text = ",".join(desired)
-    plan.remark = re.sub(
-        r"((?:^|[;\n；])\s*official_exempt_items\s*=\s*)[^;\n；]*",
-        lambda match: f"{match.group(1)}{desired_text}",
-        str(plan.remark or ""), count=1, flags=re.IGNORECASE)
+    _set_all_store_exempt_scope(plan, desired)
     db.commit()
     db.refresh(plan)
     return {
@@ -156,6 +340,8 @@ def correct_official_exemptions(
         "workflow_key": workflow_key, "plan": plan,
         "previous_official_exempt_item_ids": current,
         "official_exempt_item_ids": desired,
+        "repaired_derived_scope": drifted_empty_scope,
+        "submission_guard": correction_guard,
         "execution_boundary": {
             "plan_scoped_only": True, "permanent_exclusion_write": False,
             "platform_write": False, "account_action": False,

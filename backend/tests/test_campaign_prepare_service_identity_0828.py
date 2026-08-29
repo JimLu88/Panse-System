@@ -266,6 +266,67 @@ def test_official_exemption_correction_endpoint_is_scoped_and_audited(
         engine.dispose()
 
 
+def test_official_exemption_correction_endpoint_accepts_unsubmitted_alarm(
+        monkeypatch):
+    engine = create_engine(
+        "sqlite://", future=True,
+        connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    Base.metadata.create_all(engine)
+    Session = sessionmaker(
+        bind=engine, autoflush=False, autocommit=False, future=True)
+    with Session() as db:
+        settings_service.set_value(
+            db, dependencies.CAMPAIGN_PREPARE_SERVICE_SETTING, TOKEN)
+        db.add(CampaignPlan(
+            id=8,
+            workflow_key="campaign:super88:49462:49469",
+            name="超级88现货", campaign_type="big88", tier="big",
+            start_at=datetime(2026, 9, 6, 20, 0, 0),
+            end_at=datetime(2026, 9, 13, 23, 59, 59),
+            qn_campaign_title="26年淘宝9月超级88", status="alarmed",
+            remark="official_all_store=true; official_exempt_items=",
+            platform_activity_mode="fixed_window",
+            platform_campaign_id="49462",
+            platform_united_activity_id="49469",
+            platform_sign_record_id="3527841611",
+        ))
+        db.commit()
+
+    def override_db():
+        with Session() as db:
+            yield db
+
+    app.dependency_overrides[get_db] = override_db
+    monkeypatch.setattr(middleware, "SessionLocal", Session)
+    monkeypatch.setenv("PANSE_AUTH_ENFORCE", "1")
+    try:
+        response = TestClient(app).post(
+            "/api/campaigns/correct-official-exemptions",
+            headers={"X-API-Key": TOKEN},
+            json={
+                "workflow_key": "campaign:super88:49462:49469",
+                "plan_id": 8,
+                "expected_official_exempt_item_ids": [],
+                "official_exempt_item_ids": ["805268708396"],
+            },
+        )
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["changed"] is True
+        assert body["submission_guard"]["alarmed"] is True
+        assert body["execution_boundary"]["platform_write"] is False
+        with Session() as db:
+            audit = db.execute(select(AuditLog).where(
+                AuditLog.path == "/api/campaigns/correct-official-exemptions"
+            ).order_by(AuditLog.id.desc())).scalars().first()
+            assert audit.status_code == 200
+            assert audit.username == "service:campaign-prepare"
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        engine.dispose()
+
+
 def test_evidence_refresh_endpoint_is_scoped_audited_and_covers_both_modes(
         monkeypatch):
     from app.services import campaign_service
