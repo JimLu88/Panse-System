@@ -130,6 +130,62 @@ def test_reimport_logistics_no_duplicate(db_session):
     assert db_session.query(LogisticsBill).filter_by(row_type="summary").count() == 1
 
 
+def test_reimport_logistics_enriches_package_measurements(db_session):
+    """旧账单重导时补实重/体积/件数，不新增、不覆盖计费重量。"""
+    from datetime import datetime
+    from openpyxl import Workbook
+    from app.services import bill_import_service as bi
+
+    def mk(include_measurements: bool):
+        wb = Workbook(); ws = wb.active
+        headers = ["运单号", "寄件时间", "计费重量", "收件人姓名", "运费"]
+        if include_measurements:
+            headers += ["实际重量", "体积", "件数"]
+        ws.append(headers)
+        row = ["700800000001", datetime(2026, 3, 2), 95, "张三", 269]
+        if include_measurements:
+            row += [87, 0.57, 2]
+        ws.append(row)
+        return wb
+
+    bi.import_logistics_xlsx(db_session, mk(False), source_name="李爱群 2026年3月账单 269元.xlsx")
+    rep = bi.import_logistics_xlsx(db_session, mk(True), source_name="李爱群 2026年3月账单 269元.xlsx")
+    bill = db_session.query(LogisticsBill).filter_by(row_type="line").one()
+    assert rep.inserted == 0
+    assert rep.updated_existing == 1
+    assert bill.weight_kg == Decimal("95")
+    assert bill.actual_weight_kg == Decimal("87")
+    assert bill.volume_m3 == Decimal("0.57")
+    assert bill.package_count == 2
+
+
+def test_reimport_logistics_csv_enriches_package_measurements(db_session):
+    """CSV 与 XLSX 同口径：重导补齐实重/体积/件数且不重复建行。"""
+    from app.services import bill_import_service as bi
+
+    base = (
+        "日期,承运商,运单号,计费重量,运费\n"
+        "2026-03-02,德邦,CSV700800000001,95,269\n"
+    )
+    enriched = (
+        "日期,承运商,运单号,计费重量,运费,实际重量,体积,件数\n"
+        "2026-03-02,德邦,CSV700800000001,95,269,87,0.57,2\n"
+    )
+
+    bi.import_logistics_csv(db_session, base)
+    rep = bi.import_logistics_csv(db_session, enriched)
+    bill = db_session.query(LogisticsBill).filter_by(tracking_no="CSV700800000001").one()
+
+    assert rep.inserted == 0
+    assert rep.updated_existing == 1
+    assert rep.skipped_duplicate == 1
+    assert rep.errors == []
+    assert bill.weight_kg == Decimal("95")
+    assert bill.actual_weight_kg == Decimal("87")
+    assert bill.volume_m3 == Decimal("0.57")
+    assert bill.package_count == 2
+
+
 def test_manual_match_not_overwritten(db_session):
     """人工指定过的不重算 (only_unmatched 跳过 manual)."""
     _order(db_session, "O6", "孙八", "山东省青岛市", track="DB6")

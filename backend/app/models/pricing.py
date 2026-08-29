@@ -6,10 +6,11 @@
 """
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import Boolean, Index, Numeric, String, Text
+from sqlalchemy import Boolean, Date, Index, Integer, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base, TimestampMixin
@@ -29,6 +30,18 @@ class PricingSku(Base, TimestampMixin):
     size_category: Mapped[Optional[str]] = mapped_column(String(16))  # 小型 / 中型 / 大型
     # 按 SKU 的成品尺寸 (2026-06-19: 从 SKU 尺寸图读出回填; 下单图按订单 sku_code 取此, 多规格不再选错)
     size_info: Mapped[Optional[str]] = mapped_column(String(255))
+
+    # SKU 级重量/体积参数。同产品不同尺寸差异很大，严禁放到产品主档后跨 SKU 共用。
+    # 裸品数据只能人工维护；账单只自动回填打包后的实际重量和体积。
+    product_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    packaged_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    product_volume_m3: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    packaged_volume_m3: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    packaged_weight_source: Mapped[Optional[str]] = mapped_column(String(16))  # bill/manual
+    packaged_volume_source: Mapped[Optional[str]] = mapped_column(String(16))  # bill/manual
+    shipping_measure_source_tracking_no: Mapped[Optional[str]] = mapped_column(String(128))
+    shipping_measure_source_date: Mapped[Optional[date]] = mapped_column(Date)
+    shipping_measure_sample_count: Mapped[Optional[int]] = mapped_column(Integer)
 
     # 四档售价 (轻定制)
     list_price: Mapped[Optional[Decimal]] = mapped_column(Numeric(12, 2))     # 标价计算

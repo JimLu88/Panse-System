@@ -7,6 +7,7 @@ import {
   Form,
   Image,
   Input,
+  InputNumber,
   Modal,
   Popconfirm,
   Segmented,
@@ -25,7 +26,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import FullColumnView from '../components/FullColumnView';
 import GalleryModal from '../components/GalleryModal';
 import { CUTE_IMG } from '../components/ProductThumb';
-import { PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct } from '../api/client';
+import { PricingSku, Product, createProduct, deleteProduct, listProductCategories, listProducts, listProductSkus, updateProduct, updateSkuShippingMeasurements } from '../api/client';
 import FieldPresetBar, { type PresetField } from '../components/FieldPresetBar';
 import ResponsiveTable from '../components/ResponsiveTable';
 import { CatalogCard } from '../components/MobileCards';
@@ -44,6 +45,64 @@ const PRODUCT_PRESETS = [
   { name: '名称备注', fields: ['code', 'name', 'brand', 'category', 'remark', 'image'] },
 ];
 
+function SkuMeasurementEditor({ row }: { row: PricingSku }) {
+  const [open, setOpen] = useState(false);
+  const [form] = Form.useForm();
+  const queryClient = useQueryClient();
+  const mutation = useMutation({
+    mutationFn: (payload: Record<string, number | null>) =>
+      updateSkuShippingMeasurements(row.product_code, row.id, payload),
+    onSuccess: () => {
+      message.success('重量体积已保存');
+      setOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['product-skus', row.product_code] });
+    },
+    onError: () => message.error('保存失败，请重试'),
+  });
+  const show = () => {
+    form.setFieldsValue({
+      product_weight_kg: row.product_weight_kg == null ? null : Number(row.product_weight_kg),
+      packaged_weight_kg: row.packaged_weight_kg == null ? null : Number(row.packaged_weight_kg),
+      product_volume_m3: row.product_volume_m3 == null ? null : Number(row.product_volume_m3),
+      packaged_volume_m3: row.packaged_volume_m3 == null ? null : Number(row.packaged_volume_m3),
+    });
+    setOpen(true);
+  };
+  const save = async () => {
+    const values = await form.validateFields();
+    const keys = ['product_weight_kg', 'packaged_weight_kg', 'product_volume_m3', 'packaged_volume_m3'];
+    const payload = Object.fromEntries(keys.map((key) => [key, values[key] ?? null]));
+    mutation.mutate(payload);
+  };
+  return (
+    <>
+      <Button size="small" icon={<EditOutlined />} onClick={show}>编辑</Button>
+      <Modal title={`${row.sku || row.sku_code} · 重量体积`} open={open} onCancel={() => setOpen(false)}
+        onOk={save} confirmLoading={mutation.isPending} destroyOnClose>
+        <Alert type="info" showIcon style={{ marginBottom: 16 }}
+          message="账单只会自动更新打包重量和打包体积；产品裸重、裸品体积需人工填写。手改打包值后自动回填不会覆盖。" />
+        <Form form={form} layout="vertical">
+          <Form.Item name="product_weight_kg" label="产品重量（裸重）">
+            <InputNumber min={0} precision={3} style={{ width: '100%' }} addonAfter="kg" />
+          </Form.Item>
+          <Form.Item name="packaged_weight_kg" label="打包重量（包裹实际重量）">
+            <InputNumber min={0} precision={3} style={{ width: '100%' }} addonAfter="kg" />
+          </Form.Item>
+          <Form.Item name="product_volume_m3" label="产品体积（裸品）">
+            <InputNumber min={0} precision={4} style={{ width: '100%' }} addonAfter="m³" />
+          </Form.Item>
+          <Form.Item name="packaged_volume_m3" label="打包体积">
+            <InputNumber min={0} precision={4} style={{ width: '100%' }} addonAfter="m³" />
+          </Form.Item>
+        </Form>
+      </Modal>
+    </>
+  );
+}
+
+const measureText = (value: number | null | undefined, digits: number, unit: string) =>
+  value == null ? '-' : `${Number(value).toFixed(digits)} ${unit}`;
+
 function SkuExpandedRow({ productCode }: { productCode: string }) {
   const { data, isLoading } = useQuery({
     queryKey: ['product-skus', productCode],
@@ -60,6 +119,7 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
         dataSource={data}
         size="small"
         pagination={false}
+        scroll={{ x: 1450 }}
         columns={[
           {
             title: '图片', width: 64,
@@ -74,6 +134,25 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
           { title: 'SKU 编码', dataIndex: 'sku_code', width: 120 },
           { title: 'SKU', dataIndex: 'sku', ellipsis: true },
           { title: '尺寸分类', dataIndex: 'size_category', width: 100 },
+          { title: '产品重量', dataIndex: 'product_weight_kg', width: 110,
+            render: (v: number) => measureText(v, 3, 'kg') },
+          { title: '打包重量', dataIndex: 'packaged_weight_kg', width: 110,
+            render: (v: number) => measureText(v, 3, 'kg') },
+          { title: '产品体积', dataIndex: 'product_volume_m3', width: 110,
+            render: (v: number) => measureText(v, 4, 'm³') },
+          { title: '打包体积', dataIndex: 'packaged_volume_m3', width: 110,
+            render: (v: number) => measureText(v, 4, 'm³') },
+          {
+            title: '数据来源', width: 170,
+            render: (_: unknown, r: PricingSku) => {
+              if (!r.shipping_measure_source_tracking_no) return '-';
+              const auto = r.packaged_weight_source === 'bill' || r.packaged_volume_source === 'bill';
+              return <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                {auto ? '物流账单' : '人工'} · {r.shipping_measure_source_tracking_no}
+                {r.shipping_measure_sample_count ? ` · ${r.shipping_measure_sample_count}次` : ''}
+              </Typography.Text>;
+            },
+          },
           { title: '日常价', dataIndex: 'daily_price', width: 90, render: (v: number) => v != null ? `¥${v}` : '-' },
           { title: '小促价', dataIndex: 'small_promo', width: 90, render: (v: number) => v != null ? `¥${v}` : '-' },
           { title: '大促价', dataIndex: 'big_promo', width: 90, render: (v: number) => v != null ? `¥${v}` : '-' },
@@ -83,6 +162,7 @@ function SkuExpandedRow({ productCode }: { productCode: string }) {
               ? <Tag color={v >= 0.3 ? 'green' : v >= 0.15 ? 'orange' : 'red'}>{(v * 100).toFixed(1)}%</Tag>
               : '-',
           },
+          { title: '操作', fixed: 'right', width: 90, render: (_: unknown, r: PricingSku) => <SkuMeasurementEditor row={r} /> },
         ]}
       />
     </Image.PreviewGroup>

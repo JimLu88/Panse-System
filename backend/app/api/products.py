@@ -1,3 +1,4 @@
+from decimal import Decimal
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
@@ -39,6 +40,13 @@ class RankedProductOut(BaseModel):
     product_name: str
     product_confidence: float
     skus: list[RankedSkuOut]
+
+
+class SkuShippingMeasurementPatch(BaseModel):
+    product_weight_kg: Optional[float] = Field(None, ge=0)
+    packaged_weight_kg: Optional[float] = Field(None, ge=0)
+    product_volume_m3: Optional[float] = Field(None, ge=0)
+    packaged_volume_m3: Optional[float] = Field(None, ge=0)
 
 
 @router.get("", response_model=list[ProductOut])
@@ -432,6 +440,54 @@ def list_product_skus(
         base["gallery_image_url"] = gallery_urls.get(r.sku_code)
         out.append(PricingSkuOut.model_validate(base))
     return out
+
+
+@router.patch("/{product_code}/skus/{sku_id}/shipping-measurements", response_model=PricingSkuOut)
+def update_sku_shipping_measurements(
+    product_code: str,
+    sku_id: int,
+    payload: SkuShippingMeasurementPatch,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """产品总表内维护 SKU 裸品/打包重量体积；手改的打包值不再被账单自动覆盖。"""
+    sku = db.get(PricingSku, sku_id)
+    if sku is None or sku.product_code != product_code:
+        raise HTTPException(404, "SKU not found")
+    changes = payload.model_dump(exclude_unset=True)
+    old_packaged_weight = sku.packaged_weight_kg
+    old_packaged_volume = sku.packaged_volume_m3
+    for field_name, value in changes.items():
+        setattr(sku, field_name, value)
+
+    def value_changed(old_value, new_value) -> bool:
+        if old_value is None or new_value is None:
+            return old_value is not None or new_value is not None
+        return Decimal(str(old_value)) != Decimal(str(new_value))
+
+    if "packaged_weight_kg" in changes and value_changed(old_packaged_weight, changes["packaged_weight_kg"]):
+        sku.packaged_weight_source = "manual" if changes["packaged_weight_kg"] is not None else None
+    if "packaged_volume_m3" in changes and value_changed(old_packaged_volume, changes["packaged_volume_m3"]):
+        sku.packaged_volume_source = "manual" if changes["packaged_volume_m3"] is not None else None
+    if sku.packaged_weight_source != "bill" and sku.packaged_volume_source != "bill":
+        sku.shipping_measure_source_tracking_no = None
+        sku.shipping_measure_source_date = None
+        sku.shipping_measure_sample_count = None
+    db.commit()
+    db.refresh(sku)
+    return PricingSkuOut.model_validate(sku)
+
+
+@router.post("/shipping-measurements/rebuild")
+def rebuild_sku_shipping_measurements(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """用当前已配单物流账单重新汇总 SKU 打包重量/体积，人工值不覆盖。"""
+    from app.services import logistics_measurement_service
+    result = logistics_measurement_service.refresh_sku_shipping_measurements(db)
+    db.commit()
+    return result
 
 
 @router.get("/lookup-by-taobao-id/{taobao_id}", response_model=ProductOut)

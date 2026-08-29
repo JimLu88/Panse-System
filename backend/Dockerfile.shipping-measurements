@@ -1,0 +1,14 @@
+FROM panse-system-api:latest
+
+COPY app/api/finance.py /app/app/api/finance.py
+COPY app/api/pricing.py /app/app/api/pricing.py
+COPY app/api/products.py /app/app/api/products.py
+COPY app/models/finance.py /app/app/models/finance.py
+COPY app/models/pricing.py /app/app/models/pricing.py
+COPY app/services/bill_import_service.py /app/app/services/bill_import_service.py
+COPY app/services/logistics_measurement_service.py /app/app/services/logistics_measurement_service.py
+COPY alembic/versions/0133s_sku_shipping_measurements.py /app/alembic/versions/0133s_sku_shipping_measurements.py
+
+ENV GIT_COMMIT=shipping-measurements-20260801 \
+    GIT_COMMIT_MSG="feat: add SKU shipping measurements" \
+    BUILD_TIME=2026-08-01

@@ -214,7 +214,12 @@ class LogisticsBill(Base, TimestampMixin):
     carrier: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     tracking_no: Mapped[Optional[str]] = mapped_column(String(128), index=True)
     order_no: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    # 物流公司的计费重量；不能当作产品/包裹实际重量使用。
     weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(8, 3))
+    # 原始账单可核验的包裹数据。实际重量/体积用于 SKU 物流参数回填，件数仅作追溯。
+    actual_weight_kg: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 3))
+    volume_m3: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 4))
+    package_count: Mapped[Optional[int]] = mapped_column(Integer)
     freight_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     remark: Mapped[Optional[str]] = mapped_column(Text)
     # 逐单行(德邦)的收货人 + 目的地 — 用来按人名(+省)配淘宝订单 (用户 2026-06-21)。

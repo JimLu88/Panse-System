@@ -34,6 +34,9 @@ _LOGISTICS_MAP = {
     "运单号": "tracking_no", "快递单号": "tracking_no", "物流单号": "tracking_no",
     "订单号": "order_no", "关联订单号": "order_no",
     "重量": "weight_kg", "重量(kg)": "weight_kg", "重量（kg）": "weight_kg", "计费重量": "weight_kg",
+    "实际重量": "actual_weight_kg", "实际重量(kg)": "actual_weight_kg", "实际重量（kg）": "actual_weight_kg",
+    "体积": "volume_m3", "体积(m³)": "volume_m3", "体积（m³）": "volume_m3",
+    "件数": "package_count", "包裹件数": "package_count",
     "运费": "freight_amount", "费用": "freight_amount", "金额": "freight_amount", "实收运费": "freight_amount",
     "收货人": "recipient_name", "收件人": "recipient_name", "收件人姓名": "recipient_name",
     "目的地": "destination", "目的站": "destination", "收件人省市区": "destination",
@@ -44,6 +47,7 @@ _LOGISTICS_MAP = {
 @dataclass
 class BillImportReport:
     inserted: int = 0
+    updated_existing: int = 0
     skipped_invalid: int = 0
     skipped_duplicate: int = 0
     unmapped_columns: list[str] = field(default_factory=list)  # 未识别(被丢弃)的表头, 提示用户
@@ -57,6 +61,13 @@ def _decimal(v: Any) -> Optional[Decimal]:
         return Decimal(str(v).replace(",", "").replace("¥", "").strip())
     except (InvalidOperation, ValueError):
         return None
+
+
+def _positive_int(v: Any) -> Optional[int]:
+    d = _decimal(v)
+    if d is None or d <= 0 or d != d.to_integral_value():
+        return None
+    return int(d)
 
 
 def _date(v: Any) -> Optional[date]:
@@ -160,12 +171,13 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
             return ("t", bill_date, tracking_no)
         return ("f", bill_date, carrier, freight)
 
-    existing = {
-        _key(d, t, c, f) for d, t, c, f in db.execute(
-            select(LogisticsBill.bill_date, LogisticsBill.tracking_no,
-                   LogisticsBill.carrier, LogisticsBill.freight_amount)
-        ).all()
-    }
+    existing_rows: dict[tuple, LogisticsBill] = {}
+    for existing_bill in db.execute(select(LogisticsBill)).scalars().all():
+        existing_rows.setdefault(_key(
+            existing_bill.bill_date, existing_bill.tracking_no,
+            existing_bill.carrier, existing_bill.freight_amount,
+        ), existing_bill)
+    existing = set(existing_rows)
     seen: set = set()
     for rec in _rows(text, _LOGISTICS_MAP):
         freight = _decimal(rec.get("freight_amount"))
@@ -177,6 +189,20 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
         carrier = (rec.get("carrier") or None)
         key = _key(bill_date, tracking_no, carrier, freight)
         if key in existing or key in seen:
+            existing_bill = existing_rows.get(key)
+            if existing_bill is not None:
+                incoming = {
+                    "actual_weight_kg": _decimal(rec.get("actual_weight_kg")),
+                    "volume_m3": _decimal(rec.get("volume_m3")),
+                    "package_count": _positive_int(rec.get("package_count")),
+                }
+                changed = False
+                for field_name, field_value in incoming.items():
+                    if getattr(existing_bill, field_name, None) is None and field_value is not None:
+                        setattr(existing_bill, field_name, field_value)
+                        changed = True
+                if changed:
+                    rep.updated_existing += 1
             rep.skipped_duplicate += 1
             continue
         seen.add(key)
@@ -186,6 +212,9 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
             tracking_no=tracking_no,
             order_no=import_clean.clean_no(rec.get("order_no")),
             weight_kg=_decimal(rec.get("weight_kg")),
+            actual_weight_kg=_decimal(rec.get("actual_weight_kg")),
+            volume_m3=_decimal(rec.get("volume_m3")),
+            package_count=_positive_int(rec.get("package_count")),
             freight_amount=freight,
             recipient_name=(rec.get("recipient_name") or None),
             destination=(rec.get("destination") or None),
@@ -198,8 +227,13 @@ def import_logistics_csv(db: Session, text: str, *, import_job_id: Optional[int]
     try:
         from app.services import logistics_bill_match
         logistics_bill_match.match_logistics_bills(db, only_unmatched=True)
-    except Exception:  # noqa: BLE001 — 配对失败不阻断导入
-        pass
+    except Exception as exc:  # noqa: BLE001 — 配对失败不阻断账单入库，但回执必须说清楚
+        rep.errors.append(f"物流账单自动配单失败: {exc}")
+    try:
+        from app.services import logistics_measurement_service
+        logistics_measurement_service.refresh_sku_shipping_measurements(db)
+    except Exception as exc:  # noqa: BLE001 — 参数回填失败不回滚账单，但不能静默
+        rep.errors.append(f"SKU重量体积自动回填失败: {exc}")
     return rep
 
 
@@ -262,15 +296,19 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
         d = _decimal(v)
         return d.quantize(Decimal("0.01")) if d is not None else None
     ex_line: set = set()
+    ex_line_rows: dict = {}
     ex_summary: set = set()
-    for c_, d_, t_, rcp_, f_, rt_ in db.execute(
-        select(LogisticsBill.carrier, LogisticsBill.bill_date, LogisticsBill.tracking_no,
-               LogisticsBill.recipient_name, LogisticsBill.freight_amount, LogisticsBill.row_type)
-    ).all():
+    for bill_ in db.execute(select(LogisticsBill)).scalars().all():
+        c_, d_, t_, rcp_, f_, rt_ = (
+            bill_.carrier, bill_.bill_date, bill_.tracking_no,
+            bill_.recipient_name, bill_.freight_amount, bill_.row_type,
+        )
         if rt_ == "summary":
             ex_summary.add((c_, d_))
         else:
-            ex_line.add((c_, d_, (t_ or "").strip(), (rcp_ or "").strip(), _qf(f_)))
+            key_ = (c_, d_, (t_ or "").strip(), (rcp_ or "").strip(), _qf(f_))
+            ex_line.add(key_)
+            ex_line_rows[key_] = bill_
     seen_line: set = set()
     seen_summary: set = set()
     carrier = _detect_carrier(source_name)
@@ -278,6 +316,9 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
     c_fee = col("运费合计", "实收运费", "运费", "费用", "金额")
     c_date = col("业务日期", "寄件时间", "日期")
     c_wt = col("计费重量", "重量")
+    c_actual_wt = col("实际重量")
+    c_volume = col("体积")
+    c_packages = col("件数", "包裹件数")
     c_to = col("收货人", "收件人姓名", "收件人")
     c_dest = col("目的地", "目的站", "收件人省市区")
     c_order = col("匹配订单号", "订单号", "关联订单号")
@@ -306,6 +347,21 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
             bdate = _date(_cell(r, c_date)) or month_end
             key = (carrier, bdate, (track or "").strip(), to, _qf(fee))
             if key in ex_line or key in seen_line:
+                # 历史账单已入库时，重导只补原先未保存的包裹实重/体积/件数，不重复建行、也不覆盖已有值。
+                existing_bill = ex_line_rows.get(key)
+                if existing_bill is not None:
+                    incoming = {
+                        "actual_weight_kg": _decimal(_cell(r, c_actual_wt)),
+                        "volume_m3": _decimal(_cell(r, c_volume)),
+                        "package_count": _positive_int(_cell(r, c_packages)),
+                    }
+                    changed = False
+                    for field_name, field_value in incoming.items():
+                        if getattr(existing_bill, field_name, None) is None and field_value is not None:
+                            setattr(existing_bill, field_name, field_value)
+                            changed = True
+                    if changed:
+                        rep.updated_existing += 1
                 rep.skipped_duplicate += 1
                 continue
             seen_line.add(key)
@@ -313,6 +369,9 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
                 bill_date=bdate, carrier=carrier, tracking_no=track,
                 order_no=o_manual, match_method=("manual" if o_manual else None),
                 weight_kg=_decimal(_cell(r, c_wt)),
+                actual_weight_kg=_decimal(_cell(r, c_actual_wt)),
+                volume_m3=_decimal(_cell(r, c_volume)),
+                package_count=_positive_int(_cell(r, c_packages)),
                 freight_amount=fee, remark=f"{carrier} 收货:{to} 目的:{dest}".strip(),
                 recipient_name=(to or None), destination=(dest or None), row_type="line",
                 import_job_id=import_job_id,
@@ -354,8 +413,13 @@ def import_logistics_xlsx(db: Session, wb, *, source_name: str = "",
     try:
         from app.services import logistics_bill_match
         logistics_bill_match.match_logistics_bills(db, only_unmatched=True)
-    except Exception:  # noqa: BLE001 — 配对失败不阻断导入
-        pass
+    except Exception as exc:  # noqa: BLE001 — 配对失败不阻断账单入库，但回执必须说清楚
+        rep.errors.append(f"物流账单自动配单失败: {exc}")
+    try:
+        from app.services import logistics_measurement_service
+        logistics_measurement_service.refresh_sku_shipping_measurements(db)
+    except Exception as exc:  # noqa: BLE001 — 参数回填失败不回滚账单，但不能静默
+        rep.errors.append(f"SKU重量体积自动回填失败: {exc}")
     return rep
 
 
