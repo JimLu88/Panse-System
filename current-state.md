@@ -2,6 +2,13 @@
 
 Last updated: 2026-08-29 (Asia/Shanghai)
 
+## 2026-08-29 Feishu live QR handoff for finance login gates
+
+- ERP code commit `70fb4d2` makes the existing live scan path explicit in the Feishu alert group. Finance/login alerts now tell the user to reply `@Panse System 扫码`; `发二维码`, `发送二维码`, `二维码`, `扫码登录`, `开始扫码` and `我要扫码` are accepted aliases.
+- A reply starts the existing bounded pending-scan worker with `wait_scan=true`; the QR image is routed only to the configured Feishu alert group, never the order group, and remains live for at most 10 minutes. The scheduled finance run still does not open an unattended expiring QR session.
+- The login alert and QR path keep finance amounts redacted. Successful scan, timeout and repeated copies of the same open login incident do not create duplicate notices.
+- ERP verification: 53 focused tests and 124 alert/order/finance regression tests passed (2 intentional skips); Python compilation and diff checks passed. No live scan, login, bill pull, account action, finance replay or external test notification was performed.
+
 ## 2026-08-29 unsubmitted campaign plan resume/correction repair
 
 - Code commit `6c09059d903b50290e7c2a0a638a2464d18fd3bf` repairs two bounded resume defects without weakening R16/R17 price-evidence gates or the one-shot submission boundary.
